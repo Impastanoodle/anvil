@@ -1,5 +1,7 @@
 # per-machine permission grants, not shared
 .claude/settings.local.json
+# head-run lock, per machine
+HEAD.lock
 # scratch
 *.tmp
 *.log
