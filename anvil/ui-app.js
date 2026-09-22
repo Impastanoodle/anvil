@@ -391,6 +391,12 @@
   }
 
   // ------------------------------------------------------------------ keyboard
+  // Keys bound by the keydown handler below, by ribbon command id (used for ribbon tooltips). Keep in sync with the handler.
+  var SHORTCUTS = {
+    sketch: 'S', exitSketch: 'S', extrude: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', polygon: 'P', slot: 'T', dim: 'D',
+    fit: 'F', undo: 'Ctrl+Z', redo: 'Ctrl+Y', rebuild: 'Ctrl+B', save: 'Ctrl+S', new: 'Ctrl+N', open: 'Ctrl+O', normalTo: 'Ctrl+8', prevView: 'Shift+Ctrl+Z', orient: 'Space', delete: 'Del', rename: 'F2'
+  };
+  UI.shortcutFor = function (id) { return SHORTCUTS[id] || null; };
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
     var typing = tag === 'input' || tag === 'textarea' || tag === 'select';

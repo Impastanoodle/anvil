@@ -140,6 +140,21 @@ var AnvilExamples = [
     ].join('\n')
   },
   {
+    name: 'Tray',
+    description: '2 mm sheet-metal tray: 120×80 base with four 15 mm walls mitred at the corners, and a hanging tab on the back edge with obround bend reliefs where the wall stops. Try Sheet Metal ▸ Flatten.',
+    code: [
+      'p.name("Tray").units("mm");',
+      'p.sheet(2, 2, 0.71);                                     // thickness, inside bend radius, k-factor (steel)',
+      '// base: 120×80 plus a 60-wide tab on the back edge (Top plane: sketch v = -z, so the tab is at z in [80,100])',
+      'p.sketch("Top").polyline([[0, 0], [120, 0], [120, -80], [90, -80], [90, -100], [30, -100], [30, -80], [0, -80]], true).end().baseFlange(2);',
+      '// one Miter Flange feature: four walls, joined at the four corners; the back wall stops at the tab, so the',
+      '// two ends that run into the tab get an obround bend relief (T wide, T/2 deep) cut from the base first',
+      'p.flange(15, [[0, 2, 40], [60, 2, 0], [120, 2, 40], [105, 2, 80], [15, 2, 80]], { miter: true, relief: "obround" });',
+      '// hanging hole in the tab',
+      'p.hole("Top", 60, -92, 6, { offset: 2 });'
+    ].join('\n')
+  },
+  {
     name: 'Chamfered block',
     description: 'A machined block with a chamfered top perimeter, filleted vertical corners and a counterbored hole. Shows edge selection by point.',
     code: [

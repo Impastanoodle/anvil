@@ -202,7 +202,40 @@ var Kernel = (function () {
     return { loops: loops, warnings: warnings };
   }
 
-  // -> { loops: [{pts, hole}], warnings }
+  // Proper crossing of segments a-b and c-d (interiors only; touching at an end is not a crossing) -> point | null.
+  function segCross(a, b, c, d) {
+    var rx = b[0] - a[0], ry = b[1] - a[1], sx = d[0] - c[0], sy = d[1] - c[1];
+    var den = rx * sy - ry * sx;
+    if (Math.abs(den) <= 1e-12 * Math.max(1, Math.hypot(rx, ry) * Math.hypot(sx, sy))) return null; // parallel
+    var qx = c[0] - a[0], qy = c[1] - a[1];
+    var t = (qx * sy - qy * sx) / den, u = (qx * ry - qy * rx) / den, eps = 1e-9;
+    if (t <= eps || t >= 1 - eps || u <= eps || u >= 1 - eps) return null;
+    return [a[0] + rx * t, a[1] + ry * t];
+  }
+
+  // First point where two non-adjacent edges of a closed loop cross, or null for a simple polygon. O(n²).
+  function loopSelfCrossing(pts) {
+    var n = pts.length;
+    for (var i = 0; i < n; i++) {
+      var a = pts[i], b = pts[(i + 1) % n];
+      for (var j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue; // adjacent through the wrap-around
+        var x = segCross(a, b, pts[j], pts[(j + 1) % n]);
+        if (x) return x;
+      }
+    }
+    return null;
+  }
+
+  // Throws when any loop of a profile crosses itself; builders call it before making solids from the loops.
+  function checkProfile(profile) {
+    (profile.loops || []).forEach(function (l) {
+      if (l.cross) throw new Error('Sketch profile crosses itself near (' + fmt(l.cross[0]) + ', ' + fmt(l.cross[1]) + '). Trim or move the entities so the contour does not self-intersect.');
+    });
+  }
+
+  // -> { loops: [{pts, hole, depth, cross?}], warnings }. A loop with `cross` (a self-intersection point) is kept for
+  // display but every feature built from the profile errors through checkProfile.
   function sketchProfile(sketch) {
     var loops = [], chains = [], warnings = [];
     (sketch.entities || []).forEach(function (e) {
@@ -217,11 +250,16 @@ var Kernel = (function () {
       loops = loops.concat(ch.loops);
       warnings = warnings.concat(ch.warnings);
     }
-    loops = loops.filter(function (l) { return l.length >= 3 && Math.abs(signedArea(l)) > 1e-9; });
-    var out = loops.map(function (l) {
+    var zero = 0, out = [];
+    loops.forEach(function (l) {
+      var cross = l.length >= 3 ? loopSelfCrossing(l) : null;
+      if (!cross && (l.length < 3 || Math.abs(signedArea(l)) <= 1e-9)) { zero++; return; }
       var pts = signedArea(l) < 0 ? l.slice().reverse() : l;
-      return { pts: pts, hole: false, depth: 0 };
+      var loop = { pts: pts, hole: false, depth: 0 };
+      if (cross) loop.cross = cross;
+      out.push(loop);
     });
+    if (zero) warnings.push(zero === 1 ? '1 zero-area contour was ignored.' : zero + ' zero-area contours were ignored.');
     for (var i = 0; i < out.length; i++) {
       var depth = 0, probe = out[i].pts[0];
       // use the centroid of the first edge so a shared vertex does not confuse containment
@@ -780,6 +818,7 @@ var Kernel = (function () {
 
   // Solid from a profile: disjoint outer prisms concatenated, holes subtracted (slightly overshooting the caps).
   function solidFromProfile(profile, makeSolid) {
+    checkProfile(profile);
     var outers = [], holes = [];
     profile.loops.forEach(function (l) {
       var solid = makeSolid(l.pts, l.hole);
@@ -796,6 +835,8 @@ var Kernel = (function () {
 
   function extrudeRange(f, through) {
     through = through || THROUGH;
+    if (f.depth != null && !isFinite(+f.depth)) throw new Error('Extrude depth must be a number.');
+    if (f.dir2 && f.depth2 != null && !isFinite(+f.depth2)) throw new Error('Extrude depth must be a number.');
     var d = Math.abs(+f.depth || 0);
     var a, b;
     switch (f.end) {
@@ -841,6 +882,7 @@ var Kernel = (function () {
   function buildExtrude(f, sketch, plane, through) {
     var profile = sketch.profile || sketchProfile(sketch);
     var range = extrudeRange(f, through);
+    if (f.draft != null && !isFinite(+f.draft)) throw new Error('Draft angle must be a number.');
     var draft = +f.draft || 0;
     if (Math.abs(draft) >= 89) throw new Error('Draft angle must be less than 89°.');
     // draft: the section shrinks (or grows, with draftOut) by |t|·tan(angle) at distance t from the sketch plane
@@ -871,6 +913,7 @@ var Kernel = (function () {
     var profile = sketch.profile || sketchProfile(sketch);
     var axis = revolveAxis(f, sketch);
     var axisLine = f.axis, isLine = typeof axisLine === 'number';
+    if (f.angle != null && !isFinite(+f.angle)) throw new Error('Revolve angle must be a number.');
     var angle = +f.angle || 360;
     if (f.reverse) angle = -angle;
     var dl = len([axis.d[0], axis.d[1], 0]);
@@ -1506,9 +1549,12 @@ var Kernel = (function () {
     var profPlane = resolvePlane(prof.plane, model, ctx.planes);
     var profile = prof.profile || sketchProfile(prof);
     if (!profile.loops.length) throw new Error('Sweep profile sketch has no closed profile.');
+    checkProfile(profile);
     var path;
-    if (Array.isArray(f.path)) path = f.path.map(function (p) { return [+p[0], +p[1], +p[2]]; });
-    else {
+    if (Array.isArray(f.path)) {
+      path = f.path.map(function (p) { return [+p[0], +p[1], +p[2]]; });
+      path.forEach(function (p) { if (!isFinite(p[0]) || !isFinite(p[1]) || !isFinite(p[2])) throw new Error('Every sweep path coordinate must be a number.'); });
+    } else {
       var ps = ctx.sketches[f.path] || findFeature(model, f.path);
       if (!ps || ps.type !== 'sketch') throw new Error('Select a path sketch for the sweep.');
       var info = {};
@@ -1579,6 +1625,7 @@ var Kernel = (function () {
       if (!s || s.type !== 'sketch') throw new Error('Loft sketch not found.');
       var pl = resolvePlane(s.plane, model, ctx.planes);
       var prof = s.profile || sketchProfile(s);
+      checkProfile(prof);
       var outers = prof.loops.filter(function (l) { return !l.hole; });
       if (outers.length !== 1) throw new Error('Each loft sketch must contain exactly one closed profile.');
       return { plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }) };
@@ -1767,15 +1814,45 @@ var Kernel = (function () {
     return model.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
   }
 
+  // Flange section in the (o, u) frame: o across the edge (outward), u along the fold. The strip o ∈ [-ov, 0] overlaps
+  // the sheet so the union is watertight; the material actually added is the o >= 0 part (bend + wall).
+  function flangeProfile(A, R, T, L, ov) {
+    var segs = Math.max(4, Math.round(8 * A / (Math.PI / 2)));
+    var inner = [], outer = [];
+    for (var s = 0; s <= segs; s++) {
+      var th = A * s / segs;
+      inner.push([R * Math.sin(th), R - R * Math.cos(th)]);
+      outer.push([(R + T) * Math.sin(th), R - (R + T) * Math.cos(th)]);
+    }
+    var tx = Math.cos(A), ty = Math.sin(A);
+    var iEnd = [inner[segs][0] + tx * L, inner[segs][1] + ty * L], oEnd = [outer[segs][0] + tx * L, outer[segs][1] + ty * L];
+    var loop = [[-ov, 0]].concat(inner, [iEnd, oEnd], outer.slice().reverse(), [[-ov, -T]]);
+    if (signedArea(loop) < 0) loop.reverse();
+    return loop;
+  }
+
   // Edge flange: bend (inner radius R, thickness T, sweep angle) plus a flat wall of length L, swept along each
   // selected straight edge of a flat sheet face. "Bend outside" placement: the flange sits beyond the edge.
+  // `miter`: flanges on two selected edges that share a corner are extended past it and clipped by the corner's
+  // bisector plane (each keeps its own side, moved apart by miterGap/2), so they meet at a mitre.
+  // `relief` ('rect' | 'obround'): where a flange end runs into more sheet (the plate continues beyond the end,
+  // inline or on the outward side) a slot reliefWidth wide (default T) is cut from the base before the flange is
+  // added, from reliefDepth (default T/2) inside the edge out past the bend zone. Ends shared with another selected
+  // edge (mitred or collinear) get no relief.
   function buildFlange(f, model, ctx) {
     if (!ctx.body) throw new Error('Create a Base Flange before adding edge flanges.');
     var sheet = sheetParams(model);
     var T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
     var L = +f.length, A = (f.angle == null ? 90 : +f.angle) * Math.PI / 180;
+    if (!isFinite(L)) throw new Error('Flange length must be a number.');
+    if (!isFinite(A)) throw new Error('Flange angle must be a number.');
     if (!(L > 0)) throw new Error('Flange length must be greater than zero.');
     if (!(A > 0.01)) throw new Error('Flange angle must be greater than zero.');
+    var miter = !!f.miter, gap = Math.max(0, +f.miterGap || 0);
+    var relief = f.relief === 'rect' || f.relief === 'obround' ? f.relief : 'none';
+    var rw = f.reliefWidth != null ? +f.reliefWidth : T, rd = f.reliefDepth != null ? +f.reliefDepth : T / 2;
+    if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
+    if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
     var mesh = meshFromBody(ctx.body);
     var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
     var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, Math.max(0.5, T));
@@ -1784,7 +1861,8 @@ var Kernel = (function () {
     // face at the edge), 'inside' (Material Inside: the wall's outer face at the edge). The base sheet is trimmed back
     // by the shift so the bend takes its place.
     var shift = f.position === 'inside' ? R + T : (f.position === 'outside' ? R : 0);
-    var tools = [], cuts = [], info = [];
+    var ov = Math.min(T, 0.5); // overlap into the sheet so the union is watertight
+    var tools = [], cuts = [], info = [], eds = [];
     selected.forEach(function (e) {
       var fa = mesh.faces[e.faces[0]], fb = mesh.faces[e.faces[1]];
       if (Math.abs(dot(fa.normal, fb.normal)) > 0.05) throw new Error('Flange edges must be square edges of a flat face.');
@@ -1802,22 +1880,69 @@ var Kernel = (function () {
         origin = sub(origin, scale(o, shift));
       }
       var plane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
-      var segs = Math.max(4, Math.round(8 * A / (Math.PI / 2)));
-      var inner = [], outer = [];
-      for (var s = 0; s <= segs; s++) {
-        var th = A * s / segs;
-        inner.push([R * Math.sin(th), R - R * Math.cos(th)]);
-        outer.push([(R + T) * Math.sin(th), R - (R + T) * Math.cos(th)]);
-      }
-      var tx = Math.cos(A), ty = Math.sin(A);
-      var iEnd = [inner[segs][0] + tx * L, inner[segs][1] + ty * L], oEnd = [outer[segs][0] + tx * L, outer[segs][1] + ty * L];
-      var ov = Math.min(T, 0.5); // overlap into the sheet so the union is watertight
-      var loop = [[-ov, 0]].concat(inner, [iEnd, oEnd], outer.slice().reverse(), [[-ov, -T]]);
-      if (signedArea(loop) < 0) loop.reverse();
+      var loop = flangeProfile(A, R, T, L, ov);
+      var wmax = 0;
+      loop.forEach(function (p) { wmax = Math.max(wmax, p[0]); });
       var ta = dot(sub(e.a, e.mid), plane.n), tb = dot(sub(e.b, e.mid), plane.n);
-      tools.push(prism(loop, plane, Math.min(ta, tb), Math.max(ta, tb), f.id));
-      var sh = scale(o, -shift);
-      info.push({ a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: origin, o: o, u: u, len: e.len, angle: A, R: R, L: L, T: T });
+      // ends: P = vertex, t = sweep coordinate, dIn = unit direction from the vertex into the edge
+      eds.push({ e: e, nF: nF, o: o, u: u, plane: plane, loop: loop, wmax: wmax,
+        ends: [{ P: e.a, t: ta, dIn: norm(sub(e.b, e.a)) }, { P: e.b, t: tb, dIn: norm(sub(e.a, e.b)) }] });
+    });
+    // corners shared by two selected edges: mark them (no relief there) and, with `miter`, set up the mitre planes
+    for (var i = 0; i < eds.length; i++) for (var j = i + 1; j < eds.length; j++) {
+      var ei = eds[i], ej = eds[j];
+      var tol = Math.max(1e-4, 1e-3 * Math.min(ei.e.len, ej.e.len));
+      for (var ki = 0; ki < 2; ki++) for (var kj = 0; kj < 2; kj++) {
+        var ea = ei.ends[ki], eb = ej.ends[kj];
+        if (len(sub(ea.P, eb.P)) > tol) continue;
+        ea.shared = eb.shared = true;
+        if (!miter || ea.miter || eb.miter) continue;
+        var di = ea.dIn, dj = eb.dIn;
+        if (len(cross(di, dj)) < 1e-6 || dot(ei.u, ej.u) < 0.99) continue; // collinear, or folding opposite ways
+        var c = dot(ei.o, ej.o);
+        if (1 + c < 0.05) continue;
+        // corner of the (possibly trimmed-back) edge lines, and the bisector plane through it containing the sheet normal
+        var V = scale(add(ea.P, eb.P), 0.5);
+        if (shift) V = sub(V, scale(add(ei.o, ej.o), shift / (1 + c)));
+        var nb = norm(sub(di, dj));
+        [[ei, ea, nb], [ej, eb, scale(nb, -1)]].forEach(function (q) {
+          var ed = q[0], en = q[1], n = q[2];
+          // extend the sweep past the corner far enough for the outermost point of the section to reach the bisector
+          var ext = ed.wmax * dot(ed.o, n) / dot(en.dIn, n);
+          ext = Math.max(0, Math.min(ext, 4 * ed.wmax)) + 1;
+          en.miter = { n: n, w: dot(V, n) + gap / 2, tExt: dot(sub(V, ed.plane.origin), ed.plane.n) - dot(en.dIn, ed.plane.n) * ext };
+        });
+      }
+    }
+    var inside = null;
+    eds.forEach(function (ed) {
+      var t0 = ed.ends[0].miter ? ed.ends[0].miter.tExt : ed.ends[0].t;
+      var t1 = ed.ends[1].miter ? ed.ends[1].miter.tExt : ed.ends[1].t;
+      var tool = prism(ed.loop, ed.plane, Math.min(t0, t1), Math.max(t0, t1), f.id);
+      ed.ends.forEach(function (en) { if (en.miter) tool = tool.clipByPlane(en.miter.n, en.miter.w); });
+      tools.push(tool);
+      if (relief !== 'none') ed.ends.forEach(function (en) {
+        if (en.shared) return;
+        // does the sheet continue beyond this end? probe half a thickness past it at mid-thickness, inside the
+        // base (just behind the edge) and on the outward side (a plate lying beside the bend zone)
+        if (!inside) inside = ctx.body.pointTester();
+        var past = add(sub(en.P, scale(ed.nF, T / 2)), scale(en.dIn, -0.5 * T));
+        if (!inside(add(past, scale(ed.o, -0.25 * T))) && !inside(add(past, scale(ed.o, (R + T) / 2)))) return;
+        var beyond = -dot(en.dIn, ed.plane.n); // sign of t past the end
+        var tA = beyond > 0 ? en.t : en.t - rw, tB = beyond > 0 ? en.t + rw : en.t;
+        var o0 = -(shift + rd), o1 = R + T + rd;
+        var slot = [[o1, tA], [o1, tB]];
+        if (relief === 'obround') {
+          var r = rw / 2, oc = o0 + r, tc = (tA + tB) / 2;
+          for (var k = 0; k <= 12; k++) { var ph = Math.PI / 2 + Math.PI * k / 12; slot.push([oc + r * Math.cos(ph), tc + r * Math.sin(ph)]); }
+        } else slot.push([o0, tB], [o0, tA]);
+        // sweep the slot outline (in the sheet plane: o across, t along the edge) through the thickness (u ∈ [-T, 0])
+        var sp = { origin: ed.plane.origin, x: ed.o, y: ed.plane.n, n: scale(ed.u, -1) };
+        cuts.push(prism(slot, sp, -0.01, T + 0.01, f.id));
+      });
+      var sh = scale(ed.o, -shift), e = ed.e;
+      info.push({ a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: ed.plane.origin, o: ed.o, u: ed.u, len: e.len, angle: A, R: R, L: L, T: T,
+        mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter] });
     });
     ctx.flanges[f.id] = info;
     ctx.flangeCut = cuts.length ? unionAll(cuts) : null;
@@ -1831,6 +1956,7 @@ var Kernel = (function () {
     if (!ctx.body) throw new Error('Create a Base Flange before adding a jog.');
     var sheet = sheetParams(model), T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
     var A = (f.angle == null ? 90 : +f.angle) * Math.PI / 180, H = +f.height, L2 = +f.length;
+    if (!isFinite(H) || !isFinite(L2) || !isFinite(A)) throw new Error('Jog height, length and angle must be a number each.');
     if (!(H > 0)) throw new Error('Jog height must be greater than zero.');
     if (!(L2 > 0)) throw new Error('Jog length must be greater than zero.');
     if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
@@ -2135,7 +2261,7 @@ var Kernel = (function () {
   Builder.prototype.extrude = function (depth, opts) {
     opts = opts || {};
     var f = this._add({
-      type: 'extrude', sketch: this._sketchId(opts), depth: +depth || 0, end: opts.throughAll ? 'through' : (opts.midplane ? 'mid' : 'blind'),
+      type: 'extrude', sketch: this._sketchId(opts), depth: depth == null ? 0 : +depth, end: opts.throughAll ? 'through' : (opts.midplane ? 'mid' : 'blind'),
       reverse: !!opts.reverse || opts.dir === -1, cut: !!opts.cut, dir2: !!opts.depth2 || !!opts.both,
       depth2: opts.depth2 != null ? +opts.depth2 : (opts.both ? +depth : 0), end2: opts.throughAll2 ? 'through' : 'blind', name: opts.name
     });
@@ -2156,10 +2282,17 @@ var Kernel = (function () {
     return f;
   };
   // edges: [[x,y,z], ...] points on straight edges of the flat sheet face
+  // opts: angle, reverse, radius, position, toward, name, miter (bool), miterGap, relief ('none' | 'rect' | 'obround'),
+  // reliefWidth (default T), reliefDepth (default T/2)
   Builder.prototype.flange = function (length, edges, opts) {
     opts = opts || {};
-    this._add({ type: 'flange', length: +length, angle: opts.angle == null ? 90 : +opts.angle, reverse: !!opts.reverse, radius: opts.radius != null ? +opts.radius : null, position: opts.position || 'bendOutside', toward: opts.toward ? [+opts.toward[0], +opts.toward[1], +opts.toward[2]] : undefined,
-      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
+    var f = { type: 'flange', length: +length, angle: opts.angle == null ? 90 : +opts.angle, reverse: !!opts.reverse, radius: opts.radius != null ? +opts.radius : null, position: opts.position || 'bendOutside', toward: opts.toward ? [+opts.toward[0], +opts.toward[1], +opts.toward[2]] : undefined,
+      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name,
+      miter: !!opts.miter, relief: opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none' };
+    if (opts.miterGap != null) f.miterGap = +opts.miterGap;
+    if (opts.reliefWidth != null) f.reliefWidth = +opts.reliefWidth;
+    if (opts.reliefDepth != null) f.reliefDepth = +opts.reliefDepth;
+    this._add(f);
     return this;
   };
   // hem: a 180° flange folded back over the sheet; `gap` is the opening between the flats (default T/2, open hem)
@@ -2402,6 +2535,11 @@ var Kernel = (function () {
           if (f.radius != null) fo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') fo.position = f.position;
           if (f.toward) fo.toward = f.toward.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+          if (f.miter) fo.miter = true;
+          if (f.miterGap != null && +f.miterGap !== 0) fo.miterGap = +f.miterGap;
+          if (f.relief && f.relief !== 'none') fo.relief = f.relief;
+          if (f.reliefWidth != null) fo.reliefWidth = +f.reliefWidth;
+          if (f.reliefDepth != null) fo.reliefDepth = +f.reliefDepth;
           if (f.hem) {
             var ho = { gap: Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
             if (f.reverse) ho.reverse = true;
@@ -2481,7 +2619,7 @@ var Kernel = (function () {
   return {
     STD_PLANES: STD_PLANES, AXES: AXES,
     makePlane: makePlane, planeFromFace: planeFromFace, resolvePlane: resolvePlane, to3D: to3D, to2D: to2D,
-    entityPolylines: entityPolylines, entitySnapPoints: entitySnapPoints, sketchProfile: sketchProfile, signedArea: signedArea,
+    entityPolylines: entityPolylines, entitySnapPoints: entitySnapPoints, sketchProfile: sketchProfile, signedArea: signedArea, loopSelfCrossing: loopSelfCrossing, checkProfile: checkProfile,
     offsetLoop: offsetLoop, filletPolyline: filletPolyline,
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
@@ -2489,7 +2627,7 @@ var Kernel = (function () {
     buildTool: buildTool, isCut: isCut, rebuild: rebuild, buildEdgeFeature: buildEdgeFeature,
     meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
-    buildFlange: buildFlange, buildJog: buildJog, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
+    buildFlange: buildFlange, buildJog: buildJog, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
     resolveFaces: resolveFaces, buildShell: buildShell,
     Builder: Builder, runScript: runScript, generateScript: generateScript,

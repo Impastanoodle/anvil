@@ -650,6 +650,25 @@
     try { b.linearPattern({ count: 2 }); } catch (e) { c = /no feature/i.test(e.message); }
     assert(a && c, 'guards missing: sketch=' + a + ' feature=' + c);
   });
+  // like expectError, but also accepts the guard firing inside runScript (a Builder-level throw)
+  function expectErrorAny(code, re) {
+    var msg;
+    try { msg = expectError(code, re); }
+    catch (e) {
+      msg = e && e.message || String(e);
+      assert(re.test(msg), 'error "' + msg + '" does not match ' + re);
+    }
+    return msg;
+  }
+  test('a self-intersecting (bow-tie) profile is rejected, not extruded', function () {
+    return expectErrorAny('p.sketch("Front").polyline([[0, 0], [10, 0], [0, 5], [10, 5]], true).extrude(2);', /crosses itself/i);
+  });
+  test('NaN extrude depth and revolve angle report "must be a number"', function () {
+    var a = expectErrorAny('p.sketch("Front").rect(0, 0, 5, 5).extrude(NaN);', /must be a number/i);
+    var b = expectErrorAny('p.sketch("Front").rect(1, 0, 3, 4).revolve(NaN);', /must be a number/i);
+    var c = expectErrorAny('p.sketch("Front").rect(0, 0, 5, 5).extrude("deep");', /must be a number/i);
+    return a + ' | ' + b + ' | ' + c;
+  });
 
   // ------------------------------------------------------------------ script round-trip
   group('script round-trip');
@@ -1026,6 +1045,141 @@
     assert(K.generateScript(b.model) === script, 'generator is a fixed point');
   });
 
+  // ------------------------------------------------------------------ mitred corners and bend reliefs
+  group('miter & relief');
+  // The o >= 0 part of the profile loop buildFlange extrudes along an edge (o = outward across the edge, up = along
+  // the fold). buildFlange also prepends/appends an overlap strip at o in [-ov, 0] that lies inside the sheet and so
+  // adds nothing to the union; it is left out here so area and moment describe the material actually added.
+  function flangeProfile(A, R, T, L) {
+    var segs = Math.max(4, Math.round(8 * A / (Math.PI / 2)));
+    var inner = [], outer = [];
+    for (var s = 0; s <= segs; s++) {
+      var th = A * s / segs;
+      inner.push([R * Math.sin(th), R - R * Math.cos(th)]);
+      outer.push([(R + T) * Math.sin(th), R - (R + T) * Math.cos(th)]);
+    }
+    var tx = Math.cos(A), ty = Math.sin(A);
+    var iEnd = [inner[segs][0] + tx * L, inner[segs][1] + ty * L], oEnd = [outer[segs][0] + tx * L, outer[segs][1] + ty * L];
+    return inner.concat([iEnd, oEnd], outer.slice().reverse()); // inner[0] = [0, 0], outer[0] = [0, -T]: closed at o = 0
+  }
+  // shoelace area and first moment about o = 0 (mx = ∫∫ o dA), made positive whatever the loop orientation
+  function polyMoments(pts) {
+    var a = 0, mx = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i], q = pts[(i + 1) % pts.length];
+      var c = p[0] * q[1] - q[0] * p[1];
+      a += c; mx += (p[0] + q[0]) * c;
+    }
+    a /= 2; mx /= 6;
+    return a < 0 ? { area: -a, mx: -mx } : { area: a, mx: mx };
+  }
+  function mitreFaceIndex(mesh, n) { // a mesh face whose normal is ±n (n unit)
+    for (var i = 0; i < mesh.faces.length; i++) {
+      var f = mesh.faces[i].normal, d = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
+      if (Math.abs(Math.abs(d) - 1) < 1e-3) return i;
+    }
+    return -1;
+  }
+  var PROF = polyMoments(flangeProfile(Math.PI / 2, 2, 2, 20)); // { area, mx } of the 90° R2 T2 L20 profile
+  test('mitred square corner adds exactly the first moment of the profile on each side', function () {
+    var one = build(SHEET + '\np.flange(20, [[0, 2, 30]]);');
+    noErrors(one);
+    nearRel(one.mp.volume - 12000, PROF.area * 60, 1e-6, 'one flange = profile area × edge length');
+    var two = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]]);');
+    var mit = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
+    noErrors(two); noErrors(mit);
+    var f = mit.model.features[mit.model.features.length - 1];
+    assert(f.type === 'flange' && f.miter === true, 'miter flag stored: ' + JSON.stringify(f));
+    // each flange is extended past the shared vertex (0, 2, 0) up to the 45° bisector plane x = z: a slice dA at
+    // distance o from the edge reaches o beyond the corner, so the corner gains ∫∫ o dA per flange
+    nearRel(mit.mp.volume - two.mp.volume, 2 * PROF.mx, 1e-4, 'mitre volume = 2 × first moment');
+    nearVec(mit.mp.bbox.min, two.mp.bbox.min, 1e-6, 'bbox.min unchanged'); nearVec(mit.mp.bbox.max, two.mp.bbox.max, 1e-6, 'bbox.max unchanged');
+    consistentVolume(mit);
+    var rev = build(SHEET + '\np.flange(20, [[50, 2, 0], [0, 2, 30]], { miter: true });');
+    noErrors(rev);
+    nearRel(rev.mp.volume, mit.mp.volume, 1e-9, 'pick order does not matter');
+    return 'corner adds ' + fmt(mit.mp.volume - two.mp.volume) + ' (2·M = ' + fmt(2 * PROF.mx) + ')';
+  });
+  test('mitre gap opens the corner by roughly gap × profile area and leaves 45° faces', function () {
+    var mit = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
+    var gap = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true, miterGap: 1 });');
+    noErrors(mit); noErrors(gap);
+    assert(gap.mp.volume < mit.mp.volume, 'the gap removes material: ' + gap.mp.volume + ' vs ' + mit.mp.volume);
+    var removed = mit.mp.volume - gap.mp.volume;
+    // gap measured along the edges: 1 × area; measured normal to the bisector plane: √2 × area — accept both
+    assert(removed > 0.8 * PROF.area * 1 && removed < 1.6 * PROF.area * 1, 'gap removed ' + fmt(removed) + ', expected about ' + fmt(PROF.area) + '…' + fmt(Math.SQRT2 * PROF.area));
+    var s = Math.SQRT1_2;
+    assert(mitreFaceIndex(gap.mesh, [s, 0, -s]) >= 0, 'no face parallel to the bisector plane x = z (normal ±(1, 0, −1)/√2)');
+    consistentVolume(gap);
+    return 'gap removed ' + fmt(removed);
+  });
+  test('three mitred edges around the sheet: two mitred corners, one feature', function () {
+    var plain = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]]);');
+    var mit = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true });');
+    noErrors(plain); noErrors(mit);
+    nearRel(plain.mp.volume - 12000, PROF.area * (100 + 60 + 100), 1e-6, 'three plain flanges');
+    nearRel(mit.mp.volume - plain.mp.volume, 2 * 2 * PROF.mx, 1e-4, 'two mitred corners add 2 × 2M');
+    consistentVolume(mit);
+    var s = Math.SQRT1_2;
+    var mg = build(SHEET + '\np.flange(20, [[50, 2, 0], [100, 2, 30], [50, 2, 60]], { miter: true, miterGap: 0.5 });');
+    noErrors(mg);
+    assert(mitreFaceIndex(mg.mesh, [s, 0, s]) >= 0 && mitreFaceIndex(mg.mesh, [s, 0, -s]) >= 0, 'with a gap both corners show a 45° face');
+  });
+  // L-shaped sheet on Top (v → −z): x ∈ [0,100] for z ∈ [−30, 0] plus x ∈ [0,60] for z ∈ [−60, −30]; area 4800
+  var LSHEET = 'p.sheet(2, 2, 0.71);\np.sketch("Top").polyline([[0, 0], [100, 0], [100, 30], [60, 30], [60, 60], [0, 60]], true).end().baseFlange(2);';
+  test('bend relief at a concave corner is a full-thickness slot cut from the base before the flange', function () {
+    var base = build(LSHEET);
+    noErrors(base);
+    near(base.mp.volume, 9600, 1e-6, 'L plate volume');
+    // flange on the notch edge x = 60, z ∈ [−60, −30]: the z = −60 end is a convex corner (no relief), the z = −30 end
+    // runs into the wider part of the plate (relief). Slot: 2 along the edge beyond the end, o ∈ [−1, R + T + 1] = 6 across → 24
+    var none = build(LSHEET + '\np.flange(10, [[60, 2, -45]]);');
+    var rect = build(LSHEET + '\np.flange(10, [[60, 2, -45]], { relief: "rect", reliefWidth: 2, reliefDepth: 1 });');
+    noErrors(none); noErrors(rect);
+    var F = none.mp.volume - 9600;
+    nearRel(F, polyMoments(flangeProfile(Math.PI / 2, 2, 2, 10)).area * 30, 1e-6, 'flange volume without relief');
+    var f = rect.model.features[rect.model.features.length - 1];
+    assert(f.relief === 'rect' && f.reliefWidth === 2 && f.reliefDepth === 1, 'relief fields stored: ' + JSON.stringify(f));
+    nearRel(rect.mp.volume, 9600 - 24 + F, 1e-6, 'volume = plate − slot + flange');
+    consistentVolume(rect);
+    var ob = build(LSHEET + '\np.flange(10, [[60, 2, -45]], { relief: "obround", reliefWidth: 2, reliefDepth: 1 });');
+    noErrors(ob);
+    var removedOb = 9600 + F - ob.mp.volume;
+    // rounding the inner end of a 2-wide slot trades a 2 × 1 end for a semicircle of radius 1 (or both ends): between
+    // 24 − 2·(2 − π/2)·2 (both ends) and 24, with a 5 % margin on the low side
+    assert(removedOb < 24 - 1e-6, 'obround removes less than the rectangle: ' + removedOb);
+    assert(removedOb > (24 - 2 * 2 * (2 - Math.PI / 2)) * 0.95, 'obround removes too little: ' + removedOb);
+    consistentVolume(ob);
+    var flat = K.flatPattern(rect.model, rect.build, rect.mesh), BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71);
+    assert(flat.bends.length === 1, 'bends = ' + flat.bends.length);
+    // the relief shows in the blank either as a notch in the outline or as a slot loop touching the strip
+    assert(flat.loops[0].length >= 10 || flat.loops.length >= 2, 'relief missing from the flat: ' + flat.loops.length + ' loops, outer ' + flat.loops[0].length + ' points');
+    var blank = flat.loops.reduce(function (s, l, i) { return s + (i === 0 ? K.signedArea(l) : -Math.abs(K.signedArea(l))); }, 0);
+    near(blank, 4800 - 12 + 30 * (BA + 10), 1e-6, 'blank area = plate − relief + strip');
+    return 'rect slot ' + fmt(9600 + F - rect.mp.volume) + ', obround ' + fmt(removedOb) + ', blank ' + fmt(blank);
+  });
+  test('no relief is cut at a convex sheet corner', function () {
+    var plain = build(SHEET + '\np.flange(20, [[0, 2, 30]]);');
+    var rel = build(SHEET + '\np.flange(20, [[0, 2, 30]], { relief: "rect" });');
+    noErrors(plain); noErrors(rel);
+    nearRel(rel.mp.volume, plain.mp.volume, 1e-9, 'volume unchanged');
+    nearVec(rel.mp.bbox.min, plain.mp.bbox.min, 1e-9, 'bbox.min'); nearVec(rel.mp.bbox.max, plain.mp.bbox.max, 1e-9, 'bbox.max');
+  });
+  test('miter and relief options survive a script round-trip and only non-defaults are emitted', function () {
+    var code = SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true, miterGap: 0.5, relief: "obround", reliefWidth: 3 });';
+    var lines = roundTrip(code);
+    var script = K.generateScript(build(code).model), last = script.split('\n').pop();
+    assert(/miter: true/.test(last), 'miter emitted: ' + last);
+    assert(/miterGap: 0\.5/.test(last), 'miterGap emitted: ' + last);
+    assert(/relief: ["']obround["']/.test(last), 'relief emitted: ' + last);
+    assert(/reliefWidth: 3/.test(last), 'reliefWidth emitted: ' + last);
+    assert(last.indexOf('reliefDepth') < 0, 'default reliefDepth must not be emitted: ' + last);
+    assert(K.generateScript(build(script).model) === script, 'round-trip fixed point');
+    var plain = K.generateScript(build(SHEET + '\np.flange(20, [[0, 2, 30]]);').model).split('\n').pop();
+    assert(!/miter|relief/.test(plain), 'defaults are silent: ' + plain);
+    return lines;
+  });
+
   // ------------------------------------------------------------------ sweep & loft
   group('sweep');
   test('straight sweep of a circle is a tube: area × path length', function () {
@@ -1394,6 +1548,15 @@
     near(r.mp.volume, 4000, 1e-3, 'volume unchanged');
     var ok = build('p.box(20, 20, 10);\np.sketch("Top", 10).circle(10, -10, 3).cut(5, { reverse: true });');
     assert(Object.keys(ok.warnings).length === 0, 'a real cut has no warning');
+  });
+  test('a zero-area contour is dropped with a warning and the rest of the sketch still builds', function () {
+    var r = build('p.sketch("Front").rect(0, 0, 0, 5).rect(10, 0, 5, 5).extrude(2);');
+    noErrors(r);
+    near(r.mp.volume, 50, 1e-6, 'only the 5 × 5 rectangle is extruded');
+    var all = Object.keys(r.warnings).map(function (id) { return r.warnings[id]; }).join(' | ');
+    assert(/zero-area/i.test(all), 'warnings: ' + JSON.stringify(r.warnings));
+    // nothing left after dropping the degenerate loop: the usual "no closed profile" error
+    expectError('p.sketch("Front").rect(0, 0, 0, 5).extrude(2);', /no closed profile/i);
   });
 
   // ------------------------------------------------------------------ sketch dimensions (Smart Dimension)

@@ -289,6 +289,45 @@
     UI.closeModal();
     return 'dxf ' + ta.value.length + ' chars';
   });
+  step('sheet metal: mitred two-edge flange via anvil.run, tree title says "mitred"', function () {
+    var s;
+    try {
+      s = anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
+    } catch (e) { fail('anvil.run threw: ' + ((e && e.message) || e)); }
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    // two 20 mm walls (60 + 100 long) plus the mitred corner: well above the bare 12000 sheet
+    assert(s.volume > 12000 + 0.9 * (Math.PI / 4 * 12 + 40) * 160, 'both flanges missing or short: ' + s.volume);
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'flange' && f.miter === true, 'last feature: ' + JSON.stringify(f));
+    // the tree row shows the feature name; its description (", mitred") is the row's title attribute
+    var tree = $('tree');
+    var titles = Array.prototype.map.call(tree.querySelectorAll('[title]'), function (el) { return el.getAttribute('title'); }).join(' | ');
+    var text = tree.innerText + ' | ' + titles;
+    assert(/mitred/i.test(text), 'tree lacks "mitred": ' + text.replace(/\s+/g, ' ').slice(0, 200));
+    return 'volume ' + s.volume + ' · ' + titles.split(' | ').filter(function (t) { return /mitred/i.test(t); })[0];
+  });
+  step('Miter Flange PM: pick two adjacent edges, accept, named Miter-Flange1', function () {
+    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    var plain = anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]]);').volume;
+    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    UI.cmdMiterFlange();
+    assert(UI.hasPM(), 'Miter Flange PM not open');
+    assert(/Miter-Flange/.test($('pm').innerText), 'PM title: ' + $('pm').innerText.slice(0, 80));
+    var miter = pmField('Miter corners');
+    assert(miter && miter.type === 'checkbox' && miter.checked, 'Miter corners should be preset');
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([0, 2, 30]) }) !== false, 'first edge pick rejected');
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([50, 2, 0]) }) !== false, 'second edge pick rejected');
+    setInput(pmNumber(1), 20); // angle is the first number, length the second
+    UI.pmOK();
+    assert(!UI.hasPM(), 'PM still open');
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    assert(s.volume > plain + 1, 'mitre should add the corner: ' + s.volume + ' vs unmitred ' + plain);
+    assert(names()[names().length - 1] === 'Miter-Flange1', names().join());
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.miter === true && f.edges.length === 2, JSON.stringify(f));
+    return 'volume ' + s.volume + ' (unmitred ' + plain + ')';
+  });
   step('task pane: Design Library lists the examples, script console has the API text', function () {
     UI.openTaskPane('library');
     var n = D.querySelectorAll('#tp-body button').length;

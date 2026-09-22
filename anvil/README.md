@@ -40,7 +40,7 @@ Then open <http://localhost:8765/>. The kernel tests are at <http://localhost:87
 The layout deliberately mirrors SolidWorks so muscle memory carries over.
 
 - **Menu bar**: File (new, open, save, exports, screenshot), Edit (undo, redo, delete, rebuild), View (standard views, display styles, planes, origins, section view), Insert (boss, cut, sweep, loft, hole wizard, fillet, chamfer, shell, patterns, mirror, sketch, reference plane, base flange), Tools (script console, measure, mass properties, units), Window, Help.
-- **CommandManager ribbon** with Features (boss, cut, revolve, hole wizard, sweep, loft, patterns, mirror, chamfer, fillet, shell, reference plane), Sketch (line, rectangles, circle, arc, polygon, slot, convert entities, offset entities, sketch fillet, trim, mirror entities, linear sketch pattern), Evaluate (measure, mass properties, section view, face to DXF) and Sheet Metal (base flange, edge flange, flatten) tabs.
+- **CommandManager ribbon** with Features (boss, cut, revolve, hole wizard, sweep, loft, patterns, mirror, chamfer, fillet, shell, reference plane), Sketch (line, rectangles, circle, arc, polygon, slot, convert entities, offset entities, sketch fillet, trim, mirror entities, linear sketch pattern), Evaluate (measure, mass properties, section view, face to DXF) and Sheet Metal (base flange, edge flange, miter flange, hem, jog, flatten, flat to DXF) tabs. Every ribbon button has a tooltip with its shortcut and a one-line description.
 - **FeatureManager tree** on the left. Click selects a feature, double-click edits it, F2 renames, Delete removes it with its dependents. Sketches consumed by a feature are hidden unless *View ▸ All Sketches* is on.
 - **PropertyManager** replaces the tree while a command is open. Enter accepts, Esc cancels.
 - **Viewport**: orthographic. Middle-drag orbits, Ctrl+middle-drag pans, wheel zooms at the cursor. Hovering a face highlights it; clicking selects it. The triad in the corner shows the current orientation.
@@ -101,7 +101,7 @@ p.circularPattern({ axis: "y", count: 6 });  // … patterned around Y
 | `shell(t, faces, opts)` | Hollow the body leaving walls of thickness `t`. `faces` is a list of points `[[x, y, z], …]` on the faces to remove (open); an empty list gives a closed hollow part. Faces are re-resolved against the body at rebuild time. Fails with a clear message when the part is thinner than 2·t everywhere. |
 | `sheet(T, R?, K?)` | Sheet-metal parameters: thickness, inside bend radius (default `T`) and k-factor (default 0.71 for steel; use 0.64 for aluminium). |
 | `baseFlange(T?, opts)` | Extrude the last sketch by the sheet thickness and mark it as the base flange. Sets `sheet(T)` if not yet set. |
-| `flange(L, edges, opts)` | Edge flange on straight edges of the flat sheet face: a bend of the sheet radius plus a straight wall of length `L` measured after the bend, placed beyond the edge ("bend outside"). `opts`: `angle` (default 90), `reverse` (fold the other way), `radius` (override), `position` (`"bendOutside"` | `"outside"` | `"inside"`), `name`. |
+| `flange(L, edges, opts)` | Edge flange on straight edges of the flat sheet face: a bend of the sheet radius plus a straight wall of length `L` measured after the bend, placed beyond the edge ("bend outside"). `opts`: `angle` (default 90), `reverse` (fold the other way), `radius` (override), `position` (`"bendOutside"` | `"outside"` | `"inside"`), `miter` (join flanges of this feature that share a corner at the corner's bisector, 45° for a square corner), `miterGap` (opening between mitred walls, split evenly, default 0), `relief` (`"none"` | `"rect"` | `"obround"`: cut a bend relief slot where a flange end runs into more sheet), `reliefWidth` (slot width along the edge, default T), `reliefDepth` (how far the slot reaches inside the edge, default T/2), `name`. |
 | `hem(L, edges, { gap, reverse, name })` | A 180° flange folded back over the sheet: bend radius = `gap` / 2 (default T/2, an open hem), return length `L`. Same edge picking and placement as `flange`; unfolds with BA = π·(R + K·T). |
 | `jog(height, length, edges, { angle, reverse, radius, position, name })` | Two opposite bends in one feature: the sheet steps by `height` (measured face to face on the fold side) and continues parallel to the base for `length`. The wall between the bends is solved from the height, radius and angle. Unfolds as UP then DOWN. |
 | `hole(planeSpec, x, y, dia, opts)` | Sketch + cut in one call. `depth` makes it blind (default through all); `forward: true` cuts along the normal instead of against it. |
@@ -133,7 +133,7 @@ Profiles are found automatically: closed entities (rectangles, circles, polygons
 | `cpattern` | `feature`, `axis`, `center`, `n`, `angle`, `equal` |
 | `mirror` | `plane`, `offset`, and either `feature` or `body: true` |
 | `chamfer` / `fillet` | `d` or `r`, `edges: [{ at: [x, y, z], chain }]` (edges are re-resolved against the body at rebuild time, so they survive upstream edits as long as the point still lies near an edge) |
-| `flange` | `length`, `angle`, `reverse`, `radius` (`null` = sheet radius), `edges: [{ at }]`, `position`, `toward` (optional `[x, y, z]`), `hem: true` for hems |
+| `flange` | `length`, `angle`, `reverse`, `radius` (`null` = sheet radius), `edges: [{ at }]`, `position`, `toward` (optional `[x, y, z]`), `miter` (boolean, default false), `miterGap` (default 0), `relief` (`"none"` \| `"rect"` \| `"obround"`, default `"none"`), `reliefWidth` / `reliefDepth` (`null` = T / T/2), `hem: true` for hems. `generateScript` emits only the non-default values. |
 | `jog` | `height`, `length`, `angle`, `reverse`, `radius`, `position`, `edges: [{ at }]` |
 | `sweep` | `profile` (sketch id), `path` (sketch id or `[[x, y, z], …]`), `cut` |
 | `loft` | `sketches: [id, …]` (two or more, in order), `cut` |
@@ -141,7 +141,7 @@ Profiles are found automatically: closed entities (rectangles, circles, polygons
 
 An `extrude` with `sheetBase: true` is the base flange; `model.sheet = { thickness, bendRadius, kFactor }` holds the sheet parameters.
 
-Feature names auto-number per type (`Sketch1`, `Boss-Extrude1`, `Cut-Extrude1`, `Revolve1`, `LPattern1`, `CirPattern1`, `Mirror1`, `Plane1`, `Chamfer1`, `Fillet1`, `Sweep1`, `Cut-Sweep1`, `Loft1`, `Cut-Loft1`, `Shell1`, `Edge-Flange1`).
+Feature names auto-number per type (`Sketch1`, `Boss-Extrude1`, `Cut-Extrude1`, `Revolve1`, `LPattern1`, `CirPattern1`, `Mirror1`, `Plane1`, `Chamfer1`, `Fillet1`, `Sweep1`, `Cut-Sweep1`, `Loft1`, `Cut-Loft1`, `Shell1`, `Edge-Flange1`, `Hem1`, `Jog1`). A flange accepted from the Miter Flange PropertyManager is named `Miter-Flange1`; scripted mitred flanges keep the `Edge-Flange` name unless `name` is given.
 
 ### Kernel API (no UI needed)
 
@@ -160,6 +160,8 @@ Kernel.resolveEdges(specs, edges, tol);     // specs [{ at, chain }] → the edg
 Kernel.flatPattern(model, b, mesh);         // { loops (outer first, CCW), bends: [{ a, b, label, up, angle, R }], bbox, sheet }
 Kernel.exportDXFFlat(flat, units);          // OUTLINE / HOLES / BEND / NOTES layers, bend labels and "T= R= K=" as TEXT
 Kernel.bendAllowance(angleRad, R, T, K);    // angle · (R + K·T), the neutral-axis arc length
+Kernel.flangeProfile(angleRad, R, T, L, ov); // the 2D section a flange sweeps along its edge (o across the edge, u along the fold), incl. the overlap strip o ∈ [−ov, 0]
+Kernel.loopSelfCrossing(pts); Kernel.checkProfile(profile);   // first self-intersection of a closed loop | throw "crosses itself" for any crossing loop
 Kernel.offsetLoop(pts, d);                  // 2D: mitred offset of a closed loop, +d = outward for CCW
 Kernel.filletPolyline(pts, i, r);           // 2D: replace vertex i of a closed loop with a tangent arc
 Kernel.sketchPath(sketch, plane, info);     // chain a path sketch's lines/arcs into 3D points; info.dropped = unconnected entities
@@ -173,6 +175,12 @@ Kernel.generateScript(model);               // model → script text
 ```
 
 A feature that fails to build is recorded in `errors` and the rest of the tree still builds. Errors are meant to be shown to people: "Sketch has no closed profile.", "Nothing to cut yet.", "Revolve profile crosses the axis.", "Pattern needs at least 2 instances." Non-fatal problems land in `warnings` by feature id, for example an open contour in a sketch or a cut whose tool never touched the body ("Cut removed no material. Try Reverse direction.").
+
+Degenerate geometry is diagnosed before it reaches the CSG kernel:
+
+- A closed contour with zero area (a rectangle of zero width, a polyline whose points are collinear) is dropped with the warning "1 zero-area contour was ignored." on the feature; if nothing is left, the feature errors with the usual "no closed profile".
+- A contour that crosses itself (a bow-tie polyline, a rectangle whose edges cross an open chain) errors with "Sketch profile crosses itself near (x, y)." and the loop stays visible in the sketch so it can be trimmed. `Kernel.loopSelfCrossing(pts)` returns the first crossing point of a closed loop, or `null`.
+- A non-finite number where a dimension is expected (`extrude(NaN)`, `revolve(undefined + 1)`, a sweep path with a missing coordinate) errors with "… must be a number." instead of building an empty or infinite solid: extrude depth and draft, revolve angle, flange length and angle, jog height / length / angle, sweep path coordinates.
 
 ### Sheet metal and flat patterns
 
@@ -188,6 +196,17 @@ p.flange(15, [[50, 2, 0]], { reverse: true });        // down along the z = 0 ed
 ```
 
 Unfolding is recursive: each flange contributes a bend strip and then its wall face is mapped into the flat with its real outline, so holes cut through a wall and flanges attached to a wall (a Z or hat section) all reach the blank. Flanges accept `position: "bendOutside"` (default, the bend sits beyond the edge), `"outside"` (Material Outside: the wall's inner face at the edge) or `"inside"` (Material Inside: the outer face flush with the edge); the last two trim the base back by R or R + T so the envelope keeps the base dimensions.
+
+**Mitred corners.** `flange(L, edges, { miter: true })` (the *Miter Flange* ribbon button presets it) joins the walls of one feature wherever two selected edges share a corner: each bend + wall is extended past the corner and clipped by the bisector plane through the shared vertex (45° for a square corner), so the corner is closed instead of leaving a square notch. `miterGap` opens the joint by that distance, measured normal to the bisector and split evenly between the two walls. Edges that are collinear or fold in opposite directions are not mitred. A mitred square corner adds exactly twice the first moment of the flange section about the edge line to the volume, which is what the kernel tests check.
+
+**Bend reliefs.** `relief: "rect"` or `"obround"` cuts a slot from the base before the flange is added, at every flange end where the sheet continues beyond the end (a wall that stops part-way along a plate edge, or an edge that meets a tab or a wider region). The slot is `reliefWidth` wide along the edge (default T), starts `reliefDepth` inside the edge (default T/2) and runs out past the bend zone (to R + T + `reliefDepth`), through the full thickness; `"obround"` rounds the inner end. Ends at convex sheet corners and ends shared with another edge of the same feature (mitred or collinear) get no relief. The relief appears in the flat pattern as a slot beside the bend strip.
+
+```js
+p.sheet(2, 2, 0.71);
+p.sketch("Top").polyline([[0, 0], [100, 0], [100, 30], [60, 30], [60, 60], [0, 60]], true).end().baseFlange(2); // L plate
+p.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });                 // two walls joined at the (0, 0) corner
+p.flange(10, [[60, 2, -45]], { relief: "obround", reliefWidth: 2 });    // wall on the notch edge, relief where it meets the wider plate
+```
 
 ## Automation from the browser console
 
@@ -228,3 +247,4 @@ Downloads are blocked inside some sandboxes; every export dialog also offers *Co
 - Circles and arcs are polygons; volumes of round parts are up to ~2 % under the analytic value.
 - CSG is BSP based: a few hundred features is fine, thousands of polygons per feature starts to take hundreds of milliseconds per rebuild.
 - Tools that only touch the body along a face can leave hairline slivers.
+- Mitres join flanges of one feature only, at corners where both fold the same way; a flange meeting another flange at a concave (inside) corner is not closed or relieved automatically. Reliefs are straight slots normal to the edge; there is no tear or bend-line relief.

@@ -908,22 +908,37 @@
   }
 
   // ------------------------------------------------------------------ sheet metal: edge flange & flatten
-  // kind: 'flange' (edge flange), 'hem' (a 180° flange folded back, stored as a flange with hem: true) or 'jog'
+  // kind: 'flange' (edge flange), 'miter' (an edge flange with miter: true preset), 'hem' (a 180° flange folded back,
+  // stored as a flange with hem: true) or 'jog'.
+  // Plain flanges carry miter (bool), miterGap, relief ('none' | 'rect' | 'obround'), reliefWidth / reliefDepth (null = T / T/2).
   function cmdEdgeFlange(existing, kind) {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
     if (!App.edges || !App.edges.length) { UI.toast('Create a Base Flange first.'); return; }
     var sheet = App.model.sheet, T = sheet.thickness;
-    kind = existing ? (existing.type === 'jog' ? 'jog' : (existing.hem ? 'hem' : 'flange')) : (kind || 'flange');
-    var isHem = kind === 'hem', isJog = kind === 'jog';
+    kind = existing ? (existing.type === 'jog' ? 'jog' : existing.hem ? 'hem' : existing.miter ? 'miter' : 'flange') : (kind || 'flange');
+    var isHem = kind === 'hem', isJog = kind === 'jog', isMiter = kind === 'miter', isFlange = !isHem && !isJog;
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
       isJog ? { type: 'jog', edges: [], height: 10, length: 20, angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
       isHem ? { type: 'flange', hem: true, edges: [], length: 10, angle: 180, reverse: false, radius: T / 4, position: 'bendOutside' } :
-      { type: 'flange', edges: [], length: 20, angle: 90, reverse: false, radius: null, position: 'bendOutside' };
+      { type: 'flange', edges: [], length: 20, angle: 90, reverse: false, radius: null, position: 'bendOutside', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
     if (isHem) f.gap = Math.round((f.radius != null ? f.radius : T / 4) * 2 * 1e4) / 1e4;
-    var titles = { flange: 'Edge-Flange', hem: 'Hem', jog: 'Jog' };
+    if (isFlange) {
+      // older flanges lack the miter/relief fields: fill the defaults, then split relief sizes into UI-only check + value pairs
+      if (f.miter == null) f.miter = false;
+      if (f.miterGap == null) f.miterGap = 0;
+      if (!f.relief) f.relief = 'none';
+      if (f.reliefWidth === undefined) f.reliefWidth = null;
+      if (f.reliefDepth === undefined) f.reliefDepth = null;
+      f.useDefaultReliefWidth = f.reliefWidth == null;
+      f.reliefWidthValue = f.reliefWidth != null ? f.reliefWidth : T;
+      f.useDefaultReliefDepth = f.reliefDepth == null;
+      f.reliefDepthValue = f.reliefDepth != null ? f.reliefDepth : T / 2;
+    }
+    var titles = { flange: 'Edge-Flange', miter: 'Miter-Flange', hem: 'Hem', jog: 'Jog' };
+    var RELIEF_NAMES = { none: 'None', rect: 'Rectangle', obround: 'Obround' };
     if (!existing && App.sel && App.sel.kind === 'edge') f.edges.push({ at: App.sel.edge.mid.slice() });
     var edgeList = [];
     function resolveList() {
@@ -937,6 +952,15 @@
       if (isHem) { out.angle = 180; out.radius = Math.max((+v.gap || 0) / 2, 0.02 * T); out.position = 'bendOutside'; delete out.gap; }
       else out.radius = v.useDefaultRadius ? null : +v.radiusValue;
       delete out.useDefaultRadius; delete out.radiusValue;
+      if (isFlange) {
+        out.miter = !!v.miter;
+        out.miterGap = out.miter ? Math.max(0, +v.miterGap || 0) : 0;
+        out.relief = RELIEF_NAMES[v.relief] ? v.relief : 'none';
+        out.reliefWidth = out.relief !== 'none' && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
+        out.reliefDepth = out.relief !== 'none' && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
+      }
+      // UI-only keys must never reach the model (feature JSON is the rebuild cache key)
+      delete out.useDefaultReliefWidth; delete out.reliefWidthValue; delete out.useDefaultReliefDepth; delete out.reliefDepthValue;
       return out;
     }
     function preview() {
@@ -951,7 +975,10 @@
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.preview));
         var R = feat.radius != null ? feat.radius : sheet.bendRadius;
         var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);
-        UI.setStatus(titles[kind] + ' preview: ' + edgeList.length + ' edge' + (edgeList.length === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ').');
+        var extra = '';
+        if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
+        if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
+        UI.setStatus(titles[kind] + ' preview: ' + edgeList.length + ' edge' + (edgeList.length === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ')' + extra + '.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
     var radiusFields = [
@@ -981,13 +1008,26 @@
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
       { title: 'Flange Length', fields: [{ type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
-      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside']] }] }
+      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside']] }] },
+      { title: 'Miter', fields: [
+        { type: 'check', label: 'Miter corners', key: 'miter', rerender: true },
+        { type: 'number', label: 'Gap', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
+      ] },
+      { title: 'Auto Relief', fields: [
+        { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], rerender: true },
+        { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.relief !== 'none'; } },
+        { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefWidth; } },
+        { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return v.relief !== 'none'; } },
+        { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefDepth; } }
+      ] }
     ];
     groups.push({ title: 'Sheet', fields: [{ type: 'static', label: 'Thickness', value: T + ' ' + UI.unitLabel() }, { type: 'static', label: 'K-factor', value: String(sheet.kFactor) }] });
     groups.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
     openPM({
-      title: existing ? existing.name : titles[kind], icon: 'flange', values: f,
-      message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. The gap is the opening between the two flats.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.',
+      title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
+      message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. The gap is the opening between the two flats.' :
+        (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
+        ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
       command: {
         pickEdges: true, edgeList: edgeList,
         onPick: function (pk) {
@@ -1004,7 +1044,11 @@
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
         var feat = toFeature(v);
-        if (!feat.name) { if (isHem) feat.name = K.featureName(App.model, 'hem'); else delete feat.name; }
+        if (!feat.name) {
+          if (isHem) feat.name = K.featureName(App.model, 'hem');
+          else if (isFlange && feat.miter) feat.name = 'Miter-Flange' + (App.model.features.filter(function (q) { return /^Miter-Flange\d+$/.test(q.name || ''); }).length + 1);
+          else delete feat.name;
+        }
         commitFeature(feat, existing);
       }
     });
@@ -1012,6 +1056,8 @@
   }
   function cmdHem(existing) { cmdEdgeFlange(existing, 'hem'); }
   function cmdJog(existing) { cmdEdgeFlange(existing, 'jog'); }
+  // Miter Flange: an Edge-Flange with "Miter corners" preset; flanges on adjacent edges meet at the corner.
+  function cmdMiterFlange(existing) { cmdEdgeFlange(existing, 'miter'); }
 
   function flatSvg(flat, width) {
     var b = flat.bbox, w = b.max[0] - b.min[0], h = b.max[1] - b.min[1], pad = Math.max(w, h) * 0.08 + 2;
@@ -1204,7 +1250,7 @@
   UI.cmdLinearPattern = cmdLinearPattern; UI.cmdCircularPattern = cmdCircularPattern; UI.cmdMirror = cmdMirror; UI.cmdPlane = cmdPlane;
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;
   UI.cmdChamfer = cmdChamfer; UI.cmdFillet = cmdFillet;
-  UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
+  UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdMiterFlange = cmdMiterFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
   UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;

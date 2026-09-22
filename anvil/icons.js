@@ -63,6 +63,8 @@ var Icons = (function () {
     dxf: '<rect x="6" y="4" width="20" height="24" rx="1" fill="#fff" ' + sw() + '/><path d="M10 9 h12 M10 13 h12 M10 17 h8" ' + sw('stroke="' + L + '"') + '/><text x="16" y="25" font-size="7" font-weight="700" font-family="Segoe UI, sans-serif" fill="' + B + '" text-anchor="middle">DXF</text>',
     flange: '<path d="M4 24 h12 v-14 h12" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/>',
     bend: '<path d="M6 24 h10 a6 6 0 0 0 6 -6 v-10" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/>',
+    // miter flange: two walls meeting at a corner with the 45° mitre line between them
+    miter: '<path d="M4 26 h12 v-14" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/><path d="M16 26 l10 -8 v-12" ' + sw('stroke-width="3.5" stroke="' + G + '" stroke-opacity="0.55"') + '/><path d="M16 26 L27 15" ' + sw('stroke="' + B + '" stroke-dasharray="3 2"') + '/>',
     flatten: '<path d="M4 20 h24" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/><path d="M8 10 l4 -4 h12 l-4 4 z" fill="' + F + '" ' + sw() + '/>',
     fit: '<path d="M5 11 V5 h6 M21 5 h6 v6 M27 21 v6 h-6 M11 27 H5 v-6" ' + sw() + '/><rect x="11" y="11" width="10" height="10" fill="' + B + '" fill-opacity="0.35" ' + sw('stroke="' + B + '"') + '/>',
     zoomArea: '<circle cx="14" cy="14" r="8" ' + sw() + '/><path d="M20 20 l7 7" ' + sw('stroke-width="2.4"') + '/><rect x="10" y="10" width="8" height="8" ' + sw('stroke="' + B + '" stroke-dasharray="2 2"') + '/>',

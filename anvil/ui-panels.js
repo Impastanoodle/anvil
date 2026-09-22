@@ -81,7 +81,7 @@
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
       { id: 'generic', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
-      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'bend', label: 'Miter\nFlange' }, { id: 'bend', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'bend', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'bend', label: 'Sketched\nBend' },
+      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'bend', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'bend', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'bend', label: 'Sketched\nBend' },
       { stack: [{ id: 'generic', label: 'Cross-Break' }, { id: 'generic', label: 'Corners' }, { id: 'generic', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', label: 'Vent' },
@@ -90,14 +90,36 @@
     ]
   };
 
+  // One-line descriptions for the ribbon tooltips, keyed by the button label (ids such as 'bend' are shared by several buttons).
+  var RIBBON_HELP = {
+    'Extruded Boss/Base': 'Extrude a closed sketch profile into a solid', 'Revolved Boss/Base': 'Revolve a sketch profile about an axis line',
+    'Swept Boss/Base': 'Sweep a profile sketch along a path', 'Lofted Boss/Base': 'Loft a solid through two or more section sketches',
+    'Extruded Cut': 'Remove material by extruding a sketch profile', 'Hole Wizard': 'Cut a simple hole at the selected point on a face', 'Revolved Cut': 'Remove material by revolving a sketch profile',
+    'Swept Cut': 'Remove material along a path', 'Lofted Cut': 'Remove material lofted through section sketches',
+    'Fillet': 'Round the selected edges', 'Chamfer': 'Bevel the selected edges', 'Linear Pattern': 'Repeat a feature along one or two directions', 'Circular Pattern': 'Repeat a feature about an axis', 'Mirror': 'Mirror a feature or the body about a plane',
+    'Shell': 'Hollow the body, removing the selected faces', 'Reference Geometry': 'Create an offset reference plane',
+    'Sketch': 'Start a sketch on the selected plane or face', 'Exit Sketch': 'Close the sketch and return to the part', 'Smart Dimension': 'Dimension sketch entities',
+    'Line': 'Draw a line', 'Corner Rectangle': 'Rectangle from two corners', 'Center Rectangle': 'Rectangle from its center', 'Circle': 'Circle from center and radius', 'Centerpoint Arc': 'Arc from center, start and end', 'Polygon': 'Regular polygon', 'Straight Slot': 'Slot from two centers and a width', 'Point': 'Sketch point',
+    'Sketch Fillet': 'Round a sketch corner', 'Trim Entities': 'Trim or extend sketch entities', 'Convert Entities': 'Project model edges into the sketch', 'Offset Entities': 'Offset sketch entities by a distance',
+    'Plane': 'Create an offset reference plane', 'Sketch to DXF': 'Export the active sketch as DXF',
+    'Measure': 'Measure distances, lengths and areas', 'Mass Properties': 'Volume, mass, centroid and bounding box', 'Section View': 'Cut the view with a section plane', 'Face to DXF': 'Export the selected face outline as DXF',
+    'Base Flange/Tab': 'Turn a sketch into the first sheet-metal body and set the sheet parameters', 'Edge Flange': 'Bend a wall from a straight edge of the sheet',
+    'Miter Flange': 'Bend walls from adjacent edges and join them at the corner', 'Hem': 'Fold the sheet back over itself along an edge', 'Jog': 'Step the sheet up or down with two bends',
+    'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet'
+  };
+  function ribbonTitle(id, label, enabled) {
+    var key = UI.shortcutFor ? UI.shortcutFor(id) : null, help = RIBBON_HELP[label];
+    if (!enabled) return label + ' — not available in this build yet';
+    return label + (key ? ' (' + key + ')' : '') + (help ? ' — ' + help : '');
+  }
   function ribbonButton(item) {
     var d = item.dyn && item.dyn();
-    var id = d ? d.id : item.id, label = d ? d.label : item.label;
+    var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace('\n', ' ');
     var enabled = !!(item.run || item.tool);
-    var b = el('button', { class: 'rb', html: Icons(id, 32) + '<span>' + label + '</span>', title: enabled ? label.replace('\n', ' ') : label.replace('\n', ' ') + ' — not available in this build yet' });
+    var b = el('button', { class: 'rb', html: Icons(id, 32) + '<span>' + label + '</span>', title: ribbonTitle(id, flat, enabled), 'aria-label': flat });
     if (!enabled) b.disabled = true;
     if (item.tool) {
-      if (App.mode !== 'sketch') { b.disabled = true; b.title = label.replace('\n', ' ') + ' — open a sketch first'; }
+      if (App.mode !== 'sketch') { b.disabled = true; b.title = ribbonTitle(id, flat, true) + ' — open a sketch first'; }
       if (App.mode === 'sketch' && App.tool === item.tool) b.classList.add('active');
       b.addEventListener('click', function () { UI.setTool(App.tool === item.tool ? 'select' : item.tool); });
     } else if (item.run) {
@@ -153,6 +175,7 @@
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : 'extrude';
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
+    if (f.type === 'flange' && f.miter) return 'miter';
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {
@@ -234,7 +257,8 @@
       case 'chamfer': return 'Chamfer ' + f.d + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'fillet': return 'Fillet R' + f.r + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'jog': return 'Jog ' + f.height + ' high, ' + f.length + ' flat, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's');
-      case 'flange': return (f.hem ? 'Hem gap ' + Math.round(f.radius * 2 * 1e4) / 1e4 + ', ' : 'Edge flange ') + f.length + ' long, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's') + (f.position === 'inside' ? ', material inside' : f.position === 'outside' ? ', material outside' : '');
+      case 'flange': return (f.hem ? 'Hem gap ' + Math.round(f.radius * 2 * 1e4) / 1e4 + ', ' : f.miter ? 'Miter flange ' : 'Edge flange ') + f.length + ' long, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's') + (f.position === 'inside' ? ', material inside' : f.position === 'outside' ? ', material outside' : '') +
+        (f.miter ? ', mitred' + (f.miterGap > 0 ? ' (gap ' + f.miterGap + ')' : '') : '') + (f.relief && f.relief !== 'none' ? ', relief ' + (f.relief === 'rect' ? 'rectangle' : f.relief) : '');
       case 'shell': return 'Shell, walls ' + f.thickness + ' thick, ' + ((f.faces || []).length ? (f.faces || []).length + ' face' + ((f.faces || []).length === 1 ? '' : 's') + ' removed' : 'closed');
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
@@ -379,6 +403,7 @@
         { label: 'Reference Geometry ▸ Plane', action: function () { UI.cmdPlane(); } },
         { label: 'Sheet Metal ▸ Base Flange', action: UI.cmdBaseFlange },
         { label: 'Sheet Metal ▸ Edge Flange', action: function () { UI.cmdEdgeFlange(); } },
+        { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },
         { label: 'Sheet Metal ▸ Hem', action: function () { UI.cmdHem(); } },
         { label: 'Sheet Metal ▸ Jog', action: function () { UI.cmdJog(); } },
         { label: 'Sheet Metal ▸ Flatten', action: function () { UI.cmdFlatten(); } }

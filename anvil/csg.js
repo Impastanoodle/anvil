@@ -219,6 +219,57 @@ var CSG = (function () {
       }
       return CSG.fromPolygons(out);
     },
+    // Keep the part of the solid on the front side of a plane (normal · p >= w), closed by a planar cap. Built as the
+    // intersection with a box whose one face is the plane and which encloses the solid otherwise, so the result is
+    // watertight and coplanar faces are handled by the ordinary boolean.
+    clipByPlane: function (normal, w) {
+      var n = normal instanceof Vector ? normal : new Vector(normal[0], normal[1], normal[2]);
+      var l = n.length();
+      if (!(l > 0) || !this.polygons.length) return this;
+      n = n.dividedBy(l); w = w / l;
+      var min = null, max = null;
+      this.polygons.forEach(function (p) {
+        p.vertices.forEach(function (v) {
+          var q = v.pos;
+          if (!min) { min = q.clone(); max = q.clone(); return; }
+          min.x = Math.min(min.x, q.x); min.y = Math.min(min.y, q.y); min.z = Math.min(min.z, q.z);
+          max.x = Math.max(max.x, q.x); max.y = Math.max(max.y, q.y); max.z = Math.max(max.z, q.z);
+        });
+      });
+      var c = min.plus(max).times(0.5), r = max.minus(min).length() / 2;
+      var D = 2 * r + Math.abs(c.dot(n) - w) + 2;
+      var a = Math.abs(n.x) < 0.9 ? new Vector(1, 0, 0) : new Vector(0, 1, 0);
+      a = a.minus(n.times(a.dot(n))).unit();
+      var b = n.cross(a);
+      var cb = c.plus(n.times(w - c.dot(n) + D / 2)); // the box spans [w, w + D] along n
+      function corner(i) {
+        return new Vertex(cb.plus(a.times((i & 1) ? D : -D)).plus(b.times((i & 2) ? D : -D)).plus(n.times((i & 4) ? D / 2 : -D / 2)));
+      }
+      var polys = [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]].map(function (f) {
+        return new Polygon(f.map(corner));
+      });
+      var box = CSG.fromPolygons(polys);
+      if (box.volume() < 0) polys.forEach(function (p) { p.flip(); });
+      return this.intersect(box);
+    },
+    // Point-in-solid classifier from the BSP tree: descend to the leaf region holding the point; a region behind a
+    // plane with nothing further back is inside the solid (the same convention clipPolygons uses). Points within
+    // EPSILON of a face count as inside. Build the tester once and reuse it for many probes.
+    pointTester: function () {
+      var tree = new Node(this.polygons.slice());
+      function inside(node, p) {
+        var t = node.plane.normal.dot(p) - node.plane.w;
+        if (t > EPSILON) return node.front ? inside(node.front, p) : false;
+        if (t < -EPSILON) return node.back ? inside(node.back, p) : true;
+        return (node.front ? inside(node.front, p) : false) || (node.back ? inside(node.back, p) : true);
+      }
+      return function (p) {
+        if (!tree.plane) return false;
+        var v = p instanceof Vector ? p : new Vector(p[0], p[1], p[2]);
+        return inside(tree, v);
+      };
+    },
+    containsPoint: function (p) { return this.pointTester()(p); },
     // Signed volume via the divergence theorem (positive for outward-facing solids).
     volume: function () {
       var vol = 0;

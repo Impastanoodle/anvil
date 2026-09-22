@@ -40,13 +40,15 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Flanges on flanges (flat pattern unfolds recursively: each wall face is mapped rigidly into the flat and its own flanges follow)
 - [x] Holes on flange walls carried into the flat pattern (wall faces contribute their real outlines; regions are merged with the CSG kernel and the top-face outline is the blank)
 - [x] Hem (`p.hem(L, edges, {gap})`: a 180° flange with R = gap/2, unfolds with BA = π(R + K·T)) and Jog (`p.jog(height, length, edges, {angle, reverse})`: two opposite bends in one feature, wall length solved so the flats sit `height` apart, unfolded as UP + DOWN); flanges accept `toward: [x,y,z]` to pick the fold side by direction
-- [ ] Miter flange (mitred corners where flanges on adjacent edges meet); relief cuts at flange ends; thickness-aware "normal cut"
+- [x] Miter flange (`p.flange(L, edges, { miter: true, miterGap })`: flanges on adjacent edges are swept past the shared corner and clipped by the bisector plane, gap split evenly; Miter Flange ribbon button + Miter group in the Edge-Flange PM)
+- [x] Auto relief at flange ends (`relief: 'rect' | 'obround'`, `reliefWidth` default T, `reliefDepth` default T/2: where the plate continues past a flange end a slot is cut from the base before the bend is added; no relief at convex corners or mitred ends)
+- [ ] Thickness-aware "normal cut"; bend strips extended to the mitre line in the flat pattern (today a mitred corner shows a small step in the blank)
 
 ## Phase 4 — robustness and performance
 - [ ] Faster CSG: bounding-box early-out per polygon, polygon splitting only inside overlap regions (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
 - [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
 - [ ] Web Worker rebuilds so the UI never freezes
-- [ ] Degenerate geometry guards (zero-area loops, self-intersecting profiles) with clear messages
+- [x] Degenerate geometry guards: zero-area loops dropped with a "zero-area contour" warning, self-intersecting loops error with "crosses itself near (x, y)" from extrude/revolve/sweep/loft, NaN depths/angles/path points error with "must be a number"
 - [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
 
 ## Phase 5 — assemblies and drawings
@@ -55,7 +57,8 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [ ] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF
 
 ## Phase 6 — polish
-- [ ] Icons closer to the SolidWorks set, hover tooltips with shortcut hints
+- [x] Hover tooltips on ribbon buttons: `Label (Key) — description` from `UI.shortcutFor` and a per-button help map, plus `aria-label`
+- [ ] Icons closer to the SolidWorks set
 - [ ] Configuration manager: named parameter sets driving feature values
 - [ ] Equations: expressions in PropertyManager fields (`= t * 2`)
 - [ ] Theme: dark UI option
