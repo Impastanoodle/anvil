@@ -59,3 +59,4 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [ ] Configuration manager: named parameter sets driving feature values
 - [ ] Equations: expressions in PropertyManager fields (`= t * 2`)
 - [ ] Theme: dark UI option
+- [ ] Desktop shell (Tauri or Electron) wrapping the same static files: own window, native open/save dialogs, no server step. The browser build stays the primary target; the shell must not fork the code.

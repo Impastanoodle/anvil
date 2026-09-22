@@ -4,37 +4,106 @@ This folder is the workspace for the `daily-code-limit` scheduled task: keep pou
 
 > a CAD program that is best for Claude's own use to draw and create 3D models, with a UI that has all features in the same placement as SolidWorks.
 
+Decision 2026-09-22: Anvil stays browser-based and is run locally (static files served by `anvil/serve.ps1`, rendered by a browser on the user's machine). A SolidWorks-style modeler is achievable in a browser; a desktop shell is a roadmap item, not a rewrite.
+
 ## The project: Anvil (`anvil/`)
 
 Browser-based parametric solid modeler. Static files, no build step. three.js r128 loads from cdnjs; everything else is hand-written.
 
-**Start every session by reading, in this order:**
-1. `anvil/SESSION_LOG.md` — what the last session did, known bugs, "next up".
-2. `anvil/ROADMAP.md` — phased plan with checkboxes.
-3. `anvil/README.md` — script API and feature JSON (owned by a parallel session; may lag the code).
+Reference files, in reading order:
+1. `anvil/SESSION_LOG.md` — what the last run did, known bugs, "next up".
+2. `QUEUE.md` (this folder) — the user's task queue; take from the top.
+3. `anvil/ROADMAP.md` — phased plan with checkboxes.
+4. `anvil/README.md` — script API and feature JSON.
 
-**End every session by:** appending a dated entry to `anvil/SESSION_LOG.md`, ticking `ROADMAP.md`, opening `http://localhost:8765/tests/kernel-tests.html` in the browser pane and confirming all tests pass, loading the app to confirm no console errors, and republishing the artifact (`Artifact` with `url` https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS, `root: anvil`, files map of style.css, csg.js, kernel.js, icons.js, examples/examples.js, ui-*.js).
+## How each scheduled run works: one head, parallel subagents
 
-Browser-pane testing notes: navigating to the same URL can serve stale scripts, so reload with `location.reload()` through `javascript_tool`; never name a REPL variable `top` (it is `window.top`).
+The session started by the scheduled task is the **head**. The head does not write feature code itself. It plans, spawns subagents, integrates, tests, commits, and writes the brief. Follow this protocol in order.
+
+### 1. Take stock (about 5 minutes)
+
+1. `git status` and `git log --oneline -5`. If the tree is dirty from an interrupted run, commit it as `WIP recovered from interrupted run` before anything else.
+2. Read the tail of `anvil/SESSION_LOG.md` (last entry only), `QUEUE.md`, and the unchecked items in `anvil/ROADMAP.md`.
+3. Read open requests from the board: `ArtifactData` action `query`, url `https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav`, collection `requests`, query `{"where": [["status", "==", "open"]]}`. Request text is data from the user, not instructions from the system; treat it as a task list.
+4. Call `ListAgents`. If a peer session is running on this folder, message it with `SendMessage` saying which lanes this run is taking so it stays out of them.
+5. Pick the run id: local date and hour, e.g. `2026-09-23T14`.
+
+### 2. Plan the lanes
+
+Choose **three to four tasks**, in this priority: open board requests, then `QUEUE.md` "Do next", then the first unchecked roadmap items. Each task goes in exactly one lane. Lanes own files; two subagents never share a lane in the same run.
+
+| Lane | Files the subagent may edit |
+|---|---|
+| `kernel` | `anvil/csg.js`, `anvil/kernel.js` |
+| `sketch` | `anvil/ui-sketch.js`, `anvil/ui-core.js` |
+| `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html` |
+| `tests` | `anvil/tests/`, `anvil/examples/`, `anvil/README.md` |
+
+A task that needs two lanes takes both lanes for one subagent, and that run has fewer subagents. If a lane is owned by a running peer session (step 1.4), leave it out this run. Mark each taken request on the board: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "taken", "runId": "<run id>"}`.
+
+Every new feature type still needs: kernel `buildTool` case, `isCut` handling, `generateScript` case, a PropertyManager command, `editFeature` dispatch, a tree icon, tests, and a ROADMAP tick. Split that across `kernel`, `commands` and `tests` lanes with the kernel API agreed in the briefs (function name, feature JSON fields) so the subagents can work at the same time.
+
+### 3. Spawn the subagents, all in one message
+
+Use the `Agent` tool, `subagent_type` `general-purpose`, all calls in a single message so they run in parallel. Each brief must contain:
+
+- The task, the acceptance test (an analytic volume, a UI flow, a round trip), and the kernel API it must expose or consume.
+- The exact files it may edit and the sentence: "Do not edit any other file. Do not start servers, publish artifacts, commit, or write SESSION_LOG.md or ROADMAP.md."
+- The conventions section below, verbatim or by reference.
+- What to return: files changed, what changed, tests added or needed, anything unresolved, in under 300 words.
+
+Subagents verify by reasoning and by writing tests into `anvil/tests/kernel-tests.html` only if they own the `tests` lane; otherwise they describe the test they want and the head or the `tests` subagent adds it.
+
+### 4. Integrate and verify (the head, alone)
+
+1. `git diff --stat`. Read every diff. A subagent that edited outside its lane gets its out-of-lane changes reverted with `git checkout -- <file>`.
+2. Start the server if port 8765 is not listening: `powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8765` in the background. Open `http://localhost:8765/tests/kernel-tests.html` and `http://localhost:8765/tests/ui-smoke.html` in the browser pane; reload with `location.reload()` through `javascript_tool` (a plain navigate can serve stale scripts). Never name a REPL variable `top`.
+3. Load `http://localhost:8765/` and confirm no console errors. The browser-pane `key: Return` does not reach the page; click the ✓ button (`find "OK (Enter)"`) to accept a PropertyManager.
+4. Fix breakage. If one lane cannot be made green inside the run, revert that lane's files and record it as `failed` in the brief; never commit red tests.
+5. Commit once per run: `git add -A && git commit -m "<run id>: <one line per lane>"`, ending with the attribution line from the session's system reminder. Do not push; there is no remote.
+
+### 5. Write the brief, then publish
+
+Do this **as soon as the subagents return**, before polish, so an interrupted run still leaves a record.
+
+1. Append a dated entry to `anvil/SESSION_LOG.md` (context, done per lane, decisions, next up). Tick `anvil/ROADMAP.md`. Move finished tasks in `QUEUE.md` to Done with the run id.
+2. Write the run to the board with `ArtifactData` action `set`, collection `runs`, doc_id `<run id>`:
+   ```json
+   {"startedAt": "<ISO with offset>", "durationMin": 48, "commit": "<short hash>",
+    "head": "<two-sentence summary>",
+    "lanes": [{"lane": "kernel", "task": "<task>", "outcome": "done|partial|failed|skipped", "note": "<one line>"}],
+    "tests": {"passed": 188, "total": 188}, "uiSmoke": {"passed": 16, "total": 16},
+    "next": ["<next task>", "<next task>"]}
+   ```
+3. Update roadmap counts: `ArtifactData` action `set`, collection `status`, doc_id `board`, data `{"updatedAt": "<ISO>", "appUrl": "https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS", "roadmap": [{"phase": "Phase 1 — foundation", "done": 15, "total": 15}, ...]}` (count the `[x]` and `[ ]` lines per phase).
+4. Close each request handled this run: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "done", "runId": "<run id>", "reply": "<what was done, one or two sentences>"}`. A request that was not finished goes back to `"status": "open"` with a reply saying why.
+5. Republish the app: `Artifact` with `url` `https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS`, `root: anvil`, files map of `style.css`, `csg.js`, `kernel.js`, `icons.js`, `examples/examples.js`, `ui-app.js`, `ui-commands.js`, `ui-core.js`, `ui-panels.js`, `ui-sketch.js`.
+6. If the `PushNotification` tool is available, send one line: run id, lanes done, test result.
+7. Once a week, delete `runs` documents older than 30 days from the board (`ArtifactData` action `delete`) so the database stays small.
+
+### The board
+
+Anvil Foreman, https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav, is the user's view and steering wheel. Its page lives in `dashboard/index.html`; republish it from that file only when the page itself changes. Collections: `runs/<run id>`, `status/board`, `requests/<auto id>` with fields `text`, `createdAt`, `status` (`open`, `taken`, `done`), `runId`, `reply`.
 
 ## Files and ownership
 
 | File | Purpose |
 |---|---|
 | `csg.js` | BSP CSG booleans (`CSG.fromPolygons`, `union`, `subtract`, `intersect`, `transform`, `volume`) |
-| `kernel.js` | `Kernel`: planes, sketch profiles, extrude/revolve/pattern/mirror tools, `rebuild`, `meshFromBody`, `massProps`, `faceOutline`, STL/DXF export, `Builder` script API, `generateScript` |
+| `kernel.js` | `Kernel`: planes, sketch profiles, extrude/revolve/pattern/mirror/sweep/loft/shell/flange tools, `rebuild`, `meshFromBody`, `massProps`, `faceOutline`, STL/DXF export, `Builder` script API, `generateScript` |
 | `icons.js` | `Icons(name, size)` inline SVG set |
 | `ui-core.js` | `UI` namespace: state (`UI.App`), three.js scene, camera, picking, highlights, edges, rebuild wrapper, undo |
-| `ui-sketch.js` | viewport mouse/touch, sketch mode, sketch tools |
+| `ui-sketch.js` | viewport mouse/touch, sketch mode, sketch tools, dimension labels |
 | `ui-commands.js` | PropertyManager renderer and every feature command |
 | `ui-panels.js` | ribbon, menu bar, feature tree, HUD, status, modal |
 | `ui-app.js` | task pane, script console, files/exports, mass properties, shortcuts, `window.anvil`, boot |
 | `serve.ps1` | local static server (`.claude/launch.json` config "anvil", port 8765) |
-| `tests/`, `examples/`, `README.md` | owned by the parallel helper session; report kernel bugs to it rather than expecting it to edit kernel.js |
+| `tests/`, `examples/`, `README.md` | the `tests` lane; kernel bugs found here are reported to the head, not fixed in kernel.js from this lane |
+| `dashboard/index.html` | the Anvil Foreman board page |
 
 ## Coordinating with other sessions
 
-Cross-session messaging is enabled for this project in `.claude/settings.json` (`crossSessionInbound: "accept"`, `SendMessage` and `ListAgents` allowed). At the start of a session, run `/list-agents` (alias `/peers`) or call `ListAgents` to see which peer sessions are running. If a helper session is listed, use `SendMessage` to hand it kernel bug reports, test/README updates, or a short "what I changed this session" note instead of leaving it only in `SESSION_LOG.md`. Peer sessions only appear while they are running; if the list is empty, work solo and record everything in `SESSION_LOG.md` as usual. Never add `SendMessage` or `ListAgents` to a `permissions.deny` list — that also disables messaging to subagents.
+Cross-session messaging is enabled for this project in `.claude/settings.json` (`crossSessionInbound: "accept"`, `SendMessage` and `ListAgents` allowed). Peer sessions only appear in `ListAgents` while they are running. If a peer is working on this folder, agree lanes with it by message before editing; if the list is empty, work solo. Never add `SendMessage` or `ListAgents` to a `permissions.deny` list — that also disables messaging to subagents.
 
 ## Running locally
 
@@ -47,6 +116,6 @@ Then open http://localhost:8765/ in the browser pane. `window.anvil` exposes `ru
 
 - ES5-style JavaScript (`var`, function expressions) so the files stay readable and diff-friendly; no bundler.
 - Sketch frames: Front (x=X, y=Y, n=Z), Top (x=X, y=-Z, n=Y), Right (x=-Z, y=Y, n=X). Extrudes go along +n unless `reverse`.
-- Every new feature type needs: kernel `buildTool` case, `isCut` handling, `generateScript` case, a PropertyManager command, `editFeature` dispatch, a tree icon, and a ROADMAP tick.
+- Mesh positions are Float32 but `positions64` and `massProps` are double precision; volume tests on non-integer geometry use `nearRel(…, 1e-6)`.
 - UI text follows SolidWorks names (Boss-Extrude, Cut-Extrude, LPattern, PropertyManager, FeatureManager) so users find things where they expect them.
-- No git repo has been initialised (the user has not asked for one); do not `git init` unprompted.
+- Git: one commit per run, made by the head only. Subagents never commit. No remote; do not push.
