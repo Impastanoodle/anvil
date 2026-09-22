@@ -42,12 +42,13 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Hem (`p.hem(L, edges, {gap})`: a 180° flange with R = gap/2, unfolds with BA = π(R + K·T)) and Jog (`p.jog(height, length, edges, {angle, reverse})`: two opposite bends in one feature, wall length solved so the flats sit `height` apart, unfolded as UP + DOWN); flanges accept `toward: [x,y,z]` to pick the fold side by direction
 - [x] Miter flange (`p.flange(L, edges, { miter: true, miterGap })`: flanges on adjacent edges are swept past the shared corner and clipped by the bisector plane, gap split evenly; Miter Flange ribbon button + Miter group in the Edge-Flange PM)
 - [x] Auto relief at flange ends (`relief: 'rect' | 'obround'`, `reliefWidth` default T, `reliefDepth` default T/2: where the plate continues past a flange end a slot is cut from the base before the bend is added; no relief at convex corners or mitred ends)
-- [ ] Thickness-aware "normal cut"; bend strips extended to the mitre line in the flat pattern (today a mitred corner shows a small step in the blank)
+- [x] Bend strips of mitred flanges extended to the mitre line in the flat pattern (flange info carries `miterPlanes`; each strip end is a trapezoid ending on the mitre line, bend lines reach it, no step in the blank)
+- [ ] Thickness-aware "normal cut"
 
 ## Phase 4 — robustness and performance
 - [ ] Faster CSG: bounding-box early-out per polygon, polygon splitting only inside overlap regions (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
 - [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
-- [ ] Web Worker rebuilds so the UI never freezes
+- [x] Web Worker rebuilds so the UI never freezes (`worker.js` owns `Kernel.rebuild` and its cache, `UI.rebuild` returns a Promise with coalescing and a synchronous fallback, Edit ▸ "Rebuild in background (Web Worker)" toggle, `CSG.pack/unpack`, `Kernel.packBuild/unpackBuild`)
 - [x] Degenerate geometry guards: zero-area loops dropped with a "zero-area contour" warning, self-intersecting loops error with "crosses itself near (x, y)" from extrude/revolve/sweep/loft, NaN depths/angles/path points error with "must be a number"
 - [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
 

@@ -11,6 +11,7 @@ There is no build step and no dependency besides three.js r128 from cdnjs. Open 
 | `index.html` | Page skeleton. Loads the scripts in dependency order. |
 | `csg.js` | BSP-tree constructive solid geometry (union, subtract, intersect, transform, signed volume). Global `CSG`. |
 | `kernel.js` | Modeling kernel: planes, sketch entities, profiles, features, rebuild, meshing, mass properties, STL/DXF export, the script `Builder`. Global `Kernel`. |
+| `worker.js` | Web Worker entry: `importScripts('csg.js', 'kernel.js')`, rebuilds a model off the main thread and posts the packed build back (see *Background rebuilds*). |
 | `icons.js` | Inline SVG icon set. Global `Icons`. |
 | `style.css` | The whole UI stylesheet. |
 | `ui-core.js` | App state, three.js scene, camera, picking, highlights. Creates the shared `UI` namespace. |
@@ -172,6 +173,9 @@ Kernel.buildSweep(f, model, ctx); Kernel.buildLoft(f, model, ctx);   // tool bod
 Kernel.resolveFaces(specs, mesh, tol);      // [{ at }] → mesh face indices (plane distance + outline containment)
 Kernel.buildShell(f, { body });             // { body, inner, removed } — the shelled body and the cavity solid
 Kernel.generateScript(model);               // model → script text
+Kernel.packBuild(b); Kernel.unpackBuild(obj);   // rebuild result ↔ structured-clone-safe object of typed arrays (unpacked builds have cache: null and carry profiles)
+Kernel.applyProfiles(model, profiles);      // put the sketch profiles computed elsewhere (the worker) back on the model's sketch features
+csg.pack(); CSG.unpack(obj); CSG.packTransferables(obj);   // one solid ↔ typed arrays (exact volume, same polygon order), and its ArrayBuffers for postMessage transfer
 ```
 
 A feature that fails to build is recorded in `errors` and the rest of the tree still builds. Errors are meant to be shown to people: "Sketch has no closed profile.", "Nothing to cut yet.", "Revolve profile crosses the axis.", "Pattern needs at least 2 instances." Non-fatal problems land in `warnings` by feature id, for example an open contour in a sketch or a cut whose tool never touched the body ("Cut removed no material. Try Reverse direction.").
@@ -197,7 +201,7 @@ p.flange(15, [[50, 2, 0]], { reverse: true });        // down along the z = 0 ed
 
 Unfolding is recursive: each flange contributes a bend strip and then its wall face is mapped into the flat with its real outline, so holes cut through a wall and flanges attached to a wall (a Z or hat section) all reach the blank. Flanges accept `position: "bendOutside"` (default, the bend sits beyond the edge), `"outside"` (Material Outside: the wall's inner face at the edge) or `"inside"` (Material Inside: the outer face flush with the edge); the last two trim the base back by R or R + T so the envelope keeps the base dimensions.
 
-**Mitred corners.** `flange(L, edges, { miter: true })` (the *Miter Flange* ribbon button presets it) joins the walls of one feature wherever two selected edges share a corner: each bend + wall is extended past the corner and clipped by the bisector plane through the shared vertex (45° for a square corner), so the corner is closed instead of leaving a square notch. `miterGap` opens the joint by that distance, measured normal to the bisector and split evenly between the two walls. Edges that are collinear or fold in opposite directions are not mitred. A mitred square corner adds exactly twice the first moment of the flange section about the edge line to the volume, which is what the kernel tests check.
+**Mitred corners.** `flange(L, edges, { miter: true })` (the *Miter Flange* ribbon button presets it) joins the walls of one feature wherever two selected edges share a corner: each bend + wall is extended past the corner and clipped by the bisector plane through the shared vertex (45° for a square corner), so the corner is closed instead of leaving a square notch. `miterGap` opens the joint by that distance, measured normal to the bisector and split evenly between the two walls. Edges that are collinear or fold in opposite directions are not mitred. A mitred square corner adds exactly twice the first moment of the flange section about the edge line to the volume, which is what the kernel tests check. In the flat pattern the bend strip of a mitred flange ends on the mitre line: its end edge at the shared corner runs straight from the base corner to the wall's extended corner, so the blank has no step there (the base corner stays a vertex of the outline and the old strip corners at *BA* from it are gone).
 
 **Bend reliefs.** `relief: "rect"` or `"obround"` cuts a slot from the base before the flange is added, at every flange end where the sheet continues beyond the end (a wall that stops part-way along a plate edge, or an edge that meets a tab or a wider region). The slot is `reliefWidth` wide along the edge (default T), starts `reliefDepth` inside the edge (default T/2) and runs out past the bend zone (to R + T + `reliefDepth`), through the full thickness; `"obround"` rounds the inner end. Ends at convex sheet corners and ends shared with another edge of the same feature (mitred or collinear) get no relief. The relief appears in the flat pattern as a slot beside the bend strip.
 
@@ -208,14 +212,22 @@ p.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });                 // two 
 p.flange(10, [[60, 2, -45]], { relief: "obround", reliefWidth: 2 });    // wall on the notch edge, relief where it meets the wider plate
 ```
 
+## Background rebuilds
+
+By default (when the page is served over HTTP) the rebuild runs in a Web Worker: `worker.js` loads `csg.js` and `kernel.js`, receives `{ type: 'rebuild', seq, model }`, keeps its own rebuild cache between messages and answers `{ type: 'built', seq, build }` with `Kernel.packBuild(build)` (typed arrays, transferred rather than copied) or `{ type: 'error', seq, message }`. The main thread unpacks the result with `Kernel.unpackBuild`, puts the sketch profiles back with `Kernel.applyProfiles`, and only then swaps the mesh, tree and status. While a build is in flight the status bar shows *Rebuilding…*; rapid edits are coalesced, so only the latest model is built. *Edit ▸ Rebuild in background (Web Worker)* toggles the mode (`App.workerOn`, persisted in `localStorage` under `anvil.worker`); with it off every rebuild is synchronous, as before, which is also the fallback when workers are unavailable (`file://`).
+
+For code that drives the app, `UI.rebuild(opts)` and `UI.pmOK()` return Promises, `UI.whenIdle()` resolves once no rebuild is queued or in flight, and `anvil.run` / `append` / `load` / `rebuild` return Promises resolving to the summary they used to return directly (`anvil.busy()` says whether a build is in flight, `anvil.workerOn(bool)` reads or sets the mode). In synchronous mode the work is done before the Promise is returned, so `anvil.summary()` is already up to date when the call returns.
+
 ## Automation from the browser console
 
-`ui-app.js` exposes `window.anvil` for driving the running app:
+`ui-app.js` exposes `window.anvil` for driving the running app. `run`, `append`, `load` and `rebuild` return Promises (see *Background rebuilds*); `await` them, or `await UI.whenIdle()` after any UI action, before reading `summary()`.
 
 | Call | Effect |
 | --- | --- |
-| `anvil.run(code)` / `anvil.append(code)` | Replace or extend the model from a script. Throws with the first feature error. Returns a summary. |
-| `anvil.model()` / `anvil.load(json)` | Get or set the feature JSON. |
+| `anvil.run(code)` / `anvil.append(code)` | Replace or extend the model from a script. Returns a Promise that resolves to a summary, or rejects with the first feature error. |
+| `anvil.model()` / `anvil.load(json)` | Get or set the feature JSON (`load` returns a Promise of the summary). |
+| `anvil.rebuild()` | Rebuild and resolve to the summary. |
+| `anvil.busy()`, `anvil.workerOn()` / `anvil.workerOn(bool)` | Whether a rebuild is in flight; read or set background-rebuild mode. |
 | `anvil.script()` | Script regenerated from the model. |
 | `anvil.stl()`, `anvil.dxfFace(i)`, `anvil.dxfSketch(id)` | Export text. |
 | `anvil.mass()`, `anvil.faces()`, `anvil.features()` | Mass properties; face list with index, normal, area, centroid; feature list with errors. |
@@ -235,11 +247,11 @@ Downloads are blocked inside some sandboxes; every export dialog also offers *Co
 
 ## Tests
 
-`tests/kernel-tests.html` builds parts through the script API and checks them against known volumes, bounding boxes, face counts, profile nesting, edge extraction, chamfers and fillets, sheet-metal flanges and flat patterns, export contents, error messages and script round-trips, then builds every entry in `examples/examples.js` and round-trips each one through `generateScript`. Run it after touching `csg.js` or `kernel.js`. Circles are polygonal in the kernel, so tests compare against the polygonal area (`n/2 · r² · sin(2π/n)` with `n = clamp(round(8√r), 16, 72)`) rather than `πr²`.
+`tests/kernel-tests.html` builds parts through the script API and checks them against known volumes, bounding boxes, face counts, profile nesting, edge extraction, chamfers and fillets, sheet-metal flanges and flat patterns (including the mitred-corner blank), export contents, error messages and script round-trips, then builds every entry in `examples/examples.js` and round-trips each one through `generateScript`. The `pack & worker` group round-trips solids and whole builds through `pack`/`unpack`, clones a packed build through a `MessageChannel`, and drives `worker.js` end to end (build, cache reuse, a broken feature). A test may return a Promise: its row shows *WAIT* until it settles, a pending test fails after 10 s, and the summary and `window.__anvilTests` are written only once every test has settled. Run it after touching `csg.js`, `kernel.js` or `worker.js`. Circles are polygonal in the kernel, so tests compare against the polygonal area (`n/2 · r² · sin(2π/n)` with `n = clamp(round(8√r), 16, 72)`) rather than `πr²`.
 
 `tests/bench.html` times every example and a set of stress parts and reports medians; `tests/BENCHMARKS.md` keeps dated baselines so performance work in Phase 4 has something to compare against.
 
-`tests/ui-smoke.html` is the app-level regression: it loads `index.html` in a frame and walks the main workflows through the same functions the ribbon and PropertyManager call (`UI.cmdSketch`, `UI.pmOK`, `UI.deleteFeature`, …), asserting volumes after each step and failing on any uncaught error or `console.error` inside the app. Run it after touching any `ui-*.js` file. Results are also exposed as `window.__anvilSmoke`.
+`tests/ui-smoke.html` is the app-level regression: it loads `index.html` in a frame and walks the main workflows through the same functions the ribbon and PropertyManager call (`UI.cmdSketch`, `UI.pmOK`, `UI.deleteFeature`, …), asserting volumes after each step and failing on any uncaught error or `console.error` inside the app. Every step awaits the rebuild it triggers (`await anvil.run(...)`, `await UI.pmOK()`, `await UI.whenIdle()`), and the last steps cover background rebuilds: worker mode on by default, synchronous mode when off, coalescing of three rapid runs, and the *Rebuild in background* menu item. Run it after touching any `ui-*.js` file or `worker.js`. Results are also exposed as `window.__anvilSmoke`.
 
 ## Known limitations
 

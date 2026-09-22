@@ -6,9 +6,9 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- Web Worker rebuilds so the UI never freezes on shell or sweep. Note from run 2026-09-22T12: this makes `UI.rebuild` asynchronous, which touches every PM commit path, `window.anvil.run` and the smoke tests at once, so it needs the `sketch` + `commands` + `tests` lanes in one run with a design agreed first (worker owns `Kernel.rebuild` + cache, posts back serialised polygons; UI keeps a synchronous fallback).
-- Flat pattern: extend the bend strips of mitred flanges to the mitre line (today the blank shows a small step at each mitred corner).
 - Thickness-aware "normal cut" for sheet metal.
+- Flat pattern: two Material-Outside (`position: "outside"`) flanges that share a corner do not attach in the flat; the `attached` check in `flatPattern` uses the untrimmed edge ends (found by run 2026-09-22T13, pre-existing).
+- Worker mode: refresh `App.buildCache` from worker results (or drop it) so the first synchronous rebuild after a worker phase is not a full build.
 
 ## Ideas (lower priority)
 
@@ -17,6 +17,8 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (2026-09-22T13) Web Worker rebuilds: `worker.js`, `UI.rebuild` returns a Promise (coalescing, synchronous fallback, Edit menu toggle), `anvil.run/append/load/rebuild` return Promises, `UI.whenIdle()`; kernel tests 216, smoke 26.
+- (2026-09-22T13) Flat pattern: bend strips of mitred flanges extended to the mitre line (no step in the blank).
 - (2026-09-22T12) Sketch-dimension overlay decision: only the SVG `#dim-layer` exists at the baseline commit (the HTML labels were already removed); the `dimensions` test group passes, so nothing to delete.
 - (2026-09-22T12) Miter flange (`miter`, `miterGap`) and auto relief (`relief`, `reliefWidth`, `reliefDepth`) on edge flanges; Miter Flange ribbon button and PM groups.
 - (2026-09-22T12) Degenerate geometry guards: zero-area contour warning, "crosses itself" error, "must be a number" errors.

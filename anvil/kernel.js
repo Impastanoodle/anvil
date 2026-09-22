@@ -1149,7 +1149,61 @@ var Kernel = (function () {
       steps.push({ key: keys[p + j], body: ctx.body, tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null });
     });
     var t1 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    return { body: ctx.body, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p };
+    // profiles: the computed profile of every sketch, by feature id, so a build made on a copy of the model (a worker)
+    // can hand them back to the original with applyProfiles
+    var profiles = {};
+    Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
+    return { body: ctx.body, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles };
+  }
+
+  // ------------------------------------------------------------------ build serialization (Web Worker rebuilds)
+  // packBuild(build, model?) -> a structured-clone-safe copy of a rebuild result without its cache:
+  //   { body: packedCSG | null, tools: { featureId: packedCSG | null }, planes, flanges, errors, warnings, time, reused,
+  //     profiles: { sketchFeatureId: profile } }
+  // planes (makePlane frames), flanges (flange info records), errors, warnings and profiles are plain JSON already; the
+  // solids are packed with CSG.prototype.pack (typed arrays). `model` is only consulted for profiles when the build
+  // predates the `profiles` field.
+  function packBuild(build, model) {
+    var tools = {};
+    Object.keys(build.tools || {}).forEach(function (id) { tools[id] = build.tools[id] ? build.tools[id].pack() : null; });
+    var profiles = build.profiles;
+    if (!profiles) {
+      profiles = {};
+      if (model) model.features.forEach(function (f) { if (f.type === 'sketch') profiles[f.id] = f.profile || null; });
+    }
+    return {
+      body: build.body ? build.body.pack() : null, tools: tools,
+      planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles
+    };
+  }
+  // Every ArrayBuffer of a packed build (body and tools), for postMessage's transfer list. pack() allocates fresh
+  // arrays per call, so no buffer appears twice even when a tool and the body are the same solid.
+  function packTransferables(packed) {
+    var out = [];
+    if (packed.body) out = out.concat(CSG.packTransferables(packed.body));
+    Object.keys(packed.tools || {}).forEach(function (id) { if (packed.tools[id]) out = out.concat(CSG.packTransferables(packed.tools[id])); });
+    return out;
+  }
+  // unpackBuild(obj) -> an object shaped like a rebuild result (meshFromBody, massProps, faceOutline, flatPattern and
+  // the exports all work on it) with `cache: null`, since the cache stays where the build was made.
+  function unpackBuild(obj) {
+    var tools = {};
+    Object.keys(obj.tools || {}).forEach(function (id) { tools[id] = obj.tools[id] ? CSG.unpack(obj.tools[id]) : null; });
+    return {
+      body: obj.body ? CSG.unpack(obj.body) : null, tools: tools,
+      planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null
+    };
+  }
+  // Write the profiles a build computed (build.profiles, keyed by sketch feature id) onto the model's sketch features.
+  // Other features are left alone; a sketch the build did not see (or recorded as null) keeps its profile.
+  function applyProfiles(model, profiles) {
+    if (!profiles) return model;
+    model.features.forEach(function (f) {
+      if (f.type === 'sketch' && profiles[f.id]) f.profile = profiles[f.id];
+    });
+    return model;
   }
 
   // ------------------------------------------------------------------ meshing
@@ -1941,8 +1995,11 @@ var Kernel = (function () {
         cuts.push(prism(slot, sp, -0.01, T + 0.01, f.id));
       });
       var sh = scale(ed.o, -shift), e = ed.e;
+      // miterPlanes: per end, the clip plane { n, w } (tool kept where n·p >= w) or null; the flat pattern uses it to
+      // run the bend strip out to the mitre line. Plain arrays and numbers only: the record must survive a structured clone.
       info.push({ a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: ed.plane.origin, o: ed.o, u: ed.u, len: e.len, angle: A, R: R, L: L, T: T,
-        mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter] });
+        mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter],
+        miterPlanes: ed.ends.map(function (en) { return en.miter ? { n: en.miter.n.slice(), w: en.miter.w } : null; }) });
     });
     ctx.flanges[f.id] = info;
     ctx.flangeCut = cuts.length ? unionAll(cuts) : null;
@@ -2050,11 +2107,44 @@ var Kernel = (function () {
         o2 = [o2[0] / ol, o2[1] / ol];
         var BA = bendAllowance(fi.angle, fi.R, T, K), eps = 1e-3;
         function off(p, d) { return [p[0] + o2[0] * d, p[1] + o2[1] * d]; }
-        regions.push([[off(A2, -eps), off(B2, -eps), off(B2, BA + eps), off(A2, BA + eps)]]);
         var trackedInner = dot(fi.u, nTracked) > 0;
-        bends.push({ a: off(A2, BA / 2), b: off(B2, BA / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, label: (trackedInner ? 'UP' : 'DOWN') + ' ' + Math.round(fi.angle * 180 / Math.PI) + '° R' + fi.R });
         // the wall face on the tracked side of the sheet: inner radius when the fold comes toward this side
         var Rt = trackedInner ? fi.R : fi.R + T, sA = Math.sin(fi.angle), cA = Math.cos(fi.angle);
+        // Ends of the bend strip. An unmitred end is square at the edge end (t0 = ext = 0). A mitred end was swept past
+        // the end point P and clipped by the plane { n, w } (kept where n·p >= w): a wall point at o-distance d from the
+        // edge line reaches t(d) = (n·P − w + d·(o·n)) / (dIn·n) past P, so the wall's start line (d = Rt·sin A) ends at
+        // `ext`, the base corner (d = 0) sits at `t0` (0 without a gap or a placement shift) and the wall's end line
+        // slants by `slope` per unit of wall length when the fold is not 90°. The strip is drawn as a trapezoid whose
+        // end edge runs straight from the base corner to that wall corner, so the blank has no step at the mitre.
+        var ends = [fi.a, fi.b].map(function (P, kk) {
+          var Q = kk === 0 ? A2 : B2, other = kk === 0 ? B2 : A2;
+          var dl = Math.hypot(Q[0] - other[0], Q[1] - other[1]);
+          var r = { P: Q, dOut: dl > 1e-9 ? [(Q[0] - other[0]) / dl, (Q[1] - other[1]) / dl] : [0, 0], t0: 0, ext: 0, slope: 0, mitred: false };
+          var mp = fi.miterPlanes && fi.miterPlanes[kk];
+          if (!mp || dl <= 1e-9) return r;
+          var dIn = norm(sub(kk === 0 ? fi.b : fi.a, P)), dn = dot(dIn, mp.n);
+          if (!(dn > 1e-9)) return r;
+          var kappa = dot(fi.o, mp.n) / dn;
+          r.t0 = (dot(mp.n, P) - mp.w) / dn;
+          r.ext = r.t0 + kappa * Rt * sA;
+          r.slope = kappa * cA;
+          r.mitred = true;
+          return r;
+        });
+        // point at o-distance d from the edge and t past end r along the edge line
+        function corner(r, d, t) { return [r.P[0] + o2[0] * d + r.dOut[0] * t, r.P[1] + o2[1] * d + r.dOut[1] * t]; }
+        var eA = ends[0], eB = ends[1];
+        // strip: base side at −eps (inside the sheet), far side at BA + eps (inside the wall). A mitred end passes through
+        // the wall corner (BA, ext) itself and then follows the wall's end line for the eps overlap, so the strip never
+        // pokes out past the wall's unfolded outline.
+        var strip = [corner(eA, -eps, eA.t0 - (eA.ext - eA.t0) * eps / BA), corner(eB, -eps, eB.t0 - (eB.ext - eB.t0) * eps / BA)];
+        if (eB.mitred) strip.push(corner(eB, BA, eB.ext), corner(eB, BA + eps, eB.ext + eB.slope * eps));
+        else strip.push(off(B2, BA + eps));
+        if (eA.mitred) strip.push(corner(eA, BA + eps, eA.ext + eA.slope * eps), corner(eA, BA, eA.ext));
+        else strip.push(off(A2, BA + eps));
+        regions.push([strip]);
+        // bend line: mid-strip, reaching the mitre line at a mitred end
+        bends.push({ a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, label: (trackedInner ? 'UP' : 'DOWN') + ' ' + Math.round(fi.angle * 180 / Math.PI) + '° R' + fi.R });
         var Pmid = add(add(fi.origin, scale(fi.o, Rt * sA)), scale(fi.u, fi.R - Rt * cA));
         var wn = trackedInner ? add(scale(fi.o, -sA), scale(fi.u, cA)) : add(scale(fi.o, sA), scale(fi.u, -cA));
         var tw = add(scale(fi.o, cA), scale(fi.u, sA));
@@ -2066,7 +2156,8 @@ var Kernel = (function () {
         var wIdx = -1;
         mesh.faces.forEach(function (fc, i) { if (wIdx < 0 && dot(fc.normal, wn) > 0.999 && Math.abs(dot(fc.normal, Pmid) - fc.w) < 1e-3) wIdx = i; });
         if (wIdx >= 0 && !usedFaces[wIdx]) unfold(wIdx, wallMap, wn, depth + 1);
-        else regions.push([[off(A2, BA - eps), off(B2, BA - eps), off(B2, BA + fi.L), off(A2, BA + fi.L)]]);
+        else regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
+          corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
       });
     }
     unfold(best.i, function (Q) { return to2D(plane, Q); }, best.face.normal, 0);
@@ -2625,6 +2716,7 @@ var Kernel = (function () {
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
     newModel: newModel, featureName: featureName, findFeature: findFeature,
     buildTool: buildTool, isCut: isCut, rebuild: rebuild, buildEdgeFeature: buildEdgeFeature,
+    packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles,
     meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
     buildFlange: buildFlange, buildJog: buildJog, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,

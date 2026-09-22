@@ -28,7 +28,7 @@
   }
 
   function exitSketch(silent) {
-    if (App.mode !== 'sketch') return;
+    if (App.mode !== 'sketch') return UI.whenIdle();
     var f = UI.activeSketchFeature();
     cancelTool();
     App.mode = 'part';
@@ -49,17 +49,17 @@
     $('status-coords').textContent = '';
     viewport.classList.remove('tool-cross');
     App.gridStale = true;
-    if (App.pendingAfterSketch) {
-      var cb = App.pendingAfterSketch; App.pendingAfterSketch = null;
-      UI.rebuild();
-      UI.setRibbonTab('Features');
-      cb(f);
-      return;
-    }
-    UI.rebuild();
+    var p = UI.rebuild();
     UI.setRibbonTab('Features');
+    if (App.pendingAfterSketch) {
+      // the command that closed the sketch (withSketch) opens its PropertyManager once the build is applied
+      var cb = App.pendingAfterSketch; App.pendingAfterSketch = null;
+      return UI.afterRebuild(p, function () { cb(f); });
+    }
     UI.closePM();
-    if (!silent && f) { App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); UI.updateSketches(); UI.refreshTree(); }
+    return UI.afterRebuild(p, function () {
+      if (!silent && f) { App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); UI.updateSketches(); UI.refreshTree(); }
+    });
   }
 
   function cancelSketch() {

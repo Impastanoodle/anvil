@@ -14,8 +14,15 @@ var UI = (function () {
     view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: true, showDims: true, section: null, bg: 'gradient' },
     ribbonTab: 'Features',
     viewHistory: [],
-    sketchDirty: false
+    sketchDirty: false,
+    // Web Worker rebuilds: on by default when served over http(s); persisted in localStorage 'anvil.worker'
+    workerOn: false, rebuilding: false
   };
+  (function () {
+    var on = !!window.Worker && /^http/.test(location.protocol);
+    try { var s = localStorage.getItem('anvil.worker'); if (s === '0') on = false; else if (s === '1') on = !!window.Worker; } catch (e) { }
+    App.workerOn = on;
+  })();
 
   function $(id) { return document.getElementById(id); }
   function el(tag, attrs, children) {
@@ -605,11 +612,60 @@ var UI = (function () {
   }
 
   // ------------------------------------------------------------------ rebuild pipeline
+  // Two paths end in applyBuild(): the sync path runs Kernel.rebuild on the main thread (App.buildCache
+  // keeps the unchanged feature prefix); the async path posts App.model to worker.js, which keeps its own
+  // cache, and applies the packed result when it comes back. UI.rebuild() always returns a Promise that
+  // resolves to App.build once the build is applied. Sync-path promises carry `applied: true` so that
+  // UI.afterRebuild(p, fn) can run the caller's tail immediately, exactly as before the worker existed.
+  var wk = {
+    worker: null,        // lazily created Worker
+    seq: 0,              // last posted sequence number
+    inflight: null,      // { seq, waiters: [{resolve, reject}], opts } — the one message in flight
+    pending: null,       // { waiters, opts } — calls made while inflight; they all build the latest App.model together
+    idle: [],            // resolvers of UI.whenIdle()
+    warned: false        // the "background rebuild unavailable" toast is shown once
+  };
+
   function rebuild(opts) {
     opts = opts || {};
+    if (!App.workerOn || opts.sync || !window.Worker) {
+      // A request already posted to the worker is answered by this newer build; its reply is then ignored.
+      var stale = takeInflight();
+      if (stale && !stale.opts.noSave) opts = { noSave: false, sync: opts.sync };
+      try { rebuildSync(opts); }
+      catch (e) { if (stale) { settle(stale, e); drain(); } throw e; }
+      if (stale) { settle(stale, null); drain(); }
+      var done = Promise.resolve(App.build);
+      done.applied = true;
+      return done;
+    }
+    return new Promise(function (resolve, reject) {
+      var w = { resolve: resolve, reject: reject };
+      if (wk.inflight) {
+        // Coalesce: one message in flight at a time. Everything asked for meanwhile is answered by a single
+        // rebuild of the latest App.model, posted when the in-flight reply arrives.
+        if (!wk.pending) wk.pending = { waiters: [], opts: { noSave: true } };
+        wk.pending.waiters.push(w);
+        wk.pending.opts.noSave = !!(wk.pending.opts.noSave && opts.noSave);
+        return;
+      }
+      postRebuild({ waiters: [w], opts: opts });
+    });
+  }
+
+  function rebuildSync(opts) {
     var t0 = performance.now();
-    App.build = K.rebuild(App.model, App.buildCache);
-    App.buildCache = App.build.cache;
+    var build = K.rebuild(App.model, App.buildCache);
+    App.buildCache = build.cache;
+    applyBuild(build, opts, performance.now() - t0);
+  }
+
+  // Everything that happens after the kernel has built the body: mesh, edges, highlights, planes,
+  // sketches, tree, status bar, autosave. `msBefore` is the kernel time (main thread or worker).
+  function applyBuild(build, opts, msBefore) {
+    opts = opts || {};
+    var t0 = performance.now();
+    App.build = build;
     App.mesh = K.meshFromBody(App.build.body);
     App.triShared = buildTriShared(App.mesh);
     updateBodyMesh();
@@ -619,8 +675,7 @@ var UI = (function () {
     updatePlanes();
     updateOrigin();
     updateSketches();
-    var t = performance.now() - t0;
-    App.lastRebuildMs = t;
+    App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
     if (!opts.noSave) autosave();
@@ -629,6 +684,141 @@ var UI = (function () {
       var f = K.findFeature(App.model, +errIds[0]);
       UI.setStatus((f ? f.name : 'Feature') + ': ' + App.build.errors[errIds[0]]);
     }
+    return App.build;
+  }
+
+  // Run fn once the build behind promise p is applied: immediately when p came from the sync path
+  // (so callers that read App.build / App.mesh straight afterwards behave as before), else in .then().
+  function afterRebuild(p, fn) {
+    if (p && p.applied) {
+      var r = fn(App.build);
+      return r && typeof r.then === 'function' ? r : Promise.resolve(r);
+    }
+    return p.then(fn);
+  }
+
+  function whenIdle() {
+    if (!wk.inflight && !wk.pending) return Promise.resolve();
+    return new Promise(function (resolve) { wk.idle.push(resolve); });
+  }
+
+  function getWorker() {
+    if (!App.workerOn || !window.Worker) return null;
+    if (wk.worker) return wk.worker;
+    try {
+      wk.worker = new Worker('worker.js');
+      wk.worker.onmessage = onWorkerMessage;
+      wk.worker.onerror = onWorkerError;        // also fires when worker.js itself fails to load
+      wk.worker.onmessageerror = onWorkerError;
+    } catch (e) { disableWorker(e); return null; }
+    return wk.worker;
+  }
+
+  function disableWorker(err) {
+    App.workerOn = false;
+    if (wk.worker) { try { wk.worker.terminate(); } catch (e) { } }
+    wk.worker = null;
+    if (!wk.warned) {
+      wk.warned = true;
+      if (err) console.warn('Anvil: background rebuild disabled —', (err && err.message) || err);
+      if (UI.toast) UI.toast('Background rebuild unavailable; rebuilding on the main thread.');
+    }
+  }
+
+  function postRebuild(req) {
+    var w = getWorker();
+    if (!w) { finishSync(req); return; }
+    req.seq = ++wk.seq;
+    wk.inflight = req;
+    try { w.postMessage({ type: 'rebuild', seq: req.seq, model: App.model }); }
+    catch (e) { wk.inflight = null; disableWorker(e); finishSync(req); return; }   // e.g. an uncloneable value in the model
+    setBusy(true);
+  }
+
+  // A pending request wants the same latest App.model as req, so it is folded in and answered together.
+  function foldPending(req) {
+    if (!wk.pending) return req;
+    var p = wk.pending; wk.pending = null;
+    req.waiters = req.waiters.concat(p.waiters);
+    req.opts = { noSave: !!(req.opts.noSave && p.opts.noSave) };
+    return req;
+  }
+
+  // Detach the in-flight request (plus anything pending behind it) so a newer build made elsewhere can
+  // answer it; the worker's eventual reply no longer matches wk.inflight and is dropped as stale.
+  function takeInflight() {
+    var req = wk.inflight;
+    if (!req) return null;
+    wk.inflight = null; wk.seq++;
+    return foldPending(req);
+  }
+
+  // Serve a request on the main thread (worker off or broken).
+  function finishSync(req) {
+    foldPending(req);
+    try { rebuildSync(req.opts); }
+    catch (e) { console.error(e); settle(req, e); drain(); return; }
+    settle(req, null);
+    drain();
+  }
+
+  function settle(req, err) {
+    req.waiters.forEach(function (w) { if (err) w.reject(err); else w.resolve(App.build); });
+  }
+
+  // After a reply: post what accumulated meanwhile, or announce idle. The idle check is deferred one
+  // microtask so the callers' .then() tails (which may queue another rebuild) run first.
+  function drain() {
+    if (wk.pending && !wk.inflight) { var p = wk.pending; wk.pending = null; postRebuild(p); }
+    Promise.resolve().then(function () {
+      if (wk.inflight || wk.pending) return;
+      setBusy(false);
+      var ws = wk.idle; wk.idle = [];
+      ws.forEach(function (r) { r(); });
+    });
+  }
+
+  function onWorkerMessage(ev) {
+    var d = ev.data || {};
+    if (!wk.inflight || d.seq !== wk.inflight.seq) return;   // stale reply (newer request already posted)
+    var req = wk.inflight; wk.inflight = null;
+    if (d.type === 'built') {
+      var build;
+      try {
+        build = K.unpackBuild(d.build);
+        K.applyProfiles(App.model, build.profiles);   // the worker built its own copy; write the sketch profiles back onto ours
+        applyBuild(build, req.opts, build.time);
+      } catch (e) { disableWorker(e); finishSync(req); return; }
+      settle(req, null);
+      drain();
+    } else {
+      disableWorker(d.message || 'worker error');
+      finishSync(req);
+    }
+  }
+
+  function onWorkerError(ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var req = wk.inflight; wk.inflight = null;
+    disableWorker((ev && ev.message) || 'worker.js failed');
+    if (req) finishSync(req); else drain();
+  }
+
+  var busyPrevStatus = null;
+  function setBusy(on) {
+    if (App.rebuilding === on) return;
+    App.rebuilding = on;
+    var s = $('status-msg');
+    if (!s) return;
+    if (on) { busyPrevStatus = s.textContent; s.textContent = 'Rebuilding…'; s.classList.add('busy'); }
+    else { s.classList.remove('busy'); if (s.textContent === 'Rebuilding…') s.textContent = busyPrevStatus || 'Rebuilt.'; }
+  }
+
+  function setWorkerOn(on) {
+    App.workerOn = !!on && !!window.Worker;
+    try { localStorage.setItem('anvil.worker', App.workerOn ? '1' : '0'); } catch (e) { }
+    if (!App.workerOn && wk.worker && !wk.inflight) { try { wk.worker.terminate(); } catch (e) { } wk.worker = null; }
+    return App.workerOn;
   }
 
   function autosave() {
@@ -640,23 +830,23 @@ var UI = (function () {
     App.redo.length = 0;
   }
   function undo() {
-    if (!App.undo.length) return;
+    if (!App.undo.length) return whenIdle();
     App.redo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.undo.pop());
-    afterModelSwap();
+    return afterModelSwap();
   }
   function redo() {
-    if (!App.redo.length) return;
+    if (!App.redo.length) return whenIdle();
     App.undo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.redo.pop());
-    afterModelSwap();
+    return afterModelSwap();
   }
   function afterModelSwap() {
     if (App.activeSketch != null && !K.findFeature(App.model, App.activeSketch)) App.activeSketch = null;
     if (App.activeSketch == null && App.mode === 'sketch' && UI.exitSketch) UI.exitSketch(true);
     App.sel = null; App.sel2 = null;
     if (UI.closePM) UI.closePM();
-    rebuild();
+    return rebuild();
   }
 
   function loadModel(model) {
@@ -667,9 +857,9 @@ var UI = (function () {
     App.undo.length = 0; App.redo.length = 0;
     App.sel = null; App.sel2 = null;
     App.activeSketch = null; App.mode = 'part';
-    rebuild();
+    var p = rebuild();
     $('doc-title').textContent = model.name;
-    zoomToFit();
+    return afterRebuild(p, function (b) { zoomToFit(); return b; });
   }
 
   window.addEventListener('resize', resize);
@@ -684,7 +874,8 @@ var UI = (function () {
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
-    rebuild: rebuild, autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
+    rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn,
+    autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; }
   };
 })();

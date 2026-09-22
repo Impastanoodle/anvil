@@ -16,16 +16,17 @@
 </style>
 
 <h1>Anvil UI smoke test</h1>
-<div class="sub">Loads <code>../index.html</code> in the frame below and drives it through <code>window.anvil</code> and the <code>UI</code> command functions: boot, every Design Library example, sketch → extrude → edit → undo/redo, Hole Wizard, chamfer, section view, exports, delete with dependents, File ▸ New, drafted extrude, sweep, loft, shell, sheet metal flatten and DXF. Any uncaught error or <code>console.error</code> inside the app fails the run. Needs the folder served over HTTP (same origin as the app).</div>
+<div class="sub">Loads <code>../index.html</code> in the frame below and drives it through <code>window.anvil</code> and the <code>UI</code> command functions: boot, every Design Library example, sketch → extrude → edit → undo/redo, Hole Wizard, chamfer, section view, exports, delete with dependents, File ▸ New, drafted extrude, sweep, loft, shell, sheet metal flatten and DXF, mitred flanges, and the background (Web Worker) rebuild: default on over HTTP, synchronous when off, coalescing of rapid runs, and the menu toggle. Every rebuild is awaited (<code>anvil.run</code> returns a Promise, <code>UI.whenIdle()</code> resolves when nothing is queued). Any uncaught error or <code>console.error</code> inside the app fails the run. Needs the folder served over HTTP (same origin as the app).</div>
 <div id="summary">loading the app…</div>
 <table><thead><tr><th>Status</th><th>Step</th><th>Detail</th><th>ms</th></tr></thead><tbody id="rows"></tbody></table>
-<iframe id="app" src="../index.html"></iframe>
+<iframe id="app"></iframe>
 
 <script>
 (function () {
   'use strict';
   var rows = document.getElementById('rows'), results = [];
   var W, D, K, UI, anvil, errors = [];
+  var STEP_TIMEOUT_MS = 30000;
 
   function row(name, ok, detail, ms) {
     results.push({ name: name, ok: ok, detail: detail, ms: ms });
@@ -41,6 +42,8 @@
   function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
   function fmt(n) { return Math.round(n * 1000) / 1000; }
   function polyCircleArea(r) { var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01))))); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
+  // resolves when no rebuild is queued or in flight (a no-op on a build without UI.whenIdle)
+  function idle() { return UI.whenIdle ? UI.whenIdle() : Promise.resolve(); }
 
   var steps = [];
   function step(name, fn) { steps.push({ name: name, fn: fn }); }
@@ -71,6 +74,8 @@
     assert(b, 'PM button "' + text + '" not found');
     b.click();
   }
+  // accept the PropertyManager and wait for the rebuild it triggers
+  async function pmAccept() { await UI.pmOK(); await idle(); }
   function modalOpen() { return !$('modal').hidden; }
   function clickModalButton(text) {
     var b = Array.prototype.filter.call(D.querySelectorAll('#modal-buttons button'), function (x) { return x.textContent.trim() === text; })[0];
@@ -92,77 +97,85 @@
     return best;
   }
   function names() { return UI.App.model.features.map(function (f) { return f.name; }); }
+  function statusText() { return $('status-msg').textContent; }
 
   // ---- steps
-  step('app booted: anvil, UI, Kernel, THREE present, no boot errors', function () {
+  step('app booted: anvil, UI, Kernel, THREE present, no boot errors', async function () {
     assert(W.anvil && W.UI && W.Kernel && W.THREE, 'globals missing');
     assert($('tree') && $('pm') && $('viewport'), 'layout missing');
-    return 'status: ' + $('status-msg').textContent.slice(0, 60);
+    await idle();
+    return 'status: ' + statusText().slice(0, 60);
   });
-  step('new part via loadModel', function () {
+  step('new part via loadModel', async function () {
     UI.loadModel(K.newModel('Smoke'));
+    await idle();
     assert($('doc-title').textContent === 'Smoke', 'title');
     assert(anvil.summary().features === 0, 'features');
   });
-  step('every Design Library example builds through anvil.run', function () {
+  step('every Design Library example builds through anvil.run', async function () {
     var out = [];
-    anvil.examples.forEach(function (ex) {
-      var s = anvil.run(ex.code);
+    for (var i = 0; i < anvil.examples.length; i++) {
+      var ex = anvil.examples[i];
+      var s = await anvil.run(ex.code);
+      await idle();
       assert(Object.keys(s.errors).length === 0, ex.name + ': ' + JSON.stringify(s.errors));
       assert(s.volume > 0 && s.faces > 0, ex.name + ': empty body');
       var last = UI.App.model.features[UI.App.model.features.length - 1];
       assert($('tree').innerText.indexOf(last.name) >= 0, ex.name + ': tree lacks ' + last.name);
       out.push(ex.name + ' ' + s.rebuildMs + 'ms');
-    });
+    }
     return anvil.examples.length + ' examples · ' + out.join(' · ');
   });
-  step('Sketch PM: pick Front Plane → sketch mode on Front', function () {
+  step('Sketch PM: pick Front Plane → sketch mode on Front', async function () {
     UI.loadModel(K.newModel('Smoke'));
+    await idle();
     UI.cmdSketch();
     assert(UI.hasPM(), 'Sketch PM not open');
     clickPmButton('Front Plane');
+    await idle();
     assert(UI.App.mode === 'sketch' && UI.App.activeSketch != null, 'not in sketch mode');
     var f = K.findFeature(UI.App.model, UI.App.activeSketch);
     assert(f.plane.ref === 'Front', 'plane ' + JSON.stringify(f.plane));
     near(UI.cam.dir.z, 1, 1e-9, 'camera normal to Front');
   });
-  step('draw a rectangle, exit sketch, extrude 20 via the PM', function () {
+  step('draw a rectangle, exit sketch, extrude 20 via the PM', async function () {
     var f = K.findFeature(UI.App.model, UI.App.activeSketch);
     f.entities.push({ t: 'rect', x: 0, y: 0, w: 30, h: 20 });
     UI.exitSketch();
+    await idle();
     assert(UI.App.mode === 'part', 'still in sketch');
     UI.cmdExtrude(false);
     assert(UI.hasPM(), 'Extrude PM not open');
     var sel = D.querySelector('#pm select');
     assert(sel && +sel.value === f.id, 'sketch not preselected: ' + (sel && sel.value));
     setInput(pmNumber(0), 20);
-    UI.pmOK();
+    await pmAccept();
     assert(!UI.hasPM(), 'PM still open');
     var s = anvil.summary();
     near(s.volume, 30 * 20 * 20, 1e-6, 'volume');
     assert(names().join() === 'Sketch1,Boss-Extrude1', names().join());
   });
-  step('edit the extrude (depth 30), undo, redo', function () {
+  step('edit the extrude (depth 30), undo, redo', async function () {
     UI.editFeature(K.findFeature(UI.App.model, 2));
     assert(UI.hasPM(), 'edit PM not open');
     setInput(pmNumber(0), 30);
-    UI.pmOK();
+    await pmAccept();
     near(anvil.summary().volume, 18000, 1e-6, 'after edit');
-    UI.undo(); near(anvil.summary().volume, 12000, 1e-6, 'after undo');
-    UI.redo(); near(anvil.summary().volume, 18000, 1e-6, 'after redo');
+    UI.undo(); await idle(); near(anvil.summary().volume, 12000, 1e-6, 'after undo');
+    UI.redo(); await idle(); near(anvil.summary().volume, 18000, 1e-6, 'after redo');
   });
-  step('Hole Wizard on the +Z face (Ø6 through)', function () {
+  step('Hole Wizard on the +Z face (Ø6 through)', async function () {
     var idx = faceWithNormal([0, 0, 1]);
     UI.cmdHole();
     assert(UI.hasPM() && UI.App.command && UI.App.command.onPick, 'Hole PM not waiting for a pick');
     var c = UI.App.mesh.faces[idx].centroid;
     assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [15, 10, c[2]] }) !== false, 'pick rejected');
     setInput(pmNumber(0), 6);
-    UI.pmOK();
+    await pmAccept();
     near(anvil.summary().volume, 18000 - polyCircleArea(3) * 30, 1e-3, 'volume');
     assert(names()[names().length - 1] === 'Hole1', names().join());
   });
-  step('Chamfer PM: pick an edge object, distance 2', function () {
+  step('Chamfer PM: pick an edge object, distance 2', async function () {
     UI.cmdChamfer();
     assert(UI.hasPM() && UI.App.command.pickEdges, 'Chamfer PM not open');
     var e = edgeNear([30, 20, 15]);
@@ -170,11 +183,11 @@
     assert(UI.App.command.onPick({ kind: 'edge', edge: e }) === true, 'edge pick rejected');
     assert(/1 edge pick/.test($('pm').innerText), 'pick not listed: ' + $('pm').innerText.slice(0, 120));
     setInput(pmNumber(0), 2);
-    UI.pmOK();
+    await pmAccept();
     near(anvil.summary().volume, before - 2 * 2 / 2 * 30, 1e-3, 'volume');
     assert(names()[names().length - 1] === 'Chamfer1', names().join());
   });
-  step('exports: STL, script round-trip, face DXF, PNG', function () {
+  step('exports: STL, script round-trip, face DXF, PNG', async function () {
     var stl = anvil.stl();
     assert(stl.indexOf('solid ') === 0 && /endsolid/.test(stl), 'stl');
     var script = anvil.script(), vol = anvil.summary().volume;
@@ -187,32 +200,35 @@
     assert(png.indexOf('data:image/png') === 0 && png.length > 1000, 'png');
     return 'stl ' + stl.length + ' chars, script ' + script.split('\n').length + ' lines, png ' + png.length + ' chars';
   });
-  step('section view PM accepts and clips', function () {
+  step('section view PM accepts and clips', async function () {
     UI.cmdSection();
     assert(UI.hasPM(), 'Section PM not open');
-    UI.pmOK();
+    await pmAccept();
     assert(UI.App.view.section && UI.App.view.section.plane, 'section not set');
     UI.App.view.section = null; UI.applyDisplayStyle();
   });
-  step('delete the sketch with its dependents through the confirm modal', function () {
+  step('delete the sketch with its dependents through the confirm modal', async function () {
     var before = names().length;
     UI.deleteFeature(1);
     assert(modalOpen(), 'confirm modal expected');
     var primary = D.querySelector('#modal-buttons button.primary') || D.querySelector('#modal-buttons button');
     primary.click();
+    await idle();
     assert(!modalOpen(), 'modal still open');
     assert(names().length < before, 'nothing deleted: ' + names().join());
     assert(names().indexOf('Sketch1') < 0 && names().indexOf('Boss-Extrude1') < 0, 'dependents remain: ' + names().join());
     return 'now: ' + names().join(', ');
   });
-  step('File ▸ New goes through the modal and starts Part1', function () {
+  step('File ▸ New goes through the modal and starts Part1', async function () {
     UI.fileNew();
     assert(modalOpen(), 'New-part modal expected');
     clickModalButton('New part');
+    await idle();
     assert($('doc-title').textContent === 'Part1' && anvil.summary().features === 0, 'not reset');
   });
-  step('Extrude PM with Draft on (10°) builds a frustum', function () {
-    anvil.run('p.sketch("Top").centerRect(0, 0, 20, 20);');
+  step('Extrude PM with Draft on (10°) builds a frustum', async function () {
+    await anvil.run('p.sketch("Top").centerRect(0, 0, 20, 20);');
+    await idle();
     UI.cmdExtrude(false);
     assert(UI.hasPM(), 'Extrude PM not open');
     setInput(pmNumber(0), 10);
@@ -222,62 +238,67 @@
     var angle = pmField('Draft angle');
     assert(angle, 'Draft angle field missing after enabling draft');
     setInput(angle, 10);
-    UI.pmOK();
+    await pmAccept();
     var t = Math.tan(10 * Math.PI / 180), s2 = 20 - 2 * 10 * t;
     near(anvil.summary().volume, 10 / 3 * (400 + s2 * s2 + 20 * s2), 1e-3, 'frustum volume');
     var f = UI.App.model.features[UI.App.model.features.length - 1];
     assert(f.draft === 10 && !f.draftOut, 'feature draft fields: ' + JSON.stringify(f));
   });
-  step('Sweep PM pairs profile and path sketches and builds a tube', function () {
-    anvil.run('p.sketch("Front").circle(0, 0, 5);\np.sketch("Top").line(0, 0, 0, -50);');
+  step('Sweep PM pairs profile and path sketches and builds a tube', async function () {
+    await anvil.run('p.sketch("Front").circle(0, 0, 5);\np.sketch("Top").line(0, 0, 0, -50);');
+    await idle();
     UI.cmdSweep(false);
     assert(UI.hasPM(), 'Sweep PM not open');
-    UI.pmOK();
+    await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
     var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(5))));
     near(s.volume, n / 2 * 25 * Math.sin(2 * Math.PI / n) * 50, 1e-3, 'tube volume');
     assert(names()[names().length - 1] === 'Sweep1', names().join());
   });
-  step('Loft PM lofts the two most recent sketches', function () {
-    anvil.run('p.sketch("Front").centerRect(0, 0, 20, 20);\np.sketch("Front", 30).centerRect(0, 0, 10, 10);');
+  step('Loft PM lofts the two most recent sketches', async function () {
+    await anvil.run('p.sketch("Front").centerRect(0, 0, 20, 20);\np.sketch("Front", 30).centerRect(0, 0, 10, 10);');
+    await idle();
     UI.cmdLoft(false);
     assert(UI.hasPM(), 'Loft PM not open');
-    UI.pmOK();
+    await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
     near(s.volume, 30 / 3 * (400 + 100 + 200), 1e-3, 'frustum volume');
     assert(names()[names().length - 1] === 'Loft1', names().join());
   });
-  step('Shell PM removes the pre-selected top face', function () {
-    anvil.run('p.box(40, 40, 20, { centered: true });');
+  step('Shell PM removes the pre-selected top face', async function () {
+    await anvil.run('p.box(40, 40, 20, { centered: true });');
+    await idle();
     var idx = faceWithNormal([0, 1, 0]);
     var c = UI.App.mesh.faces[idx].centroid;
     UI.App.sel = { kind: 'face', index: idx, point: c.slice() };
     UI.cmdShell();
     assert(UI.hasPM(), 'Shell PM not open');
     setInput(pmNumber(0), 2);
-    UI.pmOK();
+    await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
     near(s.volume, 32000 - 36 * 36 * 18, 1e-3, 'open box volume');
     assert(names()[names().length - 1] === 'Shell1', names().join());
   });
-  step('sheet metal: Edge Flange PM picks an edge and builds', function () {
-    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+  step('sheet metal: Edge Flange PM picks an edge and builds', async function () {
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    await idle();
     var before = anvil.summary().volume;
     UI.cmdEdgeFlange();
     assert(UI.hasPM(), 'Flange PM not open');
     var e = edgeNear([0, 2, 30]);
     assert(UI.App.command.onPick({ kind: 'edge', edge: e }) !== false, 'edge pick rejected');
     setInput(pmNumber(1), 20); // angle is the first number, length the second
-    UI.pmOK();
+    await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
     near(s.volume, before + Math.PI / 4 * 12 * 60 + 20 * 2 * 60, 60, 'volume');
     assert(names()[names().length - 1] === 'Edge-Flange1', names().join());
   });
-  step('Flatten modal and Flat to DXF', function () {
+  step('Flatten modal and Flat to DXF', async function () {
+    await idle();
     UI.cmdFlatten();
     assert(modalOpen() && /Flat pattern/.test($('modal-body').innerText), 'flatten modal');
     assert($('modal-body').querySelector('svg, canvas'), 'no drawing in the flatten modal');
@@ -289,11 +310,12 @@
     UI.closeModal();
     return 'dxf ' + ta.value.length + ' chars';
   });
-  step('sheet metal: mitred two-edge flange via anvil.run, tree title says "mitred"', function () {
+  step('sheet metal: mitred two-edge flange via anvil.run, tree title says "mitred"', async function () {
     var s;
     try {
-      s = anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
+      s = await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
     } catch (e) { fail('anvil.run threw: ' + ((e && e.message) || e)); }
+    await idle();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
     // two 20 mm walls (60 + 100 long) plus the mitred corner: well above the bare 12000 sheet
     assert(s.volume > 12000 + 0.9 * (Math.PI / 4 * 12 + 40) * 160, 'both flanges missing or short: ' + s.volume);
@@ -306,10 +328,11 @@
     assert(/mitred/i.test(text), 'tree lacks "mitred": ' + text.replace(/\s+/g, ' ').slice(0, 200));
     return 'volume ' + s.volume + ' · ' + titles.split(' | ').filter(function (t) { return /mitred/i.test(t); })[0];
   });
-  step('Miter Flange PM: pick two adjacent edges, accept, named Miter-Flange1', function () {
-    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
-    var plain = anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]]);').volume;
-    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+  step('Miter Flange PM: pick two adjacent edges, accept, named Miter-Flange1', async function () {
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    var plain = (await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]]);')).volume;
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    await idle();
     UI.cmdMiterFlange();
     assert(UI.hasPM(), 'Miter Flange PM not open');
     assert(/Miter-Flange/.test($('pm').innerText), 'PM title: ' + $('pm').innerText.slice(0, 80));
@@ -318,7 +341,7 @@
     assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([0, 2, 30]) }) !== false, 'first edge pick rejected');
     assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([50, 2, 0]) }) !== false, 'second edge pick rejected');
     setInput(pmNumber(1), 20); // angle is the first number, length the second
-    UI.pmOK();
+    await pmAccept();
     assert(!UI.hasPM(), 'PM still open');
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
@@ -328,7 +351,7 @@
     assert(f.miter === true && f.edges.length === 2, JSON.stringify(f));
     return 'volume ' + s.volume + ' (unmitred ' + plain + ')';
   });
-  step('task pane: Design Library lists the examples, script console has the API text', function () {
+  step('task pane: Design Library lists the examples, script console has the API text', async function () {
     UI.openTaskPane('library');
     var n = D.querySelectorAll('#tp-body button').length;
     assert(n >= anvil.examples.length, 'library buttons ' + n + ' < ' + anvil.examples.length);
@@ -337,17 +360,110 @@
     UI.closeTaskPane();
     return n + ' library entries';
   });
-  step('no uncaught errors or console.error calls during the run', function () {
+
+  // ---- background rebuilds (Web Worker)
+  step('worker mode is on by default over http and a rebuild goes through the worker', async function () {
+    assert(typeof UI.whenIdle === 'function', 'UI.whenIdle() is missing');
+    assert(typeof UI.rebuild === 'function', 'UI.rebuild is missing');
+    assert(typeof anvil.busy === 'function' && typeof anvil.workerOn === 'function', 'anvil.busy() / anvil.workerOn() are missing');
+    assert(UI.App.workerOn === true, 'App.workerOn should default to true over http, got ' + JSON.stringify(UI.App.workerOn));
+    assert(anvil.workerOn() === true, 'anvil.workerOn() getter should report true, got ' + JSON.stringify(anvil.workerOn()));
+    var p = anvil.run('p.box(10, 20, 30);');
+    assert(p && typeof p.then === 'function', 'anvil.run must return a Promise, got ' + Object.prototype.toString.call(p));
+    // a fast build may already be done before the first poll; busy/status are reported, the final state is asserted
+    var sawBusy = !!anvil.busy(), sawStatus = /Rebuilding/.test(statusText());
+    for (var i = 0; i < 400 && anvil.busy(); i++) {
+      sawBusy = true;
+      if (/Rebuilding/.test(statusText())) sawStatus = true;
+      await wait(5);
+    }
+    var s = await p;
+    await idle();
+    assert(s && typeof s.volume === 'number', 'the promise must resolve to a summary, got ' + JSON.stringify(s));
+    near(s.volume, 10 * 20 * 30, 1e-6, 'summary volume from the promise');
+    near(anvil.summary().volume, 10 * 20 * 30, 1e-6, 'final volume');
+    assert(!anvil.busy(), 'still busy after whenIdle()');
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    return 'busy observed: ' + sawBusy + ', "Rebuilding…" observed: ' + sawStatus + ', rebuild ' + s.rebuildMs + ' ms';
+  });
+  step('worker off: anvil.run rebuilds synchronously; the setting is persisted', async function () {
+    var offVal = null, onVal = null, s;
+    anvil.workerOn(false);
+    try {
+      assert(UI.App.workerOn === false && anvil.workerOn() === false, 'workerOn(false) did not switch the mode off: ' + JSON.stringify(UI.App.workerOn));
+      try { offVal = W.localStorage.getItem('anvil.worker'); } catch (e) { }
+      var p = anvil.run('p.box(20, 10, 10);');
+      near(anvil.summary().volume, 2000, 1e-6, 'volume right after the call, before any await (sync mode)');
+      assert(!anvil.busy(), 'busy() should be false right after a synchronous run');
+      s = await p;
+      near(s.volume, 2000, 1e-6, 'promise summary volume');
+    } finally {
+      anvil.workerOn(true);
+    }
+    assert(UI.App.workerOn === true && anvil.workerOn() === true, 'workerOn(true) did not restore the mode');
+    try { onVal = W.localStorage.getItem('anvil.worker'); } catch (e) { }
+    assert(offVal != null && offVal !== onVal, 'localStorage "anvil.worker" should record the off state: off=' + JSON.stringify(offVal) + ' on=' + JSON.stringify(onVal));
+    await idle();
+    return 'anvil.worker off=' + JSON.stringify(offVal) + ' on=' + JSON.stringify(onVal);
+  });
+  step('coalescing: three back-to-back runs settle on the last model', async function () {
+    var p1 = anvil.run('p.box(10, 10, 10);');
+    var p2 = anvil.run('p.box(20, 10, 10);');
+    var p3 = anvil.run('p.box(30, 10, 10);');
+    [p1, p2].forEach(function (p) { if (p && typeof p.then === 'function') p.then(null, function () { }); });
+    var s3 = await p3;
+    await idle();
+    assert(!anvil.busy(), 'still busy after whenIdle()');
+    var s = anvil.summary();
+    near(s.volume, 3000, 1e-6, 'final volume is the third model');
+    near(s.bbox.max[0], 30, 1e-6, 'final bbox is the third box');
+    near(s3.volume, 3000, 1e-6, 'the third promise resolves to its own summary');
+    assert(UI.App.model.features.length === 2, 'features: ' + names().join());
+    return 'volume ' + s.volume + ', bbox.max ' + s.bbox.max.map(fmt).join(', ');
+  });
+  step('menu item "Rebuild in background (Web Worker)" toggles workerOn', async function () {
+    var before = UI.App.workerOn;
+    function findRow() {
+      var lis = D.querySelectorAll('#menus > li');
+      for (var i = 0; i < lis.length; i++) {
+        lis[i].dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        var mi = D.querySelectorAll('.menu .mi');
+        for (var j = 0; j < mi.length; j++) if (mi[j].textContent.indexOf('Rebuild in background') >= 0) return { row: mi[j], menu: lis[i].textContent, chk: (mi[j].querySelector('.chk') || {}).textContent };
+      }
+      if (UI.closeMenus) UI.closeMenus();
+      return null;
+    }
+    var hit = findRow();
+    assert(hit, 'no menu item containing "Rebuild in background" in any menu (' + Array.prototype.map.call(D.querySelectorAll('#menus > li'), function (l) { return l.textContent; }).join(', ') + ')');
+    hit.row.click();
+    assert(UI.App.workerOn === !before, 'clicking the item should flip workerOn from ' + before + ', got ' + JSON.stringify(UI.App.workerOn));
+    var hit2 = findRow();
+    assert(hit2, 'menu item vanished after the first toggle');
+    hit2.row.click();
+    assert(UI.App.workerOn === before, 'second click should restore workerOn = ' + before + ', got ' + JSON.stringify(UI.App.workerOn));
+    if (UI.closeMenus) UI.closeMenus();
+    await idle();
+    return 'in the ' + hit.menu + ' menu; check mark ' + JSON.stringify(hit.chk) + ' → ' + JSON.stringify(hit2.chk);
+  });
+
+  step('no uncaught errors or console.error calls during the run', async function () {
+    await idle();
     assert(errors.length === 0, errors.join('\n'));
   });
 
   // ---- runner
+  function withTimeout(p, ms, name) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error('step timed out after ' + ms / 1000 + ' s (a rebuild never settled?)')); }, ms);
+      Promise.resolve(p).then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+    });
+  }
   function runAll() {
     var i = 0;
     function next() {
       if (i >= steps.length) return finish();
       var s = steps[i++], t0 = performance.now();
-      Promise.resolve().then(function () { return s.fn(); }).then(function (detail) {
+      withTimeout(Promise.resolve().then(function () { return s.fn(); }), STEP_TIMEOUT_MS, s.name).then(function (detail) {
         row(s.name, true, typeof detail === 'string' ? detail : '', performance.now() - t0);
       }, function (e) {
         row(s.name, false, (e && e.message) || String(e), performance.now() - t0);
@@ -378,5 +494,9 @@
       else { row('app booted', false, 'window.anvil never appeared (is three.js reachable? is the folder served over HTTP?)', 0); finish(); }
     })();
   });
+  // The app reads localStorage 'anvil.worker' at boot ('0' = off, '1' = on); clear a value left by an earlier session so
+  // the "on by default over http" step tests the default, not a remembered preference (same origin as the frame).
+  try { localStorage.removeItem('anvil.worker'); } catch (e) { }
+  frame.src = '../index.html';
 })();
 </script>

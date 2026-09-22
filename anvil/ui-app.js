@@ -212,9 +212,10 @@
     var out = el('div', { class: 'err-text' });
     function run(replace) {
       out.textContent = '';
-      var res = runScript(ta.value, replace);
-      if (res.error) { out.textContent = res.error; UI.toast('Script error'); }
-      else UI.toast((replace ? 'Model rebuilt from script' : 'Script appended') + ' · ' + App.model.features.length + ' features');
+      runScript(ta.value, replace).then(function (res) {
+        if (res.error) { out.textContent = res.error; UI.toast('Script error'); }
+        else UI.toast((replace ? 'Model rebuilt from script' : 'Script appended') + ' · ' + App.model.features.length + ' features');
+      });
     }
     var row = el('div', { class: 'row' });
     row.appendChild(el('button', { class: 'btn primary', text: 'Run (replace model)', title: 'Ctrl+Enter', onclick: function () { run(true); } }));
@@ -256,22 +257,28 @@
     body.appendChild(ref);
   }
 
+  // Resolves to { ok: true } or { error: text } once the model is rebuilt (never rejects).
   function runScript(code, replace) {
+    var model, p;
     try {
-      var model = replace ? K.newModel('Part1') : App.model;
+      model = replace ? K.newModel('Part1') : App.model;
       if (!replace) UI.pushUndo();
       if (replace) { model.color = App.model.color; model.density = App.model.density; }
       K.runScript(model, code);
-      if (replace) { UI.pushUndo(); var undo = App.undo; UI.loadModel(model); App.undo = undo; }
-      else UI.rebuild();
+      if (replace) { UI.pushUndo(); var undo = App.undo; p = UI.loadModel(model); App.undo = undo; }
+      else p = UI.rebuild();
+    } catch (e) {
+      return Promise.resolve({ error: (e && e.message) || String(e) });
+    }
+    return p.then(function () {
       UI.refreshStatus();
       UI.setStatus('Script ran: ' + App.model.features.length + ' features, rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
       var errs = Object.keys(App.build.errors);
       if (errs.length) return { error: errs.map(function (id) { var f = K.findFeature(App.model, +id); return (f ? f.name : id) + ': ' + App.build.errors[id]; }).join('\n') };
       return { ok: true };
-    } catch (e) {
+    }, function (e) {
       return { error: (e && e.message) || String(e) };
-    }
+    });
   }
 
   // ------------------------------------------------------------------ files & exports
@@ -336,7 +343,7 @@
         var txt = ta.value.trim();
         if (!txt) return;
         if (txt.charAt(0) === '{') { try { UI.loadModel(JSON.parse(txt)); UI.closeModal(); } catch (e) { UI.toast('Invalid JSON: ' + e.message); } }
-        else { var r = runScript(txt, true); if (r.error) UI.toast(r.error); else UI.closeModal(); }
+        else runScript(txt, true).then(function (r) { if (r.error) UI.toast(r.error); else UI.closeModal(); });
       } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
@@ -417,7 +424,7 @@
     if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else UI.undo(); return; }
     if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); UI.redo(); return; }
     if (ctrl && (k === 's' || k === 'S')) { e.preventDefault(); fileSave(); return; }
-    if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.rebuild(); UI.toast('Rebuilt'); return; }
+    if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); return; }
     if (ctrl && (k === 'n' || k === 'N')) { e.preventDefault(); fileNew(); return; }
     if (ctrl && (k === 'o' || k === 'O')) { e.preventDefault(); fileOpen(); return; }
     if (ctrl) return;
@@ -439,10 +446,14 @@
 
   // ------------------------------------------------------------------ automation API (for the browser console / Claude)
   window.anvil = {
-    run: function (code) { var r = runScript(code, true); if (r.error) throw new Error(r.error); return window.anvil.summary(); },
-    append: function (code) { var r = runScript(code, false); if (r.error) throw new Error(r.error); return window.anvil.summary(); },
+    // run / append / load / rebuild resolve to the summary (or reject with the script error) once the build is applied
+    run: function (code) { return runScript(code, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
+    append: function (code) { return runScript(code, false).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
     model: function () { return JSON.parse(JSON.stringify(App.model)); },
-    load: function (json) { UI.loadModel(typeof json === 'string' ? JSON.parse(json) : json); return window.anvil.summary(); },
+    load: function (json) { return UI.loadModel(typeof json === 'string' ? JSON.parse(json) : json).then(function () { return window.anvil.summary(); }); },
+    busy: function () { return !!App.rebuilding; },
+    idle: function () { return UI.whenIdle(); },
+    workerOn: function (on) { if (arguments.length) UI.setWorkerOn(on); return App.workerOn; },
     script: function () { return K.generateScript(App.model); },
     stl: function () { return K.exportSTL(App.mesh, App.model.name); },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
@@ -457,7 +468,7 @@
     view: function (name) { UI.setView(name); },
     fit: function () { UI.zoomToFit(); },
     png: function () { UI.render(); return UI.renderer.domElement.toDataURL('image/png'); },
-    rebuild: function () { UI.rebuild(); return window.anvil.summary(); },
+    rebuild: function () { return UI.rebuild().then(function () { return window.anvil.summary(); }); },
     summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, rebuildMs: +App.lastRebuildMs.toFixed(1) }; },
     examples: EXAMPLES
   };
@@ -480,7 +491,7 @@
     UI.renderMenuBar();
     UI.refreshRibbon();
     UI.resize();
-    UI.rebuild({ noSave: true });
+    UI.rebuild({ noSave: true, sync: true });   // boot builds on the main thread so the first frame already shows the body
     UI.frame();
     // fit once the viewport has real dimensions (the pane may still be laying out)
     var fitTries = 0;

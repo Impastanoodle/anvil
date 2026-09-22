@@ -284,6 +284,51 @@ var CSG = (function () {
     }
   };
 
+  // ---------------------------------------------------------------- structured-clone serialization (Web Workers)
+  // pack() -> a plain object of typed arrays that postMessage can clone or transfer:
+  //   { verts: Float64Array(3·V)  every vertex of every polygon in order (x, y, z),
+  //     counts: Int32Array(P)     vertex count of each polygon,
+  //     planes: Float64Array(4·P) each polygon's plane as nx, ny, nz, w (copied, never recomputed),
+  //     shared: Array(P) | null   the polygons' `shared` tags (feature ids or undefined), null when none is set }
+  // unpack(obj) rebuilds the same polygons with the same vertex order and planes, so volume() of the round trip is
+  // bit-identical and booleans on the result behave exactly as on the original.
+  CSG.prototype.pack = function () {
+    var polys = this.polygons, P = polys.length, V = 0, i, j;
+    for (i = 0; i < P; i++) V += polys[i].vertices.length;
+    var verts = new Float64Array(3 * V), counts = new Int32Array(P), planes = new Float64Array(4 * P);
+    var shared = null, k = 0;
+    for (i = 0; i < P; i++) {
+      var p = polys[i], vs = p.vertices;
+      counts[i] = vs.length;
+      for (j = 0; j < vs.length; j++) {
+        var q = vs[j].pos;
+        verts[k++] = q.x; verts[k++] = q.y; verts[k++] = q.z;
+      }
+      planes[4 * i] = p.plane.normal.x; planes[4 * i + 1] = p.plane.normal.y; planes[4 * i + 2] = p.plane.normal.z; planes[4 * i + 3] = p.plane.w;
+      if (p.shared !== undefined) {
+        if (!shared) { shared = new Array(P); for (j = 0; j < P; j++) shared[j] = undefined; }
+        shared[i] = p.shared;
+      }
+    }
+    return { verts: verts, counts: counts, planes: planes, shared: shared };
+  };
+  CSG.unpack = function (obj) {
+    var counts = obj.counts, verts = obj.verts, planes = obj.planes, shared = obj.shared || null;
+    var polys = [], k = 0;
+    for (var i = 0; i < counts.length; i++) {
+      var vs = [];
+      for (var j = 0; j < counts[i]; j++) { vs.push(new Vertex(new Vector(verts[k], verts[k + 1], verts[k + 2]))); k += 3; }
+      var plane = new Plane(new Vector(planes[4 * i], planes[4 * i + 1], planes[4 * i + 2]), planes[4 * i + 3]);
+      polys.push(new Polygon(vs, shared ? shared[i] : undefined, plane));
+    }
+    return CSG.fromPolygons(polys);
+  };
+  // The ArrayBuffers inside a packed solid, for postMessage's transfer list (the sender's copy is detached after
+  // the transfer, so only pass a packed object you are done with).
+  CSG.packTransferables = function (packed) {
+    return [packed.verts.buffer, packed.counts.buffer, packed.planes.buffer];
+  };
+
   CSG.Vector = Vector;
   CSG.Vertex = Vertex;
   CSG.Plane = Plane;

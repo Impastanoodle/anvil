@@ -352,7 +352,8 @@
         { label: 'Redo', key: 'Ctrl+Y', action: UI.redo, disabled: !App.redo.length },
         { sep: true },
         { label: 'Delete', key: 'Del', action: UI.deleteSelection, disabled: !App.sel },
-        { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild(); toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); } },
+        { label: 'Rebuild', key: 'Ctrl+B', action: function () { UI.rebuild().then(function () { toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); } },
+        { label: 'Rebuild in background (Web Worker)', checked: App.workerOn, action: function () { UI.setWorkerOn(!App.workerOn); toast(App.workerOn ? 'Rebuilds run in a Web Worker' : 'Rebuilds run on the main thread'); } },
         { label: 'Clear selection', key: 'Esc', action: function () { App.sel = null; App.sel2 = null; UI.updateHighlights(); refreshTree(); } }
       ] },
       { label: 'View', items: [

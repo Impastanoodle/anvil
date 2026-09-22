@@ -208,6 +208,10 @@ body { overflow: auto; }
 /* ---------------------------------------------------------------- status bar */
 #statusbar { display: flex; align-items: center; gap: 16px; padding: 0 8px; background: var(--panel-2); border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
 #status-msg { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a rebuild is running in the Web Worker: pulse the message, no layout change */
+#status-msg.busy { color: var(--blue); animation: status-busy 1.1s ease-in-out infinite; }
+#status-msg.busy::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); margin-right: 6px; vertical-align: middle; }
+@keyframes status-busy { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 #status-coords { font-family: var(--mono); font-size: 11px; min-width: 190px; }
 #status-right { display: flex; gap: 14px; }
 #status-right span { padding-left: 14px; border-left: 1px solid var(--line); }

@@ -11,7 +11,7 @@
   th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-weight: 600; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
   td.st { width: 46px; font: 600 12px var(--mono); }
-  tr.ok td.st { color: var(--ok); } tr.bad td.st { color: var(--bad); }
+  tr.ok td.st { color: var(--ok); } tr.bad td.st { color: var(--bad); } tr.pending td.st { color: var(--dim); }
   td.detail { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; }
   tr.bad td.detail { color: var(--bad); }
   td.ms { width: 60px; text-align: right; font: 12px var(--mono); color: var(--dim); }
@@ -45,25 +45,66 @@
     tr.firstChild.textContent = name;
     rows.appendChild(tr);
   }
+  // test(name, fn): fn runs synchronously; if it returns a thenable the row is shown as WAIT and settled when the
+  // promise resolves (PASS, string result as detail) or rejects (FAIL). A pending test that has not settled after
+  // ASYNC_TIMEOUT_MS fails with "timed out" so a hung worker cannot hang the page. The summary (and
+  // window.__anvilTests) is written only after every test, sync and async, has settled.
+  var ASYNC_TIMEOUT_MS = 10000, pending = 0, allDeclared = false;
+  function errText(e) {
+    return (e && e.stack) ? String(e.message || e) + '\n' + String(e.stack).split('\n').slice(1, 3).join('\n') : String(e);
+  }
   function test(name, fn) {
-    var t0 = performance.now(), detail = '', ok = true;
-    try {
-      var r = fn();
-      if (typeof r === 'string') detail = r;
-    } catch (e) {
-      ok = false;
-      detail = (e && e.stack) ? String(e.message || e) + '\n' + String(e.stack).split('\n').slice(1, 3).join('\n') : String(e);
-    }
-    var ms = performance.now() - t0;
-    results.push({ group: currentGroup, name: name, ok: ok, detail: detail, ms: ms });
+    var t0 = performance.now();
+    var res = { group: currentGroup, name: name, ok: false, detail: '', ms: 0, pending: false };
+    results.push(res);
     var tr = document.createElement('tr');
-    tr.className = ok ? 'ok' : 'bad';
     tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
-    tr.children[0].textContent = ok ? 'PASS' : 'FAIL';
     tr.children[1].textContent = name;
-    tr.children[2].textContent = detail;
-    tr.children[3].textContent = ms.toFixed(1);
     rows.appendChild(tr);
+    function settle(ok, detail) {
+      res.ok = ok; res.detail = detail; res.ms = performance.now() - t0; res.pending = false;
+      tr.className = ok ? 'ok' : 'bad';
+      tr.children[0].textContent = ok ? 'PASS' : 'FAIL';
+      tr.children[2].textContent = detail;
+      tr.children[3].textContent = res.ms.toFixed(1);
+    }
+    var r;
+    try {
+      r = fn();
+    } catch (e) {
+      settle(false, errText(e));
+      return;
+    }
+    if (r && typeof r.then === 'function') {
+      res.pending = true; pending++;
+      tr.className = 'pending';
+      tr.children[0].textContent = 'WAIT';
+      var done = false, timer = null;
+      var finishAsync = function (ok, detail) {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        settle(ok, detail);
+        pending--;
+        maybeSummarize();
+      };
+      timer = setTimeout(function () { finishAsync(false, 'timed out after ' + (ASYNC_TIMEOUT_MS / 1000) + ' s (promise never settled)'); }, ASYNC_TIMEOUT_MS);
+      r.then(function (v) { finishAsync(true, typeof v === 'string' ? v : ''); }, function (e) { finishAsync(false, errText(e)); });
+      return;
+    }
+    settle(true, typeof r === 'string' ? r : '');
+  }
+  function maybeSummarize() {
+    var summary = document.getElementById('summary');
+    if (!allDeclared || pending > 0) {
+      summary.className = '';
+      summary.textContent = 'running… ' + results.length + ' tests declared, ' + pending + ' waiting on async work';
+      return;
+    }
+    var passed = results.filter(function (r) { return r.ok; }).length, total = results.length;
+    var totalMs = results.reduce(function (s, r) { return s + r.ms; }, 0);
+    summary.className = passed === total ? 'ok' : 'bad';
+    summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED') + '  ·  ' + totalMs.toFixed(0) + ' ms';
+    window.__anvilTests = { passed: passed, total: total, results: results };
   }
   function fail(msg) { throw new Error(msg); }
   function assert(cond, msg) { if (!cond) fail(msg || 'assertion failed'); }
@@ -1179,6 +1220,39 @@
     assert(!/miter|relief/.test(plain), 'defaults are silent: ' + plain);
     return lines;
   });
+  test('flat pattern of a mitred corner: bend strips end on the mitre line, no step in the blank', function () {
+    // Top frame: sketch x = X, sketch y = -Z. The x = 0 edge (z in [0, 60]) unfolds to sketch x < 0, the z = 0 edge
+    // (x in [0, 100]) unfolds to sketch y > 0; the shared corner (0, 2, 0) is sketch (0, 0). Before the fix each bend
+    // strip stayed edge-length and the wall stuck out past it by its mitre extension, leaving the step vertices
+    // (-BA, 0) and (0, BA) in the outline. Now the strip's end edge runs straight from the base corner to the wall's
+    // extended corner, so (0, 0) is a vertex of the outer loop and the step vertices are gone.
+    var r = build(SHEET + '\np.flange(20, [[0, 2, 30], [50, 2, 0]], { miter: true });');
+    noErrors(r);
+    var R = 2, T = 2, L = 20, BA = K.bendAllowance(Math.PI / 2, R, T, 0.71);
+    var flat = K.flatPattern(r.model, r.build, r.mesh);
+    assert(flat.loops.length === 1, 'one outline loop, got ' + flat.loops.length);
+    assert(flat.bends.length === 2, 'two bends, got ' + flat.bends.length);
+    var outer = flat.loops[0];
+    assert(K.signedArea(outer) > 0, 'outer loop is CCW');
+    function hasVertex(loop, p, tol) { return loop.some(function (q) { return Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol; }); }
+    function show(loop) { return loop.map(function (q) { return '(' + fmt(q[0]) + ', ' + fmt(q[1]) + ')'; }).join(' '); }
+    assert(hasVertex(outer, [0, 0], 1e-6), 'the base corner (0, 0) must be a vertex of the outline: ' + show(outer));
+    assert(!hasVertex(outer, [-BA, 0], 1e-6), 'old step vertex (-BA, 0) is still in the outline: ' + show(outer));
+    assert(!hasVertex(outer, [0, BA], 1e-6), 'old step vertex (0, BA) is still in the outline: ' + show(outer));
+    for (var i = 0; i < outer.length; i++) {
+      var p = outer[i], q = outer[(i + 1) % outer.length];
+      assert(Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6, 'zero-length or duplicate consecutive vertices at ' + i + ': ' + show(outer));
+    }
+    var area = K.signedArea(outer);
+    var strips = 60 * (BA + L) + 100 * (BA + L);
+    var lo = 6000 + strips + 2 * R * L, hi = 6000 + strips + 2 * (R + T) * L + (R + T) * BA + 1e-6;
+    assert(area > lo, 'blank area ' + fmt(area) + ' should exceed base + strips + 2·R·L = ' + fmt(lo));
+    assert(area <= hi, 'blank area ' + fmt(area) + ' exceeds base + strips + 2·(R+T)·L + (R+T)·BA = ' + fmt(hi));
+    // the envelope is unchanged: the walls end at BA + L beyond their edges
+    near(flat.bbox.max[0] - flat.bbox.min[0], 100 + BA + L, 1e-6, 'flat width');
+    near(flat.bbox.max[1] - flat.bbox.min[1], 60 + BA + L, 1e-6, 'flat height');
+    return 'blank ' + fmt(area) + ' (bounds ' + fmt(lo) + ' .. ' + fmt(hi) + '), ' + outer.length + ' outline points';
+  });
 
   // ------------------------------------------------------------------ sweep & loft
   group('sweep');
@@ -1690,12 +1764,198 @@
     });
   }
 
+  // ------------------------------------------------------------------ pack / unpack and the rebuild worker
+  group('pack & worker');
+  // Mirrors the "Sheet Metal Bracket" entry of EXAMPLES in ui-app.js (this page does not load the UI).
+  var BRACKET = 'p.name("Sheet Bracket");\n' +
+    'p.sheet(2, 2, 0.71);\n' +
+    'p.sketch("Top").centerRect(0, 0, 100, 60).end().baseFlange(2);\n' +
+    'p.sketch("Top", 10).circle(0, 0, 6).cut("through", { reverse: true });\n' +
+    'p.flange(20, [[0, 2, 30]]);\n' +
+    'p.flange(15, [[50, 2, 0]], { reverse: true });\n';
+  function bracketModel() { var m = K.newModel('Bracket'); K.runScript(m, BRACKET); return m; }
+  function firstVertex(c) { var p = c.toPolygons()[0].vertices[0].pos; return [p.x, p.y, p.z]; }
+  function cloneOf(o) { return JSON.parse(JSON.stringify(o)); }
+  function keysOf(o) { return Object.keys(o || {}).sort().join(','); }
+  test('CSG.pack / unpack round-trips a boolean result exactly', function () {
+    var r = build('p.box(40, 30, 20);\np.hole("Top", 20, -15, 8, { offset: 20 });');
+    noErrors(r);
+    var c = r.body, packed = c.pack();
+    assert(packed && typeof packed === 'object' && !(packed instanceof CSG), 'pack() must return a plain object, got ' + Object.prototype.toString.call(packed));
+    var u = CSG.unpack(packed);
+    assert(u instanceof CSG, 'unpack() must return a CSG');
+    assert(u.volume() === c.volume(), 'volume must survive exactly: ' + u.volume() + ' vs ' + c.volume());
+    var cp = c.toPolygons(), up = u.toPolygons();
+    assert(up.length === cp.length, 'polygon count ' + up.length + ' vs ' + cp.length);
+    nearVec(firstVertex(u), firstVertex(c), 0, 'first vertex');
+    for (var i = 0; i < cp.length; i++) {
+      assert(up[i].vertices.length === cp[i].vertices.length, 'polygon ' + i + ': vertex count ' + up[i].vertices.length + ' vs ' + cp[i].vertices.length);
+      near(up[i].plane.w, cp[i].plane.w, 1e-12, 'polygon ' + i + ' plane w');
+      nearVec([up[i].plane.normal.x, up[i].plane.normal.y, up[i].plane.normal.z], [cp[i].plane.normal.x, cp[i].plane.normal.y, cp[i].plane.normal.z], 1e-12, 'polygon ' + i + ' plane normal');
+      var lp = up[i].vertices[up[i].vertices.length - 1].pos, lc = cp[i].vertices[cp[i].vertices.length - 1].pos;
+      nearVec([lp.x, lp.y, lp.z], [lc.x, lc.y, lc.z], 0, 'polygon ' + i + ' last vertex (vertex order)');
+    }
+    // a boolean on the unpacked body behaves like one on the original
+    var tool = cube(20, 10, 10, 3);
+    var v0 = c.subtract(tool).volume(), v1 = u.subtract(tool).volume();
+    near(v1, v0, 1e-9, 'subtract on the unpacked body');
+    assert(Math.abs(v0 - c.volume()) > 1, 'the tool must actually remove material (' + fmt(c.volume() - v0) + ')');
+    return cp.length + ' polygons, volume ' + fmt(c.volume()) + ', minus tool ' + fmt(v1);
+  });
+  test('packBuild / unpackBuild carry the Sheet Metal Bracket build and its flat pattern', function () {
+    var model = bracketModel();
+    var b = K.rebuild(model);
+    noErrors({ errors: b.errors });
+    var packed = K.packBuild(b);
+    assert(packed && packed.body && packed.tools && packed.profiles && packed.flanges, 'packBuild shape: ' + keysOf(packed));
+    var u = K.unpackBuild(packed);
+    assert(u.cache === null, 'unpacked build must have cache: null, got ' + typeof u.cache);
+    assert(u.body instanceof CSG, 'unpacked body is a CSG');
+    assert(u.body.volume() === b.body.volume(), 'body volume exact: ' + u.body.volume() + ' vs ' + b.body.volume());
+    var mesh0 = K.meshFromBody(b.body), mesh1 = K.meshFromBody(u.body);
+    var mp0 = K.massProps(mesh0, model.density), mp1 = K.massProps(mesh1, model.density);
+    near(mp1.volume, mp0.volume, 1e-9, 'massProps volume');
+    assert(mesh1.faces.length === mesh0.faces.length, 'face count ' + mesh1.faces.length + ' vs ' + mesh0.faces.length);
+    assert(keysOf(u.tools) === keysOf(b.tools), 'tool ids: ' + keysOf(u.tools) + ' vs ' + keysOf(b.tools));
+    Object.keys(b.tools).forEach(function (id) {
+      if (b.tools[id]) assert(u.tools[id] instanceof CSG && u.tools[id].volume() === b.tools[id].volume(), 'tool ' + id + ' volume');
+      else assert(!u.tools[id], 'tool ' + id + ' should stay empty');
+    });
+    assert(keysOf(u.flanges) === keysOf(b.flanges), 'flange feature ids: ' + keysOf(u.flanges) + ' vs ' + keysOf(b.flanges));
+    var nFl = 0;
+    Object.keys(b.flanges).forEach(function (id) {
+      assert(u.flanges[id].length === b.flanges[id].length, 'flange ' + id + ': ' + u.flanges[id].length + ' records vs ' + b.flanges[id].length);
+      b.flanges[id].forEach(function (fi, k) {
+        var fu = u.flanges[id][k];
+        near(fu.angle, fi.angle, 0, 'flange ' + id + '[' + k + '].angle'); near(fu.R, fi.R, 0, '.R'); near(fu.L, fi.L, 0, '.L');
+        nearVec(fu.a, fi.a, 0, 'flange ' + id + '[' + k + '].a'); nearVec(fu.b, fi.b, 0, '.b'); nearVec(fu.o, fi.o, 0, '.o'); nearVec(fu.u, fi.u, 0, '.u');
+        nFl++;
+      });
+    });
+    assert(nFl === 2, 'bracket has two flange records, got ' + nFl);
+    assert(keysOf(u.planes) === keysOf(b.planes), 'planes: ' + keysOf(u.planes) + ' vs ' + keysOf(b.planes));
+    assert(keysOf(u.errors) === keysOf(b.errors) && keysOf(u.warnings) === keysOf(b.warnings), 'error/warning keys differ: ' + JSON.stringify([u.errors, u.warnings]) + ' vs ' + JSON.stringify([b.errors, b.warnings]));
+    assert(typeof u.time === 'number' && typeof u.reused === 'number', 'time/reused are numbers');
+    // profiles: one per sketch feature, and applyProfiles puts them back on a model that never built
+    var sketches = model.features.filter(function (f) { return f.type === 'sketch'; });
+    assert(sketches.length >= 2, 'the bracket has sketches');
+    sketches.forEach(function (f) { assert(u.profiles && u.profiles[f.id] != null, 'profiles lacks sketch ' + f.id + ' (have ' + keysOf(u.profiles) + ')'); });
+    var fresh = bracketModel();
+    fresh.features.forEach(function (f) { if (f.type === 'sketch') delete f.profile; });
+    K.applyProfiles(fresh, u.profiles);
+    sketches.forEach(function (f) {
+      var g = K.findFeature(fresh, f.id);
+      assert(g && g.profile && g.profile.loops, 'applyProfiles did not set the profile of sketch ' + f.id);
+      assert(g.profile.loops.length === f.profile.loops.length, 'sketch ' + f.id + ': ' + g.profile.loops.length + ' loops vs ' + f.profile.loops.length);
+    });
+    // the flat pattern unfolds from the unpacked build exactly as from the original
+    var f0 = K.flatPattern(model, b, mesh0), f1 = K.flatPattern(model, u, mesh1);
+    assert(f1.loops.length === f0.loops.length && f1.loops.length === 2, 'flat loops ' + f1.loops.length + ' vs ' + f0.loops.length);
+    assert(f1.bends.length === f0.bends.length && f1.bends.length === 2, 'flat bends ' + f1.bends.length + ' vs ' + f0.bends.length);
+    f0.loops.forEach(function (l, i) { assert(f1.loops[i].length === l.length, 'flat loop ' + i + ' points ' + f1.loops[i].length + ' vs ' + l.length); });
+    for (var k = 0; k < 2; k++) { near(f1.bbox.min[k], f0.bbox.min[k], 1e-9, 'flat bbox.min[' + k + ']'); near(f1.bbox.max[k], f0.bbox.max[k], 1e-9, 'flat bbox.max[' + k + ']'); }
+    near(K.signedArea(f1.loops[0]), K.signedArea(f0.loops[0]), 1e-9, 'flat outline area');
+    return Object.keys(b.tools).length + ' tools, ' + nFl + ' flange records, ' + sketches.length + ' profiles, flat ' + fmt(f1.bbox.max[0] - f1.bbox.min[0]) + ' × ' + fmt(f1.bbox.max[1] - f1.bbox.min[1]);
+  });
+  test('a packed build survives structured cloning through a MessageChannel', function () {
+    var model = bracketModel(), b = K.rebuild(model), packed = K.packBuild(b), vol = b.body.volume();
+    if (typeof MessageChannel === 'undefined') fail('MessageChannel is not available in this browser');
+    return new Promise(function (resolve, reject) {
+      var ch = new MessageChannel();
+      ch.port2.onmessage = function (ev) {
+        try {
+          var u = K.unpackBuild(ev.data);
+          assert(u.body instanceof CSG, 'cloned body unpacks to a CSG');
+          assert(u.body.volume() === vol, 'volume after cloning ' + u.body.volume() + ' vs ' + vol);
+          assert(keysOf(u.tools) === keysOf(b.tools), 'tools after cloning: ' + keysOf(u.tools) + ' vs ' + keysOf(b.tools));
+          assert(keysOf(u.flanges) === keysOf(b.flanges), 'flanges after cloning: ' + keysOf(u.flanges) + ' vs ' + keysOf(b.flanges));
+          assert(keysOf(u.profiles) === keysOf(packed.profiles), 'profiles after cloning: ' + keysOf(u.profiles) + ' vs ' + keysOf(packed.profiles));
+          assert(keysOf(u.errors) === keysOf(b.errors) && keysOf(u.warnings) === keysOf(b.warnings), 'errors/warnings after cloning');
+          resolve('cloned build unpacks to volume ' + fmt(u.body.volume()));
+        } catch (e) { reject(e); } finally { ch.port1.close(); ch.port2.close(); }
+      };
+      try { ch.port1.postMessage(packed); } catch (e) { reject(new Error('packed build is not structured-clone safe: ' + (e && e.message))); }
+    });
+  });
+  test('packTransferables lists ArrayBuffers so a packed CSG can be transferred instead of copied', function () {
+    var model = bracketModel(), b = K.rebuild(model), vol = b.body.volume();
+    var pk = b.body.pack(), bufs = CSG.packTransferables(pk);
+    assert(Array.isArray(bufs) && bufs.length > 0, 'packTransferables must return a non-empty array, got ' + Object.prototype.toString.call(bufs));
+    bufs.forEach(function (x, i) { assert(x instanceof ArrayBuffer, 'transferable ' + i + ' is not an ArrayBuffer: ' + Object.prototype.toString.call(x)); });
+    var seen = []; bufs.forEach(function (x) { assert(seen.indexOf(x) < 0, 'the same ArrayBuffer is listed twice (postMessage would throw)'); seen.push(x); });
+    return new Promise(function (resolve, reject) {
+      var ch = new MessageChannel();
+      ch.port2.onmessage = function (ev) {
+        try {
+          var u = CSG.unpack(ev.data);
+          assert(u.volume() === vol, 'volume after transfer ' + u.volume() + ' vs ' + vol);
+          resolve(bufs.length + ' buffers transferred, volume ' + fmt(u.volume()));
+        } catch (e) { reject(e); } finally { ch.port1.close(); ch.port2.close(); }
+      };
+      try { ch.port1.postMessage(pk, bufs); } catch (e) { reject(new Error('postMessage with the transfer list threw: ' + (e && e.message))); }
+    });
+  });
+  test('worker.js rebuilds the bracket, reuses its cache on a repeat, and reports a broken feature', function () {
+    if (typeof Worker === 'undefined') fail('Worker is not available in this browser');
+    var model = bracketModel(), local = K.rebuild(model), vol = local.body.volume(), n = model.features.length;
+    var w = new Worker('../worker.js'), waiting = {};
+    w.onmessage = function (ev) {
+      var m = ev.data || {}, cb = waiting[m.seq];
+      if (cb) { delete waiting[m.seq]; cb(m); }
+    };
+    w.onerror = function (ev) {
+      var msg = 'worker error: ' + ((ev && ev.message) || ev);
+      Object.keys(waiting).forEach(function (s) { var cb = waiting[s]; delete waiting[s]; cb({ type: 'error', seq: +s, message: msg, workerFailed: true }); });
+    };
+    function ask(seq, m) {
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () { delete waiting[seq]; reject(new Error('worker did not answer seq ' + seq + ' within 8 s')); }, 8000);
+        waiting[seq] = function (reply) { clearTimeout(timer); resolve(reply); };
+        w.postMessage({ type: 'rebuild', seq: seq, model: cloneOf(m) });
+      });
+    }
+    function expectBuilt(reply, seq) {
+      assert(!reply.workerFailed, reply.message);
+      assert(reply.type === 'built', 'seq ' + seq + ': expected a "built" reply, got ' + reply.type + (reply.message ? ': ' + reply.message : ''));
+      assert(reply.seq === seq, 'seq echoed: ' + reply.seq + ' vs ' + seq);
+      assert(reply.build, 'reply carries a packed build');
+      return K.unpackBuild(reply.build);
+    }
+    var notes = [];
+    return ask(1, model).then(function (reply) {
+      var u = expectBuilt(reply, 1);
+      noErrors({ errors: u.errors });
+      nearRel(u.body.volume(), vol, 1e-12, 'worker volume vs synchronous rebuild');
+      assert(u.reused === 0, 'a fresh worker reuses nothing, got ' + u.reused);
+      notes.push('built ' + fmt(u.body.volume()) + ' in ' + fmt(u.time) + ' ms');
+      return ask(2, model);
+    }).then(function (reply) {
+      var u = expectBuilt(reply, 2);
+      assert(u.reused === n, 'a repeated model should reuse all ' + n + ' features from the worker cache, reused ' + u.reused);
+      nearRel(u.body.volume(), vol, 1e-12, 'cached volume');
+      notes.push('repeat reused ' + u.reused + '/' + n);
+      var broken = cloneOf(model);
+      var ext = broken.features.filter(function (f) { return f.type === 'extrude'; })[0];
+      assert(ext, 'bracket has an extrude to break');
+      ext.depth = 'not a number'; // JSON-safe (NaN would clone as null); extrudeRange throws "Extrude depth must be a number."
+      return ask(3, broken).then(function (reply3) {
+        assert(!reply3.workerFailed, reply3.message);
+        if (reply3.type === 'error') {
+          assert(typeof reply3.message === 'string' && reply3.message.length > 0, 'an error reply must carry a message');
+          notes.push('broken model -> error reply: ' + reply3.message);
+          return;
+        }
+        var u3 = expectBuilt(reply3, 3);
+        assert(u3.errors && u3.errors[ext.id], 'expected errors[' + ext.id + '] for the broken extrude, got ' + JSON.stringify(u3.errors));
+        notes.push('broken model -> errors[' + ext.id + '] = ' + u3.errors[ext.id]);
+      });
+    }).then(function () { w.terminate(); return notes.join(' · '); }, function (e) { w.terminate(); throw e; });
+  });
+
+
   // ------------------------------------------------------------------ summary
-  var passed = results.filter(function (r) { return r.ok; }).length, total = results.length;
-  var totalMs = results.reduce(function (s, r) { return s + r.ms; }, 0);
-  var summary = document.getElementById('summary');
-  summary.className = passed === total ? 'ok' : 'bad';
-  summary.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED') + '  ·  ' + totalMs.toFixed(0) + ' ms';
-  window.__anvilTests = { passed: passed, total: total, results: results };
+  // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
+  allDeclared = true;
+  maybeSummarize();
 })();
 </script>

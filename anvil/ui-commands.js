@@ -31,11 +31,13 @@
     if (spec.onClose) spec.onClose();
     UI.refreshRibbon();
   }
+  // Returns the commit's Promise when the command's onOK returns one (commitFeature does), else UI.whenIdle().
   function pmOK() {
-    if (!pm.spec) return;
-    var spec = pm.spec;
-    if (spec.onOK && spec.onOK(pm.values) === false) return;
+    if (!pm.spec) return UI.whenIdle();
+    var spec = pm.spec, r;
+    if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
     closePM();
+    return r && typeof r.then === 'function' ? r : UI.whenIdle();
   }
   function pmCancel() {
     if (!pm.spec) return;
@@ -185,12 +187,14 @@
       f.name = f.name || K.featureName(App.model, f.type, f.cut);
       App.model.features.push(f);
     }
-    UI.rebuild();
-    App.sel = { kind: 'feature', id: f.id };
-    UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
-    var err = App.build.errors[f.id];
-    UI.setStatus(err ? f.name + ' failed: ' + err : f.name + (existing ? ' updated' : ' created') + '. Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
-    return f;
+    // resolves to the feature once the build is applied (immediately in sync mode)
+    return UI.afterRebuild(UI.rebuild(), function () {
+      App.sel = { kind: 'feature', id: f.id };
+      UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
+      var err = App.build.errors[f.id];
+      UI.setStatus(err ? f.name + ' failed: ' + err : f.name + (existing ? ' updated' : ' created') + '. Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
+      return f;
+    });
   }
 
   // If a sketch is open, close it first and run the command with that sketch.
@@ -225,8 +229,7 @@
     App.model.features.push(f);
     App.sketchSnapshot = JSON.stringify({ entities: [] });
     App.newSketchId = f.id;
-    UI.rebuild();
-    UI.enterSketch(f.id);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
   function newSketchOnFace(pk) {
     var face = App.mesh.faces[pk.index];
@@ -241,8 +244,7 @@
     App.model.features.push(f);
     App.sketchSnapshot = JSON.stringify({ entities: [] });
     App.newSketchId = f.id;
-    UI.rebuild();
-    UI.enterSketch(f.id);
+    return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
 
   // ------------------------------------------------------------------ sketch tools: convert / offset / sketch fillet
@@ -500,7 +502,7 @@
           { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
         onChange: function (v) { App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
-        onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; commitFeature(feat, existing); }
+        onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; return commitFeature(feat, existing); }
       });
     });
   }
@@ -526,7 +528,7 @@
           { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
         onChange: function (v, key) { if (key === 'sketch') { renderPM(); } App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '.'); },
-        onOK: function (v) { if (!v.name) delete v.name; if (typeof v.axis === 'string' && /^\d+$/.test(v.axis)) v.axis = +v.axis; commitFeature(v, existing); }
+        onOK: function (v) { if (!v.name) delete v.name; if (typeof v.axis === 'string' && /^\d+$/.test(v.axis)) v.axis = +v.axis; return commitFeature(v, existing); }
       });
     });
   }
@@ -569,7 +571,7 @@
           App.command.sketchId = v.profile; App.command.pathId = v.path; UI.updateSketches();
           var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.');
         },
-        onOK: function (v) { if (!v.name) delete v.name; delete v.pathPoints; commitFeature(v, existing); }
+        onOK: function (v) { if (!v.name) delete v.name; delete v.pathPoints; return commitFeature(v, existing); }
       });
     });
   }
@@ -603,7 +605,7 @@
           { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
         onChange: function (v) { sync(v); App.command.loftIds = v.sketches; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
-        onOK: function (v) { sync(v); if (v.sketches.length < 2) { UI.toast('Pick at least two sketches.'); return false; } delete v.s0; delete v.s1; delete v.s2; if (!v.name) delete v.name; commitFeature(v, existing); }
+        onOK: function (v) { sync(v); if (v.sketches.length < 2) { UI.toast('Pick at least two sketches.'); return false; } delete v.s0; delete v.s1; delete v.s2; if (!v.name) delete v.name; return commitFeature(v, existing); }
       });
     });
   }
@@ -634,7 +636,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { if (v.d2 === '') v.d2 = null; var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing linear pattern.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; commitFeature(v, existing); }
+      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; return commitFeature(v, existing); }
     });
   }
 
@@ -653,7 +655,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { var err = showPreview(norm(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
-      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; commitFeature(v, existing); }
+      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; return commitFeature(v, existing); }
     });
   }
 
@@ -669,7 +671,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; commitFeature(v, existing); }
+      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; return commitFeature(v, existing); }
     });
   }
 
@@ -740,7 +742,7 @@
         v.edges.forEach(function (e) { e.chain = v.chain; });
         delete v.chain;
         if (!v.name) delete v.name;
-        commitFeature(v, existing);
+        return commitFeature(v, existing);
       }
     });
     resolveList(); preview();
@@ -807,7 +809,7 @@
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function () { resolveList(); preview(); },
-      onOK: function (v) { if (!(v.thickness > 0)) { UI.toast('Thickness must be greater than zero.'); return false; } if (!v.name) delete v.name; commitFeature(v, existing); }
+      onOK: function (v) { if (!(v.thickness > 0)) { UI.toast('Thickness must be greater than zero.'); return false; } if (!v.name) delete v.name; return commitFeature(v, existing); }
     });
     resolveList(); preview();
   }
@@ -826,7 +828,7 @@
         g.setAttribute('position', new THREE.Float32BufferAttribute([].concat(c[0], c[1], c[2], c[0], c[2], c[3]), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.planeFaceHi));
       },
-      onOK: function (v) { if (!v.name) delete v.name; commitFeature(v, existing); App.view.showPlanes = true; UI.updatePlanes(); }
+      onOK: function (v) { if (!v.name) delete v.name; var p = commitFeature(v, existing); App.view.showPlanes = true; UI.updatePlanes(); return p; }
     });
   }
 
@@ -865,8 +867,7 @@
         var c = { id: App.model.nextId++, type: 'extrude', cut: true, sketch: s.id, depth: x.end === 'blind' ? +x.depth : 0, end: x.end, reverse: true, dir2: false, depth2: 0, end2: 'blind' };
         c.name = 'Hole' + (App.model.features.filter(function (q) { return /^Hole\d+$/.test(q.name || ''); }).length + 1);
         App.model.features.push(c);
-        UI.rebuild();
-        App.sel = { kind: 'feature', id: c.id }; UI.updateHighlights(); UI.refreshTree();
+        return UI.afterRebuild(UI.rebuild(), function () { App.sel = { kind: 'feature', id: c.id }; UI.updateHighlights(); UI.refreshTree(); });
       }
     });
     function preview() {
@@ -901,7 +902,7 @@
           v.depth = +v.thickness; v.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
           v.sheetBase = true;
           delete v.thickness; delete v.bendRadius; delete v.kFactor;
-          commitFeature(v, null);
+          return commitFeature(v, null);
         }
       });
     });
@@ -1049,7 +1050,7 @@
           else if (isFlange && feat.miter) feat.name = 'Miter-Flange' + (App.model.features.filter(function (q) { return /^Miter-Flange\d+$/.test(q.name || ''); }).length + 1);
           else delete feat.name;
         }
-        commitFeature(feat, existing);
+        return commitFeature(feat, existing);
       }
     });
     resolveList(); preview();
@@ -1231,8 +1232,9 @@
       if (App.activeSketch != null && doomed.indexOf(App.activeSketch) >= 0) UI.exitSketch(true);
       App.sel = null; App.sel2 = null;
       closePM();
-      UI.rebuild();
-      UI.setStatus('Deleted ' + f.name + (dependents.length ? ' and ' + dependents.length + ' dependent feature' + (dependents.length > 1 ? 's' : '') : '') + '.');
+      UI.afterRebuild(UI.rebuild(), function () {
+        UI.setStatus('Deleted ' + f.name + (dependents.length ? ' and ' + dependents.length + ' dependent feature' + (dependents.length > 1 ? 's' : '') : '') + '.');
+      });
     }, 'Delete');
   }
   function deleteSelection() {
