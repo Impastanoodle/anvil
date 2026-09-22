@@ -1,0 +1,343 @@
+<title>Anvil UI smoke test</title>
+<style>
+  :root { --ok: #2f9e5b; --bad: #d9453b; --dim: #6b7380; --line: #d8dde4; --bg: #f6f7f9; --ink: #1d2128; --mono: Consolas, "IBM Plex Mono", monospace; }
+  body { margin: 0; padding: 20px 28px; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  .sub { color: var(--dim); margin-bottom: 14px; max-width: 90ch; }
+  #summary { font: 600 15px var(--mono); padding: 10px 14px; border: 1px solid var(--line); background: #fff; margin-bottom: 14px; }
+  #summary.ok { border-color: var(--ok); color: var(--ok); } #summary.bad { border-color: var(--bad); color: var(--bad); }
+  table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid var(--line); margin-bottom: 16px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.st { width: 46px; font: 600 12px var(--mono); } tr.ok td.st { color: var(--ok); } tr.bad td.st { color: var(--bad); }
+  td.detail { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; } tr.bad td.detail { color: var(--bad); }
+  td.ms { width: 60px; text-align: right; font: 12px var(--mono); color: var(--dim); }
+  iframe { width: 100%; height: 560px; border: 1px solid var(--line); background: #fff; }
+</style>
+
+<h1>Anvil UI smoke test</h1>
+<div class="sub">Loads <code>../index.html</code> in the frame below and drives it through <code>window.anvil</code> and the <code>UI</code> command functions: boot, every Design Library example, sketch → extrude → edit → undo/redo, Hole Wizard, chamfer, section view, exports, delete with dependents, File ▸ New, drafted extrude, sweep, loft, shell, sheet metal flatten and DXF. Any uncaught error or <code>console.error</code> inside the app fails the run. Needs the folder served over HTTP (same origin as the app).</div>
+<div id="summary">loading the app…</div>
+<table><thead><tr><th>Status</th><th>Step</th><th>Detail</th><th>ms</th></tr></thead><tbody id="rows"></tbody></table>
+<iframe id="app" src="../index.html"></iframe>
+
+<script>
+(function () {
+  'use strict';
+  var rows = document.getElementById('rows'), results = [];
+  var W, D, K, UI, anvil, errors = [];
+
+  function row(name, ok, detail, ms) {
+    results.push({ name: name, ok: ok, detail: detail, ms: ms });
+    var tr = document.createElement('tr');
+    tr.className = ok ? 'ok' : 'bad';
+    tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
+    tr.children[0].textContent = ok ? 'PASS' : 'FAIL'; tr.children[1].textContent = name; tr.children[2].textContent = detail || ''; tr.children[3].textContent = ms.toFixed(1);
+    rows.appendChild(tr);
+  }
+  function fail(msg) { throw new Error(msg); }
+  function assert(c, msg) { if (!c) fail(msg || 'assertion failed'); }
+  function near(a, b, tol, label) { if (!(Math.abs(a - b) <= tol)) fail((label || 'value') + ' = ' + a + ', expected ' + b + ' ±' + tol); }
+  function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+  function fmt(n) { return Math.round(n * 1000) / 1000; }
+  function polyCircleArea(r) { var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01))))); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
+
+  var steps = [];
+  function step(name, fn) { steps.push({ name: name, fn: fn }); }
+
+  // ---- helpers that talk to the app
+  function $(id) { return D.getElementById(id); }
+  function pmInputs() { return Array.prototype.slice.call(D.querySelectorAll('#pm input, #pm select')); }
+  function setInput(inp, value) {
+    inp.value = value;
+    inp.dispatchEvent(new W.Event('input', { bubbles: true }));
+    inp.dispatchEvent(new W.Event('change', { bubbles: true }));
+  }
+  function pmNumber(i) { var n = D.querySelectorAll('#pm input[type=number]'); return n[i || 0]; }
+  // the input belonging to the PM label whose text contains `text`
+  function pmField(text) {
+    var labels = Array.prototype.filter.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent.indexOf(text) >= 0; });
+    for (var i = 0; i < labels.length; i++) {
+      var l = labels[i], inp = l.querySelector('input, select');
+      if (!inp && l.htmlFor) inp = D.getElementById(l.htmlFor);
+      if (!inp) { var p = l.parentElement; inp = p && p.querySelector('input, select'); }
+      if (!inp) { var nx = l.nextElementSibling; while (nx && !inp) { inp = nx.matches && nx.matches('input, select') ? nx : nx.querySelector && nx.querySelector('input, select'); nx = nx.nextElementSibling; } }
+      if (inp) return inp;
+    }
+    return null;
+  }
+  function clickPmButton(text) {
+    var b = Array.prototype.filter.call(D.querySelectorAll('#pm button'), function (x) { return x.textContent.trim() === text; })[0];
+    assert(b, 'PM button "' + text + '" not found');
+    b.click();
+  }
+  function modalOpen() { return !$('modal').hidden; }
+  function clickModalButton(text) {
+    var b = Array.prototype.filter.call(D.querySelectorAll('#modal-buttons button'), function (x) { return x.textContent.trim() === text; })[0];
+    assert(b, 'modal button "' + text + '" not found (have: ' + Array.prototype.map.call(D.querySelectorAll('#modal-buttons button'), function (x) { return x.textContent; }).join(', ') + ')');
+    b.click();
+  }
+  function faceWithNormal(n) {
+    var best = -1;
+    UI.App.mesh.faces.forEach(function (f, i) {
+      if (Math.abs(f.normal[0] - n[0]) < 1e-6 && Math.abs(f.normal[1] - n[1]) < 1e-6 && Math.abs(f.normal[2] - n[2]) < 1e-6 && (best < 0 || f.area > UI.App.mesh.faces[best].area)) best = i;
+    });
+    assert(best >= 0, 'no face with normal ' + n);
+    return best;
+  }
+  function edgeNear(p) {
+    var best = null, bd = 0.5;
+    (UI.App.edges || []).forEach(function (e) { var d = K.pointSegmentDistance(p, e.a, e.b); if (d < bd) { bd = d; best = e; } });
+    assert(best, 'no edge near ' + p);
+    return best;
+  }
+  function names() { return UI.App.model.features.map(function (f) { return f.name; }); }
+
+  // ---- steps
+  step('app booted: anvil, UI, Kernel, THREE present, no boot errors', function () {
+    assert(W.anvil && W.UI && W.Kernel && W.THREE, 'globals missing');
+    assert($('tree') && $('pm') && $('viewport'), 'layout missing');
+    return 'status: ' + $('status-msg').textContent.slice(0, 60);
+  });
+  step('new part via loadModel', function () {
+    UI.loadModel(K.newModel('Smoke'));
+    assert($('doc-title').textContent === 'Smoke', 'title');
+    assert(anvil.summary().features === 0, 'features');
+  });
+  step('every Design Library example builds through anvil.run', function () {
+    var out = [];
+    anvil.examples.forEach(function (ex) {
+      var s = anvil.run(ex.code);
+      assert(Object.keys(s.errors).length === 0, ex.name + ': ' + JSON.stringify(s.errors));
+      assert(s.volume > 0 && s.faces > 0, ex.name + ': empty body');
+      var last = UI.App.model.features[UI.App.model.features.length - 1];
+      assert($('tree').innerText.indexOf(last.name) >= 0, ex.name + ': tree lacks ' + last.name);
+      out.push(ex.name + ' ' + s.rebuildMs + 'ms');
+    });
+    return anvil.examples.length + ' examples · ' + out.join(' · ');
+  });
+  step('Sketch PM: pick Front Plane → sketch mode on Front', function () {
+    UI.loadModel(K.newModel('Smoke'));
+    UI.cmdSketch();
+    assert(UI.hasPM(), 'Sketch PM not open');
+    clickPmButton('Front Plane');
+    assert(UI.App.mode === 'sketch' && UI.App.activeSketch != null, 'not in sketch mode');
+    var f = K.findFeature(UI.App.model, UI.App.activeSketch);
+    assert(f.plane.ref === 'Front', 'plane ' + JSON.stringify(f.plane));
+    near(UI.cam.dir.z, 1, 1e-9, 'camera normal to Front');
+  });
+  step('draw a rectangle, exit sketch, extrude 20 via the PM', function () {
+    var f = K.findFeature(UI.App.model, UI.App.activeSketch);
+    f.entities.push({ t: 'rect', x: 0, y: 0, w: 30, h: 20 });
+    UI.exitSketch();
+    assert(UI.App.mode === 'part', 'still in sketch');
+    UI.cmdExtrude(false);
+    assert(UI.hasPM(), 'Extrude PM not open');
+    var sel = D.querySelector('#pm select');
+    assert(sel && +sel.value === f.id, 'sketch not preselected: ' + (sel && sel.value));
+    setInput(pmNumber(0), 20);
+    UI.pmOK();
+    assert(!UI.hasPM(), 'PM still open');
+    var s = anvil.summary();
+    near(s.volume, 30 * 20 * 20, 1e-6, 'volume');
+    assert(names().join() === 'Sketch1,Boss-Extrude1', names().join());
+  });
+  step('edit the extrude (depth 30), undo, redo', function () {
+    UI.editFeature(K.findFeature(UI.App.model, 2));
+    assert(UI.hasPM(), 'edit PM not open');
+    setInput(pmNumber(0), 30);
+    UI.pmOK();
+    near(anvil.summary().volume, 18000, 1e-6, 'after edit');
+    UI.undo(); near(anvil.summary().volume, 12000, 1e-6, 'after undo');
+    UI.redo(); near(anvil.summary().volume, 18000, 1e-6, 'after redo');
+  });
+  step('Hole Wizard on the +Z face (Ø6 through)', function () {
+    var idx = faceWithNormal([0, 0, 1]);
+    UI.cmdHole();
+    assert(UI.hasPM() && UI.App.command && UI.App.command.onPick, 'Hole PM not waiting for a pick');
+    var c = UI.App.mesh.faces[idx].centroid;
+    assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [15, 10, c[2]] }) !== false, 'pick rejected');
+    setInput(pmNumber(0), 6);
+    UI.pmOK();
+    near(anvil.summary().volume, 18000 - polyCircleArea(3) * 30, 1e-3, 'volume');
+    assert(names()[names().length - 1] === 'Hole1', names().join());
+  });
+  step('Chamfer PM: pick an edge object, distance 2', function () {
+    UI.cmdChamfer();
+    assert(UI.hasPM() && UI.App.command.pickEdges, 'Chamfer PM not open');
+    var e = edgeNear([30, 20, 15]);
+    var before = anvil.summary().volume;
+    assert(UI.App.command.onPick({ kind: 'edge', edge: e }) === true, 'edge pick rejected');
+    assert(/1 edge pick/.test($('pm').innerText), 'pick not listed: ' + $('pm').innerText.slice(0, 120));
+    setInput(pmNumber(0), 2);
+    UI.pmOK();
+    near(anvil.summary().volume, before - 2 * 2 / 2 * 30, 1e-3, 'volume');
+    assert(names()[names().length - 1] === 'Chamfer1', names().join());
+  });
+  step('exports: STL, script round-trip, face DXF, PNG', function () {
+    var stl = anvil.stl();
+    assert(stl.indexOf('solid ') === 0 && /endsolid/.test(stl), 'stl');
+    var script = anvil.script(), vol = anvil.summary().volume;
+    var m = K.newModel('rt'); K.runScript(m, script);
+    var mp = K.massProps(K.meshFromBody(K.rebuild(m).body), m.density);
+    near(mp.volume, vol, 1e-3, 'script round-trip volume'); // summary() rounds to 3 decimals
+    var dxf = anvil.dxfFace(faceWithNormal([0, 0, 1]));
+    assert(dxf && dxf.indexOf('CIRCLE') > 0 && dxf.indexOf('HOLES') > 0, 'face dxf should carry the hole as a CIRCLE on HOLES');
+    var png = anvil.png();
+    assert(png.indexOf('data:image/png') === 0 && png.length > 1000, 'png');
+    return 'stl ' + stl.length + ' chars, script ' + script.split('\n').length + ' lines, png ' + png.length + ' chars';
+  });
+  step('section view PM accepts and clips', function () {
+    UI.cmdSection();
+    assert(UI.hasPM(), 'Section PM not open');
+    UI.pmOK();
+    assert(UI.App.view.section && UI.App.view.section.plane, 'section not set');
+    UI.App.view.section = null; UI.applyDisplayStyle();
+  });
+  step('delete the sketch with its dependents through the confirm modal', function () {
+    var before = names().length;
+    UI.deleteFeature(1);
+    assert(modalOpen(), 'confirm modal expected');
+    var primary = D.querySelector('#modal-buttons button.primary') || D.querySelector('#modal-buttons button');
+    primary.click();
+    assert(!modalOpen(), 'modal still open');
+    assert(names().length < before, 'nothing deleted: ' + names().join());
+    assert(names().indexOf('Sketch1') < 0 && names().indexOf('Boss-Extrude1') < 0, 'dependents remain: ' + names().join());
+    return 'now: ' + names().join(', ');
+  });
+  step('File ▸ New goes through the modal and starts Part1', function () {
+    UI.fileNew();
+    assert(modalOpen(), 'New-part modal expected');
+    clickModalButton('New part');
+    assert($('doc-title').textContent === 'Part1' && anvil.summary().features === 0, 'not reset');
+  });
+  step('Extrude PM with Draft on (10°) builds a frustum', function () {
+    anvil.run('p.sketch("Top").centerRect(0, 0, 20, 20);');
+    UI.cmdExtrude(false);
+    assert(UI.hasPM(), 'Extrude PM not open');
+    setInput(pmNumber(0), 10);
+    var draftOn = pmField('Draft on');
+    assert(draftOn && draftOn.type === 'checkbox', 'Draft on checkbox missing');
+    draftOn.click();
+    var angle = pmField('Draft angle');
+    assert(angle, 'Draft angle field missing after enabling draft');
+    setInput(angle, 10);
+    UI.pmOK();
+    var t = Math.tan(10 * Math.PI / 180), s2 = 20 - 2 * 10 * t;
+    near(anvil.summary().volume, 10 / 3 * (400 + s2 * s2 + 20 * s2), 1e-3, 'frustum volume');
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.draft === 10 && !f.draftOut, 'feature draft fields: ' + JSON.stringify(f));
+  });
+  step('Sweep PM pairs profile and path sketches and builds a tube', function () {
+    anvil.run('p.sketch("Front").circle(0, 0, 5);\np.sketch("Top").line(0, 0, 0, -50);');
+    UI.cmdSweep(false);
+    assert(UI.hasPM(), 'Sweep PM not open');
+    UI.pmOK();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(5))));
+    near(s.volume, n / 2 * 25 * Math.sin(2 * Math.PI / n) * 50, 1e-3, 'tube volume');
+    assert(names()[names().length - 1] === 'Sweep1', names().join());
+  });
+  step('Loft PM lofts the two most recent sketches', function () {
+    anvil.run('p.sketch("Front").centerRect(0, 0, 20, 20);\np.sketch("Front", 30).centerRect(0, 0, 10, 10);');
+    UI.cmdLoft(false);
+    assert(UI.hasPM(), 'Loft PM not open');
+    UI.pmOK();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, 30 / 3 * (400 + 100 + 200), 1e-3, 'frustum volume');
+    assert(names()[names().length - 1] === 'Loft1', names().join());
+  });
+  step('Shell PM removes the pre-selected top face', function () {
+    anvil.run('p.box(40, 40, 20, { centered: true });');
+    var idx = faceWithNormal([0, 1, 0]);
+    var c = UI.App.mesh.faces[idx].centroid;
+    UI.App.sel = { kind: 'face', index: idx, point: c.slice() };
+    UI.cmdShell();
+    assert(UI.hasPM(), 'Shell PM not open');
+    setInput(pmNumber(0), 2);
+    UI.pmOK();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, 32000 - 36 * 36 * 18, 1e-3, 'open box volume');
+    assert(names()[names().length - 1] === 'Shell1', names().join());
+  });
+  step('sheet metal: Edge Flange PM picks an edge and builds', function () {
+    anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    var before = anvil.summary().volume;
+    UI.cmdEdgeFlange();
+    assert(UI.hasPM(), 'Flange PM not open');
+    var e = edgeNear([0, 2, 30]);
+    assert(UI.App.command.onPick({ kind: 'edge', edge: e }) !== false, 'edge pick rejected');
+    setInput(pmNumber(1), 20); // angle is the first number, length the second
+    UI.pmOK();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, before + Math.PI / 4 * 12 * 60 + 20 * 2 * 60, 60, 'volume');
+    assert(names()[names().length - 1] === 'Edge-Flange1', names().join());
+  });
+  step('Flatten modal and Flat to DXF', function () {
+    UI.cmdFlatten();
+    assert(modalOpen() && /Flat pattern/.test($('modal-body').innerText), 'flatten modal');
+    assert($('modal-body').querySelector('svg, canvas'), 'no drawing in the flatten modal');
+    UI.closeModal();
+    UI.exportFlatDXF();
+    assert(modalOpen(), 'dxf modal');
+    var ta = D.querySelector('#modal textarea');
+    assert(ta && ta.value.indexOf('BEND') > 0 && /\nEOF$/.test(ta.value), 'dxf content');
+    UI.closeModal();
+    return 'dxf ' + ta.value.length + ' chars';
+  });
+  step('task pane: Design Library lists the examples, script console has the API text', function () {
+    UI.openTaskPane('library');
+    var n = D.querySelectorAll('#tp-body button').length;
+    assert(n >= anvil.examples.length, 'library buttons ' + n + ' < ' + anvil.examples.length);
+    UI.openTaskPane('macro');
+    assert(D.querySelector('#tp-body textarea'), 'script textarea missing');
+    UI.closeTaskPane();
+    return n + ' library entries';
+  });
+  step('no uncaught errors or console.error calls during the run', function () {
+    assert(errors.length === 0, errors.join('\n'));
+  });
+
+  // ---- runner
+  function runAll() {
+    var i = 0;
+    function next() {
+      if (i >= steps.length) return finish();
+      var s = steps[i++], t0 = performance.now();
+      Promise.resolve().then(function () { return s.fn(); }).then(function (detail) {
+        row(s.name, true, typeof detail === 'string' ? detail : '', performance.now() - t0);
+      }, function (e) {
+        row(s.name, false, (e && e.message) || String(e), performance.now() - t0);
+      }).then(function () { return wait(30); }).then(next);
+    }
+    next();
+  }
+  function finish() {
+    var passed = results.filter(function (r) { return r.ok; }).length, total = results.length;
+    var el = document.getElementById('summary');
+    el.className = passed === total ? 'ok' : 'bad';
+    el.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED');
+    window.__anvilSmoke = { passed: passed, total: total, results: results, errors: errors };
+  }
+
+  var frame = document.getElementById('app');
+  frame.addEventListener('load', function () {
+    W = frame.contentWindow; D = W.document;
+    var tries = 0;
+    (function poll() {
+      if (W.anvil && W.UI && W.Kernel) {
+        K = W.Kernel; UI = W.UI; anvil = W.anvil;
+        W.addEventListener('error', function (ev) { errors.push('uncaught: ' + (ev.message || ev.error)); });
+        var origErr = W.console.error;
+        W.console.error = function () { errors.push('console.error: ' + Array.prototype.join.call(arguments, ' ')); origErr.apply(W.console, arguments); };
+        runAll();
+      } else if (tries++ < 100) setTimeout(poll, 100);
+      else { row('app booted', false, 'window.anvil never appeared (is three.js reachable? is the folder served over HTTP?)', 0); finish(); }
+    })();
+  });
+})();
+</script>

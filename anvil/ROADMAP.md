@@ -1,0 +1,61 @@
+# Anvil roadmap
+
+Anvil is a browser-based parametric solid modeler with a SolidWorks-style workspace and a scripting API that Claude can drive. Phases are ordered; each session picks up the first unchecked items.
+
+## Phase 1 — foundation (session 1, 2026-09-21)
+- [x] BSP CSG kernel (union / subtract / intersect / transform / signed volume)
+- [x] Sketch entities: line, corner & center rectangle, circle, polygon, straight slot, centerpoint arc, polyline, point
+- [x] Profiles: loop chaining, nesting (holes), ear-clipping triangulation
+- [x] Features: extrude (blind / through all / mid-plane / two directions, boss or cut), revolve (axis = sketch X/Y or a line), linear pattern, circular pattern, mirror (feature or body), reference plane
+- [x] Rebuild pipeline with per-feature errors and warnings
+- [x] Mesh with coplanar face grouping, face outlines (T-junction aware), mass properties
+- [x] Exports: STL, DXF of a sketch, DXF of a planar face (OUTLINE / HOLES layers)
+- [x] Script builder API + generate-script-from-model round trip
+- [x] SolidWorks-layout UI: menu bar, CommandManager ribbon (Features / Sketch / Evaluate / Sheet Metal), FeatureManager tree, PropertyManager, heads-up view toolbar, Task Pane, status bar, triad
+- [x] Viewport: orthographic orbit / pan / zoom-at-cursor, standard views, normal-to, previous view, zoom to area, display styles, section view, face hover + selection highlight, B-rep style edges with tangent edges hidden
+- [x] Sketch mode: grid + snapping, all tools drawn by clicking, entity edit by typing values, undo
+- [x] Feature editing (double-click), rename, delete with dependents, undo/redo
+- [x] Hole Wizard (simple hole on a picked face), base flange (thin extrude recording sheet params)
+- [x] Persistence: autosave, named saves in localStorage, JSON open/save, script open
+- [x] `window.anvil` automation API
+
+## Phase 2 — modeling depth
+- [x] Edge selection: kernel `bodyEdges` (faces, interior directions, convexity, tangent-chain propagation), viewport edge picking with occlusion test, hover/selection highlight
+- [x] Fillet and chamfer on selected edges: swept cross-section per edge, mitred caps at shared vertices, convex edges cut / concave edges add; `p.chamfer(d, [[x,y,z]])`, `p.fillet(r, [...])`
+- [x] Shell (`p.shell(t, [[x,y,z]…])`: inner solid = body minus a T-deep slab behind every kept face, each slab outline grown by T·tan(φ/2) per edge so slabs meet at exact offset corners; removed faces get an extension out through the face; body − inner. Faces picked by point, Shell PM with cavity preview)
+- [x] Sketch on a picked face keeps the face's edges available: Convert Entities (face outline stored on the sketch as `faceLoops`)
+- [x] Offset Entities (mitred polygon offset, inward/outward, construction option) and Sketch Fillet (click a corner of a rect/polygon/polyline)
+- [x] Trim (`trimEntity`: exact seg/arc intersections, removes the span between neighbours, circles become arcs, slots explode, rects become polylines), Mirror Entities (`mirrorEntities(axis)`: sketch axes or a line, arcs/polygons stay true), Linear Sketch Pattern (`patternEntities`); PMs with live temp previews
+- [x] Smart Dimension: click an entity, then place the dimension (aligned / horizontal / vertical for lines, rectangle edges, Ø, R, slot length and width); placed dimensions live on the sketch (`dims`), draw with extension lines and arrows in an SVG overlay, round-trip through `SketchBuilder.dim`, and the value box drives the entity through `Kernel.setDimValue`; View ▸ Sketch Dimensions also shows driven values for undimensioned entities
+- [x] Sweep along a polyline or line/arc path sketch (mitred sections, profile auto-oriented) and loft through 2+ sketches (resampled outlines, rotation-matched); `p.sweep({profile, path})`, `p.loft([ids])`, Swept/Lofted Boss and Cut PMs
+- [x] Draft on extrudes: `extrude(d, { draft: deg, draftOutward })`, tapered prism with mitred section offsets (holes widen as material narrows), Draft group in the Boss/Cut-Extrude PM; collapse detected with a clear error
+- [x] Edge selection + "Normal To" on edges (view along the mean face normal with the edge horizontal); Measure shows edge length, endpoints, direction and the angle between its faces
+
+## Phase 3 — sheet metal (the user's shop workflow)
+- [x] Edge flange: pick straight edges of the flat sheet, bend radius + angle + length, reverse side; "Bend Outside" placement; `p.sheet(T,R,K)`, `p.baseFlange(T)`, `p.flange(L, [[x,y,z]], {angle, reverse, radius})`
+- [x] Flatten: base face outline + unfolded flanges (bend allowance = angle × (R + K·T), K = 0.71 steel / 0.64 aluminum), flat-pattern viewer with bend centre lines and UP/DOWN labels
+- [x] Flat pattern DXF with OUTLINE / HOLES / BEND / NOTES layers (blank note carries T, R, K)
+- [x] Sheet metal parameters in Custom Properties (thickness, bend radius, K-factor)
+- [x] Flange placement options: Material Inside / Material Outside (`position` option: the flange section shifts by R+T or R and the base is trimmed by the same strip)
+- [x] Flanges on flanges (flat pattern unfolds recursively: each wall face is mapped rigidly into the flat and its own flanges follow)
+- [x] Holes on flange walls carried into the flat pattern (wall faces contribute their real outlines; regions are merged with the CSG kernel and the top-face outline is the blank)
+- [x] Hem (`p.hem(L, edges, {gap})`: a 180° flange with R = gap/2, unfolds with BA = π(R + K·T)) and Jog (`p.jog(height, length, edges, {angle, reverse})`: two opposite bends in one feature, wall length solved so the flats sit `height` apart, unfolded as UP + DOWN); flanges accept `toward: [x,y,z]` to pick the fold side by direction
+- [ ] Miter flange (mitred corners where flanges on adjacent edges meet); relief cuts at flange ends; thickness-aware "normal cut"
+
+## Phase 4 — robustness and performance
+- [ ] Faster CSG: bounding-box early-out per polygon, polygon splitting only inside overlap regions (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
+- [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
+- [ ] Web Worker rebuilds so the UI never freezes
+- [ ] Degenerate geometry guards (zero-area loops, self-intersecting profiles) with clear messages
+- [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
+
+## Phase 5 — assemblies and drawings
+- [ ] Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder
+- [ ] Simple assembly document: insert parts, mate by coincident planes / concentric axes
+- [ ] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF
+
+## Phase 6 — polish
+- [ ] Icons closer to the SolidWorks set, hover tooltips with shortcut hints
+- [ ] Configuration manager: named parameter sets driving feature values
+- [ ] Equations: expressions in PropertyManager fields (`= t * 2`)
+- [ ] Theme: dark UI option

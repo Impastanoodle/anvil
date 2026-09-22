@@ -1,0 +1,70 @@
+<title>Anvil</title>
+<link rel="stylesheet" href="style.css">
+
+<div id="app">
+  <div id="menubar">
+    <div id="logo">A</div><span id="brand">Anvil</span>
+    <ul id="menus"></ul>
+    <div id="doc-title">Part1</div>
+    <div id="search"><input id="cmd-search" placeholder="Search Commands" aria-label="Search commands"><span id="search-ico"></span></div>
+  </div>
+
+  <div id="ribbon">
+    <div id="ribbon-buttons"></div>
+    <div id="ribbon-tabs"></div>
+  </div>
+
+  <div id="main">
+    <div id="left">
+      <div id="fm-tabs"></div>
+      <div id="fm-tree">
+        <div id="tree-filter"><span id="filter-ico"></span><input id="tree-filter-input" placeholder="Filter" aria-label="Filter feature tree"></div>
+        <div id="tree"></div>
+      </div>
+      <div id="pm" hidden></div>
+    </div>
+
+    <div id="viewport">
+      <div id="hud"></div>
+      <canvas id="triad" width="192" height="192"></canvas>
+      <svg id="dim-layer" aria-hidden="true"></svg>
+      <div id="dim-edit" hidden><input type="number" step="any" aria-label="Dimension value"></div>
+      <div id="zoom-box" hidden></div>
+      <div id="sketch-hint" hidden></div>
+      <div id="exit-sketch" hidden></div>
+    </div>
+
+    <div id="taskpane">
+      <div id="tp-panel" hidden>
+        <div id="tp-title"></div>
+        <div id="tp-body"></div>
+      </div>
+      <div id="tp-strip"></div>
+    </div>
+  </div>
+
+  <div id="statusbar">
+    <span id="status-msg">Ready</span>
+    <span id="status-coords"></span>
+    <span id="status-right"></span>
+  </div>
+</div>
+
+<div id="modal" hidden>
+  <div id="modal-card" role="dialog" aria-modal="true">
+    <div id="modal-title"></div>
+    <div id="modal-body"></div>
+    <div id="modal-buttons"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="csg.js"></script>
+<script src="kernel.js"></script>
+<script src="icons.js"></script>
+<script src="examples/examples.js"></script>
+<script src="ui-core.js"></script>
+<script src="ui-sketch.js"></script>
+<script src="ui-commands.js"></script>
+<script src="ui-panels.js"></script>
+<script src="ui-app.js"></script>

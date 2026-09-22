@@ -1,0 +1,96 @@
+# Anvil session log
+
+Newest entry last. Each entry: what was done, decisions, and "next up" for the following session.
+
+## Session 1 — 2026-09-21
+
+**Context.** Scheduled task `daily-code-limit`. The user rejected two earlier directions this session (a scripting language, then a roguelike) and asked for: a CAD program that is best for Claude's own use to draw and create 3D models, with a UI whose features sit in the same places as SolidWorks. A parallel Claude session joined mid-way and owns `tests/`, `examples/` and `README.md`.
+
+**Done.**
+- Wrote the whole application from scratch as static files (no build step; three.js r128 from cdnjs):
+  `csg.js` (BSP CSG), `kernel.js` (sketches, features, rebuild, meshing, mass props, STL/DXF, script builder), `icons.js`, `style.css`, `index.html`, `ui-core.js` (scene, camera, picking, highlights, edges), `ui-sketch.js` (mouse, sketch tools), `ui-commands.js` (PropertyManager + commands), `ui-panels.js` (ribbon, menus, tree, HUD, modal), `ui-app.js` (task pane, script console, files, exports, shortcuts, `window.anvil`, boot).
+- `serve.ps1` + `.claude/launch.json` serve the folder on http://localhost:8765 (PowerShell HttpListener, since there is no node/python).
+- Verified in the browser pane: loads with no console errors, sample bracket (12 features) rebuilds in ~17–30 ms, face selection highlights, layout correct at 1024 px after fixing the ribbon overflow and the initial fit timing.
+
+**Decisions.**
+- Model = feature list JSON; the script API is a builder over that list and `generateScript` regenerates code from the tree, so both representations stay interchangeable.
+- Sketch frames follow SolidWorks: Front (x=X, y=Y, n=Z), Top (x=X, y=-Z, n=Y), Right (x=-Z, y=Y, n=X).
+- Holes in profiles are subtracted as slightly over-long prisms to avoid coplanar-cap artifacts.
+- Edges are drawn from kernel face outlines (T-junction aware) with tangent edges (< 22°) hidden, not from `THREE.EdgesGeometry`.
+- Polygon tags (`shared`) carry the owning feature id through CSG so selecting a feature highlights its faces and double-clicking a face opens its feature.
+- No fillet/chamfer/shell yet: they need edge selection and offset geometry (Phase 2).
+
+**Known gaps / bugs to check first next session.**
+- Sketch tools were only exercised by reading the code, not by clicking through in the browser; test Line/Rect/Circle drawing, entity PM editing, exit sketch → extrude.
+- Revolve: holes inside revolved profiles are revolved at exactly the same radius as the outer loop caps; coplanar end caps may leave slivers for partial revolves.
+- Circular pattern preview uses the source's cached tool; for patterns-of-patterns the tool exists but `isCut` follows only one level.
+- `featureFamily` in ui-core returns only the feature itself; pattern/mirror copies keep the source's tag, so selecting a pattern highlights nothing (selecting the source highlights all copies).
+- Downloads are inert inside the claude.ai artifact sandbox; the export dialogs offer Copy as the fallback.
+- **Published artifact:** https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS (multi-file; republish with `url` from any session, `root: anvil`, files map of style.css, csg.js, kernel.js, icons.js, examples/examples.js, ui-*.js).
+- Click-tested in the browser pane: Sketch → Top plane → Circle tool → Exit Sketch → Extruded Boss/Base PM (depth edit, yellow preview, ✓ commit) all work; the parallel session's kernel test page passes 101/101 after two kernel fixes it found (generateScript round-trip vars, slot tangent vertices).
+
+**Later in session 1 (same day).**
+- Edge selection (kernel `bodyEdges` with interior directions from outline winding, tangent chains; viewport `pickEdge` with occlusion test) and **Fillet / Chamfer** features with mitred caps at shared vertices (`p.fillet(r, [[x,y,z]])`, `p.chamfer(d, [...])`). Verified in the browser: hole-rim chamfer as one 31-edge chain, four top edges filleted in one feature, clean corners.
+- **Sheet metal**: `p.sheet(T,R,K)`, `baseFlange`, **Edge Flange** feature (bend + wall swept along picked edges, reverse side), **Flatten** viewer (SVG blank with bend centre lines, UP/DOWN labels, BA = angle·(R+K·T)) and **Flat to DXF** (OUTLINE/HOLES/BEND/NOTES). Verified: 100×60 base with two flanges → 120.37 × 85.37 blank.
+- Convexity bug found by testing (centroid test failed on faces with holes) fixed by using outline winding.
+
+- Parallel session click-tested the UI (all core flows pass) and reported 8 issues; all fixed: cut defaults (Through All + Reverse for face sketches, "cut removed no material" warning), modal confirm/prompt replacing blocked native dialogs, face-first picking with the Sketch PM, empty new sketches discarded, preview through-all clamped, status text on exit, narrow-window layout, export textarea/hole rounding cosmetics.
+- Sketch tools added: Convert Entities, Offset Entities (PM), Sketch Fillet (PM + click a corner). Kernel `offsetLoop`, `filletPolyline`.
+- Testing note: in the browser pane, navigating to the same localhost URL can serve stale scripts; use `location.reload()` via javascript_tool. Never name a REPL variable `top` (it is window.top).
+
+**Next up.**
+1. Sweep and loft features (kernel + PMs), then wire the greyed Swept/Lofted ribbon buttons.
+2. Phase 2: Convert Entities / Offset Entities in sketches on faces, sketch fillet, Shell, sweep/loft, driven dimensions display.
+3. Sheet metal: Material Inside placement, flanges on flanges in the flat pattern, holes on flange walls.
+4. Performance: incremental rebuild (cache tools for unchanged prefix), Web Worker.
+
+## Session 2 — 2026-09-22
+
+**Context.** Scheduled task `daily-code-limit`, unattended. Five interactive peer sessions were active on the folder at the same time (one had just added `tests/ui-smoke.html`, three pattern tests and README text); I messaged all of them with the file split (this session: `kernel.js`, `ui-*.js`; helpers: `tests/`, `examples/`, `README.md`) and only touched their files additively.
+
+**Found on arrival.** Sweep and loft were already implemented in the kernel and UI at the end of session 1 but never verified, tested, documented or logged (the log's "next up" was stale). Verified them headlessly against analytic volumes (straight tube, mitred L, 3D-point path, line+arc path, swept cut, square frustum 7000 exact, lofted cut) and by clicking through the Swept/Lofted PMs.
+
+**Done.**
+- Sweep polish: path sketches no longer raise the "open contour" warning (they are open by design); path entities that do not connect produce a warning on the sweep instead of vanishing silently; the Sweep PM pairs the closed sketch as profile and the open one as path automatically.
+- **Shell** feature (`p.shell(t, [[x,y,z]…])`, feature `{type:'shell', thickness, faces:[{at}]}`): `Kernel.resolveFaces` (point → mesh face by plane distance + outline containment), `Kernel.buildShell` builds the inner solid as body − ⋃(slab behind each kept face) ∪ extensions through removed faces, then body − inner. Slab outlines are grown per edge by T·tan(φ/2) (φ = dihedral angle to the neighbour, via `offsetLoopVar`), which is exactly where the two offset planes meet: sharp offset corners at concave edges, no over-cut at tangent facets (the uniform-T version left a star pattern around polygonal holes). Exact results: closed box 15744, open box 11712, two open faces 11280, L block 19264; cup and holed box within 0.02 %. Shell PM: click faces to remove (highlighted), thickness, red cavity preview; editing an existing shell previews on the body rebuilt up to that feature (`bodyBefore`). Ribbon Shell button, Insert menu, tree icon and description.
+- `unionTree` (balanced pairwise union) for shell slabs and sweep segments: bushing shell 4.1 s → 0.39 s, cup 110 → 16 ms. NOT used for patterns: a tree union of coincident copies loses material (three pattern tests fail with it).
+- Kernel bug fixed (found by the helper session's new tests): a pattern's tool holds only its copies, so a pattern/mirror of a pattern missed the seed instance (3 holes instead of 4). `familyTool` now unions the seed recursively for `lpattern`/`cpattern`/feature `mirror` sources.
+- Tests added to `tests/kernel-tests.html` (groups `sweep`, `loft`, `shell`: 19 tests) — 169/169 pass; `tests/ui-smoke.html` 16/16. Examples added: Mug (shell + swept handle), Funnel (loft + shell open both ends), Handlebar (3D-point sweep with a swept-cut bore). README: Part methods, feature JSON, kernel API, ribbon/menu lists, known limitations.
+- Status bar says "updated" instead of "created" when a feature edit is committed.
+
+**Notes.**
+- The browser-pane `key: Return` does not reach the page's keydown handler; click the ✓ button (`find "OK (Enter)"`) to accept a PM when driving the UI from tools. Enter works for real users (ui-app keydown + number inputs).
+- Shell on a revolved part (~300 faces) takes ~0.4 s; on a loft-with-spout funnel ~0.55 s. Fine interactively, but the PM recomputes the preview on every keystroke in the thickness field.
+- Editing an existing Shell cannot re-pick removed faces (they no longer exist on the displayed body); delete and recreate instead.
+
+**Next up.**
+1. Draft on extrudes (tapered prism; the greyed Draft button), then Rib.
+2. Sketch tools: Trim, Mirror Entities, Linear Sketch Pattern; driven dimensions display.
+3. Sheet metal: Material Inside placement, flanges on flanges in the flat pattern, holes on flange walls.
+4. Performance: cache tools for an unchanged feature prefix; Web Worker rebuilds.
+
+**Later in session 2 (continued on request).**
+- **Draft on extrudes**: `extrude(d, { draft: deg, draftOutward })` / feature fields `draft`, `draftOut`. `taperedPrism` offsets the section by depth·tan(angle) at each end (mitred `offsetLoop`, so side quads stay planar); holes offset the other way (they widen as material narrows); mid-plane and direction-2 ranges are split at the sketch plane so the taper starts there on both sides. Collapse is detected by edge reversal (a square offset past its centre keeps a positive area) and reported as "Draft angle is too large for this depth". Draft group (on/angle/outward) in the Boss/Cut-Extrude PM, tree description shows the angle. 4 tests (frustum volumes exact to Float32 precision, outward, mid-plane, drafted cut, boss with widening hole, error, round-trip) — 173/173 pass; committed from the PM with the exact expected volume.
+- Note for tests: mesh positions are Float32, so volume checks on non-integer geometry need `nearRel(…, 1e-6)`, not an absolute 1e-6.
+- The ribbon "Draft" button stays greyed: SolidWorks' Draft feature drafts existing faces about a neutral plane, which is a different (harder) operation than the extrude option.
+
+**Later in session 2 (sketch tools).**
+- **Trim Entities** (`Kernel.trimEntity`, `SketchBuilder.trim(i, u, v)`): entities are decomposed into exact primitives (segments and circular arcs; slots explode into 2 lines + 2 arcs, rects/polygons become polylines), intersections are analytic (seg–seg, seg–arc, arc–arc), and the span of the clicked primitive between its neighbouring intersections is removed: lines split, arcs split, a full circle becomes the remaining arc, a closed polyline opens, an entity nothing crosses is deleted. PM "Trim Entities" (click to trim, repeat, ✓ to finish); `onSketchPoint` now also receives the screen coordinates so the command can use `UI.pickEntity`.
+- **Mirror Entities** (`Kernel.mirrorAxis/mirrorEntity`, `SketchBuilder.mirrorEntities(axis, {entities, copy})`): axes = sketch X/Y or a line entity; arcs reflect as 2φ − a with the sweep re-ordered, regular polygons keep their type (rot' = 2φ − rot), rects/crects keep their type for axis-aligned mirrors and become polylines otherwise. PM previews the copies as temp entities; mirrors the selected entity or all.
+- **Linear Sketch Pattern** (`Kernel.translateEntity`, `SketchBuilder.patternEntities({dx, dy, count, dx2, dy2, count2})`): PM with angle/spacing/instances for two directions, temp preview.
+- Kernel: `meshFromBody` now keeps `positions64` (Float64) and `massProps` uses it, so volumes are exact in double precision instead of carrying the Float32 render error (about 4e-8 relative) — this made the helper session's absolute-tolerance draft tests pass.
+- Coordination: the helper session wrote its own `draft` test group with a `frustum` helper that shadowed mine (function declarations hoist), so I removed my draft group and kept theirs. Tests: 185/185; sketch tools have 7 tests in the `sketch tools` group.
+
+**Later in session 2 (sheet metal).**
+- **Flat pattern rewritten as a recursive unfold.** The base face (largest face on the +n side of the base sketch plane) is mapped into the sketch frame; each flange attached to an unfolded face adds a bend strip of length BA beyond its edge and then unfolds its wall face on the tracked side of the sheet (inner radius when the fold comes toward that side, outer radius otherwise) with a rigid map built from the arc-end line, the wall direction and the edge direction, recursively. Regions (real face outlines, holes included) are merged by extruding them 1 unit in the Front frame and unioning with the CSG kernel; the merged top face outline is the blank, so collinear points vanish (the two-flange test now expects 6 outline points, not 8). Verified: hole on a wall lands at BA + 8 in the flat, Z bracket flat = 100 + 2·BA + 30 + 25, Flatten dialog draws both.
+- **Flange placement** (`position`: `bendOutside` default, `outside` = Material Outside, `inside` = Material Inside): the bend section shifts inward by R or R + T and a strip of the base of that width is cut first (`ctx.flangeCut`), so the envelope keeps the base size. Flange info now stores the shifted edge, `mid`, `origin` and `T` for the flat pattern. PM has a Flange Position select; script generation emits `position` when not default.
+- Tests: three new sheet-metal tests (wall hole, Z bracket, placements + round trip); 188 expected.
+
+**Later in session 2 (smart dimensions).**
+- **Smart Dimension** (driven, editable): in sketch mode each entity gets HTML labels positioned by `worldToScreen` every frame (`UI.frameDims` from the render loop; `App.dimsStale` set by `updateSketches` rebuilds them): line length, circle Ø, arc R, rect/crect w and h, polygon R, slot length and width. Clicking a label swaps in a number input; Enter applies (line keeps its start and direction, slot keeps centre 1), Esc/blur cancels or commits; one undo step per edit. `App.view.showDims` (default on) is toggled by the ribbon Smart Dimension button, which now shows an active state (generic `active()` hook for ribbon items). Overlay is `#dims` in index.html with styles at the end of style.css.
+- The local server had gone away mid-session (no listener on 8765); `preview_start` still refuses unattended sessions, so serve.ps1 was started in the background from PowerShell as CLAUDE.md documents.
+
+**Later in session 2 (hem, jog, `toward`).**
+- `p.hem(L, edges, {gap})` is a flange feature with `hem: true`, angle 180 and R = gap/2 (default gap T/2); script generation emits `p.hem`. `p.jog(height, length, edges, {angle, reverse, radius, position})` is a new `jog` feature: `buildJog` builds the first flange, applies it to a temporary body, computes the wall's end-edge mid-thickness point and builds the second flange there with `toward` = the outward direction, so it folds back parallel to the base; both flange infos are recorded so the recursive flat pattern unfolds them (UP then DOWN). Wall length = (H − 2R(1−cosA) + T·cosA)/sinA so the jogged flat sits `height` from the base's fold-side face.
+- `buildFlange` gained `toward: [x,y,z]` (a world direction that decides the fold side, overriding `reverse`), and the bend origin is now derived from the actual fold side (`dot(u, nF) > 0`) rather than from `reverse` — this was wrong whenever `toward` flipped the side.
+- A peer session is mid-way through its own SVG dimension layer (`#dim-layer`, `#dim-edit`, `UI.drawDims`, `App.dimsStale`) in index.html, style.css, ui-core.js. My HTML dimension labels now use `App.dimLabelsStale` so the two do not fight; the next session should keep one of the two implementations. Peer sessions were not reachable by message when this was written.

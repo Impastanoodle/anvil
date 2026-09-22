@@ -1,0 +1,5 @@
+# per-machine permission grants, not shared
+.claude/settings.local.json
+# scratch
+*.tmp
+*.log

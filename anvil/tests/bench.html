@@ -1,0 +1,145 @@
+<title>Anvil rebuild benchmark</title>
+<style>
+  :root { --dim: #6b7380; --line: #d8dde4; --bg: #f6f7f9; --ink: #1d2128; --accent: #2d7dd2; --mono: Consolas, "IBM Plex Mono", monospace; }
+  body { margin: 0; padding: 20px 28px; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  .sub { color: var(--dim); margin-bottom: 14px; max-width: 80ch; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  label { color: var(--dim); }
+  input[type=number] { width: 60px; font: inherit; padding: 4px 6px; border: 1px solid var(--line); }
+  #summary { font: 600 14px var(--mono); padding: 10px 14px; border: 1px solid var(--line); background: #fff; margin-bottom: 14px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.num, th.num { text-align: right; font: 13px var(--mono); font-variant-numeric: tabular-nums; }
+  td.bar { width: 220px; }
+  td.bar i { display: block; height: 10px; background: var(--accent); opacity: 0.7; }
+  tr.total td { font-weight: 600; background: #eef1f5; }
+  tr.err td { color: #d9453b; }
+</style>
+
+<h1>Anvil rebuild benchmark</h1>
+<div class="sub">Times <code>Kernel.runScript</code> + <code>Kernel.rebuild</code> + <code>Kernel.meshFromBody</code> for every entry in <code>examples/examples.js</code> plus a few synthetic stress parts, several runs each, and reports the median. Use it as the Phase 4 baseline: run it before and after a kernel change and compare the medians (single-run numbers jitter by ±30 %).</div>
+<div class="controls">
+  <button class="primary" id="run">Run</button>
+  <label>Runs per part <input type="number" id="runs" value="7" min="1" max="50"></label>
+  <label><input type="checkbox" id="includeStress" checked> include stress parts</label>
+  <button id="copy">Copy as Markdown</button>
+</div>
+<div id="summary">idle</div>
+<table>
+  <thead><tr><th>Part</th><th class="num">features</th><th class="num">polys</th><th class="num">tris</th><th class="num">script ms</th><th class="num">rebuild ms</th><th class="num">mesh ms</th><th class="num">total median</th><th class="num">min</th><th class="num">max</th><th class="bar"></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script src="../csg.js"></script>
+<script src="../kernel.js"></script>
+<script src="../examples/examples.js"></script>
+<script>
+(function () {
+  'use strict';
+  var K = Kernel;
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Synthetic parts that stress specific kernel paths. Volumes are irrelevant; shapes are chosen for polygon counts.
+  var STRESS = [
+    { name: 'stress: 5×5 hole grid', code: 'p.box(200, 200, 6);\np.hole("Top", 20, -20, 8, { offset: 6 });\np.linearPattern({ dir: "x", spacing: 40, count: 5, dir2: "z", spacing2: 40, count2: 5 });' },
+    { name: 'stress: 24-hole bolt circle', code: 'p.cylinder(100, 10);\np.hole("Top", 80, 0, 6, { offset: 10 });\np.circularPattern({ axis: "y", count: 24 });' },
+    { name: 'stress: revolve with 6 grooves', code: 'p.sketch("Front").polyline([[10,0],[40,0],[40,60],[10,60]], true).revolve(360);\np.sketch("Front").rect(36, 5, 10, 4).revolveCut(360);\np.linearPattern({ dir: "y", spacing: 9, count: 6 });' },
+    // a 12-gon turns 30° per edge, above the 28° chain threshold, so this fillets a single edge
+    { name: 'stress: fillet on one edge of a 12-gon prism', code: 'p.sketch("Top").polygon(0, 0, 40, 12).extrude(20);\np.fillet(4, [[40, 20, 0]]);' },
+    { name: 'stress: 4 chamfers + 4 fillets on a block', code: 'p.sketch("Top").centerRect(0, 0, 80, 40).extrude(20);\np.chamfer(3, [[40, 20, 0], [-40, 20, 0], [0, 20, 20], [0, 20, -20]]);\np.fillet(3, [[40, 0, 0], [-40, 0, 0], [0, 0, 20], [0, 0, -20]]);' },
+    { name: 'stress: sheet box with 4 flanges + flat', code: 'p.sheet(1.5, 1.5, 0.71);\np.sketch("Top").rect(0, -80, 120, 80).end().baseFlange(1.5);\np.hole("Top", 60, -40, 20, { offset: 1.5 });\np.flange(25, [[0, 1.5, 40]]);\np.flange(25, [[120, 1.5, 40]]);\np.flange(25, [[60, 1.5, 0]]);\np.flange(25, [[60, 1.5, 80]]);', flat: true },
+    { name: 'stress: 40 stacked unions', code: (function () { var s = 'p.box(10, 10, 10);'; for (var i = 1; i < 40; i++) s += '\np.box(10, 10, 10, { at: [' + (i * 7) + ', ' + (i % 3) * 3 + ', ' + (i % 5) * 2 + '] });'; return s; })() }
+  ];
+
+  function median(a) { var s = a.slice().sort(function (x, y) { return x - y; }); var m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+  function fmt(n, d) { return n == null ? '-' : n.toFixed(d == null ? 1 : d); }
+
+  function timeOnce(part) {
+    var model = K.newModel('Bench');
+    var t0 = performance.now();
+    K.runScript(model, part.code);
+    var t1 = performance.now();
+    var b = K.rebuild(model);
+    var t2 = performance.now();
+    var mesh = K.meshFromBody(b.body);
+    if (part.flat) K.flatPattern(model, b, mesh);
+    var t3 = performance.now();
+    var errs = Object.keys(b.errors);
+    return {
+      script: t1 - t0, rebuild: t2 - t1, mesh: t3 - t2, total: t3 - t0,
+      features: model.features.length, polys: b.body ? b.body.polygons.length : 0, tris: mesh.triCount,
+      error: errs.length ? errs.map(function (id) { return b.errors[id]; }).join(' | ') : null
+    };
+  }
+
+  var lastResults = [];
+  function run() {
+    var runs = Math.max(1, Math.min(50, +$('runs').value || 7));
+    var parts = (typeof AnvilExamples !== 'undefined' ? AnvilExamples : []).slice();
+    if ($('includeStress').checked) parts = parts.concat(STRESS);
+    var rows = $('rows'); rows.innerHTML = '';
+    $('run').disabled = true;
+    $('summary').textContent = 'running ' + parts.length + ' parts × ' + runs + ' runs…';
+    lastResults = [];
+    var i = 0, grandTotal = 0, maxMedian = 1;
+    // warm-up so JIT and GC state are comparable
+    try { timeOnce(parts[0]); } catch (e) { }
+    function step() {
+      if (i >= parts.length) {
+        var tr = document.createElement('tr'); tr.className = 'total';
+        tr.innerHTML = '<td>All parts (sum of medians)</td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num">' + fmt(grandTotal) + '</td><td></td><td></td><td></td>';
+        rows.appendChild(tr);
+        Array.prototype.forEach.call(rows.querySelectorAll('td.bar i'), function (bar) { bar.style.width = (100 * (+bar.dataset.ms) / maxMedian) + '%'; });
+        $('summary').textContent = parts.length + ' parts · ' + runs + ' runs each · sum of medians ' + fmt(grandTotal) + ' ms · ' + navigator.userAgent.replace(/^.*\) /, '');
+        $('run').disabled = false;
+        window.__anvilBench = lastResults;
+        return;
+      }
+      var part = parts[i++], samples = [], last = null, err = null;
+      for (var r = 0; r < runs; r++) {
+        try { last = timeOnce(part); samples.push(last); if (last.error) { err = last.error; break; } } catch (e) { err = e.message; break; }
+      }
+      var tr = document.createElement('tr');
+      if (err) {
+        tr.className = 'err';
+        tr.innerHTML = '<td></td><td colspan="10"></td>';
+        tr.children[0].textContent = part.name; tr.children[1].textContent = 'error: ' + err;
+      } else {
+        var med = median(samples.map(function (s) { return s.total; }));
+        var res = {
+          name: part.name, features: last.features, polys: last.polys, tris: last.tris,
+          script: median(samples.map(function (s) { return s.script; })), rebuild: median(samples.map(function (s) { return s.rebuild; })), mesh: median(samples.map(function (s) { return s.mesh; })),
+          median: med, min: Math.min.apply(null, samples.map(function (s) { return s.total; })), max: Math.max.apply(null, samples.map(function (s) { return s.total; }))
+        };
+        lastResults.push(res);
+        grandTotal += med; maxMedian = Math.max(maxMedian, med);
+        tr.innerHTML = '<td></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="bar"><i data-ms="' + med + '"></i></td>';
+        [res.name, res.features, res.polys, res.tris, fmt(res.script, 2), fmt(res.rebuild), fmt(res.mesh), fmt(res.median), fmt(res.min), fmt(res.max)].forEach(function (v, k) { tr.children[k].textContent = v; });
+      }
+      rows.appendChild(tr);
+      setTimeout(step, 0);
+    }
+    setTimeout(step, 0);
+  }
+
+  function toMarkdown() {
+    var lines = ['| Part | features | polys | tris | rebuild ms | total median ms |', '| --- | ---: | ---: | ---: | ---: | ---: |'];
+    lastResults.forEach(function (r) { lines.push('| ' + r.name + ' | ' + r.features + ' | ' + r.polys + ' | ' + r.tris + ' | ' + fmt(r.rebuild) + ' | ' + fmt(r.median) + ' |'); });
+    return lines.join('\n');
+  }
+
+  $('run').addEventListener('click', run);
+  $('copy').addEventListener('click', function () {
+    var md = toMarkdown();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(md);
+    $('summary').textContent = md;
+  });
+  window.__anvilBenchMarkdown = toMarkdown;
+  run();
+})();
+</script>
