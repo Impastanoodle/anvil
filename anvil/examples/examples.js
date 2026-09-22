@@ -155,6 +155,24 @@ var AnvilExamples = [
     ].join('\n')
   },
   {
+    name: 'Normal Cut Bracket',
+    description: '2 mm sheet with a 90° flange and a rectangular window cut through the wall from a sketch tilted 45° to it, with Normal cut on: the window walls stay square to the sheet instead of following the tilted sketch. Remove normalCut from the script to compare.',
+    code: [
+      'p.name("Normal Cut Bracket").units("mm");',
+      'p.sheet(2, 2, 0.71);                                          // thickness, inside bend radius, k-factor (steel)',
+      'p.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);   // x in [0,100], y in [0,2], z in [0,60]',
+      'p.flange(30, [[100, 2, 30]]);                                 // wall on the x = 100 edge: x in [102,104], y in [4,34]',
+      '// a sketch plane tilted 45° to the wall (normal between +x and -y), 11 mm outside it; the cut runs along -n,',
+      '// i.e. toward -x and +y, through the wall at y around 8..20, well clear of the bend and of the base sheet',
+      'p.sketch({ custom: true, origin: [115, 3, 30], x: [0, 0, 1], y: [-0.7071067811865476, -0.7071067811865476, 0], n: [0.7071067811865476, -0.7071067811865476, 0] }, 0)',
+      '  .rect(-6, -4, 12, 8)',
+      '  .cut("through", { reverse: true, normalCut: true });         // 12 x 8 on the sketch, 12 x 11.3 on the wall',
+      '// two mounting holes in the base',
+      'p.hole("Top", 30, -30, 6, { offset: 2 });',
+      'p.hole("Top", 70, -30, 6, { offset: 2 });'
+    ].join('\n')
+  },
+  {
     name: 'Chamfered block',
     description: 'A machined block with a chamfered top perimeter, filleted vertical corners and a counterbored hole. Shows edge selection by point.',
     code: [

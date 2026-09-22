@@ -43,7 +43,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Miter flange (`p.flange(L, edges, { miter: true, miterGap })`: flanges on adjacent edges are swept past the shared corner and clipped by the bisector plane, gap split evenly; Miter Flange ribbon button + Miter group in the Edge-Flange PM)
 - [x] Auto relief at flange ends (`relief: 'rect' | 'obround'`, `reliefWidth` default T, `reliefDepth` default T/2: where the plate continues past a flange end a slot is cut from the base before the bend is added; no relief at convex corners or mitred ends)
 - [x] Bend strips of mitred flanges extended to the mitre line in the flat pattern (flange info carries `miterPlanes`; each strip end is a trapezoid ending on the mitre line, bend lines reach it, no step in the blank)
-- [ ] Thickness-aware "normal cut"
+- [x] Thickness-aware "normal cut" (`p.cut(d, { normalCut: true })`, Cut-Extrude PM ▸ Sheet Metal ▸ Normal cut, default on for sheet parts: the part of the tool inside the body is meshed, its sheet-surface faces (entry side when the cut has a direction) are pushed straight through the thickness and replace the tool, so cuts from tilted sketches leave walls square to the sheet)
 
 ## Phase 4 — robustness and performance
 - [ ] Faster CSG: bounding-box early-out per polygon, polygon splitting only inside overlap regions (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
@@ -62,5 +62,5 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [ ] Icons closer to the SolidWorks set
 - [ ] Configuration manager: named parameter sets driving feature values
 - [ ] Equations: expressions in PropertyManager fields (`= t * 2`)
-- [ ] Theme: dark UI option
+- [x] Theme: dark UI option (View ▸ Theme ▸ Light / Dark, `UI.setTheme`, `anvil.theme`, persisted in `anvil.theme`; every stylesheet colour is a `:root` variable, the three.js edge/grid/HLR materials follow through `UI.setViewportTheme`)
 - [ ] Desktop shell (Tauri or Electron) wrapping the same static files: own window, native open/save dialogs, no server step. The browser build stays the primary target; the shell must not fork the code.

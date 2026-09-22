@@ -57,6 +57,7 @@
     root.appendChild(actions);
     if (spec.message) root.appendChild(el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : ''), html: spec.message }));
     (spec.groups || []).forEach(function (g) {
+      if (g.show && !g.show(pm.values)) return;   // a group may hide itself, like a field
       var box = el('div', { class: 'pm-group' + (g.collapsed ? ' collapsed' : '') });
       var h = el('h4', { html: '<span class="tw">' + (g.collapsed ? '▸' : '▾') + '</span>' + g.title });
       h.addEventListener('click', function () { box.classList.toggle('collapsed'); h.querySelector('.tw').textContent = box.classList.contains('collapsed') ? '▸' : '▾'; });
@@ -461,6 +462,9 @@
     withSketch(function (sid) {
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: !!cut, depth: 10, end: cut ? 'through' : 'blind', reverse: false, dir2: false, depth2: 10, end2: 'blind', sketch: pickDefaultSketch(sid) };
       if (existing) delete f.profile;
+      // SolidWorks default: a new cut on a sheet-metal part is a Normal cut (perpendicular to the sheet faces, through the thickness)
+      if (!existing && cut && App.model.sheet) f.normalCut = true;
+      f.normalCut = !!f.normalCut;
       if (f.sketch == null) { UI.setStatus('Create a sketch first: Sketch tab → pick a plane → draw a closed profile.'); UI.toast('No sketch available. Draw a sketch first.'); return; }
       // a cut drawn on a face should go into the material (the face normal points out of it)
       if (!existing && cut) { var sk0 = K.findFeature(App.model, f.sketch); if (sk0 && sk0.plane && sk0.plane.custom) f.reverse = true; }
@@ -471,8 +475,10 @@
         delete out.draftOn;
         if (!v.draftOn || !(+v.draft > 0)) { delete out.draft; delete out.draftOut; }
         else if (!v.draftOut) delete out.draftOut;
+        if (!v.cut || !v.normalCut) delete out.normalCut;
         return out;
       }
+      function isSheetCut(v) { return !!v.cut && !!App.model.sheet; }
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'cut' : 'extrude', values: f,
         command: { sketchId: f.sketch },
@@ -493,13 +499,19 @@
             ]
           },
           {
+            // only on a Cut-Extrude of a sheet-metal part (the model carries sheet parameters)
+            title: 'Sheet Metal', show: isSheetCut, fields: [
+              { type: 'check', label: 'Normal cut', key: 'normalCut' }
+            ]
+          },
+          {
             title: 'Draft', collapsed: !f.draftOn, fields: [
               { type: 'check', label: 'Draft on', key: 'draftOn', rerender: true },
               { type: 'number', label: 'Draft angle', key: 'draft', unit: '°', min: 0, show: function (v) { return v.draftOn; } },
               { type: 'check', label: 'Draft outward', key: 'draftOut', show: function (v) { return v.draftOn; } }
             ]
           },
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
         onChange: function (v) { App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
         onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; return commitFeature(feat, existing); }

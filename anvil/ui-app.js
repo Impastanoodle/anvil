@@ -444,8 +444,24 @@
     if (k === 'e' || k === 'E') { UI.cmdExtrude(false); return; }
   });
 
+  // ------------------------------------------------------------------ theme (light | dark)
+  // The stylesheet keys every colour off html[data-theme]; the three.js materials follow through UI.setViewportTheme (ui-core.js).
+  var THEMES = ['light', 'dark'];
+  function theme() { return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'; }
+  function setTheme(name) {
+    name = THEMES.indexOf(name) >= 0 ? name : 'light';
+    document.documentElement.dataset.theme = name;
+    try { localStorage.setItem('anvil.theme', name); } catch (e) { }
+    if (UI.setViewportTheme) UI.setViewportTheme(name);
+    App.gridStale = true; App.dimsStale = true;   // sketch grid and dimension overlay pick up the new colours
+    // the View ▸ Theme check marks come from MENUS(), which is re-evaluated every time a menu opens
+    return name;
+  }
+  UI.theme = theme; UI.setTheme = setTheme;
+
   // ------------------------------------------------------------------ automation API (for the browser console / Claude)
   window.anvil = {
+    theme: function (name) { if (arguments.length) setTheme(name); return theme(); },
     // run / append / load / rebuild resolve to the summary (or reject with the script error) once the build is applied
     run: function (code) { return runScript(code, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
     append: function (code) { return runScript(code, false).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
@@ -475,6 +491,10 @@
 
   // ------------------------------------------------------------------ boot
   function boot() {
+    // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
+    var savedTheme = 'light';
+    try { savedTheme = localStorage.getItem('anvil.theme') || 'light'; } catch (e) { }
+    setTheme(savedTheme);
     $('search-ico').innerHTML = Icons('search', 16);
     $('filter-ico').innerHTML = Icons('filter', 14);
     UI.renderFmTabs();

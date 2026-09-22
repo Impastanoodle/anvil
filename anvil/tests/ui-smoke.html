@@ -98,6 +98,18 @@
   }
   function names() { return UI.App.model.features.map(function (f) { return f.name; }); }
   function statusText() { return $('status-msg').textContent; }
+  // open the menu bar entries one by one and collect the rows whose label contains `text`
+  function menuRows(text) {
+    var out = [], lis = D.querySelectorAll('#menus > li');
+    for (var i = 0; i < lis.length; i++) {
+      lis[i].dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      var mi = D.querySelectorAll('.menu .mi');
+      for (var j = 0; j < mi.length; j++) if (mi[j].textContent.indexOf(text) >= 0) out.push({ row: mi[j], menu: lis[i].textContent, text: mi[j].textContent, chk: (mi[j].querySelector('.chk') || {}).textContent || '' });
+      if (out.length) return out;
+    }
+    if (UI.closeMenus) UI.closeMenus();
+    return out;
+  }
 
   // ---- steps
   step('app booted: anvil, UI, Kernel, THREE present, no boot errors', async function () {
@@ -360,6 +372,79 @@
     UI.closeTaskPane();
     return n + ' library entries';
   });
+  step('Cut-Extrude PM on a sheet part: "Normal cut" is on by default, lands in the feature, absent on a plain part', async function () {
+    // sheet on Top: x ∈ [0,100], y ∈ [0,2], z ∈ [−60,0]; the sketch sits on the bottom face (Top plane, offset 0) so
+    // the cut's default direction (+y) already goes into the sheet
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, 0, 100, 60);\np.baseFlange(2);');
+    await anvil.append('p.sketch("Top", 0).rect(20, 20, 10, 10);');
+    await idle();
+    near(anvil.summary().volume, 12000, 1e-6, 'sheet volume');
+    UI.cmdExtrude(true);
+    assert(UI.hasPM(), 'Cut-Extrude PM not open');
+    assert(/Sheet Metal/.test($('pm').innerText), 'PM has no Sheet Metal group: ' + $('pm').innerText.replace(/\s+/g, ' ').slice(0, 160));
+    var cb = pmField('Normal cut');
+    assert(cb && cb.type === 'checkbox', 'Normal cut checkbox missing');
+    assert(cb.checked, 'Normal cut should be checked by default for a new cut on a sheet part');
+    await pmAccept();
+    assert(!UI.hasPM(), 'PM still open');
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'extrude' && f.cut === true && f.normalCut === true, 'committed feature: ' + JSON.stringify(f));
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, 12000 - 10 * 10 * 2, 1e-6, 'volume after the cut');
+    assert(/normalCut: true/.test(anvil.script()), 'script lacks normalCut: ' + anvil.script().split('\n').pop());
+    // editing the feature shows the box checked; a plain part gets no Sheet Metal group
+    UI.editFeature(f);
+    assert(UI.hasPM(), 'edit PM not open');
+    var cb2 = pmField('Normal cut');
+    assert(cb2 && cb2.checked, 'edit PM should show Normal cut checked');
+    UI.pmCancel();
+    await anvil.run('p.box(20, 20, 10);\np.sketch("Top", 10).rect(5, -15, 5, 5);');
+    await idle();
+    UI.cmdExtrude(true);
+    assert(UI.hasPM(), 'Cut-Extrude PM not open on the plain part');
+    assert(!pmField('Normal cut') && !/Sheet Metal/.test($('pm').innerText), 'Normal cut should not be offered on a part without sheet parameters');
+    UI.pmCancel();
+    await idle();
+    return 'volume ' + s.volume + ', feature ' + f.name;
+  });
+  step('View ▸ Theme: UI.setTheme / anvil.theme switch to dark and back; document, storage, viewport and menu agree', async function () {
+    assert(typeof UI.setTheme === 'function' && typeof UI.theme === 'function', 'UI.setTheme / UI.theme missing');
+    assert(typeof anvil.theme === 'function', 'anvil.theme missing');
+    assert(UI.theme() === 'light' && anvil.theme() === 'light', 'the default theme should be light, got ' + UI.theme());
+    var stored;
+    function read() { try { return W.localStorage.getItem('anvil.theme'); } catch (e) { return null; } }
+    try {
+      UI.setTheme('dark');
+      assert(D.documentElement.dataset.theme === 'dark', 'documentElement.dataset.theme = ' + JSON.stringify(D.documentElement.dataset.theme));
+      stored = read();
+      assert(stored === 'dark', 'localStorage anvil.theme = ' + JSON.stringify(stored));
+      assert(UI.theme() === 'dark' && anvil.theme() === 'dark', 'UI.theme() / anvil.theme() should report dark');
+      assert(UI.viewportTheme === 'dark', 'UI.viewportTheme = ' + JSON.stringify(UI.viewportTheme));
+      var rows = menuRows('Theme');
+      var dark = rows.filter(function (r) { return /Dark/.test(r.text); })[0], light = rows.filter(function (r) { return /Light/.test(r.text); })[0];
+      assert(dark && light, 'View menu lacks Theme ▸ Light / Dark rows: ' + rows.map(function (r) { return r.text; }).join(' | '));
+      assert(/View/.test(dark.menu), 'Theme rows should be in the View menu, found in ' + dark.menu);
+      assert(dark.chk && !light.chk, 'Dark should be checked and Light not: dark=' + JSON.stringify(dark.chk) + ' light=' + JSON.stringify(light.chk));
+      if (UI.closeMenus) UI.closeMenus();
+      // the setter also takes the light theme back through the automation alias
+      anvil.theme('light');
+      assert((D.documentElement.dataset.theme || 'light') === 'light', 'dataset.theme after light = ' + JSON.stringify(D.documentElement.dataset.theme));
+      assert(UI.theme() === 'light' && UI.viewportTheme === 'light', 'light restored: theme ' + UI.theme() + ', viewport ' + UI.viewportTheme);
+      var rows2 = menuRows('Theme');
+      var light2 = rows2.filter(function (r) { return /Light/.test(r.text); })[0], dark2 = rows2.filter(function (r) { return /Dark/.test(r.text); })[0];
+      assert(light2 && light2.chk && dark2 && !dark2.chk, 'after restoring: light=' + JSON.stringify(light2 && light2.chk) + ' dark=' + JSON.stringify(dark2 && dark2.chk));
+      // clicking the menu row (still open from menuRows) works too and closes the menu
+      dark2.row.click();
+      assert(UI.theme() === 'dark' && D.documentElement.dataset.theme === 'dark', 'clicking Theme ▸ Dark should switch the theme');
+    } finally {
+      if (UI.theme() !== 'light') UI.setTheme('light');
+      if (UI.closeMenus) UI.closeMenus();
+      try { W.localStorage.removeItem('anvil.theme'); } catch (e) { }
+    }
+    await idle();
+    return 'stored ' + JSON.stringify(stored) + ' while dark; restored light';
+  });
 
   // ---- background rebuilds (Web Worker)
   step('worker mode is on by default over http and a rebuild goes through the worker', async function () {
@@ -445,6 +530,31 @@
     await idle();
     return 'in the ' + hit.menu + ' menu; check mark ' + JSON.stringify(hit.chk) + ' → ' + JSON.stringify(hit2.chk);
   });
+  step('after a worker build the main-thread cache holds every feature; a sync rebuild reuses all of them', async function () {
+    assert(typeof UI.buildCacheInfo === 'function', 'UI.buildCacheInfo is missing');
+    anvil.workerOn(true);
+    assert(UI.App.workerOn === true, 'worker mode should be on');
+    var s = await anvil.run('p.box(30, 20, 10);\np.hole("Top", 15, -10, 6, { offset: 10 });\np.linearPattern({ dir: "x", spacing: 10, count: 2 });');
+    await idle();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    var n = UI.App.model.features.length;
+    var info = UI.buildCacheInfo();
+    assert(info && info.steps === n, 'cache steps ' + JSON.stringify(info) + ' vs ' + n + ' features');
+    assert(info.partial === n - 1, 'every step but the last should be partial: ' + JSON.stringify(info));
+    var b = await UI.rebuild({ sync: true });
+    assert(b && b.reused === n, 'a sync rebuild right after the worker build should reuse all ' + n + ' features, reused ' + JSON.stringify(b && b.reused));
+    assert(UI.App.build.reused === n, 'App.build.reused = ' + UI.App.build.reused);
+    near(anvil.summary().volume, s.volume, 1e-6, 'volume unchanged by the cached rebuild');
+    // the full cache from that sync build carries on: an appended feature only builds itself
+    await anvil.append('p.box(5, 5, 5, { at: [100, 0, 0] });');
+    await idle();
+    var info2 = UI.buildCacheInfo();
+    assert(info2.steps === n + 2, 'cache after the append: ' + JSON.stringify(info2) + ' vs ' + (n + 2) + ' features');
+    var b2 = await UI.rebuild({ sync: true });
+    assert(b2.reused === n + 2, 'unchanged model after the append: reused ' + b2.reused + ' of ' + (n + 2));
+    near(anvil.summary().volume, s.volume + 125, 1e-6, 'volume with the cube');
+    return 'steps ' + info.steps + ' (' + info.partial + ' partial), sync rebuild reused ' + b.reused + '/' + n;
+  });
 
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
@@ -497,6 +607,8 @@
   // The app reads localStorage 'anvil.worker' at boot ('0' = off, '1' = on); clear a value left by an earlier session so
   // the "on by default over http" step tests the default, not a remembered preference (same origin as the frame).
   try { localStorage.removeItem('anvil.worker'); } catch (e) { }
+  // Likewise 'anvil.theme' ('dark' | 'light'): the theme step asserts the light default before switching.
+  try { localStorage.removeItem('anvil.theme'); } catch (e) { }
   frame.src = '../index.html';
 })();
 </script>

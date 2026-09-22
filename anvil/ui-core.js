@@ -86,6 +86,33 @@ var UI = (function () {
 
   var bodyMesh = null, edgeLines = null;
 
+  // ------------------------------------------------------------------ viewport theme
+  // The viewport background is CSS (the renderer clears to transparent) and is themed by the stylesheet through
+  // document.documentElement.dataset.theme; the line materials above are tuned for the light background, so the
+  // dark theme swaps them here. `light` is exactly the set of colours the materials are created with.
+  // The HLR body colour follows the theme too: it exists to occlude hidden lines, so it must read as "background".
+  var THEME_COLORS = {
+    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff },
+    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b }
+  };
+  var viewportTheme = 'light';
+  // setViewportTheme('dark' | 'light'): idempotent; UI.setTheme (ui-app.js) calls it after switching the stylesheet.
+  function setViewportTheme(name) {
+    name = name === 'dark' ? 'dark' : 'light';
+    var c = THEME_COLORS[name];
+    Object.keys(c).forEach(function (k) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; });
+    viewportTheme = name;
+    if (UI) UI.viewportTheme = name;  // UI is still undefined during the boot call below; the export picks the value up
+    if (App.model) render();          // before boot the frame loop is not running and the canvas has no size yet
+    return name;
+  }
+  // The materials exist before ui-app.js boots, so a stored dark theme is applied here as well (UI.setTheme repeats it).
+  (function () {
+    var stored = null;
+    try { stored = localStorage.getItem('anvil.theme'); } catch (e) { }
+    if (stored === 'dark') setViewportTheme('dark');
+  })();
+
   // ------------------------------------------------------------------ camera model
   var cam = { target: new THREE.Vector3(0, 0, 0), dir: new THREE.Vector3(1, 1, 1).normalize(), up: new THREE.Vector3(0, 1, 0), scale: 0.35, right: new THREE.Vector3(1, 0, 0) };
   var size = { w: 1, h: 1 };
@@ -614,7 +641,12 @@ var UI = (function () {
   // ------------------------------------------------------------------ rebuild pipeline
   // Two paths end in applyBuild(): the sync path runs Kernel.rebuild on the main thread (App.buildCache
   // keeps the unchanged feature prefix); the async path posts App.model to worker.js, which keeps its own
-  // cache, and applies the packed result when it comes back. UI.rebuild() always returns a Promise that
+  // cache, and applies the packed result when it comes back, after which App.buildCache is rebuilt from the
+  // result with Kernel.cacheFromBuild so the next sync build (worker off, opts.sync, or the fallback after a
+  // worker error) starts from the last applied body instead of from scratch and the previous cache's bodies
+  // are released. A cache is never stale in the sense of being wrong: Kernel.rebuild compares feature keys and
+  // only reuses the prefix that still matches, so it is kept across the worker-error fallback on purpose.
+  // UI.rebuild() always returns a Promise that
   // resolves to App.build once the build is applied. Sync-path promises carry `applied: true` so that
   // UI.afterRebuild(p, fn) can run the caller's tail immediately, exactly as before the worker existed.
   var wk = {
@@ -788,6 +820,8 @@ var UI = (function () {
         build = K.unpackBuild(d.build);
         K.applyProfiles(App.model, build.profiles);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
+        // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
+        App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, build) : null;
       } catch (e) { disableWorker(e); finishSync(req); return; }
       settle(req, null);
       drain();
@@ -812,6 +846,15 @@ var UI = (function () {
     if (!s) return;
     if (on) { busyPrevStatus = s.textContent; s.textContent = 'Rebuilding…'; s.classList.add('busy'); }
     else { s.classList.remove('busy'); if (s.textContent === 'Rebuilding…') s.textContent = busyPrevStatus || 'Rebuilt.'; }
+  }
+
+  // For tests: how many feature steps the main-thread cache holds and how many of them carry no body
+  // (`partial`, as Kernel.cacheFromBuild marks every step but the last).
+  function buildCacheInfo() {
+    var steps = (App.buildCache && App.buildCache.steps) || [];
+    var partial = 0;
+    steps.forEach(function (s) { if (s && s.partial) partial++; });
+    return { steps: steps.length, partial: partial };
   }
 
   function setWorkerOn(on) {
@@ -874,7 +917,8 @@ var UI = (function () {
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
-    rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn,
+    rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; }
   };

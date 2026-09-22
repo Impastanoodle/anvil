@@ -1078,6 +1078,9 @@ var Kernel = (function () {
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
     while (p < model.features.length && p < prev.length && prev[p].key === keys[p]) p++;
+    // a cache made from a finished build (cacheFromBuild) only knows the final body: a partial step cannot hand over
+    // ctx.body, so the prefix ends at the last step that carries one (all of them, or none, for such a cache)
+    while (p > 0 && prev[p - 1].partial) p--;
     for (var i = 0; i < p; i++) {
       var st = prev[i], pf = model.features[i];
       if (st.error) errors[pf.id] = st.error;
@@ -1131,13 +1134,23 @@ var Kernel = (function () {
           default: {
             var tool = buildTool(f, model, ctx);
             if (!tool) break;
-            ctx.tools[f.id] = tool;
             var cut = isCut(f, model);
+            if (cut && f.type === 'extrude' && f.normalCut && model.sheet && ctx.body) {
+              // Normal Cut: swap the tool for a prism normal to the sheet (see normalCutTool); the swapped tool is
+              // what the cache and the packed build carry
+              var ncs = ctx.sketches[f.sketch] || findFeature(model, f.sketch);
+              var ncp = resolvePlane(ncs.plane, model, ctx.planes);
+              var ncDir = (f.dir2 || f.end === 'mid') ? null : (f.reverse ? scale(ncp.n, -1) : ncp.n.slice());
+              var nct = normalCutTool(tool, ctx.body, model, ncDir);
+              if (nct === tool) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Normal cut: the cut does not cross a sheet face; a plain cut was made.';
+              tool = nct;
+            }
+            ctx.tools[f.id] = tool;
             if (cut) {
               if (!ctx.body) throw new Error('Nothing to cut yet.');
               var volBefore = ctx.body.volume();
               ctx.body = ctx.body.subtract(tool);
-              if (Math.abs(ctx.body.volume() - volBefore) < 1e-6) warnings[f.id] = 'Cut removed no material. Try "Reverse direction".';
+              if (Math.abs(ctx.body.volume() - volBefore) < 1e-6) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Cut removed no material. Try "Reverse direction".';
             } else {
               ctx.body = ctx.body ? ctx.body.union(tool) : tool;
             }
@@ -1204,6 +1217,21 @@ var Kernel = (function () {
       if (f.type === 'sketch' && profiles[f.id]) f.profile = profiles[f.id];
     });
     return model;
+  }
+  // cacheFromBuild(model, build) -> a rebuild cache ({ steps }) made from a finished build of `model` (typically an
+  // unpacked worker build, whose own cache stayed in the worker). A build keeps only the final body, so every step
+  // but the last is `partial` (tool, plane, flange, profile and messages, but no body); rebuild then reuses the
+  // whole cache for an unchanged or appended model and starts over for a change anywhere in the middle.
+  function cacheFromBuild(model, build) {
+    var n = model.features.length;
+    var steps = model.features.map(function (f, i) {
+      var st = { key: featureKey(f, model), tool: (build.tools && build.tools[f.id]) || null, plane: (build.planes && build.planes[f.id]) || null,
+        flange: (build.flanges && build.flanges[f.id]) || null, profile: (build.profiles && build.profiles[f.id]) || f.profile || null,
+        error: (build.errors && build.errors[f.id]) || null, warning: (build.warnings && build.warnings[f.id]) || null };
+      if (i === n - 1) st.body = build.body || null; else st.partial = true;
+      return st;
+    });
+    return { steps: steps };
   }
 
   // ------------------------------------------------------------------ meshing
@@ -2046,6 +2074,55 @@ var Kernel = (function () {
     return { first: tool1, second: unionAll(tools2) };
   }
 
+  // Normal Cut (the Cut-Extrude option of the same name): a cut sketched on a plane that is not parallel to the
+  // sheet would leave slanted walls no laser or punch can make. The tool is replaced by a prism normal to the sheet:
+  // the part of the tool inside the body is meshed, and each of its faces that lies on a sheet surface (flat or a
+  // bend facet: air just in front of it, metal half a thickness behind, air again a full thickness behind) is
+  // outlined and pushed straight through the thickness. With `dir` (the extrusion direction) only the faces the
+  // tool enters through are used, so a blind cut is not doubled from the far side; without it (mid-plane or
+  // two-direction cuts), or when the tool enters through a thickness edge, every sheet-surface face counts. A cut of
+  // any depth becomes a through-thickness cut. Returns `tool` itself when it crosses no sheet surface.
+  function normalCutTool(tool, body, model, dir) {
+    var R = body.intersect(tool);
+    if (!(R.volume() > 1e-9)) return tool;
+    var T = +sheetParams(model).thickness, eps = 1e-3 * T;
+    var inside = body.pointTester();
+    var meshR = meshFromBody(R), p = meshR.positions64;
+    var caps = [], entry = [];
+    meshR.faces.forEach(function (face, i) {
+      // one probe per triangle (its centroid), votes weighted by area: a sliver triangle at the rim of a bend facet
+      // can probe into the neighbouring facet's metal and must not outvote the bulk of the face
+      var n = face.normal, yes = 0, no = 0;
+      for (var t = face.start; t < face.start + face.count; t++) {
+        var k = t * 9;
+        var a = [p[k], p[k + 1], p[k + 2]], b = [p[k + 3], p[k + 4], p[k + 5]], d = [p[k + 6], p[k + 7], p[k + 8]];
+        var c = scale(add(add(a, b), d), 1 / 3), w = len(cross(sub(b, a), sub(d, a)));
+        var onSheet = !inside(add(c, scale(n, eps))) && inside(sub(c, scale(n, T / 2))) && !inside(sub(c, scale(n, T + eps)));
+        if (onSheet) yes += w; else no += w;
+      }
+      if (!(yes > no)) return;
+      caps.push(i);
+      if (dir && dot(n, dir) < -1e-6) entry.push(i);
+    });
+    var chosen = entry.length ? entry : caps;
+    if (!chosen.length) return tool;
+    var tag = tool.polygons.length ? tool.polygons[0].shared : undefined;
+    var prisms = [];
+    chosen.forEach(function (i) {
+      var o = faceOutline(meshR, i);
+      if (!o) return;
+      var cl = faceLoopsClassified(o);
+      // through the thickness along −n: from just in front of the face to just past the far surface
+      var outers = cl.outers.map(function (l) { return prism(l, o.plane, -(T + eps), eps, tag); });
+      if (!outers.length) return;
+      var solid = unionAll(outers);
+      if (cl.holes.length) solid = solid.subtract(unionAll(cl.holes.map(function (l) { return prism(l, o.plane, -(T + 2 * eps), 2 * eps, tag); })));
+      prisms.push(solid);
+    });
+    if (!prisms.length) return tool;
+    return unionTree(prisms);
+  }
+
   // Bend allowance with the shop k-factor: arc length of the neutral axis.
   function bendAllowance(angleRad, R, T, K) { return angleRad * (R + K * T); }
 
@@ -2077,12 +2154,17 @@ var Kernel = (function () {
       (build.flanges[f.id] || []).forEach(function (fi) { flanges.push(fi); });
     });
     var regions = [], bends = [], usedFaces = {}, usedFlanges = {};
-    function onSegment(p, a, b) {
-      var d = [b[0] - a[0], b[1] - a[1]], L2 = d[0] * d[0] + d[1] * d[1];
-      if (L2 < 1e-12) return false;
-      var t = ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / L2;
-      if (t < -1e-6 || t > 1 + 1e-6) return false;
-      return Math.hypot(p[0] - a[0] - d[0] * t, p[1] - a[1] - d[1] * t) < 1e-3;
+    // length of the overlap of segment A–B with segment a–b when the two are collinear (both A and B within 1e-3 of
+    // the line a–b), else 0
+    function overlapOnSegment(A, B, a, b) {
+      var d = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(d[0], d[1]);
+      if (L < 1e-9) return 0;
+      var u = [d[0] / L, d[1] / L];
+      var tA = (A[0] - a[0]) * u[0] + (A[1] - a[1]) * u[1], tB = (B[0] - a[0]) * u[0] + (B[1] - a[1]) * u[1];
+      if (Math.hypot(A[0] - a[0] - u[0] * tA, A[1] - a[1] - u[1] * tA) > 1e-3) return 0;
+      if (Math.hypot(B[0] - a[0] - u[0] * tB, B[1] - a[1] - u[1] * tB) > 1e-3) return 0;
+      var lo = Math.max(0, Math.min(tA, tB)), hi = Math.min(L, Math.max(tA, tB));
+      return hi > lo ? hi - lo : 0;
     }
     function unfold(faceIdx, map, nTracked, depth) {
       if (usedFaces[faceIdx] || depth > 16) return;
@@ -2096,8 +2178,11 @@ var Kernel = (function () {
         var dm = dot(fi.mid, face.normal) - face.w;
         if (Math.abs(dm) > 1e-3 && Math.abs(Math.abs(dm) - T) > 1e-3) return;
         var A2 = map(fi.a), B2 = map(fi.b);
+        // attached when the flange's edge line A2–B2 runs along an outline segment and overlaps it by more than half
+        // a thickness: with Material Outside/Inside a neighbouring flange trims the base back at a shared corner, so
+        // the ends of the edge need not lie on the outline themselves
         var attached = loops2.some(function (l) {
-          return l.some(function (p, i) { var q = l[(i + 1) % l.length]; return onSegment(A2, p, q) && onSegment(B2, p, q); });
+          return l.some(function (p, i) { return overlapOnSegment(A2, B2, p, l[(i + 1) % l.length]) > Math.max(1e-3, 0.5 * T); });
         });
         if (!attached) return;
         usedFlanges[k] = true;
@@ -2358,6 +2443,7 @@ var Kernel = (function () {
     });
     if (opts.sheetBase) f.sheetBase = true;
     if (opts.draft) { f.draft = +opts.draft; if (opts.draftOutward) f.draftOut = true; }
+    if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
     return this;
   };
   // Sheet metal parameters used by baseFlange/flange/flatten. K = 0.71 (steel) or 0.64 (aluminum) per shop practice.
@@ -2616,6 +2702,7 @@ var Kernel = (function () {
           if (f.dir2) { o.depth2 = f.depth2; if (f.end2 === 'through') o.throughAll2 = true; }
           if (f.sheetBase) o.sheetBase = true;
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
+          if (f.cut && f.normalCut) o.normalCut = true;
           out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + f.depth + ', ' + optsStr(o) + ').last();');
           break;
         }
@@ -2716,10 +2803,10 @@ var Kernel = (function () {
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
     newModel: newModel, featureName: featureName, findFeature: findFeature,
     buildTool: buildTool, isCut: isCut, rebuild: rebuild, buildEdgeFeature: buildEdgeFeature,
-    packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles,
+    packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
     meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
-    buildFlange: buildFlange, buildJog: buildJog, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
+    buildFlange: buildFlange, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
     resolveFaces: resolveFaces, buildShell: buildShell,
     Builder: Builder, runScript: runScript, generateScript: generateScript,

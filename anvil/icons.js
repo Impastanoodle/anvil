@@ -1,7 +1,8 @@
 // icons.js — inline SVG icon set for Anvil's ribbon, tree and panels. Two-tone: slate strokes, blue/green/red accents.
 var Icons = (function () {
   'use strict';
-  var S = '#4d5561', B = '#2d7dd2', G = '#3fa34d', R = '#d9453b', A = '#e8a23a', L = '#9aa3ad', F = '#dfe6ee';
+  // S is the icon ink: currentColor, so the stylesheet picks it per theme (.ico { color: var(--icon-ink) }; light = #4d5561)
+  var S = 'currentColor', B = '#2d7dd2', G = '#3fa34d', R = '#d9453b', A = '#e8a23a', L = '#9aa3ad', F = '#dfe6ee';
   function sw(extra) { return 'fill="none" stroke="' + S + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" ' + (extra || ''); }
   // isometric box helper: front face path, top, side
   function box(color, x, y, w, h, d) {

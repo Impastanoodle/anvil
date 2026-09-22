@@ -1253,6 +1253,172 @@
     near(flat.bbox.max[1] - flat.bbox.min[1], 60 + BA + L, 1e-6, 'flat height');
     return 'blank ' + fmt(area) + ' (bounds ' + fmt(lo) + ' .. ' + fmt(hi) + '), ' + outer.length + ' outline points';
   });
+  test('Material Outside flanges on two edges that share a corner unfold into one blank with two bends', function () {
+    // Sheet on Top: rect(0, 0, 100, 60) → x ∈ [0,100], y ∈ [0,2], z ∈ [−60,0] (Top sketch v maps to −z). Flange 1 on the
+    // x = 100 edge, flange 2 on the z = 0 edge, both Material Outside (the wall's inner face at the edge), so each one
+    // trims the base back by R = 2 before its bend takes that strip's place. Two separate features, no mitre.
+    var r = build('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, 0, 100, 60);\np.baseFlange(2);\n' +
+      'p.flange(20, [[100, 2, -30]], { position: "outside" });\np.flange(20, [[50, 2, 0]], { position: "outside" });');
+    noErrors(r);
+    var R = 2, T = 2, L = 20, BA = K.bendAllowance(Math.PI / 2, R, T, 0.71);
+    // envelope: Material Outside keeps the base dimensions, the walls' outer faces are T beyond the edges
+    near(r.mp.bbox.max[0], 100 + T, 1e-6, 'wall 1 outer face at x = 100 + T');
+    near(r.mp.bbox.max[2], 0 + T, 1e-6, 'wall 2 outer face at z = 0 + T');
+    near(r.mp.bbox.max[1], 2 + R + L, 1e-6, 'wall tops at edge + R + L');
+    assert(r.mp.volume > 12000, 'two 20 mm walls add far more than the two R-wide trims remove: ' + fmt(r.mp.volume));
+    var flat = K.flatPattern(r.model, r.build, r.mesh);
+    assert(flat.bends.length === 2, 'two bends expected, got ' + flat.bends.length + ': ' + JSON.stringify(flat.bends.map(function (b) { return b.label; })));
+    assert(flat.loops.length === 1, 'one outline loop, got ' + flat.loops.length);
+    var area = K.signedArea(flat.loops[0]);
+    assert(area > 6000, 'the blank (' + fmt(area) + ') must be larger than the 100 × 60 base');
+    // Derivation. Flange 1 trims x ∈ [98,100] off the base along its whole edge (z ∈ [−60,0]); flange 2 is placed on
+    // the z = 0 edge of the flat face that is left, which now runs x ∈ [0,98], and trims z ∈ [−2,0] there. Flat face
+    // after both trims: 98 × 58 = 5684. Flange 1 unfolds along its 60 mm edge as a strip BA + L wide, flange 2 along
+    // its 98 mm edge: 60·(BA + L) + 98·(BA + L) with BA = π/2·(R + K·T) = π/2·3.42 = 5.3721. Total 9692.79. The two
+    // strips do not overlap (flange 2's region stops at x = 98 where flange 1's strip begins). The kernel lane reports
+    // its own number for this corner; the head reconciles the constant if the derivations differ (tolerance 1e-3).
+    var expected = 98 * 58 + 60 * (BA + L) + 98 * (BA + L);   // = 9692.7955, the kernel lane's measured value
+    nearRel(area, expected, 1e-4, 'blank area');
+    // envelope: each strip starts at its trimmed edge (x = 98, and z = −2 which is sketch y = 2 since y = −z) and runs
+    // BA + L outward: x up to 98 + 25.372 = 123.372, y down to 2 − 25.372 = −23.372 (kernel lane: [0, −23.3721] .. [123.3721, 60])
+    nearVec([flat.bbox.min[0], flat.bbox.min[1], 0], [0, 2 - (BA + L), 0], 1e-6, 'flat bbox.min');
+    nearVec([flat.bbox.max[0], flat.bbox.max[1], 0], [98 + BA + L, 60, 0], 1e-6, 'flat bbox.max');
+    var labels = flat.bends.map(function (b) { return b.label; }).sort().join(' | ');
+    assert(/UP 90° R2/.test(labels) && !/DOWN/.test(labels), 'both bends fold up: ' + labels);
+    return 'blank ' + fmt(area) + ' (derived ' + fmt(expected) + '), ' + labels;
+  });
+
+  // ------------------------------------------------------------------ normal cut (sheet metal)
+  group('normal cut');
+  // Sheet on Top: rect(0, 0, 100, 60) → x ∈ [0,100], y ∈ [0,2], z ∈ [−60,0] (Top sketch v maps to −z); volume 12000.
+  var NSHEET = 'p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, 0, 100, 60);\np.baseFlange(2);';
+  function lastFeature(r) { return r.model.features[r.model.features.length - 1]; }
+  // every mesh face normal is parallel to a world axis
+  function tiltedFaces(mesh) {
+    return mesh.faces.filter(function (f) {
+      var n = f.normal;
+      return !(Math.abs(n[0]) > 0.999999 || Math.abs(n[1]) > 0.999999 || Math.abs(n[2]) > 0.999999);
+    });
+  }
+  function hasFace(mesh, n, w, tol) {
+    return mesh.faces.some(function (f) {
+      return Math.abs(f.normal[0] - n[0]) < 1e-6 && Math.abs(f.normal[1] - n[1]) < 1e-6 && Math.abs(f.normal[2] - n[2]) < 1e-6 && Math.abs(f.w - w) < tol;
+    });
+  }
+  test('normal cut parallel to the sheet is the plain cut; the flag is stored, emitted and round-trips', function () {
+    assert(typeof K.normalCutTool === 'function', 'Kernel.normalCutTool is missing');
+    // 10 × 10 through the 2 mm sheet from the top face: 12000 − 200 = 11800
+    var plain = build(NSHEET + '\np.sketch("Top", 2).rect(20, 20, 10, 10);\np.cut("through", { reverse: true });');
+    var nc = build(NSHEET + '\np.sketch("Top", 2).rect(20, 20, 10, 10);\np.cut("through", { reverse: true, normalCut: true });');
+    noErrors(plain); noErrors(nc);
+    nearRel(plain.mp.volume, 11800, 1e-6, 'plain cut volume');
+    nearRel(nc.mp.volume, 11800, 1e-6, 'normal cut volume');
+    nearVec(nc.mp.centroid, plain.mp.centroid, 1e-6, 'centroid');
+    assert(Object.keys(nc.warnings).length === 0, 'no warning: ' + JSON.stringify(nc.warnings));
+    var f = lastFeature(nc);
+    assert(f.type === 'extrude' && f.cut === true && f.normalCut === true, 'feature: ' + JSON.stringify(f));
+    assert(lastFeature(plain).normalCut !== true, 'the plain cut has no normalCut flag');
+    var script = K.generateScript(nc.model);
+    assert(/normalCut: true/.test(script), 'generateScript emits normalCut: ' + script.split('\n').pop());
+    assert(!/normalCut/.test(K.generateScript(plain.model)), 'the plain cut script has no normalCut');
+    var rt = build(script);
+    noErrors(rt);
+    assert(lastFeature(rt).normalCut === true, 'round-trip keeps normalCut');
+    nearRel(rt.mp.volume, 11800, 1e-6, 'round-trip volume');
+    assert(K.generateScript(rt.model) === script, 'generateScript is a fixed point with normalCut');
+    // p.extrude(d, { cut: true, normalCut: true }) is the same feature; a blind 5 mm cut still goes through the 2 mm sheet
+    var ex = build(NSHEET + '\np.sketch("Top", 2).rect(20, 20, 10, 10);\np.extrude(5, { cut: true, reverse: true, normalCut: true });');
+    noErrors(ex);
+    nearRel(ex.mp.volume, 11800, 1e-6, 'extrude(cut, normalCut) volume');
+    assert(lastFeature(ex).normalCut === true && lastFeature(ex).cut === true, 'extrude() stores normalCut: ' + JSON.stringify(lastFeature(ex)));
+    // a blind normal cut shallower than the sheet still goes through: the prism is re-extruded through the thickness
+    var shallow = build(NSHEET + '\np.sketch("Top", 2).rect(20, 20, 10, 10);\np.cut(1, { reverse: true, normalCut: true });');
+    noErrors(shallow);
+    nearRel(shallow.mp.volume, 11800, 1e-6, 'a 1 mm blind normal cut removes the full 10 × 10 × 2');
+    var shallowPlain = build(NSHEET + '\np.sketch("Top", 2).rect(20, 20, 10, 10);\np.cut(1, { reverse: true });');
+    nearRel(shallowPlain.mp.volume, 11900, 1e-6, 'sanity: the plain 1 mm cut removes half');
+  });
+  test('normal cut from a 45° sketch removes a straight prism (axis-aligned faces), not the oblique slab', function () {
+    // Custom frame tilted 45° about X: x = X, y = (0, c, −c), n = (0, c, c), c = 1/√2; origin (50, 10, −30) is 8 above the
+    // sheet. A tool point is origin + u·x + v·y − t·n (the cut runs along −n, "reverse"). On the top face y = 2:
+    // c·v − c·t = −8 → z = −30 − c·v − c·t = −38 − √2·v, so the 10 × 10 sketch (u, v ∈ [−5, 5]) enters through
+    // x ∈ [45, 55], z ∈ [−45.071, −30.929] (10√2 = 14.142 long); on the bottom face y = 0 the footprint is shifted by −2 in z.
+    // Plain oblique cut: a parallelogram slab, removed volume 10 · 14.142 · 2 = 282.843 with centroid z = −39.
+    // Normal cut: the top footprint extruded straight through the thickness: the same volume, centroid z = −38.
+    var c = Math.SQRT1_2;
+    var TILT = 'p.sketch({ custom: true, origin: [50, 10, -30], x: [1, 0, 0], y: [0, ' + c + ', ' + (-c) + '], n: [0, ' + c + ', ' + c + '] }, 0).rect(-5, -5, 10, 10);';
+    var plain = build(NSHEET + '\n' + TILT + '\np.cut("through", { reverse: true });');
+    var nc = build(NSHEET + '\n' + TILT + '\np.cut("through", { reverse: true, normalCut: true });');
+    noErrors(plain); noErrors(nc);
+    var removed = 10 * 10 * Math.SQRT2 * 2, vol = 12000 - removed;
+    nearRel(plain.mp.volume, vol, 1e-6, 'plain oblique cut volume');
+    nearRel(nc.mp.volume, vol, 1e-6, 'normal cut volume');
+    assert(Object.keys(nc.warnings).length === 0, 'no warning: ' + JSON.stringify(nc.warnings));
+    // body centroid z = (12000·(−30) − removed·zRemoved) / vol with zRemoved = −39 (oblique) or −38 (normal)
+    var zPlain = (12000 * -30 - removed * -39) / vol;   // −29.782750
+    var zNc = (12000 * -30 - removed * -38) / vol;      // −29.806890
+    nearRel(plain.mp.centroid[2], zPlain, 1e-6, 'plain cut centroid z');
+    nearRel(nc.mp.centroid[2], zNc, 1e-6, 'normal cut centroid z');
+    near(nc.mp.centroid[0], 50, 1e-6, 'normal cut centroid x');
+    near(nc.mp.centroid[1], 1, 1e-6, 'normal cut centroid y (symmetric through the thickness)');
+    nearVec(nc.mp.bbox.min, [0, 0, -60], 1e-6, 'bbox.min unchanged'); nearVec(nc.mp.bbox.max, [100, 2, 0], 1e-6, 'bbox.max unchanged');
+    // the window's walls are square to the sheet: its z walls sit at the top footprint z = −38 ∓ 5√2
+    var z0 = -38 - 5 * Math.SQRT2, z1 = -38 + 5 * Math.SQRT2;
+    assert(hasFace(nc.mesh, [0, 0, 1], z0, 1e-3), 'window wall facing +z at z = ' + fmt(z0));
+    assert(hasFace(nc.mesh, [0, 0, -1], -z1, 1e-3), 'window wall facing −z at z = ' + fmt(z1));
+    assert(hasFace(nc.mesh, [1, 0, 0], 45, 1e-6) && hasFace(nc.mesh, [-1, 0, 0], -55, 1e-6), 'window walls at x = 45 and 55');
+    var tilted = tiltedFaces(nc.mesh);
+    assert(tilted.length === 0, tilted.length + ' tilted faces after the normal cut, e.g. normal ' + (tilted[0] ? tilted[0].normal.map(fmt).join(', ') : ''));
+    assert(tiltedFaces(plain.mesh).length > 0, 'sanity: the plain oblique cut does leave tilted faces');
+    consistentVolume(nc);
+    return 'centroid z ' + fmt(nc.mp.centroid[2]) + ' (oblique ' + fmt(plain.mp.centroid[2]) + '), ' + nc.mesh.faces.length + ' faces';
+  });
+  test('normal cut through a flange wall removes outline area × T, from outside or from inside the wall, both directions', function () {
+    // bend-outside flange up on the x = 100 edge: wall x ∈ [102,104], y ∈ [4,24], z ∈ [−60,0]
+    var WALL = NSHEET + '\np.flange(20, [[100, 2, -30]]);';
+    var base = build(WALL);
+    noErrors(base);
+    near(base.mp.bbox.max[0], 104, 1e-6, 'wall outer face at x = 104'); near(base.mp.bbox.max[1], 24, 1e-6, 'wall top at y = 24');
+    var V = base.mp.volume;
+    // Right plane (u = −z, v = y) at x = 110, outside the wall: rect(20, 10, 20, 6) → z ∈ [−40,−20], y ∈ [10,16], in the
+    // flat part of the wall (the bend ends at y = 4). Cut along −x through all: 20 × 6 × T = 240 removed.
+    var one = build(WALL + '\np.sketch("Right", 110).rect(20, 10, 20, 6);\np.cut("through", { reverse: true, normalCut: true });');
+    noErrors(one);
+    nearRel(one.mp.volume, V - 240, 1e-6, 'from outside, one direction');
+    assert(!one.warnings[lastFeature(one).id], 'no warning: ' + JSON.stringify(one.warnings));
+    assert(hasFace(one.mesh, [0, 0, 1], -40, 1e-6) && hasFace(one.mesh, [0, 0, -1], 20, 1e-6), 'window walls at z = −40 and −20');
+    assert(hasFace(one.mesh, [0, 1, 0], 10, 1e-6) && hasFace(one.mesh, [0, -1, 0], -16, 1e-6), 'window walls at y = 10 and 16');
+    // the same with a second (+x, 50 mm blind) direction that meets nothing
+    var both = build(WALL + '\np.sketch("Right", 110).rect(20, 10, 20, 6);\np.cut("through", { reverse: true, normalCut: true, depth2: 50 });');
+    noErrors(both);
+    nearRel(both.mp.volume, V - 240, 1e-6, 'from outside, both directions');
+    // sketch plane inside the wall (x = 103): direction 1 (−x, through) takes x ∈ [102,103], direction 2 (+x, 50) takes
+    // x ∈ [103,104]; each side enters through its own sheet face, so both caps are used
+    var mid = build(WALL + '\np.sketch("Right", 103).rect(20, 10, 20, 6);\np.cut("through", { reverse: true, normalCut: true, depth2: 50 });');
+    noErrors(mid);
+    nearRel(mid.mp.volume, V - 240, 1e-6, 'from inside the wall, both directions');
+    assert(tiltedFaces(mid.mesh).length === tiltedFaces(base.mesh).length, 'no new tilted faces');
+    return 'wall part ' + fmt(V) + ' → ' + fmt(one.mp.volume);
+  });
+  test('normalCut on a part without sheet metal parameters is a plain cut', function () {
+    // 10 × 10 × 10 block (Front sketch extruded +z), a 2 × 2 window cut down from the top face: 1000 − 2·2·10 = 960
+    var r = build('p.sketch("Front").rect(0, 0, 10, 10).extrude(10);\np.sketch("Top", 10).rect(2, -4, 2, 2);\np.cut("through", { reverse: true, normalCut: true });');
+    noErrors(r);
+    assert(!r.model.sheet, 'the model has no sheet parameters: ' + JSON.stringify(r.model.sheet));
+    near(r.mp.volume, 960, 1e-6, 'volume');
+    assert(lastFeature(r).normalCut === true, 'the flag is kept on the feature');
+    assert(Object.keys(r.warnings).length === 0, 'no warning: ' + JSON.stringify(r.warnings));
+    consistentVolume(r);
+  });
+  test('normal cut whose tool crosses no sheet face warns and leaves the body alone', function () {
+    var r = build(NSHEET + '\np.sketch("Top", 2).rect(200, 200, 10, 10);\np.cut("through", { reverse: true, normalCut: true });');
+    noErrors(r);
+    var id = lastFeature(r).id;
+    assert(typeof r.warnings[id] === 'string' && r.warnings[id].length > 0, 'expected a warning on feature ' + id + ': ' + JSON.stringify(r.warnings));
+    assert(/normal cut|removed no material/i.test(r.warnings[id]), 'warning text: ' + r.warnings[id]);
+    near(r.mp.volume, 12000, 1e-6, 'volume unchanged');
+    return r.warnings[id];
+  });
 
   // ------------------------------------------------------------------ sweep & loft
   group('sweep');
@@ -1894,6 +2060,79 @@
       };
       try { ch.port1.postMessage(pk, bufs); } catch (e) { reject(new Error('postMessage with the transfer list threw: ' + (e && e.message))); }
     });
+  });
+  // cacheFromBuild(model, build): the cache the main thread keeps after a worker build. One step per feature with the
+  // same keys Kernel.rebuild would write, but only the last step carries a body (the others are `partial`), so a later
+  // synchronous rebuild can continue from the last applied body when nothing before it changed.
+  test('cacheFromBuild: one step per feature with the rebuild keys, a body only on the last step, partial on the rest', function () {
+    assert(typeof K.cacheFromBuild === 'function', 'Kernel.cacheFromBuild is missing');
+    var model = bracketModel(), b = K.rebuild(model), n = model.features.length;
+    var cache = K.cacheFromBuild(model, b);
+    assert(cache && Array.isArray(cache.steps), 'cacheFromBuild must return { steps: [...] }, got ' + keysOf(cache));
+    assert(cache.steps.length === n, 'steps ' + cache.steps.length + ' vs ' + n + ' features');
+    var keys = b.cache.steps.map(function (s) { return s.key; });
+    cache.steps.forEach(function (s, i) {
+      assert(s && typeof s.key === 'string' && s.key.length > 0, 'step ' + i + ' has no key');
+      assert(s.key === keys[i], 'step ' + i + ' key differs from the Kernel.rebuild cache key');
+      ['tool', 'plane', 'flange', 'profile', 'error', 'warning'].forEach(function (k) { assert(k in s, 'step ' + i + ' lacks the field "' + k + '" (has ' + keysOf(s) + ')'); });
+      if (i < n - 1) assert(s.partial === true && !s.body, 'step ' + i + ' should be partial and carry no body');
+      else { assert(!s.partial && s.body instanceof CSG, 'the last step must carry the body and not be partial'); nearRel(s.body.volume(), b.body.volume(), 1e-12, 'last step body volume'); }
+    });
+    // the tools and flange records come along (the bracket has a cut tool and two flange records)
+    var tools = cache.steps.filter(function (s) { return s.tool; }).length, fl = cache.steps.filter(function (s) { return s.flange; }).length;
+    assert(tools >= 1, 'no tool recorded in the cache steps'); assert(fl === 2, 'flange records in the cache: ' + fl + ', expected 2');
+    // the same from an unpacked (worker-style) build once the sketch profiles are back on the model
+    var u = K.unpackBuild(K.packBuild(b));
+    K.applyProfiles(model, u.profiles);
+    var c2 = K.cacheFromBuild(model, u);
+    assert(c2.steps.length === n && c2.steps[n - 1].body instanceof CSG && c2.steps.every(function (s, i) { return s.key === keys[i]; }), 'cache from an unpacked build: ' + c2.steps.length + ' steps');
+    return n + ' steps, ' + tools + ' tools, ' + fl + ' flange records';
+  });
+  test('rebuild with a cacheFromBuild cache: an unchanged model reuses every feature and gives the same body', function () {
+    var model = bracketModel(), b = K.rebuild(model), n = model.features.length, vol = b.body.volume();
+    var b2 = K.rebuild(model, K.cacheFromBuild(model, b));
+    assert(b2.reused === n, 'unchanged model: reused ' + b2.reused + ' of ' + n);
+    noErrors({ errors: b2.errors });
+    nearRel(b2.body.volume(), vol, 1e-12, 'same body');
+    assert(b2.cache && b2.cache.steps.length === n, 'the rebuild hands back a full cache again');
+    // and that full cache still works as before
+    var b3 = K.rebuild(model, b2.cache);
+    assert(b3.reused === n, 'full cache after a partial one: reused ' + b3.reused);
+    // the same through the worker path: pack, unpack, profiles back, cache, sync rebuild
+    var u = K.unpackBuild(K.packBuild(b)); K.applyProfiles(model, u.profiles);
+    var b4 = K.rebuild(model, K.cacheFromBuild(model, u));
+    assert(b4.reused === n, 'after an unpacked build: reused ' + b4.reused + ' of ' + n);
+    nearRel(b4.body.volume(), vol, 1e-12, 'volume after the worker-style cache');
+    return 'reused ' + b2.reused + '/' + n;
+  });
+  test('rebuild with a cacheFromBuild cache: an appended feature reuses the previous count, a change in the middle reuses nothing', function () {
+    var model = bracketModel(), b = K.rebuild(model), n = model.features.length, vol = b.body.volume();
+    var cache = K.cacheFromBuild(model, b);
+    // append: a disjoint 10 mm cube far from the bracket (box = sketch + extrude, two features)
+    K.runScript(model, 'p.box(10, 10, 10, { at: [200, 0, 0] });');
+    assert(model.features.length === n + 2, 'box appends two features');
+    var b2 = K.rebuild(model, cache);
+    assert(b2.reused === n, 'appended features: reused ' + b2.reused + ', expected the previous count ' + n);
+    noErrors({ errors: b2.errors });
+    nearRel(b2.body.volume(), vol + 1000, 1e-9, 'bracket + cube');
+    nearRel(b2.body.volume(), K.rebuild(cloneOf(model)).body.volume(), 1e-9, 'equals a fresh rebuild');
+    // a change in the middle: only the last step has a body, so nothing before the change can be continued from
+    var m2 = bracketModel(), c2 = K.cacheFromBuild(m2, K.rebuild(m2));
+    var holeSketch = m2.features.filter(function (f) { return f.type === 'sketch' && f.entities[0] && f.entities[0].t === 'circle'; })[0];
+    assert(holeSketch, 'bracket has a circle sketch');
+    holeSketch.entities[0].r = 8;
+    var b3 = K.rebuild(m2, c2);
+    assert(b3.reused === 0, 'change in the middle: reused ' + b3.reused + ', expected 0');
+    noErrors({ errors: b3.errors });
+    var fresh = K.rebuild(cloneOf(m2)).body.volume();
+    nearRel(b3.body.volume(), fresh, 1e-9, 'cached rebuild equals a fresh rebuild');
+    assert(Math.abs(fresh - vol) > 1, 'the bigger hole changed the volume (' + fmt(vol) + ' → ' + fmt(fresh) + ')');
+    // the last feature changed: the prefix has no bodies, so this is also rebuilt from scratch, but correctly
+    var m3 = bracketModel(), c3 = K.cacheFromBuild(m3, K.rebuild(m3));
+    m3.features[m3.features.length - 1].length = 25;
+    var b4 = K.rebuild(m3, c3);
+    nearRel(b4.body.volume(), K.rebuild(cloneOf(m3)).body.volume(), 1e-9, 'last feature edited');
+    return 'append reused ' + b2.reused + '/' + n + ', middle change reused ' + b3.reused;
   });
   test('worker.js rebuilds the bracket, reuses its cache on a repeat, and reports a broken feature', function () {
     if (typeof Worker === 'undefined') fail('Worker is not available in this browser');

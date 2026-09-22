@@ -40,7 +40,7 @@ Then open <http://localhost:8765/>. The kernel tests are at <http://localhost:87
 
 The layout deliberately mirrors SolidWorks so muscle memory carries over.
 
-- **Menu bar**: File (new, open, save, exports, screenshot), Edit (undo, redo, delete, rebuild), View (standard views, display styles, planes, origins, section view), Insert (boss, cut, sweep, loft, hole wizard, fillet, chamfer, shell, patterns, mirror, sketch, reference plane, base flange), Tools (script console, measure, mass properties, units), Window, Help.
+- **Menu bar**: File (new, open, save, exports, screenshot), Edit (undo, redo, delete, rebuild), View (standard views, display styles, planes, origins, section view, *Theme ▸ Light / Dark*), Insert (boss, cut, sweep, loft, hole wizard, fillet, chamfer, shell, patterns, mirror, sketch, reference plane, base flange), Tools (script console, measure, mass properties, units), Window, Help.
 - **CommandManager ribbon** with Features (boss, cut, revolve, hole wizard, sweep, loft, patterns, mirror, chamfer, fillet, shell, reference plane), Sketch (line, rectangles, circle, arc, polygon, slot, convert entities, offset entities, sketch fillet, trim, mirror entities, linear sketch pattern), Evaluate (measure, mass properties, section view, face to DXF) and Sheet Metal (base flange, edge flange, miter flange, hem, jog, flatten, flat to DXF) tabs. Every ribbon button has a tooltip with its shortcut and a one-line description.
 - **FeatureManager tree** on the left. Click selects a feature, double-click edits it, F2 renames, Delete removes it with its dependents. Sketches consumed by a feature are hidden unless *View ▸ All Sketches* is on.
 - **PropertyManager** replaces the tree while a command is open. Enter accepts, Esc cancels.
@@ -49,6 +49,7 @@ The layout deliberately mirrors SolidWorks so muscle memory carries over.
 - **Heads-up toolbar** above the viewport: zoom to fit, zoom to area, previous view, view orientation, display style, section view.
 - **Task pane** on the right: Home, Design Library (example parts), Files (named saves in localStorage), Views, Appearance, Properties (name, units, material, sheet-metal parameters), and the **Script** console.
 - **Status bar** shows the last message, cursor coordinates in sketch mode, and the rebuild time.
+- **Theme**: *View ▸ Theme ▸ Dark* switches the whole workspace, viewport included, to a dark scheme; *Light* switches back. The choice is kept in `localStorage` under `anvil.theme` and applied at boot. `UI.setTheme("dark" | "light")` and `UI.theme()` do the same from code; `UI.viewportTheme` reports what the 3D view is currently using.
 
 Keyboard: Ctrl+1 … Ctrl+7 standard views, Ctrl+8 normal-to, F fit, S start or exit a sketch, L/R/C/A/P/T sketch tools, Ctrl+Z / Ctrl+Y undo and redo, Ctrl+B rebuild, Ctrl+S save. *Help ▸ Keyboard shortcuts* lists everything.
 
@@ -88,8 +89,8 @@ p.circularPattern({ axis: "y", count: 6 });  // … patterned around Y
 | `name(s)`, `units("mm" \| "in")`, `density(kg_per_m3)`, `color(css)` | Document properties. Chainable. |
 | `plane(ref, offset, name?) → id` | Reference plane. `ref` is `"Front"`, `"Top"` or `"Right"`. |
 | `sketch(spec, offset?, name?) → SketchBuilder` | `spec` is a plane name, a plane feature id, `{ ref, offset }`, or a custom frame. |
-| `extrude(depth, opts)` | `opts`: `cut`, `reverse`, `midplane`, `throughAll`, `depth2` (second direction), `both` (mirror the depth), `sketch` (id, defaults to the last sketch), `draft` (angle in degrees: the section shrinks by depth·tan(angle) away from the sketch plane, in both directions for mid-plane; holes widen), `draftOutward` (grow instead), `name`. |
-| `cut(depth \| "through", opts)` | `extrude` with `cut: true`. |
+| `extrude(depth, opts)` | `opts`: `cut`, `reverse`, `midplane`, `throughAll`, `depth2` (second direction), `both` (mirror the depth), `sketch` (id, defaults to the last sketch), `draft` (angle in degrees: the section shrinks by depth·tan(angle) away from the sketch plane, in both directions for mid-plane; holes widen), `draftOutward` (grow instead), `normalCut` (sheet-metal parts only: the cut is made square to the sheet, see *Normal cut* below), `name`. |
+| `cut(depth \| "through", opts)` | `extrude` with `cut: true`. `p.cut("through", { reverse: true, normalCut: true })` is the usual sheet-metal window. |
 | `revolve(angleDeg, opts)` | `opts.axis`: `"y"` (default), `"x"`, the index of a sketch line, or `{ x1, y1, x2, y2 }`; plus `reverse`, `cut`, `sketch`, `name`. |
 | `revolveCut(angleDeg, opts)` | `revolve` with `cut: true`. |
 | `linearPattern(opts)` | `feature` (defaults to the last solid feature), `dir` `"x"|"y"|"z"`, `reverse`, `spacing`, `count`, and optionally `dir2`, `reverse2`, `spacing2`, `count2`. Patterns of cuts stay cuts. |
@@ -128,7 +129,7 @@ Profiles are found automatically: closed entities (rectangles, circles, polygons
 | --- | --- |
 | `sketch` | `plane` (`{ ref, offset }` \| `{ featureId }` \| custom frame), `entities: [{ t: "line" \| "rect" \| "crect" \| "circle" \| "poly" \| "slot" \| "arc" \| "polyline" \| "point", … }]`, optional `dims: [{ e, k, i, off, ang }]` (placed Smart Dimensions; ignored by the rebuild) |
 | `plane` | `ref`, `offset` |
-| `extrude` | `sketch`, `depth`, `end` (`"blind" \| "through" \| "mid"`), `reverse`, `cut`, `dir2`, `depth2`, `end2`, `draft` (degrees, optional), `draftOut` |
+| `extrude` | `sketch`, `depth`, `end` (`"blind" \| "through" \| "mid"`), `reverse`, `cut`, `dir2`, `depth2`, `end2`, `draft` (degrees, optional), `draftOut`, `normalCut` (boolean, cuts on sheet-metal parts; `generateScript` emits `normalCut: true` only when set) |
 | `revolve` | `sketch`, `angle`, `axis`, `reverse`, `cut` |
 | `lpattern` | `feature`, `d1`, `rev1`, `s1`, `n1`, `d2`, `rev2`, `s2`, `n2` |
 | `cpattern` | `feature`, `axis`, `center`, `n`, `angle`, `equal` |
@@ -161,6 +162,7 @@ Kernel.resolveEdges(specs, edges, tol);     // specs [{ at, chain }] → the edg
 Kernel.flatPattern(model, b, mesh);         // { loops (outer first, CCW), bends: [{ a, b, label, up, angle, R }], bbox, sheet }
 Kernel.exportDXFFlat(flat, units);          // OUTLINE / HOLES / BEND / NOTES layers, bend labels and "T= R= K=" as TEXT
 Kernel.bendAllowance(angleRad, R, T, K);    // angle · (R + K·T), the neutral-axis arc length
+Kernel.normalCutTool(tool, body, model, dir); // the Normal-cut replacement for a cut tool: the outlines of the sheet faces it enters (n·dir < 0), re-extruded straight through the thickness; rebuild applies it to cuts with normalCut on a part that has model.sheet
 Kernel.flangeProfile(angleRad, R, T, L, ov); // the 2D section a flange sweeps along its edge (o across the edge, u along the fold), incl. the overlap strip o ∈ [−ov, 0]
 Kernel.loopSelfCrossing(pts); Kernel.checkProfile(profile);   // first self-intersection of a closed loop | throw "crosses itself" for any crossing loop
 Kernel.offsetLoop(pts, d);                  // 2D: mitred offset of a closed loop, +d = outward for CCW
@@ -175,6 +177,7 @@ Kernel.buildShell(f, { body });             // { body, inner, removed } — the 
 Kernel.generateScript(model);               // model → script text
 Kernel.packBuild(b); Kernel.unpackBuild(obj);   // rebuild result ↔ structured-clone-safe object of typed arrays (unpacked builds have cache: null and carry profiles)
 Kernel.applyProfiles(model, profiles);      // put the sketch profiles computed elsewhere (the worker) back on the model's sketch features
+Kernel.cacheFromBuild(model, build);        // { steps } for Kernel.rebuild from a build that came back from the worker: one step per feature (key, tool, plane, flange, profile, error, warning), the body only on the last step, `partial: true` on the others — an unchanged model reuses every feature, an appended feature reuses the previous count, a change in the middle reuses nothing
 csg.pack(); CSG.unpack(obj); CSG.packTransferables(obj);   // one solid ↔ typed arrays (exact volume, same polygon order), and its ArrayBuffers for postMessage transfer
 ```
 
@@ -202,6 +205,17 @@ p.flange(15, [[50, 2, 0]], { reverse: true });        // down along the z = 0 ed
 Unfolding is recursive: each flange contributes a bend strip and then its wall face is mapped into the flat with its real outline, so holes cut through a wall and flanges attached to a wall (a Z or hat section) all reach the blank. Flanges accept `position: "bendOutside"` (default, the bend sits beyond the edge), `"outside"` (Material Outside: the wall's inner face at the edge) or `"inside"` (Material Inside: the outer face flush with the edge); the last two trim the base back by R or R + T so the envelope keeps the base dimensions.
 
 **Mitred corners.** `flange(L, edges, { miter: true })` (the *Miter Flange* ribbon button presets it) joins the walls of one feature wherever two selected edges share a corner: each bend + wall is extended past the corner and clipped by the bisector plane through the shared vertex (45° for a square corner), so the corner is closed instead of leaving a square notch. `miterGap` opens the joint by that distance, measured normal to the bisector and split evenly between the two walls. Edges that are collinear or fold in opposite directions are not mitred. A mitred square corner adds exactly twice the first moment of the flange section about the edge line to the volume, which is what the kernel tests check. In the flat pattern the bend strip of a mitred flange ends on the mitre line: its end edge at the shared corner runs straight from the base corner to the wall's extended corner, so the blank has no step there (the base corner stays a vertex of the outline and the old strip corners at *BA* from it are gone).
+
+**Normal cut.** A cut sketched on a plane that is not parallel to the sheet (a face of another wall, a tilted reference plane) would normally leave an oblique window whose walls follow the sketch direction. With `normalCut: true` (the *Normal cut* checkbox in the Cut-Extrude PropertyManager's *Sheet Metal* group, on by default for a new cut on a sheet-metal part) the kernel intersects the plain tool with the body, takes the outlines of the sheet faces the tool enters through, and re-extrudes them straight through the thickness, so the window has walls square to the sheet and the same size on both faces — what a laser or punch would cut in the flat. A blind normal cut always goes through the sheet. When the sketch is parallel to the sheet the result is the plain cut; when the tool crosses no sheet face at all the plain tool is used and the feature gets the warning *Normal cut: the cut does not cross a sheet face; a plain cut was made.* The option is ignored on parts without sheet parameters.
+
+```js
+p.sheet(2, 2, 0.71);
+p.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);
+p.flange(30, [[100, 2, 30]]);                      // wall at x in [102,104]
+// a 45° plane outside the wall: the 12 × 8 sketch lands as a 12 × 11.3 window with square walls
+p.sketch({ custom: true, origin: [115, 3, 30], x: [0, 0, 1], y: [-0.7071, -0.7071, 0], n: [0.7071, -0.7071, 0] }, 0)
+  .rect(-6, -4, 12, 8).cut("through", { reverse: true, normalCut: true });
+```
 
 **Bend reliefs.** `relief: "rect"` or `"obround"` cuts a slot from the base before the flange is added, at every flange end where the sheet continues beyond the end (a wall that stops part-way along a plate edge, or an edge that meets a tab or a wider region). The slot is `reliefWidth` wide along the edge (default T), starts `reliefDepth` inside the edge (default T/2) and runs out past the bend zone (to R + T + `reliefDepth`), through the full thickness; `"obround"` rounds the inner end. Ends at convex sheet corners and ends shared with another edge of the same feature (mitred or collinear) get no relief. The relief appears in the flat pattern as a slot beside the bend strip.
 
@@ -232,6 +246,7 @@ For code that drives the app, `UI.rebuild(opts)` and `UI.pmOK()` return Promises
 | `anvil.stl()`, `anvil.dxfFace(i)`, `anvil.dxfSketch(id)` | Export text. |
 | `anvil.mass()`, `anvil.faces()`, `anvil.features()` | Mass properties; face list with index, normal, area, centroid; feature list with errors. |
 | `anvil.select(i)`, `anvil.view(name)`, `anvil.fit()` | Select a face, set a standard view, zoom to fit. |
+| `anvil.theme()` / `anvil.theme("dark" \| "light")` | Read or set the workspace theme (same as *View ▸ Theme*). |
 | `anvil.png()` | Data URL of the current viewport. |
 | `anvil.summary()` | `{ name, features, errors, volume, bbox, faces, rebuildMs }`. |
 | `anvil.examples` | The Design Library entries. |
@@ -247,11 +262,11 @@ Downloads are blocked inside some sandboxes; every export dialog also offers *Co
 
 ## Tests
 
-`tests/kernel-tests.html` builds parts through the script API and checks them against known volumes, bounding boxes, face counts, profile nesting, edge extraction, chamfers and fillets, sheet-metal flanges and flat patterns (including the mitred-corner blank), export contents, error messages and script round-trips, then builds every entry in `examples/examples.js` and round-trips each one through `generateScript`. The `pack & worker` group round-trips solids and whole builds through `pack`/`unpack`, clones a packed build through a `MessageChannel`, and drives `worker.js` end to end (build, cache reuse, a broken feature). A test may return a Promise: its row shows *WAIT* until it settles, a pending test fails after 10 s, and the summary and `window.__anvilTests` are written only once every test has settled. Run it after touching `csg.js`, `kernel.js` or `worker.js`. Circles are polygonal in the kernel, so tests compare against the polygonal area (`n/2 · r² · sin(2π/n)` with `n = clamp(round(8√r), 16, 72)`) rather than `πr²`.
+`tests/kernel-tests.html` builds parts through the script API and checks them against known volumes, bounding boxes, face counts, profile nesting, edge extraction, chamfers and fillets, sheet-metal flanges and flat patterns (including the mitred-corner blank and two Material Outside flanges sharing a corner: blank 9692.80 with bend allowance 5.372), export contents, error messages and script round-trips, then builds every entry in `examples/examples.js` and round-trips each one through `generateScript`. The `normal cut` group checks that a cut parallel to the sheet is unchanged, that a 45° sketch removes a straight prism (same volume as the oblique slab, centroid z −29.8069 instead of −29.7827 on the 100×60×2 sheet, every face axis-aligned), that a window through a flange wall removes outline × T from either side and in both directions, that the option is ignored without sheet parameters and warns when the tool crosses no sheet face. The `pack & worker` group round-trips solids and whole builds through `pack`/`unpack`, clones a packed build through a `MessageChannel`, checks `cacheFromBuild` (step shape, full reuse, appended feature, change in the middle) and drives `worker.js` end to end (build, cache reuse, a broken feature). 227 tests at the time of writing. A test may return a Promise: its row shows *WAIT* until it settles, a pending test fails after 10 s, and the summary and `window.__anvilTests` are written only once every test has settled. Run it after touching `csg.js`, `kernel.js` or `worker.js`. Circles are polygonal in the kernel, so tests compare against the polygonal area (`n/2 · r² · sin(2π/n)` with `n = clamp(round(8√r), 16, 72)`) rather than `πr²`.
 
 `tests/bench.html` times every example and a set of stress parts and reports medians; `tests/BENCHMARKS.md` keeps dated baselines so performance work in Phase 4 has something to compare against.
 
-`tests/ui-smoke.html` is the app-level regression: it loads `index.html` in a frame and walks the main workflows through the same functions the ribbon and PropertyManager call (`UI.cmdSketch`, `UI.pmOK`, `UI.deleteFeature`, …), asserting volumes after each step and failing on any uncaught error or `console.error` inside the app. Every step awaits the rebuild it triggers (`await anvil.run(...)`, `await UI.pmOK()`, `await UI.whenIdle()`), and the last steps cover background rebuilds: worker mode on by default, synchronous mode when off, coalescing of three rapid runs, and the *Rebuild in background* menu item. Run it after touching any `ui-*.js` file or `worker.js`. Results are also exposed as `window.__anvilSmoke`.
+`tests/ui-smoke.html` is the app-level regression: it loads `index.html` in a frame and walks the main workflows through the same functions the ribbon and PropertyManager call (`UI.cmdSketch`, `UI.pmOK`, `UI.deleteFeature`, …), asserting volumes after each step and failing on any uncaught error or `console.error` inside the app. Every step awaits the rebuild it triggers (`await anvil.run(...)`, `await UI.pmOK()`, `await UI.whenIdle()`). Later steps cover the Cut-Extrude *Normal cut* checkbox (on by default on a sheet part, absent on a plain part, `normalCut: true` in the committed feature), *View ▸ Theme* (`UI.setTheme`, `anvil.theme`, `localStorage`, `UI.viewportTheme`, the menu check marks), and background rebuilds: worker mode on by default, synchronous mode when off, coalescing of three rapid runs, the *Rebuild in background* menu item, and the main-thread cache after a worker build (`UI.buildCacheInfo()`, a following `UI.rebuild({ sync: true })` reuses every feature). Run it after touching any `ui-*.js` file or `worker.js`. Results are also exposed as `window.__anvilSmoke`. 29 steps at the time of writing.
 
 ## Known limitations
 
