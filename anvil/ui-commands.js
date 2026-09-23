@@ -458,6 +458,22 @@
     return list.length ? list[list.length - 1].id : null;
   }
 
+  // Default "Reverse direction" for a NEW cut so it goes into the body instead of away from it.
+  // 1. A sketch on a face (custom plane) has its normal pointing out of the material: reverse.
+  // 2. The kernel's cutDirectionHint (when present) looks at where the body actually lies relative to the
+  //    sketch plane: true = reverse, false = forward, null = undetermined (keep the rule-1 default).
+  function defaultCutReverse(sketchId, fallback) {
+    var rev = !!fallback;
+    var sk = K.findFeature(App.model, sketchId);
+    if (sk && sk.plane && sk.plane.custom) rev = true;
+    if (typeof K.cutDirectionHint === 'function') {
+      var hint = null;
+      try { hint = K.cutDirectionHint(App.model, sketchId, App.build && App.build.body); } catch (e) { hint = null; }
+      if (hint !== null && hint !== undefined) rev = !!hint;
+    }
+    return rev;
+  }
+
   function cmdExtrude(cut, existing) {
     withSketch(function (sid) {
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: !!cut, depth: 10, end: cut ? 'through' : 'blind', reverse: false, dir2: false, depth2: 10, end2: 'blind', sketch: pickDefaultSketch(sid) };
@@ -467,7 +483,7 @@
       f.normalCut = !!f.normalCut;
       if (f.sketch == null) { UI.setStatus('Create a sketch first: Sketch tab → pick a plane → draw a closed profile.'); UI.toast('No sketch available. Draw a sketch first.'); return; }
       // a cut drawn on a face should go into the material (the face normal points out of it)
-      if (!existing && cut) { var sk0 = K.findFeature(App.model, f.sketch); if (sk0 && sk0.plane && sk0.plane.custom) f.reverse = true; }
+      if (!existing && cut) f.reverse = defaultCutReverse(f.sketch, f.reverse);
       var title = f.cut ? 'Cut-Extrude' : 'Boss-Extrude';
       f.draftOn = !!f.draft; if (!f.draft) f.draft = 5; f.draftOut = !!f.draftOut;
       function toFeature(v) {

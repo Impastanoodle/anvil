@@ -81,7 +81,7 @@
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
       { id: 'generic', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
-      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'bend', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'bend', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'bend', label: 'Sketched\nBend' },
+      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'bend', label: 'Sketched\nBend' },
       { stack: [{ id: 'generic', label: 'Cross-Break' }, { id: 'generic', label: 'Corners' }, { id: 'generic', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', label: 'Vent' },
@@ -173,9 +173,10 @@
   var expanded = {};
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell' };
   function featureIcon(f) {
-    if (f.type === 'extrude') return f.cut ? 'cut' : 'extrude';
+    if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
-    if (f.type === 'flange' && f.miter) return 'miter';
+    if (f.type === 'flange') return f.miter ? 'miter' : (f.hem ? 'hem' : 'bend');
+    if (f.type === 'jog') return 'jog';
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {

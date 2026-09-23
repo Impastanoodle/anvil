@@ -1930,6 +1930,214 @@
     });
   }
 
+  // ------------------------------------------------------------------ CSG bounding-box early-out
+  // csg.js skips BSP clipping for polygons whose bounding box cannot touch the other operand (kept as they are for
+  // union and for A in subtract, dropped for B in subtract and for both in intersect) and short-circuits fully
+  // disjoint operands. None of that may change a volume; these tests pin the numbers the old kernel produced.
+  group('csg early-out');
+  test('getBounds() of a cube is its axis-aligned box', function () {
+    var c = cube(0, 0, 0, 5);
+    assert(typeof c.getBounds === 'function', 'CSG.prototype.getBounds is missing');
+    var bb = c.getBounds();
+    assert(bb && bb.min && bb.max && bb.min.length === 3 && bb.max.length === 3, 'getBounds() must return { min: [x, y, z], max: [x, y, z] }, got ' + JSON.stringify(bb));
+    nearVec(bb.min, [-5, -5, -5], 1e-9, 'min'); nearVec(bb.max, [5, 5, 5], 1e-9, 'max');
+    return bboxStr(bb);
+  });
+  test('disjoint cubes: union 2000, subtract 1000, intersect 0, union keeps all 12 quads unsplit', function () {
+    var a = cube(0, 0, 0, 5), b = cube(50, 0, 0, 5);
+    var u = a.union(b);
+    near(u.volume(), 2000, 1e-9, 'union volume');
+    near(a.subtract(b).volume(), 1000, 1e-9, 'subtract volume');
+    near(a.intersect(b).volume(), 0, 1e-9, 'intersect volume');
+    near(b.subtract(a).volume(), 1000, 1e-9, 'subtract the other way');
+    assert(u.polygons.length === 12, 'union of two far-apart cubes should keep 6 + 6 quads, got ' + u.polygons.length);
+    var bb = u.getBounds();
+    nearVec(bb.min, [-5, -5, -5], 1e-9, 'union bounds min'); nearVec(bb.max, [55, 5, 5], 1e-9, 'union bounds max');
+    // the union is a proper solid: the mesh agrees with the polygon volume
+    near(K.massProps(K.meshFromBody(u), 1).volume, 2000, 1e-6, 'mesh volume');
+    return u.polygons.length + ' polygons, bounds ' + bboxStr(bb);
+  });
+  test('far boss on a plate with a distant hole: volume and centroid are analytic', function () {
+    // plate x ∈ [0,100], y ∈ [0,60], z ∈ [0,2]; Ø5 hole at (10,10) through; 10×10×10 boss at (80,40) on the top face
+    var r = build('p.sketch("Front").rect(0, 0, 100, 60).extrude(2);\n' +
+      'p.hole("Front", 10, 10, 5, { offset: 2 });\n' +
+      'p.sketch("Front", 2).rect(80, 40, 10, 10).extrude(10);');
+    noErrors(r);
+    var A = polyCircleArea(2.5), V = 12000 - 2 * A + 1000;
+    nearRel(r.body.volume(), V, 1e-9, 'polygon volume');
+    nearRel(r.mp.volume, V, 1e-9, 'mesh volume');
+    var cx = (50 * 12000 - 10 * 2 * A + 85 * 1000) / V, cy = (30 * 12000 - 10 * 2 * A + 45 * 1000) / V, cz = (1 * 12000 - 1 * 2 * A + 7 * 1000) / V;
+    nearVec(r.mp.centroid, [cx, cy, cz], 1e-6, 'centroid');
+    nearVec(r.mp.bbox.min, [0, 0, 0], 1e-6, 'bbox.min'); nearVec(r.mp.bbox.max, [100, 60, 12], 1e-6, 'bbox.max');
+    return 'volume ' + fmt(V) + ', centroid ' + r.mp.centroid.map(fmt).join(', ');
+  });
+  test('cubes sharing a face (touching bboxes) still union to 2000', function () {
+    var a = cube(0, 0, 0, 5), b = cube(10, 0, 0, 5);
+    near(a.union(b).volume(), 2000, 1e-9, 'union');
+    near(a.subtract(b).volume(), 1000, 1e-9, 'subtract');
+    near(a.intersect(b).volume(), 0, 1e-9, 'intersect');
+    near(K.massProps(K.meshFromBody(a.union(b)), 1).volume, 2000, 1e-6, 'mesh volume of the union');
+  });
+  test('cubes overlapping by 1: union 1900, intersect 100, subtract 900', function () {
+    var a = cube(0, 0, 0, 5), b = cube(9, 0, 0, 5);
+    near(a.union(b).volume(), 1900, 1e-9, 'union');
+    near(a.intersect(b).volume(), 100, 1e-9, 'intersect');
+    near(a.subtract(b).volume(), 900, 1e-9, 'subtract');
+    near(b.subtract(a).volume(), 900, 1e-9, 'subtract the other way');
+  });
+  test('early-out where one operand is entirely inside the other', function () {
+    var big = cube(0, 0, 0, 10), small = cube(0, 0, 0, 2);
+    near(big.union(small).volume(), 8000, 1e-9, 'union');
+    near(big.subtract(small).volume(), 8000 - 64, 1e-9, 'subtract (cavity)');
+    near(big.intersect(small).volume(), 64, 1e-9, 'intersect');
+    near(small.subtract(big).volume(), 0, 1e-9, 'small minus big');
+  });
+  test('early-out result packs and unpacks: volume identical, pointTester works in both cubes', function () {
+    var u = cube(0, 0, 0, 5).union(cube(50, 0, 0, 5));
+    var back = CSG.unpack(u.pack());
+    near(back.volume(), u.volume(), 1e-12, 'volume after pack/unpack');
+    assert(back.polygons.length === u.polygons.length, 'polygon count ' + back.polygons.length + ' vs ' + u.polygons.length);
+    var inside = back.pointTester();
+    assert(inside([0, 0, 0]) === true, '(0,0,0) should be inside the first cube');
+    assert(inside([50, 1, 1]) === true, '(50,1,1) should be inside the second cube');
+    assert(inside([25, 0, 0]) === false, '(25,0,0) is between the cubes');
+    assert(inside([0, 0, 20]) === false, '(0,0,20) is outside');
+    var t2 = u.pointTester();
+    assert(t2([0, 0, 0]) && t2([50, 0, 0]) && !t2([25, 0, 0]), 'pointTester on the un-packed union');
+  });
+  test('a subtract whose tool misses the body leaves the body polygons intact', function () {
+    var r = build('p.box(20, 20, 10);\np.sketch("Top", 10).rect(100, -100, 5, 5).cut("through", { reverse: true });');
+    // the kernel warns about the empty cut; the body must be unchanged
+    near(r.body.volume(), 4000, 1e-9, 'volume');
+    var r0 = build('p.box(20, 20, 10);'); // the tool box is disjoint, so the subtract short-circuits and nothing is split
+    assert(r.body.polygons.length === r0.body.polygons.length, 'box should keep its ' + r0.body.polygons.length + ' polygons, got ' + r.body.polygons.length);
+  });
+  // Every Design Library part must build to exactly the volume it had before the early-out. Values are pinned
+  // where they are analytic (polygonal circles use polyCircleArea, as the kernel does); entries at null are
+  // recorded under window.__anvilVolumes; the numbers below were measured by the head with the old (pre-early-out) csg.js at commit 3b5f6d6:
+  // copy the output of window.__anvilVolumesJS() into EXPECTED_VOLUMES.
+  var EXPECTED_VOLUMES = {
+    'Plate with bolt holes': 100 * 60 * 8 - 4 * polyCircleArea(4) * 8,
+    'L-bracket': 20510.16520657268,
+    'Bushing': 11029.985347363243,
+    'Flange': 12 * polyCircleArea(60) + 4 * polyCircleArea(35) - 16 * polyCircleArea(25) - 6 * 12 * polyCircleArea(5.5),
+    'Hex nut': 2311.7861132622634,
+    'Shaft with keyway': 40081.63430437458,
+    'Pulley': 82472.75250921662,
+    'Enclosure lid': 31747.799209639525,
+    'Mirrored clevis': 40109.90683139952,
+    'Sheet-metal U-bracket': 23862.694338157933,
+    'Tray': 35750.4546182302,
+    'Normal Cut Bracket': 15780.118294909678,
+    'Chamfered block': 96398.26753692025,
+    'Rounded handle': 30674.73950036209,
+    'Mug': 84806.88290263337,
+    'Funnel': 12268.395201503854, // shell over ~14k polygons; the bodies before the shell match to 1e-15, the shell union differs by 1e-6 (fragmentation noise), see EXPECTED_TOL
+    'Handlebar': 46838.66040500728,
+    'Moulded cap': 13443.22758936501,
+    'Spur gear (12 teeth)': 18877.16891755744
+  };
+  // per-part tolerance where the pinned value is a large union of slabs (default 1e-6)
+  var EXPECTED_TOL = { 'Funnel': 5e-6 };
+  window.__anvilVolumes = {};
+  window.__anvilVolumesJS = function () {
+    return Object.keys(window.__anvilVolumes).map(function (k) { return '    ' + JSON.stringify(k) + ': ' + window.__anvilVolumes[k]; }).join(',\n');
+  };
+  if (typeof AnvilExamples !== 'undefined') {
+    AnvilExamples.forEach(function (ex) {
+      test('same volume as before the early-out: ' + ex.name, function () {
+        var r = build(ex.code);
+        noErrors(r);
+        var v = r.body.volume();
+        window.__anvilVolumes[ex.name] = v;
+        assert(isFinite(v) && v > 0, 'volume must be finite and positive, got ' + v);
+        nearRel(r.mp.volume, v, 1e-6, 'mesh volume vs polygon volume');
+        var expected = EXPECTED_VOLUMES[ex.name];
+        if (expected == null) return 'volume ' + v + ' (not pinned yet; add it to EXPECTED_VOLUMES)';
+        nearRel(v, expected, EXPECTED_TOL[ex.name] || 1e-6, 'volume vs the pinned value');
+        return 'volume ' + fmt(v) + ' = pinned';
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------ cut direction hint
+  // Kernel.cutDirectionHint(model, sketchId, body): true = a new cut on that sketch should be reversed to go into
+  // the body, false = forward already goes into it, null = undetermined (no body, the probe along the sketch normal
+  // misses the body, the sketch plane lies inside the material, unknown sketch). It never throws.
+  group('cut direction hint');
+  var SHEET_FRONT = 'p.sketch("Front").rect(0, 0, 100, 60).extrude(2);\n'; // z ∈ [0, 2], n = +Z
+  function hintFor(code, sketchCode) {
+    var r = build(code + sketchCode);
+    noErrors(r);
+    var sk = r.model.features.filter(function (f) { return f.type === 'sketch'; }).pop();
+    return { r: r, sketch: sk, hint: K.cutDirectionHint(r.model, sk.id, r.body) };
+  }
+  test('Kernel.cutDirectionHint exists', function () {
+    assert(typeof K.cutDirectionHint === 'function', 'Kernel.cutDirectionHint is missing');
+  });
+  test('sketch on the top face (Front offset 2, normal away from the sheet): true', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Front", 2).rect(20, 20, 10, 10);');
+    assert(h.hint === true, 'expected true, got ' + JSON.stringify(h.hint));
+  });
+  test('sketch on the bottom face (Front offset 0, normal into the sheet): false', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Front", 0).rect(20, 20, 10, 10);');
+    assert(h.hint === false, 'expected false, got ' + JSON.stringify(h.hint));
+  });
+  test('sketch above the sheet (Front offset 10): true, the probe along −Z reaches the body', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Front", 10).circle(50, 30, 5);');
+    assert(h.hint === true, 'expected true, got ' + JSON.stringify(h.hint));
+  });
+  test('sketch below the sheet (Front offset −10): false, the probe along +Z reaches the body', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Front", -10).circle(50, 30, 5);');
+    assert(h.hint === false, 'expected false, got ' + JSON.stringify(h.hint));
+  });
+  test('sketch whose normal line misses the body (Right at x = −50, loop at y 20..30, z 30..40): null', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Right", -50).rect(-40, 20, 10, 10);');
+    assert(h.hint === null, 'expected null, got ' + JSON.stringify(h.hint));
+  });
+  test('Top-plane box: sketch on the top face true, on the bottom face false, inside the material null', function () {
+    var box = 'p.box(100, 60, 8);\n'; // y ∈ [0, 8], Top normal = +Y
+    assert(hintFor(box, 'p.sketch("Top", 8).rect(20, -40, 10, 10);').hint === true, 'top face should be true');
+    assert(hintFor(box, 'p.sketch("Top", 0).rect(20, -40, 10, 10);').hint === false, 'bottom face should be false');
+    assert(hintFor(box, 'p.sketch("Top", 4).rect(20, -40, 10, 10);').hint === null, 'a plane inside the material should be null');
+  });
+  test('sketch on a face (custom plane from planeFromFace): true', function () {
+    // the +Z face of the sheet, as "Sketch on a face" would build it: frame through (50, 30, 2) with n = +Z
+    var pl = K.planeFromFace([0, 0, 1], [50, 30, 2]);
+    var h = hintFor(SHEET_FRONT, 'p.sketch(' + JSON.stringify(pl) + ', 0).centerRect(0, 0, 10, 10);');
+    assert(h.hint === true, 'expected true, got ' + JSON.stringify(h.hint));
+    // the same frame flipped (n = −Z, on the bottom face): forward already goes into the sheet
+    var pl2 = K.planeFromFace([0, 0, -1], [50, 30, 0]);
+    var h2 = hintFor(SHEET_FRONT, 'p.sketch(' + JSON.stringify(pl2) + ', 0).centerRect(0, 0, 10, 10);');
+    assert(h2.hint === true, 'a face frame on the bottom (n = −Z, pointing out of the sheet) should also be true, got ' + JSON.stringify(h2.hint));
+  });
+  test('null body, unknown sketch id, a non-sketch feature, no model: null, never throws', function () {
+    var r = build(SHEET_FRONT + 'p.sketch("Front", 2).rect(20, 20, 10, 10);');
+    var sk = r.model.features.filter(function (f) { return f.type === 'sketch'; }).pop();
+    var ex = r.model.features.filter(function (f) { return f.type === 'extrude'; })[0];
+    var out;
+    try {
+      assert(K.cutDirectionHint(r.model, sk.id, null) === null, 'null body should give null');
+      assert(K.cutDirectionHint(r.model, 9999, r.body) === null, 'unknown sketch id should give null');
+      assert(K.cutDirectionHint(r.model, ex.id, r.body) === null, 'a non-sketch feature should give null');
+      out = K.cutDirectionHint(null, sk.id, r.body);
+      assert(out === null, 'no model should give null, got ' + JSON.stringify(out));
+      out = K.cutDirectionHint(r.model, null, r.body);
+      assert(out === null, 'null sketch id should give null, got ' + JSON.stringify(out));
+    } catch (e) {
+      if (e && /should give/.test(e.message)) throw e;
+      fail('cutDirectionHint threw: ' + ((e && e.message) || e));
+    }
+  });
+  test('the hint agrees with what a cut actually does: reversed removes material, forward does not', function () {
+    var h = hintFor(SHEET_FRONT, 'p.sketch("Front", 2).rect(20, 20, 10, 10);');
+    var rev = build(SHEET_FRONT + 'p.sketch("Front", 2).rect(20, 20, 10, 10).cut("through", { reverse: true });');
+    var fwd = build(SHEET_FRONT + 'p.sketch("Front", 2).rect(20, 20, 10, 10).cut("through", { reverse: false });');
+    near(rev.body.volume(), 12000 - 200, 1e-9, 'reversed cut volume');
+    near(fwd.body.volume(), 12000, 1e-9, 'forward cut volume (misses)');
+    assert(h.hint === (rev.body.volume() < fwd.body.volume()), 'hint ' + JSON.stringify(h.hint) + ' disagrees with the cuts');
+  });
+
   // ------------------------------------------------------------------ pack / unpack and the rebuild worker
   group('pack & worker');
   // Mirrors the "Sheet Metal Bracket" entry of EXAMPLES in ui-app.js (this page does not load the UI).

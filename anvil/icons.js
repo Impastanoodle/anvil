@@ -1,109 +1,143 @@
-// icons.js — inline SVG icon set for Anvil's ribbon, tree and panels. Two-tone: slate strokes, blue/green/red accents.
+// icons.js — inline SVG icon set for Anvil's ribbon, tree and panels.
+// Drawn on a 16×16 grid in the SolidWorks colour language: blue-grey base solids, a green accent for boss/add
+// features, a red-orange accent for cut/remove features, yellow for sketch tools, grey-blue for reference geometry.
+// Original artwork; the slate ink is currentColor so the stylesheet picks it per theme (.ico { color: var(--icon-ink) }).
 var Icons = (function () {
   'use strict';
-  // S is the icon ink: currentColor, so the stylesheet picks it per theme (.ico { color: var(--icon-ink) }; light = #4d5561)
-  var S = 'currentColor', B = '#2d7dd2', G = '#3fa34d', R = '#d9453b', A = '#e8a23a', L = '#9aa3ad', F = '#dfe6ee';
-  function sw(extra) { return 'fill="none" stroke="' + S + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" ' + (extra || ''); }
-  // isometric box helper: front face path, top, side
-  function box(color, x, y, w, h, d) {
-    return '<path d="M' + x + ' ' + (y + d) + ' l' + w + ' 0 l0 ' + h + ' l-' + w + ' 0 z" fill="' + color + '" ' + sw() + '/>' +
-      '<path d="M' + x + ' ' + (y + d) + ' l' + d + ' -' + d + ' l' + w + ' 0 l-' + d + ' ' + d + ' z" fill="' + F + '" ' + sw() + '/>' +
-      '<path d="M' + (x + w) + ' ' + (y + d) + ' l' + d + ' -' + d + ' l0 ' + h + ' l-' + d + ' ' + d + ' z" fill="' + L + '" ' + sw() + '/>';
+  var S = 'currentColor';                                   // ink
+  var B = '#2f7fd6';                                        // sketch entities, selection blue
+  var G = '#3ba776', GL = '#9bdcbd', GD = '#2b8a5f';        // boss / add
+  var R = '#e0553c', RL = '#f4a795', RD = '#b33d2a';        // cut / remove
+  var Y = '#f2c230', YD = '#c9961a';                        // sketch
+  var P = '#7d98bd', PL = '#d5e0ef';                        // reference geometry
+  var F1 = '#e2eaf3', F2 = '#bfcfe0', F3 = '#98adc6';       // base solid: top, front, side faces
+  var L = '#9aa3ad', W = '#ffffff';
+  var DASH = 'stroke-dasharray="2 1.4"';
+
+  // one stroke attribute per element (color defaults to the ink, width to 1.25)
+  function st(color, w, extra) { return 'stroke="' + (color || S) + '" stroke-width="' + (w || 1.25) + '" stroke-linejoin="round" stroke-linecap="round"' + (extra ? ' ' + extra : ''); }
+  function p(d, fill, color, w, extra) { return '<path d="' + d + '" fill="' + (fill || 'none') + '" ' + st(color, w, extra) + '/>'; }
+  function ln(d, color, w, extra) { return p(d, 'none', color, w, extra); }
+  function circ(cx, cy, r, fill, color, w) { return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + (fill || 'none') + '" ' + (color === 'none' ? 'stroke="none"' : st(color, w)) + '/>'; }
+  function ell(cx, cy, rx, ry, fill, color, w) { return '<ellipse cx="' + cx + '" cy="' + cy + '" rx="' + rx + '" ry="' + ry + '" fill="' + (fill || 'none') + '" ' + (color === 'none' ? 'stroke="none"' : st(color, w)) + '/>'; }
+  function rect(x, y, w, h, fill, color, sw, extra) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" fill="' + (fill || 'none') + '" ' + st(color, sw, extra) + '/>'; }
+  function txt(x, y, size, s, fill, family, weight) { return '<text x="' + x + '" y="' + y + '" font-size="' + size + '" font-weight="' + (weight || 600) + '" font-family="' + (family || 'Segoe UI, Arial, sans-serif') + '" fill="' + (fill || S) + '" text-anchor="middle">' + s + '</text>'; }
+  // isometric block: front face w×h at (x, y+d), top and right faces receding by d
+  function blk(x, y, w, h, d, front, top, side, color, sw) {
+    var y0 = y + d;
+    return p('M' + x + ' ' + y0 + ' h' + w + ' v' + h + ' h-' + w + ' z', front || F2, color, sw) +
+      p('M' + x + ' ' + y0 + ' l' + d + ' -' + d + ' h' + w + ' l-' + d + ' ' + d + ' z', top || F1, color, sw) +
+      p('M' + (x + w) + ' ' + y0 + ' l' + d + ' -' + d + ' v' + h + ' l-' + d + ' ' + d + ' z', side || F3, color, sw);
   }
+  var SHEET = rect(1.5, 4.5, 9, 9, W, P, 1.1);                                  // the sketch sheet behind the pencil
+  var PENCIL = p('M6.5 11.5 L12.5 5.5 l2 2 L8.5 13.5 z', Y, YD, 1) + p('M6.5 11.5 L5.3 14.7 L8.5 13.5 z', '#e9c3a4', YD, 1) + ln('M12.5 5.5 l2 2', S, 0.9);
+  var SPOOL = 'M4 3 h8 l-2 3.5 v3 l2 3.5 h-8 l2 -3.5 v-3 z';                  // revolved body profile (spool)
+  var AXIS = ln('M8 1 v14', S, 0.9, DASH);
+  var SWEEP_PATH = 'M3.5 13 C3.5 6 12.5 10 12.5 3';
+  var FLANGE_L = 'M2 10.5 h6.5 a2 2 0 0 0 2 -2 V2.5 h3 V8.5 a5 5 0 0 1 -5 5 H2 z'; // L-bent sheet, 3 thick
+
   var I = {
-    extrude: box(G, 6, 8, 14, 12, 6) + '<path d="M24 5 v-3 M22 4 l2 -2 2 2" ' + sw('stroke="' + B + '"') + '/>',
-    cut: box(F, 5, 9, 16, 12, 6) + '<circle cx="13" cy="20" r="4" fill="' + R + '" ' + sw() + '/>',
-    revolve: '<path d="M16 4 v24" ' + sw('stroke-dasharray="3 2"') + '/><path d="M16 8 h7 l3 5 v6 l-3 5 h-7 z" fill="' + G + '" ' + sw() + '/><path d="M6 12 a10 4 0 0 0 20 0" ' + sw('stroke="' + B + '"') + '/>',
-    revolveCut: '<path d="M16 4 v24" ' + sw('stroke-dasharray="3 2"') + '/><path d="M16 8 h7 l3 5 v6 l-3 5 h-7 z" fill="' + F + '" ' + sw() + '/><path d="M19 12 h4 v6 h-4 z" fill="' + R + '" ' + sw() + '/>',
-    sweep: '<path d="M6 26 C6 14 16 18 16 8" ' + sw('stroke="' + B + '"') + '/><circle cx="16" cy="8" r="3" fill="' + G + '" ' + sw() + '/>',
-    loft: '<path d="M8 8 h16 M6 24 h20 M8 8 L6 24 M24 8 L26 24" ' + sw() + '/><path d="M8 8 h16 l2 16 h-20 z" fill="' + G + '" fill-opacity="0.5" stroke="none"/>',
-    hole: box(F, 5, 9, 16, 12, 6) + '<ellipse cx="13" cy="15" rx="4" ry="1.6" fill="' + R + '" ' + sw() + '/>',
-    fillet: '<path d="M6 26 V12 a6 6 0 0 1 6 -6 h14" ' + sw() + '/><path d="M6 26 V12 a6 6 0 0 1 6 -6 h14 v20 z" fill="' + F + '" stroke="none"/><path d="M6 26 V12 a6 6 0 0 1 6 -6 h14" ' + sw('stroke="' + B + '"') + '/>',
-    chamfer: '<path d="M6 26 V14 l8 -8 h12 v20 z" fill="' + F + '" ' + sw() + '/><path d="M6 14 l8 -8" ' + sw('stroke="' + B + '"') + '/>',
-    lpattern: '<rect x="4" y="12" width="6" height="8" fill="' + G + '" ' + sw() + '/><rect x="13" y="12" width="6" height="8" fill="' + G + '" ' + sw() + '/><rect x="22" y="12" width="6" height="8" fill="' + G + '" ' + sw() + '/><path d="M4 25 h24" ' + sw('stroke="' + B + '"') + '/>',
-    cpattern: '<circle cx="16" cy="16" r="10" ' + sw('stroke-dasharray="3 2"') + '/><circle cx="16" cy="6" r="3" fill="' + G + '" ' + sw() + '/><circle cx="25" cy="21" r="3" fill="' + G + '" ' + sw() + '/><circle cx="7" cy="21" r="3" fill="' + G + '" ' + sw() + '/>',
-    mirror: '<path d="M16 4 v24" ' + sw('stroke="' + B + '" stroke-dasharray="3 2"') + '/><path d="M13 9 h-7 v14 h7 z" fill="' + G + '" ' + sw() + '/><path d="M19 9 h7 v14 h-7 z" fill="' + G + '" fill-opacity="0.45" ' + sw() + '/>',
-    shell: box(F, 6, 8, 16, 12, 6) + '<path d="M9 12 h10 v9 h-10 z" fill="#fff" ' + sw() + '/>',
-    draft: '<path d="M8 26 L12 6 h8 l4 20 z" fill="' + F + '" ' + sw() + '/>',
-    rib: box(F, 6, 8, 16, 12, 6) + '<path d="M10 20 l6 -8 v8 z" fill="' + G + '" ' + sw() + '/>',
-    wrap: '<path d="M6 10 a10 6 0 0 1 20 0 v12 a10 6 0 0 1 -20 0 z" fill="' + F + '" ' + sw() + '/><path d="M10 14 h12" ' + sw('stroke="' + B + '"') + '/>',
-    intersect: '<circle cx="12" cy="16" r="8" fill="' + F + '" ' + sw() + '/><circle cx="20" cy="16" r="8" fill="' + F + '" fill-opacity="0.6" ' + sw() + '/>',
-    refgeo: '<path d="M4 22 l8 -8 h16 l-8 8 z" fill="' + B + '" fill-opacity="0.25" ' + sw('stroke="' + B + '"') + '/><path d="M16 26 v-16 M16 10 l-3 3 M16 10 l3 3" ' + sw() + '/>',
-    curves: '<path d="M4 24 C10 4 22 28 28 8" ' + sw('stroke="' + B + '"') + '/>',
-    instant: '<path d="M16 6 v20 M6 16 h20" ' + sw() + '/><path d="M16 6 l-3 3 M16 6 l3 3 M26 16 l-3 -3 M26 16 l-3 3" ' + sw('stroke="' + B + '"') + '/>',
-    sketch: '<rect x="5" y="9" width="22" height="16" rx="1" fill="#fff" ' + sw() + '/><path d="M9 21 L17 11 l4 4 L13 23 z" fill="' + A + '" ' + sw() + '/>',
-    exitSketch: '<rect x="5" y="9" width="22" height="16" rx="1" fill="#fff" ' + sw() + '/><path d="M10 17 h12 M18 13 l4 4 -4 4" ' + sw('stroke="' + B + '"') + '/>',
-    dim: '<path d="M6 22 h20 M6 19 v6 M26 19 v6" ' + sw() + '/><path d="M9 22 l3 -2 M9 22 l3 2 M23 22 l-3 -2 M23 22 l-3 2" ' + sw('stroke="' + B + '"') + '/><text x="16" y="15" font-size="9" font-family="Segoe UI, sans-serif" fill="' + S + '" text-anchor="middle">10</text>',
-    line: '<path d="M6 24 L26 8" ' + sw('stroke="' + B + '"') + '/><circle cx="6" cy="24" r="2" fill="' + S + '"/><circle cx="26" cy="8" r="2" fill="' + S + '"/>',
-    rect: '<rect x="6" y="9" width="20" height="14" ' + sw('stroke="' + B + '"') + '/><circle cx="6" cy="9" r="2" fill="' + S + '"/><circle cx="26" cy="23" r="2" fill="' + S + '"/>',
-    crect: '<rect x="6" y="9" width="20" height="14" ' + sw('stroke="' + B + '"') + '/><path d="M13 16 h6 M16 13 v6" ' + sw() + '/>',
-    circle: '<circle cx="16" cy="16" r="10" ' + sw('stroke="' + B + '"') + '/><path d="M14 16 h4 M16 14 v4" ' + sw() + '/>',
-    arc: '<path d="M8 24 A11 11 0 0 1 24 8" ' + sw('stroke="' + B + '"') + '/><path d="M14 20 h4 M16 18 v4" ' + sw() + '/>',
-    polygon: '<path d="M16 5 l10 6 v10 l-10 6 l-10 -6 v-10 z" ' + sw('stroke="' + B + '"') + '/>',
-    slot: '<path d="M10 10 h12 a6 6 0 0 1 0 12 h-12 a6 6 0 0 1 0 -12 z" ' + sw('stroke="' + B + '"') + '/>',
-    spline: '<path d="M5 24 C10 4 20 30 27 8" ' + sw('stroke="' + B + '"') + '/>',
-    ellipse: '<ellipse cx="16" cy="16" rx="11" ry="7" ' + sw('stroke="' + B + '"') + '/>',
-    point: '<circle cx="16" cy="16" r="2.5" fill="' + B + '"/><path d="M16 8 v4 M16 20 v4 M8 16 h4 M20 16 h4" ' + sw() + '/>',
-    text: '<text x="16" y="23" font-size="18" font-family="Georgia, serif" fill="' + S + '" text-anchor="middle">A</text>',
-    trim: '<path d="M6 10 h20 M6 22 h20" ' + sw('stroke="' + B + '"') + '/><path d="M16 6 v20" ' + sw('stroke-dasharray="3 2"') + '/><path d="M12 14 l4 -4 4 4" ' + sw('stroke="' + R + '"') + '/>',
-    convert: '<rect x="6" y="6" width="20" height="20" ' + sw() + '/><rect x="10" y="10" width="12" height="12" ' + sw('stroke="' + B + '"') + '/>',
-    offset: '<rect x="8" y="8" width="16" height="16" ' + sw('stroke="' + B + '"') + '/><rect x="4" y="4" width="24" height="24" ' + sw('stroke-dasharray="3 2"') + '/>',
-    mirrorEnt: '<path d="M16 5 v22" ' + sw('stroke-dasharray="3 2"') + '/><path d="M12 10 L6 22 h6 z" ' + sw('stroke="' + B + '"') + '/><path d="M20 10 L26 22 h-6 z" ' + sw('stroke="' + B + '" stroke-dasharray="2 2"') + '/>',
-    sketchPattern: '<circle cx="8" cy="16" r="3" ' + sw('stroke="' + B + '"') + '/><circle cx="16" cy="16" r="3" ' + sw('stroke="' + B + '"') + '/><circle cx="24" cy="16" r="3" ' + sw('stroke="' + B + '"') + '/>',
-    relations: '<path d="M6 22 h20 M6 10 h20" ' + sw('stroke="' + B + '"') + '/><path d="M10 14 v4 M22 14 v4" ' + sw() + '/>',
-    plane: '<path d="M4 22 l8 -10 h16 l-8 10 z" fill="' + B + '" fill-opacity="0.2" ' + sw('stroke="' + B + '"') + '/>',
-    planeSmall: '<path d="M2 12 l4 -6 h8 l-4 6 z" fill="' + B + '" fill-opacity="0.25" stroke="' + B + '" stroke-width="1.2"/>',
-    origin: '<path d="M4 12 h9 M4 12 v-9" fill="none" stroke="' + R + '" stroke-width="1.6"/><path d="M4 12 l4 3" fill="none" stroke="' + B + '" stroke-width="1.6"/><circle cx="4" cy="12" r="1.5" fill="' + S + '"/>',
-    part: '<path d="M3 5 l5 -3 h6 l-5 3 z M3 5 h6 v9 h-6 z M9 5 l5 -3 v9 l-5 3 z" fill="' + F + '" stroke="' + S + '" stroke-width="1"/>',
-    measure: '<path d="M4 24 L24 4 l4 4 L8 28 z" fill="' + A + '" fill-opacity="0.5" ' + sw() + '/><path d="M9 19 l2 2 M13 15 l2 2 M17 11 l2 2 M21 7 l2 2" ' + sw() + '/>',
-    mass: '<path d="M16 6 l10 6 -4 14 h-12 l-4 -14 z" fill="' + F + '" ' + sw() + '/><circle cx="16" cy="16" r="2" fill="' + R + '"/><path d="M16 10 v12 M10 16 h12" ' + sw('stroke="' + B + '" stroke-width="1"') + '/>',
-    section: box(F, 6, 8, 16, 12, 6) + '<path d="M4 6 L28 26" ' + sw('stroke="' + R + '"') + '/>',
-    sensor: '<circle cx="16" cy="16" r="9" ' + sw() + '/><path d="M16 16 l5 -5" ' + sw('stroke="' + R + '"') + '/>',
-    check: '<path d="M6 17 l6 6 L26 9" ' + sw('stroke="' + G + '" stroke-width="2.4"') + '/>',
-    zebra: '<circle cx="16" cy="16" r="10" fill="' + F + '" ' + sw() + '/><path d="M8 11 c6 2 10 2 16 0 M7 16 c6 2 12 2 18 0 M8 21 c6 2 10 2 16 0" ' + sw() + '/>',
-    dxf: '<rect x="6" y="4" width="20" height="24" rx="1" fill="#fff" ' + sw() + '/><path d="M10 9 h12 M10 13 h12 M10 17 h8" ' + sw('stroke="' + L + '"') + '/><text x="16" y="25" font-size="7" font-weight="700" font-family="Segoe UI, sans-serif" fill="' + B + '" text-anchor="middle">DXF</text>',
-    flange: '<path d="M4 24 h12 v-14 h12" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/>',
-    bend: '<path d="M6 24 h10 a6 6 0 0 0 6 -6 v-10" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/>',
-    // miter flange: two walls meeting at a corner with the 45° mitre line between them
-    miter: '<path d="M4 26 h12 v-14" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/><path d="M16 26 l10 -8 v-12" ' + sw('stroke-width="3.5" stroke="' + G + '" stroke-opacity="0.55"') + '/><path d="M16 26 L27 15" ' + sw('stroke="' + B + '" stroke-dasharray="3 2"') + '/>',
-    flatten: '<path d="M4 20 h24" ' + sw('stroke-width="3.5" stroke="' + G + '"') + '/><path d="M8 10 l4 -4 h12 l-4 4 z" fill="' + F + '" ' + sw() + '/>',
-    fit: '<path d="M5 11 V5 h6 M21 5 h6 v6 M27 21 v6 h-6 M11 27 H5 v-6" ' + sw() + '/><rect x="11" y="11" width="10" height="10" fill="' + B + '" fill-opacity="0.35" ' + sw('stroke="' + B + '"') + '/>',
-    zoomArea: '<circle cx="14" cy="14" r="8" ' + sw() + '/><path d="M20 20 l7 7" ' + sw('stroke-width="2.4"') + '/><rect x="10" y="10" width="8" height="8" ' + sw('stroke="' + B + '" stroke-dasharray="2 2"') + '/>',
-    prevView: '<path d="M20 6 l-10 10 10 10" ' + sw('stroke-width="2.2"') + '/>',
-    orient: box(F, 8, 9, 12, 10, 5) + '<circle cx="24" cy="24" r="5" fill="#fff" ' + sw('stroke="' + B + '"') + '/><path d="M24 21 v3 l2 1" ' + sw('stroke="' + B + '"') + '/>',
-    display: box('#b9c2cc', 6, 8, 16, 12, 6),
-    hideshow: '<path d="M3 16 c4 -6 22 -6 26 0 c-4 6 -22 6 -26 0 z" ' + sw() + '/><circle cx="16" cy="16" r="4" fill="' + B + '"/>',
-    appearance: '<circle cx="16" cy="16" r="10" fill="' + F + '" ' + sw() + '/><circle cx="12" cy="13" r="2" fill="' + R + '"/><circle cx="19" cy="11" r="2" fill="' + B + '"/><circle cx="20" cy="18" r="2" fill="' + G + '"/><circle cx="13" cy="20" r="2" fill="' + A + '"/>',
-    scene: '<rect x="4" y="6" width="24" height="20" rx="1" fill="#fff" ' + sw() + '/><path d="M4 22 l8 -7 6 5 4 -3 6 5" ' + sw('stroke="' + B + '"') + '/><circle cx="22" cy="11" r="2" fill="' + A + '"/>',
-    settings: '<circle cx="16" cy="16" r="4" ' + sw() + '/><path d="M16 4 v4 M16 24 v4 M4 16 h4 M24 16 h4 M7.5 7.5 l3 3 M21.5 21.5 l3 3 M7.5 24.5 l3 -3 M21.5 10.5 l3 -3" ' + sw() + '/>',
-    tree: '<path d="M6 6 h6 M6 12 h4 M10 12 h10 M6 18 h4 M10 18 h10 M10 24 h4 M14 24 h8" ' + sw('stroke="' + B + '"') + '/><path d="M8 6 v18" ' + sw() + '/>',
-    pm: '<rect x="6" y="5" width="20" height="22" rx="1" fill="#fff" ' + sw() + '/><path d="M9 10 h14 M9 15 h14 M9 20 h8" ' + sw('stroke="' + B + '"') + '/>',
-    config: '<rect x="5" y="7" width="8" height="8" fill="' + F + '" ' + sw() + '/><rect x="19" y="7" width="8" height="8" fill="' + F + '" ' + sw() + '/><rect x="12" y="19" width="8" height="8" fill="' + B + '" fill-opacity="0.3" ' + sw() + '/>',
-    dimx: '<path d="M6 24 h20" ' + sw() + '/><path d="M8 24 l3 -2 M8 24 l3 2 M24 24 l-3 -2 M24 24 l-3 2" ' + sw('stroke="' + B + '"') + '/><circle cx="16" cy="12" r="5" fill="' + G + '" ' + sw() + '/>',
-    dispman: '<circle cx="16" cy="16" r="10" fill="url(#g)" ' + sw() + '/><defs><radialGradient id="g" cx="35%" cy="35%"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="' + B + '"/></radialGradient></defs>',
-    home: '<path d="M4 16 L16 5 l12 11" ' + sw('stroke="' + B + '"') + '/><path d="M8 14 v13 h16 v-13" fill="' + F + '" ' + sw() + '/>',
-    library: '<path d="M5 6 h6 v20 h-6 z M13 6 h6 v20 h-6 z M20 8 l6 -1 4 18 -6 1 z" fill="' + F + '" ' + sw() + '/>',
-    explorer: '<path d="M4 9 h9 l3 3 h12 v14 h-24 z" fill="' + A + '" fill-opacity="0.6" ' + sw() + '/>',
-    palette: '<rect x="5" y="5" width="9" height="9" fill="' + F + '" ' + sw() + '/><rect x="18" y="5" width="9" height="9" fill="' + F + '" ' + sw() + '/><rect x="5" y="18" width="9" height="9" fill="' + F + '" ' + sw() + '/><rect x="18" y="18" width="9" height="9" fill="' + B + '" fill-opacity="0.3" ' + sw() + '/>',
-    props: '<rect x="6" y="5" width="20" height="22" rx="1" fill="#fff" ' + sw() + '/><path d="M10 11 h12 M10 16 h12 M10 21 h7" ' + sw() + '/><path d="M20 20 l2 2 4 -4" ' + sw('stroke="' + G + '"') + '/>',
-    macro: '<rect x="4" y="6" width="24" height="20" rx="2" fill="#2b3340" stroke="none"/><path d="M8 12 l4 4 -4 4" fill="none" stroke="#7ee787" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 20 h8" stroke="#dfe6ee" stroke-width="2" stroke-linecap="round"/>',
-    warn: '<path d="M16 4 L29 27 H3 z" fill="' + A + '" ' + sw() + '/><path d="M16 12 v8 M16 23 v1" ' + sw('stroke-width="2.4"') + '/>',
-    error: '<circle cx="16" cy="16" r="11" fill="' + R + '" ' + sw() + '/><path d="M11 11 l10 10 M21 11 l-10 10" ' + sw('stroke="#fff" stroke-width="2.4"') + '/>',
-    ok: '<path d="M5 17 l7 7 L27 8" fill="none" stroke="' + G + '" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
-    cancel: '<path d="M8 8 l16 16 M24 8 L8 24" fill="none" stroke="' + R + '" stroke-width="4" stroke-linecap="round"/>',
-    generic: '<rect x="7" y="7" width="18" height="18" rx="2" fill="' + F + '" ' + sw() + '/>',
-    search: '<circle cx="14" cy="14" r="7" ' + sw() + '/><path d="M19 19 l7 7" ' + sw('stroke-width="2.2"') + '/>',
-    filter: '<path d="M4 6 h24 l-9 10 v9 l-6 3 v-12 z" fill="' + F + '" ' + sw() + '/>',
-    body: '<path d="M3 5 l5 -3 h6 l-5 3 z M3 5 h6 v9 h-6 z M9 5 l5 -3 v9 l-5 3 z" fill="' + B + '" fill-opacity="0.3" stroke="' + S + '" stroke-width="1"/>',
-    material: '<path d="M3 13 l5 -9 h5 l-5 9 z" fill="' + A + '" fill-opacity="0.6" stroke="' + S + '" stroke-width="1"/>',
-    folder: '<path d="M2 4 h4 l1.5 1.5 H14 v8 H2 z" fill="' + A + '" fill-opacity="0.7" stroke="' + S + '" stroke-width="1"/>',
-    annotations: '<path d="M3 12 V4 h7 l3 3 v5 z" fill="#fff" stroke="' + S + '" stroke-width="1"/><path d="M5 8 h6 M5 10 h4" stroke="' + B + '" stroke-width="1"/>'
+    // ---- features: boss (green) / cut (red)
+    extrude: blk(1.5, 5, 8, 6, 3.5) + blk(4, 1.5, 3.5, 3.5, 2, G, GL, GD),
+    cut: blk(1.5, 5, 8, 6, 3.5) + p('M4 7.6 l2 -2 h4.5 l-2 2 z', R, RD, 1),
+    revolve: p(SPOOL, G, S) + ell(8, 3, 4, 1.3, GL, S) + AXIS,
+    revolveCut: p(SPOOL, F2, S) + ell(8, 3, 4, 1.3, F1, S) + p('M6 6.5 h4 v3 h-4 z', R, RD, 1) + AXIS,
+    sweep: ln(SWEEP_PATH, S, 4.2) + ln(SWEEP_PATH, G, 2.6) + circ(3.5, 13, 2.2, GL, S, 1.1),
+    loft: p('M5.5 3.5 L2.5 13 h11 L10.5 3.5 z', G, S) + ell(8, 13, 5.5, 1.6, GL, S) + ell(8, 3.5, 2.5, 0.9, GL, S),
+    hole: blk(1.5, 5, 10, 4, 3.5) + ell(7.5, 7.2, 2.8, 1.2, RL, RD, 1) + ell(7.5, 7.2, 1.5, 0.65, RD, 'none'),
+    fillet: p('M2 14 V7.5 a4.5 4.5 0 0 1 4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 a4.5 4.5 0 0 1 4.5 -4.5', G, 2.2),
+    chamfer: p('M2 14 V7.5 l4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 l4.5 -4.5', G, 2.2),
+    shell: blk(1.5, 4.5, 9, 7, 3.5) + p('M3.4 7.1 L5.5 5 H11.6 L9.5 7.1 z', '#5f7189', S, 1),
+    draft: p('M3 14 L5.5 2.5 h5 L13 14 z', F2, S) + ln('M5.5 2.5 L3 14', G, 1.6),
+    rib: blk(1.5, 4.5, 9, 7, 3.5) + p('M4 13 l5 -5.5 v5.5 z', G, S, 1),
+    wrap: p('M3 4 a5 2 0 0 1 10 0 v8 a5 2 0 0 1 -10 0 z', F2, S) + ell(8, 4, 5, 2, F1, S) + ln('M4 9 c1.5 1.2 6.5 1.2 8 0', G, 1.6),
+    intersect: circ(6, 8, 4.5, F2, S) + circ(10, 8, 4.5, F2, S) + p('M8 3.97 A4.5 4.5 0 0 1 8 12.03 A4.5 4.5 0 0 1 8 3.97 z', G, S, 1),
+    // ---- patterns and mirror: the seed is solid green, the instances a lighter tint
+    lpattern: rect(1.5, 3, 3, 3, G, S, 1) + rect(6.5, 3, 3, 3, GL, S, 1) + rect(11.5, 3, 3, 3, GL, S, 1) + rect(1.5, 9.5, 3, 3, GL, S, 1) + rect(6.5, 9.5, 3, 3, GL, S, 1) + rect(11.5, 9.5, 3, 3, GL, S, 1),
+    cpattern: circ(8, 8, 5.5, 'none', S, 0.9) + circ(8, 8, 0.8, S, 'none') + rect(6.7, 1.2, 2.6, 2.6, G, S, 1) + rect(12.2, 6.7, 2.6, 2.6, GL, S, 1) + rect(6.7, 12.2, 2.6, 2.6, GL, S, 1) + rect(1.2, 6.7, 2.6, 2.6, GL, S, 1),
+    mirror: p('M6.5 3 L2 6 v7 h4.5 z', G, S) + p('M9.5 3 L14 6 v7 h-4.5 z', GL, S) + ln('M8 1.5 v13', S, 1, DASH),
+    // ---- reference geometry (grey-blue)
+    refgeo: p('M1.5 12.5 l3.5 -6 h9 l-3.5 6 z', PL, P) + ln('M8 14.5 V5 M8 5 l-2 2 M8 5 l2 2', S, 1.25),
+    plane: p('M1.5 12.5 l4 -7 h9 l-4 7 z', PL, P),
+    planeSmall: p('M1 12 l4 -6 h8 l-4 6 z', PL, P, 1.1),
+    origin: ln('M3.5 12.5 h9 M3.5 12.5 v-9', R, 1.5) + ln('M3.5 12.5 l4 3', B, 1.5) + circ(3.5, 12.5, 1.4, S, 'none'),
+    curves: ln('M2 12 C5 2 11 14 14 4', B, 1.5),
+    instant: ln('M8 2.5 v11 M2.5 8 h11', S) + ln('M8 2.5 l-2 2 M8 2.5 l2 2 M13.5 8 l-2 -2 M13.5 8 l-2 2', B, 1.25),
+    // ---- sketch (yellow pencil, blue entities)
+    sketch: SHEET + PENCIL,
+    exitSketch: SHEET + ln('M3.5 9 h6.5 M7.5 6.5 l2.5 2.5 -2.5 2.5', G, 1.7) + ln('M10.5 13 L14 9.5', S, 3.4) + ln('M10.5 13 L14 9.5', Y, 2.2),
+    dim: ln('M2 11.5 h12 M2 9 v5 M14 9 v5', S, 1.1) + ln('M2 11.5 l2.5 -1.4 M2 11.5 l2.5 1.4 M14 11.5 l-2.5 -1.4 M14 11.5 l-2.5 1.4', B, 1.2) + txt(8, 7.5, 6, '10'),
+    line: ln('M2.5 13 L13.5 3', B, 1.5) + circ(2.5, 13, 1.2, S, 'none') + circ(13.5, 3, 1.2, S, 'none'),
+    rect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + circ(2.5, 4, 1.2, S, 'none') + circ(13.5, 12, 1.2, S, 'none'),
+    crect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
+    circle: circ(8, 8, 5.5, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
+    arc: ln('M5 3 A8 8 0 0 1 13 11', B, 1.5) + ln('M3.5 11 h3 M5 9.5 v3', S, 1.1),
+    polygon: ln('M8 2 l5.2 3 v6 l-5.2 3 l-5.2 -3 v-6 z', B, 1.5),
+    slot: ln('M5 5 h6 a3 3 0 0 1 0 6 h-6 a3 3 0 0 1 0 -6 z', B, 1.5) + ln('M5 8 h6', S, 0.9, DASH),
+    spline: ln('M2 12.5 C5 1 10 15 14 3.5', B, 1.5) + circ(2, 12.5, 1.1, S, 'none') + circ(14, 3.5, 1.1, S, 'none'),
+    ellipse: ell(8, 8, 6, 3.8, 'none', B, 1.5),
+    point: circ(8, 8, 1.6, B, 'none') + ln('M8 3 v2.5 M8 10.5 v2.5 M3 8 h2.5 M10.5 8 h2.5', S, 1.1),
+    text: txt(8, 12.5, 12, 'A', S, 'Georgia, serif', 600),
+    trim: ln('M2 5 h12 M2 11 h12', B, 1.5) + ln('M8 2 v12', S, 0.9, DASH) + ln('M6 9.5 l2 -3 2 3', R, 1.5),
+    convert: rect(2.5, 2.5, 11, 11, F2, S) + rect(5, 5, 6, 6, 'none', B, 1.5),
+    offset: rect(4, 4, 8, 8, 'none', B, 1.5) + rect(1.5, 1.5, 13, 13, 'none', S, 1, DASH),
+    mirrorEnt: ln('M8 2 v12', S, 0.9, DASH) + ln('M6 4.5 L2.5 11.5 h3.5 z', B, 1.4) + ln('M10 4.5 L13.5 11.5 h-3.5 z', B, 1.4, 'stroke-dasharray="1.5 1.5"'),
+    sketchPattern: circ(3.5, 8, 1.8, 'none', B, 1.4) + circ(8, 8, 1.8, 'none', B, 1.4) + circ(12.5, 8, 1.8, 'none', B, 1.4) + ln('M2 12.5 h12', S, 0.9, DASH),
+    relations: ln('M2.5 4.5 h11 M2.5 11.5 h11', B, 1.5) + ln('M5.5 6.5 v3 M10.5 6.5 v3', S, 1.25),
+    // ---- sheet metal (green sheet)
+    flange: p(FLANGE_L, G, S) + ln('M2 12 h6.5 a3.5 3.5 0 0 0 3.5 -3.5 V2.5', Y, 1, 'stroke-dasharray="1.6 1.2"'),
+    bend: p('M2 10.5 h6.5 v3 H2 z', F2, S) + p('M8.5 10.5 a2 2 0 0 0 2 -2 V2.5 h3 V8.5 a5 5 0 0 1 -5 5 v-3 z', G, S) + ln('M8.5 10.5 v3', B, 1.2),
+    miter: p('M1.5 12.5 L5.5 9.5 h8 l-4 3 z', F2, S) + p('M5.5 9.5 v-5 h8 v5 z', G, S) + p('M13.5 9.5 l-4 3 v-5 l4 -3 z', GD, S) + ln('M13.5 4.5 v5', B, 1.2, DASH),
+    hem: p('M2 9 h9 a2.5 2.5 0 0 1 0 5 h-5 v-2 h5 a0.5 0.5 0 0 0 0 -1 H2 z', G, S),
+    jog: p('M1.5 12.5 h4 l4 -6 h5 v-2.5 h-6 l-4 6 h-3 z', G, S),
+    flatten: p('M1.5 12 l3 -8 h10 l-3 8 z', GL, S) + ln('M5.5 12 l3 -8 M9 12 l3 -8', B, 1, DASH),
+    // ---- evaluate
+    measure: p('M2 12 L12 2 l2 2 L4 14 z', Y, S) + ln('M4.5 9.5 l1 1 M6.5 7.5 l1 1 M8.5 5.5 l1 1 M10.5 3.5 l1 1', S, 1),
+    mass: p('M8 2.5 l5.5 3.2 -2 7.3 h-7 l-2 -7.3 z', F2, S) + circ(8, 8, 1.3, R, 'none') + ln('M8 4.5 v7 M4.5 8 h7', B, 0.9),
+    section: blk(1.5, 4.5, 9, 7, 3.5) + ln('M1.5 2.5 L14.5 14', R, 1.5),
+    sensor: circ(8, 8, 5, 'none', S) + ln('M8 8 l3 -3', R, 1.5) + circ(8, 8, 0.9, S, 'none'),
+    check: ln('M2.5 8.5 l3.5 3.5 L13.5 4.5', G, 2.2),
+    zebra: circ(8, 8, 5.5, F2, S) + ln('M3.5 5.5 c3 1.2 6 1.2 9 0 M3 8 c3 1.2 7 1.2 10 0 M3.5 10.5 c3 1.2 6 1.2 9 0', S, 1),
+    dxf: rect(2.5, 1.5, 11, 13, W, S, 1.1, 'rx="0.8"') + ln('M5 4.5 h6 M5 6.5 h6 M5 8.5 h4', L, 0.9) + txt(8, 12.8, 4.2, 'DXF', B, null, 700),
+    // ---- view (heads-up toolbar)
+    fit: ln('M2.5 5.5 V2.5 h3 M10.5 2.5 h3 v3 M13.5 10.5 v3 h-3 M5.5 13.5 h-3 v-3', S, 1.25) + rect(5.5, 5.5, 5, 5, PL, B, 1.2),
+    zoomArea: circ(7, 7, 4, 'none', S) + ln('M10 10 l3.5 3.5', S, 2) + rect(5, 5, 4, 4, 'none', B, 1, 'stroke-dasharray="1.2 1.2"'),
+    prevView: ln('M10 3 L5 8 l5 5', S, 1.8),
+    orient: blk(2, 3.5, 6, 5, 2.5) + circ(11.5, 11.5, 3, W, B, 1.1) + ln('M11.5 9.8 v1.7 l1.2 0.7', B, 1.1),
+    display: blk(1.5, 4.5, 9, 7, 3.5, '#b3bfcc', '#dbe2ea', '#8d9bac'),
+    hideshow: ln('M1.5 8 c3 -5 10 -5 13 0 c-3 5 -10 5 -13 0 z', S, 1.25) + circ(8, 8, 2.2, B, 'none'),
+    appearance: circ(8, 8, 6, F2, S) + circ(6, 6.3, 1.2, R, 'none') + circ(9.6, 5.4, 1.2, B, 'none') + circ(10.2, 9.2, 1.2, G, 'none') + circ(6.4, 10.3, 1.2, Y, 'none'),
+    scene: rect(2, 3, 12, 10, W, S, 1.1, 'rx="0.6"') + ln('M2 11 l4 -3.5 3 2.5 2 -1.5 3 2.5', B, 1.2) + circ(11, 5.5, 1.1, Y, 'none'),
+    settings: circ(8, 8, 2, 'none', S) + ln('M8 2 v2 M8 12 v2 M2 8 h2 M12 8 h2 M3.8 3.8 l1.4 1.4 M10.8 10.8 l1.4 1.4 M3.8 12.2 l1.4 -1.4 M10.8 5.2 l1.4 -1.4', S, 1.25),
+    // ---- FeatureManager tabs, task pane, misc
+    tree: ln('M3 3 h3 M3 6 h2 M5 6 h5 M3 9 h2 M5 9 h5 M5 12 h2 M7 12 h4', B, 1.2) + ln('M4 3 v9', S, 1.2),
+    pm: rect(3, 2.5, 10, 11, W, S, 1.1, 'rx="0.6"') + ln('M4.5 5 h7 M4.5 7.5 h7 M4.5 10 h4', B, 1.1),
+    config: rect(2.5, 3.5, 4, 4, F2, S, 1) + rect(9.5, 3.5, 4, 4, F2, S, 1) + rect(6, 9.5, 4, 4, PL, B, 1),
+    dimx: ln('M3 12 h10', S, 1.1) + ln('M3 12 l1.5 -1 M3 12 l1.5 1 M13 12 l-1.5 -1 M13 12 l-1.5 1', B, 1.1) + circ(8, 6, 2.5, G, S, 1),
+    dispman: '<defs><radialGradient id="anvil-ico-dm" cx="35%" cy="35%"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="' + B + '"/></radialGradient></defs>' + circ(8, 8, 5.5, 'url(#anvil-ico-dm)', S),
+    home: ln('M2 8 L8 2.5 l6 5.5', B, 1.4) + p('M4 7 v6.5 h8 V7', F2, S),
+    library: p('M2.5 3 h3 v10 h-3 z M6.5 3 h3 v10 h-3 z M10 4 l3 -0.5 2 9 -3 0.5 z', F2, S, 1),
+    explorer: p('M2 4.5 h4.5 l1.5 1.5 h6 v7 h-12 z', Y, S, 1),
+    palette: rect(2.5, 2.5, 4.5, 4.5, F2, S, 1) + rect(9, 2.5, 4.5, 4.5, F2, S, 1) + rect(2.5, 9, 4.5, 4.5, F2, S, 1) + rect(9, 9, 4.5, 4.5, PL, B, 1),
+    props: rect(3, 2.5, 10, 11, W, S, 1.1, 'rx="0.6"') + ln('M5 5.5 h6 M5 8 h6 M5 10.5 h3.5', S, 1) + ln('M10 10 l1 1 2 -2', G, 1.2),
+    macro: '<rect x="2" y="3" width="12" height="10" rx="1" fill="#2b3340" stroke="none"/>' + ln('M4 6 l2 2 -2 2', '#7ee787', 1.3) + ln('M7.5 10 h4', '#dfe6ee', 1.3),
+    warn: p('M8 2 L14.5 13.5 H1.5 z', '#e8a23a', S) + ln('M8 6 v4 M8 11.5 v0.5', S, 1.6),
+    error: circ(8, 8, 5.5, R, S) + ln('M5.5 5.5 l5 5 M10.5 5.5 l-5 5', W, 1.6),
+    ok: ln('M2.5 8.5 l3.5 3.5 L13.5 4', G, 2.6),
+    cancel: ln('M4 4 l8 8 M12 4 L4 12', R, 2.6),
+    generic: rect(3.5, 3.5, 9, 9, F2, S, 1.1, 'rx="1"'),
+    search: circ(7, 7, 3.5, 'none', S) + ln('M9.5 9.5 l3.5 3.5', S, 1.6),
+    filter: p('M2 3 h12 l-4.5 5 v4.5 l-3 1.5 v-6 z', F2, S),
+    part: blk(2, 3, 7, 8, 4, F2, F1, F3, S, 1),
+    body: blk(2, 3, 7, 8, 4, '#a9c6ea', '#d3e3f7', '#7fa2cc', S, 1),
+    material: p('M3 13 l5 -9 h5 l-5 9 z', '#f0c987', S, 1),
+    folder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1),
+    annotations: p('M3 13 V3.5 h6 l3 3 V13 z', W, S, 1) + ln('M5 7.5 h5 M5 9.5 h4', B, 1)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;
-    var vb = (name === 'planeSmall' || name === 'origin' || name === 'part' || name === 'body' || name === 'material' || name === 'folder' || name === 'annotations') ? '0 0 16 16' : '0 0 32 32';
     size = size || 32;
-    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="' + vb + '" aria-hidden="true">' + body + '</svg>';
+    return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true">' + body + '</svg>';
   }
   icon.has = function (name) { return !!I[name]; };
   return icon;

@@ -147,6 +147,20 @@ var CSG = (function () {
       if (this.back) polygons = polygons.concat(this.back.allPolygons());
       return polygons;
     },
+    // Move every polygon whose own bounding box lies outside `bounds` (grown by eps) out of this tree into `out`.
+    // The node planes stay, so the tree still classifies space exactly; only the far polygons skip the clipping.
+    extractFar: function (bounds, eps, out) {
+      if (this.polygons.length) {
+        var keep = [];
+        for (var i = 0; i < this.polygons.length; i++) {
+          var p = this.polygons[i];
+          if (polygonFar(p, bounds, eps)) out.push(p); else keep.push(p);
+        }
+        this.polygons = keep;
+      }
+      if (this.front) this.front.extractFar(bounds, eps, out);
+      if (this.back) this.back.extractFar(bounds, eps, out);
+    },
     build: function (polygons) {
       if (!polygons.length) return;
       if (!this.plane) this.plane = polygons[(polygons.length / 2) | 0].plane.clone();
@@ -157,29 +171,95 @@ var CSG = (function () {
     }
   };
 
-  function CSG() { this.polygons = []; }
+  // ---------------------------------------------------------------- axis-aligned bounds (the boolean early-out)
+  // boundsOf(polygons) -> { min: [x, y, z], max: [x, y, z] }, or null for an empty list.
+  function boundsOf(polygons) {
+    if (!polygons.length) return null;
+    var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < polygons.length; i++) {
+      var vs = polygons[i].vertices;
+      for (var j = 0; j < vs.length; j++) {
+        var q = vs[j].pos;
+        if (q.x < min[0]) min[0] = q.x; if (q.x > max[0]) max[0] = q.x;
+        if (q.y < min[1]) min[1] = q.y; if (q.y > max[1]) max[1] = q.y;
+        if (q.z < min[2]) min[2] = q.z; if (q.z > max[2]) max[2] = q.z;
+      }
+    }
+    return { min: min, max: max };
+  }
+  function boundsOverlap(a, b, eps) {
+    return a.min[0] <= b.max[0] + eps && a.max[0] >= b.min[0] - eps &&
+      a.min[1] <= b.max[1] + eps && a.max[1] >= b.min[1] - eps &&
+      a.min[2] <= b.max[2] + eps && a.max[2] >= b.min[2] - eps;
+  }
+  // True when the polygon's own bounding box is clear of `b` grown by eps on some axis (touching counts as near).
+  function polygonFar(p, b, eps) {
+    var vs = p.vertices, minx = Infinity, miny = Infinity, minz = Infinity, maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+    for (var j = 0; j < vs.length; j++) {
+      var q = vs[j].pos;
+      if (q.x < minx) minx = q.x; if (q.x > maxx) maxx = q.x;
+      if (q.y < miny) miny = q.y; if (q.y > maxy) maxy = q.y;
+      if (q.z < minz) minz = q.z; if (q.z > maxz) maxz = q.z;
+    }
+    return minx > b.max[0] + eps || maxx < b.min[0] - eps ||
+      miny > b.max[1] + eps || maxy < b.min[1] - eps ||
+      minz > b.max[2] + eps || maxz < b.min[2] - eps;
+  }
+  // The near/far tolerance for a boolean of two solids: at least the plane-classification EPSILON (a polygon that
+  // could be judged coplanar with the other solid's face must be clipped), plus a hair of the model's extent.
+  function farEps(ba, bb) {
+    var ext = 0;
+    for (var k = 0; k < 3; k++) ext = Math.max(ext, Math.max(ba.max[k], bb.max[k]) - Math.min(ba.min[k], bb.min[k]));
+    return EPSILON + 1e-9 * ext;
+  }
+  function clonePolys(polygons) { return polygons.map(function (p) { return p.clone(); }); }
+
+  function CSG() { this.polygons = []; this.bounds = null; }
   CSG.fromPolygons = function (polygons) {
     var csg = new CSG();
     csg.polygons = polygons;
     return csg;
   };
+  // The booleans below are the classic BSP algorithm with a bounding-box early-out: both trees are built from every
+  // polygon (so each one classifies space exactly), but a polygon whose own bounding box lies clear of the other
+  // solid's bounding box is lifted out of its tree before the clipping and put back (or dropped) unchanged, since
+  // no part of it can be inside the other solid. Two solids whose boxes do not meet skip the trees altogether.
   CSG.prototype = {
-    clone: function () { return CSG.fromPolygons(this.polygons.map(function (p) { return p.clone(); })); },
+    clone: function () {
+      var c = CSG.fromPolygons(clonePolys(this.polygons));
+      c.bounds = this.bounds;
+      return c;
+    },
     toPolygons: function () { return this.polygons; },
+    // Axis-aligned bounding box { min: [x, y, z], max: [x, y, z] } (null for an empty solid), cached on the instance.
+    // Every operation that changes geometry returns a new CSG, so the cache never goes stale.
+    getBounds: function () {
+      if (!this.bounds) this.bounds = boundsOf(this.polygons);
+      return this.bounds;
+    },
     union: function (csg) {
-      var a = new Node(this.clone().polygons);
-      var b = new Node(csg.clone().polygons);
+      var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
+      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
+      var a = new Node(clonePolys(this.polygons));
+      var b = new Node(clonePolys(csg.polygons));
+      var far = [];
+      if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, far); }
       a.clipTo(b);
       b.clipTo(a);
       b.invert();
       b.clipTo(a);
       b.invert();
       a.build(b.allPolygons());
-      return CSG.fromPolygons(a.allPolygons());
+      return CSG.fromPolygons(a.allPolygons().concat(far));
     },
     subtract: function (csg) {
-      var a = new Node(this.clone().polygons);
-      var b = new Node(csg.clone().polygons);
+      var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
+      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons));
+      var a = new Node(clonePolys(this.polygons));
+      var b = new Node(clonePolys(csg.polygons));
+      var far = [];
+      // A's far polygons survive untouched; B's far polygons lie outside A and take nothing away
+      if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, []); }
       a.invert();
       a.clipTo(b);
       b.clipTo(a);
@@ -188,11 +268,15 @@ var CSG = (function () {
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(a.allPolygons());
+      return CSG.fromPolygons(a.allPolygons().concat(far));
     },
     intersect: function (csg) {
-      var a = new Node(this.clone().polygons);
-      var b = new Node(csg.clone().polygons);
+      var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
+      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
+      var a = new Node(clonePolys(this.polygons));
+      var b = new Node(clonePolys(csg.polygons));
+      // far polygons of either solid lie outside the other and cannot be part of the intersection
+      if (ba && bb) { a.extractFar(bb, eps, []); b.extractFar(ba, eps, []); }
       a.invert();
       b.clipTo(a);
       b.invert();

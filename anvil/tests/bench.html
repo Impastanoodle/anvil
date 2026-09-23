@@ -95,9 +95,11 @@
         tr.innerHTML = '<td>All parts (sum of medians)</td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num">' + fmt(grandTotal) + '</td><td></td><td></td><td></td>';
         rows.appendChild(tr);
         Array.prototype.forEach.call(rows.querySelectorAll('td.bar i'), function (bar) { bar.style.width = (100 * (+bar.dataset.ms) / maxMedian) + '%'; });
+        // one number to compare before/after a kernel change: the sum of the per-part medians
         $('summary').textContent = parts.length + ' parts · ' + runs + ' runs each · sum of medians ' + fmt(grandTotal) + ' ms · ' + navigator.userAgent.replace(/^.*\) /, '');
         $('run').disabled = false;
         window.__anvilBench = lastResults;
+        window.__anvilBenchTotal = grandTotal;
         return;
       }
       var part = parts[i++], samples = [], last = null, err = null;
@@ -129,7 +131,9 @@
 
   function toMarkdown() {
     var lines = ['| Part | features | polys | tris | rebuild ms | total median ms |', '| --- | ---: | ---: | ---: | ---: | ---: |'];
-    lastResults.forEach(function (r) { lines.push('| ' + r.name + ' | ' + r.features + ' | ' + r.polys + ' | ' + r.tris + ' | ' + fmt(r.rebuild) + ' | ' + fmt(r.median) + ' |'); });
+    var total = 0;
+    lastResults.forEach(function (r) { total += r.median; lines.push('| ' + r.name + ' | ' + r.features + ' | ' + r.polys + ' | ' + r.tris + ' | ' + fmt(r.rebuild) + ' | ' + fmt(r.median) + ' |'); });
+    lines.push('| **All parts (sum of medians)** | | | | | **' + fmt(total) + '** |');
     return lines.join('\n');
   }
 

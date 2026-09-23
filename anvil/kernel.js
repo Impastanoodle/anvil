@@ -988,6 +988,99 @@ var Kernel = (function () {
     return null;
   }
 
+  // A point strictly inside a closed loop and outside the given hole loops: the vertex centroid when it qualifies,
+  // else an edge midpoint nudged inward. Returns [u, v] or null.
+  function insidePoint2D(pts, holes) {
+    var n = pts.length;
+    if (n < 3) return null;
+    var ok = function (q) {
+      if (!pointInPoly(q, pts)) return false;
+      for (var h = 0; h < holes.length; h++) if (pointInPoly(q, holes[h])) return false;
+      return true;
+    };
+    var cx = 0, cy = 0, minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, i;
+    for (i = 0; i < n; i++) {
+      cx += pts[i][0]; cy += pts[i][1];
+      minx = Math.min(minx, pts[i][0]); maxx = Math.max(maxx, pts[i][0]);
+      miny = Math.min(miny, pts[i][1]); maxy = Math.max(maxy, pts[i][1]);
+    }
+    var c = [cx / n, cy / n];
+    if (ok(c)) return c;
+    var s = signedArea(pts) >= 0 ? 1 : -1, d = 1e-3 * Math.hypot(maxx - minx, maxy - miny);
+    if (!(d > 0)) return null;
+    for (i = 0; i < n; i++) {
+      var a = pts[i], b = pts[(i + 1) % n];
+      var ex = b[0] - a[0], ey = b[1] - a[1], el = Math.hypot(ex, ey);
+      if (el < 1e-12) continue;
+      // inward normal of a CCW loop is the left-hand normal
+      var q = [(a[0] + b[0]) / 2 - s * ey / el * d, (a[1] + b[1]) / 2 + s * ex / el * d];
+      if (ok(q)) return q;
+    }
+    return null;
+  }
+
+  // cutDirectionHint(model, sketchId, body) -> true when a new cut on this sketch should be built with `reverse: true`
+  // to go into the body (the material lies on the −n side of the sketch plane), false when the plain +n direction
+  // already enters the body, null when there is no answer: no body, the sketch plane sits inside the material, the
+  // profile lies off the body along its normal, or anything fails. A PropertyManager default only; never throws.
+  function cutDirectionHint(model, sketchId, body) {
+    try {
+      if (!model || !body || !body.polygons || !body.polygons.length) return null;
+      var sketch = findFeature(model, sketchId);
+      if (!sketch || sketch.type !== 'sketch') return null;
+      var planesById = {};
+      model.features.forEach(function (f) { if (f.type === 'plane') planesById[f.id] = makePlane(f.ref || 'Front', +f.offset || 0); });
+      var plane = resolvePlane(sketch.plane, model, planesById);
+      var profile = sketch.profile || sketchProfile(sketch);
+      var outer = null, holes = [];
+      (profile.loops || []).forEach(function (l) {
+        if (l.cross) return;
+        if (!outer && !l.hole) outer = l;
+        else if (outer && l.hole && l.depth === outer.depth + 1) holes.push(l.pts);
+      });
+      if (!outer) return null;
+      var uv = insidePoint2D(outer.pts, holes);
+      if (!uv) return null;
+      var p = to3D(plane, uv[0], uv[1]), n = norm(plane.n);
+      var bb = body.getBounds();
+      var diag = bb ? len(sub(bb.max, bb.min)) : 0;
+      if (!(diag > 0)) return null;
+      var eps = Math.max(1e-3, 1e-3 * diag);
+      var inside = body.pointTester();
+      var fwd = inside(add(p, scale(n, eps))), back = inside(sub(p, scale(n, eps)));
+      if (fwd && back) return null;
+      if (fwd || back) return back && !fwd;
+      // nothing right at the plane: shoot the line p + t·n through every face and see which side is hit first
+      var hit = rayHits(body, p, n, eps);
+      if (hit.forward === Infinity && hit.backward === Infinity) return null;
+      return hit.backward < hit.forward;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Nearest face crossings of the line p + t·n with a solid, ignoring |t| < eps: { forward: t > 0 or Infinity,
+  // backward: −t for the nearest t < 0, or Infinity }. Each polygon is tested in its own plane by projecting onto
+  // the two axes its normal leans away from, so the test is exact for planar polygons of any shape.
+  function rayHits(body, p, n, eps) {
+    var forward = Infinity, backward = Infinity, polys = body.polygons;
+    for (var i = 0; i < polys.length; i++) {
+      var pl = polys[i].plane, pn = [pl.normal.x, pl.normal.y, pl.normal.z];
+      var denom = dot(pn, n);
+      if (Math.abs(denom) < 1e-12) continue;
+      var t = (pl.w - dot(pn, p)) / denom;
+      if (Math.abs(t) < eps) continue;
+      if (t > 0 ? t >= forward : -t >= backward) continue;
+      var q = add(p, scale(n, t));
+      var ax = Math.abs(pn[0]), ay = Math.abs(pn[1]), az = Math.abs(pn[2]);
+      var u = ax >= ay && ax >= az ? 1 : 0, v = az > ax && az > ay ? 1 : 2;
+      var pts = polys[i].vertices.map(function (vx) { var a = arr(vx.pos); return [a[u], a[v]]; });
+      if (!pointInPoly([q[u], q[v]], pts)) continue;
+      if (t > 0) forward = t; else backward = -t;
+    }
+    return { forward: forward, backward: backward };
+  }
+
   // The geometry a pattern or mirror should copy: a pattern's own tool holds only its copies, so when the source
   // is itself a pattern/mirror the seed instance has to be included (recursively) or nested patterns miss it.
   function familyTool(id, model, ctx) {
@@ -2801,7 +2894,7 @@ var Kernel = (function () {
     offsetLoop: offsetLoop, filletPolyline: filletPolyline,
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
-    newModel: newModel, featureName: featureName, findFeature: findFeature,
+    newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
     buildTool: buildTool, isCut: isCut, rebuild: rebuild, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
     meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,

@@ -408,6 +408,90 @@
     await idle();
     return 'volume ' + s.volume + ', feature ' + f.name;
   });
+  step('Cut-Extrude PM: a sketch on the top face gets "Reverse direction" checked by default and the cut goes into the sheet', async function () {
+    // sheet on Front: x ∈ [0,100], y ∈ [0,60], z ∈ [0,2]; the sketch sits on the top face (Front plane, offset 2),
+    // whose normal (+Z) points away from the sheet, so a forward cut would miss. Kernel.cutDirectionHint says so
+    // and cmdExtrude presets Reverse direction for the new cut.
+    await anvil.run('p.sketch("Front").rect(0, 0, 100, 60).extrude(2);');
+    await anvil.append('p.sketch("Front", 2).rect(20, 20, 10, 10);');
+    await idle();
+    near(anvil.summary().volume, 12000, 1e-6, 'sheet volume');
+    assert(typeof K.cutDirectionHint === 'function', 'Kernel.cutDirectionHint is missing');
+    UI.cmdExtrude(true);
+    assert(UI.hasPM(), 'Cut-Extrude PM not open');
+    var cb = pmField('Reverse direction');
+    assert(cb && cb.type === 'checkbox', 'Reverse direction checkbox missing');
+    assert(cb.checked, 'Reverse direction should be checked for a new cut sketched on the top face');
+    await pmAccept();
+    assert(!UI.hasPM(), 'PM still open');
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'extrude' && f.cut === true && f.reverse === true, 'committed feature: ' + JSON.stringify(f));
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, 12000 - 10 * 10 * 2, 1e-6, 'the cut should remove 10 × 10 × 2');
+    var warn = UI.App.build && UI.App.build.warnings && UI.App.build.warnings[f.id];
+    assert(!warn || !/removed no material/.test(warn), 'the cut warned: ' + warn);
+    return 'volume ' + s.volume + ', feature ' + f.name + ' reverse=' + f.reverse;
+  });
+  step('Cut-Extrude PM: a sketch on the bottom face leaves "Reverse direction" unchecked and the cut still removes material', async function () {
+    await anvil.run('p.sketch("Front").rect(0, 0, 100, 60).extrude(2);');
+    await anvil.append('p.sketch("Front", 0).rect(60, 20, 10, 10);'); // bottom face: +Z already points into the sheet
+    await idle();
+    UI.cmdExtrude(true);
+    assert(UI.hasPM(), 'Cut-Extrude PM not open');
+    var cb = pmField('Reverse direction');
+    assert(cb && cb.type === 'checkbox', 'Reverse direction checkbox missing');
+    assert(!cb.checked, 'Reverse direction should stay unchecked for a sketch on the bottom face');
+    await pmAccept();
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'extrude' && f.cut === true && !f.reverse, 'committed feature: ' + JSON.stringify(f));
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    near(s.volume, 12000 - 10 * 10 * 2, 1e-6, 'the forward cut should remove 10 × 10 × 2');
+    // editing the feature must not flip the stored direction
+    UI.editFeature(f);
+    assert(UI.hasPM(), 'edit PM not open');
+    var cb2 = pmField('Reverse direction');
+    assert(cb2 && !cb2.checked, 'edit PM should show the stored (unchecked) direction');
+    UI.pmCancel();
+    await idle();
+    return 'volume ' + s.volume + ', feature ' + f.name + ' reverse=' + !!f.reverse;
+  });
+  step('icons: every ribbon and tree icon id renders as well-formed SVG', async function () {
+    var Icons = W.Icons;
+    assert(typeof Icons === 'function', 'window.Icons is missing');
+    // ids the ribbon, tree and panels ask for (ui-panels.js RIBBON tabs, FEATURE_ICON, task pane, PM header)
+    var ids = ['extrude', 'revolve', 'sweep', 'loft', 'cut', 'hole', 'revolveCut', 'fillet', 'lpattern', 'cpattern', 'mirror', 'chamfer', 'shell',
+      'draft', 'intersect', 'rib', 'wrap', 'refgeo', 'curves', 'instant', 'sketch', 'exitSketch', 'dim', 'line', 'rect', 'crect', 'circle', 'arc',
+      'polygon', 'slot', 'point', 'spline', 'ellipse', 'text', 'trim', 'convert', 'offset', 'mirrorEnt', 'sketchPattern', 'relations', 'plane',
+      'dxf', 'measure', 'mass', 'section', 'check', 'sensor', 'zebra', 'generic', 'flange', 'bend', 'miter', 'flatten',
+      'part', 'planeSmall', 'origin', 'body', 'material', 'folder', 'annotations', 'error', 'warn', 'ok', 'cancel', 'search', 'filter',
+      'home', 'library', 'explorer', 'palette', 'props', 'macro', 'tree', 'pm', 'config', 'dimx', 'display', 'dispman', 'appearance',
+      'fit', 'zoomArea', 'prevView', 'orient', 'hideshow', 'scene', 'settings'];
+    if (typeof Icons.names === 'function') ids = ids.concat(Icons.names());
+    else if (Array.isArray(Icons.names)) ids = ids.concat(Icons.names);
+    var seen = {}; ids = ids.filter(function (id) { if (seen[id]) return false; seen[id] = true; return true; });
+    var parser = new W.DOMParser(), bad = [], missing = [];
+    function check(label, s) {
+      if (typeof s !== 'string' || s.indexOf('<svg') !== 0) { bad.push(label + ': not an <svg string (' + String(s).slice(0, 40) + ')'); return; }
+      var doc = parser.parseFromString(s, 'image/svg+xml');
+      var err = doc.querySelector('parsererror');
+      if (err) bad.push(label + ': ' + err.textContent.replace(/\s+/g, ' ').slice(0, 120));
+      else if (!doc.documentElement || doc.documentElement.nodeName !== 'svg') bad.push(label + ': root is <' + (doc.documentElement && doc.documentElement.nodeName) + '>');
+    }
+    ids.forEach(function (id) {
+      if (typeof Icons.has === 'function' && id !== 'generic' && !Icons.has(id)) missing.push(id);
+      check(id, Icons(id, 16));
+      check(id + '@32', Icons(id, 32));
+    });
+    // the ribbon as actually rendered: every button's SVG must re-parse cleanly
+    var svgs = D.querySelectorAll('#ribbon svg');
+    assert(svgs.length >= 12, 'ribbon shows only ' + svgs.length + ' icons');
+    Array.prototype.forEach.call(svgs, function (svg, i) { check('ribbon svg #' + i, svg.outerHTML); });
+    assert(bad.length === 0, bad.length + ' bad icon(s):\n' + bad.join('\n'));
+    assert(missing.length === 0, 'ribbon/tree ids with no icon (fall back to generic): ' + missing.join(', '));
+    return ids.length + ' icon ids × 2 sizes, ' + svgs.length + ' rendered ribbon icons parse';
+  });
   step('View ▸ Theme: UI.setTheme / anvil.theme switch to dark and back; document, storage, viewport and menu agree', async function () {
     assert(typeof UI.setTheme === 'function' && typeof UI.theme === 'function', 'UI.setTheme / UI.theme missing');
     assert(typeof anvil.theme === 'function', 'anvil.theme missing');

@@ -6,8 +6,8 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- Cut direction default: a new Cut-Extrude from the PM on a sketch that sits on an offset plane (e.g. `Top` at the sheet's top face) goes away from the body unless "Reverse direction" is ticked; point it into the body by default (found by run 2026-09-22T14, pre-existing).
-- Faster CSG: bounding-box early-out per polygon (ROADMAP Phase 4).
+- Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder (ROADMAP Phase 5; needs kernel + commands + tests lanes with the feature JSON agreed first).
+- CSG: split polygons only inside overlap regions (the rest of ROADMAP Phase 4 "Faster CSG"); the Funnel/Rounded handle shells and fillets are now the slow parts (slab unions where every slab overlaps its neighbours).
 
 ## Ideas (lower priority)
 
@@ -16,6 +16,9 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (2026-09-22T20) Cut direction default: `Kernel.cutDirectionHint` (±eps probes, then an exact ray test through every face) presets *Reverse direction* in the Cut-Extrude PM so a new cut goes into the body from either face.
+- (2026-09-22T20) Faster CSG: per-polygon bounding-box early-out and disjoint short-circuit in `csg.js` (`getBounds`); bench 2994 → 2375 ms, every example volume unchanged; kernel tests 264, smoke 32.
+- (2026-09-22T20) Icons redrawn closer to the SolidWorks set (88 glyphs, Hem/Jog icons, base flange tree icon).
 - (2026-09-22T14) Thickness-aware Normal Cut: `normalCut` flag, `Kernel.normalCutTool`, Cut-Extrude PM ▸ Sheet Metal ▸ Normal cut (default on for sheet parts); kernel tests 227, smoke 29.
 - (2026-09-22T14) Flat pattern: Material-Outside flanges sharing a corner both unfold (collinear-overlap attachment test).
 - (2026-09-22T14) Worker mode: `Kernel.cacheFromBuild` refreshes `App.buildCache` after every worker build; a sync rebuild of an unchanged or appended model reuses the whole prefix.

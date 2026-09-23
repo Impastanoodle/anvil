@@ -66,3 +66,25 @@ Same page and browser as above (the other session was running its own tests on t
 Sum of medians: 2221 ms (of which Funnel 1199, Rounded handle 354, Mug 230).
 
 Apparent regressions in that run (Flange 27, Pulley 19, hole grid 44, Rounded handle 345) were machine load from the other session: re-timed feature by feature a few minutes later with `Kernel.rebuild` on truncated models, Flange is 7.7 ms (CirPattern 4.0 of it), Pulley 8.1 (CirPattern 6.9), Rounded handle 109 (Fillet 49, Chamfer 54, Revolve 7) and Hex nut 3.0 — all at or below the 09-21 baseline. Lesson: run the bench when nothing else is executing, and look at the union-chain row as a load canary.
+
+## 2026-09-22 (run T20) — bounding-box early-out in the CSG booleans
+
+Same machine and browser pane as above, 26 parts, before (commit 3b5f6d6, 3 runs) and after (`csg.js` early-out, 7 runs), medians in ms.
+
+| Part | before | after |
+| --- | ---: | ---: |
+| Flange | 45 | 33 |
+| Pulley | 34 | 33 |
+| Enclosure lid | 12 | 5 |
+| Sheet-metal U-bracket | 24 | 19 |
+| Tray | 28 | 21 |
+| Rounded handle | 474 | 419 |
+| Mug | 298 | 149 |
+| Funnel | 1550 | 1325 |
+| stress: 5×5 hole grid | 56 | 44 |
+| stress: 24-hole bolt circle | 81 | 46 |
+| stress: revolve with 6 grooves | 114 | 57 |
+| stress: sheet box with 4 flanges + flat | 40 | 20 |
+| stress: 40 stacked unions | 162 | 136 |
+
+Sum of medians: **2994 ms before, 2375 ms after** (−21 %). Parts whose features are small relative to the body (patterns of holes, grooves, the Mug's handle) gain the most, 1.5–2×; the Funnel and the Rounded handle are dominated by the shell and fillet slab unions, where every slab overlaps its neighbours, so the early-out helps less. Every example's volume is unchanged (pinned in the `csg early-out` test group; the Funnel differs by 1e-6 because the shell's slab union now sees fewer, unsplit input polygons).

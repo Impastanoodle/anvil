@@ -46,7 +46,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Thickness-aware "normal cut" (`p.cut(d, { normalCut: true })`, Cut-Extrude PM ▸ Sheet Metal ▸ Normal cut, default on for sheet parts: the part of the tool inside the body is meshed, its sheet-surface faces (entry side when the cut has a direction) are pushed straight through the thickness and replace the tool, so cuts from tilted sketches leave walls square to the sheet)
 
 ## Phase 4 — robustness and performance
-- [ ] Faster CSG: bounding-box early-out per polygon, polygon splitting only inside overlap regions (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
+- [x] Faster CSG: bounding-box early-out per polygon (2026-09-22T20: far polygons skip the BSP clipping, disjoint operands short-circuit; bench sum of medians 2994 → 2375 ms, hole patterns and grooves 1.5–2×); polygon splitting only inside overlap regions is still open (done so far: balanced-tree unions for shell slabs and sweep segments, 7–10× faster than a running union)
 - [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
 - [x] Web Worker rebuilds so the UI never freezes (`worker.js` owns `Kernel.rebuild` and its cache, `UI.rebuild` returns a Promise with coalescing and a synchronous fallback, Edit ▸ "Rebuild in background (Web Worker)" toggle, `CSG.pack/unpack`, `Kernel.packBuild/unpackBuild`)
 - [x] Degenerate geometry guards: zero-area loops dropped with a "zero-area contour" warning, self-intersecting loops error with "crosses itself near (x, y)" from extrude/revolve/sweep/loft, NaN depths/angles/path points error with "must be a number"
@@ -59,7 +59,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 
 ## Phase 6 — polish
 - [x] Hover tooltips on ribbon buttons: `Label (Key) — description` from `UI.shortcutFor` and a per-button help map, plus `aria-label`
-- [ ] Icons closer to the SolidWorks set
+- [x] Icons closer to the SolidWorks set (2026-09-22T20: 88 glyphs redrawn on a 16×16 grid, green boss / red cut / yellow sketch / grey-blue reference, distinct Hem and Jog)
 - [ ] Configuration manager: named parameter sets driving feature values
 - [ ] Equations: expressions in PropertyManager fields (`= t * 2`)
 - [x] Theme: dark UI option (View ▸ Theme ▸ Light / Dark, `UI.setTheme`, `anvil.theme`, persisted in `anvil.theme`; every stylesheet colour is a `:root` variable, the three.js edge/grid/HLR materials follow through `UI.setViewportTheme`)
