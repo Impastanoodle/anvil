@@ -198,6 +198,75 @@
     });
   }
 
+  // ------------------------------------------------------------------ solid bodies (multi-body parts)
+  // The kernel keeps every separate solid in App.build.bodies (creation order) and describes them with
+  // Kernel.bodyInfo. Older builds only carry the combined App.build.body: treat that as one body.
+  var bodyInfoCache = { build: null, infos: null };
+  function bodyList() {
+    var b = App.build;
+    if (!b) return [];
+    if (b.bodies && b.bodies.length) return b.bodies;
+    return b.body ? [b.body] : [];
+  }
+  function bodyInfos() {
+    var build = App.build, list = bodyList();
+    if (!build || !list.length) return [];
+    if (bodyInfoCache.build === build && bodyInfoCache.infos) return bodyInfoCache.infos;
+    var infos = null;
+    if (typeof K.bodyInfo === 'function' && build.bodies) { try { infos = K.bodyInfo(build, App.model); } catch (e) { infos = null; } }
+    if (!infos) {
+      infos = list.map(function (body, i) {
+        var vol = 0;
+        try { vol = K.massProps(list.length === 1 && App.mesh && App.mesh.triCount ? App.mesh : K.meshFromBody(body), App.model.density).volume; } catch (e) { vol = 0; }
+        return { index: i, featureId: build.bodyFeatures ? build.bodyFeatures[i] : null, name: 'Body' + (i + 1), volume: vol };
+      });
+    }
+    infos = infos.map(function (b, i) { return { index: b.index != null ? b.index : i, featureId: b.featureId != null ? b.featureId : null, name: b.name || 'Body' + (i + 1), volume: +b.volume || 0 }; });
+    bodyInfoCache.build = build; bodyInfoCache.infos = infos;
+    return infos;
+  }
+  function bodyTitle(b) { return b.name + ': volume ' + UI.fmtNum(b.volume, 2) + ' ' + UI.unitLabel() + '³'; }
+  // Select a body (the sketch lane's UI.selectBody highlights it in the graphics area when present).
+  function selectBody(i) {
+    if (typeof UI.selectBody === 'function') { UI.selectBody(i); return; }
+    App.sel = { kind: 'body', index: i }; App.sel2 = null;
+    UI.updateHighlights(); UI.refreshTree();
+  }
+
+  // Multi-body fields shared by the boss/cut PropertyManagers, in SolidWorks placement: "Merge result" at the end of
+  // Direction 1 on a boss, a "Feature Scope" group on a cut when the part has two or more bodies.
+  // PM value keys: merge (boolean), scope ('all' | 'selected'), body0, body1, ... (one check per body).
+  // Feature JSON: merge:false on a boss that stays a separate body; bodies:[indices] on a cut limited to some bodies.
+  function initBodyFields(f, existing) {
+    var picked = existing && Array.isArray(existing.bodies) ? existing.bodies : null;
+    f.merge = existing ? existing.merge !== false : true;
+    f.scope = picked ? 'selected' : 'all';
+    bodyInfos().forEach(function (b) { f['body' + b.index] = !!(picked && picked.indexOf(b.index) >= 0); });
+    return f;
+  }
+  function mergeField(isBoss) {
+    return { type: 'check', label: 'Merge result', key: 'merge', show: function (v) { return isBoss(v); } };
+  }
+  function scopeGroup(isCut) {
+    var infos = bodyInfos();
+    var fields = [{ type: 'select', label: 'Bodies', key: 'scope', options: [['all', 'All bodies'], ['selected', 'Selected bodies']], rerender: true }];
+    infos.forEach(function (b) { fields.push({ type: 'check', label: b.name, key: 'body' + b.index, show: function (v) { return v.scope === 'selected'; } }); });
+    return { title: 'Feature Scope', show: function (v) { return infos.length >= 2 && isCut(v); }, fields: fields };
+  }
+  // Strip the PM-only keys from the feature about to be committed and write merge / bodies from them.
+  function applyBodyFields(out, v, cut) {
+    // read the PM values before the keys are stripped (out and v are the same object in the onOK handlers)
+    var merge = v.merge, scope = v.scope;
+    var ids = bodyInfos().filter(function (b) { return !!v['body' + b.index]; }).map(function (b) { return b.index; });
+    delete out.merge; delete out.scope; delete out.bodies;
+    Object.keys(out).forEach(function (k) { if (/^body\d+$/.test(k)) delete out[k]; });
+    if (!cut && merge === false) out.merge = false;
+    if (cut && scope === 'selected' && ids.length) out.bodies = ids;   // nothing checked = all bodies
+    return out;
+  }
+  function featureIsCut(v) { try { return K.isCut(v, App.model); } catch (e) { return false; } }
+  function featureIsBoss(v) { return !featureIsCut(v); }
+
   // If a sketch is open, close it first and run the command with that sketch.
   function withSketch(cb) {
     if (App.mode === 'sketch') {
@@ -486,15 +555,18 @@
       if (!existing && cut) f.reverse = defaultCutReverse(f.sketch, f.reverse);
       var title = f.cut ? 'Cut-Extrude' : 'Boss-Extrude';
       f.draftOn = !!f.draft; if (!f.draft) f.draft = 5; f.draftOut = !!f.draftOut;
+      initBodyFields(f, existing);
       function toFeature(v) {
         var out = JSON.parse(JSON.stringify(v));
         delete out.draftOn;
         if (!v.draftOn || !(+v.draft > 0)) { delete out.draft; delete out.draftOut; }
         else if (!v.draftOut) delete out.draftOut;
         if (!v.cut || !v.normalCut) delete out.normalCut;
-        return out;
+        return applyBodyFields(out, v, !!v.cut);
       }
       function isSheetCut(v) { return !!v.cut && !!App.model.sheet; }
+      function isCutPM(v) { return !!v.cut; }
+      function isBossPM(v) { return !v.cut; }
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'cut' : 'extrude', values: f,
         command: { sketchId: f.sketch },
@@ -504,7 +576,8 @@
             title: 'Direction 1', fields: [
               { type: 'select', label: 'End condition', key: 'end', options: [['blind', 'Blind'], ['through', 'Through All'], ['mid', 'Mid Plane']], rerender: true },
               { type: 'number', label: 'Depth  D1', key: 'depth', unit: 'u', min: 0, show: function (v) { return v.end !== 'through'; } },
-              { type: 'check', label: 'Reverse direction', key: 'reverse' }
+              { type: 'check', label: 'Reverse direction', key: 'reverse' },
+              mergeField(isBossPM)
             ]
           },
           {
@@ -520,6 +593,7 @@
               { type: 'check', label: 'Normal cut', key: 'normalCut' }
             ]
           },
+          scopeGroup(isCutPM),   // only on a cut of a multi-body part
           {
             title: 'Draft', collapsed: !f.draftOn, fields: [
               { type: 'check', label: 'Draft on', key: 'draftOn', rerender: true },
@@ -548,15 +622,18 @@
       if (existing) delete f.profile;
       if (f.sketch == null) { UI.toast('No sketch available. Draw a sketch first.'); return; }
       var title = f.cut ? 'Cut-Revolve' : 'Revolve';
+      initBodyFields(f, existing);
+      function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: { sketchId: f.sketch },
         groups: [
           { title: 'Axis of Revolution', fields: [sketchPickerField(f), { type: 'select', label: 'Axis', key: 'axis', options: revolveAxisOptions }] },
-          { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
+          { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, mergeField(function (v) { return !v.cut; })] },
+          scopeGroup(function (v) { return !!v.cut; }),
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
-        onChange: function (v, key) { if (key === 'sketch') { renderPM(); } App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '.'); },
-        onOK: function (v) { if (!v.name) delete v.name; if (typeof v.axis === 'string' && /^\d+$/.test(v.axis)) v.axis = +v.axis; return commitFeature(v, existing); }
+        onChange: function (v, key) { if (key === 'sketch') { renderPM(); } App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '.'); },
+        onOK: function (v) { if (!v.name) delete v.name; if (typeof v.axis === 'string' && /^\d+$/.test(v.axis)) v.axis = +v.axis; return commitFeature(applyBodyFields(v, v, !!v.cut), existing); }
       });
     });
   }
@@ -582,6 +659,8 @@
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'sweep', cut: !!cut, profile: prof.id, path: path.id };
       if (Array.isArray(f.path)) f.pathPoints = JSON.stringify(f.path);
       var title = f.cut ? 'Cut-Sweep' : 'Sweep';
+      initBodyFields(f, existing);
+      function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
         title: existing ? existing.name : title, icon: 'sweep', values: f, command: { sketchId: f.profile },
         message: 'The <b>profile</b> is a closed sketch; the <b>path</b> is a sketch of connected lines/arcs starting at the profile. The profile is turned perpendicular to the first path segment automatically.',
@@ -589,17 +668,19 @@
           { title: 'Profile and Path', fields: [
             { type: 'select', label: 'Profile', key: 'profile', options: function (v) { return allSketchesField('Profile', 'profile', 'path')(v).options; } },
             { type: 'select', label: 'Path', key: 'path', options: function (v) { return allSketchesField('Path', 'path', 'profile')(v).options; }, show: function (v) { return !Array.isArray(v.path); } },
-            { type: 'static', label: 'Path', value: function (v) { return Array.isArray(v.path) ? v.path.length + ' points (from script)' : ''; }, show: function (v) { return Array.isArray(v.path); } }
+            { type: 'static', label: 'Path', value: function (v) { return Array.isArray(v.path) ? v.path.length + ' points (from script)' : ''; }, show: function (v) { return Array.isArray(v.path); } },
+            mergeField(function (v) { return !v.cut; })
           ] },
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
+          scopeGroup(function (v) { return !!v.cut; }),
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
         onChange: function (v) {
           if (typeof v.profile === 'string' && /^\d+$/.test(v.profile)) v.profile = +v.profile;
           if (typeof v.path === 'string' && /^\d+$/.test(v.path)) v.path = +v.path;
           App.command.sketchId = v.profile; App.command.pathId = v.path; UI.updateSketches();
-          var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.');
+          var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.');
         },
-        onOK: function (v) { if (!v.name) delete v.name; delete v.pathPoints; return commitFeature(v, existing); }
+        onOK: function (v) { if (!v.name) delete v.name; delete v.pathPoints; return commitFeature(applyBodyFields(v, v, !!v.cut), existing); }
       });
     });
   }
@@ -616,11 +697,13 @@
       }
       f.s0 = f.sketches[0]; f.s1 = f.sketches[1]; f.s2 = f.sketches[2] != null ? f.sketches[2] : -1;
       var title = f.cut ? 'Cut-Loft' : 'Loft';
+      initBodyFields(f, existing);
       function opts(v, exclude) { return sketches.map(function (s) { return [s.id, s.name + (UI.isConsumed(s.id) ? ' (used)' : '')]; }); }
       function sync(v) {
         var ids = [v.s0, v.s1, v.s2].map(function (x) { return typeof x === 'string' ? +x : x; }).filter(function (x) { return x != null && x !== -1 && !isNaN(x); });
         v.sketches = ids;
       }
+      function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
         title: existing ? existing.name : title, icon: 'loft', values: f, command: { loftIds: f.sketches.slice() },
         message: 'Pick two or three sketches, each with <b>one closed profile</b>, on different planes. Profiles are matched point by point around their outlines.',
@@ -628,12 +711,14 @@
           { title: 'Profiles', fields: [
             { type: 'select', label: 'Section 1', key: 's0', options: opts },
             { type: 'select', label: 'Section 2', key: 's1', options: opts },
-            { type: 'select', label: 'Section 3', key: 's2', options: function (v) { return [[-1, '(none)']].concat(opts(v)); } }
+            { type: 'select', label: 'Section 3', key: 's2', options: function (v) { return [[-1, '(none)']].concat(opts(v)); } },
+            mergeField(function (v) { return !v.cut; })
           ] },
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut' }, { type: 'text', label: 'Name', key: 'name' }] }
+          scopeGroup(function (v) { return !!v.cut; }),
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
         ],
-        onChange: function (v) { sync(v); App.command.loftIds = v.sketches; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
-        onOK: function (v) { sync(v); if (v.sketches.length < 2) { UI.toast('Pick at least two sketches.'); return false; } delete v.s0; delete v.s1; delete v.s2; if (!v.name) delete v.name; return commitFeature(v, existing); }
+        onChange: function (v) { sync(v); App.command.loftIds = v.sketches; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
+        onOK: function (v) { sync(v); if (v.sketches.length < 2) { UI.toast('Pick at least two sketches.'); return false; } delete v.s0; delete v.s1; delete v.s2; if (!v.name) delete v.name; return commitFeature(applyBodyFields(v, v, !!v.cut), existing); }
       });
     });
   }
@@ -655,16 +740,19 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'lpattern', feature: defaultSource(), d1: 'x', rev1: false, s1: 20, n1: 3, d2: null, rev2: false, s2: 20, n2: 2 };
     if (!needSource(f)) return;
+    initBodyFields(f, existing);
+    function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
       title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f,
       groups: [
-        { title: 'Features to Pattern', fields: [sourceField(f)] },
-        { title: 'Direction 1', fields: [{ type: 'select', label: 'Direction', key: 'd1', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'check', label: 'Reverse', key: 'rev1' }, { type: 'number', label: 'Spacing', key: 's1', unit: 'u' }, { type: 'number', label: 'Instances', key: 'n1', step: 1, min: 1 }] },
+        { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
+        { title: 'Direction 1', fields: [{ type: 'select', label: 'Direction', key: 'd1', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'check', label: 'Reverse', key: 'rev1' }, { type: 'number', label: 'Spacing', key: 's1', unit: 'u' }, { type: 'number', label: 'Instances', key: 'n1', step: 1, min: 1 }, mergeField(featureIsBoss)] },
         { title: 'Direction 2', fields: [{ type: 'select', label: 'Direction', key: 'd2', options: [['', 'None'], ['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']], rerender: true }, { type: 'check', label: 'Reverse', key: 'rev2', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Spacing', key: 's2', unit: 'u', show: function (v) { return !!v.d2; } }, { type: 'number', label: 'Instances', key: 'n2', step: 1, min: 1, show: function (v) { return !!v.d2; } }] },
+        scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { if (v.d2 === '') v.d2 = null; var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing linear pattern.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; return commitFeature(v, existing); }
+      onChange: function (v) { if (v.d2 === '') v.d2 = null; var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing linear pattern.'); },
+      onOK: function (v) { if (!v.name) delete v.name; if (v.d2 === '') v.d2 = null; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -673,17 +761,20 @@
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'cpattern', feature: defaultSource(), axis: 'y', cx: 0, cy: 0, cz: 0, n: 6, angle: 360, equal: true };
     if (existing && existing.center) { f.cx = existing.center[0]; f.cy = existing.center[1]; f.cz = existing.center[2]; }
     if (!needSource(f)) return;
+    initBodyFields(f, existing);
     function norm(v) { v.center = [+v.cx || 0, +v.cy || 0, +v.cz || 0]; return v; }
+    function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(norm(v))), v, featureIsCut(v)); }
     openPM({
       title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f,
       groups: [
-        { title: 'Features to Pattern', fields: [sourceField(f)] },
-        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }] },
+        { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
+        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
         { title: 'Axis point', fields: [{ type: 'number', label: 'X', key: 'cx', unit: 'u' }, { type: 'number', label: 'Y', key: 'cy', unit: 'u' }, { type: 'number', label: 'Z', key: 'cz', unit: 'u' }] },
+        scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { var err = showPreview(norm(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
-      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; return commitFeature(v, existing); }
+      onChange: function (v) { var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
+      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -691,15 +782,18 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'mirror', plane: 'Right', offset: 0, feature: defaultSource(), body: false };
     if (!f.body && !needSource(f)) return;
+    initBodyFields(f, existing);
+    function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
       title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f,
       groups: [
-        { title: 'Mirror Face/Plane', fields: [{ type: 'select', label: 'Plane', key: 'plane', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Plane offset', key: 'offset', unit: 'u' }] },
-        { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { show: function (v) { return !v.body; } })] },
+        { title: 'Mirror Face/Plane', fields: [{ type: 'select', label: 'Plane', key: 'plane', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Plane offset', key: 'offset', unit: 'u' }, mergeField(featureIsBoss)] },
+        { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { show: function (v) { return !v.body; }, rerender: true })] },
+        scopeGroup(featureIsCut),   // a mirror of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
-      onChange: function (v) { var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
-      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; return commitFeature(v, existing); }
+      onChange: function (v) { var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing mirror.'); },
+      onOK: function (v) { if (!v.name) delete v.name; if (v.body) delete v.feature; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -1285,4 +1379,5 @@
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;
   UI.newSketchOnPlane = newSketchOnPlane;
+  UI.bodyList = bodyList; UI.bodyInfos = bodyInfos; UI.bodyTitle = bodyTitle; UI.selectBodyRow = selectBody;
 })(UI);

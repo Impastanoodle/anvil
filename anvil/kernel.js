@@ -1158,13 +1158,145 @@ var Kernel = (function () {
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(model.sheet || null);
   }
 
+  // ------------------------------------------------------------------ bodies (multi-body parts)
+  // A part is a list of separate solid bodies in creation order. `build.body` is still one solid for everything that
+  // reads a single CSG (meshing, mass properties, exports, cut direction hints, normal cuts): combineBodies makes it.
+  // combineBodies(bodies) -> the combined solid: the body itself for one body, a fresh CSG of every polygon for
+  // several, null for none. Every polygon of the result carries `polygon.body` (its body index). A lone body is
+  // tagged in place (its index is always 0, so the tag never goes stale); with several bodies the polygons are cloned
+  // first, so a body that changes index later (a cut swallowed the one before it) keeps no wrong tag behind.
+  function combineBodies(bodies) {
+    if (!bodies || !bodies.length) return null;
+    var i, j;
+    if (bodies.length === 1) {
+      var ps = bodies[0].polygons;
+      for (i = 0; i < ps.length; i++) ps[i].body = 0;
+      return bodies[0];
+    }
+    var polys = [];
+    for (i = 0; i < bodies.length; i++) {
+      var src = bodies[i].polygons;
+      for (j = 0; j < src.length; j++) { var p = src[j].clone(); p.body = i; polys.push(p); }
+    }
+    return CSG.fromPolygons(polys);
+  }
+  // bodyNearPoint(bodies, p) -> index of the body with a polygon edge nearest to p (-1 for no bodies): how a feature
+  // that was picked on a face or an edge (shell, fillet, chamfer, flange, jog) finds the body it belongs to. Edge
+  // segments, not vertices: a pick in the middle of a long edge must not resolve to another body whose hole vertex
+  // happens to be closer than this edge's ends.
+  function bodyNearPoint(bodies, p) {
+    var best = -1, bestD = Infinity;
+    if (!bodies || !p) return best;
+    var px = p[0], py = p[1], pz = p[2];
+    for (var i = 0; i < bodies.length; i++) {
+      var polys = bodies[i].polygons;
+      for (var j = 0; j < polys.length; j++) {
+        var vs = polys[j].vertices, n = vs.length;
+        for (var k = 0; k < n; k++) {
+          var a = vs[k].pos, b = vs[(k + 1) % n].pos;
+          var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, l2 = ex * ex + ey * ey + ez * ez;
+          var t = l2 > 1e-24 ? ((px - a.x) * ex + (py - a.y) * ey + (pz - a.z) * ez) / l2 : 0;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          var dx = a.x + ex * t - px, dy = a.y + ey * t - py, dz = a.z + ez * t - pz, d = dx * dx + dy * dy + dz * dz;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+      }
+    }
+    return best;
+  }
+  // bodyInfo(build, model) -> [{ index, featureId, name, volume }] for the FeatureManager's Solid Bodies folder:
+  // `name` is the creating feature's name (Body<n> when the feature is gone), `volume` the body's own volume.
+  function bodyInfo(build, model) {
+    var bodies = build && build.bodies ? build.bodies : (build && build.body ? [build.body] : []);
+    return bodies.map(function (b, i) {
+      var fid = build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null;
+      var f = fid != null && model ? findFeature(model, fid) : null;
+      return { index: i, featureId: fid, name: f && f.name ? f.name : 'Body' + (i + 1), volume: b.volume() };
+    });
+  }
+  // True when two bounding boxes overlap or touch (within the CSG classification tolerance plus a hair of the extent),
+  // the merge test for a boss: a tool whose box meets a body's box is unioned with it, as one body always was.
+  function boundsMeet(a, b) {
+    if (!a || !b) return false;
+    var ext = 0;
+    for (var k = 0; k < 3; k++) ext = Math.max(ext, Math.max(a.max[k], b.max[k]) - Math.min(a.min[k], b.min[k]));
+    var eps = 1e-5 + 1e-9 * ext;
+    return a.min[0] <= b.max[0] + eps && a.max[0] >= b.min[0] - eps &&
+      a.min[1] <= b.max[1] + eps && a.max[1] >= b.min[1] - eps &&
+      a.min[2] <= b.max[2] + eps && a.max[2] >= b.min[2] - eps;
+  }
+  // The body indices a cut feature acts on: its `bodies` list (out-of-range entries dropped), or every body.
+  function cutScope(f, count) {
+    var out = [];
+    if (Array.isArray(f.bodies) && f.bodies.length) {
+      f.bodies.forEach(function (i) { i = i | 0; if (i >= 0 && i < count && out.indexOf(i) < 0) out.push(i); });
+      return out;
+    }
+    for (var i = 0; i < count; i++) out.push(i);
+    return out;
+  }
+
   // rebuild(model, cache): `cache` is the `cache` of a previous build; the longest prefix of features whose keys are
   // unchanged is restored from it (bodies are immutable, so the snapshots are just references) and only the rest is
   // rebuilt. The result carries a fresh `cache` and `reused` (number of features taken from the cache).
+  // The context keeps the body list (`ctx.bodies`, `ctx.bodyFeatures`: the id of the feature that started each body)
+  // and, after every feature, `ctx.body` = combineBodies(ctx.bodies) for the code that reads one solid. A boss
+  // unions with every body whose bounding box its own meets (those collapse into the lowest-indexed one) or starts a
+  // new body when none does, or always starts one with `merge: false`; a cut subtracts from every body in its scope
+  // (`bodies`, or all) and drops a body it empties; shell, fillet, chamfer, flange and jog act on the body nearest
+  // their first pick point.
   function rebuild(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     var errors = {}, warnings = {};
-    var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, warnings: warnings };
+    var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings };
+    function syncBody() { ctx.body = combineBodies(ctx.bodies); }
+    // a boss tool joins the part: merged into the bodies it meets, or appended as a new body
+    function addBoss(tool, f) {
+      if (f.merge !== false) {
+        var tb = tool.getBounds(), hit = [];
+        ctx.bodies.forEach(function (b, i) { if (boundsMeet(b.getBounds(), tb)) hit.push(i); });
+        if (hit.length) {
+          var merged = ctx.bodies[hit[0]].union(tool);
+          for (var h = 1; h < hit.length; h++) merged = merged.union(ctx.bodies[hit[h]]);
+          ctx.bodies[hit[0]] = merged;
+          for (h = hit.length - 1; h >= 1; h--) { ctx.bodies.splice(hit[h], 1); ctx.bodyFeatures.splice(hit[h], 1); }
+          syncBody();
+          return;
+        }
+      }
+      ctx.bodies.push(tool);
+      ctx.bodyFeatures.push(f.id);
+      syncBody();
+    }
+    // a cut tool is taken out of every body in the feature's scope; a body it empties leaves the list
+    function applyCut(tool, f) {
+      if (!ctx.bodies.length) throw new Error('Nothing to cut yet.');
+      var scope = cutScope(f, ctx.bodies.length), changed = false;
+      for (var s = scope.length - 1; s >= 0; s--) {
+        var i = scope[s], b = ctx.bodies[i], volBefore = b.volume();
+        var nb = b.subtract(tool), vol = nb.polygons.length ? nb.volume() : 0;
+        if (Math.abs(vol - volBefore) >= 1e-6) changed = true;
+        if (!nb.polygons.length || vol < 1e-9) { ctx.bodies.splice(i, 1); ctx.bodyFeatures.splice(i, 1); }
+        else ctx.bodies[i] = nb;
+      }
+      if (!changed) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Cut removed no material. Try "Reverse direction".';
+      syncBody();
+    }
+    // the body a face- or edge-picked feature works on: the one nearest its first pick (body 0 without a pick);
+    // ctx.body is pointed at it for the builder, and the result goes back into the same slot with putBody
+    function pickBody(f) {
+      if (!ctx.bodies.length) { ctx.body = null; return -1; }
+      var at = (f.edges && f.edges[0] && f.edges[0].at) || (f.faces && f.faces[0] && f.faces[0].at) || null;
+      var k = at ? bodyNearPoint(ctx.bodies, at) : 0;
+      if (k < 0) k = 0;
+      ctx.body = ctx.bodies[k];
+      return k;
+    }
+    function putBody(k, body) {
+      if (k < 0) return;
+      ctx.bodies[k] = body;
+      syncBody();
+    }
     // sketches used as sweep paths are open by design: no "open contour" warning for them
     var pathIds = {};
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
@@ -1182,23 +1314,28 @@ var Kernel = (function () {
       if (st.plane) ctx.planes[pf.id] = st.plane;
       if (st.flange) ctx.flanges[pf.id] = st.flange;
       if (pf.type === 'sketch') { pf.profile = st.profile; ctx.sketches[pf.id] = pf; }
-      ctx.body = st.body;
+      // a step made before bodies were kept apart carries just the combined solid: it is the one body
+      ctx.bodies = (st.bodies || (st.body ? [st.body] : [])).slice();
+      ctx.bodyFeatures = (st.bodyFeatures || ctx.bodies.map(function () { return null; })).slice();
+      ctx.body = st.body || null;
       steps.push(st);
     }
     model.features.slice(p).forEach(function (f, j) {
       try {
         switch (f.type) {
           case 'flange': {
+            var fk = pickBody(f);
             var ft = buildFlange(f, model, ctx);
             ctx.tools[f.id] = ft;
-            if (ctx.flangeCut) ctx.body = ctx.body.subtract(ctx.flangeCut);
-            ctx.body = ctx.body.union(ft);
+            var fb = ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body;
+            putBody(fk, fb.union(ft));
             break;
           }
           case 'jog': {
+            var jk = pickBody(f);
             var jg = buildJog(f, model, ctx);
-            if (ctx.flangeCut) ctx.body = ctx.body.subtract(ctx.flangeCut);
-            ctx.body = ctx.body.union(jg.first).union(jg.second);
+            var jb = ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body;
+            putBody(jk, jb.union(jg.first).union(jg.second));
             ctx.tools[f.id] = jg.first.union(jg.second);
             break;
           }
@@ -1208,8 +1345,9 @@ var Kernel = (function () {
             if (f.profile.warnings.length && !pathIds[f.id]) warnings[f.id] = f.profile.warnings.join(' ');
             break;
           case 'shell': {
+            var sk = pickBody(f);
             var sh = buildShell(f, ctx);
-            ctx.body = sh.body;
+            putBody(sk, sh.body);
             ctx.tools[f.id] = sh.inner;
             break;
           }
@@ -1218,9 +1356,12 @@ var Kernel = (function () {
             break;
           case 'chamfer':
           case 'fillet': {
+            var ek = pickBody(f);
             var r = buildEdgeFeature(f, ctx);
-            if (r.cut) ctx.body = ctx.body.subtract(r.cut);
-            if (r.add) ctx.body = ctx.body.union(r.add);
+            var eb = ctx.body;
+            if (r.cut) eb = eb.subtract(r.cut);
+            if (r.add) eb = eb.union(r.add);
+            putBody(ek, eb);
             ctx.tools[f.id] = r.cut || r.add;
             break;
           }
@@ -1239,36 +1380,31 @@ var Kernel = (function () {
               tool = nct;
             }
             ctx.tools[f.id] = tool;
-            if (cut) {
-              if (!ctx.body) throw new Error('Nothing to cut yet.');
-              var volBefore = ctx.body.volume();
-              ctx.body = ctx.body.subtract(tool);
-              if (Math.abs(ctx.body.volume() - volBefore) < 1e-6) warnings[f.id] = (warnings[f.id] ? warnings[f.id] + ' ' : '') + 'Cut removed no material. Try "Reverse direction".';
-            } else {
-              ctx.body = ctx.body ? ctx.body.union(tool) : tool;
-            }
+            if (cut) applyCut(tool, f); else addBoss(tool, f);
           }
         }
       } catch (e) {
         errors[f.id] = e.message || String(e);
+        syncBody(); // a failed pick-based feature may have left ctx.body pointing at one body
       }
-      steps.push({ key: keys[p + j], body: ctx.body, tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null });
+      steps.push({ key: keys[p + j], body: ctx.body, bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice(), tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null });
     });
     var t1 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     // profiles: the computed profile of every sketch, by feature id, so a build made on a copy of the model (a worker)
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles };
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles };
   }
 
   // ------------------------------------------------------------------ build serialization (Web Worker rebuilds)
   // packBuild(build, model?) -> a structured-clone-safe copy of a rebuild result without its cache:
-  //   { body: packedCSG | null, tools: { featureId: packedCSG | null }, planes, flanges, errors, warnings, time, reused,
-  //     profiles: { sketchFeatureId: profile } }
+  //   { bodies: [packedCSG], bodyFeatures: [featureId | null], body: packedCSG | null, tools: { featureId: packedCSG | null },
+  //     planes, flanges, errors, warnings, time, reused, profiles: { sketchFeatureId: profile } }
   // planes (makePlane frames), flanges (flange info records), errors, warnings and profiles are plain JSON already; the
-  // solids are packed with CSG.prototype.pack (typed arrays). `model` is only consulted for profiles when the build
-  // predates the `profiles` field.
+  // solids are packed with CSG.prototype.pack (typed arrays). The separate bodies are what travels; `body` (the
+  // combined solid) is packed only for a build that has no body list, since unpackBuild recombines the bodies.
+  // `model` is only consulted for profiles when the build predates the `profiles` field.
   function packBuild(build, model) {
     var tools = {};
     Object.keys(build.tools || {}).forEach(function (id) { tools[id] = build.tools[id] ? build.tools[id].pack() : null; });
@@ -1277,27 +1413,36 @@ var Kernel = (function () {
       profiles = {};
       if (model) model.features.forEach(function (f) { if (f.type === 'sketch') profiles[f.id] = f.profile || null; });
     }
+    var bodies = build.bodies || [];
     return {
-      body: build.body ? build.body.pack() : null, tools: tools,
+      bodies: bodies.map(function (b) { return b.pack(); }),
+      bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
+      body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
       time: build.time || 0, reused: build.reused || 0, profiles: profiles
     };
   }
-  // Every ArrayBuffer of a packed build (body and tools), for postMessage's transfer list. pack() allocates fresh
-  // arrays per call, so no buffer appears twice even when a tool and the body are the same solid.
+  // Every ArrayBuffer of a packed build (bodies, body and tools), for postMessage's transfer list. pack() allocates
+  // fresh arrays per call, so no buffer appears twice even when a tool and a body are the same solid.
   function packTransferables(packed) {
     var out = [];
+    (packed.bodies || []).forEach(function (b) { out = out.concat(CSG.packTransferables(b)); });
     if (packed.body) out = out.concat(CSG.packTransferables(packed.body));
     Object.keys(packed.tools || {}).forEach(function (id) { if (packed.tools[id]) out = out.concat(CSG.packTransferables(packed.tools[id])); });
     return out;
   }
   // unpackBuild(obj) -> an object shaped like a rebuild result (meshFromBody, massProps, faceOutline, flatPattern and
-  // the exports all work on it) with `cache: null`, since the cache stays where the build was made.
+  // the exports all work on it) with `cache: null`, since the cache stays where the build was made. The bodies are
+  // unpacked and `body` recombined from them (face tags included); a packed `body` alone (an older message) is the
+  // one body.
   function unpackBuild(obj) {
     var tools = {};
     Object.keys(obj.tools || {}).forEach(function (id) { tools[id] = obj.tools[id] ? CSG.unpack(obj.tools[id]) : null; });
+    var bodies = (obj.bodies || []).map(function (b) { return CSG.unpack(b); });
+    if (!bodies.length && obj.body) bodies = [CSG.unpack(obj.body)];
+    var bodyFeatures = bodies.map(function (b, i) { return obj.bodyFeatures && obj.bodyFeatures[i] != null ? obj.bodyFeatures[i] : null; });
     return {
-      body: obj.body ? CSG.unpack(obj.body) : null, tools: tools,
+      body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
       time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null
     };
@@ -1321,7 +1466,11 @@ var Kernel = (function () {
       var st = { key: featureKey(f, model), tool: (build.tools && build.tools[f.id]) || null, plane: (build.planes && build.planes[f.id]) || null,
         flange: (build.flanges && build.flanges[f.id]) || null, profile: (build.profiles && build.profiles[f.id]) || f.profile || null,
         error: (build.errors && build.errors[f.id]) || null, warning: (build.warnings && build.warnings[f.id]) || null };
-      if (i === n - 1) st.body = build.body || null; else st.partial = true;
+      if (i === n - 1) {
+        st.body = build.body || null;
+        st.bodies = (build.bodies || (build.body ? [build.body] : [])).slice();
+        st.bodyFeatures = st.bodies.map(function (b, k) { return build.bodyFeatures && build.bodyFeatures[k] != null ? build.bodyFeatures[k] : null; });
+      } else st.partial = true;
       return st;
     });
     return { steps: steps };
@@ -1332,13 +1481,15 @@ var Kernel = (function () {
     return [Math.round(pl.normal.x * 1000), Math.round(pl.normal.y * 1000), Math.round(pl.normal.z * 1000), Math.round(pl.w * 100)].join('|');
   }
 
-  // -> { positions, normals, faces:[{normal,w,start,count,centroid,area}], triCount, polygons }
+  // -> { positions, normals, faces:[{normal,w,start,count,centroid,area,body}], triCount, polygons }
+  // Coplanar polygons make one face, but only within one body: the body tag (polygon.body, from combineBodies; 0 when
+  // untagged) is part of the grouping key, and each face records it as `face.body`.
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     var groups = {}, order = [];
     body.polygons.forEach(function (p) {
-      var k = planeKey(p.plane);
-      if (!groups[k]) { groups[k] = { polys: [], plane: p.plane }; order.push(k); }
+      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi;
+      if (!groups[k]) { groups[k] = { polys: [], plane: p.plane, body: bi }; order.push(k); }
       groups[k].polys.push(p);
     });
     var tris = [];
@@ -1358,7 +1509,7 @@ var Kernel = (function () {
       var count = tris.length / 9 - start;
       faces.push({
         normal: [g.plane.normal.x, g.plane.normal.y, g.plane.normal.z], w: g.plane.w,
-        start: start, count: count, centroid: [cx / cnt, cy / cnt, cz / cnt], area: area, polys: g.polys
+        start: start, count: count, centroid: [cx / cnt, cy / cnt, cz / cnt], area: area, polys: g.polys, body: g.body
       });
     });
     var positions = new Float32Array(tris);
@@ -2537,8 +2688,18 @@ var Kernel = (function () {
     if (opts.sheetBase) f.sheetBase = true;
     if (opts.draft) { f.draft = +opts.draft; if (opts.draftOutward) f.draftOut = true; }
     if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
+    bodyOpts(f, opts);
     return this;
   };
+  // Multi-body options shared by every boss and cut: `merge: false` keeps a boss as a separate body, `bodies: [i, …]`
+  // limits a cut to those bodies. A pattern or mirror takes both and the rebuild applies whichever fits its source.
+  function bodyOpts(f, opts) {
+    if (!opts) return f;
+    var patternLike = f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror';
+    if (opts.merge === false && (!f.cut || patternLike)) f.merge = false;
+    if ((f.cut || patternLike) && Array.isArray(opts.bodies) && opts.bodies.length) f.bodies = opts.bodies.map(function (i) { return i | 0; });
+    return f;
+  }
   // Sheet metal parameters used by baseFlange/flange/flatten. K = 0.71 (steel) or 0.64 (aluminum) per shop practice.
   Builder.prototype.sheet = function (thickness, bendRadius, kFactor) {
     this.model.sheet = { thickness: +thickness, bendRadius: bendRadius == null ? +thickness : +bendRadius, kFactor: kFactor == null ? 0.71 : +kFactor };
@@ -2590,7 +2751,7 @@ var Kernel = (function () {
   };
   Builder.prototype.revolve = function (angle, opts) {
     opts = opts || {};
-    this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : +angle, axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name });
+    bodyOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : +angle, axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts);
     return this;
   };
   Builder.prototype.revolveCut = function (angle, opts) { return this.revolve(angle, Object.assign({}, opts || {}, { cut: true })); };
@@ -2599,14 +2760,14 @@ var Kernel = (function () {
     opts = opts || {};
     var profile = opts.profile != null ? opts.profile : this.lastSketchId;
     if (profile == null || opts.path == null) throw new Error('sweep needs {profile, path}.');
-    this._add({ type: 'sweep', profile: profile, path: opts.path, cut: !!opts.cut, name: opts.name });
+    bodyOpts(this._add({ type: 'sweep', profile: profile, path: opts.path, cut: !!opts.cut, name: opts.name }), opts);
     return this;
   };
   // loft: blend between two or more sketches, each holding exactly one closed profile
   Builder.prototype.loft = function (sketches, opts) {
     opts = opts || {};
     if (!Array.isArray(sketches) || sketches.length < 2) throw new Error('loft needs an array of at least two sketch ids.');
-    this._add({ type: 'loft', sketches: sketches.slice(), cut: !!opts.cut, name: opts.name });
+    bodyOpts(this._add({ type: 'loft', sketches: sketches.slice(), cut: !!opts.cut, name: opts.name }), opts);
     return this;
   };
   // shell: hollow the body with wall thickness t; faces: [[x,y,z], ...] points on the faces to remove (open)
@@ -2622,22 +2783,22 @@ var Kernel = (function () {
   };
   Builder.prototype.linearPattern = function (opts) {
     opts = opts || {};
-    this._add({
+    bodyOpts(this._add({
       type: 'lpattern', feature: this._srcId(opts), d1: opts.dir || 'x', rev1: !!opts.reverse, s1: +opts.spacing || 10, n1: opts.count || 2,
       d2: opts.dir2 || null, rev2: !!opts.reverse2, s2: +opts.spacing2 || 0, n2: opts.count2 || 1, name: opts.name
-    });
+    }), opts);
     return this;
   };
   Builder.prototype.circularPattern = function (opts) {
     opts = opts || {};
-    this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center || [0, 0, 0], n: opts.count || 4, angle: opts.angle == null ? 360 : +opts.angle, equal: opts.equal !== false, name: opts.name });
+    bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center || [0, 0, 0], n: opts.count || 4, angle: opts.angle == null ? 360 : +opts.angle, equal: opts.equal !== false, name: opts.name }), opts);
     return this;
   };
   Builder.prototype.mirror = function (plane, opts) {
     opts = opts || {};
     var f = { type: 'mirror', plane: plane || 'Right', offset: +opts.offset || 0, name: opts.name };
     if (opts.body) f.body = true; else f.feature = this._srcId(opts);
-    this._add(f);
+    bodyOpts(this._add(f), opts);
     return this;
   };
   // edges: [[x,y,z], ...] points on (or near) the edges to modify; chain=false disables tangent propagation
@@ -2658,8 +2819,8 @@ var Kernel = (function () {
     var s = this.sketch(planeSpec, opts.offset);
     s.circle(x, y, dia / 2);
     var f = s.end();
-    if (opts.depth) f.cut(opts.depth, { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name });
-    else f.cut('through', { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name });
+    if (opts.depth) f.cut(opts.depth, { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name, bodies: opts.bodies });
+    else f.cut('through', { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name, bodies: opts.bodies });
     return this;
   };
   Builder.prototype.box = function (w, d, h, opts) {
@@ -2668,7 +2829,7 @@ var Kernel = (function () {
     // sketch on Top: u = x, v = -z
     var s = this.sketch('Top', at[1]);
     if (opts.centered) s.centerRect(at[0], -at[2], w, d); else s.rect(at[0], -at[2] - d, w, d);
-    s.end().extrude(h, { cut: !!opts.cut, name: opts.name });
+    s.end().extrude(h, { cut: !!opts.cut, name: opts.name, merge: opts.merge, bodies: opts.bodies });
     return this;
   };
   Builder.prototype.cylinder = function (r, h, opts) {
@@ -2678,7 +2839,7 @@ var Kernel = (function () {
     if (axis === 'y') s = this.sketch('Top', at[1]).circle(at[0], -at[2], r);
     else if (axis === 'z') s = this.sketch('Front', at[2]).circle(at[0], at[1], r);
     else s = this.sketch('Right', at[0]).circle(-at[2], at[1], r);
-    s.end().extrude(h, { cut: !!opts.cut, name: opts.name });
+    s.end().extrude(h, { cut: !!opts.cut, name: opts.name, merge: opts.merge, bodies: opts.bodies });
     return this;
   };
   Builder.prototype.last = function () { return this.lastId; };
@@ -2796,7 +2957,7 @@ var Kernel = (function () {
           if (f.sheetBase) o.sheetBase = true;
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
           if (f.cut && f.normalCut) o.normalCut = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + f.depth + ', ' + optsStr(o) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + f.depth + ', ' + optsStr(bodyOptsOut(o, f)) + ').last();');
           break;
         }
         case 'flange': {
@@ -2830,35 +2991,35 @@ var Kernel = (function () {
         case 'revolve': {
           var ro = { sketch: '@' + idVar[f.sketch], name: f.name, axis: f.axis };
           if (f.reverse) ro.reverse = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + f.angle + ', ' + optsStr(ro) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + f.angle + ', ' + optsStr(bodyOptsOut(ro, f)) + ').last();');
           break;
         }
         case 'lpattern': {
           var lo = { feature: '@' + idVar[f.feature], dir: f.d1, spacing: f.s1, count: f.n1, name: f.name };
           if (f.rev1) lo.reverse = true;
           if (f.d2) { lo.dir2 = f.d2; lo.spacing2 = f.s2; lo.count2 = f.n2; if (f.rev2) lo.reverse2 = true; }
-          out.push('var ' + v + ' = p.linearPattern(' + optsStr(lo) + ').last();');
+          out.push('var ' + v + ' = p.linearPattern(' + optsStr(bodyOptsOut(lo, f)) + ').last();');
           break;
         }
         case 'cpattern':
-          out.push('var ' + v + ' = p.circularPattern(' + optsStr({ feature: '@' + idVar[f.feature], axis: f.axis, center: f.center, count: f.n, angle: f.angle, equal: f.equal !== false, name: f.name }) + ').last();');
+          out.push('var ' + v + ' = p.circularPattern(' + optsStr(bodyOptsOut({ feature: '@' + idVar[f.feature], axis: f.axis, center: f.center, count: f.n, angle: f.angle, equal: f.equal !== false, name: f.name }, f)) + ').last();');
           break;
         case 'mirror': {
           var mo = { name: f.name, offset: f.offset || 0 };
           if (f.body) mo.body = true; else mo.feature = '@' + idVar[f.feature];
-          out.push('var ' + v + ' = p.mirror(' + JSON.stringify(f.plane) + ', ' + optsStr(mo) + ').last();');
+          out.push('var ' + v + ' = p.mirror(' + JSON.stringify(f.plane) + ', ' + optsStr(bodyOptsOut(mo, f)) + ').last();');
           break;
         }
         case 'sweep': {
           var so = { profile: '@' + idVar[f.profile], path: Array.isArray(f.path) ? f.path : '@' + idVar[f.path], name: f.name };
           if (f.cut) so.cut = true;
-          out.push('var ' + v + ' = p.sweep(' + optsStr(so) + ').last();');
+          out.push('var ' + v + ' = p.sweep(' + optsStr(bodyOptsOut(so, f)) + ').last();');
           break;
         }
         case 'loft': {
           var lo2 = { name: f.name };
           if (f.cut) lo2.cut = true;
-          out.push('var ' + v + ' = p.loft([' + f.sketches.map(function (id) { return idVar[id]; }).join(', ') + '], ' + optsStr(lo2) + ').last();');
+          out.push('var ' + v + ' = p.loft([' + f.sketches.map(function (id) { return idVar[id]; }).join(', ') + '], ' + optsStr(bodyOptsOut(lo2, f)) + ').last();');
           break;
         }
         case 'chamfer':
@@ -2876,11 +3037,18 @@ var Kernel = (function () {
     });
     return out.join('\n');
   }
+  // The multi-body fields of a feature, added to its emitted opts: `merge: false` on a boss kept separate, `bodies`
+  // on a scoped cut. Nothing is emitted for the defaults, so an ordinary part's script reads as before.
+  function bodyOptsOut(o, f) {
+    if (f.merge === false) o.merge = false;
+    if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();
+    return o;
+  }
   function optsStr(o) {
     var parts = [];
     Object.keys(o).forEach(function (k) {
       var v = o[k];
-      if (v === undefined || v === null || v === false) return;
+      if (v === undefined || v === null || (v === false && k !== 'merge')) return;
       if (typeof v === 'string' && v.charAt(0) === '@') parts.push(k + ': ' + v.slice(1));
       else parts.push(k + ': ' + JSON.stringify(v));
     });
@@ -2895,7 +3063,7 @@ var Kernel = (function () {
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
     newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
-    buildTool: buildTool, isCut: isCut, rebuild: rebuild, buildEdgeFeature: buildEdgeFeature,
+    buildTool: buildTool, isCut: isCut, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
     meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,

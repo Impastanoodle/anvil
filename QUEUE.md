@@ -6,7 +6,6 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder (ROADMAP Phase 5; needs kernel + commands + tests lanes with the feature JSON agreed first).
 - CSG: split polygons only inside overlap regions (the rest of ROADMAP Phase 4 "Faster CSG"); the Funnel/Rounded handle shells and fillets are now the slow parts (slab unions where every slab overlaps its neighbours).
 
 ## Ideas (lower priority)
@@ -16,6 +15,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (2026-09-22T20b) Multi-body parts: `merge: false` keeps a boss as its own body, `bodies: [i…]` scopes a cut, Solid Bodies(n) folder with select/hide, Merge result and Feature Scope in the PropertyManagers, per-body Mass Properties, Two-body clamp example; kernel tests 296, smoke 39.
 - (2026-09-22T20) Cut direction default: `Kernel.cutDirectionHint` (±eps probes, then an exact ray test through every face) presets *Reverse direction* in the Cut-Extrude PM so a new cut goes into the body from either face.
 - (2026-09-22T20) Faster CSG: per-polygon bounding-box early-out and disjoint short-circuit in `csg.js` (`getBounds`); bench 2994 → 2375 ms, every example volume unchanged; kernel tests 264, smoke 32.
 - (2026-09-22T20) Icons redrawn closer to the SolidWorks set (88 glyphs, Hem/Jog icons, base flange tree icon).

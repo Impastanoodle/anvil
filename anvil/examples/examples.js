@@ -259,6 +259,24 @@ var AnvilExamples = [
     ].join('\n')
   },
   {
+    name: 'Two-body clamp',
+    description: 'A base block and a floating cap kept as two solid bodies (Merge result off), with two holes scoped to the cap only (Feature Scope ▸ Selected bodies) and a fillet that acts on the base alone. Shows the Solid Bodies folder in the FeatureManager.',
+    // base 60×10×30 + cap 60×6×30 − two Ø6 holes through the 6 mm cap − a R3 fillet along the base's 60 mm front bottom edge
+    volume: 60 * 30 * 10 + 60 * 30 * 6 - 2 * Math.PI * 9 * 6 - (1 - Math.PI / 4) * 9 * 60,
+    tolerance: 0.01,
+    code: [
+      'p.name("Two-body clamp").units("mm");',
+      'p.box(60, 30, 10);                                   // base: x in [0,60], y in [0,10], z in [0,30]',
+      'p.box(60, 30, 6, { at: [0, 15, 0], merge: false }); // cap 5 mm above the base, its own body (Merge result off)',
+      '// two through holes from the top of the cap, scoped to body 1 (the cap): the base underneath stays solid',
+      'p.hole("Top", 10, -15, 6, { offset: 21, bodies: [1] });',
+      'p.hole("Top", 50, -15, 6, { offset: 21, bodies: [1] });',
+      '// a fillet picked mid-way along the base\'s front bottom edge (y = 0, z = 0) rounds the base only: the pick',
+      '// point decides which body the fillet works on (the body with the nearest edge)',
+      'p.fillet(3, [[30, 0, 0]]);'
+    ].join('\n')
+  },
+  {
     name: 'Spur gear (12 teeth)',
     description: 'A gear blank with 12 trapezoidal teeth cut by a circular pattern. Not an involute, but it looks the part.',
     code: [

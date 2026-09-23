@@ -53,7 +53,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
 
 ## Phase 5 — assemblies and drawings
-- [ ] Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder
+- [x] Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder (2026-09-22T20b: `merge: false` on bosses, `bodies: [i…]` scope on cuts, `build.bodies` + `bodyFeatures`, `Kernel.combineBodies` tags `face.body`; FeatureManager Solid Bodies(n) folder with select/hide, Merge result checkbox, Feature Scope group, per-body Mass Properties, `anvil.bodies()`)
 - [ ] Simple assembly document: insert parts, mate by coincident planes / concentric axes
 - [ ] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF
 

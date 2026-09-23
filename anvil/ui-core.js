@@ -8,6 +8,9 @@ var UI = (function () {
     model: null, build: null, mesh: null, triShared: null,
     undo: [], redo: [],
     sel: null, sel2: null, hover: null,
+    // multi-body parts: body index -> true for bodies hidden in the viewport only (not saved, not undoable);
+    // App.mesh stays the combined mesh, so face indices, mass properties and exports are unaffected
+    hiddenBodies: {},
     mode: 'part', activeSketch: null,
     tool: null, toolState: null, tempEntities: [],
     command: null,
@@ -250,33 +253,144 @@ var UI = (function () {
     return out;
   }
 
+  // ------------------------------------------------------------------ bodies
+  // The kernel tags every face of the combined mesh with `face.body` (index into App.build.bodies, 0 when the
+  // build predates multi-body support). Everything here reads through these helpers so a single-body build
+  // behaves exactly as before: one body, index 0, nothing hidden.
+  function bodyOfFace(f) { return f && f.body ? f.body : 0; }
+  function bodyList() {
+    var b = App.build;
+    if (!b) return [];
+    if (b.bodies) return b.bodies;
+    return b.body ? [b.body] : [];
+  }
+  function bodyCount() { return bodyList().length; }
+  function anyHidden() { return Object.keys(App.hiddenBodies).length > 0; }
+  function isBodyHidden(index) { return !!App.hiddenBodies[index]; }
+  function faceHidden(f) { return anyHidden() && isBodyHidden(bodyOfFace(f)); }
+  // [{index, featureId, name, volume}] from Kernel.bodyInfo when the kernel has it; a plain fallback otherwise
+  function bodyInfo() {
+    if (!App.build) return [];
+    if (K.bodyInfo) { try { return K.bodyInfo(App.build, App.model) || []; } catch (e) { } }
+    var feats = App.build.bodyFeatures || [];
+    return bodyList().map(function (b, i) {
+      var f = feats[i] != null ? K.findFeature(App.model, feats[i]) : null;
+      var vol = null;
+      try { if (b && typeof b.volume === 'function') vol = b.volume(); } catch (e) { }
+      return { index: i, featureId: feats[i] != null ? feats[i] : null, name: f ? f.name : 'Body' + (i + 1), volume: vol };
+    });
+  }
+  // Name only (no volumes): cheap enough for the hover status on every mouse move.
+  function bodyName(index) {
+    var feats = App.build && App.build.bodyFeatures, f = feats && feats[index] != null ? K.findFeature(App.model, feats[index]) : null;
+    return f && f.name ? f.name : 'Body' + (index + 1);
+  }
+  // Drop hidden entries for bodies that no longer exist (the count shrank after a rebuild).
+  function pruneHiddenBodies() {
+    var n = bodyCount();
+    Object.keys(App.hiddenBodies).forEach(function (k) { if (+k >= n || !App.hiddenBodies[k]) delete App.hiddenBodies[k]; });
+  }
+  // Per-triangle hidden flags (Uint8Array over the combined mesh) or null when every body is visible.
+  function buildTriHidden(m) {
+    if (!m || !anyHidden()) return null;
+    var out = new Uint8Array(m.triCount), any = false;
+    m.faces.forEach(function (f) {
+      if (!faceHidden(f)) return;
+      any = true;
+      for (var t = f.start; t < f.start + f.count; t++) out[t] = 1;
+    });
+    return any ? out : null;
+  }
+
   function updateBodyMesh() {
     disposeGroup(groups.body); disposeGroup(groups.edges);
     bodyMesh = null; edgeLines = null;
     var m = App.mesh;
-    if (!m || !m.triCount) return;
+    if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; return; }
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+    // Hidden bodies: the full position/normal arrays stay (every face index is still valid), but the geometry gets an
+    // index attribute that lists only the visible triangles, and visTris maps each rendered triangle back to its
+    // global triangle index so pickFace still lands on the right face of App.mesh.
+    App.triHidden = buildTriHidden(m);
+    visTris = null;
+    if (App.triHidden) {
+      var th = App.triHidden, n = 0, t;
+      for (t = 0; t < m.triCount; t++) if (!th[t]) n++;
+      var idx = new Uint32Array(n * 3), map = new Int32Array(n), o = 0;
+      for (t = 0; t < m.triCount; t++) {
+        if (th[t]) continue;
+        idx[o * 3] = t * 3; idx[o * 3 + 1] = t * 3 + 1; idx[o * 3 + 2] = t * 3 + 2;
+        map[o++] = t;
+      }
+      g.setIndex(new THREE.BufferAttribute(idx, 1));
+      visTris = map;
+    }
     bodyMesh = new THREE.Mesh(g, App.view.style === 'hlr' ? mats.hlr : mats.part);
     groups.body.add(bodyMesh);
     edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
     groups.edges.add(edgeLines);
     applyDisplayStyle();
   }
+  var visTris = null;  // rendered triangle -> global triangle, or null when nothing is hidden
+
+  // App.edges is computed once per mesh (bodyEdges is not cheap) and reused when only visibility changes.
+  function edgesFor(m) {
+    if (App.edges && App.edgesMesh === m) return App.edges;
+    App.edgesMesh = m;
+    return (App.edges = K.bodyEdges(m));
+  }
+  // An edge is drawn/pickable while at least one of its faces belongs to a visible body.
+  function edgeVisible(e) {
+    if (!anyHidden()) return true;
+    var faces = App.mesh.faces;
+    for (var i = 0; i < e.faces.length; i++) if (!faceHidden(faces[e.faces[i]])) return true;
+    return false;
+  }
 
   // Face boundary loops (T-junction aware) give clean B-rep style edges instead of triangle-soup edges.
   function buildEdgeGeometry(m) {
     var arr = [];
-    App.edges = K.bodyEdges(m);
+    edgesFor(m);
     // tangent (smooth) edges between near-coplanar neighbours are hidden, like SolidWorks' default
     App.edges.forEach(function (e) {
-      if (e.smooth) return;
+      if (e.smooth || !edgeVisible(e)) return;
       arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
     });
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     return g;
+  }
+
+  // UI.setBodyHidden(index, hidden): viewport-only; rebuilds the drawn geometry from the visible faces.
+  function setBodyHidden(index, hidden) {
+    index = +index;
+    if (!(index >= 0 && index < Math.max(1, bodyCount()))) return false;
+    if (hidden) App.hiddenBodies[index] = true; else delete App.hiddenBodies[index];
+    pruneHiddenBodies();
+    updateBodyMesh();
+    if (App.hover && (App.hover.kind === 'face' || App.hover.kind === 'edge' || App.hover.kind === 'body')) App.hover = null;
+    updateHighlights();
+    if (UI.refreshTree) UI.refreshTree();
+    if (App.model) render();
+    return isBodyHidden(index);
+  }
+  // UI.selectBody(index): select a whole body (every face tagged with that index) and report it in the status bar.
+  function selectBody(index) {
+    index = +index;
+    if (!(index >= 0 && index < Math.max(1, bodyCount()))) return null;
+    App.sel = { kind: 'body', index: index }; App.sel2 = null;
+    updateHighlights();
+    if (UI.refreshTree) UI.refreshTree();
+    if (UI.onSelectionChanged) UI.onSelectionChanged();
+    if (UI.setStatus) {
+      var info = bodyInfo()[index], name = info && info.name ? info.name : 'Body' + (index + 1);
+      var vol = info && info.volume != null ? info.volume : (bodyCount() <= 1 && App.mesh ? K.massProps(App.mesh).volume : null);
+      var unit = UI.unitLabel ? UI.unitLabel() : unitLabel();
+      UI.setStatus(vol != null ? name + ': volume ' + fmtNum(vol, 3) + ' ' + unit + '³' : name);
+    }
+    return App.sel;
   }
 
   function applyDisplayStyle() {
@@ -306,13 +420,22 @@ var UI = (function () {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     return g;
   }
+  // Triangle ranges [[start, count], ...] of a selection; hidden bodies contribute nothing so they never ghost.
   function selectionRanges(sel) {
     if (!sel || !App.mesh) return null;
-    if (sel.kind === 'face') { var f = App.mesh.faces[sel.index]; return f ? [[f.start, f.count]] : null; }
+    if (sel.kind === 'face') { var f = App.mesh.faces[sel.index]; return f && !faceHidden(f) ? [[f.start, f.count]] : null; }
+    if (sel.kind === 'body') {
+      var br = [], brun = null;
+      App.mesh.faces.forEach(function (fc) {
+        if (bodyOfFace(fc) !== sel.index || faceHidden(fc)) return;
+        if (brun && brun[0] + brun[1] === fc.start) brun[1] += fc.count; else { brun = [fc.start, fc.count]; br.push(brun); }
+      });
+      return br.length ? br : null;
+    }
     if (sel.kind === 'feature') {
-      var ids = featureFamily(sel.id), ranges = [], ts = App.triShared, run = null;
+      var ids = featureFamily(sel.id), ranges = [], ts = App.triShared, th = App.triHidden, run = null;
       for (var i = 0; i < ts.length; i++) {
-        var hit = ids.indexOf(ts[i]) >= 0;
+        var hit = ids.indexOf(ts[i]) >= 0 && !(th && th[i]);
         if (hit) { if (run && run[0] + run[1] === i) run[1]++; else { run = [i, 1]; ranges.push(run); } }
       }
       return ranges.length ? ranges : null;
@@ -347,7 +470,8 @@ var UI = (function () {
       App.command.faceList.forEach(function (i) { var fc = App.mesh.faces[i]; if (fc) fr.push([fc.start, fc.count]); });
       if (fr.length) groups.highlight.add(new THREE.Mesh(triRangeGeometry(fr), mats.sel));
     }
-    var hr = App.hover && App.hover.kind === 'face' && !(App.sel && App.sel.kind === 'face' && App.sel.index === App.hover.index) ? selectionRanges(App.hover) : null;
+    var hv = App.hover, hr = null;
+    if (hv && (hv.kind === 'face' || hv.kind === 'body') && !(App.sel && App.sel.kind === hv.kind && App.sel.index === hv.index)) hr = selectionRanges(hv);
     if (hr) groups.highlight.add(new THREE.Mesh(triRangeGeometry(hr), mats.hover));
     [App.sel, App.sel2].forEach(function (s) {
       var r = selectionRanges(s);
@@ -550,7 +674,9 @@ var UI = (function () {
     for (var i = 0; i < hits.length; i++) {
       var h = hits[i];
       if (App.view.section && App.view.section.plane.distanceToPoint(h.point) < 0) continue;
-      return { kind: 'face', index: faceAtTriangle(h.faceIndex), point: [h.point.x, h.point.y, h.point.z] };
+      // with hidden bodies the mesh is indexed and faceIndex counts rendered triangles; map it back to the global one
+      var tri = visTris ? visTris[h.faceIndex] : h.faceIndex;
+      return { kind: 'face', index: faceAtTriangle(tri), point: [h.point.x, h.point.y, h.point.z] };
     }
     return null;
   }
@@ -562,7 +688,7 @@ var UI = (function () {
     var hitDepth = hit ? V.dot(hit.point, [cam.dir.x, cam.dir.y, cam.dir.z]) : -Infinity;
     for (var i = 0; i < App.edges.length; i++) {
       var e = App.edges[i];
-      if (e.smooth || e.faces.length !== 2) continue;
+      if (e.smooth || e.faces.length !== 2 || !edgeVisible(e)) continue;
       var a = worldToScreen(e.a), b = worldToScreen(e.b);
       var d = distToSegment([mx, my], a, b);
       if (d >= bestD) continue;
@@ -700,8 +826,15 @@ var UI = (function () {
     App.build = build;
     App.mesh = K.meshFromBody(App.build.body);
     App.triShared = buildTriShared(App.mesh);
+    pruneHiddenBodies();
     updateBodyMesh();
-    if (App.sel && App.sel.kind === 'face' && App.sel.index >= App.mesh.faces.length) App.sel = null;
+    var nb = bodyCount();
+    ['sel', 'sel2'].forEach(function (k) {
+      var s = App[k];
+      if (!s) return;
+      if (s.kind === 'face' && s.index >= App.mesh.faces.length) App[k] = null;
+      else if (s.kind === 'body' && s.index >= nb) App[k] = null;
+    });
     App.hover = null;
     updateHighlights();
     updatePlanes();
@@ -920,6 +1053,9 @@ var UI = (function () {
     rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
-    getBodyMesh: function () { return bodyMesh; }
+    getBodyMesh: function () { return bodyMesh; },
+    // multi-body parts (viewport side): see the "bodies" section
+    bodyInfo: bodyInfo, bodyName: bodyName, bodyCount: bodyCount, selectBody: selectBody,
+    setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden
   };
 })();

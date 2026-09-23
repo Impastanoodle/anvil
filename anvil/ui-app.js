@@ -253,7 +253,7 @@
 'Sketch frames: Front (x=X, y=Y, n=Z)  Top (x=X, y=-Z, n=Y)  Right (x=-Z, y=Y, n=X)\n' +
 'Extrudes go along the plane normal; reverse:true goes the other way.\n\n' +
 'Browser console: anvil.run(code) anvil.append(code) anvil.script() anvil.model()\n' +
-'anvil.load(json) anvil.stl() anvil.dxfFace(i) anvil.mass() anvil.faces() anvil.png()' }));
+'anvil.load(json) anvil.stl() anvil.dxfFace(i) anvil.mass() anvil.faces() anvil.bodies() anvil.selectBody(i) anvil.png()' }));
     body.appendChild(ref);
   }
 
@@ -376,6 +376,17 @@
       ['Extents', [0, 1, 2].map(function (k) { return UI.fmtNum(mp.bbox.max[k] - mp.bbox.min[k], 2); }).join(' × ') + ' ' + u],
       ['Faces / triangles', App.mesh.faces.length + ' / ' + App.mesh.triCount]
     ];
+    // per-body section on a multi-body part (SolidWorks lists each solid body after the totals)
+    var bodies = UI.bodyList ? UI.bodyList() : [], infos = UI.bodyInfos ? UI.bodyInfos() : [];
+    if (bodies.length >= 2) {
+      rows.push(['Solid bodies', String(bodies.length)]);
+      bodies.forEach(function (b, i) {
+        var info = infos[i] || { name: 'Body' + (i + 1) }, bm = null;
+        try { bm = K.massProps(K.meshFromBody(b), App.model.density); } catch (e) { bm = null; }
+        var bVolM3 = bm ? (u === 'in' ? bm.volume * Math.pow(0.0254, 3) : bm.volume * 1e-9) : 0;
+        rows.push([info.name, bm ? 'volume ' + UI.fmtNum(bm.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(bVolM3 * App.model.density * 1000, 2) + ' g' : '(not computed)']);
+      });
+    }
     var body = el('table', {}, rows.map(function (r) { return el('tr', {}, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
     UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
   }
@@ -479,13 +490,16 @@
     edges: function () { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2; }).map(function (e, i) { return { mid: e.mid.map(function (x) { return +x.toFixed(3); }), len: +e.len.toFixed(3), convex: e.convex }; }); },
     mass: function () { return K.massProps(App.mesh, App.model.density); },
     faces: function () { return App.mesh.faces.map(function (f, i) { return { index: i, normal: f.normal, area: +f.area.toFixed(3), centroid: f.centroid.map(function (x) { return +x.toFixed(3); }) }; }); },
+    // separate solid bodies of a multi-body part: [{ index, featureId, name, volume }]
+    bodies: function () { return (UI.bodyInfos ? UI.bodyInfos() : []).map(function (b) { return { index: b.index, featureId: b.featureId, name: b.name, volume: +b.volume.toFixed(3) }; }); },
+    selectBody: function (i) { if (UI.selectBody) UI.selectBody(i); else if (UI.selectBodyRow) UI.selectBodyRow(i); else { App.sel = { kind: 'body', index: i }; UI.updateHighlights(); UI.refreshTree(); } return window.anvil.bodies()[i] || null; },
     features: function () { return App.model.features.map(function (f) { return { id: f.id, type: f.type, name: f.name, error: App.build.errors[f.id] || null }; }); },
     select: function (i) { App.sel = { kind: 'face', index: i }; UI.updateHighlights(); return App.mesh.faces[i]; },
     view: function (name) { UI.setView(name); },
     fit: function () { UI.zoomToFit(); },
     png: function () { UI.render(); return UI.renderer.domElement.toDataURL('image/png'); },
     rebuild: function () { return UI.rebuild().then(function () { return window.anvil.summary(); }); },
-    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, rebuildMs: +App.lastRebuildMs.toFixed(1) }; },
+    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1) }; },
     examples: EXAMPLES
   };
 

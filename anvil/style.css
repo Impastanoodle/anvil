@@ -191,6 +191,8 @@ body { overflow: auto; }
 .ti:hover { background: var(--hover); }
 .ti.selected { background: var(--sel); }
 .ti.dim { color: var(--muted); }
+.ti.hidden { color: var(--muted); }           /* a hidden solid body: dimmed, still selectable */
+.ti.hidden .ico { opacity: 0.45; }
 .ti .tw { width: 14px; text-align: center; color: var(--muted); font-size: 9px; flex: none; }
 .ti .tw.leaf { visibility: hidden; }
 .ti .nm { overflow: hidden; text-overflow: ellipsis; }

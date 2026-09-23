@@ -198,8 +198,9 @@
     var root = treeItem({ icon: 'part', name: m.name, children: true, open: true, toggle: function () { } });
     root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { m.name = n; UI.rebuild(); }); });
     tree.appendChild(root);
-    var statics = [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations'], ['body', 'Solid Bodies(' + (App.mesh && App.mesh.triCount ? 1 : 0) + ')'], ['material', (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³']];
-    statics.forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
+    [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
+    appendBodiesFolder(tree, filter);
+    tree.appendChild(treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
     ['Front', 'Top', 'Right'].forEach(function (r) {
       var row = treeItem({ icon: 'planeSmall', name: r + ' Plane', depth: 1, cls: App.sel && App.sel.kind === 'plane' && App.sel.ref === r ? 'selected' : '' });
       row.addEventListener('click', function () { App.sel = { kind: 'plane', ref: r, plane: K.makePlane(r, 0), name: r + ' Plane' }; App.sel2 = null; UI.updatePlanes(); UI.updateHighlights(); refreshTree(); });
@@ -232,10 +233,62 @@
         tree.appendChild(box);
       }
     });
-    if (App.sel && App.sel.kind === 'feature') {
+    if (App.sel && (App.sel.kind === 'feature' || App.sel.kind === 'body')) {
       var selRow = tree.querySelector('.ti.selected');
       if (selRow && selRow.scrollIntoViewIfNeeded) selRow.scrollIntoViewIfNeeded();
     }
+  }
+  // Solid Bodies(n) folder: one row per separate solid (App.build.bodies, described by Kernel.bodyInfo through
+  // UI.bodyInfos). Expanded by default on a multi-body part; the user's toggle is remembered in expanded.bodies.
+  function isBodyHidden(i) { return UI.isBodyHidden ? !!UI.isBodyHidden(i) : !!(App.hiddenBodies && App.hiddenBodies[i]); }
+  function setBodyHidden(i, hidden) {
+    if (UI.setBodyHidden) { UI.setBodyHidden(i, hidden); return; }
+    App.hiddenBodies = App.hiddenBodies || {};
+    if (hidden) App.hiddenBodies[i] = true; else delete App.hiddenBodies[i];
+    UI.updateHighlights(); refreshTree();
+  }
+  function selectBody(i) {
+    if (typeof UI.selectBody === 'function') UI.selectBody(i);
+    else if (UI.selectBodyRow) UI.selectBodyRow(i);
+    else { App.sel = { kind: 'body', index: i }; App.sel2 = null; UI.updateHighlights(); refreshTree(); }
+  }
+  function bodyTitle(b) { return UI.bodyTitle ? UI.bodyTitle(b) : b.name + ': volume ' + UI.fmtNum(b.volume, 2) + ' ' + UI.unitLabel() + '³'; }
+  function bodyMenu(b) {
+    var hidden = isBodyHidden(b.index);
+    var items = [
+      { label: hidden ? 'Show' : 'Hide', action: function () { setBodyHidden(b.index, !hidden); } },
+      { label: 'Mass Properties', action: function () { UI.showMassProperties(); } }
+    ];
+    if (UI.zoomToFit) items.push({ label: 'Zoom to Selection', action: function () { UI.zoomToFit(); } });
+    if (b.featureId != null && K.findFeature(App.model, b.featureId)) {
+      items.push({ sep: true });
+      items.push({ label: 'Edit Feature', action: function () { UI.editFeature(K.findFeature(App.model, b.featureId)); } });
+    }
+    return items;
+  }
+  function appendBodiesFolder(tree, filter) {
+    var infos = [];
+    try { infos = UI.bodyInfos ? UI.bodyInfos() : []; } catch (e) { infos = []; }
+    var isOpen = expanded.bodies == null ? infos.length > 1 : !!expanded.bodies;
+    var shown = infos.filter(function (b) { return !filter || b.name.toLowerCase().indexOf(filter) >= 0; });
+    if (filter && shown.length) isOpen = true;   // a filter hit inside the folder opens it
+    var folder = treeItem({ icon: 'folder', name: 'Solid Bodies(' + infos.length + ')', depth: 1, cls: 'bodies-folder' + (infos.length ? '' : ' dim'), children: infos.length > 0, open: isOpen, toggle: function () { expanded.bodies = !isOpen; refreshTree(); } });
+    folder.addEventListener('click', function () { if (infos.length) { expanded.bodies = !isOpen; refreshTree(); } });
+    tree.appendChild(folder);
+    if (!infos.length) return;
+    var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
+    shown.forEach(function (b) {
+      var selected = App.sel && App.sel.kind === 'body' && App.sel.index === b.index;
+      var hidden = isBodyHidden(b.index);
+      var row = treeItem({ icon: 'body', name: b.name, depth: 2, cls: 'body-row' + (selected ? ' selected' : '') + (hidden ? ' hidden' : ''), title: bodyTitle(b) + (hidden ? ' (hidden)' : '') });
+      row.setAttribute('data-body', String(b.index));
+      row.title = bodyTitle(b) + (hidden ? ' (hidden)' : '');
+      row.addEventListener('click', function () { selectBody(b.index); if (typeof UI.selectBody !== 'function') setStatus(bodyTitle(b)); });
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); var f = b.featureId != null ? K.findFeature(App.model, b.featureId) : null; if (f) UI.editFeature(f); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); selectBody(b.index); setStatus(bodyTitle(b)); showMenu(e.clientX, e.clientY, bodyMenu(b)); });
+      box.appendChild(row);
+    });
+    tree.appendChild(box);
   }
   function featureRow(f, depth, kids, errors, warnings) {
     var err = errors[f.id], warn = warnings[f.id];
