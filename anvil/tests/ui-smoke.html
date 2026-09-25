@@ -1666,6 +1666,190 @@
     near(s.volume, 1000, 1e-6, 'a part still builds');
   });
 
+  // ---- drawings (drawing.js): File > Make Drawing from Part, Drawing ribbon tab, drawing FeatureManager, sheet
+  function ribbonButton(label) {
+    var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (x) { return (x.getAttribute('aria-label') || '') === label; })[0];
+    assert(b, 'ribbon button "' + label + '" not found');
+    return b;
+  }
+  function ribbonTabs() { return Array.prototype.map.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent; }); }
+  function dwView(orient) { return anvil.drawing.summary().views.filter(function (v) { return v.orient === orient; })[0]; }
+  // client coordinates (inside the frame) of a paper point (mm, y up) on the drawing sheet
+  function paperToClient(p) {
+    var svg = D.querySelector('#drawing-sheet svg'), m = svg.getScreenCTM(), pt = svg.createSVGPoint();
+    pt.x = p[0]; pt.y = anvil.drawing.summary().sheet.size[1] - p[1];
+    var q = pt.matrixTransform(m);
+    return { clientX: q.x, clientY: q.y };
+  }
+  function sheetMouse(type, p, target) {
+    var c = paperToClient(p);
+    (target || D.querySelector('#drawing-sheet svg')).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: c.clientX, clientY: c.clientY }));
+  }
+  function key(k) { W.dispatchEvent(new W.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }
+  function plateCode() { return W.AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code; }
+
+  step('drawing: File > Make Drawing from Part opens Draw1 (Standard 3 View + Isometric), the Drawing tab and the drawing FeatureManager', async function () {
+    await anvil.run(plateCode());
+    var rows = menuRows('Make Drawing from Part');
+    assert(rows.length && rows[0].menu === 'File', 'File menu item missing');
+    rows[0].row.click();
+    assert(UI.drawingActive() && !$('drawing-doc').hidden, 'drawing document not shown');
+    assert(JSON.stringify(ribbonTabs().slice(0, 1)) === '["Drawing"]' && ribbonTabs().indexOf('Features') < 0, 'tabs ' + ribbonTabs());
+    ['Standard 3 View', 'Model View', 'Smart Dimension', 'Model Items', 'Sheet Properties', 'Save as PDF'].forEach(ribbonButton);
+    assert($('doc-title').textContent === 'Draw1 - Sheet1', 'title ' + $('doc-title').textContent);
+    assert(W.getComputedStyle($('fm-tree')).display === 'none' && !$('drawing-tree').hidden, 'part tree still shown');
+    var vrows = D.querySelectorAll('#drawing-tree .dw-view');
+    assert(vrows.length === 4 && D.querySelector('#drawing-tree .dw-sheet'), 'tree rows ' + vrows.length);
+    assert(Array.prototype.map.call(vrows, function (r) { return r.querySelector('.badge').textContent; }).join() === 'Front,Top,Right,Isometric', 'view rows');
+    ['FRONT', 'TOP', 'RIGHT', 'ISOMETRIC', 'DIMENSIONS', 'SHEET'].forEach(function (l) { assert(D.querySelector('#drawing-sheet g[data-layer="' + l + '"]'), 'layer ' + l); });
+    var s = anvil.drawing.summary();
+    assert(JSON.stringify(s.views.map(function (v) { return v.extents; })) === '[[100,8],[100,60],[60,8],[' + dwView('Isometric').extents.join(',') + ']]', 'extents');
+    assert(dwView('Front').stats.hiddenLines === 4 && dwView('Top').stats.visibleCircles === 4 && dwView('Right').stats.hiddenLines === 4, 'stats');
+    assert(s.dims.indexOf('4X \u00d88') >= 0 && s.sheet.scale === '2:1' && s.sheet.format === 'A3', JSON.stringify(s.dims) + ' ' + s.sheet.scale);
+    assert(D.querySelectorAll('#drawing-sheet line.hidden').length === 8, 'dashed lines ' + D.querySelectorAll('#drawing-sheet line.hidden').length);
+    return s.views.length + ' views, dims ' + s.dims.join(' ');
+  });
+  step('drawing: Smart Dimension on the Front view bottom edge adds a 100 dimension; Undo removes it and the drawing stays open', async function () {
+    ribbonButton('Smart Dimension').click();
+    assert(UI.drawing.state.tool === 'dim', 'tool not active');
+    var F = dwView('Front');
+    sheetMouse('mousedown', [F.box[0] + (F.box[2] - F.box[0]) * 0.3, F.box[1]]);
+    var d = anvil.drawing.doc().views[0].dims;
+    assert(d.length === 1 && d[0].kind === 'h' && Math.abs(d[0].value - 100) < 1e-9, 'dims ' + JSON.stringify(d));
+    assert(anvil.drawing.summary().dims.filter(function (t) { return t === '100'; }).length === 2, 'the new 100 is drawn');
+    key('Escape');
+    assert(UI.drawing.state.tool === null, 'Esc should end Smart Dimension');
+    await UI.undo(); await idle(); await wait(60);
+    assert(UI.drawingActive() && anvil.drawing.doc().views[0].dims.length === 0, 'undo');
+    return 'Smart Dimension 100, undone';
+  });
+  step('drawing: dragging the Top view moves it vertically only (aligned with Front); the Right view stays level', async function () {
+    var T0 = dwView('Top'), F0 = dwView('Front');
+    var c = [(T0.box[0] + T0.box[2]) / 2, (T0.box[1] + T0.box[3]) / 2];
+    sheetMouse('mousedown', c);
+    var to = paperToClient([c[0] + 25, c[1] + 12]);
+    W.dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: to.clientX, clientY: to.clientY }));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, clientX: to.clientX, clientY: to.clientY }));
+    await wait(60);
+    var T1 = dwView('Top');
+    near(T1.x, F0.x, 1e-6, 'Top x'); assert(T1.y > T0.y + 5, 'Top did not move up: ' + T0.y + ' -> ' + T1.y);
+    assert(anvil.drawing.doc().layout === 'manual', 'layout');
+    return 'Top y ' + fmt(T0.y) + ' -> ' + fmt(T1.y);
+  });
+  step('drawing: Model View PM (Bottom) then a click on the sheet places a fifth view there', async function () {
+    ribbonButton('Model View').click();
+    assert(UI.hasPM() && W.getComputedStyle($('drawing-tree')).display === 'none', 'PM not shown over the drawing tree');
+    setInput(pmField('View'), 'Bottom');
+    await UI.pmOK();
+    assert(UI.drawing.state.tool === 'place', 'placing mode');
+    assert(W.getComputedStyle($('drawing-tree')).display !== 'none', 'drawing tree back');
+    sheetMouse('mousedown', [70, 95]);
+    var v = dwView('Bottom');
+    assert(v && anvil.drawing.summary().views.length === 5, 'no Bottom view');
+    near(v.x, 70, 1, 'x'); near(v.y, 95, 1, 'y');
+    assert(D.querySelectorAll('#drawing-tree .dw-view').length === 5 && D.querySelector('#drawing-sheet g[data-layer="BOTTOM"]'), 'tree / layer');
+    return 'Bottom view at ' + fmt(v.x) + ', ' + fmt(v.y);
+  });
+  step('drawing: Sheet Properties > First angle puts Top below Front and Right to its left; title block says so', async function () {
+    ribbonButton('Sheet Properties').click();
+    assert(modalOpen(), 'no modal');
+    var sels = D.querySelectorAll('#modal .dw-props select');
+    assert(sels.length === 3, 'selects ' + sels.length);
+    setInput(sels[2], 'first');
+    clickModalButton('Apply Changes');
+    var F = dwView('Front'), T = dwView('Top'), R = dwView('Right');
+    assert(T.y < F.y && R.x < F.x, 'first-angle placement ' + JSON.stringify([F.x, F.y, T.y, R.x]));
+    assert(Array.prototype.some.call(D.querySelectorAll('#drawing-sheet text'), function (t) { return t.textContent === 'FIRST ANGLE'; }), 'title block');
+    return anvil.drawing.summary().sheet.projection;
+  });
+  step('drawing: Save as PDF / DXF / SVG open the export dialog with the file; anvil.drawing.dxf() has one layer per view', async function () {
+    ribbonButton('Save as PDF').click();
+    assert(modalOpen() && $('modal-title').querySelector('span').textContent === 'Save Drawing as PDF', 'pdf dialog');
+    assert(D.querySelector('#modal textarea').value.indexOf('%PDF-1.4') === 0, 'pdf text');
+    clickModalButton('Close');
+    ribbonButton('Save as DXF').click();
+    assert(D.querySelector('#modal textarea').value.indexOf('ISOMETRIC') > 0, 'dxf text');
+    clickModalButton('Close');
+    ribbonButton('Save as SVG').click();
+    var svg = D.querySelector('#modal textarea').value;
+    clickModalButton('Close');
+    assert(!new W.DOMParser().parseFromString(svg, 'image/svg+xml').querySelector('parsererror'), 'svg parses');
+    var dxf = anvil.drawing.dxf();
+    ['FRONT', 'TOP', 'RIGHT', 'ISOMETRIC', 'BOTTOM'].forEach(function (l) { assert(dxf.indexOf('\n8\n' + l + '\n') > 0, 'layer ' + l); });
+    return (svg.length / 1024).toFixed(1) + ' KB SVG';
+  });
+  step('drawing: part shortcuts are swallowed (E opens no Extrude); a part change redraws the views', async function () {
+    key('e');
+    assert(!UI.hasPM(), 'E opened a PropertyManager in the drawing');
+    var f = UI.App.model.features.filter(function (x) { return x.type === 'extrude' && !x.cut; })[0];
+    UI.pushUndo(); f.depth = 12;
+    await UI.rebuild(); await idle(); await wait(80);
+    assert(JSON.stringify(dwView('Front').extents) === '[100,12]', 'front extents ' + JSON.stringify(dwView('Front').extents));
+    await UI.undo(); await idle(); await wait(80);
+    assert(JSON.stringify(dwView('Front').extents) === '[100,8]' && UI.drawingActive(), 'undo');
+    return 'Front 100 x 12, then back to 100 x 8';
+  });
+  step('drawing: the part tab returns to the part (Features tab, part tree); Window lists the drawing and reopens it', async function () {
+    var partTab = Array.prototype.filter.call(D.querySelectorAll('#drawing-tabs .dw-tab'), function (b) { return b.textContent.indexOf(UI.App.model.name) >= 0; })[0];
+    assert(partTab, 'part tab');
+    partTab.click();
+    assert(!UI.drawingActive() && $('drawing-doc').hidden && ribbonTabs().indexOf('Features') >= 0 && ribbonTabs().indexOf('Drawing') < 0, 'still in the drawing');
+    assert(W.getComputedStyle($('fm-tree')).display !== 'none', 'part tree hidden');
+    var rows = menuRows('Draw1 - Sheet1');
+    assert(rows.length && rows[0].menu === 'Window', 'Window menu entry');
+    rows[0].row.click();
+    assert(UI.drawingActive() && anvil.drawing.summary().views.length === 5, 'reopened');
+    anvil.drawing.close();
+    assert(!UI.drawingActive(), 'close');
+    return 'closed and reopened';
+  });
+  step('drawing + assembly: the assembly example disables Make Drawing from Part (refused politely); Window lists part, assembly and drawing; New Assembly from a drawing closes it', async function () {
+    var ex = W.AnvilExamples.filter(function (e) { return e.kind === 'assembly'; })[0];
+    assert(ex, 'no assembly example in the Design Library');
+    var r = await UI.openExample(ex); await idle();
+    assert(!r.error && UI.isAssembly(), 'assembly example did not open: ' + r.error);
+    var rows = menuRows('Make Drawing from Part');
+    assert(rows.length && rows[0].row.classList.contains('disabled'), 'Make Drawing from Part should be disabled in an assembly');
+    if (UI.closeMenus) UI.closeMenus();
+    assert(anvil.drawing.make() === null && !UI.drawingActive(), 'anvil.drawing.make() on an assembly should refuse');
+    assert(/assemblies are not supported/.test(statusText()), 'status: ' + statusText());
+    var wa = menuRows('(assembly)');
+    assert(wa.length && wa[0].menu === 'Window' && wa[0].chk === '✓', 'Window lists the assembly');
+    if (UI.closeMenus) UI.closeMenus();
+    assert(anvil.drawing.summary() === null, 'an assembly has no drawing');
+    // back to a part: draw it, then File > New > Assembly from inside the drawing closes the drawing
+    await anvil.run(plateCode());
+    anvil.drawing.make();
+    assert(UI.drawingActive(), 'drawing of the part');
+    var wp = menuRows('(part)');
+    assert(wp.length && wp[0].menu === 'Window', 'Window lists the part while the drawing is open');
+    if (UI.closeMenus) UI.closeMenus();
+    var na = menuRows('New ▸ Assembly');
+    assert(na.length && na[0].menu === 'File', 'File > New > Assembly in the drawing menus');
+    na[0].row.click();
+    await idle(); await wait(80);
+    assert(UI.isAssembly() && !UI.drawingActive() && $('drawing-doc').hidden, 'New Assembly should leave the drawing');
+    assert(ribbonTabs().indexOf('Drawing') < 0 && ribbonTabs().indexOf('Assembly') >= 0, 'tabs ' + ribbonTabs());
+    await anvil.run('p.box(10, 10, 10);'); await idle();
+    assert(!UI.isAssembly(), 'back to a part');
+    return 'refused on ' + ex.name + '; Window part / assembly / drawing entries';
+  });
+  // after the drawings merge (run cloud-2026-09-25e): UI.ribbonTabsFor (drawing.js) must leave the assembly tabs alone
+  step('assembly + drawings: the ribbon still shows Assembly (Move / Rotate Component) and Evaluate (Interference Detection), no Drawing tab; Make Drawing is disabled', async function () {
+    var ex = (W.AnvilExamples || []).filter(function (e) { return e.name === 'Interference check'; })[0];
+    await anvil.run(ex.code); await idle();
+    assert(!UI.drawingActive || !UI.drawingActive(), 'no drawing open');
+    var tabs = Array.prototype.map.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent.trim(); });
+    assert(tabs.indexOf('Assembly') >= 0 && tabs.indexOf('Evaluate') >= 0 && tabs.indexOf('Drawing') < 0 && tabs.indexOf('Features') < 0, 'tabs ' + JSON.stringify(tabs));
+    function labels() { return Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return b.textContent.replace(/\s+/g, ' '); }).join(' | '); }
+    UI.setRibbonTab('Assembly');
+    assert(/Move\s*Component/.test(labels()) && /Rotate\s*Component/.test(labels()), 'Assembly tab: ' + labels());
+    UI.setRibbonTab('Evaluate');
+    assert(/Interference/.test(labels()), 'Evaluate tab: ' + labels());
+    if (W.anvil.drawing && anvil.drawing.make) assert(anvil.drawing.make() === null && !UI.drawingActive(), 'Make Drawing refuses an assembly');
+    return JSON.stringify(tabs);
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));
