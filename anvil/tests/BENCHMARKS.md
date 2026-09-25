@@ -88,3 +88,47 @@ Same machine and browser pane as above, 26 parts, before (commit 3b5f6d6, 3 runs
 | stress: 40 stacked unions | 162 | 136 |
 
 Sum of medians: **2994 ms before, 2375 ms after** (−21 %). Parts whose features are small relative to the body (patterns of holes, grooves, the Mug's handle) gain the most, 1.5–2×; the Funnel and the Rounded handle are dominated by the shell and fillet slab unions, where every slab overlaps its neighbours, so the early-out helps less. Every example's volume is unchanged (pinned in the `csg early-out` test group; the Funnel differs by 1e-6 because the shell's slab union now sees fewer, unsplit input polygons).
+
+## 2026-09-25 (run cloud-2026-09-25b) — BSP trees built from the near region only
+
+Cloud container, headless Chromium 141 (Playwright 1.56), `tests/bench.html` with the default 7 runs per part, nothing else running. Two full runs before (commit 3377590, `restoreWhole` already on) and two after (`CSG.options.nearTrees` on, `nearRatio` 0.5); the table shows the better median of each pair, in ms. Absolute numbers are not comparable with the Windows sections above (different machine).
+
+| Part | polys before | polys after | before | after | speed-up |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plate with bolt holes | 227 | 234 | 3.0 | 3.3 | 0.9× |
+| L-bracket | 149 | 129 | 1.7 | 1.3 | 1.3× |
+| Bushing | 288 | 288 | 1.1 | 1.2 | 0.9× |
+| Flange | 1824 | 1829 | 21.5 | 18.8 | 1.1× |
+| Hex nut | 213 | 172 | 10.9 | 8.7 | 1.3× |
+| Shaft with keyway | 658 | 539 | 4.1 | 3.2 | 1.3× |
+| Pulley | 2190 | 756 | 18.8 | 3.7 | 5.1× |
+| Enclosure lid | 647 | 450 | 4.9 | 4.4 | 1.1× |
+| Mirrored clevis | 194 | 140 | 0.9 | 0.7 | 1.3× |
+| Sheet-metal U-bracket | 1259 | 514 | 11.9 | 6.8 | 1.8× |
+| Tray | 973 | 334 | 13.8 | 7.8 | 1.8× |
+| Normal Cut Bracket | 347 | 166 | 3.0 | 2.2 | 1.4× |
+| Chamfered block | 333 | 305 | 5.2 | 4.0 | 1.3× |
+| Rounded handle | 5294 | 756 | 208.4 | 38.9 | 5.4× |
+| Mug | 3525 | 1118 | 103.7 | 38.7 | 2.7× |
+| Funnel | 4576 | 4453 | 816.4 | 765.9 | 1.1× |
+| Handlebar | 646 | 572 | 17.3 | 15.5 | 1.1× |
+| Moulded cap | 237 | 127 | 1.6 | 1.5 | 1.1× |
+| Parametric plate | 427 | 392 | 3.3 | 3.6 | 0.9× |
+| Two-body clamp | 155 | 114 | 1.3 | 1.0 | 1.3× |
+| Configured spacer | 47 | 34 | 0.3 | 0.5 | 0.6× |
+| Spur gear (12 teeth) | 654 | 637 | 4.3 | 4.3 | 1.0× |
+| stress: 5×5 hole grid | 1398 | 1399 | 23.2 | 26.7 | 0.9× |
+| stress: 24-hole bolt circle | 2526 | 2653 | 27.7 | 29.1 | 1.0× |
+| stress: revolve with 6 grooves | 3759 | 1560 | 50.8 | 13.9 | 3.7× |
+| stress: fillet on one edge of a 12-gon prism | 74 | 68 | 0.9 | 0.8 | 1.1× |
+| stress: 4 chamfers + 4 fillets on a block | 65 | 65 | 2.0 | 2.0 | 1.0× |
+| stress: sheet box with 4 flanges + flat | 584 | 323 | 21.5 | 17.6 | 1.2× |
+| stress: 40 stacked unions | 2379 | 574 | 76.6 | 10.0 | 7.7× |
+
+Sum of medians: **1510 / 1484 ms before, 1050 / 1050 ms after** (−30 %). Rounded handle 208 → 39 ms (5.4×), Mug 104 → 39 (2.7×), Funnel 816 → 766 (1.1×), revolve with 6 grooves 51 → 14, 40 stacked unions 77 → 10, Pulley 19 → 4. Rows under ~5 ms that move by ±0.5 ms are noise.
+
+Where it helps: a boolean whose operand has many polygons of which only a few are near the other operand (a fillet or chamfer slab on a big body, a handle on a revolved mug, a groove on a shaft, one more box on a long chain). The tree of that operand is now built from those few polygons plus six box caps instead of all of them. The results also carry far fewer polygons (Rounded handle 5294 → 756, Mug 3525 → 1118, Pulley 2190 → 756), because a near polygon is clipped only by the other solid, not first split by its own tree, so every later boolean is cheaper too.
+
+Where it does not: the Funnel's three big booleans (4338 ∪ 3018, 785 − 9624, 272 − 5857 polygons, ~1.1 s of its time in Node) are the shell's inner offset and slab unions, whose operands overlap almost everywhere (70–85 % of each is near the other), so they stay on the classic path; only its smaller slab unions got faster. Speeding those up needs a finer near test than one bounding box per operand (a grid of boxes), or fewer slabs from the shell.
+
+Every Design Library volume is unchanged: identical to 1e-9 relative with near trees on and off (Funnel 3.7e-10, all others ≤ 1e-14), checked in the `csg near-region trees` test group. With `nearRatio` 0.7 the Funnel gets ~10 % faster in Node but its volume moves by 1.1e-6 (a 1e-5 mm³ sliver between near-coplanar slabs decided at the BSP's EPSILON; the union, intersection and difference agree with each other in both modes), which is why the default stays 0.5.

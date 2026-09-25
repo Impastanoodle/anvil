@@ -6,7 +6,6 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- CSG: build the BSP trees from only the faces near the overlap (the last part of ROADMAP Phase 4 "Faster CSG"). It needs a separate inside/outside test for each piece (ray cast), because a tree built from part of a solid misclassifies.
 
 ## Ideas (lower priority)
 
@@ -15,6 +14,7 @@ When a task is finished the head moves it to the Done section with the run id.
 ## Done
 
 - (cloud-2026-09-25c) Assembly documents: `anvil/assembly.js` (components from Design Library / script / embedded parts, Coincident + Concentric mates, mate solver with DOF and conflict errors, script round trip, mass properties across components), File ▸ New ▸ New assembly, Assembly ribbon, Insert Components and Mate PMs, `(f)`/`(-)` component rows and Mates folder, `anvil.insert/mate/components/mates`, Pinned plate assembly example (51391.868); kernel tests 383, smoke 66.
+- (cloud-2026-09-25b) Faster CSG, last part: BSP trees built from only the polygons near the other operand, closed by box caps classified with ray casts (`CSG.options.nearTrees`, default on; falls back to the classic trees on any doubtful probe). Bench sum of medians 1510 → 1050 ms (Rounded handle 208 → 39, Mug 104 → 39, Funnel 816 → 766); every example volume unchanged to 1e-9; empty operands fixed (∅ − A was the tool inverted); kernel tests 365, smoke 53.
 - (cloud-2026-09-25a) Configuration manager: named sets of global-variable values (`model.configurations`, `model.activeConfiguration`), ConfigurationManager tab next to the FeatureManager with Add/Rename/Delete/Show (one undo step each), configuration-aware Equations dialog, script round trip, `anvil.configurations()` / `activateConfiguration()`, `summary().configuration(s)`, Configured spacer example (Small 18000, Medium 29000, Large 32000); kernel tests 354, smoke 53.
 - (2026-09-25T15) Equations: `model.equations` global variables, `=` expressions in any numeric feature field and in the sketch Modify box, Tools ▸ Equations dialog, Equations folder in the FeatureManager, script round trip, `anvil.equations()`, Parametric plate example; kernel tests 334, smoke 46.
 - (2026-09-25T15) Faster CSG: faces a boolean did not cut come back whole (`CSG.options.restoreWhole`); Funnel 1844 → 1292 ms, 14071 → 4576 faces; volumes unchanged.

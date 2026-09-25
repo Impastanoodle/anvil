@@ -240,7 +240,9 @@ var CSG = (function () {
     return out;
   }
   // CSG.options.restoreWhole = false turns this off (every fragment is kept, as before) for benchmarks and debugging.
-  var OPTIONS = { restoreWhole: true };
+  // CSG.options.nearTrees = false turns off the near-region trees below; nearRatio is the largest share of an
+  // operand's polygons that may lie near the other one for its tree to be built from the near part only.
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5 };
   function restoreWhole(polygons) {
     if (!OPTIONS.restoreWhole) return untag(polygons);
     var out = [];
@@ -258,16 +260,209 @@ var CSG = (function () {
   }
   function untag(polygons) { for (var i = 0; i < polygons.length; i++) polygons[i]._src = null; return polygons; }
 
+  // ---------------------------------------------------------------- trees built from the near region only
+  // The classic boolean builds a BSP tree from every polygon of both solids, although only the polygons near the
+  // other solid are ever clipped. A tree built from a subset of a solid's polygons does not classify space (its
+  // leaves assume a closed surface), so the near part is closed first: X' = X ∩ K, where K is the bounding box of the
+  // polygons that will be clipped against X, grown by a margin. X' is bounded by X's polygons clipped to K plus the
+  // parts of K's six faces that lie inside X ("caps"). Within K, X' and X are the same solid with the same faces, so
+  // a tree of X' clips everything in K exactly as a tree of X would, coplanar faces included; the polygons clipped
+  // against it stay at least `margin` inside K, clear of the caps.
+  // The caps are found by splitting K's faces with the tree of X's clipped polygons: every leaf cell of that tree
+  // meets K in a convex region that X's surface does not cross, so one point per leaf decides inside or outside for
+  // all cap pieces in it. That point is classified exactly by a ray cast against all of X (signed crossing count,
+  // two directions that must agree). Anything doubtful (a cap coplanar with a face, a ray grazing an edge,
+  // directions disagreeing) returns null and the boolean falls back to the classic full trees.
+  var STATS = { near: 0, classic: 0, fallback: 0 };
+  var RAY_DIRS = [[0.5377, 0.6214, 0.5698], [-0.6023, 0.4719, 0.6441], [0.4402, -0.7131, 0.5456], [0.7071, 0.1234, -0.6963]].map(function (d) {
+    return new Vector(d[0], d[1], d[2]).unit();
+  });
+
+  function growBounds(b, m) {
+    return { min: [b.min[0] - m, b.min[1] - m, b.min[2] - m], max: [b.max[0] + m, b.max[1] + m, b.max[2] + m] };
+  }
+  // The six faces of box b as outward-facing quads.
+  function boxPolygons(b) {
+    var x = [b.min[0], b.max[0]], y = [b.min[1], b.max[1]], z = [b.min[2], b.max[2]];
+    function V(i) { return new Vertex(new Vector(x[i & 1], y[(i >> 1) & 1], z[(i >> 2) & 1])); }
+    return [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]].map(function (f) {
+      return new Polygon(f.map(V));
+    });
+  }
+  // The six outward face planes of box b.
+  function boxPlanes(b) {
+    return [new Plane(new Vector(-1, 0, 0), -b.min[0]), new Plane(new Vector(1, 0, 0), b.max[0]),
+      new Plane(new Vector(0, -1, 0), -b.min[1]), new Plane(new Vector(0, 1, 0), b.max[1]),
+      new Plane(new Vector(0, 0, -1), -b.min[2]), new Plane(new Vector(0, 0, 1), b.max[2])];
+  }
+  // Clones of X's polygons that meet box K, clipped to K. null when a polygon lies in one of K's face planes.
+  function clipToBox(polygons, K, planes) {
+    var out = [];
+    for (var i = 0; i < polygons.length; i++) {
+      var p = polygons[i];
+      if (polygonFar(p, K, 0)) continue;
+      var cur = [p.clone()];
+      for (var k = 0; k < 6 && cur.length; k++) {
+        var cop = [], back = [];
+        planes[k].splitPolygon(cur[0], cop, cop, [], back);
+        if (cop.length) return null;
+        cur = back;
+      }
+      if (cur.length) out.push(cur[0]);
+    }
+    return out;
+  }
+  // Split `polygons` down the tree and collect the pieces that reach each empty child (one group per leaf cell).
+  // false when a piece is coplanar with a node plane.
+  function leafGroups(node, polygons, groups) {
+    var cop = [], front = [], back = [];
+    for (var i = 0; i < polygons.length; i++) node.plane.splitPolygon(polygons[i], cop, cop, front, back);
+    if (cop.length) return false;
+    if (front.length) { if (node.front) { if (!leafGroups(node.front, front, groups)) return false; } else groups.push(front); }
+    if (back.length) { if (node.back) { if (!leafGroups(node.back, back, groups)) return false; } else groups.push(back); }
+    return true;
+  }
+  function polygonArea(p) {
+    var vs = p.vertices, s = new Vector(0, 0, 0);
+    for (var i = 0; i < vs.length; i++) s = s.plus(vs[i].pos.cross(vs[(i + 1) % vs.length].pos));
+    return Math.abs(s.dot(p.plane.normal)) / 2;
+  }
+  function centroid(p) {
+    var c = new Vector(0, 0, 0), vs = p.vertices;
+    for (var i = 0; i < vs.length; i++) c = c.plus(vs[i].pos);
+    return c.dividedBy(vs.length);
+  }
+  // Flat per-polygon data for ray casts, built once per solid: plane (nx, ny, nz, w) and bounding box.
+  function rayData(X) {
+    if (X._ray && X._ray.polys === X.polygons) return X._ray;
+    var P = X.polygons, n = P.length, pl = new Float64Array(4 * n), bx = new Float64Array(6 * n);
+    for (var i = 0; i < n; i++) {
+      var p = P[i], nn = p.plane.normal, vs = p.vertices;
+      pl[4 * i] = nn.x; pl[4 * i + 1] = nn.y; pl[4 * i + 2] = nn.z; pl[4 * i + 3] = p.plane.w;
+      var x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+      for (var j = 0; j < vs.length; j++) {
+        var q = vs[j].pos;
+        if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x;
+        if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y;
+        if (q.z < z0) z0 = q.z; if (q.z > z1) z1 = q.z;
+      }
+      bx[6 * i] = x0; bx[6 * i + 1] = y0; bx[6 * i + 2] = z0; bx[6 * i + 3] = x1; bx[6 * i + 4] = y1; bx[6 * i + 5] = z1;
+    }
+    X._ray = { polys: P, pl: pl, bx: bx };
+    return X._ray;
+  }
+  // Signed crossing count of the ray p + t·d (t > 0) with the solid's polygons: +1 per exit, -1 per entry, so 1 for
+  // a point inside a closed outward-facing solid and 0 outside. null when the ray passes within tol of an edge or
+  // p lies within tol of a face (the count could be off by one).
+  function rayCount(R, p, d, tol) {
+    var count = 0, pl = R.pl, bx = R.bx, px = p.x, py = p.y, pz = p.z, dx = d.x, dy = d.y, dz = d.z;
+    for (var i = 0, n = R.polys.length; i < n; i++) {
+      var nx = pl[4 * i], ny = pl[4 * i + 1], nz = pl[4 * i + 2], den = nx * dx + ny * dy + nz * dz;
+      if (den < 1e-9 && den > -1e-9) continue;
+      var t = (pl[4 * i + 3] - (nx * px + ny * py + nz * pz)) / den;
+      if (t < -tol) continue;
+      var hx = px + t * dx, hy = py + t * dy, hz = pz + t * dz, o = 6 * i;
+      if (hx < bx[o] - tol || hx > bx[o + 3] + tol || hy < bx[o + 1] - tol || hy > bx[o + 4] + tol || hz < bx[o + 2] - tol || hz > bx[o + 5] + tol) continue;
+      var vs = R.polys[i].vertices, inside = true, edge = false, m = vs.length;
+      for (var j = 0; j < m; j++) {
+        var a = vs[j].pos, b = vs[j + 1 < m ? j + 1 : 0].pos;
+        var ex = b.x - a.x, ey = b.y - a.y, ez = b.z - a.z, el = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        if (el < 1e-15) continue;
+        var wx = hx - a.x, wy = hy - a.y, wz = hz - a.z;
+        // distance of h from the edge line, positive on the polygon's side
+        var s = ((ey * wz - ez * wy) * nx + (ez * wx - ex * wz) * ny + (ex * wy - ey * wx) * nz) / el;
+        if (s < -tol) { inside = false; break; }
+        if (s <= tol) edge = true;
+      }
+      if (!inside) continue;
+      if (edge || t <= tol) return null;
+      count += den > 0 ? 1 : -1;
+    }
+    return count;
+  }
+  // Exact point-in-solid for a point known to be off the surface: two ray directions must agree on 0 or 1.
+  function insideByRays(R, p, tol) {
+    var found = null;
+    for (var k = 0; k < RAY_DIRS.length; k++) {
+      var c = rayCount(R, p, RAY_DIRS[k], tol);
+      if (c !== 0 && c !== 1) continue;
+      if (found === null) found = c;
+      else return found === c ? c === 1 : undefined;
+    }
+    return undefined;
+  }
+  // BSP tree of X ∩ K (see above), or null when it cannot be built with certainty.
+  function nearTree(X, K, tol) {
+    var polys = clipToBox(X.polygons, K, boxPlanes(K));
+    if (!polys) return null;
+    var tree = new Node(polys), groups = [];
+    var caps = boxPolygons(K);
+    if (tree.plane) { if (!leafGroups(tree, caps, groups)) return null; } else groups.push(caps);
+    if (groups.length > 256) return null; // too many probes for this to pay off
+    var keep = [], R = rayData(X);
+    for (var g = 0; g < groups.length; g++) {
+      var best = null, bestA = -1;
+      for (var i = 0; i < groups[g].length; i++) { var a = polygonArea(groups[g][i]); if (a > bestA) { bestA = a; best = groups[g][i]; } }
+      var ins = insideByRays(R, centroid(best), tol);
+      if (ins === undefined) return null;
+      if (ins) keep = keep.concat(groups[g]);
+    }
+    if (keep.length) tree.build(keep);
+    return tree.plane ? tree : null;
+  }
+  // Clip trees for the two operands: a near tree for an operand when few of its polygons are near the other one,
+  // else the full tree. null when neither operand has a near tree worth building (or one failed): use the classic.
+  function nearTrees(A, B, ba, bb, nearA, nearB) {
+    var ext = 0;
+    for (var k = 0; k < 3; k++) ext = Math.max(ext, Math.max(ba.max[k], bb.max[k]) - Math.min(ba.min[k], bb.min[k]));
+    // clipped polygons stay >= margin inside the box; the margin is odd so that faces rarely sit on a box plane
+    var margin = 97 * EPSILON + 1.37e-6 * ext, tol = 1e-9 * ext + 1e-10;
+    var bNearA = boundsOf(nearA), bNearB = boundsOf(nearB);
+    var useA = nearB.length && A.polygons.length * OPTIONS.nearRatio >= countNear(A.polygons, bNearB, margin);
+    var useB = nearA.length && B.polygons.length * OPTIONS.nearRatio >= countNear(B.polygons, bNearA, margin);
+    if (!useA && !useB) return null;
+    var tA = useA ? nearTree(A, growBounds(bNearB, margin), tol) : new Node(clonePolys(A.polygons));
+    var tB = tA && (useB ? nearTree(B, growBounds(bNearA, margin), tol) : new Node(clonePolys(B.polygons)));
+    if (!tA || !tB) { STATS.fallback++; return null; }
+    STATS.near++;
+    return { a: tA, b: tB };
+  }
+  function countNear(polygons, K, m) {
+    if (!K) return 0;
+    var n = 0;
+    for (var i = 0; i < polygons.length; i++) if (!polygonFar(polygons[i], K, m)) n++;
+    return n;
+  }
+  // Split an operand's polygons into those near the other operand's box (clipped later) and the far ones.
+  function splitNear(polygons, other, eps) {
+    var near = [], far = [];
+    for (var i = 0; i < polygons.length; i++) (polygonFar(polygons[i], other, eps) ? far : near).push(polygons[i]);
+    return { near: near, far: far };
+  }
+  // Everything a near-tree boolean needs, or null for the classic path: tagged clones of the near polygons of both
+  // operands (n.a, n.b), the far ones (n.farA, n.farB, uncloned) and the clip trees (n.t.a, n.t.b). Only with
+  // restoreWhole on: with it off (the flat-pattern region merge) every boolean is the classic one, fragments and all.
+  function nearOperands(A, B, ba, bb, eps) {
+    if (!OPTIONS.nearTrees || !OPTIONS.restoreWhole) return null;
+    var sa = splitNear(A.polygons, bb, eps), sb = splitNear(B.polygons, ba, eps);
+    var t = nearTrees(A, B, ba, bb, sa.near, sb.near);
+    if (!t) return null;
+    return { a: taggedClones(sa.near), b: taggedClones(sb.near), farA: sa.far, farB: sb.far, t: t };
+  }
+  function flipAll(polygons) { for (var i = 0; i < polygons.length; i++) polygons[i].flip(); return polygons; }
+
   function CSG() { this.polygons = []; this.bounds = null; }
   CSG.fromPolygons = function (polygons) {
     var csg = new CSG();
     csg.polygons = polygons;
     return csg;
   };
-  // The booleans below are the classic BSP algorithm with a bounding-box early-out: both trees are built from every
-  // polygon (so each one classifies space exactly), but a polygon whose own bounding box lies clear of the other
-  // solid's bounding box is lifted out of its tree before the clipping and put back (or dropped) unchanged, since
-  // no part of it can be inside the other solid. Two solids whose boxes do not meet skip the trees altogether.
+  // The booleans below are the classic BSP algorithm with a bounding-box early-out: a polygon whose own bounding box
+  // lies clear of the other solid's bounding box is never clipped and is put back (or dropped) unchanged, since no
+  // part of it can be inside the other solid. Two solids whose boxes do not meet skip the trees altogether. When few
+  // of an operand's polygons are near the other one, its tree is built from the near region only (nearOperands);
+  // the clipping then runs as lists, in the same order as the classic tree sequence. Otherwise both trees are built
+  // from every polygon (so each one classifies space exactly) and the far polygons are lifted out before clipping.
   CSG.prototype = {
     clone: function () {
       var c = CSG.fromPolygons(clonePolys(this.polygons));
@@ -283,11 +478,19 @@ var CSG = (function () {
     },
     union: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
-      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
+      if (!ba || !bb) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons))); // an operand is empty
+      if (!boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
+      var n = nearOperands(this, csg, ba, bb, eps);
+      if (n) {
+        // A outside B, plus B outside A with B's faces coplanar with A's dropped (the classic sequence as lists)
+        var bk = flipAll(n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b))));
+        return CSG.fromPolygons(restoreWhole(n.t.b.clipPolygons(n.a).concat(bk)).concat(clonePolys(n.farA), clonePolys(n.farB)));
+      }
+      STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
       var b = new Node(taggedClones(csg.polygons));
       var far = [];
-      if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, far); }
+      a.extractFar(bb, eps, far); b.extractFar(ba, eps, far);
       a.clipTo(b);
       b.clipTo(a);
       b.invert();
@@ -298,12 +501,22 @@ var CSG = (function () {
     },
     subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
-      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons));
+      // nothing minus anything is nothing (the trees would hand back the tool's faces inverted)
+      if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(ba ? clonePolys(this.polygons) : []);
+      var n = nearOperands(this, csg, ba, bb, eps);
+      if (n) {
+        // A outside B, plus B inside A flipped: the classic sequence with ~A = the inverted tree of A
+        n.t.a.invert();
+        var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
+        var bk = n.t.a.clipPolygons(flipAll(n.t.a.clipPolygons(n.b)));
+        return CSG.fromPolygons(restoreWhole(ak.concat(bk)).concat(clonePolys(n.farA)));
+      }
+      STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
       var b = new Node(taggedClones(csg.polygons));
       var far = [];
       // A's far polygons survive untouched; B's far polygons lie outside A and take nothing away
-      if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, []); }
+      a.extractFar(bb, eps, far); b.extractFar(ba, eps, []);
       a.invert();
       a.clipTo(b);
       b.clipTo(a);
@@ -316,11 +529,20 @@ var CSG = (function () {
     },
     intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
-      if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
+      if (!ba || !bb || !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
+      var n = nearOperands(this, csg, ba, bb, eps);
+      if (n) {
+        n.t.a.invert();
+        var b1 = flipAll(n.t.a.clipPolygons(n.b));
+        n.t.b.invert();
+        var ak = flipAll(n.t.b.clipPolygons(flipAll(n.a)));
+        return CSG.fromPolygons(restoreWhole(ak.concat(flipAll(n.t.a.clipPolygons(b1)))));
+      }
+      STATS.classic++;
       var a = new Node(taggedClones(this.polygons));
       var b = new Node(taggedClones(csg.polygons));
       // far polygons of either solid lie outside the other and cannot be part of the intersection
-      if (ba && bb) { a.extractFar(bb, eps, []); b.extractFar(ba, eps, []); }
+      a.extractFar(bb, eps, []); b.extractFar(ba, eps, []);
       a.invert();
       b.clipTo(a);
       b.invert();
@@ -463,5 +685,8 @@ var CSG = (function () {
   CSG.Polygon = Polygon;
   CSG.Node = Node;
   CSG.options = OPTIONS;
+  // Counters of the boolean paths taken since load (near-region trees, classic full trees, near attempts that fell
+  // back to the classic because a probe was doubtful); tests and benchmarks reset them by assigning 0.
+  CSG.stats = STATS;
   return CSG;
 })();
