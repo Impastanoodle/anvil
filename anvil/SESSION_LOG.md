@@ -282,3 +282,30 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Phase 4: near-face-only BSP trees with a per-piece ray-cast inside test (owned by the local run).
 2. Configurations: per-configuration feature suppression and a design-table grid.
 3. Phase 5: simple assembly document (insert parts, mates).
+
+## Run cloud-2026-09-25b — CSG trees built from the near region only
+
+**Context.** Cloud session (not the scheduled local run): no HEAD.lock, no Foreman board, no artifact republish. One agent, no subagents; `csg.js`, `tests/` and `BENCHMARKS.md` only (another cloud session was on the UI files; `kernel.js` untouched). Task: QUEUE "Do next" / ROADMAP Phase 4 "Faster CSG", last part. Tests in headless Chromium 141 (Playwright 1.56) against `python3 -m http.server 8765`, three.js r128 routed from npm `three@0.128.0` because cdnjs is blocked (harness only). Baseline on 3377590: kernel 354/354, smoke 53/53, bench sum of medians 1510 ms.
+
+**Done (csg.js).**
+- `nearOperands` / `nearTrees` / `nearTree`: when at most `nearRatio` (0.5) of an operand's polygons lie near the polygons it will clip, its BSP tree is built from X ∩ K instead of X, where K is the bounding box of the other operand's near polygons grown by a margin (97·EPSILON + 1.37e-6·extent). X ∩ K is X's polygons clipped to K plus the parts of K's six faces inside X ("caps"). Inside K it is the same solid with the same faces as X, so it clips everything in K exactly like the full tree, coplanar faces included; clipped polygons stay ≥ margin away from the caps.
+- Caps: K's faces are split down the tree of the clipped polygons; each leaf cell meets K in a convex region X's surface does not cross, so one point per leaf (the centroid of its largest piece) decides for all its pieces. That point is classified by a ray cast against all of X (`rayCount` over flat typed arrays with a bounding-box reject; signed crossing count, +1 per exit), two directions that must agree. A cap coplanar with a node plane, a ray within tol of an edge or face, disagreeing directions, over 256 leaves or an empty X ∩ K all return null, and the boolean falls back to the classic full trees (`CSG.stats.fallback`).
+- The clipping runs as lists in exactly the classic order (union: A by T(B), B by T(A) twice with flips; subtract and intersect with the inverted trees), far polygons are passed through (union, A side of subtract) or dropped, and `restoreWhole` still returns uncut faces whole. The near path runs only with `restoreWhole` on, so the flat-pattern region merge (which turns it off) keeps the classic algorithm, fragments and all.
+- `CSG.options.nearTrees` (default **on**), `CSG.options.nearRatio`, `CSG.stats { near, classic, fallback }`.
+- Fixed a classic bug found by the fuzz: a boolean with an empty operand ran the trees and ∅ − A returned A's faces inverted (negative volume); now ∅ − A = ∅, A − ∅ = A, ∅ ∪ A = A, ∅ ∩ A = ∅.
+
+**Tests.** kernel-tests 354 → 365, new group `csg near-region trees`: options/counters; a box sunk into a 96-gon disc (near path, +64/−32/32, the 96 side quads stay whole); coplanar faces (a square through the disc with shared top and bottom, one across the rim: union + ∩ = disc + box); touching solids (on top, underneath, against the rim vertex, no polygon left on the glued face); nested solids (a cavity whose near box holds no disc face, the disc inside a big box); a 36-hole plate cut one hole at a time (analytic volume, 36 near cuts, 3498 vs 5156 polygons); a tilted disc and box; empty operands; restoreWhole off never takes the near path; every example's volume with near trees on vs off (1e-9); 40 seeded random chains of boxes and prisms on a half grid against exact point membership. Each near result is also compared with the classic one on 400 sample points and meshed watertight. A mutation (keeping the outside caps) fails 136 tests. Outside the suite, on the committed code: 3400 random chains in Node (1400 of them rotated off-axis, 1400 with `nearRatio` 1) — 0 volume mismatches vs the classic, 0 sample points off the exact answer.
+
+**Verified (headless Chromium, port 8765).** kernel-tests 365/365, ui-smoke 53/53, app page loads with no console errors. Bench (two runs each, tests/BENCHMARKS.md): sum of medians 1510 / 1484 ms before, 1050 / 1050 after. Rounded handle 208 → 39 ms, Mug 104 → 39, Funnel 816 → 766, grooves 51 → 14, 40 stacked unions 77 → 10, Pulley 19 → 4; polygons Rounded handle 5294 → 756, Mug 3525 → 1118.
+
+**Decisions.**
+- Default on: it is a clear win on every part where it applies and falls back to the classic trees on any doubt.
+- `nearRatio` 0.5, not 0.7: 0.7 makes the Funnel ~10 % faster but moves its volume by 1.1e-6 (an EPSILON-level sliver between near-coplanar shell slabs, within the pinned tolerance but not "unchanged"); at 0.5 every example matches the classic to 1e-9.
+- The Funnel's big shell booleans stay classic: their operands are 70–85 % near each other by bounding box, so there is nothing to leave out.
+
+**Known gaps.** README's "Boolean early-out" paragraph does not mention near trees yet (README was outside this run's files). The near test is one bounding box per operand; a finer one (per-cell grid) could help the Funnel's shell.
+
+**Next up.**
+1. Configurations: per-configuration feature suppression and a design-table grid.
+2. Phase 5: simple assembly document (insert parts, mates).
+3. Funnel/shell speed: a grid-based near test or fewer shell slabs.
