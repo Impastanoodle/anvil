@@ -203,6 +203,22 @@ body { overflow: auto; }
 .ti.err .nm { color: var(--red); }
 .ti.warn .nm { color: var(--warn-text); }
 
+/* ConfigurationManager */
+#config-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.cfg-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); background: var(--panel-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfg-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line-2); }
+.cfg-tools button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--input-bg); }
+.cfg-tools button:hover { background: var(--hover); border-color: var(--blue-line); }
+#cfg-list { overflow: auto; flex: 1; padding: 4px 0 20px; }
+.cfg-row { display: flex; align-items: center; gap: 4px; min-height: 21px; padding: 0 6px 0 8px; white-space: nowrap; cursor: default; }
+.cfg-row:hover { background: var(--hover); }
+.cfg-row.selected { background: var(--sel); }
+.cfg-row .cfg-mark { width: 12px; flex: none; color: var(--blue); text-align: center; }
+.cfg-row.active .cfg-name { font-weight: 600; }
+.cfg-row .cfg-vals { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.cfg-empty { margin: 8px; color: var(--muted); line-height: 1.4; }
+.eq-config { margin: 0 0 6px; font-weight: 600; }
+
 /* PropertyManager */
 #pm { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; }
 .pm-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); background: var(--panel-2); }

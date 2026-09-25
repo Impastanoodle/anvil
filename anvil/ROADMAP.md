@@ -60,7 +60,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 ## Phase 6 — polish
 - [x] Hover tooltips on ribbon buttons: `Label (Key) — description` from `UI.shortcutFor` and a per-button help map, plus `aria-label`
 - [x] Icons closer to the SolidWorks set (2026-09-22T20: 88 glyphs redrawn on a 16×16 grid, green boss / red cut / yellow sketch / grey-blue reference, distinct Hem and Jog)
-- [ ] Configuration manager: named parameter sets driving feature values
+- [x] Configuration manager: named parameter sets driving feature values (cloud-2026-09-25a: `model.configurations` [{ name, values }] + `model.activeConfiguration` override the equations' expressions, `Kernel.effectiveEquations / captureConfiguration / applyEquations`, `p.configurations()` / `p.activeConfiguration()` script round trip, cache keys follow the active set; ConfigurationManager tab with Add/Rename/Delete/Show, one undo step each, configuration-aware Equations dialog, "Part (Config)" tree row, `anvil.configurations()`, Configured spacer example)
 - [x] Equations: expressions in PropertyManager fields (`= t * 2`) (2026-09-25T15: `model.equations`, `=` strings in any numeric feature field, Tools ▸ Equations dialog, Equations folder, `=` in PM fields and the sketch Modify box, script round trip, `anvil.equations()`)
 - [x] Theme: dark UI option (View ▸ Theme ▸ Light / Dark, `UI.setTheme`, `anvil.theme`, persisted in `anvil.theme`; every stylesheet colour is a `:root` variable, the three.js edge/grid/HLR materials follow through `UI.setViewportTheme`)
 - [ ] Desktop shell (Tauri or Electron) wrapping the same static files: own window, native open/save dialogs, no server step. The browser build stays the primary target; the shell must not fork the code.
