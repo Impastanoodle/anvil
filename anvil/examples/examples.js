@@ -1,7 +1,8 @@
 // examples.js — sample parts written against Anvil's script API (see README.md).
 // Plain script so it can be loaded with a <script> tag from file:// as well as http://.
-// Each entry: { name, description, code, volume?, tolerance? }. `volume` is a documented reference value in units^3
+// Each entry: { name, description, code, volume?, tolerance?, configurations? }. `volume` is a documented reference value in units^3
 // (approximate where circles are involved — the kernel uses polygonal circles), checked by tests/kernel-tests.html.
+// `configurations` (optional) maps each configuration name to its volume; the tests switch to each one and rebuild.
 var AnvilExamples = [
   {
     name: 'Plate with bolt holes',
@@ -294,6 +295,29 @@ var AnvilExamples = [
       '// a fillet picked mid-way along the base\'s front bottom edge (y = 0, z = 0) rounds the base only: the pick',
       '// point decides which body the fillet works on (the body with the nearest edge)',
       'p.fillet(3, [[30, 0, 0]]);'
+    ].join('\n')
+  },
+  {
+    name: 'Configured spacer',
+    description: 'One part, three sizes: an 80×40 spacer plate with a row of rectangular pockets. The configurations Small, Medium and Large set the plate thickness T, the pocket count N, the pocket pitch S and the pocket depth D (ConfigurationManager tab). Medium is active.',
+    // plate 80 × 40 × T minus N pockets of 10 × 20 × D. Small: T 6, N 2, D 3 → 18000; Medium: T 10, N 3, D = T/2 = 5 →
+    // 29000; Large: T 12, N 4, S 18, D = T-4 = 8 → 32000
+    volume: 80 * 40 * 10 - 3 * 10 * 20 * 5,
+    tolerance: 1e-6,
+    configurations: { Small: 80 * 40 * 6 - 2 * 10 * 20 * 3, Medium: 80 * 40 * 10 - 3 * 10 * 20 * 5, Large: 80 * 40 * 12 - 4 * 10 * 20 * 8 },
+    code: [
+      'p.name("Spacer").units("mm");',
+      'p.equations({ T: 10, N: 3, S: 20, D: "=T/2" });',
+      '// each configuration overrides some variables; D in Large refers to T, which is evaluated before it',
+      'p.configurations([',
+      '  { name: "Small", values: { T: 6, N: 2, D: 3 } },',
+      '  { name: "Medium", values: { T: 10, N: 3 } },',
+      '  { name: "Large", values: { T: 12, N: 4, S: 18, D: "=T-4" } }',
+      '], "Medium");',
+      '// only live feature fields follow a configuration switch: extrude and cut depths, plane offset, pattern spacing and count',
+      'p.sketch("Front").rect(0, 0, 80, 40).extrude("=T");',
+      'p.sketch("Front", "=T").rect(10, 10, 10, 20).cut("=D", { reverse: true });',
+      'p.linearPattern({ dir: "x", spacing: "=S", count: "=N" });'
     ].join('\n')
   },
   {

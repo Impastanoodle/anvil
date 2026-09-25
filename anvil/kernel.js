@@ -1101,7 +1101,7 @@ var Kernel = (function () {
   // order, each seeing the ones before it. A failing or invalid variable is absent from vars and named in errors.
   function resolveEquations(model) {
     var vars = {}, errors = {};
-    var list = model && Array.isArray(model.equations) ? model.equations : [];
+    var list = effectiveEquations(model);
     list.forEach(function (eq) {
       var name = eq && eq.name != null ? String(eq.name) : '';
       if (!EXPR_NAME.test(name)) { errors[name] = 'Invalid name "' + name + '"'; return; }
@@ -1112,7 +1112,78 @@ var Kernel = (function () {
         errors[name] = e.message || String(e);
       }
     });
-    return { vars: vars, errors: errors };
+    var ac = activeConfiguration(model);
+    return { vars: vars, errors: errors, configuration: ac ? ac.name : null };
+  }
+
+  // ------------------------------------------------------------------ configurations (named sets of variable values)
+  // model.configurations = [{ name: 'Small', values: { T: '6', N: '2' } }, ...]; model.activeConfiguration = 'Small'.
+  // A configuration overrides the expression of each global variable it names (values are expression strings without
+  // the leading "=", evaluated in the equations' order, so they may use the variables above them). Variables it does
+  // not name keep model.equations' expr; a value for a name that is not an equation is ignored. No configurations, or
+  // an active name that matches none, means the base equations. Everything downstream (resolvedModel, rebuild, cache
+  // keys, Builder._value) goes through resolveEquations, so switching configuration rebuilds exactly the features
+  // whose resolved values change.
+  function configurationList(model) {
+    return model && Array.isArray(model.configurations) ? model.configurations.filter(function (c) { return c && c.name != null; }) : [];
+  }
+  function findConfiguration(model, name) {
+    var list = configurationList(model);
+    for (var i = 0; i < list.length; i++) if (String(list[i].name) === String(name)) return list[i];
+    return null;
+  }
+  // activeConfiguration(model) -> the active configuration object, or null
+  function activeConfiguration(model) {
+    if (!model || model.activeConfiguration == null) return null;
+    return findConfiguration(model, model.activeConfiguration);
+  }
+  function configExpr(v) { return String(v == null ? '' : v).replace(/^\s*=\s*/, '').trim(); }
+  // effectiveEquations(model) -> [{ name, expr }]: model.equations with the active configuration's values applied
+  function effectiveEquations(model) {
+    var list = model && Array.isArray(model.equations) ? model.equations : [];
+    var ac = activeConfiguration(model), vals = ac && ac.values && typeof ac.values === 'object' ? ac.values : null;
+    if (!vals) return list;
+    return list.map(function (eq) {
+      if (!eq || eq.name == null || !Object.prototype.hasOwnProperty.call(vals, String(eq.name))) return eq;
+      return { name: eq.name, expr: configExpr(vals[String(eq.name)]) };
+    });
+  }
+  // captureConfiguration(model) -> { name: expr } for every equation, as the active set resolves it (a new
+  // configuration starts as a copy of what the model shows now)
+  function captureConfiguration(model) {
+    var out = {};
+    effectiveEquations(model).forEach(function (eq) { if (eq && eq.name != null) out[String(eq.name)] = String(eq.expr == null ? '' : eq.expr); });
+    return out;
+  }
+  // applyEquations(model, list) -> model: write an edited equation list ([{ name, expr }], e.g. from the Equations
+  // dialog) back. With no active configuration it replaces model.equations (an empty list deletes it). With one, the
+  // list's names and order become model.equations; a variable the active configuration names gets its new expr in
+  // that configuration only (the base expr and the other configurations keep theirs), any other variable gets it in
+  // model.equations. A name dropped from the list is dropped from every configuration's values too.
+  function applyEquations(model, list) {
+    list = (list || []).filter(function (q) { return q && q.name != null && String(q.name) !== ''; })
+      .map(function (q) { return { name: String(q.name), expr: String(q.expr == null ? '' : q.expr) }; });
+    var ac = activeConfiguration(model), vals = ac ? (ac.values && typeof ac.values === 'object' ? ac.values : (ac.values = {})) : null;
+    var base = {};
+    (Array.isArray(model.equations) ? model.equations : []).forEach(function (q) { if (q && q.name != null) base[String(q.name)] = q; });
+    var names = {};
+    var out = list.map(function (q) {
+      names[q.name] = true;
+      if (vals && Object.prototype.hasOwnProperty.call(vals, q.name)) {
+        vals[q.name] = q.expr;
+        var old = base[q.name];
+        return old ? old : { name: q.name, expr: q.expr };
+      }
+      var o = {}, b = base[q.name];
+      if (b) Object.keys(b).forEach(function (k) { o[k] = b[k]; }); // extra fields ride along
+      o.name = q.name; o.expr = q.expr;
+      return o;
+    });
+    configurationList(model).forEach(function (c) {
+      if (c.values && typeof c.values === 'object') Object.keys(c.values).forEach(function (k) { if (!names[k]) delete c.values[k]; });
+    });
+    if (out.length) model.equations = out; else delete model.equations;
+    return model;
   }
 
   function cloneValue(v) {
@@ -1163,7 +1234,7 @@ var Kernel = (function () {
     if (model.sheet && hasExpressions(model.sheet)) {
       try { rm.sheet = resolveFeature(model.sheet, vars); } catch (e) { sheetError = 'sheet.' + (e.message || String(e)); }
     }
-    return { model: rm, vars: vars, errors: eq.errors, featureErrors: featureErrors, sheetError: sheetError };
+    return { model: rm, vars: vars, errors: eq.errors, featureErrors: featureErrors, sheetError: sheetError, configuration: eq.configuration };
   }
 
   // ------------------------------------------------------------------ rebuild
@@ -1618,7 +1689,7 @@ var Kernel = (function () {
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
     return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles,
-      equations: resolved.vars, equationErrors: resolved.errors };
+      equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration };
   }
 
   // ------------------------------------------------------------------ build serialization (Web Worker rebuilds)
@@ -1644,7 +1715,7 @@ var Kernel = (function () {
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
       time: build.time || 0, reused: build.reused || 0, profiles: profiles,
-      equations: build.equations || {}, equationErrors: build.equationErrors || {}
+      equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null
     };
   }
   // Every ArrayBuffer of a packed build (bodies, body and tools), for postMessage's transfer list. pack() allocates
@@ -1670,7 +1741,7 @@ var Kernel = (function () {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
       time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null,
-      equations: obj.equations || {}, equationErrors: obj.equationErrors || {}
+      equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null
     };
   }
   // Write the profiles a build computed (build.profiles, keyed by sketch feature id) onto the model's sketch features.
@@ -2915,6 +2986,29 @@ var Kernel = (function () {
     this.model.equations = list;
     return this;
   };
+  // configurations([{ name, values: { T: 6, N: '=2' } }], active?): the model's named variable sets (replaces any
+  // earlier list). Values are stored as expression strings without a leading "=". `active` (optional) activates one.
+  Builder.prototype.configurations = function (list, active) {
+    var out = [];
+    (Array.isArray(list) ? list : []).forEach(function (c) {
+      if (!c || c.name == null) return;
+      var q = {}, vals = {};
+      Object.keys(c).forEach(function (k) { q[k] = c[k]; });
+      Object.keys(c.values || {}).forEach(function (k) { vals[k] = configExpr(c.values[k]); });
+      q.name = String(c.name); q.values = vals;
+      out.push(q);
+    });
+    if (out.length) this.model.configurations = out; else { delete this.model.configurations; delete this.model.activeConfiguration; }
+    if (active != null) this.activeConfiguration(active);
+    return this;
+  };
+  // activeConfiguration(name): the configuration whose values drive the equations (null: the base equations)
+  Builder.prototype.activeConfiguration = function (name) {
+    if (name == null) { delete this.model.activeConfiguration; return this; }
+    if (!findConfiguration(this.model, name)) throw new Error('activeConfiguration: no configuration named "' + name + '"');
+    this.model.activeConfiguration = String(name);
+    return this;
+  };
   // _value(x): a number for a sketch dimension that must be numeric now (box, cylinder, hole sizes): an equation is
   // evaluated against the current variables at script time, since sketch entities hold no expressions.
   Builder.prototype._value = function (x, what) {
@@ -3187,6 +3281,11 @@ var Kernel = (function () {
     var out = ['// ' + model.name + ' — generated by Anvil', 'p.name(' + JSON.stringify(model.name) + ').units(' + JSON.stringify(model.units) + ');'];
     // equations first, so every "=" field below resolves against them; the array form keeps each expr string exactly
     if (Array.isArray(model.equations) && model.equations.length) out.push('p.equations(' + JSON.stringify(model.equations) + ');');
+    // configurations right after, so a box/hole size given as "=..." is evaluated with the active set as the model had it
+    if (Array.isArray(model.configurations) && model.configurations.length) {
+      out.push('p.configurations(' + JSON.stringify(model.configurations) + ');');
+      if (model.activeConfiguration != null && findConfiguration(model, model.activeConfiguration)) out.push('p.activeConfiguration(' + JSON.stringify(String(model.activeConfiguration)) + ');');
+    }
     if (model.sheet) out.push('p.sheet(' + nv(model.sheet.thickness) + ', ' + nv(model.sheet.bendRadius) + ', ' + nv(model.sheet.kFactor) + ');');
     var idVar = {};
     model.features.forEach(function (f) {
@@ -3351,7 +3450,9 @@ var Kernel = (function () {
     resolveFaces: resolveFaces, buildShell: buildShell,
     Builder: Builder, runScript: runScript, generateScript: generateScript,
     isExpression: isExpression, evalExpression: evalExpression, resolveEquations: resolveEquations, resolvedModel: resolvedModel,
-    resolveFeature: resolveFeature, hasExpressions: hasExpressions, EXPR_FUNCTIONS: Object.keys(EXPR_FN),
+    resolveFeature: resolveFeature, hasExpressions: hasExpressions,
+    configurationList: configurationList, findConfiguration: findConfiguration, activeConfiguration: activeConfiguration,
+    effectiveEquations: effectiveEquations, captureConfiguration: captureConfiguration, applyEquations: applyEquations, EXPR_FUNCTIONS: Object.keys(EXPR_FN),
     vec: { add: add, sub: sub, scale: scale, dot: dot, cross: cross, len: len, norm: norm }
   };
 })();

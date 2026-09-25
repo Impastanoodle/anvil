@@ -506,9 +506,21 @@
       return UI.setEquations(spec).then(function () { return window.anvil.summary(); });
     },
     showEquations: function () { UI.showEquations(); },
-    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})) }; },
+    // configurations() -> { active: name | null, list: [{ name, values }] } (copies); configurations(list, active?)
+    // replaces them all (one undo step), rebuilds and resolves to the summary. Also .add(name?), .rename(old, new),
+    // .remove(name) and .activate(name), each one undo step resolving to the summary (or rejecting with the reason).
+    configurations: function (list, active) {
+      if (!arguments.length) return { active: UI.configurations.active(), list: UI.configurations.list() };
+      return UI.configurations.set(list, active).then(function () { return window.anvil.summary(); });
+    },
+    activateConfiguration: function (name) { return UI.configurations.activate(name).then(function () { return window.anvil.summary(); }); },
+    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
     examples: EXAMPLES
   };
+  window.anvil.configurations.activate = window.anvil.activateConfiguration;
+  ['add', 'rename', 'remove'].forEach(function (op) {
+    window.anvil.configurations[op] = function () { return UI.configurations[op].apply(null, arguments).then(function () { return window.anvil.summary(); }); };
+  });
 
   // ------------------------------------------------------------------ boot
   function boot() {

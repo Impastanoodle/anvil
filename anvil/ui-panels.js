@@ -159,14 +159,21 @@
     var bar = $('fm-tabs');
     bar.innerHTML = '';
     FM_TABS.forEach(function (t) {
-      var b = el('button', { html: Icons(t[1], 18), title: t[2], onclick: function () { if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'tree') { if (!UI.hasPM()) setFmTab('tree'); else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
+      var b = el('button', { html: Icons(t[1], 18), title: t[2], onclick: function () { if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'tree' || t[0] === 'config') { if (!UI.hasPM()) setFmTab(t[0]); else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
       b.dataset.tab = t[0];
       bar.appendChild(b);
     });
     setFmTab('tree');
   }
+  // setFmTab('tree' | 'config' | 'pm'): marks the tab and shows its pane. The PropertyManager (ui-commands openPM /
+  // closePM) shows and hides #pm and #fm-tree itself; here 'pm' only hides the ConfigurationManager.
   function setFmTab(name) {
     Array.prototype.forEach.call($('fm-tabs').children, function (b) { b.classList.toggle('active', b.dataset.tab === name); });
+    App.fmTab = name;
+    var cp = $('config-panel');
+    if (name === 'tree') { $('fm-tree').hidden = false; if (cp) cp.hidden = true; }
+    else if (name === 'config') { $('fm-tree').hidden = true; if (cp) { cp.hidden = false; refreshConfigPanel(); } }
+    else if (cp) cp.hidden = true;
   }
 
   // ------------------------------------------------------------------ feature tree
@@ -195,7 +202,8 @@
     tree.innerHTML = '';
     var m = App.model, filter = ($('tree-filter-input').value || '').toLowerCase();
     var errors = App.build ? App.build.errors : {}, warnings = App.build ? App.build.warnings : {};
-    var root = treeItem({ icon: 'part', name: m.name, children: true, open: true, toggle: function () { } });
+    var ac = K.activeConfiguration ? K.activeConfiguration(m) : null;
+    var root = treeItem({ icon: 'part', name: m.name + (ac ? ' (' + ac.name + ')' : ''), children: true, open: true, toggle: function () { } });
     root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { m.name = n; UI.rebuild(); }); });
     tree.appendChild(root);
     [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
@@ -238,6 +246,7 @@
       var selRow = tree.querySelector('.ti.selected');
       if (selRow && selRow.scrollIntoViewIfNeeded) selRow.scrollIntoViewIfNeeded();
     }
+    refreshConfigPanel();   // every rebuild, undo and load refreshes the tree; keep the ConfigurationManager in step
   }
   // Solid Bodies(n) folder: one row per separate solid (App.build.bodies, described by Kernel.bodyInfo through
   // UI.bodyInfos). Expanded by default on a multi-body part; the user's toggle is remembered in expanded.bodies.
@@ -295,14 +304,14 @@
   // Equations folder (SolidWorks shows it near the top of the tree once the part has global variables): one
   // "T = 10" row per model.equations entry; double-click opens Tools ▸ Equations. Open by default.
   function appendEquationsFolder(tree, filter) {
-    var list = Array.isArray(App.model.equations) ? App.model.equations : [];
+    var list = currentEquations();   // with the active configuration's values
     if (!list.length) return;
     var vars = (App.build && App.build.equations) || {}, errs = (App.build && App.build.equationErrors) || {};
     var shown = list.filter(function (q) { return !filter || String(q.name).toLowerCase().indexOf(filter) >= 0; });
     var isOpen = expanded.equations == null ? true : !!expanded.equations;
     if (filter && shown.length) isOpen = true;
     var anyErr = list.some(function (q) { return errs[q.name]; });
-    var folder = treeItem({ icon: 'equations', name: 'Equations', depth: 1, cls: 'eq-folder' + (anyErr ? ' err' : ''), children: true, open: isOpen, title: list.length + ' global variable' + (list.length === 1 ? '' : 's') + ' — double-click to manage', toggle: function () { expanded.equations = !isOpen; refreshTree(); } });
+    var folder = treeItem({ icon: 'equations', name: 'Equations', depth: 1, cls: 'eq-folder' + (anyErr ? ' err' : ''), children: true, open: isOpen, title: list.length + ' global variable' + (list.length === 1 ? '' : 's') + (K.activeConfiguration && K.activeConfiguration(App.model) ? ' (configuration ' + K.activeConfiguration(App.model).name + ')' : '') + ' — double-click to manage', toggle: function () { expanded.equations = !isOpen; refreshTree(); } });
     folder.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(); });
     folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', action: showEquations }]); });
     tree.appendChild(folder);
@@ -615,11 +624,18 @@
     else if (spec && typeof spec === 'object') Object.keys(spec).forEach(function (k) { out.push({ name: k, expr: exprText(spec[k]) }); });
     return out;
   }
-  // setEquations(list) -> the rebuild Promise. An empty list removes model.equations.
+  // currentEquations() -> [{ name, expr }] as the model resolves them now (the active configuration's values applied)
+  function currentEquations() {
+    if (K.effectiveEquations) return normalizeEquations(K.effectiveEquations(App.model));
+    return normalizeEquations(App.model.equations || []);
+  }
+  // setEquations(list) -> the rebuild Promise. An empty list removes model.equations. With a configuration active,
+  // Kernel.applyEquations writes a variable that configuration sets into it only; everything else goes to the base.
   function setEquations(spec) {
     var list = normalizeEquations(spec);
     UI.pushUndo();
-    if (list.length) App.model.equations = list; else delete App.model.equations;
+    if (K.applyEquations) K.applyEquations(App.model, list);
+    else if (list.length) App.model.equations = list; else delete App.model.equations;
     return UI.afterRebuild(UI.rebuild(), function () { refreshTree(); refreshStatus(); });
   }
   function evaluateEquations(list) {
@@ -627,8 +643,10 @@
     try { return K.resolveEquations({ equations: list }); } catch (e) { return { vars: {}, errors: {} }; }
   }
   function showEquations(focusName) {
-    var rows = normalizeEquations(App.model.equations || []);
+    var rows = currentEquations();
+    var acfg = K.activeConfiguration ? K.activeConfiguration(App.model) : null;
     var wrap = el('div', { id: 'eq-dialog' });
+    if (acfg) wrap.appendChild(el('p', { id: 'eq-config', class: 'eq-config', text: 'Configuration: ' + acfg.name, title: 'Values of variables this configuration sets are changed in it only; the other configurations keep theirs.' }));
     var table = el('table', { id: 'eq-table', class: 'eq-table' });
     table.appendChild(el('thead', {}, [el('tr', {}, [el('th', { text: 'Name' }), el('th', { text: 'Value / Equation' }), el('th', { text: 'Evaluates to' }), el('th', { text: '' })])]));
     var tbody = el('tbody');
@@ -699,7 +717,7 @@
     function applyAndClose() {
       if (evaluate()) { msg.textContent = 'Fix the equations shown in red first.'; msg.classList.add('err'); return null; }
       var list = rows.filter(function (q) { return q.name !== '' && q.expr !== ''; }).map(function (q) { return { name: q.name, expr: q.expr }; });
-      var before = JSON.stringify(App.model.equations || []);
+      var before = JSON.stringify(currentEquations());
       closeModal();
       if (JSON.stringify(list) === before) return UI.whenIdle();
       var p = setEquations(list);
@@ -720,6 +738,178 @@
     render(fi >= 0 ? fi : null, 'expr');
     if (!rows.length) setTimeout(function () { addBtn.focus(); }, 0);
     UI.equationsDialog = { rows: rows, evaluate: evaluate, apply: applyAndClose, render: render };
+  }
+
+  // ------------------------------------------------------------------ ConfigurationManager
+  // Configurations are named sets of global-variable values (Kernel: model.configurations [{ name, values }],
+  // model.activeConfiguration). The panel #config-panel replaces #fm-tree while its tab is active: a header, the
+  // buttons #cfg-add / #cfg-rename / #cfg-delete / #cfg-activate, and #cfg-list with one .cfg-row[data-name] per
+  // configuration (.active = the one shown, .selected = the one the buttons act on). Double-click a row to show it.
+  // Every operation is one undo step followed by a rebuild; UI.configurations exposes them for scripts and tests.
+  var cfgSelected = null;
+  function cfgCopy(c) { return { name: String(c.name), values: JSON.parse(JSON.stringify(c.values || {})) }; }
+  function cfgList() { return (K.configurationList ? K.configurationList(App.model) : []).map(cfgCopy); }
+  function cfgActiveName() { var ac = K.activeConfiguration ? K.activeConfiguration(App.model) : null; return ac ? String(ac.name) : null; }
+  function cfgValuesText(values) {
+    var keys = Object.keys(values || {});
+    var txt = keys.map(function (k) { return k + '=' + values[k]; }).join(', ');
+    return txt.length > 40 ? txt.slice(0, 38) + '…' : txt;
+  }
+  function nextConfigName() {
+    for (var i = cfgList().length + 1; ; i++) if (!K.findConfiguration(App.model, 'Config' + i)) return 'Config' + i;
+  }
+  function cfgFail(msg) { return Promise.reject(new Error(msg)); }
+  function cfgCheckName(name, except) {
+    var n = name == null ? '' : String(name).trim();
+    if (!n) return { error: 'A configuration needs a name.' };
+    if (n !== except && K.findConfiguration(App.model, n)) return { error: 'A configuration named "' + n + '" already exists.' };
+    return { name: n };
+  }
+  // one undoable change: snapshot, mutate App.model, rebuild, refresh tree / status / panel
+  function cfgCommit(mutate, message) {
+    UI.pushUndo();
+    mutate(App.model);
+    return UI.afterRebuild(UI.rebuild(), function () { refreshTree(); refreshStatus(); if (message) setStatus(message); });
+  }
+  function cfgAdd(name) {
+    var chk = cfgCheckName(name == null ? nextConfigName() : name);
+    if (chk.error) return cfgFail(chk.error);
+    var values = K.captureConfiguration(App.model);
+    var first = !K.configurationList(App.model).length;
+    if (first && chk.name === 'Default') return cfgFail('A configuration named "Default" already exists.');
+    cfgSelected = chk.name;
+    return cfgCommit(function (m) {
+      if (!Array.isArray(m.configurations)) m.configurations = [];
+      if (first) m.configurations.push({ name: 'Default', values: JSON.parse(JSON.stringify(values)) });
+      m.configurations.push({ name: chk.name, values: values });
+      m.activeConfiguration = chk.name;
+    }, 'Added configuration "' + chk.name + '" (now active).');
+  }
+  function cfgRename(oldName, newName) {
+    var c = K.findConfiguration(App.model, oldName);
+    if (!c) return cfgFail('No configuration named "' + oldName + '".');
+    var chk = cfgCheckName(newName, String(c.name));
+    if (chk.error) return cfgFail(chk.error);
+    if (chk.name === String(c.name)) return Promise.resolve();
+    var from = String(c.name);
+    if (cfgSelected === from) cfgSelected = chk.name;
+    return cfgCommit(function (m) {
+      var cc = K.findConfiguration(m, from);
+      if (String(m.activeConfiguration) === from) m.activeConfiguration = chk.name;
+      cc.name = chk.name;
+    }, 'Renamed configuration "' + from + '" to "' + chk.name + '".');
+  }
+  function cfgRemove(name) {
+    var c = K.findConfiguration(App.model, name);
+    if (!c) return cfgFail('No configuration named "' + name + '".');
+    var gone = String(c.name);
+    if (cfgSelected === gone) cfgSelected = null;
+    return cfgCommit(function (m) {
+      var wasActive = cfgActiveName() === gone;
+      m.configurations = m.configurations.filter(function (x) { return !(x && String(x.name) === gone); });
+      var left = K.configurationList(m);
+      if (!left.length) { delete m.configurations; delete m.activeConfiguration; }
+      else if (wasActive || !K.activeConfiguration(m)) m.activeConfiguration = String(left[0].name);
+    }, 'Deleted configuration "' + gone + '".');
+  }
+  function cfgActivate(name) {
+    var c = K.findConfiguration(App.model, name);
+    if (!c) return cfgFail('No configuration named "' + name + '".');
+    if (cfgActiveName() === String(c.name)) return Promise.resolve();
+    var to = String(c.name);
+    return cfgCommit(function (m) { m.activeConfiguration = to; }, 'Configuration "' + to + '" is active.');
+  }
+  // cfgSet(list, active?): replace every configuration at once. list = [{ name, values: { T: 6 | '6' | '=W/2' } }];
+  // active defaults to the current one when it survives, else the first. An empty list removes configurations.
+  function cfgSet(list, active) {
+    list = Array.isArray(list) ? list : [];
+    var out = [], seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i] || {}, n = c.name == null ? '' : String(c.name).trim();
+      if (!n) return cfgFail('Configuration ' + (i + 1) + ' needs a name.');
+      if (seen[n]) return cfgFail('A configuration named "' + n + '" already exists.');
+      seen[n] = true;
+      var vals = {};
+      Object.keys(c.values || {}).forEach(function (k) { vals[k] = String(c.values[k] == null ? '' : c.values[k]).replace(/^\s*=\s*/, '').trim(); });
+      out.push({ name: n, values: vals });
+    }
+    var act = null;
+    if (out.length) {
+      if (active != null) { if (!seen[String(active)]) return cfgFail('No configuration named "' + active + '".'); act = String(active); }
+      else act = seen[cfgActiveName()] ? cfgActiveName() : out[0].name;
+    }
+    if (cfgSelected && !seen[cfgSelected]) cfgSelected = null;
+    return cfgCommit(function (m) {
+      if (out.length) { m.configurations = out; m.activeConfiguration = act; }
+      else { delete m.configurations; delete m.activeConfiguration; }
+    }, out.length ? out.length + ' configuration' + (out.length === 1 ? '' : 's') + ', "' + act + '" active.' : 'Configurations removed.');
+  }
+  // UI entry points: report a refusal as a toast instead of an unhandled rejection
+  function cfgRun(p) { return p.catch(function (e) { toast(e.message || String(e)); }); }
+  function cfgNeedSelection() {
+    var n = cfgSelected && K.findConfiguration(App.model, cfgSelected) ? cfgSelected : null;
+    if (!n) toast('Select a configuration first.');
+    return n;
+  }
+  function cfgPromptAdd() {
+    promptDialog('Add Configuration', 'Configuration name:', nextConfigName(), function (v) { cfgRun(cfgAdd(v)); });
+  }
+  function cfgPromptRename(name) {
+    name = name || cfgNeedSelection();
+    if (!name) return;
+    promptDialog('Rename Configuration', 'New name for "' + name + '":', name, function (v) { cfgRun(cfgRename(name, v)); });
+  }
+  function cfgConfirmDelete(name) {
+    name = name || cfgNeedSelection();
+    if (!name) return;
+    confirmDialog('Delete Configuration', 'Delete configuration "' + escHtml(name) + '"? Its variable values are lost (Undo brings them back).', function () { cfgRun(cfgRemove(name)); }, 'Delete');
+  }
+  function escHtml(t) { return String(t).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); }
+  function cfgMenu(name) {
+    var items = [];
+    if (name) {
+      items.push({ label: 'Show Configuration', action: function () { cfgRun(cfgActivate(name)); } });
+      items.push({ label: 'Rename…', action: function () { cfgPromptRename(name); } });
+      items.push({ label: 'Delete', action: function () { cfgConfirmDelete(name); } });
+      items.push({ sep: true });
+    }
+    items.push({ label: 'Add Configuration…', action: cfgPromptAdd });
+    items.push({ label: 'Manage Equations…', action: function () { showEquations(); } });
+    return items;
+  }
+  function refreshConfigPanel() {
+    var panel = $('config-panel');
+    if (!panel || panel.hidden || !App.model) return;
+    var list = cfgList(), active = cfgActiveName();
+    if (cfgSelected && !list.some(function (c) { return c.name === cfgSelected; })) cfgSelected = null;
+    panel.innerHTML = '';
+    panel.appendChild(el('div', { class: 'cfg-head', title: App.model.name + ' Configuration(s)' }, [el('span', { html: Icons('config', 16) }), el('span', { class: 'cfg-title', text: App.model.name + ' Configuration(s)' })]));
+    panel.appendChild(el('div', { class: 'cfg-tools' }, [
+      el('button', { id: 'cfg-add', text: 'Add\u2026', title: 'Add Configuration: a copy of the current variable values, made active', onclick: cfgPromptAdd }),
+      el('button', { id: 'cfg-rename', text: 'Rename\u2026', title: 'Rename the selected configuration', onclick: function () { cfgPromptRename(); } }),
+      el('button', { id: 'cfg-delete', text: 'Delete', title: 'Delete the selected configuration', onclick: function () { cfgConfirmDelete(); } }),
+      el('button', { id: 'cfg-activate', text: 'Show', title: 'Show Configuration: make the selected configuration active', onclick: function () { var n = cfgNeedSelection(); if (n) cfgRun(cfgActivate(n)); } })
+    ]));
+    var box = el('div', { id: 'cfg-list' });
+    box.addEventListener('contextmenu', function (e) { if (e.target !== box) return; e.preventDefault(); showMenu(e.clientX, e.clientY, cfgMenu(null)); });
+    if (!list.length) {
+      var eqs = currentEquations().length;
+      box.appendChild(el('div', { class: 'cfg-empty', text: eqs ? 'No configurations yet: the part uses its base equation values. Add… stores them as "Default" and starts a new configuration you can change in Tools ▸ Equations.' : 'Configurations are named sets of global-variable values. Add global variables in Tools ▸ Equations first, then Add… a configuration for each variant.' }));
+    }
+    list.forEach(function (c) {
+      var isActive = c.name === active, vals = cfgValuesText(c.values);
+      var row = el('div', { class: 'cfg-row' + (isActive ? ' active' : '') + (c.name === cfgSelected ? ' selected' : ''), 'data-name': c.name, title: c.name + (isActive ? ' (active)' : '') + (vals ? ': ' + Object.keys(c.values).map(function (k) { return k + ' = ' + c.values[k]; }).join(', ') : '') + ' — double-click to show' }, [
+        el('span', { class: 'cfg-mark', text: isActive ? '\u2713' : '' }),
+        el('span', { html: Icons('config', 16) }),
+        el('span', { class: 'cfg-name', text: c.name }),
+        el('span', { class: 'cfg-vals', text: vals })
+      ]);
+      row.addEventListener('click', function () { cfgSelected = c.name; refreshConfigPanel(); setStatus('Configuration "' + c.name + '"' + (vals ? ': ' + vals : '') + (isActive ? ' (active)' : '')); });
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); cfgSelected = c.name; cfgRun(cfgActivate(c.name)); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); cfgSelected = c.name; refreshConfigPanel(); showMenu(e.clientX, e.clientY, cfgMenu(c.name)); });
+      box.appendChild(row);
+    });
+    panel.appendChild(box);
   }
 
   // Modal replacements for window.confirm / window.prompt (native dialogs are blocked in sandboxed hosts).
@@ -745,4 +935,6 @@
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu;
   UI.refreshHud = refreshHud; UI.showModal = showModal; UI.closeModal = closeModal; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
+  UI.refreshConfigPanel = refreshConfigPanel;
+  UI.configurations = { list: cfgList, active: cfgActiveName, add: cfgAdd, rename: cfgRename, remove: cfgRemove, activate: cfgActivate, set: cfgSet };
 })(UI);

@@ -259,3 +259,26 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Phase 6: configuration manager driving the equations (named sets of variable values).
 2. Phase 4: near-face-only BSP trees with a per-piece ray-cast inside test.
 3. Phase 5: simple assembly document (insert parts, mates).
+
+## Run cloud-2026-09-25a — Configuration manager (named sets of equation values)
+
+**Context.** Cloud session (not the scheduled local run): no HEAD.lock, no Foreman board, no artifact republish. Head wrote the kernel part, then two parallel subagents (commands, tests). The CSG near-face BSP task was left alone; a local run owns it. Tests ran in headless Chromium (Playwright 1.56 + /opt/pw-browsers/chromium) against `python3 -m http.server 8765`; cdnjs is blocked by the cloud network policy, so the runner routed the three.js r128 CDN URL to the same file from npm `three@0.128.0` (harness only, no repo change).
+
+**Done per lane.**
+- `kernel` (head, kernel.js): `model.configurations = [{ name, values: { T: '6' } }]`, `model.activeConfiguration`. `resolveEquations` evaluates `effectiveEquations(model)` (the active configuration's values replace the named variables' exprs; unknown names ignored; an unknown active name means the base equations) and returns `configuration`; rebuild / pack / unpack carry `build.configuration`. Exported `configurationList / findConfiguration / activeConfiguration / effectiveEquations / captureConfiguration / applyEquations`. Builder `p.configurations(list, active?)`, `p.activeConfiguration(name)` (throws for an unknown name); `generateScript` writes both right after `p.equations`. Cache keys already follow resolved values, so a switch rebuilds only the features whose values change.
+- `commands` (ui-panels.js, ui-app.js, index.html, style.css): ConfigurationManager tab in `#fm-tabs` shows `#config-panel` (`.cfg-row[data-name]`, `.active`, `.selected`; `#cfg-add / #cfg-rename / #cfg-delete / #cfg-activate` "Show"; double-click shows; context menu). `UI.configurations = { list, active, add, rename, remove, activate, set }`, each one undo step. First Add stores the current values as "Default" plus the new configuration and makes the new one active. Equations dialog is configuration-aware (`#eq-config`, `Kernel.applyEquations`). Part row reads "Part1 (Thick)". `anvil.configurations()` get/set, `.activate/.add/.rename/.remove`, `anvil.activateConfiguration`; `summary().configuration`, `summary().configurations`.
+- `tests` (tests/, examples/, README.md): kernel `configurations` group ×17 + 3 via the example loops (354); smoke ×7 (53); Design Library **Configured spacer** (80×40×T plate − N 10×20×D pockets at pitch S; Small 18000, Medium 29000 (active), Large 32000, pinned analytically, every configuration checked); optional `configurations` map on example entries; README `## Configurations`.
+
+**Verified by the head (headless Chromium, port 8765).** kernel-tests 354/354, ui-smoke 53/53, app page loads with no console errors.
+
+**Decisions.**
+- A configuration stores expressions for the variables it names, not a full snapshot requirement; unnamed variables fall back to the base equations.
+- With a configuration active, the Equations dialog writes a variable the configuration names into that configuration only (SolidWorks "This configuration"); new variables go to the base list.
+- Box/hole/sketch sizes given as `=...` are still evaluated at script time, so configurations vary only live feature fields (depth, pattern count/spacing, fillet, chamfer, shell, plane offset).
+
+**Known gaps.** After a PropertyManager closes the left pane returns to the tree even if the ConfigurationManager tab was open. No design-table view (edit all configurations' values in one grid). Features cannot be suppressed per configuration yet.
+
+**Next up.**
+1. Phase 4: near-face-only BSP trees with a per-piece ray-cast inside test (owned by the local run).
+2. Configurations: per-configuration feature suppression and a design-table grid.
+3. Phase 5: simple assembly document (insert parts, mates).
