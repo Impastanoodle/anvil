@@ -1,0 +1,33 @@
+/* drawing.css — the drawing document (drawing.js): sheet area over the viewport, sheet tabs, drawing FeatureManager.
+   Colours come from style.css variables so both themes work; the sheet itself stays paper-white. */
+:root { --dw-desk: #8f99a5; --dw-hot: #1f6fc5; --dw-ghost: #3fa34d; }
+:root[data-theme="dark"] { --dw-desk: #3a414b; --dw-hot: #6fa8ea; --dw-ghost: #62c173; }
+
+#drawing-doc { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--dw-desk); }
+#drawing-doc[hidden] { display: none; }
+#drawing-sheet { flex: 1; min-height: 0; overflow: hidden; cursor: default; user-select: none; }
+#drawing-sheet svg { display: block; }
+#drawing-sheet .sheet-bg { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35)); }
+#drawing-tabs { flex: none; display: flex; align-items: stretch; gap: 2px; height: 24px; padding: 0 6px; background: var(--panel); border-top: 1px solid var(--line); }
+#drawing-tabs .dw-tab { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-top: none; background: var(--btn-face); color: var(--text); font: inherit; font-size: 12px; padding: 0 10px; cursor: pointer; }
+#drawing-tabs .dw-tab.active { background: var(--panel); font-weight: 600; }
+#drawing-tabs .dw-sp { flex: 1; }
+
+/* overlay drawn into the sheet SVG: view frames, dimension frames, the entity under the Smart Dimension cursor */
+#dw-overlay .dw-vbox { fill: none; stroke: var(--dw-hot); opacity: 0.55; }
+#dw-overlay .dw-vbox.sel { opacity: 1; }
+#dw-overlay .dw-dbox { fill: var(--dw-hot); fill-opacity: 0.08; stroke: var(--dw-hot); opacity: 0.6; }
+#dw-overlay .dw-dbox.sel { opacity: 1; fill-opacity: 0.16; }
+#dw-overlay .dw-hot { fill: none; stroke: var(--dw-hot); stroke-linecap: round; }
+#dw-overlay .dw-ghost { fill: var(--dw-ghost); fill-opacity: 0.08; stroke: var(--dw-ghost); }
+
+/* the drawing FeatureManager replaces the part tree (and the ConfigurationManager) while a drawing is open */
+#drawing-tree { flex: 1; overflow: auto; padding: 4px 0 20px; }
+#drawing-tree[hidden] { display: none; }
+#app.drawing-mode #fm-tree, #app.drawing-mode #config-panel { display: none !important; }
+#app.drawing-mode.dw-pm #drawing-tree { display: none; }
+#drawing-tree .ti.dw-root .nm { font-weight: 600; }
+#drawing-tree .ti.dw-ref { color: var(--muted); }
+
+.dw-props { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; min-width: 360px; }
+.dw-props label { color: var(--muted); }
