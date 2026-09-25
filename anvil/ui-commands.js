@@ -204,7 +204,7 @@
         return el('div', { class: 'pm-row pm-row-num' }, [el('label', { text: f.label }), wrap, hint]);
       }
       case 'select': {
-        var sel = el('select');
+        var sel = el('select', { 'data-key': f.key });
         var opts = typeof f.options === 'function' ? f.options(v) : f.options;
         opts.forEach(function (o) {
           var val = Array.isArray(o) ? o[0] : o, lab = Array.isArray(o) ? o[1] : o;
@@ -329,7 +329,15 @@
     if (!build || !list.length) return [];
     if (bodyInfoCache.build === build && bodyInfoCache.infos) return bodyInfoCache.infos;
     var infos = null;
-    if (typeof K.bodyInfo === 'function' && build.bodies) { try { infos = K.bodyInfo(build, App.model); } catch (e) { infos = null; } }
+    if (build.assembly && UI.bodyInfo) {
+      // assembly: one body per component, named after it (Pin<1>); featureId stays null (bodyFeatures are component ids)
+      infos = UI.bodyInfo().map(function (b, i) {
+        var vol = b.volume;
+        if (vol == null) { try { vol = K.massProps(K.meshFromBody(list[i])).volume; } catch (e) { vol = 0; } }
+        return { index: i, featureId: null, name: b.name, volume: vol };
+      });
+    }
+    if (!infos && typeof K.bodyInfo === 'function' && build.bodies) { try { infos = K.bodyInfo(build, App.model); } catch (e) { infos = null; } }
     if (!infos) {
       infos = list.map(function (body, i) {
         var vol = 0;
@@ -396,6 +404,7 @@
 
   // ------------------------------------------------------------------ sketch command
   function cmdSketch() {
+    if (isAsm()) { refusePart('Sketch'); return; }
     if (App.mode === 'sketch') { UI.exitSketch(); return; }
     if (App.sel && App.sel.kind === 'face') { newSketchOnFace(App.sel); return; }
     if (App.sel && App.sel.kind === 'plane') { newSketchOnPlane(App.sel.ref); return; }
@@ -407,6 +416,7 @@
     });
   }
   function newSketchOnPlane(ref) {
+    if (isAsm()) { refusePart('Sketch'); return Promise.resolve(null); }
     closePM();
     UI.pushUndo();
     var plane = typeof ref === 'number' ? { featureId: ref } : { ref: ref, offset: 0 };
@@ -418,6 +428,7 @@
     return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
   function newSketchOnFace(pk) {
+    if (isAsm()) { refusePart('Sketch'); return Promise.resolve(null); }
     var face = App.mesh.faces[pk.index];
     if (!face) return;
     closePM();
@@ -1438,6 +1449,356 @@
     });
   }
 
+  // ------------------------------------------------------------------ assembly documents
+  // App.model is an assembly ({ type: 'assembly', components, mates }, see assembly.js) when UI.isAssembly(). The
+  // Assembly global holds the model operations and the mate solver; this section is the PropertyManagers and the
+  // component / mate operations the FeatureManager, the ribbon and window.anvil call. Every change is one undo step
+  // followed by a rebuild (assembly rebuilds are synchronous).
+  function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  function asmReady() {
+    if (typeof Assembly === 'undefined') { UI.toast('Assemblies need assembly.js, which did not load.'); return false; }
+    if (!isAsm()) { UI.toast('Open an assembly first (File ▸ New ▸ Assembly).'); return false; }
+    return true;
+  }
+  // Part-only commands refuse politely in an assembly (ribbon, menus, shortcuts and command search all go through UI.cmd*).
+  function refusePart(label) {
+    var msg = label + ' is a part command: it is not available in an assembly document.';
+    UI.toast(msg); UI.setStatus(msg);
+  }
+  function partOnly(fn, label) {
+    return function () { if (isAsm()) { refusePart(label); return; } return fn.apply(null, arguments); };
+  }
+  function asmFail(msg) { return Promise.reject(new Error(msg)); }
+  function findComp(idOrName) { return typeof Assembly !== 'undefined' && isAsm() ? Assembly.findComponent(App.model, idOrName) : null; }
+  function findMateObj(idOrName) { return typeof Assembly !== 'undefined' && isAsm() ? Assembly.findMate(App.model, idOrName) : null; }
+  function compIndex(id) {
+    if (UI.componentIndex) return UI.componentIndex(id);
+    var cs = App.model.components || [];
+    for (var i = 0; i < cs.length; i++) if (cs[i].id === id) return i;
+    return -1;
+  }
+  // the build's per-component status { id, name, index, fixed, dof, underDefined, error } (or null before a build)
+  function compStatus(id) {
+    var list = App.build && App.build.assembly ? App.build.components || [] : [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+  // FeatureManager text: "(f) Plate<1>" when fixed, "(-) Pin<1>" when it can still move, plain when fully mated
+  function compLabel(c) {
+    var s = compStatus(c.id);
+    if (c.fixed) return '(f) ' + c.name;
+    if (s && s.underDefined) return '(-) ' + c.name;
+    return c.name;
+  }
+  // The component under the current selection: a component body, or the component owning a selected face.
+  function selectedComponent() {
+    if (!isAsm() || !App.sel) return null;
+    var i = -1;
+    if (App.sel.kind === 'body') i = App.sel.index;
+    else if (App.sel.kind === 'face' && App.mesh && App.mesh.faces[App.sel.index]) i = App.mesh.faces[App.sel.index].body || 0;
+    return (App.model.components || [])[i] || null;
+  }
+  function refName(ref) {
+    if (!ref) return '';
+    var c = ref.component != null ? findComp(ref.component) : null;
+    return c ? c.name : App.model.name;
+  }
+  // "Coincident1 (Plate<1>, Pin<1>)"
+  function mateLabel(m) { return m.name + ' (' + refName(m.a) + ', ' + refName(m.b) + ')'; }
+  function mateStatus(m) {
+    var b = App.build && App.build.assembly ? App.build : null;
+    if (!b) return { ok: true, error: null };
+    var s = (b.mates || {})[m.id] || {};
+    var err = s.error || (b.errors || {})[m.id] || null;
+    return { ok: !err && s.ok !== false, error: err };
+  }
+  function asmCommit(mutate, message) {
+    UI.pushUndo();
+    var r = mutate(App.model);
+    return UI.afterRebuild(UI.rebuild(), function () {
+      UI.refreshTree(); UI.refreshStatus();
+      if (message) UI.setStatus(typeof message === 'function' ? message(r) : message);
+      return r;
+    });
+  }
+  // insert(source, { position, rotation, fixed, name }) -> Promise of the new component
+  function asmInsert(source, opts) {
+    if (!asmReady()) return asmFail('Not an assembly document');
+    try { Assembly.partModel(typeof source === 'string' ? { example: source } : source); } catch (e) { return asmFail(e.message || String(e)); }
+    return asmCommit(function (m) { return Assembly.insert(m, source, opts || {}); }, function (c) {
+      var err = compStatus(c.id) && compStatus(c.id).error;
+      return err ? c.name + ' inserted with an error: ' + err : 'Inserted ' + c.name + (c.fixed ? ' (fixed)' : '') + '. Add mates to position it.';
+    }).then(function (c) { if (UI.selectComponent) UI.selectComponent(c.id); return c; });
+  }
+  // addMate(type, a, b, { alignment, name, suppressed }) -> Promise of the new mate
+  function asmAddMate(type, a, b, opts) {
+    if (!asmReady()) return asmFail('Not an assembly document');
+    return asmCommit(function (m) { return Assembly.addMate(m, type, a, b, opts || {}); }, function (mt) {
+      var st = mateStatus(mt);
+      return st.error ? mt.name + ': ' + st.error : mt.name + ' added.';
+    });
+  }
+  function asmSetFixed(idOrName, fixed) {
+    var c = findComp(idOrName);
+    if (!c) return asmFail('No component "' + idOrName + '"');
+    fixed = fixed !== false;
+    if (!!c.fixed === fixed) return Promise.resolve(c);
+    var id = c.id;
+    return asmCommit(function (m) { Assembly.setFixed(m, id, fixed); return Assembly.findComponent(m, id); }, c.name + (fixed ? ' fixed.' : ' floats: mates position it.'));
+  }
+  function asmRemoveComponent(idOrName) {
+    var c = findComp(idOrName);
+    if (!c) return asmFail('No component "' + idOrName + '"');
+    var id = c.id, idx = compIndex(id), nm = c.name;
+    var before = (App.model.mates || []).length;
+    // hidden flags are by body index: shift the ones after the removed component
+    var hid = {};
+    Object.keys(App.hiddenBodies || {}).forEach(function (k) { k = +k; if (k < idx) hid[k] = true; else if (k > idx) hid[k - 1] = true; });
+    App.hiddenBodies = hid;
+    App.sel = null; App.sel2 = null;
+    return asmCommit(function (m) { Assembly.removeComponent(m, id); return (m.mates || []).length; }, function (after) {
+      var gone = before - after;
+      return 'Deleted ' + nm + (gone ? ' and ' + gone + ' mate' + (gone > 1 ? 's' : '') + ' that referenced it' : '') + '.';
+    });
+  }
+  function asmRemoveMate(idOrName) {
+    var mt = findMateObj(idOrName);
+    if (!mt) return asmFail('No mate "' + idOrName + '"');
+    var id = mt.id, nm = mt.name;
+    return asmCommit(function (m) { Assembly.removeMate(m, id); }, 'Deleted ' + nm + '.');
+  }
+  function asmSuppressMate(idOrName, on) {
+    var mt = findMateObj(idOrName);
+    if (!mt) return asmFail('No mate "' + idOrName + '"');
+    var id = mt.id;
+    on = on !== false;
+    return asmCommit(function (m) { var x = Assembly.findMate(m, id); if (on) x.suppressed = true; else delete x.suppressed; return x; }, mt.name + (on ? ' suppressed.' : ' unsuppressed.'));
+  }
+  // Hide / Show is display state (like SolidWorks' Hide Components), kept per body index by ui-core.
+  function asmSetHidden(idOrName, hidden) {
+    var c = findComp(idOrName), i = c ? compIndex(c.id) : -1;
+    if (i < 0) return false;
+    if (UI.setBodyHidden) UI.setBodyHidden(i, hidden !== false);
+    UI.setStatus(c.name + (hidden !== false ? ' hidden.' : ' shown.'));
+    return true;
+  }
+  function asmIsHidden(id) { var i = compIndex(id); return i >= 0 && !!(UI.isBodyHidden ? UI.isBodyHidden(i) : (App.hiddenBodies || {})[i]); }
+  function confirmRemoveComponent(c) {
+    var n = (App.model.mates || []).filter(function (m) { return (m.a && m.a.component === c.id) || (m.b && m.b.component === c.id); }).length;
+    UI.confirmDialog('Confirm Delete', 'Delete <b>' + c.name + '</b>?' + (n ? '<br>This also deletes ' + n + ' mate' + (n > 1 ? 's' : '') + ' that reference it.' : ''), function () {
+      asmRemoveComponent(c.id).catch(function (e) { UI.toast(e.message); });
+    }, 'Delete');
+  }
+  function confirmRemoveMate(mt) {
+    UI.confirmDialog('Confirm Delete', 'Delete <b>' + mt.name + '</b>?', function () { asmRemoveMate(mt.id).catch(function (e) { UI.toast(e.message); }); }, 'Delete');
+  }
+  // Ribbon Fix / Float / Hide/Show Components act on the selected component.
+  function cmdFixComponent(fixed) {
+    if (!asmReady()) return;
+    var c = selectedComponent();
+    if (!c) { UI.toast('Select a component first (click it in the graphics area or the FeatureManager).'); return; }
+    asmSetFixed(c.id, fixed).catch(function (e) { UI.toast(e.message); });
+  }
+  function cmdHideShowComponents() {
+    if (!asmReady()) return;
+    var c = selectedComponent();
+    if (c) { asmSetHidden(c.id, !asmIsHidden(c.id)); return; }
+    var any = (App.model.components || []).filter(function (x) { return asmIsHidden(x.id); });
+    if (!any.length) { UI.toast('Select a component to hide.'); return; }
+    any.forEach(function (x) { asmSetHidden(x.id, false); });
+    UI.setStatus('Shown ' + any.length + ' hidden component' + (any.length > 1 ? 's' : '') + '.');
+  }
+
+  // ---- Insert Components PropertyManager
+  // Part list: the Design Library parts (AnvilExamples without kind 'assembly'), the last open part, and parts opened
+  // with Browse… (a part JSON file). PM keys: part (the list key), x, y, z (where the part origin goes).
+  var browsedParts = [];
+  function insertSources() {
+    var out = [];
+    if (App.lastPart && Array.isArray(App.lastPart.features)) out.push({ key: 'last', label: (App.lastPart.name || 'Part1') + ' (last part)', source: { model: App.lastPart } });
+    browsedParts.forEach(function (b) { out.push(b); });
+    (window.AnvilExamples || []).forEach(function (ex) {
+      if (ex && ex.name && ex.code && ex.kind !== 'assembly') out.push({ key: 'ex:' + ex.name, label: ex.name, source: { example: ex.name } });
+    });
+    return out;
+  }
+  function browsePart(done) {
+    var inp = el('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
+    inp.addEventListener('change', function () {
+      var file = inp.files && inp.files[0];
+      inp.remove();
+      if (!file) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        var m = null;
+        try { m = JSON.parse(String(rd.result)); } catch (e) { UI.toast('Not a model JSON file: ' + e.message); return; }
+        if (!m || m.type === 'assembly' || !Array.isArray(m.features)) { UI.toast('Pick a part JSON file (File ▸ Save As in a part).'); return; }
+        var b = { key: 'file:' + (browsedParts.length + 1), label: (m.name || file.name) + ' (' + file.name + ')', source: { model: m } };
+        browsedParts.push(b);
+        done(b);
+      };
+      rd.readAsText(file);
+    });
+    document.body.appendChild(inp);
+    inp.click();
+  }
+  function cmdInsertComponent(preset) {
+    if (!asmReady()) return;
+    var list = insertSources();
+    var first = !(App.model.components || []).length;
+    var v = { part: list.length ? list[0].key : '', x: 0, y: 0, z: 0 };
+    if (preset && preset.part != null) v.part = preset.part;
+    function options() { return insertSources().map(function (s) { return [s.key, s.label]; }).concat([['browse', 'Browse…']]); }
+    openPM({
+      title: 'Insert Component', icon: 'insertComponent', values: v,
+      message: first ? 'Pick a part to insert. The first component is <b>fixed</b> at the assembly origin.' : 'Pick a part and where its origin goes, then ✓. It floats until you add mates.',
+      groups: [
+        { title: 'Part/Assembly to Insert', fields: [{ type: 'select', label: 'Part', key: 'part', options: options, rerender: true }] },
+        { title: 'Position', fields: [
+          { type: 'number', label: 'X', key: 'x', unit: 'u' }, { type: 'number', label: 'Y', key: 'y', unit: 'u' }, { type: 'number', label: 'Z', key: 'z', unit: 'u' }
+        ] }
+      ],
+      onChange: function (x, key) {
+        if (key !== 'part' || x.part !== 'browse') return;
+        x.part = list.length ? list[0].key : '';
+        renderPM();
+        browsePart(function (b) { if (pm.spec && pm.values === x) { x.part = b.key; renderPM(); } });
+      },
+      onOK: function (x) {
+        var src = insertSources().filter(function (s) { return s.key === x.part; })[0];
+        if (!src) { UI.toast('Pick a part to insert first.'); return false; }
+        var p = asmInsert(src.source, { position: [+x.x || 0, +x.y || 0, +x.z || 0] });
+        p.catch(function (e) { UI.toast(e.message || String(e)); });
+        return p;
+      }
+    });
+  }
+
+  // ---- Mate PropertyManager
+  // Mate Selections holds two refs (a viewport face pick -> Assembly.refFromPick, an origin plane pick -> { plane });
+  // Standard Mates picks the type (Concentric when both are cylinders/axes, else Coincident, until the user chooses);
+  // Mate alignment picks Aligned / Anti-Aligned (Assembly's default until chosen). The graphics area previews the
+  // solved assembly with the mate applied; Cancel restores the model, ✓ adds (or updates) it as one undo step.
+  var MATE_TYPES = [['coincident', 'Coincident'], ['concentric', 'Concentric']];
+  function mateTypeLabel(t) { return t === 'concentric' ? 'Concentric' : 'Coincident'; }
+  function refKind(ref) { return !ref ? null : (ref.cylinder || ref.axis) ? 'axis' : (ref.face || ref.plane) ? 'plane' : null; }
+  function refText(ref) {
+    if (!ref) return '';
+    var who = refName(ref);
+    if (ref.face) return 'Face@' + who;
+    if (ref.cylinder) return 'Cylindrical Face@' + who;
+    if (ref.plane) return ref.plane + ' Plane@' + who;
+    if (ref.axis) return 'Axis ' + String(ref.axis).toUpperCase() + '@' + who;
+    return who;
+  }
+  function defaultMateType(a, b) { return refKind(a) === 'axis' && refKind(b) === 'axis' ? 'concentric' : 'coincident'; }
+  function defaultAlignment(type, a, b) { return type === 'coincident' && a && b && a.face && b.face ? 'anti-aligned' : 'aligned'; }
+  function mateKindError(type, a, b) {
+    if (type === 'coincident' && (refKind(a) !== 'plane' || refKind(b) !== 'plane')) return 'Coincident needs two planar faces or planes';
+    if (type === 'concentric' && (refKind(a) !== 'axis' || refKind(b) !== 'axis')) return 'Concentric needs two cylindrical faces or axes';
+    return null;
+  }
+  function nextMateName(m, type, except) {
+    var base = mateTypeLabel(type), n = 0;
+    (m.mates || []).forEach(function (x) { var r = new RegExp('^' + base + '(\\d+)$').exec(x.name || ''); if (r && x.id !== except) n = Math.max(n, +r[1]); });
+    return base + (n + 1);
+  }
+  var mateSession = null;   // the open Mate PM: { addRef(ref), values }
+  function cmdMate(existing) {
+    if (!asmReady()) return;
+    if (existing && typeof existing !== 'object') existing = findMateObj(existing);
+    var snapshot = JSON.stringify(App.model), previewed = false;
+    var v = existing ? { a: JSON.parse(JSON.stringify(existing.a)), b: JSON.parse(JSON.stringify(existing.b)), type: existing.type, alignment: existing.alignment || defaultAlignment(existing.type, existing.a, existing.b) }
+      : { a: null, b: null, type: 'coincident', alignment: 'aligned' };
+    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), picked = [];
+    function restore() { App.model = JSON.parse(snapshot); }
+    function apply(m) {
+      var opts = alignSet ? { alignment: v.alignment } : {};
+      if (existing) {
+        var x = Assembly.findMate(m, existing.id);
+        if (x.type !== v.type && /^(Coincident|Concentric)\d+$/.test(x.name)) x.name = nextMateName(m, v.type, x.id);
+        x.type = v.type; x.a = JSON.parse(JSON.stringify(v.a)); x.b = JSON.parse(JSON.stringify(v.b));
+        if (alignSet) x.alignment = v.alignment; else delete x.alignment;
+        return x;
+      }
+      return Assembly.addMate(m, v.type, JSON.parse(JSON.stringify(v.a)), JSON.parse(JSON.stringify(v.b)), opts);
+    }
+    function setMessage(html, ok) { if (!pm.spec) return; pm.spec.message = html; pm.spec.messageOk = !!ok; renderPM(); }
+    function preview() {
+      if (!(v.a && v.b)) {
+        if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); }
+        setMessage('Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.');
+        return;
+      }
+      var kindErr = mateKindError(v.type, v.a, v.b);
+      restore();
+      if (kindErr) { if (previewed) { previewed = false; UI.rebuild({ noSave: true }); } setMessage(kindErr + '. Pick other entities or change the mate type.'); return; }
+      var mt;
+      try { mt = apply(App.model); previewed = true; UI.rebuild({ noSave: true }); }
+      catch (e) { restore(); previewed = false; UI.rebuild({ noSave: true }); setMessage('Preview failed: ' + (e.message || e)); return; }
+      var st = mateStatus(mt);
+      setMessage(st.error ? mateTypeLabel(v.type) + ': ' + st.error : mateTypeLabel(v.type) + ' mate previewed. Press ✓ to ' + (existing ? 'update' : 'add') + ' it.', !st.error);
+    }
+    function addRef(ref, faceIndex) {
+      if (!ref) return false;
+      if (v.a && v.b) { v.a = null; v.b = null; picked = []; }
+      if (!v.a) v.a = ref; else v.b = ref;
+      if (faceIndex != null) picked.push(faceIndex);
+      if (App.command) App.command.faceList = picked.slice();
+      if (!typeSet) v.type = defaultMateType(v.a, v.b);
+      if (!alignSet) v.alignment = defaultAlignment(v.type, v.a, v.b);
+      renderPM();
+      preview();
+      UI.updateHighlights();
+      return true;
+    }
+    openPM({
+      title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
+      message: 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.',
+      command: {
+        pickPlane: true, faceList: [],
+        onPick: function (pk) {
+          var ref = null;
+          if (pk.kind === 'face') { try { ref = Assembly.refFromPick(App.model, App.build, pk.index, pk.point, App.mesh); } catch (e) { ref = null; } }
+          else if (pk.kind === 'plane' && typeof pk.ref === 'string') ref = { plane: pk.ref };
+          if (!ref) { UI.setStatus('That entity cannot be used in a mate.'); return true; }
+          return addRef(ref, pk.kind === 'face' ? pk.index : null);
+        }
+      },
+      groups: [
+        { title: 'Mate Selections', fields: [
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.a); }, placeholder: 'First entity…' },
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…' },
+          { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { x.a = null; x.b = null; picked = []; if (App.command) App.command.faceList = []; renderPM(); preview(); UI.updateHighlights(); } }] }
+        ] },
+        { title: 'Standard Mates', fields: [{ type: 'select', label: 'Mate type', key: 'type', options: MATE_TYPES, rerender: true }] },
+        { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned']] }] }
+      ],
+      onChange: function (x, key) {
+        if (key === 'type') { typeSet = true; if (!alignSet) { x.alignment = defaultAlignment(x.type, x.a, x.b); renderPM(); } }
+        if (key === 'alignment') alignSet = true;
+        if (key) preview();
+      },
+      onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
+      onClose: function () { mateSession = null; },
+      onOK: function (x) {
+        if (!(x.a && x.b)) { UI.toast('Select two entities to mate first.'); return false; }
+        var kindErr = mateKindError(x.type, x.a, x.b);
+        if (kindErr) { UI.toast(kindErr + '.'); return false; }
+        restore(); previewed = false;
+        return asmCommit(apply, function (mt) {
+          var st = mateStatus(mt);
+          return st.error ? mt.name + ': ' + st.error : mt.name + (existing ? ' updated.' : ' added.');
+        });
+      }
+    });
+    mateSession = { addRef: function (ref) { return addRef(JSON.parse(JSON.stringify(ref)), null); }, values: v };
+    if (existing) preview();
+  }
+  function editMate(m) { cmdMate(m); }
+  // UI.mateSelect(ref): add a ref to the open Mate PM as if it were picked (scripts / tests); false when no Mate PM is open
+  function mateSelect(ref) { return mateSession ? mateSession.addRef(ref) : false; }
+
   // ------------------------------------------------------------------ edit / delete features
   function editFeature(f) {
     if (!f) return;
@@ -1478,6 +1839,12 @@
     }, 'Delete');
   }
   function deleteSelection() {
+    if (isAsm()) {
+      var c = selectedComponent();
+      if (c) confirmRemoveComponent(c);
+      else UI.toast('Select a component, or right-click a mate in the FeatureManager to delete it.');
+      return;
+    }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'entity') { deleteEntity(App.sel.index); closePM(); return; }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'dim') { UI.deleteDim(App.sel.index); return; }
     if (App.sel && App.sel.kind === 'feature') { deleteFeature(App.sel.id); return; }
@@ -1508,5 +1875,21 @@
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;
   UI.newSketchOnPlane = newSketchOnPlane;
+  // part-only commands refuse in an assembly document (label = the SolidWorks command name for the message)
+  [['cmdExtrude', 'Extruded Boss/Base'], ['cmdRevolve', 'Revolved Boss/Base'], ['cmdLinearPattern', 'Linear Pattern'], ['cmdCircularPattern', 'Circular Pattern'],
+    ['cmdMirror', 'Mirror'], ['cmdPlane', 'Reference Plane'], ['cmdHole', 'Hole Wizard'], ['cmdBaseFlange', 'Base Flange/Tab'], ['cmdChamfer', 'Chamfer'], ['cmdFillet', 'Fillet'],
+    ['cmdEdgeFlange', 'Edge Flange'], ['cmdMiterFlange', 'Miter Flange'], ['cmdHem', 'Hem'], ['cmdJog', 'Jog'], ['cmdFlatten', 'Flatten'], ['exportFlatDXF', 'Flat to DXF'],
+    ['cmdConvertEntities', 'Convert Entities'], ['cmdOffsetEntities', 'Offset Entities'], ['cmdSketchFillet', 'Sketch Fillet'], ['cmdTrimEntities', 'Trim Entities'],
+    ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSketchPattern', 'Linear Sketch Pattern'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
+    ['editSketch', 'Edit Sketch']
+  ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
+  // assembly documents
+  UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
+  UI.cmdFixComponent = cmdFixComponent; UI.cmdHideShowComponents = cmdHideShowComponents;
+  UI.confirmRemoveComponent = confirmRemoveComponent; UI.confirmRemoveMate = confirmRemoveMate;
+  UI.compLabel = compLabel; UI.compStatus = compStatus; UI.mateLabel = mateLabel; UI.mateStatus = mateStatus; UI.selectedComponent = selectedComponent;
+  UI.asm = { insert: asmInsert, mate: asmAddMate, fix: asmSetFixed, removeComponent: asmRemoveComponent, removeMate: asmRemoveMate,
+    suppressMate: asmSuppressMate, setHidden: asmSetHidden, isHidden: asmIsHidden };
+  UI.commands = { insertComponent: cmdInsertComponent, mate: cmdMate, editMate: editMate };
   UI.bodyList = bodyList; UI.bodyInfos = bodyInfos; UI.bodyTitle = bodyTitle; UI.selectBodyRow = selectBody;
 })(UI);

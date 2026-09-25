@@ -54,7 +54,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 
 ## Phase 5 — assemblies and drawings
 - [x] Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder (2026-09-22T20b: `merge: false` on bosses, `bodies: [i…]` scope on cuts, `build.bodies` + `bodyFeatures`, `Kernel.combineBodies` tags `face.body`; FeatureManager Solid Bodies(n) folder with select/hide, Merge result checkbox, Feature Scope group, per-body Mass Properties, `anvil.bodies()`)
-- [ ] Simple assembly document: insert parts, mate by coincident planes / concentric axes
+- [x] Simple assembly document: insert parts, mate by coincident planes / concentric axes (cloud-2026-09-25c: `anvil/assembly.js` — assembly model `{ type: 'assembly', components, mates }` with Design Library / script / embedded part sources, Coincident and Concentric mates on faces, cylindrical faces, planes and axes, greedy + Levenberg–Marquardt solver with per-component DOF and conflict errors, faceted cylinder axis fit, `a.insert/a.mate` script round trip, mass properties across components; File ▸ New ▸ New assembly, Assembly ribbon tab, Insert Components and Mate PropertyManagers, component rows `(f)`/`(-)` and a Mates folder, `anvil.insert/mate/components/mates`, Pinned plate assembly example)
 - [ ] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF
 
 ## Phase 6 — polish

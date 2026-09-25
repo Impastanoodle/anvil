@@ -1395,6 +1395,64 @@
     assert(compRows().length === s.components, 'tree rows ' + compRows().length + ' vs ' + s.components);
     return ex.name + ': ' + s.components + ' components, ' + s.mates + ' mates, volume ' + s.volume;
   });
+  // PropertyManager flows (head, run cloud-2026-09-25c): Insert Component and Mate driven through their PMs, the mate
+  // selections coming from face picks (App.command.onPick -> Assembly.refFromPick), as a viewport click delivers them.
+  function asmFace(compIndex, normal, y) {
+    var faces = UI.App.mesh.faces;
+    for (var i = 0; i < faces.length; i++) {
+      var f = faces[i];
+      if ((f.body || 0) === compIndex && Math.abs(f.normal[1] - normal) < 1e-9 && Math.abs(f.centroid[1] - y) < 1e-6) return { kind: 'face', index: i, point: f.centroid.slice() };
+    }
+    return null;
+  }
+  step('assembly PM: Insert Component PM inserts two plates (the first fixed, the second at the typed position)', async function () {
+    need(UI, 'cmdInsertComponent'); need(UI, 'pmSetField');
+    await anvil.newAssembly('PMAsm');
+    await idle();
+    UI.cmdInsertComponent({ part: 'ex:Plate with bolt holes' });
+    assert(UI.hasPM(), 'Insert Component PM not open');
+    await pmAccept();
+    UI.cmdInsertComponent({ part: 'ex:Plate with bolt holes' });
+    assert(UI.pmSetField('x', '150') && UI.pmSetField('y', '30'), 'pmSetField on the Position fields');
+    await pmAccept();
+    assert(!UI.hasPM(), 'PM still open');
+    var cs = anvil.components();
+    assert(cs.length === 2 && cs[0].name === 'Plate<1>' && cs[1].name === 'Plate<2>', 'components ' + JSON.stringify(cs.map(function (c) { return c.name; })));
+    assert(cs[0].fixed && !cs[1].fixed, 'fixed flags');
+    nearVecS(cs[1].position, [150, 30, 0], 1e-9, 'Plate<2> position');
+    return compRows().map(function (r) { return r.textContent.trim(); }).join(' | ');
+  });
+  step('assembly PM: Mate PM with two face picks defaults to Coincident Anti-Aligned; ✓ stacks Plate<2> on Plate<1>', async function () {
+    need(UI, 'cmdMate');
+    var top = asmFace(0, 1, 8), bottom = asmFace(1, -1, 30);
+    assert(top && bottom, 'faces to pick: ' + JSON.stringify([top, bottom]));
+    UI.cmdMate();
+    assert(UI.hasPM() && UI.App.command && UI.App.command.onPick, 'Mate PM with a pick handler');
+    UI.App.command.onPick(top);
+    UI.App.command.onPick(bottom);
+    await idle();
+    var type = D.querySelector('#pm select[data-key="type"]'), align = D.querySelector('#pm select[data-key="alignment"]');
+    assert(type && type.value === 'coincident', 'Standard Mates: ' + (type && type.value));
+    assert(align && align.value === 'anti-aligned', 'Mate alignment: ' + (align && align.value));
+    await pmAccept();
+    var p2 = anvil.components()[1];
+    near(p2.position[1], 8, 1e-9, 'Plate<2> bottom on the Plate<1> top (y)');
+    var ms = anvil.mates();
+    assert(ms.length === 1 && ms[0].ok && ms[0].name === 'Coincident1', 'mates ' + JSON.stringify(ms));
+    var row = mateRows()[0];
+    assert(row && /Coincident1 \(Plate<1>, Plate<2>\)/.test(row.textContent), 'mate row: ' + (row && row.textContent));
+    return row.textContent.trim();
+  });
+  step('assembly PM: editing the mate and cancelling leaves the model as it was', async function () {
+    var before = JSON.stringify(anvil.model());
+    UI.cmdMate(anvil.mates()[0].id);
+    assert(UI.hasPM(), 'Mate PM (edit) not open');
+    UI.pmCancel();
+    await idle();
+    assert(!UI.hasPM(), 'PM still open');
+    assert(JSON.stringify(anvil.model()) === before, 'model changed by a cancelled edit');
+    near(anvil.components()[1].position[1], 8, 1e-9, 'Plate<2> y after cancel');
+  });
   step('assembly: anvil.newPart() returns to a part document with the Features ribbon', async function () {
     var s = await anvil.newPart('BackToPart');
     await idle();

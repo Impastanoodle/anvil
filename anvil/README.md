@@ -381,9 +381,9 @@ a.coincident({ component: pin, face: [1, 0, 1] }, { component: plate, face: [50,
 
 ### UI
 
-- **File ▸ New ▸ Assembly** (or `anvil.newAssembly()`) opens an empty assembly; the ribbon shows the *Assembly* tab (*Insert Components*, *Mate*, *Fix*, *Float*, *Hide/Show Components*). Sketches are not available in an assembly document.
-- **Insert Components** PropertyManager: pick a Design Library part (or the current part), a position, and whether it is fixed.
-- **Mate** PropertyManager: pick two faces in the viewport (a cylindrical face gives an axis, a flat face a plane), choose *Coincident* or *Concentric* and the alignment; OK solves and moves the components.
+- **File ▸ New** → *New assembly* (or `anvil.newAssembly()`; *New part* / `anvil.newPart()` goes back) opens an empty assembly; the ribbon shows the *Assembly* tab (*Insert Components*, *Mate*, *Fix*, *Float*, *Hide/Show Components*) and *Evaluate*; part-only commands refuse with a message. Sketches are not available in an assembly document.
+- **Insert Components** PropertyManager (`UI.cmdInsertComponent()`): pick a Design Library part, the last open part, or *Browse…* for a part JSON file, and the X/Y/Z position of its origin. The first component is fixed; later ones float until mated.
+- **Mate** PropertyManager (`UI.cmdMate(existing?)`): *Mate Selections* takes two viewport picks (a cylindrical face gives an axis, a flat face a plane, an origin plane its plane); *Standard Mates* defaults to *Concentric* for two cylinders and *Coincident* otherwise; *Mate alignment* Aligned / Anti-Aligned. The graphics area previews the solved result, ✓ commits it, Cancel restores the model; double-clicking a mate row reopens it.
 - **FeatureManager.** One row per component, `(f) Plate<1>` when fixed and `(-) Pin<1>` while under-defined, then a *Mates* folder with a row per mate (errors in red). Clicking a component row selects its body; hover reads *Component: Pin<1>*.
 - **Mass Properties** lists each component with its own volume, density and mass, and the mass-weighted totals.
 - Every edit is one undo step; saving and *File ▸ Open* round-trip the assembly JSON and script.

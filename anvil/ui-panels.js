@@ -14,8 +14,16 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.remove(); }, 2600);
   }
+  var lastDocType = null;
   function refreshStatus() {
-    var mode = App.mode === 'sketch' ? 'Editing ' + (UI.activeSketchFeature() || {}).name : 'Editing Part';
+    var asm = isAsm();
+    // switching between a part and an assembly document swaps the CommandManager tabs
+    if (lastDocType !== (asm ? 'assembly' : 'part')) {
+      lastDocType = asm ? 'assembly' : 'part';
+      if (ribbonTabs().indexOf(App.ribbonTab) < 0) App.ribbonTab = ribbonTabs()[0];
+      refreshRibbon();
+    }
+    var mode = App.mode === 'sketch' ? 'Editing ' + (UI.activeSketchFeature() || {}).name : asm ? 'Editing Assembly' : 'Editing Part';
     var units = App.model.units === 'in' ? 'IPS' : 'MMGS';
     var errs = App.build ? Object.keys(App.build.errors).length : 0;
     $('status-right').innerHTML = '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
@@ -90,6 +98,32 @@
     ]
   };
 
+  // Assembly documents get their own CommandManager: the Assembly tab plus Evaluate (the part-only tabs are hidden).
+  var ASM_RIBBON = {
+    Assembly: [
+      { id: 'insertComponent', label: 'Insert\nComponents', run: function () { UI.cmdInsertComponent(); } },
+      { id: 'mate', label: 'Mate', run: function () { UI.cmdMate(); } },
+      { sep: true },
+      { id: 'fix', label: 'Fix', run: function () { UI.cmdFixComponent(true); } },
+      { id: 'float', label: 'Float', run: function () { UI.cmdFixComponent(false); } },
+      { sep: true },
+      { id: 'hideshow', label: 'Hide/Show\nComponents', run: function () { UI.cmdHideShowComponents(); } },
+      { sep: true },
+      { id: 'lpattern', label: 'Linear Component\nPattern' }, { id: 'generic', label: 'Move\nComponent' }, { id: 'generic', label: 'Exploded\nView' },
+      { stack: [{ id: 'generic', label: 'Smart Fasteners' }, { id: 'generic', label: 'Bill of Materials' }, { id: 'generic', label: 'Instant3D' }] }
+    ],
+    Evaluate: [
+      { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
+      { id: 'mass', label: 'Mass\nProperties', run: function () { UI.showMassProperties(); } },
+      { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
+      { sep: true },
+      { id: 'generic', label: 'Interference\nDetection' }, { id: 'generic', label: 'Clearance\nVerification' }, { id: 'generic', label: 'Hole Alignment' }
+    ]
+  };
+  function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  function ribbonSet() { return isAsm() ? ASM_RIBBON : RIBBON; }
+  function ribbonTabs() { return Object.keys(ribbonSet()); }
+
   // One-line descriptions for the ribbon tooltips, keyed by the button label (ids such as 'bend' are shared by several buttons).
   var RIBBON_HELP = {
     'Extruded Boss/Base': 'Extrude a closed sketch profile into a solid', 'Revolved Boss/Base': 'Revolve a sketch profile about an axis line',
@@ -105,7 +139,9 @@
     'Measure': 'Measure distances, lengths and areas', 'Mass Properties': 'Volume, mass, centroid and bounding box', 'Section View': 'Cut the view with a section plane', 'Face to DXF': 'Export the selected face outline as DXF',
     'Base Flange/Tab': 'Turn a sketch into the first sheet-metal body and set the sheet parameters', 'Edge Flange': 'Bend a wall from a straight edge of the sheet',
     'Miter Flange': 'Bend walls from adjacent edges and join them at the corner', 'Hem': 'Fold the sheet back over itself along an edge', 'Jog': 'Step the sheet up or down with two bends',
-    'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet'
+    'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet',
+    'Insert Components': 'Add a part to the assembly', 'Mate': 'Position components relative to each other (Coincident, Concentric)',
+    'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones'
   };
   function ribbonTitle(id, label, enabled) {
     var key = UI.shortcutFor ? UI.shortcutFor(id) : null, help = RIBBON_HELP[label];
@@ -131,7 +167,9 @@
   function refreshRibbon() {
     var bar = $('ribbon-buttons');
     bar.innerHTML = '';
-    (RIBBON[App.ribbonTab] || []).forEach(function (item) {
+    var set = ribbonSet();
+    if (!set[App.ribbonTab]) App.ribbonTab = Object.keys(set)[0];
+    (set[App.ribbonTab] || []).forEach(function (item) {
       if (item.sep) { bar.appendChild(el('div', { class: 'rb-sep' })); return; }
       if (item.stack) {
         var st = el('div', { class: 'rb-stack' });
@@ -143,10 +181,10 @@
     });
     var tabs = $('ribbon-tabs');
     tabs.innerHTML = '';
-    Object.keys(RIBBON).forEach(function (name) {
+    Object.keys(set).forEach(function (name) {
       tabs.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { setRibbonTab(name); } }));
     });
-    ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions'].forEach(function (name) {
+    (isAsm() ? ['Layout', 'Sketch', 'Markup', 'SOLIDWORKS Add-Ins'] : ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions']).forEach(function (name) {
       var t = el('button', { class: 'rtab', text: name, title: 'Not available in this build', style: 'opacity:.5' });
       tabs.appendChild(t);
     });
@@ -198,6 +236,7 @@
     return row;
   }
   function refreshTree() {
+    if (isAsm()) { refreshAssemblyTree(); return; }
     var tree = $('tree');
     tree.innerHTML = '';
     var m = App.model, filter = ($('tree-filter-input').value || '').toLowerCase();
@@ -247,6 +286,83 @@
       if (selRow && selRow.scrollIntoViewIfNeeded) selRow.scrollIntoViewIfNeeded();
     }
     refreshConfigPanel();   // every rebuild, undo and load refreshes the tree; keep the ConfigurationManager in step
+  }
+  // ---- assembly FeatureManager: "Assem1", origin planes, one row per component ("(f) Plate<1>" fixed, "(-) Pin<1>"
+  // still free to move, red on a build error) and the Mates folder ("Coincident1 (Plate<1>, Pin<1>)", red with the
+  // message in the tooltip when the mate fails, grey when suppressed).
+  // DOM: .ti.asm-root, .ti.component-row[data-comp=id], .ti.mates-folder, .ti.mate-row[data-mate=id].
+  function refreshAssemblyTree() {
+    var tree = $('tree');
+    tree.innerHTML = '';
+    var m = App.model, filter = ($('tree-filter-input').value || '').toLowerCase();
+    var errors = (App.build && App.build.errors) || {};
+    var root = treeItem({ icon: 'assembly', name: m.name, children: true, open: true, cls: 'asm-root', toggle: function () { } });
+    root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { UI.pushUndo(); m.name = n; UI.rebuild(); }); });
+    tree.appendChild(root);
+    [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
+    ['Front', 'Top', 'Right'].forEach(function (r) {
+      var row = treeItem({ icon: 'planeSmall', name: r + ' Plane', depth: 1, cls: App.sel && App.sel.kind === 'plane' && App.sel.ref === r ? 'selected' : '' });
+      row.addEventListener('click', function () { App.sel = { kind: 'plane', ref: r, plane: K.makePlane(r, 0), name: r + ' Plane' }; App.sel2 = null; UI.updatePlanes(); UI.updateHighlights(); refreshTree(); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); showMenu(e.clientX, e.clientY, [{ label: 'Normal To', action: function () { UI.viewNormalTo(K.makePlane(r, 0)); } }, { label: (App.view.showPlanes ? 'Hide' : 'Show') + ' planes', action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } }]); });
+      tree.appendChild(row);
+    });
+    tree.appendChild(treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim' }));
+    (m.components || []).forEach(function (c, i) {
+      var label = UI.compLabel ? UI.compLabel(c) : c.name;
+      if (filter && label.toLowerCase().indexOf(filter) < 0) return;
+      var st = UI.compStatus ? UI.compStatus(c.id) : null;
+      var err = (st && st.error) || errors[c.id] || null;
+      var selected = App.sel && App.sel.kind === 'body' && App.sel.index === i;
+      var hidden = isBodyHidden(i);
+      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '');
+      var row = treeItem({ icon: err ? 'error' : 'component', name: label, depth: 1, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : ''), title: tip });
+      row.setAttribute('data-comp', String(c.id));
+      row.title = tip;
+      row.addEventListener('click', function () { if (UI.selectComponent) UI.selectComponent(c.id); else selectBody(i); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); if (UI.selectComponent) UI.selectComponent(c.id); showMenu(e.clientX, e.clientY, componentMenu(c)); });
+      tree.appendChild(row);
+    });
+    var mates = m.mates || [];
+    var shown = mates.filter(function (mt) { return !filter || (UI.mateLabel ? UI.mateLabel(mt) : mt.name).toLowerCase().indexOf(filter) >= 0; });
+    var isOpen = expanded.mates == null ? true : !!expanded.mates;
+    var anyErr = mates.some(function (mt) { return UI.mateStatus && UI.mateStatus(mt).error && !mt.suppressed; });
+    var folder = treeItem({ icon: 'matesFolder', name: 'Mates', depth: 1, cls: 'mates-folder' + (anyErr ? ' err' : '') + (mates.length ? '' : ' dim'), children: mates.length > 0, open: isOpen, title: mates.length + ' mate' + (mates.length === 1 ? '' : 's'), toggle: function () { expanded.mates = !isOpen; refreshTree(); } });
+    folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Add Mate…', action: function () { UI.cmdMate(); } }]); });
+    tree.appendChild(folder);
+    if (!mates.length) return;
+    var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
+    shown.forEach(function (mt) {
+      var st = UI.mateStatus ? UI.mateStatus(mt) : { error: null };
+      var err = mt.suppressed ? null : st.error;
+      var row = treeItem({ icon: err ? 'error' : (mt.type === 'concentric' ? 'concentric' : 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (mt.suppressed ? ' suppressed' : '') });
+      row.setAttribute('data-mate', String(mt.id));
+      row.title = err ? mt.name + ': ' + err : mt.name + (mt.suppressed ? ' (suppressed)' : '') + ' — double-click to edit';
+      row.addEventListener('click', function () { setStatus(err ? mt.name + ': ' + err : (UI.mateLabel ? UI.mateLabel(mt) : mt.name) + (mt.suppressed ? ' (suppressed)' : '')); });
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.editMate(mt); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, mateMenu(mt)); });
+      box.appendChild(row);
+    });
+    tree.appendChild(box);
+  }
+  function asmRun(p) { if (p && p.catch) p.catch(function (e) { toast(e.message || String(e)); }); }
+  function componentMenu(c) {
+    var i = UI.componentIndex ? UI.componentIndex(c.id) : -1, hidden = i >= 0 && isBodyHidden(i);
+    return [
+      c.fixed ? { label: 'Float', action: function () { asmRun(UI.asm.fix(c.id, false)); } } : { label: 'Fix', action: function () { asmRun(UI.asm.fix(c.id, true)); } },
+      { label: hidden ? 'Show' : 'Hide', action: function () { UI.asm.setHidden(c.id, !hidden); } },
+      { label: 'Mass Properties', action: function () { UI.showMassProperties(); } },
+      { label: 'Add Mate…', action: function () { UI.cmdMate(); } },
+      { sep: true },
+      { label: 'Delete', action: function () { UI.confirmRemoveComponent(c); } }
+    ];
+  }
+  function mateMenu(mt) {
+    return [
+      { label: 'Edit Feature', action: function () { UI.editMate(mt); } },
+      mt.suppressed ? { label: 'Unsuppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, false)); } } : { label: 'Suppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, true)); } },
+      { sep: true },
+      { label: 'Delete', action: function () { UI.confirmRemoveMate(mt); } }
+    ];
   }
   // Solid Bodies(n) folder: one row per separate solid (App.build.bodies, described by Kernel.bodyInfo through
   // UI.bodyInfos). Expanded by default on a multi-body part; the user's toggle is remembered in expanded.bodies.
@@ -425,7 +541,9 @@
     var v = App.view;
     return [
       { label: 'File', items: [
-        { label: 'New', key: 'Ctrl+N', action: UI.fileNew },
+        { label: 'New…', key: 'Ctrl+N', action: UI.fileNew },
+        { label: 'New ▸ Part', action: function () { UI.newPart(); } },
+        { label: 'New ▸ Assembly', action: function () { UI.newAssembly(); } },
         { label: 'Open…', key: 'Ctrl+O', action: UI.fileOpen },
         { label: 'Save', key: 'Ctrl+S', action: UI.fileSave },
         { label: 'Save As…', action: UI.fileSaveAs },
@@ -477,7 +595,10 @@
         { label: 'Theme ▸ Light', checked: UI.theme() === 'light', action: function () { UI.setTheme('light'); toast('Light theme'); } },
         { label: 'Theme ▸ Dark', checked: UI.theme() === 'dark', action: function () { UI.setTheme('dark'); toast('Dark theme'); } }
       ] },
-      { label: 'Insert', items: [
+      { label: 'Insert', items: isAsm() ? [
+        { label: 'Component ▸ Existing Part…', action: function () { UI.cmdInsertComponent(); } },
+        { label: 'Mate…', action: function () { UI.cmdMate(); } }
+      ] : [
         { label: 'Boss/Base ▸ Extrude', action: function () { UI.cmdExtrude(false); } },
         { label: 'Boss/Base ▸ Revolve', action: function () { UI.cmdRevolve(false); } },
         { label: 'Boss/Base ▸ Sweep', action: function () { UI.cmdSweep(false); } },
@@ -508,7 +629,7 @@
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },
         { label: 'Measure', action: UI.cmdMeasure },
         { label: 'Mass Properties', action: UI.showMassProperties },
-        { label: 'Equations…', action: function () { showEquations(); } },
+        { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },

@@ -1155,6 +1155,7 @@ var UI = (function () {
     App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(ids.filter(function (n) { return typeof n === 'number'; }))) + 1);
     App.undo.length = 0; App.redo.length = 0;
     App.sel = null; App.sel2 = null;
+    App.hiddenBodies = {}; // hidden bodies/components are viewport state of the previous document
     App.activeSketch = null; App.mode = 'part';
     var p = rebuild();
     $('doc-title').textContent = model.name;
