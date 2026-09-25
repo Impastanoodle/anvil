@@ -368,5 +368,65 @@ var AnvilExamples = [
       'a.coincident({ component: cap, face: [0, 2.5, 10] }, { component: plate, face: [0, 4, 30] }, { alignment: "aligned" });',
       'a.coincident({ component: cap, face: [15, 2.5, 20] }, { component: plate, face: [50, 4, 60] }, { alignment: "aligned" });'
     ].join('\n')
+  },
+  {
+    name: 'Distance and angle mates',
+    kind: 'assembly',
+    description: 'Assembly: a block held 15 above a base plate by Distance mates and an offset Coincident, and a bar pivoted on the base corner at 30° by an Angle mate. Every component is fully defined.',
+    // base 100 × 10 × 60 + block 20³ + bar 40 × 4 × 10; nothing overlaps
+    volume: 100 * 60 * 10 + 20 * 20 * 20 + 40 * 4 * 10,
+    checks: [
+      { component: 'Base<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      // Distance 15 above the top (y = 10 + 15), left faces 30 apart (offset Coincident), back faces 10 apart with the
+      // dimension flipped (the block's back face 10 beyond the base's: z = 60 + 10 − 20)
+      { component: 'Block<1>', position: [30, 25, 50], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      // on the top face, pivoting about the base's Y axis (the x = z = 0 corner), turned −30° about +Y by the Angle mate
+      { component: 'Bar<1>', position: [0, 10, 0], rotation: [Math.cos(Math.PI / 6), 0, -0.5, 0, 1, 0, 0.5, 0, Math.cos(Math.PI / 6)] }
+    ],
+    code: [
+      'a.name("Distance and Angle").units("mm");',
+      '// the base is x in [0,100], y in [0,10], z in [0,60]',
+      'var base = a.insert({ script: \'p.name("Base"); p.box(100, 60, 10);\' }, { fixed: true });',
+      '// block: 20 cube, dropped in tilted; the three mates fix it completely',
+      'var block = a.insert({ script: \'p.name("Block"); p.box(20, 20, 20);\' }, { position: [5, 40, 5], rotation: [0.965926, -0.258819, 0, 0.258819, 0.965926, 0, 0, 0, 1] });',
+      'a.distance({ component: block, face: [10, 0, 10] }, { component: base, face: [50, 10, 30] }, 15);   // bottom 15 above the top',
+      'a.coincident({ component: block, face: [0, 10, 10] }, { component: base, face: [0, 5, 30] }, { alignment: "aligned", offset: 30 });',
+      'a.distance({ component: block, face: [10, 10, 20] }, { component: base, face: [50, 5, 60] }, 10, { alignment: "aligned", flip: true });',
+      '// bar: 40 × 4 × 10 lying on the top, hinged on the base corner, 30° between its side face and the base front face',
+      'var bar = a.insert({ script: \'p.name("Bar"); p.box(40, 10, 4);\' }, { position: [60, 30, 20] });',
+      'a.coincident({ component: bar, face: [20, 0, 5] }, { component: base, face: [50, 10, 30] });',
+      'a.concentric({ component: bar, axis: "y" }, { component: base, axis: "y" });',
+      'a.angle({ component: bar, face: [20, 2, 0] }, { component: base, face: [50, 5, 0] }, 30);'
+    ].join('\n')
+  },
+  {
+    name: 'Interference check',
+    kind: 'assembly',
+    description: 'Assembly for Interference Detection: a block sunk 5 into a base plate (offset Coincident, flipped), a pin standing on the top (touching only) and a pin sunk 8 into the plate.',
+    // base 60 × 10 × 40 + block 20³ + two Ø8 × 20 pins (16-gons); the bodies are kept apart, so the overlaps count twice
+    volume: 60 * 40 * 10 + 20 * 20 * 20 + 2 * 128 * Math.sin(Math.PI / 8) * 20,
+    checks: [
+      { component: 'Block<1>', position: [10, 5, 10], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      { component: 'Pin<1>', position: [50, 10, 30] },
+      { component: 'Pin<2>', position: [50, 2, 10] }
+    ],
+    // Interference Detection: Base ∩ Block is 20 × 5 × 20, Base ∩ Pin<2> is the pin's 8 lowest mm; Pin<1> only touches
+    interference: [
+      { a: 'Base<1>', b: 'Block<1>', volume: 20 * 5 * 20 },
+      { a: 'Base<1>', b: 'Pin<2>', volume: 128 * Math.sin(Math.PI / 8) * 8 }
+    ],
+    code: [
+      'a.name("Interference").units("mm");',
+      '// the base is x in [0,60], y in [0,10], z in [0,40]',
+      'var base = a.insert({ script: \'p.name("Base"); p.box(60, 40, 10);\' }, { fixed: true });',
+      '// block: bottom 5 below the base top (Coincident with a flipped 5 offset), 10 in from the left and front faces',
+      'var block = a.insert({ script: \'p.name("Block"); p.box(20, 20, 20);\' }, { position: [40, 30, 0] });',
+      'a.coincident({ component: block, face: [10, 0, 10] }, { component: base, face: [30, 10, 20] }, { offset: 5, flip: true });',
+      'a.coincident({ component: block, face: [0, 10, 10] }, { component: base, face: [0, 5, 20] }, { alignment: "aligned", offset: 10 });',
+      'a.coincident({ component: block, face: [10, 10, 0] }, { component: base, face: [30, 5, 0] }, { alignment: "aligned", offset: 10 });',
+      '// pins: Ø8 × 20 along +y, fixed where they are; the first stands on the top, the second goes 8 into the plate',
+      'a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [50, 10, 30], fixed: true });',
+      'a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [50, 2, 10], fixed: true });'
+    ].join('\n')
   }
 ];

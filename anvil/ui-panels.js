@@ -109,7 +109,10 @@
       { sep: true },
       { id: 'hideshow', label: 'Hide/Show\nComponents', run: function () { UI.cmdHideShowComponents(); } },
       { sep: true },
-      { id: 'lpattern', label: 'Linear Component\nPattern' }, { id: 'generic', label: 'Move\nComponent' }, { id: 'generic', label: 'Exploded\nView' },
+      { id: 'lpattern', label: 'Linear Component\nPattern' },
+      { id: 'moveComponent', label: 'Move\nComponent', run: function () { UI.cmdMoveComponent(); } },
+      { id: 'rotateComponent', label: 'Rotate\nComponent', run: function () { UI.cmdRotateComponent(); } },
+      { id: 'generic', label: 'Exploded\nView' },
       { stack: [{ id: 'generic', label: 'Smart Fasteners' }, { id: 'generic', label: 'Bill of Materials' }, { id: 'generic', label: 'Instant3D' }] }
     ],
     Evaluate: [
@@ -117,7 +120,7 @@
       { id: 'mass', label: 'Mass\nProperties', run: function () { UI.showMassProperties(); } },
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
-      { id: 'generic', label: 'Interference\nDetection' }, { id: 'generic', label: 'Clearance\nVerification' }, { id: 'generic', label: 'Hole Alignment' }
+      { id: 'interference', label: 'Interference\nDetection', run: function () { UI.cmdInterference(); } }, { id: 'generic', label: 'Clearance\nVerification' }, { id: 'generic', label: 'Hole Alignment' }
     ]
   };
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
@@ -140,7 +143,9 @@
     'Base Flange/Tab': 'Turn a sketch into the first sheet-metal body and set the sheet parameters', 'Edge Flange': 'Bend a wall from a straight edge of the sheet',
     'Miter Flange': 'Bend walls from adjacent edges and join them at the corner', 'Hem': 'Fold the sheet back over itself along an edge', 'Jog': 'Step the sheet up or down with two bends',
     'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet',
-    'Insert Components': 'Add a part to the assembly', 'Mate': 'Position components relative to each other (Coincident, Concentric)',
+    'Insert Components': 'Add a part to the assembly', 'Mate': 'Position components relative to each other (Coincident, Concentric, Distance, Angle)',
+    'Move Component': 'Drag a floating component; its mates are solved again when you drop it', 'Rotate Component': 'Turn a floating component about its centre by dragging',
+    'Interference Detection': 'Find components whose solids overlap and the overlapping volume',
     'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones'
   };
   function ribbonTitle(id, label, enabled) {
@@ -334,7 +339,7 @@
     shown.forEach(function (mt) {
       var st = UI.mateStatus ? UI.mateStatus(mt) : { error: null };
       var err = mt.suppressed ? null : st.error;
-      var row = treeItem({ icon: err ? 'error' : (mt.type === 'concentric' ? 'concentric' : 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (mt.suppressed ? ' suppressed' : '') });
+      var row = treeItem({ icon: err ? 'error' : ({ concentric: 'concentric', distance: 'distance', angle: 'angle' }[mt.type] || 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (mt.suppressed ? ' suppressed' : '') });
       row.setAttribute('data-mate', String(mt.id));
       row.title = err ? mt.name + ': ' + err : mt.name + (mt.suppressed ? ' (suppressed)' : '') + ' — double-click to edit';
       row.addEventListener('click', function () { setStatus(err ? mt.name + ': ' + err : (UI.mateLabel ? UI.mateLabel(mt) : mt.name) + (mt.suppressed ? ' (suppressed)' : '')); });

@@ -642,7 +642,8 @@
     isAssembly: function () { return isAsm(); },
     // insert(source, { position, rotation, fixed, name }): source = Design Library part name | { example } | { script } | { model }
     insert: function (source, opts) { return needAsm().then(function () { return UI.asm.insert(source, opts); }).then(function () { return window.anvil.summary(); }); },
-    // mate('coincident' | 'concentric', refA, refB, { alignment, name, suppressed }); refs as in assembly.js
+    // mate('coincident' | 'concentric' | 'distance' | 'angle', refA, refB, { alignment, name, suppressed, distance, angle, offset, flip });
+    // refs as in assembly.js
     mate: function (type, a, b, opts) { return needAsm().then(function () { return UI.asm.mate(type, a, b, opts); }).then(function () { return window.anvil.summary(); }); },
     components: function () {
       if (!isAsm()) return [];
@@ -656,7 +657,22 @@
     },
     mates: function () {
       if (!isAsm()) return [];
-      return (App.model.mates || []).map(function (m) { var st = UI.mateStatus(m); return { id: m.id, name: m.name, type: m.type, ok: !m.suppressed && !st.error, error: m.suppressed ? null : st.error, suppressed: !!m.suppressed }; });
+      return (App.model.mates || []).map(function (m) {
+        var st = UI.mateStatus(m), o = { id: m.id, name: m.name, type: m.type, ok: !m.suppressed && !st.error, error: m.suppressed ? null : st.error, suppressed: !!m.suppressed };
+        ['distance', 'angle', 'offset'].forEach(function (k) { if (m[k] != null) o[k] = m[k]; });
+        if (m.flip) o.flip = true;
+        return o;
+      });
+    },
+    // Move / Rotate Component: the component's stored transform changes, then its mates are solved again
+    moveComponent: function (idOrName, delta) { return needAsm().then(function () { return UI.asm.move(idOrName, delta); }).then(function () { return window.anvil.summary(); }); },
+    // rotateComponent(idOrName, 'x' | 'y' | 'z' | [x, y, z], degrees): about the component's centre
+    rotateComponent: function (idOrName, axis, deg) { return needAsm().then(function () { return UI.asm.rotate(idOrName, axis, deg); }).then(function () { return window.anvil.summary(); }); },
+    // Interference Detection on the current build: { count, volume, pairs: [{ a, b, aId, bId, volume }] } (largest first)
+    interference: function () {
+      if (!isAsm() || !hasAssembly()) return { count: 0, volume: 0, pairs: [] };
+      var r = UI.interference();
+      return { count: r.pairs.length, volume: r.volume, pairs: r.pairs.map(function (p) { return { a: p.aName, b: p.bName, aId: p.a, bId: p.b, volume: p.volume }; }) };
     },
     fix: function (idOrName, fixed) { return needAsm().then(function () { return UI.asm.fix(idOrName, fixed !== false); }).then(function () { return window.anvil.summary(); }); },
     removeComponent: function (id) { return needAsm().then(function () { return UI.asm.removeComponent(id); }).then(function () { return window.anvil.summary(); }); },
