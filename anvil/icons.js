@@ -134,7 +134,27 @@ var Icons = (function () {
     folder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1),
     // Equations (global variables): a sigma on a sheet
     equations: rect(2, 2, 12, 12, W, S, 1, 'rx="1"') + ln('M11 4.5 H5 L8 8 L5 11.5 H11', R, 1.5),
-    annotations: p('M3 13 V3.5 h6 l3 3 V13 z', W, S, 1) + ln('M5 7.5 h5 M5 9.5 h4', B, 1)
+    annotations: p('M3 13 V3.5 h6 l3 3 V13 z', W, S, 1) + ln('M5 7.5 h5 M5 9.5 h4', B, 1),
+
+    // ---- assemblies: component blocks in two tones, mates in purple, fix = pin
+    // Assembly document: a tall block and a short one stacked against it
+    assembly: blk(1.5, 5, 6, 7, 3, F2, F1, F3, S, 1) + blk(7, 2, 5, 5, 3, '#f0c987', '#f8e2b8', '#d9a95a', S, 1),
+    // Insert Components: a component block with a green plus
+    insertComponent: blk(1.5, 5, 7, 6, 3, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + circ(12, 11.5, 3, G, GD, 1) + ln('M12 9.8 v3.4 M10.3 11.5 h3.4', W, 1.3),
+    // Mate: a paper clip holding two blocks together
+    mate: blk(1, 7, 6, 5, 2.5, F2, F1, F3, S, 1) + blk(8.5, 3, 5, 5, 2.5, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + p('M6.5 5.5 v-3 a1.5 1.5 0 0 1 3 0 v7 a2.5 2.5 0 0 1 -5 0 v-4', 'none', '#8a5cc2', 1.3),
+    // Coincident: two faces pressed flat together
+    coincident: p('M1.5 9 l3 -3 h10 l-3 3 z', '#c9b6e6', '#8a5cc2', 1) + p('M1.5 10.5 l3 -3 h10 l-3 3 z', 'none', S, 0.9) + ln('M8 1.5 v3.5 M6.5 3.5 l1.5 1.5 1.5 -1.5 M8 14.5 v-2.5', '#8a5cc2', 1.2),
+    // Concentric: two circles on one centre with the shared axis
+    concentric: circ(8, 8, 5.5, 'none', S, 1.2) + circ(8, 8, 3, '#c9b6e6', '#8a5cc2', 1.2) + ln('M8 0.8 v14.4 M0.8 8 h14.4', '#8a5cc2', 0.8, DASH),
+    // a component row in the FeatureManager: a two-tone part block
+    component: blk(2, 3, 7, 8, 4, '#f0c987', '#f8e2b8', '#d9a95a', S, 1),
+    // the Mates folder: a folder with the paper clip
+    matesFolder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1) + p('M8 11.5 v-5 a1.2 1.2 0 0 1 2.4 0 v4 a2 2 0 0 1 -4 0 v-2.5', 'none', '#8a5cc2', 1.1),
+    // Fix: a push pin
+    fix: p('M6 2 h5 l-1 1.5 v3.5 l2 2 h-7 l2 -2 V3.5 z', R, RD, 1) + ln('M8.5 9 v5.5', S, 1.3),
+    // Float: a block with four arrows around it
+    float: rect(5.5, 5.5, 5, 5, F2, S, 1) + ln('M8 1.5 v2.5 M6.8 2.7 l1.2 -1.2 1.2 1.2 M8 14.5 V12 M6.8 13.3 l1.2 1.2 1.2 -1.2 M1.5 8 H4 M2.7 6.8 l-1.2 1.2 1.2 1.2 M14.5 8 H12 M13.3 6.8 l1.2 1.2 -1.2 1.2', B, 1)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

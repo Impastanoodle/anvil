@@ -6,6 +6,7 @@
 
   // ------------------------------------------------------------------ sketch mode
   function enterSketch(id) {
+    if (UI.isAssembly && UI.isAssembly()) { if (UI.setStatus) UI.setStatus('Sketches are not available in an assembly document'); return; }
     var f = K.findFeature(App.model, id);
     if (!f || f.type !== 'sketch') return;
     if (App.mode === 'sketch' && App.activeSketch !== id) exitSketch(true);
@@ -557,7 +558,9 @@
       var f = App.mesh.faces[hover.index];
       var txt = 'Face ' + hover.index + '  area ' + UI.fmtNum(f.area, 1) + ' ' + UI.unitLabel() + '²';
       // multi-body parts: say which body the face belongs to (Body: Boss-Extrude2)
-      if (UI.bodyCount && UI.bodyCount() > 1) txt += '  Body: ' + UI.bodyName(f.body || 0);
+      // assemblies: say which component (Component: Pin<1>)
+      if (UI.isAssembly && UI.isAssembly()) txt += '  Component: ' + UI.bodyName(f.body || 0);
+      else if (UI.bodyCount && UI.bodyCount() > 1) txt += '  Body: ' + UI.bodyName(f.body || 0);
       $('status-coords').textContent = txt;
     } else if (hover && hover.kind === 'edge') $('status-coords').textContent = 'Edge  length ' + UI.fmtNum(hover.edge.len, 2) + ' ' + UI.unitLabel() + (hover.edge.convex ? '' : '  (concave)');
     else if (hover && hover.kind === 'plane') $('status-coords').textContent = hover.name;

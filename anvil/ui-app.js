@@ -61,7 +61,7 @@
   if (window.AnvilExamples && Array.isArray(window.AnvilExamples)) {
     window.AnvilExamples.forEach(function (ex) {
       if (!ex || !ex.code || EXAMPLES.some(function (e) { return e.name === ex.name; })) return;
-      EXAMPLES.push({ name: ex.name, note: ex.description || '', code: ex.code });
+      EXAMPLES.push({ name: ex.name, note: ex.description || '', code: ex.code, kind: ex.kind === 'assembly' ? 'assembly' : 'part' });
     });
   }
 
@@ -117,11 +117,27 @@
   function tpLibrary(body) {
     body.appendChild(el('h3', { text: 'Sample parts' }));
     body.appendChild(el('p', { text: 'Loading a sample replaces the current model (it is kept in Undo).' }));
-    var list = el('div', { class: 'list' });
-    EXAMPLES.forEach(function (ex) {
-      list.appendChild(el('button', { html: '<b>' + ex.name + '</b><small>' + ex.note + '</small>', onclick: function () { runScript(ex.code, true); UI.toast('Loaded ' + ex.name); } }));
+    function addList(items) {
+      var list = el('div', { class: 'list' });
+      items.forEach(function (ex) {
+        list.appendChild(el('button', { html: '<b>' + ex.name + '</b><small>' + ex.note + '</small>', onclick: function () { openExample(ex); } }));
+      });
+      body.appendChild(list);
+    }
+    addList(EXAMPLES.filter(function (ex) { return ex.kind !== 'assembly'; }));
+    var asms = EXAMPLES.filter(function (ex) { return ex.kind === 'assembly'; });
+    if (asms.length) {
+      body.appendChild(el('h3', { text: 'Sample assemblies' }));
+      body.appendChild(el('p', { text: 'Opens as an assembly document: components from the parts above, positioned by mates.' }));
+      addList(asms);
+    }
+  }
+  // Design Library entry -> a new part or assembly document (an assembly entry's code is an assembly script)
+  function openExample(ex) {
+    return runScript(ex.code, true, ex.kind === 'assembly' ? 'assembly' : 'part').then(function (r) {
+      UI.toast(r.error ? ex.name + ': ' + r.error.split('\n')[0] : 'Loaded ' + ex.name);
+      return r;
     });
-    body.appendChild(list);
   }
   function savedFiles() { try { return JSON.parse(localStorage.getItem('anvil.files') || '{}'); } catch (e) { return {}; } }
   function tpFiles(body) {
@@ -131,8 +147,9 @@
     var list = el('div', { class: 'list' });
     names.forEach(function (n) {
       var f = files[n];
-      var b = el('button', { html: '<b>' + n + '</b><small>' + (f.features ? f.features.length : 0) + ' features · ' + new Date(f.savedAt || 0).toLocaleString() + '</small>' });
-      b.addEventListener('click', function () { UI.loadModel(f.model); UI.toast('Opened ' + n); });
+      var isA = f.model && f.model.type === 'assembly';
+      var b = el('button', { html: '<b>' + n + '</b><small>' + (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString() + '</small>' });
+      b.addEventListener('click', function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); UI.toast('Opened ' + n); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, [{ label: 'Delete ' + n, action: function () { delete files[n]; localStorage.setItem('anvil.files', JSON.stringify(files)); openTaskPane('files'); } }]); });
       list.appendChild(b);
     });
@@ -173,8 +190,9 @@
     body.appendChild(el('h3', { text: 'Document properties' }));
     var kv = el('div', { class: 'kv' });
     function field(label, input) { kv.appendChild(el('span', { text: label })); kv.appendChild(input); }
-    var name = el('input', { type: 'text', value: m.name }); name.addEventListener('change', function () { m.name = name.value || 'Part1'; UI.rebuild(); });
-    field('Part name', name);
+    var asm = isAsm();
+    var name = el('input', { type: 'text', value: m.name }); name.addEventListener('change', function () { m.name = name.value || (asm ? 'Assem1' : 'Part1'); UI.rebuild(); });
+    field(asm ? 'Assembly name' : 'Part name', name);
     var units = el('select'); [['mm', 'Millimeters (MMGS)'], ['in', 'Inches (IPS)']].forEach(function (u) { var o = el('option', { value: u[0], text: u[1] }); if (m.units === u[0]) o.selected = true; units.appendChild(o); });
     units.addEventListener('change', function () { m.units = units.value; UI.rebuild(); });
     field('Units', units);
@@ -206,7 +224,7 @@
   var lastScript = null;
   function tpMacro(body) {
     var ta = el('textarea', { spellcheck: 'false' });
-    ta.value = lastScript != null ? lastScript : K.generateScript(App.model);
+    ta.value = lastScript != null ? lastScript : modelScript();
     ta.addEventListener('input', function () { lastScript = ta.value; });
     ta.addEventListener('keydown', function (e) { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(true); } e.stopPropagation(); });
     var out = el('div', { class: 'err-text' });
@@ -214,20 +232,20 @@
       out.textContent = '';
       runScript(ta.value, replace).then(function (res) {
         if (res.error) { out.textContent = res.error; UI.toast('Script error'); }
-        else UI.toast((replace ? 'Model rebuilt from script' : 'Script appended') + ' · ' + App.model.features.length + ' features');
+        else UI.toast((replace ? 'Model rebuilt from script' : 'Script appended') + ' · ' + docCount());
       });
     }
     var row = el('div', { class: 'row' });
     row.appendChild(el('button', { class: 'btn primary', text: 'Run (replace model)', title: 'Ctrl+Enter', onclick: function () { run(true); } }));
     row.appendChild(el('button', { class: 'btn', text: 'Append to model', onclick: function () { run(false); } }));
-    row.appendChild(el('button', { class: 'btn', text: 'Script from model', onclick: function () { ta.value = K.generateScript(App.model); lastScript = ta.value; } }));
+    row.appendChild(el('button', { class: 'btn', text: 'Script from model', onclick: function () { ta.value = modelScript(); lastScript = ta.value; } }));
     row.appendChild(el('button', { class: 'btn', text: 'Copy', onclick: function () { copyText(ta.value); } }));
     var ex = el('select');
     ex.appendChild(el('option', { value: '', text: 'Insert example…' }));
     EXAMPLES.forEach(function (e, i) { ex.appendChild(el('option', { value: String(i), text: e.name })); });
     ex.addEventListener('change', function () { if (ex.value !== '') { ta.value = EXAMPLES[+ex.value].code; lastScript = ta.value; ex.value = ''; } });
     row.appendChild(ex);
-    body.appendChild(el('p', { html: 'Scripts run against <code>p</code>, a part builder. The model and this script are interchangeable: <b>Script from model</b> regenerates code from the feature tree.' }));
+    body.appendChild(el('p', { html: 'Scripts run against <code>p</code>, a part builder, or <code>a</code>, an assembly builder (a script calling <code>a.insert</code> / <code>a.mate</code> opens as an assembly). The model and this script are interchangeable: <b>Script from model</b> regenerates code from the feature tree.' }));
     body.appendChild(ta);
     body.appendChild(row);
     body.appendChild(out);
@@ -250,31 +268,101 @@
 'p.mirror("Front"|"Top"|"Right", {feature | body:true, offset})\n' +
 'p.hole(planeRef, x, y, dia, {depth, forward})   p.box(w,d,h,{at,centered,cut})\n' +
 'p.cylinder(r,h,{axis,at,cut})   p.last() -> id of the last feature\n\n' +
+'Assemblies (a = assembly builder):\n' +
+'a.name(str) .units("mm")   a.insert({example|script|model}, {position, rotation, fixed, name}) -> id\n' +
+'a.coincident(refA, refB, {alignment:"aligned"|"anti-aligned"})   a.concentric(refA, refB)\n' +
+'a.mate(type, refA, refB, opts)   a.fix(c)   a.float(c)\n' +
+'refs: {component, face:[x,y,z]} {component, cylinder:[x,y,z]} {component, plane:"Top"} {component, axis:"y"} {plane:"Top"}\n\n' +
 'Sketch frames: Front (x=X, y=Y, n=Z)  Top (x=X, y=-Z, n=Y)  Right (x=-Z, y=Y, n=X)\n' +
 'Extrudes go along the plane normal; reverse:true goes the other way.\n\n' +
 'Browser console: anvil.run(code) anvil.append(code) anvil.script() anvil.model()\n' +
-'anvil.load(json) anvil.stl() anvil.dxfFace(i) anvil.mass() anvil.faces() anvil.bodies() anvil.selectBody(i) anvil.png()' }));
+'anvil.load(json) anvil.stl() anvil.dxfFace(i) anvil.mass() anvil.faces() anvil.bodies() anvil.selectBody(i) anvil.png()\n' +
+'anvil.newAssembly(name) anvil.newPart(name) anvil.insert(src, opts) anvil.mate(type, a, b, opts) anvil.components() anvil.mates()\n' +
+'anvil.fix(c, fixed) anvil.removeComponent(id) anvil.removeMate(id)' }));
     body.appendChild(ref);
   }
 
-  // Resolves to { ok: true } or { error: text } once the model is rebuilt (never rejects).
-  function runScript(code, replace) {
+  // ------------------------------------------------------------------ documents: part / assembly
+  function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  function hasAssembly() { return typeof Assembly !== 'undefined'; }
+  function modelScript() { return isAsm() && hasAssembly() ? Assembly.generateScript(App.model) : K.generateScript(App.model); }
+  function docCount() { return isAsm() ? (App.model.components || []).length + ' components, ' + (App.model.mates || []).length + ' mates' : App.model.features.length + ' features'; }
+  // The last part document stays available to Insert Components ("Part1 (last part)") after switching to an assembly.
+  function rememberPart() {
+    var m = App.model;
+    if (!m || m.type === 'assembly' || !Array.isArray(m.features) || !m.features.length) return;
+    App.lastPart = JSON.parse(JSON.stringify(m));
+    try { localStorage.setItem('anvil.lastPart', JSON.stringify(App.lastPart)); } catch (e) { }
+  }
+  function newAssembly(name) {
+    if (!hasAssembly()) { UI.toast('Assemblies need assembly.js, which did not load.'); return Promise.reject(new Error('assembly.js is not loaded')); }
+    rememberPart();
+    App.hiddenBodies = {};
+    return UI.loadModel(Assembly.newAssembly(name || 'Assem1')).then(function () {
+      UI.setRibbonTab('Assembly');
+      UI.setStatus('New assembly. Assembly tab → Insert Components to add parts, then Mate to position them.');
+      return window.anvil.summary();
+    });
+  }
+  function newPart(name) {
+    rememberPart();
+    App.hiddenBodies = {};
+    return UI.loadModel(K.newModel(name || 'Part1')).then(function () { return window.anvil.summary(); });
+  }
+  // An assembly script calls a.insert / a.mate …; a script run while an assembly is open is one too unless it drives `p.`
+  function isAssemblyCode(code) {
+    if (!hasAssembly()) return false;
+    if (Assembly.isAssemblyScript(code)) return true;
+    return isAsm() && !/(^|[^\w.$])p\s*\.\s*\w+\s*\(/.test(code);
+  }
+  // Resolves to { ok: true } or { error: text } once the model is rebuilt (never rejects). kind: 'part' | 'assembly'
+  // forces the document type (Design Library entries); otherwise assembly scripts are detected (isAssemblyCode).
+  function runScript(code, replace, kind) {
+    var asm = kind ? kind === 'assembly' : isAssemblyCode(code);
+    if (asm) return runAssemblyScript(code, replace);
     var model, p;
     try {
+      if (replace) rememberPart();
+      if (!replace && isAsm()) throw new Error('This is a part script: open a part (File ▸ New ▸ Part) to append to it.');
       model = replace ? K.newModel('Part1') : App.model;
       if (!replace) UI.pushUndo();
-      if (replace) { model.color = App.model.color; model.density = App.model.density; }
+      if (replace && !isAsm()) { model.color = App.model.color; model.density = App.model.density; }
       K.runScript(model, code);
-      if (replace) { UI.pushUndo(); var undo = App.undo; p = UI.loadModel(model); App.undo = undo; }
+      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }
       else p = UI.rebuild();
     } catch (e) {
       return Promise.resolve({ error: (e && e.message) || String(e) });
     }
+    return finishScript(p);
+  }
+  // Assembly scripts (a.insert / a.mate): replace = a new assembly document, else appended to the open assembly.
+  function runAssemblyScript(code, replace) {
+    var model, p;
+    try {
+      if (!hasAssembly()) throw new Error('Assemblies need assembly.js, which did not load.');
+      if (!replace && !isAsm()) throw new Error('This is an assembly script: open an assembly (File ▸ New ▸ Assembly) to append to it.');
+      if (replace) rememberPart();
+      model = replace ? Assembly.newAssembly('Assem1') : App.model;
+      if (!replace) UI.pushUndo();
+      Assembly.runScript(model, code);
+      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }
+      else p = UI.rebuild();
+    } catch (e) {
+      return Promise.resolve({ error: (e && e.message) || String(e) });
+    }
+    return finishScript(p);
+  }
+  function errorOwnerName(id) {
+    var f = K.findFeature(App.model, +id);
+    if (!f && isAsm() && hasAssembly()) f = Assembly.findComponent(App.model, +id) || Assembly.findMate(App.model, +id);
+    return f ? f.name : id;
+  }
+  function finishScript(p) {
     return p.then(function () {
       UI.refreshStatus();
-      UI.setStatus('Script ran: ' + App.model.features.length + ' features, rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
+      UI.setStatus('Script ran: ' + docCount() + ', rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
       var errs = Object.keys(App.build.errors);
-      if (errs.length) return { error: errs.map(function (id) { var f = K.findFeature(App.model, +id); return (f ? f.name : id) + ': ' + App.build.errors[id]; }).join('\n') };
+      if (errs.length) return { error: errs.map(function (id) { return errorOwnerName(id) + ': ' + App.build.errors[id]; }).join('\n') };
       return { ok: true };
     }, function (e) {
       return { error: (e && e.message) || String(e) };
@@ -305,7 +393,7 @@
     ] });
     setTimeout(function () { ta.setSelectionRange(0, 0); ta.scrollTop = 0; }, 0);
   }
-  function safeName() { return (App.model.name || 'part').replace(/[^\w\-]+/g, '_'); }
+  function safeName() { return (App.model.name || (isAsm() ? 'assembly' : 'part')).replace(/[^\w\-]+/g, '_'); }
   function exportSTL() {
     if (!App.mesh || !App.mesh.triCount) { UI.toast('Nothing to export yet.'); return; }
     exportDialog('Export STL', safeName() + '.stl', K.exportSTL(App.mesh, App.model.name), 'model/stl');
@@ -324,17 +412,20 @@
     if (!sketch) { UI.toast('Select a sketch in the tree (or open one) first.'); return; }
     exportDialog('Export sketch as DXF', safeName() + '_' + sketch.name + '.dxf', K.exportDXFSketch(sketch, App.model.units), 'application/dxf');
   }
-  function exportScript() { exportDialog('Model as script', safeName() + '.anvil.js', K.generateScript(App.model), 'text/javascript'); }
+  function exportScript() { exportDialog(isAsm() ? 'Assembly as script' : 'Model as script', safeName() + '.anvil.js', modelScript(), 'text/javascript'); }
   function screenshot() {
     UI.render();
     var url = UI.renderer.domElement.toDataURL('image/png');
     var img = el('img', { src: url, style: 'max-width:100%;border:1px solid #ccc' });
     UI.showModal({ title: 'Screenshot', body: el('div', {}, [img]), buttons: [{ label: 'Download PNG', primary: true, action: function () { var a = el('a', { href: url, download: safeName() + '.png' }); document.body.appendChild(a); a.click(); a.remove(); } }, { label: 'Close', action: UI.closeModal }] });
   }
+  // New SOLIDWORKS-style document: Part or Assembly (the current one stays in File Explorer only if it was saved).
   function fileNew() {
-    UI.confirmDialog('New part', 'Start a new part? The current one stays in File Explorer only if you saved it.', function () {
-      UI.loadModel(K.newModel('Part1'));
-    }, 'New part');
+    UI.showModal({ title: 'New Document', body: '<p>Start a new document? The current one stays in File Explorer only if you saved it.</p><p><b>Part</b>: a single design component. <b>Assembly</b>: parts positioned by mates.</p>', buttons: [
+      { label: 'New part', primary: true, action: function () { UI.closeModal(); newPart('Part1'); } },
+      { label: 'New assembly', action: function () { UI.closeModal(); newAssembly('Assem1'); } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
   }
   function fileOpen() {
     var ta = el('textarea', { placeholder: 'Paste a model JSON (File → Save As) or an Anvil script here…' });
@@ -342,7 +433,7 @@
       { label: 'Open', primary: true, action: function () {
         var txt = ta.value.trim();
         if (!txt) return;
-        if (txt.charAt(0) === '{') { try { UI.loadModel(JSON.parse(txt)); UI.closeModal(); } catch (e) { UI.toast('Invalid JSON: ' + e.message); } }
+        if (txt.charAt(0) === '{') { try { var jm = JSON.parse(txt); rememberPart(); App.hiddenBodies = {}; UI.loadModel(jm); UI.closeModal(); } catch (e) { UI.toast('Invalid JSON: ' + e.message); } }
         else runScript(txt, true).then(function (r) { if (r.error) UI.toast(r.error); else UI.closeModal(); });
       } },
       { label: 'Cancel', action: UI.closeModal }
@@ -353,7 +444,7 @@
       name = (name || '').trim();
       if (!name) return;
       var files = savedFiles();
-      files[name] = { model: App.model, features: App.model.features.length, savedAt: Date.now() };
+      files[name] = { model: App.model, features: App.model.features.length, components: isAsm() ? (App.model.components || []).length : undefined, savedAt: Date.now() };
       try { localStorage.setItem('anvil.files', JSON.stringify(files)); UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); }
       if (tpCurrent === 'files') openTaskPane('files');
     });
@@ -361,7 +452,33 @@
   function fileSaveAs() { exportDialog('Model JSON', safeName() + '.anvil.json', JSON.stringify(App.model, null, 1), 'application/json'); }
 
   // ------------------------------------------------------------------ mass properties
+  // Assembly: totals from Assembly.massProps (each component with its part's own density), then one line per component.
+  function showAssemblyMassProperties() {
+    var u = UI.unitLabel(), mp;
+    try { mp = Assembly.massProps(App.model, App.build); } catch (e) { UI.toast('Mass properties failed: ' + e.message); return; }
+    var toKg = u === 'in' ? Math.pow(0.0254, 3) : 1e-9;
+    var rows = [
+      ['Components', String((App.model.components || []).length)],
+      ['Mass', UI.fmtNum(mp.mass * toKg * 1000, 2) + ' g  (' + UI.fmtNum(mp.mass * toKg, 4) + ' kg)'],
+      ['Volume', UI.fmtNum(mp.volume, 2) + ' ' + u + '³'],
+      ['Surface area', UI.fmtNum(mp.area, 2) + ' ' + u + '²'],
+      ['Center of mass', (mp.centroid || [0, 0, 0]).map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ' ' + u]
+    ];
+    if (mp.bbox) {
+      rows.push(['Bounding box', mp.bbox.min.map(function (x) { return UI.fmtNum(x, 2); }).join(', ') + '  →  ' + mp.bbox.max.map(function (x) { return UI.fmtNum(x, 2); }).join(', ')]);
+      rows.push(['Extents', [0, 1, 2].map(function (k) { return UI.fmtNum(mp.bbox.max[k] - mp.bbox.min[k], 2); }).join(' × ') + ' ' + u]);
+    }
+    (mp.components || []).forEach(function (c) {
+      rows.push([c.name, 'volume ' + UI.fmtNum(c.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(c.mass * toKg * 1000, 2) + ' g (' + c.density + ' kg/m³)']);
+    });
+    var body = el('table', { id: 'mass-table' }, rows.map(function (r, i) { return el('tr', { class: i >= rows.length - (mp.components || []).length ? 'mass-comp' : '' }, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
+    UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
+  }
   function showMassProperties() {
+    if (isAsm() && hasAssembly()) {
+      if (!(App.model.components || []).length) { UI.toast('Insert a component first.'); return; }
+      showAssemblyMassProperties(); return;
+    }
     if (!App.mesh || !App.mesh.triCount) { UI.toast('No solid body yet.'); return; }
     var u = UI.unitLabel(), mp = K.massProps(App.mesh, App.model.density);
     var volM3 = u === 'in' ? mp.volume * Math.pow(0.0254, 3) : mp.volume * 1e-9;
@@ -477,18 +594,18 @@
     run: function (code) { return runScript(code, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
     append: function (code) { return runScript(code, false).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); }); },
     model: function () { return JSON.parse(JSON.stringify(App.model)); },
-    load: function (json) { return UI.loadModel(typeof json === 'string' ? JSON.parse(json) : json).then(function () { return window.anvil.summary(); }); },
+    load: function (json) { rememberPart(); App.hiddenBodies = {}; return UI.loadModel(typeof json === 'string' ? JSON.parse(json) : json).then(function () { return window.anvil.summary(); }); },
     busy: function () { return !!App.rebuilding; },
     idle: function () { return UI.whenIdle(); },
     workerOn: function (on) { if (arguments.length) UI.setWorkerOn(on); return App.workerOn; },
-    script: function () { return K.generateScript(App.model); },
+    script: function () { return modelScript(); },
     stl: function () { return K.exportSTL(App.mesh, App.model.name); },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
     dxfSketch: function (id) { return K.exportDXFSketch(K.findFeature(App.model, id), App.model.units); },
     flat: function () { return K.flatPattern(App.model, App.build, App.mesh); },
     dxfFlat: function () { return K.exportDXFFlat(K.flatPattern(App.model, App.build, App.mesh), App.model.units); },
     edges: function () { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2; }).map(function (e, i) { return { mid: e.mid.map(function (x) { return +x.toFixed(3); }), len: +e.len.toFixed(3), convex: e.convex }; }); },
-    mass: function () { return K.massProps(App.mesh, App.model.density); },
+    mass: function () { return isAsm() && hasAssembly() ? Assembly.massProps(App.model, App.build) : K.massProps(App.mesh, App.model.density); },
     faces: function () { return App.mesh.faces.map(function (f, i) { return { index: i, normal: f.normal, area: +f.area.toFixed(3), centroid: f.centroid.map(function (x) { return +x.toFixed(3); }) }; }); },
     // separate solid bodies of a multi-body part: [{ index, featureId, name, volume }]
     bodies: function () { return (UI.bodyInfos ? UI.bodyInfos() : []).map(function (b) { return { index: b.index, featureId: b.featureId, name: b.name, volume: +b.volume.toFixed(3) }; }); },
@@ -514,9 +631,45 @@
       return UI.configurations.set(list, active).then(function () { return window.anvil.summary(); });
     },
     activateConfiguration: function (name) { return UI.configurations.activate(name).then(function () { return window.anvil.summary(); }); },
-    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
-    examples: EXAMPLES
+    summary: function () {
+      if (isAsm()) return asmSummary();
+      var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, type: 'part', features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
+    examples: EXAMPLES,
+    // ---- assembly documents. Each change is one undo step and resolves to the summary once rebuilt; the calls that
+    // need an assembly reject with "Not an assembly document" in a part.
+    newAssembly: function (name) { return newAssembly(name); },
+    newPart: function (name) { return newPart(name); },
+    isAssembly: function () { return isAsm(); },
+    // insert(source, { position, rotation, fixed, name }): source = Design Library part name | { example } | { script } | { model }
+    insert: function (source, opts) { return needAsm().then(function () { return UI.asm.insert(source, opts); }).then(function () { return window.anvil.summary(); }); },
+    // mate('coincident' | 'concentric', refA, refB, { alignment, name, suppressed }); refs as in assembly.js
+    mate: function (type, a, b, opts) { return needAsm().then(function () { return UI.asm.mate(type, a, b, opts); }).then(function () { return window.anvil.summary(); }); },
+    components: function () {
+      if (!isAsm()) return [];
+      var vols = {};
+      try { (Assembly.massProps(App.model, App.build).components || []).forEach(function (c) { vols[c.id] = c.volume; }); } catch (e) { }
+      return (App.model.components || []).map(function (c, i) {
+        var st = UI.compStatus(c.id) || {};
+        return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: st.dof != null ? st.dof : null, underDefined: !!st.underDefined,
+          position: c.transform.position.slice(), rotation: c.transform.rotation.slice(), volume: vols[c.id] != null ? +vols[c.id].toFixed(3) : 0, error: st.error || (App.build.errors || {})[c.id] || null };
+      });
+    },
+    mates: function () {
+      if (!isAsm()) return [];
+      return (App.model.mates || []).map(function (m) { var st = UI.mateStatus(m); return { id: m.id, name: m.name, type: m.type, ok: !m.suppressed && !st.error, error: m.suppressed ? null : st.error, suppressed: !!m.suppressed }; });
+    },
+    fix: function (idOrName, fixed) { return needAsm().then(function () { return UI.asm.fix(idOrName, fixed !== false); }).then(function () { return window.anvil.summary(); }); },
+    removeComponent: function (id) { return needAsm().then(function () { return UI.asm.removeComponent(id); }).then(function () { return window.anvil.summary(); }); },
+    removeMate: function (id) { return needAsm().then(function () { return UI.asm.removeMate(id); }).then(function () { return window.anvil.summary(); }); }
   };
+  function needAsm() { return isAsm() && hasAssembly() ? Promise.resolve() : Promise.reject(new Error('Not an assembly document')); }
+  function asmSummary() {
+    var mp = null;
+    try { mp = (App.model.components || []).length ? Assembly.massProps(App.model, App.build) : null; } catch (e) { mp = null; }
+    return { name: App.model.name, type: 'assembly', features: 0, components: (App.model.components || []).length, mates: (App.model.mates || []).length,
+      errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length,
+      bodies: UI.bodyList ? UI.bodyList().length : 0, rebuildMs: +(App.lastRebuildMs || 0).toFixed(1), equations: {}, equationErrors: {}, configuration: null, configurations: [] };
+  }
   window.anvil.configurations.activate = window.anvil.activateConfiguration;
   ['add', 'rename', 'remove'].forEach(function (op) {
     window.anvil.configurations[op] = function () { return UI.configurations[op].apply(null, arguments).then(function () { return window.anvil.summary(); }); };
@@ -535,12 +688,17 @@
     UI.refreshHud();
     var model = null;
     try { var raw = localStorage.getItem('anvil.autosave'); if (raw) model = JSON.parse(raw); } catch (e) { }
-    if (!model || !model.features || !model.features.length) {
+    try { var lp = localStorage.getItem('anvil.lastPart'); if (lp) App.lastPart = JSON.parse(lp); } catch (e) { }
+    var asmOk = model && model.type === 'assembly' && hasAssembly() && Array.isArray(model.components);
+    if (model && model.type === 'assembly' && !asmOk) model = null;
+    if (asmOk) model.features = model.features || [];
+    if (!asmOk && (!model || !model.features || !model.features.length)) {
       model = K.newModel('Mounting Bracket');
       try { K.runScript(model, EXAMPLES[0].code); } catch (e) { console.error(e); }
     }
     App.model = model;
-    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }))) + 1);
+    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }), (model.components || []).map(function (c) { return c.id; }), (model.mates || []).map(function (m) { return m.id; }))) + 1);
+    if (asmOk) App.ribbonTab = 'Assembly';
     UI.renderMenuBar();
     UI.refreshRibbon();
     UI.resize();
@@ -558,7 +716,7 @@
     $('cmd-search').addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
       var q = $('cmd-search').value.toLowerCase();
-      var cmds = { extrude: function () { UI.cmdExtrude(false); }, cut: function () { UI.cmdExtrude(true); }, revolve: function () { UI.cmdRevolve(false); }, sketch: UI.cmdSketch, hole: UI.cmdHole, pattern: function () { UI.cmdLinearPattern(); }, circular: function () { UI.cmdCircularPattern(); }, mirror: function () { UI.cmdMirror(); }, plane: function () { UI.cmdPlane(); }, measure: UI.cmdMeasure, mass: showMassProperties, section: UI.cmdSection, dxf: exportFaceDXF, stl: exportSTL, script: function () { openTaskPane('macro'); }, macro: function () { openTaskPane('macro'); } };
+      var cmds = { extrude: function () { UI.cmdExtrude(false); }, cut: function () { UI.cmdExtrude(true); }, revolve: function () { UI.cmdRevolve(false); }, sketch: UI.cmdSketch, hole: UI.cmdHole, pattern: function () { UI.cmdLinearPattern(); }, circular: function () { UI.cmdCircularPattern(); }, mirror: function () { UI.cmdMirror(); }, plane: function () { UI.cmdPlane(); }, measure: UI.cmdMeasure, mass: showMassProperties, section: UI.cmdSection, dxf: exportFaceDXF, stl: exportSTL, script: function () { openTaskPane('macro'); }, macro: function () { openTaskPane('macro'); }, mate: function () { UI.cmdMate(); }, insert: function () { UI.cmdInsertComponent(); }, component: function () { UI.cmdInsertComponent(); }, assembly: function () { newAssembly(); } };
       var hit = Object.keys(cmds).filter(function (c) { return q.indexOf(c) >= 0; })[0];
       if (hit) { cmds[hit](); $('cmd-search').value = ''; $('cmd-search').blur(); } else UI.toast('No command matches "' + q + '"');
     });
@@ -567,6 +725,7 @@
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
+  UI.newAssembly = newAssembly; UI.newPart = newPart; UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
   UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
