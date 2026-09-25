@@ -55,7 +55,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 ## Phase 5 — assemblies and drawings
 - [x] Multi-body parts: keep bodies separate (no auto-merge) with a Solid Bodies folder (2026-09-22T20b: `merge: false` on bosses, `bodies: [i…]` scope on cuts, `build.bodies` + `bodyFeatures`, `Kernel.combineBodies` tags `face.body`; FeatureManager Solid Bodies(n) folder with select/hide, Merge result checkbox, Feature Scope group, per-body Mass Properties, `anvil.bodies()`)
 - [ ] Simple assembly document: insert parts, mate by coincident planes / concentric axes
-- [ ] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF
+- [x] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF (cloud-2026-09-25d: `drawing.js`: File ▸ Make Drawing from Part, Drawing ribbon tab (Standard 3 View, Model View, Smart Dimension, Model Items, Sheet Properties, Save as SVG / DXF / PDF), drawing FeatureManager with sheet and view rows; Front / Top / Right third- or first-angle plus Isometric, exact hidden-line removal against the mesh with silhouettes of faceted curved faces, sheet with title block and automatic scale, overall and diameter model dimensions, DXF one layer per view, PDF 1.4)
 
 ## Phase 6 — polish
 - [x] Hover tooltips on ribbon buttons: `Label (Key) — description` from `UI.shortcutFor` and a per-button help map, plus `aria-label`

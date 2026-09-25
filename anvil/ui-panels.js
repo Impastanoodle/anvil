@@ -143,10 +143,13 @@
     });
     var tabs = $('ribbon-tabs');
     tabs.innerHTML = '';
-    Object.keys(RIBBON).forEach(function (name) {
+    var tabNames = Object.keys(RIBBON), extraTabs = ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions'];
+    // another document type (drawing.js) may swap the tab set: UI.ribbonTabsFor(names, extra) -> [names, extra]
+    if (UI.ribbonTabsFor) { var tf = UI.ribbonTabsFor(tabNames, extraTabs); tabNames = tf[0]; extraTabs = tf[1]; }
+    tabNames.forEach(function (name) {
       tabs.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { setRibbonTab(name); } }));
     });
-    ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions'].forEach(function (name) {
+    extraTabs.forEach(function (name) {
       var t = el('button', { class: 'rtab', text: name, title: 'Not available in this build', style: 'opacity:.5' });
       tabs.appendChild(t);
     });
@@ -421,7 +424,9 @@
   }
   document.addEventListener('mousedown', function (e) { if (openMenu && !openMenu.contains(e.target) && !(e.target.closest && e.target.closest('#menus'))) closeMenus(); });
 
-  function MENUS() {
+  // UI.menuHook(menus) -> menus lets another document type (drawing.js) add or replace menu items
+  function MENUS() { var m = partMenus(); return UI.menuHook ? UI.menuHook(m) : m; }
+  function partMenus() {
     var v = App.view;
     return [
       { label: 'File', items: [
@@ -931,6 +936,7 @@
   $('modal').addEventListener('mousedown', function (e) { if (e.target === $('modal')) closeModal(); });
 
   UI.setStatus = setStatus; UI.toast = toast; UI.refreshStatus = refreshStatus;
+  UI.RIBBON = RIBBON;
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu;
   UI.refreshHud = refreshHud; UI.showModal = showModal; UI.closeModal = closeModal; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
