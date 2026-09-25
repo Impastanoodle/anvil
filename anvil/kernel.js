@@ -957,6 +957,214 @@ var Kernel = (function () {
     }, true);
   }
 
+  // ------------------------------------------------------------------ equations (global variables)
+  // model.equations = [{ name: 'T', expr: '10' }, ...] in order; each expression may use the ones before it. Any
+  // numeric field of a feature (depth, angle, spacing, count, r, d, thickness, offset, ... at any depth) may hold a
+  // string beginning with "=" instead of a number ('=T*2'); rebuild resolves it against the variables first.
+  // References and sketch geometry are never expressions: the keys in EXPR_SKIP are copied untouched.
+  var EXPR_SKIP = { id: 1, type: 1, name: 1, entities: 1, profile: 1, sketch: 1, path: 1, edges: 1, faces: 1, bodies: 1, feature: 1 };
+  var EXPR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var EXPR_CONST = { pi: Math.PI, e: Math.E };
+  function fixedArity(fn, n, name) {
+    return function (args) {
+      if (args.length !== n) throw new Error('"' + name + '" expects ' + n + ' argument' + (n === 1 ? '' : 's'));
+      return fn.apply(null, args);
+    };
+  }
+  function variadic(fn, name) {
+    return function (args) {
+      if (!args.length) throw new Error('"' + name + '" expects at least 1 argument');
+      return fn.apply(null, args);
+    };
+  }
+  var D2R = Math.PI / 180;
+  var EXPR_FN = {};
+  ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'sqrt', 'cbrt', 'abs', 'floor', 'ceil', 'round', 'trunc', 'sign', 'exp', 'log', 'log10', 'log2'].forEach(function (n) {
+    var fn = Math[n] || (n === 'cbrt' ? function (x) { return x < 0 ? -Math.pow(-x, 1 / 3) : Math.pow(x, 1 / 3); } :
+      n === 'sinh' ? function (x) { return (Math.exp(x) - Math.exp(-x)) / 2; } :
+      n === 'cosh' ? function (x) { return (Math.exp(x) + Math.exp(-x)) / 2; } :
+      n === 'tanh' ? function (x) { var a = Math.exp(x), b = Math.exp(-x); return (a - b) / (a + b); } :
+      n === 'trunc' ? function (x) { return x < 0 ? Math.ceil(x) : Math.floor(x); } :
+      n === 'sign' ? function (x) { return x > 0 ? 1 : x < 0 ? -1 : 0; } :
+      n === 'log10' ? function (x) { return Math.log(x) / Math.LN10; } :
+      n === 'log2' ? function (x) { return Math.log(x) / Math.LN2; } : null);
+    EXPR_FN[n] = fixedArity(fn, 1, n);
+  });
+  EXPR_FN.atan2 = fixedArity(Math.atan2, 2, 'atan2');
+  EXPR_FN.pow = fixedArity(Math.pow, 2, 'pow');
+  EXPR_FN.min = variadic(Math.min, 'min');
+  EXPR_FN.max = variadic(Math.max, 'max');
+  EXPR_FN.hypot = variadic(function () { var s = 0; for (var i = 0; i < arguments.length; i++) s += arguments[i] * arguments[i]; return Math.sqrt(s); }, 'hypot');
+  EXPR_FN.sind = fixedArity(function (x) { return Math.sin(x * D2R); }, 1, 'sind');
+  EXPR_FN.cosd = fixedArity(function (x) { return Math.cos(x * D2R); }, 1, 'cosd');
+  EXPR_FN.tand = fixedArity(function (x) { return Math.tan(x * D2R); }, 1, 'tand');
+  EXPR_FN.asind = fixedArity(function (x) { return Math.asin(x) / D2R; }, 1, 'asind');
+  EXPR_FN.acosd = fixedArity(function (x) { return Math.acos(x) / D2R; }, 1, 'acosd');
+  EXPR_FN.atand = fixedArity(function (x) { return Math.atan(x) / D2R; }, 1, 'atand');
+  EXPR_FN.deg = fixedArity(function (x) { return x / D2R; }, 1, 'deg');
+  EXPR_FN.rad = fixedArity(function (x) { return x * D2R; }, 1, 'rad');
+
+  // isExpression(v) -> true for a string that starts with "=" (after trimming)
+  function isExpression(v) { return typeof v === 'string' && /^\s*=/.test(v); }
+
+  function tokenizeExpr(src) {
+    var toks = [], i = 0, n = src.length;
+    while (i < n) {
+      var c = src.charAt(i);
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+      var m;
+      if ((m = /^(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/.exec(src.slice(i)))) {
+        toks.push({ t: 'num', v: parseFloat(m[0]), s: m[0] }); i += m[0].length; continue;
+      }
+      if ((m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i)))) {
+        toks.push({ t: 'id', v: m[0], s: m[0] }); i += m[0].length; continue;
+      }
+      if (c === '*' && src.charAt(i + 1) === '*') { toks.push({ t: 'op', v: '^', s: '**' }); i += 2; continue; }
+      if ('+-*/^(),'.indexOf(c) >= 0) { toks.push({ t: 'op', v: c, s: c }); i++; continue; }
+      throw new Error('Unexpected "' + c + '"');
+    }
+    return toks;
+  }
+
+  // evalExpression(expr, vars) -> number. Grammar: numbers, + - * / and ^ (right-associative; ** is accepted), unary
+  // - and +, parentheses, variables from `vars`, the constants pi and e (unless a variable shadows them) and the
+  // functions in EXPR_FN (angles in radians; sind/cosd/... and deg()/rad() for degrees). A leading "=" is stripped.
+  // A hand-rolled recursive-descent parser: no eval, no Function.
+  function evalExpression(expr, vars) {
+    var src = String(expr == null ? '' : expr).replace(/^\s*=/, '');
+    vars = vars || {};
+    var toks = tokenizeExpr(src), pos = 0;
+    function peek() { return toks[pos]; }
+    function isOp(v) { var t = toks[pos]; return t && t.t === 'op' && t.v === v; }
+    function next() { return toks[pos++]; }
+    function expect(v) {
+      var t = next();
+      if (!t) throw new Error('Unexpected end of expression');
+      if (t.t !== 'op' || t.v !== v) throw new Error('Unexpected "' + t.s + '"');
+    }
+    function parseSum() {
+      var v = parseTerm();
+      while (isOp('+') || isOp('-')) { var op = next().v, r = parseTerm(); v = op === '+' ? v + r : v - r; }
+      return v;
+    }
+    function parseTerm() {
+      var v = parseUnary();
+      while (isOp('*') || isOp('/')) {
+        var op = next().v, r = parseUnary();
+        if (op === '*') v = v * r;
+        else { if (r === 0) throw new Error('Division by zero'); v = v / r; }
+      }
+      return v;
+    }
+    function parseUnary() {
+      if (isOp('-')) { next(); return -parseUnary(); }
+      if (isOp('+')) { next(); return parseUnary(); }
+      return parsePower();
+    }
+    function parsePower() {
+      var base = parseAtom();
+      if (isOp('^')) { next(); var ex = parseUnary(); return Math.pow(base, ex); }
+      return base;
+    }
+    function parseAtom() {
+      var t = next();
+      if (!t) throw new Error('Unexpected end of expression');
+      if (t.t === 'num') return t.v;
+      if (t.t === 'id') {
+        if (isOp('(')) {
+          next();
+          var fn = EXPR_FN.hasOwnProperty(t.v) ? EXPR_FN[t.v] : null;
+          if (!fn) throw new Error('Unknown function "' + t.v + '"');
+          var args = [];
+          if (!isOp(')')) {
+            args.push(parseSum());
+            while (isOp(',')) { next(); args.push(parseSum()); }
+          }
+          expect(')');
+          return fn(args);
+        }
+        if (Object.prototype.hasOwnProperty.call(vars, t.v) && typeof vars[t.v] === 'number') return vars[t.v];
+        if (EXPR_CONST.hasOwnProperty(t.v)) return EXPR_CONST[t.v];
+        throw new Error('Unknown variable "' + t.v + '"');
+      }
+      if (t.v === '(') { var v = parseSum(); expect(')'); return v; }
+      throw new Error('Unexpected "' + t.s + '"');
+    }
+    if (!toks.length) throw new Error('Unexpected end of expression');
+    var value = parseSum();
+    if (peek()) throw new Error('Unexpected "' + peek().s + '"');
+    if (typeof value !== 'number' || !isFinite(value)) throw new Error('Result is not a number');
+    return value;
+  }
+
+  // resolveEquations(model) -> { vars: { name: number }, errors: { name: message } }: model.equations evaluated in
+  // order, each seeing the ones before it. A failing or invalid variable is absent from vars and named in errors.
+  function resolveEquations(model) {
+    var vars = {}, errors = {};
+    var list = model && Array.isArray(model.equations) ? model.equations : [];
+    list.forEach(function (eq) {
+      var name = eq && eq.name != null ? String(eq.name) : '';
+      if (!EXPR_NAME.test(name)) { errors[name] = 'Invalid name "' + name + '"'; return; }
+      if (Object.prototype.hasOwnProperty.call(vars, name)) { errors[name] = 'Duplicate name "' + name + '"'; return; }
+      try {
+        vars[name] = evalExpression(eq.expr == null ? '' : eq.expr, vars);
+      } catch (e) {
+        errors[name] = e.message || String(e);
+      }
+    });
+    return { vars: vars, errors: errors };
+  }
+
+  function cloneValue(v) {
+    if (Array.isArray(v)) return v.map(cloneValue);
+    if (v && typeof v === 'object') { var o = {}; Object.keys(v).forEach(function (k) { o[k] = cloneValue(v[k]); }); return o; }
+    return v;
+  }
+  function resolveValue(v, vars, path) {
+    if (isExpression(v)) {
+      try { return evalExpression(v, vars); } catch (e) { throw new Error(path + ': ' + (e.message || String(e))); }
+    }
+    if (Array.isArray(v)) return v.map(function (x, i) { return resolveValue(x, vars, path + '.' + i); });
+    if (v && typeof v === 'object') {
+      var o = {};
+      Object.keys(v).forEach(function (k) {
+        o[k] = EXPR_SKIP[k] ? cloneValue(v[k]) : resolveValue(v[k], vars, path ? path + '.' + k : k);
+      });
+      return o;
+    }
+    return v;
+  }
+  // resolveFeature(f, vars) -> a deep copy of f with every "=" string replaced by its value; throws
+  // "<field>: <message>" (nested fields as dir2.depth) for the first field that fails.
+  function resolveFeature(f, vars) { return resolveValue(f, vars || {}, ''); }
+  // hasExpressions(f) -> true when the feature holds any "=" string outside the skipped keys
+  function hasExpressions(f) {
+    if (isExpression(f)) return true;
+    if (Array.isArray(f)) { for (var i = 0; i < f.length; i++) if (hasExpressions(f[i])) return true; return false; }
+    if (f && typeof f === 'object') {
+      var ks = Object.keys(f);
+      for (var j = 0; j < ks.length; j++) if (!EXPR_SKIP[ks[j]] && hasExpressions(f[ks[j]])) return true;
+    }
+    return false;
+  }
+  // resolvedModel(model) -> { model: rm, vars, errors, featureErrors: { id: message }, sheetError }: a shallow copy of
+  // the model whose features and sheet parameters have their expressions evaluated. A feature without expressions
+  // is the original object (so rebuild's sketch profiles land on the model as before); one that fails to resolve
+  // stays the original and is named in featureErrors. Nothing on the original model is changed.
+  function resolvedModel(model) {
+    var eq = resolveEquations(model), vars = eq.vars, featureErrors = {}, sheetError = null;
+    var rm = {};
+    Object.keys(model).forEach(function (k) { rm[k] = model[k]; });
+    rm.features = model.features.map(function (f) {
+      if (!hasExpressions(f)) return f;
+      try { return resolveFeature(f, vars); } catch (e) { featureErrors[f.id] = e.message || String(e); return f; }
+    });
+    if (model.sheet && hasExpressions(model.sheet)) {
+      try { rm.sheet = resolveFeature(model.sheet, vars); } catch (e) { sheetError = 'sheet.' + (e.message || String(e)); }
+    }
+    return { model: rm, vars: vars, errors: eq.errors, featureErrors: featureErrors, sheetError: sheetError };
+  }
+
   // ------------------------------------------------------------------ rebuild
   function newModel(name) {
     return { name: name || 'Part1', units: 'mm', density: 7850, color: '#a8adb6', features: [], nextId: 1 };
@@ -1026,6 +1234,7 @@ var Kernel = (function () {
   function cutDirectionHint(model, sketchId, body) {
     try {
       if (!model || !body || !body.polygons || !body.polygons.length) return null;
+      model = resolvedModel(model).model; // plane offsets and the sketch plane may be equations
       var sketch = findFeature(model, sketchId);
       if (!sketch || sketch.type !== 'sketch') return null;
       var planesById = {};
@@ -1154,6 +1363,9 @@ var Kernel = (function () {
   }
 
   // Cache key of a feature: its JSON (minus the computed profile) plus the sheet parameters flanges depend on.
+  // `f` and `model` are the RESOLVED feature and model (resolvedModel), so the key follows the values equations
+  // produce: a variable change rebuilds just the features that use it, an equation edit that changes no value
+  // reuses the whole cache.
   function featureKey(f, model) {
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(model.sheet || null);
   }
@@ -1245,9 +1457,16 @@ var Kernel = (function () {
   // new body when none does, or always starts one with `merge: false`; a cut subtracts from every body in its scope
   // (`bodies`, or all) and drops a body it empties; shell, fillet, chamfer, flange and jog act on the body nearest
   // their first pick point.
+  // Equations: the variables are resolved once (build.equations, build.equationErrors) and every feature is built
+  // from its resolved copy (resolvedModel); a feature whose expression fails gets that message as its error and
+  // leaves the body alone. The original model is never changed apart from the sketch profiles it always received.
   function rebuild(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     var errors = {}, warnings = {};
+    var origFeatures = model.features, resolved = resolvedModel(model);
+    model = resolved.model;
+    var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
+    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.sheetBase || (f.cut && f.normalCut); }
     var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings };
     function syncBody() { ctx.body = combineBodies(ctx.bodies); }
     // a boss tool joins the part: merged into the bodies it meets, or appended as a new body
@@ -1313,7 +1532,7 @@ var Kernel = (function () {
       if (st.tool) ctx.tools[pf.id] = st.tool;
       if (st.plane) ctx.planes[pf.id] = st.plane;
       if (st.flange) ctx.flanges[pf.id] = st.flange;
-      if (pf.type === 'sketch') { pf.profile = st.profile; ctx.sketches[pf.id] = pf; }
+      if (pf.type === 'sketch') { pf.profile = st.profile; origFeatures[i].profile = st.profile; ctx.sketches[pf.id] = pf; }
       // a step made before bodies were kept apart carries just the combined solid: it is the one body
       ctx.bodies = (st.bodies || (st.body ? [st.body] : [])).slice();
       ctx.bodyFeatures = (st.bodyFeatures || ctx.bodies.map(function () { return null; })).slice();
@@ -1322,6 +1541,8 @@ var Kernel = (function () {
     }
     model.features.slice(p).forEach(function (f, j) {
       try {
+        if (resolveErrors[f.id]) throw new Error(resolveErrors[f.id]);
+        if (sheetError && needsSheet(f)) throw new Error(sheetError);
         switch (f.type) {
           case 'flange': {
             var fk = pickBody(f);
@@ -1341,6 +1562,7 @@ var Kernel = (function () {
           }
           case 'sketch':
             f.profile = sketchProfile(f);
+            origFeatures[p + j].profile = f.profile; // the UI reads profiles off the model's own feature objects
             ctx.sketches[f.id] = f;
             if (f.profile.warnings.length && !pathIds[f.id]) warnings[f.id] = f.profile.warnings.join(' ');
             break;
@@ -1394,7 +1616,8 @@ var Kernel = (function () {
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles };
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles,
+      equations: resolved.vars, equationErrors: resolved.errors };
   }
 
   // ------------------------------------------------------------------ build serialization (Web Worker rebuilds)
@@ -1419,7 +1642,8 @@ var Kernel = (function () {
       bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
-      time: build.time || 0, reused: build.reused || 0, profiles: profiles
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles,
+      equations: build.equations || {}, equationErrors: build.equationErrors || {}
     };
   }
   // Every ArrayBuffer of a packed build (bodies, body and tools), for postMessage's transfer list. pack() allocates
@@ -1444,7 +1668,8 @@ var Kernel = (function () {
     return {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
-      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null,
+      equations: obj.equations || {}, equationErrors: obj.equationErrors || {}
     };
   }
   // Write the profiles a build computed (build.profiles, keyed by sketch feature id) onto the model's sketch features.
@@ -1461,6 +1686,7 @@ var Kernel = (function () {
   // but the last is `partial` (tool, plane, flange, profile and messages, but no body); rebuild then reuses the
   // whole cache for an unchanged or appended model and starts over for a change anywhere in the middle.
   function cacheFromBuild(model, build) {
+    model = resolvedModel(model).model; // keys come from the resolved features, as rebuild makes them
     var n = model.features.length;
     var steps = model.features.map(function (f, i) {
       var st = { key: featureKey(f, model), tool: (build.tools && build.tools[f.id]) || null, plane: (build.planes && build.planes[f.id]) || null,
@@ -2169,6 +2395,7 @@ var Kernel = (function () {
     if (!ctx.body) throw new Error('Create a Base Flange before adding edge flanges.');
     var sheet = sheetParams(model);
     var T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
+    if (f.hem && f.gap != null) R = Math.max(+f.gap / 2, 0.02 * T); // a hem whose gap was an equation: radius from the resolved gap
     var L = +f.length, A = (f.angle == null ? 90 : +f.angle) * Math.PI / 180;
     if (!isFinite(L)) throw new Error('Flange length must be a number.');
     if (!isFinite(A)) throw new Error('Flange angle must be a number.');
@@ -2377,6 +2604,9 @@ var Kernel = (function () {
   // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged with the
   // CSG kernel (thin prisms) and the merged top face's outline is the blank.
   function flatPattern(model, build, mesh) {
+    var rmodel = resolvedModel(model);
+    if (rmodel.sheetError) throw new Error(rmodel.sheetError);
+    model = rmodel.model;
     var sheet = model.sheet;
     if (!sheet) throw new Error('No sheet metal parameters: create a Base Flange first (Sheet Metal tab).');
     var base = model.features.filter(function (f) { return f.sheetBase; })[0];
@@ -2653,21 +2883,39 @@ var Kernel = (function () {
     else if (f.type !== 'plane') this.lastSolidId = f.id;
     return f;
   };
+  // num(x): a numeric argument, or an equation ('=T*2') passed through untouched for rebuild to resolve
+  function num(x) { return isExpression(x) ? x : +x; }
   Builder.prototype.name = function (n) { this.model.name = String(n); return this; };
   Builder.prototype.units = function (u) { this.model.units = u === 'in' ? 'in' : 'mm'; return this; };
   Builder.prototype.density = function (d) { this.model.density = +d; return this; };
   Builder.prototype.color = function (c) { this.model.color = String(c); return this; };
+  // equations({ T: 10, W: '=T*2' }) or equations([{ name, expr }]): the model's global variables, in order (replaces
+  // any earlier list). Numbers are stored as their string, a leading "=" is dropped.
+  Builder.prototype.equations = function (spec) {
+    var list = [];
+    function expr(v) { return String(v == null ? '' : v).replace(/^\s*=/, '').trim(); }
+    if (Array.isArray(spec)) spec.forEach(function (e) { if (e) list.push({ name: String(e.name), expr: expr(e.expr) }); });
+    else if (spec && typeof spec === 'object') Object.keys(spec).forEach(function (k) { list.push({ name: k, expr: expr(spec[k]) }); });
+    this.model.equations = list;
+    return this;
+  };
+  // _value(x): a number for a sketch dimension that must be numeric now (box, cylinder, hole sizes): an equation is
+  // evaluated against the current variables at script time, since sketch entities hold no expressions.
+  Builder.prototype._value = function (x, what) {
+    if (!isExpression(x)) return +x;
+    try { return evalExpression(x, resolveEquations(this.model).vars); } catch (e) { throw new Error(what + ': ' + e.message); }
+  };
   Builder.prototype.plane = function (ref, offset, name) {
-    var f = this._add({ type: 'plane', ref: ref || 'Front', offset: +offset || 0, name: name });
+    var f = this._add({ type: 'plane', ref: ref || 'Front', offset: num(offset) || 0, name: name });
     return f.id;
   };
   Builder.prototype._planeRef = function (spec, offset) {
     if (spec == null) return { ref: 'Front', offset: 0 };
     if (typeof spec === 'number') return { featureId: spec };
-    if (typeof spec === 'string') return { ref: spec, offset: +offset || 0 };
+    if (typeof spec === 'string') return { ref: spec, offset: num(offset) || 0 };
     if (spec.custom) return spec;
     if (spec.featureId != null) return { featureId: spec.featureId };
-    return { ref: spec.ref || 'Front', offset: +(spec.offset || offset || 0) };
+    return { ref: spec.ref || 'Front', offset: num(spec.offset || offset || 0) };
   };
   Builder.prototype.sketch = function (spec, offset, name) {
     var f = this._add({ type: 'sketch', plane: this._planeRef(spec, offset), entities: [], name: name });
@@ -2681,12 +2929,12 @@ var Kernel = (function () {
   Builder.prototype.extrude = function (depth, opts) {
     opts = opts || {};
     var f = this._add({
-      type: 'extrude', sketch: this._sketchId(opts), depth: depth == null ? 0 : +depth, end: opts.throughAll ? 'through' : (opts.midplane ? 'mid' : 'blind'),
+      type: 'extrude', sketch: this._sketchId(opts), depth: depth == null ? 0 : num(depth), end: opts.throughAll ? 'through' : (opts.midplane ? 'mid' : 'blind'),
       reverse: !!opts.reverse || opts.dir === -1, cut: !!opts.cut, dir2: !!opts.depth2 || !!opts.both,
-      depth2: opts.depth2 != null ? +opts.depth2 : (opts.both ? +depth : 0), end2: opts.throughAll2 ? 'through' : 'blind', name: opts.name
+      depth2: opts.depth2 != null ? num(opts.depth2) : (opts.both ? num(depth) : 0), end2: opts.throughAll2 ? 'through' : 'blind', name: opts.name
     });
     if (opts.sheetBase) f.sheetBase = true;
-    if (opts.draft) { f.draft = +opts.draft; if (opts.draftOutward) f.draftOut = true; }
+    if (opts.draft) { f.draft = num(opts.draft); if (opts.draftOutward) f.draftOut = true; }
     if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
     bodyOpts(f, opts);
     return this;
@@ -2702,7 +2950,7 @@ var Kernel = (function () {
   }
   // Sheet metal parameters used by baseFlange/flange/flatten. K = 0.71 (steel) or 0.64 (aluminum) per shop practice.
   Builder.prototype.sheet = function (thickness, bendRadius, kFactor) {
-    this.model.sheet = { thickness: +thickness, bendRadius: bendRadius == null ? +thickness : +bendRadius, kFactor: kFactor == null ? 0.71 : +kFactor };
+    this.model.sheet = { thickness: num(thickness), bendRadius: bendRadius == null ? num(thickness) : num(bendRadius), kFactor: kFactor == null ? 0.71 : num(kFactor) };
     return this;
   };
   Builder.prototype.baseFlange = function (thickness, opts) {
@@ -2717,22 +2965,26 @@ var Kernel = (function () {
   // reliefWidth (default T), reliefDepth (default T/2)
   Builder.prototype.flange = function (length, edges, opts) {
     opts = opts || {};
-    var f = { type: 'flange', length: +length, angle: opts.angle == null ? 90 : +opts.angle, reverse: !!opts.reverse, radius: opts.radius != null ? +opts.radius : null, position: opts.position || 'bendOutside', toward: opts.toward ? [+opts.toward[0], +opts.toward[1], +opts.toward[2]] : undefined,
+    var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [+opts.toward[0], +opts.toward[1], +opts.toward[2]] : undefined,
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name,
       miter: !!opts.miter, relief: opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none' };
-    if (opts.miterGap != null) f.miterGap = +opts.miterGap;
-    if (opts.reliefWidth != null) f.reliefWidth = +opts.reliefWidth;
-    if (opts.reliefDepth != null) f.reliefDepth = +opts.reliefDepth;
+    if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
+    if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
+    if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
     this._add(f);
     return this;
   };
-  // hem: a 180° flange folded back over the sheet; `gap` is the opening between the flats (default T/2, open hem)
+  // hem: a 180° flange folded back over the sheet; `gap` is the opening between the flats (default T/2, open hem).
+  // A numeric gap is stored as the bend radius; a gap (or sheet thickness) given as an equation is kept as `gap`
+  // and the radius is derived from it at rebuild.
   Builder.prototype.hem = function (length, edges, opts) {
     opts = opts || {};
-    var T = this.model.sheet ? +this.model.sheet.thickness : 2;
-    var gap = opts.gap != null ? +opts.gap : T / 2;
-    var f = { type: 'flange', hem: true, length: +length, angle: 180, reverse: !!opts.reverse, radius: Math.max(gap / 2, 0.02 * T), position: 'bendOutside',
+    var T = this.model.sheet ? this.model.sheet.thickness : 2;
+    var gap = opts.gap != null ? num(opts.gap) : (isExpression(T) ? '=(' + T.replace(/^\s*=/, '') + ')/2' : T / 2);
+    var f = { type: 'flange', hem: true, length: num(length), angle: 180, reverse: !!opts.reverse, position: 'bendOutside',
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name };
+    if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
+    else f.radius = Math.max(gap / 2, 0.02 * T);
     f.name = f.name || featureName(this.model, 'hem');
     this._add(f);
     return this;
@@ -2740,7 +2992,7 @@ var Kernel = (function () {
   // jog: two bends offsetting the sheet by `height`, then `length` of flat parallel to the base
   Builder.prototype.jog = function (height, length, edges, opts) {
     opts = opts || {};
-    this._add({ type: 'jog', height: +height, length: +length, angle: opts.angle == null ? 90 : +opts.angle, reverse: !!opts.reverse, radius: opts.radius != null ? +opts.radius : null, position: opts.position || 'bendOutside',
+    this._add({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
     return this;
   };
@@ -2751,7 +3003,7 @@ var Kernel = (function () {
   };
   Builder.prototype.revolve = function (angle, opts) {
     opts = opts || {};
-    bodyOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : +angle, axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts);
+    bodyOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : num(angle), axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts);
     return this;
   };
   Builder.prototype.revolveCut = function (angle, opts) { return this.revolve(angle, Object.assign({}, opts || {}, { cut: true })); };
@@ -2773,7 +3025,7 @@ var Kernel = (function () {
   // shell: hollow the body with wall thickness t; faces: [[x,y,z], ...] points on the faces to remove (open)
   Builder.prototype.shell = function (t, faces, opts) {
     opts = opts || {};
-    this._add({ type: 'shell', thickness: +t, faces: (faces || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
+    this._add({ type: 'shell', thickness: num(t), faces: (faces || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
     return this;
   };
   Builder.prototype._srcId = function (opts) {
@@ -2784,19 +3036,19 @@ var Kernel = (function () {
   Builder.prototype.linearPattern = function (opts) {
     opts = opts || {};
     bodyOpts(this._add({
-      type: 'lpattern', feature: this._srcId(opts), d1: opts.dir || 'x', rev1: !!opts.reverse, s1: +opts.spacing || 10, n1: opts.count || 2,
-      d2: opts.dir2 || null, rev2: !!opts.reverse2, s2: +opts.spacing2 || 0, n2: opts.count2 || 1, name: opts.name
+      type: 'lpattern', feature: this._srcId(opts), d1: opts.dir || 'x', rev1: !!opts.reverse, s1: num(opts.spacing) || 10, n1: opts.count || 2,
+      d2: opts.dir2 || null, rev2: !!opts.reverse2, s2: num(opts.spacing2) || 0, n2: opts.count2 || 1, name: opts.name
     }), opts);
     return this;
   };
   Builder.prototype.circularPattern = function (opts) {
     opts = opts || {};
-    bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center || [0, 0, 0], n: opts.count || 4, angle: opts.angle == null ? 360 : +opts.angle, equal: opts.equal !== false, name: opts.name }), opts);
+    bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center || [0, 0, 0], n: opts.count || 4, angle: opts.angle == null ? 360 : num(opts.angle), equal: opts.equal !== false, name: opts.name }), opts);
     return this;
   };
   Builder.prototype.mirror = function (plane, opts) {
     opts = opts || {};
-    var f = { type: 'mirror', plane: plane || 'Right', offset: +opts.offset || 0, name: opts.name };
+    var f = { type: 'mirror', plane: plane || 'Right', offset: num(opts.offset) || 0, name: opts.name };
     if (opts.body) f.body = true; else f.feature = this._srcId(opts);
     bodyOpts(this._add(f), opts);
     return this;
@@ -2805,19 +3057,19 @@ var Kernel = (function () {
   Builder.prototype.chamfer = function (d, edges, opts) {
     opts = opts || {};
     var specs = (edges || []).map(function (e) { return Array.isArray(e) ? { at: e, chain: opts.chain !== false } : e; });
-    this._add({ type: 'chamfer', d: +d, edges: specs, name: opts.name });
+    this._add({ type: 'chamfer', d: num(d), edges: specs, name: opts.name });
     return this;
   };
   Builder.prototype.fillet = function (r, edges, opts) {
     opts = opts || {};
     var specs = (edges || []).map(function (e) { return Array.isArray(e) ? { at: e, chain: opts.chain !== false } : e; });
-    this._add({ type: 'fillet', r: +r, edges: specs, name: opts.name });
+    this._add({ type: 'fillet', r: num(r), edges: specs, name: opts.name });
     return this;
   };
   Builder.prototype.hole = function (planeSpec, x, y, dia, opts) {
     opts = opts || {};
     var s = this.sketch(planeSpec, opts.offset);
-    s.circle(x, y, dia / 2);
+    s.circle(x, y, this._value(dia, 'hole diameter') / 2);
     var f = s.end();
     if (opts.depth) f.cut(opts.depth, { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name, bodies: opts.bodies });
     else f.cut('through', { reverse: !opts.forward, sketch: this.lastSketchId, name: opts.name, bodies: opts.bodies });
@@ -2826,6 +3078,7 @@ var Kernel = (function () {
   Builder.prototype.box = function (w, d, h, opts) {
     opts = opts || {};
     var at = opts.at || [0, 0, 0];
+    w = this._value(w, 'box width'); d = this._value(d, 'box depth'); // sketch sizes are numbers; h may stay an equation
     // sketch on Top: u = x, v = -z
     var s = this.sketch('Top', at[1]);
     if (opts.centered) s.centerRect(at[0], -at[2], w, d); else s.rect(at[0], -at[2] - d, w, d);
@@ -2835,6 +3088,7 @@ var Kernel = (function () {
   Builder.prototype.cylinder = function (r, h, opts) {
     opts = opts || {};
     var at = opts.at || [0, 0, 0], axis = opts.axis || 'y';
+    r = this._value(r, 'cylinder radius'); // the sketch circle is a number; h may stay an equation
     var s;
     if (axis === 'y') s = this.sketch('Top', at[1]).circle(at[0], -at[2], r);
     else if (axis === 'z') s = this.sketch('Front', at[2]).circle(at[0], at[1], r);
