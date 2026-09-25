@@ -80,7 +80,7 @@
   var lastResults = [];
   function run() {
     var runs = Math.max(1, Math.min(50, +$('runs').value || 7));
-    var parts = (typeof AnvilExamples !== 'undefined' ? AnvilExamples : []).slice();
+    var parts = (typeof AnvilExamples !== 'undefined' ? AnvilExamples : []).filter(function (ex) { return ex.kind !== 'assembly'; }); // parts only: assembly scripts need assembly.js
     if ($('includeStress').checked) parts = parts.concat(STRESS);
     var rows = $('rows'); rows.innerHTML = '';
     $('run').disabled = true;

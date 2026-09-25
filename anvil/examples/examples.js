@@ -3,6 +3,11 @@
 // Each entry: { name, description, code, volume?, tolerance?, configurations? }. `volume` is a documented reference value in units^3
 // (approximate where circles are involved — the kernel uses polygonal circles), checked by tests/kernel-tests.html.
 // `configurations` (optional) maps each configuration name to its volume; the tests switch to each one and rebuild.
+// `kind` (optional): 'part' (the default) or 'assembly'. An assembly entry's `code` is an assembly script (the `a.insert` /
+// `a.mate` API of assembly.js, see README.md "Assemblies"); the Design Library opens it as an assembly document and the
+// tests build it with Assembly.runScript(Assembly.newAssembly(), code) + Assembly.rebuild. Assembly entries are not
+// insertable as components. `checks` (assembly only, optional): [{ component: 'Pin<1>', position: [x, y, z],
+// rotation?: [9 numbers, row-major] }] solved transforms the tests verify to 1e-6.
 var AnvilExamples = [
   {
     name: 'Plate with bolt holes',
@@ -331,6 +336,37 @@ var AnvilExamples = [
       'p.circularPattern({ axis: "y", count: 12 });',
       'p.sketch("Top", 8).circle(0, 0, 6).cut("through", { reverse: true });',
       'p.sketch("Top", 8).centerRect(0, -6, 3, 3).cut("through", { reverse: true }); // keyway'
+    ].join('\n')
+  },
+  {
+    name: 'Pinned plate assembly',
+    kind: 'assembly',
+    description: 'Assembly: the bolt-hole plate (fixed), two Ø8 pins mated into two of its holes, and a cap block seated on its top face in a corner.',
+    // plate + 2 pins + cap; a Ø8 circle is a 16-gon (area 128·sin(π/8)), exactly as the kernel samples it
+    volume: 100 * 60 * 8 - 4 * 128 * Math.sin(Math.PI / 8) * 8 + 2 * 128 * Math.sin(Math.PI / 8) * 20 + 30 * 20 * 5,
+    checks: [
+      { component: 'Plate<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      { component: 'Pin<1>', position: [10, 0, 10] },
+      { component: 'Pin<2>', position: [90, 0, 10] },
+      { component: 'Cap<1>', position: [0, 8, 40], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] }
+    ],
+    code: [
+      'a.name("Pinned Plate").units("mm");',
+      '// the plate is x in [0,100], y in [0,8], z in [0,60] with Ø8 holes at x = 10, 90 and z = 10, 50',
+      'var plate = a.insert({ example: "Plate with bolt holes" }, { fixed: true });',
+      '// pins: Ø8 × 20 along local +y from the origin, dropped in anywhere (the mates put them in place)',
+      'var pin1 = a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [40, 30, -20] });',
+      'var pin2 = a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [60, 15, 80], rotation: [1, 0, 0, 0, 0, -1, 0, 1, 0] });',
+      'a.concentric({ component: pin1, cylinder: [4, 10, 0] }, { component: plate, cylinder: [14, 4, 10] });',
+      'a.coincident({ component: pin1, face: [1, 0, 1] }, { component: plate, face: [50, 0, 30] }, { alignment: "aligned" });  // flush bottoms',
+      'a.concentric({ component: pin2, cylinder: [4, 10, 0] }, { component: plate, cylinder: [94, 4, 10] });',
+      'a.coincident({ component: pin2, face: [1, 0, 1] }, { component: plate, face: [50, 0, 30] }, { alignment: "aligned" });',
+      '// cap: 30 × 5 × 20 block seated on the top face (faces touch: anti-aligned by default), flush with the x = 0 and',
+      '// z = 60 sides of the plate, so it covers the empty hole at (10, 50)',
+      'var cap = a.insert({ script: \'p.name("Cap"); p.box(30, 20, 5);\' }, { position: [50, 30, 20] });',
+      'a.coincident({ component: cap, face: [15, 0, 10] }, { component: plate, face: [50, 8, 30] });',
+      'a.coincident({ component: cap, face: [0, 2.5, 10] }, { component: plate, face: [0, 4, 30] }, { alignment: "aligned" });',
+      'a.coincident({ component: cap, face: [15, 2.5, 20] }, { component: plate, face: [50, 4, 60] }, { alignment: "aligned" });'
     ].join('\n')
   }
 ];
