@@ -876,7 +876,8 @@ var Drawing = (function () {
     active: false, index: 0, sheet: null, sel: null, hover: null, tool: null, pending: null,
     vb: null, drag: null, root: null, host: null, tree: null, renderQueued: false
   };
-  function doc() { var l = App.model && App.model.drawings; return l && l[D.index] || null; }
+  // drawings belong to part documents; an assembly model never has one open
+  function doc() { var l = App.model && App.model.type !== 'assembly' && App.model.drawings; return l && l[D.index] || null; }
   function units() { return App.model.units === 'in' ? 'in' : 'mm'; }
   function mesh() { return App.mesh || { positions: new Float32Array(0), faces: [], triCount: 0 }; }
   function paperK() { return units() === 'in' ? 1 / 25.4 : 1; }
@@ -916,8 +917,11 @@ var Drawing = (function () {
   // ------------------------------------------------------------------ open / close
   // makeDrawing(opts): File ▸ Make Drawing from Part. Reuses the part's first drawing or creates one with Standard 3
   // View + Isometric (one undo step), then shows the drawing document.
+  function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
+  var ASM_REFUSAL = 'Make Drawing from Part works on parts only; drawings of assemblies are not supported yet. Open a part (File \u25b8 New \u25b8 Part or the Design Library) to make its drawing.';
   function makeDrawing(opts) {
     opts = opts || {};
+    if (isAsm()) { UI.toast('Drawings of assemblies are not supported yet.'); UI.setStatus(ASM_REFUSAL); return null; }
     if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return null; }
     if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch();
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
@@ -1397,24 +1401,31 @@ var Drawing = (function () {
   UI.menuHook = function (menus) {
     var file = menus.filter(function (m) { return m.label === 'File'; })[0];
     if (!D.active) {
+      var asm = isAsm();
       if (file) {
+        // after the New / Open / Save group (the first separator); matched by position, not by label text
         var at = 0;
-        file.items.forEach(function (it, i) { if (it.label === 'Save As\u2026') at = i + 1; });
-        file.items.splice(at, 0, { sep: true }, { label: 'Make Drawing from Part', action: function () { makeDrawing(); } });
+        while (at < file.items.length && !file.items[at].sep) at++;
+        // an assembly cannot be drawn yet: the item stays visible but disabled (SolidWorks shows Make Drawing from Assembly)
+        file.items.splice(at, 0, { sep: true }, { label: 'Make Drawing from Part', disabled: asm, action: function () { makeDrawing(); } });
       }
+      // Window: the open document (part or assembly), then the part's drawings
       var win = menus.filter(function (m) { return m.label === 'Window'; })[0];
-      if (win && App.model.drawings && App.model.drawings.length) {
+      if (win) {
         win.items.push({ sep: true });
-        App.model.drawings.forEach(function (dc, i) { win.items.push({ label: dc.name + ' - ' + dc.sheet.name, action: function () { makeDrawing({ index: i }); } }); });
+        win.items.push({ label: (App.model.name || (asm ? 'Assem1' : 'Part1')) + (asm ? ' (assembly)' : ' (part)'), checked: true, action: function () { } });
+        if (!asm) (App.model.drawings || []).forEach(function (dc, i) { win.items.push({ label: dc.name + ' - ' + dc.sheet.name, action: function () { makeDrawing({ index: i }); } }); });
       }
       return menus;
     }
     // a drawing document: SolidWorks-style drawing menus
-    var pick = function (label) { return (file && file.items || []).filter(function (it) { return it.label === label; })[0]; };
+    // the part File menu's New / Open / Save group: everything before its first separator
+    var docItems = [];
+    (file && file.items || []).some(function (it) { if (it.sep) return true; docItems.push(it); return false; });
     var editMenu = menus.filter(function (m) { return m.label === 'Edit'; })[0], help = menus.filter(function (m) { return m.label === 'Help'; })[0];
     var dc = doc();
     return [
-      { label: 'File', items: [pick('New'), pick('Open\u2026'), pick('Save'), pick('Save As\u2026')].filter(Boolean).concat([
+      { label: 'File', items: docItems.concat([
         { sep: true },
         { label: 'Save Drawing as SVG\u2026', action: function () { exportAs('svg'); } },
         { label: 'Save Drawing as DXF\u2026', action: function () { exportAs('dxf'); } },
