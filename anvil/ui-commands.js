@@ -4,11 +4,57 @@
   var App = UI.App, K = UI.K, $ = UI.$, el = UI.el;
 
   // ------------------------------------------------------------------ PropertyManager
-  var pm = { spec: null, values: null, root: $('pm') };
+  // pm.exprs: { key: '=T*2' } for number fields holding an equation; pm.values[key] then holds its evaluated number so
+  // previews and the commands' own arithmetic keep working. pm.exprErrors: { key: message } for ones that fail.
+  var pm = { spec: null, values: null, root: $('pm'), exprs: {}, exprErrors: {} };
+
+  // ------------------------------------------------------------------ equations in number fields
+  function isExpr(v) { return K.isExpression ? K.isExpression(v) : (typeof v === 'string' && /^\s*=/.test(v)); }
+  function equationVars() {
+    try { return K.resolveEquations ? K.resolveEquations(App.model).vars : ((App.build && App.build.equations) || {}); } catch (e) { return {}; }
+  }
+  // The model with its equations evaluated (plane offsets, sheet parameters), for previews that call the kernel directly.
+  function previewModel() {
+    if (!K.resolvedModel) return App.model;
+    try { return K.resolvedModel(App.model).model; } catch (e) { return App.model; }
+  }
+  // evalFieldExpr('=T*2') -> { value } or { error }
+  function evalFieldExpr(text) {
+    if (!K.evalExpression) return { error: 'Equations are not available in this build' };
+    try { return { value: K.evalExpression(String(text).replace(/^\s*=/, ''), equationVars()) }; } catch (e) { return { error: e.message || String(e) }; }
+  }
+  function normExpr(text) { return '=' + String(text).replace(/^\s*=\s*/, '').trim(); }
+  function numberFieldKeys(spec) {
+    var keys = [];
+    (spec.groups || []).forEach(function (g) { (g.fields || []).forEach(function (f) { if (f.type === 'number' && f.key) keys.push(f.key); }); });
+    return keys;
+  }
+  // The equation text of a number field, or `fallback` when it holds a plain number (for commands that move a PM value
+  // somewhere other than the feature, e.g. the Base Flange thickness into model.sheet).
+  function pmExpr(key, fallback) { return pm.exprs && pm.exprs[key] != null ? pm.exprs[key] : fallback; }
+  // Put the equation strings back into the feature about to be committed: a key that reached the feature unchanged
+  // (same number as the PM value) takes its expression; spec.exprMap renames PM-only keys (radiusValue -> radius).
+  function applyExpressions(f) {
+    if (!pm.spec || !pm.exprs || !f) return f;
+    var map = pm.spec.exprMap || {};
+    Object.keys(pm.exprs).forEach(function (k) {
+      var tk = map[k] || k;
+      if (typeof f[tk] === 'number' && pm.values && f[tk] === +pm.values[k]) f[tk] = pm.exprs[k];
+    });
+    return f;
+  }
 
   function openPM(spec) {
     pm.spec = spec;
     pm.values = spec.values || {};
+    pm.exprs = {}; pm.exprErrors = {};
+    // editing a feature whose number fields hold equations: keep the text, evaluate the value for previews
+    numberFieldKeys(spec).forEach(function (k) {
+      if (!isExpr(pm.values[k])) return;
+      var r = evalFieldExpr(pm.values[k]);
+      pm.exprs[k] = normExpr(pm.values[k]);
+      if (r.error) { pm.exprErrors[k] = r.error; pm.values[k] = 0; } else pm.values[k] = r.value;
+    });
     App.command = spec.command || null;
     renderPM();
     $('fm-tree').hidden = true;
@@ -20,7 +66,7 @@
   function closePM() {
     if (!pm.spec) return;
     var spec = pm.spec;
-    pm.spec = null; pm.values = null;
+    pm.spec = null; pm.values = null; pm.exprs = {}; pm.exprErrors = {};
     App.command = null;
     pm.root.hidden = true;
     pm.root.innerHTML = '';
@@ -35,6 +81,12 @@
   function pmOK() {
     if (!pm.spec) return UI.whenIdle();
     var spec = pm.spec, r;
+    var bad = Object.keys(pm.exprErrors || {});
+    if (bad.length) {
+      var msg = 'Fix the equation in ' + bad[0] + ': ' + pm.exprErrors[bad[0]];
+      UI.setStatus(msg); UI.toast(msg);
+      return UI.whenIdle();
+    }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
     closePM();
     return r && typeof r.then === 'function' ? r : UI.whenIdle();
@@ -46,12 +98,22 @@
     closePM();
   }
 
+  // The ✓ button looks disabled (and pmOK refuses) while a number field holds an equation that does not evaluate.
+  function updateOkState() {
+    var ok = pm.root.querySelector('.pm-ok');
+    if (!ok) return;
+    var bad = Object.keys(pm.exprErrors || {});
+    ok.classList.toggle('disabled', bad.length > 0);
+    ok.setAttribute('aria-disabled', bad.length ? 'true' : 'false');
+    ok.title = bad.length ? 'OK (Enter) — fix the equation first: ' + pm.exprErrors[bad[0]] : 'OK (Enter)';
+  }
+
   function renderPM() {
     var spec = pm.spec, root = pm.root;
     root.innerHTML = '';
     root.appendChild(el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' }));
     var actions = el('div', { class: 'pm-actions' });
-    actions.appendChild(el('button', { title: 'OK (Enter)', html: Icons('ok', 20), onclick: pmOK }));
+    actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 20), onclick: pmOK }));
     actions.appendChild(el('button', { title: 'Cancel (Esc)', html: Icons('cancel', 18), onclick: pmCancel }));
     if (spec.extraActions) spec.extraActions.forEach(function (a) { actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
     root.appendChild(actions);
@@ -81,12 +143,65 @@
     }
     switch (f.type) {
       case 'number': {
-        var inp = el('input', { type: 'number', step: f.step || 'any', value: v[f.key] == null ? '' : v[f.key] });
+        // A plain number is an <input type=number> (spin arrows, arrow keys). Typing "=" turns the box into a text
+        // box holding an equation ('=T*2', variables from Tools ▸ Equations); the value it evaluates to is shown in
+        // the .pm-expr-hint beside it (red with the message when it fails, and OK is refused until it is fixed).
+        var key = f.key, exprText = pm.exprs[key];
+        var inp = el('input', { type: exprText != null ? 'text' : 'number', step: f.step || 'any', class: 'pm-num' + (exprText != null ? ' expr' : ''), 'data-key': key });
+        inp.value = exprText != null ? exprText : (v[key] == null ? '' : v[key]);
         if (f.min != null) inp.min = f.min;
-        inp.addEventListener('input', function () { var n = parseFloat(inp.value); if (!isNaN(n)) changed(n); });
-        inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); pmOK(); } });
-        var wrap = el('span', {}, [inp, f.unit ? el('span', { class: 'unit', text: f.unit === 'u' ? UI.unitLabel() : f.unit }) : null]);
-        return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), wrap]);
+        var hint = el('span', { class: 'pm-expr-hint', 'data-key': key });
+        var showHint = function () {
+          var ex = pm.exprs[key], er = pm.exprErrors[key];
+          inp.classList.toggle('expr', ex != null);
+          inp.classList.toggle('expr-err', !!er);
+          hint.hidden = ex == null;
+          hint.classList.toggle('err', !!er);
+          hint.textContent = ex == null ? '' : er ? er : '= ' + UI.fmtNum(v[key], 4);
+          hint.title = ex == null ? '' : er ? 'Equation error: ' + er : ex + ' evaluates to ' + v[key];
+          updateOkState();
+        };
+        var setExpr = function (text) {
+          pm.exprs[key] = normExpr(text);
+          var r = evalFieldExpr(text);
+          if (r.error) { pm.exprErrors[key] = r.error; showHint(); return; }
+          delete pm.exprErrors[key];
+          v[key] = r.value;
+          showHint();
+          changed(r.value);
+        };
+        var clearExpr = function () {
+          if (pm.exprs[key] == null) return;
+          delete pm.exprs[key]; delete pm.exprErrors[key];
+          showHint();
+        };
+        inp.addEventListener('input', function () {
+          var s = inp.value;
+          if (isExpr(s)) { if (inp.type !== 'text') { inp.type = 'text'; } setExpr(s); return; }
+          clearExpr();
+          var n = parseFloat(s); if (!isNaN(n)) changed(n);
+        });
+        inp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); pmOK(); return; }
+          // a number box cannot hold "=": switch to a text box and start the equation
+          if (e.key === '=' && inp.type === 'number') {
+            e.preventDefault();
+            inp.type = 'text'; inp.value = '=';
+            try { inp.setSelectionRange(1, 1); } catch (er) { }
+            setExpr('=');
+            return;
+          }
+          // no spin increments on an equation
+          if ((e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'PageUp' || e.key === 'PageDown') && pm.exprs[key] != null) e.preventDefault();
+        });
+        inp.addEventListener('wheel', function (e) { if (pm.exprs[key] != null) e.preventDefault(); });
+        // leaving a text box that no longer holds an equation turns it back into a number box
+        inp.addEventListener('blur', function () {
+          if (inp.type === 'text' && pm.exprs[key] == null) { var s = inp.value; inp.type = 'number'; inp.value = isNaN(parseFloat(s)) ? (v[key] == null ? '' : v[key]) : parseFloat(s); }
+        });
+        showHint();
+        var wrap = el('span', { class: 'pm-num-wrap' }, [inp, f.unit ? el('span', { class: 'unit', text: f.unit === 'u' ? UI.unitLabel() : f.unit }) : null]);
+        return el('div', { class: 'pm-row pm-row-num' }, [el('label', { text: f.label }), wrap, hint]);
       }
       case 'select': {
         var sel = el('select');
@@ -139,7 +254,7 @@
       var b = UI.modelBounds();
       var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
       var ctx = { tools: App.build.tools, planes: App.build.planes, sketches: {}, body: App.build.body, throughLimit: Math.max(20, diag * 1.5) };
-      var tool = K.buildTool(feature, App.model, ctx);
+      var tool = K.buildTool(feature, previewModel(), ctx);
       if (!tool) return null;
       var mesh = K.meshFromBody(tool);
       var g = new THREE.BufferGeometry();
@@ -178,6 +293,7 @@
     return null;
   }
   function commitFeature(f, existing) {
+    applyExpressions(f);   // number fields typed as '=T*2' are stored as the equation, not its value
     UI.pushUndo();
     if (existing) {
       Object.keys(f).forEach(function (k) { existing[k] = f[k]; });
@@ -1020,8 +1136,9 @@
         ],
         onChange: function (v) { v.depth = v.thickness; App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing base flange (thickness ' + v.thickness + ').'); },
         onOK: function (v) {
-          App.model.sheet = { thickness: +v.thickness, bendRadius: +v.bendRadius, kFactor: +v.kFactor };
-          v.depth = +v.thickness; v.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
+          // the sheet parameters may be equations too (the kernel resolves model.sheet like a feature)
+          App.model.sheet = { thickness: pmExpr('thickness', +v.thickness), bendRadius: pmExpr('bendRadius', +v.bendRadius), kFactor: pmExpr('kFactor', +v.kFactor) };
+          v.depth = pmExpr('thickness', +v.thickness); v.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
           v.sheetBase = true;
           delete v.thickness; delete v.bendRadius; delete v.kFactor;
           return commitFeature(v, null);
@@ -1038,7 +1155,7 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
     if (!App.edges || !App.edges.length) { UI.toast('Create a Base Flange first.'); return; }
-    var sheet = App.model.sheet, T = sheet.thickness;
+    var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;   // resolved: the sheet parameters may be equations
     kind = existing ? (existing.type === 'jog' ? 'jog' : existing.hem ? 'hem' : existing.miter ? 'miter' : 'flange') : (kind || 'flange');
     var isHem = kind === 'hem', isJog = kind === 'jog', isMiter = kind === 'miter', isFlange = !isHem && !isJog;
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
@@ -1091,8 +1208,8 @@
       if (!f.edges.length) { UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
       try {
         var feat = toFeature(f), tool;
-        if (isJog) { var jg = K.buildJog(feat, App.model, { body: App.build.body, flanges: {}, tools: {} }); tool = jg.first.union(jg.second); }
-        else tool = K.buildFlange(feat, App.model, { body: App.build.body, flanges: {} });
+        if (isJog) { var jg = K.buildJog(feat, previewModel(), { body: App.build.body, flanges: {}, tools: {} }); tool = jg.first.union(jg.second); }
+        else tool = K.buildFlange(feat, previewModel(), { body: App.build.body, flanges: {} });
         var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.preview));
@@ -1148,6 +1265,7 @@
     groups.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
     openPM({
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
+      exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. The gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
@@ -1370,6 +1488,17 @@
   }
 
   UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  // equations in PropertyManager number fields: the open PM's equation texts and errors (copies), and a field setter for scripts/tests
+  UI.pmExpressions = function () { return { exprs: JSON.parse(JSON.stringify(pm.exprs || {})), errors: JSON.parse(JSON.stringify(pm.exprErrors || {})) }; };
+  UI.pmSetField = function (key, text) {
+    var inp = pm.root.querySelector('input.pm-num[data-key="' + key + '"]');
+    if (!inp) return false;
+    if (isExpr(text) && inp.type !== 'text') inp.type = 'text';
+    inp.value = String(text);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
+  UI.evalFieldExpr = evalFieldExpr;
   UI.cmdSketch = cmdSketch; UI.editSketch = editSketch; UI.cmdExtrude = cmdExtrude; UI.cmdRevolve = cmdRevolve;
   UI.cmdLinearPattern = cmdLinearPattern; UI.cmdCircularPattern = cmdCircularPattern; UI.cmdMirror = cmdMirror; UI.cmdPlane = cmdPlane;
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;

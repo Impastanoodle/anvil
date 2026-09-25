@@ -233,3 +233,29 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Phase 4: polygon splitting only inside overlap regions (shell/fillet slab unions dominate the Funnel and Rounded handle).
 2. Phase 6: equations in PropertyManager fields; configuration manager.
 3. Phase 5: simple assembly document (insert parts, mate by coincident planes / concentric axes) now that bodies are separate.
+
+## Run 2026-09-25T15 — Equations (global variables) and faster CSG (faces restored whole)
+
+**Context.** Scheduled task, head + four parallel subagents (kernel, commands, sketch, tests). The lock from run 2026-09-22T21 was three days stale; that run had left an uncommitted equations kernel in kernel.js, committed first as `WIP recovered from interrupted run` (4eefeb8). No open board requests, no peer sessions. Tasks: QUEUE "Do next" (CSG splitting only inside overlaps) and ROADMAP Phase 6 "Equations", finishing the recovered kernel work.
+
+**Done per lane.**
+- `kernel` (kernel.js, csg.js): Equations finished: `Kernel.isExpression / evalExpression / resolveEquations / resolvedModel / resolveFeature / hasExpressions / EXPR_FUNCTIONS` exported; `generateScript` writes `p.equations([{name, expr}])` and quoted `"=..."` fields (sheet, planes, depth, angle, fillet r, chamfer d, shell, flange options); Builder numeric args go through `num()` (pattern counts, cpattern centre, flange `toward`); a bad expression is a feature error (`depth: Unknown variable "Q"`), never a throw; cache keys follow resolved values. CSG: every operand polygon carries a source record; a boolean that removed nothing from a face returns that face whole instead of its BSP fragments (`CSG.options.restoreWhole`, default on). Funnel 1844 → 1292 ms (14071 → 4576 faces), Rounded handle 738 → 619 ms, Mug 197 → 154 ms, Handlebar 1775 → 646 faces. The flat-pattern region merge runs with it off: whole faces leave T-junctions wider than `faceOutline`'s weld and split the corner blank into two loops.
+- `commands` (ui-commands.js, ui-panels.js, ui-app.js, icons.js, style.css): Tools ▸ Equations… modal "Equations, Global Variables, and Dimensions" (`#eq-dialog`: add, delete, reorder, live values, red rows refuse OK, one undo step); Equations folder in the FeatureManager (`.eq-folder`, `.eq-row[data-eq]`, double-click opens the dialog); every PM number field accepts `=...` with a `.pm-expr-hint` value/error and a disabled OK while broken, expression text kept on edit; previews use the resolved model; `anvil.equations()` get/set, `summary().equations/equationErrors`; Zoom to Selection on a body row calls `UI.zoomToBody`.
+- `sketch` (ui-core.js, ui-sketch.js): Modify box evaluates `=T*3` and plain arithmetic through `UI.evalInput`, keeps the box open with the message on error; equation errors in the status bar ("Equation W: …"); `UI.equationVars()`; `UI.bodyBounds(i)`, `UI.zoomToBody(i)`, Zoom to Fit shares `UI.fitBox`.
+- `tests` (tests/, examples/, README.md): kernel tests 296 → 334 (`equations` ×21, `csg overlap split` ×15, Parametric plate rows); smoke 39 → 46 (equations API/tree/dialog, PM `=` field, status line, Modify box, body zoom); Design Library **Parametric plate** (L, W, T, E, D; volume 74938.628 pinned analytically); README `## Equations`.
+
+**Head fixes during integration.** `index.html` `#dim-edit input` was `type="number"`, so the browser discarded `=T*3` before the sketch code saw it; now `type="text" inputmode="decimal"`. Sent the mitre corner-blank regression back to the kernel lane (fixed as above).
+
+**Verified by the head (port 8765).** kernel-tests 334/334, ui-smoke 46/46, app loads with no console errors; Parametric plate via the Equations dialog T 8 → 12 gives exactly 1.5× volume, UI.undo restores T=8 and 74938.628.
+
+**Decisions.**
+- Box/cylinder/hole sizes and sketch entity values given as `=...` are evaluated when the script runs; only feature fields stay live expressions (sketch geometry is never an expression).
+- `Builder.equations([...])` keeps each expr exactly; the object form drops a leading `=`.
+- Building BSP trees from near faces only was not done: a partial tree misclassifies inside/outside. Restoring whole faces gets most of the win safely.
+
+**Known gaps.** Circular pattern axis point, hem gap and sketch-mode PM fields (offset distance, polygon sides, entity properties) keep numbers only. `window.anvil` has no `undo()`. Configuration manager (named parameter sets) not started.
+
+**Next up.**
+1. Phase 6: configuration manager driving the equations (named sets of variable values).
+2. Phase 4: near-face-only BSP trees with a per-piece ray-cast inside test.
+3. Phase 5: simple assembly document (insert parts, mates).

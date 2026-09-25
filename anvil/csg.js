@@ -76,8 +76,9 @@ var CSG = (function () {
               b.push(v.clone());
             }
           }
-          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) front.push(pf); }
-          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) back.push(pb); }
+          // fragments remember the polygon they came from (`_src`, see restoreWhole)
+          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; front.push(pf); } }
+          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; back.push(pb); } }
           break;
       }
     }
@@ -133,7 +134,12 @@ var CSG = (function () {
       var front = [], back = [];
       for (var i = 0; i < polygons.length; i++) this.plane.splitPolygon(polygons[i], front, back, front, back);
       if (this.front) front = this.front.clipPolygons(front);
-      if (this.back) back = this.back.clipPolygons(back); else back = [];
+      if (this.back) back = this.back.clipPolygons(back);
+      else {
+        // these fragments are inside the solid and are dropped: their source polygon no longer survives whole
+        for (var k = 0; k < back.length; k++) if (back[k]._src) back[k]._src.lost = true;
+        back = [];
+      }
       return front.concat(back);
     },
     clipTo: function (bsp) {
@@ -154,7 +160,8 @@ var CSG = (function () {
         var keep = [];
         for (var i = 0; i < this.polygons.length; i++) {
           var p = this.polygons[i];
-          if (polygonFar(p, bounds, eps)) out.push(p); else keep.push(p);
+          // a far piece leaves the clipped set, so its source (possibly split by the tree build) is not restored whole
+          if (polygonFar(p, bounds, eps)) { if (p._src) p._src.lost = true; out.push(p); } else keep.push(p);
         }
         this.polygons = keep;
       }
@@ -214,6 +221,43 @@ var CSG = (function () {
   }
   function clonePolys(polygons) { return polygons.map(function (p) { return p.clone(); }); }
 
+  // ---------------------------------------------------------------- splitting only where a solid is really cut
+  // The BSP clip splits a polygon by every plane of the other tree it passes through, most of which belong to faces
+  // nowhere near it, so a polygon that ends up wholly kept can come out as dozens of fragments (and the next boolean
+  // pays for all of them). Each operand polygon is therefore cloned with a source record (`_src`), which every
+  // fragment inherits (splitPolygon) and which clipPolygons marks `lost` when it drops a fragment. restoreWhole then
+  // replaces the fragments of every source that lost nothing by one copy of the source polygon: the fragments tile
+  // it exactly (a split partitions a convex polygon; only zero-area slivers are ever discarded by tryCreate), so the
+  // point set, the volume and the classification of later booleans are unchanged, while a polygon stays split only
+  // where material was actually removed from it: inside the overlap with the other solid.
+  function taggedClones(polygons) {
+    var out = new Array(polygons.length);
+    for (var i = 0; i < polygons.length; i++) {
+      var c = polygons[i].clone();
+      c._src = { orig: polygons[i], lost: false, done: false };
+      out[i] = c;
+    }
+    return out;
+  }
+  // CSG.options.restoreWhole = false turns this off (every fragment is kept, as before) for benchmarks and debugging.
+  var OPTIONS = { restoreWhole: true };
+  function restoreWhole(polygons) {
+    if (!OPTIONS.restoreWhole) return untag(polygons);
+    var out = [];
+    for (var i = 0; i < polygons.length; i++) {
+      var p = polygons[i], r = p._src;
+      p._src = null; // no record outlives the boolean (it would keep the operands alive)
+      if (!r || r.lost) { out.push(p); continue; }
+      if (r.done) continue;
+      r.done = true;
+      var q = r.orig.clone();
+      if (q.plane.normal.dot(p.plane.normal) < 0) q.flip(); // a subtract hands the tool's faces back inverted
+      out.push(q);
+    }
+    return out;
+  }
+  function untag(polygons) { for (var i = 0; i < polygons.length; i++) polygons[i]._src = null; return polygons; }
+
   function CSG() { this.polygons = []; this.bounds = null; }
   CSG.fromPolygons = function (polygons) {
     var csg = new CSG();
@@ -240,8 +284,8 @@ var CSG = (function () {
     union: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons).concat(clonePolys(csg.polygons)));
-      var a = new Node(clonePolys(this.polygons));
-      var b = new Node(clonePolys(csg.polygons));
+      var a = new Node(taggedClones(this.polygons));
+      var b = new Node(taggedClones(csg.polygons));
       var far = [];
       if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, far); }
       a.clipTo(b);
@@ -250,13 +294,13 @@ var CSG = (function () {
       b.clipTo(a);
       b.invert();
       a.build(b.allPolygons());
-      return CSG.fromPolygons(a.allPolygons().concat(far));
+      return CSG.fromPolygons(restoreWhole(a.allPolygons()).concat(untag(far)));
     },
     subtract: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons(clonePolys(this.polygons));
-      var a = new Node(clonePolys(this.polygons));
-      var b = new Node(clonePolys(csg.polygons));
+      var a = new Node(taggedClones(this.polygons));
+      var b = new Node(taggedClones(csg.polygons));
       var far = [];
       // A's far polygons survive untouched; B's far polygons lie outside A and take nothing away
       if (ba && bb) { a.extractFar(bb, eps, far); b.extractFar(ba, eps, []); }
@@ -268,13 +312,13 @@ var CSG = (function () {
       b.invert();
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(a.allPolygons().concat(far));
+      return CSG.fromPolygons(restoreWhole(a.allPolygons()).concat(untag(far)));
     },
     intersect: function (csg) {
       var ba = this.getBounds(), bb = csg.getBounds(), eps = ba && bb ? farEps(ba, bb) : 0;
       if (ba && bb && !boundsOverlap(ba, bb, eps)) return CSG.fromPolygons([]);
-      var a = new Node(clonePolys(this.polygons));
-      var b = new Node(clonePolys(csg.polygons));
+      var a = new Node(taggedClones(this.polygons));
+      var b = new Node(taggedClones(csg.polygons));
       // far polygons of either solid lie outside the other and cannot be part of the intersection
       if (ba && bb) { a.extractFar(bb, eps, []); b.extractFar(ba, eps, []); }
       a.invert();
@@ -284,7 +328,7 @@ var CSG = (function () {
       b.clipTo(a);
       a.build(b.allPolygons());
       a.invert();
-      return CSG.fromPolygons(a.allPolygons());
+      return CSG.fromPolygons(restoreWhole(a.allPolygons()));
     },
     inverse: function () {
       var csg = this.clone();
@@ -418,5 +462,6 @@ var CSG = (function () {
   CSG.Plane = Plane;
   CSG.Polygon = Polygon;
   CSG.Node = Node;
+  CSG.options = OPTIONS;
   return CSG;
 })();

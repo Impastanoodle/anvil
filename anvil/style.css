@@ -338,3 +338,28 @@ body { overflow: auto; }
 
 @media (max-width: 1100px) { #main { grid-template-columns: 240px minmax(0, 1fr) auto; } #tp-panel { width: 280px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* equations: "=" expressions in PropertyManager number fields, the Tools ▸ Equations dialog */
+.pm-row .pm-num.expr { font-family: var(--mono); font-size: 11.5px; width: 110px; }
+.pm-row .pm-num.expr-err { border-color: var(--red); color: var(--red); }
+.pm-row .pm-expr-hint { grid-column: 1 / -1; justify-self: end; margin-top: -2px; font-size: 11px; color: var(--muted); font-family: var(--mono); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row .pm-expr-hint.err { color: var(--red); font-family: inherit; }
+.pm-row .pm-expr-hint[hidden] { display: none; }
+.pm-actions button.pm-ok.disabled { opacity: .4; cursor: not-allowed; }
+#modal-card.wide { width: min(760px, 94vw); }
+#modal-body .eq-table th { width: auto; }
+#modal-body .eq-table td { padding: 3px 6px; vertical-align: middle; }
+#modal-body .eq-table input { width: 100%; box-sizing: border-box; font: 12px var(--mono); }
+#modal-body .eq-table .eq-name { max-width: 130px; }
+#modal-body .eq-table .eq-val { font-family: var(--mono); font-size: 12px; min-width: 110px; }
+#modal-body .eq-table .eq-val.err { color: var(--red); font-family: inherit; font-size: 11.5px; }
+#modal-body .eq-table tr.err .eq-expr { border-color: var(--red); }
+#modal-body .eq-tools { white-space: nowrap; width: 1%; }
+#modal-body .eq-tools button { width: 22px; height: 22px; color: var(--muted); border: 1px solid transparent; border-radius: 3px; }
+#modal-body .eq-tools button:hover:not(:disabled) { border-color: var(--line); color: var(--text); }
+#modal-body .eq-tools button:disabled { opacity: .3; }
+#modal-body .eq-tools .eq-del:hover { color: var(--red); }
+.eq-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; }
+.eq-msg { color: var(--muted); font-size: 12px; }
+.eq-msg.err { color: var(--red); }
+.eq-help { color: var(--muted); font-size: 12px; margin: 6px 0 0; }

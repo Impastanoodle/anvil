@@ -499,7 +499,14 @@
     fit: function () { UI.zoomToFit(); },
     png: function () { UI.render(); return UI.renderer.domElement.toDataURL('image/png'); },
     rebuild: function () { return UI.rebuild().then(function () { return window.anvil.summary(); }); },
-    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1) }; },
+    // equations() -> a copy of model.equations ([{ name, expr }]); equations(list | { T: 10, W: '=T*2' }) replaces them
+    // (one undo step), rebuilds, and resolves to the summary (whose `equations` holds the evaluated variables)
+    equations: function (spec) {
+      if (!arguments.length) return JSON.parse(JSON.stringify(App.model.equations || []));
+      return UI.setEquations(spec).then(function () { return window.anvil.summary(); });
+    },
+    showEquations: function () { UI.showEquations(); },
+    summary: function () { var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})) }; },
     examples: EXAMPLES
   };
 

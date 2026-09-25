@@ -259,6 +259,26 @@ var AnvilExamples = [
     ].join('\n')
   },
   {
+    name: 'Parametric plate',
+    description: 'A mounting plate driven by equations (Tools ▸ Equations): length, width, thickness, edge margin and hole size are global variables, the corner holes are patterned at "=L - 2*E" and a centre row at "=L/4". Change T or D and rebuild.',
+    // 120×80×8 plate − four Ø8 corner holes − three Ø4 centre holes (polygonal circles: 16 sides each)
+    volume: 120 * 80 * 8 - 4 * Math.PI * 16 * 8 - 3 * Math.PI * 4 * 8,
+    tolerance: 0.01,
+    code: [
+      'p.name("Parametric plate").units("mm");',
+      '// global variables, in order: each may use the ones above it',
+      'p.equations({ L: 120, W: 80, T: 8, E: 15, D: 8 });',
+      '// box sizes are sketch dimensions, evaluated now; the thickness stays live ("=T")',
+      'p.box("=L", "=W", "=T");                              // x in [0,L], y in [0,T], z in [0,W]',
+      '// one corner hole on the top face, then a 2×2 pattern whose spacings follow L, W and the margin E',
+      'p.hole("Top", 15, -15, "=D", { offset: "=T" });',
+      'p.linearPattern({ dir: "x", spacing: "=L - 2*E", count: 2, dir2: "z", spacing2: "=W - 2*E", count2: 2 });',
+      '// a row of three half-size holes along the middle, a quarter of the length apart',
+      'p.hole("Top", 30, -40, "=D/2", { offset: "=T" });',
+      'p.linearPattern({ dir: "x", spacing: "=L/4", count: 3 });'
+    ].join('\n')
+  },
+  {
     name: 'Two-body clamp',
     description: 'A base block and a floating cap kept as two solid bodies (Merge result off), with two holes scoped to the cap only (Feature Scope ▸ Selected bodies) and a fillet that acts on the base alone. Shows the Solid Bodies folder in the FeatureManager.',
     // base 60×10×30 + cap 60×6×30 − two Ø6 holes through the 6 mm cap − a R3 fillet along the base's 60 mm front bottom edge

@@ -199,6 +199,7 @@
     root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { m.name = n; UI.rebuild(); }); });
     tree.appendChild(root);
     [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
+    appendEquationsFolder(tree, filter);
     appendBodiesFolder(tree, filter);
     tree.appendChild(treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
     ['Front', 'Top', 'Right'].forEach(function (r) {
@@ -259,7 +260,8 @@
       { label: hidden ? 'Show' : 'Hide', action: function () { setBodyHidden(b.index, !hidden); } },
       { label: 'Mass Properties', action: function () { UI.showMassProperties(); } }
     ];
-    if (UI.zoomToFit) items.push({ label: 'Zoom to Selection', action: function () { UI.zoomToFit(); } });
+    // Zoom to Selection frames just this body when ui-core has UI.zoomToBody, else the whole model
+    if (UI.zoomToBody || UI.zoomToFit) items.push({ label: 'Zoom to Selection', action: function () { if (!(UI.zoomToBody && UI.zoomToBody(b.index)) && UI.zoomToFit) UI.zoomToFit(); } });
     if (b.featureId != null && K.findFeature(App.model, b.featureId)) {
       items.push({ sep: true });
       items.push({ label: 'Edit Feature', action: function () { UI.editFeature(K.findFeature(App.model, b.featureId)); } });
@@ -286,6 +288,33 @@
       row.addEventListener('click', function () { selectBody(b.index); if (typeof UI.selectBody !== 'function') setStatus(bodyTitle(b)); });
       row.addEventListener('dblclick', function (e) { e.stopPropagation(); var f = b.featureId != null ? K.findFeature(App.model, b.featureId) : null; if (f) UI.editFeature(f); });
       row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); selectBody(b.index); setStatus(bodyTitle(b)); showMenu(e.clientX, e.clientY, bodyMenu(b)); });
+      box.appendChild(row);
+    });
+    tree.appendChild(box);
+  }
+  // Equations folder (SolidWorks shows it near the top of the tree once the part has global variables): one
+  // "T = 10" row per model.equations entry; double-click opens Tools ▸ Equations. Open by default.
+  function appendEquationsFolder(tree, filter) {
+    var list = Array.isArray(App.model.equations) ? App.model.equations : [];
+    if (!list.length) return;
+    var vars = (App.build && App.build.equations) || {}, errs = (App.build && App.build.equationErrors) || {};
+    var shown = list.filter(function (q) { return !filter || String(q.name).toLowerCase().indexOf(filter) >= 0; });
+    var isOpen = expanded.equations == null ? true : !!expanded.equations;
+    if (filter && shown.length) isOpen = true;
+    var anyErr = list.some(function (q) { return errs[q.name]; });
+    var folder = treeItem({ icon: 'equations', name: 'Equations', depth: 1, cls: 'eq-folder' + (anyErr ? ' err' : ''), children: true, open: isOpen, title: list.length + ' global variable' + (list.length === 1 ? '' : 's') + ' — double-click to manage', toggle: function () { expanded.equations = !isOpen; refreshTree(); } });
+    folder.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(); });
+    folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', action: showEquations }]); });
+    tree.appendChild(folder);
+    var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
+    shown.forEach(function (q) {
+      var err = errs[q.name], val = vars[q.name];
+      var plain = /^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(String(q.expr));
+      var row = treeItem({ icon: err ? 'error' : 'equations', name: q.name + ' = ' + q.expr + (!err && !plain && val != null ? '  (' + UI.fmtNum(val, 4) + ')' : ''), depth: 2, cls: 'eq-row' + (err ? ' err' : ''), title: err ? q.name + ': ' + err : q.name + ' = ' + q.expr + (val != null ? ' = ' + val : '') });
+      row.setAttribute('data-eq', String(q.name));
+      row.addEventListener('dblclick', function (e) { e.stopPropagation(); showEquations(q.name); });
+      row.addEventListener('click', function () { setStatus(err ? q.name + ': ' + err : q.name + ' = ' + q.expr + (val != null ? ' = ' + UI.fmtNum(val, 6) : '')); });
+      row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Manage Equations…', action: function () { showEquations(q.name); } }]); });
       box.appendChild(row);
     });
     tree.appendChild(box);
@@ -470,6 +499,7 @@
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },
         { label: 'Measure', action: UI.cmdMeasure },
         { label: 'Mass Properties', action: UI.showMassProperties },
+        { label: 'Equations…', action: function () { showEquations(); } },
         { sep: true },
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
@@ -560,13 +590,137 @@
     var btns = $('modal-buttons');
     btns.innerHTML = '';
     (opts.buttons || [{ label: 'Close', primary: true, action: closeModal }]).forEach(function (b) {
-      btns.appendChild(el('button', { class: 'btn' + (b.primary ? ' primary' : ''), text: b.label, onclick: function () { if (b.action) b.action(); if (b.close !== false && !b.action) closeModal(); } }));
+      var bt = el('button', { class: 'btn' + (b.primary ? ' primary' : ''), text: b.label, onclick: function () { if (b.action) b.action(); if (b.close !== false && !b.action) closeModal(); } });
+      if (b.id) bt.id = b.id;
+      btns.appendChild(bt);
     });
     $('modal').hidden = false;
     var first = body.querySelector('textarea, input, button');
     if (first) first.focus();
   }
-  function closeModal() { $('modal').hidden = true; }
+  function closeModal() { $('modal').hidden = true; $('modal-card').classList.remove('wide'); }
+
+  // ------------------------------------------------------------------ Tools ▸ Equations
+  // "Equations, Global Variables, and Dimensions": edits a working copy of model.equations ([{ name, expr }], in
+  // order, each may use the ones above it; expr is stored without the leading "="). Every keystroke re-evaluates the
+  // whole list with Kernel.resolveEquations and shows the value, or the error in red, per row. OK applies the list as
+  // one undoable change and rebuilds (setEquations); Cancel discards it.
+  // DOM: #eq-dialog, table #eq-table, rows tr.eq-row[data-index] with input.eq-name, input.eq-expr, td.eq-val (.err),
+  // buttons .eq-up / .eq-down / .eq-del; #eq-add adds a row; #eq-msg; modal buttons #eq-ok and #eq-cancel.
+  // Normalise any accepted form to [{ name, expr }]: a list of { name, expr|value }, or an object { T: 10, W: '=T*2' }.
+  function normalizeEquations(spec) {
+    var out = [];
+    function exprText(v) { return v == null ? '' : String(v).replace(/^\s*=\s*/, '').trim(); }
+    if (Array.isArray(spec)) spec.forEach(function (q) { if (q && q.name != null && String(q.name).trim() !== '') out.push({ name: String(q.name).trim(), expr: exprText(q.expr != null ? q.expr : q.value) }); });
+    else if (spec && typeof spec === 'object') Object.keys(spec).forEach(function (k) { out.push({ name: k, expr: exprText(spec[k]) }); });
+    return out;
+  }
+  // setEquations(list) -> the rebuild Promise. An empty list removes model.equations.
+  function setEquations(spec) {
+    var list = normalizeEquations(spec);
+    UI.pushUndo();
+    if (list.length) App.model.equations = list; else delete App.model.equations;
+    return UI.afterRebuild(UI.rebuild(), function () { refreshTree(); refreshStatus(); });
+  }
+  function evaluateEquations(list) {
+    if (!K.resolveEquations) return { vars: {}, errors: {} };
+    try { return K.resolveEquations({ equations: list }); } catch (e) { return { vars: {}, errors: {} }; }
+  }
+  function showEquations(focusName) {
+    var rows = normalizeEquations(App.model.equations || []);
+    var wrap = el('div', { id: 'eq-dialog' });
+    var table = el('table', { id: 'eq-table', class: 'eq-table' });
+    table.appendChild(el('thead', {}, [el('tr', {}, [el('th', { text: 'Name' }), el('th', { text: 'Value / Equation' }), el('th', { text: 'Evaluates to' }), el('th', { text: '' })])]));
+    var tbody = el('tbody');
+    table.appendChild(tbody);
+    var msg = el('div', { id: 'eq-msg', class: 'eq-msg' });
+    var help = el('p', { class: 'eq-help', html: 'Global variables are evaluated top to bottom; each may use the ones above it. Use them in any PropertyManager number field by typing <kbd>=</kbd>, e.g. <kbd>=T*2</kbd>. Operators <kbd>+ - * / ^</kbd>, parentheses, <kbd>pi</kbd>, and functions such as <kbd>sqrt()</kbd>, <kbd>sind()</kbd>, <kbd>min()</kbd>, <kbd>max()</kbd>.' });
+    var addBtn = el('button', { id: 'eq-add', class: 'btn', text: '+ Add global variable', onclick: function () { rows.push({ name: nextName(), expr: '0' }); render(rows.length - 1, 'name'); } });
+    wrap.appendChild(table);
+    wrap.appendChild(el('div', { class: 'eq-bar' }, [addBtn, msg]));
+    wrap.appendChild(help);
+    function nextName() {
+      var used = {}; rows.forEach(function (q) { used[q.name] = true; });
+      for (var i = 1; ; i++) if (!used['D' + i]) return 'D' + i;
+    }
+    function evaluate() {
+      var live = rows.filter(function (q) { return q.name !== '' || q.expr !== ''; });
+      var r = evaluateEquations(live);
+      var bad = 0;
+      Array.prototype.forEach.call(tbody.querySelectorAll('tr.eq-row'), function (tr) {
+        var q = rows[+tr.getAttribute('data-index')], td = tr.querySelector('.eq-val');
+        var err = null;
+        if (q.name === '' && q.expr === '') err = null;
+        else if (q.name === '') err = 'Enter a name';
+        else if (q.expr === '') err = 'Enter a value or equation';
+        else if (r.errors[q.name]) err = r.errors[q.name];
+        else if (r.vars[q.name] == null) err = 'Not evaluated';
+        td.classList.toggle('err', !!err);
+        tr.classList.toggle('err', !!err);
+        td.textContent = err ? err : (q.name === '' ? '' : UI.fmtNum(r.vars[q.name], 6));
+        td.title = err || '';
+        if (err) bad++;
+      });
+      msg.textContent = bad ? bad + ' equation' + (bad === 1 ? '' : 's') + ' with errors' : (rows.length ? rows.length + ' global variable' + (rows.length === 1 ? '' : 's') : 'No global variables yet');
+      msg.classList.toggle('err', bad > 0);
+      return bad;
+    }
+    function render(focusIndex, focusField) {
+      tbody.innerHTML = '';
+      rows.forEach(function (q, i) {
+        var tr = el('tr', { class: 'eq-row', 'data-index': String(i) });
+        var name = el('input', { type: 'text', class: 'eq-name', spellcheck: 'false', 'aria-label': 'Name' });
+        name.value = q.name;
+        var expr = el('input', { type: 'text', class: 'eq-expr', spellcheck: 'false', 'aria-label': 'Value or equation' });
+        expr.value = q.expr === '' ? '' : '= ' + q.expr;
+        name.addEventListener('input', function () { q.name = name.value.trim(); evaluate(); });
+        expr.addEventListener('input', function () { q.expr = expr.value.replace(/^\s*=\s*/, '').trim(); evaluate(); });
+        [name, expr].forEach(function (inp) { inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); applyAndClose(); } else if (e.key !== 'Escape') e.stopPropagation(); }); });
+        var tools = el('td', { class: 'eq-tools' }, [
+          el('button', { class: 'eq-up', title: 'Move up', text: '▲', onclick: function () { if (i > 0) { rows.splice(i - 1, 0, rows.splice(i, 1)[0]); render(i - 1, 'name'); } } }),
+          el('button', { class: 'eq-down', title: 'Move down', text: '▼', onclick: function () { if (i < rows.length - 1) { rows.splice(i + 1, 0, rows.splice(i, 1)[0]); render(i + 1, 'name'); } } }),
+          el('button', { class: 'eq-del', title: 'Delete', text: '✕', onclick: function () { rows.splice(i, 1); render(Math.min(i, rows.length - 1), 'name'); } })
+        ]);
+        if (i === 0) tools.firstChild.disabled = true;
+        if (i === rows.length - 1) tools.children[1].disabled = true;
+        tr.appendChild(el('td', {}, [name]));
+        tr.appendChild(el('td', {}, [expr]));
+        tr.appendChild(el('td', { class: 'eq-val' }));
+        tr.appendChild(tools);
+        tbody.appendChild(tr);
+      });
+      evaluate();
+      if (focusIndex != null && focusIndex >= 0) {
+        var t = tbody.querySelectorAll('tr.eq-row')[focusIndex];
+        var inp = t && t.querySelector(focusField === 'expr' ? '.eq-expr' : '.eq-name');
+        if (inp) setTimeout(function () { inp.focus(); inp.select(); }, 0);
+      }
+    }
+    function applyAndClose() {
+      if (evaluate()) { msg.textContent = 'Fix the equations shown in red first.'; msg.classList.add('err'); return null; }
+      var list = rows.filter(function (q) { return q.name !== '' && q.expr !== ''; }).map(function (q) { return { name: q.name, expr: q.expr }; });
+      var before = JSON.stringify(App.model.equations || []);
+      closeModal();
+      if (JSON.stringify(list) === before) return UI.whenIdle();
+      var p = setEquations(list);
+      UI.lastEquationsApply = p;
+      p.then(function () {
+        var n = App.build && App.build.errors ? Object.keys(App.build.errors).length : 0;
+        setStatus('Equations applied: ' + list.length + ' global variable' + (list.length === 1 ? '' : 's') + '. ' + (n ? n + ' rebuild error' + (n > 1 ? 's' : '') + '.' : 'Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.'));
+      });
+      return p;
+    }
+    showModal({ title: 'Equations, Global Variables, and Dimensions', body: wrap, buttons: [
+      { id: 'eq-ok', label: 'OK', primary: true, action: applyAndClose },
+      { id: 'eq-cancel', label: 'Cancel', action: closeModal }
+    ] });
+    $('modal-card').classList.add('wide');
+    var fi = -1;
+    rows.forEach(function (q, i) { if (focusName != null && q.name === focusName) fi = i; });
+    render(fi >= 0 ? fi : null, 'expr');
+    if (!rows.length) setTimeout(function () { addBtn.focus(); }, 0);
+    UI.equationsDialog = { rows: rows, evaluate: evaluate, apply: applyAndClose, render: render };
+  }
 
   // Modal replacements for window.confirm / window.prompt (native dialogs are blocked in sandboxed hosts).
   function confirmDialog(title, message, onYes, yesLabel) {
@@ -590,4 +744,5 @@
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu;
   UI.refreshHud = refreshHud; UI.showModal = showModal; UI.closeModal = closeModal; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
+  UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
 })(UI);

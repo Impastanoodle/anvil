@@ -189,9 +189,35 @@ var UI = (function () {
     return { min: min, max: max };
   }
 
-  function zoomToFit() {
-    var b = modelBounds();
-    var c = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
+  function zoomToFit() { fitBox(modelBounds()); }
+
+  // Bounding box {min, max} of one body of a multi-body part, from the combined-mesh faces tagged with that body
+  // (face.body, see bodyOfFace). Null when the index has no triangles.
+  function bodyBounds(index) {
+    var m = App.mesh;
+    if (!m || !m.faces) return null;
+    var p = m.positions64 || m.positions, min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity], any = false;
+    m.faces.forEach(function (f) {
+      if (bodyOfFace(f) !== index) return;
+      for (var i = f.start * 9, e = (f.start + f.count) * 9; i < e; i += 3) {
+        for (var k = 0; k < 3; k++) { var v = p[i + k]; if (v < min[k]) min[k] = v; if (v > max[k]) max[k] = v; }
+        any = true;
+      }
+    });
+    return any ? { min: min, max: max } : null;
+  }
+  // Zoom to Selection for a body: frame that body's box with the same fit as Zoom to Fit.
+  function zoomToBody(index) {
+    var b = bodyBounds(index);
+    if (!b) return false;
+    pushViewHistory();
+    fitBox(b);
+    return true;
+  }
+
+  // Centre the camera on box b and scale so its projected extent fills the viewport (less a margin).
+  function fitBox(b) {
+    var c =new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
     cam.target.copy(c);
     applyCamera();
     var ex = 0, ey = 0;
@@ -844,12 +870,62 @@ var UI = (function () {
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
     if (!opts.noSave) autosave();
-    var errIds = Object.keys(App.build.errors);
-    if (errIds.length && UI.setStatus) {
+    var errIds = Object.keys(App.build.errors || {});
+    var eqMsgs = equationErrorMessages(App.build);
+    if (eqMsgs.length && UI.setStatus) {
+      UI.setStatus(eqMsgs[0] + (eqMsgs.length > 1 ? ' (+' + (eqMsgs.length - 1) + ' more equation errors)' : ''));
+    } else if (errIds.length && UI.setStatus) {
       var f = K.findFeature(App.model, +errIds[0]);
       UI.setStatus((f ? f.name : 'Feature') + ': ' + App.build.errors[errIds[0]]);
     }
     return App.build;
+  }
+
+  // ------------------------------------------------------------------ equations
+  // build.equationErrors comes from Kernel.resolveEquations: an array of {name, error|msg|message} or strings, or an
+  // object keyed by variable name. Normalised here to "Equation W: Unknown variable Q" lines for the status bar.
+  function equationErrorMessages(build) {
+    var errs = build && build.equationErrors, out = [];
+    if (!errs) return out;
+    function line(name, msg) {
+      if (msg && typeof msg === 'object') msg = msg.error || msg.message || msg.msg || String(msg);
+      return 'Equation' + (name ? ' ' + name : '') + ': ' + msg;
+    }
+    if (Array.isArray(errs)) {
+      errs.forEach(function (e) {
+        if (typeof e === 'string') out.push(/^Equation\b/.test(e) ? e : line('', e));
+        else if (e) out.push(line(e.name, e.error || e.message || e.msg || ''));
+      });
+    } else if (typeof errs === 'object') {
+      Object.keys(errs).forEach(function (k) { out.push(line(k, errs[k])); });
+    }
+    return out;
+  }
+  // Current global variable values {name: number}: the last build's, else resolved from the model now.
+  function equationVars() {
+    if (App.build && App.build.equations && typeof App.build.equations === 'object' && !Array.isArray(App.build.equations)) return App.build.equations;
+    if (App.build && App.build.equationVars) return App.build.equationVars;
+    if (typeof K.resolveEquations === 'function') {
+      try { var r = K.resolveEquations(App.model); return (r && r.vars) || {}; } catch (e) { }
+    }
+    return {};
+  }
+  // Evaluate what the user typed in a numeric box: "=T*2" or plain arithmetic "25.4*2" (evaluated as "=25.4*2").
+  // Returns {value} or {error}. Falls back to parseFloat when the kernel has no expression evaluator.
+  function evalInput(text) {
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return { error: 'Enter a value' };
+    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return { value: parseFloat(s) };
+    if (typeof K.evalExpression !== 'function') {
+      var v = parseFloat(s);
+      return isNaN(v) ? { error: 'Not a number: ' + s } : { value: v };
+    }
+    var expr = s.charAt(0) === '=' ? s : '=' + s;
+    try {
+      var n = K.evalExpression(expr, equationVars());
+      if (typeof n !== 'number' || !isFinite(n)) return { error: 'Not a number: ' + s };
+      return { value: n };
+    } catch (err) { return { error: (err && err.message) || String(err) }; }
   }
 
   // Run fn once the build behind promise p is applied: immediately when p came from the sync path
@@ -1056,6 +1132,8 @@ var UI = (function () {
     getBodyMesh: function () { return bodyMesh; },
     // multi-body parts (viewport side): see the "bodies" section
     bodyInfo: bodyInfo, bodyName: bodyName, bodyCount: bodyCount, selectBody: selectBody,
-    setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden
+    setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden, bodyBounds: bodyBounds, zoomToBody: zoomToBody, fitBox: fitBox,
+    // equations (global variables)
+    equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput
   };
 })();

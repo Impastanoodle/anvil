@@ -376,16 +376,40 @@
     dimEdit.style.left = sc.text.x + 'px';
     dimEdit.style.top = (sc.text.y - 4) + 'px';
   }
-  function closeDimEdit(commit) {
+  // Show (msg) or clear (no msg) an error on the Modify box: red outline, tooltip, and the status bar.
+  function dimEditError(msg) {
+    dimEdit.setAttribute('data-error', msg || '');
+    dimInput.style.outline = msg ? '2px solid #d33' : '';
+    dimInput.title = msg || '';
+    dimInput.setAttribute('aria-invalid', msg ? 'true' : 'false');
+    if (msg) UI.setStatus('Dimension not changed: ' + msg);
+  }
+  // Value typed in the Modify box: a number, plain arithmetic ("25.4*2") or an equation ("=T*3"). The sketch stores
+  // the resulting number, never the expression.
+  function parseDimInput(text) {
+    if (UI.evalInput) return UI.evalInput(text);
+    var v = parseFloat(text);
+    return isNaN(v) ? { error: 'Not a number: ' + text } : { value: v };
+  }
+  // commit: apply the typed value. keepOnError: an invalid entry leaves the box open with the message (Enter);
+  // otherwise (blur) the box closes without applying and the message stays in the status bar.
+  function closeDimEdit(commit, keepOnError) {
     var ed = dimEditing;
     if (!ed) return;
+    var r = null;
+    if (commit) {
+      r = parseDimInput(dimInput.value);
+      if (r.error != null && keepOnError) { dimEditError(r.error); dimInput.focus(); dimInput.select(); return; }
+    }
     dimEditing = null;
     dimEdit.hidden = true;
-    if (!commit) return;
+    if (r && r.error != null) UI.setStatus('Dimension not changed: ' + r.error);
+    dimEditError('');
+    if (!commit || !r || r.error != null) return;
     var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && f.entities[ed.d.e];
     if (!e) return;
-    var v = parseFloat(dimInput.value);
-    if (isNaN(v) || Math.abs(v - ed.value) < 1e-9) return;
+    var v = r.value;
+    if (Math.abs(v - ed.value) < 1e-9) return;
     try {
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       K.setDimValue(e, ed.d, v);
@@ -396,9 +420,10 @@
   }
   dimInput.addEventListener('keydown', function (ev) {
     ev.stopPropagation();
-    if (ev.key === 'Enter') { ev.preventDefault(); closeDimEdit(true); }
+    if (ev.key === 'Enter') { ev.preventDefault(); closeDimEdit(true, true); }
     else if (ev.key === 'Escape') { ev.preventDefault(); closeDimEdit(false); }
   });
+  dimInput.addEventListener('input', function () { if (dimEdit.getAttribute('data-error')) dimEditError(''); });
   dimInput.addEventListener('blur', function () { closeDimEdit(true); });
   dimEdit.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
 
@@ -457,6 +482,26 @@
   UI.drawDims = drawDims;
   UI.deleteDim = deleteDim;
   UI.dimToolClick = dimToolClick;
+  // Script/test hooks for the Modify box. openDimEdit(i) opens it on placed dimension i of the active sketch;
+  // editDim(i, text) opens it, types text and presses Enter: {ok:true, value} when applied, {ok:false, error} when the
+  // entry was rejected (the box then stays open, as for a user; cancelDimEdit() closes it).
+  UI.openDimEdit = function (index) {
+    var f = UI.activeSketchFeature();
+    if (!f || !f.dims || !f.dims[index]) return false;
+    openDimEdit({ d: f.dims[index], index: index });
+    return true;
+  };
+  UI.editDim = function (index, text) {
+    if (!UI.openDimEdit(index)) return { ok: false, error: 'No dimension ' + index + ' in the active sketch' };
+    dimInput.value = String(text);
+    var d = dimEditing.d;
+    closeDimEdit(true, true);
+    if (dimEditing) return { ok: false, error: dimEdit.getAttribute('data-error') || 'rejected' };
+    var f = UI.activeSketchFeature(), e = f && f.entities[d.e];
+    return { ok: true, value: e ? K.dimValue(e, d) : null };
+  };
+  UI.cancelDimEdit = function () { closeDimEdit(false); dimEditError(''); };
+  UI.isDimEditOpen = function () { return !!dimEditing; };
 
   // ------------------------------------------------------------------ mouse handling
   var drag = null, downPos = null, zoomBox = null;

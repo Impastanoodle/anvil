@@ -6,15 +6,17 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- CSG: split polygons only inside overlap regions (the rest of ROADMAP Phase 4 "Faster CSG"); the Funnel/Rounded handle shells and fillets are now the slow parts (slab unions where every slab overlaps its neighbours).
+- CSG: build the BSP trees from only the faces near the overlap (the last part of ROADMAP Phase 4 "Faster CSG"). It needs a separate inside/outside test for each piece (ray cast), because a tree built from part of a solid misclassifies.
 
 ## Ideas (lower priority)
 
 - Desktop shell so Anvil opens as its own window with native file dialogs.
-- Equations in PropertyManager fields (`= t * 2`).
 
 ## Done
 
+- (2026-09-25T15) Equations: `model.equations` global variables, `=` expressions in any numeric feature field and in the sketch Modify box, Tools ▸ Equations dialog, Equations folder in the FeatureManager, script round trip, `anvil.equations()`, Parametric plate example; kernel tests 334, smoke 46.
+- (2026-09-25T15) Faster CSG: faces a boolean did not cut come back whole (`CSG.options.restoreWhole`); Funnel 1844 → 1292 ms, 14071 → 4576 faces; volumes unchanged.
+- (2026-09-25T15) Zoom to Selection frames a single body (`UI.zoomToBody`).
 - (2026-09-22T20b) Multi-body parts: `merge: false` keeps a boss as its own body, `bodies: [i…]` scopes a cut, Solid Bodies(n) folder with select/hide, Merge result and Feature Scope in the PropertyManagers, per-body Mass Properties, Two-body clamp example; kernel tests 296, smoke 39.
 - (2026-09-22T20) Cut direction default: `Kernel.cutDirectionHint` (±eps probes, then an exact ray test through every face) presets *Reverse direction* in the Cut-Extrude PM so a new cut goes into the body from either face.
 - (2026-09-22T20) Faster CSG: per-polygon bounding-box early-out and disjoint short-circuit in `csg.js` (`getBounds`); bench 2994 → 2375 ms, every example volume unchanged; kernel tests 264, smoke 32.

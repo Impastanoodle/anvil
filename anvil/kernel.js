@@ -1128,7 +1128,8 @@ var Kernel = (function () {
     if (v && typeof v === 'object') {
       var o = {};
       Object.keys(v).forEach(function (k) {
-        o[k] = EXPR_SKIP[k] ? cloneValue(v[k]) : resolveValue(v[k], vars, path ? path + '.' + k : k);
+        // a computed sketch profile is shared, not copied: rebuild replaces it wholesale and never edits it in place
+        o[k] = k === 'profile' ? v[k] : EXPR_SKIP[k] ? cloneValue(v[k]) : resolveValue(v[k], vars, path ? path + '.' + k : k);
       });
       return o;
     }
@@ -2741,7 +2742,14 @@ var Kernel = (function () {
       solids.push(s);
     });
     if (!solids.length) throw new Error('Could not build the flat pattern.');
-    var merged = unionTree(solids), fm = meshFromBody(merged), topIdx = -1;
+    // The regions come from rigid maps of real faces, so their shared corners carry near-coincident vertices (a few
+    // 1e-5 apart). Merged with every BSP fragment kept, both sides of such a seam get the same split vertices and the
+    // outline tracer welds them; with CSG's whole-polygon restore a seam becomes a T-junction beyond its tolerance and
+    // the blank falls apart into two loops. So this one merge keeps all fragments.
+    var keepWhole = CSG.options ? CSG.options.restoreWhole : null, merged;
+    if (CSG.options) CSG.options.restoreWhole = false;
+    try { merged = unionTree(solids); } finally { if (CSG.options) CSG.options.restoreWhole = keepWhole; }
+    var fm = meshFromBody(merged), topIdx = -1;
     fm.faces.forEach(function (fc, i) { if (fc.normal[2] > 0.999 && Math.abs(fc.w - 1) < 1e-6) topIdx = i; });
     if (topIdx < 0) throw new Error('Could not build the flat pattern.');
     var fo = faceOutline(fm, topIdx);
@@ -2890,11 +2898,19 @@ var Kernel = (function () {
   Builder.prototype.density = function (d) { this.model.density = +d; return this; };
   Builder.prototype.color = function (c) { this.model.color = String(c); return this; };
   // equations({ T: 10, W: '=T*2' }) or equations([{ name, expr }]): the model's global variables, in order (replaces
-  // any earlier list). Numbers are stored as their string, a leading "=" is dropped.
+  // any earlier list). Numbers are stored as their string. The object form drops a leading "="; the array form (what
+  // generateScript writes) keeps each expr string exactly, so a script round trip reproduces model.equations.
   Builder.prototype.equations = function (spec) {
     var list = [];
     function expr(v) { return String(v == null ? '' : v).replace(/^\s*=/, '').trim(); }
-    if (Array.isArray(spec)) spec.forEach(function (e) { if (e) list.push({ name: String(e.name), expr: expr(e.expr) }); });
+    if (Array.isArray(spec)) spec.forEach(function (e) {
+      if (!e) return;
+      var q = {};
+      Object.keys(e).forEach(function (k) { q[k] = e[k]; }); // extra fields (a comment, say) ride along
+      q.name = String(e.name);
+      q.expr = typeof e.expr === 'string' ? e.expr : String(e.expr == null ? '' : e.expr);
+      list.push(q);
+    });
     else if (spec && typeof spec === 'object') Object.keys(spec).forEach(function (k) { list.push({ name: k, expr: expr(spec[k]) }); });
     this.model.equations = list;
     return this;
@@ -2965,7 +2981,7 @@ var Kernel = (function () {
   // reliefWidth (default T), reliefDepth (default T/2)
   Builder.prototype.flange = function (length, edges, opts) {
     opts = opts || {};
-    var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [+opts.toward[0], +opts.toward[1], +opts.toward[2]] : undefined,
+    var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [num(opts.toward[0]), num(opts.toward[1]), num(opts.toward[2])] : undefined,
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name,
       miter: !!opts.miter, relief: opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none' };
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
@@ -3036,14 +3052,14 @@ var Kernel = (function () {
   Builder.prototype.linearPattern = function (opts) {
     opts = opts || {};
     bodyOpts(this._add({
-      type: 'lpattern', feature: this._srcId(opts), d1: opts.dir || 'x', rev1: !!opts.reverse, s1: num(opts.spacing) || 10, n1: opts.count || 2,
-      d2: opts.dir2 || null, rev2: !!opts.reverse2, s2: num(opts.spacing2) || 0, n2: opts.count2 || 1, name: opts.name
+      type: 'lpattern', feature: this._srcId(opts), d1: opts.dir || 'x', rev1: !!opts.reverse, s1: num(opts.spacing) || 10, n1: num(opts.count) || 2,
+      d2: opts.dir2 || null, rev2: !!opts.reverse2, s2: num(opts.spacing2) || 0, n2: num(opts.count2) || 1, name: opts.name
     }), opts);
     return this;
   };
   Builder.prototype.circularPattern = function (opts) {
     opts = opts || {};
-    bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center || [0, 0, 0], n: opts.count || 4, angle: opts.angle == null ? 360 : num(opts.angle), equal: opts.equal !== false, name: opts.name }), opts);
+    bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center ? opts.center.map(num) : [0, 0, 0], n: num(opts.count) || 4, angle: opts.angle == null ? 360 : num(opts.angle), equal: opts.equal !== false, name: opts.name }), opts);
     return this;
   };
   Builder.prototype.mirror = function (plane, opts) {
@@ -3100,15 +3116,18 @@ var Kernel = (function () {
 
   function SketchBuilder(part, feature) { this.part = part; this.f = feature; }
   SketchBuilder.prototype._e = function (e) { this.f.entities.push(e); return this; };
-  SketchBuilder.prototype.line = function (x1, y1, x2, y2) { return this._e({ t: 'line', x1: +x1, y1: +y1, x2: +x2, y2: +y2 }); };
-  SketchBuilder.prototype.rect = function (x, y, w, h) { return this._e({ t: 'rect', x: +x, y: +y, w: +w, h: +h }); };
-  SketchBuilder.prototype.centerRect = function (cx, cy, w, h) { return this._e({ t: 'crect', cx: +cx, cy: +cy, w: +w, h: +h }); };
-  SketchBuilder.prototype.circle = function (cx, cy, r) { return this._e({ t: 'circle', cx: +cx, cy: +cy, r: +r }); };
-  SketchBuilder.prototype.polygon = function (cx, cy, r, n, rot) { return this._e({ t: 'poly', cx: +cx, cy: +cy, r: +r, n: n | 0 || 6, rot: +rot || 0 }); };
-  SketchBuilder.prototype.slot = function (x1, y1, x2, y2, w) { return this._e({ t: 'slot', x1: +x1, y1: +y1, x2: +x2, y2: +y2, w: +w }); };
-  SketchBuilder.prototype.arc = function (cx, cy, r, a0, a1) { return this._e({ t: 'arc', cx: +cx, cy: +cy, r: +r, a0: +a0, a1: +a1 }); };
-  SketchBuilder.prototype.polyline = function (pts, closed) { return this._e({ t: 'polyline', pts: pts.map(function (p) { return [+p[0], +p[1]]; }), closed: closed !== false }); };
-  SketchBuilder.prototype.point = function (x, y) { return this._e({ t: 'point', x: +x, y: +y }); };
+  // sketch entities hold plain numbers: a value given as an equation ('=T/2') is evaluated against the current
+  // variables when the script runs (the entity keeps the number, not the expression)
+  SketchBuilder.prototype._v = function (x) { return isExpression(x) ? this.part._value(x, 'sketch value') : +x; };
+  SketchBuilder.prototype.line = function (x1, y1, x2, y2) { var s = this; return this._e({ t: 'line', x1: s._v(x1), y1: s._v(y1), x2: s._v(x2), y2: s._v(y2) }); };
+  SketchBuilder.prototype.rect = function (x, y, w, h) { var s = this; return this._e({ t: 'rect', x: s._v(x), y: s._v(y), w: s._v(w), h: s._v(h) }); };
+  SketchBuilder.prototype.centerRect = function (cx, cy, w, h) { var s = this; return this._e({ t: 'crect', cx: s._v(cx), cy: s._v(cy), w: s._v(w), h: s._v(h) }); };
+  SketchBuilder.prototype.circle = function (cx, cy, r) { var s = this; return this._e({ t: 'circle', cx: s._v(cx), cy: s._v(cy), r: s._v(r) }); };
+  SketchBuilder.prototype.polygon = function (cx, cy, r, n, rot) { var s = this; return this._e({ t: 'poly', cx: s._v(cx), cy: s._v(cy), r: s._v(r), n: s._v(n) | 0 || 6, rot: s._v(rot) || 0 }); };
+  SketchBuilder.prototype.slot = function (x1, y1, x2, y2, w) { var s = this; return this._e({ t: 'slot', x1: s._v(x1), y1: s._v(y1), x2: s._v(x2), y2: s._v(y2), w: s._v(w) }); };
+  SketchBuilder.prototype.arc = function (cx, cy, r, a0, a1) { var s = this; return this._e({ t: 'arc', cx: s._v(cx), cy: s._v(cy), r: s._v(r), a0: s._v(a0), a1: s._v(a1) }); };
+  SketchBuilder.prototype.polyline = function (pts, closed) { var s = this; return this._e({ t: 'polyline', pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }), closed: closed !== false }); };
+  SketchBuilder.prototype.point = function (x, y) { var s = this; return this._e({ t: 'point', x: s._v(x), y: s._v(y) }); };
   // mirror entities across 'x' | 'y' | a line entity index | {x1,y1,x2,y2}; opts.entities = indices (default all), opts.copy=false replaces
   SketchBuilder.prototype.mirrorEntities = function (axis, opts) {
     opts = opts || {};
@@ -3166,18 +3185,20 @@ var Kernel = (function () {
   // Regenerate a script from a model so the two representations stay interchangeable.
   function generateScript(model) {
     var out = ['// ' + model.name + ' — generated by Anvil', 'p.name(' + JSON.stringify(model.name) + ').units(' + JSON.stringify(model.units) + ');'];
-    if (model.sheet) out.push('p.sheet(' + model.sheet.thickness + ', ' + model.sheet.bendRadius + ', ' + model.sheet.kFactor + ');');
+    // equations first, so every "=" field below resolves against them; the array form keeps each expr string exactly
+    if (Array.isArray(model.equations) && model.equations.length) out.push('p.equations(' + JSON.stringify(model.equations) + ');');
+    if (model.sheet) out.push('p.sheet(' + nv(model.sheet.thickness) + ', ' + nv(model.sheet.bendRadius) + ', ' + nv(model.sheet.kFactor) + ');');
     var idVar = {};
     model.features.forEach(function (f) {
       var v = 'f' + f.id;
       idVar[f.id] = v;
       switch (f.type) {
         case 'plane':
-          out.push('var ' + v + ' = p.plane(' + JSON.stringify(f.ref) + ', ' + f.offset + ', ' + JSON.stringify(f.name) + ');');
+          out.push('var ' + v + ' = p.plane(' + JSON.stringify(f.ref) + ', ' + nv(f.offset) + ', ' + JSON.stringify(f.name) + ');');
           break;
         case 'sketch': {
           var pl = f.plane || {};
-          var spec = pl.custom ? JSON.stringify(pl) : (pl.featureId != null ? idVar[pl.featureId] : JSON.stringify(pl.ref || 'Front') + ', ' + (pl.offset || 0));
+          var spec = pl.custom ? JSON.stringify(pl) : (pl.featureId != null ? idVar[pl.featureId] : JSON.stringify(pl.ref || 'Front') + ', ' + nv(pl.offset || 0));
           var s = 'var ' + v + ' = p.sketch(' + spec + (pl.custom || pl.featureId != null ? ', 0' : '') + ', ' + JSON.stringify(f.name) + ')';
           f.entities.forEach(function (e) {
             switch (e.t) {
@@ -3211,7 +3232,7 @@ var Kernel = (function () {
           if (f.sheetBase) o.sheetBase = true;
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
           if (f.cut && f.normalCut) o.normalCut = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + f.depth + ', ' + optsStr(bodyOptsOut(o, f)) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(o, f)) + ').last();');
           break;
         }
         case 'flange': {
@@ -3220,17 +3241,17 @@ var Kernel = (function () {
           if (f.reverse) fo.reverse = true;
           if (f.radius != null) fo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') fo.position = f.position;
-          if (f.toward) fo.toward = f.toward.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+          if (f.toward) fo.toward = f.toward.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e4) / 1e4; });
           if (f.miter) fo.miter = true;
-          if (f.miterGap != null && +f.miterGap !== 0) fo.miterGap = +f.miterGap;
+          if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) fo.miterGap = numOut(f.miterGap);
           if (f.relief && f.relief !== 'none') fo.relief = f.relief;
-          if (f.reliefWidth != null) fo.reliefWidth = +f.reliefWidth;
-          if (f.reliefDepth != null) fo.reliefDepth = +f.reliefDepth;
+          if (f.reliefWidth != null) fo.reliefWidth = numOut(f.reliefWidth);
+          if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
           if (f.hem) {
-            var ho = { gap: Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
+            var ho = { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
             if (f.reverse) ho.reverse = true;
-            out.push('var ' + v + ' = p.hem(' + f.length + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
-          } else out.push('var ' + v + ' = p.flange(' + f.length + ', ' + fspecs + ', ' + optsStr(fo) + ').last();');
+            out.push('var ' + v + ' = p.hem(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
+          } else out.push('var ' + v + ' = p.flange(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(fo) + ').last();');
           break;
         }
         case 'jog': {
@@ -3239,13 +3260,13 @@ var Kernel = (function () {
           if (f.reverse) jo.reverse = true;
           if (f.radius != null) jo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') jo.position = f.position;
-          out.push('var ' + v + ' = p.jog(' + f.height + ', ' + f.length + ', ' + jspecs + ', ' + optsStr(jo) + ').last();');
+          out.push('var ' + v + ' = p.jog(' + nv(f.height) + ', ' + nv(f.length) + ', ' + jspecs + ', ' + optsStr(jo) + ').last();');
           break;
         }
         case 'revolve': {
           var ro = { sketch: '@' + idVar[f.sketch], name: f.name, axis: f.axis };
           if (f.reverse) ro.reverse = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + f.angle + ', ' + optsStr(bodyOptsOut(ro, f)) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + nv(f.angle) + ', ' + optsStr(bodyOptsOut(ro, f)) + ').last();');
           break;
         }
         case 'lpattern': {
@@ -3279,12 +3300,12 @@ var Kernel = (function () {
         case 'chamfer':
         case 'fillet': {
           var specs = JSON.stringify((f.edges || []).map(function (e) { return { at: e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }), chain: e.chain !== false }; }));
-          out.push('var ' + v + ' = p.' + f.type + '(' + (f.type === 'chamfer' ? f.d : f.r) + ', ' + specs + ', ' + optsStr({ name: f.name }) + ').last();');
+          out.push('var ' + v + ' = p.' + f.type + '(' + nv(f.type === 'chamfer' ? f.d : f.r) + ', ' + specs + ', ' + optsStr({ name: f.name }) + ').last();');
           break;
         }
         case 'shell': {
           var fspecs2 = JSON.stringify((f.faces || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));
-          out.push('var ' + v + ' = p.shell(' + f.thickness + ', ' + fspecs2 + ', ' + optsStr({ name: f.name }) + ').last();');
+          out.push('var ' + v + ' = p.shell(' + nv(f.thickness) + ', ' + fspecs2 + ', ' + optsStr({ name: f.name }) + ').last();');
           break;
         }
       }
@@ -3293,6 +3314,10 @@ var Kernel = (function () {
   }
   // The multi-body fields of a feature, added to its emitted opts: `merge: false` on a boss kept separate, `bodies`
   // on a scoped cut. Nothing is emitted for the defaults, so an ordinary part's script reads as before.
+  // nv(x): a numeric argument as script text, an equation ('=T*2') as its quoted string
+  function nv(x) { return isExpression(x) ? JSON.stringify(x) : String(x); }
+  // numOut(x): an option value, a number or the equation string untouched (optsStr quotes strings)
+  function numOut(x) { return isExpression(x) ? x : +x; }
   function bodyOptsOut(o, f) {
     if (f.merge === false) o.merge = false;
     if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();
@@ -3325,6 +3350,8 @@ var Kernel = (function () {
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
     resolveFaces: resolveFaces, buildShell: buildShell,
     Builder: Builder, runScript: runScript, generateScript: generateScript,
+    isExpression: isExpression, evalExpression: evalExpression, resolveEquations: resolveEquations, resolvedModel: resolvedModel,
+    resolveFeature: resolveFeature, hasExpressions: hasExpressions, EXPR_FUNCTIONS: Object.keys(EXPR_FN),
     vec: { add: add, sub: sub, scale: scale, dot: dot, cross: cross, len: len, norm: norm }
   };
 })();

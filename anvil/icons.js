@@ -132,6 +132,8 @@ var Icons = (function () {
     body: blk(2, 3, 7, 8, 4, '#a9c6ea', '#d3e3f7', '#7fa2cc', S, 1),
     material: p('M3 13 l5 -9 h5 l-5 9 z', '#f0c987', S, 1),
     folder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1),
+    // Equations (global variables): a sigma on a sheet
+    equations: rect(2, 2, 12, 12, W, S, 1, 'rx="1"') + ln('M11 4.5 H5 L8 8 L5 11.5 H11', R, 1.5),
     annotations: p('M3 13 V3.5 h6 l3 3 V13 z', W, S, 1) + ln('M5 7.5 h5 M5 9.5 h4', B, 1)
   };
   function icon(name, size, cls) {
