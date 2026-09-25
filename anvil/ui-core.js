@@ -297,6 +297,14 @@ var UI = (function () {
   // [{index, featureId, name, volume}] from Kernel.bodyInfo when the kernel has it; a plain fallback otherwise
   function bodyInfo() {
     if (!App.build) return [];
+    // assemblies: one body per component, named after the component (Pin<1>)
+    if (App.build.assembly) {
+      return bodyList().map(function (b, i) {
+        var vol = null;
+        try { if (b && typeof b.volume === 'function') vol = b.volume(); } catch (e) { }
+        return { index: i, featureId: (App.build.bodyFeatures || [])[i], componentId: (App.build.bodyFeatures || [])[i], name: bodyName(i), volume: vol };
+      });
+    }
     if (K.bodyInfo) { try { return K.bodyInfo(App.build, App.model) || []; } catch (e) { } }
     var feats = App.build.bodyFeatures || [];
     return bodyList().map(function (b, i) {
@@ -308,6 +316,10 @@ var UI = (function () {
   }
   // Name only (no volumes): cheap enough for the hover status on every mouse move.
   function bodyName(index) {
+    if (App.build && App.build.assembly) {
+      var nm = App.build.bodyNames && App.build.bodyNames[index];
+      return nm || 'Component' + (index + 1);
+    }
     var feats = App.build && App.build.bodyFeatures, f = feats && feats[index] != null ? K.findFeature(App.model, feats[index]) : null;
     return f && f.name ? f.name : 'Body' + (index + 1);
   }
@@ -426,6 +438,23 @@ var UI = (function () {
     mats.part.color.set(App.model.color || '#a8adb6');
     var planes = App.view.section ? [App.view.section.plane] : [];
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
+  }
+
+  // ------------------------------------------------------------------ assemblies
+  // An assembly document (Assembly.isAssembly: model.type === 'assembly') builds one body per component, in
+  // model.components order, so the body helpers above work per component: face.body is the component index.
+  function isAssembly() { return !!(App.model && App.model.type === 'assembly'); }
+  // UI.componentIndex(idOrName) -> index in model.components (= body index), or -1.
+  function componentIndex(id) {
+    if (!isAssembly()) return -1;
+    var cs = App.model.components || [];
+    for (var i = 0; i < cs.length; i++) if (cs[i].id === id || (typeof id === 'string' && (cs[i].name === id || String(cs[i].id) === id))) return i;
+    return -1;
+  }
+  // UI.selectComponent(idOrName): select that component's body; status 'Pin<1>: volume …'.
+  function selectComponent(id) {
+    var i = componentIndex(id);
+    return i < 0 ? null : selectBody(i);
   }
 
   // ------------------------------------------------------------------ highlights
@@ -812,7 +841,8 @@ var UI = (function () {
 
   function rebuild(opts) {
     opts = opts || {};
-    if (!App.workerOn || opts.sync || !window.Worker) {
+    // assemblies always build on the main thread (worker.js only knows part models)
+    if (!App.workerOn || opts.sync || !window.Worker || isAssembly()) {
       // A request already posted to the worker is answered by this newer build; its reply is then ignored.
       var stale = takeInflight();
       if (stale && !stale.opts.noSave) opts = { noSave: false, sync: opts.sync };
@@ -838,8 +868,16 @@ var UI = (function () {
   }
 
   function rebuildSync(opts) {
-    var t0 = performance.now();
-    var build = K.rebuild(App.model, App.buildCache);
+    var t0 = performance.now(), build;
+    if (isAssembly()) {
+      if (typeof Assembly === 'undefined') throw new Error('Assembly documents need assembly.js');
+      if (!App.model.features) App.model.features = [];
+      build = Assembly.rebuild(App.model, App.asmCache);
+      App.asmCache = build.cache;
+      applyBuild(build, opts, performance.now() - t0);
+      return;
+    }
+    build = K.rebuild(App.model, App.buildCache);
     App.buildCache = build.cache;
     applyBuild(build, opts, performance.now() - t0);
   }
@@ -875,8 +913,10 @@ var UI = (function () {
     if (eqMsgs.length && UI.setStatus) {
       UI.setStatus(eqMsgs[0] + (eqMsgs.length > 1 ? ' (+' + (eqMsgs.length - 1) + ' more equation errors)' : ''));
     } else if (errIds.length && UI.setStatus) {
-      var f = K.findFeature(App.model, +errIds[0]);
-      UI.setStatus((f ? f.name : 'Feature') + ': ' + App.build.errors[errIds[0]]);
+      var f;
+      if (App.build.assembly && typeof Assembly !== 'undefined') f = Assembly.findComponent(App.model, +errIds[0]) || Assembly.findMate(App.model, +errIds[0]);
+      else f = K.findFeature(App.model, +errIds[0]);
+      UI.setStatus((f ? f.name : (App.build.assembly ? 'Assembly' : 'Feature')) + ': ' + App.build.errors[errIds[0]]);
     }
     return App.build;
   }
@@ -967,7 +1007,7 @@ var UI = (function () {
   }
 
   function postRebuild(req) {
-    var w = getWorker();
+    var w = isAssembly() ? null : getWorker();   // a request queued before an assembly was loaded is served here
     if (!w) { finishSync(req); return; }
     req.seq = ++wk.seq;
     wk.inflight = req;
@@ -1023,6 +1063,7 @@ var UI = (function () {
     var d = ev.data || {};
     if (!wk.inflight || d.seq !== wk.inflight.seq) return;   // stale reply (newer request already posted)
     var req = wk.inflight; wk.inflight = null;
+    if (isAssembly()) { finishSync(req); return; }   // reply for a part model that has since been replaced
     if (d.type === 'built') {
       var build;
       try {
@@ -1105,7 +1146,13 @@ var UI = (function () {
     if (UI.exitSketch && App.mode === 'sketch') UI.exitSketch(true);
     if (UI.closePM) UI.closePM();
     App.model = model;
-    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }))) + 1);
+    if (!model.features) model.features = [];
+    var ids = model.features.map(function (f) { return f.id; });
+    if (model.type === 'assembly') {
+      model.components = model.components || []; model.mates = model.mates || [];
+      ids = ids.concat(model.components.map(function (c) { return c.id; }), model.mates.map(function (m) { return m.id; }));
+    }
+    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(ids.filter(function (n) { return typeof n === 'number'; }))) + 1);
     App.undo.length = 0; App.redo.length = 0;
     App.sel = null; App.sel2 = null;
     App.activeSketch = null; App.mode = 'part';
@@ -1131,6 +1178,8 @@ var UI = (function () {
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; },
     // multi-body parts (viewport side): see the "bodies" section
+    // assembly documents
+    isAssembly: isAssembly, componentIndex: componentIndex, selectComponent: selectComponent,
     bodyInfo: bodyInfo, bodyName: bodyName, bodyCount: bodyCount, selectBody: selectBody,
     setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden, bodyBounds: bodyBounds, zoomToBody: zoomToBody, fitBox: fitBox,
     // equations (global variables)
