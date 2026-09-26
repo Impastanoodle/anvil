@@ -30,6 +30,24 @@
     if (isAsm()) return list.map(function (x, i) { var c = (App.model.components || [])[i]; return c ? c.name : 'Component' + (i + 1); });
     return list.map(function (x, i) { return UI.bodyName ? UI.bodyName(i) : 'Body' + (i + 1); });
   }
+  // Interference Detection and Clearance Verification analyse the assembly collapsed, as SolidWorks does: in the exploded
+  // state the build's bodies carry the explode offsets, so the collapsed world bodies come from
+  // Assembly.explodedBodies(…, 0) (the component transforms, which the explode never changes). Pattern and mirror
+  // instances are components with their own world bodies (a mirrored one already turned outward), so they need nothing
+  // special. Results are drawn shifted by each component's explode offset, onto the components as shown.
+  function exploded() { return !!(isAsm() && App.build && App.build.explode && typeof Assembly !== 'undefined' && Assembly.explodedBodies); }
+  function collapsedBodies() {
+    if (!exploded()) return bodies();
+    return Assembly.explodedBodies(App.model, App.build, App.build.explode.view, 0);
+  }
+  function explodeOffset(i) {
+    if (!exploded()) return [0, 0, 0];
+    var c = (App.model.components || [])[i], o = c && App.build.explode.offsets ? App.build.explode.offsets[c.id] : null;
+    return o ? [o[0], o[1], o[2]] : [0, 0, 0];
+  }
+  function shifted(p, o) { return [p[0] + o[0], p[1] + o[1], p[2] + o[2]]; }
+  var COLLAPSED_NOTE = ' Computed with the assembly collapsed.';
+
   // body index of the current selection(s): a body / component row, or a face of it
   function selectedBodies() {
     var out = [];
@@ -492,9 +510,9 @@
     clr.res.results.forEach(function (x, i) {
       if (clr.active >= 0 && i !== clr.active) return;
       if (!x.pa) return;
-      var c = x.ok ? 0x2d7dd2 : 0xd9302c;
-      addPoint(UI.groups.preview, x.pa, c, r); addPoint(UI.groups.preview, x.pb, c, r);
-      addLines(UI.groups.preview, [[x.pa, x.pb]], c);
+      var c = x.ok ? 0x2d7dd2 : 0xd9302c, pa = shifted(x.pa, explodeOffset(x.a)), pb = shifted(x.pb, explodeOffset(x.b));
+      addPoint(UI.groups.preview, pa, c, r); addPoint(UI.groups.preview, pb, c, r);
+      addLines(UI.groups.preview, [[pa, pb]], c);
     });
     if (App.command) {
       App.command.faceList = App.mesh ? App.mesh.faces.map(function (f, i) { return clr.sel.indexOf(f.body || 0) >= 0 ? i : -1; }).filter(function (i) { return i >= 0; }) : [];
@@ -511,10 +529,10 @@
   }
   function calcClearance() {
     var t0 = performance.now();
-    clr.res = E.clearance(bodies(), bodyNames(), clr.sel, +clr.v.min, { withRest: !!clr.v.rest && clr.sel.length > 0 });
+    clr.res = E.clearance(collapsedBodies(), bodyNames(), clr.sel, +clr.v.min, { withRest: !!clr.v.rest && clr.sel.length > 0 });
     clr.active = -1;
     var spec = UI.pmSpec && UI.pmSpec();
-    if (spec) { spec.message = clearanceMessage(); spec.messageOk = !!(clr.res.results.length && !clr.res.failed); }
+    if (spec) { spec.message = clearanceMessage() + (exploded() ? COLLAPSED_NOTE : ''); spec.messageOk = !!(clr.res.results.length && !clr.res.failed); }
     rerender(); drawClearance();
     UI.setStatus('Clearance Verification: ' + clearanceMessage() + ' (' + fmt(performance.now() - t0, 0) + ' ms)');
     return clr.res;
@@ -583,7 +601,8 @@
         var mesh = K.meshFromBody(p.body), g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
         g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
-        var obj = new THREE.Mesh(g, interferenceMaterial());
+        var obj = new THREE.Mesh(g, interferenceMaterial()), o = explodeOffset(p.aIndex);
+        obj.position.set(o[0], o[1], o[2]);   // exploded: drawn on the first component of the pair as shown
         obj.renderOrder = 10;
         UI.groups.preview.add(obj);
       } catch (e) { /* a degenerate common body is still listed */ }
@@ -607,13 +626,14 @@
     var msg = res.error ? 'Interference Detection failed: ' + res.error
       : n ? n + ' interference' + (n > 1 ? 's' : '') + ', ' + fmt(res.volume, 3) + ' ' + u + '³ in all (' + res.checked + ' pair' + (res.checked === 1 ? '' : 's') + ' checked' + scope + ').'
         : 'No interferences: no two ' + (intf.sel.length ? 'selected ' : '') + 'components overlap (touching faces are not interferences).';
+    if (!res.error && exploded()) msg += COLLAPSED_NOTE;
     if (spec) { spec.message = msg; spec.messageOk = !n && !res.error; }
     rerender(); intfHighlight();
     UI.setStatus(msg);
   }
   function intfCalculate() {
     try {
-      intf.res = E.interference(bodies(), bodyNames(), intf.sel, { withRest: !!(intf.v && intf.v.rest) && intf.sel.length > 0 });
+      intf.res = E.interference(collapsedBodies(), bodyNames(), intf.sel, { withRest: !!(intf.v && intf.v.rest) && intf.sel.length > 0 });
       // the ids as Assembly.interference reports them
       intf.res.pairs.forEach(function (p) { var cs = App.model.components || []; p.a = cs[p.aIndex] ? cs[p.aIndex].id : p.aIndex; p.b = cs[p.bIndex] ? cs[p.bIndex].id : p.bIndex; });
     } catch (e) { intf.res = { pairs: [], volume: 0, checked: 0, error: e.message || String(e) }; }
@@ -725,14 +745,14 @@
     window.anvil.clearance = function (items, min) {
       var sel = (items || []).map(bodyIndex);
       if (sel.some(function (i) { return i < 0; })) throw new Error('Unknown body or component in ' + JSON.stringify(items));
-      var r = E.clearance(bodies(), bodyNames(), sel, min || 0);
+      var r = E.clearance(collapsedBodies(), bodyNames(), sel, min || 0);
       return { minimum: r.minimum, failed: r.failed, checked: r.checked, results: r.results.map(function (x) { return { a: x.aName, b: x.bName, distance: x.distance, pa: x.pa, pb: x.pb, interfering: x.interfering, ok: x.ok }; }) };
     };
     // interferenceOf([components…], withRest?) -> Interference Detection limited to those components
     window.anvil.interferenceOf = function (items, withRest) {
       var sel = (items || []).map(bodyIndex);
       if (sel.some(function (i) { return i < 0; })) throw new Error('Unknown component in ' + JSON.stringify(items));
-      var r = E.interference(bodies(), bodyNames(), sel, { withRest: !!withRest });
+      var r = E.interference(collapsedBodies(), bodyNames(), sel, { withRest: !!withRest });
       return { count: r.pairs.length, volume: r.volume, checked: r.checked, pairs: r.pairs.map(function (p) { return { a: p.aName, b: p.bName, volume: p.volume }; }) };
     };
     // zebra(true | false, { stripes, direction, sharpness }?) -> state
@@ -744,6 +764,11 @@
   UI.cmdCheck = cmdCheck; UI.cmdZebra = cmdZebra; UI.cmdSectionProperties = cmdSectionProperties;
   UI.cmdDraftAnalysis = cmdDraftAnalysis; UI.cmdClearance = cmdClearance; UI.cmdInterference = cmdInterference;
   UI.interferenceSession = function () { return intfSession; };
+  // the whole assembly, collapsed (anvil.interference() in ui-app.js reads this)
+  UI.interference = function () {
+    if (!isAsm() || typeof Assembly === 'undefined') return { pairs: [], volume: 0, checked: 0 };
+    return Assembly.interference(App.model, { bodies: collapsedBodies() });
+  };
   UI.evaluate = {
     check: function () { var r = runCheck(); if (pmIs('Check')) checkReport(); return r; },
     checkResult: function () { return chk.res; },

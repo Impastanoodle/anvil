@@ -269,20 +269,28 @@ var Exchange = (function () {
     if (typeof Assembly === 'undefined') throw new Error('Assemblies need assembly.js');
     build = build && build.partBuilds ? build : Assembly.rebuild(model);
     var parts = [], byKey = {}, instances = [];
+    // An opposite-hand instance (Mirror Components, det R < 0) cannot be placed by a rigid transform (a STEP
+    // AXIS2_PLACEMENT_3D is always right-handed): it gets its own left-hand part, the source mesh reflected in its local
+    // YZ plane (F = diag(-1, 1, 1)), placed by the proper rotation R·F — world = R·F·(F·p) + P = R·p + P.
+    function det3(R) { return R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]); }
+    function reflectX(b) { return b.transform(function (v) { return new CSG.Vector(-v.x, v.y, v.z); }, true); }
     (model.components || []).forEach(function (c) {
       var pb = build.partBuilds && build.partBuilds[c.id];
       if (!pb || !pb.body || !pb.body.polygons.length) return;
-      var key = JSON.stringify(c.source);
+      var T = tf(c.transform), mirrored = det3(T.rotation) < 0;
+      var key = JSON.stringify(c.source) + (mirrored ? '#opposite-hand' : '');
       if (byKey[key] == null) {
         var pm = null;
         try { pm = Assembly.partModel(c.source); } catch (e) { pm = null; }
         var nm = pm && pm.name && pm.name !== 'Part1' ? pm.name : (c.source && c.source.example) || (pm && pm.name) || c.name;
+        if (mirrored) nm += ' (opposite hand)';
         var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
         byKey[key] = parts.length;
         var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
-        parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (b, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(b), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
+        parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (b, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(b) : b), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
       }
-      instances.push({ part: byKey[key], name: c.name, transform: tf(c.transform) });
+      if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
+      instances.push({ part: byKey[key], name: c.name, transform: T });
     });
     return { name: model.name || 'Assem1', units: model.units === 'in' ? 'in' : 'mm', assembly: true, parts: parts, instances: instances };
   }

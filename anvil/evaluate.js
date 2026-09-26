@@ -466,8 +466,10 @@ var Evaluate = (function () {
   // ------------------------------------------------------------------ Clearance Verification
   // minDistance(a, b) -> { distance, pa, pb, interfering }  (a, b: CSG bodies or kernel meshes)
   // Exact minimum distance between the two triangle sets (a BVH over b, pruned by the best distance so far); 0 when
-  // they touch or cross. `interfering` is true when a triangle of one crosses the other (touching faces are 0 apart but
-  // not interfering; use interference() for volumes).
+  // they touch or cross. `interfering` is true when the solids share volume: for CSG bodies whose boxes overlap, the
+  // CSG.intersect volume exceeds 1e-9 · diag³ (this also catches coplanar-sided overlaps and one solid nested inside the
+  // other, which then reports distance 0); for plain meshes, a triangle edge through the other's interior. Touching
+  // faces are 0 apart but not interfering.
   function minDistance(a, b, opts) {
     opts = opts || {};
     var ta = trianglesOf(a), tb = trianglesOf(b);
@@ -496,8 +498,21 @@ var Evaluate = (function () {
       if (best.d === 0) break;
     }
     var out = { distance: best.d, pa: best.pa, pb: best.pb, interfering: false };
-    if (best.d === 0 && opts.checkCrossing !== false) {
-      // touching vs crossing: a strict edge-through-interior crossing means the solids interpenetrate
+    if (opts.checkCrossing === false) return out;
+    if (a && a.polygons && b && b.polygons && a.intersect) {
+      var ba = csgBox(a), bb = csgBox(b);
+      if (ba && bb && boxDist(ba, bb) === 0) {
+        var d = boxDiag(boxUnion(ba, bb)), tol = Math.max(1e-12, 1e-9 * d * d * d), common = a.intersect(b);
+        if (common.polygons.length && common.volume() > tol) {
+          out.interfering = true;
+          if (out.distance > 0) {   // nested: the surfaces are apart but the solids overlap
+            var v = common.polygons[0].vertices[0].pos, q = [v.x, v.y, v.z];
+            out.distance = 0; out.pa = q; out.pb = q.slice();
+          }
+        }
+      }
+    } else if (best.d === 0) {
+      // plain meshes: a strict edge-through-interior crossing means they interpenetrate
       out.interfering = anyCrossing(ta, tb, tree);
     }
     return out;

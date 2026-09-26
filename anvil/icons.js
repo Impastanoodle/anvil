@@ -176,6 +176,27 @@ var Icons = (function () {
     rotateComponent: blk(3, 6, 7, 6, 3, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + p('M2 6 a6.5 6.5 0 0 1 11.5 -2', 'none', B, 1.2) + ln('M13.8 1.3 l-0.3 2.7 -2.6 -0.6', B, 1.1),
     // Interference Detection: two overlapping blocks with the shared volume in red
     interference: rect(1.5, 5.5, 8, 8, F2, S, 1) + rect(6.5, 2.5, 8, 8, '#f8e2b8', S, 1) + rect(6.5, 5.5, 3, 5, R, RD, 0.9),
+    // Parallel: two faces one above the other, with the parallel bars
+    parallel: p('M1.5 5 l3 -3 h10 l-3 3 z', '#c9b6e6', '#8a5cc2', 1) + p('M1.5 13.5 l3 -3 h10 l-3 3 z', 'none', S, 0.9) + ln('M6.5 6.5 l-1.5 3 M10 6.5 l-1.5 3', '#8a5cc2', 1.2),
+    // Perpendicular: a face with a face standing square on it
+    perpendicular: p('M1.5 13 l3 -3 h10 l-3 3 z', 'none', S, 0.9) + p('M6 11.5 V2.5 h4 v9 z', '#c9b6e6', '#8a5cc2', 1) + ln('M10 9 h2 v2.5', '#8a5cc2', 0.9),
+    // Tangent: a cylinder resting on a face
+    tangent: p('M1 13.5 l2.5 -2 h11.5 l-2.5 2 z', 'none', S, 0.9) + circ(8, 7, 4.2, '#c9b6e6', '#8a5cc2', 1.2) + circ(8, 7, 0.9, '#8a5cc2', 'none'),
+    // Width: a tab centred between two walls
+    width: ln('M2 2 v12 M14 2 v12', S, 1.4) + rect(5.5, 4, 5, 8, '#c9b6e6', '#8a5cc2', 1) + ln('M8 1.5 v13', '#8a5cc2', 0.8, DASH),
+    // Gear: two meshing gear wheels
+    gear: circ(5.5, 9.5, 3.8, '#c9b6e6', '#8a5cc2', 1.1) + circ(5.5, 9.5, 1, W, '#8a5cc2', 0.8) + circ(11.5, 5, 2.6, F2, S, 1.1) + circ(11.5, 5, 0.7, W, S, 0.8) + ln('M5.5 4.8 v1 M1 9.5 h1 M5.5 14.2 v-1 M9.3 11.8 l-0.8 -0.6 M11.5 1.6 v0.8 M14.9 5 h-0.8', '#8a5cc2', 1.1),
+    // Limit Distance: two faces with a dimension between two stops
+    limitDistance: p('M1.5 4 l3 -2.5 h10 l-3 2.5 z', '#c9b6e6', '#8a5cc2', 1) + p('M1.5 14 l3 -2.5 h10 l-3 2.5 z', 'none', S, 0.9) + ln('M8 4.5 v6.5 M6 7 h4 M6 9 h4', '#8a5cc2', 1.1),
+    // Limit Angle: a hinge with an arc between two stops
+    limitAngle: ln('M2 13.5 h12.5', S, 1.3) + ln('M2 13.5 L11 3', '#8a5cc2', 1.3) + p('M8 13.5 a6 6 0 0 0 -1.9 -4.4', 'none', '#8a5cc2', 1.1) + ln('M9.6 12 l1.6 -0.4 M7.8 9.4 l1.1 -1.2', '#8a5cc2', 1),
+    // Linear / Circular Component Pattern, Mirror Components: component blocks in a row, round a centre, across a plane
+    lpatternComp: blk(1, 8, 4.5, 4.5, 2, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(6, 8, 4.5, 4.5, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + blk(11, 8, 4.5, 4.5, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9) + ln('M2 3.5 h12 M12.5 2 l1.5 1.5 -1.5 1.5', G, 1.1),
+    cpatternComp: circ(8, 8, 5, 'none', S, 0.8, DASH) + rect(6, 1, 4, 4, '#f0c987', S, 0.9) + rect(11, 6, 4, 4, '#f8e2b8', S, 0.9) + rect(6, 11, 4, 4, '#f8e2b8', S, 0.9) + rect(1, 6, 4, 4, '#f8e2b8', S, 0.9),
+    mirrorComp: ln('M8 1 v14', P, 1.1, DASH) + blk(1, 5, 5, 6, 2, '#f0c987', '#f8e2b8', '#d9a95a', S, 0.9) + blk(10, 5, 5, 6, 2, '#f8e2b8', '#fbeed6', '#e8c58c', S, 0.9),
+    // Exploded View: a block lifted off another along a dashed explode line; an explode step: the arrow alone
+    explode: blk(2, 10, 8, 4, 2.5, F2, F1, F3, S, 1) + blk(5, 1.5, 6, 4, 2.5, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + ln('M13.5 9.5 v-6 M12.2 4.8 l1.3 -1.3 1.3 1.3', '#e07b1a', 1.2) + ln('M8 6 v4', '#e07b1a', 0.9, DASH),
+    explodeStep: ln('M8 14 V3 M5 6 l3 -3 3 3', '#e07b1a', 1.4) + ln('M3 14 h10', S, 1.2),
     // Fix: a push pin
     fix: p('M6 2 h5 l-1 1.5 v3.5 l2 2 h-7 l2 -2 V3.5 z', R, RD, 1) + ln('M8.5 9 v5.5', S, 1.3),
     // Float: a block with four arrows around it

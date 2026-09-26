@@ -78,10 +78,12 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series, and hole callouts in drawings
 - [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
 - [ ] IGES / Parasolid import and export; STEP import of curved faces (cylinders, cones, B-splines) and exact curved STEP export (needs true curves in the kernel); compressed 3MF import
-- [ ] Assemblies: Parallel, Perpendicular, Tangent, Width, Gear and Limit mates; Distance between cylinders
+- [x] Assemblies: Parallel, Perpendicular, Tangent (cylinder–plane, cylinder–cylinder), Width, Gear and Limit Distance / Limit Angle mates; Distance between cylinders; Standard / Advanced / Mechanical Mates groups in the Mate PM (cloud-2026-09-25l)
 - [ ] Assemblies: sub-assemblies, and components that are live links to part files instead of embedded copies (edit part in context, update on save)
-- [ ] Assemblies: Linear / Circular Component Pattern, Mirror Components, SmartMates by dragging, Collision Detection while moving
-- [ ] Exploded View (steps, explode lines) and its use in drawings
+- [x] Assemblies: Linear / Circular Component Pattern and Mirror Components (copy or opposite hand), pattern folders in the FeatureManager, seed-driven instances (cloud-2026-09-25l)
+- [ ] Assemblies: SmartMates by dragging, Collision Detection while moving; more Advanced / Mechanical mates (Symmetric, Profile Center, Path, Linear Coupler, Cam, Slot, Hinge, Rack Pinion, Screw)
+- [x] Exploded View: explode steps (pick or drag along an axis), explode lines, ExplView in the ConfigurationManager, Explode / Collapse and animation (cloud-2026-09-25l)
+- [ ] Exploded views in drawings: a per-view "Show in exploded state" option in drawing.js using the `Assembly.explodedBodies` hook; exploded views per configuration; rotation in explode steps
 - [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
 - [ ] Drawings: centre marks and centrelines, hole callouts, ordinate and baseline dimensions, chamfer dimensions, dimension dragging and editing
 - [ ] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text, magnetic lines
