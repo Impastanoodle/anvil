@@ -2027,94 +2027,6 @@
     });
   }
 
-  // ---- Interference Detection (Evaluate tab)
-  // Lists every pair of components whose solids overlap (Assembly.interference: CSG.intersect of the world bodies),
-  // largest first. The interfering components' faces are highlighted and the common volumes drawn in red on top;
-  // clicking a result shows that pair only (click again for all). Calculate runs it again after the assembly changed.
-  var intfMat = null;
-  function interferenceMaterial() {
-    if (!intfMat) intfMat = new THREE.MeshBasicMaterial({ color: 0xe0553c, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
-    return intfMat;
-  }
-  function asmInterference() {
-    if (!isAsm() || typeof Assembly === 'undefined') return { pairs: [], volume: 0, checked: 0 };
-    return Assembly.interference(App.model, App.build);
-  }
-  var intfSession = null;
-  function escHtml(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  function cmdInterference() {
-    if (!asmReady()) return;
-    var res = null, active = -1, u = UI.unitLabel();
-    function shown() { return !res ? [] : active >= 0 ? [res.pairs[active]] : res.pairs; }
-    function highlight() {
-      UI.disposeGroup(UI.groups.preview);
-      var comps = {};
-      shown().forEach(function (p) {
-        comps[p.aIndex] = true; comps[p.bIndex] = true;
-        try {
-          var mesh = K.meshFromBody(p.body), g = new THREE.BufferGeometry();
-          g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
-          g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
-          var obj = new THREE.Mesh(g, interferenceMaterial());
-          obj.renderOrder = 10;
-          UI.groups.preview.add(obj);
-        } catch (e) { /* a degenerate common body is still listed */ }
-      });
-      if (App.command) App.command.faceList = App.mesh ? App.mesh.faces.map(function (f, i) { return comps[f.body || 0] ? i : -1; }).filter(function (i) { return i >= 0; }) : [];
-      UI.updateHighlights();
-    }
-    function rowsHtml() {
-      if (!res) return '';
-      if (!res.pairs.length) return '<div class="intf-none">No Interferences</div>';
-      return res.pairs.map(function (p, i) {
-        return '<div class="intf-row' + (i === active ? ' selected' : '') + '" data-i="' + i + '">' + Icons('interference', 16) + '<span><b>Interference' + (i + 1) + '</b> — ' +
-          UI.fmtNum(p.volume, 3) + ' ' + u + '³<br><small>' + escHtml(p.aName) + ' · ' + escHtml(p.bName) + '</small></span></div>';
-      }).join('');
-    }
-    function report() {
-      if (!pm.spec) return;
-      var n = res.pairs.length;
-      pm.spec.message = res.error ? 'Interference Detection failed: ' + res.error
-        : n ? n + ' interference' + (n > 1 ? 's' : '') + ', ' + UI.fmtNum(res.volume, 3) + ' ' + u + '³ in all (' + res.checked + ' pair' + (res.checked === 1 ? '' : 's') + ' checked).'
-          : 'No interferences: no two components overlap (touching faces are not interferences).';
-      pm.spec.messageOk = !n && !res.error;
-      renderPM();
-      highlight();
-      UI.setStatus(pm.spec.message);
-    }
-    function calculate() {
-      try { res = asmInterference(); } catch (e) { res = { pairs: [], volume: 0, checked: 0, error: e.message || String(e) }; }
-      active = -1;
-      report();
-      return res;
-    }
-    function onClick(e) {
-      var row = e.target.closest && e.target.closest('.intf-row');
-      if (!row) return;
-      var i = +row.getAttribute('data-i');
-      active = active === i ? -1 : i;
-      renderPM(); highlight();
-    }
-    var n = (App.model.components || []).length;
-    openPM({
-      title: 'Interference Detection', icon: 'interference', values: {},
-      message: 'Calculating…',
-      command: { faceList: [] },
-      groups: [
-        { title: 'Selected Components', fields: [
-          { type: 'static', label: 'Check', value: 'Entire assembly (' + n + ' component' + (n === 1 ? '' : 's') + ')' },
-          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { calculate(); } }] }
-        ] },
-        { title: 'Results', fields: [{ type: 'html', html: function () { return '<div class="intf-list">' + rowsHtml() + '</div>'; } }] }
-      ],
-      onClose: function () { pm.root.removeEventListener('click', onClick); intfSession = null; },
-      onOK: function () { }
-    });
-    pm.root.addEventListener('click', onClick);
-    intfSession = { calculate: calculate, results: function () { return res; }, select: function (i) { active = i; renderPM(); highlight(); } };
-    calculate();
-  }
-
   // ------------------------------------------------------------------ Imported feature (exchange.js)
   // Editing an Imported feature: which file it came from and its size; Merge result joins its solids to the bodies they
   // touch (otherwise each solid is its own body). The geometry itself is the file's: re-import to replace it.
@@ -2194,7 +2106,9 @@
     }
   }
 
-  UI.openPM = openPM; UI.renderPM = renderPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  // for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open PropertyManager's message and results
+  UI.renderPM = function () { if (pm.spec) renderPM(); }; UI.pmSpec = function () { return pm.spec; }; UI.pmTitle = function () { return pm.spec ? pm.spec.title : null; };
   // equations in PropertyManager number fields: the open PM's equation texts and errors (copies), and a field setter for scripts/tests
   UI.pmExpressions = function () { return { exprs: JSON.parse(JSON.stringify(pm.exprs || {})), errors: JSON.parse(JSON.stringify(pm.exprErrors || {})) }; };
   UI.pmSetField = function (key, text) {
@@ -2226,8 +2140,7 @@
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };
-  UI.cmdInterference = cmdInterference; UI.componentDragHook = componentDragHook;
-  UI.interference = asmInterference; UI.interferenceSession = function () { return intfSession; };
+  UI.componentDragHook = componentDragHook;   // Interference Detection (UI.cmdInterference, UI.interference) is in ui-evaluate.js
   UI.cmdFixComponent = cmdFixComponent; UI.cmdHideShowComponents = cmdHideShowComponents;
   UI.confirmRemoveComponent = confirmRemoveComponent; UI.confirmRemoveMate = confirmRemoveMate;
   UI.compLabel = compLabel; UI.compStatus = compStatus; UI.mateLabel = mateLabel; UI.mateStatus = mateStatus; UI.selectedComponent = selectedComponent;

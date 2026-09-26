@@ -81,11 +81,15 @@
     Evaluate: [
       { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
       { id: 'mass', label: 'Mass\nProperties', run: function () { UI.showMassProperties(); } },
+      { id: 'sectionProps', label: 'Section\nProperties', run: function () { UI.cmdSectionProperties(); } },
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
       { id: 'dxf', label: 'Face\nto DXF', run: function () { UI.exportFaceDXF(); } },
-      { id: 'check', label: 'Check' }, { id: 'sensor', label: 'Sensor' }, { id: 'zebra', label: 'Zebra\nStripes' },
-      { stack: [{ id: 'generic', label: 'Draft Analysis' }, { id: 'generic', label: 'Undercut Analysis' }, { id: 'generic', label: 'Thickness Analysis' }] },
+      { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } }, { id: 'sensor', label: 'Sensor' },
+      { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
+      { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } },
+      { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } },
+      { stack: [{ id: 'generic', label: 'Undercut Analysis' }, { id: 'generic', label: 'Thickness Analysis' }] },
       { sep: true },
       { id: 'generic', label: 'Compare\nDocuments' }, { id: 'generic', label: 'Performance\nEvaluation' }, { id: 'generic', label: 'Costing' }
     ],
@@ -122,9 +126,14 @@
     Evaluate: [
       { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
       { id: 'mass', label: 'Mass\nProperties', run: function () { UI.showMassProperties(); } },
+      { id: 'sectionProps', label: 'Section\nProperties', run: function () { UI.cmdSectionProperties(); } },
       { id: 'section', label: 'Section\nView', run: function () { UI.cmdSection(); } },
       { sep: true },
-      { id: 'interference', label: 'Interference\nDetection', run: function () { UI.cmdInterference(); } }, { id: 'generic', label: 'Clearance\nVerification' }, { id: 'generic', label: 'Hole Alignment' }
+      { id: 'interference', label: 'Interference\nDetection', run: function () { UI.cmdInterference(); } }, { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } }, { id: 'generic', label: 'Hole Alignment' },
+      { sep: true },
+      { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } },
+      { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
+      { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } }
     ]
   };
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
@@ -149,7 +158,10 @@
     'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet',
     'Insert Components': 'Add a part to the assembly', 'Mate': 'Position components relative to each other (Coincident, Concentric, Distance, Angle)',
     'Move Component': 'Drag a floating component; its mates are solved again when you drop it', 'Rotate Component': 'Turn a floating component about its centre by dragging',
-    'Interference Detection': 'Find components whose solids overlap and the overlapping volume',
+    'Interference Detection': 'Find selected components (or all) whose solids overlap and the overlapping volume',
+    'Check': 'Validate the geometry: open and non-manifold edges, zero-area faces, self-intersections', 'Zebra Stripes': 'Show reflected stripes to judge smoothness and tangency (click again to turn off)',
+    'Section Properties': 'Area, centroid and moments of area of a planar face or a sketch', 'Draft Analysis': 'Colour faces by their draft angle relative to a direction of pull',
+    'Clearance Verification': 'Minimum distance between selected bodies or components, with the closest points',
     'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones'
   };
   function ribbonTitle(id, label, enabled) {
@@ -656,6 +668,11 @@
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },
         { label: 'Measure', action: UI.cmdMeasure },
         { label: 'Mass Properties', action: UI.showMassProperties },
+        { label: 'Evaluate ▸ Section Properties', action: function () { UI.cmdSectionProperties(); } },
+        { label: 'Evaluate ▸ Check', action: function () { UI.cmdCheck(); } },
+        { label: 'Evaluate ▸ Draft Analysis', action: function () { UI.cmdDraftAnalysis(); } },
+        { label: 'Evaluate ▸ Clearance Verification', action: function () { UI.cmdClearance(); } },
+        { label: 'Evaluate ▸ Interference Detection', action: function () { UI.cmdInterference(); }, disabled: !isAsm() },
         { label: 'Relations ▸ Add…', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Display/Delete…', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },

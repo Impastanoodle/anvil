@@ -252,6 +252,22 @@ body { overflow: auto; }
 .intf-row.selected { background: var(--pick-filled); border-color: var(--blue-line); }
 .intf-row small { color: var(--muted); }
 .intf-none { color: var(--muted); padding: 3px 6px; }
+/* Evaluate tab (ui-evaluate.js): Check, Section Properties, Draft Analysis, Clearance Verification */
+.ev-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-variant-numeric: tabular-nums; }
+.ev-kv > span { overflow-wrap: anywhere; }
+.ev-sub { margin: 8px 0 3px; font-weight: 600; color: var(--muted); font-size: 11px; }
+.ev-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.ev-bad { color: var(--red); font-weight: 600; } .ev-good { color: var(--green); }
+.ev-legend { display: flex; flex-direction: column; gap: 3px; }
+.ev-leg { display: grid; grid-template-columns: 14px 1fr auto; gap: 6px; align-items: center; }
+.sw { display: inline-block; width: 12px; height: 12px; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 2px; flex: none; margin-top: 2px; }
+.chk-list, .clr-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
+.chk-row, .clr-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 6px; border: 1px solid transparent; border-radius: 2px; cursor: pointer; }
+.chk-row:hover, .clr-row:hover { border-color: var(--blue-line); }
+.chk-row.selected, .clr-row.selected { background: var(--pick-filled); border-color: var(--blue-line); }
+.chk-row small, .clr-row small { color: var(--muted); }
+.clr-row.bad b { color: var(--red); }
+.chk-none { color: var(--green); padding: 3px 6px; margin-top: 6px; }
 .pm-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .pm-btns button, .btn { border: 1px solid var(--input-line); background: var(--btn-face); padding: 3px 10px; border-radius: 3px; height: 24px; }
 .pm-btns button:hover, .btn:hover { background: var(--hover); border-color: var(--blue-line); }
