@@ -766,3 +766,23 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Bench** (sum of medians, idle): 422.1 ms before → 775.4 ms with the default 0.05 mm tolerance; 434.5 ms with `?legacy` (the records cost ~3 %; the rest is the finer mesh, mostly the Funnel shell).
 
 **Next up.** 1. Tangent mate / interference with analytic radii (assembly session). 2. Surface records for sweeps, lofts between coaxial circles, shells of round faces, fillets along curved edges. 3. Faster shells on fine meshes. 4. Tighten curveEdges on trimmed cones (Hex nut chords 0.03 off the circle).
+
+## Run cloud-2026-09-26r — Analytic mates, exact interference / clearance, drawing BOMs across levels
+
+**Context.** Cloud session, small budget, no helpers (no HEAD.lock, board or republish). Follow-ups to cloud-2026-09-25p (true curves) and -25o (sub-assemblies).
+
+**Done.**
+- `assembly.js`: `analyticCylinder` reads a patch's `polygon.surf` cylinder record (axis point, canonical direction, radius); `findCylinder`, `refFromPick` and `pickInner` try it before the facet fit (`cylinderFromPatch`, kept for record-free meshes). Tangent (cylinder–plane, cylinder–cylinder), Concentric and Distance between cylinders therefore use the true axis and radius: a lying Ø8 pin sits with its axis exactly 4 above the face at any turn about its axis. `findCylinder` results carry `exact: true`.
+- Interference: `Assembly.interference` and `Evaluate.interference` (and `minDistance`'s interfering test) take the common volume from `Kernel.massProps` (curve correction) when the common body has curved facets (`exactVolume`): the Interference check example's Base ∩ Pin<2> is now π·4²·8 (was the 16-gon's area × 8).
+- Clearance: `Evaluate.exactClearance` refines the facet result when the closest points lie on exact cylinders: parallel cylinders outside each other (D − rA − rB), one inside the other's hole (rB − rA − D), cylinder and a plane parallel to its axis (|n·c − w| − r); the facet value only picks the configuration (within 5 % of the radii) and the gap must run square to the axes. Other cases keep the facet value.
+- Gear train example: the roller's 7.5° insert turn is gone (Tangent now rests it at exactly 15); its check pins y = 15. Gear A keeps its 90° turn (it sets the Gear mate's phase), comment updated: the bores no longer need to line up facet for facet.
+- `drawing.js`: BOM Type *Indented* (new, `BOM_TYPES` has three entries, `Drawing.bomType`) and *Parts only* across sub-assembly levels come from `Assembly.bom` (items 1.1 / 3.2.2, `row.level`, quantities multiplied through levels); multi-body parts in Parts only still split into bodies; top-level rows keep their body indices for balloons. PM select, status text and `anvil.drawing.bomType` accept 'indented'.
+
+**Tests.** kernel 665 → 671: Tangent tests pinned to the exact radius (1e-9, were the apothem); new group `analytic mates, interference and clearance` (Tangent at 0° / 7° / 11.25° turns → axis height 14 to 1e-9, pin–peg 6 / 2; Concentric of a 7°-turned gear bore on its shaft to 1e-9, record radius 3, no interference; Distance 20 between turned pins; interference π·4²·8 to 1e-9 in Assembly and Evaluate; clearance 9 / 2 / 3 to 1e-9 for pin–peg, peg in hole, pin over a block; stripped records fall back to the fit); `Drawing BOM across levels` in the sub-assemblies group. ui-smoke 145/145 (the Interference PM step pinned to π·4²·8, the Tangent mate step to 10 + 4).
+
+**Verified (headless Chromium via Playwright, `python -m http.server 8765` in anvil/, three.js r128 from npm three@0.128.0 routed in place of the CDN URL in the harness only).** Before: kernel 665/665, ui-smoke 145/145. After: kernel-tests 671/671, ui-smoke 145/145, app page loads with no console errors.
+
+**Known gaps.** Exact clearance only for parallel cylinders and cylinder–plane (no skew cylinders, cones, spheres or tori); Concentric on cones / spheres still unsupported; interference is exact only as far as the kernel's curve correction (`Kernel.massProps`) is for the common body.
+
+**Next up.** 1. Concentric / Tangent on cones and spheres from their records. 2. Exact clearance for spheres and skew cylinders. 3. Surface records for sweeps, lofts and shells (from 25p).
+

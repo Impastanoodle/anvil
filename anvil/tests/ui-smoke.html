@@ -1631,7 +1631,7 @@
     await idle();
     var api = anvil.interference();
     assert(api.count === 2 && api.pairs[0].a === 'Base<1>' && api.pairs[0].b === 'Block<1>' && api.pairs[1].b === 'Pin<2>', JSON.stringify(api));
-    near(api.pairs[0].volume, 2000, 1e-6, 'Base ∩ Block'); near(api.pairs[1].volume, 8 * meshCircleArea(4), 1e-6, 'Base ∩ Pin<2>');   // a mesh intersection: the pin's n-gon (n = segsForRadius(4)) × 8 thick
+    near(api.pairs[0].volume, 2000, 1e-6, 'Base ∩ Block'); near(api.pairs[1].volume, 8 * Math.PI * 16, 1e-6, 'Base ∩ Pin<2>');   // exact from the surface records (cloud-2026-09-26r): π·4² × 8 thick
     UI.App.ribbonTab = 'Evaluate'; UI.refreshRibbon();
     var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /Interference/.test(b.textContent); })[0];
     assert(btn, 'Interference Detection ribbon button');
@@ -2089,8 +2089,8 @@
     await pmAccept();
     var ms = anvil.mates();
     assert(ms.length === 2 && ms[0].type === 'parallel' && ms[1].type === 'tangent' && ms.every(function (m) { return m.ok; }), JSON.stringify(ms));
-    // the mate rests the faceted pin on a flat of its n-gon (n = segsForRadius(4)): axis at the top 10 + apothem r·cos(π/n)
-    near(anvil.components()[2].position[1], 10 + 4 * Math.cos(Math.PI / meshSegs(4)), 1e-6, 'pin axis on the top (n-gon flats)');
+    // the mate reads the pin's exact cylinder record: axis at the top 10 + r (cloud-2026-09-26r)
+    near(anvil.components()[2].position[1], 10 + 4, 1e-9, 'pin axis on the top (exact radius)');
     var mt = mateRows().map(rowText);
     assert(/^Parallel1 \(Block<1>, Base<1>\)/.test(mt[0]) && /^Tangent1 \(Pin<1>, Base<1>\)/.test(mt[1]), JSON.stringify(mt));
     assert(mateRows()[1].innerHTML.indexOf('<circle') >= 0, 'Tangent icon');

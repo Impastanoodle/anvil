@@ -1464,7 +1464,8 @@ var Drawing = (function () {
   var BOM_DEFAULT = [{ type: 'item' }, { type: 'partNumber' }, { type: 'description' }, { type: 'qty' }];
   var BOM_TYPE_DEFAULTS = { item: BOM_COLS[0], partNumber: BOM_COLS[1], description: BOM_COLS[2], qty: BOM_COLS[3] };
   var PROP_WIDTH = { material: 40, mass: 26, vendor: 35, revision: 16, rev: 14, finish: 30, cost: 20 };
-  var BOM_TYPES = [['top', 'Top-level only'], ['parts', 'Parts only']];
+  var BOM_TYPES = [['top', 'Top-level only'], ['indented', 'Indented'], ['parts', 'Parts only']];
+  function bomType(t) { return t === 'parts' || t === 'indented' ? t : 'top'; }
   function bomColumnSpecs(bom) { return (bom && Array.isArray(bom.columns) && bom.columns.length ? bom.columns : BOM_DEFAULT).map(function (c) { return typeof c === 'string' ? { type: 'property', prop: c } : c; }); }
   // bomColumns(bom) -> the visible columns [{ type, prop, title, width, align }]
   function bomColumns(bom) {
@@ -1533,6 +1534,10 @@ var Drawing = (function () {
   // counted together, items in tree order). bom.type 'parts' (Parts only) lists the solid bodies of a multi-body part
   // as rows of their own, each with its own material and mass; 'top' (Top-level only, the default) lists the part.
   // A part drawing has rows only when it has a BOM (bom given): the part, or its bodies for Parts only.
+  // Sub-assemblies (cloud-2026-09-26r): 'indented' (Indented) lists each sub-assembly followed by its own rows one
+  // level in (items 1, 1.1, 1.2 …, qty per one of its parent; row.level); 'parts' with sub-assemblies lists every part
+  // at any depth with the quantities multiplied through the levels. Both come from Assembly.bom; 'top' keeps a
+  // sub-assembly as one row.
   // PART NUMBER is the part's "Part Number" property, else its name; DESCRIPTION its "Description" property, else the
   // model's description / Design Library name / size "30 x 5 x 20" (when the mesh is given). opts.build: the
   // assembly (or part) build, to reuse its part builds.
@@ -1561,13 +1566,26 @@ var Drawing = (function () {
       return rows;
     }
     if (!model.components) return [];
-    var groups = [], bySrc = {};
-    model.components.forEach(function (c, i) {
-      var key = JSON.stringify(c.source), g = bySrc[key];
-      if (!g) { g = bySrc[key] = { key: key, source: c.source, first: i, components: [], indices: [], transform: c.transform }; groups.push(g); }
-      g.components.push(c.id); g.indices.push(i);
-    });
+    var groups = [], bySrc = {}, type = bomType(bom && bom.type), levels = null;
+    if (type !== 'top' && typeof Assembly !== 'undefined' && Assembly.bom &&
+        (type === 'indented' || model.components.some(function (c) { return Assembly.isSubAssemblySource(c.source); }))) {
+      var ab = opts.build && opts.build.partBuilds ? opts.build : null, topIdx = {};
+      model.components.forEach(function (c, i) { topIdx[c.id] = i; });
+      levels = Assembly.bom(model, ab, { type: type });
+      levels.forEach(function (r) {
+        var idx = r.level === 0 ? r.components.map(function (id) { return topIdx[id]; }).filter(function (i) { return i != null; }) : [];
+        var first = idx.length ? idx[0] : -1;
+        groups.push({ key: r.key, source: JSON.parse(r.key), first: first, components: r.components.slice(), indices: idx, transform: first >= 0 ? model.components[first].transform : null, qty: r.qty, item: r.item, level: r.level, kind: r.kind });
+      });
+    } else {
+      model.components.forEach(function (c, i) {
+        var key = JSON.stringify(c.source), g = bySrc[key];
+        if (!g) { g = bySrc[key] = { key: key, source: c.source, first: i, components: [], indices: [], transform: c.transform }; groups.push(g); }
+        g.components.push(c.id); g.indices.push(i);
+      });
+    }
     groups.forEach(function (g) {
+      var qty = g.qty != null ? g.qty : g.components.length;
       var info = partInfo(g.source, opts.build), pb = null;
       function pbuild() { return pb || (pb = info.build()); }
       var prop = partProps(info.model, null, null), full = null;
@@ -1577,14 +1595,15 @@ var Drawing = (function () {
         return full(name);
       };
       var pn = nonEmpty(prop('Part Number')) || info.name;
-      var brs = parts && info.model ? bodyRows(info.model, pbuild(), info.model.units === 'in' ? 'in' : 'mm') : null;
+      var brs = parts && info.model && g.kind !== 'assembly' ? bodyRows(info.model, pbuild(), info.model.units === 'in' ? 'in' : 'mm') : null;
       if (brs) {
-        brs.forEach(function (b) { push({ key: g.key + '#' + b.key, srcKey: g.key, partNumber: pn + ' - ' + b.name, description: b.size, qty: b.count * g.components.length, components: g.components.slice(), indices: g.indices.slice(), prop: b.prop, body: true }); });
+        brs.forEach(function (b) { push({ key: g.key + '#' + b.key, srcKey: g.key, partNumber: pn + ' - ' + b.name, description: b.size, qty: b.count * qty, components: g.components.slice(), indices: g.indices.slice(), prop: b.prop, body: true }); });
         return;
       }
       var desc = nonEmpty(prop('Description')) || info.description;
-      if (!desc && mesh) desc = envelopeText(mesh, g.first, g.transform, model.units);
-      push({ key: g.key, srcKey: g.key, partNumber: pn, description: desc, qty: g.components.length, components: g.components.slice(), indices: g.indices.slice(), prop: propFn });
+      if (!desc && mesh && g.first >= 0) desc = envelopeText(mesh, g.first, g.transform, model.units);
+      var r = push({ key: g.key, srcKey: g.key, partNumber: pn, description: desc, qty: qty, components: g.components.slice(), indices: g.indices.slice(), prop: propFn });
+      if (type === 'indented' && g.item != null) { r.item = g.item; r.level = g.level; }
     });
     return rows;
   }
@@ -1848,7 +1867,7 @@ var Drawing = (function () {
       bb.columns.forEach(function (c, i) { cellText(0, i, c.title); });
       var cells = rows.map(function (r) { return bb.columns.map(function (c) { return bomCell(r, c); }); });
       cells.forEach(function (cr, i) { cr.forEach(function (t, j) { cellText(i + 1, j, t); }); });
-      bom = { rows: rows, box: bb, layer: BL, columns: bb.columns, cells: cells, type: doc.bom.type === 'parts' ? 'parts' : 'top' };
+      bom = { rows: rows, box: bb, layer: BL, columns: bb.columns, cells: cells, type: bomType(doc.bom.type) };
     }
     // a part drawing without a Bill of Materials still numbers its manual balloons: the part is item 1
     var brows = rows;
@@ -2980,7 +2999,7 @@ var Drawing = (function () {
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
     sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
-    BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
+    BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomType: bomType, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
     TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, bomPropertyNames: bomPropertyNames,
     // annotations
     circlesAlong: circlesAlong, meshCurves: meshCurves, holeInfo: holeInfo, holeText: holeText, cylAxes: cylAxes, fitCircle: fitCircle, lineIntervals: lineIntervals,
@@ -3822,7 +3841,7 @@ var Drawing = (function () {
       b.show = true;
       if (props.anchor && ANCHOR_NAMES[props.anchor]) { b.anchor = props.anchor; delete b.x; delete b.y; }
       if (props.x != null && props.y != null) { b.x = +props.x; b.y = +props.y; }
-      if (props.type) b.type = props.type === 'parts' ? 'parts' : 'top';
+      if (props.type) b.type = Drawing.bomType(props.type);
       if (props.columns !== undefined) { if (props.columns && props.columns.length) b.columns = JSON.parse(JSON.stringify(props.columns)); else delete b.columns; }
       dc.bom = b;
       syncBom(dc);
@@ -3833,7 +3852,7 @@ var Drawing = (function () {
   // only), Columns (show / hide each one) and Add Column (a column bound to a custom property: Material, Mass, Vendor…)
   function cmdBOM() {
     var b = doc().bom || { anchor: 'top-right' }, specs = Drawing.bomColumnSpecs(b);
-    var values = { anchor: b.x != null ? 'moved' : b.anchor || 'top-right', type: b.type === 'parts' ? 'parts' : 'top', addProp: '', addTitle: '' };
+    var values = { anchor: b.x != null ? 'moved' : b.anchor || 'top-right', type: Drawing.bomType(b.type), addProp: '', addTitle: '' };
     var colFields = specs.map(function (c, i) {
       values['col' + i] = !c.hidden;
       var t = c.title || (c.type === 'property' ? String(c.prop).toUpperCase() : { item: 'ITEM NO.', partNumber: 'PART NUMBER', description: 'DESCRIPTION', qty: 'QTY.' }[c.type]);
@@ -3861,7 +3880,7 @@ var Drawing = (function () {
         if (val.anchor !== 'moved') props.anchor = val.anchor;
         setBom(props);
         var n = D.sheet.bom ? D.sheet.bom.rows.length : 0;
-        UI.setStatus('Bill of Materials (' + (val.type === 'parts' ? 'Parts only' : 'Top-level only') + '): ' + n + ' item' + (n === 1 ? '' : 's') + ', ' + (doc().bom.x != null ? 'where it was dragged' : 'anchored ' + ANCHOR_NAMES[doc().bom.anchor]) + '.');
+        UI.setStatus('Bill of Materials (' + ({ parts: 'Parts only', indented: 'Indented' }[val.type] || 'Top-level only') + '): ' + n + ' item' + (n === 1 ? '' : 's') + ', ' + (doc().bom.x != null ? 'where it was dragged' : 'anchored ' + ANCHOR_NAMES[doc().bom.anchor]) + '.');
       }
     });
   }
@@ -4553,7 +4572,7 @@ var Drawing = (function () {
       deleteBalloons: function (viewId) { if (!doc()) return null; edit(function (dc) { Drawing.deleteBalloons(dc, viewId); }); return summary(); },
       bom: function (props) { if (!doc()) return null; if (props !== undefined) setBom(props === null ? null : typeof props === 'string' ? { anchor: props } : props); return summary().bom; },
       // BOM columns: bomColumns() -> the column specs; bomColumns([{ type, prop, title, width, hidden } | 'Material', …])
-      // replaces them (a string is a property column); bomType('top' | 'parts'); each one undo step, returns summary().bom
+      // replaces them (a string is a property column); bomType('top' | 'indented' | 'parts'); each one undo step, returns summary().bom
       bomColumns: function (cols) { if (!doc()) return null; if (!arguments.length) return Drawing.bomColumnSpecs(doc().bom); setBom({ columns: cols }); return summary().bom; },
       bomType: function (t) { if (!doc()) return null; if (!arguments.length) return (doc().bom && doc().bom.type) || 'top'; setBom({ type: t }); return summary().bom; },
       // title block: titleBlock() -> { key: text shown }; titleBlock({ key: text | null }) sets (null: back to the default link)
