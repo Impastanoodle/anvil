@@ -525,11 +525,11 @@ var AnvilExamples = [
   {
     name: 'Hinge sub-assembly',
     kind: 'assembly',
-    description: 'Assembly used as a sub-assembly: a fixed leaf and an arm hinged on its top edge (Concentric on the hinge line, Coincident ends). The arm keeps one degree of freedom (it swings), so a Flexible instance can be opened in the assembly that uses it.',
+    description: 'Assembly used as a sub-assembly: a fixed leaf and an arm hinged on its top edge, 1 mm clear of it (Concentric on the hinge line, Coincident ends). The arm keeps one degree of freedom (it swings), so a Flexible instance can be opened in the assembly that uses it.',
     volume: 2 * 40 * 20 * 5,
     checks: [
       { component: 'Leaf<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
-      // the arm stands on the hinge line (turned 90° about z), touching the leaf only along that edge
+      // the arm stands on the hinge line (turned 90° about z), 1 mm clear of the leaf (the knuckle clearance)
       { component: 'Arm<1>', position: [0, 0, 0], rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1] }
     ],
     interference: [],
@@ -537,10 +537,10 @@ var AnvilExamples = [
       'a.name("Hinge").units("mm");',
       '// leaf x in [-40,0], y in [-5,0], z in [0,20]: the hinge line is its top edge x = y = 0 (the z axis)',
       'var leaf = a.insert({ script: \'p.name("Leaf"); p.box(40, 20, 5, { at: [-40, -5, 0] });\' }, { fixed: true });',
-      '// arm x in [0,40], y in [0,5] from the hinge line, dropped in standing up (90° about z)',
-      'var arm = a.insert({ script: \'p.name("Arm"); p.box(40, 20, 5);\' }, { rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1] });',
+      '// arm x in [1,41], y in [0,5]: 1 mm clear of the hinge line, dropped in standing up (90° about z)',
+      'var arm = a.insert({ script: \'p.name("Arm"); p.box(40, 20, 5, { at: [1, 0, 0] });\' }, { rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1] });',
       'a.concentric({ component: arm, axis: "z" }, { component: leaf, axis: "z" });',
-      'a.coincident({ component: arm, face: [20, 2.5, 0] }, { component: leaf, face: [-20, -2.5, 0] }, { alignment: "aligned" });'
+      'a.coincident({ component: arm, face: [21, 2.5, 0] }, { component: leaf, face: [-20, -2.5, 0] }, { alignment: "aligned" });'
     ].join('\n')
   },
   {
@@ -573,7 +573,7 @@ var AnvilExamples = [
       '  a.coincident({ component: h[0], path: ["Leaf<1>"], face: [-20, -2.5, 0] }, { component: base, face: [60, 5, 0] }, { alignment: "aligned" });',
       '});',
       '// only the Flexible hinge can open: its arm turns to 30° from the base top (on the rigid one this mate would over-define it)',
-      'a.angle({ component: base, face: [60, 10, 30] }, { component: h2, path: ["Arm<1>"], face: [20, 5, 10] }, 30);'
+      'a.angle({ component: base, face: [60, 10, 30] }, { component: h2, path: ["Arm<1>"], face: [21, 5, 10] }, 30);'
     ].join('\n')
   }
 ];

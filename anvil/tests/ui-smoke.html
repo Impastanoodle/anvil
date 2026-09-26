@@ -2822,13 +2822,13 @@
     assert(UI.mateStatus(am).error, 'angle mate over-defines the rigid hinge');
     await UI.undo(); await idle();
     assert(UI.App.model.components[2].flexible && !UI.mateStatus(UI.App.model.mates[UI.App.model.mates.length - 1]).error, 'undo: flexible again');
-    // a face inside Hinge<1>: the top end of its standing arm (world normal +y at y = 55)
+    // a face inside Hinge<1>: the top end of its standing arm (world normal +y at y = 15 + 41 = 56)
     var fi = -1;
-    UI.App.mesh.faces.forEach(function (f, i) { if (f.body === 1 && Math.abs(f.normal[1] - 1) < 1e-9 && Math.abs(f.centroid ? f.centroid[1] - 55 : 0) < 1e-6) fi = i; });
+    UI.App.mesh.faces.forEach(function (f, i) { if (f.body === 1 && Math.abs(f.normal[1] - 1) < 1e-9 && Math.abs(f.centroid ? f.centroid[1] - 56 : 0) < 1e-6) fi = i; });
     if (fi < 0) UI.App.mesh.faces.forEach(function (f, i) { if (f.body === 1 && Math.abs(f.normal[1] - 1) < 1e-9) fi = i; });
-    var ref = W.Assembly.refFromPick(UI.App.model, UI.App.build, fi, [47.5, 55, 10], UI.App.mesh);
+    var ref = W.Assembly.refFromPick(UI.App.model, UI.App.build, fi, [47.5, 56, 10], UI.App.mesh);
     assert(ref && ref.component === UI.App.model.components[1].id && JSON.stringify(ref.path) === '[2]' && ref.face, JSON.stringify(ref));
-    near(ref.face[0], 40, 1e-6, 'arm-local x'); near(ref.face[1], 2.5, 1e-6, 'arm-local y');
+    near(ref.face[0], 41, 1e-6, 'arm-local x'); near(ref.face[1], 2.5, 1e-6, 'arm-local y');
     // Edit Part on an embedded part: the edit replaces the embedded copy (one undo step)
     rightClick(compRow('Base<1>'));
     menuItem(/^Edit Part/).click();
@@ -2842,7 +2842,7 @@
     assert(UI.App.model.components[0].source.script && Math.abs(anvil.summary().volume - 88000) < 1e-6, 'undo restores the embedded script');
     // the Mate PM with a pick inside Hinge<1> (its arm's top end) and a block's bottom: a path ref, named Face@Arm<1>@Hinge<1>
     await anvil.insert({ script: 'p.name("Block"); p.box(10, 10, 10);' }, { position: [30, 70, 30] }); await idle();
-    var armTop = asmFace(1, 1, 55), blockBottom = asmFace(3, -1, 70);
+    var armTop = asmFace(1, 1, 56), blockBottom = asmFace(3, -1, 70);
     assert(armTop && blockBottom, 'faces ' + JSON.stringify([armTop, blockBottom]));
     UI.cmdMate();
     UI.App.command.onPick(blockBottom);
@@ -2852,7 +2852,7 @@
     await pmAccept();
     var mt = UI.App.model.mates[UI.App.model.mates.length - 1];
     assert(mt.type === 'coincident' && JSON.stringify(mt.b.path) === '[2]', JSON.stringify(mt));
-    near(anvil.components()[3].position[1], 55, 1e-9, 'block seated on the arm top');
+    near(anvil.components()[3].position[1], 56, 1e-9, 'block seated on the arm top');
     await UI.undo(); await UI.undo(); await idle();
     assert(anvil.components().length === 3, 'undo');
     return JSON.stringify(ref);
@@ -2924,6 +2924,398 @@
     forgetDocs(['SmokePin', 'LinkAsm']);
     await anvil.newPart('Part1'); await idle();
     return 'edit propagated: 2000 → 6000; second assembly 3000 → 500';
+  });
+  // ---- Evaluate tab: Check, Zebra Stripes, Section Properties, Draft Analysis, Clearance Verification, Interference
+  //      Detection on selected components (ui-evaluate.js, run cloud-2026-09-25n)
+  function evalBtn(re) {
+    UI.App.ribbonTab = 'Evaluate'; UI.refreshRibbon();
+    var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (x) { return re.test(x.textContent.replace(/\s+/g, ' ')); })[0];
+    assert(b, 'Evaluate ribbon button ' + re);
+    assert(!b.disabled, re + ' is enabled');
+    return b;
+  }
+  function pmMsg() { var m = D.querySelector('#pm .pm-msg'); return m ? m.textContent : ''; }
+  step('evaluate: the part Evaluate tab has Section Properties, Check, Zebra Stripes, Draft Analysis and Clearance Verification enabled; Tools ▸ Evaluate lists them', async function () {
+    await anvil.newPart('Eval');
+    await idle();
+    [/Section Properties/, /^Check$/, /Zebra Stripes/, /Draft Analysis/, /Clearance Verification/].forEach(function (re) { evalBtn(re); });
+    var rows = menuRows('Evaluate ▸');
+    if (UI.closeMenus) UI.closeMenus();
+    assert(rows.length >= 5 && rows.some(function (r) { return /Check/.test(r.text); }) && rows.some(function (r) { return /Section Properties/.test(r.text); }), 'Tools ▸ Evaluate rows: ' + rows.map(function (r) { return r.text; }).join(' | '));
+  });
+  step('evaluate: Check on a clean box says No problems; on a body with a missing face it lists 4 open edges, draws them, and clicking a result shows that edge alone', async function () {
+    await anvil.run('p.box(10, 10, 10);');
+    await idle();
+    evalBtn(/^Check$/).click();
+    assert(UI.hasPM() && /No problems/.test(pmMsg()), 'clean: ' + pmMsg());
+    assert(D.querySelector('#pm .chk-none'), 'No problems found row');
+    await pmAccept();
+    assert(anvil.check().ok === true, 'anvil.check() on the box');
+    // a body with one face removed (open box), put in place of the build's bodies
+    var open = W.CSG.fromPolygons(UI.App.build.body.polygons.filter(function (p) { return p.plane.normal.y < 0.5; }));
+    var saved = UI.App.build.bodies;
+    UI.App.build.bodies = [open];
+    try {
+      evalBtn(/^Check$/).click();
+      assert(/4 problems found/.test(pmMsg()), 'message: ' + pmMsg());
+      var rows = D.querySelectorAll('#pm .chk-row');
+      assert(rows.length === 4 && /Open edge 1/.test(rows[0].textContent), 'rows ' + rows.length);
+      assert(/Open edges\s*4/.test($('pm').textContent), 'summary counts');
+      var all = UI.groups.preview.children.length;
+      assert(all >= 8, 'every edge drawn with a marker: ' + all);
+      rows[2].click();
+      assert(D.querySelector('#pm .chk-row.selected[data-i="2"]'), 'row selected');
+      assert(UI.groups.preview.children.length === 2, 'one edge + its marker, got ' + UI.groups.preview.children.length);
+      assert(/Open edge 3/.test(statusText()), 'status ' + statusText());
+      D.querySelector('#pm .chk-row[data-i="2"]').click();
+      assert(UI.groups.preview.children.length === all, 'click again shows all');
+      await pmAccept();
+      assert(UI.groups.preview.children.length === 0, 'cleared on close');
+    } finally { UI.App.build.bodies = saved; }
+  });
+  step('evaluate: Section Properties of the selected top face (40 × 20: area 800, Ixx 26666.667, Iyy 106666.667), then of Sketch1 picked in the FeatureManager; centroid and principal axes drawn; anvil.sectionProperties', async function () {
+    await anvil.run('p.sketch("Front").rect(0, 0, 40, 20).end().extrude(7);');
+    await idle();
+    UI.App.sel = { kind: 'face', index: faceWithNormal([0, 0, 1]) }; UI.updateHighlights();
+    evalBtn(/Section Properties/).click();
+    assert(UI.hasPM() && /Section Properties/.test($('pm').textContent), 'PM');
+    var r = UI.evaluate.section();
+    near(r.area, 800, 1e-9, 'area'); near(r.I1, 106666.667, 1e-3, 'I1'); near(r.I2, 26666.667, 1e-3, 'I2');
+    assert(/Area\s*800 mm²/.test($('pm').textContent), 'area row: ' + $('pm').textContent.slice(0, 200));
+    assert(UI.groups.preview.children.length === 3, 'centroid + two axes: ' + UI.groups.preview.children.length);
+    // selecting the sketch updates the open PM
+    UI.App.sel = { kind: 'feature', id: UI.App.model.features[0].id };
+    UI.onSelectionChanged();
+    r = UI.evaluate.section();
+    assert(r.source === 'sketch' && /Sketch1/.test($('pm').textContent), 'sketch source');
+    near(r.Ixx, 40 * 8000 / 12, 1e-6, 'Ixx'); near(r.Iyy, 20 * 64000 / 12, 1e-6, 'Iyy'); near(r.Ixy, 0, 1e-6, 'Ixy');
+    await pmAccept();
+    var api = anvil.sectionProperties('Sketch1');
+    near(api.area, 800, 1e-9, 'api area'); near(api.centroid[0], 20, 1e-9, 'api cx');
+    near(anvil.sectionProperties(faceWithNormal([0, 0, 1])).area, 800, 1e-9, 'api face');
+  });
+  step('evaluate: Zebra Stripes turns on a stripe shader over the body (PM: number of stripes, direction, sharpness), stays on after OK and after a rebuild, and the ribbon button toggles it off', async function () {
+    await anvil.run('p.cylinder(10, 30, { axis: "z" });');
+    await idle();
+    evalBtn(/Zebra Stripes/).click();
+    assert(UI.hasPM() && /Zebra Stripes/.test($('pm').textContent), 'PM');
+    var st = UI.evaluate.zebra.state();
+    assert(st.on && st.drawn && UI.groups.analysis.children.length === 1, 'drawn');
+    var mat = UI.groups.analysis.children[0].material;
+    assert(mat.type === 'ShaderMaterial' && mat.uniforms.stripes.value === 16, 'shader');
+    setInput(pmField('Number of stripes'), '24');
+    setInput(pmField('Direction'), 'vertical');
+    assert(mat.uniforms.stripes.value === 24 && mat.uniforms.axis.value.x === 1, 'uniforms follow the PM');
+    await pmAccept();
+    assert(UI.evaluate.zebra.state().on && UI.groups.analysis.children.length === 1, 'still on after OK');
+    assert(evalBtn(/Zebra Stripes/).classList.contains('active'), 'ribbon button pressed');
+    await anvil.append('p.sketch("Front", 30).circle(0, 0, 4).extrude(10);');
+    await idle();
+    var g = UI.groups.analysis.children[0].geometry;
+    assert(g.getAttribute('position').count === UI.App.mesh.triCount * 3, 'overlay follows the rebuilt mesh');
+    evalBtn(/Zebra Stripes/).click();
+    assert(!UI.evaluate.zebra.state().on && UI.groups.analysis.children.length === 0 && !UI.hasPM(), 'toggled off');
+    assert(anvil.zebra(true, { stripes: 8 }).on && anvil.zebra(false).on === false, 'anvil.zebra');
+  });
+  step('evaluate: Draft Analysis of a 5° tapered extrude, pull +Z: 5 positive / 1 negative at 3°, 4 require draft at 6° (face colours in the overlay); a picked face sets the pull direction; closing removes the colours', async function () {
+    await anvil.run('p.sketch("Front").rect(0, 0, 40, 20).end().extrude(30, { draft: 5 });');
+    await idle();
+    evalBtn(/Draft Analysis/).click();
+    assert(UI.hasPM() && /Draft Analysis/.test($('pm').textContent), 'PM');
+    setInput(pmField('Direction of Pull'), '+z');
+    setInput(pmField('Draft angle'), '3');
+    var c = UI.evaluate.draftCounts();
+    assert(c.positive === 5 && c.negative === 1 && c.requires === 0, JSON.stringify(c));
+    var leg = D.querySelector('#pm .ev-leg[data-cls="positive"] b');
+    assert(leg && leg.textContent === '5', 'legend ' + (leg && leg.textContent));
+    assert(UI.evaluate.display() === 'draft' && UI.groups.analysis.children.length === 1, 'overlay');
+    var col = UI.groups.analysis.children[0].geometry.getAttribute('color'), side = UI.App.mesh.faces.filter(function (f) { return Math.abs(f.normal[2]) < 0.5; })[0];
+    assert(col.getY(side.start * 3) > 0.6 && col.getX(side.start * 3) < 0.4, 'side face green');
+    setInput(pmField('Draft angle'), '6');
+    c = UI.evaluate.draftCounts();
+    assert(c.requires === 4 && c.positive === 1 && c.negative === 1, 'at 6°: ' + JSON.stringify(c));
+    near(UI.evaluate.draftFace(UI.App.mesh.faces.indexOf(side)).angle, 5, 1e-9, 'face angle');
+    // pick the bottom face: the pull direction becomes its normal (−Z)
+    UI.App.command.onPick({ kind: 'face', index: faceWithNormal([0, 0, -1]) });
+    c = UI.evaluate.draftCounts();
+    assert(pmField('Direction of Pull').value === 'face' && c.negative === 1 && c.positive === 1 && c.requires === 4, 'picked: ' + JSON.stringify(c));
+    await pmAccept();
+    assert(UI.groups.analysis.children.length === 0 && UI.evaluate.display() === null, 'colours removed');
+    var api = anvil.draftAnalysis([0, 0, 1], 3);
+    assert(api.counts.positive === 5 && api.faces.length === UI.App.mesh.faces.length, 'anvil.draftAnalysis');
+  });
+  step('evaluate: Clearance Verification between two bodies (10 apart): result row, closest points drawn; a 12 minimum marks it below minimum; clicking the other body in the graphics area edits the selection', async function () {
+    await anvil.run('p.box(10, 10, 10); p.sketch("Front").rect(20, 3, 10, 5).end().extrude(5, { merge: false });');
+    await idle();
+    evalBtn(/Clearance Verification/).click();
+    assert(UI.hasPM() && /Clearance Verification/.test($('pm').textContent), 'PM');
+    var rows = D.querySelectorAll('#pm .clr-row');
+    assert(rows.length === 1 && /10 mm/.test(rows[0].textContent), 'row: ' + (rows[0] && rows[0].textContent));
+    assert(UI.groups.preview.children.length === 3, 'two points + line: ' + UI.groups.preview.children.length);
+    setInput(pmField('Minimum acceptable clearance'), '12');
+    assert(/1 of 1 clearance is below 12/.test(pmMsg()) && D.querySelector('#pm .clr-row.bad'), 'below minimum: ' + pmMsg());
+    // click body 1 in the graphics area: it becomes the selection (checked against the rest)
+    var f1 = UI.App.mesh.faces.findIndex(function (f) { return (f.body || 0) === 1; });
+    UI.App.command.onPick({ kind: 'face', index: f1 });
+    var pick = D.querySelector('#pm .pm-pick');
+    assert(pick.classList.contains('filled') && pick.textContent.trim() === UI.bodyName(1) && UI.evaluate.clearanceSession().results().checked === 1, 'selection shown: ' + pick.textContent);
+    assert(UI.App.command.faceList.length > 0, 'selected body highlighted');
+    await pmAccept();
+    var api = anvil.clearance([], 0);
+    near(api.minimum, 10, 1e-9, 'anvil.clearance');
+  });
+  step('evaluate: assembly Interference Detection limited to selected components (Pin<2> selected: only Base<1> · Pin<2>); Selected items + clicking Block<1> gives no interference; Clearance Verification on components; anvil.interferenceOf', async function () {
+    await anvil.run(exByName('Interference check').code);
+    await idle();
+    UI.selectComponent('Pin<2>');
+    evalBtn(/Interference Detection/).click();
+    assert(UI.hasPM() && /Interference Detection/.test($('pm').textContent), 'PM');
+    var rows = D.querySelectorAll('#pm .intf-row');
+    assert(rows.length === 1 && /Base<1> · Pin<2>/.test(rows[0].textContent), 'rows: ' + Array.prototype.map.call(rows, rowText).join(' | '));
+    assert(/1 interference.*3 pairs checked among 1 selected component/.test(pmMsg()) || /1 interference/.test(pmMsg()), 'message: ' + pmMsg());
+    assert(/Pin<2>/.test(D.querySelector('#pm .pm-pick').textContent), 'selection box');
+    var ses = UI.interferenceSession();
+    var blk = UI.componentIndex('Block<1>');
+    UI.App.command.onPick({ kind: 'face', index: UI.App.mesh.faces.findIndex(function (f) { return (f.body || 0) === blk; }) });
+    assert(ses.selected().length === 2 && D.querySelector('#pm .intf-none') && /No interferences/.test(pmMsg()), 'Block + Pin<2>: ' + pmMsg());
+    clickPmButton('Entire assembly');
+    assert(D.querySelectorAll('#pm .intf-row').length === 2, 'entire assembly');
+    await pmAccept();
+    var r = anvil.interferenceOf(['Base<1>', 'Block<1>']);
+    assert(r.count === 1 && Math.abs(r.volume - 2000) < 1e-6, 'anvil.interferenceOf ' + JSON.stringify(r));
+    assert(anvil.interference().count === 2, 'anvil.interference() still checks everything');
+    UI.App.sel = null;
+    evalBtn(/Clearance Verification/).click();
+    var cr = UI.evaluate.clearanceSession().results();
+    assert(cr.checked === 6 && cr.results.filter(function (x) { return x.interfering; }).length === 2, 'clearance on components: ' + cr.checked);
+    await pmAccept();
+  });
+  step('evaluate: Interference Detection and Clearance Verification on pattern / mirror instances of an exploded assembly use the collapsed positions (Block<2> exploded 50 up still interferes; results drawn on the exploded components)', async function () {
+    await anvil.run([
+      'a.name("Patterned").units("mm");',
+      'var base = a.insert({ script: \'p.name("Base"); p.box(100, 60, 10);\' }, { fixed: true });',
+      'var blk = a.insert({ script: \'p.name("Block"); p.box(20, 20, 20);\' }, { position: [10, 10, -5], fixed: true });',
+      'a.linearPattern([blk], { direction: { axis: "x" }, spacing: 15, count: 2 });',
+      'a.mirrorComponents([blk], { plane: { plane: "Front" }, oppositeHand: true });',
+      'a.explode(["Block<2>"], "y", 50);',
+      'a.exploded();'
+    ].join('\n'));
+    await idle();
+    var names = anvil.components().map(function (c) { return c.name; });
+    assert(names.join() === 'Base<1>,Block<1>,Block<2>,Block<3>', names.join());
+    assert(UI.App.build.explode, 'shown exploded');
+    // collapsed: Block<1> ∩ Block<2> 5 × 20 × 20, Block<1> ∩ Block<3> (opposite hand, z −15..5) 20 × 20 × 10, Block<2> ∩ Block<3> 5 × 20 × 10
+    var api = anvil.interference();
+    assert(api.count === 3, 'anvil.interference() collapsed: ' + JSON.stringify(api.pairs));
+    near(api.volume, 7000, 1e-6, 'total');
+    UI.selectComponent('Block<2>');
+    evalBtn(/Interference Detection/).click();
+    var rows = D.querySelectorAll('#pm .intf-row');
+    assert(rows.length === 2 && /Block<1> · Block<2>/.test(rows[0].textContent) && /Block<2> · Block<3>/.test(rows[1].textContent), 'rows: ' + Array.prototype.map.call(rows, rowText).join(' | '));
+    assert(/collapsed/.test(pmMsg()), 'message: ' + pmMsg());
+    var ys = UI.groups.preview.children.map(function (o) { return o.position.y; }).sort();
+    assert(ys.join() === '0,50', 'common volumes drawn on the first component as shown: ' + ys.join());
+    await pmAccept();
+    var r = anvil.interferenceOf(['Block<1>', 'Block<3>']);
+    assert(r.count === 1, 'mirror instance'); near(r.volume, 4000, 1e-6, 'Block<1> ∩ Block<3>');
+    // Clearance: Block<2> against the rest, collapsed (touching the base: 0, not interfering)
+    UI.App.sel = null;
+    evalBtn(/Clearance Verification/).click();
+    var ses = UI.evaluate.clearanceSession();
+    var res = ses.select([UI.componentIndex('Block<2>')]);
+    var toBase = res.results.filter(function (x) { return x.aName === 'Base<1>' || x.bName === 'Base<1>'; })[0];
+    assert(toBase && toBase.distance === 0 && !toBase.interfering, 'Block<2> on the base, collapsed: ' + JSON.stringify(toBase && toBase.distance));
+    assert(res.results.filter(function (x) { return x.interfering; }).length === 2, 'two interfering');
+    var i = res.results.indexOf(toBase);
+    ses.show(i);
+    var pys = UI.groups.preview.children.filter(function (o) { return o.type === 'Mesh'; }).map(function (o) { return o.position.y; }).sort(function (a, b) { return a - b; });
+    assert(pys.length === 2 && Math.abs(pys[0] - 10) < 1e-6 && Math.abs(pys[1] - 60) < 1e-6, 'closest points on the base top and the exploded block bottom: ' + pys.join());
+    assert(/collapsed/.test(pmMsg()), 'clearance message: ' + pmMsg());
+    await pmAccept();
+    near(anvil.clearance(['Block<2>', 'Base<1>'], 0).minimum, 0, 1e-12, 'anvil.clearance collapsed');
+  });
+  // ---- drawing annotations (run cloud-2026-09-25m): Annotation tab, centre marks, centrelines, hole callouts,
+  // ordinate dimensions, the Dimension PropertyManager (tolerance, driving the part), balloons
+  function annots(type, viewId) { return anvil.drawing.summary().annotations.filter(function (a) { return (!type || a.type === type) && (viewId == null || a.view === viewId); }); }
+  function boxMid(b) { return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; }
+  function sheetDrag(from, to) {
+    sheetMouse('mousedown', from);
+    var c = paperToClient(to);
+    W.dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: c.clientX, clientY: c.clientY }));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, clientX: c.clientX, clientY: c.clientY }));
+  }
+  step('annotations: a new plate drawing auto-inserts centre marks (Top) and centrelines (Front, Right); the Annotation tab has the tools; Document Properties turns centre marks off for new views', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(plateCode()); await idle();
+    anvil.drawing.make(); await idle(); await wait(60);
+    var T = dwView('Top'), F = dwView('Front'), R = dwView('Right');
+    var cm = annots('centerMark'), cl = annots('centerline');
+    assert(cm.length === 4 && cm.every(function (a) { return a.view === T.id && a.auto; }), 'centre marks ' + JSON.stringify(annots().map(function (a) { return a.view + a.type; })));
+    // the marks sit on the hole centres: Top view box x0 + 2 * x, y1 - 2 * z at 2:1
+    [[10, 10], [90, 10], [10, 50], [90, 50]].forEach(function (xz) {
+      var x = T.box[0] + 2 * xz[0], y = T.box[3] - 2 * xz[1];
+      assert(cm.some(function (a) { return Math.hypot(a.centers[0][0] - x, a.centers[0][1] - y) < 1e-6; }), 'mark at ' + xz);
+    });
+    assert(cl.filter(function (a) { return a.view === F.id; }).length === 2 && cl.filter(function (a) { return a.view === R.id; }).length === 2, 'centrelines');
+    assert(D.querySelectorAll('#drawing-sheet g[data-layer="ANNOTATIONS"] line.center').length >= 20, 'centre-line styled lines');
+    var mrow = D.querySelector('#drawing-tree .dw-centerMark');
+    assert(mrow && mrow.querySelector('.badge').textContent === '4' && D.querySelectorAll('#drawing-tree .dw-centerline').length === 2, 'tree rows');
+    assert(ribbonTabs().slice(0, 2).join() === 'Drawing,Annotation', 'tabs ' + ribbonTabs());
+    Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
+    ['Smart Dimension', 'Ordinate Dimension', 'Baseline Dimension', 'Chamfer Dimension', 'Model Items', 'Balloon', 'Auto Balloon', 'Stacked Balloon', 'Hole Callout', 'Center Mark', 'Centerline', 'Document Properties'].forEach(ribbonButton);
+    ribbonButton('Document Properties').click();
+    assert(modalOpen() && $('dw-opt-cm').checked && $('dw-opt-cl').checked, 'Document Properties with auto insert on');
+    $('dw-opt-cm').checked = false;
+    $('dw-opt-ok').click(); await wait(30);
+    assert(anvil.drawing.summary().options.autoCenterMarks === false && anvil.drawing.summary().options.autoCenterlines === true, 'options');
+    anvil.drawing.addView('Bottom', { x: 330, y: 90 }); await wait(30);
+    var B = dwView('Bottom');
+    assert(B && annots('centerMark', B.id).length === 0 && annots('centerline').length === 4, 'no centre marks on the new Bottom view');
+    anvil.drawing.deleteView(B.id);
+    return cm.length + ' marks, ' + cl.length + ' centrelines';
+  });
+  step('annotations: Center Mark PM (Linear: two holes then ✓), Hole Callout tool reads 4X Ø8 THRU and drags, Centerline tool, Delete and Undo', async function () {
+    var T = dwView('Top'), x0 = T.box[0], y1 = T.box[3];
+    ribbonButton('Center Mark').click();
+    assert(UI.hasPM() && UI.drawing.state.tool === 'centermark', 'Center Mark PM');
+    setInput(pmField('Style'), 'linear');
+    sheetMouse('mousedown', [x0 + 20 + 8, y1 - 20]); sheetMouse('mousedown', [x0 + 180 + 8, y1 - 20]);
+    await UI.pmOK(); await wait(30);
+    var lin = annots('centerMark').filter(function (a) { return a.style === 'linear'; });
+    assert(lin.length === 1 && lin[0].text === 'Linear Center Mark (2)' && UI.drawing.state.tool === null, 'linear mark ' + JSON.stringify(lin));
+    ribbonButton('Hole Callout').click();
+    sheetMouse('mousedown', [x0 + 20 + 8, y1 - 100]);
+    key('Escape');
+    var hc = annots('holeCallout');
+    assert(hc.length === 1 && hc[0].text === '4X Ø8 THRU', 'callout ' + JSON.stringify(hc));
+    assert(Array.prototype.some.call(D.querySelectorAll('#drawing-sheet g[data-layer="ANNOTATIONS"] text'), function (t) { return t.textContent === '4X Ø8 THRU'; }), 'callout drawn');
+    function calloutOf() { var out = null; anvil.drawing.doc().views.forEach(function (v) { (v.annotations || []).forEach(function (a) { if (a.type === 'holeCallout') out = a; }); }); return out; }
+    var b0 = hc[0].box, from = [b0[2] - 4, b0[3] - 2], l0 = calloutOf().leadNow.slice();
+    sheetDrag(from, [from[0] - 30, from[1] + 12]); await wait(60);
+    var l1 = calloutOf().lead;
+    near(l1[0] - l0[0], -30, 0.5, 'leader dragged left'); near(l1[1] - l0[1], 12, 0.5, 'leader dragged up');
+    // Centerline tool: click the hole row of the Right view (its centrelines were auto-inserted; delete one first)
+    var R = dwView('Right'), rl = annots('centerline', R.id);
+    anvil.drawing.deleteAnnotation(rl[0].id);
+    assert(annots('centerline', R.id).length === 1, 'one right centreline left');
+    ribbonButton('Centerline').click();
+    var ax = (rl[0].box[0] + rl[0].box[2]) / 2;
+    sheetMouse('mousedown', [ax + 1, (R.box[1] + R.box[3]) / 2]);
+    key('Escape');
+    assert(annots('centerline', R.id).length === 2, 'centreline added back');
+    // select a centre mark on the sheet and Delete it; Undo restores it
+    var n = annots('centerMark').length, m = annots('centerMark').filter(function (a) { return a.style === 'single'; })[0];
+    sheetMouse('mousedown', [m.centers[0][0] + 6, m.centers[0][1]]);
+    assert(UI.drawing.state.sel && UI.drawing.state.sel.kind === 'annot', 'selected ' + JSON.stringify(UI.drawing.state.sel));
+    key('Delete');
+    assert(annots('centerMark').length === n - 1, 'deleted');
+    await UI.undo(); await idle(); await wait(60);
+    assert(UI.drawingActive() && annots('centerMark').length === n, 'undo');
+    return 'linear mark, ' + hc[0].text + ', centreline, delete / undo';
+  });
+  step('annotations: Ordinate Dimension (vertical, Top view): base = top edge, then two holes, reads 0 / 10 / 50; Chamfer Dimension tool on a chamfered box reads 2 X 45°', async function () {
+    var T = dwView('Top'), x0 = T.box[0], y1 = T.box[3];
+    ribbonButton('Ordinate Dimension').click();
+    setInput(pmField('Measure'), 'v');
+    sheetMouse('mousedown', [x0 + 100, y1]);
+    sheetMouse('mousedown', [x0 + 20 + 8, y1 - 20]);
+    sheetMouse('mousedown', [x0 + 20 + 8, y1 - 100]);
+    await UI.pmOK(); await wait(30);
+    var od = anvil.drawing.summary().dimDetails.filter(function (d) { return d.kind === 'ordinate'; });
+    assert(od.length === 1 && od[0].text === '0, 10, 50' && od[0].view === T.id, 'ordinate ' + JSON.stringify(od));
+    anvil.drawing.close(); await idle();
+    await anvil.newPart(); await idle();
+    await anvil.run('p.box(40, 20, 10); p.chamfer(2, [[20, 10, 20]]);'); await idle();
+    anvil.drawing.make(); await idle(); await wait(60);
+    var R = dwView('Right'), s = +anvil.drawing.summary().sheet.scale.split(':')[0] / +anvil.drawing.summary().sheet.scale.split(':')[1];
+    // Right view: u = -z ∈ [-20, 0], v = y ∈ [0, 10]; the chamfer runs (-20, 8) - (-18, 10), the lead-in edge along v = 10
+    Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
+    ribbonButton('Chamfer Dimension').click();
+    sheetMouse('mousedown', [R.box[0] + 1 * s, R.box[3] - 1 * s]);
+    sheetMouse('mousedown', [R.box[0] + 10 * s, R.box[3]]);
+    key('Escape');
+    var cd = anvil.drawing.summary().dimDetails.filter(function (d) { return d.kind === 'chamfer'; });
+    assert(cd.length === 1 && cd[0].text === '2 X 45°', 'chamfer ' + JSON.stringify(cd));
+    anvil.drawing.close(); await idle();
+    return od[0].text + '; ' + cd[0].text;
+  });
+  step('dimensions: drag the plate width text down; double-click → Dimension PM: Bilateral +0.1 / -0.05 at .12; again: Value 120 drives the part (rebuild, 120 wide); Undo restores 100', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(plateCode()); await idle();
+    anvil.drawing.make(); await idle(); await wait(60);
+    var dd = anvil.drawing.summary().dimDetails, w = dd[0];
+    assert(w.kind === 'h' && w.auto && w.text === '100', 'width dim ' + JSON.stringify(w));
+    var mid = boxMid(w.box);
+    sheetDrag(mid, [mid[0] + 6, mid[1] - 12]); await wait(60);
+    var w1 = anvil.drawing.summary().dimDetails[0];
+    near(w1.box[1] - w.box[1], -12, 0.5, 'moved down');
+    var pr = anvil.drawing.doc().dimProps[w.style];
+    assert(pr && pr.at != null && Math.abs(pr.tx - 6) < 0.5, 'dimProps ' + JSON.stringify(anvil.drawing.doc().dimProps));
+    near(pr.at, -5 - 6, 0.25, 'dimension line 12 mm lower at 2:1');
+    sheetMouse('dblclick', boxMid(w1.box));
+    assert(UI.hasPM() && D.querySelector('#pm .pm-head span').textContent === 'Dimension', 'Dimension PM');
+    assert(/Sketch1/.test(D.querySelector('#pm').textContent), 'Drives Sketch1');
+    setInput(pmField('Tolerance'), 'bilateral');
+    setInput(pmField('Maximum variation'), '0.1'); setInput(pmField('Minimum variation'), '0.05'); setInput(pmField('Unit precision'), '2');
+    await UI.pmOK(); await wait(30);
+    assert(anvil.drawing.summary().dims[0] === '100.00 +0.10/-0.05', 'tolerance ' + anvil.drawing.summary().dims[0]);
+    assert(Array.prototype.some.call(D.querySelectorAll('#drawing-sheet g[data-layer="DIMENSIONS"] text'), function (t) { return t.textContent === '+0.10'; }), 'stacked tolerance drawn');
+    sheetMouse('dblclick', boxMid(anvil.drawing.summary().dimDetails[0].box));
+    setInput(pmField('Value'), '120');
+    await UI.pmOK(); await idle(); await wait(80);
+    assert(UI.drawingActive() && JSON.stringify(dwView('Front').extents) === '[120,8]', 'driven: ' + JSON.stringify(dwView('Front').extents));
+    assert(anvil.drawing.summary().dims[0] === '120.00 +0.10/-0.05', 'dim follows ' + anvil.drawing.summary().dims[0]);
+    assert(UI.App.model.features.filter(function (f) { return f.type === 'sketch'; })[0].entities[0].w === 120, 'sketch width');
+    await UI.undo(); await idle(); await wait(80);
+    assert(JSON.stringify(dwView('Front').extents) === '[100,8]' && anvil.drawing.summary().dims[0] === '100.00 +0.10/-0.05', 'undo ' + anvil.drawing.summary().dims[0]);
+    return 'dragged, toleranced, driven 100 -> 120 -> undo';
+  });
+  step('balloons: Balloon tool on the part drawing (edge, place) is item 1; drag it; double-click → Show quantity 1X; Stacked Balloon on the assembly isometric stacks Plate, Pin, Cap with QTY', async function () {
+    var T = dwView('Top');
+    Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
+    ribbonButton('Balloon').click();
+    sheetMouse('mousedown', [T.box[0], (T.box[1] + T.box[3]) / 2 + 7]);
+    sheetMouse('mousedown', [T.box[0] - 25, T.box[3] + 8]);
+    UI.pmCancel();
+    var bl = anvil.drawing.summary().balloons;
+    assert(bl.length === 1 && bl[0].item === 1 && bl[0].manual, 'balloon ' + JSON.stringify(bl));
+    near(bl[0].c[0], T.box[0] - 25, 0.5, 'placed x'); near(bl[0].c[1], T.box[3] + 8, 0.5, 'placed y');
+    sheetDrag(bl[0].c, [bl[0].c[0] - 10, bl[0].c[1] + 5]); await wait(60);
+    var b2 = anvil.drawing.summary().balloons[0];
+    near(b2.c[0] - bl[0].c[0], -10, 1, 'dragged x'); near(b2.c[1] - bl[0].c[1], 5, 1, 'dragged y');
+    sheetMouse('dblclick', b2.c);
+    assert(UI.hasPM() && D.querySelector('#pm .pm-head span').textContent === 'Balloon', 'Balloon PM');
+    var q = pmField('Show quantity'); q.checked = true; q.dispatchEvent(new W.Event('change', { bubbles: true }));
+    await UI.pmOK(); await wait(30);
+    assert(anvil.drawing.summary().balloons[0].qty === '1X', 'qty ' + JSON.stringify(anvil.drawing.summary().balloons[0]));
+    anvil.drawing.close(); await idle();
+    // assembly: Auto Balloon finds an edge point of each component; the Stacked Balloon tool uses them
+    var ex = W.AnvilExamples.filter(function (e) { return e.name === 'Pinned plate assembly'; })[0];
+    await UI.openExample(ex); await idle();
+    anvil.drawing.make(); await idle(); await wait(60);
+    var iso = dwView('Isometric');
+    var auto = anvil.drawing.autoBalloon(iso.id).balloons;
+    var at = {}; auto.forEach(function (b) { at[b.item] = b.attach; });
+    anvil.drawing.deleteBalloons(iso.id);
+    Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
+    ribbonButton('Stacked Balloon').click();
+    var qs = pmField('Show quantity'); qs.checked = true; qs.dispatchEvent(new W.Event('change', { bubbles: true }));
+    sheetMouse('mousedown', at[1]);
+    sheetMouse('mousedown', [iso.box[0] - 10, iso.box[3] + 10]);
+    sheetMouse('mousedown', at[2]); sheetMouse('mousedown', at[3]);
+    await UI.pmOK(); await wait(30);
+    var sb = anvil.drawing.summary().balloons;
+    assert(sb.length === 1 && sb[0].item === 1 && JSON.stringify(sb[0].stack) === '[2,3]' && sb[0].qty === '1X', 'stack ' + JSON.stringify(sb));
+    assert(D.querySelectorAll('#drawing-sheet g[data-layer="BALLOONS"] circle').length === 3, 'three circles');
+    sheetMouse('mousedown', sb[0].c); key('Delete');
+    assert(!anvil.drawing.summary().balloons.length, 'deleted');
+    await UI.undo(); await idle(); await wait(60);
+    assert(anvil.drawing.summary().balloons.length === 1, 'undo');
+    var dxf = anvil.drawing.dxf();
+    assert(dxf.indexOf('\n2\nCENTER\n') > 0 && dxf.indexOf('\n8\nANNOTATIONS\n') > 0, 'DXF annotations');
+    anvil.drawing.close(); await idle();
+    await anvil.newPart(); await idle();
+    return 'part balloon 1 (1X); stack ' + [sb[0].item].concat(sb[0].stack).join(' | ');
   });
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();

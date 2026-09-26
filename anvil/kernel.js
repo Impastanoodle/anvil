@@ -1837,6 +1837,111 @@ var Kernel = (function () {
     return { volume: vol, area: area, centroid: centroid, bbox: { min: min, max: max }, density: density, mass: vol * density };
   }
 
+  // ------------------------------------------------------------------ mesh quality
+  // meshQuality(mesh, opts?) -> { triangles, vertices, minAngle, needles, slivers, openEdges, nonManifoldEdges,
+  //   tJunctions, closed, diag, tol }
+  // Works on the rendered triangles (positions64). Vertices closer than tol = opts.tol (default 1e-9 × the bounding
+  // diagonal) are welded. Every directed triangle edge must be cancelled by an opposite edge: first exactly (the same
+  // two welded vertices), then, for what is left, by antiparallel collinear edges within tol (T-junctions: a long edge
+  // on one side, several short ones on the other), subtracting the overlapping parameter ranges. What remains longer
+  // than tol is an open edge (a crack as narrow as ~10 tol is found; the drawing's edge matcher pairs lines on a
+  // 1e-3 grid and would not see it). An edge used more than once in the same direction, or by more than two
+  // triangles, is non-manifold. slivers: triangles whose height over their longest edge is under tol (collinear);
+  // needles: triangles with a corner under opts.needleDeg (default 1°); minAngle in degrees over non-sliver triangles.
+  function meshQuality(mesh, opts) {
+    opts = opts || {};
+    var P = mesh.positions64 || mesh.positions, nT = P.length / 9;
+    var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity], i, k;
+    for (i = 0; i < P.length; i += 3) for (k = 0; k < 3; k++) { if (P[i + k] < min[k]) min[k] = P[i + k]; if (P[i + k] > max[k]) max[k] = P[i + k]; }
+    var diag = P.length ? len(sub(max, min)) : 0, tol = opts.tol || Math.max(diag * 1e-9, 1e-12);
+    var needleDeg = opts.needleDeg == null ? 1 : opts.needleDeg;
+    // weld: grid cells of size tol, a vertex joins any existing vertex within tol in the 27 neighbouring cells
+    var cells = {}, verts = [], ids = new Int32Array(nT * 3);
+    function cellKey(x, y, z) { return x + ',' + y + ',' + z; }
+    for (i = 0; i < nT * 3; i++) {
+      var x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2];
+      var cx = Math.floor(x / tol), cy = Math.floor(y / tol), cz = Math.floor(z / tol), found = -1;
+      for (var dx = -1; dx <= 1 && found < 0; dx++) for (var dy = -1; dy <= 1 && found < 0; dy++) for (var dz = -1; dz <= 1 && found < 0; dz++) {
+        var list = cells[cellKey(cx + dx, cy + dy, cz + dz)];
+        if (!list) continue;
+        for (var m = 0; m < list.length; m++) {
+          var v = verts[list[m]];
+          if (Math.abs(v[0] - x) <= tol && Math.abs(v[1] - y) <= tol && Math.abs(v[2] - z) <= tol) { found = list[m]; break; }
+        }
+      }
+      if (found < 0) {
+        found = verts.length; verts.push([x, y, z]);
+        var ck = cellKey(cx, cy, cz);
+        (cells[ck] || (cells[ck] = [])).push(found);
+      }
+      ids[i] = found;
+    }
+    // triangle shape
+    var minAngle = 180, needles = 0, slivers = 0;
+    for (var t = 0; t < nT; t++) {
+      var A = verts[ids[t * 3]], B = verts[ids[t * 3 + 1]], C = verts[ids[t * 3 + 2]];
+      var ab = sub(B, A), bc = sub(C, B), ca = sub(A, C), lab = len(ab), lbc = len(bc), lca = len(ca);
+      var area2 = len(cross(ab, sub(C, A))), longest = Math.max(lab, lbc, lca);
+      if (!(longest > 0) || area2 / longest < tol) { slivers++; continue; }
+      var angA = Math.acos(Math.max(-1, Math.min(1, -dot(ab, ca) / (lab * lca)))), angB = Math.acos(Math.max(-1, Math.min(1, -dot(bc, ab) / (lbc * lab))));
+      var a = Math.min(angA, angB, Math.PI - angA - angB) * 180 / Math.PI;
+      if (a < minAngle) minAngle = a;
+      if (a < needleDeg) needles++;
+    }
+    // exact pairing of directed edges between welded vertices
+    var directed = {}, undirected = {}, nonManifold = 0, open = [];
+    for (t = 0; t < nT; t++) for (k = 0; k < 3; k++) {
+      var ia = ids[t * 3 + k], ib = ids[t * 3 + (k + 1) % 3];
+      if (ia === ib) continue;
+      var dk = ia + '>' + ib, uk = ia < ib ? ia + '|' + ib : ib + '|' + ia;
+      directed[dk] = (directed[dk] || 0) + 1;
+      undirected[uk] = (undirected[uk] || 0) + 1;
+    }
+    Object.keys(undirected).forEach(function (uk) {
+      var p = uk.split('|'), f = directed[p[0] + '>' + p[1]] || 0, r = directed[p[1] + '>' + p[0]] || 0;
+      if (f > 1 || r > 1 || f + r > 2) nonManifold++;
+      for (var n = 0; n < f - r; n++) open.push([+p[0], +p[1]]);
+      for (n = 0; n < r - f; n++) open.push([+p[1], +p[0]]);
+    });
+    // T-junctions: cancel what is left against antiparallel collinear edges, by parameter range along each edge
+    var rest = open.map(function (e) {
+      var a = verts[e[0]], b = verts[e[1]], d = sub(b, a), L = len(d);
+      return { a: a, u: scale(d, 1 / L), L: L, pieces: [[0, L]], lo: [Math.min(a[0], b[0]) - tol, Math.min(a[1], b[1]) - tol, Math.min(a[2], b[2]) - tol], hi: [Math.max(a[0], b[0]) + tol, Math.max(a[1], b[1]) + tol, Math.max(a[2], b[2]) + tol] };
+    });
+    function cutOut(e, t0, t1) {
+      var out = [];
+      e.pieces.forEach(function (pc) {
+        if (t1 <= pc[0] || t0 >= pc[1]) { out.push(pc); return; }
+        if (t0 > pc[0]) out.push([pc[0], t0]);
+        if (t1 < pc[1]) out.push([t1, pc[1]]);
+      });
+      e.pieces = out;
+    }
+    function offLine(e, p) { var w = sub(p, e.a), s = dot(w, e.u); return len(sub(w, scale(e.u, s))); }
+    var tj = 0;
+    for (i = 0; i < rest.length; i++) {
+      var e = rest[i];
+      for (var j = i + 1; j < rest.length; j++) {
+        var g = rest[j];
+        if (dot(e.u, g.u) > -1 + 1e-9) continue;
+        if (g.lo[0] > e.hi[0] || g.hi[0] < e.lo[0] || g.lo[1] > e.hi[1] || g.hi[1] < e.lo[1] || g.lo[2] > e.hi[2] || g.hi[2] < e.lo[2]) continue;
+        var gb = add(g.a, scale(g.u, g.L));
+        if (offLine(e, g.a) > tol || offLine(e, gb) > tol) continue;
+        var s0 = dot(sub(gb, e.a), e.u), s1 = dot(sub(g.a, e.a), e.u); // g runs backwards along e
+        var t0 = Math.max(0, s0), t1 = Math.min(e.L, s1);
+        if (t1 - t0 <= tol) continue;
+        cutOut(e, t0, t1);
+        // the same range in g's own parameter
+        cutOut(g, dot(sub(add(e.a, scale(e.u, t1)), g.a), g.u), dot(sub(add(e.a, scale(e.u, t0)), g.a), g.u));
+        tj++;
+      }
+    }
+    var openEdges = 0;
+    rest.forEach(function (e) { e.pieces.forEach(function (pc) { if (pc[1] - pc[0] > tol * 10) openEdges++; }); });
+    return { triangles: nT, vertices: verts.length, minAngle: nT - slivers > 0 ? minAngle : 0, needles: needles, slivers: slivers,
+      openEdges: openEdges, nonManifoldEdges: nonManifold, tJunctions: tj, closed: openEdges === 0 && nonManifold === 0, diag: diag, tol: tol };
+  }
+
   // ------------------------------------------------------------------ face outlines (for DXF of flat faces)
   function key3(p) { return Math.round(p[0] * 1e4) + ',' + Math.round(p[1] * 1e4) + ',' + Math.round(p[2] * 1e4); }
 
@@ -2241,6 +2346,53 @@ var Kernel = (function () {
     return norm([nx, ny, nz]);
   }
 
+  // Loft side between convex sections on parallel planes: the convex hull of each consecutive pair (a rotating-calipers
+  // merge of the two loops' edge directions), so every side face is planar and every edge convex. Each section keeps
+  // its own polygon, so it still matches features made from the same sketch (the Funnel's spout). A Ø80 → Ø14 loft
+  // used to resample the 21-gon onto 51 points: non-planar quads split into needle triangles with slightly concave
+  // (saddle) diagonals, which the shell could not offset cleanly (grooves in the wall, extra lines in drawings).
+  // secs: [{ plane, pts3 }] -> { loops: [pts3 CCW about the loft direction, started at the smallest edge angle],
+  // tris: [[p, q, r] or [p, q, r, s]] } or null when a section is not convex or the planes are not parallel.
+  function hullLoftLoops(secs) {
+    var n0 = secs[0].plane.n, plane = secs[0].plane, sgn = 0, loops = [];
+    for (var i = 0; i < secs.length; i++) {
+      if (Math.abs(dot(secs[i].plane.n, n0)) < 1 - 1e-9) return null;
+      if (i + 1 < secs.length) {
+        var dn = dot(sub(loopCentroid3(secs[i + 1].pts), loopCentroid3(secs[i].pts)), n0), s = dn > 0 ? 1 : -1;
+        if (Math.abs(dn) < 1e-9 || (sgn && s !== sgn)) return null;
+        sgn = s;
+      }
+      var pts = secs[i].pts.slice(), p2 = pts.map(function (p) { return to2D(plane, p); });
+      if (signedArea(p2) < 0) { pts.reverse(); p2.reverse(); }
+      var n = pts.length, angs = [], best = 0;
+      for (var k = 0; k < n; k++) {
+        var a = p2[k], b = p2[(k + 1) % n], c = p2[(k + 2) % n];
+        var cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if (cr < -1e-9 * (Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) + Math.abs(c[0] - b[0]) + Math.abs(c[1] - b[1]) + 1e-12)) return null;
+        var ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        if (ang < 0) ang += Math.PI * 2;
+        if (ang > Math.PI * 2 - 1e-9) ang = 0; // so a direction just below 2π merges with the other loop's 0
+        angs.push(ang);
+        if (ang < angs[best]) best = k;
+      }
+      loops.push({ pts: pts.slice(best).concat(pts.slice(0, best)), angs: angs.slice(best).concat(angs.slice(0, best)) });
+    }
+    var tris = [];
+    for (i = 0; i + 1 < loops.length; i++) {
+      var P = loops[i].pts, Q = loops[i + 1].pts, aP = loops[i].angs, aQ = loops[i + 1].angs, nP = P.length, nQ = Q.length, pi = 0, qj = 0;
+      while (pi < nP || qj < nQ) {
+        var x = pi < nP ? aP[pi] : Infinity, y = qj < nQ ? aQ[qj] : Infinity;
+        var p0 = P[pi % nP], p1 = P[(pi + 1) % nP], q0 = Q[qj % nQ], q1 = Q[(qj + 1) % nQ];
+        if (Math.abs(x - y) < 1e-9) { tris.push([p0, p1, q1, q0]); pi++; qj++; }
+        else if (x < y) { tris.push([p0, p1, q0]); pi++; }
+        else { tris.push([p0, q1, q0]); qj++; }
+      }
+    }
+    // the loops run CCW about the first plane's normal; the side faces above are wound for a loft along +n
+    if (sgn < 0) tris.forEach(function (t) { t.reverse(); });
+    return { loops: loops.map(function (l) { return sgn < 0 ? l.pts.slice().reverse() : l.pts; }), tris: tris };
+  }
+
   function buildLoft(f, model, ctx) {
     var ids = f.sketches || [];
     if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
@@ -2254,30 +2406,36 @@ var Kernel = (function () {
       if (outers.length !== 1) throw new Error('Each loft sketch must contain exactly one closed profile.');
       return { plane: pl, pts: outers[0].pts.map(function (p) { return to3D(pl, p[0], p[1]); }) };
     });
-    var N = 24;
-    secs.forEach(function (s) { N = Math.max(N, s.pts.length); });
-    N = Math.min(N, 96);
-    var loops = secs.map(function (s) { return resampleLoop(s.pts, N); });
-    // consistent winding along the loft direction, then align start indices
-    for (var i = 0; i + 1 < loops.length; i++) {
-      var dir = norm(sub(loopCentroid3(loops[i + 1]), loopCentroid3(loops[i])));
-      if (i === 0 && dot(loopNormal3(loops[0]), dir) < 0) loops[0].reverse();
-      if (dot(loopNormal3(loops[i + 1]), dir) < 0) loops[i + 1].reverse();
-      var A = loops[i], B = loops[i + 1], bestO = 0, bestCost = Infinity;
-      for (var o = 0; o < N; o++) {
-        var cost = 0;
-        for (var k = 0; k < N; k++) { var d = sub(A[k], B[(k + o) % N]); cost += dot(d, d); }
-        if (cost < bestCost) { bestCost = cost; bestO = o; }
+    var polys = [], loops, i;
+    var hull = hullLoftLoops(secs);
+    if (hull) {
+      loops = hull.loops;
+      hull.tris.forEach(function (t) { pushPoly(polys, t, f.id); });
+    } else {
+      var N = 24;
+      secs.forEach(function (s) { N = Math.max(N, s.pts.length); });
+      N = Math.min(N, 96);
+      loops = secs.map(function (s) { return resampleLoop(s.pts, N); });
+      // consistent winding along the loft direction, then align start indices
+      for (i = 0; i + 1 < loops.length; i++) {
+        var dir = norm(sub(loopCentroid3(loops[i + 1]), loopCentroid3(loops[i])));
+        if (i === 0 && dot(loopNormal3(loops[0]), dir) < 0) loops[0].reverse();
+        if (dot(loopNormal3(loops[i + 1]), dir) < 0) loops[i + 1].reverse();
+        var A = loops[i], B = loops[i + 1], bestO = 0, bestCost = Infinity;
+        for (var o = 0; o < N; o++) {
+          var cost = 0;
+          for (var k = 0; k < N; k++) { var d = sub(A[k], B[(k + o) % N]); cost += dot(d, d); }
+          if (cost < bestCost) { bestCost = cost; bestO = o; }
+        }
+        if (bestO) loops[i + 1] = B.slice(bestO).concat(B.slice(0, bestO));
       }
-      if (bestO) loops[i + 1] = B.slice(bestO).concat(B.slice(0, bestO));
-    }
-    var polys = [];
-    for (i = 0; i + 1 < loops.length; i++) {
-      var P = loops[i], Q = loops[i + 1];
-      for (var k2 = 0; k2 < N; k2++) {
-        var j = (k2 + 1) % N;
-        pushPoly(polys, [P[k2], P[j], Q[j]], f.id);
-        pushPoly(polys, [P[k2], Q[j], Q[k2]], f.id);
+      for (i = 0; i + 1 < loops.length; i++) {
+        var P = loops[i], Q = loops[i + 1];
+        for (var k2 = 0; k2 < N; k2++) {
+          var j = (k2 + 1) % N;
+          pushPoly(polys, [P[k2], P[j], Q[j]], f.id);
+          pushPoly(polys, [P[k2], Q[j], Q[k2]], f.id);
+        }
       }
     }
     function cap(loop3, plane, flip) {
@@ -3443,7 +3601,7 @@ var Kernel = (function () {
     newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
     buildTool: buildTool, isCut: isCut, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
-    meshFromBody: meshFromBody, massProps: massProps, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
+    meshFromBody: meshFromBody, massProps: massProps, meshQuality: meshQuality, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
     buildFlange: buildFlange, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,

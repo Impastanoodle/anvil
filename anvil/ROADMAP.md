@@ -50,6 +50,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
 - [x] Web Worker rebuilds so the UI never freezes (`worker.js` owns `Kernel.rebuild` and its cache, `UI.rebuild` returns a Promise with coalescing and a synchronous fallback, Edit ▸ "Rebuild in background (Web Worker)" toggle, `CSG.pack/unpack`, `Kernel.packBuild/unpackBuild`)
 - [x] Degenerate geometry guards: zero-area loops dropped with a "zero-area contour" warning, self-intersecting loops error with "crosses itself near (x, y)" from extrude/revolve/sweep/loft, NaN depths/angles/path points error with "must be a number"
+- [x] Mesh quality (cloud-2026-09-25g): `Kernel.meshQuality` (welded open / non-manifold edges with T-junctions resolved, collinear slivers, needles, min angle) asserted closed, manifold and sliver-free on every Design Library example; lofts between convex parallel sections are the convex hull of the sections (planar side faces), which removed the Funnel's shell grooves, its 1e-5 mm crack at the tube and the extra lines in its drawing (Funnel 762 → 276 ms)
 - [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
 
 ## Phase 5 — assemblies and drawings
@@ -75,7 +76,7 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Fillets and chamfers on curved and tangent edge chains, variable-radius fillets, face fillets
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve), Instant3D
 - [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves; construction geometry toggle
-- [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series, and hole callouts in drawings
+- [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series (drawing hole callouts already read counterbores / countersinks from the solid, cloud-2026-09-25m)
 - [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
 - [ ] IGES / Parasolid import and export; STEP import of curved faces (cylinders, cones, B-splines) and exact curved STEP export (needs true curves in the kernel); compressed 3MF import
 - [x] Assemblies: Parallel, Perpendicular, Tangent (cylinder–plane, cylinder–cylinder), Width, Gear and Limit Distance / Limit Angle mates; Distance between cylinders; Standard / Advanced / Mechanical Mates groups in the Mate PM (cloud-2026-09-25l)
@@ -85,14 +86,16 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Exploded View: explode steps (pick or drag along an axis), explode lines, ExplView in the ConfigurationManager, Explode / Collapse and animation (cloud-2026-09-25l)
 - [ ] Exploded views in drawings: a per-view "Show in exploded state" option in drawing.js using the `Assembly.explodedBodies` hook; exploded views per configuration; rotation in explode steps
 - [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
-- [ ] Drawings: centre marks and centrelines, hole callouts, ordinate and baseline dimensions, chamfer dimensions, dimension dragging and editing
-- [ ] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text, magnetic lines
+- [x] Drawings: centre marks (single, linear, circular, extension lines) and centrelines with Auto insert on view creation (Document Properties), hole callouts read from the solid (THRU / depth / counterbore / countersink, 4X), ordinate and baseline dimensions, chamfer dimensions, dimension dragging and the Dimension PropertyManager (tolerance bilateral / limit / symmetric, precision, text, flip arrows; a model item's value drives the part) (cloud-2026-09-25m)
+- [x] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text (cloud-2026-09-25m)
+- [ ] Drawings: magnetic lines for balloons; notes, surface finish, datum and geometric tolerance symbols
 - [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
 - [ ] Drawings: indented BOM and Parts only across sub-assemblies (sub-assemblies exist now: call `Assembly.bom(model, build, { type })` from drawing.js), revision table, general tables
 - [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
 - [ ] Drawings: multiple sheets, editable sheet formats / title-block custom properties, drawing templates, a separate `.drawing` document that references the part file
 - [x] Custom properties and materials: material library in classes (`materials.js`: density, E, Poisson, tensile / yield, appearance), Edit Material dialog, Material row in the FeatureManager, per-body materials, viewport colour follows the material, Mass Properties with material densities; File ▸ Properties (Summary, Custom, Configuration Specific, "SW-Material" / "SW-Mass" links) on parts and assemblies, round-tripped through the script; drawings and BOMs read them (cloud-2026-09-25j)
 - [ ] Surfaces (extruded / revolved / lofted surfaces, knit, thicken), Weldments, Mold Tools, Direct Editing (move face) — the greyed tabs
-- [ ] Evaluate: Check (geometry validation), Zebra Stripes and Sensors are placeholders; Section Properties, Draft Analysis, Clearance Verification and Interference Detection on selected components are missing
+- [x] Evaluate: Check (open / non-manifold edges, zero-area faces, self-intersections, click-to-highlight), Zebra Stripes (shader overlay, stripe count / direction / sharpness), Section Properties (area, centroid, Ixx / Iyy / Ixy, principal axes of a face or sketch), Draft Analysis (positive / negative / requires draft / straddle), Clearance Verification (minimum distance and closest points) and Interference Detection limited to selected components (`evaluate.js`, `ui-evaluate.js`) (cloud-2026-09-25n)
+- [ ] Evaluate: Sensors, Undercut Analysis, Thickness Analysis, Curvature display, Deviation Analysis
 - [ ] Configurations per configuration feature suppression and a design table grid; configurations in assemblies
 - [ ] Selection filters and box selection in the viewport (Ctrl+click only pairs two faces in Measure); Instant3D drag handles on features

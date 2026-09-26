@@ -35,6 +35,7 @@
 <script src="../materials.js"></script>
 <script src="../examples/examples.js"></script>
 <script src="../drawing.js"></script>
+<script src="../evaluate.js"></script>
 <script>
 (function () {
   'use strict';
@@ -2107,7 +2108,7 @@
     'Chamfered block': 96398.26753692025,
     'Rounded handle': 30674.73950036209,
     'Mug': 84806.88290263337,
-    'Funnel': 12268.395201503854, // shell over ~14k polygons; the bodies before the shell match to 1e-15, the shell union differs by 1e-6 (fragmentation noise), see EXPECTED_TOL
+    'Funnel': 12160.516094319566, // run cloud-2026-09-25g: hull loft; equals the independent slice integral of the 1.5 mm offset in group "mesh quality" (was 12268.395 on the resampled loft)
     'Handlebar': 46838.66040500728,
     'Moulded cap': 13443.22758936501,
     'Parametric plate': 120 * 80 * 8 - 8 * (4 * polyCircleArea(4) + 3 * polyCircleArea(2)), // equations example (run 2026-09-25T15): plate − 4 Ø8 − 3 Ø4 through holes
@@ -2122,7 +2123,7 @@
     'Interference check': 60 * 40 * 10 + 20 * 20 * 20 + 2 * polyCircleArea(4) * 20
   };
   // per-part tolerance where the pinned value is a large union of slabs (default 1e-6)
-  var EXPECTED_TOL = { 'Funnel': 5e-6 };
+  var EXPECTED_TOL = {};
   window.__anvilVolumes = {};
   window.__anvilVolumesJS = function () {
     return Object.keys(window.__anvilVolumes).map(function (k) { return '    ' + JSON.stringify(k) + ': ' + window.__anvilVolumes[k]; }).join(',\n');
@@ -6564,7 +6565,8 @@
       assert(!Object.keys(b.errors).length, JSON.stringify(b.errors));
       var mp = AS.massProps(m, b), c30 = Math.cos(Math.PI / 6), s30 = Math.sin(Math.PI / 6);
       // base (60, 5, 30) 72000; each leaf / arm 4000: Hinge<1> at (50, 15, 0) with its arm standing (Rz 90), Hinge<2> at (110, 15, 0) with its arm at 30°
-      var parts = [[72000, [60, 5, 30]], [4000, [30, 12.5, 10]], [4000, [47.5, 35, 10]], [4000, [90, 12.5, 10]], [4000, [110 + 20 * c30 - 2.5 * s30, 15 + 20 * s30 + 2.5 * c30, 10]]];
+      // (the arm's local centroid is (21, 2.5, 10): it starts 1 mm clear of the hinge line)
+      var parts = [[72000, [60, 5, 30]], [4000, [30, 12.5, 10]], [4000, [47.5, 36, 10]], [4000, [90, 12.5, 10]], [4000, [110 + 21 * c30 - 2.5 * s30, 15 + 21 * s30 + 2.5 * c30, 10]]];
       var V = 0, C = [0, 0, 0];
       parts.forEach(function (p) { V += p[0]; for (var k = 0; k < 3; k++) C[k] += p[0] * p[1][k]; });
       C = C.map(function (x) { return x / V; });
@@ -6774,6 +6776,703 @@
       nearRel(AS.massProps(m2, b2).volume, AS.massProps(m, b).volume, 1e-12, 'volume');
       D.use(null);
       return s.split('\n').length + ' lines';
+    });
+  })();
+
+  // ------------------------------------------------------------------ mesh quality (run cloud-2026-09-25g)
+  group('mesh quality');
+  // The Funnel, computed without the kernel: its sections are the Ø80 and Ø14 circles as the sketch polylines them
+  // (regular n-gons, n = round(8 √r), vertex 0 at angle 0; Top frame: x = u, z = −v). The loft side is the convex hull
+  // of the two sections: every plane through an edge of one and a vertex of the other that has all points behind it.
+  function funnelSections() {
+    var TAU = Math.PI * 2;
+    function ngon(r, y) { var n = Math.round(8 * Math.sqrt(r)), out = []; for (var k = 0; k < n; k++) out.push([r * Math.cos(TAU * k / n), y, -r * Math.sin(TAU * k / n)]); return out; }
+    var P = ngon(40, 60), Q = ngon(7, 20), all = P.concat(Q), V = K.vec, planes = [], seen = {};
+    function tryPlane(a, b, c) {
+      var n = V.cross(V.sub(b, a), V.sub(c, a)), l = V.len(n);
+      if (l < 1e-12) return;
+      n = V.scale(n, 1 / l);
+      var w = V.dot(n, a), hi = -Infinity, lo = Infinity;
+      all.forEach(function (p) { var d = V.dot(n, p) - w; hi = Math.max(hi, d); lo = Math.min(lo, d); });
+      if (hi > 1e-9) { if (lo < -1e-9) return; n = V.scale(n, -1); w = -w; }
+      if (Math.abs(n[1]) > 1 - 1e-12) return; // the two caps
+      var key = n.map(function (x) { return Math.round(x * 1e8); }).join(',');
+      if (!seen[key]) { seen[key] = true; planes.push({ n: n, w: w }); }
+    }
+    [[P, Q], [Q, P]].forEach(function (pr) { var A = pr[0]; for (var i = 0; i < A.length; i++) pr[1].forEach(function (q) { tryPlane(A[i], A[(i + 1) % A.length], q); }); });
+    return { P: P, Q: Q, planes: planes };
+  }
+  // 2D (x, z) helpers: clip a convex polygon to a x + b z <= c; polygon area; convex hull (monotone chain)
+  function clip2(poly, a, b, c) {
+    var out = [];
+    for (var i = 0; i < poly.length; i++) {
+      var p = poly[i], q = poly[(i + 1) % poly.length], dp = a * p[0] + b * p[1] - c, dq = a * q[0] + b * q[1] - c;
+      if (dp <= 0) out.push(p);
+      if ((dp < 0 && dq > 0) || (dp > 0 && dq < 0)) { var t = dp / (dp - dq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
+    }
+    return out;
+  }
+  function area2(poly) { var s = 0; for (var i = 0; i < poly.length; i++) { var p = poly[i], q = poly[(i + 1) % poly.length]; s += p[0] * q[1] - q[0] * p[1]; } return Math.abs(s) / 2; }
+  function hull2(pts) {
+    pts = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    function cr(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+    var lo = [], up = [];
+    pts.forEach(function (p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); });
+    pts.slice().reverse().forEach(function (p) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); });
+    return lo.slice(0, -1).concat(up.slice(0, -1));
+  }
+  var FUNNEL_LOFT = 'var mouth = p.sketch("Top", 60).circle(0, 0, 40).id();\nvar neck = p.sketch("Top", 20).circle(0, 0, 7).id();\np.loft([mouth, neck], { name: "Cone" });';
+  test('loft between parallel convex sections is their convex hull: prismatoid volume h/6 (A1 + A2 + 4 Am), Am = Minkowski mean', function () {
+    var fs = funnelSections(), r = build(FUNNEL_LOFT);
+    noErrors(r);
+    var xz = function (p) { return [p[0], p[2]]; }, P2 = fs.P.map(xz), Q2 = fs.Q.map(xz), mid = [];
+    P2.forEach(function (p) { Q2.forEach(function (q) { mid.push([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]); }); });
+    var expected = 40 / 6 * (area2(P2) + area2(Q2) + 4 * area2(hull2(mid)));
+    nearRel(r.body.volume(), expected, 1e-12, 'hull loft volume');
+    // planar side faces: one mesh face per hull plane (51 + 21 edges, 3 parallel pairs give quads), no saddle edges
+    var side = r.mesh.faces.filter(function (f) { return Math.abs(f.normal[1]) < 1 - 1e-9; });
+    assert(side.length === fs.planes.length && fs.planes.length === 69, 'side faces ' + side.length + ', hull planes ' + fs.planes.length);
+    var q = K.meshQuality(r.mesh);
+    assert(q.closed && q.slivers === 0, 'loft mesh closed, no slivers: ' + JSON.stringify(q));
+    return 'volume ' + fmt(expected);
+  });
+  test('Funnel volume = slice integral of the 1.5 mm shell of hull + tube, computed without the kernel (was 12268.395 on the resampled loft)', function () {
+    // Body section B(y): the Ø14 21-gon below y = 20, the hull section above. Sharp inner offset (what Shell makes: face
+    // planes moved in by T and extended to meet; top and bottom faces open): C(y) = hull section with every side plane
+    // moved in by T, S = tube 21-gon moved in by T. Wall area = |B| − |B∩(C∪S)| = |B| − (|B∩C| + |B∩S| − |B∩C∩S|);
+    // each piece is a convex polygon whose area is piecewise quadratic in y, so Simpson converges fast (1e-10 here).
+    var fs = funnelSections(), T = 1.5, TAU = Math.PI * 2, nq = fs.Q.length, ap = 7 * Math.cos(Math.PI / nq);
+    var BIG = [[-1e3, -1e3], [1e3, -1e3], [1e3, 1e3], [-1e3, 1e3]];
+    function byPlanes(poly, y, off) { fs.planes.forEach(function (pl) { poly = clip2(poly, pl.n[0], pl.n[2], pl.w - off - pl.n[1] * y); }); return poly; }
+    function byTube(poly, off) { for (var k = 0; k < nq; k++) { var a = -TAU * (k + 0.5) / nq; poly = clip2(poly, Math.cos(a), Math.sin(a), ap - off); } return poly; }
+    function wall(y) {
+      var b = y < 20 ? byTube(BIG, 0) : byPlanes(BIG, y, 0), c = byPlanes(b, y, T);
+      return area2(b) - (area2(c) + area2(byTube(b, T)) - area2(byTube(c, T)));
+    }
+    function simpson(f, a, b, n) { var h = (b - a) / n, s = f(a) + f(b); for (var i = 1; i < n; i++) s += f(a + i * h) * (i % 2 ? 4 : 2); return s * h / 3; }
+    var expected = simpson(wall, 0, 20, 2) + simpson(wall, 20, 60, 20000);
+    var ex = AnvilExamples.filter(function (e) { return e.name === 'Funnel'; })[0], r = build(ex.code);
+    noErrors(r);
+    nearRel(r.body.volume(), expected, 1e-8, 'Funnel vs the analytic shell');
+    return 'analytic ' + expected.toFixed(6) + ', kernel ' + r.body.volume().toFixed(6);
+  });
+  test('the Funnel is closed where the cone meets the tube (the resampled loft left a ~1e-5 mm crack: 3 open edges)', function () {
+    var ex = AnvilExamples.filter(function (e) { return e.name === 'Funnel'; })[0], r = build(ex.code), q = K.meshQuality(r.mesh);
+    assert(q.openEdges === 0 && q.nonManifoldEdges === 0, JSON.stringify(q));
+    // and the check does see a crack that narrow: two unit cubes 1e-5 apart share no edge
+    var c = build('p.box(10, 10, 10);\np.box(10, 10, 10, { at: [10.00001, 0, 0], merge: false });');
+    var qc = K.meshQuality(c.mesh);
+    assert(qc.closed, 'two separate closed boxes: ' + JSON.stringify(qc));
+    var M = K.meshFromBody(r.body), P = M.positions64, moved = new Float64Array(P);
+    // open a 1e-5 crack: shift one face's vertices by 1e-5 along its normal
+    var f = M.faces[0];
+    for (var i = f.start * 9; i < (f.start + f.count) * 9; i += 3) for (var k = 0; k < 3; k++) moved[i + k] += f.normal[k] * 1e-5;
+    var qb = K.meshQuality({ positions64: moved });
+    assert(qb.openEdges > 0, 'a 1e-5 mm crack is reported: ' + JSON.stringify(qb));
+    return 'Funnel ' + q.triangles + ' triangles, ' + q.tJunctions + ' T-junctions resolved; cracked copy: ' + qb.openEdges + ' open edges';
+  });
+  test('Funnel drawing: no extra lines from the shell (Front 7 visible lines, Top 72: the two rims; were 7 / 394 with 469 hidden)', function () {
+    if (typeof Drawing === 'undefined') return 'drawing.js not loaded';
+    var ex = AnvilExamples.filter(function (e) { return e.name === 'Funnel'; })[0], r = build(ex.code);
+    var front = Drawing.projectView(r.mesh, 'Front'), top = Drawing.projectView(r.mesh, 'Top');
+    assert(front.lines.visible.length <= 10 && front.lines.hidden.length <= 20, 'Front ' + front.lines.visible.length + ' visible, ' + front.lines.hidden.length + ' hidden');
+    assert(top.lines.visible.length <= 80 && top.lines.hidden.length === 0, 'Top ' + top.lines.visible.length + ' visible, ' + top.lines.hidden.length + ' hidden');
+    return 'Front ' + front.lines.visible.length + ' / ' + front.lines.hidden.length + ', Top ' + top.lines.visible.length + ' / ' + top.lines.hidden.length;
+  });
+  test('meshQuality counts slivers, needles and non-manifold edges on hand-made meshes', function () {
+    // a tetrahedron: closed, min angle 60°
+    var a = [0, 0, 0], b = [1, 0, 0], c = [0.5, Math.sqrt(3) / 2, 0], d = [0.5, Math.sqrt(3) / 6, Math.sqrt(2 / 3)];
+    function mesh(tris) { var out = []; tris.forEach(function (t) { t.forEach(function (p) { out.push(p[0], p[1], p[2]); }); }); return { positions64: new Float64Array(out) }; }
+    var tet = [[a, c, b], [a, b, d], [b, c, d], [c, a, d]], q = K.meshQuality(mesh(tet));
+    assert(q.closed && q.slivers === 0 && q.needles === 0, JSON.stringify(q));
+    near(q.minAngle, 60, 1e-9, 'tetrahedron min angle');
+    var q1 = K.meshQuality(mesh(tet.slice(1)));
+    assert(q1.openEdges === 3 && !q1.closed, 'one face missing: 3 open edges ' + JSON.stringify(q1));
+    var q2 = K.meshQuality(mesh(tet.concat([[a, b, d]])));
+    assert(q2.nonManifoldEdges === 3, 'a face used twice: 3 non-manifold edges ' + JSON.stringify(q2));
+    var q3 = K.meshQuality(mesh(tet.concat([[a, [0.5, 0, 0], b]])));
+    assert(q3.slivers === 1, 'a collinear triangle is a sliver ' + JSON.stringify(q3));
+  });
+  if (typeof AnvilExamples !== 'undefined') {
+    AnvilExamples.forEach(function (ex) {
+      test('mesh quality: ' + ex.name + ' is closed, manifold, without slivers', function () {
+        // an assembly's components may touch (a pin in its hole shares edges with the plate), so each component body
+        // is checked on its own; a part is checked as one mesh
+        var r = buildExample(ex), meshes = isAsmExample(ex) ? r.build.bodies.filter(Boolean).map(function (b) { return K.meshFromBody(b); }) : [r.mesh];
+        var q = { triangles: 0, openEdges: 0, nonManifoldEdges: 0, slivers: 0, needles: 0, tJunctions: 0, minAngle: 180 };
+        meshes.forEach(function (m) {
+          var qm = K.meshQuality(m);
+          ['triangles', 'openEdges', 'nonManifoldEdges', 'slivers', 'needles', 'tJunctions'].forEach(function (k) { q[k] += qm[k]; });
+          q.minAngle = Math.min(q.minAngle, qm.minAngle);
+        });
+        assert(q.openEdges === 0, q.openEdges + ' open edges');
+        assert(q.nonManifoldEdges === 0, q.nonManifoldEdges + ' non-manifold edges');
+        assert(q.slivers === 0, q.slivers + ' sliver (collinear) triangles');
+        assert(q.triangles > 0 && q.minAngle > 1e-3, 'min angle ' + q.minAngle + '° (a corner under 0.001° is a CSG fragment)');
+        return q.triangles + ' triangles, min angle ' + q.minAngle.toFixed(3) + '°, ' + q.needles + ' under 1°, ' + q.tJunctions + ' T-junctions';
+      });
+    });
+  }
+  // ------------------------------------------------------------------ Evaluate tab (evaluate.js, run cloud-2026-09-25n)
+  group('evaluate: Check / Section Properties / Draft Analysis / Clearance / Interference');
+  if (typeof Evaluate === 'undefined') {
+    test('evaluate.js loads', function () { fail('Evaluate is not defined'); });
+  } else (function () {
+    var EV = Evaluate;
+    // closed-form second moments of a regular n-gon of circumradius R centred on the origin (vertex at angle 0):
+    // area n/2 R² sin a, polar moment n R⁴ sin a (2 + cos a) / 12 with a = 2π/n, Ixx = Iyy = J / 2
+    function ngon(R) { var n = segsForRadius(R), a = 2 * Math.PI / n; return { n: n, A: n / 2 * R * R * Math.sin(a), J: n * Math.pow(R, 4) * Math.sin(a) * (2 + Math.cos(a)) / 12 }; }
+    function sketchOf(r, name) { return r.model.features.filter(function (f) { return f.type === 'sketch' && (!name || f.name === name); })[0]; }
+    function faceNormal(mesh, n) {
+      var best = -1;
+      mesh.faces.forEach(function (f, i) { if (V.len(V.sub(f.normal, n)) < 1e-9 && (best < 0 || f.area > mesh.faces[best].area)) best = i; });
+      assert(best >= 0, 'no face with normal ' + n);
+      return best;
+    }
+    // a unit cube as an indexed triangle mesh (outward, counter-clockwise), for the Check tests
+    function cubeMesh(o, s) {
+      o = o || [0, 0, 0]; s = s || 1;
+      var P = [], T = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7];
+      [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]].forEach(function (c) { P.push(o[0] + c[0] * s, o[1] + c[1] * s, o[2] + c[2] * s); });
+      return { positions: P, triangles: T };
+    }
+    function joinMeshes(a, b) {
+      var n = a.positions.length / 3;
+      return { positions: a.positions.concat(b.positions), triangles: a.triangles.concat(b.triangles.map(function (i) { return i + n; })) };
+    }
+
+    // ---- Section Properties
+    test('Section Properties of a 40 × 20 rectangle sketch at (5, 10): A = 800, centroid (25, 20), Ixx = bh³/12, Iyy = hb³/12, Ixy = 0, principal axes along x / y, origin moments by the parallel-axis theorem', function () {
+      var r = build('p.sketch("Front").rect(5, 10, 40, 20);');
+      var s = EV.sectionOfSketch(sketchOf(r), r.model, r.build.planes);
+      nearRel(s.area, 800, 1e-12, 'area');
+      near(s.centroid2[0], 25, 1e-9, 'cx'); near(s.centroid2[1], 20, 1e-9, 'cy');
+      nearVec(s.centroid, [25, 20, 0], 1e-9, 'centroid 3D');
+      nearRel(s.Ixx, 40 * 8000 / 12, 1e-12, 'Ixx'); nearRel(s.Iyy, 20 * 64000 / 12, 1e-12, 'Iyy'); near(s.Ixy, 0, 1e-6, 'Ixy');
+      nearRel(s.J, 40 * 8000 / 12 + 20 * 64000 / 12, 1e-12, 'J');
+      nearRel(s.I1, 20 * 64000 / 12, 1e-12, 'I1 = Iyy'); nearRel(s.I2, 40 * 8000 / 12, 1e-12, 'I2 = Ixx');
+      near(Math.abs(s.axis1World[1]), 1, 1e-9, 'I1 about the y direction');
+      nearRel(s.origin.Ixx, 40 * 8000 / 12 + 800 * 20 * 20, 1e-12, 'Lxx'); nearRel(s.origin.Iyy, 20 * 64000 / 12 + 800 * 25 * 25, 1e-12, 'Lyy'); nearRel(s.origin.Ixy, 800 * 25 * 20, 1e-12, 'Lxy');
+      nearRel(s.perimeter, 120, 1e-12, 'perimeter');
+      return 'Ixx ' + fmt(s.Ixx) + ', Iyy ' + fmt(s.Iyy);
+    });
+    test('Section Properties of an L-section (60 × 80, 10 thick): A, centroid, Ixx, Iyy, Ixy by composite rectangles and the parallel-axis theorem; principal moments and angle from Mohr\'s circle', function () {
+      var r = build('p.sketch("Front").polyline([[0, 0], [60, 0], [60, 10], [10, 10], [10, 80], [0, 80]]);');
+      var s = EV.sectionOfSketch(sketchOf(r), r.model, r.build.planes);
+      // rectangles: flange [0,60]×[0,10], web [0,10]×[10,80]
+      var R = [{ b: 60, h: 10, x: 30, y: 5 }, { b: 10, h: 70, x: 5, y: 45 }];
+      var A = 0, Sx = 0, Sy = 0;
+      R.forEach(function (q) { var a = q.b * q.h; A += a; Sx += a * q.x; Sy += a * q.y; });
+      var cx = Sx / A, cy = Sy / A, Ixx = 0, Iyy = 0, Ixy = 0;
+      R.forEach(function (q) { var a = q.b * q.h; Ixx += q.b * Math.pow(q.h, 3) / 12 + a * Math.pow(q.y - cy, 2); Iyy += q.h * Math.pow(q.b, 3) / 12 + a * Math.pow(q.x - cx, 2); Ixy += a * (q.x - cx) * (q.y - cy); });
+      nearRel(s.area, 1300, 1e-12, 'area'); near(s.centroid2[0], cx, 1e-9, 'cx'); near(s.centroid2[1], cy, 1e-9, 'cy');
+      nearRel(s.Ixx, Ixx, 1e-10, 'Ixx'); nearRel(s.Iyy, Iyy, 1e-10, 'Iyy'); nearRel(s.Ixy, Ixy, 1e-10, 'Ixy');
+      var avg = (Ixx + Iyy) / 2, rad = Math.sqrt(Math.pow((Ixx - Iyy) / 2, 2) + Ixy * Ixy);
+      nearRel(s.I1, avg + rad, 1e-10, 'I1'); nearRel(s.I2, avg - rad, 1e-10, 'I2');
+      // the moment about axis1 is I1 and the product about the principal axes vanishes
+      var th = s.angle * Math.PI / 180, c = Math.cos(th), sn = Math.sin(th);
+      nearRel(Ixx * c * c + Iyy * sn * sn - Ixy * Math.sin(2 * th), s.I1, 1e-10, 'moment about axis1');
+      near((Ixx - Iyy) / 2 * Math.sin(2 * th) + Ixy * Math.cos(2 * th), 0, 1e-6 * s.I1, 'principal product');
+      assert(Ixy < 0, 'an L with its legs along +x / +y has a negative product about the centroid: ' + Ixy);
+      return 'centroid (' + fmt(cx) + ', ' + fmt(cy) + '), Ixy ' + fmt(Ixy) + ', θ ' + fmt(s.angle) + '°';
+    });
+    test('Section Properties of a ring (R 20, r 12): the n-gon closed form (n/2 R² sin 2π/n, J = nR⁴ sin a (2 + cos a)/12) to 1e-9 and π(R⁴ − r⁴)/4 to 1 %; the extruded ring\'s annular face gives the same values', function () {
+      var r = build('p.sketch("Front").circle(0, 0, 20).circle(0, 0, 12).end().extrude(5);');
+      var s = EV.sectionOfSketch(sketchOf(r), r.model, r.build.planes), o = ngon(20), i = ngon(12);
+      nearRel(s.area, o.A - i.A, 1e-9, 'area'); nearRel(s.J, o.J - i.J, 1e-9, 'J');
+      nearRel(s.Ixx, (o.J - i.J) / 2, 1e-9, 'Ixx'); nearRel(s.Iyy, (o.J - i.J) / 2, 1e-9, 'Iyy'); near(s.Ixy, 0, 1e-6 * s.Ixx, 'Ixy');
+      nearVec(s.centroid, [0, 0, 0], 1e-9, 'centroid');
+      nearRel(s.Ixx, Math.PI * (Math.pow(20, 4) - Math.pow(12, 4)) / 4, 0.01, 'true circle');
+      var f = EV.sectionOfFace(r.mesh, faceNormal(r.mesh, [0, 0, 1]));
+      nearRel(f.area, s.area, 1e-9, 'face area'); nearRel(f.J, s.J, 1e-9, 'face J'); nearRel(f.I1, s.I1, 1e-9, 'face I1'); nearRel(f.I2, s.I2, 1e-9, 'face I2');
+      nearVec(f.centroid, [0, 0, 5], 1e-9, 'face centroid');
+      return 'n ' + o.n + ' / ' + i.n + ', J ' + fmt(s.J);
+    });
+    test('Section Properties of a face: the 40 × 20 top of a box (any in-plane frame) gives the rectangle\'s area, centroid, J and principal moments; a planar face with a hole subtracts it', function () {
+      var r = build('p.sketch("Front").rect(0, 0, 40, 20).end().extrude(7);');
+      var s = EV.sectionOfFace(r.mesh, faceNormal(r.mesh, [0, 0, 1]));
+      nearRel(s.area, 800, 1e-12, 'area'); nearVec(s.centroid, [20, 10, 7], 1e-9, 'centroid');
+      nearRel(s.I1, 20 * 64000 / 12, 1e-10, 'I1'); nearRel(s.I2, 40 * 8000 / 12, 1e-10, 'I2'); nearRel(s.J, 40 * 8000 / 12 + 20 * 64000 / 12, 1e-10, 'J');
+      nearVec(s.normal, [0, 0, 1], 1e-12, 'normal');
+      var h = build('p.sketch("Front").rect(0, 0, 40, 20).rect(5, 5, 10, 10).end().extrude(7);');
+      var t = EV.sectionOfFace(h.mesh, faceNormal(h.mesh, [0, 0, 1]));
+      nearRel(t.area, 700, 1e-12, 'holed area');
+      var cx = (800 * 20 - 100 * 10) / 700, cy = (800 * 10 - 100 * 10) / 700;
+      nearVec(t.centroid, [cx, cy, 7], 1e-9, 'holed centroid');
+      var Ixx = 40 * 8000 / 12 + 800 * Math.pow(10 - cy, 2) - (10 * 1000 / 12 + 100 * Math.pow(10 - cy, 2));
+      var Iyy = 20 * 64000 / 12 + 800 * Math.pow(20 - cx, 2) - (10 * 1000 / 12 + 100 * Math.pow(10 - cx, 2));
+      nearRel(t.J, Ixx + Iyy, 1e-10, 'holed J');
+      assert(t.perimeter > 159.99 && t.perimeter < 160.01, 'perimeter ' + t.perimeter);
+    });
+    test('Section Properties refuses a sketch with no closed contour', function () {
+      var r = build('p.sketch("Front").line(0, 0, 10, 0);');
+      var err = null;
+      try { EV.sectionOfSketch(sketchOf(r), r.model, r.build.planes); } catch (e) { err = e.message; }
+      assert(err && /closed/.test(err), 'error ' + err);
+    });
+
+    // ---- Draft Analysis
+    test('Draft Analysis of a 5° tapered extrude along +Z: sides +5.000° (positive at 3°, requires draft at 6°), top +90° positive, bottom −90° negative; pulling along −Z makes the sides negative', function () {
+      var r = build('p.sketch("Front").rect(0, 0, 40, 20).end().extrude(30, { draft: 5 });');
+      noErrors(r);
+      var a = EV.draftAnalysis(r.mesh, [0, 0, 1], 3), sides = a.faces.filter(function (f) { return Math.abs(r.mesh.faces[f.index].normal[2]) < 0.5; });
+      assert(sides.length === 4, 'four side faces, got ' + sides.length);
+      sides.forEach(function (f) { near(f.angle, 5, 1e-9, 'side draft'); assert(f.cls === 'positive', 'side ' + f.cls); });
+      var top = a.faces[faceNormal(r.mesh, [0, 0, 1])], bot = a.faces[faceNormal(r.mesh, [0, 0, -1])];
+      near(top.angle, 90, 1e-9, 'top'); near(bot.angle, -90, 1e-9, 'bottom');
+      assert(top.cls === 'positive' && bot.cls === 'negative', top.cls + ' / ' + bot.cls);
+      assert(a.counts.positive === 5 && a.counts.negative === 1 && a.counts.requires === 0 && a.counts.straddle === 0, JSON.stringify(a.counts));
+      var b = EV.draftAnalysis(r.mesh, [0, 0, 1], 6);
+      assert(b.counts.requires === 4 && b.counts.positive === 1 && b.counts.negative === 1, 'at 6°: ' + JSON.stringify(b.counts));
+      var c = EV.draftAnalysis(r.mesh, [0, 0, -1], 3);
+      assert(c.counts.negative === 5 && c.counts.positive === 1, 'reversed: ' + JSON.stringify(c.counts));
+      c.faces.filter(function (f) { return Math.abs(r.mesh.faces[f.index].normal[2]) < 0.5; }).forEach(function (f) { near(f.angle, -5, 1e-9, 'reversed side'); });
+      var d = EV.draftAnalysis(build('p.box(10, 10, 10);').mesh, [0, 1, 0], 1);
+      assert(d.counts.requires === 4 && d.counts.positive === 1 && d.counts.negative === 1, 'box walls need draft: ' + JSON.stringify(d.counts));
+    });
+    test('Draft Analysis: the faceted side of a cylinder lying across the pull direction is one straddle surface (its facets are joined by tangent edges); the end caps need draft', function () {
+      var r = build('p.cylinder(10, 30, { axis: "x" });');
+      var a = EV.draftAnalysis(r.mesh, [0, 1, 0], 2);
+      assert(a.counts.straddle === 1 && a.counts.requires === 2 && a.counts.positive === 0 && a.counts.negative === 0, JSON.stringify(a.counts));
+      var st = a.faces.filter(function (f) { return f.cls === 'straddle'; });
+      assert(st.length === segsForRadius(10), 'every side facet straddles: ' + st.length);
+      var b = EV.draftAnalysis(r.mesh, [1, 0, 0], 2);
+      assert(b.counts.requires === 1 && b.counts.positive === 1 && b.counts.negative === 1, 'along the axis: ' + JSON.stringify(b.counts));
+    });
+
+    // ---- Clearance Verification
+    test('Clearance between two boxes: 10 apart along x (face to face), and √50 corner to corner with the two closest points exactly at the corners', function () {
+      var r = build('p.box(10, 10, 10); p.sketch("Front").rect(20, 3, 10, 5).end().extrude(5, { merge: false });');
+      assert(r.build.bodies.length === 2, 'two bodies');
+      var d = EV.minDistance(r.build.bodies[0], r.build.bodies[1]);
+      near(d.distance, 10, 1e-9, 'gap'); near(d.pa[0], 10, 1e-9, 'pa on x = 10'); near(d.pb[0], 20, 1e-9, 'pb on x = 20');
+      assert(!d.interfering, 'not interfering');
+      var q = build('p.box(10, 10, 10); p.sketch("Front", 13).rect(15, 14, 5, 5).end().extrude(5, { merge: false });');
+      var e = EV.minDistance(q.build.bodies[0], q.build.bodies[1]);
+      near(e.distance, Math.sqrt(50), 1e-9, 'diagonal'); nearVec(e.pa, [10, 10, 10], 1e-9, 'corner A'); nearVec(e.pb, [15, 14, 13], 1e-9, 'corner B');
+      var c = EV.clearance(q.build.bodies, ['A', 'B'], [], 8);
+      assert(c.checked === 1 && c.failed === 1 && !c.results[0].ok, 'below 8: ' + JSON.stringify(c.results.map(function (x) { return x.ok; })));
+      assert(EV.clearance(q.build.bodies, ['A', 'B'], [], 7).failed === 0, 'at least 7');
+      return 'min ' + fmt(e.distance);
+    });
+    test('Clearance between two cylinders (r 4, 16-gons): side by side 20 apart → 12 (facet vertices face each other); end to end 7 apart → 7; overlapping → 0 and interfering; touching boxes → 0, not interfering', function () {
+      assert(segsForRadius(4) === 16, 'r 4 is a 16-gon');
+      var a = build('p.cylinder(4, 20, { axis: "z" }); p.cylinder(4, 20, { axis: "z", at: [20, 0, 0], merge: false });');
+      var d = EV.minDistance(a.build.bodies[0], a.build.bodies[1]);
+      near(d.distance, 12, 1e-9, 'side by side'); near(d.pa[0], 4, 1e-9, 'pa x'); near(d.pb[0], 16, 1e-9, 'pb x');
+      var b = build('p.cylinder(4, 20, { axis: "z" }); p.cylinder(4, 10, { axis: "z", at: [0, 0, 27], merge: false });');
+      near(EV.minDistance(b.build.bodies[0], b.build.bodies[1]).distance, 7, 1e-9, 'end to end');
+      var c = build('p.cylinder(4, 20, { axis: "z" }); p.cylinder(4, 20, { axis: "z", at: [5, 0, 0], merge: false });');
+      var e = EV.minDistance(c.build.bodies[0], c.build.bodies[1]);
+      assert(e.distance === 0 && e.interfering, 'overlap ' + e.distance + ' ' + e.interfering);
+      var t = build('p.box(10, 10, 10); p.box(10, 10, 10, { at: [10, 0, 0], merge: false });');
+      var f = EV.minDistance(t.build.bodies[0], t.build.bodies[1]);
+      assert(f.distance === 0 && !f.interfering, 'touching ' + f.distance + ' ' + f.interfering);
+    });
+    test('Clearance between assembly components: selected pairs only, one selected against the rest; Pinned plate pins sit in their holes (clearance 0 would mean touching)', function () {
+      var ex = AnvilExamples.filter(function (x) { return x.name === 'Interference check'; })[0];
+      var r = buildAsm(ex.code), names = r.model.components.map(function (c) { return c.name; });
+      var all = EV.clearance(r.build.bodies, names, [], 0);
+      assert(all.checked === 6, 'six pairs ' + all.checked);
+      var one = EV.clearance(r.build.bodies, names, [names.indexOf('Pin<1>')], 0);
+      assert(one.checked === 3 && one.results.every(function (x) { return x.aName === 'Pin<1>' || x.bName === 'Pin<1>'; }), 'Pin<1> vs the rest');
+      var two = EV.clearance(r.build.bodies, names, [names.indexOf('Block<1>'), names.indexOf('Pin<2>')], 0);
+      assert(two.checked === 1, 'one pair');
+      var ov = all.results.filter(function (x) { return x.interfering; }).map(function (x) { return x.aName + '/' + x.bName; }).sort();
+      assert(ov.join() === 'Base<1>/Block<1>,Base<1>/Pin<2>', 'interfering pairs ' + ov.join());
+      return 'minimum ' + fmt(all.minimum) + ', Block–Pin<2> ' + fmt(two.minimum);
+    });
+    test('Interference Detection limited to selected components matches Assembly.interference on the whole assembly and filters to the selection', function () {
+      var ex = AnvilExamples.filter(function (x) { return x.name === 'Interference check'; })[0];
+      var r = buildAsm(ex.code), names = r.model.components.map(function (c) { return c.name; });
+      var whole = Assembly.interference(r.model, r.build), mine = EV.interference(r.build.bodies, names, []);
+      assert(mine.pairs.length === whole.pairs.length && mine.pairs.length === 2, 'pairs ' + mine.pairs.length);
+      mine.pairs.forEach(function (p, i) { nearRel(p.volume, whole.pairs[i].volume, 1e-12, p.aName + '/' + p.bName); assert(p.aName === whole.pairs[i].aName && p.bName === whole.pairs[i].bName, 'names'); });
+      var bi = names.indexOf('Base<1>'), pi = names.indexOf('Pin<2>'), ki = names.indexOf('Block<1>');
+      var sel = EV.interference(r.build.bodies, names, [bi, pi]);
+      assert(sel.pairs.length === 1 && sel.pairs[0].bName === 'Pin<2>', 'Base + Pin<2>');
+      nearRel(sel.pairs[0].volume, 8 * polyCircleArea(4), 1e-9, 'Base ∩ Pin<2>');
+      assert(EV.interference(r.build.bodies, names, [ki, pi]).pairs.length === 0, 'Block and Pin<2> do not overlap');
+      var rest = EV.interference(r.build.bodies, names, [pi], { withRest: true });
+      assert(rest.pairs.length === 1 && rest.checked >= 1, 'Pin<2> and the rest');
+      assert(EV.pairsFor(4, [2]).length === 3 && EV.pairsFor(4, []).length === 6 && EV.pairsFor(4, [0, 3]).length === 1 && EV.pairsFor(4, [0, 3], { withRest: true }).length === 5, 'pairsFor');
+    });
+
+    // pattern and mirror instances (assembly.js, cloud-2026-09-25l) are components with their own world bodies; the
+    // exploded view adds display offsets to build.bodies, so Interference / Clearance use Assembly.explodedBodies(…, 0)
+    var BLK = 'p.name("Block"); p.box(20, 20, 20);';
+    function patterned() {
+      var m = Assembly.newAssembly();
+      var base = Assembly.insert(m, { script: 'p.name("Base"); p.box(100, 60, 10);' }, { fixed: true }).id;
+      var blk = Assembly.insert(m, { script: BLK }, { position: [10, 10, 5], fixed: true }).id;   // x 10..30, y 10..30, z 5..25
+      Assembly.addPattern(m, 'linear', [blk], { direction: { axis: 'x' }, spacing: 15, count: 2 });   // Block<2>: x 25..45 (5 into Block<1>)
+      Assembly.addPattern(m, 'mirror', [blk], { plane: { component: base, plane: 'Right' } });        // Block<3>: x −30..−10
+      Assembly.addPattern(m, 'mirror', [blk], { plane: { plane: 'Front' }, oppositeHand: true });     // Block<4>: z −25..−5, det −1
+      return { m: m, b: Assembly.rebuild(m), blk: blk };
+    }
+    function idx(m, name) { for (var i = 0; i < m.components.length; i++) if (m.components[i].name === name) return i; return -1; }
+    test('Interference and Clearance on Linear Component Pattern and Mirror Components instances: Block<1> ∩ Block<2> = 5 × 20 × 20; the mirror copy 20 away, the opposite-hand copy 10 away (outward normals, so CSG and distances work on it); coplanar-sided and nested overlaps interfere', function () {
+      var s = patterned(), m = s.m, names = m.components.map(function (c) { return c.name; });
+      noErrors(s.b);
+      assert(names.join() === 'Base<1>,Block<1>,Block<2>,Block<3>,Block<4>', names.join());
+      var b1 = idx(m, 'Block<1>'), b2 = idx(m, 'Block<2>'), b3 = idx(m, 'Block<3>'), b4 = idx(m, 'Block<4>');
+      var r = EV.interference(s.b.bodies, names, [b1, b2]);
+      assert(r.pairs.length === 1, 'pairs ' + r.pairs.length); nearRel(r.pairs[0].volume, 2000, 1e-9, 'Block<1> ∩ Block<2>');
+      var all = EV.interference(s.b.bodies, names, []), whole = Assembly.interference(m, s.b);
+      assert(all.pairs.length === whole.pairs.length, 'same pairs as Assembly.interference: ' + all.pairs.length + ' / ' + whole.pairs.length);
+      near(EV.minDistance(s.b.bodies[b1], s.b.bodies[b3]).distance, 20, 1e-9, 'mirror copy');
+      var d4 = EV.minDistance(s.b.bodies[b1], s.b.bodies[b4]);
+      near(d4.distance, 10, 1e-9, 'opposite hand'); near(d4.pa[2], 5, 1e-9, 'pa on z = 5'); near(d4.pb[2], -5, 1e-9, 'pb on z = −5');
+      var c = EV.clearance(s.b.bodies, names, [b3, b4], 0, { withRest: true });
+      assert(c.results.every(function (x) { return !x.interfering; }), 'the mirrored blocks touch nothing');
+      // an opposite-hand mirror that overlaps its seed: a block at z −5..15 mirrored in the Front plane (z −15..5)
+      var m2 = Assembly.newAssembly();
+      var k = Assembly.insert(m2, { script: BLK }, { position: [0, 0, -5], fixed: true }).id;   // z −5..15
+      Assembly.addPattern(m2, 'mirror', [k], { plane: { plane: 'Front' }, oppositeHand: true });   // z −15..5: overlap 10
+      var b2b = Assembly.rebuild(m2), n2 = m2.components.map(function (x) { return x.name; });
+      var o = EV.interference(b2b.bodies, n2, [0, 1]);
+      assert(o.pairs.length === 1, 'opposite-hand overlap'); nearRel(o.pairs[0].volume, 4000, 1e-9, 'Block ∩ its opposite-hand mirror');
+      assert(EV.minDistance(b2b.bodies[0], b2b.bodies[1]).interfering, 'coplanar-sided overlap interferes');
+      var nest = build('p.box(20, 20, 20); p.box(4, 4, 4, { at: [8, 8, 8], merge: false });');
+      var dn = EV.minDistance(nest.build.bodies[0], nest.build.bodies[1]);
+      assert(dn.distance === 0 && dn.interfering, 'a block nested inside another: ' + dn.distance + ' ' + dn.interfering);
+    });
+    test('Exploded View: build.bodies carry the explode offsets, Assembly.explodedBodies(…, 0) gives the collapsed ones; Interference / Clearance on the collapsed bodies match the unexploded assembly', function () {
+      var s = patterned(), m = s.m, names = m.components.map(function (c) { return c.name; });
+      var b2 = idx(m, 'Block<2>'), b1 = idx(m, 'Block<1>');
+      var before = EV.interference(s.b.bodies, names, []), cb = EV.clearance(s.b.bodies, names, [], 0);
+      Assembly.addExplodeStep(m, null, [m.components[b2].id], 'y', 50);
+      Assembly.setExploded(m, true);
+      var x = Assembly.rebuild(m);
+      assert(x.explode && x.explode.offsets[m.components[b2].id], 'exploded');
+      near(K.massProps(K.meshFromBody(x.bodies[b2]), 1).bbox.min[1], 60, 1e-9, 'Block<2> shown 50 up');
+      assert(EV.interference(x.bodies, names, [b1, b2]).pairs.length === 0, 'the displayed (exploded) bodies no longer overlap');
+      var col = Assembly.explodedBodies(m, x, x.explode.view, 0);
+      near(K.massProps(K.meshFromBody(col[b2]), 1).bbox.min[1], 10, 1e-9, 'collapsed Block<2>');
+      var after = EV.interference(col, names, []), ca = EV.clearance(col, names, [], 0);
+      assert(after.pairs.length === before.pairs.length, 'pairs ' + after.pairs.length + ' vs ' + before.pairs.length);
+      after.pairs.forEach(function (p, i) { nearRel(p.volume, before.pairs[i].volume, 1e-12, p.aName + ' ∩ ' + p.bName); });
+      ca.results.forEach(function (r, i) { near(r.distance, cb.results[i].distance, 1e-12, r.aName + ' – ' + r.bName); });
+    });
+
+    // ---- Check
+    test('Check: a closed indexed cube passes; the same cube as unwelded triangle soup passes after welding', function () {
+      var r = EV.checkMesh(cubeMesh());
+      assert(r.ok && r.triangles === 12 && r.edges === 18 && r.vertices === 8, JSON.stringify({ ok: r.ok, t: r.triangles, e: r.edges, v: r.vertices }));
+      var c = cubeMesh(), P = [], T = [];
+      for (var i = 0; i < c.triangles.length; i++) { var v = c.triangles[i]; P.push(c.positions[v * 3], c.positions[v * 3 + 1], c.positions[v * 3 + 2]); T.push(i); }
+      var s = EV.checkMesh({ positions: P, triangles: T });
+      assert(s.ok && s.vertices === 8, 'soup ' + s.vertices);
+    });
+    test('Check flags deliberately broken meshes: a missing triangle (3 open edges), a duplicated triangle (3 non-manifold edges), a flipped triangle (3 inconsistently oriented edges), a collinear triangle (zero-area), two interpenetrating cubes (self-intersections); touching cubes do not self-intersect', function () {
+      var c = cubeMesh();
+      var hole = { positions: c.positions, triangles: c.triangles.slice(3) };
+      var h = EV.checkMesh(hole);
+      assert(h.openEdges.length === 3 && !h.nonManifoldEdges.length && !h.ok, 'hole: open ' + h.openEdges.length + ', nm ' + h.nonManifoldEdges.length);
+      var dup = EV.checkMesh({ positions: c.positions, triangles: c.triangles.concat(c.triangles.slice(0, 3)) });
+      assert(dup.nonManifoldEdges.length === 3 && dup.nonManifoldEdges.every(function (e) { return e.count === 3; }) && !dup.openEdges.length, 'duplicate: nm ' + dup.nonManifoldEdges.length);
+      var flip = c.triangles.slice(); flip[1] = c.triangles[2]; flip[2] = c.triangles[1];
+      var f = EV.checkMesh({ positions: c.positions, triangles: flip });
+      assert(f.nonManifoldEdges.length === 3 && /orient/.test(f.nonManifoldEdges[0].reason) && !f.openEdges.length, 'flipped: nm ' + f.nonManifoldEdges.length);
+      var deg = EV.checkMesh({ positions: c.positions.concat([5, 0, 0, 6, 0, 0, 7, 0, 0]), triangles: c.triangles.concat([8, 9, 10]) });
+      assert(deg.zeroAreaFaces.length === 1 && deg.zeroAreaFaces[0].tri === 12, 'collinear: ' + deg.zeroAreaFaces.length);
+      var interMesh = joinMeshes(c, cubeMesh([0.5, 0.25, 0.3])), inter = EV.checkMesh(interMesh);
+      assert(inter.selfIntersections.length > 0 && !inter.openEdges.length && !inter.nonManifoldEdges.length, 'interpenetrating: ' + inter.selfIntersections.length);
+      var touch = EV.checkMesh(joinMeshes(c, cubeMesh([1, 0.25, 0.3], 0.5)));
+      assert(touch.selfIntersections.length === 0 && touch.ok, 'touching: ' + touch.selfIntersections.length);
+      var all = EV.check([hole, interMesh], ['Hole', 'Inter']);
+      assert(all.counts.open === 3 && all.counts.selfIntersection === inter.selfIntersections.length && all.items.length === 3 + inter.selfIntersections.length && !all.ok, JSON.stringify(all.counts));
+      assert(all.items[0].lines.length === 1 && all.items[0].name === 'Hole' && /Open edge 1/.test(all.items[0].label), 'item ' + all.items[0].label);
+      return 'self-intersections ' + inter.selfIntersections.length;
+    });
+    test('Check of CSG bodies: every Design Library example is closed and manifold with no zero-area faces or self-intersections (the Funnel\'s known sliver crack is reported, not asserted)', function () {
+      var out = [], funnel = '';
+      AnvilExamples.forEach(function (ex) {
+        var r = buildExample(ex), c = EV.check(r.build.bodies);
+        if (ex.name === 'Funnel') { funnel = JSON.stringify(c.counts); return; }
+        assert(c.ok, ex.name + ': ' + JSON.stringify(c.counts));
+        out.push(ex.name);
+      });
+      return out.length + ' clean; Funnel ' + funnel;
+    });
+    test('Check finds a zero-area polygon added to a CSG body (reported once, from the polygons or the welded mesh)', function () {
+      var body = build('p.box(10, 10, 10);').body.clone();
+      var p0 = body.polygons[0], v = p0.vertices;
+      var sliver = new CSG.Polygon([v[0].clone(), v[1].clone(), new CSG.Vertex(v[0].pos.lerp(v[1].pos, 0.5), v[0].normal)], p0.shared);
+      sliver.plane = p0.plane.clone();   // three collinear points define no plane of their own
+      body.polygons.push(sliver);
+      var r = EV.checkBody(body);
+      assert(r.zeroAreaFaces.length === 1 && !r.ok, 'sliver flagged once: ' + r.zeroAreaFaces.length);
+      near(r.zeroAreaFaces[0].area, 0, 1e-12, 'its area');
+    });
+
+    // ---- Zebra Stripes normals
+    test('Zebra Stripes normals: a box keeps its face normals; a cylinder\'s side is smoothed radially (tangent facets blend) while its caps stay flat', function () {
+      var b = build('p.box(10, 10, 10);'), n = EV.smoothNormals(b.mesh);
+      for (var i = 0; i < b.mesh.normals.length; i++) near(n[i], b.mesh.normals[i], 1e-6, 'box normal ' + i);
+      var c = build('p.cylinder(10, 30, { axis: "z" });'), m = EV.smoothNormals(c.mesh), P = c.mesh.positions, side = 0;
+      c.mesh.faces.forEach(function (f) {
+        for (var t = f.start; t < f.start + f.count; t++) for (var k = 0; k < 3; k++) {
+          var o = t * 9 + k * 3;
+          if (Math.abs(f.normal[2]) > 0.5) { near(m[o + 2], f.normal[2], 1e-6, 'cap'); continue; }
+          var rr = Math.hypot(P[o], P[o + 1]);
+          near(m[o], P[o] / rr, 1e-5, 'radial x'); near(m[o + 1], P[o + 1] / rr, 1e-5, 'radial y'); near(m[o + 2], 0, 1e-6, 'radial z');
+          side++;
+        }
+      });
+      assert(side > 0, 'side vertices');
+    });
+  })();
+
+  // ------------------------------------------------------------------ drawing annotations (run cloud-2026-09-25m)
+  // Plate with bolt holes: 100 x 8 x 60 (x ∈ [0,100], y ∈ [0,8], z ∈ [0,60]), four Ø8 through holes at x = 10 / 90,
+  // z = 10 / 50. Standard 3 View puts it at 2:1; the Top view shows (u, v) = (x, -z), centred on (50, -30).
+  if (DW) (function () {
+    group('drawing annotations');
+    var PLATE2 = AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code;
+    function annDrawing(code, opts) {
+      var r = build(code);
+      noErrors(r);
+      var doc = DW.newDrawing(r.model, Object.assign({ date: '2026-09-26' }, opts || {}));
+      DW.standard3View(doc, r.mesh, r.model.units);
+      r.doc = doc; r.sheet = DW.compute(doc, r.mesh, r.model, { build: r.build });
+      r.view = function (orient) { return r.sheet.views.filter(function (w) { return w.view.orient === orient; })[0]; };
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      return r;
+    }
+    function annPrims(sheet, style) { return sheet.prims.filter(function (p) { return p.layer === 'ANNOTATIONS' && (!style || p.style === style); }); }
+    function hasSeg(list, a, b, tol) {
+      return list.some(function (p) { return p.k === 'line' && ((Math.hypot(p.a[0] - a[0], p.a[1] - a[1]) < tol && Math.hypot(p.b[0] - b[0], p.b[1] - b[1]) < tol) || (Math.hypot(p.a[0] - b[0], p.a[1] - b[1]) < tol && Math.hypot(p.b[0] - a[0], p.b[1] - a[1]) < tol)); });
+    }
+    function polyArea(r) { var n = segsForRadius(r); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
+
+    test('Auto insert on view creation: centre marks on the four plate holes at their analytic sheet positions, centrelines in the Front and Right views', function () {
+      var r = annDrawing(PLATE2, { options: { autoCenterMarks: true, autoCenterlines: true } });
+      var T = r.view('Top'), F = r.view('Front'), R = r.view('Right'), s = 2;
+      var marks = r.sheet.annotations.filter(function (a) { return a.type === 'centerMark'; });
+      assert(marks.length === 4 && marks.every(function (a) { return a.view === T.view.id && a.auto && !a.dangling; }), 'marks ' + JSON.stringify(r.sheet.annotations.map(function (a) { return [a.view, a.type]; })));
+      var thin = annPrims(r.sheet, 'thin'), ctr = annPrims(r.sheet, 'center');
+      [[10, 10], [90, 10], [10, 50], [90, 50]].forEach(function (xz) {
+        // analytic: Top view u = x, v = -z, centred on (50, -30) at 2:1
+        var x = T.view.x + (xz[0] - 50) * s, y = T.view.y + (-xz[1] + 30) * s;
+        assert(marks.some(function (a) { return Math.hypot(a.info.centers[0][0] - x, a.info.centers[0][1] - y) < 1e-9; }), 'no mark at ' + xz);
+        assert(hasSeg(thin, [x - 2.5, y], [x + 2.5, y], 1e-9) && hasSeg(thin, [x, y - 2.5], [x, y + 2.5], 1e-9), 'cross at ' + xz);
+        // extended lines: 1 mm gap after the 2.5 mm cross, 2.5 mm past the Ø8 circle (r = 8 on paper)
+        assert(hasSeg(ctr, [x + 3.5, y], [x + 10.5, y], 1e-9) && hasSeg(ctr, [x, y - 3.5], [x, y - 10.5], 1e-9), 'extension lines at ' + xz);
+      });
+      var cls = r.sheet.annotations.filter(function (a) { return a.type === 'centerline'; });
+      assert(cls.length === 4 && cls.filter(function (a) { return a.view === F.view.id; }).length === 2 && cls.filter(function (a) { return a.view === R.view.id; }).length === 2, 'centrelines ' + cls.length);
+      // Front: axes at x = 10 and 90 over the 8 mm thickness, 3 mm past both faces; Right: u = -z = -10, -50
+      [10, 90].forEach(function (u) { var x = F.view.x + (u - 50) * s; assert(hasSeg(ctr, [x, F.box.y0 - 3], [x, F.box.y1 + 3], 1e-9), 'front centreline x=' + u); });
+      [-10, -50].forEach(function (u) { var x = R.view.x + (u + 30) * s; assert(hasSeg(ctr, [x, R.box.y0 - 3], [x, R.box.y1 + 3], 1e-9), 'right centreline u=' + u); });
+      assert(!r.sheet.annotations.some(function (a) { return a.view === r.view('Isometric').view.id; }), 'nothing on the isometric');
+      // off by default: a drawing made without the option has no annotations
+      var r2 = annDrawing(PLATE2);
+      assert(!r2.sheet.annotations.length && !annPrims(r2.sheet).length, 'auto insert is off by default in the engine');
+      return '4 marks, 4 centrelines';
+    });
+    test('Linear and circular centre marks: connection line through a row of holes; bolt circle Ø40 fitted through six pattern holes', function () {
+      var r = annDrawing(PLATE2), T = r.view('Top');
+      var lin = DW.addCenterMark(r.doc, T.view.id, { style: 'linear', holes: [{ c: [90, -10], r: 4 }, { c: [10, -10], r: 4 }] });
+      r.recompute();
+      var x0 = T.view.x - 80, x1 = T.view.x + 80, y = T.view.y + 40;
+      assert(hasSeg(annPrims(r.sheet, 'center'), [x0, y], [x1, y], 1e-9), 'connection line');
+      assert(r.sheet.annotations.filter(function (a) { return a.id === lin.id; })[0].text === 'Linear Center Mark (2)', 'text');
+      var f = annDrawing('p.cylinder(30, 10); p.hole("Top", 20, 0, 6, { offset: 10 }); p.circularPattern({ axis: "y", count: 6 });');
+      var FT = f.view('Top'), holes = FT.proj.circles.visible.filter(function (c) { return Math.abs(c.r - 3) < 1e-9; });
+      assert(holes.length === 6, 'six holes ' + holes.length);
+      var cm = DW.addCenterMark(f.doc, FT.view.id, { style: 'circular', holes: holes.map(function (c) { return { c: c.c, r: c.r }; }) });
+      f.recompute();
+      var pc = f.sheet.prims.filter(function (p) { return p.layer === 'ANNOTATIONS' && p.k === 'circle' && p.style === 'center'; });
+      var s = DW.scaleValue(f.doc.sheet.scale), cs = FT.toSheet([0, 0]);
+      assert(pc.length === 1, 'pitch circle ' + pc.length);
+      near(pc[0].c[0], cs[0], 1e-6, 'pitch centre x'); near(pc[0].c[1], cs[1], 1e-6, 'pitch centre y'); near(pc[0].r, 20 * s, 1e-6, 'pitch radius');
+      var fit = DW.fitCircle(holes.map(function (c) { return c.c; }));
+      near(fit.r, 20, 1e-9, 'fitted bolt circle'); near(Math.hypot(fit.c[0], fit.c[1]), 0, 1e-9, 'fitted centre');
+      // six radial lines from the pattern centre (they start one mark size out)
+      assert(annPrims(f.sheet, 'center').filter(function (p) { return p.k === 'line'; }).length === 6, 'radial lines');
+      void cm;
+      return 'bolt circle r ' + fmt(pc[0].r) + ' at ' + DW.scaleText(f.doc.sheet.scale);
+    });
+    test('Hole Callout: THRU, blind depth, counterbore, countersink, far-side blind; "4X" counts the identical holes of the view; a boss is not a hole', function () {
+      var F = DW.orientation('Top');
+      function callout(code, c, r) { var m = build(code); noErrors(m); var h = DW.holeInfo(m.mesh, F, c, r); return h ? DW.holeText(h, 'mm', 1).join(' | ') + (h.entry === 'far' ? ' (far)' : '') : null; }
+      var BOX = 'p.box(40, 40, 20, { centered: true }); ';
+      var cases = [
+        [BOX + 'p.hole("Top", 0, 0, 6.6, { offset: 20 });', 3.3, 'Ø6.6 THRU'],
+        [BOX + 'p.hole("Top", 5, 5, 8, { offset: 20, depth: 10 });', 4, 'Ø8 ↧ 10', [5, 5]],
+        [BOX + 'p.hole("Top", 0, 0, 11, { offset: 20, depth: 6.8 }); p.hole("Top", 0, 0, 6.6, { offset: 20 });', 5.5, 'Ø6.6 THRU | ⌴ Ø11 ↧ 6.8'],
+        [BOX + 'p.hole("Top", 0, 0, 11, { offset: 20, depth: 6.8 }); p.hole("Top", 0, 0, 6.6, { offset: 20, depth: 15 });', 3.3, 'Ø6.6 ↧ 15 | ⌴ Ø11 ↧ 6.8'],
+        [BOX + 'p.hole("Top", 0, 0, 6.6, { offset: 20 }); p.sketch("Front", 0).polyline([[0, 21], [7, 21], [3.3, 17.3], [0, 17.3]]).end().revolveCut(360, { axis: "y" });', 6, 'Ø6.6 THRU | ⌵ Ø12 X 90°'],
+        [BOX + 'p.hole("Top", 5, 5, 8, { offset: 0, depth: 10, forward: true });', 4, 'Ø8 ↧ 10 (far)', [5, 5]],
+        [BOX + 'p.cylinder(5, 10, { at: [0, 20, 0] });', 5, null]
+      ];
+      var got = cases.map(function (c) { var t = callout(c[0], c[3] || [0, 0], c[1]); assert(t === c[2], JSON.stringify(c[2]) + ' read as ' + JSON.stringify(t)); return t; });
+      // the plate's four holes read "4X Ø8 THRU" in a callout; the annotation follows the hole it was put on
+      var r = annDrawing(PLATE2), T = r.view('Top');
+      var an = DW.addHoleCallout(r.doc, T.view.id, { c: [90, -50], r: 4 });
+      r.recompute();
+      var a = r.sheet.annotations.filter(function (x) { return x.id === an.id; })[0];
+      assert(a.text === '4X Ø8 THRU' && !a.dangling && a.info.count === 4, 'plate callout ' + a.text);
+      assert(annPrims(r.sheet).some(function (p) { return p.k === 'text' && p.text === '4X Ø8 THRU'; }), 'callout text drawn');
+      return got.filter(Boolean).join('; ');
+    });
+    test('Ordinate dimensions on the plate: 0 / 6 / 14 / 86 / 94 / 100 along the Front view, 0 / 10 / 50 down the Top view; they follow a width change', function () {
+      var r = annDrawing(PLATE2), F = r.view('Front'), T = r.view('Top');
+      function vline(u) { return { a: [u, 0], b: [u, 8] }; }
+      var od = DW.addOrdinate(r.doc, F.view.id, { dir: 'h', base: vline(0), refs: [vline(6), vline(14), vline(86), vline(94), vline(100)] });
+      var ov = DW.addOrdinate(r.doc, T.view.id, { dir: 'v', base: { a: [0, 0], b: [100, 0] }, refs: [{ c: [10, -10], r: 4 }, { c: [10, -50], r: 4 }] });
+      r.recompute();
+      var dh = r.sheet.dims.filter(function (d) { return d.kind === 'ordinate' && d.view === F.view.id; })[0], dv = r.sheet.dims.filter(function (d) { return d.kind === 'ordinate' && d.view === T.view.id; })[0];
+      assert(dh.text === '0, 6, 14, 86, 94, 100' && !dh.dangling, 'front ' + dh.text);
+      assert(dv.text === '0, 10, 50' && !dv.dangling, 'top ' + dv.text);
+      // texts: rotated 90° on one line 10 mm above the Front view; the uncrowded ones sit on their feature (x + h/2)
+      var tx = r.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && p.rot === 90 && Math.abs(p.p[1] - (F.box.y1 + 11)) < 1e-9; });
+      assert(tx.length === 6, 'ordinate texts ' + tx.length);
+      var t100 = tx.filter(function (p) { return p.text === '100'; })[0];
+      near(t100.p[0], F.view.x + 50 * 2 + 1.75, 1e-9, 'x of the 100 text');
+      // widen the plate to 120: the right-edge reference reattaches and reads 120
+      r.model.features.filter(function (f) { return f.type === 'sketch'; })[0].entities[0].w = 120;
+      var b = K.rebuild(r.model); r.mesh = K.meshFromBody(b.body); r.build = b; r.recompute();
+      dh = r.sheet.dims.filter(function (d) { return d.kind === 'ordinate' && d.view === F.view.id; })[0];
+      assert(dh.text === '0, 6, 14, 86, 94, 120', 'after the change ' + dh.text);
+      void od; void ov;
+      return dh.text + ' | ' + dv.text;
+    });
+    test('Baseline dimensions stack 10 / 18 / 26 mm out from the view, nearest first; Chamfer dimension reads "2 X 45°"', function () {
+      var r = annDrawing(PLATE2), F = r.view('Front');
+      function vline(u) { return { a: [u, 0], b: [u, 8] }; }
+      DW.addBaseline(r.doc, F.view.id, { dir: 'h', base: vline(0), refs: [vline(100), vline(14), vline(6)] });
+      r.recompute();
+      var d = r.sheet.dims.filter(function (x) { return x.kind === 'baseline'; })[0];
+      assert(d.text === '100, 14, 6', 'baseline ' + d.text);
+      var texts = r.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && ['6', '14', '100'].indexOf(p.text) >= 0 && p.rot === 0 && p.p[1] > F.box.y1; });
+      var ys = {}; texts.forEach(function (p) { ys[p.text] = p.p[1] - F.box.y1; });
+      assert(Math.abs(ys['6'] - 11) < 1e-9 && Math.abs(ys['14'] - 19) < 1e-9 && Math.abs(ys['100'] - 27) < 1e-9, 'stacking ' + JSON.stringify(ys));
+      // chamfer 2 on the top front edge of a 40 x 20 x 10 box: the Right view shows the 45° chamfer line
+      var c = annDrawing('p.box(40, 20, 10); p.chamfer(2, [[20, 10, 20]]);'), R = c.view('Right');
+      var ch = R.proj.lines.visible.filter(function (l) { return Math.abs(Math.abs(l[2] - l[0]) - 2) < 1e-9 && Math.abs(Math.abs(l[3] - l[1]) - 2) < 1e-9; })[0];
+      var lead = R.proj.lines.visible.filter(function (l) { return Math.abs(l[1] - 10) < 1e-9 && Math.abs(l[3] - 10) < 1e-9; })[0];
+      assert(ch && lead, 'chamfer / lead-in edges');
+      var cd = DW.addChamferDim(c.doc, R.view.id, { a: [ch[0], ch[1]], b: [ch[2], ch[3]], ref: { a: [lead[0], lead[1]], b: [lead[2], lead[3]] } });
+      near(cd.value, 2, 1e-9, 'setback'); near(cd.angle, 45, 1e-9, 'angle');
+      c.recompute();
+      var t = c.sheet.dims.filter(function (x) { return x.kind === 'chamfer'; })[0];
+      assert(t.text === '2 X 45°', 'chamfer text ' + t.text);
+      var threw = false; try { DW.addChamferDim(c.doc, R.view.id, { a: [lead[0], lead[1]], b: [lead[2], lead[3]], ref: { a: [lead[0], lead[1]], b: [lead[2], lead[3]] } }); } catch (e) { threw = true; }
+      assert(threw, 'parallel edges refused');
+      return d.text + '; ' + t.text;
+    });
+    test('Tolerance and precision formatting: bilateral, limit, symmetric, <DIM> text, inch precision; model items keep them through a part change', function () {
+      function L(d, u) { return DW.dimLabel(d, u || 'mm'); }
+      var bi = L({ kind: 'h', value: 100, prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0.05 } });
+      assert(bi.main === '100.00' && bi.upper === '+0.10' && bi.lower === '-0.05' && bi.text === '100.00 +0.10/-0.05', JSON.stringify(bi));
+      assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'limit', plus: 0.1, minus: 0.05 } }).text === '100.10/99.95', 'limit');
+      assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'symmetric', plus: 0.05 } }).text === '100.00 ±0.05', 'symmetric');
+      assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0 } }).lower === '0.00', 'zero lower');
+      assert(L({ kind: 'dia', value: 8, count: 4, prec: 1, label: '<DIM> TYP' }).text === '4X Ø8.0 TYP', 'dia with text');
+      assert(L({ kind: 'dia', value: 8, count: 1, tol: { type: 'limit', plus: 0.02, minus: 0 }, prec: 2 }).text === 'Ø8.02/Ø8.00', 'dia limit');
+      assert(L({ kind: 'v', value: 4, prec: 3, tol: { type: 'bilateral', plus: 0.005, minus: 0.002 } }, 'in').text === '4.000 +0.005/-0.002', 'inch');
+      assert(L({ kind: 'h', value: 12.3456 }).text === '12.35' && L({ kind: 'h', value: 12.3456, prec: 0 }).text === '12', 'precision');
+      // on the sheet: the overall width (model item Front:h:0) with a bilateral tolerance, stacked 0.7 high beside the value
+      var r = annDrawing(PLATE2), F = r.view('Front');
+      r.doc.dimProps = {}; r.doc.dimProps[F.view.id + ':h:0'] = { prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0.05 } };
+      r.recompute();
+      assert(r.sheet.dims[0].text === '100.00 +0.10/-0.05', 'sheet text ' + r.sheet.dims[0].text);
+      var tt = r.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && (p.text === '100.00' || p.tol); });
+      assert(tt.length === 3 && tt.filter(function (p) { return p.tol; }).every(function (p) { return Math.abs(p.h - 3.5 * 0.7) < 1e-9; }), 'stacked tolerance texts ' + tt.map(function (p) { return p.text; }));
+      var up = tt.filter(function (p) { return p.tol === 'upper'; })[0], lo = tt.filter(function (p) { return p.tol === 'lower'; })[0], mn = tt.filter(function (p) { return !p.tol; })[0];
+      assert(up.p[1] > lo.p[1] && up.p[0] === lo.p[0] && up.p[0] > mn.p[0] + DW.numText(0, 'mm').length, 'upper over lower, right of the value');
+      // a part change keeps the settings (the style key is view:kind:n, not the value)
+      r.model.features.filter(function (f) { return f.type === 'sketch'; })[0].entities[0].w = 120;
+      var b = K.rebuild(r.model); r.mesh = K.meshFromBody(b.body); r.build = b; r.recompute();
+      assert(r.sheet.dims[0].text === '120.00 +0.10/-0.05', 'after the change ' + r.sheet.dims[0].text);
+      return bi.text;
+    });
+    test('Driving dimensions: the plate’s model items find their parameters; width 100 → 120, 4X Ø8 → Ø10 and depth 8 → 6 rebuild to the analytic volume', function () {
+      var r = annDrawing(PLATE2);
+      function src(i) { var d = r.sheet.dims[i]; return DW.dimSource(r.model, r.build, r.sheet.views.filter(function (w) { return w.view.id === d.view; })[0], d); }
+      var texts = r.sheet.dims.map(function (d) { return d.text; });
+      assert(JSON.stringify(texts) === JSON.stringify(['100', '8', '60', '4X Ø8']), 'dims ' + texts);
+      var s = [0, 1, 2, 3].map(src);
+      assert(s[0].kind === 'entity' && s[0].dim.k === 'w' && s[0].featureName === 'Sketch1', 'width source ' + JSON.stringify(s[0]));
+      assert(s[1].kind === 'depth' && s[1].featureName === 'Boss-Extrude1', 'depth source ' + JSON.stringify(s[1]));
+      assert(s[2].kind === 'entity' && s[2].dim.k === 'h', 'height source ' + JSON.stringify(s[2]));
+      assert(s[3].kind === 'entity' && s[3].dim.k === 'dia' && s[3].featureName === 'Sketch2', 'diameter source ' + JSON.stringify(s[3]));
+      // (the hole sketch sits at y = 8 and cuts down through: a thinner plate keeps its through holes)
+      DW.driveDim(r.model, s[0], 120); DW.driveDim(r.model, s[3], 10); DW.driveDim(r.model, s[1], 6);
+      var b = K.rebuild(r.model); noErrors({ errors: b.errors }); r.mesh = K.meshFromBody(b.body); r.build = b; r.recompute();
+      texts = r.sheet.dims.map(function (d) { return d.text; });
+      assert(JSON.stringify(texts) === JSON.stringify(['120', '6', '60', '4X Ø10']), 'after driving ' + texts);
+      var mp = K.massProps(r.mesh, 1);
+      nearRel(mp.volume, 120 * 60 * 6 - 4 * polyArea(5) * 6, 1e-6, 'volume');
+      // refused: a value an equation drives, a non-positive value
+      var e = build('p.equations({ T: 8 }); p.box(100, 60, "=T");'), doc = DW.newDrawing(e.model, {});
+      DW.standard3View(doc, e.mesh, 'mm');
+      var sh = DW.compute(doc, e.mesh, e.model), dv = sh.dims[1], se = DW.dimSource(e.model, e.build, sh.views[0], dv);
+      assert(se && se.expr === '=T', 'equation source ' + JSON.stringify(se));
+      var m1 = null, m2 = null;
+      try { DW.driveDim(e.model, se, 9); } catch (err) { m1 = err.message; }
+      try { DW.driveDim(r.model, s[0], -1); } catch (err) { m2 = err.message; }
+      assert(/equation =T/.test(m1 || '') && /positive/.test(m2 || ''), m1 + ' / ' + m2);
+      return texts.join(', ') + '; volume ' + fmt(mp.volume);
+    });
+    test('Dimension properties on the sheet: at moves the dimension line, flip puts the arrows outside, lead moves a diameter leader, off an aligned one', function () {
+      var r = annDrawing(PLATE2), F = r.view('Front'), T = r.view('Top');
+      var d0 = r.sheet.dims[0];
+      near(d0.lineAt, -5, 1e-9, 'default width line 10 mm below at 2:1');
+      r.doc.dimProps = {}; r.doc.dimProps[F.view.id + ':h:0'] = { at: -15, flip: true };
+      r.recompute();
+      var y = F.view.y + (-15 - 4) * 2, lines = r.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'line' && Math.abs(p.a[1] - y) < 1e-9 && Math.abs(p.b[1] - y) < 1e-9; });
+      assert(lines.length === 1, 'dimension line at the new level ' + lines.length);
+      near(Math.abs(lines[0].b[0] - lines[0].a[0]), 200 + 2 * 7, 1e-9, 'flipped: the line runs 7 mm past both extension lines');
+      var dd = r.sheet.dims.filter(function (d) { return d.kind === 'dia'; })[0];
+      r.doc.dimProps[T.view.id + ':dia:0'] = { lead: [-30, 20] };
+      r.recompute();
+      var dia = r.sheet.dims.filter(function (d) { return d.kind === 'dia'; })[0], c = T.toSheet(dia.c);
+      assert(Math.abs(dia.leadNow[0] + 30) < 1e-9 && Math.abs(dia.leadNow[1] - 20) < 1e-9, 'lead ' + dia.leadNow);
+      assert(r.sheet.prims.some(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && p.text === '4X Ø8' && p.anchor === 'end' && Math.abs(p.p[0] - (c[0] - 31)) < 1e-9; }), 'text left of the elbow');
+      void dd;
+      return 'ok';
+    });
+    test('Balloons: a manual balloon on a part drawing is item 1 with QTY "1X"; a stacked balloon on the pinned-plate assembly shows 1 | 2 with "2X" for the pins', function () {
+      var r = annDrawing(PLATE2), T = r.view('Top');
+      var b = DW.addBalloon(r.doc, r.model, T.view.id, { attach: [0, -30], pos: [-130, 40], qty: true });
+      r.recompute();
+      var sb = r.sheet.balloons[0];
+      assert(sb && sb.item === 1 && sb.manual && b.key === 'part', 'part balloon ' + JSON.stringify(sb && { item: sb.item }));
+      near(sb.c[0], T.view.x - 130, 1e-9, 'x'); near(sb.c[1], T.view.y + 40, 1e-9, 'y');
+      var at = T.toSheet([0, -30]); near(sb.attach[0], at[0], 1e-9, 'attach x'); near(sb.attach[1], at[1], 1e-9, 'attach y');
+      assert(r.sheet.prims.some(function (p) { return p.layer === 'BALLOONS' && p.k === 'text' && p.text === '1X'; }), 'QTY text');
+      var ex = AnvilExamples.filter(function (e) { return /Pinned plate/.test(e.name); })[0];
+      var a = buildAsm(ex.code), doc = DW.newDrawing(a.model, { date: '2026-09-26' });
+      DW.standard3View(doc, a.mesh, a.model.units);
+      var iso = doc.views.filter(function (v) { return v.role === 'iso'; })[0];
+      var plate = a.model.components[0], pin = a.model.components[1];
+      DW.addBalloon(doc, a.model, iso.id, { component: plate.id, attach: [0, 0], pos: [-60, 40], stack: [{ component: pin.id }], stackDir: 'right', qty: true });
+      var sh = DW.compute(doc, a.mesh, a.model, { build: a.build });
+      var bb = sh.balloons.filter(function (x) { return x.manual; })[0];
+      assert(bb.item === 1 && JSON.stringify(bb.stack.map(function (s) { return s.item; })) === '[2]', 'stack ' + JSON.stringify(bb.stack));
+      var circles = sh.prims.filter(function (p) { return p.layer === 'BALLOONS' && p.k === 'circle'; });
+      assert(circles.some(function (p) { return Math.abs(p.c[0] - (bb.c[0] + 2 * bb.r)) < 1e-9 && Math.abs(p.c[1] - bb.c[1]) < 1e-9; }), 'stacked circle to the right');
+      assert(sh.prims.some(function (p) { return p.layer === 'BALLOONS' && p.k === 'text' && p.text === '1X'; }), 'QTY of the plate row');
+      // Auto Balloon still replaces a view's balloons; dragging (pos) moves one without touching the others
+      return 'part item 1 (1X); stack 1 | 2';
+    });
+    test('Exports: CENTER linetype and ANNOTATIONS layer in the DXF, symbols as words (CBORE, X 6.8 DEEP, %%p), SVG dash, PDF ASCII with ± as WinAnsi', function () {
+      var r = annDrawing('p.box(40, 40, 20, { centered: true }); p.hole("Top", 0, 0, 11, { offset: 20, depth: 6.8 }); p.hole("Top", 0, 0, 6.6, { offset: 20 });', { options: { autoCenterMarks: true, autoCenterlines: true } });
+      var T = r.view('Top');
+      DW.addHoleCallout(r.doc, T.view.id, { c: [0, 0], r: 5.5 });
+      r.doc.dimProps = {}; r.doc.dimProps[r.view('Front').view.id + ':h:0'] = { tol: { type: 'symmetric', plus: 0.1 }, prec: 1 };
+      r.recompute();
+      var dxf = DW.toDXF(r.sheet), svg = DW.toSVG(r.sheet), pdf = DW.toPDF(r.sheet);
+      assert(dxf.indexOf('\n2\nCENTER\n') > 0 && dxf.indexOf('LTYPE\n70\n4') > 0 && dxf.indexOf('\n8\nANNOTATIONS\n6\nCENTER\n') > 0, 'CENTER linetype on ANNOTATIONS');
+      assert(dxf.indexOf('%%c6.6 THRU') > 0 && dxf.indexOf('CBORE %%c11 X 6.8 DEEP') > 0 && dxf.indexOf('40.0 %%p0.1') > 0, 'DXF text');
+      var d = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      assert(!d.querySelector('parsererror') && d.querySelectorAll('g[data-layer="ANNOTATIONS"] line.center[stroke-dasharray="6 1.5 1.5 1.5"]').length > 0, 'SVG centre lines');
+      assert(Array.prototype.some.call(d.querySelectorAll('text'), function (t) { return t.textContent === '⌴ Ø11 ↧ 6.8'; }), 'SVG keeps the symbols');
+      assert(!/[^\x00-\x7f]/.test(pdf) && pdf.indexOf('(CBORE \\33011 X 6.8 DEEP) Tj') > 0 && pdf.indexOf('(40.0 \\2610.1) Tj') > 0, 'PDF text');
+      return 'ok';
     });
   })();
 
