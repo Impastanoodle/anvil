@@ -491,3 +491,36 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Phase 7: true curves in the kernel (coordinate with the mesh-quality session).
 2. Sketch: Symmetric relation, driven dimensions, tangent / perpendicular inference while drawing an arc or line from an end point, construction toggle.
 3. Drawings: balloon dragging / manual Balloon, excluded components in sections, exploded views.
+
+## Run cloud-2026-09-25j — Materials, custom properties, property-linked title block and BOM columns
+
+**Context.** Cloud session (not the scheduled local run): no HEAD.lock, no Foreman board, no artifact republish. One agent, no subagents. Task: ROADMAP Phase 7 "Custom properties and materials" plus the editable BOM item. Another session is editing `kernel.js` / `csg.js`, so neither was touched: the library, mass and properties live in a new `anvil/materials.js` (global `Materials`, no DOM) that hooks the part / assembly Builders and `generateScript` from outside, the UI in a new `anvil/ui-materials.js`; `drawing.js` got the title block and BOM changes; `assembly.js`, `ui-core.js`, `ui-panels.js`, `ui-app.js` got small hook edits.
+
+**Done (materials.js).**
+- Library in six classes (Steel, Stainless Steel, Aluminium Alloys, Copper Alloys, Titanium Alloys, Plastics), 23 materials: Plain Carbon Steel, AISI 1020 / 1045 / 4130, Galvanized, AISI 304 / 316, 17-4 PH, 1060, 5052-H32, 6061-T6 (SS), 7075-T6 (SN), Brass, Copper, Aluminium Bronze, CP Titanium, Ti-6Al-4V, ABS, PLA, Nylon 6/6, Acetal (POM), Polycarbonate, Acrylic (PMMA); density, E, Poisson, tensile, yield, colour. `find` takes aliases ("6061", "delrin", the old task-pane names).
+- `model.material` (applying sets `density` and `color`; a typed density that differs unlinks it), `model.bodyMaterials = { featureId: name }` for per-body materials; `massProps(model, build?, mesh?)` = Kernel.massProps fields + `massKg`, `bodies[]` (per-body volume / centroid integrated from the combined mesh's body-tagged faces, mass-weighted centroid); identical to Kernel.massProps without body materials. `bodyColors` for the viewport.
+- `model.properties = { custom: [...], config: { cfg: [...] } }`; `evaluate` replaces `"SW-Material"`, `"SW-Mass"` (g / lb), `"SW-Density"`, `"SW-Volume"`, `"SW-Surface Area"`, `"SW-File Name"`, `"SW-Configuration Name"` (an `@file` suffix is ignored); Configuration Specific rows override Custom ones; `sheetProperty` falls back to the material / mass for Material / Mass.
+- Script: `p.material`, `p.bodyMaterial(fN, name)`, `p.property(name, value, { type, config })`, `a.property`; `generateScript` writes them (and `p.density` / `p.color` when not the defaults or the material's). Design Library scripts are unchanged.
+- `Assembly.massProps` (small edit in assembly.js) weighs a component with its part's body materials and reports `material` per component.
+
+**Done (drawings).** Title block regridded into 11 fields (TITLE / PART NO. / REV, DWG. NO. / MATERIAL / SCALE / UNITS, DATE / MASS / PROJECTION / SHEET), each a text with `$PRPSHEET:"…"` (the model's properties) and `$PRP:"SW-…"` (the drawing's) links, shrink-to-fit; `doc.titleBlock` overrides, edited in Sheet Properties (one undo step with the sheet change). BOM: `doc.bom.columns` (item / partNumber / description / qty / property, with title, width, hidden), `doc.bom.type` 'top' | 'parts'; PART NUMBER / DESCRIPTION use the Part Number / Description properties; Parts only lists a multi-body part's bodies (own material and mass, identical bodies grouped); BOMs on part drawings; the PM has BOM Type, Columns checkboxes and Add Column; balloons fall back to the first row of their part. `compute(doc, mesh, model, { build })` takes the build for masses.
+
+**Done (UI).** Edit Material dialog (class tree, Properties table, Appearance, Apply / Remove Material / Close) from the Material tree row (double-click; right-click favourites), a body row's *Material ▸* entries and the task pane; per-body vertex colours in ui-core (assemblies: each component's part colour); Mass Properties shows materials per body / component; *File ▸ Properties…* dialog (Summary / Custom / Configuration Specific, preset names, link list, live Evaluated Value, default rows for a document without properties). `anvil.material / bodyMaterial / materials / properties / property / editMaterial / fileProperties`, `anvil.drawing.bomColumns / bomType / titleBlock`; summary gains `material`, `massKg`. Added `<meta charset="utf-8">` to index.html and the two test pages: the `▸` / `—` mojibake under `python -m http.server` is gone.
+
+**Tests.** kernel 471 → 486 (group `materials & properties`, 15): library; box masses 135 / 425 / 51 / 390 g; bolt-hole plate (analytic 16-gon volume 46432.529 mm³) in 6061-T6 125.37 g, AISI 304 371.46 g, Nylon 6/6 52.93 g; inch part 0.098 lb; steel + ABS bodies 8.82 g with mass-weighted centroid; assembly 279.82 g with per-component and body materials; properties / configuration override / links; script round trips; unchanged example scripts; title block values and their text in SVG / DXF / PDF; BOM columns; Top-level vs Parts only on part and assembly drawings. ui-smoke 97 → 103.
+
+**Verified (headless Chromium, port 8765, three.js r128 from npm three@0.128.0).** kernel-tests 486/486, ui-smoke 103/103, app page loads with no console errors. Screenshots of the two-material part, Edit Material, File Properties and the drawing (Parts only BOM with MATERIAL / MASS / VENDOR, title block BRACKET / 6061-T6 (SS) / 203.00 g) checked by eye. origin/main had nothing new since d90cfa6, so the pre-PR merge was a no-op.
+
+**Decisions.**
+- Material names are stored, density and colour are copied onto the model: every existing density consumer keeps working untouched (kernel.js was off limits).
+- Body materials are keyed by the id of the feature that created the body, not the body index, which shifts when bodies merge or vanish.
+- Parts only, with no sub-assemblies yet, lists the bodies of a multi-body part (the cut-list view); Top-level only lists parts. When sub-assemblies arrive, Parts only should also flatten them.
+- Title block and BOM property columns fall back to the material / mass (and TITLE / PART NO. to the name) so a part without File Properties still fills them; SolidWorks would leave them blank.
+- SW-Mass shows grams (MMGS) or pounds (IPS), matching SolidWorks' document units.
+
+**Known gaps.** No custom material library editing (user-defined materials) or appearance overrides separate from the material; no component-level material override in assemblies (a component's material is its part's); no indented BOM, revision table or general tables; drawings have no `$PRP` properties of their own beyond `doc.properties`; Date / Number / Yes or no types are stored but not validated.
+
+**Next up.**
+1. Phase 7: true curves in the kernel (coordinate with the mesh-quality session).
+2. Assemblies: sub-assemblies (then a real Parts only / Indented BOM), component patterns.
+3. Drawings: revision table, multiple sheets and editable sheet formats, balloon dragging / manual Balloon.
