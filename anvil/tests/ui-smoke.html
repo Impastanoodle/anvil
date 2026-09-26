@@ -2767,7 +2767,9 @@
     assert((xml.match(/<item /g) || []).length === 4, '3MF items');
     assert((obj.match(/^o /gm) || []).length === 4, 'OBJ groups');
     var back = W.Exchange.importFile('a.step', step);
-    near(back.solids.reduce(function (t, x) { return t + W.Exchange.signedVolume(x.positions, x.triangles); }, 0), anvil.summary().volume, 1e-3, 'STEP volume');
+    // true curves: the STEP keeps the pins' and holes' cylinders, so the re-imported solids measure the exact volume
+    var bb = W.Kernel.rebuild(W.Exchange.newPartFromImport(back));
+    near(bb.bodies.reduce(function (t, body) { return t + W.Kernel.massProps(W.Kernel.meshFromBody(body), 1).volume; }, 0), anvil.summary().volume, 1e-3, 'STEP volume');
     UI.fileSaveAs();
     var first = D.querySelector('#modal-body select').options[0].textContent;
     clickModalButton('Cancel');
