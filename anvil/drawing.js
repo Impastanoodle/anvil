@@ -28,6 +28,43 @@ var Drawing = (function () {
     var e = V.norm(o[0]), u = V.norm(V.cross(o[1], e)), v = V.cross(e, u);
     return { name: name, e: e, u: u, v: v };
   }
+  // frameOf(orient | { e, u, v, name? }): a named orientation, or a stored frame (projected and section views, whose
+  // direction comes from their parent). A stored frame that equals a named one takes its name.
+  function frameOf(o) {
+    if (typeof o === 'string') return orientation(o);
+    var F = { e: o.e.slice(), u: o.u.slice(), v: o.v.slice() };
+    F.name = o.name || matchOrient(F) || 'Projected';
+    return F;
+  }
+  function matchOrient(F) {
+    var names = Object.keys(ORIENTS);
+    for (var i = 0; i < names.length; i++) {
+      var O = orientation(names[i]);
+      if (V.dot(O.e, F.e) > 1 - 1e-9 && V.dot(O.u, F.u) > 1 - 1e-9) return names[i];
+    }
+    return null;
+  }
+  function frameKey(F) { return [F.e, F.u, F.v].map(function (a) { return a.map(function (x) { return Math.round(x * 1e9); }).join(','); }).join('|'); }
+  // a view looks straight along a model axis: edges parallel to the sheet are drawn at true length
+  function isOrthoFrame(F) { return Math.max(Math.abs(F.e[0]), Math.abs(F.e[1]), Math.abs(F.e[2])) > 1 - 1e-9; }
+  // projectedFrame(parentFrame, dir, projection): the view seen from the side it is placed on ('up' | 'down' | 'left' |
+  // 'right' of its parent) in third-angle projection, from the opposite side in first angle. Vertical neighbours share
+  // the parent's u (so they line up in x), horizontal ones its v (level in y). Front + up = Top, Front + right = Right.
+  var DIRS = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0] };
+  function projectedFrame(P, dir, projection) {
+    var d = DIRS[dir];
+    if (!d) throw new Error('Projection direction must be up, down, left or right');
+    var sg = projection === 'first' ? -1 : 1;
+    var e = V.add(V.scale(P.u, sg * d[0]), V.scale(P.v, sg * d[1])), F;
+    if (d[0] === 0) F = { e: e, u: P.u.slice(), v: V.cross(e, P.u) };
+    else F = { e: e, u: V.cross(P.v, e), v: P.v.slice() };
+    return frameOf(F);
+  }
+  // sectionFrame(parentFrame, axis, sign): a cutting line horizontal ('h', at v = at) or vertical ('v', at u = at) in
+  // the parent. The viewer stands on the +e side (e = sign × the parent's v or u) and looks back at the cut face.
+  function sectionFrame(P, axis, sign) {
+    return projectedFrame(P, axis === 'h' ? (sign > 0 ? 'up' : 'down') : (sign > 0 ? 'right' : 'left'), 'third');
+  }
 
   // ------------------------------------------------------------------ model edges (view independent)
   // The kernel's coarsest curved facets turn 22.5° (a 16-gon circle, a slot end, a 90° fillet in 4 steps), so faces
@@ -112,7 +149,7 @@ var Drawing = (function () {
   // are dropped, and closed chains that are regular circles come back as circles.
   function projectView(mesh, orientName, opts) {
     opts = opts || {};
-    var O = orientation(orientName), e = O.e, U = O.u, Vv = O.v;
+    var O = frameOf(orientName), e = O.e, U = O.u, Vv = O.v;
     var diag = meshDiag(mesh), epsZ = diag * 1e-9, epsIn = diag * 1e-9, tol2 = diag * 1e-7;
     var P = mesh.positions64 || mesh.positions;
     // projected bounds of the whole mesh
@@ -234,8 +271,10 @@ var Drawing = (function () {
     });
     var merged = mergeCollinear(vis, hid, diag);
     var vc = extractCircles(merged.visible, diag), hc = extractCircles(merged.hidden, diag);
+    // every edge whole, visible or not: what user dimensions reattach to after a part change
+    var ac = extractCircles(mergeCollinear(vis.concat(hid), [], diag).visible, diag);
     var res = {
-      orient: orientName, u: U, v: Vv, e: e, bounds: bounds,
+      orient: O.name, u: U, v: Vv, e: e, bounds: bounds, all: ac.lines, circlesAll: ac.circles,
       lines: { visible: vc.lines, hidden: opts.display === 'hlr' ? [] : hc.lines },
       circles: { visible: vc.circles, hidden: opts.display === 'hlr' ? [] : hc.circles }
     };
@@ -350,6 +389,175 @@ var Drawing = (function () {
     return { c: [cx, cy], r: r };
   }
 
+  // ------------------------------------------------------------------ section views: an exact cut of the solid
+  // sectionOf(mesh, e, w) -> { mesh, caps: [face index], area, e, w }: the part with everything in front of the plane
+  // p·e = w removed (p·e > w), cut exactly by CSG: each body is intersected with a box that ends on the plane, so the
+  // cut faces ("caps") are true faces of the result lying on the plane and facing +e. Cached on the mesh.
+  function sectionOf(mesh, e, w) {
+    var c = mesh._drawingSections || (mesh._drawingSections = {});
+    var key = e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9);
+    if (c[key]) return c[key];
+    var P = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), m = diag * 0.25 + 1;
+    var u = V.norm(V.cross(Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], e)), v = V.cross(e, u);
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < P.length; i += 3) {
+      var p = [P[i], P[i + 1], P[i + 2]], q = [V.dot(p, e), V.dot(p, u), V.dot(p, v)];
+      for (var k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+    }
+    var out;
+    if (!P.length || w >= hi[0] - diag * 1e-9) out = { mesh: mesh, caps: [], area: 0 };             // the plane misses the part
+    else if (w <= lo[0] + diag * 1e-9) out = { mesh: K.meshFromBody(null), caps: [], area: 0 };      // nothing behind it
+    else {
+      var box = boxSolid([e, u, v], [lo[0] - m, lo[1] - m, lo[2] - m], [w, hi[1] + m, hi[2] + m]);
+      var byBody = {}, order = [];
+      mesh.faces.forEach(function (f) {
+        (f.polys || []).forEach(function (pg) { var b = pg.body || 0; if (!byBody[b]) { byBody[b] = []; order.push(b); } byBody[b].push(pg.clone()); });
+      });
+      var polys = [];
+      order.forEach(function (b) {
+        CSG.fromPolygons(byBody[b]).intersect(box).polygons.forEach(function (pg) { pg.body = b; polys.push(pg); });
+      });
+      var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
+      sm.faces.forEach(function (f, fi) {
+        if (V.dot(f.normal, e) > 1 - 1e-9 && Math.abs(f.w - w) <= tol) { caps.push(fi); area += f.area; }
+      });
+      out = { mesh: sm, caps: caps, area: area };
+    }
+    out.e = e.slice(); out.w = w;
+    c[key] = out;
+    return out;
+  }
+  // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
+  function boxSolid(ax, lo, hi) {
+    function pt(c) { return new CSG.Vector(ax[0][0] * c[0] + ax[1][0] * c[1] + ax[2][0] * c[2], ax[0][1] * c[0] + ax[1][1] * c[1] + ax[2][1] * c[2], ax[0][2] * c[0] + ax[1][2] * c[1] + ax[2][2] * c[2]); }
+    var polys = [];
+    for (var a = 0; a < 3; a++) for (var s = 0; s < 2; s++) {
+      var b = (a + 1) % 3, d = (a + 2) % 3, vs = [];
+      [[0, 0], [1, 0], [1, 1], [0, 1]].forEach(function (q) {
+        var c = [0, 0, 0]; c[a] = s ? hi[a] : lo[a]; c[b] = q[0] ? hi[b] : lo[b]; c[d] = q[1] ? hi[d] : lo[d];
+        vs.push(new CSG.Vertex(pt(c)));
+      });
+      var pg = new CSG.Polygon(vs), out = V.scale(ax[a], s ? 1 : -1);
+      if (pg.plane.normal.x * out[0] + pg.plane.normal.y * out[1] + pg.plane.normal.z * out[2] < 0) pg = new CSG.Polygon(vs.slice().reverse());
+      polys.push(pg);
+    }
+    return CSG.fromPolygons(polys);
+  }
+  // the cut faces of a section as closed loops in a view frame: [{ loops: [[[u, v]…]…], body }]
+  function capLoops(S, F) {
+    return S.caps.map(function (fi) {
+      var o = K.faceOutline(S.mesh, fi);
+      return { body: S.mesh.faces[fi].body || 0, loops: o ? o.loops.map(function (loop) {
+        return loop.map(function (p2) { var p = K.to3D(o.plane, p2[0], p2[1]); return [V.dot(p, F.u), V.dot(p, F.v)]; });
+      }) : [] };
+    });
+  }
+  // ANSI31 hatching: parallel lines at `ang` degrees, `sp` apart (paper units, anchored at the sheet origin so every
+  // view's pattern lines up), clipped to the region inside an odd number of loops. Returns [[x1, y1, x2, y2]].
+  function hatchLines(loops, sp, ang) {
+    var a = ang * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], n = [-Math.sin(a), Math.cos(a)];
+    var tmin = Infinity, tmax = -Infinity, out = [];
+    loops.forEach(function (l) { l.forEach(function (p) { var t = n[0] * p[0] + n[1] * p[1]; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }); });
+    for (var k = Math.ceil(tmin / sp); k * sp <= tmax; k++) {
+      var t = k * sp, xs = [];
+      loops.forEach(function (l) {
+        for (var i = 0; i < l.length; i++) {
+          var p = l[i], q = l[(i + 1) % l.length], tp = n[0] * p[0] + n[1] * p[1] - t, tq = n[0] * q[0] + n[1] * q[1] - t;
+          if ((tp > 0) !== (tq > 0)) { var f = tp / (tp - tq); xs.push(d[0] * (p[0] + (q[0] - p[0]) * f) + d[1] * (p[1] + (q[1] - p[1]) * f)); }
+        }
+      });
+      xs.sort(function (x, y) { return x - y; });
+      for (var j = 0; j + 1 < xs.length; j += 2) {
+        if (xs[j + 1] - xs[j] < 1e-9) continue;
+        out.push([n[0] * t + d[0] * xs[j], n[1] * t + d[1] * xs[j], n[0] * t + d[0] * xs[j + 1], n[1] * t + d[1] * xs[j + 1]]);
+      }
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ detail views: the parent clipped to a circle
+  // the part of segment l inside the circle (C, R), or null
+  function clipSeg(l, C, R) {
+    var dx = l[2] - l[0], dy = l[3] - l[1], fx = l[0] - C[0], fy = l[1] - C[1];
+    var A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), Cc = fx * fx + fy * fy - R * R;
+    if (A < 1e-24) return null;
+    var disc = B * B - 4 * A * Cc;
+    if (disc <= 0) return null;
+    var sq = Math.sqrt(disc), t0 = Math.max(0, (-B - sq) / (2 * A)), t1 = Math.min(1, (-B + sq) / (2 * A));
+    if (t1 - t0 < 1e-12) return null;
+    return [l[0] + dx * t0, l[1] + dy * t0, l[0] + dx * t1, l[1] + dy * t1];
+  }
+  // a circle (c, r) against the clip circle (C, R): 'full', null, or the arc inside { a0, a1 } (degrees, CCW)
+  function clipCircle(c, r, C, R) {
+    var dd = Math.hypot(C[0] - c[0], C[1] - c[1]);
+    if (dd + r <= R) return 'full';
+    if (dd >= r + R || dd + R <= r) return null;
+    var phi = Math.atan2(C[1] - c[1], C[0] - c[0]), al = Math.acos(Math.max(-1, Math.min(1, (r * r + dd * dd - R * R) / (2 * r * dd))));
+    return { a0: (phi - al) * 180 / Math.PI, a1: (phi + al) * 180 / Math.PI };
+  }
+  // clipProjection(proj, C, R): a projection result limited to the disc (C, R); circles cut by the edge become arcs
+  function clipProjection(pr, C, R) {
+    var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, all: [], circlesAll: [],
+      bounds: { umin: C[0] - R, umax: C[0] + R, vmin: C[1] - R, vmax: C[1] + R } };
+    ['visible', 'hidden'].forEach(function (k) {
+      pr.lines[k].forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.lines[k].push(q); });
+      pr.circles[k].forEach(function (c) {
+        var q = clipCircle(c.c, c.r, C, R);
+        if (q === 'full') out.circles[k].push(c); else if (q) out.arcs[k].push({ c: c.c, r: c.r, a0: q.a0, a1: q.a1 });
+      });
+    });
+    (pr.all || []).forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.all.push(q); });
+    (pr.circlesAll || []).forEach(function (c) { if (clipCircle(c.c, c.r, C, R) === 'full') out.circlesAll.push(c); });
+    out.stats = { visibleLines: out.lines.visible.length, hiddenLines: out.lines.hidden.length, visibleCircles: out.circles.visible.length, hiddenCircles: out.circles.hidden.length,
+      visibleArcs: out.arcs.visible.length, hiddenArcs: out.arcs.hidden.length };
+    return out;
+  }
+
+  // ------------------------------------------------------------------ dimensions that follow the part
+  // A Smart Dimension placed by the user stores view geometry (model units in the view frame). Every render reattaches
+  // it to the edge or circle of the current projection that is geometrically the same one: unchanged; else the best
+  // of the collinear edges that overlap it (an edge that grew or shrank) and the parallel ones within a quarter of the
+  // view that overlap it by at least half of their union (a face that moved), scored by overlap / union and offset,
+  // so a moved full-length edge beats a short collinear leftover; circles by centre (a hole whose size changed), then
+  // by radius near the old centre (a hole that moved). The dimension then takes the new geometry and value. With no match it is
+  // flagged `dangling` and keeps its last geometry (drawn in the dangling colour), so undoing the change reattaches it.
+  function reattachDim(d, pr) {
+    var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6, reach = size * 0.25;
+    var best = null, bs = Infinity;
+    if (d.kind === 'dia') {
+      (pr.circlesAll || []).forEach(function (c) {
+        var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
+        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
+        if (s < bs) { bs = s; best = c; }
+      });
+      if (!best) { d.dangling = true; return false; }
+      d.c = best.c.slice(); d.r = best.r; d.value = 2 * best.r; delete d.dangling;
+      return true;
+    }
+    var a = d.a, bb = d.b, L = Math.hypot(bb[0] - a[0], bb[1] - a[1]);
+    if (L < 1e-12) { d.dangling = true; return false; }
+    var t = [(bb[0] - a[0]) / L, (bb[1] - a[1]) / L], hit = null;
+    (pr.all || []).forEach(function (m) {
+      var mx = m[2] - m[0], my = m[3] - m[1], ml = Math.hypot(mx, my);
+      if (ml < 1e-12 || Math.abs(t[0] * my - t[1] * mx) > ml * 1e-6) return;          // not parallel
+      var p0 = (m[0] - a[0]) * t[0] + (m[1] - a[1]) * t[1], p1 = (m[2] - a[0]) * t[0] + (m[3] - a[1]) * t[1];
+      var lo = Math.min(p0, p1), hi = Math.max(p0, p1), off = Math.abs(t[0] * (m[1] - a[1]) - t[1] * (m[0] - a[0]));
+      // score: 1 - overlap / union along the line, plus the offset in quarter-view sizes, less a little for a kept end
+      var ov = Math.min(hi, L) - Math.max(lo, 0), jac = ov / (Math.max(hi, L) - Math.min(lo, 0)), s = Infinity;
+      var sc = (1 - jac) + off / reach - (Math.abs(lo) <= tol || Math.abs(hi - L) <= tol ? 0.1 : 0);
+      if (off <= tol && Math.abs(lo) <= tol && Math.abs(hi - L) <= tol) s = -1;
+      else if (off <= tol && ov > tol) s = sc;                      // collinear: any overlap
+      else if (off <= reach && jac >= 0.5) s = sc;                  // parallel: most of it
+      if (s < bs) { bs = s; hit = { m: m, lo: lo, hi: hi, forward: p1 >= p0 }; }
+    });
+    if (!hit) { d.dangling = true; return false; }
+    var m0 = [hit.m[0], hit.m[1]], m1 = [hit.m[2], hit.m[3]];
+    d.a = hit.forward ? m0 : m1; d.b = hit.forward ? m1 : m0;
+    d.value = d.kind === 'h' ? Math.abs(d.b[0] - d.a[0]) : d.kind === 'v' ? Math.abs(d.b[1] - d.a[1]) : hit.hi - hit.lo;
+    delete d.dangling;
+    return true;
+  }
+
   // ------------------------------------------------------------------ sheets, scales, the drawing document
   var MM = 25.4;
   // [width, height] in mm, landscape
@@ -380,7 +588,7 @@ var Drawing = (function () {
     return {
       name: opts.name || 'Draw' + n,
       sheet: { name: 'Sheet1', format: opts.format || (model.units === 'in' ? 'ANSI B' : 'A3'), scale: opts.scale || [1, 1], autoScale: !opts.scale, projection: opts.projection || 'third' },
-      views: [], date: opts.date || todayISO(), autoDims: opts.autoDims !== false, suppressed: [], nextView: 1, layout: 'auto'
+      units: model.units === 'in' ? 'in' : 'mm', views: [], date: opts.date || todayISO(), autoDims: opts.autoDims !== false, suppressed: [], nextView: 1, layout: 'auto'
     };
   }
   function addView(doc, orient, props) {
@@ -393,11 +601,120 @@ var Drawing = (function () {
   // Views are recomputed on every render; the projection of a mesh in one orientation is cached on the mesh
   // (meshes are immutable once built, so the cache dies with it).
   function cachedProjection(mesh, orient, display) {
-    var c = mesh._drawingProj || (mesh._drawingProj = {}), key = orient + '|' + display;
-    return c[key] || (c[key] = projectView(mesh, orient, { display: display }));
+    var F = frameOf(orient), c = mesh._drawingProj || (mesh._drawingProj = {}), key = frameKey(F) + '|' + display;
+    return c[key] || (c[key] = projectView(mesh, F, { display: display }));
   }
-  // Title block and border sizes in paper mm (converted by paperK for inch sheets)
-  var BORDER = 10, TB_W = 180, TB_H = 40, GAP = 22;
+  // viewFrame(doc, v): the frame a view looks along. Section views derive theirs from the parent and the cutting
+  // line, detail views use the parent's, projected views keep the frame they were made with.
+  function viewFrame(doc, v, depth) {
+    var par = v.parent != null ? findView(doc, v.parent) : null;
+    if ((depth || 0) < 20 && par && (v.kind === 'section' || v.kind === 'detail')) {
+      var P = viewFrame(doc, par, (depth || 0) + 1);
+      return v.kind === 'section' ? sectionFrame(P, v.section.axis, v.section.sign) : P;
+    }
+    return v.frame ? frameOf({ e: v.frame.e, u: v.frame.u, v: v.frame.v, name: v.orient }) : orientation(v.orient);
+  }
+  // A–Z without I, O and Q (ASME Y14.3), the first letter no section or detail view of the drawing uses yet
+  function nextLabel(doc) {
+    var used = {};
+    doc.views.forEach(function (v) { if (v.label) used[v.label] = 1; });
+    var abc = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+    for (var i = 0; i < abc.length; i++) if (!used[abc[i]]) return abc[i];
+    for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
+  }
+  function viewExtents(doc, mesh, v) { return extentsOf(mesh, viewFrame(doc, v)); }
+  // addProjectedView(doc, mesh, parentId, dir, { x, y }): a view projected up / down / left / right from a parent,
+  // aligned with it (same scale; dragging it slides along the projection direction only, the parent drags it along).
+  // Without x / y it is placed one gap beyond the parent.
+  function addProjectedView(doc, mesh, parentId, dir, opts) {
+    opts = opts || {};
+    var par = findView(doc, parentId);
+    if (!par) throw new Error('No drawing view ' + parentId);
+    if (par.kind === 'detail') throw new Error('A view cannot be projected from a detail view');
+    var F = projectedFrame(viewFrame(doc, par), dir, doc.sheet.projection), vert = !DIRS[dir][0];
+    var pos = besidePos(doc, mesh, par, F, dir);
+    var v = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: vert ? 'x' : 'y', dir: dir,
+      scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
+    if (opts.x != null && !vert) v.x = opts.x;
+    if (opts.y != null && vert) v.y = opts.y;
+    doc.layout = 'manual';
+    return v;
+  }
+  // where a view in frame F goes when it is placed `dir` of its parent: the parent's centre line, one gap out
+  function besidePos(doc, mesh, par, F, dir) {
+    var s = viewScale(doc, par), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ce = extentsOf(mesh, F), d = DIRS[dir];
+    if (!d[0]) return [par.x, par.y + d[1] * ((pe.h + ce.h) * s / 2 + g)];
+    return [par.x + d[0] * ((pe.w + ce.w) * s / 2 + g), par.y];
+  }
+  // addSectionView(doc, mesh, parentId, { axis: 'h' | 'v', at, sign, x, y, label }): a full section on a cutting
+  // line through the parent, horizontal at v = at or vertical at u = at (model units in the parent's view frame).
+  // The viewer stands on the side sign points to (sign × the parent's v or u) and looks at the cut, so the arrows
+  // point the other way. The view is aligned with the parent, placed on the viewer's side in third-angle projection
+  // and on the arrows' side in first angle; cut faces are hatched ANSI31 and the view is labelled SECTION A-A.
+  function addSectionView(doc, mesh, parentId, opts) {
+    opts = opts || {};
+    var par = findView(doc, parentId);
+    if (!par) throw new Error('No drawing view ' + parentId);
+    if (par.kind === 'detail') throw new Error('A section cannot be cut in a detail view');
+    var axis = opts.axis === 'v' ? 'v' : 'h', sign = opts.sign < 0 ? -1 : 1, label = opts.label || nextLabel(doc);
+    var F = sectionFrame(viewFrame(doc, par), axis, sign);
+    var place = (axis === 'h' ? (sign > 0 ? 'up' : 'down') : (sign > 0 ? 'right' : 'left'));
+    if (doc.sheet.projection === 'first') place = { up: 'down', down: 'up', left: 'right', right: 'left' }[place];
+    var pos = besidePos(doc, mesh, par, F, place);
+    var v = addView(doc, F.name, { kind: 'section', name: 'Section View ' + label + '-' + label, label: label, parent: par.id, align: axis === 'h' ? 'x' : 'y',
+      section: { axis: axis, at: +opts.at || 0, sign: sign }, scale: par.scale ? par.scale.slice() : null, display: 'hlr', x: pos[0], y: pos[1] });
+    if (opts.x != null && axis === 'v') v.x = opts.x;
+    if (opts.y != null && axis === 'h') v.y = opts.y;
+    doc.layout = 'manual';
+    return v;
+  }
+  // detail scale: twice the parent's, as a standard scale when there is one
+  function detailScale(ps) {
+    var want = 2 * scaleValue(ps);
+    for (var i = 0; i < SCALES.length; i++) if (Math.abs(scaleValue(SCALES[i]) - want) < 1e-9) return SCALES[i].slice();
+    return want >= 1 ? [Math.round(want * 1000) / 1000, 1] : [1, Math.round(1000 / want) / 1000];
+  }
+  // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label }): the parent inside the circle (c, r)
+  // (model units in the parent's frame), enlarged to its own scale (default twice the parent's) and labelled
+  // DETAIL B / SCALE 4:1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
+  function addDetailView(doc, mesh, parentId, opts) {
+    opts = opts || {};
+    var par = findView(doc, parentId);
+    if (!par) throw new Error('No drawing view ' + parentId);
+    if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
+    if (!(opts.r > 0)) throw new Error('A detail circle needs a radius');
+    var label = opts.label || nextLabel(doc), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : detailScale(par.scale || doc.sheet.scale || [1, 1]);
+    var s = scaleValue(sc), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ps = viewScale(doc, par);
+    var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
+      detail: { c: [+opts.c[0], +opts.c[1]], r: +opts.r }, scale: sc, display: par.display,
+      x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + opts.r * s, y: opts.y != null ? opts.y : par.y });
+    doc.layout = 'manual';
+    return v;
+  }
+  // Title block and border sizes in paper mm (converted by paperK for inch sheets); HATCH is the ANSI31 line spacing
+  var BORDER = 10, TB_W = 180, TB_H = 40, GAP = 22, HATCH = 2.5;
+  // viewContent(doc, v, mesh, parentContent) -> { frame, proj, center: [u, v] (the model point at the view's x, y),
+  // caps (section faces to hatch), clip (a detail circle), section }. Section and detail views are centred on the
+  // whole part's extents in their frame (not on what is left of it), so they stay aligned with their parent.
+  function viewContent(doc, v, mesh, parentContent) {
+    var par = v.parent != null ? findView(doc, v.parent) : null, s = viewScale(doc, v);
+    if (v.kind === 'section' && par && parentContent) {
+      var P = parentContent(par).frame, sc = v.section, F = sectionFrame(P, sc.axis, sc.sign);
+      var S = sectionOf(mesh, F.e, sc.sign * sc.at), pr = cachedProjection(S.mesh, F, v.display), full = extentsOf(mesh, F);
+      if (!S.mesh.faces.length) pr = emptyProjection(F, full);
+      return { frame: F, proj: pr, center: [full.cu, full.cv], caps: capLoops(S, F), section: S, scale: s };
+    }
+    if (v.kind === 'detail' && par && parentContent) {
+      var pc = parentContent(par), dt = v.detail;
+      return { frame: pc.frame, proj: clipProjection(pc.proj, dt.c, dt.r), center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
+    }
+    var F2 = viewFrame(doc, v), pr2 = cachedProjection(mesh, F2, v.display), b = pr2.bounds;
+    return { frame: F2, proj: pr2, center: [(b.umin + b.umax) / 2, (b.vmin + b.vmax) / 2], caps: [], scale: s };
+  }
+  function emptyProjection(F, ext) {
+    return { orient: F.name, u: F.u, v: F.v, e: F.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, all: [], circlesAll: [],
+      bounds: { umin: ext.cu, umax: ext.cu, vmin: ext.cv, vmax: ext.cv }, stats: { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 } };
+  }
   function usableArea(doc, units) {
     var S = sheetSize(doc, units), k = paperK(units);
     return { x0: BORDER * k, x1: S[0] - BORDER * k, y0: (BORDER + TB_H) * k, y1: S[1] - BORDER * k };
@@ -416,7 +733,7 @@ var Drawing = (function () {
     return doc;
   }
   function extentsOf(mesh, orient) {
-    var O = orientation(orient), P = mesh.positions64 || mesh.positions;
+    var O = frameOf(orient), P = mesh.positions64 || mesh.positions;
     var b = { umin: Infinity, umax: -Infinity, vmin: Infinity, vmax: -Infinity };
     for (var i = 0; i < P.length; i += 3) {
       var p = [P[i], P[i + 1], P[i + 2]], u = V.dot(p, O.u), v = V.dot(p, O.v);
@@ -430,7 +747,8 @@ var Drawing = (function () {
   // scale is automatic, chooses it. A view's (x, y) is where the centre of its projected bounding box sits on the sheet.
   function layout(doc, mesh, units) {
     var k = paperK(units), A = usableArea(doc, units), g = GAP * k;
-    var byRole = {};
+    var byRole = {}, before = {};
+    doc.views.forEach(function (v) { before[v.id] = [v.x, v.y]; });
     doc.views.forEach(function (v) { if (v.role) byRole[v.role] = v; });
     var F = extentsOf(mesh, 'Front'), T = extentsOf(mesh, 'Top'), R = extentsOf(mesh, 'Right');
     var Wm = F.w, Hm = F.h, Dm = T.h;
@@ -472,6 +790,16 @@ var Drawing = (function () {
       byRole.iso.x = (isoBox.x0 + isoBox.x1) / 2; byRole.iso.y = (isoBox.y0 + isoBox.y1) / 2;
     }
     void R;
+    // projected and section views of the standard views move with their parent and stay aligned with it
+    function follow(p, depth) {
+      doc.views.forEach(function (c) {
+        if (c.parent !== p.id || !c.align || c.role || depth > 20) return;
+        c.x += p.x - before[p.id][0]; c.y += p.y - before[p.id][1];
+        if (c.align === 'x') c.x = p.x; else c.y = p.y;
+        follow(c, depth + 1);
+      });
+    }
+    doc.views.forEach(function (v) { if (v.role) follow(v, 0); });
     return doc;
   }
   // moveView(doc, id, x, y): a parent view drags its projected children along; a projected view slides along its
@@ -482,8 +810,26 @@ var Drawing = (function () {
     if (v.parent != null && findView(doc, v.parent)) { if (v.align === 'x') x = v.x; else if (v.align === 'y') y = v.y; }
     var dx = x - v.x, dy = y - v.y;
     v.x = x; v.y = y;
-    doc.views.forEach(function (c) { if (c.parent === v.id) { c.x += dx; c.y += dy; } });
+    shiftAligned(doc, v.id, dx, dy, 0);
     doc.layout = 'manual';
+  }
+  // aligned children (projected and section views) follow their parent, and their own aligned children follow them;
+  // detail views stay where they are
+  function shiftAligned(doc, id, dx, dy, depth) {
+    if (depth > 20) return;
+    doc.views.forEach(function (c) { if (c.parent === id && c.align) { c.x += dx; c.y += dy; shiftAligned(doc, c.id, dx, dy, depth + 1); } });
+  }
+  // deleteView(doc, id): removes a view with the section and detail views cut from it (they cannot exist without
+  // it); projected views keep their frame and become ordinary views
+  function deleteView(doc, id) {
+    var gone = {}; gone[id] = 1;
+    for (var changed = true; changed;) {
+      changed = false;
+      doc.views.forEach(function (v) { if (!gone[v.id] && gone[v.parent] && (v.kind === 'section' || v.kind === 'detail')) { gone[v.id] = 1; changed = true; } });
+    }
+    doc.views = doc.views.filter(function (v) { return !gone[v.id]; });
+    doc.views.forEach(function (v) { if (gone[v.parent]) { v.parent = null; v.align = null; } });
+    return Object.keys(gone).length;
   }
   function findView(doc, id) { for (var i = 0; i < doc.views.length; i++) if (doc.views[i].id === id) return doc.views[i]; return null; }
 
@@ -498,7 +844,7 @@ var Drawing = (function () {
   // and every distinct circle diameter once, in the first ortho view that shows it as a visible circle ("4X Ø8").
   function autoDims(doc, projections, units) {
     var dims = [];
-    var order = doc.views.filter(function (v) { return ORTHO[v.orient]; });
+    var order = doc.views.filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id]; });
     var roleOrder = { front: 0, top: 1, right: 2 };
     order.sort(function (a, b) { return (roleOrder[a.role] != null ? roleOrder[a.role] : 5) - (roleOrder[b.role] != null ? roleOrder[b.role] : 5) || a.id - b.id; });
     var front = order.filter(function (v) { return v.role === 'front'; })[0] || order[0];
@@ -578,32 +924,101 @@ var Drawing = (function () {
     cell(c2, ty0 + row, 'SHEET', '1 OF 1');
     function rect(a, b, layer, style) { line([a[0], a[1]], [b[0], a[1]], layer, style); line([b[0], a[1]], [b[0], b[1]], layer, style); line([b[0], b[1]], [a[0], b[1]], layer, style); line([a[0], b[1]], [a[0], a[1]], layer, style); }
 
-    // views
-    var projections = {}, views = [];
+    // views: what each one shows (its content, in model units of its frame), then paper primitives
+    doc.units = units;
+    var projections = {}, views = [], contents = {}, byId = {};
     var layers = {};
+    doc.views.forEach(function (v) { byId[v.id] = v; });
+    function contentOf(v, depth) {
+      if (contents[v.id]) return contents[v.id];
+      var c = viewContent(doc, v, mesh, byId[v.parent] && (depth || 0) < 20 ? function (pv) { return contentOf(pv, (depth || 0) + 1); } : null);
+      contents[v.id] = c;
+      return c;
+    }
+    var hs = HATCH * k;
     doc.views.forEach(function (v) {
-      var pr = cachedProjection(mesh, v.orient, v.display);
+      var ct = contentOf(v), pr = ct.proj;
       projections[v.id] = pr;
-      var s = viewScale(doc, v), bd = pr.bounds, cu = (bd.umin + bd.umax) / 2, cv = (bd.vmin + bd.vmax) / 2;
+      var s = viewScale(doc, v), cu = ct.center[0], cv = ct.center[1], bd = pr.bounds;
       var toSheet = function (p) { return [v.x + (p[0] - cu) * s, v.y + (p[1] - cv) * s]; };
+      var fromSheet = function (p) { return [(p[0] - v.x) / s + cu, (p[1] - v.y) / s + cv]; };
       var layer = layerName(v, layers);
+      var clip = ct.clip ? { c: toSheet(ct.clip.c), r: ct.clip.r * s } : null;
+      // cut faces first, so the outlines are drawn over the hatching
+      var hatch = 0;
+      (ct.caps || []).forEach(function (cap) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); });
+        hatchLines(loops, hs, cap.body % 2 ? 135 : 45).forEach(function (h) {
+          var q = clip ? clipSeg(h, clip.c, clip.r) : h;
+          if (q) { line([q[0], q[1]], [q[2], q[3]], layer, 'hatch'); hatch++; }
+        });
+      });
       pr.lines.visible.forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, 'visible'); });
       pr.circles.visible.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'visible' }); });
+      (pr.arcs ? pr.arcs.visible : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'visible' }); });
       pr.lines.hidden.forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, 'hidden'); });
       pr.circles.hidden.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'hidden' }); });
-      var box = { x0: v.x - (bd.umax - bd.umin) * s / 2, x1: v.x + (bd.umax - bd.umin) * s / 2, y0: v.y - (bd.vmax - bd.vmin) * s / 2, y1: v.y + (bd.vmax - bd.vmin) * s / 2 };
-      if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, v.orient.toUpperCase() + '  SCALE ' + scaleText(v.scale), 'middle', layer);
-      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, scale: s });
+      (pr.arcs ? pr.arcs.hidden : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'hidden' }); });
+      var p0 = toSheet([bd.umin, bd.vmin]), p1 = toSheet([bd.umax, bd.vmax]);
+      var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
+      if (v.kind === 'section') {
+        text([v.x, box.y0 - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
+        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale), 'middle', layer);
+      } else if (v.kind === 'detail') {
+        text([(box.x0 + box.x1) / 2, box.y0 - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
+        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale || scale), 'middle', layer);
+      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  SCALE ' + scaleText(v.scale), 'middle', layer);
+      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
+        section: ct.section || null, hatch: hatch, clip: clip });
+    });
+    // cutting lines and detail circles on the parents
+    views.forEach(function (w) {
+      var v = w.view, pw = views.filter(function (x) { return x.view.id === v.parent; })[0];
+      if (!pw) return;
+      var L = pw.layer, ar = 3 * k, aw = 0.9 * k;
+      function arrow(tip, dir) {
+        var n = [-dir[1], dir[0]];
+        prims.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: L });
+      }
+      if (v.kind === 'section') {
+        var sc = v.section, ext = 5 * k, shaft = 8 * k, lh = 5 * k, a, b, dv;
+        if (sc.axis === 'h') {
+          var y = pw.toSheet([0, sc.at])[1];
+          a = [pw.box.x0 - ext, y]; b = [pw.box.x1 + ext, y]; dv = [0, -sc.sign];
+        } else {
+          var x = pw.toSheet([sc.at, 0])[0];
+          a = [x, pw.box.y0 - ext]; b = [x, pw.box.y1 + ext]; dv = [-sc.sign, 0];
+        }
+        line(a, b, L, 'chain');
+        [a, b].forEach(function (e0) {
+          var tip = [e0[0] + dv[0] * shaft, e0[1] + dv[1] * shaft];
+          line(e0, tip, L, 'thick'); arrow(tip, dv);
+          var tp = [tip[0] + dv[0] * 2 * k, tip[1] + dv[1] * 2 * k - (dv[1] > 0 ? 0 : dv[1] < 0 ? lh : lh / 2)];
+          if (dv[0]) tp[0] += dv[0] * 1 * k;
+          text(tp, lh, v.label, 'middle', L);
+        });
+      } else if (v.kind === 'detail') {
+        var dc = pw.toSheet(v.detail.c), r = v.detail.r * pw.scale;
+        prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick' });
+        var q = Math.SQRT1_2;
+        text([dc[0] + (r + 2 * k) * q, dc[1] + (r + 2 * k) * q], 5 * k, v.label, 'start', L);
+      }
     });
     // dimensions
     var suppressed = doc.suppressed || [];
     var dims = doc.autoDims ? autoDims(doc, projections, units).filter(function (d) { d.key = autoDimKey(d); return suppressed.indexOf(d.key) < 0; }) : [];
-    doc.views.forEach(function (v) { (v.dims || []).forEach(function (d, i) { var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i; c.text = dimText(c, units); dims.push(c); }); });
+    doc.views.forEach(function (v) {
+      (v.dims || []).forEach(function (d, i) {
+        if (projections[v.id]) reattachDim(d, projections[v.id]);
+        var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i; c.text = dimText(c, units); dims.push(c);
+      });
+    });
     var placed = [], shown = [];
     dims.forEach(function (d) {
       var vw = views.filter(function (w) { return w.view.id === d.view; })[0];
       if (!vw) return;
       var p = dimPrims(d, vw, k, placed);
+      if (d.dangling) p.forEach(function (x) { x.color = 'dangling'; });
       var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
       function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
       p.forEach(function (x) {
@@ -618,7 +1033,7 @@ var Drawing = (function () {
     return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale };
   }
   function layerName(v, used) {
-    var base = String(v.orient).toUpperCase(), name = base, n = 2;
+    var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : String(v.orient).toUpperCase(), name = base, n = 2;
     while (used[name]) name = base + '_' + n++;
     used[name] = true;
     return name;
@@ -694,12 +1109,19 @@ var Drawing = (function () {
   function num(x) { return String(Math.round(x * 1e4) / 1e4); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   // widths in paper mm
-  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7 };
+  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7 };
+  // SolidWorks draws dangling annotations (their model reference is gone) in olive brown
+  var COLORS = { dangling: '#a07c00' }, DXF_COLORS = { dangling: 42 }, PDF_COLORS = { dangling: '0.627 0.486 0' };
+  // a CCW arc (degrees) as start / end points
+  function arcEnds(p) {
+    var a0 = p.a0 * Math.PI / 180, a1 = p.a1 * Math.PI / 180;
+    return [[p.c[0] + p.r * Math.cos(a0), p.c[1] + p.r * Math.sin(a0)], [p.c[0] + p.r * Math.cos(a1), p.c[1] + p.r * Math.sin(a1)]];
+  }
   function toSVG(sheet, opts) {
     opts = opts || {};
     var S = sheet.size, k = sheet.units === 'in' ? 1 / MM : 1, H = S[1];
     function X(p) { return num(p[0]); } function Y(p) { return num(H - p[1]); }
-    var dash = num(3 * k) + ' ' + num(1.5 * k);
+    var dash = num(3 * k) + ' ' + num(1.5 * k), chain = [8, 1.5, 1.5, 1.5].map(function (x) { return num(x * k); }).join(' ');
     var out = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + num(S[0]) + sheet.units + '" height="' + num(S[1]) + sheet.units + '" viewBox="0 0 ' + num(S[0]) + ' ' + num(S[1]) + '" font-family="Arial, Helvetica, sans-serif">'];
     out.push('<rect class="sheet-bg" x="0" y="0" width="' + num(S[0]) + '" height="' + num(S[1]) + '" fill="#fff"/>');
     var groups = {}, gorder = [];
@@ -709,13 +1131,18 @@ var Drawing = (function () {
       out.push('<g data-layer="' + esc(layer) + '"' + (vw ? ' data-view="' + vw.view.id + '" class="dv"' : '') + ' fill="none" stroke="#000" stroke-linecap="round">');
       groups[layer].forEach(function (p) {
         var sw = num((STROKE[p.style] || 0.25) * k), cls = p.style ? ' class="' + p.style + '"' : '';
-        var dsh = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : '';
-        if (p.k === 'line') out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
+        var dsh = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'chain' ? ' stroke-dasharray="' + chain + '"' : '';
+        var col = p.color && COLORS[p.color];
+        if (col) { dsh += p.k === 'fill' || p.k === 'text' ? '' : ' stroke="' + col + '"'; cls += ' data-color="' + p.color + '"'; }
+        if (p.k === 'arc') {
+          var ae = arcEnds(p), big = ((p.a1 - p.a0) % 360 + 360) % 360 > 180 ? 1 : 0;
+          out.push('<path' + cls + ' d="M' + X(ae[0]) + ' ' + Y(ae[0]) + ' A' + num(p.r) + ' ' + num(p.r) + ' 0 ' + big + ' 0 ' + X(ae[1]) + ' ' + Y(ae[1]) + '" stroke-width="' + sw + '"' + dsh + '/>');
+        } else if (p.k === 'line') out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
         else if (p.k === 'circle') out.push('<circle' + cls + ' cx="' + X(p.c) + '" cy="' + Y(p.c) + '" r="' + num(p.r) + '" stroke-width="' + sw + '"' + dsh + '/>');
-        else if (p.k === 'fill') out.push('<path d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="#000" stroke="none"/>');
+        else if (p.k === 'fill') out.push('<path' + (col ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
         else if (p.k === 'text') {
           var tr = p.rot ? ' transform="rotate(' + num(-p.rot) + ' ' + X(p.p) + ' ' + Y(p.p) + ')"' : '';
-          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h) + '" text-anchor="' + p.anchor + '" fill="#000" stroke="none"' + tr + '>' + esc(p.text) + '</text>');
+          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (col ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
         }
       });
       out.push('</g>');
@@ -741,9 +1168,10 @@ var Drawing = (function () {
     pr(9, '$LTSCALE'); pr(40, sheet.units === 'in' ? 0.04 : 1);
     pr(0, 'ENDSEC');
     pr(0, 'SECTION'); pr(2, 'TABLES');
-    pr(0, 'TABLE'); pr(2, 'LTYPE'); pr(70, 2);
+    pr(0, 'TABLE'); pr(2, 'LTYPE'); pr(70, 3);
     pr(0, 'LTYPE'); pr(2, 'CONTINUOUS'); pr(70, 0); pr(3, 'Solid line'); pr(72, 65); pr(73, 0); pr(40, 0);
     pr(0, 'LTYPE'); pr(2, 'HIDDEN'); pr(70, 0); pr(3, '__ __ __ __'); pr(72, 65); pr(73, 2); pr(40, 4.5); pr(49, 3); pr(49, -1.5);
+    pr(0, 'LTYPE'); pr(2, 'PHANTOM'); pr(70, 0); pr(3, '____ _ ____ _'); pr(72, 65); pr(73, 4); pr(40, 12.5); pr(49, 8); pr(49, -1.5); pr(49, 1.5); pr(49, -1.5);
     pr(0, 'ENDTAB');
     pr(0, 'TABLE'); pr(2, 'LAYER'); pr(70, layers.length);
     layers.forEach(function (n) {
@@ -754,15 +1182,17 @@ var Drawing = (function () {
     pr(0, 'ENDSEC');
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) {
-      var lt = p.style === 'hidden' ? function () { pr(6, 'HIDDEN'); } : function () { };
+      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' ? 'PHANTOM' : null, dc = p.color && DXF_COLORS[p.color];
+      var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
       if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
       else if (p.k === 'circle') { pr(0, 'CIRCLE'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
+      else if (p.k === 'arc') { pr(0, 'ARC'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); pr(50, num(((p.a0 % 360) + 360) % 360)); pr(51, num(((p.a1 % 360) + 360) % 360)); }
       else if (p.k === 'fill') {
-        pr(0, 'SOLID'); pr(8, p.layer);
+        pr(0, 'SOLID'); pr(8, p.layer); lt();
         var q = [p.pts[0], p.pts[1], p.pts[2], p.pts[2]];
         q.forEach(function (pt, i) { pr(10 + i, num(pt[0])); pr(20 + i, num(pt[1])); pr(30 + i, 0); });
       } else if (p.k === 'text') {
-        pr(0, 'TEXT'); pr(8, p.layer); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, String(p.text).replace(/\u00d8/g, '%%c'));
+        pr(0, 'TEXT'); pr(8, p.layer); lt(); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, String(p.text).replace(/\u00d8/g, '%%c'));
         if (p.rot) pr(50, num(p.rot));
         if (p.anchor !== 'start') { pr(72, p.anchor === 'middle' ? 1 : 2); pr(11, num(p.p[0])); pr(21, num(p.p[1])); pr(31, 0); }
       }
@@ -777,10 +1207,26 @@ var Drawing = (function () {
     function P(x) { return num(x * ptPer); }
     var c = ['1 J 1 j'];
     var dash = [3 * k * ptPer, 1.5 * k * ptPer];
-    var cur = null;
+    var cur = null, curCol = '0 0 0', chain = [8, 1.5, 1.5, 1.5].map(function (x) { return num(x * k * ptPer); }).join(' ');
     function style(s) {
       if (s === cur) return; cur = s;
-      c.push(num((STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : '[] 0 d'));
+      c.push(num((STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : s === 'chain' ? '[' + chain + '] 0 d' : '[] 0 d'));
+    }
+    function color(p) {
+      var col = p.color && PDF_COLORS[p.color] || '0 0 0';
+      if (col === curCol) return; curCol = col;
+      c.push(col + ' RG ' + col + ' rg');
+    }
+    // a CCW arc as cubic Beziers of at most 90 degrees
+    function arcPath(p) {
+      var a0 = p.a0 * Math.PI / 180, sweep = (((p.a1 - p.a0) % 360) + 360) % 360 * Math.PI / 180 || 2 * Math.PI, n = Math.ceil(sweep / (Math.PI / 2) - 1e-9), da = sweep / n;
+      var kk = 4 / 3 * Math.tan(da / 4), x = p.c[0], y = p.c[1], r = p.r, s = P(x + r * Math.cos(a0)) + ' ' + P(y + r * Math.sin(a0)) + ' m';
+      for (var i = 0; i < n; i++) {
+        var t0 = a0 + i * da, t1 = t0 + da;
+        s += ' ' + P(x + r * (Math.cos(t0) - kk * Math.sin(t0))) + ' ' + P(y + r * (Math.sin(t0) + kk * Math.cos(t0))) + ' ' +
+          P(x + r * (Math.cos(t1) + kk * Math.sin(t1))) + ' ' + P(y + r * (Math.sin(t1) - kk * Math.cos(t1))) + ' ' + P(x + r * Math.cos(t1)) + ' ' + P(y + r * Math.sin(t1)) + ' c';
+      }
+      return s + ' S';
     }
     function pdfText(s) {
       var out = '';
@@ -794,7 +1240,9 @@ var Drawing = (function () {
       return out;
     }
     sheet.prims.forEach(function (p) {
-      if (p.k === 'line') { style(p.style); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
+      color(p);
+      if (p.k === 'arc') { style(p.style); c.push(arcPath(p)); }
+      else if (p.k === 'line') { style(p.style); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
       else if (p.k === 'circle') {
         style(p.style);
         var x = p.c[0], y = p.c[1], r = p.r, m = 0.5522847498 * r;
@@ -835,7 +1283,10 @@ var Drawing = (function () {
     orientation: orientation, meshEdges: meshEdges, projectView: projectView, extentsOf: extentsOf,
     newDrawing: newDrawing, addView: addView, standard3View: standard3View, layout: layout, moveView: moveView, findView: findView,
     sheetSize: sheetSize, scaleText: scaleText, parseScale: parseScale, scaleValue: scaleValue,
-    autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, toDXF: toDXF, toPDF: toPDF
+    autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, toDXF: toDXF, toPDF: toPDF,
+    frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
+    addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
+    sectionOf: sectionOf, hatchLines: hatchLines, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView
   };
 })();
 
@@ -860,6 +1311,8 @@ var Drawing = (function () {
     svgExport: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><text x="8" y="12" font-size="4.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#e0553c">SVG</text>',
     pdfExport: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><text x="8" y="12" font-size="4.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#d9453b">PDF</text>',
     dxfExport: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><text x="8" y="12" font-size="4.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">DXF</text>',
+    sectionView: '<path d="M2 3 h12 v10 H2 z" fill="#bfcfe0" stroke="currentColor" stroke-width="1"/><path d="M3 12 l3 -3 M3 9 l3 -3 M3 6 l2 -2 M5 12 l1 -1" stroke="currentColor" stroke-width="0.6"/><path d="M8 1 v14" stroke="#e0553c" stroke-width="1.3" stroke-dasharray="3 1 1 1"/><path d="M8 1.5 h3 M8 14.5 h3 M10 0.3 l1.4 1.2 -1.4 1.2 M10 13.3 l1.4 1.2 -1.4 1.2" fill="none" stroke="#e0553c" stroke-width="1"/>',
+    detailView: '<path d="M1.5 9 h7 v5 h-7 z" fill="#bfcfe0" stroke="currentColor" stroke-width="0.9"/><circle cx="7" cy="9" r="2.4" fill="none" stroke="#e0553c" stroke-width="1"/><circle cx="11.5" cy="5" r="3.8" fill="#fff" stroke="#2f7fd6" stroke-width="1"/><path d="M8 5 h3.5 v4" fill="none" stroke="currentColor" stroke-width="1"/>',
     closeDoc: '<path d="M2 3 h12 v10 H2 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 5.5 l5 5 M10.5 5.5 l-5 5" stroke="#e0553c" stroke-width="1.4"/>'
   };
   var baseIcons = Icons;
@@ -1041,9 +1494,19 @@ var Drawing = (function () {
       if (h.circle) svgNode('circle', { class: 'dw-hot', cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': pxToPaper(3) }, g);
       else svgNode('line', { class: 'dw-hot', x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': pxToPaper(3) }, g);
     }
-    if (D.tool === 'place' && D.pending && D.pending.at) {
-      var P = D.pending, gw = P.w, gh = P.h;
-      svgNode('rect', { class: 'dw-ghost', x: P.at[0] - gw / 2, y: H - P.at[1] - gh / 2, width: gw, height: gh, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
+    function ghost(cx, cy, gw, gh) { svgNode('rect', { class: 'dw-ghost', x: cx - gw / 2, y: H - cy - gh / 2, width: gw, height: gh, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g); }
+    var P = D.pending;
+    if (D.tool === 'place' && P && P.at) ghost(P.at[0], P.at[1], P.w, P.h);
+    if (D.tool === 'project' && P && P.parent != null && P.at) { var pl = projectPlacement(P.at); if (pl) ghost(pl.x, pl.y, pl.w, pl.h); }
+    if (D.tool === 'section' && P && P.at) {
+      var sl = P.parent != null ? P.line : sectionLineAt(P.at);
+      if (sl) svgNode('line', { class: 'dw-cut', x1: sl.a[0], y1: H - sl.a[1], x2: sl.b[0], y2: H - sl.b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) }, g);
+      if (P.parent != null) { var sp = sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
+    }
+    if (D.tool === 'detail' && P && P.parent != null) {
+      var dw = sheetView(P.parent), rr = P.r != null ? P.r : P.at ? Math.hypot(P.at[0] - P.cp[0], P.at[1] - P.cp[1]) / dw.scale : 0;
+      if (rr > 0) svgNode('circle', { class: 'dw-cut', cx: P.cp[0], cy: H - P.cp[1], r: rr * dw.scale, 'stroke-width': pxToPaper(2) }, g);
+      if (P.r != null && P.at) { var ds = Drawing.scaleValue(P.scale); ghost(P.at[0], P.at[1], 2 * P.r * ds, 2 * P.r * ds); }
     }
   }
   function dimMatches(ref, d) { return ref.view === d.view && (ref.key ? ref.key === d.key : ref.index === d.index && d.index != null); }
@@ -1063,7 +1526,7 @@ var Drawing = (function () {
   function entityAt(p) {
     var tol = pxToPaper(6), best = null, bd = tol;
     D.sheet.views.forEach(function (w) {
-      if (ORTHO_NAMES.indexOf(w.view.orient) < 0) return;   // lengths in a pictorial view are foreshortened
+      if (!w.ortho) return;   // lengths in a pictorial view are foreshortened
       w.proj.lines.visible.forEach(function (l) {
         var a = w.toSheet([l[0], l[1]]), b = w.toSheet([l[2], l[3]]), d = segDist(p, a, b);
         if (d < bd) { bd = d; best = { kind: 'entity', view: w.view.id, a: a, b: b, la: [l[0], l[1]], lb: [l[2], l[3]] }; }
@@ -1089,6 +1552,9 @@ var Drawing = (function () {
     if (e.button === 1 || e.button === 2 && e.shiftKey) { D.drag = { kind: 'pan', x: e.clientX, y: e.clientY, vb: D.vb && JSON.parse(JSON.stringify(D.vb)) }; return; }
     if (e.button !== 0) return;
     if (D.tool === 'place' && D.pending) { placePending(p); return; }
+    if (D.tool === 'project' && D.pending) { projectClick(p); return; }
+    if (D.tool === 'section' && D.pending) { sectionClick(p); return; }
+    if (D.tool === 'detail' && D.pending) { detailClick(p); return; }
     if (D.tool === 'dim') {
       var ent = entityAt(p);
       if (ent) addDimension(ent); else UI.setStatus('Smart Dimension: click a visible edge or circle of an orthographic view.');
@@ -1127,7 +1593,7 @@ var Drawing = (function () {
     }
     if (e.target && D.host.contains(e.target)) {
       var q = toPaper(e), h = null;
-      if (D.tool === 'place' && D.pending) { D.pending.at = q; drawOverlay(); return; }
+      if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
       if (D.tool === 'dim') h = entityAt(q);
       else { var dm = dimAt(q); if (dm) h = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; else { var w = viewAt(q); if (w) h = { kind: 'view', id: w.view.id }; } }
       if (JSON.stringify(h) !== JSON.stringify(D.hover)) { D.hover = h; drawOverlay(); }
@@ -1212,22 +1678,155 @@ var Drawing = (function () {
     UI.setStatus(v.name + ' (' + v.orient + ') placed.');
     return v;
   }
+  // ------------------------------------------------------------------ Projected, Section and Detail View tools
+  function startTool(tool, pending) { D.tool = tool; D.pending = pending; D.hover = null; drawOverlay(); UI.refreshRibbon(); }
+  function endTool(msg) { D.tool = null; D.pending = null; D.hover = null; drawOverlay(); UI.refreshRibbon(); UI.setStatus(msg || 'Ready'); }
+  function sheetView(id) { return D.sheet && D.sheet.views.filter(function (w) { return w.view.id === id; })[0]; }
+  function parentAt(p) { var w = viewAt(p); return w && w.view.kind !== 'detail' ? w : null; }
+  // Projected View: the parent is the selected view or the next one clicked; then the preview follows the pointer to
+  // whichever side of the parent it is on (up / down / left / right), aligned with it, and a click places the view.
+  function cmdProjectedView() {
+    if (D.tool === 'project') { endTool(); return; }
+    var w = D.sel && D.sel.kind === 'view' ? sheetView(D.sel.id) : null;
+    startTool('project', { parent: w && w.view.kind !== 'detail' ? w.view.id : null, at: null });
+    UI.setStatus(D.pending.parent != null ? 'Projected View from ' + w.view.name + ': move the pointer above, below, left or right of it and click to place. Esc cancels.' : 'Projected View: click the view to project from. Esc cancels.');
+  }
+  function projectPlacement(p) {
+    var w = sheetView(D.pending.parent);
+    if (!w) return null;
+    var v = w.view, dx = p[0] - v.x, dy = p[1] - v.y;
+    var dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'up' : 'down'), vert = dir === 'up' || dir === 'down';
+    var F = Drawing.projectedFrame(w.frame, dir, doc().sheet.projection), ext = Drawing.extentsOf(mesh(), F);
+    return { dir: dir, x: vert ? v.x : p[0], y: vert ? p[1] : v.y, w: ext.w * w.scale, h: ext.h * w.scale, name: F.name };
+  }
+  function projectClick(p) {
+    if (D.pending.parent == null) {
+      var w = parentAt(p);
+      if (!w) { UI.setStatus('Projected View: click a model, projected or section view to project from.'); return; }
+      D.pending.parent = w.view.id; D.sel = { kind: 'view', id: w.view.id }; D.pending.at = p;
+      drawOverlay(); renderTree();
+      UI.setStatus('Projected View from ' + w.view.name + ': move the pointer to a side of it and click to place.');
+      return;
+    }
+    var pl = projectPlacement(p), parent = D.pending.parent, v;
+    if (!pl) { endTool(); return; }
+    endTool();
+    edit(function (dc) { v = Drawing.addProjectedView(dc, mesh(), parent, pl.dir, { x: pl.x, y: pl.y }); });
+    D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
+    UI.setStatus(v.name + ' (' + v.orient + ') projected ' + pl.dir + ' from its parent, aligned with it.');
+    return v;
+  }
+  // Section View: PropertyManager (cutting line Horizontal / Vertical, label), then click in a view to put the cutting
+  // line there (it snaps to hole and boss centres within 8 px), then click on the side the section view goes.
+  function cmdSectionView() {
+    if (D.tool === 'section') { endTool(); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
+    openDrawingPM({
+      title: 'Section View', icon: 'sectionView', command: 'sectionView',
+      message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes.',
+      values: { axis: 'h', label: Drawing.nextLabel(doc()) },
+      groups: [
+        { title: 'Cutting Line', fields: [{ type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] },
+        { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }] }
+      ],
+      onOK: function (val) {
+        startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', label: cleanLabel(val.label), parent: null, at: null });
+        UI.setStatus('Section View: click in a view to place the ' + (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line. Esc cancels.');
+      }
+    });
+  }
+  function cleanLabel(t) { t = String(t || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3); return t || Drawing.nextLabel(doc()); }
+  // the cutting line under the pointer: { w, at (model), a, b (paper) }, snapped to circle centres
+  function sectionLineAt(p, w) {
+    w = w || parentAt(p);
+    if (!w) return null;
+    var axis = D.pending.axis, mp = w.fromSheet(p), at = axis === 'h' ? mp[1] : mp[0], snap = pxToPaper(8), best = snap;
+    w.proj.circles.visible.concat(w.proj.circles.hidden).forEach(function (c) {
+      var cs = w.toSheet(c.c), d = axis === 'h' ? Math.abs(cs[1] - p[1]) : Math.abs(cs[0] - p[0]);
+      if (d < best) { best = d; at = axis === 'h' ? c.c[1] : c.c[0]; }
+    });
+    var ext = 5 * paperK(), q = w.toSheet(axis === 'h' ? [0, at] : [at, 0]);
+    return axis === 'h' ? { w: w, at: at, a: [w.box.x0 - ext, q[1]], b: [w.box.x1 + ext, q[1]] } : { w: w, at: at, a: [q[0], w.box.y0 - ext], b: [q[0], w.box.y1 + ext] };
+  }
+  // the pointer's side of the cutting line picks where the view goes; the viewer stands on that side in third angle
+  function sectionPlacement(p) {
+    var P = D.pending, w = sheetView(P.parent);
+    if (!w) return null;
+    var side = P.axis === 'h' ? (p[1] >= P.line.a[1] ? 1 : -1) : (p[0] >= P.line.a[0] ? 1 : -1);
+    var sign = doc().sheet.projection === 'first' ? -side : side;
+    var F = Drawing.sectionFrame(w.frame, P.axis, sign), ext = Drawing.extentsOf(mesh(), F);
+    return { sign: sign, x: P.axis === 'h' ? w.view.x : p[0], y: P.axis === 'h' ? p[1] : w.view.y, w: ext.w * w.scale, h: ext.h * w.scale };
+  }
+  function sectionClick(p) {
+    var P = D.pending;
+    if (P.parent == null) {
+      var sl = sectionLineAt(p);
+      if (!sl) { UI.setStatus('Section View: click inside a model, projected or section view to place the cutting line.'); return; }
+      P.parent = sl.w.view.id; P.at = p; P.cut = sl.at; P.line = sl;
+      drawOverlay();
+      UI.setStatus('Section View ' + P.label + '-' + P.label + ': click on the side of the cutting line where the view goes (the arrows point away from it).');
+      return;
+    }
+    var pl = sectionPlacement(p), spec = { axis: P.axis, at: P.cut, sign: pl.sign, x: pl.x, y: pl.y, label: P.label }, parent = P.parent, v;
+    endTool();
+    edit(function (dc) { v = Drawing.addSectionView(dc, mesh(), parent, spec); });
+    D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
+    UI.setStatus(v.name + ' placed, cut at ' + Drawing.fmtDim(spec.at, units()) + ' ' + units() + '.');
+    return v;
+  }
+  // Detail View: click the centre of the detail circle in a view, click again to set its radius, then click where
+  // the enlarged view goes (twice the parent's scale; change it in the view's properties).
+  function cmdDetailView() {
+    if (D.tool === 'detail') { endTool(); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
+    startTool('detail', { parent: null, at: null });
+    UI.setStatus('Detail View: click the centre of the detail circle in a view. Esc cancels.');
+  }
+  function detailClick(p) {
+    var P = D.pending;
+    if (P.parent == null) {
+      var w = parentAt(p);
+      if (!w) { UI.setStatus('Detail View: click inside a model, projected or section view.'); return; }
+      P.parent = w.view.id; P.c = w.fromSheet(p); P.cp = p;
+      UI.setStatus('Detail View: click to set the radius of the detail circle.');
+      return;
+    }
+    var w2 = sheetView(P.parent);
+    if (P.r == null) {
+      var r = Math.hypot(p[0] - P.cp[0], p[1] - P.cp[1]) / w2.scale;
+      if (!(r > 0)) return;
+      P.r = r; P.scale = Drawing.detailScale(w2.view.scale || doc().sheet.scale || [1, 1]);
+      UI.setStatus('Detail View (' + Drawing.scaleText(P.scale) + '): click where the view goes.');
+      return;
+    }
+    var spec = { c: P.c, r: P.r, scale: P.scale, x: p[0], y: p[1] }, parent = P.parent, v;
+    endTool();
+    edit(function (dc) { v = Drawing.addDetailView(dc, mesh(), parent, spec); });
+    D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
+    UI.setStatus(v.name + ' placed.');
+    return v;
+  }
   function cmdViewProperties(id) {
     var v = Drawing.findView(doc(), id);
     if (!v) return;
     openDrawingPM({
       title: v.name, icon: 'drawingView', command: 'viewProps',
       values: { orient: v.orient, display: v.display, scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet' },
-      groups: [
-        { title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] },
+      // projected, section and detail views take their direction from the parent
+      groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
-        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
-      ],
+        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: v.kind === 'detail' ? scaleOptions().slice(1) : scaleOptions() }] }
+      ]),
       onOK: function (val) {
         edit(function (dc) {
           var w = Drawing.findView(dc, id);
           if (!w) return;
-          if (w.orient !== val.orient) { w.orient = val.orient; w.role = null; w.parent = null; w.align = null; w.dims = []; }
+          if (!w.kind && w.orient !== val.orient) {
+            w.orient = val.orient; w.role = null; w.parent = null; w.align = null; w.dims = [];
+            // projected views keep the frame they were made with: no longer aligned with the turned parent
+            dc.views.forEach(function (c) { if (c.parent === w.id && c.kind === 'projected') { c.parent = null; c.align = null; } });
+          }
+          if (w.kind === 'detail' && val.scale !== 'sheet') w.name = 'Detail View ' + w.label + ' (' + val.scale + ')';
           w.display = val.display; w.scale = val.scale === 'sheet' ? null : Drawing.parseScale(val.scale);
           if (w.role === 'iso') w.role = null;
           dc.layout = 'manual';
@@ -1239,10 +1838,7 @@ var Drawing = (function () {
     edit(function (dc) { var v = Drawing.findView(dc, id); if (v) v.display = display; });
   }
   function deleteView(id) {
-    edit(function (dc) {
-      dc.views = dc.views.filter(function (v) { return v.id !== id; });
-      dc.views.forEach(function (v) { if (v.parent === id) { v.parent = null; v.align = null; } });
-    });
+    edit(function (dc) { Drawing.deleteView(dc, id); });
     D.sel = null; render();
   }
   function deleteSelection() {
@@ -1325,6 +1921,8 @@ var Drawing = (function () {
     return [
       { label: 'Properties\u2026', action: function () { cmdViewProperties(v.id); } },
       { sep: true },
+      { label: 'Projected View', disabled: v.kind === 'detail', action: function () { D.sel = { kind: 'view', id: v.id }; cmdProjectedView(); } },
+      { sep: true },
       { label: 'Display \u25b8 Hidden Lines Visible', checked: v.display === 'hlv', action: function () { setViewDisplay(v.id, 'hlv'); } },
       { label: 'Display \u25b8 Hidden Lines Removed', checked: v.display === 'hlr', action: function () { setViewDisplay(v.id, 'hlr'); } },
       { sep: true },
@@ -1368,7 +1966,8 @@ var Drawing = (function () {
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === v.id;
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
       var st = w ? w.proj.stats : null;
-      t.appendChild(row({ icon: 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view', data: { view: String(v.id) }, sel: sel, badge: v.orient,
+      var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.orient;
+      t.appendChild(row({ icon: v.kind === 'section' ? 'sectionView' : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
         title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
         dbl: function () { cmdViewProperties(v.id); }, menu: function () { return viewMenu(v); } }));
@@ -1380,7 +1979,9 @@ var Drawing = (function () {
   UI.RIBBON.Drawing = [
     { id: 'std3view', label: 'Standard\n3 View', run: cmdStandard3View },
     { id: 'modelView', label: 'Model\nView', run: cmdModelView, active: function () { return D.tool === 'place'; } },
-    { id: 'projView', label: 'Projected\nView' },
+    { id: 'projView', label: 'Projected\nView', run: cmdProjectedView, active: function () { return D.tool === 'project'; } },
+    { id: 'sectionView', label: 'Section\nView', run: cmdSectionView, active: function () { return D.tool === 'section'; } },
+    { id: 'detailView', label: 'Detail\nView', run: cmdDetailView, active: function () { return D.tool === 'detail'; } },
     { sep: true },
     { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
     { id: 'modelItems', label: 'Model\nItems', run: cmdModelItems, active: function () { return !!(doc() && doc().autoDims); } },
@@ -1438,6 +2039,9 @@ var Drawing = (function () {
       { label: 'Insert', items: [
         { label: 'Drawing View \u25b8 Standard 3 View', action: cmdStandard3View },
         { label: 'Drawing View \u25b8 Model\u2026', action: cmdModelView },
+        { label: 'Drawing View \u25b8 Projected', action: cmdProjectedView },
+        { label: 'Drawing View \u25b8 Section\u2026', action: cmdSectionView },
+        { label: 'Drawing View \u25b8 Detail', action: cmdDetailView },
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
         { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems }
       ] },
@@ -1489,11 +2093,22 @@ var Drawing = (function () {
       name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection },
       views: D.sheet.views.map(function (w) {
         var b = w.proj.bounds;
-        return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, display: w.view.display, x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
-          extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length };
+        return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent,
+          display: w.view.display, x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
+          extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
+          hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null };
       }),
-      dims: D.sheet.dims.map(function (d) { return d.text; }), autoDims: !!dc.autoDims
+      dims: D.sheet.dims.map(function (d) { return d.text; }), dangling: D.sheet.dims.filter(function (d) { return d.dangling; }).length, autoDims: !!dc.autoDims
     };
+  }
+  // runs an engine call on a scratch copy first, so a refused view (missing parent, detail of a detail…) leaves no undo step
+  function viewApi(fn) {
+    if (!doc()) return null;
+    try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+    var v;
+    edit(function (dc) { v = fn(dc); });
+    D.sel = { kind: 'view', id: v.id };
+    return summary();
   }
   function current() { if (!doc()) return null; if (!D.active) { if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model); } return D.sheet; }
   if (window.anvil) {
@@ -1504,6 +2119,11 @@ var Drawing = (function () {
       isOpen: function () { return D.active; },
       summary: summary,
       standard3View: function () { cmdStandard3View(); return summary(); },
+      // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
+      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, opts); }); },
+      sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, opts || {}); }); },
+      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0] }, opts || {})); }); },
+      deleteView: function (id) { deleteView(id); return summary(); },
       addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },
@@ -1514,7 +2134,7 @@ var Drawing = (function () {
     };
   }
   UI.makeDrawing = makeDrawing; UI.openDrawing = openDrawing; UI.closeDrawing = closeDrawing; UI.drawingActive = function () { return D.active; };
-  UI.drawing = { state: D, render: render, fit: fitSheet, standard3View: cmdStandard3View, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
+  UI.drawing = { state: D, render: render, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
   // the File menu gets its drawing entry through UI.menuHook; redraw the menu bar now that the hook exists
   if (UI.renderMenuBar && $('menus').children.length) UI.renderMenuBar();
   if (UI.refreshRibbon && $('ribbon-buttons').children.length) UI.refreshRibbon();
