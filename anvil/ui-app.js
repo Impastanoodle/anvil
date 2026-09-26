@@ -223,6 +223,24 @@
     body.innerHTML = '';
     body.appendChild(el('h3', { text: 'Document properties' }));
     body.appendChild(kv);
+    // Image Quality (Tools ▸ Options ▸ Document Properties ▸ Image Quality): the chord tolerance curved faces are
+    // meshed to; saved in the document (model.tessellation), an undo step, rebuilds
+    if (UI.imageQuality) {
+      var iq = UI.imageQuality();
+      body.appendChild(el('h3', { text: 'Image Quality' }));
+      var kv3 = el('div', { class: 'kv' });
+      var qsel = el('select', { 'data-role': 'image-quality' });
+      UI.IMAGE_QUALITY.forEach(function (q) { var o = el('option', { value: q.key, text: q.label }); if (iq.preset === q.key) o.selected = true; qsel.appendChild(o); });
+      if (iq.preset === 'custom') { var oc = el('option', { value: 'custom', text: 'Custom (' + iq.chordTol + ' mm)' }); oc.selected = true; qsel.appendChild(oc); }
+      var tolIn = el('input', { type: 'number', value: iq.chordTol, step: 'any', min: '0.001', 'data-role': 'chord-tol' });
+      function applyQ(v) { UI.setImageQuality(v).then(function () { tpProps(body); }, function (e) { UI.toast(e.message); tpProps(body); }); }
+      qsel.addEventListener('change', function () { if (qsel.value !== 'custom') applyQ(qsel.value); });
+      tolIn.addEventListener('change', function () { applyQ(+tolIn.value); });
+      kv3.appendChild(el('span', { text: 'Shaded resolution' })); kv3.appendChild(qsel);
+      kv3.appendChild(el('span', { text: 'Chord deviation mm' })); kv3.appendChild(tolIn);
+      body.appendChild(kv3);
+      body.appendChild(el('p', { html: '<small>Curved faces are meshed so no chord strays more than this from the true surface' + (iq.segsR10 ? ' (a Ø20 circle: ' + iq.segsR10 + ' facets)' : '') + '. Mass properties use the exact surfaces at every setting.</small>' }));
+    }
     var sm = m.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
     body.appendChild(el('h3', { text: 'Sheet metal defaults' }));
     var kv2 = el('div', { class: 'kv' });
@@ -772,6 +790,12 @@
     load: function (json) { rememberPart(); App.hiddenBodies = {}; return UI.loadModel(typeof json === 'string' ? JSON.parse(json) : json).then(function () { return window.anvil.summary(); }); },
     busy: function () { return !!App.rebuilding; },
     idle: function () { return UI.whenIdle(); },
+    // tessellation() -> { chordTol, preset, segsR10 }; tessellation(preset | chordTol | { chordTol }) sets the document's
+    // Image Quality (undoable, saved in the model) and resolves to the same object once rebuilt
+    tessellation: function (opts) {
+      if (!arguments.length || opts == null) return UI.imageQuality();
+      return UI.setImageQuality(opts).then(function () { return UI.imageQuality(); });
+    },
     workerOn: function (on) { if (arguments.length) UI.setWorkerOn(on); return App.workerOn; },
     script: function () { return modelScript(); },
     stl: function () { return K.exportSTL(App.mesh, App.model.name); },

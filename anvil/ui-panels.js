@@ -679,7 +679,8 @@
         { sep: true },
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
-        { label: 'Options…', action: function () { UI.openTaskPane('props'); } }
+        { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
+        { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } }
       ] },
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } },

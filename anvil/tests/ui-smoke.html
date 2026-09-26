@@ -43,6 +43,10 @@
   function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
   function fmt(n) { return Math.round(n * 1000) / 1000; }
   function polyCircleArea(r) { var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(Math.max(r, 0.01))))); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
+  // true curves (cloud-2026-09-25p): the mesh's n-gon at the current chord tolerance (Kernel.segsForRadius), for results
+  // that still come from the facets (sweeps, mesh intersections, mates resting on flats); volumes are exact otherwise
+  function meshSegs(r) { return W.Kernel.segsForRadius(r); }
+  function meshCircleArea(r) { var n = meshSegs(r); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
   // resolves when no rebuild is queued or in flight (a no-op on a build without UI.whenIdle)
   function idle() { return UI.whenIdle ? UI.whenIdle() : Promise.resolve(); }
 
@@ -192,7 +196,7 @@
     assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [15, 10, c[2]] }) !== false, 'pick rejected');
     setInput(pmNumber(0), 6);
     await pmAccept();
-    near(anvil.summary().volume, 18000 - polyCircleArea(3) * 30, 1e-3, 'volume');
+    near(anvil.summary().volume, 18000 - Math.PI * 9 * 30, 1e-3, 'volume');   // exact: block 18000 minus the Ø6 × 30 cylinder π·3²·30
     assert(names()[names().length - 1] === 'Hole1', names().join());
   });
   step('Chamfer PM: pick an edge object, distance 2', async function () {
@@ -272,8 +276,8 @@
     await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
-    var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(5))));
-    near(s.volume, n / 2 * 25 * Math.sin(2 * Math.PI / n) * 50, 1e-3, 'tube volume');
+    // sweeps are not exact yet: the swept n-gon of the r = 5 circle (n = Kernel.segsForRadius(5)) times the 50 mm path
+    near(s.volume, meshCircleArea(5) * 50, 1e-3, 'tube volume');
     assert(names()[names().length - 1] === 'Sweep1', names().join());
   });
   step('Loft PM lofts the two most recent sketches', async function () {
@@ -1251,7 +1255,8 @@
   // Plate with bolt holes: x ∈ [0,100], y ∈ [0,8], z ∈ [0,60], Ø8 holes at x ∈ {10, 90}, z ∈ {10, 50}; the pin is a
   // Ø8 × 20 cylinder along local +y from its origin.
   var ASM_PIN = 'p.name("Pin"); p.cylinder(4, 20);';
-  var ASM_PLATE_V = 100 * 60 * 8 - 4 * polyCircleArea(4) * 8, ASM_PIN_V = polyCircleArea(4) * 20;
+  // exact volumes (true curves): plate 100·60·8 minus four Ø8 × 8 holes π·4²·8; pin π·4²·20
+  var ASM_PLATE_V = 100 * 60 * 8 - 4 * Math.PI * 16 * 8, ASM_PIN_V = Math.PI * 16 * 20;
   function compRows() { return Array.prototype.slice.call(D.querySelectorAll('#tree .ti.component-row[data-comp]')); }
   function mateRows() { return Array.prototype.slice.call(D.querySelectorAll('#tree .ti.mate-row[data-mate]')); }
   function compRow(name) { return compRows().filter(function (r) { return r.textContent.indexOf(name) >= 0; })[0]; }
@@ -1626,7 +1631,7 @@
     await idle();
     var api = anvil.interference();
     assert(api.count === 2 && api.pairs[0].a === 'Base<1>' && api.pairs[0].b === 'Block<1>' && api.pairs[1].b === 'Pin<2>', JSON.stringify(api));
-    near(api.pairs[0].volume, 2000, 1e-6, 'Base ∩ Block'); near(api.pairs[1].volume, 8 * polyCircleArea(4), 1e-6, 'Base ∩ Pin<2>');
+    near(api.pairs[0].volume, 2000, 1e-6, 'Base ∩ Block'); near(api.pairs[1].volume, 8 * meshCircleArea(4), 1e-6, 'Base ∩ Pin<2>');   // a mesh intersection: the pin's n-gon (n = segsForRadius(4)) × 8 thick
     UI.App.ribbonTab = 'Evaluate'; UI.refreshRibbon();
     var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /Interference/.test(b.textContent); })[0];
     assert(btn, 'Interference Detection ribbon button');
@@ -2084,7 +2089,8 @@
     await pmAccept();
     var ms = anvil.mates();
     assert(ms.length === 2 && ms[0].type === 'parallel' && ms[1].type === 'tangent' && ms.every(function (m) { return m.ok; }), JSON.stringify(ms));
-    near(anvil.components()[2].position[1], 10 + 4 * Math.cos(Math.PI / 16), 1e-6, 'pin axis on the top (16-gon flats)');
+    // the mate rests the faceted pin on a flat of its n-gon (n = segsForRadius(4)): axis at the top 10 + apothem r·cos(π/n)
+    near(anvil.components()[2].position[1], 10 + 4 * Math.cos(Math.PI / meshSegs(4)), 1e-6, 'pin axis on the top (n-gon flats)');
     var mt = mateRows().map(rowText);
     assert(/^Parallel1 \(Block<1>, Base<1>\)/.test(mt[0]) && /^Tangent1 \(Pin<1>, Base<1>\)/.test(mt[1]), JSON.stringify(mt));
     assert(mateRows()[1].innerHTML.indexOf('<circle') >= 0, 'Tangent icon');
@@ -3160,6 +3166,88 @@
     anvil.drawing.close(); await idle();
     await anvil.newPart(); await idle();
     return 'part balloon 1 (1X); stack ' + [sb[0].item].concat(sb[0].stack).join(' | ');
+  });
+  // ---- true curves in the viewport (cloud-2026-09-25p): analytic shading normals, curve edges, Image Quality
+  // Ø20 × 20 cylinder along +y: its side facets carry the surface record { t: 'cyl', o, d: y, r: 10 }
+  function curvedFaces() { return UI.App.mesh.faces.filter(function (f) { return f.polys.some(function (p) { return p.surf; }); }); }
+  function edgeOverlay() { var a = UI.groups.edges.children[0].geometry.getAttribute('position'), out = []; for (var i = 0; i < a.count; i++) out.push([a.getX(i), a.getY(i), a.getZ(i)]); return out; }
+  function segsAt(tol, r) { var saved = K.setTessellation({}); try { K.setTessellation({ chordTol: tol }); return K.segsForRadius(r); } finally { K.setTessellation(saved); } }
+  step('true curves: a cylinder shades with smooth normals (every corner on the side has the radial normal (x, 0, z)/10), the caps stay flat', async function () {
+    await anvil.run('p.cylinder(10, 20);'); await idle();
+    var g = UI.getBodyMesh().geometry, pos = g.getAttribute('position'), nrm = g.getAttribute('normal'), side = 0, cap = 0, differs = 0;
+    UI.App.mesh.faces.forEach(function (f) {
+      var curved = f.polys.some(function (p) { return p.surf && p.surf.s.t === 'cyl'; });
+      for (var v = f.start * 3; v < (f.start + f.count) * 3; v++) {
+        var x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v), n = [nrm.getX(v), nrm.getY(v), nrm.getZ(v)];
+        if (curved) {
+          var r = Math.hypot(x, z);
+          near(n[0] * x / r + n[2] * z / r, 1, 1e-5, 'side normal · radial'); near(n[1], 0, 1e-6, 'side normal y');
+          if (Math.abs(n[0] * f.normal[0] + n[2] * f.normal[2]) < 1 - 1e-4) differs++;
+          side++;
+        } else { near(n[0] * f.normal[0] + n[1] * f.normal[1] + n[2] * f.normal[2], 1, 1e-6, 'cap normal = facet normal'); cap++; }
+      }
+    });
+    assert(side > 0 && cap > 0 && differs > 0, 'side ' + side + ', cap ' + cap + ', corners off the facet normal ' + differs);
+    near(anvil.mass().volume, Math.PI * 100 * 20, 1e-6, 'exact volume π·10²·20');
+    return side + ' side corners radial, ' + cap + ' cap corners flat';
+  });
+  step('true curves: no seam edges on the cylinder side (facet boundaries of one surface are tangent, not drawn or picked); both rims drawn as 128-segment circles', async function () {
+    var n = curvedFaces().length, seams = UI.App.edges.filter(function (e) { return e.seam; });
+    assert(n === K.segsForRadius(10) && seams.length === n, 'side facets ' + n + ', seam edges ' + seams.length);
+    assert(seams.every(function (e) { return e.smooth; }), 'seams are smooth (not pickable)');
+    var pts = edgeOverlay();
+    // every drawn segment lies on a rim circle (y = 0 or 20, radius 10): nothing vertical, no chords
+    pts.forEach(function (p) { near(Math.hypot(p[0], p[2]), 10, 1e-4, 'overlay point radius'); assert(Math.abs(p[1]) < 1e-6 || Math.abs(p[1] - 20) < 1e-6, 'overlay point off the rims: ' + p); });
+    assert(pts.length === 2 * 2 * 128, 'two circles × 128 segments, got ' + pts.length / 2 + ' segments');
+    assert(UI.App.curves.length === 2 && UI.App.curves.every(function (c) { return c.curve.kind === 'circle' && c.edges.length === n; }), 'App.curves: ' + UI.App.curves.map(function (c) { return c.curve.kind + '/' + c.edges.length; }));
+    // hovering a chord lights up the whole circle
+    UI.App.hover = { kind: 'edge', edge: UI.App.curves[0].edges[0] }; UI.updateHighlights();
+    var hl = UI.groups.highlight.children[0].geometry.getAttribute('position').count / 2;
+    UI.App.hover = null; UI.updateHighlights();
+    assert(hl === 128, 'hovered rim segments ' + hl);
+    return n + ' facets, ' + seams.length + ' hidden seams, rims 2 × 128 segments';
+  });
+  step('Image Quality: Tools ▸ Options (document properties) → Finer rebuilds with more facets through the worker, writes model.tessellation, Coarse from the pane; the volume stays exact; undo steps back', async function () {
+    assert(typeof anvil.tessellation === 'function', 'anvil.tessellation');
+    var q0 = anvil.tessellation();
+    assert(q0.chordTol === 0.05 && q0.preset === 'default', JSON.stringify(q0));
+    assert(UI.App.workerOn === true, 'the worker is on: the rebuild below goes through it with the model clone');
+    // spy on what the rebuild worker is sent: the model clone must carry the document's tessellation
+    var sent = [], OW = W.Worker.prototype.postMessage;
+    W.Worker.prototype.postMessage = function (m) { if (m && m.type === 'rebuild') sent.push(m.model && m.model.tessellation); return OW.apply(this, arguments); };
+    var q1;
+    try { q1 = await anvil.tessellation('finer'); await idle(); } finally { W.Worker.prototype.postMessage = OW; }
+    assert(sent.length >= 1 && sent[sent.length - 1] && sent[sent.length - 1].chordTol === 0.01, 'worker got the model tessellation: ' + JSON.stringify(sent));
+    assert(q1.chordTol === 0.01 && q1.preset === 'finer' && UI.App.model.tessellation.chordTol === 0.01, JSON.stringify(q1));
+    near(curvedFaces().length, segsAt(0.01, 10), 0, 'side facets at 0.01 mm');
+    assert(segsAt(0.01, 10) > K.segsForRadius(10), 'finer has more facets than the default');
+    assert(K.setTessellation({}).chordTol === 0.05, 'the global (main-thread) setting is untouched: the document carries its own');
+    near(anvil.mass().volume, Math.PI * 100 * 20, 1e-6, 'exact volume at 0.01 mm');
+    assert(edgeOverlay().length === 2 * 2 * 128, 'rims still 128 segments');
+    UI.openTaskPane('props');
+    var sel = D.querySelector('#tp-panel [data-role="image-quality"]');
+    assert(sel && sel.value === 'finer', 'Image Quality select in the document properties: ' + (sel && sel.value));
+    setInput(sel, 'coarse'); await idle();
+    near(UI.App.model.tessellation.chordTol, 0.1, 0, 'chordTol from the pane');
+    near(curvedFaces().length, segsAt(0.1, 10), 0, 'side facets at 0.1 mm');
+    UI.undo(); await idle();
+    near(UI.App.model.tessellation.chordTol, 0.01, 0, 'undo → finer');
+    near(curvedFaces().length, segsAt(0.01, 10), 0, 'side facets after undo');
+    UI.undo(); await idle();
+    assert(anvil.tessellation().chordTol === 0.05 && curvedFaces().length === K.segsForRadius(10), 'undo → default: ' + JSON.stringify(anvil.tessellation()));
+    UI.closeTaskPane && UI.closeTaskPane();
+    return 'facets ' + K.segsForRadius(10) + ' → ' + segsAt(0.01, 10) + ' (finer) → ' + segsAt(0.1, 10) + ' (coarse) → undo, undo';
+  });
+  step('Image Quality survives save / load (model JSON) and rebuilds the loaded document with it', async function () {
+    await anvil.tessellation(0.02); await idle();
+    var json = JSON.stringify(anvil.model());
+    assert(JSON.parse(json).tessellation.chordTol === 0.02, 'saved JSON carries tessellation');
+    await anvil.run('p.box(5, 5, 5);'); await idle();
+    await anvil.load(json); await idle();
+    assert(anvil.tessellation().chordTol === 0.02 && anvil.tessellation().preset === 'fine', JSON.stringify(anvil.tessellation()));
+    near(curvedFaces().length, segsAt(0.02, 10), 0, 'side facets at 0.02 mm after load');
+    near(anvil.mass().volume, Math.PI * 100 * 20, 1e-6, 'exact volume');
+    return 'fine (0.02 mm): ' + segsAt(0.02, 10) + ' facets after the round trip';
   });
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
