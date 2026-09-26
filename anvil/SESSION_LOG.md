@@ -889,3 +889,13 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Fixed.** `tests/bench.html` loaded only csg.js and kernel.js, so "Constrained L profile" errored (`.rel is not a function`) since the sketch solver landed; it now loads holewizard.js, sketch-solver.js, exchange.js and materials.js like the worker. Each extension alone and all together bench the same (~445-455 ms); two isolated ~1180 ms runs were a busy machine and did not repeat.
 
 **Finding.** Bench sum of medians is ~445-460 ms against the ~422 ms pre-true-curves baseline (~1.07x), so the QUEUE performance item's ~775 ms no longer reproduces here; QUEUE note updated.
+
+## Run local-2026-09-26e — ui-smoke `?watch` layout for screen recordings
+
+**Context.** The user wants to record the UI test sequence to show how fast Anvil works (a captioned demo page was tried and dropped: it should look like the real test run).
+
+**Done.** `tests/ui-smoke.html?watch`: the results list scrolls down the right of the window (latest row kept in view, detail column hidden) and the app frame keeps the 843 × 560 layout size of a normal run, scaled with a CSS transform to fill the rest of the window. Without `?watch` the page is unchanged.
+
+**Finding.** Three steps depend on the app frame's exact size (balloons placement, box-selection window, sketch centerline / Instant3D drags failed at 899 × 560 or 578 wide); a scaled frame keeps them green. Making those steps size-independent is a possible follow-up.
+
+**Verified (port 8812).** ui-smoke?watch 149/149 (about 18 s end to end), no horizontal scroll.

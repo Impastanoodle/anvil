@@ -14,6 +14,15 @@
   td.detail { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; } tr.bad td.detail { color: var(--bad); }
   td.ms { width: 60px; text-align: right; font: 12px var(--mono); color: var(--dim); }
   iframe { width: 100%; height: 560px; border: 1px solid var(--line); background: #fff; }
+  /* ?watch (screen recordings): the results list scrolls down the right of the window and the app frame keeps the
+     843 × 560 layout size of a normal run (several drag / placement steps depend on it), scaled up to fill the rest */
+  body.watch { padding: 0; overflow: hidden; font-size: 13px; }
+  body.watch .sub { display: none; }
+  body.watch iframe { position: fixed; left: 0; top: 0; width: 843px; height: 560px; border: 0; transform-origin: 0 0; }
+  body.watch #side { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 34vw); overflow: auto; padding: 12px 14px; box-sizing: border-box;
+    border-left: 1px solid var(--line); }
+  body.watch td.detail, body.watch th:nth-child(3) { display: none; }
+  body.watch table { table-layout: fixed; } body.watch th:first-child { width: 46px; } body.watch th:last-child { width: 56px; }
 </style>
 
 <h1>Anvil UI smoke test</h1>
@@ -36,6 +45,20 @@
     tr.innerHTML = '<td class="st"></td><td></td><td class="detail"></td><td class="ms"></td>';
     tr.children[0].textContent = ok ? 'PASS' : 'FAIL'; tr.children[1].textContent = name; tr.children[2].textContent = detail || ''; tr.children[3].textContent = ms.toFixed(1);
     rows.appendChild(tr);
+    if (WATCH) side.scrollTop = side.scrollHeight;
+  }
+  var WATCH = /[?&]watch\b/.test(location.search), side = null;
+  if (WATCH) {
+    document.body.classList.add('watch');
+    side = document.createElement('div'); side.id = 'side';
+    ['h1', '#summary', 'table'].forEach(function (q) { side.appendChild(document.querySelector(q)); });
+    document.body.appendChild(side);
+    var fitFrame = function () {
+      var f = document.getElementById('app'), room = window.innerWidth - side.offsetWidth;
+      var k = Math.min(room / 843, window.innerHeight / 560);
+      f.style.transform = 'translate(' + Math.max(0, (room - 843 * k) / 2) + 'px,' + Math.max(0, (window.innerHeight - 560 * k) / 2) + 'px) scale(' + k + ')';
+    };
+    fitFrame(); window.addEventListener('resize', fitFrame);
   }
   function fail(msg) { throw new Error(msg); }
   function assert(c, msg) { if (!c) fail(msg || 'assertion failed'); }
