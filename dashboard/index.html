@@ -139,6 +139,10 @@
   .bar { grid-column: 1 / -1; height: 6px; background: var(--idle-bg); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
   .bar i.full { background: var(--good); }
+  header .links { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .pill.cloud { color: var(--accent); background: var(--live-bg); }
+  .cloud-links { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); align-items: baseline; }
+  .tile .bar { display: block; margin-top: 4px; }
   .empty { color: var(--muted); padding: 14px 16px; background: var(--surface); border: 1px dashed var(--line); border-radius: 6px; }
   .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--ground); padding: 8px 14px; border-radius: 4px; font-size: 13px; box-shadow: var(--shadow); }
   @media (prefers-reduced-motion: no-preference) { .toast { animation: rise .2s ease-out; } @keyframes rise { from { opacity: 0; transform: translate(-50%, 6px); } } }
@@ -148,9 +152,9 @@
   <header>
     <div>
       <h1>Anvil Foreman</h1>
-      <div class="sub">Shift board for the <b>daily-code-limit</b> routine. One head per run, one subagent per lane, every step reported here.</div>
+      <div class="sub">Shift board for Anvil. Up to four <b>cloud sessions</b> build in parallel, each on its own branch; the foreman reviews every pull request, merges it only on green tests, and reports here.</div>
     </div>
-    <div class="sub"><a href="https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS" target="_blank" rel="noopener">Open Anvil</a></div>
+    <div class="sub links"><a href="https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS" target="_blank" rel="noopener">Open Anvil</a><a href="https://github.com/Impastanoodle/anvil/pulls" target="_blank" rel="noopener">Pull requests</a><a href="https://claude.ai/code" target="_blank" rel="noopener">Cloud sessions</a></div>
   </header>
 
   <div class="tiles">
@@ -158,7 +162,8 @@
     <div class="tile"><span class="k">Last finished run</span><span class="v" id="t-last">—</span><span class="d" id="t-last-d">no runs recorded yet</span></div>
     <div class="tile"><span class="k">Kernel tests</span><span class="v mono" id="t-tests">—</span><span class="d" id="t-tests-d">from the last finished run</span></div>
     <div class="tile"><span class="k">Roadmap</span><span class="v mono" id="t-road">—</span><span class="d" id="t-road-d">items ticked</span></div>
-    <div class="tile"><span class="k">Open requests</span><span class="v mono" id="t-open">—</span><span class="d">waiting for the next head</span></div>
+    <div class="tile"><span class="k">Cloud credit</span><span class="v mono" id="t-credit">—</span><span class="d" id="t-credit-d">promo balance for cloud sessions</span><span class="bar" id="t-credit-bar" hidden><i></i></span></div>
+    <div class="tile"><span class="k">Open requests</span><span class="v mono" id="t-open">—</span><span class="d">picked up at the next foreman check</span></div>
   </div>
 
   <section id="now-section" hidden>
@@ -175,7 +180,7 @@
     <section>
       <h2>Tell the next run</h2>
       <div class="card">
-        <label for="req-text" class="hint">Anything you want done, changed or checked. The head agent reads this at the start of every run and answers here.</label>
+        <label for="req-text" class="hint">Anything you want done, changed or checked. The foreman reads this list at every check (about every 20 minutes), turns open requests into cloud sessions, and answers here.</label>
         <textarea id="req-text" placeholder="e.g. Add a dark theme. Or: the fillet on the mug handle looks wrong, check it."></textarea>
         <div class="row">
           <button id="req-send" type="button">Add request</button>
@@ -221,6 +226,15 @@
     var t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
     setTimeout(function () { t.remove(); }, 2200);
   }
+  function cloudLinks(r) {
+    if (r.kind !== "cloud") return "";
+    var bits = [];
+    if (r.branch) bits.push('<span class="mono">' + esc(r.branch) + "</span>");
+    if (r.model) bits.push("<span>" + esc(r.model) + "</span>");
+    if (r.pr) bits.push('<a href="https://github.com/Impastanoodle/anvil/pull/' + encodeURIComponent(r.pr) + '" target="_blank" rel="noopener">PR #' + esc(r.pr) + "</a>");
+    if (r.session) bits.push('<a href="https://claude.ai/code/' + encodeURIComponent(r.session) + '" target="_blank" rel="noopener">Open session</a>');
+    return bits.length ? '<div class="cloud-links">' + bits.join("") + "</div>" : "";
+  }
   function isLive(r) { return r && r.status && r.status !== "done" && (Date.now() - new Date(r.heartbeat || r.startedAt).getTime()) < 90 * 60000; }
 
   // ----- lanes: merge the lanes subcollection with the run's own lanes array
@@ -256,9 +270,10 @@
       var lanes = lanesFor(r.id, r).slice().sort(laneOrder);
       var running = lanes.filter(function (l) { return (l.status || "").toLowerCase() === "running"; }).length;
       return '<div class="now">' +
-        '<div class="head"><h3>' + esc(r.id) + (r.id.indexOf("helper") >= 0 ? " (helper run)" : "") + '</h3><span class="phase">head is <b>' + esc(r.phase || "starting") + "</b> · " + elapsed(r.startedAt) + " in · heartbeat " + ago(r.heartbeat || r.startedAt) + "</span></div>" +
+        '<div class="head"><h3>' + esc(r.id) + (r.id.indexOf("helper") >= 0 ? " (helper run)" : "") + '</h3><span class="phase">' + (r.kind === "cloud" ? "session is <b>" : "head is <b>") + esc(r.phase || "starting") + "</b> · " + elapsed(r.startedAt) + " in · heartbeat " + ago(r.heartbeat || r.startedAt) + "</span></div>" +
         (r.head ? '<p class="summary" style="margin:0">' + esc(r.head) + "</p>" : "") +
-        (lanes.length ? '<div class="agents">' + lanes.map(function (l) { return agentCard(l, true); }).join("") + "</div>" : '<p class="hint">No subagents yet. The head is reading the queue and planning lanes.</p>') +
+        (lanes.length ? '<div class="agents">' + lanes.map(function (l) { return agentCard(l, true); }).join("") + "</div>" : (r.kind === "cloud" ? "" : '<p class="hint">No subagents yet. The head is reading the queue and planning lanes.</p>')) +
+        cloudLinks(r) +
         "</div>";
     }).join("");
     var first = live[0]; var ln = lanesFor(first.id, first);
@@ -289,9 +304,11 @@
       var interrupted = r.status && r.status !== "done" ? pill("failed", "interrupted") : "";
       return '<article class="run">' +
         '<div class="head"><span class="when">' + fmtWhen(r.startedAt) + ' <span class="mono" style="font-size:12px;color:var(--muted)">' + esc(r.id) + "</span></span><span class=\"meta\">" + interrupted + testsHtml +
+        (r.kind === "cloud" ? pill("cloud", "cloud") : "") +
         (r.commit ? '<span class="mono">' + esc(r.commit).slice(0, 7) + "</span>" : "") +
         (r.durationMin ? "<span>" + esc(r.durationMin) + " min</span>" : "") + "</span></div>" +
         (r.head ? '<p class="summary">' + esc(r.head) + "</p>" : "") +
+        cloudLinks(r) +
         (laneHtml ? '<ul class="lanes">' + laneHtml + "</ul>" : "") +
         (next ? '<ul class="next">' + next + "</ul>" : "") +
         "</article>";
@@ -306,7 +323,10 @@
     }
   }
 
-  function renderAll() { renderNow(); renderRuns(); }
+  function renderAll() {
+    try { renderNow(); } catch (e) { $("now").innerHTML = '<div class="empty">Could not show the live runs: ' + esc(e && e.message) + "</div>"; }
+    try { renderRuns(); } catch (e) { $("runs").innerHTML = '<div class="empty">Could not show the run briefs: ' + esc(e && e.message) + "</div>"; }
+  }
 
   function syncLaneSubs() {
     var want = {};
@@ -315,21 +335,24 @@
     Object.keys(want).forEach(function (id) {
       if (laneSubs[id]) return;
       laneSubs[id] = db.collection("runs/" + id + "/lanes").onSnapshot(function (snap) {
-        laneDocs[id] = snap.docs.map(function (d) { var x = d.data() || {}; if (!x.lane) x.lane = d.id; return x; });
+        laneDocs[id] = snap.docs.map(function (d) { var x = Object.assign({}, d.data() || {}); if (!x.lane) x.lane = d.id; return x; });
         renderAll();
       }, function () {});
     });
   }
 
   function onRuns(snap) {
-    runs = snap.docs.map(function (d) { var r = d.data() || {}; r.id = d.id; return r; });
-    syncLaneSubs();
+    try {
+      runs = snap.docs.map(function (d) { var r = Object.assign({}, d.data() || {}); r.id = d.id; return r; });
+      syncLaneSubs();
+    } catch (e) { $("runs").innerHTML = '<div class="empty">Could not read the run briefs: ' + esc(e && e.message) + "</div>"; return; }
     renderAll();
   }
 
   function renderRoadmap(snap) {
     var box = $("roadmap");
     var s = snap.exists ? (snap.data() || {}) : null;
+    renderCredit(s && s.credit);
     if (!s || !s.roadmap || !s.roadmap.length) { box.innerHTML = '<p class="hint">Waiting for the head to report roadmap progress.</p>'; return; }
     var done = 0, total = 0;
     box.innerHTML = s.roadmap.map(function (p) {
@@ -339,6 +362,15 @@
     }).join("") + (s.updatedAt ? '<p class="hint">Updated ' + ago(s.updatedAt) + "</p>" : "");
     $("t-road").textContent = done + " / " + total;
     $("t-road-d").textContent = total ? Math.round(100 * done / total) + "% of roadmap items ticked" : "items ticked";
+  }
+
+  function renderCredit(c) {
+    if (!c || c.left == null || !c.total) return;
+    var pct = Math.max(0, Math.min(100, Math.round(100 * c.left / c.total)));
+    $("t-credit").textContent = "$" + c.left + " / $" + c.total;
+    $("t-credit").style.color = c.left < 20 ? "var(--warn)" : "";
+    $("t-credit-d").textContent = (c.expires ? "expires " + fmtWhen(c.expires) : "promo balance") + (c.checkedAt ? " · checked " + ago(c.checkedAt) : "");
+    var bar = $("t-credit-bar"); bar.hidden = false; bar.firstChild.style.width = pct + "%";
   }
 
   function renderRequests(snap) {
@@ -355,7 +387,7 @@
   function attachDb(ref) {
     db = ref;
     $("runs-empty").textContent = "Loading run briefs…";
-    db.collection("runs").orderBy("startedAt", "desc").limit(12).onSnapshot(onRuns, function (e) { $("runs").innerHTML = '<div class="empty">Could not load run briefs (' + esc(e.code) + ").</div>"; });
+    db.collection("runs").orderBy("startedAt", "desc").limit(40).onSnapshot(onRuns, function (e) { $("runs").innerHTML = '<div class="empty">Could not load run briefs (' + esc(e.code) + ").</div>"; });
     db.doc("status/board").onSnapshot(renderRoadmap, function () {});
     db.collection("requests").orderBy("createdAt", "desc").limit(40).onSnapshot(renderRequests, function () {});
     tick = setInterval(function () { if (runs.some(isLive)) renderNow(); }, 30000);
