@@ -412,6 +412,7 @@
     if (!sketch) { UI.toast('Select a sketch in the tree (or open one) first.'); return; }
     exportDialog('Export sketch as DXF', safeName() + '_' + sketch.name + '.dxf', K.exportDXFSketch(sketch, App.model.units), 'application/dxf');
   }
+  function exportJSON() { exportDialog('Model JSON', safeName() + '.anvil.json', JSON.stringify(App.model, null, 1), 'application/json'); }
   function exportScript() { exportDialog(isAsm() ? 'Assembly as script' : 'Model as script', safeName() + '.anvil.js', modelScript(), 'text/javascript'); }
   function screenshot() {
     UI.render();
@@ -427,17 +428,119 @@
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
+  // File ▸ Open: an Anvil document (.anvil.json / .json), a script (.anvil.js / .js) or a neutral CAD file (STEP, STL,
+  // OBJ, 3MF — exchange.js), picked from disk or pasted. A neutral file opens as a new part whose one feature is
+  // Imported1; Insert ▸ Features ▸ Imported… adds one to the open part instead.
+  var OPEN_TYPES = [
+    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.stl;*.obj;*.3mf)', '.json,.js,.step,.stp,.stl,.obj,.3mf'],
+    ['anvil', 'Anvil documents and scripts (*.anvil.json;*.anvil.js)', '.json,.js'],
+    ['step', 'STEP AP203/AP214 (*.step;*.stp)', '.step,.stp'],
+    ['stl', 'STL (*.stl)', '.stl'],
+    ['obj', 'OBJ (*.obj)', '.obj'],
+    ['3mf', '3D Manufacturing Format (*.3mf)', '.3mf']
+  ];
+  function hasExchange() { return typeof Exchange !== 'undefined'; }
+  function neutralFile(name) { return /\.(step|stp|p21|stl|obj|3mf)$/i.test(String(name || '')); }
+  function readFile(file) {
+    if (file.arrayBuffer) return file.arrayBuffer();
+    return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = function () { rej(r.error); }; r.readAsArrayBuffer(file); });
+  }
+  function bytesText(data) { return typeof data === 'string' ? data : Exchange.fromUtf8(new Uint8Array(data)); }
+  // openFileData(name, data, opts?) -> Promise of the summary. data: text, ArrayBuffer or Uint8Array.
+  function openFileData(name, data, opts) {
+    opts = opts || {};
+    if (neutralFile(name) || opts.format) return opts.into === 'current' ? importIntoCurrent(name, data, opts) : importIntoNew(name, data, opts);
+    var txt = typeof data === 'string' ? data : new TextDecoder('utf-8').decode(new Uint8Array(data));
+    txt = txt.trim();
+    if (txt.charAt(0) === '{') {
+      var jm = JSON.parse(txt);
+      rememberPart(); App.hiddenBodies = {};
+      return UI.loadModel(jm).then(function () { return window.anvil.summary(); });
+    }
+    return runScript(txt, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); });
+  }
+  function importStatus(res, what) {
+    var st = res.stats || {};
+    UI.setStatus(what + ' ' + (res.file || res.name) + ': ' + st.solids + ' solid' + (st.solids === 1 ? '' : 's') + ', ' + st.triangles + ' triangles' + (res.warnings && res.warnings.length ? '. ' + res.warnings.join(' ') : '.'));
+    if (res.warnings && res.warnings.length) UI.toast(res.warnings[0]);
+  }
+  function importIntoNew(name, data, opts) {
+    if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
+    var res;
+    try { res = Exchange.importFile(name, data, { units: (opts && opts.units) || 'auto', sourceUnits: opts && opts.sourceUnits, format: opts && opts.format }); } catch (e) { return Promise.reject(e); }
+    rememberPart(); App.hiddenBodies = {};
+    return UI.loadModel(Exchange.newPartFromImport(res, { merge: opts && opts.merge })).then(function () { importStatus(res, 'Opened'); return window.anvil.summary(); });
+  }
+  function importIntoCurrent(name, data, opts) {
+    if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
+    if (isAsm()) return Promise.reject(new Error('Open a part first: imported bodies go into a part (File ▸ Open makes a new one).'));
+    if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch(true);
+    var res;
+    try { res = Exchange.importFile(name, data, { units: App.model.units === 'in' ? 'in' : 'mm', sourceUnits: opts && opts.sourceUnits, format: opts && opts.format }); } catch (e) { return Promise.reject(e); }
+    UI.pushUndo();
+    var f = Exchange.importFeature(App.model, res, { merge: opts && opts.merge });
+    f.id = App.model.nextId++;
+    App.model.features.push(f);
+    return UI.afterRebuild(UI.rebuild(), function () {
+      App.sel = { kind: 'feature', id: f.id };
+      UI.updateHighlights(); UI.refreshTree();
+      importStatus(res, f.name + ' from');
+      return window.anvil.summary();
+    });
+  }
+  // pick a file from disk: resolves to { name, data } (ArrayBuffer), or never when the picker is cancelled
+  function pickFile(accept, onFile) {
+    var inp = el('input', { type: 'file', accept: accept, style: 'display:none' });
+    inp.addEventListener('change', function () {
+      var file = inp.files && inp.files[0];
+      inp.remove();
+      if (!file) return;
+      readFile(file).then(function (buf) { onFile(file.name, buf); }, function (e) { UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
+    });
+    document.body.appendChild(inp);
+    inp.click();
+  }
   function fileOpen() {
-    var ta = el('textarea', { placeholder: 'Paste a model JSON (File → Save As) or an Anvil script here…' });
-    UI.showModal({ title: 'Open', body: el('div', {}, [el('p', { text: 'Paste model JSON or a script. Scripts are detected by the leading "p." calls.' }), ta]), buttons: [
+    var chosen = null;
+    var type = el('select', { 'aria-label': 'Files of type' });
+    OPEN_TYPES.forEach(function (t) { type.appendChild(el('option', { value: t[0], text: t[1] })); });
+    var fileInp = el('input', { type: 'file', accept: OPEN_TYPES[0][2], 'aria-label': 'File to open' });
+    type.addEventListener('change', function () { OPEN_TYPES.forEach(function (t) { if (t[0] === type.value) fileInp.accept = t[2]; }); });
+    fileInp.addEventListener('change', function () {
+      var file = fileInp.files && fileInp.files[0];
+      if (!file) { chosen = null; return; }
+      readFile(file).then(function (buf) { chosen = { name: file.name, data: buf }; }, function (e) { UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
+    });
+    var ta = el('textarea', { placeholder: '…or paste a model JSON (File → Save As), an Anvil script, or the text of a STEP / ASCII STL / OBJ file here…' });
+    var body = el('div', { class: 'open-dialog' }, [
+      el('p', { text: 'Anvil documents and scripts open as they were saved. STEP (planar and faceted B-reps), STL, OBJ and 3MF files open as a new part with an Imported1 feature you can sketch on, cut and boss against.' }),
+      el('label', { class: 'dlg-row' }, [el('span', { text: 'Files of type' }), type]),
+      el('label', { class: 'dlg-row' }, [el('span', { text: 'File' }), fileInp]),
+      ta
+    ]);
+    UI.showModal({ title: 'Open', body: body, buttons: [
       { label: 'Open', primary: true, action: function () {
-        var txt = ta.value.trim();
-        if (!txt) return;
-        if (txt.charAt(0) === '{') { try { var jm = JSON.parse(txt); rememberPart(); App.hiddenBodies = {}; UI.loadModel(jm); UI.closeModal(); } catch (e) { UI.toast('Invalid JSON: ' + e.message); } }
-        else runScript(txt, true).then(function (r) { if (r.error) UI.toast(r.error); else UI.closeModal(); });
+        var p;
+        if (chosen) p = openFileData(chosen.name, chosen.data);
+        else {
+          var txt = ta.value.trim();
+          if (!txt) { UI.toast('Choose a file or paste its text first.'); return; }
+          // pasted text: JSON, a STEP / ASCII STL / OBJ file, or else an Anvil script
+          var fmt = txt.charAt(0) === '{' || !hasExchange() ? null : Exchange.formatOf('', txt);
+          if (fmt === 'obj' && /(^|[^\w.$])(p|a)\s*\.\s*\w+\s*\(/.test(txt)) fmt = null;
+          p = fmt ? openFileData('Pasted.' + fmt, txt, { format: fmt }) : openFileData('Pasted.anvil.js', txt);
+        }
+        p.then(function () { UI.closeModal(); }, function (e) { UI.toast((e && e.message) || String(e)); });
       } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
+  }
+  // Insert ▸ Features ▸ Imported…: a STEP / STL / OBJ / 3MF file becomes an Imported feature at the end of the part
+  function cmdInsertImported() {
+    if (isAsm()) { UI.toast('Imported bodies go into a part. Open a part, or use File ▸ Open for a new one.'); return; }
+    pickFile('.step,.stp,.stl,.obj,.3mf', function (name, data) {
+      importIntoCurrent(name, data).catch(function (e) { UI.toast((e && e.message) || String(e)); });
+    });
   }
   function fileSave() {
     UI.promptDialog('Save', 'Save as (kept in this browser):', App.model.name, function (name) {
@@ -449,7 +552,60 @@
       if (tpCurrent === 'files') openTaskPane('files');
     });
   }
-  function fileSaveAs() { exportDialog('Model JSON', safeName() + '.anvil.json', JSON.stringify(App.model, null, 1), 'application/json'); }
+  // File ▸ Save As: the document (JSON), its script, or a neutral format through exchange.js (STEP AP214, 3MF, OBJ with
+  // its .mtl, STL). exportData(type, base) -> { name, data, mime, extra? } is also what anvil.saveAs downloads.
+  function saveTypes() {
+    var doc = isAsm() ? 'Assembly' : 'Part';
+    var t = [['json', doc + ' (*.anvil.json)'], ['script', 'Anvil script (*.anvil.js)']];
+    if (hasExchange()) t.push(['step', 'STEP AP214 (*.step)'], ['3mf', '3D Manufacturing Format (*.3mf)'], ['obj', 'OBJ (*.obj) + materials (*.mtl)']);
+    t.push(['stl', 'STL (*.stl)']);
+    return t;
+  }
+  function exportData(type, base) {
+    base = base || safeName();
+    var m = App.model, b = App.build;
+    switch (type) {
+      case 'json': return { name: base + '.anvil.json', data: JSON.stringify(m, null, 1), mime: 'application/json' };
+      case 'script': return { name: base + '.anvil.js', data: modelScript(), mime: 'text/javascript' };
+      case 'step': return { name: base + '.step', data: Exchange.exportSTEP(m, b, { fileName: base + '.step' }), mime: 'model/step' };
+      case '3mf': return { name: base + '.3mf', data: Exchange.export3MF(m, b), mime: 'model/3mf' };
+      case 'obj': {
+        var mtl = Exchange.exportMTL(m, b), hasMtl = /newmtl/.test(mtl);
+        return { name: base + '.obj', data: Exchange.exportOBJ(m, b, { mtlName: base + '.mtl', mtl: hasMtl }), mime: 'model/obj', extra: hasMtl ? { name: base + '.mtl', data: mtl, mime: 'model/mtl' } : null };
+      }
+      case 'stl': return { name: base + '.stl', data: K.exportSTL(App.mesh, m.name), mime: 'model/stl' };
+    }
+    throw new Error('Unknown file type "' + type + '"');
+  }
+  function fileSaveAs(preset) {
+    var name = el('input', { type: 'text', value: safeName(), 'aria-label': 'File name', spellcheck: 'false' });
+    var type = el('select', { 'aria-label': 'Save as type' });
+    saveTypes().forEach(function (t) { var o = el('option', { value: t[0], text: t[1] }); if (t[0] === preset) o.selected = true; type.appendChild(o); });
+    var note = el('p', { class: 'dlg-note' });
+    function describe() {
+      var v = type.value;
+      note.textContent = v === 'step' ? 'Planar-faced B-rep (ADVANCED_FACE on planes): one solid per body' + (isAsm() ? ', components as assembly occurrences with their placements.' : '.') :
+        v === '3mf' ? 'Mesh package in ' + (App.model.units === 'in' ? 'inches' : 'millimetres') + ': one object per body' + (isAsm() ? ', one build item per component.' : '.') :
+        v === 'obj' ? 'Mesh with normals, one group per body' + (isAsm() ? ' per component' : '') + '; colours go into the .mtl downloaded with it.' :
+        v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' : 'The Anvil document, re-opened with File ▸ Open.';
+    }
+    type.addEventListener('change', describe); describe();
+    var body = el('div', { class: 'saveas-dialog' }, [
+      el('label', { class: 'dlg-row' }, [el('span', { text: 'File name' }), name]),
+      el('label', { class: 'dlg-row' }, [el('span', { text: 'Save as type' }), type]), note]);
+    UI.showModal({ title: 'Save As', body: body, buttons: [
+      { label: 'Save', primary: true, action: function () {
+        if (!App.mesh || (!App.mesh.triCount && type.value !== 'json' && type.value !== 'script')) { UI.toast('Nothing to export yet.'); return; }
+        var out;
+        try { out = exportData(type.value, (name.value || '').trim().replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl)$/i, '').replace(/[^\w\-]+/g, '_') || safeName()); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
+        download(out.name, out.data, out.mime);
+        if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime);
+        UI.closeModal();
+        UI.setStatus('Saved ' + out.name + (out.extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).');
+      } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+  }
 
   // ------------------------------------------------------------------ mass properties
   // Assembly: totals from Assembly.massProps (each component with its part's own density), then one line per component.
@@ -600,6 +756,19 @@
     workerOn: function (on) { if (arguments.length) UI.setWorkerOn(on); return App.workerOn; },
     script: function () { return modelScript(); },
     stl: function () { return K.exportSTL(App.mesh, App.model.name); },
+    // neutral formats (exchange.js): STEP AP214 text, 3MF bytes (Uint8Array), OBJ text (+ exportMtl), from the open
+    // document (part or assembly) as last built
+    exportStep: function (opts) { return Exchange.exportSTEP(App.model, App.build, opts); },
+    export3mf: function (opts) { return Exchange.export3MF(App.model, App.build, opts); },
+    exportObj: function (opts) { return Exchange.exportOBJ(App.model, App.build, opts); },
+    exportMtl: function () { return Exchange.exportMTL(App.model, App.build); },
+    // importFile(name, data, { into: 'new' | 'current', units, sourceUnits, merge }) -> Promise of the summary: a STEP /
+    // STL / OBJ / 3MF file as a new part (Imported1), or as an Imported feature appended to the open part; .json / .js
+    // open as documents
+    importFile: function (name, data, opts) { return openFileData(name, data, opts); },
+    // saveAs(type, baseName?) downloads the file File ▸ Save As would (type: json, script, step, 3mf, obj, stl) and
+    // returns { name, data, mime, extra }
+    saveAs: function (type, base) { var out = exportData(type, base); download(out.name, out.data, out.mime); if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime); return out; },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
     dxfSketch: function (id) { return K.exportDXFSketch(K.findFeature(App.model, id), App.model.units); },
     flat: function () { return K.flatPattern(App.model, App.build, App.mesh); },
@@ -739,8 +908,9 @@
   }
 
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog;
-  UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.screenshot = screenshot;
+  UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
+  UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.exportData = exportData;
   UI.newAssembly = newAssembly; UI.newPart = newPart; UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
   UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES;
 
