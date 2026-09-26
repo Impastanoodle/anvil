@@ -836,3 +836,18 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Known gaps.** No hole series, no drill-point angle option, no ANSI inch / pipe tap sizes, no Near side / Far side countersinks or Up To Surface; patterned holes (LPattern of a hole) are cut but carry no cosmetic thread; points are placed by clicking (no dimensions to them from the PM, though the sketch can be dimensioned).
 
 **Next up.** 1. Hole series and Up To Next / Up To Surface end conditions. 2. Drill point option with callouts measured to the shoulder. 3. Cosmetic threads on patterned / mirrored holes and in section views.
+
+## Run local-2026-09-26a — Whole curved faces for picking and selection
+
+**Context.** Local session (Opus 5.5, normal plan usage), at the user's request with a screenshot: hovering or selecting the side of a boss highlighted one thin facet strip at a time. Holes and bosses must pick as full surfaces, as in SolidWorks.
+
+**Done.**
+- `ui-core.js`: `faceGroups(mesh)` / `UI.faceGroup(i)`. Mesh faces on the same analytic surface (key from `Kernel.curveSurfaces`), in the same body and connected by shared vertices form one selectable face; a planar face is its own group; cached per mesh. `selectionRanges` highlights the whole group for face hover and selection, and hovering another facet of the selected cylinder no longer draws a hover on top of it.
+- `ui-select.js`: box selection tests each whole curved face (window: all of it inside; crossing: any part) and lists it once; `selKey` maps any facet to its group, so Ctrl / Shift-click on another facet of a selected cylinder toggles that same face.
+- `tests/ui-smoke.html`: new step on the Bushing (147 mesh faces → 6 selectable: 3 cylinders + 3 planar), the Ø30 group holds all its facets, bore / body / flange stay separate, real Front-view clicks (click selects, Ctrl-click on a neighbouring facet toggles it off), crossing box over the part lists 6 faces.
+
+**Decision.** The kernel keeps one mesh face per facet: an attempt to merge facets in `meshFromBody` broke 39 kernel tests (shell offsets each face by its plane, fillet / chamfer edge resolution, drawing silhouettes and hidden lines, mesh quality and exports all rely on planar mesh faces). The grouping lives in the UI layer where picking happens.
+
+**Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 148/148, app page with no console errors.
+
+**Next up.** Commands that take a picked face (Concentric / Tangent mates, Fillet face selection, Hole Wizard refusal on curved faces) could read `UI.faceGroup` to show the whole face in their PropertyManager selection boxes.

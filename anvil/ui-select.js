@@ -105,7 +105,8 @@ if (typeof UI !== 'undefined') (function (UI) {
   function selKey(s) {
     if (!s) return '';
     switch (s.kind) {
-      case 'face': case 'body': case 'entity': case 'dim': case 'rel': return s.kind + ':' + s.index;
+      case 'face': return 'face:' + (UI.faceGroup && App.mode !== 'sketch' ? UI.faceGroup(s.index)[0] : s.index);   // any facet of a curved face is that face
+      case 'body': case 'entity': case 'dim': case 'rel': return s.kind + ':' + s.index;
       case 'edge': return 'edge:' + (s.index != null && s.index >= 0 ? s.index : s.edge.mid.map(round6).join(','));
       case 'vertex': return 'vertex:' + s.point.map(round6).join(',');
       case 'feature': return 'feature:' + s.id;
@@ -392,9 +393,13 @@ if (typeof UI !== 'undefined') (function (UI) {
     var f = filterSet(), asm = isAsm();
     var want = f ? { faces: f.faces, edges: f.edges, vertices: f.vertices, bodies: bodyFilter(f), sketch: f.sketch } : asm ? { bodies: true } : { edges: true };
     var faces = App.mesh.faces, sp = (want.faces || want.bodies) ? screenMesh() : null;
+    // a curved face (every facet of one cylinder, hole, cone...) is one face: a window box needs all of it inside, a
+    // crossing box any part of it, and it is listed once
     if (want.faces) faces.forEach(function (fc, i) {
-      if (!faceVisible(i)) return;
-      if (BoxSelect.triangles(sp, r, mode, fc.start * 6, (fc.start + fc.count) * 6)) out.push({ kind: 'face', index: i });
+      var grp = UI.faceGroup ? UI.faceGroup(i) : [i];
+      if (grp[0] !== i || !faceVisible(i)) return;
+      var hit = function (j) { var g = faces[j]; return BoxSelect.triangles(sp, r, mode, g.start * 6, (g.start + g.count) * 6); };
+      if (mode === 'window' ? grp.every(hit) : grp.some(hit)) out.push({ kind: 'face', index: i });
     });
     if (want.edges) (App.edges || []).forEach(function (e, i) {
       if (edgeShown(e) && BoxSelect.segment(S(e.a), S(e.b), r, mode)) out.push({ kind: 'edge', edge: e, index: i });

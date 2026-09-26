@@ -3789,6 +3789,40 @@
     return 'volume ' + v0.toFixed(3) + ', threads ' + UI.cosmeticThreadCount();
   });
 
+  step('whole curved faces: the Bushing (Ø30 body, Ø36 flange, Ø20 bore) is 6 selectable faces, not one per facet; selecting any facet of a cylinder highlights all of it; Ctrl-click on another facet of it toggles the same face; a crossing box over the part lists each face once', async function () {
+    await anvil.run(exByName('Bushing').code); await idle();
+    var mesh = UI.App.mesh, cs = W.Kernel.curveSurfaces(mesh);
+    var reps = {}; mesh.faces.forEach(function (f, i) { reps[UI.faceGroup(i)[0]] = true; });
+    assert(Object.keys(reps).length === 6, 'selectable faces ' + Object.keys(reps).length + ' of ' + mesh.faces.length + ' mesh faces');
+    assert(cs.length === 3 && cs.every(function (s) { return s.polys.length > 8; }), 'three cylinders');
+    function faceOf(r, k) { var s = cs.filter(function (s) { return Math.abs(s.surf.r - r) < 1e-9; })[0]; return mesh.faces.findIndex(function (f) { return f.polys[0] === s.polys[k || 0]; }); }
+    var body = UI.faceGroup(faceOf(15));
+    assert(body.length === cs.filter(function (s) { return s.surf.r === 15; })[0].polys.length && body.indexOf(faceOf(15, 5)) >= 0, 'the Ø30 group holds every facet of the Ø30 cylinder');
+    assert(UI.faceGroup(faceOf(10)).indexOf(faceOf(15)) < 0 && UI.faceGroup(faceOf(18)).indexOf(faceOf(15)) < 0, 'bore, body and flange stay separate faces');
+    // real clicks in the Front view: two different front-facing facets of the Ø30 body; the Ctrl-click on the second
+    // toggles the same face off instead of adding a second item
+    UI.setView('Front'); await idle();
+    var front = body.filter(function (i) { return mesh.faces[i].normal[2] > 0.8; }).sort(function (a, b) { return mesh.faces[b].normal[2] - mesh.faces[a].normal[2]; });
+    assert(front.length >= 2, 'front-facing facets of the body: ' + front.length);
+    var pA = UI.worldToScreen(mesh.faces[front[0]].centroid), pB = UI.worldToScreen(mesh.faces[front[1]].centroid);
+    anvil.clearSelection(); anvil.selectionFilter({ faces: true }); await idle();
+    selClick(pA); await idle(); await wait(20);
+    var s1 = anvil.selection();
+    assert(s1.length === 1 && s1[0].kind === 'face' && body.indexOf(s1[0].index) >= 0, 'click selects the body face: ' + JSON.stringify(s1));
+    selClick(pB, { ctrlKey: true }); await idle(); await wait(20);
+    assert(anvil.selection().length === 0, 'Ctrl-click on another facet of the same cylinder toggles it off: ' + JSON.stringify(anvil.selection()));
+    anvil.selectionFilter({ faces: false });
+    // a crossing box over everything: one entry per face
+    UI.setView('Isometric'); UI.zoomToFit && UI.zoomToFit(); await idle();
+    var vr = D.getElementById('viewport').getBoundingClientRect();
+    anvil.selectionFilter({ faces: true });
+    await selDrag([vr.width - 20, vr.height - 20], [20, 60]);
+    var sel = anvil.selection();
+    anvil.selectionFilter({ faces: false }); anvil.clearSelection();
+    assert(sel.length === 6 && sel.every(function (s) { return s.kind === 'face'; }), 'crossing box: ' + sel.length + ' faces');
+    return 'mesh faces ' + mesh.faces.length + ' -> 6 selectable; cylinder group ' + body.length + ' facets; box 6';
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));

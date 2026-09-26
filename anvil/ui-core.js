@@ -627,10 +627,51 @@ var UI = (function () {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     return g;
   }
+  // Whole curved faces: the kernel keeps each facet of a cylinder, cone, sphere or torus as its own mesh face (shell,
+  // fillets and drawings rely on that), but the user picks, hovers and selects the whole surface as in SolidWorks.
+  // faceGroup(i) -> the indices of every mesh face on the same analytic surface, in the same body, and connected to
+  // face i (a shaft cut by a groove stays two faces); a planar face is its own group. Cached per mesh.
+  function faceGroups(mesh) {
+    if (!mesh || !mesh.faces) return null;
+    if (mesh._faceGroups) return mesh._faceGroups;
+    var of = new Array(mesh.faces.length), keyOf = new Map();
+    if (K.curveSurfaces) K.curveSurfaces(mesh).forEach(function (s) { s.polys.forEach(function (p) { keyOf.set(p, s.key); }); });
+    var byKey = {};
+    mesh.faces.forEach(function (f, i) {
+      var p = f.polys && f.polys[0], k = p && keyOf.get(p);
+      if (k == null) { of[i] = [i]; return; }
+      k += '|' + bodyOfFace(f);
+      (byKey[k] = byKey[k] || []).push(i);
+    });
+    Object.keys(byKey).forEach(function (k) {
+      var list = byKey[k], parent = {}, owner = {};
+      list.forEach(function (i) { parent[i] = i; });
+      function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+      list.forEach(function (i) {
+        mesh.faces[i].polys.forEach(function (p) {
+          p.vertices.forEach(function (v) {
+            var vk = Math.round(v.pos.x * 1e5) + ',' + Math.round(v.pos.y * 1e5) + ',' + Math.round(v.pos.z * 1e5);
+            if (owner[vk] == null) owner[vk] = i; else { var a = find(i), b = find(owner[vk]); if (a !== b) parent[a] = b; }
+          });
+        });
+      });
+      var byRoot = {};
+      list.forEach(function (i) { var r = find(i); (byRoot[r] = byRoot[r] || []).push(i); });
+      Object.keys(byRoot).forEach(function (r) { byRoot[r].forEach(function (i) { of[i] = byRoot[r]; }); });
+    });
+    mesh._faceGroups = of;
+    return of;
+  }
+  function faceGroup(i) { var g = faceGroups(App.mesh); return (g && g[i]) || [i]; }
+
   // Triangle ranges [[start, count], ...] of a selection; hidden bodies contribute nothing so they never ghost.
   function selectionRanges(sel) {
     if (!sel || !App.mesh) return null;
-    if (sel.kind === 'face') { var f = App.mesh.faces[sel.index]; return f && !faceHidden(f) ? [[f.start, f.count]] : null; }
+    if (sel.kind === 'face') {
+      var f = App.mesh.faces[sel.index];
+      if (!f || faceHidden(f)) return null;
+      return faceGroup(sel.index).map(function (i) { var g = App.mesh.faces[i]; return [g.start, g.count]; });
+    }
     if (sel.kind === 'body') {
       var br = [], brun = null;
       App.mesh.faces.forEach(function (fc) {
@@ -688,7 +729,9 @@ var UI = (function () {
       if (fr.length) groups.highlight.add(new THREE.Mesh(triRangeGeometry(fr), mats.sel));
     }
     var hv = App.hover, hr = null;
-    if (hv && (hv.kind === 'face' || hv.kind === 'body') && !(App.sel && App.sel.kind === hv.kind && App.sel.index === hv.index)) hr = selectionRanges(hv);
+    var sameAsSel = App.sel && hv && App.sel.kind === hv.kind &&
+      (App.sel.index === hv.index || (hv.kind === 'face' && faceGroup(hv.index).indexOf(App.sel.index) >= 0));
+    if (hv && (hv.kind === 'face' || hv.kind === 'body') && !sameAsSel) hr = selectionRanges(hv);
     if (hr) groups.highlight.add(new THREE.Mesh(triRangeGeometry(hr), mats.hover));
     [App.sel, App.sel2].forEach(function (s) {
       var r = selectionRanges(s);
@@ -1405,6 +1448,8 @@ var UI = (function () {
     bodyInfo: bodyInfo, bodyName: bodyName, bodyCount: bodyCount, selectBody: selectBody,
     setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden, bodyBounds: bodyBounds, zoomToBody: zoomToBody, fitBox: fitBox,
     // equations (global variables)
-    equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput
+    equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput,
+    // whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
+    faceGroup: faceGroup, faceGroups: function () { return faceGroups(App.mesh); }
   };
 })();
