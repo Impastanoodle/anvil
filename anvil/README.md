@@ -312,14 +312,15 @@ An assembly document places parts (*components*) in space and positions them wit
   features: [],                        // always empty, so part-oriented code stays safe
   components: [{ id: 1, name: "Plate<1>", source: { example: "Plate with bolt holes" }, fixed: true,
                  transform: { position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] } }],
-  mates: [{ id: 3, name: "Concentric1", type: "concentric", a: Ref, b: Ref, alignment: "aligned", suppressed: false }],
+  mates: [{ id: 3, name: "Concentric1", type: "concentric", a: Ref, b: Ref, alignment: "aligned", suppressed: false },
+          { id: 4, name: "Distance1", type: "distance", a: Ref, b: Ref, distance: 15, flip: true }],
   nextId: 4 }                          // shared id counter for components and mates
 ```
 
 - **Transform.** `world = R · local + position`, `R` a row-major 3×3 proper rotation. The rebuild writes the solved transforms back into the model, so a saved assembly keeps its solved positions and re-solving it changes nothing (beyond 1e-9).
 - **Source** — exactly one of `{ example: name }` (a Design Library part; assembly entries cannot be inserted), `{ script: "p.cylinder(4, 20);" }` (a part script) or `{ model: { …part JSON… } }` (an embedded part). A string source is an example name.
-- **Names.** A component is named after its part model plus an instance number: `Plate<1>`, `Plate<2>`, `Pin<1>`. Mates are `Coincident1`, `Concentric2`, … (next free number per type).
-- **Fixed.** The first component of an empty assembly is fixed (shown `(f)` in the tree); later ones float (`(-)` while under-defined) unless inserted with `fixed: true`.
+- **Names.** A component is named after its part model plus an instance number: `Plate<1>`, `Plate<2>`, `Pin<1>`. Mates are `Coincident1`, `Concentric2`, `Distance1`, `Angle1`, … (next free number per type).
+- **Fixed.** The first component of an empty assembly is fixed (shown `(f)` in the tree); later ones float (`(-)` while under-defined, no prefix once fully defined, as in SolidWorks) unless inserted with `fixed: true`.
 
 ### References
 
@@ -336,21 +337,25 @@ A reference (`Ref`) names geometry on a component by id (the script also accepts
 ### Mates
 
 - **Coincident** — two planes (faces or planes) coincide. `alignment: "anti-aligned"` makes the normals opposite (faces touching), `"aligned"` makes them equal. Default: anti-aligned when both refs are faces, otherwise aligned.
+- **Coincident offset** — `offset: d` (≥ 0) holds B's plane `d` along A's normal instead of on it; `flip: true` puts it on the other side (−d). An offset of 0 is not stored.
 - **Concentric** — two axes (cylinders or axes) coincide. Directions equal (`"aligned"`, default) or opposite (`"anti-aligned"`). A cylinder's direction is canonical: the sign whose largest-magnitude local component is positive.
-- **Errors, never exceptions.** Wrong reference kinds give *Coincident needs two planar faces or planes* / *Concentric needs two cylindrical faces or axes*; a mate the solver cannot satisfy (over-defined or conflicting, or between two fixed components or two refs on one component when not already satisfied) gets *Mate cannot be satisfied (over-defined or conflicting)*; a face point that lies on no face and a part that fails to build are errors on the mate or component. Suppressed mates are ignored.
+- **Distance** — two planes (faces or planes) parallel, `distance: d` (≥ 0) apart: B's plane lies `d` along A's normal, or −d with `flip: true` (*Flip dimension*). Alignment defaults as for Coincident (anti-aligned for two faces). Distance 0 is Coincident.
+- **Angle** — `angle: deg` (0–180) between the directions of two refs (faces, planes, cylinders or axes; the second times the alignment sign, default aligned), measured as a signed angle about the mate's *angle axis* k; `flip: true` measures it the other way round (−deg). k is the line normal to both directions when the mate is solved, with its sign made canonical (so re-solving keeps the same side); when the two directions are parallel it is the hinge axis earlier mates leave the moving component (e.g. a Concentric), else any normal. The angle removes one rotation: a free block with only an Angle keeps 5 DOF; a bar with Coincident + Concentric (hinge) + Angle is fully defined.
+- **Errors, never exceptions.** Wrong reference kinds give *Coincident needs two planar faces or planes* / *Concentric needs two cylindrical faces or axes* / *Distance needs two planar faces or planes*; bad values *Distance must be a number ≥ 0*, *Angle must be between 0° and 180°*, *Offset must be a number ≥ 0*; a mate the solver cannot satisfy (over-defined or conflicting, or between two fixed components or two refs on one component when not already satisfied) gets *Mate cannot be satisfied (over-defined or conflicting)*; a face point that lies on no face and a part that fails to build are errors on the mate or component. Suppressed mates are ignored.
 - **Degrees of freedom.** Each component reports `dof` (0–6, 0 when fixed) and `underDefined`: a pin concentric with a hole has 2 (slide and spin), adding a coincident face leaves 1 (spin).
 - **Solver.** Fixed components never move. Floating components are placed mate by mate, then refined by damped least squares over all mates; `dof` comes from the rank of each component's Jacobian.
 
 ### Script API
 
-An assembly script sees `a` (and `asm`, the same Builder) and `Math`. `Assembly.isAssemblyScript(code)` recognises one (`a.insert`, `a.mate`, `a.coincident`, `a.concentric`), and `anvil.run(code)` / *File ▸ Open* open such a script as an assembly.
+An assembly script sees `a` (and `asm`, the same Builder) and `Math`. `Assembly.isAssemblyScript(code)` recognises one (`a.insert`, `a.mate`, `a.coincident`, `a.concentric`, `a.distance`, `a.angle`), and `anvil.run(code)` / *File ▸ Open* open such a script as an assembly.
 
 | Method | Notes |
 | --- | --- |
 | `name(s)`, `units(u)` | Chainable. |
 | `insert(source, opts) → id` | `opts`: `name`, `position` (alias `at`), `rotation` (9 numbers, row-major), `fixed`. |
-| `mate(type, a, b, opts) → id` | `type` `"coincident"` \| `"concentric"`; `opts`: `alignment`, `name`, `suppressed`. |
+| `mate(type, a, b, opts) → id` | `type` `"coincident"` \| `"concentric"` \| `"distance"` \| `"angle"`; `opts`: `alignment`, `name`, `suppressed`, `distance`, `angle` (degrees), `offset`, `flip`. |
 | `coincident(a, b, opts)`, `concentric(a, b, opts)` → id | Shortcuts for `mate`. |
+| `distance(a, b, d, opts)`, `angle(a, b, deg, opts)` → id | Distance / Angle mate with its value. |
 | `fix(c)`, `float(c)` | Fix or float a component (id or name). |
 
 ```js
@@ -362,7 +367,15 @@ a.coincident({ component: pin, face: [1, 0, 1] }, { component: plate, face: [50,
 // the pin now stands in the (10, 10) hole with its bottom flush: origin [10, 0, 10], axis +Y, 1 DOF (spin) left
 ```
 
-`Assembly.generateScript(model)` writes the same form back (numbers rounded to 1e-6, rotation only when not identity, alignment only when it differs from the default).
+```js
+// Distance and angle mates (Design Library example): a block 15 above a base, a bar hinged on the base corner at 30°
+a.distance({ component: block, face: [10, 0, 10] }, { component: base, face: [50, 10, 30] }, 15);
+a.coincident({ component: block, face: [0, 10, 10] }, { component: base, face: [0, 5, 30] }, { alignment: "aligned", offset: 30 });
+a.distance({ component: block, face: [10, 10, 20] }, { component: base, face: [50, 5, 60] }, 10, { alignment: "aligned", flip: true });
+a.angle({ component: bar, face: [20, 2, 0] }, { component: base, face: [50, 5, 0] }, 30);
+```
+
+`Assembly.generateScript(model)` writes the same form back (numbers rounded to 1e-6, rotation only when not identity, alignment only when it differs from the default, `distance` / `angle` / `offset` / `flip` when set).
 
 ### Kernel API
 
@@ -376,6 +389,10 @@ a.coincident({ component: pin, face: [1, 0, 1] }, { component: plate, face: [50,
 | `Assembly.rebuild(model, cache?)` | `{ assembly: true, body, bodies, bodyFeatures, bodyNames, components: [{ id, name, index, fixed, dof, underDefined, error }], mates: { id: { ok, residual, error } }, errors, warnings, partBuilds, cache, … }`. `body` is every component in world space with `polygon.body` = component index (so `Kernel.meshFromBody(build.body)` faces carry `face.body`); volumes add, components are never merged. Pass `build.cache` back to reuse the part builds. |
 | `Assembly.solve(model, partBuilds)`, `Assembly.resolveRef(model, partBuilds, ref, transforms?)` | Solver; a ref as `{ kind: "plane", point, normal }` or `{ kind: "axis", point, dir }` in world coordinates (throws a readable Error). |
 | `Assembly.refFromPick(model, build, faceIndex, worldPoint, mesh)` | The Ref for a viewport pick: `{ component, cylinder }` on a cylindrical face, else `{ component, face }`, in local coordinates rounded to 1e-6; `null` when nothing applies. |
+| `Assembly.moveComponent(model, id, delta)`, `Assembly.rotateComponent(model, id, axis, deg, pivot?)` | Move / Rotate Component: change a floating component's stored transform (translate by a world delta; turn about `"x"`\|`"y"`\|`"z"` or a vector through `pivot`, default the component origin). Throw *X is fixed: Float it to move it*. The next rebuild solves the mates again, so the component keeps what its free DOF allow. |
+| `Assembly.componentCenter(model, build, id)` | World centre of the component's bounding box (the pivot the UI rotates about). |
+| `Assembly.interference(model, build?, { minVolume }?)` | Interference Detection: `{ pairs: [{ a, b, aName, bName, aIndex, bIndex, volume, body }], volume, checked, tolerance }`. Every pair whose world boxes overlap is intersected with `CSG.intersect`; pairs whose common volume exceeds the tolerance (1e-9 · bbox diagonal³) are listed, largest first, with the common solid as `body`. Touching faces are not interferences; components whose part failed are skipped. |
+| `Assembly.setMateValues(mate, { distance, angle, offset, flip })`, `Assembly.MATE_TYPES` | Set a mate's values, dropping keys its type does not use. |
 | `Assembly.massProps(model, build)` | `{ volume, area, mass, centroid, bbox, components: [{ id, name, index, volume, mass, density, centroid }] }`: mass = Σ volume · density with each part's own density, centroid mass-weighted. |
 | `Assembly.runScript(model, code)`, `Assembly.generateScript(model)`, `Assembly.isAssemblyScript(code)` | Script round trip. |
 | `Assembly.transformPoint(T, p)`, `inverseTransformPoint(T, p)`, `transformDir(T, d)`, `IDENTITY` | Transform helpers. |
@@ -384,14 +401,16 @@ a.coincident({ component: pin, face: [1, 0, 1] }, { component: plate, face: [50,
 
 - **File ▸ New** → *New assembly* (or `anvil.newAssembly()`; *New part* / `anvil.newPart()` goes back) opens an empty assembly; the ribbon shows the *Assembly* tab (*Insert Components*, *Mate*, *Fix*, *Float*, *Hide/Show Components*) and *Evaluate*; part-only commands refuse with a message. Sketches are not available in an assembly document.
 - **Insert Components** PropertyManager (`UI.cmdInsertComponent()`): pick a Design Library part, the last open part, or *Browse…* for a part JSON file, and the X/Y/Z position of its origin. The first component is fixed; later ones float until mated.
-- **Mate** PropertyManager (`UI.cmdMate(existing?)`): *Mate Selections* takes two viewport picks (a cylindrical face gives an axis, a flat face a plane, an origin plane its plane); *Standard Mates* defaults to *Concentric* for two cylinders and *Coincident* otherwise; *Mate alignment* Aligned / Anti-Aligned. The graphics area previews the solved result, ✓ commits it, Cancel restores the model; double-clicking a mate row reopens it.
-- **FeatureManager.** One row per component, `(f) Plate<1>` when fixed and `(-) Pin<1>` while under-defined, then a *Mates* folder with a row per mate (errors in red). Clicking a component row selects its body; hover reads *Component: Pin<1>*.
+- **Mate** PropertyManager (`UI.cmdMate(existing?)`): *Mate Selections* takes two viewport picks (a cylindrical face gives an axis, a flat face a plane, an origin plane its plane); *Standard Mates* defaults to *Concentric* for two cylinders and *Coincident* otherwise, and offers *Distance* and *Angle* with their value box (starting at the current distance / angle between the selections), *Offset* for Coincident, and *Flip dimension*; *Mate alignment* Aligned / Anti-Aligned. The graphics area previews the solved result, ✓ commits it, Cancel restores the model; double-clicking a mate row reopens it.
+- **Move Component / Rotate Component** (Assembly tab, `UI.cmdMoveComponent()` / `UI.cmdRotateComponent()`): with no command open, or with this PropertyManager open, pressing on a floating component and dragging moves it in the screen plane (Rotate: turns it about its centre, 0.5° per pixel); the graphics area shows the solved result while dragging and the drop is one undo step. Dragging a fixed component rotates the view as usual (status: *Base<1> is fixed: Float it to drag it*). *By Delta XYZ* moves / rotates the selected component by typed amounts. `UI.componentDragHook` is what `ui-sketch.js` asks on a left-button press.
+- **Interference Detection** (Evaluate tab, `UI.cmdInterference()`): lists *Interference1 — 2000 mm³ / Base<1> · Block<1>*, …, largest first, or *No Interferences*; highlights the interfering components and draws the common volumes in red on top; clicking a result shows that pair only (again for all); *Calculate* runs it again.
+- **FeatureManager.** One row per component, `(f) Plate<1>` when fixed, `(-) Pin<1>` while under-defined and the bare name once fully defined, then a *Mates* folder with a row per mate (errors in red). Clicking a component row selects its body; hover reads *Component: Pin<1>*.
 - **Mass Properties** lists each component with its own volume, density and mass, and the mass-weighted totals.
 - Every edit is one undo step; saving and *File ▸ Open* round-trip the assembly JSON and script.
 
 ### Automation
 
-`anvil.newAssembly(name?)`, `anvil.newPart(name?)`, `anvil.isAssembly()`; `anvil.insert(source, opts)` and `anvil.mate(type, a, b, opts)` return a Promise of the summary; `anvil.components()` → `[{ id, name, index, fixed, dof, underDefined, position, rotation, volume, error }]`, `anvil.mates()` → `[{ id, name, type, ok, error, suppressed }]`; `anvil.fix(idOrName, fixed)`, `anvil.removeComponent(id)`, `anvil.removeMate(id)`; `anvil.mass()` is `Assembly.massProps` in an assembly; `anvil.script()`, `anvil.run(code)`, `anvil.model()` and `anvil.load(json)` work on assemblies; `anvil.summary().type` is `"part"` or `"assembly"`, with `components` and `mates` counts. `UI.isAssembly()`, `UI.selectComponent(id)`, `UI.componentIndex(id)` and `UI.bodyName(i)` (the component name) drive the same paths. The *Pinned plate assembly* example in the Design Library is a fixed plate with two pins mated into its holes and a cap seated on it.
+`anvil.newAssembly(name?)`, `anvil.newPart(name?)`, `anvil.isAssembly()`; `anvil.insert(source, opts)` and `anvil.mate(type, a, b, opts)` return a Promise of the summary; `anvil.components()` → `[{ id, name, index, fixed, dof, underDefined, position, rotation, volume, error }]`, `anvil.mates()` → `[{ id, name, type, ok, error, suppressed }]`; `anvil.fix(idOrName, fixed)`, `anvil.removeComponent(id)`, `anvil.removeMate(id)`; `anvil.moveComponent(idOrName, delta)` and `anvil.rotateComponent(idOrName, axis, deg)` (about the component's centre) return a Promise of the summary; `anvil.interference()` → `{ count, volume, pairs: [{ a, b, aId, bId, volume }] }`; `anvil.mates()` rows carry `distance` / `angle` / `offset` / `flip` when set; `anvil.mass()` is `Assembly.massProps` in an assembly; `anvil.script()`, `anvil.run(code)`, `anvil.model()` and `anvil.load(json)` work on assemblies; `anvil.summary().type` is `"part"` or `"assembly"`, with `components` and `mates` counts. `UI.isAssembly()`, `UI.selectComponent(id)`, `UI.componentIndex(id)` and `UI.bodyName(i)` (the component name) drive the same paths. The *Pinned plate assembly* example in the Design Library is a fixed plate with two pins mated into its holes and a cap seated on it; *Distance and angle mates* holds a block 15 above a base (Distance, offset Coincident, flipped Distance: block at [30, 25, 50]) and hinges a bar on the base corner at 30° (Ry(−30°)), every component fully defined; *Interference check* sinks a block 5 into a base and a pin 8 into it (interferences 2000 and 8·A(Ø8) mm³) with a second pin only touching.
 
 ## Background rebuilds
 

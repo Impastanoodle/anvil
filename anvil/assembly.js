@@ -1,4 +1,5 @@
-// assembly.js — Anvil assembly documents: insert parts as components, mate them (Coincident / Concentric), solve.
+// assembly.js — Anvil assembly documents: insert parts as components, mate them (Coincident / Concentric / Distance /
+// Angle), solve, move and rotate components, detect interference.
 // Plain script (no modules): defines the global `Assembly`. Loaded after csg.js and kernel.js; no DOM, no three.js.
 //
 // An assembly model is plain JSON (see README "Assemblies"):
@@ -71,7 +72,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle)\s*\(/.test(String(code || '')); }
 
   // A fresh part model JSON for a component source. Throws for an unknown / unusable source.
   function partModel(source) {
@@ -160,7 +161,8 @@ var Assembly = (function () {
     return comp;
   }
 
-  var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric' };
+  var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle'];
 
   function normRef(model, ref) {
     var r = JSON.parse(JSON.stringify(ref || {}));
@@ -183,8 +185,25 @@ var Assembly = (function () {
       type: type, a: normRef(model, a), b: normRef(model, b)
     };
     if (opts.alignment) m.alignment = opts.alignment;
+    setMateValues(m, opts);
     if (opts.suppressed) m.suppressed = true;
     model.mates.push(m);
+    return m;
+  }
+
+  // Mate values: Distance { distance } (mm, >= 0), Angle { angle } (degrees, 0..180), Coincident { offset } (mm, >= 0,
+  // left out when 0); `flip: true` (Flip dimension) puts the distance / offset on the other side, or measures the angle
+  // the other way round. Keys that do not belong to the mate type are removed.
+  function setMateValues(m, opts) {
+    opts = opts || {};
+    ['distance', 'angle', 'offset'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    if (opts.flip != null) { if (opts.flip) m.flip = true; else delete m.flip; }
+    if (m.type !== 'distance') delete m.distance;
+    if (m.type !== 'angle') delete m.angle;
+    if (m.type !== 'coincident' || !m.offset) delete m.offset;
+    if (m.type === 'distance' && m.distance == null) m.distance = 0;
+    if (m.type === 'angle' && m.angle == null) m.angle = 0;
+    if (m.type === 'concentric' || (m.type === 'coincident' && !m.offset)) delete m.flip;
     return m;
   }
 
@@ -488,20 +507,41 @@ var Assembly = (function () {
 
   // ------------------------------------------------------------------ mate residuals
   function defaultAlignment(m) {
-    if (m.type === 'coincident') return (m.a && m.a.face && m.b && m.b.face) ? 'anti-aligned' : 'aligned';
+    if (m.type === 'coincident' || m.type === 'distance') return (m.a && m.a.face && m.b && m.b.face) ? 'anti-aligned' : 'aligned';
     return 'aligned';
   }
   function alignSign(m) { return (m.alignment || defaultAlignment(m)) === 'anti-aligned' ? -1 : 1; }
 
-  // Residual vector of a prepared mate given world refs A, B. Coincident: nA − s·nB (3) and the plane gap (1).
+  // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
+  function gapTarget(m) {
+    var v = m.type === 'distance' ? +m.distance || 0 : m.type === 'coincident' ? +m.offset || 0 : 0;
+    return m.flip ? -v : v;
+  }
+  // Signed angle an Angle mate holds (radians), measured from A's direction to B's (times the alignment sign) about the
+  // mate's angle axis k; flip measures it the other way round.
+  function angleTarget(m) { var a = (+m.angle || 0) * Math.PI / 180; return m.flip ? -a : a; }
+  function wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
+  function dirOf(W) { return W.normal || W.dir; }
+  // The signed angle from direction p to q seen along k (both projected onto the plane normal to k).
+  function signedAngle(p, q, k) {
+    var pp = sub(p, scale(k, dot(p, k))), qq = sub(q, scale(k, dot(q, k)));
+    return Math.atan2(dot(k, cross(pp, qq)), dot(pp, qq));
+  }
+  // An axis normal to direction d (for an angle axis when the two directions are parallel).
+  function perpTo(d) { return norm(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); }
+
+  // Residual vector of a prepared mate given world refs A, B (and the world angle axis k for an Angle mate).
+  // Coincident / Distance: nA − s·nB (3) and the plane gap minus its target (1).
   // Concentric: dA − s·dB (3) and B's axis point offset perpendicular to A's axis (3).
-  function mateResidual(pm, A, B) {
+  // Angle: the signed angle from dA to s·dB about k minus its target (1, wrapped to ±π).
+  function mateResidual(pm, A, B, k) {
     var s = pm.sign;
-    if (pm.type === 'coincident') {
+    if (pm.type === 'coincident' || pm.type === 'distance') {
       var dn = sub(A.normal, scale(B.normal, s));
       var gap = 0.5 * (dot(sub(B.point, A.point), A.normal) + s * dot(sub(B.point, A.point), B.normal));
-      return [dn[0], dn[1], dn[2], gap];
+      return [dn[0], dn[1], dn[2], gap - pm.target];
     }
+    if (pm.type === 'angle') return [wrapAngle(signedAngle(dirOf(A), scale(dirOf(B), s), k) - pm.target)];
     var dd = sub(A.dir, scale(B.dir, s)), v = sub(B.point, A.point);
     var perp = sub(v, scale(A.dir, dot(v, A.dir)));
     return [dd[0], dd[1], dd[2], perp[0], perp[1], perp[2]];
@@ -530,25 +570,48 @@ var Assembly = (function () {
     var prepared = [];
     model.mates.forEach(function (m) {
       if (m.suppressed) { mateOut[m.id] = { ok: true, residual: 0, error: null, suppressed: true }; return; }
-      var pm = { mate: m, id: m.id, type: m.type, sign: alignSign(m) };
+      var pm = { mate: m, id: m.id, type: m.type, sign: alignSign(m), target: gapTarget(m), kL: null };
       try {
-        if (m.type !== 'coincident' && m.type !== 'concentric') throw new Error('Unknown mate type "' + m.type + '"');
+        if (MATE_TYPES.indexOf(m.type) < 0) throw new Error('Unknown mate type "' + m.type + '"');
+        if (m.type === 'distance' && !(isFinite(+m.distance) && +m.distance >= 0)) throw new Error('Distance must be a number ≥ 0');
+        if (m.type === 'angle' && !(isFinite(+m.angle) && +m.angle >= 0 && +m.angle <= 180)) throw new Error('Angle must be between 0° and 180°');
+        if (m.type === 'coincident' && m.offset != null && !(isFinite(+m.offset) && +m.offset >= 0)) throw new Error('Offset must be a number ≥ 0');
         pm.A = localRef(model, partBuilds, m.a);
         pm.B = localRef(model, partBuilds, m.b);
         if (m.type === 'coincident' && (pm.A.kind !== 'plane' || pm.B.kind !== 'plane')) throw new Error('Coincident needs two planar faces or planes');
+        if (m.type === 'distance' && (pm.A.kind !== 'plane' || pm.B.kind !== 'plane')) throw new Error('Distance needs two planar faces or planes');
         if (m.type === 'concentric' && (pm.A.kind !== 'axis' || pm.B.kind !== 'axis')) throw new Error('Concentric needs two cylindrical faces or axes');
+        if (m.type === 'angle') pm.target = angleTarget(m);
       } catch (e) {
         mateOut[m.id] = { ok: false, residual: null, error: e.message || String(e) };
         return;
       }
       pm.ca = pm.A.comp; pm.cb = pm.B.comp;
       pm.rigid = (pm.ca && pm.cb && pm.ca === pm.cb) || (!movable(pm.ca) && !movable(pm.cb));
+      if (pm.type === 'angle') setAngleAxis(pm, null);
       prepared.push(pm);
     });
 
+    // An Angle mate's axis k is fixed for the solve and rides with A's component (kL is in A's local frame, or world).
+    // k is the line normal to both directions when the mate is placed, with its sign made canonical, so re-solving a
+    // solved assembly measures the same signed angle; when the directions are parallel it is the hinge axis earlier
+    // mates left the moving component (lockAxis), else any normal to A's direction.
+    function angleAxisWorld(pm, T) {
+      T = T || transforms;
+      return pm.ca ? transformDir(T[pm.ca.id], pm.kL) : pm.kL.slice();
+    }
+    function setAngleAxis(pm, lockAxis) {
+      var Aw = worldOf(pm.A, pm.ca ? transforms[pm.ca.id] : null), Bw = worldOf(pm.B, pm.cb ? transforms[pm.cb.id] : null);
+      var a = dirOf(Aw), b = scale(dirOf(Bw), pm.sign), c = cross(a, b), k;
+      if (lockAxis && Math.abs(dot(lockAxis, a)) < 1e-6 && (len(c) < 1e-6 || len(cross(c, lockAxis)) < 1e-6 * len(c))) k = canonicalDir(norm(lockAxis));
+      else if (len(c) > 1e-9) k = canonicalDir(norm(c));
+      else k = canonicalDir(lockAxis && Math.abs(dot(lockAxis, a)) < 1e-6 ? norm(lockAxis) : perpTo(a));
+      pm.kL = pm.ca ? matTVec(transforms[pm.ca.id].rotation, k) : k;
+    }
+
     function residualOf(pm, T) {
       T = T || transforms;
-      return mateResidual(pm, worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), worldOf(pm.B, pm.cb ? T[pm.cb.id] : null));
+      return mateResidual(pm, worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), worldOf(pm.B, pm.cb ? T[pm.cb.id] : null), pm.kL ? angleAxisWorld(pm, T) : null);
     }
 
     // ---- greedy placement of one mate: rotate then translate the component being brought to the other side
@@ -563,14 +626,35 @@ var Assembly = (function () {
       var T = transforms[id];
       transforms[id] = { rotation: matMul(R, T.rotation), position: add(matVec(R, sub(T.position, pivot)), pivot) };
     }
+    function moverIsB(pm) {
+      var aMov = movable(pm.ca), bMov = movable(pm.cb);
+      if (!aMov) return true;
+      if (!bMov) return false;
+      if (grounded[pm.ca.id] && !grounded[pm.cb.id]) return true;
+      if (grounded[pm.cb.id] && !grounded[pm.ca.id]) return false;
+      return true;
+    }
+    // Angle mate: turn the moving component about the angle axis k (its hinge, when earlier mates left one) until the
+    // signed angle reaches the target; a hinged component is then fully oriented.
+    function greedyAngle(pm) {
+      var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb, L = locks[C.id];
+      if (!L.full) {
+        var k = angleAxisWorld(pm), ax = L.axis && len(cross(L.axis, k)) < 1e-6 ? L.axis : k;
+        var err = residualOf(pm)[0];
+        if (Math.abs(err) > TOL_DONE) {
+          // turning B by +t about k raises the angle by t, turning A by +t lowers it
+          var t = (moveB ? -err : err) * (dot(ax, k) < 0 ? -1 : 1);
+          var mw = worldOf(moveB ? pm.B : pm.A, transforms[C.id]);
+          rotateAbout(C.id, rotVec(scale(ax, t)), ax === L.axis ? L.point : mw.point);
+        }
+        if (L.axis) L.full = true;
+      }
+      if (!oc || grounded[oc.id]) grounded[C.id] = true;
+    }
     function greedy(pm) {
-      var aMov = movable(pm.ca), bMov = movable(pm.cb), moveB;
       if (pm.rigid) return;
-      if (!aMov) moveB = true;
-      else if (!bMov) moveB = false;
-      else if (grounded[pm.ca.id] && !grounded[pm.cb.id]) moveB = true;
-      else if (grounded[pm.cb.id] && !grounded[pm.ca.id]) moveB = false;
-      else moveB = true;
+      if (pm.type === 'angle') { greedyAngle(pm); return; }
+      var moveB = moverIsB(pm);
       var C = moveB ? pm.cb : pm.ca, mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
       var oc = moveB ? pm.ca : pm.cb, L = locks[C.id];
       if (L.full && L.trans.length === 3) { /* fully placed by earlier mates: leave it to the solver */ }
@@ -596,10 +680,12 @@ var Assembly = (function () {
           if (R) rotateAbout(C.id, R, pivot);
           M = worldOf(mine, transforms[C.id]);
         }
-        // translation: close the gap, keeping directions earlier mates locked
+        // translation: close the gap (to its target), keeping directions earlier mates locked
         var delta;
-        if (pm.type === 'coincident') delta = scale(O.normal, dot(sub(O.point, M.point), O.normal));
-        else { var v = sub(O.point, M.point); delta = sub(v, scale(O.dir, dot(v, O.dir))); }
+        if (pm.type !== 'concentric') {
+          var nA = moveB ? O.normal : M.normal, g = dot(sub(moveB ? M.point : O.point, moveB ? O.point : M.point), nA);
+          delta = scale(nA, moveB ? pm.target - g : g - pm.target);
+        } else { var v = sub(O.point, M.point); delta = sub(v, scale(O.dir, dot(v, O.dir))); }
         L.trans.forEach(function (tr) { delta = sub(delta, scale(tr, dot(delta, tr))); });
         transforms[C.id].position = add(transforms[C.id].position, delta);
       }
@@ -607,7 +693,7 @@ var Assembly = (function () {
       var Mw = worldOf(mine, transforms[C.id]), dir = Mw.normal || Mw.dir;
       if (!L.axis) { L.axis = dir.slice(); L.point = Mw.point.slice(); }
       else if (len(cross(L.axis, dir)) > 1e-6) L.full = true;
-      if (pm.type === 'coincident') lockTrans(L, dir);
+      if (pm.type !== 'concentric') lockTrans(L, dir);
       else { var e1 = norm(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); lockTrans(L, e1); lockTrans(L, cross(dir, e1)); }
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
@@ -694,6 +780,7 @@ var Assembly = (function () {
       }
       var snapT = {}, snapLocks = JSON.stringify(locks), snapG = JSON.stringify(grounded);
       comps.forEach(function (c) { snapT[c.id] = transforms[c.id]; });
+      if (pm.type === 'angle') { var mv = moverIsB(pm) ? pm.cb : pm.ca; setAngleAxis(pm, locks[mv.id].full ? null : locks[mv.id].axis); }
       greedy(pm);
       var trial = active.concat([pm]);
       lm(trial);
@@ -811,6 +898,78 @@ var Assembly = (function () {
     };
   }
 
+  // ------------------------------------------------------------------ Move / Rotate Component
+  // These only change a floating component's stored transform; the next rebuild re-solves the mates, so the component
+  // keeps the part of the move its free degrees of freedom allow (SolidWorks: dragging respects mates).
+  function movableComponent(model, id) {
+    var c = findComponent(model, id);
+    if (!c) throw new Error('Unknown component ' + JSON.stringify(id));
+    if (c.fixed) throw new Error(c.name + ' is fixed: Float it to move it');
+    return c;
+  }
+  // moveComponent(model, id, delta) -> the component, translated by delta (world)
+  function moveComponent(model, id, delta) {
+    var c = movableComponent(model, id), T = tf(c.transform);
+    c.transform = { position: add(T.position, copy3(delta)), rotation: T.rotation };
+    return c;
+  }
+  // rotateComponent(model, id, axis, degrees, pivot?) -> the component, turned about the world axis through pivot
+  // (default: the component's origin; the UI passes componentCenter)
+  function rotateComponent(model, id, axis, deg, pivot) {
+    var c = movableComponent(model, id), T = tf(c.transform);
+    var ax = typeof axis === 'string' ? AXIS_DIRS[axis.toLowerCase()] : axis && norm(copy3(axis));
+    if (!ax || len(ax) < 0.5) throw new Error('Rotate needs an axis: "x", "y", "z" or [x, y, z]');
+    var R = rotVec(scale(ax, (+deg || 0) * Math.PI / 180)), P = pivot ? copy3(pivot) : T.position;
+    c.transform = { rotation: orthonormalize(matMul(R, T.rotation)), position: add(matVec(R, sub(T.position, P)), P) };
+    return c;
+  }
+  // the world centre of a component's bounding box (its origin when it has no geometry)
+  function componentCenter(model, build, id) {
+    var c = findComponent(model, id);
+    if (!c) return null;
+    var g = partGeom(build && build.partBuilds && build.partBuilds[c.id]);
+    return transformPoint(c.transform, g ? g.center : [0, 0, 0]);
+  }
+
+  // ------------------------------------------------------------------ Interference Detection
+  // interference(model, build, opts?) -> { pairs: [{ a, b, aName, bName, aIndex, bIndex, volume, body }], volume, checked }
+  // Every pair of components whose world bounding boxes overlap is intersected (CSG.intersect); pairs whose common
+  // volume exceeds the tolerance are listed, largest first. Faces that only touch (coincident mates) have no common
+  // volume and are not interferences. opts.minVolume overrides the tolerance (1e-9 · assembly bbox diagonal³).
+  function bodyBox(csg) {
+    var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    csg.polygons.forEach(function (p) {
+      p.vertices.forEach(function (v) { var q = arr(v.pos); for (var k = 0; k < 3; k++) { if (q[k] < min[k]) min[k] = q[k]; if (q[k] > max[k]) max[k] = q[k]; } });
+    });
+    return min[0] <= max[0] ? { min: min, max: max } : null;
+  }
+  function interference(model, build, opts) {
+    opts = opts || {};
+    if (!build || !build.bodies) build = rebuild(model);
+    var comps = model.components || [], boxes = [], all = null;
+    comps.forEach(function (c, i) {
+      var b = build.bodies[i], bx = b && b.polygons.length ? bodyBox(b) : null;   // a part that failed has an empty body
+      boxes.push(bx);
+      if (bx) all = all ? { min: all.min.map(function (v, k) { return Math.min(v, bx.min[k]); }), max: all.max.map(function (v, k) { return Math.max(v, bx.max[k]); }) } : { min: bx.min.slice(), max: bx.max.slice() };
+    });
+    var diag = all ? len(sub(all.max, all.min)) : 0;
+    var tol = opts.minVolume != null ? +opts.minVolume : Math.max(1e-12, 1e-9 * diag * diag * diag);
+    var pairs = [], checked = 0;
+    for (var i = 0; i < comps.length; i++) {
+      for (var j = i + 1; j < comps.length; j++) {
+        var A = boxes[i], B = boxes[j];
+        if (!A || !B) continue;
+        var e = 1e-9 * Math.max(1, diag);
+        if (A.min[0] > B.max[0] - e || B.min[0] > A.max[0] - e || A.min[1] > B.max[1] - e || B.min[1] > A.max[1] - e || A.min[2] > B.max[2] - e || B.min[2] > A.max[2] - e) continue;
+        checked++;
+        var common = build.bodies[i].intersect(build.bodies[j]), v = common.polygons.length ? common.volume() : 0;
+        if (v > tol) pairs.push({ a: comps[i].id, b: comps[j].id, aName: comps[i].name, bName: comps[j].name, aIndex: i, bIndex: j, volume: v, body: common });
+      }
+    }
+    pairs.sort(function (p, q) { return q.volume - p.volume; });
+    return { pairs: pairs, volume: pairs.reduce(function (s, p) { return s + p.volume; }, 0), checked: checked, tolerance: tol };
+  }
+
   // ------------------------------------------------------------------ picking
   function r6(x) { var r = Math.round(x * 1e6) / 1e6; return Math.abs(r) < 1e-9 ? 0 : r; }
 
@@ -881,6 +1040,9 @@ var Assembly = (function () {
   };
   Builder.prototype.coincident = function (a, b, opts) { return this.mate('coincident', a, b, opts); };
   Builder.prototype.concentric = function (a, b, opts) { return this.mate('concentric', a, b, opts); };
+  function withValue(opts, key, v) { var o = JSON.parse(JSON.stringify(opts || {})); if (v != null) o[key] = v; return o; }
+  Builder.prototype.distance = function (a, b, d, opts) { return this.mate('distance', a, b, withValue(opts, 'distance', d)); };
+  Builder.prototype.angle = function (a, b, deg, opts) { return this.mate('angle', a, b, withValue(opts, 'angle', deg)); };
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
 
@@ -922,6 +1084,8 @@ var Assembly = (function () {
     (model.mates || []).forEach(function (m) {
       var opts = ['name: ' + JSON.stringify(m.name)];
       if (m.alignment && m.alignment !== defaultAlignment(m)) opts.push('alignment: ' + JSON.stringify(m.alignment));
+      ['distance', 'angle', 'offset'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
+      if (m.flip) opts.push('flip: true');
       if (m.suppressed) opts.push('suppressed: true');
       out.push('a.mate(' + JSON.stringify(m.type) + ', ' + refText(m.a, varOf) + ', ' + refText(m.b, varOf) + ', { ' + opts.join(', ') + ' });');
     });
@@ -936,6 +1100,8 @@ var Assembly = (function () {
     rebuild: rebuild, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, massProps: massProps,
     transformPoint: transformPoint, inverseTransformPoint: inverseTransformPoint, transformDir: transformDir,
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
-    defaultAlignment: defaultAlignment, findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
+    defaultAlignment: defaultAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
+    moveComponent: moveComponent, rotateComponent: rotateComponent, componentCenter: componentCenter, interference: interference,
+    findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };
 })();

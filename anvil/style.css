@@ -245,6 +245,13 @@ body { overflow: auto; }
 .pm-row .static { color: var(--muted); }
 .pm-pick { border: 1px solid var(--blue-line); background: var(--pick-bg); min-height: 26px; padding: 3px 6px; border-radius: 2px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .pm-pick.filled { color: var(--text); background: var(--pick-filled); }
+/* Interference Detection results (assembly Evaluate tab) */
+.intf-list { display: flex; flex-direction: column; gap: 2px; }
+.intf-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 6px; border: 1px solid transparent; border-radius: 2px; cursor: pointer; }
+.intf-row:hover { border-color: var(--blue-line); }
+.intf-row.selected { background: var(--pick-filled); border-color: var(--blue-line); }
+.intf-row small { color: var(--muted); }
+.intf-none { color: var(--muted); padding: 3px 6px; }
 .pm-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .pm-btns button, .btn { border: 1px solid var(--input-line); background: var(--btn-face); padding: 3px 10px; border-radius: 3px; height: 24px; }
 .pm-btns button:hover, .btn:hover { background: var(--hover); border-color: var(--blue-line); }
