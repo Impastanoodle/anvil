@@ -848,7 +848,7 @@
       if (!isAsm()) return [];
       return (App.model.mates || []).map(function (m) {
         var st = UI.mateStatus(m), o = { id: m.id, name: m.name, type: m.type, ok: !m.suppressed && !st.error, error: m.suppressed ? null : st.error, suppressed: !!m.suppressed };
-        ['distance', 'angle', 'offset'].forEach(function (k) { if (m[k] != null) o[k] = m[k]; });
+        ['distance', 'angle', 'offset', 'min', 'max', 'ratio'].forEach(function (k) { if (m[k] != null) o[k] = m[k]; });
         if (m.flip) o.flip = true;
         return o;
       });

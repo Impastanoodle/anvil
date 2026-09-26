@@ -320,7 +320,9 @@
       tree.appendChild(row);
     });
     tree.appendChild(treeItem({ icon: 'origin', name: 'Origin', depth: 1, cls: 'dim' }));
-    (m.components || []).forEach(function (c, i) {
+    // pattern instances are listed in their pattern's folder (ui-assembly.js, UI.asmTreeExtras), after the Mates
+    (m.components || []).forEach(function (c, i) { if (c.pattern == null || !UI.asmTreeExtras) componentRow(c, i, 1); });
+    function componentRow(c, i, depth, parent) {
       var label = UI.compLabel ? UI.compLabel(c) : c.name;
       if (filter && label.toLowerCase().indexOf(filter) < 0) return;
       var st = UI.compStatus ? UI.compStatus(c.id) : null;
@@ -328,13 +330,13 @@
       var selected = App.sel && App.sel.kind === 'body' && App.sel.index === i;
       var hidden = isBodyHidden(i);
       var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
-      var row = treeItem({ icon: err ? 'error' : 'component', name: label, depth: 1, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : ''), title: tip });
+      var row = treeItem({ icon: err ? 'error' : 'component', name: label, depth: depth, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : ''), title: tip });
       row.setAttribute('data-comp', String(c.id));
       row.title = tip;
       row.addEventListener('click', function () { if (UI.selectComponent) UI.selectComponent(c.id); else selectBody(i); });
       row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); if (UI.selectComponent) UI.selectComponent(c.id); showMenu(e.clientX, e.clientY, componentMenu(c)); });
-      tree.appendChild(row);
-    });
+      (parent || tree).appendChild(row);
+    }
     var mates = m.mates || [];
     var shown = mates.filter(function (mt) { return !filter || (UI.mateLabel ? UI.mateLabel(mt) : mt.name).toLowerCase().indexOf(filter) >= 0; });
     var isOpen = expanded.mates == null ? true : !!expanded.mates;
@@ -342,12 +344,14 @@
     var folder = treeItem({ icon: 'matesFolder', name: 'Mates', depth: 1, cls: 'mates-folder' + (anyErr ? ' err' : '') + (mates.length ? '' : ' dim'), children: mates.length > 0, open: isOpen, title: mates.length + ' mate' + (mates.length === 1 ? '' : 's'), toggle: function () { expanded.mates = !isOpen; refreshTree(); } });
     folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Add Mate…', action: function () { UI.cmdMate(); } }]); });
     tree.appendChild(folder);
-    if (!mates.length) return;
+    // component pattern / mirror folders come after the Mates folder, as in SolidWorks
+    function extras() { if (UI.asmTreeExtras) UI.asmTreeExtras(tree, { treeItem: treeItem, componentRow: componentRow, expanded: expanded, showMenu: showMenu, filter: filter, refresh: refreshTree }); }
+    if (!mates.length) { extras(); return; }
     var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
     shown.forEach(function (mt) {
       var st = UI.mateStatus ? UI.mateStatus(mt) : { error: null };
       var err = mt.suppressed ? null : st.error;
-      var row = treeItem({ icon: err ? 'error' : ({ concentric: 'concentric', distance: 'distance', angle: 'angle' }[mt.type] || 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (mt.suppressed ? ' suppressed' : '') });
+      var row = treeItem({ icon: err ? 'error' : ({ concentric: 'concentric', distance: 'distance', angle: 'angle', parallel: 'parallel', perpendicular: 'perpendicular', tangent: 'tangent', width: 'width', gear: 'gear', limitdistance: 'limitDistance', limitangle: 'limitAngle' }[mt.type] || 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (mt.suppressed ? ' suppressed' : '') });
       row.setAttribute('data-mate', String(mt.id));
       row.title = err ? mt.name + ': ' + err : mt.name + (mt.suppressed ? ' (suppressed)' : '') + ' — double-click to edit';
       row.addEventListener('click', function () { setStatus(err ? mt.name + ': ' + err : (UI.mateLabel ? UI.mateLabel(mt) : mt.name) + (mt.suppressed ? ' (suppressed)' : '')); });
@@ -356,6 +360,7 @@
       box.appendChild(row);
     });
     tree.appendChild(box);
+    extras();
   }
   function asmRun(p) { if (p && p.catch) p.catch(function (e) { toast(e.message || String(e)); }); }
   function componentMenu(c) {
@@ -1025,6 +1030,8 @@
   function refreshConfigPanel() {
     var panel = $('config-panel');
     if (!panel || panel.hidden || !App.model) return;
+    // an assembly's ConfigurationManager (Default with its exploded views) is drawn by ui-assembly.js
+    if (isAsm() && UI.asmConfigPanel) { panel.innerHTML = ''; UI.asmConfigPanel(panel); return; }
     var list = cfgList(), active = cfgActiveName();
     if (cfgSelected && !list.some(function (c) { return c.name === cfgSelected; })) cfgSelected = null;
     panel.innerHTML = '';
