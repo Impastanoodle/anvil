@@ -915,3 +915,15 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Done.** `anvil/vendor/three.min.js` (three.js r128, MIT, 603 445 bytes, sha256 9274bbce…c1ce2, downloaded from the same cdnjs URL) and `index.html` loads it locally, so the app makes no network requests (checked: every resource from localhost). The Claude artifact copy keeps its own index.html.
 
 **Verified (port 8812).** App boots with THREE r128, ui-smoke?watch 150/150.
+
+## Run local-2026-09-26h — OpenCascade experiment
+
+**Context.** The user asked whether SolidWorks-level modelling is possible; the proposed route is a real B-rep kernel (OpenCascade) under Anvil's UI. This run tests it in the browser, offline.
+
+**Done.** `experiments/occt-lab.html` builds Plate with bolt holes, Bushing, Rounded handle, Mug and Funnel with both kernels (time, volume, faces, triangles, a three.js view with one colour per B-rep face) plus OCCT-only checks (fillet every edge, fillet the Mug handle joints, exact STEP). `experiments/get-occt.ps1` fetches opencascade.js 2.0.0-beta.b5ff984 (50.3 MB wasm, sha256 pinned; not committed, `.gitignore`). `serve.ps1` serves `.wasm` as application/wasm. Findings and the recommendation in `experiments/OCCT.md`.
+
+**Findings.** Loads in 0.9-1.9 s from localhost. Volumes agree (Plate / Bushing exact in both, Rounded handle 0.002 %, Funnel 0.05 %, Mug 0.7 % from Anvil's faceted sweep). True faces: 10 / 6 / 16 / 8 / 6 against 102 / 147 / 332 / 851 / 258 mesh faces. Total time about equal (OCCT slower on booleans and sweeps, 5-10x faster on loft + shell). OCCT-only: fillet all 24 plate edges 58 ms, Mug handle joint fillets 70 ms, STEP with exact cylinder / torus 20 ms. 1.1.1 has a broken list binding; the Arc shell join returned an invalid Funnel silently (use Intersection and validate every step).
+
+**Verified.** ui-smoke?watch 150/150 (app code unchanged).
+
+**Next up.** If the user agrees: OCCT in `worker.js` behind a switch, feature by feature, with Anvil's kernel as fallback and volume cross-check.

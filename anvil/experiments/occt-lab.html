@@ -1,0 +1,231 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpenCascade lab</title>
+<!-- occt-lab.html — experiment: build Anvil's example parts with OpenCascade (opencascade.js 2.0 beta, WebAssembly) and
+     with Anvil's own kernel, side by side: build time, exact volume, true B-rep face count, triangles; plus what only
+     OpenCascade can do today (fillet every edge, exact STEP). Needs experiments/occt/v2 (run experiments/get-occt.ps1).
+     Coordinates follow Anvil's: Y up, the Front plane is XY. -->
+<style>
+  :root { --ink: #1d2128; --dim: #6b7380; --line: #d8dde4; --bg: #f6f7f9; --ok: #2f9e5b; --bad: #d9453b; --acc: #2b6fd6; --mono: Consolas, monospace; }
+  body { margin: 0; padding: 18px 24px; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  h1 { margin: 0 0 2px; font-size: 20px; } .sub { color: var(--dim); margin-bottom: 12px; max-width: 110ch; }
+  #status { font: 600 14px var(--mono); padding: 8px 12px; background: #fff; border: 1px solid var(--line); margin-bottom: 12px; }
+  table { border-collapse: collapse; background: #fff; border: 1px solid var(--line); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: right; vertical-align: top; }
+  th { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; } td:first-child, th:first-child { text-align: left; }
+  td.grp { border-left: 2px solid var(--line); } .ok { color: var(--ok); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  #wrap { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  #view { width: 560px; height: 420px; background: #fff; border: 1px solid var(--line); }
+  #pick { margin-bottom: 6px; } #notes { max-width: 70ch; } #notes li { margin-bottom: 4px; }
+</style>
+<h1>OpenCascade lab</h1>
+<div class="sub">The same parts built by Anvil's kernel (BSP mesh CSG with analytic records) and by OpenCascade 7.6 (exact B-rep,
+  <code>opencascade.js</code> 2.0 beta in WebAssembly). Times are medians of 5 builds in this tab; tessellation for both at a 0.05 mm chord.</div>
+<div id="status">loading…</div>
+<table id="tbl"><thead>
+  <tr><th rowspan="2">Part</th><th colspan="4" class="grp">Anvil kernel</th><th colspan="5" class="grp">OpenCascade</th><th rowspan="2">Volume diff</th></tr>
+  <tr><th class="grp">build ms</th><th>volume</th><th>mesh faces</th><th>triangles</th><th class="grp">build ms</th><th>mesh ms</th><th>volume</th><th>B-rep faces</th><th>triangles</th></tr>
+</thead><tbody id="rows"></tbody></table>
+<div id="wrap">
+  <div><div id="pick"></div><div id="view"></div></div>
+  <div id="notes"><b>OpenCascade only</b><ul id="extra"></ul></div>
+</div>
+
+<script src="../vendor/three.min.js"></script>
+<script src="../csg.js"></script>
+<script src="../kernel.js"></script>
+<script src="../holewizard.js"></script>
+<script src="../sketch-solver.js"></script>
+<script src="../exchange.js"></script>
+<script src="../materials.js"></script>
+<script src="../examples/examples.js"></script>
+<script type="module">
+import opencascade from './occt/v2/package/dist/opencascade.full.js';
+const $ = (id) => document.getElementById(id);
+const K = window.Kernel;
+const RUNS = 5;
+const status = (t) => { $('status').textContent = t; };
+const median = (a) => { const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const f1 = (n) => n == null ? '-' : (n < 10 ? n.toFixed(2) : n.toFixed(1));
+
+const t0 = performance.now();
+const oc = await new opencascade({ locateFile: (p) => './occt/v2/package/dist/' + p });
+const loadMs = performance.now() - t0;
+window.oc = oc;
+
+// ---- small OpenCascade toolkit (overload numbers from opencascade.full.d.ts)
+const R = () => new oc.Message_ProgressRange_1();
+const P = (x, y, z) => new oc.gp_Pnt_3(x, y, z);
+const D = (x, y, z) => new oc.gp_Dir_4(x, y, z);
+const ax2 = (p, d) => new oc.gp_Ax2_3(P(...p), D(...d));
+const ax1 = (p, d) => new oc.gp_Ax1_2(P(...p), D(...d));
+const ENUM = oc.TopAbs_ShapeEnum;
+function explore(sh, kind) { const out = [], x = new oc.TopExp_Explorer_2(sh, kind, ENUM.TopAbs_SHAPE); for (; x.More(); x.Next()) out.push(x.Current()); return out; }
+const faces = (sh) => explore(sh, ENUM.TopAbs_FACE).map((s) => oc.TopoDS.Face_1(s));
+function edges(sh) { // unique edges (the explorer visits a shared edge once per face)
+  const out = [], seen = new oc.TopTools_IndexedMapOfShape_1();
+  explore(sh, ENUM.TopAbs_EDGE).forEach((s) => { if (!seen.Contains(s)) { seen.Add(s); out.push(oc.TopoDS.Edge_1(s)); } });
+  return out;
+}
+function faceCentroid(f) { const g = new oc.GProp_GProps_1(); oc.BRepGProp.SurfaceProperties_1(f, g, false, false); const c = g.CentreOfMass(); return [c.X(), c.Y(), c.Z()]; }
+function edgeInfo(e) { const g = new oc.GProp_GProps_1(); oc.BRepGProp.LinearProperties(e, g, false, false); const c = g.CentreOfMass(); return { c: [c.X(), c.Y(), c.Z()], len: g.Mass() }; }
+function isValid(sh) { try { return new oc.BRepCheck_Analyzer(sh, true, false).IsValid_2(); } catch (e) { return false; } }
+function volume(sh) { const g = new oc.GProp_GProps_1(); oc.BRepGProp.VolumeProperties_1(sh, g, false, false, false); return g.Mass(); }
+const fuse = (a, b) => new oc.BRepAlgoAPI_Fuse_3(a, b, R()).Shape();
+const cut = (a, b) => new oc.BRepAlgoAPI_Cut_3(a, b, R()).Shape();
+const seg = (a, b) => new oc.BRepBuilderAPI_MakeEdge_3(P(...a), P(...b)).Edge();
+function arc3(a, m, b) { const tc = new oc.GC_MakeArcOfCircle_4(P(...a), P(...m), P(...b)).Value(); return new oc.BRepBuilderAPI_MakeEdge_24(new oc.Handle_Geom_Curve_2(tc.get())).Edge(); }
+function wireOf(es) { const w = new oc.BRepBuilderAPI_MakeWire_1(); es.forEach((e) => w.Add_1(e)); return w.Wire(); }
+const circleWire = (c, n, r) => wireOf([new oc.BRepBuilderAPI_MakeEdge_8(new oc.gp_Circ_2(ax2(c, n), r)).Edge()]);
+const faceOf = (w) => new oc.BRepBuilderAPI_MakeFace_15(w, true).Face();
+function polyFace(pts) { const es = []; for (let i = 0; i < pts.length; i++) es.push(seg(pts[i], pts[(i + 1) % pts.length])); return faceOf(wireOf(es)); }
+const revolveY = (face) => new oc.BRepPrimAPI_MakeRevol_1(face, ax1([0, 0, 0], [0, 1, 0]), 2 * Math.PI, false).Shape();
+const cylY = (x, y, z, r, h) => new oc.BRepPrimAPI_MakeCylinder_3(ax2([x, y, z], [0, 1, 0]), r, h).Shape();
+function shell(sh, removePred, t) {
+  const rm = new oc.TopTools_ListOfShape_1();
+  faces(sh).filter((f) => removePred(faceCentroid(f))).forEach((f) => rm.Append_1(f));
+  const th = new oc.BRepOffsetAPI_MakeThickSolid();
+  th.MakeThickSolidByJoin(sh, rm, -t, 1e-3, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, R());   // Arc join left the lofted Funnel invalid (volume 2.4x)
+  return th.Shape();
+}
+function fillet(sh, r, pred) {
+  const mf = new oc.BRepFilletAPI_MakeFillet(sh, oc.ChFi3d_FilletShape.ChFi3d_Rational);
+  let n = 0; edges(sh).forEach((e) => { if (pred(edgeInfo(e), e)) { mf.Add_2(r, e); n++; } });
+  if (!n) throw new Error('fillet: no edges matched');
+  return mf.Shape();
+}
+function chamfer(sh, d, pred) {
+  const mc = new oc.BRepFilletAPI_MakeChamfer(sh);
+  let n = 0; edges(sh).forEach((e) => { if (pred(edgeInfo(e), e)) { mc.Add_2(d, e); n++; } });
+  if (!n) throw new Error('chamfer: no edges matched');
+  return mc.Shape();
+}
+const near = (a, b, t = 1e-6) => Math.abs(a - b) <= t;
+
+// ---- the parts, as in examples/examples.js
+const PARTS = [
+  { name: 'Plate with bolt holes', exact: 100 * 60 * 8 - 4 * Math.PI * 16 * 8, occ() {
+      let s = new oc.BRepPrimAPI_MakeBox_2(100, 8, 60).Shape();
+      [[10, 10], [90, 10], [10, 50], [90, 50]].forEach(([x, z]) => { s = cut(s, cylY(x, -1, z, 4, 10)); });
+      return s; } },
+  { name: 'Bushing', exact: Math.PI * (15 * 15 - 10 * 10) * 25 + Math.PI * (18 * 18 - 15 * 15) * 4, occ() {
+      return revolveY(polyFace([[10, 0, 0], [15, 0, 0], [15, 21, 0], [18, 21, 0], [18, 25, 0], [10, 25, 0]])); } },
+  { name: 'Rounded handle', occ() {
+      let s = new oc.BRepPrimAPI_MakeBox_3(P(-20, 0, -20), 40, 6, 40).Shape();
+      s = fuse(s, cylY(0, 6, 0, 8, 30));
+      s = fillet(s, 3, (i) => near(i.c[1], 6, 1e-4) && near(i.len, 2 * Math.PI * 8, 1e-3));
+      s = fuse(s, revolveY(polyFace([[0, 36, 0], [18, 36, 0], [22, 42, 0], [18, 48, 0], [0, 48, 0]])));
+      s = chamfer(s, 1, (i) => near(i.c[1], 6, 1e-4) && near(i.len, 40, 1e-4) && (near(Math.abs(i.c[0]), 20, 1e-4) || near(Math.abs(i.c[2]), 20, 1e-4)));
+      return s; } },
+  { name: 'Mug', occ() {
+      const cup = shell(cylY(0, 0, 0, 40, 90), (c) => near(c[1], 90, 1e-6), 3);
+      const prof = faceOf(circleWire([38, 20, 0], [1, 0, 0], 5));
+      const path = wireOf([seg([38, 20, 0], [44, 20, 0]), arc3([44, 20, 0], [69, 45, 0], [44, 70, 0]), seg([44, 70, 0], [38, 70, 0])]);
+      const handle = new oc.BRepOffsetAPI_MakePipe_1(path, prof).Shape();
+      return fuse(cup, handle); } },
+  { name: 'Funnel', occ() {
+      const loft = new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6);
+      loft.AddWire(circleWire([0, 60, 0], [0, 1, 0], 40)); loft.AddWire(circleWire([0, 20, 0], [0, 1, 0], 7));
+      loft.Build(R());
+      const body = fuse(loft.Shape(), cylY(0, 0, 0, 7, 20));
+      return shell(body, (c) => near(c[1], 60, 1e-6) || near(c[1], 0, 1e-6), 1.5); } }
+];
+
+// ---- tessellation: one BufferGeometry, a colour per B-rep face
+function tessellate(sh, chord = 0.05) {
+  new oc.BRepMesh_IncrementalMesh_2(sh, chord, false, 0.5, false);
+  const pos = [], col = [], fs = faces(sh);
+  fs.forEach((f, fi) => {
+    const loc = new oc.TopLoc_Location_1(), h = oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0);
+    if (h.IsNull()) return;
+    const tri = h.get(), tr = loc.Transformation(), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
+    const hue = (fi * 0.618034) % 1, c = new THREE.Color().setHSL(hue, 0.45, 0.62);
+    const nodes = []; for (let i = 1; i <= tri.NbNodes(); i++) { const p = tri.Node(i).Transformed(tr); nodes[i] = [p.X(), p.Y(), p.Z()]; }
+    for (let t = 1; t <= tri.NbTriangles(); t++) {
+      const T = tri.Triangle(t); let a = T.Value(1), b = T.Value(2), d = T.Value(3);
+      if (rev) { const x = b; b = d; d = x; }
+      [a, b, d].forEach((k) => { pos.push(...nodes[k]); col.push(c.r, c.g, c.b); });
+    }
+  });
+  return { pos, col, tris: pos.length / 9, faces: fs.length };
+}
+
+// ---- Anvil side
+function anvilOnce(code) {
+  const model = K.newModel('Lab'); const a = performance.now();
+  K.runScript(model, code); const b = K.rebuild(model); const mesh = K.meshFromBody(b.body);
+  return { ms: performance.now() - a, mesh, errors: Object.keys(b.errors).length };
+}
+
+// ---- viewer
+const view = $('view'), renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(view.clientWidth, view.clientHeight); renderer.setClearColor(0xffffff); view.appendChild(renderer.domElement);
+const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(35, view.clientWidth / view.clientHeight, 0.1, 5000);
+scene.add(new THREE.AmbientLight(0xffffff, 0.55)); const dl = new THREE.DirectionalLight(0xffffff, 0.6); dl.position.set(1, 2, 1.5); scene.add(dl);
+let current = null, spin = 0;
+function show(t) {
+  if (current) { scene.remove(current); current.geometry.dispose(); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(t.pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(t.col, 3)); g.computeVertexNormals();
+  current = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })); scene.add(current);
+  g.computeBoundingSphere(); const s = g.boundingSphere; current.position.set(-s.center.x, -s.center.y, -s.center.z);
+  cam.position.set(s.radius * 2.2, s.radius * 1.6, s.radius * 2.6); cam.lookAt(0, 0, 0);
+}
+(function loop() { spin += 0.006; if (current) { scene.rotation.y = spin; } renderer.render(scene, cam); requestAnimationFrame(loop); })();
+
+// ---- run
+const results = [];
+for (const part of PARTS) {
+  status('building ' + part.name + '…'); await new Promise((r) => setTimeout(r, 20));
+  const ex = K && window.AnvilExamples ? (AnvilExamples.list || AnvilExamples).find((e) => e.name === part.name) : null;
+  const row = { name: part.name };
+  try {
+    const at = []; let am; for (let i = 0; i < RUNS; i++) { const r = anvilOnce(ex.code); at.push(r.ms); am = r; }
+    row.aMs = median(at); row.aVol = K.massProps(am.mesh, 1).volume; row.aFaces = am.mesh.faces.length; row.aTris = am.mesh.triCount; row.aErr = am.errors;
+  } catch (e) { row.aError = e.message; }
+  try {
+    const ot = []; let sh; for (let i = 0; i < RUNS; i++) { const a = performance.now(); sh = part.occ(); ot.push(performance.now() - a); }
+    row.oMs = median(ot); row.oVol = volume(sh); row.oValid = isValid(sh);
+    const m0 = performance.now(); const t = tessellate(sh); row.oMeshMs = performance.now() - m0; row.oFaces = t.faces; row.oTris = t.tris; row.tess = t; row.shape = sh;
+  } catch (e) { row.oError = String(e && e.message || e); }
+  results.push(row); render();
+}
+function render() {
+  $('rows').innerHTML = results.filter((r) => r.aMs != null || r.aError || r.oError).map((r) => {
+    const ref = r.oVol, diff = r.aVol != null && ref ? (r.aVol - ref) / ref * 100 : null;
+    const exactNote = (v) => r.name && PARTS.find((p) => p.name === r.name).exact ? ' <span class="dim">(' + ((v - PARTS.find((p) => p.name === r.name).exact) / PARTS.find((p) => p.name === r.name).exact * 100).toExponential(0) + ' %)</span>' : '';
+    return '<tr><td>' + r.name + '</td>' +
+      (r.aError ? '<td class="grp bad" colspan="4">' + r.aError + '</td>' : '<td class="grp">' + f1(r.aMs) + '</td><td>' + r.aVol.toFixed(1) + exactNote(r.aVol) + '</td><td>' + r.aFaces + '</td><td>' + r.aTris + '</td>') +
+      (r.oError ? '<td class="grp bad" colspan="5">' + r.oError + '</td>' : '<td class="grp">' + f1(r.oMs) + '</td><td>' + f1(r.oMeshMs) + '</td><td>' + r.oVol.toFixed(1) + exactNote(r.oVol) + (r.oValid ? '' : ' <b class="bad">INVALID</b>') + '</td><td>' + r.oFaces + '</td><td>' + r.oTris + '</td>') +
+      '<td class="' + (diff != null && Math.abs(diff) < 0.1 ? 'ok' : 'bad') + '">' + (diff == null ? '-' : (diff >= 0 ? '+' : '') + diff.toFixed(3) + ' %') + '</td></tr>';
+  }).join('');
+  $('pick').innerHTML = 'Show OpenCascade result: ' + results.filter((r) => r.tess).map((r, i) => '<button data-i="' + results.indexOf(r) + '">' + r.name + '</button>').join(' ');
+  $('pick').querySelectorAll('button').forEach((b) => { b.onclick = () => show(results[+b.dataset.i].tess); });
+}
+
+// ---- OpenCascade only: things Anvil's kernel cannot do today
+const extra = [];
+function note(t) { extra.push(t); $('extra').innerHTML = extra.map((x) => '<li>' + x + '</li>').join(''); }
+try {
+  const plate = PARTS[0].occ(), a = performance.now(); const all = fillet(plate, 1, () => true); const ms = performance.now() - a;
+  const t = tessellate(all); results.push({ name: 'Plate, every edge filleted R1 (OCCT only)', tess: t }); render();
+  note('Fillet R1 on <b>all ' + edges(plate).length + ' edges</b> of the plate (straight and round hole rims): ' + ms.toFixed(0) + ' ms, ' + faces(all).length + ' faces, volume ' + volume(all).toFixed(1) + (isValid(all) ? ', valid' : ' <b class="bad">INVALID</b>'));
+} catch (e) { note('<span class="bad">fillet every edge: ' + e.message + '</span>'); }
+try {
+  const mug = results.find((r) => r.name === 'Mug').shape, a = performance.now();
+  const m2 = fillet(mug, 2, (i) => i.len > 5 && i.c[0] > 36 && i.c[0] < 41 && (near(i.c[1], 20, 6) || near(i.c[1], 70, 6)));
+  note('Fillet R2 where the Mug handle meets the wall: ' + (performance.now() - a).toFixed(0) + ' ms, volume ' + volume(m2).toFixed(1) + (isValid(m2) ? ', valid' : ' <b class="bad">INVALID</b>'));
+  results.push({ name: 'Mug, handle joints filleted R2 (OCCT only)', tess: tessellate(m2) }); render();
+} catch (e) { note('<span class="bad">Mug handle fillet: ' + e.message + '</span>'); }
+try {
+  const mug = results.find((r) => r.name === 'Mug').shape, a = performance.now();
+  const w = new oc.STEPControl_Writer_1(); w.Transfer(mug, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R()); w.Write('/mug.step');
+  const txt = oc.FS.readFile('/mug.step', { encoding: 'utf8' });
+  const kinds = ['CYLINDRICAL_SURFACE', 'TOROIDAL_SURFACE', 'B_SPLINE_SURFACE', 'PLANE', 'SURFACE_OF_REVOLUTION'].map((k) => k + ' ' + (txt.split(k + '(').length - 1)).filter((s) => !/ 0$/.test(s));
+  note('STEP export of the Mug: ' + (performance.now() - a).toFixed(0) + ' ms, ' + (txt.length / 1024).toFixed(0) + ' KB, exact surfaces: ' + kinds.join(', '));
+} catch (e) { note('<span class="bad">STEP export: ' + e.message + '</span>'); }
+
+const done = results.filter((r) => r.oMs != null);
+status('OpenCascade loaded in ' + loadMs.toFixed(0) + ' ms (50.3 MB wasm) · ' + done.length + ' / ' + PARTS.length + ' parts built · Anvil total ' + f1(done.reduce((s, r) => s + (r.aMs || 0), 0)) + ' ms, OpenCascade total ' + f1(done.reduce((s, r) => s + r.oMs + r.oMeshMs, 0)) + ' ms (build + mesh)');
+show((results.find((r) => r.name === 'Mug') || results[0]).tess);
+window.labResults = results.map(({ tess, shape, ...r }) => r); window.labExtra = extra; window.labLoadMs = loadMs; window.labDone = true;
+</script>

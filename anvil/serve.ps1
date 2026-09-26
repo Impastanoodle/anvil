@@ -6,7 +6,7 @@ $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
 Write-Host "Serving $root at http://localhost:$Port/"
-$types = @{ ".html"="text/html; charset=utf-8"; ".js"="text/javascript; charset=utf-8"; ".css"="text/css; charset=utf-8"; ".json"="application/json"; ".png"="image/png"; ".svg"="image/svg+xml"; ".md"="text/plain; charset=utf-8" }
+$types = @{ ".html"="text/html; charset=utf-8"; ".js"="text/javascript; charset=utf-8"; ".css"="text/css; charset=utf-8"; ".json"="application/json"; ".wasm"="application/wasm"; ".mjs"="text/javascript; charset=utf-8"; ".png"="image/png"; ".svg"="image/svg+xml"; ".md"="text/plain; charset=utf-8" }
 while ($listener.IsListening) {
   $ctx = $listener.GetContext()
   try {
