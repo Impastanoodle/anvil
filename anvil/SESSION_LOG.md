@@ -909,3 +909,9 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (port 8812).** kernel-tests 683/683, ui-smoke?watch 150/150.
 
 **Next up.** Shell inner walls (Funnel, Mug inside) lose their surface records and still pick as strips: carry an offset analytic record through `buildShell`.
+
+## Run local-2026-09-26g — Fully offline: three.js vendored
+
+**Done.** `anvil/vendor/three.min.js` (three.js r128, MIT, 603 445 bytes, sha256 9274bbce…c1ce2, downloaded from the same cdnjs URL) and `index.html` loads it locally, so the app makes no network requests (checked: every resource from localhost). The Claude artifact copy keeps its own index.html.
+
+**Verified (port 8812).** App boots with THREE r128, ui-smoke?watch 150/150.
