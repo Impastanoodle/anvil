@@ -14,6 +14,9 @@
 #drawing-tabs .dw-sp { flex: 1; }
 
 /* overlay drawn into the sheet SVG: view frames, dimension frames, the entity under the Smart Dimension cursor */
+/* hit testing is geometric (drawing.js): the overlay, redrawn on every mousedown, must not take the pointer, or the
+   second click of a double-click lands on a node that is already gone and no dblclick fires */
+#dw-overlay { pointer-events: none; }
 #dw-overlay .dw-vbox { fill: none; stroke: var(--dw-hot); opacity: 0.55; }
 #dw-overlay .dw-vbox.sel { opacity: 1; }
 #dw-overlay .dw-dbox { fill: var(--dw-hot); fill-opacity: 0.08; stroke: var(--dw-hot); opacity: 0.6; }
@@ -35,3 +38,6 @@
 .dw-props input[data-tb] { font-family: Consolas, "IBM Plex Mono", monospace; font-size: 12px; }
 /* Section View cutting line and Detail View circle previews */
 #dw-overlay .dw-cut { fill: none; stroke: var(--dw-hot); }
+/* Document Properties: checkbox rows span both columns */
+.dw-props .dw-opt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+.dw-docprops input[type=number] { width: 80px; }
