@@ -2412,8 +2412,13 @@
     };
     function ask(seq, m) {
       return new Promise(function (resolve, reject) {
-        var timer = setTimeout(function () { delete waiting[seq]; reject(new Error('worker did not answer seq ' + seq + ' within 8 s')); }, 8000);
-        waiting[seq] = function (reply) { clearTimeout(timer); resolve(reply); };
+        // the 8 s start once the page is idle: the synchronous tests declared after this one keep the main thread busy
+        // for several seconds, and a timer armed now would fire before the worker's queued reply is delivered
+        var timer = null, answered = false;
+        setTimeout(function () {
+          if (!answered) timer = setTimeout(function () { delete waiting[seq]; reject(new Error('worker did not answer seq ' + seq + ' within 8 s')); }, 8000);
+        }, 0);
+        waiting[seq] = function (reply) { answered = true; clearTimeout(timer); resolve(reply); };
         w.postMessage({ type: 'rebuild', seq: seq, model: cloneOf(m) });
       });
     }
@@ -4347,6 +4352,262 @@
         out.push(ex.name.split(' ')[0] + ' ' + DW.scaleText(r.doc.sheet.scale));
       });
       return out.join(', ') + (skipped.length ? '; skipped assemblies: ' + skipped.join(', ') : '');
+    });
+
+    // ---------------------------------------------------------------- Projected, Section and Detail views, dimensions that follow the part
+    group('drawing views');
+    var PLATE = AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code;
+    function viewRec(r, id) { return r.sheet.views.filter(function (w) { return w.view.id === id; })[0]; }
+    function recompute(r) { r.sheet = DW.compute(r.doc, r.mesh, r.model); return r.sheet; }
+    function frameEq(F, G, what) { nearVec(F.e, G.e, 1e-12, what + ' e'); nearVec(F.u, G.u, 1e-12, what + ' u'); nearVec(F.v, G.v, 1e-12, what + ' v'); }
+    test('projected frames: Front + up / down / left / right = Top / Bottom / Left / Right in third angle, mirrored in first angle; u x v = e from any parent', function () {
+      var Fr = DW.orientation('Front');
+      [['up', 'Top'], ['down', 'Bottom'], ['left', 'Left'], ['right', 'Right']].forEach(function (c) {
+        var F = DW.projectedFrame(Fr, c[0], 'third');
+        assert(F.name === c[1], c[0] + ' -> ' + F.name); frameEq(F, DW.orientation(c[1]), c[0]);
+      });
+      [['up', 'Bottom'], ['down', 'Top'], ['left', 'Right'], ['right', 'Left']].forEach(function (c) { assert(DW.projectedFrame(Fr, c[0], 'first').name === c[1], 'first angle ' + c[0]); });
+      // folding up from Top shows the back upside down (a true projection, not the Back standard view)
+      var tu = DW.projectedFrame(DW.orientation('Top'), 'up', 'third'), bk = DW.orientation('Back');
+      assert(tu.name === 'Projected', 'Top + up is ' + tu.name); nearVec(tu.e, bk.e, 1e-12, 'Top + up looks from the back'); nearVec(tu.u, V.scale(bk.u, -1), 1e-12, 'turned 180');
+      assert(DW.projectedFrame(DW.orientation('Right'), 'right', 'third').name === 'Back', 'Right + right = Back');
+      DW.ORIENTS.forEach(function (n) {
+        ['up', 'down', 'left', 'right'].forEach(function (d) {
+          var F = DW.projectedFrame(DW.orientation(n), d, 'third');
+          nearVec(V.cross(F.u, F.v), F.e, 1e-12, n + ' ' + d);
+          near(V.len(F.e), 1, 1e-12); near(V.dot(F.u, F.v), 0, 1e-12);
+        });
+      });
+      return '4 x ' + DW.ORIENTS.length + ' frames right-handed';
+    });
+    test('Projected View: a Bottom view below Front and a Back view right of Right are aligned (same x span / y span), slide only along the projection and follow the parent', function () {
+      var r = drawingOf(PLATE), F = r.view('Front').view, R = r.view('Right').view;
+      var B = DW.addProjectedView(r.doc, r.mesh, F.id, 'down'), K2 = DW.addProjectedView(r.doc, r.mesh, R.id, 'right');
+      assert(B.orient === 'Bottom' && B.kind === 'projected' && B.align === 'x' && K2.orient === 'Back' && K2.align === 'y', B.orient + ' ' + K2.orient);
+      recompute(r);
+      var wb = viewRec(r, B.id), wf = viewRec(r, F.id), wk = viewRec(r, K2.id), wr = viewRec(r, R.id);
+      near(wb.box.x0, wf.box.x0, 1e-9, 'Bottom x0'); near(wb.box.x1, wf.box.x1, 1e-9, 'Bottom x1');
+      near(wk.box.y0, wr.box.y0, 1e-9, 'Back y0'); near(wk.box.y1, wr.box.y1, 1e-9, 'Back y1');
+      assert(wb.box.y1 < wf.box.y0 && wk.box.x0 > wr.box.x1, 'placed below / beside');
+      near(wb.box.x1 - wb.box.x0, 200, 1e-9, 'Bottom width at 2:1'); near(wb.box.y1 - wb.box.y0, 120, 1e-9, 'Bottom depth at 2:1');
+      assert(wb.proj.stats.visibleCircles === 4 && wk.proj.stats.hiddenLines === 4, 'content ' + JSON.stringify([wb.proj.stats, wk.proj.stats]));
+      var bx = B.x; DW.moveView(r.doc, B.id, B.x + 40, B.y - 10); near(B.x, bx, 1e-12, 'Bottom slides vertically only');
+      var fx = F.x, by = B.y, ky = K2.y; DW.moveView(r.doc, F.id, fx + 7, F.y + 3);
+      near(B.x, bx + 7, 1e-12, 'Bottom follows Front'); near(B.y, by + 3, 1e-12);
+      near(K2.y, ky + 3, 1e-12, 'Back follows Right, which follows Front');
+      recompute(r);
+      near(viewRec(r, B.id).box.x0, viewRec(r, F.id).box.x0, 1e-9, 'still aligned after the moves');
+      // a new sheet scale re-lays out the standard views: the projected ones follow and stay aligned
+      r.doc.sheet.scale = [1, 1]; r.doc.sheet.autoScale = false; DW.layout(r.doc, r.mesh, 'mm'); recompute(r);
+      near(B.x, F.x, 1e-12, 'Bottom under Front after the layout'); near(K2.y, R.y, 1e-12, 'Back level with Right');
+      near(viewRec(r, B.id).box.x1 - viewRec(r, B.id).box.x0, 100, 1e-9, '1:1');
+      return 'Bottom under Front, Back beside Right';
+    });
+    test('section areas are exact: box, plate through its four holes, bushing annulus and axial section, two-body clamp (one cap per body)', function () {
+      var bx = build('p.box(40, 20, 10);'), S = DW.sectionOf(bx.mesh, [0, 1, 0], 5);
+      near(S.area, 800, 1e-9, 'box y=5'); near(K.massProps(S.mesh, 1).volume, 4000, 1e-9, 'box kept half');
+      var pl = build(PLATE);
+      S = DW.sectionOf(pl.mesh, [0, 1, 0], 4);
+      nearRel(S.area, 6000 - 4 * polyCircleArea(4), 1e-12, 'plate through the holes');
+      assert(S.caps.length === 1, 'one cap face');
+      near(DW.sectionOf(pl.mesh, [1, 0, 0], 50).area, 480, 1e-9, 'plate x=50');
+      near(DW.sectionOf(pl.mesh, [-1, 0, 0], -50).area, 480, 1e-9, 'plate x=50 seen from the other side');
+      // dV/dc = A where the part is prismatic along the cut direction: an independent check of the cap area
+      var v1 = K.massProps(DW.sectionOf(pl.mesh, [0, 1, 0], 1).mesh, 1).volume, v7 = K.massProps(DW.sectionOf(pl.mesh, [0, 1, 0], 7).mesh, 1).volume;
+      nearRel((v7 - v1) / 6, S.area, 1e-12, 'volume slope');
+      var bu = build(AnvilExamples.filter(function (e) { return e.name === 'Bushing'; })[0].code);
+      var ann = 24 * Math.sin(2 * Math.PI / 48) * (15 * 15 - 10 * 10);   // revolves are 48-gons
+      nearRel(DW.sectionOf(bu.mesh, [0, 1, 0], 10).area, ann, 1e-12, 'bushing annulus');
+      var ax = DW.sectionOf(bu.mesh, [1, 0, 0], 0);
+      near(ax.area, 2 * (5 * 21 + 8 * 4), 1e-9, 'bushing through its axis = twice the profile');
+      assert(ax.caps.length === 1, 'the two walls are one cap face');
+      var tb = build(AnvilExamples.filter(function (e) { return e.name === 'Two-body clamp'; })[0].code), bb = tb.mp.bbox;
+      var tS = DW.sectionOf(tb.mesh, [0, 0, 1], (bb.min[2] + bb.max[2]) / 2);
+      assert(JSON.stringify(tS.caps.map(function (i) { return tS.mesh.faces[i].body; })) === '[0,1]', 'caps per body');
+      assert(DW.sectionOf(pl.mesh, [0, 1, 0], 100).area === 0 && DW.sectionOf(pl.mesh, [0, 1, 0], -1).mesh.triCount === 0, 'planes that miss the part');
+      return 'plate ' + fmt(S.area) + ', bushing ' + fmt(ann) + ' / 274';
+    });
+    test('Section View A-A: cutting line on Front, aligned view looking down at the cut, 4 hole circles, 45 degree hatch inside the cut face only, arrows and labels', function () {
+      var r = drawingOf(PLATE), F = r.view('Front').view;
+      var S = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'h', at: 4, sign: 1 });
+      assert(S.label === 'A' && S.name === 'Section View A-A' && S.orient === 'Top' && S.align === 'x', JSON.stringify([S.label, S.name, S.orient]));
+      recompute(r);
+      var w = viewRec(r, S.id), wf = viewRec(r, F.id);
+      near(w.box.x0, wf.box.x0, 1e-9, 'aligned with Front'); near(w.box.x1, wf.box.x1, 1e-9);
+      assert(w.box.y0 > wf.box.y1, 'third angle: above the Front view (the viewer side)');
+      assert(w.layer === 'SECTION_A' && w.proj.stats.visibleCircles === 4 && w.proj.stats.visibleLines === 4, JSON.stringify(w.proj.stats));
+      w.proj.circles.visible.forEach(function (c) { near(c.r, 4, 1e-9, 'hole'); });
+      nearRel(w.section.area, 6000 - 4 * polyCircleArea(4), 1e-12, 'area');
+      // hatching: every line at 45 degrees, inside the plate outline and outside every hole, total length ~ area / spacing
+      var hatch = r.sheet.prims.filter(function (p) { return p.layer === 'SECTION_A' && p.style === 'hatch'; }), len = 0;
+      assert(hatch.length === w.hatch && hatch.length > 50, 'hatch lines ' + hatch.length);
+      var holes = w.proj.circles.visible.map(function (c) { return c.c; });
+      hatch.forEach(function (h) {
+        var dx = h.b[0] - h.a[0], dy = h.b[1] - h.a[1], L = Math.hypot(dx, dy);
+        near(Math.abs(dx / L), Math.SQRT1_2, 1e-9, '45 deg'); near(dx * dy > 0 ? 1 : 0, 1, 0, 'rising');
+        len += L;
+        [0.1, 0.5, 0.9].forEach(function (t) {
+          var m = w.fromSheet([h.a[0] + dx * t, h.a[1] + dy * t]);
+          assert(m[0] > -1e-9 && m[0] < 100 + 1e-9 && m[1] < 1e-9 && m[1] > -60 - 1e-9, 'hatch outside the plate ' + m);
+          holes.forEach(function (c) { assert(Math.hypot(m[0] - c[0], m[1] - c[1]) > 4 * Math.cos(Math.PI / 16) - 1e-9, 'hatch inside a hole ' + m); });
+        });
+      });
+      nearRel(len * 2.5, w.section.area * 4, 0.02, 'hatched length x spacing = paper area');
+      // cutting line on the Front view: chain line through y = 4 past both sides, arrows pointing down (toward the part), letters A
+      var cut = r.sheet.prims.filter(function (p) { return p.layer === 'FRONT' && p.style === 'chain'; });
+      assert(cut.length === 1, 'chain lines ' + cut.length);
+      var y = wf.toSheet([0, 4])[1];
+      near(cut[0].a[1], y, 1e-9); near(cut[0].b[1], y, 1e-9);
+      assert(Math.min(cut[0].a[0], cut[0].b[0]) < wf.box.x0 && Math.max(cut[0].a[0], cut[0].b[0]) > wf.box.x1, 'line runs past the view');
+      var arrows = r.sheet.prims.filter(function (p) { return p.layer === 'FRONT' && p.k === 'fill'; });
+      assert(arrows.length === 2 && arrows.every(function (a) { return a.pts[0][1] < a.pts[1][1] && a.pts[0][1] < y; }), 'arrows point down, away from the view above');
+      var txt = r.sheet.prims.filter(function (p) { return p.k === 'text'; });
+      assert(txt.filter(function (t) { return t.layer === 'FRONT' && t.text === 'A'; }).length === 2, 'letters A');
+      assert(txt.some(function (t) { return t.layer === 'SECTION_A' && t.text === 'SECTION A-A'; }), 'view label');
+      assert(!r.sheet.dims.some(function (d) { return d.view === S.id; }), 'model items stay on the standard views');
+      return hatch.length + ' hatch lines, area ' + fmt(w.section.area);
+    });
+    test('section views agree with an independent ray cast; a vertical cut through two holes; sign flips the side; first angle places it on the arrow side', function () {
+      var r = drawingOf(PLATE), F = r.view('Front').view, T = r.view('Top').view;
+      var S = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'v', at: 10, sign: -1 });
+      assert(S.orient === 'Left' && S.align === 'y', S.orient);
+      S.display = 'hlv';
+      recompute(r);
+      var w = viewRec(r, S.id), wt = viewRec(r, F.id);
+      assert(w.box.x1 < wt.box.x0, 'viewer on the left: view left of Front');
+      near(w.box.y0, wt.box.y0, 1e-9, 'level with Front'); near(w.box.y1, wt.box.y1, 1e-9);
+      void T;
+      near(w.section.area, 60 * 8 - 2 * 8 * 8, 1e-9, 'x = 10 through two hole axes (a 16-gon vertex lies on the plane)');
+      var c = checkRays({ mesh: w.section.mesh, view: function () { return w; } }, 'Left');
+      assert(!c.bad.length, c.bad.slice(0, 3).join(' | '));
+      var arrows = r.sheet.prims.filter(function (p) { return p.layer === 'FRONT' && p.k === 'fill'; });
+      assert(arrows.length === 2 && arrows.every(function (a) { return a.pts[0][0] > a.pts[1][0]; }), 'arrows point right (line of sight)');
+      var r2 = drawingOf(PLATE, { projection: 'first' }), F2 = r2.view('Front').view;
+      var S2 = DW.addSectionView(r2.doc, r2.mesh, F2.id, { axis: 'h', at: 4, sign: 1 });
+      recompute(r2);
+      assert(viewRec(r2, S2.id).box.y1 < viewRec(r2, F2.id).box.y0, 'first angle: below the parent');
+      return c.n + ' ray samples agree';
+    });
+    test('Detail View: twice the parent scale, lines clipped to the circle, a cut circle becomes an arc, circle and letter on the parent, DETAIL A / SCALE 4:1', function () {
+      var r = drawingOf(PLATE), T = r.view('Top').view;
+      assert(JSON.stringify(DW.detailScale([2, 1])) === '[4,1]' && JSON.stringify(DW.detailScale([1, 2])) === '[1,1]' && JSON.stringify(DW.detailScale([1, 5])) === '[1,2.5]', 'detail scales');
+      var Dv = DW.addDetailView(r.doc, r.mesh, T.id, { c: [10, -10], r: 12, x: 330, y: 120 });
+      assert(Dv.label === 'A' && DW.scaleText(Dv.scale) === '4:1' && Dv.name === 'Detail View A (4:1)', Dv.name);
+      var Dv2 = DW.addDetailView(r.doc, r.mesh, T.id, { c: [14, -10], r: 3, x: 330, y: 60, label: 'C' });
+      recompute(r);
+      var w = viewRec(r, Dv.id), w2 = viewRec(r, Dv2.id);
+      near(w.scale, 4, 0); near(w.box.x1 - w.box.x0, 96, 1e-9, 'box = 2r x 4');
+      assert(w.proj.stats.visibleCircles === 1 && w.proj.stats.visibleLines === 2, JSON.stringify(w.proj.stats));
+      var circ = r.sheet.prims.filter(function (p) { return p.layer === 'DETAIL_A' && p.k === 'circle'; });
+      assert(circ.length === 1, 'circles'); near(circ[0].r, 16, 1e-9, 'hole r 4 at 4:1'); nearVec(circ[0].c.concat(0), [330, 120, 0], 1e-9, 'centred');
+      r.sheet.prims.filter(function (p) { return p.layer === 'DETAIL_A' && p.k === 'line'; }).forEach(function (l) {
+        [l.a, l.b].forEach(function (q) { assert(Math.hypot(q[0] - 330, q[1] - 120) <= 48 + 1e-9, 'line leaves the detail circle'); });
+      });
+      // the plate corner edges u = 0 and v = 0 each clipped to a chord of the circle
+      w.proj.lines.visible.forEach(function (l) { near(Math.hypot(l[2] - l[0], l[3] - l[1]), 2 * Math.sqrt(144 - 100), 1e-9, 'chord'); });
+      var arcs = r.sheet.prims.filter(function (p) { return p.layer === 'DETAIL_C' && p.k === 'arc'; });
+      assert(arcs.length === 1 && w2.proj.stats.visibleCircles === 0, 'arc ' + JSON.stringify(w2.proj.stats));
+      var a = arcs[0], a0 = a.a0 * Math.PI / 180, a1 = a.a1 * Math.PI / 180, cc = w2.toSheet([14, -10]);
+      near(a.r, 16, 1e-9);
+      [a0, a1].forEach(function (t) { near(Math.hypot(a.c[0] + a.r * Math.cos(t) - cc[0], a.c[1] + a.r * Math.sin(t) - cc[1]), 12, 1e-9, 'arc ends on the detail circle'); });
+      var mid = (a0 + a1) / 2;
+      assert(Math.hypot(a.c[0] + a.r * Math.cos(mid) - cc[0], a.c[1] + a.r * Math.sin(mid) - cc[1]) < 12, 'the arc kept is the inside one');
+      var wt = viewRec(r, T.id), onTop = r.sheet.prims.filter(function (p) { return p.layer === 'TOP' && p.k === 'circle' && p.style === 'thick'; });
+      assert(onTop.length === 2, 'detail circles on the parent'); near(onTop[0].r, 24, 1e-9, 'r 12 at 2:1'); nearVec(onTop[0].c.concat(0), wt.toSheet([10, -10]).concat(0), 1e-9);
+      var txt = r.sheet.prims.filter(function (p) { return p.k === 'text'; }).map(function (p) { return p.layer + ':' + p.text; });
+      ['TOP:A', 'TOP:C', 'DETAIL_A:DETAIL A', 'DETAIL_A:SCALE 4:1', 'DETAIL_C:DETAIL C'].forEach(function (t) { assert(txt.indexOf(t) >= 0, 'missing ' + t); });
+      // a detail of a section view hatches the cut face at the detail's scale, inside the circle
+      var S = DW.addSectionView(r.doc, r.mesh, r.view('Front').view.id, { axis: 'h', at: 4, sign: 1, x: 139, y: 40 });
+      var Ds = DW.addDetailView(r.doc, r.mesh, S.id, { c: [10, -10], r: 8, x: 60, y: 60 });
+      recompute(r);
+      var wd = viewRec(r, Ds.id), dh = r.sheet.prims.filter(function (p) { return p.layer === wd.layer && p.style === 'hatch'; });
+      assert(S.label === 'B' && Ds.label === 'D' && dh.length > 10 && dh.every(function (h) { return Math.hypot(h.a[0] - 60, h.a[1] - 60) <= 32 + 1e-9 && Math.hypot(h.b[0] - 60, h.b[1] - 60) <= 32 + 1e-9; }), 'detail hatch ' + dh.length);
+      return 'chords ' + fmt(2 * Math.sqrt(44)) + ', arc ' + fmt(a.a1 - a.a0) + ' deg';
+    });
+    test('labels skip I, O and Q; deleting a parent removes its section and detail views, projected views become free', function () {
+      var r = drawingOf('p.box(40, 20, 10);'), F = r.view('Front').view;
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].forEach(function (l) { r.doc.views.push({ id: 900 + l.charCodeAt(0), label: l, orient: 'Front', kind: 'x' }); });
+      assert(DW.nextLabel(r.doc) === 'J', DW.nextLabel(r.doc));
+      r.doc.views = r.doc.views.filter(function (v) { return v.id < 900; });
+      var S = DW.addSectionView(r.doc, r.mesh, F.id, { at: 5 }), Dt = DW.addDetailView(r.doc, r.mesh, S.id, { c: [5, 5], r: 3 }), P = DW.addProjectedView(r.doc, r.mesh, F.id, 'down');
+      var n = r.doc.views.length;
+      assert(DW.deleteView(r.doc, F.id) === 3 && r.doc.views.length === n - 3, 'removed ' + (n - r.doc.views.length));
+      assert(!DW.findView(r.doc, S.id) && !DW.findView(r.doc, Dt.id) && P.parent === null && P.align === null && DW.findView(r.doc, P.id), 'dependents');
+      recompute(r);
+      assert(viewRec(r, P.id).view.orient === 'Bottom', 'the projected view keeps its frame');
+      return 'J after H';
+    });
+    test('Smart Dimensions follow the part: an edge that grows, a face that moves, a hole that grows and moves; a lost reference dangles (olive) and reattaches on undo', function () {
+      function redo(r, code) { var n = build(code); noErrors(n); r.mesh = n.mesh; r.model = n.model; return recompute(r); }
+      var r = drawingOf('p.box(100, 60, 8); p.hole("Top", 20, -20, 10, { offset: 8 });');
+      var wf = r.view('Front'), wt = r.view('Top');
+      var top = wf.proj.lines.visible.filter(function (l) { return Math.abs(l[1] - wf.proj.bounds.vmax) < 1e-9 && Math.abs(l[3] - l[1]) < 1e-9; })[0];
+      assert(top, 'top edge in the Front view');
+      wf.view.dims.push({ kind: 'h', a: [top[0], top[1]], b: [top[2], top[3]], side: 1, value: Math.abs(top[2] - top[0]) });
+      var hole = wt.proj.circles.visible[0];
+      wt.view.dims.push({ kind: 'dia', c: hole.c.slice(), r: hole.r, count: 1, value: 2 * hole.r });
+      function user() { return r.sheet.dims.filter(function (d) { return !d.auto; }).map(function (d) { return d.text + (d.dangling ? '?' : ''); }).join(' '); }
+      recompute(r); assert(user() === '100 \u00d810', user());
+      redo(r, 'p.box(120, 60, 8); p.hole("Top", 20, -20, 10, { offset: 8 });');
+      assert(user() === '120 \u00d810', 'wider: ' + user());
+      redo(r, 'p.box(120, 60, 10); p.hole("Top", 20, -20, 12, { offset: 10 });');
+      assert(user() === '120 \u00d812', 'taller + bigger hole: ' + user());
+      near(wf.view.dims[0].a[1], 10, 1e-9, 'the dimension moved with the top face');
+      redo(r, 'p.box(120, 60, 10); p.hole("Top", 50, -30, 12, { offset: 10 });');
+      assert(user() === '120 \u00d812', 'hole moved: ' + user());
+      nearVec(wt.view.dims[0].c.concat(0), [50, -30, 0], 1e-9, 'diameter follows the hole');
+      var sh = redo(r, 'p.box(120, 60, 10);');
+      assert(user() === '120 \u00d812?', 'hole deleted: ' + user());
+      var dang = sh.prims.filter(function (p) { return p.color === 'dangling'; });
+      assert(dang.length >= 3 && dang.every(function (p) { return p.layer === 'DIMENSIONS'; }), 'dangling prims ' + dang.length);
+      var svg = DW.toSVG(sh), dxf = DW.toDXF(sh), pdf = DW.toPDF(sh);
+      assert(svg.indexOf('stroke="#a07c00"') > 0 && svg.indexOf('fill="#a07c00"') > 0, 'SVG colour');
+      assert(/\n62\n42\n/.test(dxf) && pdf.indexOf('0.627 0.486 0 RG') > 0, 'DXF / PDF colour');
+      redo(r, 'p.box(120, 60, 10); p.hole("Top", 50, -30, 12, { offset: 10 });');
+      assert(user() === '120 \u00d812', 'reattached: ' + user());
+      return 'dangling colour #a07c00 (DXF 42)';
+    });
+    test('a moved full-length edge beats a short collinear leftover (a blind hole bottom on the old top line)', function () {
+      var r = drawingOf('p.box(100, 60, 8);'), wf = r.view('Front');
+      wf.view.dims.push({ kind: 'h', a: [0, 8], b: [100, 8], side: 1, value: 100 });
+      var n = build('p.box(100, 60, 12); p.hole("Top", 50, -30, 10, { offset: 12, depth: 4 });');
+      r.mesh = n.mesh; r.model = n.model; recompute(r);
+      assert(viewRec(r, wf.view.id).proj.all.some(function (l) { return Math.abs(l[1] - 8) < 1e-9 && Math.abs(l[3] - 8) < 1e-9; }), 'the hole bottom is on the old line');
+      var d = wf.view.dims[0];
+      assert(!d.dangling && Math.abs(d.value - 100) < 1e-9 && Math.abs(d.a[1] - 12) < 1e-9 && Math.abs(d.b[1] - 12) < 1e-9, JSON.stringify(d));
+      return 'top edge 8 -> 12';
+    });
+    test('exports of section, detail and projected views: SVG layers and hatch, DXF PHANTOM cutting line + ARC entities, PDF arcs and chain dash', function () {
+      var r = drawingOf(PLATE), F = r.view('Front').view, T = r.view('Top').view;
+      var S = DW.addSectionView(r.doc, r.mesh, T.id, { axis: 'v', at: 10, sign: -1, x: 60 });
+      var Dv = DW.addDetailView(r.doc, r.mesh, T.id, { c: [14, -10], r: 6, x: 330, y: 110 });
+      DW.addProjectedView(r.doc, r.mesh, F.id, 'down');
+      var sh = recompute(r), svg = DW.toSVG(sh), dxf = DW.toDXF(sh), pdf = DW.toPDF(sh);
+      var d = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      assert(!d.querySelector('parsererror'), 'SVG parse');
+      var nh = sh.prims.filter(function (p) { return p.style === 'hatch'; }).length;
+      assert(nh > 0 && d.querySelectorAll('g[data-layer="SECTION_A"] line.hatch').length === nh, 'hatch in SVG');
+      assert(d.querySelectorAll('g[data-layer="DETAIL_B"] path.visible').length === 1, 'arc path');
+      assert(d.querySelectorAll('g[data-layer="TOP"] line.chain[stroke-dasharray]').length === 1 && d.querySelector('g[data-layer="BOTTOM"]'), 'chain line / Bottom layer');
+      var L = dxf.split('\n'), ents = [], cur = null, inEnt = false;
+      for (var i = 0; i < L.length; i += 2) {
+        var c = L[i].trim(), v = L[i + 1];
+        if (c === '2' && v === 'ENTITIES') inEnt = true;
+        if (c === '0') { cur = inEnt ? { type: v } : null; if (cur) ents.push(cur); }
+        if (cur && c === '8') cur.layer = v;
+        if (cur && c === '6') cur.ltype = v;
+      }
+      assert(dxf.indexOf('\n2\nPHANTOM\n') > 0 && dxf.indexOf('LTYPE\n70\n3') > 0, 'PHANTOM linetype');
+      assert(ents.filter(function (e) { return e.ltype === 'PHANTOM'; }).length === 1, 'cutting line');
+      assert(ents.filter(function (e) { return e.type === 'ARC' && e.layer === 'DETAIL_B'; }).length === 1, 'ARC');
+      assert(ents.filter(function (e) { return e.type === 'LINE' && e.layer === 'SECTION_A'; }).length >= nh, 'hatch lines in DXF');
+      assert(!/[^\x00-\x7f]/.test(pdf) && pdf.indexOf('[22.6772 4.252 4.252 4.252] 0 d') > 0, 'PDF chain dash');
+      var sx = +/startxref\n(\d+)/.exec(pdf)[1];
+      assert(pdf.substr(sx, 4) === 'xref', 'startxref');
+      var len = +/\/Length (\d+) >>\nstream\n/.exec(pdf)[1], st = pdf.indexOf('stream\n') + 7;
+      assert(pdf.substr(st + len, 10) === '\nendstream', 'stream length');
+      void Dv; void S;
+      return ents.length + ' DXF entities, ' + nh + ' hatch lines';
     });
   }
 
