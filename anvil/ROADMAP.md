@@ -76,7 +76,7 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Fillets and chamfers on curved and tangent edge chains, variable-radius fillets, face fillets
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve), Instant3D
 - [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves; construction geometry toggle
-- [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series, and hole callouts in drawings
+- [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series (drawing hole callouts already read counterbores / countersinks from the solid, cloud-2026-09-25m)
 - [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
 - [ ] IGES / Parasolid import and export; STEP import of curved faces (cylinders, cones, B-splines) and exact curved STEP export (needs true curves in the kernel); compressed 3MF import
 - [x] Assemblies: Parallel, Perpendicular, Tangent (cylinder–plane, cylinder–cylinder), Width, Gear and Limit Distance / Limit Angle mates; Distance between cylinders; Standard / Advanced / Mechanical Mates groups in the Mate PM (cloud-2026-09-25l)
@@ -86,8 +86,9 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Exploded View: explode steps (pick or drag along an axis), explode lines, ExplView in the ConfigurationManager, Explode / Collapse and animation (cloud-2026-09-25l)
 - [ ] Exploded views in drawings: a per-view "Show in exploded state" option in drawing.js using the `Assembly.explodedBodies` hook; exploded views per configuration; rotation in explode steps
 - [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
-- [ ] Drawings: centre marks and centrelines, hole callouts, ordinate and baseline dimensions, chamfer dimensions, dimension dragging and editing
-- [ ] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text, magnetic lines
+- [x] Drawings: centre marks (single, linear, circular, extension lines) and centrelines with Auto insert on view creation (Document Properties), hole callouts read from the solid (THRU / depth / counterbore / countersink, 4X), ordinate and baseline dimensions, chamfer dimensions, dimension dragging and the Dimension PropertyManager (tolerance bilateral / limit / symmetric, precision, text, flip arrows; a model item's value drives the part) (cloud-2026-09-25m)
+- [x] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text (cloud-2026-09-25m)
+- [ ] Drawings: magnetic lines for balloons; notes, surface finish, datum and geometric tolerance symbols
 - [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
 - [ ] Drawings: indented BOM and Parts only across sub-assemblies (needs sub-assemblies), revision table, general tables
 - [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
