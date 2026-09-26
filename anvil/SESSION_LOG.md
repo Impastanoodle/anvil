@@ -875,3 +875,17 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - `worker.js`: comment only.
 
 **Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 149/149, every test unchanged.
+
+## Run local-2026-09-26d — Thorough verification pass; bench loads the kernel extensions
+
+**Context.** The user asked for a more thorough test run after 26b / 26c.
+
+**Checked.**
+- ui-smoke three more times: 149/149 twice with the pane visible throughout (visibilitychange logged); one run at 138/149 failed only drawing and drag steps, the known hidden / throttled pane pattern, not reproduced.
+- kernel-tests 683/683.
+- App page: all 23 part examples build with no feature errors and no console errors, `Kernel.meshQuality` 0 open / 0 non-manifold edges, and `anvil.script()` → `anvil.run` gives the same volume to 1e-6 (the script path that 26c moved onto the kernel registries). Assemblies are covered by the smoke steps.
+- Anvil dark theme renders.
+
+**Fixed.** `tests/bench.html` loaded only csg.js and kernel.js, so "Constrained L profile" errored (`.rel is not a function`) since the sketch solver landed; it now loads holewizard.js, sketch-solver.js, exchange.js and materials.js like the worker. Each extension alone and all together bench the same (~445-455 ms); two isolated ~1180 ms runs were a busy machine and did not repeat.
+
+**Finding.** Bench sum of medians is ~445-460 ms against the ~422 ms pre-true-curves baseline (~1.07x), so the QUEUE performance item's ~775 ms no longer reproduces here; QUEUE note updated.

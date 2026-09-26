@@ -6,7 +6,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
+- Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Re-measured locally on 2026-09-26 (local-2026-09-26d, all 30 parts building): ~445-460 ms, i.e. ~1.07x, already inside the target; Funnel is ~57% of the total (~258 ms). Confirm on another machine before closing. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
 
 
 ## Ideas (lower priority)
