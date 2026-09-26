@@ -1514,7 +1514,7 @@
     if (!b) return { ok: true, error: null };
     var s = (b.mates || {})[m.id] || {};
     var err = s.error || (b.errors || {})[m.id] || null;
-    return { ok: !err && s.ok !== false, error: err };
+    return { ok: !err && s.ok !== false, error: err, suppressed: !!s.suppressed, warning: s.warning || null };
   }
   function asmCommit(mutate, message) {
     UI.pushUndo();
@@ -1624,6 +1624,8 @@
     (window.AnvilExamples || []).forEach(function (ex) {
       if (ex && ex.name && ex.code && ex.kind !== 'assembly') out.push({ key: 'ex:' + ex.name, label: ex.name, source: { example: ex.name } });
     });
+    // sub-assemblies (Design Library assemblies) and live links to saved documents (ui-assembly.js)
+    if (UI.insertSourcesExtra) out = out.concat(UI.insertSourcesExtra());
     return out;
   }
   function browsePart(done) {
@@ -1636,7 +1638,7 @@
       rd.onload = function () {
         var m = null;
         try { m = JSON.parse(String(rd.result)); } catch (e) { UI.toast('Not a model JSON file: ' + e.message); return; }
-        if (!m || m.type === 'assembly' || !Array.isArray(m.features)) { UI.toast('Pick a part JSON file (File ▸ Save As in a part).'); return; }
+        if (!m || (m.type === 'assembly' ? !Array.isArray(m.components) : !Array.isArray(m.features))) { UI.toast('Pick a part or assembly JSON file (File ▸ Save As).'); return; }
         var b = { key: 'file:' + (browsedParts.length + 1), label: (m.name || file.name) + ' (' + file.name + ')', source: { model: m } };
         browsedParts.push(b);
         done(b);
@@ -1697,6 +1699,7 @@
   function refText(ref) {
     if (!ref) return '';
     var who = refName(ref);
+    if (ref.path && ref.path.length && UI.innerRefName) who = UI.innerRefName(ref) || who;   // Face@Arm<1>@Hinge<2>
     if (ref.face) return 'Face@' + who;
     if (ref.cylinder) return 'Cylindrical Face@' + who;
     if (ref.plane) return ref.plane + ' Plane@' + who;

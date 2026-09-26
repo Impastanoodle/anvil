@@ -504,6 +504,285 @@
     if (UI.refreshRibbon) try { UI.refreshRibbon(); } catch (e) { /* the ribbon is drawn at boot */ }
   }
 
+  // ------------------------------------------------------------------ sub-assemblies and live links (cloud-2026-09-25o)
+  // The document store (assembly.js Assembly.Documents) is backed by the documents saved in this browser (File ▸ Save,
+  // localStorage 'anvil.files'), so a component { file: name } is a live link to a saved part or assembly: every
+  // rebuild reads the saved document (or the edited copy still in memory). Open Part / Edit Part open the referenced
+  // document on a document stack; Return to Assembly goes back (an unsaved edit stays in memory and already shows in the
+  // assembly; File ▸ Save of the assembly saves it too). A missing document is a broken reference: the component shows
+  // suppressed with a warning.
+  var FILES = 'anvil.files', filesRaw, filesParsed = {};
+  function readFiles() {
+    var raw = null;
+    try { raw = localStorage.getItem(FILES); } catch (e) { raw = null; }
+    if (raw !== filesRaw) { filesRaw = raw; try { filesParsed = raw ? JSON.parse(raw) || {} : {}; } catch (e) { filesParsed = {}; } }
+    return filesParsed;
+  }
+  function writeFiles(f) { var raw = JSON.stringify(f); localStorage.setItem(FILES, raw); filesRaw = raw; filesParsed = JSON.parse(raw); }
+  function savedModel(name) { var f = readFiles()[name]; return f && f.model ? f.model : null; }
+  AS.Documents.use({
+    get: savedModel,
+    put: function (name, m) {
+      var f = clone(readFiles());
+      f[name] = { model: m, features: (m.features || []).length, components: AS.isAssembly(m) ? (m.components || []).length : undefined, savedAt: Date.now() };
+      writeFiles(f);
+    },
+    remove: function (name) { var f = clone(readFiles()); delete f[name]; writeFiles(f); },
+    list: function () { return Object.keys(readFiles()); }
+  });
+
+  function subStatus(c) { return UI.compStatus ? UI.compStatus(c.id) : null; }
+  function partBuildOf(c) { var b = App.build && App.build.assembly ? App.build : null; return b && b.partBuilds ? b.partBuilds[c.id] : null; }
+  function sourceKind(c) { var st = subStatus(c); return st && st.subAssembly ? 'assembly' : AS.isSubAssemblySource(c.source) ? 'assembly' : 'part'; }
+
+  // FeatureManager: a sub-assembly row expands into its own components (every level down) and its Mates folder; a
+  // linked component says what it links to; a broken reference is shown suppressed with the warning.
+  function innerRows(parent, depth, sm, sb, top, pathKey, h) {
+    var status = {};
+    (sb && sb.components || []).forEach(function (co) { status[co.id] = co; });
+    (sm.components || []).forEach(function (k) {
+      var co = status[k.id] || {}, kb = sb && sb.partBuilds ? sb.partBuilds[k.id] : null, isSub = !!(kb && kb.assembly && kb.model);
+      var key = pathKey + '/' + k.id, open = !!h.expanded[key];
+      var label = (k.fixed ? '(f) ' : co.underDefined ? '(-) ' : '') + k.name, warn = co.suppressed;
+      var tip = k.name + ' in ' + top.name + (co.error ? ': ' + co.error : warn ? ' (suppressed): ' + (co.warning || '') : co.underDefined ? ' (' + co.dof + ' degree' + (co.dof === 1 ? '' : 's') + ' of freedom left)' : '') +
+        (k.source && k.source.file != null ? ' — linked to "' + k.source.file + '"' : '');
+      var row = h.treeItem({ icon: co.error ? 'error' : warn ? 'warn' : isSub ? 'assembly' : 'component', name: label + (warn ? ' (suppressed)' : ''), depth: depth, title: tip,
+        cls: 'component-row inner-row' + (warn ? ' suppressed' : '') + (co.error ? ' err' : ''), children: isSub, open: open, toggle: function () { h.expanded[key] = !open; h.refresh(); } });
+      row.setAttribute('data-inner', key);
+      row.title = tip;
+      row.addEventListener('click', function (e) { e.stopPropagation(); if (UI.selectComponent) UI.selectComponent(top.id); UI.setStatus(tip); });
+      row.addEventListener('contextmenu', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var items = [];
+        if (k.source && k.source.file != null) items.push({ label: isSub ? 'Open Assembly' : 'Open Part', action: function () { run(openDocument(k.source.file, { from: top.name })); } });
+        items.push({ label: 'Select ' + top.name, action: function () { if (UI.selectComponent) UI.selectComponent(top.id); } });
+        h.showMenu(e.clientX, e.clientY, items);
+      });
+      parent.appendChild(row);
+      if (isSub && open) innerRows(parent, depth + 1, kb.model, kb, top, key, h);
+    });
+    var mates = sm.mates || [];
+    if (!mates.length) return;
+    var mk = pathKey + '/mates', mopen = !!h.expanded[mk];
+    var folder = h.treeItem({ icon: 'matesFolder', name: 'Mates', depth: depth, children: true, open: mopen, cls: 'mates-folder inner-row', title: mates.length + ' mate' + (mates.length === 1 ? '' : 's') + ' in ' + top.name, toggle: function () { h.expanded[mk] = !mopen; h.refresh(); } });
+    parent.appendChild(folder);
+    if (!mopen) return;
+    mates.forEach(function (mt) {
+      var ms = sb && sb.mates ? sb.mates[mt.id] || {} : {}, err = mt.suppressed ? null : ms.error;
+      var r = h.treeItem({ icon: err ? 'error' : 'coincident', name: mt.name, depth: depth + 1, cls: 'mate-row inner-row' + (err ? ' err' : '') + (mt.suppressed || ms.suppressed ? ' suppressed' : ''), title: err ? mt.name + ': ' + err : mt.name + ' in ' + top.name });
+      parent.appendChild(r);
+    });
+  }
+  UI.asmRowDecor = function (c, st, h) {
+    st = st || {};
+    var linked = c.source && c.source.file != null, pb = partBuildOf(c), isSub = !!(st.subAssembly || (pb && pb.assembly && pb.model));
+    if (!linked && !isSub && !st.suppressed) return null;
+    var key = 'sub' + c.id, open = !!h.expanded[key];
+    var d = {
+      icon: st.suppressed ? 'warn' : isSub ? 'assembly' : 'component',
+      cls: (st.suppressed ? 'suppressed' : '') + (linked ? ' linked' : '') + (isSub ? ' subassembly' : '') + (st.flexible ? ' flexible' : ''),
+      suffix: st.suppressed ? ' (suppressed)' : '',
+      tip: function (t) {
+        if (st.suppressed) return c.name + ' (suppressed): ' + (st.warning || 'broken reference');
+        return t + (isSub ? ' — sub-assembly, solved as ' + (c.flexible ? 'Flexible' : 'Rigid') : '') + (linked ? ' — linked to "' + c.source.file + '"' + (AS.Documents.isDirty(c.source.file) ? ' (edited, not saved)' : '') : '');
+      }
+    };
+    if (isSub && pb && pb.model && !st.suppressed) {
+      d.children = function (parent, depth) { innerRows(parent, depth, pb.model, pb, c, key, h); };
+      d.open = open;
+      d.toggle = function () { h.expanded[key] = !open; h.refresh(); };
+    }
+    return d;
+  };
+
+  // component context menu: Open Part / Open Assembly (linked), Edit Part (in context), Solve as Rigid / Flexible,
+  // Make Linked Document… (embedded -> a saved document and a link to it)
+  UI.asmComponentMenuExtras = function (c) {
+    var items = [{ sep: true }], linked = c.source && c.source.file != null, kind = sourceKind(c), st = subStatus(c) || {};
+    if (linked && !st.suppressed) items.push({ label: kind === 'assembly' ? 'Open Assembly' : 'Open Part', action: function () { run(openDocument(c.source.file, { from: c.name })); } });
+    if (kind === 'part' && !st.suppressed && c.pattern == null) items.push({ label: 'Edit Part', action: function () { run(editPart(c.id)); } });
+    if (kind === 'assembly' && !st.suppressed) items.push(c.flexible ? { label: 'Solve as Rigid', action: function () { run(setFlexible(c.id, false)); } } : { label: 'Solve as Flexible', action: function () { run(setFlexible(c.id, true)); } });
+    if (!linked && c.pattern == null) items.push({ label: 'Make Linked Document…', action: function () { UI.promptDialog('Make Linked Document', 'Save ' + c.name + ' in this browser as (the component then links to it):', AS.findComponent(App.model, c.id) ? baseName(c.name) : '', function (n) { run(makeLinked(c.id, n)); }); } });
+    return items.length > 1 ? items : [];
+  };
+  function baseName(n) { return String(n || '').replace(/<\d+>$/, ''); }
+  // UI.innerRefName({ component, path }) -> 'Arm<1>@Hinge<2>' (innermost first, as SolidWorks names selections)
+  UI.innerRefName = function (ref) {
+    var c = AS.findComponent(App.model, ref.component);
+    if (!c) return null;
+    var names = [c.name], pb = partBuildOf(c);
+    (ref.path || []).forEach(function (id) {
+      var k = pb && pb.model ? AS.findComponent(pb.model, id) : null;
+      names.unshift(k ? k.name : String(id));
+      pb = k && pb.partBuilds ? pb.partBuilds[k.id] : null;
+    });
+    return names.join('@');
+  };
+
+  // Insert Components: Design Library assemblies go in as sub-assemblies, saved documents as live links
+  UI.insertSourcesExtra = function () {
+    var out = [];
+    (window.AnvilExamples || []).forEach(function (ex) { if (ex && ex.name && ex.code && ex.kind === 'assembly') out.push({ key: 'asm:' + ex.name, label: ex.name + ' (sub-assembly)', source: { example: ex.name } }); });
+    AS.Documents.list().forEach(function (n) {
+      if (n === App.fileName) return;   // an assembly cannot contain itself
+      var m = savedModel(n) || AS.Documents.get(n);
+      out.push({ key: 'link:' + n, label: n + ' (linked' + (m && AS.isAssembly(m) ? ' assembly' : '') + ', saved in this browser)', source: { file: n } });
+    });
+    return out;
+  };
+
+  // one undo step on the assembly
+  function setFlexible(id, on) {
+    if (!asmReady()) return fail('Not an assembly document');
+    var c = AS.findComponent(App.model, id);
+    if (!c) return fail('Unknown component ' + JSON.stringify(id));
+    try { AS.setFlexible(clone(App.model), c.id, on); } catch (e) { return fail(e.message); }
+    return commit(function (m) { return AS.setFlexible(m, c.id, on); }, c.name + ' is solved as ' + (on ? 'Flexible: its own mates are solved in this assembly.' : 'Rigid.'));
+  }
+  function makeLinked(id, name) {
+    name = String(name || '').trim();
+    var c = AS.findComponent(App.model, id);
+    if (!c || !name) return fail('Give the document a name');
+    if (AS.Documents.has(name)) return fail('A document named "' + name + '" is already saved: pick another name');
+    var model;
+    try { model = AS.partModel(c.source); } catch (e) { return fail(e.message); }
+    AS.Documents.put(name, model);
+    var key = JSON.stringify(c.source);
+    return commit(function (m) {
+      m.components.forEach(function (x) { if (JSON.stringify(x.source) === key) x.source = { file: name }; });
+      return name;
+    }, c.name + ' now links to "' + name + '" (saved in this browser).');
+  }
+
+  // ---- the document stack: Open Part / Open Assembly / Edit Part, Return to Assembly
+  var docStack = [];
+  function banner() {
+    var b = document.getElementById('asm-doc-banner');
+    var top = docStack[docStack.length - 1];
+    if (!top) { if (b) b.remove(); return; }
+    if (!b) { b = el('div', { id: 'asm-doc-banner', class: 'asm-doc-banner' }); (UI.viewport || document.body).appendChild(b); }
+    b.innerHTML = '';
+    b.appendChild(el('span', { text: (top.inContext ? 'Editing ' + top.what + ' in the context of ' : 'Opened ' + top.what + ' from ') + top.model.name }));
+    b.appendChild(el('button', { class: 'btn primary', id: 'asm-return', text: 'Return to ' + top.model.name, onclick: function () { run(returnToAssembly()); } }));
+  }
+  function pushDoc(frame, model) {
+    frame.model = App.model; frame.fileName = App.fileName || null;
+    frame.undo = App.undo.slice(); frame.redo = App.redo.slice();
+    frame.hidden = clone(App.hiddenBodies || {}); frame.tab = App.ribbonTab;
+    docStack.push(frame);
+    return UI.loadModel(model).then(function () {
+      frame.original = JSON.stringify(App.model);   // as opened and rebuilt: Return compares against this
+      App.fileName = frame.file || null;
+      if (UI.setRibbonTab) UI.setRibbonTab(AS.isAssembly(model) ? 'Assembly' : 'Features');
+      banner();
+      UI.setStatus((frame.inContext ? 'Edit Part: ' : 'Opened ') + frame.what + '. Change it, then Return to ' + frame.model.name + (frame.file ? ' (File ▸ Save saves it for every assembly that uses it).' : '.'));
+      return window.anvil ? window.anvil.summary() : null;
+    });
+  }
+  // openDocument(name, { from, inContext }): open a linked document from the store on top of the assembly
+  function openDocument(name, opts) {
+    opts = opts || {};
+    var m = AS.Documents.get(name);
+    if (!m) return fail('Cannot find the referenced document "' + name + '"');
+    return pushDoc({ file: String(name), what: '"' + name + '"', inContext: !!opts.inContext }, m);
+  }
+  // editPart(component): Edit Part — the component's part (linked or embedded) opened in the context of this assembly
+  function editPart(id) {
+    if (!asmReady()) return fail('Not an assembly document');
+    var c = AS.findComponent(App.model, id);
+    if (!c) return fail('Unknown component ' + JSON.stringify(id));
+    if (c.source && c.source.file != null) return openDocument(c.source.file, { inContext: true, from: c.name }).then(function (r) { docStack[docStack.length - 1].component = c.id; return r; });
+    var m;
+    try { m = AS.partModel(c.source); } catch (e) { return fail(e.message); }
+    if (AS.isAssembly(m)) return fail(c.name + ' is a sub-assembly: open it with Open Assembly');
+    return pushDoc({ embedded: JSON.stringify(c.source), component: c.id, what: c.name, inContext: true }, m);
+  }
+  // returnToAssembly(): back to the assembly below on the stack. A linked document that changed stays in memory as an
+  // edited (dirty) document until it, or the assembly, is saved; an embedded part's edit replaces the embedded copy of
+  // every component with that source (one undo step on the assembly).
+  function returnToAssembly() {
+    var fr = docStack.pop();
+    if (!fr) return fail('No assembly to return to');
+    var edited = App.model, changed = false;
+    changed = JSON.stringify(edited) !== fr.original;
+    if (fr.file && changed) {
+      var saved = savedModel(fr.file);   // saved from the part itself (File ▸ Save) since: nothing left to keep in memory
+      if (saved && JSON.stringify(saved) === JSON.stringify(edited)) AS.Documents.revert(fr.file); else AS.Documents.put(fr.file, edited, { dirty: true });
+    }
+    return UI.loadModel(fr.model).then(function () {
+      App.fileName = fr.fileName;
+      App.undo.push.apply(App.undo, fr.undo); App.redo.push.apply(App.redo, fr.redo);
+      App.hiddenBodies = fr.hidden || {};
+      if (UI.setRibbonTab) UI.setRibbonTab(fr.tab || 'Assembly');
+      banner();
+      if (fr.embedded && changed) {
+        return commit(function (m) {
+          var src = { model: clone(edited) };
+          m.components.forEach(function (x) { if (JSON.stringify(x.source) === fr.embedded) x.source = clone(src); });
+        }, fr.what + ' updated from Edit Part.');
+      }
+      UI.refreshTree();
+      UI.setStatus(changed ? '"' + fr.file + '" was changed: every assembly that uses it shows the change; File ▸ Save saves it.' : 'Back in ' + App.model.name + '.');
+    }).then(function () { return window.anvil ? window.anvil.summary() : null; });
+  }
+  // File ▸ Save: an assembly also saves the referenced documents edited in memory; a saved part drops its edited copy
+  UI.afterSaveHook = function (name) {
+    if (!isAsm()) { AS.Documents.revert(name); return; }
+    var saved = AS.saveReferences(App.model);
+    if (saved.length) UI.toast('Saved "' + name + '" and ' + saved.map(function (n) { return '"' + n + '"'; }).join(', '));
+  };
+
+  // ---- Pack and Go: the assembly with every linked document embedded, as one JSON file
+  function packAndGo() {
+    if (!isAsm()) { UI.toast('Pack and Go works on an assembly: it embeds the documents the assembly links to.'); return null; }
+    var r = AS.packAndGo(App.model), name = (App.fileName || App.model.name || 'Assem1') + ' (packed).anvil.json';
+    var body = el('div', {}, [
+      el('p', { text: r.embedded.length ? 'Embeds ' + r.embedded.map(function (n) { return '"' + n + '"'; }).join(', ') + ' in one file.' : 'Nothing is linked: the assembly already stands alone.' }),
+      r.missing.length ? el('p', { class: 'err', text: 'Missing (left as links): ' + r.missing.join(', ') }) : el('span')
+    ]);
+    UI.showModal({ title: 'Pack and Go', body: body, buttons: [
+      { label: 'Save', primary: true, id: 'pack-save', action: function () { UI.closeModal(); if (UI.downloadText) UI.downloadText(name, JSON.stringify(r.model, null, 1), 'application/json'); else downloadJSON(name, r.model); } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+    return r;
+  }
+  function downloadJSON(name, obj) {
+    try {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: 'application/json' }));
+      a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      UI.setStatus('Saved ' + name + '.');
+    } catch (e) { UI.toast('Could not save: ' + e.message); }
+  }
+
+  // ---- Bill of Materials (Top-level only / Indented / Parts only) of the open assembly
+  function bomRows(type) { return isAsm() ? AS.bom(App.model, App.build, { type: type }) : []; }
+  function showBom(type) {
+    if (!asmReady()) return;
+    type = type || 'indented';
+    var sel = el('select', { id: 'bom-type', 'aria-label': 'BOM Type' });
+    [['top', 'Top-level only'], ['indented', 'Indented'], ['parts', 'Parts only']].forEach(function (o) { var op = el('option', { value: o[0], text: o[1] }); if (o[0] === type) op.selected = true; sel.appendChild(op); });
+    var table = el('table', { id: 'bom-table', class: 'bom-table' });
+    function fill() {
+      table.innerHTML = '';
+      table.appendChild(el('tr', {}, ['ITEM NO.', 'PART NUMBER', 'QTY.'].map(function (h) { return el('th', { text: h }); })));
+      bomRows(sel.value).forEach(function (r) {
+        var nm = el('td', { text: r.name + (r.kind === 'assembly' ? ' (assembly)' : '') + (r.file ? ' ↗' : '') });
+        nm.style.paddingLeft = (6 + 14 * r.level) + 'px';
+        var tr = el('tr', { class: 'bom-row', 'data-item': r.item }, [el('td', { text: r.item }), nm, el('td', { text: String(r.qty) })]);
+        table.appendChild(tr);
+      });
+    }
+    sel.addEventListener('change', fill);
+    fill();
+    UI.showModal({ title: 'Bill of Materials — ' + App.model.name, body: el('div', {}, [el('label', { class: 'dlg-row' }, [el('span', { text: 'BOM Type' }), sel]), table]) });
+  }
+
+  // ribbon: the Bill of Materials placeholder opens the BOM
+  if (tab) tab.forEach(function (b) {
+    if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'generic', label: 'Bill of Materials', run: function () { showBom(); } }; });
+  });
+
   // ------------------------------------------------------------------ exports and window.anvil
   UI.cmdLinearComponentPattern = function () { cmdComponentPattern('linear'); };
   UI.cmdCircularComponentPattern = function () { cmdComponentPattern('circular'); };
@@ -512,6 +791,8 @@
   UI.patternSession = function () { return patSession; }; UI.explodeSession = function () { return expSession; };
   UI.asmExplode = { set: setExploded, animate: animateExplode, removeStep: removeExplodeStep, removeView: removeExplodedView };
   UI.asmPatterns = { add: addPattern, remove: removePattern, confirmRemove: confirmRemovePattern };
+  UI.asmDocs = { open: openDocument, editPart: editPart, returnToAssembly: returnToAssembly, stack: function () { return docStack.map(function (f) { return { what: f.what, file: f.file || null, assembly: f.model.name, inContext: !!f.inContext }; }); } };
+  UI.returnToAssembly = returnToAssembly; UI.packAndGo = packAndGo; UI.showBom = showBom; UI.setFlexible = setFlexible; UI.makeLinked = makeLinked;
   if (window.anvil) {
     var A = window.anvil;
     function then(p) { return p.then(function () { return A.summary(); }); }
@@ -537,6 +818,23 @@
       return setExploded(v).then(function () { return A.exploded(); });
     };
     A.animateExplode = function (explode, ms) { return animateExplode(explode, ms).then(function () { return A.exploded(); }); };
+    // sub-assemblies and live links
+    A.documents = function () { return AS.Documents.list().map(function (n) { var m = AS.Documents.get(n); return { name: n, type: m && AS.isAssembly(m) ? 'assembly' : 'part', dirty: AS.Documents.isDirty(n) }; }); };
+    // saveDocument(name, model?): save a model (default: the open document) in this browser under that name
+    A.saveDocument = function (name, model) { AS.Documents.put(String(name), model || App.model); if (!model) App.fileName = String(name); return A.documents(); };
+    A.removeDocument = function (name) { AS.Documents.remove(String(name)); return A.documents(); };
+    A.flexible = function (id, on) { return then(setFlexible(id, on !== false)); };
+    A.openPart = function (idOrName) {
+      var c = isAsm() ? AS.findComponent(App.model, idOrName) : null;
+      if (c && c.source && c.source.file != null) return openDocument(c.source.file, { from: c.name });
+      return openDocument(idOrName);
+    };
+    A.editPart = function (idOrName) { var c = isAsm() ? AS.findComponent(App.model, idOrName) : null; return c ? editPart(c.id) : fail('Unknown component ' + JSON.stringify(idOrName)); };
+    A.returnToAssembly = function () { return returnToAssembly(); };
+    A.docStack = function () { return UI.asmDocs.stack(); };
+    A.bom = function (type) { return bomRows(type || 'top').map(function (r) { return { item: r.item, level: r.level, name: r.name, kind: r.kind, qty: r.qty, file: r.file || null }; }); };
+    A.packAndGo = function () { return isAsm() ? AS.packAndGo(App.model) : null; };
+    A.saveReferences = function () { return isAsm() ? AS.saveReferences(App.model) : []; };
     A.explodedViews = function () {
       if (!isAsm()) return [];
       return (App.model.explodedViews || []).map(function (v) { return { id: v.id, name: v.name, exploded: App.model.exploded === v.id, steps: v.steps.map(function (s) { return { id: s.id, name: s.name, components: s.components.map(compName), direction: s.direction.slice(), distance: s.distance }; }) }; });
