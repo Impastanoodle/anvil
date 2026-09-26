@@ -474,3 +474,42 @@ body { overflow: auto; }
 .fp-table .fp-del { border: none; background: none; color: var(--muted); cursor: pointer; }
 .fp-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 #modal-body table.fp-summary th { width: 34%; }
+
+/* ---- selection (ui-select.js): Selection Filter toolbar (F5), box selection, Instant3D handles */
+#sel-filter { position: absolute; left: 10px; top: 46px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--line, #c9d0d8); border-radius: 4px; box-shadow: 0 2px 8px var(--shadow); font: 11px "Segoe UI", sans-serif; }
+#sel-filter[hidden] { display: none; }
+#sel-filter .sf-title { color: #6b7380; margin: 0 6px 0 2px; white-space: nowrap; }
+#sel-filter .sf-sep { width: 1px; height: 20px; background: #c9d0d8; margin: 0 3px; }
+#sel-filter .sf-btn { width: 28px; height: 28px; padding: 3px; border: 1px solid transparent; border-radius: 3px; background: transparent; cursor: pointer; }
+#sel-filter .sf-btn:hover { border-color: var(--blue); }
+#sel-filter .sf-btn.on { background: rgba(31,111,197,0.16); border-color: var(--blue); }
+#sel-filter.suspended .sf-btn.on { opacity: 0.5; }
+/* window (left to right): solid blue; crossing (right to left): dashed green, as SolidWorks draws them */
+#sel-box { position: absolute; pointer-events: none; z-index: 3; }
+#sel-box[hidden] { display: none; }
+#sel-box.window { border: 1px solid #1f6fc5; background: rgba(31,111,197,0.12); }
+#sel-box.crossing { border: 1px dashed #1fa653; background: rgba(31,166,83,0.12); }
+#tree .ti.sel-owner { background: rgba(31,111,197,0.07); box-shadow: inset 2px 0 0 #7fb8ef; }
+#i3d-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
+#i3d-layer .i3d-handle { pointer-events: all; cursor: grab; }
+#i3d-layer .i3d-grip { stroke: transparent; stroke-width: 14; fill: transparent; }
+#i3d-layer .i3d-shaft { stroke: #1f6fc5; stroke-width: 2.5; }
+#i3d-layer .i3d-head { fill: #1f6fc5; }
+#i3d-layer .i3d-base { fill: #fff; stroke: #1f6fc5; stroke-width: 1.5; }
+#i3d-layer .i3d-dot { fill: #1f6fc5; stroke: #fff; stroke-width: 1.5; }
+#i3d-layer .i3d-handle:hover .i3d-shaft { stroke: #ff8c1a; }
+#i3d-layer .i3d-handle:hover .i3d-head, #i3d-layer .i3d-handle:hover .i3d-dot { fill: #ff8c1a; }
+#i3d-layer .i3d-ruler { fill: none; stroke: #23272d; stroke-width: 1; }
+#i3d-layer .i3d-tick { stroke: #23272d; stroke-width: 1; }
+#i3d-layer .i3d-tick.major { stroke-width: 1.5; }
+#i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: #23272d; }
+#i3d-layer .i3d-value { font: 600 12px "Segoe UI", sans-serif; fill: #1f6fc5; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-layer .i3d-dim line { stroke: #1f5fd0; stroke-width: 1; }
+#i3d-layer .i3d-dim polygon { fill: #1f5fd0; }
+#i3d-layer .i3d-dim-text { font: 12px "Segoe UI", sans-serif; fill: #1f5fd0; pointer-events: all; cursor: text; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-edit { position: absolute; z-index: 4; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
+#i3d-edit[hidden] { display: none; }
+#i3d-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: inherit; }
+html[data-theme="dark"] #i3d-layer .i3d-ruler, html[data-theme="dark"] #i3d-layer .i3d-tick { stroke: #d8dde3; }
+html[data-theme="dark"] #i3d-layer .i3d-tick-label { fill: #d8dde3; }
+html[data-theme="dark"] #i3d-layer .i3d-value, html[data-theme="dark"] #i3d-layer .i3d-dim-text { stroke: #1e232b; }

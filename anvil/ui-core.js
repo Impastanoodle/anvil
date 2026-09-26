@@ -571,6 +571,8 @@ var UI = (function () {
         pm.material = on ? mats.planeFaceHi : mats.planeFace;
       }
     });
+    // multi-selection items beyond sel / sel2, vertices, and the Instant3D overlay (ui-select.js)
+    if (UI.drawSelectionExtras) UI.drawSelectionExtras(groups.highlight, { selectionRanges: selectionRanges, triRangeGeometry: triRangeGeometry, edgeLineObject: edgeLineObject, edgeSelMat: edgeSelMat });
   }
 
   // ------------------------------------------------------------------ planes, origin, sketches
@@ -655,7 +657,7 @@ var UI = (function () {
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict };
       f.entities.forEach(function (e, i) {
         var pls = K.entityPolylines(e);
-        var selected = active && App.sel && App.sel.kind === 'entity' && App.sel.index === i;
+        var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
         if (e.t === 'point') {
           var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
