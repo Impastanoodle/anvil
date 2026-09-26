@@ -151,6 +151,16 @@ var Icons = (function () {
     component: blk(2, 3, 7, 8, 4, '#f0c987', '#f8e2b8', '#d9a95a', S, 1),
     // the Mates folder: a folder with the paper clip
     matesFolder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1) + p('M8 11.5 v-5 a1.2 1.2 0 0 1 2.4 0 v4 a2 2 0 0 1 -4 0 v-2.5', 'none', '#8a5cc2', 1.1),
+    // Distance: two parallel faces with a dimension arrow between them
+    distance: p('M1.5 4 l3 -2.5 h10 l-3 2.5 z', '#c9b6e6', '#8a5cc2', 1) + p('M1.5 14 l3 -2.5 h10 l-3 2.5 z', 'none', S, 0.9) + ln('M8 4.5 v6.5 M6.6 6 l1.4 -1.5 1.4 1.5 M6.6 9.5 l1.4 1.5 1.4 -1.5', '#8a5cc2', 1.1),
+    // Angle: two faces meeting at a hinge with an arc between them
+    angle: ln('M2 13.5 h12.5', S, 1.3) + ln('M2 13.5 L11 3', '#8a5cc2', 1.3) + p('M8 13.5 a6 6 0 0 0 -1.9 -4.4', 'none', '#8a5cc2', 1.1),
+    // Move Component: a component block with a four-way move arrow
+    moveComponent: blk(1.5, 6, 7, 6, 3, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + ln('M12 2 v7 M10.6 3.4 l1.4 -1.4 1.4 1.4 M8.5 5.5 h7 M14.1 4.1 l1.4 1.4 -1.4 1.4', B, 1.1),
+    // Rotate Component: a component block with a curved arrow around it
+    rotateComponent: blk(3, 6, 7, 6, 3, '#f0c987', '#f8e2b8', '#d9a95a', S, 1) + p('M2 6 a6.5 6.5 0 0 1 11.5 -2', 'none', B, 1.2) + ln('M13.8 1.3 l-0.3 2.7 -2.6 -0.6', B, 1.1),
+    // Interference Detection: two overlapping blocks with the shared volume in red
+    interference: rect(1.5, 5.5, 8, 8, F2, S, 1) + rect(6.5, 2.5, 8, 8, '#f8e2b8', S, 1) + rect(6.5, 5.5, 3, 5, R, RD, 0.9),
     // Fix: a push pin
     fix: p('M6 2 h5 l-1 1.5 v3.5 l2 2 h-7 l2 -2 V3.5 z', R, RD, 1) + ln('M8.5 9 v5.5', S, 1.3),
     // Float: a block with four arrows around it

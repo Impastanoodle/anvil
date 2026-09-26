@@ -522,6 +522,9 @@
       return;
     }
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
+    // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
+    var hook = ev.button === 0 && UI.componentDragHook ? UI.componentDragHook(p, ev) : null;
+    if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 0) drag = { kind: 'maybe-rotate', last: p, moved: false };
   });
 
@@ -539,6 +542,11 @@
         if (Math.hypot(p[0] - downPos[0], p[1] - downPos[1]) > 4) { drag.kind = 'rotate'; drag.moved = true; viewport.classList.add('tool-grab'); }
         else return;
       }
+      if (drag.kind === 'maybe-hook') {
+        if (Math.hypot(p[0] - downPos[0], p[1] - downPos[1]) > 4) { drag.kind = 'hook'; drag.moved = true; viewport.classList.add('tool-grab'); drag.hook.start(); }
+        else return;
+      }
+      if (drag.kind === 'hook') { drag.hook.move(p); drag.last = p; return; }
       if (drag.kind === 'rotate') UI.rotateView(dx, dy);
       else if (drag.kind === 'pan') { UI.panView(dx, dy); drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 0; }
       drag.last = p;
@@ -584,6 +592,7 @@
     if (!drag) return;
     var d = drag; drag = null;
     viewport.classList.remove('tool-grab');
+    if (d.kind === 'hook') { d.hook.end(p); return; }
     if (d.kind === 'rotate' || (d.kind === 'pan' && d.moved)) return;
     if (ev.button === 2) { if (App.mode === 'sketch') { finishChain(); } return; }
     if (ev.button !== 0) return;

@@ -1679,8 +1679,10 @@
   // Standard Mates picks the type (Concentric when both are cylinders/axes, else Coincident, until the user chooses);
   // Mate alignment picks Aligned / Anti-Aligned (Assembly's default until chosen). The graphics area previews the
   // solved assembly with the mate applied; Cancel restores the model, ✓ adds (or updates) it as one undo step.
-  var MATE_TYPES = [['coincident', 'Coincident'], ['concentric', 'Concentric']];
-  function mateTypeLabel(t) { return t === 'concentric' ? 'Concentric' : 'Coincident'; }
+  // Distance holds two planes `distance` apart, Angle turns two directions `angle` degrees apart, Coincident takes an
+  // optional `offset`; Flip dimension (`flip`) puts the value on the other side (see assembly.js setMateValues).
+  var MATE_TYPES = [['coincident', 'Coincident'], ['concentric', 'Concentric'], ['distance', 'Distance'], ['angle', 'Angle']];
+  function mateTypeLabel(t) { return { concentric: 'Concentric', distance: 'Distance', angle: 'Angle' }[t] || 'Coincident'; }
   function refKind(ref) { return !ref ? null : (ref.cylinder || ref.axis) ? 'axis' : (ref.face || ref.plane) ? 'plane' : null; }
   function refText(ref) {
     if (!ref) return '';
@@ -1692,9 +1694,11 @@
     return who;
   }
   function defaultMateType(a, b) { return refKind(a) === 'axis' && refKind(b) === 'axis' ? 'concentric' : 'coincident'; }
-  function defaultAlignment(type, a, b) { return type === 'coincident' && a && b && a.face && b.face ? 'anti-aligned' : 'aligned'; }
+  function defaultAlignment(type, a, b) { return (type === 'coincident' || type === 'distance') && a && b && a.face && b.face ? 'anti-aligned' : 'aligned'; }
   function mateKindError(type, a, b) {
     if (type === 'coincident' && (refKind(a) !== 'plane' || refKind(b) !== 'plane')) return 'Coincident needs two planar faces or planes';
+    if (type === 'distance' && (refKind(a) !== 'plane' || refKind(b) !== 'plane')) return 'Distance needs two planar faces or planes';
+    if (type === 'angle' && (!refKind(a) || !refKind(b))) return 'Angle needs two faces, planes or axes';
     if (type === 'concentric' && (refKind(a) !== 'axis' || refKind(b) !== 'axis')) return 'Concentric needs two cylindrical faces or axes';
     return null;
   }
@@ -1710,17 +1714,38 @@
     var snapshot = JSON.stringify(App.model), previewed = false;
     var v = existing ? { a: JSON.parse(JSON.stringify(existing.a)), b: JSON.parse(JSON.stringify(existing.b)), type: existing.type, alignment: existing.alignment || defaultAlignment(existing.type, existing.a, existing.b) }
       : { a: null, b: null, type: 'coincident', alignment: 'aligned' };
-    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), picked = [];
+    v.distance = existing && existing.distance != null ? existing.distance : 10;
+    v.angle = existing && existing.angle != null ? existing.angle : 90;
+    v.offset = existing && existing.offset != null ? existing.offset : 0;
+    v.flip = !!(existing && existing.flip);
+    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [];
     function restore() { App.model = JSON.parse(snapshot); }
+    function mateValues() {
+      return { distance: v.type === 'distance' ? +v.distance || 0 : null, angle: v.type === 'angle' ? +v.angle || 0 : null,
+        offset: v.type === 'coincident' ? +v.offset || 0 : null, flip: v.type !== 'concentric' && !!v.flip };
+    }
+    // Distance / Angle start at the distance / angle the two selections have now (SolidWorks does the same)
+    function measure() {
+      if (valueSet || !(v.a && v.b) || !App.build || !App.build.partBuilds) return;
+      try {
+        var A = Assembly.resolveRef(App.model, App.build.partBuilds, v.a), B = Assembly.resolveRef(App.model, App.build.partBuilds, v.b);
+        var da = A.normal || A.dir, db = B.normal || B.dir, c = Math.max(-1, Math.min(1, K.vec.dot(da, db)));
+        if (A.kind === 'plane' && B.kind === 'plane') v.distance = +Math.abs(K.vec.dot(K.vec.sub(B.point, A.point), A.normal)).toFixed(4);
+        v.angle = +(Math.acos(c) * 180 / Math.PI).toFixed(4);
+      } catch (e) { /* the preview reports a bad reference */ }
+    }
     function apply(m) {
       var opts = alignSet ? { alignment: v.alignment } : {};
       if (existing) {
         var x = Assembly.findMate(m, existing.id);
-        if (x.type !== v.type && /^(Coincident|Concentric)\d+$/.test(x.name)) x.name = nextMateName(m, v.type, x.id);
+        if (x.type !== v.type && /^(Coincident|Concentric|Distance|Angle)\d+$/.test(x.name)) x.name = nextMateName(m, v.type, x.id);
         x.type = v.type; x.a = JSON.parse(JSON.stringify(v.a)); x.b = JSON.parse(JSON.stringify(v.b));
         if (alignSet) x.alignment = v.alignment; else delete x.alignment;
+        Assembly.setMateValues(x, mateValues());
         return x;
       }
+      var mv = mateValues();
+      Object.keys(mv).forEach(function (k) { if (mv[k] != null) opts[k] = mv[k]; });
       return Assembly.addMate(m, v.type, JSON.parse(JSON.stringify(v.a)), JSON.parse(JSON.stringify(v.b)), opts);
     }
     function setMessage(html, ok) { if (!pm.spec) return; pm.spec.message = html; pm.spec.messageOk = !!ok; renderPM(); }
@@ -1747,6 +1772,7 @@
       if (App.command) App.command.faceList = picked.slice();
       if (!typeSet) v.type = defaultMateType(v.a, v.b);
       if (!alignSet) v.alignment = defaultAlignment(v.type, v.a, v.b);
+      measure();
       renderPM();
       preview();
       UI.updateHighlights();
@@ -1771,12 +1797,19 @@
           { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…' },
           { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { x.a = null; x.b = null; picked = []; if (App.command) App.command.faceList = []; renderPM(); preview(); UI.updateHighlights(); } }] }
         ] },
-        { title: 'Standard Mates', fields: [{ type: 'select', label: 'Mate type', key: 'type', options: MATE_TYPES, rerender: true }] },
+        { title: 'Standard Mates', fields: [
+          { type: 'select', label: 'Mate type', key: 'type', options: MATE_TYPES, rerender: true },
+          { type: 'number', label: 'Distance', key: 'distance', unit: 'u', min: 0, show: function (x) { return x.type === 'distance'; } },
+          { type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0, show: function (x) { return x.type === 'angle'; } },
+          { type: 'number', label: 'Offset', key: 'offset', unit: 'u', min: 0, show: function (x) { return x.type === 'coincident'; } },
+          { type: 'check', label: 'Flip dimension', key: 'flip', show: function (x) { return x.type !== 'concentric'; } }
+        ] },
         { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned']] }] }
       ],
       onChange: function (x, key) {
         if (key === 'type') { typeSet = true; if (!alignSet) { x.alignment = defaultAlignment(x.type, x.a, x.b); renderPM(); } }
         if (key === 'alignment') alignSet = true;
+        if (key === 'distance' || key === 'angle') valueSet = true;
         if (key) preview();
       },
       onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
@@ -1798,6 +1831,204 @@
   function editMate(m) { cmdMate(m); }
   // UI.mateSelect(ref): add a ref to the open Mate PM as if it were picked (scripts / tests); false when no Mate PM is open
   function mateSelect(ref) { return mateSession ? mateSession.addRef(ref) : false; }
+
+  // ---- Move Component / Rotate Component
+  // A move only changes the component's stored transform; the rebuild solves the mates again, so the component keeps
+  // what its free degrees of freedom allow (Assembly.moveComponent / rotateComponent). Each move is one undo step.
+  function asmMove(idOrName, delta) {
+    var c = findComp(idOrName);
+    if (!c) return asmFail('No component "' + idOrName + '"');
+    if (c.fixed) return asmFail(c.name + ' is fixed: Float it to move it.');
+    var id = c.id;
+    return asmCommit(function (m) { return Assembly.moveComponent(m, id, delta); }, c.name + ' moved; mates solved again.');
+  }
+  // rotate(idOrName, axis 'x' | 'y' | 'z' | [x, y, z], degrees, pivot? (default: the component's centre))
+  function asmRotate(idOrName, axis, deg, pivot) {
+    var c = findComp(idOrName);
+    if (!c) return asmFail('No component "' + idOrName + '"');
+    if (c.fixed) return asmFail(c.name + ' is fixed: Float it to rotate it.');
+    var id = c.id, P = pivot || Assembly.componentCenter(App.model, App.build, id);
+    try { Assembly.rotateComponent(JSON.parse(JSON.stringify(App.model)), id, axis, deg, P); } catch (e) { return asmFail(e.message); }
+    return asmCommit(function (m) { return Assembly.rotateComponent(m, id, axis, deg, P); }, c.name + ' rotated; mates solved again.');
+  }
+  // Viewport drag (ui-sketch.js asks UI.componentDragHook on a left button press): in an assembly, with no command
+  // open or with Move / Rotate Component open, pressing on a floating component and dragging moves it in the screen
+  // plane (Rotate Component: turns it about its centre). The graphics area shows the solved result while dragging
+  // (mates hold what they fix); dropping commits one undo step. Fixed components refuse and the view rotates instead.
+  var DRAG_DEG_PER_PX = 0.5;
+  function componentDragHook(p) {
+    if (!isAsm() || typeof Assembly === 'undefined' || App.mode === 'sketch' || !App.mesh) return null;
+    if (App.command && !App.command.dragComponents) return null;
+    var hit = UI.pickFace(p[0], p[1]), face = hit && App.mesh.faces[hit.index];
+    var c = face ? (App.model.components || [])[face.body || 0] : null;
+    if (!c) return null;
+    if (c.fixed) { UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
+    var mode = App.command && App.command.dragComponents === 'rotate' ? 'rotate' : 'move';
+    var snap = JSON.stringify(App.model), id = c.id, start = p.slice(), last = null, raf = 0;
+    var center = Assembly.componentCenter(App.model, App.build, id);
+    function target(q) {
+      var m = JSON.parse(snap), dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up, sc = UI.cam.scale;
+      if (mode === 'move') Assembly.moveComponent(m, id, [(r.x * dx - u.x * dy) * sc, (r.y * dx - u.y * dy) * sc, (r.z * dx - u.z * dy) * sc]);
+      else {
+        if (dx) Assembly.rotateComponent(m, id, [u.x, u.y, u.z], dx * DRAG_DEG_PER_PX, center);
+        if (dy) Assembly.rotateComponent(m, id, [r.x, r.y, r.z], dy * DRAG_DEG_PER_PX, center);
+      }
+      return m;
+    }
+    function show() { raf = 0; if (!last) return; App.model = target(last); UI.rebuild({ noSave: true }); }
+    return {
+      component: c,
+      start: function () { UI.setStatus((mode === 'move' ? 'Moving ' : 'Rotating ') + c.name + '…'); },
+      move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
+      end: function (q) {
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        var T = Assembly.findComponent(target(q), id).transform;
+        App.model = JSON.parse(snap);
+        return asmCommit(function (m) { var x = Assembly.findComponent(m, id); x.transform = T; return x; }, c.name + (mode === 'move' ? ' moved' : ' rotated') + '; mates solved again.')
+          .catch(function (e) { UI.toast(e.message || String(e)); });
+      }
+    };
+  }
+  function cmdMoveComponent(mode) {
+    if (!asmReady()) return;
+    mode = mode === 'rotate' ? 'rotate' : 'move';
+    var v = { drag: mode, move: 'free', rotate: 'free', dx: 0, dy: 0, dz: 0, ax: 0, ay: 0, az: 0 };
+    function target() {
+      var c = selectedComponent();
+      if (!c) { UI.toast('Select a component first (click it in the graphics area or the FeatureManager).'); return null; }
+      return c;
+    }
+    function run(p) { if (p && p.catch) p.catch(function (e) { UI.toast(e.message || String(e)); }); return p; }
+    function applyMove(x) { var c = target(); if (c) run(asmMove(c.id, [+x.dx || 0, +x.dy || 0, +x.dz || 0])); }
+    function applyRotate(x) {
+      var c = target();
+      if (!c) return;
+      var id = c.id, P = Assembly.componentCenter(App.model, App.build, id);
+      if (c.fixed) { UI.toast(c.name + ' is fixed: Float it to rotate it.'); return; }
+      run(asmCommit(function (m) {
+        [['x', x.ax], ['y', x.ay], ['z', x.az]].forEach(function (a) { if (+a[1]) Assembly.rotateComponent(m, id, a[0], +a[1], P); });
+        return Assembly.findComponent(m, id);
+      }, c.name + ' rotated; mates solved again.'));
+    }
+    openPM({
+      title: mode === 'rotate' ? 'Rotate Component' : 'Move Component', icon: mode === 'rotate' ? 'rotateComponent' : 'moveComponent', values: v,
+      message: 'Drag a component in the graphics area to ' + (mode === 'rotate' ? 'rotate' : 'move') + ' it. Its mates are solved again when you drop it; fixed components do not move.',
+      command: { dragComponents: mode },
+      groups: [
+        { title: 'Drag', fields: [{ type: 'select', label: 'Drag', key: 'drag', options: [['move', 'Move'], ['rotate', 'Rotate']] }] },
+        { title: 'Move', fields: [
+          { type: 'select', label: 'Move', key: 'move', options: [['free', 'Free Drag'], ['delta', 'By Delta XYZ']], rerender: true },
+          { type: 'number', label: 'ΔX', key: 'dx', unit: 'u', show: function (x) { return x.move === 'delta'; } },
+          { type: 'number', label: 'ΔY', key: 'dy', unit: 'u', show: function (x) { return x.move === 'delta'; } },
+          { type: 'number', label: 'ΔZ', key: 'dz', unit: 'u', show: function (x) { return x.move === 'delta'; } },
+          { type: 'buttons', buttons: [{ label: 'Apply', onclick: applyMove }], show: function (x) { return x.move === 'delta'; } }
+        ] },
+        { title: 'Rotate', fields: [
+          { type: 'select', label: 'Rotate', key: 'rotate', options: [['free', 'Free Drag'], ['delta', 'By Delta XYZ']], rerender: true },
+          { type: 'number', label: 'ΔX', key: 'ax', unit: '°', show: function (x) { return x.rotate === 'delta'; } },
+          { type: 'number', label: 'ΔY', key: 'ay', unit: '°', show: function (x) { return x.rotate === 'delta'; } },
+          { type: 'number', label: 'ΔZ', key: 'az', unit: '°', show: function (x) { return x.rotate === 'delta'; } },
+          { type: 'buttons', buttons: [{ label: 'Apply', onclick: applyRotate }], show: function (x) { return x.rotate === 'delta'; } }
+        ] }
+      ],
+      onChange: function (x, key) {
+        if (key === 'drag' && App.command) {
+          App.command.dragComponents = x.drag;
+          pm.spec.title = x.drag === 'rotate' ? 'Rotate Component' : 'Move Component';
+          renderPM();
+        }
+      },
+      onOK: function () { }
+    });
+  }
+
+  // ---- Interference Detection (Evaluate tab)
+  // Lists every pair of components whose solids overlap (Assembly.interference: CSG.intersect of the world bodies),
+  // largest first. The interfering components' faces are highlighted and the common volumes drawn in red on top;
+  // clicking a result shows that pair only (click again for all). Calculate runs it again after the assembly changed.
+  var intfMat = null;
+  function interferenceMaterial() {
+    if (!intfMat) intfMat = new THREE.MeshBasicMaterial({ color: 0xe0553c, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    return intfMat;
+  }
+  function asmInterference() {
+    if (!isAsm() || typeof Assembly === 'undefined') return { pairs: [], volume: 0, checked: 0 };
+    return Assembly.interference(App.model, App.build);
+  }
+  var intfSession = null;
+  function escHtml(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function cmdInterference() {
+    if (!asmReady()) return;
+    var res = null, active = -1, u = UI.unitLabel();
+    function shown() { return !res ? [] : active >= 0 ? [res.pairs[active]] : res.pairs; }
+    function highlight() {
+      UI.disposeGroup(UI.groups.preview);
+      var comps = {};
+      shown().forEach(function (p) {
+        comps[p.aIndex] = true; comps[p.bIndex] = true;
+        try {
+          var mesh = K.meshFromBody(p.body), g = new THREE.BufferGeometry();
+          g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+          g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+          var obj = new THREE.Mesh(g, interferenceMaterial());
+          obj.renderOrder = 10;
+          UI.groups.preview.add(obj);
+        } catch (e) { /* a degenerate common body is still listed */ }
+      });
+      if (App.command) App.command.faceList = App.mesh ? App.mesh.faces.map(function (f, i) { return comps[f.body || 0] ? i : -1; }).filter(function (i) { return i >= 0; }) : [];
+      UI.updateHighlights();
+    }
+    function rowsHtml() {
+      if (!res) return '';
+      if (!res.pairs.length) return '<div class="intf-none">No Interferences</div>';
+      return res.pairs.map(function (p, i) {
+        return '<div class="intf-row' + (i === active ? ' selected' : '') + '" data-i="' + i + '">' + Icons('interference', 16) + '<span><b>Interference' + (i + 1) + '</b> — ' +
+          UI.fmtNum(p.volume, 3) + ' ' + u + '³<br><small>' + escHtml(p.aName) + ' · ' + escHtml(p.bName) + '</small></span></div>';
+      }).join('');
+    }
+    function report() {
+      if (!pm.spec) return;
+      var n = res.pairs.length;
+      pm.spec.message = res.error ? 'Interference Detection failed: ' + res.error
+        : n ? n + ' interference' + (n > 1 ? 's' : '') + ', ' + UI.fmtNum(res.volume, 3) + ' ' + u + '³ in all (' + res.checked + ' pair' + (res.checked === 1 ? '' : 's') + ' checked).'
+          : 'No interferences: no two components overlap (touching faces are not interferences).';
+      pm.spec.messageOk = !n && !res.error;
+      renderPM();
+      highlight();
+      UI.setStatus(pm.spec.message);
+    }
+    function calculate() {
+      try { res = asmInterference(); } catch (e) { res = { pairs: [], volume: 0, checked: 0, error: e.message || String(e) }; }
+      active = -1;
+      report();
+      return res;
+    }
+    function onClick(e) {
+      var row = e.target.closest && e.target.closest('.intf-row');
+      if (!row) return;
+      var i = +row.getAttribute('data-i');
+      active = active === i ? -1 : i;
+      renderPM(); highlight();
+    }
+    var n = (App.model.components || []).length;
+    openPM({
+      title: 'Interference Detection', icon: 'interference', values: {},
+      message: 'Calculating…',
+      command: { faceList: [] },
+      groups: [
+        { title: 'Selected Components', fields: [
+          { type: 'static', label: 'Check', value: 'Entire assembly (' + n + ' component' + (n === 1 ? '' : 's') + ')' },
+          { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { calculate(); } }] }
+        ] },
+        { title: 'Results', fields: [{ type: 'html', html: function () { return '<div class="intf-list">' + rowsHtml() + '</div>'; } }] }
+      ],
+      onClose: function () { pm.root.removeEventListener('click', onClick); intfSession = null; },
+      onOK: function () { }
+    });
+    pm.root.addEventListener('click', onClick);
+    intfSession = { calculate: calculate, results: function () { return res; }, select: function (i) { active = i; renderPM(); highlight(); } };
+    calculate();
+  }
 
   // ------------------------------------------------------------------ edit / delete features
   function editFeature(f) {
@@ -1885,11 +2116,14 @@
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
+  UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };
+  UI.cmdInterference = cmdInterference; UI.componentDragHook = componentDragHook;
+  UI.interference = asmInterference; UI.interferenceSession = function () { return intfSession; };
   UI.cmdFixComponent = cmdFixComponent; UI.cmdHideShowComponents = cmdHideShowComponents;
   UI.confirmRemoveComponent = confirmRemoveComponent; UI.confirmRemoveMate = confirmRemoveMate;
   UI.compLabel = compLabel; UI.compStatus = compStatus; UI.mateLabel = mateLabel; UI.mateStatus = mateStatus; UI.selectedComponent = selectedComponent;
   UI.asm = { insert: asmInsert, mate: asmAddMate, fix: asmSetFixed, removeComponent: asmRemoveComponent, removeMate: asmRemoveMate,
-    suppressMate: asmSuppressMate, setHidden: asmSetHidden, isHidden: asmIsHidden };
+    suppressMate: asmSuppressMate, setHidden: asmSetHidden, isHidden: asmIsHidden, move: asmMove, rotate: asmRotate };
   UI.commands = { insertComponent: cmdInsertComponent, mate: cmdMate, editMate: editMate };
   UI.bodyList = bodyList; UI.bodyInfos = bodyInfos; UI.bodyTitle = bodyTitle; UI.selectBodyRow = selectBody;
 })(UI);
