@@ -683,3 +683,21 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Hole Wizard feature (counterbore / countersink / tapped with cosmetic threads) — kernel side, coordinate with the mesh-quality session; the drawing callout already reads the geometry.
 2. Drawings: notes and GD&T (feature control frames, datums), magnetic lines, multiple sheets.
 3. Phase 7: true curves in the kernel.
+
+## Run cloud-2026-09-25p — True curves: exact circles, arcs, cylinders, cones, spheres and tori
+
+**Context.** Cloud session (no HEAD.lock, board or republish). Board request: "make the arcs radii & circles true not segmented lines". Head did kernel.js / csg.js / tests; three subagents did drawing.js, exchange.js and the viewport (ui-core / ui-app / ui-panels / ui-commands, ui-smoke.html). assembly.js / ui-assembly.js untouched.
+
+**Done.**
+- Profiles: `profile.curves` + `loop.seg` mark which segments are chords of which circle / arc.
+- Solids: `polygon.surf = { s: { t: cyl | cone | sph | tor, o, d, r, … }, P?, Q? }` on every facet of a curved face (extrude, drafted extrude → cone, holes, revolves, fillets between planar faces), carried by CSG splits, clones, transforms and pack / unpack.
+- `massProps` exact: sliver integration per fragment (Gauss-Legendre on fan triangles, closed-form columns; two-level for spheres / tori; side walls for areas). Cylinders, holes, counterbores, bosses, cones, frusta, spheres, tori, partial revolves, drafted cylinders and fillets match their formulas to ≤ 1e-11; 14 Design Library parts are tessellation-independent to 1e-11.
+- `Kernel.curveEdges` / `curveSurfaces`; chord-tolerance tessellation (0.05 mm, n multiple of 8, 16..128), `setTessellation`, `model.tessellation` (cache key, worker), `legacy: true` reproduces old meshes bit for bit.
+- Drawings: exact circles / arcs / ellipses (SVG, DXF, PDF), visible / hidden arcs, exact silhouettes, R dimensions. STEP: CYLINDRICAL / CONICAL / SPHERICAL / TOROIDAL faces with CIRCLE edges and seams; import of those; OpenCascade validity + volumes to 1e-15 (checked independently by the head on cylinder, bolt plate, counterbore, torus, fillet). Viewport: analytic normals, no seams, 128-segment curve edges, Tools ▸ Options ▸ Image Quality.
+- Examples: Gear train's Gear A turned 90° and the roller 7.5° so the 24-gon bores / flats line up (Tangent and interference in assembly.js still use facets).
+
+**Tests.** Old polygonal pins run under `withLegacy` (unchanged numbers); analytic pins moved to πr² formulas with comments; new groups `true curves: kernel / drawings / STEP`. Verified on the branch before the attempted main merge: kernel-tests 640/640, ui-smoke 135/135, app with no console errors. After merging origin/main (PRs #15, #16) kernel was 665/665 and the app clean but ui-smoke did not finish within 15 min; the merge was aborted and is left to the foreman.
+
+**Bench** (sum of medians, idle): 422.1 ms before → 775.4 ms with the default 0.05 mm tolerance; 434.5 ms with `?legacy` (the records cost ~3 %; the rest is the finer mesh, mostly the Funnel shell).
+
+**Next up.** 1. Tangent mate / interference with analytic radii (assembly session). 2. Surface records for sweeps, lofts between coaxial circles, shells of round faces, fillets along curved edges. 3. Faster shells on fine meshes. 4. Tighten curveEdges on trimmed cones (Hex nut chords 0.03 off the circle).
