@@ -815,3 +815,24 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 1. Mirror Entities about a centerline adds Symmetric relations to the copies.
 2. Tangent / perpendicular inference from an end point while drawing a line or arc.
 3. Concentric / Tangent mates on cones and spheres (from 26r).
+
+## Run cloud-2026-09-26t — Hole Wizard: Counterbore, Countersink, Hole, Straight Tap (ISO M2–M20)
+
+**Context.** Last cloud session on the credit, small budget: no HEAD.lock, board, subagents or republish. ROADMAP Phase 7 "Hole Wizard types". Branch `cloud/hole-wizard`, PR to main (the foreman integrates). Baseline on f6fae6f: kernel 676/676, smoke 146/146.
+
+**Done.**
+- `holewizard.js` (new, no DOM, loaded by the app, kernel tests and the rebuild worker): ISO coarse table M2–M20 (ISO 273 clearance Close / Normal / Loose, ISO 4762 counterbore Ø / depth, ISO 10642 countersink Ø at 90°, tap drill), the `hole` feature (`holeType`, `size`, `fit`, `end` blind / through, `depth`, `threadDepth`, `sketch` = a points sketch on the face). Each hole is a `revolve` tool of its half section on a plane through the axis, built through `Kernel.buildTool`, so the walls carry true-curve records; several points union into one tool. `p.holeWizard({ sketch | face + offset + points, type, size, fit, depth | end: 'through', threadDepth })`, the generateScript line, `HoleWizard.spec / threads / holeName`. Names follow SolidWorks: *CBORE for M6 Socket Head Cap Screw1*, *M8x1.25 Tapped Hole1*.
+- `kernel.js` (minimal, as agreed): `registerFeature(type, { build, cut, script })` and three one-line hooks (buildTool `default`, `isCut`, generateScript `default`). No other kernel change.
+- `ui-holewizard.js` (new): Hole Wizard PM with Type / Positions tab buttons, Hole Type, Hole Specifications (Standard ISO, Size, Fit, a read-out of the sizes), End Condition (Blind depth / Through All, thread depth for taps), Hole Position (first face click places the first hole, more clicks on the same face add holes, Remove last / Clear), live preview, OK = points sketch + hole feature in one undo step; edit rewrites both. Cosmetic threads: dashed circle at the major diameter on the face (`UI.updateCosmeticThreads`, called from `applyBuild` in ui-core.js).
+- Wiring: ribbon / menu *Hole Wizard* → `UI.cmdHoleWizard` (the sheet-metal *Simple Hole* and `UI.cmdHole` stay), `editFeature` case, tree icon `holeWizard` and tooltip, index.html / worker.js script tags.
+- `drawing.js`: dashed cosmetic-thread circles in orthographic views along the thread axis (not section / detail views); the hole callout of a tapped hole adds `M8x1.25 ↧ 12` (or `THRU`) under the tap drill line.
+
+**Tests.** kernel 676 → 683 (group *Hole Wizard*): ISO table sanity; volume removed for hole / cbore / csk / tap against πR²D, the counterbore and frustum formulas to 1e-9; three through-all counterbores; counterbore wall 6.5 high on the cylinder records and countersink included angle 90° from the cone records; script round trip (identical second generation); error messages; drawing callout `Ø6.8 ↧ 16 M8x1.25 ↧ 12`, the Ø8 dashed thread circle at the analytic sheet position, and a counterbore callout `Ø6.6 ↧ 16 ⌴ Ø11 ↧ 6.5` with no thread. Smoke 146 → 147: two face clicks, Type tab → Counterbore M6 blind 16, volume, tree name and icon, one undo step, edit to Straight Tap M8 → 2 cosmetic threads, script round trip.
+
+**Verified (headless Chromium via Playwright, `python3 -m http.server 8765` in anvil/, three.js r128 routed from npm three@0.128.0 in the runner only).** kernel-tests 683/683, ui-smoke 147/147, app page loads with 0 console errors.
+
+**Decisions.** Flat-bottom blind holes (no 118° drill point), so drawing callouts read the depth to the bottom and volumes stay simple; the thread is cosmetic only (the solid is the tap drill); a hole feature's positions live in an ordinary sketch of points (editable in sketch mode too).
+
+**Known gaps.** No hole series, no drill-point angle option, no ANSI inch / pipe tap sizes, no Near side / Far side countersinks or Up To Surface; patterned holes (LPattern of a hole) are cut but carry no cosmetic thread; points are placed by clicking (no dimensions to them from the PM, though the sketch can be dimensioned).
+
+**Next up.** 1. Hole series and Up To Next / Up To Surface end conditions. 2. Drill point option with callouts measured to the shoulder. 3. Cosmetic threads on patterned / mirrored holes and in section views.

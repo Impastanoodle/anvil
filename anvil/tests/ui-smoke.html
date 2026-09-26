@@ -3742,6 +3742,53 @@
     near(anvil.mass().volume, Math.PI * 100 * 20, 1e-6, 'exact volume');
     return 'fine (0.02 mm): ' + segsAt(0.02, 10) + ' facets after the round trip';
   });
+  // ---- Hole Wizard (run cloud-2026-09-26t): block 60 × 60 × 30 centred on x / z, top face at y = 30
+  step('Hole Wizard: two clicks on the top face, Type tab → Counterbore M6 blind 16 → one hole feature (tree icon, one undo step); edit to Straight Tap M8 shows two cosmetic threads; script round trip', async function () {
+    var s = await anvil.run('p.box(60, 60, 30, { centered: true });');
+    await idle();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    var n0 = UI.App.model.features.length, idx = faceWithNormal([0, 1, 0]);
+    UI.cmdHoleWizard();
+    assert(UI.hasPM() && UI.pmTitle() === 'Hole Wizard' && UI.App.command && UI.App.command.onPick, 'Hole Wizard PM not waiting for a pick');
+    assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [-15, 30, 0] }) !== false, 'first pick rejected');
+    assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [15, 30, 10] }) !== false, 'second pick rejected');
+    clickPmButton('Type');
+    var ty = pmSelect('holeType'), sz = pmSelect('size'), en = pmSelect('end');
+    assert(ty && sz && en, 'Type tab selects missing');
+    assert(optionValues(ty).join() === 'cbore,csk,hole,tap', optionValues(ty).join());
+    setInput(ty, 'cbore'); setInput(pmSelect('size'), 'M6'); setInput(pmSelect('end'), 'blind');
+    setInput(pmNumber(0), 16);
+    await pmAccept();
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(UI.App.model.features.length === n0 + 2 && f.type === 'hole' && f.holeType === 'cbore' && f.size === 'M6' && f.depth === 16, JSON.stringify(f));
+    assert(!UI.App.build.errors[f.id], UI.App.build.errors[f.id]);
+    var one = Math.PI * 5.5 * 5.5 * 6.5 + Math.PI * 3.3 * 3.3 * (16 - 6.5);   // CBORE Ø11 ↧ 6.5 over Ø6.6 ↧ 16
+    near(anvil.summary().volume, 108000 - 2 * one, 1e-3, 'volume');   // summary() rounds to 3 decimals
+    var row = D.querySelector('#tree .ti[data-fid="' + f.id + '"]');
+    var ic = D.createElement('span'); ic.innerHTML = W.Icons('holeWizard', 16);
+    assert(row && row.textContent.indexOf('CBORE for M6 Socket Head Cap Screw1') >= 0, 'tree row ' + (row && row.textContent));
+    assert(Array.prototype.some.call(row.querySelectorAll('span'), function (x) { return x.innerHTML === ic.innerHTML; }), 'Hole Wizard tree icon');
+    assert(UI.cosmeticThreadCount() === 0, 'no threads on a counterbore');
+    UI.undo(); await idle();
+    assert(UI.App.model.features.length === n0, 'one undo step removes sketch + hole: ' + names().join());
+    near(anvil.summary().volume, 108000, 1e-3, 'after undo');
+    UI.redo(); await idle();
+    f = UI.App.model.features[UI.App.model.features.length - 1];
+    UI.editFeature(f);
+    assert(UI.hasPM() && UI.pmTitle() === 'Hole Wizard', 'edit PM');
+    setInput(pmSelect('holeType'), 'tap'); setInput(pmSelect('size'), 'M8');
+    await pmAccept();
+    assert(f.holeType === 'tap' && f.size === 'M8' && f.threadDepth === 16, JSON.stringify(f));
+    near(anvil.summary().volume, 108000 - 2 * Math.PI * 3.4 * 3.4 * 16, 1e-3, 'tap drill volume');
+    assert(UI.cosmeticThreadCount() === 2, 'cosmetic threads: ' + UI.cosmeticThreadCount());
+    var code = anvil.script();
+    assert(code.indexOf('p.holeWizard({') > 0 && code.indexOf('type: "tap", size: "M8"') > 0, code);
+    var v0 = anvil.summary().volume;
+    await anvil.run(code); await idle();
+    near(anvil.summary().volume, v0, 1e-3, 'round trip volume');
+    return 'volume ' + v0.toFixed(3) + ', threads ' + UI.cosmeticThreadCount();
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));

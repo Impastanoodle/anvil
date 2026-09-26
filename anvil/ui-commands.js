@@ -2071,6 +2071,7 @@
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
       case 'import': cmdImported(f); break;
+      case 'hole': if (UI.cmdHoleWizard) UI.cmdHoleWizard(f); break;
     }
   }
   function deleteFeature(id) {

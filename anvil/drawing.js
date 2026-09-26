@@ -1936,11 +1936,17 @@ var Drawing = (function () {
       placed.push(d); shown.push(d);
     });
     dims = shown;
+    // cosmetic threads (holewizard.js Straight Tap holes): a dashed circle at the major diameter in views along the axis
+    var threads = partThreads(model);
+    views.forEach(function (w) {
+      if (!w.ortho || w.section || w.clip) return;
+      threadsAlong(threads, w.frame).forEach(function (t) { prims.push({ k: 'circle', c: w.toSheet(t.c), r: t.r * w.scale, layer: w.layer, style: 'hidden', thread: t.label }); });
+    });
     // annotations: centre marks, centrelines, hole callouts
     var annotations = [];
     views.forEach(function (w) {
       (w.view.annotations || []).forEach(function (an, i) {
-        var r = annotationPrims(an, w, k, mesh, doc, units), bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        var r = annotationPrims(an, w, k, mesh, doc, units, threads), bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
         function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
         r.prims.forEach(function (x) {
           prims.push(x);
@@ -2886,7 +2892,17 @@ var Drawing = (function () {
   // ------------------------------------------------------------------ annotation primitives
   // annotationPrims(an, w, k, mesh, doc, units, counts) -> { prims, dangling, text, info }: an annotation of view
   // record w on the ANNOTATIONS layer. Centre marks and centrelines use the CENTER linetype ('center' style).
-  function annotationPrims(an, w, k, mesh, doc, units) {
+  // partThreads(model) -> HoleWizard.threads of a part ([] for an assembly or without holewizard.js);
+  // threadsAlong(threads, F) -> those seen along their axis in the view frame F, with their view centre c
+  function partThreads(model) {
+    if (!model || model.type === 'assembly' || typeof HoleWizard === 'undefined') return [];
+    try { return HoleWizard.threads(model); } catch (e) { return []; }
+  }
+  function threadsAlong(threads, F) {
+    return (threads || []).filter(function (t) { return Math.abs(Math.abs(V.dot(t.n, F.e)) - 1) < 1e-9; })
+      .map(function (t) { return { c: [V.dot(t.p, F.u), V.dot(t.p, F.v)], r: t.r, depth: t.depth, label: t.label, drill: t.drill }; });
+  }
+  function annotationPrims(an, w, k, mesh, doc, units, threads) {
     var L = 'ANNOTATIONS', out = [], pr = w.proj, o = docOptions(doc), dangling = false, text = '', info = null;
     function line(a, b, style) { out.push({ k: 'line', a: a, b: b, layer: L, style: style || 'thin' }); }
     function mark(cs, rr, size, ext, only) {
@@ -2960,6 +2976,9 @@ var Drawing = (function () {
         });
         lines = holeText(h, units, Math.max(1, count), an.prec);
         info = { hole: h, count: Math.max(1, count) };
+        // a Straight Tap hole of the Hole Wizard: the tap drill line, then the thread 'M8x1.25 ↧ 12' / 'M8x1.25 THRU'
+        var tap = w.ortho ? threadsAlong(threads, w.frame).filter(function (t) { return Math.hypot(t.c[0] - h.c[0], t.c[1] - h.c[1]) <= 1e-6 * (1 + t.r) && Math.abs(t.drill - h.dia) <= 1e-6 * (1 + t.drill); })[0] : null;
+        if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? ' THRU' : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
       } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
       if (an.text) lines = String(an.text).split('\n').map(function (s) { return s.split('<HOLE>').join(lines.join(' ')); });
       var c = w.toSheet(an.c), rr2 = an.r * w.scale, box = w.box, th = 3.5 * k, mid = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];

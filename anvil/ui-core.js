@@ -1091,6 +1091,7 @@ var UI = (function () {
     updatePlanes();
     updateOrigin();
     updateSketches();
+    if (UI.updateCosmeticThreads) UI.updateCosmeticThreads();   // ui-holewizard.js: Straight Tap threads
     App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
