@@ -1,9 +1,12 @@
-// assembly.js — Anvil assembly documents: insert parts as components, mate them (Coincident / Concentric / Distance /
-// Angle), solve, move and rotate components, detect interference.
+// assembly.js — Anvil assembly documents: insert parts as components, mate them (Standard mates Coincident / Parallel /
+// Perpendicular / Tangent / Concentric / Distance / Angle, Advanced mates Width / Limit Distance / Limit Angle, the
+// Mechanical Gear mate), solve, move and rotate components, detect interference, pattern and mirror components
+// (Linear / Circular Component Pattern, Mirror Components) and explode them (Exploded View steps and explode lines).
 // Plain script (no modules): defines the global `Assembly`. Loaded after csg.js and kernel.js; no DOM, no three.js.
 //
 // An assembly model is plain JSON (see README "Assemblies"):
-//   { type: 'assembly', name, units, features: [], components: [Component], mates: [Mate], nextId }
+//   { type: 'assembly', name, units, features: [], components: [Component], mates: [Mate], patterns: [Pattern],
+//     explodedViews: [ExplodedView], exploded?: viewId, nextId }
 // A component places a part (a Design Library example, a part script or an embedded part model) with a rigid transform
 // world = R · local + position (R row-major 3x3). Mates reference geometry on components in component-local coords;
 // `rebuild` builds each part once (cached by source), solves the mates and writes the solved transforms back.
@@ -72,7 +75,7 @@ var Assembly = (function () {
 
   function examplesList() { return (typeof AnvilExamples !== 'undefined' && AnvilExamples) ? AnvilExamples : []; }
 
-  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle)\s*\(/.test(String(code || '')); }
+  function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
   // A fresh part model JSON for a component source. Throws for an unknown / unusable source.
   function partModel(source) {
@@ -137,7 +140,8 @@ var Assembly = (function () {
     if (!model.features) model.features = [];
     if (!(model.nextId > 0)) {
       var max = 0;
-      model.components.concat(model.mates).forEach(function (o) { if (o.id > max) max = o.id; });
+      model.components.concat(model.mates, model.patterns || [], model.explodedViews || []).forEach(function (o) { if (o.id > max) max = o.id; });
+      (model.explodedViews || []).forEach(function (v) { (v.steps || []).forEach(function (st) { if (st.id > max) max = st.id; }); });
       model.nextId = max + 1;
     }
   }
@@ -161,8 +165,17 @@ var Assembly = (function () {
     return comp;
   }
 
-  var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle' };
-  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle'];
+  var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
+    parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
+    limitdistance: 'LimitDistance', limitangle: 'LimitAngle' };
+  var MATE_TYPES = ['coincident', 'concentric', 'distance', 'angle', 'parallel', 'perpendicular', 'tangent', 'width', 'gear', 'limitdistance', 'limitangle'];
+  // Mate PropertyManager groups, as in SolidWorks (types Anvil does not have yet are left out)
+  var MATE_GROUPS = {
+    standard: ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'],
+    advanced: ['width', 'limitdistance', 'limitangle'],
+    mechanical: ['gear']
+  };
+  function mateTypeName(t) { t = String(t || '').toLowerCase(); return t === 'limitdistance' ? 'limitDistance' : t === 'limitangle' ? 'limitAngle' : t; }
 
   function normRef(model, ref) {
     var r = JSON.parse(JSON.stringify(ref || {}));
@@ -177,14 +190,18 @@ var Assembly = (function () {
   function addMate(model, type, a, b, opts) {
     opts = opts || {};
     ensureLists(model);
-    type = String(type || '').toLowerCase();
+    type = String(type || '').toLowerCase().replace(/[^a-z]/g, '');
     var base = MATE_BASE[type] || 'Mate';
     var m = {
       id: model.nextId++,
       name: opts.name || (base + nextNumber(model.mates.map(function (x) { return x.name; }), base)),
       type: type, a: normRef(model, a), b: normRef(model, b)
     };
+    // Width: a / a2 are the two width faces, b / b2 the two tab faces (or b alone: a cylindrical tab)
+    if (opts.a2) m.a2 = normRef(model, opts.a2);
+    if (opts.b2) m.b2 = normRef(model, opts.b2);
     if (opts.alignment) m.alignment = opts.alignment;
+    if (opts.phase && opts.phase.length === 2) m.phase = [+opts.phase[0], +opts.phase[1]];
     setMateValues(m, opts);
     if (opts.suppressed) m.suppressed = true;
     model.mates.push(m);
@@ -192,18 +209,30 @@ var Assembly = (function () {
   }
 
   // Mate values: Distance { distance } (mm, >= 0), Angle { angle } (degrees, 0..180), Coincident { offset } (mm, >= 0,
-  // left out when 0); `flip: true` (Flip dimension) puts the distance / offset on the other side, or measures the angle
-  // the other way round. Keys that do not belong to the mate type are removed.
+  // left out when 0), Limit Distance / Limit Angle { min, max } (the range the value may take), Gear { ratio: [a, b] }
+  // (B turns a/b times as far as A; a number r means [r, 1]); `flip: true` (Flip dimension) puts the distance / offset /
+  // range on the other side, measures the angle the other way round, makes a Tangent internal (cylinders) or puts the
+  // cylinder on the back of the plane, and makes a Gear turn both components the same way (SolidWorks' Reverse).
+  // Keys that do not belong to the mate type are removed.
+  var FLIP_TYPES = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
   function setMateValues(m, opts) {
     opts = opts || {};
-    ['distance', 'angle', 'offset'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    ['distance', 'angle', 'offset', 'min', 'max'].forEach(function (k) { if (opts[k] != null) m[k] = +opts[k]; });
+    if (opts.ratio != null) m.ratio = Array.isArray(opts.ratio) ? [+opts.ratio[0], +opts.ratio[1]] : [+opts.ratio, 1];
     if (opts.flip != null) { if (opts.flip) m.flip = true; else delete m.flip; }
+    var limit = m.type === 'limitdistance' || m.type === 'limitangle';
     if (m.type !== 'distance') delete m.distance;
     if (m.type !== 'angle') delete m.angle;
     if (m.type !== 'coincident' || !m.offset) delete m.offset;
+    if (!limit) { delete m.min; delete m.max; }
+    if (m.type !== 'gear') { delete m.ratio; delete m.phase; }
+    if (m.type !== 'width') { delete m.a2; delete m.b2; }
     if (m.type === 'distance' && m.distance == null) m.distance = 0;
     if (m.type === 'angle' && m.angle == null) m.angle = 0;
-    if (m.type === 'concentric' || (m.type === 'coincident' && !m.offset)) delete m.flip;
+    if (limit && m.min == null) m.min = 0;
+    if (limit && m.max == null) m.max = m.min;
+    if (m.type === 'gear' && m.ratio == null) m.ratio = [1, 1];
+    if (!FLIP_TYPES[m.type] || (m.type === 'coincident' && !m.offset)) delete m.flip;
     return m;
   }
 
@@ -211,9 +240,23 @@ var Assembly = (function () {
   function removeComponent(model, id) {
     var c = findComponent(model, id);
     if (!c) return false;
-    model.components.splice(model.components.indexOf(c), 1);
-    model.mates = model.mates.filter(function (m) { return !refUses(m.a, c.id) && !refUses(m.b, c.id); });
+    var gone = {};
+    gone[c.id] = true;
+    // a seed takes its pattern instances along; a pattern left without seeds is deleted
+    (model.patterns || []).forEach(function (p) { p.seeds = (p.seeds || []).filter(function (s) { return s !== c.id; }); });
+    model.patterns = (model.patterns || []).filter(function (p) { return p.seeds.length > 0; });
+    model.components.forEach(function (x) { if (x.pattern != null && (x.seed === c.id || !findPattern(model, x.pattern))) gone[x.id] = true; });
+    dropComponents(model, gone);
     return true;
+  }
+  // remove the components in `gone` (id -> true), the mates that reference them and their explode-step entries
+  function dropComponents(model, gone) {
+    model.components = model.components.filter(function (x) { return !gone[x.id]; });
+    model.mates = model.mates.filter(function (m) { return ['a', 'b', 'a2', 'b2'].every(function (k) { return !(m[k] && gone[m[k].component]); }); });
+    (model.explodedViews || []).forEach(function (v) {
+      (v.steps || []).forEach(function (st) { st.components = (st.components || []).filter(function (id) { return !gone[id]; }); });
+      v.steps = (v.steps || []).filter(function (st) { return st.components.length > 0; });
+    });
   }
   function removeMate(model, id) {
     var m = findMate(model, id);
@@ -487,14 +530,17 @@ var Assembly = (function () {
       out.point = add(cy.point, scale(cy.dir, dot(sub(pc, cy.point), cy.dir))); // axis point nearest the given point
       out.radius = cy.radius;
     } else throw new Error('A mate reference needs face, plane, cylinder or axis');
+    // an axis carries a fixed reference direction square to it: the Gear mate measures the component's turn with it
+    if (out.dir) out.ref = perpTo(out.dir);
     return out;
   }
 
   function worldOf(lr, T) {
-    if (!lr.comp) return { kind: lr.kind, point: lr.point.slice(), normal: lr.normal && lr.normal.slice(), dir: lr.dir && lr.dir.slice() };
-    var o = { kind: lr.kind, point: transformPoint(T, lr.point) };
+    if (!lr.comp) return { kind: lr.kind, point: lr.point.slice(), normal: lr.normal && lr.normal.slice(), dir: lr.dir && lr.dir.slice(), ref: lr.ref && lr.ref.slice(), radius: lr.radius };
+    var o = { kind: lr.kind, point: transformPoint(T, lr.point), radius: lr.radius };
     if (lr.normal) o.normal = transformDir(T, lr.normal);
     if (lr.dir) o.dir = transformDir(T, lr.dir);
+    if (lr.ref) o.ref = transformDir(T, lr.ref);
     return o;
   }
 
@@ -502,15 +548,28 @@ var Assembly = (function () {
     var lr = localRef(model, partBuilds, ref);
     var T = lr.comp ? ((transforms && transforms[lr.comp.id]) || lr.comp.transform) : null;
     var w = worldOf(lr, T);
-    return w.kind === 'plane' ? { kind: 'plane', point: w.point, normal: w.normal } : { kind: 'axis', point: w.point, dir: w.dir };
+    if (w.kind === 'plane') return { kind: 'plane', point: w.point, normal: w.normal };
+    var o = { kind: 'axis', point: w.point, dir: w.dir };
+    if (lr.radius != null) o.radius = lr.radius;
+    return o;
   }
 
   // ------------------------------------------------------------------ mate residuals
+  function isAxisRef(r) { return !!(r && (r.cylinder || r.axis != null)); }
+  // Default alignment: Coincident / Distance / Limit Distance between two faces are anti-aligned (the faces touch), with a
+  // plane aligned; Concentric and Angle aligned. The newer mates (Parallel, Perpendicular, Tangent, Width, a Distance
+  // that involves a cylinder or axis) take the closest alignment, as SolidWorks does: 'closest' keeps whichever sign the
+  // two directions have when the mate is solved (so the component turns the least).
   function defaultAlignment(m) {
-    if (m.type === 'coincident' || m.type === 'distance') return (m.a && m.a.face && m.b && m.b.face) ? 'anti-aligned' : 'aligned';
+    var t = m.type;
+    if (t === 'parallel' || t === 'perpendicular' || t === 'tangent' || t === 'width' || t === 'gear') return 'closest';
+    if (t === 'coincident' || t === 'distance' || t === 'limitdistance') {
+      if (t !== 'coincident' && (isAxisRef(m.a) || isAxisRef(m.b))) return 'closest';
+      return (m.a && m.a.face && m.b && m.b.face) ? 'anti-aligned' : 'aligned';
+    }
     return 'aligned';
   }
-  function alignSign(m) { return (m.alignment || defaultAlignment(m)) === 'anti-aligned' ? -1 : 1; }
+  function alignSign(m) { var a = m.alignment || defaultAlignment(m); return a === 'anti-aligned' ? -1 : a === 'closest' ? 0 : 1; }
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
   function gapTarget(m) {
@@ -534,14 +593,60 @@ var Assembly = (function () {
   // Coincident / Distance: nA − s·nB (3) and the plane gap minus its target (1).
   // Concentric: dA − s·dB (3) and B's axis point offset perpendicular to A's axis (3).
   // Angle: the signed angle from dA to s·dB about k minus its target (1, wrapped to ±π).
-  function mateResidual(pm, A, B, k) {
+  //
+  // The newer mates, by the kinds of their two refs (pair 'pp' plane–plane, 'aa' axis–axis, 'ap' / 'pa' mixed):
+  // Parallel: pp / aa dA − s·dB (3), mixed dA · dB (1).  Perpendicular: pp / aa dA · dB (1), mixed dA − s·dB (3).
+  // Distance aa: dA − s·dB (3) and the axis-to-axis distance minus d; ap: axis · normal (1) and the axis' signed height
+  // above the plane minus ±d. Tangent: as Distance with d = the radius (cylinder–plane) or rA + rB / |rA − rB| (two
+  // cylinders). Width: the tab's mid-plane (two faces) or axis (a cylinder) parallel to and on the mid-plane of the two
+  // width faces. Limit Distance / Limit Angle: the directions as for Distance / Angle and the amount by which the value
+  // lies outside [min, max] (0 inside, so the component moves freely there). Gear: B's turn about its axis plus
+  // ±(a/b)·A's turn, both measured from the phase stored when the mate was first solved.
+  function clampExcess(v, lo, hi) { return v < lo ? v - lo : v > hi ? v - hi : 0; }
+  function axisDistance(A, B) { var v = sub(B.point, A.point); return len(sub(v, scale(A.dir, dot(v, A.dir)))); }
+  function planeGap(P, X) { return dot(sub(X.point, P.point), P.normal); }   // X's point above P, along P's normal
+  function axisTurn(W) { return signedAngle(perpTo(W.dir), W.ref, W.dir); }   // the component's turn about its axis
+  function limitRange(pm, toRad) {
+    var f = toRad ? Math.PI / 180 : 1, lo = (+pm.mate.min || 0) * f, hi = (+pm.mate.max || 0) * f;
+    return pm.mate.flip && pm.pair !== 'aa' ? [-hi, -lo] : [lo, hi];
+  }
+  // the scalar a distance-like mate holds: 'pp' the plane gap, 'aa' the axis distance, 'ap' / 'pa' the axis height
+  function distValue(pm, A, B) {
+    var s = pm.sign || 1;
+    if (pm.pair === 'pp') return 0.5 * (dot(sub(B.point, A.point), A.normal) + s * dot(sub(B.point, A.point), B.normal));
+    if (pm.pair === 'aa') return axisDistance(A, B);
+    return pm.pair === 'pa' ? planeGap(A, B) : planeGap(B, A);
+  }
+  function dirResidual(pm, A, B) {   // the direction part of a distance-like mate
+    if (pm.pair === 'pp' || pm.pair === 'aa') { var d = sub(dirOf(A), scale(dirOf(B), pm.sign || 1)); return [d[0], d[1], d[2]]; }
+    return [dot(dirOf(A), dirOf(B))];
+  }
+  function mateResidual(pm, A, B, k, A2, B2) {
     var s = pm.sign;
-    if (pm.type === 'coincident' || pm.type === 'distance') {
+    if (pm.type === 'coincident' || (pm.type === 'distance' && pm.pair === 'pp')) {
       var dn = sub(A.normal, scale(B.normal, s));
       var gap = 0.5 * (dot(sub(B.point, A.point), A.normal) + s * dot(sub(B.point, A.point), B.normal));
       return [dn[0], dn[1], dn[2], gap - pm.target];
     }
     if (pm.type === 'angle') return [wrapAngle(signedAngle(dirOf(A), scale(dirOf(B), s), k) - pm.target)];
+    if (pm.type === 'limitangle') { var rg = limitRange(pm, true); return [clampExcess(wrapAngle(signedAngle(dirOf(A), scale(dirOf(B), s || 1), k)), rg[0], rg[1])]; }
+    if (pm.type === 'distance' || pm.type === 'tangent') return dirResidual(pm, A, B).concat([distValue(pm, A, B) - pm.target]);
+    if (pm.type === 'limitdistance') { var lr = limitRange(pm, false); return dirResidual(pm, A, B).concat([clampExcess(distValue(pm, A, B), lr[0], lr[1])]); }
+    if (pm.type === 'parallel' || pm.type === 'perpendicular') {
+      var same = pm.pair === 'pp' || pm.pair === 'aa';
+      if (same === (pm.type === 'parallel')) { var dp = sub(dirOf(A), scale(dirOf(B), s || 1)); return [dp[0], dp[1], dp[2]]; }
+      return [dot(dirOf(A), dirOf(B))];
+    }
+    if (pm.type === 'width') {
+      var nW = A.normal, mid = scale(add(A.point, A2.point), 0.5);
+      if (B.kind === 'axis') return [dot(B.dir, nW), dot(sub(B.point, mid), nW)];
+      var dw = sub(nW, scale(B.normal, s || 1)), midB = scale(add(B.point, B2.point), 0.5);
+      return [dw[0], dw[1], dw[2], dot(sub(midB, mid), nW)];
+    }
+    if (pm.type === 'gear') {
+      var ph = pm.phase, dA = wrapAngle(axisTurn(A) - ph[0]), dB = wrapAngle(axisTurn(B) - ph[1]);
+      return [wrapAngle(dB + (pm.mate.flip ? -1 : 1) * pm.ratio * dA)];
+    }
     var dd = sub(A.dir, scale(B.dir, s)), v = sub(B.point, A.point);
     var perp = sub(v, scale(A.dir, dot(v, A.dir)));
     return [dd[0], dd[1], dd[2], perp[0], perp[1], perp[2]];
@@ -560,7 +665,8 @@ var Assembly = (function () {
     ensureLists(model);
     var comps = model.components, transforms = {}, pivots = {}, mateOut = {};
     comps.forEach(function (c) { transforms[c.id] = tf(c.transform); });
-    function movable(comp) { return !!(comp && !comp.fixed); }
+    // pattern instances are placed from their seeds (placeInstances), never by the mate solver
+    function movable(comp) { return !!(comp && !comp.fixed && comp.pattern == null); }
     function pivotOf(comp) {
       var g = partGeom(partBuilds && partBuilds[comp.id]);
       return transformPoint(transforms[comp.id], g ? g.center : [0, 0, 0]);
@@ -578,17 +684,59 @@ var Assembly = (function () {
         if (m.type === 'coincident' && m.offset != null && !(isFinite(+m.offset) && +m.offset >= 0)) throw new Error('Offset must be a number ≥ 0');
         pm.A = localRef(model, partBuilds, m.a);
         pm.B = localRef(model, partBuilds, m.b);
-        if (m.type === 'coincident' && (pm.A.kind !== 'plane' || pm.B.kind !== 'plane')) throw new Error('Coincident needs two planar faces or planes');
-        if (m.type === 'distance' && (pm.A.kind !== 'plane' || pm.B.kind !== 'plane')) throw new Error('Distance needs two planar faces or planes');
-        if (m.type === 'concentric' && (pm.A.kind !== 'axis' || pm.B.kind !== 'axis')) throw new Error('Concentric needs two cylindrical faces or axes');
+        pm.pair = (pm.A.kind === 'plane' ? 'p' : 'a') + (pm.B.kind === 'plane' ? 'p' : 'a');
+        if (m.type === 'coincident' && pm.pair !== 'pp') throw new Error('Coincident needs two planar faces or planes');
+        if (m.type === 'concentric' && pm.pair !== 'aa') throw new Error('Concentric needs two cylindrical faces or axes');
+        // Distance / Limit Distance: between two planes, or between two cylinders (axes: centre distance)
+        if ((m.type === 'distance' || m.type === 'limitdistance') && pm.pair !== 'pp' && pm.pair !== 'aa')
+          throw new Error((m.type === 'distance' ? 'Distance' : 'Limit Distance') + ' needs two planar faces or planes, or two cylindrical faces or axes');
+        if (m.type === 'tangent') {
+          var ra = pm.A.refKind === 'cylinder' ? pm.A.radius : null, rb = pm.B.refKind === 'cylinder' ? pm.B.radius : null;
+          if ((ra == null && rb == null) || pm.pair === 'pp') throw new Error('Tangent needs a cylindrical face and a planar or cylindrical face');
+          if (pm.pair === 'aa') pm.target = m.flip ? Math.abs((ra || 0) - (rb || 0)) : (ra || 0) + (rb || 0);
+          else { var r = pm.A.kind === 'axis' ? ra : rb; pm.target = m.flip ? -r : r; }
+        }
+        if (m.type === 'distance' && pm.pair === 'aa') pm.target = +m.distance;
+        if (m.type === 'limitdistance' || m.type === 'limitangle') {
+          var hiLim = m.type === 'limitangle' ? 180 : Infinity, nm = m.type === 'limitangle' ? 'Limit Angle' : 'Limit Distance';
+          if (!(isFinite(+m.min) && isFinite(+m.max) && +m.min >= 0 && +m.max >= +m.min && +m.max <= hiLim))
+            throw new Error(nm + ' needs 0 ≤ minimum ≤ maximum' + (m.type === 'limitangle' ? ' ≤ 180°' : ''));
+        }
+        if (m.type === 'width') {
+          if (!m.a2 || (pm.B.kind === 'plane' && !m.b2)) throw new Error('Width needs two width faces and two tab faces (or one cylindrical tab)');
+          pm.A2 = localRef(model, partBuilds, m.a2);
+          if (m.b2) pm.B2 = localRef(model, partBuilds, m.b2);
+          if (pm.A.kind !== 'plane' || pm.A2.kind !== 'plane' || (pm.B2 && pm.B2.kind !== 'plane')) throw new Error('Width needs two width faces and two tab faces (or one cylindrical tab)');
+          if (pm.A2.comp !== pm.A.comp || (pm.B2 && pm.B2.comp !== pm.B.comp)) throw new Error('Width: both width faces must be on one component, both tab faces on another');
+          if (len(cross(pm.A.normal, pm.A2.normal)) > 1e-6 || (pm.B2 && len(cross(pm.B.normal, pm.B2.normal)) > 1e-6)) throw new Error('Width: each pair of faces must be parallel');
+        }
+        if (m.type === 'gear') {
+          if (pm.pair !== 'aa') throw new Error('Gear needs a cylindrical face or axis on each of two components');
+          if (!pm.A.comp || !pm.B.comp || pm.A.comp === pm.B.comp) throw new Error('Gear needs two rotating components');
+          var ratio = m.ratio || [1, 1];
+          if (!(isFinite(+ratio[0]) && isFinite(+ratio[1]) && +ratio[0] > 0 && +ratio[1] > 0)) throw new Error('Gear ratio must be two numbers > 0');
+          pm.ratio = +ratio[0] / +ratio[1];
+        }
         if (m.type === 'angle') pm.target = angleTarget(m);
       } catch (e) {
         mateOut[m.id] = { ok: false, residual: null, error: e.message || String(e) };
         return;
       }
       pm.ca = pm.A.comp; pm.cb = pm.B.comp;
+      // 'closest' alignment: the sign the two directions have now (Width: the width normal and the tab normal)
+      if (pm.sign === 0) {
+        var wa = worldOf(pm.A, pm.ca ? transforms[pm.ca.id] : null), wb = worldOf(pm.B, pm.cb ? transforms[pm.cb.id] : null);
+        pm.sign = dot(dirOf(wa), dirOf(wb)) < -1e-9 ? -1 : 1;
+      }
+      if (pm.type === 'gear') {
+        // the phase is the two components' turns when the mate is first solved; it is stored with the mate
+        if (!(m.phase && m.phase.length === 2 && isFinite(+m.phase[0]) && isFinite(+m.phase[1]))) {
+          m.phase = [axisTurn(worldOf(pm.A, transforms[pm.ca.id])) * 180 / Math.PI, axisTurn(worldOf(pm.B, transforms[pm.cb.id])) * 180 / Math.PI];
+        }
+        pm.phase = [+m.phase[0] * Math.PI / 180, +m.phase[1] * Math.PI / 180];
+      }
       pm.rigid = (pm.ca && pm.cb && pm.ca === pm.cb) || (!movable(pm.ca) && !movable(pm.cb));
-      if (pm.type === 'angle') setAngleAxis(pm, null);
+      if (pm.type === 'angle' || pm.type === 'limitangle') setAngleAxis(pm, null);
       prepared.push(pm);
     });
 
@@ -611,7 +759,8 @@ var Assembly = (function () {
 
     function residualOf(pm, T) {
       T = T || transforms;
-      return mateResidual(pm, worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), worldOf(pm.B, pm.cb ? T[pm.cb.id] : null), pm.kL ? angleAxisWorld(pm, T) : null);
+      return mateResidual(pm, worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), worldOf(pm.B, pm.cb ? T[pm.cb.id] : null), pm.kL ? angleAxisWorld(pm, T) : null,
+        pm.A2 ? worldOf(pm.A2, pm.ca ? T[pm.ca.id] : null) : null, pm.B2 ? worldOf(pm.B2, pm.cb ? T[pm.cb.id] : null) : null);
     }
 
     // ---- greedy placement of one mate: rotate then translate the component being brought to the other side
@@ -647,13 +796,102 @@ var Assembly = (function () {
           var mw = worldOf(moveB ? pm.B : pm.A, transforms[C.id]);
           rotateAbout(C.id, rotVec(scale(ax, t)), ax === L.axis ? L.point : mw.point);
         }
-        if (L.axis) L.full = true;
+        if (L.axis && pm.type === 'angle') L.full = true;   // a Limit Angle leaves the turn free inside its range
       }
       if (!oc || grounded[oc.id]) grounded[C.id] = true;
     }
+    // Turn direction u (about `axis` when given, else about u × t) so that u · t = 0; null when it cannot.
+    function perpRotation(u, t, axis) {
+      if (!axis) {
+        var ax = cross(u, t), sn = len(ax), c = dot(u, t);
+        if (sn < 1e-12) return c === 0 ? null : rotVec(scale(perpTo(u), Math.PI / 2));
+        return rotVec(scale(ax, (Math.atan2(sn, c) - Math.PI / 2) / sn));
+      }
+      // u(φ) · t = p + q cos φ + r sin φ with u = u∥ + u⊥ turned about the axis
+      var up = scale(axis, dot(u, axis)), uq = sub(u, up), ur = cross(axis, uq);
+      var P = dot(up, t), Q = dot(uq, t), Rr = dot(ur, t), A = Math.sqrt(Q * Q + Rr * Rr);
+      if (A < 1e-12 || Math.abs(P) > A) return null;
+      var base = Math.atan2(Rr, Q), d = Math.acos(-P / A), f1 = base + d, f2 = base - d;
+      var phi = Math.abs(wrapAngle(f1)) < Math.abs(wrapAngle(f2)) ? wrapAngle(f1) : wrapAngle(f2);
+      return Math.abs(phi) > 1e-15 ? rotVec(scale(axis, phi)) : null;
+    }
+    // Rotation turning u onto t (about L's hinge axis when earlier mates left one), or null.
+    function alignRotation(u, t, L) {
+      if (!L.axis) {
+        var ax = cross(u, t), sn = len(ax), c = dot(u, t);
+        if (sn > 1e-12) return rotVec(scale(ax, Math.atan2(sn, c) / sn));
+        return c < 0 ? rotVec(scale(perpTo(u), Math.PI)) : null;
+      }
+      var a = L.axis, up = sub(u, scale(a, dot(u, a))), tp = sub(t, scale(a, dot(t, a)));
+      if (len(up) < 1e-9 || len(tp) < 1e-9) return null;
+      var ang = Math.atan2(dot(a, cross(up, tp)), dot(up, tp));
+      return Math.abs(ang) > 1e-15 ? rotVec(scale(a, ang)) : null;
+    }
+    // Greedy placement for Parallel, Perpendicular, Tangent, Width, Gear, Limit Distance and Distance between cylinders:
+    // turn the moving component so the directions satisfy the mate, then slide it to the distance / mid-plane it holds.
+    function greedyMore(pm) {
+      var moveB = moverIsB(pm), C = moveB ? pm.cb : pm.ca, oc = moveB ? pm.ca : pm.cb, L = locks[C.id];
+      var mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
+      function W(lr, comp) { return worldOf(lr, comp ? transforms[comp.id] : null); }
+      if (pm.type === 'gear') {
+        var err = residualOf(pm)[0], Mg = W(mine, C);
+        if (Math.abs(err) > TOL_DONE) {
+          // B's turn enters with weight 1, A's with ±ratio
+          var t = moveB ? -err : -err / ((pm.mate.flip ? -1 : 1) * pm.ratio);
+          rotateAbout(C.id, rotVec(scale(Mg.dir, t)), Mg.point);
+        }
+        if (L.axis && len(cross(L.axis, Mg.dir)) < 1e-6) L.full = true;
+        if (!oc || grounded[oc.id]) grounded[C.id] = true;
+        return;
+      }
+      var same = pm.pair === 'pp' || pm.pair === 'aa';
+      // which direction condition: 'align' (u = ±t) or 'perp' (u · t = 0)
+      var rot = pm.type === 'perpendicular' ? (same ? 'perp' : 'align') : pm.type === 'parallel' ? (same ? 'align' : 'perp')
+        : pm.type === 'width' ? (pm.B.kind === 'axis' ? 'perp' : 'align') : same ? 'align' : 'perp';
+      var dirRef = pm.type === 'width' ? (moveB ? pm.B : pm.A) : mine, dirOther = pm.type === 'width' ? (moveB ? pm.A : pm.B) : other;
+      if (!L.full && vnorm(residualOf(pm)) > TOL_DONE) {
+        var M = W(dirRef, C), O = W(dirOther, oc), u = dirOf(M), tt = dirOf(O), R = null;
+        if (rot === 'align') R = alignRotation(u, scale(tt, pm.sign || 1), L);
+        else R = perpRotation(u, tt, L.axis);
+        if (R) rotateAbout(C.id, R, L.axis ? L.point : M.point);
+      }
+      // translation along the one direction the mate measures
+      var A = W(pm.A, pm.ca), B = W(pm.B, pm.cb), e = null, amount = 0, lockIt = pm.type !== 'limitdistance';
+      if (pm.type === 'width') {
+        var A2 = W(pm.A2, pm.ca), mid = scale(add(A.point, A2.point), 0.5);
+        var midB = pm.B2 ? scale(add(B.point, W(pm.B2, pm.cb).point), 0.5) : B.point;
+        e = A.normal; amount = -dot(sub(midB, mid), e);                   // move the tab (B) by amount along e
+      } else if (pm.type === 'distance' || pm.type === 'tangent' || pm.type === 'limitdistance') {
+        var v = distValue(pm, A, B), target = pm.target;
+        if (pm.type === 'limitdistance') { var rg = limitRange(pm, false); target = Math.min(rg[1], Math.max(rg[0], v)); }
+        if (pm.pair === 'pp') { e = A.normal; amount = target - v; }
+        else if (pm.pair === 'aa') {
+          var dv = sub(B.point, A.point), pp = sub(dv, scale(A.dir, dot(dv, A.dir)));
+          e = len(pp) > 1e-9 ? norm(pp) : perpTo(A.dir); amount = target - v;
+        } else {
+          var P = pm.pair === 'pa' ? A : B;
+          e = P.normal; amount = (target - v) * (pm.pair === 'pa' ? 1 : -1);  // B is the axis in 'pa', the plane in 'ap'
+        }
+      }
+      if (e && Math.abs(amount) > TOL_DONE) {
+        var delta = scale(e, moveB ? amount : -amount);
+        L.trans.forEach(function (tr) { delta = sub(delta, scale(tr, dot(delta, tr))); });
+        transforms[C.id].position = add(transforms[C.id].position, delta);
+      }
+      // what this mate locks on the moved component
+      if (rot === 'align') {
+        var Mw = W(dirRef, C), dir = dirOf(Mw);
+        if (!L.axis) { L.axis = dir.slice(); L.point = Mw.point.slice(); }
+        else if (len(cross(L.axis, dir)) > 1e-6) L.full = true;
+      }
+      if (e && lockIt) lockTrans(L, e);
+      if (!oc || grounded[oc.id]) grounded[C.id] = true;
+    }
+    var MORE = { parallel: 1, perpendicular: 1, tangent: 1, width: 1, gear: 1, limitdistance: 1 };
     function greedy(pm) {
       if (pm.rigid) return;
-      if (pm.type === 'angle') { greedyAngle(pm); return; }
+      if (pm.type === 'angle' || pm.type === 'limitangle') { greedyAngle(pm); return; }
+      if (MORE[pm.type] || (pm.type === 'distance' && pm.pair === 'aa')) { greedyMore(pm); return; }
       var moveB = moverIsB(pm);
       var C = moveB ? pm.cb : pm.ca, mine = moveB ? pm.B : pm.A, other = moveB ? pm.A : pm.B;
       var oc = moveB ? pm.ca : pm.cb, L = locks[C.id];
@@ -780,7 +1018,7 @@ var Assembly = (function () {
       }
       var snapT = {}, snapLocks = JSON.stringify(locks), snapG = JSON.stringify(grounded);
       comps.forEach(function (c) { snapT[c.id] = transforms[c.id]; });
-      if (pm.type === 'angle') { var mv = moverIsB(pm) ? pm.cb : pm.ca; setAngleAxis(pm, locks[mv.id].full ? null : locks[mv.id].axis); }
+      if (pm.type === 'angle' || pm.type === 'limitangle') { var mv = moverIsB(pm) ? pm.cb : pm.ca; setAngleAxis(pm, locks[mv.id].full ? null : locks[mv.id].axis); }
       greedy(pm);
       var trial = active.concat([pm]);
       lm(trial);
@@ -802,12 +1040,14 @@ var Assembly = (function () {
     // ---- degrees of freedom: motions of each component left free by the accepted mates (null space of J projected
     // onto the component's 6 unknowns), so a part mated to an under-defined part is under-defined too
     var dofs = {};
-    comps.forEach(function (c) { dofs[c.id] = c.fixed ? 0 : 6; });
-    var ids = unknowns(active);
+    comps.forEach(function (c) { dofs[c.id] = c.fixed || c.pattern != null ? 0 : 6; });
+    // Limit Distance / Limit Angle remove nothing: inside their range the component still moves
+    var holding = active.filter(function (pm) { return pm.type !== 'limitdistance' && pm.type !== 'limitangle'; });
+    var ids = unknowns(holding);
     if (ids.length) {
       var piv = {};
       ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
-      var J = jacobian(active, ids, piv), n = J.length, JtJ = [], i, j, k, maxe = 0;
+      var J = jacobian(holding, ids, piv), n = J.length, JtJ = [], i, j, k, maxe = 0;
       for (i = 0; i < n; i++) { JtJ.push([]); for (j = 0; j < n; j++) { var s = 0; for (k = 0; k < J[i].length; k++) s += J[i][k] * J[j][k]; JtJ[i].push(s); } }
       var eg = eigSym(JtJ);
       eg.values.forEach(function (v) { if (v > maxe) maxe = v; });
@@ -828,9 +1068,284 @@ var Assembly = (function () {
       });
     }
     var compOut = comps.map(function (c, idx) {
-      return { id: c.id, name: c.name, index: idx, fixed: !!c.fixed, dof: dofs[c.id], underDefined: dofs[c.id] > 0, error: null };
+      var o = { id: c.id, name: c.name, index: idx, fixed: !!c.fixed, dof: dofs[c.id], underDefined: dofs[c.id] > 0, error: null };
+      if (c.pattern != null) o.instance = true;
+      return o;
     });
     return { transforms: transforms, mates: mateOut, components: compOut };
+  }
+
+  // ------------------------------------------------------------------ component patterns and Mirror Components
+  // A pattern { id, name, type, seeds: [component ids], ... } makes instance components: ordinary entries of
+  // model.components carrying { pattern: pattern id, seed: seed id, instance: k } whose transforms are recomputed from
+  // the seed's solved transform on every rebuild (seed-driven, as in SolidWorks: move the seed and the instances follow).
+  // The solver never moves an instance; mates may reference one (it is then like a fixed component).
+  //   linear   { direction: Ref, spacing, count, reverse?, direction2?: Ref, spacing2?, count2?, reverse2? }   LocalLPattern1
+  //   circular { axis: Ref, angle, count, equal?, reverse? }  equal: `angle` is the total (360 = full turn)  LocalCirPattern1
+  //   mirror   { plane: Ref, oppositeHand? }  a copy placed at the mirror image (proper rotation), or with oppositeHand
+  //            the reflected (left-hand) version of the part                                           MirrorComponent1
+  // A direction Ref is a face / plane (its normal) or a cylinder / axis (its direction); the axis Ref of a circular
+  // pattern must be a cylinder or an axis; the mirror plane a face or plane.
+  var PATTERN_BASE = { linear: 'LocalLPattern', circular: 'LocalCirPattern', mirror: 'MirrorComponent' };
+  function findPattern(model, idOrName) {
+    var list = (model && model.patterns) || [], i;
+    for (i = 0; i < list.length; i++) if (list[i].id === idOrName) return list[i];
+    for (i = 0; i < list.length; i++) if (list[i].name === idOrName) return list[i];
+    if (typeof idOrName === 'string' && /^\d+$/.test(idOrName)) return findPattern(model, +idOrName);
+    return null;
+  }
+  var PATTERN_KEYS = { linear: ['direction', 'spacing', 'count', 'reverse', 'direction2', 'spacing2', 'count2', 'reverse2'],
+    circular: ['axis', 'angle', 'count', 'equal', 'reverse'], mirror: ['plane', 'oppositeHand'] };
+  // setPatternValues(model, p, opts): copy the keys of p.type from opts (refs normalised, numbers as numbers)
+  function setPatternValues(model, p, opts) {
+    (PATTERN_KEYS[p.type] || []).forEach(function (k) {
+      if (opts[k] === undefined) return;
+      if (opts[k] === null || opts[k] === false) { delete p[k]; return; }
+      if (k === 'direction' || k === 'direction2' || k === 'axis' || k === 'plane') p[k] = normRef(model, opts[k]);
+      else if (k === 'reverse' || k === 'reverse2' || k === 'equal' || k === 'oppositeHand') p[k] = true;
+      else p[k] = +opts[k];
+    });
+    if (p.type === 'linear') { if (p.count == null) p.count = 2; if (p.spacing == null) p.spacing = 10; if (!p.direction2) { delete p.spacing2; delete p.count2; delete p.reverse2; } }
+    if (p.type === 'circular') { if (p.count == null) p.count = 2; if (p.angle == null) p.angle = p.equal ? 360 : 90; }
+    return p;
+  }
+  // addPattern(model, 'linear' | 'circular' | 'mirror', seeds, opts) -> the pattern (instances are made by syncPatterns)
+  function addPattern(model, type, seeds, opts) {
+    ensureLists(model);
+    if (!model.patterns) model.patterns = [];
+    type = String(type || '').toLowerCase();
+    if (!PATTERN_BASE[type]) throw new Error('Unknown pattern type "' + type + '"');
+    var ids = (Array.isArray(seeds) ? seeds : [seeds]).map(function (x) {
+      var c = findComponent(model, x);
+      if (!c) throw new Error('Unknown component ' + JSON.stringify(x));
+      if (c.pattern != null) throw new Error(c.name + ' is a pattern instance: pattern its seed instead');
+      return c.id;
+    });
+    if (!ids.length) throw new Error('Select the components to pattern');
+    opts = opts || {};
+    var base = PATTERN_BASE[type];
+    var p = { id: model.nextId++, name: opts.name || (base + nextNumber(model.patterns.map(function (x) { return x.name; }), base)), type: type, seeds: ids };
+    setPatternValues(model, p, opts);
+    model.patterns.push(p);
+    syncPatterns(model);
+    return p;
+  }
+  function removePattern(model, id) {
+    var p = findPattern(model, id);
+    if (!p) return false;
+    model.patterns.splice(model.patterns.indexOf(p), 1);
+    syncPatterns(model);
+    return true;
+  }
+  function patternCount(p) {
+    var n1 = Math.floor(+p.count), n2 = p.type === 'linear' && p.direction2 ? Math.floor(+p.count2 || 1) : 1;
+    if (p.type === 'mirror') return 2;
+    return isFinite(n1) && n1 >= 1 && isFinite(n2) && n2 >= 1 ? Math.min(n1 * n2, 1000) : 1;
+  }
+  function baseName(name) { return String(name || 'Part').replace(/<\d+>$/, ''); }
+  // Make model.components match the patterns: one instance per seed and per pattern position after the first,
+  // appended after the other components; instances of deleted patterns / seeds (and their mates) are removed.
+  function syncPatterns(model) {
+    ensureLists(model);
+    var pats = model.patterns || [], want = {}, have = {};
+    pats.forEach(function (p) {
+      p.seeds = (p.seeds || []).filter(function (sid) { var c = findComponent(model, sid); return c && c.pattern == null; });
+      var n = patternCount(p);
+      p.seeds.forEach(function (sid) { for (var k = 1; k < n; k++) want[p.id + ':' + sid + ':' + k] = { p: p, seed: sid, k: k }; });
+    });
+    var gone = {};
+    model.components.forEach(function (c) {
+      if (c.pattern == null) return;
+      var key = c.pattern + ':' + c.seed + ':' + c.instance;
+      if (want[key] && !have[key]) have[key] = c; else gone[c.id] = true;
+    });
+    if (Object.keys(gone).length) dropComponents(model, gone);
+    Object.keys(want).forEach(function (key) {
+      var w = want[key], seed = findComponent(model, w.seed), c = have[key];
+      if (!c) {
+        var base = baseName(seed.name);
+        c = { id: model.nextId++, name: base + '<' + nextNumber(model.components.map(function (x) { return x.name; }), base) + '>', source: null, fixed: false,
+          transform: tf(seed.transform), pattern: w.p.id, seed: w.seed, instance: w.k };
+        model.components.push(c);
+      }
+      c.source = JSON.parse(JSON.stringify(seed.source));
+      c.fixed = false;
+    });
+    model.patterns = pats.filter(function (p) { return p.seeds.length > 0; });
+  }
+  function worldRefOf(model, partBuilds, ref, transforms) {
+    var lr = localRef(model, partBuilds, ref);
+    return worldOf(lr, lr.comp ? transforms[lr.comp.id] || tf(lr.comp.transform) : null);
+  }
+  // patternTransforms(model, partBuilds, transforms, p) -> { k: T } for one seed (a function of the seed's transform)
+  function patternPlacer(model, partBuilds, transforms, p) {
+    if (p.type === 'linear') {
+      var n1 = Math.floor(+p.count), n2 = p.direction2 ? Math.floor(+p.count2 || 1) : 1;
+      if (!(n1 >= 1 && n1 <= 1000)) throw new Error('Number of instances must be a whole number ≥ 1');
+      if (!(n2 >= 1 && n1 * n2 <= 1000)) throw new Error('Number of instances (direction 2) must be a whole number ≥ 1');
+      if (!isFinite(+p.spacing) || (p.direction2 && !isFinite(+p.spacing2 || 0))) throw new Error('Spacing must be a number');
+      if (!p.direction) throw new Error('Pick a direction (a face, plane, cylinder or axis)');
+      var W1 = worldRefOf(model, partBuilds, p.direction, transforms), d1 = scale(norm(dirOf(W1)), p.reverse ? -1 : 1), d2 = [0, 0, 0];
+      if (p.direction2) { var W2 = worldRefOf(model, partBuilds, p.direction2, transforms); d2 = scale(norm(dirOf(W2)), p.reverse2 ? -1 : 1); }
+      return function (T, k) {
+        var i = k % n1, j = Math.floor(k / n1);
+        return { rotation: T.rotation.slice(), position: add(T.position, add(scale(d1, i * +p.spacing), scale(d2, j * (+p.spacing2 || 0)))) };
+      };
+    }
+    if (p.type === 'circular') {
+      var n = Math.floor(+p.count);
+      if (!(n >= 1 && n <= 1000)) throw new Error('Number of instances must be a whole number ≥ 1');
+      if (!isFinite(+p.angle)) throw new Error('Angle must be a number');
+      if (!p.axis) throw new Error('Pick an axis (a cylindrical face or an axis)');
+      var WA = worldRefOf(model, partBuilds, p.axis, transforms);
+      if (WA.kind !== 'axis') throw new Error('Pattern axis must be a cylindrical face or an axis');
+      var step = +p.angle;
+      if (p.equal) step = Math.abs(Math.abs(step) - 360) < 1e-9 ? step / n : n > 1 ? step / (n - 1) : 0;
+      var ax = scale(norm(WA.dir), p.reverse ? -1 : 1), o = WA.point;
+      return function (T, k) {
+        var Q = rotVec(scale(ax, k * step * Math.PI / 180));
+        return { rotation: matMul(Q, T.rotation), position: add(matVec(Q, sub(T.position, o)), o) };
+      };
+    }
+    if (!p.plane) throw new Error('Pick a mirror plane (a planar face or plane)');
+    var WP = worldRefOf(model, partBuilds, p.plane, transforms);
+    if (WP.kind !== 'plane') throw new Error('Mirror plane must be a planar face or plane');
+    var nrm = norm(WP.normal), q = WP.point;
+    var H = [1 - 2 * nrm[0] * nrm[0], -2 * nrm[0] * nrm[1], -2 * nrm[0] * nrm[2], -2 * nrm[1] * nrm[0], 1 - 2 * nrm[1] * nrm[1], -2 * nrm[1] * nrm[2], -2 * nrm[2] * nrm[0], -2 * nrm[2] * nrm[1], 1 - 2 * nrm[2] * nrm[2]];
+    function reflect(x) { return sub(x, scale(nrm, 2 * dot(sub(x, q), nrm))); }
+    return function (T, k, seedId) {
+      if (p.oppositeHand) return { rotation: matMul(H, T.rotation), position: reflect(T.position), mirrored: true };
+      // copy: flip the part's own axis closest to the plane normal, so the rotation stays proper and a part symmetric
+      // about that local plane lands exactly on its mirror image (its bounding-box centre is reflected)
+      var nl = matTVec(T.rotation, nrm), kx = 0;
+      for (var a = 1; a < 3; a++) if (Math.abs(nl[a]) > Math.abs(nl[kx])) kx = a;
+      var F = IDENTITY.slice(); F[kx * 4] = -1;
+      var R = matMul(matMul(H, T.rotation), F);
+      var g = partGeom(partBuilds && partBuilds[seedId]), cL = g ? g.center : [0, 0, 0];
+      return { rotation: R, position: sub(reflect(add(matVec(T.rotation, cL), T.position)), matVec(R, cL)) };
+    };
+  }
+  // Place every instance from its seed's current transform; errors keyed by pattern id.
+  function placeInstances(model, partBuilds, transforms, errors) {
+    var out = {};
+    (model.patterns || []).forEach(function (p) {
+      var info = { ok: true, error: null, instances: [] };
+      out[p.id] = info;
+      var place = null;
+      try { place = patternPlacer(model, partBuilds, transforms, p); } catch (e) { info.ok = false; info.error = e.message || String(e); errors[p.id] = info.error; }
+      model.components.forEach(function (c) {
+        if (c.pattern !== p.id) return;
+        info.instances.push(c.id);
+        if (!place) return;
+        var seedT = transforms[c.seed] || tf((findComponent(model, c.seed) || {}).transform);
+        var T = place(seedT, c.instance, c.seed);
+        transforms[c.id] = { position: T.position, rotation: T.rotation };
+        c.transform = { position: T.position.slice(), rotation: T.rotation.slice() };
+      });
+    });
+    return out;
+  }
+  function isMirroredRotation(R) {   // det < 0: an opposite-hand instance
+    return R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]) < 0;
+  }
+
+  // ------------------------------------------------------------------ Exploded View
+  // model.explodedViews = [{ id, name: 'ExplView1', steps: [{ id, name: 'Explode Step1', components: [ids],
+  // direction: [x, y, z] (unit, world), distance }] }]; model.exploded = the id of the view shown exploded (absent:
+  // collapsed). Steps run in order; a component moves by the sum of its steps' direction · distance. The explode is
+  // display state only: component transforms (and mates) stay collapsed, the exploded offsets are added to the world
+  // bodies of the build, and build.explode carries { view, t, offsets: { id: [dx, dy, dz] }, lines } where the explode
+  // lines run through each moved component's centre, one segment per step.
+  function findExplodedView(model, idOrName) {
+    var list = (model && model.explodedViews) || [], i;
+    if (idOrName == null) return list[0] || null;
+    for (i = 0; i < list.length; i++) if (list[i].id === idOrName) return list[i];
+    for (i = 0; i < list.length; i++) if (list[i].name === idOrName) return list[i];
+    if (typeof idOrName === 'string' && /^\d+$/.test(idOrName)) return findExplodedView(model, +idOrName);
+    return null;
+  }
+  function addExplodedView(model, opts) {
+    ensureLists(model);
+    if (!model.explodedViews) model.explodedViews = [];
+    opts = opts || {};
+    var v = { id: model.nextId++, name: opts.name || ('ExplView' + nextNumber(model.explodedViews.map(function (x) { return x.name; }), 'ExplView')), steps: [] };
+    model.explodedViews.push(v);
+    return v;
+  }
+  function explodeDir(d) {
+    if (typeof d === 'string') {
+      var neg = d.charAt(0) === '-', a = AXIS_DIRS[d.replace(/^[-+]/, '').toLowerCase()];
+      if (!a) throw new Error('Explode direction must be "x", "y", "z", "-x", … or [x, y, z]');
+      return neg ? scale(a, -1) : a.slice();
+    }
+    var v = d && d.length === 3 ? copy3(d) : null;
+    if (!v || !(len(v) > 1e-12) || !isFinite(len(v))) throw new Error('Explode direction must be "x", "y", "z", "-x", … or [x, y, z]');
+    return norm(v);
+  }
+  // addExplodeStep(model, view (id, name or null: the first, made when missing), components, direction, distance, opts)
+  function addExplodeStep(model, view, comps, direction, distance, opts) {
+    ensureLists(model);
+    opts = opts || {};
+    var v = findExplodedView(model, view);
+    if (!v) v = addExplodedView(model, view != null && typeof view === 'string' && !/^\d+$/.test(view) ? { name: view } : {});
+    var ids = (Array.isArray(comps) ? comps : [comps]).map(function (x) {
+      var c = findComponent(model, x);
+      if (!c) throw new Error('Unknown component ' + JSON.stringify(x));
+      return c.id;
+    });
+    if (!ids.length) throw new Error('Select the components to explode');
+    if (!(isFinite(+distance))) throw new Error('Explode distance must be a number');
+    var st = { id: model.nextId++, name: opts.name || ('Explode Step' + nextNumber(v.steps.map(function (x) { return x.name.replace(/\s+/g, ''); }), 'ExplodeStep')),
+      components: ids, direction: explodeDir(direction).map(r6), distance: +distance };
+    v.steps.push(st);
+    return st;
+  }
+  function findExplodeStep(model, id) {
+    var out = null;
+    (model.explodedViews || []).forEach(function (v) { (v.steps || []).forEach(function (st) { if (st.id === id || st.name === id) out = { view: v, step: st }; }); });
+    return out;
+  }
+  function removeExplodeStep(model, id) {
+    var f = findExplodeStep(model, id);
+    if (!f) return false;
+    f.view.steps.splice(f.view.steps.indexOf(f.step), 1);
+    return true;
+  }
+  function removeExplodedView(model, id) {
+    var v = findExplodedView(model, id);
+    if (!v) return false;
+    model.explodedViews.splice(model.explodedViews.indexOf(v), 1);
+    if (model.exploded === v.id) delete model.exploded;
+    return true;
+  }
+  // setExploded(model, view | true | false): explode (the given or first view) or collapse
+  function setExploded(model, view) {
+    if (view === false || view == null) { delete model.exploded; return null; }
+    var v = findExplodedView(model, view === true ? null : view);
+    if (!v) throw new Error('No exploded view' + (view === true ? '' : ' "' + view + '"'));
+    model.exploded = v.id;
+    return v;
+  }
+  // explodeOffsets(model, view, t, centers?) -> { offsets, lines }. t in [0, 1] runs the steps one after another
+  // (the animation); centers { id: world point } give the explode lines their start points.
+  function explodeOffsets(model, view, t, centers) {
+    var v = typeof view === 'object' && view ? view : findExplodedView(model, view), offsets = {}, lines = [];
+    if (!v) return { offsets: offsets, lines: lines };
+    var steps = v.steps || [], n = steps.length, p = (t == null ? 1 : Math.max(0, Math.min(1, +t))) * n;
+    steps.forEach(function (st, i) {
+      var f = Math.max(0, Math.min(1, p - i));
+      if (!(f > 0)) return;
+      var d;
+      try { d = explodeDir(st.direction); } catch (e) { return; }
+      var mv = scale(d, (+st.distance || 0) * f);
+      (st.components || []).forEach(function (id) {
+        if (!findComponent(model, id)) return;
+        var before = offsets[id] || [0, 0, 0], after = add(before, mv);
+        offsets[id] = after;
+        if (centers && centers[id]) lines.push({ component: id, step: st.id, from: add(centers[id], before), to: add(centers[id], after) });
+      });
+    });
+    return { offsets: offsets, lines: lines };
   }
 
   // ------------------------------------------------------------------ rebuild
@@ -852,9 +1367,12 @@ var Assembly = (function () {
     return entry;
   }
 
-  function rebuild(model, cache) {
+  // rebuild(model, cache?, opts?) — opts.explodeT (0..1) shows the exploded view part-way (the explode animation).
+  function rebuild(model, cache, opts) {
     var t0 = now();
     ensureLists(model);
+    opts = opts || {};
+    syncPatterns(model);
     cache = cache || {};
     var newCache = {}, partBuilds = {}, errors = {}, warnings = {}, entries = {};
     model.components.forEach(function (c) {
@@ -866,12 +1384,25 @@ var Assembly = (function () {
       if (entry.error) errors[c.id] = entry.error;
       else if (entry.warning) warnings[c.id] = entry.warning;
     });
-    var sol;
-    try { sol = solve(model, partBuilds); } catch (e) {
+    var sol, patOut = {}, patErr = {};
+    function instanceMates() {   // mates that reference a pattern instance: solved again once the instances moved
+      return model.mates.some(function (m) {
+        return !m.suppressed && ['a', 'b', 'a2', 'b2'].some(function (k) { var c = m[k] && m[k].component != null ? findComponent(model, m[k].component) : null; return c && c.pattern != null; });
+      });
+    }
+    try {
+      var T0 = {};
+      model.components.forEach(function (c) { T0[c.id] = tf(c.transform); });
+      patOut = placeInstances(model, partBuilds, T0, patErr);
+      sol = solve(model, partBuilds);
+      patErr = {}; patOut = placeInstances(model, partBuilds, sol.transforms, patErr);
+      if (instanceMates()) { sol = solve(model, partBuilds); patErr = {}; patOut = placeInstances(model, partBuilds, sol.transforms, patErr); }
+    } catch (e) {
       sol = { transforms: {}, mates: {}, components: model.components.map(function (c, i) { return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: c.fixed ? 0 : 6, underDefined: !c.fixed, error: null }; }) };
       model.components.forEach(function (c) { sol.transforms[c.id] = tf(c.transform); });
       errors.solver = 'Mate solver failed: ' + (e.message || e);
     }
+    Object.keys(patErr).forEach(function (id) { errors[id] = patErr[id]; });
     // write the solved transforms back (the model keeps solved positions)
     model.components.forEach(function (c) {
       var T = sol.transforms[c.id];
@@ -879,23 +1410,46 @@ var Assembly = (function () {
     });
     Object.keys(sol.mates).forEach(function (id) { if (sol.mates[id].error) errors[id] = sol.mates[id].error; });
     sol.components.forEach(function (co) { co.error = errors[co.id] || null; });
+    // the exploded view shown (display only: the offsets are added to the world bodies, not to the transforms)
+    var explode = null, xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
+    if (model.exploded != null && !xv) delete model.exploded;
+    if (xv) {
+      var centers = {};
+      model.components.forEach(function (c) { var g = partGeom(partBuilds[c.id]); centers[c.id] = transformPoint(c.transform, g ? g.center : [0, 0, 0]); });
+      var xo = explodeOffsets(model, xv, opts.explodeT == null ? 1 : opts.explodeT, centers);
+      explode = { view: xv.id, name: xv.name, t: opts.explodeT == null ? 1 : +opts.explodeT, offsets: xo.offsets, lines: xo.lines };
+    }
     // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed)
     var bodies = model.components.map(function (c) {
-      var b = partBuilds[c.id] && partBuilds[c.id].body;
-      if (!b || entries[c.id].error) return CSG.fromPolygons([]);
-      var T = tf(c.transform), R = T.rotation, P = T.position;
-      return b.transform(function (v) {
-        return new CSG.Vector(R[0] * v.x + R[1] * v.y + R[2] * v.z + P[0], R[3] * v.x + R[4] * v.y + R[5] * v.z + P[1], R[6] * v.x + R[7] * v.y + R[8] * v.z + P[2]);
-      }, false);
+      return worldBody(partBuilds[c.id] && !entries[c.id].error ? partBuilds[c.id].body : null, c.transform, explode && explode.offsets[c.id]);
     });
     var body = bodies.length ? Kernel.combineBodies(bodies) : null;
     return {
-      assembly: true, body: body, bodies: bodies,
+      assembly: true, body: body, bodies: bodies, explode: explode, patterns: patOut,
       bodyFeatures: model.components.map(function (c) { return c.id; }),
       bodyNames: model.components.map(function (c) { return c.name; }),
       components: sol.components, mates: sol.mates, errors: errors, warnings: warnings,
       partBuilds: partBuilds, cache: newCache, equations: {}, equationErrors: {}, time: now() - t0
     };
+  }
+
+  // A part body placed in the world: world = R · local + position (+ an explode offset). An opposite-hand (mirrored)
+  // instance has det R < 0, so its polygons are turned round to keep the normals pointing out.
+  function worldBody(b, transform, offset) {
+    if (!b) return CSG.fromPolygons([]);
+    var T = tf(transform), R = T.rotation, P = offset ? add(T.position, offset) : T.position;
+    return b.transform(function (v) {
+      return new CSG.Vector(R[0] * v.x + R[1] * v.y + R[2] * v.z + P[0], R[3] * v.x + R[4] * v.y + R[5] * v.z + P[1], R[6] * v.x + R[7] * v.y + R[8] * v.z + P[2]);
+    }, isMirroredRotation(R));
+  }
+  // explodedBodies(model, build, view?, t?) -> the world bodies of the components in that exploded view (default: the
+  // first view, fully exploded) without re-solving. The hook for drawings ("Show in exploded state") and animations.
+  function explodedBodies(model, build, view, t) {
+    var v = findExplodedView(model, view), offs = v ? explodeOffsets(model, v, t == null ? 1 : t).offsets : {};
+    return model.components.map(function (c) {
+      var pb = build && build.partBuilds && build.partBuilds[c.id], e = build && build.cache && build.cache[JSON.stringify(c.source)];
+      return worldBody(pb && !(e && e.error) ? pb.body : null, c.transform, offs[c.id]);
+    });
   }
 
   // ------------------------------------------------------------------ Move / Rotate Component
@@ -905,6 +1459,7 @@ var Assembly = (function () {
     var c = findComponent(model, id);
     if (!c) throw new Error('Unknown component ' + JSON.stringify(id));
     if (c.fixed) throw new Error(c.name + ' is fixed: Float it to move it');
+    if (c.pattern != null) throw new Error(c.name + ' is a pattern instance: move its seed ' + ((findComponent(model, c.seed) || {}).name || ''));
     return c;
   }
   // moveComponent(model, id, delta) -> the component, translated by delta (world)
@@ -979,7 +1534,8 @@ var Assembly = (function () {
     var idx = face ? (face.body || 0) : -1;
     var comp = model.components[idx];
     if (!comp) return null;
-    var T = tf(comp.transform), p = inverseTransformPoint(T, worldPoint);
+    var off = build.explode && build.explode.offsets && build.explode.offsets[comp.id];   // picked in the exploded view
+    var T = tf(comp.transform), p = inverseTransformPoint(T, off ? sub(worldPoint, off) : worldPoint);
     var geom = partGeom(build.partBuilds && build.partBuilds[comp.id]);
     var lp = p.map(r6);
     if (!geom) return { component: comp.id, face: lp };
@@ -1043,6 +1599,44 @@ var Assembly = (function () {
   function withValue(opts, key, v) { var o = JSON.parse(JSON.stringify(opts || {})); if (v != null) o[key] = v; return o; }
   Builder.prototype.distance = function (a, b, d, opts) { return this.mate('distance', a, b, withValue(opts, 'distance', d)); };
   Builder.prototype.angle = function (a, b, deg, opts) { return this.mate('angle', a, b, withValue(opts, 'angle', deg)); };
+  Builder.prototype.parallel = function (a, b, opts) { return this.mate('parallel', a, b, opts); };
+  Builder.prototype.perpendicular = function (a, b, opts) { return this.mate('perpendicular', a, b, opts); };
+  Builder.prototype.tangent = function (a, b, opts) { return this.mate('tangent', a, b, opts); };
+  // width(widthFace1, widthFace2, tabFace1, tabFace2 | null (cylindrical tab), opts)
+  Builder.prototype.width = function (a, a2, b, b2, opts) {
+    var o = JSON.parse(JSON.stringify(opts || {}));
+    o.a2 = builderRef(this.model, a2);
+    if (b2) o.b2 = builderRef(this.model, b2);
+    return this.mate('width', a, b, o);
+  };
+  Builder.prototype.gear = function (a, b, ratio, opts) { return this.mate('gear', a, b, withValue(opts, 'ratio', ratio)); };
+  Builder.prototype.limitDistance = function (a, b, min, max, opts) { return this.mate('limitdistance', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
+  Builder.prototype.limitAngle = function (a, b, min, max, opts) { return this.mate('limitangle', a, b, withValue(withValue(opts, 'min', min), 'max', max)); };
+  function patternOpts(model, opts) {
+    var o = JSON.parse(JSON.stringify(opts || {}));
+    ['direction', 'direction2', 'axis', 'plane'].forEach(function (k) { if (o[k]) o[k] = builderRef(model, o[k]); });
+    return o;
+  }
+  function builderPattern(model, type, seeds, opts) {
+    var p = addPattern(model, type, (Array.isArray(seeds) ? seeds : [seeds]).map(function (x) { return compId(model, x); }), patternOpts(model, opts));
+    // instanceNames (generateScript): keep the instance names of the saved assembly
+    if (opts && Array.isArray(opts.instanceNames)) {
+      var inst = model.components.filter(function (c) { return c.pattern === p.id; });
+      opts.instanceNames.forEach(function (nm, i) { if (inst[i] && nm) inst[i].name = String(nm); });
+    }
+    return p.id;
+  }
+  Builder.prototype.linearPattern = function (seeds, opts) { return builderPattern(this.model, 'linear', seeds, opts); };
+  Builder.prototype.circularPattern = function (seeds, opts) { return builderPattern(this.model, 'circular', seeds, opts); };
+  Builder.prototype.mirrorComponents = function (seeds, opts) { return builderPattern(this.model, 'mirror', seeds, opts); };
+  // explode(components, direction ("x", "-y", [x, y, z]), distance, { view, name }) -> the step id
+  Builder.prototype.explode = function (comps, dir, dist, opts) {
+    var model = this.model;
+    opts = opts || {};
+    return addExplodeStep(model, opts.view != null ? opts.view : null, (Array.isArray(comps) ? comps : [comps]).map(function (x) { return compId(model, x); }), dir, dist, { name: opts.name }).id;
+  };
+  // exploded(view | true): show that exploded view exploded; exploded(false): collapse
+  Builder.prototype.exploded = function (v) { setExploded(this.model, v === undefined ? true : v); return this; };
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
 
@@ -1061,6 +1655,7 @@ var Assembly = (function () {
     return '{ model: ' + JSON.stringify(src.model) + ' }';
   }
   function refText(ref, varOf) {
+    if (!ref) return 'null';
     var parts = [];
     if (ref.component != null) parts.push('component: ' + (varOf[ref.component] || JSON.stringify(ref.component)));
     ['face', 'cylinder'].forEach(function (k) { if (ref[k]) parts.push(k + ': ' + numList(ref[k])); });
@@ -1070,10 +1665,28 @@ var Assembly = (function () {
 
   function generateScript(model) {
     var out = ['// ' + model.name + ' — generated by Anvil (assembly)', 'a.name(' + JSON.stringify(model.name) + ').units(' + JSON.stringify(model.units || 'mm') + ');'];
-    var varOf = {};
+    var varOf = {}, emitted = {}, patDone = {};
+    var PAT_CALL = { linear: 'linearPattern', circular: 'circularPattern', mirror: 'mirrorComponents' };
+    function emitPattern(p) {
+      if (patDone[p.id] || !p.seeds.every(function (sid) { return emitted[sid]; })) return;
+      patDone[p.id] = true;
+      var opts = ['name: ' + JSON.stringify(p.name)];
+      (PATTERN_KEYS[p.type] || []).forEach(function (k) {
+        if (p[k] == null) return;
+        if (k === 'direction' || k === 'direction2' || k === 'axis' || k === 'plane') opts.push(k + ': ' + refText(p[k], varOf));
+        else if (p[k] === true) opts.push(k + ': true');
+        else opts.push(k + ': ' + String(r6(+p[k])));
+      });
+      var inst = (model.components || []).filter(function (c) { return c.pattern === p.id; });
+      if (inst.length) opts.push('instanceNames: ' + JSON.stringify(inst.map(function (c) { return c.name; })));
+      out.push('var p' + p.id + ' = a.' + PAT_CALL[p.type] + '([' + p.seeds.map(function (sid) { return varOf[sid]; }).join(', ') + '], { ' + opts.join(', ') + ' });');
+      inst.forEach(function (c) { varOf[c.id] = JSON.stringify(c.name); emitted[c.id] = true; });
+    }
     (model.components || []).forEach(function (c, i) {
+      if (c.pattern != null) { var pp = findPattern(model, c.pattern); if (pp) emitPattern(pp); return; }
       var v = 'c' + c.id;
       varOf[c.id] = v;
+      emitted[c.id] = true;
       var T = tf(c.transform), opts = ['name: ' + JSON.stringify(c.name)];
       if (c.fixed) opts.push('fixed: true');
       else if (i === 0) opts.push('fixed: false');
@@ -1081,14 +1694,28 @@ var Assembly = (function () {
       if (!isIdentity(T.rotation)) opts.push('rotation: ' + numList(T.rotation));
       out.push('var ' + v + ' = a.insert(' + sourceText(c.source || {}) + ', { ' + opts.join(', ') + ' });');
     });
+    (model.patterns || []).forEach(emitPattern);
     (model.mates || []).forEach(function (m) {
       var opts = ['name: ' + JSON.stringify(m.name)];
       if (m.alignment && m.alignment !== defaultAlignment(m)) opts.push('alignment: ' + JSON.stringify(m.alignment));
-      ['distance', 'angle', 'offset'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
+      ['distance', 'angle', 'offset', 'min', 'max'].forEach(function (k) { if (m[k] != null) opts.push(k + ': ' + String(r6(+m[k]))); });
+      if (m.ratio) opts.push('ratio: ' + numList(m.ratio));
+      if (m.phase) opts.push('phase: ' + numList(m.phase));
+      if (m.a2) opts.push('a2: ' + refText(m.a2, varOf));
+      if (m.b2) opts.push('b2: ' + refText(m.b2, varOf));
       if (m.flip) opts.push('flip: true');
       if (m.suppressed) opts.push('suppressed: true');
       out.push('a.mate(' + JSON.stringify(m.type) + ', ' + refText(m.a, varOf) + ', ' + refText(m.b, varOf) + ', { ' + opts.join(', ') + ' });');
     });
+    (model.explodedViews || []).forEach(function (v) {
+      (v.steps || []).forEach(function (st) {
+        out.push('a.explode([' + st.components.map(function (id) { return varOf[id] || JSON.stringify(id); }).join(', ') + '], ' + numList(st.direction) + ', ' + String(r6(+st.distance)) +
+          ', { view: ' + JSON.stringify(v.name) + ', name: ' + JSON.stringify(st.name) + ' });');
+      });
+      if (!(v.steps || []).length) out.push('// ' + v.name + ' has no explode steps');
+    });
+    var xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
+    if (xv && (xv.steps || []).length) out.push('a.exploded(' + JSON.stringify(xv.name) + ');');
     return out.join('\n') + '\n';
   }
 
@@ -1102,6 +1729,11 @@ var Assembly = (function () {
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
     moveComponent: moveComponent, rotateComponent: rotateComponent, componentCenter: componentCenter, interference: interference,
+    MATE_GROUPS: JSON.parse(JSON.stringify(MATE_GROUPS)), MATE_NAMES: JSON.parse(JSON.stringify(MATE_BASE)),
+    addPattern: addPattern, removePattern: removePattern, findPattern: findPattern, setPatternValues: setPatternValues, syncPatterns: syncPatterns,
+    addExplodedView: addExplodedView, addExplodeStep: addExplodeStep, removeExplodeStep: removeExplodeStep, removeExplodedView: removeExplodedView,
+    findExplodedView: findExplodedView, findExplodeStep: findExplodeStep, setExploded: setExploded, explodeOffsets: explodeOffsets,
+    explodedBodies: explodedBodies, explodeDir: explodeDir,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };
 })();

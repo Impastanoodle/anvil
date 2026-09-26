@@ -883,7 +883,7 @@ var UI = (function () {
     if (isAssembly()) {
       if (typeof Assembly === 'undefined') throw new Error('Assembly documents need assembly.js');
       if (!App.model.features) App.model.features = [];
-      build = Assembly.rebuild(App.model, App.asmCache);
+      build = Assembly.rebuild(App.model, App.asmCache, UI.asmBuildOpts || null);   // asmBuildOpts: the explode animation (ui-assembly.js)
       App.asmCache = build.cache;
       applyBuild(build, opts, performance.now() - t0);
       return;

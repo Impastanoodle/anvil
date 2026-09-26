@@ -1685,8 +1685,14 @@
   // solved assembly with the mate applied; Cancel restores the model, ✓ adds (or updates) it as one undo step.
   // Distance holds two planes `distance` apart, Angle turns two directions `angle` degrees apart, Coincident takes an
   // optional `offset`; Flip dimension (`flip`) puts the value on the other side (see assembly.js setMateValues).
-  var MATE_TYPES = [['coincident', 'Coincident'], ['concentric', 'Concentric'], ['distance', 'Distance'], ['angle', 'Angle']];
-  function mateTypeLabel(t) { return { concentric: 'Concentric', distance: 'Distance', angle: 'Angle' }[t] || 'Coincident'; }
+  // Standard Mates / Advanced Mates / Mechanical Mates, as grouped in the SolidWorks Mate PropertyManager
+  // (Assembly.MATE_GROUPS). Width takes four selections (two width faces, two tab faces or one cylindrical tab).
+  var MATE_LABELS = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle', parallel: 'Parallel', perpendicular: 'Perpendicular',
+    tangent: 'Tangent', width: 'Width', gear: 'Gear', limitdistance: 'Limit Distance', limitangle: 'Limit Angle' };
+  function mateGroup(g) { return ((typeof Assembly !== 'undefined' && Assembly.MATE_GROUPS && Assembly.MATE_GROUPS[g]) || (g === 'standard' ? ['coincident', 'concentric', 'distance', 'angle'] : [])).map(function (t) { return [t, MATE_LABELS[t]]; }); }
+  var MATE_TYPES = mateGroup('standard');
+  function mateTypeLabel(t) { return MATE_LABELS[t] || 'Coincident'; }
+  function mateBaseName(t) { return (typeof Assembly !== 'undefined' && Assembly.MATE_NAMES && Assembly.MATE_NAMES[t]) || mateTypeLabel(t); }
   function refKind(ref) { return !ref ? null : (ref.cylinder || ref.axis) ? 'axis' : (ref.face || ref.plane) ? 'plane' : null; }
   function refText(ref) {
     if (!ref) return '';
@@ -1698,16 +1704,23 @@
     return who;
   }
   function defaultMateType(a, b) { return refKind(a) === 'axis' && refKind(b) === 'axis' ? 'concentric' : 'coincident'; }
-  function defaultAlignment(type, a, b) { return (type === 'coincident' || type === 'distance') && a && b && a.face && b.face ? 'anti-aligned' : 'aligned'; }
-  function mateKindError(type, a, b) {
-    if (type === 'coincident' && (refKind(a) !== 'plane' || refKind(b) !== 'plane')) return 'Coincident needs two planar faces or planes';
-    if (type === 'distance' && (refKind(a) !== 'plane' || refKind(b) !== 'plane')) return 'Distance needs two planar faces or planes';
-    if (type === 'angle' && (!refKind(a) || !refKind(b))) return 'Angle needs two faces, planes or axes';
-    if (type === 'concentric' && (refKind(a) !== 'axis' || refKind(b) !== 'axis')) return 'Concentric needs two cylindrical faces or axes';
+  function defaultAlignment(type, a, b) {
+    if (typeof Assembly !== 'undefined' && Assembly.defaultAlignment) return Assembly.defaultAlignment({ type: type, a: a, b: b });
+    return (type === 'coincident' || type === 'distance') && a && b && a.face && b.face ? 'anti-aligned' : 'aligned';
+  }
+  function mateKindError(type, a, b, a2, b2) {
+    var ka = refKind(a), kb = refKind(b);
+    if (type === 'coincident' && (ka !== 'plane' || kb !== 'plane')) return 'Coincident needs two planar faces or planes';
+    if ((type === 'distance' || type === 'limitdistance') && !(ka && ka === kb)) return mateTypeLabel(type) + ' needs two planar faces or planes, or two cylindrical faces or axes';
+    if ((type === 'angle' || type === 'limitangle' || type === 'parallel' || type === 'perpendicular') && (!ka || !kb)) return mateTypeLabel(type) + ' needs two faces, planes or axes';
+    if (type === 'concentric' && (ka !== 'axis' || kb !== 'axis')) return 'Concentric needs two cylindrical faces or axes';
+    if (type === 'tangent' && (!(a.cylinder || b.cylinder) || !ka || !kb)) return 'Tangent needs a cylindrical face and a planar or cylindrical face';
+    if (type === 'gear' && (ka !== 'axis' || kb !== 'axis' || a.component == null || b.component == null || a.component === b.component)) return 'Gear needs a cylindrical face or axis on each of two components';
+    if (type === 'width' && (ka !== 'plane' || refKind(a2) !== 'plane' || !kb || (kb === 'plane' && refKind(b2) !== 'plane'))) return 'Width needs two width faces and two tab faces (or one cylindrical tab)';
     return null;
   }
   function nextMateName(m, type, except) {
-    var base = mateTypeLabel(type), n = 0;
+    var base = mateBaseName(type), n = 0;
     (m.mates || []).forEach(function (x) { var r = new RegExp('^' + base + '(\\d+)$').exec(x.name || ''); if (r && x.id !== except) n = Math.max(n, +r[1]); });
     return base + (n + 1);
   }
@@ -1718,48 +1731,79 @@
     var snapshot = JSON.stringify(App.model), previewed = false;
     var v = existing ? { a: JSON.parse(JSON.stringify(existing.a)), b: JSON.parse(JSON.stringify(existing.b)), type: existing.type, alignment: existing.alignment || defaultAlignment(existing.type, existing.a, existing.b) }
       : { a: null, b: null, type: 'coincident', alignment: 'aligned' };
+    v.a2 = existing && existing.a2 ? JSON.parse(JSON.stringify(existing.a2)) : null;
+    v.b2 = existing && existing.b2 ? JSON.parse(JSON.stringify(existing.b2)) : null;
     v.distance = existing && existing.distance != null ? existing.distance : 10;
     v.angle = existing && existing.angle != null ? existing.angle : 90;
     v.offset = existing && existing.offset != null ? existing.offset : 0;
+    v.min = existing && existing.min != null ? existing.min : 0;
+    v.max = existing && existing.max != null ? existing.max : 10;
+    v.ratioA = existing && existing.ratio ? existing.ratio[0] : 1;
+    v.ratioB = existing && existing.ratio ? existing.ratio[1] : 1;
     v.flip = !!(existing && existing.flip);
+    function syncGroups(x) {   // the Advanced / Mechanical selects show the chosen type, '' otherwise
+      x.advType = mateGroup('advanced').some(function (o) { return o[0] === x.type; }) ? x.type : '';
+      x.mechType = mateGroup('mechanical').some(function (o) { return o[0] === x.type; }) ? x.type : '';
+    }
+    syncGroups(v);
+    // the selections a mate type takes, in pick order; the mate can be previewed once `ready`
+    function slots(x) { return x.type === 'width' ? ['a', 'a2', 'b', 'b2'] : ['a', 'b']; }
+    function ready(x) { return x.type === 'width' ? !!(x.a && x.a2 && x.b && (x.b2 || refKind(x.b) === 'axis')) : !!(x.a && x.b); }
+    function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; if (App.command) App.command.faceList = []; }
     var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [];
     function restore() { App.model = JSON.parse(snapshot); }
+    var LIMIT = { limitdistance: 1, limitangle: 1 }, FLIPS = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
     function mateValues() {
-      return { distance: v.type === 'distance' ? +v.distance || 0 : null, angle: v.type === 'angle' ? +v.angle || 0 : null,
-        offset: v.type === 'coincident' ? +v.offset || 0 : null, flip: v.type !== 'concentric' && !!v.flip };
+      var t = v.type, lim = !!LIMIT[t];
+      return { distance: t === 'distance' ? +v.distance || 0 : null, angle: t === 'angle' ? +v.angle || 0 : null,
+        offset: t === 'coincident' ? +v.offset || 0 : null, min: lim ? +v.min || 0 : null, max: lim ? +v.max || 0 : null,
+        ratio: t === 'gear' ? [+v.ratioA || 1, +v.ratioB || 1] : null, flip: !!FLIPS[t] && !!v.flip };
     }
-    // Distance / Angle start at the distance / angle the two selections have now (SolidWorks does the same)
+    // Distance / Angle (and the limits) start at the distance / angle the two selections have now (as in SolidWorks)
     function measure() {
       if (valueSet || !(v.a && v.b) || !App.build || !App.build.partBuilds) return;
       try {
         var A = Assembly.resolveRef(App.model, App.build.partBuilds, v.a), B = Assembly.resolveRef(App.model, App.build.partBuilds, v.b);
-        var da = A.normal || A.dir, db = B.normal || B.dir, c = Math.max(-1, Math.min(1, K.vec.dot(da, db)));
-        if (A.kind === 'plane' && B.kind === 'plane') v.distance = +Math.abs(K.vec.dot(K.vec.sub(B.point, A.point), A.normal)).toFixed(4);
+        var da = A.normal || A.dir, db = B.normal || B.dir, c = Math.max(-1, Math.min(1, K.vec.dot(da, db))), d = null;
+        if (A.kind === 'plane' && B.kind === 'plane') d = Math.abs(K.vec.dot(K.vec.sub(B.point, A.point), A.normal));
+        else if (A.kind === 'axis' && B.kind === 'axis') { var w = K.vec.sub(B.point, A.point), t = K.vec.dot(w, A.dir); d = Math.hypot(w[0] - t * A.dir[0], w[1] - t * A.dir[1], w[2] - t * A.dir[2]); }
+        if (d != null) v.distance = +d.toFixed(4);
         v.angle = +(Math.acos(c) * 180 / Math.PI).toFixed(4);
+        if (v.type === 'limitdistance' && d != null) { v.min = v.distance; v.max = v.distance; }
+        if (v.type === 'limitangle') { v.min = v.angle; v.max = v.angle; }
       } catch (e) { /* the preview reports a bad reference */ }
     }
     function apply(m) {
       var opts = alignSet ? { alignment: v.alignment } : {};
+      var wide = v.type === 'width';
       if (existing) {
         var x = Assembly.findMate(m, existing.id);
-        if (x.type !== v.type && /^(Coincident|Concentric|Distance|Angle)\d+$/.test(x.name)) x.name = nextMateName(m, v.type, x.id);
+        if (x.type !== v.type && /^(Coincident|Concentric|Distance|Angle|Parallel|Perpendicular|Tangent|Width|Gear|LimitDistance|LimitAngle)\d+$/.test(x.name)) x.name = nextMateName(m, v.type, x.id);
+        if (x.type !== v.type) delete x.phase;
         x.type = v.type; x.a = JSON.parse(JSON.stringify(v.a)); x.b = JSON.parse(JSON.stringify(v.b));
+        if (wide && v.a2) x.a2 = JSON.parse(JSON.stringify(v.a2)); else delete x.a2;
+        if (wide && v.b2) x.b2 = JSON.parse(JSON.stringify(v.b2)); else delete x.b2;
         if (alignSet) x.alignment = v.alignment; else delete x.alignment;
         Assembly.setMateValues(x, mateValues());
         return x;
       }
       var mv = mateValues();
       Object.keys(mv).forEach(function (k) { if (mv[k] != null) opts[k] = mv[k]; });
+      if (wide) { opts.a2 = v.a2 ? JSON.parse(JSON.stringify(v.a2)) : null; if (v.b2) opts.b2 = JSON.parse(JSON.stringify(v.b2)); }
       return Assembly.addMate(m, v.type, JSON.parse(JSON.stringify(v.a)), JSON.parse(JSON.stringify(v.b)), opts);
     }
     function setMessage(html, ok) { if (!pm.spec) return; pm.spec.message = html; pm.spec.messageOk = !!ok; renderPM(); }
+    function selectMessage() {
+      return v.type === 'width' ? 'Width: select the two width faces (the slot sides), then the two tab faces or one cylindrical face (the part centred between them).'
+        : 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.';
+    }
     function preview() {
-      if (!(v.a && v.b)) {
+      if (!ready(v)) {
         if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); }
-        setMessage('Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.');
+        setMessage(selectMessage());
         return;
       }
-      var kindErr = mateKindError(v.type, v.a, v.b);
+      var kindErr = mateKindError(v.type, v.a, v.b, v.a2, v.b2);
       restore();
       if (kindErr) { if (previewed) { previewed = false; UI.rebuild({ noSave: true }); } setMessage(kindErr + '. Pick other entities or change the mate type.'); return; }
       var mt;
@@ -1770,8 +1814,9 @@
     }
     function addRef(ref, faceIndex) {
       if (!ref) return false;
-      if (v.a && v.b) { v.a = null; v.b = null; picked = []; }
-      if (!v.a) v.a = ref; else v.b = ref;
+      if (ready(v)) clearPicks(v);
+      var slot = slots(v).filter(function (k) { return !v[k]; })[0];
+      v[slot] = ref;
       if (faceIndex != null) picked.push(faceIndex);
       if (App.command) App.command.faceList = picked.slice();
       if (!typeSet) v.type = defaultMateType(v.a, v.b);
@@ -1790,6 +1835,7 @@
         onPick: function (pk) {
           var ref = null;
           if (pk.kind === 'face') { try { ref = Assembly.refFromPick(App.model, App.build, pk.index, pk.point, App.mesh); } catch (e) { ref = null; } }
+          else if (pk.kind === 'axis' && typeof pk.ref === 'string') ref = { axis: pk.ref };
           else if (pk.kind === 'plane' && typeof pk.ref === 'string') ref = { plane: pk.ref };
           if (!ref) { UI.setStatus('That entity cannot be used in a mate.'); return true; }
           return addRef(ref, pk.kind === 'face' ? pk.index : null);
@@ -1797,30 +1843,63 @@
       },
       groups: [
         { title: 'Mate Selections', fields: [
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.a); }, placeholder: 'First entity…' },
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…' },
-          { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { x.a = null; x.b = null; picked = []; if (App.command) App.command.faceList = []; renderPM(); preview(); UI.updateHighlights(); } }] }
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.a); }, placeholder: 'First entity…', show: function (x) { return x.type !== 'width'; } },
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…', show: function (x) { return x.type !== 'width'; } },
+          { type: 'static', label: 'Width selections', value: '', show: function (x) { return x.type === 'width'; } },
+          { type: 'pick', icon: 'width', value: function (x) { return refText(x.a); }, placeholder: 'First width face…', show: function (x) { return x.type === 'width'; } },
+          { type: 'pick', icon: 'width', value: function (x) { return refText(x.a2); }, placeholder: 'Second width face…', show: function (x) { return x.type === 'width'; } },
+          { type: 'static', label: 'Tab selections', value: '', show: function (x) { return x.type === 'width'; } },
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Tab face or cylindrical face…', show: function (x) { return x.type === 'width'; } },
+          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b2); }, placeholder: 'Second tab face…', show: function (x) { return x.type === 'width' && refKind(x.b) !== 'axis'; } },
+          { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { clearPicks(x); renderPM(); preview(); UI.updateHighlights(); } }] }
         ] },
         { title: 'Standard Mates', fields: [
-          { type: 'select', label: 'Mate type', key: 'type', options: MATE_TYPES, rerender: true },
+          // an Advanced / Mechanical type shows as "—" here
+          { type: 'select', label: 'Mate type', key: 'type', rerender: true, options: function (x) { return MATE_TYPES.some(function (o) { return o[0] === x.type; }) ? MATE_TYPES : [[x.type, '\u2014']].concat(MATE_TYPES); } },
           { type: 'number', label: 'Distance', key: 'distance', unit: 'u', min: 0, show: function (x) { return x.type === 'distance'; } },
           { type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0, show: function (x) { return x.type === 'angle'; } },
           { type: 'number', label: 'Offset', key: 'offset', unit: 'u', min: 0, show: function (x) { return x.type === 'coincident'; } },
-          { type: 'check', label: 'Flip dimension', key: 'flip', show: function (x) { return x.type !== 'concentric'; } }
+          { type: 'check', label: 'Flip dimension', key: 'flip', show: function (x) { return x.type !== 'concentric' && x.type !== 'tangent' && !!FLIPS[x.type] && x.type !== 'gear'; } },
+          { type: 'check', label: 'Flip (other side / internal)', key: 'flip', show: function (x) { return x.type === 'tangent'; } }
         ] },
-        { title: 'Mate alignment', fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned']] }] }
+        { title: 'Advanced Mates', fields: [
+          { type: 'select', label: 'Advanced', key: 'advType', rerender: true, options: function () { return [['', '\u2014']].concat(mateGroup('advanced')); } },
+          { type: 'number', label: 'Maximum', key: 'max', unit: 'u', min: 0, show: function (x) { return x.type === 'limitdistance'; } },
+          { type: 'number', label: 'Minimum', key: 'min', unit: 'u', min: 0, show: function (x) { return x.type === 'limitdistance'; } },
+          { type: 'number', label: 'Maximum', key: 'max', unit: '°', min: 0, show: function (x) { return x.type === 'limitangle'; } },
+          { type: 'number', label: 'Minimum', key: 'min', unit: '°', min: 0, show: function (x) { return x.type === 'limitangle'; } }
+        ] },
+        { title: 'Mechanical Mates', fields: [
+          { type: 'select', label: 'Mechanical', key: 'mechType', rerender: true, options: function () { return [['', '\u2014']].concat(mateGroup('mechanical')); } },
+          { type: 'number', label: 'Ratio A', key: 'ratioA', min: 0, show: function (x) { return x.type === 'gear'; } },
+          { type: 'number', label: 'Ratio B', key: 'ratioB', min: 0, show: function (x) { return x.type === 'gear'; } },
+          { type: 'check', label: 'Reverse', key: 'flip', show: function (x) { return x.type === 'gear'; } }
+        ] },
+        { title: 'Mate alignment', show: function (x) { return x.type !== 'gear'; }, fields: [{ type: 'select', label: 'Alignment', key: 'alignment', options: [['aligned', 'Aligned'], ['anti-aligned', 'Anti-Aligned'], ['closest', 'Closest']] }] }
       ],
       onChange: function (x, key) {
-        if (key === 'type') { typeSet = true; if (!alignSet) { x.alignment = defaultAlignment(x.type, x.a, x.b); renderPM(); } }
+        if ((key === 'advType' || key === 'mechType') && !x[key]) { syncGroups(x); renderPM(); return; }
+        if (key === 'advType' || key === 'mechType') { x.type = x[key]; key = 'type'; }
+        if (key === 'type') {
+          typeSet = true;
+          // switching to Width: the two picks so far are the width faces; switching away: the second width face is B
+          if (x.type === 'width' && x.b && !x.a2) { x.a2 = x.b; x.b = null; }
+          if (x.type !== 'width' && x.a2 && !x.b) { x.b = x.a2; }
+          if (x.type !== 'width') { x.a2 = null; x.b2 = null; }
+          if (!alignSet) x.alignment = defaultAlignment(x.type, x.a, x.b);
+          if (!valueSet && LIMIT[x.type]) measure();
+          syncGroups(x);
+          renderPM();
+        }
         if (key === 'alignment') alignSet = true;
-        if (key === 'distance' || key === 'angle') valueSet = true;
+        if (key === 'distance' || key === 'angle' || key === 'min' || key === 'max') valueSet = true;
         if (key) preview();
       },
       onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
       onClose: function () { mateSession = null; },
       onOK: function (x) {
-        if (!(x.a && x.b)) { UI.toast('Select two entities to mate first.'); return false; }
-        var kindErr = mateKindError(x.type, x.a, x.b);
+        if (!ready(x)) { UI.toast(x.type === 'width' ? 'Select the width faces and the tab faces first.' : 'Select two entities to mate first.'); return false; }
+        var kindErr = mateKindError(x.type, x.a, x.b, x.a2, x.b2);
         if (kindErr) { UI.toast(kindErr + '.'); return false; }
         restore(); previewed = false;
         return asmCommit(apply, function (mt) {
@@ -1843,6 +1922,7 @@
     var c = findComp(idOrName);
     if (!c) return asmFail('No component "' + idOrName + '"');
     if (c.fixed) return asmFail(c.name + ' is fixed: Float it to move it.');
+    if (c.pattern != null) return asmFail(c.name + ' is a pattern instance: move its seed.');
     var id = c.id;
     return asmCommit(function (m) { return Assembly.moveComponent(m, id, delta); }, c.name + ' moved; mates solved again.');
   }
@@ -1851,6 +1931,7 @@
     var c = findComp(idOrName);
     if (!c) return asmFail('No component "' + idOrName + '"');
     if (c.fixed) return asmFail(c.name + ' is fixed: Float it to rotate it.');
+    if (c.pattern != null) return asmFail(c.name + ' is a pattern instance: rotate its seed.');
     var id = c.id, P = pivot || Assembly.componentCenter(App.model, App.build, id);
     try { Assembly.rotateComponent(JSON.parse(JSON.stringify(App.model)), id, axis, deg, P); } catch (e) { return asmFail(e.message); }
     return asmCommit(function (m) { return Assembly.rotateComponent(m, id, axis, deg, P); }, c.name + ' rotated; mates solved again.');
@@ -2090,7 +2171,7 @@
     }
   }
 
-  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  UI.openPM = openPM; UI.renderPM = renderPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
   // equations in PropertyManager number fields: the open PM's equation texts and errors (copies), and a field setter for scripts/tests
   UI.pmExpressions = function () { return { exprs: JSON.parse(JSON.stringify(pm.exprs || {})), errors: JSON.parse(JSON.stringify(pm.exprErrors || {})) }; };
   UI.pmSetField = function (key, text) {
