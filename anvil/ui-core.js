@@ -725,7 +725,13 @@ var UI = (function () {
     if (selEdges.length) groups.highlight.add(edgeLineObject(selEdges, edgeSelMat));
     if (App.command && App.command.faceList && App.command.faceList.length && App.mesh) {
       var fr = [];
-      App.command.faceList.forEach(function (i) { var fc = App.mesh.faces[i]; if (fc) fr.push([fc.start, fc.count]); });
+      // a picked facet of a curved face highlights the whole face
+      var seenF = {};
+      App.command.faceList.forEach(function (i) {
+        (App.mesh.faces[i] ? faceGroup(i) : []).forEach(function (j) {
+          var fc = App.mesh.faces[j]; if (fc && !seenF[j]) { seenF[j] = 1; fr.push([fc.start, fc.count]); }
+        });
+      });
       if (fr.length) groups.highlight.add(new THREE.Mesh(triRangeGeometry(fr), mats.sel));
     }
     var hv = App.hover, hr = null;

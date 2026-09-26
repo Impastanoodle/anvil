@@ -1044,7 +1044,9 @@
         onPick: function (pk) {
           if (pk.kind !== 'face' || !pk.point) return false;
           var hit = -1;
-          f.faces.forEach(function (spec, i) { if (K.resolveFaces([spec], baseMesh, tol())[0] === pk.index) hit = i; });
+          // any facet of an already listed curved face toggles it off
+          var grp = baseMesh === App.mesh && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
+          f.faces.forEach(function (spec, i) { if (grp.indexOf(K.resolveFaces([spec], baseMesh, tol())[0]) >= 0) hit = i; });
           if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push({ at: pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
           renderPM(); resolveList(); preview();
           return true;

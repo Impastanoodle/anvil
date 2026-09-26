@@ -3823,6 +3823,29 @@
     return 'mesh faces ' + mesh.faces.length + ' -> 6 selectable; cylinder group ' + body.length + ' facets; box 6';
   });
 
+  step('whole curved faces in PropertyManagers: a Shell face pick on one facet of the Bushing body highlights the whole cylinder, and a pick on another facet of it toggles the same face off', async function () {
+    await anvil.run(exByName('Bushing').code); await idle();
+    var mesh = UI.App.mesh, cs = W.Kernel.curveSurfaces(mesh);
+    var s15 = cs.filter(function (s) { return Math.abs(s.surf.r - 15) < 1e-9; })[0];
+    function facet(k) { return mesh.faces.findIndex(function (f) { return f.polys[0] === s15.polys[k]; }); }
+    var grp = UI.faceGroup(facet(0)), tris = 0;
+    grp.forEach(function (i) { tris += mesh.faces[i].count; });
+    anvil.clearSelection(); UI.App.sel = null; UI.App.hover = null;
+    UI.cmdShell();
+    assert(UI.hasPM() && UI.App.command && UI.App.command.onPick, 'Shell PM waiting for a pick');
+    var f0 = mesh.faces[facet(0)];
+    UI.App.command.onPick({ kind: 'face', index: facet(0), point: f0.centroid.slice() }); await idle();
+    var hl = UI.groups.highlight.children.filter(function (c) { return c.isMesh; })
+      .reduce(function (n, c) { return n + c.geometry.getAttribute('position').count / 3; }, 0);
+    assert(hl === tris, 'highlighted triangles ' + hl + ', whole cylinder ' + tris + ' (' + grp.length + ' facets)');
+    var f5 = mesh.faces[facet(5)];
+    UI.App.command.onPick({ kind: 'face', index: facet(5), point: f5.centroid.slice() }); await idle();
+    var left = UI.App.command.faceList.length;
+    UI.pmCancel(); await idle();
+    assert(left === 0, 'second facet of the same cylinder toggled the face off, faces left ' + left);
+    return 'shell pick highlights ' + grp.length + ' facets / ' + tris + ' triangles';
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));

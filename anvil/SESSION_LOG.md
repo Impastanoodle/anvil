@@ -851,3 +851,14 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 148/148, app page with no console errors.
 
 **Next up.** Commands that take a picked face (Concentric / Tangent mates, Fillet face selection, Hole Wizard refusal on curved faces) could read `UI.faceGroup` to show the whole face in their PropertyManager selection boxes.
+
+## Run local-2026-09-26b — Whole curved faces in PropertyManager selections
+
+**Context.** Follow-up to 26a: commands that take picked faces still highlighted one facet strip.
+
+**Done.**
+- `ui-core.js`: `App.command.faceList` highlights expand each entry to its whole face group (deduplicated), so every PM that lists faces (Mate, Shell, assembly move/explode, Evaluate) shows the full cylinder.
+- `ui-commands.js`: Shell face picks compare against the picked face's group, so a pick on any facet of an already listed curved face toggles it off instead of adding it again.
+- `tests/ui-smoke.html`: new step on the Bushing: a Shell pick on one facet highlights all 48 facets / 96 triangles of the Ø30 body; a pick on another facet removes it.
+
+**Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 149/149.
