@@ -149,7 +149,7 @@
       var f = files[n];
       var isA = f.model && f.model.type === 'assembly';
       var b = el('button', { html: '<b>' + n + '</b><small>' + (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString() + '</small>' });
-      b.addEventListener('click', function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); UI.toast('Opened ' + n); });
+      b.addEventListener('click', function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, [{ label: 'Delete ' + n, action: function () { delete files[n]; localStorage.setItem('anvil.files', JSON.stringify(files)); openTaskPane('files'); } }]); });
       list.appendChild(b);
     });
@@ -557,12 +557,13 @@
     });
   }
   function fileSave() {
-    UI.promptDialog('Save', 'Save as (kept in this browser):', App.model.name, function (name) {
+    UI.promptDialog('Save', 'Save as (kept in this browser):', App.fileName || App.model.name, function (name) {
       name = (name || '').trim();
       if (!name) return;
       var files = savedFiles();
       files[name] = { model: App.model, features: App.model.features.length, components: isAsm() ? (App.model.components || []).length : undefined, savedAt: Date.now() };
-      try { localStorage.setItem('anvil.files', JSON.stringify(files)); UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); }
+      try { localStorage.setItem('anvil.files', JSON.stringify(files)); App.fileName = name; UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); return; }
+      if (UI.afterSaveHook) UI.afterSaveHook(name);   // an assembly also saves its edited referenced documents (ui-assembly.js)
       if (tpCurrent === 'files') openTaskPane('files');
     });
   }
