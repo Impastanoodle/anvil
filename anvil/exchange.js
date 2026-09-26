@@ -268,30 +268,60 @@ var Exchange = (function () {
     }
     if (typeof Assembly === 'undefined') throw new Error('Assemblies need assembly.js');
     build = build && build.partBuilds ? build : Assembly.rebuild(model);
-    var parts = [], byKey = {}, instances = [];
+    var parts = [], byKey = {}, subs = [], subByKey = {};
     // An opposite-hand instance (Mirror Components, det R < 0) cannot be placed by a rigid transform (a STEP
     // AXIS2_PLACEMENT_3D is always right-handed): it gets its own left-hand part, the source mesh reflected in its local
     // YZ plane (F = diag(-1, 1, 1)), placed by the proper rotation R·F — world = R·F·(F·p) + P = R·p + P.
     function det3(R) { return R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]); }
     function reflectX(b) { return b.transform(function (v) { return new CSG.Vector(-v.x, v.y, v.z); }, true); }
-    (model.components || []).forEach(function (c) {
-      var pb = build.partBuilds && build.partBuilds[c.id];
-      if (!pb || !pb.body || !pb.body.polygons.length) return;
-      var T = tf(c.transform), mirrored = det3(T.rotation) < 0;
-      var key = JSON.stringify(c.source) + (mirrored ? '#opposite-hand' : '');
-      if (byKey[key] == null) {
-        var pm = null;
-        try { pm = Assembly.partModel(c.source); } catch (e) { pm = null; }
-        var nm = pm && pm.name && pm.name !== 'Part1' ? pm.name : (c.source && c.source.example) || (pm && pm.name) || c.name;
-        if (mirrored) nm += ' (opposite hand)';
-        var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
-        byKey[key] = parts.length;
-        var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
-        parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (b, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(b) : b), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
-      }
-      if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
-      instances.push({ part: byKey[key], name: c.name, transform: T });
-    });
+    function composeTf(A, B) { var R = A.rotation, Q = B.rotation, C = [], i, j; for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) C.push(R[i * 3] * Q[j] + R[i * 3 + 1] * Q[3 + j] + R[i * 3 + 2] * Q[6 + j]); return { rotation: C, position: tfPoint(A, B.position) }; }
+    // walk(assembly model, its build) -> { top: [{ part | sub, name, transform }] (this level), flat: [{ part, name,
+    // transform }] (every part below, placed in this level's frame) }. A sub-assembly component (its part build is an
+    // assembly build, see assembly.js) becomes one `subs` entry per distinct source (a Flexible one per instance, since
+    // its inner layout is its own), placed like a part; the flat list composes the transforms down to the parts.
+    function walk(m, b, prefix) {
+      var top = [], flat = [];
+      (m.components || []).forEach(function (c) {
+        var pb = b.partBuilds && b.partBuilds[c.id], st = (b.components || []).filter(function (x) { return x.id === c.id; })[0];
+        if (!pb || !pb.body || !pb.body.polygons.length || (st && (st.error || st.suppressed))) return;
+        var T = tf(c.transform), mirrored = det3(T.rotation) < 0;
+        if (pb.assembly && pb.model) {
+          var sk = JSON.stringify(c.source) + (pb.flexible ? '#flexible:' + prefix + c.id : '');
+          if (subByKey[sk] == null) {
+            var w = walk(pb.model, pb, prefix + c.id + '/');
+            subByKey[sk] = subs.length;
+            subs.push({ name: (pb.model.name || 'SubAssem') + (pb.flexible ? ' (' + c.name + ', flexible)' : ''), instances: w.top, flat: w.flat });
+          }
+          var sub = subs[subByKey[sk]];
+          if (!mirrored) top.push({ sub: subByKey[sk], name: c.name, transform: T });
+          sub.flat.forEach(function (inst) {
+            var fi = { part: inst.part, name: c.name + '/' + inst.name, transform: composeTf(T, inst.transform) };
+            flat.push(fi);
+            if (mirrored) top.push(fi);   // a mirrored sub-assembly is written as its parts
+          });
+          return;
+        }
+        var key = JSON.stringify(c.source) + (mirrored ? '#opposite-hand' : '');
+        if (byKey[key] == null) {
+          var pm = null;
+          try { pm = Assembly.partModel(c.source); } catch (e) { pm = null; }
+          var nm = pm && pm.name && pm.name !== 'Part1' ? pm.name : (c.source && (c.source.file || c.source.example)) || (pm && pm.name) || c.name;
+          if (mirrored) nm += ' (opposite hand)';
+          var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
+          byKey[key] = parts.length;
+          var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
+          parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (bb, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(mirrored ? reflectX(bb) : bb), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
+        }
+        if (mirrored) { var R = T.rotation; T = { rotation: [-R[0], R[1], R[2], -R[3], R[4], R[5], -R[6], R[7], R[8]], position: T.position }; }
+        var inst = { part: byKey[key], name: c.name, transform: T };
+        top.push(inst); flat.push(inst);
+      });
+      return { top: top, flat: flat };
+    }
+    var root = walk(model, build, ''), instances = root.flat;
+    // sub-assemblies (children before the assemblies that use them): STEP writes each as its own product with
+    // NEXT_ASSEMBLY_USAGE_OCCURRENCEs, 3MF as a components object; `instances` stays the flat list of placed parts
+    if (subs.length) return { name: model.name || 'Assem1', units: model.units === 'in' ? 'in' : 'mm', assembly: true, parts: parts, instances: instances, top: root.top, subs: subs };
     return { name: model.name || 'Assem1', units: model.units === 'in' ? 'in' : 'mm', assembly: true, parts: parts, instances: instances };
   }
 
@@ -474,6 +504,7 @@ var Exchange = (function () {
       x.push('  </basematerials>');
     }
     // one mesh object per body of every part; a part of an assembly also gets a components object that groups them
+    var subObjectIds = [];
     var partObjects = doc.parts.map(function (part, pi) {
       var bodyIds = part.bodies.map(function (b) {
         var id = nextId++, m = b.mesh, p = m.positions, mat = b.mat ? ' pid="' + matId + '" pindex="' + b.mat.index + '"' : '';
@@ -491,11 +522,23 @@ var Exchange = (function () {
       x.push('   </components>', '  </object>');
       return { bodies: bodyIds, group: gid };
     });
+    // sub-assemblies: a components object each (children first), holding its parts / sub-assemblies with transforms
+    var subObjects = (doc.subs || []).map(function (sb) {
+      var id = nextId++;
+      x.push('  <object id="' + id + '" type="model" name="' + xmlEsc(sb.name) + '">', '   <components>');
+      sb.instances.forEach(function (inst) {
+        var T = inst.transform, oid = inst.sub != null ? subObjectIds[inst.sub] : partObjects[inst.part].group;
+        x.push('    <component objectid="' + oid + '"' + (isIdentity(T) ? '' : ' transform="' + matrix3mf(T) + '"') + '/>');
+      });
+      x.push('   </components>', '  </object>');
+      subObjectIds.push(id);
+      return id;
+    });
     x.push(' </resources>', ' <build>');
     if (!doc.assembly) partObjects[0].bodies.forEach(function (id) { x.push('  <item objectid="' + id + '"/>'); });
-    else doc.instances.forEach(function (inst) {
-      var T = inst.transform;
-      x.push('  <item objectid="' + partObjects[inst.part].group + '"' + (isIdentity(T) ? '' : ' transform="' + matrix3mf(T) + '"') + ' partnumber="' + xmlEsc(inst.name) + '"/>');
+    else (doc.top || doc.instances).forEach(function (inst) {
+      var T = inst.transform, oid = inst.sub != null ? subObjects[inst.sub] : partObjects[inst.part].group;
+      x.push('  <item objectid="' + oid + '"' + (isIdentity(T) ? '' : ' transform="' + matrix3mf(T) + '"') + ' partnumber="' + xmlEsc(inst.name) + '"/>');
     });
     x.push(' </build>', '</model>');
     var files = [
@@ -727,20 +770,28 @@ var Exchange = (function () {
     }
     if (!doc.assembly) writePart(doc.parts[0]);
     else {
-      var parts = doc.parts.map(writePart);
-      var root = product(doc.name, 'assembly');
-      var rootOrigin = axis(null);
-      var placements = doc.instances.map(function (inst) { return axis(inst.transform); });
-      var rootRep = W.add('SHAPE_REPRESENTATION(' + stepString(doc.name) + ',' + stepList([rootOrigin].concat(placements)) + ',' + ctx + ')');
-      W.add('SHAPE_DEFINITION_REPRESENTATION(' + root.pds + ',' + rootRep + ')');
-      doc.instances.forEach(function (inst, i) {
-        var part = parts[inst.part];
-        var nauo = W.add('NEXT_ASSEMBLY_USAGE_OCCURRENCE(' + stepString('NAUO' + (i + 1)) + ',' + stepString(inst.name) + ',\'\',' + root.pd + ',' + part.pd + ',$)');
-        var pds = W.add('PRODUCT_DEFINITION_SHAPE(\'Placement\',\'Placement of an item\',' + nauo + ')');
-        var idt = W.add('ITEM_DEFINED_TRANSFORMATION(\'\',\'\',' + part.origin + ',' + placements[i] + ')');
-        var rr = W.add('(REPRESENTATION_RELATIONSHIP(\'\',\'\',' + part.rep + ',' + rootRep + ')REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(' + idt + ')SHAPE_REPRESENTATION_RELATIONSHIP())');
-        W.add('CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(' + rr + ',' + pds + ')');
-      });
+      var parts = doc.parts.map(writePart), subProducts = [], nauoCount = 0;
+      // an assembly product: its placements and one NEXT_ASSEMBLY_USAGE_OCCURRENCE per component (a part or a
+      // sub-assembly product written before it)
+      var writeAssembly = function (name, list) {
+        var root = product(name, 'assembly');
+        var rootOrigin = axis(null);
+        var placements = list.map(function (inst) { return axis(inst.transform); });
+        var rootRep = W.add('SHAPE_REPRESENTATION(' + stepString(name) + ',' + stepList([rootOrigin].concat(placements)) + ',' + ctx + ')');
+        W.add('SHAPE_DEFINITION_REPRESENTATION(' + root.pds + ',' + rootRep + ')');
+        list.forEach(function (inst, i) {
+          var part = inst.sub != null ? subProducts[inst.sub] : parts[inst.part];
+          var nauo = W.add('NEXT_ASSEMBLY_USAGE_OCCURRENCE(' + stepString('NAUO' + (++nauoCount)) + ',' + stepString(inst.name) + ',\'\',' + root.pd + ',' + part.pd + ',$)');
+          var pds = W.add('PRODUCT_DEFINITION_SHAPE(\'Placement\',\'Placement of an item\',' + nauo + ')');
+          var idt = W.add('ITEM_DEFINED_TRANSFORMATION(\'\',\'\',' + part.origin + ',' + placements[i] + ')');
+          var rr = W.add('(REPRESENTATION_RELATIONSHIP(\'\',\'\',' + part.rep + ',' + rootRep + ')REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(' + idt + ')SHAPE_REPRESENTATION_RELATIONSHIP())');
+          W.add('CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(' + rr + ',' + pds + ')');
+        });
+        root.rep = rootRep; root.origin = rootOrigin;
+        return root;
+      };
+      (doc.subs || []).forEach(function (sb) { subProducts.push(writeAssembly(sb.name, sb.instances)); });
+      writeAssembly(doc.name, doc.top || doc.instances);
     }
     if (styled.length) W.add('MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION(\'\',' + stepList(styled) + ',' + ctx + ')');
     return ['ISO-10303-21;', 'HEADER;',

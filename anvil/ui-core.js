@@ -1186,6 +1186,7 @@ var UI = (function () {
     if (UI.exitSketch && App.mode === 'sketch') UI.exitSketch(true);
     if (UI.closePM) UI.closePM();
     App.model = model;
+    App.fileName = null;   // the saved-document name, set by whoever opened it from the browser's saved files
     if (!model.features) model.features = [];
     var ids = model.features.map(function (f) { return f.id; });
     if (model.type === 'assembly') {

@@ -2,6 +2,9 @@
 // Perpendicular / Tangent / Concentric / Distance / Angle, Advanced mates Width / Limit Distance / Limit Angle, the
 // Mechanical Gear mate), solve, move and rotate components, detect interference, pattern and mirror components
 // (Linear / Circular Component Pattern, Mirror Components) and explode them (Exploded View steps and explode lines).
+// Components may be sub-assemblies (rigid, or Flexible: their own mates solved in context) and live links to documents
+// in the document store ({ file: name }) instead of embedded copies; BOM, mass properties and interference go through
+// every level.
 // Plain script (no modules): defines the global `Assembly`. Loaded after csg.js and kernel.js; no DOM, no three.js.
 //
 // An assembly model is plain JSON (see README "Assemblies"):
@@ -77,31 +80,149 @@ var Assembly = (function () {
 
   function isAssemblyScript(code) { return /\b(a|asm)\.(insert|mate|coincident|concentric|distance|angle|parallel|perpendicular|tangent|width|gear|limitDistance|limitAngle|linearPattern|circularPattern|mirrorComponents|explode)\s*\(/.test(String(code || '')); }
 
-  // A fresh part model JSON for a component source. Throws for an unknown / unusable source.
-  function partModel(source) {
+  // ------------------------------------------------------------------ documents: live links to part / assembly files
+  // A component source { file: name } is a live link to a document in the document store instead of an embedded copy
+  // (SolidWorks' external references). The store has two layers: `open` holds documents edited in memory and not saved
+  // yet (dirty), the backing store holds saved ones. The UI (ui-assembly.js) backs it with the browser's saved files
+  // (localStorage 'anvil.files', File ▸ Save); the default backing is an in-memory map (tests, scripts). A rebuild reads
+  // the current document every time, so editing a referenced part updates every assembly that uses it; a name the
+  // store does not know is a broken reference (the component is shown suppressed, with a warning).
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function memoryBacking() {
+    var docs = {};
+    return {
+      get: function (n) { return Object.prototype.hasOwnProperty.call(docs, n) ? docs[n] : null; },
+      put: function (n, m) { docs[n] = m; },
+      remove: function (n) { delete docs[n]; },
+      list: function () { return Object.keys(docs); }
+    };
+  }
+  var backing = memoryBacking(), openDocs = {};
+  function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  function rawDoc(name) { name = String(name); return has(openDocs, name) ? openDocs[name] : backing.get(name); }
+  var Documents = {
+    // use(backing | null): { get(name) -> model | null, put(name, model), remove(name), list() -> names }; null: a fresh
+    // in-memory store. Unsaved (dirty) documents are dropped.
+    use: function (b) { backing = b || memoryBacking(); openDocs = {}; return Documents; },
+    get: function (name) { var m = rawDoc(name); return m ? clone(m) : null; },
+    has: function (name) { return !!rawDoc(name); },
+    // put(name, model, { dirty }): save to the backing store, or with dirty keep it in memory only (an edit not saved)
+    put: function (name, model, opts) {
+      name = String(name);
+      if (opts && opts.dirty) openDocs[name] = clone(model);
+      else { backing.put(name, clone(model)); delete openDocs[name]; }
+      return name;
+    },
+    isDirty: function (name) { return has(openDocs, String(name)); },
+    dirty: function () { return Object.keys(openDocs); },
+    save: function (name) { name = String(name); if (!has(openDocs, name)) return false; backing.put(name, openDocs[name]); delete openDocs[name]; return true; },
+    revert: function (name) { var d = has(openDocs, String(name)); delete openDocs[String(name)]; return d; },
+    remove: function (name) { name = String(name); delete openDocs[name]; backing.remove(name); },
+    list: function () { var seen = {}; (backing.list() || []).concat(Object.keys(openDocs)).forEach(function (n) { seen[n] = true; }); return Object.keys(seen).sort(); }
+  };
+  function hashString(s) { var h = 5381; for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + ':' + s.length; }
+  var MAX_DEPTH = 16;
+  function isLinkish(src) { return !!(src && typeof src === 'object' && (src.file != null || (src.model && isAssembly(src.model)))); }
+  // sourceStamp(source) -> '' for a source that is its own content; for a link, a hash of the document (and of the
+  // documents it links to in turn), so a cached build is reused only while none of them changed
+  function sourceStamp(source, depth) {
+    depth = depth || 0;
+    if (!isLinkish(source) || depth > MAX_DEPTH) return '';
+    var m = null, s = '';
+    if (source.file != null) { m = rawDoc(source.file); s = m ? hashString(JSON.stringify(m)) : 'missing'; }
+    else m = source.model;
+    if (m && isAssembly(m)) (m.components || []).forEach(function (c) { if (isLinkish(c.source)) s += '|' + sourceStamp(c.source, depth + 1); });
+    return s;
+  }
+  // references(model) -> the document names a model links to, directly or through its sub-assemblies (sorted)
+  function references(model, out, depth) {
+    out = out || {};
+    depth = depth || 0;
+    if (!model || depth > MAX_DEPTH) return Object.keys(out).sort();
+    (model.components || []).forEach(function (c) {
+      var src = c.source;
+      if (!src) return;
+      if (src.file != null) {
+        var first = !out[src.file];
+        out[src.file] = true;
+        var m = first ? rawDoc(src.file) : null;
+        if (m && isAssembly(m)) references(m, out, depth + 1);
+      } else if (src.model && isAssembly(src.model)) references(src.model, out, depth + 1);
+    });
+    return Object.keys(out).sort();
+  }
+  // saveReferences(model) -> the names saved: File ▸ Save of an assembly also saves the referenced documents that were
+  // edited in memory (Open Part / Edit Part) and not saved yet
+  function saveReferences(model) { return references(model).filter(function (n) { return Documents.save(n); }); }
+  // packAndGo(model) -> { model, embedded: [names], missing: [names] }: a copy with every linked document embedded
+  // ({ file } -> { model }, sub-assemblies packed in turn), so the file stands alone (SolidWorks Pack and Go)
+  function packAndGo(model, depth) {
+    depth = depth || 0;
+    var out = clone(model), embedded = {}, missing = {};
+    (out.components || []).forEach(function (c) {
+      var src = c.source;
+      if (!src || typeof src !== 'object') return;
+      var m = null;
+      if (src.file != null) {
+        m = Documents.get(src.file);
+        if (!m) { missing[src.file] = true; return; }
+        embedded[src.file] = true;
+      } else if (src.model && isAssembly(src.model)) m = src.model;
+      if (!m) return;
+      if (isAssembly(m) && depth < MAX_DEPTH) {
+        var r = packAndGo(m, depth + 1);
+        m = r.model;
+        r.embedded.forEach(function (n) { embedded[n] = true; });
+        r.missing.forEach(function (n) { missing[n] = true; });
+      }
+      c.source = { model: m };
+    });
+    return { model: out, embedded: Object.keys(embedded).sort(), missing: Object.keys(missing).sort() };
+  }
+
+  function exampleEntry(name) {
+    var ex = null;
+    examplesList().forEach(function (e) { if (!ex && e && e.name === name) ex = e; });
+    return ex;
+  }
+  function isAssemblyExample(ex) { return !!(ex && (ex.kind === 'assembly' || ex.assembly || ex.type === 'assembly' || isAssemblyScript(ex.code))); }
+  // resolveSource(source) -> { kind: 'part' | 'assembly', model (a fresh copy), file? }. Sources: { example } (a Design
+  // Library part or assembly), { script } (a part or assembly script), { model } (an embedded part or assembly) and
+  // { file } (a live link to the document store). Throws a readable Error; a missing document throws one with
+  // `broken: true`.
+  function resolveSource(source) {
     if (typeof source === 'string') source = { example: source };
-    if (!source || typeof source !== 'object') throw new Error('Component source must be { example }, { script } or { model }');
+    if (!source || typeof source !== 'object') throw new Error('Component source must be { example }, { script }, { model } or { file }');
     var m;
+    if (source.file != null) {
+      m = Documents.get(source.file);
+      if (!m) { var err = new Error('Cannot find the referenced document "' + source.file + '"'); err.broken = true; throw err; }
+      if (isAssembly(m)) m.features = m.features || [];
+      return { kind: isAssembly(m) ? 'assembly' : 'part', model: m, file: String(source.file) };
+    }
     if (source.example != null) {
-      var ex = null;
-      examplesList().forEach(function (e) { if (!ex && e && e.name === source.example) ex = e; });
+      var ex = exampleEntry(source.example);
       if (!ex) throw new Error('Unknown Design Library part "' + source.example + '"');
-      if (ex.kind === 'assembly' || ex.assembly || ex.type === 'assembly' || isAssemblyScript(ex.code)) throw new Error('"' + source.example + '" is an assembly and cannot be inserted as a part');
+      if (isAssemblyExample(ex)) { m = newAssembly(ex.name); runScript(m, ex.code); return { kind: 'assembly', model: m }; }
       m = Kernel.newModel();
       Kernel.runScript(m, ex.code);
-      return m;
+      return { kind: 'part', model: m };
     }
     if (source.script != null) {
+      if (isAssemblyScript(source.script)) { m = newAssembly('SubAssem'); runScript(m, String(source.script)); return { kind: 'assembly', model: m }; }
       m = Kernel.newModel();
       Kernel.runScript(m, String(source.script));
-      return m;
+      return { kind: 'part', model: m };
     }
     if (source.model) {
-      if (isAssembly(source.model)) throw new Error('An assembly cannot be inserted as a part');
-      return JSON.parse(JSON.stringify(source.model));
+      m = clone(source.model);
+      if (isAssembly(m)) { m.features = m.features || []; return { kind: 'assembly', model: m }; }
+      return { kind: 'part', model: m };
     }
-    throw new Error('Component source must be { example }, { script } or { model }');
+    throw new Error('Component source must be { example }, { script }, { model } or { file }');
   }
+  // A fresh model JSON for a component source: a part model, or an assembly model for a sub-assembly source.
+  function partModel(source) { return resolveSource(source).model; }
 
   function findComponent(model, idOrName) {
     if (idOrName == null || !model || !model.components) return null;
@@ -152,8 +273,8 @@ var Assembly = (function () {
     ensureLists(model);
     if (typeof source === 'string') source = { example: source };
     source = JSON.parse(JSON.stringify(source || {}));
-    var base = 'Part';
-    try { base = partModel(source).name || 'Part'; } catch (e) { /* rebuild reports the error on the component */ }
+    var base = source.file != null ? String(source.file) : 'Part';
+    if (source.file == null) try { base = partModel(source).name || 'Part'; } catch (e) { /* rebuild reports the error on the component */ }
     var name = opts.name || (base + '<' + nextNumber(model.components.map(function (c) { return c.name; }), base) + '>');
     var fixed = model.components.length === 0 ? opts.fixed !== false : opts.fixed === true;
     var pos = opts.position || opts.at;
@@ -161,9 +282,24 @@ var Assembly = (function () {
       id: model.nextId++, name: name, source: source, fixed: fixed,
       transform: { position: pos ? copy3(pos) : [0, 0, 0], rotation: opts.rotation ? orthonormalize(opts.rotation.map(Number)) : IDENTITY.slice() }
     };
+    // a sub-assembly is rigid unless inserted with flexible: true (then its internal mates are solved in context)
+    if (opts.flexible) comp.flexible = true;
+    if (opts.flexState && typeof opts.flexState === 'object') comp.flexState = clone(opts.flexState);
     model.components.push(comp);
     return comp;
   }
+  // setFlexible(model, id, on): Solve as Flexible (the sub-assembly's own mates are solved in the assembly, so parts of
+  // it can move) or Rigid (it moves as one body). Throws for a component that is not a sub-assembly.
+  function setFlexible(model, id, on) {
+    var c = findComponent(model, id);
+    if (!c) throw new Error('Unknown component ' + JSON.stringify(id));
+    var kind = null;
+    try { kind = resolveSource(c.source).kind; } catch (e) { kind = null; }
+    if (kind !== 'assembly') throw new Error(c.name + ' is not a sub-assembly');
+    if (on) c.flexible = true; else { delete c.flexible; delete c.flexState; }
+    return c;
+  }
+  function isSubAssemblySource(source) { try { return resolveSource(source).kind === 'assembly'; } catch (e) { return false; } }
 
   var MATE_BASE = { coincident: 'Coincident', concentric: 'Concentric', distance: 'Distance', angle: 'Angle',
     parallel: 'Parallel', perpendicular: 'Perpendicular', tangent: 'Tangent', width: 'Width', gear: 'Gear',
@@ -498,6 +634,23 @@ var Assembly = (function () {
     if (ref.component != null) {
       comp = findComponent(model, ref.component);
       if (!comp) throw new Error('Unknown component ' + JSON.stringify(ref.component));
+      // { component: sub-assembly, path: [inner id | name, …], face | cylinder | plane | axis }: geometry of a component
+      // inside a sub-assembly, in that inner component's local frame; resolved there and carried into the
+      // sub-assembly's frame by the inner transforms (the sub-assembly build's own, or its in-context ones when flexible)
+      if (ref.path && ref.path.length) {
+        var sb = partBuilds && partBuilds[comp.id];
+        if (!sb || !sb.model || !isAssembly(sb.model)) throw new Error(comp.name + ' is not a sub-assembly');
+        var inner = findComponent(sb.model, ref.path[0]);
+        if (!inner) throw new Error('Unknown component ' + JSON.stringify(ref.path[0]) + ' in ' + comp.name);
+        var iref = {};
+        Object.keys(ref).forEach(function (k) { iref[k] = ref[k]; });
+        iref.component = inner.id;
+        if (ref.path.length > 1) iref.path = ref.path.slice(1); else delete iref.path;
+        var ilr = localRef(sb.model, sb.partBuilds, iref);
+        var w = worldOf(ilr, tf(inner.transform));
+        w.comp = comp; w.refKind = ilr.refKind; w.inner = inner;
+        return w;
+      }
     }
     function needGeom() {
       var b = partBuilds && partBuilds[comp.id];
@@ -536,8 +689,8 @@ var Assembly = (function () {
   }
 
   function worldOf(lr, T) {
-    if (!lr.comp) return { kind: lr.kind, point: lr.point.slice(), normal: lr.normal && lr.normal.slice(), dir: lr.dir && lr.dir.slice(), ref: lr.ref && lr.ref.slice(), radius: lr.radius };
-    var o = { kind: lr.kind, point: transformPoint(T, lr.point), radius: lr.radius };
+    if (!lr.comp) return { kind: lr.kind, refKind: lr.refKind, point: lr.point.slice(), normal: lr.normal && lr.normal.slice(), dir: lr.dir && lr.dir.slice(), ref: lr.ref && lr.ref.slice(), radius: lr.radius };
+    var o = { kind: lr.kind, refKind: lr.refKind, point: transformPoint(T, lr.point), radius: lr.radius };
     if (lr.normal) o.normal = transformDir(T, lr.normal);
     if (lr.dir) o.dir = transformDir(T, lr.dir);
     if (lr.ref) o.ref = transformDir(T, lr.ref);
@@ -1170,6 +1323,7 @@ var Assembly = (function () {
       }
       c.source = JSON.parse(JSON.stringify(seed.source));
       c.fixed = false;
+      delete c.flexible; delete c.flexState;   // an instance of a sub-assembly moves as one body
     });
     model.patterns = pats.filter(function (p) { return p.seeds.length > 0; });
   }
@@ -1351,20 +1505,202 @@ var Assembly = (function () {
   // ------------------------------------------------------------------ rebuild
   function now() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
 
-  function buildPart(source) {
-    var entry = { model: null, build: null, error: null };
+  // buildPart(source) -> cache entry { kind: 'part' | 'assembly', model, build, error, warning, broken, stamp }. A
+  // sub-assembly source is built by rebuild() in turn (its own mates solved, collapsed): entry.build is that assembly
+  // build, whose `body` holds every inner component in the sub-assembly's frame and whose `model` carries the solved
+  // inner transforms. A document that contains itself (directly or further down) is an error, not a loop.
+  var building = [];
+  function guardKey(source) { return source && source.file != null ? 'file:' + source.file : source && source.example != null ? 'example:' + source.example : null; }
+  function buildPart(source, stamp) {
+    var entry = { kind: 'part', model: null, build: null, error: null, stamp: stamp || '' };
+    var gk = guardKey(source);
     try {
-      entry.model = partModel(source);
+      if (gk && building.indexOf(gk) >= 0) throw new Error('Circular reference: ' + gk.replace(/^\w+:/, '') + ' contains itself');
+      if (building.length > MAX_DEPTH) throw new Error('Sub-assemblies nested too deeply');
+      var r = resolveSource(source);
+      entry.model = r.model; entry.kind = r.kind;
+      if (r.file) entry.file = r.file;
+      if (r.kind === 'assembly') {
+        delete entry.model.exploded;   // a sub-assembly takes part collapsed
+        building.push(gk || '(embedded)');
+        try { entry.build = rebuild(entry.model); } finally { building.pop(); }
+        if (!entry.build.body || !entry.build.body.polygons.length) entry.error = (entry.model.components || []).length ? 'Sub-assembly has no solid body' : 'Sub-assembly has no components';
+        else {
+          var errs = Object.keys(entry.build.errors || {});
+          if (errs.length) entry.warning = 'Sub-assembly has errors: ' + entry.build.errors[errs[0]];
+          else if (Object.keys(entry.build.warnings || {}).length) { var wk = Object.keys(entry.build.warnings); entry.warning = entry.build.warnings[wk[0]]; }
+        }
+        return entry;
+      }
       entry.build = Kernel.rebuild(entry.model);
       if (!entry.build || !entry.build.body || !entry.build.body.polygons.length) entry.error = 'Part has no solid body';
       else {
-        var errs = entry.build.errors && Object.keys(entry.build.errors);
-        if (errs && errs.length) entry.warning = 'Part has rebuild errors: ' + entry.build.errors[errs[0]];
+        var perrs = entry.build.errors && Object.keys(entry.build.errors);
+        if (perrs && perrs.length) entry.warning = 'Part has rebuild errors: ' + entry.build.errors[perrs[0]];
       }
     } catch (e) {
       entry.error = e.message || String(e);
+      if (e.broken) entry.broken = true;
     }
     return entry;
+  }
+
+  // composeSub(subModel, subBuild, only?) -> a build-like object for a sub-assembly placed with subModel's inner
+  // transforms (a Flexible instance's in-context positions): { assembly, subAssembly, model, body, bodies, partBuilds,
+  // components, mates, errors, warnings, cache }; `only` (id -> true) keeps just those inner components (the rigid
+  // base of a Flexible sub-assembly).
+  function composeSub(sm, sb, only) {
+    var status = {};
+    (sb.components || []).forEach(function (co) { status[co.id] = co; });
+    var bodies = sm.components.map(function (k) {
+      var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id];
+      if ((only && !only[k.id]) || !pb || !pb.body || (co && (co.error || co.suppressed))) return CSG.fromPolygons([]);
+      return worldBody(pb.body, k.transform);
+    });
+    var body = bodies.length ? Kernel.combineBodies(bodies) : CSG.fromPolygons([]);
+    return { assembly: true, subAssembly: true, model: sm, body: body, bodies: bodies, partBuilds: sb.partBuilds,
+      bodyFeatures: sm.components.map(function (c) { return c.id; }), bodyNames: sm.components.map(function (c) { return c.name; }),
+      components: sb.components, mates: sb.mates, errors: sb.errors || {}, warnings: sb.warnings || {}, cache: sb.cache, patterns: sb.patterns };
+  }
+  function composeT(A, B) { A = tf(A); B = tf(B); return { rotation: matMul(A.rotation, B.rotation), position: add(matVec(A.rotation, B.position), A.position) }; }
+  function relativeT(A, B) { A = tf(A); B = tf(B); var Rt = [A.rotation[0], A.rotation[3], A.rotation[6], A.rotation[1], A.rotation[4], A.rotation[7], A.rotation[2], A.rotation[5], A.rotation[8]]; return { rotation: matMul(Rt, B.rotation), position: matTVec(A.rotation, sub(B.position, A.position)) }; }
+  function refComponents(m) { return ['a', 'b', 'a2', 'b2'].map(function (k) { return m[k] && m[k].component != null ? m[k].component : null; }).filter(function (x) { return x != null; }); }
+
+  // virtualModel(model, entries, partBuilds) -> null when the model can be solved as it is, else { model, builds, … }:
+  // the model the mate solver sees. Broken references (suppressed components) are held fixed and the mates on them left
+  // out; a Flexible sub-assembly S becomes a rigid base (id S.id: its fixed inner components, in S's frame) plus one
+  // floating component per floating inner component (id 'S/k', placed S·k), and S's own mates are added with their
+  // references rewritten ('S/k', or { component: S, path: [k] } for the base). Parent mates and pattern references
+  // that point into S by path are rewritten the same way. Pattern instances inside S stay with the base.
+  function virtualModel(model, entries, partBuilds) {
+    var flex = {}, broken = {}, anyFlex = false, anyBroken = false;
+    model.components.forEach(function (c) {
+      var e = entries[c.id];
+      if (e && e.broken) { broken[c.id] = true; anyBroken = true; }
+      else if (c.flexible && c.pattern == null && e && e.kind === 'assembly' && e.build && !e.error) { flex[c.id] = e; anyFlex = true; }
+    });
+    if (!anyFlex && !anyBroken) return null;
+    function shallow(o) { var r = {}; Object.keys(o).forEach(function (k) { r[k] = o[k]; }); return r; }
+    var V = { type: 'assembly', name: model.name, units: model.units, features: [], components: [], mates: [], nextId: model.nextId },
+      builds = {}, copies = [], skipped = [], innerMates = {};
+    Object.keys(partBuilds).forEach(function (k) { builds[k] = partBuilds[k]; });
+    function floatingInner(k) { return k && !k.fixed && k.pattern == null; }
+    function outer(ref) {   // a parent-level ref pointing into a flexible sub-assembly by path
+      if (!ref || ref.component == null || !ref.path || !ref.path.length) return ref;
+      var c = findComponent(model, ref.component), e = c && flex[c.id];
+      if (!e) return ref;
+      var k = findComponent(e.model, ref.path[0]);
+      if (!floatingInner(k)) return ref;
+      var r = shallow(ref);
+      r.component = c.id + '/' + k.id;
+      if (ref.path.length > 1) r.path = ref.path.slice(1); else delete r.path;
+      return r;
+    }
+    model.components.forEach(function (c) {
+      var vc = shallow(c);
+      if (broken[c.id] && c.pattern == null) vc.fixed = true;
+      V.components.push(vc);
+      var e = flex[c.id];
+      if (!e) return;
+      var sm = e.model, st = c.flexState || {}, only = {};
+      sm.components.forEach(function (k) { if (!floatingInner(k)) only[k.id] = true; });
+      builds[c.id] = composeSub(sm, e.build, only);
+      var status = {};
+      (e.build.components || []).forEach(function (co) { status[co.id] = co; });
+      sm.components.forEach(function (k) {
+        if (!floatingInner(k)) return;
+        var vid = c.id + '/' + k.id, co = status[k.id], ok = e.build.partBuilds[k.id] && !(co && (co.error || co.suppressed));
+        V.components.push({ id: vid, name: c.name + '/' + k.name, fixed: !ok, transform: composeT(c.transform, st[k.id] || k.transform), flexOf: c.id, inner: k.id });
+        builds[vid] = e.build.partBuilds[k.id];
+      });
+      function inner(ref) {
+        var r = shallow(ref || {});
+        if (r.component == null) { r.component = c.id; return r; }   // the sub-assembly's own origin planes / axes
+        var k = findComponent(sm, r.component);
+        if (floatingInner(k)) { r.component = c.id + '/' + k.id; return r; }
+        r.path = [k ? k.id : r.component].concat(r.path || []);
+        r.component = c.id;
+        return r;
+      }
+      innerMates[c.id] = [];
+      sm.mates.forEach(function (m) {
+        var sbm = e.build.mates && e.build.mates[m.id];
+        if (m.suppressed || (sbm && sbm.suppressed)) return;
+        var cp = shallow(m);
+        cp.id = c.id + '/' + m.id;
+        ['a', 'b', 'a2', 'b2'].forEach(function (k) { if (m[k]) cp[k] = inner(m[k]); });
+        innerMates[c.id].push({ mate: m, copy: cp });
+      });
+    });
+    // parent mates first (they place the sub-assembly bases), then each flexible sub-assembly's own mates
+    model.mates.forEach(function (m) {
+      if (refComponents(m).some(function (id) { return broken[id]; })) { skipped.push(m); return; }
+      var cp = m, changed = false;
+      ['a', 'b', 'a2', 'b2'].forEach(function (k) {
+        if (!m[k]) return;
+        var r = outer(m[k]);
+        if (r !== m[k]) { if (!changed) { cp = shallow(m); changed = true; } cp[k] = r; }
+      });
+      if (changed) copies.push({ mate: m, copy: cp });
+      V.mates.push(cp);
+    });
+    Object.keys(innerMates).forEach(function (id) { innerMates[id].forEach(function (x) { V.mates.push(x.copy); }); });
+    if (model.patterns) V.patterns = model.patterns.map(function (p) {
+      var q = shallow(p);
+      ['direction', 'direction2', 'axis', 'plane'].forEach(function (k) { if (p[k]) q[k] = outer(p[k]); });
+      return q;
+    });
+    return { model: V, builds: builds, flex: flex, broken: broken, copies: copies, skipped: skipped, innerMates: innerMates };
+  }
+  // finishVirtual: carry a solve of the virtual model back to the real one — solved Flexible positions into
+  // c.flexState (inner transforms relative to the sub-assembly), a per-instance build for each Flexible sub-assembly
+  // (partBuilds), statuses for the real components only, and warnings for mates left out.
+  function finishVirtual(ctx, sol, model, partBuilds, warnings) {
+    ctx.copies.forEach(function (x) { if (x.copy.phase && !x.mate.phase) x.mate.phase = x.copy.phase.slice(); });
+    var byId = {};
+    sol.components.forEach(function (co) { byId[co.id] = co; });
+    Object.keys(ctx.flex).forEach(function (sid) {
+      var e = ctx.flex[sid], c = findComponent(model, +sid), Ts = sol.transforms[c.id] || tf(c.transform);
+      var sm = clone(e.model), st = {}, comps = [], mates = {};
+      var status = {};
+      (e.build.components || []).forEach(function (co) { status[co.id] = co; });
+      sm.components.forEach(function (k, i) {
+        var vid = c.id + '/' + k.id, T = sol.transforms[vid];
+        var co = byId[vid], base = status[k.id] || { id: k.id, name: k.name, index: i, fixed: !!k.fixed, dof: 0, underDefined: false, error: null };
+        if (T) { var rel = relativeT(Ts, T); k.transform = rel; st[k.id] = { position: rel.position.slice(), rotation: rel.rotation.slice() }; }
+        var o = {};
+        Object.keys(base).forEach(function (q) { o[q] = base[q]; });
+        if (co) { o.dof = co.dof; o.underDefined = co.underDefined; }
+        comps.push(o);
+      });
+      (ctx.innerMates[sid] || []).forEach(function (x) {
+        var r = sol.mates[x.copy.id];
+        if (!r) return;
+        mates[x.mate.id] = r;
+        if (x.copy.phase && !x.mate.phase) x.mate.phase = x.copy.phase.slice();
+        if (r.error && !warnings[c.id]) warnings[c.id] = 'Flexible: ' + x.mate.name + ': ' + r.error;
+      });
+      (e.model.mates || []).forEach(function (m) { if (!mates[m.id] && e.build.mates && e.build.mates[m.id]) mates[m.id] = e.build.mates[m.id]; });
+      c.flexState = st;
+      var sb = {};
+      Object.keys(e.build).forEach(function (q) { sb[q] = e.build[q]; });
+      sb.components = comps; sb.mates = mates;
+      partBuilds[c.id] = composeSub(sm, sb);
+      partBuilds[c.id].flexible = true;
+    });
+    ctx.skipped.forEach(function (m) { sol.mates[m.id] = { ok: true, residual: 0, error: null, suppressed: true, warning: 'References a suppressed component' }; });
+    var mo = {};
+    model.mates.forEach(function (m) { if (sol.mates[m.id]) mo[m.id] = sol.mates[m.id]; });
+    sol.mates = mo;
+    sol.components = model.components.map(function (c, i) {
+      var co = byId[c.id] || { id: c.id, name: c.name, fixed: !!c.fixed, dof: 0, underDefined: false, error: null };
+      var o = {};
+      Object.keys(co).forEach(function (q) { o[q] = co[q]; });
+      o.index = i; o.fixed = !!c.fixed;
+      if (ctx.broken[c.id]) { o.dof = 0; o.underDefined = false; }
+      return o;
+    });
+    Object.keys(sol.transforms).forEach(function (id) { if (String(id).indexOf('/') >= 0) delete sol.transforms[id]; });   // the virtual 'S/k' ones
   }
 
   // rebuild(model, cache?, opts?) — opts.explodeT (0..1) shows the exploded view part-way (the explode animation).
@@ -1376,27 +1712,31 @@ var Assembly = (function () {
     cache = cache || {};
     var newCache = {}, partBuilds = {}, errors = {}, warnings = {}, entries = {};
     model.components.forEach(function (c) {
-      var key = JSON.stringify(c.source);
-      var entry = newCache[key] || cache[key] || buildPart(c.source);
+      var key = JSON.stringify(c.source), stamp = sourceStamp(c.source);
+      var entry = newCache[key] || (cache[key] && cache[key].stamp === stamp ? cache[key] : null) || buildPart(c.source, stamp);
       newCache[key] = entry;
       entries[c.id] = entry;
       if (entry.build) partBuilds[c.id] = entry.build;
-      if (entry.error) errors[c.id] = entry.error;
+      if (entry.broken) warnings[c.id] = entry.error;
+      else if (entry.error) errors[c.id] = entry.error;
       else if (entry.warning) warnings[c.id] = entry.warning;
     });
-    var sol, patOut = {}, patErr = {};
+    var sol, patOut = {}, patErr = {}, ctx = null;
+    try { ctx = virtualModel(model, entries, partBuilds); } catch (e) { ctx = null; errors.solver = 'Mate solver failed: ' + (e.message || e); }
+    var SM = ctx ? ctx.model : model, SB = ctx ? ctx.builds : partBuilds;
     function instanceMates() {   // mates that reference a pattern instance: solved again once the instances moved
-      return model.mates.some(function (m) {
-        return !m.suppressed && ['a', 'b', 'a2', 'b2'].some(function (k) { var c = m[k] && m[k].component != null ? findComponent(model, m[k].component) : null; return c && c.pattern != null; });
+      return SM.mates.some(function (m) {
+        return !m.suppressed && ['a', 'b', 'a2', 'b2'].some(function (k) { var c = m[k] && m[k].component != null ? findComponent(SM, m[k].component) : null; return c && c.pattern != null; });
       });
     }
     try {
       var T0 = {};
-      model.components.forEach(function (c) { T0[c.id] = tf(c.transform); });
-      patOut = placeInstances(model, partBuilds, T0, patErr);
-      sol = solve(model, partBuilds);
-      patErr = {}; patOut = placeInstances(model, partBuilds, sol.transforms, patErr);
-      if (instanceMates()) { sol = solve(model, partBuilds); patErr = {}; patOut = placeInstances(model, partBuilds, sol.transforms, patErr); }
+      SM.components.forEach(function (c) { T0[c.id] = tf(c.transform); });
+      patOut = placeInstances(SM, SB, T0, patErr);
+      sol = solve(SM, SB);
+      patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr);
+      if (instanceMates()) { sol = solve(SM, SB); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
+      if (ctx) finishVirtual(ctx, sol, model, partBuilds, warnings);
     } catch (e) {
       sol = { transforms: {}, mates: {}, components: model.components.map(function (c, i) { return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: c.fixed ? 0 : 6, underDefined: !c.fixed, error: null }; }) };
       model.components.forEach(function (c) { sol.transforms[c.id] = tf(c.transform); });
@@ -1408,8 +1748,17 @@ var Assembly = (function () {
       var T = sol.transforms[c.id];
       if (T) c.transform = { position: T.position.slice(), rotation: T.rotation.slice() };
     });
-    Object.keys(sol.mates).forEach(function (id) { if (sol.mates[id].error) errors[id] = sol.mates[id].error; });
-    sol.components.forEach(function (co) { co.error = errors[co.id] || null; });
+    Object.keys(sol.mates).forEach(function (id) { if (sol.mates[id].error) errors[id] = sol.mates[id].error; else if (sol.mates[id].warning) warnings[id] = sol.mates[id].warning; });
+    sol.components.forEach(function (co) {
+      var e = entries[co.id];
+      co.error = errors[co.id] || null;
+      if (e && e.kind === 'assembly') { co.subAssembly = true; if (findComponent(model, co.id).flexible && !e.error) co.flexible = true; }
+      if (e && e.file) co.file = e.file;
+      var c = findComponent(model, co.id);
+      if (c && c.source && c.source.file != null) co.file = String(c.source.file);
+      if (e && e.broken) { co.suppressed = true; co.broken = true; co.dof = 0; co.underDefined = false; }
+      if (warnings[co.id]) co.warning = warnings[co.id];
+    });
     // the exploded view shown (display only: the offsets are added to the world bodies, not to the transforms)
     var explode = null, xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
     if (model.exploded != null && !xv) delete model.exploded;
@@ -1419,13 +1768,13 @@ var Assembly = (function () {
       var xo = explodeOffsets(model, xv, opts.explodeT == null ? 1 : opts.explodeT, centers);
       explode = { view: xv.id, name: xv.name, t: opts.explodeT == null ? 1 : +opts.explodeT, offsets: xo.offsets, lines: xo.lines };
     }
-    // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed)
+    // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed or is suppressed)
     var bodies = model.components.map(function (c) {
       return worldBody(partBuilds[c.id] && !entries[c.id].error ? partBuilds[c.id].body : null, c.transform, explode && explode.offsets[c.id]);
     });
     var body = bodies.length ? Kernel.combineBodies(bodies) : null;
     return {
-      assembly: true, body: body, bodies: bodies, explode: explode, patterns: patOut,
+      assembly: true, model: model, body: body, bodies: bodies, explode: explode, patterns: patOut,
       bodyFeatures: model.components.map(function (c) { return c.id; }),
       bodyNames: model.components.map(function (c) { return c.name; }),
       components: sol.components, mates: sol.mates, errors: errors, warnings: warnings,
@@ -1498,12 +1847,45 @@ var Assembly = (function () {
     });
     return min[0] <= max[0] ? { min: min, max: max } : null;
   }
+  // Sub-assemblies: by default every part inside them is checked too (pairs between parts of one sub-assembly, and
+  // between those parts and the rest), named 'Sub<1>/Pin<1>' with aPath / bPath the inner ids; aIndex / bIndex stay
+  // the top-level component (body) index. opts.subAssembliesAsComponents: true (SolidWorks' "Treat subassemblies as
+  // components") checks each sub-assembly as one body.
+  // leafBodies(model, build) -> [{ top (component id), index (top-level body index), name, path: [inner ids], body (world) }]
+  // With asComponents a sub-assembly is one body: the union of its parts (their shells side by side are not a solid
+  // the boolean can intersect when they touch).
+  function leafBodies(model, build, asComponents) {
+    var out = [];
+    (model.components || []).forEach(function (c, i) {
+      var pb = build.partBuilds && build.partBuilds[c.id], wb = build.bodies[i];
+      if (asComponents && pb && pb.assembly && pb.model && wb && wb.polygons.length) {
+        var parts = leafBodies({ components: [c] }, { partBuilds: build.partBuilds, bodies: [wb], explode: build.explode }, false), u = null;
+        parts.forEach(function (l) { u = u ? u.union(l.body) : l.body; });
+        out.push({ top: c.id, index: i, name: c.name, path: null, body: u || wb });
+        return;
+      }
+      if (!asComponents && pb && pb.assembly && pb.model && wb && wb.polygons.length) {
+        var off = build.explode && build.explode.offsets && build.explode.offsets[c.id];
+        (function walk(sm, sb, T, names, path) {
+          sm.components.forEach(function (k, j) {
+            var kb = sb.partBuilds && sb.partBuilds[k.id], TK = composeT(T, k.transform), co = (sb.components || [])[j];
+            if (!kb || !kb.body || (co && (co.error || co.suppressed))) return;
+            if (kb.assembly && kb.model) { walk(kb.model, kb, TK, names.concat(k.name), path.concat(k.id)); return; }
+            out.push({ top: c.id, index: i, name: names.concat(k.name).join('/'), path: path.concat(k.id), body: worldBody(kb.body, TK, off) });
+          });
+        })(pb.model, pb, c.transform, [c.name], []);
+        return;
+      }
+      out.push({ top: c.id, index: i, name: c.name, path: null, body: wb });
+    });
+    return out;
+  }
   function interference(model, build, opts) {
     opts = opts || {};
     if (!build || !build.bodies) build = rebuild(model);
-    var comps = model.components || [], boxes = [], all = null;
+    var comps = leafBodies(model, build, !!opts.subAssembliesAsComponents), boxes = [], all = null;
     comps.forEach(function (c, i) {
-      var b = build.bodies[i], bx = b && b.polygons.length ? bodyBox(b) : null;   // a part that failed has an empty body
+      var b = c.body, bx = b && b.polygons.length ? bodyBox(b) : null;   // a part that failed has an empty body
       boxes.push(bx);
       if (bx) all = all ? { min: all.min.map(function (v, k) { return Math.min(v, bx.min[k]); }), max: all.max.map(function (v, k) { return Math.max(v, bx.max[k]); }) } : { min: bx.min.slice(), max: bx.max.slice() };
     });
@@ -1517,8 +1899,13 @@ var Assembly = (function () {
         var e = 1e-9 * Math.max(1, diag);
         if (A.min[0] > B.max[0] - e || B.min[0] > A.max[0] - e || A.min[1] > B.max[1] - e || B.min[1] > A.max[1] - e || A.min[2] > B.max[2] - e || B.min[2] > A.max[2] - e) continue;
         checked++;
-        var common = build.bodies[i].intersect(build.bodies[j]), v = common.polygons.length ? common.volume() : 0;
-        if (v > tol) pairs.push({ a: comps[i].id, b: comps[j].id, aName: comps[i].name, bName: comps[j].name, aIndex: i, bIndex: j, volume: v, body: common });
+        var common = comps[i].body.intersect(comps[j].body), v = common.polygons.length ? common.volume() : 0;
+        if (v > tol) {
+          var pr = { a: comps[i].top, b: comps[j].top, aName: comps[i].name, bName: comps[j].name, aIndex: comps[i].index, bIndex: comps[j].index, volume: v, body: common };
+          if (comps[i].path) pr.aPath = comps[i].path;
+          if (comps[j].path) pr.bPath = comps[j].path;
+          pairs.push(pr);
+        }
       }
     }
     pairs.sort(function (p, q) { return q.volume - p.volume; });
@@ -1536,7 +1923,15 @@ var Assembly = (function () {
     if (!comp) return null;
     var off = build.explode && build.explode.offsets && build.explode.offsets[comp.id];   // picked in the exploded view
     var T = tf(comp.transform), p = inverseTransformPoint(T, off ? sub(worldPoint, off) : worldPoint);
-    var geom = partGeom(build.partBuilds && build.partBuilds[comp.id]);
+    var pbs = build.partBuilds && build.partBuilds[comp.id];
+    if (pbs && pbs.assembly && pbs.model) {   // a face inside a sub-assembly: a path ref to the part under the pick
+      var hit = pickInner(pbs.model, pbs, p, face ? matTVec(T.rotation, face.normal) : null);
+      if (!hit) return null;
+      var pr = { component: comp.id, path: hit.path };
+      pr[hit.cylinder ? 'cylinder' : 'face'] = hit.point.map(r6);
+      return pr;
+    }
+    var geom = partGeom(pbs);
     var lp = p.map(r6);
     if (!geom) return { component: comp.id, face: lp };
     var ln = face ? matTVec(T.rotation, face.normal) : null;
@@ -1550,6 +1945,31 @@ var Assembly = (function () {
     return { component: comp.id, face: lp };
   }
 
+  // pickInner(subModel, subBuild, p, n) -> { path: [inner ids], point (the leaf part's local coords), cylinder, d }: the
+  // inner part whose face lies nearest p (a point in the sub-assembly's frame), preferring faces with normal n
+  function pickInner(sm, sb, p, n) {
+    var best = null;
+    (sm.components || []).forEach(function (k, j) {
+      var kb = sb.partBuilds && sb.partBuilds[k.id], co = (sb.components || [])[j];
+      if (!kb || !kb.body || (co && (co.error || co.suppressed))) return;
+      var T = tf(k.transform), lp = inverseTransformPoint(T, p), ln = n ? matTVec(T.rotation, n) : null, hit;
+      if (kb.assembly && kb.model) {
+        hit = pickInner(kb.model, kb, lp, ln);
+        if (hit) hit.path = [k.id].concat(hit.path);
+      } else {
+        var g = partGeom(kb);
+        if (!g) return;
+        var list = patchesByDistance(g, lp), pt = null, d = Infinity;
+        for (var i = 0; i < list.length && i < 12; i++) if (!ln || dot(list[i].pt.normal, ln) > 1 - 1e-6) { pt = list[i].pt; d = list[i].d; break; }
+        if (!pt && list.length) { pt = list[0].pt; d = list[0].d + 1e-3 * g.size; }
+        if (!pt) return;
+        hit = { path: [k.id], point: lp, cylinder: !!cylinderFromPatch(g, pt), d: d };
+      }
+      if (hit && (!best || hit.d < best.d - 1e-9)) best = hit;
+    });
+    return best;
+  }
+
   // ------------------------------------------------------------------ mass properties
   function massProps(model, build) {
     var comps = [], vol = 0, area = 0, mass = 0, mc = [0, 0, 0];
@@ -1558,9 +1978,28 @@ var Assembly = (function () {
     model.components.forEach(function (c, i) {
       var pb = build && build.partBuilds && build.partBuilds[c.id];
       var e = entries[JSON.stringify(c.source)];
+      // a sub-assembly: its own mass properties (every level down), carried into this frame
+      if (pb && pb.assembly && pb.model && !(e && e.error)) {
+        var sm = massProps(pb.model, pb), TT = tf(c.transform), scen = transformPoint(TT, sm.centroid);
+        var kids = sm.components.map(function place(k) {   // centroids in this assembly's frame, every level down
+          var o = {};
+          Object.keys(k).forEach(function (q) { o[q] = k[q]; });
+          o.centroid = transformPoint(TT, k.centroid);
+          if (k.components) o.components = k.components.map(place);
+          return o;
+        });
+        vol += sm.volume; area += sm.area; mass += sm.mass;
+        mc = add(mc, scale(scen, sm.mass));
+        comps.push({ id: c.id, name: c.name, index: i, volume: sm.volume, mass: sm.mass, density: sm.volume > 0 ? sm.mass / sm.volume : 0, material: null, centroid: scen, subAssembly: true, components: kids });
+        var sw = build.bodies && build.bodies[i];
+        if (sw) sw.polygons.forEach(function (p) {
+          p.vertices.forEach(function (v) { var q = arr(v.pos); for (var k = 0; k < 3; k++) { if (q[k] < min[k]) min[k] = q[k]; if (q[k] > max[k]) max[k] = q[k]; } });
+        });
+        return;
+      }
       var density = (e && e.model && e.model.density > 0) ? e.model.density : 7850;
       var geom = partGeom(pb);
-      if (!geom || (e && e.error)) { comps.push({ id: c.id, name: c.name, index: i, volume: 0, mass: 0, density: density, centroid: [0, 0, 0] }); return; }
+      if (!geom || (e && e.error)) { var z = { id: c.id, name: c.name, index: i, volume: 0, mass: 0, density: density, centroid: [0, 0, 0] }; if (e && e.broken) z.suppressed = true; comps.push(z); return; }
       var mp = Kernel.massProps(geom.mesh, density), T = tf(c.transform);
       // materials.js: the part's material name, and bodies with their own material weigh with their own density
       var matName = null;
@@ -1579,6 +2018,70 @@ var Assembly = (function () {
     });
     if (!(min[0] <= max[0])) { min = [0, 0, 0]; max = [0, 0, 0]; }
     return { volume: vol, area: area, mass: mass, centroid: mass > 0 ? scale(mc, 1 / mass) : [0, 0, 0], bbox: { min: min, max: max }, components: comps };
+  }
+
+  // ------------------------------------------------------------------ Bill of Materials across levels
+  // bom(model, build?, { type }) -> rows [{ item, level, name, kind: 'part' | 'assembly', key, qty, components: [ids],
+  // file? }]. Components with the same source count together (their key); suppressed (broken) components are left out.
+  //   'top'      Top-level only: this assembly's components, a sub-assembly as one row.
+  //   'indented' Indented: as Top-level, each sub-assembly followed by its own rows one level in (items 1.1, 1.2, …;
+  //              qty per one of its parent).
+  //   'parts'    Parts only: every part at any depth, quantities multiplied through the levels; no assembly rows.
+  // The sub-assembly layouts come from the build when given (build.partBuilds), else from the sources.
+  function bom(model, build, opts) {
+    opts = opts || {};
+    var type = opts.type === 'indented' || opts.type === 'parts' ? opts.type : 'top';
+    var names = {};
+    function info(c, pb) {
+      var key = JSON.stringify(c.source);
+      if (!names[key]) {
+        var r = null;
+        try { r = resolveSource(c.source); } catch (e) { r = null; }
+        names[key] = { name: c.source && c.source.file != null ? String(c.source.file) : (r && r.model && r.model.name) || baseName(c.name), kind: r ? r.kind : 'part', model: r ? r.model : null, broken: !r };
+      }
+      var inf = names[key];
+      return { key: key, name: inf.name, kind: inf.kind, broken: inf.broken, sub: inf.kind === 'assembly' ? { model: pb && pb.model ? pb.model : inf.model, build: pb && pb.assembly ? pb : null } : null };
+    }
+    function groups(m, b) {
+      var out = [], by = {};
+      (m.components || []).forEach(function (c) {
+        var st = b && b.components ? b.components.filter(function (x) { return x.id === c.id; })[0] : null;
+        if (st && st.suppressed) return;
+        var it = info(c, b && b.partBuilds ? b.partBuilds[c.id] : null);
+        if (it.broken) return;
+        var g = by[it.key];
+        if (!g) { g = by[it.key] = { key: it.key, name: it.name, kind: it.kind, sub: it.sub, components: [], file: c.source && c.source.file != null ? String(c.source.file) : null }; out.push(g); }
+        g.components.push(c.id);
+      });
+      return out;
+    }
+    var rows = [];
+    function row(g, item, level, qty) {
+      var r = { item: String(item), level: level, name: g.name, kind: g.kind, key: g.key, qty: qty, components: g.components.slice() };
+      if (g.file) r.file = g.file;
+      rows.push(r);
+      return r;
+    }
+    if (type === 'parts') {
+      var byKey = {};
+      (function walk(m, b, mult, depth) {
+        groups(m, b).forEach(function (g) {
+          if (g.kind === 'assembly' && g.sub && g.sub.model && depth < MAX_DEPTH) { walk(g.sub.model, g.sub.build, mult * g.components.length, depth + 1); return; }
+          var r = byKey[g.key];
+          if (!r) r = byKey[g.key] = row(g, rows.length + 1, 0, 0);
+          r.qty += mult * g.components.length;
+        });
+      })(model, build, 1, 0);
+      return rows;
+    }
+    (function walk(m, b, prefix, level) {
+      groups(m, b).forEach(function (g, i) {
+        var item = prefix ? prefix + '.' + (i + 1) : i + 1;
+        row(g, item, level, g.components.length);
+        if (type === 'indented' && g.kind === 'assembly' && g.sub && g.sub.model && level < MAX_DEPTH) walk(g.sub.model, g.sub.build, String(item), level + 1);
+      });
+    })(model, build, '', 0);
+    return rows;
   }
 
   // ------------------------------------------------------------------ script API
@@ -1643,6 +2146,8 @@ var Assembly = (function () {
   };
   // exploded(view | true): show that exploded view exploded; exploded(false): collapse
   Builder.prototype.exploded = function (v) { setExploded(this.model, v === undefined ? true : v); return this; };
+  // flexible(c, on = true): Solve as Flexible / Rigid for a sub-assembly component
+  Builder.prototype.flexible = function (c, on) { setFlexible(this.model, compId(this.model, c), on !== false); return this; };
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
 
@@ -1656,6 +2161,7 @@ var Assembly = (function () {
   function numList(a) { return '[' + a.map(function (x) { return String(r6(+x)); }).join(', ') + ']'; }
   function isIdentity(R) { for (var i = 0; i < 9; i++) if (Math.abs(r6(R[i]) - IDENTITY[i]) > 0) return false; return true; }
   function sourceText(src) {
+    if (src.file != null) return '{ file: ' + JSON.stringify(src.file) + ' }';
     if (src.example != null) return '{ example: ' + JSON.stringify(src.example) + ' }';
     if (src.script != null) return '{ script: ' + JSON.stringify(src.script) + ' }';
     return '{ model: ' + JSON.stringify(src.model) + ' }';
@@ -1664,6 +2170,7 @@ var Assembly = (function () {
     if (!ref) return 'null';
     var parts = [];
     if (ref.component != null) parts.push('component: ' + (varOf[ref.component] || JSON.stringify(ref.component)));
+    if (ref.path && ref.path.length) parts.push('path: ' + JSON.stringify(ref.path));
     ['face', 'cylinder'].forEach(function (k) { if (ref[k]) parts.push(k + ': ' + numList(ref[k])); });
     ['plane', 'axis'].forEach(function (k) { if (ref[k] != null) parts.push(k + ': ' + JSON.stringify(ref[k])); });
     return '{ ' + parts.join(', ') + ' }';
@@ -1698,6 +2205,11 @@ var Assembly = (function () {
       else if (i === 0) opts.push('fixed: false');
       if (T.position.some(function (x) { return r6(x) !== 0; })) opts.push('position: ' + numList(T.position));
       if (!isIdentity(T.rotation)) opts.push('rotation: ' + numList(T.rotation));
+      if (c.flexible) {
+        opts.push('flexible: true');
+        var fs = c.flexState ? Object.keys(c.flexState) : [];
+        if (fs.length) opts.push('flexState: { ' + fs.map(function (k) { var q = tf(c.flexState[k]); return JSON.stringify(k) + ': { position: ' + numList(q.position) + ', rotation: ' + numList(q.rotation) + ' }'; }).join(', ') + ' }');
+      }
       out.push('var ' + v + ' = a.insert(' + sourceText(c.source || {}) + ', { ' + opts.join(', ') + ' });');
     });
     (model.patterns || []).forEach(emitPattern);
@@ -1740,6 +2252,9 @@ var Assembly = (function () {
     addExplodedView: addExplodedView, addExplodeStep: addExplodeStep, removeExplodeStep: removeExplodeStep, removeExplodedView: removeExplodedView,
     findExplodedView: findExplodedView, findExplodeStep: findExplodeStep, setExploded: setExploded, explodeOffsets: explodeOffsets,
     explodedBodies: explodedBodies, explodeDir: explodeDir,
+    Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
+    packAndGo: packAndGo, setFlexible: setFlexible, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
+    composeTransforms: composeT, relativeTransform: relativeT,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };
 })();

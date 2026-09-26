@@ -521,5 +521,59 @@ var AnvilExamples = [
       'a.explode([roller], "y", 30);',
       'a.explode([gB, dot, "Dot Pin<2>", "Dot Pin<3>"], "y", 20);'
     ].join('\n')
+  },
+  {
+    name: 'Hinge sub-assembly',
+    kind: 'assembly',
+    description: 'Assembly used as a sub-assembly: a fixed leaf and an arm hinged on its top edge, 1 mm clear of it (Concentric on the hinge line, Coincident ends). The arm keeps one degree of freedom (it swings), so a Flexible instance can be opened in the assembly that uses it.',
+    volume: 2 * 40 * 20 * 5,
+    checks: [
+      { component: 'Leaf<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      // the arm stands on the hinge line (turned 90° about z), 1 mm clear of the leaf (the knuckle clearance)
+      { component: 'Arm<1>', position: [0, 0, 0], rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1] }
+    ],
+    interference: [],
+    code: [
+      'a.name("Hinge").units("mm");',
+      '// leaf x in [-40,0], y in [-5,0], z in [0,20]: the hinge line is its top edge x = y = 0 (the z axis)',
+      'var leaf = a.insert({ script: \'p.name("Leaf"); p.box(40, 20, 5, { at: [-40, -5, 0] });\' }, { fixed: true });',
+      '// arm x in [1,41], y in [0,5]: 1 mm clear of the hinge line, dropped in standing up (90° about z)',
+      'var arm = a.insert({ script: \'p.name("Arm"); p.box(40, 20, 5, { at: [1, 0, 0] });\' }, { rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1] });',
+      'a.concentric({ component: arm, axis: "z" }, { component: leaf, axis: "z" });',
+      'a.coincident({ component: arm, face: [21, 2.5, 0] }, { component: leaf, face: [-20, -2.5, 0] }, { alignment: "aligned" });'
+    ].join('\n')
+  },
+  {
+    name: 'Hinged cover (sub-assemblies)',
+    kind: 'assembly',
+    description: 'Assembly with sub-assemblies: a base plate and two Hinge sub-assemblies mated by faces inside them (the leaves). Hinge<1> is rigid and keeps its arm standing as in its own document; Hinge<2> is Flexible, so an Angle mate on its arm opens it to 30° in this assembly only. BOM Indented / Parts only and Mass Properties go through both levels.',
+    // base 120 × 60 × 10 + two hinges of 2 × (40 × 20 × 5)
+    volume: 120 * 60 * 10 + 4 * 40 * 20 * 5,
+    checks: (function () {
+      var c = Math.cos(Math.PI / 6), s = Math.sin(Math.PI / 6);
+      return [
+        { component: 'Base<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+        // leaf bottom on the base top (y 10 -> the hinge line at y 15), leaf left end 10 / 70 from the base's left side, z flush
+        { component: 'Hinge<1>', position: [50, 15, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+        { component: 'Hinge<2>', position: [110, 15, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+        // the flexible arm's in-context turn about the hinge line: 30° from lying flat (the Angle mate)
+        { component: 'Hinge<2>', flexState: { 'Arm<1>': { position: [0, 0, 0], rotation: [c, -s, 0, s, c, 0, 0, 0, 1] } } }
+      ];
+    })(),
+    interference: [],
+    code: [
+      'a.name("Hinged Cover").units("mm");',
+      'var base = a.insert({ script: \'p.name("Base"); p.box(120, 60, 10);\' }, { fixed: true });',
+      '// the Hinge sub-assembly twice: faces inside it are referenced by path (the component inside the sub-assembly)',
+      'var h1 = a.insert({ example: "Hinge sub-assembly" }, { position: [20, 30, 20] });',
+      'var h2 = a.insert({ example: "Hinge sub-assembly" }, { position: [60, 30, 20], flexible: true });',
+      '[[h1, 10], [h2, 70]].forEach(function (h) {',
+      '  a.coincident({ component: h[0], path: ["Leaf<1>"], face: [-20, -5, 10] }, { component: base, face: [60, 10, 30] });   // leaf on the top',
+      '  a.coincident({ component: base, face: [0, 5, 30] }, { component: h[0], path: ["Leaf<1>"], face: [-40, -2.5, 10] }, { alignment: "aligned", offset: h[1], flip: true });',
+      '  a.coincident({ component: h[0], path: ["Leaf<1>"], face: [-20, -2.5, 0] }, { component: base, face: [60, 5, 0] }, { alignment: "aligned" });',
+      '});',
+      '// only the Flexible hinge can open: its arm turns to 30° from the base top (on the rigid one this mate would over-define it)',
+      'a.angle({ component: base, face: [60, 10, 30] }, { component: h2, path: ["Arm<1>"], face: [21, 5, 10] }, 30);'
+    ].join('\n')
   }
 ];
