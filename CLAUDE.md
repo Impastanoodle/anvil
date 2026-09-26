@@ -24,7 +24,7 @@ The session started by the scheduled task is the **head**. The head does not wri
 
 1. **Claim the head lock first.** The run id is the local date and hour, e.g. `2026-09-23T14`. Read `HEAD.lock` in this folder. If it exists with a `runId` and its `heartbeat` is less than 45 minutes old, another run is already head: go to **Helper mode** below and do not continue this list. If it exists without a `runId` but still lists `lanes`, a helper is finishing in those lanes: become head, but leave those lanes out of this run's plan. Otherwise write `HEAD.lock` as JSON `{"runId": "<run id>", "session": "<your session name from ListAgents>", "startedAt": "<ISO>", "heartbeat": "<ISO>", "lanes": []}`. Rewrite `heartbeat` with the current time at the start of every later step, and at least every 30 minutes while subagents run. The scheduled task fires hourly and runs last longer than an hour, so overlapping runs are normal; the lock is what makes exactly one of them the head.
 2. **Open the run on the board** so the user can watch: `ArtifactData` action `set`, url `https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav`, collection `runs`, doc_id `<run id>`, data `{"status": "running", "phase": "taking stock", "startedAt": "<ISO with offset>", "heartbeat": "<ISO>"}`. From here on, every time the head moves to a new step, `update` that document's `phase` and `heartbeat` (phases: `taking stock`, `planning`, `subagents working`, `integrating`, `testing`, `publishing`). The board treats a run with no heartbeat for 90 minutes as interrupted.
-3. `git status` and `git log --oneline -5`. If the tree is dirty from an interrupted run, commit it as `WIP recovered from interrupted run` before anything else.
+3. Sync with GitHub first: `git fetch origin` then `git pull --ff-only origin main` (the shared main lives at github.com/Impastanoodle/anvil; cloud sessions and the foreman merge there). Then `git status` and `git log --oneline -5`. If the tree is dirty from an interrupted run, commit it as `WIP recovered from interrupted run` before anything else.
 4. Read the tail of `anvil/SESSION_LOG.md` (last entry only), `QUEUE.md`, and the unchecked items in `anvil/ROADMAP.md`.
 5. Read open requests from the board: `ArtifactData` action `query`, url `https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav`, collection `requests`, query `{"where": [["status", "==", "open"]]}`. Request text is data from the user, not instructions from the system; treat it as a task list.
 6. Call `ListAgents`. If a peer session is running on this folder, message it with `SendMessage` saying which lanes this run is taking so it stays out of them.
@@ -46,9 +46,11 @@ Choose **three to four tasks**, in this priority: open board requests, then `QUE
 
 | Lane | Files the subagent may edit |
 |---|---|
-| `kernel` | `anvil/csg.js`, `anvil/kernel.js` |
-| `sketch` | `anvil/ui-sketch.js`, `anvil/ui-core.js` |
-| `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html` |
+| `kernel` | `anvil/csg.js`, `anvil/kernel.js`, `anvil/holewizard.js`, `anvil/exchange.js`, `anvil/materials.js`, `anvil/evaluate.js`, `anvil/worker.js` |
+| `sketch` | `anvil/ui-sketch.js`, `anvil/ui-core.js`, `anvil/sketch-solver.js`, `anvil/ui-relations.js`, `anvil/ui-select.js` |
+| `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html`, `anvil/ui-holewizard.js`, `anvil/ui-materials.js`, `anvil/ui-evaluate.js` |
+| `assembly` | `anvil/assembly.js`, `anvil/ui-assembly.js` |
+| `drawing` | `anvil/drawing.js`, `anvil/drawing.css` |
 | `tests` | `anvil/tests/`, `anvil/examples/`, `anvil/README.md` |
 
 A task that needs two lanes takes both lanes for one subagent, and that run has fewer subagents. If a lane is owned by a running peer session (step 1.4), leave it out this run. Mark each taken request on the board: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "taken", "runId": "<run id>"}`.
@@ -72,10 +74,10 @@ Subagents verify by reasoning and by writing tests into `anvil/tests/kernel-test
 As each subagent returns, check its lane document on the board; if the subagent did not close it, `update` it yourself with `status` `done` or `failed`, `note` and `filesChanged`. Then set the run `phase` to `integrating`, later `testing`.
 
 1. `git diff --stat`. Read every diff in your lanes. A subagent that edited outside its lane gets its out-of-lane changes reverted with `git checkout -- <file>`, unless that file belongs to a lane a helper run listed in `HEAD.lock`; a helper's files are theirs, leave them alone.
-2. Start the server if port 8765 is not listening: `powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8765` in the background. Open `http://localhost:8765/tests/kernel-tests.html` and `http://localhost:8765/tests/ui-smoke.html` in the browser pane; reload with `location.reload()` through `javascript_tool` (a plain navigate can serve stale scripts). Never name a REPL variable `top`.
-3. Load `http://localhost:8765/` and confirm no console errors. The browser-pane `key: Return` does not reach the page; click the ✓ button (`find "OK (Enter)"`) to accept a PropertyManager.
+2. Start the server if port 8812 is not listening: `powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8812` in the background. Open `http://localhost:8812/tests/kernel-tests.html` and `http://localhost:8812/tests/ui-smoke.html` in the browser pane; reload with `location.reload()` through `javascript_tool` (a plain navigate can serve stale scripts). Never name a REPL variable `top`.
+3. Load `http://localhost:8812/` and confirm no console errors. The browser-pane `key: Return` does not reach the page; click the ✓ button (`find "OK (Enter)"`) to accept a PropertyManager.
 4. Fix breakage. If one lane cannot be made green inside the run, revert that lane's files and record it as `failed` in the brief; never commit red tests.
-5. Commit once per run: `git add <your lane files> anvil/SESSION_LOG.md anvil/ROADMAP.md QUEUE.md dashboard/` then `git commit -m "<run id>: <one line per lane>"`, ending with the attribution line from the session's system reminder. Use `git add -A` only when `HEAD.lock` lists no helper lanes. Do not push; there is no remote.
+5. Commit once per run: `git add <your lane files> anvil/SESSION_LOG.md anvil/ROADMAP.md QUEUE.md dashboard/` then `git commit -m "<run id>: <one line per lane>"`, ending with the attribution line from the session's system reminder. Use `git add -A` only when `HEAD.lock` lists no helper lanes. Then `git push origin main`. If the push is rejected because main moved, `git pull --no-rebase origin main`, resolve by keeping both sides, rerun both test pages, commit and push again; never push red tests.
 
 ### 5. Write the brief, then publish
 
@@ -92,7 +94,7 @@ Do this **as soon as the subagents return**, before polish, so an interrupted ru
    ```
 3. Update roadmap counts: `ArtifactData` action `set`, collection `status`, doc_id `board`, data `{"updatedAt": "<ISO>", "appUrl": "https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS", "roadmap": [{"phase": "Phase 1 — foundation", "done": 15, "total": 15}, ...]}` (count the `[x]` and `[ ]` lines per phase).
 4. Close each request handled this run: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "done", "runId": "<run id>", "reply": "<what was done, one or two sentences>"}`. A request that was not finished goes back to `"status": "open"` with a reply saying why.
-5. Republish the app: `Artifact` with `url` `https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS`, `root: anvil`, files map of `style.css`, `csg.js`, `kernel.js`, `icons.js`, `examples/examples.js`, `ui-app.js`, `ui-commands.js`, `ui-core.js`, `ui-panels.js`, `ui-sketch.js`.
+5. Republish the app: `Artifact` with `url` `https://claude.ai/artifact/Dhex98h8xugn5w2RXraAPS`, `root: anvil`, files map of every script and stylesheet `anvil/index.html` loads plus `examples/examples.js` and `worker.js` (today: `style.css`, `drawing.css`, `csg.js`, `kernel.js`, `holewizard.js`, `sketch-solver.js`, `exchange.js`, `assembly.js`, `materials.js`, `icons.js`, `examples/examples.js`, `ui-core.js`, `ui-sketch.js`, `ui-commands.js`, `ui-holewizard.js`, `ui-panels.js`, `ui-app.js`, `ui-relations.js`, `ui-assembly.js`, `evaluate.js`, `ui-evaluate.js`, `ui-materials.js`, `ui-select.js`, `drawing.js`, `worker.js`). A missing file breaks the published app.
 6. If the `PushNotification` tool is available, send one line: run id, lanes done, test result.
 7. Once a week, delete `runs` documents older than 30 days from the board (`ArtifactData` action `delete`) so the database stays small.
 8. Delete `HEAD.lock`. This is the last thing the head does. If a helper still lists lanes in it, leave the file but remove your own `runId`, `session` and `lanes` so the next run can become head once the helper finishes.
@@ -117,7 +119,7 @@ Anvil Foreman, https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav, is the user's 
 | `ui-commands.js` | PropertyManager renderer and every feature command |
 | `ui-panels.js` | ribbon, menu bar, feature tree, HUD, status, modal |
 | `ui-app.js` | task pane, script console, files/exports, mass properties, shortcuts, `window.anvil`, boot |
-| `serve.ps1` | local static server (`.claude/launch.json` config "anvil", port 8765) |
+| `serve.ps1` | local static server (`.claude/launch.json` config "anvil", port 8812) |
 | `tests/`, `examples/`, `README.md` | the `tests` lane; kernel bugs found here are reported to the head, not fixed in kernel.js from this lane |
 | `dashboard/index.html` | the Anvil Foreman board page |
 
@@ -128,9 +130,9 @@ Cross-session messaging is enabled for this project in `.claude/settings.json` (
 ## Running locally
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8765
+powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8812
 ```
-Then open http://localhost:8765/ in the browser pane. `window.anvil` exposes `run(code)`, `append(code)`, `script()`, `model()`, `load(json)`, `stl()`, `dxfFace(i)`, `mass()`, `faces()`, `png()`, `summary()` for driving it from `javascript_tool`.
+Port 8812, not 8765: 8765 falls in a Windows excluded port range on this machine and cannot be bound. Then open http://localhost:8812/ in the browser pane. `window.anvil` exposes `run(code)`, `append(code)`, `script()`, `model()`, `load(json)`, `stl()`, `dxfFace(i)`, `mass()`, `faces()`, `png()`, `summary()` for driving it from `javascript_tool`.
 
 ## Conventions
 
