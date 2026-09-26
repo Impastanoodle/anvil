@@ -413,3 +413,42 @@ body { overflow: auto; }
 .eq-msg { color: var(--muted); font-size: 12px; }
 .eq-msg.err { color: var(--red); }
 .eq-help { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+
+/* ---- Edit Material dialog (ui-materials.js): class tree left, properties / appearance right */
+.mat-dialog { display: grid; grid-template-columns: 240px 1fr; gap: 12px; min-height: 320px; }
+.mat-tree { border: 1px solid var(--line); background: var(--panel-2); overflow: auto; max-height: 56vh; padding: 4px 0; user-select: none; }
+.mat-tree .mat-lib { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-weight: 600; }
+.mat-tree .mat-class { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 14px; cursor: pointer; }
+.mat-tree .mat-class .tw { width: 12px; color: var(--muted); }
+.mat-tree .mat-item { display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 34px; cursor: pointer; }
+.mat-tree .mat-class:hover, .mat-tree .mat-item:hover { background: var(--hover); }
+.mat-tree .mat-item.selected { background: var(--sel); }
+.mat-tree .mat-item.current { font-weight: 600; }
+.mat-dot { width: 10px; height: 10px; border: 1px solid var(--line); flex: none; }
+.mat-right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mat-tabs, .fp-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.mat-tab, .fp-tab { border: 1px solid transparent; border-bottom: none; background: none; padding: 5px 12px; cursor: pointer; color: var(--muted); }
+.mat-tab.active, .fp-tab.active { border-color: var(--line); background: var(--panel); color: var(--text); margin-bottom: -1px; }
+.mat-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.mat-kv span:nth-child(odd) { color: var(--muted); }
+#modal-body table.mat-props th { width: auto; }
+#modal-body table.mat-props td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.mat-appearance { display: flex; gap: 12px; align-items: center; }
+.mat-appearance .v, .mat-note, .mat-empty, .mat-msg, .fp-hint { color: var(--muted); font-size: 12px; }
+.mat-swatch { width: 72px; height: 72px; border: 1px solid var(--line); background-image: linear-gradient(135deg, rgba(255,255,255,0.45), rgba(255,255,255,0) 55%, rgba(0,0,0,0.18)); }
+.mat-msg:empty { display: none; }
+#tree .ti.material-row .nm { font-style: normal; }
+
+/* ---- File ▸ Properties (Summary / Custom / Configuration Specific) */
+.fp-dialog { display: flex; flex-direction: column; gap: 10px; }
+.fp-pane { display: flex; flex-direction: column; gap: 8px; }
+#modal-body table.fp-table th { width: auto; font-size: 12px; }
+#modal-body table.fp-table td { padding: 2px 4px; vertical-align: middle; }
+.fp-table input.fp-name { width: 130px; }
+.fp-table input.fp-value { width: 170px; font-family: var(--mono); font-size: 12px; }
+.fp-table .fp-n { color: var(--muted); width: 18px; }
+.fp-table .fp-eval { display: inline-block; min-width: 110px; color: var(--muted); }
+.fp-table .fp-eval.linked { color: var(--text); }
+.fp-table .fp-del { border: none; background: none; color: var(--muted); cursor: pointer; }
+.fp-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#modal-body table.fp-summary th { width: 34%; }

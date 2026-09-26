@@ -31,5 +31,7 @@
 
 .dw-props { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; min-width: 360px; }
 .dw-props label { color: var(--muted); }
+.dw-props .dw-tb-head { grid-column: 1 / -1; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line, #d8dde4); color: var(--muted); font-size: 12px; }
+.dw-props input[data-tb] { font-family: Consolas, "IBM Plex Mono", monospace; font-size: 12px; }
 /* Section View cutting line and Detail View circle previews */
 #dw-overlay .dw-cut { fill: none; stroke: var(--dw-hot); }
