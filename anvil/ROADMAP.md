@@ -58,6 +58,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Assembly follow-ups: Distance / Angle mates, offsets, Move / Rotate Component, Interference Detection (cloud-2026-09-25e: `distance` / `angle` mate types and Coincident `offset` with *Flip dimension* in the solver (signed plane gap targets; a signed angle about a canonical angle axis, the hinge axis when earlier mates leave one) and in the Mate PropertyManager (value boxes that start at the measured distance / angle); `a.distance` / `a.angle` script round trip; `Assembly.moveComponent / rotateComponent` + a viewport drag of floating components that re-solves the mates live and on drop, Move / Rotate Component PM with By Delta XYZ; `Assembly.interference` (pairwise `CSG.intersect` volumes) with an Interference Detection PM on the Evaluate tab highlighting the pairs and drawing the common volumes, `anvil.interference()`; fully defined components show no prefix; Distance and angle mates / Interference check examples)
 - [x] 2D drawing view: orthographic projections with hidden lines as SVG, dimensions, export PDF/DXF (cloud-2026-09-25d: `drawing.js`: File ▸ Make Drawing from Part, Drawing ribbon tab (Standard 3 View, Model View, Smart Dimension, Model Items, Sheet Properties, Save as SVG / DXF / PDF), drawing FeatureManager with sheet and view rows; Front / Top / Right third- or first-angle plus Isometric, exact hidden-line removal against the mesh with silhouettes of faceted curved faces, sheet with title block and automatic scale, overall and diameter model dimensions, DXF one layer per view, PDF 1.4)
 - [x] Drawing views: Projected, Section and Detail views; dimensions that follow the part (cloud-2026-09-25f: `drawing.js` — Projected View up / down / left / right of any view, aligned and sliding along the projection; Section View from a horizontal or vertical cutting line, the part cut exactly by CSG with one cap face per body, ANSI31 hatch, chain cutting line with arrows and letters, SECTION A-A; Detail View circle with its own scale (2x the parent), clipped lines and arcs, DETAIL B / SCALE 4:1; user Smart Dimensions reattach to the same edge or circle after a rebuild or are flagged dangling in olive; SVG / DXF (PHANTOM, ARC) / PDF of all of it)
+- [x] Drawings of assemblies (cloud-2026-09-25h: `drawing.js` — File ▸ Make Drawing from Assembly; Standard 3 View, Model, Projected, Section and Detail views of the solved components with hidden lines across all of them (edges kept per component, a hidden edge under another component's visible one dropped); Section View hatches every component at its own angle (45°, 135°, 30°, 120°, 60°, 150°, then 1.6× wider); Bill of Materials (ITEM NO., PART NUMBER, DESCRIPTION, QTY.; identical components — same source — on one row) anchored to a corner of the sheet or dragged, kept clear by Standard 3 View; Auto Balloon (one per item or per instance) numbered from the BOM at every render; BOM / BALLOONS layers in SVG / DXF / PDF; `anvil.drawing.autoBalloon / bom / deleteBalloons`)
 
 ## Phase 6 — polish
 - [x] Hover tooltips on ribbon buttons: `Label (Key) — description` from `UI.shortcutFor` and a per-button help map, plus `aria-label`
@@ -66,3 +67,28 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Equations: expressions in PropertyManager fields (`= t * 2`) (2026-09-25T15: `model.equations`, `=` strings in any numeric feature field, Tools ▸ Equations dialog, Equations folder, `=` in PM fields and the sketch Modify box, script round trip, `anvil.equations()`)
 - [x] Theme: dark UI option (View ▸ Theme ▸ Light / Dark, `UI.setTheme`, `anvil.theme`, persisted in `anvil.theme`; every stylesheet colour is a `:root` variable, the three.js edge/grid/HLR materials follow through `UI.setViewportTheme`)
 - [ ] Desktop shell (Tauri or Electron) wrapping the same static files: own window, native open/save dialogs, no server step. The browser build stays the primary target; the shell must not fork the code.
+
+## Phase 7 — gaps versus SolidWorks (queue for later sessions)
+Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in order of how often a SolidWorks user would miss them.
+- [ ] Sketch constraint solver: geometric relations (coincident, horizontal, parallel, tangent, equal…) and driving dimensions; today a dimension edit moves one entity and Display/Delete Relations is a placeholder
+- [ ] True curves in the kernel: exact circles, arcs and cylinders (B-rep or at least analytic faces) instead of 16–72-gons, so volumes, fillets and drawings stop showing facets
+- [ ] Fillets and chamfers on curved and tangent edge chains, variable-radius fillets, face fillets
+- [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve), Instant3D
+- [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves; construction geometry toggle
+- [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series, and hole callouts in drawings
+- [ ] STEP / IGES / Parasolid import and export (only STL, DXF, JSON and scripts today); 3MF / OBJ export
+- [ ] Assemblies: Parallel, Perpendicular, Tangent, Width, Gear and Limit mates; Distance between cylinders
+- [ ] Assemblies: sub-assemblies, and components that are live links to part files instead of embedded copies (edit part in context, update on save)
+- [ ] Assemblies: Linear / Circular Component Pattern, Mirror Components, SmartMates by dragging, Collision Detection while moving
+- [ ] Exploded View (steps, explode lines) and its use in drawings
+- [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
+- [ ] Drawings: centre marks and centrelines, hole callouts, ordinate and baseline dimensions, chamfer dimensions, dimension dragging and editing
+- [ ] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text, magnetic lines
+- [ ] Drawings: editable BOM (custom properties from the part — material, mass, vendor; add / hide columns; parts-only and indented BOMs), revision table, general tables
+- [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
+- [ ] Drawings: multiple sheets, editable sheet formats / title-block custom properties, drawing templates, a separate `.drawing` document that references the part file
+- [ ] Custom properties and materials: a material library (density, appearance) and File Properties on parts and assemblies that drawings and BOMs read
+- [ ] Surfaces (extruded / revolved / lofted surfaces, knit, thicken), Weldments, Mold Tools, Direct Editing (move face) — the greyed tabs
+- [ ] Evaluate: Check (geometry validation), Zebra Stripes and Sensors are placeholders; Section Properties, Draft Analysis, Clearance Verification and Interference Detection on selected components are missing
+- [ ] Configurations per configuration feature suppression and a design table grid; configurations in assemblies
+- [ ] Selection filters and box selection in the viewport (Ctrl+click only pairs two faces in Measure); Instant3D drag handles on features

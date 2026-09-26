@@ -1,4 +1,6 @@
-// drawing.js — 2D drawings of the active part (SolidWorks: File ▸ Make Drawing from Part).
+// drawing.js — 2D drawings of the active part or assembly (SolidWorks: File ▸ Make Drawing from Part / Assembly).
+// An assembly is drawn from its solved mesh (one body per component, so hidden lines run across components and
+// section views hatch each component at its own angle) and gets a Bill of Materials table and Auto Balloons.
 // Two halves in one file:
 //   * `Drawing` (no UI needed, loaded by tests/kernel-tests.html): orthographic and isometric projection of a mesh with
 //     exact hidden-line removal (every candidate edge is clipped against the front-facing triangles, not a screenshot),
@@ -119,7 +121,9 @@ var Drawing = (function () {
         cuts.push(s.t1);
         var ta = V.dot(s.a, ln.d);
         for (var i = 0; i + 1 < cuts.length; i++) {
-          var k0 = Math.round(cuts[i] / tolT), k1 = Math.round(cuts[i + 1] / tolT), pk = k0 + ':' + k1;
+          // pieces are kept per body: where two bodies (assembly components) share an edge position, each body's
+          // edge is judged sharp or smooth on its own faces (a pin in a hole must not turn its facet lines sharp)
+          var k0 = Math.round(cuts[i] / tolT), k1 = Math.round(cuts[i + 1] / tolT), pk = (mesh.faces[s.face].body || 0) + ':' + k0 + ':' + k1;
           var pc = pieces[pk];
           if (!pc) {
             pc = pieces[pk] = { a: V.add(s.a, V.scale(ln.d, cuts[i] - ta)), b: V.add(s.a, V.scale(ln.d, cuts[i + 1] - ta)), faces: [], normals: [] };
@@ -262,9 +266,10 @@ var Drawing = (function () {
       var L2 = Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
       if (L2 < tol2 * 10) return;                           // seen end-on
       var hidden = hiddenIntervals(ed.a, ed.b, a2, b2), t = 0;
+      var body = mesh.faces[ed.faces[0]].body || 0;   // the component (assembly) or solid body the edge belongs to
       function seg(t0, t1, list) {
         if ((t1 - t0) * L2 < tol2 * 10) return;
-        list.push([a2[0] + (b2[0] - a2[0]) * t0, a2[1] + (b2[1] - a2[1]) * t0, a2[0] + (b2[0] - a2[0]) * t1, a2[1] + (b2[1] - a2[1]) * t1]);
+        list.push([a2[0] + (b2[0] - a2[0]) * t0, a2[1] + (b2[1] - a2[1]) * t0, a2[0] + (b2[0] - a2[0]) * t1, a2[1] + (b2[1] - a2[1]) * t1, body]);
       }
       hidden.forEach(function (iv) { seg(t, iv[0], vis); seg(iv[0], iv[1], hid); t = iv[1]; });
       seg(t, 1, vis);
@@ -303,26 +308,36 @@ var Drawing = (function () {
       dx /= L; dy /= L;
       if (dx < -1e-9 || (Math.abs(dx) <= 1e-9 && dy < 0)) { dx = -dx; dy = -dy; }
       var c = dx * s[1] - dy * s[0];
-      var key = Math.round(dx * 1e6) + ',' + Math.round(dy * 1e6) + ',' + Math.round(c / q);
+      // lines are merged per body, so each drawn piece still knows which component it belongs to (balloons)
+      var key = Math.round(dx * 1e6) + ',' + Math.round(dy * 1e6) + ',' + Math.round(c / q) + ',' + (s[4] || 0);
       var g = groups[key];
-      if (!g) { g = groups[key] = { d: [dx, dy], p: [s[0], s[1]], vis: [], hid: [] }; order.push(key); }
+      if (!g) { g = groups[key] = { d: [dx, dy], p: [s[0], s[1]], vis: [], hid: [], body: s[4] || 0 }; order.push(key); }
       var t0 = (s[0] - g.p[0]) * dx + (s[1] - g.p[1]) * dy, t1 = (s[2] - g.p[0]) * dx + (s[3] - g.p[1]) * dy;
       g[cls].push([Math.min(t0, t1), Math.max(t0, t1)]);
     }
     vis.forEach(function (s) { add(s, 'vis'); });
     hid.forEach(function (s) { add(s, 'hid'); });
+    var byLine = {};
+    order.forEach(function (key) { var lk = key.slice(0, key.lastIndexOf(',')); (byLine[lk] || (byLine[lk] = [])).push(key); });
     var outV = [], outH = [];
     order.forEach(function (key) {
       var g = groups[key];
-      var mv = mergeIntervals(g.vis, gap), mh = mergeIntervals(g.hid, gap);
+      var mv = mergeIntervals(g.vis, gap), mh = mergeIntervals(g.hid, gap), mvAll = mv;
+      // a hidden edge under a visible edge of another component (a pin's side inside its hole) is not shown either
+      var lineKey = key.slice(0, key.lastIndexOf(','));
+      if (byLine[lineKey].length > 1) {
+        var all = [];
+        byLine[lineKey].forEach(function (k2) { var g2 = groups[k2], off = (g2.p[0] - g.p[0]) * g.d[0] + (g2.p[1] - g.p[1]) * g.d[1]; g2.vis.forEach(function (iv) { all.push([iv[0] + off, iv[1] + off]); }); });
+        mvAll = mergeIntervals(all, gap);
+      }
       function emit(iv, list) {
         if (iv[1] - iv[0] < gap * 10) return;
-        list.push([g.p[0] + g.d[0] * iv[0], g.p[1] + g.d[1] * iv[0], g.p[0] + g.d[0] * iv[1], g.p[1] + g.d[1] * iv[1]]);
+        list.push([g.p[0] + g.d[0] * iv[0], g.p[1] + g.d[1] * iv[0], g.p[0] + g.d[0] * iv[1], g.p[1] + g.d[1] * iv[1], g.body]);
       }
       mv.forEach(function (iv) { emit(iv, outV); });
       mh.forEach(function (iv) {
         var parts = [iv.slice()];
-        mv.forEach(function (w) {
+        mvAll.forEach(function (w) {
           var next = [];
           parts.forEach(function (p) {
             if (w[1] <= p[0] + gap || w[0] >= p[1] - gap) { next.push(p); return; }
@@ -367,6 +382,7 @@ var Drawing = (function () {
       var c = circleFit(pts, diag);
       if (!c) continue;
       chain.forEach(function (j) { used[j] = 1; });
+      c.body = segs[i][4] || 0;
       circles.push(c);
     }
     return { lines: segs.filter(function (s, j) { return !used[j]; }), circles: circles };
@@ -475,6 +491,14 @@ var Drawing = (function () {
     return out;
   }
 
+  // hatchStyle(body) -> { angle, spacing (× HATCH) }: every body of a multi-body part and every component of an assembly
+  // gets its own hatch, as in SolidWorks — 45°, 135°, 30°, 120°, 60°, 150°, then the same angles 1.6× wider apart, …
+  var HATCH_ANGLES = [45, 135, 30, 120, 60, 150];
+  function hatchStyle(body) {
+    var b = Math.max(0, body | 0);
+    return { angle: HATCH_ANGLES[b % HATCH_ANGLES.length], spacing: 1 + 0.6 * Math.floor(b / HATCH_ANGLES.length) };
+  }
+
   // ------------------------------------------------------------------ detail views: the parent clipped to a circle
   // the part of segment l inside the circle (C, R), or null
   function clipSeg(l, C, R) {
@@ -485,7 +509,7 @@ var Drawing = (function () {
     if (disc <= 0) return null;
     var sq = Math.sqrt(disc), t0 = Math.max(0, (-B - sq) / (2 * A)), t1 = Math.min(1, (-B + sq) / (2 * A));
     if (t1 - t0 < 1e-12) return null;
-    return [l[0] + dx * t0, l[1] + dy * t0, l[0] + dx * t1, l[1] + dy * t1];
+    return [l[0] + dx * t0, l[1] + dy * t0, l[0] + dx * t1, l[1] + dy * t1, l[4] || 0];
   }
   // a circle (c, r) against the clip circle (C, R): 'full', null, or the arc inside { a0, a1 } (degrees, CCW)
   function clipCircle(c, r, C, R) {
@@ -503,7 +527,7 @@ var Drawing = (function () {
       pr.lines[k].forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.lines[k].push(q); });
       pr.circles[k].forEach(function (c) {
         var q = clipCircle(c.c, c.r, C, R);
-        if (q === 'full') out.circles[k].push(c); else if (q) out.arcs[k].push({ c: c.c, r: c.r, a0: q.a0, a1: q.a1 });
+        if (q === 'full') out.circles[k].push(c); else if (q) out.arcs[k].push({ c: c.c, r: c.r, a0: q.a0, a1: q.a1, body: c.body || 0 });
       });
     });
     (pr.all || []).forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.all.push(q); });
@@ -584,11 +608,12 @@ var Drawing = (function () {
   // newDrawing(model, opts) -> a drawing document { name, sheet, views, date, autoDims, nextView } (no views yet)
   function newDrawing(model, opts) {
     opts = opts || {};
-    var n = (model.drawings || []).length + 1;
+    var n = (model.drawings || []).length + 1, asm = model.type === 'assembly';
     return {
+      bom: asm ? { show: opts.bom !== false, anchor: opts.bomAnchor || 'top-right' } : null, bomRows: asm ? bomRows(model).length : 0,
       name: opts.name || 'Draw' + n,
       sheet: { name: 'Sheet1', format: opts.format || (model.units === 'in' ? 'ANSI B' : 'A3'), scale: opts.scale || [1, 1], autoScale: !opts.scale, projection: opts.projection || 'third' },
-      units: model.units === 'in' ? 'in' : 'mm', views: [], date: opts.date || todayISO(), autoDims: opts.autoDims !== false, suppressed: [], nextView: 1, layout: 'auto'
+      units: model.units === 'in' ? 'in' : 'mm', views: [], date: opts.date || todayISO(), autoDims: asm ? opts.autoDims === true : opts.autoDims !== false, suppressed: [], nextView: 1, layout: 'auto'
     };
   }
   function addView(doc, orient, props) {
@@ -753,34 +778,50 @@ var Drawing = (function () {
     var F = extentsOf(mesh, 'Front'), T = extentsOf(mesh, 'Top'), R = extentsOf(mesh, 'Right');
     var Wm = F.w, Hm = F.h, Dm = T.h;
     var availW = A.x1 - A.x0, availH = A.y1 - A.y0;
+    // an assembly drawing's Bill of Materials is a keep-out box: the Front / Top / Right block must not cover it
+    var bomK = doc.bom && doc.bom.show !== false && doc.bomRows ? bomBox(doc, units, doc.bomRows) : null;
+    function hitsBom(b) { return bomK && b.x1 > bomK.x0 - g / 2 && b.x0 < bomK.x1 + g / 2 && b.y1 > bomK.y0 - g / 2 && b.y0 < bomK.y1 + g / 2; }
+    // place(sv, packed): view centres for scale sv, the block centred in the usable area (or packed into the corner
+    // away from the BOM); null when a view would cover the BOM
+    function place(sv, packed) {
+      var W = Wm * sv, H = Hm * sv, D = Dm * sv, blockW = W + g + D, blockH = H + g + D, P = {};
+      var left = A.x0 + Math.max(g, (availW - blockW) / 2), bottom = A.y0 + Math.max(g, (availH - blockH) / 2);
+      if (packed) {
+        left = bomK && /left/.test(bomK.anchor) ? A.x1 - g - blockW : A.x0 + g;
+        bottom = bomK && /bottom/.test(bomK.anchor) ? A.y1 - g - blockH : A.y0 + g;
+      }
+      if (doc.sheet.projection === 'first') {
+        // first angle: Top below Front, Right to the left of Front
+        P.rx = left + D / 2; P.fx = left + D + g + W / 2; P.tx = P.fx;
+        P.ty = bottom + D / 2; P.fy = bottom + D + g + H / 2; P.ry = P.fy;
+        P.isoBox = { x0: A.x0, x1: left + D + g / 2, y0: A.y0, y1: bottom + D + g / 2 };
+      } else {
+        P.fx = left + W / 2; P.tx = P.fx; P.rx = left + W + g + D / 2;
+        P.fy = bottom + H / 2; P.ry = P.fy; P.ty = bottom + H + g + D / 2;
+        P.isoBox = { x0: left + W + g / 2, x1: A.x1, y0: bottom + H + g / 2, y1: A.y1 };
+      }
+      var boxes = [[P.fx, P.fy, W, H], [P.tx, P.ty, W, D], [P.rx, P.ry, D, H]].map(function (q) { return { x0: q[0] - q[2] / 2, x1: q[0] + q[2] / 2, y0: q[1] - q[3] / 2, y1: q[1] + q[3] / 2 }; });
+      if (boxes.some(hitsBom)) return null;
+      return P;
+    }
+    function fits(sv) { return (Wm + Dm) * sv + 3 * g <= availW && (Hm + Dm) * sv + 3 * g <= availH && (place(sv) || place(sv, true)); }
     if (doc.sheet.autoScale || !doc.sheet.scale) {
       var s = SCALES[SCALES.length - 1];
-      for (var i = 0; i < SCALES.length; i++) {
-        var sv = scaleValue(SCALES[i]);
-        if ((Wm + Dm) * sv + 3 * g <= availW && (Hm + Dm) * sv + 3 * g <= availH) { s = SCALES[i]; break; }
-      }
+      for (var i = 0; i < SCALES.length; i++) if (fits(scaleValue(SCALES[i]))) { s = SCALES[i]; break; }
       doc.sheet.scale = s;
     }
     var sv2 = scaleValue(doc.sheet.scale);
-    var W = Wm * sv2, H = Hm * sv2, D = Dm * sv2;
-    // centre the Front + Top + Right block in the usable area
-    var blockW = W + g + D, blockH = H + g + D;
-    var left = A.x0 + Math.max(g, (availW - blockW) / 2), bottom = A.y0 + Math.max(g, (availH - blockH) / 2);
-    var fx, fy, tx, ty, rx, ry, isoBox;
-    if (doc.sheet.projection === 'first') {
-      // first angle: Top below Front, Right to the left of Front
-      rx = left + D / 2; fx = left + D + g + W / 2; tx = fx;
-      ty = bottom + D / 2; fy = bottom + D + g + H / 2; ry = fy;
-      isoBox = { x0: A.x0, x1: left + D + g / 2, y0: A.y0, y1: bottom + D + g / 2 };
-    } else {
-      fx = left + W / 2; tx = fx; rx = left + W + g + D / 2;
-      fy = bottom + H / 2; ry = fy; ty = bottom + H + g + D / 2;
-      isoBox = { x0: left + W + g / 2, x1: A.x1, y0: bottom + H + g / 2, y1: A.y1 };
-    }
+    var PL = place(sv2) || place(sv2, true) || (function () { var q = bomK; bomK = null; var r = place(sv2); bomK = q; return r; })();
+    var fx = PL.fx, fy = PL.fy, tx = PL.tx, ty = PL.ty, rx = PL.rx, ry = PL.ry, isoBox = PL.isoBox;
     if (byRole.front) { byRole.front.x = fx; byRole.front.y = fy; }
     if (byRole.top) { byRole.top.x = tx; byRole.top.y = ty; }
     if (byRole.right) { byRole.right.x = rx; byRole.right.y = ry; }
     if (byRole.iso) {
+      // a Bill of Materials in the isometric's corner takes its room (the iso then drops in scale if it must)
+      if (bomK) {
+        var ov = bomK.x1 > isoBox.x0 && bomK.x0 < isoBox.x1 && bomK.y1 > isoBox.y0 && bomK.y0 < isoBox.y1;
+        if (ov) { if (/top/.test(bomK.anchor)) isoBox.y1 = Math.min(isoBox.y1, bomK.y0 - g / 2); else isoBox.y0 = Math.max(isoBox.y0, bomK.y1 + g / 2); }
+      }
       var I = extentsOf(mesh, byRole.iso.orient), bw = isoBox.x1 - isoBox.x0 - g / 2, bh = isoBox.y1 - isoBox.y0 - g / 2;
       byRole.iso.scale = null;
       if (I.w * sv2 > bw || I.h * sv2 > bh) {
@@ -888,6 +929,155 @@ var Drawing = (function () {
     return fmtDim(d.value, units);
   }
 
+
+  // ------------------------------------------------------------------ assemblies: Bill of Materials and balloons
+  // A drawing of an assembly draws the solved components (the assembly mesh, one body per component) exactly like a
+  // multi-body part. On top of that it carries a Bill of Materials (identical components — same source — on one row,
+  // ITEM NO. in insertion order) and balloons that name the BOM item of a component in a view.
+  var partInfoCache = {};
+  // partInfo(source) -> { name, description }: the part's name and its description (the part model's own
+  // `description`, else the Design Library entry it came from; parts from scripts get their size in bomRows)
+  function partInfo(source) {
+    var key = JSON.stringify(source);
+    if (partInfoCache[key]) return partInfoCache[key];
+    var info = { name: 'Part', description: '' };
+    try {
+      if (typeof Assembly !== 'undefined') {
+        var m = Assembly.partModel(source);
+        info.name = m.name || 'Part';
+        var ex = null;
+        if (source && source.example != null && typeof AnvilExamples !== 'undefined') AnvilExamples.forEach(function (e) { if (!ex && e.name === source.example) ex = e; });
+        info.description = m.description || (ex ? ex.name : '');
+      }
+    } catch (err) { info.description = err.message; }
+    partInfoCache[key] = info;
+    return info;
+  }
+  // bomRows(model, mesh?) -> [{ item, key, partNumber, description, qty, components: [id…], indices: [body index…] }]
+  // A part without a description is described by its size, "30 x 5 x 20" (its own x, y, z extents), when the
+  // assembly mesh is given (the first instance's world vertices taken back into the part's frame).
+  function bomRows(model, mesh) {
+    if (!model || model.type !== 'assembly' || !model.components) return [];
+    var rows = [], byKey = {};
+    model.components.forEach(function (c, i) {
+      var key = JSON.stringify(c.source), r = byKey[key];
+      if (!r) {
+        var info = partInfo(c.source), desc = info.description;
+        if (!desc && mesh) desc = envelopeText(mesh, i, c.transform, model.units);
+        r = byKey[key] = { item: rows.length + 1, key: key, partNumber: info.name, description: desc, qty: 0, components: [], indices: [] };
+        rows.push(r);
+      }
+      r.qty++; r.components.push(c.id); r.indices.push(i);
+    });
+    return rows;
+  }
+  function envelopeText(mesh, body, T, units) {
+    var P = mesh.positions64 || mesh.positions, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    var R = T && T.rotation || [1, 0, 0, 0, 1, 0, 0, 0, 1], o = T && T.position || [0, 0, 0];
+    mesh.faces.forEach(function (f) {
+      if ((f.body || 0) !== body) return;
+      for (var i = f.start * 9; i < (f.start + f.count) * 9; i += 3) {
+        var d = [P[i] - o[0], P[i + 1] - o[1], P[i + 2] - o[2]];
+        for (var k = 0; k < 3; k++) { var x = R[k] * d[0] + R[3 + k] * d[1] + R[6 + k] * d[2]; if (x < lo[k]) lo[k] = x; if (x > hi[k]) hi[k] = x; }
+      }
+    });
+    if (!(lo[0] <= hi[0])) return '';
+    return [0, 1, 2].map(function (k) { return fmtDim(hi[k] - lo[k], units); }).join(' x ');
+  }
+  // BOM table geometry in paper mm (× paperK): column widths, row height, text height
+  var BOM_COLS = [['ITEM NO.', 18, 'middle'], ['PART NUMBER', 45, 'start'], ['DESCRIPTION', 80, 'start'], ['QTY.', 14, 'middle']], BOM_ROW = 7, BOM_TEXT = 3;
+  var BOM_ANCHORS = ['top-right', 'top-left', 'bottom-right', 'bottom-left'];
+  // bomBox(doc, units, nRows) -> { x0, y0, x1, y1, rowH, cols: [x…] } anchored to a corner of the border (a bottom
+  // anchor sits above the title block on the right), or at doc.bom.x / y (its top-left corner) when it was dragged
+  function bomBox(doc, units, nRows) {
+    var k = paperK(units), S = sheetSize(doc, units), b = BORDER * k, bm = doc.bom || {};
+    var W = BOM_COLS.reduce(function (a, c) { return a + c[1]; }, 0) * k, H = (nRows + 1) * BOM_ROW * k;
+    var anchor = bm.anchor || 'top-right', x0, y1;
+    if (bm.x != null && bm.y != null) { x0 = bm.x; y1 = bm.y; }
+    else {
+      x0 = /left/.test(anchor) ? b : S[0] - b - W;
+      y1 = /top/.test(anchor) ? S[1] - b : b + (/right/.test(anchor) ? TB_H * k : 0) + H;
+    }
+    var cols = [x0]; BOM_COLS.forEach(function (c) { cols.push(cols[cols.length - 1] + c[1] * k); });
+    return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: BOM_ROW * k, cols: cols, anchor: anchor };
+  }
+  // autoBalloon(doc, model, viewId, { ignoreMultiple }) -> the view's balloons [{ key (the BOM row: the component
+  // source), component (id), instance? }]. SolidWorks Auto Balloon: one balloon per BOM item that shows in the view
+  // ("Ignore multiple instances", the default), or one per component instance with ignoreMultiple false. The item
+  // number is looked up in the BOM at every render, so balloons renumber with it; a balloon whose item has no visible
+  // or hidden edge in the view is not drawn. Replaces the view's earlier balloons.
+  function autoBalloon(doc, model, viewId, opts) {
+    opts = opts || {};
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    var rows = bomRows(model);
+    if (!rows.length) throw new Error('Auto Balloon needs a drawing of an assembly');
+    var list = [];
+    rows.forEach(function (r) {
+      if (opts.ignoreMultiple === false) r.components.forEach(function (id) { list.push({ key: r.key, component: id, instance: true }); });
+      else list.push({ key: r.key, component: r.components[0] });
+    });
+    v.balloons = list;
+    return v.balloons;
+  }
+  function deleteBalloons(doc, viewId) { var v = findView(doc, viewId); if (v) v.balloons = []; }
+  // balloonSpots(w, rows, k) -> [{ item, key, component, attach (paper), c (paper), r, ok }]: attaches each balloon to
+  // the component's visible geometry farthest from the view centre (so the leader runs outward) and places the
+  // balloons on a rectangle 14 mm outside the view box, on the side the attach point faces, spread apart
+  var BALLOON_R = 5, BALLOON_OUT = 14;
+  function balloonSpots(w, rows, k) {
+    var v = w.view, box = w.box, list = v.balloons || [], out = [];
+    if (!list.length) return out;
+    var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2, r = BALLOON_R * k, pr = w.proj;
+    var byKey = {}; rows.forEach(function (rw) { byKey[rw.key] = rw; });
+    list.forEach(function (b) {
+      var rw = byKey[b.key];
+      if (!rw) return;
+      var idx = b.instance ? rw.indices.filter(function (i, j) { return rw.components[j] === b.component; }) : rw.indices, best = null, bd = -1;
+      if (!idx.length) return;
+      function consider(p, bodyIndex, hidden) {
+        if (idx.indexOf(bodyIndex) < 0) return;
+        var q = w.toSheet(p), d = Math.hypot(q[0] - cx, q[1] - cy) - (hidden ? 1e6 : 0);
+        if (d > bd) { bd = d; best = q; }
+      }
+      pr.lines.visible.forEach(function (l) { consider([(l[0] + l[2]) / 2, (l[1] + l[3]) / 2], l[4] || 0, false); });
+      pr.circles.visible.forEach(function (c) { consider([c.c[0] + c.r, c.c[1]], c.body || 0, false); });
+      (pr.arcs ? pr.arcs.visible : []).forEach(function (a) { var e = arcEnds(a); consider([(e[0][0] + e[1][0]) / 2, (e[0][1] + e[1][1]) / 2], a.body || 0, false); });
+      if (!best) { pr.lines.hidden.forEach(function (l) { consider([(l[0] + l[2]) / 2, (l[1] + l[3]) / 2], l[4] || 0, true); }); pr.circles.hidden.forEach(function (c) { consider([c.c[0] + c.r, c.c[1]], c.body || 0, true); }); }
+      if (!best) return;
+      out.push({ item: rw.item, key: rw.key, component: b.component, attach: best, r: r, ok: true });
+    });
+    // place: the ray from the view centre through the attach point meets the rectangle `out` mm outside the box
+    var o = BALLOON_OUT * k, R = { x0: box.x0 - o, x1: box.x1 + o, y0: box.y0 - o, y1: box.y1 + o }, W = R.x1 - R.x0, H = R.y1 - R.y0, per = 2 * (W + H);
+    function tOf(p) {   // perimeter parameter, counter-clockwise from the bottom-left corner
+      if (Math.abs(p[1] - R.y0) < 1e-9) return p[0] - R.x0;
+      if (Math.abs(p[0] - R.x1) < 1e-9) return W + p[1] - R.y0;
+      if (Math.abs(p[1] - R.y1) < 1e-9) return W + H + (R.x1 - p[0]);
+      return 2 * W + H + (R.y1 - p[1]);
+    }
+    function pOf(t) {
+      t = ((t % per) + per) % per;
+      if (t < W) return [R.x0 + t, R.y0]; t -= W;
+      if (t < H) return [R.x1, R.y0 + t]; t -= H;
+      if (t < W) return [R.x1 - t, R.y1]; t -= W;
+      return [R.x0, R.y1 - t];
+    }
+    out.forEach(function (b) {
+      var dx = b.attach[0] - cx, dy = b.attach[1] - cy, L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+      var tx = Math.abs(dx) < 1e-12 ? Infinity : (dx > 0 ? R.x1 - cx : R.x0 - cx) / dx, ty = Math.abs(dy) < 1e-12 ? Infinity : (dy > 0 ? R.y1 - cy : R.y0 - cy) / dy;
+      var t = Math.min(tx, ty), p = [cx + dx * t, cy + dy * t];
+      p[0] = Math.max(R.x0, Math.min(R.x1, p[0])); p[1] = Math.max(R.y0, Math.min(R.y1, p[1]));
+      b.t = tOf(p);
+    });
+    // spread balloons closer than 2.4 r apart along the perimeter (a few relaxation passes)
+    var gap = 2.4 * r, sorted = out.slice().sort(function (a, b) { return a.t - b.t; });
+    for (var pass = 0; pass < 8 && sorted.length > 1; pass++) {
+      for (var i = 1; i < sorted.length; i++) if (sorted[i].t - sorted[i - 1].t < gap) { var m = (sorted[i].t + sorted[i - 1].t) / 2; sorted[i - 1].t = m - gap / 2; sorted[i].t = m + gap / 2; }
+      if (sorted[sorted.length - 1].t - sorted[0].t > per - gap) { var m2 = (sorted[sorted.length - 1].t - per + sorted[0].t) / 2; sorted[0].t = m2 + gap / 2; sorted[sorted.length - 1].t = per + m2 - gap / 2; }
+    }
+    out.forEach(function (b) { b.c = pOf(b.t); });
+    return out;
+  }
   // ------------------------------------------------------------------ sheet primitives
   // compute(doc, mesh, model) -> { size: [W, H], units, prims: [...], views: [{ view, proj, box }], dims }
   // prims: { k: 'line', a, b, layer, style } | { k: 'circle', c, r, layer, style } | { k: 'text', p, h, text, anchor,
@@ -945,13 +1135,14 @@ var Drawing = (function () {
       var layer = layerName(v, layers);
       var clip = ct.clip ? { c: toSheet(ct.clip.c), r: ct.clip.r * s } : null;
       // cut faces first, so the outlines are drawn over the hatching
-      var hatch = 0;
+      var hatch = 0, hatches = [];
       (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); });
-        hatchLines(loops, hs, cap.body % 2 ? 135 : 45).forEach(function (h) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch;
+        hatchLines(loops, hs * hst.spacing, hst.angle).forEach(function (h) {
           var q = clip ? clipSeg(h, clip.c, clip.r) : h;
-          if (q) { line([q[0], q[1]], [q[2], q[3]], layer, 'hatch'); hatch++; }
+          if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body }); hatch++; }
         });
+        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0 });
       });
       pr.lines.visible.forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, 'visible'); });
       pr.circles.visible.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'visible' }); });
@@ -969,7 +1160,7 @@ var Drawing = (function () {
         text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale || scale), 'middle', layer);
       } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  SCALE ' + scaleText(v.scale), 'middle', layer);
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
-        section: ct.section || null, hatch: hatch, clip: clip });
+        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct });
     });
     // cutting lines and detail circles on the parents
     views.forEach(function (w) {
@@ -1004,6 +1195,36 @@ var Drawing = (function () {
         text([dc[0] + (r + 2 * k) * q, dc[1] + (r + 2 * k) * q], 5 * k, v.label, 'start', L);
       }
     });
+    // Bill of Materials (assemblies): a table anchored to the sheet; balloons on the views that asked for them
+    var rows = bomRows(model, mesh), bom = null, balloons = [];
+    if (doc.bom) doc.bomRows = rows.length;
+    if (rows.length && doc.bom && doc.bom.show !== false) {
+      var bb = bomBox(doc, units, rows.length), th = BOM_TEXT * k, BL = 'BOM';
+      rect([bb.x0, bb.y0], [bb.x1, bb.y1], BL, 'thick');
+      for (var ri = 1; ri <= rows.length; ri++) line([bb.x0, bb.y1 - ri * bb.rowH], [bb.x1, bb.y1 - ri * bb.rowH], BL, 'thin');
+      for (var ci = 1; ci < bb.cols.length - 1; ci++) line([bb.cols[ci], bb.y0], [bb.cols[ci], bb.y1], BL, 'thin');
+      var cellText = function (rowIndex, col, t) {
+        var x = BOM_COLS[col][2] === 'middle' ? (bb.cols[col] + bb.cols[col + 1]) / 2 : bb.cols[col] + 1.5 * k, y = bb.y1 - (rowIndex + 1) * bb.rowH + (bb.rowH - th) / 2;
+        var maxCh = Math.floor((bb.cols[col + 1] - bb.cols[col] - 3 * k) / (th * 0.6));
+        text([x, y], th, String(t).length > maxCh ? String(t).slice(0, Math.max(1, maxCh - 3)) + '...' : String(t), BOM_COLS[col][2], BL);
+      };
+      BOM_COLS.forEach(function (c, i) { cellText(0, i, c[0]); });
+      rows.forEach(function (r, i) { cellText(i + 1, 0, r.item); cellText(i + 1, 1, r.partNumber); cellText(i + 1, 2, r.description); cellText(i + 1, 3, r.qty); });
+      bom = { rows: rows, box: bb, layer: BL };
+    }
+    views.forEach(function (w) {
+      if (!(w.view.balloons || []).length || !rows.length) return;
+      balloonSpots(w, rows, k).forEach(function (b) {
+        var L = 'BALLOONS', d = [b.attach[0] - b.c[0], b.attach[1] - b.c[1]], Ln = Math.hypot(d[0], d[1]) || 1, u = [d[0] / Ln, d[1] / Ln];
+        var start = [b.c[0] + u[0] * b.r, b.c[1] + u[1] * b.r];
+        line(start, b.attach, L, 'thin');
+        prims.push({ k: 'fill', pts: [b.attach, [b.attach[0] - u[0] * 3 * k + u[1] * 0.9 * k, b.attach[1] - u[1] * 3 * k - u[0] * 0.9 * k], [b.attach[0] - u[0] * 3 * k - u[1] * 0.9 * k, b.attach[1] - u[1] * 3 * k + u[0] * 0.9 * k]], layer: L });
+        prims.push({ k: 'circle', c: b.c, r: b.r, layer: L, style: 'thin' });
+        text([b.c[0], b.c[1] - 1.25 * k], 3.5 * k, String(b.item), 'middle', L);
+        b.view = w.view.id;
+        balloons.push(b);
+      });
+    });
     // dimensions
     var suppressed = doc.suppressed || [];
     var dims = doc.autoDims ? autoDims(doc, projections, units).filter(function (d) { d.key = autoDimKey(d); return suppressed.indexOf(d.key) < 0; }) : [];
@@ -1030,7 +1251,7 @@ var Drawing = (function () {
       placed.push(d); shown.push(d);
     });
     dims = shown;
-    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale };
+    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons };
   }
   function layerName(v, used) {
     var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : String(v.orient).toUpperCase(), name = base, n = 2;
@@ -1158,7 +1379,7 @@ var Drawing = (function () {
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3 }, next = 1;
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3 }, next = 1;
     pr(0, 'SECTION'); pr(2, 'HEADER');
     pr(9, '$ACADVER'); pr(1, 'AC1009');
     pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);
@@ -1192,7 +1413,7 @@ var Drawing = (function () {
         var q = [p.pts[0], p.pts[1], p.pts[2], p.pts[2]];
         q.forEach(function (pt, i) { pr(10 + i, num(pt[0])); pr(20 + i, num(pt[1])); pr(30 + i, 0); });
       } else if (p.k === 'text') {
-        pr(0, 'TEXT'); pr(8, p.layer); lt(); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, String(p.text).replace(/\u00d8/g, '%%c'));
+        pr(0, 'TEXT'); pr(8, p.layer); lt(); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, String(p.text).replace(/\u00d8/g, '%%c').replace(/\u00d7/g, 'x').replace(/[^\x20-\x7e]/g, '?'));
         if (p.rot) pr(50, num(p.rot));
         if (p.anchor !== 'start') { pr(72, p.anchor === 'middle' ? 1 : 2); pr(11, num(p.p[0])); pr(21, num(p.p[1])); pr(31, 0); }
       }
@@ -1233,6 +1454,7 @@ var Drawing = (function () {
       for (var i = 0; i < s.length; i++) {
         var ch = s.charCodeAt(i);
         if (ch === 0xd8) out += '\\330';
+        else if (ch === 0xd7) out += '\\327';
         else if (ch === 40 || ch === 41 || ch === 92) out += '\\' + s[i];
         else if (ch >= 32 && ch < 127) out += s[i];
         else out += '?';
@@ -1286,7 +1508,9 @@ var Drawing = (function () {
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
-    sectionOf: sectionOf, hatchLines: hatchLines, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView
+    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
+    bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
+    BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS
   };
 })();
 
@@ -1313,6 +1537,8 @@ var Drawing = (function () {
     dxfExport: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><text x="8" y="12" font-size="4.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">DXF</text>',
     sectionView: '<path d="M2 3 h12 v10 H2 z" fill="#bfcfe0" stroke="currentColor" stroke-width="1"/><path d="M3 12 l3 -3 M3 9 l3 -3 M3 6 l2 -2 M5 12 l1 -1" stroke="currentColor" stroke-width="0.6"/><path d="M8 1 v14" stroke="#e0553c" stroke-width="1.3" stroke-dasharray="3 1 1 1"/><path d="M8 1.5 h3 M8 14.5 h3 M10 0.3 l1.4 1.2 -1.4 1.2 M10 13.3 l1.4 1.2 -1.4 1.2" fill="none" stroke="#e0553c" stroke-width="1"/>',
     detailView: '<path d="M1.5 9 h7 v5 h-7 z" fill="#bfcfe0" stroke="currentColor" stroke-width="0.9"/><circle cx="7" cy="9" r="2.4" fill="none" stroke="#e0553c" stroke-width="1"/><circle cx="11.5" cy="5" r="3.8" fill="#fff" stroke="#2f7fd6" stroke-width="1"/><path d="M8 5 h3.5 v4" fill="none" stroke="currentColor" stroke-width="1"/>',
+    autoBalloon: '<path d="M2 13 h6 v-5 h-6 z" fill="#bfcfe0" stroke="currentColor" stroke-width="0.9"/><path d="M7 9.5 L10.2 6.3" stroke="currentColor" stroke-width="0.9"/><circle cx="12" cy="4.5" r="3.2" fill="#fff" stroke="#2f7fd6" stroke-width="1.1"/><text x="12" y="6.2" font-size="4.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">1</text>',
+    bom: '<path d="M1.5 3 h13 v10 h-13 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M1.5 5.5 h13" stroke="currentColor" stroke-width="1.1"/><path d="M1.5 8 h13 M1.5 10.5 h13 M4.5 3 v10 M12 3 v10" stroke="currentColor" stroke-width="0.6"/><path d="M5.8 6.8 h4.6 M5.8 9.3 h3.6 M5.8 11.8 h4.2" stroke="#2f7fd6" stroke-width="0.8"/>',
     closeDoc: '<path d="M2 3 h12 v10 H2 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 5.5 l5 5 M10.5 5.5 l-5 5" stroke="#e0553c" stroke-width="1.4"/>'
   };
   var baseIcons = Icons;
@@ -1329,8 +1555,11 @@ var Drawing = (function () {
     active: false, index: 0, sheet: null, sel: null, hover: null, tool: null, pending: null,
     vb: null, drag: null, root: null, host: null, tree: null, renderQueued: false
   };
-  // drawings belong to part documents; an assembly model never has one open
-  function doc() { var l = App.model && App.model.type !== 'assembly' && App.model.drawings; return l && l[D.index] || null; }
+  // drawings belong to the open part or assembly document (model.drawings)
+  function doc() { var l = App.model && App.model.drawings; return l && l[D.index] || null; }
+  // an assembly drawing's BOM row count drives where Standard 3 View leaves room for the table
+  function syncBom(dc) { dc = dc || doc(); if (dc && dc.bom) dc.bomRows = Drawing.bomRows(App.model).length; return dc; }
+  function relayout(dc) { syncBom(dc); Drawing.layout(dc, mesh(), units()); }
   function units() { return App.model.units === 'in' ? 'in' : 'mm'; }
   function mesh() { return App.mesh || { positions: new Float32Array(0), faces: [], triCount: 0 }; }
   function paperK() { return units() === 'in' ? 1 / 25.4 : 1; }
@@ -1364,18 +1593,18 @@ var Drawing = (function () {
     tabs.innerHTML = '';
     tabs.appendChild(el('button', { class: 'dw-tab active', text: dc ? dc.sheet.name : 'Sheet1', title: 'Sheet (right-click for Sheet Properties)', oncontextmenu: function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, sheetMenu()); } }));
     tabs.appendChild(el('span', { class: 'dw-sp' }));
-    tabs.appendChild(el('button', { class: 'dw-tab', html: Icons('part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the part document (Window menu)', onclick: function () { closeDrawing(); } }));
+    tabs.appendChild(el('button', { class: 'dw-tab', html: Icons(isAsm() ? 'assembly' : 'part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the ' + (isAsm() ? 'assembly' : 'part') + ' document (Window menu)', onclick: function () { closeDrawing(); } }));
   }
 
   // ------------------------------------------------------------------ open / close
-  // makeDrawing(opts): File ▸ Make Drawing from Part. Reuses the part's first drawing or creates one with Standard 3
-  // View + Isometric (one undo step), then shows the drawing document.
+  // makeDrawing(opts): File ▸ Make Drawing from Part / Assembly. Reuses the document's first drawing or creates one
+  // with Standard 3 View + Isometric (and, for an assembly, a Bill of Materials in the top-right corner of the sheet;
+  // opts.bom === false leaves it out) as one undo step, then shows the drawing document.
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
-  var ASM_REFUSAL = 'Make Drawing from Part works on parts only; drawings of assemblies are not supported yet. Open a part (File \u25b8 New \u25b8 Part or the Design Library) to make its drawing.';
+  function docKind() { return isAsm() ? 'assembly' : 'part'; }
   function makeDrawing(opts) {
     opts = opts || {};
-    if (isAsm()) { UI.toast('Drawings of assemblies are not supported yet.'); UI.setStatus(ASM_REFUSAL); return null; }
-    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return null; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return null; }
     if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch();
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
     var list = App.model.drawings || [];
@@ -1383,6 +1612,7 @@ var Drawing = (function () {
       UI.pushUndo();
       App.model.drawings = list = list.concat([]);
       var dc = Drawing.newDrawing(App.model, opts);
+      syncBom(dc);
       Drawing.standard3View(dc, App.mesh, units(), opts);
       list.push(dc);
       UI.autosave();
@@ -1402,7 +1632,7 @@ var Drawing = (function () {
     UI.renderMenuBar();
     render();
     fitSheet();
-    UI.setStatus('Drawing ' + doc().name + ': drag a view to move it, Smart Dimension (D) to dimension an edge or circle, wheel to zoom.');
+    UI.setStatus('Drawing ' + doc().name + (isAsm() ? ' of assembly ' + App.model.name + ': Auto Balloon numbers the components after the Bill of Materials' : '') + ': drag a view to move it, Smart Dimension (D) to dimension an edge or circle, wheel to zoom.');
   }
   function closeDrawing() {
     if (!D.active) return;
@@ -1415,7 +1645,7 @@ var Drawing = (function () {
     UI.refreshRibbon();
     UI.renderMenuBar();
     UI.refreshStatus();
-    UI.setStatus('Part ' + App.model.name);
+    UI.setStatus((isAsm() ? 'Assembly ' : 'Part ') + App.model.name);
   }
 
   // ------------------------------------------------------------------ render
@@ -1423,6 +1653,7 @@ var Drawing = (function () {
     if (!D.active) return;
     var dc = doc();
     if (!dc) { closeDrawing(); return; }
+    syncBom(dc);
     if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
     D.sheet = Drawing.compute(dc, mesh(), App.model);
     var svg = Drawing.toSVG(D.sheet);
@@ -1488,6 +1719,10 @@ var Drawing = (function () {
       var sel = D.sel && D.sel.kind === 'dim' && dimMatches(D.sel, d), hov = D.hover && D.hover.kind === 'dim' && dimMatches(D.hover, d);
       if (!sel && !hov || !d.box) return;
       svgNode('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: d.box.x0 - pad / 2, y: H - d.box.y1 - pad / 2, width: d.box.x1 - d.box.x0 + pad, height: d.box.y1 - d.box.y0 + pad, 'stroke-width': sw }, g);
+    });
+    if (D.sel && D.sel.kind === 'bom' && D.sheet.bom) { var bb = D.sheet.bom.box; svgNode('rect', { class: 'dw-vbox sel', x: bb.x0 - pad, y: H - bb.y1 - pad, width: bb.x1 - bb.x0 + 2 * pad, height: bb.y1 - bb.y0 + 2 * pad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g); }
+    (D.sheet.balloons || []).forEach(function (b) {
+      if (D.sel && D.sel.kind === 'balloon' && D.sel.view === b.view && D.sel.key === b.key && D.sel.component === b.component) svgNode('circle', { class: 'dw-hot', cx: b.c[0], cy: H - b.c[1], r: b.r + pad / 2, 'stroke-width': pxToPaper(2) }, g);
     });
     if (D.hover && D.hover.kind === 'entity') {
       var h = D.hover;
@@ -1560,6 +1795,16 @@ var Drawing = (function () {
       if (ent) addDimension(ent); else UI.setStatus('Smart Dimension: click a visible edge or circle of an orthographic view.');
       return;
     }
+    var bl = balloonAt(p);
+    if (bl) { D.sel = { kind: 'balloon', view: bl.view, key: bl.key, component: bl.component }; drawOverlay(); renderTree(); UI.setStatus('Balloon ' + bl.item + ' (Bill of Materials item ' + bl.item + ') — Delete removes it.'); return; }
+    var bt = bomAt(p);
+    if (bt) {
+      D.sel = { kind: 'bom' };
+      D.drag = { kind: 'bom', start: p, x0: bt.box.x0, y0: bt.box.y1, moved: false };
+      drawOverlay(); renderTree();
+      UI.setStatus('Bill of Materials (' + bt.rows.length + ' items) — drag to move it off its anchor, double-click for properties, Delete removes it.');
+      return;
+    }
     var dm = dimAt(p);
     if (dm) { D.sel = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; drawOverlay(); renderTree(); UI.setStatus('Dimension ' + dm.text + (dm.auto ? ' (model item)' : '') + ' \u2014 Delete removes it.'); return; }
     var w = viewAt(p);
@@ -1583,6 +1828,14 @@ var Drawing = (function () {
       applyViewBox();
       return;
     }
+    if (D.drag && D.drag.kind === 'bom') {
+      var pb = toPaper(e), db = D.drag;
+      if (!db.moved && Math.hypot(pb[0] - db.start[0], pb[1] - db.start[1]) < pxToPaper(3)) return;
+      if (!db.moved) { UI.pushUndo(); db.moved = true; }
+      doc().bom.x = db.x0 + pb[0] - db.start[0]; doc().bom.y = db.y0 + pb[1] - db.start[1];
+      queueRender();
+      return;
+    }
     if (D.drag && D.drag.kind === 'view') {
       var p = toPaper(e), dg = D.drag;
       if (!dg.moved && Math.hypot(p[0] - dg.start[0], p[1] - dg.start[1]) < pxToPaper(3)) return;
@@ -1603,7 +1856,7 @@ var Drawing = (function () {
     if (!D.drag) return;
     var dg = D.drag;
     D.drag = null;
-    if (dg.kind === 'view' && dg.moved) { UI.autosave(); render(); }
+    if ((dg.kind === 'view' || dg.kind === 'bom') && dg.moved) { UI.autosave(); render(); }
   }
   function onWheel(e) {
     if (!D.active || !D.vb) return;
@@ -1617,6 +1870,7 @@ var Drawing = (function () {
   }
   function onDblClick(e) {
     if (!D.active || D.tool) return;
+    if (bomAt(toPaper(e))) { cmdBOM(); return; }
     var w = viewAt(toPaper(e));
     if (w) cmdViewProperties(w.view.id); else cmdSheetProperties();
   }
@@ -1624,14 +1878,15 @@ var Drawing = (function () {
     e.preventDefault();
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
+    if (bomAt(p)) { D.sel = { kind: 'bom' }; drawOverlay(); renderTree(); UI.showMenu(e.clientX, e.clientY, bomMenu()); return; }
     if (w) { D.sel = { kind: 'view', id: w.view.id }; drawOverlay(); renderTree(); UI.showMenu(e.clientX, e.clientY, viewMenu(w.view)); }
     else UI.showMenu(e.clientX, e.clientY, sheetMenu());
   }
 
   // ------------------------------------------------------------------ commands
   function cmdStandard3View() {
-    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
-    edit(function (dc) { Drawing.standard3View(dc, mesh(), units()); });
+    if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
+    edit(function (dc) { syncBom(dc); Drawing.standard3View(dc, mesh(), units()); });
     D.sel = null; fitSheet();
     UI.setStatus('Standard 3 View: Front, Top and Right (' + (doc().sheet.projection === 'first' ? 'first' : 'third') + '-angle) plus an Isometric, scale ' + Drawing.scaleText(doc().sheet.scale) + '.');
   }
@@ -1645,7 +1900,7 @@ var Drawing = (function () {
   }
   // Model View: choose an orientation, display style and scale, then click the sheet to place the view.
   function cmdModelView() {
-    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
     openDrawingPM({
       title: 'Model View', icon: 'modelView', command: 'modelView',
       message: 'Pick the orientation, press OK, then click on the sheet to place the view.',
@@ -1720,7 +1975,7 @@ var Drawing = (function () {
   // line there (it snaps to hole and boss centres within 8 px), then click on the side the section view goes.
   function cmdSectionView() {
     if (D.tool === 'section') { endTool(); return; }
-    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
     openDrawingPM({
       title: 'Section View', icon: 'sectionView', command: 'sectionView',
       message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes.',
@@ -1778,7 +2033,7 @@ var Drawing = (function () {
   // the enlarged view goes (twice the parent's scale; change it in the view's properties).
   function cmdDetailView() {
     if (D.tool === 'detail') { endTool(); return; }
-    if (!App.mesh || !App.mesh.triCount) { UI.toast('The part has no solid body to draw yet.'); return; }
+    if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
     startTool('detail', { parent: null, at: null });
     UI.setStatus('Detail View: click the centre of the detail circle in a view. Esc cancels.');
   }
@@ -1845,6 +2100,12 @@ var Drawing = (function () {
     var s = D.sel;
     if (!s) return false;
     if (s.kind === 'view') { deleteView(s.id); return true; }
+    if (s.kind === 'bom') { setBom(null); D.sel = null; render(); return true; }
+    if (s.kind === 'balloon') {
+      edit(function (dc) { var v = Drawing.findView(dc, s.view); if (v && v.balloons) v.balloons = v.balloons.filter(function (b) { return !(b.key === s.key && b.component === s.component); }); });
+      D.sel = null; render();
+      return true;
+    }
     if (s.kind === 'dim') {
       edit(function (dc) {
         if (s.key) { dc.suppressed = (dc.suppressed || []).concat([s.key]); return; }
@@ -1890,7 +2151,7 @@ var Drawing = (function () {
       else if (props.scale) { var sc = Array.isArray(props.scale) ? props.scale : Drawing.parseScale(props.scale); if (sc) { dc.sheet.scale = sc; dc.sheet.autoScale = false; } }
       if (props.name) dc.sheet.name = String(props.name);
       // re-place the standard views for the new sheet / scale / projection
-      if (dc.views.some(function (v) { return v.role; })) { var manual = dc.layout === 'manual'; Drawing.layout(dc, mesh(), units()); if (manual) dc.layout = 'manual'; }
+      if (dc.views.some(function (v) { return v.role; })) { var manual = dc.layout === 'manual'; relayout(dc); if (manual) dc.layout = 'manual'; }
     });
     fitSheet();
   }
@@ -1922,6 +2183,7 @@ var Drawing = (function () {
       { label: 'Properties\u2026', action: function () { cmdViewProperties(v.id); } },
       { sep: true },
       { label: 'Projected View', disabled: v.kind === 'detail', action: function () { D.sel = { kind: 'view', id: v.id }; cmdProjectedView(); } },
+      { label: 'Auto Balloon', disabled: !isAsm() || v.kind === 'detail', action: function () { autoBalloonView(v.id); } },
       { sep: true },
       { label: 'Display \u25b8 Hidden Lines Visible', checked: v.display === 'hlv', action: function () { setViewDisplay(v.id, 'hlv'); } },
       { label: 'Display \u25b8 Hidden Lines Removed', checked: v.display === 'hlr', action: function () { setViewDisplay(v.id, 'hlr'); } },
@@ -1938,6 +2200,82 @@ var Drawing = (function () {
       { sep: true },
       { label: 'Zoom to Fit', key: 'F', action: fitSheet }
     ];
+  }
+
+
+  // ------------------------------------------------------------------ assembly drawings: Auto Balloon, Bill of Materials
+  function defaultBalloonView() {
+    var dc = doc(), s = D.sel && D.sel.kind === 'view' ? Drawing.findView(dc, D.sel.id) : null;
+    return s || dc.views.filter(function (v) { return v.role === 'iso'; })[0] || dc.views.filter(function (v) { return v.orient === 'Isometric'; })[0] || dc.views[0] || null;
+  }
+  function needAsm(what) {
+    if (isAsm()) return true;
+    UI.toast(what + ' numbers the components of an assembly: open the drawing of an assembly (File ▸ Make Drawing from Assembly).');
+    return false;
+  }
+  function autoBalloonView(id, opts) {
+    if (!needAsm('Auto Balloon')) return 0;
+    edit(function (dc) { Drawing.autoBalloon(dc, App.model, id, opts); });
+    var n = (D.sheet.balloons || []).filter(function (b) { return b.view === id; }).length, v = Drawing.findView(doc(), id);
+    UI.setStatus('Auto Balloon: ' + n + ' balloon' + (n === 1 ? '' : 's') + ' on ' + (v ? v.name : 'the view') + ', numbered after the Bill of Materials.');
+    return n;
+  }
+  // Auto Balloon PropertyManager: the view (default: the selected one, else the isometric) and Ignore multiple instances
+  function cmdAutoBalloon() {
+    if (!needAsm('Auto Balloon')) return;
+    var dc = doc(), v0 = defaultBalloonView();
+    if (!v0) { UI.toast('Add a drawing view first.'); return; }
+    openDrawingPM({
+      title: 'Auto Balloon', icon: 'autoBalloon', command: 'autoBalloon',
+      message: 'Balloons every component in the view with its Bill of Materials item number, on a square around the view.',
+      values: { view: v0.id, ignoreMultiple: true },
+      groups: [
+        { title: 'Drawing View', fields: [{ type: 'select', key: 'view', label: 'View', options: dc.views.map(function (v) { return [v.id, v.name + (v.kind ? '' : ' (' + v.orient + ')')]; }) }] },
+        { title: 'Balloon Layout', fields: [{ type: 'static', label: 'Layout', value: 'Square' }, { type: 'check', key: 'ignoreMultiple', label: 'Ignore multiple instances' }] }
+      ],
+      onOK: function (val) { autoBalloonView(+val.view, { ignoreMultiple: !!val.ignoreMultiple }); }
+    });
+  }
+  // Bill of Materials PropertyManager: Table Position (the corner of the sheet it is anchored to) or remove it
+  var ANCHOR_NAMES = { 'top-right': 'Top Right', 'top-left': 'Top Left', 'bottom-right': 'Bottom Right (above the title block)', 'bottom-left': 'Bottom Left' };
+  function setBom(props) {
+    edit(function (dc) {
+      if (props === null) { dc.bom = { show: false, anchor: (dc.bom && dc.bom.anchor) || 'top-right' }; return; }
+      var b = dc.bom || { anchor: 'top-right' };
+      b.show = true;
+      if (props.anchor && ANCHOR_NAMES[props.anchor]) { b.anchor = props.anchor; delete b.x; delete b.y; }
+      if (props.x != null && props.y != null) { b.x = +props.x; b.y = +props.y; }
+      dc.bom = b;
+      syncBom(dc);
+      if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
+    });
+  }
+  function cmdBOM() {
+    if (!needAsm('Bill of Materials')) return;
+    var b = doc().bom || { anchor: 'top-right' };
+    openDrawingPM({
+      title: 'Bill of Materials', icon: 'bom', command: 'bom',
+      message: 'One row per distinct part (identical components counted together): ITEM NO., PART NUMBER, DESCRIPTION, QTY. Balloons use the item numbers.',
+      values: { anchor: b.x != null ? 'moved' : b.anchor || 'top-right' },
+      groups: [{ title: 'Table Position', fields: [{ type: 'select', key: 'anchor', label: 'Anchor', options: (b.x != null ? [['moved', 'Where it was dragged']] : []).concat(Drawing.BOM_ANCHORS.map(function (a) { return [a, ANCHOR_NAMES[a]]; })) }] }],
+      onOK: function (val) {
+        setBom(val.anchor === 'moved' ? {} : { anchor: val.anchor });
+        var n = D.sheet.bom ? D.sheet.bom.rows.length : 0;
+        UI.setStatus('Bill of Materials: ' + n + ' item' + (n === 1 ? '' : 's') + ', ' + (doc().bom.x != null ? 'where it was dragged' : 'anchored ' + ANCHOR_NAMES[doc().bom.anchor]) + '.');
+      }
+    });
+  }
+  function bomMenu() {
+    return [
+      { label: 'Properties…', action: cmdBOM },
+      { label: 'Delete', key: 'Del', action: function () { setBom(null); D.sel = null; render(); } }
+    ];
+  }
+  function bomAt(p) { var b = D.sheet && D.sheet.bom && D.sheet.bom.box; return b && p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 ? D.sheet.bom : null; }
+  function balloonAt(p) {
+    var hit = null;
+    (D.sheet && D.sheet.balloons || []).forEach(function (b) { if (Math.hypot(p[0] - b.c[0], p[1] - b.c[1]) <= b.r + pxToPaper(2)) hit = b; });
+    return hit;
   }
 
   // ------------------------------------------------------------------ drawing FeatureManager
@@ -1962,6 +2300,12 @@ var Drawing = (function () {
     t.appendChild(row({ icon: 'annotations', name: 'Annotations', depth: 1, badge: dc.autoDims ? 'model items' : '' }));
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
     t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block' }));
+    if (isAsm() && dc.bom && dc.bom.show !== false) {
+      var nr = D.sheet && D.sheet.bom ? D.sheet.bom.rows.length : 0;
+      t.appendChild(row({ icon: 'bom', name: 'Bill of Materials1', depth: 2, cls: 'dw-bom', sel: D.sel && D.sel.kind === 'bom', badge: nr + (nr === 1 ? ' item' : ' items'),
+        title: 'Bill of Materials of ' + App.model.name + ' (' + (dc.bom.x != null ? 'moved' : 'anchored ' + (dc.bom.anchor || 'top-right')) + '). Double-click for properties.',
+        click: function () { D.sel = { kind: 'bom' }; drawOverlay(); renderTree(); }, dbl: cmdBOM, menu: bomMenu }));
+    }
     dc.views.forEach(function (v) {
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === v.id;
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
@@ -1971,7 +2315,10 @@ var Drawing = (function () {
         title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
         dbl: function () { cmdViewProperties(v.id); }, menu: function () { return viewMenu(v); } }));
-      t.appendChild(row({ icon: 'part', name: App.model.name, depth: 3, cls: 'dw-ref' }));
+      t.appendChild(row({ icon: isAsm() ? 'assembly' : 'part', name: App.model.name, depth: 3, cls: 'dw-ref' }));
+      var nb = w && D.sheet.balloons ? D.sheet.balloons.filter(function (b) { return b.view === v.id; }).length : 0;
+      if (nb) t.appendChild(row({ icon: 'autoBalloon', name: 'Balloons', depth: 3, cls: 'dw-balloons', badge: String(nb), title: nb + ' balloons linked to the Bill of Materials item numbers',
+        menu: function () { return [{ label: 'Delete Balloons', action: function () { edit(function (dc2) { Drawing.deleteBalloons(dc2, v.id); }); } }]; } }));
     });
   }
 
@@ -1985,6 +2332,8 @@ var Drawing = (function () {
     { sep: true },
     { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
     { id: 'modelItems', label: 'Model\nItems', run: cmdModelItems, active: function () { return !!(doc() && doc().autoDims); } },
+    { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
+    { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false && isAsm()); } },
     { sep: true },
     { id: 'sheetProps', label: 'Sheet\nProperties', run: cmdSheetProperties },
     { sep: true },
@@ -1994,6 +2343,7 @@ var Drawing = (function () {
     { sep: true },
     { id: 'closeDoc', label: 'Close\nDrawing', run: function () { closeDrawing(); } }
   ];
+  if (UI.ASM_RIBBON) UI.ASM_RIBBON.Drawing = UI.RIBBON.Drawing;
   // the Drawing tab exists only in a drawing document; part tabs are hidden while one is open
   UI.ribbonTabsFor = function (names, extra) {
     if (D.active) return [['Drawing'], ['Annotation', 'Sketch', 'Markup', 'Sheet Format']];
@@ -2007,15 +2357,14 @@ var Drawing = (function () {
         // after the New / Open / Save group (the first separator); matched by position, not by label text
         var at = 0;
         while (at < file.items.length && !file.items[at].sep) at++;
-        // an assembly cannot be drawn yet: the item stays visible but disabled (SolidWorks shows Make Drawing from Assembly)
-        file.items.splice(at, 0, { sep: true }, { label: 'Make Drawing from Part', disabled: asm, action: function () { makeDrawing(); } });
+        file.items.splice(at, 0, { sep: true }, { label: asm ? 'Make Drawing from Assembly' : 'Make Drawing from Part', action: function () { makeDrawing(); } });
       }
       // Window: the open document (part or assembly), then the part's drawings
       var win = menus.filter(function (m) { return m.label === 'Window'; })[0];
       if (win) {
         win.items.push({ sep: true });
         win.items.push({ label: (App.model.name || (asm ? 'Assem1' : 'Part1')) + (asm ? ' (assembly)' : ' (part)'), checked: true, action: function () { } });
-        if (!asm) (App.model.drawings || []).forEach(function (dc, i) { win.items.push({ label: dc.name + ' - ' + dc.sheet.name, action: function () { makeDrawing({ index: i }); } }); });
+        (App.model.drawings || []).forEach(function (dc, i) { win.items.push({ label: dc.name + ' - ' + dc.sheet.name, action: function () { makeDrawing({ index: i }); } }); });
       }
       return menus;
     }
@@ -2043,11 +2392,13 @@ var Drawing = (function () {
         { label: 'Drawing View \u25b8 Section\u2026', action: cmdSectionView },
         { label: 'Drawing View \u25b8 Detail', action: cmdDetailView },
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
-        { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems }
+        { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems },
+        { label: 'Annotations \u25b8 Auto Balloon', disabled: !isAsm(), action: cmdAutoBalloon },
+        { label: 'Tables \u25b8 Bill of Materials\u2026', disabled: !isAsm(), action: cmdBOM }
       ] },
       { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }] },
       { label: 'Window', items: [
-        { label: App.model.name + ' (part)', action: closeDrawing },
+        { label: App.model.name + ' (' + docKind() + ')', action: closeDrawing },
         { label: (dc ? dc.name + ' - ' + dc.sheet.name : 'Drawing'), checked: true, action: function () { } }
       ] },
       help || { label: 'Help', items: [] }
@@ -2088,7 +2439,7 @@ var Drawing = (function () {
   function summary() {
     var dc = doc();
     if (!dc) return null;
-    if (!D.sheet || !D.active) { if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model); }
+    if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model); }
     return {
       name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection },
       views: D.sheet.views.map(function (w) {
@@ -2096,8 +2447,13 @@ var Drawing = (function () {
         return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent,
           display: w.view.display, x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
-          hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null };
+          hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
+          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines }; }),
+          balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
       }),
+      bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
+        rows: D.sheet.bom.rows.map(function (r) { return { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; }) } : null,
+      balloons: (D.sheet.balloons || []).map(function (b) { return { view: b.view, item: b.item, component: (Assembly.findComponent(App.model, b.component) || {}).name || null, c: [+b.c[0].toFixed(3), +b.c[1].toFixed(3)], attach: [+b.attach[0].toFixed(3), +b.attach[1].toFixed(3)] }; }),
       dims: D.sheet.dims.map(function (d) { return d.text; }), dangling: D.sheet.dims.filter(function (d) { return d.dangling; }).length, autoDims: !!dc.autoDims
     };
   }
@@ -2110,7 +2466,7 @@ var Drawing = (function () {
     D.sel = { kind: 'view', id: v.id };
     return summary();
   }
-  function current() { if (!doc()) return null; if (!D.active) { if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model); } return D.sheet; }
+  function current() { if (!doc()) return null; if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model); } return D.sheet; }
   if (window.anvil) {
     window.anvil.drawing = {
       make: function (opts) { return makeDrawing(opts) ? summary() : null; },
@@ -2124,6 +2480,12 @@ var Drawing = (function () {
       sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, opts || {}); }); },
       detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0] }, opts || {})); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
+      // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of
+      // Materials (anchor 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left', or { x, y } for its top-left corner),
+      // bom(null) removes it
+      autoBalloon: function (viewId, opts) { if (!doc() || !isAsm()) return null; var v = viewId != null ? Drawing.findView(doc(), viewId) : defaultBalloonView(); if (!v) return null; autoBalloonView(v.id, opts); return summary(); },
+      deleteBalloons: function (viewId) { if (!doc()) return null; edit(function (dc) { Drawing.deleteBalloons(dc, viewId); }); return summary(); },
+      bom: function (props) { if (!doc() || !isAsm()) return null; if (props !== undefined) setBom(props === null ? null : typeof props === 'string' ? { anchor: props } : props); return summary().bom; },
       addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },
@@ -2134,7 +2496,7 @@ var Drawing = (function () {
     };
   }
   UI.makeDrawing = makeDrawing; UI.openDrawing = openDrawing; UI.closeDrawing = closeDrawing; UI.drawingActive = function () { return D.active; };
-  UI.drawing = { state: D, render: render, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
+  UI.drawing = { state: D, render: render, autoBalloon: cmdAutoBalloon, bom: cmdBOM, balloonAt: balloonAt, bomAt: bomAt, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
   // the File menu gets its drawing entry through UI.menuHook; redraw the menu bar now that the hook exists
   if (UI.renderMenuBar && $('menus').children.length) UI.renderMenuBar();
   if (UI.refreshRibbon && $('ribbon-buttons').children.length) UI.refreshRibbon();
