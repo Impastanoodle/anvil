@@ -359,8 +359,8 @@ var AnvilExamples = [
     name: 'Pinned plate assembly',
     kind: 'assembly',
     description: 'Assembly: the bolt-hole plate (fixed), two Ø8 pins mated into two of its holes, and a cap block seated on its top face in a corner.',
-    // plate + 2 pins + cap; a Ø8 circle is a 16-gon (area 128·sin(π/8)), exactly as the kernel samples it
-    volume: 100 * 60 * 8 - 4 * 128 * Math.sin(Math.PI / 8) * 8 + 2 * 128 * Math.sin(Math.PI / 8) * 20 + 30 * 20 * 5,
+    // plate + 2 pins + cap; the kernel's volumes are exact for round holes and pins (true curves, cloud-2026-09-25p)
+    volume: 100 * 60 * 8 - 4 * Math.PI * 16 * 8 + 2 * Math.PI * 16 * 20 + 30 * 20 * 5,
     checks: [
       { component: 'Plate<1>', position: [0, 0, 0], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
       { component: 'Pin<1>', position: [10, 0, 10] },
@@ -420,17 +420,19 @@ var AnvilExamples = [
     name: 'Interference check',
     kind: 'assembly',
     description: 'Assembly for Interference Detection: a block sunk 5 into a base plate (offset Coincident, flipped), a pin standing on the top (touching only) and a pin sunk 8 into the plate.',
-    // base 60 × 10 × 40 + block 20³ + two Ø8 × 20 pins (16-gons); the bodies are kept apart, so the overlaps count twice
-    volume: 60 * 40 * 10 + 20 * 20 * 20 + 2 * 128 * Math.sin(Math.PI / 8) * 20,
+    // base 60 × 10 × 40 + block 20³ + two Ø8 × 20 pins (exact); the bodies are kept apart, so the overlaps count twice
+    volume: 60 * 40 * 10 + 20 * 20 * 20 + 2 * Math.PI * 16 * 20,
     checks: [
       { component: 'Block<1>', position: [10, 5, 10], rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
       { component: 'Pin<1>', position: [50, 10, 30] },
       { component: 'Pin<2>', position: [50, 2, 10] }
     ],
-    // Interference Detection: Base ∩ Block is 20 × 5 × 20, Base ∩ Pin<2> is the pin's 8 lowest mm; Pin<1> only touches
+    // Interference Detection: Base ∩ Block is 20 × 5 × 20, Base ∩ Pin<2> is the pin's 8 lowest mm; Pin<1> only touches.
+    // Interference is measured on the meshes, so the pin is the n-gon the kernel makes (Kernel.segsForRadius; 16 before
+    // true curves)
     interference: [
       { a: 'Base<1>', b: 'Block<1>', volume: 20 * 5 * 20 },
-      { a: 'Base<1>', b: 'Pin<2>', volume: 128 * Math.sin(Math.PI / 8) * 8 }
+      { a: 'Base<1>', b: 'Pin<2>', volume: (function () { var n = typeof Kernel !== 'undefined' && Kernel.segsForRadius ? Kernel.segsForRadius(4) : 16; return n / 2 * 16 * Math.sin(2 * Math.PI / n) * 8; })() }
     ],
     code: [
       'a.name("Interference").units("mm");',
@@ -452,21 +454,22 @@ var AnvilExamples = [
     description: 'Assembly with the newer mates and component patterns: two gears on shafts coupled by a Gear mate (1:2), three pins on the big gear (Circular Component Pattern, they turn with it), a row of four pins (Linear Component Pattern) and a mirrored pin (Mirror Components), a slider centred in a slot by a Width mate and held in range by a Limit Distance mate, a roller lying on the plate (Tangent, Perpendicular), and an exploded view.',
     // base plate with two shafts and two rails + gears with Ø6 bores + 3 dot pins + 5 pins + slider + roller (bodies kept apart)
     volume: (function () {
-      function A(r) { var n = Math.max(16, Math.min(72, Math.round(8 * Math.sqrt(r)))); return n / 2 * r * r * Math.sin(2 * Math.PI / n); }
+      function A(r) { return Math.PI * r * r; } // exact (true curves, cloud-2026-09-25p)
       return 160 * 120 * 10 + 2 * A(3) * 15 + 2 * 100 * 8 * 8 + (A(12) - A(3)) * 5 + (A(24) - A(3)) * 5 + 3 * A(1.5) * 6 + 5 * A(2) * 12 + 20 * 10 * 8 + A(5) * 40;
     })(),
     checks: (function () {
       function ry(deg) { var a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; }
       // Dot Pin<1> sits 16 out along Gear B's x axis; its pattern copies are 120° and 240° further round Gear B's axis
-      function dot(k) { var a = (-22.5 + 120 * k) * Math.PI / 180; return [-14 + 16 * Math.cos(a), 15, -16 * Math.sin(a)]; }
+      function dot(k) { var a = (-45 + 120 * k) * Math.PI / 180; return [-14 + 16 * Math.cos(a), 15, -16 * Math.sin(a)]; }
+      function rz(deg) { var a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
       return [
         { component: 'Base<1>', position: [0, 0, 0], rotation: ry(0) },
-        // Gear A inserted turned 45° about its shaft; the Gear mate (12 : 24, phase 0 / 0) turns Gear B −22.5°
-        { component: 'Gear A<1>', position: [-50, 10, 0], rotation: ry(45) },
-        { component: 'Gear B<1>', position: [-14, 10, 0], rotation: ry(-22.5) },
-        { component: 'Dot Pin<1>', position: dot(0), rotation: ry(-22.5) },
-        { component: 'Dot Pin<2>', position: dot(1), rotation: ry(97.5) },
-        { component: 'Dot Pin<3>', position: dot(2), rotation: ry(217.5) },
+        // Gear A inserted turned 90° about its shaft; the Gear mate (12 : 24, phase 0 / 0) turns Gear B −45°
+        { component: 'Gear A<1>', position: [-50, 10, 0], rotation: ry(90) },
+        { component: 'Gear B<1>', position: [-14, 10, 0], rotation: ry(-45) },
+        { component: 'Dot Pin<1>', position: dot(0), rotation: ry(-45) },
+        { component: 'Dot Pin<2>', position: dot(1), rotation: ry(75) },
+        { component: 'Dot Pin<3>', position: dot(2), rotation: ry(195) },
         { component: 'Pin<1>', position: [70, 10, -50] },
         { component: 'Pin<2>', position: [50, 10, -50] },
         { component: 'Pin<3>', position: [30, 10, -50] },
@@ -474,8 +477,9 @@ var AnvilExamples = [
         { component: 'Pin<5>', position: [-70, 10, -50], rotation: ry(0) },
         // Width: centred in the 12 wide slot (z 38..50); Limit Distance 10..60 from the rail ends clamps x = 70 to 40
         { component: 'Slider<1>', position: [40, 10, 39], rotation: ry(0) },
-        // Tangent to the plate top (the 18-gon's flats are 5·cos 10° from its axis), end flush with the back face
-        { component: 'Roller<1>', position: [-60, 10 + 5 * Math.cos(Math.PI / 18), 20], rotation: ry(0) }
+        // Tangent to the plate top: the mate rests the faceted roller on a flat, r·cos(π/n) from its axis, n the kernel's
+        // segment count for r 5 (18 before true curves: 5·cos 10°); end flush with the back face
+        { component: 'Roller<1>', position: [-60, 10 + 5 * Math.cos(Math.PI / (typeof Kernel !== 'undefined' && Kernel.segsForRadius ? Kernel.segsForRadius(5) : 18)), 20], rotation: rz(7.5) }
       ];
     })(),
     // Interference Detection finds nothing: the bores line up with the shafts, everything else only touches
@@ -484,8 +488,8 @@ var AnvilExamples = [
       'a.name("Gear Train").units("mm");',
       '// plate x in [-80,80], z in [-60,60], y in [0,10]; Ø6 shafts at x = -50 and -14 (36 apart = 12 + 24); rails z 30..38 and 50..58',
       'var base = a.insert({ script: \'p.name("Base"); p.box(160, 120, 10, { centered: true }); p.cylinder(3, 15, { at: [-50, 10, 0] }); p.cylinder(3, 15, { at: [-14, 10, 0] }); p.box(100, 8, 8, { at: [-20, 10, 30] }); p.box(100, 8, 8, { at: [-20, 10, 50] });\' }, { fixed: true });',
-      '// gears: discs with Ø6 bores, on the shafts and on the plate; Gear A dropped in turned 45° (a multiple of the 22.5° facets, so its bore lines up with the shaft)',
-      'var gA = a.insert({ script: \'p.name("Gear A"); p.cylinder(12, 5); p.cylinder(3, 5, { cut: true });\' }, { position: [-60, 30, 20], rotation: [0.7071067811865476, 0, 0.7071067811865476, 0, 1, 0, -0.7071067811865476, 0, 0.7071067811865476] });',
+      '// gears: discs with Ø6 bores, on the shafts and on the plate; Gear A dropped in turned 90° (a multiple of the 15° facets of the Ø6 24-gon, and so is Gear B\'s 45°, so both bores line up with the shafts)',
+      'var gA = a.insert({ script: \'p.name("Gear A"); p.cylinder(12, 5); p.cylinder(3, 5, { cut: true });\' }, { position: [-60, 30, 20], rotation: [0, 0, 1, 0, 1, 0, -1, 0, 0] });',
       'var gB = a.insert({ script: \'p.name("Gear B"); p.cylinder(24, 5); p.cylinder(3, 5, { cut: true });\' }, { position: [0, 30, 20] });',
       'a.concentric({ component: gA, cylinder: [12, 2.5, 0] }, { component: base, cylinder: [-47, 15, 0] });',
       'a.coincident({ component: gA, face: [7, 0, 0] }, { component: base, face: [0, 10, -40] });',
@@ -512,7 +516,8 @@ var AnvilExamples = [
       'a.width({ component: base, face: [30, 14, 38] }, { component: base, face: [30, 14, 50] }, { component: slider, face: [10, 4, 0] }, { component: slider, face: [10, 4, 10] });',
       'a.limitDistance({ component: slider, face: [0, 4, 5] }, { component: base, face: [-20, 14, 34] }, 10, 60, { alignment: "aligned" });',
       '// roller Ø10 × 40 lying on the plate: Tangent to the top, axis Perpendicular to the back face, end flush with it',
-      'var roller = a.insert({ script: \'p.name("Roller"); p.cylinder(5, 40, { axis: "z" });\' }, { position: [-60, 30, 0] });',
+      '// (dropped in turned 7.5° about its axis, half a facet of its 24-gon, so a flat faces the plate: the Tangent mate rests the faceted roller on its flats)',
+      'var roller = a.insert({ script: \'p.name("Roller"); p.cylinder(5, 40, { axis: "z" });\' }, { position: [-60, 30, 0], rotation: [0.9914448613738104, -0.13052619222005157, 0, 0.13052619222005157, 0.9914448613738104, 0, 0, 0, 1] });',
       'a.tangent({ component: roller, cylinder: [5, 0, 20] }, { component: base, face: [0, 10, -40] });',
       'a.perpendicular({ component: roller, cylinder: [5, 0, 20] }, { component: base, face: [0, 5, 60] });',
       'a.coincident({ component: roller, face: [0, 0, 40] }, { component: base, face: [0, 5, 60] }, { alignment: "aligned" });',

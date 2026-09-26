@@ -352,7 +352,8 @@ var UI = (function () {
     if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; return; }
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+    // true curves: triangles on analytic faces shade with the exact surface normal at each corner (smooth)
+    g.setAttribute('normal', new THREE.BufferAttribute(analyticNormals(m), 3));
     // Hidden bodies: the full position/normal arrays stay (every face index is still valid), but the geometry gets an
     // index attribute that lists only the visible triangles, and visTris maps each rendered triangle back to its
     // global triangle index so pickFace still lands on the right face of App.mesh.
@@ -382,7 +383,122 @@ var UI = (function () {
   function edgesFor(m) {
     if (App.edges && App.edgesMesh === m) return App.edges;
     App.edgesMesh = m;
-    return (App.edges = K.bodyEdges(m));
+    App.edges = K.bodyEdges(m);
+    App.curves = annotateCurveEdges(m, App.edges);
+    return App.edges;
+  }
+
+  // ------------------------------------------------------------------ true curves (display)
+  // The kernel's CSG polygons carry exact surface records (polygon.surf.s: cyl / cone / sph / tor, see kernel.js
+  // "analytic surface records"). The viewport uses them twice:
+  //   shading: every corner of a triangle on a curved face gets the surface's own normal there (analyticNormals), so
+  //     cylinders and fillets shade smoothly whatever the facet count; planar faces keep their flat normals;
+  //   edges: the seams between facets of one surface are tangent (e.seam, e.smooth) and never drawn or picked, and the
+  //     facet edges that approximate a true circle or arc (Kernel.curveEdges chords) are drawn as that curve, a fine
+  //     polyline of CURVE_SEGS segments per full turn independent of the mesh (App.curves, e.curve on the chord edges).
+  var CURVE_SEGS = 128;
+  // unit outward-or-inward normal of surface S at point x ([x,y,z]), or null where it is undefined (a cone apex)
+  function surfNormal(S, x) {
+    var v = [x[0] - S.o[0], x[1] - S.o[1], x[2] - S.o[2]], d = S.d, z = V.dot(v, d), n;
+    if (S.t === 'sph') n = v;
+    else {
+      var rho = [v[0] - d[0] * z, v[1] - d[1] * z, v[2] - d[2] * z], rl = V.len(rho);
+      if (rl < 1e-9) return null;   // on the axis: a cone apex or a torus pole has no single normal
+      var er = [rho[0] / rl, rho[1] / rl, rho[2] / rl];
+      if (S.t === 'cyl') n = er;
+      else if (S.t === 'cone') n = [er[0] - (S.k || 0) * d[0], er[1] - (S.k || 0) * d[1], er[2] - (S.k || 0) * d[2]];
+      else if (S.t === 'tor') n = [rho[0] - er[0] * S.R, rho[1] - er[1] * S.R, rho[2] - er[2] * S.R];   // from the tube centre o + R·eρ
+      else return null;
+    }
+    var l = V.len(n);
+    return l > 1e-12 ? [n[0] / l, n[1] / l, n[2] / l] : null;
+  }
+  // analyticNormals(mesh) -> Float32Array laid out like mesh.normals (3 per triangle corner); cached on the mesh as
+  // mesh.smoothNormals. The triangles follow meshFromBody's order (each face's polygons fanned from vertex 0); each
+  // normal is oriented to agree with its facet's (holes face inward). mesh.normals itself stays flat (exports, zebra).
+  function analyticNormals(m) {
+    if (m.smoothNormals) return m.smoothNormals;
+    var out = new Float32Array(m.normals);
+    (m.faces || []).forEach(function (f) {
+      if (!f.polys) return;
+      var t = f.start, fn = f.normal, ok = true, writes = [];
+      f.polys.forEach(function (p) {
+        var vs = p.vertices, nt = Math.max(0, vs.length - 2);
+        if (p.surf && p.surf.s) {
+          var vn = vs.map(function (vx) {
+            var n = surfNormal(p.surf.s, [vx.pos.x, vx.pos.y, vx.pos.z]);
+            if (!n) return fn;
+            return V.dot(n, fn) < 0 ? [-n[0], -n[1], -n[2]] : n;
+          });
+          for (var j = 1; j + 1 < vs.length; j++) writes.push(t + j - 1, vn[0], vn[j], vn[j + 1]);
+        }
+        t += nt;
+      });
+      if (t !== f.start + f.count) ok = false;   // not the layout meshFromBody made: keep the flat normals
+      if (!ok) return;
+      for (var w = 0; w < writes.length; w += 4) {
+        var o = writes[w] * 9;
+        for (var c = 0; c < 3; c++) { var n = writes[w + 1 + c]; out[o + c * 3] = n[0]; out[o + c * 3 + 1] = n[1]; out[o + c * 3 + 2] = n[2]; }
+      }
+    });
+    m.smoothNormals = out;
+    return out;
+  }
+  function ekey3(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
+  function pairKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+  // Marks seams (e.seam, e.smooth) and chord edges (e.curve = index into the returned list) on bodyEdges' list;
+  // -> [{ curve (the Kernel.curveEdges record), pts: [[x,y,z]…] fine polyline, edges: [chord edges] }]
+  function annotateCurveEdges(m, edges) {
+    if (!K.curveSurfaces || !K.curveEdges || !m.faces || !m.faces.length || !m.faces[0].polys) return [];
+    var surfOf = new Map();
+    try { K.curveSurfaces(m).forEach(function (s) { s.polys.forEach(function (p) { surfOf.set(p, s.key); }); }); } catch (e) { return []; }
+    if (!surfOf.size) return [];
+    var faceSurfs = m.faces.map(function (f) {
+      var ks = null;
+      f.polys.forEach(function (p) { var k = surfOf.get(p); if (k) (ks = ks || {})[k] = 1; });
+      return ks;
+    });
+    edges.forEach(function (e) {
+      if (e.faces.length !== 2) return;
+      var A = faceSurfs[e.faces[0]], B = faceSurfs[e.faces[1]];
+      if (!A || !B) return;
+      for (var k in A) if (B[k]) { e.seam = true; e.smooth = true; return; }
+    });
+    var list;
+    try { list = K.curveEdges(m); } catch (e2) { return []; }
+    var curves = list.map(function (c) {
+      var n = c.normal, xd = c.xdir, yd = V.cross(n, xd), sweep = c.a1 - c.a0;
+      var segs = Math.max(4, Math.ceil(CURVE_SEGS * sweep / (2 * Math.PI) - 1e-9)), pts = [];
+      for (var i = 0; i <= segs; i++) {
+        var a = c.a0 + sweep * i / segs, ca = Math.cos(a) * c.radius, sa = Math.sin(a) * c.radius;
+        pts.push([c.center[0] + xd[0] * ca + yd[0] * sa, c.center[1] + xd[1] * ca + yd[1] * sa, c.center[2] + xd[2] * ca + yd[2] * sa]);
+      }
+      return { curve: c, pts: pts, edges: [] };
+    });
+    var chordMap = {};
+    curves.forEach(function (c, ci) { c.curve.chords.forEach(function (ch) { chordMap[pairKey(ekey3(ch[0]), ekey3(ch[1]))] = ci; }); });
+    // pieces of a chord (a face outline split it at a T-junction): both ends on one of the curve's chords
+    function onSeg(p, q0, q1, tol) { return K.pointSegmentDistance(p, q0, q1) <= tol; }
+    edges.forEach(function (e) {
+      if (e.seam) return;
+      var ci = chordMap[pairKey(e.ka, e.kb)];
+      if (ci == null) {
+        // only edges next to a curved face can lie on a curve
+        if (!e.faces.some(function (fi) { return faceSurfs[fi]; })) return;
+        for (var i = 0; i < curves.length && ci == null; i++) {
+          var C = curves[i].curve, tol = 1e-4 * Math.max(1, C.radius);
+          if (Math.abs(V.dot(V.sub(e.mid, C.center), C.normal)) > tol || V.len(V.sub(e.mid, C.center)) > C.radius + tol) continue;
+          for (var j = 0; j < C.chords.length; j++) {
+            var ch = C.chords[j];
+            if (onSeg(e.a, ch[0], ch[1], tol) && onSeg(e.b, ch[0], ch[1], tol)) { ci = i; break; }
+          }
+        }
+      }
+      if (ci == null) return;
+      e.curve = ci;
+      curves[ci].edges.push(e);
+    });
+    return curves;
   }
   // An edge is drawn/pickable while at least one of its faces belongs to a visible body.
   function edgeVisible(e) {
@@ -397,10 +513,14 @@ var UI = (function () {
     var arr = [];
     edgesFor(m);
     // tangent (smooth) edges between near-coplanar neighbours are hidden, like SolidWorks' default
+    var drawCurve = {};
     App.edges.forEach(function (e) {
       if (e.smooth || !edgeVisible(e)) return;
+      // a chord of a true circle / arc: the curve is drawn once, finely, instead of its chords
+      if (e.curve != null && App.curves && App.curves[e.curve]) { drawCurve[e.curve] = 1; return; }
       arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
     });
+    Object.keys(drawCurve).forEach(function (ci) { pushPolyline(arr, App.curves[ci].pts); });
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     return g;
@@ -534,9 +654,19 @@ var UI = (function () {
 
   var edgeHoverMat = new THREE.LineBasicMaterial({ color: 0xff8c1a, depthTest: false });
   var edgeSelMat = new THREE.LineBasicMaterial({ color: 0x14a34a, depthTest: false });
+  function pushPolyline(arr, pts) {
+    for (var i = 0; i + 1 < pts.length; i++) arr.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
+  }
+  // hovered / selected edges; a chord of a true circle or arc lights up the whole curve
   function edgeLineObject(edges, mat) {
-    var arr = [];
-    edges.forEach(function (e) { arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]); });
+    var arr = [], seen = {};
+    edges.forEach(function (e) {
+      if (e.curve != null && App.curves && App.curves[e.curve] && App.curves[e.curve].edges.indexOf(e) >= 0) {
+        if (!seen[e.curve]) { seen[e.curve] = 1; pushPolyline(arr, App.curves[e.curve].pts); }
+        return;
+      }
+      arr.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+    });
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     var o = new THREE.LineSegments(g, mat);
@@ -912,7 +1042,13 @@ var UI = (function () {
     if (isAssembly()) {
       if (typeof Assembly === 'undefined') throw new Error('Assembly documents need assembly.js');
       if (!App.model.features) App.model.features = [];
-      build = Assembly.rebuild(App.model, App.asmCache, UI.asmBuildOpts || null);   // asmBuildOpts: the explode animation (ui-assembly.js)
+      // the assembly's Image Quality applies to every component built for it (parts carry their own otherwise)
+      var tsaved = App.model.tessellation ? K.setTessellation({}) : null, tkey = JSON.stringify(App.model.tessellation || null);
+      if (App.asmTessKey !== tkey) { App.asmCache = null; App.asmTessKey = tkey; }   // component meshes follow the setting
+      try {
+        if (tsaved) K.setTessellation(App.model.tessellation);
+        build = Assembly.rebuild(App.model, App.asmCache, UI.asmBuildOpts || null);   // asmBuildOpts: the explode animation (ui-assembly.js)
+      } finally { if (tsaved) K.setTessellation(tsaved); }
       App.asmCache = build.cache;
       applyBuild(build, opts, performance.now() - t0);
       return;
@@ -1154,6 +1290,36 @@ var UI = (function () {
     return App.workerOn;
   }
 
+  // ------------------------------------------------------------------ Image Quality (document property)
+  // SolidWorks: Tools ▸ Options ▸ Document Properties ▸ Image Quality. Stored in the model as
+  // model.tessellation = { chordTol } (mm of sagitta per chord), which Kernel.rebuild applies to that document only
+  // (and the worker gets with its structured clone of App.model). Changing it is an undo step and rebuilds.
+  var IMAGE_QUALITY = [
+    { key: 'coarse', label: 'Coarse (0.1 mm)', chordTol: 0.1 },
+    { key: 'default', label: 'Default (0.05 mm)', chordTol: 0.05 },
+    { key: 'fine', label: 'Fine (0.02 mm)', chordTol: 0.02 },
+    { key: 'finer', label: 'Finer (0.01 mm)', chordTol: 0.01 }
+  ];
+  var DEFAULT_CHORD_TOL = 0.05;
+  // -> { chordTol, preset (key or 'custom'), segsR10 (facets on a Ø20 circle, for the UI) }
+  function imageQuality() {
+    var t = App.model && App.model.tessellation, tol = t && +t.chordTol > 0 ? +t.chordTol : DEFAULT_CHORD_TOL;
+    var pr = IMAGE_QUALITY.filter(function (q) { return Math.abs(q.chordTol - tol) < 1e-12; })[0];
+    var segs = null;
+    try { var saved = K.setTessellation({}); K.setTessellation({ chordTol: tol }); segs = K.segsForRadius(10); K.setTessellation(saved); } catch (e) { }
+    return { chordTol: tol, preset: pr ? pr.key : 'custom', segsR10: segs };
+  }
+  // setImageQuality(preset key | chordTol number | { chordTol }) -> Promise of the build (an undo step unless unchanged)
+  function setImageQuality(q) {
+    var tol = q && typeof q === 'object' ? +q.chordTol : typeof q === 'string' && isNaN(+q) ? (IMAGE_QUALITY.filter(function (p) { return p.key === q; })[0] || {}).chordTol : +q;
+    if (!(tol > 0) || !isFinite(tol)) return Promise.reject(new Error('Image quality: a preset (' + IMAGE_QUALITY.map(function (p) { return p.key; }).join(', ') + ') or a positive chord tolerance in mm'));
+    tol = Math.max(0.001, Math.min(10, tol));
+    if (Math.abs(imageQuality().chordTol - tol) < 1e-12 && App.model.tessellation) return whenIdle();
+    pushUndo();
+    App.model.tessellation = Object.assign({}, App.model.tessellation || {}, { chordTol: tol });
+    return rebuild();
+  }
+
   function autosave() {
     try { localStorage.setItem('anvil.autosave', JSON.stringify(App.model)); } catch (e) { }
   }
@@ -1217,6 +1383,8 @@ var UI = (function () {
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
     rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
+    imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
+    analyticNormals: analyticNormals, surfNormal: surfNormal,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; },
     // multi-body parts (viewport side): see the "bodies" section

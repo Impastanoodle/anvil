@@ -259,7 +259,7 @@
       var mesh = K.meshFromBody(tool);
       var g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
-      g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
       UI.groups.preview.add(new THREE.Mesh(g, K.isCut(feature, App.model) || feature.cut ? UI.mats.previewCut : UI.mats.preview));
       return null;
     } catch (e) {
@@ -950,7 +950,7 @@
         [r.cut, r.add].forEach(function (tool, i) {
           if (!tool) return;
           var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
-          g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+          g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
           UI.groups.preview.add(new THREE.Mesh(g, i === 0 ? UI.mats.previewCut : UI.mats.preview));
         });
         UI.setStatus((isChamfer ? 'Chamfer' : 'Fillet') + ' preview: ' + r.count + ' edge' + (r.count === 1 ? '' : 's') + '. Press Enter or ✓ to accept.');
@@ -1031,7 +1031,7 @@
       try {
         var r = K.buildShell(f, { body: base });
         var mesh = K.meshFromBody(r.inner), g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
         UI.setStatus('Shell preview: walls ' + f.thickness + ' ' + UI.unitLabel() + ', ' + (r.removed.length ? r.removed.length + ' face' + (r.removed.length === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
@@ -1128,7 +1128,7 @@
       try {
         var tool = K.buildTool(tmp, App.model, { tools: {}, planes: App.build.planes, sketches: { '-999': sk }, body: null });
         var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
       } catch (e) { }
     }
@@ -1223,7 +1223,7 @@
         if (isJog) { var jg = K.buildJog(feat, previewModel(), { body: App.build.body, flanges: {}, tools: {} }); tool = jg.first.union(jg.second); }
         else tool = K.buildFlange(feat, previewModel(), { body: App.build.body, flanges: {} });
         var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.preview));
         var R = feat.radius != null ? feat.radius : sheet.bendRadius;
         var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);

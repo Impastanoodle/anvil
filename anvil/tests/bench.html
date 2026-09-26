@@ -43,6 +43,8 @@
   'use strict';
   var K = Kernel;
   var $ = function (id) { return document.getElementById(id); };
+  // bench.html?legacy times the pre-true-curves tessellation (same meshes as before cloud-2026-09-25p)
+  if (/legacy/.test(location.search)) K.setTessellation({ legacy: true });
 
   // Synthetic parts that stress specific kernel paths. Volumes are irrelevant; shapes are chosen for polygon counts.
   var STRESS = [

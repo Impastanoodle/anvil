@@ -77,17 +77,21 @@ var CSG = (function () {
             }
           }
           // fragments remember the polygon they came from (`_src`, see restoreWhole)
-          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; front.push(pf); } }
-          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; back.push(pb); } }
+          // fragments also inherit the analytic surface record (`surf`) of the face they were cut from
+          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; pf.surf = polygon.surf; front.push(pf); } }
+          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; pb.surf = polygon.surf; back.push(pb); } }
           break;
       }
     }
   };
 
+  // `surf` (optional): the analytic surface record of a facet that approximates a curved face (see kernel.js,
+  // "true curves"); null for planar faces. Splits, clones, transforms and pack / unpack carry it.
   function Polygon(vertices, shared, plane) {
     this.vertices = vertices;
     this.shared = shared;
     this.plane = plane || Plane.fromVertices(vertices);
+    this.surf = null;
   }
   Polygon.tryCreate = function (vertices, shared) {
     var plane = Plane.fromVertices(vertices);
@@ -96,7 +100,9 @@ var CSG = (function () {
   };
   Polygon.prototype = {
     clone: function () {
-      return new Polygon(this.vertices.map(function (v) { return v.clone(); }), this.shared, this.plane.clone());
+      var p = new Polygon(this.vertices.map(function (v) { return v.clone(); }), this.shared, this.plane.clone());
+      p.surf = this.surf;
+      return p;
     },
     flip: function () {
       this.vertices.reverse();
@@ -451,6 +457,35 @@ var CSG = (function () {
   }
   function flipAll(polygons) { for (var i = 0; i < polygons.length; i++) polygons[i].flip(); return polygons; }
 
+  // Analytic surface records under an affine point transform (rigid motions, mirrors, uniform scales): a facet record
+  // { s: surface, P?, Q?, e0?, dphi? } whose surface { t, o, d, r?, R?, k? } has an axis point `o` and unit axis `d`.
+  // Points move with fn, directions with fn(o + d) − fn(o); lengths (r, R, P, Q) scale with it and a mirror reverses
+  // the angular sense (dphi). One record maps to one copy per transform, so facets of one surface still share it.
+  function mapSurf(F, fn, flip, memo) {
+    if (F._m) return F._m;
+    var S = F.s, S2 = S._m;
+    function V(a) { return new Vector(a[0], a[1], a[2]); }
+    function A(v) { return [v.x, v.y, v.z]; }
+    var o = fn(V(S.o)), dd = fn(V([S.o[0] + S.d[0], S.o[1] + S.d[1], S.o[2] + S.d[2]])).minus(o), lam = dd.length();
+    if (!S2) {
+      S2 = {};
+      for (var k in S) if (S.hasOwnProperty(k) && k !== '_m') S2[k] = S[k];
+      S2.o = A(o); S2.d = A(dd.dividedBy(lam));
+      if (S.r != null) S2.r = S.r * lam;
+      if (S.R != null) S2.R = S.R * lam;
+      S._m = S2; memo.push(S);
+    }
+    var F2 = {};
+    for (var j in F) if (F.hasOwnProperty(j) && j !== '_m') F2[j] = F[j];
+    F2.s = S2;
+    if (F.P) F2.P = [F.P[0] * lam, F.P[1] * lam];
+    if (F.Q) F2.Q = [F.Q[0] * lam, F.Q[1] * lam];
+    if (F.e0) { var e = fn(V([S.o[0] + F.e0[0], S.o[1] + F.e0[1], S.o[2] + F.e0[2]])).minus(o); F2.e0 = A(e.dividedBy(e.length())); }
+    if (F.dphi != null && flip) F2.dphi = -F.dphi;
+    F._m = F2; memo.push(F);
+    return F2;
+  }
+
   function CSG() { this.polygons = []; this.bounds = null; }
   CSG.fromPolygons = function (polygons) {
     var csg = new CSG();
@@ -559,14 +594,15 @@ var CSG = (function () {
     },
     // Apply a point transform. `flip` must be true for reflections (negative determinant).
     transform: function (fn, flip) {
-      var out = [];
+      var out = [], memo = [];
       for (var i = 0; i < this.polygons.length; i++) {
         var p = this.polygons[i];
         var vs = p.vertices.map(function (v) { return new Vertex(fn(v.pos)); });
         if (flip) vs.reverse();
         var np = Polygon.tryCreate(vs, p.shared);
-        if (np) out.push(np);
+        if (np) { if (p.surf) np.surf = mapSurf(p.surf, fn, flip, memo); out.push(np); }
       }
+      for (var m = 0; m < memo.length; m++) delete memo[m]._m;
       return CSG.fromPolygons(out);
     },
     // Keep the part of the solid on the front side of a plane (normal · p >= w), closed by a planar cap. Built as the
@@ -639,16 +675,23 @@ var CSG = (function () {
   //   { verts: Float64Array(3·V)  every vertex of every polygon in order (x, y, z),
   //     counts: Int32Array(P)     vertex count of each polygon,
   //     planes: Float64Array(4·P) each polygon's plane as nx, ny, nz, w (copied, never recomputed),
-  //     shared: Array(P) | null   the polygons' `shared` tags (feature ids or undefined), null when none is set }
+  //     shared: Array(P) | null   the polygons' `shared` tags (feature ids or undefined), null when none is set,
+  //     surfs: Array | null, surfIdx: Int32Array(P) | null   the distinct analytic surface records and each polygon's
+  //                               index into them (-1 for a planar face); null when no polygon has one }
   // unpack(obj) rebuilds the same polygons with the same vertex order and planes, so volume() of the round trip is
   // bit-identical and booleans on the result behave exactly as on the original.
   CSG.prototype.pack = function () {
     var polys = this.polygons, P = polys.length, V = 0, i, j;
     for (i = 0; i < P; i++) V += polys[i].vertices.length;
     var verts = new Float64Array(3 * V), counts = new Int32Array(P), planes = new Float64Array(4 * P);
-    var shared = null, k = 0;
+    var shared = null, k = 0, surfs = null, surfIdx = null;
     for (i = 0; i < P; i++) {
       var p = polys[i], vs = p.vertices;
+      if (p.surf) {
+        if (!surfs) { surfs = []; surfIdx = new Int32Array(P); for (j = 0; j < P; j++) surfIdx[j] = -1; }
+        if (p.surf._pk == null) { p.surf._pk = surfs.length; surfs.push(p.surf); }
+        surfIdx[i] = p.surf._pk;
+      }
       counts[i] = vs.length;
       for (j = 0; j < vs.length; j++) {
         var q = vs[j].pos;
@@ -660,7 +703,9 @@ var CSG = (function () {
         shared[i] = p.shared;
       }
     }
-    return { verts: verts, counts: counts, planes: planes, shared: shared };
+    var out = { verts: verts, counts: counts, planes: planes, shared: shared };
+    if (surfs) { for (i = 0; i < surfs.length; i++) delete surfs[i]._pk; out.surfs = surfs; out.surfIdx = surfIdx; }
+    return out;
   };
   CSG.unpack = function (obj) {
     var counts = obj.counts, verts = obj.verts, planes = obj.planes, shared = obj.shared || null;
@@ -669,14 +714,18 @@ var CSG = (function () {
       var vs = [];
       for (var j = 0; j < counts[i]; j++) { vs.push(new Vertex(new Vector(verts[k], verts[k + 1], verts[k + 2]))); k += 3; }
       var plane = new Plane(new Vector(planes[4 * i], planes[4 * i + 1], planes[4 * i + 2]), planes[4 * i + 3]);
-      polys.push(new Polygon(vs, shared ? shared[i] : undefined, plane));
+      var np = new Polygon(vs, shared ? shared[i] : undefined, plane);
+      if (obj.surfIdx && obj.surfIdx[i] >= 0) np.surf = obj.surfs[obj.surfIdx[i]];
+      polys.push(np);
     }
     return CSG.fromPolygons(polys);
   };
   // The ArrayBuffers inside a packed solid, for postMessage's transfer list (the sender's copy is detached after
   // the transfer, so only pass a packed object you are done with).
   CSG.packTransferables = function (packed) {
-    return [packed.verts.buffer, packed.counts.buffer, packed.planes.buffer];
+    var out = [packed.verts.buffer, packed.counts.buffer, packed.planes.buffer];
+    if (packed.surfIdx) out.push(packed.surfIdx.buffer);
+    return out;
   };
 
   CSG.Vector = Vector;

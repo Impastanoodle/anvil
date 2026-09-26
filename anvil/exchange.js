@@ -11,10 +11,11 @@
 //   export3MF(model, build?, opts?)  -> Uint8Array of a 3MF package (stored zip): 3D/3dmodel.model in the model's units,
 //                                       one mesh object per body, assemblies as build items with transforms
 //   exportSTEP(model, build?, opts?) -> STEP AP214 text: one MANIFOLD_SOLID_BREP per body (CLOSED_SHELL of ADVANCED_FACEs
-//                                       on PLANEs, straight EDGE_CURVEs), products named after the parts, assemblies as
-//                                       NEXT_ASSEMBLY_USAGE_OCCURRENCEs with placements
-// Imports turn a file into solids ({ name, positions: [x, y, z, …], triangles: [i, j, k, …] }, outward, in the target
-// model's units):
+//                                       on PLANEs and, for true curves, CYLINDRICAL / CONICAL / SPHERICAL / TOROIDAL
+//                                       surfaces; LINE and CIRCLE EDGE_CURVEs), products named after the parts,
+//                                       assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs with placements
+// Imports turn a file into solids ({ name, positions: [x, y, z, …], triangles: [i, j, k, …], curves? }, outward, in the
+// target model's units; `curves` holds the analytic surface records of a STEP file's curved faces, see curvesOf):
 //   importSTEP(text, opts?), importSTL(data, opts?), importOBJ(text, opts?), import3MF(bytes, opts?)
 //   importFile(fileName, data, opts?) -> { format, name, file, units, solids, warnings, stats } by extension (or content);
 //   opts.units: the target model's 'mm' | 'in' (default mm; 'auto' keeps a STEP / 3MF file's inches), opts.sourceUnits:
@@ -140,7 +141,11 @@ var Exchange = (function () {
         if (idx[idx.length - 1] !== i) idx.push(i);
       });
       while (idx.length > 1 && idx[0] === idx[idx.length - 1]) idx.pop();
-      if (idx.length >= 3) polys.push({ idx: idx, n: [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], w: p.plane.w });
+      if (idx.length >= 3) {
+        var q = { idx: idx, n: [p.plane.normal.x, p.plane.normal.y, p.plane.normal.z], w: p.plane.w };
+        if (p.surf) q.srf = p.surf; // analytic surface record (true curves): carried to mesh.triSurf
+        polys.push(q);
+      }
     });
     splitTJunctions(pos, polys);
     return fanPolygons(pos, polys);
@@ -199,8 +204,11 @@ var Exchange = (function () {
     }
   }
   function lowerBound(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
+  // A polygon's `srf` (a surface record or tag) is copied to every triangle made from it: mesh.triSurf[t] (null for
+  // untagged polygons); triSurf is only present when some polygon has one.
   function fanPolygons(pos, polys) {
     var tris = [], faces = [], fmap = {}, vol = 0;
+    var triSurf = polys.some(function (p) { return p.srf != null; }) ? [] : null;
     function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
     polys.forEach(function (p) {
       var idx = p.idx, n = idx.length, collinear = false;
@@ -215,6 +223,7 @@ var Exchange = (function () {
       function tri(a, b, c) {
         var t = tris.length / 3;
         tris.push(a, b, c); face.tris.push(t);
+        if (triSurf) triSurf.push(p.srf != null ? p.srf : null);
         vol += dot(P(a), cross(P(b), P(c))) / 6;
       }
       if (n === 3) tri(idx[0], idx[1], idx[2]);
@@ -231,7 +240,9 @@ var Exchange = (function () {
     var dir = {}, open = 0;
     for (var t = 0; t < tris.length; t += 3) for (var e = 0; e < 3; e++) dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] = (dir[tris[t + e] + '>' + tris[t + (e + 1) % 3]] || 0) + 1;
     Object.keys(dir).forEach(function (k) { var ab = k.split('>'); if (!dir[ab[1] + '>' + ab[0]]) open++; });
-    return { positions: pos, triangles: tris, faces: faces, openEdges: open, volume: vol };
+    var res = { positions: pos, triangles: tris, faces: faces, openEdges: open, volume: vol };
+    if (triSurf) res.triSurf = triSurf;
+    return res;
   }
   function meshBounds(mesh, T) {
     var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity], p = mesh.positions;
@@ -600,9 +611,11 @@ var Exchange = (function () {
   }
 
   // ------------------------------------------------------------------ STEP AP214 export
-  // Faceted-exact B-rep: each planar face of a body is an ADVANCED_FACE on a PLANE, bounded by EDGE_LOOPs of straight
-  // EDGE_CURVEs (LINE) shared with the neighbouring faces; each body is a MANIFOLD_SOLID_BREP over a CLOSED_SHELL.
-  // Split points that only two faces share (collinear, left by CSG splits) are dropped, so edges come out whole.
+  // Each planar face of a body is an ADVANCED_FACE on a PLANE, bounded by EDGE_LOOPs of EDGE_CURVEs shared with the
+  // neighbouring faces; each body is a MANIFOLD_SOLID_BREP over a CLOSED_SHELL. Split points that only two faces share
+  // (collinear, left by CSG splits) are dropped, so edges come out whole. A body without analytic surface records
+  // (all planar) is written by writeBrep below exactly as before true curves; one with them by writeBrepAnalytic
+  // (curved faces on their true surfaces, see "STEP export of true curved faces").
   function faceLoops(mesh) {
     var tri = mesh.triangles, faces = [];
     mesh.faces.forEach(function (f) {
@@ -689,6 +702,7 @@ var Exchange = (function () {
   function stepVec(v) { return stepList(v.map(stepReal)); }
 
   function writeBrep(W, mesh, name, T) {
+    if (!T && mesh.triSurf) return writeBrepAnalytic(W, mesh, name);
     T = T || null;
     var P = function (i) { var q = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]]; return T ? tfPoint(T, q) : q; };
     var vp = {}, edges = {};
@@ -715,6 +729,373 @@ var Exchange = (function () {
     });
     return W.add('MANIFOLD_SOLID_BREP(' + stepString(name) + ',' + W.add('CLOSED_SHELL(\'\',' + stepList(faceIds) + ')') + ')');
   }
+
+  // ------------------------------------------------------------------ STEP export of true curved faces
+  // A body whose polygons carry analytic surface records (kernel.js "analytic surface records") is written with its
+  // curved faces on their true surfaces: one ADVANCED_FACE per connected patch of a cylinder, cone, sphere or torus
+  // (CYLINDRICAL_ / CONICAL_ / SPHERICAL_ / TOROIDAL_SURFACE), bounded by EDGE_CURVEs on CIRCLEs where the patch meets
+  // a face perpendicular to its axis (caps, hole rims and bottoms, steps) and on LINEs along its rulings. The planar
+  // faces use the same CIRCLE edges in their loops. Patch shapes, as OpenCascade writes them:
+  //   band   between two full circles (a boss, a hole, a sphere or torus zone): one EDGE_LOOP circle, seam, circle,
+  //          seam (the seam a LINE, or a meridian CIRCLE arc on spheres and tori, used twice by the face)
+  //   cap    one full circle and an apex or pole (a cone to its tip, a hemisphere): circle, seam, seam
+  //   closed a whole sphere (VERTEX_LOOP at its pole) or torus (its two seam circles, each used twice)
+  //   plain  cylinders and cones that do not wrap around the axis (partial revolves, fillets): their own loops of
+  //          arcs and rulings
+  // Seams and the vertex of a full circle sit at the circle's angle 0: its reference direction is the world x axis
+  // (else y) projected into its plane, so every circle of one axis shares it. A patch whose boundary is not made of
+  // such circles and rulings (a cylinder cut by an oblique plane, crossing holes) keeps its planar facets.
+  function canonDir(d) { var s = (d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)))) ? -1 : 1; return scale(d, s); }
+  function xdirOf(n) {
+    var ws = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    for (var i = 0; i < 3; i++) { var t = sub(ws[i], scale(n, dot(ws[i], n))); if (len(t) > 1e-6) return norm(t); }
+    return [1, 0, 0];
+  }
+  function qk(v) { return Math.round(v * 1e5); }
+  function circleOf(center, normal, radius) {
+    var n = canonDir(norm(normal));
+    return { center: center, normal: n, radius: radius, xdir: xdirOf(n), key: center.map(qk).join(',') + '|' + n.map(qk).join(',') + '|' + qk(radius) };
+  }
+  // axial coordinate z, distance rho from the axis and radial vector v of a point, for a surface record
+  function axial(S, X) { var rel = sub(X, S.o), z = dot(rel, S.d), v = sub(rel, scale(S.d, z)); return { z: z, rho: len(v), v: v }; }
+  // radii of the surface's circles at axial level z
+  function latRadii(S, z) {
+    if (S.t === 'cyl') return [S.r];
+    if (S.t === 'cone') return [S.r + S.k * z];
+    var h = S.r * S.r - z * z;
+    if (h < -1e-9 * S.r * S.r) return [];
+    h = Math.sqrt(Math.max(0, h));
+    if (S.t === 'sph') return [h];
+    return [Math.abs(S.R) + h, Math.abs(S.R) - h];
+  }
+  // classifyEdge(S, A, B, tol) -> { t: 'c', c: circle, lat } | { t: 'l' } | null: the mesh edge AB as a chord of a
+  // circle of the surface (a latitude circle, or a meridian arc of a sphere / torus), a segment of a ruling, or neither
+  function classifyEdge(S, A, B, tol) {
+    var a = axial(S, A), b = axial(S, B);
+    if (Math.abs(a.z - b.z) < tol) {
+      var z = (a.z + b.z) / 2, rs = latRadii(S, z);
+      for (var i = 0; i < rs.length; i++) if (rs[i] > tol && Math.abs(a.rho - rs[i]) < tol && Math.abs(b.rho - rs[i]) < tol) return { t: 'c', c: circleOf(add(S.o, scale(S.d, z)), S.d, rs[i]), lat: true };
+    }
+    if (S.t === 'cyl') {
+      if (Math.abs(a.rho - S.r) < tol && Math.abs(b.rho - S.r) < tol && len(cross(sub(B, A), S.d)) < tol) return { t: 'l' };
+      return null;
+    }
+    if (S.t === 'cone') {
+      if (Math.abs(a.rho - (S.r + S.k * a.z)) > tol || Math.abs(b.rho - (S.r + S.k * b.z)) > tol) return null;
+      if (a.rho > tol && b.rho > tol && (dot(a.v, b.v) <= 0 || len(cross(scale(a.v, 1 / a.rho), scale(b.v, 1 / b.rho))) * Math.max(a.rho, b.rho) > tol)) return null;
+      return { t: 'l' };
+    }
+    // spheres and tori: an arc in a meridian half-plane
+    var e = norm(a.rho >= b.rho ? a.v : b.v), m = cross(e, S.d);
+    if (Math.abs(dot(sub(A, S.o), m)) > tol || Math.abs(dot(sub(B, S.o), m)) > tol) return null;
+    if ((a.rho > tol && dot(a.v, e) <= 0) || (b.rho > tol && dot(b.v, e) <= 0)) return null;
+    var C = S.t === 'tor' ? add(S.o, scale(e, Math.abs(S.R))) : S.o;
+    if (Math.abs(len(sub(A, C)) - S.r) > tol || Math.abs(len(sub(B, C)) - S.r) > tol) return null;
+    return { t: 'c', c: circleOf(C, m, S.r), lat: false };
+  }
+  // the loops (vertex lists) of a set of triangles: directed edges without a reverse twin in the set, chained
+  function trisLoops(tri, tris) {
+    var dir = {};
+    tris.forEach(function (t) { for (var e = 0; e < 3; e++) { var k = tri[t * 3 + e] + '>' + tri[t * 3 + (e + 1) % 3]; dir[k] = (dir[k] || 0) + 1; } });
+    var next = {}, loops = [];
+    Object.keys(dir).forEach(function (k) {
+      var ab = k.split('>'), a = +ab[0], b = +ab[1], twin = dir[b + '>' + a] || 0;
+      for (var r = 0; r < dir[k] - twin; r++) (next[a] = next[a] || []).push(b);
+    });
+    Object.keys(next).forEach(function (s) {
+      s = +s;
+      while (next[s] && next[s].length) {
+        var loop = [s], cur = next[s].pop(), guard = 0;
+        while (cur !== s && guard++ < 1e6) {
+          loop.push(cur);
+          if (!next[cur] || !next[cur].length) break;
+          cur = next[cur].pop();
+        }
+        if (loop.length >= 3) loops.push(loop);
+      }
+    });
+    return loops;
+  }
+
+  function writeBrepAnalytic(W, mesh, name) {
+    var pos = mesh.positions, tri = mesh.triangles, nT = tri.length / 3, nF = mesh.faces.length;
+    function P(i) { return [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]; }
+    var ext = 1;
+    for (var q = 0; q < pos.length; q++) ext = Math.max(ext, Math.abs(pos[q]));
+    var tol = 1e-7 * ext;
+    var triPlane = new Int32Array(nT);
+    mesh.faces.forEach(function (f, fi) { f.tris.forEach(function (t) { triPlane[t] = fi; }); });
+    // distinct surfaces (one per analytic surface key), and each triangle's
+    var recs = [], triRec = new Int32Array(nT), lastF = null, lastI = -1;
+    for (var t = 0; t < nT; t++) {
+      var F = mesh.triSurf[t];
+      if (!F) { triRec[t] = -1; continue; }
+      if (F !== lastF) { lastF = F; lastI = recs.indexOf(F); if (lastI < 0) { lastI = recs.length; recs.push(F); } }
+      triRec[t] = lastI;
+    }
+    var sGroups = K.curveSurfaces(recs.map(function (F) { return { surf: F }; })), recSurf = [];
+    sGroups.forEach(function (g, gi) { g.polys.forEach(function (fp) { recSurf[recs.indexOf(fp.surf)] = gi; }); });
+    var surfaces = sGroups.map(function (g) { return g.surf; });
+    // connected patches of each surface: union-find over triangles of one surface sharing an edge
+    var par = new Int32Array(nT), edgeTris = {};
+    for (t = 0; t < nT; t++) par[t] = t;
+    function root(x) { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; }
+    for (t = 0; t < nT; t++) {
+      if (triRec[t] < 0) continue;
+      for (var e = 0; e < 3; e++) {
+        var a = tri[t * 3 + e], b = tri[t * 3 + (e + 1) % 3], k = a < b ? a + '_' + b : b + '_' + a, o = edgeTris[k];
+        if (o == null) edgeTris[k] = t;
+        else if (recSurf[triRec[o]] === recSurf[triRec[t]]) { var ra = root(o), rb = root(t); if (ra !== rb) par[ra] = rb; }
+      }
+    }
+    var comps = [], compOf = new Int32Array(nT), byRoot = {};
+    for (t = 0; t < nT; t++) {
+      if (triRec[t] < 0) { compOf[t] = -1; continue; }
+      var r0 = root(t);
+      if (byRoot[r0] == null) { byRoot[r0] = comps.length; comps.push({ surf: surfaces[recSurf[triRec[t]]], tris: [] }); }
+      compOf[t] = byRoot[r0];
+      comps[byRoot[r0]].tris.push(t);
+    }
+    comps.forEach(function (c) {
+      var S = c.surf;
+      c.ok = (S.t === 'cyl' || S.t === 'cone' || S.t === 'sph' || S.t === 'tor') && S.r > tol && (S.t !== 'tor' || Math.abs(S.R) > S.r + tol) && (S.t !== 'cone' || Math.abs(S.k) > 1e-9);
+    });
+
+    var groups, loopsOf, owner, ecls, shape;
+    function ek(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+    function build() {
+      // faces: analytic patches (group nF + comp) and planes (group = the mesh face index)
+      groups = [];
+      for (var g = 0; g < nF + comps.length; g++) groups.push([]);
+      for (var t2 = 0; t2 < nT; t2++) groups[compOf[t2] >= 0 && comps[compOf[t2]].ok ? nF + compOf[t2] : triPlane[t2]].push(t2);
+      loopsOf = groups.map(function (ts) { return ts.length ? trisLoops(tri, ts) : []; });
+      // drop split points: a vertex used by exactly two loop occurrences in the whole body, collinear in both
+      var uses = {};
+      loopsOf.forEach(function (ls) { ls.forEach(function (l) { l.forEach(function (v) { uses[v] = (uses[v] || 0) + 1; }); }); });
+      loopsOf = loopsOf.map(function (ls) {
+        return ls.map(function (l) {
+          var changed = true;
+          while (changed && l.length > 3) {
+            changed = false;
+            for (var i = 0; i < l.length && l.length > 3; i++) {
+              var v = l[i];
+              if (uses[v] !== 2) continue;
+              var A = P(l[(i + l.length - 1) % l.length]), B = P(v), C = P(l[(i + 1) % l.length]);
+              var d1 = sub(B, A), d2 = sub(C, B);
+              if (len(cross(d1, d2)) <= len(d1) * len(d2) * 1e-9 && dot(d1, d2) > 0) { l.splice(i, 1); changed = true; i--; }
+            }
+          }
+          return l;
+        });
+      });
+      owner = {};
+      loopsOf.forEach(function (ls, g) { ls.forEach(function (l) { for (var i = 0; i < l.length; i++) owner[l[i] + '>' + l[(i + 1) % l.length]] = g; }); });
+      ecls = {};
+      shape = {};
+      var failed = false;
+      comps.forEach(function (c, ci) {
+        if (!c.ok) return;
+        var g = nF + ci, S = c.surf, bad = false;
+        loopsOf[g].forEach(function (l) {
+          for (var i = 0; i < l.length && !bad; i++) {
+            var a = l[i], b = l[(i + 1) % l.length], A = P(a), B = P(b), cl = classifyEdge(S, A, B, tol), nb = owner[b + '>' + a];
+            if (!cl || nb == null) { bad = true; break; }
+            if (nb >= nF) {
+              var c2 = classifyEdge(comps[nb - nF].surf, A, B, tol);
+              if (!c2 || c2.t !== cl.t || (cl.t === 'c' && c2.c.key !== cl.c.key)) bad = true;
+            } else if (cl.t === 'c') {
+              var pf = mesh.faces[nb], pn = norm(pf.normal);
+              if (Math.abs(Math.abs(dot(pn, cl.c.normal)) - 1) > 1e-9 || Math.abs(dot(pn, cl.c.center) - pf.w) > tol) bad = true;
+            }
+            ecls[ek(a, b)] = cl;
+          }
+        });
+        var sh = bad ? null : patchShape(c, loopsOf[g]);
+        if (!sh) { c.ok = false; failed = true; } else shape[g] = sh;
+      });
+      return !failed;
+    }
+    // the shape of an analytic patch from its loops: band / cap / closed / plain, or null (keep the facets)
+    function patchShape(c, loops) {
+      var S = c.surf, nC = canonDir(S.d), xd = xdirOf(nC), yd = cross(nC, xd), closed = [], other = [];
+      loops.forEach(function (l) {
+        var first = ecls[ek(l[0], l[1])], nb0 = owner[l[1] + '>' + l[0]], all = first && first.t === 'c' && first.lat;
+        for (var i = 1; i < l.length && all; i++) {
+          var cl = ecls[ek(l[i], l[(i + 1) % l.length])];
+          if (!cl || cl.t !== 'c' || cl.c.key !== first.c.key || owner[l[(i + 1) % l.length] + '>' + l[i]] !== nb0) all = false;
+        }
+        (all ? closed : other).push({ loop: l, circle: all ? first.c : null });
+      });
+      var onAxis = null;
+      c.tris.forEach(function (t2) { for (var e2 = 0; e2 < 3; e2++) { var v = tri[t2 * 3 + e2]; if (!onAxis && axial(S, P(v)).rho < tol) onAxis = P(v); } });
+      if (!closed.length && !other.length) return S.t === 'sph' || S.t === 'tor' ? { kind: 'closed' } : null;
+      if (!closed.length) {
+        if (S.t !== 'cyl' && S.t !== 'cone') return null;
+        // every loop must stay on one side of the axis (winding number 0)
+        for (var k = 0; k < other.length; k++) {
+          var l = other[k].loop, sum = 0, prev = null, first2 = null;
+          for (var i = 0; i < l.length; i++) {
+            var ax = axial(S, P(l[i]));
+            if (ax.rho < tol) return null;
+            var ang = Math.atan2(dot(ax.v, yd), dot(ax.v, xd));
+            if (prev == null) first2 = ang; else sum += wrapAngle(ang - prev);
+            prev = ang;
+          }
+          sum += wrapAngle(first2 - prev);
+          if (Math.abs(sum) > Math.PI) return null;
+        }
+        return { kind: 'plain' };
+      }
+      if (other.length) return null;
+      if (closed.length === 2 && closed[0].circle.key !== closed[1].circle.key) return { kind: 'band', loops: closed };
+      if (closed.length === 1 && onAxis && (S.t === 'cone' || S.t === 'sph')) {
+        var apex = S.t === 'cone' ? add(S.o, scale(S.d, -S.r / S.k)) : add(S.o, scale(nC, dot(sub(onAxis, S.o), nC) > 0 ? S.r : -S.r));
+        return { kind: 'cap', loops: closed, apex: apex };
+      }
+      return null;
+    }
+    for (var iter = 0; iter < comps.length + 2 && !build(); iter++) { /* a patch fell back to facets: rebuild the topology */ }
+
+    // ---- writing
+    var vp = {}, cv = {}, cg = {}, chains = {};
+    function pt(p) { return W.add('CARTESIAN_POINT(\'\',' + stepVec(p) + ')'); }
+    function dirE(d) { return W.add('DIRECTION(\'\',' + stepVec(d) + ')'); }
+    function axisE(o, z, x) { return W.add('AXIS2_PLACEMENT_3D(\'\',' + pt(o) + ',' + dirE(z) + ',' + dirE(x) + ')'); }
+    function vertex(i) { return vp[i] || (vp[i] = W.add('VERTEX_POINT(\'\',' + pt(P(i)) + ')')); }
+    function vertexAt(key, p) { return cv[key] || (cv[key] = W.add('VERTEX_POINT(\'\',' + pt(p) + ')')); }
+    function circleVertex(c) { return vertexAt('c' + c.key, add(c.center, scale(c.xdir, c.radius))); }
+    function circleE(c) { return cg[c.key] || (cg[c.key] = W.add('CIRCLE(\'\',' + axisE(c.center, c.normal, c.xdir) + ',' + stepReal(c.radius) + ')')); }
+    function lineE(A, B) { var d = sub(B, A); return W.add('LINE(\'\',' + pt(A) + ',' + W.add('VECTOR(\'\',' + dirE(norm(d)) + ',' + stepReal(len(d)) + ')') + ')'); }
+    function oe(id, fwd) { return W.add('ORIENTED_EDGE(\'\',*,*,' + id + ',' + (fwd ? '.T.' : '.F.') + ')'); }
+    function ccw(c, A, B) { return dot(cross(sub(A, c.center), sub(B, c.center)), c.normal) > 0; }
+    // the oriented edges of one loop: runs of chords of one circle between the same two faces become one EDGE_CURVE
+    function loopEdges(l, g) {
+      var n = l.length, cls = [], nbs = [], i;
+      for (i = 0; i < n; i++) { cls.push(ecls[ek(l[i], l[(i + 1) % n])] || { t: 'l' }); nbs.push(owner[l[(i + 1) % n] + '>' + l[i]]); }
+      function same(i1, i2) { return cls[i1].t === 'c' && cls[i2].t === 'c' && cls[i1].c.key === cls[i2].c.key && nbs[i1] === nbs[i2]; }
+      var breaks = [];
+      for (i = 0; i < n; i++) if (!same((i + n - 1) % n, i)) breaks.push(i);
+      if (!breaks.length) return [closedCircleEdge(cls[0].c, P(l[0]), P(l[1]))];
+      var out = [];
+      for (var k = 0; k < breaks.length; k++) {
+        var s = breaks[k], e = breaks[(k + 1) % breaks.length], vs = [];
+        if (e <= s) e += n;
+        for (var j = s; j <= e; j++) vs.push(l[j % n]);
+        out.push(openEdge(vs, cls[s]));
+      }
+      return out;
+    }
+    function openEdge(vs, cl) {
+      var fk = vs.join(','), rk = vs.slice().reverse().join(','), key = fk < rk ? fk : rk, ch = chains[key];
+      if (ch) return oe(ch.id, ch.fk === fk);
+      var A = P(vs[0]), B = P(vs[1]), geom, sense = '.T.';
+      if (cl.t === 'c') { geom = circleE(cl.c); sense = ccw(cl.c, A, B) ? '.T.' : '.F.'; } else geom = lineE(A, P(vs[vs.length - 1]));
+      ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + vertex(vs[0]) + ',' + vertex(vs[vs.length - 1]) + ',' + geom + ',' + sense + ')'), fk: fk };
+      return oe(ch.id, true);
+    }
+    function closedCircleEdge(c, A, B) {
+      var dirCCW = ccw(c, A, B), key = 'C' + c.key, ch = chains[key];
+      if (ch) return oe(ch.id, ch.ccw === dirCCW);
+      var V = circleVertex(c);
+      ch = chains[key] = { id: W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + circleE(c) + ',' + (dirCCW ? '.T.' : '.F.') + ')'), ccw: dirCCW };
+      return oe(ch.id, true);
+    }
+    function edgeLoop(oes) { return W.add('EDGE_LOOP(\'\',' + stepList(oes) + ')'); }
+
+    // the seam of a band or cap from V1 (on circle c1) to the point p2: a ruling LINE, or a meridian arc of a sphere /
+    // torus, the one that crosses the patch
+    function seamEdge(c, S, V1ref, p1, V2ref, p2) {
+      if (S.t === 'cyl' || S.t === 'cone') return W.add('EDGE_CURVE(\'\',' + V1ref + ',' + V2ref + ',' + lineE(p1, p2) + ',.T.)');
+      var nC = canonDir(S.d), xd = xdirOf(nC), Cr = S.t === 'tor' ? Math.abs(S.R) : 0, C = add(S.o, scale(xd, Cr));
+      function beta(p) { var ax = axial(S, p), z = dot(sub(p, S.o), nC); return Math.atan2(z, ax.rho - Cr); }
+      var b1 = beta(p1), b2 = beta(p2), span = mod2pi(b2 - b1), inside = 0, total = 0;
+      c.tris.forEach(function (t2) {
+        var cen = scale(add(add(P(tri[t2 * 3]), P(tri[t2 * 3 + 1])), P(tri[t2 * 3 + 2])), 1 / 3);
+        total++;
+        if (mod2pi(beta(cen) - b1) < span) inside++;
+      });
+      var circ = circleOf(C, cross(xd, nC), S.r);
+      circ.normal = cross(xd, nC); circ.xdir = xd; circ.key += '|seam';
+      return W.add('EDGE_CURVE(\'\',' + V1ref + ',' + V2ref + ',' + W.add('CIRCLE(\'\',' + axisE(C, circ.normal, xd) + ',' + stepReal(S.r) + ')') + ',' + (inside * 2 >= total ? '.T.' : '.F.') + ')');
+    }
+    function surfaceE(c) {
+      var S = c.surf, nC = canonDir(S.d), xd = xdirOf(nC);
+      // same_sense: the true surface normal against the facets' outward normal, on the largest triangle
+      var best = -1, bt = c.tris[0];
+      c.tris.forEach(function (t2) { var A = P(tri[t2 * 3]), ar = len(cross(sub(P(tri[t2 * 3 + 1]), A), sub(P(tri[t2 * 3 + 2]), A))); if (ar > best) { best = ar; bt = t2; } });
+      var X = scale(add(add(P(tri[bt * 3]), P(tri[bt * 3 + 1])), P(tri[bt * 3 + 2])), 1 / 3), nt = norm(mesh.faces[triPlane[bt]].normal);
+      var ax = axial(S, X), er = norm(ax.v), grad;
+      if (S.t === 'cyl') grad = er;
+      else if (S.t === 'cone') grad = sub(er, scale(S.d, S.k));
+      else if (S.t === 'sph') grad = sub(X, S.o);
+      else grad = sub(X, add(S.o, add(scale(S.d, ax.z), scale(er, Math.abs(S.R)))));
+      var sense = dot(nt, grad) > 0 ? '.T.' : '.F.', ref;
+      if (S.t === 'cyl') ref = W.add('CYLINDRICAL_SURFACE(\'\',' + axisE(S.o, nC, xd) + ',' + stepReal(S.r) + ')');
+      else if (S.t === 'cone') {
+        var zs = 0, nz = 0;
+        c.tris.forEach(function (t2) { for (var e2 = 0; e2 < 3; e2++) { zs += axial(S, P(tri[t2 * 3 + e2])).z; nz++; } });
+        var zr = zs / nz, cd = S.k > 0 ? S.d : scale(S.d, -1);
+        ref = W.add('CONICAL_SURFACE(\'\',' + axisE(add(S.o, scale(S.d, zr)), cd, xdirOf(cd)) + ',' + stepReal(S.r + S.k * zr) + ',' + stepReal(Math.atan(Math.abs(S.k))) + ')');
+      } else if (S.t === 'sph') ref = W.add('SPHERICAL_SURFACE(\'\',' + axisE(S.o, nC, xd) + ',' + stepReal(S.r) + ')');
+      else ref = W.add('TOROIDAL_SURFACE(\'\',' + axisE(S.o, nC, xd) + ',' + stepReal(Math.abs(S.R)) + ',' + stepReal(S.r) + ')');
+      return { ref: ref, sense: sense };
+    }
+    function firstEdge(l) { return [P(l[0]), P(l[1])]; }
+
+    var faceIds = [];
+    groups.forEach(function (ts, g) {
+      if (!ts.length || (g < nF && !loopsOf[g].length)) return;
+      if (g < nF) {
+        // a planar face: every counter-clockwise loop (seen along the normal) is an outer bound, every clockwise loop a
+        // hole of the smallest outer loop that contains it
+        var f = mesh.faces[g], n = norm(f.normal), fr = frameFor(n);
+        var ls = loopsOf[g], l2 = ls.map(function (l) { return l.map(function (v) { var p = P(v); return [dot(p, fr.u), dot(p, fr.v)]; }); });
+        var outers = [], holes = [];
+        ls.forEach(function (l, i) { var A = area2(l2[i]); (A >= 0 ? outers : holes).push({ loop: l, pts: l2[i], area: Math.abs(A), holes: [] }); });
+        holes.forEach(function (h) {
+          var bestO = null, p0 = h.pts.length > 1 ? [(h.pts[0][0] + h.pts[1][0]) / 2, (h.pts[0][1] + h.pts[1][1]) / 2] : h.pts[0];
+          outers.forEach(function (o2) { if (pointInPoly2(p0, o2.pts) && (!bestO || o2.area < bestO.area)) bestO = o2; });
+          (bestO || outers[0] || { holes: [] }).holes.push(h);
+        });
+        outers.forEach(function (o2) {
+          var bounds = [W.add('FACE_OUTER_BOUND(\'\',' + edgeLoop(loopEdges(o2.loop, g)) + ',.T.)')].concat(o2.holes.map(function (h) { return W.add('FACE_BOUND(\'\',' + edgeLoop(loopEdges(h.loop, g)) + ',.T.)'); }));
+          var ax2 = axisE(P(o2.loop[0]), n, fr.u);
+          faceIds.push(W.add('ADVANCED_FACE(\'\',' + stepList(bounds) + ',' + W.add('PLANE(\'\',' + ax2 + ')') + ',.T.)'));
+        });
+        return;
+      }
+      var c = comps[g - nF], S = c.surf, sh = shape[g], bounds = [], sf;
+      if (sh.kind === 'plain') {
+        sf = surfaceE(c);
+        loopsOf[g].forEach(function (l) { bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop(loopEdges(l, g)) + ',.T.)')); });
+      } else if (sh.kind === 'band') {
+        var L1 = sh.loops[0], L2 = sh.loops[1], e1 = loopEdges(L1.loop, g)[0], e2 = loopEdges(L2.loop, g)[0];
+        var p1 = add(L1.circle.center, scale(L1.circle.xdir, L1.circle.radius)), p2 = add(L2.circle.center, scale(L2.circle.xdir, L2.circle.radius));
+        var seam = seamEdge(c, S, circleVertex(L1.circle), p1, circleVertex(L2.circle), p2);
+        sf = surfaceE(c);
+        bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([e1, oe(seam, true), e2, oe(seam, false)]) + ',.T.)'));
+      } else if (sh.kind === 'cap') {
+        var L = sh.loops[0], ec = loopEdges(L.loop, g)[0], pc = add(L.circle.center, scale(L.circle.xdir, L.circle.radius));
+        var sc = seamEdge(c, S, circleVertex(L.circle), pc, vertexAt('apex' + g, sh.apex), sh.apex);
+        sf = surfaceE(c);
+        bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([ec, oe(sc, true), oe(sc, false)]) + ',.T.)'));
+      } else if (S.t === 'sph') {
+        sf = surfaceE(c);
+        bounds.push(W.add('FACE_BOUND(\'\',' + W.add('VERTEX_LOOP(\'\',' + vertexAt('pole' + g, sub(S.o, scale(canonDir(S.d), S.r))) + ')') + ',.T.)'));
+      } else {
+        // a whole torus: the outer circle and the tube circle at angle 0, each used twice
+        var nT2 = canonDir(S.d), xT = xdirOf(nT2), Rt = Math.abs(S.R), V = vertexAt('tor' + g, add(S.o, scale(xT, Rt + S.r)));
+        var u = W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + W.add('CIRCLE(\'\',' + axisE(S.o, nT2, xT) + ',' + stepReal(Rt + S.r) + ')') + ',.T.)');
+        var v = W.add('EDGE_CURVE(\'\',' + V + ',' + V + ',' + W.add('CIRCLE(\'\',' + axisE(add(S.o, scale(xT, Rt)), cross(xT, nT2), xT) + ',' + stepReal(S.r) + ')') + ',.T.)');
+        sf = surfaceE(c);
+        bounds.push(W.add('FACE_BOUND(\'\',' + edgeLoop([oe(u, false), oe(v, false), oe(u, true), oe(v, true)]) + ',.T.)'));
+      }
+      faceIds.push(W.add('ADVANCED_FACE(\'\',' + stepList(bounds) + ',' + sf.ref + ',' + sf.sense + ')'));
+    });
+    return W.add('MANIFOLD_SOLID_BREP(' + stepString(name) + ',' + W.add('CLOSED_SHELL(\'\',' + stepList(faceIds) + ')') + ')');
+  }
+  function wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
+  function mod2pi(a) { a = a % (2 * Math.PI); return a < 0 ? a + 2 * Math.PI : a; }
 
   function exportSTEP(model, build, opts) {
     opts = opts || {};
@@ -937,36 +1318,78 @@ var Exchange = (function () {
     if (toMM == null) { toMM = 1; warnings.push('No length unit in the file; millimetres assumed.'); }
 
     // ---- faces -> triangles
-    var nonPlanar = {}, faceCount = 0;
+    // Edges are discretized once per EDGE_CURVE (cached), so the two faces that share an edge get the same points: a
+    // LINE is its two vertices, a POLYLINE its points, a CIRCLE (arc or full circle) its vertices plus the points of the
+    // circle's canonical grid between them (Kernel.segsForRadius segments per turn, from angle 0 at the world x axis
+    // (else y) projected into the circle's plane), so arcs of one circle agree wherever they are split.
+    // Planar faces are ear clipped; faces on cylinders, cones, spheres and tori are tessellated in rows of latitude
+    // circles (curvedFace) and their triangles carry the surface records kernel.js uses for exact mass properties.
+    var nonPlanar = {}, faceCount = 0, angleUnit = 1;
+    Object.keys(E).forEach(function (id) {
+      var e = E[id], cb = has(e, 'PLANE_ANGLE_UNIT') && args(e, 'CONVERSION_BASED_UNIT');
+      if (cb && /DEG/i.test(String(cb[0]))) angleUnit = Math.PI / 180;
+    });
+    function vertexPoint(ref) { var v = ent(ref), va = v && args(v, 'VERTEX_POINT'); return va ? point(va[1]) : null; }
+    var edgeCache = {};
+    function edgeInfo(ref) {
+      var id = ref && ref.r;
+      if (id == null) return null;
+      if (edgeCache[id]) return edgeCache[id];
+      var ec = ent(ref), ea = ec && args(ec, 'EDGE_CURVE');
+      if (!ea) return null;
+      var p1 = vertexPoint(ea[1]), p2 = vertexPoint(ea[2]), geom = ent(ea[3]), same = !(ea[4] && ea[4].e === 'F');
+      // SURFACE_CURVE / SEAM_CURVE / INTERSECTION_CURVE wrap the 3D curve they lie on
+      while (geom && (geom.t === 'SURFACE_CURVE' || geom.t === 'SEAM_CURVE' || geom.t === 'INTERSECTION_CURVE' || geom.t === 'BOUNDED_SURFACE_CURVE')) geom = ent(geom.a[1]);
+      var info = { id: id, start: p1, end: p2, kind: 'other', type: geom ? geom.t || 'complex' : 'none', pts: [] };
+      if (!p1 || !p2) { info.pts = [p1 || p2].filter(Boolean); return (edgeCache[id] = info); }
+      if (!geom || geom.t === 'LINE') { info.kind = 'line'; info.pts = [p1, p2]; }
+      else if (geom.t === 'POLYLINE') {
+        var mid = (geom.a[1] || []).map(point).filter(Boolean);
+        if (!same) mid.reverse();
+        info.kind = 'poly'; info.pts = [p1].concat(mid.slice(1, -1), [p2]);
+      } else if (geom.t === 'CIRCLE' && +geom.a[2] > 0) {
+        var T = placement(geom.a[1]);
+        info.kind = 'circle';
+        info.circle = { c: T.position, n: [T.rotation[2], T.rotation[5], T.rotation[8]], r: +geom.a[2] };
+        var cp = circlePoints(info.circle, p1, p2, same, toMM);
+        info.pts = cp.pts; info.mid = cp.mid; info.full = cp.full;
+      } else info.pts = [p1, p2];
+      return (edgeCache[id] = info);
+    }
+    // the oriented edges of an EDGE_LOOP: [{ info, fwd }]
+    function loopEdgeList(l) {
+      var list = [];
+      (l.a[1] || []).forEach(function (oeRef) {
+        var oe = ent(oeRef), oa = oe && args(oe, 'ORIENTED_EDGE');
+        if (!oa) return;
+        var info = edgeInfo(oa[3]);
+        if (info) list.push({ info: info, fwd: !(oa[4] && oa[4].e === 'F') });
+      });
+      return list;
+    }
+    function orientedPts(x) { return x.fwd ? x.info.pts : x.info.pts.slice().reverse(); }
     function loopPoints(ref) {
       var e = ent(ref);
       if (!e) return null;
       if (e.t === 'POLY_LOOP') return (e.a[1] || []).map(point).filter(Boolean);
       if (e.t === 'EDGE_LOOP') {
         var pts = [];
-        (e.a[1] || []).forEach(function (oeRef) {
-          var oe = ent(oeRef), oa = oe && args(oe, 'ORIENTED_EDGE');
-          if (!oa) return;
-          var ec = ent(oa[3]), ea = ec && args(ec, 'EDGE_CURVE');
-          var fwd = !(oa[4] && oa[4].e === 'F');
-          if (!ea) return;
-          var v1 = ent(ea[1]), v2 = ent(ea[2]);
-          var p1 = v1 && args(v1, 'VERTEX_POINT') ? point(args(v1, 'VERTEX_POINT')[1]) : null;
-          var p2 = v2 && args(v2, 'VERTEX_POINT') ? point(args(v2, 'VERTEX_POINT')[1]) : null;
-          var geom = ent(ea[3]), mid = [];
-          // SURFACE_CURVE / SEAM_CURVE / INTERSECTION_CURVE wrap the 3D curve they lie on
-          while (geom && (geom.t === 'SURFACE_CURVE' || geom.t === 'SEAM_CURVE' || geom.t === 'INTERSECTION_CURVE' || geom.t === 'BOUNDED_SURFACE_CURVE')) geom = ent(geom.a[1]);
-          if (geom && geom.t === 'POLYLINE') {
-            mid = (geom.a[1] || []).map(point).filter(Boolean);
-            if (ea[4] && ea[4].e === 'F') mid.reverse();
-            mid = mid.slice(1, -1);
-          } else if (geom && geom.t !== 'LINE') { var ct = 'curve ' + (geom.t || 'complex'); nonPlanar[ct] = (nonPlanar[ct] || 0) + 1; }
-          if (fwd) { if (p1) pts.push(p1); pts = pts.concat(mid); }
-          else { if (p2) pts.push(p2); pts = pts.concat(mid.slice().reverse()); }
+        loopEdgeList(e).forEach(function (x) {
+          if (x.info.kind === 'other') { var ct = 'curve ' + x.info.type; nonPlanar[ct] = (nonPlanar[ct] || 0) + 1; }
+          var q = orientedPts(x);
+          pts = pts.concat(q.slice(0, Math.max(1, q.length - 1)));
         });
         return pts;
       }
       return null; // VERTEX_LOOP and others: no area
+    }
+    function surfRecord(surf) {
+      var a = surf.a, T = placement(a[1]), o = T.position, d = [T.rotation[2], T.rotation[5], T.rotation[8]];
+      if (surf.t === 'CYLINDRICAL_SURFACE') return { t: 'cyl', o: o, d: d, r: +a[2] };
+      if (surf.t === 'CONICAL_SURFACE') return { t: 'cone', o: o, d: d, r: +a[2], k: Math.tan(+a[3] * angleUnit) };
+      if (surf.t === 'SPHERICAL_SURFACE') return { t: 'sph', o: o, d: d, r: +a[2] };
+      if (surf.t === 'TOROIDAL_SURFACE') return { t: 'tor', o: o, d: d, R: +a[2], r: +a[3] };
+      return null;
     }
     function faceTriangles(faceRef, out) {
       var f = ent(faceRef);
@@ -981,7 +1404,13 @@ var Exchange = (function () {
           var T = placement(surf.a[1]);
           normal = [T.rotation[2], T.rotation[5], T.rotation[8]];
           if (fa[3] && fa[3].e === 'F') normal = scale(normal, -1);
-        } else if (surf) { nonPlanar[surf.t || 'complex surface'] = (nonPlanar[surf.t || 'complex surface'] || 0) + 1; return; }
+        } else if (surf) {
+          var S = surf.t ? surfRecord(surf) : null;
+          if (S && curvedFace(fa, S, !(fa[3] && fa[3].e === 'F'), out)) return;
+          var key = (surf.t || 'complex surface') + (S ? ' (trimmed by curves other than circles and rulings)' : '');
+          nonPlanar[key] = (nonPlanar[key] || 0) + 1;
+          return;
+        }
       }
       var loops = [], outerIdx = -1;
       (fa[1] || []).forEach(function (bRef) {
@@ -1002,7 +1431,172 @@ var Exchange = (function () {
       }
       if (!normal) normal = norm(newell(loops[outerIdx]));
       if (len(normal) < 0.5) return;
+      var t0 = out.tris.length;
       triangulateFace(loops, outerIdx, normal, out);
+      for (var t = t0; t < out.tris.length; t += 3) out.recs.push(null);
+    }
+    // curvedFace(faceArgs, S, sameSense, out) -> true when the face was tessellated. Supported: bands between two full
+    // latitude circles (cylinder, cone, sphere, torus), caps from one circle to a cone's apex or a sphere's pole,
+    // whole spheres and tori, and cylinder / cone patches bounded by two latitude arcs and two rulings. Seam edges (an
+    // EDGE_CURVE the face uses twice) only say which way round a sphere or torus band goes.
+    function curvedFace(fa, S, sameSense, out) {
+      var loops = [], vloops = [], uses = {}, ok = true;
+      (fa[1] || []).forEach(function (bRef) {
+        var b = ent(bRef), ba = b && (args(b, 'FACE_OUTER_BOUND') || args(b, 'FACE_BOUND')), l = ba && ent(ba[1]);
+        if (!l) { ok = false; return; }
+        if (l.t === 'VERTEX_LOOP') { var vpt = vertexPoint(l.a[1]); if (vpt) vloops.push(vpt); return; }
+        if (l.t !== 'EDGE_LOOP') { ok = false; return; }
+        var list = loopEdgeList(l);
+        list.forEach(function (x) { uses[x.info.id] = (uses[x.info.id] || 0) + 1; });
+        loops.push(list);
+      });
+      if (!ok || !(S.r > 0) || len(S.d) < 0.5) return false;
+      var Cr = S.t === 'tor' ? S.R : 0, ext = Math.max(1, S.r, Math.abs(Cr), len(S.o)), tol = 1e-6 * ext;
+      if (S.t === 'tor' && !(Cr > S.r)) return false;
+      var nc = canonDir(S.d), xc = xdirOf(nc), yc = cross(nc, xc);
+      function ax(p) { var rel = sub(p, S.o), z = dot(rel, S.d), v = sub(rel, scale(S.d, z)); return { z: z, rho: len(v), ang: Math.atan2(dot(v, yc), dot(v, xc)) }; }
+      function onSurface(p) {
+        var a = ax(p);
+        if (S.t === 'cyl') return Math.abs(a.rho - S.r) < tol;
+        if (S.t === 'cone') return Math.abs(a.rho - (S.r + S.k * a.z)) < tol;
+        return Math.abs(Math.hypot(a.rho - Cr, a.z) - S.r) < tol;
+      }
+      var seams = [], lats = [], rulings = [];
+      for (var li = 0; li < loops.length; li++) for (var xi = 0; xi < loops[li].length; xi++) {
+        var x = loops[li][xi], info = x.info;
+        if (uses[info.id] > 1) { if (seams.indexOf(info) < 0) seams.push(info); continue; }
+        if (info.kind === 'circle' && Math.abs(Math.abs(dot(norm(info.circle.n), S.d)) - 1) < 1e-9 && ax(info.circle.c).rho < tol && onSurface(info.start)) {
+          lats.push({ x: x, loop: li, idx: xi, z: ax(info.circle.c).z, rho: info.circle.r });
+          continue;
+        }
+        if (info.kind === 'line' && (S.t === 'cyl' || S.t === 'cone') && onSurface(info.start) && onSurface(info.end)) {
+          var a1 = ax(info.start), a2 = ax(info.end);
+          if (a1.rho < tol || a2.rho < tol || Math.abs(wrapAngle(a1.ang - a2.ang)) * Math.max(a1.rho, a2.rho) < tol) { rulings.push({ x: x, loop: li, idx: xi }); continue; }
+        }
+        return false;
+      }
+      // latitude levels
+      var levels = [];
+      lats.forEach(function (L) {
+        var lv = null;
+        levels.forEach(function (q) { if (Math.abs(q.z - L.z) < tol && Math.abs(q.rho - L.rho) < tol) lv = q; });
+        if (!lv) { lv = { z: L.z, rho: L.rho, items: [] }; levels.push(lv); }
+        lv.items.push(L);
+      });
+      var full = levels.filter(function (q) { return q.items.length === 1 && q.items[0].x.info.full; });
+      function ring(q) { // a full circle's points as a row, sorted by angle
+        var pts = q.items[0].x.info.pts.slice(0, -1);
+        return pts.map(function (p) { return { p: p, a: mod2pi(ax(p).ang) }; }).sort(function (u, v) { return u.a - v.a; });
+      }
+      var recs = { cyl: null }, tris = [];
+      function rec(P, Q) { if (S.t === 'cyl' || S.t === 'cone') return recs.cyl || (recs.cyl = { s: S }); return { s: S, P: P, Q: Q }; }
+      // zipper two rows of points ({ p, a }, angles increasing); cyclic rows wrap around
+      function zip(A, B, cyclic, r) {
+        if (cyclic) {
+          A = A.concat([{ p: A[0].p, a: A[0].a + 2 * Math.PI }]);
+          B = B.concat([{ p: B[0].p, a: B[0].a + 2 * Math.PI }]);
+        }
+        var i = 0, j = 0;
+        while (i < A.length - 1 || j < B.length - 1) {
+          if (j >= B.length - 1 || (i < A.length - 1 && A[i + 1].a <= B[j + 1].a)) { tris.push([A[i].p, A[i + 1].p, B[j].p, r]); i++; }
+          else { tris.push([A[i].p, B[j + 1].p, B[j].p, r]); j++; }
+        }
+      }
+      function pointRow(p) { return [{ p: p, a: 0 }]; }
+      // a latitude row of a sphere / torus at meridian angle beta (a pole is one point)
+      function betaRow(beta) {
+        var rho = Cr + S.r * Math.cos(beta), z = S.r * Math.sin(beta), c = add(S.o, scale(S.d, z));
+        if (rho < tol) return { row: pointRow(c), rho: 0, z: z };
+        var n = K.segsForRadius(rho * toMM), row = [];
+        for (var i = 0; i < n; i++) { var a = 2 * Math.PI * i / n; row.push({ p: add(c, scale(add(scale(xc, Math.cos(a)), scale(yc, Math.sin(a))), rho)), a: a }); }
+        return { row: row, rho: rho, z: z };
+      }
+      function betaOf(p) { var a = ax(p); return Math.atan2(a.z, a.rho - Cr); }
+      // rows of a sphere / torus from meridian angle b1 to b2 (dir +1 / -1); first / last rows given (null: computed)
+      function betaRows(b1, b2, dir, first, last) {
+        var span = dir > 0 ? mod2pi(b2 - b1) : mod2pi(b1 - b2);
+        if (span < 1e-12) span = 2 * Math.PI;
+        var nv = K.segsForRadius(S.r * toMM), step = 2 * Math.PI / nv, rows = [first || betaRow(b1)];
+        var k = dir > 0 ? Math.floor(b1 / step) + 1 : Math.ceil(b1 / step) - 1;
+        for (; ; k += dir) {
+          var b = k * step, off = dir > 0 ? b - b1 : b1 - b;
+          if (off >= span - 0.3 * step) break;
+          if (off > 0.3 * step) rows.push(betaRow(b));
+        }
+        rows.push(last || betaRow(b2));
+        return rows;
+      }
+      function zipRows(rows, cyclicRows) {
+        var n = rows.length;
+        for (var j = 0; j < (cyclicRows ? n : n - 1); j++) {
+          var A = rows[j], B = rows[(j + 1) % n];
+          zip(A.row, B.row, true, rec([A.rho, A.z], [B.rho, B.z]));
+        }
+      }
+      function circleRow(q) { return { row: ring(q), rho: q.rho, z: q.z }; }
+      var seamMid = seams.length && seams[0].kind === 'circle' ? seams[0].mid : null;
+      if (S.t === 'cyl' || S.t === 'cone') {
+        if (levels.length === 2 && full.length === 2 && !rulings.length) zip(ring(levels[0]), ring(levels[1]), true, rec());
+        else if (S.t === 'cone' && levels.length === 1 && full.length === 1 && !rulings.length && Math.abs(S.k) > 1e-12) zip(ring(levels[0]), pointRow(add(S.o, scale(S.d, -S.r / S.k))), true, rec());
+        else if (levels.length === 2 && rulings.length === 2 && loops.length === 1) {
+          // a patch between two arcs and two rulings: the loop is arcs at one level, a ruling, arcs at the other, a ruling
+          var L = loops[0], n = L.length, start = -1;
+          for (var s = 0; s < n && start < 0; s++) if (rulings.some(function (r) { return r.idx === s; }) && !rulings.some(function (r) { return r.idx === (s + 1) % n; })) start = (s + 1) % n;
+          if (start < 0) return false;
+          var rowsPts = [[], []], side = 0;
+          for (var m = 0; m < n; m++) {
+            var xx = L[(start + m) % n];
+            if (rulings.some(function (r) { return r.x === xx; })) { if (m > 0 && rowsPts[side].length) side = 1; continue; }
+            var q = orientedPts(xx);
+            rowsPts[side] = rowsPts[side].concat(rowsPts[side].length ? q.slice(1) : q);
+          }
+          if (!rowsPts[0].length || !rowsPts[1].length) return false;
+          var A = rowsPts[0], B = rowsPts[1].slice().reverse();
+          function unwrap(pts) {
+            var out2 = [], prev = null, acc = 0;
+            pts.forEach(function (p) { var a = ax(p).ang; if (prev != null) acc += wrapAngle(a - prev); prev = a; out2.push({ p: p, a: acc }); });
+            return out2;
+          }
+          var ua = unwrap(A), ub = unwrap(B), sg = ua[ua.length - 1].a >= 0 ? 1 : -1;
+          var off2 = wrapAngle(ax(B[0]).ang - ax(A[0]).ang);
+          ua.forEach(function (u) { u.a *= sg; }); ub.forEach(function (u) { u.a = (u.a + off2) * sg; });
+          zip(ua, ub, false, rec());
+        } else return false;
+      } else {
+        var circles = levels.map(circleRow);
+        if (!levels.length && !rulings.length) {
+          if (S.t === 'sph') zipRows(betaRows(-Math.PI / 2, Math.PI / 2, 1));
+          else {
+            var nv2 = K.segsForRadius(S.r * toMM), trows = [];
+            for (var j2 = 0; j2 < nv2; j2++) trows.push(betaRow(2 * Math.PI * j2 / nv2));
+            zipRows(trows, true);
+          }
+        } else if (levels.length === 2 && full.length === 2 && seamMid) {
+          var b1 = betaOf(circles[0].row[0].p), b2 = betaOf(circles[1].row[0].p), bm = betaOf(seamMid);
+          var dir = mod2pi(bm - b1) < mod2pi(b2 - b1) ? 1 : -1;
+          zipRows(betaRows(b1, b2, dir, circles[0], circles[1]));
+        } else if (S.t === 'sph' && levels.length === 1 && full.length === 1 && seams.length === 1) {
+          var sm = seams[0], far = Math.abs(betaOf(sm.start) - betaOf(circles[0].row[0].p)) > Math.abs(betaOf(sm.end) - betaOf(circles[0].row[0].p)) ? sm.start : sm.end;
+          var bp = ax(far).z > 0 ? Math.PI / 2 : -Math.PI / 2, bc = betaOf(circles[0].row[0].p);
+          zipRows(betaRows(bc, bp, bp > bc ? 1 : -1, circles[0], null));
+        } else return false;
+      }
+      // orient every triangle outward (along the surface normal, or against it for a face with same_sense .F.)
+      tris.forEach(function (t) {
+        var A = t[0], B = t[1], C = t[2], nrm = cross(sub(B, A), sub(C, A));
+        if (len(nrm) < 1e-14 * ext * ext) return;
+        var X = scale(add(add(A, B), C), 1 / 3), a = ax(X), rel = sub(X, S.o), er = norm(sub(rel, scale(S.d, a.z))), g;
+        if (S.t === 'cyl') g = er;
+        else if (S.t === 'cone') g = sub(er, scale(S.d, S.k));
+        else if (S.t === 'sph') g = rel;
+        else g = sub(rel, add(scale(S.d, a.z), scale(er, Cr)));
+        if ((dot(nrm, g) > 0) !== sameSense) { var tmp = B; B = C; C = tmp; }
+        var base = out.pos.length / 3;
+        out.pos.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2]);
+        out.tris.push(base, base + 1, base + 2);
+        out.recs.push(t[3]);
+      });
+      return true;
     }
     function newell(pts) {
       var n = [0, 0, 0];
@@ -1104,7 +1698,7 @@ var Exchange = (function () {
       if (bw) { if (!a) shells.push(bw[1]); (bw[2] || []).forEach(function (v) { shells.push(v); }); }
       if (e.t === 'CLOSED_SHELL') shells.push({ r: sid });
       var name = (a && a[0]) || (bw && bw[0]) || '';
-      var shellTris = shells.map(function (sh) { var out = { pos: [], tris: [] }; shellFaces(sh).forEach(function (fr) { faceTriangles(fr, out); }); return out; });
+      var shellTris = shells.map(function (sh) { var out = { pos: [], tris: [], recs: [] }; shellFaces(sh).forEach(function (fr) { faceTriangles(fr, out); }); return out; });
       // representations holding this solid
       var holders = Object.keys(reps).filter(function (rid) { return reps[rid].indexOf(sid) >= 0; }).map(function (rid) { return find(+rid); });
       if (!holders.length) holders = [null];
@@ -1115,8 +1709,9 @@ var Exchange = (function () {
         var Ts = cls != null ? placements(cls, 0, {}) : [tf(null)];
         var label = name && !/^(NONE|SOLID)?$/i.test(name) ? name : (cls != null && repName[cls]) || ('Solid' + (solids.length + 1));
         Ts.forEach(function (T, k) {
-          var sol = { name: Ts.length > 1 ? label + '<' + (k + 1) + '>' : label, positions: [], triangles: [] };
+          var sol = { name: Ts.length > 1 ? label + '<' + (k + 1) + '>' : label, positions: [], triangles: [], recs: [] }, memo = [];
           shellTris.forEach(function (sh, si) {
+            sh.recs.forEach(function (F) { sol.recs.push(F ? mapRecord(F, memo, function (p) { return tfPoint(T, p); }, function (d) { return tfDir(T, d); }, 1) : null); });
             var base = sol.positions.length / 3, t0 = sol.triangles.length;
             for (var q = 0; q < sh.pos.length; q += 3) { var p = tfPoint(T, [sh.pos[q], sh.pos[q + 1], sh.pos[q + 2]]); sol.positions.push(p[0], p[1], p[2]); }
             for (var t = 0; t < sh.tris.length; t++) sol.triangles.push(sh.tris[t] + base);
@@ -1124,6 +1719,7 @@ var Exchange = (function () {
             var v = signedVolume(sol.positions, sol.triangles.slice(t0));
             if ((si === 0 && v < 0) || (si > 0 && v > 0)) flipRange(sol.triangles, t0);
           });
+          if (!sol.recs.some(Boolean)) delete sol.recs;
           if (sol.triangles.length) solids.push(sol);
         });
       });
@@ -1131,13 +1727,30 @@ var Exchange = (function () {
     var surfs = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') !== 0; });
     var curves = Object.keys(nonPlanar).filter(function (k) { return k.indexOf('curve ') === 0; });
     function listOf(keys) { return keys.map(function (k) { return nonPlanar[k] + ' ' + k.replace(/^curve /, ''); }).join(', '); }
-    if (surfs.length) throw new Error('This STEP file has curved faces (' + listOf(surfs) + (curves.length ? '; curved edges: ' + listOf(curves) : '') + '). Anvil imports planar-face and faceted B-reps only; export it from the source CAD as a faceted / tessellated STEP, or as STL or 3MF.');
+    if (surfs.length) throw new Error('This STEP file has curved faces (' + listOf(surfs) + (curves.length ? '; curved edges: ' + listOf(curves) : '') + '). Anvil imports planar-face and faceted B-reps, and cylinders, cones, spheres and tori bounded by circles and straight rulings; export it from the source CAD as a faceted / tessellated STEP, or as STL or 3MF.');
     if (curves.length) warnings.push('Curved edges (' + listOf(curves) + ') on planar faces were taken as straight lines.');
     if (!solids.length) throw new Error('No faces could be read from the STEP solids.');
     var res = finishImport('step', opts, solids, toMM, warnings);
     res.stats.faces = faceCount;
     res.header = st.header;
     return res;
+  }
+  // circlePoints({ c, n, r }, p1, p2, sameSense, toMM) -> { pts, mid, full }: an EDGE_CURVE on a CIRCLE from vertex p1 to
+  // p2 (counter-clockwise about n when sameSense) as p1, the circle's canonical grid points strictly between, p2. The
+  // grid: Kernel.segsForRadius(r in mm) points from angle 0 at the circle's reference direction (xdirOf the
+  // sign-normalised normal), so every face and edge on one circle agrees. `mid` is the arc's midpoint.
+  function circlePoints(C, p1, p2, sameSense, toMM) {
+    var nc = canonDir(norm(C.n)), xc = xdirOf(nc), yc = cross(nc, xc), ccw = sameSense === (dot(C.n, nc) > 0);
+    function ang(p) { var v = sub(p, C.c); return Math.atan2(dot(v, yc), dot(v, xc)); }
+    function at(a) { return add(C.c, scale(add(scale(xc, Math.cos(a)), scale(yc, Math.sin(a))), C.r)); }
+    var N = K.segsForRadius(C.r * (toMM || 1)), step = 2 * Math.PI / N, a1 = ang(p1);
+    var full = len(sub(p1, p2)) <= 1e-9 * Math.max(1, C.r), sweep = 2 * Math.PI;
+    if (!full) { var a2 = ang(p2); sweep = ccw ? mod2pi(a2 - a1) : mod2pi(a1 - a2); if (sweep < 1e-12) sweep = 2 * Math.PI; }
+    var pts = [p1], eps = 1e-9, k;
+    if (ccw) for (k = Math.floor(a1 / step + eps) + 1; k * step < a1 + sweep - eps; k++) pts.push(at(k * step));
+    else for (k = Math.ceil(a1 / step - eps) - 1; k * step > a1 - sweep + eps; k--) pts.push(at(k * step));
+    pts.push(p2);
+    return { pts: pts, full: full, mid: at(ccw ? a1 + sweep / 2 : a1 - sweep / 2) };
   }
   function dedupeRing(pts) {
     var out = [];
@@ -1288,16 +1901,19 @@ var Exchange = (function () {
     if (!out.length) throw new Error('The STL file has no triangles.');
     return finishImport('stl', opts, out, 1, warnings);
   }
-  function weldSoup(soup) {
-    var pos = [], tris = [], map = {};
+  // recs (optional): one record per soup triangle, kept for the triangles that survive (result.recs)
+  function weldSoup(soup, recs) {
+    var pos = [], tris = [], map = {}, keep = recs ? [] : null;
     for (var i = 0; i < soup.length; i += 3) {
       var k = wkey(soup[i], soup[i + 1], soup[i + 2]), v = map[k];
       if (v == null) { v = map[k] = pos.length / 3; pos.push(soup[i], soup[i + 1], soup[i + 2]); }
       tris.push(v);
     }
     var clean = [];
-    for (var t = 0; t < tris.length; t += 3) if (tris[t] !== tris[t + 1] && tris[t + 1] !== tris[t + 2] && tris[t] !== tris[t + 2]) clean.push(tris[t], tris[t + 1], tris[t + 2]);
-    return { positions: pos, triangles: clean };
+    for (var t = 0; t < tris.length; t += 3) if (tris[t] !== tris[t + 1] && tris[t + 1] !== tris[t + 2] && tris[t] !== tris[t + 2]) { clean.push(tris[t], tris[t + 1], tris[t + 2]); if (keep) keep.push(recs[t / 3]); }
+    var res = { positions: pos, triangles: clean };
+    if (keep) res.recs = keep;
+    return res;
   }
   // connected components of a triangle mesh (by shared vertices); a component with negative volume whose box sits
   // inside another component's box is a void of that one and stays with it
@@ -1375,6 +1991,54 @@ var Exchange = (function () {
     return n;
   }
 
+  // ------------------------------------------------------------------ surface records of imported solids
+  // mapRecord(F, memo, point, dir, lengthScale) -> a copy of the facet record F = { s, P?, Q? } with its surface's
+  // axis point and direction mapped and lengths scaled; one copy per record and per surface (memo), so the facets of
+  // one face still share their surface.
+  function mapRecord(F, memo, pointFn, dirFn, ls) {
+    for (var i = 0; i < memo.length; i++) if (memo[i][0] === F) return memo[i][1];
+    var S = F.s, S2 = null;
+    for (var j = 0; j < memo.length; j++) if (memo[j][0] === S) S2 = memo[j][1];
+    if (!S2) {
+      S2 = { t: S.t, o: pointFn(S.o), d: norm(dirFn(S.d)), r: S.r * ls };
+      if (S.k != null) S2.k = S.k;
+      if (S.R != null) S2.R = S.R * ls;
+      memo.push([S, S2]);
+    }
+    var F2 = { s: S2 };
+    if (F.P) { F2.P = [F.P[0] * ls, F.P[1] * ls]; F2.Q = [F.Q[0] * ls, F.Q[1] * ls]; }
+    memo.push([F, F2]);
+    return F2;
+  }
+  // curvesOf(triSurf) -> { surfs: [S], recs: [{ s: surface index, P?, Q? }], tri: [0 | record index + 1 per triangle] }:
+  // the compact form an imported solid (and the Imported feature) keeps its triangles' surface records in
+  function curvesOf(triSurf) {
+    var surfs = [], recs = [], recObjs = [], tri = [], last = null, lastI = 0;
+    triSurf.forEach(function (F) {
+      if (!F) { tri.push(0); return; }
+      if (F !== last) {
+        last = F; lastI = recObjs.indexOf(F);
+        if (lastI < 0) {
+          var si = surfs.indexOf(F.s);
+          if (si < 0) { si = surfs.length; surfs.push(F.s); }
+          var r = { s: si };
+          if (F.P) { r.P = F.P.slice(); r.Q = F.Q.slice(); }
+          lastI = recObjs.length; recObjs.push(F); recs.push(r);
+        }
+      }
+      tri.push(lastI + 1);
+    });
+    return { surfs: surfs.map(function (S) { var o = { t: S.t, o: S.o.slice(), d: S.d.slice(), r: S.r }; if (S.k != null) o.k = S.k; if (S.R != null) o.R = S.R; return o; }), recs: recs, tri: tri };
+  }
+  // curveRecords(curves) -> per-triangle facet records (null for planar triangles), sharing one object per record and
+  // surface, as kernel.js expects
+  function curveRecords(curves) {
+    if (!curves || !curves.surfs) return null;
+    var surfs = curves.surfs.map(function (S) { var o = { t: S.t, o: S.o.map(Number), d: S.d.map(Number), r: +S.r }; if (S.k != null) o.k = +S.k; if (S.R != null) o.R = +S.R; return o; });
+    var recs = (curves.recs || []).map(function (r) { var F = { s: surfs[r.s] }; if (r.P) { F.P = r.P.map(Number); F.Q = r.Q.map(Number); } return F; });
+    return decodeU32(curves.tri || []).map(function (k) { return k > 0 ? recs[k - 1] || null : null; });
+  }
+
   // ------------------------------------------------------------------ common import finish
   // Scale to the target units, weld, split T-junctions (a mesh exported from a CSG modeller usually has them), orient
   // each solid outward, and report open edges.
@@ -1389,15 +2053,18 @@ var Exchange = (function () {
       // mesh formats carry float32 (STL) or short decimals: T-junctions are found within 1e-6 of the part's size
       var bx = boxOf(pos), ext = Math.max(bx.max[0] - bx.min[0], bx.max[1] - bx.min[1], bx.max[2] - bx.min[2]) || 1;
       var tol = format === 'step' ? 1e-6 : Math.max(1e-6, ext * 1e-6);
-      var polys = [];
-      var w = weldSoup(expand(pos, sol.triangles));
+      var polys = [], memo = [];
+      var recs = sol.recs ? sol.recs.map(function (F) { return F ? mapRecord(F, memo, function (p) { return scale(p, s); }, function (d) { return d; }, s) : null; }) : null;
+      var w = weldSoup(expand(pos, sol.triangles), recs);
       for (var t = 0; t < w.triangles.length; t += 3) {
         var a = w.triangles[t], b = w.triangles[t + 1], c = w.triangles[t + 2];
         var pa = [w.positions[a * 3], w.positions[a * 3 + 1], w.positions[a * 3 + 2]], pb = [w.positions[b * 3], w.positions[b * 3 + 1], w.positions[b * 3 + 2]], pc = [w.positions[c * 3], w.positions[c * 3 + 1], w.positions[c * 3 + 2]];
         var nn = cross(sub(pb, pa), sub(pc, pa)), l = len(nn);
         if (l < 1e-14) continue;
         nn = scale(nn, 1 / l);
-        polys.push({ idx: [a, b, c], n: nn, w: dot(nn, pa) });
+        var poly = { idx: [a, b, c], n: nn, w: dot(nn, pa) };
+        if (w.recs && w.recs[t / 3]) poly.srf = w.recs[t / 3];
+        polys.push(poly);
       }
       splitTJunctions(w.positions, polys, tol);
       var m = fanPolygons(w.positions, polys);
@@ -1408,7 +2075,9 @@ var Exchange = (function () {
       names[nm] = true;
       tris += compact.triangles.length / 3;
       open += m.openEdges;
-      out.push({ name: nm, positions: compact.positions.map(function (x) { return Math.round(x * 1e9) / 1e9; }), triangles: compact.triangles });
+      var solid = { name: nm, positions: compact.positions.map(function (x) { return Math.round(x * 1e9) / 1e9; }), triangles: compact.triangles };
+      if (m.triSurf) solid.curves = curvesOf(m.triSurf);
+      out.push(solid);
     });
     if (open) warnings.push(open + ' open edge' + (open === 1 ? '' : 's') + ': the mesh is not closed, so cuts and bosses against it may fail.');
     return { format: format, units: units, solids: out, warnings: warnings, stats: { solids: out.length, triangles: tris, openEdges: open } };
@@ -1498,7 +2167,10 @@ var Exchange = (function () {
   function encodeSolids(list) {
     return (list || []).map(function (s, i) {
       var v = s.vertices != null ? s.vertices : s.positions, t = s.triangles;
-      return { name: String(s.name || 'Body' + (i + 1)), vertices: typeof v === 'string' ? v : encodeF64(v || []), triangles: typeof t === 'string' ? t : encodeU32(t || []) };
+      var out = { name: String(s.name || 'Body' + (i + 1)), vertices: typeof v === 'string' ? v : encodeF64(v || []), triangles: typeof t === 'string' ? t : encodeU32(t || []) };
+      // the triangles' analytic surface records (curved faces of a STEP file): { surfs, recs, tri (base64 U32) }
+      if (s.curves && s.curves.surfs) out.curves = { surfs: s.curves.surfs, recs: s.curves.recs || [], tri: typeof s.curves.tri === 'string' ? s.curves.tri : encodeU32(s.curves.tri || []) };
+      return out;
     });
   }
   // solidMesh(featureSolid) -> { positions, triangles } (decoded)
@@ -1507,14 +2179,14 @@ var Exchange = (function () {
   // solidCSG(featureSolid) -> CSG of its triangles, outward (flipped when the signed volume is negative)
   var csgCache = [];
   function solidCSG(s) {
-    var key = (typeof s.vertices === 'string' ? s.vertices : JSON.stringify(s.vertices || s.positions)) + '|' + (typeof s.triangles === 'string' ? s.triangles : JSON.stringify(s.triangles));
+    var key = (typeof s.vertices === 'string' ? s.vertices : JSON.stringify(s.vertices || s.positions)) + '|' + (typeof s.triangles === 'string' ? s.triangles : JSON.stringify(s.triangles)) + (s.curves ? '|' + JSON.stringify(s.curves) : '');
     for (var c = 0; c < csgCache.length; c++) if (csgCache[c].key === key) return csgCache[c].csg.clone();
-    var m = solidMesh(s), p = m.positions, t = m.triangles, flip = signedVolume(p, t) < 0, polys = [];
+    var m = solidMesh(s), p = m.positions, t = m.triangles, flip = signedVolume(p, t) < 0, polys = [], recs = curveRecords(s.curves);
     for (var i = 0; i + 2 < t.length; i += 3) {
       var ids = flip ? [t[i], t[i + 2], t[i + 1]] : [t[i], t[i + 1], t[i + 2]];
       var vs = ids.map(function (k) { return new CSG.Vertex(new CSG.Vector(p[k * 3], p[k * 3 + 1], p[k * 3 + 2])); });
       var poly = CSG.Polygon.tryCreate ? CSG.Polygon.tryCreate(vs, null) : new CSG.Polygon(vs);
-      if (poly) polys.push(poly);
+      if (poly) { if (recs && recs[i / 3]) poly.surf = recs[i / 3]; polys.push(poly); }
     }
     var csg = CSG.fromPolygons(polys);
     csgCache.unshift({ key: key, csg: csg });
