@@ -76,7 +76,8 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve), Instant3D
 - [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves; construction geometry toggle
 - [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series, and hole callouts in drawings
-- [ ] STEP / IGES / Parasolid import and export (only STL, DXF, JSON and scripts today); 3MF / OBJ export
+- [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
+- [ ] IGES / Parasolid import and export; STEP import of curved faces (cylinders, cones, B-splines) and exact curved STEP export (needs true curves in the kernel); compressed 3MF import
 - [x] Assemblies: Parallel, Perpendicular, Tangent (cylinder–plane, cylinder–cylinder), Width, Gear and Limit Distance / Limit Angle mates; Distance between cylinders; Standard / Advanced / Mechanical Mates groups in the Mate PM (cloud-2026-09-25l)
 - [ ] Assemblies: sub-assemblies, and components that are live links to part files instead of embedded copies (edit part in context, update on save)
 - [x] Assemblies: Linear / Circular Component Pattern and Mirror Components (copy or opposite hand), pattern folders in the FeatureManager, seed-driven instances (cloud-2026-09-25l)

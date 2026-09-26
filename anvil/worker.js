@@ -1,5 +1,6 @@
 // worker.js — Anvil's rebuild worker. Runs Kernel.rebuild off the main thread so the UI stays responsive while a
-// heavy feature tree builds. No DOM, no three.js: only csg.js and kernel.js are loaded (paths relative to this file).
+// heavy feature tree builds. No DOM, no three.js: only csg.js, kernel.js and exchange.js are loaded (paths relative to
+// this file).
 //
 // Messages in (from ui-core.js):
 //   { type: 'rebuild', seq: <number>, model: <model JSON> }
@@ -10,7 +11,7 @@
 //   { type: 'error', seq, message: <string> }                  when the rebuild itself threw (feature errors never do;
 //                                                              they are reported inside build.errors)
 // The worker keeps the rebuild cache between messages, so only the features after the first change are rebuilt.
-importScripts('csg.js', 'kernel.js');
+importScripts('csg.js', 'kernel.js', 'exchange.js'); // exchange.js hooks Kernel.rebuild for Imported features
 
 var cache = null;
 

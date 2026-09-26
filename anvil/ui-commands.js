@@ -2115,6 +2115,28 @@
     calculate();
   }
 
+  // ------------------------------------------------------------------ Imported feature (exchange.js)
+  // Editing an Imported feature: which file it came from and its size; Merge result joins its solids to the bodies they
+  // touch (otherwise each solid is its own body). The geometry itself is the file's: re-import to replace it.
+  function cmdImported(existing) {
+    if (!existing) { UI.cmdInsertImported(); return; }
+    var info = typeof Exchange !== 'undefined' ? Exchange.featureInfo(existing) : { solids: (existing.solids || []).length, triangles: 0, file: existing.file, format: existing.format };
+    var esc = function (t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+    var v = { merge: !!existing.merge, name: existing.name };
+    openPM({
+      title: existing.name, icon: 'imported', values: v, messageOk: true,
+      message: 'Imported from <b>' + esc(info.file || 'a file') + '</b> (' + esc(String(info.format || 'mesh').toUpperCase()) + '): ' + info.solids + ' solid' + (info.solids === 1 ? '' : 's') + ', ' + info.triangles + ' triangles. Sketch on its faces, cut it and boss onto it like any body.',
+      groups: [{ title: 'Options', fields: [{ type: 'check', label: 'Merge result', key: 'merge' }] }, { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
+      onOK: function (val) {
+        var f = {};
+        Object.keys(existing).forEach(function (k) { if (k !== 'id' && k !== 'merge') f[k] = existing[k]; });
+        if (val.merge) f.merge = true;
+        if (val.name) f.name = String(val.name);
+        return commitFeature(f, existing);
+      }
+    });
+  }
+
   // ------------------------------------------------------------------ edit / delete features
   function editFeature(f) {
     if (!f) return;
@@ -2133,6 +2155,7 @@
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
+      case 'import': cmdImported(f); break;
     }
   }
   function deleteFeature(id) {

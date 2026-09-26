@@ -401,6 +401,12 @@ body { overflow: auto; }
 #modal-body .eq-table td { padding: 3px 6px; vertical-align: middle; }
 #modal-body .eq-table input { width: 100%; box-sizing: border-box; font: 12px var(--mono); }
 #modal-body .eq-table .eq-name { max-width: 130px; }
+/* File ▸ Open / Save As (exchange.js formats): label + control rows */
+#modal-body .dlg-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+#modal-body .dlg-row > span { flex: none; width: 96px; color: var(--muted); }
+#modal-body .dlg-row input[type=text], #modal-body .dlg-row select, #modal-body .dlg-row input[type=file] { flex: 1; min-width: 0; }
+#modal-body .dlg-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+#modal-body .open-dialog textarea { min-height: 140px; margin-top: 6px; }
 #modal-body .eq-table .eq-val { font-family: var(--mono); font-size: 12px; min-width: 110px; }
 #modal-body .eq-table .eq-val.err { color: var(--red); font-family: inherit; font-size: 11.5px; }
 #modal-body .eq-table tr.err .eq-expr { border-color: var(--red); }

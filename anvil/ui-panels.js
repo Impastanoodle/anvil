@@ -228,7 +228,7 @@
 
   // ------------------------------------------------------------------ feature tree
   var expanded = {};
-  var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell' };
+  var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported' };
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
@@ -489,6 +489,7 @@
       case 'shell': return 'Shell, walls ' + f.thickness + ' thick, ' + ((f.faces || []).length ? (f.faces || []).length + ' face' + ((f.faces || []).length === 1 ? '' : 's') + ' removed' : 'closed');
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
+      case 'import': return 'Imported ' + String(f.format || 'mesh').toUpperCase() + (f.file ? ' from ' + f.file : '') + ', ' + (f.solids || []).length + ' solid' + ((f.solids || []).length === 1 ? '' : 's') + (f.merge ? ', merged' : '');
       case 'sketch': return 'Sketch on ' + (f.plane.custom ? 'face' : f.plane.featureId != null ? 'Plane' + f.plane.featureId : f.plane.ref + (f.plane.offset ? ' + ' + f.plane.offset : ''));
     }
     return f.type;
@@ -567,13 +568,16 @@
         { label: 'New ▸ Assembly', action: function () { UI.newAssembly(); } },
         { label: 'Open…', key: 'Ctrl+O', action: UI.fileOpen },
         { label: 'Save', key: 'Ctrl+S', action: UI.fileSave },
-        { label: 'Save As…', action: UI.fileSaveAs },
+        { label: 'Save As…', action: function () { UI.fileSaveAs(); } },
         { sep: true },
+        { label: 'Export STEP AP214…', action: function () { UI.fileSaveAs('step'); } },
+        { label: 'Export 3MF…', action: function () { UI.fileSaveAs('3mf'); } },
+        { label: 'Export OBJ…', action: function () { UI.fileSaveAs('obj'); } },
         { label: 'Export STL…', action: UI.exportSTL },
         { label: 'Export selected face as DXF…', action: UI.exportFaceDXF },
         { label: 'Export sketch as DXF…', action: function () { UI.exportSketchDXF(); } },
         { label: 'Export model as script…', action: UI.exportScript },
-        { label: 'Export model as JSON…', action: UI.fileSaveAs },
+        { label: 'Export model as JSON…', action: UI.exportJSON },
         { sep: true },
         { label: 'Screenshot (PNG)…', action: UI.screenshot },
         { label: 'Properties…', action: function () { if (UI.fileProperties) UI.fileProperties(); else UI.openTaskPane('props'); } }
@@ -633,6 +637,7 @@
         { label: 'Features ▸ Fillet', action: function () { UI.cmdFillet(); } },
         { label: 'Features ▸ Chamfer', action: function () { UI.cmdChamfer(); } },
         { label: 'Features ▸ Shell', action: function () { UI.cmdShell(); } },
+        { label: 'Features ▸ Imported…', action: function () { UI.cmdInsertImported(); } },
         { sep: true },
         { label: 'Pattern/Mirror ▸ Linear Pattern', action: function () { UI.cmdLinearPattern(); } },
         { label: 'Pattern/Mirror ▸ Circular Pattern', action: function () { UI.cmdCircularPattern(); } },
