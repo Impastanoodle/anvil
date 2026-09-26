@@ -7233,6 +7233,19 @@
     });
   })();
 
+  // ------------------------------------------------------------------ true curves (run cloud-2026-09-25p)
+  group('true curves: kernel');
+  // (kernel tests: added by the head of the run)
+  // ==== TRUE CURVES KERNEL TESTS END ====
+
+  group('true curves: drawings');
+  // ==== TRUE CURVES DRAWING TESTS BEGIN ====
+  // ==== TRUE CURVES DRAWING TESTS END ====
+
+  group('true curves: STEP');
+  // ==== TRUE CURVES STEP TESTS BEGIN ====
+  // ==== TRUE CURVES STEP TESTS END ====
+
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
   allDeclared = true;
