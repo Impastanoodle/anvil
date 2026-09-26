@@ -6,7 +6,6 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- Kernel consolidation: sketch-solver.js wraps `Kernel.generateScript`, and exchange.js wraps `Kernel.rebuild`, `cacheFromBuild` and `generateScript` for the Imported feature. Move both onto `Kernel.registerFeature` (added by the Hole Wizard) or into kernel.js so nothing patches the kernel from outside. Every test unchanged.
 - Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
 
 

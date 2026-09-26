@@ -862,3 +862,16 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - `tests/ui-smoke.html`: new step on the Bushing: a Shell pick on one facet highlights all 48 facets / 96 triangles of the Ø30 body; a pick on another facet removes it.
 
 **Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 149/149.
+
+## Run local-2026-09-26c — Kernel consolidation: no more outside patches of Kernel.*
+
+**Context.** QUEUE "Do next": sketch-solver.js, exchange.js and materials.js replaced `Kernel.generateScript` / `rebuild` / `cacheFromBuild` with wrappers.
+
+**Done.**
+- `kernel.js`: `registerFeature` also takes `apply(f, { bodies, bodyFeatures }, model) -> { bodies, bodyFeatures, tool }` for features that set the body list themselves (rebuild calls it in the feature's place; a throw leaves the bodies unchanged); `buildTool` only calls a registered `build`. New `registerSketchScript(fn)` (extra calls before a sketch's `.id();`) and `registerScriptSection({ head, tail })` (document lines after `p.name(…)` and after the last feature).
+- `exchange.js`: the Imported feature is `registerFeature('import', { apply, script })`. The multi-pass `rebuild` wrapper, the `cacheFromBuild` wrapper, the `importApplied` step flag and the placeholder-plane script rewrite are gone.
+- `sketch-solver.js`: construction marks, driven dimensions and relations go through `registerSketchScript` instead of string-searching the generated script.
+- `materials.js`: material / properties head lines and `p.bodyMaterial` tail lines go through `registerScriptSection` (the Assembly script wrapper stays; it is not the kernel).
+- `worker.js`: comment only.
+
+**Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 149/149, every test unchanged.

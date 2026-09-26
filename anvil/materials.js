@@ -403,18 +403,14 @@ var Materials = (function () {
         if (m && Math.abs(m.density - this.model.density) > 1e-9) { delete this.model.material; delete this.model.materialName; }
         return r;
       };
-      var gen = Kn.generateScript;
-      Kn.generateScript = function (model) {
-        var s = gen.apply(this, arguments);
-        s = insertAfterHead(s, headLines(model), 'p.name(');
-        var tail = [];
-        Object.keys(model.bodyMaterials || {}).forEach(function (fid) {
-          if (s.indexOf('var f' + fid + ' = ') < 0) return;
-          tail.push('p.bodyMaterial(f' + fid + ', ' + JSON.stringify(model.bodyMaterials[fid]) + ');');
-        });
-        if (tail.length) s = s + (s.charAt(s.length - 1) === '\n' ? '' : '\n') + tail.join('\n') + '\n';
-        return s;
-      };
+      Kn.registerScriptSection({
+        head: headLines,
+        tail: function (model, idVar) {
+          return Object.keys(model.bodyMaterials || {}).filter(function (fid) { return idVar[fid]; }).map(function (fid) {
+            return 'p.bodyMaterial(' + idVar[fid] + ', ' + JSON.stringify(model.bodyMaterials[fid]) + ');';
+          });
+        }
+      });
     }
     if (As && !As.__materials) {
       As.__materials = true;

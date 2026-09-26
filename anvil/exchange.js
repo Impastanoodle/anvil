@@ -2217,39 +2217,26 @@ var Exchange = (function () {
   }
 
   // ------------------------------------------------------------------ kernel hook
-  // kernel.js knows nothing about `import` features (buildTool returns null for them, so a plain rebuild just skips
-  // them). The hook wraps Kernel.rebuild: for each import feature, in order, it rebuilds the prefix up to and including
-  // it (reusing the cache), then puts the imported solids into that step's bodies (the step `rebuild` recorded for the
-  // feature), and hands the patched steps on as the cache of the next pass. The final pass rebuilds the whole model
-  // from that cache, so every later feature (sketches on its faces, cuts, bosses, patterns) builds against the imported
-  // bodies with the kernel's own code. A step patched once is flagged and never patched twice when a cache is reused.
-  function patchImportStep(st, f, model) {
-    if (st.importApplied) return;
-    st.importApplied = true;
-    if (st.error) return;
-    try {
-      var bodies = (st.bodies || (st.body ? [st.body] : [])).slice();
-      var bf = (st.bodyFeatures || bodies.map(function () { return null; })).slice();
-      var solids = (f.solids || []).map(solidCSG).filter(function (c) { return c.polygons.length; });
-      if (!solids.length) throw new Error('The imported file has no solid geometry.');
-      var tool = null;
-      solids.forEach(function (c) {
-        tool = tool ? CSG.fromPolygons(tool.polygons.concat(c.clone().polygons)) : c.clone();
-        if (f.merge) {
-          var cb = c.getBounds ? c.getBounds() : null, hit = -1;
-          if (cb) bodies.forEach(function (b, i) { var bb = b.getBounds && b.getBounds(); if (hit < 0 && bb && boxesMeet(bb, cb)) hit = i; });
-          if (hit >= 0) { bodies[hit] = bodies[hit].union(c); return; }
-        }
-        bodies.push(c);
-        bf.push(f.id);
-      });
-      st.bodies = bodies;
-      st.bodyFeatures = bf;
-      st.body = K.combineBodies(bodies);
-      st.tool = tool;
-    } catch (e) {
-      st.error = e.message || String(e);
-    }
+  // An `import` feature is registered with Kernel.registerFeature as an `apply` feature: rebuild hands it the body list
+  // at its place in the tree and it adds the imported solids (as new bodies, or unioned into the bodies they touch when
+  // `merge` is set). Every later feature (sketches on its faces, cuts, bosses, patterns) then builds against the
+  // imported bodies with the kernel's own code, and the rebuild cache and worker builds need nothing special.
+  function applyImport(f, state) {
+    var bodies = state.bodies, bf = state.bodyFeatures;
+    var solids = (f.solids || []).map(solidCSG).filter(function (c) { return c.polygons.length; });
+    if (!solids.length) throw new Error('The imported file has no solid geometry.');
+    var tool = null;
+    solids.forEach(function (c) {
+      tool = tool ? CSG.fromPolygons(tool.polygons.concat(c.clone().polygons)) : c.clone();
+      if (f.merge) {
+        var cb = c.getBounds ? c.getBounds() : null, hit = -1;
+        if (cb) bodies.forEach(function (b, i) { var bb = b.getBounds && b.getBounds(); if (hit < 0 && bb && boxesMeet(bb, cb)) hit = i; });
+        if (hit >= 0) { bodies[hit] = bodies[hit].union(c); return; }
+      }
+      bodies.push(c);
+      bf.push(f.id);
+    });
+    return { bodies: bodies, bodyFeatures: bf, tool: tool };
   }
   function boxesMeet(a, b) {
     var amin = a.min || a[0], amax = a.max || a[1], bmin = b.min || b[0], bmax = b.max || b[1];
@@ -2258,56 +2245,15 @@ var Exchange = (function () {
     for (var k = 0; k < 3; k++) if (g(amin, k) > g(bmax, k) + 1e-6 || g(bmin, k) > g(amax, k) + 1e-6) return false;
     return true;
   }
-  var origRebuild = K.rebuild, origCacheFromBuild = K.cacheFromBuild, origGenerateScript = K.generateScript;
-  function rebuildWithImports(model, cache) {
-    var idx = [];
-    (model && model.features || []).forEach(function (f, i) { if (f.type === 'import') idx.push(i); });
-    if (!idx.length) return origRebuild(model, cache);
-    var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now()), c = cache, whole = true;
-    idx.forEach(function (k) {
-      var sub = {};
-      Object.keys(model).forEach(function (key) { sub[key] = model[key]; });
-      sub.features = model.features.slice(0, k + 1);
-      var b = origRebuild(sub, c), steps = b.cache.steps;
-      if (b.reused < k + 1) whole = false; // something up to this import changed: later cached steps are stale
-      patchImportStep(steps[k], model.features[k], model);
-      c = { steps: steps };
-    });
-    // every step up to the last import came from the caller's cache: its later steps are still good
-    if (whole && cache && cache.steps) c = { steps: c.steps.concat(cache.steps.slice(c.steps.length)) };
-    var res = origRebuild(model, c);
-    res.time = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
-    return res;
-  }
-  // a cache made from a finished (worker) build: its last step already holds the imported bodies
-  function cacheFromBuildWithImports(model, build) {
-    var c = origCacheFromBuild(model, build);
-    (model.features || []).forEach(function (f, i) { if (f.type === 'import' && c.steps[i]) c.steps[i].importApplied = true; });
-    return c;
-  }
   // script: `var f7 = p.importMesh({ name, file, format, units, solids });` in the feature's place
-  function generateScriptWithImports(model) {
-    if (!(model.features || []).some(function (f) { return f.type === 'import'; })) return origGenerateScript(model);
-    var copy = {}, marks = {};
-    Object.keys(model).forEach(function (k) { copy[k] = model[k]; });
-    copy.features = model.features.map(function (f) {
-      if (f.type !== 'import') return f;
-      marks[f.id] = f;
-      return { id: f.id, type: 'plane', ref: '__anvil_import_' + f.id, offset: 0, name: f.name };
-    });
-    return origGenerateScript(copy).split('\n').map(function (line) {
-      var m = /^var (f(\d+)) = p\.plane\("__anvil_import_(\d+)"/.exec(line);
-      if (!m || !marks[m[3]]) return line;
-      var f = marks[m[3]], spec = { name: f.name, file: f.file || '', format: f.format || '', units: f.units || 'mm', solids: f.solids };
-      if (f.merge) spec.merge = true;
-      return 'var ' + m[1] + ' = p.importMesh(' + JSON.stringify(spec) + ');';
-    }).join('\n');
+  function importScript(f, v) {
+    var spec = { name: f.name, file: f.file || '', format: f.format || '', units: f.units || 'mm', solids: f.solids };
+    if (f.merge) spec.merge = true;
+    return 'var ' + v + ' = p.importMesh(' + JSON.stringify(spec) + ');';
   }
   function installKernelHook() {
-    if (K.rebuild && K.rebuild.withImports) return;
-    K.rebuild = rebuildWithImports; K.rebuild.withImports = true;
-    K.cacheFromBuild = cacheFromBuildWithImports;
-    K.generateScript = generateScriptWithImports;
+    if (K.Builder.prototype.importMesh) return;
+    K.registerFeature('import', { apply: applyImport, script: importScript });
     // p.importMesh({ name?, file?, format?, units?, merge?, solids: [{ name, positions | vertices, triangles }] }) -> id
     K.Builder.prototype.importMesh = function (spec) {
       spec = spec || {};

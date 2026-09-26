@@ -956,8 +956,9 @@ var SketchSolver = (function () {
   }
 
   // ------------------------------------------------------------------ script round trip (Builder / generateScript hooks)
-  // kernel.js is not edited for this: `.rel(type, refs, value)` and `.solve()` are added to the SketchBuilder
-  // prototype, and generateScript is wrapped to write each sketch's relations before its `.id();`.
+  // `.rel(type, refs, value)`, `.solve()`, `.construction()` and `.driven()` are added to the SketchBuilder prototype,
+  // and Kernel.registerSketchScript writes each sketch's construction marks, driven dimensions and relations before its
+  // `.id();` in generateScript.
   function relArgs(rel) {
     var s = JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs);
     if (TYPES[rel.type] && TYPES[rel.type].dim) {
@@ -1001,22 +1002,11 @@ var SketchSolver = (function () {
       (Array.isArray(list) ? list : [list]).forEach(function (i) { var d = (self.f.dims || [])[i]; if (!d) throw new Error('No sketch dimension ' + i + ' to make driven.'); d.driven = true; });
       return this;
     };
-    var gen = Kn.generateScript;
-    Kn.generateScript = function (model) {
-      var s = gen.apply(this, arguments);
-      (model.features || []).forEach(function (f) {
-        var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
-        var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
-        if (f.type !== 'sketch' || (!(f.rels && f.rels.length) && !cons.length && !drv.length)) return;
-        var head = 'var f' + f.id + ' = p.sketch(', at = s.indexOf(head);
-        if (at < 0) return;
-        var end = s.indexOf('\n  .id();', at);
-        if (end < 0) return;
-        var add = (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
-        s = s.slice(0, end) + add + s.slice(end);
-      });
-      return s;
-    };
+    Kn.registerSketchScript(function (f) {
+      var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
+      var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
+      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
+    });
   }
   if (K) install(K);
 
