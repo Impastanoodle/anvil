@@ -195,6 +195,7 @@
     if (!raw) return;
     if (App.command && App.command.onSketchPoint) { App.command.onSketchPoint(raw, mx, my); return; }
     if (App.tool === 'select') {
+      if (UI.sketchSelectClick && UI.sketchSelectClick(mx, my, ev)) return;   // Ctrl / Shift toggle, Selection Filter (ui-select.js)
       var hit = UI.pickEntity(mx, my);
       App.sel = hit;
       UI.updateSketches();
@@ -522,6 +523,7 @@
   }
 
   UI.drawDims = drawDims;
+  UI.autoDims = autoDims;
   UI.deleteDim = deleteDim;
   UI.dimToolClick = dimToolClick;
   // Script/test hooks for the Modify box. openDimEdit(i) opens it on placed dimension i of the active sketch;
@@ -581,6 +583,8 @@
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
     var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
+    // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
+    if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 0) drag = { kind: 'maybe-rotate', last: p, moved: false };
   });
@@ -613,7 +617,8 @@
     if (App.mode === 'sketch') { sketchMove(p[0], p[1]); return; }
     // hover
     var hover = null;
-    if (App.command && App.command.pickPlane) hover = UI.pickFace(p[0], p[1]) || UI.pickPlane(p[0], p[1]);
+    if (UI.pickHover) hover = UI.pickHover(p[0], p[1]);   // Selection Filter aware (ui-select.js)
+    else if (App.command && App.command.pickPlane) hover = UI.pickFace(p[0], p[1]) || UI.pickPlane(p[0], p[1]);
     else if (App.command && App.command.pickEdges) hover = UI.pickEdge(p[0], p[1]);
     else hover = UI.pickEdge(p[0], p[1]) || UI.pickFace(p[0], p[1]) || ((App.view.showPlanes) ? UI.pickPlane(p[0], p[1]) : null);
     var changed = JSON.stringify(hover && { k: hover.kind, i: hover.index, r: hover.ref }) !== JSON.stringify(App.hover && { k: App.hover.kind, i: App.hover.index, r: App.hover.ref });
@@ -629,6 +634,8 @@
       $('status-coords').textContent = txt;
     } else if (hover && hover.kind === 'edge') $('status-coords').textContent = 'Edge  length ' + UI.fmtNum(hover.edge.len, 2) + ' ' + UI.unitLabel() + (hover.edge.convex ? '' : '  (concave)');
     else if (hover && hover.kind === 'plane') $('status-coords').textContent = hover.name;
+    else if (hover && hover.kind === 'vertex') $('status-coords').textContent = 'Vertex  ' + hover.point.map(function (x) { return UI.fmtNum(x, 2); }).join(', ') + ' ' + UI.unitLabel();
+    else if (hover && hover.kind === 'body') $('status-coords').textContent = (UI.isAssembly && UI.isAssembly() ? 'Component: ' : 'Body: ') + UI.bodyName(hover.index);
     else $('status-coords').textContent = '';
   });
 
@@ -681,6 +688,7 @@
   }, { passive: false });
 
   function partClick(mx, my, ev) {
+    if (UI.selectClick) { UI.selectClick(mx, my, ev); return; }   // Selection Filter, Ctrl / Shift toggle (ui-select.js)
     if (App.command && App.command.onPick) {
       var pk = (App.command.pickEdges ? UI.pickEdge(mx, my) : null) || UI.pickFace(mx, my) || (App.command.pickPlane ? UI.pickPlane(mx, my) : null);
       if (pk && App.command.onPick(pk) !== false) return;

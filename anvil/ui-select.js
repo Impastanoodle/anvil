@@ -1,0 +1,1062 @@
+// ui-select.js — selection: the Selection Filter toolbar (F5), box selection (window / crossing) in parts, sketches and
+// assemblies, multi-selection kept in step with the FeatureManager, and Instant3D drag handles on features and sketch
+// dimensions. BoxSelect (no DOM, no UI) is the screen-space geometry; kernel-tests.html tests it on its own.
+// Hooks: ui-core.js updateHighlights -> UI.drawSelectionExtras, updateSketches -> UI.entitySelected; ui-sketch.js
+// mousedown -> UI.boxSelectHook, hover -> UI.pickHover, partClick -> UI.selectClick, sketch select -> UI.sketchSelectClick.
+
+var BoxSelect = (function () {
+  'use strict';
+  // The box from the press point a to the release point b (screen pixels). Dragged left to right it is a window
+  // (items fully inside), right to left a crossing box (items inside or touching), as in SolidWorks.
+  function rect(a, b) {
+    return { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]), x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]), mode: b[0] >= a[0] ? 'window' : 'crossing' };
+  }
+  function inside(p, r) { return p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1; }
+  // Liang–Barsky: does segment ab meet the box (boundary included)?
+  function segHits(a, b, r) {
+    var t0 = 0, t1 = 1, dx = b[0] - a[0], dy = b[1] - a[1];
+    var p = [-dx, dx, -dy, dy], q = [a[0] - r.x0, r.x1 - a[0], a[1] - r.y0, r.y1 - a[1]];
+    for (var i = 0; i < 4; i++) {
+      if (p[i] === 0) { if (q[i] < 0) return false; continue; }
+      var t = q[i] / p[i];
+      if (p[i] < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+    return true;
+  }
+  function cross(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+  function pointInTri(p, a, b, c) {
+    var d1 = cross(a, b, p), d2 = cross(b, c, p), d3 = cross(c, a, p);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  }
+  function triHits(a, b, c, r) {
+    if (inside(a, r) || inside(b, r) || inside(c, r)) return true;
+    if (segHits(a, b, r) || segHits(b, c, r) || segHits(c, a, r)) return true;
+    return pointInTri([r.x0, r.y0], a, b, c);   // the box lies inside the triangle
+  }
+  function segment(a, b, r, mode) { return mode === 'window' ? inside(a, r) && inside(b, r) : segHits(a, b, r); }
+  // A polyline [[x, y], …] (closed adds the last → first segment). Window: every point inside; crossing: any segment
+  // meets the box (a single point: inside).
+  function polyline(pts, closed, r, mode) {
+    if (!pts.length) return false;
+    if (mode === 'window') { for (var k = 0; k < pts.length; k++) if (!inside(pts[k], r)) return false; return true; }
+    if (pts.length === 1) return inside(pts[0], r);
+    var n = pts.length, cnt = closed ? n : n - 1;
+    for (var i = 0; i < cnt; i++) if (segHits(pts[i], pts[(i + 1) % n], r)) return true;
+    return false;
+  }
+  // Triangles as a flat screen array [x, y, x, y, x, y, …] (6 numbers each), from index `from` to `to` (exclusive).
+  function triangles(t, r, mode, from, to) {
+    from = from || 0; to = to == null ? t.length : to;
+    if (to <= from) return false;
+    var i;
+    if (mode === 'window') { for (i = from; i < to; i += 2) if (!(t[i] >= r.x0 && t[i] <= r.x1 && t[i + 1] >= r.y0 && t[i + 1] <= r.y1)) return false; return true; }
+    // quick reject / accept on the bounding box first
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (i = from; i < to; i += 2) { if (t[i] < x0) x0 = t[i]; if (t[i] > x1) x1 = t[i]; if (t[i + 1] < y0) y0 = t[i + 1]; if (t[i + 1] > y1) y1 = t[i + 1]; }
+    if (x1 < r.x0 || x0 > r.x1 || y1 < r.y0 || y0 > r.y1) return false;
+    for (i = from; i < to; i += 6) if (triHits([t[i], t[i + 1]], [t[i + 2], t[i + 3]], [t[i + 4], t[i + 5]], r)) return true;
+    return false;
+  }
+  // Merge `items` into `list`: 'replace' (items only), 'add' (union), 'toggle' (items already there are removed).
+  // key(item) identifies an item; order is kept, new items go last.
+  function combine(list, items, op, key) {
+    if (op === 'replace') list = [];
+    var out = list.slice(), keys = out.map(key);
+    items.forEach(function (it) {
+      var k = key(it), at = keys.indexOf(k);
+      if (at >= 0) { if (op === 'toggle') { out.splice(at, 1); keys.splice(at, 1); } return; }
+      out.push(it); keys.push(k);
+    });
+    return out;
+  }
+  // "Nice" ruler step (1, 2, 5 × 10ⁿ) so that ticks sit at least minPx pixels apart at pxPerUnit.
+  function rulerStep(pxPerUnit, minPx) {
+    if (!(pxPerUnit > 0)) return 1;
+    var raw = (minPx || 8) / pxPerUnit, e = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    var steps = [1, 2, 5, 10];
+    for (var i = 0; i < steps.length; i++) if (steps[i] * e >= raw * (1 - 1e-12)) return +(steps[i] * e).toPrecision(12);
+    return 10 * e;
+  }
+  function snap(v, step) { return +(Math.round(v / step) * step).toPrecision(12); }
+  return { rect: rect, inside: inside, segHits: segHits, pointInTri: pointInTri, triHits: triHits, segment: segment, polyline: polyline, triangles: triangles, combine: combine, rulerStep: rulerStep, snap: snap };
+})();
+
+if (typeof UI !== 'undefined') (function (UI) {
+  'use strict';
+  var App = UI.App, K = UI.K, V = UI.V, $ = UI.$, el = UI.el;
+  var viewport = UI.viewport;
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function isAsm() { return !!(UI.isAssembly && UI.isAssembly()); }
+  function drawingOn() { return !!(UI.drawingActive && UI.drawingActive()); }
+  function svg(tag, attrs, parent) {
+    var n = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+
+  // ================================================================== selection list
+  // App.sel / App.sel2 stay what the rest of the app reads (first and second item). App.multi holds the whole list
+  // when it has more than one item; it is valid only while App.multi[0] === App.sel and the mesh is the one it was made
+  // on, so any code that assigns App.sel directly (tree rows, commands, undo) simply replaces the multi-selection.
+  App.multi = [];
+  function round6(x) { return Math.round(x * 1e6) / 1e6; }
+  function selKey(s) {
+    if (!s) return '';
+    switch (s.kind) {
+      case 'face': case 'body': case 'entity': case 'dim': case 'rel': return s.kind + ':' + s.index;
+      case 'edge': return 'edge:' + (s.index != null && s.index >= 0 ? s.index : s.edge.mid.map(round6).join(','));
+      case 'vertex': return 'vertex:' + s.point.map(round6).join(',');
+      case 'feature': return 'feature:' + s.id;
+      case 'plane': return 'plane:' + s.ref;
+    }
+    return s.kind + ':' + JSON.stringify(s);
+  }
+  function selection() {
+    if (App.multi.length && App.multi[0] === App.sel && App.multiMesh === App.mesh && App.multiMode === App.mode) return App.multi.slice();
+    App.multi = [];
+    return [App.sel, App.sel2].filter(Boolean);
+  }
+  function describe(list) {
+    var names = { face: 'face', edge: 'edge', vertex: 'vertex', body: isAsm() ? 'component' : 'body', entity: 'sketch entity', feature: 'feature', plane: 'plane', dim: 'dimension', rel: 'relation' };
+    var plural = { vertex: 'vertices', entity: 'sketch entities', body: isAsm() ? 'components' : 'bodies' };
+    var counts = {};
+    list.forEach(function (s) { counts[s.kind] = (counts[s.kind] || 0) + 1; });
+    return Object.keys(counts).map(function (k) { var n = counts[k]; return n + ' ' + (n === 1 ? names[k] || k : plural[k] || (names[k] || k) + 's'); }).join(', ');
+  }
+  // UI.setSelection(list): the whole selection in one go; highlights, sketch colours, tree and listeners follow.
+  function setSelection(list, opts) {
+    list = (list || []).filter(Boolean);
+    App.multi = list.length > 1 ? list.slice() : [];
+    App.multiMesh = App.mesh; App.multiMode = App.mode;
+    App.sel = list[0] || null;
+    App.sel2 = list[1] || null;
+    if (list.some(function (s) { return s.kind === 'plane'; }) || (opts && opts.planes)) UI.updatePlanes();
+    UI.updateHighlights();
+    if (App.mode === 'sketch' || list.some(function (s) { return s.kind === 'feature'; })) UI.updateSketches();
+    else App.dimsStale = true;
+    UI.refreshTree();
+    if (UI.onSelectionChanged) UI.onSelectionChanged();
+    if (!(opts && opts.quiet) && UI.setStatus) UI.setStatus(list.length > 1 ? describe(list) + ' selected.' : list.length ? describe(list) + ' selected.' : 'Selection cleared.');
+    return list;
+  }
+  function entitySelected(i) {
+    return selection().some(function (s) { return s.kind === 'entity' && s.index === i; });
+  }
+
+  // ================================================================== Selection Filter
+  // SolidWorks semantics: with no filter button pressed everything is selectable; pressing some limits picking, box
+  // selection and every PropertyManager selection box to those kinds. Toggle Selection Filters (F6) suspends the set
+  // without forgetting it; F5 shows or hides the toolbar (the filters stay in force while it is hidden).
+  var FILTERS = [
+    ['faces', 'Filter Faces', 'face'], ['edges', 'Filter Edges', 'edge'], ['vertices', 'Filter Vertices', 'vertex'],
+    ['bodies', 'Filter Solid Bodies', 'body'], ['components', 'Filter Components', 'component'], ['sketch', 'Filter Sketch Entities', 'sketch']
+  ];
+  var filter = { faces: false, edges: false, vertices: false, bodies: false, components: false, sketch: false, suspended: false, bar: false };
+  function filterSet() {
+    if (filter.suspended) return null;
+    var any = FILTERS.some(function (f) { return filter[f[0]]; });
+    return any ? filter : null;
+  }
+  function bodyFilter(f) { return isAsm() ? !!(f.components || f.bodies) : !!f.bodies; }
+  // allows(kind): kind as in a selection item ('face', 'edge', 'vertex', 'body', 'entity', 'feature' (sketch), 'plane')
+  function allows(kind) {
+    var f = filterSet();
+    if (!f) return true;
+    switch (kind) {
+      case 'face': return !!f.faces;
+      case 'edge': return !!f.edges;
+      case 'vertex': return !!f.vertices;
+      case 'body': return bodyFilter(f);
+      case 'entity': case 'sketch': return !!f.sketch;
+      case 'plane': return true;     // reference planes have no filter here
+    }
+    return true;
+  }
+
+  // Icons for the filter toolbar (inline, same 24-unit stroke style as icons.js).
+  var FICON = {
+    face: '<path d="M4 8l8-4 8 4-8 4z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#6b7380"/>',
+    edge: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#9aa4b0"/><path d="M12 12v8" stroke="#1f5fd0" stroke-width="2.4"/>',
+    vertex: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#9aa4b0"/><circle cx="12" cy="12" r="2.6" fill="#1f5fd0"/>',
+    body: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M4 8l8 4 8-4M12 12v8" fill="none" stroke="#1f5fd0"/>',
+    component: '<path d="M3 9l6-3 6 3-6 3zM3 9v6l6 3v-6M15 9v6l-6 3" fill="#c9dcf2" stroke="#1f5fd0"/><path d="M13 13l4-2 4 2-4 2zM13 13v5l4 2v-5M21 13v5l-4 2" fill="#f2d98a" stroke="#a07800"/>',
+    sketch: '<path d="M4 18L10 6l6 9 4-5" fill="none" stroke="#1f5fd0" stroke-width="1.8"/><circle cx="4" cy="18" r="1.6" fill="#1f5fd0"/><circle cx="20" cy="10" r="1.6" fill="#1f5fd0"/>',
+    toggle: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="#f2cf5b" stroke="#6b5200"/>',
+    clear: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="none" stroke="#6b7380"/><path d="M15 14l5 5M20 14l-5 5" stroke="#d9453b" stroke-width="1.8"/>',
+    all: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M14 17l2 2 4-5" fill="none" stroke="#1fa653" stroke-width="1.8"/>'
+  };
+  function ficon(name) { return '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">' + FICON[name] + '</svg>'; }
+  var bar = el('div', { id: 'sel-filter', class: 'sel-filter', role: 'toolbar', 'aria-label': 'Selection Filter' });
+  bar.hidden = true;
+  viewport.appendChild(bar);
+  function renderBar() {
+    bar.innerHTML = '';
+    bar.appendChild(el('span', { class: 'sf-title', text: 'Selection Filter' }));
+    function btn(key, title, icon, pressed, fn) {
+      var b = el('button', { class: 'sf-btn' + (pressed ? ' on' : ''), title: title, 'aria-label': title, 'aria-pressed': pressed ? 'true' : 'false', 'data-filter': key, html: ficon(icon) });
+      b.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      b.addEventListener('click', function (e) { e.stopPropagation(); fn(); });
+      bar.appendChild(b);
+    }
+    btn('toggle', 'Toggle Selection Filters (F6)' + (filter.suspended ? ' — suspended' : ''), 'toggle', !filter.suspended && !!filterSet(), function () { setFilter({ suspended: !filter.suspended }); });
+    btn('clear', 'Clear All Filters', 'clear', false, function () { var o = {}; FILTERS.forEach(function (f) { o[f[0]] = false; }); setFilter(o); });
+    btn('all', 'Select All Filters', 'all', false, function () { var o = { suspended: false }; FILTERS.forEach(function (f) { o[f[0]] = true; }); setFilter(o); });
+    bar.appendChild(el('span', { class: 'sf-sep' }));
+    FILTERS.forEach(function (f) { btn(f[0], f[1], f[2], !!filter[f[0]], function () { var o = {}; o[f[0]] = !filter[f[0]]; setFilter(o); }); });
+    bar.classList.toggle('suspended', !!filter.suspended);
+  }
+  // UI.selectionFilter(opts?) -> copy of the filter state; opts may set faces / edges / vertices / bodies / components /
+  // sketch (booleans), suspended, bar (toolbar shown).
+  function setFilter(opts) {
+    opts = opts || {};
+    Object.keys(opts).forEach(function (k) { if (k in filter) filter[k] = !!opts[k]; });
+    // selected items the filter no longer allows are dropped, as SolidWorks does when a filter is switched on
+    var list = selection(), keep = list.filter(function (s) { return allows(s.kind); });
+    if (keep.length !== list.length) setSelection(keep, { quiet: true });
+    bar.hidden = !filter.bar;
+    renderBar();
+    if (App.hover && !allows(App.hover.kind)) { App.hover = null; UI.updateHighlights(); }
+    var f = filterSet();
+    if (UI.setStatus && Object.keys(opts).some(function (k) { return k !== 'bar'; })) {
+      UI.setStatus(f ? 'Selection Filter: ' + FILTERS.filter(function (x) { return f[x[0]]; }).map(function (x) { return x[1].replace('Filter ', ''); }).join(', ') + '.' : filter.suspended ? 'Selection filters suspended (F6 turns them back on).' : 'Selection Filter off: everything is selectable.');
+    }
+    return selectionFilter();
+  }
+  function selectionFilter(opts) {
+    if (opts) return setFilter(opts);
+    var o = {};
+    Object.keys(filter).forEach(function (k) { o[k] = filter[k]; });
+    o.active = !!filterSet();
+    return o;
+  }
+  function toggleBar(on) { setFilter({ bar: on == null ? !filter.bar : !!on }); return filter.bar; }
+  renderBar();
+
+  // ================================================================== picking with the filter
+  // Vertices: the distinct end points of the sharp edges, computed once per mesh.
+  var vtxCache = { mesh: null, list: [] };
+  function faceVisible(i) { var f = App.mesh && App.mesh.faces[i]; return !!f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0)); }
+  function edgeShown(e) {
+    if (e.smooth || e.faces.length !== 2) return false;
+    return faceVisible(e.faces[0]) || faceVisible(e.faces[1]);
+  }
+  function vertices() {
+    if (vtxCache.mesh === App.mesh) return vtxCache.list;
+    var seen = {}, list = [];
+    (App.edges || []).forEach(function (e) {
+      if (e.smooth || e.faces.length !== 2) return;
+      [e.a, e.b].forEach(function (p) {
+        var k = p.map(function (x) { return Math.round(x * 1e5); }).join(',');
+        if (seen[k] != null) { list[seen[k]].edges.push(e); return; }
+        seen[k] = list.length;
+        list.push({ point: [p[0], p[1], p[2]], edges: [e] });
+      });
+    });
+    vtxCache = { mesh: App.mesh, list: list };
+    return list;
+  }
+  function camDir() { return [UI.cam.dir.x, UI.cam.dir.y, UI.cam.dir.z]; }
+  // Nearest visible vertex within 8 px (occluded when it sits clearly behind the face under the cursor).
+  function pickVertex(mx, my) {
+    var list = vertices(), best = null, bestD = 8;
+    if (!list.length) return null;
+    var hit = UI.pickFace(mx, my), cd = camDir(), hitDepth = hit ? V.dot(hit.point, cd) : -Infinity;
+    list.forEach(function (v, i) {
+      if (!v.edges.some(edgeShown)) return;
+      var s = UI.worldToScreen(v.point), d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d >= bestD) return;
+      if (hit && V.dot(v.point, cd) < hitDepth - Math.max(0.5, UI.cam.scale * 3)) return;
+      bestD = d; best = { kind: 'vertex', point: v.point.slice(), index: i };
+    });
+    return best;
+  }
+  function faceBody(i) { var f = App.mesh.faces[i]; return f && f.body ? f.body : 0; }
+  // A visible sketch (part mode) under the cursor, as its feature: Filter Sketch Entities in a part picks sketches.
+  function pickSketchFeature(mx, my) {
+    var best = null, bestD = 7;
+    UI.groups.sketches.children.forEach(function (o) {
+      var u = o.userData;
+      if (!u || u.sketch == null || !o.geometry) return;
+      var a = o.geometry.getAttribute('position');
+      if (!a) return;
+      for (var i = 0; i + 1 < a.count; i += 2) {
+        var p = UI.worldToScreen([a.getX(i), a.getY(i), a.getZ(i)]), q = UI.worldToScreen([a.getX(i + 1), a.getY(i + 1), a.getZ(i + 1)]);
+        var d = distSeg([mx, my], p, q);
+        if (d < bestD) { bestD = d; best = { kind: 'feature', id: u.sketch }; }
+      }
+    });
+    return best;
+  }
+  function distSeg(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+    var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+  }
+  // What a plain click selects under the filter (part or assembly, no command).
+  function pick(mx, my) {
+    var f = filterSet();
+    if (!f) return UI.pickEdge(mx, my) || UI.pickFace(mx, my) || (App.view.showPlanes ? UI.pickPlane(mx, my) : null);
+    var hit = null;
+    if (f.vertices) hit = pickVertex(mx, my);
+    if (!hit && f.edges) hit = UI.pickEdge(mx, my);
+    if (!hit && (f.faces || bodyFilter(f))) {
+      var fc = UI.pickFace(mx, my);
+      if (fc) hit = f.faces ? fc : { kind: 'body', index: faceBody(fc.index) };
+    }
+    if (!hit && f.sketch) hit = pickSketchFeature(mx, my);
+    if (!hit && App.view.showPlanes) hit = UI.pickPlane(mx, my);
+    return hit;
+  }
+  // What a PropertyManager selection box receives (App.command.onPick), filtered. Commands that map a face to its
+  // component (assembly selection boxes) still get the face when only Bodies / Components are on.
+  function pickFor(mx, my, cmd) {
+    var f = filterSet(), pk = null;
+    if (cmd.pickEdges && allows('edge')) pk = UI.pickEdge(mx, my);
+    if (!pk && (!f || f.faces || bodyFilter(f))) pk = UI.pickFace(mx, my);
+    if (!pk && cmd.pickPlane) pk = UI.pickPlane(mx, my);
+    return pk;
+  }
+  // Hover under the filter (same rules as a click), so the pre-highlight tells what a click will select.
+  function pickHover(mx, my) {
+    var cmd = App.command, f = filterSet();
+    if (cmd && cmd.pickPlane) return (!f || f.faces || bodyFilter(f) ? UI.pickFace(mx, my) : null) || UI.pickPlane(mx, my);
+    if (cmd && cmd.pickEdges) return allows('edge') ? UI.pickEdge(mx, my) : null;
+    return pick(mx, my);
+  }
+  // A click in the part / assembly viewport (ui-sketch.js partClick). Ctrl or Shift toggles the item in the selection.
+  function selectClick(mx, my, ev) {
+    if (App.command && App.command.onPick) {
+      var pk = pickFor(mx, my, App.command);
+      if (pk && App.command.onPick(pk) !== false) return;
+    }
+    var hit = pick(mx, my);
+    if (ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey)) {
+      if (hit) setSelection(BoxSelect.combine(selection(), [hit], 'toggle', selKey));
+      return;
+    }
+    setSelection(hit ? [hit] : [], { quiet: !hit });
+  }
+  // A click with the Select tool in a sketch: Ctrl / Shift toggle entities; the filter can block sketch entities.
+  function sketchSelectClick(mx, my, ev) {
+    if (!allows('entity')) { App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
+    if (!(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey))) return false;
+    var hit = UI.pickEntity(mx, my);
+    if (!hit) return true;
+    UI.closePM();
+    setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hit], 'toggle', selKey));
+    return true;
+  }
+
+  // ================================================================== box selection
+  var boxEl = el('div', { id: 'sel-box' });
+  boxEl.hidden = true;
+  viewport.appendChild(boxEl);
+  var boxing = null;   // { start, end, mods, cancelled }
+
+  // Screen projection of a whole mesh in one pass: 2 numbers per vertex, 6 per triangle.
+  function projector() {
+    var cam = UI.camera, m = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), e = m.elements;
+    var w = UI.size.w, h = UI.size.h;
+    return function (x, y, z, out, o) {
+      var W = e[3] * x + e[7] * y + e[11] * z + e[15] || 1;
+      out[o] = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / W + 1) / 2 * w;
+      out[o + 1] = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / W) / 2 * h;
+    };
+  }
+  function screenMesh() {
+    var m = App.mesh, P = projector(), pos = m.positions64 || m.positions, n = m.triCount * 3, out = new Float64Array(n * 2);
+    for (var i = 0; i < n; i++) P(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], out, i * 2);
+    return out;
+  }
+  function S(p) { return UI.worldToScreen(p); }
+  // Everything the box r selects, before the Ctrl / Shift merge. Parts select edges by default, assemblies
+  // components, sketches entities; the Selection Filter picks the kinds instead.
+  function boxItems(r) {
+    var mode = r.mode, out = [];
+    if (App.mode === 'sketch') {
+      var sk = UI.activeSketchFeature();
+      if (!sk || !allows('entity')) return out;
+      var pl = UI.activePlane();
+      sk.entities.forEach(function (e, i) {
+        var pls = e.t === 'point' ? [{ pts: [[e.x, e.y]], closed: false }] : K.entityPolylines(e);
+        if (!pls.length) return;
+        var scr = pls.map(function (l) { return { pts: l.pts.map(function (q) { return S(K.to3D(pl, q[0], q[1])); }), closed: l.closed }; });
+        var ok = mode === 'window' ? scr.every(function (l) { return BoxSelect.polyline(l.pts, l.closed, r, mode); }) : scr.some(function (l) { return BoxSelect.polyline(l.pts, l.closed, r, mode); });
+        if (ok) out.push({ kind: 'entity', index: i });
+      });
+      return out;
+    }
+    if (!App.mesh) return out;
+    var f = filterSet(), asm = isAsm();
+    var want = f ? { faces: f.faces, edges: f.edges, vertices: f.vertices, bodies: bodyFilter(f), sketch: f.sketch } : asm ? { bodies: true } : { edges: true };
+    var faces = App.mesh.faces, sp = (want.faces || want.bodies) ? screenMesh() : null;
+    if (want.faces) faces.forEach(function (fc, i) {
+      if (!faceVisible(i)) return;
+      if (BoxSelect.triangles(sp, r, mode, fc.start * 6, (fc.start + fc.count) * 6)) out.push({ kind: 'face', index: i });
+    });
+    if (want.edges) (App.edges || []).forEach(function (e, i) {
+      if (edgeShown(e) && BoxSelect.segment(S(e.a), S(e.b), r, mode)) out.push({ kind: 'edge', edge: e, index: i });
+    });
+    if (want.vertices) vertices().forEach(function (v, i) {
+      if (v.edges.some(edgeShown) && BoxSelect.inside(S(v.point), r)) out.push({ kind: 'vertex', point: v.point.slice(), index: i });
+    });
+    if (want.bodies) {
+      var n = Math.max(1, UI.bodyCount ? UI.bodyCount() : 1), state = [];
+      for (var b = 0; b < n; b++) state.push(mode === 'window' ? null : false);
+      faces.forEach(function (fc) {
+        var bi = fc.body || 0;
+        if (UI.isBodyHidden && UI.isBodyHidden(bi)) return;
+        var hit = BoxSelect.triangles(sp, r, mode, fc.start * 6, (fc.start + fc.count) * 6);
+        if (mode === 'window') state[bi] = (state[bi] == null ? true : state[bi]) && hit;
+        else state[bi] = state[bi] || hit;
+      });
+      state.forEach(function (s, bi) { if (s) out.push({ kind: 'body', index: bi }); });
+    }
+    if (want.sketch) {
+      var per = {};
+      UI.groups.sketches.children.forEach(function (o) {
+        var u = o.userData, a = o.geometry && o.geometry.getAttribute('position');
+        if (!u || u.sketch == null || !a) return;
+        var st = per[u.sketch] || (per[u.sketch] = { all: true, any: false });
+        for (var i = 0; i + 1 < a.count; i += 2) {
+          var hit = BoxSelect.segment(S([a.getX(i), a.getY(i), a.getZ(i)]), S([a.getX(i + 1), a.getY(i + 1), a.getZ(i + 1)]), r, mode);
+          st.all = st.all && hit; st.any = st.any || hit;
+        }
+      });
+      Object.keys(per).forEach(function (id) { if (mode === 'window' ? per[id].all : per[id].any) out.push({ kind: 'feature', id: +id }); });
+    }
+    return out;
+  }
+  // Apply a box: mods.ctrl adds, mods.shift toggles (Ctrl+Shift too), neither replaces. Inside an edge PropertyManager
+  // (Fillet, Chamfer, flanges) the boxed edges go to its selection box instead. Returns the new selection.
+  function applyBox(r, mods) {
+    mods = mods || {};
+    var items = boxItems(r);
+    var cmd = App.command;
+    if (cmd && cmd.onPick) {
+      items.filter(function (it) { return it.kind === 'edge'; }).forEach(function (it) { cmd.onPick(it); });
+      UI.updateHighlights();
+      return selection();
+    }
+    var op = mods.shift ? 'toggle' : mods.ctrl ? 'add' : 'replace';
+    var list = BoxSelect.combine(selection(), items, op, selKey);
+    setSelection(list, { quiet: true });
+    if (UI.setStatus) UI.setStatus((r.mode === 'window' ? 'Window' : 'Crossing') + ' selection: ' + (list.length ? describe(list) + ' selected.' : 'nothing selected.'));
+    return list;
+  }
+  function showBox(a, b) {
+    var r = BoxSelect.rect(a, b);
+    boxEl.hidden = false;
+    boxEl.className = r.mode;
+    boxEl.style.left = r.x0 + 'px'; boxEl.style.top = r.y0 + 'px';
+    boxEl.style.width = (r.x1 - r.x0) + 'px'; boxEl.style.height = (r.y1 - r.y0) + 'px';
+  }
+  // ui-sketch.js mousedown: a left press on empty space (no face, plane or sketch entity under it) starts a box; a
+  // press on the model still rotates the view, as before. Returns a drag hook { start, move, end } or null.
+  function boxSelectHook(p, ev) {
+    if (ev.button !== 0 || ev.altKey || App.zoomAreaMode || drawingOn() || !App.mesh) return null;
+    var cmd = App.command;
+    if (App.mode === 'sketch') {
+      if (App.tool !== 'select' || (cmd && (cmd.onSketchPoint || cmd.onPick))) return null;
+      if (UI.pickEntity(p[0], p[1])) return null;
+    } else {
+      if (cmd && !(cmd.onPick && cmd.pickEdges)) return null;   // other PropertyManagers keep press-and-drag = rotate
+      if (UI.pickFace(p[0], p[1])) return null;
+      if (App.view.showPlanes && UI.pickPlane(p[0], p[1])) return null;
+    }
+    var mods = { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey };
+    return {
+      box: true,
+      start: function () { boxing = { start: p, end: p, mods: mods }; showBox(p, p); },
+      move: function (q) { if (!boxing) return; boxing.end = q; showBox(p, q); },
+      end: function (q) {
+        var b = boxing; boxing = null; boxEl.hidden = true;
+        if (!b || b.cancelled) return;
+        var r = BoxSelect.rect(p, q);
+        if (r.x1 - r.x0 < 2 && r.y1 - r.y0 < 2) return;
+        applyBox(r, mods);
+      }
+    };
+  }
+
+  // ================================================================== highlights of the extra items
+  var vtxMat = new THREE.PointsMaterial({ color: 0x14a34a, size: 9, sizeAttenuation: false, depthTest: false });
+  var vtxHoverMat = new THREE.PointsMaterial({ color: 0xff8c1a, size: 9, sizeAttenuation: false, depthTest: false });
+  function pointsObject(pts, mat) {
+    var arr = [];
+    pts.forEach(function (p) { arr.push(p[0], p[1], p[2]); });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    var o = new THREE.Points(g, mat);
+    o.renderOrder = 13;
+    return o;
+  }
+  // ui-core.js updateHighlights calls this last: items 3… of a multi-selection (App.sel / App.sel2 are drawn by core),
+  // selected and hovered vertices; then the Instant3D overlay is marked for redraw.
+  UI.drawSelectionExtras = function (g, h) {
+    var list = selection(), edges = [], verts = [];
+    list.forEach(function (s, i) {
+      if (s.kind === 'vertex') { verts.push(s.point); return; }
+      if (i < 2) return;
+      if (s.kind === 'edge') edges.push(s.edge);
+      else { var r = h.selectionRanges(s); if (r) g.add(new THREE.Mesh(h.triRangeGeometry(r), UI.mats.sel)); }
+    });
+    if (edges.length) g.add(h.edgeLineObject(edges, h.edgeSelMat));
+    if (verts.length) g.add(pointsObject(verts, vtxMat));
+    if (App.hover && App.hover.kind === 'vertex') g.add(pointsObject([App.hover.point], vtxHoverMat));
+    App.dimsStale = true;
+  };
+
+  // ================================================================== FeatureManager sync
+  // Rows of selected features, bodies and components are marked; the feature that owns a selected face or edge gets a
+  // lighter "owner" mark. Ctrl / Shift + click on a row adds or removes it from the selection.
+  function ownerOfFace(i) { var f = App.mesh && App.mesh.faces[i]; return f && App.triShared ? App.triShared[f.start] : -1; }
+  function markTree() {
+    var tree = $('tree');
+    if (!tree || !App.model) return;
+    var fids = {}, owners = {}, bodies = {};
+    selection().forEach(function (s) {
+      if (s.kind === 'feature') fids[s.id] = true;
+      else if (s.kind === 'face') owners[ownerOfFace(s.index)] = true;
+      else if (s.kind === 'edge' && s.edge) s.edge.faces.forEach(function (fi) { owners[ownerOfFace(fi)] = true; });
+      else if (s.kind === 'body') bodies[s.index] = true;
+    });
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti[data-fid]'), function (row) {
+      var id = +row.getAttribute('data-fid');
+      if (fids[id]) row.classList.add('selected');
+      row.classList.toggle('sel-owner', !!owners[id] && !fids[id]);
+    });
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti[data-body]'), function (row) { if (bodies[+row.getAttribute('data-body')]) row.classList.add('selected'); });
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti.component-row[data-comp]'), function (row) {
+      var i = UI.componentIndex ? UI.componentIndex(+row.getAttribute('data-comp')) : -1;
+      if (i >= 0 && bodies[i]) row.classList.add('selected');
+    });
+  }
+  var baseRefreshTree = UI.refreshTree;
+  UI.refreshTree = function () { var r = baseRefreshTree.apply(this, arguments); markTree(); return r; };
+  $('tree').addEventListener('click', function (e) {
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    var row = e.target.closest && e.target.closest('.ti[data-fid], .ti[data-body], .ti.component-row[data-comp]');
+    if (!row || App.mode === 'sketch') return;
+    e.stopPropagation(); e.preventDefault();
+    var item = row.hasAttribute('data-fid') ? { kind: 'feature', id: +row.getAttribute('data-fid') }
+      : row.hasAttribute('data-body') ? { kind: 'body', index: +row.getAttribute('data-body') }
+      : { kind: 'body', index: UI.componentIndex(+row.getAttribute('data-comp')) };
+    if (item.kind === 'body' && !(item.index >= 0)) return;
+    setSelection(BoxSelect.combine(selection(), [item], 'toggle', selKey));
+  }, true);
+
+  // Delete with several sketch entities selected removes them all (one undo step, highest index first).
+  var baseDelete = UI.deleteSelection;
+  UI.deleteSelection = function () {
+    var list = selection();
+    if (App.mode === 'sketch' && list.length > 1 && list.every(function (s) { return s.kind === 'entity'; })) {
+      list.map(function (s) { return s.index; }).sort(function (a, b) { return b - a; }).forEach(function (i) {
+        App.sel = { kind: 'entity', index: i }; App.sel2 = null; App.multi = [];
+        baseDelete();
+      });
+      App.sel = null; UI.updateSketches();
+      return;
+    }
+    return baseDelete.apply(this, arguments);
+  };
+
+  // ================================================================== Instant3D
+  // Selecting a face of a Boss-Extrude / Cut-Extrude / Revolve (or the feature in the FeatureManager) shows a drag
+  // arrow on its end face (depth / angle) and the feature's sketch dimensions in the viewport, each with a drag dot.
+  // Dragging changes the value live, snapped to the ruler's ticks; the whole drag is one undo step and releasing opens
+  // a box to type an exact value. In a sketch the same dots sit on the dimension arrows. Toggle: Features ▸ Instant3D.
+  var i3d = { on: true, drag: null, edit: null, side: {} };
+  var layer = svg('svg', { id: 'i3d-layer', 'aria-hidden': 'true' });
+  viewport.appendChild(layer);
+  var editBox = el('div', { id: 'i3d-edit' });
+  editBox.hidden = true;
+  var editInput = el('input', { type: 'text', inputmode: 'decimal', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Instant3D value' });
+  editBox.appendChild(editInput);
+  viewport.appendChild(editBox);
+
+  function numeric(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v === 'string' && /^\s*[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i.test(v)) return parseFloat(v);
+    return null;     // "=…" equations drive the value: no handle
+  }
+  function unitText() { return UI.unitLabel ? UI.unitLabel() : 'mm'; }
+  function fmtV(v, h) { return UI.fmtNum(v, h && h.angle ? 2 : 3) + (h && h.angle ? '°' : ' ' + unitText()); }
+  function sketchPlane(sk) { try { return K.resolvePlane(sk.plane, App.model, App.build && App.build.planes); } catch (e) { return null; } }
+  function to3Ddir(pl, d) { return V.norm(V.add(V.scale(pl.x, d[0]), V.scale(pl.y, d[1]))); }
+  function rotate(v, axis, ang) {    // Rodrigues, right-handed about the unit axis
+    var c = Math.cos(ang), s = Math.sin(ang), k = axis, d = V.dot(k, v), cr = V.cross(k, v);
+    return [v[0] * c + cr[0] * s + k[0] * d * (1 - c), v[1] * c + cr[1] * s + k[1] * d * (1 - c), v[2] * c + cr[2] * s + k[2] * d * (1 - c)];
+  }
+
+  // A linear handle: value v sits at O + dir·v/k (k = 2 for mid-plane depths and diameters).
+  function linearHandle(h) {
+    h.pos = function (v) { return V.add(h.O, V.scale(h.dir, v / h.k)); };
+    h.arrow = function () { return h.dir; };
+    h.rawAt = function (mx, my) {
+      var s0 = S(h.O), s1 = S(V.add(h.O, h.dir)), ux = s1[0] - s0[0], uy = s1[1] - s0[1], L2 = ux * ux + uy * uy;
+      if (L2 < 1e-6) return null;                       // seen end-on: the arrow cannot be dragged in this view
+      return ((mx - s0[0]) * ux + (my - s0[1]) * uy) / L2 * h.k;
+    };
+    h.pxPerUnit = function () { var s0 = S(h.O), s1 = S(V.add(h.O, h.dir)); return Math.hypot(s1[0] - s0[0], s1[1] - s0[1]) / h.k; };
+    h.step = function () { return BoxSelect.rulerStep(h.pxPerUnit(), 8); };
+    return h;
+  }
+
+  // Boss-Extrude / Cut-Extrude depth. faceIndex: the selected face (must be an end face) or null (the largest end face,
+  // on the side dragged last).
+  function extrudeHandle(f, sk, pl, faceIndex) {
+    if (f.end === 'through' || f.dir2) return null;
+    var depth = numeric(f.depth);
+    if (depth == null || !(depth > 0)) return null;
+    var n = pl.n, mid = f.end === 'mid', want = mid ? depth / 2 : depth, sign = f.reverse ? -1 : 1, faces = App.mesh.faces;
+    var tol = 1e-4 * Math.max(1, depth);
+    function endSide(i) {
+      var fc = faces[i];
+      if (!fc || App.triShared[fc.start] !== f.id || !fc.normal || !fc.centroid) return 0;
+      if (Math.abs(V.dot(fc.normal, n)) < 0.9999) return 0;
+      var d = V.dot(V.sub(fc.centroid, pl.origin), n);
+      if (mid) return Math.abs(Math.abs(d) - want) < tol ? (d > 0 ? 1 : -1) : 0;
+      return Math.abs(d - sign * want) < tol ? sign : 0;
+    }
+    var pickI = -1, side = 0;
+    if (faceIndex != null) { side = endSide(faceIndex); if (!side) return null; pickI = faceIndex; }
+    else {
+      var prefer = i3d.side[f.id], bestA = -1;
+      faces.forEach(function (fc, i) {
+        var s = endSide(i);
+        if (!s) return;
+        var a = fc.area + (prefer && s === prefer ? 1e12 : 0);
+        if (a > bestA) { bestA = a; pickI = i; side = s; }
+      });
+      if (pickI < 0) return null;
+    }
+    var c = faces[pickI].centroid, d0 = V.dot(V.sub(c, pl.origin), n);
+    return linearHandle({ kind: 'depth', fid: f.id, side: side, O: V.sub(c, V.scale(n, d0)), dir: V.scale(n, side), k: mid ? 2 : 1, value: depth,
+      label: (f.cut ? 'Cut-Extrude' : 'Boss-Extrude') + ' depth', min: 0,
+      apply: function (v) { f.depth = v; return true; } });
+  }
+
+  function revolveAxisWorld(f, sk, pl) {
+    var ax = f.axis, p, d;
+    if (ax === 'y' || ax == null) { p = [0, 0]; d = [0, 1]; }
+    else if (ax === 'x') { p = [0, 0]; d = [1, 0]; }
+    else if (typeof ax === 'object' && ax.x1 != null) { p = [ax.x1, ax.y1]; d = [ax.x2 - ax.x1, ax.y2 - ax.y1]; }
+    else { var e = sk.entities[ax]; if (!e || e.t !== 'line') return null; p = [e.x1, e.y1]; d = [e.x2 - e.x1, e.y2 - e.y1]; }
+    if (Math.hypot(d[0], d[1]) < 1e-12) return null;
+    return { A: K.to3D(pl, p[0], p[1]), D: to3Ddir(pl, d) };
+  }
+  // Revolve angle: the end cap is the planar face of the feature containing the axis at `angle` from the profile's side.
+  function revolveHandle(f, sk, pl, faceIndex) {
+    var ang = numeric(f.angle);
+    if (ang == null || !(ang > 0) || ang >= 360 - 1e-6) return null;
+    var ax = revolveAxisWorld(f, sk, pl);
+    if (!ax) return null;
+    var A = ax.A, D = ax.D, sum = [0, 0, 0], cnt = 0;
+    sk.entities.forEach(function (e, i) {
+      if (i === f.axis || e.construction) return;
+      (K.entitySnapPoints ? K.entitySnapPoints(e) : []).forEach(function (q) { sum = V.add(sum, K.to3D(pl, q[0], q[1])); cnt++; });
+    });
+    if (!cnt) return null;
+    function perp(p) { var w = V.sub(p, A); return V.sub(w, V.scale(D, V.dot(w, D))); }
+    var w0 = perp(V.scale(sum, 1 / cnt));
+    if (V.len(w0) < 1e-9) return null;
+    var e1 = V.norm(w0), e2 = V.cross(D, e1);
+    function angOf(p) { var w = perp(p), a = Math.atan2(V.dot(w, e2), V.dot(w, e1)) * 180 / Math.PI; return a < 0 ? a + 360 : a; }
+    var faces = App.mesh.faces;
+    function capSign(i) {
+      var fc = faces[i];
+      if (!fc || App.triShared[fc.start] !== f.id || !fc.normal || !fc.centroid) return 0;
+      if (Math.abs(V.dot(fc.normal, D)) > 1e-3 || V.len(perp(fc.centroid)) < 1e-9) return 0;
+      var a = angOf(fc.centroid);
+      if (Math.abs(a - ang) < 0.05) return 1;
+      if (Math.abs(360 - a - ang) < 0.05) return -1;
+      return 0;
+    }
+    var pickI = -1, s = 0;
+    if (faceIndex != null) { s = capSign(faceIndex); if (!s) return null; pickI = faceIndex; }
+    else faces.forEach(function (fc, i) { if (pickI < 0) { var c = capSign(i); if (c) { pickI = i; s = c; } } });
+    if (pickI < 0) return null;
+    var c = faces[pickI].centroid, hgt = V.dot(V.sub(c, A), D), r = V.len(perp(c)), foot = V.add(A, V.scale(D, hgt));
+    var h = { kind: 'angle', angle: true, fid: f.id, value: ang, label: (f.cut ? 'Cut-Revolve' : 'Revolve') + ' angle', min: 0, max: 360,
+      apply: function (v) { f.angle = v; return true; } };
+    h.pos = function (v) { return V.add(foot, V.scale(rotate(e1, D, s * v * Math.PI / 180), r)); };
+    h.arrow = function (v) { return V.scale(rotate(e2, D, s * v * Math.PI / 180), s); };
+    h.pxPerUnit = function () { return r * Math.PI / 180 / UI.cam.scale; };
+    h.step = function () { var p = h.pxPerUnit(); return p >= 6 ? 1 : p >= 1.2 ? 5 : 15; };
+    h.rawAt = function (mx, my) {    // the angle whose arc point is nearest the pointer (0.25° samples, then refined)
+      var best = null, bestD = Infinity;
+      for (var t = 0; t <= 360; t += 0.25) { var q = S(h.pos(t)), dd = Math.hypot(q[0] - mx, q[1] - my); if (dd < bestD) { bestD = dd; best = t; } }
+      return best;
+    };
+    h.ring = true;
+    return h;
+  }
+
+  // Sketch dimensions of `sk` as handles (placed dimensions, plus the driven ones when View ▸ Sketch Dimensions is on).
+  function sketchDimHandles(sk, pl, liveSketch) {
+    var out = [], placed = sk.dims || [], list = [];
+    placed.forEach(function (d, i) { list.push({ d: d, index: i }); });
+    if (App.view.showDims && UI.autoDims) sk.entities.forEach(function (e, i) { UI.autoDims(e, i, placed).forEach(function (d) { list.push({ d: d, auto: true }); }); });
+    var s = UI.cam.scale;
+    list.forEach(function (it) {
+      var e = sk.entities[it.d.e], g = e && K.dimGeometry(e, it.d);
+      if (!g) return;
+      var h;
+      if (g.type === 'linear') {
+        var n2 = [-g.dir[1], g.dir[0]], off = it.d.off != null ? it.d.off : 16 * s;
+        if (Math.abs(off) < 6 * s) off = (off < 0 ? -6 : 6) * s;
+        var A2 = [g.P[0] + n2[0] * off, g.P[1] + n2[1] * off];
+        h = linearHandle({ O: K.to3D(pl, A2[0], A2[1]), dir: to3Ddir(pl, g.dir), k: 1, g: g, off: off, n2: n2 });
+      } else {
+        var a = (it.d.ang != null ? it.d.ang : 45) * Math.PI / 180, u = [Math.cos(a), Math.sin(a)];
+        h = linearHandle({ O: K.to3D(pl, g.C[0], g.C[1]), dir: to3Ddir(pl, u), k: g.prefix === '⌀' ? 2 : 1, g: g });
+      }
+      h.kind = 'sdim'; h.sketch = sk.id; h.dim = it.d; h.dimIndex = it.index; h.auto = !!it.auto; h.value = g.value; h.live = !!liveSketch;
+      h.label = sk.name + ' ' + (g.prefix || '') + UI.fmtNum(g.value, 2); h.prefix = g.prefix || ''; h.min = 0;
+      h.apply = function (v) {
+        var skNow = K.findFeature(App.model, sk.id), ent = skNow && skNow.entities[it.d.e];
+        if (!ent) return false;
+        if (window.SketchSolver) { var res = SketchSolver.setDim(skNow, it.auto ? it.d : it.index, v); return !!res.ok; }
+        try { K.setDimValue(ent, it.d, v); return true; } catch (err) { return false; }
+      };
+      out.push(h);
+    });
+    return out;
+  }
+
+  // The handles for the current state: a feature's (part mode, one selected face or feature), or the active sketch's
+  // dimension dots (sketch mode).
+  function computeHandles() {
+    if (!i3d.on || !App.model || !App.build || !App.mesh || drawingOn() || isAsm()) return [];
+    if (App.mode === 'sketch') {
+      var ask = UI.activeSketchFeature(), apl = ask && UI.activePlane();
+      if (!ask || !apl || App.tool !== 'select' || App.command) return [];
+      return sketchDimHandles(ask, apl, true);
+    }
+    if (App.mode !== 'part' || App.command || (UI.hasPM && UI.hasPM())) return [];
+    var list = selection();
+    if (list.length !== 1) return [];
+    var s = list[0], f = null, face = null;
+    if (s.kind === 'face') { var fc = App.mesh.faces[s.index]; if (!fc || !App.triShared) return []; f = K.findFeature(App.model, App.triShared[fc.start]); face = s.index; }
+    else if (s.kind === 'feature') f = K.findFeature(App.model, s.id);
+    if (!f || (f.type !== 'extrude' && f.type !== 'revolve') || f.suppressed) return [];
+    if (App.build.errors && App.build.errors[f.id]) return [];
+    var sk = K.findFeature(App.model, f.sketch), pl = sk && sketchPlane(sk);
+    if (!sk || !pl) return [];
+    var out = [], h = f.type === 'extrude' ? extrudeHandle(f, sk, pl, face) : revolveHandle(f, sk, pl, face);
+    if (h) out.push(h);
+    return out.concat(sketchDimHandles(sk, pl, false));
+  }
+
+  // ---- drawing
+  function unit2(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy); return L < 1e-9 ? null : [dx / L, dy / L]; }
+  function arrowHead(g, tip, u, size, cls) {
+    var px = -u[1] * size * 0.38, py = u[0] * size * 0.38;
+    svg('polygon', { 'class': cls, points: tip[0] + ',' + tip[1] + ' ' + (tip[0] - u[0] * size + px) + ',' + (tip[1] - u[1] * size + py) + ' ' + (tip[0] - u[0] * size - px) + ',' + (tip[1] - u[1] * size - py) }, g);
+  }
+  function drawRuler(g, h, v) {
+    var step = h.step(), maxV = h.angle ? 360 : Math.max(v * 1.35, v + 12 * step), n = Math.min(400, Math.floor(maxV / step + 1e-9));
+    var pts = [];
+    for (var j = 0; j <= n; j++) pts.push(S(h.pos(j * step)));
+    svg('polyline', { 'class': 'i3d-ruler', points: pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ') }, g);
+    var major = h.angle ? (step === 1 ? 15 : step === 5 ? 3 : 2) : 5;
+    for (var k = 0; k <= n; k++) {
+      var p = pts[k], q = pts[Math.min(n, k + 1)], o = pts[Math.max(0, k - 1)], u = unit2(o, q) || [1, 0], nn = [-u[1], u[0]];
+      var L = k % major === 0 ? 9 : 5;
+      svg('line', { 'class': 'i3d-tick' + (k % major === 0 ? ' major' : ''), x1: p[0], y1: p[1], x2: p[0] + nn[0] * L, y2: p[1] + nn[1] * L }, g);
+      if (k % major === 0 && k > 0) {
+        var t = svg('text', { 'class': 'i3d-tick-label', x: p[0] + nn[0] * 17, y: p[1] + nn[1] * 17 + 4, 'text-anchor': 'middle' }, g);
+        t.textContent = UI.fmtNum(k * step, 3);
+      }
+    }
+  }
+  function drawSketchDim(g, h, v) {
+    var sk = K.findFeature(App.model, h.sketch), pl = sk && sketchPlane(sk), e = sk && sk.entities[h.dim.e], gg = e && K.dimGeometry(e, h.dim);
+    if (!gg) return;
+    var P = function (uv) { return S(K.to3D(pl, uv[0], uv[1])); };
+    var dg = svg('g', { 'class': 'i3d-dim' }, g), label, at;
+    if (gg.type === 'linear') {
+      var n2 = [-gg.dir[1], gg.dir[0]], off = h.off;
+      var A = [gg.P[0] + n2[0] * off, gg.P[1] + n2[1] * off], B = [A[0] + gg.dir[0] * gg.value, A[1] + gg.dir[1] * gg.value];
+      var Q2 = [gg.Q[0] + n2[0] * off, gg.Q[1] + n2[1] * off];
+      [[gg.P, A], [gg.Q, Q2]].forEach(function (l) { var a = P(l[0]), b = P(l[1]); svg('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1] }, dg); });
+      var sA = P(A), sB = P(B), u = unit2(sA, sB);
+      svg('line', { x1: sA[0], y1: sA[1], x2: sB[0], y2: sB[1] }, dg);
+      if (u) { arrowHead(dg, sA, [-u[0], -u[1]], 8, ''); arrowHead(dg, sB, u, 8, ''); }
+      at = [(sA[0] + sB[0]) / 2, (sA[1] + sB[1]) / 2 - 6];
+    } else {
+      var a = (h.dim.ang != null ? h.dim.ang : 45) * Math.PI / 180, ux = Math.cos(a), uy = Math.sin(a);
+      var Pc = P([gg.C[0] + ux * gg.r, gg.C[1] + uy * gg.r]), T = P([gg.C[0] + ux * (gg.r + 18 * UI.cam.scale), gg.C[1] + uy * (gg.r + 18 * UI.cam.scale)]);
+      svg('line', { x1: Pc[0], y1: Pc[1], x2: T[0], y2: T[1] }, dg);
+      var ut = unit2(T, Pc);
+      if (ut) arrowHead(dg, Pc, ut, 8, '');
+      at = [T[0], T[1] - 4];
+    }
+    label = svg('text', { x: at[0], y: at[1], 'text-anchor': 'middle', 'class': 'i3d-dim-text' }, dg);
+    label.textContent = gg.prefix + UI.fmtNum(v != null ? v : gg.value, 2);
+    label.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); openEdit(h); });
+    label.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+  }
+  var handleList = [];
+  function drawI3D() {
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
+    var d = i3d.drag;
+    // a handle whose direction is seen end-on cannot be dragged in this view and is left out
+    handleList = d ? [d.h] : computeHandles().filter(function (h) { return h.pxPerUnit() > 0.02; });
+    if (i3d.edit && !d && !handleList.some(function (h) { return hKey(h) === i3d.edit.key; })) closeEdit(false);
+    handleList.forEach(function (h, idx) {
+      var v = d ? d.v : h.value, g = svg('g', { 'class': 'i3d ' + h.kind, 'data-kind': h.kind, 'data-index': String(idx) }, layer);
+      if (d) drawRuler(g, h, v);
+      if (h.kind === 'sdim' && !h.live) drawSketchDim(g, h, d ? v : null);
+      var p = S(h.pos(v)), a = h.arrow(v), q = S(V.add(h.pos(v), a)), u = unit2(p, q);
+      var hg = svg('g', { 'class': 'i3d-handle', 'data-kind': h.kind, 'data-index': String(idx) }, g);
+      if (h.kind === 'sdim') {
+        svg('circle', { 'class': 'i3d-grip', cx: p[0], cy: p[1], r: 9 }, hg);
+        svg('circle', { 'class': 'i3d-dot', cx: p[0], cy: p[1], r: 4.5 }, hg);
+        h.grab = p;
+      } else {
+        var len = 38, tip = u ? [p[0] + u[0] * len, p[1] + u[1] * len] : p;
+        if (u) {
+          svg('line', { 'class': 'i3d-grip', x1: p[0], y1: p[1], x2: tip[0], y2: tip[1] }, hg);
+          svg('line', { 'class': 'i3d-shaft', x1: p[0], y1: p[1], x2: tip[0] - u[0] * 8, y2: tip[1] - u[1] * 8 }, hg);
+          arrowHead(hg, tip, u, 12, 'i3d-head');
+        }
+        svg('circle', { 'class': 'i3d-base', cx: p[0], cy: p[1], r: 3.5 }, hg);
+        h.grab = u ? [p[0] + u[0] * len * 0.55, p[1] + u[1] * len * 0.55] : p;
+        if (d) { var tx = svg('text', { 'class': 'i3d-value', x: tip[0] + (u ? u[0] * 10 : 0), y: tip[1] + (u ? u[1] * 10 : 0) - 6, 'text-anchor': 'middle' }, g); tx.textContent = fmtV(v, h); }
+      }
+      hg.setAttribute('aria-label', h.label + ' ' + fmtV(v, h) + ' — drag to change');
+      hg.addEventListener('mousedown', function (ev) { if (ev.button !== 0) return; ev.stopPropagation(); ev.preventDefault(); startDrag(h, ev); });
+      hg.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+    });
+    if (i3d.edit && !i3d.drag) positionEdit();
+  }
+  function hKey(h) { return h.kind + ':' + (h.fid != null ? h.fid : h.sketch) + ':' + (h.dimIndex != null ? h.dimIndex : h.dim ? h.dim.e + h.dim.k + (h.dim.i || '') : ''); }
+
+  // ---- dragging
+  function pos(ev) { var r = viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function pushUndoOnce(d) {
+    if (d.pushed) return;
+    d.pushed = true;
+    if (App.mode === 'sketch') { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; d.undoPushed = true; } }
+    else { UI.pushUndo(); d.undoPushed = true; }
+  }
+  var liveBusy = false, livePending = false;
+  function liveRebuild(h) {
+    if (App.mode === 'sketch') { App.gridStale = true; UI.updateSketches(); return; }
+    if (liveBusy) { livePending = true; return; }
+    liveBusy = true;
+    UI.afterRebuild(UI.rebuild({ noSave: true }), function () {
+      liveBusy = false;
+      if (livePending) { livePending = false; liveRebuild(h); }
+    }).catch(function () { liveBusy = false; });
+  }
+  function valueFor(h, raw) {
+    var step = h.step(), v = BoxSelect.snap(raw, step);
+    if (v <= (h.min || 0)) v = step;
+    if (h.max != null && v > h.max) v = h.max;
+    return v;
+  }
+  function startDrag(h, ev) {
+    closeEdit(false);
+    var m = pos(ev), raw = h.rawAt(m[0], m[1]);
+    // a feature handle is dragged with the feature selected (face indices change while it rebuilds)
+    if (App.mode === 'part' && h.fid != null) { if (h.side) i3d.side[h.fid] = h.side; }
+    var d = i3d.drag = { h: h, v0: h.value, v: h.value, grab: raw == null ? 0 : raw - h.value, moved: false, pushed: false, sel: App.sel };
+    if (App.mode === 'part') {
+      var fid = h.fid != null ? h.fid : ownerFeature();
+      if (fid != null) { App.sel = { kind: 'feature', id: fid }; App.sel2 = null; App.multi = []; UI.updateHighlights(); }
+      d.fid = fid;
+    }
+    viewport.classList.add('tool-grab');
+    function move(e) {
+      var q = pos(e), r = h.rawAt(q[0], q[1]);
+      if (r == null) return;
+      d.moved = true;
+      var v = valueFor(h, r - d.grab);
+      if (Math.abs(v - d.v) < 1e-12) return;
+      pushUndoOnce(d);
+      if (h.apply(v) === false) return;          // the sketch solver refused the value: keep the last good one
+      d.v = v;
+      liveRebuild(h);
+      App.dimsStale = true;
+      if (UI.setStatus) UI.setStatus(h.label.replace(/ [\d.]+$/, '') + ': ' + fmtV(v, h) + ' (Instant3D; release to type a value)');
+    }
+    function up() {
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true);
+      viewport.classList.remove('tool-grab');
+      endDrag();
+    }
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
+  }
+  function ownerFeature() {
+    var s = App.sel;
+    if (s && s.kind === 'face') return ownerOfFace(s.index);
+    if (s && s.kind === 'feature') return s.id;
+    return null;
+  }
+  // After the drag: the final (saved) rebuild, the end face selected again, and the value box.
+  function endDrag() {
+    var d = i3d.drag;
+    if (!d) return Promise.resolve();
+    i3d.drag = null;
+    var h = d.h;
+    var session = { key: hKey(h), pushed: d.pushed, fid: d.fid, side: h.side, kind: h.kind, sketch: h.sketch, dimIndex: h.dimIndex, dim: h.dim };
+    if (App.mode === 'sketch') { App.dimsStale = true; openEditFor(session); return Promise.resolve(); }
+    var done = d.pushed ? UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }) : Promise.resolve();
+    return done.then(function () { reselect(session); openEditFor(session); });
+  }
+  // Select the dragged feature's end face again (depth / angle handles), or keep the feature selected.
+  function reselect(session) {
+    if (session.fid == null || !App.mesh) return;
+    var f = K.findFeature(App.model, session.fid);
+    if (!f) return;
+    App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; App.multi = [];
+    if (session.kind === 'depth' || session.kind === 'angle') {
+      var hs = computeHandles().filter(function (x) { return x.kind === session.kind; })[0], sk = K.findFeature(App.model, f.sketch), pl = sk && sketchPlane(sk);
+      if (hs && pl) {
+        // the end face whose handle is this one
+        for (var i = 0; i < App.mesh.faces.length; i++) {
+          var h = f.type === 'extrude' ? extrudeHandle(f, sk, pl, i) : revolveHandle(f, sk, pl, i);
+          if (h && (h.side == null || h.side === session.side)) { App.sel = { kind: 'face', index: i }; break; }
+        }
+      }
+    }
+    UI.updateHighlights(); UI.refreshTree();
+  }
+  function openEditFor(session) {
+    var h = null;
+    computeHandles().forEach(function (x) { if (!h && hKey(x) === session.key) h = x; });
+    if (h) openEdit(h, session.pushed);
+  }
+
+  // ---- the value box (Enter applies, Esc or clicking elsewhere closes it; part of the drag's undo step)
+  function openEdit(h, pushed) {
+    i3d.edit = { key: hKey(h), h: h, pushed: !!pushed };
+    editInput.value = String(Math.round(h.value * 1e6) / 1e6);
+    editBox.hidden = false;
+    editBox.setAttribute('data-kind', h.kind);
+    editBox.title = h.label;
+    positionEdit();
+    try { editInput.focus(); editInput.select(); } catch (e) { }
+  }
+  function positionEdit() {
+    var ed = i3d.edit;
+    if (!ed) return;
+    var p = S(ed.h.pos(ed.h.value));
+    editBox.style.left = (p[0] + 14) + 'px';
+    editBox.style.top = (p[1] + 10) + 'px';
+  }
+  // commit: apply the typed value -> Promise (resolves when the rebuild is applied)
+  function closeEdit(commit) {
+    var ed = i3d.edit;
+    if (!ed) return Promise.resolve(false);
+    i3d.edit = null;
+    editBox.hidden = true;
+    if (!commit) return Promise.resolve(false);
+    var r = UI.evalInput ? UI.evalInput(editInput.value) : { value: parseFloat(editInput.value) };
+    var h = ed.h;
+    if (r.error != null || !(r.value > (h.min || 0)) || (h.max != null && r.value > h.max)) {
+      if (UI.setStatus) UI.setStatus('Value not changed: ' + (r.error || 'must be greater than 0' + (h.max != null ? ' and at most ' + h.max : '')));
+      return Promise.resolve(false);
+    }
+    if (Math.abs(r.value - h.value) < 1e-12) return Promise.resolve(true);
+    var d = { pushed: ed.pushed };
+    pushUndoOnce(d);
+    if (h.apply(r.value) === false) { if (UI.setStatus) UI.setStatus('Value not changed: the sketch cannot reach ' + r.value + '.'); return Promise.resolve(false); }
+    if (UI.setStatus) UI.setStatus(h.label.replace(/ [\d.]+$/, '') + ' set to ' + fmtV(r.value, h) + '.');
+    if (App.mode === 'sketch') { App.gridStale = true; UI.updateSketches(); return Promise.resolve(true); }
+    var session = { fid: h.fid != null ? h.fid : ownerFeature(), side: h.side, kind: h.kind };
+    return UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }).then(function () { reselect(session); return true; });
+  }
+  editInput.addEventListener('keydown', function (ev) {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') { ev.preventDefault(); closeEdit(true); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); closeEdit(false); }
+  });
+  editInput.addEventListener('blur', function () { if (i3d.edit && !i3d.committing) closeEdit(false); });
+  editBox.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+
+  // render loop: the overlay follows the camera and the selection (App.dimsStale -> UI.drawDims)
+  var baseDrawDims = UI.drawDims;
+  UI.drawDims = function () { var r = baseDrawDims ? baseDrawDims.apply(this, arguments) : []; drawI3D(); return r; };
+
+  function setInstant3D(on) {
+    i3d.on = on == null ? !i3d.on : !!on;
+    if (!i3d.on) closeEdit(false);
+    App.dimsStale = true;
+    drawI3D();
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    if (UI.setStatus) UI.setStatus('Instant3D ' + (i3d.on ? 'on: select a face of an extrude or revolve and drag its arrow.' : 'off.'));
+    return i3d.on;
+  }
+
+  // ================================================================== keys
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (e.key === 'F5') { e.preventDefault(); toggleBar(); return; }
+    if (e.key === 'F6') { e.preventDefault(); setFilter({ suspended: !filter.suspended }); return; }
+    if (e.key === 'Escape') {
+      if (boxing) { boxing.cancelled = true; boxEl.hidden = true; }
+      if (i3d.edit) closeEdit(false);
+      App.multi = [];
+    }
+  });
+
+  // ================================================================== exports
+  function summarize(s) {
+    var o = { kind: s.kind };
+    if (s.index != null) o.index = s.index;
+    if (s.id != null) o.id = s.id;
+    if (s.ref != null) o.ref = s.ref;
+    if (s.kind === 'edge') o.mid = s.edge.mid.map(function (x) { return +x.toFixed(4); });
+    if (s.kind === 'vertex') o.point = s.point.map(function (x) { return +x.toFixed(4); });
+    if (s.kind === 'body' && UI.bodyName) o.name = UI.bodyName(s.index);
+    if (s.kind === 'feature') { var f = K.findFeature(App.model, s.id); if (f) o.name = f.name; }
+    return o;
+  }
+  function handleSummary(h) {
+    var o = { kind: h.kind, label: h.label, value: h.value };
+    if (h.fid != null) o.feature = h.fid;
+    if (h.sketch != null) o.sketch = h.sketch;
+    if (h.dimIndex != null) o.dim = h.dimIndex;
+    var p = S(h.pos(h.value));
+    o.at = [+p[0].toFixed(2), +p[1].toFixed(2)];
+    if (h.grab) o.grab = [+h.grab[0].toFixed(2), +h.grab[1].toFixed(2)];
+    o.step = h.step();
+    return o;
+  }
+  UI.BoxSelect = BoxSelect;
+  UI.selection = selection; UI.setSelection = setSelection; UI.selKey = selKey; UI.entitySelected = entitySelected;
+  UI.selectionFilter = selectionFilter; UI.selectionFilterAllows = allows; UI.toggleSelectionFilterBar = toggleBar;
+  UI.selectionFilterBarShown = function () { return filter.bar; };
+  UI.pickVertex = pickVertex; UI.pickFiltered = pick; UI.pickHover = pickHover; UI.selectClick = selectClick; UI.sketchSelectClick = sketchSelectClick;
+  UI.boxSelectHook = boxSelectHook; UI.boxItems = boxItems; UI.applyBox = applyBox;
+  UI.instant3DOn = function () { return i3d.on; }; UI.toggleInstant3D = setInstant3D;
+  UI.instant3DHandles = function () { drawI3D(); return handleList.slice(); };
+  UI.instant3DEdit = function (text) {   // type into the open value box and press Enter (tests / scripts)
+    if (!i3d.edit) return Promise.resolve(false);
+    editInput.value = String(text);
+    return closeEdit(true);
+  };
+  UI.instant3DEditOpen = function () { return i3d.edit ? { kind: i3d.edit.h.kind, value: +editInput.value, label: i3d.edit.h.label } : null; };
+  UI.instant3DDragging = function () { return !!i3d.drag; };
+
+  if (window.anvil) {
+    // selection: [{ kind, index | id, … }] of the current selection
+    window.anvil.selection = function () { return selection().map(summarize); };
+    // selectionFilter({ faces, edges, vertices, bodies, components, sketch, suspended, bar }) -> the filter state
+    window.anvil.selectionFilter = function (opts) { return selectionFilter(opts); };
+    // boxSelect([x0, y0], [x1, y1], { ctrl, shift }) in viewport pixels: left to right = window, right to left = crossing
+    window.anvil.boxSelect = function (a, b, mods) { applyBox(BoxSelect.rect(a, b), mods); return selection().map(summarize); };
+    window.anvil.clearSelection = function () { setSelection([], { quiet: true }); return []; };
+    // instant3D(on?) -> { on, handles: [{ kind: 'depth' | 'angle' | 'sdim', label, value, at, grab, step }] }
+    window.anvil.instant3D = function (on) { if (on != null) setInstant3D(on); return { on: i3d.on, handles: UI.instant3DHandles().map(handleSummary) }; };
+  }
+})(UI);

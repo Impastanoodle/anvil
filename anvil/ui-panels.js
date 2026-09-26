@@ -54,7 +54,7 @@
       { sep: true },
       { id: 'refgeo', label: 'Reference\nGeometry', run: function () { UI.cmdPlane(); } },
       { id: 'curves', label: 'Curves' },
-      { id: 'instant', label: 'Instant3D' }
+      { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
     Sketch: [
       { id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
@@ -162,6 +162,7 @@
     'Check': 'Validate the geometry: open and non-manifold edges, zero-area faces, self-intersections', 'Zebra Stripes': 'Show reflected stripes to judge smoothness and tangency (click again to turn off)',
     'Section Properties': 'Area, centroid and moments of area of a planar face or a sketch', 'Draft Analysis': 'Colour faces by their draft angle relative to a direction of pull',
     'Clearance Verification': 'Minimum distance between selected bodies or components, with the closest points',
+    'Instant3D': 'Drag arrows on a selected extrude or revolve face, and its sketch dimensions, to change them in the viewport',
     'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones'
   };
   function ribbonTitle(id, label, enabled) {
@@ -488,6 +489,7 @@
     var selected = App.sel && App.sel.kind === 'feature' && App.sel.id === f.id;
     var active = App.activeSketch === f.id;
     var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : ''), title: err || warn || featureTitle(f), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
+    row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
     row.addEventListener('click', function () { App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name + (err ? ': ' + err : '')); });
     row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.editFeature(f); });
     row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f)); });
@@ -615,6 +617,7 @@
       { label: 'View', items: [
         { label: 'Zoom to Fit', key: 'F', action: UI.zoomToFit },
         { label: 'Zoom to Area', action: function () { App.zoomAreaMode = true; refreshHud(); } },
+        { label: 'Selection Filter', key: 'F5', checked: !!(UI.selectionFilterBarShown && UI.selectionFilterBarShown()), action: function () { if (UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar(); } },
         { label: 'Previous View', key: 'Shift+Ctrl+Z', action: UI.previousView },
         { sep: true },
         { label: 'Front', key: 'Ctrl+1', action: function () { UI.setView('Front'); } },
