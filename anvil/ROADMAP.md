@@ -50,6 +50,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 - [x] Cache tool bodies between rebuilds when a feature did not change: `Kernel.rebuild(model, cache)` restores the longest unchanged feature prefix (per-feature keys = feature JSON + sheet params; bodies are immutable so snapshots are references) and rebuilds only from the first changed feature; the UI keeps `App.buildCache`
 - [x] Web Worker rebuilds so the UI never freezes (`worker.js` owns `Kernel.rebuild` and its cache, `UI.rebuild` returns a Promise with coalescing and a synchronous fallback, Edit ▸ "Rebuild in background (Web Worker)" toggle, `CSG.pack/unpack`, `Kernel.packBuild/unpackBuild`)
 - [x] Degenerate geometry guards: zero-area loops dropped with a "zero-area contour" warning, self-intersecting loops error with "crosses itself near (x, y)" from extrude/revolve/sweep/loft, NaN depths/angles/path points error with "must be a number"
+- [x] Mesh quality (cloud-2026-09-25g): `Kernel.meshQuality` (welded open / non-manifold edges with T-junctions resolved, collinear slivers, needles, min angle) asserted closed, manifold and sliver-free on every Design Library example; lofts between convex parallel sections are the convex hull of the sections (planar side faces), which removed the Funnel's shell grooves, its 1e-5 mm crack at the tube and the extra lines in its drawing (Funnel 762 → 276 ms)
 - [ ] A test page (parallel session owns `tests/kernel-tests.html`) run before every session ends
 
 ## Phase 5 — assemblies and drawings
