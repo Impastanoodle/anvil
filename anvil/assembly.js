@@ -611,11 +611,30 @@ var Assembly = (function () {
     return x;
   }
 
-  // The cylinder through / nearest a local point: the nearest patch that belongs to a cylindrical surface.
+  // True curves (cloud-2026-09-26r): a patch whose facets carry an exact cylinder record (polygon.surf, kernel.js) is
+  // that cylinder: its axis and radius come from the record, not from a fit to the facets, so Concentric, Tangent and
+  // Distance between cylinders use the true radius. -> { point, dir, radius, patches, exact: true } | null
+  function analyticCylinder(geom, pt) {
+    if (!geom.acyl) geom.acyl = {};
+    if (geom.acyl[pt.index] !== undefined) return geom.acyl[pt.index];
+    var S = null;
+    for (var i = 0; i < pt.polys.length && !S; i++) { var F = pt.polys[i].surf; if (F && F.s && F.s.t === 'cyl') S = F.s; }
+    var out = null;
+    if (S) {
+      var d = canonicalDir(norm(copy3(S.d))), o = copy3(S.o);
+      out = { point: sub(o, scale(d, dot(o, d))), dir: d, radius: Math.abs(+S.r), patches: [pt], exact: true, surf: S };
+    }
+    geom.acyl[pt.index] = out;
+    return out;
+  }
+  function patchCylinder(geom, pt) { return analyticCylinder(geom, pt) || cylinderFromPatch(geom, pt); }
+
+  // The cylinder through / nearest a local point: the nearest patch that belongs to a cylindrical surface (exact
+  // record first, else a facet fit for meshes without records, e.g. legacy tessellation or imported STL).
   function findCylinder(geom, p) {
     var list = patchesByDistance(geom, p);
     for (var i = 0; i < list.length; i++) {
-      var c = cylinderFromPatch(geom, list[i].pt);
+      var c = patchCylinder(geom, list[i].pt);
       if (c) return c;
     }
     return null;
@@ -1880,6 +1899,14 @@ var Assembly = (function () {
     });
     return out;
   }
+  // exactVolume(csg): the kernel's exact volume (curve correction from the facets' surface records) when the common
+  // body has curved facets, so two analytic bodies report the true common volume (0 for a shaft in its own-size bore)
+  function exactVolume(csg) {
+    if (!csg || !csg.polygons.length) return 0;
+    if (!csg.polygons.some(function (p) { return p.surf; })) return csg.volume();
+    var v = Kernel.massProps(Kernel.meshFromBody(csg)).volume;
+    return isFinite(v) ? v : csg.volume();
+  }
   function interference(model, build, opts) {
     opts = opts || {};
     if (!build || !build.bodies) build = rebuild(model);
@@ -1899,7 +1926,7 @@ var Assembly = (function () {
         var e = 1e-9 * Math.max(1, diag);
         if (A.min[0] > B.max[0] - e || B.min[0] > A.max[0] - e || A.min[1] > B.max[1] - e || B.min[1] > A.max[1] - e || A.min[2] > B.max[2] - e || B.min[2] > A.max[2] - e) continue;
         checked++;
-        var common = comps[i].body.intersect(comps[j].body), v = common.polygons.length ? common.volume() : 0;
+        var common = comps[i].body.intersect(comps[j].body), v = exactVolume(common);
         if (v > tol) {
           var pr = { a: comps[i].top, b: comps[j].top, aName: comps[i].name, bName: comps[j].name, aIndex: comps[i].index, bIndex: comps[j].index, volume: v, body: common };
           if (comps[i].path) pr.aPath = comps[i].path;
@@ -1941,7 +1968,7 @@ var Assembly = (function () {
       if (!ln || dot(list[i].pt.normal, ln) > 1 - 1e-6) { best = list[i].pt; break; }
     }
     if (!best && list.length) best = list[0].pt;
-    if (best && cylinderFromPatch(geom, best)) return { component: comp.id, cylinder: lp };
+    if (best && patchCylinder(geom, best)) return { component: comp.id, cylinder: lp };
     return { component: comp.id, face: lp };
   }
 
@@ -1963,7 +1990,7 @@ var Assembly = (function () {
         for (var i = 0; i < list.length && i < 12; i++) if (!ln || dot(list[i].pt.normal, ln) > 1 - 1e-6) { pt = list[i].pt; d = list[i].d; break; }
         if (!pt && list.length) { pt = list[0].pt; d = list[0].d + 1e-3 * g.size; }
         if (!pt) return;
-        hit = { path: [k.id], point: lp, cylinder: !!cylinderFromPatch(g, pt), d: d };
+        hit = { path: [k.id], point: lp, cylinder: !!patchCylinder(g, pt), d: d };
       }
       if (hit && (!best || hit.d < best.d - 1e-9)) best = hit;
     });

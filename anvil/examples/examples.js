@@ -432,7 +432,8 @@ var AnvilExamples = [
     // true curves)
     interference: [
       { a: 'Base<1>', b: 'Block<1>', volume: 20 * 5 * 20 },
-      { a: 'Base<1>', b: 'Pin<2>', volume: (function () { var n = typeof Kernel !== 'undefined' && Kernel.segsForRadius ? Kernel.segsForRadius(4) : 16; return n / 2 * 16 * Math.sin(2 * Math.PI / n) * 8; })() }
+      // exact since cloud-2026-09-26r: the common volume of two analytic bodies uses their surface records, π·4²·8
+      { a: 'Base<1>', b: 'Pin<2>', volume: Math.PI * 16 * 8 }
     ],
     code: [
       'a.name("Interference").units("mm");',
@@ -477,9 +478,9 @@ var AnvilExamples = [
         { component: 'Pin<5>', position: [-70, 10, -50], rotation: ry(0) },
         // Width: centred in the 12 wide slot (z 38..50); Limit Distance 10..60 from the rail ends clamps x = 70 to 40
         { component: 'Slider<1>', position: [40, 10, 39], rotation: ry(0) },
-        // Tangent to the plate top: the mate rests the faceted roller on a flat, r·cos(π/n) from its axis, n the kernel's
-        // segment count for r 5 (18 before true curves: 5·cos 10°); end flush with the back face
-        { component: 'Roller<1>', position: [-60, 10 + 5 * Math.cos(Math.PI / (typeof Kernel !== 'undefined' && Kernel.segsForRadius ? Kernel.segsForRadius(5) : 18)), 20], rotation: rz(7.5) }
+        // Tangent to the plate top: the axis exactly r = 5 above it (the mate reads the cylinder's surface record, so any
+        // turn about the axis rests the same); end flush with the back face
+        { component: 'Roller<1>', position: [-60, 15, 20], rotation: rz(0) }
       ];
     })(),
     // Interference Detection finds nothing: the bores line up with the shafts, everything else only touches
@@ -488,7 +489,7 @@ var AnvilExamples = [
       'a.name("Gear Train").units("mm");',
       '// plate x in [-80,80], z in [-60,60], y in [0,10]; Ø6 shafts at x = -50 and -14 (36 apart = 12 + 24); rails z 30..38 and 50..58',
       'var base = a.insert({ script: \'p.name("Base"); p.box(160, 120, 10, { centered: true }); p.cylinder(3, 15, { at: [-50, 10, 0] }); p.cylinder(3, 15, { at: [-14, 10, 0] }); p.box(100, 8, 8, { at: [-20, 10, 30] }); p.box(100, 8, 8, { at: [-20, 10, 50] });\' }, { fixed: true });',
-      '// gears: discs with Ø6 bores, on the shafts and on the plate; Gear A dropped in turned 90° (a multiple of the 15° facets of the Ø6 24-gon, and so is Gear B\'s 45°, so both bores line up with the shafts)',
+      '// gears: discs with Ø6 bores, on the shafts and on the plate; Gear A dropped in turned 90° (Concentric uses the exact axes and Interference the exact volumes, so the bores need not line up facet for facet)',
       'var gA = a.insert({ script: \'p.name("Gear A"); p.cylinder(12, 5); p.cylinder(3, 5, { cut: true });\' }, { position: [-60, 30, 20], rotation: [0, 0, 1, 0, 1, 0, -1, 0, 0] });',
       'var gB = a.insert({ script: \'p.name("Gear B"); p.cylinder(24, 5); p.cylinder(3, 5, { cut: true });\' }, { position: [0, 30, 20] });',
       'a.concentric({ component: gA, cylinder: [12, 2.5, 0] }, { component: base, cylinder: [-47, 15, 0] });',
@@ -516,8 +517,8 @@ var AnvilExamples = [
       'a.width({ component: base, face: [30, 14, 38] }, { component: base, face: [30, 14, 50] }, { component: slider, face: [10, 4, 0] }, { component: slider, face: [10, 4, 10] });',
       'a.limitDistance({ component: slider, face: [0, 4, 5] }, { component: base, face: [-20, 14, 34] }, 10, 60, { alignment: "aligned" });',
       '// roller Ø10 × 40 lying on the plate: Tangent to the top, axis Perpendicular to the back face, end flush with it',
-      '// (dropped in turned 7.5° about its axis, half a facet of its 24-gon, so a flat faces the plate: the Tangent mate rests the faceted roller on its flats)',
-      'var roller = a.insert({ script: \'p.name("Roller"); p.cylinder(5, 40, { axis: "z" });\' }, { position: [-60, 30, 0], rotation: [0.9914448613738104, -0.13052619222005157, 0, 0.13052619222005157, 0.9914448613738104, 0, 0, 0, 1] });',
+      '// (Tangent uses the roller\'s exact radius: its axis sits 5 above the plate whatever its turn about the axis)',
+      'var roller = a.insert({ script: \'p.name("Roller"); p.cylinder(5, 40, { axis: "z" });\' }, { position: [-60, 30, 0] });',
       'a.tangent({ component: roller, cylinder: [5, 0, 20] }, { component: base, face: [0, 10, -40] });',
       'a.perpendicular({ component: roller, cylinder: [5, 0, 20] }, { component: base, face: [0, 5, 60] });',
       'a.coincident({ component: roller, face: [0, 0, 40] }, { component: base, face: [0, 5, 60] }, { alignment: "aligned" });',

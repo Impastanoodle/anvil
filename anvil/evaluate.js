@@ -498,12 +498,12 @@ var Evaluate = (function () {
       if (best.d === 0) break;
     }
     var out = { distance: best.d, pa: best.pa, pb: best.pb, interfering: false };
-    if (opts.checkCrossing === false) return out;
+    if (opts.checkCrossing === false) return exactClearance(a, b, out);
     if (a && a.polygons && b && b.polygons && a.intersect) {
       var ba = csgBox(a), bb = csgBox(b);
       if (ba && bb && boxDist(ba, bb) === 0) {
         var d = boxDiag(boxUnion(ba, bb)), tol = Math.max(1e-12, 1e-9 * d * d * d), common = a.intersect(b);
-        if (common.polygons.length && common.volume() > tol) {
+        if (common.polygons.length && exactVolume(common) > tol) {
           out.interfering = true;
           if (out.distance > 0) {   // nested: the surfaces are apart but the solids overlap
             var v = common.polygons[0].vertices[0].pos, q = [v.x, v.y, v.z];
@@ -515,7 +515,72 @@ var Evaluate = (function () {
       // plain meshes: a strict edge-through-interior crossing means they interpenetrate
       out.interfering = anyCrossing(ta, tb, tree);
     }
-    return out;
+    return out.interfering ? out : exactClearance(a, b, out);
+  }
+
+  // ------------------------------------------------------------------ exact values from the surface records (true curves)
+  // exactVolume(csg): the volume with the kernel's curve correction when any facet carries an analytic surface record
+  // (polygon.surf): the common volume of two analytic solids (a pin through a plate, a shaft in its bore) is then the
+  // true one, not the facets', so a shaft in a bore of the same diameter no longer shows a sliver of interference.
+  function exactVolume(csg) {
+    if (!csg || !csg.polygons || !csg.polygons.length) return 0;
+    if (!csg.polygons.some(function (p) { return p.surf; })) return csg.volume();
+    var v = K.massProps(K.meshFromBody(csg)).volume;
+    return isFinite(v) ? v : csg.volume();
+  }
+  // exactClearance(a, b, r): when the facet result's closest points lie on exact cylinders (or a cylinder and a plane
+  // parallel to its axis) and the gap between them runs square to the axes, the distance and the two points come from
+  // the surfaces: cylinder–plane |n·c − w| − r; parallel cylinders D − rA − rB outside each other, rB − rA − D for one
+  // inside the other (D = the distance between the axes). The facet value only picks the configuration: the exact one
+  // must lie within the facets' sagitta of it. Everything else keeps the facet result. -> r (with exact: true when refined)
+  function cylsOf(body) {
+    return (K.curveSurfaces ? K.curveSurfaces(body) : []).map(function (e) { return e.surf; }).filter(function (S) { return S.t === 'cyl' && S.r > 0; });
+  }
+  function onCyl(q, list) {
+    var best = null, bd = Infinity;
+    list.forEach(function (S) {
+      var o = S.o, d = norm(S.d), v = sub(q, o), e = Math.abs(len(sub(v, scale(d, dot(v, d)))) - S.r);
+      if (e <= 0.05 * S.r + 1e-9 && e < bd) { bd = e; best = S; }
+    });
+    return best;
+  }
+  function axisPoint(S, q) { var d = norm(S.d); return add(S.o, scale(d, dot(sub(q, S.o), d))); }
+  function planeAt(body, q, u) {
+    var best = null;
+    body.polygons.forEach(function (p) {
+      if (best || p.surf) return;
+      var n = arr(p.plane.normal);
+      if (Math.abs(dot(n, q) - p.plane.w) < 1e-6 && Math.abs(dot(n, u)) > 0.99) best = { n: n, w: p.plane.w };
+    });
+    return best;
+  }
+  function exactClearance(a, b, r) {
+    if (!(r.distance > 0) || !isFinite(r.distance) || !r.pa || !r.pb || !a || !b || !a.polygons || !b.polygons) return r;
+    var u = norm(sub(r.pb, r.pa)), SA = onCyl(r.pa, cylsOf(a)), SB = onCyl(r.pb, cylsOf(b)), res = null;
+    if (!SA && !SB) return r;
+    function take(dist, pa, pb, tol) {
+      if (dist >= -1e-12 && Math.abs(dist - r.distance) <= tol && (!res || Math.abs(dist - r.distance) < Math.abs(res.distance - r.distance))) res = { distance: Math.max(0, dist), pa: pa, pb: pb };
+    }
+    if (SA && SB) {
+      var dA = norm(SA.d), dB = norm(SB.d);
+      if (len(cross(dA, dB)) < 1e-9 && Math.abs(dot(u, dA)) < 0.1) {
+        var ca = axisPoint(SA, r.pa), cb = axisPoint(SB, ca), w = sub(cb, ca), D = len(w), tol = 0.05 * (SA.r + SB.r) + 1e-9;
+        var e = D > 1e-12 ? scale(w, 1 / D) : u;   // from A's axis towards B's
+        take(D - SA.r - SB.r, add(ca, scale(e, SA.r)), sub(cb, scale(e, SB.r)), tol);                  // outside each other
+        take(SB.r - SA.r - D, sub(ca, scale(e, SA.r)), sub(cb, scale(e, SB.r)), tol);                  // A inside B
+        take(SA.r - SB.r - D, add(ca, scale(e, SA.r)), add(cb, scale(e, SB.r)), tol);                  // B inside A
+      }
+    } else {
+      var S = SA || SB, q = SA ? r.pa : r.pb, other = SA ? b : a, v = SA ? u : scale(u, -1), pl = planeAt(other, SA ? r.pb : r.pa, v);
+      if (pl && Math.abs(dot(pl.n, norm(S.d))) < 1e-9) {
+        var c = axisPoint(S, q), sd = dot(pl.n, c) - pl.w, n = sd >= 0 ? scale(pl.n, -1) : pl.n;   // n: from the axis towards the plane
+        var dist = Math.abs(sd) - S.r, ps = add(c, scale(n, S.r)), pp = add(ps, scale(n, dist));
+        if (SA) take(dist, ps, pp, 0.05 * S.r + 1e-9); else take(dist, pp, ps, 0.05 * S.r + 1e-9);
+      }
+    }
+    if (!res) return r;
+    r.distance = res.distance; r.pa = res.pa; r.pb = res.pb; r.exact = true;
+    return r;
   }
   function anyCrossing(ta, tb, tree) {
     for (var i = 0; i < ta.length; i++) {
@@ -580,7 +645,7 @@ var Evaluate = (function () {
       if (!A || !B) return;
       if (A.min[0] > B.max[0] - e || B.min[0] > A.max[0] - e || A.min[1] > B.max[1] - e || B.min[1] > A.max[1] - e || A.min[2] > B.max[2] - e || B.min[2] > A.max[2] - e) return;
       checked++;
-      var common = bodies[i].intersect(bodies[j]), v = common.polygons.length ? common.volume() : 0;
+      var common = bodies[i].intersect(bodies[j]), v = exactVolume(common);
       if (v > tol) pairs.push({ a: i, b: j, aIndex: i, bIndex: j, aName: names ? names[i] : 'Body' + (i + 1), bName: names ? names[j] : 'Body' + (j + 1), volume: v, body: common });
     });
     pairs.sort(function (p, q) { return q.volume - p.volume; });
@@ -593,6 +658,7 @@ var Evaluate = (function () {
     sectionFromLoops: sectionFromLoops, sectionOfFace: sectionOfFace, sectionOfSketch: sectionOfSketch,
     draftAnalysis: draftAnalysis, DRAFT_COLORS: DRAFT_COLORS,
     minDistance: minDistance, clearance: clearance, interference: interference, pairsFor: pairsFor,
+    exactVolume: exactVolume, exactClearance: exactClearance,
     triTriDistance: triTriDistance, closestOnTri: closestOnTri, closestSegSeg: closestSegSeg
   };
 })();
