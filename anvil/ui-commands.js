@@ -2114,6 +2114,8 @@
   }
 
   UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  // for commands in other files (ui-evaluate.js) that update their open PropertyManager's message and results
+  UI.renderPM = function () { if (pm.spec) renderPM(); }; UI.pmSpec = function () { return pm.spec; }; UI.pmTitle = function () { return pm.spec ? pm.spec.title : null; };
   // equations in PropertyManager number fields: the open PM's equation texts and errors (copies), and a field setter for scripts/tests
   UI.pmExpressions = function () { return { exprs: JSON.parse(JSON.stringify(pm.exprs || {})), errors: JSON.parse(JSON.stringify(pm.exprErrors || {})) }; };
   UI.pmSetField = function (key, text) {

@@ -106,6 +106,12 @@ var Icons = (function () {
     section: blk(1.5, 4.5, 9, 7, 3.5) + ln('M1.5 2.5 L14.5 14', R, 1.5),
     sensor: circ(8, 8, 5, 'none', S) + ln('M8 8 l3 -3', R, 1.5) + circ(8, 8, 0.9, S, 'none'),
     check: ln('M2.5 8.5 l3.5 3.5 L13.5 4.5', G, 2.2),
+    // Section Properties: a hatched I-section with the centroid axes
+    sectionProps: p('M3 2.5 h10 v2.5 h-3.5 v6 H13 v2.5 H3 V11 h3.5 V5 H3 z', F2, S, 1) + ln('M1.5 8 h13 M8 1 v14', R, 0.9, DASH) + circ(8, 8, 1, R, 'none'),
+    // Draft Analysis: a tapered block with its faces coloured positive / requires / negative, pull arrow on top
+    draftAnalysis: p('M3 14 L5 6 h6 L13 14 z', G, S, 1) + p('M5 6 h6 l-1 -1.5 h-4 z', Y, S, 0.9) + ln('M8 4 V1 M6.6 2.4 L8 1 l1.4 1.4', B, 1.1) + ln('M3 14 h10', R, 1.5),
+    // Clearance Verification: two blocks with a dimension arrow across the gap
+    clearance: rect(1.5, 4.5, 5, 9, F2, S, 1) + rect(10.5, 2.5, 4, 9, '#f8e2b8', S, 1) + ln('M6.5 8 h4 M8 6.8 L6.6 8 8 9.2 M9 6.8 L10.4 8 9 9.2', B, 1),
     zebra: circ(8, 8, 5.5, F2, S) + ln('M3.5 5.5 c3 1.2 6 1.2 9 0 M3 8 c3 1.2 7 1.2 10 0 M3.5 10.5 c3 1.2 6 1.2 9 0', S, 1),
     dxf: rect(2.5, 1.5, 11, 13, W, S, 1.1, 'rx="0.8"') + ln('M5 4.5 h6 M5 6.5 h6 M5 8.5 h4', L, 0.9) + txt(8, 12.8, 4.2, 'DXF', B, null, 700),
     // ---- view (heads-up toolbar)
