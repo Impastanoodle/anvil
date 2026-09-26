@@ -45,6 +45,7 @@ var Icons = (function () {
     sweep: ln(SWEEP_PATH, S, 4.2) + ln(SWEEP_PATH, G, 2.6) + circ(3.5, 13, 2.2, GL, S, 1.1),
     loft: p('M5.5 3.5 L2.5 13 h11 L10.5 3.5 z', G, S) + ell(8, 13, 5.5, 1.6, GL, S) + ell(8, 3.5, 2.5, 0.9, GL, S),
     hole: blk(1.5, 5, 10, 4, 3.5) + ell(7.5, 7.2, 2.8, 1.2, RL, RD, 1) + ell(7.5, 7.2, 1.5, 0.65, RD, 'none'),
+    holeWizard: blk(1.5, 5, 10, 4, 3.5) + ell(7.5, 7.2, 3.4, 1.4, RL, RD, 1) + ell(7.5, 7.8, 1.6, 0.6, RD, 'none') + ln('M5.9 7.8 v1.6 M9.1 7.8 v1.6', RD, 0.8),
     fillet: p('M2 14 V7.5 a4.5 4.5 0 0 1 4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 a4.5 4.5 0 0 1 4.5 -4.5', G, 2.2),
     chamfer: p('M2 14 V7.5 l4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 l4.5 -4.5', G, 2.2),
     imported: blk(5.5, 5.5, 8, 7, 3) + ln('M0.8 4.2 H6.2', G, 1.5) + ln('M4.2 2 L6.4 4.2 L4.2 6.4', G, 1.5),

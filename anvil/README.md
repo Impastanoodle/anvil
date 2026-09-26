@@ -16,7 +16,9 @@ There is no build step and no dependency besides three.js r128 from cdnjs. Open 
 | `materials.js` | Material library (classes of materials with density, elastic modulus, Poisson's ratio, tensile and yield strength, appearance colour), part and per-body materials, mass properties with per-body densities, custom / configuration-specific properties with `"SW-…"` links, and the `p.material` / `p.bodyMaterial` / `p.property` script round trip. Global `Materials`, no DOM. See *Materials and custom properties*. |
 | `exchange.js` | Neutral CAD formats: STEP AP214, 3MF and OBJ export; STEP (planar / faceted B-reps), STL, OBJ and 3MF import; the *Imported* feature and the hook that builds it inside `Kernel.rebuild`. Global `Exchange`, no DOM. See *Import and export of neutral formats*. |
 | `evaluate.js` | The Evaluate tab's analyses as plain functions over kernel meshes and CSG bodies: Check (open / non-manifold edges, zero-area faces, self-intersections), smooth normals for Zebra Stripes, Section Properties of a planar face or sketch, Draft Analysis, Clearance Verification (exact minimum distance, closest points) and Interference Detection over selected bodies. Global `Evaluate`, no DOM. See *Evaluate tools*. |
-| `worker.js` | Web Worker entry: `importScripts('csg.js', 'kernel.js', 'exchange.js')`, rebuilds a model off the main thread and posts the packed build back (see *Background rebuilds*). |
+| `holewizard.js` | Hole Wizard: the ISO M2–M20 table (ISO 273 clearance fits, ISO 4762 counterbores, ISO 10642 countersinks, tap drills), the `hole` feature (registered with `Kernel.registerFeature`), `p.holeWizard` and cosmetic threads (`HoleWizard.threads`). Global `HoleWizard`, no DOM. See *Hole Wizard*. |
+| `ui-holewizard.js` | The Hole Wizard PropertyManager (Type / Positions tabs) and the viewport's dashed cosmetic threads. |
+| `worker.js` | Web Worker entry: `importScripts('csg.js', 'kernel.js', 'holewizard.js', 'exchange.js')`, rebuilds a model off the main thread and posts the packed build back (see *Background rebuilds*). |
 | `icons.js` | Inline SVG icon set. Global `Icons`. |
 | `style.css` | The whole UI stylesheet. |
 | `ui-core.js` | App state, three.js scene, camera, picking, highlights. Creates the shared `UI` namespace. |
@@ -225,6 +227,20 @@ Degenerate geometry is diagnosed before it reaches the CSG kernel:
 - A closed contour with zero area (a rectangle of zero width, a polyline whose points are collinear) is dropped with the warning "1 zero-area contour was ignored." on the feature; if nothing is left, the feature errors with the usual "no closed profile".
 - A contour that crosses itself (a bow-tie polyline, a rectangle whose edges cross an open chain) errors with "Sketch profile crosses itself near (x, y)." and the loop stays visible in the sketch so it can be trimmed. `Kernel.loopSelfCrossing(pts)` returns the first crossing point of a closed loop, or `null`.
 - A non-finite number where a dimension is expected (`extrude(NaN)`, `revolve(undefined + 1)`, a sweep path with a missing coordinate) errors with "… must be a number." instead of building an empty or infinite solid: extrude depth and draft, revolve angle, flange length and angle, jog height / length / angle, sweep path coordinates.
+
+### Hole Wizard
+
+`holewizard.js` adds the `hole` feature: standard ISO metric holes at the points of a sketch on a planar face.
+
+```js
+p.holeWizard({ face: "Top", offset: 30, points: [[-15, 0], [15, 0]], type: "cbore", size: "M6", depth: 16 });
+var s = p.sketch("Top", 30).point(0, 0).id();
+p.holeWizard({ sketch: s, type: "tap", size: "M8", depth: 16, threadDepth: 12 });   // or end: "through"
+```
+
+Feature JSON: `{ type: 'hole', standard: 'ISO', holeType: 'cbore' | 'csk' | 'hole' | 'tap', size: 'M2'…'M20', fit: 'close' | 'normal' | 'loose', end: 'blind' | 'through', depth, threadDepth, sketch }`. Holes run into the face (against the sketch plane's normal); a blind depth is measured from the face to the flat bottom and includes the counterbore / countersink. Each hole is a revolve cut of its half section about its axis, so walls are exact cylinders and the 90° countersink an exact cone (`massProps` matches the formulas to 1e-9). Sizes: clearance Ø by fit (ISO 273), counterbore Ø / depth for ISO 4762 socket head cap screws, countersink Ø for ISO 10642 flat heads, tap drill for the coarse thread (`HoleWizard.spec(f)`, `HoleWizard.ISO`). Straight Tap holes carry a cosmetic thread (`HoleWizard.threads(model)`): a dashed circle at the major diameter in the viewport and in drawing views along the axis, and the drawing hole callout adds `M8x1.25 ↧ 12` (or `THRU`) under the tap drill line. The UI command is *Features ▸ Hole Wizard* (`UI.cmdHoleWizard`); double-clicking the tree row edits it; the positions sketch sits under the feature in the FeatureManager.
+
+`Kernel.registerFeature(type, { build(f, model, ctx), cut, script(f, varName, idVar, optsStr) })` is the hook other files use to add a tool feature type: rebuild builds it like an extrude or revolve, `isCut` reads `cut`, `generateScript` writes `script`'s line.
 
 ### Sheet metal and flat patterns
 

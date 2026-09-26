@@ -41,7 +41,7 @@
       { stack: [{ id: 'sweep', label: 'Swept Boss/Base', run: function () { UI.cmdSweep(false); } }, { id: 'loft', label: 'Lofted Boss/Base', run: function () { UI.cmdLoft(false); } }, { id: 'loft', label: 'Boundary Boss/Base' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } },
-      { id: 'hole', label: 'Hole\nWizard', run: function () { UI.cmdHole(); } },
+      { id: 'holeWizard', label: 'Hole\nWizard', run: function () { (UI.cmdHoleWizard || UI.cmdHole)(); } },
       { id: 'revolveCut', label: 'Revolved\nCut', run: function () { UI.cmdRevolve(true); } },
       { stack: [{ id: 'sweep', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, { id: 'loft', label: 'Boundary Cut' }] },
       { sep: true },
@@ -146,7 +146,7 @@
   var RIBBON_HELP = {
     'Extruded Boss/Base': 'Extrude a closed sketch profile into a solid', 'Revolved Boss/Base': 'Revolve a sketch profile about an axis line',
     'Swept Boss/Base': 'Sweep a profile sketch along a path', 'Lofted Boss/Base': 'Loft a solid through two or more section sketches',
-    'Extruded Cut': 'Remove material by extruding a sketch profile', 'Hole Wizard': 'Cut a simple hole at the selected point on a face', 'Revolved Cut': 'Remove material by revolving a sketch profile',
+    'Extruded Cut': 'Remove material by extruding a sketch profile', 'Hole Wizard': 'Counterbore, countersink, hole or straight tap holes (ISO M2–M20) at points on a face', 'Revolved Cut': 'Remove material by revolving a sketch profile',
     'Swept Cut': 'Remove material along a path', 'Lofted Cut': 'Remove material lofted through section sketches',
     'Fillet': 'Round the selected edges', 'Chamfer': 'Bevel the selected edges', 'Linear Pattern': 'Repeat a feature along one or two directions', 'Circular Pattern': 'Repeat a feature about an axis', 'Mirror': 'Mirror a feature or the body about a plane',
     'Shell': 'Hollow the body, removing the selected faces', 'Reference Geometry': 'Create an offset reference plane',
@@ -243,7 +243,7 @@
 
   // ------------------------------------------------------------------ feature tree
   var expanded = {};
-  var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported' };
+  var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
@@ -514,6 +514,7 @@
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
       case 'import': return 'Imported ' + String(f.format || 'mesh').toUpperCase() + (f.file ? ' from ' + f.file : '') + ', ' + (f.solids || []).length + ' solid' + ((f.solids || []).length === 1 ? '' : 's') + (f.merge ? ', merged' : '');
+      case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ISO ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'through all' : 'blind ' + f.depth);
       case 'sketch': return 'Sketch on ' + (f.plane.custom ? 'face' : f.plane.featureId != null ? 'Plane' + f.plane.featureId : f.plane.ref + (f.plane.offset ? ' + ' + f.plane.offset : ''));
     }
     return f.type;
@@ -659,7 +660,7 @@
         { label: 'Cut ▸ Revolve', action: function () { UI.cmdRevolve(true); } },
         { label: 'Cut ▸ Sweep', action: function () { UI.cmdSweep(true); } },
         { label: 'Cut ▸ Loft', action: function () { UI.cmdLoft(true); } },
-        { label: 'Features ▸ Hole Wizard', action: UI.cmdHole },
+        { label: 'Features ▸ Hole Wizard', action: function () { (UI.cmdHoleWizard || UI.cmdHole)(); } },
         { label: 'Features ▸ Fillet', action: function () { UI.cmdFillet(); } },
         { label: 'Features ▸ Chamfer', action: function () { UI.cmdChamfer(); } },
         { label: 'Features ▸ Shell', action: function () { UI.cmdShell(); } },

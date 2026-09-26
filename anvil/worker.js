@@ -11,7 +11,7 @@
 //   { type: 'error', seq, message: <string> }                  when the rebuild itself threw (feature errors never do;
 //                                                              they are reported inside build.errors)
 // The worker keeps the rebuild cache between messages, so only the features after the first change are rebuilt.
-importScripts('csg.js', 'kernel.js', 'exchange.js'); // exchange.js hooks Kernel.rebuild for Imported features
+importScripts('csg.js', 'kernel.js', 'holewizard.js', 'exchange.js'); // exchange.js hooks Kernel.rebuild for Imported features
 
 var cache = null;
 

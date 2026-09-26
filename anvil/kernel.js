@@ -1601,11 +1601,19 @@ var Kernel = (function () {
         if (!msrc) throw new Error('Mirror source feature has no geometry.');
         return mirrorBody(msrc, mplane);
       }
+      default:
+        if (featureTypes[f.type]) return featureTypes[f.type].build(f, model, ctx);
     }
     return null;
   }
 
+  // registerFeature(type, { build(f, model, ctx) -> CSG tool, cut: bool, script(f, varName, idVar) -> line }): a feature
+  // type defined in another file (holewizard.js: 'hole'); rebuild builds it like any tool feature
+  var featureTypes = {};
+  function registerFeature(type, spec) { featureTypes[type] = spec; }
+
   function isCut(f, model) {
+    if (featureTypes[f.type]) return !!featureTypes[f.type].cut;
     if (f.type === 'extrude' || f.type === 'revolve' || f.type === 'sweep' || f.type === 'loft') return !!f.cut;
     if (f.type === 'mirror' && f.body) return false;
     if (f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror') {
@@ -4013,6 +4021,9 @@ var Kernel = (function () {
           out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(o, f)) + ').last();');
           break;
         }
+        default:
+          if (featureTypes[f.type] && featureTypes[f.type].script) out.push(featureTypes[f.type].script(f, v, idVar, optsStr));
+          break;
         case 'flange': {
           var fspecs = JSON.stringify((f.edges || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));
           var fo = { angle: f.angle, name: f.name };
@@ -4120,7 +4131,7 @@ var Kernel = (function () {
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,
     dimGeometry: dimGeometry, dimValue: dimValue, setDimValue: setDimValue, dimForEntity: dimForEntity,
     newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
-    buildTool: buildTool, isCut: isCut, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
+    buildTool: buildTool, isCut: isCut, registerFeature: registerFeature, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
     meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
