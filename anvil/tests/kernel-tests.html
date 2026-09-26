@@ -5892,6 +5892,99 @@
       });
       return n + ' sketches, ' + ents + ' entities';
     });
+
+    // ---- Symmetric, driven (reference) dimensions, construction geometry (cloud-2026-09-26s)
+    var CL = { t: 'line', x1: 0, y1: -20, x2: 0, y2: 20, construction: true };   // a vertical centerline
+    test('Symmetric: two points about a free centerline 8 -> 6 DOF; about a fixed centerline 4 -> 2 DOF and the points mirror exactly; offered by Add Relations for [point, point, line] in any order', function () {
+      var s = sk([{ t: 'point', x: -7, y: 3 }, { t: 'point', x: 6, y: 4 }, CL]);
+      assert(SS.analyze(s).dof === 8, 'free ' + SS.analyze(s).dof);
+      assert(SS.applicable(s, ['2', '0', '1']).indexOf('symmetric') >= 0 && SS.applicable(s, ['0', '1']).indexOf('symmetric') < 0, 'applicable ' + SS.applicable(s, ['2', '0', '1']));
+      var r = SS.addRelation(s, 'symmetric', ['2', '0', '1']);
+      assert(r.ok && r.status === 'ok', JSON.stringify(r));
+      assert(JSON.stringify(s.rels[0].refs) === '["0","1","2"]', 'axis last (the centerline) ' + JSON.stringify(s.rels[0].refs));
+      assert(SS.analyze(s).dof === 6, 'free axis ' + SS.analyze(s).dof);
+      var t = sk([{ t: 'point', x: -7, y: 3 }, { t: 'point', x: 6, y: 4 }, CL]);
+      addAll(t, [['fix', ['2']]]);
+      assert(SS.analyze(t).dof === 4, 'fixed axis before ' + SS.analyze(t).dof);
+      addAll(t, [['symmetric', ['0', '1', '2']]]);
+      var a = t.entities[0], b = t.entities[1];
+      near(a.x, -b.x, 1e-9, 'x mirrored'); near(a.y, b.y, 1e-9, 'same height');
+      assert(SS.analyze(t).dof === 2, 'fixed axis after ' + SS.analyze(t).dof);
+      return 'points ' + [a.x, a.y, b.x, b.y].map(function (v) { return v.toFixed(3); }).join(', ');
+    });
+    test('Symmetric: two lines about a fixed centerline 8 -> 4 DOF (ends paired as they mirror now); two circles 6 -> 3 DOF with equal radii; end points of one line symmetric 4 -> 2; a fourth relation repeating it is redundant', function () {
+      var s = sk([{ t: 'line', x1: -9, y1: 0, x2: -4, y2: 8 }, { t: 'line', x1: 4.5, y1: 7.5, x2: 8, y2: 0.5 }, CL]);
+      addAll(s, [['fix', ['2']], ['symmetric', ['0', '1', '2']]]);
+      var L0 = s.entities[0], L1 = s.entities[1];
+      near(L0.x1, -L1.x2, 1e-9, 'p1 <-> p2 x'); near(L0.y1, L1.y2, 1e-9, 'p1 <-> p2 y'); near(L0.x2, -L1.x1, 1e-9, 'p2 <-> p1 x'); near(L0.y2, L1.y1, 1e-9, 'p2 <-> p1 y');
+      assert(SS.analyze(s).dof === 4, 'lines ' + SS.analyze(s).dof);
+      var c = sk([{ t: 'circle', cx: -5, cy: 2, r: 3 }, { t: 'circle', cx: 6, cy: 2.5, r: 2 }, CL]);
+      addAll(c, [['fix', ['2']], ['symmetric', ['0', '1', '2']]]);
+      near(c.entities[0].r, c.entities[1].r, 1e-9, 'equal radii'); near(c.entities[0].cx, -c.entities[1].cx, 1e-9, 'centres mirrored');
+      assert(SS.analyze(c).dof === 3, 'circles ' + SS.analyze(c).dof);
+      var h = sk([{ t: 'line', x1: -10, y1: 5, x2: 9, y2: 6 }, CL]);
+      addAll(h, [['fix', ['1']], ['symmetric', ['0.p1', '0.p2', '1']]]);
+      assert(SS.analyze(h).dof === 2 && Math.abs(h.entities[0].y1 - h.entities[0].y2) < 1e-9, 'line ends ' + JSON.stringify(h.entities[0]));
+      var x = SS.addRelation(h, 'horizontal', ['0']);
+      assert(x.ok && x.status === 'redundant', 'horizontal repeats the symmetry: ' + x.status);
+      return 'DOF 4, 3, 2';
+    });
+    test('Symmetric is inferred when a line is drawn with its ends mirrored about a centerline (instead of Horizontal), and when a circle mirrors an existing one', function () {
+      var s = sk([CL], [{ type: 'vertical', refs: ['0'] }]);   // a centerline drawn upright infers Vertical
+      s.entities.push({ t: 'line', x1: -10, y1: 5, x2: 10, y2: 5 });
+      var got = SS.infer(s, 1).map(function (r) { return r.type; });
+      assert(got.join() === 'symmetric', 'line ' + got.join());
+      assert(JSON.stringify(s.rels[1].refs) === '["1.p1","1.p2","0"]', JSON.stringify(s.rels[1].refs));
+      s.entities.push({ t: 'circle', cx: -6, cy: 12, r: 2 });
+      SS.infer(s, 2);
+      s.entities.push({ t: 'circle', cx: 6, cy: 12, r: 2 });
+      var got2 = SS.infer(s, 3).map(function (r) { return r.type + ':' + r.refs.join('|'); });
+      assert(got2.join() === 'symmetric:2|3|0', 'circle ' + got2.join());
+      assert(SS.inferPreview({ entities: [CL] }, { t: 'line', x1: -3, y1: 1, x2: 3, y2: 1 })[0].type === 'symmetric', 'preview');
+      return got.concat(got2).join(', ');
+    });
+    test('driven dimensions: a distance repeating the rectangle height over-defines (Make driven?); made driven it adds no equation (Fully Defined), shows 20, and reads 30 after the height is set to 30; a driven Smart Dimension follows a width edit and refuses edits', function () {
+      var s = constrainedRect();
+      var r = SS.addRelation(s, 'distance', ['0', '2']);
+      assert(r.ok && r.status === 'redundant' && SS.overDefines(s, 'rel', r.rels[0]), 'redundant ' + r.status);
+      var d = SS.setDriven(s, 'rel', r.rels[0], true);
+      assert(d.ok && d.state === 'driven' && d.analysis.status === 'full' && d.analysis.dof === 0, JSON.stringify(d.analysis));
+      near(s.rels[r.rels[0]].v, 20, 1e-9, 'driven value');
+      assert(SS.setDim(s, 1, 30).ok, 'height 30');
+      near(s.rels[r.rels[0]].v, 30, 1e-9, 'driven value after the solve');
+      assert(!SS.setRelValue(s, r.rels[0], 12).ok, 'a driven distance cannot be edited');
+      s.dims.push({ e: 2, k: 'len' });
+      var di = s.dims.length - 1;
+      assert(SS.overDefines(s, 'dim', di) && SS.analyze(s).status === 'over', 'top width repeats the bottom width');
+      SS.setDriven(s, 'dim', di, true);
+      assert(SS.analyze(s).status === 'full' && SS.analyze(s).dims[di] === 'driven', 'driven dim ' + JSON.stringify(SS.analyze(s).dims));
+      assert(SS.setDim(s, 0, 50).ok, 'width 50');
+      near(K.dimValue(s.entities[2], s.dims[di]), 50, 1e-9, 'driven width follows');
+      var e = SS.setDim(s, di, 45);
+      assert(!e.ok && /driven/.test(e.error), 'refused: ' + e.error);
+      var back = SS.setDriven(s, 'rel', r.rels[0], false);
+      assert(back.state === 'redundant', 'driving again over-defines: ' + back.state);
+      return 'distance ' + s.rels[r.rels[0]].v + ', width ' + K.dimValue(s.entities[2], s.dims[di]);
+    });
+    test('construction geometry: a centerline and a construction circle are solved but not part of the profile (1 loop, volume of the rectangle alone); .construction() / .driven() / driven .rel() round trip through the script', function () {
+      var code = 'p.sketch("Front").rect(-10, 0, 20, 8).line(0, -5, 0, 15).circle(0, 4, 3).dim(0, "w").dim(0, "w", { i: 2 })'
+        + '.construction([1, 2]).driven([1]).rel("symmetric", ["0.v0", "0.v1", "1"]).rel("distance", ["0.e0", "0.e2"], { driven: true }).extrude(5);';
+      var b = build(code), f = b.model.features[0];
+      assert(!b.errors || !Object.keys(b.errors).length, JSON.stringify(b.errors));
+      assert(K.sketchProfile(f).loops.length === 1, 'loops ' + K.sketchProfile(f).loops.length);
+      near(b.mp.volume, 20 * 8 * 5, 1e-9, 'volume');
+      var an = SS.analyze(f);
+      assert(an.dims[1] === 'driven' && an.rels[1] === 'driven' && an.status !== 'over', JSON.stringify(an.dims) + ' ' + JSON.stringify(an.rels));
+      near(f.rels[1].v, 8, 1e-9, 'driven distance reads the height');
+      var s1 = K.generateScript(b.model);
+      assert(s1.indexOf('.construction([1,2])') > 0 && s1.indexOf('.driven([1])') > 0 && s1.indexOf('{"driven":true}') > 0, s1);
+      var m2 = K.newModel('x');
+      K.runScript(m2, s1);
+      var g = m2.features[0];
+      assert(JSON.stringify(g.entities) === JSON.stringify(f.entities) && JSON.stringify(g.dims) === JSON.stringify(f.dims) && JSON.stringify(g.rels) === JSON.stringify(f.rels), 'round trip');
+      assert(K.generateScript(m2) === s1, 'fixed point');
+      return 'volume ' + b.mp.volume;
+    });
   })();
 
   // ------------------------------------------------------------------ materials & custom properties (materials.js)

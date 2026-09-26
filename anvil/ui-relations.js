@@ -107,8 +107,9 @@
     if (!g) return null;
     var s = UI.cam.scale;
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
-    var value = rel.v != null ? rel.v : S.measure(f, rel.type, rel.refs);
+    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs);
     var out = { lines: [], arrows: [], label: UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '') };
+    if (rel.driven) out.label = '(' + out.label + ')';
     if (g.type === 'distance') {
       var L = Math.hypot(g.Q[0] - g.P[0], g.Q[1] - g.P[1]), dir = L < 1e-12 ? [1, 0] : [(g.Q[0] - g.P[0]) / L, (g.Q[1] - g.P[1]) / L];
       var n = [-dir[1], dir[0]], off = rel.off != null ? rel.off : 16 * s;
@@ -147,11 +148,88 @@
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };
     refresh();
-    if (r.status !== 'ok') UI.setStatus('This dimension over-defines the sketch (shown ' + (r.status === 'conflict' ? 'red' : 'yellow') + '). Delete it, or a relation it duplicates.');
-    else UI.setStatus((rd.type === 'angle' ? 'Angle' : 'Distance') + ' dimension placed. Type a value and press Enter to drive the sketch.');
     App.dimsStale = false;
     if (UI.drawDims) UI.drawDims();
+    if (r.status !== 'ok') { askDriven(f, 'rel', idx); return; }
+    UI.setStatus((rd.type === 'angle' ? 'Angle' : 'Distance') + ' dimension placed. Type a value and press Enter to drive the sketch.');
     UI.openRelDimEdit(idx);
+  }
+
+  // ------------------------------------------------------------------ driven (reference) dimensions
+  // A new dimension that would over-define the sketch: ask, as SolidWorks does, whether to make it driven. The answer
+  // is a page modal (#drv-driven / #drv-driving), never a browser dialog.
+  function askDriven(f, kind, index) {
+    var sketchId = f.id;
+    function item() { var g = UI.activeSketchFeature(); return g && g.id === sketchId ? g : null; }
+    UI.showModal({
+      title: 'Make Dimension Driven?',
+      body: '<p>Adding this dimension will make the sketch over defined or unable to solve.</p><p>Do you want to add this dimension as a driven (reference) dimension instead? A driven dimension shows the value the geometry has, in grey and in parentheses, and does not drive anything.</p>',
+      buttons: [
+        { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); var g = item(); if (g) setDriven(g, kind, index, true); } },
+        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } }
+      ]
+    });
+    App.drivenPrompt = { kind: kind, index: index };
+  }
+  // Placed dimension check (ui-sketch.js calls this after a single-entity Smart Dimension is placed): true when the
+  // question was asked (the caller then does not open the Modify box).
+  function askDrivenIfOver(f, kind, index) {
+    if (!S.overDefines(f, kind, index)) return false;
+    askDriven(f, kind, index);
+    return true;
+  }
+  function setDriven(f, kind, index, on) {
+    markDirty();
+    var r = S.setDriven(f, kind, index, on);
+    App.drivenPrompt = null;
+    if (!r.ok) { UI.toast(r.error); return r; }
+    refresh();
+    App.dimsStale = true;
+    UI.setStatus(on ? 'Driven dimension: its value follows the geometry. ' + S.STATUS_TEXT[r.analysis.status] + '.' : 'The dimension drives the sketch again' + (r.state !== 'ok' ? ', and over-defines it (shown yellow).' : '.'));
+    return r;
+  }
+  // Clicking a driven dimension: it has no value to type, so offer to make it driving.
+  function drivenDimClick(it) {
+    var f = UI.activeSketchFeature();
+    if (!f) return;
+    var kind = it.rel != null ? 'rel' : 'dim', index = it.rel != null ? it.rel : it.index;
+    UI.showModal({
+      title: 'Driven Dimension',
+      body: '<p>This is a driven (reference) dimension: it shows what the geometry measures and cannot be changed.</p>',
+      buttons: [
+        { id: 'drv-make-driving', label: 'Make driving', primary: true, action: function () { UI.closeModal(); setDriven(f, kind, index, false); } },
+        { label: 'Close', action: UI.closeModal }
+      ]
+    });
+  }
+
+  // ------------------------------------------------------------------ construction geometry
+  // Construction Geometry (Sketch tab): toggles `construction` on the selected sketch entities (all become
+  // construction unless all already are). Construction entities are drawn dashed and are not part of any profile.
+  function selectedEntities() {
+    var out = [];
+    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
+    if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
+    return out;
+  }
+  function toggleConstruction(list) {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    list = (list || selectedEntities()).filter(function (i) { return f.entities[i]; });
+    if (!list.length) { UI.setStatus('Select sketch entities first, then click Construction Geometry.'); return null; }
+    var on = list.some(function (i) { return !f.entities[i].construction; });
+    markDirty();
+    list.forEach(function (i) { if (on) f.entities[i].construction = true; else delete f.entities[i].construction; });
+    refresh();
+    UI.setStatus((list.length === 1 ? 'Entity' : list.length + ' entities') + (on ? ' changed to construction geometry.' : ' changed back to sketch geometry.'));
+    return on;
+  }
+  function cmdCenterline() {
+    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    UI.setTool('line');
+    App.drawConstruction = true;
+    $('sketch-hint').innerHTML = 'Centerline: click the start and end points. Centerlines are construction geometry: axes for Symmetric relations, not part of the profile.';
+    UI.refreshRibbon();
   }
 
   // ------------------------------------------------------------------ relation icons in the #dim-layer
@@ -180,7 +258,7 @@
       var state = an && an.rels ? an.rels[i] : 'ok';
       if (t.dim) {
         var sc = relDimScreenData(f, pl, rel);
-        if (sc) { var it = { d: rel, rel: i, state: state }; h.drawOne(sc, it); h.list.push(it); }
+        if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
         return;
       }
       if (App.view.showRelations === false) return;
@@ -372,6 +450,11 @@
   UI.cmdAddRelations = cmdAddRelations;
   UI.cmdDisplayRelations = cmdDisplayRelations;
   UI.sketchDragHook = sketchDragHook;
+  UI.askDrivenIfOver = askDrivenIfOver;
+  UI.setDimDriven = function (kind, index, on) { var f = UI.activeSketchFeature(); return f ? setDriven(f, kind, index, on !== false) : null; };
+  UI.drivenDimClick = drivenDimClick;
+  UI.toggleConstruction = toggleConstruction;
+  UI.cmdCenterline = cmdCenterline;
   UI.sketchStatus = function () {
     var f = UI.activeSketchFeature();
     if (!f) return null;
@@ -394,5 +477,8 @@
     };
     window.anvil.deleteRelation = function (i) { return deleteRelation(i); };
     window.anvil.sketchStatus = UI.sketchStatus;
+    // anvil.construction(i | [i…]): toggle construction geometry; anvil.driven('dim' | 'rel', i, on?)
+    window.anvil.construction = function (list) { activeOrThrow(); return toggleConstruction(Array.isArray(list) ? list : [list]); };
+    window.anvil.driven = function (kind, index, on) { var f = activeOrThrow(), r = setDriven(f, kind, index, on !== false); if (!r.ok) throw new Error(r.error); return r.state; };
   }
 })(UI);

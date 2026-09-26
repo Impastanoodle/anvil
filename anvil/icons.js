@@ -92,6 +92,9 @@ var Icons = (function () {
     relParallel: ln('M5 13 L9 3 M8 13 L12 3', G, 1.6), relPerpendicular: ln('M3 13 h10 M8 13 V3', G, 1.6),
     relTangent: circ(8, 6.5, 4, 'none', G, 1.3) + ln('M2 12.5 h12', G, 1.6), relConcentric: circ(8, 8, 2.5, 'none', G, 1.3) + circ(8, 8, 5.5, 'none', G, 1.3),
     relEqual: ln('M3 6 h10 M3 10 h10', G, 1.7), relMidpoint: ln('M2 11 h12', G, 1.4) + circ(8, 11, 2.2, G, 'none') + ln('M8 3 v5', G, 1.2),
+    relSymmetric: ln('M8 2 v12', G, 1, 'stroke-dasharray="2 1.5"') + ln('M3 5 v6 M13 5 v6', G, 1.6) + ln('M4.5 8 h2 M11.5 8 h-2', G, 1.1),
+    construction: ln('M2 13 L14 3', YD, 1.6, 'stroke-dasharray="2.5 1.6"') + circ(2.5, 12.5, 1.2, W, B) + circ(13.5, 3.5, 1.2, W, B),
+    centerline: ln('M2 13 L14 3', B, 1.4, 'stroke-dasharray="4 1.5 1 1.5"'),
     relCollinear: ln('M2 8 h5 M9 8 h5', G, 1.8) + circ(8, 8, 0.8, G, 'none'), relFix: ln('M8 2.5 v8 M4 7 a4 4 0 0 0 8 0 M6 4.5 h4', G, 1.4),
     // ---- sheet metal (green sheet)
     flange: p(FLANGE_L, G, S) + ln('M2 12 h6.5 a3.5 3.5 0 0 0 3.5 -3.5 V2.5', Y, 1, 'stroke-dasharray="1.6 1.2"'),

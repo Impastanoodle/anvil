@@ -319,6 +319,7 @@ body { overflow: auto; }
 #dim-layer circle.rel-pick { fill: var(--green); }
 #dim-layer .dim.redundant text { fill: #b08700; } #dim-layer .dim.redundant line { stroke: #d4a300; } #dim-layer .dim.redundant polygon { fill: #d4a300; }
 #dim-layer .dim.conflict text { fill: #d9302c; } #dim-layer .dim.conflict line { stroke: #d9302c; } #dim-layer .dim.conflict polygon { fill: #d9302c; }
+#dim-layer .dim.driven text { fill: #8a9099; } #dim-layer .dim.driven line { stroke: #a4aab2; } #dim-layer .dim.driven polygon { fill: #a4aab2; }
 .rel-list { max-height: 260px; overflow: auto; border: 1px solid var(--line); background: var(--panel, #fff); margin: 2px 0 6px; }
 .rel-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 12px; border-bottom: 1px solid var(--line); cursor: default; }
 .rel-row:last-child { border-bottom: 0; }

@@ -774,6 +774,15 @@ var UI = (function () {
       return g.sketch === id || g.profile === id || g.path === id || (g.sketches && g.sketches.indexOf(id) >= 0);
     });
   }
+  // a dashed twin of a sketch line material, dash length in screen pixels at the current zoom
+  var dashMats = {};
+  function dashedMat(m) {
+    var d = dashMats[m.uuid];
+    if (!d) d = dashMats[m.uuid] = new THREE.LineDashedMaterial({ color: m.color, depthTest: m.depthTest });
+    d.color.copy(m.color);
+    d.dashSize = cam.scale * 7; d.gapSize = cam.scale * 4;
+    return d;
+  }
   function updateSketches() {
     App.dimsStale = true;
     disposeGroup(groups.sketches);
@@ -797,7 +806,9 @@ var UI = (function () {
           return;
         }
         if (!pls.length) return;
+        if (e.construction) mat = dashedMat(mat);   // construction geometry / centerlines: dashed
         var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
+        if (e.construction) ls.computeLineDistances();
         ls.userData = { sketch: f.id, index: i };
         if (active) ls.renderOrder = 10;
         groups.sketches.add(ls);

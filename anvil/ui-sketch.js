@@ -94,6 +94,7 @@
     cancelTool(true);
     App.tool = name || 'select';
     App.toolState = { pts: [] };
+    App.drawConstruction = false;
     viewport.classList.toggle('tool-cross', App.tool !== 'select');
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
@@ -182,6 +183,7 @@
     var f = UI.activeSketchFeature();
     if (!f) return;
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+    if (App.drawConstruction) e.construction = true;   // the Centerline tool (ui-relations.js)
     f.entities.push(e);
     // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …)
     if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1);
@@ -341,6 +343,7 @@
         ev.stopPropagation();
         if (it.rel != null) { App.sel = { kind: 'rel', index: it.rel }; UI.closePM(); UI.updateSketches(); }
         else if (!it.auto) { App.sel = { kind: 'dim', index: it.index }; UI.closePM(); UI.updateSketches(); }
+        if (it.d.driven && UI.drivenDimClick) { UI.drivenDimClick(it); return; }
         openDimEdit(it);
       });
       t.setAttribute('tabindex', '0');
@@ -356,12 +359,14 @@
     var f = UI.activeSketchFeature();
     if (!f || App.mode !== 'sketch') { if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
-    placed.forEach(function (d, i) { list.push({ d: d, index: i }); });
+    var an = App.sketchState;
+    placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : an && an.dims ? an.dims[i] : null }); });
     if (App.view.showDims) f.entities.forEach(function (e, i) { autoDims(e, i, placed).forEach(function (d) { list.push({ d: d, auto: true }); }); });
     if (App.tempDim) list.push({ d: App.tempDim, temp: true });
     list.forEach(function (it) {
       var e = f.entities[it.d.e], sc = e && dimScreen(pl, e, it.d);
       if (!sc) { if (it.index != null) stale.push(it.index); return; }
+      if (it.d.driven) sc.label = '(' + sc.label + ')';   // driven (reference) dimension
       drawOne(sc, it);
     });
     // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
@@ -491,6 +496,8 @@
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       (f.dims = f.dims || []).push(d);
       App.sel = { kind: 'dim', index: f.dims.length - 1 };
+      // over-defining: ask whether to make it driven (ui-relations.js) instead of opening the Modify box
+      if (UI.askDrivenIfOver && UI.askDrivenIfOver(f, 'dim', f.dims.length - 1)) { UI.updateSketches(); return; }
       App.dimsStale = false;
       var list = drawDims();
       var it = null;
