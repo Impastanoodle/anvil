@@ -84,6 +84,14 @@ var Icons = (function () {
     mirrorEnt: ln('M8 2 v12', S, 0.9, DASH) + ln('M6 4.5 L2.5 11.5 h3.5 z', B, 1.4) + ln('M10 4.5 L13.5 11.5 h-3.5 z', B, 1.4, 'stroke-dasharray="1.5 1.5"'),
     sketchPattern: circ(3.5, 8, 1.8, 'none', B, 1.4) + circ(8, 8, 1.8, 'none', B, 1.4) + circ(12.5, 8, 1.8, 'none', B, 1.4) + ln('M2 12.5 h12', S, 0.9, DASH),
     relations: ln('M2.5 4.5 h11 M2.5 11.5 h11', B, 1.5) + ln('M5.5 6.5 v3 M10.5 6.5 v3', S, 1.25),
+    addRelation: ln('M2.5 4.5 h8 M2.5 11.5 h8', B, 1.5) + ln('M5.5 6.5 v3', S, 1.25) + ln('M13 8.5 v5 M10.5 11 h5', G, 1.6),
+    // relation glyphs drawn next to sketch entities (small, on a 16 grid, like SolidWorks' relation icons)
+    relHorizontal: ln('M3 8 h10', G, 2), relVertical: ln('M8 3 v10', G, 2),
+    relCoincident: circ(8, 8, 3, G, 'none') + circ(8, 8, 5.5, 'none', G, 1.2),
+    relParallel: ln('M5 13 L9 3 M8 13 L12 3', G, 1.6), relPerpendicular: ln('M3 13 h10 M8 13 V3', G, 1.6),
+    relTangent: circ(8, 6.5, 4, 'none', G, 1.3) + ln('M2 12.5 h12', G, 1.6), relConcentric: circ(8, 8, 2.5, 'none', G, 1.3) + circ(8, 8, 5.5, 'none', G, 1.3),
+    relEqual: ln('M3 6 h10 M3 10 h10', G, 1.7), relMidpoint: ln('M2 11 h12', G, 1.4) + circ(8, 11, 2.2, G, 'none') + ln('M8 3 v5', G, 1.2),
+    relCollinear: ln('M2 8 h5 M9 8 h5', G, 1.8) + circ(8, 8, 0.8, G, 'none'), relFix: ln('M8 2.5 v8 M4 7 a4 4 0 0 0 8 0 M6 4.5 h4', G, 1.4),
     // ---- sheet metal (green sheet)
     flange: p(FLANGE_L, G, S) + ln('M2 12 h6.5 a3.5 3.5 0 0 0 3.5 -3.5 V2.5', Y, 1, 'stroke-dasharray="1.6 1.2"'),
     bend: p('M2 10.5 h6.5 v3 H2 z', F2, S) + p('M8.5 10.5 a2 2 0 0 0 2 -2 V2.5 h3 V8.5 a5 5 0 0 1 -5 5 v-3 z', G, S) + ln('M8.5 10.5 v3', B, 1.2),

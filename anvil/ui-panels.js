@@ -26,7 +26,10 @@
     var mode = App.mode === 'sketch' ? 'Editing ' + (UI.activeSketchFeature() || {}).name : asm ? 'Editing Assembly' : 'Editing Part';
     var units = App.model.units === 'in' ? 'IPS' : 'MMGS';
     var errs = App.build ? Object.keys(App.build.errors).length : 0;
-    $('status-right').innerHTML = '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    // sketch mode: the active sketch's definition state (SolidWorks' Under Defined / Fully Defined / Over Defined)
+    var sk = App.mode === 'sketch' && App.sketchState ? App.sketchState : null;
+    var skTxt = sk ? '<span class="sk-state ' + sk.status + '" title="Degrees of freedom: ' + sk.dof + '">' + (window.SketchSolver ? SketchSolver.STATUS_TEXT[sk.status] : sk.status) + '</span>' : '';
+    $('status-right').innerHTML = skTxt + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     $('doc-title').textContent = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
   }
 
@@ -69,7 +72,8 @@
       { sep: true },
       { id: 'fillet', label: 'Sketch\nFillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } },
       { id: 'trim', label: 'Trim\nEntities', run: function () { UI.cmdTrimEntities(); } }, { id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
-      { stack: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'relations', label: 'Display/Delete Relations' }] },
+      { stack: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'relations', label: 'Display/Delete Relations', run: function () { UI.cmdDisplayRelations(); } }] },
+      { stack: [{ id: 'addRelation', label: 'Add Relation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } }] },
       { sep: true },
       { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
       { id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } }
@@ -599,6 +603,7 @@
         { label: 'Origins', checked: v.showOrigin, action: function () { v.showOrigin = !v.showOrigin; UI.updateOrigin(); } },
         { label: 'All Sketches', checked: v.showSketches, action: function () { v.showSketches = !v.showSketches; UI.updateSketches(); } },
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
+        { label: 'Sketch Relations', checked: v.showRelations !== false, action: function () { v.showRelations = v.showRelations === false; App.dimsStale = true; UI.setStatus(v.showRelations ? 'Relation icons shown next to sketch entities.' : 'Relation icons hidden.'); } },
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
         { sep: true },
@@ -639,6 +644,8 @@
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },
         { label: 'Measure', action: UI.cmdMeasure },
         { label: 'Mass Properties', action: UI.showMassProperties },
+        { label: 'Relations ▸ Add…', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
+        { label: 'Relations ▸ Display/Delete…', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },

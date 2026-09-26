@@ -537,9 +537,10 @@
         var hit = UI.pickEntity(mx, my);
         if (!hit) { UI.setStatus('Click on an entity to trim it.'); return; }
         try {
-          var out = K.trimEntity(f.entities, hit.index, uv);
+          var before = f.entities.slice(), out = K.trimEntity(f.entities, hit.index, uv);
           if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
           f.entities = out.map(roundPts);
+          if (window.SketchSolver) SketchSolver.remap(f, before);  // relations on untouched entities survive
           count++;
           App.sel = null; App.gridStale = true;
           UI.updateSketches(); UI.refreshTree();
@@ -583,7 +584,7 @@
         var c;
         try { c = copies(); } catch (e) { UI.toast(e.message); return false; }
         UI.pushUndo(); App.sketchDirty = true;
-        if (!v.copy) { var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1; f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); }
+        if (!v.copy) { var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before); }
         c.forEach(function (e) { f.entities.push(e); });
         App.tempEntities = []; UI.updateTemp(); App.sel = null; App.gridStale = true;
         UI.updateSketches(); UI.refreshTree();
@@ -635,7 +636,7 @@
     var f = K.findFeature(App.model, id);
     if (!f) return;
     closePM();
-    App.sketchSnapshot = JSON.stringify({ entities: f.entities, dims: f.dims || [] });
+    App.sketchSnapshot = JSON.stringify({ entities: f.entities, dims: f.dims || [], rels: f.rels || null });
     UI.enterSketch(id);
   }
 
@@ -1425,6 +1426,8 @@
       onChange: function (v) {
         if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
         Object.keys(v).forEach(function (k) { e[k] = v[k]; });
+        // typed values move the entity; the rest of the sketch follows its relations (the edited entity moves least)
+        if (window.SketchSolver && (f.rels || f.dims)) { var mob = {}; mob[index] = 1e-4; SketchSolver.solve(f, { mob: mob }); }
         UI.updateSketches();
       },
       onOK: function () { App.sel = null; UI.updateSketches(); }
@@ -1435,7 +1438,8 @@
     if (!f) return;
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     f.entities.splice(index, 1);
-    // dimensions follow their entities: drop the deleted one's, shift the rest
+    // relations and dimensions follow their entities: drop the deleted one's, shift the rest
+    if (window.SketchSolver) SketchSolver.removeEntity(f, index);
     if (f.dims) f.dims = f.dims.filter(function (d) { return d.e !== index; }).map(function (d) { if (d.e > index) d.e--; return d; });
     App.sel = null;
     UI.updateSketches();
@@ -2078,6 +2082,7 @@
     }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'entity') { deleteEntity(App.sel.index); closePM(); return; }
     if (App.mode === 'sketch' && App.sel && App.sel.kind === 'dim') { UI.deleteDim(App.sel.index); return; }
+    if (App.mode === 'sketch' && App.sel && App.sel.kind === 'rel' && UI.deleteRelation) { UI.deleteRelation(App.sel.index); return; }
     if (App.sel && App.sel.kind === 'feature') { deleteFeature(App.sel.id); return; }
     if (App.sel && App.sel.kind === 'face' && App.mesh) {
       var id = App.triShared[App.mesh.faces[App.sel.index].start];
