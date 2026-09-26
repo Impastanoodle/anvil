@@ -107,7 +107,7 @@ p.circularPattern({ axis: "y", count: 6 });  // … patterned around Y
 | `chamfer(d, edges, opts)` | Break the edges nearest to the given points `[[x, y, z], …]` by distance `d`. Convex edges are cut, concave edges are filled; chained neighbours join with mitred caps. `opts.chain: false` stops tangent-chain propagation (default on: edges sharing an endpoint within 28° and of the same convexity are picked up, so one point selects a whole cylinder rim). |
 | `fillet(r, edges, opts)` | Same selection as `chamfer`, with a tangent arc of radius `r` (polygonal, ≥ 4 segments per 90°). |
 | `sweep({ profile, path, cut, merge, bodies, name })` | Sweep a closed sketch (`profile`, defaults to the last sketch) along `path`: either the id of a sketch of connected lines/arcs (open by design, no warning) or an array of 3D points `[[x, y, z], …]`. The profile is turned perpendicular to the first segment (pivoting about the path start, which is the end nearest the profile); corners are mitred, so the volume is exactly area × path length for a centred section. Disconnected path entities are ignored with a warning. |
-| `loft(sketchIds, { cut, merge, bodies, name })` | Ruled loft through two or more sketches, each holding exactly one closed profile, in the given order. Outlines are resampled to the same point count and matched by rotation, so a square can loft into a circle. |
+| `loft(sketchIds, { cut, merge, bodies, name })` | Ruled loft through two or more sketches, each holding exactly one closed profile, in the given order. When every section is convex and the sketch planes are parallel, the side is the convex hull of consecutive sections (each edge of one section joined to the other's farthest vertex along its outward normal, quads where edges are parallel), so every side face is planar and each section keeps its own polygon; otherwise outlines are resampled to the same point count and matched by rotation, so a square can loft into a star. |
 | `shell(t, faces, opts)` | Hollow the body leaving walls of thickness `t`. `faces` is a list of points `[[x, y, z], …]` on the faces to remove (open); an empty list gives a closed hollow part. Faces are re-resolved against the body at rebuild time. On a multi-body part the body nearest the first point is shelled (body 0 with no faces). Fails with a clear message when the part is thinner than 2·t everywhere. |
 | `sheet(T, R?, K?)` | Sheet-metal parameters: thickness, inside bend radius (default `T`) and k-factor (default 0.71 for steel; use 0.64 for aluminium). |
 | `baseFlange(T?, opts)` | Extrude the last sketch by the sheet thickness and mark it as the base flange. Sets `sheet(T)` if not yet set. |
@@ -167,6 +167,7 @@ Kernel.combineBodies(bodies);               // one solid of every body's polygon
 Kernel.bodyInfo(b, model);                  // [{ index, featureId, name, volume }] — name is the creating feature's name (Body<n> if it is gone)
 Kernel.bodyNearPoint(bodies, [x, y, z]);    // index of the body with the vertex nearest the point (−1 for none): how picked features find their body
 var mp = Kernel.massProps(mesh, model.density); // { volume, area, centroid, bbox: { min, max }, mass }
+var q = Kernel.meshQuality(mesh);           // { triangles, vertices, minAngle, needles, slivers, openEdges, nonManifoldEdges, tJunctions, closed }
 Kernel.exportSTL(mesh, name);               // ASCII STL text
 Kernel.exportDXFSketch(sketchFeature, units);   // circles and arcs stay true entities
 Kernel.exportDXFFace(mesh, faceIndex, units);   // OUTLINE / HOLES layers; round holes become CIRCLEs
@@ -679,7 +680,7 @@ Validated outside the browser: the STEP files open in OpenCascade 8 (the kernel 
 
 ## Known limitations
 
-- No draft, rib or wrap yet (see `ROADMAP.md`). Chamfers and fillets work on straight and polygonal edges between planar faces; a fillet is a polygonal arc. Sweeps use mitred polyline paths (arcs are polygonal), lofts are ruled surfaces between resampled outlines, and Shell is exact for planar faces; on polygonal round faces the cavity is the polygonal offset.
+- No draft, rib or wrap yet (see `ROADMAP.md`). Chamfers and fillets work on straight and polygonal edges between planar faces; a fillet is a polygonal arc. Sweeps use mitred polyline paths (arcs are polygonal), lofts are the convex hull of convex parallel sections and ruled surfaces between resampled outlines otherwise, and Shell is exact for planar faces; on polygonal round faces the cavity is the polygonal offset.
 - Circles and arcs are polygons; volumes of round parts are up to ~2 % under the analytic value.
 - STEP import reads planar-face and faceted B-reps only (curved faces are refused by name); STEP export is faceted-exact (round faces leave as their polygon facets, since the kernel has no true curves yet). No IGES or Parasolid. 3MF import reads stored (uncompressed) packages only.
 - CSG is BSP based: a few hundred features is fine, thousands of polygons per feature starts to take hundreds of milliseconds per rebuild.

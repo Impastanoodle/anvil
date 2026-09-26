@@ -132,3 +132,43 @@ Where it helps: a boolean whose operand has many polygons of which only a few ar
 Where it does not: the Funnel's three big booleans (4338 ∪ 3018, 785 − 9624, 272 − 5857 polygons, ~1.1 s of its time in Node) are the shell's inner offset and slab unions, whose operands overlap almost everywhere (70–85 % of each is near the other), so they stay on the classic path; only its smaller slab unions got faster. Speeding those up needs a finer near test than one bounding box per operand (a grid of boxes), or fewer slabs from the shell.
 
 Every Design Library volume is unchanged: identical to 1e-9 relative with near trees on and off (Funnel 3.7e-10, all others ≤ 1e-14), checked in the `csg near-region trees` test group. With `nearRatio` 0.7 the Funnel gets ~10 % faster in Node but its volume moves by 1.1e-6 (a 1e-5 mm³ sliver between near-coplanar slabs decided at the BSP's EPSILON; the union, intersection and difference agree with each other in both modes), which is why the default stays 0.5.
+
+## 2026-09-26 (run cloud-2026-09-25g) — hull lofts; mesh-quality check
+
+Cloud container, headless Chromium 141 (Playwright 1.56), `tests/bench.html`, 7 runs per part. Four full runs of `origin/main` (614eb34, served from a snapshot) and four of this branch, alternated; the table shows the best median of the four per part, in ms.
+
+| Part | polys main | polys branch | main ms | branch ms | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plate with bolt holes | 234 | 234 | 4.4 | 3.9 | 0.89× |
+| L-bracket | 129 | 129 | 1.3 | 1.3 | 1.00× |
+| Bushing | 288 | 288 | 1.0 | 0.8 | 0.80× |
+| Flange | 1829 | 1829 | 18.2 | 18.1 | 0.99× |
+| Hex nut | 172 | 172 | 5.8 | 6.0 | 1.03× |
+| Shaft with keyway | 539 | 539 | 2.9 | 2.9 | 1.00× |
+| Pulley | 756 | 756 | 3.4 | 3.6 | 1.06× |
+| Enclosure lid | 450 | 450 | 3.5 | 3.6 | 1.03× |
+| Mirrored clevis | 140 | 140 | 0.6 | 0.6 | 1.00× |
+| Sheet-metal U-bracket | 514 | 514 | 7.3 | 7.0 | 0.96× |
+| Tray | 334 | 334 | 7.4 | 7.6 | 1.03× |
+| Normal Cut Bracket | 166 | 166 | 2.1 | 2.2 | 1.05× |
+| Chamfered block | 305 | 305 | 4.0 | 4.1 | 1.02× |
+| Rounded handle | 756 | 756 | 38.4 | 37.9 | 0.99× |
+| Mug | 1118 | 1118 | 38.1 | 39.1 | 1.03× |
+| Funnel | 4453 | 1875 | 761.6 | 276.2 | 0.36× |
+| Handlebar | 572 | 572 | 15.2 | 15.2 | 1.00× |
+| Moulded cap | 127 | 127 | 0.9 | 1.0 | 1.11× |
+| Parametric plate | 392 | 392 | 2.3 | 2.5 | 1.09× |
+| Two-body clamp | 114 | 114 | 1.0 | 1.1 | 1.10× |
+| Configured spacer | 34 | 34 | 0.3 | 0.3 | 1.00× |
+| Spur gear (12 teeth) | 637 | 637 | 4.3 | 4.6 | 1.07× |
+| stress: 5×5 hole grid | 1399 | 1399 | 26.5 | 26.1 | 0.98× |
+| stress: 24-hole bolt circle | 2653 | 2653 | 28.4 | 28.1 | 0.99× |
+| stress: revolve with 6 grooves | 1560 | 1560 | 13.4 | 13.1 | 0.98× |
+| stress: fillet on one edge of a 12-gon prism | 68 | 68 | 0.8 | 0.8 | 1.00× |
+| stress: 4 chamfers + 4 fillets on a block | 65 | 65 | 2.0 | 2.0 | 1.00× |
+| stress: sheet box with 4 flanges + flat | 323 | 323 | 17.2 | 16.9 | 0.98× |
+| stress: 40 stacked unions | 574 | 574 | 10.3 | 10.0 | 0.97× |
+| **Sum of medians** | | | **1023** | **537** | 0.52× |
+
+
+Only the Funnel's code path changed: its loft is now the convex hull of the Ø80 51-gon and the Ø14 21-gon (69 planar side faces) instead of 51 resampled quads split into 102 needle triangles, so the shell's slab union and the final subtraction work on far fewer polygons (4453 → 1875) and the part is 2.8× faster. Every other part runs the same code as main (`Kernel.meshQuality` is not called by the bench); their differences are ±0.1–0.3 ms jitter at the resolution of the table (the largest ratios, 1.10–1.11×, are 0.9 → 1.0 ms and 1.0 → 1.1 ms). No needle-triangle cleanup was added to `meshFromBody`: a face-level retriangulation costs more than the rebuild itself on the small parts (faceOutline on every face: 545 ms over the library vs 877 ms of rebuilds in Node), well over the 10 % budget.
