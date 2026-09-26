@@ -2248,14 +2248,19 @@ var Kernel = (function () {
         var za = dot(sub(A, S.o), S.d), zb = dot(sub(B, S.o), S.d), scl = Math.max(1, el, Math.abs(za));
         var g = null;
         if (Math.abs(za - zb) < 1e-9 * scl) {
-          // a chord in a plane perpendicular to the axis, with both ends on the circle of that level
+          // a chord (or a piece of one, when CSG split the facet) in a plane perpendicular to the axis: both ends
+          // between the chord's distance and the circle of that level (at most a 16-gon's sagitta inside it)
           var c = add(S.o, scale(S.d, za)), ra = len(sub(A, c)), rb = len(sub(B, c));
-          if (Math.abs(ra - rb) > 1e-7 * scl || ra < 1e-9) continue;
           var Rz = null;
           if (S.t === 'cyl' || S.t === 'cone') Rz = S.r + (S.k || 0) * za;
           else if (F.P && Math.abs(za - F.P[1]) < 1e-7 * scl) Rz = F.P[0];
           else if (F.Q && Math.abs(za - F.Q[1]) < 1e-7 * scl) Rz = F.Q[0];
-          if (Rz == null || Math.abs(ra - Rz) > 1e-6 * Math.max(1, Rz)) continue;
+          if (Rz == null || !(Rz > 1e-9)) continue;
+          var tolR = 1e-6 * Math.max(1, Rz), lo = Rz * Math.cos(Math.PI / 8) - tolR;
+          if (ra > Rz + tolR || rb > Rz + tolR || ra < lo || rb < lo) continue;
+          // the chord must be a boundary of the facet on the curve: its midpoint no nearer the axis than the chord of
+          // the facet it lies on (a straight edge across the face would be)
+          if (len(sub(scale(add(A, B), 0.5), c)) < lo) continue;
           g = { key: sk + '|z' + Math.round(za * 1e6), center: c, normal: S.d.slice(), radius: Rz, surface: S };
         } else if (F.P && Math.abs(dot(norm(cross(S.d, sub(A, S.o))), sub(B, S.o))) < 1e-9 * scl) {
           // a profile arc of a partial revolve: in a meridian half-plane, both ends on the tube circle
@@ -2616,7 +2621,7 @@ var Kernel = (function () {
     if (theta < 0.05 || theta > Math.PI - 0.05) throw new Error('Edge faces are nearly parallel; cannot ' + kind + ' it.');
     var plane = { origin: m, x: dA, y: cross(dir, dA), n: dir };
     function uv(p) { var d = sub(p, m); return [dot(d, plane.x), dot(d, plane.y)]; }
-    var pts = [];
+    var pts = [], arcPt = [], S = null;
     var ext = size * 1.5;
     if (kind === 'chamfer') {
       pts.push(add(m, scale(dA, size)), add(m, scale(dB, size)));
@@ -2627,8 +2632,12 @@ var Kernel = (function () {
       var vA = sub(pA, c), vB = sub(pB, c);
       var sweep = Math.acos(Math.max(-1, Math.min(1, dot(vA, vB) / (size * size))));
       var axis = norm(cross(vA, vB));
-      var segs = Math.max(4, Math.round(sweep / (Math.PI / 12)));
-      for (var s = 0; s <= segs; s++) pts.push(add(c, rotatePoint(vA, [0, 0, 0], axis, sweep * s / segs)));
+      var segs = TESS.legacy ? Math.max(4, Math.round(sweep / (Math.PI / 12))) : Math.max(4, Math.ceil(segsForRadius(size) * sweep / (2 * Math.PI) - 1e-9));
+      for (var s = 0; s <= segs; s++) { pts.push(add(c, rotatePoint(vA, [0, 0, 0], axis, sweep * s / segs))); arcPt.push(true); }
+      // the round is a true cylinder about the edge line through c when both faces are planar (a fillet along a
+      // chain of facets of a curved face is a polygonal approximation of a torus: no record)
+      var planarFaces = [fa, fb].every(function (f) { return !(f.polys || []).some(function (p) { return p.surf; }); });
+      if (planarFaces) S = { t: 'cyl', o: c, d: dir.slice(), r: size };
     }
     var last = pts[pts.length - 1], first = pts[0];
     if (e.convex) {
@@ -2636,8 +2645,9 @@ var Kernel = (function () {
     } else {
       pts.push(sub(m, scale(add(dA, dB), ext)));
     }
+    while (arcPt.length < pts.length) arcPt.push(false);
     var loop = pts.map(uv);
-    if (signedArea(loop) < 0) { loop.reverse(); pts.reverse(); }
+    if (signedArea(loop) < 0) { loop.reverse(); pts.reverse(); arcPt.reverse(); }
     // Section is swept from end A to end B. Ends are either perpendicular caps (with a small overshoot) or
     // mitre planes shared with a selected neighbour, so chained facets join without notches.
     var tA = dot(sub(e.a, m), dir) - (extA.ext || 0), tB = dot(sub(e.b, m), dir) + (extB.ext || 0);
@@ -2656,9 +2666,13 @@ var Kernel = (function () {
       pushPoly(polys, [top[t[0]], top[t[1]], top[t[2]]], tag);
       pushPoly(polys, [bottom[t[2]], bottom[t[1]], bottom[t[0]]], tag);
     });
+    var F = S ? { s: S } : null;
     for (var i = 0; i < n; i++) {
       var j = (i + 1) % n;
-      pushPoly(polys, [bottom[i], bottom[j], top[j], top[i]], tag);
+      var side = poly([bottom[i], bottom[j], top[j], top[i]], tag);
+      if (!side) continue;
+      if (F && arcPt[i] && arcPt[j]) side.surf = F;
+      polys.push(side);
     }
     return ensureOutward(polys);
   }
