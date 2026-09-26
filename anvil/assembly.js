@@ -1562,10 +1562,16 @@ var Assembly = (function () {
       var geom = partGeom(pb);
       if (!geom || (e && e.error)) { comps.push({ id: c.id, name: c.name, index: i, volume: 0, mass: 0, density: density, centroid: [0, 0, 0] }); return; }
       var mp = Kernel.massProps(geom.mesh, density), T = tf(c.transform);
+      // materials.js: the part's material name, and bodies with their own material weigh with their own density
+      var matName = null;
+      if (typeof Materials !== 'undefined' && e && e.model) {
+        matName = Materials.materialName(e.model);
+        if (Materials.hasBodyMaterials(e.model)) { var pm = Materials.massProps(e.model, pb, geom.mesh); mp = { volume: pm.volume, area: pm.area, centroid: pm.centroid }; density = pm.density; }
+      }
       var cen = transformPoint(T, mp.centroid), m = mp.volume * density;
       vol += mp.volume; area += mp.area; mass += m;
       mc = add(mc, scale(cen, m));
-      comps.push({ id: c.id, name: c.name, index: i, volume: mp.volume, mass: m, density: density, centroid: cen });
+      comps.push({ id: c.id, name: c.name, index: i, volume: mp.volume, mass: m, density: density, material: matName, centroid: cen });
       var wb = build.bodies && build.bodies[i];
       if (wb) wb.polygons.forEach(function (p) {
         p.vertices.forEach(function (v) { var q = arr(v.pos); for (var k = 0; k < 3; k++) { if (q[k] < min[k]) min[k] = q[k]; if (q[k] > max[k]) max[k] = q[k]; } });

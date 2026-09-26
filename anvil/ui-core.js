@@ -441,8 +441,35 @@ var UI = (function () {
     if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' ? mats.hlr : mats.part; }
     if (edgeLines) edgeLines.visible = s !== 'shaded';
     mats.part.color.set(App.model.color || '#a8adb6');
+    applyBodyColors();
     var planes = App.view.section ? [App.view.section.plane] : [];
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
+  }
+
+  // Per-body colours: UI.bodyColors() (ui-materials.js) gives one CSS colour per body when bodies differ (a body with its
+  // own material, or each component's part material in an assembly); the body mesh then gets a colour attribute and the
+  // part material uses vertex colours. null keeps the single part colour.
+  function applyBodyColors() {
+    var cols = null;
+    try { cols = UI.bodyColors ? UI.bodyColors() : null; } catch (e) { cols = null; }
+    var g = bodyMesh && bodyMesh.geometry, m = App.mesh;
+    if (!cols || !g || !m || !m.triCount) {
+      if (mats.part.vertexColors) mats.part.vertexColors = false;
+      if (g && g.getAttribute('color')) { g.deleteAttribute('color'); g.__colorKey = null; }
+      return;
+    }
+    var key = cols.join(',');
+    if (!(g.getAttribute('color') && g.__colorKey === key)) {
+      var arr = new Float32Array(m.triCount * 9), c = new THREE.Color();
+      m.faces.forEach(function (f) {
+        c.set(cols[f.body || 0] || App.model.color || '#a8adb6');
+        for (var o = f.start * 9; o < (f.start + f.count) * 9; o += 3) { arr[o] = c.r; arr[o + 1] = c.g; arr[o + 2] = c.b; }
+      });
+      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      g.__colorKey = key;
+    }
+    mats.part.color.set('#ffffff');
+    mats.part.vertexColors = true;
   }
 
   // ------------------------------------------------------------------ assemblies

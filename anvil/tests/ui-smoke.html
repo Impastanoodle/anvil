@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Anvil UI smoke test</title>
 <style>
   :root { --ok: #2f9e5b; --bad: #d9453b; --dim: #6b7380; --line: #d8dde4; --bg: #f6f7f9; --ink: #1d2128; --mono: Consolas, "IBM Plex Mono", monospace; }
@@ -2488,6 +2489,173 @@
     UI.App.view.showRelations = true;
     await UI.exitSketch(); await idle();
     return n + ' icons, hidden and shown';
+  });
+  // ---- materials and custom properties (materials.js, ui-materials.js)
+  function colorHex(c) { return '#' + c.getHexString(); }
+  function bodyGeom() { var m = UI.groups.body.children[0]; return m && m.geometry; }
+  function menuItem(re) { return Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (x) { return re.test(x.textContent); })[0]; }
+  step('materials: Material <not specified> row, double-click opens Edit Material (class tree, properties); Aluminium Alloys > 6061-T6 (SS) Apply sets material, density, viewport colour and mass; Undo restores', async function () {
+    await anvil.newPart('MatPart'); await anvil.append('p.box(100, 50, 10);'); await idle();
+    var row = D.querySelector('#tree .material-row');
+    assert(row && /Material <not specified>/.test(row.textContent), 'tree row ' + (row && row.textContent));
+    row.dispatchEvent(new W.MouseEvent('dblclick', { bubbles: true }));
+    assert(modalOpen() && D.getElementById('mat-dialog'), 'Edit Material dialog');
+    assert(D.querySelectorAll('.mat-class').length === 6, 'six classes');
+    D.querySelector('.mat-class[data-class="Aluminium Alloys"]').click();
+    D.querySelector('.mat-item[data-material="6061-T6 (SS)"]').click();
+    assert(D.querySelector('.mat-props tr[data-prop="density"] td.num').textContent === '2700' && D.querySelector('.mat-props tr[data-prop="yield"] td.num').textContent === '275', 'properties table');
+    clickModalButton('Apply'); await idle();
+    var m = UI.App.model;
+    assert(m.material === '6061-T6 (SS)' && m.density === 2700, 'applied ' + m.material + ' ' + m.density);
+    assert(colorHex(UI.mats.part.color) === W.Materials.find('6061').color && !UI.mats.part.vertexColors, 'viewport colour ' + colorHex(UI.mats.part.color));
+    clickModalButton('Close');
+    assert(/6061-T6 \(SS\)/.test(D.querySelector('#tree .material-row').textContent), 'tree row shows the material');
+    near(anvil.mass().massKg, 0.135, 1e-12, 'mass kg');
+    assert(anvil.summary().material === '6061-T6 (SS)' && anvil.material() === '6061-T6 (SS)', 'summary / anvil.material');
+    // right-click menu: favourites
+    D.querySelector('#tree .material-row').dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, clientX: 60, clientY: 200 }));
+    var fav = menuItem(/^Brass$/);
+    assert(fav && menuItem(/Remove Material/), 'context menu favourites');
+    fav.click(); await idle();
+    assert(UI.App.model.material === 'Brass' && colorHex(UI.mats.part.color) === '#c9a64a', 'Brass from the favourites');
+    await UI.undo(); await UI.undo(); await idle();
+    assert(!UI.App.model.material && UI.App.model.density === 7850, 'undone');
+    return 'mass 135.00 g in 6061-T6';
+  });
+  step('materials: a second body gets its own material (Solid Bodies row > Material > Edit Material): per-body viewport colours, Mass Properties per body, Use Part Material', async function () {
+    await anvil.append('p.material("Plain Carbon Steel"); p.sketch("Front").rect(120, 0, 20, 20).id(); p.extrude(20, { merge: false });'); await idle();
+    var rows = D.querySelectorAll('#tree .body-row');
+    assert(rows.length === 2, 'two body rows');
+    rows[1].dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, clientX: 60, clientY: 200 }));
+    var it = menuItem(/Material .*Edit Material/);
+    assert(it, 'body menu has Material > Edit Material');
+    it.click();
+    assert(modalOpen() && /Boss-Extrude2/.test($('modal-title').textContent), 'dialog for the body');
+    D.querySelector('.mat-class[data-class="Copper Alloys"]').click();
+    D.querySelector('.mat-item[data-material="Brass"]').click();
+    clickModalButton('Apply'); await idle(); clickModalButton('Close');
+    var m = UI.App.model, fid = UI.bodyInfos()[1].featureId;
+    assert(m.bodyMaterials && m.bodyMaterials[fid] === 'Brass' && anvil.bodyMaterial(1) === 'Brass' && anvil.bodyMaterial(0) === null, 'body material ' + JSON.stringify(m.bodyMaterials));
+    var g = bodyGeom(), col = g && g.getAttribute('color');
+    assert(col && UI.mats.part.vertexColors, 'vertex colours');
+    var f1 = UI.App.mesh.faces.filter(function (f) { return (f.body || 0) === 1; })[0], f0 = UI.App.mesh.faces.filter(function (f) { return !f.body; })[0];
+    var c1 = new W.THREE.Color().fromArray(col.array, f1.start * 9), c0 = new W.THREE.Color().fromArray(col.array, f0.start * 9);
+    assert(colorHex(c1) === '#c9a64a' && colorHex(c0) === W.Materials.find('Plain Carbon Steel').color, 'colours ' + colorHex(c0) + ' ' + colorHex(c1));
+    near(anvil.mass().massKg, 50000e-9 * 7800 + 8000e-9 * 8500, 1e-12, 'mass kg');
+    UI.showMassProperties();
+    var txt = $('modal-body').textContent;
+    assert(/Plain Carbon Steel/.test(txt) && /Brass, 8500 kg/.test(txt) && /Mass458 g/.test(txt), 'Mass Properties: ' + txt.slice(0, 300));
+    UI.closeModal();
+    await anvil.bodyMaterial(1, null); await idle();
+    assert(!UI.App.model.bodyMaterials && !UI.mats.part.vertexColors && !(bodyGeom().getAttribute('color')), 'Use Part Material');
+    await UI.undo(); await idle();
+    assert(anvil.bodyMaterial(1) === 'Brass' && bodyGeom().getAttribute('color'), 'undo brings the body material back');
+    return 'steel 390 g + brass 68 g';
+  });
+  step('materials: task pane Properties lists the library by class; a typed density that is not the material’s unlinks it', async function () {
+    UI.openTaskPane('props');
+    var sel = D.querySelector('#tp-body select[data-role="material"]');
+    assert(sel && sel.querySelectorAll('optgroup').length === 6, 'material select');
+    setInput(sel, 'ABS'); await idle();
+    assert(UI.App.model.material === 'ABS' && UI.App.model.density === 1020, 'ABS from the task pane');
+    var dens = Array.prototype.filter.call(D.querySelectorAll('#tp-body input[type=number]'), function (x) { return +x.value === 1020; })[0];
+    assert(dens, 'density field shows 1020');
+    setInput(dens, '1050'); await idle();
+    assert(!UI.App.model.material && UI.App.model.density === 1050, 'custom density unlinks');
+    assert(/Material <not specified>/.test(D.querySelector('#tree .material-row').textContent), 'tree row');
+    await UI.undo(); await UI.undo(); await idle();
+    UI.closeTaskPane();
+    assert(UI.App.model.material === 'Plain Carbon Steel', 'undone to ' + UI.App.model.material);
+    return 'ABS, then 1050 kg/m³ custom';
+  });
+  step('File > Properties: Custom tab starts with Description / Part Number / Material ("SW-Material") / Mass ("SW-Mass") / Vendor / Revision, live Evaluated Value; Configuration Specific row; OK stores them (script round trip), Undo removes', async function () {
+    var rows = menuRows('Properties');
+    var fp = rows.filter(function (r) { return /File/.test(r.menu) && /^\s*Properties/.test(r.text); })[0];
+    assert(fp, 'File > Properties row (' + rows.map(function (r) { return r.menu + ':' + r.text; }).join('|') + ')');
+    fp.row.click();
+    assert(modalOpen() && D.getElementById('fp-dialog'), 'dialog');
+    var names = Array.prototype.map.call(D.querySelectorAll('.fp-name'), function (x) { return x.value; });
+    assert(names.join(',') === 'Description,Part Number,Material,Mass,Vendor,Revision', 'default rows ' + names);
+    var ev = Array.prototype.map.call(D.querySelectorAll('.fp-eval'), function (x) { return x.textContent; });
+    assert(ev[2] === 'Plain Carbon Steel' && ev[3] === (390 + 68).toFixed(2) + ' g', 'evaluated ' + ev);
+    setInput(D.querySelectorAll('.fp-value')[0], 'Bracket, left');
+    setInput(D.querySelectorAll('.fp-value')[1], 'BR-7');
+    setInput(D.querySelectorAll('.fp-value')[4], 'Acme');
+    D.getElementById('fp-add').click();
+    var n = D.querySelectorAll('.fp-name'); setInput(n[n.length - 1], 'Finish'); setInput(D.querySelectorAll('.fp-value')[n.length - 1], 'Painted');
+    D.querySelector('.fp-tab[data-tab="config"]').click();
+    assert(D.getElementById('fp-config').value === 'Default', 'Applies to Default');
+    D.getElementById('fp-add').click();
+    setInput(D.querySelector('.fp-name'), 'Revision'); setInput(D.querySelector('.fp-value'), 'B');
+    D.querySelector('.fp-tab[data-tab="summary"]').click();
+    assert(/Plain Carbon Steel/.test($('modal-body').textContent), 'summary tab');
+    clickModalButton('OK'); await idle();
+    var p = anvil.properties();
+    assert(p.custom.length === 7 && anvil.property('Description') === 'Bracket, left' && anvil.property('Revision') === 'B' && anvil.property('Mass') === '458.00 g' && anvil.property('Finish') === 'Painted', JSON.stringify(p.evaluated));
+    var s = anvil.script();
+    assert(s.indexOf('p.property("Revision", "B", { config: "Default" });') > 0 && s.indexOf('p.property("Material", "\\"SW-Material\\"");') > 0, s.slice(0, 600));
+    await UI.undo(); await idle();
+    assert(!UI.App.model.properties, 'undo removes them');
+    await UI.redo(); await idle();
+    assert(anvil.property('Vendor') === 'Acme', 'redo');
+    return p.evaluated.map(function (x) { return x.name + '=' + x.evaluated; }).join(', ');
+  });
+  step('drawing: title block reads the properties (TITLE, PART NO., REV, MATERIAL, MASS); BOM on a part drawing through its PM (Parts only, Add Column Material / Mass); Sheet Properties edits a title block link', async function () {
+    anvil.drawing.make(); await idle();
+    var s = anvil.drawing.summary(), tb = s.titleBlock;
+    assert(tb.title === 'BRACKET, LEFT' && tb.partNo === 'BR-7' && tb.rev === 'B' && tb.material === 'Plain Carbon Steel' && tb.mass === '458.00 g', JSON.stringify(tb));
+    assert(!s.bom, 'a part drawing starts without a BOM');
+    UI.drawing.bom();
+    assert(UI.hasPM() && /Bill of Materials/.test($('pm').textContent), 'BOM PM');
+    setInput(pmField('Type'), 'parts');
+    setInput(pmField('Property'), 'Material');
+    await pmAccept();
+    UI.drawing.bom();
+    setInput(pmField('Property'), 'Mass');
+    setInput(pmField('Title'), 'WEIGHT');
+    await pmAccept();
+    var bom = anvil.drawing.summary().bom;
+    assert(bom.type === 'parts' && bom.columns.join('|') === 'ITEM NO.|PART NUMBER|DESCRIPTION|QTY.|MATERIAL|WEIGHT', 'columns ' + bom.columns);
+    assert(JSON.stringify(bom.cells.map(function (r) { return r.slice(1).join('/'); })) === JSON.stringify(['BR-7 - Boss-Extrude1/100 x 10 x 50/1/Plain Carbon Steel/390.00 g', 'BR-7 - Boss-Extrude2/20 x 20 x 20/1/Brass/68.00 g']), JSON.stringify(bom.cells));
+    // hide DESCRIPTION through the PM's Columns group
+    UI.drawing.bom();
+    var hide = pmField('DESCRIPTION'); assert(hide && hide.type === 'checkbox' && hide.checked, 'column checkbox');
+    hide.click(); await pmAccept();
+    assert(anvil.drawing.summary().bom.columns.join('|') === 'ITEM NO.|PART NUMBER|QTY.|MATERIAL|WEIGHT', 'hidden');
+    UI.drawing.sheetProperties();
+    var rev = D.querySelector('#modal-body input[data-tb="rev"]');
+    assert(rev && rev.value === '$PRPSHEET:"Revision"', 'rev link ' + (rev && rev.value));
+    setInput(rev, 'R-$PRPSHEET:"Finish"');
+    clickModalButton('Apply Changes'); await idle();
+    assert(anvil.drawing.summary().titleBlock.rev === 'R-Painted', 'edited link');
+    var svg = anvil.drawing.svg(), dxf = anvil.drawing.dxf(), pdf = anvil.drawing.pdf();
+    ['BRACKET, LEFT', 'R-Painted', '458.00 g', 'WEIGHT', 'Brass'].forEach(function (x) { assert(svg.indexOf('>' + x + '<') > 0 && dxf.indexOf('\n' + x + '\n') > 0 && pdf.indexOf('(' + x + ') Tj') > 0, 'exports carry ' + x); });
+    await UI.undo(); await idle();
+    assert(anvil.drawing.summary().titleBlock.rev === 'B', 'undo the link');
+    anvil.drawing.close(); await idle();
+    return 'title ' + tb.title + ', BOM ' + bom.cells.length + ' rows';
+  });
+  step('assembly: components keep their part material (viewport colours per component, tooltip, Mass Properties), assembly File Properties feed the BOM and title block', async function () {
+    var base = JSON.stringify({ script: 'p.name("Base"); p.material("6061"); p.property("Vendor", "Acme"); p.box(100, 10, 50);' });
+    var block = JSON.stringify({ script: 'p.name("Block"); p.material("Brass"); p.box(20, 20, 20);' });
+    await anvil.newAssembly('Rig');
+    await anvil.append('a.insert(' + base + ', { fixed: true }); a.insert(' + block + ', { position: [0, 10, 0] });'); await idle();
+    var cols = UI.bodyColors();
+    assert(cols && cols[0] === W.Materials.find('6061').color && cols[1] === '#c9a64a' && UI.mats.part.vertexColors, 'component colours ' + cols);
+    var rows = D.querySelectorAll('#tree .component-row');
+    assert(/Material: Brass/.test(rows[1].title), 'tooltip ' + rows[1].title);
+    UI.showMassProperties();
+    assert(/Brass, 8500 kg/.test($('modal-body').textContent) && /6061-T6 \(SS\), 2700 kg/.test($('modal-body').textContent), 'mass rows');
+    UI.closeModal();
+    await anvil.property('Description', 'Test rig'); await idle();
+    anvil.drawing.make(); await idle();
+    anvil.drawing.bomColumns([{ type: 'item' }, { type: 'partNumber' }, 'Material', 'Mass', 'Vendor', { type: 'qty' }]);
+    var s = anvil.drawing.summary();
+    assert(JSON.stringify(s.bom.cells) === JSON.stringify([['1', 'Base', '6061-T6 (SS)', '135.00 g', 'Acme', '1'], ['2', 'Block', 'Brass', '68.00 g', '', '1']]), JSON.stringify(s.bom.cells));
+    assert(s.titleBlock.title === 'TEST RIG' && s.titleBlock.mass === '203.00 g', JSON.stringify(s.titleBlock));
+    anvil.drawing.close(); await idle();
+    await anvil.newPart(); await idle();
+    return 'BOM ' + s.bom.cells.length + ' rows, ' + s.titleBlock.mass;
   });
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();

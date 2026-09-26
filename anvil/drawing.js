@@ -718,6 +718,66 @@ var Drawing = (function () {
   }
   // Title block and border sizes in paper mm (converted by paperK for inch sheets); HATCH is the ANSI31 line spacing
   var BORDER = 10, TB_W = 180, TB_H = 40, GAP = 22, HATCH = 2.5;
+  // Title block (180 × 40 mm, three rows): each field is a text with links, SolidWorks style — $PRPSHEET:"name" is the
+  // custom property of the model shown on the sheet (Materials.sheetProperty: File ▸ Properties, Configuration
+  // Specific first; Material and Mass fall back to the part's material and mass), $PRP:"name" the drawing's own
+  // (SW-File Name, SW-Sheet Name, SW-Sheet Scale, SW-Units, SW-Date, SW-Projection, SW-Sheet, or doc.properties[name]).
+  // doc.titleBlock = { key: text } overrides a field; `fallback` fills an empty TITLE / PART NO. with the model name.
+  var TB_FIELDS = [
+    { key: 'title', label: 'TITLE', row: 0, x0: 0, x1: 105, big: true, upper: true, link: '$PRPSHEET:"Description"', fallback: true },
+    { key: 'partNo', label: 'PART NO.', row: 0, x0: 105, x1: 150, link: '$PRPSHEET:"Part Number"', fallback: true },
+    { key: 'rev', label: 'REV', row: 0, x0: 150, x1: 180, link: '$PRPSHEET:"Revision"' },
+    { key: 'dwgNo', label: 'DWG. NO.', row: 1, x0: 0, x1: 45, link: '$PRP:"SW-File Name"' },
+    { key: 'material', label: 'MATERIAL', row: 1, x0: 45, x1: 105, link: '$PRPSHEET:"Material"' },
+    { key: 'scale', label: 'SCALE', row: 1, x0: 105, x1: 140, link: '$PRP:"SW-Sheet Scale"' },
+    { key: 'units', label: 'UNITS', row: 1, x0: 140, x1: 180, link: '$PRP:"SW-Units"' },
+    { key: 'date', label: 'DATE', row: 2, x0: 0, x1: 45, link: '$PRP:"SW-Date"' },
+    { key: 'mass', label: 'MASS', row: 2, x0: 45, x1: 105, link: '$PRPSHEET:"Mass"' },
+    { key: 'projection', label: 'PROJECTION', row: 2, x0: 105, x1: 140, link: '$PRP:"SW-Projection"' },
+    { key: 'sheet', label: 'SHEET', row: 2, x0: 140, x1: 180, link: '$PRP:"SW-Sheet"' }
+  ];
+  function drawingProp(doc, name, units) {
+    switch (String(name).trim().toLowerCase()) {
+      case 'sw-file name': return doc.name;
+      case 'sw-sheet name': return doc.sheet.name;
+      case 'sw-sheet scale': return scaleText(doc.sheet.scale || [1, 1]);
+      case 'sw-units': return String(units).toUpperCase();
+      case 'sw-date': return doc.date;
+      case 'sw-projection': return doc.sheet.projection === 'first' ? 'FIRST ANGLE' : 'THIRD ANGLE';
+      case 'sw-sheet': return '1 OF 1';
+    }
+    var own = doc.properties || {};
+    for (var k in own) if (k.toLowerCase() === String(name).trim().toLowerCase()) return String(own[k]);
+    return '';
+  }
+  // titleText(text, doc, model, ctx?) -> the text with its $PRPSHEET / $PRP links replaced
+  function titleText(t, doc, model, ctx) {
+    ctx = ctx || {};
+    var units = model && model.units === 'in' ? 'in' : 'mm', mctx = null;
+    return String(t == null ? '' : t).replace(/\$PRPSHEET:\s*"([^"]*)"|\$PRP:\s*"([^"]*)"/g, function (all, sheetName, prpName) {
+      if (sheetName != null) {
+        if (typeof Materials === 'undefined' || !model) return '';
+        mctx = mctx || ctx.props || Materials.context(model, { build: ctx.build, mesh: ctx.mesh });
+        try { return Materials.sheetProperty(model, sheetName, mctx); } catch (e) { return ''; }
+      }
+      return drawingProp(doc, prpName, units);
+    });
+  }
+  // titleBlock(doc, model, ctx?) -> { key: evaluated text } for every TB_FIELDS entry
+  function titleBlock(doc, model, ctx) {
+    ctx = ctx || {};
+    var out = {}, own = doc.titleBlock || {};
+    if (typeof Materials !== 'undefined' && model && !ctx.props) {
+      var asm = model.type === 'assembly', b = ctx.build && !!ctx.build.assembly === asm ? ctx.build : null;
+      ctx = { build: b, mesh: ctx.mesh, props: Materials.context(model, { build: b, mesh: asm ? null : ctx.mesh }) };
+    }
+    TB_FIELDS.forEach(function (f) {
+      var v = titleText(own[f.key] != null ? own[f.key] : f.link, doc, model, ctx).trim();
+      if (!v && f.fallback) v = String(model && model.name || 'Part');
+      out[f.key] = f.upper ? v.toUpperCase() : v;
+    });
+    return out;
+  }
   // viewContent(doc, v, mesh, parentContent) -> { frame, proj, center: [u, v] (the model point at the view's x, y),
   // caps (section faces to hatch), clip (a detail circle), section }. Section and detail views are centred on the
   // whole part's extents in their frame (not on what is left of it), so they stay aligned with their parent.
@@ -935,39 +995,166 @@ var Drawing = (function () {
   // multi-body part. On top of that it carries a Bill of Materials (identical components — same source — on one row,
   // ITEM NO. in insertion order) and balloons that name the BOM item of a component in a view.
   var partInfoCache = {};
-  // partInfo(source) -> { name, description }: the part's name and its description (the part model's own
-  // `description`, else the Design Library entry it came from; parts from scripts get their size in bomRows)
-  function partInfo(source) {
+  function hasMaterials() { return typeof Materials !== 'undefined'; }
+  // partInfo(source, asmBuild?) -> { name, description, model, build() }: the part's name and its description (the
+  // part model's own `description`, else the Design Library entry it came from; parts from scripts get their size in
+  // bomRows), its model (custom properties, material) and, on demand, its build (mass, bodies)
+  function partInfo(source, asmBuild) {
     var key = JSON.stringify(source);
-    if (partInfoCache[key]) return partInfoCache[key];
-    var info = { name: 'Part', description: '' };
-    try {
-      if (typeof Assembly !== 'undefined') {
-        var m = Assembly.partModel(source);
-        info.name = m.name || 'Part';
-        var ex = null;
-        if (source && source.example != null && typeof AnvilExamples !== 'undefined') AnvilExamples.forEach(function (e) { if (!ex && e.name === source.example) ex = e; });
-        info.description = m.description || (ex ? ex.name : '');
-      }
-    } catch (err) { info.description = err.message; }
-    partInfoCache[key] = info;
+    var info = partInfoCache[key];
+    if (!info) {
+      info = { name: 'Part', description: '', model: null, _build: null };
+      try {
+        if (typeof Assembly !== 'undefined') {
+          var m = Assembly.partModel(source);
+          info.model = m;
+          info.name = m.name || 'Part';
+          var ex = null;
+          if (source && source.example != null && typeof AnvilExamples !== 'undefined') AnvilExamples.forEach(function (e) { if (!ex && e.name === source.example) ex = e; });
+          info.description = m.description || (ex ? ex.name : '');
+        }
+      } catch (err) { info.description = err.message; }
+      info.build = function () {
+        if (info._build || !info.model) return info._build;
+        try { info._build = K.rebuild(JSON.parse(JSON.stringify(info.model))); } catch (e) { info._build = null; }
+        return info._build;
+      };
+      partInfoCache[key] = info;
+    }
+    // the assembly build already holds every part's build: reuse it instead of building the part again
+    var e = asmBuild && asmBuild.cache && asmBuild.cache[key];
+    if (e && e.build && !info._build) info._build = e.build;
     return info;
   }
-  // bomRows(model, mesh?) -> [{ item, key, partNumber, description, qty, components: [id…], indices: [body index…] }]
-  // A part without a description is described by its size, "30 x 5 x 20" (its own x, y, z extents), when the
-  // assembly mesh is given (the first instance's world vertices taken back into the part's frame).
-  function bomRows(model, mesh) {
-    if (!model || model.type !== 'assembly' || !model.components) return [];
-    var rows = [], byKey = {};
-    model.components.forEach(function (c, i) {
-      var key = JSON.stringify(c.source), r = byKey[key];
+  // BOM columns. A column is { type: 'item' | 'partNumber' | 'description' | 'qty' | 'property', prop (property name,
+  // for 'property'), title, width (paper mm), hidden }. doc.bom.columns holds them in order; without it the table has
+  // the four SolidWorks default columns. A property column shows the part's custom property of that name, falling
+  // back for Material / Mass to the part's material and mass (as a title block does).
+  var BOM_COLS = [['ITEM NO.', 18, 'middle'], ['PART NUMBER', 45, 'start'], ['DESCRIPTION', 80, 'start'], ['QTY.', 14, 'middle']], BOM_ROW = 7, BOM_TEXT = 3;
+  var BOM_DEFAULT = [{ type: 'item' }, { type: 'partNumber' }, { type: 'description' }, { type: 'qty' }];
+  var BOM_TYPE_DEFAULTS = { item: BOM_COLS[0], partNumber: BOM_COLS[1], description: BOM_COLS[2], qty: BOM_COLS[3] };
+  var PROP_WIDTH = { material: 40, mass: 26, vendor: 35, revision: 16, rev: 14, finish: 30, cost: 20 };
+  var BOM_TYPES = [['top', 'Top-level only'], ['parts', 'Parts only']];
+  function bomColumnSpecs(bom) { return (bom && Array.isArray(bom.columns) && bom.columns.length ? bom.columns : BOM_DEFAULT).map(function (c) { return typeof c === 'string' ? { type: 'property', prop: c } : c; }); }
+  // bomColumns(bom) -> the visible columns [{ type, prop, title, width, align }]
+  function bomColumns(bom) {
+    return bomColumnSpecs(bom).filter(function (c) { return !c.hidden; }).map(function (c) {
+      var d = BOM_TYPE_DEFAULTS[c.type], prop = d ? null : String(c.prop || '');
+      return {
+        type: d ? c.type : 'property', prop: prop,
+        title: c.title || (d ? d[0] : prop.toUpperCase()),
+        width: +c.width > 0 ? +c.width : d ? d[1] : (PROP_WIDTH[prop.toLowerCase()] || 32),
+        align: d ? d[2] : 'start'
+      };
+    });
+  }
+  function bomCell(row, col) {
+    switch (col.type) {
+      case 'item': return row.item;
+      case 'partNumber': return row.partNumber;
+      case 'description': return row.description;
+      case 'qty': return row.qty;
+    }
+    return row.prop ? row.prop(col.prop) : '';
+  }
+  function bboxText(mesh, units) {
+    var P = mesh.positions64 || mesh.positions, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < mesh.triCount * 9; i += 3) for (var k = 0; k < 3; k++) { var x = P[i + k]; if (x < lo[k]) lo[k] = x; if (x > hi[k]) hi[k] = x; }
+    if (!(lo[0] <= hi[0])) return '';
+    return [0, 1, 2].map(function (q) { return fmtDim(hi[q] - lo[q], units); }).join(' x ');
+  }
+  // the evaluator for one part: prop(name) through Materials (custom / configuration-specific properties, "SW-" links,
+  // Material / Mass falling back to the part's own)
+  function partProps(model, build, mesh, bodyOverride) {
+    if (!hasMaterials() || !model) return function () { return ''; };
+    var ctx = Materials.context(model, bodyOverride ? { massProps: bodyOverride.mp, material: bodyOverride.material } : { build: build, mesh: mesh });
+    var memo = {};
+    return function (name) {
+      var k = String(name).toLowerCase();
+      if (!(k in memo)) { try { memo[k] = Materials.sheetProperty(model, name, ctx); } catch (e) { memo[k] = ''; } }
+      return memo[k];
+    };
+  }
+  function nonEmpty(v) { return v != null && String(v).trim() !== '' ? String(v) : null; }
+  // bodyRows(model, build, units) -> one entry per distinct solid body of a multi-body part (same material, size and
+  // volume count together, as a weldment cut list does): { key, name, size, material, count, bodies, prop }; null for
+  // a single-body part
+  function bodyRows(model, build, units) {
+    var bodies = build ? (build.bodies || (build.body ? [build.body] : [])) : [];
+    if (bodies.length < 2) return null;
+    var out = [], byKey = {};
+    bodies.forEach(function (b, i) {
+      var bm = hasMaterials() ? Materials.bodyMaterial(model, build, i) : { name: null, density: model.density || 7850 };
+      var mesh = K.meshFromBody(b), mp = K.massProps(mesh, bm.density);
+      var size = bboxText(mesh, units), key = (bm.name || '') + '|' + size + '|' + mp.volume.toFixed(3);
+      var fid = build.bodyFeatures ? build.bodyFeatures[i] : null, f = fid != null ? K.findFeature(model, fid) : null;
+      var r = byKey[key];
       if (!r) {
-        var info = partInfo(c.source), desc = info.description;
-        if (!desc && mesh) desc = envelopeText(mesh, i, c.transform, model.units);
-        r = byKey[key] = { item: rows.length + 1, key: key, partNumber: info.name, description: desc, qty: 0, components: [], indices: [] };
-        rows.push(r);
+        var bmp = { volume: mp.volume, area: mp.area, density: bm.density, mass: mp.volume * bm.density, massKg: (hasMaterials() ? Materials.volumeToM3(mp.volume, units) : mp.volume * 1e-9) * bm.density };
+        r = byKey[key] = { key: key, name: f ? f.name : 'Body' + (i + 1), size: size, material: bm.name, count: 0, bodies: [], prop: partProps(model, build, null, { mp: bmp, material: bm.name || null }) };
+        out.push(r);
       }
-      r.qty++; r.components.push(c.id); r.indices.push(i);
+      r.count++; r.bodies.push(i);
+    });
+    return out;
+  }
+  // bomRows(model, mesh?, bom?, opts?) -> [{ item, key, srcKey, partNumber, description, qty, components: [id…],
+  // indices: [body index…], prop(name) }]. Assemblies: one row per distinct component source (identical components
+  // counted together, items in tree order). bom.type 'parts' (Parts only) lists the solid bodies of a multi-body part
+  // as rows of their own, each with its own material and mass; 'top' (Top-level only, the default) lists the part.
+  // A part drawing has rows only when it has a BOM (bom given): the part, or its bodies for Parts only.
+  // PART NUMBER is the part's "Part Number" property, else its name; DESCRIPTION its "Description" property, else the
+  // model's description / Design Library name / size "30 x 5 x 20" (when the mesh is given). opts.build: the
+  // assembly (or part) build, to reuse its part builds.
+  function bomRows(model, mesh, bom, opts) {
+    opts = opts || {};
+    if (!model) return [];
+    var asm = model.type === 'assembly', parts = !!(bom && bom.type === 'parts'), units = model.units === 'in' ? 'in' : 'mm';
+    var rows = [];
+    function push(r) { r.item = rows.length + 1; rows.push(r); return r; }
+    if (!asm) {
+      if (!bom) return [];
+      var build = opts.build && !opts.build.assembly ? opts.build : null;
+      var needBuild = parts || (hasMaterials() && Materials.hasBodyMaterials(model));
+      if (!build && needBuild) { try { build = K.rebuild(JSON.parse(JSON.stringify(model))); } catch (e) { build = null; } }
+      var prop = partProps(model, build, mesh && mesh.triCount ? mesh : null);
+      var pn = nonEmpty(prop('Part Number')) || model.name || 'Part';
+      var brs = parts ? bodyRows(model, build, units) : null;
+      if (brs) {
+        brs.forEach(function (b) { push({ key: 'part#' + b.key, srcKey: 'part', partNumber: pn + ' - ' + b.name, description: b.size, qty: b.count, components: [], indices: b.bodies, prop: b.prop, body: true }); });
+        return rows;
+      }
+      var desc = nonEmpty(prop('Description')) || model.description || (mesh && mesh.triCount ? bboxText(mesh, units) : '');
+      var nb = build ? (build.bodies || [build.body]).length : 1, idx = [];
+      for (var q = 0; q < nb; q++) idx.push(q);
+      push({ key: 'part', srcKey: 'part', partNumber: pn, description: desc, qty: 1, components: [], indices: idx, prop: prop });
+      return rows;
+    }
+    if (!model.components) return [];
+    var groups = [], bySrc = {};
+    model.components.forEach(function (c, i) {
+      var key = JSON.stringify(c.source), g = bySrc[key];
+      if (!g) { g = bySrc[key] = { key: key, source: c.source, first: i, components: [], indices: [], transform: c.transform }; groups.push(g); }
+      g.components.push(c.id); g.indices.push(i);
+    });
+    groups.forEach(function (g) {
+      var info = partInfo(g.source, opts.build), pb = null;
+      function pbuild() { return pb || (pb = info.build()); }
+      var prop = partProps(info.model, null, null), full = null;
+      // mass needs the part's build: a property column evaluates through a context that has it, built on first use
+      var propFn = function (name) {
+        if (!full) full = info.model ? partProps(info.model, pbuild(), null) : prop;
+        return full(name);
+      };
+      var pn = nonEmpty(prop('Part Number')) || info.name;
+      var brs = parts && info.model ? bodyRows(info.model, pbuild(), info.model.units === 'in' ? 'in' : 'mm') : null;
+      if (brs) {
+        brs.forEach(function (b) { push({ key: g.key + '#' + b.key, srcKey: g.key, partNumber: pn + ' - ' + b.name, description: b.size, qty: b.count * g.components.length, components: g.components.slice(), indices: g.indices.slice(), prop: b.prop, body: true }); });
+        return;
+      }
+      var desc = nonEmpty(prop('Description')) || info.description;
+      if (!desc && mesh) desc = envelopeText(mesh, g.first, g.transform, model.units);
+      push({ key: g.key, srcKey: g.key, partNumber: pn, description: desc, qty: g.components.length, components: g.components.slice(), indices: g.indices.slice(), prop: propFn });
     });
     return rows;
   }
@@ -984,22 +1171,34 @@ var Drawing = (function () {
     if (!(lo[0] <= hi[0])) return '';
     return [0, 1, 2].map(function (k) { return fmtDim(hi[k] - lo[k], units); }).join(' x ');
   }
-  // BOM table geometry in paper mm (× paperK): column widths, row height, text height
-  var BOM_COLS = [['ITEM NO.', 18, 'middle'], ['PART NUMBER', 45, 'start'], ['DESCRIPTION', 80, 'start'], ['QTY.', 14, 'middle']], BOM_ROW = 7, BOM_TEXT = 3;
   var BOM_ANCHORS = ['top-right', 'top-left', 'bottom-right', 'bottom-left'];
-  // bomBox(doc, units, nRows) -> { x0, y0, x1, y1, rowH, cols: [x…] } anchored to a corner of the border (a bottom
-  // anchor sits above the title block on the right), or at doc.bom.x / y (its top-left corner) when it was dragged
+  // bomPropertyNames(model) -> the property names a BOM column can show: Material, Mass, Vendor, Revision, Finish and
+  // every custom property of the part (or of the assembly's parts)
+  function bomPropertyNames(model) {
+    var out = ['Material', 'Mass', 'Vendor', 'Revision', 'Finish'], seen = {};
+    out.forEach(function (n) { seen[n.toLowerCase()] = 1; });
+    function add(m) {
+      if (!m || !hasMaterials()) return;
+      Materials.effective(m).forEach(function (p) { var k = p.name.toLowerCase(); if (!seen[k] && k !== 'description' && k !== 'part number') { seen[k] = 1; out.push(p.name); } });
+    }
+    if (model && model.type === 'assembly') (model.components || []).forEach(function (c) { add(partInfo(c.source).model); });
+    else add(model);
+    return out;
+  }
+  // bomBox(doc, units, nRows) -> { x0, y0, x1, y1, rowH, cols: [x…], columns } anchored to a corner of the border (a
+  // bottom anchor sits above the title block on the right), or at doc.bom.x / y (its top-left corner) when it was
+  // dragged. Its width is the sum of the visible columns.
   function bomBox(doc, units, nRows) {
-    var k = paperK(units), S = sheetSize(doc, units), b = BORDER * k, bm = doc.bom || {};
-    var W = BOM_COLS.reduce(function (a, c) { return a + c[1]; }, 0) * k, H = (nRows + 1) * BOM_ROW * k;
+    var k = paperK(units), S = sheetSize(doc, units), b = BORDER * k, bm = doc.bom || {}, columns = bomColumns(bm);
+    var W = columns.reduce(function (a, c) { return a + c.width; }, 0) * k, H = (nRows + 1) * BOM_ROW * k;
     var anchor = bm.anchor || 'top-right', x0, y1;
     if (bm.x != null && bm.y != null) { x0 = bm.x; y1 = bm.y; }
     else {
       x0 = /left/.test(anchor) ? b : S[0] - b - W;
       y1 = /top/.test(anchor) ? S[1] - b : b + (/right/.test(anchor) ? TB_H * k : 0) + H;
     }
-    var cols = [x0]; BOM_COLS.forEach(function (c) { cols.push(cols[cols.length - 1] + c[1] * k); });
-    return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: BOM_ROW * k, cols: cols, anchor: anchor };
+    var cols = [x0]; columns.forEach(function (c) { cols.push(cols[cols.length - 1] + c.width * k); });
+    return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: BOM_ROW * k, cols: cols, anchor: anchor, columns: columns };
   }
   // autoBalloon(doc, model, viewId, { ignoreMultiple }) -> the view's balloons [{ key (the BOM row: the component
   // source), component (id), instance? }]. SolidWorks Auto Balloon: one balloon per BOM item that shows in the view
@@ -1029,7 +1228,8 @@ var Drawing = (function () {
     var v = w.view, box = w.box, list = v.balloons || [], out = [];
     if (!list.length) return out;
     var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2, r = BALLOON_R * k, pr = w.proj;
-    var byKey = {}; rows.forEach(function (rw) { byKey[rw.key] = rw; });
+    // a balloon names its component's source; in a Parts only BOM that part may be several rows (its bodies): the first
+    var byKey = {}; rows.forEach(function (rw) { byKey[rw.key] = rw; if (rw.srcKey && !byKey[rw.srcKey]) byKey[rw.srcKey] = rw; });
     list.forEach(function (b) {
       var rw = byKey[b.key];
       if (!rw) return;
@@ -1079,10 +1279,11 @@ var Drawing = (function () {
     return out;
   }
   // ------------------------------------------------------------------ sheet primitives
-  // compute(doc, mesh, model) -> { size: [W, H], units, prims: [...], views: [{ view, proj, box }], dims }
+  // compute(doc, mesh, model, ctx?) -> { size: [W, H], units, prims: [...], views: [{ view, proj, box }], dims }
   // prims: { k: 'line', a, b, layer, style } | { k: 'circle', c, r, layer, style } | { k: 'text', p, h, text, anchor,
   // layer, rot } | { k: 'fill', pts, layer }; styles: 'visible', 'hidden', 'thin', 'thick'. Paper coordinates, y up.
-  function compute(doc, mesh, model) {
+  function compute(doc, mesh, model, ctx) {
+    ctx = ctx || {};
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
     var S = sheetSize(doc, units), prims = [];
     function line(a, b, layer, style) { prims.push({ k: 'line', a: a, b: b, layer: layer, style: style }); }
@@ -1095,23 +1296,19 @@ var Drawing = (function () {
     rect([tx0, ty0], [S[0] - b1, ty0 + th], 'SHEET', 'thick');
     line([tx0, ty0 + row], [S[0] - b1, ty0 + row], 'SHEET', 'thin');
     line([tx0, ty0 + 2 * row], [S[0] - b1, ty0 + 2 * row], 'SHEET', 'thin');
-    var c1 = tx0 + tw / 3, c2 = tx0 + 2 * tw / 3;
-    line([c1, ty0], [c1, ty0 + 2 * row], 'SHEET', 'thin');
-    line([c2, ty0], [c2, ty0 + 2 * row], 'SHEET', 'thin');
     var lab = 2.2 * k, val = 3.5 * k, pad = 1.5 * k;
-    function cell(x, yTop, label, value, big) {
-      text([x + pad, yTop - pad - lab], lab, label, 'start', 'SHEET');
-      text([x + pad, yTop - pad - lab - (big ? 6.5 : 4.5) * k], big ? 5 * k : val, value, 'start', 'SHEET');
-    }
-    var scale = doc.sheet.scale || [1, 1];
-    var sc = scaleText(scale);
-    cell(tx0, ty0 + th, 'TITLE', String(model.name || 'Part').toUpperCase(), true);
-    cell(tx0, ty0 + 2 * row, 'DWG. NO.', doc.name);
-    cell(c1, ty0 + 2 * row, 'SCALE', sc);
-    cell(c2, ty0 + 2 * row, 'UNITS', units.toUpperCase());
-    cell(tx0, ty0 + row, 'DATE', doc.date);
-    cell(c1, ty0 + row, 'PROJECTION', doc.sheet.projection === 'first' ? 'FIRST ANGLE' : 'THIRD ANGLE');
-    cell(c2, ty0 + row, 'SHEET', '1 OF 1');
+    // title block fields: each a text with $PRPSHEET:"name" (the model's custom property) / $PRP:"name" (the
+    // drawing's) links, evaluated now; doc.titleBlock overrides a field's text
+    var tb = titleBlock(doc, model, ctx), scale = doc.sheet.scale || [1, 1];
+    var colX = {};
+    TB_FIELDS.forEach(function (f) {
+      var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
+      if (f.x0 > 0 && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; line([x0, yTop - row], [x0, yTop], 'SHEET', 'thin'); }
+      var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
+      if (v && textWidth(v, h) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.6));
+      text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
+      if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
+    });
     function rect(a, b, layer, style) { line([a[0], a[1]], [b[0], a[1]], layer, style); line([b[0], a[1]], [b[0], b[1]], layer, style); line([b[0], b[1]], [a[0], b[1]], layer, style); line([a[0], b[1]], [a[0], a[1]], layer, style); }
 
     // views: what each one shows (its content, in model units of its frame), then paper primitives
@@ -1196,7 +1393,7 @@ var Drawing = (function () {
       }
     });
     // Bill of Materials (assemblies): a table anchored to the sheet; balloons on the views that asked for them
-    var rows = bomRows(model, mesh), bom = null, balloons = [];
+    var rows = bomRows(model, mesh, doc.bom || null, { build: ctx.build }), bom = null, balloons = [];
     if (doc.bom) doc.bomRows = rows.length;
     if (rows.length && doc.bom && doc.bom.show !== false) {
       var bb = bomBox(doc, units, rows.length), th = BOM_TEXT * k, BL = 'BOM';
@@ -1204,13 +1401,16 @@ var Drawing = (function () {
       for (var ri = 1; ri <= rows.length; ri++) line([bb.x0, bb.y1 - ri * bb.rowH], [bb.x1, bb.y1 - ri * bb.rowH], BL, 'thin');
       for (var ci = 1; ci < bb.cols.length - 1; ci++) line([bb.cols[ci], bb.y0], [bb.cols[ci], bb.y1], BL, 'thin');
       var cellText = function (rowIndex, col, t) {
-        var x = BOM_COLS[col][2] === 'middle' ? (bb.cols[col] + bb.cols[col + 1]) / 2 : bb.cols[col] + 1.5 * k, y = bb.y1 - (rowIndex + 1) * bb.rowH + (bb.rowH - th) / 2;
+        var al = bb.columns[col].align;
+        var x = al === 'middle' ? (bb.cols[col] + bb.cols[col + 1]) / 2 : bb.cols[col] + 1.5 * k, y = bb.y1 - (rowIndex + 1) * bb.rowH + (bb.rowH - th) / 2;
         var maxCh = Math.floor((bb.cols[col + 1] - bb.cols[col] - 3 * k) / (th * 0.6));
-        text([x, y], th, String(t).length > maxCh ? String(t).slice(0, Math.max(1, maxCh - 3)) + '...' : String(t), BOM_COLS[col][2], BL);
+        t = t == null ? '' : String(t);
+        if (t) text([x, y], th, t.length > maxCh ? t.slice(0, Math.max(1, maxCh - 3)) + '...' : t, al, BL);
       };
-      BOM_COLS.forEach(function (c, i) { cellText(0, i, c[0]); });
-      rows.forEach(function (r, i) { cellText(i + 1, 0, r.item); cellText(i + 1, 1, r.partNumber); cellText(i + 1, 2, r.description); cellText(i + 1, 3, r.qty); });
-      bom = { rows: rows, box: bb, layer: BL };
+      bb.columns.forEach(function (c, i) { cellText(0, i, c.title); });
+      var cells = rows.map(function (r) { return bb.columns.map(function (c) { return bomCell(r, c); }); });
+      cells.forEach(function (cr, i) { cr.forEach(function (t, j) { cellText(i + 1, j, t); }); });
+      bom = { rows: rows, box: bb, layer: BL, columns: bb.columns, cells: cells, type: doc.bom.type === 'parts' ? 'parts' : 'top' };
     }
     views.forEach(function (w) {
       if (!(w.view.balloons || []).length || !rows.length) return;
@@ -1510,7 +1710,8 @@ var Drawing = (function () {
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
     sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
-    BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS
+    BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
+    TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, bomPropertyNames: bomPropertyNames
   };
 })();
 
@@ -1558,7 +1759,9 @@ var Drawing = (function () {
   // drawings belong to the open part or assembly document (model.drawings)
   function doc() { var l = App.model && App.model.drawings; return l && l[D.index] || null; }
   // an assembly drawing's BOM row count drives where Standard 3 View leaves room for the table
-  function syncBom(dc) { dc = dc || doc(); if (dc && dc.bom) dc.bomRows = Drawing.bomRows(App.model).length; return dc; }
+  // the build the sheet reads mass and bodies from (the open document's)
+  function cctx() { return { build: App.build || null }; }
+  function syncBom(dc) { dc = dc || doc(); if (dc && dc.bom) dc.bomRows = Drawing.bomRows(App.model, mesh(), dc.bom, cctx()).length; return dc; }
   function relayout(dc) { syncBom(dc); Drawing.layout(dc, mesh(), units()); }
   function units() { return App.model.units === 'in' ? 'in' : 'mm'; }
   function mesh() { return App.mesh || { positions: new Float32Array(0), faces: [], triCount: 0 }; }
@@ -1655,7 +1858,7 @@ var Drawing = (function () {
     if (!dc) { closeDrawing(); return; }
     syncBom(dc);
     if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
-    D.sheet = Drawing.compute(dc, mesh(), App.model);
+    D.sheet = Drawing.compute(dc, mesh(), App.model, cctx());
     var svg = Drawing.toSVG(D.sheet);
     D.host.innerHTML = svg;
     var s = D.host.querySelector('svg');
@@ -2150,6 +2353,7 @@ var Drawing = (function () {
       if (props.scale === 'auto' || props.scale === null) dc.sheet.autoScale = true;
       else if (props.scale) { var sc = Array.isArray(props.scale) ? props.scale : Drawing.parseScale(props.scale); if (sc) { dc.sheet.scale = sc; dc.sheet.autoScale = false; } }
       if (props.name) dc.sheet.name = String(props.name);
+      if (props.titleBlock) applyTitleBlock(dc, props.titleBlock);   // same undo step as the sheet change
       // re-place the standard views for the new sheet / scale / projection
       if (dc.views.some(function (v) { return v.role; })) { var manual = dc.layout === 'manual'; relayout(dc); if (manual) dc.layout = 'manual'; }
     });
@@ -2165,8 +2369,16 @@ var Drawing = (function () {
       el('label', { text: 'Name' }), nm, el('label', { text: 'Sheet format / size' }), fmt,
       el('label', { text: 'Scale' }), sc, el('label', { text: 'Type of projection' }), proj
     ]);
+    // title block: each field's text with its links ($PRPSHEET:"Material" reads the model's custom property)
+    var own = dc.titleBlock || {}, shown = Drawing.titleBlock(dc, App.model, cctx()), tbInputs = {};
+    body.appendChild(el('div', { class: 'dw-tb-head', text: 'Title block (links: $PRPSHEET:"property" from File \u25b8 Properties, $PRP:"SW-File Name" from the drawing)' }));
+    Drawing.TB_FIELDS.forEach(function (f) {
+      var inp = el('input', { type: 'text', value: own[f.key] != null ? own[f.key] : f.link, title: 'Shows: ' + (shown[f.key] || '(empty)'), 'data-tb': f.key });
+      tbInputs[f.key] = inp;
+      body.appendChild(el('label', { text: f.label })); body.appendChild(inp);
+    });
     UI.showModal({ title: 'Sheet Properties', body: body, buttons: [
-      { label: 'Apply Changes', primary: true, action: function () { UI.closeModal(); setSheet({ name: nm.value, format: fmt.value, scale: sc.value, projection: proj.value }); } },
+      { label: 'Apply Changes', primary: true, action: function () { UI.closeModal(); var tb = {}; Object.keys(tbInputs).forEach(function (k) { tb[k] = tbInputs[k].value; }); setSheet({ name: nm.value, format: fmt.value, scale: sc.value, projection: proj.value, titleBlock: tb }); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
@@ -2245,25 +2457,59 @@ var Drawing = (function () {
       b.show = true;
       if (props.anchor && ANCHOR_NAMES[props.anchor]) { b.anchor = props.anchor; delete b.x; delete b.y; }
       if (props.x != null && props.y != null) { b.x = +props.x; b.y = +props.y; }
+      if (props.type) b.type = props.type === 'parts' ? 'parts' : 'top';
+      if (props.columns !== undefined) { if (props.columns && props.columns.length) b.columns = JSON.parse(JSON.stringify(props.columns)); else delete b.columns; }
       dc.bom = b;
       syncBom(dc);
       if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
     });
   }
+  // Bill of Materials PropertyManager (part and assembly drawings): Table Position, BOM Type (Top-level only / Parts
+  // only), Columns (show / hide each one) and Add Column (a column bound to a custom property: Material, Mass, Vendor…)
   function cmdBOM() {
-    if (!needAsm('Bill of Materials')) return;
-    var b = doc().bom || { anchor: 'top-right' };
+    var b = doc().bom || { anchor: 'top-right' }, specs = Drawing.bomColumnSpecs(b);
+    var values = { anchor: b.x != null ? 'moved' : b.anchor || 'top-right', type: b.type === 'parts' ? 'parts' : 'top', addProp: '', addTitle: '' };
+    var colFields = specs.map(function (c, i) {
+      values['col' + i] = !c.hidden;
+      var t = c.title || (c.type === 'property' ? String(c.prop).toUpperCase() : { item: 'ITEM NO.', partNumber: 'PART NUMBER', description: 'DESCRIPTION', qty: 'QTY.' }[c.type]);
+      return { type: 'check', key: 'col' + i, label: t + (c.type === 'property' ? '  (property "' + c.prop + '")' : '') };
+    });
+    var used = {}; specs.forEach(function (c) { if (c.type === 'property') used[String(c.prop).toLowerCase()] = 1; });
+    var names = Drawing.bomPropertyNames(App.model).filter(function (n) { return !used[n.toLowerCase()]; });
     openDrawingPM({
       title: 'Bill of Materials', icon: 'bom', command: 'bom',
-      message: 'One row per distinct part (identical components counted together): ITEM NO., PART NUMBER, DESCRIPTION, QTY. Balloons use the item numbers.',
-      values: { anchor: b.x != null ? 'moved' : b.anchor || 'top-right' },
-      groups: [{ title: 'Table Position', fields: [{ type: 'select', key: 'anchor', label: 'Anchor', options: (b.x != null ? [['moved', 'Where it was dragged']] : []).concat(Drawing.BOM_ANCHORS.map(function (a) { return [a, ANCHOR_NAMES[a]]; })) }] }],
+      message: (isAsm() ? 'One row per distinct part (identical components counted together)' : 'The part, or with Parts only each of its solid bodies') + '. Columns can show custom properties from File ▸ Properties (Material and Mass fall back to the part’s material and mass). Balloons use the item numbers.',
+      values: values,
+      groups: [
+        { title: 'Table Position', fields: [{ type: 'select', key: 'anchor', label: 'Anchor', options: (b.x != null ? [['moved', 'Where it was dragged']] : []).concat(Drawing.BOM_ANCHORS.map(function (a) { return [a, ANCHOR_NAMES[a]]; })) }] },
+        { title: 'BOM Type', fields: [{ type: 'select', key: 'type', label: 'Type', options: Drawing.BOM_TYPES }] },
+        { title: 'Columns', fields: colFields },
+        { title: 'Add Column', collapsed: false, fields: [
+          { type: 'select', key: 'addProp', label: 'Property', options: [['', '(none)']].concat(names.map(function (n) { return [n, n]; })) },
+          { type: 'text', key: 'addTitle', label: 'Title (optional)' }
+        ] }
+      ],
       onOK: function (val) {
-        setBom(val.anchor === 'moved' ? {} : { anchor: val.anchor });
+        var cols = specs.map(function (c, i) { var o = JSON.parse(JSON.stringify(c)); if (val['col' + i]) delete o.hidden; else o.hidden = true; return o; });
+        if (val.addProp) { var nc = { type: 'property', prop: val.addProp }; if (String(val.addTitle || '').trim()) nc.title = String(val.addTitle).trim(); cols.push(nc); }
+        var props = { type: val.type, columns: cols };
+        if (val.anchor !== 'moved') props.anchor = val.anchor;
+        setBom(props);
         var n = D.sheet.bom ? D.sheet.bom.rows.length : 0;
-        UI.setStatus('Bill of Materials: ' + n + ' item' + (n === 1 ? '' : 's') + ', ' + (doc().bom.x != null ? 'where it was dragged' : 'anchored ' + ANCHOR_NAMES[doc().bom.anchor]) + '.');
+        UI.setStatus('Bill of Materials (' + (val.type === 'parts' ? 'Parts only' : 'Top-level only') + '): ' + n + ' item' + (n === 1 ? '' : 's') + ', ' + (doc().bom.x != null ? 'where it was dragged' : 'anchored ' + ANCHOR_NAMES[doc().bom.anchor]) + '.');
       }
     });
+  }
+  // setTitleBlock({ key: text | null }): a title block field's text (links included); null restores the default link
+  function setTitleBlock(map) { edit(function (dc) { applyTitleBlock(dc, map); }); }
+  function applyTitleBlock(dc, map) {
+    var tb = dc.titleBlock || {};
+    Object.keys(map || {}).forEach(function (k) {
+      var f = Drawing.TB_FIELDS.filter(function (x) { return x.key === k; })[0];
+      if (!f) return;
+      if (map[k] == null || String(map[k]) === f.link) delete tb[k]; else tb[k] = String(map[k]);
+    });
+    if (Object.keys(tb).length) dc.titleBlock = tb; else delete dc.titleBlock;
   }
   function bomMenu() {
     return [
@@ -2300,7 +2546,7 @@ var Drawing = (function () {
     t.appendChild(row({ icon: 'annotations', name: 'Annotations', depth: 1, badge: dc.autoDims ? 'model items' : '' }));
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
     t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block' }));
-    if (isAsm() && dc.bom && dc.bom.show !== false) {
+    if (dc.bom && dc.bom.show !== false) {
       var nr = D.sheet && D.sheet.bom ? D.sheet.bom.rows.length : 0;
       t.appendChild(row({ icon: 'bom', name: 'Bill of Materials1', depth: 2, cls: 'dw-bom', sel: D.sel && D.sel.kind === 'bom', badge: nr + (nr === 1 ? ' item' : ' items'),
         title: 'Bill of Materials of ' + App.model.name + ' (' + (dc.bom.x != null ? 'moved' : 'anchored ' + (dc.bom.anchor || 'top-right')) + '). Double-click for properties.',
@@ -2333,7 +2579,7 @@ var Drawing = (function () {
     { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
     { id: 'modelItems', label: 'Model\nItems', run: cmdModelItems, active: function () { return !!(doc() && doc().autoDims); } },
     { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
-    { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false && isAsm()); } },
+    { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false); } },
     { sep: true },
     { id: 'sheetProps', label: 'Sheet\nProperties', run: cmdSheetProperties },
     { sep: true },
@@ -2394,7 +2640,7 @@ var Drawing = (function () {
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
         { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems },
         { label: 'Annotations \u25b8 Auto Balloon', disabled: !isAsm(), action: cmdAutoBalloon },
-        { label: 'Tables \u25b8 Bill of Materials\u2026', disabled: !isAsm(), action: cmdBOM }
+        { label: 'Tables \u25b8 Bill of Materials\u2026', action: cmdBOM }
       ] },
       { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }] },
       { label: 'Window', items: [
@@ -2439,7 +2685,7 @@ var Drawing = (function () {
   function summary() {
     var dc = doc();
     if (!dc) return null;
-    if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model); }
+    if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); }
     return {
       name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection },
       views: D.sheet.views.map(function (w) {
@@ -2452,7 +2698,9 @@ var Drawing = (function () {
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
       }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
-        rows: D.sheet.bom.rows.map(function (r) { return { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; }) } : null,
+        type: D.sheet.bom.type, columns: D.sheet.bom.columns.map(function (c) { return c.title; }), cells: D.sheet.bom.cells.map(function (r) { return r.map(function (x) { return String(x); }); }),
+        rows: D.sheet.bom.rows.map(function (r, i) { var o = { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; D.sheet.bom.columns.forEach(function (c, j) { if (c.type === 'property') o[c.prop] = String(D.sheet.bom.cells[i][j]); }); return o; }) } : null,
+      titleBlock: Drawing.titleBlock(dc, App.model, cctx()),
       balloons: (D.sheet.balloons || []).map(function (b) { return { view: b.view, item: b.item, component: (Assembly.findComponent(App.model, b.component) || {}).name || null, c: [+b.c[0].toFixed(3), +b.c[1].toFixed(3)], attach: [+b.attach[0].toFixed(3), +b.attach[1].toFixed(3)] }; }),
       dims: D.sheet.dims.map(function (d) { return d.text; }), dangling: D.sheet.dims.filter(function (d) { return d.dangling; }).length, autoDims: !!dc.autoDims
     };
@@ -2466,7 +2714,7 @@ var Drawing = (function () {
     D.sel = { kind: 'view', id: v.id };
     return summary();
   }
-  function current() { if (!doc()) return null; if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model); } return D.sheet; }
+  function current() { if (!doc()) return null; if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model, cctx()); } return D.sheet; }
   if (window.anvil) {
     window.anvil.drawing = {
       make: function (opts) { return makeDrawing(opts) ? summary() : null; },
@@ -2485,7 +2733,13 @@ var Drawing = (function () {
       // bom(null) removes it
       autoBalloon: function (viewId, opts) { if (!doc() || !isAsm()) return null; var v = viewId != null ? Drawing.findView(doc(), viewId) : defaultBalloonView(); if (!v) return null; autoBalloonView(v.id, opts); return summary(); },
       deleteBalloons: function (viewId) { if (!doc()) return null; edit(function (dc) { Drawing.deleteBalloons(dc, viewId); }); return summary(); },
-      bom: function (props) { if (!doc() || !isAsm()) return null; if (props !== undefined) setBom(props === null ? null : typeof props === 'string' ? { anchor: props } : props); return summary().bom; },
+      bom: function (props) { if (!doc()) return null; if (props !== undefined) setBom(props === null ? null : typeof props === 'string' ? { anchor: props } : props); return summary().bom; },
+      // BOM columns: bomColumns() -> the column specs; bomColumns([{ type, prop, title, width, hidden } | 'Material', …])
+      // replaces them (a string is a property column); bomType('top' | 'parts'); each one undo step, returns summary().bom
+      bomColumns: function (cols) { if (!doc()) return null; if (!arguments.length) return Drawing.bomColumnSpecs(doc().bom); setBom({ columns: cols }); return summary().bom; },
+      bomType: function (t) { if (!doc()) return null; if (!arguments.length) return (doc().bom && doc().bom.type) || 'top'; setBom({ type: t }); return summary().bom; },
+      // title block: titleBlock() -> { key: text shown }; titleBlock({ key: text | null }) sets (null: back to the default link)
+      titleBlock: function (map) { if (!doc()) return null; if (map) setTitleBlock(map); return Drawing.titleBlock(doc(), App.model, cctx()); },
       addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },

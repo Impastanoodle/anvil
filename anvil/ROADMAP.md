@@ -86,10 +86,11 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
 - [ ] Drawings: centre marks and centrelines, hole callouts, ordinate and baseline dimensions, chamfer dimensions, dimension dragging and editing
 - [ ] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text, magnetic lines
-- [ ] Drawings: editable BOM (custom properties from the part — material, mass, vendor; add / hide columns; parts-only and indented BOMs), revision table, general tables
+- [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
+- [ ] Drawings: indented BOM and Parts only across sub-assemblies (needs sub-assemblies), revision table, general tables
 - [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
 - [ ] Drawings: multiple sheets, editable sheet formats / title-block custom properties, drawing templates, a separate `.drawing` document that references the part file
-- [ ] Custom properties and materials: a material library (density, appearance) and File Properties on parts and assemblies that drawings and BOMs read
+- [x] Custom properties and materials: material library in classes (`materials.js`: density, E, Poisson, tensile / yield, appearance), Edit Material dialog, Material row in the FeatureManager, per-body materials, viewport colour follows the material, Mass Properties with material densities; File ▸ Properties (Summary, Custom, Configuration Specific, "SW-Material" / "SW-Mass" links) on parts and assemblies, round-tripped through the script; drawings and BOMs read them (cloud-2026-09-25j)
 - [ ] Surfaces (extruded / revolved / lofted surfaces, knit, thicken), Weldments, Mold Tools, Direct Editing (move face) — the greyed tabs
 - [ ] Evaluate: Check (geometry validation), Zebra Stripes and Sensors are placeholders; Section Properties, Draft Analysis, Clearance Verification and Interference Detection on selected components are missing
 - [ ] Configurations per configuration feature suppression and a design table grid; configurations in assemblies
