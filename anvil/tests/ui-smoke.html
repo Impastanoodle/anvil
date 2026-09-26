@@ -3869,6 +3869,50 @@
     return 'shell pick highlights ' + grp.length + ' facets / ' + tris + ' triangles';
   });
 
+  step('whole freeform faces: the Mug handle (sweep) and the Handlebar pick as whole faces, Rounded handle fillets group without swallowing the flat faces they blend into, and flanges / extrudes are never merged', async function () {
+    var model = function () { return UI.App.model; };
+    function groupsOf(name) {
+      return anvil.run(exByName(name).code).then(idle).then(function () {
+        var mesh = UI.App.mesh, g = UI.faceGroups(), seen = new Set(), out = [];
+        g.forEach(function (x) { if (!seen.has(x)) { seen.add(x); out.push(x); } });
+        return { mesh: mesh, groups: out };
+      });
+    }
+    function typeOf(mesh, i) {
+      var f = W.Kernel.findFeature(model(), mesh.faces[i].polys[0].shared);
+      while (f && /pattern|mirror/.test(f.type) && f.feature != null) f = W.Kernel.findFeature(model(), f.feature);
+      return f ? f.type : '?';
+    }
+    function isAnalytic(mesh, grp) { return grp.every(function (i) { return mesh.faces[i].polys.every(function (p) { return p.surf; }); }); }
+    // every multi-facet group is one analytic surface, or one sweep / loft / fillet feature; never two features
+    function checkSane(r, name) {
+      r.groups.forEach(function (grp) {
+        if (grp.length < 2 || isAnalytic(r.mesh, grp)) return;
+        var ids = new Set(grp.map(function (i) { return r.mesh.faces[i].polys[0].shared; }));
+        assert(ids.size === 1, name + ': a freeform group spans features ' + Array.from(ids).join());
+        var t = typeOf(r.mesh, grp[0]);
+        assert(t === 'sweep' || t === 'loft' || t === 'fillet', name + ': a ' + t + ' face group of ' + grp.length + ' facets');
+      });
+    }
+    var mug = await groupsOf('Mug');
+    checkSane(mug, 'Mug');
+    var sweepFaces = mug.mesh.faces.map(function (f, i) { return i; }).filter(function (i) { return typeOf(mug.mesh, i) === 'sweep'; });
+    var biggest = mug.groups.filter(function (g) { return typeOf(mug.mesh, g[0]) === 'sweep'; }).sort(function (a, b) { return b.length - a.length; })[0];
+    assert(biggest && biggest.length >= 0.9 * sweepFaces.length, 'the handle is one face: ' + (biggest && biggest.length) + ' of ' + sweepFaces.length + ' sweep facets');
+    UI.App.sel = { kind: 'face', index: biggest[biggest.length - 1] }; UI.updateHighlights();
+    assert(anvil.selection().length === 1, 'one selected face');
+    UI.App.sel = null; UI.updateHighlights();
+    var bar = await groupsOf('Handlebar');
+    checkSane(bar, 'Handlebar');
+    assert(bar.groups.length <= 6 && bar.mesh.faces.length > 100, 'Handlebar: ' + bar.groups.length + ' faces from ' + bar.mesh.faces.length + ' facets');
+    var rh = await groupsOf('Rounded handle');
+    checkSane(rh, 'Rounded handle');
+    assert(rh.groups.length < rh.mesh.faces.length / 5, 'Rounded handle: ' + rh.groups.length + ' faces from ' + rh.mesh.faces.length);
+    var ub = await groupsOf('Sheet-metal U-bracket');
+    checkSane(ub, 'Sheet-metal U-bracket');
+    return 'Mug handle ' + biggest.length + ' facets; Handlebar ' + bar.groups.length + ' / ' + bar.mesh.faces.length + '; Rounded handle ' + rh.groups.length + ' / ' + rh.mesh.faces.length + '; U-bracket ' + ub.groups.length + ' / ' + ub.mesh.faces.length;
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));

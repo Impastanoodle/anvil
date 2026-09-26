@@ -899,3 +899,13 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Finding.** Three steps depend on the app frame's exact size (balloons placement, box-selection window, sketch centerline / Instant3D drags failed at 899 × 560 or 578 wide); a scaled frame keeps them green. Making those steps size-independent is a possible follow-up.
 
 **Verified (port 8812).** ui-smoke?watch 149/149 (about 18 s end to end), no horizontal scroll.
+
+## Run local-2026-09-26f — Whole freeform faces (sweeps, lofts, fillets)
+
+**Done.** `ui-core.js` `freeformGroups`: after the analytic grouping, facets with no surface record are joined across smooth (< 22°) edges when both come from the same sweep, loft or fillet feature (a pattern / mirror resolves to its source) in the same body. Flanges, shells and extrudes are not merged, so a flat face tangent to a bend or fillet keeps its identity. Selectable faces: Handlebar 218 → 4, Rounded handle 332 facets → 16 faces, Mug 851 → 69 (the handle is one face). New smoke step checks the Mug handle, Handlebar, Rounded handle and that no freeform group spans two features or a flange / extrude.
+
+**Environment note.** With a game running on the machine the bench read 666 ms (vs ~450) and ui-smoke failed 12-14 drawing / drag steps at HEAD 0717af7 as well (A/B identical); a later run was 150/150.
+
+**Verified (port 8812).** kernel-tests 683/683, ui-smoke?watch 150/150.
+
+**Next up.** Shell inner walls (Funnel, Mug inside) lose their surface records and still pick as strips: carry an offset analytic record through `buildShell`.

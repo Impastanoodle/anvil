@@ -659,8 +659,43 @@ var UI = (function () {
       list.forEach(function (i) { var r = find(i); (byRoot[r] = byRoot[r] || []).push(i); });
       Object.keys(byRoot).forEach(function (r) { byRoot[r].forEach(function (i) { of[i] = byRoot[r]; }); });
     });
+    freeformGroups(mesh, of);
     mesh._faceGroups = of;
     return of;
+  }
+  // Freeform surfaces (a sweep's or loft's side, a fillet rolled along a curved edge) have no analytic record: their
+  // facets are joined across smooth (tangent, < 22°) edges when both come from the same sweep, loft or fillet feature
+  // (or a pattern / mirror of one) in the same body. Other features are left alone, so a flat face tangent to a bend,
+  // an offset wall or a line-to-spline extrude keeps its own identity, as in SolidWorks.
+  var FREEFORM = { sweep: 1, loft: 1, fillet: 1 };
+  function freeformGroups(mesh, of) {
+    if (!App.model || !App.model.features || !mesh.faces.length || !mesh.faces[0].polys) return;
+    var kindOf = {};
+    function freeformId(i) {
+      if (of[i].length > 1) return null;   // already on an analytic surface
+      var p = mesh.faces[i].polys[0], id = p && p.shared;
+      if (id == null) return null;
+      if (!(id in kindOf)) {
+        var f = K.findFeature(App.model, id), guard = 0;
+        while (f && (f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror') && f.feature != null && guard++ < 20) f = K.findFeature(App.model, f.feature);
+        kindOf[id] = f && FREEFORM[f.type] ? true : false;
+      }
+      return kindOf[id] ? id + '|' + bodyOfFace(mesh.faces[i]) : null;
+    }
+    var parent = {};
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    edgesFor(mesh).forEach(function (e) {
+      if (!e.smooth || e.faces.length !== 2) return;
+      var a = e.faces[0], b = e.faces[1], ka = freeformId(a);
+      if (ka == null || ka !== freeformId(b)) return;
+      if (parent[a] == null) parent[a] = a;
+      if (parent[b] == null) parent[b] = b;
+      var ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    });
+    var byRoot = {};
+    Object.keys(parent).forEach(function (i) { var r = find(+i); (byRoot[r] = byRoot[r] || []).push(+i); });
+    Object.keys(byRoot).forEach(function (r) { var g = byRoot[r].sort(function (x, y) { return x - y; }); g.forEach(function (i) { of[i] = g; }); });
   }
   function faceGroup(i) { var g = faceGroups(App.mesh); return (g && g[i]) || [i]; }
 
