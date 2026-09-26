@@ -260,7 +260,8 @@
     [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
     appendEquationsFolder(tree, filter);
     appendBodiesFolder(tree, filter);
-    tree.appendChild(treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
+    // Material row (ui-materials.js: name, Edit Material on double-click, favourites on right-click)
+    tree.appendChild(UI.materialTreeRow ? UI.materialTreeRow(treeItem) : treeItem({ icon: 'material', name: (m.materialName || 'Material <not specified>') + '  ·  ' + m.density + ' kg/m³', depth: 1, cls: 'dim' }));
     ['Front', 'Top', 'Right'].forEach(function (r) {
       var row = treeItem({ icon: 'planeSmall', name: r + ' Plane', depth: 1, cls: App.sel && App.sel.kind === 'plane' && App.sel.ref === r ? 'selected' : '' });
       row.addEventListener('click', function () { App.sel = { kind: 'plane', ref: r, plane: K.makePlane(r, 0), name: r + ' Plane' }; App.sel2 = null; UI.updatePlanes(); UI.updateHighlights(); refreshTree(); });
@@ -326,7 +327,7 @@
       var err = (st && st.error) || errors[c.id] || null;
       var selected = App.sel && App.sel.kind === 'body' && App.sel.index === i;
       var hidden = isBodyHidden(i);
-      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '');
+      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
       var row = treeItem({ icon: err ? 'error' : 'component', name: label, depth: 1, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : ''), title: tip });
       row.setAttribute('data-comp', String(c.id));
       row.title = tip;
@@ -399,6 +400,7 @@
     ];
     // Zoom to Selection frames just this body when ui-core has UI.zoomToBody, else the whole model
     if (UI.zoomToBody || UI.zoomToFit) items.push({ label: 'Zoom to Selection', action: function () { if (!(UI.zoomToBody && UI.zoomToBody(b.index)) && UI.zoomToFit) UI.zoomToFit(); } });
+    if (UI.bodyMaterialMenu) items = items.concat([{ sep: true }], UI.bodyMaterialMenu(b));
     if (b.featureId != null && K.findFeature(App.model, b.featureId)) {
       items.push({ sep: true });
       items.push({ label: 'Edit Feature', action: function () { UI.editFeature(K.findFeature(App.model, b.featureId)); } });
@@ -573,7 +575,7 @@
         { label: 'Export model as JSON…', action: UI.exportJSON },
         { sep: true },
         { label: 'Screenshot (PNG)…', action: UI.screenshot },
-        { label: 'Properties…', action: function () { UI.openTaskPane('props'); } }
+        { label: 'Properties…', action: function () { if (UI.fileProperties) UI.fileProperties(); else UI.openTaskPane('props'); } }
       ] },
       { label: 'Edit', items: [
         { label: 'Undo', key: 'Ctrl+Z', action: UI.undo, disabled: !App.undo.length },

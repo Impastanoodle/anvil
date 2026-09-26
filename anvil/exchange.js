@@ -99,12 +99,22 @@ var Exchange = (function () {
   function colorHex(rgb) {
     return '#' + rgb.map(function (v) { var n = Math.max(0, Math.min(255, Math.round(v * 255))); return ('0' + n.toString(16)).slice(-2); }).join('').toUpperCase();
   }
-  // a part's display colour: a material appearance when the model has one, else the part colour
+  // a part's display colour: its library material's appearance (materials.js) when it has one, else the part colour
+  function hasMaterials() { return typeof Materials !== 'undefined' && Materials && Materials.bodyMaterial; }
   function partColor(model) {
     if (!model) return null;
-    var mat = model.material;
-    var c = (mat && typeof mat === 'object' && (mat.color || (mat.appearance && mat.appearance.color))) || (model.appearance && model.appearance.color) || model.color;
+    var lib = hasMaterials() && model.material ? Materials.find(model.material) : null;
+    var c = model.color || (lib && lib.color);
     return parseColor(c) ? c : null;
+  }
+  // bodyMat(model, build, i) -> { name, color } of body i: its own material (model.bodyMaterials, by the feature that
+  // made the body), else the part's material (model.material), else just the part colour; name null without a material
+  function bodyMat(model, build, i) {
+    if (hasMaterials()) {
+      var bm = Materials.bodyMaterial(model, build, i);
+      return { name: bm.name || null, color: parseColor(bm.color) ? bm.color : partColor(model) };
+    }
+    return { name: typeof model.material === 'string' ? model.material : null, color: partColor(model) };
   }
 
   // ------------------------------------------------------------------ watertight body meshes
@@ -250,7 +260,7 @@ var Exchange = (function () {
         var nm = bodies.length === 1 ? (model.name || 'Part1') : (infos[i] && infos[i].name) || ('Body' + (i + 1));
         if (used[nm]) { var n = 2; while (used[nm + '-' + n]) n++; nm = nm + '-' + n; }
         used[nm] = true;
-        return { name: nm, mesh: bodyMesh(b) };
+        return { name: nm, mesh: bodyMesh(b), material: bodyMat(model, { bodies: bodies, bodyFeatures: build.bodyFeatures || [] }, i) };
       });
       return { name: model.name || 'Part1', units: model.units === 'in' ? 'in' : 'mm', assembly: false,
         parts: [{ name: model.name || 'Part1', color: partColor(model), bodies: list }],
@@ -269,19 +279,41 @@ var Exchange = (function () {
         var nm = pm && pm.name && pm.name !== 'Part1' ? pm.name : (c.source && c.source.example) || (pm && pm.name) || c.name;
         var pbodies = pb.bodies && pb.bodies.length ? pb.bodies : [pb.body];
         byKey[key] = parts.length;
-        parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (b, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(b) }; }) });
+        var pbuild = { bodies: pbodies, bodyFeatures: pb.bodyFeatures || [] };
+        parts.push({ name: nm, color: partColor(pm), bodies: pbodies.map(function (b, i) { return { name: pbodies.length === 1 ? nm : nm + '-Body' + (i + 1), mesh: bodyMesh(b), material: pm ? bodyMat(pm, pbuild, i) : { name: null, color: null } }; }) });
       }
       instances.push({ part: byKey[key], name: c.name, transform: tf(c.transform) });
     });
     return { name: model.name || 'Assem1', units: model.units === 'in' ? 'in' : 'mm', assembly: true, parts: parts, instances: instances };
   }
 
+  // ------------------------------------------------------------------ materials of a document
+  // materialTable(doc) -> { list: [{ id, name, color }], of(partIndex, body) -> entry | null }: one entry per distinct
+  // (material name, colour) over every body; `id` is the OBJ / MTL name (the material's name, else the part's), `name`
+  // the display name (the material, else the part). Bodies without a colour have no entry.
+  function materialTable(doc) {
+    var list = [], byKey = {}, used = {};
+    function entry(part, body) {
+      var m = body.material || { name: null, color: part.color }, c = m.color || part.color;
+      if (!parseColor(c)) return null;
+      var key = (m.name || '') + '|' + colorHex(parseColor(c)) + '|' + (m.name ? '' : part.name);
+      if (byKey[key]) return byKey[key];
+      var id = safeName(m.name || part.name).replace(/^_+|_+$/g, '') || 'material', k = 2;
+      if (used[id]) { while (used[id + '_' + k]) k++; id = id + '_' + k; }
+      used[id] = true;
+      var e = byKey[key] = { id: id, name: m.name || part.name, material: m.name || null, color: c };
+      list.push(e);
+      return e;
+    }
+    doc.parts.forEach(function (part) { part.bodies.forEach(function (b) { b.mat = entry(part, b); }); });
+    return { list: list, of: function (pi, body) { return body.mat || null; } };
+  }
+
   // ------------------------------------------------------------------ OBJ export
-  function materialName(part, i) { return 'mat' + (i + 1) + '_' + safeName(part.name); }
   function exportOBJ(model, build, opts) {
     opts = opts || {};
     var doc = docParts(model, build);
-    var colored = doc.parts.some(function (p) { return p.color; });
+    var mats = materialTable(doc), colored = mats.list.length > 0;
     var mtl = opts.mtl === false ? null : (opts.mtlName || safeName(doc.name) + '.mtl');
     var out = ['# ' + doc.name + ' — exported by Anvil (OBJ, units ' + doc.units + ')', '# ' + doc.instances.length + ' instance(s), ' + doc.parts.length + ' part(s)'];
     if (colored && mtl) out.push('mtllib ' + mtl);
@@ -293,7 +325,7 @@ var Exchange = (function () {
         if (usedNames[nm]) { var k = 2; while (usedNames[nm + '_' + k]) k++; nm = nm + '_' + k; }
         usedNames[nm] = true;
         out.push('o ' + nm, 'g ' + nm);
-        if (colored && mtl && part.color) out.push('usemtl ' + materialName(part, inst.part));
+        if (colored && mtl && b.mat) out.push('usemtl ' + b.mat.id);
         var m = b.mesh, p = m.positions, nv = p.length / 3;
         for (var i = 0; i < nv; i++) {
           var q = tfPoint(T, [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]]);
@@ -314,10 +346,11 @@ var Exchange = (function () {
   }
   function exportMTL(model, build) {
     var doc = docParts(model, build), out = ['# ' + doc.name + ' — materials exported by Anvil'];
-    doc.parts.forEach(function (part, i) {
-      var c = parseColor(part.color);
-      if (!c) return;
-      out.push('', 'newmtl ' + materialName(part, i), 'Ka 0 0 0', 'Kd ' + c.map(function (v) { return numText(v, 6); }).join(' '), 'Ks 0.25 0.25 0.25', 'Ns 40', 'd 1', 'illum 2');
+    materialTable(doc).list.forEach(function (e) {
+      var c = parseColor(e.color);
+      out.push('', 'newmtl ' + e.id);
+      if (e.material) out.push('# material: ' + e.material);
+      out.push('Ka 0 0 0', 'Kd ' + c.map(function (v) { return numText(v, 6); }).join(' '), 'Ks 0.25 0.25 0.25', 'Ns 40', 'd 1', 'illum 2');
     });
     return out.join('\n') + '\n';
   }
@@ -425,18 +458,17 @@ var Exchange = (function () {
       ' <metadata name="Title">' + xmlEsc(doc.name) + '</metadata>',
       ' <metadata name="Application">Anvil</metadata>',
       ' <resources>'];
-    var nextId = 1, matId = null, matIndex = {};
-    var colored = doc.parts.filter(function (p) { return p.color; });
-    if (colored.length) {
+    var nextId = 1, matId = null, mats = materialTable(doc);
+    if (mats.list.length) {
       matId = nextId++;
       x.push('  <basematerials id="' + matId + '">');
-      doc.parts.forEach(function (p, i) { if (p.color) { matIndex[i] = Object.keys(matIndex).length; x.push('   <base name="' + xmlEsc(p.name) + '" displaycolor="' + colorHex(parseColor(p.color)) + 'FF"/>'); } });
+      mats.list.forEach(function (e, i) { e.index = i; x.push('   <base name="' + xmlEsc(e.name) + '" displaycolor="' + colorHex(parseColor(e.color)) + 'FF"/>'); });
       x.push('  </basematerials>');
     }
     // one mesh object per body of every part; a part of an assembly also gets a components object that groups them
     var partObjects = doc.parts.map(function (part, pi) {
       var bodyIds = part.bodies.map(function (b) {
-        var id = nextId++, m = b.mesh, p = m.positions, mat = matIndex[pi] != null ? ' pid="' + matId + '" pindex="' + matIndex[pi] + '"' : '';
+        var id = nextId++, m = b.mesh, p = m.positions, mat = b.mat ? ' pid="' + matId + '" pindex="' + b.mat.index + '"' : '';
         x.push('  <object id="' + id + '" type="model" name="' + xmlEsc(b.name) + '"' + mat + '>', '   <mesh>', '    <vertices>');
         for (var i = 0; i < p.length; i += 3) x.push('     <vertex x="' + numText(p[i]) + '" y="' + numText(p[i + 1]) + '" z="' + numText(p[i + 2]) + '"/>');
         x.push('    </vertices>', '    <triangles>');
@@ -679,7 +711,7 @@ var Exchange = (function () {
     function writePart(part) {
       var pr = product(part.name, 'part');
       var origin = axis(null);
-      var solids = part.bodies.map(function (b) { var s = writeBrep(W, b.mesh, b.name); styleSolid(s, part.color); return s; });
+      var solids = part.bodies.map(function (b) { var s = writeBrep(W, b.mesh, b.name); styleSolid(s, (b.material && b.material.color) || part.color); return s; });
       var rep = W.add('ADVANCED_BREP_SHAPE_REPRESENTATION(' + stepString(part.name) + ',' + stepList([origin].concat(solids)) + ',' + ctx + ')');
       W.add('SHAPE_DEFINITION_REPRESENTATION(' + pr.pds + ',' + rep + ')');
       pr.rep = rep; pr.origin = origin;

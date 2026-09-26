@@ -196,16 +196,30 @@
     var units = el('select'); [['mm', 'Millimeters (MMGS)'], ['in', 'Inches (IPS)']].forEach(function (u) { var o = el('option', { value: u[0], text: u[1] }); if (m.units === u[0]) o.selected = true; units.appendChild(o); });
     units.addEventListener('change', function () { m.units = units.value; UI.rebuild(); });
     field('Units', units);
-    var mat = el('select');
-    [['Steel, plain carbon', 7850], ['Stainless 304', 8000], ['Aluminum 6061', 2700], ['Brass', 8500], ['Copper', 8960], ['ABS', 1020], ['Nylon 6/6', 1140], ['Titanium Ti-6Al-4V', 4430], ['Custom', 0]].forEach(function (x) {
-      var o = el('option', { value: String(x[1]), text: x[0] + (x[1] ? ' · ' + x[1] + ' kg/m³' : '') });
-      if ((m.materialName || 'Steel, plain carbon') === x[0]) o.selected = true;
-      mat.appendChild(o);
-    });
-    mat.addEventListener('change', function () { var t = mat.options[mat.selectedIndex].text.split(' · ')[0]; m.materialName = t; if (+mat.value) m.density = +mat.value; UI.rebuild(); tpProps(body); });
-    field('Material', mat);
-    var dens = el('input', { type: 'number', value: m.density, step: 'any' }); dens.addEventListener('change', function () { m.density = +dens.value || 0; UI.rebuild(); });
-    field('Density kg/m³', dens);
+    // Material: the materials.js library by class (Edit Material… for the full dialog); a typed density that is not
+    // the material's unlinks it (custom density)
+    if (typeof Materials !== 'undefined' && !asm) {
+      var mat = el('select', { 'data-role': 'material' }), cur = Materials.materialName(m);
+      mat.appendChild(el('option', { value: '', text: Materials.NONE }));
+      Materials.classes().forEach(function (c) {
+        var g = el('optgroup', { label: c.name });
+        c.materials.forEach(function (x) { var o = el('option', { value: x.name, text: x.name + ' · ' + x.density + ' kg/m³' }); if (cur === x.name) o.selected = true; g.appendChild(o); });
+        mat.appendChild(g);
+      });
+      mat.addEventListener('change', function () { if (UI.setMaterial) UI.setMaterial(mat.value || null); else { UI.pushUndo(); Materials.apply(m, mat.value || null); UI.rebuild(); } tpProps(body); });
+      field('Material', mat);
+      if (UI.editMaterial) field('', el('button', { text: 'Edit Material…', onclick: function () { UI.editMaterial(); } }));
+    }
+    if (!asm) {
+      var dens = el('input', { type: 'number', value: m.density, step: 'any' });
+      dens.addEventListener('change', function () {
+        UI.pushUndo(); m.density = +dens.value || 0;
+        var lm = typeof Materials !== 'undefined' ? Materials.of(m) : null;
+        if (lm && Math.abs(lm.density - m.density) > 1e-9) { delete m.material; delete m.materialName; }
+        UI.rebuild(); tpProps(body);
+      });
+      field('Density kg/m³', dens);
+    }
     body.innerHTML = '';
     body.appendChild(el('h3', { text: 'Document properties' }));
     body.appendChild(kv);
@@ -326,7 +340,7 @@
       if (!replace && isAsm()) throw new Error('This is a part script: open a part (File ▸ New ▸ Part) to append to it.');
       model = replace ? K.newModel('Part1') : App.model;
       if (!replace) UI.pushUndo();
-      if (replace && !isAsm()) { model.color = App.model.color; model.density = App.model.density; }
+      if (replace && !isAsm()) { model.color = App.model.color; model.density = App.model.density; if (App.model.material) model.material = App.model.material; }
       K.runScript(model, code);
       if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }
       else p = UI.rebuild();
@@ -625,7 +639,7 @@
       rows.push(['Extents', [0, 1, 2].map(function (k) { return UI.fmtNum(mp.bbox.max[k] - mp.bbox.min[k], 2); }).join(' × ') + ' ' + u]);
     }
     (mp.components || []).forEach(function (c) {
-      rows.push([c.name, 'volume ' + UI.fmtNum(c.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(c.mass * toKg * 1000, 2) + ' g (' + c.density + ' kg/m³)']);
+      rows.push([c.name, 'volume ' + UI.fmtNum(c.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(c.mass * toKg * 1000, 2) + ' g (' + (c.material ? c.material + ', ' : '') + UI.fmtNum(c.density, 2) + ' kg/m³)']);
     });
     var body = el('table', { id: 'mass-table' }, rows.map(function (r, i) { return el('tr', { class: i >= rows.length - (mp.components || []).length ? 'mass-comp' : '' }, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
     UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
@@ -636,11 +650,15 @@
       showAssemblyMassProperties(); return;
     }
     if (!App.mesh || !App.mesh.triCount) { UI.toast('No solid body yet.'); return; }
-    var u = UI.unitLabel(), mp = K.massProps(App.mesh, App.model.density);
+    var u = UI.unitLabel(), MT = typeof Materials !== 'undefined' ? Materials : null;
+    var mp = MT ? MT.massProps(App.model, App.build, App.mesh) : K.massProps(App.mesh, App.model.density);
     var volM3 = u === 'in' ? mp.volume * Math.pow(0.0254, 3) : mp.volume * 1e-9;
-    var mass = volM3 * App.model.density;
+    var mass = MT ? mp.massKg : volM3 * App.model.density;
+    var matName = MT ? MT.materialName(App.model) : App.model.materialName;
+    var multiMat = MT && MT.hasBodyMaterials(App.model);
     var rows = [
-      ['Density', App.model.density + ' kg/m³' + (App.model.materialName ? ' (' + App.model.materialName + ')' : '')],
+      ['Material', (matName || 'Material <not specified>') + (multiMat ? ' (some bodies have their own material)' : '')],
+      ['Density', (multiMat ? UI.fmtNum(mp.density, 2) + ' kg/m³ (average)' : App.model.density + ' kg/m³')],
       ['Mass', UI.fmtNum(mass * 1000, 2) + ' g  (' + UI.fmtNum(mass, 4) + ' kg)'],
       ['Volume', UI.fmtNum(mp.volume, 2) + ' ' + u + '³'],
       ['Surface area', UI.fmtNum(mp.area, 2) + ' ' + u + '²'],
@@ -654,7 +672,8 @@
     if (bodies.length >= 2) {
       rows.push(['Solid bodies', String(bodies.length)]);
       bodies.forEach(function (b, i) {
-        var info = infos[i] || { name: 'Body' + (i + 1) }, bm = null;
+        var info = infos[i] || { name: 'Body' + (i + 1) }, bm = null, pb = MT && mp.bodies ? mp.bodies[i] : null;
+        if (pb) { rows.push([info.name, 'volume ' + UI.fmtNum(pb.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(pb.massKg * 1000, 2) + ' g (' + (pb.material || 'Material <not specified>') + ', ' + pb.density + ' kg/m³)']); return; }
         try { bm = K.massProps(K.meshFromBody(b), App.model.density); } catch (e) { bm = null; }
         var bVolM3 = bm ? (u === 'in' ? bm.volume * Math.pow(0.0254, 3) : bm.volume * 1e-9) : 0;
         rows.push([info.name, bm ? 'volume ' + UI.fmtNum(bm.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(bVolM3 * App.model.density * 1000, 2) + ' g' : '(not computed)']);
@@ -774,7 +793,8 @@
     flat: function () { return K.flatPattern(App.model, App.build, App.mesh); },
     dxfFlat: function () { return K.exportDXFFlat(K.flatPattern(App.model, App.build, App.mesh), App.model.units); },
     edges: function () { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2; }).map(function (e, i) { return { mid: e.mid.map(function (x) { return +x.toFixed(3); }), len: +e.len.toFixed(3), convex: e.convex }; }); },
-    mass: function () { return isAsm() && hasAssembly() ? Assembly.massProps(App.model, App.build) : K.massProps(App.mesh, App.model.density); },
+    // mass properties; parts go through materials.js (bodies with their own material, massKg), same fields as Kernel.massProps
+    mass: function () { return isAsm() && hasAssembly() ? Assembly.massProps(App.model, App.build) : typeof Materials !== 'undefined' ? Materials.massProps(App.model, App.build, App.mesh) : K.massProps(App.mesh, App.model.density); },
     faces: function () { return App.mesh.faces.map(function (f, i) { return { index: i, normal: f.normal, area: +f.area.toFixed(3), centroid: f.centroid.map(function (x) { return +x.toFixed(3); }) }; }); },
     // separate solid bodies of a multi-body part: [{ index, featureId, name, volume }]
     bodies: function () { return (UI.bodyInfos ? UI.bodyInfos() : []).map(function (b) { return { index: b.index, featureId: b.featureId, name: b.name, volume: +b.volume.toFixed(3) }; }); },
@@ -907,6 +927,8 @@
     });
   }
 
+  // the Properties panel shows the material and density: redraw it after a material change made elsewhere
+  UI.refreshTaskPane = function () { if (tpCurrent === 'props' && !$('tp-panel').hidden) openTaskPane('props'); };
   UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
