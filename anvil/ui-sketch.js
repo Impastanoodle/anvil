@@ -67,7 +67,11 @@
     if (App.sketchSnapshot) {
       var f = UI.activeSketchFeature();
       var snap = JSON.parse(App.sketchSnapshot);
-      if (f) f.entities = snap.entities;
+      if (f) {
+        f.entities = snap.entities;
+        if (snap.dims) f.dims = snap.dims;
+        if (snap.rels) f.rels = snap.rels; else delete f.rels;
+      }
     }
     App.pendingAfterSketch = null;
     exitSketch(true);
@@ -100,8 +104,10 @@
   }
   function cancelTool(keep) {
     App.toolState = { pts: [] };
+    if (App.inferPreview && App.inferPreview.length) { App.inferPreview = []; App.dimsStale = true; }
     App.tempEntities = [];
     if (App.tempDim) { App.tempDim = null; App.dimsStale = true; }
+    if (App.tempRelDim) { App.tempRelDim = null; App.dimsStale = true; }
     UI.updateTemp();
     if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
   }
@@ -177,6 +183,8 @@
     if (!f) return;
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     f.entities.push(e);
+    // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …)
+    if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1);
     App.gridStale = true;
     UI.updateSketches();
     UI.refreshTree();
@@ -228,6 +236,10 @@
     if (App.tool !== 'select' && App.toolState.pts.length) {
       App.tempEntities = toolEntities(App.toolState.pts, p);
       UI.updateTemp();
+      // yellow inference icons: the relations the entity being drawn would get
+      var f = UI.activeSketchFeature(), prev = JSON.stringify(App.inferPreview || []);
+      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0]) : [];
+      if (JSON.stringify(App.inferPreview) !== prev) App.dimsStale = true;
     }
   }
 
@@ -239,7 +251,8 @@
   // kernel's setDimValue moves the entity so the value reads as typed (there is no constraint solver).
   var dimLayer = $('dim-layer'), dimEdit = $('dim-edit'), dimInput = dimEdit.querySelector('input');
   var SVGNS = 'http://www.w3.org/2000/svg';
-  var dimEditing = null; // { d, auto, index, sketchId }
+  var dimEditing = null; // { d, auto, index, rel, sketchId }
+  var lastDimError = null; // why the last committed value was not applied (the solver refused it)
   function svg(tag, attrs, parent) {
     var n = document.createElementNS(SVGNS, tag);
     Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
@@ -312,7 +325,8 @@
   }
 
   function drawOne(sc, it) {
-    var cls = 'dim' + (it.temp ? ' temp' : '') + (it.auto ? ' auto' : '') + (!it.temp && !it.auto && App.sel && App.sel.kind === 'dim' && App.sel.index === it.index ? ' sel' : '');
+    var isSel = it.rel != null ? App.sel && App.sel.kind === 'rel' && App.sel.index === it.rel : App.sel && App.sel.kind === 'dim' && App.sel.index === it.index;
+    var cls = 'dim' + (it.temp ? ' temp' : '') + (it.auto ? ' auto' : '') + (!it.temp && !it.auto && isSel ? ' sel' : '') + (it.state && it.state !== 'ok' ? ' ' + it.state : '');
     var gEl = svg('g', { 'class': cls }, dimLayer);
     sc.lines.forEach(function (l) { svg('line', { x1: l[0][0], y1: l[0][1], x2: l[1][0], y2: l[1][1] }, gEl); });
     sc.arrows.forEach(function (a) {
@@ -324,7 +338,8 @@
     if (!it.temp) {
       t.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        if (!it.auto) { App.sel = { kind: 'dim', index: it.index }; UI.closePM(); UI.updateSketches(); }
+        if (it.rel != null) { App.sel = { kind: 'rel', index: it.rel }; UI.closePM(); UI.updateSketches(); }
+        else if (!it.auto) { App.sel = { kind: 'dim', index: it.index }; UI.closePM(); UI.updateSketches(); }
         openDimEdit(it);
       });
       t.setAttribute('tabindex', '0');
@@ -348,6 +363,8 @@
       if (!sc) { if (it.index != null) stale.push(it.index); return; }
       drawOne(sc, it);
     });
+    // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
+    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, drawOne: drawOne, list: list });
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
@@ -361,7 +378,8 @@
   function openDimEdit(it) {
     var f = UI.activeSketchFeature();
     if (!f) return;
-    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, sketchId: f.id, value: K.dimValue(f.entities[it.d.e], it.d) };
+    var value = it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d);
+    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value };
     dimEdit.hidden = false;
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
     positionDimEdit();
@@ -371,8 +389,8 @@
     if (!dimEditing) return;
     var it = null;
     (list || []).forEach(function (x) { if (x.d === dimEditing.d) it = x; });
-    var f = UI.activeSketchFeature(), e = f && f.entities[dimEditing.d.e];
-    var sc = it && it.text ? { text: it.text } : (e && dimScreen(UI.activePlane(), e, dimEditing.d));
+    var f = UI.activeSketchFeature(), e = f && dimEditing.rel == null && f.entities[dimEditing.d.e];
+    var sc = it && it.text ? { text: it.text } : dimEditing.rel != null ? (UI.relDimScreen ? UI.relDimScreen(f, dimEditing.rel) : null) : (e && dimScreen(UI.activePlane(), e, dimEditing.d));
     if (!sc) { closeDimEdit(false); return; }
     dimEdit.style.left = sc.text.x + 'px';
     dimEdit.style.top = (sc.text.y - 4) + 'px';
@@ -407,17 +425,21 @@
     if (r && r.error != null) UI.setStatus('Dimension not changed: ' + r.error);
     dimEditError('');
     if (!commit || !r || r.error != null) return;
-    var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && f.entities[ed.d.e];
+    var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && (ed.rel != null ? f.rels && f.rels[ed.rel] : f.entities[ed.d.e]);
     if (!e) return;
     var v = r.value;
     if (Math.abs(v - ed.value) < 1e-9) return;
     try {
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-      K.setDimValue(e, ed.d, v);
+      if (window.SketchSolver) {
+        // a driving dimension: the whole sketch is re-solved with the new value (relations and other dimensions hold)
+        var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, v) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, v);
+        if (!res.ok) throw new Error(res.error);
+      } else K.setDimValue(e, ed.d, v);
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
       UI.setStatus('Dimension set to ' + fmtDim(v) + ' ' + UI.unitLabel() + '.');
-    } catch (err) { UI.toast(err.message); App.dimsStale = true; }
+    } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; }
   }
   dimInput.addEventListener('keydown', function (ev) {
     ev.stopPropagation();
@@ -442,7 +464,24 @@
   function dimToolClick(raw, mx, my) {
     var f = UI.activeSketchFeature(), st = App.toolState;
     if (!f) return;
+    if (st.relDim) {
+      // third click of a two-entity dimension: place it, then type its value
+      var rd = st.relDim;
+      st.relDim = null; st.dim = null; App.tempRelDim = null;
+      if (UI.placeRelDim) UI.placeRelDim(f, rd, raw);
+      return;
+    }
     if (st.dim) {
+      // a second entity or point clicked: distance / angle between the two, as SolidWorks' Smart Dimension does
+      var ref2 = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+      var two = ref2 && st.ref1 && UI.relDimFor ? UI.relDimFor(f, st.ref1, ref2) : null;
+      if (two) {
+        st.relDim = two; st.dim = null; App.tempDim = null;
+        App.tempRelDim = Object.assign({}, two, UI.relDimPlacement(f, two, raw));
+        App.dimsStale = true;
+        $('sketch-hint').innerHTML = 'Click where the ' + (two.type === 'angle' ? 'angle' : 'distance') + ' dimension should sit.';
+        return;
+      }
       var d = st.dim, e = f.entities[d.e];
       st.dim = null; App.tempDim = null;
       if (!e) return;
@@ -465,13 +504,15 @@
     if (!t) { UI.toast('That entity has no dimension to place.'); return; }
     t.e = hit.index;
     st.dim = t;
+    st.ref1 = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
     var pv = dimPlacement(f.entities[hit.index], t, raw);
     App.tempDim = Object.assign({}, t, pv);
     App.dimsStale = true;
-    $('sketch-hint').innerHTML = 'Click where the dimension should sit.' + (f.entities[hit.index].t === 'line' ? ' Move above/below or beside a slanted line for its horizontal or vertical distance.' : '');
+    $('sketch-hint').innerHTML = 'Click where the dimension should sit, or click a second entity for the distance / angle between them.' + (f.entities[hit.index].t === 'line' ? ' Move above/below or beside a slanted line for its horizontal or vertical distance.' : '');
   }
   function dimToolMove(raw) {
     var f = UI.activeSketchFeature(), st = App.toolState;
+    if (f && st.relDim) { App.tempRelDim = Object.assign({}, st.relDim, UI.relDimPlacement(f, st.relDim, raw)); App.dimsStale = true; return; }
     if (!f || !st.dim) return;
     var e = f.entities[st.dim.e];
     if (!e) return;
@@ -496,11 +537,27 @@
     if (!UI.openDimEdit(index)) return { ok: false, error: 'No dimension ' + index + ' in the active sketch' };
     dimInput.value = String(text);
     var d = dimEditing.d;
+    lastDimError = null;
     closeDimEdit(true, true);
     if (dimEditing) return { ok: false, error: dimEdit.getAttribute('data-error') || 'rejected' };
+    if (lastDimError) return { ok: false, error: lastDimError };
     var f = UI.activeSketchFeature(), e = f && f.entities[d.e];
     return { ok: true, value: e ? K.dimValue(e, d) : null };
   };
+  // the same for a distance / angle dimension (sketch relation `index` with a value)
+  UI.editRelDim = function (index, text) {
+    var f = UI.activeSketchFeature(), rel = f && f.rels && f.rels[index];
+    if (!rel || rel.v == null) return { ok: false, error: 'No dimension relation ' + index + ' in the active sketch' };
+    openDimEdit({ d: rel, rel: index });
+    if (!dimEditing) return { ok: false, error: 'could not open the Modify box' };
+    dimInput.value = String(text);
+    lastDimError = null;
+    closeDimEdit(true, true);
+    if (dimEditing) return { ok: false, error: dimEdit.getAttribute('data-error') || 'rejected' };
+    if (lastDimError) return { ok: false, error: lastDimError };
+    return { ok: true, value: f.rels[index].v };
+  };
+  UI.openRelDimEdit = function (index) { var f = UI.activeSketchFeature(), rel = f && f.rels && f.rels[index]; if (!rel || rel.v == null) return false; openDimEdit({ d: rel, rel: index }); return true; };
   UI.cancelDimEdit = function () { closeDimEdit(false); dimEditError(''); };
   UI.isDimEditOpen = function () { return !!dimEditing; };
 
@@ -523,7 +580,7 @@
     }
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
-    var hook = ev.button === 0 && UI.componentDragHook ? UI.componentDragHook(p, ev) : null;
+    var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 0) drag = { kind: 'maybe-rotate', last: p, moved: false };
   });

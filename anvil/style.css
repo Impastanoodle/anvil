@@ -290,6 +290,29 @@ body { overflow: auto; }
 #dim-layer .temp line, #dim-layer .temp polyline { stroke: var(--blue); stroke-dasharray: 4 3; }
 #dim-layer .temp polygon { fill: var(--blue); }
 #dim-layer .temp text { fill: var(--blue); pointer-events: none; }
+/* sketch relations (ui-relations.js): relation icons, inference icons, over-defined dimensions, Add Relations picks */
+#dim-layer .rel-badge { pointer-events: auto; cursor: pointer; }
+#dim-layer .rel-badge rect { fill: #f3f8ef; stroke: #8fbf86; stroke-width: 1; }
+#dim-layer .rel-badge:hover rect, #dim-layer .rel-badge.sel rect { fill: #d9f2d4; stroke: var(--green); stroke-width: 1.5; }
+#dim-layer .rel-badge.redundant rect { fill: #fff4c8; stroke: #d4a300; }
+#dim-layer .rel-badge.conflict rect { fill: #fde0dd; stroke: #d9302c; }
+#dim-layer .rel-badge.infer { pointer-events: none; }
+#dim-layer .rel-badge.infer rect { fill: #fff2a8; stroke: #d4a300; }
+#dim-layer .rel-badge line, #dim-layer .rel-badge polyline { stroke-width: inherit; }
+#dim-layer .rel-pick { stroke: var(--green); stroke-width: 3; fill: none; opacity: 0.85; }
+#dim-layer circle.rel-pick { fill: var(--green); }
+#dim-layer .dim.redundant text { fill: #b08700; } #dim-layer .dim.redundant line { stroke: #d4a300; } #dim-layer .dim.redundant polygon { fill: #d4a300; }
+#dim-layer .dim.conflict text { fill: #d9302c; } #dim-layer .dim.conflict line { stroke: #d9302c; } #dim-layer .dim.conflict polygon { fill: #d9302c; }
+.rel-list { max-height: 260px; overflow: auto; border: 1px solid var(--line); background: var(--panel, #fff); margin: 2px 0 6px; }
+.rel-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 12px; border-bottom: 1px solid var(--line); cursor: default; }
+.rel-row:last-child { border-bottom: 0; }
+.rel-row span { flex: 1; }
+.rel-row em { font-style: normal; color: var(--muted); font-size: 11px; }
+#rel-display .rel-row { cursor: pointer; }
+.rel-row.sel { background: var(--blue-soft); }
+.rel-row.redundant em { color: #b08700; } .rel-row.conflict em { color: #d9302c; }
+.rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
+#status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
 #dim-edit { position: absolute; z-index: 4; transform: translate(-50%, -50%); background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 #dim-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }

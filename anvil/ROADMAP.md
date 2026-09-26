@@ -70,7 +70,7 @@ Anvil is a browser-based parametric solid modeler with a SolidWorks-style worksp
 
 ## Phase 7 — gaps versus SolidWorks (queue for later sessions)
 Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in order of how often a SolidWorks user would miss them.
-- [ ] Sketch constraint solver: geometric relations (coincident, horizontal, parallel, tangent, equal…) and driving dimensions; today a dimension edit moves one entity and Display/Delete Relations is a placeholder
+- [x] Sketch constraint solver: geometric relations (coincident, horizontal, vertical, parallel, perpendicular, tangent, concentric, equal, midpoint, collinear, fix) and driving dimensions (linear, radial / diameter, distance, angle) solved together (Levenberg-Marquardt, DOF count), inference with yellow icons, relation icons, Add Relations and Display/Delete Relations PMs, Under / Fully / Over Defined with entity colours, dragging keeps relations (cloud-2026-09-25i)
 - [ ] True curves in the kernel: exact circles, arcs and cylinders (B-rep or at least analytic faces) instead of 16–72-gons, so volumes, fillets and drawings stop showing facets
 - [ ] Fillets and chamfers on curved and tangent edge chains, variable-radius fillets, face fillets
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve), Instant3D

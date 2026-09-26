@@ -79,6 +79,11 @@ var UI = (function () {
     sketch: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     sketchDim: new THREE.LineBasicMaterial({ color: 0x8a94a3 }),
     sketchSel: new THREE.LineBasicMaterial({ color: 0x1fa653, depthTest: false }),
+    // active-sketch entities by definition state (sketch-solver.js): under = mats.sketch (blue), fully defined, over
+    // defined (redundant, yellow), conflict (red)
+    sketchFull: new THREE.LineBasicMaterial({ color: 0x15181d, depthTest: false }),
+    sketchOver: new THREE.LineBasicMaterial({ color: 0xd4a300, depthTest: false }),
+    sketchConflict: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),
     temp: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     planeFace: new THREE.MeshBasicMaterial({ color: 0x5a9be6, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
     planeFaceHi: new THREE.MeshBasicMaterial({ color: 0x69d98a, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
@@ -95,8 +100,8 @@ var UI = (function () {
   // dark theme swaps them here. `light` is exactly the set of colours the materials are created with.
   // The HLR body colour follows the theme too: it exists to occlude hidden lines, so it must read as "background".
   var THEME_COLORS = {
-    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff },
-    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b }
+    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d },
+    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5 }
   };
   var viewportTheme = 'light';
   // setViewportTheme('dark' | 'light'): idempotent; UI.setTheme (ui-app.js) calls it after switching the stylesheet.
@@ -617,10 +622,14 @@ var UI = (function () {
       if (f.type !== 'sketch' || !sketchVisible(f)) return;
       var pl; try { pl = K.resolvePlane(f.plane, App.model, App.build && App.build.planes); } catch (e) { return; }
       var active = App.activeSketch === f.id;
+      // the active sketch is analysed on every redraw: entity colours and the status bar's Under / Fully / Over Defined
+      var state = null;
+      if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
+      var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict };
       f.entities.forEach(function (e, i) {
         var pls = K.entityPolylines(e);
         var selected = active && App.sel && App.sel.kind === 'entity' && App.sel.index === i;
-        var mat = selected ? mats.sketchSel : (active ? mats.sketch : mats.sketchDim);
+        var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
         if (e.t === 'point') {
           var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
           var g = new THREE.BufferGeometry();
@@ -635,6 +644,8 @@ var UI = (function () {
         groups.sketches.add(ls);
       });
     });
+    if (App.mode !== 'sketch') App.sketchState = null;
+    else if (UI.refreshStatus) UI.refreshStatus();
   }
   function updateTemp() {
     disposeGroup(groups.temp);

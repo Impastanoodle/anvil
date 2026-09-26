@@ -265,6 +265,23 @@ var AnvilExamples = [
     ].join('\n')
   },
   {
+    name: 'Constrained L profile',
+    description: 'An L-shaped profile drawn roughly and then pinned down by sketch relations (Coincident, Horizontal, Vertical, origin) and four driving dimensions: 60 × 40 with 15 mm legs, Fully Defined, extruded 10 mm.',
+    volume: (60 * 15 + 15 * 25) * 10,
+    code: [
+      'p.name("Constrained L").units("mm");',
+      '// six lines drawn by eye; the dimensions set four lengths, the relations close and square the outline',
+      'p.sketch("Front")',
+      '  .line(0, 0, 58, 1).line(58, 1, 59, 14).line(59, 14, 16, 16).line(16, 16, 14, 41).line(14, 41, 1, 39).line(1, 39, 0, 0)',
+      '  .dim(0, "len", { value: 60 }).dim(1, "len", { value: 15 }).dim(4, "len", { value: 15 }).dim(5, "len", { value: 40 })',
+      '  .rel("coincident", ["0.p2", "1.p1"]).rel("coincident", ["1.p2", "2.p1"]).rel("coincident", ["2.p2", "3.p1"])',
+      '  .rel("coincident", ["3.p2", "4.p1"]).rel("coincident", ["4.p2", "5.p1"]).rel("coincident", ["5.p2", "0.p1"])',
+      '  .rel("coincident", ["0.p1", "O"])',
+      '  .rel("horizontal", ["0"]).rel("vertical", ["1"]).rel("horizontal", ["2"]).rel("vertical", ["3"]).rel("horizontal", ["4"]).rel("vertical", ["5"])',
+      '  .extrude(10);'
+    ].join('\n')
+  },
+  {
     name: 'Parametric plate',
     description: 'A mounting plate driven by equations (Tools ▸ Equations): length, width, thickness, edge margin and hole size are global variables, the corner holes are patterned at "=L - 2*E" and a centre row at "=L/4". Change T or D and rebuild.',
     // 120×80×8 plate − four Ø8 corner holes − three Ø4 centre holes (polygonal circles: 16 sides each)
