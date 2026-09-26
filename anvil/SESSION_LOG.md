@@ -786,3 +786,32 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 
 **Next up.** 1. Concentric / Tangent on cones and spheres from their records. 2. Exact clearance for spheres and skew cylinders. 3. Surface records for sweeps, lofts and shells (from 25p).
 
+
+## Run cloud-2026-09-26s — Sketch solver: Symmetric, driven (reference) dimensions, construction geometry
+
+**Context.** Cloud session (not the scheduled local run): no HEAD.lock, no Foreman board, no artifact republish, no subagents. Task: the sketch-solver gaps listed in cloud-2026-09-25i. Branch `cloud/sketch-symmetric`, PR to main (the foreman integrates). kernel.js was not edited: the kernel already had `construction: true` (skipped by `sketchProfile`, kept by offset / trim), so no profile change was needed. Tests in headless Chromium (Playwright, /opt/pw-browsers) against `python3 -m http.server 8765`, three.js r128 routed from npm `three@0.128.0` (cdnjs blocked; runner only). Baseline on c926ab1: kernel 671/671, smoke 145/145.
+
+**Done (sketch-solver.js).**
+- `symmetric` relation, refs `[a, b, axis]`: two points, two lines or two circles / arcs and the line they mirror about. Each mirrored pair gives two equations (midpoint on the axis, chord ⟂ axis); two lines pair their ends the way they mirror when the relation is made (4 equations); circles add equal radii (5). Add Relations offers it for three picks (like, like, line) in any order, preferring a construction line as the axis.
+- Inference: a line drawn with its ends mirrored about a centerline gets Symmetric (its Horizontal is then redundant and skipped), a point / line / circle drawn as the mirror of an existing one gets Symmetric with it.
+- Driven dimensions: `driven: true` on a distance / angle relation or a Smart Dimension removes its equation; `analyze` reports `'driven'`; `updateDriven` (run after every solve) rewrites the measured `v` of driven relations; `setDim` / `setRelValue` refuse driven ones; `overDefines(sketch, kind, i)` and `setDriven(sketch, kind, i, on)`.
+- Over-definition is judged by counts, not only by the added rows: the row reduction flags whichever equation comes last, so a new relation that repeats an older Smart Dimension used to read "ok" while the dimension turned yellow. `addRelation` and `infer` now compare redundant / conflict counts before and after; `overDefines` compares the DOF with and without the item.
+- Script round trip without kernel.js: `.construction([i…])`, `.driven([i…])`, `.rel("distance", refs, { driven: true })`, written by the `generateScript` wrapper before `.id();`. (Construction flags did not round-trip through scripts before this.)
+
+**Done (UI).** `ui-relations.js`: the *Make Dimension Driven?* page modal (`#drv-driven` *Make this dimension driven* / `#drv-driving` *Leave this dimension driving*) when a new single-entity or two-entity dimension would over-define the sketch; clicking a driven dimension offers *Make driving*; *Construction Geometry* toggles the selected entities; *Centerline* = the Line tool drawing construction lines; `anvil.construction()`, `anvil.driven()`, `UI.setDimDriven`. `ui-sketch.js` hooks: Centerline flag in `addEntity` (reset by `setTool`), the question after a Smart Dimension is placed, driven labels in parentheses, a driven dimension's click goes to the modal. `ui-core.js`: construction entities drawn with a dashed twin of their state material. `ui-panels.js`: the two ribbon buttons in the Add Relation stack. `icons.js`: `relSymmetric`, `construction`, `centerline`. `style.css`: `.dim.driven` grey.
+
+**Tests.** kernel 671 → 676: Symmetric points (free axis 8 → 6 DOF, fixed axis 4 → 2, exact mirror, axis ordering), lines (8 → 4) / circles (6 → 3, equal radii) / one line's ends (4 → 2, a Horizontal on top is redundant), inference (line across a centerline, mirrored circle, preview), driven dimensions (distance repeating the height: over-defines, driven → Fully Defined, reads 20 then 30 after the height edit, edits refused; driven Smart Dimension follows a width edit; driving again over-defines), construction (1 loop, extrude volume of the rectangle alone, `.construction` / `.driven` / driven `.rel` round trip and fixed point). Smoke 145 → 146: Centerline from the ribbon (dashed material), a line across it infers Symmetric, the second dimension on it opens the modal, *Make this dimension driven* → grey "(16)", a 16 → 30 edit keeps the symmetry and the driven label reads "(30)", Construction Geometry on / off.
+
+**Verified (headless Chromium, port 8765).** kernel-tests 676/676, ui-smoke 146/146, app page loads with 0 console errors.
+
+**Decisions.**
+- Symmetric between two arcs constrains centres and radii only (not the end angles).
+- The dash length of construction lines is set from the zoom when the sketch is redrawn (not on every zoom step).
+- "Leave this dimension driving" keeps the over-defining dimension (yellow), as SolidWorks does.
+
+**Known gaps.** No Symmetric from Mirror Entities yet (SolidWorks adds it to mirrored copies); no tangent / perpendicular inference while drawing; Pierce / Merge / Intersection relations; construction lines are not offered as revolve axes by name.
+
+**Next up.**
+1. Mirror Entities about a centerline adds Symmetric relations to the copies.
+2. Tangent / perpendicular inference from an end point while drawing a line or arc.
+3. Concentric / Tangent mates on cones and spheres (from 26r).

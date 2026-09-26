@@ -7,8 +7,11 @@
 //   '3.c'    centre (circle, arc, polygon, rectangles, slot)
 //   '3.v0'   vertex i (rectangles, polygon, polyline)      '3.e0' edge i (same entities, as a line)
 // Relation types: coincident, horizontal, vertical, parallel, perpendicular, tangent, concentric, equal, midpoint,
-// collinear, fix (at: the fixed values), and the two-entity driving dimensions distance and angle (v: value, degrees
-// for angle). The single-entity Smart Dimensions in `dims` (Kernel.dimGeometry) are driving too: each holds the value
+// collinear, symmetric (two points / lines / circles about a centerline: refs [a, b, axis]), fix (at: the fixed
+// values), and the two-entity driving dimensions distance and angle (v: value, degrees for angle). A dimension
+// (relation or Smart Dimension) with `driven: true` is a reference dimension: it adds no equation and its value
+// follows the geometry (updateDriven after every solve). Entities with `construction: true` are solved like the
+// others but left out of profiles (Kernel.sketchProfile skips them). The single-entity Smart Dimensions in `dims` (Kernel.dimGeometry) are driving too: each holds the value
 // the geometry has when the solve starts, unless a new target is given (dimension edit).
 //
 // The solver treats every entity parameter as an unknown (arc angles in degrees), every relation / dimension as one or
@@ -118,6 +121,13 @@ var SketchSolver = (function () {
   function lineDist(p, L) { var d = sub(L.b, L.a), l = len(d); return l < 1e-12 ? len(sub(p, L.a)) : crs(d, sub(p, L.a)) / l; }
   function angleDeg(L1, L2) { var d1 = sub(L1.b, L1.a), d2 = sub(L2.b, L2.a); return Math.atan2(crs(d1, d2), dot(d1, d2)) / D2R; }
   function sgn(x) { return x < 0 ? -1 : 1; }
+  // mirror image of p about line L
+  function reflect(p, L) {
+    var d = sub(L.b, L.a), l2 = dot(d, d);
+    if (l2 < 1e-24) return [p[0], p[1]];
+    var t = dot(sub(p, L.a), d) / l2, f = [L.a[0] + d[0] * t, L.a[1] + d[1] * t];
+    return [2 * f[0] - p[0], 2 * f[1] - p[1]];
+  }
 
   // ------------------------------------------------------------------ relation catalogue
   var TYPES = {
@@ -131,11 +141,12 @@ var SketchSolver = (function () {
     equal: { name: 'Equal', glyph: '=' },
     midpoint: { name: 'Midpoint', glyph: 'M' },
     collinear: { name: 'Collinear', glyph: '≡' },
+    symmetric: { name: 'Symmetric', glyph: '⇹' },
     fix: { name: 'Fix', glyph: 'F' },
     distance: { name: 'Distance', glyph: '↔', dim: true },
     angle: { name: 'Angle', glyph: '∠', dim: true }
   };
-  var ADD_ORDER = ['horizontal', 'vertical', 'coincident', 'midpoint', 'collinear', 'parallel', 'perpendicular', 'tangent', 'concentric', 'equal', 'fix'];
+  var ADD_ORDER = ['horizontal', 'vertical', 'coincident', 'midpoint', 'collinear', 'parallel', 'perpendicular', 'tangent', 'concentric', 'equal', 'symmetric', 'fix'];
 
   // Does relation `type` apply to refs of these kinds? (order-free; returns the kinds in the order the residual wants
   // them, as an index permutation, or null)
@@ -143,6 +154,15 @@ var SketchSolver = (function () {
     var n = kinds.length;
     function perm(a, b) { if (kinds[0] === a && kinds[1] === b) return [0, 1]; if (kinds[0] === b && kinds[1] === a) return [1, 0]; return null; }
     switch (type) {
+      case 'symmetric':
+        // two items of one kind and the centerline (a line) they are mirrored about; with three lines the last is the axis
+        if (n !== 3) return null;
+        for (var k = 2; k >= 0; k--) {
+          if (kinds[k] !== 'line') continue;
+          var o = [0, 1, 2].filter(function (q) { return q !== k; });
+          if (kinds[o[0]] === kinds[o[1]]) return [o[0], o[1], k];
+        }
+        return null;
       case 'horizontal': case 'vertical':
         if (n === 1 && kinds[0] === 'line') return [0];
         return n === 2 ? perm('point', 'point') : null;
@@ -195,7 +215,7 @@ var SketchSolver = (function () {
     if (kinds.some(function (k) { return !k; })) return null;
     var p = match(rel.type, kinds);
     if (!p) return null;
-    var A = R[p[0]], B = R[p[1]], kA = kinds[p[0]], kB = kinds[p[1]];
+    var A = R[p[0]], B = R[p[1]], kA = kinds[p[0]], kB = kinds[p[1]], Ax = p.length > 2 ? R[p[2]] : null;
     var eidx = [];
     R.forEach(function (r) { if (!r.o && eidx.indexOf(r.e) < 0) eidx.push(r.e); });
     var f, n, v = +rel.v;
@@ -222,6 +242,30 @@ var SketchSolver = (function () {
           var d1 = sub(C(A, E).b, C(A, E).a), d2 = sub(C(B, E).b, C(B, E).a), l = len(d1) * len(d2);
           if (l < 1e-18) return [0];
           return [(par ? crs(d1, d2) : dot(d1, d2)) / l];
+        };
+        break;
+      }
+      case 'symmetric': {
+        // mirror pairs: the midpoint of each pair lies on the axis and the pair's chord is perpendicular to it
+        var pairs;
+        if (kA === 'point') pairs = [[function (E) { return P(A, E); }, function (E) { return P(B, E); }]];
+        else if (kA === 'circle') pairs = [[function (E) { return C(A, E).c; }, function (E) { return C(B, E).c; }]];
+        else {
+          // two lines: pair the ends the way the geometry mirrors best now (a.p1 with b.p1, or a.p1 with b.p2)
+          var la = C(A, ents), lb = C(B, ents), ax0 = C(Ax, ents), m1 = reflect(la.a, ax0);
+          var swap = len(sub(m1, lb.b)) < len(sub(m1, lb.a));
+          pairs = [[function (E) { return C(A, E).a; }, function (E) { var l = C(B, E); return swap ? l.b : l.a; }],
+                   [function (E) { return C(A, E).b; }, function (E) { var l = C(B, E); return swap ? l.a : l.b; }]];
+        }
+        n = pairs.length * 2 + (kA === 'circle' ? 1 : 0);
+        f = function (E) {
+          var L = C(Ax, E), dir = unit(sub(L.b, L.a)), out = [];
+          pairs.forEach(function (pr) {
+            var a = pr[0](E), b = pr[1](E);
+            out.push(lineDist([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], L), dot(sub(b, a), dir));
+          });
+          if (kA === 'circle') out.push(C(A, E).r - C(B, E).r);
+          return out;
         };
         break;
       }
@@ -309,10 +353,12 @@ var SketchSolver = (function () {
     (sketch.rels || []).forEach(function (rel, i) {
       var r = rel;
       if (opts.relTargets && opts.relTargets[i] != null) { r = clone(rel); r.v = opts.relTargets[i]; }
+      if (rel.driven && TYPES[rel.type] && TYPES[rel.type].dim) { cons.push({ src: 'rel', index: i, n: 0, driven: true, ents: [] }); return; }
       var q = relEquation(ents, r, sketch.rels);
       cons.push(q ? { src: 'rel', index: i, n: q.n, f: q.f, ents: q.ents } : { src: 'rel', index: i, n: 0, bad: true, ents: [] });
     });
     (sketch.dims || []).forEach(function (d, i) {
+      if (d.driven) { cons.push({ src: 'dim', index: i, n: 0, driven: true, ents: [] }); return; }
       var q = dimEquation(ents, d, opts.dimTargets ? opts.dimTargets[i] : null);
       cons.push(q ? { src: 'dim', index: i, n: q.n, f: q.f, ents: q.ents } : { src: 'dim', index: i, n: 0, bad: true, ents: [] });
     });
@@ -473,7 +519,7 @@ var SketchSolver = (function () {
 
   // ------------------------------------------------------------------ public: analyse
   // { dof, status: 'under' | 'full' | 'over', entities: ['under'|'full'|'over'|'conflict'], rels: ['ok'|'redundant'|
-  //   'conflict'|'invalid'], dims: [...same], redundant, conflicts, unknowns, equations }
+  //   'conflict'|'invalid'|'driven'], dims: [...same], redundant, conflicts, unknowns, equations }
   function analyze(sketch, sysIn) {
     var sys = sysIn || buildSystem(sketch);
     var n = sys.vars.length, r = residuals(sys), J = jacobian(sys), info = rankInfo(sys, J);
@@ -483,7 +529,8 @@ var SketchSolver = (function () {
     sys.cons.forEach(function (c, ci) {
       if (c.src === 'extra') return;
       var st = 'ok';
-      if (c.bad) st = 'invalid';
+      if (c.driven) st = 'driven';
+      else if (c.bad) st = 'invalid';
       else {
         var bad = false;
         for (var k = 0; k < c.n; k++) if (Math.abs(r[c.row + k]) > tol) bad = true;
@@ -536,10 +583,46 @@ var SketchSolver = (function () {
     var moved = 0, x1 = getX(sys);
     for (var j = 0; j < x0.length; j++) moved = Math.max(moved, Math.abs(x1[j] - x0[j]));
     if (r.ok || opts.force) writeBack(sketch, sys);
+    updateDriven(sketch);
     return { ok: r.ok, it: r.it, res: r.res, moved: r.ok || opts.force ? moved : 0 };
   }
 
+  // Driven (reference) distance / angle relations read their value off the geometry. Single-entity Smart Dimensions
+  // hold no value (Kernel.dimValue reads the entity), so a driven one is always current.
+  function updateDriven(sketch) {
+    (sketch.rels || []).forEach(function (rel) {
+      if (!rel.driven || !TYPES[rel.type] || !TYPES[rel.type].dim) return;
+      var v = measure(sketch, rel.type, rel.refs);
+      if (v != null && isFinite(v)) rel.v = Math.abs(v - Math.round(v * 1e6) / 1e6) < 1e-9 * Math.max(1, Math.abs(v)) ? Math.round(v * 1e6) / 1e6 : v;
+    });
+  }
+  // Would this dimension ('dim' | 'rel', index), taken as driving, over-define the sketch? (the 'Make this dimension
+  // driven?' question). True when, taken as driving, it removes no degree of freedom (it repeats what the rest already
+  // says, whichever equation the rank reduction happens to flag) or adds a conflict.
+  function overDefines(sketch, kind, index) {
+    var list = kind === 'rel' ? sketch.rels : sketch.dims, item = list && list[index];
+    if (!item) return false;
+    var was = item.driven;
+    item.driven = true;
+    var a0 = analyze(sketch);
+    delete item.driven;
+    var a1 = analyze(sketch);
+    if (was) item.driven = true;
+    return a1.dof === a0.dof || a1.conflicts > a0.conflicts;
+  }
+  // Make dimension ('dim' | 'rel', index) driven (reference) or driving. Driving again holds the value it reads now.
+  function setDriven(sketch, kind, index, on) {
+    var list = kind === 'rel' ? sketch.rels : sketch.dims, item = list && list[index];
+    if (!item || (kind === 'rel' && !(TYPES[item.type] && TYPES[item.type].dim))) return { ok: false, error: 'Not a dimension.' };
+    var over = false;
+    if (on) { item.driven = true; if (kind === 'rel') updateDriven(sketch); }
+    else { over = overDefines(sketch, kind, index); delete item.driven; if (kind === 'rel') { var v = measure(sketch, item.type, item.refs); if (v != null) item.v = v; } }
+    var an = analyze(sketch), st = an[kind === 'rel' ? 'rels' : 'dims'][index];
+    return { ok: true, state: over && st === 'ok' ? 'redundant' : st, analysis: an };
+  }
+
   // ------------------------------------------------------------------ editing helpers
+  var DRIVEN_MSG = 'This is a driven dimension: its value follows the geometry. Make it driving to change it.';
   // Set placed dimension `index` (or a dimension object not in sketch.dims) to v and re-solve the whole sketch.
   // Returns { ok, error }; on failure the sketch is unchanged.
   function setDim(sketch, d, v) {
@@ -547,6 +630,7 @@ var SketchSolver = (function () {
     if (!(v > 0) || !isFinite(v)) return { ok: false, error: 'Dimension must be a positive number.' };
     var index = typeof d === 'number' ? d : (sketch.dims || []).indexOf(d);
     var dim = index >= 0 ? sketch.dims[index] : d;
+    if (dim.driven) return { ok: false, error: DRIVEN_MSG };
     var e = sketch.entities[dim.e];
     if (!e || !K || !K.dimGeometry(e, dim)) return { ok: false, error: 'That dimension no longer applies to the entity.' };
     var saved = clone(sketch.entities);
@@ -562,6 +646,7 @@ var SketchSolver = (function () {
   function setRelValue(sketch, index, v) {
     var rel = (sketch.rels || [])[index];
     if (!rel || !TYPES[rel.type] || !TYPES[rel.type].dim) return { ok: false, error: 'Not a dimension.' };
+    if (rel.driven) return { ok: false, error: DRIVEN_MSG };
     v = +v;
     if (!(v >= 0) || !isFinite(v) || (rel.type === 'angle' && v > 180)) return { ok: false, error: rel.type === 'angle' ? 'Angle must be between 0 and 180 degrees.' : 'Dimension must be a positive number.' };
     var saved = clone(sketch.entities), t = {};
@@ -592,6 +677,7 @@ var SketchSolver = (function () {
     var kinds = R.map(function (r) { return refKind(sketch.entities, r); });
     if (kinds.some(function (k) { return !k; })) return [];
     return ADD_ORDER.filter(function (t) {
+      if (t === 'symmetric') return R.length === 3 && !!match(t, kinds);
       if (R.length > 2) return (t === 'horizontal' || t === 'vertical' || t === 'fix') && kinds.every(function (k) { return k === 'line' || t === 'fix'; })
         || ((t === 'parallel' || t === 'equal' || t === 'collinear' || t === 'coincident') && sameKind(kinds, t));
       if (R.length === 2 && kinds[0] === 'line' && kinds[1] === 'line' && (t === 'horizontal' || t === 'vertical')) return true;
@@ -623,14 +709,16 @@ var SketchSolver = (function () {
     if ((type === 'horizontal' || type === 'vertical') && refs.length === 2) {
       var kinds = refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); });
       groups = kinds[0] === 'point' && kinds[1] === 'point' ? [refs] : refs.map(function (r) { return [r]; });
-    } else groups = type === 'distance' || type === 'angle' ? [refs] : expand(type, refs);
-    var added = [], saved = clone(sketch.entities), savedRels = clone(sketch.rels || []);
+    } else if (type === 'symmetric') groups = [symOrder(sketch, refs)];
+    else groups = type === 'distance' || type === 'angle' ? [refs] : expand(type, refs);
+    var added = [], saved = clone(sketch.entities), savedRels = clone(sketch.rels || []), before = analyze(sketch);
     sketch.rels = sketch.rels || [];
     for (var g = 0; g < groups.length; g++) {
       var rel = { type: type, refs: groups[g] };
       if (TYPES[type].dim) {
-        rel.v = opts.value != null ? +opts.value : measure(sketch, type, groups[g]);
+        rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g]);
         if (opts.off != null) rel.off = +opts.off;
+        if (opts.driven) rel.driven = true;
       }
       if (type === 'fix') {
         var r0 = parseRef(groups[g][0]), e = sketch.entities[r0.e];
@@ -644,9 +732,24 @@ var SketchSolver = (function () {
     var res = solve(sketch);
     var an = analyze(sketch), worst = 'ok';
     added.forEach(function (i) { var s = an.rels[i]; if (s === 'conflict') worst = 'conflict'; else if (s === 'redundant' && worst === 'ok') worst = 'redundant'; });
-    if (!res.ok) worst = 'conflict';
+    if (!res.ok || an.conflicts > before.conflicts) worst = 'conflict';
+    // the rank reduction flags whichever equation comes last, so a new relation repeating an older dimension shows up
+    // as that dimension turning redundant: judge by the count, not only by the added rows
+    else if (worst === 'ok' && an.redundant > before.redundant) worst = 'redundant';
     if (worst !== 'ok' && opts.rejectOver) { sketch.rels = savedRels; sketch.entities = saved; return { ok: false, status: worst, error: 'Adding ' + TYPES[type].name + ' would over-define the sketch.' }; }
     return { ok: true, rels: added, status: worst, analysis: an };
+  }
+  // Symmetric refs in [a, b, axis] order; when more than one of the three could be the axis, a construction line
+  // (a centerline) is preferred.
+  function symOrder(sketch, refs) {
+    var kinds = refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); });
+    if (kinds.length !== 3) return refs;
+    for (var k = 2; k >= 0; k--) {
+      var p = parseRef(refs[k]), e = p && !p.o && sketch.entities[p.e], o = [0, 1, 2].filter(function (q) { return q !== k; });
+      if (kinds[k] === 'line' && e && e.construction && kinds[o[0]] === kinds[o[1]]) return [refs[o[0]], refs[o[1]], refs[k]];
+    }
+    var m = match('symmetric', kinds);
+    return m ? m.map(function (i) { return refs[i]; }) : refs;
   }
   function deleteRelation(sketch, index) {
     if (!sketch.rels || !sketch.rels[index]) return false;
@@ -724,6 +827,7 @@ var SketchSolver = (function () {
     var e = sketch.entities[i], out = [];
     if (!e) return out;
     var tol = 1e-9 * Math.max(1, Math.abs(e.x1 || e.x || e.cx || 0), Math.abs(e.y1 || e.y || e.cy || 0)) + 1e-9;
+    symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
     if (e.t === 'line') {
       var dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
       if (dy < tol && dx > tol) out.push({ type: 'horizontal', refs: [String(i)], at: [(e.x1 + e.x2) / 2, e.y1] });
@@ -749,15 +853,46 @@ var SketchSolver = (function () {
     });
     return out;
   }
+  // Symmetric about an existing centerline (a construction line): a line whose ends mirror each other, or a point /
+  // line / circle that mirrors an existing one of its kind.
+  function symCandidates(sketch, i, tol) {
+    var E = sketch.entities, e = E[i], out = [];
+    if (!e || e.construction && e.t === 'line') return out;
+    function near(a, b) { return Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol; }
+    E.forEach(function (ax, j) {
+      if (j === i || !ax || ax.t !== 'line' || !ax.construction) return;
+      var L = { a: [ax.x1, ax.y1], b: [ax.x2, ax.y2] };
+      if (len(sub(L.b, L.a)) < 1e-12) return;
+      if (e.t === 'line' && !near([e.x1, e.y1], [e.x2, e.y2]) && near(reflect([e.x1, e.y1], L), [e.x2, e.y2])) {
+        out.push({ type: 'symmetric', refs: [i + '.p1', i + '.p2', String(j)], at: [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2] });
+        return;
+      }
+      for (var k = 0; k < E.length; k++) {
+        var o = E[k];
+        if (k === i || k === j || !o || o.t !== e.t) continue;
+        var hit = false, at;
+        if (e.t === 'point') { hit = near(reflect([o.x, o.y], L), [e.x, e.y]); at = [e.x, e.y]; }
+        else if (e.t === 'circle' || e.t === 'arc') { hit = Math.abs(o.r - e.r) < tol && near(reflect([o.cx, o.cy], L), [e.cx, e.cy]); at = [e.cx, e.cy]; }
+        else if (e.t === 'line') {
+          var m1 = reflect([o.x1, o.y1], L), m2 = reflect([o.x2, o.y2], L), p1 = [e.x1, e.y1], p2 = [e.x2, e.y2];
+          hit = (near(m1, p1) && near(m2, p2)) || (near(m1, p2) && near(m2, p1));
+          at = [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2];
+        }
+        if (hit) { out.push({ type: 'symmetric', refs: [String(k), String(i), String(j)], at: at }); return; }
+      }
+    });
+    return out;
+  }
   // Add the inferred relations of entity i, skipping any that would over-define the sketch. Returns the added rels.
   function infer(sketch, i) {
     var added = [];
     inferCandidates(sketch, i).forEach(function (c) {
       var rel = { type: c.type, refs: c.refs };
       if (!relEquation(sketch.entities, rel)) return;
+      var before = analyze(sketch);
       (sketch.rels = sketch.rels || []).push(rel);
       var an = analyze(sketch), k = sketch.rels.length - 1;
-      if (an.rels[k] !== 'ok') { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
+      if (an.rels[k] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
       added.push(rel);
     });
     return added;
@@ -816,7 +951,7 @@ var SketchSolver = (function () {
   function describe(sketch, rel) {
     var t = TYPES[rel.type];
     var s = (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
-    if (t && t.dim) s += ' = ' + (Math.round(rel.v * 1e4) / 1e4) + (rel.type === 'angle' ? '°' : '');
+    if (t && t.dim) s += (rel.driven ? ' (driven) = ' : ' = ') + (Math.round(rel.v * 1e4) / 1e4) + (rel.type === 'angle' ? '°' : '');
     return s;
   }
 
@@ -825,7 +960,10 @@ var SketchSolver = (function () {
   // prototype, and generateScript is wrapped to write each sketch's relations before its `.id();`.
   function relArgs(rel) {
     var s = JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs);
-    if (TYPES[rel.type] && TYPES[rel.type].dim) s += rel.off != null ? ', ' + JSON.stringify({ value: rel.v, off: rel.off }) : ', ' + rel.v;
+    if (TYPES[rel.type] && TYPES[rel.type].dim) {
+      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; s += ', ' + JSON.stringify(o); }
+      else s += rel.off != null ? ', ' + JSON.stringify({ value: rel.v, off: rel.off }) : ', ' + rel.v;
+    }
     else if (rel.type === 'fix' && rel.at) s += ', ' + JSON.stringify({ at: rel.at });
     return s;
   }
@@ -845,21 +983,36 @@ var SketchSolver = (function () {
         return this;
       }
       if (opt && typeof opt === 'object' && opt.off != null) o.off = +opt.off;
+      if (opt && typeof opt === 'object' && opt.driven) o.driven = true;
       var r = addRelation(this.f, type, refs, o);
       if (!r.ok) throw new Error('rel(' + JSON.stringify(type) + '): ' + r.error);
       return this;
     };
     SBP.solve = function () { solve(this.f); return this; };
+    // .construction([i, …]): mark entities as construction geometry (drawn dashed, not part of any profile)
+    SBP.construction = function (list) {
+      var self = this;
+      (Array.isArray(list) ? list : [list]).forEach(function (i) { var e = self.f.entities[i]; if (!e) throw new Error('No sketch entity ' + i + ' to make construction.'); e.construction = true; });
+      return this;
+    };
+    // .driven([i, …]): Smart Dimensions i become driven (reference) dimensions
+    SBP.driven = function (list) {
+      var self = this;
+      (Array.isArray(list) ? list : [list]).forEach(function (i) { var d = (self.f.dims || [])[i]; if (!d) throw new Error('No sketch dimension ' + i + ' to make driven.'); d.driven = true; });
+      return this;
+    };
     var gen = Kn.generateScript;
     Kn.generateScript = function (model) {
       var s = gen.apply(this, arguments);
       (model.features || []).forEach(function (f) {
-        if (f.type !== 'sketch' || !f.rels || !f.rels.length) return;
+        var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
+        var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
+        if (f.type !== 'sketch' || (!(f.rels && f.rels.length) && !cons.length && !drv.length)) return;
         var head = 'var f' + f.id + ' = p.sketch(', at = s.indexOf(head);
         if (at < 0) return;
         var end = s.indexOf('\n  .id();', at);
         if (end < 0) return;
-        var add = f.rels.map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
+        var add = (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
         s = s.slice(0, end) + add + s.slice(end);
       });
       return s;
@@ -874,7 +1027,7 @@ var SketchSolver = (function () {
     refKind: function (sketch, ref) { return refKind(sketch.entities, parseRef(ref)); },
     pointRefs: pointRefs, curveRefs: curveRefs, refName: refName, describe: describe,
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
-    setDim: setDim, setRelValue: setRelValue, measure: measure,
+    setDim: setDim, setRelValue: setRelValue, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation,
     removeEntity: removeEntity, remap: remap, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, install: install

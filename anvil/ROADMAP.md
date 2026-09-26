@@ -76,7 +76,8 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Analytic mates and evaluation (cloud-2026-09-26r: Tangent / Concentric / Distance between cylinders read the exact axis and radius from the surface records (facet fit only for record-free meshes); Interference volumes and Clearance distances between analytic bodies exact (parallel cylinders, pin in hole, cylinder–plane); drawing BOMs Indented and Parts only across sub-assembly levels via `Assembly.bom`)
 - [ ] Fillets and chamfers on curved and tangent edge chains, variable-radius fillets, face fillets
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve)
-- [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves; construction geometry toggle
+- [x] Sketch solver follow-ups: Symmetric relation (points / lines / circles about a centerline, inferred), driven (reference) dimensions with the "Make this dimension driven?" question, Construction Geometry toggle and Centerline tool (cloud-2026-09-26s)
+- [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves
 - [ ] Hole Wizard types: counterbore, countersink, tapped holes with cosmetic threads, hole series (drawing hole callouts already read counterbores / countersinks from the solid, cloud-2026-09-25m)
 - [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
 - [ ] IGES / Parasolid import and export; STEP import of B-spline faces (cylinders, cones, spheres and tori import and export exactly since cloud-2026-09-25p); compressed 3MF import
