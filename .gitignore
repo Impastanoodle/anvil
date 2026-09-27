@@ -5,5 +5,5 @@ HEAD.lock
 # scratch
 *.tmp
 *.log
-# OpenCascade experiment: the 64 MB opencascade.js package is fetched by experiments/get-occt.ps1, not committed
-anvil/experiments/occt/
+# OpenCascade experiment: the 64 MB opencascade.js package is fetched by anvil/vendor/get-occt.ps1, not committed
+anvil/vendor/occt/opencascade.full.*

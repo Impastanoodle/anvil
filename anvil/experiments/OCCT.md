@@ -1,7 +1,7 @@
 # OpenCascade experiment (2026-09-26, run local-2026-09-26h)
 
 Question: can Anvil use OpenCascade (a real B-rep kernel) in the browser, fully offline, instead of growing its own
-mesh-based kernel toward NURBS? Page: `experiments/occt-lab.html` (fetch the engine first with `get-occt.ps1`).
+mesh-based kernel toward NURBS? Page: `experiments/occt-lab.html` (fetch the engine first with `vendor/get-occt.ps1`).
 
 ## Package
 

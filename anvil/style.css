@@ -330,6 +330,7 @@ body { overflow: auto; }
 .rel-row.redundant em { color: #b08700; } .rel-row.conflict em { color: #d9302c; }
 .rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 #status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
+#status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
 #dim-edit { position: absolute; z-index: 4; transform: translate(-50%, -50%); background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 #dim-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }

@@ -3,7 +3,7 @@
 <title>OpenCascade lab</title>
 <!-- occt-lab.html — experiment: build Anvil's example parts with OpenCascade (opencascade.js 2.0 beta, WebAssembly) and
      with Anvil's own kernel, side by side: build time, exact volume, true B-rep face count, triangles; plus what only
-     OpenCascade can do today (fillet every edge, exact STEP). Needs experiments/occt/v2 (run experiments/get-occt.ps1).
+     OpenCascade can do today (fillet every edge, exact STEP). Needs vendor/occt (run vendor/get-occt.ps1).
      Coordinates follow Anvil's: Y up, the Front plane is XY. -->
 <style>
   :root { --ink: #1d2128; --dim: #6b7380; --line: #d8dde4; --bg: #f6f7f9; --ok: #2f9e5b; --bad: #d9453b; --acc: #2b6fd6; --mono: Consolas, monospace; }
@@ -40,7 +40,7 @@
 <script src="../materials.js"></script>
 <script src="../examples/examples.js"></script>
 <script type="module">
-import opencascade from './occt/v2/package/dist/opencascade.full.js';
+import opencascade from '../vendor/occt/opencascade.full.js';
 const $ = (id) => document.getElementById(id);
 const K = window.Kernel;
 const RUNS = 5;
@@ -49,7 +49,7 @@ const median = (a) => { const s = a.slice().sort((x, y) => x - y), m = s.length 
 const f1 = (n) => n == null ? '-' : (n < 10 ? n.toFixed(2) : n.toFixed(1));
 
 const t0 = performance.now();
-const oc = await new opencascade({ locateFile: (p) => './occt/v2/package/dist/' + p });
+const oc = await new opencascade({ locateFile: (p) => '../vendor/occt/' + p });
 const loadMs = performance.now() - t0;
 window.oc = oc;
 

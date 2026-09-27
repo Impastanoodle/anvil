@@ -143,6 +143,8 @@
   step('app booted: anvil, UI, Kernel, THREE present, no boot errors', async function () {
     assert(W.anvil && W.UI && W.Kernel && W.THREE, 'globals missing');
     assert($('tree') && $('pm') && $('viewport'), 'layout missing');
+    // the OpenCascade switch is remembered per browser: every step runs with Anvil's own face grouping
+    if (W.anvil.occt && W.anvil.occt().on) W.anvil.occt(false);
     await idle();
     return 'status: ' + statusText().slice(0, 60);
   });
@@ -3911,6 +3913,36 @@
     var ub = await groupsOf('Sheet-metal U-bracket');
     checkSane(ub, 'Sheet-metal U-bracket');
     return 'Mug handle ' + biggest.length + ' facets; Handlebar ' + bar.groups.length + ' / ' + bar.mesh.faces.length + '; Rounded handle ' + rh.groups.length + ' / ' + rh.mesh.faces.length + '; U-bracket ' + ub.groups.length + ' / ' + ub.mesh.faces.length;
+  });
+
+  step('Tools ▸ OpenCascade kernel: the Flange picks as its 12 B-rep faces with a matching volume, the Mug (Shell) falls back to Anvil\'s grouping with "needs shell", and switching off restores Anvil\'s own (skipped without vendor/occt)', async function () {
+    function occIdle() { return Promise.race([anvil.occtIdle(), wait(30000).then(function () { return anvil.occt(); })]); }
+    function groups() { return new Set(UI.faceGroups()).size; }
+    await anvil.run(exByName('Flange').code); await idle();
+    var anvilGroups = groups();
+    anvil.occt(true);
+    var s = await occIdle();
+    try {
+      if (s.state === 'failed') return 'skipped: ' + (s.error || 'OpenCascade not installed').slice(0, 80);
+      assert(s.state === 'ok', 'state ' + s.state + ' ' + (s.error || s.unsupported || ''));
+      assert(s.faces === 12 && s.valid && s.volumeDiff < 1e-9, 'Flange: ' + JSON.stringify({ faces: s.faces, valid: s.valid, dv: s.volumeDiff }));
+      assert(s.mapped === UI.App.mesh.faces.length, 'every mesh face mapped: ' + s.mapped + ' / ' + UI.App.mesh.faces.length);
+      assert(groups() === 12, 'selectable faces ' + groups());
+      assert(/OpenCascade ✓ 12 faces/.test($('status-right').textContent), 'status chip: ' + $('status-right').textContent);
+      var item = menuRows('OpenCascade kernel (experimental)')[0];
+      if (UI.closeMenus) UI.closeMenus();
+      assert(item && item.menu.indexOf('Tools') >= 0 && item.chk === '✓', 'Tools menu item checked: ' + JSON.stringify(item && { menu: item.menu, chk: item.chk }));
+      await anvil.run(exByName('Mug').code); await idle();
+      var m = await occIdle();
+      assert(m.state === 'unsupported' && m.unsupported === 'shell', 'Mug: ' + m.state + ' ' + m.unsupported);
+      assert(/needs shell/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
+      assert(groups() < UI.App.mesh.faces.length / 5, 'Mug keeps Anvil\'s whole faces: ' + groups());
+      await anvil.run(exByName('Flange').code); await idle(); await occIdle();
+      return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug: needs shell';
+    } finally {
+      anvil.occt(false);
+      assert(!anvil.occt().on && groups() === anvilGroups, 'switched off: ' + groups() + ' groups');
+    }
   });
 
   step('no uncaught errors or console.error calls during the run', async function () {

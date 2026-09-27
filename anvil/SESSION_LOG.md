@@ -927,3 +927,23 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified.** ui-smoke?watch 150/150 (app code unchanged).
 
 **Next up.** If the user agrees: OCCT in `worker.js` behind a switch, feature by feature, with Anvil's kernel as fallback and volume cross-check.
+
+## Run local-2026-09-26i — OpenCascade kernel, stage 1 (switch, translator, true-face picking)
+
+**Context.** The user approved the OpenCascade route (experiment 26h). Stage 1: run OpenCascade beside Anvil's kernel behind a switch, build the basic features with it, cross-check, and use its true faces for picking.
+
+**Done.**
+- `vendor/occt/` (opencascade.js 2.0.0-beta.b5ff984, fetched by `vendor/get-occt.ps1`, sha256 pinned; the 60 MB of engine files are gitignored, the LGPL licence text is committed).
+- `occt-kernel.js`: `OcctKernel.build(oc, Kernel, model)` reads the tree through Kernel's own `resolvedModel`, `sketchProfile` (loops with their exact circles / arcs → OpenCascade wires with true arcs), `resolvePlane`, `extrudeRange`, `revolveAxis`, `cutScope`, `isCut` (newly exported from kernel.js). Supported: sketch, plane, extrude / cut (blind, through all, mid-plane, two directions, reverse, bodies scope, merge: false), revolve / revolve cut, linear / circular pattern, mirror of features and of the body. Anything else stops at that feature as 'unsupported'. Faces unified after booleans (ShapeUpgrade_UnifySameDomain), every body validated (BRepCheck_Analyzer), all OpenCascade objects freed after each build. `OcctKernel.mapFaces(mesh, result)` maps each Anvil mesh face to its B-rep face (nearest OpenCascade triangle to the centre of the face's largest triangle; grid-accelerated).
+- `occt-worker.js`: module worker loading csg / kernel / holewizard / exchange / occt-kernel (indirect eval) and OpenCascade; started only while the switch is on.
+- `ui-occt.js`: Tools ▸ OpenCascade kernel (experimental), remembered in localStorage `anvil.occt`; after every applied build (new `UI.onBuild` hooks in `applyBuild`) the model is built by OpenCascade (newest wins); status chip ("OpenCascade ✓ 12 faces", "needs shell", mismatch / invalid / not installed); when its volume matches Anvil's (1e-4) `UI.faceGroups` uses its faces (`UI.occtFaceGroups`). `anvil.occt(on?)`, `anvil.occtIdle()`.
+- `tests/occt-tests.html`: every part example + 8 feature models built by both kernels: valid, same body count, volume 1e-4, bbox 0.05 mm; unsupported features listed as TODO; rebuild-twice check for the object freeing.
+- ui-smoke: switch forced off at boot (it is per browser); new step for the switch (Flange 12 faces, Mug needs shell, off restores Anvil's grouping; skipped without vendor/occt).
+
+**Results.** occt-tests 22/22 (Plate, L-bracket, Bushing, Flange, Hex nut, Shaft, Pulley, Enclosure lid, Clevis, Constrained L, Parametric plate, Spacer, Spur gear + 8 feature models; volumes agree to ~1e-15, Hex nut 8.5e-6 from Anvil's cone correction); TODO: sheet metal ×3, fillet ×3, shell, loft, sweep, draft. In the app: Flange 347 mesh faces → 12 true faces, Bushing 147 → 6, gear 111 → 54, all mesh faces mapped. Engine load ~1.7-2.6 s once per session; builds 2-480 ms in the worker.
+
+**Limitation.** Anvil merges disjoint coplanar faces into one mesh face (the Spacer's three pocket floors), so they cannot be picked apart until OpenCascade's own mesh is displayed (next stage). The claude.ai app copy cannot carry the 50 MB engine: there the switch reports "OpenCascade not installed".
+
+**Verified (port 8812).** kernel-tests 683/683, occt-tests 22/22; ui-smoke 151/151 (pane visible), including the new OpenCascade step.
+
+**Next up.** Stage 2: fillet / chamfer (point-picked edges → OpenCascade edges), shell, draft, loft, sweep; then display OpenCascade's mesh (true faces everywhere, drawings via HLRBRep).

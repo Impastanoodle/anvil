@@ -29,7 +29,7 @@
     // sketch mode: the active sketch's definition state (SolidWorks' Under Defined / Fully Defined / Over Defined)
     var sk = App.mode === 'sketch' && App.sketchState ? App.sketchState : null;
     var skTxt = sk ? '<span class="sk-state ' + sk.status + '" title="Degrees of freedom: ' + sk.dof + '">' + (window.SketchSolver ? SketchSolver.STATUS_TEXT[sk.status] : sk.status) + '</span>' : '';
-    $('status-right').innerHTML = skTxt + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    $('status-right').innerHTML = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     $('doc-title').textContent = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
   }
 
@@ -695,7 +695,8 @@
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
-        { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } }
+        { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
+        { label: 'OpenCascade kernel (experimental)', checked: !!(UI.occt && UI.occt.on()), disabled: !UI.occt, action: function () { UI.occt.set(!UI.occt.on()); toast(UI.occt.on() ? 'OpenCascade builds every part too: true faces for picking, volumes cross-checked' : 'OpenCascade kernel off'); } }
       ] },
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } },

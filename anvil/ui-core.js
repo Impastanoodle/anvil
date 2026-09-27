@@ -634,6 +634,9 @@ var UI = (function () {
   function faceGroups(mesh) {
     if (!mesh || !mesh.faces) return null;
     if (mesh._faceGroups) return mesh._faceGroups;
+    // with Tools ▸ OpenCascade kernel on and its build agreeing with Anvil's, its true B-rep faces decide (ui-occt.js)
+    var occ = UI.occtFaceGroups ? UI.occtFaceGroups(mesh) : null;
+    if (occ) { mesh._faceGroups = occ; return occ; }
     var of = new Array(mesh.faces.length), keyOf = new Map();
     if (K.curveSurfaces) K.curveSurfaces(mesh).forEach(function (s) { s.polys.forEach(function (p) { keyOf.set(p, s.key); }); });
     var byKey = {};
@@ -1179,6 +1182,7 @@ var UI = (function () {
     App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
+    (UI.onBuild || []).forEach(function (fn) { try { fn(App.build); } catch (e) { console.warn(e); } });   // ui-occt.js
     if (!opts.noSave) autosave();
     var errIds = Object.keys(App.build.errors || {});
     var eqMsgs = equationErrorMessages(App.build);
