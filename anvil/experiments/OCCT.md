@@ -49,3 +49,18 @@ Go, behind a switch, one layer at a time:
 3. Drawings: exact hidden lines with `HLRBRep`; STEP / IGES read and write through OCCT.
 4. Keep Anvil's kernel as the fallback and as the cross-check in the tests (volumes must agree) until OCCT covers
    every feature.
+
+## Outcome (2026-09-26, runs local-2026-09-26i..q)
+
+The recommendation was carried out in one day. OpenCascade is Anvil's second kernel (`occt-kernel.js`, `occt-worker.js`,
+`ui-occt.js`, README *OpenCascade kernel*), on by default when `vendor/occt` is installed:
+
+- stage 1: switch, translator (sketches with exact arcs, extrude, revolve, patterns, mirror), true-face picking;
+- stage 2: fillet / chamfer, shell, draft, loft, sweep, Hole Wizard;
+- stage 3: its solid drives the part (face-tagged polygons, surface records, exact mass properties); STEP / IGES
+  export from the B-rep and import of any surfaces, the Imported feature rebuilt from its kept file;
+- stage 4: sheet metal (flanges, hems, jogs, normal cut through `Kernel.flangeLayout`, exact bends);
+- then the rebuild cache (per-feature snapshots), features Anvil's own kernel cannot build (saddle-edge fillets), and
+  assemblies (parts built by OpenCascade, the assembly rebuilt around them).
+
+`tests/occt-tests.html`: 42/42, every part example and feature model, 0 left to Anvil's kernel.

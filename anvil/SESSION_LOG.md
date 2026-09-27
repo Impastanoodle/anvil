@@ -1030,3 +1030,7 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Checked in the app (every assembly example):** Pinned plate 19 faces / 7 of 7 mates, Distance and angle mates 18 / 6, Interference check 15 / 3 (2 interferences found, as designed), Gear train and patterns 41 faces / 17 mates, Hinge sub-assembly 12 / 2, Hinged cover (sub-assemblies) 18 / 7; no errors.
 
 **Verified (port 8812, pane visible).** ui-smoke 151/151 (the OpenCascade step now opens the Pinned plate assembly: 19 faces, 3 OpenCascade parts, every mate ok, no interference); kernel-tests 683/683.
+
+## Run local-2026-09-26r — OpenCascade kernel: documentation, roadmap, published copy
+
+**Done.** README: offline note, file table (occt-kernel.js, occt-worker.js, ui-occt.js, vendor/, tests/occt-tests.html, experiments/), new section *OpenCascade kernel*. ROADMAP: fillets / chamfers on curved and tangent edge chains and IGES / STEP of any surfaces ticked (variable-radius / face fillets and Parasolid split out as open); the greyed tabs note that Surfaces, Mold Tools and Direct Editing are unblocked. experiments/OCCT.md: outcome. QUEUE: OpenCascade to Done; Do next = Surfaces tab on the OpenCascade kernel, variable / face fillets. The claude.ai app copy republished (v20: every current file plus vendor/three.min.js; no engine there, so the switch stays off).

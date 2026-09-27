@@ -2,7 +2,7 @@
 
 Anvil is a parametric solid modeler that runs entirely in the browser. It has a SolidWorks-style workspace (CommandManager ribbon, FeatureManager tree, PropertyManager, task pane, heads-up view toolbar) on top of a small CSG kernel, and every model is also a script: you can build parts by clicking, by typing a script in the console, or by driving `window.anvil` from automation.
 
-There is no build step and no dependency besides three.js r128 from cdnjs. Open `index.html` over HTTP (see *Running* below).
+There is no build step and everything runs offline: three.js r128 is in `vendor/three.min.js`. With the optional OpenCascade engine installed (`vendor/get-occt.ps1`, 50 MB, not in git) every part and assembly is built by a real B-rep kernel as well (see *OpenCascade kernel*). Open `index.html` over HTTP (see *Running* below).
 
 ## Files
 
@@ -19,6 +19,10 @@ There is no build step and no dependency besides three.js r128 from cdnjs. Open 
 | `holewizard.js` | Hole Wizard: the ISO M2–M20 table (ISO 273 clearance fits, ISO 4762 counterbores, ISO 10642 countersinks, tap drills), the `hole` feature (registered with `Kernel.registerFeature`), `p.holeWizard` and cosmetic threads (`HoleWizard.threads`). Global `HoleWizard`, no DOM. See *Hole Wizard*. |
 | `ui-holewizard.js` | The Hole Wizard PropertyManager (Type / Positions tabs) and the viewport's dashed cosmetic threads. |
 | `worker.js` | Web Worker entry: `importScripts('csg.js', 'kernel.js', 'holewizard.js', 'exchange.js')`, rebuilds a model off the main thread and posts the packed build back (see *Background rebuilds*). |
+| `occt-kernel.js` | The OpenCascade kernel: builds an Anvil model's feature tree with OpenCascade (exact B-rep), reads / writes STEP and IGES, turns the result into an Anvil build (`OcctKernel.build`, `importFile`, `toBuild`, `mapFaces`). Global `OcctKernel`, no DOM. See *OpenCascade kernel*. |
+| `occt-worker.js` | The OpenCascade module worker (loaded only while *Tools ▸ OpenCascade kernel* is on): builds, per-part rebuild caches, STEP / IGES import. |
+| `ui-occt.js` | *Tools ▸ OpenCascade kernel*: runs every rebuild through OpenCascade too, shows its solid when it agrees with (or goes beyond) Anvil's, the status chip, `anvil.occt()`. |
+| `vendor/` | `three.min.js` (three.js r128, MIT); `get-occt.ps1` fetches opencascade.js 2.0.0-beta.b5ff984 (LGPL-2.1, licence in `vendor/occt/`) into `vendor/occt/`. |
 | `icons.js` | Inline SVG icon set. Global `Icons`. |
 | `style.css` | The whole UI stylesheet. |
 | `ui-core.js` | App state, three.js scene, camera, picking, highlights. Creates the shared `UI` namespace. |
@@ -35,7 +39,9 @@ There is no build step and no dependency besides three.js r128 from cdnjs. Open 
 | `examples/examples.js` | Sample parts, and assemblies marked `kind: "assembly"`, as scripts (`AnvilExamples`). Picked up by the Design Library when loaded. |
 | `tests/kernel-tests.html` | Headless kernel test page (no three.js needed). |
 | `tests/bench.html`, `tests/BENCHMARKS.md` | Rebuild timing page (median of N runs per example plus stress parts) and the recorded baselines. |
-| `tests/ui-smoke.html` | Loads the app in a frame and drives it through `window.anvil` and the `UI.cmd*` functions: examples, PMs, undo/redo, exports, modals, sheet metal, multi-body parts, equations, configurations, assemblies. |
+| `tests/ui-smoke.html` | Loads the app in a frame and drives it through `window.anvil` and the `UI.cmd*` functions: examples, PMs, undo/redo, exports, modals, sheet metal, multi-body parts, equations, configurations, assemblies. `?watch` lays it out for screen recordings; downloads are captured, never saved. |
+| `tests/occt-tests.html` | Every part example and feature model built by both kernels: OpenCascade's solid valid, volume / bounding box / body count matching Anvil's, exact volumes where known, STEP / IGES round trips, the rebuild cache. Needs `vendor/occt`. |
+| `experiments/` | `occt-lab.html` and `OCCT.md`: the experiment that led to the OpenCascade kernel. |
 | `serve.ps1` | Tiny PowerShell static server for local use. |
 | `ROADMAP.md`, `SESSION_LOG.md` | Plan and per-session history. |
 
@@ -566,6 +572,18 @@ var pin = a.insert({ file: "Pin" }, { position: [0, 20, 0] });   // a live link 
 By default (when the page is served over HTTP) the rebuild runs in a Web Worker: `worker.js` loads `csg.js` and `kernel.js`, receives `{ type: 'rebuild', seq, model }`, keeps its own rebuild cache between messages and answers `{ type: 'built', seq, build }` with `Kernel.packBuild(build)` (typed arrays, transferred rather than copied) or `{ type: 'error', seq, message }`. The main thread unpacks the result with `Kernel.unpackBuild`, puts the sketch profiles back with `Kernel.applyProfiles`, and only then swaps the mesh, tree and status. While a build is in flight the status bar shows *Rebuilding…*; rapid edits are coalesced, so only the latest model is built. *Edit ▸ Rebuild in background (Web Worker)* toggles the mode (`App.workerOn`, persisted in `localStorage` under `anvil.worker`); with it off every rebuild is synchronous, as before, which is also the fallback when workers are unavailable (`file://`).
 
 For code that drives the app, `UI.rebuild(opts)` and `UI.pmOK()` return Promises, `UI.whenIdle()` resolves once no rebuild is queued or in flight, and `anvil.run` / `append` / `load` / `rebuild` return Promises resolving to the summary they used to return directly (`anvil.busy()` says whether a build is in flight, `anvil.workerOn(bool)` reads or sets the mode). In synchronous mode the work is done before the Promise is returned, so `anvil.summary()` is already up to date when the call returns.
+
+## OpenCascade kernel
+
+Anvil's own kernel is a BSP mesh CSG with exact records for circles, cylinders, cones, spheres and tori. With *Tools ▸ OpenCascade kernel* on — the default whenever `vendor/occt/opencascade.full.wasm` is installed (`powershell -ExecutionPolicy Bypass -File vendor\get-occt.ps1`) and no choice was stored — every rebuild is also built by OpenCascade 7.6 (opencascade.js, WebAssembly) in `occt-worker.js`:
+
+- **The feature tree is read exactly as Anvil reads it** (`OcctKernel.build`): the resolved model (equations, configurations), sketch profiles with their exact arcs, planes, extrude ranges, revolve axes, cut scopes, merge / bodies options. Supported: sketches and planes; extrude / cut (all end conditions, draft, two directions) and revolve; linear / circular patterns and mirror; fillet and chamfer (edges picked by point, tangent propagation as SolidWorks); shell (faces removed, or a closed hollow); loft (smooth) and sweep (exact line / arc paths, 3D polylines); Hole Wizard holes; sheet metal (base flange, edge flange and hem with mitres and reliefs, jog, normal cut — via `Kernel.flangeLayout`, bends exact); the Imported feature when it kept its STEP / IGES file. Every body is checked with `BRepCheck_Analyzer`; faces split by booleans are merged back.
+- **Its solid drives the part** when every feature was built, the solid is valid and its volume agrees with Anvil's (relative 1e-4; 2e-2 when Anvil only approximates: sweeps, lofts, flange bends, mesh imports, unchained edge picks) — or when Anvil's kernel failed features OpenCascade built (a fillet on the saddle edge of a pipe tee). `OcctKernel.toBuild` turns it into an Anvil build: every polygon tagged with its B-rep face (`polygon.face`), its face's surface record and its feature, exact mass properties on the body (`body.exact`, used by `Kernel.massProps`). The viewport, picking (whole B-rep faces; coplanar faces stay apart), edges, drawings, flat patterns, exports and evaluate tools then work on OpenCascade's geometry. Otherwise Anvil's result stays and the status bar says why: *OpenCascade ✓ 12 faces*, *(+1 Anvil could not)*, *needs a mesh import*, *volume differs*, *invalid solid*, *not installed*.
+- **STEP and IGES** come straight from the B-rep while it drives (*File ▸ Save As* STEP AP214 with exact B-spline faces, IGES 5.3, `anvil.exportIges()`); STEP / IGES files are read by OpenCascade (any surfaces) for IGES, while the kernel is on, or when Anvil's own reader refuses a file, and the Imported feature keeps the file so OpenCascade rebuilds it exactly.
+- **Assemblies**: every distinct part (sub-assemblies' too) is built by OpenCascade and checked against Anvil's build of it; the assembly is then rebuilt around OpenCascade's parts (`Assembly.setPartBuilder`), mates, patterns, interference and BOMs as ever.
+- **Rebuild cache**: the worker keeps a snapshot after each feature (per part in assemblies); editing the last feature of the Tray rebuilds in ~50 ms instead of ~1 s.
+
+`anvil.occt()` → `{ on, state, driving, faces, volume, anvilVolume, volumeDiff, beyond, unsupported, loadMs, ms }`; `anvil.occt(true | false, { remember: false }?)` switches it; `anvil.occtIdle()` resolves when OpenCascade has answered. The engine loads in 1–3 s once per session and only while the switch is on. The claude.ai copy of the app has no engine: there the switch stays off.
 
 ## Automation from the browser console
 
