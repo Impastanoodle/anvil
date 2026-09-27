@@ -15,12 +15,17 @@ while ($listener.IsListening) {
     $file = Join-Path $root ($path -replace "/", "\")
     if ((Test-Path $file -PathType Container)) { $file = Join-Path $file "index.html" }
     if (Test-Path $file -PathType Leaf) {
-      $bytes = [System.IO.File]::ReadAllBytes($file)
       $ext = [System.IO.Path]::GetExtension($file).ToLower()
       $ctx.Response.ContentType = if ($types.ContainsKey($ext)) { $types[$ext] } else { "application/octet-stream" }
       $ctx.Response.Headers.Add("Cache-Control", "no-store")
-      $ctx.Response.ContentLength64 = $bytes.Length
-      $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+      if ($ctx.Request.HttpMethod -eq "HEAD") {
+        # HEAD (ui-occt.js checks that the OpenCascade engine is installed): the size only, no body
+        $ctx.Response.ContentLength64 = (Get-Item $file).Length
+      } else {
+        $bytes = [System.IO.File]::ReadAllBytes($file)
+        $ctx.Response.ContentLength64 = $bytes.Length
+        $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+      }
     } else {
       $ctx.Response.StatusCode = 404
       $msg = [System.Text.Encoding]::UTF8.GetBytes("404 " + $path)

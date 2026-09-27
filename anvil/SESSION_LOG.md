@@ -1013,3 +1013,12 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Measured (app, OpenCascade driving, last feature edited):** Tray 1062 → 51 ms, Spur gear 364 → 66 ms, Moulded cap 566 → 357 ms (its last feature, a drafted rib, dominates).
 
 **Verified (port 8812, pane visible).** occt-tests 42/42 (new: the Tray with its last feature edited, cached — reused 4 of 5, 43 ms — equals a fresh build, 834 ms); ui-smoke 151/151.
+
+## Run local-2026-09-26p — OpenCascade beyond Anvil's kernel; on by default when installed
+
+**Done.**
+- `ui-occt.js`: when Anvil's kernel failed features that OpenCascade built (a fillet on the saddle edge of a pipe tee: Anvil's kernel overflows its stack), Anvil's volume is no reference: OpenCascade's valid solid is shown; `toBuild` drops those features' errors from the shown build; the chip reads "OpenCascade ✓ 6 faces (+1 Anvil could not)" (`status().beyond`).
+- Default: with no stored choice the app HEAD-probes `vendor/occt/opencascade.full.wasm` and switches OpenCascade on (not remembered) when it is installed; the claude.ai copy has no engine and stays off. `anvil.occt(on, { remember: false })` / `UI.occt.set(on, { remember: false })` switch without storing; any explicit switch wins over the probe (`st.chosen`). `serve.ps1` answers HEAD with the size only (no 50 MB read).
+- ui-smoke: the switch is set with `remember: false` (the tests share the app's localStorage); the OpenCascade step adds the pipe-tee saddle fillet (drives, no errors in the build, chip says so).
+
+**Verified (port 8812, pane visible).** ui-smoke 151/151 (stored choice untouched), occt-tests 42/42; in the app with no stored choice OpenCascade came on by itself and rebuilt the autosaved pipe tee.

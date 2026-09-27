@@ -949,6 +949,9 @@ var OcctKernel = (function () {
       out.body.exact = { volume: V, area: A, centroid: V > 1e-12 ? [M[0] / V, M[1] / V, M[2] / V] : [0, 0, 0] };
     }
     out.cache = anvilBuild.cache;
+    // errors of features OpenCascade built are Anvil's kernel's own limits: the shown part has none
+    out.errors = {};
+    Object.keys(anvilBuild.errors || {}).forEach(function (id) { if (!occ.status || occ.status[id] !== 'ok') out.errors[id] = anvilBuild.errors[id]; });
     out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies, step: occ.step || null, iges: occ.iges || null };
     return out;
   }

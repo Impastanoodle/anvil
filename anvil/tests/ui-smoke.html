@@ -152,7 +152,7 @@
       return aClick.apply(this, arguments);
     };
     // the OpenCascade switch is remembered per browser: every step runs with Anvil's own face grouping
-    if (W.anvil.occt && W.anvil.occt().on) W.anvil.occt(false);
+    if (W.anvil.occt) W.anvil.occt(false, { remember: false });
     await idle();
     return 'status: ' + statusText().slice(0, 60);
   });
@@ -3930,7 +3930,7 @@
     function groups() { return new Set(UI.faceGroups()).size; }
     await anvil.run(exByName('Flange').code); await idle();
     var anvilGroups = groups();
-    anvil.occt(true);
+    anvil.occt(true, { remember: false });
     var s = await occIdle();
     try {
       if (s.state === 'failed') return 'skipped: ' + (s.error || 'OpenCascade not installed').slice(0, 80);
@@ -3968,10 +3968,16 @@
       var q = await occIdle();
       assert(q.state === 'unsupported' && /mesh import/.test(q.unsupported) && !UI.App.build.occt, 'STL import: ' + q.state + ' ' + q.unsupported);
       assert(/needs a mesh import/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
+      // beyond Anvil's kernel: a fillet on the saddle edge of a pipe tee (Anvil's kernel errors); OpenCascade's solid
+      // is shown and the feature carries no error
+      await anvil.run('p.cylinder(15, 80, { axis: "x", at: [-40, 0, 0] });\np.cylinder(10, 40, { at: [0, 0, 0] });\np.fillet(3, [[0, Math.sqrt(125), 10]]);').catch(function () { });
+      await idle();
+      var tee = await occIdle();
+      assert(tee.state === 'ok' && tee.beyond.length === 1 && Object.keys(UI.App.build.errors).length === 0 && /Anvil could not/.test($('status-right').textContent), 'tee fillet: ' + JSON.stringify({ state: tee.state, beyond: tee.beyond, errors: UI.App.build.errors }));
       await anvil.run(exByName('Flange').code); await idle(); await occIdle();
       return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug 8 faces; Spacer 21 faces; U-bracket 24 faces, flat 2 bends; STL import: Anvil\'s';
     } finally {
-      anvil.occt(false);
+      anvil.occt(false, { remember: false });
       assert(!anvil.occt().on && !UI.App.build.occt && groups() === anvilGroups, 'switched off, Anvil\'s build back: ' + groups() + ' groups');
     }
   });

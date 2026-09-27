@@ -14,7 +14,10 @@
   var App = UI.App, K = window.Kernel;
   var st = App.occt = { on: false, worker: null, ready: false, loadMs: null, seq: 0, want: 0, busy: false,
     state: 'off', result: null, driving: false, anvilBuild: null, anvilVolume: null, volumeDiff: null, error: null, waiters: [] };
-  try { st.on = localStorage.getItem('anvil.occt') === '1'; } catch (e) { }
+  // '1' / '0': the user's choice; unset: on by default when the engine is installed (probed at load, below)
+  var stored = null;
+  try { stored = localStorage.getItem('anvil.occt'); } catch (e) { }
+  st.on = stored === '1';
 
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
   function startWorker() {
@@ -56,7 +59,10 @@
     if (!r.valid) { st.state = 'invalid'; return; }
     var dv = st.anvilVolume ? Math.abs(r.volume - st.anvilVolume) / st.anvilVolume : Math.abs(r.volume);
     st.volumeDiff = dv;
-    if (!(dv <= (r.tolerance || 1e-4)) || !r.mesh) { st.state = 'mismatch'; return; }
+    // features Anvil's kernel failed that OpenCascade built (a fillet on a saddle edge, ...): Anvil's volume is no
+    // reference any more, OpenCascade's valid solid is shown and those errors are cleared
+    st.beyond = Object.keys((anvilBuild && anvilBuild.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
+    if (!r.mesh || (!st.beyond.length && !(dv <= (r.tolerance || 1e-4)))) { st.state = 'mismatch'; return; }
     var build;
     try { build = OcctKernel.toBuild(r, anvilBuild, anvilMesh, App.triShared, window.CSG, K); }
     catch (e) { st.state = 'error'; st.error = 'Could not show the OpenCascade solid: ' + e.message; return; }
@@ -89,9 +95,10 @@
   }
   (UI.onBuild = UI.onBuild || []).push(afterBuild);
 
-  function set(on) {
-    st.on = !!on;
-    try { localStorage.setItem('anvil.occt', st.on ? '1' : '0'); } catch (e) { }
+  // set(on, { remember: false }): switch without storing the choice (the test pages)
+  function set(on, opts) {
+    st.on = !!on; st.chosen = true;   // any explicit switch wins over the installed-engine default below
+    if (!opts || opts.remember !== false) { try { localStorage.setItem('anvil.occt', st.on ? '1' : '0'); } catch (e) { } }
     if (st.on) { st.state = 'loading'; request(); }
     else {
       stopWorker(); st.state = 'off'; st.result = null;
@@ -121,7 +128,7 @@
     var r = st.result;
     return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs,
       unsupported: r && r.unsupported || null, faces: r && !r.unsupported ? r.faces.length : null, bodies: r ? r.bodies : null,
-      volume: r ? r.volume : null, anvilVolume: st.anvilVolume, volumeDiff: st.volumeDiff, tolerance: r ? r.tolerance : null,
+      volume: r ? r.volume : null, anvilVolume: st.anvilVolume, volumeDiff: st.volumeDiff, tolerance: r ? r.tolerance : null, beyond: st.state === 'ok' && st.beyond ? st.beyond.slice() : [],
       valid: r ? r.valid : null, ms: r ? r.ms : null };
   }
   // the status bar chip (ui-panels.js refreshStatus)
@@ -131,7 +138,10 @@
     switch (s.state) {
       case 'loading': txt = 'OpenCascade: loading…'; break;
       case 'building': txt = 'OpenCascade: building…'; break;
-      case 'ok': txt = 'OpenCascade ✓ ' + s.faces + ' face' + (s.faces === 1 ? '' : 's'); cls += ' ok'; tip += ': the part shown is OpenCascade\'s solid (every feature built, volume ' + (s.volume || 0).toFixed(3) + ', Anvil ' + (s.anvilVolume || 0).toFixed(3) + ')'; break;
+      case 'ok':
+        txt = 'OpenCascade ✓ ' + s.faces + ' face' + (s.faces === 1 ? '' : 's') + (s.beyond.length ? ' (+' + s.beyond.length + ' Anvil could not)' : ''); cls += ' ok';
+        tip += ': the part shown is OpenCascade\'s solid (every feature built, volume ' + (s.volume || 0).toFixed(3) + (s.beyond.length ? '; ' + s.beyond.length + ' feature' + (s.beyond.length === 1 ? '' : 's') + ' Anvil\'s own kernel could not build' : ', Anvil ' + (s.anvilVolume || 0).toFixed(3)) + ')';
+        break;
       case 'unsupported': txt = 'OpenCascade: needs ' + s.unsupported; tip += ': this part uses a feature it does not build yet; Anvil\'s own result is shown'; break;
       case 'mismatch': txt = 'OpenCascade ✗ volume differs'; cls += ' bad'; tip += ': ' + (s.volume || 0).toFixed(3) + ' vs Anvil ' + (s.anvilVolume || 0).toFixed(3) + '; Anvil\'s result is shown'; break;
       case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; tip += ': Anvil\'s result is shown'; break;
@@ -162,10 +172,15 @@
   if (window.anvil) {
     // anvil.occt() -> status; anvil.occt(true | false) switches it; anvil.occtIdle() resolves when the current build
     // has answered (or at once when nothing is pending)
-    window.anvil.occt = function (on) { if (arguments.length) set(on); return status(); };
+    window.anvil.occt = function (on, opts) { if (arguments.length) set(on, opts); return status(); };
     window.anvil.occtIdle = function () {
       return new Promise(function (res) { if (!st.on || (!st.busy && st.state !== 'loading')) res(status()); else st.waiters.push(res); });
     };
   }
   if (st.on) request();
+  else if (stored == null && window.fetch && window.Worker) {
+    fetch('vendor/occt/opencascade.full.wasm', { method: 'HEAD' }).then(function (res) {
+      if (res.ok && !st.chosen) { set(true, { remember: false }); st.chosen = false; }
+    }, function () { });
+  }
 })(UI);
