@@ -3177,7 +3177,12 @@ var Kernel = (function () {
   // inline or on the outward side) a slot reliefWidth wide (default T) is cut from the base before the flange is
   // added, from reliefDepth (default T/2) inside the edge out past the bend zone. Ends shared with another selected
   // edge (mitred or collinear) get no relief.
-  function buildFlange(f, model, ctx) {
+  // flangeLayout(f, model, ctx) -> the flange as plain data, from the edges of ctx.body (a CSG): { parts: [{ loop,
+  // plane, t0, t1, clips: [{ n, w }] }] (each a prism of the section `loop` in `plane` from t0 to t1, kept where
+  // n·p >= w for each clip), cuts: [{ loop, plane, a, b }] (prisms taken from the sheet first: trim-back and reliefs),
+  // info (ctx.flanges' records), section: { A, R, T, L, ov } (flangeProfile's parameters) }. buildFlange builds it with
+  // the CSG kernel; occt-kernel.js builds the same layout with exact bend arcs.
+  function flangeLayout(f, model, ctx) {
     if (!ctx.body) throw new Error('Create a Base Flange before adding edge flanges.');
     var sheet = sheetParams(model);
     var T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
@@ -3215,7 +3220,7 @@ var Kernel = (function () {
       if (shift) {
         var cutPlane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
         var tca = dot(sub(e.a, e.mid), cutPlane.n), tcb = dot(sub(e.b, e.mid), cutPlane.n);
-        cuts.push(prism([[-shift, 0.01], [-shift, -T - 0.01], [0.5, -T - 0.01], [0.5, 0.01]].reverse(), cutPlane, Math.min(tca, tcb) - 0.01, Math.max(tca, tcb) + 0.01, f.id));
+        cuts.push({ loop: [[-shift, 0.01], [-shift, -T - 0.01], [0.5, -T - 0.01], [0.5, 0.01]].reverse(), plane: cutPlane, a: Math.min(tca, tcb) - 0.01, b: Math.max(tca, tcb) + 0.01 });
         origin = sub(origin, scale(o, shift));
       }
       var plane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
@@ -3257,9 +3262,8 @@ var Kernel = (function () {
     eds.forEach(function (ed) {
       var t0 = ed.ends[0].miter ? ed.ends[0].miter.tExt : ed.ends[0].t;
       var t1 = ed.ends[1].miter ? ed.ends[1].miter.tExt : ed.ends[1].t;
-      var tool = prism(ed.loop, ed.plane, Math.min(t0, t1), Math.max(t0, t1), f.id);
-      ed.ends.forEach(function (en) { if (en.miter) tool = tool.clipByPlane(en.miter.n, en.miter.w); });
-      tools.push(tool);
+      tools.push({ loop: ed.loop, plane: ed.plane, t0: Math.min(t0, t1), t1: Math.max(t0, t1),
+        clips: ed.ends.filter(function (en) { return en.miter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) });
       if (relief !== 'none') ed.ends.forEach(function (en) {
         if (en.shared) return;
         // does the sheet continue beyond this end? probe half a thickness past it at mid-thickness, inside the
@@ -3277,7 +3281,7 @@ var Kernel = (function () {
         } else slot.push([o0, tB], [o0, tA]);
         // sweep the slot outline (in the sheet plane: o across, t along the edge) through the thickness (u ∈ [-T, 0])
         var sp = { origin: ed.plane.origin, x: ed.o, y: ed.plane.n, n: scale(ed.u, -1) };
-        cuts.push(prism(slot, sp, -0.01, T + 0.01, f.id));
+        cuts.push({ loop: slot, plane: sp, a: -0.01, b: T + 0.01 });
       });
       var sh = scale(ed.o, -shift), e = ed.e;
       // miterPlanes: per end, the clip plane { n, w } (tool kept where n·p >= w) or null; the flat pattern uses it to
@@ -3286,8 +3290,17 @@ var Kernel = (function () {
         mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter],
         miterPlanes: ed.ends.map(function (en) { return en.miter ? { n: en.miter.n.slice(), w: en.miter.w } : null; }) });
     });
-    ctx.flanges[f.id] = info;
-    ctx.flangeCut = cuts.length ? unionAll(cuts) : null;
+    return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
+  }
+  function buildFlange(f, model, ctx) {
+    var lay = flangeLayout(f, model, ctx);
+    var tools = lay.parts.map(function (p) {
+      var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id);
+      p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
+      return tool;
+    });
+    ctx.flanges[f.id] = lay.info;
+    ctx.flangeCut = lay.cuts.length ? unionAll(lay.cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b, f.id); })) : null;
     return unionAll(tools);
   }
 
@@ -4166,7 +4179,7 @@ var Kernel = (function () {
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
     meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
-    buildFlange: buildFlange, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
+    buildFlange: buildFlange, flangeLayout: flangeLayout, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
     resolveFaces: resolveFaces, buildShell: buildShell,
     Builder: Builder, runScript: runScript, generateScript: generateScript,

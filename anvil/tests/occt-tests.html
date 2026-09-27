@@ -78,6 +78,10 @@
     { name: 'closed hollow shell (no faces removed)', code: 'p.box(40, 30, 20);\np.shell(2, []);' },
     { name: 'drafted boss and drafted pocket', code: 'p.sketch("Top").centerRect(0, 0, 40, 30).extrude(15, { draft: 5 });\np.sketch("Top", 15).circle(0, 0, 8).cut(8, { reverse: true, draft: 3 });' },
     { name: 'sweep of a circle along a line-arc-line path', code: 'var prof = p.sketch("Right").circle(0, 0, 3).id();\nvar path = p.sketch("Front").line(0, 0, 20, 0).arc(20, 15, 15, -90, 0).line(35, 15, 35, 40).id();\np.sweep({ profile: prof, path: path });', exact: Math.PI * 9 * (20 + Math.PI / 2 * 15 + 25) },
+    // sheet metal: a 100 × 60 × 2 base flange and a 90° edge flange (inner radius 2, wall 20) on a 60 mm edge; the bend
+    // is a quarter annulus exactly in OpenCascade (Anvil facets it 8 times per 90°)
+    { name: 'base flange + 90° edge flange (exact bend)', code: 'p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[100, 2, 30]]);', exact: 100 * 60 * 2 + 60 * (Math.PI / 4 * (16 - 4) + 2 * 20) },
+    { name: 'jog (offset 10, length 15)', code: 'p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -40, 60, 40).end().baseFlange(2);\np.jog(10, 15, [[60, 2, 20]]);' },
     { name: 'fillet around a hole rim and a straight edge', code: 'p.box(40, 40, 10);\np.hole("Top", 20, -20, 12, { offset: 10 });\np.fillet(1.5, [[26, 10, 20], [0, 10, 20]]);' }
   ];
   var EX = AnvilExamples.list || AnvilExamples;

@@ -26,7 +26,7 @@
 var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
-    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1 };
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1 };
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -178,7 +178,7 @@ var OcctKernel = (function () {
     }
     function moveTo(sh, t, plane) { var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec([plane.n[0] * t, plane.n[1] * t, plane.n[2] * t])); return transformed(sh, tr); }
     function extrudeTool(f) {
-      if (f.normalCut || f.sheetBase || m.sheet) throw unsupportedErr('sheet metal');
+      if (f.sheetBase && rm.sheetError) throw new Error(rm.sheetError);
       var sk = sketchOf(f), plane = K.resolvePlane(sk.plane, m, planes), range = K.extrudeRange(f, K.THROUGH);
       if (f.draft != null && !isFinite(+f.draft)) throw new Error('Draft angle must be a number.');
       var draft = +f.draft || 0;
@@ -186,7 +186,7 @@ var OcctKernel = (function () {
       // draft (as Kernel.buildExtrude): the section shrinks (grows with draftOut) by |t|·tan(angle) at distance t from
       // the sketch plane; a hole loop does the opposite. Ruled loft between the two offset sections.
       var k = draft ? Math.tan(draft * Math.PI / 180) * (f.draftOut ? 1 : -1) : 0;
-      return fromLoops(loopFaces(sk, plane), function (face, hole) {
+      var solid = fromLoops(loopFaces(sk, plane), function (face, hole) {
         var a = range[0], b = range[1];
         if (!k) return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec([plane.n[0] * (b - a), plane.n[1] * (b - a), plane.n[2] * (b - a)]), false, true)).Shape());
         var s = hole ? -1 : 1;
@@ -200,6 +200,64 @@ var OcctKernel = (function () {
         }
         return a < -1e-9 && b > 1e-9 ? fuse(part(a, 0), part(0, b)) : part(a, b);
       });
+      if (f.cut && f.normalCut && m.sheet && bodies.length) {
+        var ncDir = (f.dir2 || f.end === 'mid') ? null : V.scale(plane.n, f.reverse ? -1 : 1);
+        solid = normalCutTool(solid, ncDir);
+      }
+      return solid;
+    }
+    // Normal Cut (as Kernel.normalCutTool): the tool's faces that lie on a sheet surface where it meets the body (air
+    // just in front, metal half a thickness behind, air a thickness behind; area-weighted over its triangles), only
+    // those the cut enters through when it has one direction, each pushed straight through the thickness: planar faces
+    // as prisms, bend faces as a thickness-deep offset solid. Returns the tool itself when it crosses no sheet surface.
+    function normalCutTool(tool, dir) {
+      var body = bodies.length === 1 ? bodies[0] : compound(bodies);
+      var com = N(new oc.BRepAlgoAPI_Common_3(body, tool, R()));
+      if (!com.IsDone()) return tool;
+      var Rs = N(com.Shape());
+      if (!(volumeOf(Rs) > 1e-9)) return tool;
+      var T = +K.sheetParams(m).thickness, eps = 1e-3 * T;
+      var cls = N(new oc.BRepClass3d_SolidClassifier_2(body));
+      function inside(p) { cls.Perform(P(p), 1e-7); return cls.State() === oc.TopAbs_State.TopAbs_IN; }
+      N(new oc.BRepMesh_IncrementalMesh_2(Rs, Math.max(0.05, T / 4), false, 0.35, false));
+      var caps = [], entry = [];
+      facesOf(Rs).forEach(function (fc) {
+        var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(fc, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
+        if (h.IsNull()) return;
+        var tri = h.get(), tr = N(loc.Transformation()), rev = fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
+        for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); nodes[i] = [p.X(), p.Y(), p.Z()]; }
+        var yes = 0, no = 0, nSum = [0, 0, 0];
+        for (var j = 1; j <= tri.NbTriangles(); j++) {
+          var Tt = N(tri.Triangle(j)), a = nodes[Tt.Value(1)], b = nodes[Tt.Value(2)], c = nodes[Tt.Value(3)];
+          if (rev) { var x = b; b = c; c = x; }
+          var cr = V.cross(V.sub(b, a), V.sub(c, a)), w = V.len(cr);
+          if (w < 1e-12) continue;
+          var n = V.scale(cr, 1 / w), cen = V.scale(V.add(V.add(a, b), c), 1 / 3);
+          nSum = V.add(nSum, cr);
+          var onSheet = !inside(V.add(cen, V.scale(n, eps))) && inside(V.sub(cen, V.scale(n, T / 2))) && !inside(V.sub(cen, V.scale(n, T + eps)));
+          if (onSheet) yes += w; else no += w;
+        }
+        if (!(yes > no)) return;
+        var nf = V.norm(nSum);
+        caps.push({ face: fc, n: nf });
+        if (dir && V.dot(nf, dir) < -1e-6) entry.push({ face: fc, n: nf });
+      });
+      var chosen = entry.length ? entry : caps;
+      if (!chosen.length) return tool;
+      var pieces = chosen.map(function (c) {
+        var ad = N(new oc.BRepAdaptor_Surface_2(c.face, true)), t = ad.GetType(), planar = (t && t.value != null ? t.value : t) === 0;
+        if (planar) {
+          var mv = N(new oc.gp_Trsf_1()); mv.SetTranslation_1(Vec(V.scale(c.n, eps)));
+          return N(N(new oc.BRepPrimAPI_MakePrism_1(transformed(c.face, mv), Vec(V.scale(c.n, -(T + 2 * eps))), false, true)).Shape());
+        }
+        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+        th.MakeThickSolidBySimple(c.face, -(T + eps));
+        if (!th.IsDone()) throw new Error('OpenCascade could not make the normal cut through a bend.');
+        return N(th.Shape());
+      });
+      var out = pieces[0];
+      for (var q = 1; q < pieces.length; q++) out = fuse(out, pieces[q]);
+      return out;
     }
     function revolveTool(f) {
       var sk = sketchOf(f);
@@ -439,6 +497,113 @@ var OcctKernel = (function () {
         bodies.push(s); bodyFeatures.push(f.id);
       });
     }
+    // ---- sheet metal. Edge flanges, hems and jogs use Kernel.flangeLayout (the same edges, mitres, reliefs and
+    // trim-back as Anvil's), computed from the body's tessellation; the sections are built exactly (bend arcs).
+    // an OpenCascade shape as a CSG solid (its triangles), for Kernel functions that read Anvil meshes
+    function shapeToCSG(sh) {
+      N(new oc.BRepMesh_IncrementalMesh_2(sh, 0.05, false, 0.35, false));
+      var polys = [];
+      facesOf(sh).forEach(function (f) {
+        var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
+        if (h.IsNull()) return;
+        var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
+        for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); nodes[i] = new CSGlib.Vector(p.X(), p.Y(), p.Z()); }
+        for (var j = 1; j <= tri.NbTriangles(); j++) {
+          var T = N(tri.Triangle(j)), a = T.Value(1), b = T.Value(2), c = T.Value(3);
+          if (rev) { var x = b; b = c; c = x; }
+          var pg = CSGlib.Polygon.tryCreate([new CSGlib.Vertex(nodes[a]), new CSGlib.Vertex(nodes[b]), new CSGlib.Vertex(nodes[c])], null);
+          if (pg) polys.push(pg);
+        }
+      });
+      return CSGlib.fromPolygons(polys);
+    }
+    var CSGlib = typeof CSG !== 'undefined' ? CSG : (typeof self !== 'undefined' ? self.CSG : null);
+    // a prism of a 2D polyline loop in plane from a to b along plane.n
+    function prismOf(loop, plane, a, b) {
+      var face = polyFace3(loop.map(function (p) { return K.to3D(plane, p[0], p[1]); }));
+      return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec(V.scale(plane.n, b - a)), false, true)).Shape());
+    }
+    function polyFace3(pts) {
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      for (var i = 0; i < pts.length; i++) {
+        var p = pts[i], q = pts[(i + 1) % pts.length];
+        if (V.len(V.sub(p, q)) > 1e-9) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(p), P(q))).Edge()));
+      }
+      return N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+    }
+    // the flange section (Kernel.flangeProfile) with exact arcs: in the (o, u) plane the inner bend is a circle of
+    // radius R about (0, R), the outer one R + T, the wall runs on at angle A for L; the strip o in [-ov, 0] overlaps the sheet
+    function flangeSection(s, plane) {
+      var A = s.A, R = s.R, T = s.T, L = s.L, ov = s.ov, to3 = function (p) { return K.to3D(plane, p[0], p[1]); };
+      function arcPt(r, th) { return [r * Math.sin(th), R - r * Math.cos(th)]; }
+      var tx = Math.cos(A), ty = Math.sin(A), iE = arcPt(R, A), oE = arcPt(R + T, A);
+      var iEnd = [iE[0] + tx * L, iE[1] + ty * L], oEnd = [oE[0] + tx * L, oE[1] + ty * L];
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      function line(p, q) { if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-9) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(p)), P(to3(q)))).Edge())); }
+      function arc(r, th0, th1) {
+        if (r < 1e-9) return;
+        var mk = N(new oc.GC_MakeArcOfCircle_4(P(to3(arcPt(r, th0))), P(to3(arcPt(r, (th0 + th1) / 2))), P(to3(arcPt(r, th1)))));
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(mk.Value()).get())))).Edge()));
+      }
+      line([-ov, 0], [0, 0]); arc(R, 0, A); line(iE, iEnd); line(iEnd, oEnd); line(oEnd, oE); arc(R + T, A, 0); line([0, -T], [-ov, -T]); line([-ov, -T], [-ov, 0]);
+      if (!mw.IsDone()) throw new Error('OpenCascade could not make the flange section.');
+      return N(N(new oc.BRepBuilderAPI_MakeFace_15(N(mw.Wire()), true)).Face());
+    }
+    // keep the part of sh where n·p >= w
+    function clipKeep(sh, n, w) {
+      var o = V.scale(n, w), x = V.norm(V.cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), y = V.cross(n, x), S = 1e4;
+      var face = polyFace3([V.add(o, V.add(V.scale(x, -S), V.scale(y, -S))), V.add(o, V.add(V.scale(x, S), V.scale(y, -S))), V.add(o, V.add(V.scale(x, S), V.scale(y, S))), V.add(o, V.add(V.scale(x, -S), V.scale(y, S)))]);
+      var hs = N(N(new oc.BRepPrimAPI_MakeHalfSpace_1(face, P(V.add(o, n)))).Solid());
+      var op = N(new oc.BRepAlgoAPI_Common_3(sh, hs, R()));
+      if (!op.IsDone()) throw new Error('OpenCascade could not mitre the flange.');
+      return N(op.Shape());
+    }
+    // a flange layout onto body k: its cuts (trim-back, reliefs) first, then each part's exact sweep, mitred
+    function applyLayout(k, lay, withCuts) {
+      var body = bodies[k];
+      if (withCuts) lay.cuts.forEach(function (c) { body = cut(body, prismOf(c.loop, c.plane, c.a, c.b)); });
+      lay.parts.forEach(function (p) {
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(lay.section, p.plane), p.t0, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0)), false, true)).Shape());
+        p.clips.forEach(function (c) { tool = clipKeep(tool, c.n, c.w); });
+        body = fuse(body, tool);
+      });
+      bodies[k] = body;
+    }
+    function sheetBody(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var k = pickBody(f.edges && f.edges[0] && f.edges[0].at);
+      if (k < 0) throw new Error('Create a Base Flange before adding ' + (f.type === 'jog' ? 'a jog.' : 'edge flanges.'));
+      bodies[k] = unify(bodies[k]);
+      return k;
+    }
+    function flangeOp(f) {
+      var k = sheetBody(f);
+      applyLayout(k, K.flangeLayout(f, m, { body: shapeToCSG(bodies[k]) }), true);
+    }
+    // Jog (as Kernel.buildJog): a flange whose wall length makes the offset `height`, then on its wall's end a flange
+    // folding back parallel to the base for `length`
+    function jogOp(f) {
+      var k = sheetBody(f), sheet = K.sheetParams(m), T = +sheet.thickness, Rr = f.radius != null ? +f.radius : +sheet.bendRadius;
+      var A = (f.angle == null ? 90 : +f.angle) * Math.PI / 180, H = +f.height, L2 = +f.length;
+      if (!isFinite(H) || !isFinite(L2) || !isFinite(A)) throw new Error('Jog height, length and angle must be a number each.');
+      if (!(H > 0)) throw new Error('Jog height must be greater than zero.');
+      if (!(L2 > 0)) throw new Error('Jog length must be greater than zero.');
+      if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
+      var wall = (H - 2 * Rr * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
+      if (!(wall > 0.01)) throw new Error('Jog height is too small for this bend radius and angle.');
+      var f1 = { id: f.id, edges: f.edges, angle: A * 180 / Math.PI, length: wall, reverse: !!f.reverse, radius: Rr, position: f.position };
+      var lay1 = K.flangeLayout(f1, m, { body: shapeToCSG(bodies[k]) });
+      applyLayout(k, lay1, true);
+      var sA = Math.sin(A), cA = Math.cos(A), csg1 = shapeToCSG(bodies[k] = unify(bodies[k]));
+      lay1.info.forEach(function (fi) {
+        var innerEnd = V.add(V.add(fi.origin, V.scale(fi.o, Rr * sA + cA * wall)), V.scale(fi.u, Rr - Rr * cA + sA * wall));
+        var outerDir = V.add(V.scale(fi.o, sA), V.scale(fi.u, -cA)), tw = V.add(V.scale(fi.o, cA), V.scale(fi.u, sA));
+        var toward = V.norm(V.sub(fi.o, V.scale(tw, V.dot(fi.o, tw))));
+        var f2 = { id: f.id, edges: [{ at: V.add(innerEnd, V.scale(outerDir, T / 2)) }], angle: A * 180 / Math.PI, length: L2, toward: toward, radius: Rr, position: 'bendOutside' };
+        applyLayout(k, K.flangeLayout(f2, m, { body: csg1 }), false);   // Anvil's jog keeps only the first bend's cuts
+      });
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -475,6 +640,8 @@ var OcctKernel = (function () {
             case 'hole': tool = holeTool(f); break;
             case 'fillet': case 'chamfer': edgeOp(f); break;
             case 'import': importOp(f); break;
+            case 'flange': flangeOp(f); break;
+            case 'jog': jogOp(f); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }
@@ -491,11 +658,12 @@ var OcctKernel = (function () {
       var tBuild = now() - t0;
       var out = { ok: !unsupported && Object.keys(status).every(function (k) { return status[k] === 'ok'; }), status: status, unsupported: unsupported,
         bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0 },
-        // how closely Anvil's own volume can be expected to agree: its sweeps and lofts are faceted (mitred sections,
-        // ruled sections), and an edge picked with chain: false stops at that edge in Anvil while OpenCascade carries
-        // the fillet / chamfer on round tangent edges (SolidWorks' tangent propagation); everything else is exact
+        // how closely Anvil's own volume can be expected to agree: its sweeps, lofts, flange / jog bends and imports
+        // are faceted (mitred sections, ruled sections, 8 segments per 90° bend, a mesh), and an edge picked with
+        // chain: false stops at that edge in Anvil while OpenCascade carries the fillet / chamfer on round tangent
+        // edges (SolidWorks' tangent propagation); everything else is exact
         tolerance: m.features.some(function (f) {
-          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface

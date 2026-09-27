@@ -3925,7 +3925,7 @@
     return 'Mug handle ' + biggest.length + ' facets; Handlebar ' + bar.groups.length + ' / ' + bar.mesh.faces.length + '; Rounded handle ' + rh.groups.length + ' / ' + rh.mesh.faces.length + '; U-bracket ' + ub.groups.length + ' / ' + ub.mesh.faces.length;
   });
 
-  step('Tools ▸ OpenCascade kernel: OpenCascade\'s solid drives the part (exact volume): the Flange picks as its 12 B-rep faces, the Mug (shell + sweep) as its 8, the Spacer\'s coplanar pocket floors apart (21), sheet metal keeps Anvil\'s grouping with "needs sheet metal", and switching off restores Anvil\'s own (skipped without vendor/occt)', async function () {
+  step('Tools ▸ OpenCascade kernel: OpenCascade\'s solid drives the part (exact volume): the Flange picks as its 12 B-rep faces, the Mug (shell + sweep) as its 8, the Spacer\'s coplanar pocket floors apart (21), the U-bracket (sheet metal) as its 24 with its flat pattern, STEP / IGES from its B-rep; an STL import keeps Anvil\'s result with "needs a mesh import", and switching off restores Anvil\'s own (skipped without vendor/occt)', async function () {
     function occIdle() { return Promise.race([anvil.occtIdle(), wait(30000).then(function () { return anvil.occt(); })]); }
     function groups() { return new Set(UI.faceGroups()).size; }
     await anvil.run(exByName('Flange').code); await idle();
@@ -3956,13 +3956,20 @@
       await anvil.run(exByName('Configured spacer').code); await idle();
       var sp = await occIdle();
       assert(sp.state === 'ok' && sp.faces === 21 && groups() === 21, 'Spacer: ' + sp.faces + ' faces, ' + groups() + ' groups');
-      // sheet metal is not built by OpenCascade yet: Anvil's grouping stays, the chip says why
+      // sheet metal builds too (exact bends), and its flat pattern still unfolds
       await anvil.run(exByName('Sheet-metal U-bracket').code); await idle();
       var u = await occIdle();
-      assert(u.state === 'unsupported' && /sheet metal/.test(u.unsupported), 'U-bracket: ' + u.state + ' ' + u.unsupported);
-      assert(/needs sheet metal/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
+      assert(u.state === 'ok' && u.driving && u.faces === 24, 'U-bracket: ' + u.state + ' ' + u.faces);
+      var flat = anvil.flat();
+      assert(flat.bends.length === 2 && Math.abs(flat.bbox.max[0] - flat.bbox.min[0] - 210.74) < 0.05, 'flat pattern ' + JSON.stringify(flat.bbox));
+      // an STL import has no B-rep: Anvil's result stays and the chip says why
+      var stl = anvil.stl();
+      await anvil.importFile('part.stl', stl); await idle();
+      var q = await occIdle();
+      assert(q.state === 'unsupported' && /mesh import/.test(q.unsupported) && !UI.App.build.occt, 'STL import: ' + q.state + ' ' + q.unsupported);
+      assert(/needs a mesh import/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
       await anvil.run(exByName('Flange').code); await idle(); await occIdle();
-      return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug 8 faces; Spacer 21 faces; U-bracket: needs sheet metal';
+      return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug 8 faces; Spacer 21 faces; U-bracket 24 faces, flat 2 bends; STL import: Anvil\'s';
     } finally {
       anvil.occt(false);
       assert(!anvil.occt().on && !UI.App.build.occt && groups() === anvilGroups, 'switched off, Anvil\'s build back: ' + groups() + ' groups');

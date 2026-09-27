@@ -995,3 +995,13 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (port 8812, pane visible).** occt-tests 36/36 (new: Mug → STEP → import and Mug → IGES → import, 8 faces, volume within 4.9e-6); ui-smoke 151/151 (OpenCascade step asserts the torus in the Mug's STEP, the product name and IGES export; File ▸ Open lists 7 types); kernel-tests 683/683. In the app: Mug exported and re-opened as STEP and IGES drives as 8 faces; inserted into a part with merge it unions (13 faces, 485025.574).
 
 **Next up.** Worker-side caching of unchanged feature prefixes (rebuild speed), sheet metal in OpenCascade.
+
+## Run local-2026-09-26n — OpenCascade kernel, stage 4: sheet metal (every part example now builds in OpenCascade)
+
+**Done.**
+- `kernel.js`: `buildFlange` split into `flangeLayout(f, model, ctx)` (plain data: parts = section loop + plane + sweep range + mitre clips, cuts = trim-back and relief prisms, info, section parameters) and the CSG build from it; exported. Anvil's own results unchanged (kernel-tests 683/683).
+- `occt-kernel.js`: base flanges and every extrude in a sheet model; edge flanges and hems through `Kernel.flangeLayout` computed on the body's tessellation (`shapeToCSG`), built with exact bend arcs (`flangeSection`, radius R and R + T about (0, R)), mitres by half-space clipping (`clipKeep`), trim-back and reliefs cut first; jogs as Kernel.buildJog (first flange with its cuts, the fold-back flange from the first one's wall end on the intermediate body); Normal Cut as Kernel.normalCutTool (the tool ∩ body faces on a sheet surface by area-weighted classification with `BRepClass3d_SolidClassifier`, entry faces only when the cut has one direction, planar faces pushed through as prisms, bend faces as thickness-deep `MakeThickSolidBySimple` solids). Flange / jog parts get the 2e-2 tolerance (Anvil facets bends 8× per 90°).
+
+**Tests.** occt-tests 41/41, 0 TODO: U-bracket 24 faces, Tray 57 (mitres + obround reliefs), Normal Cut Bracket 16, new base flange + 90° flange matching its exact volume 12000 + 60·(π/4·(4² − 2²) + 40) = 14965.487, a jog. ui-smoke 151/151 (the OpenCascade step now drives the U-bracket, checks its flat pattern — 2 bends, blank 210.74 wide as Anvil's — and uses an STL import for "needs a mesh import"). In the app with OpenCascade driving: flat patterns and DXF of the U-bracket, Tray and Normal Cut Bracket identical in size and bends to Anvil's.
+
+**Next up.** Rebuild speed (worker-side caching of unchanged feature prefixes), then decide on OpenCascade as the default.
