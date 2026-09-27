@@ -16,6 +16,9 @@ async function classic(url) {
   (0, eval)((await res.text()) + '\n//# sourceURL=' + new URL(url, self.location.href).href);
 }
 
+// the rebuild cache (OcctKernel.build opts.cache): snapshots after each feature, reused while the prefix is unchanged
+let cache = {};
+
 const ready = (async () => {
   for (const f of ['csg.js', 'kernel.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
   const t0 = performance.now();
@@ -38,10 +41,11 @@ self.onmessage = async (e) => {
   }
   if (m.type !== 'build') return;
   try {
-    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports });
+    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cache });
     const transfer = r.mesh ? [r.mesh.positions.buffer, r.mesh.faceOf.buffer] : [];
     self.postMessage({ type: 'built', seq: m.seq, result: r }, transfer);
   } catch (err) {
+    cache = {};   // a build that threw may have left the snapshots half-updated
     self.postMessage({ type: 'error', seq: m.seq, message: (err && err.message) || String(err) });
   }
 };

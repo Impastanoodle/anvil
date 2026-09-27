@@ -623,8 +623,50 @@ var OcctKernel = (function () {
       }
     }
 
+    // ---- rebuild cache (opts.cache, kept by the worker between builds): after each feature, a snapshot of the bodies,
+    // tools, planes, sketches and statuses; the longest prefix of unchanged features (same resolved JSON, same sheet
+    // parameters and units) is restored and only the rest is built. Snapshot shapes are extra handles (Moved by the
+    // identity) on the same OpenCascade geometry, outside the arena, freed here when their snapshot is dropped.
+    var cache = opts.cache || null, ident = N(new oc.TopLoc_Location_1());
+    function keep(s) { return s.Moved(ident, false); }
+    function featureKey(f) { return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(m.sheet || null) + '|' + (m.units || 'mm'); }
+    function freeState(S) { S.bodies.forEach(function (b) { try { b.delete(); } catch (e) { } }); }
+    var keys = m.features.map(featureKey), start = 0;
+    if (cache) {
+      if (!cache.states) { cache.keys = []; cache.states = []; cache.tools = {}; }
+      while (start < keys.length && start < cache.keys.length && cache.keys[start] === keys[start] && !cache.states[start].unsupported) start++;
+      // drop the snapshots from the first change on
+      for (var d = start; d < cache.states.length; d++) freeState(cache.states[d]);
+      Object.keys(cache.tools).forEach(function (id) {
+        var i = -1;
+        m.features.forEach(function (f, j) { if (String(f.id) === id) i = j; });
+        if (i < 0 || i >= start) { try { cache.tools[id].delete(); } catch (e) { } delete cache.tools[id]; }
+      });
+      cache.keys.length = start; cache.states.length = start;
+      if (start > 0) {
+        var S0 = cache.states[start - 1];
+        bodies = S0.bodies.slice(); bodyFeatures = S0.bodyFeatures.slice();
+        Object.keys(S0.planes).forEach(function (id) { planes[id] = S0.planes[id]; });
+        Object.keys(S0.sketches).forEach(function (id) { sketches[id] = S0.sketches[id]; });
+        Object.keys(cache.tools).forEach(function (id) { tools[id] = cache.tools[id]; });
+        Object.keys(S0.status).forEach(function (id) { status[id] = S0.status[id]; });
+      }
+    }
+    function snapshot(i) {
+      if (!cache) return;
+      var S = { bodies: bodies.map(keep), bodyFeatures: bodyFeatures.slice(), planes: {}, sketches: {}, status: {}, unsupported: unsupported };
+      Object.keys(planes).forEach(function (id) { S.planes[id] = planes[id]; });
+      Object.keys(sketches).forEach(function (id) { S.sketches[id] = sketches[id]; });
+      Object.keys(status).forEach(function (id) { S.status[id] = status[id]; });
+      var fid = String(m.features[i].id);
+      if (tools[fid] && !cache.tools[fid]) cache.tools[fid] = tools[fid] = keep(tools[fid]);
+      cache.keys[i] = keys[i]; cache.states[i] = S;
+    }
+    var reused = start;
+
     try {
-      m.features.forEach(function (f) {
+      m.features.forEach(function (f, fi) {
+        if (fi < start) return;   // restored from the cache
         if (unsupported) { status[f.id] = 'skipped'; return; }
         if (!SUPPORTED[f.type]) { unsupported = f.type; status[f.id] = 'unsupported'; return; }
         try {
@@ -654,10 +696,11 @@ var OcctKernel = (function () {
           if (e.unsupported) { unsupported = e.unsupported; status[f.id] = 'unsupported'; return; }
           status[f.id] = 'error: ' + (e.message || String(e));
         }
+        snapshot(fi);
       });
       var tBuild = now() - t0;
       var out = { ok: !unsupported && Object.keys(status).every(function (k) { return status[k] === 'ok'; }), status: status, unsupported: unsupported,
-        bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0 },
+        bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0 }, reused: reused,
         // how closely Anvil's own volume can be expected to agree: its sweeps, lofts, flange / jog bends and imports
         // are faceted (mitred sections, ruled sections, 8 segments per 90° bend, a mesh), and an edge picked with
         // chain: false stops at that edge in Anvil while OpenCascade carries the fillet / chamfer on round tangent

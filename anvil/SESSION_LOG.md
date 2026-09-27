@@ -1005,3 +1005,11 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Tests.** occt-tests 41/41, 0 TODO: U-bracket 24 faces, Tray 57 (mitres + obround reliefs), Normal Cut Bracket 16, new base flange + 90° flange matching its exact volume 12000 + 60·(π/4·(4² − 2²) + 40) = 14965.487, a jog. ui-smoke 151/151 (the OpenCascade step now drives the U-bracket, checks its flat pattern — 2 bends, blank 210.74 wide as Anvil's — and uses an STL import for "needs a mesh import"). In the app with OpenCascade driving: flat patterns and DXF of the U-bracket, Tray and Normal Cut Bracket identical in size and bends to Anvil's.
 
 **Next up.** Rebuild speed (worker-side caching of unchanged feature prefixes), then decide on OpenCascade as the default.
+
+## Run local-2026-09-26o — OpenCascade rebuild cache
+
+**Done.** `OcctKernel.build` takes `opts.cache` (kept by occt-worker.js between builds, reset when a build throws; `noCache` in the message skips it): after each feature a snapshot of the bodies (extra handles `Moved` by the identity on the same OpenCascade geometry, outside the arena), tools, planes, sketches and statuses; the longest prefix of unchanged features (resolved feature JSON without profile / name, sheet parameters, units) is restored and only the rest is built; dropped snapshots free their handles. The result reports `reused`.
+
+**Measured (app, OpenCascade driving, last feature edited):** Tray 1062 → 51 ms, Spur gear 364 → 66 ms, Moulded cap 566 → 357 ms (its last feature, a drafted rib, dominates).
+
+**Verified (port 8812, pane visible).** occt-tests 42/42 (new: the Tray with its last feature edited, cached — reused 4 of 5, 43 ms — equals a fresh build, 834 ms); ui-smoke 151/151.
