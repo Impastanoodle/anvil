@@ -6,7 +6,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
-- OpenCascade kernel stage 2 (run local-2026-09-26i did stage 1; see anvil/experiments/OCCT.md and the ui-occt.js header): in `occt-kernel.js` build fillet and chamfer (resolve Anvil's point-picked edges `{ at }` to OpenCascade edges, chains included), shell (Intersection join, remove faces picked by point), drafted extrude, loft (ThruSections) and sweep (MakePipe / MakePipeShell), then the Hole Wizard `hole` type. Each must pass `tests/occt-tests.html` (volume 1e-4, bbox 0.05 mm, valid). Then stage 3: display OpenCascade's own mesh when the switch is on (true faces for picking, drawings with HLRBRep, STEP through OpenCascade).
+- OpenCascade kernel stage 3 (stages 1-2 done: local-2026-09-26i, -26k; see anvil/experiments/OCCT.md): display OpenCascade's own mesh when the switch is on (true faces for picking, drawings with HLRBRep, STEP through OpenCascade).
 - Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Re-measured locally on 2026-09-26 (local-2026-09-26d, all 30 parts building): ~445-460 ms, i.e. ~1.07x, already inside the target; Funnel is ~57% of the total (~258 ms). Confirm on another machine before closing. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
 
 

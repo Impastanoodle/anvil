@@ -43,7 +43,7 @@
     var dv = st.anvilVolume ? Math.abs(r.volume - st.anvilVolume) / st.anvilVolume : Math.abs(r.volume);
     st.volumeDiff = dv;
     if (!r.valid) { st.state = 'invalid'; clearMapping(); return; }
-    if (!(dv <= 1e-4) || !r.mesh) { st.state = 'mismatch'; clearMapping(); return; }
+    if (!(dv <= (r.tolerance || 1e-4)) || !r.mesh) { st.state = 'mismatch'; clearMapping(); return; }
     st.state = 'ok';
     st.mesh = App.mesh;
     st.faceOf = window.OcctKernel ? OcctKernel.mapFaces(App.mesh, r, 0.25) : null;

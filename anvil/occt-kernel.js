@@ -15,18 +15,23 @@
 // }
 // The feature tree is read exactly as Kernel.rebuild reads it: the same resolved model (equations, configurations),
 // sketch profiles (Kernel.sketchProfile, with the exact circles / arcs behind the chords), planes, extrude ranges,
-// revolve axes and cut scopes. Supported now: sketch, reference plane, extrude / cut (blind, through all, mid-plane,
-// two directions, reverse; bodies scope and merge: false), revolve / revolve cut, linear and circular patterns,
-// mirror of features and of the body. Everything else stops the build at that feature ('unsupported'), so the caller
-// keeps Anvil's own result. OpenCascade objects are freed after every build.
+// revolve axes and cut scopes. Supported: sketch, reference plane, extrude / cut (blind, through all, mid-plane,
+// two directions, reverse, draft; bodies scope and merge: false), revolve / revolve cut, linear and circular patterns,
+// mirror of features and of the body (stage 1); fillet and chamfer (edges nearest the picked points, tangent
+// propagation), shell (faces nearest the picked points removed; none: closed hollow), loft, sweep (sketch path with
+// exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2). Sheet metal and anything else stops
+// the build at that feature ('unsupported'), so the caller keeps Anvil's own result. `tolerance` is the relative
+// volume agreement to expect with Anvil (1e-4; 2e-2 with sweeps / lofts, which Anvil facets). OpenCascade objects
+// are freed after every build.
 var OcctKernel = (function () {
   'use strict';
-  var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1 };
+  var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1 };
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
     opts = opts || {};
-    var t0 = now(), arena = [];
+    var t0 = now(), arena = [], V = K.vec;
     // every OpenCascade object made here goes into the arena and is deleted at the end
     function N(o) { arena.push(o); return o; }
     var R = function () { return N(new oc.Message_ProgressRange_1()); };
@@ -55,6 +60,56 @@ var OcctKernel = (function () {
     function cut(a, b) { var op = N(new oc.BRepAlgoAPI_Cut_3(a, b, R())); if (!op.IsDone()) throw new Error('OpenCascade could not cut the body.'); return N(op.Shape()); }
     function transformed(sh, trsf) { return N(N(new oc.BRepBuilderAPI_Transform_2(sh, trsf, true)).Shape()); }
     function valid(sh) { try { return N(new oc.BRepCheck_Analyzer(sh, true, false)).IsValid_2(); } catch (e) { return false; } }
+    function edgesOf(sh) { // unique edges (an explorer visits a shared edge once per face)
+      var out = [], seen = N(new oc.TopTools_IndexedMapOfShape_1());
+      explore(sh, ENUM.TopAbs_EDGE).forEach(function (s) { if (!seen.Contains(s)) { seen.Add(s); out.push(N(oc.TopoDS.Edge_1(s))); } });
+      return out;
+    }
+    function facesOf(sh) { return explore(sh, ENUM.TopAbs_FACE).map(function (s) { return N(oc.TopoDS.Face_1(s)); }); }
+    // distance from a point to any shape (vertex, edge, face, solid)
+    function dist(p, sh) {
+      var v = N(N(new oc.BRepBuilderAPI_MakeVertex(P(p))).Vertex());
+      var d = N(new oc.BRepExtrema_DistShapeShape_2(v, sh, oc.Extrema_ExtFlag.Extrema_ExtFlag_MIN, oc.Extrema_ExtAlgo.Extrema_ExtAlgo_Grad, R()));
+      return d.IsDone() ? d.Value() : Infinity;
+    }
+    // faces split along old boolean seams merged back (edge and face picks see whole edges and faces)
+    function unify(sh) {
+      try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(sh, true, true, false)); u.Build(); return N(u.Shape()); } catch (e) { return sh; }
+    }
+    // the body a face- or edge-picked feature works on: the one nearest its first pick (Kernel's pickBody)
+    function pickBody(at) {
+      if (!bodies.length) return -1;
+      if (!at) return 0;
+      var best = 0, bestD = Infinity;
+      bodies.forEach(function (b, i) { var d = dist(at, b); if (d < bestD) { bestD = d; best = i; } });
+      return best;
+    }
+    // the shape nearest each picked point within tol (Kernel's resolveEdges / resolveFaces), deduplicated
+    function nearest(specs, shapes, tol) {
+      var out = [];
+      (specs || []).forEach(function (spec) {
+        var best = -1, bestD = tol;
+        shapes.forEach(function (s, i) { var d = dist(spec.at, s); if (d < bestD) { bestD = d; best = i; } });
+        if (best >= 0 && out.indexOf(best) < 0) out.push(best);
+      });
+      return out.map(function (i) { return shapes[i]; });
+    }
+    // the first wire of a shape (an offset returns a wire or a compound of wires)
+    function firstWire(sh) {
+      if (sh.ShapeType() === ENUM.TopAbs_WIRE) return N(oc.TopoDS.Wire_1(sh));
+      var w = explore(sh, ENUM.TopAbs_WIRE);
+      if (!w.length) throw new Error('OpenCascade could not offset the sketch contour.');
+      return N(oc.TopoDS.Wire_1(w[0]));
+    }
+    // a planar face's outer wire offset in its plane by d (positive grows the face), sharp corners, as Anvil's
+    // mitred offset (radial on arcs)
+    function offsetWire(face, d) {
+      if (Math.abs(d) < 1e-12) return firstWire(face);
+      var mo = N(new oc.BRepOffsetAPI_MakeOffset_2(face, oc.GeomAbs_JoinType.GeomAbs_Intersection, false));
+      mo.Perform(d, 0);
+      if (!mo.IsDone()) throw new Error('Draft angle is too large for this depth: the profile collapses.');
+      return firstWire(N(mo.Shape()));
+    }
 
     // ---- sketch loops -> wires with exact circles and arcs
     function loopWire(loop, profile, plane) {
@@ -106,7 +161,7 @@ var OcctKernel = (function () {
     function fromLoops(faces, makeSolid) {
       var sorted = faces.slice().sort(function (p, q) { return p.depth - q.depth; }), acc = null;
       sorted.forEach(function (lf) {
-        var s = makeSolid(lf.face);
+        var s = makeSolid(lf.face, lf.depth % 2 === 1);
         if (lf.depth % 2 === 0) acc = acc ? fuse(acc, s) : s;
         else if (acc) acc = cut(acc, s);
       });
@@ -121,23 +176,38 @@ var OcctKernel = (function () {
       if (!s || s.type !== 'sketch') throw new Error('Select a sketch for this feature.');
       return s;
     }
+    function moveTo(sh, t, plane) { var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec([plane.n[0] * t, plane.n[1] * t, plane.n[2] * t])); return transformed(sh, tr); }
     function extrudeTool(f) {
-      if (f.draft) throw unsupportedErr('drafted extrude');
       if (f.normalCut || f.sheetBase || m.sheet) throw unsupportedErr('sheet metal');
       var sk = sketchOf(f), plane = K.resolvePlane(sk.plane, m, planes), range = K.extrudeRange(f, K.THROUGH);
-      var off = function (t) { return [plane.n[0] * t, plane.n[1] * t, plane.n[2] * t]; };
-      return fromLoops(loopFaces(sk, plane), function (face) {
-        var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec(off(range[0])));
-        var moved = transformed(face, tr);
-        var pr = N(new oc.BRepPrimAPI_MakePrism_1(moved, Vec(off(range[1] - range[0])), false, true));
-        return N(pr.Shape());
+      if (f.draft != null && !isFinite(+f.draft)) throw new Error('Draft angle must be a number.');
+      var draft = +f.draft || 0;
+      if (Math.abs(draft) >= 89) throw new Error('Draft angle must be less than 89°.');
+      // draft (as Kernel.buildExtrude): the section shrinks (grows with draftOut) by |t|·tan(angle) at distance t from
+      // the sketch plane; a hole loop does the opposite. Ruled loft between the two offset sections.
+      var k = draft ? Math.tan(draft * Math.PI / 180) * (f.draftOut ? 1 : -1) : 0;
+      return fromLoops(loopFaces(sk, plane), function (face, hole) {
+        var a = range[0], b = range[1];
+        if (!k) return N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(face, a, plane), Vec([plane.n[0] * (b - a), plane.n[1] * (b - a), plane.n[2] * (b - a)]), false, true)).Shape());
+        var s = hole ? -1 : 1;
+        function part(a0, b0) {
+          var ts = N(new oc.BRepOffsetAPI_ThruSections(true, true, 1e-6));
+          ts.AddWire(N(oc.TopoDS.Wire_1(moveTo(offsetWire(face, s * k * Math.abs(a0)), a0, plane))));
+          ts.AddWire(N(oc.TopoDS.Wire_1(moveTo(offsetWire(face, s * k * Math.abs(b0)), b0, plane))));
+          ts.Build(R());
+          if (!ts.IsDone()) throw new Error('OpenCascade could not make the drafted extrude.');
+          return N(ts.Shape());
+        }
+        return a < -1e-9 && b > 1e-9 ? fuse(part(a, 0), part(0, b)) : part(a, b);
       });
     }
     function revolveTool(f) {
-      var sk = sketchOf(f), plane = K.resolvePlane(sk.plane, m, planes), axis = K.revolveAxis(f, sk);
+      var sk = sketchOf(f);
+      return revolveSketch(sk, K.resolvePlane(sk.plane, m, planes), K.revolveAxis(f, sk), (+f.angle || 360) * (f.reverse ? -1 : 1));
+    }
+    function revolveSketch(sk, plane, axis, ang) {
       var dl = Math.hypot(axis.d[0], axis.d[1]);
       if (dl < 1e-9) throw new Error('Revolve axis has zero length.');
-      var ang = +f.angle || 360; if (f.reverse) ang = -ang;
       var o = K.to3D(plane, axis.p[0], axis.p[1]);
       var d = [(plane.x[0] * axis.d[0] + plane.y[0] * axis.d[1]) / dl, (plane.x[1] * axis.d[0] + plane.y[1] * axis.d[1]) / dl, (plane.x[2] * axis.d[0] + plane.y[2] * axis.d[1]) / dl];
       var ax1 = N(new oc.gp_Ax1_2(P(o), Dir(d)));
@@ -180,6 +250,181 @@ var OcctKernel = (function () {
       }
       return compound(copies);
     }
+    function sketchById(id, what) {
+      var s = sketches[id] || K.findFeature(m, id);
+      if (!s || s.type !== 'sketch') throw new Error(what);
+      return s;
+    }
+    function outerLoop(s, what) {
+      var prof = s.profile || K.sketchProfile(s);
+      K.checkProfile(prof);
+      var outers = prof.loops.filter(function (l) { return !l.hole; });
+      if (outers.length !== 1) throw new Error(what);
+      return { loop: outers[0], profile: prof };
+    }
+    // Loft through the sections' outer loops, smooth as SolidWorks (Anvil's own loft is ruled between sections)
+    function loftTool(f) {
+      var ids = f.sketches || [];
+      if (ids.length < 2) throw new Error('Loft needs at least two profile sketches.');
+      var ts = N(new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6));
+      ids.forEach(function (id) {
+        var s = sketchById(id, 'Loft sketch not found.'), pl = K.resolvePlane(s.plane, m, planes);
+        var o = outerLoop(s, 'Each loft sketch must contain exactly one closed profile.');
+        ts.AddWire(loopWire(o.loop, o.profile, pl));
+      });
+      ts.Build(R());
+      if (!ts.IsDone()) throw new Error('OpenCascade could not loft these sections.');
+      return N(ts.Shape());
+    }
+    // Sweep (as Kernel.buildSweep): the path is a sketch of lines and arcs (kept exact) or a 3D polyline, started at the
+    // end nearest the profile; the profile turns about the path start to face along the first segment; corners mitre.
+    function sweepTool(f) {
+      var prof = sketchById(f.profile, 'Select a profile sketch for the sweep.'), profPlane = K.resolvePlane(prof.plane, m, planes);
+      var profile = prof.profile || K.sketchProfile(prof);
+      K.checkProfile(profile);
+      if (!profile.loops.length) throw new Error('Sweep profile sketch has no closed profile.');
+      var c0 = [0, 0, 0], lp = profile.loops[0].pts;
+      lp.forEach(function (p) { var q = K.to3D(profPlane, p[0], p[1]); c0 = [c0[0] + q[0] / lp.length, c0[1] + q[1] / lp.length, c0[2] + q[2] / lp.length]; });
+      var path = Array.isArray(f.path) ? polylinePath(f.path, c0) : sketchPathEdges(f.path, c0);
+      var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      path.edges.forEach(function (e) { mw.Add_1(e); });
+      if (!mw.IsDone()) throw new Error('The sweep path does not connect.');
+      var spine = N(mw.Wire());
+      // turn the profile about the path start so it faces the first segment
+      var n = profPlane.n, dir = path.dir0, sg = V.dot(n, dir) < 0 ? -1 : 1, from = [n[0] * sg, n[1] * sg, n[2] * sg];
+      var c = Math.max(-1, Math.min(1, V.dot(from, dir))), rot = null;
+      if (c < 1 - 1e-9) {
+        var ax = c < -1 + 1e-9 ? V.norm(V.cross(from, Math.abs(from[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])) : V.norm(V.cross(from, dir));
+        rot = N(new oc.gp_Trsf_1()); rot.SetRotation_1(N(new oc.gp_Ax1_2(P(path.start), Dir(ax))), Math.acos(c));
+      }
+      return fromLoops(loopFaces(prof, profPlane), function (face) {
+        var w = firstWire(rot ? transformed(face, rot) : face);
+        var ps = N(new oc.BRepOffsetAPI_MakePipeShell(spine));
+        ps.SetMode_1(false);
+        ps.Add_1(w, false, false);
+        ps.SetTransitionMode(oc.BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RightCorner);
+        ps.Build(R());
+        if (!ps.IsDone() || !ps.MakeSolid()) throw new Error('OpenCascade could not sweep the profile along this path.');
+        return N(ps.Shape());
+      });
+    }
+    function polylinePath(raw, c0) {
+      var pts = [];
+      raw.forEach(function (p) { var q = [+p[0], +p[1], +p[2]]; if (!isFinite(q[0]) || !isFinite(q[1]) || !isFinite(q[2])) throw new Error('Every sweep path coordinate must be a number.'); if (!pts.length || V.len(V.sub(q, pts[pts.length - 1])) > 1e-6) pts.push(q); });
+      if (pts.length < 2) throw new Error('Sweep path needs at least two distinct points.');
+      if (V.len(V.sub(pts[pts.length - 1], c0)) < V.len(V.sub(pts[0], c0))) pts.reverse();
+      var edges = [];
+      for (var i = 0; i + 1 < pts.length; i++) edges.push(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(pts[i]), P(pts[i + 1]))).Edge()));
+      return { edges: edges, start: pts[0], dir0: V.norm(V.sub(pts[1], pts[0])) };
+    }
+    // the path sketch's lines, arcs and open polylines chained end to end, with exact arcs
+    function sketchPathEdges(id, c0) {
+      var sk = sketchById(id, 'Select a path sketch for the sweep.'), pl = K.resolvePlane(sk.plane, m, planes), segs = [];
+      (sk.entities || []).forEach(function (e) {
+        if (e.construction) return;
+        if (e.t === 'line') segs.push({ a: [e.x1, e.y1], b: [e.x2, e.y2] });
+        else if (e.t === 'arc') {
+          var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180, am = (a0 + a1) / 2;
+          var at = function (a) { return [e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]; };
+          segs.push({ a: at(a0), b: at(a1), mid: at(am), c: [e.cx, e.cy], sense: a1 > a0 ? 1 : -1 });
+        } else if (e.t === 'polyline' || e.t === 'rect' || e.t === 'crect' || e.t === 'poly') {
+          K.entityPolylines(e).forEach(function (pl2) { var q = pl2.pts; for (var i = 0; i + 1 < q.length; i++) segs.push({ a: q[i], b: q[i + 1] }); if (pl2.closed) segs.push({ a: q[q.length - 1], b: q[0] }); });
+        } else if (e.t !== 'point') throw unsupportedErr('a ' + e.t + ' in a sweep path');
+      });
+      if (!segs.length) throw new Error('Path sketch has no lines or arcs.');
+      var key = function (p) { return Math.round(p[0] * 1e4) + ',' + Math.round(p[1] * 1e4); }, deg = {};
+      segs.forEach(function (s) { [s.a, s.b].forEach(function (p) { deg[key(p)] = (deg[key(p)] || 0) + 1; }); });
+      // start at a free end nearest the profile (any point of a closed path)
+      var ends = [];
+      segs.forEach(function (s) { [s.a, s.b].forEach(function (p) { if (deg[key(p)] === 1) ends.push(p); }); });
+      var start = (ends.length ? ends : [segs[0].a]).slice().sort(function (p, q) { return V.len(V.sub(K.to3D(pl, p[0], p[1]), c0)) - V.len(V.sub(K.to3D(pl, q[0], q[1]), c0)); })[0];
+      var used = segs.map(function () { return false; }), cur = start, order = [];
+      for (var guard = 0; guard < segs.length; guard++) {
+        var hit = -1, rev = false;
+        for (var i = 0; i < segs.length && hit < 0; i++) {
+          if (used[i]) continue;
+          if (key(segs[i].a) === key(cur)) { hit = i; rev = false; } else if (key(segs[i].b) === key(cur)) { hit = i; rev = true; }
+        }
+        if (hit < 0) break;
+        used[hit] = true; order.push({ s: segs[hit], rev: rev }); cur = rev ? segs[hit].a : segs[hit].b;
+      }
+      var to3 = function (p) { return K.to3D(pl, p[0], p[1]); };
+      var edges = order.map(function (o) {
+        var s = o.s;
+        if (!s.mid) return N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(s.a)), P(to3(s.b)))).Edge());
+        var arc = N(new oc.GC_MakeArcOfCircle_4(P(to3(s.a)), P(to3(s.mid)), P(to3(s.b))));
+        return N(N(new oc.BRepBuilderAPI_MakeEdge_24(N(new oc.Handle_Geom_Curve_2(N(arc.Value()).get())))).Edge());
+      });
+      // direction along the path at its start
+      var f0 = order[0], d2;
+      if (!f0.s.mid) d2 = f0.rev ? V.sub([f0.s.a[0], f0.s.a[1], 0], [f0.s.b[0], f0.s.b[1], 0]) : V.sub([f0.s.b[0], f0.s.b[1], 0], [f0.s.a[0], f0.s.a[1], 0]);
+      else {
+        var p0 = f0.rev ? f0.s.b : f0.s.a, rr = [p0[0] - f0.s.c[0], p0[1] - f0.s.c[1]], sense = f0.s.sense * (f0.rev ? -1 : 1);
+        d2 = [-rr[1] * sense, rr[0] * sense, 0];
+      }
+      var d3 = V.norm([pl.x[0] * d2[0] + pl.y[0] * d2[1], pl.x[1] * d2[0] + pl.y[1] * d2[1], pl.x[2] * d2[0] + pl.y[2] * d2[1]]);
+      return { edges: edges, start: to3(start), dir0: d3 };
+    }
+    // Hole Wizard (holewizard.js): its half section revolved about each hole axis, as HoleWizard.build does
+    function holeTool(f) {
+      var HW = typeof HoleWizard !== 'undefined' ? HoleWizard : (typeof self !== 'undefined' ? self.HoleWizard : null);
+      if (!HW) throw unsupportedErr('Hole Wizard');
+      var s = HW.spec(f), sk = sketchById(f.sketch, 'Hole Wizard: select the positions sketch.'), plane = K.resolvePlane(sk.plane, m, planes);
+      var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction; });
+      if (!pts.length) throw new Error('Hole Wizard: place at least one point on the face.');
+      var L;
+      if (f.end === 'through') {
+        var bb = bodies.length ? bboxOf(compound(bodies)) : null;
+        var diag = bb ? Math.hypot(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]) : 0;
+        L = Math.max(diag * 2 + 10, 100);
+      } else { L = +f.depth; if (!(L > 0)) throw new Error('Hole depth must be greater than 0.'); }
+      var section = HW.section(s, L), x = plane.x, y = plane.n, nn = V.cross(x, y);
+      var tools = pts.map(function (e) {
+        var q = K.to3D(plane, e.x, e.y), rp = { custom: true, origin: q, x: x.slice(), y: y.slice(), n: nn, offset: V.dot(nn, q) };
+        var hsk = { id: -1, type: 'sketch', plane: rp, entities: [{ t: 'polyline', pts: section, closed: true }] };
+        hsk.profile = K.sketchProfile(hsk);
+        return revolveSketch(hsk, rp, { p: [0, 0], d: [0, 1] }, 360);
+      });
+      return tools.length === 1 ? tools[0] : compound(tools);
+    }
+    // Fillet / chamfer on the edges nearest the picked points, on the body nearest the first pick. OpenCascade
+    // carries it along tangent-continuous edges, as SolidWorks' "Tangent propagation".
+    function edgeOp(f) {
+      var size = f.type === 'chamfer' ? +f.d : +f.r;
+      if (!(size > 0)) throw new Error((f.type === 'chamfer' ? 'Distance' : 'Radius') + ' must be greater than zero.');
+      var k = pickBody(f.edges && f.edges[0] && f.edges[0].at);
+      if (k < 0) throw new Error('Nothing to ' + f.type + ' yet.');
+      var body = unify(bodies[k]), es = nearest(f.edges, edgesOf(body), Math.max(0.5, size));
+      if (!es.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
+      var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
+      es.forEach(function (e) { mk.Add_2(size, e); });
+      var res;
+      try { res = N(mk.Shape()); } catch (e) { throw new Error('OpenCascade could not ' + f.type + ' these edges (radius too large?).'); }
+      bodies[k] = res;
+    }
+    // Shell: walls of thickness T inside the body; faces nearest the picked points are removed (open), none -> hollow
+    function shellOp(f) {
+      var T = +f.thickness;
+      if (!(T > 0)) throw new Error('Shell thickness must be greater than zero.');
+      var k = pickBody(f.faces && f.faces[0] && f.faces[0].at);
+      if (k < 0) throw new Error('Nothing to shell yet.');
+      var body = unify(bodies[k]), rm = nearest(f.faces, facesOf(body), Math.max(0.5, T / 2)), res;
+      var join = oc.GeomAbs_JoinType.GeomAbs_Intersection, mode = oc.BRepOffset_Mode.BRepOffset_Skin;
+      if (rm.length) {
+        var list = N(new oc.TopTools_ListOfShape_1());
+        rm.forEach(function (fc) { list.Append_1(fc); });
+        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+        th.MakeThickSolidByJoin(body, list, -T, 1e-3, mode, false, false, join, false, R());
+        if (!th.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
+        res = N(th.Shape());
+      } else {
+        var mo = N(new oc.BRepOffsetAPI_MakeOffsetShape());
+        mo.PerformByJoin(body, -T, 1e-3, mode, false, false, join, false, R());
+        if (!mo.IsDone()) throw new Error('OpenCascade could not shell the body with this thickness.');
+        res = cut(body, N(mo.Shape()));
+      }
+      bodies[k] = res;
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -211,6 +456,11 @@ var OcctKernel = (function () {
             case 'sketch': if (!f.profile) f.profile = K.sketchProfile(f); sketches[f.id] = f; break;
             case 'extrude': tool = extrudeTool(f); break;
             case 'revolve': tool = revolveTool(f); break;
+            case 'loft': tool = loftTool(f); break;
+            case 'sweep': tool = sweepTool(f); break;
+            case 'hole': tool = holeTool(f); break;
+            case 'fillet': case 'chamfer': edgeOp(f); break;
+            case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }
           if (tool) {
@@ -225,7 +475,13 @@ var OcctKernel = (function () {
       });
       var tBuild = now() - t0;
       var out = { ok: !unsupported && Object.keys(status).every(function (k) { return status[k] === 'ok'; }), status: status, unsupported: unsupported,
-        bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0 } };
+        bodies: bodies.length, bodyFeatures: bodyFeatures.slice(), valid: true, volume: 0, bbox: null, faces: [], mesh: null, ms: { build: tBuild, mesh: 0 },
+        // how closely Anvil's own volume can be expected to agree: its sweeps and lofts are faceted (mitred sections,
+        // ruled sections), and an edge picked with chain: false stops at that edge in Anvil while OpenCascade carries
+        // the fillet / chamfer on round tangent edges (SolidWorks' tangent propagation); everything else is exact
+        tolerance: m.features.some(function (f) {
+          return f.type === 'sweep' || f.type === 'loft' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+        }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
       bodies = bodies.map(function (b) {

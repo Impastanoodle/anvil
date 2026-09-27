@@ -3925,7 +3925,7 @@
     return 'Mug handle ' + biggest.length + ' facets; Handlebar ' + bar.groups.length + ' / ' + bar.mesh.faces.length + '; Rounded handle ' + rh.groups.length + ' / ' + rh.mesh.faces.length + '; U-bracket ' + ub.groups.length + ' / ' + ub.mesh.faces.length;
   });
 
-  step('Tools ▸ OpenCascade kernel: the Flange picks as its 12 B-rep faces with a matching volume, the Mug (Shell) falls back to Anvil\'s grouping with "needs shell", and switching off restores Anvil\'s own (skipped without vendor/occt)', async function () {
+  step('Tools ▸ OpenCascade kernel: the Flange picks as its 12 B-rep faces with a matching volume, the Mug (shell + sweep) as its 8, sheet metal keeps Anvil\'s grouping with "needs sheet metal", and switching off restores Anvil\'s own (skipped without vendor/occt)', async function () {
     function occIdle() { return Promise.race([anvil.occtIdle(), wait(30000).then(function () { return anvil.occt(); })]); }
     function groups() { return new Set(UI.faceGroups()).size; }
     await anvil.run(exByName('Flange').code); await idle();
@@ -3942,13 +3942,17 @@
       var item = menuRows('OpenCascade kernel (experimental)')[0];
       if (UI.closeMenus) UI.closeMenus();
       assert(item && item.menu.indexOf('Tools') >= 0 && item.chk === '✓', 'Tools menu item checked: ' + JSON.stringify(item && { menu: item.menu, chk: item.chk }));
+      // stage 2: shell + sweep build too; the Mug picks as its 8 B-rep faces
       await anvil.run(exByName('Mug').code); await idle();
       var m = await occIdle();
-      assert(m.state === 'unsupported' && m.unsupported === 'shell', 'Mug: ' + m.state + ' ' + m.unsupported);
-      assert(/needs shell/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
-      assert(groups() < UI.App.mesh.faces.length / 5, 'Mug keeps Anvil\'s whole faces: ' + groups());
+      assert(m.state === 'ok' && m.faces === 8 && groups() === 8, 'Mug: ' + m.state + ' ' + m.faces + ' faces, ' + groups() + ' groups');
+      // sheet metal is not built by OpenCascade yet: Anvil's grouping stays, the chip says why
+      await anvil.run(exByName('Sheet-metal U-bracket').code); await idle();
+      var u = await occIdle();
+      assert(u.state === 'unsupported' && /sheet metal/.test(u.unsupported), 'U-bracket: ' + u.state + ' ' + u.unsupported);
+      assert(/needs sheet metal/.test($('status-right').textContent), 'chip: ' + $('status-right').textContent);
       await anvil.run(exByName('Flange').code); await idle(); await occIdle();
-      return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug: needs shell';
+      return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug 8 faces; U-bracket: needs sheet metal';
     } finally {
       anvil.occt(false);
       assert(!anvil.occt().on && groups() === anvilGroups, 'switched off: ' + groups() + ' groups');

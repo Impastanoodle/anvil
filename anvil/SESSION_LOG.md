@@ -955,3 +955,20 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Done.** `tests/ui-smoke.html` records every `<a download>` click from the app frame in `W.__downloads` instead of saving it (the Export STEP step now asserts the captured `.step` name). `CLAUDE.md`: new `occt` lane, occt-tests.html in the verify step, keep the pane visible for ui-smoke. `QUEUE.md`: OpenCascade stage 2 at the top of Do next.
 
 **Verified (port 8812, pane visible).** ui-smoke 151/151, one download captured (occ-block.step), none saved.
+
+## Run local-2026-09-26k — OpenCascade kernel, stage 2 (fillet / chamfer, shell, draft, loft, sweep, Hole Wizard)
+
+**Done (`occt-kernel.js`).**
+- Fillet / chamfer: the body nearest the first pick (Kernel's pickBody), faces unified first, then the edges nearest each picked point within max(0.5, size); OpenCascade carries them along tangent edges (SolidWorks' tangent propagation).
+- Shell: faces nearest the picked points removed, `MakeThickSolidByJoin` with Intersection joins; no faces → closed hollow (body − inward `MakeOffsetShape`).
+- Drafted extrude: ruled `ThruSections` between the section offset (`MakeOffset`, Intersection join) at each end, split at the sketch plane when the range crosses it; holes grow where the material shrinks, as Kernel.buildExtrude.
+- Loft: smooth `ThruSections` through the sections' outer loops (SolidWorks' loft; Anvil's is ruled).
+- Sweep: `MakePipeShell` (corrected Frenet, right-corner transitions) along the path sketch's lines and arcs built exactly and chained from the end nearest the profile, or a 3D polyline; the profile turned about the path start to face the first segment, per loop, holes subtracted.
+- Hole Wizard: `HoleWizard.section` revolved about each position (shared `revolveSketch`).
+- Result `tolerance`: 1e-4 relative, 2e-2 when the part has a sweep, a loft or an edge pick with chain: false (Anvil facets those / stops at the picked edge). Used by ui-occt.js and occt-tests.html.
+
+**Tests.** occt-tests 34/34 (every part example except the three sheet-metal ones, plus Hole Wizard types, closed hollow shell, drafts, a line-arc-line sweep with its exact volume π·9·(20 + 7.5π + 25), a fillet on a hole rim); examples with a known `volume` must now match it to 1e-6 in OpenCascade. ui-smoke 151/151 (OpenCascade step: Mug 8 faces, U-bracket "needs sheet metal"). kernel-tests 683/683.
+
+**Findings.** OpenCascade's volumes are the exact ones where Anvil approximates: the line-arc-line sweep 1938.54 vs Anvil 1915.80 (1.2 % low, faceted arc), the Mug 85025.2 vs 85618.3.
+
+**Next up.** Stage 3: display OpenCascade's mesh when the switch is on (true faces for every pick, including coplanar faces Anvil merges), drawings via HLRBRep, STEP / IGES through OpenCascade; sheet metal last.

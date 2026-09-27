@@ -18,7 +18,7 @@
 </style>
 <h1>Anvil OpenCascade kernel tests</h1>
 <div class="sub">Each part is built by Anvil's kernel and by OpenCascade (<code>occt-kernel.js</code> in <code>occt-worker.js</code>).
-  PASS: every feature built by OpenCascade, the solid is valid, the body count matches, volume matches to 1e-4 (relative) and the bounding box to 0.05 mm (Anvil's facets sit up to the 0.05 mm chord inside curves).
+  PASS: every feature built by OpenCascade, the solid is valid, the body count matches, volume matches to 1e-4 relative (2e-2 for parts with sweeps, lofts or unchained edge picks, which Anvil approximates) and the bounding box to 0.05 mm (Anvil's facets sit up to the 0.05 mm chord inside curves).
   TODO: the part uses a feature the OpenCascade kernel does not build yet.</div>
 <div id="summary">loading OpenCascade…</div>
 <table><thead><tr><th>Status</th><th>Part</th><th>Detail</th><th>ms</th></tr></thead><tbody id="rows"></tbody></table>
@@ -71,10 +71,16 @@
     { name: 'circular pattern of a pocket over 180°', code: 'p.cylinder(40, 10);\np.sketch("Top", 10).circle(30, 0, 4).cut(5, { reverse: true });\np.circularPattern({ axis: "y", count: 4, angle: 180 });' },
     { name: 'mirror the body across Right', code: 'p.box(20, 10, 10, { at: [5, 0, 0] });\np.hole("Top", 15, -5, 4, { offset: 10 });\np.mirror("Right", { body: true });' },
     { name: 'two bodies (merge: false) and a cut limited to body 1', code: 'p.box(20, 20, 20);\np.box(20, 20, 20, { at: [30, 0, 0], merge: false });\np.sketch("Top", 20).rect(-5, -15, 60, 10).cut(5, { reverse: true, bodies: [1] });' },
-    { name: 'arcs and lines profile (slot-like polyline with arcs)', code: 'p.sketch("Front").line(0, 0, 30, 0).arc(30, 10, 10, -90, 90).line(30, 20, 0, 20).line(0, 20, 0, 0).extrude(5);' }
+    { name: 'arcs and lines profile (slot-like polyline with arcs)', code: 'p.sketch("Front").line(0, 0, 30, 0).arc(30, 10, 10, -90, 90).line(30, 20, 0, 20).line(0, 20, 0, 0).extrude(5);' },
+    // stage 2
+    { name: 'Hole Wizard: counterbore, countersink, tapped and plain holes', code: 'p.box(120, 30, 20);\np.holeWizard({ face: "Top", offset: 20, points: [[15, -15]], type: "cbore", size: "M8", depth: 15 });\np.holeWizard({ face: "Top", offset: 20, points: [[45, -15]], type: "csk", size: "M6", end: "through" });\np.holeWizard({ face: "Top", offset: 20, points: [[75, -15], [105, -15]], type: "tap", size: "M5", depth: 12 });' },
+    { name: 'closed hollow shell (no faces removed)', code: 'p.box(40, 30, 20);\np.shell(2, []);' },
+    { name: 'drafted boss and drafted pocket', code: 'p.sketch("Top").centerRect(0, 0, 40, 30).extrude(15, { draft: 5 });\np.sketch("Top", 15).circle(0, 0, 8).cut(8, { reverse: true, draft: 3 });' },
+    { name: 'sweep of a circle along a line-arc-line path', code: 'var prof = p.sketch("Right").circle(0, 0, 3).id();\nvar path = p.sketch("Front").line(0, 0, 20, 0).arc(20, 15, 15, -90, 0).line(35, 15, 35, 40).id();\np.sweep({ profile: prof, path: path });', exact: Math.PI * 9 * (20 + Math.PI / 2 * 15 + 25) },
+    { name: 'fillet around a hole rim and a straight edge', code: 'p.box(40, 40, 10);\np.hole("Top", 20, -20, 12, { offset: 10 });\np.fillet(1.5, [[26, 10, 20], [0, 10, 20]]);' }
   ];
   var EX = AnvilExamples.list || AnvilExamples;
-  var parts = EX.filter(function (e) { return e.kind !== 'assembly'; }).map(function (e) { return { name: e.name, code: e.code }; }).concat(EXTRA);
+  var parts = EX.filter(function (e) { return e.kind !== 'assembly'; }).map(function (e) { return { name: e.name, code: e.code, exact: e.volume || null }; }).concat(EXTRA);
   var totals = { anvil: 0, occt: 0 };
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i], a, r, t0;
@@ -87,7 +93,10 @@
     Object.keys(r.status).forEach(function (id) { if (r.status[id] !== 'ok' && a.errors.indexOf(String(id)) < 0 && a.errors.indexOf(+id) < 0) bad.push('feature ' + id + ': ' + r.status[id]); });
     if (!r.valid) bad.push('invalid solid');
     var dv = a.volume ? Math.abs(r.volume - a.volume) / a.volume : Math.abs(r.volume);
-    if (!(dv <= 1e-4)) bad.push('volume ' + r.volume.toFixed(4) + ' vs Anvil ' + a.volume.toFixed(4) + ' (' + (dv * 100).toFixed(4) + ' %)');
+    if (!(dv <= (r.tolerance || 1e-4))) bad.push('volume ' + r.volume.toFixed(4) + ' vs Anvil ' + a.volume.toFixed(4) + ' (' + (dv * 100).toFixed(4) + ' %)');
+    // where the exact volume is known (the example's `volume`, or a test model's `exact`), OpenCascade must hit it
+    var dx = p.exact ? Math.abs(r.volume - p.exact) / p.exact : 0;
+    if (!(dx <= 1e-6)) bad.push('volume ' + r.volume.toFixed(4) + ' vs exact ' + p.exact.toFixed(4) + ' (' + (dx * 100).toFixed(5) + ' %)');
     var db = 0;
     if (a.bbox && r.bbox) for (var c = 0; c < 2; c++) for (var k = 0; k < 3; k++) db = Math.max(db, Math.abs(a.bbox[c][k] - r.bbox[c][k]));
     else if (a.bbox || r.bbox) db = Infinity;
