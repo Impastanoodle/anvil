@@ -464,15 +464,16 @@
   // OBJ, 3MF — exchange.js), picked from disk or pasted. A neutral file opens as a new part whose one feature is
   // Imported1; Insert ▸ Features ▸ Imported… adds one to the open part instead.
   var OPEN_TYPES = [
-    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.stl;*.obj;*.3mf)', '.json,.js,.step,.stp,.stl,.obj,.3mf'],
+    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.igs;*.stl;*.obj;*.3mf)', '.json,.js,.step,.stp,.igs,.iges,.stl,.obj,.3mf'],
     ['anvil', 'Anvil documents and scripts (*.anvil.json;*.anvil.js)', '.json,.js'],
     ['step', 'STEP AP203/AP214 (*.step;*.stp)', '.step,.stp'],
+    ['iges', 'IGES (*.igs;*.iges), read by OpenCascade', '.igs,.iges'],
     ['stl', 'STL (*.stl)', '.stl'],
     ['obj', 'OBJ (*.obj)', '.obj'],
     ['3mf', '3D Manufacturing Format (*.3mf)', '.3mf']
   ];
   function hasExchange() { return typeof Exchange !== 'undefined'; }
-  function neutralFile(name) { return /\.(step|stp|p21|stl|obj|3mf)$/i.test(String(name || '')); }
+  function neutralFile(name) { return /\.(step|stp|p21|igs|iges|stl|obj|3mf)$/i.test(String(name || '')); }
   function readFile(file) {
     if (file.arrayBuffer) return file.arrayBuffer();
     return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = function () { rej(r.error); }; r.readAsArrayBuffer(file); });
@@ -496,19 +497,41 @@
     UI.setStatus(what + ' ' + (res.file || res.name) + ': ' + st.solids + ' solid' + (st.solids === 1 ? '' : 's') + ', ' + st.triangles + ' triangles' + (res.warnings && res.warnings.length ? '. ' + res.warnings.join(' ') : '.'));
     if (res.warnings && res.warnings.length) UI.toast(res.warnings[0]);
   }
+  // importData(name, data, units, opts) -> Promise of an exchange.js import result. STEP / IGES go through OpenCascade
+  // (ui-occt.js, any surfaces, the file kept on the feature so OpenCascade rebuilds it exactly) for IGES, while
+  // Tools ▸ OpenCascade kernel is on, or when Anvil's own STEP reader cannot take the file; everything else is Anvil's.
+  function importData(name, data, units, opts) {
+    opts = opts || {};
+    var fmt = opts.format || Exchange.formatOf(name, typeof data === 'string' ? data : null);
+    var occt = !!(UI.occt && UI.occt.canImport() && (fmt === 'step' || fmt === 'iges'));
+    var first = null;
+    if (!(occt && (fmt === 'iges' || UI.occt.on()))) {
+      try { return Promise.resolve(Exchange.importFile(name, data, { units: units, sourceUnits: opts.sourceUnits, format: opts.format })); }
+      catch (e) { if (!occt) return Promise.reject(e); first = e; }
+    }
+    var text = bytesText(data), base = String(name || 'Imported').replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '');
+    UI.setStatus('Reading ' + String(name || '').replace(/^.*[\\\/]/, '') + ' with OpenCascade…');
+    return UI.occt.importFile(fmt, text).then(function (r) {
+      var res = Exchange.finishImport('step', { units: units === 'auto' ? 'mm' : units }, r.solids, 1, []);
+      res.format = fmt; res.name = base; res.file = String(name || '').replace(/^.*[\\\/]/, '');
+      res.brep = { format: fmt, text: text };
+      return res;
+    }, function (e) { throw first ? new Error(first.message + ' (OpenCascade: ' + e.message + ')') : e; });
+  }
   function importIntoNew(name, data, opts) {
     if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
-    var res;
-    try { res = Exchange.importFile(name, data, { units: (opts && opts.units) || 'auto', sourceUnits: opts && opts.sourceUnits, format: opts && opts.format }); } catch (e) { return Promise.reject(e); }
-    rememberPart(); App.hiddenBodies = {};
-    return UI.loadModel(Exchange.newPartFromImport(res, { merge: opts && opts.merge })).then(function () { importStatus(res, 'Opened'); return window.anvil.summary(); });
+    return importData(name, data, (opts && opts.units) || 'auto', opts).then(function (res) {
+      rememberPart(); App.hiddenBodies = {};
+      return UI.loadModel(Exchange.newPartFromImport(res, { merge: opts && opts.merge })).then(function () { importStatus(res, 'Opened'); return window.anvil.summary(); });
+    });
   }
   function importIntoCurrent(name, data, opts) {
     if (!hasExchange()) return Promise.reject(new Error('exchange.js is not loaded'));
     if (isAsm()) return Promise.reject(new Error('Open a part first: imported bodies go into a part (File ▸ Open makes a new one).'));
     if (App.mode === 'sketch' && UI.exitSketch) UI.exitSketch(true);
-    var res;
-    try { res = Exchange.importFile(name, data, { units: App.model.units === 'in' ? 'in' : 'mm', sourceUnits: opts && opts.sourceUnits, format: opts && opts.format }); } catch (e) { return Promise.reject(e); }
+    return importData(name, data, App.model.units === 'in' ? 'in' : 'mm', opts).then(function (res) { return insertImported(res, opts); });
+  }
+  function insertImported(res, opts) {
     UI.pushUndo();
     var f = Exchange.importFeature(App.model, res, { merge: opts && opts.merge });
     f.id = App.model.nextId++;
@@ -592,8 +615,11 @@
     var t = [['json', doc + ' (*.anvil.json)'], ['script', 'Anvil script (*.anvil.js)']];
     if (hasExchange()) t.push(['step', 'STEP AP214 (*.step)'], ['3mf', '3D Manufacturing Format (*.3mf)'], ['obj', 'OBJ (*.obj) + materials (*.mtl)']);
     t.push(['stl', 'STL (*.stl)']);
+    if (occtExports()) t.push(['iges', 'IGES 5.3 (*.igs)']);
     return t;
   }
+  // the part shown is OpenCascade's (Tools ▸ OpenCascade kernel): its STEP / IGES come straight from the B-rep
+  function occtExports() { return !isAsm() && App.build && App.build.occt && App.build.occt.step ? App.build.occt : null; }
   function exportData(type, base) {
     base = base || safeName();
     var m = App.model, b = App.build;
@@ -607,6 +633,11 @@
         return { name: base + '.obj', data: Exchange.exportOBJ(m, b, { mtlName: base + '.mtl', mtl: hasMtl }), mime: 'model/obj', extra: hasMtl ? { name: base + '.mtl', data: mtl, mime: 'model/mtl' } : null };
       }
       case 'stl': return { name: base + '.stl', data: K.exportSTL(App.mesh, m.name), mime: 'model/stl' };
+      case 'iges': {
+        var oe = occtExports();
+        if (!oe || !oe.iges) throw new Error('IGES export needs the part built by OpenCascade (Tools ▸ OpenCascade kernel).');
+        return { name: base + '.igs', data: oe.iges, mime: 'model/iges' };
+      }
     }
     throw new Error('Unknown file type "' + type + '"');
   }
@@ -617,7 +648,9 @@
     var note = el('p', { class: 'dlg-note' });
     function describe() {
       var v = type.value;
-      note.textContent = v === 'step' ? 'Planar-faced B-rep (ADVANCED_FACE on planes): one solid per body' + (isAsm() ? ', components as assembly occurrences with their placements.' : '.') :
+      note.textContent = v === 'step' && occtExports() ? 'Exact B-rep from OpenCascade: planes, cylinders, cones, spheres, tori and B-spline faces.' :
+        v === 'iges' ? 'IGES 5.3 from OpenCascade\'s B-rep, every face exact.' :
+        v === 'step' ? 'Planar-faced B-rep (ADVANCED_FACE on planes): one solid per body' + (isAsm() ? ', components as assembly occurrences with their placements.' : '.') :
         v === '3mf' ? 'Mesh package in ' + (App.model.units === 'in' ? 'inches' : 'millimetres') + ': one object per body' + (isAsm() ? ', one build item per component.' : '.') :
         v === 'obj' ? 'Mesh with normals, one group per body' + (isAsm() ? ' per component' : '') + '; colours go into the .mtl downloaded with it.' :
         v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' : 'The Anvil document, re-opened with File ▸ Open.';
@@ -803,6 +836,8 @@
     // neutral formats (exchange.js): STEP AP214 text, 3MF bytes (Uint8Array), OBJ text (+ exportMtl), from the open
     // document (part or assembly) as last built
     exportStep: function (opts) { return Exchange.exportSTEP(App.model, App.build, opts); },
+    // IGES of the part as built by OpenCascade (Tools ▸ OpenCascade kernel), null otherwise
+    exportIges: function () { var oe = occtExports(); return oe && oe.iges || null; },
     export3mf: function (opts) { return Exchange.export3MF(App.model, App.build, opts); },
     exportObj: function (opts) { return Exchange.exportOBJ(App.model, App.build, opts); },
     exportMtl: function () { return Exchange.exportMTL(App.model, App.build); },

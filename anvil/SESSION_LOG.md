@@ -985,3 +985,13 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 151/151 (OpenCascade step now asserts driving, exact volume, Spacer 21 faces, off restores Anvil), occt-tests 34/34.
 
 **Next up.** STEP / IGES export straight from OpenCascade when it drives (freeform faces exact: the Mug's STEP is 1980 KB of facets from Anvil's writer); STEP / IGES import through OpenCascade; worker-side caching of unchanged feature prefixes; sheet metal.
+
+## Run local-2026-09-26m — OpenCascade kernel, stage 3b-c: STEP / IGES export and import through OpenCascade
+
+**Done.**
+- Export: with `exports`, `OcctKernel.build` writes STEP AP214 (`STEPControl_Writer`, model units, PRODUCT named after the part) and IGES 5.3 (`IGESControl_Writer`) of the B-rep; ui-occt.js asks for them and `toBuild` keeps them on `build.occt`. `Exchange.exportSTEP` returns OpenCascade's STEP whenever the shown part is OpenCascade's (`opts.faceted` forces Anvil's writer); File ▸ Save As gains "IGES 5.3 (*.igs)", `anvil.exportIges()`. The Mug's STEP: 63 KB with exact cylinders, torus and planes (Anvil's writer: 1980 KB of facets).
+- Import: `OcctKernel.importFile(oc, format, text)` (worker message `import`) reads STEP / IGES with any surfaces (closed shells become solids) and tessellates each solid; `ui-app.js importData` routes STEP / IGES through it for IGES, while the switch is on, or when Anvil's own reader refuses a file; results go through the newly exported `Exchange.finishImport`, and the Imported feature keeps the file (`f.brep`) so `OcctKernel.build` rebuilds it exactly (`importOp`: each solid a body, merge unions into touching bodies, inch models scaled). File ▸ Open lists IGES; `.igs` / `.iges` are neutral files. Parts with an import feature get the 2e-2 volume tolerance (Anvil's copy is a mesh).
+
+**Verified (port 8812, pane visible).** occt-tests 36/36 (new: Mug → STEP → import and Mug → IGES → import, 8 faces, volume within 4.9e-6); ui-smoke 151/151 (OpenCascade step asserts the torus in the Mug's STEP, the product name and IGES export; File ▸ Open lists 7 types); kernel-tests 683/683. In the app: Mug exported and re-opened as STEP and IGES drives as 8 faces; inserted into a part with merge it unions (13 faces, 485025.574).
+
+**Next up.** Worker-side caching of unchanged feature prefixes (rebuild speed), sheet metal in OpenCascade.

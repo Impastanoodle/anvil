@@ -26,7 +26,7 @@
 var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
-    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1 };
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1 };
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -425,6 +425,20 @@ var OcctKernel = (function () {
       }
       bodies[k] = res;
     }
+    // Imported feature (exchange.js) that kept its source file (f.brep: { format: 'step' | 'iges', text }): the exact
+    // B-rep read again, each solid a body (or unioned into the bodies it touches with merge), in the model's units.
+    // One without it (an STL / OBJ / 3MF mesh) stays Anvil's.
+    function importOp(f) {
+      if (!f.brep || !f.brep.text) throw unsupportedErr('a mesh import (STL / OBJ / 3MF)');
+      var shape = readShape(oc, f.brep.format, f.brep.text, N);
+      if (m.units === 'in') { var sc = N(new oc.gp_Trsf_1()); sc.SetScale(P([0, 0, 0]), 1 / 25.4); shape = transformed(shape, sc); }
+      var list = solidsOf(oc, shape, N);
+      if (!list.length) throw new Error('The imported file has no solid geometry.');
+      list.forEach(function (s) {
+        if (f.merge) { var tb = bboxOf(s), hit = -1; bodies.forEach(function (b, i) { if (hit < 0 && boxesMeet(bboxOf(b), tb)) hit = i; }); if (hit >= 0) { bodies[hit] = fuse(bodies[hit], s); return; } }
+        bodies.push(s); bodyFeatures.push(f.id);
+      });
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -460,6 +474,7 @@ var OcctKernel = (function () {
             case 'sweep': tool = sweepTool(f); break;
             case 'hole': tool = holeTool(f); break;
             case 'fillet': case 'chamfer': edgeOp(f); break;
+            case 'import': importOp(f); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }
@@ -480,7 +495,7 @@ var OcctKernel = (function () {
         // ruled sections), and an edge picked with chain: false stops at that edge in Anvil while OpenCascade carries
         // the fillet / chamfer on round tangent edges (SolidWorks' tangent propagation); everything else is exact
         tolerance: m.features.some(function (f) {
-          return f.type === 'sweep' || f.type === 'loft' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface
@@ -498,6 +513,25 @@ var OcctKernel = (function () {
       });
       var all = bodies.length === 1 ? bodies[0] : compound(bodies);
       out.bbox = bboxOf(all, true);
+      if (opts.exports && out.valid) {
+        // STEP AP214 and IGES 5.3 straight from the B-rep: every face exact (planes, cylinders, cones, spheres, tori,
+        // B-splines), in the model's units, the product named after the part
+        var inch = m.units === 'in', name = String(m.name || 'Part').replace(/'/g, '');
+        try {
+          if (oc.Interface_Static) oc.Interface_Static.SetCVal('write.step.unit', inch ? 'INCH' : 'MM');
+          var sw = N(new oc.STEPControl_Writer_1());
+          sw.Transfer(all, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
+          sw.Write('/anvil-export.step');
+          out.step = String(oc.FS.readFile('/anvil-export.step', { encoding: 'utf8' })).replace(/PRODUCT\s*\(\s*'[^']*'\s*,\s*'[^']*'/g, "PRODUCT('" + name + "','" + name + "'");
+          oc.FS.unlink('/anvil-export.step');
+        } catch (e) { out.exportError = 'STEP: ' + (e.message || e); }
+        try {
+          var iw = N(new oc.IGESControl_Writer_2(inch ? 'IN' : 'MM', 1));
+          iw.AddShape(all, R()); iw.ComputeModel(); iw.Write_2('/anvil-export.igs', false);
+          out.iges = String(oc.FS.readFile('/anvil-export.igs', { encoding: 'utf8' }));
+          oc.FS.unlink('/anvil-export.igs');
+        } catch (e) { out.exportError = (out.exportError ? out.exportError + '; ' : '') + 'IGES: ' + (e.message || e); }
+      }
       if (opts.mesh !== false) {
         var t1 = now();
         out.mesh = tessellate(all, bodies, opts.chord || 0.05, out.faces);
@@ -551,6 +585,62 @@ var OcctKernel = (function () {
   }
 
   function now() { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
+
+  // ---- STEP / IGES reading (import and the Imported feature's exact rebuild). N: the caller's arena function.
+  // readShape -> the file's shapes in millimetres (OpenCascade converts the file's own units)
+  function readShape(oc, format, text, N) {
+    var iges = format === 'iges', path = '/anvil-import.' + (iges ? 'igs' : 'step');
+    oc.FS.writeFile(path, text);
+    try {
+      var rd = N(iges ? new oc.IGESControl_Reader_1() : new oc.STEPControl_Reader_1());
+      if (rd.ReadFile(path) !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) throw new Error('OpenCascade could not read this ' + (iges ? 'IGES' : 'STEP') + ' file.');
+      rd.TransferRoots(N(new oc.Message_ProgressRange_1()));
+      return N(rd.OneShape());
+    } finally { try { oc.FS.unlink(path); } catch (e) { } }
+  }
+  // the solids of a shape; closed shells with no solid around them become solids
+  function solidsOf(oc, shape, N) {
+    var E = oc.TopAbs_ShapeEnum, out = [];
+    for (var x = N(new oc.TopExp_Explorer_2(shape, E.TopAbs_SOLID, E.TopAbs_SHAPE)); x.More(); x.Next()) out.push(N(oc.TopoDS.Solid_1(N(x.Current()))));
+    if (!out.length) {
+      for (var y = N(new oc.TopExp_Explorer_2(shape, E.TopAbs_SHELL, E.TopAbs_SOLID)); y.More(); y.Next()) {
+        try { var ms = N(new oc.BRepBuilderAPI_MakeSolid_3(N(oc.TopoDS.Shell_1(N(y.Current()))))); if (ms.IsDone()) out.push(N(ms.Solid())); } catch (e) { }
+      }
+    }
+    return out;
+  }
+  // importFile(oc, format, text) -> { solids: [{ name, positions, triangles }] (millimetres; exchange.js finishImport
+  // welds and names them), faces, ms }: every solid tessellated finely enough for Anvil's booleans against it
+  function importFile(oc, format, text) {
+    var arena = [], t0 = now();
+    function N(o) { arena.push(o); return o; }
+    try {
+      var shape = readShape(oc, format, text, N), list = solidsOf(oc, shape, N), E = oc.TopAbs_ShapeEnum, faces = 0;
+      if (!list.length) throw new Error('The file has no solid bodies (surfaces only?).');
+      var solids = list.map(function (sol, si) {
+        var b = N(new oc.Bnd_Box_1()); oc.BRepBndLib.Add(sol, b, false);
+        var lo = N(b.CornerMin()), hi = N(b.CornerMax()), diag = Math.hypot(hi.X() - lo.X(), hi.Y() - lo.Y(), hi.Z() - lo.Z());
+        N(new oc.BRepMesh_IncrementalMesh_2(sol, Math.max(0.05, diag * 5e-4), false, 0.35, false));
+        var pos = [], tris = [];
+        for (var x = N(new oc.TopExp_Explorer_2(sol, E.TopAbs_FACE, E.TopAbs_SHAPE)); x.More(); x.Next()) {
+          var f = N(oc.TopoDS.Face_1(N(x.Current()))), loc = N(new oc.TopLoc_Location_1());
+          var h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
+          faces++;
+          if (h.IsNull()) continue;
+          var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, base = pos.length / 3;
+          for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); pos.push(p.X(), p.Y(), p.Z()); }
+          for (var j = 1; j <= tri.NbTriangles(); j++) {
+            var T = N(tri.Triangle(j)), a = T.Value(1) - 1, c = T.Value(3) - 1, bb = T.Value(2) - 1;
+            if (rev) tris.push(base + a, base + c, base + bb); else tris.push(base + a, base + bb, base + c);
+          }
+        }
+        return { name: 'Solid' + (si + 1), positions: pos, triangles: tris };
+      });
+      return { solids: solids, faces: faces, ms: now() - t0 };
+    } finally {
+      for (var a = arena.length - 1; a >= 0; a--) { try { if (arena[a] && arena[a].delete && !(arena[a].isDeleted && arena[a].isDeleted())) arena[a].delete(); } catch (e) { } }
+    }
+  }
 
   // Which B-rep face each mesh face of Anvil's own mesh lies on: for every mesh face, the OpenCascade triangle nearest
   // the centre of its largest triangle (inside the facet, so never on a face boundary). -> Int32Array (B-rep face index or -1 when
@@ -648,7 +738,7 @@ var OcctKernel = (function () {
       out.body.exact = { volume: V, area: A, centroid: V > 1e-12 ? [M[0] / V, M[1] / V, M[2] / V] : [0, 0, 0] };
     }
     out.cache = anvilBuild.cache;
-    out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies };
+    out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies, step: occ.step || null, iges: occ.iges || null };
     return out;
   }
   // squared distance from point p to the triangle at P[o..o+8] (Ericson, Real-Time Collision Detection 5.1.5)
@@ -684,6 +774,6 @@ var OcctKernel = (function () {
     return dot(d, d);
   }
 
-  return { build: build, mapFaces: mapFaces, toBuild: toBuild, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
+  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;

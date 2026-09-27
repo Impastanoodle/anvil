@@ -30,7 +30,16 @@
   function onMessage(e) {
     var m = e.data || {};
     if (m.type === 'ready') { st.ready = true; st.loadMs = m.loadMs; request(); return; }
-    if (m.type === 'error' && m.seq === -1) { st.state = 'failed'; st.error = m.message; settle(); refresh(); return; }
+    if (m.type === 'imported' || m.type === 'importError') {
+      var w = imports[m.seq]; delete imports[m.seq];
+      if (w) { if (m.type === 'imported') w.res(m.result); else w.rej(new Error(m.message)); }
+      return;
+    }
+    if (m.type === 'error' && m.seq === -1) {
+      st.state = 'failed'; st.error = m.message;
+      Object.keys(imports).forEach(function (k) { imports[k].rej(new Error(m.message)); delete imports[k]; });
+      settle(); refresh(); return;
+    }
     st.busy = false;
     if (m.seq !== st.want) { request(); return; }   // the model changed meanwhile: build the newer one
     if (m.type === 'error') { st.state = 'error'; st.error = m.message; st.result = null; }
@@ -66,7 +75,7 @@
     if (!st.ready || st.busy) return;
     st.busy = true; st.want = ++st.seq; st.state = 'building';
     var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { st.busy = false; return; }
-    st.worker.postMessage({ type: 'build', seq: st.want, model: model });
+    st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true });
     refresh();
   }
   // after every applied build (ui-core.js applyBuild calls the UI.onBuild hooks); OpenCascade's own apply is skipped
@@ -134,7 +143,22 @@
     return '<span class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
   };
 
-  UI.occt = { set: set, on: function () { return st.on; }, status: status };
+  // importFile(format, text) -> Promise of { solids: [{ name, positions, triangles }], faces, ms }: a STEP / IGES file
+  // read by OpenCascade (any surfaces); the engine is started for it when the switch is off
+  var imports = {}, importSeq = 0;
+  function importFile(format, text) {
+    return new Promise(function (res, rej) {
+      if (!window.Worker) { rej(new Error('This browser has no Web Workers.')); return; }
+      if (st.state === 'failed') { rej(new Error(st.error || 'OpenCascade is not installed (run vendor/get-occt.ps1).')); return; }
+      if (!st.worker) startWorker();
+      if (!st.worker) { rej(new Error(st.error || 'OpenCascade did not start.')); return; }
+      var s = ++importSeq;
+      imports[s] = { res: res, rej: rej };
+      st.worker.postMessage({ type: 'import', seq: s, format: format, text: text });
+    });
+  }
+
+  UI.occt = { set: set, on: function () { return st.on; }, status: status, importFile: importFile, canImport: function () { return !!window.Worker && st.state !== 'failed'; } };
   if (window.anvil) {
     // anvil.occt() -> status; anvil.occt(true | false) switches it; anvil.occtIdle() resolves when the current build
     // has answered (or at once when nothing is pending)

@@ -2809,7 +2809,7 @@
     UI.fileOpen();
     assert(modalOpen() && /Open/.test($('modal-title').textContent), 'Open dialog');
     var sel = D.querySelector('#modal-body select'), inp = D.querySelector('#modal-body input[type=file]');
-    assert(sel.options.length === 6 && /\.step/.test(inp.accept) && /\.3mf/.test(inp.accept), 'type list / accept ' + inp.accept);
+    assert(sel.options.length === 7 && /\.step/.test(inp.accept) && /\.igs/.test(inp.accept) && /\.3mf/.test(inp.accept), 'type list / accept ' + inp.accept);
     sel.value = 'stl'; sel.dispatchEvent(new W.Event('change'));
     assert(inp.accept === '.stl', 'filter narrows accept: ' + inp.accept);
     var dt = new W.DataTransfer();
@@ -3948,6 +3948,10 @@
       await anvil.run(exByName('Mug').code); await idle();
       var m = await occIdle();
       assert(m.state === 'ok' && m.faces === 8 && groups() === 8, 'Mug: ' + m.state + ' ' + m.faces + ' faces, ' + groups() + ' groups');
+      // STEP / IGES come from OpenCascade's B-rep: the handle is an exact torus, the file small; IGES is offered
+      var stp = anvil.exportStep(), igs = anvil.exportIges();
+      assert(/TOROIDAL_SURFACE/.test(stp) && stp.length < 200000 && /PRODUCT\('Mug','Mug'/.test(stp), 'STEP from OpenCascade: ' + stp.length + ' bytes');
+      assert(igs && igs.length > 1000 && UI.exportData('iges', 'x').name === 'x.igs', 'IGES export');
       // coplanar faces stay apart: the Spacer's three pocket floors are three faces (Anvil's own mesh merges them)
       await anvil.run(exByName('Configured spacer').code); await idle();
       var sp = await occIdle();

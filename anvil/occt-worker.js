@@ -3,7 +3,8 @@
 // kernel.js, holewizard.js, exchange.js and occt-kernel.js as classic scripts (their top-level `var`s become
 // globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1).
 //
-// Messages in:   { type: 'build', seq, model }            model: a structured clone of App.model
+// Messages in:   { type: 'build', seq, model, exports? }  model: a structured clone of App.model; exports adds STEP / IGES text
+//                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
 //                { type: 'error', seq, message }          the build itself threw, or the engine could not load
@@ -27,11 +28,17 @@ ready.catch((e) => self.postMessage({ type: 'error', seq: -1, message: 'OpenCasc
 
 self.onmessage = async (e) => {
   const m = e.data || {};
-  if (m.type !== 'build') return;
   let oc;
-  try { oc = await ready; } catch (err) { return; }
+  try { oc = await ready; } catch (err) { if (m.type === 'import') self.postMessage({ type: 'importError', seq: m.seq, message: 'OpenCascade is not installed (run vendor/get-occt.ps1).' }); return; }
+  // { type: 'import', seq, format: 'step' | 'iges', text } -> { type: 'imported', seq, result: OcctKernel.importFile(...) }
+  if (m.type === 'import') {
+    try { self.postMessage({ type: 'imported', seq: m.seq, result: OcctKernel.importFile(oc, m.format, m.text) }); }
+    catch (err) { self.postMessage({ type: 'importError', seq: m.seq, message: (err && err.message) || String(err) }); }
+    return;
+  }
+  if (m.type !== 'build') return;
   try {
-    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord });
+    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports });
     const transfer = r.mesh ? [r.mesh.positions.buffer, r.mesh.faceOf.buffer] : [];
     self.postMessage({ type: 'built', seq: m.seq, result: r }, transfer);
   } catch (err) {

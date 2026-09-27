@@ -1099,6 +1099,9 @@ var Exchange = (function () {
 
   function exportSTEP(model, build, opts) {
     opts = opts || {};
+    // a part built by OpenCascade (Tools ▸ OpenCascade kernel, ui-occt.js) exports its own B-rep: every face exact,
+    // B-spline faces included (opts.faceted: Anvil's writer anyway)
+    if (build && build.occt && build.occt.step && !opts.faceted && !(model && model.type === 'assembly')) return build.occt.step;
     var doc = docParts(model, build), W = new StepWriter();
     var fileName = opts.fileName || safeName(doc.name) + '.step';
     var stamp = (opts.time || new Date()).toISOString().replace(/\.\d+Z$/, '');
@@ -2094,6 +2097,7 @@ var Exchange = (function () {
     var ext = (/\.([a-z0-9]+)$/i.exec(String(fileName || '')) || [])[1];
     ext = ext ? ext.toLowerCase() : '';
     if (ext === 'stp' || ext === 'step' || ext === 'p21') return 'step';
+    if (ext === 'igs' || ext === 'iges') return 'iges';
     if (ext === 'stl' || ext === 'obj' || ext === '3mf') return ext;
     if (typeof data === 'string') {
       if (/^\s*ISO-10303-21/.test(data)) return 'step';
@@ -2118,7 +2122,8 @@ var Exchange = (function () {
     else if (fmt === 'stl') res = importSTL(data, o);
     else if (fmt === 'obj') res = importOBJ(data, o);
     else if (fmt === '3mf') res = import3MF(data, o);
-    else throw new Error('Unknown file type "' + fileName + '". Anvil opens .step / .stp, .stl, .obj and .3mf.');
+    else if (fmt === 'iges') throw new Error('IGES files are read by OpenCascade (Tools ▸ OpenCascade kernel; vendor/get-occt.ps1).');
+    else throw new Error('Unknown file type "' + fileName + '". Anvil opens .step / .stp, .stl, .obj and .3mf (.igs with OpenCascade).');
     res.name = base;
     res.file = String(fileName || '').replace(/^.*[\\\/]/, '');
     return res;
@@ -2204,6 +2209,8 @@ var Exchange = (function () {
     opts = opts || {};
     var f = { type: 'import', name: opts.name || importedName(model), file: result.file || '', format: result.format || '', units: result.units || 'mm', solids: encodeSolids(result.solids) };
     if (opts.merge) f.merge = true;
+    // read through OpenCascade (ui-occt.js importFile): the source file itself, so OpenCascade rebuilds it exactly
+    if (result.brep) f.brep = { format: result.brep.format, text: result.brep.text };
     return f;
   }
   // newPartFromImport(result) -> a new part model whose only feature is Imported1 (File ▸ Open of a STEP / STL / OBJ)
@@ -2276,7 +2283,7 @@ var Exchange = (function () {
     bodyMesh: bodyMesh, docParts: docParts, meshBounds: meshBounds,
     exportOBJ: exportOBJ, exportMTL: exportMTL, export3MF: export3MF, exportSTEP: exportSTEP,
     parseStep: parseStep, importSTEP: importSTEP, importSTL: importSTL, importOBJ: importOBJ, import3MF: import3MF,
-    importFile: importFile, formatOf: formatOf, zip: zip, unzip: unzip, crc32: crc32,
+    importFile: importFile, finishImport: finishImport, formatOf: formatOf, zip: zip, unzip: unzip, crc32: crc32,
     importFeature: importFeature, newPartFromImport: newPartFromImport, importedName: importedName, featureInfo: featureInfo,
     encodeSolids: encodeSolids, solidMesh: solidMesh, solidCSG: solidCSG, signedVolume: signedVolume, earcut: earcut,
     b64encode: b64encode, b64decode: b64decode, utf8: utf8, fromUtf8: fromUtf8,

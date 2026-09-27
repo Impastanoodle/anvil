@@ -49,11 +49,12 @@
       if (m.type === 'ready') { loadMs = m.loadMs; res(); return; }
       if (m.type === 'error' && m.seq === -1) { rej(new Error(m.message)); return; }
       var w = waiting[m.seq]; if (!w) return; delete waiting[m.seq];
-      if (m.type === 'built') w.res(m.result); else w.rej(new Error(m.message));
+      if (m.type === 'built' || m.type === 'imported') w.res(m.result); else w.rej(new Error(m.message));
     };
     worker.onerror = function (e) { rej(new Error(e.message || 'worker failed to start')); };
   });
-  function occt(model) { return new Promise(function (res, rej) { var s = ++seq; waiting[s] = { res: res, rej: rej }; worker.postMessage({ type: 'build', seq: s, model: model }); }); }
+  function occt(model, opts) { return new Promise(function (res, rej) { var s = ++seq; waiting[s] = { res: res, rej: rej }; worker.postMessage({ type: 'build', seq: s, model: model, exports: !!(opts && opts.exports) }); }); }
+  function occtImport(format, text) { return new Promise(function (res, rej) { var s = ++seq; waiting[s] = { res: res, rej: rej }; worker.postMessage({ type: 'import', seq: s, format: format, text: text }); }); }
   try { await readyP; } catch (e) { document.getElementById('summary').textContent = e.message; document.getElementById('summary').className = 'bad'; window.occtTestsDone = true; return; }
 
   function anvilBuild(code) {
@@ -106,6 +107,30 @@
     var detail = r.faces.length + ' B-rep faces (Anvil ' + a.meshFaces + ' mesh faces), ' + r.bodies + ' bod' + (r.bodies === 1 ? 'y' : 'ies') + ', volume ' + r.volume.toFixed(3) + ', d ' + dv.toExponential(1) + ', build ' + r.ms.build.toFixed(0) + ' + mesh ' + r.ms.mesh.toFixed(0) + ' ms';
     if (bad.length) { row('bad', p.name, bad.join('\n') + '\n' + detail, ms); counts.fail++; } else { row('ok', p.name, detail, ms); counts.pass++; }
   }
+  // STEP and IGES straight from OpenCascade's B-rep, read back by OpenCascade as an Imported feature that keeps the
+  // file (brep): same volume, same B-rep faces; the STEP product is named after the part
+  try {
+    var mugModel = anvilBuild(EX.find(function (e) { return e.name === 'Mug'; }).code).model;
+    var mug = await occt(mugModel, { exports: true });
+    for (var fmt of ['step', 'iges']) {
+      var text = fmt === 'step' ? mug.step : mug.iges, t1 = performance.now();
+      if (!text) { row('bad', fmt.toUpperCase() + ' export', 'no ' + fmt + ' text: ' + (mug.exportError || '')); counts.fail++; continue; }
+      var imp = await occtImport(fmt, text);
+      var res = Exchange.finishImport('step', { units: 'mm' }, imp.solids, 1, []);
+      var im = K.newModel('RT');
+      im.features.push({ id: 1, type: 'import', name: 'Imported1', file: 'mug.' + fmt, format: fmt, units: 'mm', solids: Exchange.encodeSolids(res.solids), brep: { format: fmt, text: text } });
+      im.nextId = 2;
+      var back = await occt(im), dvol = Math.abs(back.volume - mug.volume) / mug.volume;
+      var why = [];
+      if (back.unsupported || !back.valid) why.push('rebuild ' + (back.unsupported || 'invalid'));
+      if (!(dvol < 1e-4)) why.push('volume ' + back.volume.toFixed(3) + ' vs ' + mug.volume.toFixed(3));
+      if (back.faces.length !== mug.faces.length) why.push(back.faces.length + ' faces vs ' + mug.faces.length);
+      if (fmt === 'step' && !/PRODUCT\('Mug','Mug'/.test(text)) why.push('STEP product not named after the part');
+      var det = fmt.toUpperCase() + ' ' + (text.length / 1024).toFixed(0) + ' KB, re-read: ' + back.faces.length + ' faces, volume ' + back.volume.toFixed(3) + ' (d ' + dvol.toExponential(1) + ')';
+      row(why.length ? 'bad' : 'ok', 'Mug → ' + fmt.toUpperCase() + ' → OpenCascade import (exact rebuild from the kept file)', why.join('\n') + (why.length ? '\n' : '') + det, performance.now() - t1);
+      counts[why.length ? 'fail' : 'pass']++;
+    }
+  } catch (e) { row('bad', 'STEP / IGES round trip', e.message); counts.fail++; }
   // the arena frees every OpenCascade object after a build: building again must give the same answer
   try {
     var m2 = anvilBuild(EX.find(function (e) { return e.name === 'Flange'; }).code).model;
