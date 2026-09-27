@@ -947,3 +947,11 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (port 8812).** kernel-tests 683/683, occt-tests 22/22; ui-smoke 151/151 (pane visible), including the new OpenCascade step.
 
 **Next up.** Stage 2: fillet / chamfer (point-picked edges → OpenCascade edges), shell, draft, loft, sweep; then display OpenCascade's mesh (true faces everywhere, drawings via HLRBRep).
+
+## Run local-2026-09-26j — Test runs no longer download files; notes for the next session
+
+**Context.** The user saw the same files offered for saving again and again: ui-smoke's File ▸ Export STEP step really downloaded `<part>.step` on every run.
+
+**Done.** `tests/ui-smoke.html` records every `<a download>` click from the app frame in `W.__downloads` instead of saving it (the Export STEP step now asserts the captured `.step` name). `CLAUDE.md`: new `occt` lane, occt-tests.html in the verify step, keep the pane visible for ui-smoke. `QUEUE.md`: OpenCascade stage 2 at the top of Do next.
+
+**Verified (port 8812, pane visible).** ui-smoke 151/151, one download captured (occ-block.step), none saved.

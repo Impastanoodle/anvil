@@ -143,6 +143,14 @@
   step('app booted: anvil, UI, Kernel, THREE present, no boot errors', async function () {
     assert(W.anvil && W.UI && W.Kernel && W.THREE, 'globals missing');
     assert($('tree') && $('pm') && $('viewport'), 'layout missing');
+    // downloads (File ▸ Save As, exports, drawing SVG / DXF / PDF) are recorded in W.__downloads instead of saved,
+    // so a test run never drops files on the user's disk or asks where to save them
+    W.__downloads = [];
+    var aClick = W.HTMLAnchorElement.prototype.click;
+    W.HTMLAnchorElement.prototype.click = function () {
+      if (this.hasAttribute('download')) { W.__downloads.push({ name: this.getAttribute('download'), href: this.href }); return; }
+      return aClick.apply(this, arguments);
+    };
     // the OpenCascade switch is remembered per browser: every step runs with Anvil's own face grouping
     if (W.anvil.occt && W.anvil.occt().on) W.anvil.occt(false);
     await idle();
@@ -2782,6 +2790,8 @@
     clickModalButton('Save');
     await wait(20);
     assert(!modalOpen() && /Saved \S+\.step/.test(statusText()), 'status ' + statusText());
+    var dl = W.__downloads[W.__downloads.length - 1];
+    assert(dl && /\.step$/.test(dl.name), 'the STEP file was handed to the browser as a download: ' + JSON.stringify(dl && dl.name));
     var tmf = UI.exportData('3mf', 'x'), obj = UI.exportData('obj', 'x');
     assert(tmf.name === 'x.3mf' && tmf.data instanceof W.Uint8Array && tmf.data[0] === 0x50, '3mf bytes');
     assert(obj.name === 'x.obj' && /^mtllib x\.mtl$/m.test(obj.data) && obj.extra && obj.extra.name === 'x.mtl' && /newmtl/.test(obj.extra.data), 'obj + mtl');

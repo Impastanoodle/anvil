@@ -51,6 +51,7 @@ Choose **three to four tasks**, in this priority: open board requests, then `QUE
 | `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html`, `anvil/ui-holewizard.js`, `anvil/ui-materials.js`, `anvil/ui-evaluate.js` |
 | `assembly` | `anvil/assembly.js`, `anvil/ui-assembly.js` |
 | `drawing` | `anvil/drawing.js`, `anvil/drawing.css` |
+| `occt` | `anvil/occt-kernel.js`, `anvil/occt-worker.js`, `anvil/ui-occt.js`, `anvil/vendor/get-occt.ps1`, `anvil/experiments/` (the OpenCascade engine itself lives in `anvil/vendor/occt/`, fetched by `vendor/get-occt.ps1`, not committed) |
 | `tests` | `anvil/tests/`, `anvil/examples/`, `anvil/README.md` |
 
 A task that needs two lanes takes both lanes for one subagent, and that run has fewer subagents. If a lane is owned by a running peer session (step 1.4), leave it out this run. Mark each taken request on the board: `ArtifactData` action `update`, collection `requests`, doc_id `<id>`, data `{"status": "taken", "runId": "<run id>"}`.
@@ -75,7 +76,8 @@ As each subagent returns, check its lane document on the board; if the subagent 
 
 1. `git diff --stat`. Read every diff in your lanes. A subagent that edited outside its lane gets its out-of-lane changes reverted with `git checkout -- <file>`, unless that file belongs to a lane a helper run listed in `HEAD.lock`; a helper's files are theirs, leave them alone.
 2. Start the server if port 8812 is not listening: `powershell -NoProfile -ExecutionPolicy Bypass -File anvil\serve.ps1 -Port 8812` in the background. Open `http://localhost:8812/tests/kernel-tests.html` and `http://localhost:8812/tests/ui-smoke.html` in the browser pane; reload with `location.reload()` through `javascript_tool` (a plain navigate can serve stale scripts). Never name a REPL variable `top`.
-3. Load `http://localhost:8812/` and confirm no console errors. The browser-pane `key: Return` does not reach the page; click the ✓ button (`find "OK (Enter)"`) to accept a PropertyManager.
+3. When `anvil/vendor/occt/opencascade.full.wasm` exists (run `anvil/vendor/get-occt.ps1` once per machine), also open `http://localhost:8812/tests/occt-tests.html`: every non-TODO row must pass. Keep the browser pane visible for ui-smoke: a hidden pane throttles it and drawing steps fail.
+3b. Load `http://localhost:8812/` and confirm no console errors. The browser-pane `key: Return` does not reach the page; click the ✓ button (`find "OK (Enter)"`) to accept a PropertyManager.
 4. Fix breakage. If one lane cannot be made green inside the run, revert that lane's files and record it as `failed` in the brief; never commit red tests.
 5. Commit once per run: `git add <your lane files> anvil/SESSION_LOG.md anvil/ROADMAP.md QUEUE.md dashboard/` then `git commit -m "<run id>: <one line per lane>"`, ending with the attribution line from the session's system reminder. Use `git add -A` only when `HEAD.lock` lists no helper lanes. Then `git push origin main`. If the push is rejected because main moved, `git pull --no-rebase origin main`, resolve by keeping both sides, rerun both test pages, commit and push again; never push red tests.
 
