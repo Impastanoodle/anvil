@@ -3,7 +3,8 @@
 // kernel.js, holewizard.js, exchange.js and occt-kernel.js as classic scripts (their top-level `var`s become
 // globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1).
 //
-// Messages in:   { type: 'build', seq, model, exports? }  model: a structured clone of App.model; exports adds STEP / IGES text
+// Messages in:   { type: 'build', seq, model, exports?, cacheKey?, noCache? }  model: a clone of App.model (or an assembly's
+//                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
@@ -18,6 +19,22 @@ async function classic(url) {
 
 // the rebuild cache (OcctKernel.build opts.cache): snapshots after each feature, reused while the prefix is unchanged
 let cache = {};
+// assemblies: one cache per part (message cacheKey), the most recent 32 kept
+const caches = new Map();
+// an evicted cache frees its snapshot handles (OpenCascade objects are not garbage collected)
+function freeCache(c) {
+  (c.states || []).forEach((S) => S.bodies.forEach((b) => { try { b.delete(); } catch (e) { } }));
+  Object.values(c.tools || {}).forEach((t) => { try { t.delete(); } catch (e) { } });
+}
+function cacheFor(key) {
+  if (!key) return cache;
+  let c = caches.get(key);
+  if (!c) {
+    c = {}; caches.set(key, c);
+    if (caches.size > 32) { const old = caches.keys().next().value; freeCache(caches.get(old)); caches.delete(old); }
+  }
+  return c;
+}
 
 const ready = (async () => {
   for (const f of ['csg.js', 'kernel.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
@@ -41,11 +58,11 @@ self.onmessage = async (e) => {
   }
   if (m.type !== 'build') return;
   try {
-    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cache });
+    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cacheFor(m.cacheKey) });
     const transfer = r.mesh ? [r.mesh.positions.buffer, r.mesh.faceOf.buffer] : [];
-    self.postMessage({ type: 'built', seq: m.seq, result: r }, transfer);
+    self.postMessage({ type: 'built', seq: m.seq, part: m.part, result: r }, transfer);
   } catch (err) {
-    cache = {};   // a build that threw may have left the snapshots half-updated
-    self.postMessage({ type: 'error', seq: m.seq, message: (err && err.message) || String(err) });
+    if (m.cacheKey) caches.delete(m.cacheKey); else cache = {};   // a build that threw may have left the snapshots half-updated
+    self.postMessage({ type: 'error', seq: m.seq, part: m.part, message: (err && err.message) || String(err) });
   }
 };

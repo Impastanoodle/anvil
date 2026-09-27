@@ -3974,6 +3974,11 @@
       await idle();
       var tee = await occIdle();
       assert(tee.state === 'ok' && tee.beyond.length === 1 && Object.keys(UI.App.build.errors).length === 0 && /Anvil could not/.test($('status-right').textContent), 'tee fillet: ' + JSON.stringify({ state: tee.state, beyond: tee.beyond, errors: UI.App.build.errors }));
+      // assemblies: every part built by OpenCascade, the assembly rebuilt around them, mates solved as ever
+      await UI.openExample(exByName('Pinned plate assembly')); await idle();
+      var pa = await occIdle();
+      assert(pa.state === 'ok' && pa.faces === 19 && UI.App.build.occt && UI.App.build.occt.parts === 3 && anvil.mates().every(function (mt) { return mt.ok; }) && anvil.interference().count === 0,
+        'Pinned plate assembly: ' + JSON.stringify({ state: pa.state, faces: pa.faces, error: pa.error }));
       await anvil.run(exByName('Flange').code); await idle(); await occIdle();
       return 'Flange 12 faces (Anvil grouping ' + anvilGroups + '), loaded in ' + Math.round(s.loadMs) + ' ms, build ' + Math.round(s.ms.build) + ' ms; Mug 8 faces; Spacer 21 faces; U-bracket 24 faces, flat 2 bends; STL import: Anvil\'s';
     } finally {

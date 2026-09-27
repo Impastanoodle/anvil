@@ -43,12 +43,85 @@
       Object.keys(imports).forEach(function (k) { imports[k].rej(new Error(m.message)); delete imports[k]; });
       settle(); refresh(); return;
     }
+    if (m.part != null) {   // one part of an assembly
+      var A = st.asm;
+      if (!A || m.seq !== A.seq) return;
+      A.results[m.part] = m.type === 'built' ? m.result : { error: m.message };
+      if (--A.left > 0) return;
+      st.busy = false;
+      if (m.seq !== st.want) { request(); return; }
+      acceptAssembly(A);
+      settle(); refresh();
+      return;
+    }
     st.busy = false;
     if (m.seq !== st.want) { request(); return; }   // the model changed meanwhile: build the newer one
     if (m.type === 'error') { st.state = 'error'; st.error = m.message; st.result = null; }
     else accept(m.result);
     settle();
     refresh();
+  }
+  // ---- assemblies: every distinct part (sub-assemblies' too) is built by OpenCascade with its own rebuild cache,
+  // checked against Anvil's build of it, then the assembly is rebuilt around OpenCascade's parts (Assembly.setPartBuilder):
+  // mates, patterns and the solver run as ever, on the exact geometry
+  function keyOf(model) { return JSON.stringify(model, function (k, v) { return k === 'profile' ? undefined : v; }); }
+  function collectParts(cache, out, seen) {
+    Object.keys(cache || {}).forEach(function (ck) {
+      var e = cache[ck];
+      if (!e || e.error || !e.build) return;
+      if (e.kind === 'assembly') { collectParts(e.build.cache, out, seen); return; }
+      var key = keyOf(e.model);
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push({ key: key, cacheKey: ck, model: e.model, anvilBuild: e.build, name: e.model.name || 'Part' });
+    });
+    return out;
+  }
+  function triSharedOf(mesh) {
+    var out = new Int32Array(mesh.triCount);
+    mesh.faces.forEach(function (f) { var t = f.start; f.polys.forEach(function (p) { for (var i = 0; i < p.vertices.length - 2; i++) out[t++] = p.shared == null ? -1 : p.shared; }); });
+    return out;
+  }
+  function requestAssembly() {
+    var parts = collectParts(App.build && App.build.cache, [], {});
+    if (!parts.length) { st.state = 'assembly'; st.result = null; settle(); refresh(); return; }
+    st.busy = true; st.want = ++st.seq; st.state = 'building';
+    st.asm = { seq: st.want, parts: parts, results: {}, left: parts.length, anvilBuild: App.build };
+    parts.forEach(function (p, i) {
+      var model; try { model = JSON.parse(JSON.stringify(p.model)); } catch (e) { model = p.model; }
+      st.worker.postMessage({ type: 'build', seq: st.want, part: i, model: model, cacheKey: p.cacheKey });
+    });
+    refresh();
+  }
+  function acceptAssembly(A) {
+    var bad = null, builds = {}, faces = 0, volume = 0, beyond = [], ms = { build: 0, mesh: 0 };
+    A.parts.forEach(function (p, i) {
+      if (bad) return;
+      var r = A.results[i];
+      if (r.error) { bad = { state: 'error', error: p.name + ': ' + r.error }; return; }
+      if (r.unsupported) { bad = { state: 'unsupported', unsupported: r.unsupported + ' in ' + p.name }; return; }
+      if (!r.valid) { bad = { state: 'invalid', error: p.name }; return; }
+      var mesh = K.meshFromBody(p.anvilBuild.body), av = mesh.triCount ? K.massProps(mesh, 1).volume : 0;
+      var dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
+      var bey = Object.keys(p.anvilBuild.errors || {}).filter(function (id) { return r.status[id] === 'ok'; });
+      if (!r.mesh || (!bey.length && !(dv <= (r.tolerance || 1e-4)))) { bad = { state: 'mismatch', error: p.name + ': ' + r.volume.toFixed(3) + ' vs Anvil ' + av.toFixed(3) }; return; }
+      builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, triSharedOf(mesh), window.CSG, K);
+      faces += r.faces.length; volume += r.volume; ms.build += r.ms.build; ms.mesh += r.ms.mesh;
+      bey.forEach(function (id) { beyond.push(p.name + ':' + id); });
+    });
+    st.result = { faces: { length: faces }, volume: volume, bodies: A.parts.length, valid: !bad || bad.state !== 'invalid', ms: ms, status: {}, tolerance: null,
+      unsupported: bad && bad.unsupported || null };
+    st.beyond = beyond; st.volumeDiff = null; st.anvilVolume = null;
+    if (bad) { st.state = bad.state; st.error = bad.error || null; return; }
+    var b;
+    Assembly.setPartBuilder(function (model) { return builds[keyOf(model)] || null; });
+    try { b = Assembly.rebuild(App.model, null, UI.asmBuildOpts || null); }
+    catch (e) { st.state = 'error'; st.error = 'Assembly with OpenCascade parts: ' + (e.message || e); return; }
+    finally { Assembly.setPartBuilder(null); }
+    b.occt = { volume: volume, faces: faces, parts: A.parts.length };
+    st.state = 'ok'; st.anvilBuild = A.anvilBuild; st.driving = true;
+    App.sel = null; App.sel2 = null; App.hover = null;
+    UI.applyBuild(b, { noSave: true, keepMs: true, occt: true });
   }
   // OpenCascade answered for the model Anvil's build on screen was made from (the sequence numbers match)
   function accept(r) {
@@ -76,9 +149,10 @@
 
   // post the current model (newest wins: one build in flight, the latest request replaces older ones)
   function request() {
-    if (!st.on || isAsm() || !App.model) { settle(); return; }
+    if (!st.on || !App.model) { settle(); return; }
     if (!st.worker) { startWorker(); return; }
     if (!st.ready || st.busy) return;
+    if (isAsm()) { if (typeof Assembly !== 'undefined' && Assembly.setPartBuilder) requestAssembly(); else { st.state = 'assembly'; settle(); } return; }
     st.busy = true; st.want = ++st.seq; st.state = 'building';
     var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { st.busy = false; return; }
     st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true });
@@ -89,7 +163,6 @@
     if (opts && opts.occt) return;
     st.driving = false; st.anvilBuild = null;
     if (!st.on) return;
-    if (isAsm()) { st.state = 'assembly'; refresh(); return; }
     if (st.busy) { st.want = -1; return; }   // the in-flight reply is stale now; onMessage asks again
     request();
   }
@@ -145,7 +218,7 @@
       case 'unsupported': txt = 'OpenCascade: needs ' + s.unsupported; tip += ': this part uses a feature it does not build yet; Anvil\'s own result is shown'; break;
       case 'mismatch': txt = 'OpenCascade ✗ volume differs'; cls += ' bad'; tip += ': ' + (s.volume || 0).toFixed(3) + ' vs Anvil ' + (s.anvilVolume || 0).toFixed(3) + '; Anvil\'s result is shown'; break;
       case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; tip += ': Anvil\'s result is shown'; break;
-      case 'assembly': txt = 'OpenCascade: parts only'; break;
+      case 'assembly': txt = 'OpenCascade: no parts to build'; break;
       case 'failed': txt = 'OpenCascade not installed'; cls += ' bad'; tip = (s.error || '') + ' Run vendor/get-occt.ps1.'; break;
       case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; tip = s.error || ''; break;
       default: txt = 'OpenCascade';

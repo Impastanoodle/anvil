@@ -1529,6 +1529,10 @@ var Assembly = (function () {
   // build, whose `body` holds every inner component in the sub-assembly's frame and whose `model` carries the solved
   // inner transforms. A document that contains itself (directly or further down) is an error, not a loop.
   var building = [];
+  // setPartBuilder(fn | null): fn(partModel) -> a build of that part, or null for Kernel.rebuild (ui-occt.js hands in
+  // OpenCascade's builds of the parts while it rebuilds the assembly around them)
+  var partBuilder = null;
+  function setPartBuilder(fn) { partBuilder = fn || null; }
   function guardKey(source) { return source && source.file != null ? 'file:' + source.file : source && source.example != null ? 'example:' + source.example : null; }
   function buildPart(source, stamp) {
     var entry = { kind: 'part', model: null, build: null, error: null, stamp: stamp || '' };
@@ -1551,7 +1555,7 @@ var Assembly = (function () {
         }
         return entry;
       }
-      entry.build = Kernel.rebuild(entry.model);
+      entry.build = (partBuilder && partBuilder(entry.model)) || Kernel.rebuild(entry.model);
       if (!entry.build || !entry.build.body || !entry.build.body.polygons.length) entry.error = 'Part has no solid body';
       else {
         var perrs = entry.build.errors && Object.keys(entry.build.errors);
@@ -2269,7 +2273,7 @@ var Assembly = (function () {
     isAssembly: isAssembly, newAssembly: newAssembly, partModel: partModel,
     insert: insert, addMate: addMate, removeComponent: removeComponent, removeMate: removeMate,
     findComponent: findComponent, findMate: findMate, setFixed: setFixed, componentIndex: componentIndex,
-    rebuild: rebuild, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, massProps: massProps,
+    rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, massProps: massProps,
     transformPoint: transformPoint, inverseTransformPoint: inverseTransformPoint, transformDir: transformDir,
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
     defaultAlignment: defaultAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),

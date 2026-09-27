@@ -1022,3 +1022,11 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - ui-smoke: the switch is set with `remember: false` (the tests share the app's localStorage); the OpenCascade step adds the pipe-tee saddle fillet (drives, no errors in the build, chip says so).
 
 **Verified (port 8812, pane visible).** ui-smoke 151/151 (stored choice untouched), occt-tests 42/42; in the app with no stored choice OpenCascade came on by itself and rebuilt the autosaved pipe tee.
+
+## Run local-2026-09-26q — OpenCascade assemblies
+
+**Done.** `assembly.js`: `Assembly.setPartBuilder(fn)` — `buildPart` asks it for a part's build before `Kernel.rebuild`. `ui-occt.js`: for an assembly, every distinct part (sub-assemblies' included, from the Anvil build's cache) is built in the worker with its own rebuild cache (`cacheKey`, 32 kept, evicted caches free their snapshots), checked against Anvil's build of that part (volume within its tolerance, or features Anvil failed), turned into Anvil builds (`OcctKernel.toBuild`), and the assembly is rebuilt around them (`Assembly.rebuild(model, null, asmBuildOpts)` with the part builder); mates, patterns, the solver, interference and BOMs run as ever. A failing part keeps Anvil's assembly and the chip names it. `occt-worker.js` echoes `part` and keeps per-part caches.
+
+**Checked in the app (every assembly example):** Pinned plate 19 faces / 7 of 7 mates, Distance and angle mates 18 / 6, Interference check 15 / 3 (2 interferences found, as designed), Gear train and patterns 41 faces / 17 mates, Hinge sub-assembly 12 / 2, Hinged cover (sub-assemblies) 18 / 7; no errors.
+
+**Verified (port 8812, pane visible).** ui-smoke 151/151 (the OpenCascade step now opens the Pinned plate assembly: 19 faces, 3 OpenCascade parts, every mate ok, no interference); kernel-tests 683/683.
