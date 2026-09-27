@@ -2003,7 +2003,7 @@ var Kernel = (function () {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     var groups = {}, order = [];
     body.polygons.forEach(function (p) {
-      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi;
+      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi + (p.face != null ? '|f' + p.face : '');   // OpenCascade faces stay apart
       if (!groups[k]) { groups[k] = { polys: [], plane: p.plane, body: bi }; order.push(k); }
       groups[k].polys.push(p);
     });
@@ -2035,7 +2035,9 @@ var Kernel = (function () {
       }
     });
     // positions64 keeps full precision for mass properties; positions (Float32) is what the renderer uploads
-    return { positions: positions, positions64: new Float64Array(tris), normals: normals, faces: faces, triCount: tris.length / 9 };
+    var mesh = { positions: positions, positions64: new Float64Array(tris), normals: normals, faces: faces, triCount: tris.length / 9 };
+    if (body.exact) mesh.exact = body.exact;   // a solid from OpenCascade knows its exact mass properties (occt-kernel.js toBuild)
+    return mesh;
   }
 
   // ------------------------------------------------------------------ exact volumes from the analytic records
@@ -2104,6 +2106,7 @@ var Kernel = (function () {
       out[4] = R * Math.sqrt(1 + kk * kk) * Math.abs(nr) / rx;
       return out;
     }
+    if (!F.P || !F.Q) return null;   // a sphere / torus facet not made by a revolve (OpenCascade's triangles): no profile chord, no correction
     var P = F.P, Q = F.Q, Cr = S.t === 'tor' ? S.R : 0, r = S.r;
     var dz = Q[1] - P[1], dr = Q[0] - P[0], L = Math.hypot(dr, dz), y, js;
     if (Math.abs(dz) > 1e-12 * Math.max(1, L)) {
@@ -2157,7 +2160,7 @@ var Kernel = (function () {
       if (Math.abs(za - zb) < 1e-9 * scl) {
         var R = null;
         if (S.t === 'cyl' || S.t === 'cone') R = S.r + (S.k || 0) * zm;
-        else if (Math.abs(F.Q[1] - F.P[1]) > 1e-12 * scl) R = F.P[0] + (F.Q[0] - F.P[0]) * (zm - F.P[1]) / (F.Q[1] - F.P[1]);
+        else if (F.P && F.Q && Math.abs(F.Q[1] - F.P[1]) > 1e-12 * scl) R = F.P[0] + (F.Q[0] - F.P[0]) * (zm - F.P[1]) / (F.Q[1] - F.P[1]);
         if (R != null) {
           var va = sub(sub(A, S.o), scale(S.d, za)), vb = sub(sub(B, S.o), scale(S.d, zb));
           var cosA = dot(va, vb) / (len(va) * len(vb) || 1), dphi = Math.acos(Math.max(-1, Math.min(1, cosA)));
@@ -2359,6 +2362,11 @@ var Kernel = (function () {
     }
     if (!(p.length > 0)) { min = [0, 0, 0]; max = [0, 0, 0]; }
     var polygonal = null, curved = 0;
+    if (mesh.exact) {
+      // OpenCascade's exact B-rep integrals (the facets only give the bounding box here)
+      var ex = mesh.exact;
+      return { volume: ex.volume, area: ex.area, centroid: ex.centroid.slice(), bbox: { min: min, max: max }, density: density, mass: ex.volume * density, polygonal: { volume: vol, area: area }, exact: true };
+    }
     if (mesh.faces && mesh.faces.length && mesh.faces[0].polys) {
       var polys = [];
       mesh.faces.forEach(function (f) { if (f.polys) polys = polys.concat(f.polys); });

@@ -487,7 +487,15 @@ var OcctKernel = (function () {
       bodies = bodies.map(function (b) {
         try { var u = N(new oc.ShapeUpgrade_UnifySameDomain_2(b, true, true, false)); u.Build(); return N(u.Shape()); } catch (e) { return b; }
       });
-      bodies.forEach(function (b) { if (!valid(b)) out.valid = false; out.volume += volumeOf(b); });
+      // exact mass properties per body (volume, surface area, centre of volume): Kernel.massProps prefers them
+      out.bodyProps = bodies.map(function (b) {
+        if (!valid(b)) out.valid = false;
+        var g = N(new oc.GProp_GProps_1()), s = N(new oc.GProp_GProps_1());
+        oc.BRepGProp.VolumeProperties_1(b, g, false, false, false); oc.BRepGProp.SurfaceProperties_1(b, s, false, false);
+        var c = N(g.CentreOfMass()), v = g.Mass();
+        out.volume += v;
+        return { volume: v, area: s.Mass(), centroid: [c.X(), c.Y(), c.Z()] };
+      });
       var all = bodies.length === 1 ? bodies[0] : compound(bodies);
       out.bbox = bboxOf(all, true);
       if (opts.mesh !== false) {
@@ -507,8 +515,10 @@ var OcctKernel = (function () {
       bodyList.forEach(function (body, bi) {
         explore(body, ENUM.TopAbs_FACE).forEach(function (s) {
           var f = N(oc.TopoDS.Face_1(s)), fi = facesOut.length;
-          var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType();
-          facesOut.push({ body: bi, type: SURF[t && t.value != null ? t.value : t] || 'other' });
+          var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), t = ad.GetType(), type = SURF[t && t.value != null ? t.value : t] || 'other';
+          var info = { body: bi, type: type }, sr = surfRecord(ad, type);
+          if (sr) info.surf = sr;
+          facesOut.push(info);
           var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
           if (h.IsNull()) return;
           var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
@@ -521,7 +531,22 @@ var OcctKernel = (function () {
           }
         });
       });
-      return { positions: new Float32Array(pos), faceOf: new Int32Array(faceOf) };
+      return { positions: new Float64Array(pos), faceOf: new Int32Array(faceOf) };
+    }
+    // Anvil's analytic surface record (kernel.js "analytic surface records") of a cylinder, cone, sphere or torus face
+    function surfRecord(ad, type) {
+      function xyz(p) { return [p.X(), p.Y(), p.Z()]; }
+      function frame(g) { var a = N(g.Position()); return { o: xyz(N(a.Location())), d: xyz(N(a.Direction())) }; }
+      try {
+        if (type === 'cylinder') { var cy = N(ad.Cylinder()), f1 = frame(cy); return { t: 'cyl', o: f1.o, d: f1.d, r: cy.Radius() }; }
+        if (type === 'cone') {
+          // gp_Cone: radius RefRadius in the plane of its location, growing by tan(SemiAngle) along its direction
+          var co = N(ad.Cone()), f2 = frame(co); return { t: 'cone', o: f2.o, d: f2.d, r: co.RefRadius(), k: Math.tan(co.SemiAngle()) };
+        }
+        if (type === 'sphere') { var sp = N(ad.Sphere()), f3 = frame(sp); return { t: 'sph', o: f3.o, d: f3.d, r: sp.Radius() }; }
+        if (type === 'torus') { var to = N(ad.Torus()), f4 = frame(to); return { t: 'tor', o: f4.o, d: f4.d, R: to.MajorRadius(), r: to.MinorRadius() }; }
+      } catch (e) { }
+      return null;
     }
   }
 
@@ -531,8 +556,25 @@ var OcctKernel = (function () {
   // the centre of its largest triangle (inside the facet, so never on a face boundary). -> Int32Array (B-rep face index or -1 when
   // nothing is within tol). A uniform grid over the triangles keeps it near-linear.
   function mapFaces(mesh, occ, tol) {
-    tol = tol || 0.25;
-    var P = occ.mesh.positions, F = occ.mesh.faceOf, nt = F.length, out = new Int32Array(mesh.faces.length).fill(-1);
+    var F = occ.mesh.faceOf, pts = mesh.faces.map(function (f) { return pointOnFace(mesh.positions, f.start, f.count, f.centroid); });
+    var tri = nearestTriangles(occ.mesh.positions, pts, tol || 0.25), out = new Int32Array(mesh.faces.length).fill(-1);
+    for (var i = 0; i < tri.length; i++) out[i] = tri[i] >= 0 ? F[tri[i]] : -1;
+    return out;
+  }
+  // a point surely inside a run of triangles: the centre of the largest one (an annulus' centroid lies in its hole)
+  function pointOnFace(MP, start, count, fallback) {
+    var c = fallback, bestA = -1;
+    if (MP) for (var tt = start; tt < start + count; tt++) {
+      var o = tt * 9, ux = MP[o + 3] - MP[o], uy = MP[o + 4] - MP[o + 1], uz = MP[o + 5] - MP[o + 2], vx = MP[o + 6] - MP[o], vy = MP[o + 7] - MP[o + 1], vz = MP[o + 8] - MP[o + 2];
+      var cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx, ar = cx * cx + cy * cy + cz * cz;
+      if (ar > bestA) { bestA = ar; c = [(MP[o] + MP[o + 3] + MP[o + 6]) / 3, (MP[o + 1] + MP[o + 4] + MP[o + 7]) / 3, (MP[o + 2] + MP[o + 5] + MP[o + 8]) / 3]; }
+    }
+    return c;
+  }
+  // for each point, the index of the nearest triangle of P (9 numbers per triangle) within tol, or -1; a uniform grid
+  // over the triangles keeps it near-linear
+  function nearestTriangles(P, pts, tol) {
+    var nt = P.length / 9, out = new Int32Array(pts.length).fill(-1);
     if (!nt) return out;
     var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     for (var i = 0; i < P.length; i += 3) for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], P[i + k]); hi[k] = Math.max(hi[k], P[i + k]); }
@@ -547,23 +589,66 @@ var OcctKernel = (function () {
         var kk = key(gx, gy, gz), l = grid.get(kk); if (!l) grid.set(kk, l = []); l.push(t);
       }
     }
-    var MP = mesh.positions;
-    mesh.faces.forEach(function (f, fi) {
-      // a point surely on the face: the centre of its largest triangle (an annulus' centroid lies in its hole)
-      var c = f.centroid, bestA = -1;
-      if (MP) for (var tt = f.start; tt < f.start + f.count; tt++) {
-        var o = tt * 9, ux = MP[o + 3] - MP[o], uy = MP[o + 4] - MP[o + 1], uz = MP[o + 5] - MP[o + 2], vx = MP[o + 6] - MP[o], vy = MP[o + 7] - MP[o + 1], vz = MP[o + 8] - MP[o + 2];
-        var cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx, ar = cx * cx + cy * cy + cz * cz;
-        if (ar > bestA) { bestA = ar; c = [(MP[o] + MP[o + 3] + MP[o + 6]) / 3, (MP[o + 1] + MP[o + 4] + MP[o + 7]) / 3, (MP[o + 2] + MP[o + 5] + MP[o + 8]) / 3]; }
-      }
+    pts.forEach(function (c, pi) {
+      if (!c) return;
       var g = [0, 1, 2].map(function (k2) { return Math.floor((c[k2] - lo[k2]) / cell); });
       var list = grid.get(key(g[0], g[1], g[2])) || [], best = tol * tol, hit = -1;
       for (var q = 0; q < list.length; q++) {
         var d2 = pointTriDist2(c, P, list[q] * 9);
-        if (d2 < best) { best = d2; hit = F[list[q]]; }
+        if (d2 < best) { best = d2; hit = list[q]; }
       }
-      out[fi] = hit;
+      out[pi] = hit;
     });
+    return out;
+  }
+
+  // An Anvil build of the same model with OpenCascade's solids in place of Anvil's (ui-occt.js): every triangle
+  // becomes a CSG polygon tagged with its B-rep face (`face`, a global face index), the analytic surface record of
+  // that face (`surf`, one shared object per face, so shading, curve edges, drawings, exports and the volume
+  // correction read them as usual) and the feature that made it (`shared`: the Anvil feature of the nearest Anvil
+  // facet, from anvilMesh / anvilTriShared). Everything else (planes, profiles, tools, errors) is Anvil's.
+  function toBuild(occ, anvilBuild, anvilMesh, anvilTriShared, CSG, K) {
+    var P = occ.mesh.positions, F = occ.mesh.faceOf, nt = F.length, nf = occ.faces.length;
+    // one representative point per B-rep face -> the feature of the nearest Anvil facet
+    var firstTri = new Int32Array(nf).fill(-1), countTri = new Int32Array(nf);
+    for (var t = 0; t < nt; t++) { if (firstTri[F[t]] < 0) firstTri[F[t]] = t; countTri[F[t]]++; }
+    var shared = new Array(nf).fill(null);
+    if (anvilMesh && anvilMesh.positions && anvilTriShared) {
+      // faces' triangles are contiguous in the OpenCascade mesh
+      var reps = [];
+      for (var fi = 0; fi < nf; fi++) reps.push(firstTri[fi] >= 0 ? pointOnFace(P, firstTri[fi], countTri[fi], null) : null);
+      var near = nearestTriangles(anvilMesh.positions, reps, 2);
+      for (fi = 0; fi < nf; fi++) if (near[fi] >= 0 && anvilTriShared[near[fi]] >= 0) shared[fi] = anvilTriShared[near[fi]];
+    }
+    var surfs = occ.faces.map(function (f) { return f.surf ? { s: f.surf } : null; });
+    var perBody = [];
+    for (t = 0; t < nt; t++) {
+      var o = t * 9, face = F[t], bi = occ.faces[face].body;
+      var vs = [new CSG.Vertex(new CSG.Vector(P[o], P[o + 1], P[o + 2])), new CSG.Vertex(new CSG.Vector(P[o + 3], P[o + 4], P[o + 5])), new CSG.Vertex(new CSG.Vector(P[o + 6], P[o + 7], P[o + 8]))];
+      var pg = CSG.Polygon.tryCreate(vs, shared[face]);
+      if (!pg) continue;
+      pg.face = face;
+      if (surfs[face]) pg.surf = surfs[face];
+      (perBody[bi] = perBody[bi] || []).push(pg);
+    }
+    var bodies = [];
+    for (var b = 0; b < occ.bodies; b++) {
+      var csg = CSG.fromPolygons(perBody[b] || []);
+      if (occ.bodyProps && occ.bodyProps[b]) csg.exact = occ.bodyProps[b];   // Kernel.meshFromBody / massProps use it
+      bodies.push(csg);
+    }
+    var out = {};
+    Object.keys(anvilBuild).forEach(function (k) { out[k] = anvilBuild[k]; });
+    out.bodies = bodies;
+    out.bodyFeatures = bodies.map(function (x, i) { return occ.bodyFeatures && occ.bodyFeatures[i] != null ? occ.bodyFeatures[i] : null; });
+    out.body = K.combineBodies(bodies);
+    if (occ.bodyProps && occ.bodyProps.length === bodies.length && out.body && !out.body.exact) {
+      var V = 0, A = 0, M = [0, 0, 0];
+      occ.bodyProps.forEach(function (bp) { V += bp.volume; A += bp.area; for (var k = 0; k < 3; k++) M[k] += bp.volume * bp.centroid[k]; });
+      out.body.exact = { volume: V, area: A, centroid: V > 1e-12 ? [M[0] / V, M[1] / V, M[2] / V] : [0, 0, 0] };
+    }
+    out.cache = anvilBuild.cache;
+    out.occt = { volume: occ.volume, faces: nf, bodies: occ.bodies };
     return out;
   }
   // squared distance from point p to the triangle at P[o..o+8] (Ericson, Real-Time Collision Detection 5.1.5)
@@ -599,6 +684,6 @@ var OcctKernel = (function () {
     return dot(d, d);
   }
 
-  return { build: build, mapFaces: mapFaces, SUPPORTED: SUPPORTED };
+  return { build: build, mapFaces: mapFaces, toBuild: toBuild, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;

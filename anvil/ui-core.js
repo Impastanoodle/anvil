@@ -384,6 +384,14 @@ var UI = (function () {
     if (App.edges && App.edgesMesh === m) return App.edges;
     App.edgesMesh = m;
     App.edges = K.bodyEdges(m);
+    // a solid from OpenCascade (ui-occt.js): every polygon knows its B-rep face; edges inside one face are seams
+    if (m.faces.length && m.faces[0].polys && m.faces[0].polys[0] && m.faces[0].polys[0].face != null) {
+      App.edges.forEach(function (e) {
+        if (e.faces.length !== 2) return;
+        var a = m.faces[e.faces[0]].polys[0].face, b = m.faces[e.faces[1]].polys[0].face;
+        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+      });
+    }
     App.curves = annotateCurveEdges(m, App.edges);
     return App.edges;
   }
@@ -1179,10 +1187,10 @@ var UI = (function () {
     updateOrigin();
     updateSketches();
     if (UI.updateCosmeticThreads) UI.updateCosmeticThreads();   // ui-holewizard.js: Straight Tap threads
-    App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
+    if (!opts.keepMs) App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
-    (UI.onBuild || []).forEach(function (fn) { try { fn(App.build); } catch (e) { console.warn(e); } });   // ui-occt.js
+    (UI.onBuild || []).forEach(function (fn) { try { fn(App.build, opts); } catch (e) { console.warn(e); } });   // ui-occt.js
     if (!opts.noSave) autosave();
     var errIds = Object.keys(App.build.errors || {});
     var eqMsgs = equationErrorMessages(App.build);
@@ -1482,6 +1490,7 @@ var UI = (function () {
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
     rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
     analyticNormals: analyticNormals, surfNormal: surfNormal,

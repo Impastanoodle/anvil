@@ -78,8 +78,8 @@ var CSG = (function () {
           }
           // fragments remember the polygon they came from (`_src`, see restoreWhole)
           // fragments also inherit the analytic surface record (`surf`) of the face they were cut from
-          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; pf.surf = polygon.surf; front.push(pf); } }
-          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; pb.surf = polygon.surf; back.push(pb); } }
+          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; pf.surf = polygon.surf; if (polygon.face != null) pf.face = polygon.face; front.push(pf); } }
+          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; pb.surf = polygon.surf; if (polygon.face != null) pb.face = polygon.face; back.push(pb); } }
           break;
       }
     }
@@ -87,6 +87,8 @@ var CSG = (function () {
 
   // `surf` (optional): the analytic surface record of a facet that approximates a curved face (see kernel.js,
   // "true curves"); null for planar faces. Splits, clones, transforms and pack / unpack carry it.
+  // `face` (optional): the B-rep face a polygon belongs to when the solid came from OpenCascade (ui-occt.js); splits,
+  // clones and transforms carry it, and meshing never merges polygons of different faces.
   function Polygon(vertices, shared, plane) {
     this.vertices = vertices;
     this.shared = shared;
@@ -102,6 +104,7 @@ var CSG = (function () {
     clone: function () {
       var p = new Polygon(this.vertices.map(function (v) { return v.clone(); }), this.shared, this.plane.clone());
       p.surf = this.surf;
+      if (this.face != null) p.face = this.face;
       return p;
     },
     flip: function () {
@@ -600,7 +603,7 @@ var CSG = (function () {
         var vs = p.vertices.map(function (v) { return new Vertex(fn(v.pos)); });
         if (flip) vs.reverse();
         var np = Polygon.tryCreate(vs, p.shared);
-        if (np) { if (p.surf) np.surf = mapSurf(p.surf, fn, flip, memo); out.push(np); }
+        if (np) { if (p.surf) np.surf = mapSurf(p.surf, fn, flip, memo); if (p.face != null) np.face = p.face; out.push(np); }
       }
       for (var m = 0; m < memo.length; m++) delete memo[m]._m;
       return CSG.fromPolygons(out);

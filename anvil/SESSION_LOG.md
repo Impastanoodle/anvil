@@ -972,3 +972,16 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Findings.** OpenCascade's volumes are the exact ones where Anvil approximates: the line-arc-line sweep 1938.54 vs Anvil 1915.80 (1.2 % low, faceted arc), the Mug 85025.2 vs 85618.3.
 
 **Next up.** Stage 3: display OpenCascade's mesh when the switch is on (true faces for every pick, including coplanar faces Anvil merges), drawings via HLRBRep, STEP / IGES through OpenCascade; sheet metal last.
+
+## Run local-2026-09-26l — OpenCascade kernel, stage 3a: OpenCascade's solid drives the part
+
+**Done.**
+- `occt-kernel.js`: tessellation in Float64 with, per B-rep face, Anvil's analytic surface record (cyl / cone / sph / tor from `BRepAdaptor_Surface`); exact per-body mass properties (`bodyProps`: volume, area, centroid). `OcctKernel.toBuild(result, anvilBuild, anvilMesh, anvilTriShared, CSG, Kernel)` makes an Anvil build whose bodies are CSG polygons from OpenCascade's triangles, each tagged with its B-rep face (`polygon.face`), its face's surface record and the feature of the nearest Anvil facet (`shared`); `body.exact` carries the exact mass properties. `nearestTriangles` / `pointOnFace` shared with `mapFaces`.
+- `ui-occt.js`: when OpenCascade built every feature, the solid is valid and the volume agrees within `r.tolerance`, its build is applied with `UI.applyBuild(build, { occt: true, noSave, keepMs })` (the UI.onBuild hooks see `opts.occt` and do not re-request); switching off re-applies Anvil's build. Face groups come straight from `polygon.face`.
+- `csg.js`: `polygon.face` survives splits, clones and transforms. `kernel.js`: `meshFromBody` never merges polygons of different B-rep faces and hands `body.exact` to the mesh; `massProps` returns `mesh.exact` when present; sphere / torus facets without a revolve's profile chord get no volume correction (guard). `ui-core.js`: edges between facets of one B-rep face are seams; `UI.applyBuild`; build hooks get `opts`; `opts.keepMs`.
+
+**Checked in the app with OpenCascade driving (every part example it builds, 25):** watertight (Kernel.meshQuality 0 open / 0 non-manifold / 0 T-junctions), Evaluate ▸ Check ok, STEP / STL / 3MF export, Make Drawing (4 views), summary and Mass Properties = OpenCascade's exact volume (Mug 85025.158, Anvil's facets 84986 / Anvil's own 85618), no console errors. The Spacer's coplanar pocket floors are separate faces (21), the Chamfered block's chamfer runs round the filleted corners.
+
+**Verified (port 8812, pane visible).** kernel-tests 683/683, ui-smoke 151/151 (OpenCascade step now asserts driving, exact volume, Spacer 21 faces, off restores Anvil), occt-tests 34/34.
+
+**Next up.** STEP / IGES export straight from OpenCascade when it drives (freeform faces exact: the Mug's STEP is 1980 KB of facets from Anvil's writer); STEP / IGES import through OpenCascade; worker-side caching of unchanged feature prefixes; sheet metal.
