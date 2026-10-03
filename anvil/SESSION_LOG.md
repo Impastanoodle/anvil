@@ -1098,3 +1098,10 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Merge.** Both select5 and asm5 built an Entities to Mate list in the Mate PM: kept select5's (slot-based, also covers Width) and wired asm5's pop-up toolbar into it (removing a pick re-evaluates the pop-up); `UI.mateRefFace` and `UI.asmRefFace` both exported. Test blocks kept.
 
 **Verified (merged code on port 8812, pane visible, nothing else running).** kernel-tests 752/752, occt-tests 51/51, ui-smoke 227/227 twice.
+## Run local-2026-10-03d — Round 6 (short, two lanes): drawings, sketcher
+
+**Done.**
+- **Drawings** (`drawing.js`): view labels read "SCALE 2 : 1" (`Drawing.scaleLabel`; `scaleText` stays "2:1" for fields); script-API section views fit a full sheet (`fit: true`: aligned, then a free area, then smaller standard scales, else beside the sheet with a warning — never over a view); hatch runs written as one SVG path with relative moves (aluminium section 104 → 35 KB), DXF hatch lines without z codes.
+- **Sketcher** (`sketch-solver.js`, `ui-relations.js`, `ui-sketch.js`, Offset in `ui-commands.js`, Tools menu in `ui-panels.js`): Offset Entities adds driving offset dimensions (radial `dir: 'r'` for circles / arcs, parallel distance for lines; rectangles and polygons come out fully defined; lines and arcs can be offset; `SketchSolver.offsetDimensions`); Smart Dimension on concentric circles gives the radial distance; Tools ▸ Sketch Settings ▸ Enable on-screen numeric input on entity creation (off by default, `anvil.sketchNumericInput`) dimensions every entity drawn.
+
+**Verified (merged code on port 8812, pane visible).** kernel-tests 758/758, occt-tests 51/51, ui-smoke 229/229 twice.
