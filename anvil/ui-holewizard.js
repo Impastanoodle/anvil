@@ -46,7 +46,8 @@
       command: {
         onPick: function (pk) {
           if (pk.kind !== 'face' || !App.mesh || !App.mesh.faces[pk.index]) return false;
-          var plane = K.planeFromFace(App.mesh.faces[pk.index].normal, pk.point);
+          // r10/facesketch10: the positions sketch references the face, so the holes follow it (UI.facePlane)
+          var plane = UI.facePlane ? UI.facePlane(App.mesh.faces[pk.index], pk.point) : K.planeFromFace(App.mesh.faces[pk.index].normal, pk.point);
           if (v.face && samePlane(v.face, plane)) plane = v.face; else { v.face = plane; v.points = []; }
           var uv = K.to2D(plane, pk.point);
           v.points.push([Math.round(uv[0] * 1e4) / 1e4, Math.round(uv[1] * 1e4) / 1e4]);

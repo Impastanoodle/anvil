@@ -761,13 +761,24 @@
     App.newSketchId = f.id;
     return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
+  // r10/facesketch10: the sketch frame on a picked model face, with a reference to the feature that made the face
+  // (Kernel.faceRef) so the sketch follows the face at rebuild, as in SolidWorks
+  function facePlane(face, point) {
+    var plane = K.planeFromFace(face.normal, isFinite(face.w) ? K.vec.scale(face.normal, face.w) : point);
+    if (K.tidyPlane) K.tidyPlane(plane);   // no float noise in the stored frame (9.999999999999998 -> 10)
+    var fid = App.triShared && face.start != null ? App.triShared[face.start] : (face.polys && face.polys[0] ? face.polys[0].shared : null);
+    var fr = K.faceRef ? K.faceRef(App.model, fid, plane, App.build && App.build.planes) : null;
+    if (fr) plane.face = fr;
+    return plane;
+  }
+  UI.facePlane = facePlane;
   function newSketchOnFace(pk) {
     if (isAsm()) { refusePart('Sketch'); return Promise.resolve(null); }
     var face = App.mesh.faces[pk.index];
     if (!face) return;
     closePM();
     UI.pushUndo();
-    var plane = K.planeFromFace(face.normal, pk.point || face.centroid);
+    var plane = facePlane(face, pk.point || face.centroid);
     var f = { id: App.model.nextId++, type: 'sketch', plane: plane, entities: [] };
     f.name = K.featureName(App.model, 'sketch');
     // remember the face outline (same frame as the sketch plane) for Convert / Offset Entities
@@ -1610,7 +1621,7 @@
         onPick: function (pk) {
           if (pk.kind !== 'face') return false;
           var face = App.mesh.faces[pk.index];
-          var plane = K.planeFromFace(face.normal, pk.point);
+          var plane = facePlane(face, pk.point);
           var uv = K.to2D(plane, pk.point);
           v.face = plane; v.u = Math.round(uv[0] * 100) / 100; v.vv = Math.round(uv[1] * 100) / 100;
           pm.spec.message = 'Hole on face ' + pk.index + ' at (' + UI.fmtNum(uv[0], 2) + ', ' + UI.fmtNum(uv[1], 2) + '). Adjust and accept.';
