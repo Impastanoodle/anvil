@@ -1851,7 +1851,7 @@ var Kernel = (function () {
             var sk = pickBody(f);
             var sh = buildShell(f, ctx);
             putBody(sk, sh.body);
-            ctx.tools[f.id] = sh.inner;
+            ctx.tools[f.id] = null;   // the cavity is not built during a rebuild (buildShell: sh.inner is lazy)
             break;
           }
           case 'plane':
@@ -2854,6 +2854,10 @@ var Kernel = (function () {
     if (len(sub(pts[pts.length - 1], c0)) < len(sub(pts[0], c0))) pts.reverse();
     var dirs = [];
     for (i = 0; i + 1 < pts.length; i++) dirs.push(norm(sub(pts[i + 1], pts[i])));
+    // a closed path (a closed polyline, or a chain back to its start) mitres its start / end joint like every other
+    // corner; with flat ends there the tube had a notch on the outside of that corner (−2 % on a rectangular ring)
+    var closed = dirs.length > 2 && len(sub(pts[pts.length - 1], pts[0])) < 1e-6;
+    var joint = closed && len(add(dirs[dirs.length - 1], dirs[0])) > 1e-9 ? { v: pts[0], n: norm(add(dirs[dirs.length - 1], dirs[0])) } : null;
     // place the profile perpendicular to the first segment, pivoting about the path start
     var J0 = pts[0];
     var nSign = dot(profPlane.n, dirs[0]) < 0 ? -1 : 1;
@@ -2868,8 +2872,8 @@ var Kernel = (function () {
         sections = sections.map(function (s) { return { hole: s.hole, pts: s.pts.map(function (p) { return add(pts[i], R(sub(p, pts[i - 1]))); }) }; });
       }
       var L = len(sub(pts[i + 1], pts[i]));
-      var capA = i > 0 ? { v: pts[i], n: norm(add(dirs[i - 1], dirs[i])) } : null;
-      var capB = i + 1 < dirs.length ? { v: pts[i + 1], n: norm(add(dirs[i], dirs[i + 1])) } : null;
+      var capA = i > 0 ? { v: pts[i], n: norm(add(dirs[i - 1], dirs[i])) } : joint;
+      var capB = i + 1 < dirs.length ? { v: pts[i + 1], n: norm(add(dirs[i], dirs[i + 1])) } : joint;
       sections.forEach(function (s, k) { perLoop[k].push(sweepSection(s.pts, dirs[i], pts[i], L, capA, capB, f.id)); });
     }
     var outers = [], holes = [];
@@ -3140,11 +3144,19 @@ var Kernel = (function () {
         if (slab) slabs.push(slab);
       }
     }
-    if (extensions.length) inner = inner.union(unionTree(extensions));
-    if (slabs.length) inner = inner.subtract(unionTree(slabs));
-    if (!inner.polygons.length || inner.volume() < 1e-9) throw new Error('Shell thickness ' + T + ' is too large for this part: nothing would remain hollow.');
-    var body = ctx.body.subtract(inner);
-    return { body: body, inner: inner, removed: removed };
+    if (!slabs.length) throw new Error('Every face of the body is selected for removal: leave at least one face to keep as a wall.');
+    // body − ((body ∪ ext) − S) = body ∩ S exactly (S: the slab union), so the walls are one intersection instead of
+    // a union and two subtractions (the Funnel's shell: two large booleans fewer, the same solid). The cavity
+    // `inner` (the Shell PropertyManager's red preview) is only built when it is read.
+    var S = unionTree(slabs);
+    var body = ctx.body.intersect(S);
+    if (ctx.body.volume() - body.volume() < 1e-9) throw new Error('Shell thickness ' + T + ' is too large for this part: nothing would remain hollow. Enter a thickness below half of the thinnest wall.');
+    var out = { body: body, removed: removed }, innerSolid = null;
+    Object.defineProperty(out, 'inner', { enumerable: true, get: function () {
+      if (!innerSolid) innerSolid = (extensions.length ? inner.union(unionTree(extensions)) : inner).subtract(S);
+      return innerSolid;
+    } });
+    return out;
   }
 
   // ------------------------------------------------------------------ sheet metal: edge flange and flat pattern

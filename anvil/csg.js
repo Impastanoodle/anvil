@@ -28,6 +28,19 @@ var CSG = (function () {
     interpolate: function (other, t) { return new Vertex(this.pos.lerp(other.pos, t)); }
   };
 
+  // Centre (vertex mean), and the margin a plane distance must exceed for the whole polygon to lie on one side:
+  // radius + EPSILON + a guard. Cached on the polygon as `_bs` (vertices never move once a polygon exists; flips
+  // reverse their order, clones share the record).
+  function boundingSphere(vs) {
+    var n = vs.length, cx = 0, cy = 0, cz = 0, i, q;
+    for (i = 0; i < n; i++) { q = vs[i].pos; cx += q.x; cy += q.y; cz += q.z; }
+    cx /= n; cy /= n; cz /= n;
+    var r2 = 0;
+    for (i = 0; i < n; i++) { q = vs[i].pos; var dx = q.x - cx, dy = q.y - cy, dz = q.z - cz, d2 = dx * dx + dy * dy + dz * dz; if (d2 > r2) r2 = d2; }
+    var r = Math.sqrt(r2);
+    return { x: cx, y: cy, z: cz, m: r * (1 + 1e-12) + EPSILON + 1e-9 };
+  }
+
   function Plane(normal, w) { this.normal = normal; this.w = w; }
   // Newell's method: robust to collinear leading vertices.
   Plane.fromVertices = function (vs) {
@@ -47,6 +60,15 @@ var CSG = (function () {
     clone: function () { return new Plane(this.normal.clone(), this.w); },
     flip: function () { this.normal = this.normal.negated(); this.w = -this.w; },
     splitPolygon: function (polygon, coplanarFront, coplanarBack, front, back) {
+      // Bounding-sphere shortcut: a polygon whose sphere lies more than EPSILON (plus a guard far above rounding
+      // error) clear of the plane has every vertex classified the same way, so one dot product decides it. Exactly
+      // the classification the vertex loop below would make; it is ~80 % of the calls in a big boolean.
+      if (OPTIONS.sphereTest) {
+        var bs = polygon._bs || (polygon._bs = boundingSphere(polygon.vertices));
+        var nn = this.normal, dc = nn.x * bs.x + nn.y * bs.y + nn.z * bs.z - this.w;
+        if (dc > bs.m) { front.push(polygon); return; }
+        if (dc < -bs.m) { back.push(polygon); return; }
+      }
       var COPLANAR = 0, FRONT = 1, BACK = 2, SPANNING = 3;
       var polygonType = 0, types = [], i, n = polygon.vertices.length;
       for (i = 0; i < n; i++) {
@@ -94,6 +116,7 @@ var CSG = (function () {
     this.shared = shared;
     this.plane = plane || Plane.fromVertices(vertices);
     this.surf = null;
+    this._bs = null;   // bounding sphere, filled by the first split test (boundingSphere)
   }
   Polygon.tryCreate = function (vertices, shared) {
     var plane = Plane.fromVertices(vertices);
@@ -104,6 +127,7 @@ var CSG = (function () {
     clone: function () {
       var p = new Polygon(this.vertices.map(function (v) { return v.clone(); }), this.shared, this.plane.clone());
       p.surf = this.surf;
+      if (this._bs) p._bs = this._bs;
       if (this.face != null) p.face = this.face;
       return p;
     },
@@ -139,28 +163,38 @@ var CSG = (function () {
       this.back = temp;
     },
     clipPolygons: function (polygons) {
-      if (!this.plane) return polygons.slice();
+      var out = [];
+      this.clipInto(polygons, out);
+      return out;
+    },
+    // clipPolygons appending to `out` (front results first, then back results: the order of the old front.concat(back)
+    // recursion), so a deep tree (a convex solid's BSP is a chain as deep as its face count) no longer copies the
+    // whole surviving list at every level.
+    clipInto: function (polygons, out) {
+      var i;
+      if (!this.plane) { for (i = 0; i < polygons.length; i++) out.push(polygons[i]); return; }
+      if (!polygons.length) return;
       var front = [], back = [];
-      for (var i = 0; i < polygons.length; i++) this.plane.splitPolygon(polygons[i], front, back, front, back);
-      if (this.front) front = this.front.clipPolygons(front);
-      if (this.back) back = this.back.clipPolygons(back);
+      for (i = 0; i < polygons.length; i++) this.plane.splitPolygon(polygons[i], front, back, front, back);
+      if (this.front) this.front.clipInto(front, out);
+      else for (i = 0; i < front.length; i++) out.push(front[i]);
+      if (this.back) this.back.clipInto(back, out);
       else {
         // these fragments are inside the solid and are dropped: their source polygon no longer survives whole
         for (var k = 0; k < back.length; k++) if (back[k]._src) back[k]._src.lost = true;
-        back = [];
       }
-      return front.concat(back);
     },
     clipTo: function (bsp) {
       this.polygons = bsp.clipPolygons(this.polygons);
       if (this.front) this.front.clipTo(bsp);
       if (this.back) this.back.clipTo(bsp);
     },
-    allPolygons: function () {
-      var polygons = this.polygons.slice();
-      if (this.front) polygons = polygons.concat(this.front.allPolygons());
-      if (this.back) polygons = polygons.concat(this.back.allPolygons());
-      return polygons;
+    allPolygons: function (out) {
+      out = out || [];
+      for (var i = 0; i < this.polygons.length; i++) out.push(this.polygons[i]);
+      if (this.front) this.front.allPolygons(out);
+      if (this.back) this.back.allPolygons(out);
+      return out;
     },
     // Move every polygon whose own bounding box lies outside `bounds` (grown by eps) out of this tree into `out`.
     // The node planes stay, so the tree still classifies space exactly; only the far polygons skip the clipping.
@@ -251,7 +285,8 @@ var CSG = (function () {
   // CSG.options.restoreWhole = false turns this off (every fragment is kept, as before) for benchmarks and debugging.
   // CSG.options.nearTrees = false turns off the near-region trees below; nearRatio is the largest share of an
   // operand's polygons that may lie near the other one for its tree to be built from the near part only.
-  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5 };
+  // CSG.options.sphereTest = false turns off splitPolygon's bounding-sphere shortcut (same results, slower).
+  var OPTIONS = { restoreWhole: true, nearTrees: true, nearRatio: 0.5, sphereTest: true };
   function restoreWhole(polygons) {
     if (!OPTIONS.restoreWhole) return untag(polygons);
     var out = [];
