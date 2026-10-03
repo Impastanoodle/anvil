@@ -315,8 +315,8 @@
   // Viewport drag with the Explode PM open: press on a component of the step (or any component: it joins the step) and
   // drag; the distance follows the mouse along the step direction.
   var baseDragHook = UI.componentDragHook;
-  UI.componentDragHook = function (p, ev) {
-    if (isAsm() && App.command && App.command.explodeDrag && expSession) {
+  UI.componentDragHook = function (p, ev, force) {
+    if (force !== 'rotate' && isAsm() && App.command && App.command.explodeDrag && expSession) {
       var hit = UI.pickFace(p[0], p[1]), face = hit && App.mesh.faces[hit.index];
       var c = face ? (App.model.components || [])[face.body || 0] : null;
       if (!c) return null;
@@ -335,7 +335,7 @@
       var h = UI.pickFace(p[0], p[1]), f = h && App.mesh.faces[h.index], cc = f ? (App.model.components || [])[f.body || 0] : null;
       if (cc && cc.pattern != null) { UI.setStatus(cc.name + ' is a pattern instance: drag its seed ' + compName(cc.seed) + '.'); return null; }
     }
-    return baseDragHook ? baseDragHook(p, ev) : null;
+    return baseDragHook ? baseDragHook(p, ev, force) : null;
   };
 
   // ---- SmartMates (r4/asm4): Alt + drag a face of a floating component onto a face of another component. While the
@@ -344,7 +344,9 @@
   // adds the mate (one undo step), dropping anywhere else changes nothing. ui-sketch.js asks this before Alt + drag
   // rotates the view.
   var SMART_TYPES = { 'face|face': 'coincident', 'cylinder|cylinder': 'concentric', 'cylinder|face': 'tangent', 'face|cylinder': 'tangent' };
-  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent' };
+  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent', parallel: 'Parallel', perpendicular: 'Perpendicular', distance: 'Distance', angle: 'Angle' };
+  // r5/asm5: the types the SmartMates pop-up offers for a pair of references (the first is the one the drop adds)
+  var SMART_CHOICES = { 'face|face': ['coincident', 'parallel', 'perpendicular'], 'cylinder|cylinder': ['concentric', 'tangent'], 'cylinder|face': ['tangent'], 'face|cylinder': ['tangent'] };
   function refKind(r) { return r ? (r.cylinder ? 'cylinder' : r.face ? 'face' : null) : null; }
   // the face under (mx, my) on a component other than body index `skip` (the pose may have moved that one under it)
   var smartRay = null;
@@ -422,9 +424,13 @@
         var o = offer(q) || (cur && cur.ok ? cur : null);
         if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
         if (!o || !o.ok) { UI.setStatus('SmartMates: no mate added.'); return Promise.resolve(null); }
-        var type = o.type, a = src, b = o.ref;
+        var type = o.type, a = src, b = o.ref, pre = JSON.stringify(App.model);
         return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), {}); },
-          function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + ').'; })
+          function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + '). Pick another type, Flip Mate Alignment, or ✓.'; })
+          .then(function (mt) {   // r5/asm5: the Mate pop-up toolbar at the drop point, as in SolidWorks
+            if (mt) smartPopup(q, { pre: pre, a: a, b: b, type: type, alignment: null, mateId: mt.id, kinds: refKind(src) + '|' + refKind(o.ref), comp: c.name });
+            return mt;
+          })
           .catch(function (e) { UI.toast(e.message || String(e)); });
       }
     };
@@ -583,7 +589,7 @@
       var f = faces[e.faces[0]], b = f ? f.body || 0 : 0, c = comps[b], at = c && flexAt[c.id];
       return at && e.inner != null && at[e.inner] != null ? at[e.inner] : b;
     }
-    function shown(e) { for (var i = 0; i < e.faces.length; i++) { var f = faces[e.faces[i]]; if (f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0))) return true; } return false; }
+    function shown(e) { for (var i = 0; i < e.faces.length; i++) { var f = faces[e.faces[i]]; if (f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0)) && !UI.bodyGhost(f.body || 0)) return true; } return false; }
     edges.forEach(function (e) {
       if (!e.faces || !e.faces.length || !shown(e)) return;
       var b = bodyOfEdge(e);
@@ -667,6 +673,7 @@
     var g = st.bm.geometry;
     g.computeBoundingBox(); g.computeBoundingSphere();
     if (explode !== undefined) drawExplodeLines(explode ? explode.lines : []);
+    ghostFollow();   // r5/asm5: a transparent component moves with the pose
     if (UI.requestRender) UI.requestRender();
     return true;
   }
@@ -684,6 +691,7 @@
       g.computeBoundingBox(); g.computeBoundingSphere();
     }
     drawnFor = undefined;
+    ghostFollow();   // r5/asm5
     if (UI.requestRender) UI.requestRender();
   }
   // ---- glide: after a rebuild that moved components (a mate previewed in the Mate PM, Explode / Collapse), the
@@ -772,7 +780,107 @@
   // UI.asmNormals(m) gives the mesh's smooth normals; a drag release no longer searches the whole assembly for curves
   // (30-pin plate: curveSurfaces + curveEdges + annotate + normals 35-45 ms -> a few ms).
   function ekey(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
-  function partEdges(pb) {
+  // r5/asm5: a Flexible sub-assembly gets a new composed build on every drag release (Assembly finishVirtual): its
+  // edges, true curves and seams are placed from its inner parts' (found once per part build) instead of searched on
+  // the whole sub-assembly mesh again (30-pin flexible: bodyEdges + curve search ~165 ms -> ~30 ms). The composed
+  // body is the inner bodies placed and concatenated in order (Assembly composeSub), so inner polygon j of part k is
+  // polygon base_k + j; null (the full search) when that does not hold (an inner multibody part, a dropped sliver).
+  function flexEdges(pb, pl) {
+    var sm = pb.model, ib = pb.partBuilds, bodies = pb.bodies, polys = pb.body && pb.body.polygons;
+    if (!sm || !ib || !bodies || !polys || bodies.length !== (sm.components || []).length) return null;
+    var parts = [], base = 0, k, j;
+    for (k = 0; k < bodies.length; k++) {
+      var n = bodies[k].polygons.length;
+      if (n) {
+        var ipb = ib[sm.components[k].id];
+        if (!ipb || !ipb.body || ipb.body.polygons.length !== n) return null;
+        parts.push({ k: k, base: base, pb: ipb, T: sm.components[k].transform });
+      }
+      base += n;
+    }
+    if (base !== polys.length) return null;
+    // the inner parts' own edges (cached on their builds) and, per local face, the polygon indices it holds
+    for (k = 0; k < parts.length; k++) {
+      var P = parts[k], ip = P.pb.body.polygons;
+      if (ip.some(function (p) { return p.body; })) return null;   // a multibody inner part: its own edges are of a remeshed copy
+      P.pe = partEdges(P.pb);
+      if (!P.pe.facePolys) {
+        for (j = 0; j < ip.length; j++) ip[j].__ai = j;
+        var fp = P.pe.mesh.faces.map(function (f) { return f.polys.map(function (p) { return p.__ai; }); });
+        for (j = 0; j < ip.length; j++) delete ip[j].__ai;
+        if (fp.some(function (l) { return l.some(function (x) { return x == null; }); })) return null;
+        setHidden(P.pe, 'facePolys', fp);
+      }
+    }
+    // the composed mesh, with its faces grouped as the assembly mesh groups them where the component is placed (pl):
+    // coplanar facets of different inner parts merge by a rounded plane key, which a translation can change
+    var mesh = placedMesh(polys, pl);
+    if (!mesh) return null;
+    var faceOf = mesh.faceOf, edges = [], curves = [], curvesOk = true;
+    for (k = 0; k < parts.length; k++) {
+      var Q = parts[k], fmap = [], T = Q.T || {}, R = T.rotation || AS.IDENTITY, Pp = T.position || [0, 0, 0];
+      for (j = 0; j < Q.pe.facePolys.length; j++) {
+        var l = Q.pe.facePolys[j], f0 = faceOf[Q.base + l[0]];
+        for (var q = 1; q < l.length; q++) if (faceOf[Q.base + l[q]] !== f0) return null;   // a face split by rounding
+        if (f0 < 0) return null;
+        fmap.push(f0);
+      }
+      var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
+      var pt = function (v) { var r = rot(v); return [r[0] + Pp[0], r[1] + Pp[1], r[2] + Pp[2]]; };
+      var c0 = curves.length;
+      if (!Q.pe.curves) curvesOk = false;
+      else Q.pe.curves.forEach(function (cv) {
+        var C = cv.curve;
+        curves.push({ curve: { center: pt(C.center), normal: rot(C.normal), xdir: rot(C.xdir), radius: C.radius, a0: C.a0, a1: C.a1, chords: (C.chords || []).map(function (ch) { return [pt(ch[0]), pt(ch[1])]; }) },
+          pts: cv.pts.map(pt), edges: [] });
+      });
+      Q.pe.edges.forEach(function (e) {
+        var a = pt(e.a), b = pt(e.b), o = { a: a, b: b, ka: ekey(a), kb: ekey(b), faces: e.faces.map(function (f) { return fmap[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
+          mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex, inner: Q.k };
+        if (e.seam) o.seam = true;
+        if (e.curve != null && Q.pe.curves) { o.curve = c0 + e.curve; curves[o.curve].edges.push(o); }
+        edges.push(o);
+      });
+    }
+    var out = { mesh: mesh, edges: edges, curves: curvesOk ? curves : null, normals: null, composed: true, placed: plKey(pl) };
+    try { out.normals = UI.analyticNormals ? UI.analyticNormals(mesh) : null; } catch (e) { out.normals = null; }
+    return out;
+  }
+  function plKey(pl) { return pl ? pl.R.join() + '|' + pl.P.join() : ''; }
+  // the mesh of local polygons `polys` (asmInner = their inner body) with faces grouped and ordered as Kernel.meshFromBody
+  // groups them once placed by pl = { R, P } (Assembly worldBody: the same arithmetic, so the same rounded plane keys),
+  // in local coordinates; .faceOf[i] = the face of polygon i. null when a polygon does not survive the placement.
+  function placedMesh(polys, pl) {
+    var R = pl ? pl.R : AS.IDENTITY, P = pl ? pl.P : [0, 0, 0], flip = det3(R) < 0;
+    var world = CSG.fromPolygons(polys).transform(function (v) {
+      return new CSG.Vector(R[0] * v.x + R[1] * v.y + R[2] * v.z + P[0], R[3] * v.x + R[4] * v.y + R[5] * v.z + P[1], R[6] * v.x + R[7] * v.y + R[8] * v.z + P[2]);
+    }, flip);
+    if (world.polygons.length !== polys.length) return null;
+    world.polygons.forEach(function (p, i) { p.__ai = i; });
+    var wm = K.meshFromBody(world), n = wm.triCount * 9, pos = new Float64Array(n), nrm = new Float32Array(n), faceOf = new Int32Array(polys.length).fill(-1);
+    function back(x, y, z, o) {   // Rᵀ (x − P)
+      x -= P[0]; y -= P[1]; z -= P[2];
+      pos[o] = R[0] * x + R[3] * y + R[6] * z; pos[o + 1] = R[1] * x + R[4] * y + R[7] * z; pos[o + 2] = R[2] * x + R[5] * y + R[8] * z;
+    }
+    var src = wm.positions64 || wm.positions;
+    for (var o = 0; o < n; o += 3) back(src[o], src[o + 1], src[o + 2], o);
+    var faces = wm.faces.map(function (f, fi) {
+      var w = f.normal, nl = [R[0] * w[0] + R[3] * w[1] + R[6] * w[2], R[1] * w[0] + R[4] * w[1] + R[7] * w[2], R[2] * w[0] + R[5] * w[1] + R[8] * w[2]];
+      for (var t = f.start * 9; t < (f.start + f.count) * 9; t += 3) { nrm[t] = nl[0]; nrm[t + 1] = nl[1]; nrm[t + 2] = nl[2]; }
+      var c = f.centroid, cl = [c[0] - P[0], c[1] - P[1], c[2] - P[2]];
+      var lp = f.polys.map(function (p) { faceOf[p.__ai] = fi; var q = polys[p.__ai].clone(); q.asmInner = polys[p.__ai].body || 0; return q; });
+      return { normal: nl, w: f.w - (w[0] * P[0] + w[1] * P[1] + w[2] * P[2]), start: f.start, count: f.count, area: f.area, body: 0, polys: lp,
+        centroid: [R[0] * cl[0] + R[3] * cl[1] + R[6] * cl[2], R[1] * cl[0] + R[4] * cl[1] + R[7] * cl[2], R[2] * cl[0] + R[5] * cl[1] + R[8] * cl[2]] };
+    });
+    return { positions: new Float32Array(pos), positions64: pos, normals: nrm, faces: faces, triCount: wm.triCount, faceOf: faceOf };
+  }
+  function partEdges(pb, pl) {
+    if (pb.__asmEdges && (!pb.__asmEdges.composed || pb.__asmEdges.placed === plKey(pl))) return pb.__asmEdges;
+    if (pb.flexible && pl) {
+      var fx = null;
+      try { fx = flexEdges(pb, pl); } catch (e) { fx = null; }
+      if (fx) { setHidden(pb, '__asmEdges', fx); return fx; }
+    }
     if (pb.__asmEdges) return pb.__asmEdges;
     // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different
     // inner bodies merge there; mesh it the same way (body tags dropped) and keep each polygon's inner index (asmInner)
@@ -824,7 +932,7 @@
       var c = comps[i], pb = b.partBuilds[c.id], idx = byBody[i];
       if (!idx.length) continue;
       if (!pb || !pb.body) return null;
-      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R;
+      var pl = placeOf(c, offs), pe = partEdges(pb, pl), lf = pe.mesh.faces, R = pl.R;
       if (lf.length !== idx.length) return null;
       for (var k = 0; k < lf.length; k++) {
         var wf = m.faces[idx[k]], v = lf[k].normal, n = [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
@@ -1172,11 +1280,8 @@
   // Flip Mate Alignment (mate context menu, as in SolidWorks): Aligned <-> Anti-Aligned. A Closest mate takes the sense
   // opposite to the one it has now. The solver turns the component over (assembly.js tries half turns before it
   // reports a conflict). One undo step.
-  function flipMateAlignment(idOrName) {
-    if (!isAsm()) return fail('Not an assembly document');
-    var mt = AS.findMate(App.model, idOrName);
-    if (!mt) return fail('No mate "' + idOrName + '"');
-    if (!AS.hasAlignment(mt)) return fail(mt.name + ' has no alignment to flip');
+  // the alignment a flip gives mate mt (a Closest one: the sense opposite to the one its references have now)
+  function flippedAlignment(mt) {
     var cur = mt.alignment || AS.defaultAlignment(mt);
     if (cur === 'closest') {
       var s = 1;
@@ -1187,7 +1292,14 @@
       } catch (e) { /* unresolved: take aligned as the current sense */ }
       cur = s < 0 ? 'anti-aligned' : 'aligned';
     }
-    var next = cur === 'aligned' ? 'anti-aligned' : 'aligned', id = mt.id;
+    return cur === 'aligned' ? 'anti-aligned' : 'aligned';
+  }
+  function flipMateAlignment(idOrName) {
+    if (!isAsm()) return fail('Not an assembly document');
+    var mt = AS.findMate(App.model, idOrName);
+    if (!mt) return fail('No mate "' + idOrName + '"');
+    if (!AS.hasAlignment(mt)) return fail(mt.name + ' has no alignment to flip');
+    var next = flippedAlignment(mt), id = mt.id;
     return commit(function (m) { var x = AS.findMate(m, id); x.alignment = next; return x; }, function (x) {
       var st = App.build && App.build.mates && App.build.mates[x.id];
       return x.name + ' flipped to ' + (next === 'aligned' ? 'Aligned' : 'Anti-Aligned') + (st && st.error ? ': ' + st.error : '.');
@@ -1374,7 +1486,280 @@
     if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'generic', label: 'Bill of Materials', run: function () { showBom(); } }; });
   });
 
+  // ------------------------------------------------------------------ pop-up toolbars (r5/asm5)
+  // The small toolbars SolidWorks shows by the pointer: the Mate pop-up (SmartMates drop, two selections in the Mate
+  // PM: mate types, Flip Mate Alignment, ✓ / ✗) and the context toolbar of a component clicked in the graphics area
+  // (Mate, Hide, Change Transparency, Isolate, Fix / Float, Edit Part). One at a time; Enter = ✓, Esc = ✗.
+  var popCss = false;
+  function ensurePopCss() {
+    if (popCss) return;
+    popCss = true;
+    var st = document.createElement('style');
+    st.textContent = [
+      '.asm-pop{position:fixed;z-index:60;display:flex;align-items:center;gap:1px;padding:3px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,.2);transition:opacity .12s ease-out}',
+      '.asm-pop button{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:1px solid transparent;border-radius:3px;background:none;color:var(--text);cursor:pointer}',
+      '.asm-pop button:hover{background:var(--hover);border-color:var(--blue-line)}',
+      '.asm-pop button[aria-pressed="true"]{background:var(--blue-soft);border-color:var(--blue-line)}',
+      '.asm-pop .sep{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}',
+      '.asm-pop.ctx.far{opacity:.3}',
+      '.asm-isolate{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center;padding:4px 8px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:12px}'
+    ].join('\n');
+    document.head.appendChild(st);
+  }
+  var FLIP_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v10M2.5 9.5 5 12l2.5-2.5M11 14V4M8.5 6.5 11 4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function iconHtml(name) { return typeof Icons === 'function' ? Icons(name, 16) : ''; }
+  // the last press / release in the graphics area (client coordinates): where a pop-up goes
+  var lastUp = null;
+  if (UI.viewport) UI.viewport.addEventListener('mouseup', function (e) { lastUp = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button }; }, true);
+  function viewportClient(q) {
+    var r = UI.viewport ? UI.viewport.getBoundingClientRect() : { left: 0, top: 0, width: 800, height: 600 };
+    if (q) return { x: r.left + q[0], y: r.top + q[1] };
+    if (lastUp && performance.now() - lastUp.t < 3000) return { x: lastUp.x, y: lastUp.y };
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  var popup = null;   // { el, kind, opts, items }
+  function closePopup(how) {
+    var p = popup;
+    if (!p) return;
+    popup = null;
+    p.el.remove();
+    document.removeEventListener('keydown', p.key, true);
+    window.removeEventListener('mousedown', p.down, true);
+    window.removeEventListener('mousemove', p.move, true);
+    if (p.opts.onClose) p.opts.onClose(how);
+  }
+  // showPopup(at {x, y} client, kind 'mate' | 'ctx', label, items() -> [{ icon | svg, title, pressed, run, sep, ok, cancel }], opts)
+  // opts.outside: what a press elsewhere does ('ok' runs the ✓ item; otherwise the pop-up just closes)
+  function showPopup(at, kind, label, items, opts) {
+    closePopup('replaced');
+    ensurePopCss();
+    opts = opts || {};
+    var box = el('div', { class: 'asm-pop ' + kind, role: 'toolbar', 'aria-label': label });
+    var p = { el: box, kind: kind, opts: opts, items: items };
+    function render() {
+      box.innerHTML = '';
+      items().forEach(function (it) {
+        if (it.sep) { box.appendChild(el('span', { class: 'sep' })); return; }
+        var b = el('button', { type: 'button', title: it.title, 'aria-label': it.title, 'data-act': it.id || it.icon || '' });
+        if (it.pressed != null) b.setAttribute('aria-pressed', it.pressed ? 'true' : 'false');
+        b.innerHTML = it.svg || iconHtml(it.icon);
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); });
+        b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); it.run(); if (popup === p) render(); });
+        box.appendChild(b);
+      });
+    }
+    p.render = render;
+    function act(which) { var it = items().filter(function (x) { return x[which]; })[0]; if (it) it.run(); else closePopup(which); }
+    p.key = function (e) {
+      if (popup !== p) return;
+      if (kind === 'ctx') { if (e.key === 'Escape') closePopup('esc'); return; }   // the keys stay the graphics area's
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); act('ok'); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); act('cancel'); }
+    };
+    p.down = function (e) { if (popup !== p || box.contains(e.target)) return; if (opts.outside === 'ok') act('ok'); else closePopup('outside'); };
+    // the context toolbar fades as the pointer moves away from it and goes once it is far (SolidWorks)
+    p.move = function (e) {
+      if (popup !== p || kind !== 'ctx') return;
+      var r = box.getBoundingClientRect(), dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right), dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom), d = Math.hypot(dx, dy);
+      box.classList.toggle('far', d > 40);
+      if (d > 180) closePopup('away');
+    };
+    render();
+    document.body.appendChild(box);
+    var w = box.offsetWidth || 200, h = box.offsetHeight || 34;
+    box.style.left = Math.max(4, Math.min(window.innerWidth - w - 4, at.x + 14)) + 'px';
+    box.style.top = Math.max(4, Math.min(window.innerHeight - h - 4, at.y + 14)) + 'px';
+    popup = p;
+    document.addEventListener('keydown', p.key, true);
+    window.addEventListener('mousedown', p.down, true);
+    window.addEventListener('mousemove', p.move, true);
+    return p;
+  }
+  function typeItems(types, cur, pick) {
+    return types.map(function (t) { return { icon: t, id: t, title: SMART_NAMES[t] || t, pressed: t === cur, run: function () { pick(t); } }; });
+  }
+  // SmartMates: the mate is added on the drop (one undo step); the pop-up changes its type or alignment within that step,
+  // ✓ (or Enter, or a press elsewhere) keeps it, ✗ (Esc) takes it back
+  function smartPopup(q, s) {
+    var choices = SMART_CHOICES[s.kinds] || [s.type];
+    function redo(type, alignment) {
+      var from = capture();
+      App.model = JSON.parse(s.pre);
+      var mt = AS.addMate(App.model, type, clone(s.a), clone(s.b), alignment ? { alignment: alignment } : {});
+      s.mateId = mt.id; s.type = type; s.alignment = alignment || null;
+      return UI.afterRebuild(UI.rebuild(), function () {
+        glide(from); UI.refreshTree(); UI.refreshStatus();
+        var st = UI.mateStatus ? UI.mateStatus(mt) : {};
+        UI.setStatus('SmartMates: ' + mt.name + (st.error ? ': ' + st.error : ' (' + s.comp + ')') + '.');
+      });
+    }
+    showPopup(viewportClient(q), 'mate', 'SmartMates', function () {
+      return typeItems(choices, s.type, function (t) { if (t !== s.type) redo(t, null); }).concat([
+        { sep: true },
+        { svg: FLIP_SVG, id: 'flip', title: 'Flip Mate Alignment', run: function () { var mt = AS.findMate(App.model, s.mateId); if (mt && AS.hasAlignment(mt)) redo(s.type, flippedAlignment(mt)); } },
+        { sep: true },
+        { icon: 'ok', id: 'ok', ok: true, title: 'Keep the mate (Enter)', run: function () { closePopup('ok'); UI.setStatus('SmartMates: mate kept.'); } },
+        { icon: 'cancel', id: 'cancel', cancel: true, title: 'Take the mate back (Esc)', run: function () {
+          closePopup('cancel');
+          var from = capture();
+          Promise.resolve(UI.undo()).then(function () { App.redo.pop(); glide(from); UI.setStatus('SmartMates: no mate added.'); });
+        } }
+      ]);
+    }, { outside: 'ok' });
+  }
+  // the Mate PM's pop-up (ui-commands.js cmdMate calls this once both selections are made): o = { types() -> [type],
+  // type() -> current, onType(t), onFlip(), onOK(), onCancel() }
+  UI.asmMatePopup = function (o) {
+    return showPopup(viewportClient(null), 'mate', 'Mate', function () {
+      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat([
+        { sep: true },
+        { svg: FLIP_SVG, id: 'flip', title: 'Flip Mate Alignment', run: function () { o.onFlip(); } },
+        { sep: true },
+        { icon: 'ok', id: 'ok', ok: true, title: 'Add the mate (Enter)', run: function () { closePopup('ok'); o.onOK(); } },
+        { icon: 'cancel', id: 'cancel', cancel: true, title: 'Clear the selections (Esc)', run: function () { closePopup('cancel'); o.onCancel(); } }
+      ]);
+    }, {});
+  };
+  UI.asmClosePopup = function (kind) { if (popup && (!kind || popup.kind === kind)) closePopup('closed'); };
+  UI.asmPopup = function () { return popup ? { kind: popup.kind, el: popup.el, buttons: [].map.call(popup.el.querySelectorAll('button'), function (b) { return b.getAttribute('data-act'); }) } : null; };
+  UI.asmFlippedAlignment = flippedAlignment;
+
+  // ---- the component context toolbar: a click on a component in the graphics area (no command open)
+  function ctxToolbar() {
+    var c = selectedComponent();
+    if (!c || !isAsm() || App.command || App.mode === 'sketch') return;
+    var id = c.id, i = AS.componentIndex(App.model, id);
+    showPopup(viewportClient(null), 'ctx', 'Component: ' + c.name, function () {
+      var cc = AS.findComponent(App.model, id);
+      if (!cc) return [];
+      var out = [
+        { icon: 'mate', id: 'mate', title: 'Mate', run: function () { closePopup('run'); mateFromSelection(); } },
+        { icon: 'hideshow', id: 'hide', title: 'Hide Components', run: function () { closePopup('run'); UI.asm.setHidden(id, true); } },
+        { svg: GHOST_SVG, id: 'transparency', title: 'Change Transparency', pressed: isGhost(id), run: function () { setGhost(id, !isGhost(id)); } },
+        { icon: 'search', id: 'isolate', title: isolated ? 'Exit Isolate' : 'Isolate', pressed: !!isolated, run: function () { closePopup('run'); if (isolated) exitIsolate(); else isolate(id); } },
+        cc.fixed ? { icon: 'float', id: 'float', title: 'Float', run: function () { closePopup('run'); run(UI.asm.fix(id, false)); } }
+          : { icon: 'fix', id: 'fix', title: 'Fix', run: function () { closePopup('run'); run(UI.asm.fix(id, true)); } }
+      ];
+      if (cc.pattern == null && sourceKind(cc) === 'part') out.push({ icon: 'part', id: 'edit', title: 'Edit Part', run: function () { closePopup('run'); run(editPart(id)); } });
+      return out;
+    }, {});
+    void i;
+  }
+  // Mate from the context toolbar: the Mate PM opens with the clicked face as its first selection
+  function mateFromSelection() {
+    var s = App.sel, ref = null;
+    if (s && s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) {
+      var pt = s.point || App.mesh.faces[s.index].centroid;
+      try { ref = AS.refFromPick(App.model, App.build, s.index, pt, App.mesh); } catch (e) { ref = null; }
+    }
+    UI.cmdMate();
+    if (ref && UI.mateSelect) UI.mateSelect(ref);
+  }
+  var baseSelChanged = UI.onSelectionChanged;
+  UI.onSelectionChanged = function () {
+    var r = baseSelChanged ? baseSelChanged.apply(this, arguments) : undefined;
+    if (popup && popup.kind === 'ctx') closePopup('selection');
+    // a left click in the graphics area that selected a component (not a drag, not a tree click)
+    if (lastUp && lastUp.button === 0 && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) ctxToolbar();
+    return r;
+  };
+
+  // ---- Isolate: every other component hidden until Exit Isolate (the hidden state before is put back)
+  var isolated = null;   // { id, hidden (App.hiddenBodies before), bar }
+  function isolate(id) {
+    if (!isAsm()) return false;
+    var i = AS.componentIndex(App.model, id);
+    if (i < 0) return false;
+    if (isolated) exitIsolate();
+    var before = clone(App.hiddenBodies || {}), hid = {};
+    (App.model.components || []).forEach(function (c, k) { if (k !== i) hid[k] = true; });
+    App.hiddenBodies = hid;
+    if (UI.setBodyHidden) UI.setBodyHidden(i, false);   // redraws with the new hidden set
+    ensurePopCss();
+    var bar = el('div', { class: 'asm-isolate', role: 'toolbar', 'aria-label': 'Isolate' }, [el('span', { text: 'Isolated: ' + compName(id) }), el('button', { type: 'button', class: 'btn', text: 'Exit Isolate', onclick: function () { exitIsolate(); } })]);
+    if (UI.viewport) UI.viewport.appendChild(bar);
+    isolated = { id: id, hidden: before, bar: bar, model: App.model.name };
+    UI.setStatus(compName(id) + ' isolated. Exit Isolate shows the other components again.');
+    return true;
+  }
+  function exitIsolate() {
+    var s = isolated;
+    if (!s) return false;
+    isolated = null;
+    s.bar.remove();
+    if (isAsm()) {
+      App.hiddenBodies = s.hidden;
+      if (UI.setBodyHidden) { var k = Object.keys(s.hidden)[0]; UI.setBodyHidden(k != null ? +k : 0, k != null); }
+    }
+    UI.setStatus('Exit Isolate.');
+    return true;
+  }
+  (UI.onBuild = UI.onBuild || []).push(function () { if (isolated && (!isAsm() || App.model.name !== isolated.model)) { isolated.bar.remove(); isolated = null; } });
+
+  // ---- Change Transparency: a transparent component is drawn see-through (and clicks go through it to what is behind,
+  // as in SolidWorks); display state like Hide, kept by component id. ui-core.js draws the opaque mesh without it
+  // (UI.bodyGhost); the see-through copy shares the drawn positions, so a drag pose moves it too.
+  var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#7d98bd" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d5e0ef" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
+  var ghosts = {}, ghostModel = null, ghostMesh = null, ghostMat = null;
+  function ghostKeyOk() { if (!isAsm()) return false; if (ghostModel !== App.model.name) { ghosts = {}; ghostModel = App.model.name; } return true; }
+  function isGhost(id) { return ghostKeyOk() && !!ghosts[id]; }
+  UI.bodyGhost = function (i) {
+    if (!ghostKeyOk()) return false;
+    var c = (App.model.components || [])[i];
+    return !!(c && ghosts[c.id]);
+  };
+  UI.anyGhost = function () { return isAsm() && ghostModel === App.model.name && Object.keys(ghosts).length > 0; };
+  function setGhost(id, on) {
+    if (!ghostKeyOk() || !AS.findComponent(App.model, id)) return false;
+    if (on) ghosts[id] = true; else delete ghosts[id];
+    var i = AS.componentIndex(App.model, id);
+    if (UI.setBodyHidden) UI.setBodyHidden(i, !!(UI.isBodyHidden && UI.isBodyHidden(i)));   // redraw: the opaque mesh leaves it out
+    drawGhosts();
+    UI.setStatus(compName(id) + (on ? ' is transparent.' : ' is opaque again.'));
+    return true;
+  }
+  function drawGhosts() {
+    if (ghostMesh) { if (ghostMesh.parent) ghostMesh.parent.remove(ghostMesh); ghostMesh.geometry.dispose(); ghostMesh = null; }
+    var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
+    if (!UI.anyGhost() || !bm || !m || !m.triCount) { if (UI.requestRender) UI.requestRender(); return; }
+    var idx = [];
+    m.faces.forEach(function (f) {
+      var b = f.body || 0;
+      if (!UI.bodyGhost(b) || (UI.isBodyHidden && UI.isBodyHidden(b))) return;
+      for (var t = f.start; t < f.start + f.count; t++) idx.push(t * 3, t * 3 + 1, t * 3 + 2);
+    });
+    if (!idx.length) return;
+    var g = new THREE.BufferGeometry(), src = bm.geometry;
+    g.setAttribute('position', src.getAttribute('position'));
+    g.setAttribute('normal', src.getAttribute('normal'));
+    if (src.getAttribute('color')) g.setAttribute('color', src.getAttribute('color'));
+    g.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
+    var pm = bm.material;
+    ghostMat = ghostMat || new THREE.MeshPhongMaterial({ transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
+    ghostMat.color.copy(pm.color || new THREE.Color('#a8adb6'));
+    ghostMat.vertexColors = !!pm.vertexColors;
+    ghostMat.clippingPlanes = pm.clippingPlanes || null;
+    ghostMat.needsUpdate = true;
+    ghostMesh = new THREE.Mesh(g, ghostMat);
+    ghostMesh.renderOrder = 5;
+    ghostMesh.frustumCulled = false;
+    ghostMesh.userData.asmGhost = true;
+    (bm.parent || UI.scene).add(ghostMesh);
+    if (UI.requestRender) UI.requestRender();
+  }
+  // the see-through copy follows the drawn buffers (a pose swaps them in and out)
+  function ghostFollow() {
+    var bm = UI.getBodyMesh && UI.getBodyMesh();
+    if (!ghostMesh || !bm) return;
+    var g = ghostMesh.geometry, s = bm.geometry;
+    if (g.getAttribute('position') !== s.getAttribute('position')) g.setAttribute('position', s.getAttribute('position'));
+    if (s.getAttribute('normal') && g.getAttribute('normal') !== s.getAttribute('normal')) g.setAttribute('normal', s.getAttribute('normal'));
+  }
+  (UI.onBuild = UI.onBuild || []).push(function () { Promise.resolve().then(drawGhosts); });
+
   // ------------------------------------------------------------------ exports and window.anvil
+  UI.asmIsolate = { isolate: isolate, exit: exitIsolate, active: function () { return isolated ? isolated.id : null; } };
+  UI.asmGhost = { set: setGhost, is: isGhost, list: function () { return ghostKeyOk() ? Object.keys(ghosts).map(Number) : []; } };
   UI.cmdLinearComponentPattern = function () { cmdComponentPattern('linear'); };
   UI.cmdCircularComponentPattern = function () { cmdComponentPattern('circular'); };
   UI.cmdMirrorComponents = function () { cmdComponentPattern('mirror'); };

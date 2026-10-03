@@ -2243,7 +2243,7 @@
     // the selections a mate type takes, in pick order; the mate can be previewed once `ready`
     function slots(x) { return x.type === 'width' ? ['a', 'a2', 'b', 'b2'] : ['a', 'b']; }
     function ready(x) { return x.type === 'width' ? !!(x.a && x.a2 && x.b && (x.b2 || refKind(x.b) === 'axis')) : !!(x.a && x.b); }
-    function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; if (App.command) App.command.faceList = []; }
+    function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; if (App.command) App.command.faceList = []; if (UI.asmClosePopup) UI.asmClosePopup('mate'); }
     var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [];
     function restore() { App.model = JSON.parse(snapshot); baseModel = App.model; }
     var LIMIT = { limitdistance: 1, limitangle: 1 }, FLIPS = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
@@ -2322,7 +2322,27 @@
       renderPM();
       preview();
       UI.updateHighlights();
+      matePopup();
       return true;
+    }
+    // r5/asm5: once both selections are made, the Mate pop-up toolbar by the pointer (as in SolidWorks): the mate types
+    // the two selections can take, Flip Mate Alignment, ✓ (add, the PM stays open) and ✗ (clear the selections)
+    var POP_TYPES = ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'];
+    function matePopup() {
+      if (!UI.asmMatePopup || v.type === 'width' || !ready(v) || pm.spec !== mySpec) { if (UI.asmClosePopup) UI.asmClosePopup('mate'); return; }
+      UI.asmMatePopup({
+        types: function () { return POP_TYPES.filter(function (t) { return !mateKindError(t, v.a, v.b); }); },
+        type: function () { return v.type; },
+        onType: function (t) { if (t === v.type) return; v.type = t; syncGroups(v); if (mySpec && mySpec.onChange) mySpec.onChange(v, 'type'); },
+        onFlip: function () {
+          var cur = alignSet ? v.alignment : defaultAlignment(v.type, v.a, v.b);
+          v.alignment = cur === 'closest' && UI.asmFlippedAlignment ? UI.asmFlippedAlignment({ type: v.type, a: v.a, b: v.b, alignment: 'closest' }) : cur === 'aligned' ? 'anti-aligned' : 'aligned';
+          if (mySpec && mySpec.onChange) mySpec.onChange(v, 'alignment');
+          renderPM();
+        },
+        onOK: function () { if (pm.spec === mySpec) pmOK(); },
+        onCancel: function () { if (pm.spec !== mySpec) return; clearPicks(v); renderPM(); preview(); UI.updateHighlights(); }
+      });
     }
     openPM({
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
@@ -2393,7 +2413,7 @@
         if (key) preview();
       },
       onCancel: function () { if (previewed) { var g = glideFrom(); restore(); previewed = false; UI.rebuild({ noSave: true }); glide(g); } },
-      onClose: function () { if (mateSession && mateSession.values === v) mateSession = null; },
+      onClose: function () { if (mateSession && mateSession.values === v) mateSession = null; if (UI.asmClosePopup) UI.asmClosePopup('mate'); },
       onOK: function (x) {
         // r3/assembly3: as in SolidWorks the PM stays open after a new mate is added, empty, for the next one; ✓ with
         // nothing selected (or ✗ / Esc) closes it. Editing an existing mate closes it as before.
@@ -2457,14 +2477,14 @@
   // plane (Rotate Component: turns it about its centre). The graphics area shows the solved result while dragging
   // (mates hold what they fix); dropping commits one undo step. Fixed components refuse and the view rotates instead.
   var DRAG_DEG_PER_PX = 0.5;
-  function componentDragHook(p) {
+  function componentDragHook(p, ev, force) {   // force 'rotate': the right-mouse drag (r5/asm5)
     if (!isAsm() || typeof Assembly === 'undefined' || App.mode === 'sketch' || !App.mesh) return null;
     if (App.command && !App.command.dragComponents) return null;
     var hit = UI.pickFace(p[0], p[1]), face = hit && App.mesh.faces[hit.index];
     var c = face ? (App.model.components || [])[face.body || 0] : null;
     if (!c) return null;
-    if (c.fixed) { UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
-    var mode = App.command && App.command.dragComponents === 'rotate' ? 'rotate' : 'move';
+    var mode = force === 'rotate' || (App.command && App.command.dragComponents === 'rotate') ? 'rotate' : 'move';
+    if (c.fixed && !(c.flexible && mode === 'move')) { if (force !== 'rotate') UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
     var snap = JSON.stringify(App.model), id = c.id, start = p.slice(), last = null, raf = 0;
     var center = Assembly.componentCenter(App.model, App.build, id);
     // Move: the grabbed point (local to the component) follows the mouse in the screen plane as far as the mates let
@@ -2481,6 +2501,8 @@
       var inner = iref && iref.path && iref.path.length === 1 && sb && sb.model ? Assembly.findComponent(sb.model, iref.path[0]) : null;
       if (inner && !inner.fixed && inner.pattern == null && (iref.face || iref.cylinder)) { dragId = id + '/' + inner.id; grabLocal = (iref.face || iref.cylinder).slice(); }
     }
+    // r5/asm5: a fixed Flexible sub-assembly still lets its floating parts be dragged (as in SolidWorks), not its base
+    if (c.fixed && dragId === id) { UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }
     // Rotate: the component turns about its centre with the mouse; one its mates hold (a hinged arm) turns as far as
     // they allow: the grabbed point is pulled to where the free turn would take it.
     function dragOpts(q, rotated) {
