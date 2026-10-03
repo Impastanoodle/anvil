@@ -6496,6 +6496,21 @@
     assert(hops === 0, hops + ' zoom steps moved an icon off its place');
     return n + ' icons, ' + seq.length + ' zoom steps, ' + hops + ' moves';
   });
+  step('r9/sketch9: typing only a line\'s length (numeric input off: a digit opens the box) and pressing Enter places it — the untouched angle field no longer blocks Enter', async function () {
+    await rskNew();
+    UI.App.view.showGrid = false;
+    UI.setTool('line'); rskClick([0, 0]);
+    selEv('mousemove', rskScr([10, 0.02]));
+    selKey('4');
+    var box = UI.sketchNumBox();
+    assert(box && box[0].value === '4', 'box opened by the digit');
+    r3sType(box[0], '42');
+    r3sKey(box[0], 'Enter');
+    var l = rskEnts()[0];
+    assert(l && Math.abs(Math.hypot(l.x2 - l.x1, l.y2 - l.y1) - 42) < 1e-9 && Math.abs(l.y2) < 1e-9, 'line 42 placed: ' + JSON.stringify(rskEnts()));
+    selKey('Escape'); selKey('Escape');
+    return 'line ' + l.x2;
+  });
   // --- end r9/sketch9 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
