@@ -2476,6 +2476,9 @@
     }
     openPM({
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
+      // r9/polish9: a new mate starts with picks, not with the cursor in the Offset box (typed digits went there);
+      // Enter still accepts (ui-app.js)
+      noFocus: !existing,
       message: 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.',
       command: {
         pickPlane: true, faceList: [],
