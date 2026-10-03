@@ -1107,7 +1107,9 @@ var UI = (function () {
     if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
   function frame() {
-    if (!(App.holdFrameUntil > performance.now())) render();   // ui-occt.js: keep OpenCascade's last frame while its next solid builds (smooth/responsive)
+    // ui-occt.js: the 3D view keeps OpenCascade's last frame while its next solid builds; overlays still follow (smooth/responsive)
+    if (!(App.holdFrameUntil > performance.now())) render();
+    else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
     requestAnimationFrame(frame);
   }
 

@@ -265,7 +265,7 @@
   }
   var HOLD_MS = 280;
   function releaseHold() { App.holdFrameUntil = 0; }
-  ['pointerdown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, releaseHold, true); });
+  ['pointerdown', 'mousedown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, releaseHold, true); });
   // (re)start the quiet window; when it ends with the button up, build the latest model
   function quietThen() {
     if (st.quietTimer) clearTimeout(st.quietTimer);
