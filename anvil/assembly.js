@@ -741,6 +741,8 @@ var Assembly = (function () {
     }
     return 'aligned';
   }
+  // every mate but Gear has an alignment (Aligned / Anti-Aligned / Closest) the user may flip
+  function hasAlignment(m) { return !!(m && m.type !== 'gear'); }
   function alignSign(m) { var a = m.alignment || defaultAlignment(m); return a === 'anti-aligned' ? -1 : a === 'closest' ? 0 : 1; }
 
   // Signed plane gap a Coincident / Distance mate holds: B's plane lies `target` along A's normal (flip: the other side).
@@ -833,12 +835,18 @@ var Assembly = (function () {
     return { rotation: matMul(E, T.rotation), position: add(add(matVec(E, sub(T.position, pivot)), pivot), [x[o], x[o + 1], x[o + 2]]) };
   }
 
-  function solve(model, partBuilds) {
+  // solve(model, partBuilds, opts?) — opts.drag: see dragTo below
+  function solve(model, partBuilds, opts) {
     ensureLists(model);
     var comps = model.components, transforms = {}, pivots = {}, mateOut = {};
     comps.forEach(function (c) { transforms[c.id] = tf(c.transform); });
     // pattern instances are placed from their seeds (placeInstances), never by the mate solver
     function movable(comp) { return !!(comp && !comp.fixed && comp.pattern == null); }
+    if (opts && opts.drag && opts.drag.point && opts.drag.target && movable(findComponent(model, opts.drag.id))) {
+      // a drag first slides the component so the grabbed point is on the target (a free component just follows)
+      var dT = transforms[opts.drag.id], slide = sub(copy3(opts.drag.target), transformPoint(dT, copy3(opts.drag.point)));
+      transforms[opts.drag.id] = { rotation: dT.rotation, position: add(dT.position, slide) };
+    }
     function pivotOf(comp) {
       var g = partGeom(partBuilds && partBuilds[comp.id]);
       return transformPoint(transforms[comp.id], g ? g.center : [0, 0, 0]);
@@ -899,6 +907,8 @@ var Assembly = (function () {
       if (pm.sign === 0) {
         var wa = worldOf(pm.A, pm.ca ? transforms[pm.ca.id] : null), wb = worldOf(pm.B, pm.cb ? transforms[pm.cb.id] : null);
         pm.sign = dot(dirOf(wa), dirOf(wb)) < -1e-9 ? -1 : 1;
+        // (an Angle keeps the sense it starts with: its signed angle is measured from it)
+        if (pm.type !== 'angle' && pm.type !== 'limitangle') pm.closest = true;
       }
       if (pm.type === 'gear') {
         // the phase is the two components' turns when the mate is first solved; it is stored with the mate
@@ -931,7 +941,11 @@ var Assembly = (function () {
 
     function residualOf(pm, T) {
       T = T || transforms;
-      return mateResidual(pm, worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), worldOf(pm.B, pm.cb ? T[pm.cb.id] : null), pm.kL ? angleAxisWorld(pm, T) : null,
+      var Aw = worldOf(pm.A, pm.ca ? T[pm.ca.id] : null), Bw = worldOf(pm.B, pm.cb ? T[pm.cb.id] : null);
+      // 'closest' alignment holds either sense: whichever the two directions have now, so a later mate may still turn
+      // the component over (a roller made Perpendicular to a face, then its end face Coincident with that face)
+      if (pm.closest) pm.sign = dot(dirOf(Aw), dirOf(Bw)) < 0 ? -1 : 1;
+      return mateResidual(pm, Aw, Bw, pm.kL ? angleAxisWorld(pm, T) : null,
         pm.A2 ? worldOf(pm.A2, pm.ca ? T[pm.ca.id] : null) : null, pm.B2 ? worldOf(pm.B2, pm.cb ? T[pm.cb.id] : null) : null);
     }
 
@@ -1116,9 +1130,26 @@ var Assembly = (function () {
       });
       return ids;
     }
-    function evalAll(active, T) {
-      var r = [];
-      active.forEach(function (pm) { var q = residualOf(pm, T); for (var i = 0; i < q.length; i++) r.push(q[i]); });
+    // ex (a drag, below): the mate rows weighted by ex.w and ex.extra(T)'s rows appended
+    // groupsOf(mates, only?) -> the mates split into independent groups: linked through the floating components they
+    // move (fixed components, the world and pattern instances do not link). With `only` (a mate): just its group.
+    function groupsOf(list, only) {
+      var parent = {};
+      function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+      function key(pm) { var c = movable(pm.ca) ? pm.ca : movable(pm.cb) ? pm.cb : null; return c ? find(String(c.id)) : 'm' + pm.id; }
+      list.forEach(function (pm) {
+        var ks = [pm.ca, pm.cb].filter(movable).map(function (c) { var k = String(c.id); if (!(k in parent)) parent[k] = k; return find(k); });
+        if (ks.length === 2 && ks[0] !== ks[1]) parent[ks[0]] = ks[1];
+      });
+      var out = {}, order = [];
+      list.forEach(function (pm) { var k = key(pm); if (!out[k]) { out[k] = []; order.push(k); } out[k].push(pm); });
+      if (only) { var ko = key(only); return [out[ko] || [only]]; }
+      return order.map(function (k) { return out[k]; });
+    }
+    function evalAll(active, T, ex) {
+      var r = [], w = ex ? ex.w : 1;
+      active.forEach(function (pm) { var q = residualOf(pm, T); for (var i = 0; i < q.length; i++) r.push(w * q[i]); });
+      if (ex) { var e = ex.extra(T); for (var j = 0; j < e.length; j++) r.push(e[j]); }
       return r;
     }
     function applyX(ids, piv, x) {
@@ -1127,28 +1158,28 @@ var Assembly = (function () {
       ids.forEach(function (id, j) { T[id] = perturb(transforms[id], piv[id], x, 6 * j); });
       return T;
     }
-    function jacobian(active, ids, piv) {
+    function jacobian(active, ids, piv, ex) {
       var n = ids.length * 6, x = [], cols = [], h = 1e-6, k;
       for (k = 0; k < n; k++) x.push(0);
       for (k = 0; k < n; k++) {
-        x[k] = h; var rp = evalAll(active, applyX(ids, piv, x));
-        x[k] = -h; var rm = evalAll(active, applyX(ids, piv, x));
+        x[k] = h; var rp = evalAll(active, applyX(ids, piv, x), ex);
+        x[k] = -h; var rm = evalAll(active, applyX(ids, piv, x), ex);
         x[k] = 0;
         cols.push(rp.map(function (v, i) { return (v - rm[i]) / (2 * h); }));
       }
       return cols; // cols[k][row]
     }
     function cost(r) { var s = 0; for (var i = 0; i < r.length; i++) s += r[i] * r[i]; return s; }
-    function lm(active) {
-      var ids = unknowns(active);
+    function lm(active, ex) {
+      var ids = ex ? ex.ids : unknowns(active);
       if (!ids.length) return;
-      var lambda = 1e-3;
-      for (var iter = 0; iter < 200; iter++) {
-        var r = evalAll(active, transforms), f = cost(r);
+      var lambda = 1e-3, iters = ex ? ex.iters : 200;
+      for (var iter = 0; iter < iters; iter++) {
+        var r = evalAll(active, transforms, ex), f = cost(r);
         if (f < 1e-26) return;
         var piv = {};
         ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
-        var J = jacobian(active, ids, piv), n = J.length, i, j, k;
+        var J = jacobian(active, ids, piv, ex), n = J.length, i, j, k;
         var JtJ = [], g = [], maxd = 0;
         for (i = 0; i < n; i++) {
           JtJ.push([]);
@@ -1163,18 +1194,87 @@ var Assembly = (function () {
           var A = JtJ.map(function (row, ii) { var rr = row.slice(); rr[ii] += lambda * (row[ii] + 1e-9 * Math.max(maxd, 1e-12)); return rr; });
           var dx = solveLinear(A, g);
           if (dx) {
-            var Tn = applyX(ids, piv, dx), fn = cost(evalAll(active, Tn));
+            var Tn = applyX(ids, piv, dx), fn = cost(evalAll(active, Tn, ex));
             if (fn < f) {
               ids.forEach(function (id) { transforms[id] = Tn[id]; });
               lambda = Math.max(lambda * 0.2, 1e-15);
               improved = true;
-              if (f - fn < 1e-16 * f && fn > 1e-20) return; // stalled at a non-zero minimum
+              if (f - fn < (ex ? 1e-10 : 1e-16) * f && fn > 1e-20) return; // stalled at a non-zero minimum
               break;
             }
           }
           lambda *= 10;
         }
         if (!improved) return;
+      }
+    }
+
+    // ---- drag (SolidWorks' free drag of an under-defined component): opts.drag = { id, point (local, the grabbed point
+    // on the component), target (world) }. The component was first slid so the point sits on the target; once the mates
+    // are solved the grabbed point is pulled as close to the target as the free degrees of freedom allow (mates weighted
+    // far above the pull, then polished exactly), moving the components mated to it (a linkage follows its crank).
+    function dragTo(d) {
+      var c0 = findComponent(model, d.id);
+      if (!movable(c0) || !d.point || !d.target) return;
+      // the components reached from the dragged one through accepted mates (fixed ones stop the walk)
+      var inGroup = {}, queue = [c0.id], group = [];
+      inGroup[c0.id] = true;
+      while (queue.length) {
+        var id = queue.shift();
+        group.push(id);
+        active.forEach(function (pm) {
+          if (!((pm.ca && pm.ca.id === id) || (pm.cb && pm.cb.id === id))) return;
+          [pm.ca, pm.cb].forEach(function (c) { if (movable(c) && !inGroup[c.id]) { inGroup[c.id] = true; queue.push(c.id); } });
+        });
+      }
+      var mates = active.filter(function (pm) { return (pm.ca && inGroup[pm.ca.id]) || (pm.cb && inGroup[pm.cb.id]); });
+      var pt = copy3(d.point), tg = copy3(d.target);
+      // Gauss–Newton on the pull restricted to the free motions (the null space of the mates' Jacobian, so to first
+      // order the step keeps every mate), then the mates made exact again (the least motion), with step halving when
+      // the pull does not improve. A pull the mates cannot follow (out of the plane a face mate holds) is left.
+      var ex = { ids: group, w: 1, extra: function (T) { return sub(transformPoint(T[c0.id], pt), tg); } };
+      function pull() { return vnorm(ex.extra(transforms)); }
+      function snapAll() { var s = {}; comps.forEach(function (c) { s[c.id] = transforms[c.id]; }); return s; }
+      var cur = pull();
+      for (var it = 0; it < 40 && cur > 1e-9; it++) {
+        var piv = {};
+        group.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
+        var n = group.length * 6, i, j, k, N = [];
+        if (mates.length) {
+          var Jm = jacobian(mates, group, piv), M = [], maxe = 0;
+          for (i = 0; i < n; i++) { M.push([]); for (j = 0; j < n; j++) { var s = 0; for (k = 0; k < Jm[i].length; k++) s += Jm[i][k] * Jm[j][k]; M[i].push(s); } }
+          var eg = eigSym(M);
+          eg.values.forEach(function (v) { if (v > maxe) maxe = v; });
+          eg.values.forEach(function (v, q) { if (v <= 1e-10 * Math.max(maxe, 1e-30)) N.push(eg.vectors[q]); });
+        } else for (i = 0; i < n; i++) { var e = []; for (j = 0; j < n; j++) e.push(i === j ? 1 : 0); N.push(e); }
+        if (!N.length) return;
+        // the pull's Jacobian along the free motions: B = Jd · N (3 × q); y = (BᵀB + ε)⁻¹ (−Bᵀ rd), dx = N y
+        var Jd = jacobian([], group, piv, ex), rd = ex.extra(transforms), q = N.length, B = [], H = [], h = [], tr = 0;
+        for (var row = 0; row < 3; row++) { B.push([]); for (var a = 0; a < q; a++) { var sb = 0; for (k = 0; k < n; k++) sb += Jd[k][row] * N[a][k]; B[row].push(sb); } }
+        for (i = 0; i < q; i++) {
+          H.push([]);
+          h.push(-(B[0][i] * rd[0] + B[1][i] * rd[1] + B[2][i] * rd[2]));
+          for (j = 0; j < q; j++) H[i].push(B[0][i] * B[0][j] + B[1][i] * B[1][j] + B[2][i] * B[2][j]);
+          tr += H[i][i];
+        }
+        for (i = 0; i < q; i++) H[i][i] += 1e-12 * tr + 1e-15;
+        var y = solveLinear(H, h);
+        if (!y) return;
+        var dx = [];
+        for (k = 0; k < n; k++) { var sx = 0; for (i = 0; i < q; i++) sx += N[i][k] * y[i]; dx.push(sx); }
+        var saved = snapAll(), step = 1, better = false, now = cur;
+        for (var ls = 0; ls < 8 && !better; ls++) {
+          var Tn = applyX(group, piv, dx.map(function (v) { return v * step; }));
+          group.forEach(function (id) { transforms[id] = Tn[id]; });
+          lm(active);
+          now = pull();
+          if (now < cur - 1e-12) better = true;
+          else { comps.forEach(function (c) { transforms[c.id] = saved[c.id]; }); step *= 0.5; }
+        }
+        if (!better) return;
+        var gain = cur - now;
+        cur = now;
+        if (gain < 1e-7 * Math.max(cur, 1e-9)) return;
       }
     }
 
@@ -1191,19 +1291,43 @@ var Assembly = (function () {
       var snapT = {}, snapLocks = JSON.stringify(locks), snapG = JSON.stringify(grounded);
       comps.forEach(function (c) { snapT[c.id] = transforms[c.id]; });
       if (pm.type === 'angle' || pm.type === 'limitangle') { var mv = moverIsB(pm) ? pm.cb : pm.ca; setAngleAxis(pm, locks[mv.id].full ? null : locks[mv.id].axis); }
-      greedy(pm);
       var trial = active.concat([pm]);
-      lm(trial);
-      var worst = 0;
-      trial.forEach(function (q) { worst = Math.max(worst, vnorm(residualOf(q))); });
-      if (worst <= TOL_OK) { active = trial; return; }
-      // reject: restore the placement before this mate
-      comps.forEach(function (c) { transforms[c.id] = snapT[c.id]; });
-      locks = JSON.parse(snapLocks); grounded = JSON.parse(snapG);
+      function attempt() {
+        greedy(pm);
+        lm(groupsOf(trial, pm)[0]);   // only the mates linked to this one can move
+        var worst = 0;
+        trial.forEach(function (q) { worst = Math.max(worst, vnorm(residualOf(q))); });
+        return worst <= TOL_OK;
+      }
+      function undo() {
+        comps.forEach(function (c) { transforms[c.id] = snapT[c.id]; });
+        locks = JSON.parse(snapLocks); grounded = JSON.parse(snapG);
+      }
+      if (attempt()) { active = trial; return; }
+      // Earlier mates ('closest' ones, or ones the component meets either way round) may have left the moving component
+      // facing the wrong way for this one, and turning it over (half a turn) is a saddle the least-squares refinement
+      // cannot leave: try it turned half a turn about the direction it is locked to and about either axis normal to it,
+      // before rejecting the mate (Flip Mate Alignment relies on this too).
+      undo();
+      var mov = moverIsB(pm) ? pm.cb : pm.ca;
+      var flippable = movable(mov) && locks[mov.id].axis;
+      if (flippable) {
+        var ax0 = locks[mov.id].axis, p1 = perpTo(ax0), flips = [ax0, p1, cross(ax0, p1)];
+        for (var fi = 0; fi < flips.length; fi++) {
+          var Rf = rotVec(scale(flips[fi], Math.PI)), pv = pivotOf(mov), Lf = locks[mov.id];
+          rotateAbout(mov.id, Rf, pv);
+          Lf.axis = matVec(Rf, Lf.axis);
+          if (Lf.point) Lf.point = add(matVec(Rf, sub(Lf.point, pv)), pv);
+          if (attempt()) { active = trial; return; }
+          undo();
+        }
+      }
+      // reject: the placement before this mate stays
       mateOut[pm.id] = { ok: false, residual: vnorm(residualOf(pm)), error: 'Mate cannot be satisfied (over-defined or conflicting)' };
     });
-    // final polish over all accepted mates
-    lm(active);
+    // final polish over all accepted mates (each independent group of components on its own)
+    groupsOf(active).forEach(function (g) { lm(g); });
+    if (opts && opts.drag) dragTo(opts.drag);
     active.forEach(function (pm) {
       var res = vnorm(residualOf(pm));
       mateOut[pm.id] = res <= TOL_OK ? { ok: true, residual: res, error: null } : { ok: false, residual: res, error: 'Mate cannot be satisfied (over-defined or conflicting)' };
@@ -1215,29 +1339,34 @@ var Assembly = (function () {
     comps.forEach(function (c) { dofs[c.id] = c.fixed || c.pattern != null ? 0 : 6; });
     // Limit Distance / Limit Angle remove nothing: inside their range the component still moves
     var holding = active.filter(function (pm) { return pm.type !== 'limitdistance' && pm.type !== 'limitangle'; });
-    var ids = unknowns(holding);
-    if (ids.length) {
-      var piv = {};
-      ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
-      var J = jacobian(holding, ids, piv), n = J.length, JtJ = [], i, j, k, maxe = 0;
-      for (i = 0; i < n; i++) { JtJ.push([]); for (j = 0; j < n; j++) { var s = 0; for (k = 0; k < J[i].length; k++) s += J[i][k] * J[j][k]; JtJ[i].push(s); } }
-      var eg = eigSym(JtJ);
-      eg.values.forEach(function (v) { if (v > maxe) maxe = v; });
-      var nullVecs = [];
-      eg.values.forEach(function (v, ii) { if (v <= 1e-10 * Math.max(maxe, 1e-30)) nullVecs.push(eg.vectors[ii]); });
-      ids.forEach(function (id, jj) {
-        if (!nullVecs.length) { dofs[id] = 0; return; }
-        var P = [];
-        for (var a = 0; a < 6; a++) {
-          P.push([]);
-          for (var b = 0; b < 6; b++) {
-            var s2 = 0;
-            nullVecs.forEach(function (v) { s2 += v[6 * jj + a] * v[6 * jj + b]; });
-            P[a].push(s2);
+    // components that share no mate (through floating components) are independent: one small null space per group
+    // instead of one over every component (30 pinned pins: ~100 ms -> a few ms per rebuild)
+    groupsOf(holding).forEach(function (grp) { dofOf(grp); });
+    function dofOf(holding) {
+      var ids = unknowns(holding);
+      if (ids.length) {
+        var piv = {};
+        ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
+        var J = jacobian(holding, ids, piv), n = J.length, JtJ = [], i, j, k, maxe = 0;
+        for (i = 0; i < n; i++) { JtJ.push([]); for (j = 0; j < n; j++) { var s = 0; for (k = 0; k < J[i].length; k++) s += J[i][k] * J[j][k]; JtJ[i].push(s); } }
+        var eg = eigSym(JtJ);
+        eg.values.forEach(function (v) { if (v > maxe) maxe = v; });
+        var nullVecs = [];
+        eg.values.forEach(function (v, ii) { if (v <= 1e-10 * Math.max(maxe, 1e-30)) nullVecs.push(eg.vectors[ii]); });
+        ids.forEach(function (id, jj) {
+          if (!nullVecs.length) { dofs[id] = 0; return; }
+          var P = [];
+          for (var a = 0; a < 6; a++) {
+            P.push([]);
+            for (var b = 0; b < 6; b++) {
+              var s2 = 0;
+              nullVecs.forEach(function (v) { s2 += v[6 * jj + a] * v[6 * jj + b]; });
+              P[a].push(s2);
+            }
           }
-        }
-        dofs[id] = eigSym(P).values.filter(function (v) { return v > 1e-7; }).length;
-      });
+          dofs[id] = eigSym(P).values.filter(function (v) { return v > 1e-7; }).length;
+        });
+      }
     }
     var compOut = comps.map(function (c, idx) {
       var o = { id: c.id, name: c.name, index: idx, fixed: !!c.fixed, dof: dofs[c.id], underDefined: dofs[c.id] > 0, error: null };
@@ -1726,7 +1855,8 @@ var Assembly = (function () {
     Object.keys(sol.transforms).forEach(function (id) { if (String(id).indexOf('/') >= 0) delete sol.transforms[id]; });   // the virtual 'S/k' ones
   }
 
-  // rebuild(model, cache?, opts?) — opts.explodeT (0..1) shows the exploded view part-way (the explode animation).
+  // rebuild(model, cache?, opts?) — opts.explodeT (0..1) shows the exploded view part-way (the explode animation);
+  // opts.drag { id, point, target } solves with a component dragged (solve's dragTo).
   function rebuild(model, cache, opts) {
     var t0 = now();
     ensureLists(model);
@@ -1756,9 +1886,9 @@ var Assembly = (function () {
       var T0 = {};
       SM.components.forEach(function (c) { T0[c.id] = tf(c.transform); });
       patOut = placeInstances(SM, SB, T0, patErr);
-      sol = solve(SM, SB);
+      sol = solve(SM, SB, opts.drag ? { drag: opts.drag } : null);
       patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr);
-      if (instanceMates()) { sol = solve(SM, SB); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
+      if (instanceMates()) { sol = solve(SM, SB, opts.drag ? { drag: opts.drag } : null); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
       if (ctx) finishVirtual(ctx, sol, model, partBuilds, warnings);
     } catch (e) {
       sol = { transforms: {}, mates: {}, components: model.components.map(function (c, i) { return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: c.fixed ? 0 : 6, underDefined: !c.fixed, error: null }; }) };
@@ -2276,7 +2406,7 @@ var Assembly = (function () {
     rebuild: rebuild, setPartBuilder: setPartBuilder, solve: solve, resolveRef: resolveRef, refFromPick: refFromPick, massProps: massProps,
     transformPoint: transformPoint, inverseTransformPoint: inverseTransformPoint, transformDir: transformDir,
     Builder: Builder, runScript: runScript, isAssemblyScript: isAssemblyScript, generateScript: generateScript,
-    defaultAlignment: defaultAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
+    defaultAlignment: defaultAlignment, hasAlignment: hasAlignment, setMateValues: setMateValues, MATE_TYPES: MATE_TYPES.slice(),
     moveComponent: moveComponent, rotateComponent: rotateComponent, componentCenter: componentCenter, interference: interference,
     MATE_GROUPS: JSON.parse(JSON.stringify(MATE_GROUPS)), MATE_NAMES: JSON.parse(JSON.stringify(MATE_BASE)),
     addPattern: addPattern, removePattern: removePattern, findPattern: findPattern, setPatternValues: setPatternValues, syncPatterns: syncPatterns,

@@ -606,6 +606,35 @@
     return items.length > 1 ? items : [];
   };
   function baseName(n) { return String(n || '').replace(/<\d+>$/, ''); }
+
+  // Flip Mate Alignment (mate context menu, as in SolidWorks): Aligned <-> Anti-Aligned. A Closest mate takes the sense
+  // opposite to the one it has now. The solver turns the component over (assembly.js tries half turns before it
+  // reports a conflict). One undo step.
+  function flipMateAlignment(idOrName) {
+    if (!isAsm()) return fail('Not an assembly document');
+    var mt = AS.findMate(App.model, idOrName);
+    if (!mt) return fail('No mate "' + idOrName + '"');
+    if (!AS.hasAlignment(mt)) return fail(mt.name + ' has no alignment to flip');
+    var cur = mt.alignment || AS.defaultAlignment(mt);
+    if (cur === 'closest') {
+      var s = 1;
+      try {
+        var A = AS.resolveRef(App.model, App.build.partBuilds, mt.a), B = AS.resolveRef(App.model, App.build.partBuilds, mt.b);
+        var da = A.normal || A.dir, db = B.normal || B.dir;
+        s = da[0] * db[0] + da[1] * db[1] + da[2] * db[2] < 0 ? -1 : 1;
+      } catch (e) { /* unresolved: take aligned as the current sense */ }
+      cur = s < 0 ? 'anti-aligned' : 'aligned';
+    }
+    var next = cur === 'aligned' ? 'anti-aligned' : 'aligned', id = mt.id;
+    return commit(function (m) { var x = AS.findMate(m, id); x.alignment = next; return x; }, function (x) {
+      var st = App.build && App.build.mates && App.build.mates[x.id];
+      return x.name + ' flipped to ' + (next === 'aligned' ? 'Aligned' : 'Anti-Aligned') + (st && st.error ? ': ' + st.error : '.');
+    });
+  }
+  UI.flipMateAlignment = flipMateAlignment;
+  UI.asmMateMenuExtras = function (mt) {
+    return AS.hasAlignment(mt) ? [{ label: 'Flip Mate Alignment', action: function () { run(flipMateAlignment(mt.id)); } }] : [];
+  };
   // UI.innerRefName({ component, path }) -> 'Arm<1>@Hinge<2>' (innermost first, as SolidWorks names selections)
   UI.innerRefName = function (ref) {
     var c = AS.findComponent(App.model, ref.component);
