@@ -284,9 +284,18 @@ var Assembly = (function () {
     };
     // a sub-assembly is rigid unless inserted with flexible: true (then its internal mates are solved in context)
     if (opts.flexible) comp.flexible = true;
+    if (opts.transparent) comp.transparent = true;   // r7/asm7: Change Transparency (display, kept in the model)
     if (opts.flexState && typeof opts.flexState === 'object') comp.flexState = clone(opts.flexState);
     model.components.push(comp);
     return comp;
+  }
+  // setTransparent(model, id, on): Change Transparency (r7/asm7): a display state kept on the component (saved with the
+  // document, undone with the model, written by toScript) — the viewport draws it see-through and picks through it.
+  function setTransparent(model, id, on) {
+    var c = findComponent(model, id);
+    if (!c) throw new Error('Unknown component ' + JSON.stringify(id));
+    if (on) c.transparent = true; else delete c.transparent;
+    return c;
   }
   // setFlexible(model, id, on): Solve as Flexible (the sub-assembly's own mates are solved in the assembly, so parts of
   // it can move) or Rigid (it moves as one body). Throws for a component that is not a sub-assembly.
@@ -2395,6 +2404,8 @@ var Assembly = (function () {
   Builder.prototype.exploded = function (v) { setExploded(this.model, v === undefined ? true : v); return this; };
   // flexible(c, on = true): Solve as Flexible / Rigid for a sub-assembly component
   Builder.prototype.flexible = function (c, on) { setFlexible(this.model, compId(this.model, c), on !== false); return this; };
+  // transparent(c, on = true): Change Transparency (r7/asm7: kept in the model, so saved and undone with it)
+  Builder.prototype.transparent = function (c, on) { setTransparent(this.model, compId(this.model, c), on !== false); return this; };
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
   // r4/asm4: Interference Detection results ignored by the user are saved with the assembly (SolidWorks keeps them in
@@ -2490,6 +2501,7 @@ var Assembly = (function () {
       else if (i === 0) opts.push('fixed: false');
       if (T.position.some(function (x) { return r6(x) !== 0; })) opts.push('position: ' + numList(T.position));
       if (!isIdentity(T.rotation)) opts.push('rotation: ' + numList(T.rotation));
+      if (c.transparent) opts.push('transparent: true');
       if (c.flexible) {
         opts.push('flexible: true');
         var fs = c.flexState ? Object.keys(c.flexState) : [];
@@ -2498,6 +2510,8 @@ var Assembly = (function () {
       out.push('var ' + v + ' = a.insert(' + sourceText(c.source || {}) + ', { ' + opts.join(', ') + ' });');
     });
     (model.patterns || []).forEach(emitPattern);
+    // r7/asm7: Change Transparency of a pattern instance (the pattern call makes it)
+    (model.components || []).forEach(function (c) { if (c.pattern != null && c.transparent) out.push('a.transparent(' + JSON.stringify(c.name) + ');'); });
     (model.mates || []).forEach(function (m) {
       var opts = ['name: ' + JSON.stringify(m.name)];
       if (m.alignment && m.alignment !== defaultAlignment(m)) opts.push('alignment: ' + JSON.stringify(m.alignment));
@@ -2542,7 +2556,7 @@ var Assembly = (function () {
     findExplodedView: findExplodedView, findExplodeStep: findExplodeStep, setExploded: setExploded, explodeOffsets: explodeOffsets,
     explodedBodies: explodedBodies, explodeDir: explodeDir,
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
-    packAndGo: packAndGo, setFlexible: setFlexible, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
+    packAndGo: packAndGo, setFlexible: setFlexible, setTransparent: setTransparent, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
     composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };

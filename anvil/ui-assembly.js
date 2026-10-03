@@ -344,7 +344,7 @@
   // adds the mate (one undo step), dropping anywhere else changes nothing. ui-sketch.js asks this before Alt + drag
   // rotates the view.
   var SMART_TYPES = { 'face|face': 'coincident', 'cylinder|cylinder': 'concentric', 'cylinder|face': 'tangent', 'face|cylinder': 'tangent' };
-  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent', parallel: 'Parallel', perpendicular: 'Perpendicular', distance: 'Distance', angle: 'Angle' };
+  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent', parallel: 'Parallel', perpendicular: 'Perpendicular', distance: 'Distance', angle: 'Angle', width: 'Width' };
   // r5/asm5: the types the SmartMates pop-up offers for a pair of references (the first is the one the drop adds)
   var SMART_CHOICES = { 'face|face': ['coincident', 'parallel', 'perpendicular'], 'cylinder|cylinder': ['concentric', 'tangent'], 'cylinder|face': ['tangent'], 'face|cylinder': ['tangent'] };
   function refKind(r) { return r ? (r.cylinder ? 'cylinder' : r.face ? 'face' : null) : null; }
@@ -822,10 +822,11 @@
     for (k = 0; k < parts.length; k++) {
       var Q = parts[k], fmap = [], T = Q.T || {}, R = T.rotation || AS.IDENTITY, Pp = T.position || [0, 0, 0];
       for (j = 0; j < Q.pe.facePolys.length; j++) {
-        var l = Q.pe.facePolys[j], f0 = faceOf[Q.base + l[0]];
-        for (var q = 1; q < l.length; q++) if (faceOf[Q.base + l[q]] !== f0) return null;   // a face split by rounding
-        if (f0 < 0) return null;
-        fmap.push(f0);
+        var l = Q.pe.facePolys[j], f0 = faceOf[Q.base + l[0]], split = false;
+        for (var q = 0; q < l.length; q++) { if (faceOf[Q.base + l[q]] < 0) return null; if (faceOf[Q.base + l[q]] !== f0) split = true; }
+        // r7/asm7: a face split by rounding where it is placed (its facets' plane keys straddle a rounding step): each
+        // edge of it goes to the piece holding a facet it bounds (resolved below)
+        fmap.push(split ? l.map(function (x) { return Q.base + x; }) : f0);
       }
       var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
       var pt = function (v) { var r = rot(v); return [r[0] + Pp[0], r[1] + Pp[1], r[2] + Pp[2]]; };
@@ -836,9 +837,19 @@
         curves.push({ curve: { center: pt(C.center), normal: rot(C.normal), xdir: rot(C.xdir), radius: C.radius, a0: C.a0, a1: C.a1, chords: (C.chords || []).map(function (ch) { return [pt(ch[0]), pt(ch[1])]; }) },
           pts: cv.pts.map(pt), edges: [] });
       });
+      var piece = function (pis, m) {   // the world face of the facet (of a split face) whose boundary holds point m
+        for (var i = 0; i < pis.length; i++) {
+          var vs = polys[pis[i]].vertices;
+          for (var v = 0; v < vs.length; v++) {
+            var A = vs[v].pos, B = vs[(v + 1) % vs.length].pos;
+            if (K.pointSegmentDistance(m, [A.x, A.y, A.z], [B.x, B.y, B.z]) < 1e-6) return faceOf[pis[i]];
+          }
+        }
+        return faceOf[pis[0]];
+      };
       Q.pe.edges.forEach(function (e) {
-        var a = pt(e.a), b = pt(e.b), o = { a: a, b: b, ka: ekey(a), kb: ekey(b), faces: e.faces.map(function (f) { return fmap[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
-          mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex, inner: Q.k };
+        var a = pt(e.a), b = pt(e.b), m = pt(e.mid), o = { a: a, b: b, ka: ekey(a), kb: ekey(b), faces: e.faces.map(function (f) { var x = fmap[f]; return typeof x === 'number' ? x : piece(x, m); }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
+          mid: m, len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex, inner: Q.k };
         if (e.seam) o.seam = true;
         if (e.curve != null && Q.pe.curves) { o.curve = c0 + e.curve; curves[o.curve].edges.push(o); }
         edges.push(o);
@@ -878,10 +889,20 @@
   }
   function partEdges(pb, pl) {
     if (pb.__asmEdges && (!pb.__asmEdges.composed || pb.__asmEdges.placed === plKey(pl))) return pb.__asmEdges;
-    if (pb.flexible && pl) {
+    // r7/asm7: a rigid sub-assembly too (its build carries model / bodies / partBuilds like a composed one): grouped
+    // where it is placed, its coplanar faces of different inner parts merge (or not) as in the assembly mesh, so a
+    // translation that moves a plane key across a rounding step no longer drops the whole assembly to the full search.
+    // A rigid build is shared by every instance: the placed lists are kept per placement (a few).
+    if ((pb.flexible || (pb.assembly && pb.model && pb.bodies && pb.partBuilds)) && pl) {
+      var pk = plKey(pl), at = pb.__asmEdgesAt;
+      if (at && at[pk]) { setHidden(pb, '__asmEdges', at[pk]); return at[pk]; }
       var fx = null;
       try { fx = flexEdges(pb, pl); } catch (e) { fx = null; }
-      if (fx) { setHidden(pb, '__asmEdges', fx); return fx; }
+      if (fx) {
+        if (!at || Object.keys(at).length >= 8) setHidden(pb, '__asmEdgesAt', at = {});
+        at[pk] = fx;
+        setHidden(pb, '__asmEdges', fx); return fx;
+      }
     }
     if (pb.__asmEdges) return pb.__asmEdges;
     // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different
@@ -1618,10 +1639,10 @@
   // type() -> current, onType(t), onFlip(), onOK(), onCancel() }
   UI.asmMatePopup = function (o) {
     return showPopup(viewportClient(null), 'mate', 'Mate', function () {
-      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat([
+      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat(o.flip === false ? [{ sep: true }] : [   // r7/asm7: o.flip false: none
         { sep: true },
         { svg: FLIP_SVG, id: 'flip', title: 'Flip Mate Alignment', run: function () { o.onFlip(); } },
-        { sep: true },
+        { sep: true }]).concat([
         { icon: 'ok', id: 'ok', ok: true, title: 'Add the mate (Enter)', run: function () { closePopup('ok'); o.onOK(); } },
         { icon: 'cancel', id: 'cancel', cancel: true, title: 'Clear the selections (Esc)', run: function () { closePopup('cancel'); o.onCancel(); } }
       ]);
@@ -1712,21 +1733,24 @@
   (UI.onBuild = UI.onBuild || []).push(function () { if (isolated && (!isAsm() || App.model.name !== isolated.model)) { isolated.bar.remove(); isolated = null; } });
 
   // ---- Change Transparency: a transparent component is drawn see-through (and clicks go through it to what is behind,
-  // as in SolidWorks); display state like Hide, kept by component id. ui-core.js draws the opaque mesh without it
+  // as in SolidWorks); kept on the component (r7/asm7). ui-core.js draws the opaque mesh without it
   // (UI.bodyGhost); the see-through copy shares the drawn positions, so a drag pose moves it too.
   var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#7d98bd" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d5e0ef" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
-  var ghosts = {}, ghostModel = null, ghostMesh = null, ghostMat = null;
-  function ghostKeyOk() { if (!isAsm()) return false; if (ghostModel !== App.model.name) { ghosts = {}; ghostModel = App.model.name; } return true; }
-  function isGhost(id) { return ghostKeyOk() && !!ghosts[id]; }
+  // r7/asm7: kept in the model (component.transparent: saved, undone with it, written by toScript); a toggle is one undo
+  // step that only redraws (no rebuild).
+  var ghostMesh = null, ghostMat = null;
+  function ghostKeyOk() { return isAsm(); }
+  function isGhost(id) { var c = isAsm() && AS.findComponent(App.model, id); return !!(c && c.transparent); }
   UI.bodyGhost = function (i) {
     if (!ghostKeyOk()) return false;
     var c = (App.model.components || [])[i];
-    return !!(c && ghosts[c.id]);
+    return !!(c && c.transparent);
   };
-  UI.anyGhost = function () { return isAsm() && ghostModel === App.model.name && Object.keys(ghosts).length > 0; };
+  UI.anyGhost = function () { return isAsm() && (App.model.components || []).some(function (c) { return c.transparent; }); };
   function setGhost(id, on) {
-    if (!ghostKeyOk() || !AS.findComponent(App.model, id)) return false;
-    if (on) ghosts[id] = true; else delete ghosts[id];
+    var c = ghostKeyOk() && AS.findComponent(App.model, id);
+    if (!c) return false;
+    if (!!c.transparent !== !!on) { UI.pushUndo(); AS.setTransparent(App.model, c.id, on); if (UI.refreshTree) UI.refreshTree(); }
     var i = AS.componentIndex(App.model, id);
     if (UI.setBodyHidden) UI.setBodyHidden(i, !!(UI.isBodyHidden && UI.isBodyHidden(i)));   // redraw: the opaque mesh leaves it out
     drawGhosts();
@@ -1930,7 +1954,7 @@
 
   // ------------------------------------------------------------------ exports and window.anvil
   UI.asmIsolate = { isolate: isolate, exit: exitIsolate, active: function () { return isolated ? isolated.id : null; } };
-  UI.asmGhost = { set: setGhost, is: isGhost, list: function () { return ghostKeyOk() ? Object.keys(ghosts).map(Number) : []; } };
+  UI.asmGhost = { set: setGhost, is: isGhost, list: function () { return ghostKeyOk() ? App.model.components.filter(function (c) { return c.transparent; }).map(function (c) { return c.id; }) : []; } };
   UI.cmdLinearComponentPattern = function () { cmdComponentPattern('linear'); };
   UI.cmdCircularComponentPattern = function () { cmdComponentPattern('circular'); };
   UI.cmdMirrorComponents = function () { cmdComponentPattern('mirror'); };
@@ -1971,6 +1995,7 @@
     A.saveDocument = function (name, model) { AS.Documents.put(String(name), model || App.model); if (!model) App.fileName = String(name); return A.documents(); };
     A.removeDocument = function (name) { AS.Documents.remove(String(name)); return A.documents(); };
     A.flexible = function (id, on) { return then(setFlexible(id, on !== false)); };
+    A.transparent = function (id, on) { var c = isAsm() && AS.findComponent(App.model, id); if (!c) return Promise.reject(new Error('Unknown component ' + JSON.stringify(id))); setGhost(c.id, on !== false); return Promise.resolve(c.id); };   // r7/asm7
     A.openPart = function (idOrName) {
       var c = isAsm() ? AS.findComponent(App.model, idOrName) : null;
       if (c && c.source && c.source.file != null) return openDocument(c.source.file, { from: c.name });

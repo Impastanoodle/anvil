@@ -2399,9 +2399,11 @@
     // the two selections can take, Flip Mate Alignment, ✓ (add, the PM stays open) and ✗ (clear the selections)
     var POP_TYPES = ['coincident', 'parallel', 'perpendicular', 'tangent', 'concentric', 'distance', 'angle'];
     function matePopup() {
-      if (!UI.asmMatePopup || v.type === 'width' || !ready(v) || pm.spec !== mySpec) { if (UI.asmClosePopup) UI.asmClosePopup('mate'); return; }
+      if (!UI.asmMatePopup || !ready(v) || pm.spec !== mySpec) { if (UI.asmClosePopup) UI.asmClosePopup('mate'); return; }
       UI.asmMatePopup({
-        types: function () { return POP_TYPES.filter(function (t) { return !mateKindError(t, v.a, v.b); }); },
+        // r7/asm7: Width too (its four selections made): Width is the one type they take, the tab faces' alignment flips as for the others
+        types: function () { return v.type === 'width' ? ['width'] : POP_TYPES.filter(function (t) { return !mateKindError(t, v.a, v.b); }); },
+        flip: !(v.type === 'width' && v.b && refKind(v.b) === 'axis'),   // a cylindrical tab: nothing to flip
         type: function () { return v.type; },
         onType: function (t) { if (t === v.type) return; v.type = t; syncGroups(v); if (mySpec && mySpec.onChange) mySpec.onChange(v, 'type'); },
         onFlip: function () {
