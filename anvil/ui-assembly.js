@@ -344,7 +344,7 @@
   // adds the mate (one undo step), dropping anywhere else changes nothing. ui-sketch.js asks this before Alt + drag
   // rotates the view.
   var SMART_TYPES = { 'face|face': 'coincident', 'cylinder|cylinder': 'concentric', 'cylinder|face': 'tangent', 'face|cylinder': 'tangent' };
-  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent', parallel: 'Parallel', perpendicular: 'Perpendicular', distance: 'Distance', angle: 'Angle' };
+  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent', parallel: 'Parallel', perpendicular: 'Perpendicular', distance: 'Distance', angle: 'Angle', width: 'Width' };
   // r5/asm5: the types the SmartMates pop-up offers for a pair of references (the first is the one the drop adds)
   var SMART_CHOICES = { 'face|face': ['coincident', 'parallel', 'perpendicular'], 'cylinder|cylinder': ['concentric', 'tangent'], 'cylinder|face': ['tangent'], 'face|cylinder': ['tangent'] };
   function refKind(r) { return r ? (r.cylinder ? 'cylinder' : r.face ? 'face' : null) : null; }
@@ -1639,10 +1639,10 @@
   // type() -> current, onType(t), onFlip(), onOK(), onCancel() }
   UI.asmMatePopup = function (o) {
     return showPopup(viewportClient(null), 'mate', 'Mate', function () {
-      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat([
+      return typeItems(o.types(), o.type(), function (t) { o.onType(t); }).concat(o.flip === false ? [{ sep: true }] : [   // r7/asm7: o.flip false: none
         { sep: true },
         { svg: FLIP_SVG, id: 'flip', title: 'Flip Mate Alignment', run: function () { o.onFlip(); } },
-        { sep: true },
+        { sep: true }]).concat([
         { icon: 'ok', id: 'ok', ok: true, title: 'Add the mate (Enter)', run: function () { closePopup('ok'); o.onOK(); } },
         { icon: 'cancel', id: 'cancel', cancel: true, title: 'Clear the selections (Esc)', run: function () { closePopup('cancel'); o.onCancel(); } }
       ]);
