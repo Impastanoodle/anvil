@@ -201,9 +201,12 @@
         vs.forEach(function (v) { c[0] += v.pos.x / vs.length; c[1] += v.pos.y / vs.length; c[2] += v.pos.z / vs.length; });
         at = c;
       }
-      return at ? { s: s, at: at } : null;
+      // r5/select5: and what the face belongs to (component / body, the feature that made it, its B-rep face), so the
+      // restore cannot land on a touching part's coplanar face
+      var p0 = f && f.polys && f.polys[0];
+      return at ? { s: s, at: at, body: f ? f.body || 0 : null, shared: p0 && p0.shared != null ? p0.shared : null, face: p0 && p0.face != null ? p0.face : null } : null;
     }
-    if (s.kind === 'edge') return s.edge && s.edge.mid ? { s: s, mid: s.edge.mid.slice(), len: s.edge.len } : null;
+    if (s.kind === 'edge') return s.edge && s.edge.mid ? { s: s, mid: s.edge.mid.slice(), len: s.edge.len, body: edgeBody(s.edge) } : null;
     return { s: s };
   }
   function selRestore(p) {
@@ -212,15 +215,15 @@
     if (s.kind !== 'face' && s.kind !== 'edge') return s;
     for (k in s) if (Object.prototype.hasOwnProperty.call(s, k)) out[k] = s[k];
     if (s.kind === 'face') {
-      var hit = [];
-      try { hit = App.mesh ? K.resolveFaces([{ at: p.at }], App.mesh, 0.5) : []; } catch (e) { }
-      if (!hit.length) return null;
-      out.index = hit[0];
+      var hit = faceAt(p);
+      if (hit < 0) return null;
+      out.index = hit;
       return out;
     }
     var best = null, bestD = Math.max(0.05, (p.len || 0) * 0.02);
     (App.edges || []).forEach(function (e) {
       if (e.smooth || !e.mid) return;
+      if (p.body != null && edgeBody(e) != null && edgeBody(e) !== p.body) return;   // r5/select5: not a touching part's edge
       var d = Math.hypot(e.mid[0] - p.mid[0], e.mid[1] - p.mid[1], e.mid[2] - p.mid[2]) + Math.abs((e.len || 0) - (p.len || 0));
       if (d < bestD) { bestD = d; best = e; }
     });
@@ -228,6 +231,32 @@
     out.edge = best; out.index = App.edges.indexOf(best);
     return out;
   }
+  // r5/select5: the face a probe names on the new mesh. Candidates narrow from strict to loose: same component / body,
+  // feature and B-rep face; same component and feature; same component; anywhere. The first tier with a face through
+  // the probe's point wins (was: the first face through the point, which could be the touching part's).
+  function edgeBody(e) {
+    var m = App.mesh, f = e && e.faces && m ? m.faces[e.faces[0]] : null;
+    return f ? f.body || 0 : null;
+  }
+  function faceAt(p) {
+    var m = App.mesh;
+    if (!m) return -1;
+    function tier(test) {
+      var idx = [], faces = [];
+      for (var i = 0; i < m.faces.length; i++) if (test(m.faces[i])) { idx.push(i); faces.push(m.faces[i]); }
+      if (!faces.length) return -1;
+      var hit = [];
+      try { hit = K.resolveFaces([{ at: p.at }], { faces: faces }, 0.5); } catch (e) { }
+      return hit.length ? idx[hit[0]] : -1;
+    }
+    function body(f) { return p.body == null || (f.body || 0) === p.body; }
+    function feat(f) { var q = f.polys && f.polys[0]; return p.shared == null || !q || q.shared == null || q.shared === p.shared; }
+    function bface(f) { var q = f.polys && f.polys[0]; return p.face == null || !q || q.face == null || q.face === p.face; }
+    var tests = [function (f) { return body(f) && feat(f) && bface(f); }, function (f) { return body(f) && feat(f); }, body, function () { return true; }];
+    for (var t = 0; t < tests.length; t++) { var r = tier(tests[t]); if (r >= 0) return r; }
+    return -1;
+  }
+  UI.occtSelProbe = selProbe; UI.occtSelRestore = selRestore;   // r5/select5: for tests
   function isMeshSel(p) { return !!p && (p.s.kind === 'face' || p.s.kind === 'edge'); }
   function swapIn(build, edges, curves, normals) {
     var multiOk = App.multi && App.multi.length > 1 && App.multi[0] === App.sel && App.multiMesh === App.mesh;
