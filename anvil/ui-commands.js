@@ -1493,6 +1493,7 @@
   function compLabel(c) {
     var s = compStatus(c.id);
     if (c.fixed) return '(f) ' + c.name;
+    if (s && s.overDefined) return '(+) ' + c.name;   // over defined: a mate on it cannot be satisfied
     if (s && s.underDefined) return '(-) ' + c.name;
     return c.name;
   }
@@ -1708,7 +1709,13 @@
     if (ref.axis) return 'Axis ' + String(ref.axis).toUpperCase() + '@' + who;
     return who;
   }
-  function defaultMateType(a, b) { return refKind(a) === 'axis' && refKind(b) === 'axis' ? 'concentric' : 'coincident'; }
+  // two axes: Concentric; a cylindrical face and a flat face (or plane): Tangent, as SolidWorks proposes; else Coincident
+  function defaultMateType(a, b) {
+    var ka = refKind(a), kb = refKind(b);
+    if (ka === 'axis' && kb === 'axis') return 'concentric';
+    if (ka && kb && ka !== kb && ((a.cylinder && kb === 'plane') || (b.cylinder && ka === 'plane'))) return 'tangent';
+    return 'coincident';
+  }
   function defaultAlignment(type, a, b) {
     if (typeof Assembly !== 'undefined' && Assembly.defaultAlignment) return Assembly.defaultAlignment({ type: type, a: a, b: b });
     return (type === 'coincident' || type === 'distance') && a && b && a.face && b.face ? 'anti-aligned' : 'aligned';
@@ -1956,25 +1963,77 @@
     var mode = App.command && App.command.dragComponents === 'rotate' ? 'rotate' : 'move';
     var snap = JSON.stringify(App.model), id = c.id, start = p.slice(), last = null, raf = 0;
     var center = Assembly.componentCenter(App.model, App.build, id);
+    // Move: the grabbed point (local to the component) follows the mouse in the screen plane as far as the mates let
+    // it, as in SolidWorks: a hinged arm swings, a crank turns and drives its linkage (Assembly.rebuild opts.drag).
+    // Each frame solves from the previous one, so a long sweep goes round smoothly.
+    var off = App.build && App.build.explode && App.build.explode.offsets && App.build.explode.offsets[id];
+    var grab = hit.point ? (off ? [hit.point[0] - off[0], hit.point[1] - off[1], hit.point[2] - off[2]] : hit.point.slice()) : center;
+    var grabLocal = Assembly.inverseTransformPoint(c.transform, grab), dragId = id;
+    // a Flexible sub-assembly: grabbing one of its floating parts drags that part (its own mates solved in context)
+    if (c.flexible && mode === 'move') {
+      var iref = null;
+      try { iref = Assembly.refFromPick(App.model, App.build, hit.index, hit.point, App.mesh); } catch (e) { iref = null; }
+      var sb = App.build.partBuilds && App.build.partBuilds[id];
+      var inner = iref && iref.path && iref.path.length === 1 && sb && sb.model ? Assembly.findComponent(sb.model, iref.path[0]) : null;
+      if (inner && !inner.fixed && inner.pattern == null && (iref.face || iref.cylinder)) { dragId = id + '/' + inner.id; grabLocal = (iref.face || iref.cylinder).slice(); }
+    }
+    // Rotate: the component turns about its centre with the mouse; one its mates hold (a hinged arm) turns as far as
+    // they allow: the grabbed point is pulled to where the free turn would take it.
+    function dragOpts(q, rotated) {
+      if (mode === 'rotate') return { drag: { id: id, point: grabLocal, target: Assembly.transformPoint(Assembly.findComponent(rotated || target(q), id).transform, grabLocal) } };
+      var dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up, sc = UI.cam.scale;
+      var tgt = [grab[0] + (r.x * dx - u.x * dy) * sc, grab[1] + (r.y * dx - u.y * dy) * sc, grab[2] + (r.z * dx - u.z * dy) * sc];
+      return { drag: { id: dragId, point: grabLocal, target: tgt } };
+    }
     function target(q) {
-      var m = JSON.parse(snap), dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up, sc = UI.cam.scale;
-      if (mode === 'move') Assembly.moveComponent(m, id, [(r.x * dx - u.x * dy) * sc, (r.y * dx - u.y * dy) * sc, (r.z * dx - u.z * dy) * sc]);
-      else {
-        if (dx) Assembly.rotateComponent(m, id, [u.x, u.y, u.z], dx * DRAG_DEG_PER_PX, center);
-        if (dy) Assembly.rotateComponent(m, id, [r.x, r.y, r.z], dy * DRAG_DEG_PER_PX, center);
-      }
+      var m = JSON.parse(snap), dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up;
+      if (dx) Assembly.rotateComponent(m, id, [u.x, u.y, u.z], dx * DRAG_DEG_PER_PX, center);
+      if (dy) Assembly.rotateComponent(m, id, [r.x, r.y, r.z], dy * DRAG_DEG_PER_PX, center);
       return m;
     }
-    function show() { raf = 0; if (!last) return; App.model = target(last); UI.rebuild({ noSave: true }); }
+    function show() {
+      raf = 0;
+      if (!last) return;
+      var saved = UI.asmBuildOpts, rotated = null;
+      if (mode === 'rotate') { rotated = target(last); App.model = JSON.parse(JSON.stringify(rotated)); }
+      UI.asmBuildOpts = dragOpts(last, rotated);
+      try { UI.rebuild({ noSave: true }); } finally { UI.asmBuildOpts = saved; }
+    }
     return {
       component: c,
       start: function () { UI.setStatus((mode === 'move' ? 'Moving ' : 'Rotating ') + c.name + '…'); },
       move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
       end: function (q) {
         if (raf) { cancelAnimationFrame(raf); raf = 0; }
-        var T = Assembly.findComponent(target(q), id).transform;
+        var placed = {};   // every component's solved placement (a dragged linkage moves more than the one component)
+        var m = mode === 'rotate' ? target(q) : JSON.parse(JSON.stringify(App.model)), o = dragOpts(q, mode === 'rotate' ? m : null);
+        try { Assembly.rebuild(m, App.asmCache, o); } catch (e) { m = null; }
+        (m ? m.components : []).forEach(function (x) { placed[x.id] = { transform: x.transform, flexState: x.flexState }; });
         App.model = JSON.parse(snap);
-        return asmCommit(function (m) { var x = Assembly.findComponent(m, id); x.transform = T; return x; }, c.name + (mode === 'move' ? ' moved' : ' rotated') + '; mates solved again.')
+        // nothing moved (a fully defined component, or one its mates hold against this drag): no undo step
+        var moved = App.model.components.some(function (x) {
+          var pl = placed[x.id], T = x.transform;
+          if (!pl || !pl.transform || !T) return false;
+          for (var k = 0; k < 9; k++) if (Math.abs(pl.transform.rotation[k] - T.rotation[k]) > 1e-9) return true;
+          for (k = 0; k < 3; k++) if (Math.abs(pl.transform.position[k] - T.position[k]) > 1e-7) return true;
+          return JSON.stringify(pl.flexState || null) !== JSON.stringify(x.flexState || null);
+        });
+        if (!moved) {
+          var st = compStatus(id);
+          return UI.afterRebuild(UI.rebuild({ noSave: true }), function () {
+            UI.setStatus(c.name + (st && !st.underDefined ? ' is fully defined: its mates hold it in place.' : ' cannot move that way: its mates hold it.'));
+            return Assembly.findComponent(App.model, id);
+          });
+        }
+        return asmCommit(function (mm) {
+          mm.components.forEach(function (x) {
+            var pl = placed[x.id];
+            if (!pl) return;
+            x.transform = pl.transform;
+            if (pl.flexState) x.flexState = pl.flexState;
+          });
+          return Assembly.findComponent(mm, id);
+        }, c.name + (mode === 'move' ? ' moved' : ' rotated') + '; mates solved again.')
           .catch(function (e) { UI.toast(e.message || String(e)); });
       }
     };

@@ -346,7 +346,7 @@
       var err = (st && st.error) || errors[c.id] || null;
       var selected = App.sel && App.sel.kind === 'body' && App.sel.index === i;
       var hidden = isBodyHidden(i);
-      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
+      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st && st.overDefined ? ' (over defined: ' + st.overMate + ' cannot be satisfied)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
       // a sub-assembly / linked / suppressed component (ui-assembly.js): its icon, tooltip and the rows inside it
       var dec = UI.asmRowDecor ? UI.asmRowDecor(c, st, helpers) : null;
       if (dec && dec.tip) tip = dec.tip(tip);
@@ -400,10 +400,11 @@
   function mateMenu(mt) {
     return [
       { label: 'Edit Feature', action: function () { UI.editMate(mt); } },
-      mt.suppressed ? { label: 'Unsuppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, false)); } } : { label: 'Suppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, true)); } },
+      mt.suppressed ? { label: 'Unsuppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, false)); } } : { label: 'Suppress', action: function () { asmRun(UI.asm.suppressMate(mt.id, true)); } }
+    ].concat(UI.asmMateMenuExtras ? UI.asmMateMenuExtras(mt) : [], [   // Flip Mate Alignment (ui-assembly.js)
       { sep: true },
       { label: 'Delete', action: function () { UI.confirmRemoveMate(mt); } }
-    ];
+    ]);
   }
   // Solid Bodies(n) folder: one row per separate solid (App.build.bodies, described by Kernel.bodyInfo through
   // UI.bodyInfos). Expanded by default on a multi-body part; the user's toggle is remembered in expanded.bodies.
