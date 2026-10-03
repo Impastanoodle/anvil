@@ -1890,7 +1890,7 @@
     assert(S && S.label === 'A' && S.name === 'Section View A-A' && S.orient === 'Front' && S.parent === T.id, 'section ' + JSON.stringify(S));
     near(S.sectionArea, 100 * 8 - 2 * 8 * 8, 1e-9, 'area of the cut through the two hole axes (snapped)');
     near(S.x, T.x, 1e-6, 'aligned with Top'); near(S.y, 30, 1.5, 'y where clicked (whole pixels)');
-    assert(S.hatch > 20 && D.querySelectorAll('#drawing-sheet g[data-layer="SECTION_A"] line.hatch').length === S.hatch, 'hatch ' + S.hatch);
+    assert(S.hatch > 20 && [].reduce.call(D.querySelectorAll('#drawing-sheet g[data-layer="SECTION_A"] path.hatch'), function (n, e) { return n + e.getAttribute('d').split(/[Mm]/).length - 1; }, 0) === S.hatch, 'hatch ' + S.hatch);
     assert(D.querySelectorAll('#drawing-sheet g[data-layer="TOP"] line.chain').length === 1, 'cutting line on Top');
     var labels = Array.prototype.map.call(D.querySelectorAll('#drawing-sheet text'), function (t) { return t.textContent; });
     assert(labels.indexOf('SECTION A-A') >= 0 && labels.filter(function (t) { return t === 'A'; }).length === 2, 'labels');
