@@ -82,7 +82,7 @@
   // ------------------------------------------------------------------ tools
   var TOOL_HINTS = {
     select: 'Click an entity to select it. <b>Delete</b> removes it. Double-click empty space to finish.',
-    line: 'Click the start point, then each next point, or press and drag for one line. <b>Esc</b> or right-click ends the chain.',
+    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. <b>Esc</b> or right-click ends the chain.',
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
