@@ -44,7 +44,12 @@
     return f;
   }
 
+  // r10/editpreview10: editNext is the feature count Edit Feature rolls back to, taken by the PropertyManager it opens
+  // (pm.editUpto: previews of the feature are built on the part before it; ui-core.js rollbackTo shows that part)
+  var editNext = null;
   function openPM(spec) {
+    if (editNext != null) { pm.editUpto = editNext; editNext = null; if (UI.rollbackTo) UI.rollbackTo(pm.editUpto); }
+    else if (pm.editUpto != null) { pm.editUpto = null; if (UI.rollForward) UI.rollForward(); }   // another command replaced the edit
     pm.spec = spec;
     pm.values = spec.values || {};
     pm.exprs = {}; pm.exprErrors = {};
@@ -99,6 +104,8 @@
     UI.setFmTab('tree');
     if (UI.cancelPreviews) UI.cancelPreviews();   // smooth/responsive: a preview still waiting for the worker is not built
     if (!keepPreview) UI.disposeGroup(UI.groups.preview);
+    // r10/editpreview10: ✗ rolls forward at once; ✓ keeps the rolled-back part until the rebuilt one is applied
+    if (pm.editUpto != null) { pm.editUpto = null; if (keepPreview) { if (UI.rollbackCommit) UI.rollbackCommit(); } else if (UI.rollForward) UI.rollForward(); }
     UI.updatePlanes();
     if (spec.onClose) spec.onClose();
     UI.refreshRibbon();
@@ -119,7 +126,7 @@
     // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
     closePM(pending);
     if (pending) {
-      var drop = function () { if (!pm.spec) UI.disposeGroup(UI.groups.preview); };
+      var drop = function () { if (!pm.spec) { UI.disposeGroup(UI.groups.preview); if (UI.rollForward) UI.rollForward(); } };
       r.then(drop, drop);
     }
     return pending ? r : UI.whenIdle();
@@ -324,7 +331,8 @@
   }
   function livePreview(o) {
     var my = ++lp.seq, spec = pm.spec;
-    var p = UI.previewInWorker && !App.previewSync ? UI.previewInWorker({ op: o.op, feature: JSON.parse(JSON.stringify(o.feature)), upto: o.upto, throughLimit: o.throughLimit }) : null;
+    var upto = o.upto != null ? o.upto : pm.editUpto;   // r10/editpreview10: editing, on the part before the feature
+    var p = UI.previewInWorker && !App.previewSync ? UI.previewInWorker({ op: o.op, feature: JSON.parse(JSON.stringify(o.feature)), upto: upto, throughLimit: o.throughLimit }) : null;
     if (!p) { lp.shown = my; o.sync(); return; }
     p.then(function (r) {
       if (r && r.superseded) return;
@@ -1090,6 +1098,10 @@
     closePM();
     App.sketchSnapshot = JSON.stringify({ entities: f.entities, dims: f.dims || [], rels: f.rels || null });
     UI.enterSketch(id);
+    // r10/editpreview10: Edit Sketch rolls the part back to just before the sketch, as in SolidWorks (the rebuild on
+    // exit shows the whole part again)
+    var idx = App.model.features.indexOf(f);
+    if (App.mode === 'sketch' && App.activeSketch === id && idx >= 0 && idx < App.model.features.length - 1 && UI.rollbackTo) UI.rollbackTo(idx);
   }
 
   // ------------------------------------------------------------------ extrude / cut
@@ -1455,6 +1467,7 @@
     try { resolveList(); } catch (e) { }   // r4/features4: the selection list's rows know their edges on the first render
     openPM({
       title: existing ? existing.name : (isChamfer ? 'Chamfer' : 'Fillet'), icon: kind, values: f, handles: edgeHandles,
+      onRollback: function () { try { resolveList(); } catch (e) { } },   // r10/editpreview10: the edges of the rolled-back part
       message: 'Click <b>edges</b> to add or remove them. Tangent chains (round edges) are picked as one. Drag the arrow on the model to change the ' + (isChamfer ? 'distance' : 'radius') + '.',
       command: {
         pickEdges: true, edgeList: edgeList,
@@ -1531,9 +1544,9 @@
     function tol() { return Math.max(0.5, (+f.thickness || 1) / 2); }
     function resolveList() {
       var idx = [];
-      if (!existing) try { idx = K.resolveFaces(f.faces, getBaseMesh(), tol()); } catch (e) { }
+      if (!existing || App.rollback != null) try { idx = K.resolveFaces(f.faces, getBaseMesh(), tol()); } catch (e) { }
       // highlights map to the displayed mesh, which is the base body only for a new shell
-      if (App.command) App.command.faceList = existing ? [] : idx;
+      if (App.command) App.command.faceList = existing && App.rollback == null ? [] : idx;   // r10/editpreview10: rolled back, the base is shown
       UI.updateHighlights();
       return idx;
     }
@@ -1555,6 +1568,7 @@
     }
     openPM({
       title: existing ? existing.name : 'Shell', icon: 'shell', values: f,
+      onRollback: function (on) { if (on && existing) { base = App.build.body; baseMesh = App.mesh; } try { resolveList(); } catch (e) { } },   // r10/editpreview10
       // r4/features4: the wall thickness as an arrow into the first removed face (or the largest face)
       handles: function (v) {
         var fr = faceFrame(v.faces.length ? v.faces[0].at : null);
@@ -1567,7 +1581,7 @@
           if (pk.kind !== 'face' || !pk.point) return false;
           var hit = -1;
           // any facet of an already listed curved face toggles it off
-          var grp = !existing && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
+          var grp = (!existing || App.rollback != null) && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
           f.faces.forEach(function (spec, i) { if (grp.indexOf(K.resolveFaces([spec], getBaseMesh(), tol())[0]) >= 0) hit = i; });
           if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push({ at: pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
           renderPM(); resolveList(); preview();
@@ -2805,6 +2819,15 @@
   // ------------------------------------------------------------------ edit / delete features
   function editFeature(f) {
     if (!f) return;
+    // r10/editpreview10: the PropertyManager the command opens rolls the part back to just before this feature
+    var idx = App.model && App.model.features ? App.model.features.indexOf(f) : -1;
+    if (f.type !== 'sketch' && idx >= 0 && !(UI.isAssembly && UI.isAssembly())) {
+      if (pm.spec) pmCancel();   // one PropertyManager at a time: the one open is cancelled (and rolls forward)
+      editNext = idx;
+    }
+    try { editDispatch(f); } finally { editNext = null; }
+  }
+  function editDispatch(f) {
     switch (f.type) {
       case 'sketch': editSketch(f.id); break;
       case 'extrude': cmdExtrude(f.cut, f); break;
@@ -2886,6 +2909,8 @@
   UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdExtendEntities = cmdExtendEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.previewIdle = previewIdle;   // smooth/responsive: resolves once the newest live PropertyManager preview is shown
+  // r10/editpreview10: the part was rolled back (on) or forward; the open PropertyManager re-resolves its picks on it
+  UI.onRollback = function (on) { if (pm.spec && pm.spec.onRollback) pm.spec.onRollback(on); };
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;
   UI.newSketchOnPlane = newSketchOnPlane;
   // part-only commands refuse in an assembly document (label = the SolidWorks command name for the message)

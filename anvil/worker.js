@@ -18,7 +18,10 @@
 //   { type: 'volume', seq, volume }                            right after 'built': Kernel.massProps(mesh).volume
 //   { type: 'error', seq, message: <string> }                  when the rebuild itself threw (feature errors never do;
 //                                                              they are reported inside build.errors)
-//   { type: 'previewed', seq, tools: [packedCSG | null], info: { count?, removed? }, ms }   (buffers transferred)
+//   { type: 'previewed', seq, tools: [packedCSG | null], info: { count?, removed? }, ms, base? }   (buffers transferred)
+//     base (r10/editpreview10, when the message asked for `base: <feature count>`): the part rolled back to its first
+//     `base` features, for Edit Feature's rollback (ui-core.js rollbackTo): { upto, build: <packBuild>, edges, curves, normals }.
+//     op 'base' builds only that (tools: []).
 //   { type: 'previewError', seq, message }
 // The worker keeps the rebuild cache between messages, so only the features after the first change are rebuilt.
 // Previews of a truncated model (editing a feature in the middle of the tree) keep a cache of their own, so the main
@@ -27,13 +30,40 @@ importScripts('csg.js', 'kernel.js', 'holewizard.js', 'exchange.js'); // holewiz
 
 var cache = null, previewCache = null;
 
+// the extras ui-core.js applyBuild takes from a worker build: the edges, curved faces and normals of its mesh
+function meshExtras(packed) {
+  var out = { edges: null, curves: null, normals: null };
+  try {
+    var mirror = Kernel.unpackBuild(packed), mesh = mirror.body ? Kernel.meshFromBody(mirror.body) : null;
+    if (mesh) out.edges = Kernel.bodyEdges(mesh);
+    if (mesh && Kernel.meshCurveInfo) { try { out.curves = Kernel.meshCurveInfo(mesh); } catch (e) { } }
+    if (mesh && Kernel.analyticNormals) { try { out.normals = Kernel.analyticNormals(mesh); } catch (e2) { } }
+  } catch (e3) { }
+  return out;
+}
+
 function preview(m) {
-  var t0 = performance.now(), model = m.model, full = m.upto == null || m.upto >= model.features.length;
+  var t0 = performance.now(), model = m.model, all = model.features, full = m.upto == null || m.upto >= model.features.length;
   if (!full) model.features = model.features.slice(0, m.upto);
   var b = Kernel.rebuild(model, full ? cache : (previewCache || cache));
   if (full) cache = b.cache; else previewCache = b.cache;
-  var f = m.feature, tools = [], info = {};
-  if (m.op === 'shell') {
+  var f = m.feature, tools = [], info = {}, base = null, transfer = [];
+  if (m.base != null) {
+    // r10/editpreview10: the rolled-back part (usually the same truncated build the feature is previewed on)
+    var bb = b, bm = model;
+    if (full || m.base !== m.upto) {
+      bm = {}; Object.keys(model).forEach(function (k) { bm[k] = model[k]; });
+      bm.features = all.slice(0, m.base);
+      bb = Kernel.rebuild(bm, previewCache || cache); previewCache = bb.cache;
+    }
+    var pb = Kernel.packBuild(bb, bm), ex = meshExtras(pb);
+    base = { upto: m.base, build: pb, edges: ex.edges, curves: ex.curves, normals: ex.normals };
+    transfer = Kernel.packTransferables(pb);
+    if (ex.normals) transfer.push(ex.normals.buffer);
+  }
+  if (m.op === 'base') {
+    // r10/editpreview10: only the rolled-back part
+  } else if (m.op === 'shell') {
     var sh = Kernel.buildShell(f, { body: b.body });
     tools = [sh.inner]; info.removed = sh.removed.length;
   } else if (m.op === 'edge') {
@@ -49,9 +79,9 @@ function preview(m) {
     var ctx = { tools: b.tools, planes: b.planes, sketches: m.sketches || {}, body: b.body, throughLimit: m.throughLimit };
     tools = [Kernel.buildTool(f, Kernel.resolvedModel(model).model, ctx) || null];
   }
-  var packed = tools.map(function (t) { return t ? t.pack() : null; }), transfer = [];
+  var packed = tools.map(function (t) { return t ? t.pack() : null; });
   packed.forEach(function (p) { if (p) transfer = transfer.concat(CSG.packTransferables(p)); });
-  self.postMessage({ type: 'previewed', seq: m.seq, tools: packed, info: info, ms: performance.now() - t0 }, transfer);
+  self.postMessage({ type: 'previewed', seq: m.seq, tools: packed, info: info, ms: performance.now() - t0, base: base }, transfer);
 }
 
 self.onmessage = function (e) {
@@ -65,6 +95,9 @@ self.onmessage = function (e) {
   try {
     var b = Kernel.rebuild(m.model, cache);
     cache = b.cache;
+    // r10/editpreview10: the main cache now holds every step of the newest model, so the next truncated preview (an
+    // Edit Feature right after a change or a new document) starts from it instead of an older model's preview cache
+    previewCache = null;
     var packed = Kernel.packBuild(b, m.model);
     // the body's edges (Kernel.bodyEdges, hundreds of ms on a large part) are found here too, on exactly the mesh the
     // main thread will make from the packed bodies, so applyBuild does not have to
