@@ -82,7 +82,18 @@
     // is a quarter annulus exactly in OpenCascade (Anvil facets it 8 times per 90°)
     { name: 'base flange + 90° edge flange (exact bend)', code: 'p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[100, 2, 30]]);', exact: 100 * 60 * 2 + 60 * (Math.PI / 4 * (16 - 4) + 2 * 20) },
     { name: 'jog (offset 10, length 15)', code: 'p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -40, 60, 40).end().baseFlange(2);\np.jog(10, 15, [[60, 2, 20]]);' },
-    { name: 'fillet around a hole rim and a straight edge', code: 'p.box(40, 40, 10);\np.hole("Top", 20, -20, 12, { offset: 10 });\np.fillet(1.5, [[26, 10, 20], [0, 10, 20]]);' }
+    { name: 'fillet around a hole rim and a straight edge', code: 'p.box(40, 40, 10);\np.hole("Top", 20, -20, 12, { offset: 10 });\np.fillet(1.5, [[26, 10, 20], [0, 10, 20]]);' },
+    // --- refine/perf ---
+    // a rim picked where the cylinder's seam meets it (the seam is no longer a candidate edge; the fillet failed on it)
+    { name: 'fillet and chamfer on cylinder rims picked at the seam', code: 'p.cylinder(20, 30);\np.fillet(3, [[20, 30, 0]]);\np.chamfer(2, [[20, 0, 0]]);' },
+    // all 12 edges: spherical corners in OpenCascade (exact rounded box), mitred in Anvil -> the loose tolerance
+    { name: 'fillet on all 12 edges of a box (rounded box)', code: 'p.box(40, 30, 20);\np.fillet(3, [[20,0,0],[20,0,30],[20,20,0],[20,20,30],[0,10,0],[40,10,0],[0,10,30],[40,10,30],[0,0,15],[40,0,15],[0,20,15],[40,20,15]]);',
+      exact: 34 * 24 * 14 + 6 * (34 * 24 + 24 * 14 + 34 * 14) + Math.PI * 9 * (34 + 24 + 14) + 4 / 3 * Math.PI * 27 },
+    // a shell of a round part: exact walls in OpenCascade, polygonal in Anvil -> the loose tolerance, so it drives
+    { name: 'closed shell of a cylinder', code: 'p.cylinder(20, 30);\np.shell(2, []);', exact: Math.PI * (400 * 30 - 324 * 26) },
+    // a closed path: every corner mitred, the start / end joint too
+    { name: 'sweep along a closed rectangular path', code: 'var prof = p.sketch("Right").circle(0, 0, 3).id();\nvar path = p.sketch("Front").polyline([[0,0],[0,-30],[40,-30],[40,0]], true).id();\np.sweep({ profile: prof, path: path });', exact: Math.PI * 9 * 140 }
+    // --- end refine/perf ---
   ];
   var EX = AnvilExamples.list || AnvilExamples;
   var parts = EX.filter(function (e) { return e.kind !== 'assembly'; }).map(function (e) { return { name: e.name, code: e.code, exact: e.volume || null }; }).concat(EXTRA);

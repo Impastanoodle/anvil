@@ -172,3 +172,38 @@ Cloud container, headless Chromium 141 (Playwright 1.56), `tests/bench.html`, 7 
 
 
 Only the Funnel's code path changed: its loft is now the convex hull of the Ø80 51-gon and the Ø14 21-gon (69 planar side faces) instead of 51 resampled quads split into 102 needle triangles, so the shell's slab union and the final subtraction work on far fewer polygons (4453 → 1875) and the part is 2.8× faster. Every other part runs the same code as main (`Kernel.meshQuality` is not called by the bench); their differences are ±0.1–0.3 ms jitter at the resolution of the table (the largest ratios, 1.10–1.11×, are 0.9 → 1.0 ms and 1.0 → 1.1 ms). No needle-triangle cleanup was added to `meshFromBody`: a face-level retriangulation costs more than the rebuild itself on the small parts (faceOutline on every face: 545 ms over the library vs 877 ms of rebuilds in Node), well over the 10 % budget.
+
+## 2026-10-02 (refine/perf) — BSP clipping without per-level copies, bounding-sphere split test, shell as one intersection
+
+User's Windows machine, Claude desktop browser pane (Chrome 152), other agents running at the same time, so absolute
+numbers jitter. Paired run: `HEAD` (583661b) and this branch loaded side by side in two iframes and timed alternately
+(`runScript + rebuild + meshFromBody`, median of 7), in ms:
+
+| Part | before | after |
+| --- | ---: | ---: |
+| Flange | 10.2 | 8.1 |
+| Hex nut | 4.5 | 1.7 |
+| Rounded handle | 29.7 | 25.3 |
+| Mug | 31.6 | 20.0 |
+| Funnel | 259.2 | 76.3 |
+| Handlebar | 16.8 | 6.9 |
+| Spur gear (12 teeth) | 2.9 | 2.3 |
+| (all other examples) | within ±0.4 | |
+| **Sum of medians, 23 examples** | **381** | **165** |
+
+`tests/bench.html` (30 parts incl. stress, 7 runs): **1044 ms before** (an unpaired run at the start of the session, under load)
+**→ 216 ms after**; Funnel 518 → 79, stress rows: 5×5 hole grid 65 → 13, 24-hole bolt circle 68 → 14, revolve with 6
+grooves 53 → 8, 40 stacked unions 25 → 4, sheet box 23 → 8.
+
+What changed:
+- `Node.clipPolygons` / `allPolygons` append into one output list instead of returning `front.concat(back)` at every
+  node. A convex solid's BSP tree is a chain as deep as its face count, so the old recursion copied the whole surviving
+  list once per level (quadratic); this was most of the Funnel's time. Same polygons, same order.
+- `Plane.splitPolygon` first tests the polygon's cached bounding sphere (`polygon._bs`): when the whole sphere is more
+  than EPSILON (+ a 1e-9 guard) from the plane, every vertex would classify the same way, so one dot product decides.
+  Identical classification; `CSG.options.sphereTest = false` turns it off (the `refine/perf` test checks that every
+  example rebuilds to the bit-identical volume and polygon count either way).
+- Shell: body − ((body ∪ extensions) − slabs) is exactly body ∩ slabs, so the walls are one intersection instead of
+  a union and two subtractions; the cavity (only the Shell PM preview shows it) is built lazily. Same solid to 3e-13.
+
+Every example volume is unchanged (bit-identical except the three shelled parts: Funnel 3.4e-13, Mug 7.5e-15 relative).
