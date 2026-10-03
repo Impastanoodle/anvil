@@ -513,6 +513,9 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (edges.length) g.add(h.edgeLineObject(edges, h.edgeSelMat));
     if (verts.length) g.add(pointsObject(verts, vtxMat));
     if (App.hover && App.hover.kind === 'vertex') g.add(pointsObject([App.hover.point], vtxHoverMat));
+    // r4/features4: the face of the PropertyManager list row under the pointer
+    var hi = App.command && App.command.hoverItem;
+    if (hi && hi.faces && hi.faces.length && UI.mats && UI.mats.hover) hi.faces.forEach(function (i) { var r = h.selectionRanges({ kind: 'face', index: i }); if (r) g.add(new THREE.Mesh(h.triRangeGeometry(r), UI.mats.hover)); });
     App.dimsStale = true;
   };
 
@@ -576,6 +579,33 @@ if (typeof UI !== 'undefined') (function (UI) {
   // Dragging changes the value live, snapped to the ruler's ticks; the whole drag is one undo step and releasing opens
   // a box to type an exact value. In a sketch the same dots sit on the dimension arrows. Toggle: Features ▸ Instant3D.
   var i3d = { on: true, drag: null, edit: null, side: {} };
+  // r4/features4: styles of the PropertyManager handles, callouts and selection lists (kept here so style.css is untouched)
+  (function () {
+    var css = [
+      '#i3d-layer .i3d-callout { pointer-events: all; cursor: text; }',
+      '#i3d-layer .i3d-callout rect { fill: #fffbe6; stroke: #c9a227; stroke-width: 1; }',
+      '#i3d-layer .i3d-callout text { font: 600 11.5px "Segoe UI", sans-serif; fill: #1b2430; }',
+      '#i3d-layer .i3d-callout:hover rect { stroke: #ff8c1a; }',
+      '#i3d-layer .i3d-leader { stroke: #c9a227; stroke-width: 1; }',
+      '#i3d-layer .i3d-anchor { fill: #c9a227; }',
+      '#i3d-layer .i3d-flip { pointer-events: all; cursor: pointer; opacity: 0.55; }',
+      '#i3d-layer .i3d-flip:hover { opacity: 1; }',
+      '#i3d-layer .i3d-flip-shaft { stroke: #1f6fc5; stroke-width: 2; stroke-dasharray: 3 2; }',
+      '#i3d-layer .i3d-flip-head { fill: #1f6fc5; }',
+      '#i3d-layer .i3d-flip:hover .i3d-flip-shaft { stroke: #ff8c1a; } #i3d-layer .i3d-flip:hover .i3d-flip-head { fill: #ff8c1a; }',
+      '#i3d-layer .i3d-hover-item polyline { fill: none; stroke: #ff8c1a; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }',
+      '#i3d-layer .i3d-hover-item circle { fill: none; stroke: #ff8c1a; stroke-width: 2.5; }',
+      '.pm-list { margin-top: 3px; border: 1px solid var(--blue-line); background: var(--input-bg, #fff); max-height: 132px; overflow-y: auto; }',
+      '.pm-item { display: flex; align-items: center; gap: 5px; padding: 2px 6px; cursor: default; outline: none; white-space: nowrap; }',
+      '.pm-item:hover { background: var(--pick-bg); }',
+      '.pm-item.sel { background: var(--blue, #1f6fc5); color: #fff; }',
+      'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }'
+    ].join('\n');
+    var st = document.createElement('style');
+    st.id = 'r4-features4-style';
+    st.textContent = css;
+    document.head.appendChild(st);
+  })();
   var layer = svg('svg', { id: 'i3d-layer', 'aria-hidden': 'true' });
   viewport.appendChild(layer);
   var editBox = el('div', { id: 'i3d-edit' });
@@ -590,7 +620,9 @@ if (typeof UI !== 'undefined') (function (UI) {
     return null;     // "=…" equations drive the value: no handle
   }
   function unitText() { return UI.unitLabel ? UI.unitLabel() : 'mm'; }
-  function fmtV(v, h) { return UI.fmtNum(v, h && h.angle ? 2 : 3) + (h && h.angle ? '°' : ' ' + unitText()); }
+  // r4/features4: one value format on the model (Instant3D, PropertyManager handles, callouts): 2 decimals (3 in inches), unit
+  function valueDecimals(h) { return h && h.angle ? 2 : unitText() === 'in' ? 3 : 2; }
+  function fmtV(v, h) { return UI.fmtNum(v, valueDecimals(h)) + (h && h.angle ? '°' : ' ' + unitText()); }
   function sketchPlane(sk) { try { return K.resolvePlane(sk.plane, App.model, App.build && App.build.planes); } catch (e) { return null; } }
   function to3Ddir(pl, d) { return V.norm(V.add(V.scale(pl.x, d[0]), V.scale(pl.y, d[1]))); }
   function rotate(v, axis, ang) {    // Rodrigues, right-handed about the unit axis
@@ -734,10 +766,81 @@ if (typeof UI !== 'undefined') (function (UI) {
     return out;
   }
 
+  // ---- r4/features4: the open PropertyManager's handles (UI.pmHandles, world coordinates) as drawable handles.
+  // A drag sets the PM value (UI.pmSetValue: the field shows it and the command previews in the worker, newest wins);
+  // nothing is rebuilt or put on the undo stack until ✓. A faded arrow behind a handle flips its direction (the PM's
+  // Reverse check box); callouts show a value next to other picks and focus its field when clicked.
+  function angleHandle(h, A, D, c, sign) {
+    D = V.norm(D);
+    var w = V.sub(c, A), hgt = V.dot(w, D), foot = V.add(A, V.scale(D, hgt)), w0 = V.sub(c, foot), r = V.len(w0);
+    if (!(r > 1e-9)) return null;
+    var e1 = V.scale(w0, 1 / r), e2 = V.cross(D, e1), s = sign || 1;
+    h.angle = true; h.ring = true;
+    h.pos = function (v) { return V.add(foot, V.scale(rotate(e1, D, s * v * Math.PI / 180), r)); };
+    h.arrow = function (v) { return V.scale(rotate(e2, D, s * v * Math.PI / 180), s); };
+    h.pxPerUnit = function () { return r * Math.PI / 180 / UI.cam.scale; };
+    h.step = function () { var p = h.pxPerUnit(); return p >= 6 ? 1 : p >= 1.2 ? 5 : 15; };
+    h.rawAt = function (mx, my) {
+      var best = null, bestD = Infinity;
+      for (var t = 0; t <= 360; t += 0.25) { var q = S(h.pos(t)), dd = Math.hypot(q[0] - mx, q[1] - my); if (dd < bestD) { bestD = dd; best = t; } }
+      return best;
+    };
+    return h;
+  }
+  function pmHandleObjects() {
+    var list = UI.pmHandles ? UI.pmHandles() : [], out = [];
+    list.forEach(function (d) {
+      var h;
+      if (d.type === 'callout') {
+        h = { kind: 'callout', key: d.key, at: d.at, text: d.text, label: d.text, value: 0 };
+        h.pos = function () { return d.at; }; h.arrow = function () { return [0, 0, 0]; }; h.pxPerUnit = function () { return 1; }; h.step = function () { return 1; };
+      } else if (d.type === 'flip') {
+        h = { kind: 'pmflip', flip: d.key, O: d.O, dir: V.norm(d.dir), label: 'Reverse direction', value: 0 };
+        h.pos = function () { return h.O; }; h.arrow = function () { return h.dir; }; h.pxPerUnit = function () { return 1; }; h.step = function () { return 1; };
+      } else {
+        h = { kind: 'pm', pm: true, key: d.key, label: d.label, value: +d.value, min: d.min != null ? d.min : 0, max: d.max, flip: d.flip || null, tag: d.tag || '' };
+        h.apply = function (v) { return UI.pmSetValue ? UI.pmSetValue(d.key, v) : false; };
+        if (d.type === 'angle') { if (!angleHandle(h, d.A, d.D, d.c, d.sign)) return; }
+        else { h.O = d.O; h.dir = V.norm(d.dir); h.k = d.k || 1; linearHandle(h); h.snapStep = function () { return BoxSelect.rulerStep(h.pxPerUnit(), 4); }; }
+      }
+      out.push(h);
+    });
+    return out;
+  }
+  function flipArrow(g, h, p, u) {
+    // a faded arrow pointing the other way from the handle's base: click to reverse
+    if (!u) return;
+    var len = 26, tip = [p[0] - u[0] * len, p[1] - u[1] * len];
+    var fg = svg('g', { 'class': 'i3d-flip', 'data-flip': h.flip }, g);
+    svg('line', { 'class': 'i3d-grip', x1: p[0], y1: p[1], x2: tip[0], y2: tip[1] }, fg);
+    svg('line', { 'class': 'i3d-flip-shaft', x1: p[0] - u[0] * 5, y1: p[1] - u[1] * 5, x2: tip[0] + u[0] * 7, y2: tip[1] + u[1] * 7 }, fg);
+    arrowHead(fg, tip, [-u[0], -u[1]], 10, 'i3d-flip-head');
+    var t = svg('title', {}, fg); t.textContent = 'Reverse direction';
+    fg.addEventListener('mousedown', function (ev) { if (ev.button !== 0) return; ev.stopPropagation(); ev.preventDefault(); });
+    fg.addEventListener('click', function (ev) { ev.stopPropagation(); if (UI.pmToggle) UI.pmToggle(h.flip); });
+    h.flipAt = [(p[0] + tip[0]) / 2, (p[1] + tip[1]) / 2];
+  }
+  // a value box at `at` (u given: beyond `at` along the screen direction u, clear of the arrow head)
+  function valueLabel(g, h, at, text, key, u) {
+    var w = Math.max(24, text.length * 6.6 + 10);
+    if (u) at = [at[0] + u[0] * (10 + Math.abs(u[0]) * w / 2 + Math.abs(u[1]) * 9), at[1] + u[1] * (10 + Math.abs(u[0]) * w / 2 + Math.abs(u[1]) * 9) + 4];
+    var lg = svg('g', { 'class': 'i3d-callout', 'data-key': key || '' }, g);
+    var tx = svg('text', { x: at[0], y: at[1], 'text-anchor': 'middle' }, lg);
+    tx.textContent = text;
+    var bg = svg('rect', { x: at[0] - w / 2, y: at[1] - 13, width: w, height: 18, rx: 3 }, null);
+    lg.insertBefore(bg, tx);
+    lg.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); if (UI.pmFocusField) UI.pmFocusField(key); });
+    lg.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+    return lg;
+  }
+  function pmValueText(h, v) { return (h.tag || '') + fmtV(v, h); }
+
   // The handles for the current state: a feature's (part mode, one selected face or feature), or the active sketch's
   // dimension dots (sketch mode).
   function computeHandles() {
-    if (!i3d.on || !App.model || !App.build || !App.mesh || drawingOn() || isAsm()) return [];
+    if (!App.model || !App.build || !App.mesh || drawingOn() || isAsm()) return [];
+    if (App.mode === 'part' && UI.hasPM && UI.hasPM()) return pmHandleObjects();   // r4/features4: PropertyManager handles, Instant3D on or off
+    if (!i3d.on) return [];
     if (App.mode === 'sketch') {
       var ask = UI.activeSketchFeature(), apl = ask && UI.activePlane();
       if (!ask || !apl || App.tool !== 'select' || App.command) return [];
@@ -807,6 +910,18 @@ if (typeof UI !== 'undefined') (function (UI) {
     label.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); openEdit(h); });
     label.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
   }
+  // r4/features4: the PropertyManager list row under the pointer, drawn over the model (edges as wide lines, a pick
+  // without resolved geometry as a ring at its point); faces are lit in 3D by drawSelectionExtras
+  function drawHoverItem() {
+    var it = App.command && App.command.hoverItem;
+    if (!it || App.mode !== 'part') return;
+    var g = svg('g', { 'class': 'i3d-hover-item' }, layer), edges = it.edges || [], faces = it.faces || [];
+    edges.forEach(function (e) {
+      var pts = e.curve != null && App.curves && App.curves[e.curve] && App.curves[e.curve].edges.indexOf(e) >= 0 ? App.curves[e.curve].pts : [e.a, e.b];
+      svg('polyline', { points: pts.map(function (p) { var s = S(p); return s[0] + ',' + s[1]; }).join(' ') }, g);
+    });
+    if (!edges.length && !faces.length && it.at) { var s = S(it.at); svg('circle', { cx: s[0], cy: s[1], r: 7 }, g); }
+  }
   var handleList = [];
   function drawI3D() {
     while (layer.firstChild) layer.removeChild(layer.firstChild);
@@ -814,8 +929,22 @@ if (typeof UI !== 'undefined') (function (UI) {
     // a handle whose direction is seen end-on cannot be dragged in this view and is left out
     handleList = d ? [d.h] : computeHandles().filter(function (h) { return h.pxPerUnit() > 0.02; });
     if (i3d.edit && !d && !handleList.some(function (h) { return hKey(h) === i3d.edit.key; })) closeEdit(false);
+    drawHoverItem();
     handleList.forEach(function (h, idx) {
       var v = d ? d.v : h.value, g = svg('g', { 'class': 'i3d ' + h.kind, 'data-kind': h.kind, 'data-index': String(idx) }, layer);
+      // r4/features4: PropertyManager callouts and flip-only arrows
+      if (h.kind === 'callout') {
+        var cp = S(h.at), lab = [cp[0] + 34, cp[1] - 24];
+        svg('line', { 'class': 'i3d-leader', x1: cp[0], y1: cp[1], x2: lab[0] - 12, y2: lab[1] - 4 }, g);
+        svg('circle', { 'class': 'i3d-anchor', cx: cp[0], cy: cp[1], r: 2.5 }, g);
+        valueLabel(g, h, lab, h.text, h.key);
+        return;
+      }
+      if (h.kind === 'pmflip') {
+        var fp = S(h.O), fu = unit2(fp, S(V.add(h.O, h.dir)));
+        if (fu) flipArrow(g, h, fp, [-fu[0], -fu[1]]);
+        return;
+      }
       if (d) drawRuler(g, h, v);
       if (h.kind === 'sdim' && !h.live) drawSketchDim(g, h, d ? v : null);
       var p = S(h.pos(v)), a = h.arrow(v), q = S(V.add(h.pos(v), a)), u = unit2(p, q);
@@ -833,7 +962,14 @@ if (typeof UI !== 'undefined') (function (UI) {
         }
         svg('circle', { 'class': 'i3d-base', cx: p[0], cy: p[1], r: 3.5 }, hg);
         h.grab = u ? [p[0] + u[0] * len * 0.55, p[1] + u[1] * len * 0.55] : p;
-        if (d) { var tx = svg('text', { 'class': 'i3d-value', x: tip[0] + (u ? u[0] * 10 : 0), y: tip[1] + (u ? u[1] * 10 : 0) - 6, 'text-anchor': 'middle' }, g); tx.textContent = fmtV(v, h); }
+        if (h.pm) {
+          // r4/features4: the value beside the arrow (click: type it in the PropertyManager), the flip arrow at its base
+          valueLabel(g, h, tip, pmValueText(h, v), h.key, u || [1, 0]);
+          if (h.flip && !d) {
+            var b0 = h.angle ? h.pos(0) : h.O, bs = S(b0), bu = unit2(bs, S(V.add(b0, h.angle ? h.arrow(0) : h.dir)));
+            flipArrow(g, h, bs, bu);
+          }
+        } else if (d) { var tx = svg('text', { 'class': 'i3d-value', x: tip[0] + (u ? u[0] * 10 : 0), y: tip[1] + (u ? u[1] * 10 : 0) - 6, 'text-anchor': 'middle' }, g); tx.textContent = fmtV(v, h); }
       }
       hg.setAttribute('aria-label', h.label + ' ' + fmtV(v, h) + ' — drag to change');
       hg.addEventListener('mousedown', function (ev) { if (ev.button !== 0) return; ev.stopPropagation(); ev.preventDefault(); startDrag(h, ev); });
@@ -855,7 +991,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   function liveRebuild(h) {
     if (App.mode === 'sketch') { App.gridStale = true; UI.updateSketches(); return; }
     // r3/engine3: a feature drag previews only that feature (built in the worker); the release rebuilds the part once
-    if (i3d.drag && i3d.drag.fid != null && UI.featurePreview && UI.featurePreview(i3d.drag.fid)) { i3d.drag.previewed = true; return; }
+    if (i3d.drag && i3d.drag.fid != null && UI.featurePreview && UI.featurePreview(i3d.drag.fid)) { i3d.drag.previewed = true; schedulePause(i3d.drag); return; }
     if (liveBusy) { livePending = true; return; }
     liveBusy = true;
     UI.afterRebuild(UI.rebuild({ noSave: true }), function () {
@@ -863,8 +999,24 @@ if (typeof UI !== 'undefined') (function (UI) {
       if (livePending) { livePending = false; liveRebuild(h); }
     }).catch(function () { liveBusy = false; });
   }
+  // r4/features4: while a feature is dragged only it is previewed; once the drag rests PAUSE_MS on a value the whole
+  // part is rebuilt in the background (not saved, no undo step), so its patterns, mirrors and the other features of
+  // the sketch follow before the button is released. A move during that rebuild previews again on top of it.
+  var PAUSE_MS = 180;
+  function schedulePause(d) {
+    clearTimeout(i3d.pauseT);
+    i3d.pauseT = setTimeout(function () {
+      if (i3d.drag !== d || d.pausedAt === d.v) return;
+      if (liveBusy) { schedulePause(d); return; }
+      liveBusy = true;
+      d.pausedAt = d.v;
+      var t0 = performance.now(), p = UI.rebuild({ noSave: true });
+      if (UI.featurePreviewEnd) UI.featurePreviewEnd(p);
+      UI.afterRebuild(p, function () { liveBusy = false; i3d.lastPauseMs = performance.now() - t0; i3d.pauses = (i3d.pauses || 0) + 1; }).catch(function () { liveBusy = false; });
+    }, PAUSE_MS);
+  }
   function valueFor(h, raw) {
-    var step = h.step(), v = BoxSelect.snap(raw, step);
+    var step = h.snapStep ? h.snapStep() : h.step(), v = BoxSelect.snap(raw, step);   // r4/features4: PM handles snap finer than the ruler ticks
     if (v <= (h.min || 0)) v = step;
     if (h.max != null && v > h.max) v = h.max;
     return v;
@@ -875,7 +1027,8 @@ if (typeof UI !== 'undefined') (function (UI) {
     // a feature handle is dragged with the feature selected (face indices change while it rebuilds)
     if (App.mode === 'part' && h.fid != null) { if (h.side) i3d.side[h.fid] = h.side; }
     var d = i3d.drag = { h: h, v0: h.value, v: h.value, grab: raw == null ? 0 : raw - h.value, moved: false, pushed: false, sel: App.sel };
-    if (App.mode === 'part') {
+    if (h.angle && raw != null && Math.abs(d.grab) > 180) d.grab = 0;   // a ring grabbed across 0° / 360°
+    if (App.mode === 'part' && !h.pm) {
       var fid = h.fid != null ? h.fid : ownerFeature();
       if (fid != null) { App.sel = { kind: 'feature', id: fid }; App.sel2 = null; App.multi = []; UI.updateHighlights(); }
       d.fid = fid;
@@ -887,6 +1040,14 @@ if (typeof UI !== 'undefined') (function (UI) {
       d.moved = true;
       var v = valueFor(h, r - d.grab);
       if (Math.abs(v - d.v) < 1e-12) return;
+      if (h.pm) {   // r4/features4: a PropertyManager value (its preview is built in the worker; ✓ commits)
+        var t0 = performance.now();
+        if (h.apply(v) === false) return;
+        d.v = v; App.dimsStale = true;
+        i3d.lastPmMoveMs = performance.now() - t0;
+        if (UI.setStatus) UI.setStatus(h.label + ': ' + pmValueText(h, v) + ' (release, then Enter or ✓ to accept)');
+        return;
+      }
       pushUndoOnce(d);
       if (h.apply(v) === false) return;          // the sketch solver refused the value: keep the last good one
       d.v = v;
@@ -915,6 +1076,8 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!d) return Promise.resolve();
     i3d.drag = null;
     var h = d.h;
+    clearTimeout(i3d.pauseT);
+    if (h.pm) { App.dimsStale = true; if (d.moved && UI.pmFocusField) UI.pmFocusField(h.key); return Promise.resolve(); }   // r4/features4
     var session = { key: hKey(h), pushed: d.pushed, fid: d.fid, side: h.side, kind: h.kind, sketch: h.sketch, dimIndex: h.dimIndex, dim: h.dim };
     if (App.mode === 'sketch') { App.dimsStale = true; openEditFor(session); return Promise.resolve(); }
     var done = d.pushed ? UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }) : Promise.resolve();
@@ -1057,6 +1220,9 @@ if (typeof UI !== 'undefined') (function (UI) {
   };
   UI.instant3DEditOpen = function () { return i3d.edit ? { kind: i3d.edit.h.kind, value: +editInput.value, label: i3d.edit.h.label } : null; };
   UI.instant3DDragging = function () { return !!i3d.drag; };
+  // r4/features4: drag timings (main-thread ms of the last PropertyManager handle move, rests rebuilt and the last one's ms)
+  UI.fmtModelValue = fmtV;   // r4/features4: the value format of on-model handles and callouts
+  UI.instant3DStats = function () { return { pmMoveMs: i3d.lastPmMoveMs || 0, pauses: i3d.pauses || 0, pauseRebuildMs: i3d.lastPauseMs || 0 }; };
 
   if (window.anvil) {
     // selection: [{ kind, index | id, … }] of the current selection
