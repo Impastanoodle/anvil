@@ -76,6 +76,7 @@ var Drawing = (function () {
   // The kernel's coarsest curved facets turn 22.5° (a 16-gon circle, a slot end, a 90° fillet in 4 steps), so faces
   // meeting at less than 23° are treated as one smooth surface: drawn only where they form a silhouette.
   var COS_SMOOTH = Math.cos(23 * Math.PI / 180);
+  var COS_CREASE = Math.cos(2 * Math.PI / 180);   // true normals further apart than this: a crease, not tangent (r5/drawings5)
   function meshDiag(mesh) {
     var p = mesh.positions64 || mesh.positions, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     for (var i = 0; i < p.length; i += 3) for (var k = 0; k < 3; k++) { var x = p[i + k]; if (x < mn[k]) mn[k] = x; if (x > mx[k]) mx[k] = x; }
@@ -243,7 +244,7 @@ var Drawing = (function () {
     if (!P.length) bounds = { umin: 0, umax: 0, vmin: 0, vmax: 0 };
     // front-facing triangles as occluders
     var tris = [];
-    mesh.faces.forEach(function (f) {
+    mesh.faces.forEach(function (f, fi) {
       var ne = V.dot(f.normal, e);
       if (ne <= 1e-9) return;
       for (var t = f.start; t < f.start + f.count; t++) {
@@ -262,7 +263,7 @@ var Drawing = (function () {
           var nx = -dy / L, ny = dx / L;
           hs.push([nx, ny, -(nx * a[0] + ny * a[1])]);
         }
-        tris.push({ q: q2, hs: hs, n: f.normal, c: V.dot(f.normal, [P[o], P[o + 1], P[o + 2]]), ne: ne, wmax: wmax,
+        tris.push({ f: fi, q: q2, hs: hs, n: f.normal, c: V.dot(f.normal, [P[o], P[o + 1], P[o + 2]]), ne: ne, wmax: wmax,
           umin: Math.min(q2[0][0], q2[1][0], q2[2][0]), umax: Math.max(q2[0][0], q2[1][0], q2[2][0]),
           vmin: Math.min(q2[0][1], q2[1][1], q2[2][1]), vmax: Math.max(q2[0][1], q2[1][1], q2[2][1]) });
       }
@@ -304,14 +305,18 @@ var Drawing = (function () {
       }
       return out;
     }
-    // hidden intervals of one 3D segment (ez: a larger depth tolerance, for exact curves that lie off the facets)
-    function hiddenIntervals(A, B, a2, b2, ez) {
+    // hidden intervals of one 3D segment (ez: a larger depth tolerance, for exact curves that lie off the facets;
+    // skip: a surface key whose own facets cannot hide the segment, the exact silhouette of a cylinder or cone: its
+    // chordal facets lie inside the surface, and a sliver facet ending on the silhouette must not cut it short near
+    // its end, r5/drawings5)
+    function hiddenIntervals(A, B, a2, b2, ez, skip) {
       var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), AB = V.sub(B, A), eZ = ez > epsZ ? ez : epsZ;
       var ivs = [];
       var cand = candidates(a2, b2);
       for (var ci = 0; ci < cand.length; ci++) {
         var t = tris[cand[ci]];
         if (t.wmax <= wmin + eZ) continue;               // the triangle is nowhere in front of the segment
+        if (skip != null && CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip) continue;
         var lo = 0, hi = 1;
         // in front: s(t) = (c - n·X(t)) / (n·e) > epsZ
         var s0 = (t.c - V.dot(t.n, A)) / t.ne, s1 = (t.c - V.dot(t.n, B)) / t.ne;
@@ -343,13 +348,15 @@ var Drawing = (function () {
     var GR = CV ? CV.groups.slice() : [], synth = {};
     // p moved onto the circle (centre c, unit normal n, radius r) along its plane's radial direction
     function onCircle3(p, c, n, r) { var q = V.sub(p, c); q = V.sub(q, V.scale(n, V.dot(q, n))); var L = V.len(q); return L > 1e-12 ? V.add(c, V.scale(q, r / L)) : null; }
-    function synthGroup(body, c, n, r) {
+    // half: keep only the half of the circle on that side of its centre (a torus tube's cross-section seen face-on)
+    function synthGroup(body, c, n, r, half) {
       var sg = (n[0] < -1e-9 || (Math.abs(n[0]) <= 1e-9 && (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[2] < 0)))) ? -1 : 1, qs = diag * 1e-7 + 1e-12;
       n = V.scale(n, sg);
       var key = body + '|' + c.map(function (x) { return Math.round(x / qs); }).join(',') + '|' + n.map(function (x) { return Math.round(x * 1e6); }).join(',') + '|' + Math.round(r / qs);
+      if (half) key += '|h' + half.map(function (x) { return Math.round(x * 1e6); }).join(',');
       if (synth[key] == null) {
         var x = V.norm(V.cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-        GR.push({ body: body, c: c.slice(), n: n, x: x, y: V.cross(n, x), r: r, arc: false, sil: true, chords: [], cov: [] });
+        GR.push({ body: body, c: c.slice(), n: n, x: x, y: V.cross(n, x), r: r, arc: false, sil: true, chords: [], cov: [], half: half || null });
         cst.push(null);
         synth[key] = GR.length - 1;
       }
@@ -361,6 +368,10 @@ var Drawing = (function () {
         var fs0 = CV.faceSurf[ed.faces[0]], fs1 = CV.faceSurf[ed.faces[1]];
         if (fs0 && fs1 && fs0.key === fs1.key) { sameSurf = fs0.s; sameKey = fs0.key; }
       }
+      // faces meeting under 23° count as smooth (facets of a curved face); where both faces' true normals are known
+      // (surface records, or flat faces that are not facets of a curved one) a real crease, a shallow chamfer or a
+      // drafted face meeting another feature, is drawn as an edge instead of a tangent edge (r5/drawings5)
+      if (ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && creased(ed)) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: false };
       if (ed.smooth || sameSurf) {
         var s0 = V.dot(ed.normals[0], e) > 1e-9, s1 = V.dot(ed.normals[1], e) > 1e-9;
         if (s0 === s1) {
@@ -417,16 +428,33 @@ var Drawing = (function () {
         }
         // any other sharp edge where two different analytic surfaces meet (or one meets a plane): the chord becomes
         // points on the true intersection curve, fine enough to look smooth at any zoom (r4/drawings4)
-        // Only on OpenCascade's solid (its polygons know their B-rep face): there every facet edge is a chord of the
-        // true edge; Anvil's approximate booleans can put a chord where the true curve leaves the solid (a hex nut's
-        // chamfer cone running past its flats)
-        if (g < 0 && ed.faces.length === 2 && brepMesh) {
+        // On OpenCascade's solid (its polygons know their B-rep face) every facet edge is a chord of the true edge. On
+        // Anvil's, whose approximate booleans can put a chord where the true curve leaves the solid (a hex nut's
+        // chamfer cone running past its flats), only a chain that stays within the chord tolerance of the facet chord
+        // is taken, its ends move no further than that, and an end where other edges meet (a corner) stays where the
+        // facets put it, so the edges still meet (r5/drawings5)
+        if (g < 0 && ed.faces.length === 2 && (brepMesh || !(isFacet(ed.faces[0]) || isFacet(ed.faces[1])))) {
           var X1 = faceSurface(ed.faces[0]), X2 = X1 && faceSurface(ed.faces[1]);
           if (X2 && (X1.t !== 'pln' || X2.t !== 'pln') && X1 !== X2) {
-            var Lc = V.len(V.sub(ed.b, ed.a)), chn = intersectionChain(X1, X2, ed.a, ed.b, diag * 1e-7 + 1e-10, diag * 1e-5 + 1e-9, Lc * 0.25 + diag * 1e-5);
+            var Lc = V.len(V.sub(ed.b, ed.a)), facTol = 3 * chordTol();
+            var chn = intersectionChain(X1, X2, ed.a, ed.b, diag * 1e-7 + 1e-10, diag * 1e-5 + 1e-9, brepMesh ? Lc * 0.25 + diag * 1e-5 : Math.min(Lc * 0.5, facTol));
+            if (chn && !brepMesh) {
+              if (chn.dev > facTol) chn = null;
+              else {
+                // at a corner the true curve may run on out of the faceted solid: the chain is bent back onto the
+                // corner vertex, the offset fading out along the chord, so it stays smooth and meets the other edges
+                var cp = chn.pts, sl = [0], da = isCorner(ed.a, ed.faces) ? V.sub(ed.a, cp[0]) : null, db = isCorner(ed.b, ed.faces) ? V.sub(ed.b, cp[cp.length - 1]) : null;
+                for (var si = 1; si < cp.length; si++) sl.push(sl[si - 1] + V.len(V.sub(cp[si], cp[si - 1])));
+                var sT = sl[sl.length - 1] || 1;
+                chn.pts = cp.map(function (x, i) { var w = sl[i] / sT; if (da) x = V.add(x, V.scale(da, 1 - w)); if (db) x = V.add(x, V.scale(db, w)); return x; });
+              }
+            }
             if (chn) {
               var ceps = 2 * chn.dev + diag * 1e-6;
-              for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: ceps, isect: true }, null);
+              // (on Anvil's solid each piece gets its own depth tolerance, from how far it lies off the facet chord, so
+              // a piece pulled back onto a corner does not show through the faces around it)
+              var offC = function (x) { return K.pointSegmentDistance ? K.pointSegmentDistance(x, ed.a, ed.b) : chn.dev; };
+              for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: brepMesh ? ceps : 2 * Math.max(offC(chn.pts[ci]), offC(chn.pts[ci + 1])) + diag * 1e-6, isect: true }, null);
               return;
             }
           }
@@ -434,10 +462,69 @@ var Drawing = (function () {
       }
       if (ed.exactA) { A = ed.exactA; B = ed.exactB; }
       var a2 = [V.dot(A, U), V.dot(A, Vv)], b2 = [V.dot(B, U), V.dot(B, Vv)];
+      if (g >= 0 && !ed.split && Math.abs(V.dot(GR[g].n, e)) < 1e-9) {
+        // A true curve seen edge-on is a line whose ends are the curve's extremes in this view. A chord whose arc runs
+        // through an extreme is split there, at the true curve point: otherwise the chord (inside the curve, perhaps
+        // seen end-on, perhaps behind the next facet) loses the arc's outermost part and the rim line stops a
+        // sagitta short of the side outline (0.025 mm on OpenCascade's Mug in the Front view) (r5/drawings5)
+        var Gc = GR[g], ca = curveAngle(Gc, A), cb = unwrapNear(curveAngle(Gc, B), ca), lo = Math.min(ca, cb), hi = Math.max(ca, cb);
+        var px = [V.dot(Gc.x, U), V.dot(Gc.x, Vv)], py = [V.dot(Gc.y, U), V.dot(Gc.y, Vv)], td = Math.hypot(px[0], px[1]) >= Math.hypot(py[0], py[1]) ? px : py, tdl = Math.hypot(td[0], td[1]);
+        if (hi - lo > 1e-9 && hi - lo < Math.PI && tdl > 1e-12) {
+          var ps = Math.atan2((py[0] * td[0] + py[1] * td[1]) / tdl, (px[0] * td[0] + px[1] * td[1]) / tdl);
+          for (var j = -6; j <= 6; j++) {
+            var th = ps + j * Math.PI;
+            if (th <= lo + 1e-9 || th >= hi - 1e-9) continue;
+            var X = V.add(Gc.c, V.add(V.scale(Gc.x, Gc.r * Math.cos(th)), V.scale(Gc.y, Gc.r * Math.sin(th))));
+            var sag = Gc.r * (1 - Math.cos((hi - lo) / 2)), xe = Math.max(ed.eps || 0, 2 * sag + diag * 1e-7);
+            edgePiece({ a: A, b: X, faces: ed.faces, normals: ed.normals, group: g, exactDone: true, split: true, eps: xe }, null);
+            edgePiece({ a: X, b: B, faces: ed.faces, normals: ed.normals, group: g, exactDone: true, split: true, eps: xe }, null);
+            return;
+          }
+        }
+      }
       var L2 = Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
       if (L2 < tol2 * 10) return;                           // seen end-on
-      var hidden = hiddenIntervals(A, B, a2, b2, ed.eps), t = 0;
       var body = mesh.faces[ed.faces[0]].body || 0;   // the component (assembly) or solid body the edge belongs to
+      var hidden, t = 0;
+      if (g >= 0 && Math.abs(V.dot(GR[g].n, e)) > 1 - 1e-9) {
+        // a true circle seen face-on: the chord lies up to a sagitta inside the curve, where the facets of a surface
+        // that ends on the circle from inside (a handle's bend round its tube seen end-on) cover it and the outline
+        // came out in dashes. The true arc is tested too, as short chords between points on the circle (depth
+        // tolerance: the chord's distance from its faces' true surfaces, their facets being chords too); a part is
+        // hidden only where both are (the true arc alone sinks into a surface ending on the circle from outside, a
+        // torus's inner equator, whose facets' inner edges are chords inside the circle) (r5/drawings5)
+        var Gf = GR[g], fa = curveAngle(Gf, A), fb = unwrapNear(curveAngle(Gf, B), fa);
+        hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip);
+        if (hidden.length && Math.abs(fb - fa) > 1e-9 && Math.abs(fb - fa) < Math.PI / 3) {
+          var mid = V.scale(V.add(A, B), 0.5), dev = 0, ezf;
+          ed.faces.forEach(function (fi) { var S = faceSurface(fi), f = S && S.t !== 'pln' ? surfDist(S, mid) : null; if (f) dev = Math.max(dev, Math.abs(f[0])); });
+          ezf = Math.max(ed.eps || 0, 2 * dev);
+          // the circle's point at angle th, at the chord's depth there (a sharp edge drawn on a cylinder's circle keeps
+          // its own depth)
+          var at = function (th) {
+            var X = V.add(A, V.scale(V.sub(B, A), tOf(th)));
+            return V.add(V.add(Gf.c, V.scale(Gf.n, V.dot(V.sub(X, Gf.c), Gf.n))), V.add(V.scale(Gf.x, Gf.r * Math.cos(th)), V.scale(Gf.y, Gf.r * Math.sin(th))));
+          };
+          // chord parameter of the point at angle th (where the ray from the centre crosses the chord)
+          var pa = [V.dot(V.sub(A, Gf.c), Gf.x), V.dot(V.sub(A, Gf.c), Gf.y)], pb = [V.dot(V.sub(B, Gf.c), Gf.x), V.dot(V.sub(B, Gf.c), Gf.y)];
+          var tOf = function (th) { var dx = Math.cos(th), dy = Math.sin(th), den = (pb[0] - pa[0]) * dy - (pb[1] - pa[1]) * dx; return Math.abs(den) < 1e-15 ? 0 : Math.max(0, Math.min(1, -(pa[0] * dy - pa[1] * dx) / den)); };
+          var ns = Math.max(2, Math.min(16, Math.ceil(Math.abs(fb - fa) / 0.02))), ht = [];
+          for (var k = 0; k < ns; k++) {
+            var th0 = fa + (fb - fa) * k / ns, th1 = fa + (fb - fa) * (k + 1) / ns, P0 = at(th0), P1 = at(th1);
+            hiddenIntervals(P0, P1, [V.dot(P0, U), V.dot(P0, Vv)], [V.dot(P1, U), V.dot(P1, Vv)], ezf, ed.skip).forEach(function (q) {
+              var x0 = tOf(th0 + (th1 - th0) * q[0]), x1 = tOf(th0 + (th1 - th0) * q[1]);
+              ht.push([Math.min(x0, x1), Math.max(x0, x1)]);
+            });
+          }
+          ht = mergeIntervals(ht, 1e-9);
+          var both = [];
+          // (slivers inside the chord shorter than twice its sagitta, where the true arc dips under a facet vertex of the
+          // other surface, are not hidden curve)
+          var L2c = Math.hypot(b2[0] - a2[0], b2[1] - a2[1]), sagc = Gf.r * (1 - Math.cos((fb - fa) / 2));
+          hidden.forEach(function (h) { ht.forEach(function (q) { var lo = Math.max(h[0], q[0]), hi = Math.min(h[1], q[1]); if (hi > lo + 1e-12 && !(lo > 1e-9 && hi < 1 - 1e-9 && (hi - lo) * L2c < 2 * sagc)) both.push([lo, hi]); }); });
+          hidden = both;
+        }
+      } else hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip);
       if (g >= 0) {
         // a piece of a true curve: its visible and hidden parameter ranges become angle ranges on the curve
         var G = GR[g], st = cst[g] || (cst[g] = { vis: [], hid: [] }), ta = curveAngle(G, A);
@@ -457,6 +544,56 @@ var Drawing = (function () {
     }
     // the feature that made a mesh face (its polygons' shared tag), or null
     function featureOf(fi) { var f = mesh.faces[fi], p = f && f.polys && f.polys[0]; return p && p.shared != null ? p.shared : null; }
+    // faces with no surface record that meet a face of their own feature under 23° (the facets of an Anvil fillet,
+    // a loft): their normals are not the true surface's, so a smooth edge on them may be a tangent edge
+    var facetty = null;
+    function isFacet(fi) {
+      if (!facetty) {
+        facetty = new Uint8Array(mesh.faces.length);
+        meshEdges(mesh).forEach(function (pc) {
+          if (!pc.smooth || pc.faces.length !== 2 || featureOf(pc.faces[0]) !== featureOf(pc.faces[1])) return;
+          pc.faces.forEach(function (fi2) { if (!(CV && CV.faceSurf[fi2])) facetty[fi2] = 1; });
+        });
+      }
+      return facetty[fi] === 1;
+    }
+    // the kernel's chord tolerance (how far Anvil's facets and boolean vertices may sit from the true surfaces)
+    function chordTol() { var t = K.setTessellation ? K.setTessellation({}) : null; return Math.max(0.05, t && t.chordTol || 0.05); }
+    // a corner: a vertex where sharp edges between other surfaces than the edge's own two meet (or where a chain of
+    // edges does not just run on) (r5/drawings5)
+    var vSharp = null, qv = diag * 1e-7 + 1e-12;
+    function surfKey(fi) { var fs = CV && CV.faceSurf[fi]; return fs ? 's' + fs.key : isFacet(fi) ? 'f' + featureOf(fi) : 'p' + fi; }
+    function pairKey(fs) { var a = surfKey(fs[0]), b = fs.length > 1 ? surfKey(fs[1]) : ''; return a < b ? a + '|' + b : b + '|' + a; }
+    function vKey(p) { return Math.round(p[0] / qv) + ',' + Math.round(p[1] / qv) + ',' + Math.round(p[2] / qv); }
+    function isCorner(p, faces) {
+      if (!vSharp) {
+        vSharp = {};
+        meshEdges(mesh).forEach(function (pc) {
+          if (pc.smooth) return;
+          var k = pairKey(pc.faces);
+          [pc.a, pc.b].forEach(function (x) { var vk = vKey(x); (vSharp[vk] || (vSharp[vk] = [])).push(k); });
+        });
+      }
+      var l = vSharp[vKey(p)] || [], own = pairKey(faces);
+      return l.length !== 2 || l.some(function (k) { return k !== own; });
+    }
+    // the true unit normal of face fi at p (its surface record's, or a flat face's own), null when unknown
+    function trueNormal(fi, p) {
+      var f = mesh.faces[fi], fs = CV && CV.faceSurf[fi];
+      if (fs) {
+        var d = surfDist(fs.s, p);
+        if (!d || V.len(d[1]) < 1e-12) return null;
+        var n = V.norm(d[1]);
+        return V.dot(n, f.normal) < 0 ? V.scale(n, -1) : n;
+      }
+      if (isFacet(fi) || (f.polys && f.polys.some(function (q) { return q.surf; }))) return null;
+      return f.normal;
+    }
+    // a smooth (under 23°) edge whose two faces' true normals differ by more than 2°: a real crease
+    function creased(ed) {
+      var m = V.scale(V.add(ed.a, ed.b), 0.5), n0 = trueNormal(ed.faces[0], m), n1 = n0 && trueNormal(ed.faces[1], m);
+      return !!n1 && V.dot(n0, n1) < COS_CREASE;
+    }
     // Tangent pieces on no known curve (tfree): connected runs of them whose vertices all lie on one circle in space (an
     // Anvil fillet's run-out onto a cap: its facets carry no surface record) are that exact circle, drawn as a circle,
     // arc or ellipse like the others; the rest are straight pieces (r4/drawings4)
@@ -589,7 +726,7 @@ var Drawing = (function () {
           var ok = z0 != null && z1 != null && z1 > z0;
           var atZ = function (zz) { return V.add(V.add(S.o, V.scale(S.d, zz)), V.scale(w, S.r + kc * zz)); };
           c.items.forEach(function (x) {
-            var ed = x.p.ed, q = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: true, exactDone: true };
+            var ed = x.p.ed, q = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: true, exactDone: true, skip: ok && (S.t === 'cyl' || S.t === 'cone') ? x.p.key : null };
             if (ok) {
               // the end pieces reach the exact ends (a piece wholly past one is dropped)
               var za = x.p.ex[2], zb = x.p.ex[3];
@@ -617,7 +754,7 @@ var Drawing = (function () {
     // (exact circles and arcs with hidden parts), the general curve as short exact chords. Pieces with no clear branch
     // keep their facet edge.
     function roundSilhouettes() {
-      var runs = {}, rorder = [];
+      var runs = {}, rorder = [], axial = {};
       function fallback(p) { var q = { a: p.ed.a, b: p.ed.b, faces: p.ed.faces, normals: p.ed.normals, smooth: true, exactDone: true }; edgePiece(q, p.ei); }
       var onCircle = onCircle3;
       function toGroup(p, gi, A, B) {
@@ -638,7 +775,9 @@ var Drawing = (function () {
           // along the axis: the outer or inner equator
           var rr = R + (cth >= 0 ? r : -r);
           if (rr <= 1e-9 * R) { fallback(p); return; }
-          toGroup(p, synthGroup(body, S.o, d, rr), onCircle(a, S.o, d, rr), onCircle(b, S.o, d, rr));
+          var ge = synthGroup(body, S.o, d, rr);
+          axial[ge] = { S: S, skey: p.key, body: body, G: GR[ge] };
+          toGroup(p, ge, onCircle(a, S.o, d, rr), onCircle(b, S.o, d, rr));
           return;
         }
         if (Math.abs(de) < 1e-9) {
@@ -649,13 +788,16 @@ var Drawing = (function () {
           if (wl > 1e-12) w0 = V.scale(w0, (V.dot(w0, wm) >= 0 ? 1 : -1) / wl);
           var nearX = wl > 1e-12 && V.dot(w0, wm) >= Math.cos(Math.PI / 12);
           if (nearX && (mer > along || Math.abs(sth) < 0.5 * hyp)) {
+            // only the tube's outer half is outline: the inner half lies behind the tube itself, and the facet pieces
+            // beside it otherwise ran past the top / bottom lines (r5/drawings5)
             var cc = V.add(S.o, V.scale(w0, R)), nn = V.norm(V.cross(d, w0));
-            toGroup(p, synthGroup(body, cc, nn, r), onCircle(a, cc, nn, r), onCircle(b, cc, nn, r));
+            toGroup(p, synthGroup(body, cc, nn, r, R > r ? w0 : null), onCircle(a, cc, nn, r), onCircle(b, cc, nn, r));
             return;
           }
           if (Math.abs(sth) < 0.5 * hyp) { fallback(p); return; }
-          var cz = V.add(S.o, V.scale(d, sth > 0 ? r : -r));
-          toGroup(p, synthGroup(body, cz, d, R), onCircle(a, cz, d, R), onCircle(b, cz, d, R));
+          var cz = V.add(S.o, V.scale(d, sth > 0 ? r : -r)), gz = synthGroup(body, cz, d, R);
+          axial[gz] = { S: S, skey: p.key, body: body, G: GR[gz] };
+          toGroup(p, gz, onCircle(a, cz, d, R), onCircle(b, cz, d, R));
           return;
         }
         // any other view: the branch beside the piece, and its angular extent about the axis
@@ -742,6 +884,22 @@ var Drawing = (function () {
           }
         });
       });
+      // a partial torus seen from the side or along its axis: its top / bottom circles (edge-on) and equators
+      // (face-on) stop at the last facet vertex, up to a facet short of the end meridians; visible runs that end
+      // within a facet and a half of one are carried on to it, so the outline meets the tube's cross-section and the
+      // next face's outline (the Mug's handle from the right stopped 0.2 mm short) (r5/drawings5)
+      Object.keys(axial).forEach(function (gi) {
+        var ax = axial[gi], st = cst[gi], G = ax.G;
+        if (!st || !st.vis.length) return;
+        var ext = torusExtent({ S: ax.S, skey: ax.skey, body: ax.body, phi: function (q) { var w = V.sub(q, ax.S.o); return Math.atan2(V.dot(w, G.y), V.dot(w, G.x)); } });
+        if (!ext) return;
+        var reach = 1.5 * ext.step + 1e-9;
+        joinRuns(modMerge(st.vis, 1e-9), 1e-9).forEach(function (iv) {
+          var lo = unwrapNear(ext.lo, iv[0]), hi = unwrapNear(ext.hi, iv[1]);
+          if (iv[0] - lo > 1e-12 && iv[0] - lo <= reach) st.vis.push([lo, iv[0]]);
+          if (hi - iv[1] > 1e-12 && hi - iv[1] <= reach) st.vis.push([iv[1], hi]);
+        });
+      });
     }
     // the true curves: circles seen along their axis (grouped by their projection, so a hole's far rim under its near
     // rim is not drawn hidden), ellipses seen obliquely, lines seen edge-on
@@ -757,7 +915,14 @@ var Drawing = (function () {
         // gaps shorter than a drawable piece are closed too: a visible run broken only by a sliver of hidden curve (at
         // a tangent point) is one run, and a run that then covers the whole curve is a full circle / ellipse
         var minA = tol2 * 10 / Math.max(G.r, 1e-12), gapC = Math.max(GAPA, Math.min(minA, 1e-3));
-        var sv = closeFull(modMerge(st.vis, gapC), gapC), sh = subtractIntervals(modMerge(st.hid, GAPA), sv, GAPA);
+        var sv = closeFull(modMerge(st.vis, gapC), gapC), hidIv = st.hid;
+        if (G.half) {
+          // a torus tube's cross-section: visible pieces past the outer half go to its hidden inner half (r5/drawings5)
+          var aw = curveAngle(G, V.add(G.c, G.half)), hcut = modMerge([[aw + Math.PI / 2, aw + 1.5 * Math.PI]], 0), svc = subtractIntervals(sv, hcut, 0);
+          hidIv = hidIv.concat(subtractIntervals(sv, svc, 0));
+          sv = svc;
+        }
+        var sh = subtractIntervals(modMerge(hidIv, GAPA), sv, GAPA);
         sv = sv.filter(function (iv) { return iv[1] - iv[0] > minA; }); sh = sh.filter(function (iv) { return iv[1] - iv[0] > minA; });
         if (Math.abs(ne) > 1 - 1e-9) {
           var s = ne > 0 ? 1 : -1, f0 = Math.atan2(x2[1], x2[0]);
@@ -1442,12 +1607,13 @@ var Drawing = (function () {
   }
   // ANSI31 hatching: parallel lines at `ang` degrees, `sp` apart (paper units, anchored at the sheet origin so every
   // view's pattern lines up), clipped to the region inside an odd number of loops. Returns [[x1, y1, x2, y2]].
-  function hatchLines(loops, sp, ang) {
+  function hatchLines(loops, sp, ang, off) {
     var a = ang * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], n = [-Math.sin(a), Math.cos(a)];
     var tmin = Infinity, tmax = -Infinity, out = [];
     loops.forEach(function (l) { l.forEach(function (p) { var t = n[0] * p[0] + n[1] * p[1]; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }); });
-    for (var k = Math.ceil(tmin / sp); k * sp <= tmax; k++) {
-      var t = k * sp, xs = [];
+    off = off || 0;
+    for (var k = Math.ceil((tmin - off) / sp); k * sp + off <= tmax; k++) {
+      var t = k * sp + off, xs = [];
       loops.forEach(function (l) {
         for (var i = 0; i < l.length; i++) {
           var p = l[i], q = l[(i + 1) % l.length], tp = n[0] * p[0] + n[1] * p[1] - t, tq = n[0] * q[0] + n[1] * q[1] - t;
@@ -1469,6 +1635,43 @@ var Drawing = (function () {
   function hatchStyle(body) {
     var b = Math.max(0, body | 0);
     return { angle: HATCH_ANGLES[b % HATCH_ANGLES.length], spacing: 1 + 0.6 * Math.floor(b / HATCH_ANGLES.length) };
+  }
+  // Area hatch patterns by material, as SolidWorks takes them from the material (the ANSI Y14.2 families of acad.pat),
+  // in units of the base spacing: line families { da (degrees added to the hatch angle), offs (perpendicular offsets
+  // in one period), period, dash: [on, off] or none } (r5/drawings5)
+  var HATCH_PATTERNS = {
+    ANSI31: [{ da: 0, offs: [0], period: 1 }],                                   // iron, general use
+    ANSI32: [{ da: 0, offs: [0, 1], period: 3 }],                                // steel
+    ANSI33: [{ da: 0, offs: [0], period: 2 }, { da: 0, offs: [1], period: 2, dash: [1, 0.5] }],   // bronze, brass, copper
+    ANSI34: [{ da: 0, offs: [0, 1, 2, 3], period: 6 }],                          // plastic, rubber
+    ANSI37: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1 }], // lead, zinc, insulation
+    ANSI38: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1, dash: [2.5, 1.5] }]   // aluminium
+  };
+  var HATCH_BY_CLASS = { 'Steel': 'ANSI32', 'Stainless Steel': 'ANSI32', 'Aluminium Alloys': 'ANSI38', 'Copper Alloys': 'ANSI33', 'Plastics': 'ANSI34' };
+  // the hatch pattern for a material name (null / unknown: ANSI31)
+  function hatchPattern(materialName) {
+    var m = materialName && typeof Materials !== 'undefined' && Materials.find ? Materials.find(materialName) : null;
+    return m && HATCH_BY_CLASS[m.category] || 'ANSI31';
+  }
+  // hatch segments of a pattern over loops: [[x1, y1, x2, y2], …]; dashes keep their phase along the line direction,
+  // so neighbouring lines' dashes stagger the same way everywhere
+  function patternLines(loops, sp, ang, pattern) {
+    var out = [];
+    (HATCH_PATTERNS[pattern] || HATCH_PATTERNS.ANSI31).forEach(function (fam) {
+      var a = ang + fam.da, d = [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
+      fam.offs.forEach(function (o) {
+        hatchLines(loops, sp * fam.period, a, sp * o).forEach(function (l) {
+          if (!fam.dash) { out.push(l); return; }
+          var on = fam.dash[0] * sp, P = (fam.dash[0] + fam.dash[1]) * sp, t0 = d[0] * l[0] + d[1] * l[1], t1 = d[0] * l[2] + d[1] * l[3];
+          var lo = Math.min(t0, t1), hi = Math.max(t0, t1), bx = l[0] - d[0] * t0, by = l[1] - d[1] * t0;
+          for (var s = Math.floor(lo / P) * P; s < hi; s += P) {
+            var u0 = Math.max(lo, s), u1 = Math.min(hi, s + on);
+            if (u1 - u0 > 1e-9) out.push([bx + d[0] * u0, by + d[1] * u0, bx + d[0] * u1, by + d[1] * u1]);
+          }
+        });
+      });
+    });
+    return out;
   }
 
   // ------------------------------------------------------------------ detail views: the parent clipped to a circle
@@ -1839,6 +2042,16 @@ var Drawing = (function () {
       }
       return drawingProp(doc, prpName, units);
     });
+  }
+  // titleFieldAt(sheetSize, units, p) -> { field (a TB_FIELDS entry), rect: { x0, y0, x1, y1 } } of the title block cell
+  // under the paper point p, or null (r5/drawings5)
+  function titleFieldAt(S, units, p) {
+    var k = paperK(units), b1 = BORDER * k, tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3, hit = null;
+    TB_FIELDS.forEach(function (f) {
+      var r = { x0: tx0 + f.x0 * k, x1: tx0 + f.x1 * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + 1) * row };
+      if (!hit && p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1) hit = { field: f, rect: r };
+    });
+    return hit;
   }
   // titleBlock(doc, model, ctx?) -> { key: evaluated text } for every TB_FIELDS entry
   function titleBlock(doc, model, ctx) {
@@ -2470,6 +2683,13 @@ var Drawing = (function () {
       return c;
     }
     var hs = HATCH * k;
+    // a part's cut faces are hatched with their body's material pattern (steel ANSI32, aluminium ANSI38, …); assembly
+    // components keep ANSI31 at their own angles (r5/drawings5)
+    var capPattern = function (body) {
+      if (!hasMaterials() || !model || model.type === 'assembly') return 'ANSI31';
+      var bm = Materials.bodyMaterial ? Materials.bodyMaterial(model, ctx.build || null, body | 0) : null;
+      return hatchPattern(bm && bm.name);
+    };
     doc.views.forEach(function (v) {
       var ct = contentOf(v), pr = ct.proj;
       projections[v.id] = pr;
@@ -2481,12 +2701,12 @@ var Drawing = (function () {
       // cut faces first, so the outlines are drawn over the hatching
       var hatch = 0, hatches = [];
       (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch;
-        hatchLines(loops, hs * hst.spacing, hst.angle).forEach(function (h) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap.body);
+        patternLines(loops, hs * hst.spacing, hst.angle, pat).forEach(function (h) {
           var q = clip ? clipSeg(h, clip.c, clip.r) : h;
           if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body }); hatch++; }
         });
-        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0 });
+        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0, pattern: pat });
       });
       // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
       // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
@@ -3073,7 +3293,7 @@ var Drawing = (function () {
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3 }, next = 1;
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     pr(0, 'SECTION'); pr(2, 'HEADER');
     pr(9, '$ACADVER'); pr(1, 'AC1009');
     pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);
@@ -3092,14 +3312,16 @@ var Drawing = (function () {
     pr(0, 'ENDTAB');
     pr(0, 'TABLE'); pr(2, 'LAYER'); pr(70, layers.length);
     layers.forEach(function (n) {
-      var col = colors[n] || [5, 1, 6, 4, 2, 30, 140][(next++ - 1) % 7];
+      // view layers plot black / white (7) like the sheet; thin lines (hatch, tangent edges, centre marks) on them are
+      // colour 8, so a plot-by-colour pen table gives the thick / thin weights (R12 has no lineweights) (r5/drawings5)
+      var col = colors[n] || 7;
       pr(0, 'LAYER'); pr(2, n); pr(70, 0); pr(62, col); pr(6, 'CONTINUOUS');
     });
     pr(0, 'ENDTAB');
     pr(0, 'ENDSEC');
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) {
-      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color];
+      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
       var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
       if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
       else if (p.k === 'circle') { pr(0, 'CIRCLE'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
@@ -3475,6 +3697,33 @@ var Drawing = (function () {
     centres.forEach(function (h) {
       if (have.some(function (p) { return Math.hypot(p[0] - h.c[0], p[1] - h.c[1]) <= tol * 10; })) return;
       addCenterMark(doc, v.id, { style: 'single', holes: [h], auto: true }); n++;
+    });
+    // slot ends and rounded ends (model arcs of half a turn or more, SolidWorks's "Center marks - slots"): a slot's two
+    // ends (equal radii, facing apart) get one linear centre mark joining them, a lone rounded end a single mark
+    // (r5/drawings5)
+    var ends = [];
+    (ct.proj.arcs ? ct.proj.arcs.visible : []).forEach(function (a) {
+      if (a.src !== 'arc' || a.a1 - a.a0 < 180 - 0.01 || a.a1 - a.a0 > 359) return;
+      if (centres.some(function (x) { return Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol * 10; })) return;
+      if (ends.some(function (x) { return Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol * 10 && Math.abs(x.r - a.r) <= tol * 10; })) return;
+      var mid = (a.a0 + a.a1) / 2 * Math.PI / 180;
+      ends.push({ c: a.c.slice(), r: a.r, dir: [Math.cos(mid), Math.sin(mid)] });
+    });
+    var used = ends.map(function () { return false; });
+    ends.forEach(function (h, i) {
+      if (used[i] || have.some(function (p) { return Math.hypot(p[0] - h.c[0], p[1] - h.c[1]) <= tol * 10; })) return;
+      used[i] = true;
+      // the other end of a slot: same radius, on the side it faces away from, facing the other way
+      var mate = -1;
+      ends.forEach(function (o, j) {
+        if (used[j] || mate >= 0 || Math.abs(o.r - h.r) > tol * 10) return;
+        var dx = o.c[0] - h.c[0], dy = o.c[1] - h.c[1], L = Math.hypot(dx, dy);
+        if (L < tol * 10 || (dx * h.dir[0] + dy * h.dir[1]) / L > -1 + 1e-6 || (dx * o.dir[0] + dy * o.dir[1]) / L < 1 - 1e-6) return;
+        mate = j;
+      });
+      if (mate >= 0) { used[mate] = true; addCenterMark(doc, v.id, { style: 'linear', holes: [{ c: h.c, r: h.r }, { c: ends[mate].c, r: ends[mate].r }], auto: true }); }
+      else addCenterMark(doc, v.id, { style: 'single', holes: [{ c: h.c, r: h.r }], auto: true });
+      n++;
     });
     return n;
   }
@@ -3874,10 +4123,10 @@ var Drawing = (function () {
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
-    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
+    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
     BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomType: bomType, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
-    TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, bomPropertyNames: bomPropertyNames,
+    TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, titleFieldAt: titleFieldAt, bomPropertyNames: bomPropertyNames,
     // annotations
     circlesAlong: circlesAlong, meshCurves: meshCurves, holeInfo: holeInfo, holeText: holeText, cylAxes: cylAxes, fitCircle: fitCircle, lineIntervals: lineIntervals,
     addCenterMark: addCenterMark, autoCenterMarks: autoCenterMarks, addCenterline: addCenterline, autoCenterlines: autoCenterlines, autoInsert: autoInsert,
@@ -4492,6 +4741,8 @@ var Drawing = (function () {
     var dq = dimAt(pp);
     if (dq) { cmdDimensionPM(dimRef(dq)); openInlineEdit(dq); return; }
     if (bomAt(toPaper(e))) { cmdBOM(); return; }
+    var tf = D.sheet && Drawing.titleFieldAt(D.sheet.size, units(), pp);
+    if (tf) { openTitleEdit(tf); return; }
     var w = viewAt(toPaper(e));
     if (w) cmdViewProperties(w.view.id); else cmdSheetProperties();
   }
@@ -5392,12 +5643,39 @@ var Drawing = (function () {
   function positionInlineEdit() {
     var I = D.inline, s = svgEl(), m = s && s.getScreenCTM();
     if (!I || !m || !D.sheet) return;
-    var d = sheetDim(I.ref);
-    if (!d || !d.tbox) { closeInlineEdit(false); return; }
+    var d = I.field ? null : sheetDim(I.ref), tb = I.field ? I.field.rect : d && d.tbox;
+    if (!tb) { closeInlineEdit(false); return; }
     var H = D.sheet.size[1], pt = s.createSVGPoint(), r = D.root.getBoundingClientRect();
-    pt.x = (d.tbox.x0 + d.tbox.x1) / 2; pt.y = H - (d.tbox.y0 + d.tbox.y1) / 2;
+    pt.x = (tb.x0 + tb.x1) / 2; pt.y = H - (tb.y0 + tb.y1) / 2;
     var q = pt.matrixTransform(m);
     I.box.style.left = (q.x - r.left) + 'px'; I.box.style.top = (q.y - r.top) + 'px';
+  }
+  // Double-click a title block field: its text is edited in place (SolidWorks title block fields). The box shows the
+  // field's own text when it has one, else what its property link gives; an empty box puts the link back
+  // (r5/drawings5)
+  function openTitleEdit(tf) {
+    closeInlineEdit(false);
+    var dc = doc(), own = dc.titleBlock && dc.titleBlock[tf.field.key];
+    var shown = own != null ? String(own) : Drawing.titleBlock(dc, App.model, { build: App.build || null, mesh: mesh() })[tf.field.key] || '';
+    var inp = el('input', { type: 'text', spellcheck: 'false', 'aria-label': tf.field.label });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'text tb' }, [inp, ok, no]);
+    inp.value = shown;
+    D.root.appendChild(box);
+    D.inline = { box: box, inp: inp, field: { key: tf.field.key, rect: tf.rect, shown: shown } };
+    positionInlineEdit();
+    inp.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); closeInlineEdit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeInlineEdit(false); }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeInlineEdit(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeInlineEdit(true); });
+    no.addEventListener('click', function () { closeInlineEdit(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (err) { }
+    UI.setStatus(tf.field.label + ': type the text ($PRP:"…" / $PRPSHEET:"…" link properties; empty restores the default); Enter applies, Esc cancels.');
   }
   function closeInlineEdit(commit) {
     var I = D.inline;
@@ -5405,6 +5683,14 @@ var Drawing = (function () {
     D.inline = null;
     if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
     if (!commit) return;
+    if (I.field) {
+      var tv = I.inp.value.trim(), fm = {};
+      if (tv === I.field.shown.trim()) return;
+      fm[I.field.key] = tv === '' ? null : tv;
+      setTitleBlock(fm);
+      UI.setStatus('Title block ' + I.field.key + ': ' + (tv === '' ? 'default' : tv) + '.');
+      return;
+    }
     var d = sheetDim(I.ref), txt = I.inp.value.trim();
     if (!d) return;
     if (I.src) {
@@ -5686,7 +5972,7 @@ var Drawing = (function () {
           display: w.view.display, tangent: w.view.tangent || 'removed', x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
-          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines }; }),
+          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines, pattern: h.pattern }; }),
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
       }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
