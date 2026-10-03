@@ -1341,10 +1341,12 @@ var UI = (function () {
   // geometry updates — sceneSignature, a cheap walk over the few hundred scene objects), plus a 1 s safety redraw.
   // An idle viewport therefore costs no GPU time, and every interactive change is drawn on the very next frame.
   var needsRender = true, lastSig = null, lastRenderAt = 0;
-  var tmpBox = new THREE.Box3(), tmpV = new THREE.Vector3();
+  var tmpBox = new THREE.Box3(), tmpV = new THREE.Vector3(), boxSig = null;
+  // The camera (and the lights riding on it) are left out: render() poses it for transitions and puts it back.
   function sceneSignature() {
     var hi = 0, hf = 0;
-    scene.traverse(function (o) {
+    function visit(o) {
+      if (o === camera) return;
       hi = (hi * 31 + o.id * 7 + (o.visible ? 1 : 2) + o.renderOrder * 3) | 0;
       hf += o.position.x * 1.3 + o.position.y * 1.7 + o.position.z * 2.3 + o.quaternion.x + o.quaternion.y * 1.1 + o.quaternion.z * 1.3 + o.scale.x + o.scale.y * 1.5 + o.scale.z * 1.9;
       var m = o.material;
@@ -1360,15 +1362,17 @@ var UI = (function () {
         var pa = g.attributes && g.attributes.position;
         hi = (hi * 31 + g.id + (pa ? pa.version * 13 + pa.count : 0) + (g.index ? g.index.version : 0)) | 0;
       }
-    });
+      for (var i = 0; i < o.children.length; i++) visit(o.children[i]);
+    }
+    visit(scene);
     return hi + '|' + hf + '|' + size.w + 'x' + size.h;
   }
   // Depth range fitted to what is in the scene (both views of it while a transition runs): an orthographic camera can
   // take any near / far, and a range a few times the model instead of 20 m keeps the depth buffer fine enough that
   // edges, highlights and coincident faces do not z-fight. Picking keeps the fixed range (it is restored after drawing).
-  function fitDepth(target, dir) {
-    tmpBox.makeEmpty();
-    tmpBox.setFromObject(scene);
+  // The scene's box is recomputed only when the scene signature changes.
+  function fitDepth(target, dir, sig) {
+    if (sig !== boxSig) { boxSig = sig; tmpBox.makeEmpty(); tmpBox.setFromObject(scene); }
     if (tmpBox.isEmpty() || !isFinite(tmpBox.min.x) || !isFinite(tmpBox.max.x)) return;
     var lo = Infinity, hi = -Infinity;
     for (var i = 0; i < 8; i++) {
@@ -1380,8 +1384,9 @@ var UI = (function () {
     camera.near = lo - pad; camera.far = hi + pad;
     camera.updateProjectionMatrix();
   }
-  function render() {
+  function render(sig) {
     updateGrid();
+    if (typeof sig !== 'string') sig = sceneSignature();
     var pose = null, dir = cam.dir, up = cam.up, right = cam.right;
     if (viewAnim) {
       var u = animU();
@@ -1393,7 +1398,7 @@ var UI = (function () {
         poseCamera(pose.target, dir, up, pose.scale);
       }
     }
-    fitDepth(pose ? pose.target : cam.target, dir);
+    fitDepth(pose ? pose.target : cam.target, dir, sig);
     silMat.uniforms.viewDir.value.copy(dir);
     renderer.clear();
     renderer.render(scene, camera);
@@ -1403,7 +1408,7 @@ var UI = (function () {
     if (UI.drawDims && App.dimsStale && !viewAnim) { App.dimsStale = false; UI.drawDims(); }
     needsRender = false;
     lastRenderAt = performance.now();
-    lastSig = sceneSignature();
+    lastSig = sig;
   }
   // One frame of the loop (exported as UI.tick for measurements).
   function tick(now) {
@@ -1506,7 +1511,8 @@ var UI = (function () {
     });
     App.hover = null;
     // keep the pre-selection under a resting cursor across the rebuild instead of dropping it until the mouse moves
-    if (lastMouse && App.mode !== 'sketch' && !viewAnim && UI.pickHover) { try { App.hover = UI.pickHover(lastMouse[0], lastMouse[1]) || null; } catch (e) { App.hover = null; } }
+    var lm = lastClient && App.mode !== 'sketch' && !viewAnim && UI.pickHover ? lastMousePos() : null;
+    if (lm) { try { App.hover = UI.pickHover(lm[0], lm[1]) || null; } catch (e) { App.hover = null; } }
     updateHighlights();
     updatePlanes();
     updateOrigin();
@@ -1804,14 +1810,31 @@ var UI = (function () {
 
   window.addEventListener('resize', resize);
   // the cursor position over the viewport with no button held (null otherwise), for the pre-selection after a rebuild
-  var lastMouse = null;
-  viewport.addEventListener('mousemove', function (ev) {
-    if (ev.buttons) { lastMouse = null; return; }
+  // (client coordinates; turned into viewport ones only when used, so a mouse move forces no layout here)
+  var lastClient = null;
+  viewport.addEventListener('mousemove', function (ev) { lastClient = ev.buttons ? null : [ev.clientX, ev.clientY]; });
+  viewport.addEventListener('mouseleave', function () { lastClient = null; });
+  function lastMousePos() {
+    if (!lastClient) return null;
     var r = viewport.getBoundingClientRect();
-    lastMouse = [ev.clientX - r.left, ev.clientY - r.top];
+    return [lastClient[0] - r.left, lastClient[1] - r.top];
+  }
+  // SolidWorks: a double-click of the middle button is Zoom to Fit (browsers send no dblclick for it)
+  // (two plain middle clicks, each released where it was pressed, within 400 ms; a middle drag is not a click)
+  var lastMiddle = null, middleDown = null;
+  function nearPt(ev, p) { return Math.abs(ev.clientX - p.x) + Math.abs(ev.clientY - p.y) < 6; }
+  viewport.addEventListener('mousedown', function (ev) {
+    lastClient = null;
+    if (ev.button !== 1 || ev.ctrlKey || ev.shiftKey || ev.altKey) { lastMiddle = middleDown = null; return; }
+    var t = performance.now();
+    if (lastMiddle && t - lastMiddle.t < 400 && nearPt(ev, lastMiddle)) { lastMiddle = middleDown = null; zoomToFit(); return; }
+    middleDown = { t: t, x: ev.clientX, y: ev.clientY };
   });
-  viewport.addEventListener('mouseleave', function () { lastMouse = null; });
-  viewport.addEventListener('mousedown', function () { lastMouse = null; });
+  window.addEventListener('mouseup', function (ev) {
+    if (ev.button !== 1 || !middleDown) return;
+    lastMiddle = nearPt(ev, middleDown) ? middleDown : null;
+    middleDown = null;
+  });
 
   return {
     App: App, K: K, V: V, $: $, el: el, fmtNum: fmtNum, unitLabel: unitLabel,

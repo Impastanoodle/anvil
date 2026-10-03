@@ -4344,6 +4344,23 @@
     UI.rotateView(5, 0); UI.tick();
     assert(info.frame === n0 + 3, 'a camera move is drawn');
   });
+  step('smooth/viewport: a middle-button double-click zooms to fit; the pre-selection under a resting cursor survives a rebuild', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    UI.setView('Front');
+    UI.zoomView(4);
+    var s0 = UI.cam.scale, c = [Math.round(UI.size.w / 2), Math.round(UI.size.h / 2)];
+    vpEv('mousedown', c, { button: 1, buttons: 4 }); vpEv('mouseup', c, { button: 1 });
+    vpEv('mousedown', c, { button: 1, buttons: 4 }); vpEv('mouseup', c, { button: 1 });
+    UI.finishViewAnimation();
+    assert(UI.cam.scale < s0 / 2, 'zoomed to fit (' + s0 + ' → ' + UI.cam.scale + ')');
+    var p = UI.worldToScreen([0, 5, 10]);
+    vpEv('mousemove', p, {}, $('viewport'));
+    assert(UI.App.hover && UI.App.hover.kind === 'face', 'hovering the front face');
+    await UI.rebuild(); await idle();
+    assert(UI.App.hover && UI.App.hover.kind === 'face', 'still pre-selected after the rebuild');
+    vpEv('mousemove', [2, 2], {}, $('viewport'));
+  });
   // --- end smooth/viewport ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
