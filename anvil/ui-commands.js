@@ -2336,19 +2336,26 @@
       return { type: 'pick', icon: icon, placeholder: placeholder, show: show,
         value: function (x) { var n = filled(x).length; return n ? n + ' selected' : ''; },
         items: function (x) { return filled(x).map(function (k) { return { label: refText(x[k]), get faces() { return slotFace(k); } }; }); },
-        onRemove: function (x, i) {
-          var k = filled(x)[i];
-          if (!k) return;
-          x[k] = null; delete pickedBy[k];
-          for (var j = keys.indexOf(k); j + 1 < keys.length; j++) {   // later picks move up
-            x[keys[j]] = x[keys[j + 1]]; x[keys[j + 1]] = null;
-            if (pickedBy[keys[j + 1]] != null) { pickedBy[keys[j]] = pickedBy[keys[j + 1]]; delete pickedBy[keys[j + 1]]; } else delete pickedBy[keys[j]];
-          }
-          picked = Object.keys(pickedBy).map(function (s) { return pickedBy[s]; });
-          if (App.command) App.command.faceList = picked.slice();
-          renderPM(); preview(); UI.updateHighlights();
-        },
+        onRemove: function (x, i) { var k = filled(x)[i]; if (k) removeSlot(keys, k); },
         onClear: function (x) { clearPicks(x); renderPM(); preview(); UI.updateHighlights(); } };
+    }
+    function removeSlot(keys, k) {
+      v[k] = null; delete pickedBy[k];
+      for (var j = keys.indexOf(k); j + 1 < keys.length; j++) {   // later picks move up
+        v[keys[j]] = v[keys[j + 1]]; v[keys[j + 1]] = null;
+        if (pickedBy[keys[j + 1]] != null) { pickedBy[keys[j]] = pickedBy[keys[j + 1]]; delete pickedBy[keys[j + 1]]; } else delete pickedBy[keys[j]];
+      }
+      picked = Object.keys(pickedBy).map(function (s) { return pickedBy[s]; });
+      if (App.command) App.command.faceList = picked.slice();
+      renderPM(); preview(); UI.updateHighlights();
+    }
+    // a click on a face already in the list takes it out again (as in SolidWorks)
+    function unpick(fi) {
+      var grp = UI.faceGroup ? UI.faceGroup(fi) : [fi];
+      var k = slots(v).filter(function (s) { return v[s] && slotFace(s).some(function (j) { return grp.indexOf(j) >= 0; }); })[0];
+      if (!k) return false;
+      removeSlot(v.type === 'width' ? (k === 'a' || k === 'a2' ? ['a', 'a2'] : ['b', 'b2']) : ['a', 'b'], k);
+      return true;
     }
     openPM({
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
@@ -2357,6 +2364,7 @@
         pickPlane: true, faceList: [],
         onPick: function (pk) {
           var ref = null;
+          if (pk.kind === 'face' && unpick(pk.index)) return true;   // r5/select5
           if (pk.kind === 'face') { try { ref = Assembly.refFromPick(App.model, App.build, pk.index, pk.point, App.mesh); } catch (e) { ref = null; } }
           else if (pk.kind === 'axis' && typeof pk.ref === 'string') ref = { axis: pk.ref };
           else if (pk.kind === 'plane' && typeof pk.ref === 'string') ref = { plane: pk.ref };

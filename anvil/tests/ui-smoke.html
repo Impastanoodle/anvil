@@ -5727,6 +5727,8 @@
     rows[0].focus(); rows[0].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true })); await idle();
     rows = D.querySelectorAll('#pm .pm-list .pm-item');
     assert(rows.length === 1 && /Face@Block<1>/.test(rows[0].textContent) && UI.pmSpec().values.a && !UI.pmSpec().values.b, 'Delete removed the first pick, the second moved up');
+    UI.App.command.onPick({ kind: 'face', index: fb, point: UI.App.mesh.faces[fb].centroid.slice() }); await idle();
+    assert(!D.querySelectorAll('#pm .pm-list .pm-item').length && !UI.pmSpec().values.a, 'clicking the listed face again takes it out');
     UI.pmCancel(); await idle();
     await anvil.newPart(); await idle();
     await anvil.run(BLOCK); await idle();
