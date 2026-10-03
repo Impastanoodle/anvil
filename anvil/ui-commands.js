@@ -473,6 +473,9 @@
     function apply(commit) {
       added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); });
       added = [];
+      // a circle, rectangle, slot or polygon offsets into the same kind of entity (sketch-solver.js), not a polyline
+      var exact = sel && window.SketchSolver ? SketchSolver.offsetEntity(sel.entity, (v.reverse ? -1 : 1) * Math.abs(+v.d || 0)) : null;
+      if (exact) { if (v.construction) exact.construction = true; f.entities.push(exact); added.push(exact); UI.updateSketches(); return; }
       source.forEach(function (loop) {
         var isCcw = K.signedArea(loop) >= 0, sign = (v.reverse ? -1 : 1) * (isCcw ? 1 : -1);
         var out = K.offsetLoop(loop, sign * Math.abs(+v.d || 0));
@@ -487,7 +490,10 @@
       message: sel ? 'Offsetting the selected entity.' : 'Offsetting the face outline this sketch sits on (' + source.length + ' loop' + (source.length === 1 ? '' : 's') + ').',
       groups: [{ title: 'Parameters', fields: [{ type: 'number', label: 'Offset distance', key: 'd', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse (inward)', key: 'reverse' }, { type: 'check', label: 'Construction geometry', key: 'construction' }] }],
       onChange: function () { apply(); },
-      onOK: function () { UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
+      onOK: function () {
+        var oi = sel && added.length === 1 && window.SketchSolver ? f.entities.indexOf(added[0]) : -1;
+        if (oi >= 0) SketchSolver.offsetRelations(f, sel.index, oi).forEach(function (r) { (f.rels = f.rels || []).push(r); });
+        UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
       onCancel: function () { added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); }); added = []; UI.updateSketches(); if (App.undo.length === undoN) App.undo.pop(); }
     });
     UI.pushUndo(); App.sketchDirty = true;   // the undo point is the sketch before the offset (the preview is live)
@@ -620,9 +626,16 @@
         UI.pushUndo(); App.sketchDirty = true;
         if (!v.copy) { var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before); }
         c.forEach(function (e) { f.entities.push(e); });
+        // mirrored about a sketch line: each copy is held Symmetric to its original (sketch-solver.js)
+        var specN = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, nSym = 0;
+        if (v.copy && specN >= 0 && window.SketchSolver) {
+          var axM = K.mirrorAxis(specN, f.entities), k0 = f.entities.length - c.length, pairs = [];
+          targets.filter(function (i) { return i !== specN; }).forEach(function (i) { if (K.mirrorEntity(f.entities[i], axM)) pairs.push([i, k0++]); });
+          nSym = SketchSolver.mirrorRelations(f, pairs, specN);
+        }
         App.tempEntities = []; UI.updateTemp(); App.sel = null; App.gridStale = true;
         UI.updateSketches(); UI.refreshTree();
-        UI.setStatus('Mirrored ' + c.length + ' entit' + (c.length === 1 ? 'y' : 'ies') + '.');
+        UI.setStatus('Mirrored ' + c.length + ' entit' + (c.length === 1 ? 'y' : 'ies') + (nSym ? ', ' + nSym + ' held Symmetric about Line' + (specN + 1) : '') + '.');
       },
       onCancel: function () { App.tempEntities = []; UI.updateTemp(); }
     });

@@ -4090,6 +4090,33 @@
     near(rskEnts()[0].x2 - rskEnts()[0].x1, w, 1e-9, 'bottom unchanged');
     return kinds + ' · ' + rl.length + ' relations';
   });
+  step('refine/sketcher: Offset Entities on a selected circle gives a concentric circle (not a polyline), one undo step; Mirror Entities about a centerline holds the copy Symmetric', async function () {
+    await rskNew();
+    UI.setTool('circle'); rskClick([20, 0]); rskClick([28, 0]);
+    UI.setTool('select');
+    rskClick([28, 0]);
+    assert(UI.App.sel && UI.App.sel.kind === 'entity' && UI.App.sel.index === 0, 'circle selected: ' + JSON.stringify(UI.App.sel));
+    var undo0 = UI.App.undo.length;
+    UI.cmdOffsetEntities(); UI.pmSetField('d', '3'); await wait(20);
+    UI.pmOK();
+    var e = rskEnts();
+    assert(e.length === 2 && e[1].t === 'circle' && Math.abs(e[1].r - 11) < 1e-9 && e[1].cx === 20, 'offset ' + JSON.stringify(e[1]));
+    var f = UI.activeSketchFeature(), rl = (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); });
+    assert(rl.indexOf('concentric:0,1') >= 0, 'concentric: ' + rl.join(' '));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
+    UI.cmdCenterline(); rskClick([0, -24]); rskDbl([0, 24]);
+    selKey('Escape');
+    UI.App.sel = { kind: 'entity', index: 0 };
+    UI.cmdMirrorEntities();
+    var sel = D.querySelector('#pm select');
+    sel.value = '2'; sel.dispatchEvent(new W.Event('change', { bubbles: true }));
+    UI.pmOK();
+    e = rskEnts();
+    assert(e.length === 4 && e[3].t === 'circle' && Math.abs(e[3].cx + 20) < 1e-9, 'mirrored ' + JSON.stringify(e[3]));
+    rl = (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); });
+    assert(rl.indexOf('symmetric:0,3,2') >= 0, 'symmetric: ' + rl.join(' '));
+    return rl.join(' ');
+  });
   // --- end refine/sketcher ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

@@ -1154,6 +1154,54 @@ var SketchSolver = (function () {
     return { ok: true };
   }
 
+  // ------------------------------------------------------------------ offset of a whole entity
+  // Offset Entities on a circle, rectangle, slot or regular polygon gives the same kind of entity (a circle stays a
+  // circle, not a faceted polyline). d > 0 grows it, d < 0 shrinks it. Returns null for other kinds or when it would
+  // vanish.
+  function offsetEntity(e, d) {
+    d = +d;
+    if (!e || !isFinite(d)) return null;
+    var o = null;
+    switch (e.t) {
+      case 'circle': if (e.r + d > 1e-9) o = { t: 'circle', cx: e.cx, cy: e.cy, r: e.r + d }; break;
+      case 'rect': if (e.w + 2 * d > 1e-9 && e.h + 2 * d > 1e-9) o = { t: 'rect', x: e.x - d, y: e.y - d, w: e.w + 2 * d, h: e.h + 2 * d }; break;
+      case 'crect': if (e.w + 2 * d > 1e-9 && e.h + 2 * d > 1e-9) o = { t: 'crect', cx: e.cx, cy: e.cy, w: e.w + 2 * d, h: e.h + 2 * d }; break;
+      case 'slot': if (e.w + 2 * d > 1e-9) o = { t: 'slot', x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, w: e.w + 2 * d }; break;
+      case 'poly': { var n = e.n | 0 || 6, r = e.r + d / Math.cos(Math.PI / n); if (r > 1e-9) o = { t: 'poly', cx: e.cx, cy: e.cy, r: r, n: n, rot: e.rot || 0 }; break; }
+    }
+    return o;
+  }
+  // The relations that keep offset copy `j` of entity `i` centred on it (Concentric, centre / end Coincidents).
+  function offsetRelations(sketch, i, j) {
+    var e = sketch.entities[i], o = sketch.entities[j];
+    if (!e || !o || e.t !== o.t) return [];
+    if (e.t === 'circle') return [{ type: 'concentric', refs: [String(i), String(j)] }];
+    if (e.t === 'crect' || e.t === 'poly') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }];
+    if (e.t === 'slot') return [{ type: 'coincident', refs: [i + '.p1', j + '.p1'] }, { type: 'coincident', refs: [i + '.p2', j + '.p2'] }];
+    return [];
+  }
+
+  // Mirror Entities about a line entity: each copy is held Symmetric to its original about that line (lines, circles,
+  // arcs, points), as SolidWorks does. pairs = [[original, copy], ...]. A relation that would over-define is skipped.
+  // Returns the number added.
+  function mirrorRelations(sketch, pairs, axis) {
+    var n = 0, E = sketch.entities, ax = E[axis];
+    if (!ax || ax.t !== 'line') return 0;
+    pairs.forEach(function (p) {
+      var a = E[p[0]], b = E[p[1]];
+      if (!a || !b || a.t !== b.t || !/^(line|circle|arc|point)$/.test(a.t)) return;
+      var rel = { type: 'symmetric', refs: [String(p[0]), String(p[1]), String(axis)] };
+      if (!relEquation(E, rel, sketch.rels)) return;
+      var before = analyze(sketch);
+      (sketch.rels = sketch.rels || []).push(rel);
+      solve(sketch);   // the copies were rounded to 1e-4: close the relation exactly
+      var an = analyze(sketch);
+      if (an.rels[sketch.rels.length - 1] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
+      n++;
+    });
+    return n;
+  }
+
   // ------------------------------------------------------------------ sketch fillet between two lines
   // The corner where two lines meet (an end of each at the same point) nearest uv, within maxDist: { i, ei, j, ej, at }
   // with ei / ej = 'p1' | 'p2', or null.
@@ -1316,6 +1364,7 @@ var SketchSolver = (function () {
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation,
     removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
-    lineCorner: lineCorner, filletCorner: filletCorner, install: install
+    lineCorner: lineCorner, filletCorner: filletCorner, offsetEntity: offsetEntity, offsetRelations: offsetRelations,
+    mirrorRelations: mirrorRelations, install: install
   };
 })();
