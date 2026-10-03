@@ -171,6 +171,9 @@ var OcctKernel = (function () {
 
     var rm = K.resolvedModel(model), m = rm.model;
     var planes = {}, sketches = {}, tools = {}, bodies = [], bodyFeatures = [], status = {}, unsupported = null;
+    // a feature Anvil's kernel only approximates was built (a shell of curved faces, three picked edges meeting at one
+    // corner): the volume check against Anvil uses the loose tolerance (see out.tolerance)
+    var approx = false;
     function sketchOf(f) {
       var s = sketches[f.sketch] || K.findFeature(m, f.sketch);
       if (!s || s.type !== 'sketch') throw new Error('Select a sketch for this feature.');
@@ -452,10 +455,32 @@ var OcctKernel = (function () {
       if (!(size > 0)) throw new Error((f.type === 'chamfer' ? 'Distance' : 'Radius') + ' must be greater than zero.');
       var k = pickBody(f.edges && f.edges[0] && f.edges[0].at);
       if (k < 0) throw new Error('Nothing to ' + f.type + ' yet.');
-      var body = unify(bodies[k]), es = nearest(f.edges, edgesOf(body), Math.max(0.5, size));
+      // seam edges (where a cylinder or cone closes on itself) and degenerate ones are no edges to round: a pick on a
+      // rim right where the seam meets it is as near the seam as the rim, and the fillet on the seam failed
+      var body = unify(bodies[k]), seams = N(new oc.TopTools_IndexedMapOfShape_1());
+      facesOf(body).forEach(function (fc) {
+        explore(fc, ENUM.TopAbs_EDGE).forEach(function (s) { var e = N(oc.TopoDS.Edge_1(s)); if (oc.BRep_Tool.IsClosed_2(e, fc) || oc.BRep_Tool.Degenerated(e)) seams.Add(e); });
+      });
+      var es = nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), Math.max(0.5, size));
       if (!es.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
       var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
       es.forEach(function (e) { mk.Add_2(size, e); });
+      // a fillet / chamfer along a curved edge is polygonal in Anvil (it follows the edge's facets)
+      if (es.some(function (e) { var t = N(new oc.BRepAdaptor_Curve_2(e)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;
+      // three or more picked edges meeting at one vertex: OpenCascade blends the corner (a sphere for fillets, a
+      // corner facet for chamfers) where Anvil mitres the edge solids, so the volumes differ by a few r³ per corner
+      if (es.length >= 3) {
+        var at = {};
+        es.forEach(function (e) {
+          var mine = {};
+          explore(e, ENUM.TopAbs_VERTEX).forEach(function (v) {
+            var p = N(oc.BRep_Tool.Pnt(N(oc.TopoDS.Vertex_1(v))));
+            mine[[p.X(), p.Y(), p.Z()].map(function (x) { return Math.round(x * 1e5); }).join(',')] = 1;
+          });
+          Object.keys(mine).forEach(function (key) { at[key] = (at[key] || 0) + 1; });
+        });
+        if (Object.keys(at).some(function (key) { return at[key] >= 3; })) approx = true;
+      }
       var res;
       try { res = N(mk.Shape()); } catch (e) { throw new Error('OpenCascade could not ' + f.type + ' these edges (radius too large?).'); }
       bodies[k] = res;
@@ -468,6 +493,8 @@ var OcctKernel = (function () {
       if (k < 0) throw new Error('Nothing to shell yet.');
       var body = unify(bodies[k]), rm = nearest(f.faces, facesOf(body), Math.max(0.5, T / 2)), res;
       var join = oc.GeomAbs_JoinType.GeomAbs_Intersection, mode = oc.BRepOffset_Mode.BRepOffset_Skin;
+      // Anvil offsets curved faces facet by facet (a polygonal cavity); OpenCascade's walls are the exact offset
+      if (facesOf(body).some(function (fc) { var t = N(new oc.BRepAdaptor_Surface_2(fc, true)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;
       if (rm.length) {
         var list = N(new oc.TopTools_ListOfShape_1());
         rm.forEach(function (fc) { list.Append_1(fc); });
@@ -650,11 +677,12 @@ var OcctKernel = (function () {
         Object.keys(S0.sketches).forEach(function (id) { sketches[id] = S0.sketches[id]; });
         Object.keys(cache.tools).forEach(function (id) { tools[id] = cache.tools[id]; });
         Object.keys(S0.status).forEach(function (id) { status[id] = S0.status[id]; });
+        approx = !!S0.approx;
       }
     }
     function snapshot(i) {
       if (!cache) return;
-      var S = { bodies: bodies.map(keep), bodyFeatures: bodyFeatures.slice(), planes: {}, sketches: {}, status: {}, unsupported: unsupported };
+      var S = { bodies: bodies.map(keep), bodyFeatures: bodyFeatures.slice(), planes: {}, sketches: {}, status: {}, unsupported: unsupported, approx: approx };
       Object.keys(planes).forEach(function (id) { S.planes[id] = planes[id]; });
       Object.keys(sketches).forEach(function (id) { S.sketches[id] = sketches[id]; });
       Object.keys(status).forEach(function (id) { S.status[id] = status[id]; });
@@ -704,8 +732,9 @@ var OcctKernel = (function () {
         // how closely Anvil's own volume can be expected to agree: its sweeps, lofts, flange / jog bends and imports
         // are faceted (mitred sections, ruled sections, 8 segments per 90° bend, a mesh), and an edge picked with
         // chain: false stops at that edge in Anvil while OpenCascade carries the fillet / chamfer on round tangent
-        // edges (SolidWorks' tangent propagation); everything else is exact
-        tolerance: m.features.some(function (f) {
+        // edges (SolidWorks' tangent propagation); shells of curved faces and corners where three picked edges meet are
+        // polygonal / mitred in Anvil (`approx`); everything else is exact
+        tolerance: approx || m.features.some(function (f) {
           return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;

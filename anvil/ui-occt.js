@@ -130,6 +130,15 @@
     st.anvilVolume = anvilMesh && anvilMesh.triCount ? K.massProps(anvilMesh, 1).volume : 0;
     if (r.unsupported) { st.state = 'unsupported'; return; }
     if (!r.valid) { st.state = 'invalid'; return; }
+    // a feature Anvil built but OpenCascade could not (a fillet that consumes a whole face, ...): name it, instead of
+    // reporting the volume difference that follows from it
+    var failed = Object.keys(r.status || {}).filter(function (id) { return /^error/.test(r.status[id]) && !((anvilBuild && anvilBuild.errors) || {})[id]; });
+    if (failed.length) {
+      var ff = K.findFeature(App.model, +failed[0]);
+      st.state = 'featureError'; st.failedFeature = ff ? ff.name : 'feature ' + failed[0];
+      st.error = String(r.status[failed[0]]).replace(/^error:\s*/, '');
+      return;
+    }
     var dv = st.anvilVolume ? Math.abs(r.volume - st.anvilVolume) / st.anvilVolume : Math.abs(r.volume);
     st.volumeDiff = dv;
     // features Anvil's kernel failed that OpenCascade built (a fillet on a saddle edge, ...): Anvil's volume is no
@@ -202,7 +211,7 @@
     return { on: st.on, state: st.state, driving: st.driving, error: st.error, loadMs: st.loadMs,
       unsupported: r && r.unsupported || null, faces: r && !r.unsupported ? r.faces.length : null, bodies: r ? r.bodies : null,
       volume: r ? r.volume : null, anvilVolume: st.anvilVolume, volumeDiff: st.volumeDiff, tolerance: r ? r.tolerance : null, beyond: st.state === 'ok' && st.beyond ? st.beyond.slice() : [],
-      valid: r ? r.valid : null, ms: r ? r.ms : null };
+      valid: r ? r.valid : null, ms: r ? r.ms : null, failedFeature: st.state === 'featureError' ? st.failedFeature : null };
   }
   // the status bar chip (ui-panels.js refreshStatus)
   UI.occtStatusHtml = function () {
@@ -217,6 +226,7 @@
         break;
       case 'unsupported': txt = 'OpenCascade: needs ' + s.unsupported; tip += ': this part uses a feature it does not build yet; Anvil\'s own result is shown'; break;
       case 'mismatch': txt = 'OpenCascade ✗ volume differs'; cls += ' bad'; tip += ': ' + (s.volume || 0).toFixed(3) + ' vs Anvil ' + (s.anvilVolume || 0).toFixed(3) + '; Anvil\'s result is shown'; break;
+      case 'featureError': txt = 'OpenCascade ✗ ' + (st.failedFeature || 'a feature'); cls += ' bad'; tip += ': OpenCascade could not build ' + (st.failedFeature || 'a feature') + ' (' + (s.error || '') + '); Anvil\'s own result is shown'; break;
       case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; tip += ': Anvil\'s result is shown'; break;
       case 'assembly': txt = 'OpenCascade: no parts to build'; break;
       case 'failed': txt = 'OpenCascade not installed'; cls += ' bad'; tip = (s.error || '') + ' Run vendor/get-occt.ps1.'; break;
