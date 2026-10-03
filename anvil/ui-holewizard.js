@@ -106,17 +106,35 @@
       }
     });
     preview();
+    // the preview is built in the rebuild worker like the other PropertyManagers' (r3/engine3): the newest request wins,
+    // the shown preview is replaced only when the next is ready, and an answer for a closed PropertyManager is dropped;
+    // without the worker it is built here as before
+    var pvSeq = 0, pvShown = 0;
     function preview() {
+      if (!v.face || !v.points.length || !App.build) { pvShown = ++pvSeq; UI.disposeGroup(UI.groups.preview); return; }
+      var tmp = feature(-998), my = ++pvSeq, spec = UI.pmSpec ? UI.pmSpec() : null;
+      var s = { id: -998, type: 'sketch', plane: v.face, entities: v.points.map(function (q) { return { t: 'point', x: q[0], y: q[1] }; }) };
+      var p = UI.previewInWorker && !App.previewSync ? UI.previewInWorker({ op: 'tool', feature: JSON.parse(JSON.stringify(tmp)), upto: null, sketches: JSON.parse(JSON.stringify({ '-998': s })) }) : null;
+      if (!p) { pvShown = my; previewSync(tmp, s); return; }
+      p.then(function (r) {
+        if ((r && r.superseded) || (UI.pmSpec && UI.pmSpec() !== spec) || my < pvShown) return;
+        pvShown = my;
+        if (!r) { previewSync(tmp, s); return; }   // the worker went away
+        UI.disposeGroup(UI.groups.preview);
+        r.tools.forEach(function (t) { if (t && t.polygons.length) addMesh(t); });
+      }, function () {
+        if ((UI.pmSpec && UI.pmSpec() !== spec) || my < pvShown) return;
+        pvShown = my; UI.disposeGroup(UI.groups.preview);
+      });
+    }
+    function previewSync(tmp, s) {
       UI.disposeGroup(UI.groups.preview);
-      if (!v.face || !v.points.length || !App.build) return;
-      try {
-        var tmp = feature(-998);
-        var s = { id: -998, type: 'sketch', plane: v.face, entities: v.points.map(function (q) { return { t: 'point', x: q[0], y: q[1] }; }) };
-        var tool = K.buildTool(tmp, App.model, { tools: {}, planes: App.build.planes, sketches: { '-998': s }, body: App.build.body });
-        var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
-        UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
-      } catch (e) { }
+      try { addMesh(K.buildTool(tmp, App.model, { tools: {}, planes: App.build.planes, sketches: { '-998': s }, body: App.build.body })); } catch (e) { }
+    }
+    function addMesh(tool) {
+      var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
+      UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
     }
   }
 

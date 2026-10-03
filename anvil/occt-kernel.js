@@ -938,6 +938,16 @@ var OcctKernel = (function () {
   // correction read them as usual) and the feature that made it (`shared`: the Anvil feature of the nearest Anvil
   // facet, from anvilMesh / anvilTriShared). Everything else (planes, profiles, tools, errors) is Anvil's.
   function toBuild(occ, anvilBuild, anvilMesh, anvilTriShared, CSG, K) {
+    return finishBuild(occ, anvilBuild, toBodies(occ, anvilMesh, anvilTriShared, CSG), K);
+  }
+  // fromPacked(occ, packed, anvilBuild, CSG, K): toBuild's result from the bodies occt-worker.js made with toBodies and
+  // packed (r.packed, face tags included), so the main thread only unpacks them (r3/engine3)
+  function fromPacked(occ, packed, anvilBuild, CSG, K) {
+    return finishBuild(occ, anvilBuild, packed.map(function (p) { return CSG.unpack(p); }), K);
+  }
+  // toBodies(occ, anvilMesh, anvilTriShared, CSG) -> the solids as CSG bodies, one polygon per triangle, tagged with
+  // its B-rep face, surface record and feature (anvilMesh needs only .positions)
+  function toBodies(occ, anvilMesh, anvilTriShared, CSG) {
     var P = occ.mesh.positions, F = occ.mesh.faceOf, nt = F.length, nf = occ.faces.length;
     // one representative point per B-rep face -> the feature of the nearest Anvil facet
     var firstTri = new Int32Array(nf).fill(-1), countTri = new Int32Array(nf);
@@ -962,12 +972,12 @@ var OcctKernel = (function () {
       (perBody[bi] = perBody[bi] || []).push(pg);
     }
     var bodies = [];
-    for (var b = 0; b < occ.bodies; b++) {
-      var csg = CSG.fromPolygons(perBody[b] || []);
-      if (occ.bodyProps && occ.bodyProps[b]) csg.exact = occ.bodyProps[b];   // Kernel.meshFromBody / massProps use it
-      bodies.push(csg);
-    }
-    var out = {};
+    for (var b = 0; b < occ.bodies; b++) bodies.push(CSG.fromPolygons(perBody[b] || []));
+    return bodies;
+  }
+  function finishBuild(occ, anvilBuild, bodies, K) {
+    var nf = occ.faces.length, out = {};
+    bodies.forEach(function (csg, b) { if (occ.bodyProps && occ.bodyProps[b]) csg.exact = occ.bodyProps[b]; });   // Kernel.meshFromBody / massProps use it
     Object.keys(anvilBuild).forEach(function (k) { out[k] = anvilBuild[k]; });
     out.bodies = bodies;
     out.bodyFeatures = bodies.map(function (x, i) { return occ.bodyFeatures && occ.bodyFeatures[i] != null ? occ.bodyFeatures[i] : null; });
@@ -1017,6 +1027,6 @@ var OcctKernel = (function () {
     return dot(d, d);
   }
 
-  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
+  return { build: build, importFile: importFile, mapFaces: mapFaces, toBuild: toBuild, toBodies: toBodies, fromPacked: fromPacked, nearestTriangles: nearestTriangles, SUPPORTED: SUPPORTED };
 })();
 if (typeof self !== 'undefined') self.OcctKernel = OcctKernel;

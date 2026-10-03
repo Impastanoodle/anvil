@@ -6,13 +6,14 @@
 //   { type: 'rebuild', seq: <number>, model: <model JSON> }
 //     `model` is a structured clone of App.model; Kernel.rebuild writes sketch profiles onto this copy, which is
 //     harmless here and is how the reply's `profiles` are produced.
-//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, throughLimit }
+//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, throughLimit, sketches? }
 //     a PropertyManager live preview (ui-core.js UI.previewInWorker): the model (its first `upto` features when set) is
 //     built with the rebuild cache, then the feature being edited is built on it without joining the part:
 //     'tool' Kernel.buildTool (extrude, revolve, sweep, loft, patterns, mirror, base flange), 'shell' Kernel.buildShell's
 //     cavity, 'edge' Kernel.buildEdgeFeature's cut / add, 'flange' Kernel.buildFlange (edge flange, hem), 'jog' Kernel.buildJog.
 // Messages out:
-//   { type: 'built', seq, build: <Kernel.packBuild result>, edges: <Kernel.bodyEdges of its mesh> | null }
+//   { type: 'built', seq, build: <Kernel.packBuild result>, edges: <Kernel.bodyEdges of its mesh> | null,
+//     curves: <Kernel.meshCurveInfo of it> | null, normals: <Kernel.analyticNormals of it> | null }   (r3/engine3)
 //                                                              with the packed solids' ArrayBuffers transferred
 //   { type: 'volume', seq, volume }                            right after 'built': Kernel.massProps(mesh).volume
 //   { type: 'error', seq, message: <string> }                  when the rebuild itself threw (feature errors never do;
@@ -44,7 +45,8 @@ function preview(m) {
     var jg = Kernel.buildJog(f, Kernel.resolvedModel(model).model, { body: b.body, flanges: {}, tools: {} });
     tools = [jg.first.union(jg.second)];
   } else {
-    var ctx ={ tools: b.tools, planes: b.planes, sketches: {}, body: b.body, throughLimit: m.throughLimit };
+    // m.sketches: sketches the previewed feature uses that are not in the model yet (the Hole Wizard's points, r3/engine3)
+    var ctx = { tools: b.tools, planes: b.planes, sketches: m.sketches || {}, body: b.body, throughLimit: m.throughLimit };
     tools = [Kernel.buildTool(f, Kernel.resolvedModel(model).model, ctx) || null];
   }
   var packed = tools.map(function (t) { return t ? t.pack() : null; }), transfer = [];
@@ -66,12 +68,17 @@ self.onmessage = function (e) {
     var packed = Kernel.packBuild(b, m.model);
     // the body's edges (Kernel.bodyEdges, hundreds of ms on a large part) are found here too, on exactly the mesh the
     // main thread will make from the packed bodies, so applyBuild does not have to
-    var edges = null, mesh = null;
+    var edges = null, mesh = null, curves = null, normals = null;
     try {
       var mirror = Kernel.unpackBuild(packed), mesh = mirror.body ? Kernel.meshFromBody(mirror.body) : null;
       if (mesh) edges = Kernel.bodyEdges(mesh);
+      // and its curved faces and true circles (Kernel.meshCurveInfo: ui-core.js annotateCurveEdges, faceGroups) (r3/engine3)
+      if (mesh && Kernel.meshCurveInfo) { try { curves = Kernel.meshCurveInfo(mesh); } catch (e4) { curves = null; } }
+      if (mesh && Kernel.analyticNormals) { try { normals = Kernel.analyticNormals(mesh); } catch (e5) { normals = null; } }
     } catch (e2) { edges = null; mesh = null; }
-    self.postMessage({ type: 'built', seq: m.seq, build: packed, edges: edges }, Kernel.packTransferables(packed));
+    var transfer = Kernel.packTransferables(packed);
+    if (normals) transfer.push(normals.buffer);
+    self.postMessage({ type: 'built', seq: m.seq, build: packed, edges: edges, curves: curves, normals: normals }, transfer);
     // then the mesh's volume, which ui-occt.js compares OpenCascade's with (massProps of a large mesh: tens of ms)
     if (mesh) { try { self.postMessage({ type: 'volume', seq: m.seq, volume: mesh.triCount ? Kernel.massProps(mesh, 1).volume : 0 }); } catch (e3) { } }
   } catch (err) {

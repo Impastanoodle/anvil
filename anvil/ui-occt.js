@@ -12,7 +12,7 @@
 (function (UI) {
   'use strict';
   var App = UI.App, K = window.Kernel;
-  var st = App.occt = { on: false, worker: null, ready: false, loadMs: null, seq: 0, want: 0, busy: false,
+  var st = App.occt = { on: false, worker: null, ready: false, loadMs: null, seq: 0, want: 0, busy: false, anvilSeq: 0, sentAnvil: null,
     state: 'off', result: null, driving: false, anvilBuild: null, anvilVolume: null, volumeDiff: null, error: null, waiters: [] };
   // '1' / '0': the user's choice; unset: on by default when the engine is installed (probed at load, below)
   var stored = null;
@@ -80,6 +80,17 @@
     });
     return out;
   }
+  // an Anvil part build's mesh, triangle features and volume, kept per build (r3/engine3): a part the assembly did not
+  // rebuild keeps its build object, so the swap after another edit does not mesh it and integrate its volume again
+  var anvilInfos = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function anvilInfo(b) {
+    var ai = anvilInfos && anvilInfos.get(b);
+    if (ai) return ai;
+    var mesh = K.meshFromBody(b.body);
+    ai = { mesh: mesh, volume: mesh.triCount ? K.massProps(mesh, 1).volume : 0, triShared: triSharedOf(mesh) };
+    if (anvilInfos) anvilInfos.set(b, ai);
+    return ai;
+  }
   function triSharedOf(mesh) {
     var out = new Int32Array(mesh.triCount);
     mesh.faces.forEach(function (f) { var t = f.start; f.polys.forEach(function (p) { for (var i = 0; i < p.vertices.length - 2; i++) out[t++] = p.shared == null ? -1 : p.shared; }); });
@@ -104,11 +115,11 @@
       if (r.error) { bad = { state: 'error', error: p.name + ': ' + r.error }; return; }
       if (r.unsupported) { bad = { state: 'unsupported', unsupported: r.unsupported + ' in ' + p.name }; return; }
       if (!r.valid) { bad = { state: 'invalid', error: p.name }; return; }
-      var mesh = K.meshFromBody(p.anvilBuild.body), av = mesh.triCount ? K.massProps(mesh, 1).volume : 0;
+      var ai = anvilInfo(p.anvilBuild), mesh = ai.mesh, av = ai.volume;
       var dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
       var bey = Object.keys(p.anvilBuild.errors || {}).filter(function (id) { return r.status[id] === 'ok'; });
       if (!r.mesh || (!bey.length && !(dv <= (r.tolerance || 1e-4)))) { bad = { state: 'mismatch', error: p.name + ': ' + r.volume.toFixed(3) + ' vs Anvil ' + av.toFixed(3) }; return; }
-      builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, triSharedOf(mesh), window.CSG, K);
+      builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, ai.triShared, window.CSG, K);
       faces += r.faces.length; volume += r.volume; ms.build += r.ms.build; ms.mesh += r.ms.mesh;
       bey.forEach(function (id) { beyond.push(p.name + ':' + id); });
     });
@@ -149,12 +160,16 @@
     st.beyond = Object.keys((anvilBuild && anvilBuild.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
     if (!r.mesh || (!st.beyond.length && !(dv <= (r.tolerance || 1e-4)))) { st.state = 'mismatch'; return; }
     var build;
-    try { build = OcctKernel.toBuild(r, anvilBuild, anvilMesh, App.triShared, window.CSG, K); }
+    try {
+      var sent = st.sentAnvil;
+      build = r.packed && OcctKernel.fromPacked && sent && r.anvilKey === sent.key && sent.mesh === anvilMesh ? OcctKernel.fromPacked(r, r.packed, anvilBuild, window.CSG, K)
+        : OcctKernel.toBuild(r, anvilBuild, anvilMesh, App.triShared, window.CSG, K);
+    }
     catch (e) { st.state = 'error'; st.error = 'Could not show the OpenCascade solid: ' + e.message; return; }
     st.state = 'ok';
     st.anvilBuild = anvilBuild;
     st.driving = true;
-    swapIn(build, r.edges);
+    swapIn(build, r.edges, r.curves, r.normals);
   }
   // ---- the exact solid swaps in without losing the selection (smooth/responsive). Features, planes, bodies and
   // components are not tied to mesh indices and stay selected; a selected face is found again on the new mesh by a
@@ -196,12 +211,12 @@
     return out;
   }
   function isMeshSel(p) { return !!p && (p.s.kind === 'face' || p.s.kind === 'edge'); }
-  function swapIn(build, edges) {
+  function swapIn(build, edges, curves, normals) {
     var multiOk = App.multi && App.multi.length > 1 && App.multi[0] === App.sel && App.multiMesh === App.mesh;
     var p1 = selProbe(App.sel), p2 = selProbe(App.sel2), pl = multiOk ? App.multi.map(selProbe) : null;
     // non-mesh selections are kept through applyBuild (the tree draws them); face / edge ones are found afterwards
     App.sel = p1 && !isMeshSel(p1) ? p1.s : null; App.sel2 = p2 && !isMeshSel(p2) ? p2.s : null; App.hover = null;
-    UI.applyBuild(build, { noSave: true, keepMs: true, occt: true, edges: edges || null });
+    UI.applyBuild(build, { noSave: true, keepMs: true, occt: true, edges: edges || null, curves: curves || null, normals: normals || null });
     if (!isMeshSel(p1) && !isMeshSel(p2) && !pl) return;
     App.sel = selRestore(p1); App.sel2 = selRestore(p2);
     if (!App.sel && App.sel2) { App.sel = App.sel2; App.sel2 = null; }
@@ -243,7 +258,12 @@
     if (isAsm()) { if (typeof Assembly !== 'undefined' && Assembly.setPartBuilder) requestAssembly(); else { st.state = 'assembly'; settle(); } return; }
     st.busy = true; st.want = ++st.seq; st.state = 'building'; st.buildingSince = performance.now();
     var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { st.busy = false; return; }
-    st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true });
+    // the Anvil mesh on screen goes along (copied), so the worker tags OpenCascade's faces with their features and
+    // sends the bodies ready to unpack (accept -> OcctKernel.fromPacked) (r3/engine3)
+    var anvil = null;
+    if (!st.driving && App.mesh && App.mesh.positions && App.triShared) { anvil = { key: ++st.anvilSeq, positions: App.mesh.positions, triShared: App.triShared }; st.sentAnvil = { key: anvil.key, mesh: App.mesh }; }
+    else st.sentAnvil = null;
+    st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true, anvil: anvil });
     refresh();
   }
   // after every applied build (ui-core.js applyBuild calls the UI.onBuild hooks); OpenCascade's own apply is skipped

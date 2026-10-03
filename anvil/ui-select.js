@@ -854,6 +854,8 @@ if (typeof UI !== 'undefined') (function (UI) {
   var liveBusy = false, livePending = false;
   function liveRebuild(h) {
     if (App.mode === 'sketch') { App.gridStale = true; UI.updateSketches(); return; }
+    // r3/engine3: a feature drag previews only that feature (built in the worker); the release rebuilds the part once
+    if (i3d.drag && i3d.drag.fid != null && UI.featurePreview && UI.featurePreview(i3d.drag.fid)) { i3d.drag.previewed = true; return; }
     if (liveBusy) { livePending = true; return; }
     liveBusy = true;
     UI.afterRebuild(UI.rebuild({ noSave: true }), function () {
@@ -916,6 +918,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     var session = { key: hKey(h), pushed: d.pushed, fid: d.fid, side: h.side, kind: h.kind, sketch: h.sketch, dimIndex: h.dimIndex, dim: h.dim };
     if (App.mode === 'sketch') { App.dimsStale = true; openEditFor(session); return Promise.resolve(); }
     var done = d.pushed ? UI.afterRebuild(UI.rebuild(), function () { return UI.whenIdle(); }) : Promise.resolve();
+    if (d.previewed && UI.featurePreviewEnd) UI.featurePreviewEnd(done);   // r3/engine3: the feature preview goes once the part is rebuilt
     return done.then(function () { reselect(session); openEditFor(session); });
   }
   // Select the dragged feature's end face again (depth / angle handles), or keep the feature selected.

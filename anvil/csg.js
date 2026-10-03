@@ -722,7 +722,7 @@ var CSG = (function () {
     var polys = this.polygons, P = polys.length, V = 0, i, j;
     for (i = 0; i < P; i++) V += polys[i].vertices.length;
     var verts = new Float64Array(3 * V), counts = new Int32Array(P), planes = new Float64Array(4 * P);
-    var shared = null, k = 0, surfs = null, surfIdx = null;
+    var shared = null, k = 0, surfs = null, surfIdx = null, faces = null;
     for (i = 0; i < P; i++) {
       var p = polys[i], vs = p.vertices;
       if (p.surf) {
@@ -730,6 +730,7 @@ var CSG = (function () {
         if (p.surf._pk == null) { p.surf._pk = surfs.length; surfs.push(p.surf); }
         surfIdx[i] = p.surf._pk;
       }
+      if (p.face != null) { if (!faces) { faces = new Int32Array(P); for (j = 0; j < P; j++) faces[j] = -1; } faces[i] = p.face; }
       counts[i] = vs.length;
       for (j = 0; j < vs.length; j++) {
         var q = vs[j].pos;
@@ -743,6 +744,7 @@ var CSG = (function () {
     }
     var out = { verts: verts, counts: counts, planes: planes, shared: shared };
     if (surfs) { for (i = 0; i < surfs.length; i++) delete surfs[i]._pk; out.surfs = surfs; out.surfIdx = surfIdx; }
+    if (faces) out.faces = faces;   // B-rep face tags of an OpenCascade solid (r3/engine3: occt-worker.js packs its bodies)
     return out;
   };
   CSG.unpack = function (obj) {
@@ -754,6 +756,7 @@ var CSG = (function () {
       var plane = new Plane(new Vector(planes[4 * i], planes[4 * i + 1], planes[4 * i + 2]), planes[4 * i + 3]);
       var np = new Polygon(vs, shared ? shared[i] : undefined, plane);
       if (obj.surfIdx && obj.surfIdx[i] >= 0) np.surf = obj.surfs[obj.surfIdx[i]];
+      if (obj.faces && obj.faces[i] >= 0) np.face = obj.faces[i];
       polys.push(np);
     }
     return CSG.fromPolygons(polys);
@@ -763,6 +766,7 @@ var CSG = (function () {
   CSG.packTransferables = function (packed) {
     var out = [packed.verts.buffer, packed.counts.buffer, packed.planes.buffer];
     if (packed.surfIdx) out.push(packed.surfIdx.buffer);
+    if (packed.faces) out.push(packed.faces.buffer);
     return out;
   };
 

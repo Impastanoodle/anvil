@@ -618,6 +618,16 @@ var UI = (function () {
     });
     return ok ? es : null;
   }
+  // the curved-face info a worker found on the same mesh (Kernel.meshCurveInfo), when it fits it, else null (r3/engine3)
+  function workerCurves(m) {
+    var c = m && m.workerCurves;
+    return c && c.faces === m.faces.length && c.faceSurfs && c.faceSurfs.length === c.faces && c.key0 && c.curves ? c : null;
+  }
+  // the smooth-shading normals a worker found on the same mesh (Kernel.analyticNormals, the numbers analyticNormals
+  // below makes) become the mesh's cached ones when they fit it (r3/engine3)
+  function useWorkerNormals(m, n) {
+    if (m && n && m.normals && n.length === m.normals.length && !m.smoothNormals) m.smoothNormals = n;
+  }
   // App.edges is computed once per mesh (bodyEdges is not cheap) and reused when only visibility changes.
   function edgesFor(m) {
     if (App.edges && App.edgesMesh === m) return App.edges;
@@ -697,22 +707,29 @@ var UI = (function () {
   // -> [{ curve (the Kernel.curveEdges record), pts: [[x,y,z]…] fine polyline, edges: [chord edges] }]
   function annotateCurveEdges(m, edges) {
     if (!K.curveSurfaces || !K.curveEdges || !m.faces || !m.faces.length || !m.faces[0].polys) return [];
-    var surfOf = new Map();
-    try { K.curveSurfaces(m).forEach(function (s) { s.polys.forEach(function (p) { surfOf.set(p, s.key); }); }); } catch (e) { return []; }
-    if (!surfOf.size) return [];
-    var faceSurfs = m.faces.map(function (f) {
-      var ks = null;
-      f.polys.forEach(function (p) { var k = surfOf.get(p); if (k) (ks = ks || {})[k] = 1; });
-      return ks;
-    });
+    // found by the worker on this same mesh (Kernel.meshCurveInfo; r3/engine3): no curveSurfaces / curveEdges here
+    var info = workerCurves(m), faceSurfs, list;
+    if (info) {
+      if (!info.faceSurfs.some(function (ks) { return ks; })) return [];
+      faceSurfs = info.faceSurfs.map(function (ks) { if (!ks) return null; var o = {}; ks.forEach(function (k) { o[k] = 1; }); return o; });
+    } else {
+      var surfOf = new Map();
+      try { K.curveSurfaces(m).forEach(function (s) { s.polys.forEach(function (p) { surfOf.set(p, s.key); }); }); } catch (e) { return []; }
+      if (!surfOf.size) return [];
+      faceSurfs = m.faces.map(function (f) {
+        var ks = null;
+        f.polys.forEach(function (p) { var k = surfOf.get(p); if (k) (ks = ks || {})[k] = 1; });
+        return ks;
+      });
+    }
     edges.forEach(function (e) {
       if (e.faces.length !== 2) return;
       var A = faceSurfs[e.faces[0]], B = faceSurfs[e.faces[1]];
       if (!A || !B) return;
       for (var k in A) if (B[k]) { e.seam = true; e.smooth = true; return; }
     });
-    var list;
-    try { list = K.curveEdges(m); } catch (e2) { return []; }
+    if (info) list = info.curves;
+    else { try { list = K.curveEdges(m); } catch (e2) { return []; } }
     var curves = list.map(function (c) {
       var n = c.normal, xd = c.xdir, yd = V.cross(n, xd), sweep = c.a1 - c.a0;
       var segs = Math.max(4, Math.ceil(CURVE_SEGS * sweep / (2 * Math.PI) - 1e-9)), pts = [];
@@ -886,11 +903,11 @@ var UI = (function () {
     // with Tools ▸ OpenCascade kernel on and its build agreeing with Anvil's, its true B-rep faces decide (ui-occt.js)
     var occ = UI.occtFaceGroups ? UI.occtFaceGroups(mesh) : null;
     if (occ) { mesh._faceGroups = occ; return occ; }
-    var of = new Array(mesh.faces.length), keyOf = new Map();
-    if (K.curveSurfaces) K.curveSurfaces(mesh).forEach(function (s) { s.polys.forEach(function (p) { keyOf.set(p, s.key); }); });
+    var of = new Array(mesh.faces.length), keyOf = new Map(), wc = workerCurves(mesh);
+    if (K.curveSurfaces && !wc) K.curveSurfaces(mesh).forEach(function (s) { s.polys.forEach(function (p) { keyOf.set(p, s.key); }); });
     var byKey = {};
     mesh.faces.forEach(function (f, i) {
-      var p = f.polys && f.polys[0], k = p && keyOf.get(p);
+      var p = f.polys && f.polys[0], k = wc ? wc.key0[i] : p && keyOf.get(p);
       if (k == null) { of[i] = [i]; return; }
       k += '|' + bodyOfFace(f);
       (byKey[k] = byKey[k] || []).push(i);
@@ -1538,12 +1555,15 @@ var UI = (function () {
     App.build = build;
     App.mesh = K.meshFromBody(App.build.body);
     // worker.js found the edges of this same mesh (edgesFor); its volume follows in a 'volume' message (onWorkerMessage)
-    if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerSeq = nextWorker.seq; }
+    if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerCurves = nextWorker.curves || null; App.mesh.workerSeq = nextWorker.seq; useWorkerNormals(App.mesh, nextWorker.normals); }
     nextWorker = null;
-    if (opts.edges && App.mesh) App.mesh.workerEdges = opts.edges;   // ui-occt.js: found by occt-worker.js on the same mesh
+    if (opts.edges && App.mesh) { App.mesh.workerEdges = opts.edges; App.mesh.workerCurves = opts.curves || null; useWorkerNormals(App.mesh, opts.normals); }   // ui-occt.js: found by occt-worker.js on the same mesh
+    var tm = performance.now();
     App.triShared = buildTriShared(App.mesh);
+    var tt = performance.now();
     pruneHiddenBodies();
     updateBodyMesh();
+    var tb = performance.now();
     var nb = bodyCount();
     ['sel', 'sel2'].forEach(function (k) {
       var s = App[k];
@@ -1555,16 +1575,21 @@ var UI = (function () {
     // keep the pre-selection under a resting cursor across the rebuild instead of dropping it until the mouse moves
     var lm = lastClient && App.mode !== 'sketch' && !viewAnim && UI.pickHover ? lastMousePos() : null;
     if (lm) { try { App.hover = UI.pickHover(lm[0], lm[1]) || null; } catch (e) { App.hover = null; } }
+    var th = performance.now();
     updateHighlights();
     updatePlanes();
     updateOrigin();
     updateSketches();
     if (UI.updateCosmeticThreads) UI.updateCosmeticThreads();   // ui-holewizard.js: Straight Tap threads
     if (!opts.keepMs) App.lastRebuildMs = (msBefore || 0) + (performance.now() - t0);
+    var tr0 = performance.now();
     if (UI.refreshTree) UI.refreshTree();
     if (UI.refreshStatus) UI.refreshStatus();
     (UI.onBuild || []).forEach(function (fn) { try { fn(App.build, opts); } catch (e) { console.warn(e); } });   // ui-occt.js
     if (!opts.noSave) autosave();
+    var te = performance.now();
+    // where the main thread spent this apply (ms): mesh, triShared, body mesh / edges, pick + rest, tree / status / hooks
+    App.applyMs = { mesh: tm - t0, tri: tt - tm, body: tb - tt, pick: th - tb, scene: tr0 - th, after: te - tr0, total: te - t0 };
     var errIds = Object.keys(App.build.errors || {});
     var eqMsgs = equationErrorMessages(App.build);
     if (eqMsgs.length && UI.setStatus) {
@@ -1743,7 +1768,7 @@ var UI = (function () {
     job.seq = ++pv.seq;
     pv.inflight = job;
     var r = job.req;
-    try { w.postMessage({ type: 'preview', seq: job.seq, model: App.model, upto: r.upto == null ? null : r.upto, op: r.op, feature: r.feature, throughLimit: r.throughLimit }); }
+    try { w.postMessage({ type: 'preview', seq: job.seq, model: App.model, upto: r.upto == null ? null : r.upto, op: r.op, feature: r.feature, throughLimit: r.throughLimit, sketches: r.sketches || null }); }
     catch (e) { pv.inflight = null; job.resolve(null); nextPreview(); }
   }
   function nextPreview() {
@@ -1763,6 +1788,44 @@ var UI = (function () {
   }
   // the PropertyManager closed: a preview still waiting is not sent (the one in flight is answered and dropped there)
   function cancelPreviews() { if (pv.pending) { pv.pending.resolve({ superseded: true }); pv.pending = null; } }
+  // ---- Instant3D's light drag path (r3/engine3): while a depth / angle arrow (or a part-mode sketch dimension) is
+  // dragged, each ruler step previews only the dragged feature, built in the worker on the part before it, instead of
+  // rebuilding and re-applying the whole part; the release rebuilds once (ui-select.js endDrag), and
+  // featurePreviewEnd(promise) drops late previews and clears the shown one when that rebuild is applied.
+  // featurePreview(fid) -> true when the preview was asked for (false: no worker or not a previewable feature, so the
+  // caller rebuilds as before).
+  var fpv = { seq: 0, shown: 0, closed: 0 };
+  function featurePreview(fid) {
+    if (isAssembly() || !App.model || !App.build || App.previewSync) return false;
+    var f = K.findFeature(App.model, fid), upto = f ? App.model.features.indexOf(f) : -1;
+    if (upto < 0 || (f.type !== 'extrude' && f.type !== 'revolve')) return false;
+    var my = ++fpv.seq, cut = false;
+    try { cut = !!(K.isCut(f, App.model) || f.cut); } catch (e) { }
+    var b = modelBounds(), diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    var p = previewInWorker({ op: 'tool', feature: JSON.parse(JSON.stringify(f)), upto: upto, throughLimit: Math.max(20, diag * 1.5) });
+    if (!p) return false;
+    p.then(function (r) {
+      if (!r || r.superseded || my <= fpv.closed || my < fpv.shown) return;
+      fpv.shown = my;
+      disposeGroup(groups.preview);
+      r.tools.forEach(function (t) {
+        if (!t || !t.polygons.length) return;
+        var mesh = K.meshFromBody(t), g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+        g.setAttribute('normal', new THREE.BufferAttribute(analyticNormals(mesh), 3));
+        groups.preview.add(new THREE.Mesh(g, cut ? mats.previewCut : mats.preview));
+      });
+      requestRender();
+    }, function () { });
+    return true;
+  }
+  function featurePreviewEnd(done) {
+    var had = fpv.seq > fpv.closed;
+    fpv.closed = fpv.seq;
+    if (!had) return;
+    Promise.resolve(done).then(clear, clear);
+    function clear() { if (fpv.closed === fpv.seq) { disposeGroup(groups.preview); requestRender(); } }
+  }
   // a worker that died takes its previews with it: answer them with null (the caller previews on the main thread)
   function dropPreviews() {
     [pv.inflight, pv.pending].forEach(function (j) { if (j) j.resolve(null); });
@@ -1781,7 +1844,7 @@ var UI = (function () {
       var build;
       try {
         build = K.unpackBuild(d.build);
-        nextWorker = { edges: d.edges || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
+        nextWorker = { edges: d.edges || null, curves: d.curves || null, normals: d.normals || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
         K.applyProfiles(App.model, build.profiles);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
         // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
@@ -1958,7 +2021,7 @@ var UI = (function () {
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },
-    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,

@@ -2344,6 +2344,68 @@ var Kernel = (function () {
     });
     return out;
   }
+  // meshCurveInfo(mesh) -> { faces, faceSurfs, key0, curves }: what the viewport needs about a mesh's curved faces, as
+  // plain data a worker can send with its build (r3/engine3): faceSurfs[i] the surface keys of mesh face i's polygons
+  // (null: none curved), key0[i] that of its first polygon, curves = curveEdges(mesh); faces = the face count it fits.
+  function meshCurveInfo(mesh) {
+    var keyOf = new Map();
+    curveSurfaces(mesh).forEach(function (s) { s.polys.forEach(function (p) { keyOf.set(p, s.key); }); });
+    var faceSurfs = [], key0 = [];
+    mesh.faces.forEach(function (f) {
+      var ks = null, ps = f.polys || [];
+      for (var i = 0; i < ps.length; i++) { var k = keyOf.get(ps[i]); if (k && (!ks || ks.indexOf(k) < 0)) (ks = ks || []).push(k); }
+      faceSurfs.push(ks);
+      key0.push(ps[0] && keyOf.get(ps[0]) || null);
+    });
+    var curves = keyOf.size ? curveEdges(mesh).map(function (c) {
+      return { kind: c.kind, center: c.center, normal: c.normal, radius: c.radius, xdir: c.xdir, a0: c.a0, a1: c.a1, chords: c.chords };
+    }) : [];
+    return { faces: mesh.faces.length, faceSurfs: faceSurfs, key0: key0, curves: curves };
+  }
+  // analyticNormals(mesh) -> Float32Array laid out like mesh.normals: every corner of a triangle on a curved face gets
+  // its surface's own normal there, oriented like its facet's (planar faces keep the flat normals). The same numbers as
+  // ui-core.js analyticNormals (the viewport's smooth shading), so a worker can find them and send them with its build
+  // (r3/engine3: tens of ms on the main thread for an OpenCascade solid, where every facet is curved).
+  function surfNormalAt(S, x) {
+    var v = [x[0] - S.o[0], x[1] - S.o[1], x[2] - S.o[2]], d = S.d, z = dot(v, d), n;
+    if (S.t === 'sph') n = v;
+    else {
+      var rho = [v[0] - d[0] * z, v[1] - d[1] * z, v[2] - d[2] * z], rl = len(rho);
+      if (rl < 1e-9) return null;
+      var er = [rho[0] / rl, rho[1] / rl, rho[2] / rl];
+      if (S.t === 'cyl') n = er;
+      else if (S.t === 'cone') n = [er[0] - (S.k || 0) * d[0], er[1] - (S.k || 0) * d[1], er[2] - (S.k || 0) * d[2]];
+      else if (S.t === 'tor') n = [rho[0] - er[0] * S.R, rho[1] - er[1] * S.R, rho[2] - er[2] * S.R];
+      else return null;
+    }
+    var l = len(n);
+    return l > 1e-12 ? [n[0] / l, n[1] / l, n[2] / l] : null;
+  }
+  function analyticNormals(m) {
+    var out = new Float32Array(m.normals);
+    (m.faces || []).forEach(function (f) {
+      if (!f.polys) return;
+      var t = f.start, fn = f.normal, writes = [];
+      f.polys.forEach(function (p) {
+        var vs = p.vertices, nt = Math.max(0, vs.length - 2);
+        if (p.surf && p.surf.s) {
+          var vn = vs.map(function (vx) {
+            var n = surfNormalAt(p.surf.s, [vx.pos.x, vx.pos.y, vx.pos.z]);
+            if (!n) return fn;
+            return dot(n, fn) < 0 ? [-n[0], -n[1], -n[2]] : n;
+          });
+          for (var j = 1; j + 1 < vs.length; j++) writes.push(t + j - 1, vn[0], vn[j], vn[j + 1]);
+        }
+        t += nt;
+      });
+      if (t !== f.start + f.count) return;
+      for (var w = 0; w < writes.length; w += 4) {
+        var o = writes[w] * 9;
+        for (var c = 0; c < 3; c++) { var n = writes[w + 1 + c]; out[o + c * 3] = n[0]; out[o + c * 3 + 1] = n[1]; out[o + c * 3 + 2] = n[2]; }
+      }
+    });
+    return out;
+  }
 
   // massProps(mesh, density) -> { volume, area, centroid, bbox, density, mass, polygonal?, curved? }. Volume, area and
   // centroid are the exact values of the true curved faces when the mesh's faces carry their CSG polygons (meshes
@@ -2490,7 +2552,51 @@ var Kernel = (function () {
   }
 
   // ------------------------------------------------------------------ face outlines (for DXF of flat faces)
+  var outlineOptions = { gridMin: 32 };   // faces with more vertices use outlineGrid (Infinity: never; the tests compare)
   function key3(p) { return Math.round(p[0] * 1e4) + ',' + Math.round(p[1] * 1e4) + ',' + Math.round(p[2] * 1e4); }
+
+  // outlineGrid(vlist, plane) -> near(a, b, mark, fn): calls fn(v) for every vertex of vlist that can lie within 1e-5
+  // of segment a-b (and maybe a few more), each once per mark. The vertices are put, in the face's 2D frame, into every
+  // cell of a uniform grid their ±2e-5 box touches; a segment visits the cells it crosses (Amanatides-Woo). The 2D
+  // projection never lengthens a distance, so this is a superset of faceOutline's own test and its result is unchanged.
+  function outlineGrid(vlist, plane) {
+    var nv = vlist.length, P = new Float64Array(nv * 2), lo = [Infinity, Infinity], hi = [-Infinity, -Infinity], TOL = 2e-5;
+    for (var i = 0; i < nv; i++) {
+      var q = to2D(plane, vlist[i]);
+      P[i * 2] = q[0]; P[i * 2 + 1] = q[1];
+      for (var k = 0; k < 2; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+    }
+    lo[0] -= TOL; lo[1] -= TOL; hi[0] += TOL; hi[1] += TOL;
+    var w = hi[0] - lo[0], h = hi[1] - lo[1];
+    var c = Math.max(Math.sqrt(w * h / nv), Math.max(w, h) / nv, 8 * TOL);
+    var nx = Math.max(1, Math.ceil(w / c)), ny = Math.max(1, Math.ceil(h / c)), cells = new Array(nx * ny);
+    function cx(x) { return Math.min(nx - 1, Math.max(0, Math.floor((x - lo[0]) / c))); }
+    function cy(y) { return Math.min(ny - 1, Math.max(0, Math.floor((y - lo[1]) / c))); }
+    for (i = 0; i < nv; i++) {
+      var x0 = cx(P[i * 2] - TOL), x1 = cx(P[i * 2] + TOL), y0 = cy(P[i * 2 + 1] - TOL), y1 = cy(P[i * 2 + 1] + TOL);
+      for (var gx = x0; gx <= x1; gx++) for (var gy = y0; gy <= y1; gy++) (cells[gx * ny + gy] = cells[gx * ny + gy] || []).push(i);
+    }
+    var stamp = new Int32Array(nv).fill(-1);
+    return function (a, b, mark, fn) {
+      var pa = to2D(plane, a), pb = to2D(plane, b);
+      var X0 = (pa[0] - lo[0]) / c, Y0 = (pa[1] - lo[1]) / c, X1 = (pb[0] - lo[0]) / c, Y1 = (pb[1] - lo[1]) / c;
+      var ix = cx(pa[0]), iy = cy(pa[1]), ex = cx(pb[0]), ey = cy(pb[1]);
+      var dx = X1 - X0, dy = Y1 - Y0, sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+      var tdx = dx !== 0 ? Math.abs(1 / dx) : Infinity, tdy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+      var tmx = dx !== 0 ? (sx > 0 ? ix + 1 - X0 : X0 - ix) * tdx : Infinity, tmy = dy !== 0 ? (sy > 0 ? iy + 1 - Y0 : Y0 - iy) * tdy : Infinity;
+      function visit(gx, gy) {
+        var l = cells[gx * ny + gy];
+        if (l) for (var j = 0; j < l.length; j++) { var vi = l[j]; if (stamp[vi] !== mark) { stamp[vi] = mark; fn(vlist[vi]); } }
+      }
+      visit(ix, iy);
+      for (var guard = Math.abs(ex - ix) + Math.abs(ey - iy) + 4; (ix !== ex || iy !== ey) && guard > 0; guard--) {
+        if (tmx < tmy) { ix += sx; tmx += tdx; } else { iy += sy; tmy += tdy; }
+        if (ix < 0 || iy < 0 || ix >= nx || iy >= ny) break;
+        visit(ix, iy);
+      }
+      visit(ex, ey);
+    };
+  }
 
   // Boundary loops of a planar face as 2D polylines in the face frame. Handles T-junctions by splitting edges at
   // any face vertex lying on them.
@@ -2504,18 +2610,21 @@ var Kernel = (function () {
       for (var i = 0; i < vs.length; i++) edges.push([vs[i], vs[(i + 1) % vs.length]]);
     });
     var vlist = Object.keys(verts).map(function (k) { return verts[k]; });
-    // split edges at collinear interior vertices
+    // split edges at collinear interior vertices; on faces with many vertices only the vertices in the grid cells the
+    // edge crosses are tested (r3/engine3: was every vertex against every edge, ~100 ms on the Flange)
+    var near = vlist.length > outlineOptions.gridMin ? outlineGrid(vlist, plane) : null;
     var split = [];
-    edges.forEach(function (e) {
+    edges.forEach(function (e, ei) {
       var a = e[0], b = e[1], d = sub(b, a), L = len(d);
       if (L < 1e-9) return;
       var u = scale(d, 1 / L), ts = [0, L];
-      vlist.forEach(function (v) {
+      function test(v) {
         var w = sub(v, a), t = dot(w, u);
         if (t <= 1e-6 || t >= L - 1e-6) return;
         var perp = len(sub(w, scale(u, t)));
         if (perp < 1e-5) ts.push(t);
-      });
+      }
+      if (near) near(a, b, ei, test); else vlist.forEach(test);
       ts.sort(function (x, y) { return x - y; });
       for (var i = 0; i + 1 < ts.length; i++) {
         if (ts[i + 1] - ts[i] < 1e-7) continue;
@@ -4189,7 +4298,7 @@ var Kernel = (function () {
     newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
     buildTool: buildTool, isCut: isCut, extrudeRange: extrudeRange, revolveAxis: revolveAxis, cutScope: cutScope, THROUGH: THROUGH, registerFeature: registerFeature, registerSketchScript: registerSketchScript, registerScriptSection: registerScriptSection, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
-    meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, bodyEdges: bodyEdges, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
+    meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, outlineOptions: outlineOptions, bodyEdges: bodyEdges, meshCurveInfo: meshCurveInfo, analyticNormals: analyticNormals, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
     buildFlange: buildFlange, flangeLayout: flangeLayout, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
