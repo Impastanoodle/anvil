@@ -742,7 +742,7 @@
       '<tr><th>F</th><td>Zoom to fit</td></tr><tr><th>Z / Shift+Z</th><td>Zoom out / in</td></tr>' +
       '<tr><th>Space</th><td>View orientation menu</td></tr>' +
       '<tr><th>S</th><td>Start a sketch (or exit the current one)</td></tr>' +
-      '<tr><th>L, R, C, A, P, T</th><td>In a sketch: Line, Rectangle, Circle, Arc, Polygon, Slot</td></tr>' +
+      '<tr><th>L, R, C, A, P, T</th><td>In a sketch: Line, Rectangle, Circle, Arc (A again: 3 Point Arc), Polygon, Slot</td></tr>' +
       '<tr><th>Esc</th><td>Cancel tool / command / selection</td></tr><tr><th>Enter</th><td>Accept the PropertyManager</td></tr>' +
       '<tr><th>Delete</th><td>Delete selected entity or feature</td></tr><tr><th>F2</th><td>Rename selected feature</td></tr>' +
       '<tr><th>Ctrl+Z / Ctrl+Y</th><td>Undo / Redo</td></tr><tr><th>Ctrl+B</th><td>Rebuild</td></tr><tr><th>Ctrl+S</th><td>Save</td></tr>' +
@@ -755,7 +755,7 @@
   // ------------------------------------------------------------------ keyboard
   // Keys bound by the keydown handler below, by ribbon command id (used for ribbon tooltips). Keep in sync with the handler.
   var SHORTCUTS = {
-    sketch: 'S', exitSketch: 'S', extrude: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', polygon: 'P', slot: 'T', dim: 'D',
+    sketch: 'S', exitSketch: 'S', extrude: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', arc3: 'A, A', polygon: 'P', slot: 'T', dim: 'D',
     fit: 'F', undo: 'Ctrl+Z', redo: 'Ctrl+Y', rebuild: 'Ctrl+B', save: 'Ctrl+S', new: 'Ctrl+N', open: 'Ctrl+O', normalTo: 'Ctrl+8', prevView: 'Shift+Ctrl+Z', orient: 'Space', delete: 'Del', rename: 'F2'
   };
   UI.shortcutFor = function (id) { return SHORTCUTS[id] || null; };
@@ -802,6 +802,9 @@
     if (App.mode === 'sketch') {
       var map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'polygon', t: 'slot', d: 'dimension' };
       var t = map[k.toLowerCase()];
+      // r5/sketch5: A again with the Centerpoint Arc goes on to the 3 Point Arc, then puts the tool down
+      if (t === 'arc' && App.tool === 'arc') t = 'arc3';
+      else if (t === 'arc' && App.tool === 'arc3') t = 'select';
       if (t) { UI.setTool(App.tool === t ? 'select' : t); return; }
     }
     if (k === 'e' || k === 'E') { UI.cmdExtrude(false); return; }

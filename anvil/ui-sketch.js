@@ -22,12 +22,34 @@
     UI.updateSketches(); UI.updatePlanes(); UI.updateHighlights();
     UI.setRibbonTab('Sketch');
     $('exit-sketch').hidden = false;
-    $('exit-sketch').innerHTML = '';
-    $('exit-sketch').appendChild(el('button', { title: 'Exit Sketch (keep changes)', html: Icons('exitSketch', 26), onclick: function () { exitSketch(); } }));
-    $('exit-sketch').appendChild(el('button', { title: 'Cancel sketch changes', html: Icons('cancel', 20), onclick: function () { cancelSketch(); } }));
+    App.relHover = null;
+    refreshCorner(true);
     UI.refreshTree(); UI.refreshStatus();
     UI.setStatus('Editing ' + f.name + '. Pick a tool from the Sketch tab, or click an entity to edit its values.');
   }
+
+  // r5/sketch5: the confirmation corner, side by side in the top-right corner of the graphics area as SolidWorks has
+  // it: Exit Sketch (rebuilds) and Discard Changes and Exit; while a PropertyManager is open in the sketch it holds that
+  // PropertyManager's OK / Cancel instead (follows #pm being shown / hidden).
+  var cornerMode = null;
+  function refreshCorner(force) {
+    var cc = $('exit-sketch');
+    if (App.mode !== 'sketch') { cornerMode = null; return; }
+    var mode = UI.hasPM && UI.hasPM() ? 'pm' : 'sketch';
+    if (mode === cornerMode && !force && cc.children.length) return;
+    cornerMode = mode;
+    cc.innerHTML = '';
+    cc.classList.toggle('pm', mode === 'pm');
+    if (mode === 'pm') {
+      cc.appendChild(el('button', { 'class': 'cc-ok', title: 'OK (Enter)', 'aria-label': 'OK', html: Icons('ok', 22), onclick: function () { UI.pmOK(); } }));
+      cc.appendChild(el('button', { 'class': 'cc-cancel', title: 'Cancel (Esc)', 'aria-label': 'Cancel', html: Icons('cancel', 20), onclick: function () { UI.pmCancel(); } }));
+    } else {
+      cc.appendChild(el('button', { 'class': 'cc-exit', title: 'Exit Sketch (S): keep the changes and rebuild', 'aria-label': 'Exit Sketch', html: Icons('exitSketch', 26), onclick: function () { exitSketch(); } }));
+      cc.appendChild(el('button', { 'class': 'cc-cancel', title: 'Discard Changes and Exit', 'aria-label': 'Discard Changes and Exit', html: Icons('cancel', 20), onclick: function () { confirmCancelSketch(); } }));
+    }
+  }
+  if ($('pm') && window.MutationObserver) new MutationObserver(function () { refreshCorner(); }).observe($('pm'), { attributes: true, attributeFilter: ['hidden'] });
+  UI.refreshSketchCorner = refreshCorner;
 
   function exitSketch(silent) {
     if (App.mode !== 'sketch') return UI.whenIdle();
@@ -65,6 +87,29 @@
     });
   }
 
+  // r5/sketch5: Discard Changes and Exit (the red ✗ of the confirmation corner) asks first when the sketch was changed,
+  // as SolidWorks does; an unchanged sketch just closes
+  function sketchChanged() {
+    var f = UI.activeSketchFeature();
+    if (!f || !App.sketchSnapshot) return false;
+    var s = JSON.parse(App.sketchSnapshot);
+    function n(x) { return x && x.length ? JSON.stringify(x) : '[]'; }
+    return n(f.entities) !== n(s.entities) || n(f.dims) !== n(s.dims) || n(f.rels) !== n(s.rels);
+  }
+  function confirmCancelSketch() {
+    var f = UI.activeSketchFeature();
+    if (!f || !sketchChanged()) { cancelSketch(); return; }
+    UI.showModal({
+      title: 'Discard Changes?',
+      body: '<p>Discard the changes made to <b>' + String(f.name).replace(/</g, '&lt;') + '</b> and exit the sketch?</p>',
+      buttons: [
+        { id: 'sk-discard', label: 'Discard Changes and Exit', primary: true, action: function () { UI.closeModal(); cancelSketch(); } },
+        { id: 'sk-keep', label: 'Keep Editing', action: UI.closeModal }
+      ]
+    });
+  }
+  UI.confirmCancelSketch = confirmCancelSketch;
+  UI.sketchChanged = sketchChanged;
   function cancelSketch() {
     if (App.sketchSnapshot) {
       var f = UI.activeSketchFeature();
@@ -570,7 +615,7 @@
       case 'line': if (typed.len != null) lin('len', off); break;
       case 'rect': case 'crect': if (typed.w != null) lin('w', -off); if (typed.h != null) lin('h', off); break;
       case 'circle': if (typed.r != null) rad('dia'); break;
-      case 'arc': if (typed.r != null && App.tool === 'arc') rad('r'); break;
+      case 'arc': if (typed.r != null && (App.tool === 'arc' || App.tool === 'arc3')) rad('r'); break;
       case 'poly': if (typed.r != null) rad('r'); break;
       case 'slot': if (typed.len != null) lin('len', off); if (typed.w != null) lin('w', off); break;
     }
@@ -599,6 +644,7 @@
       case 'circle': return [['R', 'r']];
       case 'polygon': return [['R', 'r'], ['A', 'ang']];
       case 'arc': return n === 1 ? [['R', 'r']] : [['A', 'sweep']];
+      case 'arc3': return n === 1 ? [['L', 'len'], ['A', 'ang']] : [['R', 'r']];   // r5/sketch5: chord, then radius
       case 'slot': return n === 1 ? [['L', 'len'], ['A', 'ang']] : [['W', 'w']];
     }
     return null;
@@ -664,6 +710,17 @@
     return out;
   }
   function clean(v) { return +v.toPrecision(12); }
+  // 3 Point Arc with a typed radius r (r5/sketch5): the middle point of the arc from A to B of radius r that bulges to
+  // the cursor's side of the chord, the shorter or the longer way round, whichever is nearer the cursor. A radius
+  // under half the chord is taken as half the chord (a half circle).
+  function arc3Through(A, B, cur, r) {
+    var mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2, ux = B[0] - A[0], uy = B[1] - A[1], c = Math.hypot(ux, uy);
+    if (c < 1e-12) return cur;
+    var n = [-uy / c, ux / c], d = (cur[0] - mx) * n[0] + (cur[1] - my) * n[1], sg = d < 0 ? -1 : 1;
+    r = Math.max(r, c / 2);
+    var h = Math.sqrt(Math.max(0, r * r - c * c / 4)), bulge = Math.abs(Math.abs(d) - (r + h)) < Math.abs(Math.abs(d) - (r - h)) ? r + h : r - h;
+    return [clean(mx + n[0] * sg * bulge), clean(my + n[1] * sg * bulge)];
+  }
   // The tool's next point for cursor point cur with the typed values v holding.
   function typedPoint(cur, v) {
     var st = App.toolState, pts = st.pts, a = pts[0], last = pts[pts.length - 1], D = Math.PI / 180;
@@ -672,7 +729,8 @@
     function sg(x) { return x < 0 ? -1 : 1; }
     var dx = cur[0] - a[0], dy = cur[1] - a[1];
     switch (App.tool) {
-      case 'line': case 'slot': case 'polygon': {
+      case 'line': case 'slot': case 'polygon': case 'arc3': {
+        if (App.tool === 'arc3' && pts.length === 2) return v.r == null ? cur : arc3Through(a, pts[1], cur, v.r);
         if (App.tool === 'slot' && pts.length === 2) {
           if (v.w == null) return cur;
           var b = pts[1], ux = b[0] - a[0], uy = b[1] - a[1], L = Math.hypot(ux, uy) || 1, n = [-uy / L, ux / L];
@@ -851,7 +909,7 @@
         return 'R ' + n(Math.hypot(b[0] - a[0], b[1] - a[1]), 2) + '   A ' + n(sw, 1) + '°';
       }
       case 'arc3': {
-        if (pts.length < 2) return 'L ' + n(L, 2);
+        if (pts.length < 2) return 'L ' + n(L, 2) + '   A ' + ang(dx, dy);
         var ta3 = toolEntities(pts, p)[0];
         return ta3 && ta3.t === 'arc' ? 'R ' + n(ta3.r, 2) + '   A ' + n(ta3.a1 - ta3.a0, 1) + '°' : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2);
       }
@@ -873,9 +931,20 @@
   function glyph(layer, x, y, type) {
     var g = svg('g', { 'class': 'rel-badge infer', transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' }, layer);
     svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
-    var inner = svg('g', { transform: 'translate(1,1) scale(0.875)' }, g);
-    inner.innerHTML = Icons('rel' + type.charAt(0).toUpperCase() + type.slice(1), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+    iconUse(g, 'rel' + type.charAt(0).toUpperCase() + type.slice(1));
     return g;
+  }
+  // r5/sketch5: relation icons are drawn as <use> of one shared copy per icon (kept in a <defs> of the #dim-layer):
+  // parsing an icon's markup for every badge on every redraw cost ~4 ms per frame on a 56-entity sketch
+  var iconDefs = null, iconIds = {};
+  function iconUse(parent, name) {
+    if (!iconDefs || iconDefs.parentNode !== dimLayer) { iconDefs = svg('defs', {}); dimLayer.insertBefore(iconDefs, dimLayer.firstChild); iconIds = {}; }
+    if (!iconIds[name]) {
+      var g = svg('g', { id: 'sk-ico-' + name }, iconDefs);
+      g.innerHTML = Icons(name, 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      iconIds[name] = '#sk-ico-' + name;
+    }
+    return svg('use', { href: iconIds[name], transform: 'translate(1,1) scale(0.875)' }, parent);
   }
   function drawFeedback(pl, info, mx, my, readout) {
     var layer = feedbackLayer();
@@ -963,6 +1032,30 @@
     return Math.abs(t) < 10 * s ? null : Math.round(t * 1e4) / 1e4;
   }
   UI.dimTextAlong = textAlong;
+  // r5/sketch5: where a placed dimension's label sits, in sketch coordinates, and the exact placement that puts it at
+  // a given point (no snapping to the middle). Commands that move or copy entities with their dimensions (Mirror in
+  // place) carry the label with the geometry: anchor -> transform -> place at.
+  function dimAnchor(e, d) {
+    var g = K.dimGeometry(e, d), s = UI.cam.scale || 0.1;
+    if (!g) return null;
+    if (g.type === 'linear') {
+      var n = [-g.dir[1], g.dir[0]], off = d.off != null ? d.off : 16 * s, t = g.value / 2 + (d.tx || 0);
+      return [g.P[0] + n[0] * off + g.dir[0] * t, g.P[1] + n[1] * off + g.dir[1] * t];
+    }
+    var a = (d.ang != null ? d.ang : 45) * Math.PI / 180, dist = Math.max(d.off != null ? d.off : 0, g.r + 18 * s);
+    return [g.C[0] + Math.cos(a) * dist, g.C[1] + Math.sin(a) * dist];
+  }
+  function dimPlaceAt(e, d, uv) {
+    var g = K.dimGeometry(e, d);
+    if (!g) return {};
+    if (g.type !== 'linear') return dimPlacement(e, d, uv);
+    var n = [-g.dir[1], g.dir[0]], t = (uv[0] - g.P[0]) * g.dir[0] + (uv[1] - g.P[1]) * g.dir[1] - g.value / 2;
+    var out = { off: Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4 };
+    if (Math.abs(t) > 1e-6) out.tx = Math.round(t * 1e4) / 1e4;
+    return out;
+  }
+  UI.dimAnchor = dimAnchor;
+  UI.dimPlaceAt = dimPlaceAt;
 
   // A linear dimension between sketch points P and Q measured along unit direction dir (pointing from P towards Q),
   // its dimension line `off` along dir's left normal from P: extension lines from both points reach the dimension
@@ -1090,7 +1183,8 @@
       if (!uv) return;
       var pl = it.rel != null ? (UI.relDimPlacement ? UI.relDimPlacement(f, d, uv) : {}) : dimPlacement(f.entities[d.e], d, uv);
       ['off', 'ang'].forEach(function (k) { if (pl[k] != null) d[k] = pl[k]; });
-      if (pl.off != null && pl.ang == null) { if (pl.tx != null) d.tx = pl.tx; else delete d.tx; }   // a linear label sits where it is dropped
+      if (d.type === 'angle') { if (pl.ta != null) d.ta = pl.ta; else delete d.ta; }   // r5/sketch5: an angle's label too
+      else if (pl.off != null && pl.ang == null) { if (pl.tx != null) d.tx = pl.tx; else delete d.tx; }   // a linear label sits where it is dropped
       App.dimsStale = true;
     }
     function move(e2) {
@@ -1139,7 +1233,7 @@
 
   // Redraw every dimension of the active sketch. Called from the render loop whenever App.dimsStale is set.
   function drawDims() {
-    for (var c = dimLayer.firstChild; c; ) { var nx = c.nextSibling; if (c !== fbLayer) dimLayer.removeChild(c); c = nx; }
+    for (var c = dimLayer.firstChild; c; ) { var nx = c.nextSibling; if (c !== fbLayer && c !== iconDefs) dimLayer.removeChild(c); c = nx; }
     labelBoxes = [];
     var f = UI.activeSketchFeature();
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
@@ -1155,7 +1249,7 @@
       drawOne(sc, it);
     });
     // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
-    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, drawOne: drawOne, list: list });
+    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, drawOne: drawOne, list: list, icon: iconUse, free: boxFree, take: function (b) { labelBoxes.push(b); } });
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
@@ -1337,7 +1431,7 @@
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     f.dims.splice(index, 1);
     App.sel = null;
-    App.dimsStale = true;
+    UI.updateSketches();   // r5/sketch5: the sketch's state and colours follow at once
     UI.setStatus('Dimension deleted.');
   }
 
@@ -1372,6 +1466,7 @@
       Object.keys(placed).forEach(function (k) { d[k] = placed[k]; });
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       (f.dims = f.dims || []).push(d);
+      UI.updateSketches();   // r5/sketch5: colours and Under / Fully / Over Defined follow at once, not on the next edit
       App.sel = { kind: 'dim', index: f.dims.length - 1 };
       // over-defining: ask whether to make it driven (ui-relations.js) instead of opening the Modify box
       if (UI.askDrivenIfOver && UI.askDrivenIfOver(f, 'dim', f.dims.length - 1)) { UI.updateSketches(); return; }
@@ -1563,7 +1658,7 @@
     viewport.classList.remove('tool-grab');
     if (d.kind === 'hook') { d.hook.end(p); return; }
     if (d.kind === 'rotate' || d.kind === 'zoom' || (d.kind === 'pan' && d.moved)) return;
-    if (ev.button === 2) { if (App.mode === 'sketch') { finishChain(); } return; }
+    if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
     if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
@@ -1581,6 +1676,41 @@
       if (f) UI.editFeature(f);
     }
   });
+
+  // r5/sketch5: right-click with the Select tool opens the sketch's shortcut menu, as in SolidWorks: on an entity
+  // (selected first if it is not) Construction Geometry, Add Relation, Display/Delete Relations, Smart Dimension and
+  // Delete; anywhere Exit Sketch and Discard Changes.
+  function sketchMenu(mx, my, ev) {
+    var f = UI.activeSketchFeature();
+    if (!f) return;
+    var hit = UI.pickEntity(mx, my), items = [];
+    if (hit && !(UI.entitySelected ? UI.entitySelected(hit.index) : App.sel && App.sel.kind === 'entity' && App.sel.index === hit.index)) {
+      if (UI.setSelection) UI.setSelection([hit]); else { App.sel = hit; App.sel2 = null; UI.updateSketches(); }
+    }
+    var sel = [];
+    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && sel.indexOf(s.index) < 0) sel.push(s.index); });
+    if (App.sel && App.sel.kind === 'entity' && sel.indexOf(App.sel.index) < 0) sel.push(App.sel.index);
+    sel = sel.filter(function (i) { return f.entities[i]; });
+    if (sel.length) {
+      var allCon = sel.every(function (i) { return f.entities[i].construction; });
+      items.push({ label: 'Construction Geometry', checked: allCon, action: function () { if (UI.toggleConstruction) UI.toggleConstruction(sel); } });
+      items.push({ label: 'Add Relation…', action: function () { if (UI.cmdAddRelations) UI.cmdAddRelations(); } });
+      items.push({ label: 'Display/Delete Relations…', action: function () { if (UI.cmdDisplayRelations) UI.cmdDisplayRelations('selected'); } });
+      items.push({ label: 'Smart Dimension', key: 'D', action: function () { setTool('dimension'); } });
+      items.push({ sep: true });
+      items.push({ label: 'Delete', key: 'Del', action: function () { UI.deleteSelection(); } });
+    } else {
+      items.push({ label: 'Smart Dimension', key: 'D', action: function () { setTool('dimension'); } });
+      items.push({ label: 'Line', key: 'L', action: function () { setTool('line'); } });
+      items.push({ label: 'Display/Delete Relations…', action: function () { if (UI.cmdDisplayRelations) UI.cmdDisplayRelations(); } });
+      items.push({ label: 'Zoom to Fit', key: 'F', action: function () { UI.zoomToFit(); } });
+    }
+    items.push({ sep: true });
+    items.push({ label: 'Exit Sketch', action: function () { exitSketch(); } });
+    items.push({ label: 'Discard Changes and Exit', action: function () { confirmCancelSketch(); } });
+    UI.showMenu(ev.clientX, ev.clientY, items);
+  }
+  UI.sketchMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); sketchMenu(mx, my, { clientX: r.left + mx, clientY: r.top + my }); };
 
   // Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and the tool stays active
   // for the next one; with nothing in progress the tool is put down.

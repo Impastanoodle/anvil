@@ -308,6 +308,7 @@ body { overflow: auto; }
 #dim-layer .temp text { fill: var(--blue); pointer-events: none; }
 /* sketch relations (ui-relations.js): relation icons, inference icons, over-defined dimensions, Add Relations picks */
 #dim-layer .rel-badge { pointer-events: auto; cursor: pointer; }
+#viewport.tool-cross #dim-layer .rel-badge { pointer-events: none; }   /* r5/sketch5: with a drawing tool, a click on a relation icon goes to the sketch */
 #dim-layer .rel-badge rect { fill: #f3f8ef; stroke: #8fbf86; stroke-width: 1; }
 #dim-layer .rel-badge:hover rect, #dim-layer .rel-badge.sel rect { fill: #d9f2d4; stroke: var(--green); stroke-width: 1.5; }
 #dim-layer .rel-badge.redundant rect { fill: #fff4c8; stroke: #d4a300; }
@@ -328,8 +329,12 @@ body { overflow: auto; }
 #rel-display .rel-row { cursor: pointer; }
 .rel-row.sel { background: var(--blue-soft); }
 .rel-row.redundant em { color: #b08700; } .rel-row.conflict em { color: #d9302c; }
+/* r5/sketch5: Display/Delete Relations rows tinted by state, hover, focus; a relation icon whose entities are lit up */
+.rel-row.redundant { background: rgba(212,163,0,0.14); } .rel-row.conflict { background: rgba(217,48,44,0.12); } #rel-display .rel-row:hover { background: var(--blue-soft); } #rel-display .rel-row.sel { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); } #rel-display .rel-row:focus { outline: 1px dotted var(--blue); outline-offset: -1px; }
+#dim-layer .rel-badge.hot rect { fill: #ffe9cc; stroke: #e8891c; stroke-width: 1.5; }
 .rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 #status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
+#status-right .sk-state { min-width: 96px; transition: color 120ms ease-out; }   /* r5/sketch5: Under / Fully / Over Defined keep their place */
 #status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
 #dim-edit { position: absolute; z-index: 4; display: flex; align-items: center; gap: 2px; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 #dim-edit[hidden] { display: none; }
@@ -342,10 +347,10 @@ body { overflow: auto; }
 #dim-edit .dm-ok { color: #2f9e5b; } #dim-edit .dm-cancel { color: #d9302c; } #dim-edit .dm-rebuild { color: var(--blue); }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
-#exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: column; gap: 4px; }
+#exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: row; gap: 2px; padding: 2px; border-radius: 4px; background: var(--overlay-2); border: 1px solid var(--line); box-shadow: 0 1px 4px var(--shadow); }   /* r5/sketch5: the confirmation corner, side by side */
 #statusbar { white-space: nowrap; overflow: hidden; }
-#exit-sketch button { width: 36px; height: 36px; border-radius: 3px; background: var(--overlay-2); border: 1px solid var(--line); display: grid; place-items: center; }
-#exit-sketch button:hover { border-color: var(--blue); }
+#exit-sketch button { width: 36px; height: 36px; border-radius: 3px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; cursor: pointer; }
+#exit-sketch button:hover { border-color: var(--blue); background: var(--hover); } #exit-sketch button:active { transform: translateY(1px); }
 #viewport.tool-cross { cursor: crosshair; }
 #viewport.tool-grab { cursor: grabbing; }
 

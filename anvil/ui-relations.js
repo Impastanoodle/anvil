@@ -80,7 +80,7 @@
       if (Math.abs(den) < 1e-12) return null;
       var t = ((B.a[0] - A.a[0]) * d2[1] - (B.a[1] - A.a[1]) * d2[0]) / den;
       var X = [A.a[0] + d1[0] * t, A.a[1] + d1[1] * t];
-      return { type: 'angle', X: X, d1: d1, d2: d2 };
+      return { type: 'angle', X: X, d1: d1, d2: d2, A: A, B: B };
     }
     var P, Q;
     if (k0 !== 'line' && k1 !== 'line') { P = ctr(R[0], k0); Q = ctr(R[1], k1); }
@@ -116,7 +116,22 @@
     }
     var g = relDimGeometry(f, rel);
     if (!g) return out;
-    if (g.type === 'angle') { out.off = Math.round(Math.hypot(uv[0] - g.X[0], uv[1] - g.X[1]) * 1e4) / 1e4; return out; }
+    if (g.type === 'angle') {
+      // r5/sketch5: an angle being placed takes its quadrant from the cursor, as SolidWorks' does (between the two
+      // lines' directions: the angle; beside one of them: its supplement); its label follows the cursor round the arc
+      // (ta, degrees from the arc's middle), snapping to the middle within 10 px
+      var w = [uv[0] - g.X[0], uv[1] - g.X[1]], R = Math.hypot(w[0], w[1]);
+      out.off = Math.round(R * 1e4) / 1e4;
+      var q = rel.q === -1 ? -1 : 1, sup = !!rel.sup;
+      if (rel.v == null && !rel.driven) {
+        var den = g.d1[0] * g.d2[1] - g.d1[1] * g.d2[0], al = (w[0] * g.d2[1] - w[1] * g.d2[0]) / den, be = (g.d1[0] * w[1] - g.d1[1] * w[0]) / den;
+        q = al < 0 ? -1 : 1; sup = (al < 0) !== (be < 0);
+        out.q = q === -1 ? -1 : undefined; out.sup = sup || undefined;
+      }
+      var ar = angleArc(g, q, sup), da = wrapPi(Math.atan2(w[1], w[0]) - ar.mid), s = UI.cam.scale || 0.1;
+      out.ta = Math.abs(da) * R < 10 * s ? undefined : Math.round(da * 1800 / Math.PI) / 10;
+      return out;
+    }
     var n = [-g.dir[1], g.dir[0]];
     out.off = Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4;
     var tx = UI.dimTextAlong ? UI.dimTextAlong(uv, g.P, g.dir, (g.Q[0] - g.P[0]) * g.dir[0] + (g.Q[1] - g.P[1]) * g.dir[1]) : null;
@@ -129,7 +144,7 @@
     if (!g) return null;
     var s = UI.cam.scale;
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
-    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir);
+    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup);
     var label = UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '');
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
@@ -138,24 +153,48 @@
       return ld;
     }
     var out = { lines: [], arrows: [], label: label };
-    // angle: an arc of radius `off` around the intersection, from line 1's direction to line 2's (the angle the value is)
-    var R = rel.off != null ? rel.off : 30 * s;
-    var a1 = Math.atan2(g.d1[1], g.d1[0]), a2 = Math.atan2(g.d2[1], g.d2[0]), sweep = a2 - a1;
-    while (sweep > Math.PI) sweep -= 2 * Math.PI;
-    while (sweep < -Math.PI) sweep += 2 * Math.PI;
-    var N = 24, pts = [];
-    for (var i = 0; i <= N; i++) { var a = a1 + sweep * i / N; pts.push(scr(pl, [g.X[0] + R * Math.cos(a), g.X[1] + R * Math.sin(a)])); }
-    for (var j = 0; j < N; j++) out.lines.push([pts[j], pts[j + 1]]);
+    // angle: an arc of radius `off` around the intersection, between the two rays of the quadrant it was placed in
+    // (rel.q / rel.sup, angleArc); the label sits at rel.ta degrees from the arc's middle (r5/sketch5: it follows the
+    // cursor), with the arc running on to it; extension lines run from the lines to the arc where they stop short
+    var R = rel.off != null ? rel.off : 30 * s, ar = angleArc(g, rel.q === -1 ? -1 : 1, !!rel.sup);
+    function at(a, r) { return scr(pl, [g.X[0] + r * Math.cos(a), g.X[1] + r * Math.sin(a)]); }
+    function arcLines(from, sw) {
+      var n = Math.max(2, Math.ceil(Math.abs(sw) / (Math.PI / 24))), p = [];
+      for (var i = 0; i <= n; i++) p.push(at(from + sw * i / n, R));
+      for (var j = 0; j < n; j++) out.lines.push([p[j], p[j + 1]]);
+      return p;
+    }
+    var pts = arcLines(ar.a1, ar.sweep), N = pts.length - 1;
     out.arrows.push({ tip: pts[0], dir: unit(pts[1], pts[0]) }, { tip: pts[N], dir: unit(pts[N - 1], pts[N]) });
-    var mid = pts[N / 2], c = scr(pl, g.X), um = unit(c, mid);
-    out.text = { x: mid[0] + um[0] * 10, y: mid[1] + um[1] * 10 + 4, anchor: um[0] >= -0.2 ? 'start' : 'end' };
+    var da = (rel.ta || 0) * Math.PI / 180, half = Math.abs(ar.sweep) / 2, aL = ar.mid + da;
+    if (Math.abs(da) > half) {
+      var sg = da < 0 ? -1 : 1, past = Math.min(0.5, 6 * s / Math.max(R, 1e-9));
+      arcLines(ar.mid + sg * half, sg * (Math.abs(da) - half + past));
+    }
+    [[ar.u1, g.A], [ar.u2, g.B]].forEach(function (x) {
+      var u = x[0], L = Math.hypot(u[0], u[1]) || 1, ux = u[0] / L, uy = u[1] / L;
+      var t1 = (x[1].a[0] - g.X[0]) * ux + (x[1].a[1] - g.X[1]) * uy, t2 = (x[1].b[0] - g.X[0]) * ux + (x[1].b[1] - g.X[1]) * uy;
+      var tmin = Math.min(t1, t2), tmax = Math.max(t1, t2), gap = 2 * s, ext = 3 * s, a = Math.atan2(uy, ux);
+      if (R > tmax + gap) out.lines.push([at(a, tmax + gap), at(a, R + ext)]);
+      else if (R < tmin - gap) out.lines.push([at(a, R - ext), at(a, tmin - gap)]);
+    });
+    var mid = at(aL, R), c = scr(pl, g.X), um = unit(c, mid);
+    out.text = { x: mid[0] + um[0] * 10, y: mid[1] + um[1] * 10 + 4, anchor: um[0] > 0.35 ? 'start' : um[0] < -0.35 ? 'end' : 'middle' };
     return out;
+  }
+  // The arc of an angle dimension: rays u1 = q·d1 and u2 = ±q·d2 (reversed for the supplementary angle), from u1's
+  // direction a1 sweeping (signed, at most half a turn) to u2's; mid = the middle angle.
+  function wrapPi(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
+  function angleArc(g, q, sup) {
+    var u1 = [q * g.d1[0], q * g.d1[1]], s2 = sup ? -q : q, u2 = [s2 * g.d2[0], s2 * g.d2[1]];
+    var a1 = Math.atan2(u1[1], u1[0]), sweep = wrapPi(Math.atan2(u2[1], u2[0]) - a1);
+    return { u1: u1, u2: u2, a1: a1, sweep: sweep, mid: a1 + sweep / 2 };
   }
   // Place a two-entity dimension: adds the relation (value = what it measures now) and opens the Modify box.
   function placeRelDim(f, rd, uv) {
     var pl = relDimPlacement(f, rd, uv);
     markDirty();
-    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir, tx: pl.tx });
+    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir, tx: pl.tx, sup: pl.sup, q: pl.q, ta: pl.ta });
     if (!r.ok) { UI.toast(r.error); return; }
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };
@@ -256,23 +295,59 @@
   function badge(layer, h, x, y, type, cls, title) {
     var g = h.svg('g', { 'class': 'rel-badge ' + (cls || ''), transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' }, layer);
     h.svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
-    var inner = h.svg('g', { transform: 'translate(1,1) scale(0.875)' }, g);
-    inner.innerHTML = Icons(iconName(type), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+    if (h.icon) h.icon(g, iconName(type));
+    else { var inner = h.svg('g', { transform: 'translate(1,1) scale(0.875)' }, g); inner.innerHTML = Icons(iconName(type), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, ''); }
     if (title) { var t = h.svg('title', {}, g); t.textContent = title; }
     return g;
   }
+  // r5/sketch5: where a relation icon goes. Each icon takes a 16 px box clear of the dimension labels and of the icons
+  // already placed: beside a point (right / below first, then round it), along a line on either side, outside a
+  // circle; a second icon on the same anchor goes next to the first, in a row, as SolidWorks lines them up.
+  function badgeSpot(h, a, kind, dir, prev) {
+    var cands = [];
+    if (prev) cands.push([prev[0] + 18, prev[1]], [prev[0] - 18, prev[1]], [prev[0], prev[1] + 18], [prev[0], prev[1] - 18]);
+    if (kind === 'line') {
+      var n = [-dir[1], dir[0]];
+      if (n[1] < 0 || (n[1] === 0 && n[0] < 0)) n = [-n[0], -n[1]];
+      [0, 20, -20, 40, -40, 60, -60].forEach(function (t) {
+        [1, -1].forEach(function (sd) { cands.push([a[0] + dir[0] * t + n[0] * sd * 14 - 8, a[1] + dir[1] * t + n[1] * sd * 14 - 8]); });
+      });
+    } else if (kind === 'curve') {
+      [0, 0.6, -0.6, 1.2, -1.2].forEach(function (k) {
+        var c = Math.cos(k), s = Math.sin(k), u = [dir[0] * c - dir[1] * s, dir[0] * s + dir[1] * c];
+        cands.push([a[0] + u[0] * 14 - 8, a[1] + u[1] * 14 - 8]);
+      });
+    }
+    [1, 1.8, 2.6].forEach(function (m) {
+      [[8, 6], [8, -22], [-24, 6], [-24, -22], [-8, 12], [-8, -28], [14, -8], [-30, -8]].forEach(function (o) { cands.push([a[0] + (o[0] + 8) * m - 8, a[1] + (o[1] + 8) * m - 8]); });
+    });
+    for (var i = 0; i < cands.length; i++) {
+      var b = [cands[i][0] - 1, cands[i][1] - 1, cands[i][0] + 17, cands[i][1] + 17];
+      if (!h.free || h.free(b)) { if (h.take) h.take(b); return cands[i]; }
+    }
+    var p = prev ? [prev[0] + 18, prev[1]] : [a[0] + 8, a[1] + 6];
+    if (h.take) h.take([p[0] - 1, p[1] - 1, p[0] + 17, p[1] + 17]);
+    return p;
+  }
+  // A Coincident that only joins two end points (a line chain, a rectangle's corners): SolidWorks merges such points
+  // and shows no icon. Shown when selected or when it over-defines.
+  function mergedEnds(f, rel) {
+    return rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.every(function (r) { return /^\d+\.p[12]$/.test(String(r)) && f.entities[refEntity(r)] && !f.entities[refEntity(r)].sharp; });
+  }
   function drawRelations(f, pl, layer, h) {
     var an = App.sketchState, slots = {};
-    function place(key, a) { var k = slots[key] = (slots[key] || 0) + 1; return [a[0] + 8 + (k - 1) * 18, a[1] + 6]; }
+    // the distance / angle dimensions first, so the icons keep clear of their labels
     if (f.rels) f.rels.forEach(function (rel, i) {
       var t = S.TYPES[rel.type];
-      if (!t) return;
+      if (!t || !t.dim) return;
       var state = an && an.rels ? an.rels[i] : 'ok';
-      if (t.dim) {
-        var sc = relDimScreenData(f, pl, rel);
-        if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
-        return;
-      }
+      var sc = relDimScreenData(f, pl, rel);
+      if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
+    });
+    if (f.rels) f.rels.forEach(function (rel, i) {
+      var t = S.TYPES[rel.type];
+      if (!t || t.dim) return;
+      var state = an && an.rels ? an.rels[i] : 'ok';
       // a virtual sharp (SketchSolver.filletCorner) on the lines it joins: thin extension lines to their ends, no icons
       var sh = rel.type === 'coincident' && rel.refs.length === 2 ? rel.refs.map(function (r) { var e = f.entities[refEntity(r)]; return e && e.sharp && String(r) === String(refEntity(r)); }) : null;
       if (sh && (sh[0] || sh[1])) {
@@ -283,8 +358,9 @@
           return;
         }
       }
-      if (App.view.showRelations === false) return;
-      var selected = App.sel && App.sel.kind === 'rel' && App.sel.index === i;
+      var selected = App.sel && App.sel.kind === 'rel' && App.sel.index === i, hot = App.relHover === i;
+      if (App.view.showRelations === false && !selected && !hot) return;
+      if (mergedEnds(f, rel) && state === 'ok' && !selected && !hot) return;
       var drawn = [];
       rel.refs.forEach(function (ref) {
         if (ref === 'O') return;
@@ -292,12 +368,28 @@
         // one icon where both ends of the relation meet (a Coincident between two end points)
         if (!a || drawn.some(function (q) { return Math.hypot(q[0] - a[0], q[1] - a[1]) < 4; })) return;
         drawn.push(a);
-        var p = place(Math.round(a[0] / 6) + ',' + Math.round(a[1] / 6), a);
-        var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''));
+        var key = Math.round(a[0] / 6) + ',' + Math.round(a[1] / 6), c = !S.refPoint(f, ref) && S.refCurve(f, ref), kind = 'point', dir = null;
+        if (c && c.kind === 'line') { var sa = scr(pl, c.a), sb = scr(pl, c.b), L = Math.hypot(sb[0] - sa[0], sb[1] - sa[1]); if (L > 1e-9) { kind = 'line'; dir = [(sb[0] - sa[0]) / L, (sb[1] - sa[1]) / L]; } }
+        else if (c) { var sc0 = scr(pl, c.c), Lc = Math.hypot(a[0] - sc0[0], a[1] - sc0[1]); if (Lc > 1e-9) { kind = 'curve'; dir = [(a[0] - sc0[0]) / Lc, (a[1] - sc0[1]) / Lc]; } }
+        var p = slots[key] = badgeSpot(h, a, kind, dir, slots[key]);
+        var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''));
         g.setAttribute('data-rel', i);
         g.addEventListener('click', function (ev) { ev.stopPropagation(); App.sel = { kind: 'rel', index: i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(f, rel) + ' — ' + stateText(state) + '. Delete removes it.'); });
+        // hovering an icon lights up the entities it relates (r5/sketch5)
+        g.addEventListener('mouseenter', function () { hoverRelation(i, true); });
+        g.addEventListener('mouseleave', function () { hoverRelation(i, false); });
+        g.addEventListener('contextmenu', function (ev) {
+          ev.preventDefault(); ev.stopPropagation();
+          App.sel = { kind: 'rel', index: i }; App.dimsStale = true;
+          UI.showMenu(ev.clientX, ev.clientY, [
+            { label: 'Delete ' + S.TYPES[rel.type].name, key: 'Del', action: function () { deleteRelation(i); } },
+            { label: 'Display/Delete Relations…', action: function () { cmdDisplayRelations(); } }
+          ]);
+        });
       });
     });
+    // the entities of the relation hovered (an icon here, or a row of Display/Delete Relations): orange, as pre-highlight
+    if (App.relHover != null && f.rels && f.rels[App.relHover]) relHighlight(f, pl, layer, h, f.rels[App.relHover]);
     if (App.tempRelDim) { var tsc = relDimScreenData(f, pl, App.tempRelDim); if (tsc) h.drawOne(tsc, { d: App.tempRelDim, temp: true }); }
     // (the yellow inference icons of what is being drawn sit by the cursor: ui-sketch.js drawFeedback)
     // Add Relations selection
@@ -313,6 +405,31 @@
     });
   }
   function stateText(s) { return { ok: 'Satisfied', redundant: 'Over Defining (redundant)', conflict: 'Not Solved (conflict)', invalid: 'Dangling' }[s] || s; }
+  // r5/sketch5: the relation under the mouse (an icon in the graphics area, a row of Display/Delete Relations) lights up
+  // the entities / points it holds, without redrawing the sketch itself
+  var HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none';
+  function relHighlight(f, pl, layer, h, rel) {
+    rel.refs.forEach(function (ref) {
+      if (ref === 'O') { var o = scr(pl, [0, 0]); h.svg('circle', { 'class': 'rel-hot', cx: o[0], cy: o[1], r: 5, style: HOT }, layer); return; }
+      var p = S.refPoint(f, ref);
+      if (p) { var s = scr(pl, p); h.svg('circle', { 'class': 'rel-hot', cx: s[0], cy: s[1], r: 4.5, style: HOT + ';fill:#e8891c;fill-opacity:0.35' }, layer); return; }
+      var c = S.refCurve(f, ref), e = f.entities[refEntity(ref)], pls;
+      if (!c || !e) return;
+      if (c.kind === 'line') pls = [{ pts: [c.a, c.b] }];
+      else pls = K.entityPolylines(e);
+      pls.forEach(function (l) {
+        var pts = l.pts.map(function (q) { return scr(pl, q).map(function (v) { return Math.round(v * 10) / 10; }).join(','); });
+        if (l.closed && pts.length) pts.push(pts[0]);
+        h.svg('polyline', { 'class': 'rel-hot', points: pts.join(' '), style: HOT }, layer);
+      });
+    });
+  }
+  function hoverRelation(i, on) {
+    var next = on ? i : (App.relHover === i ? null : App.relHover);
+    if (next === App.relHover) return;
+    App.relHover = next;
+    if (UI.drawDims) { App.dimsStale = false; UI.drawDims(); } else App.dimsStale = true;
+  }
 
   // ------------------------------------------------------------------ delete a relation
   function deleteRelation(index) {
@@ -321,6 +438,7 @@
     markDirty();
     var d = S.describe(f, f.rels[index]);
     S.deleteRelation(f, index);
+    App.relHover = null;
     App.sel = null;
     refresh();
     UI.setStatus('Deleted ' + d + '.');
@@ -385,23 +503,54 @@
   }
 
   // ------------------------------------------------------------------ Display/Delete Relations PropertyManager
-  function cmdDisplayRelations() {
+  function cmdDisplayRelations(filter) {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first: relations belong to a sketch.'); return; }
-    var v = { filter: 'all' };
+    var v = { filter: filter === 'selected' || filter === 'over' ? filter : 'all' };
+    // r5/sketch5: clicking an entity in the graphics area shows its relations (filter Selected Entities); hovering a row
+    // lights up what it relates; Delete / arrow keys work on the list; over-defining / unsolved relations and
+    // dimensions are listed first and tinted, and every change updates the rows in place (no re-built panel)
+    function done() { hoverRelation(App.relHover, false); App.relHover = null; App.dimsStale = true; }
     var spec = {
       title: 'Display/Delete Relations', icon: 'relations', values: v,
       groups: [],
+      command: { onSketchPoint: function (uv, mx, my) {
+        var hit = UI.pickEntity(mx, my);
+        App.sel = hit ? { kind: 'entity', index: hit.index } : null;
+        v.filter = hit ? 'selected' : 'all';
+        UI.updateSketches();
+        render();
+      } },
       onChange: function () { if (!rendering) render(); },
-      onOK: function () { }, onCancel: function () { }
+      onOK: done, onCancel: done
     };
     function rows() {
       var an = App.sketchState || S.analyze(f), selEnt = App.sel && App.sel.kind === 'entity' ? App.sel.index : null;
-      return (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: an.rels[i] || 'ok' }; }).filter(function (x) {
+      var out = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i, state: an.rels[i] || 'ok' }; });
+      // over-defining / unsolved Smart Dimensions are listed too (they can be deleted here)
+      (f.dims || []).forEach(function (d, i) { var st = an.dims && an.dims[i]; if (st && st !== 'ok' && !d.driven) out.push({ dim: d, i: i, state: st }); });
+      out = out.filter(function (x) {
         if (v.filter === 'over') return x.state !== 'ok';
-        if (v.filter === 'selected') return selEnt != null && x.rel.refs.some(function (r) { return refEntity(r) === selEnt; });
+        if (v.filter === 'selected') return selEnt != null && (x.dim ? x.dim.e === selEnt : x.rel.refs.some(function (r) { return refEntity(r) === selEnt; }));
         return true;
       });
+      return out.filter(function (x) { return x.state !== 'ok'; }).concat(out.filter(function (x) { return x.state === 'ok'; }));
+    }
+    function rowKey(x) { return (x.dim ? 'd' : 'r') + x.i; }
+    function selKey() { return App.sel && App.sel.kind === 'rel' ? 'r' + App.sel.index : App.sel && App.sel.kind === 'dim' ? 'd' + App.sel.index : ''; }
+    function dimText(x) { var e = f.entities[x.dim.e], val = e ? K.dimValue(e, x.dim) : null; return 'Dimension ' + (val != null ? UI.fmtNum(val, 2) : '') + ' on ' + S.refName(f, String(x.dim.e)); }
+    function selectRow(row) {
+      var key = row.getAttribute('data-key');
+      App.sel = { kind: key.charAt(0) === 'd' ? 'dim' : 'rel', index: +key.slice(1) };
+      Array.prototype.forEach.call(row.parentNode.children, function (r) { r.classList.toggle('sel', r === row); });
+      App.dimsStale = false; if (UI.drawDims) UI.drawDims();
+      UI.setStatus(row.querySelector('span').textContent + ' — ' + row.querySelector('em').textContent + '. Delete removes it.');
+    }
+    function deleteSelected() {
+      if (App.sel && App.sel.kind === 'rel') { App.relHover = null; deleteRelation(App.sel.index); }
+      else if (App.sel && App.sel.kind === 'dim' && UI.deleteDim) { UI.deleteDim(App.sel.index); refresh(); }
+      else { UI.toast('Select a relation in the list first.'); return; }
+      render();
     }
     var rendering = false;
     function render() {
@@ -409,25 +558,36 @@
       try { renderNow(); } finally { rendering = false; }
     }
     function renderNow() {
-      var list = rows(), an = App.sketchState || S.analyze(f), selIdx = App.sel && App.sel.kind === 'rel' ? App.sel.index : -1;
+      var list = rows(), an = App.sketchState || S.analyze(f), sk = selKey();
       spec.message = S.STATUS_TEXT[an.status] + ': ' + (f.rels ? f.rels.length : 0) + ' relation' + ((f.rels || []).length === 1 ? '' : 's') + ', ' + an.dof + ' degree' + (an.dof === 1 ? '' : 's') + ' of freedom' + (an.conflicts ? ', ' + an.conflicts + ' not solved' : '') + (an.redundant ? ', ' + an.redundant + ' over defining' : '') + '.';
       spec.messageOk = an.status === 'full';
       spec.groups = [
         { title: 'Relations', fields: [
           { type: 'select', label: 'Filter', key: 'filter', options: [['all', 'All in this sketch'], ['over', 'Overdefining/Not Solved'], ['selected', 'Selected Entities']] },
-          { type: 'html', html: '<div class="rel-list" id="rel-display">' + (list.length ? list.map(function (x) {
-            return '<div class="rel-row ' + x.state + (x.i === selIdx ? ' sel' : '') + '" data-rel="' + x.i + '" tabindex="0">' + Icons(iconName(x.rel.type), 14) + '<span>' + S.describe(f, x.rel) + '</span><em>' + stateText(x.state) + '</em></div>';
-          }).join('') : '<div class="rel-empty">No relations</div>') + '</div>' },
+          { type: 'html', html: '<div class="rel-list" id="rel-display" role="listbox" aria-label="Relations">' + (list.length ? list.map(function (x) {
+            var key = rowKey(x), icon = x.dim ? Icons('dim', 14) : Icons(iconName(x.rel.type), 14);
+            return '<div class="rel-row ' + x.state + (key === sk ? ' sel' : '') + '" role="option" data-key="' + key + '"' + (x.dim ? '' : ' data-rel="' + x.i + '"') + ' tabindex="0">' + icon + '<span>' + (x.dim ? dimText(x) : S.describe(f, x.rel)) + '</span><em>' + stateText(x.state) + '</em></div>';
+          }).join('') : '<div class="rel-empty">' + (v.filter === 'selected' && !(App.sel && App.sel.kind === 'entity') ? 'Click an entity in the graphics area' : 'No relations') + '</div>') + '</div>' },
           { type: 'buttons', buttons: [
-            { label: 'Delete', onclick: function () { if (App.sel && App.sel.kind === 'rel') { deleteRelation(App.sel.index); render(); } else UI.toast('Select a relation in the list first.'); } },
-            { label: 'Delete All', onclick: function () { if (!f.rels || !f.rels.length) return; markDirty(); var n = f.rels.length; delete f.rels; App.sel = null; refresh(); UI.setStatus('Deleted all ' + n + ' relations.'); render(); } }
+            { label: 'Delete', onclick: deleteSelected },
+            { label: 'Delete All', onclick: function () { if (!f.rels || !f.rels.length) return; markDirty(); var n = f.rels.length; delete f.rels; App.sel = null; App.relHover = null; refresh(); UI.setStatus('Deleted all ' + n + ' relations.'); render(); } }
           ] }
         ] }
       ];
       UI.openPM(spec);
       var box = $('rel-display');
       if (box) Array.prototype.forEach.call(box.querySelectorAll('.rel-row'), function (row) {
-        row.addEventListener('click', function () { App.sel = { kind: 'rel', index: +row.getAttribute('data-rel') }; App.dimsStale = true; UI.updateSketches(); render(); });
+        var key = row.getAttribute('data-key'), ri = key.charAt(0) === 'r' ? +key.slice(1) : null;
+        row.addEventListener('click', function () { selectRow(row); row.focus(); });
+        row.addEventListener('mouseenter', function () { if (ri != null) hoverRelation(ri, true); });
+        row.addEventListener('mouseleave', function () { if (ri != null) hoverRelation(ri, false); });
+        row.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); ev.stopPropagation(); selectRow(row); deleteSelected(); var first = $('rel-display') && $('rel-display').querySelector('.rel-row'); if (first) first.focus(); }
+          else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); ev.stopPropagation(); var nx = ev.key === 'ArrowDown' ? row.nextElementSibling : row.previousElementSibling; if (nx) { selectRow(nx); nx.focus(); } }
+          else if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); selectRow(row); }
+        });
+        row.addEventListener('focus', function () { if (ri != null) hoverRelation(ri, true); });
+        row.addEventListener('blur', function () { if (ri != null) hoverRelation(ri, false); });
       });
     }
     render();
@@ -547,6 +707,29 @@
   UI.drivenDimClick = drivenDimClick;
   UI.toggleConstruction = toggleConstruction;
   UI.cmdCenterline = cmdCenterline;
+  // r5/sketch5: the FeatureManager marks a sketch as SolidWorks does: "(-) Sketch1" under defined, "(+) Sketch1" over
+  // defined, nothing when fully defined (or when it has no geometry). The analysis is cached per sketch on its content,
+  // so refreshing the tree costs a string compare per sketch; the active sketch uses the live App.sketchState.
+  var defCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  UI.sketchTreePrefix = function (f) {
+    if (!f || f.type !== 'sketch' || !f.entities || !f.entities.length) return '';
+    var st = null;
+    if (App.mode === 'sketch' && App.activeSketch === f.id && App.sketchState) st = App.sketchState.status;
+    else {
+      var key = JSON.stringify([f.entities, f.rels || null, f.dims || null]), c = defCache && defCache.get(f);
+      if (c && c.key === key) st = c.st;
+      else { try { st = S.analyze(f).status; } catch (e) { st = null; } if (defCache) defCache.set(f, { key: key, st: st }); }
+    }
+    return st === 'under' ? '(-) ' : st === 'over' ? '(+) ' : '';
+  };
+  // the tree row of the active sketch follows its state as soon as it changes (a dimension that fully defines it …)
+  var lastTreeState = null, baseRefreshStatus = UI.refreshStatus;
+  if (baseRefreshStatus) UI.refreshStatus = function () {
+    var r = baseRefreshStatus.apply(this, arguments);
+    var st = App.mode === 'sketch' && App.sketchState ? App.activeSketch + ':' + App.sketchState.status : null;
+    if (st !== lastTreeState) { var had = lastTreeState != null; lastTreeState = st; if (had && st && UI.refreshTree) UI.refreshTree(); }
+    return r;
+  };
   UI.sketchStatus = function () {
     var f = UI.activeSketchFeature();
     if (!f) return null;
