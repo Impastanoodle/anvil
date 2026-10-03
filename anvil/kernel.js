@@ -39,6 +39,80 @@ var Kernel = (function () {
     var d = dot(n, point);
     return { custom: true, origin: scale(n, d), x: x, y: y, n: n, offset: d };
   }
+  // r10/facesketch10: a frame that is stored in the model (a sketch on a face) is cleaned of float noise first,
+  // tidyPlane(planeFromFace(...)): 9.999999999999998 -> 10, 2e-16 -> 0. tidyNum: a value within 1e-9 of a 6-decimal
+  // number becomes that number; anything else (an irrational direction component) is left exactly as it is.
+  function tidyNum(v) { var r = Math.round(v * 1e6) / 1e6; return Math.abs(v - r) < 1e-9 ? r + 0 : v; }
+  function tidyVec(a) { return [tidyNum(a[0]), tidyNum(a[1]), tidyNum(a[2])]; }
+  function tidyPlane(pl) {
+    pl.origin = tidyVec(pl.origin); pl.x = tidyVec(pl.x); pl.y = tidyVec(pl.y); pl.n = tidyVec(pl.n);
+    if (pl.offset != null) pl.offset = tidyNum(pl.offset);
+    return pl;
+  }
+
+  // ------------------------------------------------------------------ face references (r10/facesketch10)
+  // A sketch (or a Hole Wizard positions sketch) made on a model face keeps its frame as a custom plane plus
+  //   plane.face = { feature: <id of the feature that made the face>, role: 'cap' | 'geom' }
+  // and follows the face at every rebuild, as in SolidWorks: thicken the base and the sketch and its holes move up.
+  //   'cap'  the face is an end cap of an extrude (boss top / bottom or a cut's floor): its plane is computed from
+  //          that extrude's sketch plane and range, so it follows depth, direction and upstream edits exactly, and
+  //          both kernels get the same answer from the same formula;
+  //   'geom' any other planar face: the planar face of the body before the sketch with the same outward normal
+  //          nearest the stored plane (faces tagged with the referenced feature first, on Anvil's kernel).
+  // The resolved frame keeps x, y and n (the in-plane orientation and the sketch coordinates stay put) and moves only
+  // along n. When the feature is gone or comes after the sketch, or the face cannot be found, the sketch keeps its
+  // stored plane and gets a "dangling" warning. Old models with frozen custom planes (no `face`) are unchanged.
+  // capOffset(E, N, model, planesById) -> the plane offset w (N·p = w) of extrude E's end cap whose outward body
+  // normal is N, or null (not an extrude, N not along its direction, a Through All end, any error)
+  function capOffset(E, N, model, planesById) {
+    try {
+      if (!E || E.type !== 'extrude') return null;
+      var S = findFeature(model, E.sketch);
+      if (!S || S.type !== 'sketch') return null;
+      var P = resolvePlane(S.plane, model, planesById), s = dot(N, P.n);
+      if (Math.abs(Math.abs(s) - 1) > 1e-6) return null;
+      var r = extrudeRange(E, THROUGH), cut = isCut(E, model);
+      // a boss's cap faces out of the tool; a cut's floor faces back against the tool's cap
+      var t = ((s > 0) !== !!cut) ? Math.max(r[0], r[1]) : Math.min(r[0], r[1]);
+      if (Math.abs(t) >= THROUGH / 2) return null;
+      return tidyNum((s > 0 ? 1 : -1) * (dot(P.n, P.origin) + t));
+    } catch (e) { return null; }
+  }
+  // faceRef(model, featureId, plane, planesById) -> the `face` record for a sketch frame `plane` made on a face of
+  // feature `featureId` ('cap' when the extrude's cap formula gives the face's plane now, else 'geom'), or null
+  function faceRef(model, featureId, plane, planesById) {
+    if (featureId == null || featureId < 0 || !model || !model.features || !findFeature(model, featureId)) return null;
+    var m = resolvedModel(model).model, w = capOffset(findFeature(m, featureId), plane.n, m, planesById || {});
+    return { feature: featureId, role: w != null && Math.abs(w - plane.offset) < 1e-6 ? 'cap' : 'geom' };
+  }
+  // resolveFacePlane(sketch, model, planesById, candidates?) -> null for a sketch without a face reference, else
+  // { plane, warning? }. `candidates()` lists the planar faces of the body before the sketch as [{ n, w, feature? }]
+  // (each kernel supplies its own); without it a 'geom' reference keeps its stored plane.
+  function resolveFacePlane(sk, model, planesById, candidates) {
+    var pl = sk && sk.plane, fr = pl && pl.custom ? pl.face : null;
+    if (!fr) return null;
+    var src = findFeature(model, fr.feature), before = false;
+    for (var i = 0; src && i < model.features.length && model.features[i].id !== sk.id; i++) if (model.features[i].id === fr.feature) before = true;
+    var w = null;
+    if (src && before) {
+      if (fr.role !== 'geom') w = capOffset(src, pl.n, model, planesById);
+      if (w == null && candidates) {
+        var list = (candidates() || []).filter(function (c) { return dot(c.n, pl.n) > 1 - 1e-6; });
+        var own = list.filter(function (c) { return c.feature === fr.feature; });
+        if (own.length) list = own;
+        list.forEach(function (c) { if (w == null || Math.abs(c.w - pl.offset) < Math.abs(w - pl.offset)) w = c.w; });
+        if (w != null) w = tidyNum(w);
+      } else if (w == null && fr.role === 'geom') w = pl.offset;
+    }
+    if (w == null) {
+      var what = src ? (src.name || 'feature ' + fr.feature) : 'a deleted feature';
+      return { plane: pl, warning: 'Dangling sketch: the face it was drawn on (' + what + ') ' + (src ? 'cannot be found' : 'is gone') + '; the sketch stays at its last position.' };
+    }
+    if (w === pl.offset) return { plane: pl };
+    var np = tidyPlane({ custom: true, origin: scale(pl.n, w), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: w });
+    np.face = { feature: fr.feature, role: fr.role };
+    return { plane: np };
+  }
 
   function to3D(pl, u, v) {
     return [pl.origin[0] + pl.x[0] * u + pl.y[0] * v, pl.origin[1] + pl.x[1] * u + pl.y[1] * v, pl.origin[2] + pl.x[2] * u + pl.y[2] * v];
@@ -1743,7 +1817,7 @@ var Kernel = (function () {
   function rebuild(model, cache) { return withModelTess(model, function () { return rebuildModel(model, cache); }); }
   function rebuildModel(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    var errors = {}, warnings = {};
+    var errors = {}, warnings = {}, facePlanes = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = resolved.model;
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
@@ -1813,7 +1887,7 @@ var Kernel = (function () {
       if (st.tool) ctx.tools[pf.id] = st.tool;
       if (st.plane) ctx.planes[pf.id] = st.plane;
       if (st.flange) ctx.flanges[pf.id] = st.flange;
-      if (pf.type === 'sketch') { pf.profile = st.profile; origFeatures[i].profile = st.profile; ctx.sketches[pf.id] = pf; }
+      if (pf.type === 'sketch') { pf.profile = st.profile; origFeatures[i].profile = st.profile; ctx.sketches[pf.id] = pf; if (pf.plane && pf.plane.face) facePlanes[pf.id] = pf.plane; }
       // a step made before bodies were kept apart carries just the combined solid: it is the one body
       ctx.bodies = (st.bodies || (st.body ? [st.body] : [])).slice();
       ctx.bodyFeatures = (st.bodyFeatures || ctx.bodies.map(function () { return null; })).slice();
@@ -1841,12 +1915,21 @@ var Kernel = (function () {
             ctx.tools[f.id] = jg.first.union(jg.second);
             break;
           }
-          case 'sketch':
+          case 'sketch': {
+            // r10/facesketch10: a sketch on a face follows the face; the resolved frame is written onto the model's
+            // own feature (as the profile is) and reported in build.facePlanes for a build made on a copy
+            var fp = resolveFacePlane(f, model, ctx.planes, function () { return bodyPlanes(ctx.body); });
+            if (fp) {
+              if (fp.plane !== f.plane) { f.plane = fp.plane; origFeatures[p + j].plane = fp.plane; keys[p + j] = featureKey(f, model); }
+              facePlanes[f.id] = f.plane;
+            }
             f.profile = sketchProfile(f);
             origFeatures[p + j].profile = f.profile; // the UI reads profiles off the model's own feature objects
             ctx.sketches[f.id] = f;
             if (f.profile.warnings.length && !pathIds[f.id]) warnings[f.id] = f.profile.warnings.join(' ');
+            if (fp && fp.warning) warnings[f.id] = fp.warning + (warnings[f.id] ? ' ' + warnings[f.id] : '');
             break;
+          }
           case 'shell': {
             var sk = pickBody(f);
             var sh = buildShell(f, ctx);
@@ -1904,7 +1987,7 @@ var Kernel = (function () {
     // can hand them back to the original with applyProfiles
     var profiles = {};
     Object.keys(ctx.sketches).forEach(function (id) { profiles[id] = ctx.sketches[id].profile || null; });
-    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles,
+    return { body: ctx.body, bodies: ctx.bodies, bodyFeatures: ctx.bodyFeatures, tools: ctx.tools, planes: ctx.planes, flanges: ctx.flanges, errors: errors, warnings: warnings, time: t1 - t0, cache: { steps: steps }, reused: p, profiles: profiles, facePlanes: facePlanes,
       equations: resolved.vars, equationErrors: resolved.errors, configuration: resolved.configuration };
   }
 
@@ -1930,7 +2013,7 @@ var Kernel = (function () {
       bodyFeatures: bodies.map(function (b, i) { return build.bodyFeatures && build.bodyFeatures[i] != null ? build.bodyFeatures[i] : null; }),
       body: !bodies.length && build.body ? build.body.pack() : null, tools: tools,
       planes: build.planes || {}, flanges: build.flanges || {}, errors: build.errors || {}, warnings: build.warnings || {},
-      time: build.time || 0, reused: build.reused || 0, profiles: profiles,
+      time: build.time || 0, reused: build.reused || 0, profiles: profiles, facePlanes: build.facePlanes || {},
       equations: build.equations || {}, equationErrors: build.equationErrors || {}, configuration: build.configuration || null
     };
   }
@@ -1956,18 +2039,34 @@ var Kernel = (function () {
     return {
       body: combineBodies(bodies), bodies: bodies, bodyFeatures: bodyFeatures, tools: tools,
       planes: obj.planes || {}, flanges: obj.flanges || {}, errors: obj.errors || {}, warnings: obj.warnings || {},
-      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, cache: null,
+      time: obj.time || 0, reused: obj.reused || 0, profiles: obj.profiles || {}, facePlanes: obj.facePlanes || {}, cache: null,
       equations: obj.equations || {}, equationErrors: obj.equationErrors || {}, configuration: obj.configuration || null
     };
   }
   // Write the profiles a build computed (build.profiles, keyed by sketch feature id) onto the model's sketch features.
   // Other features are left alone; a sketch the build did not see (or recorded as null) keeps its profile.
-  function applyProfiles(model, profiles) {
-    if (!profiles) return model;
+  // facePlanes (build.facePlanes, r10/facesketch10): the frames the build resolved for sketches on faces, written
+  // onto those sketches the same way
+  function applyProfiles(model, profiles, facePlanes) {
+    if (!profiles && !facePlanes) return model;
     model.features.forEach(function (f) {
-      if (f.type === 'sketch' && profiles[f.id]) f.profile = profiles[f.id];
+      if (f.type === 'sketch' && profiles && profiles[f.id]) f.profile = profiles[f.id];
+      if (f.type === 'sketch' && facePlanes && facePlanes[f.id] && f.plane && f.plane.face) f.plane = facePlanes[f.id];
     });
     return model;
+  }
+  // bodyPlanes(body) -> [{ n, w, feature }]: one entry per distinct (plane, feature) of a solid's polygons, the
+  // candidate faces of a 'geom' face reference (resolveFacePlane)
+  function bodyPlanes(body) {
+    var out = [], seen = {};
+    if (!body || !body.polygons) return out;
+    body.polygons.forEach(function (p) {
+      var pl = p.plane, k = [Math.round(pl.normal.x * 1e6), Math.round(pl.normal.y * 1e6), Math.round(pl.normal.z * 1e6), Math.round(pl.w * 1e6), p.shared].join('|');
+      if (seen[k]) return;
+      seen[k] = true;
+      out.push({ n: [pl.normal.x, pl.normal.y, pl.normal.z], w: pl.w, feature: p.shared });
+    });
+    return out;
   }
   // cacheFromBuild(model, build) -> a rebuild cache ({ steps }) made from a finished build of `model` (typically an
   // unpacked worker build, whose own cache stayed in the worker). A build keeps only the final body, so every step
@@ -3874,7 +3973,24 @@ var Kernel = (function () {
     if (spec == null) return { ref: 'Front', offset: 0 };
     if (typeof spec === 'number') return { featureId: spec };
     if (typeof spec === 'string') return { ref: spec, offset: num(offset) || 0 };
-    if (spec.custom) return spec;
+    // r10/facesketch10: a sketch on a face of a feature, which follows that face at rebuild:
+    //   p.sketch({ face: boss, normal: [0, 0, 1] })   the face of feature `boss` whose outward normal is `normal`
+    //     (an extrude's end cap is found from the extrude itself; for other faces give `at`, a point on the face, or
+    //     `offset`, the face plane's distance along the normal, and the nearest such face is taken);
+    //   a full frame { custom: true, origin, x, y, n, offset, face: { feature, role } } as generateScript writes it.
+    var fr = spec.face;
+    if (fr != null && typeof fr !== 'object') fr = { feature: fr, role: spec.role || 'cap' };
+    if (spec.custom) {
+      if (!fr) return spec;
+      var cp = JSON.parse(JSON.stringify(spec)); cp.face = { feature: fr.feature, role: fr.role || 'cap' };
+      return cp;
+    }
+    if (fr) {
+      var n = spec.normal || spec.n || [0, 0, 1], nn = norm(n);
+      var pl = tidyPlane(planeFromFace(nn, spec.at ? spec.at : scale(nn, num(spec.offset || offset || 0))));
+      pl.face = { feature: fr.feature, role: fr.role || 'cap' };
+      return pl;
+    }
     if (spec.featureId != null) return { featureId: spec.featureId };
     return { ref: spec.ref || 'Front', offset: num(spec.offset || offset || 0) };
   };
@@ -4149,7 +4265,10 @@ var Kernel = (function () {
           break;
         case 'sketch': {
           var pl = f.plane || {};
-          var spec = pl.custom ? JSON.stringify(pl) : (pl.featureId != null ? idVar[pl.featureId] : JSON.stringify(pl.ref || 'Front') + ', ' + nv(pl.offset || 0));
+          // r10/facesketch10: a face reference names its feature by the script variable (ids are renumbered)
+          var plj = pl.custom && pl.face ? JSON.stringify(pl, function (k, x) { return k === 'face' ? undefined : x; }) : null;
+          if (plj && idVar[pl.face.feature]) plj = plj.slice(0, -1) + ',"face":{"feature":' + idVar[pl.face.feature] + ',"role":' + JSON.stringify(pl.face.role || 'cap') + '}}';
+          var spec = plj ? plj : pl.custom ? JSON.stringify(pl) : (pl.featureId != null ? idVar[pl.featureId] : JSON.stringify(pl.ref || 'Front') + ', ' + nv(pl.offset || 0));
           var s = 'var ' + v + ' = p.sketch(' + spec + (pl.custom || pl.featureId != null ? ', 0' : '') + ', ' + JSON.stringify(f.name) + ')';
           f.entities.forEach(function (e) {
             switch (e.t) {
@@ -4293,7 +4412,7 @@ var Kernel = (function () {
 
   return {
     STD_PLANES: STD_PLANES, AXES: AXES,
-    makePlane: makePlane, planeFromFace: planeFromFace, resolvePlane: resolvePlane, to3D: to3D, to2D: to2D,
+    makePlane: makePlane, planeFromFace: planeFromFace, resolvePlane: resolvePlane, faceRef: faceRef, resolveFacePlane: resolveFacePlane, tidyPlane: tidyPlane, to3D: to3D, to2D: to2D,
     entityPolylines: entityPolylines, entitySnapPoints: entitySnapPoints, sketchProfile: sketchProfile, signedArea: signedArea, loopSelfCrossing: loopSelfCrossing, checkProfile: checkProfile,
     offsetLoop: offsetLoop, filletPolyline: filletPolyline,
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,

@@ -1866,7 +1866,7 @@ var UI = (function () {
       try {
         build = K.unpackBuild(d.build);
         nextWorker = { edges: d.edges || null, curves: d.curves || null, normals: d.normals || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
-        K.applyProfiles(App.model, build.profiles);   // the worker built its own copy; write the sketch profiles back onto ours
+        K.applyProfiles(App.model, build.profiles, build.facePlanes);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
         // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
         App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, build) : null;

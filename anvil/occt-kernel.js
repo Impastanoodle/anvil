@@ -179,6 +179,22 @@ var OcctKernel = (function () {
       if (!s || s.type !== 'sketch') throw new Error('Select a sketch for this feature.');
       return s;
     }
+    // r10/facesketch10: the planar faces of the current bodies as [{ n (outward), w }] for a 'geom' face reference
+    function brepPlanes() {
+      var out = [];
+      bodies.forEach(function (b) {
+        facesOf(b).forEach(function (fc) {
+          try {
+            var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), t = ad.GetType();
+            if ((t && t.value != null ? t.value : t) !== 0) return;
+            var ax = N(N(ad.Plane()).Axis()), d = N(ax.Direction()), o = N(ax.Location()), n = [d.X(), d.Y(), d.Z()];
+            if (fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = V.scale(n, -1);
+            out.push({ n: n, w: V.dot(n, [o.X(), o.Y(), o.Z()]) });
+          } catch (e) { }
+        });
+      });
+      return out;
+    }
     function moveTo(sh, t, plane) { var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec([plane.n[0] * t, plane.n[1] * t, plane.n[2] * t])); return transformed(sh, tr); }
     function extrudeTool(f) {
       if (f.sheetBase && rm.sheetError) throw new Error(rm.sheetError);
@@ -702,7 +718,13 @@ var OcctKernel = (function () {
           var tool = null;
           switch (f.type) {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
-            case 'sketch': if (!f.profile) f.profile = K.sketchProfile(f); sketches[f.id] = f; break;
+            case 'sketch': {
+              // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an
+              // extrude cap from the extrude itself; other planar faces from this build's B-rep faces)
+              var fp = K.resolveFacePlane ? K.resolveFacePlane(f, m, planes, brepPlanes) : null;
+              if (fp && fp.plane !== f.plane) { f.plane = fp.plane; keys[fi] = featureKey(f); }
+              if (!f.profile) f.profile = K.sketchProfile(f); sketches[f.id] = f; break;
+            }
             case 'extrude': tool = extrudeTool(f); break;
             case 'revolve': tool = revolveTool(f); break;
             case 'loft': tool = loftTool(f); break;
