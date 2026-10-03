@@ -1875,7 +1875,7 @@ var Drawing = (function () {
     for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
   }
   function viewExtents(doc, mesh, v) { return extentsOf(mesh, viewFrame(doc, v)); }
-  // addProjectedView(doc, mesh, parentId, dir, { x, y }): a view projected up / down / left / right from a parent,
+  // addProjectedView(doc, mesh, parentId, dir, { x, y, fit }): a view projected up / down / left / right from a parent,
   // aligned with it (same scale; dragging it slides along the projection direction only, the parent drags it along).
   // Without x / y it is placed one gap beyond the parent.
   function addProjectedView(doc, mesh, parentId, dir, opts) {
@@ -1889,7 +1889,7 @@ var Drawing = (function () {
       scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
     if (opts.x != null && !vert) v.x = opts.x;
     if (opts.y != null && vert) v.y = opts.y;
-    if ((vert ? opts.y : opts.x) == null && mesh) clearSpot(doc, mesh, v, vert ? 'y' : 'x');
+    if ((vert ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, vert ? 'y' : 'x');
     doc.layout = 'manual';
     return v;
   }
@@ -1952,17 +1952,19 @@ var Drawing = (function () {
     if (best) { v.x = best[0]; v.y = best[1]; }
     return !!best && pass === 1;   // true: clear and on the sheet
   }
-  // fitOnSheet(doc, mesh, v, free): where a section view added by the app's script API (opts.fit) goes on a full
-  // sheet. Along its alignment at its own scale first; then the nearest free area of the sheet (alignment broken,
+  // fitOnSheet(doc, mesh, v, free): where a section / projected / detail view added by the app's script API (opts.fit)
+  // goes on a full sheet (r7/drawings7: projected and detail views too; a detail view has no alignment and never
+  // shrinks to its parent's scale or below). Along its alignment at its own scale first; then the nearest free area of the sheet (alignment broken,
   // same scale); then the next smaller standard scales (down to a quarter), aligned and then anywhere. When nothing
   // fits it goes beside the sheet, aligned and clear of every view, marked v.offSheet (the UI warns and drops the
   // mark). It never overlaps a view.
   function fitOnSheet(doc, mesh, v, free) {
     var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
-    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9; });
+    var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
+    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
     function at(sc, align) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null); }
-    var tries = [[sc0, al0], [sc0, null]];
-    smaller.forEach(function (s) { tries.push([s.slice(), al0], [s.slice(), null]); });
+    var tries = al0 ? [[sc0, al0], [sc0, null]] : [[sc0, null]];
+    smaller.forEach(function (s) { if (al0) tries.push([s.slice(), al0]); tries.push([s.slice(), null]); });
     for (var i = 0; i < tries.length; i++) if (at(tries[i][0], tries[i][1])) return true;
     at(sc0, al0);
     v.offSheet = true;
@@ -1997,7 +1999,7 @@ var Drawing = (function () {
     for (var i = 0; i < SCALES.length; i++) if (Math.abs(scaleValue(SCALES[i]) - want) < 1e-9) return SCALES[i].slice();
     return want >= 1 ? [Math.round(want * 1000) / 1000, 1] : [1, Math.round(1000 / want) / 1000];
   }
-  // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label }): the parent inside the circle (c, r)
+  // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label, fit }): the parent inside the circle (c, r)
   // (model units in the parent's frame), enlarged to its own scale (default twice the parent's) and labelled
   // DETAIL B / SCALE 4 : 1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
   function addDetailView(doc, mesh, parentId, opts) {
@@ -2011,7 +2013,8 @@ var Drawing = (function () {
     var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
       detail: { c: [+opts.c[0], +opts.c[1]], r: +opts.r }, scale: sc, display: par.display,
       x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + opts.r * s, y: opts.y != null ? opts.y : par.y });
-    if (opts.x == null && opts.y == null && mesh) clearSpot(doc, mesh, v, null);
+    if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
+    if (v.scale !== sc) v.name = 'Detail View ' + label + ' (' + scaleText(v.scale) + ')';
     doc.layout = 'manual';
     return v;
   }
@@ -6048,9 +6051,9 @@ var Drawing = (function () {
       summary: summary,
       standard3View: function () { cmdStandard3View(); return summary(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
-      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, opts); }); },
+      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
       sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
-      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0] }, opts || {})); }); },
+      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts || {})); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
       tangent: function (id, mode) { setViewTangent(id, mode); return summary(); },
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of

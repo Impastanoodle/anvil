@@ -9883,6 +9883,48 @@
     });
   })();
   // --- end r6/drawings6 ---
+  // --- r7/drawings7 ---
+  (function () {
+    var DW = Drawing;
+    var PL7 = AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code;
+    function noOverlap(r, kinds) {
+      var S = DW.sheetSize(r.doc, r.doc.units), sh = DW.compute(r.doc, r.mesh, r.model), boxes = sh.views.map(function (w) { return { id: w.view.name, b: w.box, v: w.view }; });
+      for (var a = 0; a < boxes.length; a++) for (var b = a + 1; b < boxes.length; b++) {
+        var p = boxes[a].b, q = boxes[b].b;
+        assert(p.x1 <= q.x0 || q.x1 <= p.x0 || p.y1 <= q.y0 || q.y1 <= p.y0, boxes[a].id + ' covers ' + boxes[b].id);
+      }
+      boxes.forEach(function (o) {
+        if (kinds.indexOf(o.v.kind) < 0 || o.v.offSheet) return;
+        assert(o.b.x0 >= 0 && o.b.y0 >= 0 && o.b.x1 <= S[0] && o.b.y1 <= S[1], o.id + ' on the sheet: ' + JSON.stringify(o.b));
+      });
+      return boxes;
+    }
+    test('projected views added by script to a full sheet: fit (free area / smaller scale) or beside it (offSheet); never over another view', function () {
+      var r = drawingOf(PL7), F = r.view('Front').view, T = r.view('Top').view, out = [], off = 0, dirs = ['left', 'down', 'right', 'up', 'left', 'down'];
+      for (var i = 0; i < 6; i++) {
+        var pv = DW.addProjectedView(r.doc, r.mesh, (i % 2 ? T : F).id, dirs[i], { fit: true });
+        if (pv.offSheet) off++;
+        out.push(pv.orient + (pv.align ? '' : '*') + (pv.scale ? DW.scaleText(pv.scale) : '') + (pv.offSheet ? '!' : ''));
+      }
+      var boxes = noOverlap(r, ['projected']);
+      assert(boxes.some(function (o) { return o.v.kind === 'projected' && !o.v.offSheet && (!o.v.align || o.v.scale); }), 'at least one fitted by shrinking / breaking alignment: ' + out.join(' '));
+      return out.join(' ') + ' (' + off + ' beside the sheet)';
+    });
+    test('detail views added by script to a full sheet: free area, then smaller scale (still above the parent\'s), else beside it; never over another view', function () {
+      var r = drawingOf(PL7), F = r.view('Front').view, T = r.view('Top').view, out = [], off = 0;
+      for (var i = 0; i < 6; i++) {
+        var par = i % 2 ? T : F, dv = DW.addDetailView(r.doc, r.mesh, par.id, { c: [10 - 4 * i, -5], r: [6, 8, 5, 14, 6, 14][i], scale: i < 3 ? [10, 1] : null, fit: true });
+        if (dv.offSheet) off++;
+        assert(DW.scaleValue(dv.scale) > DW.scaleValue(par.scale || r.doc.sheet.scale || [1, 1]) + 1e-9, dv.name + ' larger than its parent');
+        assert(dv.name.indexOf('(' + DW.scaleText(dv.scale) + ')') > 0, 'name carries the scale: ' + dv.name);
+        out.push(dv.label + DW.scaleText(dv.scale) + (dv.offSheet ? '!' : ''));
+      }
+      var boxes = noOverlap(r, ['detail']);
+      assert(boxes.some(function (o) { return o.v.kind === 'detail' && !o.v.offSheet && DW.scaleValue(o.v.scale) < 10; }), 'at least one fitted at a smaller scale: ' + out.join(' '));
+      return out.join(' ') + ' (' + off + ' beside the sheet)';
+    });
+  })();
+  // --- end r7/drawings7 ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
