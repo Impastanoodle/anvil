@@ -1816,6 +1816,8 @@ var Drawing = (function () {
   var SCALES = [[10, 1], [5, 1], [4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 5], [1, 10], [1, 20], [1, 25], [1, 50], [1, 100], [1, 200]];
   function scaleValue(s) { return s[0] / s[1]; }
   function scaleText(s) { return s[0] + ':' + s[1]; }
+  // The scale as SolidWorks writes it under a view label: 'SCALE 2 : 1' (spaces round the colon).
+  function scaleLabel(s) { return 'SCALE ' + s[0] + ' : ' + s[1]; }
   function parseScale(txt) {
     var m = /^\s*(\d+(?:\.\d+)?)\s*[:\/]\s*(\d+(?:\.\d+)?)\s*$/.exec(String(txt));
     return m && +m[1] > 0 && +m[2] > 0 ? [+m[1], +m[2]] : null;
@@ -1980,7 +1982,7 @@ var Drawing = (function () {
   }
   // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label }): the parent inside the circle (c, r)
   // (model units in the parent's frame), enlarged to its own scale (default twice the parent's) and labelled
-  // DETAIL B / SCALE 4:1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
+  // DETAIL B / SCALE 4 : 1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
   function addDetailView(doc, mesh, parentId, opts) {
     opts = opts || {};
     var par = findView(doc, parentId);
@@ -2735,11 +2737,11 @@ var Drawing = (function () {
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
       if (v.kind === 'section') {
         text([v.x, box.y0 - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
-        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale), 'middle', layer);
+        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
       } else if (v.kind === 'detail') {
         text([(box.x0 + box.x1) / 2, box.y0 - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
-        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale || scale), 'middle', layer);
-      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  SCALE ' + scaleText(v.scale), 'middle', layer);
+        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
+      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
         section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct });
     });
@@ -4119,7 +4121,7 @@ var Drawing = (function () {
     ORIENTS: Object.keys(ORIENTS), FORMATS: FORMATS, SCALES: SCALES,
     orientation: orientation, meshEdges: meshEdges, pairOpenEdges: pairOpenEdges, projectView: projectView, extentsOf: extentsOf, textRect: textRect,
     newDrawing: newDrawing, addView: addView, standard3View: standard3View, layout: layout, moveView: moveView, findView: findView,
-    sheetSize: sheetSize, scaleText: scaleText, parseScale: parseScale, scaleValue: scaleValue,
+    sheetSize: sheetSize, scaleText: scaleText, scaleLabel: scaleLabel, parseScale: parseScale, scaleValue: scaleValue,
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,

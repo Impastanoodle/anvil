@@ -4579,7 +4579,7 @@
       assert(viewRec(r2, S2.id).box.y1 < viewRec(r2, F2.id).box.y0, 'first angle: below the parent');
       return c.n + ' ray samples agree';
     });
-    test('Detail View: twice the parent scale, lines clipped to the circle, a cut circle becomes an arc, circle and letter on the parent, DETAIL A / SCALE 4:1', function () {
+    test('Detail View: twice the parent scale, lines clipped to the circle, a cut circle becomes an arc, circle and letter on the parent, DETAIL A / SCALE 4 : 1', function () {
       var r = drawingOf(PLATE), T = r.view('Top').view;
       assert(JSON.stringify(DW.detailScale([2, 1])) === '[4,1]' && JSON.stringify(DW.detailScale([1, 2])) === '[1,1]' && JSON.stringify(DW.detailScale([1, 5])) === '[1,2.5]', 'detail scales');
       var Dv = DW.addDetailView(r.doc, r.mesh, T.id, { c: [10, -10], r: 12, x: 330, y: 120 });
@@ -4606,7 +4606,7 @@
       var wt = viewRec(r, T.id), onTop = r.sheet.prims.filter(function (p) { return p.layer === 'TOP' && p.k === 'circle' && p.style === 'thick'; });
       assert(onTop.length === 2, 'detail circles on the parent'); near(onTop[0].r, 24, 1e-9, 'r 12 at 2:1'); nearVec(onTop[0].c.concat(0), wt.toSheet([10, -10]).concat(0), 1e-9);
       var txt = r.sheet.prims.filter(function (p) { return p.k === 'text'; }).map(function (p) { return p.layer + ':' + p.text; });
-      ['TOP:A', 'TOP:C', 'DETAIL_A:DETAIL A', 'DETAIL_A:SCALE 4:1', 'DETAIL_C:DETAIL C'].forEach(function (t) { assert(txt.indexOf(t) >= 0, 'missing ' + t); });
+      ['TOP:A', 'TOP:C', 'DETAIL_A:DETAIL A', 'DETAIL_A:SCALE 4 : 1', 'DETAIL_C:DETAIL C'].forEach(function (t) { assert(txt.indexOf(t) >= 0, 'missing ' + t); });
       // a detail of a section view hatches the cut face at the detail's scale, inside the circle
       var S = DW.addSectionView(r.doc, r.mesh, r.view('Front').view.id, { axis: 'h', at: 4, sign: 1, x: 139, y: 40 });
       var Ds = DW.addDetailView(r.doc, r.mesh, S.id, { c: [10, -10], r: 8, x: 60, y: 60 });
@@ -9781,6 +9781,23 @@
     });
   })();
   // --- end r5/asm5 ---
+
+  // --- r6/drawings6 ---
+  (function () {
+    var DW = Drawing;
+    var PL6 = AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code;
+    test('view scale written as SolidWorks does: SCALE 2 : 1 under detail / section / scaled views (sheet / title block keep 2:1)', function () {
+      assert(DW.scaleLabel([2, 1]) === 'SCALE 2 : 1' && DW.scaleLabel([1, 2.5]) === 'SCALE 1 : 2.5', DW.scaleLabel([2, 1]));
+      var r = drawingOf(PL6), T = r.view('Top').view;
+      DW.addDetailView(r.doc, r.mesh, T.id, { c: [10, -10], r: 12, x: 330, y: 120 });
+      r.sheet = DW.compute(r.doc, r.mesh, r.model);
+      var txt = r.sheet.prims.filter(function (p) { return p.k === 'text'; }).map(function (p) { return p.text; });
+      assert(txt.some(function (t) { return /^SCALE \d+(\.\d+)? : \d+(\.\d+)?$/.test(t); }), 'spaced scale text: ' + txt.filter(function (t) { return /SCALE/.test(t); }));
+      assert(!txt.some(function (t) { return /SCALE \d+:\d/.test(t); }), 'no unspaced view scale');
+      assert(DW.scaleText([2, 1]) === '2:1' && JSON.stringify(DW.parseScale('2 : 1')) === '[2,1]', 'values and parsing unchanged');
+    });
+  })();
+  // --- end r6/drawings6 ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
