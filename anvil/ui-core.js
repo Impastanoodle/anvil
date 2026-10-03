@@ -379,11 +379,27 @@ var UI = (function () {
   }
   var visTris = null;  // rendered triangle -> global triangle, or null when nothing is hidden
 
+  // the edges worker.js found on the same mesh (a worker build): used when they fit it, else null (smooth/responsive)
+  function edgesFromWorker(m) {
+    var es = m && m.workerEdges, nf = m && m.faces ? m.faces.length : 0;
+    if (!es) return null;
+    m.workerEdges = null;
+    for (var i = 0; i < es.length; i++) {
+      var fs = es[i].faces || [];
+      for (var j = 0; j < fs.length; j++) if (!(fs[j] < nf)) return null;
+    }
+    // spot check: the first and last edge lie on the planes of their faces
+    var ok = [es[0], es[es.length - 1]].every(function (e) {
+      if (!e) return true;
+      return (e.faces || []).every(function (fi) { var f = m.faces[fi]; return Math.abs(f.normal[0] * e.a[0] + f.normal[1] * e.a[1] + f.normal[2] * e.a[2] - f.w) < 1e-3; });
+    });
+    return ok ? es : null;
+  }
   // App.edges is computed once per mesh (bodyEdges is not cheap) and reused when only visibility changes.
   function edgesFor(m) {
     if (App.edges && App.edgesMesh === m) return App.edges;
     App.edgesMesh = m;
-    App.edges = K.bodyEdges(m);
+    App.edges = edgesFromWorker(m) || K.bodyEdges(m);
     // a solid from OpenCascade (ui-occt.js): every polygon knows its B-rep face; edges inside one face are seams
     if (m.faces.length && m.faces[0].polys && m.faces[0].polys[0] && m.faces[0].polys[0].face != null) {
       App.edges.forEach(function (e) {
@@ -1171,6 +1187,10 @@ var UI = (function () {
     var t0 = performance.now();
     App.build = build;
     App.mesh = K.meshFromBody(App.build.body);
+    // worker.js found the edges of this same mesh (edgesFor); its volume follows in a 'volume' message (onWorkerMessage)
+    if (nextWorker && App.mesh) { App.mesh.workerEdges = nextWorker.edges; App.mesh.workerSeq = nextWorker.seq; }
+    nextWorker = null;
+    if (opts.edges && App.mesh) App.mesh.workerEdges = opts.edges;   // ui-occt.js: found by occt-worker.js on the same mesh
     App.triShared = buildTriShared(App.mesh);
     pruneHiddenBodies();
     updateBodyMesh();
@@ -1283,6 +1303,7 @@ var UI = (function () {
     App.workerOn = false;
     if (wk.worker) { try { wk.worker.terminate(); } catch (e) { } }
     wk.worker = null;
+    dropPreviews();
     if (!wk.warned) {
       wk.warned = true;
       if (err) console.warn('Anvil: background rebuild disabled —', (err && err.message) || err);
@@ -1343,8 +1364,61 @@ var UI = (function () {
     });
   }
 
+  // ---- PropertyManager live previews in the worker (smooth/responsive). One preview in flight at a time; a request
+  // made meanwhile waits as `pending`, and a newer one replaces it (its promise resolves to { superseded: true }), so
+  // typing or spinning a value never queues stale previews and the main thread only unpacks the result.
+  // req: { op: 'tool' | 'shell' | 'edge', feature, upto: feature count or null, throughLimit }
+  // -> Promise of { tools: [CSG | null], info, ms } (rejects with the kernel's message), or null when the worker is
+  // off (the caller then previews on the main thread); a promise may also resolve to null when the worker dies.
+  var pv = { seq: 0, inflight: null, pending: null };
+  var nextWorker = null;   // { edges, seq } sent with the worker build being applied (onWorkerMessage -> applyBuild)
+  function previewInWorker(req) {
+    if (isAssembly() || !getWorker()) return null;
+    return new Promise(function (resolve, reject) {
+      var job = { req: req, resolve: resolve, reject: reject };
+      if (pv.inflight) {
+        if (pv.pending) pv.pending.resolve({ superseded: true });
+        pv.pending = job;
+        return;
+      }
+      postPreview(job);
+    });
+  }
+  function postPreview(job) {
+    var w = getWorker();
+    if (!w) { job.resolve(null); return; }
+    job.seq = ++pv.seq;
+    pv.inflight = job;
+    var r = job.req;
+    try { w.postMessage({ type: 'preview', seq: job.seq, model: App.model, upto: r.upto == null ? null : r.upto, op: r.op, feature: r.feature, throughLimit: r.throughLimit }); }
+    catch (e) { pv.inflight = null; job.resolve(null); nextPreview(); }
+  }
+  function nextPreview() {
+    if (pv.pending && !pv.inflight) { var j = pv.pending; pv.pending = null; postPreview(j); }
+  }
+  function onPreviewMessage(d) {
+    var job = pv.inflight;
+    if (!job || d.seq !== job.seq) return;
+    pv.inflight = null;
+    if (d.type === 'previewed') {
+      var tools = null;
+      try { tools = d.tools.map(function (p) { return p ? CSG.unpack(p) : null; }); }
+      catch (e) { job.reject(e); }
+      if (tools) job.resolve({ tools: tools, info: d.info || {}, ms: d.ms });
+    } else job.reject(new Error(d.message || 'preview failed'));
+    nextPreview();
+  }
+  // a worker that died takes its previews with it: answer them with null (the caller previews on the main thread)
+  function dropPreviews() {
+    [pv.inflight, pv.pending].forEach(function (j) { if (j) j.resolve(null); });
+    pv.inflight = pv.pending = null;
+  }
+
   function onWorkerMessage(ev) {
     var d = ev.data || {};
+    if (d.type === 'previewed' || d.type === 'previewError') { onPreviewMessage(d); return; }
+    // the volume of the mesh of a build already applied (ui-occt.js compares OpenCascade's with it)
+    if (d.type === 'volume') { if (App.mesh && App.mesh.workerSeq === d.seq) App.mesh.workerVolume = d.volume; return; }
     if (!wk.inflight || d.seq !== wk.inflight.seq) return;   // stale reply (newer request already posted)
     var req = wk.inflight; wk.inflight = null;
     if (isAssembly()) { finishSync(req); return; }   // reply for a part model that has since been replaced
@@ -1352,11 +1426,12 @@ var UI = (function () {
       var build;
       try {
         build = K.unpackBuild(d.build);
+        nextWorker = { edges: d.edges || null, seq: d.seq };   // found by the worker on the same mesh: the applyBuild below hands them on
         K.applyProfiles(App.model, build.profiles);   // the worker built its own copy; write the sketch profiles back onto ours
         applyBuild(build, req.opts, build.time);
         // Refresh the main-thread cache from the worker's result (guarded: older kernels have no cacheFromBuild).
         App.buildCache = K.cacheFromBuild ? K.cacheFromBuild(App.model, build) : null;
-      } catch (e) { disableWorker(e); finishSync(req); return; }
+      } catch (e) { nextWorker = null; disableWorker(e); finishSync(req); return; }
       settle(req, null);
       drain();
     } else {
@@ -1372,14 +1447,24 @@ var UI = (function () {
     if (req) finishSync(req); else drain();
   }
 
-  var busyPrevStatus = null;
+  // The status bar says "Rebuilding…" only once a background build has taken longer than BUSY_SHOW_MS, so quick
+  // rebuilds (an Instant3D drag, a spun value) do not make the message flicker on every step (smooth/responsive).
+  var busyPrevStatus = null, busyTimer = 0, BUSY_SHOW_MS = 250;
   function setBusy(on) {
     if (App.rebuilding === on) return;
     App.rebuilding = on;
     var s = $('status-msg');
     if (!s) return;
-    if (on) { busyPrevStatus = s.textContent; s.textContent = 'Rebuilding…'; s.classList.add('busy'); }
-    else { s.classList.remove('busy'); if (s.textContent === 'Rebuilding…') s.textContent = busyPrevStatus || 'Rebuilt.'; }
+    if (on) {
+      busyTimer = setTimeout(function () {
+        busyTimer = 0;
+        if (!App.rebuilding) return;
+        busyPrevStatus = s.textContent; s.textContent = 'Rebuilding…'; s.classList.add('busy');
+      }, BUSY_SHOW_MS);
+    } else {
+      if (busyTimer) { clearTimeout(busyTimer); busyTimer = 0; return; }
+      s.classList.remove('busy'); if (s.textContent === 'Rebuilding…') s.textContent = busyPrevStatus || 'Rebuilt.';
+    }
   }
 
   // For tests: how many feature steps the main-thread cache holds and how many of them carry no body
@@ -1394,7 +1479,7 @@ var UI = (function () {
   function setWorkerOn(on) {
     App.workerOn = !!on && !!window.Worker;
     try { localStorage.setItem('anvil.worker', App.workerOn ? '1' : '0'); } catch (e) { }
-    if (!App.workerOn && wk.worker && !wk.inflight) { try { wk.worker.terminate(); } catch (e) { } wk.worker = null; }
+    if (!App.workerOn && wk.worker && !wk.inflight) { try { wk.worker.terminate(); } catch (e) { } wk.worker = null; dropPreviews(); }
     return App.workerOn;
   }
 
@@ -1489,7 +1574,7 @@ var UI = (function () {
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
-    rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    rebuild: rebuild, previewInWorker: previewInWorker, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
