@@ -321,6 +321,8 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   // Hover under the filter (same rules as a click), so the pre-highlight tells what a click will select.
   function pickHover(mx, my) {
+    // while a view transition glides, picking would use the view it lands on, not the one on screen: keep the hover
+    if (UI.viewAnimating && UI.viewAnimating()) return App.hover;
     var cmd = App.command, f = filterSet();
     if (cmd && cmd.pickPlane) return (!f || f.faces || bodyFilter(f) ? UI.pickFace(mx, my) : null) || UI.pickPlane(mx, my);
     if (cmd && cmd.pickEdges) return allows('edge') ? UI.pickEdge(mx, my) : null;

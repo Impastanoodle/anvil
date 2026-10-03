@@ -616,7 +616,8 @@
     downPos = p;
     if (ev.button === 1 || (ev.button === 0 && (ev.altKey)) || (ev.button === 0 && App.zoomAreaMode)) {
       if (App.zoomAreaMode && ev.button === 0) { zoomBox = { start: p }; $('zoom-box').hidden = false; return; }
-      drag = { kind: ev.ctrlKey || ev.shiftKey ? 'pan' : 'rotate', last: p };
+      // SolidWorks: middle drag rotates, Ctrl + middle pans, Shift + middle zooms (about the press point)
+      drag = { kind: ev.ctrlKey ? 'pan' : ev.shiftKey ? 'zoom' : 'rotate', last: p };
       ev.preventDefault();
       return;
     }
@@ -649,6 +650,7 @@
       }
       if (drag.kind === 'hook') { drag.hook.move(p); drag.last = p; return; }
       if (drag.kind === 'rotate') UI.rotateView(dx, dy);
+      else if (drag.kind === 'zoom') UI.zoomView(Math.exp(dy * 0.006), downPos[0], downPos[1]);   // drag up zooms in
       else if (drag.kind === 'pan') { UI.panView(dx, dy); drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 0; }
       drag.last = p;
       return;
@@ -686,9 +688,8 @@
       if (zoomBox.end && Math.abs(zoomBox.end[0] - zoomBox.start[0]) > 8) {
         var cx = (zoomBox.start[0] + zoomBox.end[0]) / 2, cy = (zoomBox.start[1] + zoomBox.end[1]) / 2;
         var fw = Math.abs(zoomBox.end[0] - zoomBox.start[0]) / UI.size.w, fh = Math.abs(zoomBox.end[1] - zoomBox.start[1]) / UI.size.h;
-        UI.pushViewHistory();
-        UI.panView(UI.size.w / 2 - cx, UI.size.h / 2 - cy);
-        UI.zoomView(Math.max(fw, fh));
+        if (UI.zoomToArea) UI.zoomToArea(cx, cy, Math.max(fw, fh));
+        else { UI.pushViewHistory(); UI.panView(UI.size.w / 2 - cx, UI.size.h / 2 - cy); UI.zoomView(Math.max(fw, fh)); }
       }
       zoomBox = null; App.zoomAreaMode = false; UI.refreshHud();
       return;
@@ -697,7 +698,7 @@
     var d = drag; drag = null;
     viewport.classList.remove('tool-grab');
     if (d.kind === 'hook') { d.hook.end(p); return; }
-    if (d.kind === 'rotate' || (d.kind === 'pan' && d.moved)) return;
+    if (d.kind === 'rotate' || d.kind === 'zoom' || (d.kind === 'pan' && d.moved)) return;
     if (ev.button === 2) { if (App.mode === 'sketch') { finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
@@ -731,7 +732,8 @@
   viewport.addEventListener('wheel', function (ev) {
     ev.preventDefault();
     var p = pos(ev);
-    UI.zoomView(ev.deltaY > 0 ? 1.12 : 1 / 1.12, p[0], p[1]);
+    if (UI.wheelZoom) UI.wheelZoom(ev, p[0], p[1]);   // eased, in proportion to the wheel / trackpad delta (ui-core.js)
+    else UI.zoomView(ev.deltaY > 0 ? 1.12 : 1 / 1.12, p[0], p[1]);
   }, { passive: false });
 
   function partClick(mx, my, ev) {
