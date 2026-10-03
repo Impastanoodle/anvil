@@ -46,3 +46,13 @@
 #dw-overlay .dw-hot.pre { stroke: var(--dw-pre); }
 #drawing-sheet.dw-dragging { cursor: move; }
 #drawing-sheet.dw-panning { cursor: grabbing; }
+/* r4/drawings4: a selected dimension's arrow handles (click to flip), the alignment guide while dragging a dimension,
+   and the in-place Modify box over a dimension's text */
+#dw-overlay .dw-handle { fill: var(--dw-ghost); stroke: #fff; }
+#dw-overlay .dw-guide { stroke: var(--dw-hot); fill: none; }
+#dw-edit { position: absolute; z-index: 5; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 1px; background: var(--input-bg, #fff); border: 1px solid var(--blue, #1f6fc5); border-radius: 3px; padding: 1px; box-shadow: 0 2px 8px var(--shadow, rgba(0, 0, 0, 0.3)); }
+#dw-edit input { width: 86px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: var(--text, #000); }
+#dw-edit.text input { width: 120px; }
+#dw-edit .dw-edit-btn { border: 0; background: transparent; color: var(--muted, #555); font-size: 12px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 2px; }
+#dw-edit .dw-edit-btn.ok { color: #1f9d3a; }
+#dw-edit .dw-edit-btn:hover { background: var(--btn-hover, rgba(0, 0, 0, 0.08)); }

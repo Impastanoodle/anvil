@@ -400,6 +400,8 @@
   }
 
   UI.occt = { set: set, on: function () { return st.on; }, status: status, importFile: importFile, canImport: function () { return !!window.Worker && st.state !== 'failed'; } };
+  // true while a build of the current model is queued, running or held back (the drawing sheet waits for it, r4/drawings4)
+  UI.occt.pending = function () { return !!(st.on && pendingWork()); };
   if (window.anvil) {
     // anvil.occt() -> status; anvil.occt(true | false) switches it; anvil.occtIdle() resolves when the current build
     // has answered (or at once when nothing is pending)

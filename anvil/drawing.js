@@ -366,10 +366,12 @@ var Drawing = (function () {
         if (s0 === s1) {
           // a tangent edge, not on the outline: drawn only with Tangent Edges Visible / With Font, and only where two
           // different surfaces meet (a fillet's run-out onto a face, a hole's blend), never between facets of one
-          if (tanOn && s0 && !sameSurf && CV && ed.faces.length === 2 && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]])) {
+          // (r4/drawings4: also where faces of two different features meet smoothly and neither has a surface record,
+          // e.g. an Anvil fillet's facets running out onto a cap)
+          if (tanOn && s0 && !sameSurf && ed.faces.length === 2 && (CV && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]]) || featureOf(ed.faces[0]) !== featureOf(ed.faces[1]))) {
             var ta2 = [V.dot(ed.a, U), V.dot(ed.a, Vv)], tb2 = [V.dot(ed.b, U), V.dot(ed.b, Vv)], tL = Math.hypot(tb2[0] - ta2[0], tb2[1] - ta2[1]), tt = 0;
-            if (tL < tol2 * 10) return;
-            var tbody = mesh.faces[ed.faces[0]].body || 0, tg = CV.tanCurve ? CV.tanCurve[ei] : -1;
+            var tbody = mesh.faces[ed.faces[0]].body || 0, tg = CV && CV.tanCurve && ei != null ? CV.tanCurve[ei] : -1;
+            if (tL < tol2 * 10 && tg >= 0) return;
             if (tg >= 0 && ei != null) {
               // a tangent edge on a true circle (a fillet's run-out onto a face, a blend round a boss): its visible
               // angle ranges go to that circle, drawn as an exact circle, arc or ellipse (r3/drawings3)
@@ -380,9 +382,13 @@ var Drawing = (function () {
               tpush(tv0, 1);
               return;
             }
-            var tseg = function (t0, t1) { if ((t1 - t0) * tL >= tol2 * 10) tan.push([ta2[0] + (tb2[0] - ta2[0]) * t0, ta2[1] + (tb2[1] - ta2[1]) * t0, ta2[0] + (tb2[0] - ta2[0]) * t1, ta2[1] + (tb2[1] - ta2[1]) * t1, tbody]); };
+            // the visible parameter ranges, kept until every tangent piece is in: chains of them on one circle in space
+            // become that exact circle below (tangentCircles), the rest straight pieces
+            var tf = { ed: ed, body: tbody, vis: [], a2: ta2, b2: tb2, L: tL };
+            var tseg = function (t0, t1) { if (t1 - t0 > 1e-12) tf.vis.push([t0, t1]); };
             hiddenIntervals(ed.a, ed.b, ta2, tb2).forEach(function (iv) { tseg(tt, iv[0]); tt = iv[1]; });
             tseg(tt, 1);
+            tfree.push(tf);
           }
           return;
         }
@@ -409,6 +415,22 @@ var Drawing = (function () {
           g = synthGroup(mesh.faces[ed.faces[0]].body || 0, S2.o, S2.d, S2.r);
           ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, exactA: A2, exactB: B2, eps: 2 * Math.max(V.len(V.sub(A2, ed.a)), V.len(V.sub(B2, ed.b))) };
         }
+        // any other sharp edge where two different analytic surfaces meet (or one meets a plane): the chord becomes
+        // points on the true intersection curve, fine enough to look smooth at any zoom (r4/drawings4)
+        // Only on OpenCascade's solid (its polygons know their B-rep face): there every facet edge is a chord of the
+        // true edge; Anvil's approximate booleans can put a chord where the true curve leaves the solid (a hex nut's
+        // chamfer cone running past its flats)
+        if (g < 0 && ed.faces.length === 2 && brepMesh) {
+          var X1 = faceSurface(ed.faces[0]), X2 = X1 && faceSurface(ed.faces[1]);
+          if (X2 && (X1.t !== 'pln' || X2.t !== 'pln') && X1 !== X2) {
+            var Lc = V.len(V.sub(ed.b, ed.a)), chn = intersectionChain(X1, X2, ed.a, ed.b, diag * 1e-7 + 1e-10, diag * 1e-5 + 1e-9, Lc * 0.25 + diag * 1e-5);
+            if (chn) {
+              var ceps = 2 * chn.dev + diag * 1e-6;
+              for (var ci = 0; ci + 1 < chn.pts.length; ci++) edgePiece({ a: chn.pts[ci], b: chn.pts[ci + 1], faces: ed.faces, normals: ed.normals, exactDone: true, eps: ceps, isect: true }, null);
+              return;
+            }
+          }
+        }
       }
       if (ed.exactA) { A = ed.exactA; B = ed.exactB; }
       var a2 = [V.dot(A, U), V.dot(A, Vv)], b2 = [V.dot(B, U), V.dot(B, Vv)];
@@ -431,7 +453,66 @@ var Drawing = (function () {
       }
       hidden.forEach(function (iv) { seg(t, iv[0], vis); seg(iv[0], iv[1], hid); t = iv[1]; });
       seg(t, 1, vis);
-      if (A !== ed.a) silh.push(a2, b2);
+      if (A !== ed.a || ed.isect) silh.push(a2, b2);
+    }
+    // the feature that made a mesh face (its polygons' shared tag), or null
+    function featureOf(fi) { var f = mesh.faces[fi], p = f && f.polys && f.polys[0]; return p && p.shared != null ? p.shared : null; }
+    // Tangent pieces on no known curve (tfree): connected runs of them whose vertices all lie on one circle in space (an
+    // Anvil fillet's run-out onto a cap: its facets carry no surface record) are that exact circle, drawn as a circle,
+    // arc or ellipse like the others; the rest are straight pieces (r4/drawings4)
+    var tfree = [], brepMesh = mesh.faces.some(function (f) { return f.polys && f.polys[0] && f.polys[0].face != null; });
+    function tangentCircles() {
+      if (!tfree.length) return;
+      var qk = diag * 1e-7 + 1e-12, at = {}, tolC = diag * 1e-6 + 1e-9;
+      function k3(p) { return p.map(function (x) { return Math.round(x / qk); }).join(','); }
+      tfree.forEach(function (t, i) { [t.ed.a, t.ed.b].forEach(function (p) { var k = k3(p); (at[k] || (at[k] = [])).push(i); }); });
+      var done = new Uint8Array(tfree.length), straight = [];
+      for (var i = 0; i < tfree.length; i++) {
+        if (done[i]) continue;
+        // the run through vertices shared by exactly two pieces of one body
+        var comp = [], stack = [i], body = tfree[i].body;
+        done[i] = 1;
+        while (stack.length) {
+          var j = stack.pop(); comp.push(j);
+          [tfree[j].ed.a, tfree[j].ed.b].forEach(function (p) {
+            var l = at[k3(p)];
+            if (l.length !== 2) return;
+            l.forEach(function (o) { if (!done[o] && tfree[o].body === body) { done[o] = 1; stack.push(o); } });
+          });
+        }
+        var fit = comp.length >= 4 ? circle3(comp.map(function (j) { return tfree[j].ed.a; }).concat(comp.map(function (j) { return tfree[j].ed.b; })), tolC) : null;
+        if (!fit) { comp.forEach(function (j) { straight.push(tfree[j]); }); continue; }
+        if (!cst) cst = GR.map(function () { return null; });
+        var gi = synthGroup(body, fit.c, fit.n, fit.r), G = GR[gi], tlist = tcs[gi] || (tcs[gi] = []);
+        comp.forEach(function (j) {
+          var t = tfree[j], A = t.ed.a, B = t.ed.b, tA = curveAngle(G, A);
+          t.vis.forEach(function (iv) {
+            var y0 = unwrapNear(curveAngle(G, V.add(A, V.scale(V.sub(B, A), iv[0]))), tA), y1 = unwrapNear(curveAngle(G, V.add(A, V.scale(V.sub(B, A), iv[1]))), tA);
+            tlist.push([Math.min(y0, y1), Math.max(y0, y1)]);
+          });
+        });
+      }
+      straight.forEach(function (t) {
+        t.vis.forEach(function (iv) {
+          if ((iv[1] - iv[0]) * t.L < tol2 * 10) return;
+          var a2 = t.a2, b2 = t.b2;
+          tan.push([a2[0] + (b2[0] - a2[0]) * iv[0], a2[1] + (b2[1] - a2[1]) * iv[0], a2[0] + (b2[0] - a2[0]) * iv[1], a2[1] + (b2[1] - a2[1]) * iv[1], t.body]);
+        });
+      });
+    }
+    // the analytic surface a mesh face lies on: its record, or its own plane for a face with none (null for a face
+    // whose polygons lie on several surfaces) (r4/drawings4)
+    var fsCache = [];
+    function faceSurface(fi) {
+      if (fsCache[fi] !== undefined) return fsCache[fi];
+      var f = mesh.faces[fi], fs = CV.faceSurf[fi], r = null;
+      if (fs) r = fs.s;
+      else if (f && f.normal && f.count > 0 && !(f.polys && f.polys.some(function (p) { return p.surf; }))) {
+        var o = f.start * 9;
+        r = { t: 'pln', n: f.normal, c: f.normal[0] * P[o] + f.normal[1] * P[o + 1] + f.normal[2] * P[o + 2] };
+      }
+      fsCache[fi] = r;
+      return r;
     }
     meshEdges(mesh).forEach(edgePiece);
     // exact silhouettes: the facet silhouette pieces of one generator (same surface, same side) are chained along the
@@ -455,15 +536,69 @@ var Drawing = (function () {
           return G.cov.some(function (iv) { for (var j = -1; j <= 1; j++) { var x = th + TWO_PI * j; if (x >= iv[0] - 1e-9 && x <= iv[1] + 1e-9) return true; } return false; });
         });
       };
+      // a chain ending where its surface meets another analytic surface or a plane (a handle's tube on a mug's wall, a
+      // cone cut by a flat): the exact generator's end there, z' with the other surface's distance 0, found from the
+      // facet end vertex X (its sharp edges name the other faces) -> z' | null (r4/drawings4)
+      var vfaces = null;
+      var endOther = function (S, key, w, z, X) {
+        if (!vfaces) {
+          vfaces = {};
+          meshEdges(mesh).forEach(function (ed) {
+            if (ed.smooth) return;
+            [ed.a, ed.b].forEach(function (p) { var k = p.map(function (x) { return Math.round(x / (tz * 10)); }).join(','); (vfaces[k] || (vfaces[k] = [])).push.apply(vfaces[k], ed.faces); });
+          });
+        }
+        var fl = vfaces[X.map(function (x) { return Math.round(x / (tz * 10)); }).join(',')] || [], k = S.t === 'cone' ? S.k || 0 : 0, best = null;
+        var at = function (zz) { return V.add(V.add(S.o, V.scale(S.d, zz)), V.scale(w, S.r + k * zz)); }, dz = V.add(S.d, V.scale(w, k));
+        fl.forEach(function (fi) {
+          var fs = CV.faceSurf[fi];
+          if (fs && fs.key === key) return;
+          var S2 = faceSurface(fi);
+          if (!S2) return;
+          var zz = z;
+          for (var it = 0; it < 20; it++) {
+            var f = surfDist(S2, at(zz));
+            if (!f) return;
+            var gd = V.dot(f[1], dz);
+            if (Math.abs(gd) < 1e-6 * V.len(f[1])) return;   // the generator runs along the other surface
+            var st = f[0] / gd;
+            zz -= st;
+            if (Math.abs(st) < tz) break;
+          }
+          if (Math.abs(zz - z) > 0.35 * Math.abs(S.r + k * z) + tz * 100) return;
+          var f2 = surfDist(S2, at(zz));
+          if (!f2 || Math.abs(f2[0]) > tz * 10) return;
+          if (best == null || Math.abs(zz - z) < Math.abs(best - z)) best = zz;
+        });
+        return best;
+      };
       rorder.forEach(function (key) {
         var list = runs[key].map(function (p) { return { p: p, z0: Math.min(p.ex[2], p.ex[3]), z1: Math.max(p.ex[2], p.ex[3]) }; }).sort(function (a, b) { return a.z0 - b.z0; });
         var chains = [];
         list.forEach(function (x) { var c = chains[chains.length - 1]; if (c && x.z0 <= c.z1 + tz * 100) { c.items.push(x); c.z1 = Math.max(c.z1, x.z1); } else chains.push({ z0: x.z0, z1: x.z1, items: [x] }); });
         chains.forEach(function (c) {
-          var p0 = c.items[0].p, ok = endOk(p0.S, p0.ex[4], c.z0) && endOk(p0.S, p0.ex[4], c.z1);
+          var p0 = c.items[0].p, S = p0.S, w = p0.ex[4], kc = S.t === 'cone' ? S.k || 0 : 0;
+          // the facet vertex at the chain's end at axial coordinate z
+          var endVertex = function (z) {
+            var bestV = null, bd = Infinity;
+            c.items.forEach(function (x) { [x.p.ed.a, x.p.ed.b].forEach(function (v) { var dd = Math.abs(V.dot(V.sub(v, S.o), S.d) - z); if (dd < bd) { bd = dd; bestV = v; } }); });
+            return bestV;
+          };
+          var z0 = endOk(S, w, c.z0) ? c.z0 : endOther(S, p0.key, w, c.z0, endVertex(c.z0));
+          var z1 = z0 == null ? null : endOk(S, w, c.z1) ? c.z1 : endOther(S, p0.key, w, c.z1, endVertex(c.z1));
+          var ok = z0 != null && z1 != null && z1 > z0;
+          var atZ = function (zz) { return V.add(V.add(S.o, V.scale(S.d, zz)), V.scale(w, S.r + kc * zz)); };
           c.items.forEach(function (x) {
             var ed = x.p.ed, q = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: true, exactDone: true };
-            if (ok) { q.exactA = x.p.ex[0]; q.exactB = x.p.ex[1]; }
+            if (ok) {
+              // the end pieces reach the exact ends (a piece wholly past one is dropped)
+              var za = x.p.ex[2], zb = x.p.ex[3];
+              za = Math.max(z0, Math.min(z1, za)); zb = Math.max(z0, Math.min(z1, zb));
+              if (x.z0 <= c.z0 + tz) { if (x.p.ex[2] <= x.p.ex[3]) za = z0; else zb = z0; }
+              if (x.z1 >= c.z1 - tz) { if (x.p.ex[2] >= x.p.ex[3]) za = z1; else zb = z1; }
+              if (Math.abs(zb - za) < tz) return;
+              q.exactA = atZ(za); q.exactB = atZ(zb);
+            }
             edgePiece(q, x.p.ei);
           });
         });
@@ -529,7 +664,7 @@ var Drawing = (function () {
         var phi = function (q) { var w = V.sub(q, S.o); return Math.atan2(V.dot(w, y0), V.dot(w, x0)); };
         var fa = phi(a), fb = unwrapNear(phi(b), fa);
         var key = p.key + '|' + body + '|' + sg;
-        if (!runs[key]) { runs[key] = { S: S, body: body, sg: sg, x0: x0, y0: y0, ivs: [], dev: 0 }; rorder.push(key); }
+        if (!runs[key]) { runs[key] = { S: S, skey: p.key, body: body, sg: sg, x0: x0, y0: y0, ivs: [], dev: 0, phi: phi }; rorder.push(key); }
         runs[key].ivs.push([Math.min(fa, fb), Math.max(fa, fb)]);
         var ra = runs[key];
         ra.p = p;
@@ -542,10 +677,45 @@ var Drawing = (function () {
         var c = ra.sg * bb / h, s = -ra.sg * aa / h;
         return V.add(V.add(S.o, V.scale(w, S.R + S.r * c)), V.scale(S.d, S.r * s));
       }
+      // A partial torus (a swept handle's bend, a fillet round part of a rim) ends on meridians φ = lo, hi. The facet
+      // silhouette stops at its last facet vertex, up to one facet short of them; a run that ends within a facet of a
+      // meridian is carried on to it, so the outline meets the next face's outline (the handle's straight tube) with
+      // no gap (r4/drawings4). -> { lo, hi, step, th: [tube angles of the vertices on lo], [on hi] } | null (full turn)
+      function torusExtent(ra) {
+        var fs = [], S = ra.S;
+        mesh.faces.forEach(function (f, fi) {
+          var s = CV.faceSurf[fi];
+          if (!s || s.key !== ra.skey || (f.body || 0) !== ra.body) return;
+          for (var o = f.start * 9; o < (f.start + f.count) * 9; o += 3) fs.push([P[o], P[o + 1], P[o + 2]]);
+        });
+        if (fs.length < 6) return null;
+        var ang = fs.map(function (q) { var f = ra.phi(q); return f < 0 ? f + TWO_PI : f; }).sort(function (a, b) { return a - b; });
+        var gaps = [];
+        for (var i = 0; i < ang.length; i++) gaps.push([(i + 1 < ang.length ? ang[i + 1] : ang[0] + TWO_PI) - ang[i], i]);
+        gaps.sort(function (a, b) { return b[0] - a[0]; });
+        var big = gaps[0], step = 0;
+        for (var j = 1; j < gaps.length; j++) if (gaps[j][0] > 1e-9) { step = gaps[j][0]; break; }
+        if (!(big[0] > 3 * step && big[0] > 0.02)) return null;
+        var hi = ang[big[1]], lo = big[1] + 1 < ang.length ? ang[big[1] + 1] : ang[0];
+        function tube(q) { var w = V.sub(q, S.o), z = V.dot(w, S.d), rv = V.sub(w, V.scale(S.d, z)); return Math.atan2(z, V.len(rv) - Math.abs(S.R)); }
+        var thLo = [], thHi = [];
+        fs.forEach(function (q) { var f = ra.phi(q); f = f < 0 ? f + TWO_PI : f; if (Math.abs(f - lo) < 1e-7) thLo.push(tube(q)); if (Math.abs(f - hi) < 1e-7) thHi.push(tube(q)); });
+        return { lo: lo, hi: hi, step: step, thLo: thLo, thHi: thHi, tube: tube };
+      }
+      // the run's ends carried on to the meridians they stop short of (only where the silhouette point there lies within
+      // a facet of the face's boundary vertices, so a branch leaving the face elsewhere is not stretched)
+      function extendRun(ra, iv, ext) {
+        if (!ext) return iv;
+        var near = function (X, ths) { if (!X) return false; var t = ext.tube(X); return ths.some(function (x) { var d = Math.abs(x - t) % TWO_PI; return Math.min(d, TWO_PI - d) < 0.6; }); };
+        var reach = 1.5 * ext.step + 1e-9, lo = unwrapNear(ext.lo, iv[0]), hi = unwrapNear(ext.hi, iv[1]), out = iv.slice();
+        if (iv[0] - lo > 1e-12 && iv[0] - lo <= reach && near(torusSil(ra, lo), ext.thLo)) out[0] = lo;
+        if (hi - iv[1] > 1e-12 && hi - iv[1] <= reach && near(torusSil(ra, hi), ext.thHi)) out[1] = hi;
+        return out;
+      }
       var tolS = diag * 3e-5 + 1e-9;
       rorder.forEach(function (key) {
-        var ra = runs[key], eps = 2 * ra.dev;
-        joinRuns(modMerge(ra.ivs, 1e-9), 1e-9).forEach(function (iv) {
+        var ra = runs[key], eps = 2 * ra.dev, ext = torusExtent(ra);
+        joinRuns(modMerge(ra.ivs, 1e-9), 1e-9).map(function (iv) { return extendRun(ra, iv, ext); }).forEach(function (iv) {
           if (iv[1] - iv[0] < 1e-9) return;
           var pts = [];
           function pr2(X) { return [V.dot(X, U), V.dot(X, Vv)]; }
@@ -575,6 +745,7 @@ var Drawing = (function () {
     }
     // the true curves: circles seen along their axis (grouped by their projection, so a hole's far rim under its near
     // rim is not drawn hidden), ellipses seen obliquely, lines seen edge-on
+    tangentCircles();
     var exact = { circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, circlesAll: [], arcsAll: [] };
     var extra = [];   // [c, ax, ay, t0, t1] of every drawn curve piece, for the bounds
     if (CV) {
@@ -775,6 +946,39 @@ var Drawing = (function () {
     });
     return { visible: outV, hidden: outH };
   }
+  // chainLines(segs, bounds) -> [[seg, …], …]: every segment once, oriented, in chains of pieces of one body that meet
+  // end to end and run smoothly on (turning less than 40° at the joint: a curve drawn as chords, not a corner of the
+  // outline, where a hidden line's dashes should meet as drawn) (r4/drawings4)
+  var COS_CHAIN = Math.cos(40 * Math.PI / 180);
+  function chainLines(segs, bd) {
+    var span = bd ? Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9) : 1, q = span * 1e-7 + 1e-12, at = {};
+    function key(x, y) { return Math.round(x / q) + ',' + Math.round(y / q); }
+    segs.forEach(function (s, i) { [0, 1].forEach(function (e) { var k = key(s[e * 2], s[e * 2 + 1]); (at[k] || (at[k] = [])).push([i, e]); }); });
+    var used = new Uint8Array(segs.length), out = [];
+    function dirOf(s, rev) { var dx = s[2] - s[0], dy = s[3] - s[1], L = Math.hypot(dx, dy) || 1; return rev ? [-dx / L, -dy / L] : [dx / L, dy / L]; }
+    function oriented(s, rev) { return rev ? [s[2], s[3], s[0], s[1], s[4]] : s; }
+    // the best continuation leaving the point (x, y) in direction d: [index, reversed] or null
+    function next(x, y, d, body) {
+      var best = null, bc = COS_CHAIN;
+      (at[key(x, y)] || []).forEach(function (h) {
+        var s = segs[h[0]];
+        if (used[h[0]] || (s[4] || 0) !== (body || 0)) return;
+        var dd = dirOf(s, h[1] === 1), c = d[0] * dd[0] + d[1] * dd[1];
+        if (c > bc) { bc = c; best = [h[0], h[1] === 1]; }
+      });
+      return best;
+    }
+    for (var i = 0; i < segs.length; i++) {
+      if (used[i]) continue;
+      used[i] = 1;
+      var ch = [segs[i]], n, guard = 0;
+      // forward from the end, then backward from the start
+      for (var cur = ch[0]; guard++ < 100000 && (n = next(cur[2], cur[3], dirOf(cur, false), cur[4])); ) { used[n[0]] = 1; cur = oriented(segs[n[0]], n[1]); ch.push(cur); }
+      for (cur = ch[0]; guard++ < 100000 && (n = next(cur[0], cur[1], dirOf(cur, true), cur[4])); ) { used[n[0]] = 1; cur = oriented(segs[n[0]], !n[1]); ch.unshift(cur); }
+      out.push(ch);
+    }
+    return out;
+  }
   // Closed chains of segments whose vertices all lie on one circle (the kernel's polygonal circles, ≥ 12 sides)
   // become { c, r } circles; everything else stays as segments.
   function extractCircles(segs, diag) {
@@ -880,12 +1084,63 @@ var Drawing = (function () {
         if (ce.kind === 'arc') g.arc = true;
         ce.chords.forEach(function (ch) { (g.raw || (g.raw = [])).push([ch[0], ch[1]]); });
       });
+      roundRims(byBody[b]).forEach(function (rm) {
+        var n = rm.n, sg = (n[0] < -1e-9 || (Math.abs(n[0]) <= 1e-9 && (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[2] < 0)))) ? -1 : 1;
+        var key = b + '|' + rm.c.map(q).join(',') + '|' + n.map(function (x) { return Math.round(x * sg * 1e6); }).join(',') + '|' + q(rm.r);
+        var g = gmap[key];
+        if (!g) {
+          var x = null;
+          [[1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach(function (w) { if (x) return; var t = V.sub(w, V.scale(n, V.dot(w, n))); if (V.len(t) > 1e-6) x = V.norm(t); });
+          g = gmap[key] = { body: b, c: rm.c, n: n.slice(), x: x, y: V.cross(n, x), r: rm.r, arc: false, chords: [] };
+          groups.push(g);
+        }
+        (g.raw || (g.raw = [])).push(rm.ch);
+      });
     });
+    // The rims of torus and sphere faces whose facets carry no profile ends (an Anvil fillet round a cylinder's rim or a
+    // boss's root: Kernel.curveEdges finds only a revolve's rims): the facet edges at one axial level, on the true
+    // surface and used by one such facet only (the face's boundary, where it meets the cap, the cylinder or the plate)
+    // -> [{ c, n, r, ch: [A, B] }] (r4/drawings4)
+    function roundRims(polys) {
+      var E = {}, order = [];
+      function k3(p) { return Math.round(p[0] / qr) + ',' + Math.round(p[1] / qr) + ',' + Math.round(p[2] / qr); }
+      polys.forEach(function (p) {
+        var F = p.surf, S = F && F.s;
+        if (!S || (S.t !== 'tor' && S.t !== 'sph') || F.P) return;
+        var vs = p.vertices;
+        for (var i = 0; i < vs.length; i++) {
+          var a = vs[i].pos, bb = vs[(i + 1) % vs.length].pos, A = [a.x, a.y, a.z], B = [bb.x, bb.y, bb.z];
+          if (V.len(V.sub(B, A)) < tol) continue;
+          var ek = k3(A) < k3(B) ? k3(A) + '|' + k3(B) : k3(B) + '|' + k3(A);
+          if (E[ek]) { E[ek].n++; continue; }
+          E[ek] = { n: 1, A: A, B: B, S: S }; order.push(ek);
+        }
+      });
+      var out = [];
+      order.forEach(function (ek) {
+        var e = E[ek], S = e.S;
+        if (e.n !== 1) return;
+        var za = V.dot(V.sub(e.A, S.o), S.d), zb = V.dot(V.sub(e.B, S.o), S.d);
+        if (Math.abs(za - zb) > tol || Math.abs(za) >= S.r) return;
+        var fa = surfDist(S, e.A), fb = surfDist(S, e.B);
+        if (!fa || !fb || Math.abs(fa[0]) > tol || Math.abs(fb[0]) > tol) return;
+        var z = (za + zb) / 2, c = V.add(S.o, V.scale(S.d, z)), ra = V.len(V.sub(e.A, c)), rb = V.len(V.sub(e.B, c)), h = Math.sqrt(S.r * S.r - z * z);
+        var cands = S.t === 'sph' ? [h] : [Math.abs(S.R) + h, Math.abs(S.R) - h], r = null;
+        cands.forEach(function (x) { if (x > tol && Math.abs(x - ra) <= tol && Math.abs(x - rb) <= tol) r = x; });
+        if (r == null) return;
+        out.push({ c: c, n: S.d, r: r, ch: [e.A, e.B] });
+      });
+      return out;
+    }
     // chords split by the kernel (a facet cut in two) are joined back end to end when collinear; then only chords
     // whose two ends are on the true curve are kept (one cut short by a trimming face, a hex nut's flat, is not)
     function onCurve(g, p) { var w = V.sub(p, g.c), h = V.dot(w, g.n); return Math.abs(h) <= tol && Math.abs(V.len(V.sub(w, V.scale(g.n, h))) - g.r) <= tol; }
     groups.forEach(function (g) {
-      var raw = (g.raw || []).slice(), changed = true;
+      var raw = [], changed = true, seenCh = {};
+      (g.raw || []).forEach(function (ch) {   // a chord reported from both faces it bounds once (r4/drawings4)
+        var ka = ch[0].map(q).join(','), kb = ch[1].map(q).join(','), kk = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        if (!seenCh[kk]) { seenCh[kk] = 1; raw.push(ch); }
+      });
       delete g.raw;
       for (var pass = 0; changed && pass < 100000; pass++) {
         changed = false;
@@ -1035,6 +1290,80 @@ var Drawing = (function () {
     if (V.dot(w, mr) < mL * Math.cos(Math.PI / 6)) return null; // the piece is not next to that generator
     function at(z) { return V.add(V.add(S.o, V.scale(d, z)), V.scale(w, S.r + k * z)); }
     return [at(za), at(zb), za, zb, w];
+  }
+  // the circle in space through points (at least 5 distinct ones, every one within tol of it) -> { c, n, r } | null
+  function circle3(pts, tol) {
+    var uniq = [];
+    pts.forEach(function (p) { if (!uniq.some(function (u) { return V.len(V.sub(u, p)) <= tol; })) uniq.push(p); });
+    if (uniq.length < 5) return null;
+    var A = uniq[0], B = A, C = null, bd = -1;
+    uniq.forEach(function (p) { var d = V.len(V.sub(p, A)); if (d > bd) { bd = d; B = p; } });
+    var ab = V.sub(B, A), abL = V.len(ab);
+    if (abL < tol * 10) return null;
+    bd = -1;
+    uniq.forEach(function (p) { var d = V.len(V.cross(V.sub(p, A), ab)) / abL; if (d > bd) { bd = d; C = p; } });
+    if (bd < tol * 10) return null;
+    var a = V.sub(A, C), b = V.sub(B, C), axb = V.cross(a, b), den = 2 * V.dot(axb, axb);
+    var c = V.add(C, V.scale(V.cross(V.sub(V.scale(b, V.dot(a, a)), V.scale(a, V.dot(b, b))), axb), 1 / den)), n = V.norm(axb), r = V.len(V.sub(A, c));
+    for (var i = 0; i < uniq.length; i++) {
+      var w = V.sub(uniq[i], c);
+      if (Math.abs(V.dot(w, n)) > tol || Math.abs(V.len(w) - r) > tol + r * 1e-7) return null;
+    }
+    return { c: c, n: n, r: r };
+  }
+  // Intersection space curves (r4/drawings4): where two different analytic surfaces meet (a handle's cylinder or
+  // torus on a mug's wall, a pin through a curved face, a plane cutting a cylinder obliquely) the facet edge is a
+  // chord between two points of the true curve. surfDist(S, x) -> [f, grad]: a signed distance-like function of an
+  // analytic surface record (kernel.js: cyl, cone, sph, tor; here also { t: 'pln', n, c }: n·x = c) and its gradient.
+  function surfDist(S, x) {
+    if (S.t === 'pln') return [V.dot(S.n, x) - S.c, S.n];
+    var q = V.sub(x, S.o);
+    if (S.t === 'sph') { var L = V.len(q); return L < 1e-12 ? null : [L - S.r, V.scale(q, 1 / L)]; }
+    var z = V.dot(q, S.d), rv = V.sub(q, V.scale(S.d, z)), rho = V.len(rv);
+    if (rho < 1e-12) return null;
+    var w = V.scale(rv, 1 / rho);
+    if (S.t === 'cyl') return [rho - S.r, w];
+    if (S.t === 'cone') { var k = S.k || 0; return [rho - (S.r + k * z), V.sub(w, V.scale(S.d, k))]; }
+    if (S.t === 'tor') {
+      var R = Math.abs(S.R), dr = rho - R, h = Math.hypot(dr, z);
+      return h < 1e-12 ? null : [h - S.r, V.scale(V.add(V.scale(w, dr), V.scale(S.d, z)), 1 / h)];
+    }
+    return null;
+  }
+  // the point of the curve where S1 and S2 meet nearest to p (minimum-norm Newton steps on both distances), or null
+  // where they do not cross cleanly there (tangent surfaces, no convergence, a jump away from p)
+  function onBoth(S1, S2, p, tol, reach) {
+    var x = p;
+    for (var it = 0; it < 16; it++) {
+      var a = surfDist(S1, x), b = surfDist(S2, x);
+      if (!a || !b) return null;
+      if (Math.abs(a[0]) <= tol && Math.abs(b[0]) <= tol) return V.len(V.sub(x, p)) <= reach ? x : null;
+      var g11 = V.dot(a[1], a[1]), g12 = V.dot(a[1], b[1]), g22 = V.dot(b[1], b[1]), det = g11 * g22 - g12 * g12;
+      if (!(det > 1e-6 * g11 * g22)) return null;   // the surfaces touch tangentially here
+      var l1 = (g22 * a[0] - g12 * b[0]) / det, l2 = (g11 * b[0] - g12 * a[0]) / det;
+      x = V.sub(x, V.add(V.scale(a[1], l1), V.scale(b[1], l2)));
+    }
+    return null;
+  }
+  // the chord A-B of the curve where S1 and S2 meet as points on the true curve, fine enough that no chord is more
+  // than tolC from it -> [A, …, B], or null when A or B is not on both surfaces or a midpoint cannot be found
+  // The ends are moved onto the true curve first (on OpenCascade's mesh they are on it already; on Anvil's they sit on
+  // the facets, up to reach away), deterministically, so the chains of neighbouring chords still meet.
+  // -> { pts: [A', …, B'], dev: how far the curve strays from the chord }
+  function intersectionChain(S1, S2, A, B, tolOn, tolC, reach) {
+    var A1 = onBoth(S1, S2, A, tolOn, reach), B1 = A1 && onBoth(S1, S2, B, tolOn, reach);
+    if (!A1 || !B1 || V.len(V.sub(B1, A1)) < tolC) return null;
+    var out = [A1], ok = true, dev = Math.max(V.len(V.sub(A1, A)), V.len(V.sub(B1, B)));
+    (function sub(P, Q, depth) {
+      if (!ok) return;
+      var m = V.scale(V.add(P, Q), 0.5), L = V.len(V.sub(Q, P)), X = onBoth(S1, S2, m, tolOn, L * 0.75 + tolOn);
+      if (!X) { ok = false; return; }
+      var dm = V.len(V.sub(X, m));
+      if (!depth) dev = Math.max(dev, dm);
+      if (depth < 7 && (dm > tolC || depth < 1)) { sub(P, X, depth + 1); sub(X, Q, depth + 1); }
+      else out.push(Q);
+    })(A1, B1, 0);
+    return ok ? { pts: out, dev: dev } : null;
   }
   // extent of the curve c + cos t ax + sin t ay (2D), t in [t0, t1], added to a bounds object
   function curveBounds(c, ax, ay, t0, t1, bd) {
@@ -2102,7 +2431,7 @@ var Drawing = (function () {
   function compute(doc, mesh, model, ctx) {
     ctx = ctx || {};
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
-    var S = sheetSize(doc, units), prims = [];
+    var S = sheetSize(doc, units), prims = [], chainSeq = 0;
     function line(a, b, layer, style) { prims.push({ k: 'line', a: a, b: b, layer: layer, style: style }); }
     function text(p, h, t, anchor, layer, rot) { prims.push({ k: 'text', p: p, h: h, text: t, anchor: anchor || 'start', layer: layer, rot: rot || 0 }); }
     // border and title block
@@ -2159,16 +2488,26 @@ var Drawing = (function () {
         });
         hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0 });
       });
-      pr.lines.visible.forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, 'visible'); });
+      // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
+      // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
+      function chained(list, style) {
+        var key = '_chains_' + style;
+        if (!list[key]) Object.defineProperty(list, key, { value: chainLines(list, pr.bounds), enumerable: false });
+        list[key].forEach(function (ch) {
+          var cid = ch.length > 1 ? ++chainSeq : null;
+          ch.forEach(function (l) { var q = { k: 'line', a: toSheet([l[0], l[1]]), b: toSheet([l[2], l[3]]), layer: layer, style: style }; if (cid) q.chain = cid; prims.push(q); });
+        });
+      }
+      chained(pr.lines.visible, 'visible');
       pr.circles.visible.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'visible' }); });
       (pr.arcs ? pr.arcs.visible : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'visible' }); });
       // tangent edges: thin solid (Tangent Edges Visible) or phantom (With Font); a detail view shows its parent's
       var tst = (v.kind === 'detail' && byId[v.parent] ? byId[v.parent].tangent : v.tangent) === 'font' ? 'tanfont' : 'tangent';
-      (pr.lines.tangent || []).forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, tst); });
+      if (pr.lines.tangent) chained(pr.lines.tangent, tst);
       (pr.circles.tangent || []).forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: tst }); });
       (pr.arcs && pr.arcs.tangent || []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: tst }); });
       (pr.ellipses && pr.ellipses.tangent || []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, tst)); });
-      pr.lines.hidden.forEach(function (l) { line(toSheet([l[0], l[1]]), toSheet([l[2], l[3]]), layer, 'hidden'); });
+      chained(pr.lines.hidden, 'hidden');
       pr.circles.hidden.forEach(function (c) { prims.push({ k: 'circle', c: toSheet(c.c), r: c.r * s, layer: layer, style: 'hidden' }); });
       (pr.arcs ? pr.arcs.hidden : []).forEach(function (a) { prims.push({ k: 'arc', c: toSheet(a.c), r: a.r * s, a0: a.a0, a1: a.a1, layer: layer, style: 'hidden' }); });
       ['visible', 'hidden'].forEach(function (st) { (pr.ellipses ? pr.ellipses[st] : []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, st)); }); });
@@ -2324,9 +2663,13 @@ var Drawing = (function () {
       if (d.dangling) p.forEach(function (x) { x.color = 'dangling'; });
       var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
       function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
+      // the arrow tips (clicked to flip the arrows) and the text's rectangle (edited in place), r4/drawings4
+      d.arrows = []; d.tbox = null;
       p.forEach(function (x) {
         x.view = d.view;
         prims.push(x);
+        if (x.k === 'fill') d.arrows.push(x.pts[0]);
+        if (x.k === 'text') { var tr0 = textRect(x); d.tbox = d.tbox ? { x0: Math.min(d.tbox.x0, tr0.x0), y0: Math.min(d.tbox.y0, tr0.y0), x1: Math.max(d.tbox.x1, tr0.x1), y1: Math.max(d.tbox.y1, tr0.y1) } : tr0; }
         if (x.a) { grow(x.a); grow(x.b); }
         if (x.k === 'text') { var w = textWidth(x.text, x.h), vert = Math.abs(x.rot) > 45; grow(x.p); grow(vert ? [x.p[0] - x.h, x.p[1] + w / 2] : [x.p[0] + w, x.p[1] + x.h]); if (vert) grow([x.p[0], x.p[1] - w / 2]); else if (x.anchor === 'middle') grow([x.p[0] - w / 2, x.p[1]]); }
       });
@@ -2677,7 +3020,17 @@ var Drawing = (function () {
       var vw = sheet.views.filter(function (w) { return w.layer === layer; })[0], out = [], run = null;
       var grp = { key: layer, open: '<g data-layer="' + esc(layer) + '"' + (vw ? ' data-view="' + vw.view.id + '" class="dv"' : '') + ' fill="none" stroke="#000" stroke-linecap="round">' };
       res.groups.push(grp);
-      groups[layer].forEach(function (p) {
+      var lst = groups[layer];
+      lst.forEach(function (p, pi) {
+        // a chain of lines (chainLines) is one path: its dashes run on along it
+        if (p.k === 'line' && p.chain && lst[pi - 1] && lst[pi - 1].chain === p.chain) return;
+        if (p.k === 'line' && p.chain && lst[pi + 1] && lst[pi + 1].chain === p.chain) {
+          var pts = [X(p.a) + ' ' + Y(p.a), X(p.b) + ' ' + Y(p.b)];
+          for (var pj = pi + 1; lst[pj] && lst[pj].chain === p.chain; pj++) pts.push(X(lst[pj].b) + ' ' + Y(lst[pj].b));
+          var dshc = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : '';
+          out.push('<path class="' + p.style + '" d="M' + pts.join(' L') + '" stroke-width="' + num((STROKE[p.style] || 0.25) * k) + '" stroke-linejoin="round"' + dshc + '/>');
+          return;
+        }
         if (opts.live && !vw) {
           var of = p.view != null ? String(p.view) : null;
           if (of !== run) { if (run != null) out.push('</g>'); if (of != null) out.push('<g data-of="' + of + '">'); run = of; }
@@ -2825,8 +3178,16 @@ var Drawing = (function () {
       }
       return out;
     }
-    sheet.prims.forEach(function (p) {
+    sheet.prims.forEach(function (p, pi) {
       color(p);
+      // a chain of lines (chainLines) is one path, so its dashes run on along it
+      var prv = sheet.prims[pi - 1], nxt = sheet.prims[pi + 1];
+      if (p.k === 'line' && p.chain && (prv && prv.chain === p.chain || nxt && nxt.chain === p.chain)) {
+        style(p.style);
+        var first = !(prv && prv.chain === p.chain), last = !(nxt && nxt.chain === p.chain);
+        c.push((first ? P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' : '') + P(p.b[0]) + ' ' + P(p.b[1]) + ' l' + (last ? ' S' : ''));
+        return;
+      }
       if (p.k === 'arc') { style(p.style); c.push(arcPath(p)); }
       else if (p.k === 'ellipse') { style(p.style); c.push(ellipsePath(p)); }
       else if (p.k === 'line') { style(p.style); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
@@ -3661,6 +4022,7 @@ var Drawing = (function () {
   function closeDrawing() {
     if (!D.active) return;
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
+    closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null;
     $('app').classList.remove('drawing-mode', 'dw-pm');
     D.root.hidden = true; D.tree.hidden = true;
@@ -3744,13 +4106,15 @@ var Drawing = (function () {
     return v ? [v.x - r[0], v.y - r[1]] : [0, 0];
   }
   // The sheet was drawn from OpenCascade's exact solid and the part has just been rebuilt by Anvil's kernel, with
-  // OpenCascade's build of it on the way: the drawing keeps its last sheet for up to 1.5 s rather than redraw Anvil's
-  // approximation (facet edges, a swept handle's chords) and then the exact solid again a moment later (r3/drawings3).
+  // OpenCascade's build of it on the way: the drawing keeps its last sheet rather than redraw Anvil's approximation
+  // (facet edges, a swept handle's chords) and then the exact solid again a moment later (r3/drawings3). ui-occt.js
+  // says when a build is queued, running or held (UI.occt.pending, r4/drawings4); the sheet waits for it up to 3 s.
   function occtSwapComing(since) {
     if (!D.occtDrove || !UI.occt || !UI.occt.on || !UI.occt.on()) return false;
     var st = UI.occt.status(), dt = performance.now() - since;
-    if (st.driving || dt > 1500) return false;
-    return st.state === 'building' || dt < 250;
+    if (st.driving || dt > 3000) return false;
+    if (UI.occt.pending) return UI.occt.pending();
+    return dt < 1500 && (st.state === 'building' || dt < 250);
   }
   function queueRender(light) {
     if (light !== true) D.renderFull = true;
@@ -3774,6 +4138,7 @@ var Drawing = (function () {
     if (!s || !D.sheet) return;
     if (!D.vb) D.vb = fitBox();
     s.setAttribute('viewBox', D.vb.x + ' ' + D.vb.y + ' ' + D.vb.w + ' ' + D.vb.h);
+    positionInlineEdit();
   }
   function fitBox() {
     var S = D.sheet.size, m = Math.max(S[0], S[1]) * 0.03;
@@ -3816,7 +4181,10 @@ var Drawing = (function () {
       var sel = D.sel && D.sel.kind === 'dim' && dimMatches(D.sel, d), hov = D.hover && D.hover.kind === 'dim' && dimMatches(D.hover, d);
       if (!sel && !hov || !d.box) return;
       svgNode('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: d.box.x0 - pad / 2, y: H - d.box.y1 - pad / 2, width: d.box.x1 - d.box.x0 + pad, height: d.box.y1 - d.box.y0 + pad, 'stroke-width': sw }, g);
+      // the selected dimension's arrow handles: click one to flip the arrows (r4/drawings4)
+      if (sel && FLIP_KINDS[d.kind] && d.arrows && !(D.drag && D.drag.moved)) d.arrows.forEach(function (a) { svgNode('circle', { class: 'dw-handle', cx: a[0], cy: H - a[1], r: pxToPaper(3.2), 'stroke-width': sw }, g); });
     });
+    if (D.snapGuide) svgNode('line', { class: 'dw-guide', x1: D.snapGuide.a[0], y1: H - D.snapGuide.a[1], x2: D.snapGuide.b[0], y2: H - D.snapGuide.b[1], 'stroke-width': sw, 'stroke-dasharray': pxToPaper(4) + ' ' + pxToPaper(3) }, g);
     if (D.sel && D.sel.kind === 'bom' && D.sheet.bom) { var bb = D.sheet.bom.box; svgNode('rect', { class: 'dw-vbox sel', x: bb.x0 - pad, y: H - bb.y1 - pad, width: bb.x1 - bb.x0 + 2 * pad, height: bb.y1 - bb.y0 + 2 * pad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g); }
     (D.sheet.balloons || []).forEach(function (b) {
       var bsel = D.sel && D.sel.kind === 'balloon' && D.sel.view === b.view && (D.sel.index != null ? D.sel.index === b.index : D.sel.key === b.key && D.sel.component === b.component);
@@ -3909,7 +4277,9 @@ var Drawing = (function () {
   // there opens the feature under the pointer in the hidden 3D view, a middle drag rotates it)
   function onDown(e) {
     if (!D.active || !D.sheet) return;
+    if (D.inline && D.inline.box.contains(e.target)) return;
     e.preventDefault(); e.stopPropagation();
+    closeInlineEdit(false);
     var p = toPaper(e);
     stopVbAnim();
     if (ZM.pending) { ZM.pending = 0; }
@@ -3961,8 +4331,11 @@ var Drawing = (function () {
       UI.setStatus('Bill of Materials (' + bt.rows.length + ' items) — drag to move it off its anchor, double-click for properties, Delete removes it.');
       return;
     }
+    // a click on an arrowhead of the selected dimension flips its arrows (SolidWorks' arrow handles), r4/drawings4
+    var fl = arrowAt(p);
+    if (fl) { flipArrows(fl); return; }
     var dm = dimAt(p);
-    if (dm) { D.sel = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; startDimDrag(dm, p); drawOverlay(); renderTree(); UI.setStatus('Dimension ' + dm.text + (dm.auto ? ' (model item)' : '') + ' \u2014 drag to move it, double-click to edit, Delete removes it.'); return; }
+    if (dm) { D.sel = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; startDimDrag(dm, p); drawOverlay(); renderTree(); UI.setStatus('Dimension ' + dm.text + (dm.auto ? ' (model item)' : '') + ' \u2014 drag to move it (it snaps in line with the others), click an arrowhead to flip the arrows, double-click to edit the value in place, Delete removes it.'); return; }
     var w = viewAt(p);
     if (w) {
       D.sel = { kind: 'view', id: w.view.id };
@@ -3997,7 +4370,7 @@ var Drawing = (function () {
       var pd = toPaper(e), dd = D.drag;
       if (!dd.moved && Math.hypot(pd[0] - dd.start[0], pd[1] - dd.start[1]) < pxToPaper(3)) return;
       if (!dd.moved) { UI.pushUndo(); dd.moved = true; D.host.classList.add('dw-dragging'); }
-      if (dd.kind === 'dim') dragDim(pd);
+      if (dd.kind === 'dim') { dd.noSnap = !!e.altKey; dragDim(pd); }   // Alt: no snapping (r4/drawings4)
       else if (dd.kind === 'balloon') {
         var vb = Drawing.findView(doc(), dd.view), bb = vb && vb.balloons && vb.balloons[dd.index];
         if (bb) { bb.pos = [dd.c0[0] + pd[0] - dd.start[0] - vb.x, dd.c0[1] + pd[1] - dd.start[1] - vb.y]; queueRender(true); }
@@ -4045,6 +4418,7 @@ var Drawing = (function () {
     var dg = D.drag;
     D.drag = null;
     if (D.host) D.host.classList.remove('dw-dragging', 'dw-panning');
+    if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot') && dg.moved) { UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
@@ -4116,7 +4490,7 @@ var Drawing = (function () {
     var aq = annotAt(pp);
     if (aq) { if (aq.type === 'holeCallout') cmdCalloutProps(aq); return; }
     var dq = dimAt(pp);
-    if (dq) { cmdDimensionPM(dimRef(dq)); return; }
+    if (dq) { cmdDimensionPM(dimRef(dq)); openInlineEdit(dq); return; }
     if (bomAt(toPaper(e))) { cmdBOM(); return; }
     var w = viewAt(toPaper(e));
     if (w) cmdViewProperties(w.view.id); else cmdSheetProperties();
@@ -4141,7 +4515,7 @@ var Drawing = (function () {
   function scaleOptions() { return [['sheet', 'Use sheet scale']].concat(Drawing.SCALES.map(function (s) { return [Drawing.scaleText(s), Drawing.scaleText(s)]; })); }
   function openDrawingPM(spec) {
     var onClose = spec.onClose;
-    spec.onClose = function () { $('app').classList.remove('dw-pm'); if (onClose) onClose(); if (D.active) { UI.setFmTab('tree'); render(); } };
+    spec.onClose = function () { $('app').classList.remove('dw-pm'); closeInlineEdit(false); if (onClose) onClose(); if (D.active) { UI.setFmTab('tree'); render(); } };
     UI.openPM(spec);
     $('app').classList.add('dw-pm');
   }
@@ -4973,6 +5347,114 @@ var Drawing = (function () {
   function autoInsertViews(dc, ids) { Drawing.autoInsert(dc, mesh(), ids); }
   // dragging: a dimension's line / text, a callout's leader, a balloon
   function startDimDrag(dm, p) { D.drag = { kind: 'dim', ref: dimRef(dm), d: dm, start: p, moved: false }; }
+  // ---- r4/drawings4: SolidWorks-like dimension handling
+  // the arrow tip of the selected dimension under the cursor (5 px): that dimension, whose arrows can flip
+  var FLIP_KINDS = { h: 1, v: 1, aligned: 1, dia: 1 };
+  function arrowAt(p) {
+    if (!D.sel || D.sel.kind !== 'dim') return null;
+    var d = sheetDim(D.sel), t = pxToPaper(5);
+    if (!d || !FLIP_KINDS[d.kind] || !d.arrows) return null;
+    return d.arrows.some(function (a) { return Math.hypot(a[0] - p[0], a[1] - p[1]) <= t; }) ? d : null;
+  }
+  function flipArrows(d) {
+    setDimProps(d, { flip: !d.flip });
+    var nd = sheetDim(dimRef(d));
+    UI.setStatus('Dimension ' + (nd ? nd.text : d.text) + ': arrows ' + (d.flip ? 'inside' : 'flipped outside') + ' (click an arrowhead again to flip them back).');
+  }
+  // In-place editing (double-click a dimension, as SolidWorks' Modify box): a box over the dimension text. A model
+  // item that drives the part edits its value (Enter rebuilds the part); any other dimension edits its text, <DIM>
+  // standing for the value. Esc or a click elsewhere cancels; the box follows the sheet's pan and zoom.
+  function openInlineEdit(d) {
+    closeInlineEdit(false);
+    if (!d || !d.tbox || d.kind === 'ordinate' || d.kind === 'baseline') return;
+    var w = sheetView(d.view), src = d.auto ? Drawing.dimSource(App.model, App.build, w, d) : null;
+    var inp = el('input', { type: 'text', spellcheck: 'false', 'aria-label': src ? 'Dimension value' : 'Dimension text (<DIM> is the value)' });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: src ? 'drives' : 'text' }, [inp, ok, no]);
+    inp.value = src ? String(+(+d.value).toFixed(6)) : d.label != null ? String(d.label) : '<DIM>';
+    D.root.appendChild(box);
+    D.inline = { box: box, inp: inp, ref: dimRef(d), src: src };
+    positionInlineEdit();
+    inp.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); closeInlineEdit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeInlineEdit(false); }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeInlineEdit(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeInlineEdit(true); });
+    no.addEventListener('click', function () { closeInlineEdit(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (err) { }
+    UI.setStatus(src ? 'Modify: a new value changes ' + src.featureName + ' (' + src.what + ') and rebuilds the part; Enter applies, Esc cancels.' : 'Dimension text: <DIM> is the value; Enter applies, Esc cancels.');
+  }
+  // the box over the dimension's text, in client pixels (the sheet may have been panned or zoomed since)
+  function positionInlineEdit() {
+    var I = D.inline, s = svgEl(), m = s && s.getScreenCTM();
+    if (!I || !m || !D.sheet) return;
+    var d = sheetDim(I.ref);
+    if (!d || !d.tbox) { closeInlineEdit(false); return; }
+    var H = D.sheet.size[1], pt = s.createSVGPoint(), r = D.root.getBoundingClientRect();
+    pt.x = (d.tbox.x0 + d.tbox.x1) / 2; pt.y = H - (d.tbox.y0 + d.tbox.y1) / 2;
+    var q = pt.matrixTransform(m);
+    I.box.style.left = (q.x - r.left) + 'px'; I.box.style.top = (q.y - r.top) + 'px';
+  }
+  function closeInlineEdit(commit) {
+    var I = D.inline;
+    if (!I) return;
+    D.inline = null;
+    if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
+    if (!commit) return;
+    var d = sheetDim(I.ref), txt = I.inp.value.trim();
+    if (!d) return;
+    if (I.src) {
+      var v = UI.evalInput ? UI.evalInput(txt) : parseFloat(txt);
+      if (v && typeof v === 'object') v = v.value;
+      v = +v;
+      if (!isFinite(v)) { UI.toast('Not a number: ' + txt); return; }
+      if (Math.abs(v - d.value) < 1e-9) return;
+      if (UI.hasPM && UI.hasPM()) UI.pmCancel();
+      var tol = d.tol || { type: 'none' };
+      applyDimensionPM(d, I.src, { value: v, tolType: tol.type || 'none', plus: tol.plus || 0, minus: tol.minus || 0, prec: d.prec != null ? String(d.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip });
+      return;
+    }
+    var label = txt === '' || txt === '<DIM>' ? null : txt;
+    if ((d.label == null ? null : String(d.label)) === label) return;
+    if (UI.hasPM && UI.hasPM()) UI.pmCancel();
+    setDimProps(d, { label: label });
+    var nd = sheetDim(I.ref);
+    UI.setStatus('Dimension text: ' + (nd ? nd.text : '') + '.');
+  }
+  // Dragging a dimension snaps it in line with the others (SolidWorks' alignment inference): a linear dimension's line
+  // onto another's of the same direction, a radius / diameter shelf onto the height of another's, within 6 px; a dotted
+  // guide shows the line it lines up with. -> the snapped props (D.snapGuide set, or null)
+  function snapDim(d, w, props) {
+    D.snapGuide = null;
+    var tol = pxToPaper(6), best = null, bd = tol, me = dimRef(d);
+    if ((d.kind === 'h' || d.kind === 'v') && props.at != null) {
+      var ax = d.kind === 'h' ? 1 : 0, cur = w.toSheet(ax ? [0, props.at] : [props.at, 0])[ax];
+      D.sheet.dims.forEach(function (o) {
+        if (o.kind !== d.kind || o.lineAt == null || dimMatches(me, o) || !o.box) return;
+        var ow = sheetView(o.view), oc = ow && ow.toSheet(ax ? [0, o.lineAt] : [o.lineAt, 0])[ax];
+        if (oc != null && Math.abs(oc - cur) < bd) { bd = Math.abs(oc - cur); best = { o: o, at: oc }; }
+      });
+      if (!best) return props;
+      props.at = w.fromSheet(ax ? [0, best.at] : [best.at, 0])[ax];
+      var bx = d.box, ob = best.o.box, lo = Math.min(ax ? bx.x0 : bx.y0, ax ? ob.x0 : ob.y0), hi = Math.max(ax ? bx.x1 : bx.y1, ax ? ob.x1 : ob.y1);
+      D.snapGuide = ax ? { a: [lo, best.at], b: [hi, best.at] } : { a: [best.at, lo], b: [best.at, hi] };
+    } else if ((d.kind === 'dia' || d.kind === 'rad') && props.lead) {
+      var c = w.toSheet(d.c), y = c[1] + props.lead[1];
+      D.sheet.dims.forEach(function (o) {
+        if ((o.kind !== 'dia' && o.kind !== 'rad') || !o.leadNow || dimMatches(me, o)) return;
+        var ow = sheetView(o.view), oy = ow && ow.toSheet(o.c)[1] + o.leadNow[1];
+        if (oy != null && Math.abs(oy - y) < bd) { bd = Math.abs(oy - y); best = { o: o, y: oy, x: ow.toSheet(o.c)[0] + o.leadNow[0] }; }
+      });
+      if (!best) return props;
+      props.lead = [props.lead[0], best.y - c[1]];
+      D.snapGuide = { a: [Math.min(c[0] + props.lead[0], best.x), best.y], b: [Math.max(c[0] + props.lead[0], best.x), best.y] };
+    }
+    return props;
+  }
   function dragDim(p) {
     var dg = D.drag, d = dg.d, w = sheetView(d.view), dx = p[0] - dg.start[0], dy = p[1] - dg.start[1], props = {};
     if (!w) return;
@@ -4986,6 +5468,9 @@ var Drawing = (function () {
     } else if (d.kind === 'dia' || d.kind === 'rad' || d.kind === 'chamfer') props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];
     else if (d.kind === 'ordinate' || d.kind === 'baseline') props.at = d.lineAt + (d.dir === 'v' ? dx : dy) / w.scale;
     if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) props.tx = null; }
+    var hadGuide = !!D.snapGuide;
+    if (!dg.noSnap) snapDim(d, w, props); else D.snapGuide = null;
+    if (hadGuide || D.snapGuide) drawOverlay();
     var t2 = dimTarget(doc(), d);
     if (t2) Drawing.setDimProps(t2, props);
     queueRender(true);
