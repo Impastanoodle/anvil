@@ -261,6 +261,16 @@
         if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
         return;
       }
+      // a virtual sharp (SketchSolver.filletCorner) on the lines it joins: thin extension lines to their ends, no icons
+      var sh = rel.type === 'coincident' && rel.refs.length === 2 ? rel.refs.map(function (r) { var e = f.entities[refEntity(r)]; return e && e.sharp && String(r) === String(refEntity(r)); }) : null;
+      if (sh && (sh[0] || sh[1])) {
+        var P = S.refPoint(f, rel.refs[sh[0] ? 0 : 1]), L = S.refCurve(f, rel.refs[sh[0] ? 1 : 0]);
+        if (P && L && L.kind === 'line') {
+          var end = Math.hypot(L.a[0] - P[0], L.a[1] - P[1]) < Math.hypot(L.b[0] - P[0], L.b[1] - P[1]) ? L.a : L.b, s1 = scr(pl, P), s2 = scr(pl, end);
+          h.svg('line', { 'class': 'sk-sharp', x1: s1[0], y1: s1[1], x2: s2[0], y2: s2[1], style: 'stroke:var(--muted);stroke-width:1;stroke-dasharray:3 2;pointer-events:none' }, layer);
+          return;
+        }
+      }
       if (App.view.showRelations === false) return;
       var selected = App.sel && App.sel.kind === 'rel' && App.sel.index === i;
       var drawn = [];
@@ -466,11 +476,11 @@
     function solveTo(q) {
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv || !uv0) return;
-      drop = point && /\.(p\d|v\d+)$|^\d+$/.test(ref) ? dropTarget(q) : null;
+      drop = point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
       if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; UI.updateSketches(); }
-      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve);
+      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, drop && /\.c$/.test(ref) && /\.c$/.test(drop.ref) ? 'concentric' : 'coincident');
     }
     // the next frame, or 50 ms when animation frames are throttled (a background tab), whichever comes first
     var timer = 0;
@@ -491,8 +501,12 @@
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
         var merged = null;
         if (drop && moved) {
-          var r = S.addRelation(f, 'coincident', [ref, drop.ref], { rejectOver: true });
-          merged = r.ok ? 'Coincident with ' + S.refName(f, drop.ref) + ' added. ' : null;
+          // a circle / arc centre dropped on another circle / arc centre: Concentric (as SolidWorks merges them)
+          var dropEnt = !/^O$/.test(drop.ref) && f.entities[refEntity(drop.ref)];
+          var conc = /\.c$/.test(ref) && /\.c$/.test(drop.ref) && dropEnt && /^(circle|arc)$/.test(dropEnt.t);
+          var r = conc ? S.addRelation(f, 'concentric', [ref.replace(/\.c$/, ''), drop.ref.replace(/\.c$/, '')], { rejectOver: true })
+            : S.addRelation(f, 'coincident', [ref, drop.ref], { rejectOver: true });
+          merged = r.ok ? (conc ? 'Concentric' : 'Coincident') + ' with ' + S.refName(f, drop.ref) + ' added. ' : null;
         }
         drop = null;
         UI.updateSketches();

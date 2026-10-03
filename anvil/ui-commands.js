@@ -690,6 +690,50 @@
       onChange: function () { }, onOK: function () { }
     });
   }
+  // Extend Entities (r3/sketch3): the counterpart of Trim, as in SolidWorks — the end of a line or an arc nearest the
+  // click grows to the first entity in its way; hovering previews the extension (SketchSolver.extendTarget).
+  function cmdExtendEntities() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return; }
+    var count = 0;
+    function target(uv, mx, my) {
+      var hit = window.SketchSolver ? UI.pickEntity(mx, my) : null, e = hit && f.entities[hit.index];
+      if (!e || (e.t !== 'line' && e.t !== 'arc')) return null;
+      var tg = SketchSolver.extendTarget(f, hit.index, uv);
+      return tg ? { i: hit.index, e: e, tg: tg } : null;
+    }
+    openPM({
+      title: 'Extend Entities', icon: 'extend',
+      message: '<b>Click a line or an arc near the end to lengthen.</b> It grows to the first entity in its way; the orange preview shows where.',
+      command: {
+        onSketchMove: function (uv, mx, my) {
+          var t = target(uv, mx, my);
+          if (!t || !UI.sketchPreview) return;
+          var pts = [t.tg.from, t.tg.to];
+          if (t.e.t === 'arc') {
+            var from = t.tg.end === 'p2' ? t.e.a1 : t.tg.a, to = t.tg.end === 'p2' ? t.tg.a : t.e.a0;
+            pts = [];
+            for (var k = 0; k <= 32; k++) { var a = (from + (to - from) * k / 32) * Math.PI / 180; pts.push([t.e.cx + t.e.r * Math.cos(a), t.e.cy + t.e.r * Math.sin(a)]); }
+          }
+          UI.sketchPreview([pts]);
+        },
+        onSketchPoint: function (uv, mx, my) {
+          var hit = UI.pickEntity(mx, my);
+          if (!hit || !window.SketchSolver) { UI.setStatus('Click a line or an arc near the end to extend.'); return; }
+          var pushed = !App.sketchDirty;
+          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
+          var r = SketchSolver.extendEntity(f, hit.index, uv);
+          if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); return; }
+          count++;
+          App.sel = null; App.gridStale = true;
+          UI.updateSketches(); UI.refreshTree();
+          UI.setStatus('Extended ' + count + ' entit' + (count === 1 ? 'y' : 'ies') + '. Click another, or press ✓ to finish.');
+        }
+      },
+      groups: [{ title: 'Options', fields: [{ type: 'static', label: 'Mode', value: 'Extend to closest' }] }],
+      onChange: function () { }, onOK: function () { }
+    });
+  }
   function entityTargets(f) {
     if (App.sel && App.sel.kind === 'entity' && f.entities[App.sel.index]) return [App.sel.index];
     return f.entities.map(function (e, i) { return i; });
@@ -2370,7 +2414,7 @@
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;
   UI.cmdChamfer = cmdChamfer; UI.cmdFillet = cmdFillet;
   UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdMiterFlange = cmdMiterFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
-  UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
+  UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdExtendEntities = cmdExtendEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.previewIdle = previewIdle;   // smooth/responsive: resolves once the newest live PropertyManager preview is shown
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;
@@ -2379,7 +2423,7 @@
   [['cmdExtrude', 'Extruded Boss/Base'], ['cmdRevolve', 'Revolved Boss/Base'], ['cmdLinearPattern', 'Linear Pattern'], ['cmdCircularPattern', 'Circular Pattern'],
     ['cmdMirror', 'Mirror'], ['cmdPlane', 'Reference Plane'], ['cmdHole', 'Hole Wizard'], ['cmdBaseFlange', 'Base Flange/Tab'], ['cmdChamfer', 'Chamfer'], ['cmdFillet', 'Fillet'],
     ['cmdEdgeFlange', 'Edge Flange'], ['cmdMiterFlange', 'Miter Flange'], ['cmdHem', 'Hem'], ['cmdJog', 'Jog'], ['cmdFlatten', 'Flatten'], ['exportFlatDXF', 'Flat to DXF'],
-    ['cmdConvertEntities', 'Convert Entities'], ['cmdOffsetEntities', 'Offset Entities'], ['cmdSketchFillet', 'Sketch Fillet'], ['cmdTrimEntities', 'Trim Entities'],
+    ['cmdConvertEntities', 'Convert Entities'], ['cmdOffsetEntities', 'Offset Entities'], ['cmdSketchFillet', 'Sketch Fillet'], ['cmdTrimEntities', 'Trim Entities'], ['cmdExtendEntities', 'Extend Entities'],
     ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSketchPattern', 'Linear Sketch Pattern'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
     ['editSketch', 'Edit Sketch']
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
