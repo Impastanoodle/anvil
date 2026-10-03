@@ -749,7 +749,8 @@
       '<tr><th>Ctrl+Enter</th><td>Run the script (in the script console)</td></tr></table>' });
   }
   function showAbout() {
-    UI.showModal({ title: 'About Anvil', body: '<p><b>Anvil</b> — a scriptable parametric solid modeler with a SolidWorks-style workspace. Sketch on planes and faces, extrude, revolve, cut, pattern, mirror; export STL and DXF. Booleans run on a BSP CSG kernel in the browser; nothing leaves your machine.</p><p>Every model is a script (Tools → Macro), so it can be generated, diffed and rebuilt by a person or by Claude.</p>' });
+    UI.showModal({ title: 'About Anvil', body: '<p><b>Anvil</b> — a scriptable parametric solid modeler with a SolidWorks-style workspace. Sketch on planes and faces, extrude, revolve, cut, pattern, mirror; export STL and DXF. Booleans run on a BSP CSG kernel in the browser; nothing leaves your machine.</p><p>Every model is a script (Tools → Macro), so it can be generated, diffed and rebuilt by a person or by Claude.</p>' +
+      '<p><b>OpenCascade kernel</b> (Tools → OpenCascade kernel): Open CASCADE Technology 7.6 compiled to WebAssembly by opencascade.js 2.0.0-beta.b5ff984, used under the GNU LGPL 2.1 — <a href="vendor/occt/LICENSE-opencascade.js.txt" target="_blank" rel="noopener">licence</a>; source: <a href="https://github.com/donalffons/opencascade.js" target="_blank" rel="noopener">github.com/donalffons/opencascade.js</a> and <a href="https://github.com/Open-Cascade-SAS/OCCT" target="_blank" rel="noopener">github.com/Open-Cascade-SAS/OCCT</a>. Before it runs, the engine is checked against the official build\'s SHA-256 fingerprints (loader 8016d504…, binary 4b6a7439…); a file that does not match is refused.</p>' });
   }
 
   // ------------------------------------------------------------------ keyboard

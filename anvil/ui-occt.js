@@ -348,7 +348,7 @@
   function set(on, opts) {
     st.on = !!on; st.chosen = true;   // any explicit switch wins over the installed-engine default below
     if (!opts || opts.remember !== false) { try { localStorage.setItem('anvil.occt', st.on ? '1' : '0'); } catch (e) { } }
-    if (st.on) { st.state = 'loading'; request(); }
+    if (st.on) { if (st.state === 'failed') stopWorker(); st.state = 'loading'; request(); }   // after a failed load, a fresh worker tries again (and says why if it fails again)
     else {
       stopWorker(); st.state = 'off'; st.result = null;
       if (st.driving && st.anvilBuild) swapIn(st.anvilBuild);
@@ -404,7 +404,9 @@
       case 'featureError': txt = 'OpenCascade ✗ ' + (st.failedFeature || 'a feature'); cls += ' bad'; tip += ': OpenCascade could not build ' + (st.failedFeature || 'a feature') + ' (' + (s.error || '') + '); Anvil\'s own result is shown'; break;
       case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; tip += ': Anvil\'s result is shown'; break;
       case 'assembly': txt = 'OpenCascade: no parts to build'; break;
-      case 'failed': txt = 'OpenCascade not installed'; cls += ' bad'; tip = (s.error || '') + ' Run vendor/get-occt.ps1.'; break;
+      case 'failed':
+        if (/integrity check/.test(s.error || '')) { txt = 'OpenCascade ✗ integrity check failed'; cls += ' bad'; tip = (s.error || '') + ' Anvil\'s own kernel is used.'; break; }
+        txt = 'OpenCascade not installed'; cls += ' bad'; tip = (s.error || '') + ' Run vendor/get-occt.ps1.'; break;
       case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; tip = s.error || ''; break;
       default: txt = 'OpenCascade';
     }
@@ -441,8 +443,11 @@
   }
   if (st.on) request();
   else if (stored == null && window.fetch && window.Worker) {
-    fetch('vendor/occt/opencascade.full.wasm', { method: 'HEAD' }).then(function (res) {
-      if (res.ok && !st.chosen) { set(true, { remember: false }); st.chosen = false; }
-    }, function () { });
+    // the plain engine (vendor/get-occt.ps1), or the gzipped one the published copy ships (occt-worker.js unpacks it
+    // and checks its fingerprint before it runs)
+    var probe = function (f) { return fetch('vendor/occt/' + f, { method: 'HEAD' }).then(function (res) { return res.ok; }, function () { return false; }); };
+    probe('opencascade.full.wasm').then(function (ok) { return ok || probe('opencascade.full.wasm.gz'); }).then(function (ok) {
+      if (ok && !st.chosen) { set(true, { remember: false }); st.chosen = false; }
+    });
   }
 })(UI);

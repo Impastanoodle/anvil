@@ -1,7 +1,8 @@
 // occt-worker.js — the OpenCascade kernel's worker (a module worker: opencascade.js is an ES module). Started by
 // ui-core.js only while Tools ▸ OpenCascade kernel is on, so the 50 MB engine never loads otherwise. Loads csg.js,
 // kernel.js, holewizard.js, exchange.js and occt-kernel.js as classic scripts (their top-level `var`s become
-// globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1).
+// globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1), checked
+// against pinned fingerprints before it runs (below).
 //
 // Messages in:   { type: 'build', seq, model, exports?, cacheKey?, noCache?, anvil? }  model: a clone of App.model (or an assembly's
 //                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache
@@ -13,7 +14,47 @@
 //                                                         result.packed: its bodies (OcctKernel.toBodies) packed, when
 //                                                         anvil { key, positions, triShared } (the Anvil mesh) came along
 //                { type: 'error', seq, message }          the build itself threw, or the engine could not load
-import opencascade from './vendor/occt/opencascade.full.js';
+// The engine is checked before it runs: the loader script and the WebAssembly binary must match the fingerprints of
+// the official opencascade.js 2.0.0-beta.b5ff984 build (pinned in vendor/get-occt.ps1); anything else is refused and
+// Anvil keeps its own kernel. Locally the plain .wasm is used; the published copy ships it gzipped
+// (opencascade.full.wasm.gz, under the 15 MB per-file limit) and it is unpacked here.
+const OCCT_DIR = './vendor/occt/';
+const JS_SHA256 = '8016d504d881f5f3b9f9431524dc8dadd03088588b828e2d18e096bc5fedd5ba';
+const WASM_SHA256 = '4b6a74398987eb3ca6bedc7d1b29d6a5af74d0613a9f3bf013a52d7d5d1b5937';
+async function sha256(buf) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+  let s = '';
+  for (let i = 0; i < d.length; i++) s += d[i].toString(16).padStart(2, '0');
+  return s;
+}
+async function verified(bytes, want, what) {
+  const got = await sha256(bytes);
+  if (got !== want) throw new Error(what + ' failed its integrity check (sha256 ' + got.slice(0, 12) + '…, expected ' + want.slice(0, 12) + '…); refused');
+  return bytes;
+}
+async function engineBinary() {
+  let res = await fetch(OCCT_DIR + 'opencascade.full.wasm');
+  let bytes;
+  if (res.ok) bytes = await res.arrayBuffer();
+  else {
+    res = await fetch(OCCT_DIR + 'opencascade.full.wasm.gz');
+    if (!res.ok) throw new Error('engine file missing (HTTP ' + res.status + ')');
+    bytes = await res.arrayBuffer();
+    const head = new Uint8Array(bytes, 0, 2);
+    if (head[0] === 0x1f && head[1] === 0x8b) {   // still gzipped (a server that sends it with Content-Encoding has unpacked it already)
+      if (typeof DecompressionStream === 'undefined') throw new Error('this browser cannot unpack the engine (no DecompressionStream)');
+      bytes = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    }
+  }
+  return verified(bytes, WASM_SHA256, 'opencascade.full.wasm');
+}
+async function engineFactory() {
+  const url = OCCT_DIR + 'opencascade.full.js';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('engine loader missing (HTTP ' + res.status + ')');
+  await verified(await res.arrayBuffer(), JS_SHA256, 'opencascade.full.js');
+  return (await import(url)).default;   // the same file, imported only once its bytes have checked out
+}
 
 async function classic(url) {
   const res = await fetch(url);
@@ -43,12 +84,13 @@ function cacheFor(key) {
 const ready = (async () => {
   for (const f of ['csg.js', 'kernel.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
   const t0 = performance.now();
-  const oc = await new opencascade({ locateFile: (p) => './vendor/occt/' + p });
+  const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
+  const oc = await new opencascade({ wasmBinary, locateFile: (p) => OCCT_DIR + p });
   const loadMs = performance.now() - t0;
   self.postMessage({ type: 'ready', loadMs });
   return oc;
 })();
-ready.catch((e) => self.postMessage({ type: 'error', seq: -1, message: 'OpenCascade did not load: ' + ((e && e.message) || e) + ' (run vendor/get-occt.ps1)' }));
+ready.catch((e) => self.postMessage({ type: 'error', seq: -1, message: 'OpenCascade did not load: ' + ((e && e.message) || e) + (/integrity/.test(String(e && e.message)) ? '' : ' (run vendor/get-occt.ps1)') }));
 
 self.onmessage = async (e) => {
   const m = e.data || {};
