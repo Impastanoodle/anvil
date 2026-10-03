@@ -126,19 +126,27 @@ var UI = (function () {
   var size = { w: 1, h: 1 };
   var DIST = 10000;
 
+  // Puts the three.js camera at a pose (target, unit dir towards the viewer, up, mm per pixel). applyCamera poses it at
+  // the logical camera `cam`; a view animation poses it at an in-between pose for one draw only (see "view animation").
+  function poseCamera(target, dir, up, scale) {
+    camera.left = -size.w / 2 * scale; camera.right = size.w / 2 * scale;
+    camera.top = size.h / 2 * scale; camera.bottom = -size.h / 2 * scale;
+    camera.near = 1; camera.far = DIST * 2;
+    camera.position.copy(target).addScaledVector(dir, DIST);
+    camera.up.copy(up);
+    camera.lookAt(target);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+  }
+  var camVer = 0;   // bumped on every camera change: projected-edge and pick caches key on it
   function applyCamera() {
     var right = new THREE.Vector3().crossVectors(cam.up, cam.dir).normalize();
     if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
     cam.up = new THREE.Vector3().crossVectors(cam.dir, right).normalize();
     cam.right = right;
-    camera.left = -size.w / 2 * cam.scale; camera.right = size.w / 2 * cam.scale;
-    camera.top = size.h / 2 * cam.scale; camera.bottom = -size.h / 2 * cam.scale;
-    camera.near = 1; camera.far = DIST * 2;
-    camera.position.copy(cam.target).addScaledVector(cam.dir, DIST);
-    camera.up.copy(cam.up);
-    camera.lookAt(cam.target);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
+    poseCamera(cam.target, cam.dir, cam.up, cam.scale);
+    camVer++;
+    needsRender = true;
     App.gridStale = true;
     App.dimsStale = true;
   }
@@ -157,20 +165,36 @@ var UI = (function () {
     if (typeof render === 'function') { try { render(); } catch (e) { } }
   }
 
+  // Rotate View: as in SolidWorks the model turns about its own centre (the centre of its bounding box) while that
+  // centre is on screen, so a panned model spins in place instead of swinging round the middle of the window; with the
+  // centre off screen (zoomed in on a detail) it turns about the middle of the window.
+  function rotatePivot() {
+    var c = sceneCenter();
+    if (!c) return null;
+    var off = new THREE.Vector3(c[0], c[1], c[2]).sub(cam.target);
+    var sx = off.dot(cam.right) / cam.scale + size.w / 2, sy = size.h / 2 - off.dot(cam.up) / cam.scale;
+    return sx >= 0 && sy >= 0 && sx <= size.w && sy <= size.h ? new THREE.Vector3(c[0], c[1], c[2]) : null;
+  }
   function rotateView(dx, dy) {
+    settleViewAnimation();
+    var pivot = rotatePivot(), off = pivot ? cam.target.clone().sub(pivot) : null;
     var qy = new THREE.Quaternion().setFromAxisAngle(cam.up, -dx * 0.008);
     cam.dir.applyQuaternion(qy);
+    if (off) off.applyQuaternion(qy);
     var right = new THREE.Vector3().crossVectors(cam.up, cam.dir).normalize();
     var qx = new THREE.Quaternion().setFromAxisAngle(right, -dy * 0.008);
     cam.dir.applyQuaternion(qx); cam.up.applyQuaternion(qx);
+    if (off) { off.applyQuaternion(qx); cam.target.copy(pivot).add(off); }
     cam.dir.normalize();
     applyCamera();
   }
   function panView(dx, dy) {
+    settleViewAnimation();
     cam.target.addScaledVector(cam.right, -dx * cam.scale).addScaledVector(cam.up, dy * cam.scale);
     applyCamera();
   }
   function zoomView(factor, mx, my) {
+    settleViewAnimation();
     var s0 = cam.scale, s1 = Math.min(50, Math.max(0.0005, s0 * factor));
     if (mx != null) {
       var ox = mx - size.w / 2, oy = my - size.h / 2;
@@ -197,6 +221,19 @@ var UI = (function () {
     if (!any) { min = [-50, -50, -50]; max = [50, 50, 50]; }
     return { min: min, max: max };
   }
+
+  // Bounding-box centre of the model (body and sketches), cached until the body or the sketches change.
+  var boundsCache = { key: null, center: null };
+  function sceneCenter() {
+    if (!App.model) return null;
+    var key = sceneVer + ':' + (App.mesh ? App.mesh.triCount : 0);
+    if (boundsCache.key !== key || boundsCache.mesh !== App.mesh) {
+      var b = modelBounds();
+      boundsCache = { key: key, mesh: App.mesh, center: [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2] };
+    }
+    return boundsCache.center;
+  }
+  var sceneVer = 0;   // bumped when the body or the sketches are redrawn
 
   function zoomToFit() { fitBox(modelBounds()); }
 
@@ -225,7 +262,9 @@ var UI = (function () {
   }
 
   // Centre the camera on box b and scale so its projected extent fills the viewport (less a margin).
-  function fitBox(b) {
+  function fitBox(b) { var from = viewPose(); fitCam(b); animateViewFrom(from); }
+  function fitCam(b) {
+    zoomMomentum.pending = 0;
     var c =new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
     cam.target.copy(c);
     applyCamera();
@@ -251,21 +290,149 @@ var UI = (function () {
   function previousView() {
     var v = App.viewHistory.pop();
     if (!v) return;
+    var from = viewPose();
+    zoomMomentum.pending = 0;
     cam.target.copy(v.target); cam.dir.copy(v.dir); cam.up.copy(v.up); cam.scale = v.scale;
     applyCamera();
+    animateViewFrom(from);
   }
   function setView(name, fit) {
+    var from = viewPose();
+    zoomMomentum.pending = 0;
     pushViewHistory();
     var v = VIEWS[name];
     if (v) { cam.dir.set(v[0][0], v[0][1], v[0][2]).normalize(); cam.up.set(v[1][0], v[1][1], v[1][2]); }
     applyCamera();
-    if (fit !== false) zoomToFit();
+    if (fit !== false) fitCam(modelBounds());
+    animateViewFrom(from);
   }
   function viewNormalTo(plane) {
+    var from = viewPose();
+    zoomMomentum.pending = 0;
     pushViewHistory();
     cam.dir.set(plane.n[0], plane.n[1], plane.n[2]);
     cam.up.set(plane.y[0], plane.y[1], plane.y[2]);
     applyCamera();
+    animateViewFrom(from);
+  }
+
+  // ------------------------------------------------------------------ view animation
+  // Standard views, Normal To, Zoom to Fit, Zoom to Selection and Previous View glide to the new view in a short eased
+  // transition instead of jumping (SolidWorks' view transition). The animation is visual only: the logical camera
+  // (`cam`, UI.camera, picking, worldToScreen) is at the new view the moment the call returns, so scripts and tests
+  // see the result synchronously; render() draws the in-between poses. Overlays positioned in screen space (sketch
+  // dimensions, Instant3D handles) are hidden while the view moves and redrawn when it lands. A rotate, pan or zoom
+  // during the transition starts from the pose on screen (settleViewAnimation), so nothing jumps.
+  // UI.viewAnimation = false (or prefers-reduced-motion) turns it off; UI.finishViewAnimation() lands it at once.
+  var VIEW_ANIM_MS = 320;
+  var viewAnim = null;   // { from: pose, to: pose, t0, dur }
+  var ANIM_LAYERS = ['dim-layer', 'i3d-layer'];
+  // pose: { q: quaternion of the (right, up, dir) basis, target, scale }
+  function poseOf(target, dir, up, scale) {
+    var right = new THREE.Vector3().crossVectors(up, dir).normalize();
+    if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+    var u = new THREE.Vector3().crossVectors(dir, right).normalize();
+    var m = new THREE.Matrix4().makeBasis(right, u, dir.clone().normalize());
+    return { q: new THREE.Quaternion().setFromRotationMatrix(m), target: target.clone(), scale: scale };
+  }
+  function lerpPose(a, b, u) {
+    // the target moves in step with the scale (linear in scale): a zoom about a point keeps that point still
+    var w = Math.abs(b.scale - a.scale) > 1e-9 * a.scale ? (Math.exp(Math.log(a.scale) + (Math.log(b.scale) - Math.log(a.scale)) * u) - a.scale) / (b.scale - a.scale) : u;
+    return {
+      q: a.q.clone().slerp(b.q, u),
+      target: a.target.clone().lerp(b.target, w),
+      scale: a.scale + (b.scale - a.scale) * w
+    };
+  }
+  function animU() {
+    if (!viewAnim) return 1;
+    var t = (performance.now() - viewAnim.t0) / viewAnim.dur;
+    if (t >= 1) return 1;
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;   // ease in-out cubic
+  }
+  // The pose on screen right now.
+  function viewPose() {
+    if (viewAnim) { var u = animU(); if (u < 1) return lerpPose(viewAnim.from, viewAnim.to, u); }
+    return poseOf(cam.target, cam.dir, cam.up, cam.scale);
+  }
+  // Only view changes the user just asked for glide (a click, key or wheel by a person within the last second): a
+  // script, a test or an API call (anvil.view, UI.setView from code) lands at once, as before.
+  var lastUserInput = -Infinity;
+  ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function (t) {
+    window.addEventListener(t, function (ev) { if (ev.isTrusted) lastUserInput = performance.now(); }, { capture: true, passive: true });
+  });
+  function animationsOn() {
+    if (UI && UI.viewAnimation === false) return false;
+    if (!(UI && UI.viewAnimation === true) && performance.now() - lastUserInput > 1000) return false;
+    try { if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false; } catch (e) { }
+    return true;
+  }
+  function setAnimLayers(hidden) {
+    ANIM_LAYERS.forEach(function (id) { var e = $(id); if (e) e.style.visibility = hidden ? 'hidden' : ''; });
+  }
+  function animateViewFrom(from) {
+    var to = poseOf(cam.target, cam.dir, cam.up, cam.scale);
+    var turn = 1 - Math.abs(from.q.dot(to.q)), move = from.target.distanceTo(to.target) / (to.scale * Math.max(size.w, size.h)), zoom = Math.abs(Math.log(to.scale / from.scale));
+    if (!animationsOn() || (turn < 1e-7 && move < 1e-4 && zoom < 1e-4)) { finishViewAnimation(); return; }
+    viewAnim = { from: from, to: to, t0: performance.now(), dur: VIEW_ANIM_MS };
+    setAnimLayers(true);
+    needsRender = true;
+  }
+  function finishViewAnimation() {
+    if (!viewAnim) return;
+    viewAnim = null;
+    setAnimLayers(false);
+    App.dimsStale = true; App.gridStale = true;
+    needsRender = true;
+  }
+  // Stop a running transition where it is: the logical camera takes the pose on screen.
+  function settleViewAnimation() {
+    if (!viewAnim) return;
+    var u = animU(), p = u < 1 ? lerpPose(viewAnim.from, viewAnim.to, u) : viewAnim.to;
+    finishViewAnimation();
+    if (u >= 1) return;
+    var m = new THREE.Matrix4().makeRotationFromQuaternion(p.q), e = m.elements;
+    cam.up.set(e[4], e[5], e[6]); cam.dir.set(e[8], e[9], e[10]).normalize();
+    cam.target.copy(p.target); cam.scale = p.scale;
+    applyCamera();
+  }
+  function viewAnimating() { return !!viewAnim; }
+
+  // ------------------------------------------------------------------ smooth wheel zoom
+  // Each wheel notch (or trackpad scroll / pinch, in proportion to its delta) adds to a pending zoom that the frame
+  // loop eases out over ~50 ms, always about the cursor, so zooming glides instead of stepping 12 % at a time and a
+  // trackpad no longer zooms at a notch per event. One notch (deltaY 100) is still a factor of 1.12 overall.
+  var zoomMomentum = { pending: 0, x: 0, y: 0, last: 0 };
+  var WHEEL_K = Math.log(1.12) / 100;
+  function wheelZoom(ev, mx, my) {
+    var dy = ev.deltaY * (ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 400 : 1);
+    var k = ev.ctrlKey ? 0.01 : WHEEL_K;   // ctrl + wheel is a trackpad pinch: small deltas, faster response
+    var d = Math.max(-0.7, Math.min(0.7, dy * k));
+    if (!d) return;
+    settleViewAnimation();
+    if (!animationsOn()) { zoomView(Math.exp(d), mx, my); return; }
+    if (!zoomMomentum.pending) zoomMomentum.last = performance.now();
+    zoomMomentum.pending += d; zoomMomentum.x = mx; zoomMomentum.y = my;
+    needsRender = true;
+  }
+  // Zoom to Area: the screen rectangle centred at (cx, cy) whose larger side is fraction f of the view fills the view.
+  function zoomToArea(cx, cy, f) {
+    var from = viewPose();
+    settleViewAnimation(); zoomMomentum.pending = 0;
+    pushViewHistory();
+    cam.target.addScaledVector(cam.right, (cx - size.w / 2) * cam.scale).addScaledVector(cam.up, -(cy - size.h / 2) * cam.scale);
+    cam.scale = Math.min(50, Math.max(0.0005, cam.scale * f));
+    applyCamera();
+    animateViewFrom(from);
+  }
+  function stepZoomMomentum(now) {
+    if (!zoomMomentum.pending) return;
+    var dt = Math.max(0, now - zoomMomentum.last);
+    zoomMomentum.last = now;
+    var p = zoomMomentum.pending, step = p * (1 - Math.exp(-dt / 50));
+    if (Math.abs(p - step) < 2e-4) step = p;
+    zoomMomentum.pending = p - step;
+    zoomView(Math.exp(step), zoomMomentum.x, zoomMomentum.y);
   }
 
   // ------------------------------------------------------------------ body geometry
@@ -351,9 +518,9 @@ var UI = (function () {
 
   function updateBodyMesh() {
     disposeGroup(groups.body); disposeGroup(groups.edges);
-    bodyMesh = null; edgeLines = null;
+    bodyMesh = null; edgeLines = null; silLines = null; edgeScr.edges = null; pickMemo.key = null;
     var m = App.mesh;
-    if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; return; }
+    if (!m || !m.triCount) { App.edges = m ? edgesFor(m) : []; App.triHidden = null; visTris = null; sceneVer++; return; }
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
     // true curves: triangles on analytic faces shade with the exact surface normal at each corner (smooth)
@@ -379,7 +546,59 @@ var UI = (function () {
     groups.body.add(bodyMesh);
     edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
     groups.edges.add(edgeLines);
+    silLines = buildSilhouettes(m);
+    if (silLines) groups.edges.add(silLines);
+    sceneVer++;
     applyDisplayStyle();
+  }
+  var silLines = null;
+
+  // ------------------------------------------------------------------ silhouette edges
+  // SolidWorks draws the outline of a curved face where it turns away from the viewer (the side of a cylinder, the
+  // rim of a sphere). Every smooth edge (a seam between two facets of one surface, or a tangent edge) goes into one
+  // line set with both facets' normals; the vertex shader keeps it only where one facet faces the viewer and the
+  // other faces away, so silhouettes follow the view on the GPU with no per-frame work on the CPU.
+  var silMat = new THREE.ShaderMaterial({
+    uniforms: { viewDir: { value: new THREE.Vector3(0, 0, 1) }, color: { value: mats.edge.color } },
+    vertexShader: [
+      'uniform vec3 viewDir;', 'attribute vec3 n1;', 'attribute vec3 n2;',
+      '#include <clipping_planes_pars_vertex>',
+      'void main() {',
+      '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+      '  gl_Position = projectionMatrix * mvPosition;',
+      '  if (dot(n1, viewDir) * dot(n2, viewDir) > 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);',
+      '  #include <clipping_planes_vertex>',
+      '}'].join('\n'),
+    fragmentShader: [
+      'uniform vec3 color;',
+      '#include <clipping_planes_pars_fragment>',
+      'void main() {',
+      '  #include <clipping_planes_fragment>',
+      '  gl_FragColor = vec4(color, 1.0);',
+      '}'].join('\n'),
+    clipping: true
+  });
+  mats.silhouette = silMat;
+  function buildSilhouettes(m) {
+    var faces = m.faces, pos = [], na = [], nb = [];
+    (App.edges || []).forEach(function (e) {
+      if (!e.smooth || e.faces.length !== 2 || !edgeVisible(e)) return;
+      var f1 = faces[e.faces[0]], f2 = faces[e.faces[1]];
+      var n1 = f1 && f1.normal, n2 = f2 && f2.normal;
+      if (!n1 || !n2 || V.dot(n1, n2) > 0.999999) return;   // coplanar split: never an outline
+      pos.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+      na.push(n1[0], n1[1], n1[2], n1[0], n1[1], n1[2]);
+      nb.push(n2[0], n2[1], n2[2], n2[0], n2[1], n2[2]);
+    });
+    if (!pos.length) return null;
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('n1', new THREE.Float32BufferAttribute(na, 3));
+    g.setAttribute('n2', new THREE.Float32BufferAttribute(nb, 3));
+    var o = new THREE.LineSegments(g, silMat);
+    o.frustumCulled = false;
+    o.userData.silhouette = true;
+    return o;
   }
   var visTris = null;  // rendered triangle -> global triangle, or null when nothing is hidden
 
@@ -572,10 +791,12 @@ var UI = (function () {
     var s = App.view.style;
     if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' ? mats.hlr : mats.part; }
     if (edgeLines) edgeLines.visible = s !== 'shaded';
+    if (silLines) silLines.visible = s !== 'shaded';
     mats.part.color.set(App.model.color || '#a8adb6');
     applyBodyColors();
     var planes = App.view.section ? [App.view.section.plane] : [];
-    [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
+    needsRender = true;
+    [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel, silMat].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
   }
 
   // Per-body colours: UI.bodyColors() (ui-materials.js) gives one CSS colour per body when bodies differ (a body with its
@@ -884,6 +1105,7 @@ var UI = (function () {
   }
   function updateSketches() {
     App.dimsStale = true;
+    sceneVer++;
     disposeGroup(groups.sketches);
     App.model.features.forEach(function (f) {
       if (f.type !== 'sketch' || !sketchVisible(f)) return;
@@ -1003,8 +1225,19 @@ var UI = (function () {
     var v = new THREE.Vector3(p[0], p[1], p[2]).project(camera);
     return [(v.x + 1) / 2 * size.w, (1 - v.y) / 2 * size.h];
   }
+  // Pre-selection runs a face pick and an edge pick (which picks the face again for occlusion) on every mouse move, so
+  // the last face pick is remembered for the same pixel, camera, body and section, and the edges' screen positions are
+  // projected once per camera change into a flat array (no per-edge allocations), not once per pick.
+  var pickMemo = { key: null, hit: null };
   function pickFace(mx, my) {
     if (!bodyMesh) return null;
+    var sec = App.view.section && App.view.section.plane;
+    var key = mx + ',' + my + ',' + camVer + ',' + bodyMesh.id + (sec ? ',' + sec.normal.x + ',' + sec.normal.y + ',' + sec.normal.z + ',' + sec.constant : '');
+    if (pickMemo.key !== key) { pickMemo.key = key; pickMemo.hit = pickFaceRaw(mx, my); }
+    var r = pickMemo.hit;
+    return r ? { kind: 'face', index: r.index, point: r.point.slice() } : null;
+  }
+  function pickFaceRaw(mx, my) {
     raycaster.setFromCamera(ndc(mx, my), camera);
     var hits = raycaster.intersectObject(bodyMesh, false);
     for (var i = 0; i < hits.length; i++) {
@@ -1016,17 +1249,36 @@ var UI = (function () {
     }
     return null;
   }
+  var edgeScr = { edges: null, ver: -1, xy: null };
+  function edgeScreen() {
+    var E = App.edges;
+    if (edgeScr.edges === E && edgeScr.ver === camVer && edgeScr.w === size.w && edgeScr.h === size.h) return edgeScr.xy;
+    var m = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), el = m.elements;
+    var xy = edgeScr.xy && edgeScr.xy.length === E.length * 4 ? edgeScr.xy : new Float64Array(E.length * 4), w = size.w, h = size.h;
+    function put(p, o) {
+      var x = p[0], y = p[1], z = p[2], W = el[3] * x + el[7] * y + el[11] * z + el[15] || 1;
+      xy[o] = ((el[0] * x + el[4] * y + el[8] * z + el[12]) / W + 1) / 2 * w;
+      xy[o + 1] = (1 - (el[1] * x + el[5] * y + el[9] * z + el[13]) / W) / 2 * h;
+    }
+    for (var i = 0; i < E.length; i++) { put(E[i].a, i * 4); put(E[i].b, i * 4 + 2); }
+    edgeScr = { edges: E, ver: camVer, w: w, h: h, xy: xy };
+    return xy;
+  }
   // Nearest visible sharp edge within 7 px. Occlusion: the edge midpoint must not sit clearly behind the face under the cursor.
   function pickEdge(mx, my) {
     if (!App.edges || !App.edges.length) return null;
     var best = null, bestD = 7;
     var hit = pickFace(mx, my);
     var hitDepth = hit ? V.dot(hit.point, [cam.dir.x, cam.dir.y, cam.dir.z]) : -Infinity;
+    var xy = edgeScreen(), P = [mx, my], A = [0, 0], B = [0, 0];
     for (var i = 0; i < App.edges.length; i++) {
       var e = App.edges[i];
-      if (e.smooth || e.faces.length !== 2 || !edgeVisible(e)) continue;
-      var a = worldToScreen(e.a), b = worldToScreen(e.b);
-      var d = distToSegment([mx, my], a, b);
+      if (e.smooth || e.faces.length !== 2) continue;
+      A[0] = xy[i * 4]; A[1] = xy[i * 4 + 1]; B[0] = xy[i * 4 + 2]; B[1] = xy[i * 4 + 3];
+      // cheap reject: the cursor is outside the segment's box grown by the pick radius
+      if (mx < Math.min(A[0], B[0]) - bestD || mx > Math.max(A[0], B[0]) + bestD || my < Math.min(A[1], B[1]) - bestD || my > Math.max(A[1], B[1]) + bestD) continue;
+      if (!edgeVisible(e)) continue;
+      var d = distToSegment(P, A, B);
       if (d >= bestD) continue;
       var depth = V.dot(e.mid, [cam.dir.x, cam.dir.y, cam.dir.z]);
       if (hit && depth < hitDepth - Math.max(0.5, cam.scale * 3)) continue;
@@ -1071,13 +1323,14 @@ var UI = (function () {
 
   // ------------------------------------------------------------------ triad
   var triadCanvas = $('triad'), tctx = triadCanvas.getContext('2d');
-  function drawTriad() {
+  function drawTriad(right, up, dir) {
+    right = right || cam.right; up = up || cam.up; dir = dir || cam.dir;
     var w = triadCanvas.width, h = triadCanvas.height, c = [w / 2, h / 2 + 8], L = w * 0.34;
     tctx.clearRect(0, 0, w, h);
     var axes = [[[1, 0, 0], '#d9453b', 'X'], [[0, 1, 0], '#3fa34d', 'Y'], [[0, 0, 1], '#2d7dd2', 'Z']];
     var items = axes.map(function (a) {
       var v = new THREE.Vector3(a[0][0], a[0][1], a[0][2]);
-      return { x: v.dot(cam.right), y: v.dot(cam.up), z: v.dot(cam.dir), color: a[1], label: a[2] };
+      return { x: v.dot(right), y: v.dot(up), z: v.dot(dir), color: a[1], label: a[2] };
     }).sort(function (p, q) { return p.z - q.z; });
     tctx.lineWidth = 4; tctx.lineCap = 'round'; tctx.font = '600 22px Segoe UI, sans-serif'; tctx.textAlign = 'center'; tctx.textBaseline = 'middle';
     items.forEach(function (it) {
@@ -1088,17 +1341,92 @@ var UI = (function () {
   }
 
   // ------------------------------------------------------------------ render loop
-  function render() {
+  // The frame loop draws only when something changed: a camera move, a view transition or eased zoom in progress, an
+  // explicit render(), or any change in the scene graph (objects added / removed / shown / hidden / moved, material or
+  // geometry updates — sceneSignature, a cheap walk over the few hundred scene objects), plus a 1 s safety redraw.
+  // An idle viewport therefore costs no GPU time, and every interactive change is drawn on the very next frame.
+  var needsRender = true, lastSig = null, lastRenderAt = 0;
+  var tmpBox = new THREE.Box3(), tmpV = new THREE.Vector3(), boxSig = null;
+  // The camera (and the lights riding on it) are left out: render() poses it for transitions and puts it back.
+  function sceneSignature() {
+    var hi = 0, hf = 0;
+    function visit(o) {
+      if (o === camera) return;
+      hi = (hi * 31 + o.id * 7 + (o.visible ? 1 : 2) + o.renderOrder * 3) | 0;
+      hf += o.position.x * 1.3 + o.position.y * 1.7 + o.position.z * 2.3 + o.quaternion.x + o.quaternion.y * 1.1 + o.quaternion.z * 1.3 + o.scale.x + o.scale.y * 1.5 + o.scale.z * 1.9;
+      var m = o.material;
+      if (m) {
+        if (Array.isArray(m)) m = m[0];
+        hi = (hi * 31 + m.id * 5 + m.version + (m.visible ? 1 : 2)) | 0;
+        if (m.color) hf += m.color.r * 3.1 + m.color.g * 5.3 + m.color.b * 7.7;
+        hf += m.opacity * 1.9;
+        if (m.clippingPlanes && m.clippingPlanes.length) { var cp = m.clippingPlanes[0]; hf += cp.constant * 1.1 + cp.normal.x + cp.normal.y * 1.3 + cp.normal.z * 1.7; }
+      }
+      var g = o.geometry;
+      if (g) {
+        var pa = g.attributes && g.attributes.position;
+        hi = (hi * 31 + g.id + (pa ? pa.version * 13 + pa.count : 0) + (g.index ? g.index.version : 0)) | 0;
+      }
+      for (var i = 0; i < o.children.length; i++) visit(o.children[i]);
+    }
+    visit(scene);
+    return hi + '|' + hf + '|' + size.w + 'x' + size.h;
+  }
+  // Depth range fitted to what is in the scene (both views of it while a transition runs): an orthographic camera can
+  // take any near / far, and a range a few times the model instead of 20 m keeps the depth buffer fine enough that
+  // edges, highlights and coincident faces do not z-fight. Picking keeps the fixed range (it is restored after drawing).
+  // The scene's box is recomputed only when the scene signature changes.
+  function fitDepth(target, dir, sig) {
+    if (sig !== boxSig) { boxSig = sig; tmpBox.makeEmpty(); tmpBox.setFromObject(scene); }
+    if (tmpBox.isEmpty() || !isFinite(tmpBox.min.x) || !isFinite(tmpBox.max.x)) return;
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < 8; i++) {
+      tmpV.set(i & 1 ? tmpBox.max.x : tmpBox.min.x, i & 2 ? tmpBox.max.y : tmpBox.min.y, i & 4 ? tmpBox.max.z : tmpBox.min.z);
+      var d = DIST - tmpV.sub(target).dot(dir);
+      if (d < lo) lo = d; if (d > hi) hi = d;
+    }
+    var pad = Math.max(1, (hi - lo) * 0.25);
+    camera.near = lo - pad; camera.far = hi + pad;
+    camera.updateProjectionMatrix();
+  }
+  function render(sig) {
     updateGrid();
+    if (typeof sig !== 'string') sig = sceneSignature();
+    var pose = null, dir = cam.dir, up = cam.up, right = cam.right;
+    if (viewAnim) {
+      var u = animU();
+      if (u >= 1) finishViewAnimation();
+      else {
+        pose = lerpPose(viewAnim.from, viewAnim.to, u);
+        var e = new THREE.Matrix4().makeRotationFromQuaternion(pose.q).elements;
+        right = new THREE.Vector3(e[0], e[1], e[2]); up = new THREE.Vector3(e[4], e[5], e[6]); dir = new THREE.Vector3(e[8], e[9], e[10]);
+        poseCamera(pose.target, dir, up, pose.scale);
+      }
+    }
+    fitDepth(pose ? pose.target : cam.target, dir, sig);
+    silMat.uniforms.viewDir.value.copy(dir);
     renderer.clear();
     renderer.render(scene, camera);
-    drawTriad();
-    if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
+    // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
+    poseCamera(cam.target, cam.dir, cam.up, cam.scale);
+    drawTriad(right, up, dir);
+    if (UI.drawDims && App.dimsStale && !viewAnim) { App.dimsStale = false; UI.drawDims(); }
+    needsRender = false;
+    lastRenderAt = performance.now();
+    lastSig = sig;
   }
-  function frame() {
-    render();
+  // One frame of the loop (exported as UI.tick for measurements).
+  function tick(now) {
+    now = now || performance.now();
+    stepZoomMomentum(now);
+    if (needsRender || viewAnim || zoomMomentum.pending || App.gridStale || now - lastRenderAt > 1000 || sceneSignature() !== lastSig) render();
+    else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
+  }
+  function frame(now) {
+    tick(now);
     requestAnimationFrame(frame);
   }
+  function requestRender() { needsRender = true; }
 
   // ------------------------------------------------------------------ rebuild pipeline
   // Two paths end in applyBuild(): the sync path runs Kernel.rebuild on the main thread (App.buildCache
@@ -1187,6 +1515,9 @@ var UI = (function () {
       else if (s.kind === 'body' && s.index >= nb) App[k] = null;
     });
     App.hover = null;
+    // keep the pre-selection under a resting cursor across the rebuild instead of dropping it until the mouse moves
+    var lm = lastClient && App.mode !== 'sketch' && !viewAnim && UI.pickHover ? lastMousePos() : null;
+    if (lm) { try { App.hover = UI.pickHover(lm[0], lm[1]) || null; } catch (e) { App.hover = null; } }
     updateHighlights();
     updatePlanes();
     updateOrigin();
@@ -1483,6 +1814,32 @@ var UI = (function () {
   }
 
   window.addEventListener('resize', resize);
+  // the cursor position over the viewport with no button held (null otherwise), for the pre-selection after a rebuild
+  // (client coordinates; turned into viewport ones only when used, so a mouse move forces no layout here)
+  var lastClient = null;
+  viewport.addEventListener('mousemove', function (ev) { lastClient = ev.buttons ? null : [ev.clientX, ev.clientY]; });
+  viewport.addEventListener('mouseleave', function () { lastClient = null; });
+  function lastMousePos() {
+    if (!lastClient) return null;
+    var r = viewport.getBoundingClientRect();
+    return [lastClient[0] - r.left, lastClient[1] - r.top];
+  }
+  // SolidWorks: a double-click of the middle button is Zoom to Fit (browsers send no dblclick for it)
+  // (two plain middle clicks, each released where it was pressed, within 400 ms; a middle drag is not a click)
+  var lastMiddle = null, middleDown = null;
+  function nearPt(ev, p) { return Math.abs(ev.clientX - p.x) + Math.abs(ev.clientY - p.y) < 6; }
+  viewport.addEventListener('mousedown', function (ev) {
+    lastClient = null;
+    if (ev.button !== 1 || ev.ctrlKey || ev.shiftKey || ev.altKey) { lastMiddle = middleDown = null; return; }
+    var t = performance.now();
+    if (lastMiddle && t - lastMiddle.t < 400 && nearPt(ev, lastMiddle)) { lastMiddle = middleDown = null; zoomToFit(); return; }
+    middleDown = { t: t, x: ev.clientX, y: ev.clientY };
+  });
+  window.addEventListener('mouseup', function (ev) {
+    if (ev.button !== 1 || !middleDown) return;
+    lastMiddle = nearPt(ev, middleDown) ? middleDown : null;
+    middleDown = null;
+  });
 
   return {
     App: App, K: K, V: V, $: $, el: el, fmtNum: fmtNum, unitLabel: unitLabel,
@@ -1493,7 +1850,10 @@ var UI = (function () {
     updateOrigin: updateOrigin, updateSketches: updateSketches, updateTemp: updateTemp, disposeGroup: disposeGroup,
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
-    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
+    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, requestRender: requestRender,
+    // view transitions and smooth zoom (see "view animation")
+    finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
+    camVersion: function () { return camVer; },
     rebuild: rebuild, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,

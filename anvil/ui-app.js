@@ -871,7 +871,7 @@
     select: function (i) { App.sel = { kind: 'face', index: i }; UI.updateHighlights(); return App.mesh.faces[i]; },
     view: function (name) { UI.setView(name); },
     fit: function () { UI.zoomToFit(); },
-    png: function () { UI.render(); return UI.renderer.domElement.toDataURL('image/png'); },
+    png: function () { if (UI.finishViewAnimation) UI.finishViewAnimation(); UI.render(); return UI.renderer.domElement.toDataURL('image/png'); },
     rebuild: function () { return UI.rebuild().then(function () { return window.anvil.summary(); }); },
     // equations() -> a copy of model.equations ([{ name, expr }]); equations(list | { T: 10, W: '=T*2' }) replaces them
     // (one undo step), rebuilds, and resolves to the summary (whose `equations` holds the evaluated variables)
