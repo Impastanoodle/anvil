@@ -1112,3 +1112,10 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - **Assemblies** (`ui-assembly.js`, `assembly.js`, `matePopup` in `ui-commands.js`): rigid sub-assemblies use the placed per-part grouping (cached per placement, 8 per build), so a translation onto a plane-key rounding step no longer forces the full edge search (12-pin rigid: 166 + 86 ms → 8–13 ms); component transparency saved in the model (`component.transparent`, one undo step, `transparent: true` / `a.transparent(name)` in scripts, `Assembly.setTransparent`, `anvil.transparent`); Width mate gets the Mate pop-up toolbar.
 
 **Verified (merged code on port 8812, pane visible).** kernel-tests 762/762, occt-tests 51/51, ui-smoke 232/232 twice.
+## Run local-2026-10-03f — Round 8 (short, two lanes): drawings, assemblies
+
+**Done.**
+- **Drawings** (`drawing.js`): `closeFreeEnds()` after `closeEnds()` in `projectView` (also without exact curves): a partial rim ellipse / arc is lengthened to a tangent visible line end within one facet step (Rounded handle 0.41 mm), and free faceted-silhouette ends within 3 × chordTol are moved onto the neighbouring line (Mug handle, Handlebar bend 0.03–0.14 mm). Ends 0.001–0.5 mm short over 23 examples × 4 views: 14 → 1 (Hex nut, 0.002 mm).
+- **Assemblies** (`ui-assembly.js`): nested rigid sub-assemblies keep the placed per-part edge path (`partEdges` recurses with composed placement; straddling case ~130 → ~45 ms, 0 edges missing); bounding-box prefilter in the split-face resolver (1.87M → 10.5k tests); transparency across pattern regeneration pinned by a test (kept on surviving instances, new instances opaque).
+
+**Verified (merged code on port 8812, pane visible).** kernel-tests 763/763, occt-tests 51/51, ui-smoke 234/234 twice.
