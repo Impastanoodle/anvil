@@ -28,7 +28,7 @@
     st.worker.onmessage = onMessage;
     st.worker.onerror = function (e) { st.state = 'failed'; st.error = (e && e.message) || 'the OpenCascade worker did not start'; settle(); refresh(); };
   }
-  function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; }
+  function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; heldResult = null; App.holdFrameUntil = 0; if (st.quietTimer) { clearTimeout(st.quietTimer); st.quietTimer = 0; } }
 
   function onMessage(e) {
     var m = e.data || {};
@@ -48,16 +48,19 @@
       if (!A || m.seq !== A.seq) return;
       A.results[m.part] = m.type === 'built' ? m.result : { error: m.message };
       if (--A.left > 0) return;
-      st.busy = false;
+      st.busy = false; st.lastOcctMs = performance.now() - (st.buildingSince || 0);
       if (m.seq !== st.want) { request(); return; }
+      if (held) { heldResult = { seq: m.seq, anvilBuild: App.build, apply: function () { acceptAssembly(A); } }; return; }   // swapped in on release
       acceptAssembly(A);
-      settle(); refresh();
+      releaseHold(); settle(); refresh();
       return;
     }
-    st.busy = false;
+    st.busy = false; st.lastOcctMs = performance.now() - (st.buildingSince || 0);
     if (m.seq !== st.want) { request(); return; }   // the model changed meanwhile: build the newer one
     if (m.type === 'error') { st.state = 'error'; st.error = m.message; st.result = null; }
+    else if (held) { heldResult = { seq: m.seq, anvilBuild: App.build, apply: function () { accept(m.result); } }; return; }   // swapped in on release
     else accept(m.result);
+    releaseHold();
     settle();
     refresh();
   }
@@ -85,7 +88,7 @@
   function requestAssembly() {
     var parts = collectParts(App.build && App.build.cache, [], {});
     if (!parts.length) { st.state = 'assembly'; st.result = null; settle(); refresh(); return; }
-    st.busy = true; st.want = ++st.seq; st.state = 'building';
+    st.busy = true; st.want = ++st.seq; st.state = 'building'; st.buildingSince = performance.now();
     st.asm = { seq: st.want, parts: parts, results: {}, left: parts.length, anvilBuild: App.build };
     parts.forEach(function (p, i) {
       var model; try { model = JSON.parse(JSON.stringify(p.model)); } catch (e) { model = p.model; }
@@ -120,14 +123,14 @@
     finally { Assembly.setPartBuilder(null); }
     b.occt = { volume: volume, faces: faces, parts: A.parts.length };
     st.state = 'ok'; st.anvilBuild = A.anvilBuild; st.driving = true;
-    App.sel = null; App.sel2 = null; App.hover = null;
-    UI.applyBuild(b, { noSave: true, keepMs: true, occt: true });
+    swapIn(b);
   }
   // OpenCascade answered for the model Anvil's build on screen was made from (the sequence numbers match)
   function accept(r) {
     st.result = r; st.error = null; st.volumeDiff = null;
     var anvilBuild = App.build, anvilMesh = App.mesh;
-    st.anvilVolume = anvilMesh && anvilMesh.triCount ? K.massProps(anvilMesh, 1).volume : 0;
+    // the volume worker.js sent with Anvil's build (smooth/responsive: massProps of a large mesh is tens of ms here)
+    st.anvilVolume = anvilMesh && anvilMesh.triCount ? (typeof anvilMesh.workerVolume === 'number' ? anvilMesh.workerVolume : K.massProps(anvilMesh, 1).volume) : 0;
     if (r.unsupported) { st.state = 'unsupported'; return; }
     if (!r.valid) { st.state = 'invalid'; return; }
     // a feature Anvil built but OpenCascade could not (a fillet that consumes a whole face, ...): name it, instead of
@@ -151,18 +154,94 @@
     st.state = 'ok';
     st.anvilBuild = anvilBuild;
     st.driving = true;
-    App.sel = null; App.sel2 = null; App.hover = null;   // face indices refer to the other mesh
-    UI.applyBuild(build, { noSave: true, keepMs: true, occt: true });
+    swapIn(build, r.edges);
   }
-  function settle() { if (st.busy) return; var w = st.waiters; st.waiters = []; w.forEach(function (fn) { fn(status()); }); }
+  // ---- the exact solid swaps in without losing the selection (smooth/responsive). Features, planes, bodies and
+  // components are not tied to mesh indices and stay selected; a selected face is found again on the new mesh by a
+  // point on it, an edge by its midpoint and length. App.hover is dropped (the pointer's next move finds it again).
+  function selProbe(s) {
+    if (!s) return null;
+    if (s.kind === 'face') {
+      var at = s.point, f = App.mesh && App.mesh.faces[s.index];
+      if (!at && f && f.polys && f.polys[0]) {
+        var vs = f.polys[0].vertices, c = [0, 0, 0];
+        vs.forEach(function (v) { c[0] += v.pos.x / vs.length; c[1] += v.pos.y / vs.length; c[2] += v.pos.z / vs.length; });
+        at = c;
+      }
+      return at ? { s: s, at: at } : null;
+    }
+    if (s.kind === 'edge') return s.edge && s.edge.mid ? { s: s, mid: s.edge.mid.slice(), len: s.edge.len } : null;
+    return { s: s };
+  }
+  function selRestore(p) {
+    if (!p) return null;
+    var s = p.s, out = {}, k;
+    if (s.kind !== 'face' && s.kind !== 'edge') return s;
+    for (k in s) if (Object.prototype.hasOwnProperty.call(s, k)) out[k] = s[k];
+    if (s.kind === 'face') {
+      var hit = [];
+      try { hit = App.mesh ? K.resolveFaces([{ at: p.at }], App.mesh, 0.5) : []; } catch (e) { }
+      if (!hit.length) return null;
+      out.index = hit[0];
+      return out;
+    }
+    var best = null, bestD = Math.max(0.05, (p.len || 0) * 0.02);
+    (App.edges || []).forEach(function (e) {
+      if (e.smooth || !e.mid) return;
+      var d = Math.hypot(e.mid[0] - p.mid[0], e.mid[1] - p.mid[1], e.mid[2] - p.mid[2]) + Math.abs((e.len || 0) - (p.len || 0));
+      if (d < bestD) { bestD = d; best = e; }
+    });
+    if (!best) return null;
+    out.edge = best; out.index = App.edges.indexOf(best);
+    return out;
+  }
+  function isMeshSel(p) { return !!p && (p.s.kind === 'face' || p.s.kind === 'edge'); }
+  function swapIn(build, edges) {
+    var multiOk = App.multi && App.multi.length > 1 && App.multi[0] === App.sel && App.multiMesh === App.mesh;
+    var p1 = selProbe(App.sel), p2 = selProbe(App.sel2), pl = multiOk ? App.multi.map(selProbe) : null;
+    // non-mesh selections are kept through applyBuild (the tree draws them); face / edge ones are found afterwards
+    App.sel = p1 && !isMeshSel(p1) ? p1.s : null; App.sel2 = p2 && !isMeshSel(p2) ? p2.s : null; App.hover = null;
+    UI.applyBuild(build, { noSave: true, keepMs: true, occt: true, edges: edges || null });
+    if (!isMeshSel(p1) && !isMeshSel(p2) && !pl) return;
+    App.sel = selRestore(p1); App.sel2 = selRestore(p2);
+    if (!App.sel && App.sel2) { App.sel = App.sel2; App.sel2 = null; }
+    if (pl && App.sel) {
+      var list = [App.sel];
+      pl.slice(1).forEach(function (p) { var r = selRestore(p); if (r) list.push(r); });
+      App.multi = list.length > 1 ? list : []; App.multiMesh = App.mesh; App.multiMode = App.mode;
+    } else App.multi = [];
+    UI.updateHighlights();
+  }
+
+  // ---- when OpenCascade builds (smooth/responsive): a rebuild that follows another within QUIET ms (an Instant3D drag,
+  // a value spun and committed again and again) waits until the edits pause, so the exact solid is not built for every
+  // step and does not swap in between two of Anvil's live builds; while the left button is held (a drag) a finished
+  // result is kept and swapped in on release, if it is still current.
+  var QUIET = 160, held = false, heldResult = null;
+  function release() {
+    if (!held) return;
+    held = false;
+    if (!heldResult) return;
+    var h = heldResult; heldResult = null;
+    if (h.seq === st.want && App.build === h.anvilBuild) h.apply(); else { st.want = -1; request(); }
+    settle(); refresh();
+  }
+  window.addEventListener('pointerdown', function (e) { if (e.button === 0) held = true; }, true);
+  window.addEventListener('pointerup', release, true);
+  window.addEventListener('pointercancel', release, true);
+  window.addEventListener('blur', release);
+  window.addEventListener('pointermove', function (e) { if (held && !(e.buttons & 1)) release(); }, true);
+  function pendingWork() { return !!(st.busy || st.quietTimer || heldResult); }
+  function settle() { if (pendingWork()) return; var w = st.waiters; st.waiters = []; w.forEach(function (fn) { fn(status()); }); }
 
   // post the current model (newest wins: one build in flight, the latest request replaces older ones)
   function request() {
     if (!st.on || !App.model) { settle(); return; }
     if (!st.worker) { startWorker(); return; }
-    if (!st.ready || st.busy) return;
+    if (!st.ready || st.busy || st.quietTimer) return;
+    heldResult = null;
     if (isAsm()) { if (typeof Assembly !== 'undefined' && Assembly.setPartBuilder) requestAssembly(); else { st.state = 'assembly'; settle(); } return; }
-    st.busy = true; st.want = ++st.seq; st.state = 'building';
+    st.busy = true; st.want = ++st.seq; st.state = 'building'; st.buildingSince = performance.now();
     var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { st.busy = false; return; }
     st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true });
     refresh();
@@ -170,10 +249,31 @@
   // after every applied build (ui-core.js applyBuild calls the UI.onBuild hooks); OpenCascade's own apply is skipped
   function afterBuild(build, opts) {
     if (opts && opts.occt) return;
+    var wasDriving = st.driving;
     st.driving = false; st.anvilBuild = null;
+    var now = performance.now(), burst = now - (st.lastBuildAt || -1e9) < QUIET;
+    st.lastBuildAt = now;
     if (!st.on) return;
-    if (st.busy) { st.want = -1; return; }   // the in-flight reply is stale now; onMessage asks again
-    request();
+    if (st.busy) st.want = -1;   // the in-flight reply is stale now; onMessage asks again
+    if (burst || held) { quietThen(); return; }
+    if (!st.busy) {
+      request();
+      // OpenCascade drove the part and answers quickly: the viewport keeps its last frame (OpenCascade's solid) for up
+      // to HOLD_MS instead of flashing Anvil's approximation before the exact solid swaps in (smooth/responsive)
+      if (wasDriving && st.busy && st.lastOcctMs != null && st.lastOcctMs < HOLD_MS && UI.holdFrame) UI.holdFrame(HOLD_MS);
+    }
+  }
+  var HOLD_MS = 280;
+  function releaseHold() { App.holdFrameUntil = 0; }
+  ['pointerdown', 'mousedown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, releaseHold, true); });
+  // (re)start the quiet window; when it ends with the button up, build the latest model
+  function quietThen() {
+    if (st.quietTimer) clearTimeout(st.quietTimer);
+    st.quietTimer = setTimeout(function () {
+      st.quietTimer = 0;
+      if (held) { quietThen(); return; }
+      request(); settle();
+    }, QUIET);
   }
   (UI.onBuild = UI.onBuild || []).push(afterBuild);
 
@@ -184,13 +284,13 @@
     if (st.on) { st.state = 'loading'; request(); }
     else {
       stopWorker(); st.state = 'off'; st.result = null;
-      if (st.driving && st.anvilBuild) { App.sel = null; App.sel2 = null; App.hover = null; UI.applyBuild(st.anvilBuild, { noSave: true, keepMs: true, occt: true }); }
+      if (st.driving && st.anvilBuild) swapIn(st.anvilBuild);
       st.driving = false; st.anvilBuild = null;
       settle();
     }
     refresh();
   }
-  function refresh() { if (UI.refreshStatus) UI.refreshStatus(); }
+  function refresh() { if (UI.refreshStatus && App.model) UI.refreshStatus(); }   // the engine probe can answer before the first model loads
 
   // UI.faceGroups (ui-core.js) asks this first: on OpenCascade's solid every polygon knows its B-rep face, so a
   // face group is every mesh face whose polygons carry the same face index
@@ -214,8 +314,15 @@
       valid: r ? r.valid : null, ms: r ? r.ms : null, failedFeature: st.state === 'featureError' ? st.failedFeature : null };
   }
   // the status bar chip (ui-panels.js refreshStatus)
+  var CHIP_DELAY = 300;
   UI.occtStatusHtml = function () {
     if (!st.on) return '';
+    // a quick build keeps the last chip (no flicker to "building…" and back on every edit); a slow one says so after
+    // CHIP_DELAY ms (smooth/responsive)
+    if (st.state === 'building' && st.lastChip && performance.now() - (st.buildingSince || 0) < CHIP_DELAY) {
+      if (!st.chipTimer) st.chipTimer = setTimeout(function () { st.chipTimer = 0; if (st.state === 'building') refresh(); }, CHIP_DELAY);
+      return st.lastChip;
+    }
     var s = status(), txt, cls = 'occt', tip = 'OpenCascade kernel (Tools ▸ OpenCascade kernel)';
     switch (s.state) {
       case 'loading': txt = 'OpenCascade: loading…'; break;
@@ -233,7 +340,9 @@
       case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; tip = s.error || ''; break;
       default: txt = 'OpenCascade';
     }
-    return '<span class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
+    var html = '<span class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
+    if (s.state !== 'building') st.lastChip = html;
+    return html;
   };
 
   // importFile(format, text) -> Promise of { solids: [{ name, positions, triangles }], faces, ms }: a STEP / IGES file
@@ -257,7 +366,7 @@
     // has answered (or at once when nothing is pending)
     window.anvil.occt = function (on, opts) { if (arguments.length) set(on, opts); return status(); };
     window.anvil.occtIdle = function () {
-      return new Promise(function (res) { if (!st.on || (!st.busy && st.state !== 'loading')) res(status()); else st.waiters.push(res); });
+      return new Promise(function (res) { if (!st.on || (!pendingWork() && st.state !== 'loading')) res(status()); else st.waiters.push(res); });
     };
   }
   if (st.on) request();

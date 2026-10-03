@@ -8,6 +8,7 @@
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
+//                                                         result.edges: Kernel.bodyEdges of the mesh it makes (parts)
 //                { type: 'error', seq, message }          the build itself threw, or the engine could not load
 import opencascade from './vendor/occt/opencascade.full.js';
 
@@ -59,6 +60,12 @@ self.onmessage = async (e) => {
   if (m.type !== 'build') return;
   try {
     const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cacheFor(m.cacheKey) });
+    // the edges of the mesh the main thread will make from this result (OcctKernel.toBuild -> Kernel.meshFromBody; the
+    // faces group by plane, body and B-rep face only, so no Anvil build is needed for it): ui-occt.js hands them to
+    // applyBuild, which then skips Kernel.bodyEdges (tens to hundreds of ms on the main thread) (smooth/responsive)
+    if (r.mesh && r.valid && m.part == null) {
+      try { const tb = OcctKernel.toBuild(r, {}, null, null, self.CSG, self.Kernel); r.edges = tb.body ? self.Kernel.bodyEdges(self.Kernel.meshFromBody(tb.body)) : null; } catch (e) { r.edges = null; }
+    }
     const transfer = r.mesh ? [r.mesh.positions.buffer, r.mesh.faceOf.buffer] : [];
     self.postMessage({ type: 'built', seq: m.seq, part: m.part, result: r }, transfer);
   } catch (err) {

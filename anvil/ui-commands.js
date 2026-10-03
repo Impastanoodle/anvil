@@ -86,7 +86,7 @@
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmCancel(); return; }
     if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmOK(); }
   });
-  function closePM() {
+  function closePM(keepPreview) {
     if (!pm.spec) return;
     var spec = pm.spec;
     pm.spec = null; pm.values = null; pm.exprs = {}; pm.exprErrors = {};
@@ -95,7 +95,8 @@
     pm.root.innerHTML = '';
     $('fm-tree').hidden = false;
     UI.setFmTab('tree');
-    UI.disposeGroup(UI.groups.preview);
+    if (UI.cancelPreviews) UI.cancelPreviews();   // smooth/responsive: a preview still waiting for the worker is not built
+    if (!keepPreview) UI.disposeGroup(UI.groups.preview);
     UI.updatePlanes();
     if (spec.onClose) spec.onClose();
     UI.refreshRibbon();
@@ -111,8 +112,14 @@
       return UI.whenIdle();
     }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
-    closePM();
-    return r && typeof r.then === 'function' ? r : UI.whenIdle();
+    var pending = r && typeof r.then === 'function';
+    // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
+    closePM(pending);
+    if (pending) {
+      var drop = function () { if (!pm.spec) UI.disposeGroup(UI.groups.preview); };
+      r.then(drop, drop);
+    }
+    return pending ? r : UI.whenIdle();
   }
   function pmCancel() {
     if (!pm.spec) return;
@@ -288,10 +295,60 @@
     return el('div');
   }
 
+  // ------------------------------------------------------------------ live previews (smooth/responsive)
+  // A PropertyManager preview is built in the rebuild worker (UI.previewInWorker), so typing or spinning a value never
+  // blocks input. The preview on screen is replaced only when the new one is ready (no empty frame in between); an
+  // answer older than the one shown, or for a PropertyManager that has closed, is dropped; while one preview builds,
+  // only the newest request waits behind it. Without the worker, o.sync() previews on the main thread as before.
+  // o: { op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, upto (feature count to build on, null: the whole part), throughLimit,
+  //      mats: [material per returned solid], sync: fn(), done: fn(result), fail: fn(message) }
+  var lp = { seq: 0, shown: 0, last: null };
+  function addPreviewMesh(tool, mat) {
+    var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
+    UI.groups.preview.add(new THREE.Mesh(g, mat));
+  }
+  function livePreview(o) {
+    var my = ++lp.seq, spec = pm.spec;
+    var p = UI.previewInWorker && !App.previewSync ? UI.previewInWorker({ op: o.op, feature: JSON.parse(JSON.stringify(o.feature)), upto: o.upto, throughLimit: o.throughLimit }) : null;
+    if (!p) { lp.shown = my; o.sync(); return; }
+    p.then(function (r) {
+      if (r && r.superseded) return;
+      if (pm.spec !== spec || my < lp.shown) return;
+      if (!r) { lp.shown = my; o.sync(); return; }   // the worker went away: preview on the main thread
+      lp.shown = my; lp.last = { ms: r.ms, at: performance.now() };
+      UI.disposeGroup(UI.groups.preview);
+      r.tools.forEach(function (t, i) { if (t && t.polygons.length) addPreviewMesh(t, o.mats[i] || o.mats[0]); });
+      if (o.done) o.done(r);
+    }, function (e) {
+      if (pm.spec !== spec || my < lp.shown) return;
+      lp.shown = my;
+      UI.disposeGroup(UI.groups.preview);
+      var msg = (e && e.message) || String(e);
+      if (o.fail) o.fail(msg); else UI.setStatus('Preview: ' + msg);
+    });
+  }
+  // resolves once the newest live preview has been shown (tests)
+  function previewIdle() {
+    return new Promise(function (res) {
+      var t0 = performance.now();
+      (function poll() { if (lp.shown >= lp.seq || !pm.spec || performance.now() - t0 > 10000) res(lp.last); else setTimeout(poll, 10); })();
+    });
+  }
+
   // ------------------------------------------------------------------ preview
   function showPreview(feature) {
+    if (!feature || !App.build) { UI.disposeGroup(UI.groups.preview); return null; }
+    var b = UI.modelBounds();
+    var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    var mat = UI.mats.preview, err = null;
+    try { if (K.isCut(feature, App.model) || feature.cut) mat = UI.mats.previewCut; } catch (e) { }
+    livePreview({ op: 'tool', feature: feature, upto: null, throughLimit: Math.max(20, diag * 1.5), mats: [mat], sync: function () { err = showPreviewSync(feature); } });
+    return err;
+  }
+  function showPreviewSync(feature) {
     UI.disposeGroup(UI.groups.preview);
-    if (!feature || !App.build) return null;
     try {
       var b = UI.modelBounds();
       var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
@@ -1031,9 +1088,16 @@
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
     }
+    function edgeStatus(r) { UI.setStatus((isChamfer ? 'Chamfer' : 'Fillet') + ' preview: ' + r.count + ' edge' + (r.count === 1 ? '' : 's') + '. Press Enter or ✓ to accept.'); }
     function preview() {
+      if (!f.edges.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click edges in the graphics area to ' + kind + ' them.'); return; }
+      // editing: built on the part as it was before this feature, like the rebuild does
+      var upto = null;
+      if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+      livePreview({ op: 'edge', feature: f, upto: upto, mats: [UI.mats.previewCut, UI.mats.preview], sync: previewSync, done: function (r) { edgeStatus(r.info); } });
+    }
+    function previewSync() {
       UI.disposeGroup(UI.groups.preview);
-      if (!f.edges.length) { UI.setStatus('Click edges in the graphics area to ' + kind + ' them.'); return; }
       try {
         var r = K.buildEdgeFeature(f, { body: App.build.body });
         [r.cut, r.add].forEach(function (tool, i) {
@@ -1101,24 +1165,32 @@
   }
   function cmdShell(existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
-    var base = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null);
-    if (!base) { UI.toast('Create a solid first, then shell it.'); return; }
+    // editing: the body before this shell is rebuilt only when the main thread needs it (a face pick, or no worker)
+    var base = existing ? null : (App.build ? App.build.body : null), baseMesh = existing ? null : App.mesh;
+    function getBase() { if (!base) { base = bodyBefore(existing.id); baseMesh = K.meshFromBody(base); } return base; }
+    function getBaseMesh() { getBase(); return baseMesh; }
+    if (existing ? !App.build : !base) { UI.toast('Create a solid first, then shell it.'); return; }
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'shell', thickness: 2, faces: [] };
     if (!existing && App.sel && App.sel.kind === 'face' && App.sel.point) f.faces.push({ at: App.sel.point.slice() });
-    var baseMesh = existing ? K.meshFromBody(base) : App.mesh;
     function tol() { return Math.max(0.5, (+f.thickness || 1) / 2); }
     function resolveList() {
       var idx = [];
-      try { idx = K.resolveFaces(f.faces, baseMesh, tol()); } catch (e) { }
+      if (!existing) try { idx = K.resolveFaces(f.faces, getBaseMesh(), tol()); } catch (e) { }
       // highlights map to the displayed mesh, which is the base body only for a new shell
       if (App.command) App.command.faceList = existing ? [] : idx;
       UI.updateHighlights();
       return idx;
     }
+    function shellStatus(removed) { UI.setStatus('Shell preview: walls ' + f.thickness + ' ' + UI.unitLabel() + ', ' + (removed ? removed + ' face' + (removed === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.'); }
     function preview() {
+      var upto = null;
+      if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+      livePreview({ op: 'shell', feature: f, upto: upto, mats: [UI.mats.previewCut], sync: previewSync, done: function (r) { shellStatus(r.info.removed); } });
+    }
+    function previewSync() {
       UI.disposeGroup(UI.groups.preview);
       try {
-        var r = K.buildShell(f, { body: base });
+        var r = K.buildShell(f, { body: getBase() });
         var mesh = K.meshFromBody(r.inner), g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
@@ -1134,8 +1206,8 @@
           if (pk.kind !== 'face' || !pk.point) return false;
           var hit = -1;
           // any facet of an already listed curved face toggles it off
-          var grp = baseMesh === App.mesh && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
-          f.faces.forEach(function (spec, i) { if (grp.indexOf(K.resolveFaces([spec], baseMesh, tol())[0]) >= 0) hit = i; });
+          var grp = !existing && UI.faceGroup ? UI.faceGroup(pk.index) : [pk.index];
+          f.faces.forEach(function (spec, i) { if (grp.indexOf(K.resolveFaces([spec], getBaseMesh(), tol())[0]) >= 0) hit = i; });
           if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push({ at: pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
           renderPM(); resolveList(); preview();
           return true;
@@ -1306,7 +1378,26 @@
       delete out.useDefaultReliefWidth; delete out.reliefWidthValue; delete out.useDefaultReliefDepth; delete out.reliefDepthValue;
       return out;
     }
+    function flangeStatus(feat) {
+      var ne = edgeList.length || (feat.edges || []).length;   // editing: the picks are on the sheet before this feature
+      var R = feat.radius != null ? feat.radius : sheet.bendRadius;
+      var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);
+      var extra = '';
+      if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
+      if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
+      UI.setStatus(titles[kind] + ' preview: ' + ne + ' edge' + (ne === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ')' + extra + '.');
+    }
+    // built in the worker (livePreview); previewSync without it
     function preview() {
+      if (!f.edges.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
+      var feat;
+      try { feat = toFeature(f); } catch (e) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Preview: ' + e.message); return; }
+      // editing: built on the sheet as it was before this feature (as the rebuild does; its edges are gone after it)
+      var upto = null;
+      if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+      livePreview({ op: isJog ? 'jog' : 'flange', feature: feat, upto: upto, mats: [UI.mats.preview], sync: previewSync, done: function () { try { flangeStatus(feat); } catch (e) { } } });
+    }
+    function previewSync() {
       UI.disposeGroup(UI.groups.preview);
       if (!f.edges.length) { UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
       try {
@@ -2281,6 +2372,7 @@
   UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdMiterFlange = cmdMiterFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
   UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
+  UI.previewIdle = previewIdle;   // smooth/responsive: resolves once the newest live PropertyManager preview is shown
   UI.openEntityPM = openEntityPM; UI.openToolPM = openToolPM; UI.editFeature = editFeature; UI.deleteFeature = deleteFeature; UI.deleteSelection = deleteSelection;
   UI.newSketchOnPlane = newSketchOnPlane;
   // part-only commands refuse in an assembly document (label = the SolidWorks command name for the message)
