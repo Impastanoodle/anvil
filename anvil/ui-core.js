@@ -1410,6 +1410,8 @@ var UI = (function () {
     } else job.reject(new Error(d.message || 'preview failed'));
     nextPreview();
   }
+  // the PropertyManager closed: a preview still waiting is not sent (the one in flight is answered and dropped there)
+  function cancelPreviews() { if (pv.pending) { pv.pending.resolve({ superseded: true }); pv.pending = null; } }
   // a worker that died takes its previews with it: answer them with null (the caller previews on the main thread)
   function dropPreviews() {
     [pv.inflight, pv.pending].forEach(function (j) { if (j) j.resolve(null); });
@@ -1576,7 +1578,7 @@ var UI = (function () {
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
-    rebuild: rebuild, previewInWorker: previewInWorker, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,

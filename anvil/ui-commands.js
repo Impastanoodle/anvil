@@ -63,7 +63,7 @@
     UI.updatePlanes();
     if (spec.onChange) spec.onChange(pm.values);
   }
-  function closePM() {
+  function closePM(keepPreview) {
     if (!pm.spec) return;
     var spec = pm.spec;
     pm.spec = null; pm.values = null; pm.exprs = {}; pm.exprErrors = {};
@@ -72,7 +72,8 @@
     pm.root.innerHTML = '';
     $('fm-tree').hidden = false;
     UI.setFmTab('tree');
-    UI.disposeGroup(UI.groups.preview);
+    if (UI.cancelPreviews) UI.cancelPreviews();   // smooth/responsive: a preview still waiting for the worker is not built
+    if (!keepPreview) UI.disposeGroup(UI.groups.preview);
     UI.updatePlanes();
     if (spec.onClose) spec.onClose();
     UI.refreshRibbon();
@@ -88,8 +89,14 @@
       return UI.whenIdle();
     }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
-    closePM();
-    return r && typeof r.then === 'function' ? r : UI.whenIdle();
+    var pending = r && typeof r.then === 'function';
+    // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
+    closePM(pending);
+    if (pending) {
+      var drop = function () { if (!pm.spec) UI.disposeGroup(UI.groups.preview); };
+      r.then(drop, drop);
+    }
+    return pending ? r : UI.whenIdle();
   }
   function pmCancel() {
     if (!pm.spec) return;
@@ -263,11 +270,11 @@
   function livePreview(o) {
     var my = ++lp.seq, spec = pm.spec;
     var p = UI.previewInWorker && !App.previewSync ? UI.previewInWorker({ op: o.op, feature: JSON.parse(JSON.stringify(o.feature)), upto: o.upto, throughLimit: o.throughLimit }) : null;
-    if (!p) { o.sync(); return; }
+    if (!p) { lp.shown = my; o.sync(); return; }
     p.then(function (r) {
       if (r && r.superseded) return;
       if (pm.spec !== spec || my < lp.shown) return;
-      if (!r) { o.sync(); return; }   // the worker went away: preview on the main thread
+      if (!r) { lp.shown = my; o.sync(); return; }   // the worker went away: preview on the main thread
       lp.shown = my; lp.last = { ms: r.ms, at: performance.now() };
       UI.disposeGroup(UI.groups.preview);
       r.tools.forEach(function (t, i) { if (t && t.polygons.length) addPreviewMesh(t, o.mats[i] || o.mats[0]); });
@@ -1041,7 +1048,7 @@
     }
     function edgeStatus(r) { UI.setStatus((isChamfer ? 'Chamfer' : 'Fillet') + ' preview: ' + r.count + ' edge' + (r.count === 1 ? '' : 's') + '. Press Enter or ✓ to accept.'); }
     function preview() {
-      if (!f.edges.length) { lp.seq++; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click edges in the graphics area to ' + kind + ' them.'); return; }
+      if (!f.edges.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click edges in the graphics area to ' + kind + ' them.'); return; }
       // editing: built on the part as it was before this feature, like the rebuild does
       var upto = null;
       if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
@@ -1340,9 +1347,9 @@
     }
     // built in the worker (livePreview); previewSync without it
     function preview() {
-      if (!f.edges.length) { lp.seq++; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
+      if (!f.edges.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
       var feat;
-      try { feat = toFeature(f); } catch (e) { lp.seq++; UI.disposeGroup(UI.groups.preview); UI.setStatus('Preview: ' + e.message); return; }
+      try { feat = toFeature(f); } catch (e) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Preview: ' + e.message); return; }
       // editing: built on the sheet as it was before this feature (as the rebuild does; its edges are gone after it)
       var upto = null;
       if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });

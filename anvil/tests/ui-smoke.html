@@ -4331,6 +4331,28 @@
       return 'feature ' + f.name + ' kept; top face ' + top + ' -> ' + sel.index;
     } finally { anvil.occt(was, { remember: false }); await occIdle(); }
   });
+  step('smooth/responsive: on OK the yellow preview stays until the committed build is applied (no frame of the old part); with the worker off, previews run on the main thread as before', async function () {
+    var was = anvil.workerOn();
+    await anvil.run(plateCode()); await idle();
+    var f = UI.App.model.features.filter(function (x) { return x.type === 'extrude'; })[0];
+    UI.editFeature(f);
+    setInput(D.querySelector('#pm input[data-key="depth"]'), '14');
+    await UI.previewIdle();
+    assert(UI.groups.preview.children.length === 1, 'preview shown');
+    var p = UI.pmOK(), kept = UI.groups.preview.children.length;
+    await p; await idle();
+    assert(kept === 1 || !anvil.workerOn(), 'preview kept until the build is applied: ' + kept);
+    assert(UI.groups.preview.children.length === 0, 'preview gone once applied');
+    anvil.workerOn(false);
+    try {
+      UI.editFeature(f);
+      setInput(D.querySelector('#pm input[data-key="depth"]'), '16');
+      assert(UI.groups.preview.children.length === 1, 'main-thread preview at once');
+      await UI.previewIdle();
+      UI.pmCancel();
+    } finally { anvil.workerOn(was); }
+    return 'kept ' + kept;
+  });
   // --- end smooth/responsive ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
