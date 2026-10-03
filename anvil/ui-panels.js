@@ -795,7 +795,8 @@
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
         { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
-        { label: 'OpenCascade kernel (experimental)', checked: !!(UI.occt && UI.occt.on()), disabled: !UI.occt, action: function () { UI.occt.set(!UI.occt.on()); toast(UI.occt.on() ? 'OpenCascade builds every part too: true faces for picking, volumes cross-checked' : 'OpenCascade kernel off'); } }
+        { label: 'OpenCascade kernel (experimental)', checked: !!(UI.occt && UI.occt.on()), disabled: !UI.occt, action: function () { UI.occt.set(!UI.occt.on()); toast(UI.occt.on() ? 'OpenCascade builds every part too: true faces for picking, volumes cross-checked' : 'OpenCascade kernel off'); } },
+        { label: 'OpenCascade engine file…', disabled: !(UI.occt && UI.occt.engineDialog), action: function () { UI.occt.engineDialog(); } }
       ] },
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } },

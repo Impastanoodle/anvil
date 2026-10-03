@@ -25,8 +25,77 @@
     try { st.worker = new Worker('occt-worker.js', { type: 'module' }); }
     catch (e) { st.state = 'failed'; st.error = e.message; refresh(); return; }
     st.state = 'loading';
+    // the worker uses a served engine when there is one; otherwise the file the user picked (kept in this browser), or none
+    var w = st.worker;
+    storedEngine().then(function (bytes) { if (st.worker === w) w.postMessage({ type: 'engine', bytes: bytes }, bytes ? [bytes] : []); });
     st.worker.onmessage = onMessage;
     st.worker.onerror = function (e) { st.state = 'failed'; st.error = (e && e.message) || 'the OpenCascade worker did not start'; settle(); refresh(); };
+  }
+  // ---- an engine file picked by the user (the published copy has no engine on its server): kept in this browser's
+  // IndexedDB, checked against the official build's SHA-256 here before it is kept and again in occt-worker.js
+  var WASM_SHA256 = '4b6a74398987eb3ca6bedc7d1b29d6a5af74d0613a9f3bf013a52d7d5d1b5937';
+  function idb(mode, fn) {
+    return new Promise(function (res) {
+      try {
+        var rq = indexedDB.open('anvil-occt', 1);
+        rq.onupgradeneeded = function () { rq.result.createObjectStore('files'); };
+        rq.onerror = function () { res(null); };
+        rq.onsuccess = function () {
+          try {
+            var tx = rq.result.transaction('files', mode), r = fn(tx.objectStore('files'));
+            tx.oncomplete = function () { res(r && r.result != null ? r.result : null); rq.result.close(); };
+            tx.onerror = tx.onabort = function () { res(null); rq.result.close(); };
+          } catch (e) { res(null); }
+        };
+      } catch (e) { res(null); }
+    });
+  }
+  function storedEngine() { return window.indexedDB ? idb('readonly', function (s) { return s.get('engine'); }) : Promise.resolve(null); }
+  function storeEngine(bytes) { return idb('readwrite', function (s) { return bytes ? s.put(bytes, 'engine') : s.delete('engine'); }); }
+  function sha256Hex(buf) {
+    return crypto.subtle.digest('SHA-256', buf).then(function (d) {
+      var a = new Uint8Array(d), s = '';
+      for (var i = 0; i < a.length; i++) s += ('0' + a[i].toString(16)).slice(-2);
+      return s;
+    });
+  }
+  function unpacked(buf) {
+    var h = new Uint8Array(buf, 0, 2);
+    if (!(h[0] === 0x1f && h[1] === 0x8b)) return Promise.resolve(buf);
+    if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error('This browser cannot unpack a .gz file; pick opencascade.full.wasm instead.'));
+    return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+  }
+  // a picked file: verified, kept, and the engine (re)started on it
+  function useEngineFile(file) {
+    return file.arrayBuffer().then(function (buf) {
+      return unpacked(buf.slice(0)).then(sha256Hex).then(function (h) {
+        if (h !== WASM_SHA256) throw new Error(file.name + ' is not the official opencascade.js 2.0.0-beta.b5ff984 engine (SHA-256 ' + h.slice(0, 12) + '…); it was not used.');
+        return storeEngine(buf);
+      });
+    }).then(function () { stopWorker(); st.state = 'off'; set(true); });
+  }
+  function engineDialog() {
+    storedEngine().then(function (kept) {
+      var input = document.createElement('input');
+      input.type = 'file'; input.accept = '.wasm,.gz'; input.style.display = 'none';
+      var msg = document.createElement('p');
+      input.onchange = function () {
+        var f = input.files && input.files[0];
+        if (!f) return;
+        msg.textContent = 'Checking ' + f.name + '…';
+        useEngineFile(f).then(function () { if (UI.closeModal) UI.closeModal(); if (UI.toast) UI.toast('OpenCascade engine checked and kept in this browser'); },
+          function (e) { msg.textContent = e.message || String(e); });
+      };
+      var body = document.createElement('div');
+      body.innerHTML = '<p>This copy of Anvil has no OpenCascade engine on its server. Pick <b>opencascade.full.wasm</b> (or <b>opencascade.full.wasm.gz</b>) from <code>anvil/vendor/occt</code> after running <code>vendor/get-occt.ps1</code>, or from the <code>dist</code> folder of the opencascade.js 2.0.0-beta.b5ff984 npm package.</p>' +
+        '<p>It is checked against the official build\'s SHA-256 fingerprint before it is kept or run; any other file is refused. It stays in this browser only; nothing is uploaded.</p>' +
+        '<p>' + (kept ? 'An engine file is kept in this browser.' : 'No engine file is kept in this browser.') + '</p>';
+      body.appendChild(msg); body.appendChild(input);
+      var buttons = [{ label: 'Choose file…', primary: true, keepOpen: true, action: function () { input.click(); return false; } }];
+      if (kept) buttons.push({ label: 'Forget kept engine', keepOpen: true, action: function () { storeEngine(null).then(function () { stopWorker(); set(false); msg.textContent = 'The kept engine was removed from this browser.'; }); return false; } });
+      buttons.push({ label: 'Close' });
+      UI.showModal({ title: 'OpenCascade engine', body: body, buttons: buttons });
+    });
   }
   function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; heldResult = null; App.holdFrameUntil = 0; if (st.quietTimer) { clearTimeout(st.quietTimer); st.quietTimer = 0; } }
 
@@ -430,7 +499,8 @@
     });
   }
 
-  UI.occt = { set: set, on: function () { return st.on; }, status: status, importFile: importFile, canImport: function () { return !!window.Worker && st.state !== 'failed'; } };
+  UI.occt = { set: set, on: function () { return st.on; }, status: status, importFile: importFile, canImport: function () { return !!window.Worker && st.state !== 'failed'; },
+    engineDialog: engineDialog, useEngineFile: useEngineFile, storedEngine: storedEngine, forgetEngine: function () { return storeEngine(null); } };
   // true while a build of the current model is queued, running or held back (the drawing sheet waits for it, r4/drawings4)
   UI.occt.pending = function () { return !!(st.on && pendingWork()); };
   if (window.anvil) {
@@ -446,7 +516,9 @@
     // the plain engine (vendor/get-occt.ps1), or the gzipped one the published copy ships (occt-worker.js unpacks it
     // and checks its fingerprint before it runs)
     var probe = function (f) { return fetch('vendor/occt/' + f, { method: 'HEAD' }).then(function (res) { return res.ok; }, function () { return false; }); };
-    probe('opencascade.full.wasm').then(function (ok) { return ok || probe('opencascade.full.wasm.gz'); }).then(function (ok) {
+    probe('opencascade.full.wasm').then(function (ok) { return ok || probe('opencascade.full.wasm.gz'); })
+      .then(function (ok) { return ok || storedEngine().then(function (b) { return !!b; }); })   // or a file the user picked earlier
+      .then(function (ok) {
       if (ok && !st.chosen) { set(true, { remember: false }); st.chosen = false; }
     });
   }

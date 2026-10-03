@@ -4,7 +4,8 @@
 // globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1), checked
 // against pinned fingerprints before it runs (below).
 //
-// Messages in:   { type: 'build', seq, model, exports?, cacheKey?, noCache?, anvil? }  model: a clone of App.model (or an assembly's
+// Messages in:   { type: 'engine', bytes }                the engine file a user picked (no engine on the server); null: none
+//                { type: 'build', seq, model, exports?, cacheKey?, noCache?, anvil? }  model: a clone of App.model (or an assembly's
 //                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
@@ -32,21 +33,26 @@ async function verified(bytes, want, what) {
   if (got !== want) throw new Error(what + ' failed its integrity check (sha256 ' + got.slice(0, 12) + '…, expected ' + want.slice(0, 12) + '…); refused');
   return bytes;
 }
+async function gunzipIfNeeded(bytes) {
+  const head = new Uint8Array(bytes, 0, 2);
+  if (!(head[0] === 0x1f && head[1] === 0x8b)) return bytes;   // not gzipped (or a server already unpacked it)
+  if (typeof DecompressionStream === 'undefined') throw new Error('this browser cannot unpack the engine (no DecompressionStream)');
+  return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+}
+// a page with no engine on its server (the published copy) is sent the bytes of a file the user picked
+// ({ type: 'engine', bytes }, ui-occt.js); they get the same check as a served file
+let engineFromPage = null;
+const pageEngine = new Promise((res) => { engineFromPage = res; });
 async function engineBinary() {
-  let res = await fetch(OCCT_DIR + 'opencascade.full.wasm');
-  let bytes;
-  if (res.ok) bytes = await res.arrayBuffer();
-  else {
-    res = await fetch(OCCT_DIR + 'opencascade.full.wasm.gz');
-    if (!res.ok) throw new Error('engine file missing (HTTP ' + res.status + ')');
-    bytes = await res.arrayBuffer();
-    const head = new Uint8Array(bytes, 0, 2);
-    if (head[0] === 0x1f && head[1] === 0x8b) {   // still gzipped (a server that sends it with Content-Encoding has unpacked it already)
-      if (typeof DecompressionStream === 'undefined') throw new Error('this browser cannot unpack the engine (no DecompressionStream)');
-      bytes = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
-    }
+  let bytes = null;
+  for (const f of ['opencascade.full.wasm', 'opencascade.full.wasm.gz']) {
+    let res = null;
+    try { res = await fetch(OCCT_DIR + f); } catch (e) { res = null; }
+    if (res && res.ok) { bytes = await res.arrayBuffer(); break; }
   }
-  return verified(bytes, WASM_SHA256, 'opencascade.full.wasm');
+  if (!bytes) bytes = await pageEngine;
+  if (!bytes) throw new Error('engine file missing');
+  return verified(await gunzipIfNeeded(bytes), WASM_SHA256, 'opencascade.full.wasm');
 }
 async function engineFactory() {
   const url = OCCT_DIR + 'opencascade.full.js';
@@ -94,6 +100,7 @@ ready.catch((e) => self.postMessage({ type: 'error', seq: -1, message: 'OpenCasc
 
 self.onmessage = async (e) => {
   const m = e.data || {};
+  if (m.type === 'engine') { engineFromPage(m.bytes || null); return; }
   let oc;
   try { oc = await ready; } catch (err) { if (m.type === 'import') self.postMessage({ type: 'importError', seq: m.seq, message: 'OpenCascade is not installed (run vendor/get-occt.ps1).' }); return; }
   // { type: 'import', seq, format: 'step' | 'iges', text } -> { type: 'imported', seq, result: OcctKernel.importFile(...) }
