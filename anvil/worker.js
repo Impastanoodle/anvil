@@ -6,11 +6,11 @@
 //   { type: 'rebuild', seq: <number>, model: <model JSON> }
 //     `model` is a structured clone of App.model; Kernel.rebuild writes sketch profiles onto this copy, which is
 //     harmless here and is how the reply's `profiles` are produced.
-//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge', feature, throughLimit }
+//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, throughLimit }
 //     a PropertyManager live preview (ui-core.js UI.previewInWorker): the model (its first `upto` features when set) is
 //     built with the rebuild cache, then the feature being edited is built on it without joining the part:
 //     'tool' Kernel.buildTool (extrude, revolve, sweep, loft, patterns, mirror, base flange), 'shell' Kernel.buildShell's
-//     cavity, 'edge' Kernel.buildEdgeFeature's cut / add.
+//     cavity, 'edge' Kernel.buildEdgeFeature's cut / add, 'flange' Kernel.buildFlange (edge flange, hem), 'jog' Kernel.buildJog.
 // Messages out:
 //   { type: 'built', seq, build: <Kernel.packBuild result>, edges: <Kernel.bodyEdges of its mesh> | null }
 //                                                              with the packed solids' ArrayBuffers transferred
@@ -38,8 +38,13 @@ function preview(m) {
   } else if (m.op === 'edge') {
     var r = Kernel.buildEdgeFeature(f, { body: b.body });
     tools = [r.cut || null, r.add || null]; info.count = r.count;
+  } else if (m.op === 'flange') {
+    tools = [Kernel.buildFlange(f, Kernel.resolvedModel(model).model, { body: b.body, flanges: {} })];
+  } else if (m.op === 'jog') {
+    var jg = Kernel.buildJog(f, Kernel.resolvedModel(model).model, { body: b.body, flanges: {}, tools: {} });
+    tools = [jg.first.union(jg.second)];
   } else {
-    var ctx = { tools: b.tools, planes: b.planes, sketches: {}, body: b.body, throughLimit: m.throughLimit };
+    var ctx ={ tools: b.tools, planes: b.planes, sketches: {}, body: b.body, throughLimit: m.throughLimit };
     tools = [Kernel.buildTool(f, Kernel.resolvedModel(model).model, ctx) || null];
   }
   var packed = tools.map(function (t) { return t ? t.pack() : null; }), transfer = [];

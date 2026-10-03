@@ -1107,7 +1107,7 @@ var UI = (function () {
     if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
   function frame() {
-    render();
+    if (!(App.holdFrameUntil > performance.now())) render();   // ui-occt.js: keep OpenCascade's last frame while its next solid builds (smooth/responsive)
     requestAnimationFrame(frame);
   }
 
@@ -1367,7 +1367,7 @@ var UI = (function () {
   // ---- PropertyManager live previews in the worker (smooth/responsive). One preview in flight at a time; a request
   // made meanwhile waits as `pending`, and a newer one replaces it (its promise resolves to { superseded: true }), so
   // typing or spinning a value never queues stale previews and the main thread only unpacks the result.
-  // req: { op: 'tool' | 'shell' | 'edge', feature, upto: feature count or null, throughLimit }
+  // req: { op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, upto: feature count or null, throughLimit }
   // -> Promise of { tools: [CSG | null], info, ms } (rejects with the kernel's message), or null when the worker is
   // off (the caller then previews on the main thread); a promise may also resolve to null when the worker dies.
   var pv = { seq: 0, inflight: null, pending: null };

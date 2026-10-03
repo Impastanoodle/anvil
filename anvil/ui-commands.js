@@ -251,7 +251,7 @@
   // blocks input. The preview on screen is replaced only when the new one is ready (no empty frame in between); an
   // answer older than the one shown, or for a PropertyManager that has closed, is dropped; while one preview builds,
   // only the newest request waits behind it. Without the worker, o.sync() previews on the main thread as before.
-  // o: { op: 'tool' | 'shell' | 'edge', feature, upto (feature count to build on, null: the whole part), throughLimit,
+  // o: { op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, upto (feature count to build on, null: the whole part), throughLimit,
   //      mats: [material per returned solid], sync: fn(), done: fn(result), fail: fn(message) }
   var lp = { seq: 0, shown: 0, last: null };
   function addPreviewMesh(tool, mat) {
@@ -1329,7 +1329,26 @@
       delete out.useDefaultReliefWidth; delete out.reliefWidthValue; delete out.useDefaultReliefDepth; delete out.reliefDepthValue;
       return out;
     }
+    function flangeStatus(feat) {
+      var ne = edgeList.length || (feat.edges || []).length;   // editing: the picks are on the sheet before this feature
+      var R = feat.radius != null ? feat.radius : sheet.bendRadius;
+      var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);
+      var extra = '';
+      if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
+      if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
+      UI.setStatus(titles[kind] + ' preview: ' + ne + ' edge' + (ne === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ')' + extra + '.');
+    }
+    // built in the worker (livePreview); previewSync without it
     function preview() {
+      if (!f.edges.length) { lp.seq++; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
+      var feat;
+      try { feat = toFeature(f); } catch (e) { lp.seq++; UI.disposeGroup(UI.groups.preview); UI.setStatus('Preview: ' + e.message); return; }
+      // editing: built on the sheet as it was before this feature (as the rebuild does; its edges are gone after it)
+      var upto = null;
+      if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
+      livePreview({ op: isJog ? 'jog' : 'flange', feature: feat, upto: upto, mats: [UI.mats.preview], sync: previewSync, done: function () { try { flangeStatus(feat); } catch (e) { } } });
+    }
+    function previewSync() {
       UI.disposeGroup(UI.groups.preview);
       if (!f.edges.length) { UI.setStatus('Click straight edges of the sheet to add ' + (isJog ? 'a jog' : isHem ? 'a hem' : 'flanges') + '.'); return; }
       try {
