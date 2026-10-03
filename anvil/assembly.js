@@ -1277,7 +1277,7 @@ var Assembly = (function () {
         if (!better) return;
         var gain = cur - now;
         cur = now;
-        if (gain < (quick ? 1e-4 : 1e-7) * Math.max(cur, 1e-9)) return;
+        if (gain < (quick ? 1e-5 : 1e-7) * Math.max(cur, 1e-9)) return;
       }
     }
 
@@ -2205,6 +2205,14 @@ var Assembly = (function () {
   //              qty per one of its parent).
   //   'parts'    Parts only: every part at any depth, quantities multiplied through the levels; no assembly rows.
   // The sub-assembly layouts come from the build when given (build.partBuilds), else from the sources.
+  // Each row has a `description` (r3/assembly3), as the drawing BOM's DESCRIPTION: the part's "Description" property
+  // (Materials.sheetProperty, links evaluated), else the model's description, else its Design Library name.
+  function describe(m, source) {
+    var d = '';
+    if (typeof Materials !== 'undefined' && Materials.sheetProperty) { try { d = String(Materials.sheetProperty(m, 'Description') || ''); } catch (e) { d = ''; } }
+    if (!d.trim()) d = m.description || (source && source.example != null ? String(source.example) : '');
+    return d;
+  }
   function bom(model, build, opts) {
     opts = opts || {};
     var type = opts.type === 'indented' || opts.type === 'parts' ? opts.type : 'top';
@@ -2214,10 +2222,11 @@ var Assembly = (function () {
       if (!names[key]) {
         var r = null;
         try { r = resolveSource(c.source); } catch (e) { r = null; }
-        names[key] = { name: c.source && c.source.file != null ? String(c.source.file) : (r && r.model && r.model.name) || baseName(c.name), kind: r ? r.kind : 'part', model: r ? r.model : null, broken: !r };
+        names[key] = { name: c.source && c.source.file != null ? String(c.source.file) : (r && r.model && r.model.name) || baseName(c.name), kind: r ? r.kind : 'part', model: r ? r.model : null, broken: !r,
+          description: r && r.model ? describe(r.model, c.source) : '' };
       }
       var inf = names[key];
-      return { key: key, name: inf.name, kind: inf.kind, broken: inf.broken, sub: inf.kind === 'assembly' ? { model: pb && pb.model ? pb.model : inf.model, build: pb && pb.assembly ? pb : null } : null };
+      return { key: key, name: inf.name, description: inf.description, kind: inf.kind, broken: inf.broken, sub: inf.kind === 'assembly' ? { model: pb && pb.model ? pb.model : inf.model, build: pb && pb.assembly ? pb : null } : null };
     }
     function groups(m, b) {
       var out = [], by = {};
@@ -2227,14 +2236,14 @@ var Assembly = (function () {
         var it = info(c, b && b.partBuilds ? b.partBuilds[c.id] : null);
         if (it.broken) return;
         var g = by[it.key];
-        if (!g) { g = by[it.key] = { key: it.key, name: it.name, kind: it.kind, sub: it.sub, components: [], file: c.source && c.source.file != null ? String(c.source.file) : null }; out.push(g); }
+        if (!g) { g = by[it.key] = { key: it.key, name: it.name, description: it.description, kind: it.kind, sub: it.sub, components: [], file: c.source && c.source.file != null ? String(c.source.file) : null }; out.push(g); }
         g.components.push(c.id);
       });
       return out;
     }
     var rows = [];
     function row(g, item, level, qty) {
-      var r = { item: String(item), level: level, name: g.name, kind: g.kind, key: g.key, qty: qty, components: g.components.slice() };
+      var r = { item: String(item), level: level, name: g.name, description: g.description || '', kind: g.kind, key: g.key, qty: qty, components: g.components.slice() };
       if (g.file) r.file = g.file;
       rows.push(r);
       return r;

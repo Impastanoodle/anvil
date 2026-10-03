@@ -356,7 +356,7 @@
     var g = bm.geometry, pa = g.getAttribute('position'), na = g.getAttribute('normal');
     var vb = new Int32Array(m.triCount * 3);
     m.faces.forEach(function (f) { for (var t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
-    var st = { bm: bm, mesh: m, base: comps.map(function (c) { return placeOf(c, offs); }), ids: comps.map(function (c) { return c.id; }),
+    var st = { bm: bm, mesh: m, base: comps.map(function (c) { return drawnAt && drawnAt.mesh === m && drawnAt.pl[c.id] ? drawnAt.pl[c.id] : placeOf(c, offs); }), ids: comps.map(function (c) { return c.id; }),
       origPos: pa, origNorm: na, pos0: new Float32Array(pa.array), norm0: na ? new Float32Array(na.array) : null, vb: vb, hidden: [] };
     st.pos = new THREE.BufferAttribute(new Float32Array(st.pos0), 3);
     st.norm = na ? new THREE.BufferAttribute(new Float32Array(st.norm0), 3) : null;
@@ -542,7 +542,13 @@
   UI.asmPose = { begin: poseBegin, apply: function (model, explode) { stopGlide(false); return poseApply(model, explode); },
     end: function () { stopGlide(false); poseEnd(); }, active: function () { return !!pose; }, capture: capture, glide: glide, gliding: function () { return !!glideTok; } };
   // a rebuild while a pose is shown (an undo, a script) replaced the drawn mesh: drop the pose, keep the new build
-  (UI.onBuild = UI.onBuild || []).push(function () { stopGlide(false); if (pose && (UI.getBodyMesh() !== pose.bm || App.mesh !== pose.mesh)) poseEnd(true); });
+  // where every component was when the mesh on screen was built (a drag solve moves App.model before the pose begins)
+  var drawnAt = null;
+  (UI.onBuild = UI.onBuild || []).push(function () {
+    stopGlide(false);
+    if (pose && (UI.getBodyMesh() !== pose.bm || App.mesh !== pose.mesh)) poseEnd(true);
+    drawnAt = isAsm() && App.build && App.build.assembly ? { mesh: App.mesh, pl: capture() } : null;
+  });
 
   // ---- edges of an assembly mesh from its parts' edges (r3/assembly3). Kernel.bodyEdges over the whole assembly mesh
   // is most of a rebuild (160 ms on a plate with 30 pins); each part's edges are found once, on its own mesh (kept
@@ -1052,11 +1058,11 @@
     var table = el('table', { id: 'bom-table', class: 'bom-table' });
     function fill() {
       table.innerHTML = '';
-      table.appendChild(el('tr', {}, ['ITEM NO.', 'PART NUMBER', 'QTY.'].map(function (h) { return el('th', { text: h }); })));
+      table.appendChild(el('tr', {}, ['ITEM NO.', 'PART NUMBER', 'DESCRIPTION', 'QTY.'].map(function (h) { return el('th', { text: h }); })));   // DESCRIPTION: r3/assembly3
       bomRows(sel.value).forEach(function (r) {
         var nm = el('td', { text: r.name + (r.kind === 'assembly' ? ' (assembly)' : '') + (r.file ? ' ↗' : '') });
         nm.style.paddingLeft = (6 + 14 * r.level) + 'px';
-        var tr = el('tr', { class: 'bom-row', 'data-item': r.item }, [el('td', { text: r.item }), nm, el('td', { text: String(r.qty) })]);
+        var tr = el('tr', { class: 'bom-row', 'data-item': r.item }, [el('td', { text: r.item }), nm, el('td', { class: 'bom-desc', text: r.description || '' }), el('td', { text: String(r.qty) })]);
         table.appendChild(tr);
       });
     }
@@ -1119,7 +1125,7 @@
     A.editPart = function (idOrName) { var c = isAsm() ? AS.findComponent(App.model, idOrName) : null; return c ? editPart(c.id) : fail('Unknown component ' + JSON.stringify(idOrName)); };
     A.returnToAssembly = function () { return returnToAssembly(); };
     A.docStack = function () { return UI.asmDocs.stack(); };
-    A.bom = function (type) { return bomRows(type || 'top').map(function (r) { return { item: r.item, level: r.level, name: r.name, kind: r.kind, qty: r.qty, file: r.file || null }; }); };
+    A.bom = function (type) { return bomRows(type || 'top').map(function (r) { return { item: r.item, level: r.level, name: r.name, description: r.description || '', kind: r.kind, qty: r.qty, file: r.file || null }; }); };
     A.packAndGo = function () { return isAsm() ? AS.packAndGo(App.model) : null; };
     A.saveReferences = function () { return isAsm() ? AS.saveReferences(App.model) : []; };
     A.explodedViews = function () {
