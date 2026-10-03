@@ -401,6 +401,20 @@ var Drawing = (function () {
       [0, 1].forEach(function (end) {
         var p = end ? [l[2], l[3]] : [l[0], l[1]], q0 = end ? [l[0], l[1]] : [l[2], l[3]], L = Math.hypot(p[0] - q0[0], p[1] - q0[1]);
         if (L < 1e-9 || !free(p, l, epsAt(p))) return;
+        // a line broken into pieces (an edge seen nearly end-on, its pieces hidden in turn by the facets beside it: the
+        // Tray's bend mitres in the Top view on OpenCascade, 0.005-0.03 mm apart): the next piece running on ahead,
+        // its near end free too, within R: the end is carried onto that end (r9/drawings9)
+        var ud = [(p[0] - q0[0]) / L, (p[1] - q0[1]) / L], join = null, jd = R;
+        lines.forEach(function (o) {
+          if (o === l || !near(p, o, R)) return;
+          [0, 1].forEach(function (oe) {
+            var p2 = oe ? [o[2], o[3]] : [o[0], o[1]], q2 = oe ? [o[0], o[1]] : [o[2], o[3]], gx = p2[0] - p[0], gy = p2[1] - p[1], g = Math.hypot(gx, gy), Lo = Math.hypot(q2[0] - p2[0], q2[1] - p2[1]);
+            if (!(g < jd) || !(Lo > 1e-9) || gx * ud[0] + gy * ud[1] < 0.95 * g || ((q2[0] - p2[0]) * ud[0] + (q2[1] - p2[1]) * ud[1]) < 0.95 * Lo) return;
+            if (!free(p2, o, epsAt(p2), l)) return;
+            jd = g; join = p2;
+          });
+        });
+        if (join) { if (end) { l[2] = join[0]; l[3] = join[1]; } else { l[0] = join[0]; l[1] = join[1]; } moved = true; return; }
         var best = null, bd = Math.min(R, L * 0.2);
         lines.forEach(function (o) { if (o === l || !near(p, o, bd)) return; var s = segD(p, o); if (s.d < bd) { bd = s.d; best = { o: o, q: s.q }; } });
         if (!best) return;
@@ -436,6 +450,7 @@ var Drawing = (function () {
   // (meshCurves) also gives arcs: { visible, hidden } ({ c, r, a0, a1 degrees CCW, body, src: 'arc' | 'circle' }),
   // ellipses: { visible, hidden } ({ c, ax, ay, t0, t1, full, body }: the point at t is c + cos t ax + sin t ay),
   // arcsAll, and exact: true; its circles carry exact: true.
+  // opts._noCrease (tests only, r9/drawings9): smooth edges are never turned into creases or seams, to compare.
   function projectView(mesh, orientName, opts) {
     opts = opts || {};
     var O = frameOf(orientName), e = O.e, U = O.u, Vv = O.v;
@@ -545,7 +560,7 @@ var Drawing = (function () {
       return hi > lo ? [lo, hi] : null;
     }
 
-    var vis = [], hid = [], tan = [], tanOn = opts.tangent === 'visible' || opts.tangent === 'font';
+    var vis = [], hid = [], tan = [], fsil = [], tanOn =opts.tangent === 'visible' || opts.tangent === 'font';
     // true curves: edges on a circle or arc of the kernel's analytic records are collected per curve (as angle
     // intervals) and drawn as exact circles, arcs, ellipses or, edge-on, exact lines; silhouettes of cylinders and
     // cones are their exact tangent generators; facets of one analytic surface never show the edge between them
@@ -578,7 +593,7 @@ var Drawing = (function () {
       // faces meeting under 23° count as smooth (facets of a curved face); where both faces' true normals are known
       // (surface records, or flat faces that are not facets of a curved one) a real crease, a shallow chamfer or a
       // drafted face meeting another feature, is drawn as an edge instead of a tangent edge (r5/drawings5)
-      if (ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && creased(ed)) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: false };
+      if (!opts._noCrease && ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && (seam && ei != null && seam[ei] || creased(ed))) ed = { a: ed.a, b: ed.b, faces: ed.faces, normals: ed.normals, smooth: false };
       if (ed.smooth || sameSurf) {
         var s0 = V.dot(ed.normals[0], e) > 1e-9, s1 = V.dot(ed.normals[1], e) > 1e-9;
         if (s0 === s1) {
@@ -747,6 +762,8 @@ var Drawing = (function () {
       }
       hidden.forEach(function (iv) { seg(t, iv[0], vis); seg(iv[0], iv[1], hid); t = iv[1]; });
       seg(t, 1, vis);
+      // silhouettes of facets with no surface record, for dropStubs (r9/drawings9)
+      if (ed.smooth && !sameSurf && !ed.exactDone && ed.faces.length === 2 && !(CV && (CV.faceSurf[ed.faces[0]] || CV.faceSurf[ed.faces[1]]))) fsil.push([a2[0], a2[1], b2[0], b2[1]]);
       if (A !== ed.a || ed.isect) silh.push(a2, b2);
     }
     // the feature that made a mesh face (its polygons' shared tag), or null
@@ -800,6 +817,78 @@ var Drawing = (function () {
     function creased(ed) {
       var m = V.scale(V.add(ed.a, ed.b), 0.5), n0 = trueNormal(ed.faces[0], m), n1 = n0 && trueNormal(ed.faces[1], m);
       return !!n1 && V.dot(n0, n1) < COS_CREASE;
+    }
+    // seamRuns() (r9/drawings9): an edge between two surfaces is drawn whole when any of it is a crease, as SolidWorks
+    // draws a B-rep edge: a mitre seam of a swept tube or a sheet-metal bend runs into points where the two surfaces
+    // turn tangent, and its pieces there (under 2° on OpenCascade's true normals, under 23° between Anvil's facets)
+    // were dropped: the Handlebar's mitre ellipses stopped 0.2-1.9 mm short, the Tray's bend mitres 0.55 mm short of
+    // the base. -> seam[i] (meshEdges index) set for smooth pieces drawn as edges.
+    // B-rep meshes (faces carry OpenCascade face ids): every smooth piece between the same two B-rep faces connected
+    // to a creased / sharp piece between them. Other meshes: from a sharp piece that is a shallow crease (under 40°
+    // between its facets) and ends where no other sharp piece does, along the smooth pieces between two faces of no
+    // common surface that run on in its direction (turning under 30° per piece), at most 16 pieces / 8% of the size.
+    var seam = null;
+    function seamRuns() {
+      var E = meshEdges(mesh), n = E.length, st = new Int8Array(n), at = {}, out = new Uint8Array(n), any = false;
+      function bf(fi) { var f = mesh.faces[fi], p = f.polys && f.polys[0]; return (f.body || 0) + ':' + (p && p.face != null ? p.face : 'x' + fi); }
+      for (var i = 0; i < n; i++) {
+        var ed = E[i];
+        if (!ed.smooth) st[i] = 1;
+        else if (ed.faces.length === 2) {
+          var fs0 = CV && CV.faceSurf[ed.faces[0]], fs1 = CV && CV.faceSurf[ed.faces[1]];
+          if (fs0 && fs1 && fs0.key === fs1.key) continue;
+          if (brepMesh && bf(ed.faces[0]) === bf(ed.faces[1])) continue;
+          st[i] = creased(ed) ? 1 : 2;
+          if (st[i] === 2) any = true;
+        }
+        if (st[i]) [ed.a, ed.b].forEach(function (p) { var k = vKey(p); (at[k] || (at[k] = [])).push(i); });
+      }
+      if (!any) return null;
+      if (brepMesh) {
+        // connected runs per B-rep face pair
+        var pk = [], seen = new Uint8Array(n);
+        for (var j = 0; j < n; j++) if (st[j]) { var a = bf(E[j].faces[0]), b = E[j].faces.length > 1 ? bf(E[j].faces[1]) : ''; pk[j] = a < b ? a + '|' + b : b + '|' + a; }
+        for (var s = 0; s < n; s++) {
+          if (st[s] !== 2 || seen[s]) continue;
+          var comp = [], stack = [s], hasSharp = false;
+          seen[s] = 1;
+          while (stack.length) {
+            var c = stack.pop(); comp.push(c);
+            if (st[c] === 1) hasSharp = true;
+            [E[c].a, E[c].b].forEach(function (p) {
+              (at[vKey(p)] || []).forEach(function (o) { if (!seen[o] && pk[o] === pk[c]) { seen[o] = 1; stack.push(o); } });
+            });
+          }
+          if (hasSharp) comp.forEach(function (c2) { if (st[c2] === 2) out[c2] = 1; });
+        }
+        return out;
+      }
+      var maxL = 0.08 * diag, cosTurn = Math.cos(30 * Math.PI / 180), cosShallow = Math.cos(40 * Math.PI / 180);
+      for (var r = 0; r < n; r++) {
+        if (st[r] !== 1 || E[r].faces.length !== 2 || V.dot(E[r].normals[0], E[r].normals[1]) < cosShallow) continue;
+        [0, 1].forEach(function (end) {
+          var v = end ? E[r].b : E[r].a, from = end ? E[r].a : E[r].b, run = [], L = 0, cur = r;
+          if ((at[vKey(v)] || []).filter(function (o) { return st[o] === 1; }).length !== 1) return;
+          var d = V.norm(V.sub(v, from));
+          while (run.length < 16) {
+            var best = -1, bd = cosTurn, bo = null;
+            (at[vKey(v)] || []).forEach(function (o) {
+              if (o === cur || st[o] !== 2 || out[o] || run.indexOf(o) >= 0) return;
+              var oe = vKey(E[o].a) === vKey(v) ? E[o].b : E[o].a, w = V.sub(oe, v), lw = V.len(w);
+              if (lw < 1e-12) return;
+              var c = V.dot(w, d) / lw;
+              if (c > bd) { bd = c; best = o; bo = oe; }
+            });
+            if (best < 0) break;
+            L += V.len(V.sub(bo, v));
+            if (L > maxL) { run = []; break; }
+            run.push(best); d = V.norm(V.sub(bo, v)); v = bo; cur = best;
+            if ((at[vKey(v)] || []).some(function (o) { return o !== best && (st[o] === 1 || out[o]); })) break;   // joined
+          }
+          run.forEach(function (o) { out[o] = 1; });
+        });
+      }
+      return out;
     }
     // Tangent pieces on no known curve (tfree): connected runs of them whose vertices all lie on one circle in space (an
     // Anvil fillet's run-out onto a cap: its facets carry no surface record) are that exact circle, drawn as a circle,
@@ -858,15 +947,18 @@ var Drawing = (function () {
       fsCache[fi] = r;
       return r;
     }
+    seam = opts._noCrease ? null : seamRuns();
     meshEdges(mesh).forEach(edgePiece);
-    // exact silhouettes: the facet silhouette pieces of one generator (same surface, same side) are chained along the
+    // exact silhouettes:the facet silhouette pieces of one generator (same surface, same side) are chained along the
     // axis; a chain whose two ends lie on true circles or arcs of that surface's axis that pass through the generator
     // (an untrimmed stretch of cylinder or cone between caps, steps or rims) is drawn as the exact tangent line;
     // a chain ending on a trimmed boundary (a cone cut by a flat) keeps its facet edges
     if (pend.length) {
       var runs = {}, rorder = [], tz = diag * 1e-7 + 1e-12;
       pend.forEach(function (p) {
-        var key = p.key + '|' + (mesh.faces[p.ed.faces[0]].body || 0) + '|' + p.ex[4].map(function (x) { return Math.round(x * 1e6); }).join(',');
+        // (and per record origin: z is measured from it, and OpenCascade gives two faces of one cylinder, the Pulley's
+        // rim either side of the groove, records with different origins, r9/drawings9)
+        var key = p.key + '|' + (mesh.faces[p.ed.faces[0]].body || 0) + '|' + p.ex[4].map(function (x) { return Math.round(x * 1e6); }).join(',') + '|' + Math.round(V.dot(p.S.o, p.S.d) / (tz * 1000));
         if (!runs[key]) { runs[key] = []; rorder.push(key); }
         runs[key].push(p);
       });
@@ -1191,6 +1283,45 @@ var Drawing = (function () {
         else joinRuns(cov, GAPA).forEach(function (iv) { exact.arcsAll.push({ c: cg.c.slice(), r: R, a0: iv[0] * 180 / Math.PI, a1: iv[1] * 180 / Math.PI, body: cg.border[0], src: cg.arc ? 'arc' : 'circle' }); });
       });
     }
+    // dropStubs (r9/drawings9): an exact silhouette line (a cylinder's or cone's generator) ends where its face does; a
+    // single piece of facet silhouette running on from that end (within 30°) to a free end is the facets' version
+    // of a contour that turns away behind the face (the Rounded handle's post running into its concave root fillet:
+    // 0.64 mm past the true end in the isometric, where SolidWorks ends the line): dropped when under 2% of the size
+    function dropStubs(lines, ells, arcs, circs) {
+      var eps = diag * 1e-7 + 1e-9, maxL = diag * 0.02, cos30 = Math.cos(Math.PI / 6);
+      function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy); }
+      function curveNear(p) {
+        var cs = [];
+        ells.forEach(function (q) { cs.push([q.c, q.ax, q.ay, q.full ? 0 : q.t0, q.full ? TWO_PI : q.t1]); });
+        arcs.forEach(function (a) { cs.push([a.c, [a.r, 0], [0, a.r], a.a0 * Math.PI / 180, a.a1 * Math.PI / 180]); });
+        circs.forEach(function (c) { cs.push([c.c, [c.r, 0], [0, c.r], 0, TWO_PI]); });
+        return cs.some(function (C) {
+          for (var i = 0; i <= 720; i++) { var t = C[3] + (C[4] - C[3]) * i / 720; if (Math.hypot(C[0][0] + Math.cos(t) * C[1][0] + Math.sin(t) * C[2][0] - p[0], C[0][1] + Math.cos(t) * C[1][1] + Math.sin(t) * C[2][1] - p[1]) < 1e-3 * (1 + Math.hypot(C[1][0], C[1][1]))) return true; }
+          return false;
+        });
+      }
+      return lines.filter(function (l) {
+        var L = Math.hypot(l[2] - l[0], l[3] - l[1]);
+        if (!(L > 0) || L > maxL) return true;
+        var mid = [(l[0] + l[2]) / 2, (l[1] + l[3]) / 2];
+        if (!fsil.some(function (s) { return segD(mid, s) < eps * 10; })) return true;
+        for (var end = 0; end < 2; end++) {
+          var p = end ? [l[2], l[3]] : [l[0], l[1]], q = end ? [l[0], l[1]] : [l[2], l[3]];
+          for (var i = 0; i + 1 < silh.length; i += 2) {
+            for (var se = 0; se < 2; se++) {
+              var x = silh[i + se], y = silh[i + 1 - se], Ls = Math.hypot(x[0] - y[0], x[1] - y[1]);
+              if (Math.hypot(x[0] - p[0], x[1] - p[1]) > eps * 10 || !(Ls > L)) continue;
+              // the stub runs on from the exact line's end x (from y through x, on past it)
+              if (((x[0] - y[0]) * (q[0] - p[0]) + (x[1] - y[1]) * (q[1] - p[1])) / (Ls * L) < cos30) continue;
+              // and its far end touches nothing
+              if (lines.some(function (o) { return o !== l && segD(q, o) < eps * 10; }) || curveNear(q)) continue;
+              return false;
+            }
+          }
+        }
+        return true;
+      });
+    }
     var merged = mergeCollinear(vis, hid, diag);
     var vc = extractCircles(merged.visible, diag), hc = extractCircles(merged.hidden, diag);
     // every edge whole, visible or not: what user dimensions reattach to after a part change
@@ -1214,6 +1345,7 @@ var Drawing = (function () {
     };
     if (CV) closeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, chordTol());
     closeFreeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, chordTol());
+    if (fsil.length && silh.length) res.lines.visible = dropStubs(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible);
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };

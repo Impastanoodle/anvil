@@ -2291,7 +2291,10 @@ var Kernel = (function () {
           // the chord must be a boundary of the facet on the curve: its midpoint no nearer the axis than the chord of
           // the facet it lies on (a straight edge across the face would be)
           if (len(sub(scale(add(A, B), 0.5), c)) < lo) continue;
-          g = { key: sk + '|z' + Math.round(za * 1e6), center: c, normal: S.d.slice(), radius: Rz, surface: S };
+          // keyed by the record's origin as well as za: two faces of one cylinder can carry records with different
+          // origins, and a rim at za of one is not the other's (OpenCascade's Pulley: y = 6 and y = 20) (r9/drawings9)
+          var dsg = (S.d[0] < -1e-9 || (Math.abs(S.d[0]) <= 1e-9 && (S.d[1] < -1e-9 || (Math.abs(S.d[1]) <= 1e-9 && S.d[2] < 0)))) ? -1 : 1;
+          g = { key: sk + '|o' + Math.round(dsg * dot(S.o, S.d) * 1e6) + '|z' + Math.round(za * 1e6), center: c, normal: S.d.slice(), radius: Rz, surface: S };
         } else if (F.P && Math.abs(dot(norm(cross(S.d, sub(A, S.o))), sub(B, S.o))) < 1e-9 * scl) {
           // a profile arc of a partial revolve: in a meridian half-plane, both ends on the tube circle
           // the radial direction of the half-plane, from the end farther from the axis (the other may be a pole)
