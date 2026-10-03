@@ -338,6 +338,174 @@
     return baseDragHook ? baseDragHook(p, ev) : null;
   };
 
+  // ---- SmartMates (r4/asm4): Alt + drag a face of a floating component onto a face of another component. While the
+  // cursor is over a face that can take a mate (plane on plane: Coincident, cylinder in cylinder: Concentric, cylinder
+  // on plane: Tangent) the component is shown mated there (a pose-only solve with the mate added, no rebuild); dropping
+  // adds the mate (one undo step), dropping anywhere else changes nothing. ui-sketch.js asks this before Alt + drag
+  // rotates the view.
+  var SMART_TYPES = { 'face|face': 'coincident', 'cylinder|cylinder': 'concentric', 'cylinder|face': 'tangent', 'face|cylinder': 'tangent' };
+  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent' };
+  function refKind(r) { return r ? (r.cylinder ? 'cylinder' : r.face ? 'face' : null) : null; }
+  // the face under (mx, my) on a component other than body index `skip` (the pose may have moved that one under it)
+  var smartRay = null;
+  function pickOther(mx, my, skip) {
+    var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
+    if (!bm || !m || !UI.camera || !UI.size) return null;
+    if (bm.geometry.index) { var h0 = UI.pickFace(mx, my), f0 = h0 && m.faces[h0.index]; return f0 && (f0.body || 0) !== skip ? h0 : null; }   // hidden bodies: the plain pick
+    smartRay = smartRay || new THREE.Raycaster();
+    smartRay.setFromCamera(new THREE.Vector2(mx / UI.size.w * 2 - 1, -(my / UI.size.h) * 2 + 1), UI.camera);
+    var hits = smartRay.intersectObject(bm, false), faces = m.faces;
+    for (var i = 0; i < hits.length; i++) {
+      var tri = hits[i].faceIndex, lo = 0, hi = faces.length - 1, fi = -1;
+      while (lo <= hi) { var mid = (lo + hi) >> 1, f = faces[mid]; if (tri < f.start) hi = mid - 1; else if (tri >= f.start + f.count) lo = mid + 1; else { fi = mid; break; } }
+      if (fi < 0 || (faces[fi].body || 0) === skip) continue;
+      var sec = App.view && App.view.section && App.view.section.plane;
+      if (sec && sec.distanceToPoint(hits[i].point) < 0) continue;
+      return { kind: 'face', index: fi, point: [hits[i].point.x, hits[i].point.y, hits[i].point.z] };
+    }
+    return null;
+  }
+  function smartMateHook(p, ev) {
+    if (!isAsm() || App.command || App.mode === 'sketch' || !App.mesh || !App.build || !App.build.assembly || !UI.asmPose) return null;
+    var hit = UI.pickFace(p[0], p[1]), face = hit && App.mesh.faces[hit.index];
+    var ci = face ? face.body || 0 : -1, c = ci >= 0 ? (App.model.components || [])[ci] : null;
+    if (!c) return null;
+    if (c.fixed) return null;   // Alt + drag on a fixed component rotates the view
+    if (c.pattern != null) { UI.setStatus(c.name + ' is a pattern instance: SmartMate its seed ' + compName(c.seed) + '.'); return null; }
+    var src = null;
+    try { src = AS.refFromPick(App.model, App.build, hit.index, hit.point, App.mesh); } catch (e) { src = null; }
+    if (!refKind(src)) return null;
+    var snap = JSON.stringify(App.model), raf = 0, last = null, cur = null, tries = {};
+    // the mate the cursor offers: { key, type, ref, ok, pb, model } (cached per target face)
+    function offer(q) {
+      var h = pickOther(q[0], q[1], ci), tf = h && App.mesh.faces[h.index];
+      if (!tf) return null;
+      var key = h.index, o = tries[key];
+      if (o) return o;
+      var ref = null;
+      try { ref = AS.refFromPick(App.model, App.build, h.index, h.point, App.mesh); } catch (e) { ref = null; }
+      var type = SMART_TYPES[refKind(src) + '|' + refKind(ref)];
+      o = tries[key] = { key: key, type: type, ref: ref, ok: false };
+      if (!type || !ref || ref.component === c.id) return o;
+      try {
+        var mm = JSON.parse(snap), mate = AS.addMate(mm, type, JSON.parse(JSON.stringify(src)), JSON.parse(JSON.stringify(ref)), {});
+        var pb = AS.rebuild(mm, App.asmCache, { poseOnly: true });
+        var r = pb.mates && pb.mates[mate.id];
+        o.ok = !!(r && !r.error);
+        o.error = r && r.error;
+        o.model = mm; o.pb = pb;
+      } catch (e2) { o.error = e2.message || String(e2); }
+      return o;
+    }
+    function show() {
+      raf = 0;
+      if (!last) return;
+      var o = offer(last);
+      if (!o && cur && cur.ok) return;   // between faces: keep the offered mate until another face is reached
+      cur = o;
+      if (o && o.ok) {
+        UI.asmPose.apply(o.model, o.pb.explode);
+        UI.setStatus('SmartMates: ' + SMART_NAMES[o.type] + ' — drop to add the mate.');
+      } else {
+        UI.asmPose.apply(JSON.parse(snap), App.build.explode);
+        UI.setStatus(o && o.type && o.error ? 'SmartMates: ' + SMART_NAMES[o.type] + ' not possible: ' + o.error
+          : 'SmartMates: drag ' + c.name + ' onto a face of another component (plane on plane, cylinder in cylinder, cylinder on plane).');
+      }
+    }
+    return {
+      component: c, smartMate: true,
+      start: function () { UI.setStatus('SmartMates: drag ' + c.name + ' onto a face of another component.'); },
+      move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
+      end: function (q) {
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        last = q;
+        var o = offer(q) || (cur && cur.ok ? cur : null);
+        if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
+        if (!o || !o.ok) { UI.setStatus('SmartMates: no mate added.'); return Promise.resolve(null); }
+        var type = o.type, a = src, b = o.ref;
+        return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), {}); },
+          function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + ').'; })
+          .catch(function (e) { UI.toast(e.message || String(e)); });
+      }
+    };
+  }
+  UI.smartMateHook = smartMateHook;
+
+  // ---- a mate picked in the FeatureManager shows what it holds (r4/asm4): its two faces are selected in the graphics
+  // area (App.sel / App.sel2 carry the mate id), as in SolidWorks; Delete then deletes the mate, not a component.
+  function sqDistTri(p, P, o) {   // squared distance from p to triangle o (offset into positions P)
+    var ax = P[o], ay = P[o + 1], az = P[o + 2], bx = P[o + 3], by = P[o + 4], bz = P[o + 5], cx = P[o + 6], cy = P[o + 7], cz = P[o + 8];
+    var abx = bx - ax, aby = by - ay, abz = bz - az, acx = cx - ax, acy = cy - ay, acz = cz - az, apx = p[0] - ax, apy = p[1] - ay, apz = p[2] - az;
+    var d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz, qx, qy, qz;
+    function at(x, y, z) { var dx = p[0] - x, dy = p[1] - y, dz = p[2] - z; return dx * dx + dy * dy + dz * dz; }
+    if (d1 <= 0 && d2 <= 0) return at(ax, ay, az);
+    var bpx = p[0] - bx, bpy = p[1] - by, bpz = p[2] - bz, d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
+    if (d3 >= 0 && d4 <= d3) return at(bx, by, bz);
+    var vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) { var v = d1 / (d1 - d3); return at(ax + abx * v, ay + aby * v, az + abz * v); }
+    var cpx = p[0] - cx, cpy = p[1] - cy, cpz = p[2] - cz, d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
+    if (d6 >= 0 && d5 <= d6) return at(cx, cy, cz);
+    var vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) { var w = d2 / (d2 - d6); return at(ax + acx * w, ay + acy * w, az + acz * w); }
+    var va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { var u = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return at(bx + (cx - bx) * u, by + (cy - by) * u, bz + (cz - bz) * u); }
+    var den = 1 / (va + vb + vc), sv = vb * den, sw = vc * den;
+    qx = ax + abx * sv + acx * sw; qy = ay + aby * sv + acy * sw; qz = az + abz * sv + acz * sw;
+    return at(qx, qy, qz);
+  }
+  // the face of App.mesh a mate reference lands on (its point placed like the component, through a sub-assembly path), or -1
+  function refFaceIndex(ref) {
+    var m = App.mesh, b = App.build;
+    if (!ref || ref.component == null || !m || !b || !b.assembly) return -1;
+    var pt = ref.face || ref.cylinder;
+    if (!pt) return -1;
+    var c = AS.findComponent(App.model, ref.component), ci = c ? (App.model.components || []).indexOf(c) : -1;
+    if (ci < 0) return -1;
+    var T = c.transform, pb = b.partBuilds && b.partBuilds[c.id];
+    (ref.path || []).forEach(function (id) {
+      var k = pb && pb.model ? AS.findComponent(pb.model, id) : null;
+      if (!k) return;
+      T = AS.composeTransforms(T, k.transform);
+      pb = pb.partBuilds && pb.partBuilds[k.id];
+    });
+    var w = AS.transformPoint(T, pt), off = b.explode && b.explode.offsets && b.explode.offsets[c.id];
+    if (off) w = [w[0] + off[0], w[1] + off[1], w[2] + off[2]];
+    var best = -1, bd = Infinity, P = m.positions;
+    for (var fi = 0; fi < m.faces.length; fi++) {
+      var f = m.faces[fi];
+      if ((f.body || 0) !== ci) continue;
+      for (var t = f.start; t < f.start + f.count; t++) { var d = sqDistTri(w, P, t * 9); if (d < bd) { bd = d; best = fi; } }
+    }
+    return bd < 1 ? best : -1;   // within 1 (squared): a facet of a true cylinder sits a chord height off its surface
+  }
+  UI.showMate = function (mt) {
+    if (!isAsm() || !mt) return false;
+    var ia = refFaceIndex(mt.a), ib = refFaceIndex(mt.b);
+    App.sel = ia >= 0 ? { kind: 'face', index: ia, mate: mt.id } : null;
+    App.sel2 = ib >= 0 ? { kind: 'face', index: ib, mate: mt.id } : null;
+    if (!App.sel && App.sel2) { App.sel = App.sel2; App.sel2 = null; }
+    if (UI.updateHighlights) UI.updateHighlights();
+    if (UI.requestRender) UI.requestRender();
+    return ia >= 0 || ib >= 0;
+  };
+  // a rebuild (the OpenCascade swap, an undo) renumbers the mesh faces: a shown mate is found again on the new mesh,
+  // after the swap has put its selection back by position (where a pin and its bore meet, that may be the wrong part)
+  (UI.onBuild = UI.onBuild || []).push(function () {
+    Promise.resolve().then(function () {
+      var id = App.sel && App.sel.mate;
+      if (id == null) return;
+      var mt = isAsm() ? AS.findMate(App.model, id) : null;
+      if (mt) UI.showMate(mt); else { App.sel = null; App.sel2 = null; if (UI.updateHighlights) UI.updateHighlights(); }
+    });
+  });
+  var baseDeleteSelection = UI.deleteSelection;
+  UI.deleteSelection = function () {
+    var id = App.sel && App.sel.mate;
+    var mt = id != null && isAsm() ? AS.findMate(App.model, id) : null;
+    if (mt && UI.confirmRemoveMate) { UI.confirmRemoveMate(mt); return; }
+    return baseDeleteSelection ? baseDeleteSelection.apply(this, arguments) : undefined;
+  };
+
   // ------------------------------------------------------------------ pose display (r3/assembly3)
   // While a component is dragged or an explode animation runs only rigid placements change, so instead of a full
   // rebuild per frame (bodies, the combined mesh, its B-rep edges: 40-60 ms on the Gear train) the viewport moves the
@@ -349,14 +517,56 @@
     var T = c && c.transform || {}, R = T.rotation || AS.IDENTITY, P = T.position || [0, 0, 0], o = offs && c ? offs[c.id] : null;
     return { R: R, P: o ? [P[0] + o[0], P[1] + o[1], P[2] + o[2]] : P };
   }
+  // a placement {R, P} followed by a relative one {R, P} (an inner component of a sub-assembly): A · B
+  function composePl(A, B) {
+    var a = A.R, b = B.R, R = new Array(9), r, k;
+    for (r = 0; r < 3; r++) for (k = 0; k < 3; k++) R[r * 3 + k] = a[r * 3] * b[k] + a[r * 3 + 1] * b[3 + k] + a[r * 3 + 2] * b[6 + k];
+    var p = B.P;
+    return { R: R, P: [a[0] * p[0] + a[1] * p[1] + a[2] * p[2] + A.P[0], a[3] * p[0] + a[4] * p[1] + a[5] * p[2] + A.P[1], a[6] * p[0] + a[7] * p[1] + a[8] * p[2] + A.P[2]] };
+  }
+  // where slot s of a pose is placed in `model` (an inner component of a Flexible sub-assembly by its flexState)
+  function slotPlace(s, offs, c) {
+    var n = placeOf(c, offs);
+    if (s.inner == null) return n;
+    var fs = c.flexState && c.flexState[s.inner];
+    return composePl(n, fs ? placeOf({ transform: fs }, null) : s.rel);
+  }
   function poseBegin() {
     var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
     if (!isAsm() || !bm || !m || !m.triCount || !App.build || !App.build.assembly || !UI.groups) return null;
     var comps = App.model.components || [], offs = App.build.explode && App.build.explode.offsets;
     var g = bm.geometry, pa = g.getAttribute('position'), na = g.getAttribute('normal');
-    var vb = new Int32Array(m.triCount * 3);
-    m.faces.forEach(function (f) { for (var t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
-    var st = { bm: bm, mesh: m, base: comps.map(function (c) { return drawnAt && drawnAt.mesh === m && drawnAt.pl[c.id] ? drawnAt.pl[c.id] : placeOf(c, offs); }), ids: comps.map(function (c) { return c.id; }),
+    var vb = new Int32Array(m.triCount * 3), t;
+    // r4/asm4: a slot per moving piece: each component, and each inner component of a Flexible sub-assembly (which
+    // changes shape as it moves: its inner components are placed by the new flexState, no rebuild per frame)
+    var slots = comps.map(function (c) { return { id: c.id, inner: null }; }), flexAt = {};
+    m.faces.forEach(function (f) { for (t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
+    if (comps.some(function (c) { return c.flexible; })) {
+      var parts = meshParts(m);
+      if (!parts) return null;
+      parts.forEach(function (p) {
+        var sb = App.build.partBuilds[p.c.id];
+        if (!p.c.flexible || !sb || !sb.flexible || !sb.model) return;
+        var at = flexAt[p.c.id] = {}, lf = p.pe.mesh.faces, ci = comps.indexOf(p.c);
+        function slotOf(ki) {
+          var ic = sb.model.components[ki];
+          if (!ic) return ci;
+          if (at[ki] == null) { at[ki] = slots.length; slots.push({ id: p.c.id, inner: ic.id, rel: placeOf(ic, null), of: ci }); }
+          return at[ki];
+        }
+        for (var k = 0; k < lf.length; k++) {
+          var tt = m.faces[p.idx[k]].start;
+          lf[k].polys.forEach(function (poly) {
+            var s = slotOf(poly.asmInner || 0), nt = Math.max(0, poly.vertices.length - 2);
+            for (var j = tt * 3; j < (tt + nt) * 3; j++) vb[j] = s;
+            tt += nt;
+          });
+        }
+      });
+    }
+    var base0 = comps.map(function (c) { return drawnAt && drawnAt.mesh === m && drawnAt.pl[c.id] ? drawnAt.pl[c.id] : placeOf(c, offs); });
+    var st = { bm: bm, mesh: m, slots: slots,
+      base: slots.map(function (s, i) { return s.inner == null ? base0[i] : composePl(base0[s.of], s.rel); }), ids: comps.map(function (c) { return c.id; }),
       origPos: pa, origNorm: na, pos0: new Float32Array(pa.array), norm0: na ? new Float32Array(na.array) : null, vb: vb, hidden: [] };
     st.pos = new THREE.BufferAttribute(new Float32Array(st.pos0), 3);
     st.norm = na ? new THREE.BufferAttribute(new Float32Array(st.norm0), 3) : null;
@@ -369,7 +579,10 @@
       if (o.userData && o.userData.silhouette) silMat = o.material; else { edgeMat = o.material; linesOn = o.visible; }
       st.hidden.push([o, o.visible]); o.visible = false;
     });
-    function bodyOfEdge(e) { var f = faces[e.faces[0]]; return f ? f.body || 0 : 0; }
+    function bodyOfEdge(e) {   // its slot (r4/asm4: an inner component of a Flexible sub-assembly by e.inner)
+      var f = faces[e.faces[0]], b = f ? f.body || 0 : 0, c = comps[b], at = c && flexAt[c.id];
+      return at && e.inner != null && at[e.inner] != null ? at[e.inner] : b;
+    }
     function shown(e) { for (var i = 0; i < e.faces.length; i++) { var f = faces[e.faces[i]]; if (f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0))) return true; } return false; }
     edges.forEach(function (e) {
       if (!e.faces || !e.faces.length || !shown(e)) return;
@@ -414,10 +627,10 @@
   // the delta of every component (R, t: x' = R x + t) from where it is drawn to its placement in `model`; null = still
   function poseDeltas(st, model, explode) {
     var offs = explode && explode.offsets, out = [], any = false;
-    st.ids.forEach(function (id, i) {
-      var c = AS.findComponent(model, id), b = st.base[i];
+    st.slots.forEach(function (s, i) {
+      var c = AS.findComponent(model, s.id), b = st.base[i];
       if (!c || !b) { out.push(null); return; }
-      var n = placeOf(c, offs), A = n.R, B = b.R, R = new Array(9), same = true, r, k;
+      var n = slotPlace(s, offs, c), A = n.R, B = b.R, R = new Array(9), same = true, r, k;
       for (r = 0; r < 3; r++) for (k = 0; k < 3; k++) R[r * 3 + k] = A[r * 3] * B[k * 3] + A[r * 3 + 1] * B[k * 3 + 1] + A[r * 3 + 2] * B[k * 3 + 2];   // A · Bᵀ
       var t = [n.P[0] - (R[0] * b.P[0] + R[1] * b.P[1] + R[2] * b.P[2]), n.P[1] - (R[3] * b.P[0] + R[4] * b.P[1] + R[5] * b.P[2]), n.P[2] - (R[6] * b.P[0] + R[7] * b.P[1] + R[8] * b.P[2])];
       for (k = 0; k < 9 && same; k++) if (Math.abs(R[k] - (k % 4 === 0 ? 1 : 0)) > 1e-12) same = false;
@@ -554,38 +767,123 @@
   // is most of a rebuild (160 ms on a plate with 30 pins); each part's edges are found once, on its own mesh (kept
   // with the part build), and placed like the component. ui-core.js edgesFor asks this first; null = the full search
   // (a component whose faces do not line up one to one with its part's, e.g. coplanar faces merged by rounding).
+  // r4/asm4: the part's seams, true curves (UI.annotateCurveEdges) and smooth normals (UI.analyticNormals) are found
+  // once per part build too and only placed: the returned list carries .curves (App.curves for this mesh), and
+  // UI.asmNormals(m) gives the mesh's smooth normals; a drag release no longer searches the whole assembly for curves
+  // (30-pin plate: curveSurfaces + curveEdges + annotate + normals 35-45 ms -> a few ms).
   function ekey(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
   function partEdges(pb) {
     if (pb.__asmEdges) return pb.__asmEdges;
-    var mesh = K.meshFromBody(pb.body), out = { mesh: mesh, edges: K.bodyEdges(mesh) };
+    // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different
+    // inner bodies merge there; mesh it the same way (body tags dropped) and keep each polygon's inner index (asmInner)
+    var body = pb.body, multi = body.polygons.some(function (p) { return p.body; });
+    if (multi) body = CSG.fromPolygons(body.polygons.map(function (p) { var q = p.clone(); q.asmInner = p.body || 0; return q; }));
+    var mesh = K.meshFromBody(body), out = { mesh: mesh, edges: K.bodyEdges(mesh), curves: null, normals: null };
+    // the inner body an edge bounds (a Flexible sub-assembly's pose moves it with that body): the one of a face holding
+    // a single inner body, else (two merged faces) the polygon whose side it lies on
+    var faceInner = multi ? mesh.faces.map(function (f) { var v = f.polys[0].asmInner; for (var j = 1; j < f.polys.length; j++) if (f.polys[j].asmInner !== v) return -1; return v; }) : null;
+    if (multi) out.edges.forEach(function (e) {
+      for (var f = 0; f < e.faces.length && e.inner == null; f++) if (faceInner[e.faces[f]] >= 0) e.inner = faceInner[e.faces[f]];
+      for (var i = 0; i < e.faces.length && e.inner == null; i++) {
+        var ps = mesh.faces[e.faces[i]].polys;
+        for (var j = 0; j < ps.length && e.inner == null; j++) {
+          var vs = ps[j].vertices;
+          for (var k = 0; k < vs.length; k++) {
+            var a = vs[k].pos, b = vs[(k + 1) % vs.length].pos;
+            if (K.pointSegmentDistance(e.mid, [a.x, a.y, a.z], [b.x, b.y, b.z]) < 1e-6) { e.inner = ps[j].asmInner; break; }
+          }
+        }
+      }
+    });
+    // an OpenCascade part: edges inside one B-rep face are seams (as ui-core.js edgesFor marks them)
+    var f0 = mesh.faces[0];
+    if (f0 && f0.polys && f0.polys[0] && f0.polys[0].face != null) {
+      out.edges.forEach(function (e) {
+        if (e.faces.length !== 2) return;
+        var a = mesh.faces[e.faces[0]].polys[0].face, b = mesh.faces[e.faces[1]].polys[0].face;
+        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+      });
+    }
+    try { out.curves = UI.annotateCurveEdges ? UI.annotateCurveEdges(mesh, out.edges) : null; } catch (e) { out.curves = null; }
+    try { out.normals = UI.analyticNormals ? UI.analyticNormals(mesh) : null; } catch (e) { out.normals = null; }
     try { Object.defineProperty(pb, '__asmEdges', { value: out, enumerable: false, configurable: true, writable: true }); } catch (e) { }
     return out;
   }
   var K = window.Kernel;
-  UI.asmEdges = function (m) {
+  function setHidden(o, k, v) { try { Object.defineProperty(o, k, { value: v, enumerable: false, configurable: true, writable: true }); } catch (e) { o[k] = v; } }
+  // the parts of mesh m (App.mesh of the assembly build): [{ c, pe, idx (world face indices), R, P }], or null when a
+  // component's faces do not line up one to one with its part mesh's
+  function meshParts(m) {
     var b = App.build;
     if (!isAsm() || !b || !b.assembly || !b.partBuilds || !m || m !== App.mesh || !K || !K.bodyEdges) return null;
-    var comps = App.model.components || [], offs = b.explode && b.explode.offsets, byBody = comps.map(function () { return []; }), list = [];
+    if (m.__asmParts !== undefined) return m.__asmParts;
+    var comps = App.model.components || [], offs = b.explode && b.explode.offsets, byBody = comps.map(function () { return []; }), out = [];
+    setHidden(m, '__asmParts', null);
     for (var fi = 0; fi < m.faces.length; fi++) { var bi = m.faces[fi].body || 0; if (!byBody[bi]) return null; byBody[bi].push(fi); }
     for (var i = 0; i < comps.length; i++) {
       var c = comps[i], pb = b.partBuilds[c.id], idx = byBody[i];
       if (!idx.length) continue;
       if (!pb || !pb.body) return null;
-      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R, P = pl.P;
+      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R;
       if (lf.length !== idx.length) return null;
+      for (var k = 0; k < lf.length; k++) {
+        var wf = m.faces[idx[k]], v = lf[k].normal, n = [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
+        if (wf.polys.length !== lf[k].polys.length || wf.count !== lf[k].count || Math.abs(n[0] - wf.normal[0]) + Math.abs(n[1] - wf.normal[1]) + Math.abs(n[2] - wf.normal[2]) > 1e-6) return null;
+        // the same corners in the same order (a mirrored instance whose triangles were turned over is not)
+        var ws = wf.start * 9, ls = lf[k].start * 9, lp = pe.mesh.positions, wp = m.positions, P = pl.P;
+        for (var q = 0; q < 9 && wf.count; q += 3) {
+          var x = lp[ls + q], y = lp[ls + q + 1], z = lp[ls + q + 2];
+          if (Math.abs(R[0] * x + R[1] * y + R[2] * z + P[0] - wp[ws + q]) + Math.abs(R[3] * x + R[4] * y + R[5] * z + P[1] - wp[ws + q + 1]) + Math.abs(R[6] * x + R[7] * y + R[8] * z + P[2] - wp[ws + q + 2]) > 1e-3) return null;
+        }
+      }
+      out.push({ c: c, pe: pe, idx: idx, R: R, P: pl.P });
+    }
+    setHidden(m, '__asmParts', out);
+    return out;
+  }
+  UI.asmEdges = function (m) {
+    var parts = meshParts(m);
+    if (!parts) return null;
+    var list = [], curves = [], curvesOk = true;
+    parts.forEach(function (p) {
+      var pe = p.pe, idx = p.idx, R = p.R, P = p.P, c0 = curves.length;
       var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
       var pt = function (v) { var r = rot(v); return [r[0] + P[0], r[1] + P[1], r[2] + P[2]]; };
-      for (var k = 0; k < lf.length; k++) {
-        var wf = m.faces[idx[k]], n = rot(lf[k].normal);
-        if (wf.polys.length !== lf[k].polys.length || Math.abs(n[0] - wf.normal[0]) + Math.abs(n[1] - wf.normal[1]) + Math.abs(n[2] - wf.normal[2]) > 1e-6) return null;
-      }
+      if (!pe.curves) curvesOk = false;
+      else pe.curves.forEach(function (cv) {
+        var C = cv.curve;
+        curves.push({ curve: { center: pt(C.center), normal: rot(C.normal), xdir: rot(C.xdir), radius: C.radius, a0: C.a0, a1: C.a1, chords: (C.chords || []).map(function (ch) { return [pt(ch[0]), pt(ch[1])]; }) },
+          pts: cv.pts.map(pt), edges: [] });
+      });
       pe.edges.forEach(function (e) {
         var a = pt(e.a), bb = pt(e.b), o = { a: a, b: bb, ka: ekey(a), kb: ekey(bb), faces: e.faces.map(function (f) { return idx[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
           mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex };
+        if (e.seam) o.seam = true;
+        if (e.inner != null) o.inner = e.inner;
+        if (e.curve != null && pe.curves) { o.curve = c0 + e.curve; curves[o.curve].edges.push(o); }
         list.push(o);
       });
-    }
+    });
+    if (curvesOk) list.curves = curves;
     return list;
+  };
+  // the smooth-shading normals of mesh m from its parts' (rotated), laid out like m.normals; null = work them out
+  UI.asmNormals = function (m) {
+    var parts = meshParts(m);
+    if (!parts || !m.normals) return null;
+    var out = new Float32Array(m.normals);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i], src = p.pe.normals, lf = p.pe.mesh.faces, R = p.R;
+      if (!src) return null;
+      for (var k = 0; k < lf.length; k++) {
+        var s = lf[k].start * 9, d = m.faces[p.idx[k]].start * 9, n = lf[k].count * 9;
+        for (var j = 0; j < n; j += 3) {
+          var x = src[s + j], y = src[s + j + 1], z = src[s + j + 2];
+          out[d + j] = R[0] * x + R[1] * y + R[2] * z; out[d + j + 1] = R[3] * x + R[4] * y + R[5] * z; out[d + j + 2] = R[6] * x + R[7] * y + R[8] * z;
+        }
+      }
+    }
+    return out;
   };
 
   // Explode / Collapse (display state, no undo step) and the explode animation (steps run one after another).

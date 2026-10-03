@@ -1474,6 +1474,9 @@
     UI.closeMenus();
     var p = pos(ev);
     downPos = p;
+    // r4/asm4: Alt + drag on a floating component is SmartMates (ui-assembly.js); elsewhere Alt + drag rotates the view
+    var smart = ev.button === 0 && ev.altKey && !App.zoomAreaMode && UI.smartMateHook ? UI.smartMateHook(p, ev) : null;
+    if (smart) { drag = { kind: 'maybe-hook', hook: smart, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 1 || (ev.button === 0 && (ev.altKey)) || (ev.button === 0 && App.zoomAreaMode)) {
       if (App.zoomAreaMode && ev.button === 0) { zoomBox = { start: p }; $('zoom-box').hidden = false; return; }
       // SolidWorks: middle drag rotates, Ctrl + middle pans, Shift + middle zooms (about the press point)

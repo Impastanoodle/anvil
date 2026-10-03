@@ -632,16 +632,17 @@ var UI = (function () {
   function edgesFor(m) {
     if (App.edges && App.edgesMesh === m) return App.edges;
     App.edgesMesh = m;
-    App.edges = edgesFromWorker(m) || (UI.asmEdges && UI.asmEdges(m)) || K.bodyEdges(m);   // asmEdges: an assembly from its parts' edges (ui-assembly.js)
+    var asmE = null;
+    App.edges = edgesFromWorker(m) || (asmE = UI.asmEdges && UI.asmEdges(m)) || K.bodyEdges(m);   // asmEdges: an assembly from its parts' edges (ui-assembly.js)
     // a solid from OpenCascade (ui-occt.js): every polygon knows its B-rep face; edges inside one face are seams
     if (m.faces.length && m.faces[0].polys && m.faces[0].polys[0] && m.faces[0].polys[0].face != null) {
       App.edges.forEach(function (e) {
         if (e.faces.length !== 2) return;
         var a = m.faces[e.faces[0]].polys[0].face, b = m.faces[e.faces[1]].polys[0].face;
-        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+        if (a != null && a === b && (m.faces[e.faces[0]].body || 0) === (m.faces[e.faces[1]].body || 0)) { e.seam = true; e.smooth = true; }   // (r4/asm4: one component's)
       });
     }
-    App.curves = annotateCurveEdges(m, App.edges);
+    App.curves = asmE && asmE.curves ? asmE.curves : annotateCurveEdges(m, App.edges);   // r4/asm4: placed from the parts' curves
     return App.edges;
   }
 
@@ -675,6 +676,8 @@ var UI = (function () {
   // normal is oriented to agree with its facet's (holes face inward). mesh.normals itself stays flat (exports, zebra).
   function analyticNormals(m) {
     if (m.smoothNormals) return m.smoothNormals;
+    var an = m === App.mesh && UI.asmNormals ? UI.asmNormals(m) : null;   // r4/asm4: an assembly's, from its parts'
+    if (an) return (m.smoothNormals = an);
     var out = new Float32Array(m.normals);
     (m.faces || []).forEach(function (f) {
       if (!f.polys) return;
@@ -2025,7 +2028,7 @@ var UI = (function () {
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
-    analyticNormals: analyticNormals, surfNormal: surfNormal,
+    analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; },
     // multi-body parts (viewport side): see the "bodies" section

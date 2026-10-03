@@ -337,7 +337,7 @@
     if (!mesh.faces.length || !mesh.faces[0].polys || !mesh.faces[0].polys[0] || mesh.faces[0].polys[0].face == null) return null;
     var of = new Array(mesh.faces.length), by = {};
     for (var i = 0; i < mesh.faces.length; i++) {
-      var p = mesh.faces[i].polys[0], k = p ? p.face : null;
+      var p = mesh.faces[i].polys[0], k = p && p.face != null ? p.face + '|' + (mesh.faces[i].body || 0) : null;   // r4/asm4: B-rep face ids repeat across assembly components
       if (k == null) { of[i] = [i]; continue; }
       (by[k] = by[k] || []).push(i);
     }
