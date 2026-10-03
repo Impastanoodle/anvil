@@ -41,3 +41,8 @@
 /* Document Properties: checkbox rows span both columns */
 .dw-props .dw-opt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
 .dw-docprops input[type=number] { width: 80px; }
+/* r3/drawings3: pre-highlight under the cursor with no tool running (SolidWorks orange), a dragged item's cursor */
+:root { --dw-pre: #f08a24; }
+#dw-overlay .dw-hot.pre { stroke: var(--dw-pre); }
+#drawing-sheet.dw-dragging { cursor: move; }
+#drawing-sheet.dw-panning { cursor: grabbing; }
