@@ -703,7 +703,7 @@
       inp.style.cssText = 'width:58px;border:0;outline:0;background:transparent;font:inherit;color:inherit;padding:1px 2px;border-bottom:1px solid var(--line)';
       inp.addEventListener('keydown', numKey);
       var item = { key: fd[1], input: inp, typed: false };
-      inp.addEventListener('input', function () { inp.style.outline = ''; item.typed = !!inp.value.trim(); numPreview(); });
+      inp.addEventListener('input', function () { inp.style.outline = '0'; item.bad = false; item.typed = !!inp.value.trim(); numPreview(); });
       lab.appendChild(inp);
       el.appendChild(lab);
       box.inputs.push(item);
@@ -792,8 +792,8 @@
       var s = x.input.value.trim();
       if (!s || !x.typed) return;   // r9/sketch9: a live (untyped) value follows the mouse
       var r = parseDimInput(s);
-      if (r.error != null || !isFinite(r.value)) { x.input.style.outline = '1px solid #d33'; return; }
-      if ((x.key !== 'ang' && x.key !== 'sweep') && !(r.value > 0)) { x.input.style.outline = '1px solid #d33'; return; }
+      if (r.error != null || !isFinite(r.value)) { x.input.style.outline = '1px solid #d33'; x.bad = true; return; }
+      if ((x.key !== 'ang' && x.key !== 'sweep') && !(r.value > 0)) { x.input.style.outline = '1px solid #d33'; x.bad = true; return; }
       out[x.key] = r.value;
     });
     return out;
@@ -866,7 +866,7 @@
     if (ev.key === 'Escape' && numBox.auto) {
       ev.preventDefault();
       if (anyTyped) {   // the typed values go back to following the mouse
-        numBox.inputs.forEach(function (x) { x.typed = false; x.input.style.outline = ''; });
+        numBox.inputs.forEach(function (x) { x.typed = false; x.input.style.outline = '0'; x.bad = false; });
         if (lastMove) sketchMove(lastMove[0], lastMove[1]);
       } else finishChain();
       return;
@@ -883,7 +883,8 @@
     } else if (ev.key === 'Enter') {
       ev.preventDefault();
       var v = numValues();
-      if (numBox.inputs.some(function (x) { return x.input.style.outline; })) { UI.setStatus('Not a valid value: type a positive length, or an angle in degrees.'); return; }
+      if (numBox.inputs.some(function (x) { return x.bad; })) {   // r9/sketch9: x.bad, not the outline (0px on every untouched field)
+        UI.setStatus('Not a valid value: type a positive length, or an angle in degrees.'); return; }
       var pl = UI.activePlane(), m = lastMove, raw = m ? UI.screenToPlane(m[0], m[1], pl) : null;
       var cur = raw ? inferPoint(raw, m[0], m[1]).p : (App.toolState.pts[App.toolState.pts.length - 1] || [0, 0]);
       var p = typedPoint(cur, v);
