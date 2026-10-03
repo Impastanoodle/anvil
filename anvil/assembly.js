@@ -1779,13 +1779,29 @@ var Assembly = (function () {
   // transforms (a Flexible instance's in-context positions): { assembly, subAssembly, model, body, bodies, partBuilds,
   // components, mates, errors, warnings, cache }; `only` (id -> true) keeps just those inner components (the rigid
   // base of a Flexible sub-assembly).
+  // the largest OpenCascade face id on a body's polygons (-1: none), cached on the body
+  function maxFaceId(b) {
+    if (b.__maxFace != null) return b.__maxFace;
+    var mx = -1, ps = b.polygons || [];
+    for (var i = 0; i < ps.length; i++) if (ps[i].face != null && ps[i].face > mx) mx = ps[i].face;
+    try { Object.defineProperty(b, '__maxFace', { value: mx, enumerable: false, configurable: true, writable: true }); } catch (e) { }
+    return mx;
+  }
   function composeSub(sm, sb, only) {
     var status = {};
     (sb.components || []).forEach(function (co) { status[co.id] = co; });
+    // r9/polish9: OpenCascade B-rep face ids (polygon.face) restart at 0 in every part, and the composed body is one
+    // component one level up, so two inner parts' faces with the same id merged into one mesh face (one pick lit the
+    // leaf tops of both hinges) and their shared edges read as seams. Each inner component's ids are offset past the
+    // previous ones' (the same offsets whichever components `only` keeps).
+    var faceBase = 0;
     var bodies = sm.components.map(function (k) {
-      var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id];
+      var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id], base = faceBase;
+      if (pb && pb.body) faceBase += maxFaceId(pb.body) + 1;
       if ((only && !only[k.id]) || !pb || !pb.body || (co && (co.error || co.suppressed))) return CSG.fromPolygons([]);
-      return worldBody(pb.body, k.transform);
+      var wb = worldBody(pb.body, k.transform);
+      if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
+      return wb;
     });
     var body = bodies.length ? Kernel.combineBodies(bodies) : CSG.fromPolygons([]);
     return { assembly: true, subAssembly: true, model: sm, body: body, bodies: bodies, partBuilds: sb.partBuilds,
@@ -2008,8 +2024,15 @@ var Assembly = (function () {
         components: sol.components, mates: sol.mates, errors: errors, warnings: warnings, partBuilds: partBuilds, cache: newCache, time: now() - t0 };
     }
     // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed or is suppressed)
+    // (r9/polish9: OpenCascade face ids offset per component, as in composeSub, so this build used as a rigid
+    // sub-assembly's body keeps its parts' faces apart)
+    var faceBase = 0;
     var bodies = model.components.map(function (c) {
-      return worldBody(partBuilds[c.id] && !entries[c.id].error ? partBuilds[c.id].body : null, c.transform, explode && explode.offsets[c.id]);
+      var pb = partBuilds[c.id], base = faceBase;
+      if (pb && pb.body) faceBase += maxFaceId(pb.body) + 1;
+      var wb = worldBody(pb && !entries[c.id].error ? pb.body : null, c.transform, explode && explode.offsets[c.id]);
+      if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
+      return wb;
     });
     var body = bodies.length ? Kernel.combineBodies(bodies) : null;
     return {
