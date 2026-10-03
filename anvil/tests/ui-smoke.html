@@ -6507,6 +6507,23 @@
     near(anvil.summary().volume, 8000 - 38 * 19 * 9, 1e-3, 'open box volume');
     return 'face → 5 edges, 4 edges, 2 shell faces';
   });
+  step('r9/polish9: SmartMates — dropping the top of a pin (held upright by a Concentric) on the plate top adds an Aligned Coincident (flush) instead of "not possible"', async function () {
+    await anvil.newAssembly('R9Smart');
+    await anvil.insert({ example: 'Plate with bolt holes' }, { fixed: true });
+    await anvil.insert({ script: 'p.name("Pin"); p.cylinder(3, 25);' }, { position: [10, 30, 10] });
+    await anvil.mate('concentric', { component: 2, cylinder: [3, 10, 0] }, { component: 1, cylinder: [14, 4, 10] }); await idle();
+    UI.setView('Isometric'); anvil.fit(); await wait(400);
+    var a = UI.worldToScreen([10, 55, 10]), b = UI.worldToScreen([60, 10, 40]);
+    var top = UI.App.mesh.faces.filter(function (f) { return f.normal[1] > 0.99 && (f.body || 0) === 0; }).reduce(function (m, f) { return Math.max(m, f.centroid[1]); }, -1e9);   // the plate top
+    await selDrag(a, b, null, { altKey: true }); await wait(50);
+    var mt = UI.App.model.mates.filter(function (m) { return m.type === 'coincident'; })[0];
+    assert(mt && mt.alignment === 'aligned', 'coincident added aligned: ' + JSON.stringify(UI.App.model.mates));
+    assert(anvil.mates().every(function (m) { return m.ok; }), 'mates ok ' + JSON.stringify(anvil.mates()));
+    var pin = anvil.components()[1];
+    near(pin.position[1] + 25, top, 1e-6, 'pin top flush with the plate top');
+    var keep = D.querySelector('.asm-popup [data-id="ok"]'); if (keep) keep.click();
+    return 'pin at ' + pin.position.map(function (v) { return +v.toFixed(3); }).join(', ');
+  });
   // --- end r9/polish9 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
