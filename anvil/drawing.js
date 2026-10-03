@@ -218,6 +218,120 @@ var Drawing = (function () {
     return out.filter(function (pc, i) { return !drop[i]; }).concat(extra);
   }
 
+  // closeEnds(lines, ellipses, arcs, circles, tol) (r7/drawings7): a visible line, arc or ellipse cut short by an
+  // occluder ends on that occluder's drawn outline. The hidden parts are found against the facets, and where the
+  // occluder is a curved face (a hole's wall seen into in an isometric view) its chordal facets stand inside the true
+  // surface while its rim is drawn as the true ellipse: the far edge stopped up to 0.013 mm short of the near rim. An
+  // end within tol of another piece of linework (not meeting it, not the same curve) is moved along its own line /
+  // curve to where it crosses that linework, if it crosses within tol of the end.
+  function closeEnds(lines, ells, arcs, circs, tol) {
+    var els = [];
+    lines.forEach(function (l) { els.push({ k: 'l', o: l }); });
+    ells.forEach(function (q) { els.push({ k: 'c', o: q, c: q.c, ax: q.ax, ay: q.ay, t0: q.full ? 0 : q.t0, t1: q.full ? TWO_PI : q.t1, full: q.full }); });
+    arcs.forEach(function (a) { els.push({ k: 'c', o: a, arc: true, c: a.c, ax: [a.r, 0], ay: [0, a.r], t0: a.a0 * Math.PI / 180, t1: a.a1 * Math.PI / 180 }); });
+    circs.forEach(function (c) { els.push({ k: 'c', o: c, c: c.c, ax: [c.r, 0], ay: [0, c.r], t0: 0, t1: TWO_PI, full: true }); });
+    if (els.length < 2 || els.length > 20000 || !(tol > 0)) return;
+    function cp(E, t) { return [E.c[0] + Math.cos(t) * E.ax[0] + Math.sin(t) * E.ay[0], E.c[1] + Math.cos(t) * E.ax[1] + Math.sin(t) * E.ay[1]]; }
+    function hyp(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]); }
+    function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy); }
+    els.forEach(function (E) {
+      if (E.k === 'l') { var l = E.o; E.b = [Math.min(l[0], l[2]), Math.min(l[1], l[3]), Math.max(l[0], l[2]), Math.max(l[1], l[3])]; return; }
+      var rx = Math.hypot(E.ax[0], E.ay[0]), ry = Math.hypot(E.ax[1], E.ay[1]);
+      E.b = [E.c[0] - rx, E.c[1] - ry, E.c[0] + rx, E.c[1] + ry];
+      var det = E.ax[0] * E.ay[1] - E.ax[1] * E.ay[0];
+      E.det = det; E.rm = Math.sqrt(Math.abs(det));
+    });
+    // distance from p to what is drawn of E
+    function dist(E, p) {
+      if (E.k === 'l') return segD(p, E.o);
+      var n = 48, h = (E.t1 - E.t0) / n, bt = E.t0, bd = Infinity;
+      for (var i = 0; i <= n; i++) { var t = E.t0 + h * i, d = hyp(cp(E, t), p); if (d < bd) { bd = d; bt = t; } }
+      var lo = Math.max(E.t0, bt - h), hi = Math.min(E.t1, bt + h);
+      for (var it = 0; it < 70 && hi - lo > 1e-15; it++) {
+        var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618;
+        if (hyp(cp(E, m1), p) < hyp(cp(E, m2), p)) hi = m2; else lo = m1;
+      }
+      return Math.min(bd, hyp(cp(E, (lo + hi) / 2), p));
+    }
+    // signed distance-like function of E's whole line / curve (zero on it)
+    function side(E, p) {
+      if (E.k === 'l') { var l = E.o, dx = l[2] - l[0], dy = l[3] - l[1], L = Math.hypot(dx, dy); return L ? ((p[0] - l[0]) * dy - (p[1] - l[1]) * dx) / L : Infinity; }
+      if (!E.det) return Infinity;
+      var qx = p[0] - E.c[0], qy = p[1] - E.c[1], a = (qx * E.ay[1] - qy * E.ay[0]) / E.det, b = (E.ax[0] * qy - E.ax[1] * qx) / E.det;
+      return (Math.hypot(a, b) - 1) * E.rm;
+    }
+    function sameCurve(A, B) {
+      if (A.k !== B.k) return false;
+      if (A.k === 'l') {
+        var a = A.o, b = B.o, dx = a[2] - a[0], dy = a[3] - a[1], L = Math.hypot(dx, dy) || 1;
+        return Math.abs((b[0] - a[0]) * dy - (b[1] - a[1]) * dx) / L < 1e-9 && Math.abs((b[2] - a[0]) * dy - (b[3] - a[1]) * dx) / L < 1e-9;
+      }
+      var e9 = 1e-9 * (1 + A.rm);
+      return hyp(A.c, B.c) < e9 && [0.7, 2.1, 4.0].every(function (t) { return Math.abs(side(B, cp(A, t))) < e9; });
+    }
+    // own[i] at the end: P(s), s the distance moved outward along the piece (negative: shortened)
+    function mover(E, end) {
+      if (E.k === 'l') {
+        var l = E.o, p = end ? [l[2], l[3]] : [l[0], l[1]], q = end ? [l[0], l[1]] : [l[2], l[3]], L = hyp(p, q);
+        if (L < 1e-12) return null;
+        var d = [(p[0] - q[0]) / L, (p[1] - q[1]) / L];
+        return { p: p, max: L * 0.5, at: function (s) { return [p[0] + d[0] * s, p[1] + d[1] * s]; },
+          set: function (s) { var r = this.at(s); if (end) { l[2] = r[0]; l[3] = r[1]; } else { l[0] = r[0]; l[1] = r[1]; } } };
+      }
+      if (E.full) return null;
+      var te = end ? E.t1 : E.t0, sg = end ? 1 : -1, dv = [-Math.sin(te) * E.ax[0] + Math.cos(te) * E.ay[0], -Math.sin(te) * E.ax[1] + Math.cos(te) * E.ay[1]], sp = Math.hypot(dv[0], dv[1]);
+      if (sp < 1e-12) return null;
+      return { p: cp(E, te), max: (E.t1 - E.t0) * sp * 0.5, at: function (s) { return cp(E, te + sg * s / sp); },
+        set: function (s) {
+          var t = te + sg * s / sp;
+          if (end) E.t1 = t; else E.t0 = t;
+          if (E.arc) { if (end) E.o.a1 = t * 180 / Math.PI; else E.o.a0 = t * 180 / Math.PI; } else if (end) E.o.t1 = t; else E.o.t0 = t;
+        } };
+    }
+    els.forEach(function (E) {
+      [0, 1].forEach(function (end) {
+        var M = mover(E, end);
+        if (!M) return;
+        var p = M.p, eps = 1e-9 * (1 + Math.abs(p[0]) + Math.abs(p[1])), best = null, bd = Infinity, met = false;
+        for (var i = 0; i < els.length && !met; i++) {
+          var O = els[i];
+          if (O === E || p[0] < O.b[0] - tol || p[0] > O.b[2] + tol || p[1] < O.b[1] - tol || p[1] > O.b[3] + tol) continue;
+          var d = dist(O, p);
+          if (d <= eps) met = true;
+          else if (d < tol && d < bd && !sameCurve(E, O)) { bd = d; best = O; }
+        }
+        if (met || !best) return;
+        // the crossing nearest the end, within tol of it
+        var R = Math.min(tol * 2, M.max), N = 32, g0 = side(best, p), sol = null;
+        if (!isFinite(g0)) return;
+        for (var k = 1; k <= N && sol == null; k++) {
+          [1, -1].forEach(function (sg) {
+            if (sol != null) return;
+            var a = sg * R * (k - 1) / N, b = sg * R * k / N, ga = side(best, M.at(a)), gb = side(best, M.at(b));
+            if (ga === 0) { sol = a; return; }
+            if (ga * gb > 0) return;
+            for (var it = 0; it < 80; it++) { var m = (a + b) / 2, gm = side(best, M.at(m)); if (ga * gm <= 0) b = m; else { a = m; ga = gm; } }
+            sol = (a + b) / 2;
+          });
+        }
+        var lim = 1e-6 * (1 + tol);
+        if (sol == null) {
+          // no crossing: a curve meeting a line or curve tangentially (a silhouette running into a rim) touches it
+          // where |side| is least
+          // (near a tangency a gap bd lies about sqrt(2 bd ρ) along the curve from the touching point)
+          var rho = Math.max(best.rm || 0, E.rm || 0), R2 = Math.min(M.max, Math.max(R, 2 * Math.sqrt(2 * bd * rho)));
+          var bs = 0, bg = Math.abs(g0), h = R2 / N;
+          for (var j = -N; j <= N; j++) { var gj = Math.abs(side(best, M.at(j * h))); if (gj < bg) { bg = gj; bs = j * h; } }
+          var lo = bs - h, hi = bs + h;
+          for (var it2 = 0; it2 < 80; it2++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (Math.abs(side(best, M.at(m1))) < Math.abs(side(best, M.at(m2)))) hi = m2; else lo = m1; }
+          sol = (lo + hi) / 2; lim = Math.min(1e-4, bd * 0.05);
+        }
+        var q = M.at(sol), dq = dist(best, q);
+        if (dq < bd * 0.05 && dq < lim) M.set(sol);
+      });
+    });
+  }
+
   // ------------------------------------------------------------------ hidden-line removal
   // projectView(mesh, orientName, opts) -> { orient, lines: { visible, hidden }, circles: { visible, hidden }, bounds, stats }
   // lines are [u1, v1, u2, v2] in model units. Candidate edges: sharp edges (faces meeting at more than 22°, open or
@@ -1005,6 +1119,7 @@ var Drawing = (function () {
       ellipses: { visible: exact.ellipses.visible, hidden: hlr ? [] : exact.ellipses.hidden },
       exact: !!CV
     };
+    if (CV) closeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, chordTol());
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
@@ -1875,7 +1990,7 @@ var Drawing = (function () {
     for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
   }
   function viewExtents(doc, mesh, v) { return extentsOf(mesh, viewFrame(doc, v)); }
-  // addProjectedView(doc, mesh, parentId, dir, { x, y }): a view projected up / down / left / right from a parent,
+  // addProjectedView(doc, mesh, parentId, dir, { x, y, fit }): a view projected up / down / left / right from a parent,
   // aligned with it (same scale; dragging it slides along the projection direction only, the parent drags it along).
   // Without x / y it is placed one gap beyond the parent.
   function addProjectedView(doc, mesh, parentId, dir, opts) {
@@ -1889,7 +2004,7 @@ var Drawing = (function () {
       scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
     if (opts.x != null && !vert) v.x = opts.x;
     if (opts.y != null && vert) v.y = opts.y;
-    if ((vert ? opts.y : opts.x) == null && mesh) clearSpot(doc, mesh, v, vert ? 'y' : 'x');
+    if ((vert ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, vert ? 'y' : 'x');
     doc.layout = 'manual';
     return v;
   }
@@ -1952,17 +2067,19 @@ var Drawing = (function () {
     if (best) { v.x = best[0]; v.y = best[1]; }
     return !!best && pass === 1;   // true: clear and on the sheet
   }
-  // fitOnSheet(doc, mesh, v, free): where a section view added by the app's script API (opts.fit) goes on a full
-  // sheet. Along its alignment at its own scale first; then the nearest free area of the sheet (alignment broken,
+  // fitOnSheet(doc, mesh, v, free): where a section / projected / detail view added by the app's script API (opts.fit)
+  // goes on a full sheet (r7/drawings7: projected and detail views too; a detail view has no alignment and never
+  // shrinks to its parent's scale or below). Along its alignment at its own scale first; then the nearest free area of the sheet (alignment broken,
   // same scale); then the next smaller standard scales (down to a quarter), aligned and then anywhere. When nothing
   // fits it goes beside the sheet, aligned and clear of every view, marked v.offSheet (the UI warns and drops the
   // mark). It never overlaps a view.
   function fitOnSheet(doc, mesh, v, free) {
     var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
-    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9; });
+    var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
+    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
     function at(sc, align) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null); }
-    var tries = [[sc0, al0], [sc0, null]];
-    smaller.forEach(function (s) { tries.push([s.slice(), al0], [s.slice(), null]); });
+    var tries = al0 ? [[sc0, al0], [sc0, null]] : [[sc0, null]];
+    smaller.forEach(function (s) { if (al0) tries.push([s.slice(), al0]); tries.push([s.slice(), null]); });
     for (var i = 0; i < tries.length; i++) if (at(tries[i][0], tries[i][1])) return true;
     at(sc0, al0);
     v.offSheet = true;
@@ -1997,7 +2114,7 @@ var Drawing = (function () {
     for (var i = 0; i < SCALES.length; i++) if (Math.abs(scaleValue(SCALES[i]) - want) < 1e-9) return SCALES[i].slice();
     return want >= 1 ? [Math.round(want * 1000) / 1000, 1] : [1, Math.round(1000 / want) / 1000];
   }
-  // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label }): the parent inside the circle (c, r)
+  // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label, fit }): the parent inside the circle (c, r)
   // (model units in the parent's frame), enlarged to its own scale (default twice the parent's) and labelled
   // DETAIL B / SCALE 4 : 1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
   function addDetailView(doc, mesh, parentId, opts) {
@@ -2011,7 +2128,8 @@ var Drawing = (function () {
     var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
       detail: { c: [+opts.c[0], +opts.c[1]], r: +opts.r }, scale: sc, display: par.display,
       x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + opts.r * s, y: opts.y != null ? opts.y : par.y });
-    if (opts.x == null && opts.y == null && mesh) clearSpot(doc, mesh, v, null);
+    if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
+    if (v.scale !== sc) v.name = 'Detail View ' + label + ' (' + scaleText(v.scale) + ')';
     doc.layout = 'manual';
     return v;
   }
@@ -6048,9 +6166,9 @@ var Drawing = (function () {
       summary: summary,
       standard3View: function () { cmdStandard3View(); return summary(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
-      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, opts); }); },
+      projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
       sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
-      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0] }, opts || {})); }); },
+      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts || {})); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
       tangent: function (id, mode) { setViewTangent(id, mode); return summary(); },
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of
