@@ -1119,3 +1119,14 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - **Assemblies** (`ui-assembly.js`): nested rigid sub-assemblies keep the placed per-part edge path (`partEdges` recurses with composed placement; straddling case ~130 → ~45 ms, 0 edges missing); bounding-box prefilter in the split-face resolver (1.87M → 10.5k tests); transparency across pattern regeneration pinned by a test (kept on surviving instances, new instances opaque).
 
 **Verified (merged code on port 8812, pane visible).** kernel-tests 763/763, occt-tests 51/51, ui-smoke 234/234 twice.
+## Run local-2026-10-03j — Round 9: drawings, docs, sketcher, modelling / assembly polish (four lanes in parallel)
+
+**Done.**
+- **Drawings** (`drawing.js`, one line in `kernel.js` curveEdges): seams drawn whole (Tray mitres, Handlebar mitre ellipses), faceted stubs past an exact outline dropped (`dropStubs`), collinear broken pieces joined; rim curves keyed by record origin, which fixed the Pulley's missing ±40 outlines and 712-line rim on OpenCascade and the Shaft iso (155 → 27 lines) on Anvil; ends 0.5–2 mm short 16 → 0 (Anvil) and 2 → 0 (OpenCascade); crease rule checked on every example (adds only true Tray / Handlebar seams; `_noCrease` test option).
+- **Docs** (`README.md`, `ROADMAP.md`; `CLAUDE.md` three.js line by the lead): README brought up to date with rounds 1–8 and 10-03g/h/i, claims checked against the code; ROADMAP Phase 8.
+- **Sketcher** (`ui-sketch.js`, `sketch-solver.js`, `ui-relations.js`): numeric input box opens by itself after the first click and shows live values; Enter with only some fields typed places the entity (bug: a lone typed length was refused); Offset relation links a rectangle's sides with one driving dimension; slots get a radial offset dimension; relation icons keep their place while zooming (84 → 14 jumps); slot width rounding, H / V on level slots, centre-on-origin Coincident, Midpoint at a rectangle edge.
+- **Modelling / assembly polish** (`ui-commands.js`, `assembly.js`, `ui-assembly.js`, `ui-select.js`): Through All preview ends at the part (`UI.previewThroughLimit`); the Mate PM and SmartMates take the alignment that can be met; Fillet / Chamfer / Shell use the whole pre-selection; OpenCascade face ids offset per inner component of a sub-assembly (no merged faces across parts); nested Flexible drag; PM list names ellipsised; Mate PM focus.
+
+**Found (next).** Sketches on faces don't follow the face: a face sketch / Hole Wizard plane is stored frozen, so thickening the base leaves them buried (needs face references resolved at rebuild in kernel.js / occt-kernel.js). Anvil-kernel coplanar faces of different parts in a sub-assembly still merge. Edit Feature preview doesn't roll back.
+
+**Verified (merged code on port 8812, pane visible).** kernel-tests 772/772, occt-tests 52/52, ui-smoke 244/244 twice.

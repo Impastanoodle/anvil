@@ -6,6 +6,9 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
+- Sketches on faces follow the face (SolidWorks): store face sketches / Hole Wizard placements as a face reference resolved at rebuild (kernel.js + occt-kernel.js), not a frozen custom plane; thickening the base must carry them. Found in local-2026-10-03j.
+- Edit Feature preview rolls the model back to that feature (SolidWorks), instead of overlaying on the full model.
+- Anvil-kernel: coplanar faces of different parts inside a sub-assembly merge (needs a per-part tag through meshFromBody / CSG transform).
 - Surfaces tab on the OpenCascade kernel (it is done and on by default: README *OpenCascade kernel*): extruded / revolved / lofted surfaces, knit (sew), thicken, trim; then Direct Editing (move / delete face) and Mold Tools (parting line, core / cavity split). Surface features need `occt-kernel.js` builders plus Anvil's kernel marking them 'OpenCascade only' (no CSG equivalent).
 - Variable-radius and face fillets on the OpenCascade kernel (BRepFilletAPI_MakeFillet Add_3 / Add_5), with PropertyManager UI.
 - Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Re-measured locally on 2026-09-26 (local-2026-09-26d, all 30 parts building): ~445-460 ms, i.e. ~1.07x, already inside the target; Funnel is ~57% of the total (~258 ms). Confirm on another machine before closing. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
@@ -24,6 +27,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (local-2026-10-03j) Round 9: drawing seams / rim keys / stubs (gaps 0.5–2 mm → 0, Pulley outlines), README brought up to date, numeric-input box auto-open, linked rectangle offset, slot offset, stable relation icons, Through All preview, mate alignment that works, whole pre-selection for fillet / chamfer / shell, sub-assembly face ids; kernel 772, smoke 244, occt 52.
 - (local-2026-10-03f) Round 8 (short): free line ends closed in drawings (14 → 1); nested rigid sub-assembly edge path, faster split-face lookup; kernel 763, smoke 234, occt 51. Left: 0.5–1.9 mm end gaps (Tray Top corners, Handlebar mitres) look like tangent fade-outs, unchecked on OpenCascade meshes; Flexible-in-Rigid nesting untested.
 - (local-2026-10-03e) Round 7 (short): projected / detail views fit the sheet, isometric line-end gaps closed (37 → 2); rigid sub-assembly fast edge path, transparency saved, Width mate pop-up; kernel 762, smoke 232, occt 51. Left: 0.04–0.4 mm gaps in Mug / Rounded handle / Handlebar drawings; nested sub-assemblies inside rigid ones still on the local edge path.
 - (local-2026-10-03d) Round 6 (short): SCALE 2 : 1 labels, API section views fit the sheet, smaller hatch output; Offset Entities driving dimensions (radial / parallel), numeric input on entity creation option; kernel 758, smoke 229, occt 51.
