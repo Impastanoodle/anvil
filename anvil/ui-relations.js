@@ -9,7 +9,7 @@
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function scr(pl, uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
-  function iconName(type) { return type === 'distance' || type === 'angle' ? type : 'rel' + type.charAt(0).toUpperCase() + type.slice(1); }
+  function iconName(type) { return type === 'distance' || type === 'angle' || type === 'offset' ? type : 'rel' + type.charAt(0).toUpperCase() + type.slice(1); }
   var CENTERLESS = /^(rect|crect|slot|poly)$/;   // their centre is not offered as a pick (it is not a sketch point in SolidWorks)
   function markDirty() { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }
   function refresh() { App.gridStale = true; UI.updateSketches(); UI.refreshTree(); }
@@ -50,6 +50,8 @@
     return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
   }
   function refEntity(ref) { var p = S.parseRef(ref); return p && !p.o ? p.e : -1; }
+  // r9/sketch9: the slot a whole-entity ref names, or null
+  function slotOf(f, ref) { var p = S.parseRef(ref), e = p && !p.o && p.s === null && f.entities[p.e]; return e && e.t === 'slot' ? e : null; }
 
   // ------------------------------------------------------------------ distance / angle dimensions (two entities)
   // Which two-entity dimension a pair of picks means: two non-parallel lines -> angle, anything else that has a
@@ -70,6 +72,9 @@
       var c1 = S.refCurve(f, r1), c2 = S.refCurve(f, r2);
       if (Math.hypot(c1.c[0] - c2.c[0], c1.c[1] - c2.c[1]) < 1e-9 * Math.max(1, c1.r, c2.r) && Math.abs(c1.r - c2.r) > 1e-9) return { type: 'distance', refs: [r1, r2], dir: 'r' };
     }
+    // r9/sketch9: two slots on the same centres (a slot and its offset copy) -> the offset between their sides
+    var sA = slotOf(f, r1), sB = slotOf(f, r2);
+    if (sA && sB && Math.abs(sA.w - sB.w) > 1e-9 && Math.hypot(sA.x1 - sB.x1, sA.y1 - sB.y1) + Math.hypot(sA.x2 - sB.x2, sA.y2 - sB.y2) < 1e-6 * Math.max(1, sA.w)) return { type: 'distance', refs: [r1, r2], dir: 'r' };
     if (S.measure(f, 'distance', [r1, r2]) != null) return { type: 'distance', refs: [r1, r2] };
     return null;
   }
@@ -93,6 +98,13 @@
       var cA = S.refCurve(f, R[0]), cB = S.refCurve(f, R[1]), u = [Math.SQRT1_2, Math.SQRT1_2];
       P = [cA.c[0] + u[0] * cA.r, cA.c[1] + u[1] * cA.r]; Q = [cA.c[0] + u[0] * cB.r, cA.c[1] + u[1] * cB.r];
       return { type: 'distance', P: P, Q: Q, dir: cB.r >= cA.r ? u : [-u[0], -u[1]] };
+    }
+    var sl0 = rel.dir === 'r' && slotOf(f, R[0]), sl1 = sl0 && slotOf(f, R[1]);
+    if (sl1) {
+      // r9/sketch9: offset between a slot and its copy, drawn square to the axis at its middle, side to side
+      var ax = [sl0.x2 - sl0.x1, sl0.y2 - sl0.y1], La = Math.hypot(ax[0], ax[1]) || 1, nn = [-ax[1] / La, ax[0] / La], M = [(sl0.x1 + sl0.x2) / 2, (sl0.y1 + sl0.y2) / 2];
+      P = [M[0] + nn[0] * sl0.w / 2, M[1] + nn[1] * sl0.w / 2]; Q = [M[0] + nn[0] * sl1.w / 2, M[1] + nn[1] * sl1.w / 2];
+      return { type: 'distance', P: P, Q: Q, dir: sl1.w >= sl0.w ? nn : [-nn[0], -nn[1]] };
     }
     if (k0 !== 'line' && k1 !== 'line') { P = ctr(R[0], k0); Q = ctr(R[1], k1); }
     else {
@@ -314,7 +326,31 @@
   // r5/sketch5: where a relation icon goes. Each icon takes a 16 px box clear of the dimension labels and of the icons
   // already placed: beside a point (right / below first, then round it), along a line on either side, outside a
   // circle; a second icon on the same anchor goes next to the first, in a row, as SolidWorks lines them up.
-  function badgeSpot(h, a, kind, dir, prev) {
+  // r9/sketch9: an icon keeps the place it took (its pixel offset from its anchor, remembered per relation and ref) as
+  // long as that place stays free, so zooming or panning no longer makes icons jump from one side to another when a
+  // dimension label passes by; while the view is zooming it keeps it regardless (the labels settle after the zoom).
+  var spotMemo = {}, spotMemoN = 0, spotSketch = null;
+  // The remembered place of an icon: { q, ok } (ok: still free; a few pixels of overlap are tolerated, so a label
+  // edge passing by does not move it), or null when it has none (new, or its line turned).
+  function memoSpot(h, a, kind, dir, memoKey) {
+    var m = memoKey && spotMemo[memoKey];
+    if (!m || m.kind !== kind || (dir && m.dir && dir[0] * m.dir[0] + dir[1] * m.dir[1] < 0.999)) return null;
+    var q = [a[0] + m.off[0], a[1] + m.off[1]];
+    return { q: q, ok: !h.free || h.free([q[0] + 3, q[1] + 3, q[0] + 13, q[1] + 13]) || !!(UI.sketchZooming && UI.sketchZooming()) };
+  }
+  function badgeSpot(h, a, kind, dir, prev, memoKey) {
+    var ms = memoSpot(h, a, kind, dir, memoKey), q = ms && ms.q, qb = q && [q[0] - 1, q[1] - 1, q[0] + 17, q[1] + 17];
+    if (ms && ms.ok) { if (h.take) h.take(qb); return q; }
+    var p0 = badgeSpotNew(h, a, kind, dir, prev, !!q);
+    if (!p0) { if (h.take) h.take(qb); return q; }   // nowhere free (zoomed far out): it stays where it was
+    if (memoKey) {
+      if (!spotMemo[memoKey] && ++spotMemoN > 4000) { spotMemo = {}; spotMemoN = 0; }
+      spotMemo[memoKey] = { off: [p0[0] - a[0], p0[1] - a[1]], kind: kind, dir: dir };
+    }
+    return p0;
+  }
+  UI.relBadgeSpots = function () { return spotMemo; };
+  function badgeSpotNew(h, a, kind, dir, prev, orNull) {
     var cands = [];
     if (prev) cands.push([prev[0] + 18, prev[1]], [prev[0] - 18, prev[1]], [prev[0], prev[1] + 18], [prev[0], prev[1] - 18]);
     if (kind === 'line') {
@@ -332,10 +368,14 @@
     [1, 1.8, 2.6].forEach(function (m) {
       [[8, 6], [8, -22], [-24, 6], [-24, -22], [-8, 12], [-8, -28], [14, -8], [-30, -8]].forEach(function (o) { cands.push([a[0] + (o[0] + 8) * m - 8, a[1] + (o[1] + 8) * m - 8]); });
     });
+    // r9/sketch9: an icon of an entity in view is not put past the edge of the graphics area (it was cut off there)
+    var W = UI.size && UI.size.w, H = UI.size && UI.size.h, inView = W > 40 && H > 40 && a[0] >= 0 && a[1] >= 0 && a[0] <= W && a[1] <= H;
     for (var i = 0; i < cands.length; i++) {
       var b = [cands[i][0] - 1, cands[i][1] - 1, cands[i][0] + 17, cands[i][1] + 17];
+      if (inView && (b[0] < 0 || b[1] < 0 || b[2] > W || b[3] > H)) continue;
       if (!h.free || h.free(b)) { if (h.take) h.take(b); return cands[i]; }
     }
+    if (orNull) return null;
     var p = prev ? [prev[0] + 18, prev[1]] : [a[0] + 8, a[1] + 6];
     if (h.take) h.take([p[0] - 1, p[1] - 1, p[0] + 17, p[1] + 17]);
     return p;
@@ -346,7 +386,8 @@
     return rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.every(function (r) { return /^\d+\.p[12]$/.test(String(r)) && f.entities[refEntity(r)] && !f.entities[refEntity(r)].sharp; });
   }
   function drawRelations(f, pl, layer, h) {
-    var an = App.sketchState, slots = {};
+    var an = App.sketchState, slots = {}, jobs = [];
+    if (spotSketch !== f.id) { spotSketch = f.id; spotMemo = {}; spotMemoN = 0; }
     // the distance / angle dimensions first, so the icons keep clear of their labels
     if (f.rels) f.rels.forEach(function (rel, i) {
       var t = S.TYPES[rel.type];
@@ -382,7 +423,19 @@
         var key = Math.round(a[0] / 6) + ',' + Math.round(a[1] / 6), c = !S.refPoint(f, ref) && S.refCurve(f, ref), kind = 'point', dir = null;
         if (c && c.kind === 'line') { var sa = scr(pl, c.a), sb = scr(pl, c.b), L = Math.hypot(sb[0] - sa[0], sb[1] - sa[1]); if (L > 1e-9) { kind = 'line'; dir = [(sb[0] - sa[0]) / L, (sb[1] - sa[1]) / L]; } }
         else if (c) { var sc0 = scr(pl, c.c), Lc = Math.hypot(a[0] - sc0[0], a[1] - sc0[1]); if (Lc > 1e-9) { kind = 'curve'; dir = [(a[0] - sc0[0]) / Lc, (a[1] - sc0[1]) / Lc]; } }
-        var p = slots[key] = badgeSpot(h, a, kind, dir, slots[key]);
+        jobs.push({ i: i, rel: rel, state: state, selected: selected, hot: hot, a: a, key: key, kind: kind, dir: dir, mk: rel.type + ':' + rel.refs.join(',') + '@' + ref });
+      });
+    });
+    // r9/sketch9: icons that can stay where they were are placed first, so one that has to move never takes another's
+    // place (which would make that one move too, a chain of jumps while zooming)
+    jobs.forEach(function (jb) {
+      var ms = memoSpot(h, jb.a, jb.kind, jb.dir, jb.mk);
+      if (ms && ms.ok) { jb.p = slots[jb.key] = ms.q; if (h.take) h.take([ms.q[0] - 1, ms.q[1] - 1, ms.q[0] + 17, ms.q[1] + 17]); }
+    });
+    jobs.forEach(function (jb) { if (!jb.p) jb.p = slots[jb.key] = badgeSpot(h, jb.a, jb.kind, jb.dir, slots[jb.key], jb.mk); });
+    jobs.forEach(function (jb) {
+      var i = jb.i, rel = jb.rel, state = jb.state, selected = jb.selected, hot = jb.hot, p = jb.p;
+      {
         var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''));
         g.setAttribute('data-rel', i);
         g.addEventListener('click', function (ev) { ev.stopPropagation(); App.sel = { kind: 'rel', index: i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(f, rel) + ' — ' + stateText(state) + '. Delete removes it.'); });
@@ -397,7 +450,7 @@
             { label: 'Display/Delete Relations…', action: function () { cmdDisplayRelations(); } }
           ]);
         });
-      });
+      }
     });
     // the entities of the relation hovered (an icon here, or a row of Display/Delete Relations): orange, as pre-highlight
     if (App.relHover != null && f.rels && f.rels[App.relHover]) relHighlight(f, pl, layer, h, f.rels[App.relHover]);
