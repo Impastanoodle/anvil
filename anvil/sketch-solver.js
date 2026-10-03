@@ -1097,13 +1097,15 @@ var SketchSolver = (function () {
     if (!e) return out;
     var tol = 1e-9 * Math.max(1, Math.abs(e.x1 || e.x || e.cx || 0), Math.abs(e.y1 || e.y || e.cy || 0)) + 1e-9;
     symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
-    if (e.t === 'line') {
+    if (e.t === 'line' || e.t === 'slot') {   // r9/sketch9: a straight slot drawn level / upright too (its centre line)
       var dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
       if (dy < tol && dx > tol) out.push({ type: 'horizontal', refs: [String(i)], at: [(e.x1 + e.x2) / 2, e.y1] });
       else if (dx < tol && dy > tol) out.push({ type: 'vertical', refs: [String(i)], at: [e.x1, (e.y1 + e.y2) / 2] });
     }
     pointRefs(sketch, i).forEach(function (pr) {
-      if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && (e.t === 'rect' || e.t === 'crect' || e.t === 'slot' || e.t === 'poly'))) return;
+      // r9/sketch9: a Center Rectangle's / Polygon's centre is a sketch point in SolidWorks (started on the origin it is
+      // Coincident with it); a corner rectangle's and a slot's centre are not
+      if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && (e.t === 'rect' || e.t === 'slot'))) return;
       if (Math.abs(pr.pt[0]) < tol && Math.abs(pr.pt[1]) < tol) { out.push({ type: 'coincident', refs: [pr.ref, 'O'], at: pr.pt }); return; }
       var hit = null;
       for (var j = 0; j < sketch.entities.length && !hit; j++) {
@@ -1117,6 +1119,9 @@ var SketchSolver = (function () {
       if (!hit) {
         // an end point (or a centre, a point) dropped on another entity's line, circle or arc, not at one of its points: Coincident to it
         var on = onCurveRef(sketch, i, pr.pt, Math.max(tol, 1e-7));
+        // r9/sketch9: at the middle of a rectangle / polygon edge: Midpoint (as a line's midpoint already infers it)
+        var oc = on && /\.e\d+$/.test(on) ? refCurve(sketch.entities, parseRef(on)) : null;
+        if (oc && oc.kind === 'line' && len(sub(pr.pt, [(oc.a[0] + oc.b[0]) / 2, (oc.a[1] + oc.b[1]) / 2])) < Math.max(tol, 1e-7)) { out.push({ type: 'midpoint', refs: [pr.ref, on], at: pr.pt }); return; }
         if (on) out.push({ type: 'coincident', refs: [pr.ref, on], at: pr.pt });
         return;
       }

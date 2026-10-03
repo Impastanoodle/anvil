@@ -10054,6 +10054,27 @@
       K.runScript(m2, s1);
       assert(JSON.stringify(m2.features[0].rels) === JSON.stringify(f.rels), JSON.stringify(m2.features[0].rels));
     });
+    test('inference: a level / upright slot gets Horizontal / Vertical; a Center Rectangle / Polygon started on the origin is Coincident with it; an end at the middle of a rectangle edge gets Midpoint', function () {
+      var s = { entities: [{ t: 'slot', x1: 0, y1: 5, x2: 20, y2: 5, w: 4 }] };
+      SS.infer(s, 0);
+      assert((s.rels || []).some(function (r) { return r.type === 'horizontal' && r.refs.join() === '0'; }), JSON.stringify(s.rels));
+      s.entities.push({ t: 'slot', x1: 40, y1: 0, x2: 40, y2: 20, w: 4 }); SS.infer(s, 1);
+      assert(s.rels.some(function (r) { return r.type === 'vertical' && r.refs.join() === '1'; }), JSON.stringify(s.rels));
+      var c = { entities: [{ t: 'crect', cx: 0, cy: 0, w: 80, h: 50 }] };
+      SS.infer(c, 0);
+      assert((c.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.join() === '0.c,O'; }), 'crect centre ' + JSON.stringify(c.rels));
+      var p = { entities: [{ t: 'poly', cx: 0, cy: 0, r: 10, n: 6, rot: 0 }] };
+      SS.infer(p, 0);
+      assert((p.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.join() === '0.c,O'; }), 'polygon centre ' + JSON.stringify(p.rels));
+      var r = { entities: [{ t: 'rect', x: 0, y: 0, w: 40, h: 20 }] };
+      SS.infer(r, 0);
+      assert(!(r.rels || []).some(function (x) { return x.refs.indexOf('0.c') >= 0; }), 'a corner rectangle centre infers nothing');
+      c.entities.push({ t: 'line', x1: 0, y1: 25, x2: 0, y2: -25, construction: true });
+      SS.infer(c, 1);
+      var ks = c.rels.map(function (x) { return x.type + ':' + x.refs.join(); }).join(' ');
+      assert(ks.indexOf('midpoint:1.p1,0.e2') >= 0 && ks.indexOf('vertical:1') >= 0, ks);
+      assert(SS.analyze(c).redundant === 0, 'nothing redundant: ' + ks);
+    });
   })();
   // --- end r9/sketch9 ---
 

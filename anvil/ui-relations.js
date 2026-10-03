@@ -368,8 +368,11 @@
     [1, 1.8, 2.6].forEach(function (m) {
       [[8, 6], [8, -22], [-24, 6], [-24, -22], [-8, 12], [-8, -28], [14, -8], [-30, -8]].forEach(function (o) { cands.push([a[0] + (o[0] + 8) * m - 8, a[1] + (o[1] + 8) * m - 8]); });
     });
+    // r9/sketch9: an icon of an entity in view is not put past the edge of the graphics area (it was cut off there)
+    var W = UI.size && UI.size.w, H = UI.size && UI.size.h, inView = W > 40 && H > 40 && a[0] >= 0 && a[1] >= 0 && a[0] <= W && a[1] <= H;
     for (var i = 0; i < cands.length; i++) {
       var b = [cands[i][0] - 1, cands[i][1] - 1, cands[i][0] + 17, cands[i][1] + 17];
+      if (inView && (b[0] < 0 || b[1] < 0 || b[2] > W || b[3] > H)) continue;
       if (!h.free || h.free(b)) { if (h.take) h.take(b); return cands[i]; }
     }
     if (orNull) return null;

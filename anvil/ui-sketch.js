@@ -362,9 +362,21 @@
       var vx = raw[0] - a[0], vy = raw[1] - a[1], r = Math.hypot(vx, vy);
       if (r > 1e-12) { var rr = niceRound(r, h); out.p = [a[0] + vx / r * rr, a[1] + vy / r * rr]; }
     }
+    // r9/sketch9: a slot's width is rounded as a length too (W 6, not 5.8 from a rounded point)
+    if (a && !grid && App.tool === 'slot' && st.pts.length === 2) {
+      var b2 = st.pts[1], ux = b2[0] - a[0], uy = b2[1] - a[1], La = Math.hypot(ux, uy);
+      if (La > 1e-12) {
+        ux /= La; uy /= La;
+        var sd = (raw[0] - a[0]) * -uy + (raw[1] - a[1]) * ux, along = (raw[0] - a[0]) * ux + (raw[1] - a[1]) * uy;
+        var hw = niceRound(2 * Math.abs(sd), 2 * h) / 2 * (sd < 0 ? -1 : 1);
+        out.p = [a[0] + ux * along - uy * hw, a[1] + uy * along + ux * hw];
+        out.align = [];
+      }
+    }
     return out;
   }
   function snap(uv, mx, my) { return inferPoint(uv, mx, my).p; }
+  UI.sketchInferPoint = inferPoint;   // r9/sketch9: script / test hook (where a drawing tool would put its next point)
 
   // The nearest point on a line, circle or arc of sketch f within tolPx screen pixels of scr, or null.
   function curveSnap(f, pl, scr, tolPx) {
@@ -516,7 +528,7 @@
       case 'slot': {
         if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
         var w = 2 * distPointLine(c, a, b);
-        return [{ t: 'slot', x1: a[0], y1: a[1], x2: b[0], y2: b[1], w: Math.max(w, 0.01) }];
+        return [{ t: 'slot', x1: a[0], y1: a[1], x2: b[0], y2: b[1], w: cleanLen(Math.max(w, 0.01)) }];
       }
       case 'point': return [{ t: 'point', x: a[0], y: a[1] }];
     }
