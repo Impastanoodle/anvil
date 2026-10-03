@@ -82,7 +82,7 @@
   // ------------------------------------------------------------------ tools
   var TOOL_HINTS = {
     select: 'Click an entity to select it. <b>Delete</b> removes it. Double-click empty space to finish.',
-    line: 'Click the start point, then each next point, or press and drag for one line. <b>Esc</b> or right-click ends the chain.',
+    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. <b>Esc</b> or right-click ends the chain.',
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
@@ -106,7 +106,9 @@
     UI.refreshRibbon();
   }
   function cancelTool(keep) {
+    if (App.toolState && App.toolState.arcMode && App.mode === 'sketch') $('sketch-hint').innerHTML = TOOL_HINTS[App.tool] || '';
     App.toolState = { pts: [] };
+    closeNumBox();
     if (App.inferPreview && App.inferPreview.length) { App.inferPreview = []; App.dimsStale = true; }
     App.tempEntities = [];
     clearFeedback();
@@ -250,6 +252,22 @@
     // 2. on a line / circle / arc (the solver infers a point-on-curve Coincident there)
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
     if (onCurve) { out.p = onCurve; out.snap = { kind: 'on', pt: onCurve }; return out; }
+    // 2b. a line leaving an existing end point: along the tangent of the arc that ends there, or square to the line
+    //     that ends there (within 6 px of that direction; the length is rounded like a free coordinate). The click then
+    //     infers Tangent / Perpendicular (SketchSolver.inferCandidates). Axis-aligned directions are left to H / V.
+    if (App.tool === 'line' && prev && !st.arcMode) {
+      var bestDir = null, w = [raw[0] - prev[0], raw[1] - prev[1]];
+      smoothDirs(f, prev).dirs.forEach(function (c) {
+        var s = w[0] * c.u[0] + w[1] * c.u[1], dd = Math.abs(w[0] * c.u[1] - w[1] * c.u[0]) / px;
+        if (s > 0 && dd < INFER_PX.align && (!bestDir || dd < bestDir.d)) bestDir = { d: dd, c: c, s: s };
+      });
+      if (bestDir) {
+        var sl = App.view.showGrid ? bestDir.s : niceRound(bestDir.s, 0.5 * px * 1.05), u = bestDir.c.u;
+        out.p = [prev[0] + u[0] * sl, prev[1] + u[1] * sl];
+        out.dir = { type: bestDir.c.type, from: prev, u: u };
+        return out;
+      }
+    }
     // 3. aligned with the previous point (horizontal / vertical) or with another sketch point (inference lines);
     //    a rectangle's second corner is not aligned with its first (it would have no width or height)
     var tol = INFER_PX.align * px, boxTool = App.tool === 'rect' || App.tool === 'crect';
@@ -304,12 +322,64 @@
     return best;
   }
 
+  // The lines and arcs of sketch f that end at P: the directions a new line may leave P with an inferred relation
+  // ({ type: 'tangent' | 'perpendicular', u }), and `fwd`, the direction travel continues in past P along the most
+  // recent of them (where a tangent arc from P starts), or null.
+  function smoothDirs(f, P) {
+    var S = window.SketchSolver, out = { dirs: [], fwd: null };
+    if (!S || !S.endDir) return out;
+    var tol = 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]));
+    function axis(u) { return Math.abs(u[0]) < 1e-9 || Math.abs(u[1]) < 1e-9; }
+    for (var i = f.entities.length - 1; i >= 0; i--) {
+      var e = f.entities[i];
+      if (!e || (e.t !== 'line' && e.t !== 'arc')) continue;
+      for (var k = 1; k <= 2; k++) {
+        var q = S.refPoint(f, i + '.p' + k);
+        if (!q || Math.abs(q[0] - P[0]) > tol || Math.abs(q[1] - P[1]) > tol) continue;
+        var t = S.endDir(e, q);
+        if (!t || !(Math.abs(t[0]) + Math.abs(t[1]) > 0.5)) continue;
+        var fwd = k === 2 ? t : [-t[0], -t[1]];
+        if (!out.fwd) out.fwd = fwd;
+        if (e.t === 'arc') { if (!axis(fwd)) out.dirs.push({ type: 'tangent', u: fwd }); }
+        else if (!axis(t)) out.dirs.push({ type: 'perpendicular', u: [-t[1], t[0]] }, { type: 'perpendicular', u: [t[1], -t[0]] });
+      }
+    }
+    return out;
+  }
+  // The arc that leaves P along unit direction t and ends at Q (SolidWorks' tangent arc), as a counter-clockwise
+  // sketch arc; null when Q lies (nearly) on the tangent line.
+  function tangentArc(P, t, Q) {
+    var w = [Q[0] - P[0], Q[1] - P[1]], ww = w[0] * w[0] + w[1] * w[1], cr = t[0] * w[1] - t[1] * w[0];
+    if (!(ww > 0) || Math.abs(cr) < 1e-6 * ww) return null;
+    var r = ww / (2 * Math.abs(cr)), n = cr > 0 ? [-t[1], t[0]] : [t[1], -t[0]], C = [P[0] + n[0] * r, P[1] + n[1] * r];
+    var aP = Math.atan2(P[1] - C[1], P[0] - C[0]) * 180 / Math.PI, aQ = Math.atan2(Q[1] - C[1], Q[0] - C[0]) * 180 / Math.PI;
+    var a0 = cr > 0 ? aP : aQ, a1 = cr > 0 ? aQ : aP;
+    while (a1 <= a0) a1 += 360;
+    return { t: 'arc', cx: C[0], cy: C[1], r: r, a0: a0, a1: a1 };
+  }
+  // Line tool, tangent arc mode (SolidWorks' autotransition: press A, or move back over the end point and out again)
+  function setArcMode(on) {
+    var st = App.toolState, prev = st.pts[st.pts.length - 1], f = UI.activeSketchFeature();
+    if (App.tool !== 'line' || !prev || !f) return false;
+    if (on) {
+      var fwd = smoothDirs(f, prev).fwd;
+      if (!fwd) { UI.setStatus('A tangent arc starts at the end of a line or an arc.'); return false; }
+      st.arcDir = fwd;
+    }
+    st.arcMode = !!on;
+    $('sketch-hint').innerHTML = on ? 'Tangent arc: click its end point. <b>A</b> (or back over the end point and out) returns to lines.' : TOOL_HINTS.line;
+    return true;
+  }
+
   function toolEntities(pts, cur) {
     var t = App.tool, all = pts.concat(cur ? [cur] : []);
     if (all.length < 2 && t !== 'point') return [];
     var a = all[0], b = all[1], c = all[2];
     switch (t) {
-      case 'line': return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
+      case 'line': {
+        var st0 = App.toolState || {}, ta = st0.arcMode && st0.arcDir ? tangentArc(a, st0.arcDir, b) : null;
+        return [ta || { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
+      }
       case 'rect': return [{ t: 'rect', x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) }];
       case 'crect': return [{ t: 'crect', cx: a[0], cy: a[1], w: Math.abs(b[0] - a[0]) * 2, h: Math.abs(b[1] - a[1]) * 2 }];
       case 'circle': return [{ t: 'circle', cx: a[0], cy: a[1], r: cleanLen(Math.hypot(b[0] - a[0], b[1] - a[1])) }];
@@ -370,7 +440,14 @@
       return;
     }
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
-    var p = snap(raw, mx, my);
+    var p = snap(raw, mx, my), typed = null;
+    // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
+    if (numBox) { typed = numValues(); p = typedPoint(p, typed); closeNumBox(); }
+    placePoint(p, typed);
+  }
+  // The next point of the drawing tool: closes a Line chain on its first point, completes an entity once the tool has
+  // all its points (adding a dimension for each value typed for it), otherwise waits for the next.
+  function placePoint(p, typed) {
     var st = App.toolState;
     // a second click on the point just placed (the first half of a double-click) adds nothing: no zero-length lines
     var lastPt = st.pts[st.pts.length - 1];
@@ -381,16 +458,22 @@
       cancelTool(true);
       return;
     }
+    if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
+    st.away = st.back = false;
     if (st.pts.length >= stepsNeeded()) {
+      var f = UI.activeSketchFeature(), n0 = f ? f.entities.length : 0;
       var ents = toolEntities(st.pts);
       ents.forEach(addEntity);
+      if (f && st.typed && f.entities.length === n0 + 1) typedDims(f, n0, st.typed);
+      st.typed = null;
       if (App.tool === 'line') {
         var last = st.pts[st.pts.length - 1];
         st.chainStart = st.chainStart || st.pts[0];
         st.pts = [last];
         // remember the chain start so closing the loop ends the tool
         st.pts.chainStart = st.chainStart;
+        if (st.arcMode) setArcMode(false);   // after a tangent arc the chain goes on with lines, as in SolidWorks
       } else {
         st.pts = [];
       }
@@ -398,18 +481,218 @@
       UI.updateTemp();
     }
   }
+  // A driving dimension for each value typed while drawing entity idx (SolidWorks adds them with on-screen numeric
+  // input): a line's length, a rectangle's width / height, a circle's diameter, an arc / polygon radius, a slot's
+  // length / width. Typed angles only set the direction (0 / 90° lines infer Horizontal / Vertical). One that would
+  // over-define the sketch is left out.
+  function typedDims(f, idx, typed) {
+    var e = f.entities[idx], s = UI.cam.scale || 0.1, off = Math.round(14 * s * 1e4) / 1e4, list = [];
+    if (!e) return;
+    function lin(k, o) { list.push({ e: idx, k: k, off: o }); }
+    function rad(k) { list.push({ e: idx, k: k, ang: 45, off: Math.round((e.r + 14 * s) * 1e4) / 1e4 }); }
+    switch (e.t) {
+      case 'line': if (typed.len != null) lin('len', off); break;
+      case 'rect': case 'crect': if (typed.w != null) lin('w', -off); if (typed.h != null) lin('h', off); break;
+      case 'circle': if (typed.r != null) rad('dia'); break;
+      case 'arc': if (typed.r != null && App.tool === 'arc') rad('r'); break;
+      case 'poly': if (typed.r != null) rad('r'); break;
+      case 'slot': if (typed.len != null) lin('len', off); if (typed.w != null) lin('w', off); break;
+    }
+    list.forEach(function (d) {
+      f.dims = f.dims || [];
+      f.dims.push(d);
+      if (window.SketchSolver && SketchSolver.overDefines(f, 'dim', f.dims.length - 1)) f.dims.pop();
+    });
+    if (f.dims && !f.dims.length) delete f.dims;
+    App.dimsStale = true;
+    if (list.length) UI.updateSketches();
+  }
+
+  // ---- on-screen numeric input while drawing (SolidWorks): with a point placed, typing a number opens a small box at
+  // the cursor for the live value(s) — L and A for a line, W and H for a rectangle, R for a circle … Tab moves to the
+  // next value, Enter places the point, Esc closes the box. A typed value holds while the mouse supplies the rest
+  // (type a length, then swing the line round); blank values follow the mouse.
+  var numBox = null;   // { el, inputs: [{ key, input }] }
+  var lastMove = null; // the last cursor position in the viewport [mx, my]
+  function numFields() {
+    var st = App.toolState || { pts: [] }, n = st.pts.length;
+    if (!n || App.mode !== 'sketch' || (App.command && App.command.onSketchPoint)) return null;
+    switch (App.tool) {
+      case 'line': return st.arcMode ? null : [['L', 'len'], ['A', 'ang']];
+      case 'rect': case 'crect': return [['W', 'w'], ['H', 'h']];
+      case 'circle': return [['R', 'r']];
+      case 'polygon': return [['R', 'r'], ['A', 'ang']];
+      case 'arc': return n === 1 ? [['R', 'r']] : [['A', 'sweep']];
+      case 'slot': return n === 1 ? [['L', 'len'], ['A', 'ang']] : [['W', 'w']];
+    }
+    return null;
+  }
+  function openNumBox(firstChar) {
+    var fields = numFields();
+    if (!fields) return false;
+    closeNumBox();
+    var el = document.createElement('div');
+    el.id = 'sk-num';
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', 'Value of the entity being drawn');
+    el.style.cssText = 'position:absolute;z-index:5;display:flex;gap:4px;align-items:center;background:var(--input-bg);border:1px solid var(--blue);border-radius:3px;padding:2px 4px;box-shadow:0 2px 8px var(--shadow);font:12px "Segoe UI",sans-serif;color:var(--text)';
+    var box = { el: el, inputs: [] };
+    fields.forEach(function (fd) {
+      var lab = document.createElement('label');
+      lab.textContent = fd[0];
+      lab.style.cssText = 'color:var(--blue);font-weight:600';
+      var inp = document.createElement('input');
+      inp.type = 'text'; inp.setAttribute('inputmode', 'decimal'); inp.spellcheck = false; inp.autocomplete = 'off';
+      inp.setAttribute('aria-label', fd[0] === 'A' ? 'Angle' : fd[0] === 'L' ? 'Length' : fd[0] === 'R' ? 'Radius' : fd[0] === 'W' ? 'Width' : 'Height');
+      inp.style.cssText = 'width:58px;border:0;outline:0;background:transparent;font:inherit;color:inherit;padding:1px 2px;border-bottom:1px solid var(--line)';
+      inp.addEventListener('keydown', numKey);
+      inp.addEventListener('input', function () { inp.style.outline = ''; numPreview(); });
+      lab.appendChild(inp);
+      el.appendChild(lab);
+      box.inputs.push({ key: fd[1], input: inp });
+    });
+    el.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    dimEdit.parentNode.appendChild(el);
+    numBox = box;
+    positionNumBox();
+    var first = box.inputs[0].input;
+    first.value = firstChar || '';
+    first.focus();
+    first.setSelectionRange(first.value.length, first.value.length);
+    numPreview();
+    return true;
+  }
+  function positionNumBox() {
+    if (!numBox) return;
+    var m = lastMove || [UI.size.w / 2, UI.size.h / 2];
+    numBox.el.style.left = Math.round(Math.min(m[0] + 14, UI.size.w - 160)) + 'px';
+    numBox.el.style.top = Math.round(Math.max(4, m[1] - 52)) + 'px';
+  }
+  function closeNumBox() {
+    if (!numBox) return;
+    var b = numBox; numBox = null;
+    if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
+  }
+  // the typed values: { len, ang, w, h, r, sweep } (only those entered); a bad entry is marked and left out
+  function numValues() {
+    var out = {};
+    if (!numBox) return out;
+    numBox.inputs.forEach(function (x) {
+      var s = x.input.value.trim();
+      if (!s) return;
+      var r = parseDimInput(s);
+      if (r.error != null || !isFinite(r.value)) { x.input.style.outline = '1px solid #d33'; return; }
+      if ((x.key !== 'ang' && x.key !== 'sweep') && !(r.value > 0)) { x.input.style.outline = '1px solid #d33'; return; }
+      out[x.key] = r.value;
+    });
+    return out;
+  }
+  function clean(v) { return +v.toPrecision(12); }
+  // The tool's next point for cursor point cur with the typed values v holding.
+  function typedPoint(cur, v) {
+    var st = App.toolState, pts = st.pts, a = pts[0], last = pts[pts.length - 1], D = Math.PI / 180;
+    if (!a || !v) return cur;
+    function polar(o, L, ang) { return [clean(o[0] + L * Math.cos(ang)), clean(o[1] + L * Math.sin(ang))]; }
+    function sg(x) { return x < 0 ? -1 : 1; }
+    var dx = cur[0] - a[0], dy = cur[1] - a[1];
+    switch (App.tool) {
+      case 'line': case 'slot': case 'polygon': {
+        if (App.tool === 'slot' && pts.length === 2) {
+          if (v.w == null) return cur;
+          var b = pts[1], ux = b[0] - a[0], uy = b[1] - a[1], L = Math.hypot(ux, uy) || 1, n = [-uy / L, ux / L];
+          var side = sg((cur[0] - a[0]) * n[0] + (cur[1] - a[1]) * n[1]);
+          return [clean(a[0] + n[0] * side * v.w / 2), clean(a[1] + n[1] * side * v.w / 2)];
+        }
+        var o = App.tool === 'line' ? last : a, ex = cur[0] - o[0], ey = cur[1] - o[1];
+        var len = App.tool === 'polygon' ? v.r : v.len;
+        if (len == null) len = Math.hypot(ex, ey);
+        var ang = v.ang != null ? v.ang * D : (Math.hypot(ex, ey) > 1e-12 ? Math.atan2(ey, ex) : 0);
+        return polar(o, len, ang);
+      }
+      case 'rect': return [clean(a[0] + sg(dx) * (v.w != null ? v.w : Math.abs(dx))), clean(a[1] + sg(dy) * (v.h != null ? v.h : Math.abs(dy)))];
+      case 'crect': return [clean(a[0] + sg(dx) * (v.w != null ? v.w / 2 : Math.abs(dx))), clean(a[1] + sg(dy) * (v.h != null ? v.h / 2 : Math.abs(dy)))];
+      case 'circle': return v.r == null ? cur : polar(a, v.r, Math.hypot(dx, dy) > 1e-12 ? Math.atan2(dy, dx) : 0);
+      case 'arc': {
+        if (pts.length === 1) return v.r == null ? cur : polar(a, v.r, Math.hypot(dx, dy) > 1e-12 ? Math.atan2(dy, dx) : 0);
+        if (v.sweep == null) return cur;
+        var b2 = pts[1], a0 = Math.atan2(b2[1] - a[1], b2[0] - a[0]);
+        return polar(a, Math.hypot(b2[0] - a[0], b2[1] - a[1]), a0 + v.sweep * D);
+      }
+    }
+    return cur;
+  }
+  function numPreview() {
+    if (!numBox || !lastMove) return;
+    sketchMove(lastMove[0], lastMove[1]);
+  }
+  function numKey(ev) {
+    ev.stopPropagation();
+    if (!numBox) return;
+    var list = numBox.inputs.map(function (x) { return x.input; }), k = list.indexOf(ev.target);
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      var nx = list[(k + (ev.shiftKey ? list.length - 1 : 1)) % list.length];
+      nx.focus(); nx.select();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      var v = numValues();
+      if (numBox.inputs.some(function (x) { return x.input.style.outline; })) { UI.setStatus('Not a valid value: type a positive length, or an angle in degrees.'); return; }
+      var pl = UI.activePlane(), m = lastMove, raw = m ? UI.screenToPlane(m[0], m[1], pl) : null;
+      var cur = raw ? inferPoint(raw, m[0], m[1]).p : (App.toolState.pts[App.toolState.pts.length - 1] || [0, 0]);
+      var p = typedPoint(cur, v);
+      closeNumBox();
+      placePoint(p, v);
+      if (m) sketchMove(m[0], m[1]);
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeNumBox();
+      if (lastMove) sketchMove(lastMove[0], lastMove[1]);
+    }
+  }
+  // typing a number (or "=" for an equation) with a drawing tool and a point placed opens the box; A in the Line tool
+  // switches to a tangent arc and back
+  document.addEventListener('keydown', function (ev) {
+    if (App.mode !== 'sketch' || ev.ctrlKey || ev.metaKey || ev.altKey || numBox) return;
+    var tag = (ev.target && ev.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (ev.target && ev.target.isContentEditable)) return;
+    if (App.tool === 'line' && (ev.key === 'a' || ev.key === 'A') && App.toolState.pts.length) {
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      setArcMode(!App.toolState.arcMode);
+      if (lastMove) sketchMove(lastMove[0], lastMove[1]);
+      return;
+    }
+    if (/^[0-9.=]$/.test(ev.key) || (ev.key === '-' && App.tool !== 'select')) {
+      if (!numFields()) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      openNumBox(ev.key);
+    }
+  }, true);
+  UI.sketchNumBox = function () { return numBox ? numBox.inputs.map(function (x) { return x.input; }) : null; };
 
   function sketchMove(mx, my) {
     var pl = UI.activePlane(), raw = UI.screenToPlane(mx, my, pl);
     if (!raw) return;
     var drawing = App.tool !== 'select' && App.tool !== 'dimension' && !(App.command && App.command.onSketchPoint);
+    lastMove = [mx, my];
+    // Line tool: back over the chain's end point and out again switches between line and tangent arc (SolidWorks)
+    if (drawing && App.tool === 'line' && App.toolState.pts.length && !numBox) {
+      var st = App.toolState, e0 = st.pts[st.pts.length - 1], s0 = UI.worldToScreen(K.to3D(pl, e0[0], e0[1])), d0 = Math.hypot(s0[0] - mx, s0[1] - my);
+      if (d0 > 15) { if (st.back) { st.back = false; setArcMode(!st.arcMode); } st.away = true; }
+      else if (d0 < 5 && st.away) st.back = true;
+    }
     var info = drawing ? inferPoint(raw, mx, my) : null, p = info ? info.p : raw;
+    if (info && numBox) {
+      var tv = numValues();
+      if (Object.keys(tv).length) { p = typedPoint(p, tv); info = { p: p, snap: null, align: [], px: info.px }; }
+    }
     var readout = drawing && App.toolState.pts.length ? toolReadout(App.toolState.pts, p) : '';
     $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
     if (!drawing) {
       // pre-highlight what a click would pick (select, Smart Dimension, Add Relations, Trim …), as SolidWorks does
       var ref = UI.pickSketchRef && !App.zoomAreaMode ? UI.pickSketchRef(mx, my) : null;
       drawHover(pl, ref === 'O' ? null : ref);
+      // a sketch command's own hover preview (Extend Entities shows where the end would go)
+      if (App.command && App.command.onSketchMove) App.command.onSketchMove(raw, mx, my);
     }
     if (App.tool === 'dimension') { dimToolMove(raw); return; }
     if (drawing && App.toolState.pts.length) {
@@ -422,13 +705,21 @@
     if (drawing) drawFeedback(pl, info, mx, my, readout);
   }
   // while dragging an end point: the point / curve it would merge with (ui-relations.js), or null
-  UI.sketchSnapMark = function (uv, q, onCurve) {
+  UI.sketchSnapMark = function (uv, q, onCurve, type) {
     var layer = feedbackLayer();
     clearFeedback();
     if (!uv) return;
     var s = UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1]));
     svg('circle', { cx: s[0], cy: s[1], r: onCurve ? 3 : 5, style: 'fill:' + (onCurve ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
-    glyph(layer, q[0] + 14, q[1] + 12, 'coincident');
+    glyph(layer, q[0] + 14, q[1] + 12, type || 'coincident');
+  };
+  // orange dashed polylines (sketch coordinates) added to the cursor feedback: a command's preview
+  UI.sketchPreview = function (polylines) {
+    var layer = feedbackLayer(), pl = UI.activePlane();
+    (polylines || []).forEach(function (pts) {
+      var s = pts.map(function (q) { var p = UI.worldToScreen(K.to3D(pl, q[0], q[1])); return Math.round(p[0] * 10) / 10 + ',' + Math.round(p[1] * 10) / 10; });
+      svg('polyline', { 'class': 'sk-preview', points: s.join(' '), style: 'stroke:#e8891c;stroke-width:2;fill:none;stroke-dasharray:5 3;stroke-linecap:round' }, layer);
+    });
   };
   var HOVER_STYLE ='stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function drawHover(pl, ref) {
@@ -456,7 +747,11 @@
     var dx = p[0] - a[0], dy = p[1] - a[1], L = Math.hypot(dx, dy);
     function ang(x, y) { var d = Math.atan2(y, x) * 180 / Math.PI; return n(d < 0 ? d + 360 : d, 1) + '°'; }
     switch (t) {
-      case 'line': { var q = pts[pts.length - 1]; dx = p[0] - q[0]; dy = p[1] - q[1]; return 'L ' + n(Math.hypot(dx, dy), 2) + '   A ' + ang(dx, dy); }
+      case 'line': {
+        var q = pts[pts.length - 1], st1 = App.toolState || {}, ta = st1.arcMode && st1.arcDir ? tangentArc(q, st1.arcDir, p) : null;
+        if (ta) return 'R ' + n(ta.r, 2) + '   A ' + n(ta.a1 - ta.a0, 1) + '°';
+        dx = p[0] - q[0]; dy = p[1] - q[1]; return 'L ' + n(Math.hypot(dx, dy), 2) + '   A ' + ang(dx, dy);
+      }
       case 'rect': return n(Math.abs(dx), 2) + ' × ' + n(Math.abs(dy), 2);
       case 'crect': return n(Math.abs(dx) * 2, 2) + ' × ' + n(Math.abs(dy) * 2, 2);
       case 'circle': return 'R ' + n(L, 2);
@@ -502,6 +797,11 @@
       svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
     });
     // the point taken: an orange ring on an existing point, a small dot on a curve
+    // a tangent / perpendicular direction taken: a dotted inference line along it from the end point, past the cursor
+    if (info.dir) {
+      var a0 = scr(info.dir.from), vx = sp[0] - a0[0], vy = sp[1] - a0[1], vl = Math.hypot(vx, vy) || 1;
+      svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
+    }
     if (info.snap) svg('circle', { cx: sp[0], cy: sp[1], r: info.snap.kind === 'on' ? 3 : 5, style: 'fill:' + (info.snap.kind === 'on' ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
     // relation glyphs by the cursor: what the click will infer
     var types = [];
@@ -862,7 +1162,7 @@
   }
 
   viewport.addEventListener('mousedown', function (ev) {
-    if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit')) return;
+    if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
     UI.closeMenus();
     var p = pos(ev);
     downPos = p;
@@ -955,7 +1255,7 @@
     if (ev.button === 2) { if (App.mode === 'sketch') { finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
-    if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit')) return;
+    if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
     if (App.mode === 'sketch') { sketchClick(p[0], p[1], ev); return; }
     partClick(p[0], p[1], ev);
   });

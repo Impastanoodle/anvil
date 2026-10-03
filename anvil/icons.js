@@ -81,6 +81,7 @@ var Icons = (function () {
     point: circ(8, 8, 1.6, B, 'none') + ln('M8 3 v2.5 M8 10.5 v2.5 M3 8 h2.5 M10.5 8 h2.5', S, 1.1),
     text: txt(8, 12.5, 12, 'A', S, 'Georgia, serif', 600),
     trim: ln('M2 5 h12 M2 11 h12', B, 1.5) + ln('M8 2 v12', S, 0.9, DASH) + ln('M6 9.5 l2 -3 2 3', R, 1.5),
+    extend: ln('M2 8 h7', B, 1.5) + ln('M9 8 h3.5', B, 1.5, DASH) + ln('M13.5 2 v12', S, 1.2) + ln('M9.5 5.5 l2.5 2.5 -2.5 2.5', G, 1.4),
     convert: rect(2.5, 2.5, 11, 11, F2, S) + rect(5, 5, 6, 6, 'none', B, 1.5),
     offset: rect(4, 4, 8, 8, 'none', B, 1.5) + rect(1.5, 1.5, 13, 13, 'none', S, 1, DASH),
     mirrorEnt: ln('M8 2 v12', S, 0.9, DASH) + ln('M6 4.5 L2.5 11.5 h3.5 z', B, 1.4) + ln('M10 4.5 L13.5 11.5 h-3.5 z', B, 1.4, 'stroke-dasharray="1.5 1.5"'),
