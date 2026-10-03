@@ -277,8 +277,7 @@
       });
     });
     if (App.tempRelDim) { var tsc = relDimScreenData(f, pl, App.tempRelDim); if (tsc) h.drawOne(tsc, { d: App.tempRelDim, temp: true }); }
-    // yellow inference icons next to what is being drawn
-    (App.inferPreview || []).forEach(function (c, k) { var a = scr(pl, c.at); badge(layer, h, a[0] + 10 + k * 18, a[1] + 10, c.type, 'infer'); });
+    // (the yellow inference icons of what is being drawn sit by the cursor: ui-sketch.js drawFeedback)
     // Add Relations selection
     (App.relPick || []).forEach(function (ref) {
       var p = S.refPoint(f, ref), c = !p && S.refCurve(f, ref);
@@ -424,18 +423,83 @@
     if (!point) ref = String(refEntity(ref));
     // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
     var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');
+    // At most one solve per animation frame: the first move of a frame is solved at once (no added latency), later ones
+    // in the same frame only replace the pending target, solved when the frame comes (or at once on release). While
+    // dragging, the sketch is redrawn without re-analysing it (its degrees of freedom cannot change mid-drag).
+    var pending = null, frame = 0, drop = null;
+    // A dragged end point dropped on another sketch point (within 9 px) or on a line / circle / arc (within 7 px) snaps
+    // there and gets a Coincident on release, as in SolidWorks. Points that sat with it when the drag began (already
+    // coincident) move with it and are no targets.
+    function dropTarget(q) {
+      var e0 = refEntity(ref), P0 = S.refPoint({ entities: start }, ref), best = null, bd = 9;
+      function excluded(i, pt0) { return i === e0 || (pt0 && P0 && Math.abs(pt0[0] - P0[0]) < 1e-9 && Math.abs(pt0[1] - P0[1]) < 1e-9); }
+      f.entities.forEach(function (e, i) {
+        S.pointRefs(f, i).forEach(function (pr) {
+          if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t))) return;
+          if (excluded(i, S.refPoint({ entities: start }, pr.ref))) return;
+          var s = scr(pl, pr.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
+          if (d < bd) { bd = d; best = { ref: pr.ref, pt: pr.pt }; }
+        });
+      });
+      var o = scr(pl, [0, 0]);
+      if (!(P0 && Math.abs(P0[0]) < 1e-9 && Math.abs(P0[1]) < 1e-9) && Math.hypot(o[0] - q[0], o[1] - q[1]) < bd) best = { ref: 'O', pt: [0, 0] };
+      if (best) return best;
+      var uv = UI.screenToPlane(q[0], q[1], pl), hit = UI.pickEntity(q[0], q[1]);
+      if (!uv || !hit || hit.index === e0) return null;
+      var bc = null, bdc = 7;
+      S.curveRefs(f, hit.index).forEach(function (cr) {
+        var c = S.refCurve(f, cr), pt;
+        if (!c) return;
+        if (c.kind === 'line') {
+          var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L2 = dx * dx + dy * dy || 1, t = Math.max(0, Math.min(1, ((uv[0] - c.a[0]) * dx + (uv[1] - c.a[1]) * dy) / L2));
+          pt = [c.a[0] + dx * t, c.a[1] + dy * t];
+        } else {
+          var vx = uv[0] - c.c[0], vy = uv[1] - c.c[1], r = Math.hypot(vx, vy);
+          if (r < 1e-12) return;
+          pt = [c.c[0] + vx / r * c.r, c.c[1] + vy / r * c.r];
+        }
+        var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
+        if (d < bdc) { bdc = d; bc = { ref: cr, pt: pt, curve: true }; }
+      });
+      return bc;
+    }
+    function solveTo(q) {
+      var uv = UI.screenToPlane(q[0], q[1], pl);
+      if (!uv || !uv0) return;
+      drop = point && /\.(p\d|v\d+)$|^\d+$/.test(ref) ? dropTarget(q) : null;
+      if (drop) uv = drop.pt.slice();
+      var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
+      if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; UI.updateSketches(); }
+      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve);
+    }
+    // the next frame, or 50 ms when animation frames are throttled (a background tab), whichever comes first
+    var timer = 0;
+    function schedule() { frame = requestAnimationFrame(tick); timer = setTimeout(tick, 50); }
+    function unschedule() { if (frame) cancelAnimationFrame(frame); if (timer) clearTimeout(timer); frame = timer = 0; }
+    function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); schedule(); } }
     return {
-      start: function () { markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); },
+      start: function () { markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); App.sketchDragging = true; },
       move: function (q) {
-        var uv = UI.screenToPlane(q[0], q[1], pl);
-        if (!uv || !uv0) return;
-        var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
-        if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; App.gridStale = true; UI.updateSketches(); }
+        if (frame) { pending = q; return; }
+        solveTo(q);
+        schedule();
       },
       end: function () {
+        unschedule();
+        if (pending) { var q = pending; pending = null; solveTo(q); }
+        App.sketchDragging = false;
+        if (UI.sketchSnapMark) UI.sketchSnapMark(null);
+        var merged = null;
+        if (drop && moved) {
+          var r = S.addRelation(f, 'coincident', [ref, drop.ref], { rejectOver: true });
+          merged = r.ok ? 'Coincident with ' + S.refName(f, drop.ref) + ' added. ' : null;
+        }
+        drop = null;
+        UI.updateSketches();
         UI.refreshTree();
         var an = App.sketchState;
-        UI.setStatus(moved ? 'Dragged ' + S.refName(f, ref) + '. ' + (an ? S.STATUS_TEXT[an.status] + (an.dof ? ' (' + an.dof + ' degrees of freedom)' : '') : '') : S.refName(f, ref) + ' is fully defined: it cannot be dragged.');
+        if (merged) { UI.setStatus('Dragged ' + S.refName(f, ref) + '. ' + merged + (an ? S.STATUS_TEXT[an.status] + '.' : '')); return; }
+        UI.setStatus(moved ?'Dragged ' + S.refName(f, ref) + '. ' + (an ? S.STATUS_TEXT[an.status] + (an.dof ? ' (' + an.dof + ' degrees of freedom)' : '') : '') : S.refName(f, ref) + ' is fully defined: it cannot be dragged.');
       }
     };
   }

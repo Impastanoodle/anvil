@@ -14,7 +14,7 @@ var UI = (function () {
     mode: 'part', activeSketch: null,
     tool: null, toolState: null, tempEntities: [],
     command: null,
-    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: true, showDims: true, section: null, bg: 'gradient' },
+    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: false, showDims: true, section: null, bg: 'gradient' },
     ribbonTab: 'Features',
     viewHistory: [],
     sketchDirty: false,
@@ -887,7 +887,8 @@ var UI = (function () {
       var active = App.activeSketch === f.id;
       // the active sketch is analysed on every redraw: entity colours and the status bar's Under / Fully / Over Defined
       var state = null;
-      if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
+      if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
+      else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict };
       f.entities.forEach(function (e, i) {
         var pls = K.entityPolylines(e);

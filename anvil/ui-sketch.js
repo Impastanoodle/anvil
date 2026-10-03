@@ -14,6 +14,7 @@
     App.activeSketch = id;
     App.sel = null; App.sel2 = null;
     App.sketchDirty = false;
+    woken = [];
     setTool('select');
     UI.viewNormalTo(UI.activePlane());
     UI.zoomToFit();
@@ -47,6 +48,7 @@
     App.newSketchId = null;
     $('exit-sketch').hidden = true;
     $('sketch-hint').hidden = true;
+    clearFeedback();
     $('status-coords').textContent = '';
     viewport.classList.remove('tool-cross');
     App.gridStale = true;
@@ -80,7 +82,7 @@
   // ------------------------------------------------------------------ tools
   var TOOL_HINTS = {
     select: 'Click an entity to select it. <b>Delete</b> removes it. Double-click empty space to finish.',
-    line: 'Click the start point, then each next point. <b>Esc</b> or right-click ends the chain.',
+    line: 'Click the start point, then each next point, or press and drag for one line. <b>Esc</b> or right-click ends the chain.',
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
@@ -107,41 +109,174 @@
     App.toolState = { pts: [] };
     if (App.inferPreview && App.inferPreview.length) { App.inferPreview = []; App.dimsStale = true; }
     App.tempEntities = [];
+    clearFeedback();
     if (App.tempDim) { App.tempDim = null; App.dimsStale = true; }
     if (App.tempRelDim) { App.tempRelDim = null; App.dimsStale = true; }
     UI.updateTemp();
     if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
   }
 
-  function snap(uv) {
-    var step = UI.snapStep();
-    var out = [Math.round(uv[0] / step) * step, Math.round(uv[1] / step) * step];
-    var f = UI.activeSketchFeature();
-    if (!f) return out;
-    var pl = UI.activePlane(), scr = UI.worldToScreen(K.to3D(pl, uv[0], uv[1]));
-    var best = null, bestD = 9;
-    var cands = [];
-    f.entities.forEach(function (e) { K.entitySnapPoints(e).forEach(function (p) { cands.push(p); }); });
-    App.toolState.pts.forEach(function (p) { cands.push(p); });
-    cands.push([0, 0]);
-    cands.forEach(function (p) {
-      var s = UI.worldToScreen(K.to3D(pl, p[0], p[1]));
-      var d = Math.hypot(s[0] - scr[0], s[1] - scr[1]);
-      if (d < bestD) { bestD = d; best = p; }
+  // ------------------------------------------------------------------ inference while sketching (no grid)
+  // As in SolidWorks there is no snap grid: a point lands where it is clicked and the sketcher infers instead. In order:
+  // an existing sketch point within 9 px (end, midpoint, centre, corner, quadrant, intersection, the origin) is taken
+  // exactly; then a point on a line, circle or arc within 7 px; otherwise the point stays under the cursor, aligned
+  // (within 6 px) horizontally / vertically with the previous point or with any other sketch point (dotted blue
+  // inference lines), and each free coordinate is rounded to the roundest value inside the pixel under the cursor (25.4
+  // rather than 25.3971), so nothing moves visibly. The grid is an option (View > Sketch Grid, off by default): while it
+  // is shown, the free coordinates snap to it instead, as SolidWorks' Grid/Snap does.
+  var INFER_PX = { point: 9, curve: 7, align: 6 };
+  var woken = [];   // sketch points the cursor passed over (inference lines align with them); reset per sketch
+  // the roundest number (multiples of 10^k, then 5·10^(k-1), …) within h of x
+  function niceRound(x, h) {
+    if (!(h > 0) || !isFinite(x)) return x;
+    for (var k = Math.ceil(Math.log10(2 * h)); k > -12; k--) {
+      var s1 = Math.pow(10, k), q;
+      q = Math.round(x / s1) * s1; if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, -k));
+      var s2 = s1 / 2;
+      q = Math.round(x / s2) * s2; if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, 1 - k));
+    }
+    return x;
+  }
+  // sketch units per screen pixel at (mx, my)
+  function pxSize(pl, mx, my) {
+    var a = UI.screenToPlane(mx, my, pl), b = UI.screenToPlane(mx + 1, my, pl), c = UI.screenToPlane(mx, my + 1, pl);
+    if (!a || !b || !c) return UI.cam.scale;
+    return Math.max(Math.hypot(b[0] - a[0], b[1] - a[1]), Math.hypot(c[0] - a[0], c[1] - a[1]));
+  }
+  // The inference points of sketch f, with their kind: end / midpoint / center / quadrant / intersection. Cached until
+  // the sketch changes.
+  var candCache = { key: null, pts: null };
+  function sketchPoints(f) {
+    var key = f.id + ':' + JSON.stringify(f.entities);
+    if (candCache.key === key) return candCache.pts;
+    var S = window.SketchSolver, pts = [], curves = [];
+    f.entities.forEach(function (e, i) {
+      if (S) {
+        S.pointRefs(f, i).forEach(function (pr) {
+          var s = pr.ref.split('.')[1] || '';
+          pts.push({ pt: pr.pt, kind: s === 'mid' ? 'midpoint' : s === 'c' ? 'center' : 'end' });
+        });
+        S.curveRefs(f, i).forEach(function (r) {
+          var c = S.refCurve(f, r);
+          if (!c) return;
+          var cv = { e: i, kind: c.kind, a: c.a, b: c.b, c: c.c, r: c.r, arc: e.t === 'arc' ? e : null };
+          curves.push(cv);
+          if (c.kind === 'line' && /\.e\d+$/.test(r)) pts.push({ pt: [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2], kind: 'midpoint' });
+          if (c.kind === 'circle') [[1, 0], [0, 1], [-1, 0], [0, -1]].forEach(function (d) {
+            var q = [c.c[0] + d[0] * c.r, c.c[1] + d[1] * c.r];
+            if (onArc(cv, q)) pts.push({ pt: q, kind: 'quadrant' });
+          });
+        });
+      } else K.entitySnapPoints(e).forEach(function (p) { pts.push({ pt: p, kind: 'end' }); });
     });
-    if (best) return [best[0], best[1]];
-    // on an existing line / circle / arc (SolidWorks' "on entity" snap; the solver infers a Coincident there)
-    var onCurve = curveSnap(f, pl, scr, 6);
-    if (onCurve) return onCurve;
-    // axis alignment with the previous point
-    var prev = App.toolState.pts[App.toolState.pts.length - 1];
-    if (prev) {
-      var s0 = UI.worldToScreen(K.to3D(pl, prev[0], prev[1]));
-      if (Math.abs(s0[0] - scr[0]) < 6) out[0] = prev[0];
-      if (Math.abs(s0[1] - scr[1]) < 6) out[1] = prev[1];
+    // intersections of lines, circles and arcs of different entities (skipped for very large sketches)
+    if (curves.length <= 150) {
+      for (var i = 0; i < curves.length; i++) for (var j = i + 1; j < curves.length; j++) {
+        if (curves[i].e === curves[j].e) continue;
+        intersect(curves[i], curves[j]).forEach(function (q) { pts.push({ pt: q, kind: 'intersection' }); });
+      }
+    }
+    candCache = { key: key, pts: pts };
+    return pts;
+  }
+  function onArc(cv, q) {
+    if (!cv.arc) return true;
+    var a = Math.atan2(q[1] - cv.c[1], q[0] - cv.c[0]) * 180 / Math.PI, sw = cv.arc.a1 - cv.arc.a0;
+    if (sw >= 360) return true;
+    var rel = ((a - cv.arc.a0) % 360 + 360) % 360;
+    return rel <= sw + 1e-9;
+  }
+  function onSeg(cv, q) {
+    var dx = cv.b[0] - cv.a[0], dy = cv.b[1] - cv.a[1], L2 = dx * dx + dy * dy;
+    if (L2 < 1e-24) return false;
+    var t = ((q[0] - cv.a[0]) * dx + (q[1] - cv.a[1]) * dy) / L2;
+    return t >= -1e-9 && t <= 1 + 1e-9;
+  }
+  function intersect(A, B) {
+    if (A.kind === 'circle' && B.kind === 'line') { var t = A; A = B; B = t; }
+    var out = [];
+    if (A.kind === 'line' && B.kind === 'line') {
+      var d1 = [A.b[0] - A.a[0], A.b[1] - A.a[1]], d2 = [B.b[0] - B.a[0], B.b[1] - B.a[1]], den = d1[0] * d2[1] - d1[1] * d2[0];
+      if (Math.abs(den) < 1e-12 * (Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]) || 1)) return out;
+      var s = ((B.a[0] - A.a[0]) * d2[1] - (B.a[1] - A.a[1]) * d2[0]) / den, u = ((B.a[0] - A.a[0]) * d1[1] - (B.a[1] - A.a[1]) * d1[0]) / den;
+      if (s >= -1e-9 && s <= 1 + 1e-9 && u >= -1e-9 && u <= 1 + 1e-9) out.push([A.a[0] + d1[0] * s, A.a[1] + d1[1] * s]);
+      return out;
+    }
+    if (A.kind === 'line') {
+      var dx = A.b[0] - A.a[0], dy = A.b[1] - A.a[1], fx = A.a[0] - B.c[0], fy = A.a[1] - B.c[1];
+      var a = dx * dx + dy * dy, b = 2 * (fx * dx + fy * dy), c = fx * fx + fy * fy - B.r * B.r, disc = b * b - 4 * a * c;
+      if (a < 1e-24 || disc < 0) return out;
+      var sq = Math.sqrt(disc);
+      [(-b - sq) / (2 * a), (-b + sq) / (2 * a)].forEach(function (tt, k) {
+        if (k === 1 && sq < 1e-12) return;
+        var q = [A.a[0] + dx * tt, A.a[1] + dy * tt];
+        if (tt >= -1e-9 && tt <= 1 + 1e-9 && onArc(B, q)) out.push(q);
+      });
+      return out;
+    }
+    var ex = B.c[0] - A.c[0], ey = B.c[1] - A.c[1], D = Math.hypot(ex, ey);
+    if (D < 1e-12 || D > A.r + B.r + 1e-12 || D < Math.abs(A.r - B.r) - 1e-12) return out;
+    var al = (A.r * A.r - B.r * B.r + D * D) / (2 * D), hh = Math.sqrt(Math.max(0, A.r * A.r - al * al));
+    var mx = A.c[0] + ex * al / D, my = A.c[1] + ey * al / D;
+    [[mx - ey * hh / D, my + ex * hh / D], [mx + ey * hh / D, my - ex * hh / D]].forEach(function (q, k) {
+      if (k === 1 && hh < 1e-12) return;
+      if (onArc(A, q) && onArc(B, q)) out.push(q);
+    });
+    return out;
+  }
+  // Where a drawing tool's next point goes for the cursor at sketch point raw (screen mx, my):
+  // { p, snap: { kind, pt } | null, align: [{ from, axis: 'x' | 'y', prev }], px }.
+  function inferPoint(raw, mx, my) {
+    var f = UI.activeSketchFeature(), pl = UI.activePlane(), out = { p: raw.slice(), snap: null, align: [], px: 0 };
+    if (!f) return out;
+    if (mx == null) { var s0 = UI.worldToScreen(K.to3D(pl, raw[0], raw[1])); mx = s0[0]; my = s0[1]; }
+    var px = out.px = pxSize(pl, mx, my), st = App.toolState || { pts: [] }, prev = st.pts[st.pts.length - 1];
+    function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
+    // 1. an existing point
+    var cands = sketchPoints(f).slice();
+    cands.push({ pt: [0, 0], kind: 'origin' });
+    st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
+    var best = null, bestD = INFER_PX.point;
+    cands.forEach(function (c) {
+      var s = scr(c.pt), d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d < bestD - 1e-9) { bestD = d; best = c; }
+    });
+    if (best) {
+      out.p = [best.pt[0], best.pt[1]]; out.snap = best;
+      // a point the cursor has passed over is "woken": inference lines can then align with it (as in SolidWorks)
+      if (!woken.some(function (w) { return w[0] === best.pt[0] && w[1] === best.pt[1]; })) { woken.push([best.pt[0], best.pt[1]]); if (woken.length > 8) woken.shift(); }
+      return out;
+    }
+    // 2. on a line / circle / arc (the solver infers a point-on-curve Coincident there)
+    var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
+    if (onCurve) { out.p = onCurve; out.snap = { kind: 'on', pt: onCurve }; return out; }
+    // 3. aligned with the previous point (horizontal / vertical) or with another sketch point (inference lines);
+    //    a rectangle's second corner is not aligned with its first (it would have no width or height)
+    var tol = INFER_PX.align * px, boxTool = App.tool === 'rect' || App.tool === 'crect';
+    var ax = null, ay = null;
+    var alignC = [];
+    if (prev && !boxTool) alignC.push({ pt: prev, prev: true });
+    st.pts.forEach(function (p) { if (p !== prev && !(boxTool && p === st.pts[0])) alignC.push({ pt: p }); });
+    woken.forEach(function (p) { if (!(boxTool && st.pts[0] && p[0] === st.pts[0][0] && p[1] === st.pts[0][1])) alignC.push({ pt: p }); });
+    alignC.forEach(function (c) {
+      var dx = Math.abs(raw[0] - c.pt[0]), dy = Math.abs(raw[1] - c.pt[1]);
+      if (dx < tol && (!ax || dx < ax.d - 1e-9)) ax = { d: dx, c: c };
+      if (dy < tol && (!ay || dy < ay.d - 1e-9)) ay = { d: dy, c: c };
+    });
+    var h = 0.5 * px * 1.05, grid = App.view.showGrid ? UI.snapStep() : 0;
+    function free(v) { return grid ? +(Math.round(v / grid) * grid).toPrecision(12) : niceRound(v, h); }
+    out.p = [ax ? ax.c.pt[0] : free(raw[0]), ay ? ay.c.pt[1] : free(raw[1])];
+    if (ax) out.align.push({ from: ax.c.pt, axis: 'x', prev: !!ax.c.prev });
+    if (ay) out.align.push({ from: ay.c.pt, axis: 'y', prev: !!ay.c.prev });
+    // a circle / polygon / arc radius is rounded as a length (R 12.5, not a rounded end point)
+    var a = st.pts[0];
+    if (a && !grid && !out.align.length && (App.tool === 'circle' || App.tool === 'polygon' || (App.tool === 'arc' && st.pts.length === 1))) {
+      var vx = raw[0] - a[0], vy = raw[1] - a[1], r = Math.hypot(vx, vy);
+      if (r > 1e-12) { var rr = niceRound(r, h); out.p = [a[0] + vx / r * rr, a[1] + vy / r * rr]; }
     }
     return out;
   }
+  function snap(uv, mx, my) { return inferPoint(uv, mx, my).p; }
 
   // The nearest point on a line, circle or arc of sketch f within tolPx screen pixels of scr, or null.
   function curveSnap(f, pl, scr, tolPx) {
@@ -177,13 +312,13 @@
       case 'line': return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
       case 'rect': return [{ t: 'rect', x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) }];
       case 'crect': return [{ t: 'crect', cx: a[0], cy: a[1], w: Math.abs(b[0] - a[0]) * 2, h: Math.abs(b[1] - a[1]) * 2 }];
-      case 'circle': return [{ t: 'circle', cx: a[0], cy: a[1], r: Math.hypot(b[0] - a[0], b[1] - a[1]) }];
+      case 'circle': return [{ t: 'circle', cx: a[0], cy: a[1], r: cleanLen(Math.hypot(b[0] - a[0], b[1] - a[1])) }];
       case 'polygon': {
         var n = (App.toolParams && App.toolParams.sides) || 6;
-        return [{ t: 'poly', cx: a[0], cy: a[1], r: Math.hypot(b[0] - a[0], b[1] - a[1]), n: n, rot: Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI }];
+        return [{ t: 'poly', cx: a[0], cy: a[1], r: cleanLen(Math.hypot(b[0] - a[0], b[1] - a[1])), n: n, rot: Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI }];
       }
       case 'arc': {
-        var r = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        var r = cleanLen(Math.hypot(b[0] - a[0], b[1] - a[1]));
         var a0 = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
         if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
         var a1 = Math.atan2(c[1] - a[1], c[0] - a[0]) * 180 / Math.PI;
@@ -199,6 +334,7 @@
     }
     return [];
   }
+  function cleanLen(x) { return +x.toPrecision(12); }   // a radius rounded as a length stays 12.5, not 12.499999999999998
   function distPointLine(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
     if (L < 1e-9) return Math.hypot(p[0] - a[0], p[1] - a[1]);
@@ -234,7 +370,7 @@
       return;
     }
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
-    var p = snap(raw);
+    var p = snap(raw, mx, my);
     var st = App.toolState;
     // a second click on the point just placed (the first half of a double-click) adds nothing: no zero-length lines
     var lastPt = st.pts[st.pts.length - 1];
@@ -266,16 +402,115 @@
   function sketchMove(mx, my) {
     var pl = UI.activePlane(), raw = UI.screenToPlane(mx, my, pl);
     if (!raw) return;
-    var p = App.tool === 'select' || App.tool === 'dimension' ? raw : snap(raw);
-    $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel();
+    var drawing = App.tool !== 'select' && App.tool !== 'dimension' && !(App.command && App.command.onSketchPoint);
+    var info = drawing ? inferPoint(raw, mx, my) : null, p = info ? info.p : raw;
+    var readout = drawing && App.toolState.pts.length ? toolReadout(App.toolState.pts, p) : '';
+    $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
+    if (!drawing) {
+      // pre-highlight what a click would pick (select, Smart Dimension, Add Relations, Trim …), as SolidWorks does
+      var ref = UI.pickSketchRef && !App.zoomAreaMode ? UI.pickSketchRef(mx, my) : null;
+      drawHover(pl, ref === 'O' ? null : ref);
+    }
     if (App.tool === 'dimension') { dimToolMove(raw); return; }
-    if (App.tool !== 'select' && App.toolState.pts.length) {
+    if (drawing && App.toolState.pts.length) {
       App.tempEntities = toolEntities(App.toolState.pts, p);
       UI.updateTemp();
       // yellow inference icons: the relations the entity being drawn would get
-      var f = UI.activeSketchFeature(), prev = JSON.stringify(App.inferPreview || []);
+      var f = UI.activeSketchFeature();
       App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0]) : [];
-      if (JSON.stringify(App.inferPreview) !== prev) App.dimsStale = true;
+    } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
+    if (drawing) drawFeedback(pl, info, mx, my, readout);
+  }
+  // while dragging an end point: the point / curve it would merge with (ui-relations.js), or null
+  UI.sketchSnapMark = function (uv, q, onCurve) {
+    var layer = feedbackLayer();
+    clearFeedback();
+    if (!uv) return;
+    var s = UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1]));
+    svg('circle', { cx: s[0], cy: s[1], r: onCurve ? 3 : 5, style: 'fill:' + (onCurve ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
+    glyph(layer, q[0] + 14, q[1] + 12, 'coincident');
+  };
+  var HOVER_STYLE ='stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
+  function drawHover(pl, ref) {
+    var layer = feedbackLayer(), f = UI.activeSketchFeature(), S = window.SketchSolver;
+    clearFeedback();
+    if (!ref || !f || !S) return;
+    function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
+    var pr = S.parseRef(ref), p = S.refPoint(f, ref);
+    if (p) { var s = scr(p); svg('circle', { cx: s[0], cy: s[1], r: 4.5, style: 'stroke:#e8891c;stroke-width:1.5;fill:#e8891c;fill-opacity:0.35' }, layer); return; }
+    var e = pr && !pr.o && f.entities[pr.e], c = S.refCurve(f, ref), pls;
+    if (!e) return;
+    if (c && c.kind === 'line' && pr.s === 'e') pls = [{ pts: [c.a, c.b], closed: false }];
+    else pls = e.t === 'point' ? [] : K.entityPolylines(e);
+    pls.forEach(function (l) {
+      var pts = l.pts.map(function (q) { return scr(q).map(function (v) { return Math.round(v * 10) / 10; }).join(','); });
+      if (l.closed && pts.length) pts.push(pts[0]);
+      svg('polyline', { points: pts.join(' '), style: HOVER_STYLE }, layer);
+    });
+  }
+
+  // Live value next to the cursor while drawing (SolidWorks shows the length / radius / angle as you drag).
+  function toolReadout(pts, p) {
+    var a = pts[0], n = UI.fmtNum, t = App.tool;
+    if (!a) return '';
+    var dx = p[0] - a[0], dy = p[1] - a[1], L = Math.hypot(dx, dy);
+    function ang(x, y) { var d = Math.atan2(y, x) * 180 / Math.PI; return n(d < 0 ? d + 360 : d, 1) + '°'; }
+    switch (t) {
+      case 'line': { var q = pts[pts.length - 1]; dx = p[0] - q[0]; dy = p[1] - q[1]; return 'L ' + n(Math.hypot(dx, dy), 2) + '   A ' + ang(dx, dy); }
+      case 'rect': return n(Math.abs(dx), 2) + ' × ' + n(Math.abs(dy), 2);
+      case 'crect': return n(Math.abs(dx) * 2, 2) + ' × ' + n(Math.abs(dy) * 2, 2);
+      case 'circle': return 'R ' + n(L, 2);
+      case 'polygon': return 'R ' + n(L, 2) + '   A ' + ang(dx, dy);
+      case 'arc': {
+        if (pts.length < 2) return 'R ' + n(L, 2);
+        var b = pts[1], a0 = Math.atan2(b[1] - a[1], b[0] - a[0]), a1 = Math.atan2(dy, dx), sw = (a1 - a0) * 180 / Math.PI;
+        while (sw <= 0) sw += 360;
+        return 'R ' + n(Math.hypot(b[0] - a[0], b[1] - a[1]), 2) + '   A ' + n(sw, 1) + '°';
+      }
+      case 'slot': return pts.length < 2 ? 'L ' + n(L, 2) : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2) + '   W ' + n(2 * distPointLine(p, a, pts[1]), 2);
+    }
+    return '';
+  }
+
+  // ---- cursor feedback: inference lines, the snapped point, relation glyphs and the live value, in a group of the
+  // #dim-layer SVG that drawDims keeps (redrawn on every mouse move without redrawing the dimensions)
+  var fbLayer = null;
+  var SNAP_GLYPH = { end: 'coincident', origin: 'coincident', on: 'coincident', quadrant: 'coincident', intersection: 'coincident', midpoint: 'midpoint', center: 'concentric' };
+  function feedbackLayer() {
+    if (!fbLayer) fbLayer = svg('g', { 'class': 'sk-feedback', 'pointer-events': 'none' });
+    if (fbLayer.parentNode !== dimLayer) dimLayer.appendChild(fbLayer);
+    return fbLayer;
+  }
+  function clearFeedback() { if (fbLayer) while (fbLayer.firstChild) fbLayer.removeChild(fbLayer.firstChild); }
+  function glyph(layer, x, y, type) {
+    var g = svg('g', { 'class': 'rel-badge infer', transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' }, layer);
+    svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
+    var inner = svg('g', { transform: 'translate(1,1) scale(0.875)' }, g);
+    inner.innerHTML = Icons('rel' + type.charAt(0).toUpperCase() + type.slice(1), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+    return g;
+  }
+  function drawFeedback(pl, info, mx, my, readout) {
+    var layer = feedbackLayer();
+    clearFeedback();
+    if (!info) return;
+    function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
+    var sp = scr(info.p);
+    // dotted blue inference lines from the points the cursor lines up with
+    info.align.forEach(function (al) {
+      if (al.prev && App.tool === 'line') return;   // the rubber band itself shows that one
+      var a = scr(al.from);
+      svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
+    });
+    // the point taken: an orange ring on an existing point, a small dot on a curve
+    if (info.snap) svg('circle', { cx: sp[0], cy: sp[1], r: info.snap.kind === 'on' ? 3 : 5, style: 'fill:' + (info.snap.kind === 'on' ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
+    // relation glyphs by the cursor: what the click will infer
+    var types = [];
+    if (info.snap && SNAP_GLYPH[info.snap.kind]) types.push(SNAP_GLYPH[info.snap.kind]);
+    (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
+    types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
+    if (readout) {
+      var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:var(--blue);font-size:11px;pointer-events:none' }, layer);
+      t.textContent = readout;
     }
   }
 
@@ -388,9 +623,9 @@
 
   // Redraw every dimension of the active sketch. Called from the render loop whenever App.dimsStale is set.
   function drawDims() {
-    while (dimLayer.firstChild) dimLayer.removeChild(dimLayer.firstChild);
+    for (var c = dimLayer.firstChild; c; ) { var nx = c.nextSibling; if (c !== fbLayer) dimLayer.removeChild(c); c = nx; }
     var f = UI.activeSketchFeature();
-    if (!f || App.mode !== 'sketch') { if (dimEditing) closeDimEdit(false); return []; }
+    if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
     var an = App.sketchState;
     placed.forEach(function (d, i) { list.push({ d: d, index: i, state: d.driven ? 'driven' : an && an.dims ? an.dims[i] : null }); });
@@ -409,6 +644,7 @@
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
       if (App.sel && App.sel.kind === 'dim') App.sel = null;
     }
+    if (fbLayer && fbLayer.parentNode === dimLayer) dimLayer.appendChild(fbLayer);   // cursor feedback stays on top
     if (dimEditing) positionDimEdit(list);
     return list;
   }
@@ -609,6 +845,22 @@
 
   viewport.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
 
+  // Click-drag sketching, as in SolidWorks: with a drawing tool, pressing and dragging draws (the press is the first
+  // point, the release the next one) instead of rotating the view; a dragged single line does not start a chain.
+  function sketchDrawHook(p) {
+    if (App.mode !== 'sketch' || App.tool === 'select' || App.tool === 'dimension' || (App.command && (App.command.onSketchPoint || App.command.onPick))) return null;
+    var fresh = !App.toolState.pts.length;
+    return {
+      start: function () { if (fresh && App.tool !== 'point') sketchClick(p[0], p[1]); },
+      move: function (q) { sketchMove(q[0], q[1]); },
+      end: function (q) {
+        if (q[0] < 0 || q[1] < 0 || q[0] > UI.size.w || q[1] > UI.size.h) return;
+        sketchClick(q[0], q[1]);
+        if (fresh && App.tool === 'line' && App.toolState.pts.length === 1) cancelTool(true);
+      }
+    };
+  }
+
   viewport.addEventListener('mousedown', function (ev) {
     if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit')) return;
     UI.closeMenus();
@@ -622,7 +874,7 @@
     }
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
-    var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
+    var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
     // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
     if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
@@ -638,6 +890,7 @@
       return;
     }
     if (drag) {
+      if (fbLayer && fbLayer.firstChild && drag.kind !== 'maybe-rotate' && drag.kind !== 'maybe-hook') clearFeedback();
       var dx = p[0] - drag.last[0], dy = p[1] - drag.last[1];
       if (drag.kind === 'maybe-rotate') {
         if (Math.hypot(p[0] - downPos[0], p[1] - downPos[1]) > 4) { drag.kind = 'rotate'; drag.moved = true; viewport.classList.add('tool-grab'); }
@@ -732,6 +985,7 @@
     ev.preventDefault();
     var p = pos(ev);
     UI.zoomView(ev.deltaY > 0 ? 1.12 : 1 / 1.12, p[0], p[1]);
+    if (App.mode === 'sketch') clearFeedback();   // screen-space cursor feedback is redrawn on the next move
   }, { passive: false });
 
   function partClick(mx, my, ev) {
