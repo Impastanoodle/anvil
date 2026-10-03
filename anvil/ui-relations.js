@@ -90,16 +90,38 @@
       var dx = L.b[0] - L.a[0], dy = L.b[1] - L.a[1], L2 = dx * dx + dy * dy || 1, u = ((P[0] - L.a[0]) * dx + (P[1] - L.a[1]) * dy) / L2;
       Q = [L.a[0] + dx * u, L.a[1] + dy * u];
     }
-    return { type: 'distance', P: P, Q: Q };
+    // the direction the distance is measured along: horizontal / vertical (rel.dir 'h' / 'v', two points or centres)
+    // or aligned with P -> Q; flipped so the value reads positive (the placement offset is along its left normal)
+    var L0 = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
+    var dir = rel.dir === 'h' && k0 !== 'line' && k1 !== 'line' ? [1, 0] : rel.dir === 'v' && k0 !== 'line' && k1 !== 'line' ? [0, 1] : L0 < 1e-12 ? [1, 0] : [(Q[0] - P[0]) / L0, (Q[1] - P[1]) / L0];
+    if ((Q[0] - P[0]) * dir[0] + (Q[1] - P[1]) * dir[1] < 0) dir = [-dir[0], -dir[1]];
+    return { type: 'distance', P: P, Q: Q, dir: dir };
   }
-  // Placement from the cursor: distance -> signed offset from P-Q; angle -> arc radius and which quadrant.
+  // Placement from the cursor: distance -> signed offset from P-Q; angle -> arc radius and which quadrant. A distance
+  // being placed between two points (no value yet) also takes its direction from where the cursor is, as SolidWorks'
+  // Smart Dimension does: above / below the two points -> horizontal, beside them -> vertical, otherwise aligned.
   function relDimPlacement(f, rel, uv) {
+    var out = {};
+    if (rel.type === 'distance' && rel.v == null && !rel.driven) {
+      var k0 = S.refKind(f, rel.refs[0]), k1 = S.refKind(f, rel.refs[1]);
+      if (k0 && k1 && k0 !== 'line' && k1 !== 'line') {
+        var g0 = relDimGeometry(f, { type: 'distance', refs: rel.refs });
+        var tol = 1e-9 * Math.max(1, Math.abs(g0.P[0]), Math.abs(g0.P[1]));
+        var inX = uv[0] > Math.min(g0.P[0], g0.Q[0]) && uv[0] < Math.max(g0.P[0], g0.Q[0]);
+        var inY = uv[1] > Math.min(g0.P[1], g0.Q[1]) && uv[1] < Math.max(g0.P[1], g0.Q[1]);
+        var slanted = Math.abs(g0.P[0] - g0.Q[0]) > tol && Math.abs(g0.P[1] - g0.Q[1]) > tol;
+        out.dir = slanted && inX && !inY ? 'h' : slanted && inY && !inX ? 'v' : undefined;
+        rel = Object.assign({}, rel, { dir: out.dir });
+      }
+    }
     var g = relDimGeometry(f, rel);
-    if (!g) return {};
-    if (g.type === 'angle') return { off: Math.round(Math.hypot(uv[0] - g.X[0], uv[1] - g.X[1]) * 1e4) / 1e4 };
-    var dx = g.Q[0] - g.P[0], dy = g.Q[1] - g.P[1], L = Math.hypot(dx, dy);
-    var n = L < 1e-12 ? [0, 1] : [-dy / L, dx / L];
-    return { off: Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4 };
+    if (!g) return out;
+    if (g.type === 'angle') { out.off = Math.round(Math.hypot(uv[0] - g.X[0], uv[1] - g.X[1]) * 1e4) / 1e4; return out; }
+    var n = [-g.dir[1], g.dir[0]];
+    out.off = Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4;
+    var tx = UI.dimTextAlong ? UI.dimTextAlong(uv, g.P, g.dir, (g.Q[0] - g.P[0]) * g.dir[0] + (g.Q[1] - g.P[1]) * g.dir[1]) : null;
+    if (tx != null) out.tx = tx;
+    return out;
   }
   // Screen drawing data in the shape ui-sketch.js's drawOne takes: { lines, arrows, label, text }.
   function relDimScreenData(f, pl, rel) {
@@ -107,25 +129,15 @@
     if (!g) return null;
     var s = UI.cam.scale;
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
-    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs);
-    var out = { lines: [], arrows: [], label: UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '') };
-    if (rel.driven) out.label = '(' + out.label + ')';
+    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir);
+    var label = UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '');
+    if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
-      var L = Math.hypot(g.Q[0] - g.P[0], g.Q[1] - g.P[1]), dir = L < 1e-12 ? [1, 0] : [(g.Q[0] - g.P[0]) / L, (g.Q[1] - g.P[1]) / L];
-      var n = [-dir[1], dir[0]], off = rel.off != null ? rel.off : 16 * s;
-      if (Math.abs(off) < 6 * s) off = (off < 0 ? -6 : 6) * s;
-      var sg = off < 0 ? -1 : 1, ext = (Math.abs(off) + 3 * s) * sg, gap = 2 * s * sg;
-      var A = [g.P[0] + n[0] * off, g.P[1] + n[1] * off], B = [g.Q[0] + n[0] * off, g.Q[1] + n[1] * off];
-      var sA = scr(pl, A), sB = scr(pl, B);
-      out.lines.push([scr(pl, [g.P[0] + n[0] * gap, g.P[1] + n[1] * gap]), scr(pl, [g.P[0] + n[0] * ext, g.P[1] + n[1] * ext])]);
-      out.lines.push([scr(pl, [g.Q[0] + n[0] * gap, g.Q[1] + n[1] * gap]), scr(pl, [g.Q[0] + n[0] * ext, g.Q[1] + n[1] * ext])]);
-      out.lines.push([sA, sB]);
-      var u = unit(sB, sA), inside = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) > 34;
-      out.arrows.push({ tip: sA, dir: inside ? u : [-u[0], -u[1]] }, { tip: sB, dir: inside ? [-u[0], -u[1]] : u });
-      var nS = unit(sA, scr(pl, [A[0] + n[0] * sg * s, A[1] + n[1] * sg * s]));
-      out.text = { x: (sA[0] + sB[0]) / 2 + nS[0] * 9, y: (sA[1] + sB[1]) / 2 + nS[1] * 9 + 4, anchor: 'middle' };
-      return out;
+      var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);
+      ld.label = label;
+      return ld;
     }
+    var out = { lines: [], arrows: [], label: label };
     // angle: an arc of radius `off` around the intersection, from line 1's direction to line 2's (the angle the value is)
     var R = rel.off != null ? rel.off : 30 * s;
     var a1 = Math.atan2(g.d1[1], g.d1[0]), a2 = Math.atan2(g.d2[1], g.d2[0]), sweep = a2 - a1;
@@ -143,7 +155,7 @@
   function placeRelDim(f, rd, uv) {
     var pl = relDimPlacement(f, rd, uv);
     markDirty();
-    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off });
+    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir, tx: pl.tx });
     if (!r.ok) { UI.toast(r.error); return; }
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };

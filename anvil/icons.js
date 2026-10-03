@@ -74,6 +74,7 @@ var Icons = (function () {
     crect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
     circle: circ(8, 8, 5.5, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
     arc: ln('M5 3 A8 8 0 0 1 13 11', B, 1.5) + ln('M3.5 11 h3 M5 9.5 v3', S, 1.1),
+    arc3: ln('M2.5 12.5 A7 7 0 0 1 13.5 12.5', B, 1.5) + circ(2.5, 12.5, 1.2, S, 'none') + circ(8, 5.5, 1.2, S, 'none') + circ(13.5, 12.5, 1.2, S, 'none'),
     polygon: ln('M8 2 l5.2 3 v6 l-5.2 3 l-5.2 -3 v-6 z', B, 1.5),
     slot: ln('M5 5 h6 a3 3 0 0 1 0 6 h-6 a3 3 0 0 1 0 -6 z', B, 1.5) + ln('M5 8 h6', S, 0.9, DASH),
     spline: ln('M2 12.5 C5 1 10 15 14 3.5', B, 1.5) + circ(2, 12.5, 1.1, S, 'none') + circ(14, 3.5, 1.1, S, 'none'),
