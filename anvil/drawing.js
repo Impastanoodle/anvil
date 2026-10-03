@@ -332,6 +332,99 @@ var Drawing = (function () {
     });
   }
 
+  // closeFreeEnds(lines, ellipses, arcs, tol) (r8/drawings8): ends that meet no other linework at all (closeEnds
+  // only reaches tol = chordTol of the outline that hid them), two cases.
+  // (a) A rim (exact ellipse / arc) between a front- and a back-facing face is visible up to the face's true
+  // silhouette, but the facets turn away a facet step early: the rim stopped up to one facet (Rounded handle grip,
+  // 0.41 mm) short of the exact silhouette line, whose free end lies on the rim's curve and runs tangent to it. The
+  // rim is lengthened to that end.
+  // (b) The silhouette of a faceted surface with no exact form (a sweep's tube, a torus) jumps between mesh edges: a
+  // piece stops up to a few chord tolerances beside the next (Mug handle, Handlebar bend, 0.03-0.14 mm). A free line
+  // end within 3 tol of another visible line (and under a fifth of its own length) is carried to that line: to the
+  // crossing if it lies within 3 gaps along the piece, else to the nearest point on it.
+  function closeFreeEnds(lines, ells, arcs, tol) {
+    if (!(tol > 0) || lines.length > 20000) return;
+    function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return { d: Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy), q: [l[0] + t * dx, l[1] + t * dy] }; }
+    function near(p, l, r) { return p[0] >= Math.min(l[0], l[2]) - r && p[0] <= Math.max(l[0], l[2]) + r && p[1] >= Math.min(l[1], l[3]) - r && p[1] <= Math.max(l[1], l[3]) + r; }
+    var cs = [];
+    ells.forEach(function (q) { cs.push({ o: q, c: q.c, ax: q.ax, ay: q.ay, t0: q.full ? 0 : q.t0, t1: q.full ? TWO_PI : q.t1, full: q.full }); });
+    arcs.forEach(function (a) { cs.push({ o: a, arc: true, c: a.c, ax: [a.r, 0], ay: [0, a.r], t0: a.a0 * Math.PI / 180, t1: a.a1 * Math.PI / 180 }); });
+    function cp(E, t) { return [E.c[0] + Math.cos(t) * E.ax[0] + Math.sin(t) * E.ay[0], E.c[1] + Math.cos(t) * E.ax[1] + Math.sin(t) * E.ay[1]]; }
+    cs.forEach(function (E) { E.det = E.ax[0] * E.ay[1] - E.ax[1] * E.ay[0]; E.rm = Math.sqrt(Math.abs(E.det)); });
+    function curveD(E, p) {
+      var n = 96, bd = Infinity;
+      for (var i = 0; i <= n; i++) { var t = E.t0 + (E.t1 - E.t0) * i / n, q = cp(E, t); bd = Math.min(bd, Math.hypot(q[0] - p[0], q[1] - p[1])); }
+      return bd;
+    }
+    // free: within eps of nothing drawn but its own piece
+    function free(p, self, eps, also) {
+      for (var i = 0; i < lines.length; i++) if (lines[i] !== self && lines[i] !== also && near(p, lines[i], eps) && segD(p, lines[i]).d <= eps) return false;
+      for (var j = 0; j < cs.length; j++) if (cs[j].o !== self && curveD(cs[j], p) <= Math.max(eps, cs[j].rm * 2e-3)) return false;
+      return true;
+    }
+    function epsAt(p) { return 1e-6 * (1 + Math.abs(p[0]) + Math.abs(p[1])); }
+    // (a) rims up to a silhouette line's free end
+    cs.forEach(function (E) {
+      if (E.full || !E.det) return;
+      [0, 1].forEach(function (end) {
+        var te = end ? E.t1 : E.t0, pe = cp(E, te);
+        if (!free(pe, E.o, epsAt(pe))) return;
+        var best = null, bd = E.rm * Math.PI / 12;
+        lines.forEach(function (l) {
+          [0, 1].forEach(function (le) {
+            var p = le ? [l[2], l[3]] : [l[0], l[1]], d = Math.hypot(p[0] - pe[0], p[1] - pe[1]);
+            if (!(d < bd)) return;
+            var qx = p[0] - E.c[0], qy = p[1] - E.c[1], a = (qx * E.ay[1] - qy * E.ay[0]) / E.det, b = (E.ax[0] * qy - E.ax[1] * qx) / E.det;
+            if (Math.abs(Math.hypot(a, b) - 1) * E.rm > epsAt(p)) return;          // on the rim's curve
+            var t = Math.atan2(b, a), tv = [-Math.sin(t) * E.ax[0] + Math.cos(t) * E.ay[0], -Math.sin(t) * E.ax[1] + Math.cos(t) * E.ay[1]];
+            var lx = l[2] - l[0], ly = l[3] - l[1], L = Math.hypot(lx, ly), tn = Math.hypot(tv[0], tv[1]);
+            if (!L || !tn || Math.abs(lx * tv[1] - ly * tv[0]) / (L * tn) > 1e-3) return; // tangent to it
+            if (!free(p, l, epsAt(p))) return;
+            bd = d; best = { t: t };
+          });
+        });
+        if (!best) return;
+        // lengthen only, on the side the curve runs on past te
+        var t = best.t;
+        while (t < te - Math.PI) t += TWO_PI;
+        while (t > te + Math.PI) t -= TWO_PI;
+        if (end ? t <= te : t >= te) return;
+        if (E.t1 - E.t0 + Math.abs(t - te) >= TWO_PI) return;
+        if (end) E.t1 = t; else E.t0 = t;
+        if (E.arc) { if (end) E.o.a1 = t * 180 / Math.PI; else E.o.a0 = t * 180 / Math.PI; } else if (end) E.o.t1 = t; else E.o.t0 = t;
+      });
+    });
+    // (b) faceted silhouette pieces onto the next line
+    // (an end can be freed by a later piece moving off it: a second pass picks it up)
+    var R = 3 * tol, moved = true;
+    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l) {
+      [0, 1].forEach(function (end) {
+        var p = end ? [l[2], l[3]] : [l[0], l[1]], q0 = end ? [l[0], l[1]] : [l[2], l[3]], L = Math.hypot(p[0] - q0[0], p[1] - q0[1]);
+        if (L < 1e-9 || !free(p, l, epsAt(p))) return;
+        var best = null, bd = Math.min(R, L * 0.2);
+        lines.forEach(function (o) { if (o === l || !near(p, o, bd)) return; var s = segD(p, o); if (s.d < bd) { bd = s.d; best = { o: o, q: s.q }; } });
+        if (!best) return;
+        var o = best.o, d = [(p[0] - q0[0]) / L, (p[1] - q0[1]) / L], ox = o[2] - o[0], oy = o[3] - o[1], den = d[0] * oy - d[1] * ox, to = best.q;
+        // two pieces side by side (under 30°), each with a free end beside (or on) the other: both ends meet halfway
+        for (var oe = 0; oe < 2; oe++) {
+          var p2 = oe ? [o[2], o[3]] : [o[0], o[1]], Lo = Math.hypot(ox, oy);
+          if (Math.abs(den) > 0.5 * Lo || Math.hypot(p2[0] - p[0], p2[1] - p[1]) > 0.8 * Math.min(L, Lo) || segD(p2, l).d >= Math.min(R, Lo * 0.2) || !free(p2, o, epsAt(p2), l)) continue;
+          var mid = [(p[0] + p2[0]) / 2, (p[1] + p2[1]) / 2];
+          if (end) { l[2] = mid[0]; l[3] = mid[1]; } else { l[0] = mid[0]; l[1] = mid[1]; }
+          if (oe) { o[2] = mid[0]; o[3] = mid[1]; } else { o[0] = mid[0]; o[1] = mid[1]; }
+          moved = true;
+          return;
+        }
+        if (Math.abs(den) > 1e-12) {
+          var s = ((o[0] - p[0]) * oy - (o[1] - p[1]) * ox) / den, x = [p[0] + d[0] * s, p[1] + d[1] * s];
+          if (Math.abs(s) <= 3 * bd && s > -L * 0.5 && segD(x, o).d <= epsAt(x)) to = x;
+        }
+        if (end) { l[2] = to[0]; l[3] = to[1]; } else { l[0] = to[0]; l[1] = to[1]; }
+        moved = true;
+      });
+    }); }
+  }
+
   // ------------------------------------------------------------------ hidden-line removal
   // projectView(mesh, orientName, opts) -> { orient, lines: { visible, hidden }, circles: { visible, hidden }, bounds, stats }
   // lines are [u1, v1, u2, v2] in model units. Candidate edges: sharp edges (faces meeting at more than 22°, open or
@@ -1120,6 +1213,7 @@ var Drawing = (function () {
       exact: !!CV
     };
     if (CV) closeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, chordTol());
+    closeFreeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, chordTol());
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
