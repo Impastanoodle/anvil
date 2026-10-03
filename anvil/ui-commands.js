@@ -577,6 +577,13 @@
     if (!c || !AXV[v.axis]) return [];
     return [{ type: 'angle', key: 'angle', label: 'Angle', A: [+v.cx || 0, +v.cy || 0, +v.cz || 0], D: AXV[v.axis], c: c, sign: 1, value: +v.angle, max: 360 }];
   }
+  // a plane's offset from a standard plane, along its normal from the origin (either side)
+  function offsetHandles(ref, offset, label) {
+    var pl;
+    try { pl = K.makePlane(ref, 0); } catch (e) { return []; }
+    if (!pl || !pl.n) return [];
+    return [{ key: 'offset', label: label, O: pl.origin || [0, 0, 0], dir: pl.n, k: 1, value: +offset, min: -Infinity }];
+  }
 
   // ------------------------------------------------------------------ helpers
   function unconsumedSketches() {
@@ -1315,7 +1322,7 @@
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f,
+      title: existing ? existing.name : 'Mirror', icon: 'mirror', values: f, handles: function (v) { return offsetHandles(v.plane || 'Right', v.offset, 'Plane offset'); },
       groups: [
         { title: 'Mirror Face/Plane', fields: [{ type: 'select', label: 'Plane', key: 'plane', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Plane offset', key: 'offset', unit: 'u' }, mergeField(featureIsBoss)] },
         { title: 'Features to Mirror', fields: [{ type: 'check', label: 'Mirror whole body', key: 'body', rerender: true }, Object.assign(sourceField(f), { show: function (v) { return !v.body; }, rerender: true })] },
@@ -1357,7 +1364,7 @@
           var fr = edgeFrame(spec.at, perPick[0] && perPick[0].length ? perPick[0] : edgeList);
           if (fr) { out.push({ key: valKey, label: isChamfer ? 'Distance D' : 'Radius R', O: fr.O, dir: fr.dir, k: 1, value: +v[valKey], min: 0, tag: valTag }); return; }
         }
-        out.push({ type: 'callout', at: spec.at, text: valTag + UI.fmtNum(+v[valKey], 2) + ' ' + UI.unitLabel(), key: valKey });
+        out.push({ type: 'callout', at: spec.at, text: valTag + (UI.fmtModelValue ? UI.fmtModelValue(+v[valKey]) : UI.fmtNum(+v[valKey], 2) + ' ' + UI.unitLabel()), key: valKey });
       });
       return out;
     }
@@ -1516,7 +1523,7 @@
   function cmdPlane(existing) {
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'plane', ref: 'Front', offset: 20 };
     openPM({
-      title: existing ? existing.name : 'Plane', icon: 'plane', values: f,
+      title: existing ? existing.name : 'Plane', icon: 'plane', values: f, handles: function (v) { return offsetHandles(v.ref, v.offset, 'Offset distance'); },
       groups: [{ title: 'First Reference', fields: [{ type: 'select', label: 'Parallel to', key: 'ref', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u' }] }, { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
       onChange: function (v) {
         UI.disposeGroup(UI.groups.preview);

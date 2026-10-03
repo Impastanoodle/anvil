@@ -5247,6 +5247,30 @@
     near(anvil.mass().volume, Math.PI * (400 - 100) * 20 / 4, 1, 'quarter revolve');
     return 'shell, pattern, revolve handles';
   });
+  step('r4/features4: Reference Plane offset arrow (either side of the plane), Mirror plane offset; an equation in a field takes its handle away', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    UI.cmdPlane(); await UI.previewIdle();
+    var ph = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 'offset'; })[0];
+    assert(ph, 'offset handle');
+    near(ph.pos(20)[2], 20, 1e-9, 'Front plane offset along +Z');
+    UI.pmSetValue('offset', -15);
+    ph = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 'offset'; })[0];
+    assert(ph.value === -15 && +D.querySelector('#pm input[data-key="offset"]').value === -15, 'a negative offset');
+    UI.pmCancel();
+    UI.cmdMirror(); await UI.previewIdle();
+    assert(UI.instant3DHandles().some(function (x) { return x.kind === 'pm' && x.key === 'offset'; }), 'mirror plane offset handle');
+    UI.pmCancel();
+    await anvil.run('p.sketch("Top").rect(-20, -10, 40, 20);'); await idle();
+    UI.cmdExtrude(false); await UI.previewIdle();
+    UI.pmSetField('depth', '=4*3'); await UI.previewIdle();
+    var hs = UI.instant3DHandles();
+    assert(!hs.some(function (x) { return x.kind === 'pm' && x.key === 'depth'; }) && hs.some(function (x) { return x.kind === 'pmflip'; }), 'equation: no drag handle, the reverse arrow stays');
+    UI.pmSetValue('depth', 15);
+    assert(!UI.pmExpressions().exprs.depth && UI.instant3DHandles().some(function (x) { return x.kind === 'pm' && x.key === 'depth'; }), 'a value set on the model replaces the equation');
+    UI.pmCancel();
+    return 'plane, mirror, equations';
+  });
   // --- end r4/features4 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

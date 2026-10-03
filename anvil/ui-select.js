@@ -620,7 +620,9 @@ if (typeof UI !== 'undefined') (function (UI) {
     return null;     // "=…" equations drive the value: no handle
   }
   function unitText() { return UI.unitLabel ? UI.unitLabel() : 'mm'; }
-  function fmtV(v, h) { return UI.fmtNum(v, h && h.angle ? 2 : 3) + (h && h.angle ? '°' : ' ' + unitText()); }
+  // r4/features4: one value format on the model (Instant3D, PropertyManager handles, callouts): 2 decimals (3 in inches), unit
+  function valueDecimals(h) { return h && h.angle ? 2 : unitText() === 'in' ? 3 : 2; }
+  function fmtV(v, h) { return UI.fmtNum(v, valueDecimals(h)) + (h && h.angle ? '°' : ' ' + unitText()); }
   function sketchPlane(sk) { try { return K.resolvePlane(sk.plane, App.model, App.build && App.build.planes); } catch (e) { return null; } }
   function to3Ddir(pl, d) { return V.norm(V.add(V.scale(pl.x, d[0]), V.scale(pl.y, d[1]))); }
   function rotate(v, axis, ang) {    // Rodrigues, right-handed about the unit axis
@@ -831,7 +833,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     lg.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
     return lg;
   }
-  function pmValueText(h, v) { return (h.tag || '') + UI.fmtNum(v, 2) + (h.angle ? '°' : ' ' + unitText()); }
+  function pmValueText(h, v) { return (h.tag || '') + fmtV(v, h); }
 
   // The handles for the current state: a feature's (part mode, one selected face or feature), or the active sketch's
   // dimension dots (sketch mode).
@@ -1219,6 +1221,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.instant3DEditOpen = function () { return i3d.edit ? { kind: i3d.edit.h.kind, value: +editInput.value, label: i3d.edit.h.label } : null; };
   UI.instant3DDragging = function () { return !!i3d.drag; };
   // r4/features4: drag timings (main-thread ms of the last PropertyManager handle move, rests rebuilt and the last one's ms)
+  UI.fmtModelValue = fmtV;   // r4/features4: the value format of on-model handles and callouts
   UI.instant3DStats = function () { return { pmMoveMs: i3d.lastPmMoveMs || 0, pauses: i3d.pauses || 0, pauseRebuildMs: i3d.lastPauseMs || 0 }; };
 
   if (window.anvil) {
