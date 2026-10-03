@@ -95,6 +95,9 @@ self.onmessage = function (e) {
   try {
     var b = Kernel.rebuild(m.model, cache);
     cache = b.cache;
+    // r10/editpreview10: the main cache now holds every step of the newest model, so the next truncated preview (an
+    // Edit Feature right after a change or a new document) starts from it instead of an older model's preview cache
+    previewCache = null;
     var packed = Kernel.packBuild(b, m.model);
     // the body's edges (Kernel.bodyEdges, hundreds of ms on a large part) are found here too, on exactly the mesh the
     // main thread will make from the packed bodies, so applyBuild does not have to
