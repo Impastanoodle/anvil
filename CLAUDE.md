@@ -8,7 +8,7 @@ Decision 2026-09-22: Anvil stays browser-based and is run locally (static files 
 
 ## The project: Anvil (`anvil/`)
 
-Browser-based parametric solid modeler. Static files, no build step. three.js r128 loads from cdnjs; everything else is hand-written.
+Browser-based parametric solid modeler. Static files, no build step. three.js r128 is vendored (`anvil/vendor/three.min.js`, so Anvil runs offline); the OpenCascade engine is fetched by `anvil/vendor/get-occt.ps1` (not committed, fingerprint-checked before it runs); everything else is hand-written.
 
 Reference files, in reading order:
 1. `anvil/SESSION_LOG.md` — what the last run did, known bugs, "next up".
