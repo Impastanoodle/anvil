@@ -1607,12 +1607,13 @@ var Drawing = (function () {
   }
   // ANSI31 hatching: parallel lines at `ang` degrees, `sp` apart (paper units, anchored at the sheet origin so every
   // view's pattern lines up), clipped to the region inside an odd number of loops. Returns [[x1, y1, x2, y2]].
-  function hatchLines(loops, sp, ang) {
+  function hatchLines(loops, sp, ang, off) {
     var a = ang * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], n = [-Math.sin(a), Math.cos(a)];
     var tmin = Infinity, tmax = -Infinity, out = [];
     loops.forEach(function (l) { l.forEach(function (p) { var t = n[0] * p[0] + n[1] * p[1]; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }); });
-    for (var k = Math.ceil(tmin / sp); k * sp <= tmax; k++) {
-      var t = k * sp, xs = [];
+    off = off || 0;
+    for (var k = Math.ceil((tmin - off) / sp); k * sp + off <= tmax; k++) {
+      var t = k * sp + off, xs = [];
       loops.forEach(function (l) {
         for (var i = 0; i < l.length; i++) {
           var p = l[i], q = l[(i + 1) % l.length], tp = n[0] * p[0] + n[1] * p[1] - t, tq = n[0] * q[0] + n[1] * q[1] - t;
@@ -1634,6 +1635,43 @@ var Drawing = (function () {
   function hatchStyle(body) {
     var b = Math.max(0, body | 0);
     return { angle: HATCH_ANGLES[b % HATCH_ANGLES.length], spacing: 1 + 0.6 * Math.floor(b / HATCH_ANGLES.length) };
+  }
+  // Area hatch patterns by material, as SolidWorks takes them from the material (the ANSI Y14.2 families of acad.pat),
+  // in units of the base spacing: line families { da (degrees added to the hatch angle), offs (perpendicular offsets
+  // in one period), period, dash: [on, off] or none } (r5/drawings5)
+  var HATCH_PATTERNS = {
+    ANSI31: [{ da: 0, offs: [0], period: 1 }],                                   // iron, general use
+    ANSI32: [{ da: 0, offs: [0, 1], period: 3 }],                                // steel
+    ANSI33: [{ da: 0, offs: [0], period: 2 }, { da: 0, offs: [1], period: 2, dash: [1, 0.5] }],   // bronze, brass, copper
+    ANSI34: [{ da: 0, offs: [0, 1, 2, 3], period: 6 }],                          // plastic, rubber
+    ANSI37: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1 }], // lead, zinc, insulation
+    ANSI38: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1, dash: [2.5, 1.5] }]   // aluminium
+  };
+  var HATCH_BY_CLASS = { 'Steel': 'ANSI32', 'Stainless Steel': 'ANSI32', 'Aluminium Alloys': 'ANSI38', 'Copper Alloys': 'ANSI33', 'Plastics': 'ANSI34' };
+  // the hatch pattern for a material name (null / unknown: ANSI31)
+  function hatchPattern(materialName) {
+    var m = materialName && typeof Materials !== 'undefined' && Materials.find ? Materials.find(materialName) : null;
+    return m && HATCH_BY_CLASS[m.category] || 'ANSI31';
+  }
+  // hatch segments of a pattern over loops: [[x1, y1, x2, y2], …]; dashes keep their phase along the line direction,
+  // so neighbouring lines' dashes stagger the same way everywhere
+  function patternLines(loops, sp, ang, pattern) {
+    var out = [];
+    (HATCH_PATTERNS[pattern] || HATCH_PATTERNS.ANSI31).forEach(function (fam) {
+      var a = ang + fam.da, d = [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
+      fam.offs.forEach(function (o) {
+        hatchLines(loops, sp * fam.period, a, sp * o).forEach(function (l) {
+          if (!fam.dash) { out.push(l); return; }
+          var on = fam.dash[0] * sp, P = (fam.dash[0] + fam.dash[1]) * sp, t0 = d[0] * l[0] + d[1] * l[1], t1 = d[0] * l[2] + d[1] * l[3];
+          var lo = Math.min(t0, t1), hi = Math.max(t0, t1), bx = l[0] - d[0] * t0, by = l[1] - d[1] * t0;
+          for (var s = Math.floor(lo / P) * P; s < hi; s += P) {
+            var u0 = Math.max(lo, s), u1 = Math.min(hi, s + on);
+            if (u1 - u0 > 1e-9) out.push([bx + d[0] * u0, by + d[1] * u0, bx + d[0] * u1, by + d[1] * u1]);
+          }
+        });
+      });
+    });
+    return out;
   }
 
   // ------------------------------------------------------------------ detail views: the parent clipped to a circle
@@ -2004,6 +2042,16 @@ var Drawing = (function () {
       }
       return drawingProp(doc, prpName, units);
     });
+  }
+  // titleFieldAt(sheetSize, units, p) -> { field (a TB_FIELDS entry), rect: { x0, y0, x1, y1 } } of the title block cell
+  // under the paper point p, or null (r5/drawings5)
+  function titleFieldAt(S, units, p) {
+    var k = paperK(units), b1 = BORDER * k, tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3, hit = null;
+    TB_FIELDS.forEach(function (f) {
+      var r = { x0: tx0 + f.x0 * k, x1: tx0 + f.x1 * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + 1) * row };
+      if (!hit && p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1) hit = { field: f, rect: r };
+    });
+    return hit;
   }
   // titleBlock(doc, model, ctx?) -> { key: evaluated text } for every TB_FIELDS entry
   function titleBlock(doc, model, ctx) {
@@ -2635,6 +2683,13 @@ var Drawing = (function () {
       return c;
     }
     var hs = HATCH * k;
+    // a part's cut faces are hatched with their body's material pattern (steel ANSI32, aluminium ANSI38, …); assembly
+    // components keep ANSI31 at their own angles (r5/drawings5)
+    var capPattern = function (body) {
+      if (!hasMaterials() || !model || model.type === 'assembly') return 'ANSI31';
+      var bm = Materials.bodyMaterial ? Materials.bodyMaterial(model, ctx.build || null, body | 0) : null;
+      return hatchPattern(bm && bm.name);
+    };
     doc.views.forEach(function (v) {
       var ct = contentOf(v), pr = ct.proj;
       projections[v.id] = pr;
@@ -2646,12 +2701,12 @@ var Drawing = (function () {
       // cut faces first, so the outlines are drawn over the hatching
       var hatch = 0, hatches = [];
       (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch;
-        hatchLines(loops, hs * hst.spacing, hst.angle).forEach(function (h) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap.body);
+        patternLines(loops, hs * hst.spacing, hst.angle, pat).forEach(function (h) {
           var q = clip ? clipSeg(h, clip.c, clip.r) : h;
           if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body }); hatch++; }
         });
-        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0 });
+        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0, pattern: pat });
       });
       // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
       // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
@@ -3238,7 +3293,7 @@ var Drawing = (function () {
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3 }, next = 1;
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     pr(0, 'SECTION'); pr(2, 'HEADER');
     pr(9, '$ACADVER'); pr(1, 'AC1009');
     pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);
@@ -3257,14 +3312,16 @@ var Drawing = (function () {
     pr(0, 'ENDTAB');
     pr(0, 'TABLE'); pr(2, 'LAYER'); pr(70, layers.length);
     layers.forEach(function (n) {
-      var col = colors[n] || [5, 1, 6, 4, 2, 30, 140][(next++ - 1) % 7];
+      // view layers plot black / white (7) like the sheet; thin lines (hatch, tangent edges, centre marks) on them are
+      // colour 8, so a plot-by-colour pen table gives the thick / thin weights (R12 has no lineweights) (r5/drawings5)
+      var col = colors[n] || 7;
       pr(0, 'LAYER'); pr(2, n); pr(70, 0); pr(62, col); pr(6, 'CONTINUOUS');
     });
     pr(0, 'ENDTAB');
     pr(0, 'ENDSEC');
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) {
-      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color];
+      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
       var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
       if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
       else if (p.k === 'circle') { pr(0, 'CIRCLE'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
@@ -3640,6 +3697,33 @@ var Drawing = (function () {
     centres.forEach(function (h) {
       if (have.some(function (p) { return Math.hypot(p[0] - h.c[0], p[1] - h.c[1]) <= tol * 10; })) return;
       addCenterMark(doc, v.id, { style: 'single', holes: [h], auto: true }); n++;
+    });
+    // slot ends and rounded ends (model arcs of half a turn or more, SolidWorks's "Center marks - slots"): a slot's two
+    // ends (equal radii, facing apart) get one linear centre mark joining them, a lone rounded end a single mark
+    // (r5/drawings5)
+    var ends = [];
+    (ct.proj.arcs ? ct.proj.arcs.visible : []).forEach(function (a) {
+      if (a.src !== 'arc' || a.a1 - a.a0 < 180 - 0.01 || a.a1 - a.a0 > 359) return;
+      if (centres.some(function (x) { return Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol * 10; })) return;
+      if (ends.some(function (x) { return Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol * 10 && Math.abs(x.r - a.r) <= tol * 10; })) return;
+      var mid = (a.a0 + a.a1) / 2 * Math.PI / 180;
+      ends.push({ c: a.c.slice(), r: a.r, dir: [Math.cos(mid), Math.sin(mid)] });
+    });
+    var used = ends.map(function () { return false; });
+    ends.forEach(function (h, i) {
+      if (used[i] || have.some(function (p) { return Math.hypot(p[0] - h.c[0], p[1] - h.c[1]) <= tol * 10; })) return;
+      used[i] = true;
+      // the other end of a slot: same radius, on the side it faces away from, facing the other way
+      var mate = -1;
+      ends.forEach(function (o, j) {
+        if (used[j] || mate >= 0 || Math.abs(o.r - h.r) > tol * 10) return;
+        var dx = o.c[0] - h.c[0], dy = o.c[1] - h.c[1], L = Math.hypot(dx, dy);
+        if (L < tol * 10 || (dx * h.dir[0] + dy * h.dir[1]) / L > -1 + 1e-6 || (dx * o.dir[0] + dy * o.dir[1]) / L < 1 - 1e-6) return;
+        mate = j;
+      });
+      if (mate >= 0) { used[mate] = true; addCenterMark(doc, v.id, { style: 'linear', holes: [{ c: h.c, r: h.r }, { c: ends[mate].c, r: ends[mate].r }], auto: true }); }
+      else addCenterMark(doc, v.id, { style: 'single', holes: [{ c: h.c, r: h.r }], auto: true });
+      n++;
     });
     return n;
   }
@@ -4039,10 +4123,10 @@ var Drawing = (function () {
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
-    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
+    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
     BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomType: bomType, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
-    TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, bomPropertyNames: bomPropertyNames,
+    TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, titleFieldAt: titleFieldAt, bomPropertyNames: bomPropertyNames,
     // annotations
     circlesAlong: circlesAlong, meshCurves: meshCurves, holeInfo: holeInfo, holeText: holeText, cylAxes: cylAxes, fitCircle: fitCircle, lineIntervals: lineIntervals,
     addCenterMark: addCenterMark, autoCenterMarks: autoCenterMarks, addCenterline: addCenterline, autoCenterlines: autoCenterlines, autoInsert: autoInsert,
@@ -4657,6 +4741,8 @@ var Drawing = (function () {
     var dq = dimAt(pp);
     if (dq) { cmdDimensionPM(dimRef(dq)); openInlineEdit(dq); return; }
     if (bomAt(toPaper(e))) { cmdBOM(); return; }
+    var tf = D.sheet && Drawing.titleFieldAt(D.sheet.size, units(), pp);
+    if (tf) { openTitleEdit(tf); return; }
     var w = viewAt(toPaper(e));
     if (w) cmdViewProperties(w.view.id); else cmdSheetProperties();
   }
@@ -5557,12 +5643,39 @@ var Drawing = (function () {
   function positionInlineEdit() {
     var I = D.inline, s = svgEl(), m = s && s.getScreenCTM();
     if (!I || !m || !D.sheet) return;
-    var d = sheetDim(I.ref);
-    if (!d || !d.tbox) { closeInlineEdit(false); return; }
+    var d = I.field ? null : sheetDim(I.ref), tb = I.field ? I.field.rect : d && d.tbox;
+    if (!tb) { closeInlineEdit(false); return; }
     var H = D.sheet.size[1], pt = s.createSVGPoint(), r = D.root.getBoundingClientRect();
-    pt.x = (d.tbox.x0 + d.tbox.x1) / 2; pt.y = H - (d.tbox.y0 + d.tbox.y1) / 2;
+    pt.x = (tb.x0 + tb.x1) / 2; pt.y = H - (tb.y0 + tb.y1) / 2;
     var q = pt.matrixTransform(m);
     I.box.style.left = (q.x - r.left) + 'px'; I.box.style.top = (q.y - r.top) + 'px';
+  }
+  // Double-click a title block field: its text is edited in place (SolidWorks title block fields). The box shows the
+  // field's own text when it has one, else what its property link gives; an empty box puts the link back
+  // (r5/drawings5)
+  function openTitleEdit(tf) {
+    closeInlineEdit(false);
+    var dc = doc(), own = dc.titleBlock && dc.titleBlock[tf.field.key];
+    var shown = own != null ? String(own) : Drawing.titleBlock(dc, App.model, { build: App.build || null, mesh: mesh() })[tf.field.key] || '';
+    var inp = el('input', { type: 'text', spellcheck: 'false', 'aria-label': tf.field.label });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'text tb' }, [inp, ok, no]);
+    inp.value = shown;
+    D.root.appendChild(box);
+    D.inline = { box: box, inp: inp, field: { key: tf.field.key, rect: tf.rect, shown: shown } };
+    positionInlineEdit();
+    inp.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); closeInlineEdit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeInlineEdit(false); }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeInlineEdit(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeInlineEdit(true); });
+    no.addEventListener('click', function () { closeInlineEdit(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (err) { }
+    UI.setStatus(tf.field.label + ': type the text ($PRP:"…" / $PRPSHEET:"…" link properties; empty restores the default); Enter applies, Esc cancels.');
   }
   function closeInlineEdit(commit) {
     var I = D.inline;
@@ -5570,6 +5683,14 @@ var Drawing = (function () {
     D.inline = null;
     if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
     if (!commit) return;
+    if (I.field) {
+      var tv = I.inp.value.trim(), fm = {};
+      if (tv === I.field.shown.trim()) return;
+      fm[I.field.key] = tv === '' ? null : tv;
+      setTitleBlock(fm);
+      UI.setStatus('Title block ' + I.field.key + ': ' + (tv === '' ? 'default' : tv) + '.');
+      return;
+    }
     var d = sheetDim(I.ref), txt = I.inp.value.trim();
     if (!d) return;
     if (I.src) {
@@ -5851,7 +5972,7 @@ var Drawing = (function () {
           display: w.view.display, tangent: w.view.tangent || 'removed', x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
-          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines }; }),
+          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines, pattern: h.pattern }; }),
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
       }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),

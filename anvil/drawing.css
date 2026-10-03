@@ -56,3 +56,5 @@
 #dw-edit .dw-edit-btn { border: 0; background: transparent; color: var(--muted, #555); font-size: 12px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 2px; }
 #dw-edit .dw-edit-btn.ok { color: #1f9d3a; }
 #dw-edit .dw-edit-btn:hover { background: var(--btn-hover, rgba(0, 0, 0, 0.08)); }
+/* r5/drawings5: a title block field edited in place (double-click a cell) */
+#dw-edit.tb input { width: 180px; }
