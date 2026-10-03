@@ -804,7 +804,23 @@
     // the inner parts' own edges (cached on their builds) and, per local face, the polygon indices it holds
     for (k = 0; k < parts.length; k++) {
       var P = parts[k], ip = P.pb.body.polygons;
-      if (ip.some(function (p) { return p.body; })) return null;   // a multibody inner part: its own edges are of a remeshed copy
+      if (ip.some(function (p) { return p.body; })) {
+        // r8/asm8: a sub-assembly nested in this one: its edges placed from its own parts (recursively), grouped where
+        // it lands (pl composed with its transform); its faces' polygons come from that placed mesh's faceOf.
+        // A multibody inner part (not a sub-assembly): its own edges are of a remeshed copy -> the full search.
+        if (!(P.pb.assembly && P.pb.model && P.pb.bodies && P.pb.partBuilds)) return null;
+        var TR = (P.T && P.T.rotation) || AS.IDENTITY, TP = (P.T && P.T.position) || [0, 0, 0], R0 = pl.R, P0 = pl.P, CR = [];
+        for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) CR.push(R0[r * 3] * TR[c] + R0[r * 3 + 1] * TR[3 + c] + R0[r * 3 + 2] * TR[6 + c]);
+        var ipl = { R: CR, P: [0, 1, 2].map(function (r) { return R0[r * 3] * TP[0] + R0[r * 3 + 1] * TP[1] + R0[r * 3 + 2] * TP[2] + P0[r]; }) };
+        P.pe = partEdges(P.pb, ipl);
+        if (!P.pe || !P.pe.composed || !P.pe.mesh.faceOf) return null;
+        if (!P.pe.facePolys) {
+          var fo = P.pe.mesh.faceOf, fl = P.pe.mesh.faces.map(function () { return []; });
+          for (j = 0; j < fo.length; j++) { if (fo[j] < 0) return null; fl[fo[j]].push(j); }
+          setHidden(P.pe, 'facePolys', fl);
+        }
+        continue;
+      }
       P.pe = partEdges(P.pb);
       if (!P.pe.facePolys) {
         for (j = 0; j < ip.length; j++) ip[j].__ai = j;
@@ -838,7 +854,23 @@
           pts: cv.pts.map(pt), edges: [] });
       });
       var piece = function (pis, m) {   // the world face of the facet (of a split face) whose boundary holds point m
+        // r8/asm8: each facet's box first (a split face of a plate with 30 holes: ~2M segment tests -> a few thousand)
+        var bb = pis.bb;
+        if (!bb) {
+          bb = pis.bb = new Float64Array(pis.length * 6);
+          for (var b = 0; b < pis.length; b++) {
+            var ws = polys[pis[b]].vertices, o6 = b * 6;
+            bb[o6] = bb[o6 + 1] = bb[o6 + 2] = Infinity; bb[o6 + 3] = bb[o6 + 4] = bb[o6 + 5] = -Infinity;
+            for (var w = 0; w < ws.length; w++) {
+              var wp = ws[w].pos;
+              bb[o6] = Math.min(bb[o6], wp.x); bb[o6 + 1] = Math.min(bb[o6 + 1], wp.y); bb[o6 + 2] = Math.min(bb[o6 + 2], wp.z);
+              bb[o6 + 3] = Math.max(bb[o6 + 3], wp.x); bb[o6 + 4] = Math.max(bb[o6 + 4], wp.y); bb[o6 + 5] = Math.max(bb[o6 + 5], wp.z);
+            }
+          }
+        }
         for (var i = 0; i < pis.length; i++) {
+          var o = i * 6;
+          if (m[0] < bb[o] - 1e-5 || m[1] < bb[o + 1] - 1e-5 || m[2] < bb[o + 2] - 1e-5 || m[0] > bb[o + 3] + 1e-5 || m[1] > bb[o + 4] + 1e-5 || m[2] > bb[o + 5] + 1e-5) continue;
           var vs = polys[pis[i]].vertices;
           for (var v = 0; v < vs.length; v++) {
             var A = vs[v].pos, B = vs[(v + 1) % vs.length].pos;
