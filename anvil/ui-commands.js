@@ -430,7 +430,7 @@
     var list = el('div', { class: 'pm-list', role: 'listbox', 'aria-label': f.placeholder || 'Selections' });
     function remove(i) { setHoverItem(null); if (f.onRemove) f.onRemove(v, i); var rows = pm.root.querySelectorAll('.pm-list .pm-item'); var r = rows[Math.min(i, rows.length - 1)]; if (r) try { r.focus({ preventScroll: true }); } catch (e) { } }
     items.forEach(function (it, i) {
-      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: 'Delete or right-click to remove', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
+      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: it.label + ' (Delete or right-click to remove)', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
       row.lastChild.textContent = it.label;
       row.addEventListener('mouseenter', function () { setHoverItem(it); });
       row.addEventListener('mouseleave', function () { if (App.command && App.command.hoverItem === it) setHoverItem(null); });
@@ -1375,7 +1375,27 @@
     if (isChamfer) f.d = f.d != null ? f.d : 2; else f.r = f.r != null ? f.r : 2;
     if (existing) f.chain = !(existing.edges || []).some(function (e) { return e.chain === false; });
     // seed with a pre-selected edge
-    if (!existing && App.sel && App.sel.kind === 'edge') f.edges.push({ at: App.sel.edge.mid.slice(), chain: true });
+    // r9/polish9: every pre-selected edge (a box or Ctrl selection, not only the first), and a pre-selected face gives
+    // the edges around it, as in SolidWorks; the items move into the PropertyManager. A selected feature (the one just
+    // created) is not an input here: it is let go so its faces do not stay lit while edges are picked.
+    if (!existing) {
+      var pre = UI.selection ? UI.selection() : [App.sel].filter(Boolean), seenAt = {}, seenCurve = {}, used = false;
+      var addAt = function (e) {
+        if (e.curve != null) { if (seenCurve[e.curve]) return; seenCurve[e.curve] = 1; }
+        var k = e.mid.map(function (x) { return Math.round(x * 1e4); }).join(',');
+        if (seenAt[k]) return;
+        seenAt[k] = 1; f.edges.push({ at: e.mid.slice(), chain: true });
+      };
+      pre.forEach(function (s) {
+        if (s.kind === 'edge' && s.edge) { addAt(s.edge); used = true; }
+        else if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) {
+          var grp = UI.faceGroup ? UI.faceGroup(s.index) : [s.index];
+          App.edges.forEach(function (e) { if (!e.smooth && e.faces.length === 2 && e.convex !== null && (grp.indexOf(e.faces[0]) >= 0 || grp.indexOf(e.faces[1]) >= 0)) addAt(e); });
+          used = true;
+        }
+      });
+      if ((used || (pre.length && pre.every(function (s) { return s.kind === 'feature'; }))) && UI.setSelection) UI.setSelection([]);
+    }
     var edgeList = [];
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
@@ -1486,7 +1506,17 @@
     function getBaseMesh() { getBase(); return baseMesh; }
     if (existing ? !App.build : !base) { UI.toast('Create a solid first, then shell it.'); return; }
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'shell', thickness: 2, faces: [] };
-    if (!existing && App.sel && App.sel.kind === 'face' && App.sel.point) f.faces.push({ at: App.sel.point.slice() });
+    // r9/polish9: every pre-selected face (Ctrl / box selection too), each at its picked point or else inside its
+    // first triangle; the faces move into the PropertyManager
+    if (!existing) {
+      var preF = (UI.selection ? UI.selection() : [App.sel]).filter(function (s) { return s && s.kind === 'face' && App.mesh && App.mesh.faces[s.index]; });
+      preF.forEach(function (s) {
+        var at = s.point ? s.point.slice() : null;
+        if (!at) { var fc = App.mesh.faces[s.index], P = App.mesh.positions, o = fc.start * 9; at = [0, 1, 2].map(function (k) { return (P[o + k] + P[o + 3 + k] + P[o + 6 + k]) / 3; }); }
+        f.faces.push({ at: at.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
+      });
+      if (preF.length && UI.setSelection) UI.setSelection([]);
+    }
     function tol() { return Math.max(0.5, (+f.thickness || 1) / 2); }
     function resolveList() {
       var idx = [];

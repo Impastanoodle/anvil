@@ -6472,6 +6472,41 @@
       return m.faces.length + ' faces';
     } finally { anvil.occt(was, { remember: false }); await idle(); }
   });
+  step('r9/polish9: Fillet / Chamfer / Shell take the whole pre-selection — a selected face gives the edges around it (a circle once), Ctrl-selected edges all go in, two selected faces are both removed by Shell; a just-created feature is let go', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.box(40, 20, 10, { centered: true });\np.sketch("Top", 10).circle(0, 0, 5);\np.extrude(5);'); await idle();
+    var tf = UI.App.mesh.faces.findIndex(function (f) { return f.normal[1] > 0.9 && Math.abs(f.centroid[1] - 10) < 1e-6; });
+    UI.setSelection([{ kind: 'face', index: tf }]);
+    UI.cmdFillet(); await UI.previewIdle();
+    var ed = UI.pmSpec().values.edges;
+    assert(ed.length === 5, '4 outer edges + the boss circle: ' + JSON.stringify(ed));
+    assert(anvil.selection().length === 0, 'the face moved into the PM');
+    UI.pmCancel(); await idle();
+    var sharp = UI.App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex === true && e.curve == null && Math.abs(e.a[1] - e.b[1]) > 5; });
+    assert(sharp.length === 4, 'four vertical edges: ' + sharp.length);
+    UI.setSelection(sharp.map(function (e) { return { kind: 'edge', edge: e, index: UI.App.edges.indexOf(e) }; }));
+    UI.cmdChamfer(); await UI.previewIdle();
+    assert(UI.pmSpec().values.edges.length === 4, 'four chamfer picks: ' + UI.pmSpec().values.edges.length);
+    await pmAccept();
+    var ch = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(ch.type === 'chamfer' && ch.edges.length === 4 && !anvil.summary().errors[ch.id], 'chamfer committed ' + JSON.stringify(ch.edges));
+    // the new feature is selected after ✓; the next Fillet starts empty and lets it go
+    assert(UI.App.sel && UI.App.sel.kind === 'feature', 'feature selected after the commit');
+    UI.cmdFillet(); await wait(20);
+    assert(UI.pmSpec().values.edges.length === 0 && !UI.App.sel, 'Fillet starts empty, selection let go');
+    UI.pmCancel(); await idle();
+    // Shell: two faces (top and front) selected
+    await anvil.run('p.box(40, 20, 10, { centered: true });'); await idle();
+    var ft = UI.App.mesh.faces.findIndex(function (f) { return f.normal[1] > 0.9; }), ff = UI.App.mesh.faces.findIndex(function (f) { return f.normal[2] > 0.9; });
+    UI.setSelection([{ kind: 'face', index: ft }, { kind: 'face', index: ff }]);
+    UI.cmdShell(); await UI.previewIdle();
+    assert(UI.pmSpec().values.faces.length === 2, 'two faces to remove: ' + JSON.stringify(UI.pmSpec().values.faces));
+    setInput(pmNumber(0), 1);
+    await pmAccept();
+    // 40 × 20 × 10 minus the 38 × 19 × 9 cavity open at the top and front
+    near(anvil.summary().volume, 8000 - 38 * 19 * 9, 1e-3, 'open box volume');
+    return 'face → 5 edges, 4 edges, 2 shell faces';
+  });
   // --- end r9/polish9 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
