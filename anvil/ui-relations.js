@@ -65,6 +65,11 @@
       var sn = Math.abs(d1[0] * d2[1] - d1[1] * d2[0]) / ((Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1])) || 1);
       if (sn > 1e-6) return { type: 'angle', refs: [r1, r2] };
     }
+    if (k1 === 'circle' && k2 === 'circle') {
+      // r6/sketch6: two concentric circles -> the radial distance between them (their centre distance is 0)
+      var c1 = S.refCurve(f, r1), c2 = S.refCurve(f, r2);
+      if (Math.hypot(c1.c[0] - c2.c[0], c1.c[1] - c2.c[1]) < 1e-9 * Math.max(1, c1.r, c2.r) && Math.abs(c1.r - c2.r) > 1e-9) return { type: 'distance', refs: [r1, r2], dir: 'r' };
+    }
     if (S.measure(f, 'distance', [r1, r2]) != null) return { type: 'distance', refs: [r1, r2] };
     return null;
   }
@@ -83,6 +88,12 @@
       return { type: 'angle', X: X, d1: d1, d2: d2, A: A, B: B };
     }
     var P, Q;
+    if (rel.dir === 'r' && k0 === 'circle' && k1 === 'circle') {
+      // r6/sketch6: radial distance between concentric circles, drawn along a 45° ray from the first one's centre
+      var cA = S.refCurve(f, R[0]), cB = S.refCurve(f, R[1]), u = [Math.SQRT1_2, Math.SQRT1_2];
+      P = [cA.c[0] + u[0] * cA.r, cA.c[1] + u[1] * cA.r]; Q = [cA.c[0] + u[0] * cB.r, cA.c[1] + u[1] * cB.r];
+      return { type: 'distance', P: P, Q: Q, dir: cB.r >= cA.r ? u : [-u[0], -u[1]] };
+    }
     if (k0 !== 'line' && k1 !== 'line') { P = ctr(R[0], k0); Q = ctr(R[1], k1); }
     else {
       var li = k1 === 'line' ? 1 : 0, L = S.refCurve(f, R[li]);
@@ -102,7 +113,7 @@
   // Smart Dimension does: above / below the two points -> horizontal, beside them -> vertical, otherwise aligned.
   function relDimPlacement(f, rel, uv) {
     var out = {};
-    if (rel.type === 'distance' && rel.v == null && !rel.driven) {
+    if (rel.type === 'distance' && rel.v == null && !rel.driven && rel.dir !== 'r') {
       var k0 = S.refKind(f, rel.refs[0]), k1 = S.refKind(f, rel.refs[1]);
       if (k0 && k1 && k0 !== 'line' && k1 !== 'line') {
         var g0 = relDimGeometry(f, { type: 'distance', refs: rel.refs });
@@ -194,7 +205,7 @@
   function placeRelDim(f, rd, uv) {
     var pl = relDimPlacement(f, rd, uv);
     markDirty();
-    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir, tx: pl.tx, sup: pl.sup, q: pl.q, ta: pl.ta });
+    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir || rd.dir, tx: pl.tx, sup: pl.sup, q: pl.q, ta: pl.ta });
     if (!r.ok) { UI.toast(r.error); return; }
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };
