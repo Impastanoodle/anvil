@@ -4008,6 +4008,19 @@
     near(anvil.components()[1].rotation[3], arm.rotation[3], 1e-9, 'undo');
     return 'arm ' + a0.toFixed(1) + '° → ' + a1.toFixed(1) + '°';
   });
+  step('refine/assembly: dragging a fully defined component leaves it in place, says so and adds no undo step', async function () {
+    await anvil.run(exByName('Distance and angle mates').code);
+    await idle();
+    UI.setView('Front'); anvil.fit(); await idle();
+    var blk = anvil.components()[1], undoN = UI.App.undo.length;
+    assert(blk.dof === 0, 'the block is fully defined');
+    var p = UI.worldToScreen(W.Assembly.componentCenter(UI.App.model, UI.App.build, blk.id)), hit = UI.pickFace(p[0], p[1]);
+    assert(hit && UI.App.mesh.faces[hit.index].body === 1, 'the block is under its centre');
+    await dragViewport(p, [p[0] + 50, p[1] + 20]);
+    nearVecS(anvil.components()[1].position, blk.position, 1e-6, 'not moved');
+    assert(UI.App.undo.length === undoN, 'no undo step (' + (UI.App.undo.length - undoN) + ')');
+    assert(/fully defined/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
+  });
   step('refine/assembly: Mate PM proposes Tangent for a cylindrical face and a flat face; mate menu Flip Mate Alignment turns the block upside down (one undo step)', async function () {
     await baseAndBlock('FlipAsm');
     await anvil.insert({ script: 'p.name("Pin"); p.cylinder(4, 20);' }, { position: [80, 40, 30], rotation: [1, 0, 0, 0, 0, -1, 0, 1, 0] });

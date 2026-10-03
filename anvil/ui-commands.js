@@ -2010,6 +2010,21 @@
         try { Assembly.rebuild(m, App.asmCache, o); } catch (e) { m = null; }
         (m ? m.components : []).forEach(function (x) { placed[x.id] = { transform: x.transform, flexState: x.flexState }; });
         App.model = JSON.parse(snap);
+        // nothing moved (a fully defined component, or one its mates hold against this drag): no undo step
+        var moved = App.model.components.some(function (x) {
+          var pl = placed[x.id], T = x.transform;
+          if (!pl || !pl.transform || !T) return false;
+          for (var k = 0; k < 9; k++) if (Math.abs(pl.transform.rotation[k] - T.rotation[k]) > 1e-9) return true;
+          for (k = 0; k < 3; k++) if (Math.abs(pl.transform.position[k] - T.position[k]) > 1e-7) return true;
+          return JSON.stringify(pl.flexState || null) !== JSON.stringify(x.flexState || null);
+        });
+        if (!moved) {
+          var st = compStatus(id);
+          return UI.afterRebuild(UI.rebuild({ noSave: true }), function () {
+            UI.setStatus(c.name + (st && !st.underDefined ? ' is fully defined: its mates hold it in place.' : ' cannot move that way: its mates hold it.'));
+            return Assembly.findComponent(App.model, id);
+          });
+        }
         return asmCommit(function (mm) {
           mm.components.forEach(function (x) {
             var pl = placed[x.id];
