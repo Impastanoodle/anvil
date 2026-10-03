@@ -439,6 +439,80 @@ var Drawing = (function () {
     }); }
   }
 
+  // closeSmallGaps(lines, ellipses, arcs, circles, G) (r10/drawings10): what closeEnds / closeFreeEnds leave — a free
+  // end (meeting nothing drawn) under G from other linework — is carried onto it: a line's end is moved to the nearest
+  // point of that linework, an arc's or ellipse's end 0.0005 mm or more off gets a bridging line to it. These are short
+  // facet pieces at corners and rims, 0.002-0.03 mm off (OpenCascade's Tray corners in the Top view, the Rounded
+  // handle's grip ends in the isometric, the Hex nut's chamfer curves); a true drawing has no such gap.
+  function closeSmallGaps(lines, ells, arcs, circs, G) {
+    if (!(G > 0) || lines.length > 20000) return lines;
+    var cs = [];
+    ells.forEach(function (q) { cs.push({ o: q, c: q.c, ax: q.ax, ay: q.ay, t0: q.full ? 0 : q.t0, t1: q.full ? TWO_PI : q.t1, full: q.full }); });
+    arcs.forEach(function (a) { cs.push({ o: a, c: a.c, ax: [a.r, 0], ay: [0, a.r], t0: a.a0 * Math.PI / 180, t1: a.a1 * Math.PI / 180 }); });
+    circs.forEach(function (c) { cs.push({ o: c, c: c.c, ax: [c.r, 0], ay: [0, c.r], t0: 0, t1: TWO_PI, full: true }); });
+    cs.forEach(function (E) {
+      var rx = Math.hypot(E.ax[0], E.ay[0]), ry = Math.hypot(E.ax[1], E.ay[1]), det = E.ax[0] * E.ay[1] - E.ax[1] * E.ay[0];
+      var qa = E.ax[0] * E.ax[0] + E.ax[1] * E.ax[1], qb = E.ay[0] * E.ay[0] + E.ay[1] * E.ay[1];
+      E.b = [E.c[0] - rx, E.c[1] - ry, E.c[0] + rx, E.c[1] + ry]; E.det = det;
+      E.semi = Math.sqrt(Math.max(0, (qa + qb) / 2 - Math.hypot((qa - qb) / 2, E.ax[0] * E.ay[0] + E.ax[1] * E.ay[1])));   // the smaller semi-axis
+    });
+    function cp(E, t) { return [E.c[0] + Math.cos(t) * E.ax[0] + Math.sin(t) * E.ay[0], E.c[1] + Math.cos(t) * E.ax[1] + Math.sin(t) * E.ay[1]]; }
+    function hyp(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]); }
+    function segQ(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return [l[0] + t * dx, l[1] + t * dy]; }
+    function curveQ(E, p) {
+      var n = 96, h = (E.t1 - E.t0) / n, bt = E.t0, bd = Infinity;
+      for (var i = 0; i <= n; i++) { var t = E.t0 + h * i, d = hyp(cp(E, t), p); if (d < bd) { bd = d; bt = t; } }
+      var lo = Math.max(E.t0, bt - h), hi = Math.min(E.t1, bt + h);
+      for (var it = 0; it < 60 && hi - lo > 1e-15; it++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (hyp(cp(E, m1), p) < hyp(cp(E, m2), p)) hi = m2; else lo = m1; }
+      return cp(E, (lo + hi) / 2);
+    }
+    // the nearest point of the linework other than `self` within G of p: { q, d } (d <= eps: p meets it), or null
+    function nearest(p, self) {
+      var best = null, bd = G;
+      lines.forEach(function (l) {
+        if (l === self || Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9 || p[0] < Math.min(l[0], l[2]) - bd || p[0] > Math.max(l[0], l[2]) + bd || p[1] < Math.min(l[1], l[3]) - bd || p[1] > Math.max(l[1], l[3]) + bd) return;
+        var q = segQ(p, l), d = hyp(p, q); if (d <= bd) { bd = d; best = { q: q, d: d }; }
+      });
+      cs.forEach(function (E) {
+        if (E.o === self || p[0] < E.b[0] - bd || p[0] > E.b[2] + bd || p[1] < E.b[1] - bd || p[1] > E.b[3] + bd || !E.det) return;
+        // (no nearer than (ρ - 1) × the smaller semi-axis, ρ the point's radius in the curve's unit-circle frame)
+        var qx = p[0] - E.c[0], qy = p[1] - E.c[1], rho = Math.hypot((qx * E.ay[1] - qy * E.ay[0]) / E.det, (E.ax[0] * qy - E.ax[1] * qx) / E.det);
+        if (Math.abs(rho - 1) * E.semi > bd) return;
+        var q = curveQ(E, p), d = hyp(p, q); if (d <= bd) { bd = d; best = { q: q, d: d }; }
+      });
+      return best;
+    }
+    function epsAt(p) { return 1e-6 * (1 + Math.abs(p[0]) + Math.abs(p[1])); }
+    // line ends shared with another line's end meet something: counted on a grid, kept up to date as ends move
+    var cnt = {};
+    function ek(x, y) { return Math.round(x * 1e6) + ',' + Math.round(y * 1e6); }
+    function bump(x, y, k) { var key = ek(x, y); cnt[key] = (cnt[key] || 0) + k; }
+    lines.forEach(function (l) { if (Math.hypot(l[2] - l[0], l[3] - l[1]) > 1e-9) { bump(l[0], l[1], 1); bump(l[2], l[3], 1); } });
+    var bridges = [], moved = true;
+    // (an end moved off another can free that one: a second pass picks it up)
+    for (var pass = 0; pass < 3 && moved; pass++) { moved = false; lines.forEach(function (l) {
+      [0, 1].forEach(function (end) {
+        var p = end ? [l[2], l[3]] : [l[0], l[1]];
+        if (Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9 || cnt[ek(p[0], p[1])] > 1) return;
+        var n = nearest(p, l);
+        if (!n || n.d <= epsAt(p)) return;
+        bump(p[0], p[1], -1); bump(n.q[0], n.q[1], 1);
+        if (end) { l[2] = n.q[0]; l[3] = n.q[1]; } else { l[0] = n.q[0]; l[1] = n.q[1]; }
+        // (a piece pulled back onto its own other end is gone: its ends no longer count)
+        if (Math.hypot(l[2] - l[0], l[3] - l[1]) <= 1e-9) { bump(l[0], l[1], -1); bump(l[2], l[3], -1); }
+        moved = true;
+      });
+    }); }
+    cs.forEach(function (E) {
+      if (E.full) return;
+      [E.t0, E.t1].forEach(function (te) {
+        var p = cp(E, te), n = nearest(p, E.o);
+        if (n && n.d > Math.max(epsAt(p), 5e-4)) bridges.push([p[0], p[1], n.q[0], n.q[1], E.o.body || 0]);
+      });
+    });
+    return lines.filter(function (l) { return Math.hypot(l[2] - l[0], l[3] - l[1]) > 1e-9; }).concat(bridges);
+  }
+
   // ------------------------------------------------------------------ hidden-line removal
   // projectView(mesh, orientName, opts) -> { orient, lines: { visible, hidden }, circles: { visible, hidden }, bounds, stats }
   // lines are [u1, v1, u2, v2] in model units. Candidate edges: sharp edges (faces meeting at more than 22°, open or
@@ -531,7 +605,8 @@ var Drawing = (function () {
     // skip: a surface key whose own facets cannot hide the segment, the exact silhouette of a cylinder or cone: its
     // chordal facets lie inside the surface, and a sliver facet ending on the silhouette must not cut it short near
     // its end, r5/drawings5)
-    function hiddenIntervals(A, B, a2, b2, ez, skip) {
+    // (only: { body, same } keeps just the occluders of that body (same) or of the other bodies (!same), r10/drawings10)
+    function hiddenIntervals(A, B, a2, b2, ez, skip, only) {
       var wa = V.dot(A, e), wb = V.dot(B, e), wmin = Math.min(wa, wb), AB = V.sub(B, A), eZ = ez > epsZ ? ez : epsZ;
       var ivs = [];
       var cand = candidates(a2, b2);
@@ -539,6 +614,7 @@ var Drawing = (function () {
         var t = tris[cand[ci]];
         if (t.wmax <= wmin + eZ) continue;               // the triangle is nowhere in front of the segment
         if (skip != null && CV.faceSurf[t.f] && CV.faceSurf[t.f].key === skip) continue;
+        if (only && ((mesh.faces[t.f].body || 0) === only.body) !== only.same) continue;
         var lo = 0, hi = 1;
         // in front: s(t) = (c - n·X(t)) / (n·e) > epsZ
         var s0 = (t.c - V.dot(t.n, A)) / t.ne, s1 = (t.c - V.dot(t.n, B)) / t.ne;
@@ -708,7 +784,17 @@ var Drawing = (function () {
       if (L2 < tol2 * 10) return;                           // seen end-on
       var body = mesh.faces[ed.faces[0]].body || 0;   // the component (assembly) or solid body the edge belongs to
       var hidden, t = 0;
-      if (g >= 0 && Math.abs(V.dot(GR[g].n, e)) > 1 - 1e-9) {
+      // Seen obliquely, only other bodies' facets get the same test (r10/drawings10): a bore's rim on a shaft of the
+      // same radius in an assembly, the shaft's facets turned against the bore's (OpenCascade's Gear train, Gear B
+      // turned 45° on its shaft), hid every other half-chord of the rim's visible half in the isometric (18 dashes);
+      // the body's own facets keep hiding the chord as before.
+      var ngf = g >= 0 ? Math.abs(V.dot(GR[g].n, e)) : 0, obl = g >= 0 && ngf > 1e-9 && ngf <= 1 - 1e-9, own = null;
+      if (obl && !hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip).length) { obl = false; hidden = []; }   // in plain view
+      if (obl) {
+        own = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip, { body: body, same: true });
+        hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip, { body: body, same: false });
+      }
+      if (g >= 0 && ngf > 1e-9) {
         // a true circle seen face-on: the chord lies up to a sagitta inside the curve, where the facets of a surface
         // that ends on the circle from inside (a handle's bend round its tube seen end-on) cover it and the outline
         // came out in dashes. The true arc is tested too, as short chords between points on the circle (depth
@@ -716,7 +802,7 @@ var Drawing = (function () {
         // hidden only where both are (the true arc alone sinks into a surface ending on the circle from outside, a
         // torus's inner equator, whose facets' inner edges are chords inside the circle) (r5/drawings5)
         var Gf = GR[g], fa = curveAngle(Gf, A), fb = unwrapNear(curveAngle(Gf, B), fa);
-        hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip);
+        if (!hidden) hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip);
         if (hidden.length && Math.abs(fb - fa) > 1e-9 && Math.abs(fb - fa) < Math.PI / 3) {
           var mid = V.scale(V.add(A, B), 0.5), dev = 0, ezf;
           ed.faces.forEach(function (fi) { var S = faceSurface(fi), f = S && S.t !== 'pln' ? surfDist(S, mid) : null; if (f) dev = Math.max(dev, Math.abs(f[0])); });
@@ -733,7 +819,7 @@ var Drawing = (function () {
           var ns = Math.max(2, Math.min(16, Math.ceil(Math.abs(fb - fa) / 0.02))), ht = [];
           for (var k = 0; k < ns; k++) {
             var th0 = fa + (fb - fa) * k / ns, th1 = fa + (fb - fa) * (k + 1) / ns, P0 = at(th0), P1 = at(th1);
-            hiddenIntervals(P0, P1, [V.dot(P0, U), V.dot(P0, Vv)], [V.dot(P1, U), V.dot(P1, Vv)], ezf, ed.skip).forEach(function (q) {
+            hiddenIntervals(P0, P1, [V.dot(P0, U), V.dot(P0, Vv)], [V.dot(P1, U), V.dot(P1, Vv)], ezf, ed.skip, obl ? { body: body, same: false } : null).forEach(function (q) {
               var x0 = tOf(th0 + (th1 - th0) * q[0]), x1 = tOf(th0 + (th1 - th0) * q[1]);
               ht.push([Math.min(x0, x1), Math.max(x0, x1)]);
             });
@@ -746,6 +832,7 @@ var Drawing = (function () {
           hidden.forEach(function (h) { ht.forEach(function (q) { var lo = Math.max(h[0], q[0]), hi = Math.min(h[1], q[1]); if (hi > lo + 1e-12 && !(lo > 1e-9 && hi < 1 - 1e-9 && (hi - lo) * L2c < 2 * sagc)) both.push([lo, hi]); }); });
           hidden = both;
         }
+        if (obl) hidden = mergeIntervals(own.concat(hidden), 1e-9);
       } else hidden = hiddenIntervals(A, B, a2, b2, ed.eps, ed.skip);
       if (g >= 0) {
         // a piece of a true curve: its visible and hidden parameter ranges become angle ranges on the curve
@@ -1322,6 +1409,51 @@ var Drawing = (function () {
         return true;
       });
     }
+    // dropOnCurves (r10/drawings10): straight pieces lying along an exact arc, circle or ellipse of the view (ends on it,
+    // inside its angle range, middle no further off than a chord's sagitta) are the same edge drawn twice:
+    // OpenCascade's Tray seen from the right drew the mitre seam's chain (its ellipse, seen along the wall, lands on
+    // the bend's arc) as 22 facet lines over the exact arc. Such pieces are dropped.
+    function dropOnCurves(lines, arcs, circs, ells) {
+      if (!lines.length || !(arcs.length || circs.length || ells.length)) return lines;
+      var tc = Math.min(0.005, chordTol() / 10), cs = [];
+      function add(c, ax, ay, t0, t1) {
+        var rx = Math.hypot(ax[0], ay[0]), ry = Math.hypot(ax[1], ay[1]), det = ax[0] * ay[1] - ax[1] * ay[0];
+        // rc: the smallest radius of curvature, b² / a (a, b: the semi-axes), for the sagitta a chord may show
+        var qa = ax[0] * ax[0] + ax[1] * ax[1], qb = ay[0] * ay[0] + ay[1] * ay[1], Ea = (qa + qb) / 2, Da = Math.hypot((qa - qb) / 2, ax[0] * ay[0] + ax[1] * ay[1]);
+        if (Math.abs(det) < 1e-12) return;
+        cs.push({ c: c, ax: ax, ay: ay, t0: t0, t1: t1, inv: [ay[1] / det, -ay[0] / det, -ax[1] / det, ax[0] / det], rc: Math.max(Ea - Da, 0) / Math.sqrt(Ea + Da),
+          box: [c[0] - rx - tc, c[1] - ry - tc, c[0] + rx + tc, c[1] + ry + tc] });
+      }
+      arcs.forEach(function (a) { add(a.c, [a.r, 0], [0, a.r], a.a0 * Math.PI / 180, a.a1 * Math.PI / 180); });
+      circs.forEach(function (c) { add(c.c, [c.r, 0], [0, c.r], 0, TWO_PI); });
+      ells.forEach(function (q) { add(q.c, q.ax, q.ay, q.full ? 0 : q.t0, q.full ? TWO_PI : q.t1); });
+      function at(C, t) { return [C.c[0] + Math.cos(t) * C.ax[0] + Math.sin(t) * C.ay[0], C.c[1] + Math.cos(t) * C.ax[1] + Math.sin(t) * C.ay[1]]; }
+      // the curve parameter nearest p (from the unit-circle preimage, refined by a few bisections), or null when it
+      // falls outside the curve's range
+      function near(C, p) {
+        var dx = p[0] - C.c[0], dy = p[1] - C.c[1], t = Math.atan2(C.inv[2] * dx + C.inv[3] * dy, C.inv[0] * dx + C.inv[1] * dy), h = 0.05;
+        for (var k = 0; k < 12; k++) {
+          var d0 = Math.hypot(at(C, t)[0] - p[0], at(C, t)[1] - p[1]), dm = Math.hypot(at(C, t - h)[0] - p[0], at(C, t - h)[1] - p[1]), dp = Math.hypot(at(C, t + h)[0] - p[0], at(C, t + h)[1] - p[1]);
+          if (dm < d0 && dm <= dp) t -= h; else if (dp < d0) t += h; else h /= 2;
+        }
+        var full = C.t1 - C.t0 >= TWO_PI - 1e-9, tt = C.t0 + ((t - C.t0) % TWO_PI + TWO_PI) % TWO_PI;
+        if (!full && tt > C.t1 + 1e-6 && tt < C.t0 + TWO_PI - 1e-6) return null;
+        var q = at(C, t);
+        return Math.hypot(q[0] - p[0], q[1] - p[1]);
+      }
+      // (ends within 0.005 mm of the curve, the middle within that plus the chord's sagitta: a nearby true edge, the
+      // Hex nut's chamfer hyperbolas 0.015-0.04 mm off its rim ellipse, stays)
+      return lines.filter(function (l) {
+        var L = Math.hypot(l[2] - l[0], l[3] - l[1]), ends = [[l[0], l[1]], [l[2], l[3]]], mid = [(l[0] + l[2]) / 2, (l[1] + l[3]) / 2];
+        return !cs.some(function (C) {
+          if (Math.min(l[0], l[2]) < C.box[0] || Math.max(l[0], l[2]) > C.box[2] || Math.min(l[1], l[3]) < C.box[1] || Math.max(l[1], l[3]) > C.box[3]) return false;
+          if (!(C.rc > 0) || L > C.rc) return false;
+          if (!ends.every(function (p) { var d = near(C, p); return d != null && d <= tc; })) return false;
+          var dm = near(C, mid);
+          return dm != null && dm <= tc + L * L / (8 * C.rc);
+        });
+      });
+    }
     var merged = mergeCollinear(vis, hid, diag);
     var vc = extractCircles(merged.visible, diag), hc = extractCircles(merged.hidden, diag);
     // every edge whole, visible or not: what user dimensions reattach to after a part change
@@ -1343,9 +1475,16 @@ var Drawing = (function () {
       ellipses: { visible: exact.ellipses.visible, hidden: hlr ? [] : exact.ellipses.hidden },
       exact: !!CV
     };
+    if (CV && !opts._keepOnCurves) {
+      res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
+      res.lines.hidden = dropOnCurves(res.lines.hidden, res.arcs.visible.concat(res.arcs.hidden), res.circles.visible.concat(res.circles.hidden), res.ellipses.visible.concat(res.ellipses.hidden));
+    }
     if (CV) closeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, chordTol());
     closeFreeEnds(res.lines.visible, res.ellipses.visible, res.arcs.visible, chordTol());
     if (fsil.length && silh.length) res.lines.visible = dropStubs(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible);
+    // (again: closeEnds / closeFreeEnds can carry a piece back along a curve, the Chamfered block's corner arcs' ends)
+    if (CV && !opts._keepOnCurves) res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
+    if (!opts._keepGaps) res.lines.visible = closeSmallGaps(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, 0.6 * chordTol());
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
