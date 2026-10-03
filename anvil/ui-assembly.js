@@ -478,6 +478,7 @@
     }
     return bd < 1 ? best : -1;   // within 1 (squared): a facet of a true cylinder sits a chord height off its surface
   }
+  UI.mateRefFace = refFaceIndex;   // r5/select5: the Mate PM list rows light their face
   UI.showMate = function (mt) {
     if (!isAsm() || !mt) return false;
     var ia = refFaceIndex(mt.a), ib = refFaceIndex(mt.b);

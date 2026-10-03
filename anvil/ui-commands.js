@@ -2243,8 +2243,8 @@
     // the selections a mate type takes, in pick order; the mate can be previewed once `ready`
     function slots(x) { return x.type === 'width' ? ['a', 'a2', 'b', 'b2'] : ['a', 'b']; }
     function ready(x) { return x.type === 'width' ? !!(x.a && x.a2 && x.b && (x.b2 || refKind(x.b) === 'axis')) : !!(x.a && x.b); }
-    function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; if (App.command) App.command.faceList = []; }
-    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [];
+    function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; pickedBy = {}; if (App.command) App.command.faceList = []; }
+    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [], pickedBy = {};   // r5/select5: pickedBy: slot -> face index (its list row lights it)
     function restore() { App.model = JSON.parse(snapshot); baseModel = App.model; }
     var LIMIT = { limitdistance: 1, limitangle: 1 }, FLIPS = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
     function mateValues() {
@@ -2314,7 +2314,7 @@
       if (ready(v)) clearPicks(v);
       var slot = slots(v).filter(function (k) { return !v[k]; })[0];
       v[slot] = ref;
-      if (faceIndex != null) picked.push(faceIndex);
+      if (faceIndex != null) { picked.push(faceIndex); pickedBy[slot] = faceIndex; }
       if (App.command) App.command.faceList = picked.slice();
       if (!typeSet) v.type = defaultMateType(v.a, v.b);
       if (!alignSet) v.alignment = defaultAlignment(v.type, v.a, v.b);
@@ -2323,6 +2323,32 @@
       preview();
       UI.updateHighlights();
       return true;
+    }
+    // r5/select5: a selection box over some of the slots: a row per filled slot (hover: its face; Delete / right-click:
+    // removed, the later picks move up so the next pick fills the end)
+    function slotFace(k) {
+      var fi = pickedBy[k], ref = v[k];
+      if (UI.mateRefFace && ref) { var r = UI.mateRefFace(ref); if (r >= 0) fi = r; }
+      return fi != null && App.mesh && App.mesh.faces[fi] ? [fi] : [];
+    }
+    function slotBox(keys, icon, placeholder, show) {
+      function filled(x) { return keys.filter(function (k) { return !!x[k]; }); }
+      return { type: 'pick', icon: icon, placeholder: placeholder, show: show,
+        value: function (x) { var n = filled(x).length; return n ? n + ' selected' : ''; },
+        items: function (x) { return filled(x).map(function (k) { return { label: refText(x[k]), get faces() { return slotFace(k); } }; }); },
+        onRemove: function (x, i) {
+          var k = filled(x)[i];
+          if (!k) return;
+          x[k] = null; delete pickedBy[k];
+          for (var j = keys.indexOf(k); j + 1 < keys.length; j++) {   // later picks move up
+            x[keys[j]] = x[keys[j + 1]]; x[keys[j + 1]] = null;
+            if (pickedBy[keys[j + 1]] != null) { pickedBy[keys[j]] = pickedBy[keys[j + 1]]; delete pickedBy[keys[j + 1]]; } else delete pickedBy[keys[j]];
+          }
+          picked = Object.keys(pickedBy).map(function (s) { return pickedBy[s]; });
+          if (App.command) App.command.faceList = picked.slice();
+          renderPM(); preview(); UI.updateHighlights();
+        },
+        onClear: function (x) { clearPicks(x); renderPM(); preview(); UI.updateHighlights(); } };
     }
     openPM({
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
@@ -2340,14 +2366,13 @@
       },
       groups: [
         { title: 'Mate Selections', fields: [
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.a); }, placeholder: 'First entity…', show: function (x) { return x.type !== 'width'; } },
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…', show: function (x) { return x.type !== 'width'; } },
+          // r5/select5: one Entities to Mate box (two lists for Width) whose rows light their face on hover and go with
+          // Delete / right-click, as in the other PropertyManagers
+          slotBox(['a', 'b'], 'component', 'Entities to mate…', function (x) { return x.type !== 'width'; }),
           { type: 'static', label: 'Width selections', value: '', show: function (x) { return x.type === 'width'; } },
-          { type: 'pick', icon: 'width', value: function (x) { return refText(x.a); }, placeholder: 'First width face…', show: function (x) { return x.type === 'width'; } },
-          { type: 'pick', icon: 'width', value: function (x) { return refText(x.a2); }, placeholder: 'Second width face…', show: function (x) { return x.type === 'width'; } },
+          slotBox(['a', 'a2'], 'width', 'Two width faces…', function (x) { return x.type === 'width'; }),
           { type: 'static', label: 'Tab selections', value: '', show: function (x) { return x.type === 'width'; } },
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Tab face or cylindrical face…', show: function (x) { return x.type === 'width'; } },
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b2); }, placeholder: 'Second tab face…', show: function (x) { return x.type === 'width' && refKind(x.b) !== 'axis'; } },
+          slotBox(['b', 'b2'], 'component', 'Two tab faces or one cylindrical face…', function (x) { return x.type === 'width'; }),
           { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function (x) { clearPicks(x); renderPM(); preview(); UI.updateHighlights(); } }] }
         ] },
         { title: 'Standard Mates', fields: [
