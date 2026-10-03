@@ -688,7 +688,8 @@ var Assembly = (function () {
       out.kind = 'axis'; out.refKind = 'axis'; out.point = [0, 0, 0]; out.dir = d.slice();
     } else if (ref.face) {
       if (!comp) throw new Error('A face reference needs a component');
-      var p = copy3(ref.face), g = needGeom(), best = patchesByDistance(g, p)[0];
+      var p = copy3(ref.face), g = needGeom(), memo = g.refMemo || (g.refMemo = {}), fk = 'f' + p.join(),
+        best = memo[fk] !== undefined ? memo[fk] : (memo[fk] = patchesByDistance(g, p)[0] || null);   // (memo: every solve resolves every ref)
       var tol = Math.max(1e-4, 1e-5 * g.size);
       if (!best || best.d > tol) throw new Error('No face at ' + fmtPt(p) + ' on ' + comp.name);
       var nn = best.pt.normal;
@@ -696,7 +697,8 @@ var Assembly = (function () {
       out.point = sub(p, scale(nn, dot(nn, p) - best.pt.w)); // projected onto the face plane
     } else if (ref.cylinder) {
       if (!comp) throw new Error('A cylindrical face reference needs a component');
-      var pc = copy3(ref.cylinder), cy = findCylinder(needGeom(), pc);
+      var pc = copy3(ref.cylinder), gc = needGeom(), memc = gc.refMemo || (gc.refMemo = {}), ck = 'c' + pc.join(),
+        cy = memc[ck] !== undefined ? memc[ck] : (memc[ck] = findCylinder(gc, pc));
       if (!cy) throw new Error('No cylindrical face near ' + fmtPt(pc) + ' on ' + comp.name);
       out.kind = 'axis'; out.refKind = 'cylinder'; out.dir = cy.dir.slice();
       out.point = add(cy.point, scale(cy.dir, dot(sub(pc, cy.point), cy.dir))); // axis point nearest the given point
@@ -1236,7 +1238,8 @@ var Assembly = (function () {
       function pull() { return vnorm(ex.extra(transforms)); }
       function snapAll() { var s = {}; comps.forEach(function (c) { s[c.id] = transforms[c.id]; }); return s; }
       var cur = pull();
-      for (var it = 0; it < 40 && cur > 1e-9; it++) {
+      var quick = !!(opts && opts.quick);   // a drag frame (r3/assembly3): a micron is close enough, the release solves exactly
+      for (var it = 0; it < 40 && cur > (quick ? 1e-4 : 1e-9); it++) {
         var piv = {};
         group.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
         var n = group.length * 6, i, j, k, N = [];
@@ -1274,7 +1277,7 @@ var Assembly = (function () {
         if (!better) return;
         var gain = cur - now;
         cur = now;
-        if (gain < 1e-7 * Math.max(cur, 1e-9)) return;
+        if (gain < (quick ? 1e-4 : 1e-7) * Math.max(cur, 1e-9)) return;
       }
     }
 
@@ -1341,7 +1344,7 @@ var Assembly = (function () {
     var holding = active.filter(function (pm) { return pm.type !== 'limitdistance' && pm.type !== 'limitangle'; });
     // components that share no mate (through floating components) are independent: one small null space per group
     // instead of one over every component (30 pinned pins: ~100 ms -> a few ms per rebuild)
-    groupsOf(holding).forEach(function (grp) { dofOf(grp); });
+    if (!(opts && opts.quick)) groupsOf(holding).forEach(function (grp) { dofOf(grp); });   // (a drag frame shows placements only)
     function dofOf(holding) {
       var ids = unknowns(holding);
       if (ids.length) {
@@ -1893,9 +1896,9 @@ var Assembly = (function () {
       var T0 = {};
       SM.components.forEach(function (c) { T0[c.id] = tf(c.transform); });
       patOut = placeInstances(SM, SB, T0, patErr);
-      sol = solve(SM, SB, opts.drag ? { drag: opts.drag } : null);
+      sol = solve(SM, SB, opts.drag ? { drag: opts.drag, quick: !!opts.quick } : null);
       patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr);
-      if (instanceMates()) { sol = solve(SM, SB, opts.drag ? { drag: opts.drag } : null); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
+      if (instanceMates()) { sol = solve(SM, SB, opts.drag ? { drag: opts.drag, quick: !!opts.quick } : null); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
       if (ctx) finishVirtual(ctx, sol, model, partBuilds, warnings);
     } catch (e) {
       sol = { transforms: {}, mates: {}, components: model.components.map(function (c, i) { return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: c.fixed ? 0 : 6, underDefined: !c.fixed, error: null }; }) };
@@ -1927,6 +1930,12 @@ var Assembly = (function () {
       model.components.forEach(function (c) { var g = partGeom(partBuilds[c.id]); centers[c.id] = transformPoint(c.transform, g ? g.center : [0, 0, 0]); });
       var xo = explodeOffsets(model, xv, opts.explodeT == null ? 1 : opts.explodeT, centers);
       explode = { view: xv.id, name: xv.name, t: opts.explodeT == null ? 1 : +opts.explodeT, offsets: xo.offsets, lines: xo.lines };
+    }
+    // opts.poseOnly (r3/assembly3): the solved transforms and explode offsets only, no world bodies; the viewport moves
+    // the components it already shows (ui-assembly.js UI.asmPose) while a drag or an explode animation runs
+    if (opts.poseOnly) {
+      return { assembly: true, pose: true, model: model, body: null, bodies: null, explode: explode, patterns: patOut,
+        components: sol.components, mates: sol.mates, errors: errors, warnings: warnings, partBuilds: partBuilds, cache: newCache, time: now() - t0 };
     }
     // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed or is suppressed)
     var bodies = model.components.map(function (c) {

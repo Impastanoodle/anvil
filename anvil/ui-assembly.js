@@ -338,14 +338,261 @@
     return baseDragHook ? baseDragHook(p, ev) : null;
   };
 
+  // ------------------------------------------------------------------ pose display (r3/assembly3)
+  // While a component is dragged or an explode animation runs only rigid placements change, so instead of a full
+  // rebuild per frame (bodies, the combined mesh, its B-rep edges: 40-60 ms on the Gear train) the viewport moves the
+  // triangles, edges and silhouettes it already shows. begin() copies the drawn buffers and tags every vertex with its
+  // component; apply(model, explode) moves each component from where it was drawn to its new placement; end() puts the
+  // drawn buffers back (the caller then rebuilds once). App.mesh / App.build are untouched while a pose is shown.
+  var pose = null;
+  function placeOf(c, offs) {
+    var T = c && c.transform || {}, R = T.rotation || AS.IDENTITY, P = T.position || [0, 0, 0], o = offs && c ? offs[c.id] : null;
+    return { R: R, P: o ? [P[0] + o[0], P[1] + o[1], P[2] + o[2]] : P };
+  }
+  function poseBegin() {
+    var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
+    if (!isAsm() || !bm || !m || !m.triCount || !App.build || !App.build.assembly || !UI.groups) return null;
+    var comps = App.model.components || [], offs = App.build.explode && App.build.explode.offsets;
+    var g = bm.geometry, pa = g.getAttribute('position'), na = g.getAttribute('normal');
+    var vb = new Int32Array(m.triCount * 3);
+    m.faces.forEach(function (f) { for (var t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
+    var st = { bm: bm, mesh: m, base: comps.map(function (c) { return placeOf(c, offs); }), ids: comps.map(function (c) { return c.id; }),
+      origPos: pa, origNorm: na, pos0: new Float32Array(pa.array), norm0: na ? new Float32Array(na.array) : null, vb: vb, hidden: [] };
+    st.pos = new THREE.BufferAttribute(new Float32Array(st.pos0), 3);
+    st.norm = na ? new THREE.BufferAttribute(new Float32Array(st.norm0), 3) : null;
+    g.setAttribute('position', st.pos);
+    if (st.norm) g.setAttribute('normal', st.norm);
+    // edges and silhouettes, rebuilt from App.edges with the component of every vertex (the drawn ones are hidden)
+    var edges = App.edges || [], faces = m.faces, lp = [], lb = [], sp = [], sn1 = [], sn2 = [], sb = [], curves = App.curves || [], drawn = {};
+    var silMat = null, edgeMat = null, linesOn = true;
+    UI.groups.edges.children.forEach(function (o) {
+      if (o.userData && o.userData.silhouette) silMat = o.material; else { edgeMat = o.material; linesOn = o.visible; }
+      st.hidden.push([o, o.visible]); o.visible = false;
+    });
+    function bodyOfEdge(e) { var f = faces[e.faces[0]]; return f ? f.body || 0 : 0; }
+    function shown(e) { for (var i = 0; i < e.faces.length; i++) { var f = faces[e.faces[i]]; if (f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0))) return true; } return false; }
+    edges.forEach(function (e) {
+      if (!e.faces || !e.faces.length || !shown(e)) return;
+      var b = bodyOfEdge(e);
+      if (e.smooth) {
+        if (e.faces.length !== 2) return;
+        var n1 = faces[e.faces[0]].normal, n2 = faces[e.faces[1]].normal;
+        if (!n1 || !n2 || n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] > 0.999999) return;
+        sp.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]); sn1.push(n1[0], n1[1], n1[2], n1[0], n1[1], n1[2]); sn2.push(n2[0], n2[1], n2[2], n2[0], n2[1], n2[2]); sb.push(b, b);
+        return;
+      }
+      if (e.curve != null && curves[e.curve]) {
+        if (drawn[e.curve]) return;
+        drawn[e.curve] = 1;
+        var pts = curves[e.curve].pts;
+        for (var i = 0; i + 1 < pts.length; i++) { lp.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]); lb.push(b, b); }
+        return;
+      }
+      lp.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]); lb.push(b, b);
+    });
+    function lineSet(p, b, mat, extra) {
+      var lg = new THREE.BufferGeometry();
+      var o = { p0: new Float32Array(p), b: new Int32Array(b) };
+      o.attr = new THREE.BufferAttribute(new Float32Array(o.p0), 3);
+      lg.setAttribute('position', o.attr);
+      (extra || []).forEach(function (x) { var a0 = new Float32Array(x[1]); o[x[0] + '0'] = a0; o[x[0]] = new THREE.BufferAttribute(new Float32Array(a0), 3); lg.setAttribute(x[0], o[x[0]]); });
+      o.obj = new THREE.LineSegments(lg, mat);
+      o.obj.frustumCulled = false;
+      o.obj.visible = linesOn;
+      o.obj.userData.asmPose = true;
+      UI.groups.edges.add(o.obj);
+      return o;
+    }
+    st.lines = edgeMat && lp.length ? lineSet(lp, lb, edgeMat) : null;
+    st.sil = silMat && sp.length ? lineSet(sp, sb, silMat, [['n1', sn1], ['n2', sn2]]) : null;
+    if (st.sil) st.sil.obj.userData.silhouette = true;
+    st.hidden.push([UI.groups.highlight, UI.groups.highlight.visible]);
+    UI.groups.highlight.visible = false;   // selection / hover overlays stay where the components were
+    pose = st;
+    return st;
+  }
+  // the delta of every component (R, t: x' = R x + t) from where it is drawn to its placement in `model`; null = still
+  function poseDeltas(st, model, explode) {
+    var offs = explode && explode.offsets, out = [], any = false;
+    st.ids.forEach(function (id, i) {
+      var c = AS.findComponent(model, id), b = st.base[i];
+      if (!c || !b) { out.push(null); return; }
+      var n = placeOf(c, offs), A = n.R, B = b.R, R = new Array(9), same = true, r, k;
+      for (r = 0; r < 3; r++) for (k = 0; k < 3; k++) R[r * 3 + k] = A[r * 3] * B[k * 3] + A[r * 3 + 1] * B[k * 3 + 1] + A[r * 3 + 2] * B[k * 3 + 2];   // A · Bᵀ
+      var t = [n.P[0] - (R[0] * b.P[0] + R[1] * b.P[1] + R[2] * b.P[2]), n.P[1] - (R[3] * b.P[0] + R[4] * b.P[1] + R[5] * b.P[2]), n.P[2] - (R[6] * b.P[0] + R[7] * b.P[1] + R[8] * b.P[2])];
+      for (k = 0; k < 9 && same; k++) if (Math.abs(R[k] - (k % 4 === 0 ? 1 : 0)) > 1e-12) same = false;
+      if (same && Math.abs(t[0]) + Math.abs(t[1]) + Math.abs(t[2]) > 1e-12) same = false;
+      out.push(same ? null : { R: R, t: t });
+      if (!same) any = true;
+    });
+    return { list: out, any: any };
+  }
+  function moveVerts(src, dst, vb, D, point) {
+    for (var v = 0, o = 0; v < vb.length; v++, o += 3) {
+      var d = D[vb[v]];
+      if (!d) { dst[o] = src[o]; dst[o + 1] = src[o + 1]; dst[o + 2] = src[o + 2]; continue; }
+      var R = d.R, x = src[o], y = src[o + 1], z = src[o + 2];
+      dst[o] = R[0] * x + R[1] * y + R[2] * z + (point ? d.t[0] : 0);
+      dst[o + 1] = R[3] * x + R[4] * y + R[5] * z + (point ? d.t[1] : 0);
+      dst[o + 2] = R[6] * x + R[7] * y + R[8] * z + (point ? d.t[2] : 0);
+    }
+  }
+  function poseApply(model, explode) {
+    var st = pose;
+    if (st && (UI.getBodyMesh() !== st.bm || App.mesh !== st.mesh)) { poseEnd(true); st = null; }   // rebuilt meanwhile
+    if (!st) st = poseBegin();
+    if (!st) return false;
+    var D = poseDeltas(st, model, explode).list;
+    moveVerts(st.pos0, st.pos.array, st.vb, D, true); st.pos.needsUpdate = true;
+    if (st.norm) { moveVerts(st.norm0, st.norm.array, st.vb, D, false); st.norm.needsUpdate = true; }
+    if (st.lines) { moveVerts(st.lines.p0, st.lines.attr.array, st.lines.b, D, true); st.lines.attr.needsUpdate = true; }
+    if (st.sil) {
+      moveVerts(st.sil.p0, st.sil.attr.array, st.sil.b, D, true); st.sil.attr.needsUpdate = true;
+      moveVerts(st.sil.n10, st.sil.n1.array, st.sil.b, D, false); st.sil.n1.needsUpdate = true;
+      moveVerts(st.sil.n20, st.sil.n2.array, st.sil.b, D, false); st.sil.n2.needsUpdate = true;
+    }
+    var g = st.bm.geometry;
+    g.computeBoundingBox(); g.computeBoundingSphere();
+    if (explode !== undefined) drawExplodeLines(explode ? explode.lines : []);
+    if (UI.requestRender) UI.requestRender();
+    return true;
+  }
+  // put the drawn buffers back (stale: the mesh was replaced by a rebuild, only drop the pose objects)
+  function poseEnd(stale) {
+    var st = pose;
+    pose = null;
+    if (!st) return;
+    [st.lines, st.sil].forEach(function (o) { if (o && o.obj.parent) { o.obj.parent.remove(o.obj); o.obj.geometry.dispose(); } });
+    st.hidden.forEach(function (h) { h[0].visible = h[1]; });
+    if (!stale && UI.getBodyMesh() === st.bm) {
+      var g = st.bm.geometry;
+      g.setAttribute('position', st.origPos);
+      if (st.origNorm) g.setAttribute('normal', st.origNorm);
+      g.computeBoundingBox(); g.computeBoundingSphere();
+    }
+    drawnFor = undefined;
+    if (UI.requestRender) UI.requestRender();
+  }
+  // ---- glide: after a rebuild that moved components (a mate previewed in the Mate PM, Explode / Collapse), the
+  // components travel from where they were drawn to their new places in GLIDE_MS instead of jumping (ease in-out;
+  // nothing with prefers-reduced-motion). capture() before the rebuild, glide(captured) after it. A timer ends the
+  // glide too, so a throttled background tab is never left mid-way.
+  var GLIDE_MS = 220, glideTok = null;
+  function capture() {
+    var b = App.build;
+    if (!isAsm() || !b || !b.assembly || !b.model) return null;
+    var offs = b.explode && b.explode.offsets, out = {};
+    (b.model.components || []).forEach(function (c) { var p = placeOf(c, offs); out[c.id] = { R: p.R.slice(), P: p.P.slice() }; });
+    return out;
+  }
+  function reducedMotion() { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } }
+  function quatOf(R) {
+    var m = new THREE.Matrix4();
+    m.set(R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, 0, 0, 0, 1);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  }
+  function det3(R) { return R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]); }
+  function stopGlide(finish) {
+    var g = glideTok;
+    glideTok = null;
+    if (!g) return;
+    clearTimeout(g.timer);
+    if (finish && pose) poseEnd();
+  }
+  function glide(from, ms) {
+    stopGlide(true);
+    if (!from || reducedMotion() || !isAsm() || !App.build || !App.build.assembly) return false;
+    ms = ms == null ? GLIDE_MS : +ms;
+    var offs = App.build.explode && App.build.explode.offsets, comps = App.model.components || [], parts = {}, moved = false;
+    comps.forEach(function (c) {
+      var a = from[c.id], b = placeOf(c, offs);
+      if (!a) return;
+      var d = Math.abs(a.P[0] - b.P[0]) + Math.abs(a.P[1] - b.P[1]) + Math.abs(a.P[2] - b.P[2]), k;
+      for (k = 0; k < 9; k++) d += Math.abs(a.R[k] - b.R[k]);
+      if (d < 1e-9) return;
+      moved = true;
+      var snap = det3(a.R) < 0 || det3(b.R) < 0;   // a mirrored instance: its position glides, its turn snaps
+      parts[c.id] = { a: a, b: b, qa: snap ? null : quatOf(a.R), qb: snap ? null : quatOf(b.R) };
+    });
+    if (!moved || !(ms > 0) || !(pose || poseBegin())) return false;
+    var tok = { t0: performance.now() }, q = new THREE.Quaternion(), m4 = new THREE.Matrix4();
+    glideTok = tok;
+    function at(u) {
+      var e = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      return { components: comps.map(function (c) {
+        var p = parts[c.id];
+        if (!p) { var t = placeOf(c, offs); return { id: c.id, transform: { rotation: t.R, position: t.P } }; }
+        var R = p.b.R;
+        if (p.qa) { q.copy(p.qa).slerp(p.qb, e); m4.makeRotationFromQuaternion(q); var el = m4.elements; R = [el[0], el[4], el[8], el[1], el[5], el[9], el[2], el[6], el[10]]; }
+        return { id: c.id, transform: { rotation: R, position: [p.a.P[0] + (p.b.P[0] - p.a.P[0]) * e, p.a.P[1] + (p.b.P[1] - p.a.P[1]) * e, p.a.P[2] + (p.b.P[2] - p.a.P[2]) * e] } };
+      }) };
+    }
+    function frame() {
+      if (glideTok !== tok) return;
+      var u = Math.min(1, (performance.now() - tok.t0) / ms);
+      if (u >= 1) { stopGlide(true); return; }
+      poseApply(at(u));
+      requestAnimationFrame(frame);
+    }
+    tok.timer = setTimeout(function () { if (glideTok === tok) stopGlide(true); }, ms + 60);
+    poseApply(at(0));
+    requestAnimationFrame(frame);
+    return true;
+  }
+  UI.asmPose = { begin: poseBegin, apply: function (model, explode) { stopGlide(false); return poseApply(model, explode); },
+    end: function () { stopGlide(false); poseEnd(); }, active: function () { return !!pose; }, capture: capture, glide: glide, gliding: function () { return !!glideTok; } };
+  // a rebuild while a pose is shown (an undo, a script) replaced the drawn mesh: drop the pose, keep the new build
+  (UI.onBuild = UI.onBuild || []).push(function () { stopGlide(false); if (pose && (UI.getBodyMesh() !== pose.bm || App.mesh !== pose.mesh)) poseEnd(true); });
+
+  // ---- edges of an assembly mesh from its parts' edges (r3/assembly3). Kernel.bodyEdges over the whole assembly mesh
+  // is most of a rebuild (160 ms on a plate with 30 pins); each part's edges are found once, on its own mesh (kept
+  // with the part build), and placed like the component. ui-core.js edgesFor asks this first; null = the full search
+  // (a component whose faces do not line up one to one with its part's, e.g. coplanar faces merged by rounding).
+  function ekey(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
+  function partEdges(pb) {
+    if (pb.__asmEdges) return pb.__asmEdges;
+    var mesh = K.meshFromBody(pb.body), out = { mesh: mesh, edges: K.bodyEdges(mesh) };
+    try { Object.defineProperty(pb, '__asmEdges', { value: out, enumerable: false, configurable: true, writable: true }); } catch (e) { }
+    return out;
+  }
+  var K = window.Kernel;
+  UI.asmEdges = function (m) {
+    var b = App.build;
+    if (!isAsm() || !b || !b.assembly || !b.partBuilds || !m || m !== App.mesh || !K || !K.bodyEdges) return null;
+    var comps = App.model.components || [], offs = b.explode && b.explode.offsets, byBody = comps.map(function () { return []; }), list = [];
+    for (var fi = 0; fi < m.faces.length; fi++) { var bi = m.faces[fi].body || 0; if (!byBody[bi]) return null; byBody[bi].push(fi); }
+    for (var i = 0; i < comps.length; i++) {
+      var c = comps[i], pb = b.partBuilds[c.id], idx = byBody[i];
+      if (!idx.length) continue;
+      if (!pb || !pb.body) return null;
+      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R, P = pl.P;
+      if (lf.length !== idx.length) return null;
+      var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
+      var pt = function (v) { var r = rot(v); return [r[0] + P[0], r[1] + P[1], r[2] + P[2]]; };
+      for (var k = 0; k < lf.length; k++) {
+        var wf = m.faces[idx[k]], n = rot(lf[k].normal);
+        if (wf.polys.length !== lf[k].polys.length || Math.abs(n[0] - wf.normal[0]) + Math.abs(n[1] - wf.normal[1]) + Math.abs(n[2] - wf.normal[2]) > 1e-6) return null;
+      }
+      pe.edges.forEach(function (e) {
+        var a = pt(e.a), bb = pt(e.b), o = { a: a, b: bb, ka: ekey(a), kb: ekey(bb), faces: e.faces.map(function (f) { return idx[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
+          mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex };
+        list.push(o);
+      });
+    }
+    return list;
+  };
+
   // Explode / Collapse (display state, no undo step) and the explode animation (steps run one after another).
   function setExploded(view) {
     if (!isAsm()) return fail('Not an assembly document');
     try { AS.setExploded(App.model, view === false || view == null ? false : view); }
     catch (e) { return fail(e.message || String(e)); }
-    return UI.afterRebuild(UI.rebuild(), function () { UI.refreshTree(); var x = App.build.explode; UI.setStatus(x ? x.name + ' exploded.' : 'Collapsed.'); return !!x; });
+    var from = capture();   // r3/assembly3: the components glide to their exploded / collapsed places
+    return UI.afterRebuild(UI.rebuild(), function () { glide(from); UI.refreshTree(); var x = App.build.explode; UI.setStatus(x ? x.name + ' exploded.' : 'Collapsed.'); return !!x; });
   }
   var animating = null;
+  // r3/assembly3: each frame solves the placements only and moves the drawn components (UI.asmPose; 40-60 ms full
+  // rebuilds per frame before), eased in and out over the whole animation; one rebuild at the end
   function animateExplode(explode, ms, view) {
     if (!isAsm()) return fail('Not an assembly document');
     var v = AS.findExplodedView(App.model, view != null ? view : App.model.exploded != null ? App.model.exploded : null);
@@ -355,13 +602,22 @@
     if (animating) animating.cancel();
     App.model.exploded = v.id;
     return new Promise(function (resolve) {
-      var t0 = performance.now(), stopped = false;
+      var t0 = performance.now(), stopped = false, posed = true;
       animating = { cancel: function () { stopped = true; } };
       function frame() {
-        var f = ms > 0 ? Math.min(1, (performance.now() - t0) / ms) : 1;
-        UI.asmBuildOpts = { explodeT: explode ? f : 1 - f };
-        UI.rebuild({ noSave: true });
-        if (f < 1 && !stopped) { requestAnimationFrame(frame); return; }
+        var f = ms > 0 ? Math.min(1, (performance.now() - t0) / ms) : 1, e = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2;
+        var t = explode ? e : 1 - e;
+        if (f < 1 && !stopped) {
+          var pb = null;
+          if (posed) { try { pb = AS.rebuild(App.model, App.asmCache, { explodeT: t, poseOnly: true, quick: true }); } catch (er) { pb = null; } }
+          if (!(pb && UI.asmPose.apply(App.model, pb.explode || { offsets: {}, lines: [] }))) {
+            posed = false;
+            UI.asmBuildOpts = { explodeT: t };
+            try { UI.rebuild({ noSave: true }); } finally { UI.asmBuildOpts = null; }
+          }
+          requestAnimationFrame(frame);
+          return;
+        }
         UI.asmBuildOpts = null;
         animating = null;
         if (!explode) delete App.model.exploded;
@@ -391,9 +647,11 @@
     var b = isAsm() ? App.build : null;
     if (b === drawnFor) return;
     drawnFor = b;
+    drawExplodeLines(b && b.explode ? b.explode.lines : []);
+  }
+  function drawExplodeLines(lines) {
     UI.disposeGroup(lineGroup);
-    var lines = b && b.explode ? b.explode.lines : [];
-    if (!lines.length) return;
+    if (!lines || !lines.length) { if (UI.requestRender) UI.requestRender(); return; }
     var pos = [];
     lines.forEach(function (l) { pos.push(l.from[0], l.from[1], l.from[2], l.to[0], l.to[1], l.to[2]); });
     var g = new THREE.BufferGeometry();
@@ -402,7 +660,7 @@
     seg.computeLineDistances();
     seg.renderOrder = 5;
     lineGroup.add(seg);
-    if (UI.render) UI.render();
+    if (UI.requestRender) UI.requestRender(); else if (UI.render) UI.render();
   }
   // every build ends in UI.refreshTree (ui-core applyBuild): redraw the lines there
   var baseRefreshTree = UI.refreshTree;

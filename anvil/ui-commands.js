@@ -112,6 +112,7 @@
       return UI.whenIdle();
     }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
+    if (r && r.keepOpen) return r.promise || UI.whenIdle();   // r3/assembly3: the Mate PM stays open for the next mate
     var pending = r && typeof r.then === 'function';
     // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
     closePM(pending);
@@ -1920,7 +1921,10 @@
   function cmdMate(existing) {
     if (!asmReady()) return;
     if (existing && typeof existing !== 'object') existing = findMateObj(existing);
-    var snapshot = JSON.stringify(App.model), previewed = false;
+    var snapshot = JSON.stringify(App.model), previewed = false, baseModel = App.model, mySpec = null;
+    // r3/assembly3: the previewed component glides to its mated place (UI.asmPose.glide) instead of jumping
+    function glideFrom() { return UI.asmPose ? UI.asmPose.capture() : null; }
+    function glide(from) { if (from && UI.asmPose) UI.asmPose.glide(from); }
     var v = existing ? { a: JSON.parse(JSON.stringify(existing.a)), b: JSON.parse(JSON.stringify(existing.b)), type: existing.type, alignment: existing.alignment || defaultAlignment(existing.type, existing.a, existing.b) }
       : { a: null, b: null, type: 'coincident', alignment: 'aligned' };
     v.a2 = existing && existing.a2 ? JSON.parse(JSON.stringify(existing.a2)) : null;
@@ -1943,7 +1947,7 @@
     function ready(x) { return x.type === 'width' ? !!(x.a && x.a2 && x.b && (x.b2 || refKind(x.b) === 'axis')) : !!(x.a && x.b); }
     function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; if (App.command) App.command.faceList = []; }
     var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [];
-    function restore() { App.model = JSON.parse(snapshot); }
+    function restore() { App.model = JSON.parse(snapshot); baseModel = App.model; }
     var LIMIT = { limitdistance: 1, limitangle: 1 }, FLIPS = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
     function mateValues() {
       var t = v.type, lim = !!LIMIT[t];
@@ -1984,28 +1988,31 @@
       if (wide) { opts.a2 = v.a2 ? JSON.parse(JSON.stringify(v.a2)) : null; if (v.b2) opts.b2 = JSON.parse(JSON.stringify(v.b2)); }
       return Assembly.addMate(m, v.type, JSON.parse(JSON.stringify(v.a)), JSON.parse(JSON.stringify(v.b)), opts);
     }
-    function setMessage(html, ok) { if (!pm.spec) return; pm.spec.message = html; pm.spec.messageOk = !!ok; renderPM(); }
+    function setMessage(html, ok) { if (!pm.spec || (mySpec && pm.spec !== mySpec)) return; pm.spec.message = html; pm.spec.messageOk = !!ok; renderPM(); }
     function selectMessage() {
       return v.type === 'width' ? 'Width: select the two width faces (the slot sides), then the two tab faces or one cylindrical face (the part centred between them).'
         : 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.';
     }
     function preview() {
       if (!ready(v)) {
-        if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); }
+        if (previewed) { var g0 = glideFrom(); restore(); previewed = false; UI.rebuild({ noSave: true }); glide(g0); }
         setMessage(selectMessage());
         return;
       }
       var kindErr = mateKindError(v.type, v.a, v.b, v.a2, v.b2);
       restore();
-      if (kindErr) { if (previewed) { previewed = false; UI.rebuild({ noSave: true }); } setMessage(kindErr + '. Pick other entities or change the mate type.'); return; }
+      if (kindErr) { if (previewed) { var g1 = glideFrom(); previewed = false; UI.rebuild({ noSave: true }); glide(g1); } setMessage(kindErr + '. Pick other entities or change the mate type.'); return; }
       var mt;
-      try { mt = apply(App.model); previewed = true; UI.rebuild({ noSave: true }); }
+      var from = glideFrom();
+      try { mt = apply(App.model); previewed = true; UI.rebuild({ noSave: true }); glide(from); }
       catch (e) { restore(); previewed = false; UI.rebuild({ noSave: true }); setMessage('Preview failed: ' + (e.message || e)); return; }
       var st = mateStatus(mt);
       setMessage(st.error ? mateTypeLabel(v.type) + ': ' + st.error : mateTypeLabel(v.type) + ' mate previewed. Press ✓ to ' + (existing ? 'update' : 'add') + ' it.', !st.error);
     }
     function addRef(ref, faceIndex) {
       if (!ref) return false;
+      // the model was replaced while the PM stayed open (an undo, a script): previews start from that one
+      if (!previewed && App.model !== baseModel) { snapshot = JSON.stringify(App.model); baseModel = App.model; }
       if (ready(v)) clearPicks(v);
       var slot = slots(v).filter(function (k) { return !v[k]; })[0];
       v[slot] = ref;
@@ -2087,19 +2094,38 @@
         if (key === 'distance' || key === 'angle' || key === 'min' || key === 'max') valueSet = true;
         if (key) preview();
       },
-      onCancel: function () { if (previewed) { restore(); previewed = false; UI.rebuild({ noSave: true }); } },
-      onClose: function () { mateSession = null; },
+      onCancel: function () { if (previewed) { var g = glideFrom(); restore(); previewed = false; UI.rebuild({ noSave: true }); glide(g); } },
+      onClose: function () { if (mateSession && mateSession.values === v) mateSession = null; },
       onOK: function (x) {
+        // r3/assembly3: as in SolidWorks the PM stays open after a new mate is added, empty, for the next one; ✓ with
+        // nothing selected (or ✗ / Esc) closes it. Editing an existing mate closes it as before.
+        if (!existing && !(x.a || x.b || x.a2 || x.b2)) return undefined;
         if (!ready(x)) { UI.toast(x.type === 'width' ? 'Select the width faces and the tab faces first.' : 'Select two entities to mate first.'); return false; }
         var kindErr = mateKindError(x.type, x.a, x.b, x.a2, x.b2);
         if (kindErr) { UI.toast(kindErr + '.'); return false; }
         restore(); previewed = false;
-        return asmCommit(apply, function (mt) {
+        var p = asmCommit(apply, function (mt) {
           var st = mateStatus(mt);
           return st.error ? mt.name + ': ' + st.error : mt.name + (existing ? ' updated.' : ' added.');
         });
+        if (existing) return p;
+        clearPicks(x);
+        typeSet = false; alignSet = false; valueSet = false;
+        x.type = 'coincident'; x.alignment = 'aligned'; x.flip = false; x.distance = 10; x.angle = 90; x.offset = 0; x.min = 0; x.max = 10; x.ratioA = 1; x.ratioB = 1;
+        syncGroups(x);
+        return { keepOpen: true, promise: p.then(function (mt) {
+          snapshot = JSON.stringify(App.model); baseModel = App.model; previewed = false;
+          var st = mateStatus(mt);
+          if (pm.spec === mySpec) {
+            renderPM();
+            setMessage((st.error ? mt.name + ': ' + st.error + '. ' : '<b>' + mt.name + '</b> added. ') + 'Select two more entities for the next mate, or ✓ / Esc to close.', !st.error);
+            UI.updateHighlights();
+          }
+          return mt;
+        }) };
       }
     });
+    mySpec = pm.spec;
     mateSession = { addRef: function (ref) { return addRef(JSON.parse(JSON.stringify(ref)), null); }, values: v };
     if (existing) preview();
   }
@@ -2171,11 +2197,21 @@
       if (dy) Assembly.rotateComponent(m, id, [r.x, r.y, r.z], dy * DRAG_DEG_PER_PX, center);
       return m;
     }
+    // r3/assembly3: solve the placements only and move what the viewport already shows (UI.asmPose); one rebuild on
+    // release. A Flexible sub-assembly changes shape as it moves, so it takes the full rebuild per frame.
+    var fast = !!UI.asmPose && dragId === id && !(App.model.components || []).some(function (x) { return x.flexible; });
     function show() {
       raf = 0;
       if (!last) return;
       var saved = UI.asmBuildOpts, rotated = null;
       if (mode === 'rotate') { rotated = target(last); App.model = JSON.parse(JSON.stringify(rotated)); }
+      if (fast) {
+        var po = dragOpts(last, rotated), pb = null;
+        po.poseOnly = true; po.quick = true;
+        try { pb = Assembly.rebuild(App.model, App.asmCache, po); } catch (e) { pb = null; }
+        if (pb && UI.asmPose.apply(App.model, pb.explode)) return;
+        fast = false;
+      }
       UI.asmBuildOpts = dragOpts(last, rotated);
       try { UI.rebuild({ noSave: true }); } finally { UI.asmBuildOpts = saved; }
     }
@@ -2187,9 +2223,11 @@
         if (raf) { cancelAnimationFrame(raf); raf = 0; }
         var placed = {};   // every component's solved placement (a dragged linkage moves more than the one component)
         var m = mode === 'rotate' ? target(q) : JSON.parse(JSON.stringify(App.model)), o = dragOpts(q, mode === 'rotate' ? m : null);
+        if (fast) o.poseOnly = true;
         try { Assembly.rebuild(m, App.asmCache, o); } catch (e) { m = null; }
         (m ? m.components : []).forEach(function (x) { placed[x.id] = { transform: x.transform, flexState: x.flexState }; });
         App.model = JSON.parse(snap);
+        if (UI.asmPose && UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the result in the same frame
         // nothing moved (a fully defined component, or one its mates hold against this drag): no undo step
         var moved = App.model.components.some(function (x) {
           var pl = placed[x.id], T = x.transform;
