@@ -389,6 +389,10 @@ var Assembly = (function () {
   function dropComponents(model, gone) {
     model.components = model.components.filter(function (x) { return !gone[x.id]; });
     model.mates = model.mates.filter(function (m) { return ['a', 'b', 'a2', 'b2'].every(function (k) { return !(m[k] && gone[m[k].component]); }); });
+    if (model.ignoredInterferences) {   // r5/asm5: ignored interferences of a deleted component go with it
+      model.ignoredInterferences = model.ignoredInterferences.filter(function (k) { var s = ignoreSides(k); return ![s.a, s.b].some(function (x) { var m = /^(\d+)(\/|$)/.exec(x); return m && gone[+m[1]]; }); });
+      if (!model.ignoredInterferences.length) delete model.ignoredInterferences;
+    }
     (model.explodedViews || []).forEach(function (v) {
       (v.steps || []).forEach(function (st) { st.components = (st.components || []).filter(function (id) { return !gone[id]; }); });
       v.steps = (v.steps || []).filter(function (st) { return st.components.length > 0; });
@@ -843,7 +847,9 @@ var Assembly = (function () {
     var comps = model.components, transforms = {}, pivots = {}, mateOut = {};
     comps.forEach(function (c) { transforms[c.id] = tf(c.transform); });
     // pattern instances are placed from their seeds (placeInstances), never by the mate solver
-    function movable(comp) { return !!(comp && !comp.fixed && comp.pattern == null); }
+    // r5/asm5: `held` components are held still for one solve step (the hub of a large floating cluster, see freeHub)
+    var held = {};
+    function movable(comp) { return !!(comp && !comp.fixed && comp.pattern == null && !held[comp.id]); }
     if (opts && opts.drag && opts.drag.point && opts.drag.target && movable(findComponent(model, opts.drag.id))) {
       // a drag first slides the component so the grabbed point is on the target (a free component just follows)
       var dT = transforms[opts.drag.id], slide = sub(copy3(opts.drag.target), transformPoint(dT, copy3(opts.drag.point)));
@@ -967,6 +973,9 @@ var Assembly = (function () {
       var aMov = movable(pm.ca), bMov = movable(pm.cb);
       if (!aMov) return true;
       if (!bMov) return false;
+      var hs = hubSet();   // r5/asm5: the hub of a floating cluster stays still, the component mated to it moves
+      if (hs[pm.ca.id] && !hs[pm.cb.id]) return true;
+      if (hs[pm.cb.id] && !hs[pm.ca.id]) return false;
       if (grounded[pm.ca.id] && !grounded[pm.cb.id]) return true;
       if (grounded[pm.cb.id] && !grounded[pm.ca.id]) return false;
       return true;
@@ -1172,13 +1181,51 @@ var Assembly = (function () {
       return cols; // cols[k][row]
     }
     function cost(r) { var s = 0; for (var i = 0; i < r.length; i++) s += r[i] * r[i]; return s; }
-    function lm(active, ex) {
+    // r5/asm5: a large cluster of floating components mated only to each other (a Flexible sub-assembly that is not
+    // mated in the assembly yet, an assembly with nothing fixed) can move as a whole, so its rigid motion is free: the
+    // solver holds its hub (the component most mates reference) still and solves each component mated to it on its
+    // own, instead of one Levenberg–Marquardt / null space over every component of it (30 pins in a floating flexible
+    // sub-assembly: 0.3–16 s per solve -> a few ms). Smaller clusters (< FREE_HUB components) are solved as before.
+    // The hubs are chosen once per solve from every mate, so a hub stays still from the first mate on.
+    var FREE_HUB = 6, hubs = null;
+    function hubSet() {
+      if (!hubs) {
+        hubs = {};
+        groupsOf(prepared.filter(function (pm) { return !pm.rigid; })).forEach(function (g) {
+          var ids = unknowns(g), count = {}, best = null;
+          if (ids.length < FREE_HUB || !g.every(function (pm) { return movable(pm.ca) && movable(pm.cb); })) return;   // grounded: a fixed component, an instance or the world
+          g.forEach(function (pm) { count[pm.ca.id] = (count[pm.ca.id] || 0) + 1; count[pm.cb.id] = (count[pm.cb.id] || 0) + 1; });
+          ids.forEach(function (id) { if (best == null || count[id] > count[best]) best = id; });
+          hubs[best] = true;
+        });
+      }
+      return hubs;
+    }
+    function freeHub(active) {
+      var hub = null;
+      hubSet();
+      for (var i = 0; i < active.length; i++) {
+        var pm = active[i];
+        if (!movable(pm.ca) || !movable(pm.cb)) return null;
+        if (hubs[pm.ca.id]) hub = pm.ca.id; else if (hubs[pm.cb.id]) hub = pm.cb.id;
+      }
+      return hub;
+    }
+    function lm(active, ex, only) {   // only: just the part of a floating cluster this mate links (the rest is solved)
+      if (!ex) {
+        var hub = freeHub(active);
+        if (hub != null) {
+          held[hub] = true;
+          try { (only ? groupsOf(active, only) : groupsOf(active)).forEach(function (g) { lm(g); }); } finally { delete held[hub]; }
+          return;
+        }
+      }
       var ids = ex ? ex.ids : unknowns(active);
       if (!ids.length) return;
       var lambda = 1e-3, iters = ex ? ex.iters : 200;
       for (var iter = 0; iter < iters; iter++) {
         var r = evalAll(active, transforms, ex), f = cost(r);
-        if (f < 1e-26) return;
+        if (f < (opts && opts.quick ? 1e-20 : 1e-26)) return;   // (r5/asm5: a drag frame stops at 1e-10, the release solves exactly)
         var piv = {};
         ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
         var J = jacobian(active, ids, piv, ex), n = J.length, i, j, k;
@@ -1218,6 +1265,16 @@ var Assembly = (function () {
     function dragTo(d) {
       var c0 = findComponent(model, d.id);
       if (!movable(c0) || !d.point || !d.target) return;
+      // r5/asm5: in a large floating cluster the dragged component first moves as far as its mates to the hub let it
+      // (the hub held), then the whole cluster follows the rest of the pull (a translation keeps every mate)
+      var linked = active.filter(function (pm) { return pm.ca === c0 || pm.cb === c0; });
+      var cl = linked.length ? groupsOf(active, linked[0])[0] : [], hub = cl.length ? freeHub(cl) : null;
+      if (hub != null) {
+        if (hub !== c0.id) { held[hub] = true; try { dragTo(d); } finally { delete held[hub]; } }
+        var rest = sub(copy3(d.target), transformPoint(transforms[c0.id], copy3(d.point)));
+        unknowns(cl).forEach(function (id) { var T = transforms[id]; transforms[id] = { rotation: T.rotation, position: add(T.position, rest) }; });
+        return;
+      }
       // the components reached from the dragged one through accepted mates (fixed ones stop the walk)
       var inGroup = {}, queue = [c0.id], group = [];
       inGroup[c0.id] = true;
@@ -1297,7 +1354,7 @@ var Assembly = (function () {
       var trial = active.concat([pm]);
       function attempt() {
         greedy(pm);
-        lm(groupsOf(trial, pm)[0]);   // only the mates linked to this one can move
+        lm(groupsOf(trial, pm)[0], null, pm);   // only the mates linked to this one can move (r5/asm5: in a floating cluster, only those its hub does not hold)
         var worst = 0;
         trial.forEach(function (q) { worst = Math.max(worst, vnorm(residualOf(q))); });
         return worst <= TOL_OK;
@@ -1347,6 +1404,8 @@ var Assembly = (function () {
     if (!(opts && opts.quick)) groupsOf(holding).forEach(function (grp) { dofOf(grp); });   // (a drag frame shows placements only)
     function dofOf(holding) {
       var ids = unknowns(holding);
+      // r5/asm5: a cluster mated only to itself moves as a whole: every component in it has all 6 free (no null space)
+      if (ids.length && holding.every(function (pm) { return movable(pm.ca) && movable(pm.cb); })) { ids.forEach(function (id) { dofs[id] = 6; }); return; }
       if (ids.length) {
         var piv = {};
         ids.forEach(function (id) { piv[id] = pivotOf(findComponent(model, id)); });
@@ -1871,6 +1930,7 @@ var Assembly = (function () {
   function rebuild(model, cache, opts) {
     var t0 = now();
     ensureLists(model);
+    migrateIgnored(model);   // r5/asm5: ignored interferences of older saves, by name -> by component id
     opts = opts || {};
     syncPatterns(model);
     cache = cache || {};
@@ -2338,7 +2398,7 @@ var Assembly = (function () {
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
   // r4/asm4: Interference Detection results ignored by the user are saved with the assembly (SolidWorks keeps them in
-  // the document): model.ignoredInterferences = ['A<1>|B<1>' (names sorted), + '#c' for a coincidence]
+  // the document): model.ignoredInterferences = ['3|7' (component ids, r5/asm5; sorted), + '#c' for a coincidence]
   function interferenceKey(a, b, coincident) { return [String(a), String(b)].sort().join('|') + (coincident ? '#c' : ''); }
   function setInterferenceIgnored(model, key, on) {
     var list = (model.ignoredInterferences || []).filter(function (k) { return k !== key; });
@@ -2346,11 +2406,33 @@ var Assembly = (function () {
     if (list.length) model.ignoredInterferences = list; else delete model.ignoredInterferences;
     return list;
   }
+  // r5/asm5: each side is a component id ('3|7'; a body of a multibody part '3/Body2'), so a renamed component keeps
+  // its ignored results. ignoreSide(model, x): a component (id or name) or 'Name/Body' -> that form (unknown: as given).
+  // Keys saved by name (before r5) are moved to ids when the assembly is rebuilt (migrateIgnored); scripts name them.
+  function ignoreSide(model, x) {
+    if (typeof x === 'number') return String(x);
+    var s = String(x), c;
+    if (/^\d+(\/|$)/.test(s)) return s;
+    c = findComponent(model, s);
+    if (c) return String(c.id);
+    for (var i = s.lastIndexOf('/'); i > 0; i = s.lastIndexOf('/', i - 1)) { c = findComponent(model, s.slice(0, i)); if (c) return c.id + s.slice(i); }
+    return s;
+  }
+  function ignoreSides(k) { var co = /#c$/.test(k), ab = String(k).replace(/#c$/, '').split('|'); return { a: ab[0], b: ab.slice(1).join('|'), co: co }; }
+  function migrateIgnored(model) {
+    if (!model.ignoredInterferences || !model.ignoredInterferences.length) return;
+    var out = [];
+    model.ignoredInterferences.forEach(function (k) {
+      var s = ignoreSides(k), n = interferenceKey(ignoreSide(model, s.a), ignoreSide(model, s.b), s.co);
+      if (out.indexOf(n) < 0) out.push(n);
+    });
+    model.ignoredInterferences = out;
+  }
+  function sideName(model, s) { var m = /^(\d+)(\/.*)?$/.exec(s), c = m ? findComponent(model, +m[1]) : null; return c ? c.name + (m[2] || '') : s; }
   // ignoreInterference(a, b, { coincident }): a and b are components (ids, names) or body names ('Part<1>/Body2')
   Builder.prototype.ignoreInterference = function (a, b, opts) {
     var model = this.model;
-    function nm(x) { var c = typeof x === 'number' ? findComponent(model, x) : null; return c ? c.name : String(x); }
-    setInterferenceIgnored(model, interferenceKey(nm(a), nm(b), opts && opts.coincident), true);
+    setInterferenceIgnored(model, interferenceKey(ignoreSide(model, a), ignoreSide(model, b), opts && opts.coincident), true);
     return this;
   };
 
@@ -2438,8 +2520,8 @@ var Assembly = (function () {
     var xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
     if (xv && (xv.steps || []).length) out.push('a.exploded(' + JSON.stringify(xv.name) + ');');
     (model.ignoredInterferences || []).forEach(function (k) {   // r4/asm4
-      var co = /#c$/.test(k), ab = String(k).replace(/#c$/, '').split('|');
-      out.push('a.ignoreInterference(' + JSON.stringify(ab[0]) + ', ' + JSON.stringify(ab.slice(1).join('|')) + (co ? ', { coincident: true }' : '') + ');');
+      var s = ignoreSides(k);   // r5/asm5: saved by component id, written by name (a script's ids may differ)
+      out.push('a.ignoreInterference(' + JSON.stringify(sideName(model, s.a)) + ', ' + JSON.stringify(sideName(model, s.b)) + (s.co ? ', { coincident: true }' : '') + ');');
     });
     return out.join('\n') + '\n';
   }
@@ -2461,7 +2543,7 @@ var Assembly = (function () {
     explodedBodies: explodedBodies, explodeDir: explodeDir,
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
     packAndGo: packAndGo, setFlexible: setFlexible, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
-    composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored,
+    composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored, ignoreSide: ignoreSide, migrateIgnored: migrateIgnored,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };
 })();

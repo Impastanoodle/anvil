@@ -469,9 +469,10 @@ var UI = (function () {
     return b.body ? [b.body] : [];
   }
   function bodyCount() { return bodyList().length; }
-  function anyHidden() { return Object.keys(App.hiddenBodies).length > 0; }
+  // r5/asm5: a transparent assembly component (UI.bodyGhost, ui-assembly.js) is left out of the opaque mesh and its picks too
+  function anyHidden() { return Object.keys(App.hiddenBodies).length > 0 || !!(UI.anyGhost && UI.anyGhost()); }
   function isBodyHidden(index) { return !!App.hiddenBodies[index]; }
-  function faceHidden(f) { return anyHidden() && isBodyHidden(bodyOfFace(f)); }
+  function faceHidden(f) { return anyHidden() && (isBodyHidden(bodyOfFace(f)) || !!(UI.bodyGhost && UI.bodyGhost(bodyOfFace(f)))); }
   // [{index, featureId, name, volume}] from Kernel.bodyInfo when the kernel has it; a plain fallback otherwise
   function bodyInfo() {
     if (!App.build) return [];

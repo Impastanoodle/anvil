@@ -617,7 +617,14 @@
   // bodies of one multi-body part checked against each other) and Ignore hidden bodies/components (on by default).
   // r4/asm4: ignored results are saved in the assembly (model.ignoredInterferences, Assembly.interferenceKey), so
   // they survive a save / reopen and the script round trip (a.ignoreInterference); ignoring one is an undo step.
-  function ignoreKey(p) { var n = [p.aName, p.bName].sort().join('|'); return n + (p.coincident ? '#c' : ''); }
+  // r5/asm5: in an assembly the key is by component id ('3', a body of a multibody part '3/Body2'), so a renamed
+  // component keeps its ignored results; by body name in a part
+  function ignoreKey(p) {
+    if (isAsm() && window.Assembly && Assembly.ignoreSide && p.a != null && p.b != null) {
+      return Assembly.interferenceKey(String(p.a) + (p.multibody ? '/' + p.aBody : ''), String(p.b) + (p.multibody ? '/' + p.bBody : ''), p.coincident);
+    }
+    var n = [p.aName, p.bName].sort().join('|'); return n + (p.coincident ? '#c' : '');
+  }
   function ignoredSet() { var o = {}; ((App.model && App.model.ignoredInterferences) || []).forEach(function (k) { o[k] = true; }); return o; }
   function intfVisible() { var res = intf.res; return !res ? [] : res.pairs.filter(function (p) { return !p.ignored || (intf.v && intf.v.showIgnored); }); }
   function intfRows() {
@@ -684,7 +691,7 @@
         var wb = pb.bodies.map(function (b) { return b && b.polygons && b.polygons.length ? placedBody(b, c.transform) : CSG.fromPolygons([]); });
         var r = E.interference(wb, wb.map(function (b, k) { return names[i] + '/' + partBodyName(pb, k, c); }), [], {});
         res.checked += r.checked;
-        r.pairs.forEach(function (p) { res.pairs.push({ a: c.id, b: c.id, aIndex: i, bIndex: i, aName: p.aName, bName: p.bName, volume: p.volume, body: p.body, multibody: true }); });
+        r.pairs.forEach(function (p) { res.pairs.push({ a: c.id, b: c.id, aIndex: i, bIndex: i, aName: p.aName, bName: p.bName, aBody: p.aName.slice(names[i].length + 1), bBody: p.bName.slice(names[i].length + 1), volume: p.volume, body: p.body, multibody: true }); });
       });
     }
     var ig = ignoredSet();

@@ -1579,6 +1579,9 @@
       ev.preventDefault();
       return;
     }
+    // r5/asm5: in an assembly a right-mouse drag on a floating component rotates it (SolidWorks); elsewhere it pans
+    var rot = ev.button === 2 && App.mode !== 'sketch' && !App.zoomAreaMode && UI.componentDragHook ? UI.componentDragHook(p, ev, 'rotate') : null;
+    if (rot) { drag = { kind: 'maybe-hook', hook: rot, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
     var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
