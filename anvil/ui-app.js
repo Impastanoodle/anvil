@@ -762,9 +762,17 @@
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
     var typing = tag === 'input' || tag === 'textarea' || tag === 'select';
-    if (!$('modal').hidden) { if (e.key === 'Escape') UI.closeModal(); return; }
+    if (!$('modal').hidden) {
+      if (e.key === 'Escape') UI.closeModal();
+      // Enter = the dialog's default (primary) button, as in SolidWorks dialogs; not from a text area, a focused
+      // button (Enter presses that one) or a field that already handled the key
+      else if (e.key === 'Enter' && !e.defaultPrevented && tag !== 'textarea' && tag !== 'button' && tag !== 'select' && UI.modalDefault) { e.preventDefault(); UI.modalDefault(); }
+      return;
+    }
     if (e.key === 'Escape') {
       if (typing) { e.target.blur(); return; }
+      // Esc with a menu open only closes the menu (it does not also cancel the command or clear the selection)
+      if (UI.menuOpen && UI.menuOpen()) { UI.closeMenus(); return; }
       UI.closeMenus();
       if (App.zoomAreaMode) { App.zoomAreaMode = false; UI.refreshHud(); return; }
       if (App.mode === 'sketch' && App.tool !== 'select') { UI.cancelTool(); return; }
@@ -789,7 +797,7 @@
     if (k === 'f' || k === 'F') { UI.zoomToFit(); return; }
     if (k === 'z') { UI.zoomView(1.25); return; }
     if (k === 'Z') { UI.zoomView(0.8); return; }
-    if (k === ' ') { e.preventDefault(); var hb = $('hud').children[5]; if (hb) hb.click(); return; }
+    if (k === ' ') { e.preventDefault(); if (UI.showOrientationMenu) { UI.showOrientationMenu(); return; } var hb = $('hud').children[5]; if (hb) hb.click(); return; }
     if (k === 's' || k === 'S') { UI.cmdSketch(); UI.refreshRibbon(); return; }
     if (App.mode === 'sketch') {
       var map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'polygon', t: 'slot', d: 'dimension' };

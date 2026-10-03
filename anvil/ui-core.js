@@ -146,11 +146,15 @@ var UI = (function () {
   function resize() {
     var w = viewport.clientWidth, h = viewport.clientHeight;
     if (w < 2 || h < 2) return;
+    // smooth/chrome: a resize to the same size is skipped (setting a canvas's size clears it), and a real one redraws at
+    // once — the ResizeObserver runs after this frame's render, so the Task Pane opening or closing showed one blank frame
+    if (w === size.w && h === size.h && renderer.domElement.style.width === w + 'px' && renderer.domElement.width === Math.floor(w * renderer.getPixelRatio())) return;
     size.w = w; size.h = h;
     renderer.setSize(w, h, false);
     renderer.domElement.style.width = w + 'px';
     renderer.domElement.style.height = h + 'px';
     applyCamera();
+    if (typeof render === 'function') { try { render(); } catch (e) { } }
   }
 
   function rotateView(dx, dy) {
