@@ -9573,6 +9573,40 @@
     });
   })();
   // --- end r4/drawings4 ---
+  // --- r5/drawings5 ---
+  (function () {
+    var DW = Drawing;
+    test('a shallow (12°) crease between two features is a real edge, not a tangent edge (true normals decide)', function () {
+      var code = 'p.sketch("Top").centerRect(0, 0, 40, 20).extrude(10); p.sketch("Front").polyline([[0, 10], [20, 10], [20, 14.2511]]).extrude(10);';
+      var r = build(code); noErrors(r);
+      var tp = DW.projectView(r.mesh, 'Top'), tt = DW.projectView(r.mesh, 'Top', { tangent: 'visible' });
+      var at0 = function (l) { return Math.abs(l[0]) < 1e-6 && Math.abs(l[2]) < 1e-6; };
+      var e = tp.lines.visible.filter(at0);
+      assert(e.length === 1 && Math.abs(Math.abs(e[0][3] - e[0][1]) - 10) < 1e-6, 'the ramp\'s start drawn as a visible edge: ' + segsStr(tp.lines.visible.filter(at0)));
+      assert(!tt.lines.tangent.some(at0), 'not drawn as a tangent edge');
+      // a fillet's run-out (facets of one feature, no surface record) stays a tangent edge
+      var f = build('p.box(40, 20, 30); p.fillet(4, [[20, 30, 20]]);');
+      assert(DW.projectView(f.mesh, 'Top', { tangent: 'visible' }).lines.tangent.length === 1, 'fillet run-out still tangent');
+    });
+    test('Anvil kernel: a chamfer cone meeting a hex nut\'s flat is drawn from the true intersection (smooth hyperbola), its ends on the facet corners', function () {
+      var r = build(AnvilExamples.filter(function (e) { return e.name === 'Hex nut'; })[0].code); noErrors(r);
+      var R = 19 / Math.cos(Math.PI / 6) / 2, f = function (u) { return R + 8.8 - Math.sqrt(90.25 + u * u); };
+      var pr = DW.projectView(r.mesh, 'Right'), n = 0, worst = 0;
+      pr.lines.visible.forEach(function (l) {
+        if (Math.min(l[1], l[3]) < 7.8 - 1e-6 || Math.abs(Math.abs(l[0]) - 4) > 0.8 || Math.abs(Math.abs(l[2]) - 4) > 0.8) return;
+        if (Math.abs(l[1] - f(l[0])) > 0.06 || Math.abs(l[3] - f(l[2])) > 0.06) return;
+        n++; worst = Math.max(worst, Math.abs((l[1] + l[3]) / 2 - f((l[0] + l[2]) / 2)));
+      });
+      assert(n >= 10, 'fine pieces on the curve: ' + n);
+      assert(worst < 2e-3, 'within 0.002 of the true curve: ' + worst);
+      // the Front view (the flats edge-on) still meets the top / bottom lines exactly
+      var fr = DW.projectView(r.mesh, 'Front'), ends = 0;
+      fr.lines.visible.forEach(function (l) { [[l[0], l[1]], [l[2], l[3]]].forEach(function (p) { if (p[1] < -1e-6 || p[1] > 10 + 1e-6) ends++; }); });
+      assert(!ends, ends + ' line ends outside the nut');
+      return n + ' pieces, worst ' + worst.toExponential(1);
+    });
+  })();
+  // --- end r5/drawings5 ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
