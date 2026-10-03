@@ -1106,9 +1106,20 @@ var UI = (function () {
     drawTriad();
     if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
+  function holdCamSig() {
+    var e = camera.projectionMatrix.elements;
+    return camera.position.toArray().concat(camera.quaternion.toArray(), [camera.zoom, camera.left, camera.right, camera.top, camera.bottom, e[0], e[5], e[10], e[14], size.w, size.h]).join(',');
+  }
+  // UI.holdFrame(ms): keep the 3D view's last frame for up to ms (ui-occt.js), for as long as the camera does not move
+  function holdFrame(ms) { App.holdFrameUntil = performance.now() + ms; App.holdCam = holdCamSig(); }
   function frame() {
-    // ui-occt.js: the 3D view keeps OpenCascade's last frame while its next solid builds; overlays still follow (smooth/responsive)
-    if (!(App.holdFrameUntil > performance.now())) render();
+    // ui-occt.js: the 3D view keeps OpenCascade's last frame while its next solid builds; overlays still follow, and a
+    // camera that moves (a view change, entering a sketch) ends the hold at once (smooth/responsive)
+    if (App.holdFrameUntil > performance.now()) {
+      if (App.holdCam !== holdCamSig()) App.holdFrameUntil = 0;
+      else camera.updateMatrixWorld();   // projections (worldToScreen, picking) stay right while the frame is held
+    }
+    if (!(App.holdFrameUntil > performance.now())) { App.holdCam = null; render(); }
     else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
     requestAnimationFrame(frame);
   }
@@ -1578,7 +1589,7 @@ var UI = (function () {
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame,
-    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,

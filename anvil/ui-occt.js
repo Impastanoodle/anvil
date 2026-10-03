@@ -260,7 +260,7 @@
       request();
       // OpenCascade drove the part and answers quickly: the viewport keeps its last frame (OpenCascade's solid) for up
       // to HOLD_MS instead of flashing Anvil's approximation before the exact solid swaps in (smooth/responsive)
-      if (wasDriving && st.busy && st.lastOcctMs != null && st.lastOcctMs < HOLD_MS) App.holdFrameUntil = now + HOLD_MS;
+      if (wasDriving && st.busy && st.lastOcctMs != null && st.lastOcctMs < HOLD_MS && UI.holdFrame) UI.holdFrame(HOLD_MS);
     }
   }
   var HOLD_MS = 280;
@@ -290,7 +290,7 @@
     }
     refresh();
   }
-  function refresh() { if (UI.refreshStatus) UI.refreshStatus(); }
+  function refresh() { if (UI.refreshStatus && App.model) UI.refreshStatus(); }   // the engine probe can answer before the first model loads
 
   // UI.faceGroups (ui-core.js) asks this first: on OpenCascade's solid every polygon knows its B-rep face, so a
   // face group is every mesh face whose polygons carry the same face index
