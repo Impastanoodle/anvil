@@ -560,7 +560,7 @@
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
     var p = snap(raw, mx, my), typed = null;
     // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
-    if (numBox) { typed = numValues(); p = typedPoint(p, typed); closeNumBox(); }
+    if (numBox) { typed = numValues(); if (Object.keys(typed).length) p = typedPoint(p, typed); else typed = null; closeNumBox(); }
     placePoint(p, typed);
   }
   // The next point of the drawing tool: closes a Line chain on its first point, completes an entity once the tool has
@@ -606,6 +606,7 @@
       App.tempEntities = [];
       UI.updateTemp();
     }
+    autoNumBox();   // r9/sketch9: numeric input on: the box for the next value opens by itself
   }
   // A driving dimension for each value typed while drawing entity idx (SolidWorks adds them with on-screen numeric
   // input): a line's length, a rectangle's width / height, a circle's diameter, an arc / polygon radius, a slot's
@@ -667,7 +668,10 @@
     }
     return null;
   }
-  function openNumBox(firstChar) {
+  // r9/sketch9: with Sketch Settings ▸ Enable on-screen numeric input on, the box opens by itself after each click of a
+  // drawing tool (auto), as in SolidWorks. A field nobody has typed in shows the live value (it follows the mouse and is
+  // selected, so typing replaces it); a typed field holds. In either box only typed fields hold.
+  function openNumBox(firstChar, auto) {
     var fields = numFields();
     if (!fields) return false;
     closeNumBox();
@@ -676,7 +680,7 @@
     el.setAttribute('role', 'group');
     el.setAttribute('aria-label', 'Value of the entity being drawn');
     el.style.cssText = 'position:absolute;z-index:5;display:flex;gap:4px;align-items:center;background:var(--input-bg);border:1px solid var(--blue);border-radius:3px;padding:2px 4px;box-shadow:0 2px 8px var(--shadow);font:12px "Segoe UI",sans-serif;color:var(--text)';
-    var box = { el: el, inputs: [] };
+    var box = { el: el, inputs: [], auto: !!auto };
     fields.forEach(function (fd) {
       var lab = document.createElement('label');
       lab.textContent = fd[0];
@@ -686,10 +690,11 @@
       inp.setAttribute('aria-label', fd[0] === 'A' ? 'Angle' : fd[0] === 'L' ? 'Length' : fd[0] === 'R' ? 'Radius' : fd[0] === 'W' ? 'Width' : 'Height');
       inp.style.cssText = 'width:58px;border:0;outline:0;background:transparent;font:inherit;color:inherit;padding:1px 2px;border-bottom:1px solid var(--line)';
       inp.addEventListener('keydown', numKey);
-      inp.addEventListener('input', function () { inp.style.outline = ''; numPreview(); });
+      var item = { key: fd[1], input: inp, typed: false };
+      inp.addEventListener('input', function () { inp.style.outline = ''; item.typed = !!inp.value.trim(); numPreview(); });
       lab.appendChild(inp);
       el.appendChild(lab);
-      box.inputs.push({ key: fd[1], input: inp });
+      box.inputs.push(item);
     });
     el.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
     dimEdit.parentNode.appendChild(el);
@@ -697,15 +702,69 @@
     positionNumBox();
     var first = box.inputs[0].input;
     first.value = firstChar || '';
+    box.inputs[0].typed = !!firstChar;
     first.focus();
     first.setSelectionRange(first.value.length, first.value.length);
     numPreview();
     return true;
   }
+  // r9/sketch9: the live values of the entity being drawn for the cursor point p, by box field key
+  function liveValues(p) {
+    var st = App.toolState || { pts: [] }, pts = st.pts, a = pts[0], out = {};
+    if (!a || !p) return out;
+    function ang(x, y) { var d = Math.atan2(y, x) * 180 / Math.PI; return d < 0 ? d + 360 : d; }
+    var dx = p[0] - a[0], dy = p[1] - a[1], L = Math.hypot(dx, dy);
+    switch (App.tool) {
+      case 'line': { var q = pts[pts.length - 1]; out.len = Math.hypot(p[0] - q[0], p[1] - q[1]); out.ang = ang(p[0] - q[0], p[1] - q[1]); break; }
+      case 'rect': out.w = Math.abs(dx); out.h = Math.abs(dy); break;
+      case 'crect': out.w = 2 * Math.abs(dx); out.h = 2 * Math.abs(dy); break;
+      case 'circle': out.r = L; break;
+      case 'polygon': out.r = L; out.ang = ang(dx, dy); break;
+      case 'arc': {
+        if (pts.length < 2) { out.r = L; break; }
+        var b = pts[1], sw = (Math.atan2(dy, dx) - Math.atan2(b[1] - a[1], b[0] - a[0])) * 180 / Math.PI;
+        if (arcClockwise(a, b)) sw = -sw;
+        while (sw <= 0) sw += 360;
+        out.sweep = sw;
+        break;
+      }
+      case 'arc3': {
+        if (pts.length < 2) { out.len = L; out.ang = ang(dx, dy); break; }
+        var e3 = toolEntities(pts, p)[0];
+        if (e3 && e3.t === 'arc') out.r = e3.r;
+        break;
+      }
+      case 'slot': if (pts.length < 2) { out.len = L; out.ang = ang(dx, dy); } else out.w = 2 * distPointLine(p, a, pts[1]); break;
+    }
+    return out;
+  }
+  // untyped fields show the live value; the focused one stays selected so the next key replaces it
+  function updateNumLive(p) {
+    if (!numBox) return;
+    var lv = liveValues(p);
+    numBox.inputs.forEach(function (x) {
+      if (x.typed || lv[x.key] == null) return;
+      var s = UI.fmtNum(lv[x.key], 2);
+      if (x.input.value !== s) x.input.value = s;
+      if (document.activeElement === x.input) x.input.select();
+    });
+  }
+  // after a click of a drawing tool (Sketch Settings ▸ numeric input on): open the box for the next value
+  function autoNumBox() {
+    if (numBox || !numericInputOn() || !numFields()) return false;
+    openNumBox('', true);
+    if (lastMove) {
+      var pl = UI.activePlane(), raw = UI.screenToPlane(lastMove[0], lastMove[1], pl);
+      if (raw) updateNumLive(inferPoint(raw, lastMove[0], lastMove[1]).p);
+    }
+    return true;
+  }
   function positionNumBox() {
     if (!numBox) return;
     var m = lastMove || [UI.size.w / 2, UI.size.h / 2];
-    numBox.el.style.left = Math.round(Math.min(m[0] + 14, UI.size.w - 160)) + 'px';
+    var bw = numBox.w || (numBox.w = numBox.el.offsetWidth || 160);
+    // r9/sketch9: kept inside the view; past the right edge it flips to the left of the cursor
+    numBox.el.style.left = Math.round(Math.max(4, m[0] + 14 + bw > UI.size.w - 4 ? m[0] - 14 - bw : m[0] + 14)) + 'px';
     numBox.el.style.top = Math.round(Math.max(4, m[1] - 52)) + 'px';
   }
   function closeNumBox() {
@@ -719,7 +778,7 @@
     if (!numBox) return out;
     numBox.inputs.forEach(function (x) {
       var s = x.input.value.trim();
-      if (!s) return;
+      if (!s || !x.typed) return;   // r9/sketch9: a live (untyped) value follows the mouse
       var r = parseDimInput(s);
       if (r.error != null || !isFinite(r.value)) { x.input.style.outline = '1px solid #d33'; return; }
       if ((x.key !== 'ang' && x.key !== 'sweep') && !(r.value > 0)) { x.input.style.outline = '1px solid #d33'; return; }
@@ -781,10 +840,34 @@
     ev.stopPropagation();
     if (!numBox) return;
     var list = numBox.inputs.map(function (x) { return x.input; }), k = list.indexOf(ev.target);
+    var anyTyped = numBox.inputs.some(function (x) { return x.typed; });
+    // r9/sketch9: a box that opened by itself must not swallow the sketcher's keys while nothing is typed in it:
+    // a letter (A for a tangent arc, L, D …) or a Ctrl shortcut closes it and goes on to the sketch as if the box
+    // were not there; Esc ends the entity being drawn (SolidWorks)
+    if (numBox.auto && !anyTyped && ((ev.key.length === 1 && /[a-zA-Z]/.test(ev.key) && !(k >= 0 && /^=/.test(list[k].value))) || ev.ctrlKey || ev.metaKey || /^F\d+$/.test(ev.key))) {
+      ev.preventDefault();
+      closeNumBox();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: ev.key, code: ev.code, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey, bubbles: true, cancelable: true }));
+      if (lastMove && App.mode === 'sketch') sketchMove(lastMove[0], lastMove[1]);
+      return;
+    }
+    if (ev.key === 'Escape' && numBox.auto) {
+      ev.preventDefault();
+      if (anyTyped) {   // the typed values go back to following the mouse
+        numBox.inputs.forEach(function (x) { x.typed = false; x.input.style.outline = ''; });
+        if (lastMove) sketchMove(lastMove[0], lastMove[1]);
+      } else finishChain();
+      return;
+    }
     if (ev.key === 'Tab') {
       ev.preventDefault();
       var nx = list[(k + (ev.shiftKey ? list.length - 1 : 1)) % list.length];
       nx.focus(); nx.select();
+    } else if ((ev.key === 'Backspace' || ev.key === 'Delete') && numBox.auto && k >= 0 && !numBox.inputs[k].typed) {
+      // clearing a live value starts typing a new one
+      ev.preventDefault();
+      list[k].value = '';
+      numBox.inputs[k].typed = true;
     } else if (ev.key === 'Enter') {
       ev.preventDefault();
       var v = numValues();
@@ -844,9 +927,14 @@
         sa.lastAng = angNow;
       }
     }
+    // r9/sketch9: the box that opens by itself follows the tool (none for a tangent arc of the Line tool)
+    if (drawing && numBox && numBox.auto && !numFields()) closeNumBox();
+    else if (drawing && !numBox && App.toolState.pts.length) autoNumBox();
     if (info && numBox) {
       var tv = numValues();
       if (Object.keys(tv).length) { p = typedPoint(p, tv); info = { p: p, snap: null, align: [], px: info.px }; }
+      updateNumLive(p);
+      positionNumBox();
     }
     var readout = drawing && App.toolState.pts.length ? toolReadout(App.toolState.pts, p) : '';
     $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
@@ -865,7 +953,7 @@
       var f = UI.activeSketchFeature();
       App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0]) : [];
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
-    if (drawing) drawFeedback(pl, info, mx, my, readout);
+    if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
   // while dragging an end point: the point / curve it would merge with (ui-relations.js), or null
   UI.sketchSnapMark = function (uv, q, onCurve, type) {
@@ -1749,8 +1837,16 @@
     var p = pos(ev);
     if (UI.wheelZoom) UI.wheelZoom(ev, p[0], p[1]);   // eased, in proportion to the wheel / trackpad delta (ui-core.js)
     else UI.zoomView(ev.deltaY > 0 ? 1.12 : 1 / 1.12, p[0], p[1]);
-    if (App.mode === 'sketch') clearFeedback();   // screen-space cursor feedback is redrawn on the next move
+    if (App.mode === 'sketch') {
+      clearFeedback();   // screen-space cursor feedback is redrawn on the next move
+      // r9/sketch9: relation icons hold their places while the zoom glides; once it has rested they are placed again
+      lastWheelAt = performance.now();
+      if (wheelRest) clearTimeout(wheelRest);
+      wheelRest = setTimeout(function () { wheelRest = 0; App.dimsStale = true; }, ZOOM_REST_MS + 20);
+    }
   }, { passive: false });
+  var lastWheelAt = -1e9, wheelRest = 0, ZOOM_REST_MS = 250;
+  UI.sketchZooming = function () { return performance.now() - lastWheelAt < ZOOM_REST_MS || !!(UI.viewAnimating && UI.viewAnimating()); };
 
   function partClick(mx, my, ev) {
     if (UI.selectClick) { UI.selectClick(mx, my, ev); return; }   // Selection Filter, Ctrl / Shift toggle (ui-select.js)
