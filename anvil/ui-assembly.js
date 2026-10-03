@@ -822,10 +822,11 @@
     for (k = 0; k < parts.length; k++) {
       var Q = parts[k], fmap = [], T = Q.T || {}, R = T.rotation || AS.IDENTITY, Pp = T.position || [0, 0, 0];
       for (j = 0; j < Q.pe.facePolys.length; j++) {
-        var l = Q.pe.facePolys[j], f0 = faceOf[Q.base + l[0]];
-        for (var q = 1; q < l.length; q++) if (faceOf[Q.base + l[q]] !== f0) return null;   // a face split by rounding
-        if (f0 < 0) return null;
-        fmap.push(f0);
+        var l = Q.pe.facePolys[j], f0 = faceOf[Q.base + l[0]], split = false;
+        for (var q = 0; q < l.length; q++) { if (faceOf[Q.base + l[q]] < 0) return null; if (faceOf[Q.base + l[q]] !== f0) split = true; }
+        // r7/asm7: a face split by rounding where it is placed (its facets' plane keys straddle a rounding step): each
+        // edge of it goes to the piece holding a facet it bounds (resolved below)
+        fmap.push(split ? l.map(function (x) { return Q.base + x; }) : f0);
       }
       var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
       var pt = function (v) { var r = rot(v); return [r[0] + Pp[0], r[1] + Pp[1], r[2] + Pp[2]]; };
@@ -836,9 +837,19 @@
         curves.push({ curve: { center: pt(C.center), normal: rot(C.normal), xdir: rot(C.xdir), radius: C.radius, a0: C.a0, a1: C.a1, chords: (C.chords || []).map(function (ch) { return [pt(ch[0]), pt(ch[1])]; }) },
           pts: cv.pts.map(pt), edges: [] });
       });
+      var piece = function (pis, m) {   // the world face of the facet (of a split face) whose boundary holds point m
+        for (var i = 0; i < pis.length; i++) {
+          var vs = polys[pis[i]].vertices;
+          for (var v = 0; v < vs.length; v++) {
+            var A = vs[v].pos, B = vs[(v + 1) % vs.length].pos;
+            if (K.pointSegmentDistance(m, [A.x, A.y, A.z], [B.x, B.y, B.z]) < 1e-6) return faceOf[pis[i]];
+          }
+        }
+        return faceOf[pis[0]];
+      };
       Q.pe.edges.forEach(function (e) {
-        var a = pt(e.a), b = pt(e.b), o = { a: a, b: b, ka: ekey(a), kb: ekey(b), faces: e.faces.map(function (f) { return fmap[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
-          mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex, inner: Q.k };
+        var a = pt(e.a), b = pt(e.b), m = pt(e.mid), o = { a: a, b: b, ka: ekey(a), kb: ekey(b), faces: e.faces.map(function (f) { var x = fmap[f]; return typeof x === 'number' ? x : piece(x, m); }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
+          mid: m, len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex, inner: Q.k };
         if (e.seam) o.seam = true;
         if (e.curve != null && Q.pe.curves) { o.curve = c0 + e.curve; curves[o.curve].edges.push(o); }
         edges.push(o);
@@ -878,10 +889,20 @@
   }
   function partEdges(pb, pl) {
     if (pb.__asmEdges && (!pb.__asmEdges.composed || pb.__asmEdges.placed === plKey(pl))) return pb.__asmEdges;
-    if (pb.flexible && pl) {
+    // r7/asm7: a rigid sub-assembly too (its build carries model / bodies / partBuilds like a composed one): grouped
+    // where it is placed, its coplanar faces of different inner parts merge (or not) as in the assembly mesh, so a
+    // translation that moves a plane key across a rounding step no longer drops the whole assembly to the full search.
+    // A rigid build is shared by every instance: the placed lists are kept per placement (a few).
+    if ((pb.flexible || (pb.assembly && pb.model && pb.bodies && pb.partBuilds)) && pl) {
+      var pk = plKey(pl), at = pb.__asmEdgesAt;
+      if (at && at[pk]) { setHidden(pb, '__asmEdges', at[pk]); return at[pk]; }
       var fx = null;
       try { fx = flexEdges(pb, pl); } catch (e) { fx = null; }
-      if (fx) { setHidden(pb, '__asmEdges', fx); return fx; }
+      if (fx) {
+        if (!at || Object.keys(at).length >= 8) setHidden(pb, '__asmEdgesAt', at = {});
+        at[pk] = fx;
+        setHidden(pb, '__asmEdges', fx); return fx;
+      }
     }
     if (pb.__asmEdges) return pb.__asmEdges;
     // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different

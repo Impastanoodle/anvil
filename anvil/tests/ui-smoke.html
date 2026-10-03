@@ -6289,6 +6289,40 @@
     } finally { UI.sketchNumericInput(was); }
   });
   // --- end r6/sketch6 ---
+  // --- r7/asm7 ---
+  // a rigid sub-assembly of a plate and n pins flush on it (r5flexPins without Solve as Flexible), on a base
+  async function r7rigidPins(n) {
+    var L = ['a.name("RPins' + n + '").units("mm");', 'var plate = a.insert({ script: \'p.name("Plate"); p.box(300, 60, 8); p.hole("Top", 10, -10, 8, { offset: 8 }); p.linearPattern({ dir: "x", spacing: 28, count: 10, dir2: "z", spacing2: 20, count2: 3 });\' }, { fixed: true });'];
+    for (var i = 0; i < n; i++) {
+      var x = 10 + 28 * (i % 10), z = 10 + 20 * Math.floor(i / 10);
+      L.push('var q' + i + ' = a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [' + (x + 3) + ', 15, ' + (z - 2) + '] });');
+      L.push('a.concentric({ component: q' + i + ', cylinder: [4, 10, 0] }, { component: plate, cylinder: [' + (x + 4) + ', 4, ' + z + '] });');
+      if (i) L.push('a.coincident({ component: q' + i + ', face: [1, 0, 1] }, { component: plate, face: [155, 0, 40] }, { alignment: "aligned" });');
+    }
+    await anvil.run(L.join('\n'));
+    await idle();
+    var sub = JSON.parse(JSON.stringify(UI.App.model));
+    await anvil.newAssembly('R7Rigid');
+    await anvil.insert({ script: 'p.name("Base"); p.box(400, 120, 10);' }, { fixed: true });
+    await anvil.insert({ model: sub }, { position: [0, 10, 0] });
+    await idle();
+  }
+  step('r7/asm7: a rigid sub-assembly moved so its plane keys straddle a rounding step (y 10.005) keeps the per-part edge path: its edges are placed from its parts, none missing', async function () {
+    await r7rigidPins(6);
+    var be = K.bodyEdges, out = [];
+    for (var P of [[0, 10.005, 0], [3.105, 10.115, 0.205]]) {
+      UI.App.model.components[1].transform.position = P;
+      await UI.rebuild(); await idle();
+      var calls = 0, list;
+      K.bodyEdges = function () { calls++; return be.apply(this, arguments); };
+      try { var t0 = performance.now(); list = UI.asmEdges(UI.App.mesh); out.push((performance.now() - t0).toFixed(0) + ' ms'); } finally { K.bodyEdges = be; }
+      assert(list && calls === 0, P.join() + ': per-part path (' + (list ? 'list' : 'null') + ', ' + calls + ' searches)');
+      var full = be(UI.App.mesh), miss = full.filter(function (f) { return !f.smooth && f.faces.length > 1 && !list.some(function (e) { return K.pointSegmentDistance(f.mid, e.a, e.b) < 1e-5; }); });
+      assert(miss.length === 0, P.join() + ': ' + miss.length + ' edges of the full search missing');
+    }
+    return out.join(', ');
+  });
+  // --- end r7/asm7 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
