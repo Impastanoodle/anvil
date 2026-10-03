@@ -1,7 +1,7 @@
 // ui-commands.js — PropertyManager rendering and the feature commands (sketch, extrude, revolve, patterns, mirror, ...).
 (function (UI) {
   'use strict';
-  var App = UI.App, K = UI.K, $ = UI.$, el = UI.el;
+  var App = UI.App, K = UI.K, $ = UI.$, el = UI.el, V = UI.V;
 
   // ------------------------------------------------------------------ PropertyManager
   // pm.exprs: { key: '=T*2' } for number fields holding an equation; pm.values[key] then holds its evaluated number so
@@ -56,6 +56,7 @@
       if (r.error) { pm.exprErrors[k] = r.error; pm.values[k] = 0; } else pm.values[k] = r.value;
     });
     App.command = spec.command || null;
+    App.dimsStale = true;   // r4/features4: on-model handles of the new PropertyManager
     var fresh = pm.root.hidden;
     pm.collapsed = {};
     if (fresh) pm.root.scrollTop = 0;
@@ -91,6 +92,7 @@
     var spec = pm.spec;
     pm.spec = null; pm.values = null; pm.exprs = {}; pm.exprErrors = {};
     App.command = null;
+    App.dimsStale = true;   // r4/features4: its on-model handles go with it
     pm.root.hidden = true;
     pm.root.innerHTML = '';
     $('fm-tree').hidden = false;
@@ -188,6 +190,7 @@
     var v = pm.values;
     function changed(val) {
       v[f.key] = val;
+      App.dimsStale = true;   // r4/features4: the on-model handles and callouts follow the value
       if (f.rerender) renderPM();
       if (pm.spec.onChange) pm.spec.onChange(v, f.key);
     }
@@ -233,6 +236,8 @@
         });
         inp.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { e.preventDefault(); pmOK(); return; }
+          // r4/features4: arrow keys spin by the field's increment (Shift ×10), the same for every PropertyManager
+          if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && pm.exprs[key] == null) { e.preventDefault(); spinField(f, inp, e.key === 'ArrowUp' ? 1 : -1, e.shiftKey ? 10 : 1, changed); return; }
           // a number box cannot hold "=": switch to a text box and start the equation
           if (e.key === '=' && inp.type === 'number') {
             e.preventDefault();
@@ -244,7 +249,13 @@
           // no spin increments on an equation
           if ((e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'PageUp' || e.key === 'PageDown') && pm.exprs[key] != null) e.preventDefault();
         });
-        inp.addEventListener('wheel', function (e) { if (pm.exprs[key] != null) e.preventDefault(); });
+        inp.addEventListener('wheel', function (e) {
+          if (pm.exprs[key] != null) { e.preventDefault(); return; }
+          // r4/features4: the wheel spins a focused value box (as in SolidWorks); an unfocused one leaves the wheel to the panel
+          if (document.activeElement !== inp || !e.deltaY) return;
+          e.preventDefault();
+          spinField(f, inp, e.deltaY < 0 ? 1 : -1, e.shiftKey ? 10 : 1, changed);
+        }, { passive: false });
         // leaving a text box that no longer holds an equation turns it back into a number box
         inp.addEventListener('blur', function () {
           if (inp.type === 'text' && pm.exprs[key] == null) { var s = inp.value; inp.type = 'number'; inp.value = isNaN(parseFloat(s)) ? (v[key] == null ? '' : v[key]) : parseFloat(s); }
@@ -283,7 +294,8 @@
         return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), el('span', { class: 'static', text: typeof f.value === 'function' ? f.value(v) : f.value })]);
       case 'pick': {
         var txt = typeof f.value === 'function' ? f.value(v) : f.value;
-        return el('div', { class: 'pm-pick' + (txt ? ' filled' : ''), html: Icons(f.icon || 'plane', 16) + '<span>' + (txt || f.placeholder || 'Select…') + '</span>' });
+        var pickBox = el('div', { class: 'pm-pick' + (txt ? ' filled' : ''), html: Icons(f.icon || 'plane', 16) + '<span>' + (txt || f.placeholder || 'Select…') + '</span>' });
+        return f.items ? pickList(f, pickBox) : pickBox;
       }
       case 'buttons': {
         var row = el('div', { class: 'pm-btns' });
@@ -365,6 +377,205 @@
     } catch (e) {
       return e.message;
     }
+  }
+
+  // ------------------------------------------------------------------ r4/features4: spin boxes, selection lists, on-model handles
+  // Spin increment of a number field: f.spin, else its integer step, else 1° for angles, 1 mm / 0.1 in for lengths.
+  function spinStep(f) {
+    if (f.spin) return f.spin;
+    if (f.step && f.step !== 'any') return +f.step;
+    if (f.unit === 'u') return UI.unitLabel() === 'in' ? 0.1 : 1;
+    return 1;
+  }
+  function spinField(f, inp, dir, mult, changed) {
+    var cur = parseFloat(inp.value), step = spinStep(f) * (mult || 1);
+    if (isNaN(cur)) cur = +pm.values[f.key] || 0;
+    var val = +(cur + dir * step).toPrecision(12);
+    if (f.min != null && val < f.min) val = +f.min;
+    if (f.max != null && val > f.max) val = +f.max;
+    inp.value = val;
+    changed(val);
+  }
+
+  // A selection box with a list (f.items(v) -> [{ label, edges?: [edge], faces?: [face index], at?: [x, y, z] }]):
+  // hovering a row highlights its item in the graphics area; Delete / Backspace on a row, or right-click ▸ Delete,
+  // removes it (f.onRemove(v, i)); right-click ▸ Clear Selections removes them all (f.onClear(v)).
+  function setHoverItem(it) {
+    if (!App.command) return;
+    App.command.hoverItem = it || null;
+    UI.updateHighlights();
+    App.dimsStale = true;
+    if (UI.requestRender) UI.requestRender();
+  }
+  function pickList(f, pickBox) {
+    var v = pm.values, items = f.items(v) || [];
+    var wrap = el('div', { class: 'pm-pickwrap' }, [pickBox]);
+    if (!items.length) return wrap;
+    var list = el('div', { class: 'pm-list', role: 'listbox', 'aria-label': f.placeholder || 'Selections' });
+    function remove(i) { setHoverItem(null); if (f.onRemove) f.onRemove(v, i); var rows = pm.root.querySelectorAll('.pm-list .pm-item'); var r = rows[Math.min(i, rows.length - 1)]; if (r) try { r.focus({ preventScroll: true }); } catch (e) { } }
+    items.forEach(function (it, i) {
+      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: 'Delete or right-click to remove', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
+      row.lastChild.textContent = it.label;
+      row.addEventListener('mouseenter', function () { setHoverItem(it); });
+      row.addEventListener('mouseleave', function () { if (App.command && App.command.hoverItem === it) setHoverItem(null); });
+      row.addEventListener('focus', function () { row.classList.add('sel'); setHoverItem(it); });
+      row.addEventListener('blur', function () { row.classList.remove('sel'); if (App.command && App.command.hoverItem === it) setHoverItem(null); });
+      row.addEventListener('mousedown', function (e) { if (e.button === 0) { e.preventDefault(); try { row.focus({ preventScroll: true }); } catch (er) { } } });
+      row.addEventListener('keydown', function (e) {
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); remove(i); }
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); var n = row[e.key === 'ArrowDown' ? 'nextSibling' : 'previousSibling']; if (n) n.focus(); }
+      });
+      row.addEventListener('contextmenu', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var menu = [{ label: 'Delete', action: function () { remove(i); } }];
+        if (f.onClear) menu.push({ label: 'Clear Selections', action: function () { setHoverItem(null); f.onClear(v); } });
+        if (UI.showMenu) UI.showMenu(e.clientX, e.clientY, menu); else remove(i);
+      });
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  // A value set from the graphics area (a handle drag): the field shows it, an equation in it is dropped, and the
+  // command previews as if it had been typed.
+  function pmSetValue(key, val) {
+    if (!pm.spec) return false;
+    pm.values[key] = val;
+    if (pm.exprs[key] != null) { delete pm.exprs[key]; delete pm.exprErrors[key]; updateOkState(); }
+    var inp = pm.root.querySelector('input.pm-num[data-key="' + key + '"]');
+    if (inp) {
+      if (inp.type !== 'number') { inp.type = 'number'; inp.classList.remove('expr', 'expr-err'); var hint = pm.root.querySelector('.pm-expr-hint[data-key="' + key + '"]'); if (hint) { hint.hidden = true; hint.textContent = ''; } }
+      inp.value = val;
+    }
+    App.dimsStale = true;
+    if (pm.spec.onChange) pm.spec.onChange(pm.values, key);
+    return true;
+  }
+  // A check box flipped from the graphics area (a reverse-direction arrow).
+  function pmToggle(key) {
+    if (!pm.spec) return false;
+    pm.values[key] = !pm.values[key];
+    var cb = pm.root.querySelector('input[type=checkbox][data-key="' + key + '"]');
+    if (cb) cb.checked = !!pm.values[key];
+    App.dimsStale = true;
+    if (pm.spec.onChange) pm.spec.onChange(pm.values, key);
+    return true;
+  }
+  function pmFocusField(key) {
+    var inp = pm.root.querySelector('input[data-key="' + key + '"]');
+    if (!inp) return false;
+    try { inp.focus({ preventScroll: false }); inp.select(); } catch (e) { }
+    return true;
+  }
+  // The open PropertyManager's on-model handles: [{ key, label, O, dir, k, value, flip, min, max } (linear) |
+  // { type: 'angle', key, label, A, D, c, sign, value, max, flip } | { type: 'flip', key, O, dir } |
+  // { type: 'callout', at, text, key }] in world coordinates; ui-select.js draws and drags them. A field holding an
+  // equation has no drag handle (the equation drives it).
+  function pmHandles() {
+    if (!pm.spec || !pm.spec.handles || !App.build || !App.mesh) return [];
+    var out = [], sig = '';
+    // the overlay redraws with every camera move: the world-space handles are reused until the values or the part change
+    try { sig = JSON.stringify(pm.values) + '|' + JSON.stringify(pm.exprs); } catch (e) { sig = String(Math.random()); }
+    var c = pmHandles.cache;
+    if (c && c.spec === pm.spec && c.sig === sig && c.build === App.build && c.mesh === App.mesh) return c.out.slice();
+    try { out = pm.spec.handles(pm.values) || []; } catch (e) { out = []; }
+    out = out.filter(function (h) {
+      if (h.type === 'callout' || h.type === 'flip') return true;
+      if (pm.exprs[h.key] != null) { if (h.flip && h.O) { h.type = 'flip'; h.key = h.flip; return true; } return false; }
+      return isFinite(h.value);
+    });
+    pmHandles.cache = { spec: pm.spec, sig: sig, build: App.build, mesh: App.mesh, out: out };
+    return out.slice();
+  }
+  var AXV = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+  function sketchPlaneOf(sk) { try { return K.resolvePlane(sk.plane, App.model, App.build && App.build.planes); } catch (e) { return null; } }
+  // centre of a sketch's closed profile (its loops' bounding box) on the sketch plane
+  function profileCentre(sk, pl) {
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    try { K.sketchProfile(sk).loops.forEach(function (l) { l.pts.forEach(function (p) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; }); }); } catch (e) { return null; }
+    if (!(hi[0] >= lo[0])) return null;
+    return { uv: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2], p: K.to3D(pl, (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2) };
+  }
+  function extrudeHandles(v) {
+    var sk = K.findFeature(App.model, typeof v.sketch === 'string' ? +v.sketch : v.sketch), pl = sk && sketchPlaneOf(sk), c = pl && profileCentre(sk, pl);
+    if (!c) return [];
+    var n = pl.n, out = [], s = v.reverse ? -1 : 1, mid = v.end === 'mid';
+    if (v.end === 'through') out.push({ type: 'flip', key: 'reverse', O: c.p, dir: V.scale(n, s) });
+    else out.push({ key: 'depth', label: 'Depth D1', O: c.p, dir: V.scale(n, mid ? 1 : s), k: mid ? 2 : 1, value: +v.depth, flip: mid ? null : 'reverse', min: 0 });
+    if (v.dir2 && !mid && v.end2 !== 'through') out.push({ key: 'depth2', label: 'Depth D2', O: c.p, dir: V.scale(n, -s), k: 1, value: +v.depth2, min: 0 });
+    return out;
+  }
+  function revolveHandles(v) {
+    var sk = K.findFeature(App.model, typeof v.sketch === 'string' ? +v.sketch : v.sketch), pl = sk && sketchPlaneOf(sk), c = pl && profileCentre(sk, pl);
+    if (!c) return [];
+    var ax = typeof v.axis === 'string' && /^\d+$/.test(v.axis) ? +v.axis : v.axis, p, d;
+    if (ax === 'x') { p = [0, 0]; d = [1, 0]; }
+    else if (typeof ax === 'number') { var e = sk.entities[ax]; if (!e || e.t !== 'line') return []; p = [e.x1, e.y1]; d = [e.x2 - e.x1, e.y2 - e.y1]; }
+    else if (ax && typeof ax === 'object' && ax.x1 != null) { p = [ax.x1, ax.y1]; d = [ax.x2 - ax.x1, ax.y2 - ax.y1]; }
+    else { p = [0, 0]; d = [0, 1]; }
+    var A = K.to3D(pl, p[0], p[1]), D = V.norm(V.sub(K.to3D(pl, p[0] + d[0], p[1] + d[1]), A));
+    if (!(V.len(D) > 0.5)) return [];
+    return [{ type: 'angle', key: 'angle', label: 'Angle', A: A, D: D, c: c.p, sign: v.reverse ? -1 : 1, value: +v.angle, max: 360, flip: 'reverse' }];
+  }
+  // Where an edge pick sits on the model and the direction into its first face (the fillet / chamfer boundary lies
+  // r / d along it on a square edge): the resolved edge when there is one, else the two planar faces through the
+  // pick point (editing: the part on screen already has the fillet).
+  function edgeFrame(at, edgeList) {
+    var best = null, bd = Infinity;
+    (edgeList || []).forEach(function (e) {
+      if (!e.ins || !e.ins[0]) return;
+      var d = K.pointSegmentDistance ? K.pointSegmentDistance(at, e.a, e.b) : V.len(V.sub(e.mid, at));
+      if (d < bd) { bd = d; best = e; }
+    });
+    // of the two faces' directions, the one seen most side-on (the longest arrow on screen, and stable while dragging)
+    function pickDir(ds) {
+      var vd = UI.cam && UI.cam.dir ? V.norm(UI.cam.dir) : [0, 0, 1], b = null, bs = Infinity;
+      ds.forEach(function (d) { if (!d) return; var s = Math.abs(V.dot(d, vd)) - (b ? 1e-6 : 0); if (s < bs) { bs = s; b = d; } });
+      return b;
+    }
+    if (best && bd < 1e-3 * Math.max(1, V.len(at))) return { O: at, dir: pickDir(best.ins) };
+    var ns = [];
+    (App.mesh.faces || []).forEach(function (fc) {
+      if (!fc.normal || !fc.centroid || Math.abs(V.dot(V.sub(at, fc.centroid), fc.normal)) > 1e-4 * Math.max(1, V.len(at))) return;
+      if (!ns.some(function (n) { return V.dot(n, fc.normal) > 0.9999; })) ns.push(fc.normal);
+    });
+    var n1 = null, n2 = null, bs = 0.05;
+    for (var i = 0; i < ns.length; i++) for (var j = i + 1; j < ns.length; j++) { var s = V.len(V.cross(ns[i], ns[j])); if (s > bs) { bs = s; n1 = ns[i]; n2 = ns[j]; } }
+    if (!n1) return best ? { O: at, dir: pickDir(best.ins) } : null;
+    var t = V.norm(V.cross(n1, n2)), d1 = V.norm(V.cross(t, n1)), d2 = V.norm(V.cross(t, n2));
+    if (V.dot(d1, n2) > 0) d1 = V.scale(d1, -1);
+    if (V.dot(d2, n1) > 0) d2 = V.scale(d2, -1);
+    return { O: at, dir: pickDir([d1, d2]) };
+  }
+  // A face pick's outward normal on the part shown (a removed face's rim keeps its plane), or the largest planar face.
+  function faceFrame(at) {
+    var faces = App.mesh.faces || [], best = null, bestA = -1;
+    faces.forEach(function (fc) {
+      if (!fc.normal || !fc.centroid) return;
+      if (at) { if (Math.abs(V.dot(V.sub(at, fc.centroid), fc.normal)) > 1e-4 * Math.max(1, V.len(at))) return; var dd = V.len(V.sub(fc.centroid, at)); if (!best || dd < bestA) { best = fc; bestA = dd; } }
+      else if (fc.area > bestA) { bestA = fc.area; best = fc; }
+    });
+    return best ? { O: at || best.centroid, n: best.normal } : null;
+  }
+  function toolCentre(fid) {
+    var t = App.build && App.build.tools && App.build.tools[fid], b = t && t.getBounds && t.getBounds();
+    if (!b) return null;
+    var lo = b.min.x != null ? [b.min.x, b.min.y, b.min.z] : b.min, hi = b.max.x != null ? [b.max.x, b.max.y, b.max.z] : b.max;
+    return [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+  }
+  function lpatternHandles(v) {
+    var c = toolCentre(typeof v.feature === 'string' ? +v.feature : v.feature);
+    if (!c) return [];
+    var out = [];
+    if (AXV[v.d1]) out.push({ key: 's1', label: 'Spacing', O: c, dir: V.scale(AXV[v.d1], v.rev1 ? -1 : 1), k: 1, value: +v.s1, flip: 'rev1', min: 0 });
+    if (AXV[v.d2]) out.push({ key: 's2', label: 'Spacing 2', O: c, dir: V.scale(AXV[v.d2], v.rev2 ? -1 : 1), k: 1, value: +v.s2, flip: 'rev2', min: 0 });
+    return out;
+  }
+  function cpatternHandles(v) {
+    var c = toolCentre(typeof v.feature === 'string' ? +v.feature : v.feature);
+    if (!c || !AXV[v.axis]) return [];
+    return [{ type: 'angle', key: 'angle', label: 'Angle', A: [+v.cx || 0, +v.cy || 0, +v.cz || 0], D: AXV[v.axis], c: c, sign: 1, value: +v.angle, max: 360 }];
   }
 
   // ------------------------------------------------------------------ helpers
@@ -888,7 +1099,7 @@
       function isBossPM(v) { return !v.cut; }
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'cut' : 'extrude', values: f,
-        command: { sketchId: f.sketch },
+        command: { sketchId: f.sketch }, handles: extrudeHandles,
         groups: [
           { title: 'From', fields: [{ type: 'static', label: 'Start', value: 'Sketch Plane' }, sketchPickerField(f)] },
           {
@@ -944,7 +1155,7 @@
       initBodyFields(f, existing);
       function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
       openPM({
-        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: { sketchId: f.sketch },
+        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: { sketchId: f.sketch }, handles: revolveHandles,
         groups: [
           { title: 'Axis of Revolution', fields: [sketchPickerField(f), { type: 'select', label: 'Axis', key: 'axis', options: revolveAxisOptions }] },
           { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, mergeField(function (v) { return !v.cut; })] },
@@ -1062,7 +1273,7 @@
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f,
+      title: existing ? existing.name : 'Linear Pattern', icon: 'lpattern', values: f, handles: lpatternHandles,
       groups: [
         { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
         { title: 'Direction 1', fields: [{ type: 'select', label: 'Direction', key: 'd1', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'check', label: 'Reverse', key: 'rev1' }, { type: 'number', label: 'Spacing', key: 's1', unit: 'u' }, { type: 'number', label: 'Instances', key: 'n1', step: 1, min: 1 }, mergeField(featureIsBoss)] },
@@ -1084,7 +1295,7 @@
     function norm(v) { v.center = [+v.cx || 0, +v.cy || 0, +v.cz || 0]; return v; }
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(norm(v))), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f,
+      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles,
       groups: [
         { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
         { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
@@ -1130,8 +1341,25 @@
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
       edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: f.chain }; }), sharp, Math.max(0.5, isChamfer ? +f.d : +f.r));
+      // r4/features4: each pick's own edges, for its row in the selection list
+      perPick = f.edges.map(function (e) { try { return K.resolveEdges([{ at: e.at, chain: f.chain }], sharp, Math.max(0.5, isChamfer ? +f.d : +f.r)); } catch (er) { return []; } });
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
+    }
+    var perPick = [], valKey = isChamfer ? 'd' : 'r', valTag = isChamfer ? 'D ' : 'R ';
+    function removePick(v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }
+    // r4/features4: a drag handle on the first pick (into its first face, where the fillet / chamfer meets it) and a
+    // value callout next to every other pick
+    function edgeHandles(v) {
+      var out = [];
+      v.edges.forEach(function (spec, i) {
+        if (i === 0) {
+          var fr = edgeFrame(spec.at, perPick[0] && perPick[0].length ? perPick[0] : edgeList);
+          if (fr) { out.push({ key: valKey, label: isChamfer ? 'Distance D' : 'Radius R', O: fr.O, dir: fr.dir, k: 1, value: +v[valKey], min: 0, tag: valTag }); return; }
+        }
+        out.push({ type: 'callout', at: spec.at, text: valTag + UI.fmtNum(+v[valKey], 2) + ' ' + UI.unitLabel(), key: valKey });
+      });
+      return out;
     }
     function edgeStatus(r) { UI.setStatus((isChamfer ? 'Chamfer' : 'Fillet') + ' preview: ' + r.count + ' edge' + (r.count === 1 ? '' : 's') + '. Press Enter or ✓ to accept.'); }
     function preview() {
@@ -1154,9 +1382,10 @@
         UI.setStatus((isChamfer ? 'Chamfer' : 'Fillet') + ' preview: ' + r.count + ' edge' + (r.count === 1 ? '' : 's') + '. Press Enter or ✓ to accept.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
+    try { resolveList(); } catch (e) { }   // r4/features4: the selection list's rows know their edges on the first render
     openPM({
-      title: existing ? existing.name : (isChamfer ? 'Chamfer' : 'Fillet'), icon: kind, values: f,
-      message: 'Click <b>edges</b> to add or remove them. Tangent chains (round edges) are picked as one.',
+      title: existing ? existing.name : (isChamfer ? 'Chamfer' : 'Fillet'), icon: kind, values: f, handles: edgeHandles,
+      message: 'Click <b>edges</b> to add or remove them. Tangent chains (round edges) are picked as one. Drag the arrow on the model to change the ' + (isChamfer ? 'distance' : 'radius') + '.',
       command: {
         pickEdges: true, edgeList: edgeList,
         onPick: function (pk) {
@@ -1175,7 +1404,9 @@
       },
       groups: [
         { title: isChamfer ? 'Items To Chamfer' : 'Items To Fillet', fields: [
-          { type: 'pick', icon: kind, value: function (v) { return v.edges.length ? v.edges.length + ' edge pick' + (v.edges.length > 1 ? 's' : '') + (edgeList.length ? ' → ' + edgeList.length + ' edges' : '') : ''; }, placeholder: 'Select edges…' },
+          { type: 'pick', icon: kind, value: function (v) { return v.edges.length ? v.edges.length + ' edge pick' + (v.edges.length > 1 ? 's' : '') + (edgeList.length ? ' → ' + edgeList.length + ' edges' : '') : ''; }, placeholder: 'Select edges…',
+            items: function (v) { return v.edges.map(function (spec, i) { var n = perPick[i] ? perPick[i].length : 0; return { label: 'Edge<' + (i + 1) + '>' + (n > 1 ? '  (' + n + ' edges)' : ''), get edges() { return perPick[i] || []; }, at: spec.at }; }); },
+            onRemove: removePick, onClear: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } },
           { type: 'check', label: 'Tangent propagation', key: 'chain' },
           { type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }
         ] },
@@ -1226,7 +1457,7 @@
       UI.updateHighlights();
       return idx;
     }
-    function shellStatus(removed) { UI.setStatus('Shell preview: walls ' + f.thickness + ' ' + UI.unitLabel() + ', ' + (removed ? removed + ' face' + (removed === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.'); }
+    function shellStatus(removed) { UI.setStatus('Shell preview: walls ' + UI.fmtNum(+f.thickness, 3) + ' ' + UI.unitLabel() + ', ' + (removed ? removed + ' face' + (removed === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.'); }
     function preview() {
       var upto = null;
       if (existing) App.model.features.forEach(function (g, i) { if (g.id === existing.id) upto = i; });
@@ -1239,11 +1470,16 @@
         var mesh = K.meshFromBody(r.inner), g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.previewCut));
-        UI.setStatus('Shell preview: walls ' + f.thickness + ' ' + UI.unitLabel() + ', ' + (r.removed.length ? r.removed.length + ' face' + (r.removed.length === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.');
+        UI.setStatus('Shell preview: walls ' + UI.fmtNum(+f.thickness, 3) + ' ' + UI.unitLabel() + ', ' + (r.removed.length ? r.removed.length + ' face' + (r.removed.length === 1 ? '' : 's') + ' removed' : 'closed hollow') + '. Press Enter or ✓ to accept.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
     openPM({
       title: existing ? existing.name : 'Shell', icon: 'shell', values: f,
+      // r4/features4: the wall thickness as an arrow into the first removed face (or the largest face)
+      handles: function (v) {
+        var fr = faceFrame(v.faces.length ? v.faces[0].at : null);
+        return fr ? [{ key: 'thickness', label: 'Thickness', O: fr.O, dir: V.scale(fr.n, -1), k: 1, value: +v.thickness, min: 0 }] : [];
+      },
       message: existing ? 'Edit the wall thickness. The cavity preview is shown in red.' : 'Click the <b>faces to remove</b> (leave none selected for a closed hollow part), then set the wall thickness. The cavity preview is shown in red.',
       command: {
         faceList: [],
@@ -1261,7 +1497,11 @@
       groups: [
         { title: 'Parameters', fields: [
           { type: 'number', label: 'Thickness  D1', key: 'thickness', unit: 'u', min: 0 },
-          { type: 'pick', icon: 'shell', value: function (v) { return v.faces.length ? v.faces.length + ' face' + (v.faces.length > 1 ? 's' : '') + ' to remove' : ''; }, placeholder: 'Faces to remove (optional)…' },
+          { type: 'pick', icon: 'shell', value: function (v) { return v.faces.length ? v.faces.length + ' face' + (v.faces.length > 1 ? 's' : '') + ' to remove' : ''; }, placeholder: 'Faces to remove (optional)…',
+            // r4/features4: one row per removed face (hover highlights it, Delete / right-click removes it)
+            items: function (v) { return v.faces.map(function (spec, i) { return { label: 'Face<' + (i + 1) + '>', get faces() { if (existing) return []; try { var k = K.resolveFaces([spec], getBaseMesh(), tol())[0]; return k != null && k >= 0 ? [k] : []; } catch (e) { return []; } }, at: spec.at }; }); },
+            onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); resolveList(); preview(); },
+            onClear: function (v) { v.faces.length = 0; renderPM(); resolveList(); preview(); } },
           { type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.faces.length = 0; renderPM(); resolveList(); preview(); } }] }
         ] },
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
@@ -1407,6 +1647,13 @@
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
     }
+    // r4/features4: a list row per edge (hover lights it, Delete / right-click removes it)
+    function flangeItems(v) {
+      var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
+      return v.edges.map(function (spec, i) { return { label: 'Edge<' + (i + 1) + '>', at: spec.at, get edges() { try { return existing ? [] : K.resolveEdges([{ at: spec.at, chain: false }], sharp, Math.max(0.5, sheet.thickness)); } catch (e) { return []; } } }; });
+    }
+    function flangeRemove(v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }
+    function flangeClear(v) { v.edges.length = 0; renderPM(); resolveList(); preview(); }
     function toFeature(v) {
       var out = JSON.parse(JSON.stringify(v));
       if (isHem) { out.angle = 180; out.radius = Math.max((+v.gap || 0) / 2, 0.02 * T); out.position = 'bendOutside'; delete out.gap; }
@@ -1466,7 +1713,7 @@
     ];
     var groups = isJog ? [
       { title: 'Jog Parameters', fields: [
-        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…' },
+        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear },
         { type: 'number', label: 'Jog height', key: 'height', unit: 'u', min: 0 },
         { type: 'number', label: 'Flat length', key: 'length', unit: 'u', min: 0 },
         { type: 'number', label: 'Bend angle', key: 'angle', unit: '°', min: 0 },
@@ -1475,7 +1722,7 @@
       { title: 'Jog Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside']] }] }
     ] : isHem ? [
       { title: 'Hem Parameters', fields: [
-        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…' },
+        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear },
         { type: 'number', label: 'Gap (open hem)', key: 'gap', unit: 'u', min: 0 },
         { type: 'number', label: 'Hem length', key: 'length', unit: 'u', min: 0 },
         { type: 'check', label: 'Reverse direction', key: 'reverse' },
@@ -1483,7 +1730,7 @@
       ] }
     ] : [
       { title: 'Flange Parameters', fields: [
-        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…' }
+        { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear }
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
       { title: 'Flange Length', fields: [{ type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
@@ -2447,6 +2694,10 @@
     return true;
   };
   UI.evalFieldExpr = evalFieldExpr;
+  // r4/features4: on-model handles of the open PropertyManager (ui-select.js draws / drags them), values and flips set
+  // from the graphics area, the selection lists' hovered item
+  UI.pmHandles = pmHandles; UI.pmSetValue = pmSetValue; UI.pmToggle = pmToggle; UI.pmFocusField = pmFocusField; UI.pmHoverItem = setHoverItem;
+  UI.pmSpinStep = spinStep;
   UI.cmdSketch = cmdSketch; UI.editSketch = editSketch; UI.cmdExtrude = cmdExtrude; UI.cmdRevolve = cmdRevolve;
   UI.cmdLinearPattern = cmdLinearPattern; UI.cmdCircularPattern = cmdCircularPattern; UI.cmdMirror = cmdMirror; UI.cmdPlane = cmdPlane;
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;

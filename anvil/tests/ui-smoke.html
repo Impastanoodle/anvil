@@ -5048,6 +5048,206 @@
     return 'zoom, live drag, ' + st.patched + ' layer patched, pre-highlight, fit';
   });
   // --- end r3/drawings3 ---
+  // --- r4/features4 ---
+  function f4Handles() { return anvil.instant3D().handles; }
+  function f4Sharp() { return UI.App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2; }); }
+  function f4El(sel) { return D.querySelector(sel); }
+  async function f4Drag(from, to, target) {
+    selEv('mousedown', from, target);
+    for (var k = 1; k <= 6; k++) { selEv('mousemove', [from[0] + (to[0] - from[0]) * k / 6, from[1] + (to[1] - from[1]) * k / 6]); await wait(15); }
+    selEv('mouseup', to);
+  }
+  step('r4/features4: Fillet selection list — a row per pick; hovering a row lights its edge on the model; Delete on a row and right-click ▸ Delete remove picks; a value callout beside the other picks focuses the radius', async function () {
+    need(UI, 'pmHandles'); need(UI, 'pmSetValue'); need(UI, 'pmToggle');
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    UI.setView('Isometric');
+    var sharp = f4Sharp();
+    UI.App.sel = { kind: 'edge', edge: sharp[0] };
+    UI.cmdFillet(); await UI.previewIdle();
+    UI.App.command.onPick({ kind: 'edge', edge: sharp[3] }); await UI.previewIdle();
+    UI.App.command.onPick({ kind: 'edge', edge: sharp[6] }); await UI.previewIdle();
+    var rows = D.querySelectorAll('#pm .pm-list .pm-item');
+    assert(rows.length === 3 && /Edge<2>/.test(rows[1].textContent), 'three rows: ' + rows.length);
+    rows[1].dispatchEvent(new W.MouseEvent('mouseenter'));
+    assert(UI.App.command.hoverItem && UI.App.command.hoverItem.edges.indexOf(sharp[3]) >= 0, 'the hovered row is its edge');
+    UI.tick();
+    assert(f4El('#i3d-layer .i3d-hover-item polyline'), 'the hovered edge is drawn over the model');
+    rows[1].dispatchEvent(new W.MouseEvent('mouseleave'));
+    assert(!UI.App.command.hoverItem, 'leaving the row clears it');
+    var hs = f4Handles();
+    assert(hs.filter(function (h) { return h.kind === 'pm' && h.label === 'Radius R' && h.value === 2; }).length === 1, 'radius handle ' + JSON.stringify(hs));
+    assert(hs.filter(function (h) { return h.kind === 'callout' && h.label === 'R 2 mm'; }).length === 2, 'callouts on the other picks');
+    UI.tick();
+    var co = D.querySelectorAll('#i3d-layer .i3d-callout[data-key="r"]');
+    assert(co.length === 3, 'value boxes drawn: ' + co.length);
+    co[co.length - 1].dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    assert(D.activeElement && D.activeElement.getAttribute('data-key') === 'r', 'a callout focuses the radius field');
+    // right-click ▸ Delete on row 2, then Delete on the (new) row 2
+    rows[1].dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
+    var mi = Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return /^\s*Delete\s*$/.test(m.textContent); })[0];
+    assert(mi, 'context menu Delete');
+    mi.click(); await UI.previewIdle();
+    assert(UI.pmSpec().values.edges.length === 2, 'right-click removed a pick');
+    rows = D.querySelectorAll('#pm .pm-list .pm-item');
+    rows[1].focus();
+    rows[1].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+    await UI.previewIdle();
+    assert(UI.pmSpec().values.edges.length === 1 && D.querySelectorAll('#pm .pm-list .pm-item').length === 1, 'Delete removed a pick');
+    assert(anvil.model().features.length === 2, 'the part is untouched by Delete in the list');
+    await UI.pmOK(); await idle();
+    var fil = anvil.model().features.filter(function (f) { return f.type === 'fillet'; })[0];
+    assert(fil && fil.edges.length === 1, 'fillet with the one pick left');
+    return 'list, hover, callouts, Delete / right-click';
+  });
+  step('r4/features4: Fillet radius and Boss-Extrude depth dragged on the model — the field follows and the worker preview updates (nothing is rebuilt until ✓); the faded arrow reverses the extrude', async function () {
+    var was = anvil.workerOn();
+    anvil.workerOn(true);
+    var builds = 0, hook = function (b, o) { if (!(o && o.occt)) builds++; };
+    try {
+      await anvil.newPart(); await idle();
+      await anvil.run(BLOCK); await idle();
+      UI.setView('Isometric');
+      var sharp = f4Sharp();
+      UI.App.sel = { kind: 'edge', edge: sharp[0] };
+      UI.cmdFillet(); await UI.previewIdle();
+      UI.onBuild.push(hook);
+      var h = f4Handles().filter(function (x) { return x.kind === 'pm'; })[0];
+      var hd = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm'; })[0];
+      var p2 = UI.worldToScreen(hd.pos(2)), p5 = UI.worldToScreen(hd.pos(5));
+      await f4Drag(h.grab, [h.grab[0] + p5[0] - p2[0], h.grab[1] + p5[1] - p2[1]], f4El('#i3d-layer .i3d-handle[data-kind="pm"]'));
+      await UI.previewIdle();
+      var r = UI.pmSpec().values.r;
+      near(r, 5, 0.6, 'radius after the drag');
+      assert(+D.querySelector('#pm input[data-key="r"]').value === r, 'the field shows the dragged radius');
+      assert(builds === 0 && anvil.model().features.length === 2, 'nothing rebuilt or committed during the drag');
+      UI.pmCancel(); await idle();
+      await anvil.run('p.sketch("Top").rect(-20, -10, 40, 20).extrude(10);\np.sketch("Top", 10).circle(0, 0, 5);'); await idle();
+      builds = 0;
+      UI.setView('Isometric');
+      UI.cmdExtrude(false); await UI.previewIdle();
+      var dh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 'depth'; })[0];
+      assert(dh && dh.value === 10, 'depth handle');
+      near(dh.pos(10)[1], 20, 1e-9, 'the depth arrow stands on the sketch plane (y 10) and points up');
+      UI.tick();
+      var flip = f4El('#i3d-layer .i3d-flip[data-flip="reverse"]');
+      assert(flip, 'reverse arrow drawn');
+      flip.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true }));
+      assert(UI.pmSpec().values.reverse === true && D.querySelector('#pm input[data-key="reverse"]').checked, 'the arrow reversed the direction');
+      dh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 'depth'; })[0];
+      near(dh.pos(10)[1], 0, 1e-9, 'reversed: the arrow points down');
+      UI.pmToggle('reverse');
+      var g = f4Handles().filter(function (x) { return x.kind === 'pm'; })[0];
+      dh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm'; })[0];
+      var a10 = UI.worldToScreen(dh.pos(10)), a25 = UI.worldToScreen(dh.pos(25));
+      await f4Drag(g.grab, [g.grab[0] + a25[0] - a10[0], g.grab[1] + a25[1] - a10[1]], f4El('#i3d-layer .i3d-handle[data-kind="pm"]'));
+      var pv = await UI.previewIdle();
+      near(UI.pmSpec().values.depth, 25, 1, 'depth after the drag');
+      assert(builds === 0, 'no rebuild during the drag: ' + builds);
+      UI.pmSetValue('depth', 25);
+      await UI.pmOK(); await idle();
+      near(anvil.mass().volume, 8000 + Math.PI * 25 * 25, 0.5, 'committed boss');
+      return 'move ' + UI.instant3DStats().pmMoveMs.toFixed(2) + ' ms main thread, preview ' + (pv && pv.ms != null ? pv.ms.toFixed(1) : '?') + ' ms in the worker';
+    } finally {
+      var i = UI.onBuild.indexOf(hook); if (i >= 0) UI.onBuild.splice(i, 1);
+      if (UI.hasPM()) UI.pmCancel();
+      anvil.workerOn(was);
+    }
+  });
+  step('r4/features4: spin increments — ↑ / ↓ add 1 mm (Shift 10) to a length, 1° to an angle, 1 to a count; the wheel spins a focused box; the minimum holds', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sketch("Top").rect(-20, -10, 40, 20);'); await idle();
+    UI.cmdExtrude(false); await UI.previewIdle();
+    var inp = D.querySelector('#pm input[data-key="depth"]');
+    inp.focus();
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.depth === 11 && +inp.value === 11, 'ArrowUp: ' + inp.value);
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'ArrowUp', shiftKey: true, bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.depth === 21, 'Shift+ArrowUp: ' + inp.value);
+    inp.dispatchEvent(new W.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.depth === 20, 'wheel down: ' + inp.value);
+    for (var k = 0; k < 25; k++) inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.depth === 0, 'stops at the minimum: ' + inp.value);
+    UI.pmCancel();
+    await anvil.run(BLOCK); await idle();
+    UI.cmdCircularPattern(); await UI.previewIdle();
+    var n = D.querySelector('#pm input[data-key="n"]'), ang = D.querySelector('#pm input[data-key="angle"]');
+    n.focus(); n.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    ang.focus(); ang.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.n === 7 && UI.pmSpec().values.angle === 359, 'count +1, angle −1°: ' + UI.pmSpec().values.n + ' ' + UI.pmSpec().values.angle);
+    UI.pmCancel();
+    return 'mm 1 / 10, ° 1, count 1';
+  });
+  step('r4/features4: Instant3D — once a depth drag rests, the part rebuilds in the background so the pattern of the dragged boss follows before the release; still one undo step', async function () {
+    var was = anvil.workerOn();
+    anvil.workerOn(true);
+    try {
+      await anvil.newPart(); await idle();
+      await anvil.run('p.sketch("Top").centerRect(0, 0, 80, 40).extrude(5);\np.sketch("Top", 5).circle(-30, 0, 4).extrude(10);\np.linearPattern({ dir: "x", spacing: 20, count: 4 });'); await idle();
+      UI.setView('Isometric');
+      var boss = anvil.model().features.filter(function (f) { return f.type === 'extrude'; })[1];
+      UI.setSelection([{ kind: 'feature', id: boss.id }]);
+      var undo0 = UI.App.undo.length;
+      var h = f4Handles().filter(function (x) { return x.kind === 'depth'; })[0], hd = UI.instant3DHandles().filter(function (x) { return x.kind === 'depth'; })[0];
+      assert(h && h.value === 10, 'boss depth handle');
+      var a = UI.worldToScreen(hd.pos(10)), b = UI.worldToScreen(hd.pos(16));
+      var to = [h.grab[0] + b[0] - a[0], h.grab[1] + b[1] - a[1]];
+      var pauses0 = UI.instant3DStats().pauses;
+      selEv('mousedown', h.grab, f4El('#i3d-layer .i3d-handle[data-kind="depth"]'));
+      for (var k = 1; k <= 6; k++) { selEv('mousemove', [h.grab[0] + (to[0] - h.grab[0]) * k / 6, h.grab[1] + (to[1] - h.grab[1]) * k / 6]); await wait(15); }
+      var t0 = performance.now();
+      while (UI.instant3DStats().pauses === pauses0 && performance.now() - t0 < 4000) await wait(20);
+      await idle();
+      var vRest = anvil.mass().volume;
+      var depthRest = UI.App.model.features.filter(function (f) { return f.id === boss.id; })[0].depth;
+      selEv('mouseup', to);
+      await idle(); await wait(30); await idle();
+      assert(UI.instant3DStats().pauses > pauses0, 'the resting drag rebuilt the part');
+      near(vRest, 16000 + 4 * Math.PI * 16 * depthRest, 1, 'resting at depth ' + depthRest + ': all four bosses follow before the release');
+      assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
+      near(anvil.mass().volume, vRest, 1e-6, 'release keeps it');
+      return 'rest rebuild ' + UI.instant3DStats().pauseRebuildMs.toFixed(1) + ' ms (background)';
+    } finally { anvil.workerOn(was); }
+  });
+  step('r4/features4: Shell faces list and thickness arrow (into the part), Linear Pattern spacing arrow with its reverse arrow, Revolve angle arc', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    UI.setView('Isometric');
+    var top = anvil.faces().filter(function (f) { return f.normal[1] > 0.999; })[0];
+    UI.App.sel = { kind: 'face', index: top.index, point: [0, 10, 0] };
+    UI.cmdShell(); await UI.previewIdle();
+    var rows = D.querySelectorAll('#pm .pm-list .pm-item');
+    assert(rows.length === 1 && /Face<1>/.test(rows[0].textContent), 'face row');
+    rows[0].dispatchEvent(new W.MouseEvent('mouseenter'));
+    assert(UI.App.command.hoverItem.faces.length === 1, 'hovered row → its face');
+    rows[0].dispatchEvent(new W.MouseEvent('mouseleave'));
+    var sh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm'; })[0];
+    assert(sh && sh.key === 'thickness', 'thickness handle');
+    near(sh.pos(2)[1], 8, 1e-9, 'the arrow points into the part from the removed face');
+    UI.pmCancel();
+    await anvil.run('p.sketch("Top").centerRect(0, 0, 80, 40).extrude(5);\np.sketch("Top", 5).circle(-30, 0, 4).extrude(10);'); await idle();
+    UI.cmdLinearPattern(); await UI.previewIdle();
+    var lh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 's1'; })[0];
+    assert(lh, 'spacing handle');
+    near(lh.pos(20)[0], -10, 1e-6, 'the spacing arrow ends on the second instance');
+    UI.tick();
+    f4El('#i3d-layer .i3d-flip[data-flip="rev1"]').dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true }));
+    assert(UI.pmSpec().values.rev1 === true, 'reversed from the model');
+    UI.pmCancel();
+    await anvil.run('p.sketch("Front").rect(10, 0, 10, 20);'); await idle();
+    UI.cmdRevolve(false); await UI.previewIdle();
+    UI.pmSetValue('angle', 90); await UI.previewIdle();
+    var rh = UI.instant3DHandles().filter(function (x) { return x.kind === 'pm' && x.key === 'angle'; })[0];
+    assert(rh && rh.angle, 'angle handle');
+    var p0 = rh.pos(0), p90 = rh.pos(90);
+    near(Math.hypot(p0[0], p0[2]), 15, 1e-6, 'on the profile centre radius');
+    near(Math.hypot(p90[0], p90[2]), 15, 1e-6, 'arc radius kept');
+    near(p90[0], 0, 1e-6, 'a quarter turn');
+    await UI.pmOK(); await idle();
+    near(anvil.mass().volume, Math.PI * (400 - 100) * 20 / 4, 1, 'quarter revolve');
+    return 'shell, pattern, revolve handles';
+  });
+  // --- end r4/features4 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
