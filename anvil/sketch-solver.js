@@ -623,6 +623,32 @@ var SketchSolver = (function () {
 
   // ------------------------------------------------------------------ editing helpers
   var DRIVEN_MSG = 'This is a driven dimension: its value follows the geometry. Make it driving to change it.';
+  // What a failed edit fights with: the sketch is solved in the least-squares sense with the new value, and the other
+  // relations / dimensions left unsatisfied (largest first) are named, so the message can say "conflicts with Line1
+  // length (50)" as SolidWorks' "over defining" list does. `skip` = { src, index } is the edited item.
+  var DIM_WORDS = { len: 'length', dx: 'horizontal distance', dy: 'vertical distance', w: 'width', h: 'height', dia: 'diameter', r: 'radius', seg: 'segment length' };
+  function dimName(sketch, d) {
+    var e = sketch.entities[d.e], v = e && K ? K.dimValue(e, d) : null;
+    return (e ? (ENTITY_NAMES[e.t] || 'Entity') : 'Entity') + (d.e + 1) + ' ' + (DIM_WORDS[d.k] || d.k) + (v != null ? ' (' + Math.round(v * 1e4) / 1e4 + ')' : '');
+  }
+  function conflictNames(sketch, opts, skip, max) {
+    try {
+      var sys = buildSystem(sketch, opts), tol = 1e-6 * sys.scale, list = [];
+      lm(sys, { leastSquares: true, maxIt: 60 });
+      var r = residuals(sys);
+      sys.cons.forEach(function (c) {
+        if (!c.n || c.soft || c.src === 'extra' || (skip && c.src === skip.src && c.index === skip.index)) return;
+        var worst = 0;
+        for (var k = 0; k < c.n; k++) worst = Math.max(worst, Math.abs(r[c.row + k]));
+        if (worst > tol) list.push({ w: worst, rank: c.src === 'dim' || (TYPES[sketch.rels[c.index].type] || {}).dim ? 0 : sketch.rels[c.index].type === 'coincident' ? 2 : 1, text: c.src === 'dim' ? dimName(sketch, sketch.dims[c.index]) : describe(sketch, sketch.rels[c.index]) });
+      });
+      list.sort(function (a, b) { return a.rank - b.rank || b.w - a.w; });   // dimensions first: they are what one changes
+      return list.slice(0, max || 3).map(function (x) { return x.text; });
+    } catch (err) { return []; }
+  }
+  function conflictMessage(names) {
+    return 'That value cannot be reached: it conflicts with ' + (names.length ? names.join('; ') : 'the sketch\'s other relations or dimensions') + '.';
+  }
   // Set placed dimension `index` (or a dimension object not in sketch.dims) to v and re-solve the whole sketch.
   // Returns { ok, error }; on failure the sketch is unchanged.
   function setDim(sketch, d, v) {
@@ -639,7 +665,7 @@ var SketchSolver = (function () {
     if (index >= 0) opts.dimTargets[index] = v;
     else opts.extra = [dimEquation(sketch.entities, dim, v)];
     var r = solve(sketch, opts);
-    if (!r.ok) { sketch.entities = saved; return { ok: false, error: 'That value cannot be reached: it conflicts with the sketch\'s other relations or dimensions.' }; }
+    if (!r.ok) { var names = conflictNames(sketch, opts, index >= 0 ? { src: 'dim', index: index } : null); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     return { ok: true };
   }
   // Change the value of a distance / angle relation and re-solve.
@@ -652,7 +678,7 @@ var SketchSolver = (function () {
     var saved = clone(sketch.entities), t = {};
     t[index] = v;
     var r = solve(sketch, { relTargets: t });
-    if (!r.ok) { sketch.entities = saved; return { ok: false, error: 'That value cannot be reached: it conflicts with the sketch\'s other relations or dimensions.' }; }
+    if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     rel.v = v;
     return { ok: true };
   }
@@ -737,7 +763,9 @@ var SketchSolver = (function () {
     // as that dimension turning redundant: judge by the count, not only by the added rows
     else if (worst === 'ok' && an.redundant > before.redundant) worst = 'redundant';
     if (worst !== 'ok' && opts.rejectOver) { sketch.rels = savedRels; sketch.entities = saved; return { ok: false, status: worst, error: 'Adding ' + TYPES[type].name + ' would over-define the sketch.' }; }
-    return { ok: true, rels: added, status: worst, analysis: an };
+    var out = { ok: true, rels: added, status: worst, analysis: an };
+    if (worst === 'conflict' && added.length) out.conflicts = conflictNames(sketch, {}, { src: 'rel', index: added[0] });   // what it fights, for the message
+    return out;
   }
   // Symmetric refs in [a, b, axis] order; when more than one of the three could be the axis, a construction line
   // (a centerline) is preferred.
@@ -768,6 +796,158 @@ var SketchSolver = (function () {
       return rel;
     });
     if (!sketch.rels.length) delete sketch.rels;
+  }
+  // Trim Entities replaced entity `idx` of `before` (the old entity list) by the pieces now in sketch.entities (new
+  // objects in its place; every other entity is the same object). As SolidWorks does, the pieces keep the trimmed
+  // entity's relations that still make sense on a part of it (Horizontal, Vertical, Parallel, Tangent, Concentric,
+  // a point lying on it, ... and the relations of an end that survives), and each new end gets a Coincident with the
+  // entity it was trimmed at. Placed dimensions follow their entities (a radius stays on the arc). Falls back to
+  // dropping the trimmed entity's relations when keeping them would leave the sketch unsolvable.
+  var KEEP_ON_PIECE = { horizontal: 1, vertical: 1, parallel: 1, perpendicular: 1, collinear: 1, tangent: 1, concentric: 1, coincident: 1, angle: 1, distance: 1 };
+  function afterTrim(sketch, before, idx) {
+    var E = sketch.entities, old = before[idx];
+    var map = before.map(function (e) { return E.indexOf(e); });
+    var pieces = [];
+    E.forEach(function (e, i) { if (before.indexOf(e) < 0) pieces.push(i); });
+    var simple = !!old && (old.t === 'line' || old.t === 'arc' || old.t === 'circle') && pieces.every(function (i) { return E[i].t === 'line' || E[i].t === 'arc'; });
+    var savedRels = sketch.rels ? clone(sketch.rels) : null, savedDims = sketch.dims ? clone(sketch.dims) : null;
+    var an0 = simple ? analyze({ entities: before, rels: sketch.rels, dims: sketch.dims }) : null;
+    function near(a, b) { return !!(a && b) && Math.abs(a[0] - b[0]) < 1e-6 * Math.max(1, Math.abs(a[0])) && Math.abs(a[1] - b[1]) < 1e-6 * Math.max(1, Math.abs(a[1])); }
+    function oldPt(k) { return refPoint(before, { e: idx, s: 'p', k: k }); }
+    // where an old point ref of the trimmed entity lives now ('3.p1', an arc piece's centre), or null
+    function pointOnPiece(p) {
+      if (p.s === 'c') { for (var q = 0; q < pieces.length; q++) if (E[pieces[q]].t === 'arc') return pieces[q] + '.c'; return null; }
+      if (p.s !== 'p') return null;
+      var at = oldPt(p.k);
+      for (var j = 0; j < pieces.length; j++) for (var k = 1; k <= 2; k++) if (near(refPoint(E, { e: pieces[j], s: 'p', k: k }), at)) return pieces[j] + '.p' + k;
+      return null;
+    }
+    var rels = [];
+    (sketch.rels || []).forEach(function (rel) {
+      var touches = false, ok = true;
+      var refs = rel.refs.map(function (r) {
+        var p = parseRef(r);
+        if (!p || p.o) return [r];
+        if (p.e !== idx) { if (map[p.e] < 0) ok = false; return [String(map[p.e]) + String(r).slice(String(p.e).length)]; }
+        touches = true;
+        if (p.s === null) return pieces.map(String);          // the whole curve: each piece
+        var q = simple ? pointOnPiece(p) : null;
+        if (!q) ok = false;
+        return [q];
+      });
+      if (!ok) return;
+      if (!touches) { rel.refs = refs.map(function (x) { return x[0]; }); rels.push(rel); return; }
+      if (!simple || !KEEP_ON_PIECE[rel.type]) return;
+      var n = Math.max.apply(null, refs.map(function (x) { return x.length; }));
+      for (var k = 0; k < n; k++) {
+        var copy = clone(rel);
+        copy.refs = refs.map(function (x) { return x.length > 1 ? x[k] : x[0]; });
+        if (copy.refs.every(function (x) { return x != null; })) rels.push(copy);
+      }
+    });
+    if (simple) {
+      // the new ends: Coincident with whatever they were cut at (an end point there, or the cutting curve)
+      pieces.forEach(function (pi) {
+        [1, 2].forEach(function (k) {
+          var pt = refPoint(E, { e: pi, s: 'p', k: k });
+          if (!pt || near(pt, oldPt(1)) || near(pt, oldPt(2))) return;
+          var hit = null;
+          for (var j = 0; j < E.length && !hit; j++) {
+            if (pieces.indexOf(j) >= 0) continue;
+            pointRefs(sketch, j).forEach(function (q) { if (!hit && !/\.(mid|c)$/.test(q.ref) && len(sub(q.pt, pt)) < 1e-3) hit = q.ref; });
+          }
+          var on = hit || onCurveRef(sketch, -1, pt, 1e-3, pieces);
+          if (!on) return;
+          // the other entity's end was already Coincident with (lying on) the trimmed curve: the end-to-end one replaces it
+          if (hit) rels = rels.filter(function (r) { return !(r.type === 'coincident' && r.refs.indexOf(hit) >= 0 && r.refs.indexOf(String(pi)) >= 0); });
+          rels.push({ type: 'coincident', refs: [pi + '.p' + k, on] });
+        });
+      });
+    }
+    sketch.rels = rels;
+    if (!rels.length) delete sketch.rels;
+    // placed dimensions follow their entity; a radius / diameter of the trimmed circle or arc goes to its first arc
+    var firstArc = pieces.filter(function (i) { return E[i].t === 'arc'; })[0];
+    function moveDims() {
+      if (!sketch.dims) return;
+      sketch.dims = sketch.dims.filter(function (d) {
+        if (d.e !== idx) { if (!(map[d.e] >= 0)) return false; d.e = map[d.e]; return true; }
+        if (simple && (d.k === 'r' || d.k === 'dia') && firstArc != null) { d.e = firstArc; d.k = 'r'; return true; }
+        return false;
+      });
+      if (!sketch.dims.length) delete sketch.dims;
+    }
+    moveDims();
+    clean(sketch);
+    if (simple) solve(sketch);   // the cut point was rounded: close the new Coincidents exactly
+    if (simple && analyze(sketch).conflicts > an0.conflicts) {
+      // keeping them fights the geometry: the trimmed entity's relations go, as before
+      if (savedRels) sketch.rels = savedRels; else delete sketch.rels;
+      if (savedDims) sketch.dims = savedDims; else delete sketch.dims;
+      remap(sketch, before);
+      simple = false;
+      moveDims();
+      return false;
+    }
+    return true;
+  }
+  // A rectangle entity (corner or centre) becomes four lines, as SolidWorks' rectangle tools draw them: line k runs
+  // from corner k to corner k+1 (bottom, right, top, left), held by Horizontal / Vertical and corner Coincidents.
+  // Relations follow (corner vk -> line k start, edge ek -> line k); a width / height dimension becomes the length of
+  // the edge it was placed on. A centre rectangle also gets a construction diagonal whose midpoint carries the old
+  // centre's relations. Later entities shift by 3 (4 with the diagonal). Returns the index of the first line, or -1.
+  function explodeRect(sketch, idx) {
+    var E = sketch.entities, e = E[idx];
+    if (!e || (e.t !== 'rect' && e.t !== 'crect')) return -1;
+    var c = corners(e), lines = [];
+    for (var k = 0; k < 4; k++) {
+      var l = { t: 'line', x1: c[k][0], y1: c[k][1], x2: c[(k + 1) % 4][0], y2: c[(k + 1) % 4][1] };
+      if (e.construction) l.construction = true;
+      lines.push(l);
+    }
+    var usesCentre = (sketch.rels || []).some(function (rel) { return rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === idx && p.s === 'c'; }); });
+    var diag = usesCentre ? { t: 'line', x1: c[0][0], y1: c[0][1], x2: c[2][0], y2: c[2][1], construction: true } : null;
+    var add = diag ? lines.concat([diag]) : lines, shift = add.length - 1;
+    sketch.entities = E.slice(0, idx).concat(add, E.slice(idx + 1));
+    function mapRef(r) {
+      var p = parseRef(r);
+      if (!p || p.o) return r;
+      if (p.e > idx) return String(p.e + shift) + String(r).slice(String(p.e).length);
+      if (p.e < idx) return r;
+      if (p.s === 'v' && p.k != null && p.k < 4) return (idx + p.k) + '.p1';
+      if (p.s === 'e' && p.k != null && p.k < 4) return String(idx + p.k);
+      if (p.s === 'c' && diag) return (idx + 4) + '.mid';
+      return null;
+    }
+    var rels = [];
+    (sketch.rels || []).forEach(function (rel) {
+      var refs = rel.refs.map(mapRef);
+      if (refs.some(function (r) { return r == null; })) return;
+      rel.refs = refs;
+      rels.push(rel);
+    });
+    for (var j = 0; j < 4; j++) {
+      rels.push({ type: j % 2 ? 'vertical' : 'horizontal', refs: [String(idx + j)] });
+      rels.push({ type: 'coincident', refs: [(idx + j) + '.p2', (idx + (j + 1) % 4) + '.p1'] });
+    }
+    if (diag) rels.push({ type: 'coincident', refs: [(idx + 4) + '.p1', idx + '.p1'] }, { type: 'coincident', refs: [(idx + 4) + '.p2', (idx + 2) + '.p1'] });
+    sketch.rels = rels;
+    if (sketch.dims) {
+      sketch.dims = sketch.dims.filter(function (d) {
+        if (d.e > idx) { d.e += shift; return true; }
+        if (d.e < idx) return true;
+        if (d.k !== 'w' && d.k !== 'h') return false;
+        // Kernel.dimGeometry: w on edge 2 (top) else bottom; h on edge 1 (right) else left. The top and left lines run
+        // the other way, so the offset side flips with them.
+        var edge = d.k === 'w' ? ((d.i | 0) === 2 ? 2 : 0) : ((d.i | 0) === 1 ? 1 : 3);
+        d.e = idx + edge; d.k = 'len'; delete d.i;
+        if (d.off != null && edge >= 2) d.off = -d.off;
+        return true;
+      });
+      if (!sketch.dims.length) delete sketch.dims;
+    }
+    clean(sketch);
+    return idx;
   }
   // The entity list was replaced (trim, mirror in place): keep relations whose entities survive as the same objects.
   function remap(sketch, before) {
@@ -845,13 +1025,47 @@ var SketchSolver = (function () {
           if (Math.abs(q.pt[0] - pr.pt[0]) < tol && Math.abs(q.pt[1] - pr.pt[1]) < tol) { hit = q; break; }
         }
       }
-      if (!hit) return;
+      if (!hit) {
+        // an end point (or a centre, a point) dropped on another entity's line, circle or arc, not at one of its points: Coincident to it
+        var on = onCurveRef(sketch, i, pr.pt, Math.max(tol, 1e-7));
+        if (on) out.push({ type: 'coincident', refs: [pr.ref, on], at: pr.pt });
+        return;
+      }
       if (isCenterRef(sketch, pr.ref) && isCenterRef(sketch, hit.ref)) out.push({ type: 'concentric', refs: [pr.ref.replace(/\.c$/, ''), hit.ref.replace(/\.c$/, '')], at: pr.pt });
       else if (/\.mid$/.test(hit.ref)) out.push({ type: 'midpoint', refs: [pr.ref, hit.ref.replace(/\.mid$/, '')], at: pr.pt });
       else if (/\.c$/.test(hit.ref) && /^(rect|crect|slot|poly)$/.test(sketch.entities[parseRef(hit.ref).e].t)) return;
       else out.push({ type: 'coincident', refs: [pr.ref, hit.ref], at: pr.pt });
     });
     return out;
+  }
+  // The curve ref (a line, a rectangle / polygon edge, a circle or an arc) of an entity other than `self` that point pt
+  // lies on, within its extent (between a segment's ends, inside an arc's sweep), or null.
+  function onCurveRef(sketch, self, pt, tol, skip) {
+    var E = sketch.entities;
+    for (var j = 0; j < E.length; j++) {
+      if (j === self || !E[j] || E[j].t === 'slot' || (skip && skip.indexOf(j) >= 0)) continue;
+      var refs = curveRefs(sketch, j);
+      for (var k = 0; k < refs.length; k++) {
+        var c = refCurve(E, parseRef(refs[k]));
+        if (!c) continue;
+        if (c.kind === 'line') {
+          var d = sub(c.b, c.a), l2 = dot(d, d);
+          if (l2 < 1e-18) continue;
+          var t = dot(sub(pt, c.a), d) / l2;
+          if (t > 1e-9 && t < 1 - 1e-9 && Math.abs(lineDist(pt, c)) < tol) return refs[k];
+        } else {
+          var v = sub(pt, c.c);
+          if (Math.abs(len(v) - c.r) >= tol) continue;
+          var e = E[j];
+          if (e.t === 'arc') {
+            var a = Math.atan2(v[1], v[0]) / D2R, rel = ((a - e.a0) % 360 + 360) % 360, sw = e.a1 - e.a0;
+            if (sw < 360 && (rel < 1e-7 || rel > sw - 1e-7)) continue;
+          }
+          return refs[k];
+        }
+      }
+    }
+    return null;
   }
   // Symmetric about an existing centerline (a construction line): a line whose ends mirror each other, or a point /
   // line / circle that mirrors an existing one of its kind.
@@ -886,14 +1100,18 @@ var SketchSolver = (function () {
   // Add the inferred relations of entity i, skipping any that would over-define the sketch. Returns the added rels.
   function infer(sketch, i) {
     var added = [];
-    inferCandidates(sketch, i).forEach(function (c) {
-      var rel = { type: c.type, refs: c.refs };
-      if (!relEquation(sketch.entities, rel)) return;
+    function tryAdd(rel) {
+      if (!relEquation(sketch.entities, rel)) return false;
       var before = analyze(sketch);
       (sketch.rels = sketch.rels || []).push(rel);
       var an = analyze(sketch), k = sketch.rels.length - 1;
-      if (an.rels[k] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
+      if (an.rels[k] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return false; }
       added.push(rel);
+      return true;
+    }
+    inferCandidates(sketch, i).forEach(function (c) {
+      // a Midpoint that half repeats what is there (a vertical line between two midpoints) still puts the end on the line
+      if (!tryAdd({ type: c.type, refs: c.refs }) && c.type === 'midpoint') tryAdd({ type: 'coincident', refs: c.refs.slice() });
     });
     return added;
   }
@@ -908,15 +1126,20 @@ var SketchSolver = (function () {
   // Drag ref (a point ref, or a whole entity by `delta` from its start) toward `to`, keeping every relation and
   // dimension: a least-squares pull (hard equations plus a weak pull on the dragged geometry) followed by an exact
   // minimum-norm projection onto the relations. `start` is a copy of the entities when the drag began.
-  function drag(sketch, ref, to, start) {
+  // opts.radius: ref is a circle or arc grabbed on its curve, and `to` is where the curve should pass (the radius
+  // follows the mouse about the centre, as dragging a circle's edge does in SolidWorks).
+  function drag(sketch, ref, to, start, opts) {
     var R = parseRef(ref);
     if (!R || R.o) return { ok: false };
     var targets = {};                                  // dimension values held at their drag-start values
     var base = { entities: start || sketch.entities, dims: sketch.dims, rels: sketch.rels };
     (sketch.dims || []).forEach(function (d, i) { var v = K && base.entities[d.e] ? K.dimValue(base.entities[d.e], d) : null; if (v != null) targets[i] = v; });
     var w = 0.1, pull;
-    var P0 = refPoint(base.entities, R);
-    if (P0) pull = { n: 2, ents: [R.e], soft: true, f: function (E) { var p = refPoint(E, R); return [w * (p[0] - to[0]), w * (p[1] - to[1])]; } };
+    var P0 = refPoint(base.entities, R), eR = base.entities[R.e];
+    if (opts && opts.radius && R.s === null && eR && (eR.t === 'circle' || eR.t === 'arc')) {
+      var rTo = len(sub(to, [eR.cx, eR.cy]));
+      pull = { n: 1, ents: [R.e], soft: true, f: function (E) { return [w * (E[R.e].r - rTo)]; } };
+    } else if (P0) pull = { n: 2, ents: [R.e], soft: true, f: function (E) { var p = refPoint(E, R); return [w * (p[0] - to[0]), w * (p[1] - to[1])]; } };
     else {
       var e0 = base.entities[R.e];
       if (!e0 || !K) return { ok: false };
@@ -929,6 +1152,78 @@ var SketchSolver = (function () {
     if (!r.ok) return { ok: false };
     writeBack(sketch, sys);
     return { ok: true };
+  }
+
+  // ------------------------------------------------------------------ sketch fillet between two lines
+  // The corner where two lines meet (an end of each at the same point) nearest uv, within maxDist: { i, ei, j, ej, at }
+  // with ei / ej = 'p1' | 'p2', or null.
+  function lineCorner(sketch, uv, maxDist) {
+    var E = sketch.entities || [], best = null, bd = maxDist == null ? Infinity : maxDist;
+    function ends(e) { return { p1: [e.x1, e.y1], p2: [e.x2, e.y2] }; }
+    for (var i = 0; i < E.length; i++) {
+      if (!E[i] || E[i].t !== 'line') continue;
+      for (var j = i + 1; j < E.length; j++) {
+        if (!E[j] || E[j].t !== 'line') continue;
+        var a = ends(E[i]), b = ends(E[j]), tol = 1e-6 * Math.max(1, len(sub(a.p2, a.p1)), len(sub(b.p2, b.p1)));
+        ['p1', 'p2'].forEach(function (ei) {
+          ['p1', 'p2'].forEach(function (ej) {
+            if (len(sub(a[ei], b[ej])) > tol) return;
+            var d = len(sub(a[ei], uv));
+            if (d < bd) { bd = d; best = { i: i, ei: ei, j: j, ej: ej, at: a[ei].slice() }; }
+          });
+        });
+      }
+    }
+    return best;
+  }
+  // Round the corner between lines c.i and c.j (a lineCorner result) with radius r, as SolidWorks' Sketch Fillet
+  // does: both lines are trimmed back to the tangent points, an arc is added, and the arc is held by Coincident and
+  // Tangent relations to both lines. Relations on the vanished corner point are dropped. Returns { ok, arc, error }.
+  function filletCorner(sketch, c, r) {
+    r = +r;
+    var E = sketch.entities, L1 = E[c.i], L2 = E[c.j];
+    if (!(r > 0) || !isFinite(r)) return { ok: false, error: 'The fillet radius must be a positive number.' };
+    if (!L1 || !L2 || L1.t !== 'line' || L2.t !== 'line') return { ok: false, error: 'A sketch fillet needs two lines that meet.' };
+    function end(e, s) { return s === 'p1' ? [e.x1, e.y1] : [e.x2, e.y2]; }
+    function other(s) { return s === 'p1' ? 'p2' : 'p1'; }
+    var P = end(L1, c.ei), A = end(L1, other(c.ei)), B = end(L2, other(c.ej));
+    var la = len(sub(A, P)), lb = len(sub(B, P));
+    if (la < 1e-12 || lb < 1e-12) return { ok: false, error: 'One of the lines has no length.' };
+    var u = [(A[0] - P[0]) / la, (A[1] - P[1]) / la], v = [(B[0] - P[0]) / lb, (B[1] - P[1]) / lb];
+    var th = Math.acos(Math.max(-1, Math.min(1, dot(u, v))));
+    if (th < 1e-6 || Math.PI - th < 1e-6) return { ok: false, error: 'The lines are collinear: there is no corner to round.' };
+    var t = r / Math.tan(th / 2);
+    if (t > la * (1 + 1e-9) || t > lb * (1 + 1e-9)) return { ok: false, error: 'Radius too large: the fillet would be longer than the lines (at most ' + (Math.round(Math.min(la, lb) * Math.tan(th / 2) * 1e4) / 1e4) + ').' };
+    var Ti = [P[0] + u[0] * t, P[1] + u[1] * t], Tj = [P[0] + v[0] * t, P[1] + v[1] * t];
+    var bis = unit([u[0] + v[0], u[1] + v[1]]), dc = r / Math.sin(th / 2), C = [P[0] + bis[0] * dc, P[1] + bis[1] * dc];
+    var a0 = Math.atan2(Ti[1] - C[1], Ti[0] - C[0]) / D2R, a1 = Math.atan2(Tj[1] - C[1], Tj[0] - C[0]) / D2R, swap = false;
+    var sw = ((a1 - a0) % 360 + 360) % 360;
+    if (sw > 180) { var tmp = a0; a0 = a1; a1 = tmp; swap = true; sw = 360 - sw; }
+    var savedE = clone(E), savedR = sketch.rels ? clone(sketch.rels) : null, savedD = sketch.dims ? clone(sketch.dims) : null, before = analyze(sketch);
+    function setEnd(e, s, p) { if (s === 'p1') { e.x1 = p[0]; e.y1 = p[1]; } else { e.x2 = p[0]; e.y2 = p[1]; } }
+    setEnd(L1, c.ei, Ti); setEnd(L2, c.ej, Tj);
+    var arc = { t: 'arc', cx: C[0], cy: C[1], r: r, a0: a0, a1: a0 + sw };
+    if (L1.construction && L2.construction) arc.construction = true;
+    E.push(arc);
+    var k = E.length - 1, gone = [c.i + '.' + c.ei, c.j + '.' + c.ej];
+    if (sketch.rels) {
+      sketch.rels = sketch.rels.filter(function (rel) { return !rel.refs.some(function (x) { return gone.indexOf(String(x)) >= 0; }); });
+    }
+    sketch.rels = sketch.rels || [];
+    sketch.rels.push({ type: 'coincident', refs: [gone[0], k + (swap ? '.p2' : '.p1')] },
+                     { type: 'coincident', refs: [gone[1], k + (swap ? '.p1' : '.p2')] },
+                     { type: 'tangent', refs: [String(c.i), String(k)] },
+                     { type: 'tangent', refs: [String(c.j), String(k)] });
+    // the radius is dimensioned, as SolidWorks dimensions the first fillet, so the corner stays as defined as it was
+    (sketch.dims = sketch.dims || []).push({ e: k, k: 'r', ang: Math.round(Math.atan2(-bis[1], -bis[0]) / D2R * 10) / 10, off: Math.round(dc * 1e4) / 1e4 });
+    var res = solve(sketch), an = analyze(sketch);
+    if (!res.ok || an.conflicts > before.conflicts) {
+      sketch.entities = savedE;
+      if (savedR) sketch.rels = savedR; else delete sketch.rels;
+      if (savedD) sketch.dims = savedD; else delete sketch.dims;
+      return { ok: false, error: 'The fillet conflicts with the sketch\'s relations or dimensions.' };
+    }
+    return { ok: true, arc: k, analysis: an };
   }
 
   // ------------------------------------------------------------------ descriptions
@@ -1019,7 +1314,8 @@ var SketchSolver = (function () {
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
     setDim: setDim, setRelValue: setRelValue, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation,
-    removeEntity: removeEntity, remap: remap, clean: clean,
-    infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, install: install
+    removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, clean: clean,
+    infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
+    lineCorner: lineCorner, filletCorner: filletCorner, install: install
   };
 })();

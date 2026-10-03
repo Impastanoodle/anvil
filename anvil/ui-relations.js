@@ -354,7 +354,7 @@
       if (!r.ok) { UI.toast(r.error); return; }
       App.relPick = [];
       refresh();
-      if (r.status === 'conflict') UI.setStatus(S.TYPES[type].name + ' added, but the sketch cannot satisfy it: Over Defined (red). Delete it in Display/Delete Relations.');
+      if (r.status === 'conflict') UI.setStatus(S.TYPES[type].name + ' added, but the sketch cannot satisfy it' + (r.conflicts && r.conflicts.length ? ' (it conflicts with ' + r.conflicts.join('; ') + ')' : '') + ': Over Defined (red). Delete it in Display/Delete Relations.');
       else if (r.status === 'redundant') UI.setStatus(S.TYPES[type].name + ' added; it repeats what other relations already say: Over Defined (yellow).');
       else UI.setStatus(S.TYPES[type].name + ' added. ' + S.STATUS_TEXT[r.analysis.status] + (r.analysis.dof ? ' (' + r.analysis.dof + ' degrees of freedom left).' : '.'));
       render();
@@ -422,13 +422,15 @@
     if (!f || !ref || ref === 'O') return null;
     var pl = UI.activePlane(), start = null, uv0 = null, point = !!S.refPoint(f, ref), moved = false;
     if (!point) ref = String(refEntity(ref));
+    // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
+    var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');
     return {
       start: function () { markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); },
       move: function (q) {
         var uv = UI.screenToPlane(q[0], q[1], pl);
         if (!uv || !uv0) return;
-        var to = point ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
-        if (S.drag(f, ref, to, start).ok) { moved = true; App.gridStale = true; UI.updateSketches(); }
+        var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
+        if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; App.gridStale = true; UI.updateSketches(); }
       },
       end: function () {
         UI.refreshTree();

@@ -487,9 +487,11 @@
       message: sel ? 'Offsetting the selected entity.' : 'Offsetting the face outline this sketch sits on (' + source.length + ' loop' + (source.length === 1 ? '' : 's') + ').',
       groups: [{ title: 'Parameters', fields: [{ type: 'number', label: 'Offset distance', key: 'd', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse (inward)', key: 'reverse' }, { type: 'check', label: 'Construction geometry', key: 'construction' }] }],
       onChange: function () { apply(); },
-      onOK: function () { UI.pushUndo(); App.sketchDirty = true; UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
-      onCancel: function () { added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); }); added = []; UI.updateSketches(); }
+      onOK: function () { UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
+      onCancel: function () { added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); }); added = []; UI.updateSketches(); if (App.undo.length === undoN) App.undo.pop(); }
     });
+    UI.pushUndo(); App.sketchDirty = true;   // the undo point is the sketch before the offset (the preview is live)
+    var undoN = App.undo.length;
     apply();
   }
   function cmdSketchFillet() {
@@ -498,7 +500,7 @@
     var v = { r: 2 };
     openPM({
       title: 'Sketch Fillet', icon: 'fillet', values: v,
-      message: 'Set the radius, then <b>click near a corner</b> of a rectangle, polygon or polyline to round it.',
+      message: 'Set the radius, then <b>click near a corner</b> where two lines meet, or a corner of a rectangle, polygon or polyline, to round it.',
       command: { sketchFillet: true, onSketchPoint: function (uv) {
         var best = null, bestD = Infinity;
         f.entities.forEach(function (e, ei) {
@@ -507,6 +509,31 @@
           if (e.t === 'polyline' && !e.closed) return;
           pts.forEach(function (p, pi) { var d = Math.hypot(p[0] - uv[0], p[1] - uv[1]); if (d < bestD) { bestD = d; best = { e: e, ei: ei, pts: pts, pi: pi }; } });
         });
+        // two lines meeting at a corner (a Line-tool chain): trimmed lines + a tangent arc (sketch-solver.js)
+        var lc = window.SketchSolver ? SketchSolver.lineCorner(f, uv, UI.gridStep()) : null;
+        var lcD = lc ? Math.hypot(lc.at[0] - uv[0], lc.at[1] - uv[1]) : Infinity, pushed = false, saved = null;
+        // a rectangle corner: the rectangle becomes four lines first (as SolidWorks draws it), then the lines are filleted
+        if (window.SketchSolver && best && (best.e.t === 'rect' || best.e.t === 'crect') && bestD <= UI.gridStep() && bestD < lcD) {
+          saved = JSON.stringify({ entities: f.entities, rels: f.rels || null, dims: f.dims || null });
+          pushed = !App.sketchDirty;
+          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
+          var corner = best.pts[best.pi].slice();
+          SketchSolver.explodeRect(f, best.ei);
+          lc = SketchSolver.lineCorner(f, corner, 1e-6 * Math.max(1, Math.abs(corner[0]), Math.abs(corner[1])));
+          lcD = 0; best = null;
+        }
+        if (lc && (!best || lcD <= bestD)) {
+          if (!saved) { pushed = !App.sketchDirty; if (pushed) { UI.pushUndo(); App.sketchDirty = true; } }
+          var fr = SketchSolver.filletCorner(f, lc, +v.r);
+          if (!fr.ok) {
+            if (saved) { var s0 = JSON.parse(saved); f.entities = s0.entities; if (s0.rels) f.rels = s0.rels; else delete f.rels; if (s0.dims) f.dims = s0.dims; else delete f.dims; UI.updateSketches(); }
+            if (pushed) { App.undo.pop(); App.sketchDirty = false; }
+            UI.toast(fr.error); return;
+          }
+          App.gridStale = true; UI.updateSketches(); UI.refreshTree();
+          UI.setStatus('Corner filleted with R' + v.r + ' (tangent arc). Click another corner or press ✓.');
+          return;
+        }
         if (!best || bestD > UI.gridStep()) { UI.toast('No corner near that point.'); return; }
         try {
           var out = K.filletPolyline(best.pts, best.pi, +v.r);
@@ -537,10 +564,17 @@
         var hit = UI.pickEntity(mx, my);
         if (!hit) { UI.setStatus('Click on an entity to trim it.'); return; }
         try {
+          var he = f.entities[hit.index];
+          if (window.SketchSolver && he && (he.t === 'rect' || he.t === 'crect')) {
+            // a rectangle is four lines in SolidWorks: trim the edge clicked, the other three keep their relations
+            if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+            SketchSolver.explodeRect(f, hit.index);
+            hit = UI.pickEntity(mx, my) || hit;
+          }
           var before = f.entities.slice(), out = K.trimEntity(f.entities, hit.index, uv);
           if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
           f.entities = out.map(roundPts);
-          if (window.SketchSolver) SketchSolver.remap(f, before);  // relations on untouched entities survive
+          if (window.SketchSolver) SketchSolver.afterTrim(f, before, hit.index);  // relations and dimensions follow the pieces
           count++;
           App.sel = null; App.gridStale = true;
           UI.updateSketches(); UI.refreshTree();
