@@ -1733,21 +1733,24 @@
   (UI.onBuild = UI.onBuild || []).push(function () { if (isolated && (!isAsm() || App.model.name !== isolated.model)) { isolated.bar.remove(); isolated = null; } });
 
   // ---- Change Transparency: a transparent component is drawn see-through (and clicks go through it to what is behind,
-  // as in SolidWorks); display state like Hide, kept by component id. ui-core.js draws the opaque mesh without it
+  // as in SolidWorks); kept on the component (r7/asm7). ui-core.js draws the opaque mesh without it
   // (UI.bodyGhost); the see-through copy shares the drawn positions, so a drag pose moves it too.
   var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#7d98bd" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d5e0ef" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
-  var ghosts = {}, ghostModel = null, ghostMesh = null, ghostMat = null;
-  function ghostKeyOk() { if (!isAsm()) return false; if (ghostModel !== App.model.name) { ghosts = {}; ghostModel = App.model.name; } return true; }
-  function isGhost(id) { return ghostKeyOk() && !!ghosts[id]; }
+  // r7/asm7: kept in the model (component.transparent: saved, undone with it, written by toScript); a toggle is one undo
+  // step that only redraws (no rebuild).
+  var ghostMesh = null, ghostMat = null;
+  function ghostKeyOk() { return isAsm(); }
+  function isGhost(id) { var c = isAsm() && AS.findComponent(App.model, id); return !!(c && c.transparent); }
   UI.bodyGhost = function (i) {
     if (!ghostKeyOk()) return false;
     var c = (App.model.components || [])[i];
-    return !!(c && ghosts[c.id]);
+    return !!(c && c.transparent);
   };
-  UI.anyGhost = function () { return isAsm() && ghostModel === App.model.name && Object.keys(ghosts).length > 0; };
+  UI.anyGhost = function () { return isAsm() && (App.model.components || []).some(function (c) { return c.transparent; }); };
   function setGhost(id, on) {
-    if (!ghostKeyOk() || !AS.findComponent(App.model, id)) return false;
-    if (on) ghosts[id] = true; else delete ghosts[id];
+    var c = ghostKeyOk() && AS.findComponent(App.model, id);
+    if (!c) return false;
+    if (!!c.transparent !== !!on) { UI.pushUndo(); AS.setTransparent(App.model, c.id, on); if (UI.refreshTree) UI.refreshTree(); }
     var i = AS.componentIndex(App.model, id);
     if (UI.setBodyHidden) UI.setBodyHidden(i, !!(UI.isBodyHidden && UI.isBodyHidden(i)));   // redraw: the opaque mesh leaves it out
     drawGhosts();
@@ -1951,7 +1954,7 @@
 
   // ------------------------------------------------------------------ exports and window.anvil
   UI.asmIsolate = { isolate: isolate, exit: exitIsolate, active: function () { return isolated ? isolated.id : null; } };
-  UI.asmGhost = { set: setGhost, is: isGhost, list: function () { return ghostKeyOk() ? Object.keys(ghosts).map(Number) : []; } };
+  UI.asmGhost = { set: setGhost, is: isGhost, list: function () { return ghostKeyOk() ? App.model.components.filter(function (c) { return c.transparent; }).map(function (c) { return c.id; }) : []; } };
   UI.cmdLinearComponentPattern = function () { cmdComponentPattern('linear'); };
   UI.cmdCircularComponentPattern = function () { cmdComponentPattern('circular'); };
   UI.cmdMirrorComponents = function () { cmdComponentPattern('mirror'); };
@@ -1992,6 +1995,7 @@
     A.saveDocument = function (name, model) { AS.Documents.put(String(name), model || App.model); if (!model) App.fileName = String(name); return A.documents(); };
     A.removeDocument = function (name) { AS.Documents.remove(String(name)); return A.documents(); };
     A.flexible = function (id, on) { return then(setFlexible(id, on !== false)); };
+    A.transparent = function (id, on) { var c = isAsm() && AS.findComponent(App.model, id); if (!c) return Promise.reject(new Error('Unknown component ' + JSON.stringify(id))); setGhost(c.id, on !== false); return Promise.resolve(c.id); };   // r7/asm7
     A.openPart = function (idOrName) {
       var c = isAsm() ? AS.findComponent(App.model, idOrName) : null;
       if (c && c.source && c.source.file != null) return openDocument(c.source.file, { from: c.name });

@@ -6322,6 +6322,48 @@
     }
     return out.join(', ');
   });
+  step('r7/asm7: Change Transparency is kept in the model: one undo step (no rebuild), undo / redo bring it back, saved in the script (a.insert transparent: true) and read back', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code);
+    await idle();
+    var A = UI.App, cap = A.model.components.filter(function (c) { return c.name === 'Cap<1>'; })[0], u0 = A.undo.length, rebuilds = 0, orig = UI.rebuild;
+    UI.rebuild = function () { rebuilds++; return orig.apply(this, arguments); };
+    try { UI.asmGhost.set(cap.id, true); } finally { UI.rebuild = orig; }
+    assert(cap.transparent === true && A.undo.length === u0 + 1 && rebuilds === 0, 'in the model, one undo step, ' + rebuilds + ' rebuilds');
+    assert(/transparent: true/.test(anvil.script()), 'the script writes it');
+    await UI.undo(); await idle();
+    var c1 = W.Assembly.findComponent(UI.App.model, cap.id);
+    assert(!c1.transparent && !UI.asmGhost.is(cap.id), 'undo: opaque');
+    await UI.redo(); await idle();
+    assert(UI.asmGhost.is(cap.id) && UI.bodyGhost(W.Assembly.componentIndex(UI.App.model, cap.id)), 'redo: transparent');
+    var ghost = null; UI.scene.traverse(function (o) { if (o.userData && o.userData.asmGhost) ghost = o; });
+    assert(ghost && ghost.parent, 'drawn see-through after redo');
+    var src = anvil.script();
+    await anvil.run(src); await idle();
+    var c2 = UI.App.model.components.filter(function (c) { return c.name === 'Cap<1>'; })[0];
+    assert(c2 && c2.transparent && UI.asmGhost.is(c2.id), 'read back from the script');
+    await anvil.transparent('Cap<1>', false);
+    assert(!UI.asmGhost.is(c2.id), 'anvil.transparent(name, false)');
+  });
+  step('r7/asm7: the Width mate gets the Mate pop-up toolbar once its four selections are made (Width, Flip Mate Alignment, ✓ / ✗); ✓ adds it', async function () {
+    await anvil.run(exByName('Gear train and patterns').code);
+    await idle();
+    var mt = UI.App.model.mates.filter(function (m) { return m.type === 'width'; })[0];
+    assert(mt, 'the example has a Width mate');
+    var refs = ['a', 'a2', 'b', 'b2'].map(function (k) { return JSON.parse(JSON.stringify(mt[k])); });
+    await UI.asm.removeMate(mt.id); await idle();
+    var n0 = anvil.mates().length;
+    UI.cmdMate();
+    var s = UI.pmSpec(); s.values.type = 'width'; s.onChange(s.values, 'type'); await idle();
+    UI.mateSelect(refs[0]); UI.mateSelect(refs[1]); UI.mateSelect(refs[2]); await idle();
+    assert(!UI.asmPopup(), 'no pop-up with three of the four selections');
+    UI.mateSelect(refs[3]); await idle();
+    var p = UI.asmPopup();
+    assert(p && p.kind === 'mate' && p.buttons.join() === 'width,flip,ok,cancel', 'pop-up: ' + (p && p.buttons.join()));
+    r5pop('ok'); await idle();
+    assert(anvil.mates().length === n0 + 1 && anvil.mates().some(function (m) { return m.type === 'width'; }), 'Width mate added');
+    assert(UI.pmTitle() === 'Mate' && !UI.asmPopup(), 'the PM stays open, the pop-up goes');
+    UI.pmCancel();
+  });
   // --- end r7/asm7 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
