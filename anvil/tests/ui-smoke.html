@@ -5833,6 +5833,27 @@
     assert(UI.App.mode === 'part', 'discarded and exited');
     return 'ok';
   });
+  step('r5/sketch5: placing a Smart Dimension or deleting one updates Under / Fully Defined (status bar, colours, FeatureManager) at once, not on the next edit', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 });
+    W.SketchSolver.infer(f, 0);
+    UI.updateSketches(); UI.refreshTree();
+    function st() { var s = D.querySelector('#status-right .sk-state'); return s ? s.textContent : ''; }
+    assert(st() === 'Under Defined', st());
+    UI.setTool('dimension');
+    rskClick([15, 0]); rskClick([15, -8]);
+    assert(st() === 'Fully Defined' && UI.App.sketchState.status === 'full', 'placed: ' + st());
+    var black = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0x15181d; });
+    assert(black, 'drawn black at once');
+    var inp = $('dim-edit').querySelector('input');
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    UI.setTool('select');
+    UI.App.sel = { kind: 'dim', index: 0 };
+    UI.deleteSelection();
+    assert(!(f.dims || []).length && st() === 'Under Defined', 'deleted: ' + st());
+    return 'ok';
+  });
   // --- end r5/sketch5 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

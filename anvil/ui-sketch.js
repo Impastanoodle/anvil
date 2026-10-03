@@ -1411,7 +1411,7 @@
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     f.dims.splice(index, 1);
     App.sel = null;
-    App.dimsStale = true;
+    UI.updateSketches();   // r5/sketch5: the sketch's state and colours follow at once
     UI.setStatus('Dimension deleted.');
   }
 
@@ -1446,6 +1446,7 @@
       Object.keys(placed).forEach(function (k) { d[k] = placed[k]; });
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       (f.dims = f.dims || []).push(d);
+      UI.updateSketches();   // r5/sketch5: colours and Under / Fully / Over Defined follow at once, not on the next edit
       App.sel = { kind: 'dim', index: f.dims.length - 1 };
       // over-defining: ask whether to make it driven (ui-relations.js) instead of opening the Modify box
       if (UI.askDrivenIfOver && UI.askDrivenIfOver(f, 'dim', f.dims.length - 1)) { UI.updateSketches(); return; }
