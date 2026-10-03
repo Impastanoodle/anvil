@@ -1788,6 +1788,44 @@ var UI = (function () {
   }
   // the PropertyManager closed: a preview still waiting is not sent (the one in flight is answered and dropped there)
   function cancelPreviews() { if (pv.pending) { pv.pending.resolve({ superseded: true }); pv.pending = null; } }
+  // ---- Instant3D's light drag path (r3/engine3): while a depth / angle arrow (or a part-mode sketch dimension) is
+  // dragged, each ruler step previews only the dragged feature, built in the worker on the part before it, instead of
+  // rebuilding and re-applying the whole part; the release rebuilds once (ui-select.js endDrag), and
+  // featurePreviewEnd(promise) drops late previews and clears the shown one when that rebuild is applied.
+  // featurePreview(fid) -> true when the preview was asked for (false: no worker or not a previewable feature, so the
+  // caller rebuilds as before).
+  var fpv = { seq: 0, shown: 0, closed: 0 };
+  function featurePreview(fid) {
+    if (isAssembly() || !App.model || !App.build || App.previewSync) return false;
+    var f = K.findFeature(App.model, fid), upto = f ? App.model.features.indexOf(f) : -1;
+    if (upto < 0 || (f.type !== 'extrude' && f.type !== 'revolve')) return false;
+    var my = ++fpv.seq, cut = false;
+    try { cut = !!(K.isCut(f, App.model) || f.cut); } catch (e) { }
+    var b = modelBounds(), diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    var p = previewInWorker({ op: 'tool', feature: JSON.parse(JSON.stringify(f)), upto: upto, throughLimit: Math.max(20, diag * 1.5) });
+    if (!p) return false;
+    p.then(function (r) {
+      if (!r || r.superseded || my <= fpv.closed || my < fpv.shown) return;
+      fpv.shown = my;
+      disposeGroup(groups.preview);
+      r.tools.forEach(function (t) {
+        if (!t || !t.polygons.length) return;
+        var mesh = K.meshFromBody(t), g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+        g.setAttribute('normal', new THREE.BufferAttribute(analyticNormals(mesh), 3));
+        groups.preview.add(new THREE.Mesh(g, cut ? mats.previewCut : mats.preview));
+      });
+      requestRender();
+    }, function () { });
+    return true;
+  }
+  function featurePreviewEnd(done) {
+    var had = fpv.seq > fpv.closed;
+    fpv.closed = fpv.seq;
+    if (!had) return;
+    Promise.resolve(done).then(clear, clear);
+    function clear() { if (fpv.closed === fpv.seq) { disposeGroup(groups.preview); requestRender(); } }
+  }
   // a worker that died takes its previews with it: answer them with null (the caller previews on the main thread)
   function dropPreviews() {
     [pv.inflight, pv.pending].forEach(function (j) { if (j) j.resolve(null); });
@@ -1983,7 +2021,7 @@ var UI = (function () {
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },
-    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
+    rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
