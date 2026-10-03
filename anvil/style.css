@@ -308,6 +308,7 @@ body { overflow: auto; }
 #dim-layer .temp text { fill: var(--blue); pointer-events: none; }
 /* sketch relations (ui-relations.js): relation icons, inference icons, over-defined dimensions, Add Relations picks */
 #dim-layer .rel-badge { pointer-events: auto; cursor: pointer; }
+#viewport.tool-cross #dim-layer .rel-badge { pointer-events: none; }   /* r5/sketch5: with a drawing tool, a click on a relation icon goes to the sketch */
 #dim-layer .rel-badge rect { fill: #f3f8ef; stroke: #8fbf86; stroke-width: 1; }
 #dim-layer .rel-badge:hover rect, #dim-layer .rel-badge.sel rect { fill: #d9f2d4; stroke: var(--green); stroke-width: 1.5; }
 #dim-layer .rel-badge.redundant rect { fill: #fff4c8; stroke: #d4a300; }
