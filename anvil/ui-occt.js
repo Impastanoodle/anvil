@@ -76,9 +76,20 @@
       var key = keyOf(e.model);
       if (seen[key]) return;
       seen[key] = true;
-      out.push({ key: key, cacheKey: ck, model: e.model, anvilBuild: e.build, name: e.model.name || 'Part' });
+      out.push({ key: key, cacheKey: ck, model: e.model, anvilBuild: e.anvil || e.build, occt: !!e.occt, name: e.model.name || 'Part' });
     });
     return out;
+  }
+  function partsKey(parts) { return parts.map(function (p) { return p.cacheKey; }).sort().join('|'); }
+  // r3/assembly3: the assembly cache keeps OpenCascade's part builds (entry.occt, Anvil's in entry.anvil), so a rebuild
+  // that only moves components (a drag, a mate, an explode) reuses them: no Anvil parts flash in, no worker round trip
+  function markOcct(oc, ac) {
+    Object.keys(oc || {}).forEach(function (k) {
+      var o = oc[k], a = ac && ac[k];
+      if (!o || !o.build || !a || !a.build) return;
+      if (o.kind === 'assembly') { markOcct(o.build.cache, a.build.cache); return; }
+      o.anvil = a.anvil || a.build; o.occt = true;
+    });
   }
   function triSharedOf(mesh) {
     var out = new Int32Array(mesh.triCount);
@@ -88,6 +99,11 @@
   function requestAssembly() {
     var parts = collectParts(App.build && App.build.cache, [], {});
     if (!parts.length) { st.state = 'assembly'; st.result = null; settle(); refresh(); return; }
+    if (st.asmOcct && st.asmOcctKey === partsKey(parts) && parts.every(function (p) { return p.occt; })) {   // every part shown is OpenCascade's already
+      App.build.occt = st.asmOcct;
+      st.state = 'ok'; st.driving = true; st.anvilBuild = null; st.error = null;
+      settle(); refresh(); return;
+    }
     st.busy = true; st.want = ++st.seq; st.state = 'building'; st.buildingSince = performance.now();
     st.asm = { seq: st.want, parts: parts, results: {}, left: parts.length, anvilBuild: App.build };
     parts.forEach(function (p, i) {
@@ -121,7 +137,9 @@
     try { b = Assembly.rebuild(App.model, null, UI.asmBuildOpts || null); }
     catch (e) { st.state = 'error'; st.error = 'Assembly with OpenCascade parts: ' + (e.message || e); return; }
     finally { Assembly.setPartBuilder(null); }
-    b.occt = { volume: volume, faces: faces, parts: A.parts.length };
+    b.occt = st.asmOcct = { volume: volume, faces: faces, parts: A.parts.length }; st.asmOcctKey = partsKey(A.parts);
+    markOcct(b.cache, A.anvilBuild && A.anvilBuild.cache);
+    if (!App.model.tessellation) App.asmCache = b.cache;   // later rebuilds reuse OpenCascade's parts (see markOcct)
     st.state = 'ok'; st.anvilBuild = A.anvilBuild; st.driving = true;
     swapIn(b);
   }
@@ -285,6 +303,7 @@
     else {
       stopWorker(); st.state = 'off'; st.result = null;
       if (st.driving && st.anvilBuild) swapIn(st.anvilBuild);
+      if (isAsm() && App.asmCache) { App.asmCache = null; st.asmOcct = null; if (UI.rebuild) UI.rebuild({ noSave: true }); }   // OpenCascade's cached parts out
       st.driving = false; st.anvilBuild = null;
       settle();
     }
