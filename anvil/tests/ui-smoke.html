@@ -4949,6 +4949,29 @@
     assert(Math.abs(s1[0] - 35) < 1e-6 && Math.abs(s1[1] + 45) < 1e-6, 'clockwise sweep ends at (35, -45): ' + JSON.stringify(e));
     return 'arcs ' + rskEnts().filter(function (x) { return x.t === 'arc'; }).length;
   });
+  step('r4/sketch4: while placing a Smart Dimension its label follows the cursor along the dimension line (past the end the line runs on to it), snaps to the middle near it, and stays where it is dropped', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: -20, y1: 0, x2: 20, y2: 0 });
+    UI.updateSketches();
+    UI.setTool('dimension');
+    rskClick([5, 0]);
+    selEv('mousemove', rskScr([30, -12]));
+    r4Dims();
+    var temp = D.querySelector('#dim-layer g.dim.temp'), tt = temp && temp.querySelector('text'), cur = rskScr([30, -12]);
+    assert(tt && Math.abs(+tt.getAttribute('x') - cur[0]) < 2, 'label under the cursor: ' + (tt && tt.getAttribute('x')) + ' vs ' + cur[0]);
+    assert(temp.querySelectorAll('line').length === 4, 'dimension line extended to the label: ' + temp.querySelectorAll('line').length + ' lines');
+    selEv('mousemove', rskScr([1, -12]));
+    assert(UI.App.tempDim.tx == null, 'near the middle the label centres: ' + JSON.stringify(UI.App.tempDim));
+    selEv('mousemove', rskScr([30, -12]));
+    rskClick([30, -12]);
+    UI.cancelDimEdit();
+    assert(f.dims.length === 1 && Math.abs(f.dims[0].tx - 30) < 0.5 && Math.abs(f.dims[0].off + 12) < 0.5, 'placed ' + JSON.stringify(f.dims));
+    r4Dims();
+    var t = r4Text('40');
+    assert(t && Math.abs(+t.getAttribute('x') - cur[0]) < 2, 'label stays where it was dropped');
+    return 'tx ' + f.dims[0].tx;
+  });
   // --- end r4/sketch4 ---
   // --- r3/engine3 ---
   async function engUntil(fn, ms) { var t0 = performance.now(); while (!fn() && performance.now() - t0 < (ms || 3000)) await wait(15); return fn(); }

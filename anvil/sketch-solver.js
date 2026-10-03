@@ -618,6 +618,12 @@ var SketchSolver = (function () {
   function solve(sketch, opts) {
     opts = opts || {};
     var sys = buildSystem(sketch, opts);
+    // opts.part = entity index: only the geometry tied to it can move (a dimension edit), so that part is solved alone
+    // (as a drag is): smaller matrices in a sketch of separate pieces, and a conflict elsewhere does not block it
+    if (opts.part != null && sys.ents[opts.part]) {
+      var pc = connected(sys, opts.part);
+      if (pc.count < sys.ents.length) sys = buildSystem(sketch, Object.assign({}, opts, { entities: pc.set }));
+    }
     var x0 = getX(sys);
     var r = lm(sys, { mob: mobility(sys, opts.mob) });
     var moved = 0, x1 = getX(sys);
@@ -701,7 +707,7 @@ var SketchSolver = (function () {
     if (!e || !K || !K.dimGeometry(e, dim)) return { ok: false, error: 'That dimension no longer applies to the entity.' };
     var saved = clone(sketch.entities);
     K.setDimValue(e, dim, v);              // the kernel's one-entity move is the starting guess
-    var opts = { dimTargets: {} };
+    var opts = { dimTargets: {}, part: dim.e };
     if (index >= 0) opts.dimTargets[index] = v;
     else opts.extra = [dimEquation(sketch.entities, dim, v)];
     var r = solve(sketch, opts);
@@ -717,7 +723,8 @@ var SketchSolver = (function () {
     if (!(v >= 0) || !isFinite(v) || (rel.type === 'angle' && v > 180)) return { ok: false, error: rel.type === 'angle' ? 'Angle must be between 0 and 180 degrees.' : 'Dimension must be a positive number.' };
     var saved = clone(sketch.entities), t = {};
     t[index] = v;
-    var r = solve(sketch, { relTargets: t });
+    var pe = rel.refs.map(parseRef).filter(function (q) { return q && !q.o; })[0];
+    var r = solve(sketch, { relTargets: t, part: pe ? pe.e : null });
     if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     rel.v = v;
     return { ok: true };
@@ -787,6 +794,7 @@ var SketchSolver = (function () {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
         rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g], rel.dir);
         if (opts.off != null) rel.off = +opts.off;
+        if (opts.tx != null && type === 'distance') rel.tx = +opts.tx;
         if (opts.driven) rel.driven = true;
       }
       if (type === 'fix') {
@@ -1360,6 +1368,7 @@ var SketchSolver = (function () {
         // distance stays one) and whether it was driven
         var rel = { type: 'distance', refs: ln.s === 'p1' ? [sref, far] : [far, sref], v: lens[ln.e][d.k] };
         if (d.k === 'dx') rel.dir = 'h'; else if (d.k === 'dy') rel.dir = 'v';
+        if (d.tx != null) rel.tx = d.tx;
         if (d.off != null) rel.off = d.off;
         if (d.driven) rel.driven = true;
         keep.push(rel);
@@ -1537,8 +1546,8 @@ var SketchSolver = (function () {
   function relArgs(rel) {
     var s = JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs);
     if (TYPES[rel.type] && TYPES[rel.type].dim) {
-      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; if (rel.dir) o.dir = rel.dir; s += ', ' + JSON.stringify(o); }
-      else if (rel.dir) { var o2 = { value: rel.v }; if (rel.off != null) o2.off = rel.off; o2.dir = rel.dir; s += ', ' + JSON.stringify(o2); }
+      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; if (rel.dir) o.dir = rel.dir; if (rel.tx != null) o.tx = rel.tx; s += ', ' + JSON.stringify(o); }
+      else if (rel.dir || rel.tx != null) { var o2 = { value: rel.v }; if (rel.off != null) o2.off = rel.off; if (rel.dir) o2.dir = rel.dir; if (rel.tx != null) o2.tx = rel.tx; s += ', ' + JSON.stringify(o2); }
       else s += rel.off != null ? ', ' + JSON.stringify({ value: rel.v, off: rel.off }) : ', ' + rel.v;
     }
     else if (rel.type === 'fix' && rel.at) s += ', ' + JSON.stringify({ at: rel.at });
@@ -1562,6 +1571,7 @@ var SketchSolver = (function () {
       if (opt && typeof opt === 'object' && opt.off != null) o.off = +opt.off;
       if (opt && typeof opt === 'object' && opt.driven) o.driven = true;
       if (opt && typeof opt === 'object' && (opt.dir === 'h' || opt.dir === 'v')) o.dir = opt.dir;
+      if (opt && typeof opt === 'object' && opt.tx != null) o.tx = +opt.tx;
       var r = addRelation(this.f, type, refs, o);
       if (!r.ok) throw new Error('rel(' + JSON.stringify(type) + '): ' + r.error);
       return this;
@@ -1585,11 +1595,19 @@ var SketchSolver = (function () {
       (Array.isArray(list) ? list : [list]).forEach(function (i) { var e = self.f.entities[i]; if (!e || e.t !== 'point') throw new Error('No sketch point ' + i + ' to make a virtual sharp.'); e.sharp = true; });
       return this;
     };
+    // .dimText([[i, t], …]): the label of Smart Dimension i sits t along its dimension line from the middle (where it
+    // was dropped)
+    SBP.dimText = function (list) {
+      var self = this;
+      (list || []).forEach(function (p) { var d = (self.f.dims || [])[p[0]]; if (!d) throw new Error('No sketch dimension ' + p[0] + ' to place.'); d.tx = +p[1]; });
+      return this;
+    };
     Kn.registerSketchScript(function (f) {
       var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
       var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
       var shp = (f.entities || []).map(function (e, i) { return e.sharp && e.t === 'point' ? i : -1; }).filter(function (i) { return i >= 0; });
-      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (shp.length ? '\n  .sharp(' + JSON.stringify(shp) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
+      var txs = (f.dims || []).map(function (d, i) { return d.tx != null ? [i, Math.round(d.tx * 1e4) / 1e4] : null; }).filter(function (x) { return x; });
+      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (shp.length ? '\n  .sharp(' + JSON.stringify(shp) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (txs.length ? '\n  .dimText(' + JSON.stringify(txs) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
     });
   }
   if (K) install(K);

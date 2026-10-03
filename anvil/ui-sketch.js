@@ -942,24 +942,34 @@
     }).map(function (t) { t.e = i; return t; });
   }
 
-  // Placement of a dimension from the cursor position (sketch coordinates): { off } for linear, { ang, off } for radial.
+  // Placement of a dimension from the cursor position (sketch coordinates): { off, tx? } for linear, { ang, off } for radial.
   function dimPlacement(e, d, uv) {
     var g = K.dimGeometry(e, d);
     if (!g) return {};
     if (g.type === 'linear') {
-      var n = [-g.dir[1], g.dir[0]];
-      return { off: Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4 };
+      var n = [-g.dir[1], g.dir[0]], out = { off: Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4 };
+      var tx = textAlong(uv, g.P, g.dir, g.value);
+      if (tx != null) out.tx = tx;
+      return out;
     }
     var dx = uv[0] - g.C[0], dy = uv[1] - g.C[1];
     return { ang: Math.round(Math.atan2(dy, dx) * 1800 / Math.PI) / 10, off: Math.round(Math.hypot(dx, dy) * 1e4) / 1e4 };
   }
+  // Where the label of a linear dimension from P along dir (length value) sits for the cursor at uv: its offset from
+  // the middle along the dimension line (sketch units), or null within 10 px of the middle (the label centres itself,
+  // as it snaps there in SolidWorks).
+  function textAlong(uv, P, dir, value) {
+    var t = (uv[0] - P[0]) * dir[0] + (uv[1] - P[1]) * dir[1] - value / 2, s = UI.cam.scale || 0.1;
+    return Math.abs(t) < 10 * s ? null : Math.round(t * 1e4) / 1e4;
+  }
+  UI.dimTextAlong = textAlong;
 
   // A linear dimension between sketch points P and Q measured along unit direction dir (pointing from P towards Q),
   // its dimension line `off` along dir's left normal from P: extension lines from both points reach the dimension
   // line (a horizontal distance between points at different heights gets one longer extension line), arrows inside
   // or, when short, outside, and the label at the middle. `along` lets drawDims slide the label along the dimension
   // line to keep labels apart.
-  function linearDimScreen(pl, P, Q, dir, off0) {
+  function linearDimScreen(pl, P, Q, dir, off0, tx) {
     var s = UI.cam.scale;
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
@@ -977,7 +987,7 @@
     out.arrows.push({ tip: sA, dir: inside ? u : [-u[0], -u[1]] }, { tip: sB, dir: inside ? [-u[0], -u[1]] : u });
     var sg0 = off < 0 ? -1 : 1, nS = unit(sA, S([A[0] + n[0] * sg0 * s, A[1] + n[1] * sg0 * s]));
     out.text = { x: (sA[0] + sB[0]) / 2 + nS[0] * 9, y: (sA[1] + sB[1]) / 2 + nS[1] * 9 + 4, anchor: 'middle' };
-    out.along = { u: [-u[0], -u[1]], half: Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) / 2 };
+    out.along = { u: [-u[0], -u[1]], half: Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) / 2, shift: tx ? tx / s : 0 };
     return out;
   }
   UI.linearDimScreen = linearDimScreen;
@@ -991,7 +1001,7 @@
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
     var out = { lines: [], arrows: [], value: g.value, label: g.prefix + fmtDim(g.value) };
     if (g.type === 'linear') {
-      var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off);
+      var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off, d.tx);
       ld.value = g.value; ld.label = out.label;
       return ld;
     } else {
@@ -1023,28 +1033,29 @@
     return true;
   }
   function placeLabel(sc, it) {
-    if (it.temp || !sc.text) return;
-    var b = labelBox(sc, 0, 0), al = sc.along, best = 0;
-    if (al && !boxFree(b)) {
+    if (!sc.text) return;
+    var al = sc.along, s0 = al && al.shift || 0, b = labelBox(sc, al ? al.u[0] * s0 : 0, al ? al.u[1] * s0 : 0), best = s0;
+    if (al && !it.temp && !boxFree(b)) {
       var w = b[2] - b[0], step = al.radial ? 14 : w + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
       for (var k = 0; k < tries.length; k++) {
-        var t = tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
+        var t = s0 + tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
         if (boxFree(bb)) { best = t; b = bb; break; }
       }
-      if (best) {
-        sc.text = { x: sc.text.x + al.u[0] * best, y: sc.text.y + al.u[1] * best, anchor: sc.text.anchor };
-        // the dimension line runs on to a label moved past its end
-        var reach = Math.abs(best) + w / 2;
-        if (!al.radial && reach > al.half) {
-          var line = sc.lines[sc.lines.length - 1], c = [(line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2], sg = best < 0 ? -1 : 1;
-          sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
-        } else if (al.radial) {
-          var ld = sc.lines[0];
-          sc.lines.push([ld[1], [ld[1][0] + al.u[0] * best, ld[1][1] + al.u[1] * best]]);
-        }
+    }
+    if (al && best) {
+      var wl = b[2] - b[0];
+      sc.text = { x: sc.text.x + al.u[0] * best, y: sc.text.y + al.u[1] * best, anchor: sc.text.anchor };
+      // the dimension line runs on to a label moved past its end
+      var reach = Math.abs(best) + wl / 2;
+      if (!al.radial && reach > al.half) {
+        var line = sc.lines[sc.lines.length - 1], c = [(line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2], sg = best < 0 ? -1 : 1;
+        sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
+      } else if (al.radial) {
+        var ld = sc.lines[0];
+        sc.lines.push([ld[1], [ld[1][0] + al.u[0] * best, ld[1][1] + al.u[1] * best]]);
       }
     }
-    labelBoxes.push(b);
+    if (!it.temp) labelBoxes.push(b);
   }
 
   // ---- selecting, moving and editing a dimension, as in SolidWorks: a click selects it, a double-click opens the
@@ -1079,6 +1090,7 @@
       if (!uv) return;
       var pl = it.rel != null ? (UI.relDimPlacement ? UI.relDimPlacement(f, d, uv) : {}) : dimPlacement(f.entities[d.e], d, uv);
       ['off', 'ang'].forEach(function (k) { if (pl[k] != null) d[k] = pl[k]; });
+      if (pl.off != null && pl.ang == null) { if (pl.tx != null) d.tx = pl.tx; else delete d.tx; }   // a linear label sits where it is dropped
       App.dimsStale = true;
     }
     function move(e2) {
@@ -1337,6 +1349,7 @@
       // third click of a two-entity dimension: place it, then type its value
       var rd = st.relDim;
       st.relDim = null; st.dim = null; App.tempRelDim = null;
+      $('sketch-hint').innerHTML = TOOL_HINTS.dimension;
       if (UI.placeRelDim) UI.placeRelDim(f, rd, raw);
       return;
     }
@@ -1351,6 +1364,7 @@
         $('sketch-hint').innerHTML = 'Click where the ' + (two.type === 'angle' ? 'angle' : 'distance') + ' dimension should sit.';
         return;
       }
+      $('sketch-hint').innerHTML = TOOL_HINTS.dimension;
       var d = st.dim, e = f.entities[d.e];
       st.dim = null; App.tempDim = null;
       if (!e) return;

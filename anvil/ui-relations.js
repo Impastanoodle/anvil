@@ -119,6 +119,8 @@
     if (g.type === 'angle') { out.off = Math.round(Math.hypot(uv[0] - g.X[0], uv[1] - g.X[1]) * 1e4) / 1e4; return out; }
     var n = [-g.dir[1], g.dir[0]];
     out.off = Math.round(((uv[0] - g.P[0]) * n[0] + (uv[1] - g.P[1]) * n[1]) * 1e4) / 1e4;
+    var tx = UI.dimTextAlong ? UI.dimTextAlong(uv, g.P, g.dir, (g.Q[0] - g.P[0]) * g.dir[0] + (g.Q[1] - g.P[1]) * g.dir[1]) : null;
+    if (tx != null) out.tx = tx;
     return out;
   }
   // Screen drawing data in the shape ui-sketch.js's drawOne takes: { lines, arrows, label, text }.
@@ -131,7 +133,7 @@
     var label = UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '');
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
-      var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off);
+      var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);
       ld.label = label;
       return ld;
     }
@@ -153,7 +155,7 @@
   function placeRelDim(f, rd, uv) {
     var pl = relDimPlacement(f, rd, uv);
     markDirty();
-    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir });
+    var r = S.addRelation(f, rd.type, rd.refs, { off: pl.off, dir: pl.dir, tx: pl.tx });
     if (!r.ok) { UI.toast(r.error); return; }
     var idx = r.rels[0];
     App.sel = { kind: 'rel', index: idx };

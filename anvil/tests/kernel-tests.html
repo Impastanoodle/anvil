@@ -9247,6 +9247,22 @@
       assert(K.generateScript(m2) === src, 'stable script');
       return 'ok';
     });
+    test('dimension labels placed off the middle (tx) survive the script: .dimText for Smart Dimensions, { tx } on distances', function () {
+      var m = K.newModel();
+      K.runScript(m, 'p.sketch("Front").line(0,0,40,0).line(0,10,30,30).dim(0, "len", { off: -5 }).id();');
+      var f = m.features.filter(function (x) { return x.type === 'sketch'; })[0];
+      f.dims[0].tx = 27.5;
+      var r = SS.addRelation(f, 'distance', ['1.p1', '1.p2'], { dir: 'h', off: 25, tx: -12 });
+      assert(r.ok && f.rels[0].tx === -12, JSON.stringify(f.rels));
+      var src = K.generateScript(m);
+      assert(src.indexOf('.dimText([[0,27.5]])') > 0 && /"tx":-12/.test(src), src);
+      var m2 = K.newModel();
+      K.runScript(m2, src);
+      var g = m2.features.filter(function (x) { return x.type === 'sketch'; })[0];
+      assert(g.dims[0].tx === 27.5 && g.rels[0].tx === -12 && g.rels[0].dir === 'h', JSON.stringify([g.dims, g.rels]));
+      assert(K.generateScript(m2) === src, 'stable script');
+      return 'ok';
+    });
   })();
   // --- end r4/sketch4 ---
 
