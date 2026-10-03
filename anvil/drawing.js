@@ -542,7 +542,7 @@ var Drawing = (function () {
         var c = ra.sg * bb / h, s = -ra.sg * aa / h;
         return V.add(V.add(S.o, V.scale(w, S.R + S.r * c)), V.scale(S.d, S.r * s));
       }
-      var tolS = diag * 1e-5 + 1e-9;
+      var tolS = diag * 3e-5 + 1e-9;
       rorder.forEach(function (key) {
         var ra = runs[key], eps = 2 * ra.dev;
         joinRuns(modMerge(ra.ivs, 1e-9), 1e-9).forEach(function (iv) {
@@ -1355,6 +1355,7 @@ var Drawing = (function () {
       scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
     if (opts.x != null && !vert) v.x = opts.x;
     if (opts.y != null && vert) v.y = opts.y;
+    if ((vert ? opts.y : opts.x) == null && mesh) clearSpot(doc, mesh, v, vert ? 'y' : 'x');
     doc.layout = 'manual';
     return v;
   }
@@ -1363,6 +1364,58 @@ var Drawing = (function () {
     var s = viewScale(doc, par), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ce = extentsOf(mesh, F), d = DIRS[dir];
     if (!d[0]) return [par.x, par.y + d[1] * ((pe.h + ce.h) * s / 2 + g)];
     return [par.x + d[0] * ((pe.w + ce.w) * s / 2 + g), par.y];
+  }
+  // The paper a view takes (an estimate from its frame's extents, scale and label; enough to keep views apart):
+  // { x0, y0, x1, y1 } in paper units
+  function viewPaperBox(doc, mesh, v) {
+    var k = paperK(doc.units), s = viewScale(doc, v), hw, hh, lab = 0;
+    if (v.kind === 'detail' && v.detail) { hw = hh = v.detail.r * s; lab = 14 * k; }
+    else { var ex = viewExtents(doc, mesh, v); hw = ex.w * s / 2; hh = ex.h * s / 2; if (v.kind === 'section' || v.scale) lab = 14 * k; }
+    return { x0: v.x - hw, x1: v.x + hw, y0: v.y - hh - lab, y1: v.y + hh };
+  }
+  // clearSpot(doc, mesh, v, free): moves a view just made by a script (no position given) to the nearest place on the
+  // sheet where it covers no other view, the title block or the Bill of Materials, keeping a gap round it: an aligned
+  // view slides along its alignment (outward first, then to the parent's other side), a detail view goes to the
+  // nearest clear spot in any direction. When nothing on the sheet is clear it goes beyond the farthest view on its
+  // side (r3/drawings3: section views added through the API used to land on the Right view).
+  function clearSpot(doc, mesh, v, free) {
+    var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = g * 0.6, b1 = BORDER * k;
+    var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) { return viewPaperBox(doc, mesh, o); });
+    obs.push({ x0: S[0] - b1 - TB_W * k, y0: b1, x1: S[0] - b1, y1: b1 + TB_H * k });
+    if (doc.bom && doc.bom.show !== false && doc.bomRows) { var bb = bomBox(doc, doc.units, doc.bomRows); obs.push({ x0: bb.x0, y0: bb.y0, x1: bb.x1, y1: bb.y1 }); }
+    var me = viewPaperBox(doc, mesh, v), ox = v.x, oy = v.y;
+    function boxAt(x, y) { return { x0: me.x0 + x - ox, x1: me.x1 + x - ox, y0: me.y0 + y - oy, y1: me.y1 + y - oy }; }
+    function clear(b) { return obs.every(function (o) { return b.x1 + sep <= o.x0 || o.x1 + sep <= b.x0 || b.y1 + sep <= o.y0 || o.y1 + sep <= b.y0; }); }
+    function onSheet(b) { return b.x0 >= b1 + g / 4 && b.y0 >= b1 + g / 4 && b.x1 <= S[0] - b1 - g / 4 && b.y1 <= S[1] - b1 - g / 4; }
+    if (clear(boxAt(ox, oy)) && onSheet(boxAt(ox, oy))) return v;
+    var step = 2 * k, cands = [], par = v.parent != null ? findView(doc, v.parent) : null;
+    if (free === 'x' || free === 'y') {
+      var c0 = free === 'x' ? ox : oy, pc = par ? (free === 'x' ? par.x : par.y) : c0, dir = c0 >= pc ? 1 : -1, span = Math.max(S[0], S[1]) * 2;
+      for (var t = 0; t <= span; t += step) cands.push(c0 + dir * t);
+      var c1 = 2 * pc - c0;   // the parent's other side
+      for (var t2 = 0; t2 <= span; t2 += step) cands.push(c1 - dir * t2);
+      var pick = null, far = null;
+      cands.forEach(function (c) {
+        if (pick != null) return;
+        var b = free === 'x' ? boxAt(c, oy) : boxAt(ox, c);
+        if (!clear(b)) return;
+        if (onSheet(b)) pick = c; else if (far == null && (c - pc) * dir > 0) far = c;
+      });
+      var cc = pick != null ? pick : far != null ? far : c0;
+      if (free === 'x') v.x = cc; else v.y = cc;
+      return v;
+    }
+    // on the sheet if it fits anywhere, else the nearest clear spot beside it
+    var best = null, bd = Infinity, pass, st2 = step * 2;
+    for (pass = 0; pass < 2 && !best; pass++) {
+      var lo = pass ? -S[0] / 2 : b1, hx = pass ? S[0] * 1.5 : S[0] - b1, hy = pass ? S[1] * 1.5 : S[1] - b1, ly = pass ? -S[1] / 2 : b1;
+      for (var y = ly; y <= hy; y += st2) for (var x = lo; x <= hx; x += st2) {
+        var bx = boxAt(x, y), d = Math.hypot(x - ox, y - oy);
+        if (d < bd && (pass || onSheet(bx)) && clear(bx)) { bd = d; best = [x, y]; }
+      }
+    }
+    if (best) { v.x = best[0]; v.y = best[1]; }
+    return v;
   }
   // addSectionView(doc, mesh, parentId, { axis: 'h' | 'v', at, sign, x, y, label }): a full section on a cutting
   // line through the parent, horizontal at v = at or vertical at u = at (model units in the parent's view frame).
@@ -1383,6 +1436,7 @@ var Drawing = (function () {
       section: { axis: axis, at: +opts.at || 0, sign: sign }, scale: par.scale ? par.scale.slice() : null, display: 'hlr', x: pos[0], y: pos[1] });
     if (opts.x != null && axis === 'v') v.x = opts.x;
     if (opts.y != null && axis === 'h') v.y = opts.y;
+    if ((axis === 'h' ? opts.y : opts.x) == null && mesh) clearSpot(doc, mesh, v, axis === 'h' ? 'y' : 'x');
     doc.layout = 'manual';
     return v;
   }
@@ -1406,6 +1460,7 @@ var Drawing = (function () {
     var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
       detail: { c: [+opts.c[0], +opts.c[1]], r: +opts.r }, scale: sc, display: par.display,
       x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + opts.r * s, y: opts.y != null ? opts.y : par.y });
+    if (opts.x == null && opts.y == null && mesh) clearSpot(doc, mesh, v, null);
     doc.layout = 'manual';
     return v;
   }
