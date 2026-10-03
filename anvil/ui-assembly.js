@@ -1800,6 +1800,95 @@
   var baseSetBodyHidden = UI.setBodyHidden;   // Hide / Show redraws the drawn mesh: the see-through copy with it
   if (baseSetBodyHidden) UI.setBodyHidden = function () { var r = baseSetBodyHidden.apply(this, arguments); if (ghostMesh || UI.anyGhost()) drawGhosts(); return r; };
 
+  // ---- Insert Components: the part follows the pointer and a click drops it there (SolidWorks), r5/asm5. Its origin
+  // goes on the face under the pointer, else on the plane through the assembly origin square to the view. The first
+  // component stays at the origin (it is fixed there). o = { source, fixedAt?: [x, y, z], onMove(p), onPlace(p) }
+  var ins = null;
+  function insertBuild(source) {
+    var model = AS.partModel(source), b = null;
+    if (AS.isAssembly(model)) { var mm = clone(model); delete mm.exploded; b = AS.rebuild(mm, App.asmCache); }
+    else b = K.rebuild(model);
+    return b && b.body && b.body.polygons.length ? b : null;
+  }
+  function insertMesh(source) {
+    var b = null;
+    try { b = insertBuild(source); } catch (e) { b = null; }
+    if (!b) return null;
+    var m = K.meshFromBody(b.body), g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+    var mat = new THREE.MeshPhongMaterial({ color: 0x8fb4de, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+    var obj = new THREE.Mesh(g, mat);
+    obj.renderOrder = 8;
+    obj.frustumCulled = false;
+    obj.userData.asmInsertPreview = true;
+    return obj;
+  }
+  function insertTarget(mx, my) {
+    var h = UI.pickFace(mx, my);
+    if (h && h.point) return h.point.slice();
+    if (!UI.camera || !UI.size) return null;
+    var ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(mx / UI.size.w * 2 - 1, -(my / UI.size.h) * 2 + 1), UI.camera);
+    var n = new THREE.Vector3();
+    UI.camera.getWorldDirection(n);
+    var hit = new THREE.Vector3();
+    return ray.ray.intersectPlane(new THREE.Plane(n, 0), hit) ? [hit.x, hit.y, hit.z] : null;
+  }
+  function insertDrop(o) { if (o && o.parent) o.parent.remove(o); if (o) { o.geometry.dispose(); o.material.dispose(); } }
+  function insertSetSource(source) {
+    if (!ins) return;
+    insertDrop(ins.obj);
+    ins.source = source;
+    ins.obj = source ? insertMesh(source) : null;
+    if (ins.obj) { UI.scene.add(ins.obj); insertAt(ins.at); }
+    if (UI.requestRender) UI.requestRender();
+  }
+  function insertAt(p) {
+    if (!ins || !p) return;
+    ins.at = p.slice();
+    if (ins.obj) ins.obj.position.set(p[0], p[1], p[2]);
+    if (UI.requestRender) UI.requestRender();
+  }
+  function insertStop() {
+    var s = ins;
+    if (!s) return;
+    ins = null;
+    insertDrop(s.obj);
+    if (UI.viewport) { UI.viewport.removeEventListener('mousemove', s.move); UI.viewport.removeEventListener('mousedown', s.down, true); UI.viewport.removeEventListener('mouseup', s.up, true); }
+    if (UI.requestRender) UI.requestRender();
+  }
+  function insertStart(o) {
+    insertStop();
+    var s = ins = { at: o.fixedAt ? o.fixedAt.slice() : (o.at || [0, 0, 0]).slice(), fixed: !!o.fixedAt, obj: null, press: null };
+    function vp(e) { var r = UI.viewport.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+    var raf = 0, last = null;
+    s.move = function (e) {
+      if (ins !== s || s.fixed || e.buttons) return;
+      last = vp(e);
+      if (raf) return;
+      raf = requestAnimationFrame(function () {
+        raf = 0;
+        if (ins !== s || !last) return;
+        var p = insertTarget(last[0], last[1]);
+        if (p) { insertAt(p); if (o.onMove) o.onMove(p); }
+      });
+    };
+    s.down = function (e) { s.press = e.button === 0 ? [e.clientX, e.clientY] : null; };
+    s.up = function (e) {
+      if (ins !== s || e.button !== 0 || !s.press || Math.hypot(e.clientX - s.press[0], e.clientY - s.press[1]) > 4) return;
+      var q = vp(e), p = s.fixed ? s.at : insertTarget(q[0], q[1]);
+      if (!p) return;
+      insertAt(p);
+      setTimeout(function () { if (ins === s && o.onPlace) o.onPlace(p); }, 0);   // after the click's own handling
+    };
+    if (UI.viewport) { UI.viewport.addEventListener('mousemove', s.move); UI.viewport.addEventListener('mousedown', s.down, true); UI.viewport.addEventListener('mouseup', s.up, true); }
+    insertSetSource(o.source);
+    return s;
+  }
+  UI.asmInsertPreview = { start: insertStart, stop: insertStop, source: insertSetSource, at: insertAt,
+    state: function () { return ins ? { at: ins.at.slice(), shown: !!(ins.obj && ins.obj.parent), fixed: ins.fixed } : null; } };
+
   // ---- Tab hides the component under the pointer, Shift + Tab shows the hidden one under it (SolidWorks shortcuts)
   var overVp = null;   // the pointer in the graphics area (viewport coordinates), null when outside
   if (UI.viewport) {

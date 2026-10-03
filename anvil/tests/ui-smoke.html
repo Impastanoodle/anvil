@@ -5884,6 +5884,27 @@
     assert(p && p.kind === 'ctx', 'context toolbar from the FeatureManager');
     UI.asmClosePopup();
   });
+  step('r5/asm5: Insert Components — the part follows the pointer (X / Y / Z follow, its origin on the face under it) and a click drops it there (one undo step); the first component stays at the origin', async function () {
+    await anvil.newAssembly('R5Ins');
+    UI.cmdInsertComponent(); await idle();
+    var st = UI.asmInsertPreview.state();
+    assert(st && st.fixed && st.shown, 'the first component: shown at the origin, fixed there');
+    UI.pmCancel();
+    assert(!UI.asmInsertPreview.state(), 'the preview goes with the PM');
+    await anvil.insert({ example: 'Plate with bolt holes' }, { fixed: true }); await idle();
+    UI.setView('Isometric'); if (UI.finishViewAnimation) UI.finishViewAnimation(); await idle();
+    UI.cmdInsertComponent(); await idle();
+    var s = UI.worldToScreen([60, 8, 40]), rc = UI.viewport.getBoundingClientRect(), u0 = UI.App.undo.length;
+    function ev(t) { return new W.MouseEvent(t, { bubbles: true, cancelable: true, button: 0, buttons: t === 'mousedown' ? 1 : 0, clientX: rc.left + s[0], clientY: rc.top + s[1] }); }
+    UI.viewport.dispatchEvent(ev('mousemove')); await r3frame(); await r3frame();
+    st = UI.asmInsertPreview.state();
+    assert(st && st.shown && Math.abs(st.at[1] - 8) < 1e-6 && Math.abs(st.at[0] - 60) < 1 && Math.abs(st.at[2] - 40) < 1, 'follows the pointer onto the plate top: ' + JSON.stringify(st));
+    near(+UI.pmSpec().values.y, 8, 1e-3, 'Y field');
+    UI.viewport.dispatchEvent(ev('mousedown')); UI.viewport.dispatchEvent(ev('mouseup'));
+    await wait(30); await idle();
+    var cs = anvil.components();
+    assert(cs.length === 2 && Math.abs(cs[1].position[1] - 8) < 1e-3 && UI.App.undo.length === u0 + 1 && !UI.hasPM(), 'dropped where clicked: ' + JSON.stringify(cs[1].position));
+  });
   // --- end r5/asm5 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

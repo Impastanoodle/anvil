@@ -2147,17 +2147,37 @@
         ] }
       ],
       onChange: function (x, key) {
+        if ((key === 'x' || key === 'y' || key === 'z') && UI.asmInsertPreview && !moving) UI.asmInsertPreview.at([+x.x || 0, +x.y || 0, +x.z || 0]);
+        if (key === 'part' && x.part !== 'browse' && UI.asmInsertPreview) UI.asmInsertPreview.source(currentSource(x));
         if (key !== 'part' || x.part !== 'browse') return;
         x.part = list.length ? list[0].key : '';
         renderPM();
-        browsePart(function (b) { if (pm.spec && pm.values === x) { x.part = b.key; renderPM(); } });
+        browsePart(function (b) { if (pm.spec && pm.values === x) { x.part = b.key; renderPM(); if (UI.asmInsertPreview) UI.asmInsertPreview.source(currentSource(x)); } });
       },
+      onClose: function () { if (UI.asmInsertPreview) UI.asmInsertPreview.stop(); },
       onOK: function (x) {
         var src = insertSources().filter(function (s) { return s.key === x.part; })[0];
         if (!src) { UI.toast('Pick a part to insert first.'); return false; }
         var p = asmInsert(src.source, { position: [+x.x || 0, +x.y || 0, +x.z || 0] });
         p.catch(function (e) { UI.toast(e.message || String(e)); });
         return p;
+      }
+    });
+    // r5/asm5: the part follows the pointer in the graphics area and a click drops it there (the first one stays at the
+    // origin, where it is fixed); the X / Y / Z fields follow
+    function currentSource(x) { var s = insertSources().filter(function (q) { return q.key === x.part; })[0]; return s ? s.source : null; }
+    var moving = false, mySpec = pm.spec;
+    if (UI.asmInsertPreview) UI.asmInsertPreview.start({
+      source: currentSource(v), fixedAt: first ? [0, 0, 0] : null,
+      onMove: function (p) {
+        if (pm.spec !== mySpec) return;
+        moving = true;
+        try { ['x', 'y', 'z'].forEach(function (k, i) { pmSetValue(k, +p[i].toFixed(3)); }); } finally { moving = false; }
+      },
+      onPlace: function (p) {
+        if (pm.spec !== mySpec) return;
+        if (!first) { v.x = +p[0].toFixed(3); v.y = +p[1].toFixed(3); v.z = +p[2].toFixed(3); }
+        pmOK();
       }
     });
   }
