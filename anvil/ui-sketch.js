@@ -86,11 +86,12 @@
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
-    arc: 'Click the center, the start point, then the end point (counter-clockwise).',
+    arc: 'Click the center, the start point, then the end point; the arc runs the way you move. From a line or arc end, move the center out square to it (Tangent glyph) for a tangent arc.',
+    arc3: 'Click the start point, then the end point, then a point the arc passes through. From a line or arc end the arc locks tangent to it as it comes near (Tangent glyph).',
     polygon: 'Click the center, then a vertex. Set the number of sides in the PropertyManager.',
     slot: 'Click the two slot centers, then a point to set the width.',
     point: 'Click to place a point.',
-    dimension: 'Click a line, circle, arc, rectangle, slot or polygon, then click where the dimension should sit. Click any value to change it; <b>Delete</b> removes a selected dimension.'
+    dimension: 'Click a line, circle, arc, rectangle, slot or polygon (or two points), then click where the dimension should sit: above / below or beside two points for a horizontal or vertical distance. Double-click a value to change it, drag it to move it; <b>Delete</b> removes a selected dimension.'
   };
   function setTool(name) {
     cancelTool(true);
@@ -249,6 +250,30 @@
       if (!woken.some(function (w) { return w[0] === best.pt[0] && w[1] === best.pt[1]; })) { woken.push([best.pt[0], best.pt[1]]); if (woken.length > 8) woken.shift(); }
       return out;
     }
+    // 1b. tangent guidance for the arc tools (the click then infers Tangent, SketchSolver.inferCandidates):
+    //     3 Point Arc — the third point locks onto the arc tangent to the line / arc ending at its start or end point
+    //     when within 6 px of it; Centerpoint Arc — the centre locks onto the line square to a line / arc end the
+    //     cursor has passed over (the arc started there leaves it tangent)
+    st.tanArc = null;
+    if (App.tool === 'arc3' && st.pts.length === 2) {
+      var tl = tangentLock(f, st.pts[0], st.pts[1], raw, px);
+      if (tl) { out.p = tl.p; out.tan = tl; st.tanArc = tl; return out; }
+    }
+    if (App.tool === 'arc' && !st.pts.length) {
+      var bestN = null;
+      woken.forEach(function (P) {
+        var fwd = smoothDirs(f, P).fwd;
+        if (!fwd) return;
+        var nrm = [-fwd[1], fwd[0]], w0 = [raw[0] - P[0], raw[1] - P[1]], sN = w0[0] * nrm[0] + w0[1] * nrm[1], dd = Math.abs(w0[0] * fwd[0] + w0[1] * fwd[1]) / px;
+        if (Math.abs(sN) / px > INFER_PX.point && dd < INFER_PX.align && (!bestN || dd < bestN.d)) bestN = { d: dd, P: P, u: sN > 0 ? nrm : [-nrm[0], -nrm[1]], s: Math.abs(sN) };
+      });
+      if (bestN) {
+        var sl0 = App.view.showGrid ? bestN.s : niceRound(bestN.s, 0.5 * px * 1.05);
+        out.p = [bestN.P[0] + bestN.u[0] * sl0, bestN.P[1] + bestN.u[1] * sl0];
+        out.dir = { type: 'tangent', from: bestN.P, u: bestN.u, glyph: 'tangent' };
+        return out;
+      }
+    }
     // 2. on a line / circle / arc (the solver infers a point-on-curve Coincident there)
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
     if (onCurve) { out.p = onCurve; out.snap = { kind: 'on', pt: onCurve }; return out; }
@@ -357,6 +382,46 @@
     while (a1 <= a0) a1 += 360;
     return { t: 'arc', cx: C[0], cy: C[1], r: r, a0: a0, a1: a1 };
   }
+  // The arc from A to B through M (counter-clockwise sketch arc), or null when the three are (nearly) collinear.
+  function threePointArc(A, B, M) {
+    var ax = A[0], ay = A[1], bx = B[0], by = B[1], mx = M[0], my = M[1];
+    var d = 2 * (ax * (by - my) + bx * (my - ay) + mx * (ay - by));
+    var sc = Math.max(Math.hypot(bx - ax, by - ay), Math.hypot(mx - ax, my - ay), 1e-12);
+    if (Math.abs(d) < 1e-9 * sc * sc) return null;
+    var a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, m2 = mx * mx + my * my;
+    var cx = (a2 * (by - my) + b2 * (my - ay) + m2 * (ay - by)) / d, cy = (a2 * (mx - bx) + b2 * (ax - mx) + m2 * (bx - ax)) / d;
+    var D = 180 / Math.PI, aA = Math.atan2(ay - cy, ax - cx) * D, aB = Math.atan2(by - cy, bx - cx) * D, aM = Math.atan2(my - cy, mx - cx) * D;
+    function ccw(from, to) { return ((to - from) % 360 + 360) % 360; }
+    // M lies on the counter-clockwise sweep from A to B: A -> B; otherwise the arc runs B -> A
+    var a0 = ccw(aA, aM) <= ccw(aA, aB) ? aA : aB, a1 = a0 === aA ? aB : aA;
+    while (a1 <= a0) a1 += 360;
+    return { t: 'arc', cx: cx, cy: cy, r: cleanLen(Math.hypot(ax - cx, ay - cy)), a0: a0, a1: a1 };
+  }
+  // 3 Point Arc tangent lock: the arc from A to B that leaves A (or arrives at B) tangent to the line / arc ending there,
+  // when the cursor point raw is within 6 px of it: { p (raw moved onto it), arc, at: 'start' | 'end' } or null.
+  function tangentLock(f, A, B, raw, px) {
+    var best = null;
+    [[A, B, 'start'], [B, A, 'end']].forEach(function (c) {
+      var fwd = smoothDirs(f, c[0]).fwd, ta = fwd && tangentArc(c[0], fwd, c[1]);
+      if (!ta) return;
+      var vx = raw[0] - ta.cx, vy = raw[1] - ta.cy, L = Math.hypot(vx, vy), dd = Math.abs(L - ta.r) / px;
+      if (L < 1e-12 || dd >= INFER_PX.align || (best && dd >= best.d)) return;
+      var ang = Math.atan2(vy, vx) * 180 / Math.PI, rel = ((ang - ta.a0) % 360 + 360) % 360;
+      if (rel > ta.a1 - ta.a0) return;   // on the other part of the circle
+      best = { d: dd, p: [ta.cx + vx / L * ta.r, ta.cy + vy / L * ta.r], arc: ta, at: c[2] };
+    });
+    return best;
+  }
+  // Centerpoint Arc: does the arc run clockwise from its start point b (centre a)? The way the cursor has swept round
+  // the centre decides (st.arcSweep, degrees, + counter-clockwise); before it has moved, an arc starting at a line /
+  // arc end continues forward from it (tangent), otherwise counter-clockwise.
+  function arcClockwise(a, b) {
+    var st = App.toolState || {};
+    if (st.arcSweep && Math.abs(st.arcSweep) > 1e-6) return st.arcSweep < 0;
+    var f = UI.activeSketchFeature(), fwd = f && smoothDirs(f, b).fwd;
+    if (!fwd) return false;
+    return fwd[0] * -(b[1] - a[1]) + fwd[1] * (b[0] - a[0]) < 0;
+  }
   // Line tool, tangent arc mode (SolidWorks' autotransition: press A, or move back over the end point and out again)
   function setArcMode(on) {
     var st = App.toolState, prev = st.pts[st.pts.length - 1], f = UI.activeSketchFeature();
@@ -392,8 +457,16 @@
         var a0 = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
         if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
         var a1 = Math.atan2(c[1] - a[1], c[0] - a[0]) * 180 / Math.PI;
+        if (arcClockwise(a, b)) { var sw0 = a0; a0 = a1; a1 = sw0; }   // stored counter-clockwise: from the end round to the start
         while (a1 <= a0) a1 += 360;
         return [{ t: 'arc', cx: a[0], cy: a[1], r: r, a0: a0, a1: a1 }];
+      }
+      case 'arc3': {
+        if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
+        var lk = (App.toolState || {}).tanArc;
+        if (lk && lk.p[0] === c[0] && lk.p[1] === c[1]) { var la = Object.assign({}, lk.arc); la.r = cleanLen(la.r); return [la]; }
+        var tp = threePointArc(a, b, c);
+        return [tp || { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
       }
       case 'slot': {
         if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
@@ -411,7 +484,7 @@
     return Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / L;
   }
   function stepsNeeded() {
-    switch (App.tool) { case 'arc': case 'slot': return 3; case 'point': return 1; default: return 2; }
+    switch (App.tool) { case 'arc': case 'arc3': case 'slot': return 3; case 'point': return 1; default: return 2; }
   }
 
   function addEntity(e) {
@@ -461,9 +534,12 @@
     if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
     st.away = st.back = false;
+    if (App.tool === 'arc' && st.pts.length === 2) { st.arcSweep = 0; st.lastAng = null; }   // the sweep starts at the start point
     if (st.pts.length >= stepsNeeded()) {
       var f = UI.activeSketchFeature(), n0 = f ? f.entities.length : 0;
       var ents = toolEntities(st.pts);
+      // a 3 Point Arc through three points in a line is no arc: the third click is not taken
+      if (App.tool === 'arc3' && (!ents[0] || ents[0].t !== 'arc')) { st.pts.pop(); UI.setStatus('The three points are in a line: click a point off the line from start to end.'); return; }
       ents.forEach(addEntity);
       if (f && st.typed && f.entities.length === n0 + 1) typedDims(f, n0, st.typed);
       st.typed = null;
@@ -616,7 +692,7 @@
         if (pts.length === 1) return v.r == null ? cur : polar(a, v.r, Math.hypot(dx, dy) > 1e-12 ? Math.atan2(dy, dx) : 0);
         if (v.sweep == null) return cur;
         var b2 = pts[1], a0 = Math.atan2(b2[1] - a[1], b2[0] - a[0]);
-        return polar(a, Math.hypot(b2[0] - a[0], b2[1] - a[1]), a0 + v.sweep * D);
+        return polar(a, Math.hypot(b2[0] - a[0], b2[1] - a[1]), a0 + (arcClockwise(a, b2) ? -1 : 1) * v.sweep * D);
       }
     }
     return cur;
@@ -681,6 +757,17 @@
       else if (d0 < 5 && st.away) st.back = true;
     }
     var info = drawing ? inferPoint(raw, mx, my) : null, p = info ? info.p : raw;
+    // Centerpoint Arc: follow the way the cursor sweeps round the centre (the arc runs that way, as in SolidWorks)
+    if (drawing && App.tool === 'arc' && App.toolState.pts.length === 2) {
+      var sa = App.toolState, c0 = sa.pts[0], b0 = sa.pts[1], D0 = 180 / Math.PI;
+      if (Math.hypot(p[0] - c0[0], p[1] - c0[1]) > 1e-12) {
+        var angNow = Math.atan2(p[1] - c0[1], p[0] - c0[0]) * D0;
+        if (sa.lastAng == null) sa.lastAng = Math.atan2(b0[1] - c0[1], b0[0] - c0[0]) * D0;
+        var dA = ((angNow - sa.lastAng) % 360 + 540) % 360 - 180;
+        sa.arcSweep = (sa.arcSweep || 0) + dA;
+        sa.lastAng = angNow;
+      }
+    }
     if (info && numBox) {
       var tv = numValues();
       if (Object.keys(tv).length) { p = typedPoint(p, tv); info = { p: p, snap: null, align: [], px: info.px }; }
@@ -759,8 +846,14 @@
       case 'arc': {
         if (pts.length < 2) return 'R ' + n(L, 2);
         var b = pts[1], a0 = Math.atan2(b[1] - a[1], b[0] - a[0]), a1 = Math.atan2(dy, dx), sw = (a1 - a0) * 180 / Math.PI;
+        if (arcClockwise(a, b)) sw = -sw;
         while (sw <= 0) sw += 360;
         return 'R ' + n(Math.hypot(b[0] - a[0], b[1] - a[1]), 2) + '   A ' + n(sw, 1) + '°';
+      }
+      case 'arc3': {
+        if (pts.length < 2) return 'L ' + n(L, 2);
+        var ta3 = toolEntities(pts, p)[0];
+        return ta3 && ta3.t === 'arc' ? 'R ' + n(ta3.r, 2) + '   A ' + n(ta3.a1 - ta3.a0, 1) + '°' : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2);
       }
       case 'slot': return pts.length < 2 ? 'L ' + n(L, 2) : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2) + '   W ' + n(2 * distPointLine(p, a, pts[1]), 2);
     }
@@ -806,6 +899,7 @@
     // relation glyphs by the cursor: what the click will infer
     var types = [];
     if (info.snap && SNAP_GLYPH[info.snap.kind]) types.push(SNAP_GLYPH[info.snap.kind]);
+    if ((info.dir && info.dir.glyph) || info.tan) types.push('tangent');   // the arc tools' tangent guidance
     (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
     types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
     if (readout) {
@@ -860,6 +954,34 @@
     return { ang: Math.round(Math.atan2(dy, dx) * 1800 / Math.PI) / 10, off: Math.round(Math.hypot(dx, dy) * 1e4) / 1e4 };
   }
 
+  // A linear dimension between sketch points P and Q measured along unit direction dir (pointing from P towards Q),
+  // its dimension line `off` along dir's left normal from P: extension lines from both points reach the dimension
+  // line (a horizontal distance between points at different heights gets one longer extension line), arrows inside
+  // or, when short, outside, and the label at the middle. `along` lets drawDims slide the label along the dimension
+  // line to keep labels apart.
+  function linearDimScreen(pl, P, Q, dir, off0) {
+    var s = UI.cam.scale;
+    function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
+    function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
+    var n = [-dir[1], dir[0]], value = (Q[0] - P[0]) * dir[0] + (Q[1] - P[1]) * dir[1];
+    var off = off0 != null ? off0 : 16 * s;
+    if (Math.abs(off) < 6 * s) off = (off < 0 ? -6 : 6) * s;
+    var A = [P[0] + n[0] * off, P[1] + n[1] * off], B = [A[0] + dir[0] * value, A[1] + dir[1] * value];
+    var sA = S(A), sB = S(B), out = { lines: [], arrows: [], value: value };
+    [[P, off], [Q, off + (P[0] - Q[0]) * n[0] + (P[1] - Q[1]) * n[1]]].forEach(function (x) {
+      var X = x[0], o = x[1], sg = o < 0 ? -1 : 1, gap = 2 * s * sg, ext = o + 3 * s * sg;
+      out.lines.push([S([X[0] + n[0] * gap, X[1] + n[1] * gap]), S([X[0] + n[0] * ext, X[1] + n[1] * ext])]);
+    });
+    out.lines.push([sA, sB]);
+    var u = unit(sB, sA), inside = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) > 34;
+    out.arrows.push({ tip: sA, dir: inside ? u : [-u[0], -u[1]] }, { tip: sB, dir: inside ? [-u[0], -u[1]] : u });
+    var sg0 = off < 0 ? -1 : 1, nS = unit(sA, S([A[0] + n[0] * sg0 * s, A[1] + n[1] * sg0 * s]));
+    out.text = { x: (sA[0] + sB[0]) / 2 + nS[0] * 9, y: (sA[1] + sB[1]) / 2 + nS[1] * 9 + 4, anchor: 'middle' };
+    out.along = { u: [-u[0], -u[1]], half: Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) / 2 };
+    return out;
+  }
+  UI.linearDimScreen = linearDimScreen;
+
   // Screen-space drawing data for one dimension: lines, arrow heads, and the label with its anchor point.
   function dimScreen(pl, e, d) {
     var g = K.dimGeometry(e, d);
@@ -869,19 +991,9 @@
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
     var out = { lines: [], arrows: [], value: g.value, label: g.prefix + fmtDim(g.value) };
     if (g.type === 'linear') {
-      var n = [-g.dir[1], g.dir[0]];
-      var off = d.off != null ? d.off : 16 * s;
-      if (Math.abs(off) < 6 * s) off = (off < 0 ? -6 : 6) * s;
-      var sg = off < 0 ? -1 : 1, ext = (Math.abs(off) + 3 * s) * sg, gap = 2 * s * sg;
-      var A = [g.P[0] + n[0] * off, g.P[1] + n[1] * off], B = [A[0] + g.dir[0] * g.value, A[1] + g.dir[1] * g.value];
-      var sA = S(A), sB = S(B);
-      var e1 = [S([g.P[0] + n[0] * gap, g.P[1] + n[1] * gap]), S([g.P[0] + n[0] * ext, g.P[1] + n[1] * ext])];
-      var e2 = [S([g.Q[0] + n[0] * gap, g.Q[1] + n[1] * gap]), S([g.Q[0] + n[0] * ext, g.Q[1] + n[1] * ext])];
-      out.lines.push([e1[0], e1[1]], [e2[0], e2[1]], [sA, sB]);
-      var u = unit(sB, sA), inside = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) > 34;
-      out.arrows.push({ tip: sA, dir: inside ? u : [-u[0], -u[1]] }, { tip: sB, dir: inside ? [-u[0], -u[1]] : u });
-      var nS = unit(S(A), S([A[0] + n[0] * sg * s, A[1] + n[1] * sg * s]));
-      out.text = { x: (sA[0] + sB[0]) / 2 + nS[0] * 9, y: (sA[1] + sB[1]) / 2 + nS[1] * 9 + 4, anchor: 'middle' };
+      var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off);
+      ld.value = g.value; ld.label = out.label;
+      return ld;
     } else {
       var ang = (d.ang != null ? d.ang : 45) * Math.PI / 180, ux = Math.cos(ang), uy = Math.sin(ang);
       var Pc = [g.C[0] + ux * g.r, g.C[1] + uy * g.r];
@@ -891,13 +1003,107 @@
       out.lines.push([sPc, sT]);
       out.arrows.push({ tip: sPc, dir: [-ut[0], -ut[1]] });
       out.text = { x: sT[0] + ut[0] * 4, y: sT[1] + ut[1] * 4 + 4, anchor: ut[0] >= -0.2 ? 'start' : 'end' };
+      out.along = { u: ut, half: 0, radial: true };
     }
     return out;
+  }
+
+  // ---- labels kept apart: each label drawn takes a box; a label that would overlap one drawn before it slides along
+  // its dimension line (a radius / diameter label: out along its leader) to the nearest free place, and the
+  // dimension line is extended to reach it. Display only: the stored placement does not change. The label being
+  // placed with the Smart Dimension tool stays under the cursor and moves nothing.
+  var labelBoxes = [];
+  function labelBox(sc, dx, dy) {
+    var w = sc.label.length * 6.6 + 4, x = sc.text.x + dx, y = sc.text.y + dy;
+    var x0 = sc.text.anchor === 'middle' ? x - w / 2 : sc.text.anchor === 'end' ? x - w : x;
+    return [x0, y - 11, x0 + w, y + 3];
+  }
+  function boxFree(b) {
+    for (var i = 0; i < labelBoxes.length; i++) { var o = labelBoxes[i]; if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return false; }
+    return true;
+  }
+  function placeLabel(sc, it) {
+    if (it.temp || !sc.text) return;
+    var b = labelBox(sc, 0, 0), al = sc.along, best = 0;
+    if (al && !boxFree(b)) {
+      var w = b[2] - b[0], step = al.radial ? 14 : w + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
+      for (var k = 0; k < tries.length; k++) {
+        var t = tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
+        if (boxFree(bb)) { best = t; b = bb; break; }
+      }
+      if (best) {
+        sc.text = { x: sc.text.x + al.u[0] * best, y: sc.text.y + al.u[1] * best, anchor: sc.text.anchor };
+        // the dimension line runs on to a label moved past its end
+        var reach = Math.abs(best) + w / 2;
+        if (!al.radial && reach > al.half) {
+          var line = sc.lines[sc.lines.length - 1], c = [(line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2], sg = best < 0 ? -1 : 1;
+          sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
+        } else if (al.radial) {
+          var ld = sc.lines[0];
+          sc.lines.push([ld[1], [ld[1][0] + al.u[0] * best, ld[1][1] + al.u[1] * best]]);
+        }
+      }
+    }
+    labelBoxes.push(b);
+  }
+
+  // ---- selecting, moving and editing a dimension, as in SolidWorks: a click selects it, a double-click opens the
+  // Modify box, dragging the value moves the dimension (its offset / angle; a distance keeps its direction)
+  var lastDimDown = null;   // { key, t } of the last press on a dimension value (double-click detection)
+  function dimKey(it) { return it.rel != null ? 'r' + it.rel : it.auto ? 'a' + it.d.e + it.d.k + (it.d.i | 0) : 'd' + it.index; }
+  function selectDim(it) {
+    if (it.rel != null) App.sel = { kind: 'rel', index: it.rel };
+    else if (!it.auto) App.sel = { kind: 'dim', index: it.index };
+    else return;
+    UI.closePM(); UI.updateSketches();
+  }
+  function editDimItem(it) {
+    if (it.d.driven && UI.drivenDimClick) { UI.drivenDimClick(it); return; }
+    openDimEdit(it);
+  }
+  function dimPress(ev, it) {
+    if (ev.button !== 0) return;
+    ev.stopPropagation(); ev.preventDefault();
+    var key = dimKey(it), now = performance.now();
+    if (lastDimDown && lastDimDown.key === key && now - lastDimDown.t < 450) { lastDimDown = null; editDimItem(it); return; }
+    lastDimDown = { key: key, t: now };
+    if (dimEditing) closeDimEdit(true);
+    selectDim(it);
+    var f = UI.activeSketchFeature(), d = it.rel != null ? f && f.rels && f.rels[it.rel] : it.auto ? null : f && f.dims && f.dims[it.index];
+    var x0 = ev.clientX, y0 = ev.clientY, moved = false, frame = 0, last = null;
+    function apply() {
+      frame = 0;
+      var f2 = UI.activeSketchFeature();
+      if (!last || f2 !== f || !d) return;
+      var r = viewport.getBoundingClientRect(), uv = UI.screenToPlane(last[0] - r.left, last[1] - r.top, UI.activePlane());
+      if (!uv) return;
+      var pl = it.rel != null ? (UI.relDimPlacement ? UI.relDimPlacement(f, d, uv) : {}) : dimPlacement(f.entities[d.e], d, uv);
+      ['off', 'ang'].forEach(function (k) { if (pl[k] != null) d[k] = pl[k]; });
+      App.dimsStale = true;
+    }
+    function move(e2) {
+      if (!moved && Math.hypot(e2.clientX - x0, e2.clientY - y0) < 4) return;
+      if (!d) return;
+      if (!moved) { moved = true; lastDimDown = null; if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } viewport.classList.add('tool-grab'); }
+      last = [e2.clientX, e2.clientY];
+      if (!frame) frame = requestAnimationFrame(apply);
+    }
+    function up() {
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true);
+      if (frame) { cancelAnimationFrame(frame); apply(); }
+      viewport.classList.remove('tool-grab');
+      if (moved) UI.setStatus('Dimension moved.');
+      else UI.setStatus((it.auto ? 'Driven value' : 'Dimension') + ' ' + (it.label || '') + ' selected. Double-click to change it; drag it to move it' + (it.auto ? '' : '; Delete removes it') + '.');
+    }
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
   }
 
   function drawOne(sc, it) {
     var isSel = it.rel != null ? App.sel && App.sel.kind === 'rel' && App.sel.index === it.rel : App.sel && App.sel.kind === 'dim' && App.sel.index === it.index;
     var cls = 'dim' + (it.temp ? ' temp' : '') + (it.auto ? ' auto' : '') + (!it.temp && !it.auto && isSel ? ' sel' : '') + (it.state && it.state !== 'ok' ? ' ' + it.state : '');
+    placeLabel(sc, it);
     var gEl = svg('g', { 'class': cls }, dimLayer);
     sc.lines.forEach(function (l) { svg('line', { x1: l[0][0], y1: l[0][1], x2: l[1][0], y2: l[1][1] }, gEl); });
     sc.arrows.forEach(function (a) {
@@ -906,17 +1112,15 @@
     });
     var t = svg('text', { x: sc.text.x, y: sc.text.y, 'text-anchor': sc.text.anchor }, gEl);
     t.textContent = sc.label;
+    it.label = sc.label;
     if (!it.temp) {
-      t.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        if (it.rel != null) { App.sel = { kind: 'rel', index: it.rel }; UI.closePM(); UI.updateSketches(); }
-        else if (!it.auto) { App.sel = { kind: 'dim', index: it.index }; UI.closePM(); UI.updateSketches(); }
-        if (it.d.driven && UI.drivenDimClick) { UI.drivenDimClick(it); return; }
-        openDimEdit(it);
-      });
+      t.addEventListener('mousedown', function (ev) { dimPress(ev, it); });
+      t.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      t.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+      t.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); selectDim(it); editDimItem(it); } });
       t.setAttribute('tabindex', '0');
       t.setAttribute('role', 'button');
-      t.setAttribute('aria-label', 'Dimension ' + sc.label + ', click to change');
+      t.setAttribute('aria-label', 'Dimension ' + sc.label + ', double-click to change, drag to move');
     }
     it.text = sc.text;
   }
@@ -924,6 +1128,7 @@
   // Redraw every dimension of the active sketch. Called from the render loop whenever App.dimsStale is set.
   function drawDims() {
     for (var c = dimLayer.firstChild; c; ) { var nx = c.nextSibling; if (c !== fbLayer) dimLayer.removeChild(c); c = nx; }
+    labelBoxes = [];
     var f = UI.activeSketchFeature();
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
@@ -949,12 +1154,33 @@
     return list;
   }
 
-  // ---- inline value editing
+  // ---- the Modify box (SolidWorks): opens next to the dimension with its value selected. Enter / ✓ applies, Esc / ✗
+  // cancels. The mouse wheel over the box (or the spin arrows, or ↑ / ↓) steps the value and the sketch follows live
+  // (Ctrl: ×10, Alt: ÷10 per step); ↻ previews a typed value. Only the final value makes an undo step.
+  var dimSpin = document.createElement('span'), dimBtns = document.createElement('span');
+  dimSpin.className = 'dm-spin';
+  dimBtns.className = 'dm-btns';
+  function dmButton(parent, cls, title, html, fn) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = cls; b.title = title; b.innerHTML = html; b.tabIndex = -1;
+    b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });   // the value keeps the focus
+    b.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); fn(ev); });
+    parent.appendChild(b);
+    return b;
+  }
+  dmButton(dimSpin, 'dm-up', 'Increase (wheel up)', '&#9650;', function (ev) { spinDim(1, ev); });
+  dmButton(dimSpin, 'dm-down', 'Decrease (wheel down)', '&#9660;', function (ev) { spinDim(-1, ev); });
+  dmButton(dimBtns, 'dm-ok', 'OK (Enter)', '&#10003;', function () { closeDimEdit(true, true); });
+  dmButton(dimBtns, 'dm-cancel', 'Cancel (Esc)', '&#10007;', function () { closeDimEdit(false); });
+  dmButton(dimBtns, 'dm-rebuild', 'Rebuild: preview the typed value', '&#8635;', function () { var r = parseDimInput(dimInput.value); if (r.error != null) dimEditError(r.error); else previewDim(r.value); });
+  dimEdit.appendChild(dimSpin);
+  dimEdit.appendChild(dimBtns);
   function openDimEdit(it) {
     var f = UI.activeSketchFeature();
     if (!f) return;
+    if (dimEditing) closeDimEdit(true);
     var value = it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d);
-    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value };
+    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: it.rel != null && f.rels[it.rel].type === 'angle' };
     dimEdit.hidden = false;
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
     positionDimEdit();
@@ -967,8 +1193,60 @@
     var f = UI.activeSketchFeature(), e = f && dimEditing.rel == null && f.entities[dimEditing.d.e];
     var sc = it && it.text ? { text: it.text } : dimEditing.rel != null ? (UI.relDimScreen ? UI.relDimScreen(f, dimEditing.rel) : null) : (e && dimScreen(UI.activePlane(), e, dimEditing.d));
     if (!sc) { closeDimEdit(false); return; }
-    dimEdit.style.left = sc.text.x + 'px';
-    dimEdit.style.top = (sc.text.y - 4) + 'px';
+    // just below the value, kept inside the viewport (the dimension itself stays visible)
+    var w = dimEdit.offsetWidth || 170, h = dimEdit.offsetHeight || 28;
+    var x = Math.max(4, Math.min(UI.size.w - w - 4, sc.text.x - 24)), y = sc.text.y + 8;
+    if (y + h > UI.size.h - 4) y = sc.text.y - 18 - h;
+    dimEdit.style.left = Math.round(x) + 'px';
+    dimEdit.style.top = Math.round(Math.max(4, y)) + 'px';
+  }
+  // The spin step: 1 mm (0.1 in, 1°), ×10 with Ctrl, ÷10 with Alt.
+  function spinStep(ev) {
+    var base = dimEditing && dimEditing.angle ? 1 : /in/.test(UI.unitLabel ? UI.unitLabel() : '') ? 0.1 : 1;
+    return base * (ev && ev.ctrlKey ? 10 : ev && ev.altKey ? 0.1 : 1);
+  }
+  function spinDim(sgn, ev) {
+    if (!dimEditing) return;
+    var r = parseDimInput(dimInput.value), cur = r.error != null ? (dimEditing.preview != null ? dimEditing.preview : dimEditing.value) : r.value;
+    var step = spinStep(ev), v = +(cur + sgn * step).toPrecision(12);
+    if (!(v > 0)) v = +(cur / 2).toPrecision(6);
+    if (dimEditing.angle && v > 180) v = 180;
+    dimInput.value = String(v);
+    dimEditError('');
+    previewDim(v);
+    dimInput.focus();
+  }
+  // Live preview of value v: the sketch is solved from the state it had when the box opened (kept in ed.snap) and
+  // redrawn, at most once per frame. restoreDimPreview puts that state back.
+  var previewFrame = 0;
+  function previewDim(v) {
+    var ed = dimEditing;
+    if (!ed) return;
+    ed.preview = v;
+    if (!previewFrame) previewFrame = requestAnimationFrame(runPreview);
+  }
+  function runPreview() {
+    previewFrame = 0;
+    var ed = dimEditing, f = UI.activeSketchFeature();
+    if (!ed || ed.preview == null || !f || f.id !== ed.sketchId || !window.SketchSolver) return;
+    var t0 = performance.now();
+    if (!ed.snap) ed.snap = { entities: JSON.parse(JSON.stringify(f.entities)), relV: ed.rel != null ? f.rels[ed.rel].v : null };
+    else restoreDimPreview(true);
+    var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, ed.preview) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, ed.preview);
+    if (!res.ok) dimEditError(res.error);
+    App.gridStale = true;
+    UI.updateSketches();
+    UI.lastDimPreviewMs = performance.now() - t0;
+  }
+  function restoreDimPreview(keep) {
+    var ed = dimEditing, f = UI.activeSketchFeature();
+    if (previewFrame && !keep) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
+    if (!ed || !ed.snap || !f || f.id !== ed.sketchId) return false;
+    f.entities = JSON.parse(JSON.stringify(ed.snap.entities));
+    if (ed.rel != null && f.rels && f.rels[ed.rel]) f.rels[ed.rel].v = ed.snap.relV;
+    if (window.SketchSolver && SketchSolver.updateDriven) SketchSolver.updateDriven(f);
+    if (!keep) { ed.snap = null; ed.preview = null; App.gridStale = true; UI.updateSketches(); }
+    return true;
   }
   // Show (msg) or clear (no msg) an error on the Modify box: red outline, tooltip, and the status bar.
   function dimEditError(msg) {
@@ -995,15 +1273,20 @@
       r = parseDimInput(dimInput.value);
       if (r.error != null && keepOnError) { dimEditError(r.error); dimInput.focus(); dimInput.select(); return; }
     }
+    // a live preview is undone first: the undo step and the solve start from the sketch as it was
+    if (previewFrame) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
+    var previewed = restoreDimPreview(true);
     dimEditing = null;
     dimEdit.hidden = true;
     if (r && r.error != null) UI.setStatus('Dimension not changed: ' + r.error);
     dimEditError('');
-    if (!commit || !r || r.error != null) return;
     var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && (ed.rel != null ? f.rels && f.rels[ed.rel] : f.entities[ed.d.e]);
-    if (!e) return;
-    var v = r.value;
-    if (Math.abs(v - ed.value) < 1e-9) return;
+    var v = r && r.value;
+    if (!commit || !r || r.error != null || !e || Math.abs(v - ed.value) < 1e-9) {
+      if (previewed) { App.gridStale = true; UI.updateSketches(); }
+      return;
+    }
+    if (previewed) App.gridStale = true;
     try {
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       if (window.SketchSolver) {
@@ -1014,16 +1297,27 @@
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
       UI.setStatus('Dimension set to ' + fmtDim(v) + ' ' + UI.unitLabel() + '.');
-    } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; }
+    } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; if (previewed) UI.updateSketches(); }
   }
   dimInput.addEventListener('keydown', function (ev) {
     ev.stopPropagation();
     if (ev.key === 'Enter') { ev.preventDefault(); closeDimEdit(true, true); }
     else if (ev.key === 'Escape') { ev.preventDefault(); closeDimEdit(false); }
+    else if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') { ev.preventDefault(); spinDim(ev.key === 'ArrowUp' ? 1 : -1, ev); }
   });
   dimInput.addEventListener('input', function () { if (dimEdit.getAttribute('data-error')) dimEditError(''); });
   dimInput.addEventListener('blur', function () { closeDimEdit(true); });
   dimEdit.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+  // the wheel over the box spins the value (never zooms the view)
+  dimEdit.addEventListener('wheel', function (ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (!dimEditing || !ev.deltaY) return;
+    spinDim(ev.deltaY < 0 ? 1 : -1, ev);
+  }, { passive: false });
+  // script / test hooks: the value shown, a wheel step (sign +1 / -1, modifiers { ctrlKey, altKey }), and the sketch's
+  // state during a preview
+  UI.dimEditValue = function () { return dimEditing ? dimInput.value : null; };
+  UI.spinDimEdit = function (sgn, mods) { spinDim(sgn, mods || {}); if (previewFrame) { cancelAnimationFrame(previewFrame); runPreview(); } return dimEditing ? +dimInput.value : null; };
 
   function deleteDim(index) {
     var f = UI.activeSketchFeature();

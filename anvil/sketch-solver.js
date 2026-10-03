@@ -310,7 +310,13 @@ var SketchSolver = (function () {
       case 'distance': {
         if (!(v >= 0)) return null;
         n = 1;
-        if (kA === 'point' && kB === 'point') f = function (E) { return [len(sub(P(A, E), P(B, E))) - v]; };
+        if ((rel.dir === 'h' || rel.dir === 'v') && kA !== 'line' && kB !== 'line') {
+          // horizontal / vertical distance between two points (or centres), signed as the geometry started
+          var ax = rel.dir === 'h' ? 0 : 1, pc = function (r, k, E) { return k === 'point' ? P(r, E) : C(r, E).c; };
+          var s3 = sgn(pc(B, kB, ents)[ax] - pc(A, kA, ents)[ax]);
+          f = function (E) { return [s3 * (pc(B, kB, E)[ax] - pc(A, kA, E)[ax]) - v]; };
+        }
+        else if (kA === 'point' && kB === 'point') f = function (E) { return [len(sub(P(A, E), P(B, E))) - v]; };
         else if (kA === 'circle' && kB === 'circle') f = function (E) { return [len(sub(C(A, E).c, C(B, E).c)) - v]; };
         else if (kA === 'point' && kB === 'circle') f = function (E) { return [len(sub(P(A, E), C(B, E).c)) - v]; };
         else {
@@ -626,7 +632,7 @@ var SketchSolver = (function () {
   function updateDriven(sketch) {
     (sketch.rels || []).forEach(function (rel) {
       if (!rel.driven || !TYPES[rel.type] || !TYPES[rel.type].dim) return;
-      var v = measure(sketch, rel.type, rel.refs);
+      var v = measure(sketch, rel.type, rel.refs, rel.dir);
       if (v != null && isFinite(v)) rel.v = Math.abs(v - Math.round(v * 1e6) / 1e6) < 1e-9 * Math.max(1, Math.abs(v)) ? Math.round(v * 1e6) / 1e6 : v;
     });
   }
@@ -650,7 +656,7 @@ var SketchSolver = (function () {
     if (!item || (kind === 'rel' && !(TYPES[item.type] && TYPES[item.type].dim))) return { ok: false, error: 'Not a dimension.' };
     var over = false;
     if (on) { item.driven = true; if (kind === 'rel') updateDriven(sketch); }
-    else { over = overDefines(sketch, kind, index); delete item.driven; if (kind === 'rel') { var v = measure(sketch, item.type, item.refs); if (v != null) item.v = v; } }
+    else { over = overDefines(sketch, kind, index); delete item.driven; if (kind === 'rel') { var v = measure(sketch, item.type, item.refs, item.dir); if (v != null) item.v = v; } }
     var an = analyze(sketch), st = an[kind === 'rel' ? 'rels' : 'dims'][index];
     return { ok: true, state: over && st === 'ok' ? 'redundant' : st, analysis: an };
   }
@@ -716,8 +722,9 @@ var SketchSolver = (function () {
     rel.v = v;
     return { ok: true };
   }
-  // The value a distance / angle relation reads on the current geometry.
-  function measure(sketch, type, refs) {
+  // The value a distance / angle relation reads on the current geometry (dir 'h' / 'v': the horizontal / vertical
+  // distance between two points or centres).
+  function measure(sketch, type, refs, dir) {
     var ents = sketch.entities, R = refs.map(parseRef), kinds = R.map(function (r) { return refKind(ents, r); });
     var p = match(type, kinds);
     if (!p) return null;
@@ -727,6 +734,7 @@ var SketchSolver = (function () {
       var from = kA === 'point' ? refPoint(ents, A) : kA === 'circle' ? refCurve(ents, A).c : (function () { var l = refCurve(ents, A); return [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]; })();
       return Math.abs(lineDist(from, refCurve(ents, B)));
     }
+    if (type === 'distance' && (dir === 'h' || dir === 'v')) return Math.abs(refCenter(ents, B)[dir === 'h' ? 0 : 1] - refCenter(ents, A)[dir === 'h' ? 0 : 1]);
     return len(sub(refCenter(ents, A), refCenter(ents, B)));
   }
 
@@ -776,7 +784,8 @@ var SketchSolver = (function () {
     for (var g = 0; g < groups.length; g++) {
       var rel = { type: type, refs: groups[g] };
       if (TYPES[type].dim) {
-        rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g]);
+        if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
+        rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g], rel.dir);
         if (opts.off != null) rel.off = +opts.off;
         if (opts.driven) rel.driven = true;
       }
@@ -1325,7 +1334,7 @@ var SketchSolver = (function () {
     var savedE = clone(E), savedR = sketch.rels ? clone(sketch.rels) : null, savedD = sketch.dims ? clone(sketch.dims) : null, before = analyze(sketch);
     function setEnd(e, s, p) { if (s === 'p1') { e.x1 = p[0]; e.y1 = p[1]; } else { e.x2 = p[0]; e.y2 = p[1]; } }
     var lens = {};   // the lengths the two lines had to the corner (their length dimensions measure to the virtual sharp)
-    lens[c.i] = la; lens[c.j] = lb;
+    lens[c.i] = { len: la, dx: Math.abs(A[0] - P[0]), dy: Math.abs(A[1] - P[1]) }; lens[c.j] = { len: lb, dx: Math.abs(B[0] - P[0]), dy: Math.abs(B[1] - P[1]) };
     setEnd(L1, c.ei, Ti); setEnd(L2, c.ej, Tj);
     var arc = { t: 'arc', cx: C[0], cy: C[1], r: r, a0: a0, a1: a0 + sw };
     if (L1.construction && L2.construction) arc.construction = true;
@@ -1338,7 +1347,7 @@ var SketchSolver = (function () {
       var n = rel.refs.filter(function (x) { return gone.indexOf(String(x)) >= 0; }).length;
       return n > 0 && !(rel.type === 'coincident' && n === 2);
     });
-    var lenDims = (sketch.dims || []).filter(function (d) { return (d.e === c.i || d.e === c.j) && d.k === 'len' && !d.driven; });
+    var lenDims = (sketch.dims || []).filter(function (d) { return (d.e === c.i || d.e === c.j) && (d.k === 'len' || d.k === 'dx' || d.k === 'dy'); });
     var sharp = -1;
     if (keep.length || lenDims.length) {
       E.push({ t: 'point', x: P[0], y: P[1], construction: true, sharp: true });
@@ -1347,9 +1356,12 @@ var SketchSolver = (function () {
       keep.forEach(function (rel) { rel.refs = rel.refs.map(function (x) { return gone.indexOf(String(x)) >= 0 ? sref : x; }); });
       lenDims.forEach(function (d) {
         var ln = d.e === c.i ? { e: c.i, s: c.ei } : { e: c.j, s: c.ej }, far = ln.e + '.' + other(ln.s);
-        // the dimension keeps its side: it ran p1 -> p2 along the line
-        var rel = { type: 'distance', refs: ln.s === 'p1' ? [sref, far] : [far, sref], v: lens[ln.e] };
+        // the dimension keeps its side (it ran p1 -> p2 along the line), its direction (a horizontal / vertical
+        // distance stays one) and whether it was driven
+        var rel = { type: 'distance', refs: ln.s === 'p1' ? [sref, far] : [far, sref], v: lens[ln.e][d.k] };
+        if (d.k === 'dx') rel.dir = 'h'; else if (d.k === 'dy') rel.dir = 'v';
         if (d.off != null) rel.off = d.off;
+        if (d.driven) rel.driven = true;
         keep.push(rel);
       });
       sketch.dims = sketch.dims.filter(function (d) { return lenDims.indexOf(d) < 0; });
@@ -1513,7 +1525,7 @@ var SketchSolver = (function () {
   }
   function describe(sketch, rel) {
     var t = TYPES[rel.type];
-    var s = (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
+    var s = (rel.dir === 'h' ? 'Horizontal ' : rel.dir === 'v' ? 'Vertical ' : '') + (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
     if (t && t.dim) s += (rel.driven ? ' (driven) = ' : ' = ') + (Math.round(rel.v * 1e4) / 1e4) + (rel.type === 'angle' ? '°' : '');
     return s;
   }
@@ -1525,7 +1537,8 @@ var SketchSolver = (function () {
   function relArgs(rel) {
     var s = JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs);
     if (TYPES[rel.type] && TYPES[rel.type].dim) {
-      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; s += ', ' + JSON.stringify(o); }
+      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; if (rel.dir) o.dir = rel.dir; s += ', ' + JSON.stringify(o); }
+      else if (rel.dir) { var o2 = { value: rel.v }; if (rel.off != null) o2.off = rel.off; o2.dir = rel.dir; s += ', ' + JSON.stringify(o2); }
       else s += rel.off != null ? ', ' + JSON.stringify({ value: rel.v, off: rel.off }) : ', ' + rel.v;
     }
     else if (rel.type === 'fix' && rel.at) s += ', ' + JSON.stringify({ at: rel.at });
@@ -1548,6 +1561,7 @@ var SketchSolver = (function () {
       }
       if (opt && typeof opt === 'object' && opt.off != null) o.off = +opt.off;
       if (opt && typeof opt === 'object' && opt.driven) o.driven = true;
+      if (opt && typeof opt === 'object' && (opt.dir === 'h' || opt.dir === 'v')) o.dir = opt.dir;
       var r = addRelation(this.f, type, refs, o);
       if (!r.ok) throw new Error('rel(' + JSON.stringify(type) + '): ' + r.error);
       return this;
@@ -1565,10 +1579,17 @@ var SketchSolver = (function () {
       (Array.isArray(list) ? list : [list]).forEach(function (i) { var d = (self.f.dims || [])[i]; if (!d) throw new Error('No sketch dimension ' + i + ' to make driven.'); d.driven = true; });
       return this;
     };
+    // .sharp([i, …]): points i are virtual sharps (SketchSolver.filletCorner), drawn with extension lines to the corner
+    SBP.sharp = function (list) {
+      var self = this;
+      (Array.isArray(list) ? list : [list]).forEach(function (i) { var e = self.f.entities[i]; if (!e || e.t !== 'point') throw new Error('No sketch point ' + i + ' to make a virtual sharp.'); e.sharp = true; });
+      return this;
+    };
     Kn.registerSketchScript(function (f) {
       var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
       var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
-      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
+      var shp = (f.entities || []).map(function (e, i) { return e.sharp && e.t === 'point' ? i : -1; }).filter(function (i) { return i >= 0; });
+      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (shp.length ? '\n  .sharp(' + JSON.stringify(shp) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
     });
   }
   if (K) install(K);

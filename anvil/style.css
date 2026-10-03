@@ -331,8 +331,15 @@ body { overflow: auto; }
 .rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 #status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
 #status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
-#dim-edit { position: absolute; z-index: 4; transform: translate(-50%, -50%); background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
+#dim-edit { position: absolute; z-index: 4; display: flex; align-items: center; gap: 2px; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
+#dim-edit[hidden] { display: none; }
 #dim-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; }
+#dim-edit .dm-spin { display: inline-flex; flex-direction: column; }
+#dim-edit .dm-spin button { width: 14px; height: 10px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 7px; line-height: 10px; cursor: pointer; }
+#dim-edit .dm-btns { display: inline-flex; gap: 1px; border-left: 1px solid var(--line); padding-left: 2px; }
+#dim-edit .dm-btns button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 2px; background: transparent; font-size: 13px; line-height: 20px; cursor: pointer; }
+#dim-edit button:hover { background: var(--hover); color: var(--blue); }
+#dim-edit .dm-ok { color: #2f9e5b; } #dim-edit .dm-cancel { color: #d9302c; } #dim-edit .dm-rebuild { color: var(--blue); }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
 #exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: column; gap: 4px; }
