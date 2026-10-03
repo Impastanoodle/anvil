@@ -1816,6 +1816,8 @@ var Drawing = (function () {
   var SCALES = [[10, 1], [5, 1], [4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 5], [1, 10], [1, 20], [1, 25], [1, 50], [1, 100], [1, 200]];
   function scaleValue(s) { return s[0] / s[1]; }
   function scaleText(s) { return s[0] + ':' + s[1]; }
+  // The scale as SolidWorks writes it under a view label: 'SCALE 2 : 1' (spaces round the colon).
+  function scaleLabel(s) { return 'SCALE ' + s[0] + ' : ' + s[1]; }
   function parseScale(txt) {
     var m = /^\s*(\d+(?:\.\d+)?)\s*[:\/]\s*(\d+(?:\.\d+)?)\s*$/.exec(String(txt));
     return m && +m[1] > 0 && +m[2] > 0 ? [+m[1], +m[2]] : null;
@@ -1910,6 +1912,7 @@ var Drawing = (function () {
   // view slides along its alignment (outward first, then to the parent's other side), a detail view goes to the
   // nearest clear spot in any direction. When nothing on the sheet is clear it goes beyond the farthest view on its
   // side (r3/drawings3: section views added through the API used to land on the Right view).
+  // Returns true when the spot is on the sheet (false: nothing on the sheet was clear, it went beside it).
   function clearSpot(doc, mesh, v, free) {
     var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = g * 0.6, b1 = BORDER * k;
     var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) { return viewPaperBox(doc, mesh, o); });
@@ -1919,7 +1922,7 @@ var Drawing = (function () {
     function boxAt(x, y) { return { x0: me.x0 + x - ox, x1: me.x1 + x - ox, y0: me.y0 + y - oy, y1: me.y1 + y - oy }; }
     function clear(b) { return obs.every(function (o) { return b.x1 + sep <= o.x0 || o.x1 + sep <= b.x0 || b.y1 + sep <= o.y0 || o.y1 + sep <= b.y0; }); }
     function onSheet(b) { return b.x0 >= b1 + g / 4 && b.y0 >= b1 + g / 4 && b.x1 <= S[0] - b1 - g / 4 && b.y1 <= S[1] - b1 - g / 4; }
-    if (clear(boxAt(ox, oy)) && onSheet(boxAt(ox, oy))) return v;
+    if (clear(boxAt(ox, oy)) && onSheet(boxAt(ox, oy))) return true;
     var step = 2 * k, cands = [], par = v.parent != null ? findView(doc, v.parent) : null;
     if (free === 'x' || free === 'y') {
       var c0 = free === 'x' ? ox : oy, pc = par ? (free === 'x' ? par.x : par.y) : c0, dir = c0 >= pc ? 1 : -1, span = Math.max(S[0], S[1]) * 2;
@@ -1935,7 +1938,7 @@ var Drawing = (function () {
       });
       var cc = pick != null ? pick : far != null ? far : c0;
       if (free === 'x') v.x = cc; else v.y = cc;
-      return v;
+      return pick != null;
     }
     // on the sheet if it fits anywhere, else the nearest clear spot beside it
     var best = null, bd = Infinity, pass, st2 = step * 2;
@@ -1947,9 +1950,25 @@ var Drawing = (function () {
       }
     }
     if (best) { v.x = best[0]; v.y = best[1]; }
-    return v;
+    return !!best && pass === 1;   // true: clear and on the sheet
   }
-  // addSectionView(doc, mesh, parentId, { axis: 'h' | 'v', at, sign, x, y, label }): a full section on a cutting
+  // fitOnSheet(doc, mesh, v, free): where a section view added by the app's script API (opts.fit) goes on a full
+  // sheet. Along its alignment at its own scale first; then the nearest free area of the sheet (alignment broken,
+  // same scale); then the next smaller standard scales (down to a quarter), aligned and then anywhere. When nothing
+  // fits it goes beside the sheet, aligned and clear of every view, marked v.offSheet (the UI warns and drops the
+  // mark). It never overlaps a view.
+  function fitOnSheet(doc, mesh, v, free) {
+    var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
+    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9; });
+    function at(sc, align) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null); }
+    var tries = [[sc0, al0], [sc0, null]];
+    smaller.forEach(function (s) { tries.push([s.slice(), al0], [s.slice(), null]); });
+    for (var i = 0; i < tries.length; i++) if (at(tries[i][0], tries[i][1])) return true;
+    at(sc0, al0);
+    v.offSheet = true;
+    return false;
+  }
+  // addSectionView(doc, mesh, parentId, { axis: 'h' | 'v', at, sign, x, y, label, fit }): a full section on a cutting
   // line through the parent, horizontal at v = at or vertical at u = at (model units in the parent's view frame).
   // The viewer stands on the side sign points to (sign × the parent's v or u) and looks at the cut, so the arrows
   // point the other way. The view is aligned with the parent, placed on the viewer's side in third-angle projection
@@ -1968,7 +1987,7 @@ var Drawing = (function () {
       section: { axis: axis, at: +opts.at || 0, sign: sign }, scale: par.scale ? par.scale.slice() : null, display: 'hlr', x: pos[0], y: pos[1] });
     if (opts.x != null && axis === 'v') v.x = opts.x;
     if (opts.y != null && axis === 'h') v.y = opts.y;
-    if ((axis === 'h' ? opts.y : opts.x) == null && mesh) clearSpot(doc, mesh, v, axis === 'h' ? 'y' : 'x');
+    if ((axis === 'h' ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, axis === 'h' ? 'y' : 'x');
     doc.layout = 'manual';
     return v;
   }
@@ -1980,7 +1999,7 @@ var Drawing = (function () {
   }
   // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label }): the parent inside the circle (c, r)
   // (model units in the parent's frame), enlarged to its own scale (default twice the parent's) and labelled
-  // DETAIL B / SCALE 4:1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
+  // DETAIL B / SCALE 4 : 1; the circle and the letter are drawn on the parent. Not aligned: it goes anywhere.
   function addDetailView(doc, mesh, parentId, opts) {
     opts = opts || {};
     var par = findView(doc, parentId);
@@ -2735,11 +2754,11 @@ var Drawing = (function () {
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
       if (v.kind === 'section') {
         text([v.x, box.y0 - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
-        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale), 'middle', layer);
+        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
       } else if (v.kind === 'detail') {
         text([(box.x0 + box.x1) / 2, box.y0 - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
-        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, 'SCALE ' + scaleText(v.scale || scale), 'middle', layer);
-      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  SCALE ' + scaleText(v.scale), 'middle', layer);
+        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
+      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
         section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct });
     });
@@ -3251,6 +3270,21 @@ var Drawing = (function () {
           out.push('<path class="' + p.style + '" d="M' + pts.join(' L') + '" stroke-width="' + num((STROKE[p.style] || 0.25) * k) + '" stroke-linejoin="round"' + dshc + '/>');
           return;
         }
+        // hatch lines (r6/drawings6): a run of them is one path, each line a move and a relative line-to, so a hatched
+        // section is about a third the size of one <line> per hatch line (a dashed pattern's dashes are many lines)
+        if (p.k === 'line' && p.style === 'hatch' && !p.color && lst[pi - 1] && lst[pi - 1].k === 'line' && lst[pi - 1].style === 'hatch' && !lst[pi - 1].color) return;
+        if (p.k === 'line' && p.style === 'hatch' && !p.color) {
+          var hd = [], cx = null, cy = 0, rd = function (x) { return Math.round(x * 1e4) / 1e4; };
+          for (var hj = pi; lst[hj] && lst[hj].k === 'line' && lst[hj].style === 'hatch' && !lst[hj].color; hj++) {
+            // relative moves from the point drawn so far (rounded), so the numbers stay short and errors never add up
+            var ax = lst[hj].a[0], ay = H - lst[hj].a[1], bx = lst[hj].b[0], by = H - lst[hj].b[1], mx, my, lx, ly;
+            if (cx === null) { cx = rd(ax); cy = rd(ay); hd.push('M' + num(cx) + ' ' + num(cy)); }
+            else { mx = rd(ax - cx); my = rd(ay - cy); cx += mx; cy += my; hd.push('m' + num(mx) + ' ' + num(my)); }
+            lx = rd(bx - cx); ly = rd(by - cy); cx += lx; cy += ly; hd.push('l' + num(lx) + ' ' + num(ly));
+          }
+          out.push('<path class="hatch" d="' + hd.join('') + '" stroke-width="' + num(STROKE.hatch * k) + '"/>');
+          return;
+        }
         if (opts.live && !vw) {
           var of = p.view != null ? String(p.view) : null;
           if (of !== run) { if (run != null) out.push('</g>'); if (of != null) out.push('<g data-of="' + of + '">'); run = of; }
@@ -3323,7 +3357,9 @@ var Drawing = (function () {
     sheet.prims.forEach(function (p) {
       var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
       var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
-      if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
+      // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
+      if (p.k === 'line' && p.style === 'hatch') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
+      else if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
       else if (p.k === 'circle') { pr(0, 'CIRCLE'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
       else if (p.k === 'arc') { pr(0, 'ARC'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); pr(50, num(((p.a0 % 360) + 360) % 360)); pr(51, num(((p.a1 % 360) + 360) % 360)); }
       else if (p.k === 'ellipse') {
@@ -4119,7 +4155,7 @@ var Drawing = (function () {
     ORIENTS: Object.keys(ORIENTS), FORMATS: FORMATS, SCALES: SCALES,
     orientation: orientation, meshEdges: meshEdges, pairOpenEdges: pairOpenEdges, projectView: projectView, extentsOf: extentsOf, textRect: textRect,
     newDrawing: newDrawing, addView: addView, standard3View: standard3View, layout: layout, moveView: moveView, findView: findView,
-    sheetSize: sheetSize, scaleText: scaleText, parseScale: parseScale, scaleValue: scaleValue,
+    sheetSize: sheetSize, scaleText: scaleText, scaleLabel: scaleLabel, parseScale: parseScale, scaleValue: scaleValue,
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
@@ -5990,8 +6026,9 @@ var Drawing = (function () {
   function viewApi(fn) {
     if (!doc()) return null;
     try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
-    var v;
-    edit(function (dc) { v = fn(dc); autoInsertViews(dc, [v.id]); });
+    var v, off = false;
+    edit(function (dc) { v = fn(dc); if (v.offSheet) { off = true; delete v.offSheet; } autoInsertViews(dc, [v.id]); });
+    if (off) { var msg = v.name + ': no room on the sheet, placed beside it. Move it, or use a larger sheet or a smaller scale.'; UI.toast(msg); UI.setStatus(msg); }
     D.sel = { kind: 'view', id: v.id };
     return summary();
   }
@@ -6012,7 +6049,7 @@ var Drawing = (function () {
       standard3View: function () { cmdStandard3View(); return summary(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
       projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, opts); }); },
-      sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, opts || {}); }); },
+      sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
       detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0] }, opts || {})); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
       tangent: function (id, mode) { setViewTangent(id, mode); return summary(); },
