@@ -393,6 +393,15 @@
         var mm = JSON.parse(snap), mate = AS.addMate(mm, type, JSON.parse(JSON.stringify(src)), JSON.parse(JSON.stringify(ref)), {});
         var pb = AS.rebuild(mm, App.asmCache, { poseOnly: true });
         var r = pb.mates && pb.mates[mate.id];
+        // r9/polish9: the default alignment cannot be met where the component stands: offer the other one (as the
+        // Mate PM does) instead of "not possible"
+        var da = r && r.error ? AS.defaultAlignment(mate) : null;
+        if (da === 'aligned' || da === 'anti-aligned') {
+          var alt = da === 'aligned' ? 'anti-aligned' : 'aligned';
+          var mm2 = JSON.parse(snap), mate2 = AS.addMate(mm2, type, JSON.parse(JSON.stringify(src)), JSON.parse(JSON.stringify(ref)), { alignment: alt });
+          var pb2 = AS.rebuild(mm2, App.asmCache, { poseOnly: true }), r2 = pb2.mates && pb2.mates[mate2.id];
+          if (r2 && !r2.error) { mm = mm2; pb = pb2; r = r2; o.alignment = alt; }
+        }
         o.ok = !!(r && !r.error);
         o.error = r && r.error;
         o.model = mm; o.pb = pb;
@@ -424,8 +433,8 @@
         var o = offer(q) || (cur && cur.ok ? cur : null);
         if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
         if (!o || !o.ok) { UI.setStatus('SmartMates: no mate added.'); return Promise.resolve(null); }
-        var type = o.type, a = src, b = o.ref, pre = JSON.stringify(App.model);
-        return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), {}); },
+        var type = o.type, a = src, b = o.ref, pre = JSON.stringify(App.model), al = o.alignment || null;
+        return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), al ? { alignment: al } : {}); },
           function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + '). Pick another type, Flip Mate Alignment, or ✓.'; })
           .then(function (mt) {   // r5/asm5: the Mate pop-up toolbar at the drop point, as in SolidWorks
             if (mt) smartPopup(q, { pre: pre, a: a, b: b, type: type, alignment: null, mateId: mt.id, kinds: refKind(src) + '|' + refKind(o.ref), comp: c.name });

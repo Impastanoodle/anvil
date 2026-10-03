@@ -351,21 +351,37 @@
   }
 
   // ------------------------------------------------------------------ preview
-  function showPreview(feature) {
-    if (!feature || !App.build) { UI.disposeGroup(UI.groups.preview); return null; }
+  // r9/polish9: a Through All preview stops just past the part (SolidWorks), not 1.5 diagonals beyond it: the depth
+  // is the farthest model corner from the sketch plane along its normal, plus a small margin.
+  function previewThroughLimit(feature) {
     var b = UI.modelBounds();
     var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    var fallback = Math.max(20, diag * 1.5);
+    try {
+      if (!feature || feature.type !== 'extrude' || !App.build || !App.build.body) return fallback;
+      var sk = (App.model.features || []).filter(function (x) { return x.id === feature.sketch; })[0];
+      if (!sk || sk.type !== 'sketch') return fallback;
+      var pl = K.resolvePlane(sk.plane, App.model, App.build.planes || {});
+      var far = 0;
+      for (var i = 0; i < 8; i++) {
+        var c = [(i & 1 ? b.max : b.min)[0], (i & 2 ? b.max : b.min)[1], (i & 4 ? b.max : b.min)[2]];
+        far = Math.max(far, Math.abs((c[0] - pl.origin[0]) * pl.n[0] + (c[1] - pl.origin[1]) * pl.n[1] + (c[2] - pl.origin[2]) * pl.n[2]));
+      }
+      return far > 1e-6 ? far + Math.max(1, diag * 0.02) : fallback;
+    } catch (e) { return fallback; }
+  }
+  UI.previewThroughLimit = previewThroughLimit;
+  function showPreview(feature) {
+    if (!feature || !App.build) { UI.disposeGroup(UI.groups.preview); return null; }
     var mat = UI.mats.preview, err = null;
     try { if (K.isCut(feature, App.model) || feature.cut) mat = UI.mats.previewCut; } catch (e) { }
-    livePreview({ op: 'tool', feature: feature, upto: null, throughLimit: Math.max(20, diag * 1.5), mats: [mat], sync: function () { err = showPreviewSync(feature); } });
+    livePreview({ op: 'tool', feature: feature, upto: null, throughLimit: previewThroughLimit(feature), mats: [mat], sync: function () { err = showPreviewSync(feature); } });
     return err;
   }
   function showPreviewSync(feature) {
     UI.disposeGroup(UI.groups.preview);
     try {
-      var b = UI.modelBounds();
-      var diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
-      var ctx = { tools: App.build.tools, planes: App.build.planes, sketches: {}, body: App.build.body, throughLimit: Math.max(20, diag * 1.5) };
+      var ctx = { tools: App.build.tools, planes: App.build.planes, sketches: {}, body: App.build.body, throughLimit: previewThroughLimit(feature) };
       var tool = K.buildTool(feature, previewModel(), ctx);
       if (!tool) return null;
       var mesh = K.meshFromBody(tool);
@@ -414,7 +430,7 @@
     var list = el('div', { class: 'pm-list', role: 'listbox', 'aria-label': f.placeholder || 'Selections' });
     function remove(i) { setHoverItem(null); if (f.onRemove) f.onRemove(v, i); var rows = pm.root.querySelectorAll('.pm-list .pm-item'); var r = rows[Math.min(i, rows.length - 1)]; if (r) try { r.focus({ preventScroll: true }); } catch (e) { } }
     items.forEach(function (it, i) {
-      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: 'Delete or right-click to remove', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
+      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: it.label + ' (Delete or right-click to remove)', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
       row.lastChild.textContent = it.label;
       row.addEventListener('mouseenter', function () { setHoverItem(it); });
       row.addEventListener('mouseleave', function () { if (App.command && App.command.hoverItem === it) setHoverItem(null); });
@@ -1359,7 +1375,27 @@
     if (isChamfer) f.d = f.d != null ? f.d : 2; else f.r = f.r != null ? f.r : 2;
     if (existing) f.chain = !(existing.edges || []).some(function (e) { return e.chain === false; });
     // seed with a pre-selected edge
-    if (!existing && App.sel && App.sel.kind === 'edge') f.edges.push({ at: App.sel.edge.mid.slice(), chain: true });
+    // r9/polish9: every pre-selected edge (a box or Ctrl selection, not only the first), and a pre-selected face gives
+    // the edges around it, as in SolidWorks; the items move into the PropertyManager. A selected feature (the one just
+    // created) is not an input here: it is let go so its faces do not stay lit while edges are picked.
+    if (!existing) {
+      var pre = UI.selection ? UI.selection() : [App.sel].filter(Boolean), seenAt = {}, seenCurve = {}, used = false;
+      var addAt = function (e) {
+        if (e.curve != null) { if (seenCurve[e.curve]) return; seenCurve[e.curve] = 1; }
+        var k = e.mid.map(function (x) { return Math.round(x * 1e4); }).join(',');
+        if (seenAt[k]) return;
+        seenAt[k] = 1; f.edges.push({ at: e.mid.slice(), chain: true });
+      };
+      pre.forEach(function (s) {
+        if (s.kind === 'edge' && s.edge) { addAt(s.edge); used = true; }
+        else if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) {
+          var grp = UI.faceGroup ? UI.faceGroup(s.index) : [s.index];
+          App.edges.forEach(function (e) { if (!e.smooth && e.faces.length === 2 && e.convex !== null && (grp.indexOf(e.faces[0]) >= 0 || grp.indexOf(e.faces[1]) >= 0)) addAt(e); });
+          used = true;
+        }
+      });
+      if ((used || (pre.length && pre.every(function (s) { return s.kind === 'feature'; }))) && UI.setSelection) UI.setSelection([]);
+    }
     var edgeList = [];
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
@@ -1470,7 +1506,17 @@
     function getBaseMesh() { getBase(); return baseMesh; }
     if (existing ? !App.build : !base) { UI.toast('Create a solid first, then shell it.'); return; }
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'shell', thickness: 2, faces: [] };
-    if (!existing && App.sel && App.sel.kind === 'face' && App.sel.point) f.faces.push({ at: App.sel.point.slice() });
+    // r9/polish9: every pre-selected face (Ctrl / box selection too), each at its picked point or else inside its
+    // first triangle; the faces move into the PropertyManager
+    if (!existing) {
+      var preF = (UI.selection ? UI.selection() : [App.sel]).filter(function (s) { return s && s.kind === 'face' && App.mesh && App.mesh.faces[s.index]; });
+      preF.forEach(function (s) {
+        var at = s.point ? s.point.slice() : null;
+        if (!at) { var fc = App.mesh.faces[s.index], P = App.mesh.positions, o = fc.start * 9; at = [0, 1, 2].map(function (k) { return (P[o + k] + P[o + 3 + k] + P[o + 6 + k]) / 3; }); }
+        f.faces.push({ at: at.map(function (x) { return Math.round(x * 1e4) / 1e4; }) });
+      });
+      if (preF.length && UI.setSelection) UI.setSelection([]);
+    }
     function tol() { return Math.max(0.5, (+f.thickness || 1) / 2); }
     function resolveList() {
       var idx = [];
@@ -2280,7 +2326,7 @@
     function slots(x) { return x.type === 'width' ? ['a', 'a2', 'b', 'b2'] : ['a', 'b']; }
     function ready(x) { return x.type === 'width' ? !!(x.a && x.a2 && x.b && (x.b2 || refKind(x.b) === 'axis')) : !!(x.a && x.b); }
     function clearPicks(x) { x.a = null; x.b = null; x.a2 = null; x.b2 = null; picked = []; pickedBy = {}; if (App.command) App.command.faceList = []; if (UI.asmClosePopup) UI.asmClosePopup('mate'); }
-    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), valueSet = !!existing, picked = [], pickedBy = {};   // r5/select5: pickedBy: slot -> face index (its list row lights it)
+    var typeSet = !!existing, alignSet = !!(existing && existing.alignment), autoAlign = false, valueSet = !!existing, picked = [], pickedBy = {};   // r5/select5: pickedBy: slot -> face index (its list row lights it)
     function restore() { App.model = JSON.parse(snapshot); baseModel = App.model; }
     var LIMIT = { limitdistance: 1, limitangle: 1 }, FLIPS = { distance: 1, angle: 1, coincident: 1, tangent: 1, gear: 1, limitdistance: 1, limitangle: 1 };
     function mateValues() {
@@ -2304,7 +2350,7 @@
       } catch (e) { /* the preview reports a bad reference */ }
     }
     function apply(m) {
-      var opts = alignSet ? { alignment: v.alignment } : {};
+      var opts = alignSet || autoAlign ? { alignment: v.alignment } : {};
       var wide = v.type === 'width';
       if (existing) {
         var x = Assembly.findMate(m, existing.id);
@@ -2313,7 +2359,7 @@
         x.type = v.type; x.a = JSON.parse(JSON.stringify(v.a)); x.b = JSON.parse(JSON.stringify(v.b));
         if (wide && v.a2) x.a2 = JSON.parse(JSON.stringify(v.a2)); else delete x.a2;
         if (wide && v.b2) x.b2 = JSON.parse(JSON.stringify(v.b2)); else delete x.b2;
-        if (alignSet) x.alignment = v.alignment; else delete x.alignment;
+        if (alignSet || autoAlign) x.alignment = v.alignment; else delete x.alignment;
         Assembly.setMateValues(x, mateValues());
         return x;
       }
@@ -2341,6 +2387,18 @@
       try { mt = apply(App.model); previewed = true; UI.rebuild({ noSave: true }); glide(from); }
       catch (e) { restore(); previewed = false; UI.rebuild({ noSave: true }); setMessage('Preview failed: ' + (e.message || e)); return; }
       var st = mateStatus(mt);
+      // r9/polish9: the default alignment cannot be met where the components stand (a pin held upright by a Concentric
+      // whose bottom is mated to the plate's bottom: Anti-Aligned would turn it over): take the other one, as SolidWorks
+      // picks the alignment the components already have. Only for a new mate whose alignment the user has not chosen.
+      if (st.error && !existing && !alignSet && !autoAlign && v.type !== 'gear' && (v.alignment === 'aligned' || v.alignment === 'anti-aligned')) {
+        var was = v.alignment, mt2 = null;
+        restore(); v.alignment = was === 'aligned' ? 'anti-aligned' : 'aligned'; autoAlign = true;
+        try { mt2 = apply(App.model); UI.rebuild({ noSave: true }); } catch (e2) { mt2 = null; }
+        var st2 = mt2 ? mateStatus(mt2) : null;
+        if (st2 && !st2.error) { mt = mt2; st = st2; renderPM(); }
+        else { restore(); v.alignment = was; autoAlign = false; mt = apply(App.model); UI.rebuild({ noSave: true }); st = mateStatus(mt); }
+        glide(from);
+      }
       setMessage(st.error ? mateTypeLabel(v.type) + ': ' + st.error : mateTypeLabel(v.type) + ' mate previewed. Press ✓ to ' + (existing ? 'update' : 'add') + ' it.', !st.error);
     }
     function addRef(ref, faceIndex) {
@@ -2353,7 +2411,7 @@
       if (faceIndex != null) { picked.push(faceIndex); pickedBy[slot] = faceIndex; }
       if (App.command) App.command.faceList = picked.slice();
       if (!typeSet) v.type = defaultMateType(v.a, v.b);
-      if (!alignSet) v.alignment = defaultAlignment(v.type, v.a, v.b);
+      if (!alignSet) { v.alignment = defaultAlignment(v.type, v.a, v.b); autoAlign = false; }
       measure();
       renderPM();
       preview();
@@ -2407,7 +2465,7 @@
         type: function () { return v.type; },
         onType: function (t) { if (t === v.type) return; v.type = t; syncGroups(v); if (mySpec && mySpec.onChange) mySpec.onChange(v, 'type'); },
         onFlip: function () {
-          var cur = alignSet ? v.alignment : defaultAlignment(v.type, v.a, v.b);
+          var cur = alignSet || autoAlign ? v.alignment : defaultAlignment(v.type, v.a, v.b);
           v.alignment = cur === 'closest' && UI.asmFlippedAlignment ? UI.asmFlippedAlignment({ type: v.type, a: v.a, b: v.b, alignment: 'closest' }) : cur === 'aligned' ? 'anti-aligned' : 'aligned';
           if (mySpec && mySpec.onChange) mySpec.onChange(v, 'alignment');
           renderPM();
@@ -2418,6 +2476,9 @@
     }
     openPM({
       title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
+      // r9/polish9: a new mate starts with picks, not with the cursor in the Offset box (typed digits went there);
+      // Enter still accepts (ui-app.js)
+      noFocus: !existing,
       message: 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.',
       command: {
         pickPlane: true, faceList: [],
@@ -2475,7 +2536,7 @@
           if (x.type === 'width' && x.b && !x.a2) { x.a2 = x.b; x.b = null; }
           if (x.type !== 'width' && x.a2 && !x.b) { x.b = x.a2; }
           if (x.type !== 'width') { x.a2 = null; x.b2 = null; }
-          if (!alignSet) x.alignment = defaultAlignment(x.type, x.a, x.b);
+          if (!alignSet) { x.alignment = defaultAlignment(x.type, x.a, x.b); autoAlign = false; }
           if (!valueSet && LIMIT[x.type]) measure();
           syncGroups(x);
           renderPM();
@@ -2500,7 +2561,7 @@
         });
         if (existing) return p;
         clearPicks(x);
-        typeSet = false; alignSet = false; valueSet = false;
+        typeSet = false; alignSet = false; autoAlign = false; valueSet = false;
         x.type = 'coincident'; x.alignment = 'aligned'; x.flip = false; x.distance = 10; x.angle = 90; x.offset = 0; x.min = 0; x.max = 10; x.ratioA = 1; x.ratioB = 1;
         syncGroups(x);
         return { keepOpen: true, promise: p.then(function (mt) {
@@ -2572,6 +2633,13 @@
       var sb = App.build.partBuilds && App.build.partBuilds[id];
       var inner = iref && iref.path && iref.path.length === 1 && sb && sb.model ? Assembly.findComponent(sb.model, iref.path[0]) : null;
       if (inner && !inner.fixed && inner.pattern == null && (iref.face || iref.cylinder)) { dragId = id + '/' + inner.id; grabLocal = (iref.face || iref.cylinder).slice(); }
+      // r9/polish9: a part deeper down (inside a sub-assembly of the Flexible one) drags the floating inner
+      // sub-assembly that holds it, as one body (its own mates are solved one level up only)
+      var deep = iref && iref.path && iref.path.length > 1 && sb && sb.model ? Assembly.findComponent(sb.model, iref.path[0]) : null;
+      if (deep && !deep.fixed && deep.pattern == null) {
+        dragId = id + '/' + deep.id;
+        grabLocal = Assembly.inverseTransformPoint(Assembly.composeTransforms(c.transform, (c.flexState || {})[deep.id] || deep.transform), grab);
+      }
     }
     // r5/asm5: a fixed Flexible sub-assembly still lets its floating parts be dragged (as in SolidWorks), not its base
     if (c.fixed && dragId === id) { UI.setStatus(c.name + ' is fixed: Float it to drag it.'); return null; }

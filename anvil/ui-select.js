@@ -603,6 +603,8 @@ if (typeof UI !== 'undefined') (function (UI) {
       '.pm-item { display: flex; align-items: center; gap: 5px; padding: 2px 6px; cursor: default; outline: none; white-space: nowrap; }',
       '.pm-item:hover { background: var(--pick-bg); }',
       '.pm-item.sel { background: var(--blue, #1f6fc5); color: #fff; }',
+      // r9/polish9: a long name (Face@Arm<1>@Hinge<2>@Hinged Cover<1>) ends in … instead of widening the PropertyManager
+      '.pm-pickwrap { min-width: 0; max-width: 100%; } .pm-list { overflow-x: hidden; } .pm-item > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
       'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }',
       // r5/select5: the ruler while the pointer snaps to it, and the tick it snapped to
       'html #i3d-layer .i3d-ruler.snapping { stroke: #1f6fc5; stroke-width: 1.5; }',
