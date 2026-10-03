@@ -56,13 +56,36 @@
       if (r.error) { pm.exprErrors[k] = r.error; pm.values[k] = 0; } else pm.values[k] = r.value;
     });
     App.command = spec.command || null;
+    var fresh = pm.root.hidden;
+    pm.collapsed = {};
+    if (fresh) pm.root.scrollTop = 0;
     renderPM();
     $('fm-tree').hidden = true;
     pm.root.hidden = false;
     UI.setFmTab('pm');
     UI.updatePlanes();
     if (spec.onChange) spec.onChange(pm.values);
+    focusFirstField();
   }
+  // SolidWorks puts the cursor in the PropertyManager's first value box with its text selected, so typing a number
+  // replaces it and Enter accepts. Only when nothing else holds the keyboard (a sketch dimension box, a dialog).
+  function focusFirstField() {
+    if (!pm.spec || pm.spec.noFocus) return;
+    var a = document.activeElement;
+    if (a && a !== document.body && !pm.root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) return;
+    if (!$('modal').hidden) return;
+    var inp = pm.root.querySelector('input.pm-num:not([disabled]), .pm-fields input[type=text]:not([disabled])');
+    if (!inp || pm.root.contains(a) && a !== pm.root) return;
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (e) { }
+  }
+  // Enter anywhere in the PropertyManager (a value box, a list, a check box) is ✓, Esc is ✗, as in SolidWorks.
+  // A focused button keeps Enter for itself; equation-field and other handlers that already took the key win.
+  pm.root.addEventListener('keydown', function (e) {
+    if (!pm.spec || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmCancel(); return; }
+    if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmOK(); }
+  });
   function closePM() {
     if (!pm.spec) return;
     var spec = pm.spec;
@@ -110,6 +133,13 @@
 
   function renderPM() {
     var spec = pm.spec, root = pm.root;
+    // a re-render (a pick, a message, a field that reshapes the panel) keeps the scroll position, the groups the user
+    // folded and the value box being typed in
+    var scroll = root.scrollTop, focus = null, a = document.activeElement;
+    if (a && a !== root && root.contains(a) && a.getAttribute('data-key')) {
+      focus = { key: a.getAttribute('data-key'), tag: a.tagName };
+      try { focus.s = a.selectionStart; focus.e = a.selectionEnd; } catch (er) { }
+    }
     root.innerHTML = '';
     root.appendChild(el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' }));
     var actions = el('div', { class: 'pm-actions' });
@@ -120,9 +150,14 @@
     if (spec.message) root.appendChild(el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : ''), html: spec.message }));
     (spec.groups || []).forEach(function (g) {
       if (g.show && !g.show(pm.values)) return;   // a group may hide itself, like a field
-      var box = el('div', { class: 'pm-group' + (g.collapsed ? ' collapsed' : '') });
-      var h = el('h4', { html: '<span class="tw">' + (g.collapsed ? '▸' : '▾') + '</span>' + g.title });
-      h.addEventListener('click', function () { box.classList.toggle('collapsed'); h.querySelector('.tw').textContent = box.classList.contains('collapsed') ? '▸' : '▾'; });
+      var folded = pm.collapsed && pm.collapsed[g.title] != null ? pm.collapsed[g.title] : !!g.collapsed;
+      var box = el('div', { class: 'pm-group' + (folded ? ' collapsed' : '') });
+      var h = el('h4', { html: '<span class="tw">' + (folded ? '▸' : '▾') + '</span>' + g.title });
+      h.addEventListener('click', function () {
+        var c = box.classList.toggle('collapsed');
+        if (pm.collapsed) pm.collapsed[g.title] = c;
+        h.querySelector('.tw').textContent = c ? '▸' : '▾';
+      });
       box.appendChild(h);
       var fields = el('div', { class: 'pm-fields' });
       g.fields.forEach(function (f) {
@@ -132,6 +167,13 @@
       box.appendChild(fields);
       root.appendChild(box);
     });
+    if (scroll && root.scrollTop !== scroll) root.scrollTop = scroll;
+    if (focus) {
+      var again = root.querySelector(focus.tag.toLowerCase() + '[data-key="' + focus.key + '"]');
+      if (again) {
+        try { again.focus({ preventScroll: true }); if (focus.s != null) again.setSelectionRange(focus.s, focus.e); } catch (er) { }
+      }
+    }
   }
 
   function renderField(f) {
@@ -219,13 +261,13 @@
         return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), sel]);
       }
       case 'check': {
-        var cb = el('input', { type: 'checkbox' });
+        var cb = el('input', { type: 'checkbox', 'data-key': f.key || '' });
         cb.checked = !!v[f.key];
         cb.addEventListener('change', function () { changed(cb.checked); });
         return el('div', { class: 'pm-row check' }, [cb, el('label', { text: f.label, onclick: function () { cb.click(); } })]);
       }
       case 'text': {
-        var t = el('input', { type: 'text', value: v[f.key] || '' });
+        var t = el('input', { type: 'text', value: v[f.key] || '', 'data-key': f.key || '' });
         t.addEventListener('input', function () { changed(t.value); });
         return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), t]);
       }

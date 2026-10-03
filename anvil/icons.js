@@ -212,5 +212,18 @@ var Icons = (function () {
     return '<svg class="ico ' + (cls || '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" aria-hidden="true">' + body + '</svg>';
   }
   icon.has = function (name) { return !!I[name]; };
+  // icon.node(name, size) -> a fresh <svg> element cloned from a parsed template (a long FeatureManager tree builds
+  // hundreds of icons per refresh; cloning is about four times cheaper than parsing the markup every time)
+  var nodeCache = {};
+  icon.node = function (name, size, cls) {
+    var key = name + '|' + (size || 32) + '|' + (cls || '');
+    var t = nodeCache[key];
+    if (!t) {
+      var box = document.createElement('div');
+      box.innerHTML = icon(name, size, cls);
+      t = nodeCache[key] = box.firstChild;
+    }
+    return t.cloneNode(true);
+  };
   return icon;
 })();

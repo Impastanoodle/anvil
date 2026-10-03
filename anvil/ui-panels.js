@@ -4,15 +4,18 @@
   var App = UI.App, K = UI.K, $ = UI.$, el = UI.el;
 
   // ------------------------------------------------------------------ status & toast
-  function setStatus(msg) { $('status-msg').textContent = msg; }
+  function setStatus(msg) { var s = $('status-msg'), t = msg == null ? '' : String(msg); if (s.textContent !== t) s.textContent = t; }
   var toastTimer = null;
+  // one toast at a time: a new message replaces the text of the one showing (no blink); it fades in and out
   function toast(msg) {
-    var old = document.querySelector('.toast');
-    if (old) old.remove();
-    var t = el('div', { class: 'toast', text: msg });
-    document.body.appendChild(t);
+    var t = document.querySelector('.toast');
+    if (t) { t.textContent = msg; t.classList.remove('out'); }
+    else { t = el('div', { class: 'toast', text: msg }); document.body.appendChild(t); }
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.remove(); }, 2600);
+    toastTimer = setTimeout(function () {
+      t.classList.add('out');
+      toastTimer = setTimeout(function () { t.remove(); }, 180);
+    }, 2420);
   }
   var lastDocType = null;
   function refreshStatus() {
@@ -29,8 +32,13 @@
     // sketch mode: the active sketch's definition state (SolidWorks' Under Defined / Fully Defined / Over Defined)
     var sk = App.mode === 'sketch' && App.sketchState ? App.sketchState : null;
     var skTxt = sk ? '<span class="sk-state ' + sk.status + '" title="Degrees of freedom: ' + sk.dof + '">' + (window.SketchSolver ? SketchSolver.STATUS_TEXT[sk.status] : sk.status) + '</span>' : '';
-    $('status-right').innerHTML = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span>' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
-    $('doc-title').textContent = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
+    // written only when it changed (refreshStatus runs on every solve and rebuild); the last span has a fixed width so
+    // a rebuild time growing from "9 ms" to "120 ms" does not shift the rest of the bar
+    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    var sr = $('status-right');
+    if (sr._html !== html) { sr.innerHTML = html; sr._html = html; }
+    var title = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
+    if ($('doc-title').textContent !== title) $('doc-title').textContent = title;
   }
 
   // ------------------------------------------------------------------ ribbon
@@ -172,49 +180,94 @@
     if (!enabled) return label + ' — not available in this build yet';
     return label + (key ? ' (' + key + ')' : '') + (help ? ' — ' + help : '');
   }
-  function ribbonButton(item) {
-    var d = item.dyn && item.dyn();
-    var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace('\n', ' ');
-    var enabled = !!(item.run || item.tool);
-    var b = el('button', { class: 'rb', html: Icons(id, 32) + '<span>' + label + '</span>', title: ribbonTitle(id, flat, enabled), 'aria-label': flat });
-    if (!enabled) b.disabled = true;
-    if (item.tool) {
-      if (App.mode !== 'sketch') { b.disabled = true; b.title = ribbonTitle(id, flat, true) + ' — open a sketch first'; }
-      if (App.mode === 'sketch' && App.tool === item.tool) b.classList.add('active');
-      b.addEventListener('click', function () { UI.setTool(App.tool === item.tool ? 'select' : item.tool); });
-    } else if (item.run) {
-      if ((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active())) b.classList.add('active');
-      b.addEventListener('click', function () { item.run(); refreshRibbon(); });
+  // A ribbon button's look follows the app state (sketch mode, active tool, toggles). sync() applies it in place, so
+  // refreshing the ribbon (after every command, tool change and PropertyManager close) does not replace the button
+  // under the mouse: no hover flicker, and the tooltip stays up.
+  function ribbonButton(item, small) {
+    var b = el('button', { class: 'rb' }), shown = null;
+    function sync() {
+      var d = item.dyn && item.dyn();
+      var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace('\n', ' ');
+      var enabled = !!(item.run || item.tool), title = ribbonTitle(id, flat, enabled), disabled = !enabled, active = false;
+      if (item.tool) {
+        if (App.mode !== 'sketch') { disabled = true; title = ribbonTitle(id, flat, true) + ' — open a sketch first'; }
+        active = App.mode === 'sketch' && App.tool === item.tool;
+      } else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
+      var face = id + '|' + label;
+      if (face !== shown) {
+        shown = face;
+        b.innerHTML = Icons(id, small ? 18 : 32) + '<span>' + (small ? item.label : label) + '</span>';
+        b.setAttribute('aria-label', flat);
+      }
+      if (b.title !== title) b.title = title;
+      if (b.disabled !== disabled) b.disabled = disabled;
+      if (b.classList.contains('active') !== active) b.classList.toggle('active', active);
     }
+    sync();
+    if (item.tool) b.addEventListener('click', function () { UI.setTool(App.tool === item.tool ? 'select' : item.tool); });
+    else if (item.run) b.addEventListener('click', function () { item.run(); refreshRibbon(); });
+    b._sync = sync;
     return b;
   }
-  function refreshRibbon() {
-    var bar = $('ribbon-buttons');
-    bar.innerHTML = '';
+  // What the ribbon was last built from: the tab, its item list (compared item by item: ui-assembly / drawing.js edit
+  // the lists in place) and the tab names. While these hold, refreshRibbon only re-syncs the buttons' states.
+  var ribbonBuilt = null;
+  function ribbonShape() {
     var set = ribbonSet();
-    if (!set[App.ribbonTab]) App.ribbonTab = Object.keys(set)[0];
-    (set[App.ribbonTab] || []).forEach(function (item) {
-      if (item.sep) { bar.appendChild(el('div', { class: 'rb-sep' })); return; }
-      if (item.stack) {
-        var st = el('div', { class: 'rb-stack' });
-        item.stack.forEach(function (s) { var b = ribbonButton(s); b.innerHTML = Icons(s.id, 18) + '<span>' + s.label + '</span>'; st.appendChild(b); });
-        bar.appendChild(st);
-        return;
-      }
-      bar.appendChild(ribbonButton(item));
-    });
-    var tabs = $('ribbon-tabs');
-    tabs.innerHTML = '';
     var tabNames = Object.keys(set), extraTabs = isAsm() ? ['Layout', 'Sketch', 'Markup', 'SOLIDWORKS Add-Ins'] : ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions'];
     // another document type (drawing.js) may swap the tab set: UI.ribbonTabsFor(names, extra) -> [names, extra]
     if (UI.ribbonTabsFor) { var tf = UI.ribbonTabsFor(tabNames, extraTabs); tabNames = tf[0]; extraTabs = tf[1]; }
-    tabNames.forEach(function (name) {
-      tabs.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { setRibbonTab(name); } }));
+    var items = (set[App.ribbonTab] || []).slice();
+    return { set: set, tab: App.ribbonTab, items: items, stacks: items.map(function (it) { return it.stack ? it.stack.slice() : null; }), tabs: tabNames.join('\u0001') + '\u0002' + extraTabs.join('\u0001'), tabNames: tabNames, extraTabs: extraTabs };
+  }
+  function sameShape(a, b) {
+    if (!a || a.set !== b.set || a.tab !== b.tab || a.tabs !== b.tabs || a.items.length !== b.items.length) return false;
+    for (var i = 0; i < a.items.length; i++) {
+      if (a.items[i] !== b.items[i]) return false;
+      var sa = a.stacks[i], sb = b.stacks[i];
+      if (sa || sb) { if (!sa || !sb || sa.length !== sb.length) return false; for (var j = 0; j < sa.length; j++) if (sa[j] !== sb[j]) return false; }
+    }
+    return true;
+  }
+  function refreshRibbon() {
+    var bar = $('ribbon-buttons');
+    var set = ribbonSet();
+    if (!set[App.ribbonTab]) App.ribbonTab = Object.keys(set)[0];
+    var shape = ribbonShape();
+    if (sameShape(ribbonBuilt, shape) && bar.children.length) {
+      Array.prototype.forEach.call(bar.querySelectorAll('.rb'), function (b) { if (b._sync) b._sync(); });
+      return;
+    }
+    ribbonBuilt = shape;
+    var frag = document.createDocumentFragment();
+    shape.items.forEach(function (item) {
+      if (item.sep) { frag.appendChild(el('div', { class: 'rb-sep' })); return; }
+      if (item.stack) {
+        var st = el('div', { class: 'rb-stack' });
+        item.stack.forEach(function (s) { st.appendChild(ribbonButton(s, true)); });
+        frag.appendChild(st);
+        return;
+      }
+      frag.appendChild(ribbonButton(item));
     });
-    extraTabs.forEach(function (name) {
-      var t = el('button', { class: 'rtab', text: name, title: 'Not available in this build', style: 'opacity:.5' });
-      tabs.appendChild(t);
+    bar.innerHTML = '';
+    bar.appendChild(frag);
+    var tabs = $('ribbon-tabs');
+    // switching tabs keeps the tab strip (and the hover on it): only the active mark moves
+    if (tabs.getAttribute('data-shape') === shape.tabs && tabs.children.length) {
+      Array.prototype.forEach.call(tabs.children, function (t) { if (!t.classList.contains('off')) t.classList.toggle('active', t.textContent === App.ribbonTab); });
+      return;
+    }
+    tabs.setAttribute('data-shape', shape.tabs);
+    var tfrag = document.createDocumentFragment();
+    shape.tabNames.forEach(function (name) {
+      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { setRibbonTab(name); } }));
     });
+    shape.extraTabs.forEach(function (name) {
+      tfrag.appendChild(el('button', { class: 'rtab off', text: name, title: 'Not available in this build', style: 'opacity:.5' }));
+    });
+    tabs.innerHTML = '';
+    tabs.appendChild(tfrag);
   }
   function setRibbonTab(name) { App.ribbonTab = name; refreshRibbon(); }
 
@@ -256,7 +309,9 @@
     row.style.paddingLeft = (6 + (opts.depth || 0) * 14) + 'px';
     var tw = el('span', { class: 'tw' + (opts.children ? '' : ' leaf'), text: opts.open ? '▾' : '▸' });
     row.appendChild(tw);
-    row.appendChild(el('span', { html: Icons(opts.icon, 16) }));
+    var ic = el('span');
+    ic.appendChild(Icons.node ? Icons.node(opts.icon, 16) : el('span', { html: Icons(opts.icon, 16) }));
+    row.appendChild(ic);
     row.appendChild(el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name }));
     if (opts.badge) row.appendChild(el('span', { class: 'badge', text: opts.badge }));
     if (opts.children) tw.addEventListener('click', function (e) { e.stopPropagation(); opts.toggle(); });
@@ -310,10 +365,18 @@
       }
     });
     if (App.sel && (App.sel.kind === 'feature' || App.sel.kind === 'body')) {
+      // a row selected elsewhere (the viewport) scrolls into view by the least amount, as in SolidWorks; a visible
+      // row leaves the list where it is
       var selRow = tree.querySelector('.ti.selected');
-      if (selRow && selRow.scrollIntoViewIfNeeded) selRow.scrollIntoViewIfNeeded();
+      if (selRow) revealRow(tree, selRow);
     }
     refreshConfigPanel();   // every rebuild, undo and load refreshes the tree; keep the ConfigurationManager in step
+  }
+  function revealRow(box, row) {
+    if (!row.getClientRects().length) return;   // inside a collapsed folder
+    var r = row.getBoundingClientRect(), b = box.getBoundingClientRect();
+    if (r.top < b.top) box.scrollTop += r.top - b.top;
+    else if (r.bottom > b.top + box.clientHeight) box.scrollTop += r.bottom - b.top - box.clientHeight;
   }
   // ---- assembly FeatureManager: "Assem1", origin planes, one row per component ("(f) Plate<1>" fixed, "(-) Pin<1>"
   // still free to move, red on a build error) and the Mates folder ("Coincident1 (Plate<1>, Pin<1>)", red with the
@@ -493,8 +556,13 @@
     var active = App.activeSketch === f.id;
     var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : ''), title: err || warn || featureTitle(f), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
-    row.addEventListener('click', function () { App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name + (err ? ': ' + err : '')); });
-    row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.editFeature(f); });
+    row.addEventListener('click', function (e) {
+      // slow double-click (SolidWorks): a second, unhurried click on the name of the selected feature renames it;
+      // a real double-click within the delay cancels it and edits the feature instead
+      if (selected && e.isTrusted && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.target.classList && e.target.classList.contains('nm')) slowRename(f);
+      App.sel = { kind: 'feature', id: f.id }; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); refreshTree(); if (UI.onSelectionChanged) UI.onSelectionChanged(); setStatus(f.name + (err ? ': ' + err : ''));
+    });
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); cancelSlowRename(); UI.editFeature(f); });
     row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); App.sel = { kind: 'feature', id: f.id }; UI.updateHighlights(); refreshTree(); showMenu(e.clientX, e.clientY, featureMenu(f)); });
     return row;
   }
@@ -532,27 +600,52 @@
     items.push({ label: 'Delete', action: function () { UI.deleteFeature(f.id); } });
     return items;
   }
+  var slowTimer = null;
+  function cancelSlowRename() { clearTimeout(slowTimer); slowTimer = null; }
+  function slowRename(f) {
+    cancelSlowRename();
+    slowTimer = setTimeout(function () {
+      slowTimer = null;
+      if (App.sel && App.sel.kind === 'feature' && App.sel.id === f.id && !UI.hasPM() && K.findFeature(App.model, f.id) === f) startRename(f);
+    }, 520);
+  }
+  // F2 / slow double-click / the context menu: the row is found by its feature id (a name prefix could match
+  // "Sketch10" for "Sketch1"); a sketch inside a collapsed feature opens its folder first
   function startRename(f) {
-    var rows = Array.prototype.filter.call($('tree').querySelectorAll('.ti'), function (r) { return r.querySelector('.nm') && r.querySelector('.nm').textContent.indexOf(f.name) === 0; });
-    var row = rows[0];
-    if (!row) return;
+    if (!f) return;
+    cancelSlowRename();
+    var tree = $('tree');
+    var row = tree.querySelector('.ti[data-fid="' + f.id + '"]');
+    if (row && !row.getClientRects().length) {
+      var owner = null;
+      App.model.features.forEach(function (g) { if (owner == null && g !== f && (g.sketch === f.id || g.profile === f.id || g.path === f.id || (g.sketches || []).indexOf(f.id) >= 0)) owner = g.id; });
+      if (owner != null && !expanded[owner]) { expanded[owner] = true; refreshTree(); row = tree.querySelector('.ti[data-fid="' + f.id + '"]'); }
+    }
+    if (!row || !row.getClientRects().length) return;
+    revealRow(tree, row);
     renameInline(row, f.name, function (n) { UI.pushUndo(); f.name = n; refreshTree(); });
   }
+  // The name becomes a text box in place (same row height, the icon and badge stay put): Enter or a click elsewhere
+  // keeps the new name, Esc restores the old one.
   function renameInline(row, current, done) {
     var nm = row.querySelector('.nm');
-    var inp = el('input', { type: 'text', value: current });
+    if (!nm) return;
+    var inp = el('input', { type: 'text', value: current, class: 'ti-rename', spellcheck: 'false', 'aria-label': 'Name' });
     nm.replaceWith(inp);
-    inp.focus(); inp.select();
+    row.classList.add('renaming');
+    inp.focus({ preventScroll: true }); inp.select();
     var finished = false;
     function finish(ok) {
       if (finished) return;
       finished = true;
       var v = inp.value.trim();
-      inp.replaceWith(nm);
-      if (ok && v && v !== current) done(v); else refreshTree();
+      row.classList.remove('renaming');
+      if (inp.parentNode) inp.replaceWith(nm);
+      if (ok && v && v !== current) done(v);
     }
-    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); e.stopPropagation(); });
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); finish(true); } if (e.key === 'Escape') { e.preventDefault(); finish(false); } e.stopPropagation(); });
     inp.addEventListener('blur', function () { finish(true); });
+    ['mousedown', 'click', 'dblclick'].forEach(function (t) { inp.addEventListener(t, function (e) { e.stopPropagation(); }); });
   }
   $('tree-filter-input').addEventListener('input', refreshTree);
 
@@ -744,33 +837,49 @@
   }
 
   // ------------------------------------------------------------------ heads-up view toolbar
+  // Built once; later calls only move the active marks (the buttons stay under the mouse, tooltips do not flicker).
+  // Drop-down items are made when the menu opens, so their check marks are always current.
+  var hudActive = null;
+  function orientItems() { return Object.keys(UI.VIEWS).map(function (n) { return { label: n, action: function () { UI.setView(n); } }; }).concat([{ sep: true }, { label: 'Normal To (Ctrl+8)', action: normalToSelection }]); }
   function refreshHud() {
     var hud = $('hud');
+    if (hudActive && hud.children.length) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
     hud.innerHTML = '';
+    hudActive = [];
     function btn(icon, title, action, active, caret) {
       var b = el('button', { html: Icons(icon, 22) + (caret ? '<span class="caret">▾</span>' : ''), title: title, onclick: action });
-      if (active) b.classList.add('active');
+      if (active) { hudActive.push([b, active]); if (active()) b.classList.add('active'); }
       hud.appendChild(b);
       return b;
     }
-    function dd(icon, title, items) { var b = btn(icon, title, function () { var r = b.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items); }, false, true); }
+    function dd(icon, title, items) { var b = btn(icon, title, function () { var r = b.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items()); }, null, true); }
     btn('fit', 'Zoom to Fit (F)', UI.zoomToFit);
-    btn('zoomArea', 'Zoom to Area', function () { App.zoomAreaMode = !App.zoomAreaMode; refreshHud(); }, App.zoomAreaMode);
+    btn('zoomArea', 'Zoom to Area', function () { App.zoomAreaMode = !App.zoomAreaMode; refreshHud(); }, function () { return App.zoomAreaMode; });
     btn('prevView', 'Previous View', UI.previousView);
-    btn('section', 'Section View', UI.cmdSection, !!App.view.section);
+    btn('section', 'Section View', UI.cmdSection, function () { return !!App.view.section; });
     hud.appendChild(el('span', { class: 'sep' }));
-    dd('orient', 'View Orientation', Object.keys(UI.VIEWS).map(function (n) { return { label: n, action: function () { UI.setView(n); } }; }).concat([{ sep: true }, { label: 'Normal To (Ctrl+8)', action: normalToSelection }]));
-    dd('display', 'Display Style', [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }));
-    dd('hideshow', 'Hide/Show Items', [
+    dd('orient', 'View Orientation', orientItems);
+    dd('display', 'Display Style', function () { return [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }); });
+    dd('hideshow', 'Hide/Show Items', function () { return [
       { label: 'Planes', checked: App.view.showPlanes, action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } },
       { label: 'Origins', checked: App.view.showOrigin, action: function () { App.view.showOrigin = !App.view.showOrigin; UI.updateOrigin(); } },
       { label: 'Sketches', checked: App.view.showSketches, action: function () { App.view.showSketches = !App.view.showSketches; UI.updateSketches(); } },
       { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } }
-    ]);
+    ]; });
     hud.appendChild(el('span', { class: 'sep' }));
     btn('appearance', 'Edit Appearance', function () { UI.openTaskPane('appearance'); });
-    dd('scene', 'Apply Scene', [['gradient', 'Studio gradient'], ['white', 'Plain white'], ['dark', 'Dark room']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }));
+    dd('scene', 'Apply Scene', function () { return [['gradient', 'Studio gradient'], ['white', 'Plain white'], ['dark', 'Dark room']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
     btn('settings', 'View Settings', function () { UI.openTaskPane('props'); });
+  }
+  // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
+  // the heads-up button
+  var lastPointer = null;
+  document.addEventListener('mousemove', function (e) { lastPointer = [e.clientX, e.clientY, e.target]; }, { passive: true });
+  function showOrientationMenu() {
+    var vp = UI.viewport || $('viewport');
+    if (lastPointer && vp && vp.contains(lastPointer[2])) { showMenu(lastPointer[0], lastPointer[1], orientItems()); return; }
+    var b = $('hud').children[5];
+    if (b) b.click();
   }
 
   // ------------------------------------------------------------------ modal
@@ -793,6 +902,8 @@
     if (first) first.focus();
   }
   function closeModal() { $('modal').hidden = true; $('modal-card').classList.remove('wide'); }
+  // Enter in a dialog (ui-app.js keydown) presses its primary button
+  function modalDefault() { var b = $('modal-buttons').querySelector('.btn.primary'); if (b && !b.disabled) b.click(); }
 
   // ------------------------------------------------------------------ Tools ▸ Equations
   // "Equations, Global Variables, and Dimensions": edits a working copy of model.equations ([{ name, expr }], in
@@ -1121,7 +1232,7 @@
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu;
-  UI.refreshHud = refreshHud; UI.showModal = showModal; UI.closeModal = closeModal; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
+  UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
   UI.refreshConfigPanel = refreshConfigPanel;
   UI.configurations = { list: cfgList, active: cfgActiveName, add: cfgAdd, rename: cfgRename, remove: cfgRemove, activate: cfgActivate, set: cfgSet };

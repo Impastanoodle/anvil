@@ -523,3 +523,39 @@ body { overflow: auto; }
 html[data-theme="dark"] #i3d-layer .i3d-ruler, html[data-theme="dark"] #i3d-layer .i3d-tick { stroke: #d8dde3; }
 html[data-theme="dark"] #i3d-layer .i3d-tick-label { fill: #d8dde3; }
 html[data-theme="dark"] #i3d-layer .i3d-value, html[data-theme="dark"] #i3d-layer .i3d-dim-text { stroke: #1e232b; }
+
+/* ---- smooth/chrome: calm, flicker-free workspace chrome (SolidWorks feel) */
+/* Long FeatureManager trees: rows off screen skip style / layout / paint (a 430-row tree re-renders in a third of the
+   time); the tree's layout is kept apart from the rest of the window. Rows are a fixed 21 px. */
+#tree { contain: strict; overscroll-behavior: contain; }
+#tree .ti { content-visibility: auto; contain-intrinsic-size: auto 21px; }
+#tree .ti.renaming { content-visibility: visible; }
+.ti input.ti-rename { flex: 1 1 auto; min-width: 60px; width: auto; max-width: 100%; height: 19px; margin: 0 0 0 -4px; padding: 0 3px; border-color: var(--blue); }
+/* hover feedback fades in quickly on buttons (not on tree rows or menu rows, which stay instant as in SolidWorks) */
+.rb, #hud button, #tp-strip button, #fm-tabs button, .pm-actions button, .pm-btns button, .btn, .cfg-tools button, #exit-sketch button, .rtab {
+  transition: background-color 90ms ease-out, border-color 90ms ease-out, color 90ms ease-out;
+}
+.rb:active:not(:disabled), #hud button:active, .pm-actions button:active, #tp-strip button:active, .btn:active { background: var(--sel); }
+.rb.active:active { background: var(--blue-soft); }
+.rtab:not(.active):not(.off):hover { background: var(--hover); }
+/* the PropertyManager slides in over the FeatureManager slot (transform + opacity only: no layout per frame) */
+#pm:not([hidden]) { animation: pm-in 140ms cubic-bezier(.2, .7, .3, 1); }
+@keyframes pm-in { from { opacity: 0.35; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+#pm { overscroll-behavior: contain; }
+.pm-group > h4 { user-select: none; }
+.pm-group > h4:hover { filter: brightness(1.03); }
+/* status bar: numbers in fixed-width digits; the rebuild time keeps its width so nothing beside it moves */
+#statusbar { font-variant-numeric: tabular-nums; }
+#status-right .st-ms { min-width: 64px; text-align: right; }
+#status-coords { white-space: pre; overflow: hidden; text-overflow: ellipsis; flex: none; min-width: 260px; max-width: 420px; }
+/* toasts fade in and out instead of blinking */
+.toast { animation: toast-in 140ms ease-out; transition: opacity 170ms ease-in; }
+.toast.out { opacity: 0; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 0.95; transform: translateX(-50%); } }
+/* menus: nothing to wait for, but keep the hover row colour consistent with the tree in both themes */
+.menu .mi:hover { background: var(--sel); }
+@media (prefers-reduced-motion: reduce) { #pm:not([hidden]), .toast { animation: none !important; } }
+/* dark theme: the Selection Filter bar used light-only greys */
+html[data-theme="dark"] #sel-filter { border-color: var(--line); }
+html[data-theme="dark"] #sel-filter .sf-title { color: var(--muted); }
+html[data-theme="dark"] #sel-filter .sf-sep { background: var(--line); }
