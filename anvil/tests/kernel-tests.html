@@ -9796,6 +9796,25 @@
       assert(!txt.some(function (t) { return /SCALE \d+:\d/.test(t); }), 'no unspaced view scale');
       assert(DW.scaleText([2, 1]) === '2:1' && JSON.stringify(DW.parseScale('2 : 1')) === '[2,1]', 'values and parsing unchanged');
     });
+    test('sections added by script to a full sheet: shrink or break alignment to fit on the sheet, else beside it (marked offSheet); never over another view', function () {
+      var r = drawingOf(PL6), F = r.view('Front').view, T = r.view('Top').view, S = DW.sheetSize(r.doc, r.doc.units), out = [], off = 0;
+      for (var i = 0; i < 6; i++) {
+        var sv = DW.addSectionView(r.doc, r.mesh, (i % 2 ? T : F).id, { axis: i % 3 ? 'v' : 'h', at: 4 + i, sign: i % 4 < 2 ? 1 : -1, fit: true });
+        if (sv.offSheet) off++;
+        out.push(sv.label + (sv.align ? '' : '*') + (sv.scale ? DW.scaleText(sv.scale) : '') + (sv.offSheet ? '!' : ''));
+      }
+      var sh = DW.compute(r.doc, r.mesh, r.model), boxes = sh.views.map(function (w) { return { id: w.view.name, b: w.box, v: w.view }; });
+      for (var a = 0; a < boxes.length; a++) for (var b = a + 1; b < boxes.length; b++) {
+        var p = boxes[a].b, q = boxes[b].b;
+        assert(p.x1 <= q.x0 || q.x1 <= p.x0 || p.y1 <= q.y0 || q.y1 <= p.y0, boxes[a].id + ' covers ' + boxes[b].id);
+      }
+      boxes.forEach(function (o) {
+        if (o.v.kind !== 'section' || o.v.offSheet) return;
+        assert(o.b.x0 >= 0 && o.b.y0 >= 0 && o.b.x1 <= S[0] && o.b.y1 <= S[1], o.id + ' on the sheet: ' + JSON.stringify(o.b));
+      });
+      assert(boxes.some(function (o) { return o.v.kind === 'section' && !o.v.offSheet && (!o.v.align || o.v.scale); }), 'at least one fitted by shrinking / breaking alignment: ' + out.join(' '));
+      return out.join(' ') + ' (' + off + ' beside the sheet)';
+    });
   })();
   // --- end r6/drawings6 ---
 
