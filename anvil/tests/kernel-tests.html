@@ -8649,6 +8649,28 @@
       near(T.position[1], 10, 1e-9, 'its bottom face on the top plane');
     });
 
+    test('Drag inside a Flexible sub-assembly: the Hinged cover without its Angle mate, Hinge<2>\'s Arm (id "S/k") pulled down swings about its hinge; Hinge<2> itself stays, flexState keeps the turn', function () {
+      var ex = (typeof AnvilExamples !== 'undefined' ? AnvilExamples : []).filter(function (e) { return e.name === 'Hinged cover (sub-assemblies)'; })[0];
+      if (!ex) return 'example missing: skipped';
+      var m = AS.newAssembly();
+      AS.runScript(m, ex.code);
+      m.mates = m.mates.filter(function (x) { return x.type !== 'angle'; });
+      var b = AS.rebuild(m);
+      noErr(b);
+      var h2 = AS.findComponent(m, 'Hinge<2>'), sm = b.partBuilds[h2.id].model, arm = AS.findComponent(sm, 'Arm<1>');
+      var p0 = h2.transform.position.slice();
+      // the arm's far end (local [41, 2.5, 10]) pulled to 30° below the hinge line, on the +x side
+      var L = Math.hypot(41, 2.5), tgt = AS.transformPoint(h2.transform, [L * Math.cos(-Math.PI / 6), L * Math.sin(-Math.PI / 6), 10]);
+      b = AS.rebuild(m, b.cache, { drag: { id: h2.id + '/' + arm.id, point: [41, 2.5, 10], target: tgt } });
+      noErr(b);
+      var k = AS.findComponent(b.partBuilds[h2.id].model, 'Arm<1>'), Tk = { position: k.transform.position, rotation: k.transform.rotation };
+      var w = AS.transformPoint(h2.transform, AS.transformPoint(Tk, [41, 2.5, 10]));
+      near(Math.hypot(w[0] - tgt[0], w[1] - tgt[1], w[2] - tgt[2]), 0, 1e-4, 'the arm end reached the pull');
+      near(Math.hypot(h2.transform.position[0] - p0[0], h2.transform.position[1] - p0[1], h2.transform.position[2] - p0[2]), 0, 1e-6, 'Hinge<2> did not move');
+      assert(h2.flexState && h2.flexState[arm.id], 'flexState stored');
+      assert(badMates(b).length === 0, 'mates ok');
+    });
+
     test('A real conflict is still rejected: a block Coincident on the top face, then Coincident on a face 10 higher', function () {
       var m = AS.newAssembly(), base = AS.insert(m, { script: 'p.box(100, 60, 10); p.box(20, 20, 10, { at: [0, 10, 0] });' }, { fixed: true }).id;
       var blk = AS.insert(m, { script: 'p.box(10, 10, 10);' }, { position: [50, 30, 20], rotation: [1, 0, 0, 0, -1, 0, 0, 0, -1] }).id;

@@ -1967,14 +1967,22 @@
     // Each frame solves from the previous one, so a long sweep goes round smoothly.
     var off = App.build && App.build.explode && App.build.explode.offsets && App.build.explode.offsets[id];
     var grab = hit.point ? (off ? [hit.point[0] - off[0], hit.point[1] - off[1], hit.point[2] - off[2]] : hit.point.slice()) : center;
-    var grabLocal = Assembly.inverseTransformPoint(c.transform, grab);
+    var grabLocal = Assembly.inverseTransformPoint(c.transform, grab), dragId = id;
+    // a Flexible sub-assembly: grabbing one of its floating parts drags that part (its own mates solved in context)
+    if (c.flexible && mode === 'move') {
+      var iref = null;
+      try { iref = Assembly.refFromPick(App.model, App.build, hit.index, hit.point, App.mesh); } catch (e) { iref = null; }
+      var sb = App.build.partBuilds && App.build.partBuilds[id];
+      var inner = iref && iref.path && iref.path.length === 1 && sb && sb.model ? Assembly.findComponent(sb.model, iref.path[0]) : null;
+      if (inner && !inner.fixed && inner.pattern == null && (iref.face || iref.cylinder)) { dragId = id + '/' + inner.id; grabLocal = (iref.face || iref.cylinder).slice(); }
+    }
     // Rotate: the component turns about its centre with the mouse; one its mates hold (a hinged arm) turns as far as
     // they allow: the grabbed point is pulled to where the free turn would take it.
     function dragOpts(q, rotated) {
       if (mode === 'rotate') return { drag: { id: id, point: grabLocal, target: Assembly.transformPoint(Assembly.findComponent(rotated || target(q), id).transform, grabLocal) } };
       var dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up, sc = UI.cam.scale;
       var tgt = [grab[0] + (r.x * dx - u.x * dy) * sc, grab[1] + (r.y * dx - u.y * dy) * sc, grab[2] + (r.z * dx - u.z * dy) * sc];
-      return { drag: { id: id, point: grabLocal, target: tgt } };
+      return { drag: { id: dragId, point: grabLocal, target: tgt } };
     }
     function target(q) {
       var m = JSON.parse(snap), dx = q[0] - start[0], dy = q[1] - start[1], r = UI.cam.right, u = UI.cam.up;
