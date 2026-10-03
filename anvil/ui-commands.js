@@ -769,6 +769,7 @@
     var e = f.entities[App.sel.index];
     if (!e) return null;
     var pls = K.entityPolylines(e).filter(function (l) { return l.closed; });
+    if (!pls.length && (e.t === 'line' || e.t === 'arc')) return { entity: e, index: App.sel.index, pts: null, open: true };   // r6/sketch6: offset as a line / arc
     return pls.length ? { entity: e, index: App.sel.index, pts: pls[0].pts } : null;
   }
   function cmdConvertEntities() {
@@ -784,9 +785,10 @@
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     var sel = selectedSketchEntityLoop();
-    var source = sel ? [sel.pts] : (f.faceLoops || []);
-    if (!source.length) { UI.toast('Select a closed sketch entity, or sketch on a face, then Offset.'); return; }
-    var v = { d: 2, reverse: false, construction: false };
+    var source = sel ? (sel.open ? [] : [sel.pts]) : (f.faceLoops || []);
+    if (!source.length && !sel) { UI.toast('Select a sketch entity, or sketch on a face, then Offset.'); return; }
+    // r6/sketch6: Add dimensions (on by default, as SolidWorks): a driving offset dimension between the entity and its copy
+    var v = { d: 2, reverse: false, construction: false, dims: true };
     var added = [];
     function apply(commit) {
       added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); });
@@ -806,11 +808,12 @@
     openPM({
       title: 'Offset Entities', icon: 'offset', values: v,
       message: sel ? 'Offsetting the selected entity.' : 'Offsetting the face outline this sketch sits on (' + source.length + ' loop' + (source.length === 1 ? '' : 's') + ').',
-      groups: [{ title: 'Parameters', fields: [{ type: 'number', label: 'Offset distance', key: 'd', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse (inward)', key: 'reverse' }, { type: 'check', label: 'Construction geometry', key: 'construction' }] }],
+      groups: [{ title: 'Parameters', fields: [{ type: 'number', label: 'Offset distance', key: 'd', unit: 'u', min: 0 }, { type: 'check', label: 'Add dimensions', key: 'dims' }, { type: 'check', label: 'Reverse (inward)', key: 'reverse' }, { type: 'check', label: 'Construction geometry', key: 'construction' }] }],
       onChange: function () { apply(); },
       onOK: function () {
         var oi = sel && added.length === 1 && window.SketchSolver ? f.entities.indexOf(added[0]) : -1;
         if (oi >= 0) SketchSolver.offsetRelations(f, sel.index, oi).forEach(function (r) { (f.rels = f.rels || []).push(r); });
+        if (oi >= 0 && v.dims && SketchSolver.offsetDimensions) { SketchSolver.offsetDimensions(f, sel.index, oi, v.d); UI.updateSketches(); }
         UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
       onCancel: function () { added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); }); added = []; UI.updateSketches(); if (App.undo.length === undoN) App.undo.pop(); }
     });

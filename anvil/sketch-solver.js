@@ -310,7 +310,13 @@ var SketchSolver = (function () {
       case 'distance': {
         if (!(v >= 0)) return null;
         n = 1;
-        if ((rel.dir === 'h' || rel.dir === 'v') && kA !== 'line' && kB !== 'line') {
+        if (rel.dir === 'r' && kA === 'circle' && kB === 'circle') {
+          // r6/sketch6: radial distance between two (concentric) circles / arcs, rB - rA signed as the geometry started
+          // (the driving dimension Offset Entities adds between a circle and its offset copy)
+          var s4 = sgn(C(B, ents).r - C(A, ents).r);
+          f = function (E) { return [s4 * (C(B, E).r - C(A, E).r) - v]; };
+        }
+        else if ((rel.dir === 'h' || rel.dir === 'v') && kA !== 'line' && kB !== 'line') {
           // horizontal / vertical distance between two points (or centres), signed as the geometry started
           var ax = rel.dir === 'h' ? 0 : 1, pc = function (r, k, E) { return k === 'point' ? P(r, E) : C(r, E).c; };
           var s3 = sgn(pc(B, kB, ents)[ax] - pc(A, kA, ents)[ax]);
@@ -744,6 +750,7 @@ var SketchSolver = (function () {
       var from = kA === 'point' ? refPoint(ents, A) : kA === 'circle' ? refCurve(ents, A).c : (function () { var l = refCurve(ents, A); return [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]; })();
       return Math.abs(lineDist(from, refCurve(ents, B)));
     }
+    if (type === 'distance' && dir === 'r' && kA === 'circle' && kB === 'circle') return Math.abs(refCurve(ents, B).r - refCurve(ents, A).r);
     if (type === 'distance' && (dir === 'h' || dir === 'v')) return Math.abs(refCenter(ents, B)[dir === 'h' ? 0 : 1] - refCenter(ents, A)[dir === 'h' ? 0 : 1]);
     return len(sub(refCenter(ents, A), refCenter(ents, B)));
   }
@@ -795,6 +802,7 @@ var SketchSolver = (function () {
       var rel = { type: type, refs: groups[g] };
       if (TYPES[type].dim) {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
+        if (type === 'distance' && opts.dir === 'r' && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) === 'circle'; })) rel.dir = 'r';
         // angle (r5/sketch5): sup = the supplementary angle, q = -1 drawn on the reversed rays, ta = label angle from
         // the middle of the arc (degrees)
         if (type === 'angle' && opts.sup) rel.sup = true;
@@ -1264,6 +1272,12 @@ var SketchSolver = (function () {
     var o = null;
     switch (e.t) {
       case 'circle': if (e.r + d > 1e-9) o = { t: 'circle', cx: e.cx, cy: e.cy, r: e.r + d }; break;
+      case 'arc': if (e.r + d > 1e-9) o = { t: 'arc', cx: e.cx, cy: e.cy, r: e.r + d, a0: e.a0, a1: e.a1 }; break;
+      case 'line': {   // r6/sketch6: a parallel copy, d along the line's left normal
+        var dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy);
+        if (L > 1e-12 && Math.abs(d) > 1e-12) { var nx = -dy / L * d, ny = dx / L * d; o = { t: 'line', x1: e.x1 + nx, y1: e.y1 + ny, x2: e.x2 + nx, y2: e.y2 + ny }; }
+        break;
+      }
       case 'rect': if (e.w + 2 * d > 1e-9 && e.h + 2 * d > 1e-9) o = { t: 'rect', x: e.x - d, y: e.y - d, w: e.w + 2 * d, h: e.h + 2 * d }; break;
       case 'crect': if (e.w + 2 * d > 1e-9 && e.h + 2 * d > 1e-9) o = { t: 'crect', cx: e.cx, cy: e.cy, w: e.w + 2 * d, h: e.h + 2 * d }; break;
       case 'slot': if (e.w + 2 * d > 1e-9) o = { t: 'slot', x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, w: e.w + 2 * d }; break;
@@ -1275,10 +1289,29 @@ var SketchSolver = (function () {
   function offsetRelations(sketch, i, j) {
     var e = sketch.entities[i], o = sketch.entities[j];
     if (!e || !o || e.t !== o.t) return [];
-    if (e.t === 'circle') return [{ type: 'concentric', refs: [String(i), String(j)] }];
+    if (e.t === 'circle' || e.t === 'arc') return [{ type: 'concentric', refs: [String(i), String(j)] }];
+    if (e.t === 'line') return [{ type: 'parallel', refs: [String(i), String(j)] }];
+    if (e.t === 'rect') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }];
+    if (e.t === 'poly') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }, { type: 'parallel', refs: [i + '.e0', j + '.e0'] }];
     if (e.t === 'crect' || e.t === 'poly') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }];
     if (e.t === 'slot') return [{ type: 'coincident', refs: [i + '.p1', j + '.p1'] }, { type: 'coincident', refs: [i + '.p2', j + '.p2'] }];
     return [];
+  }
+
+  // r6/sketch6: the driving offset dimension(s) SolidWorks' Offset Entities adds between entity `i` and its offset
+  // copy `j` (after offsetRelations): circle / arc -> radial distance (dir 'r'); line -> parallel distance; polygon ->
+  // distance between the first edges; rectangle -> distance between the bottom edges and between the right edges.
+  // Each holds |d|; one that would over-define is skipped. Returns the indices of the relations added.
+  function offsetDimensions(sketch, i, j, d) {
+    var e = sketch.entities[i], o = sketch.entities[j], v = Math.abs(+d), out = [];
+    if (!e || !o || e.t !== o.t || !(v > 1e-12)) return out;
+    var pairs = e.t === 'circle' || e.t === 'arc' || e.t === 'line' ? [[String(i), String(j)]]
+      : e.t === 'poly' ? [[i + '.e0', j + '.e0']] : e.t === 'rect' || e.t === 'crect' ? [[i + '.e0', j + '.e0'], [i + '.e1', j + '.e1']] : [];
+    pairs.forEach(function (p) {
+      var r = addRelation(sketch, 'distance', p, { value: v, dir: e.t === 'circle' || e.t === 'arc' ? 'r' : undefined, rejectOver: true });
+      if (r.ok) out = out.concat(r.rels);
+    });
+    return out;
   }
 
   // Mirror Entities about a line entity: each copy is held Symmetric to its original about that line (lines, circles,
@@ -1543,7 +1576,7 @@ var SketchSolver = (function () {
   }
   function describe(sketch, rel) {
     var t = TYPES[rel.type];
-    var s = (rel.dir === 'h' ? 'Horizontal ' : rel.dir === 'v' ? 'Vertical ' : '') + (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
+    var s = (rel.dir === 'h' ? 'Horizontal ' : rel.dir === 'v' ? 'Vertical ' : rel.dir === 'r' ? 'Radial ' : '') + (t ? t.name : rel.type) + ': ' + rel.refs.map(function (r) { return refName(sketch, r); }).join(', ');
     if (t && t.dim) s += (rel.driven ? ' (driven) = ' : ' = ') + (Math.round(rel.v * 1e4) / 1e4) + (rel.type === 'angle' ? '°' : '');
     return s;
   }
@@ -1581,7 +1614,7 @@ var SketchSolver = (function () {
       }
       if (opt && typeof opt === 'object' && opt.off != null) o.off = +opt.off;
       if (opt && typeof opt === 'object' && opt.driven) o.driven = true;
-      if (opt && typeof opt === 'object' && (opt.dir === 'h' || opt.dir === 'v')) o.dir = opt.dir;
+      if (opt && typeof opt === 'object' && (opt.dir === 'h' || opt.dir === 'v' || opt.dir === 'r')) o.dir = opt.dir;
       if (opt && typeof opt === 'object' && opt.tx != null) o.tx = +opt.tx;
       if (opt && typeof opt === 'object') { if (opt.sup) o.sup = true; if (+opt.q === -1) o.q = -1; if (opt.ta != null) o.ta = +opt.ta; }
       var r = addRelation(this.f, type, refs, o);
@@ -1635,7 +1668,7 @@ var SketchSolver = (function () {
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation,
     removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
-    lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations,
+    lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install
   };
 })();

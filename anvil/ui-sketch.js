@@ -572,7 +572,9 @@
     if (lastPt && Math.abs(p[0] - lastPt[0]) < 1e-9 && Math.abs(p[1] - lastPt[1]) < 1e-9) return;
     // clicking the chain's first point closes the loop and ends the chain (the Line tool stays active)
     if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
+      var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
       addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0]);
+      if (fc && numericInputOn() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6
       cancelTool(true);
       return;
     }
@@ -586,7 +588,10 @@
       // a 3 Point Arc through three points in a line is no arc: the third click is not taken
       if (App.tool === 'arc3' && (!ents[0] || ents[0].t !== 'arc')) { st.pts.pop(); UI.setStatus('The three points are in a line: click a point off the line from start to end.'); return; }
       ents.forEach(addEntity);
-      if (f && st.typed && f.entities.length === n0 + 1) typedDims(f, n0, st.typed);
+      // r6/sketch6: with Sketch Settings ▸ Enable on-screen numeric input on entity creation, every value of the new
+      // entity gets a driving dimension (as SolidWorks), not only the typed ones
+      var typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
+      if (f && typedAll && f.entities.length === n0 + 1) typedDims(f, n0, typedAll);
       st.typed = null;
       if (App.tool === 'line') {
         var last = st.pts[st.pts.length - 1];
@@ -606,6 +611,19 @@
   // input): a line's length, a rectangle's width / height, a circle's diameter, an arc / polygon radius, a slot's
   // length / width. Typed angles only set the direction (0 / 90° lines infer Horizontal / Vertical). One that would
   // over-define the sketch is left out.
+  // r6/sketch6: Tools ▸ Sketch Settings ▸ Enable on-screen numeric input on entity creation (off by default; kept per
+  // browser): every entity drawn gets its dimensions
+  var ALL_TYPED = { len: 1, w: 1, h: 1, r: 1 }, numInputOn = null;
+  function numericInputOn() {
+    if (numInputOn == null) { numInputOn = false; try { numInputOn = window.localStorage.getItem('anvil.sketchNumericInput') === '1'; } catch (e) { /* storage blocked */ } }
+    return numInputOn;
+  }
+  UI.sketchNumericInput = function (on) {
+    if (on == null) return numericInputOn();
+    numInputOn = !!on;
+    try { window.localStorage.setItem('anvil.sketchNumericInput', numInputOn ? '1' : '0'); } catch (e) { /* storage blocked */ }
+    return numInputOn;
+  };
   function typedDims(f, idx, typed) {
     var e = f.entities[idx], s = UI.cam.scale || 0.1, off = Math.round(14 * s * 1e4) / 1e4, list = [];
     if (!e) return;
