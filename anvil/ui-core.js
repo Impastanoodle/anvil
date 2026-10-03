@@ -1093,7 +1093,7 @@ var UI = (function () {
       planeQuad(K.makePlane(r, 0), half, r, r + ' Plane').forEach(function (o) { groups.planes.add(o); });
     });
     App.model.features.forEach(function (f) {
-      if (f.type !== 'plane') return;
+      if (f.type !== 'plane' || rolledBack(f)) return;
       planeQuad(K.makePlane(f.ref, f.offset), half * 0.8, f.id, f.name).forEach(function (o) { groups.planes.add(o); });
     });
   }
@@ -1123,6 +1123,7 @@ var UI = (function () {
   }
   function sketchVisible(f) {
     if (App.activeSketch === f.id) return true;
+    if (rolledBack(f)) return false;   // r10/editpreview10: after the rollback point of an Edit Feature
     if (App.view.showSketches) return true;
     if (App.sel && App.sel.kind === 'feature' && App.sel.id === f.id) return true;
     if (App.command && (App.command.sketchId === f.id || App.command.pathId === f.id || (App.command.loftIds && App.command.loftIds.indexOf(f.id) >= 0))) return true;
@@ -1572,6 +1573,10 @@ var UI = (function () {
   // sketches, tree, status bar, autosave. `msBefore` is the kernel time (main thread or worker).
   function applyBuild(build, opts, msBefore) {
     opts = opts || {};
+    // r10/editpreview10: while an Edit Feature shows the part rolled back, OpenCascade's solid of the whole part waits
+    // for the roll forward; any other build (the edit committed, an undo) ends the rollback
+    if (roll.active && opts.occt && !roll.committing) { roll.deferred = { build: build, opts: opts, ms: msBefore }; return App.build; }
+    if (roll.active || roll.committing) clearRollback();
     var t0 = performance.now();
     App.build = build;
     App.mesh = K.meshFromBody(App.build.body);
@@ -1789,13 +1794,17 @@ var UI = (function () {
     job.seq = ++pv.seq;
     pv.inflight = job;
     var r = job.req;
-    try { w.postMessage({ type: 'preview', seq: job.seq, model: App.model, upto: r.upto == null ? null : r.upto, op: r.op, feature: r.feature, throughLimit: r.throughLimit, sketches: r.sketches || null }); }
-    catch (e) { pv.inflight = null; job.resolve(null); nextPreview(); }
+    // r10/editpreview10: a rollback still waiting for its part goes along with the first preview posted
+    var base = roll.want != null && !roll.active && !roll.posted ? roll.want : null;
+    if (base != null) roll.posted = true;
+    try { w.postMessage({ type: 'preview', seq: job.seq, model: App.model, upto: r.upto == null ? null : r.upto, op: r.op, feature: r.feature, throughLimit: r.throughLimit, sketches: r.sketches || null, base: base }); }
+    catch (e) { pv.inflight = null; if (base != null) roll.posted = false; job.resolve(null); nextPreview(); }
   }
   function nextPreview() {
     if (pv.pending && !pv.inflight) { var j = pv.pending; pv.pending = null; postPreview(j); }
   }
   function onPreviewMessage(d) {
+    if (d.base) showRollback(d.base);   // r10/editpreview10: before the preview itself, so both reach the same frame
     var job = pv.inflight;
     if (!job || d.seq !== job.seq) return;
     pv.inflight = null;
@@ -1809,6 +1818,69 @@ var UI = (function () {
   }
   // the PropertyManager closed: a preview still waiting is not sent (the one in flight is answered and dropped there)
   function cancelPreviews() { if (pv.pending) { pv.pending.resolve({ superseded: true }); pv.pending = null; } }
+  // ---- r10/editpreview10: Edit Feature rolls the part back (SolidWorks). While a feature's PropertyManager is open,
+  // the graphics area shows the part as it was before that feature (its later features, sketches and planes hidden)
+  // and the feature's preview on it; ✗ rolls forward to the part as it was, ✓ shows the rebuilt part when it is
+  // applied. The rolled-back part comes from the worker, built from the preview cache's prefix together with the
+  // first preview (one message, one frame); App.build / App.mesh / App.triShared / App.edges are swapped for it, so
+  // picks land on what is shown, and the whole part's are kept aside untouched (no rebuild to roll forward).
+  // App.rollback: the number of features shown while rolled back, else null.
+  var roll = { want: null, posted: false, active: false, saved: null, deferred: null, committing: false };
+  App.rollback = null;
+  function rolledBack(f) {
+    if (App.rollback == null || !App.model) return false;
+    var i = App.model.features.indexOf(f);
+    return i >= App.rollback;
+  }
+  // rollbackTo(n): show the part's first n features. -> false when it cannot (no worker, an assembly, n out of range)
+  function rollbackTo(n) {
+    if (isAssembly() || !App.model || !App.build || App.previewSync || !App.workerOn || !(n >= 0) || n >= App.model.features.length || !getWorker()) return false;
+    if (roll.active || roll.want != null) clearRollback(true);
+    roll.want = n; roll.posted = false; roll.committing = false;
+    // a command whose PropertyManager posts no preview of its own right away (a plane, an imported body) asks alone
+    Promise.resolve().then(function () {
+      if (roll.want !== n || roll.posted || roll.active) return;
+      var p = previewInWorker({ op: 'base', upto: n });
+      if (p) p.then(null, function () { });
+    });
+    return true;
+  }
+  function showRollback(base) {
+    if (roll.want == null || base.upto !== roll.want || roll.active || roll.committing || isAssembly()) return;
+    var t0 = performance.now(), build;
+    try { build = K.unpackBuild(base.build); } catch (e) { return; }
+    roll.saved = { build: App.build, mesh: App.mesh, triShared: App.triShared, edges: App.edges, edgesMesh: App.edgesMesh, sel: App.sel, sel2: App.sel2, triHidden: App.triHidden };
+    roll.active = true; App.rollback = base.upto;
+    App.build = build;
+    App.mesh = K.meshFromBody(build.body);
+    if (App.mesh) { App.mesh.workerEdges = base.edges || null; App.mesh.workerCurves = base.curves || null; useWorkerNormals(App.mesh, base.normals); }
+    App.triShared = buildTriShared(App.mesh);
+    // a face, edge or body picked on the whole part means nothing on the rolled-back one (it comes back on ✗)
+    ['sel', 'sel2'].forEach(function (k) { var s = App[k]; if (s && (s.kind === 'face' || s.kind === 'edge' || s.kind === 'body')) App[k] = null; });
+    App.hover = null;
+    updateBodyMesh(); updateHighlights(); updatePlanes(); updateSketches();
+    App.dimsStale = true;
+    requestRender();
+    App.rollbackMs = performance.now() - t0;
+    if (UI.onRollback) { try { UI.onRollback(true); } catch (e) { console.warn(e); } }
+  }
+  // ✓ pressed: the rolled-back part and the preview stay until the rebuilt part is applied (applyBuild ends it)
+  function rollbackCommit() { if (roll.active || roll.want != null) { roll.committing = true; roll.want = null; } }
+  // rollForward(): back to the whole part as it was (✗, or a PropertyManager closed without a rebuild)
+  function rollForward() { clearRollback(true); }
+  function clearRollback(restore) {
+    var s = roll.saved, d = roll.deferred, was = roll.active;
+    roll.want = null; roll.posted = false; roll.active = false; roll.saved = null; roll.deferred = null; roll.committing = false;
+    App.rollback = null;
+    if (!was || !restore || !s) return;
+    App.build = s.build; App.mesh = s.mesh; App.triShared = s.triShared; App.edges = s.edges; App.edgesMesh = s.edgesMesh;
+    App.sel = s.sel; App.sel2 = s.sel2; App.hover = null;
+    updateBodyMesh(); updateHighlights(); updatePlanes(); updateSketches();
+    App.dimsStale = true;
+    requestRender();
+    if (UI.onRollback) { try { UI.onRollback(false); } catch (e) { console.warn(e); } }
+    if (d) applyBuild(d.build, d.opts, d.ms);   // OpenCascade's solid that arrived meanwhile
+  }
   // ---- Instant3D's light drag path (r3/engine3): while a depth / angle arrow (or a part-mode sketch dimension) is
   // dragged, each ruler step previews only the dragged feature, built in the worker on the part before it, instead of
   // rebuilding and re-applying the whole part; the release rebuilds once (ui-select.js endDrag), and
@@ -2044,6 +2116,7 @@ var UI = (function () {
     camVersion: function () { return camVer; },
     rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
+    rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit,   // r10/editpreview10: Edit Feature rollback
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
