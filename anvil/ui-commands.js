@@ -2360,8 +2360,26 @@
       },
       groups: [
         { title: 'Mate Selections', fields: [
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.a); }, placeholder: 'First entity…', show: function (x) { return x.type !== 'width'; } },
-          { type: 'pick', icon: 'component', value: function (x) { return refText(x.b); }, placeholder: 'Second entity…', show: function (x) { return x.type !== 'width'; } },
+          // r5/asm5: one Entities to Mate list (as in SolidWorks): hover a row to see its face, Delete / right-click removes it
+          { type: 'pick', icon: 'component', show: function (x) { return x.type !== 'width'; }, placeholder: 'Entities to Mate…',
+            value: function (x) { var n = (x.a ? 1 : 0) + (x.b ? 1 : 0); return n === 2 ? '2 entities' : n === 1 ? '1 entity — select the second' : ''; },
+            items: function (x) {
+              return ['a', 'b'].filter(function (k) { return x[k]; }).map(function (k) {
+                var fi = UI.asmRefFace ? UI.asmRefFace(x[k]) : -1;
+                return { label: refText(x[k]), faces: fi >= 0 ? [fi] : [] };
+              });
+            },
+            onRemove: function (x, i) {
+              var k = ['a', 'b'].filter(function (s) { return x[s]; })[i];
+              if (!k) return;
+              x[k] = null;
+              if (k === 'a' && x.b) { x.a = x.b; x.b = null; }
+              picked.splice(i, 1);
+              if (App.command) App.command.faceList = picked.slice();
+              if (!typeSet) x.type = 'coincident';
+              syncGroups(x); renderPM(); preview(); UI.updateHighlights(); matePopup();
+            },
+            onClear: function (x) { clearPicks(x); renderPM(); preview(); UI.updateHighlights(); } },
           { type: 'static', label: 'Width selections', value: '', show: function (x) { return x.type === 'width'; } },
           { type: 'pick', icon: 'width', value: function (x) { return refText(x.a); }, placeholder: 'First width face…', show: function (x) { return x.type === 'width'; } },
           { type: 'pick', icon: 'width', value: function (x) { return refText(x.a2); }, placeholder: 'Second width face…', show: function (x) { return x.type === 'width'; } },

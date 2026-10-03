@@ -5793,6 +5793,17 @@
     UI.mateSelect(b); await idle();
     var p = UI.asmPopup();
     assert(p && p.buttons.indexOf('concentric') >= 0 && p.buttons.indexOf('coincident') < 0, 'cylinder pair: Concentric offered, Coincident not: ' + (p && p.buttons.join()));
+    // the Entities to Mate list: a row per selection, hovering one shows its face, Delete removes it
+    var rows = D.querySelectorAll('#pm .pm-list .pm-item');
+    assert(rows.length === 2 && /Pin<1>/.test(rows[0].textContent) && /Plate<1>/.test(rows[1].textContent), 'list: ' + Array.prototype.map.call(rows, function (r) { return r.textContent; }).join(' | '));
+    rows[0].dispatchEvent(new W.MouseEvent('mouseenter'));
+    var hf = UI.App.command.hoverItem && UI.App.command.hoverItem.faces;
+    assert(hf && hf.length === 1 && W.Assembly.findComponent(UI.App.model, a.component) === UI.App.model.components[UI.App.mesh.faces[hf[0]].body || 0], 'the hovered row\'s face is on its component');
+    rows[0].focus(); rows[0].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+    assert(D.querySelectorAll('#pm .pm-list .pm-item').length === 1 && !UI.asmPopup(), 'Delete removed it; no pop-up with one selection');
+    UI.mateSelect(a); await idle();   // the pin again (the plate face is left)
+    p = UI.asmPopup();
+    assert(p && D.querySelectorAll('#pm .pm-list .pm-item').length === 2, 'two again');
     r5pop('parallel'); await idle();
     assert(UI.pmSpec().values.type === 'parallel', 'the PM takes the type: ' + UI.pmSpec().values.type);
     r5pop('concentric'); await idle();

@@ -484,6 +484,7 @@
     }
     return bd < 1 ? best : -1;   // within 1 (squared): a facet of a true cylinder sits a chord height off its surface
   }
+  UI.asmRefFace = refFaceIndex;   // r5/asm5: the Mate PM's Entities to Mate list highlights a row's face
   UI.showMate = function (mt) {
     if (!isAsm() || !mt) return false;
     var ia = refFaceIndex(mt.a), ib = refFaceIndex(mt.b);
@@ -1513,7 +1514,9 @@
   function iconHtml(name) { return typeof Icons === 'function' ? Icons(name, 16) : ''; }
   // the last press / release in the graphics area (client coordinates): where a pop-up goes
   var lastUp = null;
-  if (UI.viewport) UI.viewport.addEventListener('mouseup', function (e) { lastUp = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button }; }, true);
+  var lastDown = null;   // (a click, not the end of a drag: the context toolbar)
+  if (UI.viewport) UI.viewport.addEventListener('mousedown', function (e) { lastDown = { x: e.clientX, y: e.clientY }; }, true);
+  if (UI.viewport) UI.viewport.addEventListener('mouseup', function (e) { lastUp = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, click: !!lastDown && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) <= 4 }; }, true);
   function viewportClient(q) {
     var r = UI.viewport ? UI.viewport.getBoundingClientRect() : { left: 0, top: 0, width: 800, height: 600 };
     if (q) return { x: r.left + q[0], y: r.top + q[1] };
@@ -1663,7 +1666,7 @@
     var r = baseSelChanged ? baseSelChanged.apply(this, arguments) : undefined;
     if (popup && popup.kind === 'ctx') closePopup('selection');
     // a left click in the graphics area that selected a component (not a drag, not a tree click)
-    if (lastUp && lastUp.button === 0 && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) ctxToolbar();
+    if (lastUp && lastUp.button === 0 && lastUp.click && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) ctxToolbar();
     return r;
   };
 
