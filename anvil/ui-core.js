@@ -632,7 +632,7 @@ var UI = (function () {
   function edgesFor(m) {
     if (App.edges && App.edgesMesh === m) return App.edges;
     App.edgesMesh = m;
-    App.edges = edgesFromWorker(m) || K.bodyEdges(m);
+    App.edges = edgesFromWorker(m) || (UI.asmEdges && UI.asmEdges(m)) || K.bodyEdges(m);   // asmEdges: an assembly from its parts' edges (ui-assembly.js)
     // a solid from OpenCascade (ui-occt.js): every polygon knows its B-rep face; edges inside one face are seams
     if (m.faces.length && m.faces[0].polys && m.faces[0].polys[0] && m.faces[0].polys[0].face != null) {
       App.edges.forEach(function (e) {

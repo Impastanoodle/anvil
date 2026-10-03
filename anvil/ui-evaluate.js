@@ -591,7 +591,7 @@
     if (!intfMat) intfMat = new THREE.MeshBasicMaterial({ color: 0xe0553c, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
     return intfMat;
   }
-  function intfShown() { return !intf.res ? [] : intf.active >= 0 ? [intf.res.pairs[intf.active]] : intf.res.pairs; }
+  function intfShown() { return !intf.res ? [] : intf.active >= 0 ? [intf.res.pairs[intf.active]] : intf.res.pairs.filter(function (p) { return !p.ignored; }); }
   function intfHighlight() {
     clearPreview();
     var comps = {};
@@ -611,37 +611,106 @@
     UI.updateHighlights();
     UI.render();
   }
+  // r3/assembly3: SolidWorks' Interference Detection options (intf.v): Treat coincidence as interference (touching
+  // components listed with 0 volume, "coincident"), Show ignored interferences (a result can be ignored from its row;
+  // ignored ones drop out of the count and show greyed when this is on), Include multibody part interferences (the
+  // bodies of one multi-body part checked against each other) and Ignore hidden bodies/components (on by default).
+  // Ignored results are remembered per assembly name for the session (they are not part of the model).
+  var intfIgnored = {};
+  function ignoreKey(p) { var n = [p.aName, p.bName].sort().join('|'); return n + (p.coincident ? '#c' : ''); }
+  function ignoredSet() { var k = (App.model && App.model.name) || ''; return intfIgnored[k] || (intfIgnored[k] = {}); }
+  function intfVisible() { var res = intf.res; return !res ? [] : res.pairs.filter(function (p) { return !p.ignored || (intf.v && intf.v.showIgnored); }); }
   function intfRows() {
     var res = intf.res, u = UI.unitLabel();
     if (!res) return '';
-    if (!res.pairs.length) return '<div class="intf-none">No Interferences</div>';
-    return res.pairs.map(function (p, i) {
-      return '<div class="intf-row' + (i === intf.active ? ' selected' : '') + '" data-i="' + i + '">' + UI.Icons_('interference') + '<span><b>Interference' + (i + 1) + '</b> — ' +
-        fmt(p.volume, 3) + ' ' + u + '³<br><small>' + esc(p.aName) + ' · ' + esc(p.bName) + '</small></span></div>';
+    var rows = intfVisible();
+    if (!rows.length) return '<div class="intf-none">No Interferences</div>';
+    return rows.map(function (p) {
+      var i = res.pairs.indexOf(p), what = p.coincident ? '0 ' + u + '³ (coincident)' : fmt(p.volume, 3) + ' ' + u + '³';
+      return '<div class="intf-row' + (i === intf.active ? ' selected' : '') + '" data-i="' + i + '"' + (p.ignored ? ' style="opacity:.55"' : '') + '>' + UI.Icons_('interference') +
+        '<span style="flex:1"><b>Interference' + (i + 1) + '</b> — ' + what + (p.ignored ? ' <i>(ignored)</i>' : '') + '<br><small>' + esc(p.aName) + ' · ' + esc(p.bName) + '</small></span>' +
+        '<a href="#" class="intf-ign" data-ign="' + i + '" title="' + (p.ignored ? 'Count this interference again' : 'Ignore this interference') + '" style="font-size:11px;white-space:nowrap">' + (p.ignored ? 'Un-ignore' : 'Ignore') + '</a></div>';
     }).join('');
   }
+  function intfCounted() { return intf.res ? intf.res.pairs.filter(function (p) { return !p.ignored; }) : []; }
   function intfReport() {
-    var spec = UI.pmSpec && UI.pmSpec(), res = intf.res, n = res.pairs.length, u = UI.unitLabel();
+    var spec = UI.pmSpec && UI.pmSpec(), res = intf.res, counted = intfCounted(), n = counted.length, u = UI.unitLabel();
+    var vol = counted.reduce(function (s, p) { return s + (p.coincident ? 0 : p.volume); }, 0), ign = res.pairs.length - n;
     var scope = intf.sel.length ? ' among ' + intf.sel.length + ' selected component' + (intf.sel.length > 1 ? 's' : '') + (intf.v.rest ? ' and the rest' : '') : '';
     var msg = res.error ? 'Interference Detection failed: ' + res.error
-      : n ? n + ' interference' + (n > 1 ? 's' : '') + ', ' + fmt(res.volume, 3) + ' ' + u + '³ in all (' + res.checked + ' pair' + (res.checked === 1 ? '' : 's') + ' checked' + scope + ').'
-        : 'No interferences: no two ' + (intf.sel.length ? 'selected ' : '') + 'components overlap (touching faces are not interferences).';
+      : n ? n + ' interference' + (n > 1 ? 's' : '') + ', ' + fmt(vol, 3) + ' ' + u + '³ in all (' + res.checked + ' pair' + (res.checked === 1 ? '' : 's') + ' checked' + scope + ').'
+        : 'No interferences: no two ' + (intf.sel.length ? 'selected ' : '') + 'components overlap' + (intf.v && intf.v.coincidence ? '' : ' (touching faces are not interferences)') + '.';
+    if (!res.error && ign) msg += ' ' + ign + ' ignored.';
     if (!res.error && exploded()) msg += COLLAPSED_NOTE;
     if (spec) { spec.message = msg; spec.messageOk = !n && !res.error; }
     rerender(); intfHighlight();
     UI.setStatus(msg);
   }
+  // a part body placed like its component (collapsed): world = R · local + position
+  function placedBody(b, T) {
+    var R = (T && T.rotation) || [1, 0, 0, 0, 1, 0, 0, 0, 1], P = (T && T.position) || [0, 0, 0];
+    var det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
+    return b.transform(function (v) { return new CSG.Vector(R[0] * v.x + R[1] * v.y + R[2] * v.z + P[0], R[3] * v.x + R[4] * v.y + R[5] * v.z + P[1], R[6] * v.x + R[7] * v.y + R[8] * v.z + P[2]); }, det < 0);
+  }
+  function partBodyName(pb, k, c) {
+    var e = c && App.build && App.build.cache ? App.build.cache[JSON.stringify(c.source)] : null, pm = pb.model || (e && e.model);
+    var f = pm && pb.bodyFeatures && pb.bodyFeatures[k] != null && K.findFeature ? K.findFeature(pm, pb.bodyFeatures[k]) : null;
+    return f && f.name ? f.name : 'Body' + (k + 1);
+  }
+  function intfRun(o) {
+    o = o || {};
+    var list = collapsedBodies().slice(), names = bodyNames(), sel = intf.sel.slice(), comps = App.model.components || [];
+    if (o.ignoreHidden !== false && UI.isBodyHidden) {
+      list = list.map(function (b, i) { return UI.isBodyHidden(i) ? CSG.fromPolygons([]) : b; });
+      sel = sel.filter(function (i) { return !UI.isBodyHidden(i); });
+    }
+    var withRest = !!o.rest && sel.length > 0, res = E.interference(list, names, sel, { withRest: withRest });
+    res.pairs.forEach(function (p) { p.a = comps[p.aIndex] ? comps[p.aIndex].id : p.aIndex; p.b = comps[p.bIndex] ? comps[p.bIndex].id : p.bIndex; });
+    if (o.coincidence) {   // pairs that touch without a common volume
+      var have = {};
+      res.pairs.forEach(function (p) { have[p.aIndex + ',' + p.bIndex] = true; });
+      E.pairsFor(list.length, sel, { withRest: withRest }).forEach(function (pr) {
+        var i = pr[0], j = pr[1];
+        if (have[i + ',' + j] || !list[i] || !list[j] || !list[i].polygons.length || !list[j].polygons.length) return;
+        var d = E.minDistance(list[i], list[j]);
+        if (!(d.distance <= 1e-6)) return;
+        res.pairs.push({ a: comps[i] ? comps[i].id : i, b: comps[j] ? comps[j].id : j, aIndex: i, bIndex: j, aName: names[i], bName: names[j], volume: 0, coincident: true, body: CSG.fromPolygons([]) });
+      });
+    }
+    if (o.multibody && App.build && App.build.partBuilds) {   // the bodies of one multi-body part against each other
+      comps.forEach(function (c, i) {
+        var pb = App.build.partBuilds[c.id];
+        if (!pb || !pb.bodies || pb.bodies.length < 2 || !list[i] || !list[i].polygons.length || (sel.length && sel.indexOf(i) < 0)) return;
+        var wb = pb.bodies.map(function (b) { return b && b.polygons && b.polygons.length ? placedBody(b, c.transform) : CSG.fromPolygons([]); });
+        var r = E.interference(wb, wb.map(function (b, k) { return names[i] + '/' + partBodyName(pb, k, c); }), [], {});
+        res.checked += r.checked;
+        r.pairs.forEach(function (p) { res.pairs.push({ a: c.id, b: c.id, aIndex: i, bIndex: i, aName: p.aName, bName: p.bName, volume: p.volume, body: p.body, multibody: true }); });
+      });
+    }
+    var ig = ignoredSet();
+    res.pairs.forEach(function (p) { if (ig[ignoreKey(p)]) p.ignored = true; });
+    res.pairs.sort(function (p, q) { return (p.ignored ? 1 : 0) - (q.ignored ? 1 : 0) || q.volume - p.volume; });
+    res.volume = res.pairs.reduce(function (s, p) { return s + (p.ignored ? 0 : p.volume); }, 0);
+    return res;
+  }
   function intfCalculate() {
-    try {
-      intf.res = E.interference(collapsedBodies(), bodyNames(), intf.sel, { withRest: !!(intf.v && intf.v.rest) && intf.sel.length > 0 });
-      // the ids as Assembly.interference reports them
-      intf.res.pairs.forEach(function (p) { var cs = App.model.components || []; p.a = cs[p.aIndex] ? cs[p.aIndex].id : p.aIndex; p.b = cs[p.bIndex] ? cs[p.bIndex].id : p.bIndex; });
-    } catch (e) { intf.res = { pairs: [], volume: 0, checked: 0, error: e.message || String(e) }; }
+    try { intf.res = intfRun(intf.v || {}); }
+    catch (e) { intf.res = { pairs: [], volume: 0, checked: 0, error: e.message || String(e) }; }
     intf.active = -1;
     intfReport();
     return intf.res;
   }
+  function setIgnored(i, on) {
+    var p = intf.res && intf.res.pairs[i];
+    if (!p) return false;
+    var ig = ignoredSet(), k = ignoreKey(p);
+    if (on) ig[k] = true; else delete ig[k];
+    intfCalculate();
+    return true;
+  }
   function onIntfClick(e) {
+    var ign = e.target.closest && e.target.closest('.intf-ign');
+    if (ign) { e.preventDefault(); e.stopPropagation(); var k = +ign.getAttribute('data-ign'), p = intf.res && intf.res.pairs[k]; if (p) setIgnored(k, !p.ignored); return; }
     var row = e.target.closest && e.target.closest('.intf-row');
     if (!row) return;
     var i = +row.getAttribute('data-i');
@@ -649,11 +718,14 @@
     rerender(); intfHighlight();
   }
   var intfSession = null;
+  var OPT_KEYS = [['coincidence', 'Treat coincidence as interference'], ['showIgnored', 'Show ignored interferences'], ['multibody', 'Include multibody part interferences'], ['ignoreHidden', 'Ignore hidden bodies/components']];
+  var intfOpts = { ignoreHidden: true };   // remembered between openings, as in SolidWorks
   function cmdInterference() {
     if (typeof Assembly === 'undefined') { UI.toast('Assemblies need assembly.js, which did not load.'); return; }
     if (!isAsm()) { UI.toast('Open an assembly first (File ▸ New ▸ Assembly).'); return; }
     intf.sel = selectedBodies(); intf.res = null; intf.active = -1;
-    var v = intf.v = { rest: false }, names = bodyNames(), n = names.length, pmRoot = UI.$('pm');
+    var v = intf.v = { rest: false, coincidence: !!intfOpts.coincidence, showIgnored: !!intfOpts.showIgnored, multibody: !!intfOpts.multibody, ignoreHidden: intfOpts.ignoreHidden !== false },
+      names = bodyNames(), n = names.length, pmRoot = UI.$('pm');
     UI.openPM({
       title: 'Interference Detection', icon: 'interference', values: v, message: 'Calculating…',
       command: {
@@ -671,9 +743,13 @@
           { type: 'check', label: 'Selected items and the rest', key: 'rest' },
           { type: 'buttons', buttons: [{ label: 'Calculate', onclick: function () { intfCalculate(); } }, { label: 'Entire assembly', onclick: function () { intf.sel = []; intfCalculate(); } }] }
         ] },
-        { title: 'Results', fields: [{ type: 'html', html: function () { return '<div class="intf-list">' + intfRows() + '</div>'; } }] }
+        { title: 'Results', fields: [{ type: 'html', html: function () { return '<div class="intf-list">' + intfRows() + '</div>'; } }] },
+        { title: 'Options', fields: OPT_KEYS.map(function (o) { return { type: 'check', label: o[1], key: o[0] }; }) }
       ],
-      onChange: function (val, key) { if (key === 'rest') intfCalculate(); },
+      onChange: function (val, key) {
+        if (OPT_KEYS.some(function (o) { return o[0] === key; })) { intfOpts[key] = !!val[key]; if (key === 'showIgnored') { intf.active = -1; intfReport(); } else intfCalculate(); return; }
+        if (key === 'rest') intfCalculate();
+      },
       onClose: function () { pmRoot.removeEventListener('click', onIntfClick); intfSession = null; },
       onOK: function () { }
     });
@@ -681,7 +757,9 @@
     intfSession = {
       calculate: intfCalculate, results: function () { return intf.res; },
       select: function (i) { intf.active = i; rerender(); intfHighlight(); },
-      setSelected: function (idx) { intf.sel = idx.slice(); return intfCalculate(); }, selected: function () { return intf.sel.slice(); }
+      setSelected: function (idx) { intf.sel = idx.slice(); return intfCalculate(); }, selected: function () { return intf.sel.slice(); },
+      setOption: function (k, on) { v[k] = !!on; intfOpts[k] = !!on; intfCalculate(); return intf.res; },
+      ignore: function (i, on) { return setIgnored(i, on !== false); }
     };
     intfCalculate();
   }
