@@ -142,6 +142,10 @@ var SketchSolver = (function () {
     midpoint: { name: 'Midpoint', glyph: 'M' },
     collinear: { name: 'Collinear', glyph: '≡' },
     symmetric: { name: 'Symmetric', glyph: '⇹' },
+    // r9/sketch9: an offset copy of a rectangle, refs [original, copy] (whole entities): its sides are offset by the same
+    // distance all round (one offset dimension drives it, as SolidWorks' Offset Entities links them). Added by Offset
+    // Entities only, never offered in Add Relations.
+    offset: { name: 'Offset', glyph: '⧈' },
     fix: { name: 'Fix', glyph: 'F' },
     distance: { name: 'Distance', glyph: '↔', dim: true },
     angle: { name: 'Angle', glyph: '∠', dim: true }
@@ -207,10 +211,21 @@ var SketchSolver = (function () {
     return null;
   }
   function unit(v) { var l = len(v); return l < 1e-15 ? [0, 0] : [v[0] / l, v[1] / l]; }
+  // r9/sketch9: refs A and B name two whole slots (a slot and its offset copy: the radial offset dimension)
+  function slotPair(ents, A, B) {
+    return !!(A && B && !A.o && !B.o && A.s === null && B.s === null && A.e !== B.e && ents[A.e] && ents[B.e] && ents[A.e].t === 'slot' && ents[B.e].t === 'slot');
+  }
 
   function relEquation(ents, rel, rels) {
     var R = (rel.refs || []).map(parseRef);
     if (!TYPES[rel.type] || R.some(function (r) { return !r; })) return null;
+    if (rel.type === 'offset') {
+      // r9/sketch9: (w' - w) - (h' - h) = 0 between a rectangle and its offset copy (same kind, whole entities)
+      var e0 = R.length === 2 && !R[0].o && !R[1].o && R[0].s === null && R[1].s === null && R[0].e !== R[1].e ? ents[R[0].e] : null, e1 = e0 && ents[R[1].e];
+      if (!e1 || !/^(rect|crect)$/.test(e0.t) || e1.t !== e0.t) return null;
+      var i0 = R[0].e, i1 = R[1].e;
+      return { n: 1, ents: [i0, i1], f: function (E) { return [(E[i1].w - E[i0].w) - (E[i1].h - E[i0].h)]; } };
+    }
     var kinds = R.map(function (r) { return refKind(ents, r); });
     if (kinds.some(function (k) { return !k; })) return null;
     var p = match(rel.type, kinds);
@@ -315,6 +330,11 @@ var SketchSolver = (function () {
           // (the driving dimension Offset Entities adds between a circle and its offset copy)
           var s4 = sgn(C(B, ents).r - C(A, ents).r);
           f = function (E) { return [s4 * (C(B, E).r - C(A, E).r) - v]; };
+        }
+        else if (rel.dir === 'r' && slotPair(ents, A, B)) {
+          // r9/sketch9: the offset between a slot and its offset copy (same centres): half the width difference
+          var s5 = sgn(ents[B.e].w - ents[A.e].w);
+          f = function (E) { return [s5 * (E[B.e].w - E[A.e].w) / 2 - v]; };
         }
         else if ((rel.dir === 'h' || rel.dir === 'v') && kA !== 'line' && kB !== 'line') {
           // horizontal / vertical distance between two points (or centres), signed as the geometry started
@@ -746,6 +766,7 @@ var SketchSolver = (function () {
     if (!p) return null;
     var A = R[p[0]], B = R[p[1]], kA = kinds[p[0]], kB = kinds[p[1]];
     if (type === 'angle') { var ag = Math.abs(angleDeg(refCurve(ents, A), refCurve(ents, B))); return sup ? 180 - ag : ag; }
+    if (type === 'distance' && dir === 'r' && slotPair(ents, A, B)) return Math.abs(ents[B.e].w - ents[A.e].w) / 2;   // r9/sketch9
     if (kB === 'line') {
       var from = kA === 'point' ? refPoint(ents, A) : kA === 'circle' ? refCurve(ents, A).c : (function () { var l = refCurve(ents, A); return [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]; })();
       return Math.abs(lineDist(from, refCurve(ents, B)));
@@ -802,7 +823,7 @@ var SketchSolver = (function () {
       var rel = { type: type, refs: groups[g] };
       if (TYPES[type].dim) {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
-        if (type === 'distance' && opts.dir === 'r' && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) === 'circle'; })) rel.dir = 'r';
+        if (type === 'distance' && opts.dir === 'r' && (groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) === 'circle'; }) || slotPair(sketch.entities, parseRef(groups[g][0]), parseRef(groups[g][1])))) rel.dir = 'r';
         // angle (r5/sketch5): sup = the supplementary angle, q = -1 drawn on the reversed rays, ta = label angle from
         // the middle of the arc (degrees)
         if (type === 'angle' && opts.sup) rel.sup = true;
@@ -1291,7 +1312,8 @@ var SketchSolver = (function () {
     if (!e || !o || e.t !== o.t) return [];
     if (e.t === 'circle' || e.t === 'arc') return [{ type: 'concentric', refs: [String(i), String(j)] }];
     if (e.t === 'line') return [{ type: 'parallel', refs: [String(i), String(j)] }];
-    if (e.t === 'rect') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }];
+    // r9/sketch9: a rectangle's copy is offset by the same distance on every side (Offset): one dimension drives it
+    if (e.t === 'rect' || e.t === 'crect') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }, { type: 'offset', refs: [String(i), String(j)] }];
     if (e.t === 'poly') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }, { type: 'parallel', refs: [i + '.e0', j + '.e0'] }];
     if (e.t === 'crect' || e.t === 'poly') return [{ type: 'coincident', refs: [i + '.c', j + '.c'] }];
     if (e.t === 'slot') return [{ type: 'coincident', refs: [i + '.p1', j + '.p1'] }, { type: 'coincident', refs: [i + '.p2', j + '.p2'] }];
@@ -1300,15 +1322,17 @@ var SketchSolver = (function () {
 
   // r6/sketch6: the driving offset dimension(s) SolidWorks' Offset Entities adds between entity `i` and its offset
   // copy `j` (after offsetRelations): circle / arc -> radial distance (dir 'r'); line -> parallel distance; polygon ->
-  // distance between the first edges; rectangle -> distance between the bottom edges and between the right edges.
+  // distance between the first edges; rectangle -> distance between the bottom edges (r9: the Offset relation links the
+  // other sides); slot -> radial distance (half the width difference, r9).
   // Each holds |d|; one that would over-define is skipped. Returns the indices of the relations added.
   function offsetDimensions(sketch, i, j, d) {
     var e = sketch.entities[i], o = sketch.entities[j], v = Math.abs(+d), out = [];
     if (!e || !o || e.t !== o.t || !(v > 1e-12)) return out;
-    var pairs = e.t === 'circle' || e.t === 'arc' || e.t === 'line' ? [[String(i), String(j)]]
-      : e.t === 'poly' ? [[i + '.e0', j + '.e0']] : e.t === 'rect' || e.t === 'crect' ? [[i + '.e0', j + '.e0'], [i + '.e1', j + '.e1']] : [];
+    // r9/sketch9: a rectangle gets one dimension (its Offset relation links the other sides); a slot a radial one
+    var pairs = e.t === 'circle' || e.t === 'arc' || e.t === 'line' || e.t === 'slot' ? [[String(i), String(j)]]
+      : e.t === 'poly' ? [[i + '.e0', j + '.e0']] : e.t === 'rect' || e.t === 'crect' ? [[i + '.e0', j + '.e0']] : [];
     pairs.forEach(function (p) {
-      var r = addRelation(sketch, 'distance', p, { value: v, dir: e.t === 'circle' || e.t === 'arc' ? 'r' : undefined, rejectOver: true });
+      var r = addRelation(sketch, 'distance', p, { value: v, dir: e.t === 'circle' || e.t === 'arc' || e.t === 'slot' ? 'r' : undefined, rejectOver: true });
       if (r.ok) out = out.concat(r.rels);
     });
     return out;
