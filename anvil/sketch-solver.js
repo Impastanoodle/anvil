@@ -331,8 +331,11 @@ var SketchSolver = (function () {
       case 'angle': {
         if (!(v >= 0)) return null;
         n = 1;
-        var s2 = sgn(angleDeg(C(A, ents), C(B, ents)));
-        f = function (E) { return [s2 * angleDeg(C(A, E), C(B, E)) - v]; };
+        // rel.sup (r5/sketch5): the supplementary angle, measured to the second line reversed (the dimension was
+        // placed in the obtuse quadrant); same sign as the plain angle, magnitude 180 - |angle|
+        var sup = !!rel.sup, ang = function (E) { var a = angleDeg(C(A, E), C(B, E)); return sup ? (a >= 0 ? 180 - a : -180 - a) : a; };
+        var s2 = sgn(ang(ents));
+        f = function (E) { return [s2 * ang(E) - v]; };
         break;
       }
     }
@@ -638,7 +641,7 @@ var SketchSolver = (function () {
   function updateDriven(sketch) {
     (sketch.rels || []).forEach(function (rel) {
       if (!rel.driven || !TYPES[rel.type] || !TYPES[rel.type].dim) return;
-      var v = measure(sketch, rel.type, rel.refs, rel.dir);
+      var v = measure(sketch, rel.type, rel.refs, rel.dir, rel.sup);
       if (v != null && isFinite(v)) rel.v = Math.abs(v - Math.round(v * 1e6) / 1e6) < 1e-9 * Math.max(1, Math.abs(v)) ? Math.round(v * 1e6) / 1e6 : v;
     });
   }
@@ -662,7 +665,7 @@ var SketchSolver = (function () {
     if (!item || (kind === 'rel' && !(TYPES[item.type] && TYPES[item.type].dim))) return { ok: false, error: 'Not a dimension.' };
     var over = false;
     if (on) { item.driven = true; if (kind === 'rel') updateDriven(sketch); }
-    else { over = overDefines(sketch, kind, index); delete item.driven; if (kind === 'rel') { var v = measure(sketch, item.type, item.refs, item.dir); if (v != null) item.v = v; } }
+    else { over = overDefines(sketch, kind, index); delete item.driven; if (kind === 'rel') { var v = measure(sketch, item.type, item.refs, item.dir, item.sup); if (v != null) item.v = v; } }
     var an = analyze(sketch), st = an[kind === 'rel' ? 'rels' : 'dims'][index];
     return { ok: true, state: over && st === 'ok' ? 'redundant' : st, analysis: an };
   }
@@ -731,12 +734,12 @@ var SketchSolver = (function () {
   }
   // The value a distance / angle relation reads on the current geometry (dir 'h' / 'v': the horizontal / vertical
   // distance between two points or centres).
-  function measure(sketch, type, refs, dir) {
+  function measure(sketch, type, refs, dir, sup) {
     var ents = sketch.entities, R = refs.map(parseRef), kinds = R.map(function (r) { return refKind(ents, r); });
     var p = match(type, kinds);
     if (!p) return null;
     var A = R[p[0]], B = R[p[1]], kA = kinds[p[0]], kB = kinds[p[1]];
-    if (type === 'angle') return Math.abs(angleDeg(refCurve(ents, A), refCurve(ents, B)));
+    if (type === 'angle') { var ag = Math.abs(angleDeg(refCurve(ents, A), refCurve(ents, B))); return sup ? 180 - ag : ag; }
     if (kB === 'line') {
       var from = kA === 'point' ? refPoint(ents, A) : kA === 'circle' ? refCurve(ents, A).c : (function () { var l = refCurve(ents, A); return [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]; })();
       return Math.abs(lineDist(from, refCurve(ents, B)));
@@ -792,7 +795,12 @@ var SketchSolver = (function () {
       var rel = { type: type, refs: groups[g] };
       if (TYPES[type].dim) {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
-        rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g], rel.dir);
+        // angle (r5/sketch5): sup = the supplementary angle, q = -1 drawn on the reversed rays, ta = label angle from
+        // the middle of the arc (degrees)
+        if (type === 'angle' && opts.sup) rel.sup = true;
+        if (type === 'angle' && +opts.q === -1) rel.q = -1;
+        if (type === 'angle' && opts.ta != null) rel.ta = +opts.ta;
+        rel.v = opts.value != null && !opts.driven ? +opts.value : measure(sketch, type, groups[g], rel.dir, rel.sup);
         if (opts.off != null) rel.off = +opts.off;
         if (opts.tx != null && type === 'distance') rel.tx = +opts.tx;
         if (opts.driven) rel.driven = true;
@@ -993,6 +1001,7 @@ var SketchSolver = (function () {
         var edge = d.k === 'w' ? ((d.i | 0) === 2 ? 2 : 0) : ((d.i | 0) === 1 ? 1 : 3);
         d.e = idx + edge; d.k = 'len'; delete d.i;
         if (d.off != null && edge >= 2) d.off = -d.off;
+        if (d.tx != null && edge >= 2) d.tx = -d.tx;   // r5/sketch5: the label stays where it was along the edge
         return true;
       });
       if (!sketch.dims.length) delete sketch.dims;
@@ -1546,8 +1555,10 @@ var SketchSolver = (function () {
   function relArgs(rel) {
     var s = JSON.stringify(rel.type) + ', ' + JSON.stringify(rel.refs);
     if (TYPES[rel.type] && TYPES[rel.type].dim) {
-      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; if (rel.dir) o.dir = rel.dir; if (rel.tx != null) o.tx = rel.tx; s += ', ' + JSON.stringify(o); }
-      else if (rel.dir || rel.tx != null) { var o2 = { value: rel.v }; if (rel.off != null) o2.off = rel.off; if (rel.dir) o2.dir = rel.dir; if (rel.tx != null) o2.tx = rel.tx; s += ', ' + JSON.stringify(o2); }
+      // angle placement (r5/sketch5): sup / q / ta
+      var ang = function (o) { if (rel.sup) o.sup = true; if (rel.q === -1) o.q = -1; if (rel.ta != null) o.ta = rel.ta; return o; };
+      if (rel.driven) { var o = { driven: true }; if (rel.off != null) o.off = rel.off; if (rel.dir) o.dir = rel.dir; if (rel.tx != null) o.tx = rel.tx; s += ', ' + JSON.stringify(ang(o)); }
+      else if (rel.dir || rel.tx != null || rel.sup || rel.q === -1 || rel.ta != null) { var o2 = { value: rel.v }; if (rel.off != null) o2.off = rel.off; if (rel.dir) o2.dir = rel.dir; if (rel.tx != null) o2.tx = rel.tx; s += ', ' + JSON.stringify(ang(o2)); }
       else s += rel.off != null ? ', ' + JSON.stringify({ value: rel.v, off: rel.off }) : ', ' + rel.v;
     }
     else if (rel.type === 'fix' && rel.at) s += ', ' + JSON.stringify({ at: rel.at });
@@ -1572,6 +1583,7 @@ var SketchSolver = (function () {
       if (opt && typeof opt === 'object' && opt.driven) o.driven = true;
       if (opt && typeof opt === 'object' && (opt.dir === 'h' || opt.dir === 'v')) o.dir = opt.dir;
       if (opt && typeof opt === 'object' && opt.tx != null) o.tx = +opt.tx;
+      if (opt && typeof opt === 'object') { if (opt.sup) o.sup = true; if (+opt.q === -1) o.q = -1; if (opt.ta != null) o.ta = +opt.ta; }
       var r = addRelation(this.f, type, refs, o);
       if (!r.ok) throw new Error('rel(' + JSON.stringify(type) + '): ' + r.error);
       return this;

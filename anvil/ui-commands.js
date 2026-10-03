@@ -986,8 +986,21 @@
         var c;
         try { c = copies(); } catch (e) { UI.toast(e.message); return false; }
         UI.pushUndo(); App.sketchDirty = true;
-        if (!v.copy) { var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before); }
+        // r5/sketch5: mirrored in place, the dimensions go with their entities (labels mirrored too); the others keep
+        // theirs at the shifted indices
+        var carry = [];
+        if (!v.copy && f.dims && UI.dimAnchor) {
+          var specC = /^\d+$/.test(String(v.axis)) ? +v.axis : v.axis, axC = K.mirrorAxis(specC, f.entities);
+          var src = targets.filter(function (i) { return i !== specC && K.mirrorEntity(f.entities[i], axC); });
+          f.dims.forEach(function (d) { var k = src.indexOf(d.e), a = k >= 0 ? UI.dimAnchor(f.entities[d.e], d) : null; if (a) { var m = K.mirrorEntity({ t: 'point', x: a[0], y: a[1] }, axC); carry.push({ d: d, k: k, uv: [m.x, m.y] }); } });
+        }
+        if (!v.copy) {
+          var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before);
+          if (f.dims) { f.dims = f.dims.filter(function (d) { var n = f.entities.indexOf(before[d.e]); if (n >= 0) { d.e = n; return true; } return carry.some(function (x) { return x.d === d; }); }); }
+        }
         c.forEach(function (e) { f.entities.push(e); });
+        carry.forEach(function (x) { var ni = f.entities.length - c.length + x.k, pl = UI.dimPlaceAt(f.entities[ni], x.d, x.uv); x.d.e = ni; delete x.d.tx; Object.keys(pl).forEach(function (key) { x.d[key] = pl[key]; }); });
+        if (f.dims && !f.dims.length) delete f.dims;
         // mirrored about a sketch line: each copy is held Symmetric to its original (sketch-solver.js)
         var specN = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, nSym = 0;
         if (v.copy && specN >= 0 && window.SketchSolver) {
