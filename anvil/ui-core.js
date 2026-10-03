@@ -639,7 +639,7 @@ var UI = (function () {
       App.edges.forEach(function (e) {
         if (e.faces.length !== 2) return;
         var a = m.faces[e.faces[0]].polys[0].face, b = m.faces[e.faces[1]].polys[0].face;
-        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+        if (a != null && a === b && (m.faces[e.faces[0]].body || 0) === (m.faces[e.faces[1]].body || 0)) { e.seam = true; e.smooth = true; }   // (r4/asm4: one component's)
       });
     }
     App.curves = asmE && asmE.curves ? asmE.curves : annotateCurveEdges(m, App.edges);   // r4/asm4: placed from the parts' curves

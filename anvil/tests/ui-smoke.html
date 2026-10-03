@@ -5153,6 +5153,75 @@
     await UI.undo(); await idle();
     assert(JSON.stringify(UI.App.model.ignoredInterferences) === JSON.stringify(saved), 'undo brings it back');
   });
+  // Alt + drag in the viewport (real mouse events through ui-sketch.js)
+  async function r4altDrag(from, to, steps) {
+    var vp = UI.viewport, rc = vp.getBoundingClientRect();
+    function ev(type, p) { return new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' ? 0 : 1, altKey: true, clientX: rc.left + p[0], clientY: rc.top + p[1] }); }
+    vp.dispatchEvent(ev('mousedown', from));
+    for (var i = 1; i <= steps; i++) { W.dispatchEvent(ev('mousemove', [from[0] + (to[0] - from[0]) * i / steps, from[1] + (to[1] - from[1]) * i / steps])); await r3frame(); }
+    await r3frame();
+    var posed = UI.asmPose.active();
+    W.dispatchEvent(ev('mouseup', to));
+    await idle();
+    return posed;
+  }
+  step('r4/asm4: SmartMates — Alt + drag a face of a floating component onto a face of another adds the mate (plane on plane: Coincident, cylinder in a hole: Concentric), previewed while dragging; dropped on nothing adds none; Alt + drag on a fixed component still rotates the view', async function () {
+    await baseAndBlock('R4Smart');
+    UI.setView('Isometric'); if (UI.finishViewAnimation) UI.finishViewAnimation(); await idle();
+    var blk = anvil.components()[1], undo0 = UI.App.undo.length;
+    // the block's +z face (z = 30 in the world) onto the base's top (y = 10)
+    var ctr = W.Assembly.componentCenter(UI.App.model, UI.App.build, blk.id), bc = W.Assembly.componentCenter(UI.App.model, UI.App.build, anvil.components()[0].id);
+    var from = UI.worldToScreen([ctr[0], ctr[1], ctr[2] + 10]), to = UI.worldToScreen([bc[0] + 30, 10, bc[2] + 20]);
+    var h = UI.pickFace(from[0], from[1]);
+    assert(h && (UI.App.mesh.faces[h.index].body || 0) === 1, 'the block is under the press');
+    // dropped where there is no other component: nothing
+    var posed = await r4altDrag(from, [from[0] - 400, from[1] - 400], 4);
+    assert(anvil.mates().length === 0 && UI.App.undo.length === undo0, 'no mate when dropped on nothing');
+    posed = await r4altDrag(from, to, 6);
+    assert(posed, 'the mated place is shown while dragging (pose)');
+    var ms = anvil.mates();
+    assert(ms.length === 1 && ms[0].type === 'coincident' && ms[0].ok, 'Coincident added: ' + JSON.stringify(ms));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    assert(!UI.asmPose.active(), 'no pose left');
+    // a pin dropped into a hole of the bolt-hole plate
+    await anvil.newAssembly('R4Smart2');
+    await anvil.insert({ example: 'Plate with bolt holes' }, { fixed: true });
+    await anvil.insert({ script: 'p.name("Pin"); p.cylinder(4, 20);' }, { position: [50, 20, 30] });
+    await idle();
+    UI.setView('Isometric'); if (UI.finishViewAnimation) UI.finishViewAnimation(); await idle();
+    var a = UI.worldToScreen([54, 30, 30]), b = UI.worldToScreen([10 - 2.9, 6, 10 - 2.9]);   // the pin's side; the near wall of the hole at (10, 10)
+    await r4altDrag(a, b, 6);
+    ms = anvil.mates();
+    assert(ms.length === 1 && ms[0].type === 'concentric' && ms[0].ok, 'Concentric added: ' + JSON.stringify(ms));
+    var p = anvil.components()[1].position;
+    near(p[0], 10, 1e-6, 'pin on the hole axis x'); near(p[2], 10, 1e-6, 'pin on the hole axis z');
+    // Alt + drag on the fixed plate: the view turns, nothing is mated
+    var cv = UI.camVersion(), pl = UI.worldToScreen([60, 8, 40]);
+    await r4altDrag(pl, [pl[0] + 40, pl[1] + 10], 3);
+    assert(anvil.mates().length === 1 && UI.camVersion() !== cv, 'fixed component: the view rotated');
+  });
+  step('r4/asm4: clicking a mate in the FeatureManager selects its two faces (the hole and the pin of a Concentric); Delete then deletes the mate, not a component', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code);
+    await idle();
+    var mt = UI.App.model.mates.filter(function (m) { return m.type === 'concentric'; })[0];
+    var folder = D.querySelector('.ti.mates-folder');
+    if (folder && !D.querySelector('.ti.mate-row')) folder.click();
+    var row = D.querySelector('.ti.mate-row[data-mate="' + mt.id + '"]');
+    assert(row, 'mate row');
+    row.click();
+    var A = UI.App, fa = A.sel && A.mesh.faces[A.sel.index], fb = A.sel2 && A.mesh.faces[A.sel2.index];
+    assert(fa && fb && A.sel.mate === mt.id, 'both faces selected');
+    var ia = W.Assembly.componentIndex(A.model, mt.a.component), ib = W.Assembly.componentIndex(A.model, mt.b.component);
+    assert((fa.body || 0) === ia && (fb.body || 0) === ib, 'faces on the mated components: ' + [fa.body, fb.body, ia, ib]);
+    // whole cylindrical faces of those components only
+    [A.sel, A.sel2].forEach(function (s, k) { UI.faceGroup(s.index).forEach(function (i) { assert((A.mesh.faces[i].body || 0) === (k ? ib : ia), 'highlight stays on its component'); }); });
+    var n = anvil.components().length;
+    UI.deleteSelection();
+    var dlg = D.querySelector('#modal');
+    assert(dlg && !dlg.hidden && dlg.textContent.indexOf(mt.name) >= 0, 'Delete asks about the mate: ' + (dlg && dlg.textContent));
+    UI.closeModal();
+    assert(anvil.components().length === n, 'no component deleted');
+  });
   // --- end r4/asm4 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

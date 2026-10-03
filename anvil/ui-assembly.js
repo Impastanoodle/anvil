@@ -338,6 +338,174 @@
     return baseDragHook ? baseDragHook(p, ev) : null;
   };
 
+  // ---- SmartMates (r4/asm4): Alt + drag a face of a floating component onto a face of another component. While the
+  // cursor is over a face that can take a mate (plane on plane: Coincident, cylinder in cylinder: Concentric, cylinder
+  // on plane: Tangent) the component is shown mated there (a pose-only solve with the mate added, no rebuild); dropping
+  // adds the mate (one undo step), dropping anywhere else changes nothing. ui-sketch.js asks this before Alt + drag
+  // rotates the view.
+  var SMART_TYPES = { 'face|face': 'coincident', 'cylinder|cylinder': 'concentric', 'cylinder|face': 'tangent', 'face|cylinder': 'tangent' };
+  var SMART_NAMES = { coincident: 'Coincident', concentric: 'Concentric', tangent: 'Tangent' };
+  function refKind(r) { return r ? (r.cylinder ? 'cylinder' : r.face ? 'face' : null) : null; }
+  // the face under (mx, my) on a component other than body index `skip` (the pose may have moved that one under it)
+  var smartRay = null;
+  function pickOther(mx, my, skip) {
+    var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
+    if (!bm || !m || !UI.camera || !UI.size) return null;
+    if (bm.geometry.index) { var h0 = UI.pickFace(mx, my), f0 = h0 && m.faces[h0.index]; return f0 && (f0.body || 0) !== skip ? h0 : null; }   // hidden bodies: the plain pick
+    smartRay = smartRay || new THREE.Raycaster();
+    smartRay.setFromCamera(new THREE.Vector2(mx / UI.size.w * 2 - 1, -(my / UI.size.h) * 2 + 1), UI.camera);
+    var hits = smartRay.intersectObject(bm, false), faces = m.faces;
+    for (var i = 0; i < hits.length; i++) {
+      var tri = hits[i].faceIndex, lo = 0, hi = faces.length - 1, fi = -1;
+      while (lo <= hi) { var mid = (lo + hi) >> 1, f = faces[mid]; if (tri < f.start) hi = mid - 1; else if (tri >= f.start + f.count) lo = mid + 1; else { fi = mid; break; } }
+      if (fi < 0 || (faces[fi].body || 0) === skip) continue;
+      var sec = App.view && App.view.section && App.view.section.plane;
+      if (sec && sec.distanceToPoint(hits[i].point) < 0) continue;
+      return { kind: 'face', index: fi, point: [hits[i].point.x, hits[i].point.y, hits[i].point.z] };
+    }
+    return null;
+  }
+  function smartMateHook(p, ev) {
+    if (!isAsm() || App.command || App.mode === 'sketch' || !App.mesh || !App.build || !App.build.assembly || !UI.asmPose) return null;
+    var hit = UI.pickFace(p[0], p[1]), face = hit && App.mesh.faces[hit.index];
+    var ci = face ? face.body || 0 : -1, c = ci >= 0 ? (App.model.components || [])[ci] : null;
+    if (!c) return null;
+    if (c.fixed) return null;   // Alt + drag on a fixed component rotates the view
+    if (c.pattern != null) { UI.setStatus(c.name + ' is a pattern instance: SmartMate its seed ' + compName(c.seed) + '.'); return null; }
+    var src = null;
+    try { src = AS.refFromPick(App.model, App.build, hit.index, hit.point, App.mesh); } catch (e) { src = null; }
+    if (!refKind(src)) return null;
+    var snap = JSON.stringify(App.model), raf = 0, last = null, cur = null, tries = {};
+    // the mate the cursor offers: { key, type, ref, ok, pb, model } (cached per target face)
+    function offer(q) {
+      var h = pickOther(q[0], q[1], ci), tf = h && App.mesh.faces[h.index];
+      if (!tf) return null;
+      var key = h.index, o = tries[key];
+      if (o) return o;
+      var ref = null;
+      try { ref = AS.refFromPick(App.model, App.build, h.index, h.point, App.mesh); } catch (e) { ref = null; }
+      var type = SMART_TYPES[refKind(src) + '|' + refKind(ref)];
+      o = tries[key] = { key: key, type: type, ref: ref, ok: false };
+      if (!type || !ref || ref.component === c.id) return o;
+      try {
+        var mm = JSON.parse(snap), mate = AS.addMate(mm, type, JSON.parse(JSON.stringify(src)), JSON.parse(JSON.stringify(ref)), {});
+        var pb = AS.rebuild(mm, App.asmCache, { poseOnly: true });
+        var r = pb.mates && pb.mates[mate.id];
+        o.ok = !!(r && !r.error);
+        o.error = r && r.error;
+        o.model = mm; o.pb = pb;
+      } catch (e2) { o.error = e2.message || String(e2); }
+      return o;
+    }
+    function show() {
+      raf = 0;
+      if (!last) return;
+      var o = offer(last);
+      if (!o && cur && cur.ok) return;   // between faces: keep the offered mate until another face is reached
+      cur = o;
+      if (o && o.ok) {
+        UI.asmPose.apply(o.model, o.pb.explode);
+        UI.setStatus('SmartMates: ' + SMART_NAMES[o.type] + ' — drop to add the mate.');
+      } else {
+        UI.asmPose.apply(JSON.parse(snap), App.build.explode);
+        UI.setStatus(o && o.type && o.error ? 'SmartMates: ' + SMART_NAMES[o.type] + ' not possible: ' + o.error
+          : 'SmartMates: drag ' + c.name + ' onto a face of another component (plane on plane, cylinder in cylinder, cylinder on plane).');
+      }
+    }
+    return {
+      component: c, smartMate: true,
+      start: function () { UI.setStatus('SmartMates: drag ' + c.name + ' onto a face of another component.'); },
+      move: function (q) { last = q; if (!raf) raf = requestAnimationFrame(show); },
+      end: function (q) {
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        last = q;
+        var o = offer(q) || (cur && cur.ok ? cur : null);
+        if (UI.asmPose.active()) UI.asmPose.end();   // the rebuild below draws the mated result in the same frame
+        if (!o || !o.ok) { UI.setStatus('SmartMates: no mate added.'); return Promise.resolve(null); }
+        var type = o.type, a = src, b = o.ref;
+        return commit(function (m) { return AS.addMate(m, type, JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), {}); },
+          function (mt) { return 'SmartMates: ' + (mt ? mt.name : SMART_NAMES[type]) + ' added (' + c.name + ').'; })
+          .catch(function (e) { UI.toast(e.message || String(e)); });
+      }
+    };
+  }
+  UI.smartMateHook = smartMateHook;
+
+  // ---- a mate picked in the FeatureManager shows what it holds (r4/asm4): its two faces are selected in the graphics
+  // area (App.sel / App.sel2 carry the mate id), as in SolidWorks; Delete then deletes the mate, not a component.
+  function sqDistTri(p, P, o) {   // squared distance from p to triangle o (offset into positions P)
+    var ax = P[o], ay = P[o + 1], az = P[o + 2], bx = P[o + 3], by = P[o + 4], bz = P[o + 5], cx = P[o + 6], cy = P[o + 7], cz = P[o + 8];
+    var abx = bx - ax, aby = by - ay, abz = bz - az, acx = cx - ax, acy = cy - ay, acz = cz - az, apx = p[0] - ax, apy = p[1] - ay, apz = p[2] - az;
+    var d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz, qx, qy, qz;
+    function at(x, y, z) { var dx = p[0] - x, dy = p[1] - y, dz = p[2] - z; return dx * dx + dy * dy + dz * dz; }
+    if (d1 <= 0 && d2 <= 0) return at(ax, ay, az);
+    var bpx = p[0] - bx, bpy = p[1] - by, bpz = p[2] - bz, d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
+    if (d3 >= 0 && d4 <= d3) return at(bx, by, bz);
+    var vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) { var v = d1 / (d1 - d3); return at(ax + abx * v, ay + aby * v, az + abz * v); }
+    var cpx = p[0] - cx, cpy = p[1] - cy, cpz = p[2] - cz, d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
+    if (d6 >= 0 && d5 <= d6) return at(cx, cy, cz);
+    var vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) { var w = d2 / (d2 - d6); return at(ax + acx * w, ay + acy * w, az + acz * w); }
+    var va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { var u = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return at(bx + (cx - bx) * u, by + (cy - by) * u, bz + (cz - bz) * u); }
+    var den = 1 / (va + vb + vc), sv = vb * den, sw = vc * den;
+    qx = ax + abx * sv + acx * sw; qy = ay + aby * sv + acy * sw; qz = az + abz * sv + acz * sw;
+    return at(qx, qy, qz);
+  }
+  // the face of App.mesh a mate reference lands on (its point placed like the component, through a sub-assembly path), or -1
+  function refFaceIndex(ref) {
+    var m = App.mesh, b = App.build;
+    if (!ref || ref.component == null || !m || !b || !b.assembly) return -1;
+    var pt = ref.face || ref.cylinder;
+    if (!pt) return -1;
+    var c = AS.findComponent(App.model, ref.component), ci = c ? (App.model.components || []).indexOf(c) : -1;
+    if (ci < 0) return -1;
+    var T = c.transform, pb = b.partBuilds && b.partBuilds[c.id];
+    (ref.path || []).forEach(function (id) {
+      var k = pb && pb.model ? AS.findComponent(pb.model, id) : null;
+      if (!k) return;
+      T = AS.composeTransforms(T, k.transform);
+      pb = pb.partBuilds && pb.partBuilds[k.id];
+    });
+    var w = AS.transformPoint(T, pt), off = b.explode && b.explode.offsets && b.explode.offsets[c.id];
+    if (off) w = [w[0] + off[0], w[1] + off[1], w[2] + off[2]];
+    var best = -1, bd = Infinity, P = m.positions;
+    for (var fi = 0; fi < m.faces.length; fi++) {
+      var f = m.faces[fi];
+      if ((f.body || 0) !== ci) continue;
+      for (var t = f.start; t < f.start + f.count; t++) { var d = sqDistTri(w, P, t * 9); if (d < bd) { bd = d; best = fi; } }
+    }
+    return bd < 1 ? best : -1;   // within 1 (squared): a facet of a true cylinder sits a chord height off its surface
+  }
+  UI.showMate = function (mt) {
+    if (!isAsm() || !mt) return false;
+    var ia = refFaceIndex(mt.a), ib = refFaceIndex(mt.b);
+    App.sel = ia >= 0 ? { kind: 'face', index: ia, mate: mt.id } : null;
+    App.sel2 = ib >= 0 ? { kind: 'face', index: ib, mate: mt.id } : null;
+    if (!App.sel && App.sel2) { App.sel = App.sel2; App.sel2 = null; }
+    if (UI.updateHighlights) UI.updateHighlights();
+    if (UI.requestRender) UI.requestRender();
+    return ia >= 0 || ib >= 0;
+  };
+  // a rebuild (the OpenCascade swap, an undo) renumbers the mesh faces: a shown mate is found again on the new mesh,
+  // after the swap has put its selection back by position (where a pin and its bore meet, that may be the wrong part)
+  (UI.onBuild = UI.onBuild || []).push(function () {
+    Promise.resolve().then(function () {
+      var id = App.sel && App.sel.mate;
+      if (id == null) return;
+      var mt = isAsm() ? AS.findMate(App.model, id) : null;
+      if (mt) UI.showMate(mt); else { App.sel = null; App.sel2 = null; if (UI.updateHighlights) UI.updateHighlights(); }
+    });
+  });
+  var baseDeleteSelection = UI.deleteSelection;
+  UI.deleteSelection = function () {
+    var id = App.sel && App.sel.mate;
+    var mt = id != null && isAsm() ? AS.findMate(App.model, id) : null;
+    if (mt && UI.confirmRemoveMate) { UI.confirmRemoveMate(mt); return; }
+    return baseDeleteSelection ? baseDeleteSelection.apply(this, arguments) : undefined;
+  };
+
   // ------------------------------------------------------------------ pose display (r3/assembly3)
   // While a component is dragged or an explode animation runs only rigid placements change, so instead of a full
   // rebuild per frame (bodies, the combined mesh, its B-rep edges: 40-60 ms on the Gear train) the viewport moves the
