@@ -3,12 +3,15 @@
 // kernel.js, holewizard.js, exchange.js and occt-kernel.js as classic scripts (their top-level `var`s become
 // globals through an indirect eval), then OpenCascade from vendor/occt (fetched by vendor/get-occt.ps1).
 //
-// Messages in:   { type: 'build', seq, model, exports?, cacheKey?, noCache? }  model: a clone of App.model (or an assembly's
+// Messages in:   { type: 'build', seq, model, exports?, cacheKey?, noCache?, anvil? }  model: a clone of App.model (or an assembly's
 //                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
-//                                                         result.edges: Kernel.bodyEdges of the mesh it makes (parts)
+//                                                         result.edges: Kernel.bodyEdges of the mesh it makes (parts),
+//                                                         result.curves / normals: its Kernel.meshCurveInfo / analyticNormals,
+//                                                         result.packed: its bodies (OcctKernel.toBodies) packed, when
+//                                                         anvil { key, positions, triShared } (the Anvil mesh) came along
 //                { type: 'error', seq, message }          the build itself threw, or the engine could not load
 import opencascade from './vendor/occt/opencascade.full.js';
 
@@ -60,13 +63,29 @@ self.onmessage = async (e) => {
   if (m.type !== 'build') return;
   try {
     const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cacheFor(m.cacheKey) });
-    // the edges of the mesh the main thread will make from this result (OcctKernel.toBuild -> Kernel.meshFromBody; the
-    // faces group by plane, body and B-rep face only, so no Anvil build is needed for it): ui-occt.js hands them to
-    // applyBuild, which then skips Kernel.bodyEdges (tens to hundreds of ms on the main thread) (smooth/responsive)
-    if (r.mesh && r.valid && m.part == null) {
-      try { const tb = OcctKernel.toBuild(r, {}, null, null, self.CSG, self.Kernel); r.edges = tb.body ? self.Kernel.bodyEdges(self.Kernel.meshFromBody(tb.body)) : null; } catch (e) { r.edges = null; }
-    }
+    // the main thread's work on the result is done here too (r3/engine3; the edges since smooth/responsive): the solids
+    // as Anvil bodies (OcctKernel.toBodies, tagged with the features of m.anvil, the Anvil mesh on screen: positions and
+    // triShared), packed for ui-occt.js to unpack (OcctKernel.fromPacked) instead of running toBuild; and on the mesh the
+    // main thread will make from them (Kernel.meshFromBody), its edges, curved faces / true circles and smooth normals,
+    // which applyBuild then uses instead of computing them
     const transfer = r.mesh ? [r.mesh.positions.buffer, r.mesh.faceOf.buffer] : [];
+    if (r.mesh && r.valid && m.part == null) {
+      try {
+        const K = self.Kernel, A = m.anvil || null;
+        const bodies = OcctKernel.toBodies(r, A && A.positions ? { positions: A.positions } : null, A ? A.triShared : null, self.CSG);
+        const body = K.combineBodies(bodies);
+        const mesh = body ? K.meshFromBody(body) : null;
+        r.edges = mesh ? K.bodyEdges(mesh) : null;
+        try { r.curves = mesh && K.meshCurveInfo ? K.meshCurveInfo(mesh) : null; } catch (e2) { r.curves = null; }
+        try { r.normals = mesh && K.analyticNormals ? K.analyticNormals(mesh) : null; } catch (e3) { r.normals = null; }
+        if (r.normals) transfer.push(r.normals.buffer);
+        if (A) {
+          r.packed = bodies.map((b) => b.pack());
+          r.packed.forEach((p) => { for (const buf of self.CSG.packTransferables(p)) transfer.push(buf); });
+          r.anvilKey = A.key;
+        }
+      } catch (e) { r.edges = null; r.curves = null; r.normals = null; r.packed = null; }
+    }
     self.postMessage({ type: 'built', seq: m.seq, part: m.part, result: r }, transfer);
   } catch (err) {
     if (m.cacheKey) caches.delete(m.cacheKey); else cache = {};   // a build that threw may have left the snapshots half-updated
