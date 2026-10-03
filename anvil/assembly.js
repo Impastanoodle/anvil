@@ -1266,7 +1266,7 @@ var Assembly = (function () {
         for (var ls = 0; ls < 8 && !better; ls++) {
           var Tn = applyX(group, piv, dx.map(function (v) { return v * step; }));
           group.forEach(function (id) { transforms[id] = Tn[id]; });
-          lm(active);
+          lm(mates);   // (only the dragged group moved)
           now = pull();
           if (now < cur - 1e-12) better = true;
           else { comps.forEach(function (c) { transforms[c.id] = saved[c.id]; }); step *= 0.5; }
