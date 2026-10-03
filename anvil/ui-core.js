@@ -732,6 +732,8 @@ var UI = (function () {
       if (e.faces.length !== 2) return;
       var A = faceSurfs[e.faces[0]], B = faceSurfs[e.faces[1]];
       if (!A || !B) return;
+      var fa = m.faces[e.faces[0]], fb = m.faces[e.faces[1]];
+      if ((fa.body || 0) !== (fb.body || 0) || fa.part !== fb.part) return;   // r10/asmfaces10: a seam is inside one body / part
       for (var k in A) if (B[k]) { e.seam = true; e.smooth = true; return; }
     });
     if (info) list = info.curves;
