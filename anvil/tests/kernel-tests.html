@@ -10197,6 +10197,21 @@
       var r = build('p.box(10, 10, 10);');
       assert(r.mesh.faces.every(function (f) { return f.part === undefined && f.polys.every(function (q) { return q.part === undefined; }); }), 'a part has no tags');
     });
+    test('a multibody part (Two-body clamp) in an assembly and inside a rigid sub-assembly: its base and cap fronts stay two faces; the part build itself is not tagged', function () {
+      var ex = AnvilExamples.filter(function (e) { return e.name === 'Two-body clamp'; })[0];
+      var one = asm('One', 'a.insert({ example: "Two-body clamp" }, { fixed: true });');
+      var top = AS.newAssembly('Top'); AS.insert(top, { script: 'p.box(5, 5, 5);' }, { fixed: true, position: [-50, 0, 0] }); AS.insert(top, { model: one }, { fixed: true, position: [0, 0, 7] });
+      [[one, 0, 0], [top, 1, 7]].forEach(function (c) {
+        var b = AS.rebuild(c[0]), mesh = K.meshFromBody(b.body);
+        assert(!Object.keys(b.errors).length, JSON.stringify(b.errors));
+        var fr = mesh.faces.filter(function (f) { return f.body === c[1] && Math.abs(f.normal[2] + 1) < 1e-9 && Math.abs(f.w + c[2]) < 1e-9; });
+        assert(fr.length === 2 && fr[0].part !== fr[1].part, 'fronts ' + JSON.stringify(fr.map(function (f) { return [f.part, f.area]; })));
+        mesh.faces.forEach(function (f, i) { assert(partsOf(f).length === 1, 'face ' + i + ' mixes parts'); });
+        var pb = b.partBuilds[c[0].components[c[1]].id];
+        assert(pb.body.polygons.every(function (p) { return p.part === undefined || c[1] === 1; }), 'part build untouched');
+        nearRel(K.massProps(mesh, 1).volume - (c[1] ? 125 : 0), ex.volume, 1e-3, 'volume');
+      });
+    });
   })();
   // --- end r10/asmfaces10 ---
 

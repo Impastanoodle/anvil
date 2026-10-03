@@ -1800,6 +1800,17 @@ var Assembly = (function () {
   // Anvil's kernel has no B-rep face ids, so without it exactly coplanar faces of two parts in a sub-assembly (the
   // Hinged cover's leaf and arm fronts) merged into one mesh face: one pick lit both, their shared edges read as seams.
   function tagParts(wb, base) { var ps = wb.polygons; for (var i = 0; i < ps.length; i++) ps[i].part = base + (ps[i].part || 0); return wb; }
+  // a multibody part's bodies count as parts too (they are separate solids, as in SolidWorks: the Two-body clamp's
+  // base and cap fronts are two faces in an assembly): a copy with part = its body tag, kept on the part body
+  function partBody(b) {
+    if (!b) return b;
+    if (b.__partBody) return b.__partBody;
+    var ps = b.polygons || [], out = b, tagged = false, multi = false;
+    for (var i = 0; i < ps.length; i++) { if (ps[i].part != null) tagged = true; if (ps[i].body) multi = true; }
+    if (multi && !tagged) out = CSG.fromPolygons(ps.map(function (p) { var q = p.clone(); q.part = p.body || 0; return q; }));
+    try { Object.defineProperty(b, '__partBody', { value: out, enumerable: false, configurable: true, writable: true }); } catch (e) { }
+    return out;
+  }
   function composeSub(sm, sb, only) {
     var status = {};
     (sb.components || []).forEach(function (co) { status[co.id] = co; });
@@ -1810,9 +1821,9 @@ var Assembly = (function () {
     var faceBase = 0, partBase = 0;
     var bodies = sm.components.map(function (k) {
       var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id], base = faceBase, pbase = partBase;
-      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(pb.body); }
+      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(partBody(pb.body)); }
       if ((only && !only[k.id]) || !pb || !pb.body || (co && (co.error || co.suppressed))) return CSG.fromPolygons([]);
-      var wb = tagParts(worldBody(pb.body, k.transform), pbase);   // r10/asmfaces10
+      var wb = tagParts(worldBody(partBody(pb.body), k.transform), pbase);   // r10/asmfaces10
       if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
       return wb;
     });
@@ -2043,8 +2054,8 @@ var Assembly = (function () {
     var faceBase = 0, partBase = 0;
     var bodies = model.components.map(function (c) {
       var pb = partBuilds[c.id], base = faceBase, pbase = partBase;
-      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(pb.body); }
-      var wb = tagParts(worldBody(pb && !entries[c.id].error ? pb.body : null, c.transform, explode && explode.offsets[c.id]), pbase);
+      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(partBody(pb.body)); }
+      var wb = tagParts(worldBody(pb && !entries[c.id].error ? partBody(pb.body) : null, c.transform, explode && explode.offsets[c.id]), pbase);
       if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
       return wb;
     });
