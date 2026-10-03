@@ -543,7 +543,7 @@
     (sm.components || []).forEach(function (k) {
       var co = status[k.id] || {}, kb = sb && sb.partBuilds ? sb.partBuilds[k.id] : null, isSub = !!(kb && kb.assembly && kb.model);
       var key = pathKey + '/' + k.id, open = !!h.expanded[key];
-      var label = (k.fixed ? '(f) ' : co.underDefined ? '(-) ' : '') + k.name, warn = co.suppressed;
+      var label = (k.fixed ? '(f) ' : co.overDefined ? '(+) ' : co.underDefined ? '(-) ' : '') + k.name, warn = co.suppressed;
       var tip = k.name + ' in ' + top.name + (co.error ? ': ' + co.error : warn ? ' (suppressed): ' + (co.warning || '') : co.underDefined ? ' (' + co.dof + ' degree' + (co.dof === 1 ? '' : 's') + ' of freedom left)' : '') +
         (k.source && k.source.file != null ? ' — linked to "' + k.source.file + '"' : '');
       var row = h.treeItem({ icon: co.error ? 'error' : warn ? 'warn' : isSub ? 'assembly' : 'component', name: label + (warn ? ' (suppressed)' : ''), depth: depth, title: tip,

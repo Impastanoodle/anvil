@@ -1368,9 +1368,16 @@ var Assembly = (function () {
         });
       }
     }
+    // over defined (SolidWorks' "(+)"): a floating component a mate that cannot be satisfied tries to move
+    var over = {};
+    prepared.forEach(function (pm) {
+      var r = mateOut[pm.id];
+      if (r && r.error) [pm.ca, pm.cb].forEach(function (c) { if (movable(c) && !over[c.id]) over[c.id] = pm.mate.name || String(pm.id); });
+    });
     var compOut = comps.map(function (c, idx) {
       var o = { id: c.id, name: c.name, index: idx, fixed: !!c.fixed, dof: dofs[c.id], underDefined: dofs[c.id] > 0, error: null };
       if (c.pattern != null) o.instance = true;
+      if (over[c.id]) { o.overDefined = true; o.overMate = over[c.id]; }
       return o;
     });
     return { transforms: transforms, mates: mateOut, components: compOut };

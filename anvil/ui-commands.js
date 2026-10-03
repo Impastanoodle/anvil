@@ -1493,6 +1493,7 @@
   function compLabel(c) {
     var s = compStatus(c.id);
     if (c.fixed) return '(f) ' + c.name;
+    if (s && s.overDefined) return '(+) ' + c.name;   // over defined: a mate on it cannot be satisfied
     if (s && s.underDefined) return '(-) ' + c.name;
     return c.name;
   }

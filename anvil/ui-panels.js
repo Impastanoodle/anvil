@@ -346,7 +346,7 @@
       var err = (st && st.error) || errors[c.id] || null;
       var selected = App.sel && App.sel.kind === 'body' && App.sel.index === i;
       var hidden = isBodyHidden(i);
-      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
+      var tip = err ? c.name + ': ' + err : c.name + (c.fixed ? ' (fixed)' : st && st.overDefined ? ' (over defined: ' + st.overMate + ' cannot be satisfied)' : st ? (st.underDefined ? ' (under defined: ' + st.dof + ' degree' + (st.dof === 1 ? '' : 's') + ' of freedom left)' : ' (fully defined)') : '') + (hidden ? ' (hidden)' : '') + (UI.componentMaterial ? ' — ' + UI.componentMaterial(c) : '');
       // a sub-assembly / linked / suppressed component (ui-assembly.js): its icon, tooltip and the rows inside it
       var dec = UI.asmRowDecor ? UI.asmRowDecor(c, st, helpers) : null;
       if (dec && dec.tip) tip = dec.tip(tip);

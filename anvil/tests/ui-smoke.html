@@ -4033,6 +4033,10 @@
     assert(UI.App.undo.length === undoN + 1, 'one undo step');
     await UI.undo(); await idle();
     near(anvil.components()[1].rotation[4], 1, 1e-9, 'undo: upright');
+    // a mate that cannot be satisfied marks the block over defined: "(+) Block<1>" in the FeatureManager
+    await anvil.mate('coincident', { component: 2, face: [10, 0, 10] }, { component: 1, face: [50, 0, 30] });
+    await idle();
+    assert(anvil.components()[1].overDefined && rowText(compRows()[1]) === '(+) Block<1>', 'over defined row: ' + rowText(compRows()[1]));
     return c1.name;
   });
   // --- end refine/assembly ---

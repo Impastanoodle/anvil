@@ -8679,6 +8679,7 @@
       var b = AS.rebuild(m);
       assert(b.mates[m1.id].ok, 'first mate ok');
       assert(!b.mates[m2.id].ok && /over-defined|conflicting/.test(b.mates[m2.id].error), 'second mate reported: ' + JSON.stringify(b.mates[m2.id]));
+      assert(b.components[1].overDefined && b.components[1].overMate === m2.name && !b.components[0].overDefined, 'the block is over defined (SolidWorks "(+)"), the fixed base is not');
     });
   })();
   // --- end refine/assembly ---
