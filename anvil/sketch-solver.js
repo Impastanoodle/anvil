@@ -348,7 +348,8 @@ var SketchSolver = (function () {
     opts = opts || {};
     var ents = clone(sketch.entities || []);
     var vars = [], owner = [];
-    ents.forEach(function (e, i) { paramNames(e).forEach(function (nm) { vars.push({ e: i, n: nm }); owner.push(i); }); });
+    var only = opts.entities || null;   // { index: true }: unknowns of these entities only, and the equations that touch them
+    ents.forEach(function (e, i) { if (only && !only[i]) return; paramNames(e).forEach(function (nm) { vars.push({ e: i, n: nm }); owner.push(i); }); });
     var cons = [];
     (sketch.rels || []).forEach(function (rel, i) {
       var r = rel;
@@ -363,11 +364,23 @@ var SketchSolver = (function () {
       cons.push(q ? { src: 'dim', index: i, n: q.n, f: q.f, ents: q.ents } : { src: 'dim', index: i, n: 0, bad: true, ents: [] });
     });
     (opts.extra || []).forEach(function (q, i) { cons.push({ src: 'extra', index: i, n: q.n, f: q.f, ents: q.ents, soft: q.soft }); });
+    if (only) cons = cons.filter(function (c) { return c.n && c.ents.some(function (e) { return only[e]; }); });
     var row = 0, byEnt = ents.map(function () { return []; });
     cons.forEach(function (c) { c.row = row; row += c.n; c.ents.forEach(function (e) { if (byEnt[e]) byEnt[e].push(c); }); });
     var scale = 1;
     vars.forEach(function (v) { if (v.n !== 'a0' && v.n !== 'a1' && v.n !== 'rot') scale = Math.max(scale, Math.abs(pget(ents[v.e], v.n))); });
     return { ents: ents, vars: vars, cons: cons, m: row, byEnt: byEnt, scale: scale };
+  }
+  // The entities tied to entity e through the system's equations: { set: { index: true }, count }.
+  function connected(sys, e) {
+    var set = {}, count = 0, stack = [e];
+    while (stack.length) {
+      var i = stack.pop();
+      if (set[i] || !sys.ents[i]) continue;
+      set[i] = true; count++;
+      sys.byEnt[i].forEach(function (c) { if (c.n) c.ents.forEach(function (j) { if (!set[j]) stack.push(j); }); });
+    }
+    return { set: set, count: count };
   }
   function residuals(sys, only) {
     var r = new Array(sys.m);
@@ -398,6 +411,18 @@ var SketchSolver = (function () {
   function sumSq(r) { var s = 0; for (var i = 0; i < r.length; i++) s += r[i] * r[i]; return s; }
   function maxAbs(r) { var s = 0; for (var i = 0; i < r.length; i++) s = Math.max(s, Math.abs(r[i])); return s; }
 
+  // the column indices of the non-zeros in each row of J, and the row indices of the non-zeros in each column (ascending)
+  function sparseRows(J, m, n) {
+    var out = new Array(m);
+    for (var i = 0; i < m; i++) { var row = J[i], l = []; for (var j = 0; j < n; j++) if (row[j] !== 0) l.push(j); out[i] = l; }
+    return out;
+  }
+  function sparseCols(J, m, n) {
+    var out = new Array(n), j;
+    for (j = 0; j < n; j++) out[j] = [];
+    for (var i = 0; i < m; i++) { var row = J[i]; for (j = 0; j < n; j++) if (row[j] !== 0) out[j].push(i); }
+    return out;
+  }
   // Dense Gaussian elimination with partial pivoting; A is modified. Returns x or null.
   function linSolve(A, b) {
     var n = b.length, i, j, k;
@@ -439,7 +464,14 @@ var SketchSolver = (function () {
           for (i = 0; i < m; i++) gj += J[i][j] * r[i];
           g[j] = gj;
         }
-        for (j = 0; j < n; j++) for (k = 0; k <= j; k++) { var sjk = 0; for (i = 0; i < m; i++) sjk += J[i][j] * J[i][k]; N[j][k] = N[k][j] = sjk; }
+        // J^T J from the non-zeros of each row (J is sparse: a relation touches one or two entities); the terms are
+        // summed in the same order as the dense product, so the result is the same to the last bit
+        var rowNz = sparseRows(J, m, n);
+        for (i = 0; i < m; i++) {
+          var nz = rowNz[i], Ji = J[i];
+          for (var a1 = 0; a1 < nz.length; a1++) { var ja = nz[a1], va = Ji[ja], Na = N[ja]; for (var b1 = 0; b1 <= a1; b1++) Na[nz[b1]] += va * Ji[nz[b1]]; }
+        }
+        for (j = 0; j < n; j++) for (k = 0; k < j; k++) N[k][j] = N[j][k];
         for (j = 0; j < n; j++) dmax = Math.max(dmax, N[j][j]);
         var acc = false;
         for (var t2 = 0; t2 < 14; t2++) {
@@ -460,10 +492,12 @@ var SketchSolver = (function () {
       }
       var MJt = [];   // M J^T  (n x m) stored as rows of J scaled
       for (i = 0; i < m; i++) { var ri = new Float64Array(n); for (j = 0; j < n; j++) ri[j] = J[i][j] * (mob ? mob[j] : 1); MJt.push(ri); }
-      var G = [], diag = 0;
-      for (i = 0; i < m; i++) {
-        G.push(new Float64Array(m));
-        for (k = 0; k <= i; k++) { var s = 0, a = J[i], b = MJt[k]; for (j = 0; j < n; j++) s += a[j] * b[j]; G[i][k] = s; }
+      // G = J M J^T from the non-zeros of each column of J, summed in the dense product's order (same result, bit for bit)
+      var G = [], diag = 0, colNz = sparseCols(J, m, n);
+      for (i = 0; i < m; i++) G.push(new Float64Array(m));
+      for (j = 0; j < n; j++) {
+        var cz = colNz[j];
+        for (var a2 = 0; a2 < cz.length; a2++) { var ia = cz[a2], Ga = G[ia], va2 = J[ia][j]; for (var b2 = 0; b2 <= a2; b2++) Ga[cz[b2]] += va2 * MJt[cz[b2]][j]; }
       }
       for (i = 0; i < m; i++) { for (k = i + 1; k < m; k++) G[i][k] = G[k][i]; diag = Math.max(diag, G[i][i]); }
       var accepted = false;
@@ -1147,6 +1181,10 @@ var SketchSolver = (function () {
       pull = { n: names.length, ents: [R.e], soft: true, f: function (E) { return names.map(function (nm) { return w * (pget(E[R.e], nm) - pget(tgt, nm)); }); } };
     }
     var sys = buildSystem(sketch, { dimTargets: targets, extra: [pull] });
+    // only the geometry tied to the dragged entity (through relations and dimensions) can move: solve that part alone
+    // (much smaller matrices in a sketch of several separate pieces; a conflict elsewhere does not block the drag)
+    var part = connected(sys, R.e);
+    if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: [pull], entities: part.set });
     lm(sys, { leastSquares: true, maxIt: 60 });
     var r = lm(sys, { only: function (c) { return !c.soft; } });
     if (!r.ok) return { ok: false };
