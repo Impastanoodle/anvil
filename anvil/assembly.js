@@ -1787,6 +1787,19 @@ var Assembly = (function () {
     try { Object.defineProperty(b, '__maxFace', { value: mx, enumerable: false, configurable: true, writable: true }); } catch (e) { }
     return mx;
   }
+  // r10/asmfaces10: the number of part tags a body uses (polygon.part, carried by CSG clone / transform / split):
+  // a part's body is one part (untagged), a sub-assembly's body as many as its parts, cached on the body
+  function partCount(b) {
+    if (b.__parts != null) return b.__parts;
+    var mx = 0, ps = b.polygons || [];
+    for (var i = 0; i < ps.length; i++) if (ps[i].part != null && ps[i].part > mx) mx = ps[i].part;
+    try { Object.defineProperty(b, '__parts', { value: mx + 1, enumerable: false, configurable: true, writable: true }); } catch (e) { }
+    return mx + 1;
+  }
+  // tag a placed body's (fresh) polygons with their part: base + the tag they carry (a nested sub-assembly's parts).
+  // Anvil's kernel has no B-rep face ids, so without it exactly coplanar faces of two parts in a sub-assembly (the
+  // Hinged cover's leaf and arm fronts) merged into one mesh face: one pick lit both, their shared edges read as seams.
+  function tagParts(wb, base) { var ps = wb.polygons; for (var i = 0; i < ps.length; i++) ps[i].part = base + (ps[i].part || 0); return wb; }
   function composeSub(sm, sb, only) {
     var status = {};
     (sb.components || []).forEach(function (co) { status[co.id] = co; });
@@ -1794,12 +1807,12 @@ var Assembly = (function () {
     // component one level up, so two inner parts' faces with the same id merged into one mesh face (one pick lit the
     // leaf tops of both hinges) and their shared edges read as seams. Each inner component's ids are offset past the
     // previous ones' (the same offsets whichever components `only` keeps).
-    var faceBase = 0;
+    var faceBase = 0, partBase = 0;
     var bodies = sm.components.map(function (k) {
-      var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id], base = faceBase;
-      if (pb && pb.body) faceBase += maxFaceId(pb.body) + 1;
+      var pb = sb.partBuilds && sb.partBuilds[k.id], co = status[k.id], base = faceBase, pbase = partBase;
+      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(pb.body); }
       if ((only && !only[k.id]) || !pb || !pb.body || (co && (co.error || co.suppressed))) return CSG.fromPolygons([]);
-      var wb = worldBody(pb.body, k.transform);
+      var wb = tagParts(worldBody(pb.body, k.transform), pbase);   // r10/asmfaces10
       if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
       return wb;
     });
@@ -2026,11 +2039,12 @@ var Assembly = (function () {
     // world-space bodies, one per component (an empty CSG keeps indices aligned when a part failed or is suppressed)
     // (r9/polish9: OpenCascade face ids offset per component, as in composeSub, so this build used as a rigid
     // sub-assembly's body keeps its parts' faces apart)
-    var faceBase = 0;
+    // (r10/asmfaces10: and part tags, so Anvil-kernel faces of its parts stay apart too)
+    var faceBase = 0, partBase = 0;
     var bodies = model.components.map(function (c) {
-      var pb = partBuilds[c.id], base = faceBase;
-      if (pb && pb.body) faceBase += maxFaceId(pb.body) + 1;
-      var wb = worldBody(pb && !entries[c.id].error ? pb.body : null, c.transform, explode && explode.offsets[c.id]);
+      var pb = partBuilds[c.id], base = faceBase, pbase = partBase;
+      if (pb && pb.body) { faceBase += maxFaceId(pb.body) + 1; partBase += partCount(pb.body); }
+      var wb = tagParts(worldBody(pb && !entries[c.id].error ? pb.body : null, c.transform, explode && explode.offsets[c.id]), pbase);
       if (base) wb.polygons.forEach(function (p) { if (p.face != null) p.face += base; });
       return wb;
     });

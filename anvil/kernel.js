@@ -1998,13 +1998,14 @@ var Kernel = (function () {
 
   // -> { positions, normals, faces:[{normal,w,start,count,centroid,area,body}], triCount, polygons }
   // Coplanar polygons make one face, but only within one body: the body tag (polygon.body, from combineBodies; 0 when
-  // untagged) is part of the grouping key, and each face records it as `face.body`.
+  // untagged) is part of the grouping key, and each face records it as `face.body`. r10/asmfaces10: so is the
+  // assembly part tag (polygon.part, assembly.js), so coplanar faces of two parts in a sub-assembly stay apart (`face.part`).
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
     var groups = {}, order = [];
     body.polygons.forEach(function (p) {
-      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi + (p.face != null ? '|f' + p.face : '');   // OpenCascade faces stay apart
-      if (!groups[k]) { groups[k] = { polys: [], plane: p.plane, body: bi }; order.push(k); }
+      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '');   // OpenCascade faces / assembly parts stay apart
+      if (!groups[k]) { groups[k] = { polys: [], plane: p.plane, body: bi, part: p.part }; order.push(k); }
       groups[k].polys.push(p);
     });
     var tris = [];
@@ -2022,10 +2023,12 @@ var Kernel = (function () {
         vs.forEach(function (v) { cx += v.pos.x; cy += v.pos.y; cz += v.pos.z; cnt++; });
       });
       var count = tris.length / 9 - start;
-      faces.push({
+      var face = {
         normal: [g.plane.normal.x, g.plane.normal.y, g.plane.normal.z], w: g.plane.w,
         start: start, count: count, centroid: [cx / cnt, cy / cnt, cz / cnt], area: area, polys: g.polys, body: g.body
-      });
+      };
+      if (g.part != null) face.part = g.part;
+      faces.push(face);
     });
     var positions = new Float32Array(tris);
     var normals = new Float32Array(tris.length);
