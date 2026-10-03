@@ -22,14 +22,34 @@
     UI.updateSketches(); UI.updatePlanes(); UI.updateHighlights();
     UI.setRibbonTab('Sketch');
     $('exit-sketch').hidden = false;
-    $('exit-sketch').innerHTML = '';
-    // the confirmation corner (r5/sketch5: side by side in the top-right corner, as SolidWorks has it)
     App.relHover = null;
-    $('exit-sketch').appendChild(el('button', { 'class': 'cc-exit', title: 'Exit Sketch (S): keep the changes and rebuild', 'aria-label': 'Exit Sketch', html: Icons('exitSketch', 26), onclick: function () { exitSketch(); } }));
-    $('exit-sketch').appendChild(el('button', { 'class': 'cc-cancel', title: 'Discard Changes and Exit', 'aria-label': 'Discard Changes and Exit', html: Icons('cancel', 20), onclick: function () { confirmCancelSketch(); } }));
+    refreshCorner(true);
     UI.refreshTree(); UI.refreshStatus();
     UI.setStatus('Editing ' + f.name + '. Pick a tool from the Sketch tab, or click an entity to edit its values.');
   }
+
+  // r5/sketch5: the confirmation corner, side by side in the top-right corner of the graphics area as SolidWorks has
+  // it: Exit Sketch (rebuilds) and Discard Changes and Exit; while a PropertyManager is open in the sketch it holds that
+  // PropertyManager's OK / Cancel instead (follows #pm being shown / hidden).
+  var cornerMode = null;
+  function refreshCorner(force) {
+    var cc = $('exit-sketch');
+    if (App.mode !== 'sketch') { cornerMode = null; return; }
+    var mode = UI.hasPM && UI.hasPM() ? 'pm' : 'sketch';
+    if (mode === cornerMode && !force && cc.children.length) return;
+    cornerMode = mode;
+    cc.innerHTML = '';
+    cc.classList.toggle('pm', mode === 'pm');
+    if (mode === 'pm') {
+      cc.appendChild(el('button', { 'class': 'cc-ok', title: 'OK (Enter)', 'aria-label': 'OK', html: Icons('ok', 22), onclick: function () { UI.pmOK(); } }));
+      cc.appendChild(el('button', { 'class': 'cc-cancel', title: 'Cancel (Esc)', 'aria-label': 'Cancel', html: Icons('cancel', 20), onclick: function () { UI.pmCancel(); } }));
+    } else {
+      cc.appendChild(el('button', { 'class': 'cc-exit', title: 'Exit Sketch (S): keep the changes and rebuild', 'aria-label': 'Exit Sketch', html: Icons('exitSketch', 26), onclick: function () { exitSketch(); } }));
+      cc.appendChild(el('button', { 'class': 'cc-cancel', title: 'Discard Changes and Exit', 'aria-label': 'Discard Changes and Exit', html: Icons('cancel', 20), onclick: function () { confirmCancelSketch(); } }));
+    }
+  }
+  if ($('pm') && window.MutationObserver) new MutationObserver(function () { refreshCorner(); }).observe($('pm'), { attributes: true, attributeFilter: ['hidden'] });
+  UI.refreshSketchCorner = refreshCorner;
 
   function exitSketch(silent) {
     if (App.mode !== 'sketch') return UI.whenIdle();

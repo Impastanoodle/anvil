@@ -5854,6 +5854,18 @@
     assert(!(f.dims || []).length && st() === 'Under Defined', 'deleted: ' + st());
     return 'ok';
   });
+  step('r5/sketch5: with a PropertyManager open in a sketch the confirmation corner holds its OK / Cancel; closed, Exit Sketch / Discard come back', async function () {
+    await rskNew();
+    function cls() { return Array.prototype.map.call($('exit-sketch').querySelectorAll('button'), function (b) { return b.className; }).join(','); }
+    assert(cls() === 'cc-exit,cc-cancel', cls());
+    UI.cmdAddRelations();
+    await wait(30);
+    assert(cls() === 'cc-ok,cc-cancel', 'PM open: ' + cls());
+    $('exit-sketch').querySelector('.cc-ok').click();
+    await wait(30);
+    assert(!UI.hasPM() && cls() === 'cc-exit,cc-cancel', 'PM closed: ' + cls());
+    return 'ok';
+  });
   // --- end r5/sketch5 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
