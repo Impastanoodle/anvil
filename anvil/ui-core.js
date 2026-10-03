@@ -71,7 +71,8 @@ var UI = (function () {
     part: new THREE.MeshPhongMaterial({ color: 0xa8adb6, specular: 0x2a2f36, shininess: 38, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
     hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
     edge: new THREE.LineBasicMaterial({ color: 0x23272d }),
-    hover: new THREE.MeshBasicMaterial({ color: 0x7fb8ef, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
+    hover: new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.45,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
     sel: new THREE.MeshBasicMaterial({ color: 0x69d98a, transparent: true, opacity: 0.6, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),
     preview: new THREE.MeshPhongMaterial({ color: 0xf2cf5b, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
     previewCut: new THREE.MeshPhongMaterial({ color: 0xe8746a, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
@@ -87,6 +88,7 @@ var UI = (function () {
     temp: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     planeFace: new THREE.MeshBasicMaterial({ color: 0x5a9be6, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
     planeFaceHi: new THREE.MeshBasicMaterial({ color: 0x69d98a, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+    planeFaceHover: new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }),   // r5/select5
     planeLine: new THREE.LineBasicMaterial({ color: 0x5a9be6 }),
     grid: new THREE.LineBasicMaterial({ color: 0xb8c0ca, transparent: true, opacity: 0.55 }),
     gridMajor: new THREE.LineBasicMaterial({ color: 0x9aa4b0, transparent: true, opacity: 0.7 })
@@ -1053,8 +1055,9 @@ var UI = (function () {
     groups.planes.children.forEach(function (pm) {
       if (pm.userData.face) {
         var ref = pm.userData.ref;
-        var on = (App.sel && App.sel.kind === 'plane' && App.sel.ref === ref) || (App.hover && App.hover.kind === 'plane' && App.hover.ref === ref);
-        pm.material = on ? mats.planeFaceHi : mats.planeFace;
+        // r5/select5: a selected plane is green like other selections, a hovered one orange like other pre-highlights
+        var selOn = App.sel && App.sel.kind === 'plane' && App.sel.ref === ref, hovOn = App.hover && App.hover.kind === 'plane' && App.hover.ref === ref;
+        pm.material = selOn ? mats.planeFaceHi : hovOn ? (mats.planeFaceHover || mats.planeFaceHi) : mats.planeFace;
       }
     });
     // multi-selection items beyond sel / sel2, vertices, and the Instant3D overlay (ui-select.js)
@@ -1284,6 +1287,20 @@ var UI = (function () {
       return { kind: 'face', index: faceAtTriangle(tri), point: [h.point.x, h.point.y, h.point.z] };
     }
     return null;
+  }
+  // r5/select5: every face under the pointer, nearest first, one per face group (Select Other reaches hidden faces)
+  function pickFacesAll(mx, my) {
+    if (!bodyMesh) return [];
+    raycaster.setFromCamera(ndc(mx, my), camera);
+    var hits = raycaster.intersectObject(bodyMesh, false), out = [], seen = {};
+    hits.forEach(function (h) {
+      if (App.view.section && App.view.section.plane.distanceToPoint(h.point) < 0) return;
+      var fi = faceAtTriangle(visTris ? visTris[h.faceIndex] : h.faceIndex), grp = faceGroup(fi), key = grp && grp.length ? grp[0] : fi;
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push({ kind: 'face', index: fi, point: [h.point.x, h.point.y, h.point.z] });
+    });
+    return out;
   }
   var edgeScr = { edges: null, ver: -1, xy: null };
   function edgeScreen() {
@@ -2019,7 +2036,7 @@ var UI = (function () {
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
     updateOrigin: updateOrigin, updateSketches: updateSketches, updateTemp: updateTemp, disposeGroup: disposeGroup,
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
-    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
+    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,

@@ -323,6 +323,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   function pickHover(mx, my) {
     // while a view transition glides, picking would use the view it lands on, not the one on screen: keep the hover
     if (UI.viewAnimating && UI.viewAnimating()) return App.hover;
+    if (soMenu && soMenu.isConnected) return App.hover;   // r5/select5: the Select Other list (over the model) owns the hover
     var cmd = App.command, f = filterSet();
     if (cmd && cmd.pickPlane) return (!f || f.faces || bodyFilter(f) ? UI.pickFace(mx, my) : null) || UI.pickPlane(mx, my);
     if (cmd && cmd.pickEdges) return allows('edge') ? UI.pickEdge(mx, my) : null;
@@ -491,6 +492,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   // ================================================================== highlights of the extra items
   var vtxMat = new THREE.PointsMaterial({ color: 0x14a34a, size: 9, sizeAttenuation: false, depthTest: false });
   var vtxHoverMat = new THREE.PointsMaterial({ color: 0xff8c1a, size: 9, sizeAttenuation: false, depthTest: false });
+  var throughMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.45, depthTest: false, depthWrite: false, side: THREE.DoubleSide });   // r5/select5
   function pointsObject(pts, mat) {
     var arr = [];
     pts.forEach(function (p) { arr.push(p[0], p[1], p[2]); });
@@ -513,6 +515,8 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (edges.length) g.add(h.edgeLineObject(edges, h.edgeSelMat));
     if (verts.length) g.add(pointsObject(verts, vtxMat));
     if (App.hover && App.hover.kind === 'vertex') g.add(pointsObject([App.hover.point], vtxHoverMat));
+    // r5/select5: a hidden face hovered in the Select Other list shows through the faces in front of it
+    if (App.hover && App.hover.kind === 'face' && App.hover.through) { var tr = h.selectionRanges(App.hover); if (tr) { var tm = new THREE.Mesh(h.triRangeGeometry(tr), throughMat); tm.renderOrder = 11; g.add(tm); } }
     // r4/features4: the face of the PropertyManager list row under the pointer
     var hi = App.command && App.command.hoverItem;
     if (hi && hi.faces && hi.faces.length && UI.mats && UI.mats.hover) hi.faces.forEach(function (i) { var r = h.selectionRanges({ kind: 'face', index: i }); if (r) g.add(new THREE.Mesh(h.triRangeGeometry(r), UI.mats.hover)); });
@@ -599,7 +603,10 @@ if (typeof UI !== 'undefined') (function (UI) {
       '.pm-item { display: flex; align-items: center; gap: 5px; padding: 2px 6px; cursor: default; outline: none; white-space: nowrap; }',
       '.pm-item:hover { background: var(--pick-bg); }',
       '.pm-item.sel { background: var(--blue, #1f6fc5); color: #fff; }',
-      'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }'
+      'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }',
+      // r5/select5: the ruler while the pointer snaps to it, and the tick it snapped to
+      'html #i3d-layer .i3d-ruler.snapping { stroke: #1f6fc5; stroke-width: 1.5; }',
+      'html #i3d-layer .i3d-tick.hit { stroke: #ff8c1a; stroke-width: 3; }'
     ].join('\n');
     var st = document.createElement('style');
     st.id = 'r4-features4-style';
@@ -728,6 +735,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     h.rawAt = function (mx, my) {    // the angle whose arc point is nearest the pointer (0.25° samples, then refined)
       var best = null, bestD = Infinity;
       for (var t = 0; t <= 360; t += 0.25) { var q = S(h.pos(t)), dd = Math.hypot(q[0] - mx, q[1] - my); if (dd < bestD) { bestD = dd; best = t; } }
+      for (var b0 = best, t2 = b0 - 0.25; b0 != null && t2 <= b0 + 0.25 + 1e-9; t2 += 0.01) { var q2 = S(h.pos(t2)), d2 = Math.hypot(q2[0] - mx, q2[1] - my); if (d2 < bestD && t2 >= 0 && t2 <= 360) { bestD = d2; best = +t2.toFixed(2); } }   // r5/select5: refined for free drags
       return best;
     };
     h.ring = true;
@@ -783,6 +791,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     h.rawAt = function (mx, my) {
       var best = null, bestD = Infinity;
       for (var t = 0; t <= 360; t += 0.25) { var q = S(h.pos(t)), dd = Math.hypot(q[0] - mx, q[1] - my); if (dd < bestD) { bestD = dd; best = t; } }
+      for (var b0 = best, t2 = b0 - 0.25; b0 != null && t2 <= b0 + 0.25 + 1e-9; t2 += 0.01) { var q2 = S(h.pos(t2)), d2 = Math.hypot(q2[0] - mx, q2[1] - my); if (d2 < bestD && t2 >= 0 && t2 <= 360) { bestD = d2; best = +t2.toFixed(2); } }   // r5/select5: refined for free drags
       return best;
     };
     return h;
@@ -868,16 +877,20 @@ if (typeof UI !== 'undefined') (function (UI) {
     svg('polygon', { 'class': cls, points: tip[0] + ',' + tip[1] + ' ' + (tip[0] - u[0] * size + px) + ',' + (tip[1] - u[1] * size + py) + ' ' + (tip[0] - u[0] * size - px) + ',' + (tip[1] - u[1] * size - py) }, g);
   }
   function drawRuler(g, h, v) {
-    var step = h.step(), maxV = h.angle ? 360 : Math.max(v * 1.35, v + 12 * step), n = Math.min(400, Math.floor(maxV / step + 1e-9));
+    var step = h.step(), maxV = h.angle ? 360 : Math.max(v * 1.35, v + 12 * step), minV = 0;
+    // r5/select5: a value that may go negative (a plane offset) gets a ruler on both sides of 0
+    if (!h.angle && h.min != null && h.min < 0) { maxV = Math.max(maxV, 6 * step); minV = Math.min(v * 1.35, v - 12 * step, -6 * step); }
+    var k0 = Math.ceil(minV / step - 1e-9), n = Math.floor(maxV / step + 1e-9);
+    if (n - k0 > 400) { if (v - k0 * step < 200 * step) n = k0 + 400; else k0 = n - 400; }
     var pts = [];
-    for (var j = 0; j <= n; j++) pts.push(S(h.pos(j * step)));
-    svg('polyline', { 'class': 'i3d-ruler', points: pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ') }, g);
-    var major = h.angle ? (step === 1 ? 15 : step === 5 ? 3 : 2) : 5;
-    for (var k = 0; k <= n; k++) {
-      var p = pts[k], q = pts[Math.min(n, k + 1)], o = pts[Math.max(0, k - 1)], u = unit2(o, q) || [1, 0], nn = [-u[1], u[0]];
-      var L = k % major === 0 ? 9 : 5;
-      svg('line', { 'class': 'i3d-tick' + (k % major === 0 ? ' major' : ''), x1: p[0], y1: p[1], x2: p[0] + nn[0] * L, y2: p[1] + nn[1] * L }, g);
-      if (k % major === 0 && k > 0) {
+    for (var j = k0; j <= n; j++) pts.push(S(h.pos(j * step)));
+    svg('polyline', { 'class': 'i3d-ruler' + (i3d.drag && i3d.drag.onRuler ? ' snapping' : ''), points: pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ') }, g);
+    var major = h.angle ? (step === 1 ? 15 : step === 5 ? 3 : 2) : 5, last = pts.length - 1;
+    for (var i = 0; i <= last; i++) {
+      var k = k0 + i, p = pts[i], q = pts[Math.min(last, i + 1)], o = pts[Math.max(0, i - 1)], u = unit2(o, q) || [1, 0], nn = [-u[1], u[0]];
+      var isMajor = k % major === 0, L = isMajor ? 9 : 5, hit = i3d.drag && i3d.drag.onRuler && Math.abs(k * step - v) < step * 1e-6;
+      svg('line', { 'class': 'i3d-tick' + (isMajor ? ' major' : '') + (hit ? ' hit' : ''), x1: p[0], y1: p[1], x2: p[0] + nn[0] * L, y2: p[1] + nn[1] * L }, g);
+      if (isMajor && k !== 0) {
         var t = svg('text', { 'class': 'i3d-tick-label', x: p[0] + nn[0] * 17, y: p[1] + nn[1] * 17 + 4, 'text-anchor': 'middle' }, g);
         t.textContent = UI.fmtNum(k * step, 3);
       }
@@ -1015,11 +1028,44 @@ if (typeof UI !== 'undefined') (function (UI) {
       UI.afterRebuild(p, function () { liveBusy = false; i3d.lastPauseMs = performance.now() - t0; i3d.pauses = (i3d.pauses || 0) + 1; }).catch(function () { liveBusy = false; });
     }, PAUSE_MS);
   }
-  function valueFor(h, raw) {
-    var step = h.snapStep ? h.snapStep() : h.step(), v = BoxSelect.snap(raw, step);   // r4/features4: PM handles snap finer than the ruler ticks
-    if (v <= (h.min || 0)) v = step;
+  // r5/select5: a handle drags freely (to the displayed precision, as in SolidWorks); with the pointer over the ruler
+  // (its tick side, RULER_PX[0]..[1] px off the drag line) the value snaps to the tick under the pointer.
+  // (was: every handle snapped to ruler steps, so a value between two ticks could not be reached by dragging)
+  var RULER_PX = [4, 34];
+  function rulerSide(h, v) {   // the screen unit normal the ruler's ticks point along at value v (null: seen end-on)
+    var st = h.step(), a = S(h.pos(v - st * 0.5)), b = S(h.pos(v + st * 0.5)), u = unit2(a, b);
+    return u ? [-u[1], u[0]] : null;
+  }
+  function onRuler(h, raw, m) {
+    if (raw == null || !m) return false;
+    var p = S(h.pos(raw)), nn = rulerSide(h, raw);
+    if (!nn) return false;
+    var off = (m[0] - p[0]) * nn[0] + (m[1] - p[1]) * nn[1];
+    return off >= RULER_PX[0] && off <= RULER_PX[1];
+  }
+  function clampValue(h, v, step) {
+    var lo = h.min != null ? h.min : 0;
+    if (lo >= 0 && v <= lo) v = step;
+    else if (v < lo) v = lo;
     if (h.max != null && v > h.max) v = h.max;
     return v;
+  }
+  function valueFor(h, raw, m, rawAtPointer) {
+    var d = i3d.drag;
+    if (m && onRuler(h, rawAtPointer, m)) {   // over the ruler: the tick under the pointer
+      var step = h.step();
+      if (d) d.onRuler = true;
+      return clampValue(h, BoxSelect.snap(rawAtPointer, step), step);
+    }
+    if (d) d.onRuler = false;
+    var fine = Math.pow(10, -valueDecimals(h));
+    return clampValue(h, BoxSelect.snap(raw, fine), fine);
+  }
+  // a point `px` pixels over the ruler at value v (tests / scripts: where a pointer snaps to v)
+  function rulerPoint(h, v, px) {
+    var p = S(h.pos(v)), nn = rulerSide(h, v);
+    px = px == null ? 14 : px;
+    return nn ? [p[0] + nn[0] * px, p[1] + nn[1] * px] : p;
   }
   function startDrag(h, ev) {
     closeEdit(false);
@@ -1038,7 +1084,8 @@ if (typeof UI !== 'undefined') (function (UI) {
       var q = pos(e), r = h.rawAt(q[0], q[1]);
       if (r == null) return;
       d.moved = true;
-      var v = valueFor(h, r - d.grab);
+      var wasOn = d.onRuler, v = valueFor(h, r - d.grab, q, r);
+      if (wasOn !== d.onRuler) App.dimsStale = true;   // the ruler lights while it snaps
       if (Math.abs(v - d.v) < 1e-12) return;
       if (h.pm) {   // r4/features4: a PropertyManager value (its preview is built in the worker; ✓ commits)
         var t0 = performance.now();
@@ -1169,6 +1216,52 @@ if (typeof UI !== 'undefined') (function (UI) {
     return i3d.on;
   }
 
+  // ================================================================== r5/select5: Select Other
+  // Right-click on the model ▸ Select Other lists every face under the pointer, nearest first, hidden ones included (as
+  // in SolidWorks); hovering a row pre-highlights its face, a click selects it (Ctrl / Shift: added; an open
+  // PropertyManager's selection box takes it). A right-drag pans and shows no menu.
+  var rDown = null, soMenu = null;
+  viewport.addEventListener('mousedown', function (ev) { if (ev.button === 2) rDown = pos(ev); }, true);
+  function faceLabel(i) {
+    var f = App.mesh && App.mesh.faces[i];
+    if (!f) return 'Face';
+    var owner = '';
+    if (isAsm()) owner = UI.bodyName ? UI.bodyName(f.body || 0) : '';
+    else { var ft = App.triShared ? K.findFeature(App.model, App.triShared[f.start]) : null; owner = ft ? ft.name : ''; }
+    return 'Face ' + i + (owner ? '@' + owner : '');   // the number the status bar shows on hover
+  }
+  function takeOther(fc, add) {
+    if (App.command && App.command.onPick && App.command.onPick(fc) !== false) return;
+    var f = filterSet(), hit = fc;
+    if (f && !f.faces) hit = bodyFilter(f) ? { kind: 'body', index: faceBody(fc.index) } : null;
+    if (!hit) return;
+    if (add) setSelection(BoxSelect.combine(selection(), [hit], 'add', selKey));
+    else setSelection([hit]);
+  }
+  function selectOther(faces, x, y, add) {
+    UI.showMenu(x, y, faces.map(function (fc) { return { label: faceLabel(fc.index), action: function () { App.hover = null; takeOther(fc, add); UI.updateHighlights(); } }; }));
+    var menus = document.querySelectorAll('body > .menu'), m = menus[menus.length - 1];
+    if (!m) return;
+    m.classList.add('select-other'); soMenu = m;
+    Array.prototype.forEach.call(m.querySelectorAll('.mi'), function (row, k) {
+      var hv = k ? { kind: 'face', index: faces[k].index, point: faces[k].point, through: true } : faces[k];   // hidden ones show through
+      row.addEventListener('mouseenter', function () { App.hover = hv; UI.updateHighlights(); if (UI.requestRender) UI.requestRender(); });
+      row.addEventListener('mouseleave', function () { if (App.hover === hv) { App.hover = null; UI.updateHighlights(); if (UI.requestRender) UI.requestRender(); } });
+    });
+  }
+  viewport.addEventListener('contextmenu', function (ev) {
+    if (App.mode !== 'part' || drawingOn() || !App.mesh || !UI.pickFacesAll || !UI.showMenu) return;
+    var p = pos(ev);
+    if (rDown && Math.hypot(p[0] - rDown[0], p[1] - rDown[1]) > 4) return;   // a right-drag panned the view
+    if (ev.target.closest && ev.target.closest('#hud, #i3d-edit, #i3d-layer .i3d')) return;
+    var faces = UI.pickFacesAll(p[0], p[1]), add = ev.ctrlKey || ev.shiftKey;
+    if (!faces.length) return;
+    var items = [{ label: 'Select Other', action: function () { selectOther(faces, ev.clientX, ev.clientY, add); } }];
+    if (selection().length) items.push({ label: 'Clear Selection', action: function () { setSelection([], { quiet: true }); } });
+    UI.showMenu(ev.clientX, ev.clientY, items);
+  });
+  UI.selectOtherAt = function (mx, my) { return UI.pickFacesAll ? UI.pickFacesAll(mx, my).map(function (fc) { return { index: fc.index, label: faceLabel(fc.index) }; }) : []; };
+
   // ================================================================== keys
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
@@ -1220,6 +1313,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   };
   UI.instant3DEditOpen = function () { return i3d.edit ? { kind: i3d.edit.h.kind, value: +editInput.value, label: i3d.edit.h.label } : null; };
   UI.instant3DDragging = function () { return !!i3d.drag; };
+  UI.instant3DRulerPoint = rulerPoint;   // r5/select5: (handle, value, px) -> the screen point over the ruler that snaps to value
   // r4/features4: drag timings (main-thread ms of the last PropertyManager handle move, rests rebuilt and the last one's ms)
   UI.fmtModelValue = fmtV;   // r4/features4: the value format of on-model handles and callouts
   UI.instant3DStats = function () { return { pmMoveMs: i3d.lastPmMoveMs || 0, pauses: i3d.pauses || 0, pauseRebuildMs: i3d.lastPauseMs || 0 }; };
