@@ -840,7 +840,7 @@
       }
     }
     // the composed mesh, with its faces grouped as the assembly mesh groups them where the component is placed (pl):
-    // coplanar facets of different inner parts merge by a rounded plane key, which a translation can change
+    // coplanar facets split by a rounded plane key, which a translation can change (r10/asmfaces10: never across parts)
     var mesh = placedMesh(polys, pl);
     if (!mesh) return null;
     var faceOf = mesh.faceOf, edges = [], curves = [], curvesOk = true;
@@ -946,10 +946,11 @@
       }
     }
     if (pb.__asmEdges) return pb.__asmEdges;
-    // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different
-    // inner bodies merge there; mesh it the same way (body tags dropped) and keep each polygon's inner index (asmInner)
+    // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh; mesh it the same way (body tags
+    // dropped; r10/asmfaces10: part tags kept, a multibody part's bodies as parts, so faces never merge across parts
+    // or bodies, as in the assembly mesh) and keep each polygon's inner index (asmInner)
     var body = pb.body, multi = body.polygons.some(function (p) { return p.body; });
-    if (multi) body = CSG.fromPolygons(body.polygons.map(function (p) { var q = p.clone(); q.asmInner = p.body || 0; return q; }));
+    if (multi) body = CSG.fromPolygons(body.polygons.map(function (p) { var q = p.clone(); q.asmInner = p.body || 0; if (q.part == null) q.part = q.asmInner; return q; }));   // r10: a multibody part's bodies apart (Assembly partBody)
     var mesh = K.meshFromBody(body), out = { mesh: mesh, edges: K.bodyEdges(mesh), curves: null, normals: null };
     // the inner body an edge bounds (a Flexible sub-assembly's pose moves it with that body): the one of a face holding
     // a single inner body, else (two merged faces) the polygon whose side it lies on

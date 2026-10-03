@@ -100,8 +100,8 @@ var CSG = (function () {
           }
           // fragments remember the polygon they came from (`_src`, see restoreWhole)
           // fragments also inherit the analytic surface record (`surf`) of the face they were cut from
-          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; pf.surf = polygon.surf; if (polygon.face != null) pf.face = polygon.face; front.push(pf); } }
-          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; pb.surf = polygon.surf; if (polygon.face != null) pb.face = polygon.face; back.push(pb); } }
+          if (f.length >= 3) { var pf = Polygon.tryCreate(f, polygon.shared); if (pf) { pf._src = polygon._src; pf.surf = polygon.surf; if (polygon.face != null) pf.face = polygon.face; if (polygon.part != null) pf.part = polygon.part; front.push(pf); } }
+          if (b.length >= 3) { var pb = Polygon.tryCreate(b, polygon.shared); if (pb) { pb._src = polygon._src; pb.surf = polygon.surf; if (polygon.face != null) pb.face = polygon.face; if (polygon.part != null) pb.part = polygon.part; back.push(pb); } }
           break;
       }
     }
@@ -111,6 +111,8 @@ var CSG = (function () {
   // "true curves"); null for planar faces. Splits, clones, transforms and pack / unpack carry it.
   // `face` (optional): the B-rep face a polygon belongs to when the solid came from OpenCascade (ui-occt.js); splits,
   // clones and transforms carry it, and meshing never merges polygons of different faces.
+  // `part` (optional, r10/asmfaces10): the part a polygon belongs to inside an assembly body (assembly.js tags each
+  // placed component); splits, clones, transforms and pack / unpack carry it, and meshing never merges across parts.
   function Polygon(vertices, shared, plane) {
     this.vertices = vertices;
     this.shared = shared;
@@ -129,6 +131,7 @@ var CSG = (function () {
       p.surf = this.surf;
       if (this._bs) p._bs = this._bs;
       if (this.face != null) p.face = this.face;
+      if (this.part != null) p.part = this.part;
       return p;
     },
     flip: function () {
@@ -638,7 +641,7 @@ var CSG = (function () {
         var vs = p.vertices.map(function (v) { return new Vertex(fn(v.pos)); });
         if (flip) vs.reverse();
         var np = Polygon.tryCreate(vs, p.shared);
-        if (np) { if (p.surf) np.surf = mapSurf(p.surf, fn, flip, memo); if (p.face != null) np.face = p.face; out.push(np); }
+        if (np) { if (p.surf) np.surf = mapSurf(p.surf, fn, flip, memo); if (p.face != null) np.face = p.face; if (p.part != null) np.part = p.part; out.push(np); }
       }
       for (var m = 0; m < memo.length; m++) delete memo[m]._m;
       return CSG.fromPolygons(out);
@@ -722,7 +725,7 @@ var CSG = (function () {
     var polys = this.polygons, P = polys.length, V = 0, i, j;
     for (i = 0; i < P; i++) V += polys[i].vertices.length;
     var verts = new Float64Array(3 * V), counts = new Int32Array(P), planes = new Float64Array(4 * P);
-    var shared = null, k = 0, surfs = null, surfIdx = null, faces = null;
+    var shared = null, k = 0, surfs = null, surfIdx = null, faces = null, parts = null;
     for (i = 0; i < P; i++) {
       var p = polys[i], vs = p.vertices;
       if (p.surf) {
@@ -731,6 +734,7 @@ var CSG = (function () {
         surfIdx[i] = p.surf._pk;
       }
       if (p.face != null) { if (!faces) { faces = new Int32Array(P); for (j = 0; j < P; j++) faces[j] = -1; } faces[i] = p.face; }
+      if (p.part != null) { if (!parts) { parts = new Int32Array(P); for (j = 0; j < P; j++) parts[j] = -1; } parts[i] = p.part; }
       counts[i] = vs.length;
       for (j = 0; j < vs.length; j++) {
         var q = vs[j].pos;
@@ -745,6 +749,7 @@ var CSG = (function () {
     var out = { verts: verts, counts: counts, planes: planes, shared: shared };
     if (surfs) { for (i = 0; i < surfs.length; i++) delete surfs[i]._pk; out.surfs = surfs; out.surfIdx = surfIdx; }
     if (faces) out.faces = faces;   // B-rep face tags of an OpenCascade solid (r3/engine3: occt-worker.js packs its bodies)
+    if (parts) out.parts = parts;   // assembly part tags (r10/asmfaces10)
     return out;
   };
   CSG.unpack = function (obj) {
@@ -757,6 +762,7 @@ var CSG = (function () {
       var np = new Polygon(vs, shared ? shared[i] : undefined, plane);
       if (obj.surfIdx && obj.surfIdx[i] >= 0) np.surf = obj.surfs[obj.surfIdx[i]];
       if (obj.faces && obj.faces[i] >= 0) np.face = obj.faces[i];
+      if (obj.parts && obj.parts[i] >= 0) np.part = obj.parts[i];
       polys.push(np);
     }
     return CSG.fromPolygons(polys);
@@ -767,6 +773,7 @@ var CSG = (function () {
     var out = [packed.verts.buffer, packed.counts.buffer, packed.planes.buffer];
     if (packed.surfIdx) out.push(packed.surfIdx.buffer);
     if (packed.faces) out.push(packed.faces.buffer);
+    if (packed.parts) out.push(packed.parts.buffer);
     return out;
   };
 

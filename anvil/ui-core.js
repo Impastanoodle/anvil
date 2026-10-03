@@ -732,6 +732,8 @@ var UI = (function () {
       if (e.faces.length !== 2) return;
       var A = faceSurfs[e.faces[0]], B = faceSurfs[e.faces[1]];
       if (!A || !B) return;
+      var fa = m.faces[e.faces[0]], fb = m.faces[e.faces[1]];
+      if ((fa.body || 0) !== (fb.body || 0) || fa.part !== fb.part) return;   // r10/asmfaces10: a seam is inside one body / part
       for (var k in A) if (B[k]) { e.seam = true; e.smooth = true; return; }
     });
     if (info) list = info.curves;
@@ -915,7 +917,7 @@ var UI = (function () {
     mesh.faces.forEach(function (f, i) {
       var p = f.polys && f.polys[0], k = wc ? wc.key0[i] : p && keyOf.get(p);
       if (k == null) { of[i] = [i]; return; }
-      k += '|' + bodyOfFace(f);
+      k += '|' + bodyOfFace(f) + (f.part != null ? '|p' + f.part : '');   // r10/asmfaces10: one part's
       (byKey[k] = byKey[k] || []).push(i);
     });
     Object.keys(byKey).forEach(function (k) {
@@ -955,7 +957,7 @@ var UI = (function () {
         while (f && (f.type === 'lpattern' || f.type === 'cpattern' || f.type === 'mirror') && f.feature != null && guard++ < 20) f = K.findFeature(App.model, f.feature);
         kindOf[id] = f && FREEFORM[f.type] ? true : false;
       }
-      return kindOf[id] ? id + '|' + bodyOfFace(mesh.faces[i]) : null;
+      return kindOf[id] ? id + '|' + bodyOfFace(mesh.faces[i]) + '|' + mesh.faces[i].part : null;
     }
     var parent = {};
     function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
