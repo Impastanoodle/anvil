@@ -130,6 +130,9 @@
       if (d < bestD) { bestD = d; best = p; }
     });
     if (best) return [best[0], best[1]];
+    // on an existing line / circle / arc (SolidWorks' "on entity" snap; the solver infers a Coincident there)
+    var onCurve = curveSnap(f, pl, scr, 6);
+    if (onCurve) return onCurve;
     // axis alignment with the previous point
     var prev = App.toolState.pts[App.toolState.pts.length - 1];
     if (prev) {
@@ -138,6 +141,32 @@
       if (Math.abs(s0[1] - scr[1]) < 6) out[1] = prev[1];
     }
     return out;
+  }
+
+  // The nearest point on a line, circle or arc of sketch f within tolPx screen pixels of scr, or null.
+  function curveSnap(f, pl, scr, tolPx) {
+    var best = null, bestD = tolPx;
+    function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
+    f.entities.forEach(function (e) {
+      if (e.t === 'line') {
+        var a = S([e.x1, e.y1]), b = S([e.x2, e.y2]), dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        if (L2 < 1) return;
+        var t = ((scr[0] - a[0]) * dx + (scr[1] - a[1]) * dy) / L2;
+        if (t <= 0 || t >= 1) return;
+        var d = Math.hypot(scr[0] - (a[0] + t * dx), scr[1] - (a[1] + t * dy));
+        if (d < bestD) { bestD = d; best = [e.x1 + t * (e.x2 - e.x1), e.y1 + t * (e.y2 - e.y1)]; }
+      } else if (e.t === 'circle' || e.t === 'arc') {
+        var c = UI.screenToPlane(scr[0], scr[1], pl);
+        if (!c) return;
+        var vx = c[0] - e.cx, vy = c[1] - e.cy, r = Math.hypot(vx, vy);
+        if (r < 1e-12) return;
+        var ang = Math.atan2(vy, vx) * 180 / Math.PI;
+        if (e.t === 'arc') { var rel = ((ang - e.a0) % 360 + 360) % 360; if (rel > ((e.a1 - e.a0) % 360 + 360) % 360 && e.a1 - e.a0 < 360) return; }
+        var q = [e.cx + vx / r * e.r, e.cy + vy / r * e.r], s = S(q), dd = Math.hypot(s[0] - scr[0], s[1] - scr[1]);
+        if (dd < bestD) { bestD = dd; best = q; }
+      }
+    });
+    return best;
   }
 
   function toolEntities(pts, cur) {
@@ -207,7 +236,11 @@
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
     var p = snap(raw);
     var st = App.toolState;
-    if (App.tool === 'line' && st.pts.length && Math.abs(p[0] - st.pts[0][0]) < 1e-9 && Math.abs(p[1] - st.pts[0][1]) < 1e-9 && st.chainStart) {
+    // a second click on the point just placed (the first half of a double-click) adds nothing: no zero-length lines
+    var lastPt = st.pts[st.pts.length - 1];
+    if (lastPt && Math.abs(p[0] - lastPt[0]) < 1e-9 && Math.abs(p[1] - lastPt[1]) < 1e-9) return;
+    // clicking the chain's first point closes the loop and ends the chain (the Line tool stays active)
+    if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
       addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0]);
       cancelTool(true);
       return;
@@ -684,8 +717,15 @@
     }
   });
 
+  // Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and the tool stays active
+  // for the next one; with nothing in progress the tool is put down.
   function finishChain() {
-    if (App.tool !== 'select') { cancelTool(); }
+    if (App.tool === 'select') return;
+    var st = App.toolState || {};
+    if ((st.pts && st.pts.length) || st.dim || st.relDim) {
+      cancelTool(true);
+      UI.setStatus('Chain ended. Click to start a new ' + (App.tool === 'line' ? 'line' : 'entity') + ', or press Esc to put the tool down.');
+    } else cancelTool();
   }
 
   viewport.addEventListener('wheel', function (ev) {
@@ -733,6 +773,28 @@
     var a = ev.touches[0], b = ev.touches[1];
     return { cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2, d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) };
   }
+
+  // ------------------------------------------------------------------ undo inside a sketch
+  // Every sketch edit calls `if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }`. The flag means "this
+  // user action already has its undo point": it is cleared at the start of every mouse press and every key press that
+  // is not typing into a field, so each line segment, dimension, relation, drag, trim or delete is its own Ctrl+Z step
+  // (as in SolidWorks), while one action that edits several things (a box-selection Delete, a drag) stays one step.
+  document.addEventListener('mousedown', function () { if (App.mode === 'sketch') App.sketchDirty = false; }, true);
+  document.addEventListener('keydown', function (ev) {
+    if (App.mode !== 'sketch') return;
+    var tag = (ev.target && ev.target.tagName || '').toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') App.sketchDirty = false;
+  }, true);
+  // Undo / redo in a sketch drop the half-drawn entity (its points may belong to geometry that is going away) but keep
+  // the tool, and leave the sketch open.
+  ['undo', 'redo'].forEach(function (name) {
+    var base = UI[name];
+    if (!base) return;
+    UI[name] = function () {
+      if (App.mode === 'sketch') { cancelTool(true); App.sketchDirty = false; if (dimEditing) closeDimEdit(false); }
+      return base.apply(this, arguments);
+    };
+  });
 
   UI.enterSketch = enterSketch;
   UI.exitSketch = exitSketch;
