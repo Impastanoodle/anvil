@@ -1087,6 +1087,10 @@
     closePM();
     App.sketchSnapshot = JSON.stringify({ entities: f.entities, dims: f.dims || [], rels: f.rels || null });
     UI.enterSketch(id);
+    // r10/editpreview10: Edit Sketch rolls the part back to just before the sketch, as in SolidWorks (the rebuild on
+    // exit shows the whole part again)
+    var idx = App.model.features.indexOf(f);
+    if (App.mode === 'sketch' && App.activeSketch === id && idx >= 0 && idx < App.model.features.length - 1 && UI.rollbackTo) UI.rollbackTo(idx);
   }
 
   // ------------------------------------------------------------------ extrude / cut

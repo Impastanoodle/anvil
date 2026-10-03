@@ -555,7 +555,9 @@
     var err = errors[f.id], warn = warnings[f.id];
     var selected = App.sel && App.sel.kind === 'feature' && App.sel.id === f.id;
     var active = App.activeSketch === f.id;
-    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : ''), title: err || warn || featureTitle(f), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
+    // r10/editpreview10: features after the rollback point of an Edit Sketch / Edit Feature are greyed (SolidWorks)
+    var rolled = App.rollback != null && !active && App.model.features.indexOf(f) >= App.rollback;
+    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
     row.addEventListener('click', function (e) {
       // slow double-click (SolidWorks): a second, unhurried click on the name of the selected feature renames it;

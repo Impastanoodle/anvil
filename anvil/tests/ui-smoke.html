@@ -6725,6 +6725,32 @@
     near(rbVolume(), anvil.summary().volume, 1e-3, 'whole part shown');
     return 'extrude at ' + ei + ', plane at ' + pi;
   });
+  step('r10/editpreview10: Edit Sketch rolls the part back to just before the sketch (later features greyed in the FeatureManager); exiting the sketch shows the whole part again', async function () {
+    if (!anvil.workerOn()) return 'skipped: worker off';
+    var was = anvil.occt().on;
+    anvil.occt(false, { remember: false });
+    try {
+      await anvil.run(exByName('Funnel').code); await idle();
+      var sk = UI.App.model.features.filter(function (x) { return x.name === 'Sketch3'; })[0], idx = UI.App.model.features.indexOf(sk);
+      var vol0 = anvil.summary().volume;
+      UI.editFeature(sk);
+      assert(UI.App.mode === 'sketch' && UI.App.activeSketch === sk.id, 'editing Sketch3');
+      await rolledBackTo(idx);
+      assert(UI.App.rollback === idx, 'rolled back to ' + UI.App.rollback);
+      near(rbVolume(), prefixVolume(idx), 1e-3, 'shown part = the features before Sketch3');
+      var rolled = Array.prototype.map.call(D.querySelectorAll('#tree .ti.rolled .nm'), function (n) { return n.textContent; });
+      assert(rolled.indexOf('Spout') >= 0 && rolled.indexOf('Shell1') >= 0 && rolled.indexOf('Cone') < 0, 'greyed rows: ' + rolled.join(', '));
+      // a build applied while the rolled-back sketch is edited waits (no jump to the whole part mid-edit)
+      var rbBuild = UI.App.build;
+      UI.applyBuild(K.rebuild(JSON.parse(JSON.stringify(UI.App.model))), { noSave: true });
+      assert(UI.App.build === rbBuild && UI.App.rollback === idx, 'still rolled back');
+      await UI.exitSketch(); await idle();
+      assert(UI.App.rollback === null && UI.App.mode === 'part', 'rolled forward on exit');
+      near(rbVolume(), vol0, 1e-3, 'whole part after exit');
+      assert(!D.querySelector('#tree .ti.rolled'), 'no greyed rows after exit');
+      return 'Sketch3 at ' + idx + ': ' + prefixVolume(idx).toFixed(0) + ' mm³ shown while editing';
+    } finally { anvil.occt(was, { remember: false }); }
+  });
   // --- end r10/editpreview10 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

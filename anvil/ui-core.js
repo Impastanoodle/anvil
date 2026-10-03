@@ -1574,8 +1574,9 @@ var UI = (function () {
   function applyBuild(build, opts, msBefore) {
     opts = opts || {};
     // r10/editpreview10: while an Edit Feature shows the part rolled back, OpenCascade's solid of the whole part waits
-    // for the roll forward; any other build (the edit committed, an undo) ends the rollback
-    if (roll.active && opts.occt && !roll.committing) { roll.deferred = { build: build, opts: opts, ms: msBefore }; return App.build; }
+    // for the roll forward, and so does any build applied while a rolled-back sketch is being edited; any other build
+    // (the edit committed, the sketch exited, an undo) ends the rollback
+    if (roll.active && !roll.committing && (opts.occt || App.mode === 'sketch')) { roll.deferred = { build: build, opts: opts, ms: msBefore }; return App.build; }
     if (roll.active || roll.committing) clearRollback();
     var t0 = performance.now();
     App.build = build;
@@ -1859,6 +1860,7 @@ var UI = (function () {
     ['sel', 'sel2'].forEach(function (k) { var s = App[k]; if (s && (s.kind === 'face' || s.kind === 'edge' || s.kind === 'body')) App[k] = null; });
     App.hover = null;
     updateBodyMesh(); updateHighlights(); updatePlanes(); updateSketches();
+    if (UI.refreshTree && App.mode === 'sketch') UI.refreshTree();   // the tree shows (greyed) only outside a PropertyManager
     App.dimsStale = true;
     requestRender();
     App.rollbackMs = performance.now() - t0;
@@ -1876,6 +1878,7 @@ var UI = (function () {
     App.build = s.build; App.mesh = s.mesh; App.triShared = s.triShared; App.edges = s.edges; App.edgesMesh = s.edgesMesh;
     App.sel = s.sel; App.sel2 = s.sel2; App.hover = null;
     updateBodyMesh(); updateHighlights(); updatePlanes(); updateSketches();
+    if (UI.refreshTree) UI.refreshTree();
     App.dimsStale = true;
     requestRender();
     if (UI.onRollback) { try { UI.onRollback(false); } catch (e) { console.warn(e); } }
