@@ -4906,6 +4906,7 @@
   });
   step('r3/assembly3: assembly edges come from each part\'s cached edges (every edge Kernel.bodyEdges finds is there); the explode animation moves the drawn components (no rebuild per frame)', async function () {
     var A = UI.App, mine = UI.asmEdges(A.mesh), full = K.bodyEdges(A.mesh);
+    if (UI.annotateCurveEdges) UI.annotateCurveEdges(A.mesh, full);   // r4/asm4: asmEdges carries the seams of true curves (e.seam), so compare like with like
     assert(mine && mine.length, 'asmEdges gave edges');
     function key(p) { return p.map(function (x) { return Math.round(x * 1000); }).join(','); }
     var have = {};
@@ -5048,6 +5049,111 @@
     return 'zoom, live drag, ' + st.patched + ' layer patched, pre-highlight, fit';
   });
   // --- end r3/drawings3 ---
+  // --- r4/asm4 ---
+  // a plate with n pins in its holes (concentric + flush bottoms): the release-cost model of round 3
+  function r4pinsCode(n) {
+    var L = ['a.name("Pins' + n + '").units("mm");', 'var plate = a.insert({ script: \'p.name("Plate"); p.box(300, 60, 8); p.hole("Top", 10, -10, 8, { offset: 8 }); p.linearPattern({ dir: "x", spacing: 28, count: 10, dir2: "z", spacing2: 20, count2: 3 });\' }, { fixed: true });'];
+    for (var i = 0; i < n; i++) {
+      var x = 10 + 28 * (i % 10), z = 10 + 20 * Math.floor(i / 10);
+      L.push('var q' + i + ' = a.insert({ script: \'p.name("Pin"); p.cylinder(4, 20);\' }, { position: [' + (x + 3) + ', 15, ' + (z - 2) + '] });');
+      L.push('a.concentric({ component: q' + i + ', cylinder: [4, 10, 0] }, { component: plate, cylinder: [' + (x + 4) + ', 4, ' + z + '] });');
+      L.push('a.coincident({ component: q' + i + ', face: [1, 0, 1] }, { component: plate, face: [155, 0, 40] }, { alignment: "aligned" });');
+    }
+    return L.join('\n');
+  }
+  step('r4/asm4: an assembly rebuild places each part\'s cached seams, true curves and smooth normals (no curve search over the whole assembly); the drawn result matches the full search', async function () {
+    await anvil.run(r4pinsCode(10));
+    await idle();
+    var A = UI.App, m = A.mesh, cs = K.curveSurfaces, ce = K.curveEdges, calls = 0;
+    K.curveSurfaces = function () { calls++; return cs.apply(this, arguments); };
+    K.curveEdges = function () { calls++; return ce.apply(this, arguments); };
+    var t0 = performance.now();
+    try { UI.rebuild({ noSave: true }); } finally { K.curveSurfaces = cs; K.curveEdges = ce; }
+    var ms = performance.now() - t0;
+    m = A.mesh;
+    assert(calls === 0, 'curve search over the assembly mesh ran ' + calls + ' times');
+    var full = K.bodyEdges(m), curves = UI.annotateCurveEdges(m, full);
+    // per part: 30 holes x 2 rims + 10 pins x 2 ends (the search over the whole mesh merges a pin's bottom rim with its hole's)
+    assert(A.curves.length === 30 * 2 + 10 * 2 && curves.length <= A.curves.length, 'curves ' + A.curves.length + ' / ' + curves.length);
+    // every placed curve point lies on a curve of the full search
+    var off = 0;
+    A.curves.forEach(function (c) {
+      c.pts.forEach(function (p) {
+        var ok = curves.some(function (f) {
+          var C = f.curve, d = [p[0] - C.center[0], p[1] - C.center[1], p[2] - C.center[2]], h = d[0] * C.normal[0] + d[1] * C.normal[1] + d[2] * C.normal[2];
+          return Math.abs(h) < 1e-6 && Math.abs(Math.hypot(d[0] - h * C.normal[0], d[1] - h * C.normal[1], d[2] - h * C.normal[2]) - C.radius) < 1e-6;
+        });
+        if (!ok) off++;
+      });
+    });
+    assert(off === 0, off + ' curve points off the true curves');
+    // smooth normals: the same as working them out on the whole mesh
+    var mine = m.smoothNormals, keep = UI.asmNormals;
+    UI.asmNormals = null; m.smoothNormals = null;
+    var ref;
+    try { ref = UI.analyticNormals(m); } finally { UI.asmNormals = keep; m.smoothNormals = mine; }
+    var d = 0;
+    for (var i = 0; i < ref.length; i++) d = Math.max(d, Math.abs(ref[i] - mine[i]));
+    assert(d < 1e-5, 'normals differ by ' + d);
+    return 'rebuild ' + ms.toFixed(1) + ' ms, ' + A.curves.length + ' curves';
+  });
+  step('r4/asm4: dragging a part inside a Flexible sub-assembly poses it (no rebuild per frame, the drawn arm follows its flexState); one rebuild and one undo step on release', async function () {
+    var code = exByName('Hinged cover (sub-assemblies)').code.split('\n').filter(function (l) { return !/a\.angle/.test(l); }).join('\n');
+    await anvil.run(code);
+    await idle();
+    var A = UI.App, comps = anvil.components(), ri = comps.findIndex(function (c) { return c.name === 'Hinge<2>'; }), id = comps[ri].id, m = A.mesh;
+    var f = m.faces.filter(function (x) { return (x.body || 0) === ri; }).sort(function (a, b) { return b.centroid[1] - a.centroid[1]; })[0];   // the top of the standing arm
+    var s = UI.worldToScreen(f.centroid), h = UI.componentDragHook([s[0], s[1]], { button: 0 });
+    assert(h && h.component.name === 'Hinge<2>', 'drag hook on the flexible hinge');
+    var fs0 = JSON.stringify(W.Assembly.findComponent(A.model, id).flexState), undo0 = A.undo.length, vo = f.start * 9;
+    var v0 = [m.positions[vo], m.positions[vo + 1], m.positions[vo + 2]], rebuilds = 0, orig = UI.rebuild, build0 = A.build;
+    UI.rebuild = function () { rebuilds++; return orig.apply(this, arguments); };
+    try {
+      h.start();
+      for (var i = 1; i <= 4; i++) { h.move([s[0] - 15 * i, s[1] + 10 * i]); await r3frame(); }
+      await r3frame();
+      assert(UI.asmPose.active(), 'pose shown while dragging');
+      assert(rebuilds === 0 && A.build === build0, 'no rebuild during the drag (' + rebuilds + ')');
+      var c = W.Assembly.findComponent(A.model, id), fs = c.flexState, k = Object.keys(fs)[0];
+      assert(JSON.stringify(fs) !== fs0, 'the arm turned in context');
+      var rel0 = A.build.partBuilds[id].model.components.filter(function (x) { return String(x.id) === k; })[0].transform;
+      var T0 = W.Assembly.composeTransforms(A.build.model.components[ri].transform, rel0), T1 = W.Assembly.composeTransforms(c.transform, fs[k]);
+      var want = W.Assembly.transformPoint(T1, W.Assembly.inverseTransformPoint(T0, v0)), P = UI.getBodyMesh().geometry.getAttribute('position').array;
+      for (var j = 0; j < 3; j++) near(P[vo + j], want[j], 1e-3, 'drawn arm vertex follows the flexState [' + j + ']');
+      await h.end([s[0] - 60, s[1] + 40]);
+      await idle();
+    } finally { UI.rebuild = orig; }
+    assert(!UI.asmPose.active(), 'pose ended on release');
+    assert(rebuilds >= 1 && rebuilds <= 2, 'one rebuild on release (' + rebuilds + ')');
+    assert(A.undo.length === undo0 + 1, 'one undo step');
+    assert(JSON.stringify(W.Assembly.findComponent(A.model, id).flexState) !== fs0, 'flexState committed');
+    assert(anvil.mates().every(function (x) { return x.ok; }), 'mates hold');
+  });
+  step('r4/asm4: an ignored interference is saved in the assembly (model, script round trip, undo)', async function () {
+    await anvil.run(exByName('Interference check').code);
+    await idle();
+    UI.cmdInterference();
+    var s = UI.interferenceSession();
+    assert(s.results().pairs.length === 2, 'two interferences');
+    var undo0 = UI.App.undo.length;
+    s.ignore(0, true);
+    var saved = (UI.App.model.ignoredInterferences || []).slice();
+    assert(saved.length === 1 && UI.App.undo.length === undo0 + 1, 'saved in the model, one undo step: ' + JSON.stringify(saved));
+    assert(/a\.ignoreInterference\(/.test(anvil.script()), 'in the script');
+    UI.pmCancel();
+    await anvil.run(anvil.script());
+    await idle();
+    assert(JSON.stringify(UI.App.model.ignoredInterferences) === JSON.stringify(saved), 'script round trip: ' + JSON.stringify(UI.App.model.ignoredInterferences));
+    UI.cmdInterference();
+    s = UI.interferenceSession();
+    assert(s.results().pairs.filter(function (p) { return p.ignored; }).length === 1 && / 1 ignored\./.test(D.querySelector('#pm .pm-msg').textContent), 'still ignored after reopening');
+    s.ignore(s.results().pairs.findIndex(function (p) { return p.ignored; }), false);
+    assert(!UI.App.model.ignoredInterferences, 'un-ignored');
+    UI.pmCancel();
+    await UI.undo(); await idle();
+    assert(JSON.stringify(UI.App.model.ignoredInterferences) === JSON.stringify(saved), 'undo brings it back');
+  });
+  // --- end r4/asm4 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();

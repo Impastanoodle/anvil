@@ -2242,8 +2242,8 @@
       return m;
     }
     // r3/assembly3: solve the placements only and move what the viewport already shows (UI.asmPose); one rebuild on
-    // release. A Flexible sub-assembly changes shape as it moves, so it takes the full rebuild per frame.
-    var fast = !!UI.asmPose && dragId === id && !(App.model.components || []).some(function (x) { return x.flexible; });
+    // release. A Flexible sub-assembly changes shape as it moves: its inner components are posed one by one.
+    var fast = !!UI.asmPose;   // r4/asm4: Flexible sub-assemblies too (their inner components are posed by flexState)
     function show() {
       raf = 0;
       if (!last) return;

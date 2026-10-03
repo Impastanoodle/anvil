@@ -1817,7 +1817,7 @@ var Assembly = (function () {
   // finishVirtual: carry a solve of the virtual model back to the real one — solved Flexible positions into
   // c.flexState (inner transforms relative to the sub-assembly), a per-instance build for each Flexible sub-assembly
   // (partBuilds), statuses for the real components only, and warnings for mates left out.
-  function finishVirtual(ctx, sol, model, partBuilds, warnings) {
+  function finishVirtual(ctx, sol, model, partBuilds, warnings, poseOnly) {
     ctx.copies.forEach(function (x) { if (x.copy.phase && !x.mate.phase) x.mate.phase = x.copy.phase.slice(); });
     var byId = {};
     sol.components.forEach(function (co) { byId[co.id] = co; });
@@ -1847,6 +1847,7 @@ var Assembly = (function () {
       var sb = {};
       Object.keys(e.build).forEach(function (q) { sb[q] = e.build[q]; });
       sb.components = comps; sb.mates = mates;
+      if (poseOnly) return;   // r4/asm4: a pose (drag frame) needs flexState only, not the composed body
       partBuilds[c.id] = composeSub(sm, sb);
       partBuilds[c.id].flexible = true;
     });
@@ -1899,7 +1900,7 @@ var Assembly = (function () {
       sol = solve(SM, SB, opts.drag ? { drag: opts.drag, quick: !!opts.quick } : null);
       patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr);
       if (instanceMates()) { sol = solve(SM, SB, opts.drag ? { drag: opts.drag, quick: !!opts.quick } : null); patErr = {}; patOut = placeInstances(SM, SB, sol.transforms, patErr); }
-      if (ctx) finishVirtual(ctx, sol, model, partBuilds, warnings);
+      if (ctx) finishVirtual(ctx, sol, model, partBuilds, warnings, !!opts.poseOnly);
     } catch (e) {
       sol = { transforms: {}, mates: {}, components: model.components.map(function (c, i) { return { id: c.id, name: c.name, index: i, fixed: !!c.fixed, dof: c.fixed ? 0 : 6, underDefined: !c.fixed, error: null }; }) };
       model.components.forEach(function (c) { sol.transforms[c.id] = tf(c.transform); });
@@ -2336,6 +2337,22 @@ var Assembly = (function () {
   Builder.prototype.flexible = function (c, on) { setFlexible(this.model, compId(this.model, c), on !== false); return this; };
   Builder.prototype.fix = function (c) { setFixed(this.model, compId(this.model, c), true); return this; };
   Builder.prototype.float = function (c) { setFixed(this.model, compId(this.model, c), false); return this; };
+  // r4/asm4: Interference Detection results ignored by the user are saved with the assembly (SolidWorks keeps them in
+  // the document): model.ignoredInterferences = ['A<1>|B<1>' (names sorted), + '#c' for a coincidence]
+  function interferenceKey(a, b, coincident) { return [String(a), String(b)].sort().join('|') + (coincident ? '#c' : ''); }
+  function setInterferenceIgnored(model, key, on) {
+    var list = (model.ignoredInterferences || []).filter(function (k) { return k !== key; });
+    if (on) list.push(String(key));
+    if (list.length) model.ignoredInterferences = list; else delete model.ignoredInterferences;
+    return list;
+  }
+  // ignoreInterference(a, b, { coincident }): a and b are components (ids, names) or body names ('Part<1>/Body2')
+  Builder.prototype.ignoreInterference = function (a, b, opts) {
+    var model = this.model;
+    function nm(x) { var c = typeof x === 'number' ? findComponent(model, x) : null; return c ? c.name : String(x); }
+    setInterferenceIgnored(model, interferenceKey(nm(a), nm(b), opts && opts.coincident), true);
+    return this;
+  };
 
   function runScript(model, code) {
     var b = new Builder(model);
@@ -2420,6 +2437,10 @@ var Assembly = (function () {
     });
     var xv = model.exploded != null ? findExplodedView(model, model.exploded) : null;
     if (xv && (xv.steps || []).length) out.push('a.exploded(' + JSON.stringify(xv.name) + ');');
+    (model.ignoredInterferences || []).forEach(function (k) {   // r4/asm4
+      var co = /#c$/.test(k), ab = String(k).replace(/#c$/, '').split('|');
+      out.push('a.ignoreInterference(' + JSON.stringify(ab[0]) + ', ' + JSON.stringify(ab.slice(1).join('|')) + (co ? ', { coincident: true }' : '') + ');');
+    });
     return out.join('\n') + '\n';
   }
 
@@ -2440,7 +2461,7 @@ var Assembly = (function () {
     explodedBodies: explodedBodies, explodeDir: explodeDir,
     Documents: Documents, documents: Documents, resolveSource: resolveSource, references: references, saveReferences: saveReferences,
     packAndGo: packAndGo, setFlexible: setFlexible, isSubAssemblySource: isSubAssemblySource, bom: bom, leafBodies: leafBodies,
-    composeTransforms: composeT, relativeTransform: relativeT,
+    composeTransforms: composeT, relativeTransform: relativeT, interferenceKey: interferenceKey, setInterferenceIgnored: setInterferenceIgnored,
     findCylinder: function (build, p) { var g = partGeom(build); return g ? findCylinder(g, p) : null; }
   };
 })();

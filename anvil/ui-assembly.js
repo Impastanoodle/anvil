@@ -349,14 +349,56 @@
     var T = c && c.transform || {}, R = T.rotation || AS.IDENTITY, P = T.position || [0, 0, 0], o = offs && c ? offs[c.id] : null;
     return { R: R, P: o ? [P[0] + o[0], P[1] + o[1], P[2] + o[2]] : P };
   }
+  // a placement {R, P} followed by a relative one {R, P} (an inner component of a sub-assembly): A · B
+  function composePl(A, B) {
+    var a = A.R, b = B.R, R = new Array(9), r, k;
+    for (r = 0; r < 3; r++) for (k = 0; k < 3; k++) R[r * 3 + k] = a[r * 3] * b[k] + a[r * 3 + 1] * b[3 + k] + a[r * 3 + 2] * b[6 + k];
+    var p = B.P;
+    return { R: R, P: [a[0] * p[0] + a[1] * p[1] + a[2] * p[2] + A.P[0], a[3] * p[0] + a[4] * p[1] + a[5] * p[2] + A.P[1], a[6] * p[0] + a[7] * p[1] + a[8] * p[2] + A.P[2]] };
+  }
+  // where slot s of a pose is placed in `model` (an inner component of a Flexible sub-assembly by its flexState)
+  function slotPlace(s, offs, c) {
+    var n = placeOf(c, offs);
+    if (s.inner == null) return n;
+    var fs = c.flexState && c.flexState[s.inner];
+    return composePl(n, fs ? placeOf({ transform: fs }, null) : s.rel);
+  }
   function poseBegin() {
     var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
     if (!isAsm() || !bm || !m || !m.triCount || !App.build || !App.build.assembly || !UI.groups) return null;
     var comps = App.model.components || [], offs = App.build.explode && App.build.explode.offsets;
     var g = bm.geometry, pa = g.getAttribute('position'), na = g.getAttribute('normal');
-    var vb = new Int32Array(m.triCount * 3);
-    m.faces.forEach(function (f) { for (var t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
-    var st = { bm: bm, mesh: m, base: comps.map(function (c) { return drawnAt && drawnAt.mesh === m && drawnAt.pl[c.id] ? drawnAt.pl[c.id] : placeOf(c, offs); }), ids: comps.map(function (c) { return c.id; }),
+    var vb = new Int32Array(m.triCount * 3), t;
+    // r4/asm4: a slot per moving piece: each component, and each inner component of a Flexible sub-assembly (which
+    // changes shape as it moves: its inner components are placed by the new flexState, no rebuild per frame)
+    var slots = comps.map(function (c) { return { id: c.id, inner: null }; }), flexAt = {};
+    m.faces.forEach(function (f) { for (t = f.start * 3; t < (f.start + f.count) * 3; t++) vb[t] = f.body || 0; });
+    if (comps.some(function (c) { return c.flexible; })) {
+      var parts = meshParts(m);
+      if (!parts) return null;
+      parts.forEach(function (p) {
+        var sb = App.build.partBuilds[p.c.id];
+        if (!p.c.flexible || !sb || !sb.flexible || !sb.model) return;
+        var at = flexAt[p.c.id] = {}, lf = p.pe.mesh.faces, ci = comps.indexOf(p.c);
+        function slotOf(ki) {
+          var ic = sb.model.components[ki];
+          if (!ic) return ci;
+          if (at[ki] == null) { at[ki] = slots.length; slots.push({ id: p.c.id, inner: ic.id, rel: placeOf(ic, null), of: ci }); }
+          return at[ki];
+        }
+        for (var k = 0; k < lf.length; k++) {
+          var tt = m.faces[p.idx[k]].start;
+          lf[k].polys.forEach(function (poly) {
+            var s = slotOf(poly.asmInner || 0), nt = Math.max(0, poly.vertices.length - 2);
+            for (var j = tt * 3; j < (tt + nt) * 3; j++) vb[j] = s;
+            tt += nt;
+          });
+        }
+      });
+    }
+    var base0 = comps.map(function (c) { return drawnAt && drawnAt.mesh === m && drawnAt.pl[c.id] ? drawnAt.pl[c.id] : placeOf(c, offs); });
+    var st = { bm: bm, mesh: m, slots: slots,
+      base: slots.map(function (s, i) { return s.inner == null ? base0[i] : composePl(base0[s.of], s.rel); }), ids: comps.map(function (c) { return c.id; }),
       origPos: pa, origNorm: na, pos0: new Float32Array(pa.array), norm0: na ? new Float32Array(na.array) : null, vb: vb, hidden: [] };
     st.pos = new THREE.BufferAttribute(new Float32Array(st.pos0), 3);
     st.norm = na ? new THREE.BufferAttribute(new Float32Array(st.norm0), 3) : null;
@@ -369,7 +411,10 @@
       if (o.userData && o.userData.silhouette) silMat = o.material; else { edgeMat = o.material; linesOn = o.visible; }
       st.hidden.push([o, o.visible]); o.visible = false;
     });
-    function bodyOfEdge(e) { var f = faces[e.faces[0]]; return f ? f.body || 0 : 0; }
+    function bodyOfEdge(e) {   // its slot (r4/asm4: an inner component of a Flexible sub-assembly by e.inner)
+      var f = faces[e.faces[0]], b = f ? f.body || 0 : 0, c = comps[b], at = c && flexAt[c.id];
+      return at && e.inner != null && at[e.inner] != null ? at[e.inner] : b;
+    }
     function shown(e) { for (var i = 0; i < e.faces.length; i++) { var f = faces[e.faces[i]]; if (f && !(UI.isBodyHidden && UI.isBodyHidden(f.body || 0))) return true; } return false; }
     edges.forEach(function (e) {
       if (!e.faces || !e.faces.length || !shown(e)) return;
@@ -414,10 +459,10 @@
   // the delta of every component (R, t: x' = R x + t) from where it is drawn to its placement in `model`; null = still
   function poseDeltas(st, model, explode) {
     var offs = explode && explode.offsets, out = [], any = false;
-    st.ids.forEach(function (id, i) {
-      var c = AS.findComponent(model, id), b = st.base[i];
+    st.slots.forEach(function (s, i) {
+      var c = AS.findComponent(model, s.id), b = st.base[i];
       if (!c || !b) { out.push(null); return; }
-      var n = placeOf(c, offs), A = n.R, B = b.R, R = new Array(9), same = true, r, k;
+      var n = slotPlace(s, offs, c), A = n.R, B = b.R, R = new Array(9), same = true, r, k;
       for (r = 0; r < 3; r++) for (k = 0; k < 3; k++) R[r * 3 + k] = A[r * 3] * B[k * 3] + A[r * 3 + 1] * B[k * 3 + 1] + A[r * 3 + 2] * B[k * 3 + 2];   // A · Bᵀ
       var t = [n.P[0] - (R[0] * b.P[0] + R[1] * b.P[1] + R[2] * b.P[2]), n.P[1] - (R[3] * b.P[0] + R[4] * b.P[1] + R[5] * b.P[2]), n.P[2] - (R[6] * b.P[0] + R[7] * b.P[1] + R[8] * b.P[2])];
       for (k = 0; k < 9 && same; k++) if (Math.abs(R[k] - (k % 4 === 0 ? 1 : 0)) > 1e-12) same = false;
@@ -554,38 +599,123 @@
   // is most of a rebuild (160 ms on a plate with 30 pins); each part's edges are found once, on its own mesh (kept
   // with the part build), and placed like the component. ui-core.js edgesFor asks this first; null = the full search
   // (a component whose faces do not line up one to one with its part's, e.g. coplanar faces merged by rounding).
+  // r4/asm4: the part's seams, true curves (UI.annotateCurveEdges) and smooth normals (UI.analyticNormals) are found
+  // once per part build too and only placed: the returned list carries .curves (App.curves for this mesh), and
+  // UI.asmNormals(m) gives the mesh's smooth normals; a drag release no longer searches the whole assembly for curves
+  // (30-pin plate: curveSurfaces + curveEdges + annotate + normals 35-45 ms -> a few ms).
   function ekey(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
   function partEdges(pb) {
     if (pb.__asmEdges) return pb.__asmEdges;
-    var mesh = K.meshFromBody(pb.body), out = { mesh: mesh, edges: K.bodyEdges(mesh) };
+    // r4/asm4: a sub-assembly (or multibody part) is one body in the assembly mesh, so its coplanar faces of different
+    // inner bodies merge there; mesh it the same way (body tags dropped) and keep each polygon's inner index (asmInner)
+    var body = pb.body, multi = body.polygons.some(function (p) { return p.body; });
+    if (multi) body = CSG.fromPolygons(body.polygons.map(function (p) { var q = p.clone(); q.asmInner = p.body || 0; return q; }));
+    var mesh = K.meshFromBody(body), out = { mesh: mesh, edges: K.bodyEdges(mesh), curves: null, normals: null };
+    // the inner body an edge bounds (a Flexible sub-assembly's pose moves it with that body): the one of a face holding
+    // a single inner body, else (two merged faces) the polygon whose side it lies on
+    var faceInner = multi ? mesh.faces.map(function (f) { var v = f.polys[0].asmInner; for (var j = 1; j < f.polys.length; j++) if (f.polys[j].asmInner !== v) return -1; return v; }) : null;
+    if (multi) out.edges.forEach(function (e) {
+      for (var f = 0; f < e.faces.length && e.inner == null; f++) if (faceInner[e.faces[f]] >= 0) e.inner = faceInner[e.faces[f]];
+      for (var i = 0; i < e.faces.length && e.inner == null; i++) {
+        var ps = mesh.faces[e.faces[i]].polys;
+        for (var j = 0; j < ps.length && e.inner == null; j++) {
+          var vs = ps[j].vertices;
+          for (var k = 0; k < vs.length; k++) {
+            var a = vs[k].pos, b = vs[(k + 1) % vs.length].pos;
+            if (K.pointSegmentDistance(e.mid, [a.x, a.y, a.z], [b.x, b.y, b.z]) < 1e-6) { e.inner = ps[j].asmInner; break; }
+          }
+        }
+      }
+    });
+    // an OpenCascade part: edges inside one B-rep face are seams (as ui-core.js edgesFor marks them)
+    var f0 = mesh.faces[0];
+    if (f0 && f0.polys && f0.polys[0] && f0.polys[0].face != null) {
+      out.edges.forEach(function (e) {
+        if (e.faces.length !== 2) return;
+        var a = mesh.faces[e.faces[0]].polys[0].face, b = mesh.faces[e.faces[1]].polys[0].face;
+        if (a != null && a === b) { e.seam = true; e.smooth = true; }
+      });
+    }
+    try { out.curves = UI.annotateCurveEdges ? UI.annotateCurveEdges(mesh, out.edges) : null; } catch (e) { out.curves = null; }
+    try { out.normals = UI.analyticNormals ? UI.analyticNormals(mesh) : null; } catch (e) { out.normals = null; }
     try { Object.defineProperty(pb, '__asmEdges', { value: out, enumerable: false, configurable: true, writable: true }); } catch (e) { }
     return out;
   }
   var K = window.Kernel;
-  UI.asmEdges = function (m) {
+  function setHidden(o, k, v) { try { Object.defineProperty(o, k, { value: v, enumerable: false, configurable: true, writable: true }); } catch (e) { o[k] = v; } }
+  // the parts of mesh m (App.mesh of the assembly build): [{ c, pe, idx (world face indices), R, P }], or null when a
+  // component's faces do not line up one to one with its part mesh's
+  function meshParts(m) {
     var b = App.build;
     if (!isAsm() || !b || !b.assembly || !b.partBuilds || !m || m !== App.mesh || !K || !K.bodyEdges) return null;
-    var comps = App.model.components || [], offs = b.explode && b.explode.offsets, byBody = comps.map(function () { return []; }), list = [];
+    if (m.__asmParts !== undefined) return m.__asmParts;
+    var comps = App.model.components || [], offs = b.explode && b.explode.offsets, byBody = comps.map(function () { return []; }), out = [];
+    setHidden(m, '__asmParts', null);
     for (var fi = 0; fi < m.faces.length; fi++) { var bi = m.faces[fi].body || 0; if (!byBody[bi]) return null; byBody[bi].push(fi); }
     for (var i = 0; i < comps.length; i++) {
       var c = comps[i], pb = b.partBuilds[c.id], idx = byBody[i];
       if (!idx.length) continue;
       if (!pb || !pb.body) return null;
-      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R, P = pl.P;
+      var pe = partEdges(pb), lf = pe.mesh.faces, pl = placeOf(c, offs), R = pl.R;
       if (lf.length !== idx.length) return null;
+      for (var k = 0; k < lf.length; k++) {
+        var wf = m.faces[idx[k]], v = lf[k].normal, n = [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
+        if (wf.polys.length !== lf[k].polys.length || wf.count !== lf[k].count || Math.abs(n[0] - wf.normal[0]) + Math.abs(n[1] - wf.normal[1]) + Math.abs(n[2] - wf.normal[2]) > 1e-6) return null;
+        // the same corners in the same order (a mirrored instance whose triangles were turned over is not)
+        var ws = wf.start * 9, ls = lf[k].start * 9, lp = pe.mesh.positions, wp = m.positions, P = pl.P;
+        for (var q = 0; q < 9 && wf.count; q += 3) {
+          var x = lp[ls + q], y = lp[ls + q + 1], z = lp[ls + q + 2];
+          if (Math.abs(R[0] * x + R[1] * y + R[2] * z + P[0] - wp[ws + q]) + Math.abs(R[3] * x + R[4] * y + R[5] * z + P[1] - wp[ws + q + 1]) + Math.abs(R[6] * x + R[7] * y + R[8] * z + P[2] - wp[ws + q + 2]) > 1e-3) return null;
+        }
+      }
+      out.push({ c: c, pe: pe, idx: idx, R: R, P: pl.P });
+    }
+    setHidden(m, '__asmParts', out);
+    return out;
+  }
+  UI.asmEdges = function (m) {
+    var parts = meshParts(m);
+    if (!parts) return null;
+    var list = [], curves = [], curvesOk = true;
+    parts.forEach(function (p) {
+      var pe = p.pe, idx = p.idx, R = p.R, P = p.P, c0 = curves.length;
       var rot = function (v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; };
       var pt = function (v) { var r = rot(v); return [r[0] + P[0], r[1] + P[1], r[2] + P[2]]; };
-      for (var k = 0; k < lf.length; k++) {
-        var wf = m.faces[idx[k]], n = rot(lf[k].normal);
-        if (wf.polys.length !== lf[k].polys.length || Math.abs(n[0] - wf.normal[0]) + Math.abs(n[1] - wf.normal[1]) + Math.abs(n[2] - wf.normal[2]) > 1e-6) return null;
-      }
+      if (!pe.curves) curvesOk = false;
+      else pe.curves.forEach(function (cv) {
+        var C = cv.curve;
+        curves.push({ curve: { center: pt(C.center), normal: rot(C.normal), xdir: rot(C.xdir), radius: C.radius, a0: C.a0, a1: C.a1, chords: (C.chords || []).map(function (ch) { return [pt(ch[0]), pt(ch[1])]; }) },
+          pts: cv.pts.map(pt), edges: [] });
+      });
       pe.edges.forEach(function (e) {
         var a = pt(e.a), bb = pt(e.b), o = { a: a, b: bb, ka: ekey(a), kb: ekey(bb), faces: e.faces.map(function (f) { return idx[f]; }), normals: e.normals.map(rot), ins: (e.ins || []).map(rot),
           mid: pt(e.mid), len: e.len, dir: rot(e.dir), smooth: e.smooth, convex: e.convex };
+        if (e.seam) o.seam = true;
+        if (e.inner != null) o.inner = e.inner;
+        if (e.curve != null && pe.curves) { o.curve = c0 + e.curve; curves[o.curve].edges.push(o); }
         list.push(o);
       });
-    }
+    });
+    if (curvesOk) list.curves = curves;
     return list;
+  };
+  // the smooth-shading normals of mesh m from its parts' (rotated), laid out like m.normals; null = work them out
+  UI.asmNormals = function (m) {
+    var parts = meshParts(m);
+    if (!parts || !m.normals) return null;
+    var out = new Float32Array(m.normals);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i], src = p.pe.normals, lf = p.pe.mesh.faces, R = p.R;
+      if (!src) return null;
+      for (var k = 0; k < lf.length; k++) {
+        var s = lf[k].start * 9, d = m.faces[p.idx[k]].start * 9, n = lf[k].count * 9;
+        for (var j = 0; j < n; j += 3) {
+          var x = src[s + j], y = src[s + j + 1], z = src[s + j + 2];
+          out[d + j] = R[0] * x + R[1] * y + R[2] * z; out[d + j + 1] = R[3] * x + R[4] * y + R[5] * z; out[d + j + 2] = R[6] * x + R[7] * y + R[8] * z;
+        }
+      }
+    }
+    return out;
   };
 
   // Explode / Collapse (display state, no undo step) and the explode animation (steps run one after another).

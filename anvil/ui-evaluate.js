@@ -615,10 +615,10 @@
   // components listed with 0 volume, "coincident"), Show ignored interferences (a result can be ignored from its row;
   // ignored ones drop out of the count and show greyed when this is on), Include multibody part interferences (the
   // bodies of one multi-body part checked against each other) and Ignore hidden bodies/components (on by default).
-  // Ignored results are remembered per assembly name for the session (they are not part of the model).
-  var intfIgnored = {};
+  // r4/asm4: ignored results are saved in the assembly (model.ignoredInterferences, Assembly.interferenceKey), so
+  // they survive a save / reopen and the script round trip (a.ignoreInterference); ignoring one is an undo step.
   function ignoreKey(p) { var n = [p.aName, p.bName].sort().join('|'); return n + (p.coincident ? '#c' : ''); }
-  function ignoredSet() { var k = (App.model && App.model.name) || ''; return intfIgnored[k] || (intfIgnored[k] = {}); }
+  function ignoredSet() { var o = {}; ((App.model && App.model.ignoredInterferences) || []).forEach(function (k) { o[k] = true; }); return o; }
   function intfVisible() { var res = intf.res; return !res ? [] : res.pairs.filter(function (p) { return !p.ignored || (intf.v && intf.v.showIgnored); }); }
   function intfRows() {
     var res = intf.res, u = UI.unitLabel();
@@ -703,8 +703,12 @@
   function setIgnored(i, on) {
     var p = intf.res && intf.res.pairs[i];
     if (!p) return false;
-    var ig = ignoredSet(), k = ignoreKey(p);
-    if (on) ig[k] = true; else delete ig[k];
+    var k = ignoreKey(p);
+    if (!!ignoredSet()[k] !== !!on && window.Assembly && Assembly.setInterferenceIgnored) {
+      if (UI.pushUndo) UI.pushUndo();
+      Assembly.setInterferenceIgnored(App.model, k, !!on);
+      if (UI.autosave) UI.autosave();
+    }
     intfCalculate();
     return true;
   }
