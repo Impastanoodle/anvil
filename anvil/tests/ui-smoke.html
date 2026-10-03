@@ -4383,6 +4383,19 @@
     UI.closeMenus();
     return 'ok';
   });
+  step('chrome: Esc with a context menu open closes only the menu; the PropertyManager stays', async function () {
+    await anvil.run('p.sketch("Front").rect(0, 0, 40, 20);');
+    UI.App.sel = { kind: 'feature', id: UI.App.model.features[0].id };
+    UI.cmdExtrude(false);
+    assert(UI.hasPM(), 'no PropertyManager');
+    UI.showMenu(300, 200, [{ label: 'Smoke item', action: function () { } }]);
+    assert(UI.menuOpen(), 'menu not open');
+    chromeKey(D, 'Escape');
+    assert(!UI.menuOpen() && UI.hasPM(), 'Esc closed the PropertyManager too (menu ' + UI.menuOpen() + ', PM ' + UI.hasPM() + ')');
+    chromeKey(D, 'Escape');
+    assert(!UI.hasPM(), 'second Esc did not cancel');
+    return 'ok';
+  });
   // --- end smooth/chrome ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

@@ -675,6 +675,9 @@
     if (anchorLi) anchorLi.classList.add('open');
   }
   document.addEventListener('mousedown', function (e) { if (openMenu && !openMenu.contains(e.target) && !(e.target.closest && e.target.closest('#menus'))) closeMenus(); });
+  // a menu left open would float over the wrong place once the window is resized: close it, as Windows menus do
+  window.addEventListener('resize', function () { if (openMenu) closeMenus(); });
+  function menuOpen() { return !!openMenu; }
 
   // UI.menuHook(menus) -> menus lets another document type (drawing.js) add or replace menu items
   function MENUS() { var m = partMenus(); return UI.menuHook ? UI.menuHook(m) : m; }
@@ -1231,7 +1234,7 @@
   UI.setStatus = setStatus; UI.toast = toast; UI.refreshStatus = refreshStatus;
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
-  UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu;
+  UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
   UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
   UI.refreshConfigPanel = refreshConfigPanel;

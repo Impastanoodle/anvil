@@ -771,6 +771,8 @@
     }
     if (e.key === 'Escape') {
       if (typing) { e.target.blur(); return; }
+      // Esc with a menu open only closes the menu (it does not also cancel the command or clear the selection)
+      if (UI.menuOpen && UI.menuOpen()) { UI.closeMenus(); return; }
       UI.closeMenus();
       if (App.zoomAreaMode) { App.zoomAreaMode = false; UI.refreshHud(); return; }
       if (App.mode === 'sketch' && App.tool !== 'select') { UI.cancelTool(); return; }
