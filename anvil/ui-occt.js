@@ -80,6 +80,17 @@
     });
     return out;
   }
+  // an Anvil part build's mesh, triangle features and volume, kept per build (r3/engine3): a part the assembly did not
+  // rebuild keeps its build object, so the swap after another edit does not mesh it and integrate its volume again
+  var anvilInfos = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function anvilInfo(b) {
+    var ai = anvilInfos && anvilInfos.get(b);
+    if (ai) return ai;
+    var mesh = K.meshFromBody(b.body);
+    ai = { mesh: mesh, volume: mesh.triCount ? K.massProps(mesh, 1).volume : 0, triShared: triSharedOf(mesh) };
+    if (anvilInfos) anvilInfos.set(b, ai);
+    return ai;
+  }
   function triSharedOf(mesh) {
     var out = new Int32Array(mesh.triCount);
     mesh.faces.forEach(function (f) { var t = f.start; f.polys.forEach(function (p) { for (var i = 0; i < p.vertices.length - 2; i++) out[t++] = p.shared == null ? -1 : p.shared; }); });
@@ -104,11 +115,11 @@
       if (r.error) { bad = { state: 'error', error: p.name + ': ' + r.error }; return; }
       if (r.unsupported) { bad = { state: 'unsupported', unsupported: r.unsupported + ' in ' + p.name }; return; }
       if (!r.valid) { bad = { state: 'invalid', error: p.name }; return; }
-      var mesh = K.meshFromBody(p.anvilBuild.body), av = mesh.triCount ? K.massProps(mesh, 1).volume : 0;
+      var ai = anvilInfo(p.anvilBuild), mesh = ai.mesh, av = ai.volume;
       var dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
       var bey = Object.keys(p.anvilBuild.errors || {}).filter(function (id) { return r.status[id] === 'ok'; });
       if (!r.mesh || (!bey.length && !(dv <= (r.tolerance || 1e-4)))) { bad = { state: 'mismatch', error: p.name + ': ' + r.volume.toFixed(3) + ' vs Anvil ' + av.toFixed(3) }; return; }
-      builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, triSharedOf(mesh), window.CSG, K);
+      builds[p.key] = OcctKernel.toBuild(r, p.anvilBuild, mesh, ai.triShared, window.CSG, K);
       faces += r.faces.length; volume += r.volume; ms.build += r.ms.build; ms.mesh += r.ms.mesh;
       bey.forEach(function (id) { beyond.push(p.name + ':' + id); });
     });
