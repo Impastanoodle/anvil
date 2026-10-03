@@ -1105,3 +1105,10 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 - **Sketcher** (`sketch-solver.js`, `ui-relations.js`, `ui-sketch.js`, Offset in `ui-commands.js`, Tools menu in `ui-panels.js`): Offset Entities adds driving offset dimensions (radial `dir: 'r'` for circles / arcs, parallel distance for lines; rectangles and polygons come out fully defined; lines and arcs can be offset; `SketchSolver.offsetDimensions`); Smart Dimension on concentric circles gives the radial distance; Tools ▸ Sketch Settings ▸ Enable on-screen numeric input on entity creation (off by default, `anvil.sketchNumericInput`) dimensions every entity drawn.
 
 **Verified (merged code on port 8812, pane visible).** kernel-tests 758/758, occt-tests 51/51, ui-smoke 229/229 twice.
+## Run local-2026-10-03e — Round 7 (short, two lanes): drawings, assemblies
+
+**Done.**
+- **Drawings** (`drawing.js`): script-added projected and detail views fit a full sheet like section views (`fit: true` default; a detail view never shrinks to its parent's scale and its name follows its final scale); `closeEnds()` at the end of `projectView` moves a visible end cut short by a curved occluder's facets onto that occluder's exact outline (isometric line-end gaps 0.001–0.015 mm over the Anvil examples 37 → 2).
+- **Assemblies** (`ui-assembly.js`, `assembly.js`, `matePopup` in `ui-commands.js`): rigid sub-assemblies use the placed per-part grouping (cached per placement, 8 per build), so a translation onto a plane-key rounding step no longer forces the full edge search (12-pin rigid: 166 + 86 ms → 8–13 ms); component transparency saved in the model (`component.transparent`, one undo step, `transparent: true` / `a.transparent(name)` in scripts, `Assembly.setTransparent`, `anvil.transparent`); Width mate gets the Mate pop-up toolbar.
+
+**Verified (merged code on port 8812, pane visible).** kernel-tests 762/762, occt-tests 51/51, ui-smoke 232/232 twice.
