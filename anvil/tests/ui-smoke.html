@@ -5848,6 +5848,31 @@
     r5click(q, 2, [[q[0] + 20, q[1] + 10]]); await idle();
     assert(UI.camVersion() !== cv && UI.App.undo.length === u0 + 1, 'on the fixed plate: the view pans');
   });
+  step('r5/asm5: Tab hides the component under the pointer, Shift + Tab shows it again; a transparent one keeps its see-through copy through Hide / Show; a component row clicked in the FeatureManager shows the context toolbar', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code);
+    await idle();
+    UI.setView('Isometric'); if (UI.finishViewAnimation) UI.finishViewAnimation(); await idle();
+    var A = UI.App, pi = A.model.components.findIndex(function (c) { return c.name === 'Pin<1>'; }), cap = A.model.components.findIndex(function (c) { return c.name === 'Cap<1>'; });
+    var f = A.mesh.faces.filter(function (x) { return (x.body || 0) === pi; }).sort(function (x, y) { return y.centroid[1] - x.centroid[1]; })[0], s = UI.worldToScreen(f.centroid), rc = UI.viewport.getBoundingClientRect();
+    var h = UI.pickFace(s[0], s[1]);
+    assert(h && (A.mesh.faces[h.index].body || 0) === pi, 'the pin top is under the pointer');
+    UI.asmGhost.set(A.model.components[cap].id, true);
+    UI.viewport.dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: rc.left + s[0], clientY: rc.top + s[1] }));
+    D.body.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    assert(UI.isBodyHidden(pi), 'Tab hid the pin');
+    D.body.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    assert(!UI.isBodyHidden(pi), 'Shift + Tab showed it');
+    var ghost = null; UI.scene.traverse(function (o) { if (o.userData && o.userData.asmGhost) ghost = o; });
+    assert(ghost && ghost.parent, 'the transparent cap is still drawn see-through');
+    UI.asmGhost.set(A.model.components[cap].id, false);
+    var row = D.querySelector('.component-row[data-comp="' + A.model.components[cap].id + '"]');
+    assert(row, 'component row');
+    row.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, clientX: 100, clientY: 300 }));
+    await wait(20);
+    var p = UI.asmPopup();
+    assert(p && p.kind === 'ctx', 'context toolbar from the FeatureManager');
+    UI.asmClosePopup();
+  });
   // --- end r5/asm5 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

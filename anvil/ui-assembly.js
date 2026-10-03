@@ -1269,6 +1269,9 @@
   // Make Linked Document… (embedded -> a saved document and a link to it)
   UI.asmComponentMenuExtras = function (c) {
     var items = [{ sep: true }], linked = c.source && c.source.file != null, kind = sourceKind(c), st = subStatus(c) || {};
+    // r5/asm5: display (as on the context toolbar)
+    items.push({ label: isGhost(c.id) ? 'Change Transparency (opaque)' : 'Change Transparency', action: function () { setGhost(c.id, !isGhost(c.id)); } });
+    items.push(isolated ? { label: 'Exit Isolate', action: function () { exitIsolate(); } } : { label: 'Isolate', action: function () { isolate(c.id); } });
     if (linked && !st.suppressed) items.push({ label: kind === 'assembly' ? 'Open Assembly' : 'Open Part', action: function () { run(openDocument(c.source.file, { from: c.name })); } });
     if (kind === 'part' && !st.suppressed && c.pattern == null) items.push({ label: 'Edit Part', action: function () { run(editPart(c.id)); } });
     if (kind === 'assembly' && !st.suppressed) items.push(c.flexible ? { label: 'Solve as Rigid', action: function () { run(setFlexible(c.id, false)); } } : { label: 'Solve as Flexible', action: function () { run(setFlexible(c.id, true)); } });
@@ -1625,11 +1628,11 @@
   UI.asmFlippedAlignment = flippedAlignment;
 
   // ---- the component context toolbar: a click on a component in the graphics area (no command open)
-  function ctxToolbar() {
+  function ctxToolbar(at) {
     var c = selectedComponent();
     if (!c || !isAsm() || App.command || App.mode === 'sketch') return;
     var id = c.id, i = AS.componentIndex(App.model, id);
-    showPopup(viewportClient(null), 'ctx', 'Component: ' + c.name, function () {
+    showPopup(at || viewportClient(null), 'ctx', 'Component: ' + c.name, function () {
       var cc = AS.findComponent(App.model, id);
       if (!cc) return [];
       var out = [
@@ -1663,6 +1666,14 @@
     if (lastUp && lastUp.button === 0 && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) ctxToolbar();
     return r;
   };
+
+  // a component clicked in the FeatureManager shows the context toolbar by the pointer too
+  document.addEventListener('click', function (e) {
+    var row = e.target && e.target.closest ? e.target.closest('.component-row[data-comp]') : null;
+    if (!row || !isAsm() || App.command || e.button !== 0) return;
+    var at = { x: e.clientX, y: e.clientY }, id = row.getAttribute('data-comp');
+    setTimeout(function () { var c = selectedComponent(); if (c && String(c.id) === id && !popup) ctxToolbar(at); }, 0);
+  });
 
   // ---- Isolate: every other component hidden until Exit Isolate (the hidden state before is put back)
   var isolated = null;   // { id, hidden (App.hiddenBodies before), bar }
@@ -1719,7 +1730,7 @@
     return true;
   }
   function drawGhosts() {
-    if (ghostMesh) { if (ghostMesh.parent) ghostMesh.parent.remove(ghostMesh); ghostMesh.geometry.dispose(); ghostMesh = null; }
+    if (ghostMesh) { if (ghostMesh.parent) ghostMesh.parent.remove(ghostMesh); ghostMesh.children.forEach(function (o) { o.geometry.dispose(); }); ghostMesh.geometry.dispose(); ghostMesh = null; }
     var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
     if (!UI.anyGhost() || !bm || !m || !m.triCount) { if (UI.requestRender) UI.requestRender(); return; }
     var idx = [];
@@ -1744,9 +1755,35 @@
     ghostMesh.renderOrder = 5;
     ghostMesh.frustumCulled = false;
     ghostMesh.userData.asmGhost = true;
+    // its edges, faint (SolidWorks draws a transparent component's edges too)
+    var lp = [], curves = App.curves || [], drawn = {};
+    (App.edges || []).forEach(function (e) {
+      if (e.smooth || !e.faces || !e.faces.length) return;
+      for (var k = 0; k < e.faces.length; k++) { var fb = m.faces[e.faces[k]]; if (!fb || !UI.bodyGhost(fb.body || 0)) return; }
+      if (e.curve != null && curves[e.curve]) {
+        if (drawn[e.curve]) return;
+        drawn[e.curve] = 1;
+        var pts = curves[e.curve].pts;
+        for (var i = 0; i + 1 < pts.length; i++) lp.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
+        return;
+      }
+      lp.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+    });
+    if (lp.length) {
+      var lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
+      ghostEdgeMat = ghostEdgeMat || new THREE.LineBasicMaterial({ color: 0x24292f, transparent: true, opacity: 0.3, depthWrite: false });
+      ghostEdgeMat.clippingPlanes = pm.clippingPlanes || null;
+      var lines = new THREE.LineSegments(lg, ghostEdgeMat);
+      lines.frustumCulled = false;
+      lines.userData.asmGhostEdges = true;
+      ghostMesh.add(lines);
+    }
     (bm.parent || UI.scene).add(ghostMesh);
+    ghostFollow();
     if (UI.requestRender) UI.requestRender();
   }
+  var ghostEdgeMat = null;
   // the see-through copy follows the drawn buffers (a pose swaps them in and out)
   function ghostFollow() {
     var bm = UI.getBodyMesh && UI.getBodyMesh();
@@ -1754,8 +1791,49 @@
     var g = ghostMesh.geometry, s = bm.geometry;
     if (g.getAttribute('position') !== s.getAttribute('position')) g.setAttribute('position', s.getAttribute('position'));
     if (s.getAttribute('normal') && g.getAttribute('normal') !== s.getAttribute('normal')) g.setAttribute('normal', s.getAttribute('normal'));
+    ghostMesh.children.forEach(function (o) { o.visible = !pose; });   // its edges are where it was built: hidden while posed
   }
   (UI.onBuild = UI.onBuild || []).push(function () { Promise.resolve().then(drawGhosts); });
+  var baseSetBodyHidden = UI.setBodyHidden;   // Hide / Show redraws the drawn mesh: the see-through copy with it
+  if (baseSetBodyHidden) UI.setBodyHidden = function () { var r = baseSetBodyHidden.apply(this, arguments); if (ghostMesh || UI.anyGhost()) drawGhosts(); return r; };
+
+  // ---- Tab hides the component under the pointer, Shift + Tab shows the hidden one under it (SolidWorks shortcuts)
+  var overVp = null;   // the pointer in the graphics area (viewport coordinates), null when outside
+  if (UI.viewport) {
+    UI.viewport.addEventListener('mousemove', function (e) { var r = UI.viewport.getBoundingClientRect(); overVp = [e.clientX - r.left, e.clientY - r.top]; });
+    UI.viewport.addEventListener('mouseleave', function () { overVp = null; });
+  }
+  var hidRay = null, hidGeo = null;
+  // the body index of the hidden component under (mx, my), or -1 (a ray through every drawn triangle, hidden ones too)
+  function hiddenAt(mx, my) {
+    var bm = UI.getBodyMesh && UI.getBodyMesh(), m = App.mesh;
+    if (!bm || !m || !UI.camera || !UI.size) return -1;
+    var pos = bm.geometry.getAttribute('position');
+    if (!hidGeo || hidGeo.getAttribute('position') !== pos) { if (hidGeo) hidGeo.dispose(); hidGeo = new THREE.BufferGeometry(); hidGeo.setAttribute('position', pos); }
+    hidRay = hidRay || new THREE.Raycaster();
+    hidRay.setFromCamera(new THREE.Vector2(mx / UI.size.w * 2 - 1, -(my / UI.size.h) * 2 + 1), UI.camera);
+    var hits = hidRay.intersectObject(new THREE.Mesh(hidGeo, bm.material), false), faces = m.faces;
+    for (var i = 0; i < hits.length; i++) {
+      var tri = hits[i].faceIndex, lo = 0, hi = faces.length - 1;
+      while (lo <= hi) {
+        var mid = (lo + hi) >> 1, f = faces[mid];
+        if (tri < f.start) hi = mid - 1; else if (tri >= f.start + f.count) lo = mid + 1;
+        else { var b = f.body || 0; if (UI.isBodyHidden(b)) return b; if (!UI.bodyGhost(b)) return -1; break; }   // behind a shown one: none
+      }
+    }
+    return -1;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey || !overVp || !isAsm() || App.mode === 'sketch' || e.defaultPrevented) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (UI.hasPM && UI.hasPM() && App.command && !App.command.dragComponents && tag === 'button')) return;
+    var comps = App.model.components || [], c = null;
+    if (e.shiftKey) { var bi = hiddenAt(overVp[0], overVp[1]); c = bi >= 0 ? comps[bi] : null; }
+    else { var h = UI.pickFace(overVp[0], overVp[1]), f = h && App.mesh.faces[h.index]; c = f ? comps[f.body || 0] : null; }
+    if (!c) return;
+    e.preventDefault();
+    UI.asm.setHidden(c.id, !e.shiftKey);
+  });
 
   // ------------------------------------------------------------------ exports and window.anvil
   UI.asmIsolate = { isolate: isolate, exit: exitIsolate, active: function () { return isolated ? isolated.id : null; } };
