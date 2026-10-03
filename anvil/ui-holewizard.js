@@ -71,8 +71,12 @@
           { type: 'number', label: 'Depth', key: 'depth', unit: 'u', min: 0, show: function (x) { return x.end === 'blind'; } },
           { type: 'number', label: 'Thread depth', key: 'threadDepth', unit: 'u', min: 0, show: function (x) { return x.end === 'blind' && x.holeType === 'tap'; } }] },
         { title: 'Hole Position', show: isPos, fields: [
-          { type: 'pick', icon: 'plane', value: function (x) { return x.face ? x.points.length + ' point' + (x.points.length === 1 ? '' : 's') + ' on a face' : ''; }, placeholder: 'Click a planar face' },
-          { type: 'static', label: 'Points', value: function (x) { return x.points.map(function (q) { return '(' + fmt(q[0]) + ', ' + fmt(q[1]) + ')'; }).join(' ') || '—'; } },
+          // r5/select5: a row per hole position (hover: a ring on the model; Delete / right-click: removed), as in the
+          // other PropertyManagers' selection lists
+          { type: 'pick', icon: 'plane', value: function (x) { return x.face ? x.points.length + ' point' + (x.points.length === 1 ? '' : 's') + ' on a face' : ''; }, placeholder: 'Click a planar face',
+            items: function (x) { return x.face ? x.points.map(function (q, i) { return { label: 'Point' + (i + 1) + '  (' + fmt(q[0]) + ', ' + fmt(q[1]) + ')', at: K.to3D(x.face, q[0], q[1]) }; }) : []; },
+            onRemove: function (x, i) { x.points.splice(i, 1); UI.renderPM(); preview(); },
+            onClear: function (x) { x.points = []; UI.renderPM(); preview(); } },
           { type: 'buttons', buttons: [{ label: 'Remove last', onclick: function () { v.points.pop(); UI.renderPM(); preview(); } }, { label: 'Clear', onclick: function () { v.points = []; UI.renderPM(); preview(); } }] }] }
       ],
       onChange: function () { preview(); },
