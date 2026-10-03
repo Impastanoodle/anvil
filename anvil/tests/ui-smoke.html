@@ -4029,6 +4029,30 @@
     }
   });
 
+  step('refine/drawings: right-click a view > Tangent Edge > Tangent Edges With Font draws the Chamfered block\'s fillet run-outs as phantom lines (one undo step); the view properties offer it too', async function () {
+    await anvil.run(exByName('Chamfered block').code); await idle();
+    anvil.drawing.make(); await wait(80);
+    try {
+      assert(dwView('Front').tangent === 'removed' && !D.querySelector('#drawing-sheet .tanfont, #drawing-sheet .tangent'), 'removed by default');
+      var F = dwView('Front'), c = paperToClient([(F.box[0] + F.box[2]) / 2, (F.box[1] + F.box[3]) / 2]);
+      D.querySelector('#drawing-sheet svg').dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: c.clientX, clientY: c.clientY }));
+      var it = menuItem(/Tangent Edges With Font/);
+      assert(it && menuItem(/Tangent Edges Visible/) && menuItem(/Tangent Edges Removed/), 'Tangent Edge menu items');
+      it.click(); await idle(); await wait(80);
+      var n = D.querySelectorAll('#drawing-sheet g[data-layer="FRONT"] .tanfont').length;
+      assert(dwView('Front').tangent === 'font' && n === 2, 'phantom run-outs: ' + dwView('Front').tangent + ' ' + n);
+      await UI.undo(); await idle(); await wait(80);
+      assert(dwView('Front').tangent === 'removed' && !D.querySelector('#drawing-sheet .tanfont'), 'undo');
+      anvil.drawing.tangent(F.id, 'visible'); await wait(80);
+      var s = anvil.drawing.summary();
+      assert(s.views[0].tangent === 'visible' && D.querySelectorAll('#drawing-sheet g[data-layer="FRONT"] .tangent').length === 2, 'anvil.drawing.tangent');
+      return n + ' phantom tangent edges';
+    } finally {
+      if (UI.closeMenus) UI.closeMenus();
+      anvil.drawing.close();
+    }
+  });
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));
