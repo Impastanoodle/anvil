@@ -367,7 +367,8 @@
         fadeEl = document.createElement('canvas');
         fadeEl.className = 'occt-fade';
         fadeEl.setAttribute('aria-hidden', 'true');
-        fadeEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;visibility:hidden;opacity:0;display:none';
+        // max-width / height: a swap that lands before the 3D canvas follows a resize must not stick out of the view
+        fadeEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;visibility:hidden;opacity:0;display:none;max-width:100%;max-height:100%';
       }
       fadeEl.style.display = 'block';
       if (fadeEl.parentNode !== gl.parentNode || fadeEl.previousSibling !== gl) gl.parentNode.insertBefore(fadeEl, gl.nextSibling);
