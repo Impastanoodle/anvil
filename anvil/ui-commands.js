@@ -797,6 +797,77 @@
     return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
 
+  // r11/faceref11: Edit Sketch Plane (SolidWorks: right-click a sketch ▸ Edit Sketch Plane). The part rolls back to
+  // just before the sketch, so only planes and faces made before it can be picked; ✓ moves the sketch (its 2D
+  // geometry kept) onto the picked plane or face, with a face reference that follows the face, as one undo step. It
+  // also reattaches a Dangling sketch.
+  function sketchPlaneText(plane) {
+    if (!plane) return 'Front Plane';
+    if (plane.custom) {
+      var src = plane.face ? K.findFeature(App.model, plane.face.feature) : null;
+      return plane.face ? 'Face of ' + (src ? src.name : 'a deleted feature') : 'Face (fixed position)';
+    }
+    if (plane.featureId != null) { var pf = K.findFeature(App.model, plane.featureId); return pf ? pf.name : 'Plane' + plane.featureId; }
+    return (plane.ref || 'Front') + ' Plane' + (plane.offset ? ' + ' + plane.offset : '');
+  }
+  function editSketchPlane(id) {
+    if (isAsm()) { refusePart('Edit Sketch Plane'); return; }
+    var f = K.findFeature(App.model, id);
+    if (!f || f.type !== 'sketch') return;
+    if (App.mode === 'sketch') { UI.toast('Exit the sketch first, then Edit Sketch Plane.'); return; }
+    var idx = App.model.features.indexOf(f), chosen = null, spec = null;
+    function before(fid) { var g = K.findFeature(App.model, fid); return !!g && App.model.features.indexOf(g) < idx; }
+    function refuse(msg) { UI.setStatus(msg); UI.toast(msg); return true; }
+    function onPick(pk) {
+      if (pk.kind === 'plane') {
+        if (typeof pk.ref === 'number' && !before(pk.ref)) return refuse('That plane comes after ' + f.name + ': pick a plane or face made before it.');
+        chosen = { plane: typeof pk.ref === 'number' ? { featureId: pk.ref } : { ref: pk.ref, offset: 0 }, text: typeof pk.ref === 'number' ? sketchPlaneText({ featureId: pk.ref }) : pk.ref + ' Plane', face: null };
+        App.sel = { kind: 'plane', ref: pk.ref };
+      } else if (pk.kind === 'face' && App.mesh && App.mesh.faces[pk.index]) {
+        var face = App.mesh.faces[pk.index];
+        if (face.polys && face.polys[0] && face.polys[0].surf) return refuse('Pick a planar face (or a plane) for the sketch.');
+        var plane = facePlane(face, pk.point || face.centroid);
+        if (plane.face && !before(plane.face.feature)) return refuse('That face belongs to ' + K.findFeature(App.model, plane.face.feature).name + ', which comes after ' + f.name + ': pick a face made before it.');
+        var loops = null;
+        try { var fo = K.faceOutline(App.mesh, pk.index); if (fo) loops = fo.loops; } catch (e) { }
+        chosen = { plane: plane, text: sketchPlaneText(plane), face: pk.index, loops: loops };
+        App.sel = null;
+      } else return true;
+      if (spec && spec.command) spec.command.faceList = chosen.face != null ? [chosen.face] : [];
+      UI.updateHighlights(); UI.updatePlanes(); renderPM();
+      return true;
+    }
+    if (pm.spec) pmCancel();
+    editNext = idx;   // the part before the sketch, as Edit Sketch shows it
+    var warn = App.build && App.build.warnings && App.build.warnings[f.id];
+    spec = {
+      title: 'Sketch Plane', icon: 'sketch', values: {}, noFocus: true,
+      message: 'Select a plane or a planar face for <b>' + String(f.name).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</b>. Its sketch geometry keeps its coordinates on the new plane.' +
+        (warn && /Dangling/.test(warn) ? '<br><b>Dangling:</b> the face it was drawn on is gone; pick a face to reattach it.' : ''),
+      command: { pickPlane: true, faceList: [], onPick: onPick },
+      groups: [{ title: 'Sketch Plane/Face', fields: [
+        { type: 'static', label: 'Now on', value: sketchPlaneText(f.plane) },
+        { type: 'pick', icon: 'plane', placeholder: 'Select a plane or face…', value: function () { return chosen ? chosen.text : ''; } }
+      ] }],
+      onOK: function () {
+        if (!chosen) { UI.setStatus('Select a plane or a planar face first.'); UI.toast('Select a plane or a planar face first.'); return false; }
+        UI.pushUndo();
+        f.plane = chosen.plane;
+        if (chosen.loops) f.faceLoops = chosen.loops; else delete f.faceLoops;
+        App.sel = { kind: 'feature', id: f.id };
+        var text = chosen.text;
+        return UI.afterRebuild(UI.rebuild(), function () {
+          UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
+          UI.setStatus(f.name + ' is now on ' + text + '.');
+          return f;
+        });
+      },
+      onClose: function () { if (App.sel && App.sel.kind === 'plane') App.sel = null; }
+    };
+    try { openPM(spec); } finally { editNext = null; }
+  }
+  UI.editSketchPlane = editSketchPlane;
+
   // ------------------------------------------------------------------ sketch tools: convert / offset / sketch fillet
   function selectedSketchEntityLoop() {
     var f = UI.activeSketchFeature();
@@ -2847,22 +2918,56 @@
       case 'hole': if (UI.cmdHoleWizard) UI.cmdHoleWizard(f); break;
     }
   }
+  // r11/faceref11: features that hang on the faces of the features being deleted: sketches drawn on those faces
+  // (plane.face) and everything built from them, transitively (their extrudes, Hole Wizard holes, patterns, sketches
+  // on their faces). SolidWorks asks the same with "Also delete child features"; left alone they stay where they
+  // are, marked Dangling, and Edit Sketch Plane reattaches them.
+  function faceChildren(doomed) {
+    var kids = [], grew = true;
+    function uses(g, ids) {
+      return ids.indexOf(g.sketch) >= 0 || ids.indexOf(g.feature) >= 0 || ids.indexOf(g.profile) >= 0 || ids.indexOf(g.path) >= 0 ||
+        (g.sketches || []).some(function (s) { return ids.indexOf(s) >= 0; }) || (g.plane && g.plane.featureId != null && ids.indexOf(g.plane.featureId) >= 0);
+    }
+    while (grew) {
+      grew = false;
+      App.model.features.forEach(function (g) {
+        if (doomed.indexOf(g.id) >= 0 || kids.indexOf(g.id) >= 0) return;
+        var all = doomed.concat(kids);
+        if ((g.type === 'sketch' && g.plane && g.plane.face && all.indexOf(g.plane.face.feature) >= 0) || (kids.length && uses(g, kids))) { kids.push(g.id); grew = true; }
+      });
+    }
+    return kids;
+  }
+  UI.faceChildren = faceChildren;
   function deleteFeature(id) {
     var f = K.findFeature(App.model, id);
     if (!f) return;
     var dependents = App.model.features.filter(function (g) { return g.sketch === id || g.feature === id || (g.plane && g.plane.featureId === id); });
+    var base = [id].concat(dependents.map(function (d) { return d.id; }));
+    // cascade one more level (patterns of dependents)
+    App.model.features.forEach(function (g) { if (base.indexOf(g.feature) >= 0 && base.indexOf(g.id) < 0) base.push(g.id); });
+    var kids = faceChildren(base);
+    function names(ids) { return ids.map(function (k) { var g = K.findFeature(App.model, k); return g ? g.name : ''; }).join(', '); }
     var msg = 'Delete <b>' + f.name + '</b>?' + (dependents.length ? '<br>This also deletes: ' + dependents.map(function (d) { return d.name; }).join(', ') : '');
+    if (kids.length) {
+      var onFaces = kids.filter(function (k) { var g = K.findFeature(App.model, k); return g.type === 'sketch' && g.plane && g.plane.face && base.indexOf(g.plane.face.feature) >= 0; });
+      msg += '<br><br>Drawn on its faces: <b>' + names(onFaces) + '</b>' + (kids.length > onFaces.length ? ' (with ' + names(kids.filter(function (k) { return onFaces.indexOf(k) < 0; })) + ')' : '') + '.' +
+        '<br><label class="del-kids"><input type="checkbox" id="del-face-children"> Also delete these child features</label>' +
+        '<br><small>Left unchecked, they stay where they are, marked Dangling; right-click a sketch ▸ Edit Sketch Plane to put it on another face.</small>';
+    }
     UI.confirmDialog('Confirm Delete', msg, function () {
+      var box = document.getElementById('del-face-children');
+      var withKids = !!(kids.length && box && box.checked);
       UI.pushUndo();
-      var doomed = [id].concat(dependents.map(function (d) { return d.id; }));
-      // cascade one more level (patterns of dependents)
-      App.model.features.forEach(function (g) { if (doomed.indexOf(g.feature) >= 0 && doomed.indexOf(g.id) < 0) doomed.push(g.id); });
+      var doomed = base.concat(withKids ? kids : []);
       App.model.features = App.model.features.filter(function (g) { return doomed.indexOf(g.id) < 0; });
       if (App.activeSketch != null && doomed.indexOf(App.activeSketch) >= 0) UI.exitSketch(true);
       App.sel = null; App.sel2 = null;
       closePM();
       UI.afterRebuild(UI.rebuild(), function () {
-        UI.setStatus('Deleted ' + f.name + (dependents.length ? ' and ' + dependents.length + ' dependent feature' + (dependents.length > 1 ? 's' : '') : '') + '.');
+        var extra = dependents.length + (withKids ? kids.length : 0);
+        UI.setStatus('Deleted ' + f.name + (extra ? ' and ' + extra + ' dependent feature' + (extra > 1 ? 's' : '') : '') + '.' +
+          (kids.length && !withKids ? ' ' + kids.length + ' child feature' + (kids.length > 1 ? 's' : '') + ' left dangling.' : ''));
       });
     }, 'Delete');
   }
