@@ -1547,6 +1547,13 @@ var Drawing = (function () {
     if (CV && !opts._keepOnCurves) res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
     if (!opts._keepGaps) res.lines.visible = closeSmallGaps(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, 0.6 * chordTol());
     if (!opts._keepGaps) { res.lines.visible = joinCollinear(res.lines.visible, 0.6 * chordTol(), diag); res.lines.hidden = joinCollinear(res.lines.hidden, 0.6 * chordTol(), diag); }
+    // equal chords of a curve with no analytic record (Anvil's sheet-metal bends) as exact arcs (r13/drawings13)
+    var fitted = 0;
+    if (!opts._noFit) ['visible', 'hidden'].forEach(function (st) {
+      var fa = fitArcs(res.lines[st], diag);
+      if (!fa.arcs.length) return;
+      res.lines[st] = fa.lines; res.arcs[st] = res.arcs[st].concat(fa.arcs); res.arcsAll = (res.arcsAll || []).concat(fa.arcs); fitted += fa.arcs.length;
+    });
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
@@ -1584,7 +1591,7 @@ var Drawing = (function () {
     res.lines.tangent = tm ? tm.lines : []; res.circles.tangent = tm ? tm.circles.concat(tex.circles) : [];
     res.arcs.tangent = tex.arcs; res.ellipses.tangent = tex.ellipses;
     res.stats = { visibleLines: res.lines.visible.length, hiddenLines: res.lines.hidden.length, visibleCircles: res.circles.visible.length, hiddenCircles: res.circles.hidden.length, occluders: tris.length };
-    if (CV) { res.stats.visibleArcs = res.arcs.visible.length; res.stats.hiddenArcs = res.arcs.hidden.length; res.stats.visibleEllipses = res.ellipses.visible.length; res.stats.hiddenEllipses = res.ellipses.hidden.length; }
+    if (CV || fitted) { res.stats.visibleArcs = res.arcs.visible.length; res.stats.hiddenArcs = res.arcs.hidden.length; res.stats.visibleEllipses = res.ellipses.visible.length; res.stats.hiddenEllipses = res.ellipses.hidden.length; }
     if (tanOn) res.stats.tangentLines = res.lines.tangent.length + res.circles.tangent.length + res.arcs.tangent.length + res.ellipses.tangent.length;
     return res;
   }
@@ -1721,6 +1728,96 @@ var Drawing = (function () {
       circles.push(c);
     }
     return { lines: segs.filter(function (s, j) { return !used[j]; }), circles: circles };
+  }
+  // fitArcs(segs, diag) -> { lines, arcs } (r13/drawings13): runs of 4 or more pieces of one body that meet end to end
+  // with equal lengths and equal turns of 0.5–25° each (a curve drawn as equal chords: a sheet-metal bend on Anvil's
+  // kernel, which builds bends as faceted prisms with no analytic record, seen along its axis or cut by a section)
+  // become exact arcs through their vertices { c, r, a0, a1 (degrees CCW), body, src: 'arc', fit: true }, so both kernels draw the
+  // U-bracket's section as 8 lines and 4 arcs. Equal means to 1e-6: a tessellated ellipse or torus outline (OpenCascade's
+  // Mug handle in the isometric) has chords that change slowly, and a bend seen obliquely, unequal ones; they stay lines.
+  function fitArcs(segs, diag) {
+    var arcs = [], drop = [], minT = 0.5 * Math.PI / 180, maxT = 25 * Math.PI / 180;
+    if (segs.length < 4) return { lines: segs, arcs: arcs };
+    chainLines(segs, { umin: 0, umax: diag, vmin: 0, vmax: 0 }).forEach(function (ch) {
+      if (ch.length < 4) return;
+      var L = ch.map(function (s) { return Math.hypot(s[2] - s[0], s[3] - s[1]); }), T = [];
+      for (var i = 0; i + 1 < ch.length; i++) {
+        var a = ch[i], b = ch[i + 1], ax = a[2] - a[0], ay = a[3] - a[1], bx = b[2] - b[0], by = b[3] - b[1];
+        T.push(Math.atan2(ax * by - ay * bx, ax * bx + ay * by));
+      }
+      // piece j continues the run that starts at piece s: the same length, and the turn into it like the first turn
+      function goesOn(s, j) {
+        var t = T[j - 1], t0 = T[s];
+        return Math.abs(L[j] - L[s]) <= L[s] * 1e-6 + diag * 1e-9 && Math.abs(t) >= minT && Math.abs(t) <= maxT && Math.abs(t - t0) <= Math.abs(t0) * 1e-5 + 1e-9;
+      }
+      var s0 = 0;
+      while (s0 < ch.length) {
+        var e0 = s0;
+        while (e0 + 1 < ch.length && goesOn(s0, e0 + 1)) e0++;
+        if (e0 - s0 + 1 >= 4) {
+          var pts = [[ch[s0][0], ch[s0][1]]];
+          for (var j = s0; j <= e0; j++) pts.push([ch[j][2], ch[j][3]]);
+          var A = pts[0], B = pts[Math.floor(pts.length / 2)], C = pts[pts.length - 1];
+          var d = 2 * (A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1]));
+          if (Math.abs(d) > 1e-18) {
+            var a2 = A[0] * A[0] + A[1] * A[1], b2 = B[0] * B[0] + B[1] * B[1], c2 = C[0] * C[0] + C[1] * C[1];
+            var c = [(a2 * (B[1] - C[1]) + b2 * (C[1] - A[1]) + c2 * (A[1] - B[1])) / d, (a2 * (C[0] - B[0]) + b2 * (A[0] - C[0]) + c2 * (B[0] - A[0])) / d];
+            var r = Math.hypot(A[0] - c[0], A[1] - c[1]), tr = r * 1e-6 + diag * 1e-9, sw = 0;
+            if (pts.every(function (p) { return Math.abs(Math.hypot(p[0] - c[0], p[1] - c[1]) - r) <= tr; })) {
+              for (var q = 0; q + 1 < pts.length; q++) {
+                var u = [pts[q][0] - c[0], pts[q][1] - c[1]], w = [pts[q + 1][0] - c[0], pts[q + 1][1] - c[1]];
+                sw += Math.atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1]);
+              }
+              var t0 = Math.atan2(A[1] - c[1], A[0] - c[0]) * 180 / Math.PI;
+              sw *= 180 / Math.PI;
+              var arc = { c: c, r: r, a0: sw > 0 ? t0 : t0 + sw, a1: sw > 0 ? t0 + sw : t0, body: ch[s0][4] || 0, src: 'arc', fit: true };
+              arcs.push(arc);
+              for (var k2 = s0; k2 <= e0; k2++) { drop.push(ch[k2]); ch[k2]._arc = arc; }
+            }
+          }
+        }
+        s0 = e0 + 1;
+      }
+    });
+    if (!drop.length) return { lines: segs, arcs: arcs };
+    // chainLines hands back the pieces themselves, or reversed copies of them
+    var gone = new Uint8Array(segs.length), at = new Map();
+    segs.forEach(function (s, i) { at.set(s, i); });
+    drop.forEach(function (s) {
+      var i = at.get(s);
+      if (i == null) for (var j = 0; j < segs.length; j++) { var o = segs[j]; if (!gone[j] && o[0] === s[2] && o[1] === s[3] && o[2] === s[0] && o[3] === s[1]) { i = j; break; } }
+      if (i != null) gone[i] = 1;
+    });
+    // a line that ended on one of the chords (inside it, the Tray's mitre seam on its bend) now ends on the arc: it is
+    // carried along itself to the circle (at most the chord's sagitta away)
+    var tol = diag * 1e-6 + 1e-9, kept = [];
+    function segD(p, l) { var dx = l[2] - l[0], dy = l[3] - l[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - l[0]) * dx + (p[1] - l[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - l[0] - t * dx, p[1] - l[1] - t * dy); }
+    segs.forEach(function (s, i) {
+      if (gone[i]) return;
+      var o = s;
+      [0, 1].forEach(function (end) {
+        var p = [o[end * 2], o[end * 2 + 1]], q = [o[2 - end * 2], o[3 - end * 2]];
+        for (var j = 0; j < drop.length; j++) {
+          var ch = drop[j], A = ch._arc;
+          if (segD(p, ch) > tol || Math.hypot(p[0] - ch[0], p[1] - ch[1]) <= tol || Math.hypot(p[0] - ch[2], p[1] - ch[3]) <= tol) continue;
+          // the circle point on the line through q and p nearest p
+          var dx = p[0] - q[0], dy = p[1] - q[1], L = Math.hypot(dx, dy);
+          if (!(L > 0)) break;
+          dx /= L; dy /= L;
+          var fx = q[0] - A.c[0], fy = q[1] - A.c[1], b = fx * dx + fy * dy, cc = fx * fx + fy * fy - A.r * A.r, disc = b * b - cc;
+          if (disc < 0) break;
+          var best = null;
+          [-b - Math.sqrt(disc), -b + Math.sqrt(disc)].forEach(function (t) { if (t > 0 && (best == null || Math.abs(t - L) < Math.abs(best - L))) best = t; });
+          if (best == null || Math.abs(best - L) > A.r * 0.05 + tol) break;
+          if (o === s) o = s.slice();
+          o[end * 2] = q[0] + dx * best; o[end * 2 + 1] = q[1] + dy * best;
+          break;
+        }
+      });
+      kept.push(o);
+    });
+    drop.forEach(function (ch) { delete ch._arc; });
+    return { lines: kept, arcs: arcs };
   }
   function circleFit(pts, diag) {
     var cx = 0, cy = 0;
@@ -2088,9 +2185,10 @@ var Drawing = (function () {
   // sectionOf(mesh, e, w) -> { mesh, caps: [face index], area, e, w }: the part with everything in front of the plane
   // p·e = w removed (p·e > w), cut exactly by CSG: each body is intersected with a box that ends on the plane, so the
   // cut faces ("caps") are true faces of the result lying on the plane and facing +e. Cached on the mesh.
+  function sectionKey(e, w) { return e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9); }
   function sectionOf(mesh, e, w) {
     var c = mesh._drawingSections || (mesh._drawingSections = {});
-    var key = e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9);
+    var key = sectionKey(e, w);
     if (c[key]) return c[key];
     var P = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), m = diag * 0.25 + 1;
     var u = V.norm(V.cross(Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], e)), v = V.cross(e, u);
@@ -2147,6 +2245,11 @@ var Drawing = (function () {
   // the cut faces of a section as closed loops in a view frame: [{ loops: [[[u, v]…]…], body, part }] (part: the
   // assembly part tag, a part inside a sub-assembly, or undefined)
   function capLoops(S, F) {
+    var ck = frameKey(F), cc = S._capLoops || (S._capLoops = {});   // (cached per frame: a faceOutline per cap, r13/drawings13)
+    if (cc[ck]) return cc[ck];
+    return (cc[ck] = capLoops0(S, F));
+  }
+  function capLoops0(S, F) {
     var out = S.caps.map(function (fi) {
       var o = K.faceOutline(S.mesh, fi), f = S.mesh.faces[fi];
       var c = { body: f.body || 0, loops: o ? o.loops.map(function (loop) {
@@ -2570,6 +2673,22 @@ var Drawing = (function () {
   }
   // putProjection(mesh, key, proj): a projection worked out elsewhere (drawing-worker.js) goes into the mesh's cache
   function putProjection(mesh, key, proj) { (mesh._drawingProj || (mesh._drawingProj = {}))[key] = proj; }
+  // Section views off the main thread (r13/drawings13), as round 12 did for projections: sectionJob does what a section
+  // view needs from the part — the CSG cut (sectionOf), the cut part's hidden-line projection and its cap loops — in
+  // drawing-worker.js, and putSection files the answer in the same caches the main thread reads, so the next compute
+  // finds it. { section: { mesh, caps, area, e, w }, proj, loops }; the cut mesh goes without its _drawing caches.
+  function sectionJob(mesh, sec, frame, display, tangent) {
+    var S = sectionOf(mesh, sec.e, sec.w), F = frameOf(frame), proj = cachedProjection(S.mesh, F, display, tangent), loops = capLoops(S, F), sm = {};
+    Object.keys(S.mesh).forEach(function (q) { if (q.indexOf('_drawing') !== 0) sm[q] = S.mesh[q]; });
+    return { section: { mesh: S.mesh === mesh ? null : sm, caps: S.caps, area: S.area, e: S.e, w: S.w }, proj: proj, loops: loops };
+  }
+  function putSection(mesh, sec, frame, display, tangent, r) {
+    var c = mesh._drawingSections || (mesh._drawingSections = {}), key = sectionKey(sec.e, sec.w), S = c[key];
+    if (!S) { S = c[key] = r.section; if (!S.mesh) S.mesh = mesh; }
+    var F = frameOf(frame);
+    if (S.mesh !== mesh) putProjection(S.mesh, projectionKey(F, display, tangent), r.proj);
+    (S._capLoops || (S._capLoops = {}))[frameKey(F)] = r.loops;
+  }
   // viewFrame(doc, v): the frame a view looks along. Section views derive theirs from the parent and the cutting
   // line, detail views use the parent's, projected views keep the frame they were made with.
   function viewFrame(doc, v, depth) {
@@ -2824,14 +2943,29 @@ var Drawing = (function () {
   function viewContent(doc, v, mesh, parentContent) {
     var par = v.parent != null ? findView(doc, v.parent) : null, s = viewScale(doc, v);
     if (v.kind === 'section' && par && parentContent) {
-      var P = parentContent(par).frame, sc = v.section, F = sectionFrame(P, sc.axis, sc.sign);
-      var S = sectionOf(mesh, F.e, sc.sign * sc.at), pr = cachedProjection(S.mesh, F, v.display, v.tangent), full = extentsOf(mesh, F);
+      var P = parentContent(par).frame, sc = v.section, F = sectionFrame(P, sc.axis, sc.sign), full = extentsOf(mesh, F);
+      // (lazy compute: a cut not worked out yet is a job for drawing-worker.js, and a placeholder the size of the
+      // whole part in this frame meanwhile, r13/drawings13)
+      if (LAZY && LAZY.mesh === mesh) {
+        var S0 = mesh._drawingSections && mesh._drawingSections[sectionKey(F.e, sc.sign * sc.at)], pk = projectionKey(F, v.display, v.tangent);
+        if (!S0 || (S0.mesh !== mesh && S0.mesh.faces.length && !(S0.mesh._drawingProj && S0.mesh._drawingProj[pk])) || !(S0._capLoops && S0._capLoops[frameKey(F)])) {
+          var jk = 'S|' + sectionKey(F.e, sc.sign * sc.at) + '|' + pk;
+          if (!LAZY.keys[jk]) { LAZY.keys[jk] = 1; LAZY.missing.push({ key: jk, section: { e: F.e.slice(), w: sc.sign * sc.at }, frame: { name: F.name, e: F.e, u: F.u, v: F.v }, display: v.display, tangent: v.tangent || null }); }
+          var ph = emptyProjection(F, full);
+          ph.bounds = { umin: full.umin, umax: full.umax, vmin: full.vmin, vmax: full.vmax };
+          ph.pending = true;
+          return { frame: F, proj: ph, center: [full.cu, full.cv], caps: [], section: null, scale: s };
+        }
+      }
+      var S = sectionOf(mesh, F.e, sc.sign * sc.at), pr = cachedProjection(S.mesh, F, v.display, v.tangent);
       if (!S.mesh.faces.length) pr = emptyProjection(F, full);
       return { frame: F, proj: pr, center: [full.cu, full.cv], caps: capLoops(S, F), section: S, scale: s };
     }
     if (v.kind === 'detail' && par && parentContent) {
       var pc = parentContent(par), dt = v.detail;
-      return { frame: pc.frame, proj: clipProjection(pc.proj, dt.c, dt.r), center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
+      var dpr = clipProjection(pc.proj, dt.c, dt.r);
+      if (pc.proj.pending) dpr.pending = true;   // (its parent still being worked out, r13/drawings13)
+      return { frame: pc.frame, proj: dpr, center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
     }
     var F2 = viewFrame(doc, v), pr2 = cachedProjection(mesh, F2, v.display, v.tangent), b = pr2.bounds;
     return { frame: F2, proj: pr2, center: [(b.umin + b.umax) / 2, (b.vmin + b.vmax) / 2], caps: [], scale: s };
@@ -3094,6 +3228,37 @@ var Drawing = (function () {
     var e = asmBuild && asmBuild.cache && asmBuild.cache[key];
     if (e && e.build && !info._build) info._build = e.build;
     return info;
+  }
+  // asmPartMaterials(model, build) -> [material name | null] by assembly part tag (polygon.part), numbered as
+  // Assembly.rebuild tags them: one per part, one per body of a multibody part (its body's own material, else the
+  // part's), a sub-assembly's parts in its order; null without a build. Cached on the build. (r13/drawings13)
+  function asmPartMaterials(model, build) {
+    if (!build || !build.partBuilds || !hasMaterials()) return null;
+    if (build._dwMats && build._dwMats.model === model) return build._dwMats.list;
+    var out = [];
+    function count(body) {   // as Assembly's partCount(partBody(body)): part tags, else bodies, else one
+      var n = 0, tagged = false, ps = body.polygons || [];
+      for (var i = 0; i < ps.length; i++) if (ps[i].part != null) { tagged = true; if (ps[i].part + 1 > n) n = ps[i].part + 1; }
+      if (!tagged) for (var j = 0; j < ps.length; j++) if ((ps[j].body || 0) + 1 > n) n = (ps[j].body || 0) + 1;
+      return Math.max(1, n);
+    }
+    function walk(m, b) {
+      (m.components || []).forEach(function (c) {
+        var pb = b.partBuilds && b.partBuilds[c.id];
+        if (!pb || !pb.body) return;
+        if (pb.assembly && pb.model) { walk(pb.model, pb); return; }
+        var n = count(pb.body), pm = null;
+        try { pm = partInfo(c.source, build).model; } catch (e) { pm = null; }
+        for (var i = 0; i < n; i++) {
+          var nm = null;
+          try { nm = pm ? (Materials.bodyMaterial ? Materials.bodyMaterial(pm, pb, i).name : Materials.materialName(pm)) : null; } catch (e2) { nm = null; }
+          out.push(nm);
+        }
+      });
+    }
+    walk(model, build);
+    try { Object.defineProperty(build, '_dwMats', { value: { model: model, list: out }, enumerable: false, configurable: true, writable: true }); } catch (e3) { /* frozen: recomputed next time */ }
+    return out;
   }
   // BOM columns. A column is { type: 'item' | 'partNumber' | 'description' | 'qty' | 'property', prop (property name,
   // for 'property'), title, width (paper mm), hidden }. doc.bom.columns holds them in order; without it the table has
@@ -3391,7 +3556,8 @@ var Drawing = (function () {
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
     var S = sheetSize(doc, units), prims = [], chainSeq = 0;
     function line(a, b, layer, style) { prims.push({ k: 'line', a: a, b: b, layer: layer, style: style }); }
-    function text(p, h, t, anchor, layer, rot) { prims.push({ k: 'text', p: p, h: h, text: t, anchor: anchor || 'start', layer: layer, rot: rot || 0 }); }
+    // (h here is the font size the sheet was laid out with; the primitive keeps the capitals' height, r13/drawings13)
+    function text(p, h, t, anchor, layer, rot) { prims.push({ k: 'text', p: p, h: h * CAP_EM, text: t, anchor: anchor || 'start', layer: layer, rot: rot || 0 }); }
     // border and title block
     var b0 = BORDER * k * 0.5, b1 = BORDER * k;
     rect([b1, b1], [S[0] - b1, S[1] - b1], 'SHEET', 'thick');
@@ -3410,7 +3576,7 @@ var Drawing = (function () {
       var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
       if (f.x0 > 0 && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; line([x0, yTop - row], [x0, yTop], 'SHEET', 'thin'); }
       var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
-      if (v && textWidth(v, h) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.6));
+      if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
       text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
       if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
     });
@@ -3428,11 +3594,16 @@ var Drawing = (function () {
       return c;
     }
     var hs = HATCH * k;
-    // a part's cut faces are hatched with their body's material pattern (steel ANSI32, aluminium ANSI38, …); assembly
-    // components keep ANSI31 at their own angles (r5/drawings5)
-    var capPattern = function (body) {
-      if (!hasMaterials() || !model || model.type === 'assembly') return 'ANSI31';
-      var bm = Materials.bodyMaterial ? Materials.bodyMaterial(model, ctx.build || null, body | 0) : null;
+    // a part's cut faces are hatched with their body's material pattern (steel ANSI32, aluminium ANSI38, …) (r5/drawings5);
+    // an assembly's with the material of the part each cut face belongs to (its part tag), at the angle hatchAssign
+    // gave it so touching parts still differ (r13/drawings13: they were all ANSI31)
+    var capPattern = function (cap) {
+      if (!hasMaterials() || !model) return 'ANSI31';
+      if (model.type === 'assembly') {
+        var mats = asmPartMaterials(model, ctx.build || null);
+        return hatchPattern(mats && cap.part != null ? mats[cap.part] : null);
+      }
+      var bm = Materials.bodyMaterial ? Materials.bodyMaterial(model, ctx.build || null, cap.body | 0) : null;
       return hatchPattern(bm && bm.name);
     };
     doc.views.forEach(function (v) {
@@ -3446,7 +3617,7 @@ var Drawing = (function () {
       // cut faces first, so the outlines are drawn over the hatching
       var hatch = 0, hatches = [], rims = null;
       (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = cap.style || hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap.body);
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = cap.style || hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap);
         // (hatch lines end on the drawn round edges, not on the facets' chords)
         if (!rims) {
           rims = [];
@@ -3531,7 +3702,7 @@ var Drawing = (function () {
         prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick' });
         // the letter goes just outside the circle where it covers the least of the parent's linework and hatching
         // (upper right first, then the other diagonals and sides), as SolidWorks keeps it readable (r11/hatch11)
-        var lh2 = 5 * k, lw = textWidth(v.label, lh2), pad = 0.6 * k, bestP = null, bestN = Infinity;
+        var lh2 = 5 * k, lw = textWidth(v.label, lh2 * CAP_EM), pad = 0.6 * k, bestP = null, bestN = Infinity;
         var own = prims.filter(function (p) { return p.layer === L || p.k === 'text'; });
         // (a clear spot 2 mm further out beats one on the hatching; with none clear, the least covered beside the circle)
         var clearP = null;
@@ -3575,7 +3746,7 @@ var Drawing = (function () {
       var cellText = function (rowIndex, col, t) {
         var al = bb.columns[col].align;
         var x = al === 'middle' ? (bb.cols[col] + bb.cols[col + 1]) / 2 : bb.cols[col] + 1.5 * k, y = bb.y1 - (rowIndex + 1) * bb.rowH + (bb.rowH - th) / 2;
-        var maxCh = Math.floor((bb.cols[col + 1] - bb.cols[col] - 3 * k) / (th * 0.6));
+        var maxCh = Math.floor((bb.cols[col + 1] - bb.cols[col] - 3 * k) / (th * CAP_EM * 0.78));
         t = t == null ? '' : String(t);
         if (t) text([x, y], th, t.length > maxCh ? t.slice(0, Math.max(1, maxCh - 3)) + '...' : t, al, BL);
       };
@@ -3814,11 +3985,18 @@ var Drawing = (function () {
       out.push({ k: 'text', p: at(s0 + wm + gp, dn), h: th2, text: lab.lower, anchor: 'start', layer: L, rot: rot, tol: 'lower' });
     }
     var box = vw.box, labMain = d.tol || d.prec != null || d.label != null || d.kind === 'chamfer' ? dimLabel(d, units) : { main: d.text, upper: null, lower: null };
-    // a straight leader from `tip` (arrow) to `elbow`, a shelf and the text above it
+    // a straight leader from `tip` (arrow) to `elbow`, then (ANSI, r13/drawings13) a short horizontal shoulder with the
+    // text after it, centred on it (the text used to sit on a shelf as long as itself, the ISO way)
     function leader(tip, elbow, lab, arrowDir) {
-      var sgn = elbow[0] >= tip[0] - 1e-9 ? 1 : -1, tw = Math.max(textWidth(lab.main || '', th), lab.upper != null ? textWidth(lab.upper, th * 0.7) + textWidth(lab.main || '', th) + th * 0.4 : 0), end = [elbow[0] + sgn * (tw + 2 * k), elbow[1]];
-      line(tip, elbow); line(elbow, end); arrow(tip, arrowDir);
-      label([elbow[0] + sgn * 1 * k, elbow[1] + 1 * k], sgn > 0 ? 'start' : 'end', 0, lab);
+      var sgn = elbow[0] >= tip[0] - 1e-9 ? 1 : -1;
+      line(tip, elbow); line(elbow, [elbow[0] + sgn * SHOULDER * k, elbow[1]]); arrow(tip, arrowDir);
+      label([elbow[0] + sgn * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2], sgn > 0 ? 'start' : 'end', 0, lab);
+    }
+    // the length of a label along its text line
+    function labWidth(lab) {
+      if (lab.upper == null) return textWidth(lab.main || '', th);
+      var th2 = lab.main == null ? th * 0.8 : th * 0.7;
+      return (lab.main == null ? 0 : textWidth(lab.main, th) + th * 0.4) + Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
     }
     if (d.kind === 'rad') {
       // a radius: the leader leaves the arc at its middle, straight out from the centre; arrow on the arc
@@ -3868,9 +4046,8 @@ var Drawing = (function () {
       // flipped: the leader crosses the circle and the arrow meets the far side from inside
       var tip = d.flip ? [c[0] - u[0] * r, c[1] - u[1] * r] : [c[0] + u[0] * r, c[1] + u[1] * r];
       var sgd = (d.lead ? d.lead[0] : u[0]) >= 0 ? 1 : -1;
-      var tw = textWidth(labMain.main || '', th) + (labMain.upper != null ? th * 0.4 + textWidth(labMain.upper, th * 0.7) : 0), end = [elbow[0] + sgd * (tw + 2 * k), elbow[1]];
-      line(tip, elbow); line(elbow, end); arrow(tip, [-u[0], -u[1]]);
-      label([elbow[0] + sgd * 1 * k, elbow[1] + 1 * k], sgd > 0 ? 'start' : 'end', 0, labMain);
+      line(tip, elbow); line(elbow, [elbow[0] + sgd * SHOULDER * k, elbow[1]]); arrow(tip, [-u[0], -u[1]]);
+      label([elbow[0] + sgd * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2], sgd > 0 ? 'start' : 'end', 0, labMain);
       d.leadNow = [elbow[0] - c[0], elbow[1] - c[1]];
       return out;
     }
@@ -3883,16 +4060,28 @@ var Drawing = (function () {
     }
     var gapE = 1.5 * k, ext = 2 * k;
     // a linear dimension between sheet points a and b, horizontal (hz) or vertical, its dimension line at pos
+    // ANSI (SolidWorks' default for the ANSI standard, r13/drawings13): the text is horizontal (vertical dimensions
+    // too), centred on the dimension line in a break of it. When text and arrows do not fit between the extension
+    // lines, the arrows go outside and the text beyond them, the dimension line running on to it; the text dragged
+    // outside (tx) takes the line along the same way. d.txNow: where the text is, from the middle (dragging starts there).
     function linear(a, b, hz, pos, lab, tx) {
       var i0 = hz ? 0 : 1, i1 = hz ? 1 : 0, sg = pos < a[i1] ? -1 : 1;
       function P(along, across) { var q = [0, 0]; q[i0] = along; q[i1] = across; return q; }
       line(P(a[i0], a[i1] + sg * gapE), P(a[i0], pos + sg * ext)); line(P(b[i0], b[i1] + sg * gapE), P(b[i0], pos + sg * ext));
-      var dir = b[i0] >= a[i0] ? 1 : -1, xo = ar + 4 * k;
-      if (d.flip) line(P(a[i0] - dir * xo, pos), P(b[i0] + dir * xo, pos)); else line(P(a[i0], pos), P(b[i0], pos));
-      var fa = P(-dir, 0), fb = P(dir, 0);
-      if (d.flip) { arrow(P(a[i0], pos), fb); arrow(P(b[i0], pos), fa); } else { arrow(P(a[i0], pos), fa); arrow(P(b[i0], pos), fb); }
-      if (hz) label([(a[0] + b[0]) / 2 + (tx || 0), pos + 1 * k], 'middle', 0, lab);
-      else label([pos - 1 * k, (a[1] + b[1]) / 2 + (tx || 0)], 'middle', 90, lab);
+      var lo = Math.min(a[i0], b[i0]), hi = Math.max(a[i0], b[i0]), xo = ar + 4 * k, g = TEXT_GAP * k;
+      var half = (hz ? labWidth(lab) / 2 : (lab.upper != null ? 0.75 : 0.5) * th) + g, mid = (lo + hi) / 2;
+      var fits = hi - lo >= 2 * half + 2 * ar + g, out = !!d.flip || !fits;
+      var c = mid + (tx || 0);
+      if (tx == null && !fits) c = hi + xo + half;   // beyond the far arrow
+      var inside = c - half >= lo - 1e-9 && c + half <= hi + 1e-9;
+      var l0 = out ? lo - xo : lo, l1 = out ? hi + xo : hi;
+      if (inside) { if (c - half > l0) line(P(l0, pos), P(c - half, pos)); if (c + half < l1) line(P(c + half, pos), P(l1, pos)); }
+      else if (c > mid) line(P(l0, pos), P(Math.max(l1, c - half), pos));
+      else line(P(Math.min(l0, c + half), pos), P(l1, pos));
+      if (out) { arrow(P(lo, pos), P(1, 0)); arrow(P(hi, pos), P(-1, 0)); } else { arrow(P(lo, pos), P(-1, 0)); arrow(P(hi, pos), P(1, 0)); }
+      d.txNow = c - mid;
+      if (hz) label([c, pos - th / 2], 'middle', 0, lab);
+      else label([pos, c - th / 2], 'middle', 0, lab);
     }
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var hz2 = d.dir !== 'v', ax = hz2 ? 0 : 1, items = [{ ref: d.base, val: 0 }].concat(d.refs.map(function (r2, i) { return { ref: r2, val: (d.values || [])[i] || 0 }; }));
@@ -3928,7 +4117,7 @@ var Drawing = (function () {
           var pos = lvl + side * 8 * k * i;
           var lab = d.tol || d.label != null ? dimLabel(Object.assign({}, d, { kind: 'h', value: Math.abs(it.val) }), units) : { main: numText(Math.abs(it.val), units, prec), upper: null, lower: null };
           var a2 = bp.slice(), b2 = it.p.slice();
-          linear(a2, b2, hz2, pos, lab, 0);
+          linear(a2, b2, hz2, pos, lab, null);
         });
       }
       return out;
@@ -3956,17 +4145,34 @@ var Drawing = (function () {
       var pa = [a[0] + n[0] * o, a[1] + n[1] * o], pb = [b[0] + n[0] * o, b[1] + n[1] * o];
       line([a[0] + n[0] * gapE, a[1] + n[1] * gapE], [pa[0] + n[0] * ext, pa[1] + n[1] * ext]);
       line([b[0] + n[0] * gapE, b[1] + n[1] * gapE], [pb[0] + n[0] * ext, pb[1] + n[1] * ext]);
-      var xo2 = ar + 4 * k;
-      if (d.flip) { line([pa[0] - t[0] * xo2, pa[1] - t[1] * xo2], [pb[0] + t[0] * xo2, pb[1] + t[1] * xo2]); arrow(pa, t); arrow(pb, [-t[0], -t[1]]); }
-      else { line(pa, pb); arrow(pa, [-t[0], -t[1]]); arrow(pb, t); }
-      var ang2 = Math.atan2(t[1], t[0]) * 180 / Math.PI;
+      // (the text along the line, centred on it in a break, as a linear dimension's; r13/drawings13)
+      var xo2 = ar + 4 * k, g2 = TEXT_GAP * k, ang2 = Math.atan2(t[1], t[0]) * 180 / Math.PI;
       if (ang2 > 90) ang2 -= 180; if (ang2 <= -90) ang2 += 180;
-      var ta = ang2 * Math.PI / 180, tt2 = [Math.cos(ta), Math.sin(ta)], sh = d.tx || 0;
-      label([(pa[0] + pb[0]) / 2 + n[0] * 1 * k + tt2[0] * sh, (pa[1] + pb[1]) / 2 + n[1] * 1 * k + tt2[1] * sh], 'middle', ang2, labMain);
+      var ta = ang2 * Math.PI / 180, tt2 = [Math.cos(ta), Math.sin(ta)], up2 = [-tt2[1], tt2[0]], sd = tt2[0] * t[0] + tt2[1] * t[1];
+      var half2 = labWidth(labMain) / 2 + g2, fits2 = Ln >= 2 * half2 + 2 * ar + g2, out2 = !!d.flip || !fits2;
+      var sc = Ln / 2 + (d.tx || 0) * sd;
+      if (d.tx == null && !fits2) sc = Ln + xo2 + half2;
+      var s0a = out2 ? -xo2 : 0, s1a = out2 ? Ln + xo2 : Ln, At = function (s) { return [pa[0] + t[0] * s, pa[1] + t[1] * s]; };
+      if (sc - half2 >= -1e-9 && sc + half2 <= Ln + 1e-9) { if (sc - half2 > s0a) line(At(s0a), At(sc - half2)); if (sc + half2 < s1a) line(At(sc + half2), At(s1a)); }
+      else if (sc > Ln / 2) line(At(s0a), At(Math.max(s1a, sc - half2)));
+      else line(At(Math.min(s0a, sc + half2)), At(s1a));
+      if (out2) { arrow(pa, t); arrow(pb, [-t[0], -t[1]]); } else { arrow(pa, [-t[0], -t[1]]); arrow(pb, t); }
+      d.txNow = (sc - Ln / 2) * sd;
+      var cpt = At(sc);
+      label([cpt[0] - up2[0] * th / 2, cpt[1] - up2[1] * th / 2], 'middle', ang2, labMain);
     }
     return out;
   }
-  function textWidth(t, h) { return String(t).length * h * 0.6; }
+  // Drawing text (r13/drawings13), as SolidWorks' ANSI standard draws it: Century Gothic, with look-alike fallbacks for
+  // a machine without it (installed fonts only, nothing fetched: works offline). A text primitive's h is its character
+  // height (the height of a capital, as in ASME Y14.2, SolidWorks and DXF), so every writer draws the same size: SVG
+  // font-size = h / CAP_EM (Century Gothic's capitals are 0.72 em), PDF Helvetica at h / 0.718, DXF TEXT height h.
+  // (h used to be the SVG font-size: capitals 2.5 mm on screen and in SVG for a 3.5 mm dimension, 3.4 mm in PDF, 3.5
+  // mm in DXF.) Dimensions and notes are 3.5 mm; labels, the title block, balloons and the BOM keep their sizes on
+  // screen (computeSheet's text() converts). textWidth: the advance of Century Gothic's capitals and digits, 0.56 em.
+  var DW_FONT = '"Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, Helvetica, sans-serif';
+  var CAP_EM = 0.72, SHOULDER = 4, TEXT_GAP = 1;   // leader shoulder and the gap round dimension text, paper mm
+  function textWidth(t, h) { return String(t).length * h * 0.78; }
 
   // ------------------------------------------------------------------ writers
   function num(x) { return String(Math.round(x * 1e4) / 1e4); }
@@ -4025,7 +4231,7 @@ var Drawing = (function () {
     var S = sheet.size, k = sheet.units === 'in' ? 1 / MM : 1, H = S[1];
     function X(p) { return num(p[0]); } function Y(p) { return num(H - p[1]); }
     var dash = num(3 * k) + ' ' + num(1.5 * k), chain = [8, 1.5, 1.5, 1.5].map(function (x) { return num(x * k); }).join(' '), center = CENTER_DASH.map(function (x) { return num(x * k); }).join(' ');
-    var res = { head: '<svg xmlns="http://www.w3.org/2000/svg" width="' + num(S[0]) + sheet.units + '" height="' + num(S[1]) + sheet.units + '" viewBox="0 0 ' + num(S[0]) + ' ' + num(S[1]) + '" font-family="Arial, Helvetica, sans-serif">',
+    var res = { head: '<svg xmlns="http://www.w3.org/2000/svg" width="' + num(S[0]) + sheet.units + '" height="' + num(S[1]) + sheet.units + '" viewBox="0 0 ' + num(S[0]) + ' ' + num(S[1]) + '" font-family="' + esc(DW_FONT) + '">',
       bg: '<rect class="sheet-bg" x="0" y="0" width="' + num(S[0]) + '" height="' + num(S[1]) + '" fill="#fff"/>', groups: [] };
     var groups = {}, gorder = [];
     sheet.prims.forEach(function (p) { if (!groups[p.layer]) { groups[p.layer] = []; gorder.push(p.layer); } groups[p.layer].push(p); });
@@ -4090,7 +4296,7 @@ var Drawing = (function () {
         else if (p.k === 'fill') out.push('<path' + (col ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
         else if (p.k === 'text') {
           var tr = p.rot ? ' transform="rotate(' + num(-p.rot) + ' ' + X(p.p) + ' ' + Y(p.p) + ')"' : '';
-          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (col ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
+          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h / CAP_EM) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (col ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
         }
       });
       if (run != null) out.push('</g>');
@@ -4122,6 +4328,10 @@ var Drawing = (function () {
     pr(0, 'LTYPE'); pr(2, 'HIDDEN'); pr(70, 0); pr(3, '__ __ __ __'); pr(72, 65); pr(73, 2); pr(40, 4.5); pr(49, 3); pr(49, -1.5);
     pr(0, 'LTYPE'); pr(2, 'PHANTOM'); pr(70, 0); pr(3, '____ _ ____ _'); pr(72, 65); pr(73, 4); pr(40, 12.5); pr(49, 8); pr(49, -1.5); pr(49, 1.5); pr(49, -1.5);
     if (useCenter) { pr(0, 'LTYPE'); pr(2, 'CENTER'); pr(70, 0); pr(3, '____ _ ____ _'); pr(72, 65); pr(73, 4); pr(40, 10.5); pr(49, 6); pr(49, -1.5); pr(49, 1.5); pr(49, -1.5); }
+    pr(0, 'ENDTAB');
+    // the text style: Century Gothic (GOTHIC.TTF), as on the sheet (r13/drawings13); a reader without it substitutes its own
+    pr(0, 'TABLE'); pr(2, 'STYLE'); pr(70, 1);
+    pr(0, 'STYLE'); pr(2, 'STANDARD'); pr(70, 0); pr(40, 0); pr(41, 1); pr(50, 0); pr(71, 0); pr(42, num(3.5 * (sheet.units === 'in' ? 1 / MM : 1))); pr(3, 'GOTHIC.TTF'); pr(4, '');
     pr(0, 'ENDTAB');
     pr(0, 'TABLE'); pr(2, 'LAYER'); pr(70, layers.length);
     layers.forEach(function (n) {
@@ -4238,7 +4448,7 @@ var Drawing = (function () {
           P(x + m) + ' ' + P(y - r) + ' ' + P(x + r) + ' ' + P(y - m) + ' ' + P(x + r) + ' ' + P(y) + ' c S');
       } else if (p.k === 'fill') c.push(P(p.pts[0][0]) + ' ' + P(p.pts[0][1]) + ' m ' + P(p.pts[1][0]) + ' ' + P(p.pts[1][1]) + ' l ' + P(p.pts[2][0]) + ' ' + P(p.pts[2][1]) + ' l h f');
       else if (p.k === 'text') {
-        var fs = p.h * ptPer * 1.35, w = textWidth(plainText(p.text), p.h) * ptPer * 1.1;   // cap height ≈ 0.72 em
+        var fs = p.h / 0.718 * ptPer, w = textWidth(plainText(p.text), p.h) * ptPer;   // h: the capitals' height (Helvetica's are 0.718 em), r13/drawings13
         var shift = p.anchor === 'middle' ? -w / 2 : p.anchor === 'end' ? -w : 0;
         var a = (p.rot || 0) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
         var x0 = p.p[0] * ptPer + ca * shift, y0 = p.p[1] * ptPer + sa * shift;
@@ -4916,11 +5126,12 @@ var Drawing = (function () {
         lead = [dir[0] * run, dir[1] * run];
       }
       var ll = Math.hypot(lead[0], lead[1]) || 1, uu = [lead[0] / ll, lead[1] / ll], tip = [c[0] + uu[0] * rr2, c[1] + uu[1] * rr2], elbow = [c[0] + lead[0], c[1] + lead[1]];
-      var sg = lead[0] >= 0 ? 1 : -1, tw = Math.max.apply(null, lines.map(function (s) { return textWidth(s, th); }));
-      line(tip, elbow); line(elbow, [elbow[0] + sg * (tw + 2 * k), elbow[1]]);
+      // (ANSI, r13/drawings13: a short shoulder, the lines of text after it, centred on it)
+      var sg = lead[0] >= 0 ? 1 : -1;
+      line(tip, elbow); line(elbow, [elbow[0] + sg * SHOULDER * k, elbow[1]]);
       var ar = 3 * k, aw = ARROW_W * k, dv = [-uu[0], -uu[1]], nn = [-dv[1], dv[0]];
       out.push({ k: 'fill', pts: [tip, [tip[0] - dv[0] * ar + nn[0] * aw, tip[1] - dv[1] * ar + nn[1] * aw], [tip[0] - dv[0] * ar - nn[0] * aw, tip[1] - dv[1] * ar - nn[1] * aw]], layer: L });
-      lines.forEach(function (s, i) { out.push({ k: 'text', p: [elbow[0] + sg * 1 * k, elbow[1] + 1 * k + (lines.length - 1 - i) * th * 1.5], h: th, text: s, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 }); });
+      lines.forEach(function (s, i) { out.push({ k: 'text', p: [elbow[0] + sg * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2 + ((lines.length - 1) / 2 - i) * th * 1.6], h: th, text: s, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 }); });
       an.leadNow = lead.slice();
       text = lines.join(' ');
       info = info || {};
@@ -4939,7 +5150,7 @@ var Drawing = (function () {
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
-    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchAssign: hatchAssign, joinCollinear: joinCollinear, snapHatch: snapHatch, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
+    sectionOf: sectionOf, sectionJob: sectionJob, putSection: putSection, fitArcs: fitArcs, asmPartMaterials: asmPartMaterials, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchAssign: hatchAssign, joinCollinear: joinCollinear, snapHatch: snapHatch, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
     BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomType: bomType, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
     TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, titleFieldAt: titleFieldAt, bomPropertyNames: bomPropertyNames,
@@ -5019,6 +5230,19 @@ var Drawing = (function () {
     fn(doc());
     UI.autosave();
     render();
+  }
+  // editView(fn) -> the view fn(doc) adds (r13/drawings13): a view placed with the mouse (model, projected, section,
+  // detail) is one undo step whose linework is worked out in drawing-worker.js, as when a drawing opens: the sheet
+  // shows a placeholder where it goes at once (a section's CSG cut and hidden-line removal took 15–60 ms on the main
+  // thread), the linework drops in when ready, then Auto insert adds its centre marks / centrelines.
+  function editView(fn) {
+    settle();
+    UI.pushUndo();
+    var v = fn(doc());
+    UI.autosave();
+    D.prog = { doc: doc(), insert: false, ids: [v.id], t0: performance.now() };
+    render();
+    return v;
   }
 
   // ------------------------------------------------------------------ DOM
@@ -5138,7 +5362,7 @@ var Drawing = (function () {
       if (lazy && D.sheet.pending.length) {
         requestProjections(D.sheet.pending);
         if (D.prog.hold && old) { D.sheet = old; return; }
-      } else { var pg = D.prog; D.prog = null; if (pg.insert && Drawing.autoInsert(dc, m)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
+      } else { var pg = D.prog; D.prog = null; if ((pg.insert || pg.ids) && Drawing.autoInsert(dc, m, pg.ids || undefined)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
     }
     D.sheetMesh = m; D.sheetDoc = dc;
     D.occtDrove = !!(UI.occt && UI.occt.status && UI.occt.status().driving);
@@ -5180,7 +5404,7 @@ var Drawing = (function () {
     var m = mesh();
     if (PJ.mesh !== m) { dropBusyWorker(); PJ.mesh = m; PJ.id++; PJ.jobs = {}; PJ.sent = false; }
     list.forEach(function (j) {
-      if (!PJ.jobs[j.key]) PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, mesh: m, id: PJ.id, posted: false };
+      if (!PJ.jobs[j.key]) PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, section: j.section || null, mesh: m, id: PJ.id, posted: false };
     });
     if (!PJ.flushT) PJ.flushT = setTimeout(flushProjections, 0);
   }
@@ -5200,7 +5424,8 @@ var Drawing = (function () {
             w.postMessage({ type: 'mesh', id: PJ.id, mesh: copy });
             PJ.sent = true;
           }
-          w.postMessage({ type: 'project', id: PJ.id, job: job.key, frame: job.frame, display: job.display, tangent: job.tangent });
+          if (job.section) w.postMessage({ type: 'section', id: PJ.id, job: job.key, section: job.section, frame: job.frame, display: job.display, tangent: job.tangent });
+          else w.postMessage({ type: 'project', id: PJ.id, job: job.key, frame: job.frame, display: job.display, tangent: job.tangent });
           return;
         } catch (err) { PJ.off = true; w = null; }
       }
@@ -5212,7 +5437,8 @@ var Drawing = (function () {
     setTimeout(function () {
       if (job.id !== PJ.id || !D.prog || !PJ.jobs[job.key]) return;
       var c = job.mesh._drawingProj;
-      if (!(c && c[job.key])) Drawing.putProjection(job.mesh, job.key, Drawing.projectView(job.mesh, job.frame, { display: job.display, tangent: job.tangent }));
+      if (job.section) Drawing.putSection(job.mesh, job.section, job.frame, job.display, job.tangent, Drawing.sectionJob(job.mesh, job.section, job.frame, job.display, job.tangent));
+      else if (!(c && c[job.key])) Drawing.putProjection(job.mesh, job.key, Drawing.projectView(job.mesh, job.frame, { display: job.display, tangent: job.tangent }));
       landed(job);
     }, 0);
   }
@@ -5220,6 +5446,7 @@ var Drawing = (function () {
     var d = ev.data || {}, job = PJ.jobs[d.job];
     if (d.id !== PJ.id || !job) return;
     if (d.type === 'projected') { Drawing.putProjection(job.mesh, job.key, d.proj); landed(job); }
+    else if (d.type === 'sectioned') { Drawing.putSection(job.mesh, job.section, job.frame, job.display, job.tangent, d.result); landed(job); }
     else projectHere(job);
   }
   // a view is done: the sheet is drawn again (once for views landing together)
@@ -5763,11 +5990,9 @@ var Drawing = (function () {
   function placePending(p) {
     var spec = D.pending.spec;
     D.tool = null; D.pending = null;
-    var v;
-    edit(function (dc) {
-      v = Drawing.addView(dc, spec.orient, { display: spec.display || (ORTHO_NAMES.indexOf(spec.orient) >= 0 ? 'hlv' : 'hlr'), scale: spec.scale || null, x: p[0], y: p[1] });
+    var v = editView(function (dc) {
       dc.layout = 'manual';
-      autoInsertViews(dc, [v.id]);
+      return Drawing.addView(dc, spec.orient, { display: spec.display || (ORTHO_NAMES.indexOf(spec.orient) >= 0 ? 'hlv' : 'hlr'), scale: spec.scale || null, x: p[0], y: p[1] });
     });
     D.sel = { kind: 'view', id: v.id };
     drawOverlay(); renderTree(); UI.refreshRibbon();
@@ -5807,7 +6032,7 @@ var Drawing = (function () {
     var pl = projectPlacement(p), parent = D.pending.parent, v;
     if (!pl) { endTool(); return; }
     endTool();
-    edit(function (dc) { v = Drawing.addProjectedView(dc, mesh(), parent, pl.dir, { x: pl.x, y: pl.y }); autoInsertViews(dc, [v.id]); });
+    v = editView(function (dc) { return Drawing.addProjectedView(dc, mesh(), parent, pl.dir, { x: pl.x, y: pl.y }); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
     UI.setStatus(v.name + ' (' + v.orient + ') projected ' + pl.dir + ' from its parent, aligned with it.');
     return v;
@@ -5865,7 +6090,7 @@ var Drawing = (function () {
     }
     var pl = sectionPlacement(p), spec = { axis: P.axis, at: P.cut, sign: pl.sign, x: pl.x, y: pl.y, label: P.label }, parent = P.parent, v;
     endTool();
-    edit(function (dc) { v = Drawing.addSectionView(dc, mesh(), parent, spec); autoInsertViews(dc, [v.id]); });
+    v = editView(function (dc) { return Drawing.addSectionView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
     UI.setStatus(v.name + ' placed, cut at ' + Drawing.fmtDim(spec.at, units()) + ' ' + units() + '.');
     return v;
@@ -5897,7 +6122,7 @@ var Drawing = (function () {
     }
     var spec = { c: P.c, r: P.r, scale: P.scale, x: p[0], y: p[1] }, parent = P.parent, v;
     endTool();
-    edit(function (dc) { v = Drawing.addDetailView(dc, mesh(), parent, spec); autoInsertViews(dc, [v.id]); });
+    v = editView(function (dc) { return Drawing.addDetailView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree();
     UI.setStatus(v.name + ' placed.');
     return v;
@@ -6713,13 +6938,13 @@ var Drawing = (function () {
   function dragDim(p) {
     var dg = D.drag, d = dg.d, w = sheetView(d.view), dx = p[0] - dg.start[0], dy = p[1] - dg.start[1], props = {};
     if (!w) return;
-    if (d.kind === 'h') { props.at = d.lineAt + dy / w.scale; props.tx = (d.tx || 0) + dx; }
-    else if (d.kind === 'v') { props.at = d.lineAt + dx / w.scale; props.tx = (d.tx || 0) + dy; }
+    if (d.kind === 'h') { props.at = d.lineAt + dy / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx; }
+    else if (d.kind === 'v') { props.at = d.lineAt + dx / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dy; }
     else if (d.kind === 'aligned') {
       var a = w.toSheet(d.a), b = w.toSheet(d.b), t = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(t[0], t[1]) || 1; t = [t[0] / L, t[1] / L];
       var n0 = [-t[1], t[0]], ang = Math.atan2(t[1], t[0]) * 180 / Math.PI, tt = t;
       if (ang > 90 || ang <= -90) tt = [-t[0], -t[1]];
-      props.off = (d.offNow || 0) + dx * n0[0] + dy * n0[1]; props.tx = (d.tx || 0) + dx * tt[0] + dy * tt[1];
+      props.off = (d.offNow || 0) + dx * n0[0] + dy * n0[1]; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx * tt[0] + dy * tt[1];
     } else if (d.kind === 'dia' || d.kind === 'rad' || d.kind === 'chamfer') props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];
     else if (d.kind === 'ordinate' || d.kind === 'baseline') props.at = d.lineAt + (d.dir === 'v' ? dx : dy) / w.scale;
     if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) props.tx = null; }
