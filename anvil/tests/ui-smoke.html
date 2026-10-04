@@ -3609,6 +3609,7 @@
     return 'cut 4 → 6, revolve 90° → 135° → 180° → undo';
   });
   step('Instant3D on sketch dimensions: in the part the feature\'s sketch width (40) drags to 50 (volume 50·20·10); in the sketch the dimension dot drags the rectangle height 20 → 25; each one undo step', async function () {
+    var r12dims = UI.App.view.showDims; UI.App.view.showDims = true;   // r12/sketchui12: the driven values (View ▸ Sketch Dimensions) are off by default now
     await anvil.newPart(); await idle();
     await anvil.run(BLOCK); await idle();
     UI.setView('Isometric');
@@ -3646,6 +3647,7 @@
     near(anvil.mass().volume, 40 * 25 * 10, 1e-6, 'rebuilt after the sketch');
     await UI.undo(); await idle();
     near(anvil.mass().volume, 8000, 1e-6, 'undo');
+    UI.App.view.showDims = r12dims;
     return 'part 40 → 50, sketch 20 → 25';
   });
   step('box selection in a sketch (window 2 of 3 entities, crossing 2, Ctrl adds; Delete removes all three as one undo step) and in an assembly (crossing selects the pin it touches); FeatureManager ↔ viewport sync, Ctrl-click a row, Esc clears', async function () {
@@ -6259,6 +6261,7 @@
     UI.pmOK();
     var f = UI.activeSketchFeature(), dim = (f.rels || []).filter(function (r) { return r.type === 'distance'; })[0];
     assert(dim && dim.dir === 'r' && dim.v === 3 && dim.refs.join(',') === '0,1', 'radial dim: ' + JSON.stringify(f.rels));
+    UI.App.dimsStale = false; UI.drawDims();   // r12/sketchui12: with the driven values off by default nothing was drawn before the next frame
     assert(D.querySelectorAll('#dim-layer g.dim').length >= 1, 'drawn');
     var r = UI.editRelDim(f.rels.indexOf(dim), '5');
     assert(r.ok && Math.abs(f.entities[1].r - f.entities[0].r - 5) < 1e-6 && Math.abs(f.entities[1].cx - f.entities[0].cx) < 1e-6,'r ' + f.entities[0].r + ' / ' + f.entities[1].r);
@@ -7103,6 +7106,22 @@
     UI.App.dimsStale = false; UI.drawDims();
     assert(D.querySelector('#i3d-layer .i3d-handle[data-kind="sdim"]'), 'dimension dot back after the drag');
     return 'hidden while dragging';
+  });
+  step('r12/sketchui12: a new sketch shows only placed dimensions (View ▸ Sketch Dimensions off by default); end points are drawn as dots in the entity colour; each sketch tool has its own cursor', async function () {
+    await rskNew();
+    assert(UI.App.view.showDims === false, 'Sketch Dimensions off by default');
+    UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskDbl([40, 25]); selKey('Escape');
+    UI.setTool('circle');
+    var cur = W.getComputedStyle($('viewport')).cursor;
+    assert($('viewport').getAttribute('data-sktool') === 'circle' && /^url\(/.test(cur), 'circle cursor: ' + cur.slice(0, 40));
+    UI.setTool('select');
+    UI.App.dimsStale = false; UI.drawDims();
+    assert(!D.querySelector('#dim-layer g.dim'), 'no driven values drawn: ' + D.querySelectorAll('#dim-layer g.dim').length);
+    var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints; });
+    var n = pts.reduce(function (s, o) { return s + o.geometry.getAttribute('position').count; }, 0);
+    assert(n === 3, 'three end points (the shared corner once): ' + n);
+    assert(pts.every(function (o) { return o.material.color.getHex() === UI.mats.sketch.color.getHex(); }), 'blue like the under-defined lines');
+    return n + ' points';
   });
   // --- end r12/sketchui12 ---
 

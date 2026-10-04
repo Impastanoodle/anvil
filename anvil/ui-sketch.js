@@ -144,6 +144,7 @@
     App.toolState = { pts: [] };
     App.drawConstruction = false;
     viewport.classList.toggle('tool-cross', App.tool !== 'select');
+    viewport.setAttribute('data-sktool', App.tool);   // r12/sketchui12: the pencil cursor with the tool's glyph (style.css)
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
     hint.innerHTML = TOOL_HINTS[App.tool] || '';

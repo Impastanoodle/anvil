@@ -966,7 +966,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       if (d) drawRuler(g, h, v);
       if (h.kind === 'sdim' && !h.live) drawSketchDim(g, h, d ? v : null);
       var p = S(h.pos(v)), a = h.arrow(v), q = S(V.add(h.pos(v), a)), u = unit2(p, q);
-      var hg = svg('g', { 'class': 'i3d-handle', 'data-kind': h.kind, 'data-index': String(idx) }, g);
+      var hg = svg('g', { 'class': 'i3d-handle' + (h.kind === 'sdim' && h.live ? ' live' : ''), 'data-kind': h.kind, 'data-index': String(idx) }, g);
       if (h.kind === 'sdim') {
         svg('circle', { 'class': 'i3d-grip', cx: p[0], cy: p[1], r: 9 }, hg);
         svg('circle', { 'class': 'i3d-dot', cx: p[0], cy: p[1], r: 4.5 }, hg);

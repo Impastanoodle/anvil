@@ -14,7 +14,7 @@ var UI = (function () {
     mode: 'part', activeSketch: null,
     tool: null, toolState: null, tempEntities: [],
     command: null,
-    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: false, showDims: true, section: null, bg: 'gradient' },
+    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: false, showDims: false, section: null, bg: 'gradient' },
     ribbonTab: 'Features',
     viewHistory: [],
     sketchDirty: false,
@@ -1146,6 +1146,46 @@ var UI = (function () {
     d.dashSize = cam.scale * 7; d.gapSize = cam.scale * 4;
     return d;
   }
+  // r12/sketchui12: the end and centre points of the active sketch's entities as small round dots in the entity's
+  // colour (SolidWorks' entity points), one dot where several ends meet; mid points and a corner rectangle's centre
+  // are not shown (SolidWorks has none there)
+  var ptTexture = null, ptMats = {};
+  function sketchPointMat(m) {
+    if (!ptTexture) {
+      var cv = document.createElement('canvas'); cv.width = cv.height = 32;
+      var cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(16, 16, 14, 0, Math.PI * 2); cx.fill();
+      ptTexture = new THREE.CanvasTexture(cv);
+    }
+    var pm = ptMats[m.uuid];
+    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
+    pm.color.copy(m.color);
+    return pm;
+  }
+  function sketchEndPoints(f, i, e, mat, ptsBy) {
+    var S = window.SketchSolver;
+    if (!S || !S.pointRefs || e.t === 'point') return;
+    S.pointRefs(f, i).forEach(function (pr) {
+      if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
+      var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
+      var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [] });
+      if (ptsBy._seen && ptsBy._seen[key]) return;
+      (ptsBy._seen = ptsBy._seen || {})[key] = true;
+      b.pts.push(pr.pt);
+    });
+  }
+  function addSketchPoints(pl, ptsBy) {
+    Object.keys(ptsBy).forEach(function (k) {
+      if (k === '_seen') return;
+      var b = ptsBy[k], pos = [];
+      b.pts.forEach(function (p) { var q = K.to3D(pl, p[0], p[1]); pos.push(q[0], q[1], q[2]); });
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      var pts = new THREE.Points(g, sketchPointMat(b.mat));
+      pts.renderOrder = 11;
+      pts.userData = { sketchPoints: true };
+      groups.sketches.add(pts);
+    });
+  }
   function updateSketches() {
     App.dimsStale = true;
     sceneVer++;
@@ -1158,7 +1198,7 @@ var UI = (function () {
       var state = null;
       if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
       else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
-      var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict };
+      var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
       f.entities.forEach(function (e, i) {
         var pls = K.entityPolylines(e);
         var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
@@ -1171,13 +1211,16 @@ var UI = (function () {
           return;
         }
         if (!pls.length) return;
+        var baseMat = mat;
         if (e.construction) mat = dashedMat(mat);   // construction geometry / centerlines: dashed
         var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
         if (e.construction) ls.computeLineDistances();
         ls.userData = { sketch: f.id, index: i };
         if (active) ls.renderOrder = 10;
         groups.sketches.add(ls);
+        if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
       });
+      if (active) addSketchPoints(pl, ptsBy);
     });
     if (App.mode !== 'sketch') App.sketchState = null;
     else if (UI.refreshStatus) UI.refreshStatus();
