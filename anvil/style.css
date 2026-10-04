@@ -353,6 +353,8 @@ body { overflow: auto; }
 #statusbar { white-space: nowrap; overflow: hidden; }
 #exit-sketch button { width: 36px; height: 36px; border-radius: 3px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; cursor: pointer; }
 #exit-sketch button:hover { border-color: var(--blue); background: var(--hover); } #exit-sketch button:active { transform: translateY(1px); }
+/* r12/sketchui12: the confirmation corner floats over the graphics area without a panel, as in SolidWorks */
+#exit-sketch { background: transparent; border-color: transparent; box-shadow: none; }
 #viewport.tool-cross { cursor: crosshair; }
 #viewport.tool-grab { cursor: grabbing; }
 /* r12/sketchui12: sketch tool cursors as in SolidWorks: a pencil (hot spot at its tip) with the tool's glyph */

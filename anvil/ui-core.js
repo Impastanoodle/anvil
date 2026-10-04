@@ -1158,7 +1158,7 @@ var UI = (function () {
     }
     var pm = ptMats[m.uuid];
     if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
-    pm.color.copy(m.color);
+    pm.color = m.color;   // the same Color: a theme switch recolours the dots with their lines
     return pm;
   }
   function sketchEndPoints(f, i, e, mat, ptsBy) {

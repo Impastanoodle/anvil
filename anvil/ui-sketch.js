@@ -1374,7 +1374,8 @@
     var gEl = svg('g', { 'class': cls }, dimLayer);
     sc.lines.forEach(function (l) { svg('line', { x1: l[0][0], y1: l[0][1], x2: l[1][0], y2: l[1][1] }, gEl); });
     sc.arrows.forEach(function (a) {
-      var ax = a.dir[0] * 9, ay = a.dir[1] * 9, px = -a.dir[1] * 3, py = a.dir[0] * 3;
+      // r12/sketchui12: slender filled arrowheads as in SolidWorks (10 px long, 4.4 px wide; were 9 × 6)
+      var ax = a.dir[0] * 10, ay = a.dir[1] * 10, px = -a.dir[1] * 2.2, py = a.dir[0] * 2.2;
       svg('polygon', { points: a.tip[0] + ',' + a.tip[1] + ' ' + (a.tip[0] - ax + px) + ',' + (a.tip[1] - ay + py) + ' ' + (a.tip[0] - ax - px) + ',' + (a.tip[1] - ay - py) }, gEl);
     });
     var ta = { x: sc.text.x, y: sc.text.y, 'text-anchor': sc.text.anchor };
