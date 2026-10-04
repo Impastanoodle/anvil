@@ -903,6 +903,21 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!gg) return;
     var P = function (uv) { return S(K.to3D(pl, uv[0], uv[1])); };
     var dg = svg('g', { 'class': 'i3d-dim' }, g), label, at;
+    var text = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + UI.fmtNum(v != null ? v : gg.value, 2);
+    // r14/sketchui14: laid out exactly as the sketch's own dimensions (ui-sketch.js dimLayout): SolidWorks ANSI,
+    // Century Gothic, the text horizontal in a break of the line, slim arrows, radius / diameter leaders with a shoulder
+    var sc = UI.dimLayout && (gg.type === 'linear' ? UI.linearDimScreen(pl, gg.P, gg.Q, gg.dir, h.off, null) : UI.radialDimScreen(pl, gg.C, gg.r, h.dim.ang, null));
+    if (sc) {
+      sc.label = text;
+      var lay = UI.dimLayout(sc);
+      svg('path', { 'class': 'i3d-dim-line', d: lay.d }, dg);
+      svg('path', { 'class': 'i3d-dim-arrow', d: lay.arrows }, dg);
+      label = svg('text', { x: Math.round(lay.text.x * 100) / 100, y: Math.round(lay.text.y * 100) / 100, 'text-anchor': lay.text.anchor, 'class': 'i3d-dim-text' }, dg);
+      label.textContent = text;
+      label.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); openEdit(h); });
+      label.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+      return;
+    }
     if (gg.type === 'linear') {
       var n2 = [-gg.dir[1], gg.dir[0]], off = h.off;
       var A = [gg.P[0] + n2[0] * off, gg.P[1] + n2[1] * off], B = [A[0] + gg.dir[0] * gg.value, A[1] + gg.dir[1] * gg.value];

@@ -54,8 +54,8 @@
   /* sketch overlay colours (read by the SVG dimension layer and by UI.setViewportTheme for the three.js materials) */
   --dim: #8a94a3;
   --sketch: #1f5fd0;
-  --dim-ink: #2f3a48;
-  --dim-text: #1b2733;
+  --dim-ink: #262626;
+  --dim-text: #000;
   --dim-halo: rgba(255,255,255,0.9);
   --font: "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, Roboto, Arial, sans-serif;
   --mono: "Cascadia Mono", Consolas, "Segoe UI Mono", monospace;
@@ -111,8 +111,8 @@
   --viewport-dark: linear-gradient(#2c3340, #171b22);
   --dim: #a7b0bb;
   --sketch: #6fa8ea;
-  --dim-ink: #c9d1da;
-  --dim-text: #e6e9ee;
+  --dim-ink: #d4d8de;
+  --dim-text: #f2f4f7;
   --dim-halo: rgba(30,33,38,0.9);
   color-scheme: dark;
 }
@@ -303,31 +303,40 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #zoom-box { position: absolute; border: 1px dashed var(--blue); background: rgba(31,111,197,0.08); pointer-events: none; z-index: 2; }
 /* sketch dimensions: an SVG overlay; only the value labels take the mouse */
 #dim-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }
-#dim-layer line, #dim-layer polyline { stroke: var(--dim-ink); stroke-width: 1; fill: none; }
-#dim-layer polygon { fill: var(--dim-ink); stroke: none; }
-#dim-layer text { font: 12px "Segoe UI", sans-serif; fill: var(--dim-text); paint-order: stroke; stroke: var(--dim-halo); stroke-width: 3px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }
+#dim-layer line, #dim-layer polyline, #dim-layer path.dl { stroke: var(--dim-ink); stroke-width: 1; fill: none; }
+#dim-layer polygon, #dim-layer path.da { fill: var(--dim-ink); stroke: none; }
+/* r14/sketchui14: SolidWorks ANSI dimension text (Century Gothic, as on drawing sheets), black when driving, grey when driven */
+#dim-layer text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: var(--dim-text); paint-order: stroke; stroke: var(--dim-halo); stroke-width: 2.5px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }
 #dim-layer text:hover { fill: var(--blue); }
-#dim-layer .sel line, #dim-layer .sel polyline { stroke: var(--green); stroke-width: 1.4; }
-#dim-layer .sel polygon { fill: var(--green); }
+#dim-layer .sel line, #dim-layer .sel polyline, #dim-layer .sel .dl { stroke: var(--green); stroke-width: 1.4; }
+#dim-layer .sel polygon, #dim-layer .sel .da { fill: var(--green); }
 #dim-layer .sel text { fill: var(--green); }
-#dim-layer .temp line, #dim-layer .temp polyline { stroke: var(--blue); stroke-dasharray: 4 3; }
-#dim-layer .temp polygon { fill: var(--blue); }
+#dim-layer .temp line, #dim-layer .temp polyline, #dim-layer .temp .dl { stroke: var(--blue); stroke-dasharray: 4 3; }
+#dim-layer .temp polygon, #dim-layer .temp .da { fill: var(--blue); }
 #dim-layer .temp text { fill: var(--blue); pointer-events: none; }
 /* sketch relations (ui-relations.js): relation icons, inference icons, over-defined dimensions, Add Relations picks */
 #dim-layer .rel-badge { pointer-events: auto; cursor: pointer; }
 #viewport.tool-cross #dim-layer .rel-badge { pointer-events: none; }   /* r5/sketch5: with a drawing tool, a click on a relation icon goes to the sketch */
-#dim-layer .rel-badge rect { fill: #f3f8ef; stroke: #8fbf86; stroke-width: 1; }
-#dim-layer .rel-badge:hover rect, #dim-layer .rel-badge.sel rect { fill: #d9f2d4; stroke: var(--green); stroke-width: 1.5; }
-#dim-layer .rel-badge.redundant rect { fill: #fff4c8; stroke: #d4a300; }
-#dim-layer .rel-badge.conflict rect { fill: #fde0dd; stroke: #d9302c; }
-#dim-layer .rel-badge.infer { pointer-events: none; }
-#dim-layer .rel-badge.infer rect { fill: #fff2a8; stroke: #d4a300; }
+/* r14/sketchui14: SolidWorks relation glyphs: a small square, green border, the symbol in dark green (ui-sketch.js relGlyph);
+   the border one / two device pixels (--rg-bw), crisp at any display scaling; state colours change the fill, border and symbol */
+#dim-layer .rel-badge { color: #23731c; }
+#dim-layer .rel-badge rect { fill: #f2faef; stroke: #4c9c43; stroke-width: var(--rg-bw, 1px); shape-rendering: crispEdges; }
+#dim-layer .rel-badge:hover rect, #dim-layer .rel-badge.sel rect { fill: #cdeec6; stroke: #1f8a14; }
+#dim-layer .rel-badge:hover, #dim-layer .rel-badge.sel { color: #145c0e; }
+#dim-layer .rel-badge.redundant { color: #8a6a00; } #dim-layer .rel-badge.redundant rect { fill: #fff4c8; stroke: #d4a300; }
+#dim-layer .rel-badge.conflict { color: #b3201c; } #dim-layer .rel-badge.conflict rect { fill: #fde0dd; stroke: #d9302c; }
+#dim-layer .rel-badge.infer { pointer-events: none; color: #6b5600; }
+#dim-layer .rel-badge.infer rect { fill: #fff2a8; stroke: #c99a00; }
+html[data-theme="dark"] #dim-layer .rel-badge { color: #8fe083; } html[data-theme="dark"] #dim-layer .rel-badge rect { fill: #1f2a1d; stroke: #5fb455; }
+html[data-theme="dark"] #dim-layer .rel-badge:hover rect, html[data-theme="dark"] #dim-layer .rel-badge.sel rect { fill: #2b4527; stroke: #8fe083; }
+html[data-theme="dark"] #dim-layer .rel-badge.redundant, html[data-theme="dark"] #dim-layer .rel-badge.infer { color: #ffd75a; } html[data-theme="dark"] #dim-layer .rel-badge.redundant rect, html[data-theme="dark"] #dim-layer .rel-badge.infer rect { fill: #3a3218; stroke: #d4a300; }
+html[data-theme="dark"] #dim-layer .rel-badge.conflict { color: #ff8a84; } html[data-theme="dark"] #dim-layer .rel-badge.conflict rect { fill: #3d1f1d; stroke: #e0524d; }
 #dim-layer .rel-badge line, #dim-layer .rel-badge polyline { stroke-width: inherit; }
 #dim-layer .rel-pick { stroke: var(--green); stroke-width: 3; fill: none; opacity: 0.85; }
 #dim-layer circle.rel-pick { fill: var(--green); }
-#dim-layer .dim.redundant text { fill: #b08700; } #dim-layer .dim.redundant line { stroke: #d4a300; } #dim-layer .dim.redundant polygon { fill: #d4a300; }
-#dim-layer .dim.conflict text { fill: #d9302c; } #dim-layer .dim.conflict line { stroke: #d9302c; } #dim-layer .dim.conflict polygon { fill: #d9302c; }
-#dim-layer .dim.driven text { fill: #8a9099; } #dim-layer .dim.driven line { stroke: #a4aab2; } #dim-layer .dim.driven polygon { fill: #a4aab2; }
+#dim-layer .dim.redundant text { fill: #b08700; } #dim-layer .dim.redundant .dl { stroke: #d4a300; } #dim-layer .dim.redundant .da { fill: #d4a300; }
+#dim-layer .dim.conflict text { fill: #d9302c; } #dim-layer .dim.conflict .dl { stroke: #d9302c; } #dim-layer .dim.conflict .da { fill: #d9302c; }
+#dim-layer .dim.driven text { fill: #80868e; } #dim-layer .dim.driven .dl { stroke: #9ea4ab; } #dim-layer .dim.driven .da { fill: #9ea4ab; }   /* driven (reference): grey, as in SolidWorks */
 .rel-list { max-height: 260px; overflow: auto; border: 1px solid var(--line); background: var(--panel, #fff); margin: 2px 0 6px; }
 .rel-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 12px; border-bottom: 1px solid var(--line); cursor: default; }
 .rel-row:last-child { border-bottom: 0; }
@@ -338,20 +347,28 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .rel-row.redundant em { color: #b08700; } .rel-row.conflict em { color: #d9302c; }
 /* r5/sketch5: Display/Delete Relations rows tinted by state, hover, focus; a relation icon whose entities are lit up */
 .rel-row.redundant { background: rgba(212,163,0,0.14); } .rel-row.conflict { background: rgba(217,48,44,0.12); } #rel-display .rel-row:hover { background: var(--blue-soft); } #rel-display .rel-row.sel { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); } #rel-display .rel-row:focus { outline: 1px dotted var(--blue); outline-offset: -1px; }
-#dim-layer .rel-badge.hot rect { fill: #ffe9cc; stroke: #e8891c; stroke-width: 1.5; }
+#dim-layer .rel-badge.hot { color: #a65a00; } #dim-layer .rel-badge.hot rect { fill: #ffe9cc; stroke: #e8891c; }
 .rel-empty { padding: 4px 6px; color: var(--muted); font-size: 12px; }
 #status-right .sk-state.under { color: var(--blue); } #status-right .sk-state.full { font-weight: 600; } #status-right .sk-state.over { color: #d9302c; font-weight: 600; }
 #status-right .sk-state { min-width: 96px; transition: color 120ms ease-out; }   /* r5/sketch5: Under / Fully / Over Defined keep their place */
 #status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
-#dim-edit { position: absolute; z-index: 4; display: flex; align-items: center; gap: 2px; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
+/* r14/sketchui14: the Modify box as in SolidWorks: "Modify" title, ✓ ✗ Rebuild buttons, then the value, its unit and the spin arrows */
+#dim-edit { position: absolute; z-index: 4; display: flex; flex-direction: column; width: 152px; background: var(--panel-2); border: 1px solid #8c96a3; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); overflow: hidden; font: 12px var(--font); color: var(--text); }
 #dim-edit[hidden] { display: none; }
-#dim-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; }
-#dim-edit .dm-spin { display: inline-flex; flex-direction: column; }
-#dim-edit .dm-spin button { width: 14px; height: 10px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 7px; line-height: 10px; cursor: pointer; }
-#dim-edit .dm-btns { display: inline-flex; gap: 1px; border-left: 1px solid var(--line); padding-left: 2px; }
-#dim-edit .dm-btns button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 2px; background: transparent; font-size: 13px; line-height: 20px; cursor: pointer; }
-#dim-edit button:hover { background: var(--hover); color: var(--blue); }
-#dim-edit .dm-ok { color: #2f9e5b; } #dim-edit .dm-cancel { color: #d9302c; } #dim-edit .dm-rebuild { color: var(--blue); }
+#dim-edit .dm-head { padding: 3px 8px; background: var(--panel); border-bottom: 1px solid var(--line); font-weight: 600; font-size: 11.5px; letter-spacing: 0.1px; cursor: default; user-select: none; }
+#dim-edit .dm-btns { display: flex; gap: 2px; padding: 4px 6px 3px; }
+#dim-edit .dm-btns button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; cursor: pointer; }
+#dim-edit .dm-btns button:hover { background: var(--hover); border-color: #9cc3ea; }
+#dim-edit .dm-btns button:active { background: #d4e6f8; }
+#dim-edit .dm-row { display: flex; align-items: stretch; margin: 2px 6px 7px; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 2px; }
+#dim-edit input { flex: 1; min-width: 0; width: 60px; border: 0; outline: 0; font: 13px var(--font); padding: 3px 2px 3px 6px; background: transparent; color: inherit; }
+#dim-edit .dm-unit { align-self: center; padding: 0 4px 0 1px; color: var(--muted); font-size: 12px; user-select: none; }
+#dim-edit .dm-spin { display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+#dim-edit .dm-spin button { display: flex; align-items: center; justify-content: center; flex: 1; width: 16px; min-height: 11px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+#dim-edit .dm-spin button svg { width: 12px; height: 12px; }
+#dim-edit .dm-spin button:hover { background: var(--hover); color: var(--blue); }
+#dim-edit[data-error]:not([data-error=""]) .dm-row { border-color: #d33; }
+html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #33465c; } html[data-theme="dark"] #dim-edit .dm-btns button:hover { border-color: #4b6b8f; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
 #exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: row; gap: 2px; padding: 2px; border-radius: 4px; background: var(--overlay-2); border: 1px solid var(--line); box-shadow: 0 1px 4px var(--shadow); }   /* r5/sketch5: the confirmation corner, side by side */
@@ -548,10 +565,10 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #i3d-layer .i3d-tick { stroke: #23272d; stroke-width: 1; }
 #i3d-layer .i3d-tick.major { stroke-width: 1.5; }
 #i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: #23272d; }
-#i3d-layer .i3d-value { font: 600 12px "Segoe UI", sans-serif; fill: #1f6fc5; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
-#i3d-layer .i3d-dim line { stroke: #1f5fd0; stroke-width: 1; }
-#i3d-layer .i3d-dim polygon { fill: #1f5fd0; }
-#i3d-layer .i3d-dim-text { font: 12px "Segoe UI", sans-serif; fill: #1f5fd0; pointer-events: all; cursor: text; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-layer .i3d-value { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #1f6fc5; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-layer .i3d-dim line, #i3d-layer .i3d-dim .i3d-dim-line { stroke: #1f5fd0; stroke-width: 1; fill: none; }   /* r14/sketchui14: feature dimensions in the part laid out as the sketch's (ANSI), driving blue */
+#i3d-layer .i3d-dim polygon, #i3d-layer .i3d-dim .i3d-dim-arrow { fill: #1f5fd0; stroke: none; }
+#i3d-layer .i3d-dim-text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #1f5fd0; pointer-events: all; cursor: text; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
 #i3d-edit { position: absolute; z-index: 4; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 #i3d-edit[hidden] { display: none; }
 #i3d-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: inherit; }

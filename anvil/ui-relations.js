@@ -201,8 +201,10 @@
       if (R > tmax + gap) out.lines.push([at(a, tmax + gap), at(a, R + ext)]);
       else if (R < tmin - gap) out.lines.push([at(a, R - ext), at(a, tmin - gap)]);
     });
-    var mid = at(aL, R), c = scr(pl, g.X), um = unit(c, mid);
-    out.text = { x: mid[0] + um[0] * 10, y: mid[1] + um[1] * 10 + 4, anchor: um[0] > 0.35 ? 'start' : um[0] < -0.35 ? 'end' : 'middle' };
+    // r14/sketchui14: the text horizontal and centred on the arc, in a break of it (ANSI, as the linear dimensions)
+    var mid = at(aL, R);
+    out.text = { x: mid[0], y: mid[1] + (UI.DIM_CAP || 9.4) / 2, anchor: 'middle' };
+    out.laid = true;
     return out;
   }
   // The arc of an angle dimension: rays u1 = q·d1 and u2 = ±q·d2 (reversed for the supplementary angle), from u1's
@@ -316,10 +318,11 @@
     return scr(pl, [c.c[0] + c.r * Math.SQRT1_2, c.c[1] + c.r * Math.SQRT1_2]);
   }
   function badge(layer, h, x, y, type, cls, title, relIndex) {
-    var ga = { 'class': 'rel-badge ' + (cls || ''), transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' };
+    // r14/sketchui14: on the device-pixel grid, the frame crisp at any display scaling (ui-sketch.js relGlyph)
+    var ga = { 'class': 'rel-badge ' + (cls || ''), transform: UI.relBadgeAt ? UI.relBadgeAt(x, y) : 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' };
     if (relIndex != null) ga['data-rel'] = relIndex;
     var g = h.svg('g', ga, layer);
-    h.svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
+    h.svg('rect', UI.relBadgeFrame ? UI.relBadgeFrame() : { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
     if (h.icon) h.icon(g, iconName(type));
     else { var inner = h.svg('g', { transform: 'translate(1,1) scale(0.875)' }, g); inner.innerHTML = Icons(iconName(type), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, ''); }
     if (title) { var t = h.svg('title', {}, g); if (h.text) h.text(t, title); else t.textContent = title; }
