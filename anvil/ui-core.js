@@ -93,6 +93,7 @@ var UI = (function () {
     grid: new THREE.LineBasicMaterial({ color: 0xb8c0ca, transparent: true, opacity: 0.55 }),
     gridMajor: new THREE.LineBasicMaterial({ color: 0x9aa4b0, transparent: true, opacity: 0.7 })
   };
+  mats.sketchDangling = new THREE.LineBasicMaterial({ color: 0xa88300 });   // r12/occtui12: a Dangling sketch (its face is gone), SolidWorks' olive
 
   var bodyMesh = null, edgeLines = null;
 
@@ -1163,6 +1164,7 @@ var UI = (function () {
         var pls = K.entityPolylines(e);
         var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
+        if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
         if (e.t === 'point') {
           var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
           var g = new THREE.BufferGeometry();

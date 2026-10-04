@@ -34,7 +34,7 @@
     var skTxt = sk ? '<span class="sk-state ' + sk.status + '" title="Degrees of freedom: ' + sk.dof + '">' + (window.SketchSolver ? SketchSolver.STATUS_TEXT[sk.status] : sk.status) + '</span>' : '';
     // written only when it changed (refreshStatus runs on every solve and rebuild); the last span has a fixed width so
     // a rebuild time growing from "9 ms" to "120 ms" does not shift the rest of the bar
-    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span><span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     var sr = $('status-right');
     if (sr._html !== html) { sr.innerHTML = html; sr._html = html; }
     var title = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
@@ -326,6 +326,7 @@
     var errors = App.build ? App.build.errors : {}, warnings = App.build ? App.build.warnings : {};
     var ac = K.activeConfiguration ? K.activeConfiguration(m) : null;
     var root = treeItem({ icon: 'part', name: m.name + (ac ? ' (' + ac.name + ')' : ''), children: true, open: true, toggle: function () { } });
+    if (UI.rebuildMarkRoot) UI.rebuildMarkRoot(root);   // r12/occtui12: badge, right-click ▸ What's Wrong?
     root.addEventListener('dblclick', function () { renameInline(root, m.name, function (n) { m.name = n; UI.rebuild(); }); });
     tree.appendChild(root);
     [['folder', 'History'], ['sensor', 'Sensors'], ['annotations', 'Annotations']].forEach(function (s) { tree.appendChild(treeItem({ icon: s[0], name: s[1], depth: 1, cls: 'dim' })); });
@@ -559,6 +560,7 @@
     var rolled = App.rollback != null && !active && App.model.features.indexOf(f) >= App.rollback;
     var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
+    if (UI.rebuildMarkRow) UI.rebuildMarkRow(row, f, err, warn, featureIcon(f));   // r12/occtui12: own icon + error / warning badge, tooltip
     row.addEventListener('click', function (e) {
       // slow double-click (SolidWorks): a second, unhurried click on the name of the selected feature renames it;
       // a real double-click within the delay cancels it and edits the feature instead
@@ -593,6 +595,7 @@
   }
   function featureMenu(f) {
     var items = [];
+    if (UI.whatsWrong && App.build && ((App.build.errors || {})[f.id] || (App.build.warnings || {})[f.id])) items.push({ label: 'What\'s Wrong?', action: function () { UI.whatsWrong(f.id); } }, { sep: true });   // r12/occtui12
     if (f.type === 'sketch') items.push({ label: 'Edit Sketch', action: function () { UI.editSketch(f.id); } });
     else items.push({ label: 'Edit Feature', action: function () { UI.editFeature(f); } });
     if (f.sketch != null) items.push({ label: 'Edit Sketch', action: function () { UI.editSketch(f.sketch); } });
@@ -798,9 +801,8 @@
         { label: 'Units: inches (IPS)', checked: App.model.units === 'in', action: function () { App.model.units = 'in'; UI.rebuild(); } },
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
         { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
-        { label: 'OpenCascade kernel (experimental)', checked: !!(UI.occt && UI.occt.on()), disabled: !UI.occt, action: function () { UI.occt.set(!UI.occt.on()); toast(UI.occt.on() ? 'OpenCascade builds every part too: true faces for picking, volumes cross-checked' : 'OpenCascade kernel off'); } },
-        { label: 'OpenCascade engine file…', disabled: !(UI.occt && UI.occt.engineDialog), action: function () { UI.occt.engineDialog(); } }
-      ] },
+        { sep: true }
+      ].concat(UI.occtMenuItems ? UI.occtMenuItems() : []) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } },
         { label: 'Background: gradient', checked: v.bg === 'gradient', action: function () { setBg('gradient'); } },
