@@ -892,14 +892,24 @@ var SketchSolver = (function () {
   // entity it was trimmed at. Placed dimensions follow their entities (a radius stays on the arc). Falls back to
   // dropping the trimmed entity's relations when keeping them would leave the sketch unsolvable.
   var KEEP_ON_PIECE = { horizontal: 1, vertical: 1, parallel: 1, perpendicular: 1, collinear: 1, tangent: 1, concentric: 1, coincident: 1, angle: 1, distance: 1 };
-  function afterTrim(sketch, before, idx) {
+  // does point pt lie within the extent of line / arc e (between its ends, inside its sweep)?
+  function onPieceExtent(pt, e) {
+    var tol = 1e-6 * Math.max(1, Math.abs(pt[0]), Math.abs(pt[1]));
+    if (e.t === 'line') { var a = [e.x1, e.y1], d = sub([e.x2, e.y2], a), L = len(d); if (L < 1e-12) return false; var t = dot(sub(pt, a), d) / L; return t > -tol && t < L + tol; }
+    if (e.t !== 'arc') return true;
+    var r = ((Math.atan2(pt[1] - e.cy, pt[0] - e.cx) / D2R - e.a0) % 360 + 360) % 360;
+    return r * D2R * e.r < (e.a1 - e.a0) * D2R * e.r + tol || (360 - r) * D2R * e.r < tol;
+  }
+  // (r13/trim13) ctx, optional: { conflicts } of the sketch before (a Power trim drag knows it from the trim before),
+  // and on return { conflicts, analysis } of the result, so a run of trims analyses each state once.
+  function afterTrim(sketch, before, idx, ctx) {
     var E = sketch.entities, old = before[idx];
     var map = before.map(function (e) { return E.indexOf(e); });
     var pieces = [];
     E.forEach(function (e, i) { if (before.indexOf(e) < 0) pieces.push(i); });
     var simple = !!old && (old.t === 'line' || old.t === 'arc' || old.t === 'circle') && pieces.every(function (i) { return E[i].t === 'line' || E[i].t === 'arc'; });
     var savedRels = sketch.rels ? clone(sketch.rels) : null, savedDims = sketch.dims ? clone(sketch.dims) : null;
-    var an0 = simple ? analyze({ entities: before, rels: sketch.rels, dims: sketch.dims }) : null;
+    var an0 = !simple ? null : ctx && ctx.conflicts != null ? { conflicts: ctx.conflicts } : analyze({ entities: before, rels: sketch.rels, dims: sketch.dims });
     function near(a, b) { return !!(a && b) && Math.abs(a[0] - b[0]) < 1e-6 * Math.max(1, Math.abs(a[0])) && Math.abs(a[1] - b[1]) < 1e-6 * Math.max(1, Math.abs(a[1])); }
     function oldPt(k) { return refPoint(before, { e: idx, s: 'p', k: k }); }
     // where an old point ref of the trimmed entity lives now ('3.p1', an arc piece's centre), or null
@@ -930,7 +940,16 @@ var SketchSolver = (function () {
       for (var k = 0; k < n; k++) {
         var copy = clone(rel);
         copy.refs = refs.map(function (x) { return x.length > 1 ? x[k] : x[0]; });
-        if (copy.refs.every(function (x) { return x != null; })) rels.push(copy);
+        if (!copy.refs.every(function (x) { return x != null; })) continue;
+        // r13/trim13: a point that lay on the trimmed curve lies on (the extent of) one piece at most: its Coincident goes
+        // to that piece only (a point left in the removed gap loses it), so no piece gets a redundant one
+        if (rel.type === 'coincident') {
+          var cr = copy.refs.filter(function (x) { return pieces.indexOf(+x) >= 0 && String(+x) === x; })[0];
+          var other = cr != null ? copy.refs.filter(function (x) { return x !== cr; })[0] : null, op = other != null ? parseRef(other) : null;
+          var opt = op && refKind(E, op) === 'point' ? refPoint(E, op) : null;
+          if (opt && !onPieceExtent(opt, E[+cr])) continue;
+        }
+        rels.push(copy);
       }
     });
     if (simple) {
@@ -968,7 +987,10 @@ var SketchSolver = (function () {
     moveDims();
     clean(sketch);
     if (simple) solve(sketch);   // the cut point was rounded: close the new Coincidents exactly
-    if (simple && analyze(sketch).conflicts > an0.conflicts) {
+    var an1 = simple ? analyze(sketch) : null;
+    if (ctx) { ctx.conflicts = an1 ? an1.conflicts : null; ctx.analysis = an1; }
+    if (simple && an1.conflicts > an0.conflicts) {
+      if (ctx) { ctx.conflicts = null; ctx.analysis = null; }
       // keeping them fights the geometry: the trimmed entity's relations go, as before
       if (savedRels) sketch.rels = savedRels; else delete sketch.rels;
       if (savedDims) sketch.dims = savedDims; else delete sketch.dims;
@@ -1472,7 +1494,7 @@ var SketchSolver = (function () {
   // Where line or arc i reaches when its end nearest uv is extended to the first entity it meets, as SolidWorks' Extend
   // Entities does: { end: 'p1' | 'p2', from, to, d: added length (line) or degrees (arc), a: new end angle (arc) }, or
   // null when nothing lies ahead.
-  function extendTarget(sketch, i, uv) {
+  function extendTarget(sketch, i, uv, all) {   // all (r13/trim13): every point where the carrier meets other entities
     var E = sketch.entities, e = E[i];
     if (!e || (e.t !== 'line' && e.t !== 'arc')) return null;
     var q1 = refPoint(E, { e: i, s: 'p', k: 1 }), q2 = refPoint(E, { e: i, s: 'p', k: 2 });
@@ -1534,12 +1556,14 @@ var SketchSolver = (function () {
       if (L0 < 1e-12) return null;
       var d = [(from[0] - other[0]) / L0, (from[1] - other[1]) / L0];
       lineHits(from, d);
+      if (all) return hits;
       hits.forEach(function (p) { var t = dot(sub(p, from), d); if (t > eps && (!best || t < best.d)) best = { end: end, from: from, to: p, d: t }; });
       return best;
     }
     var sw = e.a1 - e.a0;
     if (sw >= 360 - 1e-9) return null;
     circleHits([e.cx, e.cy], e.r);
+    if (all) return hits;
     hits.forEach(function (p) {
       var a = Math.atan2(p[1] - e.cy, p[0] - e.cx) / D2R;
       var da = end === 'p2' ? ((a - e.a1) % 360 + 360) % 360 : ((e.a0 - a) % 360 + 360) % 360;
@@ -1584,6 +1608,380 @@ var SketchSolver = (function () {
       return { ok: false, error: 'Extending conflicts with the sketch\'s relations or dimensions.' };
     }
     return { ok: true, end: tg.end, to: tg.to, at: at };
+  }
+
+  // ------------------------------------------------------------------ r13/trim13: Trim Entities modes (SolidWorks)
+  // Power trim (a trail dragged across entities, an end dragged to extend), Corner, Trim away inside / outside and Trim
+  // to closest. The intersection maths is Kernel.trimEntity's (same primitives, same tolerances), so the span a hover
+  // highlights is the span a click or a crossing removes.
+  var TAU = 2 * Math.PI;
+  function tAngIn(a, a0, a1) {
+    var t = a;
+    while (t < a0 - 1e-9) t += TAU;
+    while (t >= a0 + TAU - 1e-9) t -= TAU;
+    return t <= a1 + 1e-9 ? t : null;
+  }
+  // parameters on primitive p (a segment: t in [0, 1]; an arc: the angle) where primitive q crosses it
+  function tPrimHits(p, q) {
+    var out = [], eps = 1e-9;
+    if (p.kind === 'seg' && q.kind === 'seg') {
+      var d1 = sub(p.b, p.a), d2 = sub(q.b, q.a), den = crs(d1, d2);
+      if (Math.abs(den) < eps) return out;
+      var w = sub(q.a, p.a), t = crs(w, d2) / den, u = crs(w, d1) / den;
+      if (t > -eps && t < 1 + eps && u > -eps && u < 1 + eps) out.push(t);
+      return out;
+    }
+    if (p.kind === 'seg') {
+      var d = sub(p.b, p.a), f = sub(p.a, q.c), A = dot(d, d), B = 2 * dot(f, d), C = dot(f, f) - q.r * q.r, disc = B * B - 4 * A * C;
+      if (disc < 0 || A < eps) return out;
+      var sq = Math.sqrt(disc);
+      [(-B - sq) / (2 * A), (-B + sq) / (2 * A)].forEach(function (t) {
+        if (t < -eps || t > 1 + eps) return;
+        var x = p.a[0] + d[0] * t, y = p.a[1] + d[1] * t;
+        if (tAngIn(Math.atan2(y - q.c[1], x - q.c[0]), q.a0, q.a1) != null) out.push(t);
+      });
+      return out;
+    }
+    if (q.kind === 'seg') {
+      tPrimHits(q, p).forEach(function (t) {
+        var x = q.a[0] + (q.b[0] - q.a[0]) * t, y = q.a[1] + (q.b[1] - q.a[1]) * t, a = tAngIn(Math.atan2(y - p.c[1], x - p.c[0]), p.a0, p.a1);
+        if (a != null) out.push(a);
+      });
+      return out;
+    }
+    var dx = q.c[0] - p.c[0], dy = q.c[1] - p.c[1], D = Math.hypot(dx, dy);
+    if (D < eps || D > p.r + q.r + eps || D < Math.abs(p.r - q.r) - eps) return out;
+    var a2 = (p.r * p.r - q.r * q.r + D * D) / (2 * D), h = Math.sqrt(Math.max(0, p.r * p.r - a2 * a2));
+    var mx = p.c[0] + dx / D * a2, my = p.c[1] + dy / D * a2;
+    [[mx - h * dy / D, my + h * dx / D], [mx + h * dy / D, my - h * dx / D]].forEach(function (pt, i) {
+      if (i === 1 && h < eps) return;
+      if (tAngIn(Math.atan2(pt[1] - q.c[1], pt[0] - q.c[0]), q.a0, q.a1) == null) return;
+      var a = tAngIn(Math.atan2(pt[1] - p.c[1], pt[0] - p.c[0]), p.a0, p.a1);
+      if (a != null) out.push(a);
+    });
+    return out;
+  }
+  function tPrimAt(p, uv) {
+    if (p.kind === 'seg') {
+      var d = sub(p.b, p.a), L2 = dot(d, d), t = L2 > 1e-12 ? Math.max(0, Math.min(1, dot(sub(uv, p.a), d) / L2)) : 0;
+      return { t: t, dist: Math.hypot(uv[0] - p.a[0] - d[0] * t, uv[1] - p.a[1] - d[1] * t) };
+    }
+    var a = tAngIn(Math.atan2(uv[1] - p.c[1], uv[0] - p.c[0]), p.a0, p.a1);
+    if (a == null) {
+      var e0 = tPrimPt(p, p.a0), e1 = tPrimPt(p, p.a1), d0 = len(sub(uv, e0)), d1 = len(sub(uv, e1));
+      return d0 < d1 ? { t: p.a0, dist: d0 } : { t: p.a1, dist: d1 };
+    }
+    return { t: a, dist: Math.abs(len(sub(uv, p.c)) - p.r) };
+  }
+  function tPrimPt(p, t) { return p.kind === 'seg' ? [p.a[0] + (p.b[0] - p.a[0]) * t, p.a[1] + (p.b[1] - p.a[1]) * t] : [p.c[0] + p.r * Math.cos(t), p.c[1] + p.r * Math.sin(t)]; }
+  // sketch points along primitive p from parameter lo to hi (a segment: its two ends; an arc: about every 4 degrees)
+  function tPrimPts(p, lo, hi) {
+    if (p.kind === 'seg') return [tPrimPt(p, lo), tPrimPt(p, hi)];
+    var n = Math.max(2, Math.ceil(Math.abs(hi - lo) / (4 * D2R))), out = [];
+    for (var k = 0; k <= n; k++) out.push(tPrimPt(p, lo + (hi - lo) * k / n));
+    return out;
+  }
+  function tPrims(e) { return e && e.t !== 'point' && K && K.entityPrimitives ? K.entityPrimitives(e) : []; }
+  // parameters on primitive k of entity idx where the other primitives cross it (only entities listed in `only`, if given)
+  function tCuts(E, idx, k, prim, only) {
+    var params = [];
+    E.forEach(function (o, oi) {
+      if (!o || o.t === 'point' || (only && only.indexOf(oi) < 0)) return;
+      tPrims(o).forEach(function (q, qi) { if (oi === idx && qi === k) return; tPrimHits(prim, q).forEach(function (t) { params.push(t); }); });
+    });
+    return params;
+  }
+  // The part of entity idx that Trim to closest removes at uv: { idx, pts: sketch points along it, whole }, or null.
+  function trimSpan(sketch, idx, uv) {
+    var E = sketch.entities, e = E[idx], prims = tPrims(e), k = -1, kd = Infinity, kt = 0;
+    prims.forEach(function (p, i) { var q = tPrimAt(p, uv); if (q.dist < kd) { kd = q.dist; k = i; kt = q.t; } });
+    if (k < 0) return null;
+    var prim = prims[k], params = tCuts(E, idx, k, prim), lo = null, hi = null;
+    params.forEach(function (t) {
+      if (t < kt - 1e-7 && (lo == null || t > lo)) lo = t;
+      if (t > kt + 1e-7 && (hi == null || t < hi)) hi = t;
+    });
+    if (prim.full) {
+      if (params.length < 2) return { idx: idx, whole: true, pts: tPrimPts(prim, 0, TAU) };
+      if (lo == null) lo = Math.max.apply(null, params) - TAU;
+      if (hi == null) hi = Math.min.apply(null, params) + TAU;
+      return { idx: idx, whole: false, pts: tPrimPts(prim, lo, hi) };
+    }
+    var start = prim.kind === 'arc' ? prim.a0 : 0, end = prim.kind === 'arc' ? prim.a1 : 1, tiny = (end - start) * 1e-6;
+    if (lo == null) lo = start;
+    if (hi == null) hi = end;
+    return { idx: idx, whole: prims.length === 1 && lo - start <= tiny && end - hi <= tiny, pts: tPrimPts(prim, lo, hi) };
+  }
+  function tRound(e) {
+    if (e.t === 'polyline') e.pts = e.pts.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; });
+    else Object.keys(e).forEach(function (k) { if (typeof e[k] === 'number') e[k] = Math.round(e[k] * 1e4) / 1e4; });
+    return e;
+  }
+  function segDistPt(p, a, b) {
+    var d = sub(b, a), L2 = dot(d, d), t = L2 > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), d) / L2)) : 0;
+    return len(sub(p, [a[0] + d[0] * t, a[1] + d[1] * t]));
+  }
+  // Trim to closest at uv on entity idx (Kernel.trimEntity), a rectangle first becoming four lines; relations and
+  // dimensions follow the pieces (afterTrim). Returns { ok, error }.
+  function trimAt(sketch, idx, uv, ctx) {
+    var e = sketch.entities[idx];
+    if (!e || e.t === 'point') return { ok: false, error: 'Nothing to trim there.' };
+    if (e.t === 'rect' || e.t === 'crect') {
+      explodeRect(sketch, idx);
+      if (ctx) ctx.conflicts = null;
+      var bi = idx, bd = Infinity;
+      for (var k = 0; k < 4; k++) { var l = sketch.entities[idx + k], d = segDistPt(uv, [l.x1, l.y1], [l.x2, l.y2]); if (d < bd) { bd = d; bi = idx + k; } }
+      idx = bi;
+    }
+    var before = sketch.entities.slice(), out;
+    try { out = K.trimEntity(sketch.entities, idx, uv); } catch (err) { return { ok: false, error: err.message }; }
+    sketch.entities = out.map(tRound);
+    afterTrim(sketch, before, idx, ctx);
+    return { ok: true };
+  }
+  // The entities the straight trail a -> b crosses, the first crossing of each, nearest a first: [{ i, t, pt }].
+  function trailHits(sketch, a, b) {
+    var seg = { kind: 'seg', a: a, b: b }, out = [];
+    var x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+    sketch.entities.forEach(function (e, i) {
+      if (!e || e.t === 'point') return;
+      // a cheap box test first: most entities are nowhere near one mouse move's worth of trail
+      if (e.t === 'line' && (Math.max(e.x1, e.x2) < x0 || Math.min(e.x1, e.x2) > x1 || Math.max(e.y1, e.y2) < y0 || Math.min(e.y1, e.y2) > y1)) return;
+      if ((e.t === 'circle' || e.t === 'arc') && (e.cx + e.r < x0 || e.cx - e.r > x1 || e.cy + e.r < y0 || e.cy - e.r > y1)) return;
+      var best = null;
+      tPrims(e).forEach(function (q) { tPrimHits(seg, q).forEach(function (t) { if (best == null || t < best) best = t; }); });
+      if (best != null) out.push({ i: i, t: best, pt: tPrimPt(seg, best) });
+    });
+    out.sort(function (p, q) { return p.t - q.t; });
+    return out;
+  }
+  // Power trim: each entity segment the trail a -> b crosses is trimmed away at its neighbouring intersections (Trim to
+  // closest at the crossing), in the order the trail meets them; an entity nothing else crosses is deleted. onFirst()
+  // runs before the first change (the caller's undo step). Returns how many segments went.
+  function powerTrim(sketch, a, b, onFirst, ctx) {
+    var n = 0, s = a, started = false, tiny = 1e-9 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]), Math.abs(b[0]), Math.abs(b[1]));
+    for (var guard = 0; guard < 64; guard++) {
+      var L = len(sub(b, s));
+      if (L <= tiny) break;
+      var hs = trailHits(sketch, s, b), h = null;
+      for (var k = 0; k < hs.length && !h; k++) if (hs[k].t * L > tiny) h = hs[k];
+      if (!h) break;
+      if (!started && onFirst) onFirst();
+      started = true;
+      if (trimAt(sketch, h.i, h.pt, ctx).ok) n++;
+      s = h.pt;
+    }
+    return n;
+  }
+  // Is the end endRef ('3.p2') joined to another sketch point (a Coincident with a point, not a point-on-curve one)?
+  function endJoined(sketch, endRef, except) {
+    return (sketch.rels || []).some(function (rel) {
+      return rel.type === 'coincident' && rel.refs.indexOf(endRef) >= 0 && rel.refs.some(function (r) { return r !== endRef && r !== except && refKind(sketch.entities, parseRef(r)) === 'point'; });
+    });
+  }
+  function dropEndCoincidents(sketch, refs) {
+    if (!sketch.rels) return;
+    sketch.rels = sketch.rels.filter(function (rel) { return !(rel.type === 'coincident' && refs.some(function (r) { return rel.refs.indexOf(r) >= 0; })); });
+    if (!sketch.rels.length) delete sketch.rels;
+  }
+  function tSave(sketch) { return { entities: clone(sketch.entities), rels: sketch.rels ? clone(sketch.rels) : null, dims: sketch.dims ? clone(sketch.dims) : null }; }
+  function tRestore(sketch, s) {
+    sketch.entities = s.entities;
+    if (s.rels) sketch.rels = s.rels; else delete sketch.rels;
+    if (s.dims) sketch.dims = s.dims; else delete sketch.dims;
+  }
+  // Power trim's extend: the free end of line or arc i that is near the press. Begin it with extendBegin (the end's
+  // point-on-curve Coincidents go, it leaves that curve), move it with extendMove, and finish with extendEnd, which adds
+  // a Coincident where it lands on another entity and solves (everything goes back on a conflict).
+  function extendBegin(sketch, i, end) {
+    var e = sketch.entities[i], endRef = i + '.' + end;
+    if (!e || (e.t !== 'line' && e.t !== 'arc') || endJoined(sketch, endRef)) return null;
+    var st = { i: i, end: end, endRef: endRef, saved: tSave(sketch), conflicts: analyze(sketch).conflicts, sweep: e.a1 - e.a0, ang: null, hits: extendTarget(sketch, i, [0, 0], true) || [] };
+    if (e.t === 'arc') st.ang = end === 'p2' ? e.a1 : e.a0;
+    dropEndCoincidents(sketch, [endRef]);
+    return st;
+  }
+  // move the end towards uv (a line along its direction, an arc round its circle); snap: a carrier crossing to land
+  // on exactly (from st.hits), or null. Returns the end's new point.
+  function extendMove(sketch, st, uv, snap) {
+    var e = sketch.entities[st.i];
+    if (e.t === 'line') {
+      var fix = st.end === 'p1' ? [e.x2, e.y2] : [e.x1, e.y1], mv = st.end === 'p1' ? [e.x1, e.y1] : [e.x2, e.y2], d = sub(mv, fix), L = len(d);
+      if (L < 1e-12) return mv;
+      d = [d[0] / L, d[1] / L];
+      var t = Math.max(dot(sub(snap || uv, fix), d), 1e-3 * Math.max(1, Math.abs(fix[0]), Math.abs(fix[1])));
+      var p = [fix[0] + d[0] * t, fix[1] + d[1] * t];
+      if (st.end === 'p1') { e.x1 = p[0]; e.y1 = p[1]; } else { e.x2 = p[0]; e.y2 = p[1]; }
+      return p;
+    }
+    // an arc: follow the way the cursor sweeps round the centre (no jump where the angle wraps)
+    var q = snap || uv, a = Math.atan2(q[1] - e.cy, q[0] - e.cx) / D2R, dA = ((a - st.ang) % 360 + 540) % 360 - 180;
+    var sign = st.end === 'p2' ? 1 : -1, sw = Math.max(0.5, Math.min(359.5, st.sweep + sign * dA));
+    st.sweep = sw;
+    if (st.end === 'p2') e.a1 = e.a0 + sw; else e.a0 = e.a1 - sw;
+    st.ang = st.end === 'p2' ? e.a1 : e.a0;
+    return [e.cx + e.r * Math.cos(st.ang * D2R), e.cy + e.r * Math.sin(st.ang * D2R)];
+  }
+  function extendEnd(sketch, st, landed) {
+    var E = sketch.entities, e = E[st.i], at = null;
+    if (landed) {
+      var to = refPoint(E, parseRef(st.endRef)), tol = 1e-7 * Math.max(1, Math.abs(to[0]), Math.abs(to[1]));
+      for (var j = 0; j < E.length && !at; j++) {
+        if (j === st.i) continue;
+        pointRefs(sketch, j).forEach(function (pr) { if (!at && !/\.(mid|c)$/.test(pr.ref) && Math.abs(pr.pt[0] - to[0]) < tol && Math.abs(pr.pt[1] - to[1]) < tol) at = pr.ref; });
+      }
+      at = at || onCurveRef(sketch, st.i, to, 1e-6 * Math.max(1, Math.abs(to[0]), Math.abs(to[1])));
+      if (at) {
+        (sketch.rels = sketch.rels || []).push({ type: 'coincident', refs: [st.endRef, at] });
+        if (analyze(sketch).rels[sketch.rels.length - 1] !== 'ok') { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; at = null; }
+      }
+    }
+    var p0 = refPoint(sketch.entities, parseRef(st.endRef)), res = solve(sketch), an = analyze(sketch);
+    if (!res.ok || an.conflicts > st.conflicts) { tRestore(sketch, st.saved); return { ok: false, error: 'Extending conflicts with the sketch\'s relations or dimensions.' }; }
+    var p1 = refPoint(sketch.entities, parseRef(st.endRef));
+    // held: a dimension or relation pulled the end back from where it was dropped
+    return { ok: true, at: at, held: len(sub(p1, p0)) > 1e-4 * Math.max(1, Math.abs(p0[0]), Math.abs(p0[1])) };
+  }
+  // ---- Corner: two lines / arcs are extended or trimmed until they meet, each keeping the side that was clicked
+  function tCarrier(e) { return e.t === 'line' ? { kind: 'line', a: [e.x1, e.y1], b: [e.x2, e.y2] } : { kind: 'circle', c: [e.cx, e.cy], r: e.r }; }
+  function carrierMeet(A, B) {
+    if (A.kind === 'circle' && B.kind === 'line') return carrierMeet(B, A);
+    var out = [];
+    if (A.kind === 'line' && B.kind === 'line') {
+      var d1 = sub(A.b, A.a), d2 = sub(B.b, B.a), den = crs(d1, d2);
+      if (Math.abs(den) < 1e-12 * len(d1) * len(d2)) return out;
+      var t = crs(sub(B.a, A.a), d2) / den;
+      out.push([A.a[0] + d1[0] * t, A.a[1] + d1[1] * t]);
+      return out;
+    }
+    if (A.kind === 'line') {
+      var d = sub(A.b, A.a), L = len(d); if (L < 1e-12) return out;
+      var u = [d[0] / L, d[1] / L], f = sub(A.a, B.c), b = dot(f, u), c = dot(f, f) - B.r * B.r, disc = b * b - c;
+      if (disc < -1e-12 * B.r * B.r) return out;
+      var sq = Math.sqrt(Math.max(0, disc));
+      [-b - sq, -b + sq].forEach(function (s, i) { if (i === 0 || sq > 1e-12) out.push([A.a[0] + u[0] * s, A.a[1] + u[1] * s]); });
+      return out;
+    }
+    var dx = B.c[0] - A.c[0], dy = B.c[1] - A.c[1], D = Math.hypot(dx, dy);
+    if (D < 1e-12 || D > A.r + B.r + 1e-9 || D < Math.abs(A.r - B.r) - 1e-9) return out;
+    var al = (A.r * A.r - B.r * B.r + D * D) / (2 * D), h = Math.sqrt(Math.max(0, A.r * A.r - al * al)), mx = A.c[0] + dx * al / D, my = A.c[1] + dy * al / D;
+    out.push([mx - dy * h / D, my + dx * h / D]);
+    if (h > 1e-12) out.push([mx + dy * h / D, my - dx * h / D]);
+    return out;
+  }
+  function tEnds(e) {
+    if (e.t === 'line') return [[e.x1, e.y1], [e.x2, e.y2]];
+    return [[e.cx + e.r * Math.cos(e.a0 * D2R), e.cy + e.r * Math.sin(e.a0 * D2R)], [e.cx + e.r * Math.cos(e.a1 * D2R), e.cy + e.r * Math.sin(e.a1 * D2R)]];
+  }
+  // how entity e changes to end at P keeping the side clicked at uv: { end: 'p1' | 'p2', x/y or a }, or null
+  function cornerSide(e, P, uv) {
+    if (e.t === 'line') {
+      var A = [e.x1, e.y1], d = sub([e.x2, e.y2], A), L2 = dot(d, d);
+      if (L2 < 1e-18) return null;
+      var tP = dot(sub(P, A), d) / L2, tc = dot(sub(uv, A), d) / L2, end = tc <= tP ? 'p2' : 'p1';
+      var keep = end === 'p2' ? 0 : 1;
+      if (Math.abs(tP - keep) * Math.sqrt(L2) < 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]))) return null;
+      return { end: end, pt: P };
+    }
+    var aP = Math.atan2(P[1] - e.cy, P[0] - e.cx) / D2R, ac = Math.atan2(uv[1] - e.cy, uv[0] - e.cx) / D2R;
+    function m(x) { return ((x % 360) + 360) % 360; }
+    var na1 = e.a0 + m(aP - e.a0), na0 = e.a1 - m(e.a1 - aP), c = [];
+    if (na1 - e.a0 > 1e-6) c.push({ end: 'p2', a: na1, keeps: m(ac - e.a0) <= na1 - e.a0 + 1e-9, change: Math.abs(na1 - e.a1) });
+    if (e.a1 - na0 > 1e-6) c.push({ end: 'p1', a: na0, keeps: m(ac - na0) <= e.a1 - na0 + 1e-9, change: Math.abs(na0 - e.a0) });
+    c.sort(function (p, q) { return (q.keeps - p.keeps) || (p.change - q.change); });
+    return c.length ? { end: c[0].end, a: c[0].a, pt: P } : null;
+  }
+  // { ok, pt, sides: [side of i, side of j] } or { ok: false, error }: what Corner would do (also the hover preview)
+  function cornerPlan(sketch, i, uvi, j, uvj) {
+    var E = sketch.entities, a = E[i], b = E[j];
+    if (i === j) return { ok: false, error: 'Select two different entities.' };
+    if (!a || !b || (a.t !== 'line' && a.t !== 'arc') || (b.t !== 'line' && b.t !== 'arc')) return { ok: false, error: 'Corner works on lines and arcs.' };
+    var pts = carrierMeet(tCarrier(a), tCarrier(b));
+    if (!pts.length) return { ok: false, error: 'Those entities cannot meet (parallel, or the circles do not cross).' };
+    var ea = tEnds(a), eb = tEnds(b), P = null, bd = Infinity;
+    pts.forEach(function (p) {
+      var d = Math.min(len(sub(p, ea[0])), len(sub(p, ea[1]))) + Math.min(len(sub(p, eb[0])), len(sub(p, eb[1])));
+      if (d < bd) { bd = d; P = p; }
+    });
+    var si = cornerSide(a, P, uvi), sj = cornerSide(b, P, uvj);
+    if (!si || !sj) return { ok: false, error: 'The corner would leave an entity with no length.' };
+    return { ok: true, pt: P, sides: [si, sj] };
+  }
+  function applySide(e, s) {
+    if (e.t === 'line') { if (s.end === 'p1') { e.x1 = s.pt[0]; e.y1 = s.pt[1]; } else { e.x2 = s.pt[0]; e.y2 = s.pt[1]; } }
+    else if (s.end === 'p1') e.a0 = s.a; else e.a1 = s.a;
+    if (e.t === 'arc') { while (e.a0 >= 360) { e.a0 -= 360; e.a1 -= 360; } while (e.a0 < 0) { e.a0 += 360; e.a1 += 360; } }
+  }
+  // the geometry Corner would give (line / arc copies), for the preview
+  function cornerPreview(sketch, i, uvi, j, uvj) {
+    var pl = cornerPlan(sketch, i, uvi, j, uvj);
+    if (!pl.ok) return null;
+    return [i, j].map(function (k, n) { var c = clone(sketch.entities[k]); applySide(c, pl.sides[n]); return c; });
+  }
+  function cornerTrim(sketch, i, uvi, j, uvj) {
+    var pl = cornerPlan(sketch, i, uvi, j, uvj);
+    if (!pl.ok) return pl;
+    var ri = i + '.' + pl.sides[0].end, rj = j + '.' + pl.sides[1].end;
+    if (endJoined(sketch, ri, rj) || endJoined(sketch, rj, ri)) return { ok: false, error: 'That end is joined to other geometry: only free ends can make the corner.' };
+    var saved = tSave(sketch), c0 = analyze(sketch).conflicts;
+    dropEndCoincidents(sketch, [ri, rj]);
+    applySide(sketch.entities[i], pl.sides[0]);
+    applySide(sketch.entities[j], pl.sides[1]);
+    (sketch.rels = sketch.rels || []).push({ type: 'coincident', refs: [ri, rj] });
+    var res = solve(sketch), an = analyze(sketch);
+    if (!res.ok || an.conflicts > c0) { tRestore(sketch, saved); return { ok: false, error: 'The corner conflicts with the sketch\'s relations or dimensions.' }; }
+    return { ok: true, pt: pl.pt };
+  }
+  // ---- Trim away inside / outside: entity idx is cut where it crosses the two bounding entities; inside removes the
+  // part between them, outside keeps only that part. { idx, prim, keep: [[lo, hi]], remove: [[lo, hi]] } or { error }.
+  function betweenPlan(sketch, idx, uv, bounds, outside) {
+    var E = sketch.entities, e = E[idx];
+    if (!e || (e.t !== 'line' && e.t !== 'arc' && e.t !== 'circle')) return { error: 'Trim away ' + (outside ? 'outside' : 'inside') + ' works on lines, arcs and circles.' };
+    if (bounds.indexOf(idx) >= 0) return { error: 'That is one of the bounding entities.' };
+    var prim = tPrims(e)[0], kt = tPrimAt(prim, uv).t, hits = [];
+    for (var b = 0; b < bounds.length; b++) {
+      var ps = tCuts(E, -1, -1, prim, [bounds[b]]);
+      if (!ps.length) return { error: 'The entity has to cross both bounding entities.' };
+      var dist = function (t) { var d = Math.abs(t - kt); return prim.full ? Math.min(d, TAU - d) : d; };   // round a circle either way
+      ps.sort(function (p, q) { return dist(p) - dist(q); });
+      hits.push(ps[0]);
+    }
+    var lo = Math.min(hits[0], hits[1]), hi = Math.max(hits[0], hits[1]), mid = [[lo, hi]], rest;
+    if (hi - lo < 1e-9) return { error: 'The bounding entities cross it at the same point.' };
+    if (prim.full) {
+      var other = [[hi, lo + TAU]];
+      if (!(kt >= lo && kt <= hi)) { rest = mid; mid = other; } else rest = other;
+      // a circle: "between" is the arc on the side clicked
+    } else {
+      var start = prim.kind === 'arc' ? prim.a0 : 0, end = prim.kind === 'arc' ? prim.a1 : 1, tiny = (end - start) * 1e-6;
+      rest = [];
+      if (lo - start > tiny) rest.push([start, lo]);
+      if (end - hi > tiny) rest.push([hi, end]);
+    }
+    return outside ? { idx: idx, prim: prim, keep: mid, remove: rest } : { idx: idx, prim: prim, keep: rest, remove: mid };
+  }
+  function betweenSpans(sketch, idx, uv, bounds, outside) {
+    var pl = betweenPlan(sketch, idx, uv, bounds, outside);
+    return pl.error ? null : pl.remove.map(function (r) { return tPrimPts(pl.prim, r[0], r[1]); });
+  }
+  function trimBetween(sketch, idx, uv, bounds, outside) {
+    var pl = betweenPlan(sketch, idx, uv, bounds, outside);
+    if (pl.error) return { ok: false, error: pl.error };
+    var E = sketch.entities, e = E[idx], pieces = pl.keep.map(function (r) {
+      var o;
+      if (pl.prim.kind === 'seg') { var a = tPrimPt(pl.prim, r[0]), b = tPrimPt(pl.prim, r[1]); o = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }; }
+      else {
+        o = { t: 'arc', cx: e.cx, cy: e.cy, r: e.r, a0: r[0] / D2R, a1: r[1] / D2R };
+        while (o.a0 >= 360) { o.a0 -= 360; o.a1 -= 360; }
+        while (o.a0 < 0) { o.a0 += 360; o.a1 += 360; }
+      }
+      if (e.construction) o.construction = true;
+      return tRound(o);
+    });
+    var before = E.slice();
+    sketch.entities = E.slice(0, idx).concat(pieces, E.slice(idx + 1));
+    afterTrim(sketch, before, idx);
+    return { ok: true, pieces: pieces.length };
   }
 
   // ------------------------------------------------------------------ descriptions
@@ -1698,6 +2096,9 @@ var SketchSolver = (function () {
     removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
-    mirrorRelations: mirrorRelations, install: install
+    mirrorRelations: mirrorRelations, install: install,
+    // r13/trim13: Trim Entities modes
+    trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
+    cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined
   };
 })();

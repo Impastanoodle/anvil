@@ -954,8 +954,10 @@
     $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
     if (!drawing) {
       // pre-highlight what a click would pick (select, Smart Dimension, Add Relations, Trim …), as SolidWorks does
-      var ref = UI.pickSketchRef && !App.zoomAreaMode ? UI.pickSketchRef(mx, my) : null;
-      drawHover(pl, ref === 'O' ? null : ref);
+      var own = !!(App.command && App.command.ownHover);   // r13/trim13: Trim highlights the span it would remove itself
+      var ref = UI.pickSketchRef && !App.zoomAreaMode && !own ? UI.pickSketchRef(mx, my) : null;
+      if (own) clearFeedback();
+      else drawHover(pl, ref === 'O' ? null : ref);
       // a sketch command's own hover preview (Extend Entities shows where the end would go)
       if (App.command && App.command.onSketchMove) App.command.onSketchMove(raw, mx, my);
     }
@@ -979,13 +981,15 @@
     glyph(layer, q[0] + 14, q[1] + 12, type || 'coincident');
   };
   // orange dashed polylines (sketch coordinates) added to the cursor feedback: a command's preview
-  UI.sketchPreview = function (polylines) {
+  // (r13/trim13: style replaces the dashed orange one, cls the class; the Trim hover and the Power trim trail)
+  UI.sketchPreview = function (polylines, style, cls) {
     var layer = feedbackLayer(), pl = UI.activePlane();
     (polylines || []).forEach(function (pts) {
       var s = pts.map(function (q) { var p = UI.worldToScreen(K.to3D(pl, q[0], q[1])); return Math.round(p[0] * 10) / 10 + ',' + Math.round(p[1] * 10) / 10; });
-      svg('polyline', { 'class': 'sk-preview', points: s.join(' '), style: 'stroke:#e8891c;stroke-width:2;fill:none;stroke-dasharray:5 3;stroke-linecap:round' }, layer);
+      svg('polyline', { 'class': cls || 'sk-preview', points: s.join(' '), style: style || 'stroke:#e8891c;stroke-width:2;fill:none;stroke-dasharray:5 3;stroke-linecap:round' }, layer);
     });
   };
+  UI.sketchFeedbackClear = function () { clearFeedback(); };
   var HOVER_STYLE ='stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function drawHover(pl, ref) {
     var layer = feedbackLayer(), f = UI.activeSketchFeature(), S = window.SketchSolver;
@@ -1753,7 +1757,9 @@
     if (rot) { drag = { kind: 'maybe-hook', hook: rot, last: p, moved: false }; ev.preventDefault(); return; }
     if (ev.button === 2) { drag = { kind: 'pan', last: p, moved: false }; return; }
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
-    var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
+    // (r13/trim13: a sketch command may take the drag itself, as Power trim does)
+    var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && App.command && App.command.onSketchDrag && !App.zoomAreaMode ? App.command.onSketchDrag(p, ev) : null) ||
+      (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
     // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
     if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
