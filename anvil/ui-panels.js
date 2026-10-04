@@ -1686,7 +1686,7 @@
       if (e.ctrlKey || e.metaKey || e.altKey) { closeShortcutBar(); return; }
       var take = true;
       if (k === 'Escape') closeShortcutBar();
-      else if (k === 'Enter' || k === ' ') scPress(sc.idx);
+      else if (k === 'Enter') scPress(sc.idx);
       else if (k === 's' || k === 'S') { if (!e.repeat) scPress(0); }
       else if (k === 'ArrowRight') scMark(sc.idx + 1);
       else if (k === 'ArrowLeft') scMark(sc.idx - 1);
