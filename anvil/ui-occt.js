@@ -97,7 +97,7 @@
       UI.showModal({ title: 'OpenCascade engine', body: body, buttons: buttons });
     });
   }
-  function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; heldResult = null; App.holdFrameUntil = 0; if (st.quietTimer) { clearTimeout(st.quietTimer); st.quietTimer = 0; } }
+  function stopWorker() { if (st.worker) st.worker.terminate(); st.worker = null; st.ready = false; st.busy = false; heldResult = null; App.holdFrameUntil = 0; if (st.quietTimer) { clearTimeout(st.quietTimer); st.quietTimer = 0; } rb.want = 0; rb.result = null; if (st.cueOn) cue(false); }
 
   function onMessage(e) {
     var m = e.data || {};
@@ -112,6 +112,9 @@
       Object.keys(imports).forEach(function (k) { imports[k].rej(new Error(m.message)); delete imports[k]; });
       settle(); refresh(); return;
     }
+    if (m.upto != null) { rollbackBuilt(m); return; }   // r11/occtswap11: Edit Feature's rolled-back part
+    if (m.type === 'built' && m.result && m.part == null && m.seq === st.want) learn(m.result, performance.now() - (st.buildingSince || 0));
+    if (m.part == null && st.cueOn && m.seq === st.want) cue(false);
     if (m.part != null) {   // one part of an assembly
       var A = st.asm;
       if (!A || m.seq !== A.seq) return;
@@ -379,8 +382,34 @@
     var anvil = null;
     if (!st.driving && App.mesh && App.mesh.positions && App.triShared) { anvil = { key: ++st.anvilSeq, positions: App.mesh.positions, triShared: App.triShared }; st.sentAnvil = { key: anvil.key, mesh: App.mesh }; }
     else st.sentAnvil = null;
+    st.estMs = estimate(model);   // r11/occtswap11: how long this build should take (afterBuild's frame hold)
     st.worker.postMessage({ type: 'build', seq: st.want, model: model, exports: true, anvil: anvil });
     refresh();
+  }
+  // ---- r11/occtswap11: how long OpenCascade will take. The worker's rebuild cache restores the unchanged feature
+  // prefix, so a build costs the features from the first changed one on (each feature's last measured time,
+  // r.ms.features), plus tessellation and the round trip (both measured on the last build)
+  st.featMs = {}; st.lastKeys = null;
+  function featureKeys(model) {
+    var head = JSON.stringify(model.sheet || null) + '|' + (model.units || 'mm');
+    return (model.features || []).map(function (f) { return head + JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }); });
+  }
+  function estimate(model) {
+    var keys = featureKeys(model), prev = st.lastKeys || [], i = 0, ms = 0;
+    while (i < keys.length && i < prev.length && keys[i] === prev[i]) i++;
+    for (var j = i; j < keys.length; j++) { var t = st.featMs[model.features[j].id]; ms += t != null ? t : 40; }
+    // the same part edited (an unchanged first feature, or the same features by id and type): a frame of another
+    // part is never held
+    var sig = (model.features || []).map(function (f) { return f.id + f.type; }).join(),
+      same = !!prev.length && (i > 0 || sig === st.lastSig);
+    st.lastKeys = keys; st.lastSig = sig; st.estSame = same;
+    return ms + (st.meshMs != null ? st.meshMs : 30) + (st.overMs != null ? st.overMs : 80);
+  }
+  function learn(r, total) {
+    var fm = r.ms && r.ms.features;
+    if (fm) Object.keys(fm).forEach(function (id) { st.featMs[id] = fm[id]; });
+    if (r.ms && r.ms.mesh != null) st.meshMs = r.ms.mesh;
+    if (r.ms && total != null) st.overMs = Math.max(0, Math.min(400, total - (r.ms.build || 0) - (r.ms.mesh || 0)));
   }
   // after every applied build (ui-core.js applyBuild calls the UI.onBuild hooks); OpenCascade's own apply is skipped
   function afterBuild(build, opts) {
@@ -394,14 +423,44 @@
     if (burst || held) { quietThen(); return; }
     if (!st.busy) {
       request();
-      // OpenCascade drove the part and answers quickly: the viewport keeps its last frame (OpenCascade's solid) for up
-      // to HOLD_MS instead of flashing Anvil's approximation before the exact solid swaps in (smooth/responsive)
-      if (wasDriving && st.busy && st.lastOcctMs != null && st.lastOcctMs < HOLD_MS && UI.holdFrame) UI.holdFrame(HOLD_MS);
+      // OpenCascade drove the part: the viewport keeps its last frame (OpenCascade's previous solid, or the preview
+      // the ✓ was pressed on) until the exact solid swaps in, instead of flashing Anvil's facets for the build's
+      // duration (smooth/responsive; r11/occtswap11: held for the expected build time, up to HOLD_MAX, with a
+      // 'Rebuilding…' cue; a build expected to take longer shows Anvil's part at once). Any input ends the hold.
+      if (wasDriving && st.busy && UI.holdFrame && isAsm()) { if (st.lastOcctMs != null && st.lastOcctMs < 280) UI.holdFrame(280); }   // as before
+      else if (wasDriving && st.busy && UI.holdFrame && st.estSame && st.estMs != null && st.estMs <= HOLD_MAX) {
+        UI.holdFrame(Math.min(HOLD_MAX, st.estMs * 1.5 + 150));
+        cue(true);
+      }
     }
   }
-  var HOLD_MS = 280;
+  var HOLD_MAX = 1500;
   function releaseHold() { App.holdFrameUntil = 0; }
   ['pointerdown', 'mousedown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, releaseHold, true); });
+  // r11/occtswap11: a small 'Rebuilding…' pill at the foot of the graphics area while a held frame waits for
+  // OpenCascade (faded in after 150 ms, so a quick swap shows nothing)
+  var cueEl = null;
+  function cue(on) {
+    st.cueOn = !!on;
+    if (st.cueTimer) { clearTimeout(st.cueTimer); st.cueTimer = 0; }
+    if (on) st.cueTimer = setTimeout(function () { st.cueTimer = 0; cue(false); }, HOLD_MAX + 1500);   // never left on
+    var vp = document.getElementById('viewport');
+    if (!vp) return;
+    if (!cueEl) {
+      var css = document.createElement('style');
+      css.textContent = '.occt-cue{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:11px;' +
+        'background:rgba(40,44,52,.62);color:#fff;font:12px/16px system-ui,sans-serif;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}' +
+        '.occt-cue.on{opacity:1;transition-delay:.15s}.occt-cue i{width:9px;height:9px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:occt-cue-spin .8s linear infinite}' +
+        '@keyframes occt-cue-spin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(css);
+      cueEl = document.createElement('div');
+      cueEl.className = 'occt-cue';
+      cueEl.innerHTML = '<i></i><span>Rebuilding…</span>';
+      cueEl.setAttribute('aria-hidden', 'true');
+      vp.appendChild(cueEl);
+    }
+    cueEl.classList.toggle('on', !!on);
+  }
   // (re)start the quiet window; when it ends with the button up, build the latest model
   function quietThen() {
     if (st.quietTimer) clearTimeout(st.quietTimer);
@@ -412,6 +471,57 @@
     }, QUIET);
   }
   (UI.onBuild = UI.onBuild || []).push(afterBuild);
+
+  // ---- r11/occtswap11: Edit Feature's rolled-back part (ui-core.js rollbackTo) on OpenCascade. While OpenCascade
+  // drives the part, the same rollback is asked of it as soon as the edit opens (occt-worker.js `upto`: the first n
+  // features straight from its rebuild cache, which stays as it is); its exact solid replaces Anvil's rolled-back
+  // part (UI.rollbackSwap) once that is shown, after the same checks as the whole part (valid, every feature built,
+  // volume agrees). If Anvil's rolled-back part is ready first, the viewport keeps its frame for up to ROLL_HOLD ms
+  // so Anvil's facets do not flash in between; a failed or slow answer leaves Anvil's rolled-back part.
+  var rb = { seq: 0, want: 0, n: null, result: null, anvil: null, hold: false, t0: 0 };
+  var ROLL_HOLD = 400;
+  (UI.onRollbackWant = UI.onRollbackWant || []).push(function (n) {
+    rb.want = 0; rb.result = null; rb.anvil = null; endRollHold();
+    if (!st.on || !st.ready || !st.worker || !st.driving || isAsm() || !App.model) return;
+    var model; try { model = JSON.parse(JSON.stringify(App.model)); } catch (e) { return; }
+    rb.want = ++rb.seq; rb.n = n; rb.t0 = performance.now(); st.rollbackMs = null;
+    st.worker.postMessage({ type: 'build', seq: rb.want, model: model, upto: n });
+  });
+  (UI.onRollbackShown = UI.onRollbackShown || []).push(function (n) {
+    if (!rb.want || rb.n !== n) return;
+    rb.anvil = App.build;
+    if (rb.result) { swapRollback(); return; }
+    if (UI.holdFrame) { UI.holdFrame(ROLL_HOLD); rb.hold = true; cue(true); }
+  });
+  (UI.onRollbackEnd = UI.onRollbackEnd || []).push(function () { rb.want = 0; rb.result = null; rb.anvil = null; endRollHold(); });
+  function endRollHold() {
+    if (!rb.hold) return;
+    rb.hold = false; releaseHold();
+    if (!st.busy) cue(false);
+  }
+  function rollbackBuilt(m) {
+    if (m.seq !== rb.want) return;
+    var r = m.type === 'built' ? m.result : null;
+    if (r) learn(r);
+    var ok = r && !r.unsupported && r.valid && r.mesh && Object.keys(r.status || {}).every(function (id) { return r.status[id] === 'ok'; });
+    if (!ok) { rb.want = 0; endRollHold(); return; }
+    rb.result = r;
+    if (rb.anvil && App.rollback === rb.n && App.build === rb.anvil) swapRollback();
+  }
+  function swapRollback() {
+    var r = rb.result, ab = App.build, am = App.mesh, n = rb.n;
+    rb.result = null; rb.want = 0;
+    try {
+      // Anvil's rolled-back part is the reference, as for the whole part (accept)
+      var av = am && am.triCount ? K.massProps(am, 1).volume : 0, dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
+      var beyond = Object.keys((ab && ab.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
+      if (beyond.length || dv <= (r.tolerance || 1e-4)) {
+        var b = OcctKernel.toBuild(r, ab, am, App.triShared, window.CSG, K);
+        if (UI.rollbackSwap && UI.rollbackSwap(b, { upto: n, anvil: ab, edges: r.edges, curves: r.curves, normals: r.normals })) st.rollbackMs = performance.now() - rb.t0;
+      }
+    } catch (e) { console.warn(e); }
+    endRollHold();
+  }
 
   // set(on, { remember: false }): switch without storing the choice (the test pages)
   function set(on, opts) {
@@ -503,6 +613,9 @@
     engineDialog: engineDialog, useEngineFile: useEngineFile, storedEngine: storedEngine, forgetEngine: function () { return storeEngine(null); } };
   // true while a build of the current model is queued, running or held back (the drawing sheet waits for it, r4/drawings4)
   UI.occt.pending = function () { return !!(st.on && pendingWork()); };
+  // r11/occtswap11: Edit Feature's rolled-back part on OpenCascade: { pending, ms (ask -> shown), estimate (ms) of the
+  // next build, cue }
+  UI.occt.rollback = function () { return { pending: !!rb.want, ms: st.rollbackMs != null ? st.rollbackMs : null, estimate: st.estMs, cue: !!st.cueOn }; };
   if (window.anvil) {
     // anvil.occt() -> status; anvil.occt(true | false) switches it; anvil.occtIdle() resolves when the current build
     // has answered (or at once when nothing is pending)
