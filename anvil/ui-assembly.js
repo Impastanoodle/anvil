@@ -2111,6 +2111,8 @@
       lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
       ghostEdgeMat = ghostEdgeMat || new THREE.LineBasicMaterial({ color: 0x24292f, transparent: true, opacity: 0.3, depthWrite: false });
       ghostEdgeMat.userData.lineWidth = 1.25;   // r14/fixes14: drawn as smooth thick lines like the opaque edges, a shade thinner
+      // and in the edges' own colour object, so they follow the viewport theme (near-black edges vanished on the dark one)
+      if (UI.mats && UI.mats.edge) ghostEdgeMat.color = UI.mats.edge.color;
       ghostEdgeMat.clippingPlanes = pm.clippingPlanes || null;
       var lines = new THREE.LineSegments(lg, ghostEdgeMat);
       lines.frustumCulled = false;
