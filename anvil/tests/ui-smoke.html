@@ -6912,6 +6912,29 @@
       return 'estimate ' + info.estimate.toFixed(0) + ' ms';
     } finally { anvil.occt(was, { remember: false }); await idle(); }
   });
+  step('r11/occtswap11: a whole-part OpenCascade build that finishes while Edit Feature is rolled back is not checked against the rolled-back part (no "volume differs"); ✗ swaps it in (skipped without vendor/occt)', async function () {
+    if (!anvil.workerOn()) return 'skipped: worker off';
+    var was = anvil.occt().on;
+    try {
+      if (!await occtDriving(exByName('Tray').code)) return 'skipped: OpenCascade not installed';
+      await wait(200);
+      var fl = UI.App.model.features.filter(function (x) { return x.type === 'flange'; })[0];
+      fl.length = 18;
+      await UI.rebuild();
+      var f = UI.App.model.features[UI.App.model.features.length - 1], idx = UI.App.model.features.length - 1;
+      UI.editFeature(f);
+      await rolledBackTo(idx);
+      var states = [];
+      for (var k = 0; k < 200 && (UI.occt.pending() || states.length === 0); k++) { states.push(anvil.occt().state); await wait(25); }
+      states.push(anvil.occt().state);
+      assert(states.indexOf('mismatch') < 0, 'states while rolled back: ' + states.filter(function (s, i) { return s !== states[i - 1]; }).join(' → '));
+      UI.pmCancel();
+      await wait(20); await anvil.occtIdle(); await idle();
+      assert(UI.App.rollback === null && UI.App.build.occt && anvil.occt().state === 'ok', 'whole exact part after ✗: ' + anvil.occt().state);
+      near(UI.App.build.occt.volume, anvil.occt().volume, 1e-9, 'the deferred solid');
+      return 'states ' + states.filter(function (s, i) { return s !== states[i - 1]; }).join(' → ');
+    } finally { if (UI.hasPM()) UI.pmCancel(); anvil.occt(was, { remember: false }); await idle(); }
+  });
   // --- end r11/occtswap11 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

@@ -130,6 +130,10 @@
     st.busy = false; st.lastOcctMs = performance.now() - (st.buildingSince || 0);
     if (m.seq !== st.want) { request(); return; }   // the model changed meanwhile: build the newer one
     if (m.type === 'error') { st.state = 'error'; st.error = m.message; st.result = null; }
+    // r11/occtswap11: the whole part answered while Edit Feature shows the part rolled back: App.build / App.mesh are
+    // the rolled-back part, no reference for its volume (the chip flashed "volume differs"); it is checked and swapped
+    // in when the edit rolls forward (✗), if still current (onRollbackEnd)
+    else if (App.rollback != null) { st.rollDeferred = { seq: m.seq, result: m.result }; releaseHold(); settle(); refresh(); return; }
     else if (held) { heldResult = { seq: m.seq, anvilBuild: App.build, apply: function () { accept(m.result); } }; return; }   // swapped in on release
     else accept(m.result);
     releaseHold();
@@ -493,7 +497,15 @@
     if (rb.result) { swapRollback(); return; }
     if (UI.holdFrame) { UI.holdFrame(ROLL_HOLD); rb.hold = true; cue(true); }
   });
-  (UI.onRollbackEnd = UI.onRollbackEnd || []).push(function () { rb.want = 0; rb.result = null; rb.anvil = null; endRollHold(); });
+  (UI.onRollbackEnd = UI.onRollbackEnd || []).push(function () {
+    rb.want = 0; rb.result = null; rb.anvil = null; endRollHold();
+    var d = st.rollDeferred; st.rollDeferred = null;
+    // once ui-core.js has put the whole part back (✗); after ✓ a newer build is asked for, so this one is stale
+    if (d) Promise.resolve().then(function () {
+      if (d.seq !== st.want || App.rollback != null || st.busy || !st.on) return;
+      accept(d.result); settle(); refresh();
+    });
+  });
   function endRollHold() {
     if (!rb.hold) return;
     rb.hold = false; releaseHold();
