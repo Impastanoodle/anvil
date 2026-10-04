@@ -664,3 +664,34 @@ body.splitting #viewport { pointer-events: none; }
 #tree .ti.component-row.suppressed .nm, #tree .ti.mate-row.suppressed .nm { text-decoration: none; color: var(--muted); }
 #tree .ti.component-row.err .nm, #tree .ti.mate-row.err .nm, #tree .ti.pattern-folder.err .nm { color: var(--red); }
 #tree .ti.mates-folder.warn .nm, #tree .ti.component-row.warn .nm, #tree .ti.mate-row.warn .nm { color: var(--warn-text); }
+
+/* ---- r14/commands14: flyout buttons, the Shortcut Bar (S) and two-line tooltips ---------------------------------- */
+/* a flyout: the face runs the last command picked, the narrow ▾ beside it opens the group (SolidWorks) */
+.rb-fly { display: flex; flex: none; align-items: stretch; border: 1px solid transparent; border-radius: 3px; }
+.rb-fly:hover, .rb-fly.open { border-color: var(--blue-line); }
+.rb-fly:has(> .rb.active) { border-color: var(--blue); }
+.rb-fly > .rb { border: 0; border-radius: 2px 0 0 2px; padding-right: 0; }
+.rb-fly > .rb:hover, .rb-fly > .rb:disabled:hover { border: 0; }
+.rb-caret { flex: none; width: 13px; display: flex; align-items: flex-end; justify-content: center; padding: 0 0 7px; border-radius: 0 2px 2px 0; color: var(--muted); font-size: 10px; line-height: 1; }
+.rb-caret:hover:not(:disabled), .rb-fly.open .rb-caret { background: var(--hover); color: var(--text); }
+.rb-fly.open .rb-caret { background: var(--sel); }
+.rb-caret:disabled { opacity: 0.42; cursor: default; }
+#ribbon.fit-2 .rb-fly > .rb { width: 34px; justify-content: center; }
+#ribbon.fit-2 .rb-fly > .rb span { display: none; }
+#ribbon.fit-2 .rb-caret { width: 11px; padding-bottom: 0; align-items: center; }
+/* the Shortcut Bar: a small floating toolbar at the pointer */
+.scbar { position: fixed; z-index: 45; display: grid; gap: 1px; padding: 3px; background: var(--menu-bg); border: 1px solid var(--menu-line); border-radius: 4px; box-shadow: 0 6px 18px var(--menu-shadow); animation: scbar-in 90ms ease-out; }
+.scbar .sc-btn { width: 30px; height: 28px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: none; padding: 0; }
+.scbar .sc-btn:hover:not(:disabled), .scbar .sc-btn.kbd:not(:disabled) { background: var(--hover); border-color: var(--blue-line); }
+.scbar .sc-btn.active { background: var(--sel); border-color: var(--blue); }
+.scbar .sc-btn:disabled { opacity: 0.42; cursor: default; }
+@keyframes scbar-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+/* tooltips: bold name with its shortcut, a description line, a muted note when the button is greyed */
+.tip { position: fixed; z-index: 80; max-width: 300px; padding: 5px 9px 6px; background: var(--menu-bg); color: var(--text); border: 1px solid var(--menu-line); border-radius: 3px; box-shadow: 0 4px 12px var(--menu-shadow); font-size: 12px; line-height: 1.4; pointer-events: none; }
+.tip[hidden] { display: none; }
+.tip-head { display: flex; align-items: baseline; gap: 12px; }
+.tip-head b { font-weight: 600; }
+.tip-key { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.tip-desc { margin-top: 1px; }
+.tip-note { margin-top: 2px; color: var(--muted); font-style: italic; }
+@media (prefers-reduced-motion: reduce) { .scbar { animation: none; } }

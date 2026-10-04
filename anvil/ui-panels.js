@@ -53,14 +53,14 @@
       { id: 'revolveCut', label: 'Revolved\nCut', run: function () { UI.cmdRevolve(true); } },
       { stack: [{ id: 'sweep', label: 'Swept Cut', run: function () { UI.cmdSweep(true); } }, { id: 'loft', label: 'Lofted Cut', run: function () { UI.cmdLoft(true); } }, { id: 'loft', label: 'Boundary Cut' }] },
       { sep: true },
-      { id: 'fillet', label: 'Fillet', run: function () { UI.cmdFillet(); } },
-      { id: 'lpattern', label: 'Linear\nPattern', run: function () { UI.cmdLinearPattern(); } },
-      { stack: [{ id: 'cpattern', label: 'Circular Pattern', run: function () { UI.cmdCircularPattern(); } }, { id: 'mirror', label: 'Mirror', run: function () { UI.cmdMirror(); } }, { id: 'chamfer', label: 'Chamfer', run: function () { UI.cmdChamfer(); } }] },
+      // r14/commands14: flyout buttons (SolidWorks): the face runs the last command used from the ▾ list
+      { fly: 'fillet', items: [{ id: 'fillet', label: 'Fillet', run: function () { UI.cmdFillet(); } }, { id: 'chamfer', label: 'Chamfer', run: function () { UI.cmdChamfer(); } }] },
+      { fly: 'pattern', items: [{ id: 'lpattern', label: 'Linear\nPattern', run: function () { UI.cmdLinearPattern(); } }, { id: 'cpattern', label: 'Circular\nPattern', run: function () { UI.cmdCircularPattern(); } }, { id: 'mirror', label: 'Mirror', run: function () { UI.cmdMirror(); } }] },
       { sep: true },
       { id: 'shell', label: 'Shell', run: function () { UI.cmdShell(); } },
       { id: 'draft', label: 'Draft' }, { id: 'intersect', label: 'Intersect' }, { id: 'rib', label: 'Rib' }, { id: 'wrap', label: 'Wrap' },
       { sep: true },
-      { id: 'refgeo', label: 'Reference\nGeometry', run: function () { UI.cmdPlane(); } },
+      { fly: 'refgeo', label: 'Reference\nGeometry', items: [{ id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } }, { id: 'refAxis', label: 'Axis' }, { id: 'csys', label: 'Coordinate\nSystem' }, { id: 'refPoint', label: 'Point', help: 'Create a reference point' }] },
       { id: 'curves', label: 'Curves' },
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
@@ -69,18 +69,17 @@
       { id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
       { sep: true },
       { id: 'line', label: 'Line', tool: 'line' },
-      { id: 'rect', label: 'Corner\nRectangle', tool: 'rect' },
-      { id: 'crect', label: 'Center\nRectangle', tool: 'crect' },
+      { fly: 'rect', items: [{ id: 'rect', label: 'Corner\nRectangle', tool: 'rect' }, { id: 'crect', label: 'Center\nRectangle', tool: 'crect' }] },
       { id: 'circle', label: 'Circle', tool: 'circle' },
-      { id: 'arc', label: 'Centerpoint\nArc', tool: 'arc' },
-      { id: 'arc3', label: '3 Point\nArc', tool: 'arc3' },
+      { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint\nArc', tool: 'arc' }, { id: 'arc3', label: '3 Point\nArc', tool: 'arc3' }] },
       { id: 'polygon', label: 'Polygon', tool: 'polygon' },
       { id: 'slot', label: 'Straight\nSlot', tool: 'slot' },
       { id: 'point', label: 'Point', tool: 'point' },
       { stack: [{ id: 'spline', label: 'Spline' }, { id: 'ellipse', label: 'Ellipse' }, { id: 'text', label: 'Text' }] },
       { sep: true },
       { id: 'fillet', label: 'Sketch\nFillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } },
-      { id: 'trim', label: 'Trim\nEntities', run: function () { UI.cmdTrimEntities(); } }, { id: 'extend', label: 'Extend\nEntities', run: function () { UI.cmdExtendEntities(); } }, { id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
+      { fly: 'trim', items: [{ id: 'trim', label: 'Trim\nEntities', run: function () { UI.cmdTrimEntities(); } }, { id: 'extend', label: 'Extend\nEntities', run: function () { UI.cmdExtendEntities(); } }] },
+      { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } }] },
       { stack: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'relations', label: 'Display/Delete Relations', run: function () { UI.cmdDisplayRelations(); } }] },
       { stack: [{ id: 'addRelation', label: 'Add Relation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } },
         { id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
@@ -174,12 +173,60 @@
     'Section Properties': 'Area, centroid and moments of area of a planar face or a sketch', 'Draft Analysis': 'Colour faces by their draft angle relative to a direction of pull',
     'Clearance Verification': 'Minimum distance between selected bodies or components, with the closest points',
     'Instant3D': 'Drag arrows on a selected extrude or revolve face, and its sketch dimensions, to change them in the viewport',
-    'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones'
+    'Fix': 'Fix the selected component where it is', 'Float': 'Let the selected component move so mates can position it', 'Hide/Show Components': 'Hide the selected component, or show hidden ones',
+    // r14/commands14: every ribbon command has its line now
+    'Boundary Boss/Base': 'Add material between profiles in two directions', 'Boundary Cut': 'Remove material between profiles in two directions',
+    'Draft': 'Taper faces by an angle to a neutral plane', 'Intersect': 'Intersect solids, surfaces or planes to keep or remove regions',
+    'Rib': 'Add a thin wall from an open sketch', 'Wrap': 'Wrap a sketch onto a face', 'Curves': 'Helix, projected and composite curves',
+    'Axis': 'Create a reference axis', 'Coordinate System': 'Create a reference coordinate system',
+    'Spline': 'Draw a smooth curve through points', 'Ellipse': 'Ellipse from center and two radii', 'Text': 'Sketch text along a line or curve',
+    'Extend Entities': 'Lengthen a sketch entity to the next entity in its way', 'Mirror Entities': 'Mirror sketch entities about a centerline',
+    'Linear Sketch Pattern': 'Repeat sketch entities in rows and columns', 'Display/Delete Relations': 'List the sketch relations, and delete them',
+    'Add Relation': 'Add a geometric relation (horizontal, coincident, tangent…) between the selected entities',
+    'Construction Geometry': 'Turn the selected entities into construction geometry, or back', 'Centerline': 'Draw a construction centerline',
+    'Sensor': 'Watch a value such as mass or a dimension', 'Undercut Analysis': 'Find trapped areas that block a mold from opening',
+    'Thickness Analysis': 'Show thin and thick regions of the part', 'Compare Documents': 'Compare two versions of a document',
+    'Performance Evaluation': 'Rebuild time of each feature', 'Costing': 'Estimate the manufacturing cost',
+    'Convert to Sheet Metal': 'Turn a solid into sheet metal', 'Lofted- Bend': 'Sheet metal lofted between two open profiles', 'Sketched Bend': 'Bend the sheet along a sketch line',
+    'Cross-Break': 'Stiffening cross-break on a face', 'Corners': 'Close, break or relieve sheet-metal corners', 'Forming Tool': 'Press a formed shape into the sheet',
+    'Vent': 'Vent openings from a sketch', 'Unfold': 'Flatten selected bends', 'Fold': 'Fold unfolded bends back', 'Rip': 'Rip the edges of a hollow part so it can be unfolded',
+    'Linear Component Pattern': 'Repeat components along one or two directions', 'Circular Component Pattern': 'Repeat components about an axis',
+    'Mirror Components': 'Mirror components about a plane', 'Exploded View': 'Pull the components apart in steps', 'Bill of Materials': 'Parts list with quantities',
+    'Smart Fasteners': 'Add fasteners to holes', 'Hole Alignment': 'Find holes that do not line up across components'
   };
-  function ribbonTitle(id, label, enabled) {
-    var key = UI.shortcutFor ? UI.shortcutFor(id) : null, help = RIBBON_HELP[label];
-    if (!enabled) return label + ' — not available in this build yet';
-    return label + (key ? ' (' + key + ')' : '') + (help ? ' — ' + help : '');
+  // Drawing commands have their own lines (Section View, Smart Dimension … mean other things in a part)
+  var DRAW_HELP = {
+    'Standard 3 View': 'Front, Top and Right views of the model on the sheet', 'Model View': 'Place a view of the model in any orientation',
+    'Projected View': 'Project a view from an existing one', 'Section View': 'Cut a view with a section line and place the section',
+    'Detail View': 'Enlarge a region of a view in a circle', 'Smart Dimension': 'Dimension the drawing views',
+    'Model Items': "Show the model's dimensions in the views", 'Auto Balloon': 'Balloon every component in a view',
+    'Bill of Materials': 'Parts list with item numbers and quantities', 'Sheet Properties': 'Sheet size, scale and format',
+    'Save as SVG': 'Export the sheet as SVG', 'Save as DXF': 'Export the sheet as DXF', 'Save as PDF': 'Export the sheet as PDF',
+    'Close Drawing': 'Return to the model', 'Ordinate Dimension': 'Dimensions measured from one zero line', 'Baseline Dimension': 'Dimensions measured from one baseline',
+    'Chamfer Dimension': 'Length and angle of a chamfer', 'Balloon': 'Item number of a component', 'Stacked Balloon': 'Several item numbers in one stack',
+    'Hole Callout': 'Size and depth note of a hole', 'Center Mark': 'Cross at the centre of a circle or arc', 'Centerline': 'Centerline between two edges',
+    'Document Properties': 'Drafting standard, fonts and arrows'
+  };
+  // r14/commands14: tooltips in SolidWorks' two-line style: the name in bold (with its shortcut), a description under it,
+  // and a third, muted line for why a button is greyed (setTip, below). An item's own `help` wins over the tables.
+  function ribbonTip(id, label, enabled, needsSketch, help) {
+    var key = UI.shortcutFor ? UI.shortcutFor(id) : null;
+    var desc = help || (UI.drawingActive && UI.drawingActive() && DRAW_HELP[label]) || RIBBON_HELP[label] || '';
+    if (!enabled) return { name: label, key: '', desc: desc, note: 'Not available in this build yet' };
+    return { name: label, key: key || '', desc: desc, note: needsSketch ? 'Open a sketch first' : '' };
+  }
+  // the state a ribbon item shows now: { id, label, flat, disabled, active, tip }
+  function itemState(item) {
+    var d = item.dyn && item.dyn();
+    var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
+    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch', active = false;
+    if (item.tool) active = App.mode === 'sketch' && App.tool === item.tool;
+    else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
+    return { id: id, label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help) };
+  }
+  function runItem(item) {
+    if (item.tool) UI.setTool(App.tool === item.tool ? 'select' : item.tool);
+    else if (item.run) { item.run(); refreshRibbon(); }
   }
   // A ribbon button's look follows the app state (sketch mode, active tool, toggles). sync() applies it in place, so
   // refreshing the ribbon (after every command, tool change and PropertyManager close) does not replace the button
@@ -187,28 +234,84 @@
   function ribbonButton(item, small) {
     var b = el('button', { class: 'rb' }), shown = null;
     function sync() {
-      var d = item.dyn && item.dyn();
-      var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace('\n', ' ');
-      var enabled = !!(item.run || item.tool), title = ribbonTitle(id, flat, enabled), disabled = !enabled, active = false;
-      if (item.tool) {
-        if (App.mode !== 'sketch') { disabled = true; title = ribbonTitle(id, flat, true) + ' — open a sketch first'; }
-        active = App.mode === 'sketch' && App.tool === item.tool;
-      } else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
-      var face = id + '|' + label;
+      var s = itemState(item);
+      var face = s.id + '|' + s.label;
       if (face !== shown) {
         shown = face;
-        b.innerHTML = Icons(id, small ? 18 : 32) + '<span>' + (small ? item.label : label) + '</span>';
-        b.setAttribute('aria-label', flat); b.dataset.icon = id;
+        b.innerHTML = Icons(s.id, small ? 18 : 32) + '<span>' + (small ? item.label : s.label) + '</span>';
+        b.setAttribute('aria-label', s.flat); b.dataset.icon = s.id;
       }
-      if (b.title !== title) b.title = title;
-      if (b.disabled !== disabled) b.disabled = disabled;
-      if (b.classList.contains('active') !== active) b.classList.toggle('active', active);
+      setTip(b, s.tip);
+      if (b.disabled !== s.disabled) b.disabled = s.disabled;
+      if (b.classList.contains('active') !== s.active) b.classList.toggle('active', s.active);
     }
     sync();
-    if (item.tool) b.addEventListener('click', function () { UI.setTool(App.tool === item.tool ? 'select' : item.tool); });
-    else if (item.run) b.addEventListener('click', function () { item.run(); refreshRibbon(); });
+    if (item.tool || item.run) b.addEventListener('click', function () { runItem(item); });
     b._sync = sync;
     return b;
+  }
+
+  // r14/commands14: a flyout button, as SolidWorks groups Fillet / Chamfer, the patterns, the rectangle and arc types,
+  // Trim / Extend, Convert / Offset and Reference Geometry. The face runs the command last picked from its ▾ list
+  // (remembered per group in localStorage 'anvil.fly.<group>'); while one of the group's sketch tools is on, the face
+  // shows that tool. The ▾ opens the whole group as a menu with icons, shortcuts and check marks.
+  var flyFaces = {};
+  function flyFace(item) {
+    if (flyFaces[item.fly] == null) {
+      var n = NaN;
+      try { n = parseInt(localStorage.getItem('anvil.fly.' + item.fly), 10); } catch (e) { }
+      flyFaces[item.fly] = n >= 0 && n < item.items.length && (item.items[n].run || item.items[n].tool) ? n : 0;
+    }
+    return Math.min(flyFaces[item.fly], item.items.length - 1);
+  }
+  function setFlyFace(item, i) {
+    if (flyFaces[item.fly] === i) return;
+    flyFaces[item.fly] = i;
+    try { localStorage.setItem('anvil.fly.' + item.fly, String(i)); } catch (e) { }
+  }
+  function flyCurrent(item) {
+    for (var i = 0; i < item.items.length; i++) if (item.items[i].tool && itemState(item.items[i]).active) return i;
+    return flyFace(item);
+  }
+  function flyMenuItems(item) {
+    return item.items.map(function (it, i) {
+      var s = itemState(it);
+      return { label: s.flat, icon: s.id, key: s.tip.key, checked: s.active, disabled: s.disabled, action: function () { setFlyFace(item, i); runItem(it); refreshRibbon(); } };
+    });
+  }
+  function ribbonFlyout(item) {
+    var wrap = el('div', { class: 'rb-fly' }), b = el('button', { class: 'rb rb-face' }), shown = null, wasOpen = false;
+    var c = el('button', { class: 'rb-caret', html: '<span>▾</span>' });
+    function sync() {
+      var i = flyCurrent(item), s = itemState(item.items[i]);
+      var label = item.label || s.label, face = s.id + '|' + label;
+      if (face !== shown) {
+        var refit = shown !== null;
+        shown = face;
+        b.innerHTML = Icons(s.id, 32) + '<span>' + label + '</span>';
+        b.setAttribute('aria-label', item.label ? item.label.replace(/\n/g, ' ') : s.flat); b.dataset.icon = s.id;
+        c.setAttribute('aria-label', (item.label ? item.label.replace(/\n/g, ' ') : s.flat) + ' options');
+        if (refit && wrap.isConnected) fitRibbon();   // a longer label may need the room of another button
+      }
+      var tip = item.label ? { name: item.label.replace(/\n/g, ' ') + ': ' + s.flat, key: s.tip.key, desc: s.tip.desc, note: s.tip.note } : s.tip;
+      setTip(b, tip);
+      setTip(c, { name: (item.label ? item.label.replace(/\n/g, ' ') : s.flat) + ' ▾', desc: item.items.map(function (x) { return x.label.replace(/\n/g, ' '); }).join(', ') });
+      if (b.disabled !== s.disabled) b.disabled = s.disabled;
+      var cd = item.items.every(function (x) { return itemState(x).disabled; });
+      if (c.disabled !== cd) c.disabled = cd;
+      if (b.classList.contains('active') !== s.active) b.classList.toggle('active', s.active);
+    }
+    b.addEventListener('click', function () { var i = flyCurrent(item); setFlyFace(item, i); runItem(item.items[i]); });
+    c.addEventListener('mousedown', function () { wasOpen = wrap.classList.contains('open'); });
+    c.addEventListener('click', function () {
+      if (wasOpen) { wasOpen = false; return; }
+      var r = wrap.getBoundingClientRect();
+      showMenu(r.left, r.bottom + 1, flyMenuItems(item), wrap);
+    });
+    wrap.appendChild(b); wrap.appendChild(c);
+    sync();
+    b._sync = sync; wrap._fly = item;
+    return wrap;
   }
   // What the ribbon was last built from: the tab, its item list (compared item by item: ui-assembly / drawing.js edit
   // the lists in place) and the tab names. While these hold, refreshRibbon only re-syncs the buttons' states.
@@ -219,7 +322,7 @@
     // another document type (drawing.js) may swap the tab set: UI.ribbonTabsFor(names, extra) -> [names, extra]
     if (UI.ribbonTabsFor) { var tf = UI.ribbonTabsFor(tabNames, extraTabs); tabNames = tf[0]; extraTabs = tf[1]; }
     var items = (set[App.ribbonTab] || []).slice();
-    return { set: set, tab: App.ribbonTab, items: items, stacks: items.map(function (it) { return it.stack ? it.stack.slice() : null; }), tabs: tabNames.join('\u0001') + '\u0002' + extraTabs.join('\u0001'), tabNames: tabNames, extraTabs: extraTabs };
+    return { set: set, tab: App.ribbonTab, items: items, stacks: items.map(function (it) { return it.stack ? it.stack.slice() : it.fly ? it.items.slice() : null; }), tabs: tabNames.join('\u0001') + '\u0002' + extraTabs.join('\u0001'), tabNames: tabNames, extraTabs: extraTabs };
   }
   function sameShape(a, b) {
     if (!a || a.set !== b.set || a.tab !== b.tab || a.tabs !== b.tabs || a.items.length !== b.items.length) return false;
@@ -249,6 +352,7 @@
         frag.appendChild(st);
         return;
       }
+      if (item.fly) { frag.appendChild(ribbonFlyout(item)); return; }   // r14/commands14
       frag.appendChild(ribbonButton(item));
     });
     bar.innerHTML = '';
@@ -324,6 +428,7 @@
     Array.prototype.forEach.call($('ribbon-buttons').children, function (c) {
       if (!c.classList.contains('rb-over')) return;
       if (c.classList.contains('rb-sep')) { if (items.length && !items[items.length - 1].sep) items.push({ sep: true }); return; }
+      if (c._fly) { items.push.apply(items, flyMenuItems(c._fly)); return; }   // r14/commands14: a flyout lists its whole group
       var btns = c.classList.contains('rb') ? [c] : Array.prototype.slice.call(c.querySelectorAll('.rb'));
       btns.forEach(function (b) { items.push({ label: b.getAttribute('aria-label') || b.textContent, icon: b.dataset.icon, checked: b.classList.contains('active'), disabled: b.disabled, action: function () { b.click(); } }); });
     });
@@ -803,7 +908,7 @@
   var openMenu = null;
   function closeMenus() {
     if (openMenu) { openMenu.remove(); openMenu = null; }
-    Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open, .rb-more.open'), function (li) { li.classList.remove('open'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open, .rb-more.open, .rb-fly.open'), function (li) { li.classList.remove('open'); });
   }
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
@@ -1383,6 +1488,236 @@
     setTimeout(function () { inp.focus(); inp.select(); }, 0);
   }
   $('modal').addEventListener('mousedown', function (e) { if (e.target === $('modal')) closeModal(); });
+
+  // ------------------------------------------------------------------ r14/commands14: tooltips
+  // SolidWorks' tooltip: the command name in bold with its shortcut, a one-line description under it, and (greyed
+  // buttons) why it cannot run now. Ribbon, flyout and Shortcut Bar buttons call setTip; the other toolbars (heads-up
+  // view toolbar, Task Pane strip, FeatureManager tabs, PropertyManager ✓ / ✗, the confirmation corner) keep their
+  // title attribute in the code, which is turned into the same tooltip the first time the pointer reaches the button
+  // (the text moves to aria-label, so the button keeps its accessible name, and the browser's own tooltip never shows).
+  var TIP_SEL = '#ribbon-buttons button, #hud button, #tp-strip button, #fm-tabs button, #scbar button, .pm-actions button, .cc-exit, #exit-sketch button';
+  var TIP_HELP = {
+    'Zoom to Fit': 'Zoom the model to fill the graphics area', 'Zoom to Area': 'Drag a box around the region to zoom into',
+    'Previous View': 'Go back to the last view', 'View Orientation': 'Standard views, Normal To and the view selector',
+    'Display Style': 'Shaded, shaded with edges, hidden lines or wireframe', 'Hide/Show Items': 'Show or hide planes, origins, sketches and the sketch grid',
+    'Edit Appearance': 'Colour and finish of the part', 'Apply Scene': 'Background of the graphics area', 'View Settings': 'Display and document properties',
+    'FeatureManager Design Tree': 'The features of the part, in build order', 'PropertyManager': 'Options of the active command',
+    'ConfigurationManager': 'Configurations and their variable values', 'Anvil Resources': 'Getting started, examples and help',
+    'Design Library': 'Standard parts and features', 'File Explorer': 'Documents saved in this browser', 'View Palette': 'Drag views onto a drawing sheet',
+    'Appearances, Scenes': 'Colours, materials and backgrounds', 'Custom Properties': 'Part number, description, material and other properties',
+    'Automation / Script': 'The model as a script: run, edit and export it', 'OK': 'Accept the command and close the PropertyManager',
+    'Cancel': 'Close the PropertyManager without changes', 'Exit Sketch': 'Keep the changes and rebuild', 'More commands': 'The commands that do not fit the window'
+  };
+  var TIP_KEYS = { 'Exit Sketch': 'exitSketch', 'Zoom to Fit': 'fit', 'View Orientation': 'orient' };
+  var tipEl = null, tipTarget = null, tipTimer = 0, tipHiddenAt = 0;
+  function setTip(node, t) {
+    var sig = t.name + '\u0001' + (t.key || '') + '\u0001' + (t.desc || '') + '\u0001' + (t.note || '');
+    if (node.hasAttribute('title')) node.removeAttribute('title');
+    if (node._tipSig === sig) return;
+    node._tipSig = sig; node._tip = t;
+    if (tipTarget === node && tipEl && !tipEl.hidden) renderTip(node);
+  }
+  // 'Zoom to Fit (F)', 'OK (Enter) — fix the equation first: …', 'Exit Sketch (S): keep the changes' → { name, key, desc }
+  function parseTitle(s) {
+    var m = /^(.*?)(?: \(([^()]{1,14})\))?(?:\s*(?:—|:)\s+([\s\S]*))?$/.exec(s) || [s, s];
+    var name = m[1] || s, key = m[2] || '', desc = m[3] || '';
+    if (key && !/^(?:(?:Ctrl|Shift|Alt)\+.+|[A-Z0-9](?:, [A-Z0-9])*|F\d+|Space|Esc|Enter|Del|Tab)$/.test(key)) { name += ' (' + key + ')'; key = ''; }
+    if (TIP_KEYS[name] && UI.shortcutFor && UI.shortcutFor(TIP_KEYS[name])) key = UI.shortcutFor(TIP_KEYS[name]);
+    desc = desc ? desc.charAt(0).toUpperCase() + desc.slice(1) : (RIBBON_HELP[name] || TIP_HELP[name] || '');
+    return { name: name, key: key, desc: desc, note: '' };
+  }
+  function adoptTitle(node) {
+    var s = node.getAttribute('title');
+    node.removeAttribute('title');
+    if (!s) return;
+    if (!node.hasAttribute('aria-label') || node._tipAria) { node.setAttribute('aria-label', s); node._tipAria = true; }
+    node._tipSig = null;
+    setTip(node, parseTitle(s));
+  }
+  function renderTip(node) {
+    var t = node._tip;
+    tipEl.innerHTML = '';
+    var head = el('div', { class: 'tip-head' }, [el('b', { text: t.name })]);
+    if (t.key) head.appendChild(el('span', { class: 'tip-key', text: t.key }));
+    tipEl.appendChild(head);
+    if (t.desc) tipEl.appendChild(el('div', { class: 'tip-desc', text: t.desc }));
+    if (t.note) tipEl.appendChild(el('div', { class: 'tip-note', text: t.note }));
+  }
+  function showTip(node) {
+    if (!node.isConnected || !node._tip) return;
+    if (!tipEl) { tipEl = el('div', { class: 'tip', role: 'tooltip' }); document.body.appendChild(tipEl); }
+    renderTip(node);
+    tipEl.hidden = false;
+    var bar = node.closest('#scbar'), r = node.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight, W = window.innerWidth, H = window.innerHeight;
+    // Shortcut Bar: under (or over) the whole bar, never over its other buttons
+    var below = bar ? bar.getBoundingClientRect().bottom : r.bottom, above = bar ? bar.getBoundingClientRect().top : r.top;
+    var x = Math.min(Math.max(4, r.left), W - w - 4), y = below + 4;
+    if (y + h > H - 4) y = Math.max(4, above - h - 4);
+    // a vertical strip at the window's right edge (Task Pane): beside the button rather than over its neighbours
+    if (!bar && r.right > W - 60 && r.height < 60) { x = Math.max(4, r.left - w - 6); y = Math.min(Math.max(4, r.top), H - h - 4); }
+    tipEl.style.left = Math.round(x) + 'px'; tipEl.style.top = Math.round(y) + 'px';
+  }
+  function hideTip() {
+    clearTimeout(tipTimer); tipTimer = 0;
+    if (tipEl && !tipEl.hidden) { tipEl.hidden = true; tipHiddenAt = performance.now(); }
+    tipTarget = null;
+  }
+  // disabled buttons get no pointer events of their own in some browsers: the hover is also tracked on the document
+  function tipHover(e) {
+    var t = e.target && e.target.closest ? e.target.closest(TIP_SEL) : null;
+    if (!t && document.elementFromPoint) { var at = document.elementFromPoint(e.clientX, e.clientY); t = at && at.closest ? at.closest(TIP_SEL) : null; }
+    if (t === tipTarget) return;
+    hideTip();
+    if (!t) return;
+    if (t.hasAttribute('title')) adoptTitle(t);
+    if (!t._tip) return;
+    tipTarget = t;
+    // moving along a toolbar shows the next tooltip at once, as Windows does
+    tipTimer = setTimeout(function () { if (tipTarget === t) showTip(t); }, performance.now() - tipHiddenAt < 600 ? 40 : 500);
+  }
+  document.addEventListener('mouseover', tipHover, true);
+  document.addEventListener('mousemove', function (e) { if (tipTarget || (e.target && e.target.closest && e.target.closest('#ribbon, #hud, #scbar'))) tipHover(e); }, { passive: true, capture: true });
+  document.addEventListener('mousedown', function () { hideTip(); tipHiddenAt = 0; }, true);
+  document.addEventListener('wheel', hideTip, { passive: true, capture: true });
+  window.addEventListener('keydown', function () { hideTip(); }, true);
+  window.addEventListener('blur', hideTip);
+
+  // ------------------------------------------------------------------ r14/commands14: Shortcut Bar (S)
+  // S shows SolidWorks' Shortcut Bar at the pointer: a small toolbar of the common commands for what is being edited
+  // (part, sketch, assembly or drawing). A click runs the command and closes the bar; Esc or a click elsewhere closes
+  // it. The keys keep working: the arrows move the highlight, Enter runs it, and S again runs the first button, which
+  // is Sketch in a part and Exit Sketch in a sketch (so "S, S" starts or ends a sketch); any other key closes the bar
+  // and goes on to its own shortcut (L starts a line). The buttons are the ribbon's own items, found by their labels.
+  var SC_SETS = {
+    part: ['Sketch', 'Extruded Boss/Base', 'Revolved Boss/Base', 'Extruded Cut', 'Hole Wizard', 'Fillet', 'Chamfer', 'Shell',
+      'Linear Pattern', 'Circular Pattern', 'Mirror', 'Plane', 'Measure', 'Mass Properties', 'Section View', 'Instant3D'],
+    sketch: ['Exit Sketch', 'Smart Dimension', 'Line', 'Corner Rectangle', 'Center Rectangle', 'Circle', 'Centerpoint Arc', '3 Point Arc',
+      'Polygon', 'Straight Slot', 'Point', 'Centerline', 'Sketch Fillet', 'Trim Entities', 'Extend Entities', 'Offset Entities',
+      'Convert Entities', 'Mirror Entities', 'Add Relation', 'Construction Geometry'],
+    assembly: ['Insert Components', 'Mate', 'Move Component', 'Rotate Component', 'Linear Component Pattern', 'Hide/Show Components',
+      'Exploded View', 'Interference Detection', 'Measure', 'Mass Properties', 'Section View'],
+    drawing: ['Model View', 'Projected View', 'Section View', 'Detail View', 'Smart Dimension', 'Model Items', 'Balloon', 'Auto Balloon',
+      'Hole Callout', 'Center Mark', 'Centerline', 'Bill of Materials']
+  };
+  var SC_TABS = { part: ['Features', 'Sketch', 'Evaluate', 'Sheet Metal'], sketch: ['Sketch', 'Features'], assembly: ['Assembly', 'Evaluate'], drawing: ['View Layout', 'Annotation'] };
+  var SC_COLS = 8;
+  var sc = null;   // the open bar: { el, buttons, items, idx, ctx }
+  function scContext() {
+    if (UI.drawingActive && UI.drawingActive()) return 'drawing';
+    if (App.mode === 'sketch') return 'sketch';
+    return isAsm() ? 'assembly' : 'part';
+  }
+  function scFind(ctx, name) {
+    var set = ribbonSet(), tabs = SC_TABS[ctx];
+    function flat(s) { return String(s || '').replace(/\s*\n\s*/g, ' '); }
+    for (var t = 0; t < tabs.length; t++) {
+      var list = set[tabs[t]] || [];
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i], cands = it && (it.stack || it.items || [it]);
+        for (var j = 0; cands && j < cands.length; j++) {
+          var c = cands[j], d = c && c.dyn && c.dyn();
+          if (c && c.label && (flat(c.label) === name || (d && flat(d.label) === name))) return c;
+        }
+      }
+    }
+    return null;
+  }
+  function shortcutBarItems(ctx) {
+    ctx = ctx || scContext();
+    return SC_SETS[ctx].map(function (n) { return scFind(ctx, n); }).filter(function (it) { return it && (it.run || it.tool); });
+  }
+  function closeShortcutBar() {
+    if (!sc) return;
+    sc.el.remove(); sc = null;
+    hideTip();
+  }
+  function scMark(i) {
+    if (!sc) return;
+    sc.idx = Math.max(0, Math.min(sc.buttons.length - 1, i));
+    sc.buttons.forEach(function (b, k) { b.classList.toggle('kbd', k === sc.idx); });
+  }
+  function scPress(i) {
+    if (!sc) return;
+    var it = sc.items[i], b = sc.buttons[i];
+    if (!it || !b || b.disabled) return;
+    closeShortcutBar();
+    runItem(it);
+    refreshRibbon();
+  }
+  // UI.showShortcutBar(clientX?, clientY?): at the pointer when it is over the graphics area, else in its middle
+  function showShortcutBar(x, y) {
+    closeShortcutBar(); closeMenus(); hideTip();
+    var ctx = scContext(), items = shortcutBarItems(ctx);
+    if (!items.length) return null;
+    var vp = (UI.viewport || $('viewport')).getBoundingClientRect();
+    if (x == null || y == null) {
+      if (lastPointer && lastPointer[0] >= vp.left && lastPointer[0] <= vp.right && lastPointer[1] >= vp.top && lastPointer[1] <= vp.bottom) { x = lastPointer[0]; y = lastPointer[1]; }
+      else { x = vp.left + vp.width / 2; y = vp.top + vp.height / 2; }
+    }
+    var bar = el('div', { id: 'scbar', class: 'scbar', role: 'toolbar', 'aria-label': 'Shortcut Bar' });
+    bar.style.gridTemplateColumns = 'repeat(' + Math.min(SC_COLS, items.length) + ', auto)';
+    var buttons = items.map(function (it, i) {
+      var s = itemState(it), b = el('button', { class: 'sc-btn' + (s.active ? ' active' : ''), html: Icons(s.id, 20), 'aria-label': s.flat });
+      b.dataset.icon = s.id;
+      b.disabled = s.disabled;
+      setTip(b, s.tip);
+      b.addEventListener('click', function () { scPress(i); });
+      b.addEventListener('mouseenter', function () { scMark(i); });
+      bar.appendChild(b);
+      return b;
+    });
+    ['mousedown', 'mouseup', 'dblclick', 'wheel', 'contextmenu'].forEach(function (t) { bar.addEventListener(t, function (e) { e.stopPropagation(); if (t === 'contextmenu') e.preventDefault(); }); });
+    document.body.appendChild(bar);
+    // the pointer lands on the first button (Sketch / Exit Sketch), the bar kept inside the graphics area
+    var w = bar.offsetWidth, h = bar.offsetHeight;
+    var left = Math.min(Math.max(vp.left + 2, x - 17), Math.max(vp.left + 2, vp.right - w - 2));
+    var top = Math.min(Math.max(vp.top + 2, y - 16), Math.max(vp.top + 2, vp.bottom - h - 2));
+    bar.style.left = Math.round(left) + 'px'; bar.style.top = Math.round(top) + 'px';
+    sc = { el: bar, buttons: buttons, items: items, idx: 0, ctx: ctx };
+    scMark(0);
+    return bar;
+  }
+  window.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable)) return;
+    if (!$('modal').hidden) { closeShortcutBar(); return; }
+    var k = e.key;
+    if (sc) {
+      if (e.ctrlKey || e.metaKey || e.altKey) { closeShortcutBar(); return; }
+      var take = true;
+      if (k === 'Escape') closeShortcutBar();
+      else if (k === 'Enter' || k === ' ') scPress(sc.idx);
+      else if (k === 's' || k === 'S') { if (!e.repeat) scPress(0); }
+      else if (k === 'ArrowRight') scMark(sc.idx + 1);
+      else if (k === 'ArrowLeft') scMark(sc.idx - 1);
+      else if (k === 'ArrowDown') scMark(sc.idx + SC_COLS);
+      else if (k === 'ArrowUp') scMark(sc.idx - SC_COLS);
+      else if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta') take = false;
+      else { closeShortcutBar(); take = false; }   // the key goes on to its own shortcut
+      if (take) { e.preventDefault(); e.stopImmediatePropagation(); }
+      return;
+    }
+    if ((k === 's' || k === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (!e.repeat) showShortcutBar();
+    }
+  }, true);   // capture on window: ahead of drawing.js, which takes every key while a drawing is open
+  document.addEventListener('mousedown', function (e) { if (sc && !sc.el.contains(e.target)) closeShortcutBar(); }, true);
+  document.addEventListener('wheel', function (e) { if (sc && !sc.el.contains(e.target)) closeShortcutBar(); }, { passive: true, capture: true });
+  window.addEventListener('resize', closeShortcutBar);
+  window.addEventListener('blur', closeShortcutBar);
+  UI.showShortcutBar = showShortcutBar; UI.closeShortcutBar = closeShortcutBar;
+  UI.shortcutBar = {
+    open: showShortcutBar, close: closeShortcutBar, isOpen: function () { return !!sc; },
+    context: function () { return sc ? sc.ctx : scContext(); },
+    labels: function (ctx) { return (sc && !ctx ? sc.items : shortcutBarItems(ctx)).map(function (it) { return itemState(it).flat; }); },
+    press: function (label) { if (!sc) return false; for (var i = 0; i < sc.items.length; i++) if (itemState(sc.items[i]).flat === label) { scPress(i); return true; } return false; }
+  };
+  // UI.ribbonFlyFace(group[, index]): the flyout's face (index into its items); with an index, sets and remembers it
+  UI.ribbonFlyFace = function (group, i) {
+    if (i != null) { flyFaces[group] = i; try { localStorage.setItem('anvil.fly.' + group, String(i)); } catch (e) { } refreshRibbon(); }
+    return flyFaces[group];
+  };
 
   UI.setStatus = setStatus; UI.toast = toast; UI.refreshStatus = refreshStatus;
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
