@@ -742,7 +742,8 @@
       '<tr><th>Ctrl+8</th><td>Normal To selected face / plane / sketch</td></tr>' +
       '<tr><th>F</th><td>Zoom to fit</td></tr><tr><th>Z / Shift+Z</th><td>Zoom out / in</td></tr>' +
       '<tr><th>Space</th><td>View orientation menu</td></tr>' +
-      '<tr><th>S</th><td>Start a sketch (or exit the current one)</td></tr>' +
+      '<tr><th>S</th><td>Shortcut Bar at the pointer: the common commands for the part, sketch, assembly or drawing (arrows and Enter pick one, Esc closes it)</td></tr>' +
+      '<tr><th>S, S</th><td>Start a sketch (or exit the current one): the first button of the Shortcut Bar</td></tr>' +
       '<tr><th>L, R, C, A, P, T</th><td>In a sketch: Line, Rectangle, Circle, Arc (A again: 3 Point Arc), Polygon, Slot</td></tr>' +
       '<tr><th>Esc</th><td>Cancel tool / command / selection</td></tr><tr><th>Enter</th><td>Accept the PropertyManager</td></tr>' +
       '<tr><th>Delete</th><td>Delete selected entity or feature</td></tr><tr><th>F2</th><td>Rename selected feature</td></tr>' +
@@ -757,7 +758,7 @@
   // ------------------------------------------------------------------ keyboard
   // Keys bound by the keydown handler below, by ribbon command id (used for ribbon tooltips). Keep in sync with the handler.
   var SHORTCUTS = {
-    sketch: 'S', exitSketch: 'S', extrude: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', arc3: 'A, A', polygon: 'P', slot: 'T', dim: 'D',
+    sketch: 'S, S', exitSketch: 'S, S', extrude: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', arc3: 'A, A', polygon: 'P', slot: 'T', dim: 'D',
     fit: 'F', undo: 'Ctrl+Z', redo: 'Ctrl+Y', rebuild: 'Ctrl+B', save: 'Ctrl+S', new: 'Ctrl+N', open: 'Ctrl+O', normalTo: 'Ctrl+8', prevView: 'Shift+Ctrl+Z', orient: 'Space', delete: 'Del', rename: 'F2'
   };
   UI.shortcutFor = function (id) { return SHORTCUTS[id] || null; };
@@ -800,7 +801,7 @@
     if (k === 'z') { UI.zoomView(1.25); return; }
     if (k === 'Z') { UI.zoomView(0.8); return; }
     if (k === ' ') { e.preventDefault(); if (UI.showOrientationMenu) { UI.showOrientationMenu(); return; } var hb = $('hud').children[5]; if (hb) hb.click(); return; }
-    if (k === 's' || k === 'S') { UI.cmdSketch(); UI.refreshRibbon(); return; }
+    if (k === 's' || k === 'S') { if (UI.showShortcutBar) UI.showShortcutBar(); else { UI.cmdSketch(); UI.refreshRibbon(); } return; }   // r14/commands14: ui-panels.js takes S first
     if (App.mode === 'sketch') {
       var map = { l: 'line', r: 'rect', c: 'circle', a: 'arc', p: 'polygon', t: 'slot', d: 'dimension' };
       var t = map[k.toLowerCase()];

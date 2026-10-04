@@ -63,6 +63,10 @@ var Icons = (function () {
     plane: p('M1.5 12.5 l4 -7 h9 l-4 7 z', PL, P),
     planeSmall: p('M1 12 l4 -6 h8 l-4 6 z', PL, P, 1.1),
     origin: ln('M3.5 12.5 h9 M3.5 12.5 v-9', R, 1.5) + ln('M3.5 12.5 l4 3', B, 1.5) + circ(3.5, 12.5, 1.4, S, 'none'),
+    // r14/commands14: the Reference Geometry flyout's Axis, Coordinate System and Point
+    refAxis: p('M1.5 12.5 l3.5 -6 h9 l-3.5 6 z', PL, P, 1) + ln('M8 1.5 v13.5', S, 1.2, 'stroke-dasharray="3 1.4 0.6 1.4"'),
+    csys: ln('M4 12 h9.5 M4 12 V2.5', P, 1.5) + ln('M4 12 l-2.5 2.5', P, 1.5) + ln('M11.5 10 l2 2 -2 2 M2 4.5 l2 -2 2 2', P, 1.1) + circ(4, 12, 1.4, S, 'none'),
+    refPoint: p('M1.5 12.5 l3.5 -6 h9 l-3.5 6 z', PL, P, 1) + ln('M8 6.5 v6 M5 9.5 h6', S, 1.1) + circ(8, 9.5, 1.5, P, 'none'),
     curves: ln('M2 12 C5 2 11 14 14 4', B, 1.5),
     // r12/chrome12: Instant3D, a block with the blue drag handle standing on its top face
     instant: blk(1.5, 6.5, 8, 5.5, 3) + ln('M7.25 8 V3', B, 1.5) + p('M5.1 3.9 L7.25 1 9.4 3.9 z', B, B, 0.8) + circ(7.25, 8, 1.3, W, B, 1.1),
