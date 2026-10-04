@@ -546,7 +546,7 @@ var UI = (function () {
       g.setIndex(new THREE.BufferAttribute(idx, 1));
       visTris = map;
     }
-    bodyMesh = new THREE.Mesh(g, App.view.style === 'hlr' ? mats.hlr : mats.part);
+    bodyMesh = new THREE.Mesh(g, App.view.style === 'hlr' || App.view.style === 'hlv' ? mats.hlr : mats.part);
     groups.body.add(bodyMesh);
     edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
     groups.edges.add(edgeLines);
@@ -583,6 +583,245 @@ var UI = (function () {
     clipping: true
   });
   mats.silhouette = silMat;
+
+  // ------------------------------------------------------------------ thick lines (r13/lines13)
+  // WebGL draws GL_LINES 1 device pixel wide on Windows whatever linewidth says, so model edges and sketches looked thin
+  // next to SolidWorks. A line object whose material carries userData.lineWidth (CSS px) is drawn instead by a child
+  // mesh of screen-space quads, one instance per segment, read straight from the line's own position buffer (no copy
+  // in JS): the vertex shader widens each segment in screen space and the fragment shader rounds both ends, so joins are
+  // round and clean. The line object itself stays in the scene, unchanged (picking, box selection, bounds, the assembly
+  // drag poses read its positions) but on a layer the camera does not draw. syncFatLines() runs before every frame: it
+  // follows position updates, material colour / depth / clipping changes and the display style (Hidden Lines Visible
+  // adds a dashed pass that only passes behind the body). Widths are CSS pixels, so they scale with devicePixelRatio.
+  var LINE_W = { edge: 1.5, sketch: 2, sketchInactive: 1.5, sketchSel: 2.5, temp: 2, edgeHover: 3, edgeSel: 3, plane: 1, grid: 1, origin: 1.5, hidden: 1 };
+  var FAT_LAYER = 30, fatOn = true;
+  // UI.thickLines(on?) -> whether lines are drawn thick (off: the plain 1-pixel lines; for comparisons and old GPUs)
+  function thickLines(on) { if (on != null) { fatOn = !!on; needsRender = true; } return fatOn && fatOk; }
+  var fatU = { resolution: { value: new THREE.Vector2(1, 1) }, worldPerPx: { value: 1 } };
+  var fatOk = (function () {
+    try { return !!(renderer.capabilities.isWebGL2 || renderer.extensions.get('ANGLE_instanced_arrays')); } catch (e) { return false; }
+  })();
+  // every thick-line geometry owns its 4-corner quad (disposing a geometry frees its attributes' GL buffers)
+  var FAT_QUAD = new Float32Array([-1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0]), FAT_IDX = new Uint16Array([0, 1, 2, 2, 1, 3]);
+  function fatVertexShader(kind) {
+    return [
+      'uniform vec2 resolution;', 'uniform float linewidth;', 'uniform float worldPerPx;',
+      'attribute vec3 instanceStart;', 'attribute vec3 instanceEnd;',
+      '#ifdef DASHED', 'attribute float instanceDistStart;', 'attribute float instanceDistEnd;', 'varying float vDist;', '#endif',
+      '#ifdef SIL', 'uniform vec3 viewDir;', 'attribute vec3 instanceN1;', 'attribute vec3 instanceN2;', '#endif',
+      'varying vec2 vPx;', 'varying float vLen;', 'varying float vHw;',
+      '#include <clipping_planes_pars_vertex>',
+      'void main() {',
+      '  vec4 mvA = modelViewMatrix * vec4(instanceStart, 1.0);',
+      '  vec4 mvB = modelViewMatrix * vec4(instanceEnd, 1.0);',
+      '  vec4 cA = projectionMatrix * mvA;', '  vec4 cB = projectionMatrix * mvB;',
+      '  vec2 hr = 0.5 * resolution;',
+      '  vec2 d = (cB.xy / cB.w - cA.xy / cA.w) * hr;',
+      '  float L = length(d);',
+      '  vec2 dir = L > 1e-5 ? d / L : vec2(1.0, 0.0);',
+      '  vec2 nrm = vec2(-dir.y, dir.x);',
+      '  float hw = 0.5 * linewidth;',
+      '  bool atA = position.y < 0.5;',
+      '  vec4 c = atA ? cA : cB;',
+      '  vec2 off = nrm * position.x * hw + dir * (atA ? -hw : hw);',
+      '  c.xy += off / hr * c.w;',
+      '  gl_Position = c;',
+      '  vPx = vec2(position.x * hw, atA ? -hw : L + hw);', '  vLen = L;', '  vHw = hw;',
+      '#ifdef DASHED',
+      '  float tt = L > 1e-5 ? vPx.y / L : 0.0;',   // extrapolated over the round ends, so dashes keep their pitch across joins
+      '  vDist = (instanceDistStart + tt * (instanceDistEnd - instanceDistStart)) / worldPerPx;',
+      '#endif',
+      '#ifdef SIL',
+      '  if (dot(instanceN1, viewDir) * dot(instanceN2, viewDir) > 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);',
+      '#endif',
+      '  vec4 mvPosition = atA ? mvA : mvB;',
+      '  #include <clipping_planes_vertex>',
+      '}'].join('\n');
+  }
+  var fatFragmentShader = [
+    'uniform vec3 color;', 'uniform float opacity;', 'uniform float dashPx;', 'uniform float gapPx;',
+    'varying vec2 vPx;', 'varying float vLen;', 'varying float vHw;',
+    '#ifdef DASHED', 'varying float vDist;', '#endif',
+    '#include <clipping_planes_pars_fragment>',
+    'void main() {',
+    '  #include <clipping_planes_fragment>',
+    '  if (vPx.y < 0.0) { if (length(vPx) > vHw) discard; }',
+    '  else if (vPx.y > vLen) { if (length(vec2(vPx.x, vPx.y - vLen)) > vHw) discard; }',
+    '#ifdef DASHED',
+    '  if (mod(vDist, dashPx + gapPx) > dashPx) discard;',
+    '#endif',
+    '  gl_FragColor = vec4(color, opacity);',
+    '}'].join('\n');
+  // fatMaterial(kind, src): kind 'line' | 'dash' | 'sil' | 'hid' (HLV hidden pass) | 'silhid'; one per source material
+  function fatMaterial(kind, src) {
+    var dashed = kind === 'dash' || kind === 'hid' || kind === 'silhid', sil = kind === 'sil' || kind === 'silhid';
+    var defs = {};
+    if (dashed) defs.DASHED = '';
+    if (sil) defs.SIL = '';
+    var m = new THREE.ShaderMaterial({
+      defines: defs,
+      uniforms: {
+        resolution: fatU.resolution, worldPerPx: fatU.worldPerPx, linewidth: { value: 1 },
+        color: { value: new THREE.Color() }, opacity: { value: 1 }, dashPx: { value: 6 }, gapPx: { value: 4 },
+        viewDir: silMat.uniforms.viewDir
+      },
+      vertexShader: fatVertexShader(kind), fragmentShader: fatFragmentShader, clipping: true, side: THREE.DoubleSide
+    });
+    m.userData.fatKind = kind;
+    if (kind === 'hid' || kind === 'silhid') { m.depthFunc = THREE.GreaterDepth; m.depthWrite = false; m.uniforms.dashPx.value = 5; m.uniforms.gapPx.value = 3; }
+    return m;
+  }
+  function hiddenLineColor() { return viewportTheme === 'dark' ? 0x7d8792 : 0x8a919a; }
+  // copies what the source material says onto its thick twin (cheap; runs per object per frame)
+  function syncFatMat(fm, src, w, hidden) {
+    var srcColor = src.uniforms && src.uniforms.color ? src.uniforms.color.value : src.color;
+    if (hidden) fm.uniforms.color.value.setHex(hiddenLineColor());
+    else if (srcColor) fm.uniforms.color.value.copy(srcColor);
+    fm.uniforms.opacity.value = src.opacity != null ? src.opacity : 1;
+    fm.uniforms.linewidth.value = w;
+    if (fm.transparent !== !!src.transparent) { fm.transparent = !!src.transparent; fm.needsUpdate = true; }
+    if (!hidden) { fm.depthTest = src.depthTest; fm.depthWrite = src.depthWrite; }
+    fm.clippingPlanes = src.clippingPlanes;
+    fm.visible = src.visible;
+    if (src.isLineDashedMaterial && src.userData.dashPx) { fm.uniforms.dashPx.value = src.userData.dashPx; fm.uniforms.gapPx.value = src.userData.gapPx || 4; }
+    else if (src.isLineDashedMaterial) { var wp = fatU.worldPerPx.value || 1; fm.uniforms.dashPx.value = src.dashSize / wp; fm.uniforms.gapPx.value = src.gapSize / wp; }
+  }
+  function fatMatFor(src, kind) {
+    var c = src.userData.fatMats || (src.userData.fatMats = {});
+    return c[kind] || (c[kind] = fatMaterial(kind, src));
+  }
+  // cumulative length along chained segments (a segment that starts where the last ended carries on its dash)
+  function chainDistances(arr, seg) {
+    var n = arr.length / 3, d = new Float32Array(n), acc = 0;
+    for (var i = 1; i < n; i++) {
+      var o = i * 3, p = o - 3;
+      var L = Math.sqrt((arr[o] - arr[p]) * (arr[o] - arr[p]) + (arr[o + 1] - arr[p + 1]) * (arr[o + 1] - arr[p + 1]) + (arr[o + 2] - arr[p + 2]) * (arr[o + 2] - arr[p + 2]));
+      if (seg && (i & 1) === 0) { d[i] = L < 1e-9 ? acc : (acc = 0); continue; }   // a segment's start: joined or new
+      acc += L; d[i] = acc;
+    }
+    return d;
+  }
+  function fatGeometry(o, needDist) {
+    var src = o.geometry, pos = src.attributes.position, seg = !!o.isLineSegments, stride = seg ? 6 : 3;
+    var g = new THREE.InstancedBufferGeometry();
+    g.setIndex(new THREE.BufferAttribute(FAT_IDX, 1));
+    g.setAttribute('position', new THREE.BufferAttribute(FAT_QUAD, 3));
+    var ib = new THREE.InstancedInterleavedBuffer(pos.array, stride, 1);
+    g.setAttribute('instanceStart', new THREE.InterleavedBufferAttribute(ib, 3, 0));
+    g.setAttribute('instanceEnd', new THREE.InterleavedBufferAttribute(ib, 3, 3));
+    var count = seg ? Math.floor(pos.count / 2) : pos.count - 1, nb = null;
+    if (o.material === silMat || (o.material.userData && o.material.userData.fatSil)) {
+      var a1 = src.attributes.n1, a2 = src.attributes.n2;
+      if (a1 && a2) {
+        var b1 = new THREE.InstancedInterleavedBuffer(a1.array, stride, 1), b2 = new THREE.InstancedInterleavedBuffer(a2.array, stride, 1);
+        g.setAttribute('instanceN1', new THREE.InterleavedBufferAttribute(b1, 3, 0));
+        g.setAttribute('instanceN2', new THREE.InterleavedBufferAttribute(b2, 3, 0));
+        nb = [b1, b2, a1, a2];
+      }
+    }
+    var db = null;
+    if (needDist) {
+      var ld = src.attributes.lineDistance;
+      var darr = ld && ld.count === pos.count ? ld.array : chainDistances(pos.array, seg);
+      db = new THREE.InstancedInterleavedBuffer(darr, seg ? 2 : 1, 1);
+      g.setAttribute('instanceDistStart', new THREE.InterleavedBufferAttribute(db, 1, 0));
+      g.setAttribute('instanceDistEnd', new THREE.InterleavedBufferAttribute(db, 1, 1));
+    }
+    g.instanceCount = Math.max(0, count);
+    if (!src.boundingBox) src.computeBoundingBox();
+    g.boundingBox = src.boundingBox;
+    return { geom: g, ib: ib, nb: nb, db: db, dist: !!needDist, pos: pos, arr: pos.array, ver: pos.version, ld: src.attributes.lineDistance || null };
+  }
+  function noRaycast() { }
+  function fatChild(geom, mat, tag) {
+    var m = new THREE.Mesh(geom, mat);
+    m.frustumCulled = false;
+    m.raycast = noRaycast;
+    m.userData.fatLine = tag;
+    m.matrixAutoUpdate = false;
+    return m;
+  }
+  function dropFat(o) {
+    var f = o.userData.fat;
+    if (!f) return;
+    if (f.mesh) o.remove(f.mesh);
+    if (f.hid) o.remove(f.hid);
+    if (f.g) f.g.geom.dispose();
+    o.userData.fat = null;
+    o.layers.set(0);
+  }
+  function fatSyncLine(o) {
+    var m = o.material, w = fatOk && fatOn && m && !Array.isArray(m) && m.userData && m.userData.lineWidth;
+    var pos = o.geometry && o.geometry.attributes.position;
+    if (!w || !pos || pos.isInterleavedBufferAttribute || pos.itemSize !== 3 || !(pos.array instanceof Float32Array) || pos.count < 2) { dropFat(o); return; }
+    var f = o.userData.fat || (o.userData.fat = { g: null, mesh: null, hid: null });
+    var sil = m === silMat || !!m.userData.fatSil;
+    var hlv = App.view.style === 'hlv' && !!m.userData.hlv;
+    var needDist = m.isLineDashedMaterial || hlv;
+    var ldNow = o.geometry.attributes.lineDistance || null;
+    if (!f.g || f.g.pos !== pos || f.g.arr !== pos.array || (needDist && !f.g.dist) || (f.g.dist && f.g.ld !== ldNow) ||
+        (f.g.nb && (f.g.nb[2] !== o.geometry.attributes.n1 || f.g.nb[3] !== o.geometry.attributes.n2))) {
+      if (f.g) f.g.geom.dispose();
+      f.g = fatGeometry(o, needDist);
+      if (f.mesh) f.mesh.geometry = f.g.geom;
+      if (f.hid) f.hid.geometry = f.g.geom;
+      if (!o.geometry.userData.fatHooked) {
+        o.geometry.userData.fatHooked = true;
+        o.geometry.addEventListener('dispose', function () { if (o.userData.fat && o.userData.fat.g) o.userData.fat.g.geom.dispose(); });
+      }
+    } else if (f.g.ver !== pos.version) {
+      f.g.ver = pos.version;
+      f.g.ib.needsUpdate = true;
+      if (f.g.nb) { f.g.nb[0].needsUpdate = true; f.g.nb[1].needsUpdate = true; }
+      if (f.g.db) {
+        if (f.g.ld) f.g.db.needsUpdate = true;
+        else { f.g.db.array = chainDistances(pos.array, !!o.isLineSegments); f.g.db.needsUpdate = true; }
+      }
+      o.geometry.computeBoundingBox(); f.g.geom.boundingBox = o.geometry.boundingBox;
+    }
+    var kind = sil ? 'sil' : m.isLineDashedMaterial ? 'dash' : 'line';
+    var fm = fatMatFor(m, kind);
+    syncFatMat(fm, m, w, false);
+    if (!f.mesh) { f.mesh = fatChild(f.g.geom, fm, 'line'); o.add(f.mesh); }
+    f.mesh.material = fm;
+    f.mesh.renderOrder = o.renderOrder + 0.5;   // after the body (0) so Hidden Lines Visible's pass sits under it
+    if (hlv) {
+      var hm = fatMatFor(m, sil ? 'silhid' : 'hid');
+      syncFatMat(hm, m, LINE_W.hidden, true);
+      if (!f.hid) { f.hid = fatChild(f.g.geom, hm, 'hidden'); o.add(f.hid); }
+      f.hid.material = hm;
+      f.hid.renderOrder = o.renderOrder + 0.25;
+      f.hid.visible = true;
+    } else if (f.hid) f.hid.visible = false;
+    if (o.layers.mask !== (1 << FAT_LAYER)) o.layers.set(FAT_LAYER);
+  }
+  function syncFatLines(obj) {
+    if (!obj.visible) return;
+    if ((obj.isLineSegments || obj.isLine) && !obj.isLineLoop) fatSyncLine(obj);
+    var ch = obj.children;
+    for (var i = 0; i < ch.length; i++) if (!ch[i].userData.fatLine) syncFatLines(ch[i]);
+  }
+  // the shader's view of the frame: drawing-buffer-independent CSS pixels and mm per CSS pixel
+  function syncFatFrame() {
+    fatU.resolution.value.set(size.w, size.h);
+    fatU.worldPerPx.value = (camera.right - camera.left) / Math.max(1, size.w);
+    // the faces sit back by their slope over half an edge width, so an edge in an inside corner (a pocket floor, a boss
+    // foot) is not half buried by the face that rises towards the viewer next to it (1 px was enough for 1-pixel lines)
+    var po = fatOn && fatOk ? 1 + Math.ceil(LINE_W.edge * renderer.getPixelRatio() * 2) / 4 : 1;
+    if (mats.part.polygonOffsetFactor !== po) { mats.part.polygonOffsetFactor = po; mats.hlr.polygonOffsetFactor = po; }
+  }
+  function lineMat(mat, w, extra) { mat.userData.lineWidth = w; if (extra) Object.keys(extra).forEach(function (k) { mat.userData[k] = extra[k]; }); return mat; }
+  lineMat(mats.edge, LINE_W.edge, { hlv: true });
+  lineMat(silMat, LINE_W.edge, { hlv: true, fatSil: true });
+  ['sketch', 'sketchFull', 'sketchOver', 'sketchConflict'].forEach(function (k) { lineMat(mats[k], LINE_W.sketch); });
+  lineMat(mats.sketchSel, LINE_W.sketchSel);
+  lineMat(mats.temp, LINE_W.temp);
+  lineMat(mats.sketchDim, LINE_W.sketchInactive);
+  lineMat(mats.sketchDangling, LINE_W.sketchInactive);
+  lineMat(mats.planeLine, LINE_W.plane);
+  lineMat(mats.grid, LINE_W.grid);
+  lineMat(mats.gridMajor, LINE_W.grid);
+
   function buildSilhouettes(m) {
     var faces = m.faces, pos = [], na = [], nb = [];
     (App.edges || []).forEach(function (e) {
@@ -831,7 +1070,7 @@ var UI = (function () {
 
   function applyDisplayStyle() {
     var s = App.view.style;
-    if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' ? mats.hlr : mats.part; }
+    if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' || s === 'hlv' ? mats.hlr : mats.part; }   // r13/lines13: hlv = Hidden Lines Visible
     if (edgeLines) edgeLines.visible = s !== 'shaded';
     if (silLines) silLines.visible = s !== 'shaded';
     mats.part.color.set(App.model.color || '#a8adb6');
@@ -1006,8 +1245,8 @@ var UI = (function () {
   // a feature plus patterns/mirrors derived from it (they share the source's polygon tags)
   function featureFamily(id) { return [id]; }
 
-  var edgeHoverMat = new THREE.LineBasicMaterial({ color: 0xff8c1a, depthTest: false });
-  var edgeSelMat = new THREE.LineBasicMaterial({ color: 0x14a34a, depthTest: false });
+  var edgeHoverMat = lineMat(new THREE.LineBasicMaterial({ color: 0xff8c1a, depthTest: false }), LINE_W.edgeHover);   // r13/lines13: thick
+  var edgeSelMat = lineMat(new THREE.LineBasicMaterial({ color: 0x14a34a, depthTest: false }), LINE_W.edgeSel);
   function pushPolyline(arr, pts) {
     for (var i = 0; i + 1 < pts.length; i++) arr.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
   }
@@ -1107,7 +1346,7 @@ var UI = (function () {
     [[1, 0, 0, 0xd9453b], [0, 1, 0, 0x3fa34d], [0, 0, 1, 0x2d7dd2]].forEach(function (a) {
       var g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, a[0] * L, a[1] * L, a[2] * L], 3));
-      groups.origin.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: a[3] })));
+      groups.origin.add(new THREE.Line(g, lineMat(new THREE.LineBasicMaterial({ color: a[3] }), LINE_W.origin)));
     });
   }
 
@@ -1142,7 +1381,7 @@ var UI = (function () {
   var dashMats = {};
   function dashedMat(m) {
     var d = dashMats[m.uuid];
-    if (!d) d = dashMats[m.uuid] = new THREE.LineDashedMaterial({ color: m.color, depthTest: m.depthTest });
+    if (!d) d = dashMats[m.uuid] = lineMat(new THREE.LineDashedMaterial({ color: m.color, depthTest: m.depthTest }), m.userData.lineWidth || LINE_W.sketch, { dashPx: 7, gapPx: 4 });
     d.color.copy(m.color);
     d.dashSize = cam.scale * 7; d.gapSize = cam.scale * 4;
     return d;
@@ -1493,6 +1732,7 @@ var UI = (function () {
   }
   function render(sig) {
     updateGrid();
+    syncFatLines(scene);   // r13/lines13: thick lines follow their line objects (before the signature: new children count)
     if (typeof sig !== 'string') sig = sceneSignature();
     var pose = null, dir = cam.dir, up = cam.up, right = cam.right;
     if (viewAnim) {
@@ -1507,6 +1747,7 @@ var UI = (function () {
     }
     fitDepth(pose ? pose.target : cam.target, dir, sig);
     silMat.uniforms.viewDir.value.copy(dir);
+    syncFatFrame();
     renderer.clear();
     renderer.render(scene, camera);
     // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
@@ -1526,6 +1767,10 @@ var UI = (function () {
   // One frame of the loop (exported as UI.tick for measurements).
   function tick(now) {
     now = now || performance.now();
+    // r13/lines13: the window moved to a screen with another scale (or the browser zoom changed): redraw at its pixel
+    // density, so edges stay sharp and as wide as before in CSS pixels
+    var dpr = window.devicePixelRatio || 1;
+    if (dpr !== renderer.getPixelRatio()) { renderer.setPixelRatio(dpr); size.w = 0; resize(); }
     stepZoomMomentum(now);
     // ui-occt.js: the 3D view keeps OpenCascade's last frame while its next solid builds; overlays still follow, and a
     // camera that moves (a view change, a zoom, entering a sketch) ends the hold at once (smooth/responsive)
@@ -2185,7 +2430,7 @@ var UI = (function () {
     updateOrigin: updateOrigin, updateSketches: updateSketches, updateTemp: updateTemp, disposeGroup: disposeGroup,
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
-    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, requestRender: requestRender,
+    lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
     camVersion: function () { return camVer; },

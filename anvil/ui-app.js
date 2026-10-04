@@ -167,7 +167,7 @@
     body.appendChild(grid);
     body.appendChild(el('h3', { text: 'Display style' }));
     var g2 = el('div', { class: 'views' });
-    [['shadedEdges', 'Shaded + edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden lines removed'], ['wireframe', 'Wireframe']].forEach(function (s) { g2.appendChild(el('button', { text: s[1], onclick: function () { UI.setStyle(s[0]); } })); });
+    [['shadedEdges', 'Shaded + edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden lines removed'], ['hlv', 'Hidden lines visible'], ['wireframe', 'Wireframe']].forEach(function (s) { g2.appendChild(el('button', { text: s[1], onclick: function () { UI.setStyle(s[0]); } })); });
     body.appendChild(g2);
   }
   function tpAppearance(body) {

@@ -883,6 +883,7 @@
         { label: 'Shaded With Edges', checked: v.style === 'shadedEdges', action: function () { setStyle('shadedEdges'); } },
         { label: 'Shaded', checked: v.style === 'shaded', action: function () { setStyle('shaded'); } },
         { label: 'Hidden Lines Removed', checked: v.style === 'hlr', action: function () { setStyle('hlr'); } },
+        { label: 'Hidden Lines Visible', checked: v.style === 'hlv', action: function () { setStyle('hlv'); } },   // r13/lines13
         { label: 'Wireframe', checked: v.style === 'wireframe', action: function () { setStyle('wireframe'); } },
         { sep: true },
         { label: 'Planes', checked: v.showPlanes, action: function () { v.showPlanes = !v.showPlanes; UI.updatePlanes(); } },
@@ -1014,7 +1015,7 @@
     btn('section', 'Section View', UI.cmdSection, function () { return !!App.view.section; });
     hud.appendChild(el('span', { class: 'sep' }));
     dd('orient', 'View Orientation', orientItems);
-    dd('display', 'Display Style', function () { return [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }); });
+    dd('display', 'Display Style', function () { return [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['hlv', 'Hidden Lines Visible'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }); });
     dd('hideshow', 'Hide/Show Items', function () { return [
       { label: 'Planes', checked: App.view.showPlanes, action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } },
       { label: 'Origins', checked: App.view.showOrigin, action: function () { App.view.showOrigin = !App.view.showOrigin; UI.updateOrigin(); } },
