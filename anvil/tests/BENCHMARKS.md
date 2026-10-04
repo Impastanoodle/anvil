@@ -207,3 +207,78 @@ What changed:
   a union and two subtractions; the cavity (only the Shell PM preview shows it) is built lazily. Same solid to 3e-13.
 
 Every example volume is unchanged (bit-identical except the three shelled parts: Funnel 3.4e-13, Mug 7.5e-15 relative).
+
+## 2026-10-04 (r11/perf11) — regression audit after ten refinement rounds
+
+User's Windows machine, Claude desktop browser pane, three other lane agents running tests in the same pane (so the
+tab was often in the background: timings that need animation frames were taken with emulated frames — each
+`requestAnimationFrame` callback run right after the input event, then the render loop's tick — and every comparison
+is paired: round 2's code (`970074a`, served from a scratch copy) and this branch alternated in the same tab, or the
+same page with the new code switched off). Medians unless marked min.
+
+**Kernel (`tests/bench.html`, 30 parts incl. stress).** No regression: 194 ms sum of medians in a quiet moment at the
+start (round 1 recorded 216 → after its fix, 165 for the 23 examples); paired with round 2's code under heavy load
+766 / 808 ms (970074a) vs 735 / 756 ms (this branch).
+
+**Test pages.**
+
+| Page | Before | After |
+| --- | ---: | ---: |
+| `kernel-tests.html` summary line | "72387 ms" (788 tests) | "14.7–15.8 s (synchronous tests …)" (790 tests) |
+| `kernel-tests.html` wall clock | 17.1–18.7 s | 14.7–15.8 s |
+| `occt-tests.html` wall clock | ~25 s (engine load 3.3 s, OpenCascade 9.7 s) | same |
+| `ui-smoke.html` | 252 steps, 59 s of steps + 30 s for one step that timed out in a background tab | 253 steps (+1), 250 pass with the tab hidden 88 % of a 325 s run; the 3 box-selection steps time out / cascade only under background timer throttling and pass with the tab in front |
+
+The "~80 s" for kernel-tests was the summary's sum of every test's own time: an async (worker) test's time ran from
+its declaration until it settled, i.e. through the whole synchronous run after it, so four worker tests counted ~45 s
+that never happened. The page now shows its wall-clock time and the synchronous tests' sum. What was really slower:
+710 tests present in both versions took 10.8 s with round 2's code and 12.5 s before this round's fix, mostly
+`Kernel.massProps` (every `build()` integrates the true curves) and the drawing tests (exact-curve linework added in
+rounds 3–10).
+
+**`Kernel.massProps`** (curve correction of the true curved faces). `curveWalls` asked the planar-face index whether a
+point lies on a planar face by testing every polygon of that plane; a bounding box per polygon (padded by the inside
+test's own tolerances, infinite for needle or very short-edged polygons) now skips the far ones. Bit-identical on
+every part example (`r11/perf11` test, `Kernel.massOptions.planarBoxes = false` compares). Min of 12, ms:
+
+| Part | before | after |
+| --- | ---: | ---: |
+| Flange | 28.0 | 9.9 |
+| Pulley | 10.3 | 7.8 |
+| Mounting Bracket | 5.2 | 3.6 |
+| Enclosure lid | 3.3 | 2.5 |
+| Mug / Rounded handle / Funnel | 2.4 / 3.6 / 0.8 | 2.3 / 3.3 / 1.3 (noise) |
+
+The result is also kept per mesh object (WeakMap, fresh copy per call; another positions / faces array, length or
+sampled coordinate misses): `anvil.summary()` integrated the same mesh twice per call (the part's and the materials'
+mass). `anvil.summary()` on the Flange: 93 → 1 ms; Pulley 18 → 0; Mounting Bracket 10.5 → 0.
+
+**App, measured and left alone (no regression found).**
+
+| Measure | Round 2 (970074a) | Now |
+| --- | ---: | ---: |
+| Boot to first frame (warm / cold script fetch) | 135 / 929 ms | 110–165 / 1038 ms |
+| Open a Design Library example → first frame (worker on) | | 3–112 ms (Funnel 112, Flange 56, Mug 58) |
+| Depth edit → frame, Anvil kernel (worker on) | | Bracket 21, Enclosure lid 13, Pulley 25, Flange 44, Mug 46, Funnel 103 ms |
+| Depth edit → frame, OpenCascade on | | 188–269 ms (see below) |
+| Orbit, main-thread time per frame (Funnel 4.7k tris) | | 0.1–0.2 ms |
+| Hover pick, Funnel | 0.2 ms | 0.3 ms |
+| FeatureManager refresh, 200 features | 9.7 ms | 9.5 ms |
+| Assembly drag per frame, Gear train / Pinned plate | 8–11 (round 3) | 7.8 / 0.3 ms |
+| Drawing re-render (sheet cached) | 5–21 ms | 1.1–5.4 ms |
+| Drawing first draw (Make Drawing from Part) | 45–126 ms | 113–205 ms |
+| Sketch drag per move, 92 entities / 105 relations (same sketch) | 13.7 ms | 17.2 ms |
+
+- **Rebuild → frame with OpenCascade on** is 190–270 ms because the viewport deliberately holds its last frame (up to
+  `HOLD_MS` = 280 ms in `ui-occt.js`) until OpenCascade's exact solid arrives instead of flashing Anvil's approximation
+  (the Anvil build is applied at 20–50 ms). By design (round 2); worth revisiting in the OpenCascade lane: on the
+  Bracket OpenCascade takes ~150 ms + 30 ms mesh, so every edit waits ~250 ms for its first frame.
+- **Sketch drag** is ~25 % slower than in round 2 on the same 92-entity sketch, spread over many small additions:
+  `drawDims` rebuilds ~1200 SVG nodes per frame (112 automatic dimensions + 102 relation icons, 6–7 ms), the
+  Instant3D sketch-dimension grips are redrawn with it (~7 % of the time), `linearDimScreen` projects 7 points per
+  dimension, the solve is 2–2.5 ms. Typical sketches (10–30 entities) stay well under a frame.
+- **Drawing first draw**: `projectView` (hidden lines, exact curves, end closing) is 100–175 ms of it for 4 views;
+  `buildCurves` / `meshEdges` 50–120 ms. Repeated renders are cached.
+
+**Robustness.** The render loop asked for its next frame after the frame's work, so one exception in a frame stopped
+it for good (the viewport froze; found when a measurement wrapper threw). It now asks in a `finally` (same order as before).
