@@ -227,7 +227,7 @@ start (round 1 recorded 216 → after its fix, 165 for the 23 examples); paired 
 | `kernel-tests.html` summary line | "72387 ms" (788 tests) | "14.7–15.8 s (synchronous tests …)" (790 tests) |
 | `kernel-tests.html` wall clock | 17.1–18.7 s | 14.7–15.8 s |
 | `occt-tests.html` wall clock | ~25 s (engine load 3.3 s, OpenCascade 9.7 s) | same |
-| `ui-smoke.html` | 59 s of steps + 30 s for one step that timed out in a background tab (Exploded View) | see the round's report |
+| `ui-smoke.html` | 252 steps, 59 s of steps + 30 s for one step that timed out in a background tab | 253 steps (+1), 250 pass with the tab hidden 88 % of a 325 s run; the 3 box-selection steps time out / cascade only under background timer throttling and pass with the tab in front |
 
 The "~80 s" for kernel-tests was the summary's sum of every test's own time: an async (worker) test's time ran from
 its declaration until it settled, i.e. through the whole synchronous run after it, so four worker tests counted ~45 s
@@ -281,4 +281,4 @@ mass). `anvil.summary()` on the Flange: 93 → 1 ms; Pulley 18 → 0; Mounting B
   `buildCurves` / `meshEdges` 50–120 ms. Repeated renders are cached.
 
 **Robustness.** The render loop asked for its next frame after the frame's work, so one exception in a frame stopped
-it for good (the viewport froze; found when a measurement wrapper threw). It now asks first.
+it for good (the viewport froze; found when a measurement wrapper threw). It now asks in a `finally` (same order as before).
