@@ -1736,13 +1736,14 @@
     assert(rows.length && rows[0].menu === 'File', 'File menu item missing');
     rows[0].row.click();
     assert(UI.drawingActive() && !$('drawing-doc').hidden, 'drawing document not shown');
-    assert(JSON.stringify(ribbonTabs().slice(0, 1)) === '["Drawing"]' && ribbonTabs().indexOf('Features') < 0, 'tabs ' + ribbonTabs());
+    assert(JSON.stringify(ribbonTabs().slice(0, 1)) === '["View Layout"]' && ribbonTabs().indexOf('Features') < 0, 'tabs ' + ribbonTabs());
     ['Standard 3 View', 'Model View', 'Smart Dimension', 'Model Items', 'Sheet Properties', 'Save as PDF'].forEach(ribbonButton);
     assert($('doc-title').textContent === 'Draw1 - Sheet1', 'title ' + $('doc-title').textContent);
     assert(W.getComputedStyle($('fm-tree')).display === 'none' && !$('drawing-tree').hidden, 'part tree still shown');
     var vrows = D.querySelectorAll('#drawing-tree .dw-view');
     assert(vrows.length === 4 && D.querySelector('#drawing-tree .dw-sheet'), 'tree rows ' + vrows.length);
     assert(Array.prototype.map.call(vrows, function (r) { return r.querySelector('.badge').textContent; }).join() === 'Front,Top,Right,Isometric', 'view rows');
+    await UI.drawing.ready();   // (r12/drawui12: the views land from drawing-worker.js; model items once all have)
     ['FRONT', 'TOP', 'RIGHT', 'ISOMETRIC', 'DIMENSIONS', 'SHEET'].forEach(function (l) { assert(D.querySelector('#drawing-sheet g[data-layer="' + l + '"]'), 'layer ' + l); });
     var s = anvil.drawing.summary();
     assert(JSON.stringify(s.views.map(function (v) { return v.extents; })) === '[[100,8],[100,60],[60,8],[' + dwView('Isometric').extents.join(',') + ']]', 'extents');
@@ -1835,7 +1836,7 @@
     var partTab = Array.prototype.filter.call(D.querySelectorAll('#drawing-tabs .dw-tab'), function (b) { return b.textContent.indexOf(UI.App.model.name) >= 0; })[0];
     assert(partTab, 'part tab');
     partTab.click();
-    assert(!UI.drawingActive() && $('drawing-doc').hidden && ribbonTabs().indexOf('Features') >= 0 && ribbonTabs().indexOf('Drawing') < 0, 'still in the drawing');
+    assert(!UI.drawingActive() && $('drawing-doc').hidden && ribbonTabs().indexOf('Features') >= 0 && ribbonTabs().indexOf('View Layout') < 0, 'still in the drawing');
     assert(W.getComputedStyle($('fm-tree')).display !== 'none', 'part tree hidden');
     var rows = menuRows('Draw1 - Sheet1');
     assert(rows.length && rows[0].menu === 'Window', 'Window menu entry');
@@ -1977,7 +1978,7 @@
     sm.views.forEach(function (v) { assert(!boxesOverlap(v.box, bom.box), v.name + ' covers the BOM'); });
     assert(D.querySelector('#drawing-tree .dw-bom') && /Bill of Materials1/.test(D.querySelector('#drawing-tree .dw-bom').textContent), 'tree row Bill of Materials1');
     assert(D.querySelector('#drawing-sheet g[data-layer="BOM"]') && /PINNED PLATE/.test(anvil.drawing.svg()), 'BOM layer and title');
-    assert(ribbonTabs().indexOf('Drawing') >= 0 && rbButton('Auto Balloon') && rbButton('Bill of'), 'Drawing tab with Auto Balloon and Bill of Materials');
+    assert(ribbonTabs().indexOf('View Layout') >= 0 && rbButton('Auto Balloon') && rbButton('Bill of'), 'View Layout tab with Auto Balloon and Bill of Materials');
     var wa = menuRows('(assembly)');
     assert(wa.length && wa[0].menu === 'Window', 'Window lists the assembly');
     if (UI.closeMenus) UI.closeMenus();
@@ -2053,7 +2054,7 @@
     na[0].row.click();
     await idle(); await wait(80);
     assert(UI.isAssembly() && !UI.drawingActive() && $('drawing-doc').hidden, 'New Assembly should leave the drawing');
-    assert(ribbonTabs().indexOf('Drawing') < 0 && ribbonTabs().indexOf('Assembly') >= 0, 'tabs ' + ribbonTabs());
+    assert(ribbonTabs().indexOf('View Layout') < 0 && ribbonTabs().indexOf('Assembly') >= 0, 'tabs ' + ribbonTabs());
     assert(anvil.drawing.make() === null && !UI.drawingActive(), 'an empty assembly has nothing to draw');
     await anvil.run('p.box(10, 10, 10);'); await idle();
     assert(!UI.isAssembly(), 'back to a part');
@@ -2065,7 +2066,7 @@
     await anvil.run(ex.code); await idle();
     assert(!UI.drawingActive || !UI.drawingActive(), 'no drawing open');
     var tabs = Array.prototype.map.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent.trim(); });
-    assert(tabs.indexOf('Assembly') >= 0 && tabs.indexOf('Evaluate') >= 0 && tabs.indexOf('Drawing') < 0 && tabs.indexOf('Features') < 0, 'tabs ' + JSON.stringify(tabs));
+    assert(tabs.indexOf('Assembly') >= 0 && tabs.indexOf('Evaluate') >= 0 && tabs.indexOf('View Layout') < 0 && tabs.indexOf('Features') < 0, 'tabs ' + JSON.stringify(tabs));
     function labels() { return Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return b.textContent.replace(/\s+/g, ' '); }).join(' | '); }
     UI.setRibbonTab('Assembly');
     assert(/Move\s*Component/.test(labels()) && /Rotate\s*Component/.test(labels()), 'Assembly tab: ' + labels());
@@ -2074,7 +2075,7 @@
     var sm = anvil.drawing.make();
     assert(sm && UI.drawingActive() && sm.bom.rows.map(function (r) { return r.partNumber + ' ' + r.qty; }).join(', ') === 'Base 1, Block 1, Pin 2', 'Make Drawing from Assembly: ' + JSON.stringify(sm && sm.bom));
     anvil.drawing.close();
-    assert(ribbonTabs().indexOf('Assembly') >= 0 && ribbonTabs().indexOf('Drawing') < 0, 'assembly tabs back');
+    assert(ribbonTabs().indexOf('Assembly') >= 0 && ribbonTabs().indexOf('View Layout') < 0, 'assembly tabs back');
     return JSON.stringify(tabs);
   });
 
@@ -3259,7 +3260,7 @@
     assert(D.querySelectorAll('#drawing-sheet g[data-layer="ANNOTATIONS"] line.center').length >= 20, 'centre-line styled lines');
     var mrow = D.querySelector('#drawing-tree .dw-centerMark');
     assert(mrow && mrow.querySelector('.badge').textContent === '4' && D.querySelectorAll('#drawing-tree .dw-centerline').length === 2, 'tree rows');
-    assert(ribbonTabs().slice(0, 2).join() === 'Drawing,Annotation', 'tabs ' + ribbonTabs());
+    assert(ribbonTabs().slice(0, 2).join() === 'View Layout,Annotation', 'tabs ' + ribbonTabs());
     Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
     ['Smart Dimension', 'Ordinate Dimension', 'Baseline Dimension', 'Chamfer Dimension', 'Model Items', 'Balloon', 'Auto Balloon', 'Stacked Balloon', 'Hole Callout', 'Center Mark', 'Centerline', 'Document Properties'].forEach(ribbonButton);
     ribbonButton('Document Properties').click();
@@ -7307,6 +7308,82 @@
     return n + ' points';
   });
   // --- end r12/sketchui12 ---
+  // --- r12/drawui12 ---
+  step('r12/drawui12: Make Drawing shows the sheet at once with a placeholder per view; the views land from drawing-worker.js and match the synchronous drawing', async function () {
+    if (UI.drawingActive()) UI.closeDrawing();
+    await anvil.run(plateCode()); await idle();
+    var ref = anvil.drawing.make({ fresh: true });   // the API path: settled before it returns
+    UI.closeDrawing();
+    await anvil.run(plateCode()); await idle();      // a new mesh: no projection cached
+    var t0 = W.performance.now();
+    UI.makeDrawing({ fresh: true });
+    var callMs = W.performance.now() - t0, st = UI.drawing.state;
+    assert(UI.drawingActive() && st.prog, 'the drawing should open with its views still to come');
+    var ph = D.querySelectorAll('#drawing-sheet .dw-pending').length;
+    assert(ph === 4, 'placeholders ' + ph);
+    assert(D.querySelector('#drawing-sheet g[data-layer="SHEET"]') && D.querySelector('#drawing-sheet g[data-layer="FRONT"]'), 'sheet and view layers drawn at once');
+    await UI.drawing.ready();
+    assert(!st.prog && !D.querySelector('#drawing-sheet .dw-pending'), 'placeholders left');
+    var s = anvil.drawing.summary(), strip = function (x) { x = JSON.parse(JSON.stringify(x)); delete x.titleBlock; delete x.name; return JSON.stringify(x); };
+    assert(strip(s) === strip(ref), 'differs from the synchronous drawing:\n' + strip(s) + '\n' + strip(ref));
+    assert(s.annotations.length > 0, 'Auto insert centre marks / centrelines missing');
+    return 'makeDrawing ' + callMs.toFixed(1) + ' ms on the main thread, first paint ' + st.firstPaintMs.toFixed(1) + ' ms, complete ' + st.openMs.toFixed(0) + ' ms; ' + s.annotations.length + ' annotations';
+  });
+  step('r12/drawui12: a script reading a drawing that is still being worked out gets the whole sheet (settle)', async function () {
+    UI.closeDrawing();
+    await anvil.run(plateCode()); await idle();
+    UI.makeDrawing({ fresh: true });
+    assert(UI.drawing.state.prog, 'expected a drawing in progress');
+    var s = anvil.drawing.summary();
+    assert(!UI.drawing.state.prog && !D.querySelector('#drawing-sheet .dw-pending'), 'not settled');
+    assert(s.views.length === 4 && dwView('Front').stats.hiddenLines === 4 && s.dims.indexOf('4X Ø8') >= 0 && s.annotations.length > 0, JSON.stringify(s.dims));
+    return s.views.length + ' views, ' + s.dims.length + ' dims';
+  });
+  step('r12/drawui12: View Layout tab, ASME arrowheads (3 × 1 mm), a pixel floor for line weights on screen only, cursors', async function () {
+    var tabs = ribbonTabs();
+    assert(tabs[0] === 'View Layout' && tabs[1] === 'Annotation', 'tabs ' + tabs);
+    var st = UI.drawing.state, arrow = st.sheet.prims.filter(function (p) { return p.k === 'fill' && p.layer === 'DIMENSIONS'; })[0];
+    assert(arrow, 'no dimension arrow');
+    var wdt = Math.hypot(arrow.pts[1][0] - arrow.pts[2][0], arrow.pts[1][1] - arrow.pts[2][1]);
+    var len = Math.hypot((arrow.pts[1][0] + arrow.pts[2][0]) / 2 - arrow.pts[0][0], (arrow.pts[1][1] + arrow.pts[2][1]) / 2 - arrow.pts[0][1]);
+    assert(Math.abs(wdt - 1) < 1e-9 && Math.abs(len - 3) < 1e-9, 'arrow ' + wdt + ' × ' + len);
+    UI.drawing.fit();
+    var css = D.getElementById('dw-stroke-floor').textContent;
+    var host = D.getElementById('drawing-sheet'), ppu = Math.min(host.clientWidth / st.vb.w, host.clientHeight / st.vb.h);
+    if (0.25 * ppu < 0.95) assert(/\.thin\{stroke-width:/.test(css), 'thin lines below a pixel at fit (' + (0.25 * ppu).toFixed(2) + ' px) with no floor: ' + css);
+    assert(anvil.drawing.svg().indexOf('dw-pending') < 0 && anvil.drawing.svg().indexOf('stroke-width="0.25"') >= 0, 'the export keeps the paper widths');
+    var r = host.getBoundingClientRect();
+    for (var i = 0; i < 25; i++) host.dispatchEvent(new W.WheelEvent('wheel', { deltaY: -100, clientX: r.left + 100, clientY: r.top + 100, bubbles: true, cancelable: true }));
+    var css2 = D.getElementById('dw-stroke-floor').textContent;
+    assert(css2.indexOf('.visible{') < 0, 'zoomed in, visible edges keep their paper width: ' + css2);
+    UI.drawing.fit();
+    var F = dwView('Front'), c = paperToClient([(F.box[0] + F.box[2]) / 2, (F.box[1] + F.box[3]) / 2]);
+    host.querySelector('svg').dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: c.clientX, clientY: c.clientY }));
+    assert(host.classList.contains('dw-cur-move'), 'no move cursor over a view: ' + host.className);
+    ribbonButton('Smart Dimension').click();
+    assert(host.classList.contains('dw-cur-tool'), 'no crosshair with Smart Dimension: ' + host.className);
+    key('Escape');
+    assert(!host.classList.contains('dw-cur-tool'), 'crosshair left after Esc');
+    return 'stroke floor at fit ' + (css ? 'on' : 'off') + ' (thin = ' + (0.25 * ppu).toFixed(2) + ' px); arrow ' + wdt + ' × ' + len + ' mm';
+  });
+  step('r12/drawui12: a part change keeps the last sheet on screen (no placeholders) while the new views are worked out, then swaps the new sheet in', async function () {
+    UI.closeDrawing();
+    await anvil.run(plateCode()); await idle();
+    UI.makeDrawing({ fresh: true }); await UI.drawing.ready();
+    var st = UI.drawing.state, held = false, blank = false;
+    var poll = W.setInterval(function () { if (st.prog && st.prog.hold) held = true; if (D.querySelector('#drawing-sheet .dw-pending')) blank = true; }, 2);
+    var f = UI.App.model.features.filter(function (x) { return x.type === 'extrude' && !x.cut; })[0];
+    UI.pushUndo(); f.depth = 12;
+    await UI.rebuild(); await idle(); await wait(80); await UI.drawing.ready();
+    W.clearInterval(poll);
+    assert(!blank, 'placeholders shown on a part change');
+    var fw = st.sheet.views.filter(function (w) { return w.view.orient === 'Front'; })[0], b = fw.proj.bounds;
+    assert(Math.abs(b.vmax - b.vmin - 12) < 1e-9 && !fw.pending, 'the Front view did not follow: ' + (b.vmax - b.vmin));
+    await UI.undo(); await idle();
+    assert(JSON.stringify(dwView('Front').extents) === '[100,8]', 'undo');
+    return held ? 'last sheet held while the worker ran' : 'views landed before a poll saw the hold';
+  });
+  // --- end r12/drawui12 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
