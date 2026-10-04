@@ -273,6 +273,7 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .pm-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .pm-btns button, .btn { border: 1px solid var(--input-line); background: var(--btn-face); padding: 3px 10px; border-radius: 3px; height: 24px; }
 .pm-btns button:hover, .btn:hover { background: var(--hover); border-color: var(--blue-line); }
+.pm-btns button.on { background: var(--sel); border-color: var(--blue-line); font-weight: 600; }
 .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
 .btn.primary:hover { background: var(--blue-hover); }
 .btn.danger:hover { color: var(--red); border-color: var(--red); }

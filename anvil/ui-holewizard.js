@@ -59,8 +59,8 @@
         }
       },
       groups: [
-        { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', onclick: function () { tab('type'); } }, { label: 'Positions', onclick: function () { tab('positions'); } }] },
-          { type: 'static', label: 'Showing', value: function (x) { return x.tab === 'type' ? 'Type' : 'Positions'; } }] },
+        // r14/fixes14: the pressed button is the tab on show (was a separate "Showing" row)
+        { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', active: isType, onclick: function () { tab('type'); } }, { label: 'Positions', active: isPos, onclick: function () { tab('positions'); } }] }] },
         { title: 'Hole Type', show: isType, fields: [{ type: 'select', label: 'Type', key: 'holeType', options: HW.TYPES, rerender: true }] },
         { title: 'Hole Specifications', show: isType, fields: [
           { type: 'static', label: 'Standard', value: 'ISO' },

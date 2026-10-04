@@ -244,7 +244,7 @@
         zebraUpdate();
       },
       onOK: function () { UI.setStatus('Zebra Stripes on (' + zebra.stripes + ' ' + zebra.direction + '). Click Zebra Stripes again to turn them off.'); },
-      onCancel: function () { if (!wasOn) zebraOff(); }
+      onCancel: function () { if (!wasOn) { zebraOff(); UI.setStatus('Zebra Stripes off.'); } }   // (r14/fixes14: the status said "on" after Esc)
     });
     UI.setStatus('Zebra Stripes on.');
   }
