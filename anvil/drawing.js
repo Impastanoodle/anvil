@@ -2395,6 +2395,7 @@ var Drawing = (function () {
   function clipProjection(pr, C, R) {
     var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
       bounds: { umin: C[0] - R, umax: C[0] + R, vmin: C[1] - R, vmax: C[1] + R } };
+    if (pr.pending) out.pending = true;   // a detail of a view still being worked out (r12/drawui12)
     ['visible', 'hidden'].forEach(function (k) {
       pr.lines[k].forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.lines[k].push(q); });
       pr.circles[k].forEach(function (c) {
@@ -2549,10 +2550,26 @@ var Drawing = (function () {
   function viewScale(doc, view) { return scaleValue(view.scale || doc.sheet.scale || [1, 1]); }
   // Views are recomputed on every render; the projection of a mesh in one orientation is cached on the mesh
   // (meshes are immutable once built, so the cache dies with it).
+  // While a lazy compute runs (compute(..., { lazy: true }), r12/drawui12) a projection of the main mesh that is not
+  // cached yet is not worked out here: it is listed in LAZY.missing and the view gets an empty placeholder with the
+  // view's true bounds (its extents), so the sheet shows at once, laid out where the views will be, while the UI has
+  // the missing views worked out in drawing-worker.js.
+  var LAZY = null;
+  function projectionKey(F, display, tangent) { return frameKey(F) + '|' + display + (tangent ? '|' + tangent : ''); }
   function cachedProjection(mesh, orient, display, tangent) {
-    var F = frameOf(orient), c = mesh._drawingProj || (mesh._drawingProj = {}), key = frameKey(F) + '|' + display + (tangent ? '|' + tangent : '');
-    return c[key] || (c[key] = projectView(mesh, F, { display: display, tangent: tangent }));
+    var F = frameOf(orient), c = mesh._drawingProj || (mesh._drawingProj = {}), key = projectionKey(F, display, tangent);
+    if (c[key]) return c[key];
+    if (LAZY && LAZY.mesh === mesh) {
+      if (!LAZY.keys[key]) { LAZY.keys[key] = 1; LAZY.missing.push({ key: key, frame: { name: F.name, e: F.e, u: F.u, v: F.v }, display: display, tangent: tangent || null }); }
+      var ex = extentsOf(mesh, F), ph = emptyProjection(F, ex);
+      ph.bounds = { umin: ex.umin, umax: ex.umax, vmin: ex.vmin, vmax: ex.vmax };
+      ph.pending = true;
+      return ph;
+    }
+    return (c[key] = projectView(mesh, F, { display: display, tangent: tangent }));
   }
+  // putProjection(mesh, key, proj): a projection worked out elsewhere (drawing-worker.js) goes into the mesh's cache
+  function putProjection(mesh, key, proj) { (mesh._drawingProj || (mesh._drawingProj = {}))[key] = proj; }
   // viewFrame(doc, v): the frame a view looks along. Section views derive theirs from the parent and the cutting
   // line, detail views use the parent's, projected views keep the frame they were made with.
   function viewFrame(doc, v, depth) {
@@ -3360,7 +3377,16 @@ var Drawing = (function () {
   // prims: { k: 'line', a, b, layer, style } | { k: 'circle', c, r, layer, style } | { k: 'text', p, h, text, anchor,
   // layer, rot } | { k: 'fill', pts, layer } | { k: 'arc', c, r, a0, a1, layer, style } | { k: 'ellipse', c, major,
   // ratio, t0, t1, full, layer, style } (ellipsePrim); styles: 'visible', 'hidden', 'thin', 'thick'. Paper coordinates, y up.
+  // compute(doc, mesh, model, ctx): ctx.lazy (r12/drawui12) leaves the views whose projection is not cached yet as
+  // placeholders (sheet.pending lists the projections to work out, see cachedProjection); their dimensions,
+  // annotations and balloons wait for them, and model items wait for every view (so none lands on the wrong view).
   function compute(doc, mesh, model, ctx) {
+    if (!ctx || !ctx.lazy) return computeSheet(doc, mesh, model, ctx);
+    var prev = LAZY;
+    LAZY = { mesh: mesh, missing: [], keys: {} };
+    try { var r = computeSheet(doc, mesh, model, ctx); r.pending = LAZY.missing; return r; } finally { LAZY = prev; }
+  }
+  function computeSheet(doc, mesh, model, ctx) {
     ctx = ctx || {};
     var units = model.units === 'in' ? 'in' : 'mm', k = paperK(units);
     var S = sheetSize(doc, units), prims = [], chainSeq = 0;
@@ -3457,6 +3483,8 @@ var Drawing = (function () {
       ['visible', 'hidden'].forEach(function (st) { (pr.ellipses ? pr.ellipses[st] : []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, st)); }); });
       var p0 = toSheet([bd.umin, bd.vmin]), p1 = toSheet([bd.umax, bd.vmax]);
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
+      // a view still being worked out (lazy compute): a placeholder over the paper it will take (svgParts, live only)
+      if (pr.pending) prims.push({ k: 'pending', box: box, layer: layer });
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
       var lb = box.y0;
       doc.views.forEach(function (dv) { if (dv.parent === v.id && dv.kind === 'detail' && dv.detail) lb = Math.min(lb, toSheet(dv.detail.c)[1] - dv.detail.r * s); });
@@ -3468,8 +3496,10 @@ var Drawing = (function () {
         text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
       } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
-        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct });
+        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending });
     });
+    var pendingView = {}, anyPending = false;
+    views.forEach(function (w) { if (w.pending) { pendingView[w.view.id] = 1; anyPending = true; } });
     // cutting lines and detail circles on the parents
     views.forEach(function (w) {
       var v = w.view, pw = views.filter(function (x) { return x.view.id === v.parent; })[0];
@@ -3561,13 +3591,13 @@ var Drawing = (function () {
       brows = [{ item: 1, key: 'part', srcKey: 'part', qty: 1, components: [], indices: Array.apply(null, Array(Math.max(1, nb))).map(function (x, i) { return i; }) }];
     }
     views.forEach(function (w) {
-      if (!(w.view.balloons || []).length || !brows.length) return;
+      if (!(w.view.balloons || []).length || !brows.length || w.pending) return;
       var nb0 = prims.length;
       balloonSpots(w, brows, k).forEach(function (b) {
         var L = 'BALLOONS', d = [b.attach[0] - b.c[0], b.attach[1] - b.c[1]], Ln = Math.hypot(d[0], d[1]) || 1, u = [d[0] / Ln, d[1] / Ln];
         var start = [b.c[0] + u[0] * b.r, b.c[1] + u[1] * b.r];
         line(start, b.attach, L, 'thin');
-        prims.push({ k: 'fill', pts: [b.attach, [b.attach[0] - u[0] * 3 * k + u[1] * 0.9 * k, b.attach[1] - u[1] * 3 * k - u[0] * 0.9 * k], [b.attach[0] - u[0] * 3 * k - u[1] * 0.9 * k, b.attach[1] - u[1] * 3 * k + u[0] * 0.9 * k]], layer: L });
+        prims.push({ k: 'fill', pts: [b.attach, [b.attach[0] - u[0] * 3 * k + u[1] * ARROW_W * k, b.attach[1] - u[1] * 3 * k - u[0] * ARROW_W * k], [b.attach[0] - u[0] * 3 * k - u[1] * ARROW_W * k, b.attach[1] - u[1] * 3 * k + u[0] * ARROW_W * k]], layer: L });
         prims.push({ k: 'circle', c: b.c, r: b.r, layer: L, style: 'thin' });
         text([b.c[0], b.c[1] - 1.25 * k], 3.5 * k, String(b.item), 'middle', L);
         // Stacked balloons: the other items touch this one in the stack direction; QTY: "2X" beside the stack
@@ -3593,7 +3623,7 @@ var Drawing = (function () {
     var suppressed = doc.suppressed || [];
     // a model item's Dimension PropertyManager settings live in doc.dimProps under its style key (view:kind:n)
     var nth = {};
-    var dims = doc.autoDims ? autoDims(doc, projections, units).filter(function (d) {
+    var dims = doc.autoDims && !anyPending ? autoDims(doc, projections, units).filter(function (d) {
       d.key = autoDimKey(d);
       var sk = d.view + ':' + d.kind; nth[sk] = nth[sk] || 0; d.style = styleKey(d, nth[sk]++);
       var pp = doc.dimProps && doc.dimProps[d.style];
@@ -3601,6 +3631,7 @@ var Drawing = (function () {
       return suppressed.indexOf(d.key) < 0;
     }) : [];
     doc.views.forEach(function (v) {
+      if (pendingView[v.id]) return;
       (v.dims || []).forEach(function (d, i) {
         if (projections[v.id]) reattachUserDim(d, projections[v.id]);
         var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i; c.text = dimText(c, units); dims.push(c);
@@ -3608,7 +3639,7 @@ var Drawing = (function () {
     });
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them
     var threads = partThreads(model), annPre = {};
-    views.forEach(function (w) { (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads); }); });
+    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads); }); });
     var placed = [], shown = [];
     // what a leader's text must keep clear of: the drawn geometry of every view (it may sit on empty paper inside its
     // own view, beside the hole it names), the other views, the title block, the BOM, and every dimension placed before
@@ -3657,12 +3688,13 @@ var Drawing = (function () {
     dims = shown;
     // cosmetic threads (holewizard.js Straight Tap holes): a dashed circle at the major diameter in views along the axis
     views.forEach(function (w) {
-      if (!w.ortho || w.section || w.clip) return;
+      if (!w.ortho || w.section || w.clip || w.pending) return;
       threadsAlong(threads, w.frame).forEach(function (t) { prims.push({ k: 'circle', c: w.toSheet(t.c), r: t.r * w.scale, layer: w.layer, style: 'hidden', thread: t.label }); });
     });
     // annotations: centre marks, centrelines, hole callouts
     var annotations = [];
     views.forEach(function (w) {
+      if (w.pending) return;
       (w.view.annotations || []).forEach(function (an, i) {
         var r = annPre[w.view.id + ':' + i], bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
         function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
@@ -3763,7 +3795,7 @@ var Drawing = (function () {
     return p;
   }
   function dimPrims(d, vw, k, placed) {
-    var out = [], L = 'DIMENSIONS', th = 3.5 * k, ar = 3 * k, aw = 0.9 * k, units = k === 1 ? 'mm' : 'in';
+    var out = [], L = 'DIMENSIONS', th = 3.5 * k, ar = 3 * k, aw = ARROW_W * k, units = k === 1 ? 'mm' : 'in';
     function line(a, b) { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin' }); }
     function arrow(tip, dir) {
       var n = [-dir[1], dir[0]];
@@ -3940,6 +3972,9 @@ var Drawing = (function () {
   function num(x) { return String(Math.round(x * 1e4) / 1e4); }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   // widths in paper mm
+  // dimension, leader and balloon arrowheads: 3 mm long, 1 mm wide (ASME Y14.2, SolidWorks' ANSI default 1 × 3 mm;
+  // half-width 0.5), r12/drawui12 (were 1.8 mm wide). Section-view arrows keep their own, bolder size.
+  var ARROW_W = 0.5;
   var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25 };
   var CENTER_DASH = [6, 1.5, 1.5, 1.5];   // centre marks and centrelines: long dash, short dash (paper mm)
   // plainText(s): text for writers without the ASME symbol glyphs (DXF R12, PDF Helvetica): ↧ 10 -> X 10 DEEP,
@@ -4027,6 +4062,11 @@ var Drawing = (function () {
         if (opts.live && !vw) {
           var of = p.view != null ? String(p.view) : null;
           if (of !== run) { if (run != null) out.push('</g>'); if (of != null) out.push('<g data-of="' + of + '">'); run = of; }
+        }
+        if (p.k === 'pending') {
+          // a view still being worked out (r12/drawui12): a soft panel where it goes, in the app only
+          if (opts.live) out.push('<rect class="dw-pending" x="' + num(p.box.x0) + '" y="' + num(H - p.box.y1) + '" width="' + num(p.box.x1 - p.box.x0) + '" height="' + num(p.box.y1 - p.box.y0) + '" rx="' + num(1.5 * k) + '" stroke="none"/>');
+          return;
         }
         var sw = num((STROKE[p.style] || 0.25) * k), cls = p.style ? ' class="' + p.style + '"' : '';
         var dsh = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'chain' || p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : p.style === 'center' ? ' stroke-dasharray="' + center + '"' : '';
@@ -4878,7 +4918,7 @@ var Drawing = (function () {
       var ll = Math.hypot(lead[0], lead[1]) || 1, uu = [lead[0] / ll, lead[1] / ll], tip = [c[0] + uu[0] * rr2, c[1] + uu[1] * rr2], elbow = [c[0] + lead[0], c[1] + lead[1]];
       var sg = lead[0] >= 0 ? 1 : -1, tw = Math.max.apply(null, lines.map(function (s) { return textWidth(s, th); }));
       line(tip, elbow); line(elbow, [elbow[0] + sg * (tw + 2 * k), elbow[1]]);
-      var ar = 3 * k, aw = 0.9 * k, dv = [-uu[0], -uu[1]], nn = [-dv[1], dv[0]];
+      var ar = 3 * k, aw = ARROW_W * k, dv = [-uu[0], -uu[1]], nn = [-dv[1], dv[0]];
       out.push({ k: 'fill', pts: [tip, [tip[0] - dv[0] * ar + nn[0] * aw, tip[1] - dv[1] * ar + nn[1] * aw], [tip[0] - dv[0] * ar - nn[0] * aw, tip[1] - dv[1] * ar - nn[1] * aw]], layer: L });
       lines.forEach(function (s, i) { out.push({ k: 'text', p: [elbow[0] + sg * 1 * k, elbow[1] + 1 * k + (lines.length - 1 - i) * th * 1.5], h: th, text: s, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 }); });
       an.leadNow = lead.slice();
@@ -4893,6 +4933,7 @@ var Drawing = (function () {
   return {
     ORIENTS: Object.keys(ORIENTS), FORMATS: FORMATS, SCALES: SCALES,
     orientation: orientation, meshEdges: meshEdges, pairOpenEdges: pairOpenEdges, projectView: projectView, extentsOf: extentsOf, textRect: textRect,
+    projectionKey: projectionKey, putProjection: putProjection, STROKE: STROKE,
     newDrawing: newDrawing, addView: addView, standard3View: standard3View, layout: layout, moveView: moveView, findView: findView,
     sheetSize: sheetSize, scaleText: scaleText, scaleLabel: scaleLabel, parseScale: parseScale, scaleValue: scaleValue,
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
@@ -4973,6 +5014,7 @@ var Drawing = (function () {
   function mesh() { return App.mesh || { positions: new Float32Array(0), faces: [], triCount: 0 }; }
   function paperK() { return units() === 'in' ? 1 / 25.4 : 1; }
   function edit(fn) {
+    settle();
     UI.pushUndo();
     fn(doc());
     UI.autosave();
@@ -4996,6 +5038,7 @@ var Drawing = (function () {
     D.host.addEventListener('wheel', onWheel, { passive: false });
     D.host.addEventListener('dblclick', onDblClick);
     D.host.addEventListener('contextmenu', onContext);
+    window.addEventListener('resize', function () { if (D.active) strokeFloor(); });
   }
   function renderTabs() {
     var tabs = $('drawing-tabs'), dc = doc();
@@ -5022,29 +5065,39 @@ var Drawing = (function () {
       App.model.drawings = list = list.concat([]);
       var dc = Drawing.newDrawing(App.model, Object.assign({ options: defaultDocOptions() }, opts));
       syncBom(dc);
-      Drawing.standard3View(dc, App.mesh, units(), opts);
+      // (the centre marks / centrelines of Auto insert need the views' linework: they go in once it is worked out)
+      Drawing.standard3View(dc, App.mesh, units(), Object.assign({}, opts, { autoInsert: false }));
       list.push(dc);
       UI.autosave();
       D.index = list.length - 1;
     } else D.index = opts.index != null ? opts.index : 0;
-    openDrawing();
+    openDrawing({ insert: !!dc && opts.autoInsert !== false });
     return doc();
   }
-  function openDrawing() {
+  // openDrawing(o): shows the drawing at once (r12/drawui12): the sheet, its border and title block and a placeholder
+  // where each view goes are drawn in the first frame; the views' hidden-line removal (100–200 ms for the four views of
+  // a new drawing) runs in drawing-worker.js and each view drops in as it is done (D.prog until all are). Anything
+  // that reads or edits the sheet first (a click, an API call, an export) finishes it on the spot (settle).
+  // o.insert: run Auto insert (centre marks, centrelines) once the views are known.
+  function openDrawing(o) {
     ensureDom();
     if (!doc()) return;
+    var t0 = performance.now();
     D.active = true; D.sel = null; D.hover = null; D.tool = null; D.pending = null; D.vb = null;
+    D.prog = { doc: doc(), insert: !!(o && o.insert), t0: t0 };
     $('app').classList.add('drawing-mode');
     D.root.hidden = false; D.tree.hidden = false;
-    App.ribbonTab = 'Drawing';
+    App.ribbonTab = 'View Layout';   // (SolidWorks' first drawing CommandManager tab, r12/drawui12)
     UI.refreshRibbon();
     UI.renderMenuBar();
     render();
     fitSheet();
+    D.firstPaintMs = performance.now() - t0;
     UI.setStatus('Drawing ' + doc().name + (isAsm() ? ' of assembly ' + App.model.name + ': Auto Balloon numbers the components after the Bill of Materials' : '') + ': drag a view to move it, Smart Dimension (D) to dimension an edge or circle, wheel to zoom.');
   }
   function closeDrawing() {
     if (!D.active) return;
+    settle();
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
     closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null;
@@ -5073,7 +5126,13 @@ var Drawing = (function () {
     D.qtok = (D.qtok || 0) + 1; D.renderQueued = false; D.renderFull = false;
     syncBom(dc);
     if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
-    D.sheet = Drawing.compute(dc, mesh(), App.model, cctx());
+    if (D.prog && D.prog.doc !== dc) D.prog = null;   // (undo / another drawing: nothing left to finish)
+    var lazy = !!(D.prog && !D.prog.sync);
+    D.sheet = Drawing.compute(dc, mesh(), App.model, lazy ? Object.assign(cctx(), { lazy: true }) : cctx());
+    if (D.prog) {
+      if (lazy && D.sheet.pending.length) requestProjections(D.sheet.pending);
+      else { var pg = D.prog; D.prog = null; if (pg.insert && Drawing.autoInsert(dc, mesh())) { UI.autosave(); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
+    }
     D.occtDrove = !!(UI.occt && UI.occt.status && UI.occt.status().driving);
     D.rendered = {};
     D.sheet.views.forEach(function (w) { D.rendered[w.view.id] = [w.view.x, w.view.y]; });
@@ -5083,6 +5142,77 @@ var Drawing = (function () {
     if (light !== true) { renderTree(); renderTabs(); }
     $('doc-title').textContent = dc.name + ' - ' + dc.sheet.name;
     D.lastRenderMs = performance.now() - t0;
+  }
+  // Views worked out off the main thread (r12/drawui12): drawing-worker.js gets the mesh once, then one message per
+  // view, and answers each with its projection, which goes into the mesh's projection cache; the sheet is drawn again
+  // as each one lands. Without workers (or when one fails) the views are worked out here, one per task, so the page
+  // still paints between them.
+  var PJ = { worker: null, off: false, mesh: null, id: 0, jobs: {}, tick: 0 };
+  function projWorker() {
+    if (PJ.off || typeof Worker === 'undefined') return null;
+    if (!PJ.worker) {
+      try { PJ.worker = new Worker('drawing-worker.js'); } catch (err) { PJ.off = true; return null; }
+      PJ.worker.onmessage = onProjected;
+      PJ.worker.onerror = function () { PJ.off = true; PJ.worker = null; var jobs = PJ.jobs; PJ.jobs = {}; Object.keys(jobs).forEach(function (k) { projectHere(jobs[k]); }); };
+    }
+    return PJ.worker;
+  }
+  function requestProjections(list) {
+    var m = mesh();
+    if (PJ.mesh !== m) { PJ.mesh = m; PJ.id++; PJ.jobs = {}; PJ.sent = false; }
+    var w = projWorker();
+    list.forEach(function (j) {
+      if (PJ.jobs[j.key]) return;
+      var job = PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, mesh: m, id: PJ.id };
+      if (w) {
+        try {
+          if (!PJ.sent) {
+            var copy = {};
+            Object.keys(m).forEach(function (k) { if (k.indexOf('_drawing') !== 0) copy[k] = m[k]; });
+            w.postMessage({ type: 'mesh', id: PJ.id, mesh: copy });
+            PJ.sent = true;
+          }
+          w.postMessage({ type: 'project', id: PJ.id, job: j.key, frame: j.frame, display: j.display, tangent: j.tangent });
+          return;
+        } catch (err) { PJ.off = true; w = null; }
+      }
+      projectHere(job);
+    });
+  }
+  // the main-thread fallback: one view per task
+  function projectHere(job) {
+    setTimeout(function () {
+      if (job.id !== PJ.id || !D.prog || !PJ.jobs[job.key]) return;
+      var c = job.mesh._drawingProj;
+      if (!(c && c[job.key])) Drawing.putProjection(job.mesh, job.key, Drawing.projectView(job.mesh, job.frame, { display: job.display, tangent: job.tangent }));
+      landed(job);
+    }, 0);
+  }
+  function onProjected(ev) {
+    var d = ev.data || {}, job = PJ.jobs[d.job];
+    if (d.id !== PJ.id || !job) return;
+    if (d.type === 'projected') { Drawing.putProjection(job.mesh, job.key, d.proj); landed(job); }
+    else projectHere(job);
+  }
+  // a view is done: the sheet is drawn again (once for views landing together)
+  function landed(job) {
+    delete PJ.jobs[job.key];
+    if (PJ.tick) return;
+    PJ.tick = setTimeout(function () { PJ.tick = 0; if (D.active && D.prog && mesh() === job.mesh) render(true); }, 0);
+  }
+  // settle(): finishes a drawing that is still being worked out, here and now (the views left are worked out on the
+  // main thread), so a click, an export or a script sees the whole sheet
+  function settle() {
+    if (!D.prog || !D.active) return;
+    // (a worker still busy with views no longer wanted is dropped, so the next drawing does not queue behind them)
+    if (PJ.worker && Object.keys(PJ.jobs).length) { PJ.worker.terminate(); PJ.worker = null; }
+    PJ.id++; PJ.mesh = null; PJ.jobs = {};
+    D.prog.sync = true;
+    render();
+  }
+  // a promise for when the drawing on screen is complete (tests; the views land in a few hundred ms at most)
+  function ready() {
+    return new Promise(function (res) { (function poll() { if (!D.prog || !D.active) res(); else setTimeout(poll, 10); })(); });
   }
   // the sheet SVG from svgParts: built whole the first time (or when the sheet size or the list of layers changed),
   // afterwards only the changed layers' contents are replaced; transforms left by a live view drag are cleared
@@ -5162,7 +5292,30 @@ var Drawing = (function () {
     if (!s || !D.sheet) return;
     if (!D.vb) D.vb = fitBox();
     s.setAttribute('viewBox', D.vb.x + ' ' + D.vb.y + ' ' + D.vb.w + ' ' + D.vb.h);
+    strokeFloor();
     positionInlineEdit();
+  }
+  // Line weights on screen (r12/drawui12): the sheet draws its lines at their paper widths (0.25–0.7 mm), which at the
+  // zoom that fits an A3 sheet in the window comes out at 0.4–0.6 px for thin, hidden and hatch lines: faint grey
+  // smudges. Like SolidWorks, the screen keeps every line at least about a pixel wide (visible and thick edges a
+  // little more) while zoomed out; zoomed in, the paper widths show. Exports always use the paper widths.
+  var MIN_PX = { visible: 1.35, thick: 1.6, chain: 1.1, hidden: 1, thin: 1, center: 1, tangent: 1, tanfont: 1, hatch: 0.8 };
+  function strokeFloor() {
+    var st = D.strokeStyle;
+    if (!st) { st = D.strokeStyle = document.createElement('style'); st.id = 'dw-stroke-floor'; document.head.appendChild(st); }
+    var w = D.host ? D.host.clientWidth : 0, h = D.host ? D.host.clientHeight : 0;
+    if (!w || !h || !D.vb || !D.sheet) return;
+    var ppu = Math.min(w / D.vb.w, h / D.vb.h), k = D.sheet.units === 'in' ? 1 / 25.4 : 1;
+    // (in steps of about 6 %, so a smooth zoom restyles the sheet a few times, not on every frame)
+    var q = Math.round(Math.log(ppu) / 0.06);
+    if (q === D.strokeQ) return;
+    D.strokeQ = q;
+    var px = 1 / Math.exp(q * 0.06), css = '';
+    Object.keys(MIN_PX).forEach(function (c) {
+      var paper = (Drawing.STROKE[c] || 0.25) * k, need = MIN_PX[c] * px;
+      if (need > paper) css += '#drawing-sheet svg .' + c + '{stroke-width:' + +need.toPrecision(4) + 'px}';
+    });
+    if (st.textContent !== css) st.textContent = css;
   }
   function fitBox() {
     var S = D.sheet.size, m = Math.max(S[0], S[1]) * 0.03;
@@ -5190,16 +5343,25 @@ var Drawing = (function () {
     if (parent) parent.appendChild(n);
     return n;
   }
+  // the pointer says what a click does (r12/drawui12): a crosshair while a tool waits for a pick or a placement, the
+  // move cursor over anything a drag moves (a view, a dimension, a balloon, an annotation, the BOM)
+  function updateCursor() {
+    if (!D.host) return;
+    var h = D.hover, mv = !D.tool && !!h && h.kind !== 'edge';
+    D.host.classList.toggle('dw-cur-tool', !!D.tool);
+    D.host.classList.toggle('dw-cur-move', mv);
+  }
   function drawOverlay() {
+    updateCursor();
     var s = svgEl(), g = s && s.querySelector('#dw-overlay');
     if (!g) return;
     g.innerHTML = '';
-    var H = D.sheet.size[1], pad = 2 * paperK(), sw = pxToPaper(1.2);
+    var H = D.sheet.size[1], pad = 2 * paperK(), vpad = 3 * paperK(), sw = pxToPaper(1.2);   // (a view's frame is where a click takes the view: viewAt's margin)
     D.sheet.views.forEach(function (w) {
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === w.view.id, hov = D.hover && (D.hover.kind === 'view' && D.hover.id === w.view.id || D.hover.pre && D.hover.view === w.view.id);
       if (!sel && !hov) return;
       var o = liveOffset(w.view.id);
-      svgNode('rect', { class: 'dw-vbox' + (sel ? ' sel' : ''), x: w.box.x0 + o[0] - pad, y: H - w.box.y1 - o[1] - pad, width: w.box.x1 - w.box.x0 + 2 * pad, height: w.box.y1 - w.box.y0 + 2 * pad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
+      svgNode('rect', { class: 'dw-vbox' + (sel ? ' sel' : ''), x: w.box.x0 + o[0] - vpad, y: H - w.box.y1 - o[1] - vpad, width: w.box.x1 - w.box.x0 + 2 * vpad, height: w.box.y1 - w.box.y0 + 2 * vpad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
     });
     D.sheet.dims.forEach(function (d) {
       var sel = D.sel && D.sel.kind === 'dim' && dimMatches(D.sel, d), hov = D.hover && D.hover.kind === 'dim' && dimMatches(D.hover, d);
@@ -5300,6 +5462,7 @@ var Drawing = (function () {
   // the sheet sits inside the part viewport: its mouse events must not reach the viewport's own handlers (a double-click
   // there opens the feature under the pointer in the hidden 3D view, a middle drag rotates it)
   function onDown(e) {
+    if (e.button !== 1) settle();   // (a middle-drag pan lets the views keep landing)
     if (!D.active || !D.sheet) return;
     if (D.inline && D.inline.box.contains(e.target)) return;
     e.preventDefault(); e.stopPropagation();
@@ -5374,6 +5537,7 @@ var Drawing = (function () {
   }
   function onMove(e) {
     if (!D.active || !D.sheet) return;
+    if (!D.drag) updateCursor();   // (a tool started from the keyboard or a PropertyManager)
     if (D.drag && D.drag.kind === 'pan') {
       var s = svgEl(), m = s && s.getScreenCTM();
       if (!m || !D.drag.vb) return;
@@ -5505,6 +5669,7 @@ var Drawing = (function () {
     })();
   }
   function onDblClick(e) {
+    settle();
     if (D.active) e.stopPropagation();
     if (!D.active || D.tool) return;
     var pp = toPaper(e);
@@ -5522,6 +5687,7 @@ var Drawing = (function () {
     if (w) cmdViewProperties(w.view.id); else cmdSheetProperties();
   }
   function onContext(e) {
+    settle();
     e.preventDefault(); e.stopPropagation();
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
@@ -5841,6 +6007,7 @@ var Drawing = (function () {
   }
   function safeName() { return (doc().name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_'); }
   function exportAs(kind) {
+    settle();
     if (!D.sheet) render();
     var sh = D.sheet;
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');
@@ -6592,7 +6759,7 @@ var Drawing = (function () {
   }
 
   // ------------------------------------------------------------------ ribbon, menus, keys
-  UI.RIBBON.Drawing = [
+  UI.RIBBON['View Layout'] = [
     { id: 'std3view', label: 'Standard\n3 View', run: cmdStandard3View },
     { id: 'modelView', label: 'Model\nView', run: cmdModelView, active: function () { return D.tool === 'place'; } },
     { id: 'projView', label: 'Projected\nView', run: cmdProjectedView, active: function () { return D.tool === 'project'; } },
@@ -6633,11 +6800,11 @@ var Drawing = (function () {
     { sep: true },
     { id: 'docProps', label: 'Document\nProperties', run: cmdDocProps }
   ];
-  if (UI.ASM_RIBBON) { UI.ASM_RIBBON.Drawing = UI.RIBBON.Drawing; UI.ASM_RIBBON.Annotation = UI.RIBBON.Annotation; }
-  // the Drawing and Annotation tabs exist only in a drawing document; part tabs are hidden while one is open
+  if (UI.ASM_RIBBON) { UI.ASM_RIBBON['View Layout'] = UI.RIBBON['View Layout']; UI.ASM_RIBBON.Annotation = UI.RIBBON.Annotation; }
+  // the View Layout and Annotation tabs exist only in a drawing document; part tabs are hidden while one is open
   UI.ribbonTabsFor = function (names, extra) {
-    if (D.active) return [['Drawing', 'Annotation'], ['Sketch', 'Markup', 'Sheet Format']];
-    return [names.filter(function (n) { return n !== 'Drawing' && n !== 'Annotation'; }), extra];
+    if (D.active) return [['View Layout', 'Annotation'], ['Sketch', 'Markup', 'Sheet Format']];
+    return [names.filter(function (n) { return n !== 'View Layout' && n !== 'Annotation'; }), extra];
   };
   UI.menuHook = function (menus) {
     var file = menus.filter(function (m) { return m.label === 'File'; })[0];
@@ -6752,6 +6919,7 @@ var Drawing = (function () {
     return out;
   }
   function summary() {
+    settle();
     var dc = doc(), pnames = null;
     if (!dc) return null;
     if (D.active && D.renderQueued) render();   // a script reads the sheet as it is now, not a held / queued one
@@ -6794,7 +6962,7 @@ var Drawing = (function () {
     edit(function (dc) { fn(dc); });
     return summary();
   }
-  function current() { if (!doc()) return null; if (D.active && D.renderQueued) render(); if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model, cctx()); } return D.sheet; }
+  function current() { if (!doc()) return null; settle(); if (D.active && D.renderQueued) render(); if (!D.active) { syncBom(); if (doc().layout === 'auto') Drawing.layout(doc(), mesh(), units()); D.sheet = Drawing.compute(doc(), mesh(), App.model, cctx()); } return D.sheet; }
   if (window.anvil) {
     window.anvil.drawing = {
       make: function (opts) { return makeDrawing(opts) ? summary() : null; },
@@ -6860,7 +7028,7 @@ var Drawing = (function () {
     };
   }
   UI.makeDrawing = makeDrawing; UI.openDrawing = openDrawing; UI.closeDrawing = closeDrawing; UI.drawingActive = function () { return D.active; };
-  UI.drawing = { state: D, render: render, centerMark: cmdCenterMark, centerline: cmdCenterline, holeCallout: cmdHoleCallout, ordinate: function () { cmdChainDim('ordinate'); }, baseline: function () { cmdChainDim('baseline'); },
+  UI.drawing = { state: D, render: render, ready: ready, settle: settle, centerMark: cmdCenterMark, centerline: cmdCenterline, holeCallout: cmdHoleCallout, ordinate: function () { cmdChainDim('ordinate'); }, baseline: function () { cmdChainDim('baseline'); },
     chamferDim: cmdChamferDim, balloon: function () { cmdBalloon(false); }, stackedBalloon: function () { cmdBalloon(true); }, docProps: cmdDocProps, dimensionPM: cmdDimensionPM, annotAt: annotAt, dimAt: dimAt, edgeAt: edgeAt, autoBalloon: cmdAutoBalloon, bom: cmdBOM, balloonAt: balloonAt, bomAt: bomAt, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
   // the File menu gets its drawing entry through UI.menuHook; redraw the menu bar now that the hook exists
   if (UI.renderMenuBar && $('menus').children.length) UI.renderMenuBar();

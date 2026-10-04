@@ -58,3 +58,12 @@
 #dw-edit .dw-edit-btn:hover { background: var(--btn-hover, rgba(0, 0, 0, 0.08)); }
 /* r5/drawings5: a title block field edited in place (double-click a cell) */
 #dw-edit.tb input { width: 180px; }
+/* r12/drawui12: a view still being worked out when the drawing opens (drawing-worker.js): a soft panel over the paper
+   it will take, gently pulsing until its linework drops in */
+#drawing-sheet .dw-pending { fill: #e9edf2; animation: dw-pulse 0.9s ease-in-out infinite alternate; }
+@keyframes dw-pulse { from { fill-opacity: 0.35; } to { fill-opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { #drawing-sheet .dw-pending { animation: none; fill-opacity: 0.6; } }
+/* r12/drawui12: what a click does — a crosshair while a tool waits for a pick or a placement, the move cursor over
+   anything a drag moves (a drag or a pan in progress keeps its own cursor) */
+#drawing-sheet.dw-cur-tool:not(.dw-dragging):not(.dw-panning) { cursor: crosshair; }
+#drawing-sheet.dw-cur-move:not(.dw-dragging):not(.dw-panning) { cursor: move; }
