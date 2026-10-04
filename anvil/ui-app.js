@@ -241,6 +241,7 @@
       body.appendChild(kv3);
       body.appendChild(el('p', { html: '<small>Curved faces are meshed so no chord strays more than this from the true surface' + (iq.segsR10 ? ' (a Ø20 circle: ' + iq.segsR10 + ' facets)' : '') + '. Mass properties use the exact surfaces at every setting.</small>' }));
     }
+    if (UI.occtOptionsSection) body.appendChild(UI.occtOptionsSection(function () { tpProps(body); }));   // r12/occtui12: OpenCascade kernel, After an edit
     var sm = m.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
     body.appendChild(el('h3', { text: 'Sheet metal defaults' }));
     var kv2 = el('div', { class: 'kv' });

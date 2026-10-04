@@ -18,6 +18,12 @@
   var stored = null;
   try { stored = localStorage.getItem('anvil.occt'); } catch (e) { }
   st.on = stored === '1';
+  // r12/occtui12: after an edit of a part OpenCascade drives, 'quick': Anvil's own result shows at once (~20 ms) and
+  // OpenCascade's exact solid cross-fades in over it when it lands; 'wait': the view holds the previous exact solid
+  // until the new one lands (round 11, up to HOLD_MAX, 'Rebuilding…' cue). Remembered per browser in
+  // 'anvil.occtSwap'; quick is the default (immediate feedback, the faceted → exact change is a 180 ms fade).
+  st.swap = 'quick';
+  try { var sw0 = localStorage.getItem('anvil.occtSwap'); if (sw0 === 'wait' || sw0 === 'quick') st.swap = sw0; } catch (e) { }
 
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
   function startWorker() {
@@ -252,6 +258,9 @@
     // features Anvil's kernel failed that OpenCascade built (a fillet on a saddle edge, ...): Anvil's volume is no
     // reference any more, OpenCascade's valid solid is shown and those errors are cleared
     st.beyond = Object.keys((anvilBuild && anvilBuild.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
+    // r12/occtui12: no solid on either side (every feature failed, or nothing built yet): nothing to compare, not a
+    // "volume differs"
+    if (!r.mesh && !(Math.abs(r.volume || 0) > 1e-9) && !(st.anvilVolume > 1e-9)) { st.state = 'empty'; return; }
     if (!r.mesh || (!st.beyond.length && !(dv <= (r.tolerance || 1e-4)))) { st.state = 'mismatch'; return; }
     var build;
     try {
@@ -334,7 +343,62 @@
   }
   UI.occtSelProbe = selProbe; UI.occtSelRestore = selRestore;   // r5/select5: for tests
   function isMeshSel(p) { return !!p && (p.s.kind === 'face' || p.s.kind === 'edge'); }
+  // ---- r12/occtui12: the cross-fade. The 3D canvas keeps its drawing buffer (ui-core.js preserveDrawingBuffer), so
+  // the frame on screen (Anvil's quick result) is copied into a 2D canvas laid exactly over it, under every overlay
+  // (dimensions, triad, PropertyManager); the exact solid renders underneath on the next frame and the copy fades out
+  // (FADE_MS). Not when a frame is held (it already shows an exact solid: the swap is instant, as before), the
+  // camera is animating, or the canvas is hidden; any input (a click, a wheel turn, a key) ends a fade at once, since
+  // the copy would no longer line up with a moving view. The camera, selection and pre-selection are untouched.
+  var FADE_MS = 180, fadeEl = null, fadeTimer = 0;
+  st.fades = 0;
+  function fadeStop() {
+    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = 0; }
+    if (fadeEl) { fadeEl.style.transition = 'none'; fadeEl.style.opacity = '0'; fadeEl.style.visibility = 'hidden'; }
+  }
+  ['pointerdown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, function () { if (fadeTimer) fadeStop(); }, true); });
+  function fadeSnap() {
+    if (App.holdFrameUntil > performance.now() || UI.viewAnimating && UI.viewAnimating()) return false;
+    var gl = document.querySelector('#viewport canvas.gl');
+    if (!gl || !gl.width || !gl.height || !gl.getClientRects().length || !App.mesh) return false;
+    try {
+      if (!fadeEl) {
+        fadeEl = document.createElement('canvas');
+        fadeEl.className = 'occt-fade';
+        fadeEl.setAttribute('aria-hidden', 'true');
+        fadeEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;visibility:hidden;opacity:0';
+      }
+      if (fadeEl.parentNode !== gl.parentNode || fadeEl.previousSibling !== gl) gl.parentNode.insertBefore(fadeEl, gl.nextSibling);
+      if (fadeEl.width !== gl.width) fadeEl.width = gl.width;
+      if (fadeEl.height !== gl.height) fadeEl.height = gl.height;
+      fadeEl.style.width = gl.style.width || gl.clientWidth + 'px'; fadeEl.style.height = gl.style.height || gl.clientHeight + 'px';
+      var cx = fadeEl.getContext('2d');
+      cx.clearRect(0, 0, fadeEl.width, fadeEl.height);
+      cx.drawImage(gl, 0, 0);
+      if (fadeTimer) clearTimeout(fadeTimer);
+      fadeEl.style.transition = 'none'; fadeEl.style.opacity = '1'; fadeEl.style.visibility = 'visible';
+      return true;
+    } catch (e) { fadeStop(); return false; }
+  }
+  // after the swap: once the exact solid has been drawn under the copy (the next animation frame; a timer when frames
+  // are throttled), the copy fades out
+  function fadeRun() {
+    if (UI.requestRender) UI.requestRender();
+    var go = function () {
+      if (!fadeEl || fadeEl.style.visibility !== 'visible' || go.done) return;
+      go.done = true;
+      fadeEl.style.transition = 'opacity ' + FADE_MS + 'ms ease-out';
+      fadeEl.style.opacity = '0';
+      st.fades++;
+      fadeTimer = setTimeout(function () { fadeTimer = 0; fadeStop(); }, FADE_MS + 40);
+    };
+    requestAnimationFrame(function () { requestAnimationFrame(go); });
+    fadeTimer = setTimeout(go, 120);
+  }
   function swapIn(build, edges, curves, normals) {
+    var fade = fadeSnap();
+    try { swapIn0(build, edges, curves, normals); } finally { if (fade) fadeRun(); }
+  }
+  function swapIn0(build, edges, curves, normals) {
     var multiOk = App.multi && App.multi.length > 1 && App.multi[0] === App.sel && App.multiMesh === App.mesh;
     var p1 = selProbe(App.sel), p2 = selProbe(App.sel2), pl = multiOk ? App.multi.map(selProbe) : null;
     // non-mesh selections are kept through applyBuild (the tree draws them); face / edge ones are found afterwards
@@ -431,7 +495,9 @@
       // the ✓ was pressed on) until the exact solid swaps in, instead of flashing Anvil's facets for the build's
       // duration (smooth/responsive; r11/occtswap11: held for the expected build time, up to HOLD_MAX, with a
       // 'Rebuilding…' cue; a build expected to take longer shows Anvil's part at once). Any input ends the hold.
-      if (wasDriving && st.busy && UI.holdFrame && isAsm()) { if (st.lastOcctMs != null && st.lastOcctMs < 280) UI.holdFrame(280); }   // as before
+      // r12/occtui12: only in 'wait' mode; 'quick' shows Anvil's result now and cross-fades (swapIn)
+      if (st.swap !== 'wait') { }
+      else if (wasDriving && st.busy && UI.holdFrame && isAsm()) { if (st.lastOcctMs != null && st.lastOcctMs < 280) UI.holdFrame(280); }   // as before
       else if (wasDriving && st.busy && UI.holdFrame && st.estSame && st.estMs != null && st.estMs <= HOLD_MAX) {
         UI.holdFrame(Math.min(HOLD_MAX, st.estMs * 1.5 + 150));
         cue(true);
@@ -495,7 +561,7 @@
     if (!rb.want || rb.n !== n) return;
     rb.anvil = App.build;
     if (rb.result) { swapRollback(); return; }
-    if (UI.holdFrame) { UI.holdFrame(ROLL_HOLD); rb.hold = true; cue(true); }
+    if (UI.holdFrame && st.swap === 'wait') { UI.holdFrame(ROLL_HOLD); rb.hold = true; cue(true); }   // r12/occtui12: 'quick' cross-fades instead
   });
   (UI.onRollbackEnd = UI.onRollbackEnd || []).push(function () {
     rb.want = 0; rb.result = null; rb.anvil = null; endRollHold();
@@ -528,8 +594,9 @@
       var av = am && am.triCount ? K.massProps(am, 1).volume : 0, dv = av ? Math.abs(r.volume - av) / av : Math.abs(r.volume);
       var beyond = Object.keys((ab && ab.errors) || {}).filter(function (id) { return r.status[id] === 'ok'; });
       if (beyond.length || dv <= (r.tolerance || 1e-4)) {
-        var b = OcctKernel.toBuild(r, ab, am, App.triShared, window.CSG, K);
+        var b = OcctKernel.toBuild(r, ab, am, App.triShared, window.CSG, K), fade = fadeSnap();   // r12/occtui12
         if (UI.rollbackSwap && UI.rollbackSwap(b, { upto: n, anvil: ab, edges: r.edges, curves: r.curves, normals: r.normals })) st.rollbackMs = performance.now() - rb.t0;
+        if (fade) fadeRun();
       }
     } catch (e) { console.warn(e); }
     endRollHold();
@@ -550,6 +617,65 @@
     refresh();
   }
   function refresh() { if (UI.refreshStatus && App.model) UI.refreshStatus(); }   // the engine probe can answer before the first model loads
+  // r12/occtui12: swapMode() -> 'quick' | 'wait'; swapMode(mode, { remember: false }?) sets it. Switching to 'quick'
+  // ends a frame held right now (the quick result shows at once); a pending exact solid then fades in
+  function swapMode(mode, opts) {
+    if (!arguments.length) return st.swap;
+    if (mode !== 'quick' && mode !== 'wait') throw new Error('swapMode: "quick" or "wait"');
+    st.swap = mode;
+    if (!opts || opts.remember !== false) { try { localStorage.setItem('anvil.occtSwap', mode); } catch (e) { } }
+    if (mode === 'quick' && App.holdFrameUntil > performance.now()) { releaseHold(); if (st.cueOn) cue(false); endRollHold(); }
+    if (UI.refreshTaskPane) UI.refreshTaskPane();
+    return mode;
+  }
+  var SWAP_TEXT = { quick: 'Show the quick result first', wait: 'Wait for the exact solid' };
+  var SWAP_TIP = { quick: 'After an edit, Anvil\'s own result shows at once and OpenCascade\'s exact solid fades in a moment later.',
+    wait: 'After an edit, the view keeps the previous exact solid (up to 1.5 s, with a Rebuilding… cue) until the new exact solid is ready: no faceted frame, but edits feel slower.' };
+  // Tools ▸ OpenCascade kernel ▸ … (ui-panels.js Tools menu)
+  function menuItems() {
+    var on = st.on, toastFn = UI.toast || function () { };
+    return [
+      { label: 'OpenCascade kernel ▸ Use OpenCascade (exact solids)', checked: on, action: function () { set(!st.on); toastFn(st.on ? 'OpenCascade builds every part too: true faces for picking, volumes cross-checked' : 'OpenCascade kernel off'); } },
+      { label: 'OpenCascade kernel ▸ ' + SWAP_TEXT.quick, checked: st.swap === 'quick', disabled: !on, action: function () { swapMode('quick'); toastFn('After an edit: the quick result first, the exact solid fades in'); } },
+      { label: 'OpenCascade kernel ▸ ' + SWAP_TEXT.wait, checked: st.swap === 'wait', disabled: !on, action: function () { swapMode('wait'); toastFn('After an edit: the view waits for the exact solid'); } },
+      { label: 'OpenCascade kernel ▸ Engine file…', action: engineDialog }
+    ];
+  }
+  // the Options task pane section (ui-app.js tpProps): the switch and the two swap choices as radio buttons
+  function optionsSection(redraw) {
+    var box = document.createElement('div');
+    box.className = 'occt-opts';
+    box.innerHTML = '<h3>OpenCascade kernel</h3>';
+    function line(html, input, tip) {
+      var l = document.createElement('label');
+      l.className = 'occt-opt'; l.title = tip || '';
+      l.appendChild(input); l.appendChild(document.createElement('span')).innerHTML = html;
+      box.appendChild(l);
+      return l;
+    }
+    var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = st.on; cb.setAttribute('data-role', 'occt-on');
+    cb.addEventListener('change', function () { set(cb.checked); if (redraw) redraw(); });
+    line('Build parts with OpenCascade (exact solids)', cb, 'Tools ▸ OpenCascade kernel');
+    var sub = document.createElement('div'); sub.className = 'occt-opt-head'; sub.textContent = 'After an edit';
+    box.appendChild(sub);
+    ['quick', 'wait'].forEach(function (m) {
+      var r = document.createElement('input'); r.type = 'radio'; r.name = 'occt-swap'; r.value = m; r.checked = st.swap === m; r.disabled = !st.on;
+      r.setAttribute('data-role', 'occt-swap-' + m);
+      r.addEventListener('change', function () { if (r.checked) swapMode(m); });
+      line(SWAP_TEXT[m] + (m === 'quick' ? ' <small>(default)</small>' : ''), r, SWAP_TIP[m]).classList.add('sub');
+    });
+    var p = document.createElement('p');
+    p.innerHTML = '<small>' + SWAP_TIP[st.swap] + '</small>';
+    box.appendChild(p);
+    if (!document.getElementById('occt-opts-css')) {
+      var css = document.createElement('style'); css.id = 'occt-opts-css';
+      css.textContent = '.occt-opts .occt-opt{display:flex;align-items:center;gap:6px;margin:3px 0;cursor:default}.occt-opts .occt-opt.sub{padding-left:14px}' +
+        '.occt-opts .occt-opt-head{margin:6px 0 2px;color:var(--muted)}.occt-opts .occt-opt input{margin:0}.occt-opts .occt-opt input:disabled+span{color:var(--muted)}';
+      document.head.appendChild(css);
+    }
+    return box;
+  }
+  UI.occtMenuItems = menuItems; UI.occtOptionsSection = optionsSection;
 
   // UI.faceGroups (ui-core.js) asks this first: on OpenCascade's solid every polygon knows its B-rep face, so a
   // face group is every mesh face whose polygons carry the same face index
@@ -582,26 +708,31 @@
       if (!st.chipTimer) st.chipTimer = setTimeout(function () { st.chipTimer = 0; if (st.state === 'building') refresh(); }, CHIP_DELAY);
       return st.lastChip;
     }
-    var s = status(), txt, cls = 'occt', tip = 'OpenCascade kernel (Tools ▸ OpenCascade kernel)';
+    // r12/occtui12: colours say who is shown: green, OpenCascade's exact solid; blue (pulsing dot), working; amber,
+    // Anvil's result shown because OpenCascade cannot build the part (yet); red, OpenCascade failed or disagrees
+    // (click: What's Wrong). "Not installed" opens the engine file dialog.
+    var s = status(), txt, cls = 'occt', tip = 'OpenCascade kernel (Tools ▸ OpenCascade kernel)', act = '';
     switch (s.state) {
-      case 'loading': txt = 'OpenCascade: loading…'; break;
-      case 'building': txt = 'OpenCascade: building…'; break;
+      case 'loading': txt = 'OpenCascade: starting…'; cls += ' busy'; tip += ': the engine is loading (once per session)'; break;
+      case 'building': txt = 'OpenCascade: rebuilding…'; cls += ' busy'; tip += st.swap === 'wait' ? ': the exact solid is on its way; the view keeps the previous one meanwhile' : ': the exact solid is on its way; Anvil\'s quick result is shown meanwhile'; break;
       case 'ok':
         txt = 'OpenCascade ✓ ' + s.faces + ' face' + (s.faces === 1 ? '' : 's') + (s.beyond.length ? ' (+' + s.beyond.length + ' Anvil could not)' : ''); cls += ' ok';
         tip += ': the part shown is OpenCascade\'s solid (every feature built, volume ' + (s.volume || 0).toFixed(3) + (s.beyond.length ? '; ' + s.beyond.length + ' feature' + (s.beyond.length === 1 ? '' : 's') + ' Anvil\'s own kernel could not build' : ', Anvil ' + (s.anvilVolume || 0).toFixed(3)) + ')';
         break;
-      case 'unsupported': txt = 'OpenCascade: needs ' + s.unsupported; tip += ': this part uses a feature it does not build yet; Anvil\'s own result is shown'; break;
-      case 'mismatch': txt = 'OpenCascade ✗ volume differs'; cls += ' bad'; tip += ': ' + (s.volume || 0).toFixed(3) + ' vs Anvil ' + (s.anvilVolume || 0).toFixed(3) + '; Anvil\'s result is shown'; break;
-      case 'featureError': txt = 'OpenCascade ✗ ' + (st.failedFeature || 'a feature'); cls += ' bad'; tip += ': OpenCascade could not build ' + (st.failedFeature || 'a feature') + ' (' + (s.error || '') + '); Anvil\'s own result is shown'; break;
-      case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; tip += ': Anvil\'s result is shown'; break;
+      case 'unsupported': txt = 'OpenCascade: needs ' + s.unsupported; cls += ' warn'; act = 'whatswrong'; tip += ': this part uses a feature it does not build yet; Anvil\'s own result is shown'; break;
+      case 'mismatch': txt = 'OpenCascade ✗ volume differs'; cls += ' bad'; act = 'whatswrong'; tip += ': ' + (s.volume || 0).toFixed(3) + ' vs Anvil ' + (s.anvilVolume || 0).toFixed(3) + '; Anvil\'s result is shown'; break;
+      case 'featureError': txt = 'OpenCascade ✗ ' + (st.failedFeature || 'a feature'); cls += ' bad'; act = 'whatswrong'; tip += ': OpenCascade could not build ' + (st.failedFeature || 'a feature') + ' (' + (s.error || '') + '); Anvil\'s own result is shown'; break;
+      case 'invalid': txt = 'OpenCascade ✗ invalid solid'; cls += ' bad'; act = 'whatswrong'; tip += ': Anvil\'s result is shown'; break;
       case 'assembly': txt = 'OpenCascade: no parts to build'; break;
+      case 'empty': txt = 'OpenCascade: no solid'; tip += ': the part has no solid yet'; break;
       case 'failed':
         if (/integrity check/.test(s.error || '')) { txt = 'OpenCascade ✗ integrity check failed'; cls += ' bad'; tip = (s.error || '') + ' Anvil\'s own kernel is used.'; break; }
-        txt = 'OpenCascade not installed'; cls += ' bad'; tip = (s.error || '') + ' Run vendor/get-occt.ps1.'; break;
-      case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; tip = s.error || ''; break;
+        txt = 'OpenCascade not installed'; cls += ' warn'; act = 'occt-engine'; tip = (s.error || '') + ' Run vendor/get-occt.ps1, or click to pick the engine file.'; break;
+      case 'error': txt = 'OpenCascade ✗ error'; cls += ' bad'; act = 'whatswrong'; tip = s.error || ''; break;
       default: txt = 'OpenCascade';
     }
-    var html = '<span class="' + cls + '" title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
+    if (act === 'whatswrong') tip += ' (click for What\'s Wrong)';
+    var html = '<span class="' + cls + '"' + (act ? ' data-act="' + act + '"' : '') + ' title="' + tip.replace(/"/g, '&quot;') + '">' + txt + '</span>';
     if (s.state !== 'building') st.lastChip = html;
     return html;
   };
@@ -622,7 +753,8 @@
   }
 
   UI.occt = { set: set, on: function () { return st.on; }, status: status, importFile: importFile, canImport: function () { return !!window.Worker && st.state !== 'failed'; },
-    engineDialog: engineDialog, useEngineFile: useEngineFile, storedEngine: storedEngine, forgetEngine: function () { return storeEngine(null); } };
+    engineDialog: engineDialog, useEngineFile: useEngineFile, storedEngine: storedEngine, forgetEngine: function () { return storeEngine(null); },
+    swapMode: swapMode, fades: function () { return st.fades; } };   // r12/occtui12
   // true while a build of the current model is queued, running or held back (the drawing sheet waits for it, r4/drawings4)
   UI.occt.pending = function () { return !!(st.on && pendingWork()); };
   // r11/occtswap11: Edit Feature's rolled-back part on OpenCascade: { pending, ms (ask -> shown), estimate (ms) of the
