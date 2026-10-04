@@ -137,8 +137,8 @@ textarea { height: auto; }
 .ico { display: inline-block; vertical-align: middle; flex: none; color: var(--icon-ink); }
 [hidden] { display: none !important; }
 
-body { overflow: auto; }
-#app { height: 100vh; min-width: 880px; display: grid; grid-template-rows: 28px auto minmax(0, 1fr) 22px; grid-template-columns: minmax(0, 1fr); }
+body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways; the panels and the ribbon fit instead */
+#app { height: 100vh; min-width: 0; display: grid; grid-template-rows: 28px auto minmax(0, 1fr) 22px; grid-template-columns: minmax(0, 1fr); }
 #app > * { min-width: 0; }
 #ribbon { overflow: hidden; }
 
@@ -177,8 +177,8 @@ body { overflow: auto; }
 .rtab.active { background: var(--panel); border-color: var(--line); color: var(--text); font-weight: 600; margin-bottom: -1px; }
 
 /* ---------------------------------------------------------------- main layout */
-#main { display: grid; grid-template-columns: 296px minmax(0, 1fr) auto; min-height: 0; }
-#left { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
+#main { display: grid; grid-template-columns: var(--fm-w, 296px) minmax(0, 1fr) auto; min-height: 0; }
+#left { position: relative; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
 #fm-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); padding: 0 4px; background: var(--panel-2); }
 #fm-tabs button { padding: 3px 6px 2px; border-bottom: 2px solid transparent; }
 #fm-tabs button.active { border-bottom-color: var(--blue); background: var(--panel); }
@@ -362,7 +362,7 @@ body { overflow: auto; }
 #tp-strip button { width: 28px; height: 28px; border-radius: 3px; display: grid; place-items: center; border: 1px solid transparent; }
 #tp-strip button:hover { background: var(--hover); border-color: var(--blue-line); }
 #tp-strip button.active { background: var(--sel); border-color: var(--blue); }
-#tp-panel { width: 340px; display: flex; flex-direction: column; min-height: 0; }
+#tp-panel { width: var(--tp-w, 340px); display: flex; flex-direction: column; min-height: 0; }
 #tp-title { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-weight: 600; border-bottom: 1px solid var(--line-2); background: var(--panel-2); }
 #tp-title button { margin-left: auto; color: var(--muted); width: 22px; height: 22px; }
 #tp-body { overflow: auto; padding: 10px; flex: 1; display: flex; flex-direction: column; gap: 10px; user-select: text; -webkit-user-select: text; }
@@ -418,7 +418,6 @@ body { overflow: auto; }
 #modal-buttons { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel-2); }
 .toast { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); background: var(--toast-bg); color: var(--toast-text); padding: 6px 14px; border-radius: 3px; z-index: 70; font-size: 12px; opacity: 0.95; }
 
-@media (max-width: 1100px) { #main { grid-template-columns: 240px minmax(0, 1fr) auto; } #tp-panel { width: 280px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* equations: "=" expressions in PropertyManager number fields, the Tools ▸ Equations dialog */
@@ -573,3 +572,65 @@ html[data-theme="dark"] #i3d-layer .i3d-value, html[data-theme="dark"] #i3d-laye
 html[data-theme="dark"] #sel-filter { border-color: var(--line); }
 html[data-theme="dark"] #sel-filter .sf-title { color: var(--muted); }
 html[data-theme="dark"] #sel-filter .sf-sep { background: var(--line); }
+
+/* ---- r12/chrome12: the workspace fits any window (SolidWorks-style) ----------------------------------------------
+   The FeatureManager and the Task Pane have drag handles (widths kept in localStorage, clamped so the graphics area
+   keeps its room); the CommandManager drops its labels, then moves the buttons that still do not fit into a » menu. */
+#ribbon-buttons { overflow: hidden; }
+.split { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; touch-action: none; }
+.split::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background-color 90ms ease-out; }
+.split:hover::after, .split.dragging::after { background: var(--blue); width: 2px; left: 2px; }
+#left > .split { right: -4px; }
+#tp-panel { position: relative; }
+#tp-panel > .split { left: -4px; }
+body.splitting, body.splitting * { cursor: col-resize !important; }
+body.splitting #viewport { pointer-events: none; }
+/* fit level 1: the three-row stacks show icons only */
+#ribbon.fit-1 .rb-stack .rb { min-width: 0; padding: 1px 3px; }
+#ribbon.fit-1 .rb-stack .rb span { display: none; }
+/* fit level 2: large buttons without text (Use Large Buttons with Text off) */
+#ribbon.fit-2 #ribbon-buttons > .rb { width: 40px; justify-content: center; }
+#ribbon.fit-2 #ribbon-buttons > .rb span { display: none; }
+/* buttons that still do not fit go into the » overflow menu at the right end */
+#ribbon-buttons > .rb-over { display: none !important; }
+.rb-more { flex: none; align-self: stretch; width: 18px; margin-left: auto; border: 1px solid transparent; border-radius: 3px; color: var(--muted); font-size: 14px; display: grid; place-items: center; }
+.rb-more:hover, .rb-more.open { background: var(--hover); border-color: var(--blue-line); color: var(--text); }
+.rb-more[hidden] { display: none; }
+.menu .mi .mi-ico { display: inline-flex; width: 16px; margin-left: -2px; }
+#ribbon-tabs { overflow: hidden; }
+.rtab { flex: none; white-space: nowrap; }
+/* menu bar and status bar give way before anything scrolls */
+#doc-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#search { flex: 0 1 200px; min-width: 96px; }
+#menus > li { white-space: nowrap; }
+#hud { max-width: calc(100% - 12px); overflow: hidden; }
+@media (max-width: 1100px) { #brand { display: none; } #status-coords { min-width: 0; flex: 0 1 auto; } }
+@media (max-width: 760px) { #menus > li { padding: 0 6px; } #status-right { gap: 8px; } #status-right span { padding-left: 8px; } }
+#taskpane { position: relative; }
+#taskpane.tp-overlay #tp-panel { position: absolute; right: 100%; top: 0; bottom: 0; z-index: 8; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -6px 0 16px var(--shadow); }
+
+/* ---- r12/chrome12: visual pass against SolidWorks 2024 ----------------------------------------------------------- */
+/* heads-up view toolbar: icons float on the graphics area as in SolidWorks; the panel only shows under the pointer
+   (and always on the dark scene, where the ink would not read) */
+#hud { background: transparent; border-color: transparent; backdrop-filter: none; transition: background-color 120ms ease-out, border-color 120ms ease-out; }
+#hud:hover, #viewport.bg-dark #hud { background: var(--overlay); border-color: var(--line); }
+#hud button { width: 28px; height: 26px; }
+#hud .sep { height: 18px; background: var(--line); opacity: 0.8; }
+/* CommandManager: flat buttons with a thin blue frame on hover, labels under the icons, light separators */
+.rb span { color: var(--text); }   /* layout sizes unchanged: ui-smoke drawing steps depend on the ribbon height */
+.rb-sep { background: var(--line-2); }
+.rtab { font-size: 12px; }
+.rtab.active { color: var(--blue); border-color: var(--line); border-top: 2px solid var(--blue); padding-top: 1px; }
+/* FeatureManager: a clear hover / selection pair, the twisty darkens on hover (row height and indentation unchanged) */
+.ti .tw { cursor: default; }
+.ti .tw:not(.leaf):hover { color: var(--text); }
+.ti.selected { background: var(--sel); box-shadow: inset 0 0 0 1px var(--blue-line); }
+#fm-tabs button:not(.active) .ico { opacity: 0.85; }
+/* menus and context menus: a Windows menu with an icon / check gutter and roomier rows */
+.menu { border-radius: 3px; padding: 4px 0; }
+.menu .mi { padding: 3px 18px 3px 8px; min-height: 22px; }
+.menu .mi .chk { width: 14px; text-align: center; }
+.menu .mi:hover:not(.disabled) { background: var(--hover); box-shadow: inset 0 0 0 1px var(--blue-line); }
+.menu .sep { margin: 4px 8px 4px 30px; }
+#menus > li { border-radius: 2px; }
+#menus > li:hover, #menus > li.open { background: var(--hover); }

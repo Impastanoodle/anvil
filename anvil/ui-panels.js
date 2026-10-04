@@ -198,7 +198,7 @@
       if (face !== shown) {
         shown = face;
         b.innerHTML = Icons(id, small ? 18 : 32) + '<span>' + (small ? item.label : label) + '</span>';
-        b.setAttribute('aria-label', flat);
+        b.setAttribute('aria-label', flat); b.dataset.icon = id;
       }
       if (b.title !== title) b.title = title;
       if (b.disabled !== disabled) b.disabled = disabled;
@@ -253,6 +253,7 @@
     });
     bar.innerHTML = '';
     bar.appendChild(frag);
+    fitRibbon();   // r12/chrome12
     var tabs = $('ribbon-tabs');
     // switching tabs keeps the tab strip (and the hover on it): only the active mark moves
     if (tabs.getAttribute('data-shape') === shape.tabs && tabs.children.length) {
@@ -269,8 +270,150 @@
     });
     tabs.innerHTML = '';
     tabs.appendChild(tfrag);
+    fitRibbon();   // r12/chrome12: the tab strip changed
   }
   function setRibbonTab(name) { App.ribbonTab = name; refreshRibbon(); }
+
+  // r12/chrome12: the CommandManager fits the window as in SolidWorks. Level 1 drops the labels of the small stacked
+  // buttons, level 2 the labels of the large ones; whatever still does not fit moves, from the right end, into a »
+  // menu. Nothing scrolls. The buttons stay in the DOM (hidden ones only get .rb-over), so lookups by label still work.
+  function fitRibbon() {
+    var rib = $('ribbon'), bar = $('ribbon-buttons');
+    if (!rib || !bar) return;
+    // the tab strip: greyed-out tabs that do not fit whole are left out rather than cut in half
+    var tabs = $('ribbon-tabs');
+    if (tabs) {
+      var offs = Array.prototype.filter.call(tabs.children, function (t) { if (t.style.display) t.style.display = ''; return t.classList.contains('off'); });
+      for (var k = offs.length - 1; k >= 0 && tabs.scrollWidth > tabs.clientWidth + 1; k--) offs[k].style.display = 'none';
+    }
+    var more = bar.querySelector('.rb-more');
+    if (!more) {
+      var wasOpen = false;
+      more = el('button', { class: 'rb-more', text: '»', title: 'More commands', 'aria-label': 'More commands',
+        onmousedown: function () { wasOpen = more.classList.contains('open'); },
+        onclick: function () { if (wasOpen) { wasOpen = false; return; } showRibbonOverflow(more); } });
+    }
+    if (bar.lastChild !== more) bar.appendChild(more);
+    rib.classList.remove('fit-1', 'fit-2');
+    var kids = Array.prototype.filter.call(bar.children, function (c) { return c !== more; });
+    kids.forEach(function (c) { if (c.classList.contains('rb-over')) c.classList.remove('rb-over'); });
+    more.hidden = true;
+    function fits() { return bar.scrollWidth <= bar.clientWidth + 1; }
+    if (fits()) return 0;
+    rib.classList.add('fit-1');
+    if (fits()) return 1;
+    // a few buttons in the » menu are better than no labels at all: keep the labels while at most 4 buttons overflow
+    more.hidden = false;
+    if (overflow() <= 4) return 2;
+    kids.forEach(function (c) { c.classList.remove('rb-over'); });
+    more.hidden = true;
+    rib.classList.add('fit-2');
+    if (fits()) return 3;
+    more.hidden = false;
+    overflow();
+    return 4;
+    function overflow() {
+      for (var i = kids.length - 1; i > 0 && !fits(); i--) kids[i].classList.add('rb-over');
+      // never end the visible row on a separator
+      for (var j = kids.length - 1; j >= 0; j--) { if (kids[j].classList.contains('rb-over')) continue; if (kids[j].classList.contains('rb-sep')) kids[j].classList.add('rb-over'); else break; }
+      return bar.querySelectorAll(':scope > .rb-over.rb, :scope > .rb-over .rb').length;
+    }
+  }
+  function showRibbonOverflow(anchor) {
+    var items = [];
+    Array.prototype.forEach.call($('ribbon-buttons').children, function (c) {
+      if (!c.classList.contains('rb-over')) return;
+      if (c.classList.contains('rb-sep')) { if (items.length && !items[items.length - 1].sep) items.push({ sep: true }); return; }
+      var btns = c.classList.contains('rb') ? [c] : Array.prototype.slice.call(c.querySelectorAll('.rb'));
+      btns.forEach(function (b) { items.push({ label: b.getAttribute('aria-label') || b.textContent, icon: b.dataset.icon, checked: b.classList.contains('active'), disabled: b.disabled, action: function () { b.click(); } }); });
+    });
+    while (items.length && items[items.length - 1].sep) items.pop();
+    if (!items.length) return;
+    var r = anchor.getBoundingClientRect();
+    showMenu(r.right, r.bottom + 1, items, anchor);
+    if (openMenu) openMenu.style.left = Math.max(4, r.right - openMenu.offsetWidth) + 'px';
+  }
+
+  // r12/chrome12: FeatureManager and Task Pane widths. Each has a drag handle on its inner edge (double-click: default
+  // width); the width a user sets is kept in localStorage, and the shown width is clamped so the graphics area keeps
+  // at least max(320 px, 35 % of the window): the Task Pane gives way first, then the FeatureManager.
+  var PANES = {
+    fm: { key: 'anvil.fmWidth', def: 296, min: 200, max: 640, css: '--fm-w', pref: null, shown: null },
+    tp: { key: 'anvil.tpWidth', def: 340, min: 240, max: 720, css: '--tp-w', pref: null, shown: null }
+  };
+  function panePref(p) {
+    if (p.pref == null) { var n = NaN; try { n = parseFloat(localStorage.getItem(p.key)); } catch (e) { } p.pref = n >= p.min && n <= p.max ? Math.round(n) : p.def; }
+    return p.pref;
+  }
+  function paneWidths() {
+    var W = document.documentElement.clientWidth || window.innerWidth, strip = ($('tp-strip') && $('tp-strip').offsetWidth) || 35;
+    var tpOpen = $('tp-panel') && !$('tp-panel').hidden;
+    var fm = panePref(PANES.fm), tp = panePref(PANES.tp), minVp = Math.max(320, Math.round(W * 0.35)), overlay = false;
+    var spare = W - strip - minVp - fm;
+    if (spare < 0) fm = Math.max(PANES.fm.min, fm + spare);
+    if (tpOpen) {
+      spare = W - strip - minVp - fm - tp;
+      if (spare < 0 && tp + spare >= PANES.tp.min) tp += spare;
+      // too narrow to dock it: the Task Pane slides out over the graphics area, as SolidWorks' unpinned Task Pane does
+      else if (spare < 0) { overlay = true; tp = Math.max(Math.min(PANES.tp.min, W - strip - 8), Math.min(tp, W - strip - 48)); }
+    }
+    return { fm: fm, tp: tp, W: W, strip: strip, minVp: minVp, tpOpen: tpOpen, overlay: overlay };
+  }
+  function setPaneWidth(p, w) {
+    if (p.shown === w) return false;
+    p.shown = w;
+    document.documentElement.style.setProperty(p.css, w + 'px');
+    return true;
+  }
+  function fitPanels(redraw) {
+    var w = paneWidths(), tpBox = $('taskpane');
+    var a = setPaneWidth(PANES.fm, w.fm), b = setPaneWidth(PANES.tp, w.tp), c = false;
+    if (tpBox && tpBox.classList.contains('tp-overlay') !== w.overlay) { tpBox.classList.toggle('tp-overlay', w.overlay); c = true; }
+    if ((a || b || c) && redraw && UI.resize) UI.resize();
+    return w;
+  }
+  function addSplitter(host, p, sign) {
+    if (!host || host.querySelector(':scope > .split')) return;
+    var s = el('div', { class: 'split', title: 'Drag to resize; double-click for the default width' });
+    var start = null;
+    s.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      start = { x: e.clientX, w: p.shown || panePref(p) };
+      try { s.setPointerCapture(e.pointerId); } catch (er) { }
+      s.classList.add('dragging'); document.body.classList.add('splitting');
+    });
+    s.addEventListener('pointermove', function (e) {
+      if (!start) return;
+      var w = paneWidths(), other = p === PANES.fm ? (w.tpOpen && !w.overlay ? w.tp : 0) : w.fm;
+      var room = p === PANES.tp && w.overlay ? w.W - w.strip - 48 : w.W - w.strip - w.minVp - other;
+      var nw = Math.round(Math.max(p.min, Math.min(p.max, room, start.w + sign * (e.clientX - start.x))));
+      p.pref = nw;
+      if (setPaneWidth(p, nw) && UI.resize) UI.resize();
+    });
+    function end() {
+      if (!start) return;
+      start = null;
+      s.classList.remove('dragging'); document.body.classList.remove('splitting');
+      try { localStorage.setItem(p.key, String(p.pref)); } catch (er) { }
+      fitPanels(true);
+    }
+    s.addEventListener('pointerup', end);
+    s.addEventListener('pointercancel', end);
+    s.addEventListener('lostpointercapture', end);
+    s.addEventListener('dblclick', function () { p.pref = p.def; try { localStorage.removeItem(p.key); } catch (er) { } fitPanels(true); });
+    host.appendChild(s);
+  }
+  function fitWorkspace() { fitPanels(true); fitRibbon(); }
+  (function initFit() {
+    addSplitter($('left'), PANES.fm, 1);
+    addSplitter($('tp-panel'), PANES.tp, -1);
+    fitPanels(false);
+    var queued = false;
+    window.addEventListener('resize', function () { if (queued) return; queued = true; requestAnimationFrame(function () { queued = false; fitWorkspace(); }); });
+    if (window.MutationObserver && $('tp-panel')) new MutationObserver(function () { fitPanels(true); }).observe($('tp-panel'), { attributes: true, attributeFilter: ['hidden'] });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { fitRibbon(); });
+  })();
 
   // ------------------------------------------------------------------ FeatureManager tabs
   var FM_TABS = [['tree', 'tree', 'FeatureManager Design Tree'], ['pm', 'pm', 'PropertyManager'], ['config', 'config', 'ConfigurationManager'], ['dimx', 'dimx', 'DimXpertManager'], ['dispman', 'dispman', 'DisplayManager']];
@@ -660,7 +803,7 @@
   var openMenu = null;
   function closeMenus() {
     if (openMenu) { openMenu.remove(); openMenu = null; }
-    Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open'), function (li) { li.classList.remove('open'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open, .rb-more.open'), function (li) { li.classList.remove('open'); });
   }
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
@@ -669,6 +812,7 @@
       if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
       var row = el('div', { class: 'mi' + (it.disabled ? ' disabled' : '') });
       row.appendChild(el('span', { class: 'chk', text: it.checked ? '✓' : '' }));
+      if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
       row.appendChild(el('span', { text: it.label }));
       if (it.key) row.appendChild(el('span', { class: 'key', text: it.key }));
       if (!it.disabled) row.addEventListener('click', function () { closeMenus(); it.action(); });
@@ -1241,6 +1385,7 @@
 
   UI.setStatus = setStatus; UI.toast = toast; UI.refreshStatus = refreshStatus;
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
+  UI.fitWorkspace = fitWorkspace;   // r12/chrome12: panel widths and the CommandManager fitted to the window now
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
   UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
