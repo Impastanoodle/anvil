@@ -46,7 +46,11 @@
     if (pk.kind === 'plane' && typeof pk.ref === 'string') return { component: null, ref: { plane: pk.ref } };
     return null;
   }
-  function selectedComponent() { return UI.selectedComponent ? UI.selectedComponent() : null; }
+  function selectedComponent() {
+    var c = UI.selectedComponent ? UI.selectedComponent() : null;
+    if (!c && isAsm() && App.sel && App.sel.kind === 'edge') c = (App.model.components || [])[compIndexOf(App.sel)] || null;   // r13/asmui13: an edge belongs to a component too
+    return c;
+  }
   function patternStatus(p) { var b = App.build && App.build.assembly ? App.build : null; return b && b.errors ? b.errors[p.id] || null : null; }
 
   // ------------------------------------------------------------------ Linear / Circular Component Pattern, Mirror Components
@@ -1159,7 +1163,7 @@
       var inst = [];
       (m.components || []).forEach(function (c, i) { if (c.pattern === p.id) inst.push([c, i]); });
       var key = 'pattern' + p.id, open = !!h.expanded[key], err = patternStatus(p);
-      var row = h.treeItem({ icon: err ? 'error' : PAT_ICON[p.type], name: p.name, depth: 1, children: inst.length > 0, open: open, cls: 'pattern-folder' + (err ? ' err' : ''),
+      var row = h.treeItem({ icon: PAT_ICON[p.type], name: p.name, depth: 1, children: inst.length > 0, open: open, cls: 'pattern-folder' + (err ? ' err' : ''),
         title: err ? p.name + ': ' + err : p.name + ': ' + inst.length + ' instance' + (inst.length === 1 ? '' : 's') + ' of ' + p.seeds.map(compName).join(', ') + ' \u2014 double-click to edit',
         toggle: function () { h.expanded[key] = !open; h.refresh(); } });
       row.setAttribute('data-pattern', String(p.id));
@@ -1281,9 +1285,10 @@
       var label = (k.fixed ? '(f) ' : co.overDefined ? '(+) ' : co.underDefined ? '(-) ' : '') + k.name, warn = co.suppressed;
       var tip = k.name + ' in ' + top.name + (co.error ? ': ' + co.error : warn ? ' (suppressed): ' + (co.warning || '') : co.underDefined ? ' (' + co.dof + ' degree' + (co.dof === 1 ? '' : 's') + ' of freedom left)' : '') +
         (k.source && k.source.file != null ? ' — linked to "' + k.source.file + '"' : '');
-      var row = h.treeItem({ icon: co.error ? 'error' : warn ? 'warn' : isSub ? 'assembly' : 'component', name: label + (warn ? ' (suppressed)' : ''), depth: depth, title: tip,
+      var row = h.treeItem({ icon: isSub ? 'assembly' : 'component', name: label + (warn ? ' (suppressed)' : ''), depth: depth, title: tip,
         cls: 'component-row inner-row' + (warn ? ' suppressed' : '') + (co.error ? ' err' : ''), children: isSub, open: open, toggle: function () { h.expanded[key] = !open; h.refresh(); } });
       row.setAttribute('data-inner', key);
+      if (co.error || co.overDefined || warn || co.warning) row.setAttribute('data-mark', co.error || co.overDefined ? 'err' : 'warn');   // r13/asmui13: badged by markAsmTree
       row.title = tip;
       row.addEventListener('click', function (e) { e.stopPropagation(); if (UI.selectComponent) UI.selectComponent(top.id); UI.setStatus(tip); });
       row.addEventListener('contextmenu', function (e) {
@@ -1301,10 +1306,13 @@
     var mk = pathKey + '/mates', mopen = !!h.expanded[mk];
     var folder = h.treeItem({ icon: 'matesFolder', name: 'Mates', depth: depth, children: true, open: mopen, cls: 'mates-folder inner-row', title: mates.length + ' mate' + (mates.length === 1 ? '' : 's') + ' in ' + top.name, toggle: function () { h.expanded[mk] = !mopen; h.refresh(); } });
     parent.appendChild(folder);
+    var fmark = mates.reduce(function (a, mt) { var ms = sb && sb.mates ? sb.mates[mt.id] || {} : {}; return mt.suppressed ? a : ms.error ? 'err' : a || (ms.warning ? 'warn' : null); }, null);
+    if (fmark) folder.setAttribute('data-mark', fmark);   // r13/asmui13: the folder of a failing mate is badged too
     if (!mopen) return;
     mates.forEach(function (mt) {
       var ms = sb && sb.mates ? sb.mates[mt.id] || {} : {}, err = mt.suppressed ? null : ms.error;
-      var r = h.treeItem({ icon: err ? 'error' : 'coincident', name: mt.name, depth: depth + 1, cls: 'mate-row inner-row' + (err ? ' err' : '') + (mt.suppressed || ms.suppressed ? ' suppressed' : ''), title: err ? mt.name + ': ' + err : mt.name + ' in ' + top.name });
+      var r = h.treeItem({ icon: mateIcon(mt), name: mt.name, depth: depth + 1, cls: 'mate-row inner-row' + (err ? ' err' : '') + (mt.suppressed || ms.suppressed ? ' suppressed' : ''), title: err ? mt.name + ': ' + err : mt.name + ' in ' + top.name });
+      if (err || (!mt.suppressed && ms.warning)) r.setAttribute('data-mark', err ? 'err' : 'warn');
       parent.appendChild(r);
     });
   }
@@ -1314,7 +1322,7 @@
     if (!linked && !isSub && !st.suppressed) return null;
     var key = 'sub' + c.id, open = !!h.expanded[key];
     var d = {
-      icon: st.suppressed ? 'warn' : isSub ? 'assembly' : 'component',
+      icon: isSub ? 'assembly' : 'component',
       cls: (st.suppressed ? 'suppressed' : '') + (linked ? ' linked' : '') + (isSub ? ' subassembly' : '') + (st.flexible ? ' flexible' : ''),
       suffix: st.suppressed ? ' (suppressed)' : '',
       tip: function (t) {
@@ -1341,6 +1349,7 @@
     if (kind === 'part' && !st.suppressed && c.pattern == null) items.push({ label: 'Edit Part', action: function () { run(editPart(c.id)); } });
     if (kind === 'assembly' && !st.suppressed) items.push(c.flexible ? { label: 'Solve as Rigid', action: function () { run(setFlexible(c.id, false)); } } : { label: 'Solve as Flexible', action: function () { run(setFlexible(c.id, true)); } });
     if (!linked && c.pattern == null) items.push({ label: 'Make Linked Document…', action: function () { UI.promptDialog('Make Linked Document', 'Save ' + c.name + ' in this browser as (the component then links to it):', AS.findComponent(App.model, c.id) ? baseName(c.name) : '', function (n) { run(makeLinked(c.id, n)); }); } });
+    if (issueOf('component', c.id) && UI.whatsWrong) items.push({ label: 'What\'s Wrong?', action: function () { UI.whatsWrong(c.id); } });   // r13/asmui13
     return items.length > 1 ? items : [];
   };
   function baseName(n) { return String(n || '').replace(/<\d+>$/, ''); }
@@ -1375,7 +1384,161 @@
   }
   UI.flipMateAlignment = flipMateAlignment;
   UI.asmMateMenuExtras = function (mt) {
-    return AS.hasAlignment(mt) ? [{ label: 'Flip Mate Alignment', action: function () { run(flipMateAlignment(mt.id)); } }] : [];
+    var out = AS.hasAlignment(mt) ? [{ label: 'Flip Mate Alignment', action: function () { run(flipMateAlignment(mt.id)); } }] : [];
+    if (issueOf('mate', mt.id) && UI.whatsWrong) out.push({ label: 'What\'s Wrong?', action: function () { UI.whatsWrong(mt.id); } });   // r13/asmui13
+    return out;
+  };
+
+  // ------------------------------------------------------------------ r13/asmui13: FeatureManager marks
+  // As round 12 did for parts (ui-rebuild.js): every row keeps its own icon (part / sub-assembly / mate type / pattern)
+  // and gets a small red ✗ or amber ⚠ badge on it; a failing mate also badges the Mates folder and the components it
+  // over-defines ("(+)"), a component with a warning (broken link, Flexible mate that failed, a sub-assembly or part
+  // with rebuild errors) is badged amber, and the assembly's top row says how many errors / warnings there are.
+  // A component row is lit while the pointer is over the component in the graphics area (and the component is lit
+  // while the pointer is over its row); the row of the component owning a selected face or edge gets the owner mark.
+  var MATE_ICON = { concentric: 'concentric', distance: 'distance', angle: 'angle', parallel: 'parallel', perpendicular: 'perpendicular', tangent: 'tangent', width: 'width', gear: 'gear', limitdistance: 'limitDistance', limitangle: 'limitAngle' };
+  function mateIcon(mt) { return MATE_ICON[mt && mt.type] || 'coincident'; }
+  UI.mateIcon = mateIcon;
+  // issueOf('component' | 'mate' | 'pattern', id) -> { kind: 'err' | 'warn', msg } | null
+  function issueOf(what, id) {
+    var b = App.build && App.build.assembly ? App.build : null;
+    if (!b) return null;
+    var e = (b.errors || {})[id], w = (b.warnings || {})[id];
+    if (what === 'mate') {
+      var mt = AS.findMate(App.model, id), st = UI.mateStatus && mt ? UI.mateStatus(mt) : {};
+      if (mt && mt.suppressed) return null;
+      e = e || st.error; w = w || st.warning;
+    } else if (what === 'component') {
+      var cs = UI.compStatus ? UI.compStatus(id) : null;
+      if (cs) { e = e || cs.error; w = w || cs.warning; }
+      if (!e && cs && cs.overDefined) e = 'Over defined: ' + (cs.overMate || 'a mate') + ' cannot be satisfied';
+    }
+    return e ? { kind: 'err', msg: String(e) } : w ? { kind: 'warn', msg: String(w) } : null;
+  }
+  function markRow(row, iss, name) {
+    if (!UI.rebuildBadge || !row) return;
+    UI.rebuildBadge(row, iss ? iss.kind : null);
+    row.classList.toggle('err', !!iss && iss.kind === 'err');
+    row.classList.toggle('warn', !!iss && iss.kind === 'warn' && !row.classList.contains('suppressed'));
+    if (!iss || !name) return;
+    var tip = name + ' — ' + (iss.kind === 'err' ? 'error' : 'warning') + ':\n' + iss.msg + '\nRight-click ▸ What\'s Wrong? lists every error and warning.';
+    row.title = tip;
+    var nm = row.querySelector('.nm'); if (nm) nm.title = tip;
+  }
+  var FLEX_SVG = '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><circle cx="4.5" cy="4.5" r="4.2" fill="#fff" stroke="#1f6fc5" stroke-width=".9"/><path d="M2 5.6c.8-2.4 1.8-2.4 2.5-1.1s1.7 1.3 2.5-1.1" fill="none" stroke="#1f6fc5" stroke-width="1.1" stroke-linecap="round"/></svg>';
+  UI.asmTreeMarks = function (tree, root) {
+    if (!isAsm() || !tree) return;
+    var m = App.model;
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti.component-row[data-comp]'), function (row) {
+      var id = +row.getAttribute('data-comp'), c = AS.findComponent(m, id);
+      markRow(row, issueOf('component', id), c && c.name);
+      if (c && c.flexible && row.children[1] && !row.children[1].querySelector('.asm-flex')) {   // a Flexible sub-assembly (SolidWorks: its icon with the flexible mark)
+        var fx = document.createElement('i'); fx.className = 'asm-flex'; fx.title = 'Solved as Flexible'; fx.innerHTML = FLEX_SVG;
+        row.children[1].classList.add('rb-ico'); row.children[1].appendChild(fx);
+      }
+    });
+    var anyErr = null;
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti.mate-row[data-mate]'), function (row) {
+      var id = +row.getAttribute('data-mate'), mt = AS.findMate(m, id), iss = issueOf('mate', id);
+      markRow(row, iss, mt && (UI.mateLabel ? UI.mateLabel(mt) : mt.name));
+    });
+    (m.mates || []).forEach(function (mt) { var iss = issueOf('mate', mt.id); if (iss && (!anyErr || iss.kind === 'err')) anyErr = iss.kind; });
+    var folder = tree.querySelector('.ti.mates-folder:not(.inner-row)');
+    if (folder) { UI.rebuildBadge && UI.rebuildBadge(folder, anyErr); folder.classList.toggle('warn', anyErr === 'warn'); if (anyErr) folder.title = 'Mates: ' + (anyErr === 'err' ? 'a mate has an error' : 'a mate has a warning') + ' (right-click a mate ▸ What\'s Wrong?)'; }
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti.pattern-folder[data-pattern]'), function (row) {
+      var id = +row.getAttribute('data-pattern'), p = AS.findPattern(m, id);
+      markRow(row, issueOf('pattern', id), p && p.name);
+    });
+    Array.prototype.forEach.call(tree.querySelectorAll('.ti[data-mark]'), function (row) {
+      if (UI.rebuildBadge) UI.rebuildBadge(row, row.getAttribute('data-mark'));
+    });
+    if (root && UI.rebuildMarkRoot) UI.rebuildMarkRoot(root);
+    markOwners(tree);
+    hoverRow = null; syncHoverRow();
+  };
+  // the component (index into App.model.components) under a selection / hover item
+  function compIndexOf(s) {
+    if (!s || !App.mesh) return -1;
+    if (s.kind === 'body') return s.index;
+    if (s.kind === 'face') { var f = App.mesh.faces[s.index]; return f ? f.body || 0 : -1; }
+    if (s.kind === 'edge' && s.edge && s.edge.faces && s.edge.faces.length) { var g = App.mesh.faces[s.edge.faces[0]]; return g ? g.body || 0 : -1; }
+    return -1;
+  }
+  function compRow(tree, i) {
+    var c = (App.model.components || [])[i];
+    return c && tree ? tree.querySelector('.ti.component-row[data-comp="' + c.id + '"]') : null;
+  }
+  function markOwners(tree) {
+    var sel = [App.sel, App.sel2].concat(App.multi || []).filter(Boolean), own = {};
+    sel.forEach(function (s) { if (s.kind !== 'body') { var i = compIndexOf(s); if (i >= 0) own[i] = true; } });
+    Object.keys(own).forEach(function (i) { var r = compRow(tree, +i); if (r && !r.classList.contains('selected')) r.classList.add('sel-owner'); });
+  }
+  // a selection made in the graphics area scrolls its component's row into view (SolidWorks: Scroll selected item into view)
+  function revealOwner() {
+    var tree = document.getElementById('tree'), i = compIndexOf(App.sel);
+    var row = i >= 0 ? compRow(tree, i) : null, box = tree && tree.parentElement;
+    if (!row || !row.getClientRects().length) return;
+    while (box && box !== document.body && box.scrollHeight <= box.clientHeight + 1) box = box.parentElement;
+    if (!box || box === document.body) return;
+    var r = row.getBoundingClientRect(), bb = box.getBoundingClientRect();
+    if (r.top < bb.top) box.scrollTop += r.top - bb.top - 4;
+    else if (r.bottom > bb.bottom) box.scrollTop += r.bottom - bb.bottom + 4;
+  }
+  // hover sync: graphics -> tree (the row of the component under the pointer), tree -> graphics (the component lit)
+  var hoverRow = null;
+  function syncHoverRow() {
+    var tree = document.getElementById('tree');
+    var i = isAsm() && App.hover && !App.hover.fromTree ? compIndexOf(App.hover) : -1;
+    var row = i >= 0 ? compRow(tree, i) : null;
+    if (row === hoverRow) return;
+    if (hoverRow) hoverRow.classList.remove('hover-sync');
+    hoverRow = row;
+    if (row) row.classList.add('hover-sync');
+  }
+  var baseUpdateHighlights = UI.updateHighlights;
+  if (baseUpdateHighlights) UI.updateHighlights = function () { var r = baseUpdateHighlights.apply(this, arguments); if (isAsm() || hoverRow) syncHoverRow(); return r; };
+  (function treeHover() {
+    var tree = document.getElementById('tree');
+    if (!tree) return;
+    function rowOf(t) { return t && t.closest ? t.closest('.ti.component-row[data-comp], .ti.component-row.inner-row') : null; }
+    function set(hv) {
+      var cur = App.hover && App.hover.fromTree ? App.hover : null;
+      if ((cur ? cur.index : -1) === (hv ? hv.index : -1)) return;
+      if (!hv && !cur) return;
+      App.hover = hv;
+      if (UI.updateHighlights) UI.updateHighlights();
+      if (UI.requestRender) UI.requestRender();
+    }
+    tree.addEventListener('mouseover', function (e) {
+      if (!isAsm() || App.mode === 'sketch' || e.buttons) return;
+      var row = rowOf(e.target), i = -1;
+      if (row && row.hasAttribute('data-comp')) i = UI.componentIndex ? UI.componentIndex(+row.getAttribute('data-comp')) : -1;
+      else if (row) { var top = /^sub(\d+)\//.exec(row.getAttribute('data-inner') || ''); i = top && UI.componentIndex ? UI.componentIndex(+top[1]) : -1; }
+      if (i >= 0 && UI.isBodyHidden && UI.isBodyHidden(i)) i = -1;
+      if (App.hover && !App.hover.fromTree && App.hover.kind !== 'body' && i < 0) return;
+      set(i >= 0 ? { kind: 'body', index: i, fromTree: true } : null);
+    });
+    tree.addEventListener('mouseleave', function () { if (App.hover && App.hover.fromTree) set(null); });
+  })();
+  // What's Wrong (ui-rebuild.js): how an assembly item is edited. A mate: its Mate PM; a pattern: its PM; an over-defined
+  // component: the mate that cannot be satisfied; a component whose part has rebuild errors: Edit Part.
+  UI.asmIssueEdit = function (it) {
+    if (!isAsm() || !it || it.id == null) return null;
+    if (it.what === 'mate') {
+      var mt = AS.findMate(App.model, it.id);
+      return mt && UI.editMate ? { label: 'Edit Mate', title: 'Open ' + mt.name + ' in the Mate PropertyManager', run: function () { UI.editMate(mt); } } : null;
+    }
+    if (it.what === 'pattern') {
+      var p = AS.findPattern(App.model, it.id);
+      return p ? { label: 'Edit', title: 'Open ' + p.name + ' in its PropertyManager', run: function () { cmdComponentPattern(p.type, p); } } : null;
+    }
+    if (it.what === 'component') {
+      var c = AS.findComponent(App.model, it.id), st = subStatus(c || {}) || {};
+      if (!c) return null;
+      if (st.overDefined && st.overMate) { var om = AS.findMate(App.model, st.overMate); if (om && UI.editMate) return { label: 'Edit Mate', title: 'Open ' + om.name, run: function () { UI.editMate(om); } }; }
+      if (!st.suppressed && c.pattern == null && sourceKind(c) === 'part') return { label: 'Edit Part', title: 'Edit ' + c.name + ' in the context of the assembly', run: function () { run(editPart(c.id)); } };
+    }
+    return null;
   };
   // UI.innerRefName({ component, path }) -> 'Arm<1>@Hinge<2>' (innermost first, as SolidWorks names selections)
   UI.innerRefName = function (ref) {
@@ -1551,8 +1714,24 @@
 
   // ribbon: the Bill of Materials placeholder opens the BOM
   if (tab) tab.forEach(function (b) {
-    if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'generic', label: 'Bill of Materials', run: function () { showBom(); } }; });
+    if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'bom', label: 'Bill of Materials', run: function () { showBom(); } }; else if (x.label === 'Instant3D' && x.id === 'generic') x.id = 'instant'; });   // r13/asmui13: their own icons (drawing.js draws 'bom')
   });
+  // r13/asmui13: the Assembly tab in SolidWorks' order (Insert Components, Mate | Linear Component Pattern, Move /
+  // Rotate Component, Show / Hide | Exploded View, Bill of Materials); Fix / Float, which SolidWorks keeps on the
+  // right-click menu, go last so a narrow window drops them into the » menu first.
+  if (tab && ['insertComponent', 'mate', 'lpatternComp', 'moveComponent', 'hideshow', 'fix', 'float'].every(function (id) { return tab.some(function (b) { return b && b.id === id; }); })) (function () {
+    function take(test) { for (var i = 0; i < tab.length; i++) if (tab[i] && test(tab[i])) return tab.splice(i, 1)[0]; return null; }
+    var byId = function (id) { return take(function (b) { return b.id === id; }); };
+    var ins = byId('insertComponent'), mate = byId('mate'), lp = byId('lpatternComp');
+    var lpStack = take(function (b) { return b.stack && b.stack.some(function (x) { return x.id === 'cpatternComp'; }); });
+    var mv = byId('moveComponent'), rot = byId('rotateComponent'), hs = byId('hideshow'), ex = byId('explode');
+    var misc = take(function (b) { return b.stack && b.stack.some(function (x) { return x.label === 'Bill of Materials'; }); });
+    var fix = byId('fix'), flt = byId('float');
+    var rest = tab.filter(function (b) { return b && !b.sep; });   // anything this file does not know about stays, before Fix / Float
+    tab.length = 0;
+    [ins, mate, { sep: true }, lp, lpStack, mv, rot, hs, { sep: true }, ex, misc].concat(rest, [{ sep: true }, fix, flt]).forEach(function (b) { if (b) tab.push(b); });
+    if (UI.refreshRibbon) try { UI.refreshRibbon(); } catch (e) { /* drawn at boot */ }
+  })();
 
   // ------------------------------------------------------------------ pop-up toolbars (r5/asm5)
   // The small toolbars SolidWorks shows by the pointer: the Mate pop-up (SmartMates drop, two selections in the Mate
@@ -1570,17 +1749,28 @@
       '.asm-pop button[aria-pressed="true"]{background:var(--blue-soft);border-color:var(--blue-line)}',
       '.asm-pop .sep{width:1px;align-self:stretch;margin:2px 3px;background:var(--line)}',
       '.asm-pop.ctx.far{opacity:.3}',
-      '.asm-isolate{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center;padding:4px 8px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:12px}'
+      '.asm-flyout{position:absolute;left:8px;top:44px;z-index:6;font-size:12px;color:var(--text);user-select:none;max-width:60%}',
+      '.asm-flyout .fo-row{display:flex;align-items:center;gap:4px;height:21px;padding:0 8px 0 2px;border-radius:2px;cursor:default;white-space:nowrap}',
+      '.asm-flyout .fo-row:hover{background:var(--hover);box-shadow:inset 0 0 0 1px var(--blue-line)}',
+      '.asm-flyout .fo-row:not(.fo-head){padding-left:20px}',
+      '.asm-flyout .fo-tw{width:12px;flex:none;font-size:9px;color:var(--muted);text-align:center}',
+      '.asm-flyout svg{flex:none}',
+      '.asm-isolate{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center;padding:4px 8px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:12px}',
+      '.asm-isolate{gap:8px;padding:3px 4px 3px 8px;max-width:calc(100% - 24px)}',
+      '.asm-isolate .iso-title{display:flex;align-items:center;gap:5px;flex:none}',
+      '.asm-isolate .iso-what{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+      '.asm-isolate .btn{height:22px;padding:0 10px;flex:none}'
     ].join('\n');
     document.head.appendChild(st);
   }
   var FLIP_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v10M2.5 9.5 5 12l2.5-2.5M11 14V4M8.5 6.5 11 4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var ISOLATE_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h4v4h-4zM10.5 7.5h4v4h-4z" fill="none" stroke="#9aa3ad" stroke-width=".9" stroke-dasharray="1.6 1.2"/><path d="M5.5 6.5 8 5l2.5 1.5v3L8 11 5.5 9.5z" fill="#f0c987" stroke="#4a5058" stroke-width="1" stroke-linejoin="round"/><path d="M5.5 6.5 8 8l2.5-1.5M8 8v3" fill="none" stroke="#4a5058" stroke-width=".8"/></svg>';   // r13/asmui13
   function iconHtml(name) { return typeof Icons === 'function' ? Icons(name, 16) : ''; }
   // the last press / release in the graphics area (client coordinates): where a pop-up goes
   var lastUp = null;
   var lastDown = null;   // (a click, not the end of a drag: the context toolbar)
-  if (UI.viewport) UI.viewport.addEventListener('mousedown', function (e) { lastDown = { x: e.clientX, y: e.clientY }; }, true);
-  if (UI.viewport) UI.viewport.addEventListener('mouseup', function (e) { lastUp = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, click: !!lastDown && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) <= 4 }; }, true);
+  if (UI.viewport) UI.viewport.addEventListener('mousedown', function (e) { lastDown = { x: e.clientX, y: e.clientY, cmd: !!App.command }; }, true);
+  if (UI.viewport) UI.viewport.addEventListener('mouseup', function (e) { lastUp = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, click: !!lastDown && !lastDown.cmd && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) <= 4 }; }, true);
   function viewportClient(q) {
     var r = UI.viewport ? UI.viewport.getBoundingClientRect() : { left: 0, top: 0, width: 800, height: 600 };
     if (q) return { x: r.left + q[0], y: r.top + q[1] };
@@ -1706,7 +1896,7 @@
         { icon: 'mate', id: 'mate', title: 'Mate', run: function () { closePopup('run'); mateFromSelection(); } },
         { icon: 'hideshow', id: 'hide', title: 'Hide Components', run: function () { closePopup('run'); UI.asm.setHidden(id, true); } },
         { svg: GHOST_SVG, id: 'transparency', title: 'Change Transparency', pressed: isGhost(id), run: function () { setGhost(id, !isGhost(id)); } },
-        { icon: 'search', id: 'isolate', title: isolated ? 'Exit Isolate' : 'Isolate', pressed: !!isolated, run: function () { closePopup('run'); if (isolated) exitIsolate(); else isolate(id); } },
+        { svg: ISOLATE_SVG, id: 'isolate', title: isolated ? 'Exit Isolate' : 'Isolate', pressed: !!isolated, run: function () { closePopup('run'); if (isolated) exitIsolate(); else isolate(id); } },
         cc.fixed ? { icon: 'float', id: 'float', title: 'Float', run: function () { closePopup('run'); run(UI.asm.fix(id, false)); } }
           : { icon: 'fix', id: 'fix', title: 'Fix', run: function () { closePopup('run'); run(UI.asm.fix(id, true)); } }
       ];
@@ -1730,17 +1920,73 @@
     var r = baseSelChanged ? baseSelChanged.apply(this, arguments) : undefined;
     if (popup && popup.kind === 'ctx') closePopup('selection');
     // a left click in the graphics area that selected a component (not a drag, not a tree click)
-    if (lastUp && lastUp.button === 0 && lastUp.click && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) ctxToolbar();
+    if (lastUp && lastUp.button === 0 && lastUp.click && performance.now() - lastUp.t < 400 && App.sel && !App.sel2 && !App.sel.mate) { ctxToolbar(); if (isAsm()) revealOwner(); }
     return r;
   };
+  // r13/asmui13: a pop-up belongs to the document it was opened in (it stayed up over the next document opened)
+  var popModel = null;
+  (UI.onBuild = UI.onBuild || []).push(function () {
+    if (popup && popModel && App.model !== popModel && (popup.kind === 'ctx' || !App.model || App.model.name !== popModel.name)) closePopup('document');
+    popModel = App.model;
+  });
 
   // a component clicked in the FeatureManager shows the context toolbar by the pointer too
   document.addEventListener('click', function (e) {
     var row = e.target && e.target.closest ? e.target.closest('.component-row[data-comp]') : null;
     if (!row || !isAsm() || App.command || e.button !== 0) return;
+    if (!e.clientX && !e.clientY) return;   // r13/asmui13: row.click() from code (What's Wrong ▸ Go To) has no pointer to show it by
     var at = { x: e.clientX, y: e.clientY }, id = row.getAttribute('data-comp');
     setTimeout(function () { var c = selectedComponent(); if (c && String(c.id) === id && !popup) ctxToolbar(at); }, 0);
   });
+
+  // ---- r13/asmui13: the flyout FeatureManager. While the Mate PM is open the origin planes are no longer drawn over the
+  // model (they covered it); as in SolidWorks they are picked from the flyout tree at the top left of the graphics
+  // area: "▸ Assem1" opens to Front / Top / Right Plane, hovering a row shows that plane, a click picks it.
+  var flyout = null;
+  function flyoutSync() {
+    var want = isAsm() && App.command && App.command.quietPlanes && App.command.onPick && App.mode !== 'sketch';
+    if (!want) { if (flyout) { flyout.el.remove(); flyout = null; if (App.hover && App.hover.flyout) { App.hover = null; UI.updatePlanes(); UI.updateHighlights(); } } return; }
+    if (flyout && flyout.cmd === App.command && flyout.el.isConnected) return;
+    if (flyout) flyout.el.remove();
+    // a whole component selected before Mate is not a mate entity: drop its highlight so the picks read clearly
+    if ([App.sel, App.sel2].some(function (s) { return s && s.kind === 'body'; })) { App.sel = null; App.sel2 = null; App.multi = []; UI.updateHighlights(); }
+    ensurePopCss();
+    var box = el('div', { class: 'asm-flyout', role: 'tree', 'aria-label': 'Flyout FeatureManager' });
+    flyout = { el: box, cmd: App.command, open: false };
+    ['mousedown', 'mousemove', 'wheel', 'dblclick', 'contextmenu'].forEach(function (t) { box.addEventListener(t, function (e) { e.stopPropagation(); }); });   // not a pick / hover in the graphics area
+    function render() {
+      box.innerHTML = '';
+      var head = el('div', { class: 'fo-row fo-head', title: 'Pick an origin plane of the assembly' });
+      head.innerHTML = '<span class="fo-tw">' + (flyout.open ? '▾' : '▸') + '</span>' + (typeof Icons === 'function' ? Icons('assembly', 16) : '') + '<span></span>';
+      head.lastChild.textContent = App.model.name;
+      head.addEventListener('click', function () { flyout.open = !flyout.open; render(); });
+      box.appendChild(head);
+      if (!flyout.open) return;
+      ['Front', 'Top', 'Right'].forEach(function (r) {
+        var row = el('div', { class: 'fo-row', 'data-plane': r });
+        row.innerHTML = (typeof Icons === 'function' ? Icons('planeSmall', 16) : '') + '<span>' + r + ' Plane</span>';
+        var hv = { kind: 'plane', ref: r, plane: window.Kernel.makePlane(r, 0), name: r + ' Plane', flyout: true };
+        row.addEventListener('mouseenter', function () { App.hover = hv; UI.updatePlanes(); UI.updateHighlights(); if (UI.requestRender) UI.requestRender(); });
+        row.addEventListener('mouseleave', function () { if (App.hover === hv) { App.hover = null; UI.updatePlanes(); UI.updateHighlights(); if (UI.requestRender) UI.requestRender(); } });
+        row.addEventListener('click', function () {
+          var cmd = App.command;
+          if (App.hover === hv) App.hover = null;
+          if (cmd && cmd.onPick) cmd.onPick({ kind: 'plane', ref: r, plane: hv.plane, name: hv.name });
+          UI.updatePlanes(); UI.updateHighlights();
+        });
+        box.appendChild(row);
+      });
+    }
+    render();
+    if (UI.viewport) UI.viewport.appendChild(box);
+  }
+  UI.asmFlyout = function () { return flyout ? flyout.el : null; };
+  (function watchPM() {
+    var pmEl = document.getElementById('pm');
+    if (!pmEl || !window.MutationObserver) return;
+    var queued = false;
+    new MutationObserver(function () { if (queued) return; queued = true; Promise.resolve().then(function () { queued = false; flyoutSync(); }); }).observe(pmEl, { attributes: true, attributeFilter: ['hidden'], childList: true });
+  })();
 
   // ---- Isolate: every other component hidden until Exit Isolate (the hidden state before is put back)
   var isolated = null;   // { id, hidden (App.hiddenBodies before), bar }
@@ -1754,7 +2000,10 @@
     App.hiddenBodies = hid;
     if (UI.setBodyHidden) UI.setBodyHidden(i, false);   // redraws with the new hidden set
     ensurePopCss();
-    var bar = el('div', { class: 'asm-isolate', role: 'toolbar', 'aria-label': 'Isolate' }, [el('span', { text: 'Isolated: ' + compName(id) }), el('button', { type: 'button', class: 'btn', text: 'Exit Isolate', onclick: function () { exitIsolate(); } })]);
+    // r13/asmui13: SolidWorks' small Isolate toolbar: its title, what is isolated, Exit Isolate (Esc works too)
+    var title = el('span', { class: 'iso-title' }); title.innerHTML = ISOLATE_SVG + '<b>Isolate</b>';
+    var bar = el('div', { class: 'asm-isolate', role: 'toolbar', 'aria-label': 'Isolate' }, [title, el('span', { class: 'iso-what', text: compName(id), title: 'Isolated: ' + compName(id) }), el('button', { type: 'button', class: 'btn', text: 'Exit Isolate', title: 'Show the other components again (Esc)', onclick: function () { exitIsolate(); } })]);
+    ['mousedown', 'mousemove', 'wheel', 'dblclick', 'contextmenu'].forEach(function (t) { bar.addEventListener(t, function (e) { e.stopPropagation(); }); });   // not a pick in the graphics area
     if (UI.viewport) UI.viewport.appendChild(bar);
     isolated = { id: id, hidden: before, bar: bar, model: App.model.name };
     UI.setStatus(compName(id) + ' isolated. Exit Isolate shows the other components again.');
@@ -1773,6 +2022,14 @@
     return true;
   }
   (UI.onBuild = UI.onBuild || []).push(function () { if (isolated && (!isAsm() || App.model.name !== isolated.model)) { isolated.bar.remove(); isolated = null; } });
+  document.addEventListener('keydown', function (e) {   // r13/asmui13: Esc leaves Isolate when nothing else takes it
+    if (e.key !== 'Escape' || !isolated || App.command || popup || e.defaultPrevented) return;
+    var t = e.target, tag = t && t.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+    var modal = document.getElementById('modal');
+    if (modal && !modal.hidden) return;
+    exitIsolate();
+  });
 
   // ---- Change Transparency: a transparent component is drawn see-through (and clicks go through it to what is behind,
   // as in SolidWorks); kept on the component (r7/asm7). ui-core.js draws the opaque mesh without it
@@ -1780,7 +2037,7 @@
   var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#7d98bd" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d5e0ef" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
   // r7/asm7: kept in the model (component.transparent: saved, undone with it, written by toScript); a toggle is one undo
   // step that only redraws (no rebuild).
-  var ghostMesh = null, ghostMat = null;
+  var ghostMesh = null, ghostMat = null, ghostFront = null;
   function ghostKeyOk() { return isAsm(); }
   function isGhost(id) { var c = isAsm() && AS.findComponent(App.model, id); return !!(c && c.transparent); }
   UI.bodyGhost = function (i) {
@@ -1821,8 +2078,16 @@
     ghostMat.vertexColors = !!pm.vertexColors;
     ghostMat.clippingPlanes = pm.clippingPlanes || null;
     ghostMat.needsUpdate = true;
+    // r13/asmui13: back faces first, then front faces (one double-sided pass drew them in triangle order, so a far wall
+    // could paint over a near one and the component looked blotchy as the view turned)
+    ghostMat.side = THREE.BackSide;
+    ghostFront = ghostFront || ghostMat.clone();
+    ghostFront.copy(ghostMat); ghostFront.side = THREE.FrontSide; ghostFront.needsUpdate = true;
     ghostMesh = new THREE.Mesh(g, ghostMat);
     ghostMesh.renderOrder = 5;
+    var front = new THREE.Mesh(g, ghostFront);
+    front.renderOrder = 6; front.frustumCulled = false; front.userData.asmGhostFront = true;
+    ghostMesh.add(front);
     ghostMesh.frustumCulled = false;
     ghostMesh.userData.asmGhost = true;
     // its edges, faint (SolidWorks draws a transparent component's edges too)
@@ -1861,7 +2126,7 @@
     var g = ghostMesh.geometry, s = bm.geometry;
     if (g.getAttribute('position') !== s.getAttribute('position')) g.setAttribute('position', s.getAttribute('position'));
     if (s.getAttribute('normal') && g.getAttribute('normal') !== s.getAttribute('normal')) g.setAttribute('normal', s.getAttribute('normal'));
-    ghostMesh.children.forEach(function (o) { o.visible = !pose; });   // its edges are where it was built: hidden while posed
+    ghostMesh.children.forEach(function (o) { if (o.userData.asmGhostEdges) o.visible = !pose; });   // its edges are where it was built: hidden while posed
   }
   (UI.onBuild = UI.onBuild || []).push(function () { Promise.resolve().then(drawGhosts); });
   var baseSetBodyHidden = UI.setBodyHidden;   // Hide / Show redraws the drawn mesh: the see-through copy with it

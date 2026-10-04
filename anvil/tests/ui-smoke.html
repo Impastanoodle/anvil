@@ -7385,6 +7385,107 @@
   });
   // --- end r12/drawui12 ---
 
+  // --- r13/asmui13 ---
+  step('r13/asmui13: assembly FeatureManager badges (mate, Mates folder, over-defined component, top row keep their icons), What\'s Wrong Go To / Edit Mate', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App, cap = A.model.components.filter(function (c) { return c.name === 'Cap<1>'; })[0], plate = A.model.components.filter(function (c) { return c.name === 'Plate<1>'; })[0];
+    UI.pushUndo();
+    A.model.mates.push({ id: 990, name: 'Distance9', type: 'distance', distance: 10, a: { component: cap.id, face: [15, 0, 10] }, b: { component: plate.id, face: [50, 8, 30] } });
+    await UI.rebuild(); await idle(); UI.refreshTree();
+    var mr = D.querySelector('.ti.mate-row[data-mate="990"]'), cr = D.querySelector('.ti.component-row[data-comp="' + cap.id + '"]');
+    assert(mr && mr.querySelector('.rb-badge.err') && mr.classList.contains('err'), 'mate row badged');
+    assert(mr.children[1].querySelectorAll('svg').length === 2, 'the mate keeps its own icon under the badge');
+    assert(cr && cr.querySelector('.rb-badge.err') && /^\(\+\)/.test(cr.querySelector('.nm').textContent), 'over-defined component (+) badged: ' + (cr && cr.textContent));
+    assert(D.querySelector('.ti.mates-folder .rb-badge.err') && D.querySelector('.ti.asm-root .rb-badge.err'), 'Mates folder and assembly badged');
+    assert(D.querySelectorAll('#tree .rb-badge').length === 4, 'only those four rows: ' + D.querySelectorAll('#tree .rb-badge').length);
+    UI.whatsWrong();
+    var ww = D.getElementById('whats-wrong'), row = ww && ww.querySelector('tr.ww-row[data-id="990"]');
+    assert(row && /Distance9 \(Cap<1>, Plate<1>\)/.test(row.textContent), 'What\'s Wrong row: ' + (ww && ww.textContent));
+    var ed = row.querySelector('.ww-edit');
+    assert(ed && ed.textContent === 'Edit Mate', 'Edit Mate button');
+    ed.click(); await idle();
+    assert(UI.hasPM() && D.getElementById('pm').textContent.indexOf('Distance9') >= 0, 'the Mate PM opened on Distance9');
+    assert(A.command && A.command.faceList && A.command.faceList.length === 2, 'its two faces lit: ' + JSON.stringify(A.command && A.command.faceList));
+    UI.pmCancel(); await idle();
+    await UI.undo(); await idle(); UI.refreshTree();
+    assert(D.querySelectorAll('#tree .rb-badge').length === 0, 'no badges after undo');
+  });
+  step('r13/asmui13: hover sync (tree row lights the component, the component under the pointer lights its row); a selected face marks its component row', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App, pin = A.model.components.filter(function (c) { return c.name === 'Pin<1>'; })[0], pi = A.model.components.indexOf(pin);
+    var row = D.querySelector('.ti.component-row[data-comp="' + pin.id + '"]');
+    row.querySelector('.nm').dispatchEvent(new W.MouseEvent('mouseover', { bubbles: true }));
+    assert(A.hover && A.hover.kind === 'body' && A.hover.index === pi, 'tree hover lights the pin: ' + JSON.stringify(A.hover));
+    D.getElementById('tree').dispatchEvent(new W.MouseEvent('mouseleave', { bubbles: false }));
+    assert(!A.hover, 'leaving the tree clears it');
+    var fi = A.mesh.faces.findIndex(function (f) { return (f.body || 0) === pi; });
+    A.hover = { kind: 'face', index: fi }; UI.updateHighlights();
+    assert(row.classList.contains('hover-sync'), 'graphics hover lights the row');
+    A.hover = null; UI.updateHighlights();
+    assert(!row.classList.contains('hover-sync'), 'and lets go');
+    UI.setSelection([{ kind: 'face', index: fi }]);
+    row = D.querySelector('.ti.component-row[data-comp="' + pin.id + '"]');
+    assert(row.classList.contains('sel-owner'), 'owner mark on the pin row');
+    UI.setSelection([]);
+  });
+  step('r13/asmui13: Mate PM: no origin planes over the model; the flyout FeatureManager picks one (its row shows that plane alone); a selected component is dropped', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App;
+    UI.selectComponent(A.model.components[1].id);
+    UI.cmdMate(); await wait(20);
+    assert(UI.groups.planes.children.length === 0, 'planes drawn: ' + UI.groups.planes.children.length);
+    assert(!A.sel, 'the component selection was dropped');
+    var fo = UI.asmFlyout();
+    assert(fo && fo.isConnected, 'flyout shown');
+    fo.querySelector('.fo-head').click();
+    var r = fo.querySelector('[data-plane="Top"]');
+    r.dispatchEvent(new W.MouseEvent('mouseenter'));
+    var shown = UI.groups.planes.children.filter(function (o) { return o.userData.face; }).map(function (o) { return o.userData.ref; });
+    assert(shown.length === 1 && shown[0] === 'Top', 'only the hovered plane: ' + shown.join());
+    r.dispatchEvent(new W.MouseEvent('mouseleave'));
+    r.click(); await idle();
+    assert(/Top Plane/.test(D.getElementById('pm').textContent), 'Top Plane picked');
+    UI.pmCancel(); await idle();
+    assert(!UI.asmFlyout(), 'flyout gone with the PM');
+  });
+  step('r13/asmui13: Assembly tab in SolidWorks order (Fix / Float last); Esc leaves Isolate; the context toolbar closes when another document opens', async function () {
+    var ids = UI.ASM_RIBBON.Assembly.filter(function (b) { return b.id; }).map(function (b) { return b.id; });
+    assert(ids[0] === 'insertComponent' && ids[1] === 'mate' && ids.indexOf('fix') > ids.indexOf('explode') && ids.indexOf('lpatternComp') < ids.indexOf('moveComponent'), ids.join());
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App;
+    UI.asmIsolate.isolate(A.model.components[1].id);
+    assert(D.querySelector('.asm-isolate .iso-title'), 'isolate bar');
+    D.body.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert(!UI.asmIsolate.active() && !D.querySelector('.asm-isolate'), 'Esc left Isolate');
+    var row = D.querySelector('.component-row[data-comp="' + A.model.components[1].id + '"]');
+    row.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, clientX: 100, clientY: 300 }));
+    await wait(20);
+    assert(UI.asmPopup() && UI.asmPopup().kind === 'ctx', 'context toolbar');
+    await anvil.run(exByName('Gear train and patterns').code); await idle();
+    assert(!UI.asmPopup(), 'closed with the old document');
+  });
+  step('r13/asmui13: a broken link is grey with an amber badge (own icon); What\'s Wrong lists it as a warning and Go To selects its row without a context toolbar', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App, c = JSON.parse(JSON.stringify(A.model.components[1]));
+    UI.pushUndo();
+    c.id = 9077; c.name = 'Gone<1>'; c.source = { file: 'NoSuchPart13' }; c.fixed = true; delete c.pattern;
+    A.model.components.push(c);
+    await UI.rebuild(); await idle(); UI.refreshTree();
+    var r = D.querySelector('.component-row[data-comp="9077"]');
+    assert(r && r.classList.contains('suppressed') && r.querySelector('.rb-badge.warn') && !r.querySelector('.rb-badge.err'), 'amber badge on the broken link: ' + (r && r.className));
+    assert(r.children[1].querySelectorAll('svg').length === 2, 'its own icon kept');
+    UI.whatsWrong(9077);
+    var go = D.querySelector('#whats-wrong tr.ww-row.warning[data-id="9077"] .ww-go');
+    assert(go, 'warning row with Go To');
+    UI.asmClosePopup();
+    go.click(); await wait(20);
+    r = D.querySelector('.component-row[data-comp="9077"]');
+    assert(r.classList.contains('selected') || r.classList.contains('rb-flash'), 'row selected');
+    assert(!UI.asmPopup(), 'no context toolbar at the screen corner');
+    await UI.undo(); await idle();
+  });
+  // --- end r13/asmui13 ---
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));
