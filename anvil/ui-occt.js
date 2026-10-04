@@ -353,9 +353,11 @@
   st.fades = 0;
   function fadeStop() {
     if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = 0; }
-    if (fadeEl) { fadeEl.style.transition = 'none'; fadeEl.style.opacity = '0'; fadeEl.style.visibility = 'hidden'; }
+    // display:none as well: a hidden copy keeps its old size and would stick out of a window narrowed since (r12/chrome12)
+    if (fadeEl) { fadeEl.style.transition = 'none'; fadeEl.style.opacity = '0'; fadeEl.style.visibility = 'hidden'; fadeEl.style.display = 'none'; }
   }
   ['pointerdown', 'wheel', 'keydown'].forEach(function (t) { window.addEventListener(t, function () { if (fadeTimer) fadeStop(); }, true); });
+  window.addEventListener('resize', function () { if (fadeEl && fadeEl.style.display !== 'none') fadeStop(); });   // the copy is the old size
   function fadeSnap() {
     if (App.holdFrameUntil > performance.now() || UI.viewAnimating && UI.viewAnimating()) return false;
     var gl = document.querySelector('#viewport canvas.gl');
@@ -365,8 +367,9 @@
         fadeEl = document.createElement('canvas');
         fadeEl.className = 'occt-fade';
         fadeEl.setAttribute('aria-hidden', 'true');
-        fadeEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;visibility:hidden;opacity:0';
+        fadeEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;visibility:hidden;opacity:0;display:none';
       }
+      fadeEl.style.display = 'block';
       if (fadeEl.parentNode !== gl.parentNode || fadeEl.previousSibling !== gl) gl.parentNode.insertBefore(fadeEl, gl.nextSibling);
       if (fadeEl.width !== gl.width) fadeEl.width = gl.width;
       if (fadeEl.height !== gl.height) fadeEl.height = gl.height;
