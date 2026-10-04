@@ -2162,10 +2162,13 @@ var Kernel = (function () {
     w: [0.08566224618958517, 0.18038078652406933, 0.23395696728634552, 0.23395696728634552, 0.18038078652406933, 0.08566224618958517] };
 
   // r11/perf11: a box that holds every point the inside test below can accept for planar polygon p (x0 y0 z0 x1 y1 z1),
-  // so most polygons of a big plane are skipped at once (the Flange's curve correction 26 → ~5 ms, same result). The
+  // so most polygons of a big plane are skipped at once (the Flange's curve correction 28 → 10 ms, same result). The
   // test lets a point be up to d = 1e-12·max(1, L²)/L outside an edge of length L and 1e-6·max(1, |w|) off the plane;
   // on a convex polygon that stays within max(d) / sin(α/2) of it (α its sharpest corner), padded twice over here. A
   // polygon with a very short edge or a needle corner gets an infinite box (always tested, as before).
+  // Kernel.massOptions: planarBoxes (the box filter) and cache (massProps kept per mesh); the tests switch them off to
+  // compare
+  var massOptions = { planarBoxes: true, cache: true };
   function planarBox(p) {
     var vs = p.vertices, n = vs.length, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], dmax = 0, smin = 1;
     for (var j = 0; j < n; j++) {
@@ -2201,7 +2204,7 @@ var Kernel = (function () {
         if (!list) continue;
         for (var i = 0; i < list.length; i++) {
           var bx = boxes[i];
-          if (q[0] < bx[0] || q[0] > bx[3] || q[1] < bx[1] || q[1] > bx[4] || q[2] < bx[2] || q[2] > bx[5]) continue;
+          if (massOptions.planarBoxes && (q[0] < bx[0] || q[0] > bx[3] || q[1] < bx[1] || q[1] > bx[4] || q[2] < bx[2] || q[2] > bx[5])) continue;
           var p = list[i], pn = p.plane.normal, vs = p.vertices, inside = true;
           if (Math.abs(pn.x * q[0] + pn.y * q[1] + pn.z * q[2] - p.plane.w) > 1e-6 * Math.max(1, Math.abs(p.plane.w))) continue;
           for (var j = 0; j < vs.length && inside; j++) {
@@ -2561,7 +2564,7 @@ var Kernel = (function () {
     return out;
   }
   function massProps(mesh, density) {
-    if (!massCache || !mesh || typeof mesh !== 'object') return massPropsOf(mesh, density);
+    if (!massCache || !massOptions.cache || !mesh || typeof mesh !== 'object') return massPropsOf(mesh, density);
     var key = massKey(mesh), hit = massCache.get(mesh);
     if (hit && sameMassKey(hit.key, key)) return massCopy(hit.r, density);
     var r = massPropsOf(mesh, density);
@@ -4475,7 +4478,7 @@ var Kernel = (function () {
     newModel: newModel, featureName: featureName, findFeature: findFeature, cutDirectionHint: cutDirectionHint,
     buildTool: buildTool, isCut: isCut, extrudeRange: extrudeRange, revolveAxis: revolveAxis, cutScope: cutScope, THROUGH: THROUGH, registerFeature: registerFeature, registerSketchScript: registerSketchScript, registerScriptSection: registerScriptSection, rebuild: rebuild, combineBodies: combineBodies, bodyInfo: bodyInfo, bodyNearPoint: bodyNearPoint, buildEdgeFeature: buildEdgeFeature,
     packBuild: packBuild, packTransferables: packTransferables, unpackBuild: unpackBuild, applyProfiles: applyProfiles, cacheFromBuild: cacheFromBuild,
-    meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, outlineOptions: outlineOptions, bodyEdges: bodyEdges, meshCurveInfo: meshCurveInfo, analyticNormals: analyticNormals, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
+    meshFromBody: meshFromBody, massProps: massProps, curveCorrection: curveCorrection, curveEdges: curveEdges, curveSurfaces: curveSurfaces, setTessellation: setTessellation, segsForRadius: segsForRadius, entityCurves: entityCurves, meshQuality: meshQuality, faceOutline: faceOutline, outlineOptions: outlineOptions, massOptions: massOptions, bodyEdges: bodyEdges, meshCurveInfo: meshCurveInfo, analyticNormals: analyticNormals, resolveEdges: resolveEdges, pointSegmentDistance: pointSegmentDistance,
     exportSTL: exportSTL, exportDXFSketch: exportDXFSketch, exportDXFFace: exportDXFFace,
     buildFlange: buildFlange, flangeLayout: flangeLayout, buildJog: buildJog, normalCutTool: normalCutTool, flangeProfile: flangeProfile, flatPattern: flatPattern, exportDXFFlat: exportDXFFlat, bendAllowance: bendAllowance, sheetParams: sheetParams,
     sketchPath: sketchPath, buildSweep: buildSweep, buildLoft: buildLoft,
