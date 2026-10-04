@@ -1497,8 +1497,10 @@ var UI = (function () {
     else if (UI.drawDims && App.dimsStale) { App.dimsStale = false; UI.drawDims(); }
   }
   function frame(now) {
-    tick(now);
+    // r11/perf11: the next frame is asked for first, so one exception in a frame (an overlay, a hook) cannot stop the
+    // render loop for good and freeze the viewport
     requestAnimationFrame(frame);
+    tick(now);
   }
   function requestRender() { needsRender = true; }
 

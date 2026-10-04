@@ -2161,22 +2161,47 @@ var Kernel = (function () {
   var GL6 = { x: [0.033765242898423986, 0.16939530676686776, 0.38069040695840156, 0.6193095930415985, 0.8306046932331322, 0.966234757101576],
     w: [0.08566224618958517, 0.18038078652406933, 0.23395696728634552, 0.23395696728634552, 0.18038078652406933, 0.08566224618958517] };
 
+  // r11/perf11: a box that holds every point the inside test below can accept for planar polygon p (x0 y0 z0 x1 y1 z1),
+  // so most polygons of a big plane are skipped at once (the Flange's curve correction 26 → ~5 ms, same result). The
+  // test lets a point be up to d = 1e-12·max(1, L²)/L outside an edge of length L and 1e-6·max(1, |w|) off the plane;
+  // on a convex polygon that stays within max(d) / sin(α/2) of it (α its sharpest corner), padded twice over here. A
+  // polygon with a very short edge or a needle corner gets an infinite box (always tested, as before).
+  function planarBox(p) {
+    var vs = p.vertices, n = vs.length, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], dmax = 0, smin = 1;
+    for (var j = 0; j < n; j++) {
+      var a = vs[j].pos, b = vs[(j + 1) % n].pos, c = vs[(j + 2) % n].pos;
+      lo[0] = Math.min(lo[0], a.x); lo[1] = Math.min(lo[1], a.y); lo[2] = Math.min(lo[2], a.z);
+      hi[0] = Math.max(hi[0], a.x); hi[1] = Math.max(hi[1], a.y); hi[2] = Math.max(hi[2], a.z);
+      var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
+      var L = Math.sqrt(ux * ux + uy * uy + uz * uz), M = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (!(L > 1e-6) || !(M > 1e-6)) return [-Infinity, -Infinity, -Infinity, Infinity, Infinity, Infinity];
+      dmax = Math.max(dmax, 1e-12 * Math.max(1, L * L) / L);
+      var cosA = -(ux * vx + uy * vy + uz * vz) / (L * M);   // interior angle at b
+      smin = Math.min(smin, Math.sqrt(Math.max(0, (1 - cosA) / 2)));
+    }
+    if (!(smin > 1e-3) || !(n >= 3)) return [-Infinity, -Infinity, -Infinity, Infinity, Infinity, Infinity];
+    var pad = 2 * (dmax / smin + 1e-6 * Math.max(1, Math.abs(p.plane.w))) + 1e-9;
+    return [lo[0] - pad, lo[1] - pad, lo[2] - pad, hi[0] + pad, hi[1] + pad, hi[2] + pad];
+  }
   // planar faces by plane, for the side walls of the slivers (surface area only)
   function planarIndex(polys) {
-    var idx = {};
+    var idx = {}, boxIdx = {};
     polys.forEach(function (p) {
       if (p.surf) return;
       var n = p.plane.normal, s = (n.x < -1e-9 || (Math.abs(n.x) <= 1e-9 && (n.y < -1e-9 || (Math.abs(n.y) <= 1e-9 && n.z < 0)))) ? -1 : 1;
       var k = Math.round(n.x * s * 1000) + ',' + Math.round(n.y * s * 1000) + ',' + Math.round(n.z * s * 1000) + ',' + Math.round(p.plane.w * s * 1e4);
       (idx[k] = idx[k] || []).push(p);
+      (boxIdx[k] = boxIdx[k] || []).push(planarBox(p));
     });
     return function (N, q) {
       var s = (N[0] < -1e-9 || (Math.abs(N[0]) <= 1e-9 && (N[1] < -1e-9 || (Math.abs(N[1]) <= 1e-9 && N[2] < 0)))) ? -1 : 1;
       var w = dot(N, q) * s, base = Math.round(N[0] * s * 1000) + ',' + Math.round(N[1] * s * 1000) + ',' + Math.round(N[2] * s * 1000) + ',', wk = Math.round(w * 1e4);
       for (var dk = -1; dk <= 1; dk++) {
-        var list = idx[base + (wk + dk)];
+        var list = idx[base + (wk + dk)], boxes = boxIdx[base + (wk + dk)];
         if (!list) continue;
         for (var i = 0; i < list.length; i++) {
+          var bx = boxes[i];
+          if (q[0] < bx[0] || q[0] > bx[3] || q[1] < bx[1] || q[1] > bx[4] || q[2] < bx[2] || q[2] > bx[5]) continue;
           var p = list[i], pn = p.plane.normal, vs = p.vertices, inside = true;
           if (Math.abs(pn.x * q[0] + pn.y * q[1] + pn.z * q[2] - p.plane.w) > 1e-6 * Math.max(1, Math.abs(p.plane.w))) continue;
           for (var j = 0; j < vs.length && inside; j++) {
@@ -2516,7 +2541,34 @@ var Kernel = (function () {
   // centroid are the exact values of the true curved faces when the mesh's faces carry their CSG polygons (meshes
   // from meshFromBody): the polygonal figures plus curveCorrection. `polygonal` keeps the facets' own volume and
   // area; `curved` counts the facets on analytic surfaces.
+  // r11/perf11: the result is kept per mesh object (a WeakMap; meshes are not changed after meshFromBody) and handed
+  // out as a fresh copy: the curve correction takes 2–40 ms on a part with many curved facets, and the same mesh is
+  // asked again and again (anvil.summary twice per call, materials and assembly mass, drawings, the OpenCascade
+  // check). Another positions / faces array, another length or a changed sampled coordinate misses the cache.
+  var massCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function massKey(mesh) {
+    var p = mesh.positions64 || mesh.positions, n = p ? p.length : 0, s = 0;
+    for (var i = 0; i < n; i += Math.max(1, (n / 16) | 0)) s += p[i] * (i + 1);
+    if (n) s += p[n - 1];
+    return { p: p, n: n, s: s, faces: mesh.faces, nf: mesh.faces ? mesh.faces.length : 0, exact: mesh.exact };
+  }
+  function sameMassKey(a, b) { return a.p === b.p && a.n === b.n && (a.s === b.s || (a.s !== a.s && b.s !== b.s)) && a.faces === b.faces && a.nf === b.nf && a.exact === b.exact; }
+  function massCopy(r, density) {
+    var out = { volume: r.volume, area: r.area, centroid: r.centroid.slice(), bbox: { min: r.bbox.min.slice(), max: r.bbox.max.slice() }, density: density, mass: r.volume * density };
+    if (r.polygonal) out.polygonal = { volume: r.polygonal.volume, area: r.polygonal.area };
+    if (r.exact) out.exact = true;
+    else if (r.polygonal) out.curved = r.curved;
+    return out;
+  }
   function massProps(mesh, density) {
+    if (!massCache || !mesh || typeof mesh !== 'object') return massPropsOf(mesh, density);
+    var key = massKey(mesh), hit = massCache.get(mesh);
+    if (hit && sameMassKey(hit.key, key)) return massCopy(hit.r, density);
+    var r = massPropsOf(mesh, density);
+    massCache.set(mesh, { key: key, r: massCopy(r, density) });
+    return r;
+  }
+  function massPropsOf(mesh, density) {
     var p = mesh.positions64 || mesh.positions, vol = 0, area = 0, cx = 0, cy = 0, cz = 0;
     var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (var i = 0; i < p.length; i += 9) {
@@ -2536,7 +2588,7 @@ var Kernel = (function () {
     }
     if (mesh.faces && mesh.faces.length && mesh.faces[0].polys) {
       var polys = [];
-      mesh.faces.forEach(function (f) { if (f.polys) polys = polys.concat(f.polys); });
+      mesh.faces.forEach(function (f) { if (f.polys) for (var j = 0; j < f.polys.length; j++) polys.push(f.polys[j]); });   // (r11/perf11: no concat per face)
       var corr = curveCorrection(polys);
       if (corr.facets) {
         polygonal = { volume: vol, area: area };
