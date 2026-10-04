@@ -315,12 +315,14 @@
     if (c.kind === 'line') return scr(pl, [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]);
     return scr(pl, [c.c[0] + c.r * Math.SQRT1_2, c.c[1] + c.r * Math.SQRT1_2]);
   }
-  function badge(layer, h, x, y, type, cls, title) {
-    var g = h.svg('g', { 'class': 'rel-badge ' + (cls || ''), transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' }, layer);
+  function badge(layer, h, x, y, type, cls, title, relIndex) {
+    var ga = { 'class': 'rel-badge ' + (cls || ''), transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' };
+    if (relIndex != null) ga['data-rel'] = relIndex;
+    var g = h.svg('g', ga, layer);
     h.svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
     if (h.icon) h.icon(g, iconName(type));
     else { var inner = h.svg('g', { transform: 'translate(1,1) scale(0.875)' }, g); inner.innerHTML = Icons(iconName(type), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, ''); }
-    if (title) { var t = h.svg('title', {}, g); t.textContent = title; }
+    if (title) { var t = h.svg('title', {}, g); if (h.text) h.text(t, title); else t.textContent = title; }
     return g;
   }
   // r5/sketch5: where a relation icon goes. Each icon takes a 16 px box clear of the dimension labels and of the icons
@@ -436,20 +438,11 @@
     jobs.forEach(function (jb) {
       var i = jb.i, rel = jb.rel, state = jb.state, selected = jb.selected, hot = jb.hot, p = jb.p;
       {
-        var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''));
-        g.setAttribute('data-rel', i);
-        g.addEventListener('click', function (ev) { ev.stopPropagation(); App.sel = { kind: 'rel', index: i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(f, rel) + ' — ' + stateText(state) + '. Delete removes it.'); });
-        // hovering an icon lights up the entities it relates (r5/sketch5)
-        g.addEventListener('mouseenter', function () { hoverRelation(i, true); });
-        g.addEventListener('mouseleave', function () { hoverRelation(i, false); });
-        g.addEventListener('contextmenu', function (ev) {
-          ev.preventDefault(); ev.stopPropagation();
-          App.sel = { kind: 'rel', index: i }; App.dimsStale = true;
-          UI.showMenu(ev.clientX, ev.clientY, [
-            { label: 'Delete ' + S.TYPES[rel.type].name, key: 'Del', action: function () { deleteRelation(i); } },
-            { label: 'Display/Delete Relations…', action: function () { cmdDisplayRelations(); } }
-          ]);
-        });
+        var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''), i);
+        // r12/sketchui12: the icon's node is reused from frame to frame (ui-sketch.js svg()): its listeners are attached
+        // once and act on the relation drawn there now (g._d)
+        g._d = { i: i, rel: rel, state: state, f: f };
+        if (!g._relLis) { g._relLis = true; badgeListeners(g); }
       }
     });
     // the entities of the relation hovered (an icon here, or a row of Display/Delete Relations): orange, as pre-highlight
@@ -466,6 +459,26 @@
         for (var i = 0; i <= 48; i++) { var t = i / 48 * Math.PI * 2; pts.push(scr(pl, [c.c[0] + c.r * Math.cos(t), c.c[1] + c.r * Math.sin(t)]).join(',')); }
         h.svg('polyline', { 'class': 'rel-pick', points: pts.join(' ') }, layer);
       }
+    });
+  }
+  function badgeListeners(g) {
+    g.addEventListener('click', function (ev) {
+      var d = g._d;
+      if (!d) return;
+      ev.stopPropagation(); App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(d.f, d.rel) + ' — ' + stateText(d.state) + '. Delete removes it.');
+    });
+    // hovering an icon lights up the entities it relates (r5/sketch5); leaving unlights the one lit on entering
+    g.addEventListener('mouseenter', function () { if (g._d) { g._hov = g._d.i; hoverRelation(g._d.i, true); } });
+    g.addEventListener('mouseleave', function () { var i = g._hov != null ? g._hov : g._d && g._d.i; g._hov = null; if (i != null) hoverRelation(i, false); });
+    g.addEventListener('contextmenu', function (ev) {
+      var d = g._d;
+      if (!d) return;
+      ev.preventDefault(); ev.stopPropagation();
+      App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true;
+      UI.showMenu(ev.clientX, ev.clientY, [
+        { label: 'Delete ' + S.TYPES[d.rel.type].name, key: 'Del', action: function () { deleteRelation(d.i); } },
+        { label: 'Display/Delete Relations…', action: function () { cmdDisplayRelations(); } }
+      ]);
     });
   }
   function stateText(s) { return { ok: 'Satisfied', redundant: 'Over Defining (redundant)', conflict: 'Not Solved (conflict)', invalid: 'Dangling' }[s] || s; }

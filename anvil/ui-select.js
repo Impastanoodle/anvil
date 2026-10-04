@@ -939,8 +939,11 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   var handleList = [];
   function drawI3D() {
-    while (layer.firstChild) layer.removeChild(layer.firstChild);
     var d = i3d.drag;
+    // r12/sketchui12: while sketch geometry is dragged the dimension grips are hidden (SolidWorks shows none then) and
+    // not recomputed on every frame; they come back when the drag ends
+    if (!d && App.mode === 'sketch' && App.sketchDragging) { if (layer.firstChild) layer.textContent = ''; handleList = []; return; }
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
     // a handle whose direction is seen end-on cannot be dragged in this view and is left out
     handleList = d ? [d.h] : computeHandles().filter(function (h) { return h.pxPerUnit() > 0.02; });
     if (i3d.edit && !d && !handleList.some(function (h) { return hKey(h) === i3d.edit.key; })) closeEdit(false);
