@@ -490,7 +490,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
 
   // ================================================================== highlights of the extra items
-  var vtxMat = new THREE.PointsMaterial({ color: 0x14a34a, size: 9, sizeAttenuation: false, depthTest: false });
+  var vtxMat = new THREE.PointsMaterial({ color: 0x1f6fe8, size: 9, sizeAttenuation: false, depthTest: false });
   var vtxHoverMat = new THREE.PointsMaterial({ color: 0xff8c1a, size: 9, sizeAttenuation: false, depthTest: false });
   var throughMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.45, depthTest: false, depthWrite: false, side: THREE.DoubleSide });   // r5/select5
   function pointsObject(pts, mat) {

@@ -57,9 +57,13 @@ var UI = (function () {
   var scene = new THREE.Scene();
   var camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 40000);
   scene.add(camera);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x99a3ad, 0.5));
-  var key = new THREE.DirectionalLight(0xffffff, 0.75); key.position.set(0.6, 0.9, 1.4); camera.add(key);
-  var fill = new THREE.DirectionalLight(0xffffff, 0.25); fill.position.set(-1, -0.4, 0.6); camera.add(fill);
+  // r14/viewui14: SolidWorks-like studio lighting, all riding on the camera so the model reads the same from every
+  // side: a sky / ground ambient, a key light from the upper left front, a softer fill from the lower right, and a rim
+  // light from behind that brightens faces turning away from the viewer (silhouettes stand off the background).
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8d96a1, 0.42));
+  var key = new THREE.DirectionalLight(0xffffff, 0.72); key.position.set(-0.45, 0.85, 1.3); camera.add(key);
+  var fill = new THREE.DirectionalLight(0xf2f6ff, 0.26); fill.position.set(1, -0.35, 0.7); camera.add(fill);
+  var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0.2, 0.5, -1); camera.add(rim);
 
   var groups = {
     body: new THREE.Group(), edges: new THREE.Group(), sketches: new THREE.Group(), temp: new THREE.Group(),
@@ -68,12 +72,16 @@ var UI = (function () {
   Object.keys(groups).forEach(function (k) { scene.add(groups[k]); });
 
   var mats = {
-    part: new THREE.MeshPhongMaterial({ color: 0xa8adb6, specular: 0x2a2f36, shininess: 38, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
-    hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
+    part: new THREE.MeshPhongMaterial({ color: 0xa8adb6, specular: 0x50565e, shininess: 64, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),   // r14/viewui14: glossier (was specular 0x2a2f36, shininess 38)
+    // r14/viewui14: the HLR / HLV occluder writes depth only, so the background (gradient, plain or dark) shows through it
+    // as in SolidWorks; the edges are drawn after it (renderOrder 0.5), so hidden ones are still hidden
+    hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
     edge: new THREE.LineBasicMaterial({ color: 0x23272d }),
-    hover: new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.45,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
+    // r14/viewui14: SolidWorks' face highlights are a tint over the shaded face, not a repaint: blue for selected, orange
+    // for the pre-highlight, light enough that the face's shading (and its edges) still read through
+    hover: new THREE.MeshBasicMaterial({ color: 0xff9a2e, transparent: true, opacity: 0.38,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
-    sel: new THREE.MeshBasicMaterial({ color: 0x69d98a, transparent: true, opacity: 0.6, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),
+    sel: new THREE.MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.42, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // r14/viewui14: blue (was green 0x69d98a at 0.6)
     preview: new THREE.MeshPhongMaterial({ color: 0xf2cf5b, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
     previewCut: new THREE.MeshPhongMaterial({ color: 0xe8746a, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
     // the sketch being edited is drawn on top of the body so it stays visible on hidden planes
@@ -87,7 +95,7 @@ var UI = (function () {
     sketchConflict: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),
     temp: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     planeFace: new THREE.MeshBasicMaterial({ color: 0x5a9be6, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
-    planeFaceHi: new THREE.MeshBasicMaterial({ color: 0x69d98a, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+    planeFaceHi: new THREE.MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
     planeFaceHover: new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }),   // r5/select5
     planeLine: new THREE.LineBasicMaterial({ color: 0x5a9be6 }),
     grid: new THREE.LineBasicMaterial({ color: 0xb8c0ca, transparent: true, opacity: 0.55 }),
@@ -107,21 +115,61 @@ var UI = (function () {
     dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5 }
   };
   var viewportTheme = 'light';
+  // r14/viewui14: the line palette follows what the lines are drawn over. The dark palette applies with the dark theme or
+  // the Dark background; model edges on a shaded body stay dark as in SolidWorks (light edges on a light grey body read
+  // as a washed-out outline) and turn light only where the body is not painted (HLR / HLV / wireframe on dark).
+  var EDGE_ON_BODY_DARK = 0x16191d;
+  function darkViewport() { return viewportTheme === 'dark' || App.view.bg === 'dark'; }
+  function applyLinePalette() {
+    var c = THEME_COLORS[darkViewport() ? 'dark' : 'light'];
+    Object.keys(c).forEach(function (k) { if (mats[k].color.getHex() !== c[k]) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; } });
+    var s = App.view.style, painted = s !== 'hlr' && s !== 'hlv' && s !== 'wireframe';
+    if (darkViewport() && painted && mats.edge.color.getHex() !== EDGE_ON_BODY_DARK) { mats.edge.color.setHex(EDGE_ON_BODY_DARK); mats.edge.needsUpdate = true; }
+    needsRender = true;
+  }
   // setViewportTheme('dark' | 'light'): idempotent; UI.setTheme (ui-app.js) calls it after switching the stylesheet.
   function setViewportTheme(name) {
     name = name === 'dark' ? 'dark' : 'light';
-    var c = THEME_COLORS[name];
-    Object.keys(c).forEach(function (k) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; });
     viewportTheme = name;
+    applyLinePalette();
     if (UI) UI.viewportTheme = name;  // UI is still undefined during the boot call below; the export picks the value up
+    if (UI && UI.drawTriad) drawTriad();
     if (App.model) render();          // before boot the frame loop is not running and the canvas has no size yet
     return name;
   }
+
+  // r14/viewui14: View ▸ Background — 'gradient' (SolidWorks' default: light blue-grey at the top fading to white),
+  // 'plain' (the theme's plain colour) or 'dark'; remembered per browser in localStorage 'anvil.bg'. The background is
+  // CSS behind the transparent canvas, so a change costs no WebGL work. ('white' is the older name of 'plain'.)
+  var BACKGROUNDS = ['gradient', 'plain', 'dark'];
+  function setBackground(b, noSave) {
+    if (b === 'white') b = 'plain';
+    if (BACKGROUNDS.indexOf(b) < 0) b = 'gradient';
+    App.view.bg = b;
+    viewport.classList.remove('bg-white', 'bg-plain', 'bg-dark');
+    if (b !== 'gradient') viewport.classList.add('bg-' + b);
+    if (!noSave) { try { localStorage.setItem('anvil.bg', b); } catch (e) { } }
+    applyLinePalette();
+    if (UI && UI.drawTriad) drawTriad();
+    return b;
+  }
+
+  // r14/viewui14: cheap edge darkening — faces that turn away from the viewer shade a little darker towards their
+  // silhouette, so rounds, holes and bosses read with depth like SolidWorks' default appearance (one multiply in the
+  // fragment shader; no extra pass, so orbit cost is unchanged).
+  mats.part.onBeforeCompile = function (sh) {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <dithering_fragment>',
+      'gl_FragColor.rgb *= mix(0.8, 1.0, smoothstep(0.04, 0.6, abs(normal.z)));\n#include <dithering_fragment>');
+  };
+  mats.part.customProgramCacheKey = function () { return 'anvil-part-r14'; };
   // The materials exist before ui-app.js boots, so a stored dark theme is applied here as well (UI.setTheme repeats it).
   (function () {
     var stored = null;
     try { stored = localStorage.getItem('anvil.theme'); } catch (e) { }
     if (stored === 'dark') setViewportTheme('dark');
+    var bg = null;
+    try { bg = localStorage.getItem('anvil.bg'); } catch (e) { }
+    setBackground(bg || 'gradient', true);
   })();
 
   // ------------------------------------------------------------------ camera model
@@ -547,6 +595,7 @@ var UI = (function () {
       visTris = map;
     }
     bodyMesh = new THREE.Mesh(g, App.view.style === 'hlr' || App.view.style === 'hlv' ? mats.hlr : mats.part);
+    bodyMesh.renderOrder = -1;   // r14/viewui14: before every line, so the depth-only HLR occluder hides the hidden ones in any draw order
     groups.body.add(bodyMesh);
     edgeLines = new THREE.LineSegments(buildEdgeGeometry(m), mats.edge);
     groups.edges.add(edgeLines);
@@ -1075,6 +1124,7 @@ var UI = (function () {
     if (silLines) silLines.visible = s !== 'shaded';
     mats.part.color.set(App.model.color || '#a8adb6');
     applyBodyColors();
+    applyLinePalette();   // r14/viewui14: edges dark on a painted body, light on a dark background otherwise
     var planes = App.view.section ? [App.view.section.plane] : [];
     needsRender = true;
     [mats.part, mats.hlr, mats.edge, mats.hover, mats.sel, silMat].forEach(function (mm) { mm.clippingPlanes = planes; mm.needsUpdate = true; });
@@ -1246,7 +1296,7 @@ var UI = (function () {
   function featureFamily(id) { return [id]; }
 
   var edgeHoverMat = lineMat(new THREE.LineBasicMaterial({ color: 0xff8c1a, depthTest: false }), LINE_W.edgeHover);   // r13/lines13: thick
-  var edgeSelMat = lineMat(new THREE.LineBasicMaterial({ color: 0x14a34a, depthTest: false }), LINE_W.edgeSel);
+  var edgeSelMat = lineMat(new THREE.LineBasicMaterial({ color: 0x1f6fe8, depthTest: false }), LINE_W.edgeSel);   // r14/viewui14: blue (was green)
   function pushPolyline(arr, pts) {
     for (var i = 0; i + 1 < pts.length; i++) arr.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
   }
@@ -1298,7 +1348,7 @@ var UI = (function () {
     groups.planes.children.forEach(function (pm) {
       if (pm.userData.face) {
         var ref = pm.userData.ref;
-        // r5/select5: a selected plane is green like other selections, a hovered one orange like other pre-highlights
+        // r5/select5: a selected plane is blue (r14) like other selections, a hovered one orange like other pre-highlights
         var selOn = App.sel && App.sel.kind === 'plane' && App.sel.ref === ref, hovOn = App.hover && App.hover.kind === 'plane' && App.hover.ref === ref;
         pm.material = selOn ? mats.planeFaceHi : hovOn ? (mats.planeFaceHover || mats.planeFaceHi) : mats.planeFace;
       }
@@ -1665,23 +1715,243 @@ var UI = (function () {
   }
 
   // ------------------------------------------------------------------ triad
+  // r14/viewui14: the triad is live as in SolidWorks. Hover over an axis lights it up (thicker, with a ring round its
+  // letter); a click turns the view to look along it (X = Right, Y = Top, Z = Front, zoomed to fit), and a second click
+  // on the same axis looks from the opposite side. Shift + click turns the view 90° about that axis, Ctrl + Shift + click
+  // -90°. Only the axes take the mouse: a press anywhere else on the triad goes to the graphics area as before.
   var triadCanvas = $('triad'), tctx = triadCanvas.getContext('2d');
+  var triadState = { items: [], hover: -1, basis: null };
+  var TRIAD_AXES = [[[1, 0, 0], '#d9453b', 'X'], [[0, 1, 0], '#3fa34d', 'Y'], [[0, 0, 1], '#2d7dd2', 'Z']];
   function drawTriad(right, up, dir) {
+    if (right) triadState.basis = [right, up, dir];
+    else if (triadState.basis && viewAnim) { right = triadState.basis[0]; up = triadState.basis[1]; dir = triadState.basis[2]; }
     right = right || cam.right; up = up || cam.up; dir = dir || cam.dir;
     var w = triadCanvas.width, h = triadCanvas.height, c = [w / 2, h / 2 + 8], L = w * 0.34;
     tctx.clearRect(0, 0, w, h);
-    var axes = [[[1, 0, 0], '#d9453b', 'X'], [[0, 1, 0], '#3fa34d', 'Y'], [[0, 0, 1], '#2d7dd2', 'Z']];
-    var items = axes.map(function (a) {
+    var items = TRIAD_AXES.map(function (a, i) {
       var v = new THREE.Vector3(a[0][0], a[0][1], a[0][2]);
-      return { x: v.dot(right), y: v.dot(up), z: v.dot(dir), color: a[1], label: a[2] };
+      return { axis: i, x: v.dot(right), y: v.dot(up), z: v.dot(dir), color: a[1], label: a[2] };
     }).sort(function (p, q) { return p.z - q.z; });
-    tctx.lineWidth = 4; tctx.lineCap = 'round'; tctx.font = '600 22px Segoe UI, sans-serif'; tctx.textAlign = 'center'; tctx.textBaseline = 'middle';
+    var dark = darkViewport();
+    tctx.lineCap = 'round'; tctx.lineJoin = 'round'; tctx.font = '600 22px Segoe UI, sans-serif'; tctx.textAlign = 'center'; tctx.textBaseline = 'middle';
+    // a small ball at the origin, like SolidWorks' triad
+    tctx.fillStyle = dark ? '#9aa3ad' : '#6b7480'; tctx.beginPath(); tctx.arc(c[0], c[1], 4, 0, Math.PI * 2); tctx.fill();
+    triadState.items = [];
     items.forEach(function (it) {
-      var ex = c[0] + it.x * L, ey = c[1] - it.y * L;
+      var hot = it.axis === triadState.hover;
+      var ex = c[0] + it.x * L, ey = c[1] - it.y * L, lx = c[0] + it.x * (L + 18), ly = c[1] - it.y * (L + 18);
+      if (hot) { tctx.fillStyle = dark ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.9)'; tctx.beginPath(); tctx.arc(lx, ly, 17, 0, Math.PI * 2); tctx.fill(); }
+      tctx.lineWidth = hot ? 7 : 4;
       tctx.strokeStyle = it.color; tctx.beginPath(); tctx.moveTo(c[0], c[1]); tctx.lineTo(ex, ey); tctx.stroke();
-      tctx.fillStyle = it.color; tctx.fillText(it.label, c[0] + it.x * (L + 18), c[1] - it.y * (L + 18));
+      // arrow head
+      var len = Math.hypot(ex - c[0], ey - c[1]);
+      if (len > 14) {
+        var ux = (ex - c[0]) / len, uy = (ey - c[1]) / len, hs = hot ? 13 : 10;
+        tctx.fillStyle = it.color; tctx.beginPath(); tctx.moveTo(ex + ux * 4, ey + uy * 4);
+        tctx.lineTo(ex - ux * hs - uy * hs * 0.5, ey - uy * hs + ux * hs * 0.5); tctx.lineTo(ex - ux * hs + uy * hs * 0.5, ey - uy * hs - ux * hs * 0.5); tctx.closePath(); tctx.fill();
+      }
+      if (hot) { tctx.strokeStyle = it.color; tctx.lineWidth = 2.5; tctx.beginPath(); tctx.arc(lx, ly, 15, 0, Math.PI * 2); tctx.stroke(); }
+      tctx.fillStyle = it.color; tctx.fillText(it.label, lx, ly);
+      triadState.items.push({ axis: it.axis, z: it.z, a: c, b: [ex, ey], l: [lx, ly] });
     });
   }
+  // the axis under a point of the triad canvas (CSS px from its top left), or -1; the one nearest the viewer wins
+  function triadAxisAt(px, py) {
+    var k = triadCanvas.width / Math.max(1, triadCanvas.clientWidth || 96), p = [px * k, py * k], best = -1, bestZ = -Infinity;
+    triadState.items.forEach(function (it) {
+      // the shaft (when it is not seen end-on) or the letter
+      var shaft = Math.hypot(it.b[0] - it.a[0], it.b[1] - it.a[1]) > 12 ? distToSegment(p, [it.a[0] + (it.b[0] - it.a[0]) * 0.25, it.a[1] + (it.b[1] - it.a[1]) * 0.25], it.b) : Infinity;
+      var d = Math.min(shaft, Math.hypot(p[0] - it.l[0], p[1] - it.l[1]) - 8);
+      if (d < 12 && it.z > bestZ) { best = it.axis; bestZ = it.z; }
+    });
+    return best;
+  }
+  function setTriadHover(i) {
+    if (i === triadState.hover) return;
+    triadState.hover = i;
+    triadCanvas.style.cursor = i >= 0 ? 'pointer' : '';
+    triadCanvas.title = i >= 0 ? 'View along ' + 'XYZ'[i] + ' (click again: the opposite side). Shift+click: rotate 90° about ' + 'XYZ'[i] : '';
+    drawTriad();
+  }
+  // Orient the view to look along world direction d (towards the viewer) with up u, glide there and zoom to fit.
+  function orientView(d, u, fit) {
+    var from = viewPose();
+    settleViewAnimation(); zoomMomentum.pending = 0;
+    pushViewHistory();
+    cam.dir.set(d[0], d[1], d[2]).normalize(); cam.up.set(u[0], u[1], u[2]);
+    applyCamera();
+    if (fit !== false) fitCam(modelBounds());
+    animateViewFrom(from);
+  }
+  // the up vector for looking along d: world Y unless d is (anti)parallel to it, then -Z / +Z as for Top / Bottom
+  function upFor(d) {
+    var n = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+    if (Math.abs(n.y) > 0.999) return n.y > 0 ? [0, 0, -1] : [0, 0, 1];
+    return [0, 1, 0];
+  }
+  var TRIAD_VIEWS = [['Right', 'Left'], ['Top', 'Bottom'], ['Front', 'Back']];
+  // UI.triadClick(axis 0 | 1 | 2, { shiftKey, ctrlKey }) -> the view name, or 'rotate'
+  function triadClick(axis, ev) {
+    var e = [0, 0, 0]; e[axis] = 1;
+    if (ev && ev.shiftKey) {
+      // rotate 90° about the world axis (Ctrl + Shift: the other way), about the model's centre
+      var from = viewPose();
+      settleViewAnimation(); zoomMomentum.pending = 0;
+      pushViewHistory();
+      var q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(e[0], e[1], e[2]), (ev.ctrlKey ? -1 : 1) * Math.PI / 2);
+      var pivot = rotatePivot(), off = pivot ? cam.target.clone().sub(pivot).applyQuaternion(q) : null;
+      cam.dir.applyQuaternion(q).normalize(); cam.up.applyQuaternion(q);
+      if (off) cam.target.copy(pivot).add(off);
+      applyCamera();
+      animateViewFrom(from);
+      return 'rotate';
+    }
+    var name = TRIAD_VIEWS[axis][cam.dir.getComponent(axis) > 0.999 ? 1 : 0];
+    setView(name);
+    return name;
+  }
+  function triadLocal(ev) { var r = triadCanvas.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  triadCanvas.addEventListener('mousemove', function (ev) { if (!ev.buttons) { var p = triadLocal(ev); setTriadHover(triadAxisAt(p[0], p[1])); } });
+  triadCanvas.addEventListener('mouseleave', function () { setTriadHover(-1); });
+  triadCanvas.addEventListener('mousedown', function (ev) {
+    if (ev.button !== 0) return;
+    var p = triadLocal(ev), a = triadAxisAt(p[0], p[1]);
+    if (a < 0) return;   // not on an axis: the graphics area takes the press (rotate, box select...)
+    ev.stopPropagation(); ev.preventDefault();
+    triadClick(a, ev);
+  });
+
+  // ------------------------------------------------------------------ View Selector (r14/viewui14)
+  // SolidWorks' View Selector: Space (or the heads-up View Orientation button) shows a cube in the middle of the graphics
+  // area, turned like the model. Each face is split 3 × 3: the middle picks the face's standard view (Front, Top...),
+  // the strips the edge views between two faces and the corners the isometric views of the eight corners. The region
+  // under the mouse lights up orange; a click glides the view there and zooms to fit, and the cube goes away. Esc, Space
+  // again or a press anywhere else closes it. A 2D canvas (an orthographic projection of the 26 regions), drawn only
+  // while it is shown, so it costs nothing otherwise; it follows the view while a transition or an orbit runs.
+  var vsCanvas = el('canvas', { id: 'view-selector', 'aria-label': 'View Selector' });
+  vsCanvas.hidden = true;
+  viewport.appendChild(vsCanvas);
+  var vsCtx = vsCanvas.getContext('2d');
+  var vs = { shown: false, hover: null, cells: [], size: 0 };
+  var VS_FACE_NAMES = { '1,0,0': 'Right', '-1,0,0': 'Left', '0,1,0': 'Top', '0,-1,0': 'Bottom', '0,0,1': 'Front', '0,0,-1': 'Back' };
+  // text axes (right, up) for each face's name, so it reads upright in that face's standard view
+  var VS_TEXT = { '1,0,0': [[0, 0, -1], [0, 1, 0]], '-1,0,0': [[0, 0, 1], [0, 1, 0]], '0,1,0': [[1, 0, 0], [0, 0, -1]], '0,-1,0': [[1, 0, 0], [0, 0, 1]], '0,0,1': [[1, 0, 0], [0, 1, 0]], '0,0,-1': [[-1, 0, 0], [0, 1, 0]] };
+  var VS_B = [-1, -0.56, 0.56, 1];   // cell bounds across a face (the edge and corner strips are 0.44 of 2 wide)
+  var vsFaces = (function () {
+    var out = [];
+    for (var k = 0; k < 3; k++) for (var s = -1; s <= 1; s += 2) {
+      var u = (k + 1) % 3, v = (k + 2) % 3, cells = [];
+      for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) {
+        var d = [0, 0, 0]; d[k] = s; d[u] = i - 1; d[v] = j - 1;
+        var q = [[VS_B[i], VS_B[j]], [VS_B[i + 1], VS_B[j]], [VS_B[i + 1], VS_B[j + 1]], [VS_B[i], VS_B[j + 1]]].map(function (ab) { var p = [0, 0, 0]; p[k] = s; p[u] = ab[0]; p[v] = ab[1]; return p; });
+        cells.push({ dir: d, id: d.join(','), quad: q });
+      }
+      var n = [0, 0, 0]; n[k] = s;
+      out.push({ n: n, id: n.join(','), cells: cells });
+    }
+    return out;
+  })();
+  function vsBasis() { return triadState.basis && viewAnim ? triadState.basis : [cam.right, cam.up, cam.dir]; }
+  function drawViewSelector() {
+    if (!vs.shown) return;
+    var dpr = window.devicePixelRatio || 1, S = Math.round(Math.max(170, Math.min(280, Math.min(size.w, size.h) * 0.46)));
+    if (vs.size !== S || vsCanvas.width !== Math.round(S * dpr)) {
+      vs.size = S; vsCanvas.width = Math.round(S * dpr); vsCanvas.height = Math.round(S * dpr);
+      vsCanvas.style.width = S + 'px'; vsCanvas.style.height = S + 'px';
+    }
+    var b = vsBasis(), R = b[0], U = b[1], D = b[2], half = S / 2, r = S * 0.285;   // cube half-size in px (its diagonal fits)
+    function P(p) { return [half + (p[0] * R.x + p[1] * R.y + p[2] * R.z) * r, half - (p[0] * U.x + p[1] * U.y + p[2] * U.z) * r]; }
+    var g = vsCtx, dark = darkViewport();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, S, S);
+    vs.cells = [];
+    var faces = vsFaces.map(function (f) { return { f: f, z: f.n[0] * D.x + f.n[1] * D.y + f.n[2] * D.z }; }).sort(function (a, c) { return a.z - c.z; });
+    faces.forEach(function (fz) {
+      var f = fz.f, front = fz.z > 0.02;
+      f.cells.forEach(function (c) {
+        var q = c.quad.map(P);
+        g.beginPath(); g.moveTo(q[0][0], q[0][1]); for (var i = 1; i < 4; i++) g.lineTo(q[i][0], q[i][1]); g.closePath();
+        var hot = front && vs.hover === c.id;
+        g.fillStyle = hot ? 'rgba(255,154,46,0.85)' : !front ? (dark ? 'rgba(90,100,115,0.10)' : 'rgba(120,140,165,0.08)') : (dark ? 'rgba(70,80,95,0.62)' : 'rgba(236,241,247,0.68)');
+        g.fill();
+        g.strokeStyle = front ? (dark ? 'rgba(200,210,222,0.55)' : 'rgba(70,88,110,0.45)') : (dark ? 'rgba(200,210,222,0.18)' : 'rgba(70,88,110,0.16)');
+        g.lineWidth = 1; g.stroke();
+        if (front) vs.cells.push({ id: c.id, dir: c.dir, q: q, z: fz.z });
+      });
+      if (front && fz.z > 0.25) {
+        // the face's name in the face's own plane (an affine map, as the projection is orthographic)
+        var t = VS_TEXT[f.id], o = P(f.n), pr = P([f.n[0] + t[0][0], f.n[1] + t[0][1], f.n[2] + t[0][2]]), pu = P([f.n[0] + t[1][0], f.n[1] + t[1][1], f.n[2] + t[1][2]]);
+        var ax = (pr[0] - o[0]) / 100, ay = (pr[1] - o[1]) / 100, bx = (pu[0] - o[0]) / 100, by = (pu[1] - o[1]) / 100;
+        g.save();
+        g.setTransform(dpr * ax, dpr * ay, -dpr * bx, -dpr * by, dpr * o[0], dpr * o[1]);
+        g.globalAlpha = Math.min(1, (fz.z - 0.25) / 0.35);
+        g.fillStyle = vs.hover === f.id ? '#3b2200' : dark ? '#e6ebf1' : '#33404f';
+        g.font = '600 34px Segoe UI, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(VS_FACE_NAMES[f.id], 0, 0);
+        g.restore();
+      }
+    });
+  }
+  function vsPick(px, py) {
+    var hit = null;
+    vs.cells.forEach(function (c) {
+      var inside = true, sgn = 0;
+      for (var i = 0; i < 4 && inside; i++) {
+        var a = c.q[i], b = c.q[(i + 1) % 4], cr = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
+        if (Math.abs(cr) < 1e-9) continue;
+        if (!sgn) sgn = cr > 0 ? 1 : -1; else if ((cr > 0 ? 1 : -1) !== sgn) inside = false;
+      }
+      if (inside && (!hit || c.z > hit.z)) hit = c;
+    });
+    return hit;
+  }
+  function showViewSelector() {
+    vs.shown = true; vs.hover = null; vsCanvas.hidden = false;
+    drawViewSelector();
+    return true;
+  }
+  function hideViewSelector() {
+    if (!vs.shown) return false;
+    vs.shown = false; vs.hover = null; vsCanvas.hidden = true;
+    return true;
+  }
+  function viewSelectorShown() { return vs.shown; }
+  // UI.viewSelectorPick(id): orient to a region by id ('1,1,1' the top front right corner, '0,0,1' Front, '1,0,1' the
+  // front-right edge); closes the selector. False for an id that is not a region.
+  function viewSelectorPick(id) {
+    var d = String(id).split(',').map(Number);
+    if (d.length !== 3 || d.some(function (x) { return isNaN(x) || Math.abs(x) > 1; }) || (!d[0] && !d[1] && !d[2])) return false;
+    hideViewSelector();
+    orientView(d, upFor(d));
+    return true;
+  }
+  function vsLocal(ev) { var r = vsCanvas.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function vsTitle(h) {
+    if (!h) return '';
+    var n = h.dir.filter(function (x) { return x; }).length;
+    return VS_FACE_NAMES[h.id] || (n === 3 ? 'Corner (isometric)' : 'Edge');
+  }
+  vsCanvas.addEventListener('mousemove', function (ev) {
+    ev.stopPropagation();   // no pre-highlight of the model under the cube
+    if (ev.buttons) return;
+    var p = vsLocal(ev), h = vsPick(p[0], p[1]), id = h ? h.id : null;
+    vsCanvas.style.cursor = h ? 'pointer' : '';
+    if (id !== vs.hover) { vs.hover = id; vsCanvas.title = vsTitle(h); drawViewSelector(); }
+  });
+  vsCanvas.addEventListener('mouseleave', function () { if (vs.hover) { vs.hover = null; drawViewSelector(); } });
+  vsCanvas.addEventListener('mousedown', function (ev) {
+    var p = vsLocal(ev), h = ev.button === 0 ? vsPick(p[0], p[1]) : null;
+    if (!h) { hideViewSelector(); return; }   // off the cube: closes it, and the graphics area takes the press
+    ev.stopPropagation(); ev.preventDefault();
+    viewSelectorPick(h.id);
+  });
+  // a press anywhere else closes it (the View Orientation menu and the heads-up toolbar leave it open)
+  document.addEventListener('mousedown', function (ev) {
+    if (!vs.shown || ev.target === vsCanvas) return;
+    if (ev.target.closest && ev.target.closest('.menu, #hud')) return;
+    hideViewSelector();
+  }, true);
+  window.addEventListener('keydown', function (ev) { if (vs.shown && ev.key === 'Escape') hideViewSelector(); }, true);
 
   // ------------------------------------------------------------------ render loop
   // The frame loop draws only when something changed: a camera move, a view transition or eased zoom in progress, an
@@ -1755,6 +2025,7 @@ var UI = (function () {
     // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
     poseCamera(cam.target, cam.dir, cam.up, cam.scale);
     drawTriad(right, up, dir);
+    if (vs.shown) drawViewSelector();   // r14/viewui14: the View Selector turns with the view
     if (UI.drawDims && App.dimsStale && !viewAnim) { App.dimsStale = false; UI.drawDims(); }
     needsRender = false;
     lastRenderAt = performance.now();
@@ -2440,6 +2711,10 @@ var UI = (function () {
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
     rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
+    // r14/viewui14: background, triad, View Selector
+    setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,
+    showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick,
+    viewSelectorRegions: function () { return vs.cells.map(function (c) { return { id: c.id, center: [(c.q[0][0] + c.q[2][0]) / 2, (c.q[0][1] + c.q[2][1]) / 2] }; }); },
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,

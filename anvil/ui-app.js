@@ -182,7 +182,7 @@
     body.appendChild(el('div', { class: 'row' }, [el('span', { text: 'Custom: ' }), inp]));
     body.appendChild(el('h3', { text: 'Scene' }));
     var g = el('div', { class: 'views' });
-    [['gradient', 'Studio gradient'], ['white', 'Plain white'], ['dark', 'Dark room']].forEach(function (s) { g.appendChild(el('button', { text: s[1], onclick: function () { UI.setBg(s[0]); } })); });
+    [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].forEach(function (s) { g.appendChild(el('button', { text: s[1], onclick: function () { UI.setBg(s[0]); } })); });
     body.appendChild(g);
   }
   function tpProps(body) {
