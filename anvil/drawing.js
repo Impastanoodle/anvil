@@ -513,6 +513,67 @@ var Drawing = (function () {
     return lines.filter(function (l) { return Math.hypot(l[2] - l[0], l[3] - l[1]) > 1e-9; }).concat(bridges);
   }
 
+  // joinCollinear(lines, G, diag) (r11/hatch11): pieces of one body on one straight line (direction within 1e-6 rad,
+  // offset within diag · 1e-6) that overlap or leave a gap under G are one line. mergeCollinear joins exactly touching
+  // pieces only; what a cut cylinder's facets leave on OpenCascade (a section's cap edge in three pieces 0.002 mm
+  // apart, or overlapping once closeSmallGaps moved their ends: Gear train SECTION A-A 26 lines, Anvil 21) is one edge.
+  // The longest piece of a run is kept (with its other fields) and stretched over the run.
+  function joinCollinear(lines, G, diag) {
+    if (!(G > 0) || lines.length < 2 || lines.length > 20000) return lines;
+    var angT = 1e-6, cT = diag * 1e-6 + 1e-12, recs = [], drop = {}, any = false;
+    lines.forEach(function (l, i) {
+      var dx = l[2] - l[0], dy = l[3] - l[1], L = Math.hypot(dx, dy);
+      if (!(L > 1e-12)) return;
+      var a = Math.atan2(dy, dx);
+      if (a < 0) a += Math.PI;
+      if (a >= Math.PI - angT) a -= Math.PI;
+      recs.push({ i: i, l: l, L: L, a: a });
+    });
+    // sorted by key, split where consecutive keys are more than tol apart
+    function chains(list, key, tol) {
+      list.sort(function (x, y) { return x[key] - y[key]; });
+      var out = [], cur = [];
+      list.forEach(function (r) { if (cur.length && r[key] - cur[cur.length - 1][key] > tol) { out.push(cur); cur = []; } cur.push(r); });
+      if (cur.length) out.push(cur);
+      return out;
+    }
+    chains(recs, 'a', angT).forEach(function (ga) {
+      if (ga.length < 2) return;
+      var n = [-Math.sin(ga[0].a), Math.cos(ga[0].a)];
+      ga.forEach(function (r) { r.c = n[0] * (r.l[0] + r.l[2]) / 2 + n[1] * (r.l[1] + r.l[3]) / 2; });
+      chains(ga, 'c', cT).forEach(function (gc) {
+        if (gc.length < 2) return;
+        var byBody = {};
+        gc.forEach(function (r) { var b = r.l[4] || 0; (byBody[b] || (byBody[b] = [])).push(r); });
+        Object.keys(byBody).forEach(function (b) {
+          var g = byBody[b];
+          if (g.length < 2) return;
+          var lead = g.reduce(function (x, y) { return y.L > x.L ? y : x; }), ll = lead.l;
+          var d = [(ll[2] - ll[0]) / lead.L, (ll[3] - ll[1]) / lead.L], o = [ll[0], ll[1]];
+          g.forEach(function (r) {
+            var t0 = (r.l[0] - o[0]) * d[0] + (r.l[1] - o[1]) * d[1], t1 = (r.l[2] - o[0]) * d[0] + (r.l[3] - o[1]) * d[1];
+            r.t0 = Math.min(t0, t1); r.t1 = Math.max(t0, t1);
+          });
+          g.sort(function (x, y) { return x.t0 - y.t0; });
+          var run = [g[0]], hi = g[0].t1;
+          var flush = function () {
+            if (run.length < 2) return;
+            var keep = run.reduce(function (x, y) { return y.L > x.L ? y : x; }), lo = run[0].t0, k = keep.l;
+            k[0] = o[0] + d[0] * lo; k[1] = o[1] + d[1] * lo; k[2] = o[0] + d[0] * hi; k[3] = o[1] + d[1] * hi;
+            run.forEach(function (r) { if (r !== keep) drop[r.i] = 1; });
+            any = true;
+          };
+          for (var j = 1; j < g.length; j++) {
+            if (g[j].t0 <= hi + G) { run.push(g[j]); if (g[j].t1 > hi) hi = g[j].t1; }
+            else { flush(); run = [g[j]]; hi = g[j].t1; }
+          }
+          flush();
+        });
+      });
+    });
+    return any ? lines.filter(function (l, i) { return !drop[i]; }) : lines;
+  }
+
   // ------------------------------------------------------------------ hidden-line removal
   // projectView(mesh, orientName, opts) -> { orient, lines: { visible, hidden }, circles: { visible, hidden }, bounds, stats }
   // lines are [u1, v1, u2, v2] in model units. Candidate edges: sharp edges (faces meeting at more than 22°, open or
@@ -1485,6 +1546,7 @@ var Drawing = (function () {
     // (again: closeEnds / closeFreeEnds can carry a piece back along a curve, the Chamfered block's corner arcs' ends)
     if (CV && !opts._keepOnCurves) res.lines.visible = dropOnCurves(res.lines.visible, res.arcs.visible, res.circles.visible, res.ellipses.visible);
     if (!opts._keepGaps) res.lines.visible = closeSmallGaps(res.lines.visible, res.ellipses.visible, res.arcs.visible, res.circles.visible, 0.6 * chordTol());
+    if (!opts._keepGaps) { res.lines.visible = joinCollinear(res.lines.visible, 0.6 * chordTol(), diag); res.lines.hidden = joinCollinear(res.lines.hidden, 0.6 * chordTol(), diag); }
     // tangent edges (opts.tangent 'visible' | 'font'): visible pieces only, joined, closed chains as circles; pieces
     // of true circles as exact circles, arcs and ellipses
     var tex = { circles: [], arcs: [], ellipses: [] };
@@ -2042,13 +2104,19 @@ var Drawing = (function () {
     else if (w <= lo[0] + diag * 1e-9) out = { mesh: K.meshFromBody(null), caps: [], area: 0 };      // nothing behind it
     else {
       var box = boxSolid([e, u, v], [lo[0] - m, lo[1] - m, lo[2] - m], [w, hi[1] + m, hi[2] + m]);
+      // cut per body and, in an assembly, per part (polygon.part: each part of a sub-assembly is its own solid, so its
+      // cut face is its own face and gets its own hatch, as in SolidWorks; r11/hatch11)
       var byBody = {}, order = [];
       mesh.faces.forEach(function (f) {
-        (f.polys || []).forEach(function (pg) { var b = pg.body || 0; if (!byBody[b]) { byBody[b] = []; order.push(b); } byBody[b].push(pg.clone()); });
+        (f.polys || []).forEach(function (pg) {
+          var b = pg.body || 0, pt = pg.part != null ? pg.part : f.part, k = b + '|' + (pt != null ? pt : '');
+          if (!byBody[k]) { byBody[k] = []; order.push({ k: k, b: b, part: pt }); }
+          var c = pg.clone(); if (pt != null) c.part = pt; byBody[k].push(c);
+        });
       });
       var polys = [];
-      order.forEach(function (b) {
-        CSG.fromPolygons(byBody[b]).intersect(box).polygons.forEach(function (pg) { pg.body = b; polys.push(pg); });
+      order.forEach(function (g) {
+        CSG.fromPolygons(byBody[g.k]).intersect(box).polygons.forEach(function (pg) { pg.body = g.b; if (g.part != null) pg.part = g.part; polys.push(pg); });
       });
       var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
       sm.faces.forEach(function (f, fi) {
@@ -2076,14 +2144,20 @@ var Drawing = (function () {
     }
     return CSG.fromPolygons(polys);
   }
-  // the cut faces of a section as closed loops in a view frame: [{ loops: [[[u, v]…]…], body }]
+  // the cut faces of a section as closed loops in a view frame: [{ loops: [[[u, v]…]…], body, part }] (part: the
+  // assembly part tag, a part inside a sub-assembly, or undefined)
   function capLoops(S, F) {
-    return S.caps.map(function (fi) {
-      var o = K.faceOutline(S.mesh, fi);
-      return { body: S.mesh.faces[fi].body || 0, loops: o ? o.loops.map(function (loop) {
+    var out = S.caps.map(function (fi) {
+      var o = K.faceOutline(S.mesh, fi), f = S.mesh.faces[fi];
+      var c = { body: f.body || 0, loops: o ? o.loops.map(function (loop) {
         return loop.map(function (p2) { var p = K.to3D(o.plane, p2[0], p2[1]); return [V.dot(p, F.u), V.dot(p, F.v)]; });
       }) : [] };
+      if (f.part != null) c.part = f.part;
+      return c;
     });
+    var st = hatchAssign(out);
+    out.forEach(function (c, i) { c.style = st[i]; });
+    return out;
   }
   // ANSI31 hatching: parallel lines at `ang` degrees, `sp` apart (paper units, anchored at the sheet origin so every
   // view's pattern lines up), clipped to the region inside an odd number of loops. Returns [[x1, y1, x2, y2]].
@@ -2115,6 +2189,56 @@ var Drawing = (function () {
   function hatchStyle(body) {
     var b = Math.max(0, body | 0);
     return { angle: HATCH_ANGLES[b % HATCH_ANGLES.length], spacing: 1 + 0.6 * Math.floor(b / HATCH_ANGLES.length) };
+  }
+  // hatchAssign(caps) -> [{ angle, spacing, index }] per cap (r11/hatch11): one style per solid (the assembly part tag
+  // when there is one, so every part inside a sub-assembly has its own hatch; else the body), chosen in solid order so
+  // that cut faces that touch (or nearly: within 2% of the section's size, a pin in its bore, a hinge arm 1 mm off its
+  // leaf) look different: the style furthest in angle from every touching neighbour's (up to 90°; a different spacing adds
+  // 20°), then one no other solid uses yet, then the first in hatchStyle's order. With nothing touching that gives
+  // hatchStyle(0), hatchStyle(1), … as before; a second pin in a plate gets 135° wider apart, not 30° beside 45°.
+  function hatchAssign(caps) {
+    var keys = [], byKey = {}, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    caps.forEach(function (c) {
+      var k = c.part != null ? c.part : c.body;
+      if (!byKey[k]) { byKey[k] = { k: k, loops: [], b: [Infinity, Infinity, -Infinity, -Infinity] }; keys.push(byKey[k]); }
+      var g = byKey[k];
+      c.loops.forEach(function (l) {
+        g.loops.push(l);
+        l.forEach(function (p) {
+          if (p[0] < g.b[0]) g.b[0] = p[0]; if (p[1] < g.b[1]) g.b[1] = p[1]; if (p[0] > g.b[2]) g.b[2] = p[0]; if (p[1] > g.b[3]) g.b[3] = p[1];
+          if (p[0] < lo[0]) lo[0] = p[0]; if (p[1] < lo[1]) lo[1] = p[1]; if (p[0] > hi[0]) hi[0] = p[0]; if (p[1] > hi[1]) hi[1] = p[1];
+        });
+      });
+    });
+    keys.sort(function (x, y) { return x.k - y.k; });
+    var tol = 0.02 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1]);
+    function segD(p, a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
+    function near(A, B) {
+      if (A.b[0] > B.b[2] + tol || B.b[0] > A.b[2] + tol || A.b[1] > B.b[3] + tol || B.b[1] > A.b[3] + tol) return false;
+      return [[A, B], [B, A]].some(function (pr) {
+        return pr[0].loops.some(function (la) {
+          return la.some(function (p) {
+            if (p[0] < pr[1].b[0] - tol || p[0] > pr[1].b[2] + tol || p[1] < pr[1].b[1] - tol || p[1] > pr[1].b[3] + tol) return false;
+            return pr[1].loops.some(function (lb) { for (var i = 0; i < lb.length; i++) if (segD(p, lb[i], lb[(i + 1) % lb.length]) <= tol) return true; return false; });
+          });
+        });
+      });
+    }
+    var used = {}, nCand = Math.max(18, keys.length + HATCH_ANGLES.length);
+    keys.forEach(function (g, gi) {
+      var nb = [];
+      for (var j = 0; j < gi; j++) if (near(g, keys[j])) nb.push(keys[j].style);
+      var best = -1, bs = -Infinity, bu = true;
+      for (var i = 0; i < nCand; i++) {
+        var s = hatchStyle(i), sc = 1000;
+        nb.forEach(function (t) { var d = Math.abs(s.angle - t.angle) % 180; d = Math.min(d, 180 - d); sc = Math.min(sc, 90, d + (Math.abs(s.spacing - t.spacing) > 1e-9 ? 20 : 0)); });
+        if (sc > bs + 1e-9 || (Math.abs(sc - bs) <= 1e-9 && bu && !used[i])) { best = i; bs = sc; bu = !!used[i]; }
+      }
+      used[best] = 1;
+      var st = hatchStyle(best); st.index = best;
+      g.style = st;
+    });
+    return caps.map(function (c) { return byKey[c.part != null ? c.part : c.body].style; });
   }
   // Area hatch patterns by material, as SolidWorks takes them from the material (the ANSI Y14.2 families of acad.pat),
   // in units of the base spacing: line families { da (degrees added to the hatch angle), offs (perpendicular offsets
@@ -2152,6 +2276,99 @@ var Drawing = (function () {
       });
     });
     return out;
+  }
+
+  // does a sheet primitive (line, circle, arc, filled arrow) cross the rectangle R = [x0, y0, x1, y1]? (r11/hatch11)
+  function primHitsRect(p, R) {
+    function inR(q) { return q[0] >= R[0] && q[0] <= R[2] && q[1] >= R[1] && q[1] <= R[3]; }
+    function segHits(a, b) {
+      if (inR(a) || inR(b)) return true;
+      if (Math.max(a[0], b[0]) < R[0] || Math.min(a[0], b[0]) > R[2] || Math.max(a[1], b[1]) < R[1] || Math.min(a[1], b[1]) > R[3]) return false;
+      var cs = [[R[0], R[1]], [R[2], R[1]], [R[2], R[3]], [R[0], R[3]]], s0 = null;
+      for (var i = 0; i < 4; i++) {   // the line crosses the box when the corners are not all on one side of it
+        var c = cs[i], sd = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        if (s0 === null) s0 = sd; else if ((sd > 0) !== (s0 > 0)) return true;
+      }
+      return false;
+    }
+    if (p.k === 'line') return segHits(p.a, p.b);
+    if (p.k === 'text') {
+      if (p.rot) return false;
+      var w = textWidth(p.text, p.h), x0 = p.anchor === 'middle' ? p.p[0] - w / 2 : p.anchor === 'end' ? p.p[0] - w : p.p[0];
+      return !(x0 > R[2] || x0 + w < R[0] || p.p[1] > R[3] || p.p[1] + p.h < R[1]);
+    }
+    if (p.k === 'fill') { for (var i = 0; i < p.pts.length; i++) if (segHits(p.pts[i], p.pts[(i + 1) % p.pts.length])) return true; return false; }
+    if (p.k === 'circle' || p.k === 'arc') {
+      var nx = Math.max(R[0], Math.min(p.c[0], R[2])), ny = Math.max(R[1], Math.min(p.c[1], R[3])), dmin = Math.hypot(nx - p.c[0], ny - p.c[1]);
+      var dmax = Math.max(Math.hypot(R[0] - p.c[0], R[1] - p.c[1]), Math.hypot(R[2] - p.c[0], R[1] - p.c[1]), Math.hypot(R[0] - p.c[0], R[3] - p.c[1]), Math.hypot(R[2] - p.c[0], R[3] - p.c[1]));
+      if (p.r < dmin || p.r > dmax) return false;
+      if (p.k === 'circle') return true;
+      // an arc: some of its points inside the box (sampled)
+      for (var j = 0; j <= 48; j++) { var t = (p.a0 + (p.a1 - p.a0) * j / 48) * Math.PI / 180; if (inR([p.c[0] + p.r * Math.cos(t), p.c[1] + p.r * Math.sin(t)])) return true; }
+      return false;
+    }
+    return false;
+  }
+  // the pieces of segment a-b outside rectangle R ([[a, b]…], 0-2 pieces), or null when it does not enter R
+  function segOutsideRect(a, b, R) {
+    var t0 = 0, t1 = 1, d = [b[0] - a[0], b[1] - a[1]];
+    var ps = [-d[0], d[0], -d[1], d[1]], qs = [a[0] - R[0], R[2] - a[0], a[1] - R[1], R[3] - a[1]];
+    for (var i = 0; i < 4; i++) {
+      if (ps[i] === 0) { if (qs[i] < 0) return null; continue; }
+      var t = qs[i] / ps[i];
+      if (ps[i] < 0) { if (t > t0) t0 = t; } else if (t < t1) t1 = t;
+    }
+    if (t1 - t0 <= 1e-9) return null;
+    function at(t) { return [a[0] + d[0] * t, a[1] + d[1] * t]; }
+    var out = [];
+    if (t0 > 1e-9) out.push([a, at(t0)]);
+    if (t1 < 1 - 1e-9) out.push([at(t1), b]);
+    return out;
+  }
+  // snapHatch(segs, loops, circles) (r11/hatch11): a cut face's outline is the facets' polygon, but its round edges are
+  // drawn as exact circles / arcs, so hatch lines stopped on a chord fell short of a drawn rim (or ran past a drawn
+  // hole) by up to the chord's sagitta: a scalloped gap along every round boundary, plain at a detail's 4:1. A hatch
+  // end lying on a loop segment whose two ends are on one of `circles` ({ c, r }, same units) is moved along its line
+  // onto that circle. Segments are changed in place.
+  function snapHatch(segs, loops, circles) {
+    if (!segs.length || !circles.length) return segs;
+    var chords = [];
+    loops.forEach(function (l) {
+      for (var i = 0; i < l.length; i++) {
+        var a = l[i], b = l[(i + 1) % l.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (!(L > 0)) continue;
+        for (var j = 0; j < circles.length; j++) {
+          var C = circles[j], t = 1e-3 * C.r + 1e-9;
+          if (Math.abs(Math.hypot(a[0] - C.c[0], a[1] - C.c[1]) - C.r) <= t && Math.abs(Math.hypot(b[0] - C.c[0], b[1] - C.c[1]) - C.r) <= t && L < 1.5 * C.r) {
+            chords.push({ a: a, b: b, L: L, C: C, x0: Math.min(a[0], b[0]), x1: Math.max(a[0], b[0]), y0: Math.min(a[1], b[1]), y1: Math.max(a[1], b[1]) });
+            break;
+          }
+        }
+      }
+    });
+    if (!chords.length) return segs;
+    function onSeg(p, ch) {
+      var e = 1e-7 * (1 + Math.abs(p[0]) + Math.abs(p[1]));
+      if (p[0] < ch.x0 - e || p[0] > ch.x1 + e || p[1] < ch.y0 - e || p[1] > ch.y1 + e) return false;
+      return Math.abs((ch.b[0] - ch.a[0]) * (p[1] - ch.a[1]) - (ch.b[1] - ch.a[1]) * (p[0] - ch.a[0])) / ch.L <= e;
+    }
+    segs.forEach(function (s) {
+      if (!(Math.hypot(s[2] - s[0], s[3] - s[1]) > 0)) return;
+      [0, 2].forEach(function (o) {
+        var p = [s[o], s[o + 1]], q = [s[2 - o], s[3 - o]], L = Math.hypot(q[0] - p[0], q[1] - p[1]), d = [(q[0] - p[0]) / L, (q[1] - p[1]) / L];
+        for (var i = 0; i < chords.length; i++) {
+          var ch = chords[i];
+          if (!onSeg(p, ch)) continue;
+          var w = [p[0] - ch.C.c[0], p[1] - ch.C.c[1]], B = d[0] * w[0] + d[1] * w[1], D = B * B - (w[0] * w[0] + w[1] * w[1] - ch.C.r * ch.C.r);
+          if (D < 0) return;
+          var t1 = -B - Math.sqrt(D), t2 = -B + Math.sqrt(D), t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+          if (Math.abs(t) > ch.L || t >= L) return;   // (never past the line's other end)
+          s[o] = p[0] + d[0] * t; s[o + 1] = p[1] + d[1] * t;
+          return;
+        }
+      });
+    });
+    return segs;
   }
 
   // ------------------------------------------------------------------ detail views: the parent clipped to a circle
@@ -3201,14 +3418,19 @@ var Drawing = (function () {
       var layer = layerName(v, layers);
       var clip = ct.clip ? { c: toSheet(ct.clip.c), r: ct.clip.r * s } : null;
       // cut faces first, so the outlines are drawn over the hatching
-      var hatch = 0, hatches = [];
+      var hatch = 0, hatches = [], rims = null;
       (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap.body);
-        patternLines(loops, hs * hst.spacing, hst.angle, pat).forEach(function (h) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = cap.style || hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap.body);
+        // (hatch lines end on the drawn round edges, not on the facets' chords)
+        if (!rims) {
+          rims = [];
+          [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: toSheet(c.c), r: c.r * s }); }); });
+        }
+        snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims).forEach(function (h) {
           var q = clip ? clipSeg(h, clip.c, clip.r) : h;
-          if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body }); hatch++; }
+          if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body, part: cap.part }); hatch++; }
         });
-        hatches.push({ body: cap.body, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0, pattern: pat });
+        hatches.push({ body: cap.body, part: cap.part, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0, pattern: pat });
       });
       // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
       // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
@@ -3235,13 +3457,16 @@ var Drawing = (function () {
       ['visible', 'hidden'].forEach(function (st) { (pr.ellipses ? pr.ellipses[st] : []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, st)); }); });
       var p0 = toSheet([bd.umin, bd.vmin]), p1 = toSheet([bd.umax, bd.vmax]);
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
+      // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
+      var lb = box.y0;
+      doc.views.forEach(function (dv) { if (dv.parent === v.id && dv.kind === 'detail' && dv.detail) lb = Math.min(lb, toSheet(dv.detail.c)[1] - dv.detail.r * s); });
       if (v.kind === 'section') {
-        text([v.x, box.y0 - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
-        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
+        text([v.x, lb - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
+        if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
       } else if (v.kind === 'detail') {
-        text([(box.x0 + box.x1) / 2, box.y0 - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
-        text([(box.x0 + box.x1) / 2, box.y0 - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
-      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, box.y0 - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
+        text([(box.x0 + box.x1) / 2, lb - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
+        text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
+      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
         section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct });
     });
@@ -3274,8 +3499,39 @@ var Drawing = (function () {
       } else if (v.kind === 'detail') {
         var dc = pw.toSheet(v.detail.c), r = v.detail.r * pw.scale;
         prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick' });
-        var q = Math.SQRT1_2;
-        text([dc[0] + (r + 2 * k) * q, dc[1] + (r + 2 * k) * q], 5 * k, v.label, 'start', L);
+        // the letter goes just outside the circle where it covers the least of the parent's linework and hatching
+        // (upper right first, then the other diagonals and sides), as SolidWorks keeps it readable (r11/hatch11)
+        var lh2 = 5 * k, lw = textWidth(v.label, lh2), pad = 0.6 * k, bestP = null, bestN = Infinity;
+        var own = prims.filter(function (p) { return p.layer === L || p.k === 'text'; });
+        // (a clear spot 2 mm further out beats one on the hatching; with none clear, the least covered beside the circle)
+        var clearP = null;
+        [0, 2].forEach(function (ex) { [45, 135, -45, -135, 90, 0, 180, -90].forEach(function (deg) {
+          if (clearP) return;
+          var th = deg * Math.PI / 180, cx = Math.cos(th), cy = Math.sin(th);
+          var dist = r + (1.5 + ex) * k + Math.abs(cx) * lw / 2 + Math.abs(cy) * lh2 / 2;
+          var cen = [dc[0] + cx * dist, dc[1] + cy * dist], R = [cen[0] - lw / 2 - pad, cen[1] - lh2 / 2 - pad, cen[0] + lw / 2 + pad, cen[1] + lh2 / 2 + pad];
+          var n = 0;
+          own.forEach(function (p) { if (primHitsRect(p, p.k === 'text' ? [R[0] - 3 * k, R[1] - 3 * k, R[2] + 3 * k, R[3] + 3 * k] : R)) n += p.k === 'text' ? 10 : 1; });   // (by a label: worst, it would read as part of it)
+          if (!n) clearP = cen;
+          else if (!ex && n < bestN) { bestN = n; bestP = cen; }
+        }); });
+        bestP = clearP || bestP;
+        text([bestP[0], bestP[1] - lh2 / 2], lh2, v.label, 'middle', L);
+        // on hatching, the hatch stops round the letter (a clear island, as a hatch keeps text readable)
+        if (!clearP) {
+          var isl = [bestP[0] - lw / 2 - pad, bestP[1] - lh2 / 2 - pad, bestP[0] + lw / 2 + pad, bestP[1] + lh2 / 2 + pad];
+          for (var pi = prims.length - 1; pi >= 0; pi--) {
+            var hp = prims[pi];
+            if (hp.k !== 'line' || hp.style !== 'hatch' || hp.layer !== L) continue;
+            var parts = segOutsideRect(hp.a, hp.b, isl);
+            if (!parts) continue;
+            var rep = parts.map(function (ab) { var q2 = {}; for (var kk in hp) q2[kk] = hp[kk]; q2.a = ab[0]; q2.b = ab[1]; return q2; });
+            Array.prototype.splice.apply(prims, [pi, 1].concat(rep));
+            pw.hatch += rep.length - 1;
+            var he = (pw.hatches || []).filter(function (h) { return h.body === hp.body && h.part === hp.part; })[0];
+            if (he) he.lines += rep.length - 1;
+          }
+        }
       }
     });
     // Bill of Materials (assemblies): a table anchored to the sheet; balloons on the views that asked for them
@@ -4642,7 +4898,7 @@ var Drawing = (function () {
     autoDims: autoDims, dimText: dimText, fmtDim: fmtDim, compute: compute, toSVG: toSVG, svgParts: svgParts, toDXF: toDXF, toPDF: toPDF,
     frameOf: frameOf, viewFrame: viewFrame, projectedFrame: projectedFrame, sectionFrame: sectionFrame, isOrthoFrame: isOrthoFrame,
     addProjectedView: addProjectedView, addSectionView: addSectionView, addDetailView: addDetailView, detailScale: detailScale, nextLabel: nextLabel,
-    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
+    sectionOf: sectionOf, hatchLines: hatchLines, hatchStyle: hatchStyle, hatchAssign: hatchAssign, joinCollinear: joinCollinear, snapHatch: snapHatch, hatchPattern: hatchPattern, patternLines: patternLines, HATCH_PATTERNS: Object.keys(HATCH_PATTERNS), clipProjection: clipProjection, reattachDim: reattachDim, deleteView: deleteView,
     bomRows: bomRows, bomBox: bomBox, partInfo: partInfo, autoBalloon: autoBalloon, deleteBalloons: deleteBalloons, balloonSpots: balloonSpots,
     BOM_ANCHORS: BOM_ANCHORS, BOM_COLS: BOM_COLS, BOM_TYPES: BOM_TYPES, bomType: bomType, bomColumns: bomColumns, bomColumnSpecs: bomColumnSpecs,
     TB_FIELDS: TB_FIELDS, titleBlock: titleBlock, titleText: titleText, titleFieldAt: titleFieldAt, bomPropertyNames: bomPropertyNames,
@@ -6478,8 +6734,25 @@ var Drawing = (function () {
   };
 
   // ------------------------------------------------------------------ automation: anvil.drawing
+  // the names of an assembly's part tags (polygon.part, numbered as Assembly.rebuild does: one per part, one per body of
+  // a multibody part, a sub-assembly's parts in its order): ['Base<1>', 'Hinge<1>/Leaf<1>', …] (r11/hatch11)
+  function partNames() {
+    var out = [];
+    function walk(model, build, prefix) {
+      (model.components || []).forEach(function (c) {
+        var pb = build && build.partBuilds && build.partBuilds[c.id], name = prefix + c.name;
+        if (!pb || !pb.body) return;
+        if (pb.assembly && pb.model) { walk(pb.model, pb, name + '/'); return; }
+        var n = 0;
+        (pb.body.polygons || []).forEach(function (p) { var t = p.part != null ? p.part : p.body || 0; if (t + 1 > n) n = t + 1; });
+        for (var i = 0; i < Math.max(1, n); i++) out.push(n > 1 ? name + ' body ' + (i + 1) : name);
+      });
+    }
+    if (isAsm() && App.build) walk(App.model, App.build, '');
+    return out;
+  }
   function summary() {
-    var dc = doc();
+    var dc = doc(), pnames = null;
     if (!dc) return null;
     if (D.active && D.renderQueued) render();   // a script reads the sheet as it is now, not a held / queued one
     if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); }
@@ -6491,7 +6764,7 @@ var Drawing = (function () {
           display: w.view.display, tangent: w.view.tangent || 'removed', x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
-          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, angle: h.angle, lines: h.lines, pattern: h.pattern }; }),
+          hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, part: h.part != null ? (pnames || (pnames = partNames()))[h.part] || null : null, angle: h.angle, spacing: +h.spacing.toFixed(4), lines: h.lines, pattern: h.pattern }; }),
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
       }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
