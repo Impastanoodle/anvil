@@ -64,7 +64,8 @@ var Icons = (function () {
     planeSmall: p('M1 12 l4 -6 h8 l-4 6 z', PL, P, 1.1),
     origin: ln('M3.5 12.5 h9 M3.5 12.5 v-9', R, 1.5) + ln('M3.5 12.5 l4 3', B, 1.5) + circ(3.5, 12.5, 1.4, S, 'none'),
     curves: ln('M2 12 C5 2 11 14 14 4', B, 1.5),
-    instant: ln('M8 2.5 v11 M2.5 8 h11', S) + ln('M8 2.5 l-2 2 M8 2.5 l2 2 M13.5 8 l-2 -2 M13.5 8 l-2 2', B, 1.25),
+    // r12/chrome12: Instant3D, a block with the blue drag handle standing on its top face
+    instant: blk(1.5, 6.5, 8, 5.5, 3) + ln('M7.25 8 V3', B, 1.5) + p('M5.1 3.9 L7.25 1 9.4 3.9 z', B, B, 0.8) + circ(7.25, 8, 1.3, W, B, 1.1),
     // ---- sketch (yellow pencil, blue entities)
     sketch: SHEET + PENCIL,
     exitSketch: SHEET + ln('M3.5 9 h6.5 M7.5 6.5 l2.5 2.5 -2.5 2.5', G, 1.7) + ln('M10.5 13 L14 9.5', S, 3.4) + ln('M10.5 13 L14 9.5', Y, 2.2),
@@ -81,14 +82,15 @@ var Icons = (function () {
     ellipse: ell(8, 8, 6, 3.8, 'none', B, 1.5),
     point: circ(8, 8, 1.6, B, 'none') + ln('M8 3 v2.5 M8 10.5 v2.5 M3 8 h2.5 M10.5 8 h2.5', S, 1.1),
     text: txt(8, 12.5, 12, 'A', S, 'Georgia, serif', 600),
-    trim: ln('M2 5 h12 M2 11 h12', B, 1.5) + ln('M8 2 v12', S, 0.9, DASH) + ln('M6 9.5 l2 -3 2 3', R, 1.5),
+    trim: ln('M2 8 H8 M8 2 V14', B, 1.5) + ln('M9.6 8 H14.5', R, 1.8, 'stroke-dasharray="1.6 1.3"') + circ(8, 8, 1.2, S, 'none') + ln('M11.2 4 l2.6 -2.6 M11.2 1.4 l2.6 2.6', R, 1.2),   // r12/chrome12: the trimmed piece red, dashed
     extend: ln('M2 8 h7', B, 1.5) + ln('M9 8 h3.5', B, 1.5, DASH) + ln('M13.5 2 v12', S, 1.2) + ln('M9.5 5.5 l2.5 2.5 -2.5 2.5', G, 1.4),
     convert: rect(2.5, 2.5, 11, 11, F2, S) + rect(5, 5, 6, 6, 'none', B, 1.5),
     offset: rect(4, 4, 8, 8, 'none', B, 1.5) + rect(1.5, 1.5, 13, 13, 'none', S, 1, DASH),
     mirrorEnt: ln('M8 2 v12', S, 0.9, DASH) + ln('M6 4.5 L2.5 11.5 h3.5 z', B, 1.4) + ln('M10 4.5 L13.5 11.5 h-3.5 z', B, 1.4, 'stroke-dasharray="1.5 1.5"'),
     sketchPattern: circ(3.5, 8, 1.8, 'none', B, 1.4) + circ(8, 8, 1.8, 'none', B, 1.4) + circ(12.5, 8, 1.8, 'none', B, 1.4) + ln('M2 12.5 h12', S, 0.9, DASH),
-    relations: ln('M2.5 4.5 h11 M2.5 11.5 h11', B, 1.5) + ln('M5.5 6.5 v3 M10.5 6.5 v3', S, 1.25),
-    addRelation: ln('M2.5 4.5 h8 M2.5 11.5 h8', B, 1.5) + ln('M5.5 6.5 v3', S, 1.25) + ln('M13 8.5 v5 M10.5 11 h5', G, 1.6),
+    // r12/chrome12: a sketch corner with its green relation badge (Display/Delete: perpendicular; Add: plus)
+    relations: ln('M2 13.5 H11 M2 13.5 V5', B, 1.5) + rect(8, 1.5, 6.5, 6.5, '#e3f4df', G, 1, 'rx="1"') + ln('M9.6 6.3 h3.3 M11.25 6.3 V3.1', GD, 1.2),
+    addRelation: ln('M2 13.5 H11 M2 13.5 V5', B, 1.5) + rect(8, 1.5, 6.5, 6.5, '#e3f4df', G, 1, 'rx="1"') + ln('M11.25 2.9 v3.7 M9.4 4.75 h3.7', GD, 1.4),
     // relation glyphs drawn next to sketch entities (small, on a 16 grid, like SolidWorks' relation icons)
     relHorizontal: ln('M3 8 h10', G, 2), relVertical: ln('M8 3 v10', G, 2),
     relCoincident: circ(8, 8, 3, G, 'none') + circ(8, 8, 5.5, 'none', G, 1.2),
@@ -108,8 +110,8 @@ var Icons = (function () {
     flatten: p('M1.5 12 l3 -8 h10 l-3 8 z', GL, S) + ln('M5.5 12 l3 -8 M9 12 l3 -8', B, 1, DASH),
     // ---- evaluate
     measure: p('M2 12 L12 2 l2 2 L4 14 z', Y, S) + ln('M4.5 9.5 l1 1 M6.5 7.5 l1 1 M8.5 5.5 l1 1 M10.5 3.5 l1 1', S, 1),
-    mass: p('M8 2.5 l5.5 3.2 -2 7.3 h-7 l-2 -7.3 z', F2, S) + circ(8, 8, 1.3, R, 'none') + ln('M8 4.5 v7 M4.5 8 h7', B, 0.9),
-    section: blk(1.5, 4.5, 9, 7, 3.5) + ln('M1.5 2.5 L14.5 14', R, 1.5),
+    mass: p('M4.5 6 h7 l2.5 8 h-12 z', F2, S) + circ(8, 3.9, 1.8, 'none', S, 1.2) + circ(8, 10.3, 2.3, W, S, 0.9) + p('M8 10.3 V8 A2.3 2.3 0 0 1 10.3 10.3 z M8 10.3 V12.6 A2.3 2.3 0 0 1 5.7 10.3 z', S, 'none'),   // r12/chrome12: a weight with the centre-of-mass mark
+    section: blk(1.5, 3, 5.5, 8, 3.5, F2, F1, RL) + ln('M7 9.6 l3.5 -3.5 M7 12.6 l3.5 -3.5', RD, 0.9) + p('M5.8 15.3 V5.3 l5.9 -4.6 v10 z', 'rgba(47,127,214,0.16)', B, 1),   // r12/chrome12: half a block, the cut face hatched, the blue section plane
     sensor: circ(8, 8, 5, 'none', S) + ln('M8 8 l3 -3', R, 1.5) + circ(8, 8, 0.9, S, 'none'),
     check: ln('M2.5 8.5 l3.5 3.5 L13.5 4.5', G, 2.2),
     // Section Properties: a hatched I-section with the centroid axes
@@ -131,7 +133,7 @@ var Icons = (function () {
     scene: rect(2, 3, 12, 10, W, S, 1.1, 'rx="0.6"') + ln('M2 11 l4 -3.5 3 2.5 2 -1.5 3 2.5', B, 1.2) + circ(11, 5.5, 1.1, Y, 'none'),
     settings: circ(8, 8, 2, 'none', S) + ln('M8 2 v2 M8 12 v2 M2 8 h2 M12 8 h2 M3.8 3.8 l1.4 1.4 M10.8 10.8 l1.4 1.4 M3.8 12.2 l1.4 -1.4 M10.8 5.2 l1.4 -1.4', S, 1.25),
     // ---- FeatureManager tabs, task pane, misc
-    tree: ln('M3 3 h3 M3 6 h2 M5 6 h5 M3 9 h2 M5 9 h5 M5 12 h2 M7 12 h4', B, 1.2) + ln('M4 3 v9', S, 1.2),
+    tree: rect(1.5, 1.5, 5, 4, F2, S, 1) + ln('M4 5.5 V12.5 M4 8.5 h3 M4 12.5 h3', S, 1) + rect(7.5, 6.8, 6.5, 3.4, PL, P, 1) + rect(7.5, 10.8, 6.5, 3.4, GL, GD, 1),   // r12/chrome12: a part with two child rows
     pm: rect(3, 2.5, 10, 11, W, S, 1.1, 'rx="0.6"') + ln('M4.5 5 h7 M4.5 7.5 h7 M4.5 10 h4', B, 1.1),
     config: rect(2.5, 3.5, 4, 4, F2, S, 1) + rect(9.5, 3.5, 4, 4, F2, S, 1) + rect(6, 9.5, 4, 4, PL, B, 1),
     dimx: ln('M3 12 h10', S, 1.1) + ln('M3 12 l1.5 -1 M3 12 l1.5 1 M13 12 l-1.5 -1 M13 12 l-1.5 1', B, 1.1) + circ(8, 6, 2.5, G, S, 1),
@@ -151,7 +153,7 @@ var Icons = (function () {
     filter: p('M2 3 h12 l-4.5 5 v4.5 l-3 1.5 v-6 z', F2, S),
     part: blk(2, 3, 7, 8, 4, F2, F1, F3, S, 1),
     body: blk(2, 3, 7, 8, 4, '#a9c6ea', '#d3e3f7', '#7fa2cc', S, 1),
-    material: p('M3 13 l5 -9 h5 l-5 9 z', '#f0c987', S, 1),
+    material: rect(1.5, 3, 13, 10, '#e7b98f', S, 1, 'rx="0.8"') + ln('M1.5 6.3 h13 M1.5 9.7 h13 M6 3 v3.3 M11 3 v3.3 M3.6 6.3 v3.4 M8.5 6.3 v3.4 M13 6.3 v3.4 M6 9.7 v3.3 M11 9.7 v3.3', '#a8673a', 0.9),   // r12/chrome12: bricks
     folder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1),
     // Equations (global variables): a sigma on a sheet
     equations: rect(2, 2, 12, 12, W, S, 1, 'rx="1"') + ln('M11 4.5 H5 L8 8 L5 11.5 H11', R, 1.5),
