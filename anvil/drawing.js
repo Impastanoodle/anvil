@@ -5319,10 +5319,13 @@ var Drawing = (function () {
     D.firstPaintMs = performance.now() - t0;
     UI.setStatus('Drawing ' + doc().name + (isAsm() ? ' of assembly ' + App.model.name + ': Auto Balloon numbers the components after the Bill of Materials' : '') + ': drag a view to move it, Smart Dimension (D) to dimension an edge or circle, wheel to zoom.');
   }
+  // ownPM(): the open PropertyManager is one of the drawing's own (openDrawingPM marks #app with dw-pm). Closing the
+  // drawing cancels only that one, never a part / assembly PM opened since (r14/fixes14).
+  function ownPM() { return !!(UI.hasPM && UI.hasPM() && $('app').classList.contains('dw-pm')); }
   function closeDrawing() {
     if (!D.active) return;
     settle();
-    if (UI.hasPM && UI.hasPM()) UI.pmCancel();
+    if (ownPM()) UI.pmCancel();
     closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null;
     $('app').classList.remove('drawing-mode', 'dw-pm');
@@ -5334,6 +5337,24 @@ var Drawing = (function () {
     UI.refreshStatus();
     UI.setStatus((isAsm() ? 'Assembly ' : 'Part ') + App.model.name);
   }
+  // detachDrawing(next): the document under the drawing went away (File ▸ New, Open, an example, Edit Part, or an undo
+  // past Make Drawing): the drawing is put away at once, with no settle of its pending views and no queued redraw left
+  // behind, and only a PropertyManager of its own is cancelled (r14/fixes14). next: the model about to be loaded.
+  function detachDrawing(next) {
+    D.renderQueued = false; D.renderFull = false; D.qtok = (D.qtok || 0) + 1;
+    D.prog = null; D.drag = null; D.sheet = null; D.sheetMesh = null; D.sheetDoc = null;
+    if (!D.active) return;
+    if (ownPM()) UI.pmCancel();
+    closeInlineEdit(false);
+    D.active = false; D.tool = null; D.pending = null; D.sel = null; D.hover = null;
+    $('app').classList.remove('drawing-mode', 'dw-pm');
+    D.root.hidden = true; D.tree.hidden = true;
+    var m = next || App.model;
+    App.ribbonTab = m && m.type === 'assembly' ? 'Assembly' : 'Features';
+    UI.setFmTab('tree');
+    UI.refreshRibbon();
+    UI.renderMenuBar();
+  }
 
   // ------------------------------------------------------------------ render
   // render(light): works the sheet out again and patches the SVG in place, layer by layer: only the layers whose
@@ -5343,7 +5364,7 @@ var Drawing = (function () {
   function render(light) {
     if (!D.active) return;
     var dc = doc();
-    if (!dc) { closeDrawing(); return; }
+    if (!dc) { detachDrawing(); return; }
     var t0 = performance.now();
     // this render answers any queued one (a queued full render makes this one full)
     if (D.renderQueued && D.renderFull) light = false;
@@ -7150,6 +7171,13 @@ var Drawing = (function () {
     var r = baseRefreshTree.apply(this, arguments);
     if (D.active) queueRender();
     return r;
+  };
+
+  // another document replaces the one under the drawing (newPart, open, examples, Edit Part / return to assembly)
+  var baseLoadModel = UI.loadModel;
+  UI.loadModel = function (model) {
+    if (D.active || D.renderQueued) detachDrawing(model);
+    return baseLoadModel.apply(this, arguments);
   };
 
   // ------------------------------------------------------------------ automation: anvil.drawing
