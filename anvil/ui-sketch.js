@@ -1053,22 +1053,74 @@
   }
   function clearFeedback() { if (fbLayer) while (fbLayer.firstChild) fbLayer.removeChild(fbLayer.firstChild); }
   function glyph(layer, x, y, type) {
-    var g = svg('g', { 'class': 'rel-badge infer', transform: 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' }, layer);
-    svg('rect', { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
+    var g = svg('g', { 'class': 'rel-badge infer', transform: badgeAt(x, y) }, layer);
+    svg('rect', badgeFrame(), g);
     iconUse(g, 'rel' + type.charAt(0).toUpperCase() + type.slice(1));
     return g;
   }
   // r5/sketch5: relation icons are drawn as <use> of one shared copy per icon (kept in a <defs> of the #dim-layer):
   // parsing an icon's markup for every badge on every redraw cost ~4 ms per frame on a 56-entity sketch
-  var iconDefs = null, iconIds = {};
+  var iconDefs = null, iconIds = {}, iconDpr = 0;
   function iconUse(parent, name) {
-    if (!iconDefs || iconDefs.parentNode !== dimLayer) { iconDefs = svg('defs', {}); dimLayer.insertBefore(iconDefs, dimLayer.firstChild); iconIds = {}; }
+    var dpr = devPx();
+    if (!iconDefs || iconDefs.parentNode !== dimLayer || dpr !== iconDpr) {
+      if (iconDefs && iconDefs.parentNode === dimLayer) dimLayer.removeChild(iconDefs);
+      iconDefs = svg('defs', {}); dimLayer.insertBefore(iconDefs, dimLayer.firstChild); iconIds = {}; iconDpr = dpr;
+      dimLayer.style.setProperty('--rg-bw', (Math.max(1, Math.round(dpr)) / dpr) + 'px');
+    }
     if (!iconIds[name]) {
-      var g = svg('g', { id: 'sk-ico-' + name }, iconDefs);
-      g.innerHTML = Icons(name, 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      var g = svg('g', { id: 'sk-ico-' + name }, iconDefs), gm = relGlyph(name, dpr);
+      g.innerHTML = gm != null ? gm : Icons(name, 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+      if (gm == null) g.setAttribute('transform', 'translate(1,1) scale(0.875)');
       iconIds[name] = '#sk-ico-' + name;
     }
-    return svg('use', { href: iconIds[name], transform: 'translate(1,1) scale(0.875)' }, parent);
+    return svg('use', { href: iconIds[name] }, parent);
+  }
+  // ---- r14/sketchui14: relation glyphs drawn as SolidWorks draws them: a small square with a green border and the
+  // relation's symbol in dark green, the same size and weight at 100 / 125 / 150 / 200 % display scaling. The box is
+  // 16 CSS px (a whole number of device pixels at each of those), placed on the device-pixel grid, its border one or
+  // two device pixels; the symbols' straight strokes are filled rectangles snapped to device pixels, 2 CSS px thick
+  // (2 / 3 / 4 device px): never blurred across two pixel rows. Built once per glyph and scale, shared by <use>.
+  function devPx() { var d = window.devicePixelRatio || 1; return d > 0 && d < 8 ? Math.round(d * 100) / 100 : 1; }
+  function badgeAt(x, y) { var d = devPx(); return 'translate(' + Math.round(x * d) / d + ',' + Math.round(y * d) / d + ')'; }
+  function badgeFrame() {
+    var d = devPx(), bw = Math.max(1, Math.round(d)) / d;
+    return { x: bw / 2, y: bw / 2, width: 16 - bw, height: 16 - bw, rx: 2.5 };
+  }
+  UI.relBadgeAt = badgeAt;
+  UI.relBadgeFrame = badgeFrame;
+  function relGlyph(name, d) {
+    function sn(v) { return Math.round(v * d) / d; }
+    // a bar from (x0, y0) to (x1, y1), its ends snapped to device pixels; its 2 px thickness a whole number of device
+    // pixels (2 / 2 / 3 / 4 at 100 / 125 / 150 / 200 %), the same for every bar
+    var T = Math.max(1, Math.round(2 * d - 0.01)) / d;
+    function R(x0, y0, x1, y1) {
+      var a = sn(x0), b = sn(y0), w = sn(x1) - a, h = sn(y1) - b;
+      if (Math.abs(y1 - y0 - 2) < 1e-9) { b = sn((y0 + y1) / 2 - T / 2); h = T; }
+      else if (Math.abs(x1 - x0 - 2) < 1e-9) { a = sn((x0 + x1) / 2 - T / 2); w = T; }
+      return '<rect x="' + a + '" y="' + b + '" width="' + w + '" height="' + h + '"/>';
+    }
+    function C(cx, cy, r, w) { return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="currentColor" stroke-width="' + w + '"/>'; }
+    function D(cx, cy, r) { return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '"/>'; }
+    function P(dd, w, extra) { return '<path d="' + dd + '" fill="none" stroke="currentColor" stroke-width="' + w + '" stroke-linecap="round"' + (extra || '') + '/>'; }
+    var body;
+    switch (name) {
+      case 'relHorizontal': body = R(4, 7, 12, 9); break;
+      case 'relVertical': body = R(7, 4, 9, 12); break;
+      case 'relEqual': body = R(4, 5, 12, 7) + R(4, 9, 12, 11); break;
+      case 'relPerpendicular': body = R(4, 11, 12, 13) + R(7, 3, 9, 11); break;
+      case 'relParallel': body = P('M4.8 12.2 L8 3.8 M8.4 12.2 L11.6 3.8', 1.7); break;
+      case 'relCollinear': body = R(2.5, 7, 6.5, 9) + R(9.5, 7, 13.5, 9); break;
+      case 'relCoincident': body = D(8, 8, 2.4) + C(8, 8, 5, 1.3); break;
+      case 'relConcentric': body = C(8, 8, 2.2, 1.3) + C(8, 8, 5.2, 1.3); break;
+      case 'relTangent': body = C(8, 6.6, 3.6, 1.4) + R(3, 11, 13, 13); break;
+      case 'relMidpoint': body = R(2.5, 9, 13.5, 11) + '<path d="M8 4.2 L10.6 6.8 L8 9.4 L5.4 6.8 Z"/>'; break;
+      case 'relSymmetric': body = P('M8 2.5 V13.5', 1, ' stroke-dasharray="2 1.6" stroke-linecap="butt"') + R(3, 5, 5, 11) + R(11, 5, 13, 11); break;
+      case 'relFix': body = P('M8 3 V10.5 M4.6 7.5 A3.6 3.6 0 0 0 11.4 7.5', 1.5) + R(5.5, 3, 10.5, 5); break;
+      case 'offset': body = '<rect x="2.9" y="2.9" width="10.2" height="10.2" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="1.6 1.2"/>' + '<rect x="5.6" y="5.6" width="4.8" height="4.8" fill="none" stroke="currentColor" stroke-width="1.6"/>'; break;
+      default: return null;
+    }
+    return '<g class="rg" fill="currentColor">' + body + '</g>';
   }
   function drawFeedback(pl, info, mx, my, readout) {
     var layer = feedbackLayer();
@@ -1236,18 +1288,102 @@
     if (Math.abs(off) < 6 * s) off = (off < 0 ? -6 : 6) * s;
     var A = [P[0] + n[0] * off, P[1] + n[1] * off], B = [A[0] + dir[0] * value, A[1] + dir[1] * value];
     var sA = S(A), sB = S(B), out = { lines: [], arrows: [], value: value };
+    // r14/sketchui14: extension lines leave a 2 px gap at the geometry and run 4 px past the dimension line
     [[P, off], [Q, off + (P[0] - Q[0]) * n[0] + (P[1] - Q[1]) * n[1]]].forEach(function (x) {
-      var X = x[0], o = x[1], sg = o < 0 ? -1 : 1, gap = 2 * s * sg, ext = o + 3 * s * sg;
+      var X = x[0], o = x[1], sg = o < 0 ? -1 : 1, gap = 2 * s * sg, ext = o + 4 * s * sg;
       out.lines.push([S([X[0] + n[0] * gap, X[1] + n[1] * gap]), S([X[0] + n[0] * ext, X[1] + n[1] * ext])]);
     });
-    out.lines.push([sA, sB]);
-    var u = unit(sB, sA), inside = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) > 34;
-    out.arrows.push({ tip: sA, dir: inside ? u : [-u[0], -u[1]] }, { tip: sB, dir: inside ? [-u[0], -u[1]] : u });
-    var sg0 = off < 0 ? -1 : 1, nS = unit(sA, S([A[0] + n[0] * sg0 * s, A[1] + n[1] * sg0 * s]));
-    out.text = { x: (sA[0] + sB[0]) / 2 + nS[0] * 9, y: (sA[1] + sB[1]) / 2 + nS[1] * 9 + 4, anchor: 'middle' };
-    out.along = { u: [-u[0], -u[1]], half: Math.hypot(sB[0] - sA[0], sB[1] - sA[1]) / 2, shift: tx ? tx / s : 0 };
+    // r14/sketchui14: the dimension line, its arrows and where the label goes are settled by dimLayout once the
+    // label's width is known (ANSI: horizontal text in a break of the line; arrows and text outside when short)
+    var u = unit(sA, sB), L = Math.hypot(sB[0] - sA[0], sB[1] - sA[1]);
+    out.lin = { a: sA, b: sB, u: u, L: L };
+    out.text = { x: (sA[0] + sB[0]) / 2, y: (sA[1] + sB[1]) / 2, anchor: 'middle' };
+    out.along = { u: u, half: L / 2, shift: tx ? tx / s : 0, fixed: tx != null };
     return out;
   }
+  // ---- r14/sketchui14: dimensions drawn as SolidWorks draws them with the ANSI standard (as on drawing sheets since
+  // r13/drawings13), scaled for the screen: Century Gothic, the text horizontal and centred in a break of the
+  // dimension line, slim filled arrowheads (10 × 3.4 px, ANSI 1 : 3), and radius / diameter leaders that end in a
+  // short horizontal shoulder with the text after it. Text widths come from the font itself (canvas measureText,
+  // cached per character), so the break fits the digits on any machine (a fallback font measures as itself).
+  var DIM_FONT = '"Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif';
+  var DIM_PX = 13, DIM_CAP = Math.round(DIM_PX * 0.72 * 10) / 10, DIM_GAP = 3, ARROW_L = 10, ARROW_HW = 1.7, SHOULDER = 12;
+  var charW = {}, measureCtx = null;
+  function dimTextWidth(str) {
+    str = String(str);
+    var w = 0;
+    for (var i = 0; i < str.length; i++) {
+      var ch = str.charAt(i), cw = charW[ch];
+      if (cw == null) {
+        if (!measureCtx) { try { measureCtx = document.createElement('canvas').getContext('2d'); } catch (e) { measureCtx = null; } if (measureCtx) measureCtx.font = DIM_PX + 'px ' + DIM_FONT; }
+        cw = charW[ch] = measureCtx ? measureCtx.measureText(ch).width : DIM_PX * 0.56;
+      }
+      w += cw;
+    }
+    return w;
+  }
+  // the dimension line of a linear dimension, its arrows, and the label's default place (the middle; beyond the far
+  // arrow when text and arrows do not fit between the extension lines, as on the sheet)
+  function dimLayout(sc) {
+    var ln = sc.lin;
+    if (ln && !sc.laid) {
+      var u = ln.u, w = dimTextWidth(sc.label), along = Math.abs(u[0]) * w + Math.abs(u[1]) * DIM_CAP + 2 * DIM_GAP;
+      var fits = ln.L >= along + 2 * ARROW_L + 4, xo = ARROW_L + 6, a = ln.a, b = ln.b;
+      if (fits) {
+        sc.lines.push([a, b]);
+        sc.arrows.push({ tip: a, dir: [-u[0], -u[1]] }, { tip: b, dir: u });
+      } else {
+        sc.lines.push([[a[0] - u[0] * xo, a[1] - u[1] * xo], [b[0] + u[0] * xo, b[1] + u[1] * xo]]);
+        sc.arrows.push({ tip: a, dir: u }, { tip: b, dir: [-u[0], -u[1]] });
+        if (!sc.along.fixed) sc.along.shift = ln.L / 2 + xo + along / 2;
+      }
+      sc.text.y += DIM_CAP / 2;   // y is the baseline: the digits centred on the line
+    }
+    sc.laid = true;
+    return sc;
+  }
+  // lines broken where they cross the label's box (b = [x0, y0, x1, y1]): Liang–Barsky clip, the pieces outside kept
+  function breakLines(lines, b) {
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var p = lines[i][0], q = lines[i][1], dx = q[0] - p[0], dy = q[1] - p[1], t0 = 0, t1 = 1, ok = true;
+      var P4 = [-dx, dx, -dy, dy], Q4 = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
+      for (var k = 0; k < 4 && ok; k++) {
+        if (Math.abs(P4[k]) < 1e-12) { if (Q4[k] < 0) ok = false; continue; }
+        var r = Q4[k] / P4[k];
+        if (P4[k] < 0) { if (r > t1) ok = false; else if (r > t0) t0 = r; }
+        else { if (r < t0) ok = false; else if (r < t1) t1 = r; }
+      }
+      if (!ok || t1 - t0 < 1e-9) { out.push(lines[i]); continue; }
+      if (t0 > 1e-6) out.push([p, [p[0] + dx * t0, p[1] + dy * t0]]);
+      if (t1 < 1 - 1e-6) out.push([[p[0] + dx * t1, p[1] + dy * t1], q]);
+    }
+    return out;
+  }
+  // path data: lines as M..L.. pieces, arrowheads as closed triangles
+  function r2(v) { return Math.round(v * 100) / 100; }
+  function linesPath(lines) {
+    var d = '';
+    for (var i = 0; i < lines.length; i++) { var l = lines[i]; d += 'M' + r2(l[0][0]) + ' ' + r2(l[0][1]) + 'L' + r2(l[1][0]) + ' ' + r2(l[1][1]); }
+    return d || 'M0 0';
+  }
+  function arrowsPath(arrows) {
+    var d = '';
+    for (var i = 0; i < arrows.length; i++) {
+      var a = arrows[i], ax = a.dir[0] * ARROW_L, ay = a.dir[1] * ARROW_L, px = -a.dir[1] * ARROW_HW, py = a.dir[0] * ARROW_HW;
+      d += 'M' + r2(a.tip[0]) + ' ' + r2(a.tip[1]) + 'L' + r2(a.tip[0] - ax + px) + ' ' + r2(a.tip[1] - ay + py) + 'L' + r2(a.tip[0] - ax - px) + ' ' + r2(a.tip[1] - ay - py) + 'Z';
+    }
+    return d || 'M0 0';
+  }
+  // Instant3D / feature dimensions in the part (ui-select.js) draw with the same layout: sc from UI.linearDimScreen or
+  // UI.radialDimScreen -> { d: lines path, arrows: arrowheads path, text }
+  UI.dimLayout = function (sc) {
+    dimLayout(sc);
+    var b = labelBox(sc, 0, 0);
+    return { d: linesPath(breakLines(sc.lines, b)), arrows: arrowsPath(sc.arrows), text: sc.text };
+  };
+  UI.dimTextWidth = dimTextWidth;
+  UI.DIM_CAP = DIM_CAP;
   UI.linearDimScreen = linearDimScreen;
 
   // Screen-space drawing data for one dimension: lines, arrow heads, and the label with its anchor point.
@@ -1257,34 +1393,44 @@
     var s = UI.cam.scale; // sketch units per pixel (orthographic camera)
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
-    var out = { lines: [], arrows: [], value: g.value, label: g.prefix + fmtDim(g.value) };
+    var out = { lines: [], arrows: [], value: g.value, label: (g.prefix === '⌀' ? 'Ø' : g.prefix) + fmtDim(g.value) };   // r14/sketchui14: Century Gothic's Ø (it has no ⌀): the full-height diameter sign of SolidWorks' dimensions
     if (g.type === 'linear') {
       var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off, d.tx);
       ld.value = g.value; ld.label = out.label;
       return ld;
-    } else {
-      var ang = (d.ang != null ? d.ang : 45) * Math.PI / 180, ux = Math.cos(ang), uy = Math.sin(ang);
-      var Pc = [g.C[0] + ux * g.r, g.C[1] + uy * g.r];
-      var dist = Math.max(d.off != null ? d.off : 0, g.r + 18 * s);
-      var T = [g.C[0] + ux * dist, g.C[1] + uy * dist];
-      var sPc = S(Pc), sT = S(T), ut = unit(sPc, sT);
-      out.lines.push([sPc, sT]);
-      out.arrows.push({ tip: sPc, dir: [-ut[0], -ut[1]] });
-      out.text = { x: sT[0] + ut[0] * 4, y: sT[1] + ut[1] * 4 + 4, anchor: ut[0] >= -0.2 ? 'start' : 'end' };
-      out.along = { u: ut, half: 0, radial: true };
     }
+    var rd = radialDimScreen(pl, g.C, g.r, d.ang, d.off);
+    rd.value = g.value; rd.label = out.label;
+    return rd;
+  }
+  // a radius / diameter: arrow on the curve, a leader straight out from the centre at `angDeg`, then (ANSI,
+  // r14/sketchui14) a short horizontal shoulder with the text after it, centred on it
+  function radialDimScreen(pl, C, r, angDeg, off) {
+    var s = UI.cam.scale;
+    function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
+    var ang = (angDeg != null ? angDeg : 45) * Math.PI / 180, ux = Math.cos(ang), uy = Math.sin(ang);
+    var dist = Math.max(off != null ? off : 0, r + 18 * s);
+    var sPc = S([C[0] + ux * r, C[1] + uy * r]), sT = S([C[0] + ux * dist, C[1] + uy * dist]);
+    var dx = sT[0] - sPc[0], dy = sT[1] - sPc[1], L = Math.hypot(dx, dy) || 1, ut = [dx / L, dy / L], sg = ut[0] >= -1e-9 ? 1 : -1;
+    var out = { lines: [[sPc, sT], [sT, [sT[0] + sg * SHOULDER, sT[1]]]], arrows: [{ tip: sPc, dir: [-ut[0], -ut[1]] }] };
+    out.text = { x: sT[0] + sg * (SHOULDER + DIM_GAP), y: sT[1] + DIM_CAP / 2, anchor: sg > 0 ? 'start' : 'end' };
+    out.along = { u: ut, half: 0, radial: true };
+    out.laid = true;
     return out;
   }
+  UI.radialDimScreen = radialDimScreen;
 
   // ---- labels kept apart: each label drawn takes a box; a label that would overlap one drawn before it slides along
   // its dimension line (a radius / diameter label: out along its leader) to the nearest free place, and the
   // dimension line is extended to reach it. Display only: the stored placement does not change. The label being
   // placed with the Smart Dimension tool stays under the cursor and moves nothing.
   var labelBoxes = [];
+  // r14/sketchui14: the label's box from the font's own widths, its capitals' height and a 3 px gap round it (also
+  // the break in the dimension line)
   function labelBox(sc, dx, dy) {
-    var w = sc.label.length * 6.6 + 4, x = sc.text.x + dx, y = sc.text.y + dy;
+    var w = dimTextWidth(sc.label), x = sc.text.x + dx, y = sc.text.y + dy;
     var x0 = sc.text.anchor === 'middle' ? x - w / 2 : sc.text.anchor === 'end' ? x - w : x;
-    return [x0, y - 11, x0 + w, y + 3];
+    return [x0 - DIM_GAP, y - DIM_CAP - DIM_GAP, x0 + w + DIM_GAP, y + DIM_GAP];
   }
   function boxFree(b) {
     for (var i = 0; i < labelBoxes.length; i++) { var o = labelBoxes[i]; if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return false; }
@@ -1294,25 +1440,27 @@
     if (!sc.text) return;
     var al = sc.along, s0 = al && al.shift || 0, b = labelBox(sc, al ? al.u[0] * s0 : 0, al ? al.u[1] * s0 : 0), best = s0;
     if (al && !it.temp && !boxFree(b)) {
-      var w = b[2] - b[0], step = al.radial ? 14 : w + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
+      var w = b[2] - b[0], step = al.radial ? 14 : Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b[3] - b[1]) + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
       for (var k = 0; k < tries.length; k++) {
         var t = s0 + tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
         if (boxFree(bb)) { best = t; b = bb; break; }
       }
     }
     if (al && best) {
-      var wl = b[2] - b[0];
       sc.text = { x: sc.text.x + al.u[0] * best, y: sc.text.y + al.u[1] * best, anchor: sc.text.anchor };
-      // the dimension line runs on to a label moved past its end
-      var reach = Math.abs(best) + wl / 2;
+      // the dimension line runs on to a label moved past its end (into the label's break: drawOne cuts it there)
+      var reach = Math.abs(best);
       if (!al.radial && reach > al.half) {
         var line = sc.lines[sc.lines.length - 1], c = [(line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2], sg = best < 0 ? -1 : 1;
         sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
       } else if (al.radial) {
-        var ld = sc.lines[0];
-        sc.lines.push([ld[1], [ld[1][0] + al.u[0] * best, ld[1][1] + al.u[1] * best]]);
+        // the leader runs on and the shoulder moves out with the label
+        var ld = sc.lines[0], dx = al.u[0] * best, dy = al.u[1] * best, sh = sc.lines[1];
+        sc.lines.push([ld[1], [ld[1][0] + dx, ld[1][1] + dy]]);
+        if (sh) sc.lines[1] = [[sh[0][0] + dx, sh[0][1] + dy], [sh[1][0] + dx, sh[1][1] + dy]];
       }
     }
+    sc.box = b;
     if (!it.temp) labelBoxes.push(b);
   }
 
@@ -1374,15 +1522,15 @@
   function drawOne(sc, it) {
     var isSel = it.rel != null ? App.sel && App.sel.kind === 'rel' && App.sel.index === it.rel : App.sel && App.sel.kind === 'dim' && App.sel.index === it.index;
     var cls = 'dim' + (it.temp ? ' temp' : '') + (it.auto ? ' auto' : '') + (!it.temp && !it.auto && isSel ? ' sel' : '') + (it.state && it.state !== 'ok' ? ' ' + it.state : '');
+    dimLayout(sc);
     placeLabel(sc, it);
     var gEl = svg('g', { 'class': cls }, dimLayer);
-    sc.lines.forEach(function (l) { svg('line', { x1: l[0][0], y1: l[0][1], x2: l[1][0], y2: l[1][1] }, gEl); });
-    sc.arrows.forEach(function (a) {
-      // r12/sketchui12: slender filled arrowheads as in SolidWorks (10 px long, 4.4 px wide; were 9 × 6)
-      var ax = a.dir[0] * 10, ay = a.dir[1] * 10, px = -a.dir[1] * 2.2, py = a.dir[0] * 2.2;
-      svg('polygon', { points: a.tip[0] + ',' + a.tip[1] + ' ' + (a.tip[0] - ax + px) + ',' + (a.tip[1] - ay + py) + ' ' + (a.tip[0] - ax - px) + ',' + (a.tip[1] - ay - py) }, gEl);
-    });
-    var ta = { x: sc.text.x, y: sc.text.y, 'text-anchor': sc.text.anchor };
+    // r14/sketchui14: every line of the dimension stops at the label's box (the text sits in a break of the line)
+    // All its lines are one <path>, its arrowheads another (r12/sketchui12 slender, r14/sketchui14 ANSI 10 × 3.4 px):
+    // four nodes per dimension whatever the break does, so the frame-to-frame node reuse always matches
+    svg('path', { 'class': 'dl', d: linesPath(sc.box ? breakLines(sc.lines, sc.box) : sc.lines) }, gEl);
+    svg('path', { 'class': 'da', d: arrowsPath(sc.arrows) }, gEl);
+    var ta = { x: r2(sc.text.x), y: r2(sc.text.y), 'text-anchor': sc.text.anchor };
     if (!it.temp) { ta.tabindex = '0'; ta.role = 'button'; ta['aria-label'] = 'Dimension ' + sc.label + ', double-click to change, drag to move'; }
     var t = svg('text', ta, gEl);
     svgText(t, sc.label);
@@ -1447,13 +1595,26 @@
     parent.appendChild(b);
     return b;
   }
-  dmButton(dimSpin, 'dm-up', 'Increase (wheel up)', '&#9650;', function (ev) { spinDim(1, ev); });
-  dmButton(dimSpin, 'dm-down', 'Decrease (wheel down)', '&#9660;', function (ev) { spinDim(-1, ev); });
-  dmButton(dimBtns, 'dm-ok', 'OK (Enter)', '&#10003;', function () { closeDimEdit(true, true); });
-  dmButton(dimBtns, 'dm-cancel', 'Cancel (Esc)', '&#10007;', function () { closeDimEdit(false); });
-  dmButton(dimBtns, 'dm-rebuild', 'Rebuild: preview the typed value', '&#8635;', function () { var r = parseDimInput(dimInput.value); if (r.error != null) dimEditError(r.error); else previewDim(r.value); });
-  dimEdit.appendChild(dimSpin);
-  dimEdit.appendChild(dimBtns);
+  // r14/sketchui14: laid out as SolidWorks' Modify box: a "Modify" title, the row of ✓ ✗ and Rebuild (the traffic
+  // light) buttons, then the value with its unit and the spin arrows. Drawn icons (inline SVG), not text glyphs.
+  function dmIcon(body) { return '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' + body + '</svg>'; }
+  var DM_OK = dmIcon('<path d="M2.8 8.6 L6.4 12.1 L13.2 4.2" fill="none" stroke="#1f9a4b" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>');
+  var DM_CANCEL = dmIcon('<path d="M4 4 L12 12 M12 4 L4 12" fill="none" stroke="#d9302c" stroke-width="2.2" stroke-linecap="round"/>');
+  var DM_REBUILD = dmIcon('<rect x="4.5" y="0.8" width="7" height="14.4" rx="2" fill="#3b4048"/><circle cx="8" cy="4" r="1.9" fill="#ef4136"/><circle cx="8" cy="8" r="1.9" fill="#ffc20e"/><circle cx="8" cy="12" r="1.9" fill="#3fb34f"/>');
+  var dimHead = document.createElement('div'), dimRow = document.createElement('div'), dimUnit = document.createElement('span');
+  dimHead.className = 'dm-head'; dimHead.textContent = 'Modify';
+  dimRow.className = 'dm-row'; dimUnit.className = 'dm-unit';
+  dmButton(dimSpin, 'dm-up', 'Increase (wheel up; Ctrl ×10, Alt ÷10)', dmIcon('<path d="M4 10.5 L8 5.5 L12 10.5 Z" fill="currentColor"/>'), function (ev) { spinDim(1, ev); });
+  dmButton(dimSpin, 'dm-down', 'Decrease (wheel down; Ctrl ×10, Alt ÷10)', dmIcon('<path d="M4 5.5 L8 10.5 L12 5.5 Z" fill="currentColor"/>'), function (ev) { spinDim(-1, ev); });
+  dmButton(dimBtns, 'dm-ok', 'OK (Enter): keep the value and close', DM_OK, function () { closeDimEdit(true, true); });
+  dmButton(dimBtns, 'dm-cancel', 'Cancel (Esc): restore the value and close', DM_CANCEL, function () { closeDimEdit(false); });
+  dmButton(dimBtns, 'dm-rebuild', 'Rebuild: regenerate the sketch with the typed value', DM_REBUILD, function () { var r = parseDimInput(dimInput.value); if (r.error != null) dimEditError(r.error); else previewDim(r.value); });
+  dimEdit.insertBefore(dimHead, dimInput);
+  dimEdit.insertBefore(dimBtns, dimInput);
+  dimEdit.insertBefore(dimRow, dimInput);
+  dimRow.appendChild(dimInput);
+  dimRow.appendChild(dimUnit);
+  dimRow.appendChild(dimSpin);
   function openDimEdit(it) {
     var f = UI.activeSketchFeature();
     if (!f) return;
@@ -1461,6 +1622,7 @@
     var value = it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d);
     dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: it.rel != null && f.rels[it.rel].type === 'angle' };
     dimEdit.hidden = false;
+    dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
     positionDimEdit();
     dimInput.focus(); dimInput.select();
