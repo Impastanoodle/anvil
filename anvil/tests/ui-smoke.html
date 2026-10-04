@@ -7464,6 +7464,26 @@
     await anvil.run(exByName('Gear train and patterns').code); await idle();
     assert(!UI.asmPopup(), 'closed with the old document');
   });
+  step('r13/asmui13: a broken link is grey with an amber badge (own icon); What\'s Wrong lists it as a warning and Go To selects its row without a context toolbar', async function () {
+    await anvil.run(exByName('Pinned plate assembly').code); await idle();
+    var A = UI.App, c = JSON.parse(JSON.stringify(A.model.components[1]));
+    UI.pushUndo();
+    c.id = 9077; c.name = 'Gone<1>'; c.source = { file: 'NoSuchPart13' }; c.fixed = true; delete c.pattern;
+    A.model.components.push(c);
+    await UI.rebuild(); await idle(); UI.refreshTree();
+    var r = D.querySelector('.component-row[data-comp="9077"]');
+    assert(r && r.classList.contains('suppressed') && r.querySelector('.rb-badge.warn') && !r.querySelector('.rb-badge.err'), 'amber badge on the broken link: ' + (r && r.className));
+    assert(r.children[1].querySelectorAll('svg').length === 2, 'its own icon kept');
+    UI.whatsWrong(9077);
+    var go = D.querySelector('#whats-wrong tr.ww-row.warning[data-id="9077"] .ww-go');
+    assert(go, 'warning row with Go To');
+    UI.asmClosePopup();
+    go.click(); await wait(20);
+    r = D.querySelector('.component-row[data-comp="9077"]');
+    assert(r.classList.contains('selected') || r.classList.contains('rb-flash'), 'row selected');
+    assert(!UI.asmPopup(), 'no context toolbar at the screen corner');
+    await UI.undo(); await idle();
+  });
   // --- end r13/asmui13 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

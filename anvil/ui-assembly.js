@@ -46,7 +46,11 @@
     if (pk.kind === 'plane' && typeof pk.ref === 'string') return { component: null, ref: { plane: pk.ref } };
     return null;
   }
-  function selectedComponent() { return UI.selectedComponent ? UI.selectedComponent() : null; }
+  function selectedComponent() {
+    var c = UI.selectedComponent ? UI.selectedComponent() : null;
+    if (!c && isAsm() && App.sel && App.sel.kind === 'edge') c = (App.model.components || [])[compIndexOf(App.sel)] || null;   // r13/asmui13: an edge belongs to a component too
+    return c;
+  }
   function patternStatus(p) { var b = App.build && App.build.assembly ? App.build : null; return b && b.errors ? b.errors[p.id] || null : null; }
 
   // ------------------------------------------------------------------ Linear / Circular Component Pattern, Mirror Components
@@ -1710,7 +1714,7 @@
 
   // ribbon: the Bill of Materials placeholder opens the BOM
   if (tab) tab.forEach(function (b) {
-    if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'generic', label: 'Bill of Materials', run: function () { showBom(); } }; });
+    if (b && b.stack) b.stack.forEach(function (x, i) { if (x.label === 'Bill of Materials') b.stack[i] = { id: 'bom', label: 'Bill of Materials', run: function () { showBom(); } }; else if (x.label === 'Instant3D' && x.id === 'generic') x.id = 'instant'; });   // r13/asmui13: their own icons (drawing.js draws 'bom')
   });
   // r13/asmui13: the Assembly tab in SolidWorks' order (Insert Components, Mate | Linear Component Pattern, Move /
   // Rotate Component, Show / Hide | Exploded View, Bill of Materials); Fix / Float, which SolidWorks keeps on the
@@ -1930,6 +1934,7 @@
   document.addEventListener('click', function (e) {
     var row = e.target && e.target.closest ? e.target.closest('.component-row[data-comp]') : null;
     if (!row || !isAsm() || App.command || e.button !== 0) return;
+    if (!e.clientX && !e.clientY) return;   // r13/asmui13: row.click() from code (What's Wrong ▸ Go To) has no pointer to show it by
     var at = { x: e.clientX, y: e.clientY }, id = row.getAttribute('data-comp');
     setTimeout(function () { var c = selectedComponent(); if (c && String(c.id) === id && !popup) ctxToolbar(at); }, 0);
   });
