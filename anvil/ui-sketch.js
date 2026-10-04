@@ -144,6 +144,7 @@
     App.toolState = { pts: [] };
     App.drawConstruction = false;
     viewport.classList.toggle('tool-cross', App.tool !== 'select');
+    viewport.setAttribute('data-sktool', App.tool);   // r12/sketchui12: the pencil cursor with the tool's glyph (style.css)
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
     hint.innerHTML = TOOL_HINTS[App.tool] || '';
@@ -1106,11 +1107,52 @@
   var SVGNS = 'http://www.w3.org/2000/svg';
   var dimEditing = null; // { d, auto, index, rel, sketchId }
   var lastDimError = null; // why the last committed value was not applied (the solver refused it)
+  // r12/sketchui12: drawDims no longer throws away and rebuilds its ~1000 nodes on every frame of a drag. While it
+  // runs (rcParents set), svg() walks the children already in the layer in order and reuses the next one when it has
+  // the same tag: only the attributes that changed are written, and nodes left over at the end are removed. Event
+  // listeners are attached once per node and read the item they act on from node._d (set again on every redraw).
+  var rcParents = null;
+  function rcOpen(n, first) { n._rcNext = first; n._rcOn = true; rcParents.push(n); }
   function svg(tag, attrs, parent) {
+    attrs = attrs || {};
+    var a = {}, k;
+    for (k in attrs) a[k] = String(attrs[k]);
+    if (rcParents && parent && parent._rcOn) {
+      var m = parent._rcNext;
+      if (m === fbLayer) m = null;
+      if (m && m.nodeName === tag) {
+        parent._rcNext = m.nextSibling;
+        var old = m._a || {};
+        for (k in a) if (old[k] !== a[k]) m.setAttribute(k, a[k]);
+        for (k in old) if (!(k in a)) m.removeAttribute(k);
+        m._a = a; m._d = null;
+        rcOpen(m, m.firstChild);
+        return m;
+      }
+      var c = document.createElementNS(SVGNS, tag);
+      for (k in a) c.setAttribute(k, a[k]);
+      c._a = a;
+      parent.insertBefore(c, m || (fbLayer && fbLayer.parentNode === parent ? fbLayer : null));
+      rcOpen(c, null);
+      return c;
+    }
     var n = document.createElementNS(SVGNS, tag);
-    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    for (k in a) n.setAttribute(k, a[k]);
+    n._a = a;
     if (parent) parent.appendChild(n);
     return n;
+  }
+  // text of a node, written only when it changed (a reused node keeps its text node)
+  function svgText(n, s) { s = String(s); if (n._t !== s) { n.textContent = s; n._t = s; } n._rcNext = null; }   // (its text node is not trimmed)
+  function rcBegin(layer, first) { rcParents = []; rcOpen(layer, first); }
+  function rcEnd() {
+    var list = rcParents;
+    rcParents = null;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      for (var c = p._rcNext; c; ) { var nx = c.nextSibling; if (c !== fbLayer && c !== iconDefs) p.removeChild(c); c = nx; }
+      p._rcOn = false; p._rcNext = null;
+    }
   }
   function fmtDim(n) { return UI.fmtNum(n, 2); }
 
@@ -1332,29 +1374,37 @@
     var gEl = svg('g', { 'class': cls }, dimLayer);
     sc.lines.forEach(function (l) { svg('line', { x1: l[0][0], y1: l[0][1], x2: l[1][0], y2: l[1][1] }, gEl); });
     sc.arrows.forEach(function (a) {
-      var ax = a.dir[0] * 9, ay = a.dir[1] * 9, px = -a.dir[1] * 3, py = a.dir[0] * 3;
+      // r12/sketchui12: slender filled arrowheads as in SolidWorks (10 px long, 4.4 px wide; were 9 × 6)
+      var ax = a.dir[0] * 10, ay = a.dir[1] * 10, px = -a.dir[1] * 2.2, py = a.dir[0] * 2.2;
       svg('polygon', { points: a.tip[0] + ',' + a.tip[1] + ' ' + (a.tip[0] - ax + px) + ',' + (a.tip[1] - ay + py) + ' ' + (a.tip[0] - ax - px) + ',' + (a.tip[1] - ay - py) }, gEl);
     });
-    var t = svg('text', { x: sc.text.x, y: sc.text.y, 'text-anchor': sc.text.anchor }, gEl);
-    t.textContent = sc.label;
+    var ta = { x: sc.text.x, y: sc.text.y, 'text-anchor': sc.text.anchor };
+    if (!it.temp) { ta.tabindex = '0'; ta.role = 'button'; ta['aria-label'] = 'Dimension ' + sc.label + ', double-click to change, drag to move'; }
+    var t = svg('text', ta, gEl);
+    svgText(t, sc.label);
     it.label = sc.label;
     if (!it.temp) {
-      t.addEventListener('mousedown', function (ev) { dimPress(ev, it); });
-      t.addEventListener('click', function (ev) { ev.stopPropagation(); });
-      t.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
-      t.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); selectDim(it); editDimItem(it); } });
-      t.setAttribute('tabindex', '0');
-      t.setAttribute('role', 'button');
-      t.setAttribute('aria-label', 'Dimension ' + sc.label + ', double-click to change, drag to move');
+      t._d = it;
+      // r12/sketchui12: listeners once per (reused) node; they act on the item drawn there now
+      if (!t._dimLis) {
+        t._dimLis = true;
+        t.addEventListener('mousedown', function (ev) { if (t._d) dimPress(ev, t._d); });
+        t.addEventListener('click', function (ev) { if (t._d) ev.stopPropagation(); });
+        t.addEventListener('dblclick', function (ev) { if (t._d) ev.stopPropagation(); });
+        t.addEventListener('keydown', function (ev) { var d = t._d; if (d && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); ev.stopPropagation(); selectDim(d); editDimItem(d); } });
+      }
     }
     it.text = sc.text;
   }
 
   // Redraw every dimension of the active sketch. Called from the render loop whenever App.dimsStale is set.
   function drawDims() {
-    for (var c = dimLayer.firstChild; c; ) { var nx = c.nextSibling; if (c !== fbLayer && c !== iconDefs) dimLayer.removeChild(c); c = nx; }
     labelBoxes = [];
     var f = UI.activeSketchFeature();
+    rcBegin(dimLayer, iconDefs && iconDefs.parentNode === dimLayer ? iconDefs.nextSibling : dimLayer.firstChild);
+    try { return drawDimsIn(f); } finally { rcEnd(); }
+  }
+  function drawDimsIn(f) {
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
     var an = App.sketchState;
@@ -1368,13 +1418,13 @@
       drawOne(sc, it);
     });
     // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
-    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, drawOne: drawOne, list: list, icon: iconUse, free: boxFree, take: function (b) { labelBoxes.push(b); } });
+    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, icon: iconUse, free: boxFree, take: function (b) { labelBoxes.push(b); } });
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
       if (App.sel && App.sel.kind === 'dim') App.sel = null;
     }
-    if (fbLayer && fbLayer.parentNode === dimLayer) dimLayer.appendChild(fbLayer);   // cursor feedback stays on top
+    if (fbLayer && fbLayer.parentNode === dimLayer && dimLayer.lastChild !== fbLayer) dimLayer.appendChild(fbLayer);   // cursor feedback stays on top
     if (dimEditing) positionDimEdit(list);
     return list;
   }

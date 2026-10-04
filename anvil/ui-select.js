@@ -939,8 +939,11 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   var handleList = [];
   function drawI3D() {
-    while (layer.firstChild) layer.removeChild(layer.firstChild);
     var d = i3d.drag;
+    // r12/sketchui12: while sketch geometry is dragged the dimension grips are hidden (SolidWorks shows none then) and
+    // not recomputed on every frame; they come back when the drag ends
+    if (!d && App.mode === 'sketch' && App.sketchDragging) { if (layer.firstChild) layer.textContent = ''; handleList = []; return; }
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
     // a handle whose direction is seen end-on cannot be dragged in this view and is left out
     handleList = d ? [d.h] : computeHandles().filter(function (h) { return h.pxPerUnit() > 0.02; });
     if (i3d.edit && !d && !handleList.some(function (h) { return hKey(h) === i3d.edit.key; })) closeEdit(false);
@@ -963,7 +966,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       if (d) drawRuler(g, h, v);
       if (h.kind === 'sdim' && !h.live) drawSketchDim(g, h, d ? v : null);
       var p = S(h.pos(v)), a = h.arrow(v), q = S(V.add(h.pos(v), a)), u = unit2(p, q);
-      var hg = svg('g', { 'class': 'i3d-handle', 'data-kind': h.kind, 'data-index': String(idx) }, g);
+      var hg = svg('g', { 'class': 'i3d-handle' + (h.kind === 'sdim' && h.live ? ' live' : ''), 'data-kind': h.kind, 'data-index': String(idx) }, g);
       if (h.kind === 'sdim') {
         svg('circle', { 'class': 'i3d-grip', cx: p[0], cy: p[1], r: 9 }, hg);
         svg('circle', { 'class': 'i3d-dot', cx: p[0], cy: p[1], r: 4.5 }, hg);

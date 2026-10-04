@@ -282,3 +282,15 @@ mass). `anvil.summary()` on the Flange: 93 → 1 ms; Pulley 18 → 0; Mounting B
 
 **Robustness.** The render loop asked for its next frame after the frame's work, so one exception in a frame stopped
 it for good (the viewport froze; found when a measurement wrapper threw). It now asks in a `finally` (same order as before).
+
+## Round 12 (r12/sketchui12): sketch drag on a big sketch
+
+92 entities / 105 relations (10 rectangles of 4 lines, 6 rectangles, 20 lone lines, 26 equal circles), one end point
+dragged, per synthetic `mousemove`: the solve + `UI.drawDims()` + a forced layout of the dimension layer (median of 60).
+Not comparable with round 11's 17.2 ms (another harness, which also counted the frame's WebGL draw); same harness before / after:
+
+| | before | node reuse + no Instant3D dots while dragging | + driven values off by default |
+| --- | ---: | ---: | ---: |
+| per move | 6.5 ms | 2.2 ms | 1.6 ms |
+| dimension layer (draw + layout) | 5.6 ms | 1.2 ms | 0.5 ms |
+| SVG nodes in the layer | 1026 (rebuilt every frame) | 1026 (reused) | 371 (reused) |
