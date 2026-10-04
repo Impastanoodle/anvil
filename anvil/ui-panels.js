@@ -895,7 +895,11 @@
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
         { sep: true },
         { label: 'Theme ▸ Light', checked: UI.theme() === 'light', action: function () { UI.setTheme('light'); toast('Light theme'); } },
-        { label: 'Theme ▸ Dark', checked: UI.theme() === 'dark', action: function () { UI.setTheme('dark'); toast('Dark theme'); } }
+        { label: 'Theme ▸ Dark', checked: UI.theme() === 'dark', action: function () { UI.setTheme('dark'); toast('Dark theme'); } },
+        // r14/viewui14: View ▸ Background, remembered per browser (UI.setBackground, ui-core.js)
+        { label: 'Background ▸ Gradient', checked: v.bg === 'gradient', action: function () { setBg('gradient'); } },
+        { label: 'Background ▸ Plain', checked: v.bg === 'plain', action: function () { setBg('plain'); } },
+        { label: 'Background ▸ Dark', checked: v.bg === 'dark', action: function () { setBg('dark'); } }
       ] },
       { label: 'Insert', items: isAsm() ? [
         { label: 'Component ▸ Existing Part…', action: function () { UI.cmdInsertComponent(); } },
@@ -949,10 +953,7 @@
         { sep: true }
       ].concat(UI.occtMenuItems ? UI.occtMenuItems() : []) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
       { label: 'Window', items: [
-        { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } },
-        { label: 'Background: gradient', checked: v.bg === 'gradient', action: function () { setBg('gradient'); } },
-        { label: 'Background: white', checked: v.bg === 'white', action: function () { setBg('white'); } },
-        { label: 'Background: dark', checked: v.bg === 'dark', action: function () { setBg('dark'); } }
+        { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } }
       ] },
       { label: 'Help', items: [
         { label: 'Scripting reference', action: function () { UI.openTaskPane('macro'); } },
@@ -977,7 +978,7 @@
     });
   }
   function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); }
-  function setBg(b) { App.view.bg = b; UI.viewport.className = b === 'gradient' ? '' : 'bg-' + b; }
+  function setBg(b) { return UI.setBackground(b); }   // r14/viewui14: keeps the viewport's other classes (was className =), remembered
   function normalToSelection() {
     if (App.sel && App.sel.kind === 'face' && App.mesh) { var f = App.mesh.faces[App.sel.index]; UI.viewNormalTo(K.planeFromFace(f.normal, f.centroid)); }
     else if (App.sel && App.sel.kind === 'plane') UI.viewNormalTo(App.sel.plane || K.makePlane(App.sel.ref, 0));
@@ -996,7 +997,9 @@
   // Built once; later calls only move the active marks (the buttons stay under the mouse, tooltips do not flicker).
   // Drop-down items are made when the menu opens, so their check marks are always current.
   var hudActive = null;
-  function orientItems() { return Object.keys(UI.VIEWS).map(function (n) { return { label: n, action: function () { UI.setView(n); } }; }).concat([{ sep: true }, { label: 'Normal To (Ctrl+8)', action: normalToSelection }]); }
+  // r14/viewui14: the View Selector cube (UI.showViewSelector, ui-core.js) comes up with this menu; a pick in the menu closes both
+  function hideVS() { if (UI.hideViewSelector) UI.hideViewSelector(); }
+  function orientItems() { return Object.keys(UI.VIEWS).map(function (n) { return { label: n, action: function () { hideVS(); UI.setView(n); } }; }).concat([{ sep: true }, { label: 'Normal To (Ctrl+8)', action: function () { hideVS(); normalToSelection(); } }]); }
   function refreshHud() {
     var hud = $('hud');
     if (hudActive && hud.children.length) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
@@ -1014,7 +1017,7 @@
     btn('prevView', 'Previous View', UI.previousView);
     btn('section', 'Section View', UI.cmdSection, function () { return !!App.view.section; });
     hud.appendChild(el('span', { class: 'sep' }));
-    dd('orient', 'View Orientation', orientItems);
+    var ob = btn('orient', 'View Orientation (Space)', function () { var r = ob.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, orientItems()); if (UI.showViewSelector) UI.showViewSelector(); }, null, true);   // r14/viewui14: with the View Selector
     dd('display', 'Display Style', function () { return [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['hlv', 'Hidden Lines Visible'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }); });
     dd('hideshow', 'Hide/Show Items', function () { return [
       { label: 'Planes', checked: App.view.showPlanes, action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } },
@@ -1024,7 +1027,7 @@
     ]; });
     hud.appendChild(el('span', { class: 'sep' }));
     btn('appearance', 'Edit Appearance', function () { UI.openTaskPane('appearance'); });
-    dd('scene', 'Apply Scene', function () { return [['gradient', 'Studio gradient'], ['white', 'Plain white'], ['dark', 'Dark room']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
+    dd('scene', 'Apply Scene', function () { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
     btn('settings', 'View Settings', function () { UI.openTaskPane('props'); });
   }
   // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
@@ -1033,6 +1036,9 @@
   document.addEventListener('mousemove', function (e) { lastPointer = [e.clientX, e.clientY, e.target]; }, { passive: true });
   function showOrientationMenu() {
     var vp = UI.viewport || $('viewport');
+    // r14/viewui14: Space again closes the View Selector and the menu (SolidWorks toggles it)
+    if (UI.viewSelectorShown && UI.viewSelectorShown()) { hideVS(); closeMenus(); return; }
+    if (UI.showViewSelector) UI.showViewSelector();
     if (lastPointer && vp && vp.contains(lastPointer[2])) { showMenu(lastPointer[0], lastPointer[1], orientItems()); return; }
     var b = $('hud').children[5];
     if (b) b.click();
