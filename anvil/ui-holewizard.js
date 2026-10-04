@@ -59,8 +59,8 @@
         }
       },
       groups: [
-        { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', onclick: function () { tab('type'); } }, { label: 'Positions', onclick: function () { tab('positions'); } }] },
-          { type: 'static', label: 'Showing', value: function (x) { return x.tab === 'type' ? 'Type' : 'Positions'; } }] },
+        // r14/fixes14: the pressed button is the tab on show (was a separate "Showing" row)
+        { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', active: isType, onclick: function () { tab('type'); } }, { label: 'Positions', active: isPos, onclick: function () { tab('positions'); } }] }] },
         { title: 'Hole Type', show: isType, fields: [{ type: 'select', label: 'Type', key: 'holeType', options: HW.TYPES, rerender: true }] },
         { title: 'Hole Specifications', show: isType, fields: [
           { type: 'static', label: 'Standard', value: 'ISO' },
@@ -151,7 +151,10 @@
     UI.disposeGroup(threadGroup);
     if (!App.model || App.model.type === 'assembly' || !App.model.features) return;
     var list = HW.threads(App.model).filter(function (t) { return !(App.build && App.build.errors && App.build.errors[t.featureId]); });
+    // r14/fixes14: a 1.5 px line with 6 px dashes and 3 px gaps on screen (thick lines; the 1-pixel fallback keeps dashes
+    // sized by the thread's radius)
     if (!threadMat) threadMat = new THREE.LineDashedMaterial({ color: 0x3a4a5c, dashSize: 0.6, gapSize: 0.4, depthTest: true });
+    threadMat.userData.lineWidth = 1.5; threadMat.userData.dashPx = 6; threadMat.userData.gapPx = 3;
     list.forEach(function (t) {
       var n = t.n, a = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], x = K.vec.norm(K.vec.cross(n, a)), y = K.vec.cross(n, x), pts = [];
       var lift = K.vec.scale(n, -0.002 * Math.max(1, t.r)); // a hair above the face so it is not z-fought

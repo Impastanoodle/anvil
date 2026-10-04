@@ -67,3 +67,5 @@
    anything a drag moves (a drag or a pan in progress keeps its own cursor) */
 #drawing-sheet.dw-cur-tool:not(.dw-dragging):not(.dw-panning) { cursor: crosshair; }
 #drawing-sheet.dw-cur-move:not(.dw-dragging):not(.dw-panning) { cursor: move; }
+/* r14/fixes14: a toast sits above the sheet tabs, not over them */
+body:has(#app.drawing-mode) .toast { bottom: 60px; }

@@ -316,7 +316,11 @@
       }
       case 'buttons': {
         var row = el('div', { class: 'pm-btns' });
-        f.buttons.forEach(function (b) { row.appendChild(el('button', { text: b.label, onclick: function () { b.onclick(v); } })); });
+        f.buttons.forEach(function (b) {
+          var bt = el('button', { text: b.label, onclick: function () { b.onclick(v); } });
+          if (b.active) { var on = !!b.active(v); bt.classList.toggle('on', on); bt.setAttribute('aria-pressed', on ? 'true' : 'false'); }   // r14/fixes14: a tab-like pair (Hole Wizard Type / Positions)
+          row.appendChild(bt);
+        });
         return row;
       }
       case 'html':
