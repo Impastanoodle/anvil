@@ -62,28 +62,148 @@ var Kernel = (function () {
   // The resolved frame keeps x, y and n (the in-plane orientation and the sketch coordinates stay put) and moves only
   // along n. When the feature is gone or comes after the sketch, or the face cannot be found, the sketch keeps its
   // stored plane and gets a "dangling" warning. Old models with frozen custom planes (no `face`) are unchanged.
-  // capOffset(E, N, model, planesById) -> the plane offset w (N·p = w) of extrude E's end cap whose outward body
-  // normal is N, or null (not an extrude, N not along its direction, a Through All end, any error)
-  function capOffset(E, N, model, planesById) {
+  // r11/faceref11: an extrude has two caps, plane.face.cap = 'far' (where Direction 1 ends: a boss's top, a cut's
+  // floor) or 'near' (the sketch-plane end, or where Direction 2 ends). The cap is part of the reference, so
+  // reversing the extrude takes the sketch to the cap it was drawn on (its normal flips and the sketch's x with it,
+  // so the frame stays right-handed), as in SolidWorks; a record without `cap` (round 10) gets it from its normal at
+  // the first rebuild. A face of a pattern / mirror copy of an extrude is a 'cap' of that pattern feature with
+  //   inst: the copy's index among the pattern's own copies (patternCopies); lx / ln: the sketch's x and n carried
+  //   back to the seed extrude's frame,
+  // so the sketch follows its copy when the seed's depth or direction, the spacing, the angle or the mirror plane change.
+  // capPlane(E, which, model, planesById) -> { n, w }: the outward body normal and offset (n·p = w) of extrude E's
+  // 'far' / 'near' cap now, or null (not an extrude, a Through All end, any error)
+  function capPlane(E, which, model, planesById) {
     try {
       if (!E || E.type !== 'extrude') return null;
       var S = findFeature(model, E.sketch);
       if (!S || S.type !== 'sketch') return null;
-      var P = resolvePlane(S.plane, model, planesById), s = dot(N, P.n);
-      if (Math.abs(Math.abs(s) - 1) > 1e-6) return null;
-      var r = extrudeRange(E, THROUGH), cut = isCut(E, model);
-      // a boss's cap faces out of the tool; a cut's floor faces back against the tool's cap
-      var t = ((s > 0) !== !!cut) ? Math.max(r[0], r[1]) : Math.min(r[0], r[1]);
+      var P = resolvePlane(S.plane, model, planesById), r = extrudeRange(E, THROUGH), sg = E.reverse ? -1 : 1;
+      var far = which !== 'near', t = (far === (sg > 0)) ? r[1] : r[0];
       if (Math.abs(t) >= THROUGH / 2) return null;
-      return tidyNum((s > 0 ? 1 : -1) * (dot(P.n, P.origin) + t));
+      // a boss's cap faces out of the tool; a cut's floor faces back against the tool's cap
+      var out = (far ? sg : -sg) * (isCut(E, model) ? -1 : 1);
+      return { n: scale(P.n, out), w: tidyNum(out * (dot(P.n, P.origin) + t)) };
     } catch (e) { return null; }
   }
+  // faceCopy(fr, extra?) -> a copy of a face record (role defaults to 'cap'), with `extra` fields set
+  function faceCopy(fr, extra) {
+    var o = {};
+    Object.keys(fr).forEach(function (k) { o[k] = Array.isArray(fr[k]) ? fr[k].slice() : fr[k]; });
+    if (!o.role) o.role = 'cap';
+    if (extra) Object.keys(extra).forEach(function (k) { o[k] = extra[k]; });
+    return o;
+  }
+  // capWhich(E, N, ...) -> the cap ('far' / 'near') of extrude E whose outward normal is N now
+  function capWhich(E, N, model, planesById) {
+    var c = capPlane(E, 'near', model, planesById);
+    return c && dot(c.n, N) > 1 - 1e-6 ? 'near' : 'far';
+  }
+  // rigid transforms X = { m: 3×3 row-major, t } (p -> m·p + t) of pattern / mirror copies
+  var XF_ID = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+  function xfDir(X, d) { var m = X.m; return [m[0] * d[0] + m[1] * d[1] + m[2] * d[2], m[3] * d[0] + m[4] * d[1] + m[5] * d[2], m[6] * d[0] + m[7] * d[1] + m[8] * d[2]]; }
+  function xfDirBack(X, d) { var m = X.m; return [m[0] * d[0] + m[3] * d[1] + m[6] * d[2], m[1] * d[0] + m[4] * d[1] + m[7] * d[2], m[2] * d[0] + m[5] * d[1] + m[8] * d[2]]; }   // mᵀ = m⁻¹
+  function xfPoint(X, p) { return add(xfDir(X, p), X.t); }
+  function xfThen(A, B) {   // B first, then A
+    var cols = [0, 1, 2].map(function (k) { return xfDir(A, [B.m[k], B.m[3 + k], B.m[6 + k]]); });
+    return { m: [cols[0][0], cols[1][0], cols[2][0], cols[0][1], cols[1][1], cols[2][1], cols[0][2], cols[1][2], cols[2][2]], t: xfPoint(A, B.t) };
+  }
+  function xfFromMap(fn) {   // a rigid map given as a point function
+    var o = fn([0, 0, 0]), c = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(function (e) { return sub(fn(e), o); });
+    return { m: [c[0][0], c[1][0], c[2][0], c[0][1], c[1][1], c[2][1], c[0][2], c[1][2], c[2][2]], t: o };
+  }
+  function isCopyFeature(f) { return !!f && (f.type === 'lpattern' || f.type === 'cpattern' || (f.type === 'mirror' && !f.body)); }
+  // a pattern's own copy transforms, in the order buildTool makes them
+  function ownTransforms(f) {
+    var out = [];
+    if (f.type === 'lpattern') {
+      var d1 = scale(AXES[f.d1 || 'x'], f.rev1 ? -1 : 1), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
+      var d2 = f.d2 ? scale(AXES[f.d2], f.rev2 ? -1 : 1) : [0, 0, 0];
+      for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) if (i || j) out.push({ m: XF_ID.m.slice(), t: add(scale(d1, i * (+f.s1 || 0)), scale(d2, j * (+f.s2 || 0))) });
+    } else if (f.type === 'cpattern') {
+      var count = Math.max(2, f.n | 0), total = +f.angle || 360;
+      var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
+      var rot = function (ang) { return xfFromMap(function (p) { return rotatePoint(p, f.center || [0, 0, 0], AXES[f.axis || 'z'], ang); }); };
+      for (var k = 1; k < count; k++) out.push(rot(step * k * Math.PI / 180));
+    } else if (f.type === 'mirror' && !f.body) {
+      var mp = makePlane(f.plane || 'Right', f.offset || 0);
+      out.push(xfFromMap(function (q) { return sub(q, scale(mp.n, 2 * dot(sub(q, mp.origin), mp.n))); }));
+    }
+    return out;
+  }
+  // patternFamily(id): the seed (identity) and every copy down a pattern chain to its extrude, { root, list } or null;
+  // patternCopies(P): the pattern's own part of it (its copies of its source's whole family), as its tool is made
+  function patternFamily(id, model, depth) {
+    var f = findFeature(model, id);
+    depth = depth || 0;
+    if (!f || depth > 8) return null;
+    if (f.type === 'extrude') return { root: f, list: [XF_ID] };
+    if (!isCopyFeature(f)) return null;
+    var base = patternFamily(f.feature, model, depth + 1), own = patternCopies(f, model, depth + 1);
+    return base && own ? { root: own.root, list: base.list.concat(own.list) } : null;
+  }
+  function patternCopies(P, model, depth) {
+    var base = patternFamily(P.feature, model, (depth || 0) + 1);
+    if (!base) return null;
+    var list = [];
+    ownTransforms(P).forEach(function (T) { base.list.forEach(function (B) { list.push(xfThen(T, B)); }); });
+    return { root: base.root, list: list };
+  }
+  // the cap of extrude `root` under transform X: { n, w, local } (local: its normal before X)
+  function capUnder(root, which, X, model, planesById) {
+    var c = capPlane(root, which, model, planesById);
+    if (!c) return null;
+    var n = xfDir(X, c.n);
+    return { n: n, w: tidyNum(dot(n, xfPoint(X, scale(c.n, c.w)))), local: c.n };
+  }
   // faceRef(model, featureId, plane, planesById) -> the `face` record for a sketch frame `plane` made on a face of
-  // feature `featureId` ('cap' when the extrude's cap formula gives the face's plane now, else 'geom'), or null
+  // feature `featureId` (the face's tag; a pattern copy carries its seed's), or null: 'cap' (with `cap`) when one
+  // of the extrude's caps, or of a pattern copy of it, is the face's plane now, else 'geom'
   function faceRef(model, featureId, plane, planesById) {
     if (featureId == null || featureId < 0 || !model || !model.features || !findFeature(model, featureId)) return null;
-    var m = resolvedModel(model).model, w = capOffset(findFeature(m, featureId), plane.n, m, planesById || {});
-    return { feature: featureId, role: w != null && Math.abs(w - plane.offset) < 1e-6 ? 'cap' : 'geom' };
+    var m = resolvedModel(model).model, pb = planesById || {}, E = findFeature(m, featureId), out = null;
+    function on(c) { return c && dot(c.n, plane.n) > 1 - 1e-6 && Math.abs(c.w - plane.offset) < 1e-6; }
+    ['far', 'near'].forEach(function (which) { if (!out && on(capUnder(E, which, XF_ID, m, pb))) out = { feature: featureId, role: 'cap', cap: which }; });
+    if (out) return out;
+    // a copy of it: a pattern (or mirror) whose chain leads to this feature
+    m.features.forEach(function (P) {
+      if (out || !isCopyFeature(P)) return;
+      var g = P;
+      for (var d = 0; g && g.id !== featureId && isCopyFeature(g) && d < 9; d++) g = findFeature(m, g.feature);
+      if (!g || g.id !== featureId) return;
+      var cp = patternCopies(P, m);
+      if (!cp) return;
+      cp.list.forEach(function (X, k) {
+        ['far', 'near'].forEach(function (which) {
+          if (!out && on(capUnder(cp.root, which, X, m, pb))) out = { feature: P.id, role: 'cap', cap: which, inst: k, lo: tidyVec(xfDirBack(X, sub(plane.origin, X.t))), lx: tidyVec(xfDirBack(X, plane.x)), ln: tidyVec(xfDirBack(X, plane.n)) };
+        });
+      });
+    });
+    return out || { feature: featureId, role: 'geom' };
+  }
+  // the frame a 'cap' reference gives now: { n, w, x, origin?, cap } or null. A copy's frame moves rigidly with the
+  // copy (origin included: lo, the frame origin in the seed's frame); an extrude's own cap keeps the origin at the
+  // projection of the world origin, as planeFromFace makes it.
+  function capFrame(fr, src, pl, model, planesById) {
+    var root = src, X = XF_ID, lx = pl.x, ln = pl.n, lo = null;
+    if (fr.inst != null) {
+      var cp = isCopyFeature(src) ? patternCopies(src, model) : null;
+      if (!cp || !cp.list[fr.inst] || !fr.lx || !fr.ln || !fr.lo) return null;
+      root = cp.root; X = cp.list[fr.inst]; lx = fr.lx; ln = fr.ln; lo = fr.lo;
+    }
+    var which = fr.cap === 'near' || fr.cap === 'far' ? fr.cap : capWhich(root, pl.n, model, planesById);
+    var c = capUnder(root, which, X, model, planesById);
+    if (!c || (fr.cap == null && dot(c.n, pl.n) < 1 - 1e-6)) return null;   // round 10: neither cap faces the stored way
+    // the sketch's x in the cap: projected into it, and negated when the cap faces the other way now
+    var x = sub(lx, scale(c.local, dot(lx, c.local)));
+    if (len(x) < 1e-9) return null;
+    x = norm(x);
+    if (dot(c.local, ln) < 0) x = scale(x, -1);
+    var o = null;
+    if (lo) {
+      var cl = capPlane(root, which, model, planesById);
+      o = xfPoint(X, add(lo, scale(cl.n, cl.w - dot(cl.n, lo))));
+    }
+    return { n: c.n, w: c.w, x: xfDir(X, x), origin: o, cap: which };
   }
   // resolveFacePlane(sketch, model, planesById, candidates?) -> null for a sketch without a face reference, else
   // { plane, warning? }. `candidates()` lists the planar faces of the body before the sketch as [{ n, w, feature? }]
@@ -93,10 +213,11 @@ var Kernel = (function () {
     if (!fr) return null;
     var src = findFeature(model, fr.feature), before = false;
     for (var i = 0; src && i < model.features.length && model.features[i].id !== sk.id; i++) if (model.features[i].id === fr.feature) before = true;
-    var w = null;
+    var w = null, cf = null;
     if (src && before) {
-      if (fr.role !== 'geom') w = capOffset(src, pl.n, model, planesById);
-      if (w == null && candidates) {
+      if (fr.role !== 'geom') { cf = capFrame(fr, src, pl, model, planesById); if (cf) w = cf.w; }
+      // (a pattern copy that is gone stays dangling: another copy's face is not the one it was drawn on)
+      if (w == null && fr.inst == null && candidates) {
         var list = (candidates() || []).filter(function (c) { return dot(c.n, pl.n) > 1 - 1e-6; });
         var own = list.filter(function (c) { return c.feature === fr.feature; });
         if (own.length) list = own;
@@ -108,9 +229,12 @@ var Kernel = (function () {
       var what = src ? (src.name || 'feature ' + fr.feature) : 'a deleted feature';
       return { plane: pl, warning: 'Dangling sketch: the face it was drawn on (' + what + ') ' + (src ? 'cannot be found' : 'is gone') + '; the sketch stays at its last position.' };
     }
-    if (w === pl.offset) return { plane: pl };
-    var np = tidyPlane({ custom: true, origin: scale(pl.n, w), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: w });
-    np.face = { feature: fr.feature, role: fr.role };
+    // same orientation: only the offset moves (x, y and n kept exactly); a flipped or turned cap: the new frame
+    var same = !cf || (dot(cf.n, pl.n) > 1 - 1e-12 && dot(cf.x, pl.x) > 1 - 1e-12);
+    var np = tidyPlane(same ? { custom: true, origin: cf && cf.origin ? cf.origin : scale(pl.n, w), x: pl.x.slice(), y: pl.y.slice(), n: pl.n.slice(), offset: w }
+      : { custom: true, origin: cf.origin || scale(cf.n, w), x: cf.x, y: cross(cf.n, cf.x), n: cf.n.slice(), offset: w });
+    if (np.offset === pl.offset && JSON.stringify([np.origin, np.x, np.y, np.n]) === JSON.stringify([pl.origin, pl.x, pl.y, pl.n]) && (!cf || fr.cap === cf.cap)) return { plane: pl };
+    np.face = faceCopy(fr, cf ? { cap: cf.cap } : null);
     return { plane: np };
   }
 
@@ -3980,18 +4104,20 @@ var Kernel = (function () {
     //   p.sketch({ face: boss, normal: [0, 0, 1] })   the face of feature `boss` whose outward normal is `normal`
     //     (an extrude's end cap is found from the extrude itself; for other faces give `at`, a point on the face, or
     //     `offset`, the face plane's distance along the normal, and the nearest such face is taken);
-    //   a full frame { custom: true, origin, x, y, n, offset, face: { feature, role } } as generateScript writes it.
+    //   a full frame { custom: true, origin, x, y, n, offset, face: { feature, role, cap?, inst?, lx?, ln? } } as
+    //   generateScript writes it; `cap: 'far' | 'near'` (r11/faceref11) keeps the sketch on its cap when the extrude is reversed.
     var fr = spec.face;
     if (fr != null && typeof fr !== 'object') fr = { feature: fr, role: spec.role || 'cap' };
+    if (fr && spec.cap && !fr.cap) fr = faceCopy(fr, { cap: spec.cap });
     if (spec.custom) {
       if (!fr) return spec;
-      var cp = JSON.parse(JSON.stringify(spec)); cp.face = { feature: fr.feature, role: fr.role || 'cap' };
+      var cp = JSON.parse(JSON.stringify(spec)); cp.face = faceCopy(fr);
       return cp;
     }
     if (fr) {
       var n = spec.normal || spec.n || [0, 0, 1], nn = norm(n);
       var pl = tidyPlane(planeFromFace(nn, spec.at ? spec.at : scale(nn, num(spec.offset || offset || 0))));
-      pl.face = { feature: fr.feature, role: fr.role || 'cap' };
+      pl.face = faceCopy(fr);
       return pl;
     }
     if (spec.featureId != null) return { featureId: spec.featureId };
@@ -4270,7 +4396,7 @@ var Kernel = (function () {
           var pl = f.plane || {};
           // r10/facesketch10: a face reference names its feature by the script variable (ids are renumbered)
           var plj = pl.custom && pl.face ? JSON.stringify(pl, function (k, x) { return k === 'face' ? undefined : x; }) : null;
-          if (plj && idVar[pl.face.feature]) plj = plj.slice(0, -1) + ',"face":{"feature":' + idVar[pl.face.feature] + ',"role":' + JSON.stringify(pl.face.role || 'cap') + '}}';
+          if (plj && idVar[pl.face.feature]) plj = plj.slice(0, -1) + ',"face":' + JSON.stringify(faceCopy(pl.face, { feature: 0 })).replace('"feature":0', '"feature":' + idVar[pl.face.feature]) + '}';
           var spec = plj ? plj : pl.custom ? JSON.stringify(pl) : (pl.featureId != null ? idVar[pl.featureId] : JSON.stringify(pl.ref || 'Front') + ', ' + nv(pl.offset || 0));
           var s = 'var ' + v + ' = p.sketch(' + spec + (pl.custom || pl.featureId != null ? ', 0' : '') + ', ' + JSON.stringify(f.name) + ')';
           f.entities.forEach(function (e) {
@@ -4415,7 +4541,7 @@ var Kernel = (function () {
 
   return {
     STD_PLANES: STD_PLANES, AXES: AXES,
-    makePlane: makePlane, planeFromFace: planeFromFace, resolvePlane: resolvePlane, faceRef: faceRef, resolveFacePlane: resolveFacePlane, tidyPlane: tidyPlane, to3D: to3D, to2D: to2D,
+    makePlane: makePlane, planeFromFace: planeFromFace, resolvePlane: resolvePlane, faceRef: faceRef, resolveFacePlane: resolveFacePlane, capPlane: capPlane, patternCopies: patternCopies, tidyPlane: tidyPlane, to3D: to3D, to2D: to2D,
     entityPolylines: entityPolylines, entitySnapPoints: entitySnapPoints, sketchProfile: sketchProfile, signedArea: signedArea, loopSelfCrossing: loopSelfCrossing, checkProfile: checkProfile,
     offsetLoop: offsetLoop, filletPolyline: filletPolyline,
     mirrorAxis: mirrorAxis, mirrorEntity: mirrorEntity, translateEntity: translateEntity, entityPrimitives: entityPrimitives, trimEntity: trimEntity,
