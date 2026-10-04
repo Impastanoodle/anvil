@@ -1173,3 +1173,14 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Found (next).** An open drawing is not closed by `anvil.newPart`; its next queued redraw calls `closeDrawing` → `UI.pmCancel()` and cancels whatever PropertyManager is open. Ghost / exploded / thread / evaluate lines still 1 px (set `userData.lineWidth`). Sheet-metal isometric views differ between kernels (bends as ellipses).
 
 **Verified (merged code on port 8812, pane visible).** kernel-tests 811/811, occt-tests 56/56, ui-smoke 286/286 twice (with the pane hidden the three frame-rate drag steps fail, as known).
+## Run local-2026-10-04d — Round 14 (UI focus): fixes, sketch look, commands, 3D view look
+
+**Done.**
+- **Fixes** (`drawing.js` detachDrawing / loadModel wrap, `ui-assembly.js`, `ui-holewizard.js`, `ui-evaluate.js`, small `ui-commands.js` / `style.css` / `drawing.css`): switching documents puts an open drawing away at once and closeDrawing only cancels the drawing's own PMs (the round-13 bug); thick lines for ghost edges, explode lines, cosmetic threads and Evaluate markers; ghost edges follow the theme; Hole Wizard tabs show the active one; Zebra Esc says off; drawing toasts clear the sheet tabs. Scripted pass over 29 examples and every ribbon button: no console errors, nothing left open.
+- **Sketch look** (`ui-sketch.js`, `ui-relations.js`, `ui-select.js` drawSketchDim, `style.css`): in-sketch and Instant3D dimensions in the round-13 ANSI style scaled for screen (Century Gothic, text in a break, slim arrows, leader shoulders); driving black / driven grey; relation glyphs as crisp green-bordered squares at any DPR; SolidWorks-style Modify box; 4 SVG nodes per dimension (redraw ~1.5 ms on 90 entities).
+- **Commands** (`ui-panels.js`, `ui-app.js`, `icons.js`, `style.css`): ribbon flyouts with ▾ (Fillet/Chamfer, patterns / mirror, Reference Geometry, rectangles, arcs, Trim/Extend, Convert/Offset), last-used face remembered; S opens the Shortcut Bar at the cursor (part / sketch / assembly / drawing sets) — S, S starts or exits a sketch; SolidWorks two-line tooltips everywhere; mouse gestures skipped (right-drag pans / rotates components).
+- **3D view look** (`ui-core.js`, small `ui-panels.js` / `ui-app.js` / `ui-select.js` / `style.css`): camera-mounted studio lighting, glossier default, silhouette darkening; gradient background default with View ▸ Background (Gradient / Plain / Dark, `anvil.bg`); clickable triad (axis views, Shift-click 90° turns); View Selector cube on Space; translucent blue selection / orange pre-highlight (model selection now blue, sketch stays green); dark-theme edges; HLR shows the background.
+
+**Merge.** README conflicts resolved by hand keeping both lanes' text (Space + S keyboard line; Viewport + Smart Dimension paragraphs), LF kept.
+
+**Verified (merged code on port 8812, pane visible).** kernel-tests 811/811, occt-tests 56/56, ui-smoke 301/301 twice.
