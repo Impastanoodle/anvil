@@ -7112,6 +7112,23 @@
     assert(!host.classList.contains('dw-cur-tool'), 'crosshair left after Esc');
     return 'stroke floor at fit ' + (css ? 'on' : 'off') + ' (thin = ' + (0.25 * ppu).toFixed(2) + ' px); arrow ' + wdt + ' × ' + len + ' mm';
   });
+  step('r12/drawui12: a part change keeps the last sheet on screen (no placeholders) while the new views are worked out, then swaps the new sheet in', async function () {
+    UI.closeDrawing();
+    await anvil.run(plateCode()); await idle();
+    UI.makeDrawing({ fresh: true }); await UI.drawing.ready();
+    var st = UI.drawing.state, held = false, blank = false;
+    var poll = W.setInterval(function () { if (st.prog && st.prog.hold) held = true; if (D.querySelector('#drawing-sheet .dw-pending')) blank = true; }, 2);
+    var f = UI.App.model.features.filter(function (x) { return x.type === 'extrude' && !x.cut; })[0];
+    UI.pushUndo(); f.depth = 12;
+    await UI.rebuild(); await idle(); await wait(80); await UI.drawing.ready();
+    W.clearInterval(poll);
+    assert(!blank, 'placeholders shown on a part change');
+    var fw = st.sheet.views.filter(function (w) { return w.view.orient === 'Front'; })[0], b = fw.proj.bounds;
+    assert(Math.abs(b.vmax - b.vmin - 12) < 1e-9 && !fw.pending, 'the Front view did not follow: ' + (b.vmax - b.vmin));
+    await UI.undo(); await idle();
+    assert(JSON.stringify(dwView('Front').extents) === '[100,8]', 'undo');
+    return held ? 'last sheet held while the worker ran' : 'views landed before a poll saw the hold';
+  });
   // --- end r12/drawui12 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

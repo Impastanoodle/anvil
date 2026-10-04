@@ -5127,12 +5127,20 @@ var Drawing = (function () {
     syncBom(dc);
     if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units());
     if (D.prog && D.prog.doc !== dc) D.prog = null;   // (undo / another drawing: nothing left to finish)
+    // the part changed under the open drawing (a rebuild, OpenCascade's exact solid, undo): the last sheet stays on
+    // screen while the new views are worked out in the worker, then the new sheet replaces it in one go, as SolidWorks
+    // updates a drawing after a rebuild (no freeze of 100–250 ms at a moment the user did not choose, no blank views)
+    var m = mesh(), old = D.sheet;
+    if (!D.prog && old && D.sheetMesh && D.sheetMesh !== m && D.sheetDoc === dc) D.prog = { doc: dc, insert: false, t0: t0, hold: true };
     var lazy = !!(D.prog && !D.prog.sync);
-    D.sheet = Drawing.compute(dc, mesh(), App.model, lazy ? Object.assign(cctx(), { lazy: true }) : cctx());
+    D.sheet = Drawing.compute(dc, m, App.model, lazy ? Object.assign(cctx(), { lazy: true }) : cctx());
     if (D.prog) {
-      if (lazy && D.sheet.pending.length) requestProjections(D.sheet.pending);
-      else { var pg = D.prog; D.prog = null; if (pg.insert && Drawing.autoInsert(dc, mesh())) { UI.autosave(); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
+      if (lazy && D.sheet.pending.length) {
+        requestProjections(D.sheet.pending);
+        if (D.prog.hold && old) { D.sheet = old; return; }
+      } else { var pg = D.prog; D.prog = null; if (pg.insert && Drawing.autoInsert(dc, m)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
     }
+    D.sheetMesh = m; D.sheetDoc = dc;
     D.occtDrove = !!(UI.occt && UI.occt.status && UI.occt.status().driving);
     D.rendered = {};
     D.sheet.views.forEach(function (w) { D.rendered[w.view.id] = [w.view.x, w.view.y]; });
@@ -5147,32 +5155,52 @@ var Drawing = (function () {
   // view, and answers each with its projection, which goes into the mesh's projection cache; the sheet is drawn again
   // as each one lands. Without workers (or when one fails) the views are worked out here, one per task, so the page
   // still paints between them.
-  var PJ = { worker: null, off: false, mesh: null, id: 0, jobs: {}, tick: 0 };
+  var PJ = { worker: null, off: false, mesh: null, id: 0, jobs: {}, tick: 0, flushT: 0 };
   function projWorker() {
     if (PJ.off || typeof Worker === 'undefined') return null;
     if (!PJ.worker) {
       try { PJ.worker = new Worker('drawing-worker.js'); } catch (err) { PJ.off = true; return null; }
       PJ.worker.onmessage = onProjected;
-      PJ.worker.onerror = function () { PJ.off = true; PJ.worker = null; var jobs = PJ.jobs; PJ.jobs = {}; Object.keys(jobs).forEach(function (k) { projectHere(jobs[k]); }); };
+      PJ.worker.onerror = function (ev) {
+        if (ev && ev.preventDefault) ev.preventDefault();   // (handled: the views are worked out here instead)
+        PJ.off = true; PJ.worker = null;
+        var jobs = PJ.jobs; Object.keys(jobs).forEach(function (k) { if (jobs[k].posted) projectHere(jobs[k]); });
+      };
     }
     return PJ.worker;
   }
+  // a busy worker is dropped when what it works on is no longer wanted (the next drawing does not queue behind it)
+  function dropBusyWorker() {
+    var busy = Object.keys(PJ.jobs).some(function (k) { return PJ.jobs[k].posted; });
+    if (PJ.worker && busy) { PJ.worker.terminate(); PJ.worker = null; }
+  }
+  // the jobs are posted in a task of their own, after the first paint (and never when a script settles the drawing
+  // in the same task, as anvil.drawing.make() does)
   function requestProjections(list) {
     var m = mesh();
-    if (PJ.mesh !== m) { PJ.mesh = m; PJ.id++; PJ.jobs = {}; PJ.sent = false; }
-    var w = projWorker();
+    if (PJ.mesh !== m) { dropBusyWorker(); PJ.mesh = m; PJ.id++; PJ.jobs = {}; PJ.sent = false; }
     list.forEach(function (j) {
-      if (PJ.jobs[j.key]) return;
-      var job = PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, mesh: m, id: PJ.id };
+      if (!PJ.jobs[j.key]) PJ.jobs[j.key] = { key: j.key, frame: j.frame, display: j.display, tangent: j.tangent, mesh: m, id: PJ.id, posted: false };
+    });
+    if (!PJ.flushT) PJ.flushT = setTimeout(flushProjections, 0);
+  }
+  function flushProjections() {
+    PJ.flushT = 0;
+    var m = PJ.mesh, w = null;
+    Object.keys(PJ.jobs).forEach(function (k) {
+      var job = PJ.jobs[k];
+      if (job.posted || job.id !== PJ.id) return;
+      job.posted = true;
+      if (!w && !PJ.off) w = projWorker();
       if (w) {
         try {
           if (!PJ.sent) {
             var copy = {};
-            Object.keys(m).forEach(function (k) { if (k.indexOf('_drawing') !== 0) copy[k] = m[k]; });
+            Object.keys(m).forEach(function (q) { if (q.indexOf('_drawing') !== 0) copy[q] = m[q]; });
             w.postMessage({ type: 'mesh', id: PJ.id, mesh: copy });
             PJ.sent = true;
           }
-          w.postMessage({ type: 'project', id: PJ.id, job: j.key, frame: j.frame, display: j.display, tangent: j.tangent });
+          w.postMessage({ type: 'project', id: PJ.id, job: job.key, frame: job.frame, display: job.display, tangent: job.tangent });
           return;
         } catch (err) { PJ.off = true; w = null; }
       }
@@ -5204,8 +5232,7 @@ var Drawing = (function () {
   // main thread), so a click, an export or a script sees the whole sheet
   function settle() {
     if (!D.prog || !D.active) return;
-    // (a worker still busy with views no longer wanted is dropped, so the next drawing does not queue behind them)
-    if (PJ.worker && Object.keys(PJ.jobs).length) { PJ.worker.terminate(); PJ.worker = null; }
+    dropBusyWorker();
     PJ.id++; PJ.mesh = null; PJ.jobs = {};
     D.prog.sync = true;
     render();
