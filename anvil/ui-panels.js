@@ -558,7 +558,7 @@
       // a sub-assembly / linked / suppressed component (ui-assembly.js): its icon, tooltip and the rows inside it
       var dec = UI.asmRowDecor ? UI.asmRowDecor(c, st, helpers) : null;
       if (dec && dec.tip) tip = dec.tip(tip);
-      var row = treeItem({ icon: err ? 'error' : (dec && dec.icon) || 'component', name: label + ((dec && dec.suffix) || ''), depth: depth, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : '') + (dec && dec.cls ? ' ' + dec.cls : ''), title: tip,
+      var row = treeItem({ icon: (dec && dec.icon) || 'component', name: label + ((dec && dec.suffix) || ''), depth: depth, cls: 'component-row' + (selected ? ' selected' : '') + (err ? ' err' : '') + (hidden ? ' hidden' : '') + (dec && dec.cls ? ' ' + dec.cls : ''), title: tip,
         children: !!(dec && dec.children), open: !!(dec && dec.open), toggle: dec && dec.toggle });
       row.setAttribute('data-comp', String(c.id));
       row.title = tip;
@@ -575,13 +575,13 @@
     folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Add Mate…', action: function () { UI.cmdMate(); } }]); });
     tree.appendChild(folder);
     // component pattern / mirror folders come after the Mates folder, as in SolidWorks
-    function extras() { if (UI.asmTreeExtras) UI.asmTreeExtras(tree, { treeItem: treeItem, componentRow: componentRow, expanded: expanded, showMenu: showMenu, filter: filter, refresh: refreshTree }); }
+    function extras() { if (UI.asmTreeExtras) UI.asmTreeExtras(tree, { treeItem: treeItem, componentRow: componentRow, expanded: expanded, showMenu: showMenu, filter: filter, refresh: refreshTree }); if (UI.asmTreeMarks) UI.asmTreeMarks(tree, root); }   // r13/asmui13: badges, hover / owner marks
     if (!mates.length) { extras(); return; }
     var box = el('div', { class: 'tc' + (isOpen ? ' open' : '') });
     shown.forEach(function (mt) {
       var st = UI.mateStatus ? UI.mateStatus(mt) : { error: null };
       var err = mt.suppressed ? null : st.error, off = mt.suppressed || st.suppressed;
-      var row = treeItem({ icon: err ? 'error' : ({ concentric: 'concentric', distance: 'distance', angle: 'angle', parallel: 'parallel', perpendicular: 'perpendicular', tangent: 'tangent', width: 'width', gear: 'gear', limitdistance: 'limitDistance', limitangle: 'limitAngle' }[mt.type] || 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (off ? ' suppressed' : '') });
+      var row = treeItem({ icon: ({ concentric: 'concentric', distance: 'distance', angle: 'angle', parallel: 'parallel', perpendicular: 'perpendicular', tangent: 'tangent', width: 'width', gear: 'gear', limitdistance: 'limitDistance', limitangle: 'limitAngle' }[mt.type] || 'coincident'), name: UI.mateLabel ? UI.mateLabel(mt) : mt.name, depth: 2, cls: 'mate-row' + (err ? ' err' : '') + (off ? ' suppressed' : '') });
       row.setAttribute('data-mate', String(mt.id));
       row.title = err ? mt.name + ': ' + err : mt.name + (mt.suppressed ? ' (suppressed)' : st.warning ? ' (suppressed: ' + st.warning + ')' : '') + ' — double-click to edit';
       row.addEventListener('click', function () { if (UI.showMate) UI.showMate(mt); setStatus(err ? mt.name + ': ' + err : (UI.mateLabel ? UI.mateLabel(mt) : mt.name) + (mt.suppressed ? ' (suppressed)' : '')); });   // r4/asm4: showMate selects its faces

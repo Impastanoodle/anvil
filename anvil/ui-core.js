@@ -1089,10 +1089,12 @@ var UI = (function () {
   }
   function updatePlanes() {
     disposeGroup(groups.planes);
-    var want = App.view.showPlanes || (App.command && App.command.pickPlane) || (App.sel && App.sel.kind === 'plane') || (App.hover && App.hover.kind === 'plane');
+    var want = App.view.showPlanes || (App.command && App.command.pickPlane && !App.command.quietPlanes) || (App.sel && App.sel.kind === 'plane') || (App.hover && App.hover.kind === 'plane');
     if (!want) return;
     var half = planeExtent();
+    var only = !App.view.showPlanes && App.command && App.command.quietPlanes && App.hover && App.hover.kind === 'plane' ? App.hover.ref : null;   // r13/asmui13: the flyout's hovered plane alone
     ['Front', 'Top', 'Right'].forEach(function (r) {
+      if (only && r !== only) return;
       planeQuad(K.makePlane(r, 0), half, r, r + ' Plane').forEach(function (o) { groups.planes.add(o); });
     });
     App.model.features.forEach(function (f) {

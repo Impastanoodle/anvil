@@ -2577,7 +2577,7 @@
       noFocus: !existing,
       message: 'Select two entities to mate: planar faces, cylindrical faces, or origin planes, on different components.',
       command: {
-        pickPlane: true, faceList: [],
+        pickPlane: true, quietPlanes: true, faceList: [],   // r13/asmui13: origin planes are picked in the FeatureManager (drawn while their row is hovered), not drawn over the model
         onPick: function (pk) {
           var ref = null;
           if (pk.kind === 'face' && unpick(pk.index)) return true;   // r5/select5
@@ -2675,6 +2675,13 @@
     mySpec = pm.spec;
     mateSession = { addRef: function (ref) { return addRef(JSON.parse(JSON.stringify(ref)), null); }, values: v };
     if (existing) preview();
+    // r13/asmui13: editing a mate lights its faces in the selection colour, as in SolidWorks (the list was empty)
+    if (existing && UI.mateRefFace && App.command) {
+      ['a', 'b', 'a2', 'b2'].forEach(function (k) { var r = v[k] ? UI.mateRefFace(v[k]) : -1; if (r >= 0) pickedBy[k] = r; });
+      picked = Object.keys(pickedBy).map(function (s) { return pickedBy[s]; });
+      App.command.faceList = picked.slice();
+      UI.updateHighlights();
+    }
   }
   function editMate(m) { cmdMate(m); }
   // UI.mateSelect(ref): add a ref to the open Mate PM as if it were picked (scripts / tests); false when no Mate PM is open

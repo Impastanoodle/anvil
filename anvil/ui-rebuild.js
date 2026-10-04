@@ -23,7 +23,9 @@
       var c = Assembly.findComponent && Assembly.findComponent(App.model, id);
       if (c) return { name: c.name || ('Component ' + id), kind: 'component', icon: 'part' };
       var m = Assembly.findMate && Assembly.findMate(App.model, id);
-      if (m) return { name: m.name || ('Mate ' + id), kind: 'mate', icon: 'mate' };
+      if (m) return { name: (UI.mateLabel ? UI.mateLabel(m) : m.name) || ('Mate ' + id), kind: 'mate', icon: 'mate' };   // r13/asmui13: "Distance1 (Cap<1>, Plate<1>)"
+      var p = Assembly.findPattern && Assembly.findPattern(App.model, id);
+      if (p) return { name: p.name || ('Pattern ' + id), kind: 'pattern', icon: 'lpatternComp' };
       return null;
     }
     var f = K.findFeature(App.model, id);
@@ -96,6 +98,7 @@
     bd.innerHTML = ico(kind === 'err' ? 'error' : 'warn', 10);
     ic.appendChild(bd);
   }
+  UI.rebuildBadge = badge;   // r13/asmui13: the assembly rows (ui-assembly.js markAsmTree) use the same badge
   // the row keeps the feature's own icon; the badge says error / warning; a parent whose sketch failed is badged too
   UI.rebuildMarkRow = function (row, f, err, warn, icon) {
     var b = App.build, errors = (b && b.errors) || {}, warnings = (b && b.warnings) || {};
@@ -140,7 +143,7 @@
   function treeRow(it) {
     var tree = document.getElementById('tree');
     if (!tree || it.id == null) return null;
-    var attr = it.what === 'component' ? 'data-comp' : it.what === 'mate' ? 'data-mate' : 'data-fid';
+    var attr = it.what === 'component' ? 'data-comp' : it.what === 'mate' ? 'data-mate' : it.what === 'pattern' ? 'data-pattern' : 'data-fid';
     return tree.querySelector('.ti[' + attr + '="' + it.id + '"]');
   }
   function goTo(it) {
@@ -211,6 +214,14 @@
         go.className = 'btn ww-go'; go.textContent = 'Go To'; go.title = 'Select it in the FeatureManager';
         go.addEventListener('click', function (e) { e.stopPropagation(); UI.closeModal(); goTo(it); });
         if (it.id != null || it.what === 'equation') act.appendChild(go);
+        // r13/asmui13: an assembly's mate / pattern / component says how it is edited (ui-assembly.js UI.asmIssueEdit)
+        var ae = isAsm() && UI.asmIssueEdit ? UI.asmIssueEdit(it) : null;
+        if (ae) {
+          var ea = document.createElement('button');
+          ea.className = 'btn ww-edit'; ea.textContent = ae.label; if (ae.title) ea.title = ae.title;
+          ea.addEventListener('click', function (e) { e.stopPropagation(); UI.closeModal(); ae.run(); });
+          act.appendChild(ea);
+        }
         if (o || it.what === 'equation') {
           var ed = document.createElement('button');
           ed.className = 'btn ww-edit'; ed.textContent = it.what === 'equation' ? 'Equations…' : (o.type === 'sketch' ? 'Edit Sketch' : 'Edit');
@@ -218,7 +229,7 @@
           act.appendChild(ed);
         }
         tr.addEventListener('click', function () { Array.prototype.forEach.call(tb.children, function (r) { r.classList.toggle('sel', r === tr); }); });
-        tr.addEventListener('dblclick', function () { if (o || it.what === 'equation') { UI.closeModal(); if (o && o.type === 'sketch' && UI.editSketch) UI.editSketch(o.id); else edit(it); } });
+        tr.addEventListener('dblclick', function () { if (ae) { UI.closeModal(); ae.run(); return; } if (o || it.what === 'equation') { UI.closeModal(); if (o && o.type === 'sketch' && UI.editSketch) UI.editSketch(o.id); else edit(it); } });
         if (focusId != null && it.id === focusId) tr.classList.add('sel');
         tb.appendChild(tr);
       });
