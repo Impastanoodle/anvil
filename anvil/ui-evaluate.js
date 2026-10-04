@@ -68,7 +68,9 @@
   var markMats = {};
   function lineMat(color) {
     var k = 'l' + color;
-    return markMats[k] || (markMats[k] = new THREE.LineBasicMaterial({ color: color, depthTest: false, transparent: true }));
+    // r14/fixes14: measurement / clearance / interference markers as 2 px thick lines (UI.LINE_W, ui-core.js)
+    if (!markMats[k]) { markMats[k] = new THREE.LineBasicMaterial({ color: color, depthTest: false, transparent: true }); markMats[k].userData.lineWidth = 2; }
+    return markMats[k];
   }
   function fillMat(color, opacity) {
     var k = 'f' + color + ':' + opacity;

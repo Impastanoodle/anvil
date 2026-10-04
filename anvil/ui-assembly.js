@@ -1123,6 +1123,8 @@
   lineGroup.name = 'explode-lines';
   UI.scene.add(lineGroup);
   var lineMat = new THREE.LineDashedMaterial({ color: 0xe07b1a, dashSize: 3, gapSize: 2, depthTest: false, transparent: true });
+  // r14/fixes14: thick lines, 1.5 px with 9 px dashes and 4 px gaps on screen (SolidWorks' explode lines keep their pitch at any zoom)
+  lineMat.userData.lineWidth = 1.5; lineMat.userData.dashPx = 9; lineMat.userData.gapPx = 4;
   var drawnFor = null;
   function updateExplodeLines() {
     var b = isAsm() ? App.build : null;
@@ -2108,6 +2110,7 @@
       var lg = new THREE.BufferGeometry();
       lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
       ghostEdgeMat = ghostEdgeMat || new THREE.LineBasicMaterial({ color: 0x24292f, transparent: true, opacity: 0.3, depthWrite: false });
+      ghostEdgeMat.userData.lineWidth = 1.25;   // r14/fixes14: drawn as smooth thick lines like the opaque edges, a shade thinner
       ghostEdgeMat.clippingPlanes = pm.clippingPlanes || null;
       var lines = new THREE.LineSegments(lg, ghostEdgeMat);
       lines.frustumCulled = false;
