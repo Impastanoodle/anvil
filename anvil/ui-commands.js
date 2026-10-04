@@ -292,6 +292,16 @@
         cb.addEventListener('change', function () { changed(cb.checked); });
         return el('div', { class: 'pm-row check' }, [cb, el('label', { text: f.label, onclick: function () { cb.click(); } })]);
       }
+      case 'radio': {   // r13/trim13: a column of option buttons, as in SolidWorks' PropertyManagers (Trim Entities' Options)
+        var rbox = el('div', { class: 'pm-radio' });
+        f.options.forEach(function (o) {
+          var rb = el('input', { type: 'radio', name: 'pm-' + f.key, value: String(o[0]), 'data-key': f.key + ':' + o[0] });
+          rb.checked = String(v[f.key]) === String(o[0]);
+          rb.addEventListener('change', function () { if (rb.checked) changed(o[0]); });
+          rbox.appendChild(el('div', { class: 'pm-row check' }, [rb, el('label', { text: o[1], onclick: function () { rb.click(); } })]));
+        });
+        return rbox;
+      }
       case 'text': {
         var t = el('input', { type: 'text', value: v[f.key] || '', 'data-key': f.key || '' });
         t.addEventListener('input', function () { changed(t.value); });
@@ -986,37 +996,241 @@
     else Object.keys(e).forEach(function (k) { if (typeof e[k] === 'number') e[k] = Math.round(e[k] * 1e4) / 1e4; });
     return e;
   }
+  // r13/trim13: Trim Entities as in SolidWorks, with its five options (the last one used stays for the next time).
+  // Power trim (the default): press and drag; a grey trail follows the cursor and every entity segment it crosses goes
+  // at once (one undo step per drag). Pressed on the free end of a line or an arc, the drag extends or shortens it along
+  // itself instead, snapping onto the entities in its way. Corner: two entities meet, each keeping the side clicked.
+  // Trim away inside / outside: two bounding entities, then the entities to trim. Trim to closest: a click removes the
+  // segment under the cursor (Power trim's click does too). In every mode the part that would go is highlighted first.
+  var trimMode = 'power';
+  var TRIM_MODES = [['power', 'Power trim'], ['corner', 'Corner'], ['inside', 'Trim away inside'], ['outside', 'Trim away outside'], ['closest', 'Trim to closest']];
+  var TRIM_MSG = {
+    power: '<b>Press and drag across the entities to trim.</b> Every segment the trail crosses goes. Drag from the free end of a line or an arc to extend or shorten it; a click trims the segment under the cursor.',
+    corner: '<b>Select two entities.</b> They are extended or trimmed until they meet, each keeping the side you click.',
+    inside: '<b>Select two bounding entities, then the entities to trim.</b> The part between the bounding entities goes.',
+    outside: '<b>Select two bounding entities, then the entities to trim.</b> The parts outside the bounding entities go.',
+    closest: '<b>Click the part of an entity to remove.</b> The segment between its neighbouring intersections goes away; an entity with nothing crossing it is deleted.'
+  };
+  var TRIM_HINT = { power: '<b>Power trim:</b> drag across entities to trim them; drag a free end to extend it.', corner: '<b>Corner:</b> click two entities to make them meet.', inside: '<b>Trim away inside:</b> click two bounding entities, then the entities to trim.', outside: '<b>Trim away outside:</b> click two bounding entities, then the entities to trim.', closest: '<b>Trim to closest:</b> click the segment to remove.' };
+  var TRIM_SPAN = 'stroke:#e8891c;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.85';
+  var TRIM_PICK = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
+  var TRIM_TRAIL = 'stroke:#8c8c8c;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
+  UI.trimStats = { moves: 0, total: 0, max: 0 };   // per pointer move of a Power trim drag (ms), for the smoothness checks
   function cmdTrimEntities() {
-    var f = UI.activeSketchFeature();
+    var f = UI.activeSketchFeature(), S = window.SketchSolver;
     if (!f) { UI.toast('Open a sketch first.'); return; }
-    var count = 0;
+    // the sketch as it is now (an undo or a rebuild may have replaced the feature object since the PM opened)
+    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
+    var count = 0, picks = [], vals = { mode: trimMode };   // picks: { e: the entity object, uv: where it was clicked }
+    var hint0 = $('sketch-hint') ? $('sketch-hint').innerHTML : null;
+    function setHint() { var h = $('sketch-hint'); if (h && App.mode === 'sketch') h.innerHTML = TRIM_HINT[mode()] || ''; }
+    function mode() { return vals.mode || 'power'; }
+    function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
+    function scr(q) { return UI.worldToScreen(K.to3D(UI.activePlane(), q[0], q[1])); }
+    function entPts(e) { return K.entityPolylines(e).map(function (l) { return l.closed && l.pts.length ? l.pts.concat([l.pts[0]]) : l.pts; }); }
+    function pickIdx() { picks = picks.filter(function (p) { return f.entities.indexOf(p.e) >= 0; }); return picks.map(function (p) { return f.entities.indexOf(p.e); }); }
+    function pickNames() { var ix = pickIdx(); return ix.length ? ix.map(function (i) { return S.refName(f, String(i)); }).join(', ') : '(none)'; }
+    function changedSketch(n) {
+      count += n; App.sel = null; App.gridStale = true;
+      UI.updateSketches(); UI.refreshTree();
+      UI.setStatus((mode() === 'corner' ? 'Made ' + count + ' corner' : 'Trimmed ' + count + ' segment') + (count === 1 ? '' : 's') + '. Continue, or press ✓ to finish.');
+    }
+    // the free end of a line or an arc within 8 px of the cursor (Power trim drags it): { i, end, pt }
+    function freeEndAt(mx, my) {
+      var best = null, bd = 8;
+      f.entities.forEach(function (e, i) {
+        if (e.t !== 'line' && e.t !== 'arc') return;
+        ['p1', 'p2'].forEach(function (end) {
+          var p = S.refPoint(f, i + '.' + end), s = p && scr(p), d = s ? Math.hypot(s[0] - mx, s[1] - my) : Infinity;
+          if (d < bd && !S.endJoined(f, i + '.' + end)) { bd = d; best = { i: i, end: end, pt: p }; }
+        });
+      });
+      return best;
+    }
+    function ring(p, px) {   // a small circle round sketch point p, px pixels across
+      var s = scr(p), out = [];
+      for (var k = 0; k <= 16; k++) { var a = k * Math.PI / 8, q = toUV(s[0] + px * Math.cos(a), s[1] + px * Math.sin(a)); if (q) out.push(q); }
+      return out;
+    }
+    function drawPicks() { pickIdx().forEach(function (i) { UI.sketchPreview(entPts(f.entities[i]), TRIM_PICK, 'sk-trim-pick'); }); }
+    // the hover preview: what a click (or a crossing) would remove, or what would be picked
+    function hover(uv, mx, my) {
+      fresh();
+      if (!S || !uv) return;
+      UI.sketchFeedbackClear();
+      drawPicks();
+      var m = mode(), hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
+      if (m === 'power' || m === 'closest') {
+        var fe = m === 'power' ? freeEndAt(mx, my) : null;
+        if (fe) { UI.sketchPreview([ring(fe.pt, 6)], TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2'), 'sk-trim-end'); return; }
+        var sp = e && e.t !== 'point' ? S.trimSpan(f, hit.index, uv) : null;
+        if (sp) UI.sketchPreview([sp.pts], TRIM_SPAN, 'sk-trim-span');
+        return;
+      }
+      if (!e || e.t === 'point') return;
+      var ix = pickIdx();
+      if (m === 'corner') {
+        UI.sketchPreview(entPts(e), TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2.5'), 'sk-trim-span');
+        if (ix.length === 1) {
+          var pv = S.cornerPreview(f, ix[0], picks[0].uv, hit.index, uv);
+          if (pv) UI.sketchPreview(pv.map(function (c) { return entPts(c)[0]; }));   // the dashed orange result
+        }
+        return;
+      }
+      if (ix.length < 2) { UI.sketchPreview(entPts(e), TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2.5'), 'sk-trim-span'); return; }
+      var spans = S.betweenSpans(f, hit.index, uv, ix, m === 'outside');
+      if (spans) UI.sketchPreview(spans, TRIM_SPAN, 'sk-trim-span');
+    }
+    // a rectangle is four lines in SolidWorks: the edge picked becomes a line of its own (relations kept)
+    function explodeAt(hit, mx, my) {
+      var e = f.entities[hit.index];
+      if (!e || (e.t !== 'rect' && e.t !== 'crect')) return hit;
+      if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+      S.explodeRect(f, hit.index);
+      return UI.pickEntity(mx, my) || hit;
+    }
+    function click(uv, mx, my) {
+      fresh();
+      if (!S) return;
+      var m = mode(), hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index], pushed, r;
+      if (!e || e.t === 'point') { UI.setStatus(m === 'corner' || ((m === 'inside' || m === 'outside') && picks.length < 2) ? 'Click a line or an arc.' : 'Click on an entity to trim it.'); return; }
+      if (m === 'power' || m === 'closest') {
+        if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+        r = S.trimAt(f, hit.index, uv);
+        if (!r.ok) { UI.toast(r.error); return; }
+        changedSketch(1);
+      } else if (m === 'corner' && pickIdx().length < 1) {
+        hit = explodeAt(hit, mx, my);
+        picks = [{ e: f.entities[hit.index], uv: uv }];
+        renderPM(); UI.updateSketches();
+        UI.setStatus('Select the second entity.');
+      } else if (m === 'corner') {
+        hit = explodeAt(hit, mx, my);
+        var i0 = pickIdx()[0];
+        pushed = !App.sketchDirty;
+        if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
+        r = S.cornerTrim(f, i0, picks[0].uv, hit.index, uv);
+        picks = [];
+        renderPM();
+        if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); UI.updateSketches(); }
+        else changedSketch(1);
+      } else if (pickIdx().length < 2) {
+        if (picks.some(function (p) { return p.e === e; })) return;
+        picks.push({ e: e, uv: uv });
+        renderPM();
+        UI.setStatus(picks.length < 2 ? 'Select the second bounding entity.' : 'Now click the entities to trim.');
+      } else {
+        hit = explodeAt(hit, mx, my);
+        pushed = !App.sketchDirty;
+        if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
+        r = S.trimBetween(f, hit.index, uv, pickIdx(), m === 'outside');
+        if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); return; }
+        changedSketch(1);
+        renderPM();
+      }
+      hover(uv, mx, my);   // the highlight follows the new geometry
+    }
+    // The sketch is redrawn once per animation frame, in the frame itself (a fast drag across many entities never
+    // queues redraws, and nothing is drawn that the screen would not show). ctx.analysis, when a trim left one, is the
+    // sketch's state already: the redraw reuses it instead of analysing the sketch again.
+    function painter(ctx) {
+      var frame = 0;
+      function paint() {
+        frame = 0; App.gridStale = true;
+        var reuse = !!(ctx && ctx.analysis);
+        if (reuse) { App.sketchState = ctx.analysis; App.sketchDragging = true; }
+        try { UI.updateSketches(); } finally { if (reuse) App.sketchDragging = false; }
+      }
+      return {
+        mark: function () { if (!frame) frame = requestAnimationFrame(paint); },
+        flush: function () { if (frame) { cancelAnimationFrame(frame); paint(); } }
+      };
+    }
+    function trailHook(p) {
+      var uv0 = toUV(p[0], p[1]);
+      if (!uv0) return null;
+      var trail = [uv0], last = uv0, n0 = count, ctx = { conflicts: App.sketchState ? App.sketchState.conflicts : null }, pt = painter(ctx);
+      return {
+        start: function () { },
+        move: function (q) {
+          var uv = toUV(q[0], q[1]);
+          if (!uv) return;
+          var t0 = performance.now();
+          var n = S.powerTrim(f, last, uv, function () { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }, ctx);
+          trail.push(uv); last = uv;
+          if (n) { count += n; App.sel = null; pt.mark(); }
+          UI.sketchPreview([trail], TRIM_TRAIL, 'sk-trim-trail');
+          var dt = performance.now() - t0, st = UI.trimStats;
+          st.moves++; st.total += dt; if (dt > st.max) st.max = dt;
+        },
+        end: function () {
+          pt.flush();
+          UI.sketchFeedbackClear();
+          if (count > n0) changedSketch(0);
+        }
+      };
+    }
+    function extendHook(fe) {
+      var st = null, landed = false, pushed = false, ctx = {}, pt = painter(ctx);
+      return {
+        start: function () {
+          pushed = !App.sketchDirty;
+          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
+          st = S.extendBegin(f, fe.i, fe.end);
+          ctx.analysis = st ? S.analyze(f) : null;   // the drag changes no relation: the state is drawn from this one
+        },
+        move: function (q) {
+          var uv = st && toUV(q[0], q[1]);
+          if (!uv) return;
+          var t0 = performance.now(), p = S.extendMove(f, st, uv, null), sp = scr(p), snap = null, bd = 8;
+          // it lands exactly on an entity its line (or circle) crosses when it comes within 8 px of the crossing
+          st.hits.forEach(function (h) { var s = scr(h), d = Math.hypot(s[0] - sp[0], s[1] - sp[1]); if (d < bd) { bd = d; snap = h; } });
+          if (snap) p = S.extendMove(f, st, uv, snap);
+          landed = !!snap;
+          pt.mark();
+          if (snap) UI.sketchSnapMark(p, q, true, 'coincident');
+          var dt = performance.now() - t0, s2 = UI.trimStats;
+          s2.moves++; s2.total += dt; if (dt > s2.max) s2.max = dt;
+        },
+        end: function () {
+          if (!st) return;
+          pt.flush();
+          UI.sketchFeedbackClear();
+          var r = S.extendEnd(f, st, landed);
+          if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); UI.updateSketches(); return; }
+          App.sel = null; App.gridStale = true; UI.updateSketches(); UI.refreshTree();
+          UI.setStatus(r.held ? 'Its relations or dimensions hold the entity where it was.' : landed ? 'Extended to the entity in its way.' : 'Extended. Drag another, or press ✓ to finish.');
+        }
+      };
+    }
+    function drag(p) {
+      fresh();
+      if (!S || mode() !== 'power') return null;
+      var fe = freeEndAt(p[0], p[1]);
+      return fe ? extendHook(fe) : trailHook(p);
+    }
     openPM({
-      title: 'Trim Entities', icon: 'trim',
-      message: '<b>Click the part of an entity to remove.</b> The segment between its neighbouring intersections goes away; an entity with nothing crossing it is deleted.',
-      command: { onSketchPoint: function (uv, mx, my) {
-        var hit = UI.pickEntity(mx, my);
-        if (!hit) { UI.setStatus('Click on an entity to trim it.'); return; }
-        try {
-          var he = f.entities[hit.index];
-          if (window.SketchSolver && he && (he.t === 'rect' || he.t === 'crect')) {
-            // a rectangle is four lines in SolidWorks: trim the edge clicked, the other three keep their relations
-            if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-            SketchSolver.explodeRect(f, hit.index);
-            hit = UI.pickEntity(mx, my) || hit;
-          }
-          var before = f.entities.slice(), out = K.trimEntity(f.entities, hit.index, uv);
-          if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-          f.entities = out.map(roundPts);
-          if (window.SketchSolver) SketchSolver.afterTrim(f, before, hit.index);  // relations and dimensions follow the pieces
-          count++;
-          App.sel = null; App.gridStale = true;
-          UI.updateSketches(); UI.refreshTree();
-          UI.setStatus('Trimmed ' + count + ' segment' + (count === 1 ? '' : 's') + '. Click another, or press ✓ to finish.');
-        } catch (e) { UI.toast(e.message); }
-      } },
-      groups: [{ title: 'Options', fields: [{ type: 'static', label: 'Mode', value: 'Trim to closest' }] }],
-      onChange: function () { }, onOK: function () { }
+      title: 'Trim Entities', icon: 'trim', values: vals, message: TRIM_MSG[vals.mode],
+      command: { ownHover: true, onSketchMove: hover, onSketchPoint: click, onSketchDrag: drag },
+      groups: [
+        { title: 'Options', fields: [{ type: 'radio', key: 'mode', options: TRIM_MODES }] },
+        { title: 'Selections', show: function (v) { return v.mode !== 'power' && v.mode !== 'closest'; }, fields: [
+          { type: 'static', label: 'Selected', value: pickNames },
+          { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function () { picks = []; renderPM(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); } }] }
+        ] }
+      ],
+      onChange: function (v, key) {
+        if (key !== 'mode') return;
+        trimMode = v.mode; picks = [];
+        pm.spec.message = TRIM_MSG[v.mode] || TRIM_MSG.power;
+        renderPM();
+        if (UI.sketchFeedbackClear) UI.sketchFeedbackClear();
+        setHint();
+      },
+      onOK: function () { },
+      onClose: function () { var h = $('sketch-hint'); if (h && hint0 != null) h.innerHTML = hint0; if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
     });
+    setHint();
   }
   // Extend Entities (r3/sketch3): the counterpart of Trim, as in SolidWorks — the end of a line or an arc nearest the
   // click grows to the first entity in its way; hovering previews the extension (SketchSolver.extendTarget).
