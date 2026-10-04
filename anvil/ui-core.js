@@ -1840,6 +1840,7 @@ var UI = (function () {
     if (isAssembly() || !App.model || !App.build || App.previewSync || !App.workerOn || !(n >= 0) || n >= App.model.features.length || !getWorker()) return false;
     if (roll.active || roll.want != null) clearRollback(true);
     roll.want = n; roll.posted = false; roll.committing = false;
+    rollHook('onRollbackWant', n);   // r11/occtswap11: ui-occt.js asks OpenCascade for the same rolled-back part
     // a command whose PropertyManager posts no preview of its own right away (a plane, an imported body) asks alone
     Promise.resolve().then(function () {
       if (roll.want !== n || roll.posted || roll.active) return;
@@ -1867,6 +1868,28 @@ var UI = (function () {
     requestRender();
     App.rollbackMs = performance.now() - t0;
     if (UI.onRollback) { try { UI.onRollback(true); } catch (e) { console.warn(e); } }
+    rollHook('onRollbackShown', base.upto);   // r11/occtswap11
+  }
+  // r11/occtswap11: hooks for ui-occt.js (arrays of functions on UI)
+  function rollHook(name, arg) { (UI[name] || []).forEach(function (fn) { try { fn(arg); } catch (e) { console.warn(e); } }); }
+  // r11/occtswap11: rollbackSwap(build, { upto, anvil, edges?, curves?, normals? }): OpenCascade's solid of the same
+  // rolled-back part (ui-occt.js) shown in place of Anvil's, while that part (o.anvil) is still the one shown.
+  // -> true when swapped. The whole part kept aside for ✗ is untouched.
+  function rollbackSwap(build, o) {
+    if (!roll.active || roll.committing || App.rollback !== o.upto || (o.anvil && App.build !== o.anvil)) return false;
+    var t0 = performance.now();
+    App.build = build;
+    App.mesh = K.meshFromBody(build.body);
+    if (App.mesh) { App.mesh.workerEdges = o.edges || null; App.mesh.workerCurves = o.curves || null; useWorkerNormals(App.mesh, o.normals); }
+    App.triShared = buildTriShared(App.mesh);
+    ['sel', 'sel2'].forEach(function (k) { var s = App[k]; if (s && (s.kind === 'face' || s.kind === 'edge' || s.kind === 'body')) App[k] = null; });
+    App.hover = null;
+    updateBodyMesh(); updateHighlights(); updatePlanes(); updateSketches();
+    App.dimsStale = true;
+    requestRender();
+    App.rollbackSwapMs = performance.now() - t0;
+    if (UI.onRollback) { try { UI.onRollback(true); } catch (e) { console.warn(e); } }   // PM lists re-resolved on this mesh
+    return true;
   }
   // ✓ pressed: the rolled-back part and the preview stay until the rebuilt part is applied (applyBuild ends it)
   function rollbackCommit() { if (roll.active || roll.want != null) { roll.committing = true; roll.want = null; } }
@@ -1876,6 +1899,7 @@ var UI = (function () {
     var s = roll.saved, d = roll.deferred, was = roll.active;
     roll.want = null; roll.posted = false; roll.active = false; roll.saved = null; roll.deferred = null; roll.committing = false;
     App.rollback = null;
+    rollHook('onRollbackEnd', was);   // r11/occtswap11
     if (!was || !restore || !s) return;
     App.build = s.build; App.mesh = s.mesh; App.triShared = s.triShared; App.edges = s.edges; App.edgesMesh = s.edgesMesh;
     App.sel = s.sel; App.sel2 = s.sel2; App.hover = null;
@@ -2121,7 +2145,7 @@ var UI = (function () {
     camVersion: function () { return camVer; },
     rebuild: rebuild, previewInWorker: previewInWorker, cancelPreviews: cancelPreviews, featurePreview: featurePreview, featurePreviewEnd: featurePreviewEnd, holdFrame: holdFrame, afterRebuild: afterRebuild, whenIdle: whenIdle, setWorkerOn: setWorkerOn, buildCacheInfo: buildCacheInfo,
     applyBuild: function (build, opts) { return applyBuild(build, opts, 0); },   // ui-occt.js: OpenCascade's build of the same model
-    rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit,   // r10/editpreview10: Edit Feature rollback
+    rollbackTo: rollbackTo, rollForward: rollForward, rollbackCommit: rollbackCommit, rollbackSwap: rollbackSwap,   // r10/editpreview10: Edit Feature rollback
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,

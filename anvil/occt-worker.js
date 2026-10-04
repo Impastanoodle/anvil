@@ -6,7 +6,8 @@
 //
 // Messages in:   { type: 'engine', bytes }                the engine file a user picked (no engine on the server); null: none
 //                { type: 'build', seq, model, exports?, cacheKey?, noCache?, anvil? }  model: a clone of App.model (or an assembly's
-//                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache
+//                  part); exports adds STEP / IGES text; cacheKey picks a per-part rebuild cache; upto: n builds only the
+//                  first n features from the cache, leaving it untouched (Edit Feature's rollback; the reply carries upto)
 //                { type: 'import', seq, format, text }    a STEP / IGES file read and tessellated (-> 'imported' / 'importError')
 // Messages out:  { type: 'ready', loadMs }                once, when OpenCascade has loaded
 //                { type: 'built', seq, result }           OcctKernel.build's result (mesh arrays transferred)
@@ -111,7 +112,11 @@ self.onmessage = async (e) => {
   }
   if (m.type !== 'build') return;
   try {
-    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports, cache: m.noCache ? null : cacheFor(m.cacheKey) });
+    // r11/occtswap11: upto (Edit Feature's rollback, ui-occt.js): the part's first `upto` features only, from the
+    // rebuild cache's snapshots, which it reads but leaves untouched (OcctKernel.build opts.readOnly)
+    const rolled = m.upto != null;
+    if (rolled && m.model && m.model.features) m.model.features = m.model.features.slice(0, m.upto);
+    const r = OcctKernel.build(oc, self.Kernel, m.model, { chord: m.chord, exports: !!m.exports && !rolled, cache: m.noCache ? null : cacheFor(m.cacheKey), readOnly: rolled });
     // the main thread's work on the result is done here too (r3/engine3; the edges since smooth/responsive): the solids
     // as Anvil bodies (OcctKernel.toBodies, tagged with the features of m.anvil, the Anvil mesh on screen: positions and
     // triShared), packed for ui-occt.js to unpack (OcctKernel.fromPacked) instead of running toBuild; and on the mesh the
@@ -135,9 +140,9 @@ self.onmessage = async (e) => {
         }
       } catch (e) { r.edges = null; r.curves = null; r.normals = null; r.packed = null; }
     }
-    self.postMessage({ type: 'built', seq: m.seq, part: m.part, result: r }, transfer);
+    self.postMessage({ type: 'built', seq: m.seq, part: m.part, upto: rolled ? m.upto : undefined, result: r }, transfer);
   } catch (err) {
-    if (m.cacheKey) caches.delete(m.cacheKey); else cache = {};   // a build that threw may have left the snapshots half-updated
-    self.postMessage({ type: 'error', seq: m.seq, part: m.part, message: (err && err.message) || String(err) });
+    if (m.upto != null) { /* read-only: the cache is as it was */ } else if (m.cacheKey) caches.delete(m.cacheKey); else cache = {};   // a build that threw may have left the snapshots half-updated
+    self.postMessage({ type: 'error', seq: m.seq, part: m.part, upto: m.upto, message: (err && err.message) || String(err) });
   }
 };
