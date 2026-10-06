@@ -1659,9 +1659,13 @@ var SketchSolver = (function () {
     }
     if (p.kind === 'seg') {
       var d = sub(p.b, p.a), f = sub(p.a, q.c), A = dot(d, d), B = 2 * dot(f, d), C = dot(f, f) - q.r * q.r, disc = B * B - 4 * A * C;
-      if (disc < 0 || A < eps) return out;
+      if (A < eps) return out;
+      // r15/trimtan15: a line tangent to the circle touches it at one point. Its discriminant comes out within
+      // rounding of zero, often slightly negative (two lines drawn tangent to a circle found no crossing, so nothing
+      // split the circle and a trim deleted all of it): a line within 1e-7 of touching counts as touching, once.
+      if (disc < 0) { if (Math.sqrt(q.r * q.r - disc / (4 * A)) - q.r < 1e-7 * Math.max(1, q.r)) disc = 0; else return out; }
       var sq = Math.sqrt(disc);
-      [(-B - sq) / (2 * A), (-B + sq) / (2 * A)].forEach(function (t) {
+      (sq / (2 * A) < 1e-9 ? [-B / (2 * A)] : [(-B - sq) / (2 * A), (-B + sq) / (2 * A)]).forEach(function (t) {
         if (t < -eps || t > 1 + eps) return;
         var x = p.a[0] + d[0] * t, y = p.a[1] + d[1] * t;
         if (tAngIn(Math.atan2(y - q.c[1], x - q.c[0]), q.a0, q.a1) != null) out.push(t);
