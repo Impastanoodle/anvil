@@ -13,7 +13,7 @@
 //   { type: 'projected', id, job, proj, ms }   Drawing.projectView(mesh, frame, { display, tangent })
 //   { type: 'sectioned', id, job, result, ms } Drawing.sectionJob(mesh, section, frame, display, tangent)
 //   { type: 'failed', id, job, message }      the main thread then works that view out itself
-importScripts('csg.js', 'kernel.js', 'drawing.js');
+importScripts('csg.js', 'kernel.js', 'drawing.js', 'drawing-curves.js', 'drawing-hlr.js', 'drawing-views.js', 'drawing-sheet.js', 'drawing-annotations.js', 'drawing-render.js');
 
 var current = { id: null, mesh: null };
 // a structured clone has plain objects for the CSG polygons; the section cut (CSG intersect) needs real ones
