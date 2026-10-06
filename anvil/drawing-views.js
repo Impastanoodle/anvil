@@ -1,0 +1,441 @@
+// drawing-views.js — section and detail views for the drawing engine (Drawing, see drawing.js): sectionOf cuts the
+// solid exactly by CSG and keeps the cut faces, capLoops gives them as loops in a view frame, the hatch patterns per
+// material (ANSI31 … ANSI38) with one style per solid (hatchAssign) and hatch ends snapped onto the drawn round edges;
+// clipProjection limits a projection to a detail circle; reattachDim finds a dimension's edge or circle again in the
+// current projection after the part changed. Loads after drawing.js and drawing-curves.js; textWidth is late bound
+// from drawing-render.js.
+(function (D, _) {
+  'use strict';
+  var K = Kernel, V = K.vec;
+  var TWO_PI = _.TWO_PI, frameKey = _.frameKey, meshDiag = _.meshDiag;
+
+  // ------------------------------------------------------------------ section views: an exact cut of the solid
+  // sectionOf(mesh, e, w) -> { mesh, caps: [face index], area, e, w }: the part with everything in front of the plane
+  // p·e = w removed (p·e > w), cut exactly by CSG: each body is intersected with a box that ends on the plane, so the
+  // cut faces ("caps") are true faces of the result lying on the plane and facing +e. Cached on the mesh.
+  function sectionKey(e, w) { return e.map(function (x) { return Math.round(x * 1e9); }).join(',') + '|' + Math.round(w * 1e9); }
+  function sectionOf(mesh, e, w) {
+    var c = mesh._drawingSections || (mesh._drawingSections = {});
+    var key = sectionKey(e, w);
+    if (c[key]) return c[key];
+    var P = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), m = diag * 0.25 + 1;
+    var u = V.norm(V.cross(Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], e)), v = V.cross(e, u);
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i < P.length; i += 3) {
+      var p = [P[i], P[i + 1], P[i + 2]], q = [V.dot(p, e), V.dot(p, u), V.dot(p, v)];
+      for (var k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+    }
+    var out;
+    if (!P.length || w >= hi[0] - diag * 1e-9) out = { mesh: mesh, caps: [], area: 0 };             // the plane misses the part
+    else if (w <= lo[0] + diag * 1e-9) out = { mesh: K.meshFromBody(null), caps: [], area: 0 };      // nothing behind it
+    else {
+      var box = boxSolid([e, u, v], [lo[0] - m, lo[1] - m, lo[2] - m], [w, hi[1] + m, hi[2] + m]);
+      // cut per body and, in an assembly, per part (polygon.part: each part of a sub-assembly is its own solid, so its
+      // cut face is its own face and gets its own hatch, as in SolidWorks; r11/hatch11)
+      var byBody = {}, order = [];
+      mesh.faces.forEach(function (f) {
+        (f.polys || []).forEach(function (pg) {
+          var b = pg.body || 0, pt = pg.part != null ? pg.part : f.part, k = b + '|' + (pt != null ? pt : '');
+          if (!byBody[k]) { byBody[k] = []; order.push({ k: k, b: b, part: pt }); }
+          var c = pg.clone(); if (pt != null) c.part = pt; byBody[k].push(c);
+        });
+      });
+      var polys = [];
+      order.forEach(function (g) {
+        CSG.fromPolygons(byBody[g.k]).intersect(box).polygons.forEach(function (pg) { pg.body = g.b; if (g.part != null) pg.part = g.part; polys.push(pg); });
+      });
+      var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
+      sm.faces.forEach(function (f, fi) {
+        if (V.dot(f.normal, e) > 1 - 1e-9 && Math.abs(f.w - w) <= tol) { caps.push(fi); area += f.area; }
+      });
+      out = { mesh: sm, caps: caps, area: area };
+    }
+    out.e = e.slice(); out.w = w;
+    c[key] = out;
+    return out;
+  }
+  // a box as CSG: ax = three orthonormal axes, lo / hi = coordinate ranges along them
+  function boxSolid(ax, lo, hi) {
+    function pt(c) { return new CSG.Vector(ax[0][0] * c[0] + ax[1][0] * c[1] + ax[2][0] * c[2], ax[0][1] * c[0] + ax[1][1] * c[1] + ax[2][1] * c[2], ax[0][2] * c[0] + ax[1][2] * c[1] + ax[2][2] * c[2]); }
+    var polys = [];
+    for (var a = 0; a < 3; a++) for (var s = 0; s < 2; s++) {
+      var b = (a + 1) % 3, d = (a + 2) % 3, vs = [];
+      [[0, 0], [1, 0], [1, 1], [0, 1]].forEach(function (q) {
+        var c = [0, 0, 0]; c[a] = s ? hi[a] : lo[a]; c[b] = q[0] ? hi[b] : lo[b]; c[d] = q[1] ? hi[d] : lo[d];
+        vs.push(new CSG.Vertex(pt(c)));
+      });
+      var pg = new CSG.Polygon(vs), out = V.scale(ax[a], s ? 1 : -1);
+      if (pg.plane.normal.x * out[0] + pg.plane.normal.y * out[1] + pg.plane.normal.z * out[2] < 0) pg = new CSG.Polygon(vs.slice().reverse());
+      polys.push(pg);
+    }
+    return CSG.fromPolygons(polys);
+  }
+  // the cut faces of a section as closed loops in a view frame: [{ loops: [[[u, v]…]…], body, part }] (part: the
+  // assembly part tag, a part inside a sub-assembly, or undefined)
+  function capLoops(S, F) {
+    var ck = frameKey(F), cc = S._capLoops || (S._capLoops = {});   // (cached per frame: a faceOutline per cap, r13/drawings13)
+    if (cc[ck]) return cc[ck];
+    return (cc[ck] = capLoops0(S, F));
+  }
+  function capLoops0(S, F) {
+    var out = S.caps.map(function (fi) {
+      var o = K.faceOutline(S.mesh, fi), f = S.mesh.faces[fi];
+      var c = { body: f.body || 0, loops: o ? o.loops.map(function (loop) {
+        return loop.map(function (p2) { var p = K.to3D(o.plane, p2[0], p2[1]); return [V.dot(p, F.u), V.dot(p, F.v)]; });
+      }) : [] };
+      if (f.part != null) c.part = f.part;
+      return c;
+    });
+    var st = hatchAssign(out);
+    out.forEach(function (c, i) { c.style = st[i]; });
+    return out;
+  }
+  // ANSI31 hatching: parallel lines at `ang` degrees, `sp` apart (paper units, anchored at the sheet origin so every
+  // view's pattern lines up), clipped to the region inside an odd number of loops. Returns [[x1, y1, x2, y2]].
+  function hatchLines(loops, sp, ang, off) {
+    var a = ang * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], n = [-Math.sin(a), Math.cos(a)];
+    var tmin = Infinity, tmax = -Infinity, out = [];
+    loops.forEach(function (l) { l.forEach(function (p) { var t = n[0] * p[0] + n[1] * p[1]; if (t < tmin) tmin = t; if (t > tmax) tmax = t; }); });
+    off = off || 0;
+    for (var k = Math.ceil((tmin - off) / sp); k * sp + off <= tmax; k++) {
+      var t = k * sp + off, xs = [];
+      loops.forEach(function (l) {
+        for (var i = 0; i < l.length; i++) {
+          var p = l[i], q = l[(i + 1) % l.length], tp = n[0] * p[0] + n[1] * p[1] - t, tq = n[0] * q[0] + n[1] * q[1] - t;
+          if ((tp > 0) !== (tq > 0)) { var f = tp / (tp - tq); xs.push(d[0] * (p[0] + (q[0] - p[0]) * f) + d[1] * (p[1] + (q[1] - p[1]) * f)); }
+        }
+      });
+      xs.sort(function (x, y) { return x - y; });
+      for (var j = 0; j + 1 < xs.length; j += 2) {
+        if (xs[j + 1] - xs[j] < 1e-9) continue;
+        out.push([n[0] * t + d[0] * xs[j], n[1] * t + d[1] * xs[j], n[0] * t + d[0] * xs[j + 1], n[1] * t + d[1] * xs[j + 1]]);
+      }
+    }
+    return out;
+  }
+
+  // hatchStyle(body) -> { angle, spacing (× HATCH) }: every body of a multi-body part and every component of an assembly
+  // gets its own hatch, as in SolidWorks — 45°, 135°, 30°, 120°, 60°, 150°, then the same angles 1.6× wider apart, …
+  var HATCH_ANGLES = [45, 135, 30, 120, 60, 150];
+  function hatchStyle(body) {
+    var b = Math.max(0, body | 0);
+    return { angle: HATCH_ANGLES[b % HATCH_ANGLES.length], spacing: 1 + 0.6 * Math.floor(b / HATCH_ANGLES.length) };
+  }
+  // hatchAssign(caps) -> [{ angle, spacing, index }] per cap (r11/hatch11): one style per solid (the assembly part tag
+  // when there is one, so every part inside a sub-assembly has its own hatch; else the body), chosen in solid order so
+  // that cut faces that touch (or nearly: within 2% of the section's size, a pin in its bore, a hinge arm 1 mm off its
+  // leaf) look different: the style furthest in angle from every touching neighbour's (up to 90°; a different spacing adds
+  // 20°), then one no other solid uses yet, then the first in hatchStyle's order. With nothing touching that gives
+  // hatchStyle(0), hatchStyle(1), … as before; a second pin in a plate gets 135° wider apart, not 30° beside 45°.
+  function hatchAssign(caps) {
+    var keys = [], byKey = {}, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    caps.forEach(function (c) {
+      var k = c.part != null ? c.part : c.body;
+      if (!byKey[k]) { byKey[k] = { k: k, loops: [], b: [Infinity, Infinity, -Infinity, -Infinity] }; keys.push(byKey[k]); }
+      var g = byKey[k];
+      c.loops.forEach(function (l) {
+        g.loops.push(l);
+        l.forEach(function (p) {
+          if (p[0] < g.b[0]) g.b[0] = p[0]; if (p[1] < g.b[1]) g.b[1] = p[1]; if (p[0] > g.b[2]) g.b[2] = p[0]; if (p[1] > g.b[3]) g.b[3] = p[1];
+          if (p[0] < lo[0]) lo[0] = p[0]; if (p[1] < lo[1]) lo[1] = p[1]; if (p[0] > hi[0]) hi[0] = p[0]; if (p[1] > hi[1]) hi[1] = p[1];
+        });
+      });
+    });
+    keys.sort(function (x, y) { return x.k - y.k; });
+    var tol = 0.02 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1]);
+    function segD(p, a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
+    function near(A, B) {
+      if (A.b[0] > B.b[2] + tol || B.b[0] > A.b[2] + tol || A.b[1] > B.b[3] + tol || B.b[1] > A.b[3] + tol) return false;
+      return [[A, B], [B, A]].some(function (pr) {
+        return pr[0].loops.some(function (la) {
+          return la.some(function (p) {
+            if (p[0] < pr[1].b[0] - tol || p[0] > pr[1].b[2] + tol || p[1] < pr[1].b[1] - tol || p[1] > pr[1].b[3] + tol) return false;
+            return pr[1].loops.some(function (lb) { for (var i = 0; i < lb.length; i++) if (segD(p, lb[i], lb[(i + 1) % lb.length]) <= tol) return true; return false; });
+          });
+        });
+      });
+    }
+    var used = {}, nCand = Math.max(18, keys.length + HATCH_ANGLES.length);
+    keys.forEach(function (g, gi) {
+      var nb = [];
+      for (var j = 0; j < gi; j++) if (near(g, keys[j])) nb.push(keys[j].style);
+      var best = -1, bs = -Infinity, bu = true;
+      for (var i = 0; i < nCand; i++) {
+        var s = hatchStyle(i), sc = 1000;
+        nb.forEach(function (t) { var d = Math.abs(s.angle - t.angle) % 180; d = Math.min(d, 180 - d); sc = Math.min(sc, 90, d + (Math.abs(s.spacing - t.spacing) > 1e-9 ? 20 : 0)); });
+        if (sc > bs + 1e-9 || (Math.abs(sc - bs) <= 1e-9 && bu && !used[i])) { best = i; bs = sc; bu = !!used[i]; }
+      }
+      used[best] = 1;
+      var st = hatchStyle(best); st.index = best;
+      g.style = st;
+    });
+    return caps.map(function (c) { return byKey[c.part != null ? c.part : c.body].style; });
+  }
+  // Area hatch patterns by material, as SolidWorks takes them from the material (the ANSI Y14.2 families of acad.pat),
+  // in units of the base spacing: line families { da (degrees added to the hatch angle), offs (perpendicular offsets
+  // in one period), period, dash: [on, off] or none } (r5/drawings5)
+  var HATCH_PATTERNS = {
+    ANSI31: [{ da: 0, offs: [0], period: 1 }],                                   // iron, general use
+    ANSI32: [{ da: 0, offs: [0, 1], period: 3 }],                                // steel
+    ANSI33: [{ da: 0, offs: [0], period: 2 }, { da: 0, offs: [1], period: 2, dash: [1, 0.5] }],   // bronze, brass, copper
+    ANSI34: [{ da: 0, offs: [0, 1, 2, 3], period: 6 }],                          // plastic, rubber
+    ANSI37: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1 }], // lead, zinc, insulation
+    ANSI38: [{ da: 0, offs: [0], period: 1 }, { da: 90, offs: [0], period: 1, dash: [2.5, 1.5] }]   // aluminium
+  };
+  var HATCH_BY_CLASS = { 'Steel': 'ANSI32', 'Stainless Steel': 'ANSI32', 'Aluminium Alloys': 'ANSI38', 'Copper Alloys': 'ANSI33', 'Plastics': 'ANSI34' };
+  // the hatch pattern for a material name (null / unknown: ANSI31)
+  function hatchPattern(materialName) {
+    var m = materialName && typeof Materials !== 'undefined' && Materials.find ? Materials.find(materialName) : null;
+    return m && HATCH_BY_CLASS[m.category] || 'ANSI31';
+  }
+  // hatch segments of a pattern over loops: [[x1, y1, x2, y2], …]; dashes keep their phase along the line direction,
+  // so neighbouring lines' dashes stagger the same way everywhere
+  function patternLines(loops, sp, ang, pattern) {
+    var out = [];
+    (HATCH_PATTERNS[pattern] || HATCH_PATTERNS.ANSI31).forEach(function (fam) {
+      var a = ang + fam.da, d = [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
+      fam.offs.forEach(function (o) {
+        hatchLines(loops, sp * fam.period, a, sp * o).forEach(function (l) {
+          if (!fam.dash) { out.push(l); return; }
+          var on = fam.dash[0] * sp, P = (fam.dash[0] + fam.dash[1]) * sp, t0 = d[0] * l[0] + d[1] * l[1], t1 = d[0] * l[2] + d[1] * l[3];
+          var lo = Math.min(t0, t1), hi = Math.max(t0, t1), bx = l[0] - d[0] * t0, by = l[1] - d[1] * t0;
+          for (var s = Math.floor(lo / P) * P; s < hi; s += P) {
+            var u0 = Math.max(lo, s), u1 = Math.min(hi, s + on);
+            if (u1 - u0 > 1e-9) out.push([bx + d[0] * u0, by + d[1] * u0, bx + d[0] * u1, by + d[1] * u1]);
+          }
+        });
+      });
+    });
+    return out;
+  }
+
+  // does a sheet primitive (line, circle, arc, filled arrow) cross the rectangle R = [x0, y0, x1, y1]? (r11/hatch11)
+  function primHitsRect(p, R) {
+    function inR(q) { return q[0] >= R[0] && q[0] <= R[2] && q[1] >= R[1] && q[1] <= R[3]; }
+    function segHits(a, b) {
+      if (inR(a) || inR(b)) return true;
+      if (Math.max(a[0], b[0]) < R[0] || Math.min(a[0], b[0]) > R[2] || Math.max(a[1], b[1]) < R[1] || Math.min(a[1], b[1]) > R[3]) return false;
+      var cs = [[R[0], R[1]], [R[2], R[1]], [R[2], R[3]], [R[0], R[3]]], s0 = null;
+      for (var i = 0; i < 4; i++) {   // the line crosses the box when the corners are not all on one side of it
+        var c = cs[i], sd = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        if (s0 === null) s0 = sd; else if ((sd > 0) !== (s0 > 0)) return true;
+      }
+      return false;
+    }
+    if (p.k === 'line') return segHits(p.a, p.b);
+    if (p.k === 'text') {
+      if (p.rot) return false;
+      var w = _.textWidth(p.text, p.h), x0 = p.anchor === 'middle' ? p.p[0] - w / 2 : p.anchor === 'end' ? p.p[0] - w : p.p[0];
+      return !(x0 > R[2] || x0 + w < R[0] || p.p[1] > R[3] || p.p[1] + p.h < R[1]);
+    }
+    if (p.k === 'fill') { for (var i = 0; i < p.pts.length; i++) if (segHits(p.pts[i], p.pts[(i + 1) % p.pts.length])) return true; return false; }
+    if (p.k === 'circle' || p.k === 'arc') {
+      var nx = Math.max(R[0], Math.min(p.c[0], R[2])), ny = Math.max(R[1], Math.min(p.c[1], R[3])), dmin = Math.hypot(nx - p.c[0], ny - p.c[1]);
+      var dmax = Math.max(Math.hypot(R[0] - p.c[0], R[1] - p.c[1]), Math.hypot(R[2] - p.c[0], R[1] - p.c[1]), Math.hypot(R[0] - p.c[0], R[3] - p.c[1]), Math.hypot(R[2] - p.c[0], R[3] - p.c[1]));
+      if (p.r < dmin || p.r > dmax) return false;
+      if (p.k === 'circle') return true;
+      // an arc: some of its points inside the box (sampled)
+      for (var j = 0; j <= 48; j++) { var t = (p.a0 + (p.a1 - p.a0) * j / 48) * Math.PI / 180; if (inR([p.c[0] + p.r * Math.cos(t), p.c[1] + p.r * Math.sin(t)])) return true; }
+      return false;
+    }
+    return false;
+  }
+  // the pieces of segment a-b outside rectangle R ([[a, b]…], 0-2 pieces), or null when it does not enter R
+  function segOutsideRect(a, b, R) {
+    var t0 = 0, t1 = 1, d = [b[0] - a[0], b[1] - a[1]];
+    var ps = [-d[0], d[0], -d[1], d[1]], qs = [a[0] - R[0], R[2] - a[0], a[1] - R[1], R[3] - a[1]];
+    for (var i = 0; i < 4; i++) {
+      if (ps[i] === 0) { if (qs[i] < 0) return null; continue; }
+      var t = qs[i] / ps[i];
+      if (ps[i] < 0) { if (t > t0) t0 = t; } else if (t < t1) t1 = t;
+    }
+    if (t1 - t0 <= 1e-9) return null;
+    function at(t) { return [a[0] + d[0] * t, a[1] + d[1] * t]; }
+    var out = [];
+    if (t0 > 1e-9) out.push([a, at(t0)]);
+    if (t1 < 1 - 1e-9) out.push([at(t1), b]);
+    return out;
+  }
+  // snapHatch(segs, loops, circles) (r11/hatch11): a cut face's outline is the facets' polygon, but its round edges are
+  // drawn as exact circles / arcs, so hatch lines stopped on a chord fell short of a drawn rim (or ran past a drawn
+  // hole) by up to the chord's sagitta: a scalloped gap along every round boundary, plain at a detail's 4:1. A hatch
+  // end lying on a loop segment whose two ends are on one of `circles` ({ c, r }, same units) is moved along its line
+  // onto that circle. Segments are changed in place.
+  function snapHatch(segs, loops, circles) {
+    if (!segs.length || !circles.length) return segs;
+    var chords = [];
+    loops.forEach(function (l) {
+      for (var i = 0; i < l.length; i++) {
+        var a = l[i], b = l[(i + 1) % l.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (!(L > 0)) continue;
+        for (var j = 0; j < circles.length; j++) {
+          var C = circles[j], t = 1e-3 * C.r + 1e-9;
+          if (Math.abs(Math.hypot(a[0] - C.c[0], a[1] - C.c[1]) - C.r) <= t && Math.abs(Math.hypot(b[0] - C.c[0], b[1] - C.c[1]) - C.r) <= t && L < 1.5 * C.r) {
+            chords.push({ a: a, b: b, L: L, C: C, x0: Math.min(a[0], b[0]), x1: Math.max(a[0], b[0]), y0: Math.min(a[1], b[1]), y1: Math.max(a[1], b[1]) });
+            break;
+          }
+        }
+      }
+    });
+    if (!chords.length) return segs;
+    function onSeg(p, ch) {
+      var e = 1e-7 * (1 + Math.abs(p[0]) + Math.abs(p[1]));
+      if (p[0] < ch.x0 - e || p[0] > ch.x1 + e || p[1] < ch.y0 - e || p[1] > ch.y1 + e) return false;
+      return Math.abs((ch.b[0] - ch.a[0]) * (p[1] - ch.a[1]) - (ch.b[1] - ch.a[1]) * (p[0] - ch.a[0])) / ch.L <= e;
+    }
+    segs.forEach(function (s) {
+      if (!(Math.hypot(s[2] - s[0], s[3] - s[1]) > 0)) return;
+      [0, 2].forEach(function (o) {
+        var p = [s[o], s[o + 1]], q = [s[2 - o], s[3 - o]], L = Math.hypot(q[0] - p[0], q[1] - p[1]), d = [(q[0] - p[0]) / L, (q[1] - p[1]) / L];
+        for (var i = 0; i < chords.length; i++) {
+          var ch = chords[i];
+          if (!onSeg(p, ch)) continue;
+          var w = [p[0] - ch.C.c[0], p[1] - ch.C.c[1]], B = d[0] * w[0] + d[1] * w[1], D = B * B - (w[0] * w[0] + w[1] * w[1] - ch.C.r * ch.C.r);
+          if (D < 0) return;
+          var t1 = -B - Math.sqrt(D), t2 = -B + Math.sqrt(D), t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;
+          if (Math.abs(t) > ch.L || t >= L) return;   // (never past the line's other end)
+          s[o] = p[0] + d[0] * t; s[o + 1] = p[1] + d[1] * t;
+          return;
+        }
+      });
+    });
+    return segs;
+  }
+
+  // ------------------------------------------------------------------ detail views: the parent clipped to a circle
+  // the part of segment l inside the circle (C, R), or null
+  function clipSeg(l, C, R) {
+    var dx = l[2] - l[0], dy = l[3] - l[1], fx = l[0] - C[0], fy = l[1] - C[1];
+    var A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), Cc = fx * fx + fy * fy - R * R;
+    if (A < 1e-24) return null;
+    var disc = B * B - 4 * A * Cc;
+    if (disc <= 0) return null;
+    var sq = Math.sqrt(disc), t0 = Math.max(0, (-B - sq) / (2 * A)), t1 = Math.min(1, (-B + sq) / (2 * A));
+    if (t1 - t0 < 1e-12) return null;
+    return [l[0] + dx * t0, l[1] + dy * t0, l[0] + dx * t1, l[1] + dy * t1, l[4] || 0];
+  }
+  // a circle (c, r) against the clip circle (C, R): 'full', null, or the arc inside { a0, a1 } (degrees, CCW)
+  function clipCircle(c, r, C, R) {
+    var dd = Math.hypot(C[0] - c[0], C[1] - c[1]);
+    if (dd + r <= R) return 'full';
+    if (dd >= r + R || dd + R <= r) return null;
+    var phi = Math.atan2(C[1] - c[1], C[0] - c[0]), al = Math.acos(Math.max(-1, Math.min(1, (r * r + dd * dd - R * R) / (2 * r * dd))));
+    return { a0: (phi - al) * 180 / Math.PI, a1: (phi + al) * 180 / Math.PI };
+  }
+  // clipProjection(proj, C, R): a projection result limited to the disc (C, R); circles cut by the edge become arcs
+  function clipProjection(pr, C, R) {
+    var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
+      bounds: { umin: C[0] - R, umax: C[0] + R, vmin: C[1] - R, vmax: C[1] + R } };
+    if (pr.pending) out.pending = true;   // a detail of a view still being worked out (r12/drawui12)
+    ['visible', 'hidden'].forEach(function (k) {
+      pr.lines[k].forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.lines[k].push(q); });
+      pr.circles[k].forEach(function (c) {
+        var q = clipCircle(c.c, c.r, C, R);
+        if (q === 'full') out.circles[k].push(c); else if (q) out.arcs[k].push({ c: c.c, r: c.r, a0: q.a0, a1: q.a1, body: c.body || 0 });
+      });
+      // true arcs (exact projections): the part of the arc inside the clip circle
+      (pr.arcs ? pr.arcs[k] : []).forEach(function (a) { clipArc(a, C, R).forEach(function (x) { out.arcs[k].push(x); }); });
+      // ellipses (oblique true circles): as fine chords, clipped like lines
+      (pr.ellipses ? pr.ellipses[k] : []).forEach(function (el) {
+        var n = Math.max(8, Math.ceil((el.t1 - el.t0) / TWO_PI * 144)), prev = null;
+        for (var i = 0; i <= n; i++) {
+          var t = el.t0 + (el.t1 - el.t0) * i / n, p = [el.c[0] + el.ax[0] * Math.cos(t) + el.ay[0] * Math.sin(t), el.c[1] + el.ax[1] * Math.cos(t) + el.ay[1] * Math.sin(t)];
+          if (prev) { var q2 = clipSeg([prev[0], prev[1], p[0], p[1], el.body || 0], C, R); if (q2) out.lines[k].push(q2); }
+          prev = p;
+        }
+      });
+    });
+    out.lines.tangent = []; out.circles.tangent = []; out.arcs.tangent = [];
+    (pr.lines.tangent || []).forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.lines.tangent.push(q); });
+    (pr.circles.tangent || []).forEach(function (c) {
+      var q = clipCircle(c.c, c.r, C, R);
+      if (q === 'full') out.circles.tangent.push(c); else if (q) out.arcs.tangent.push({ c: c.c, r: c.r, a0: q.a0, a1: q.a1, body: c.body || 0 });
+    });
+    (pr.arcs && pr.arcs.tangent || []).forEach(function (a) { clipArc(a, C, R).forEach(function (x) { out.arcs.tangent.push(x); }); });
+    (pr.arcsAll || []).forEach(function (a) { if (Math.hypot(a.c[0] - C[0], a.c[1] - C[1]) + a.r <= R) out.arcsAll.push(a); });
+    (pr.all || []).forEach(function (l) { var q = clipSeg(l, C, R); if (q) out.all.push(q); });
+    (pr.circlesAll || []).forEach(function (c) { if (clipCircle(c.c, c.r, C, R) === 'full') out.circlesAll.push(c); });
+    out.stats = { visibleLines: out.lines.visible.length, hiddenLines: out.lines.hidden.length, visibleCircles: out.circles.visible.length, hiddenCircles: out.circles.hidden.length,
+      visibleArcs: out.arcs.visible.length, hiddenArcs: out.arcs.hidden.length };
+    return out;
+  }
+  // an arc { c, r, a0, a1 (degrees, CCW) } inside the clip circle (C, R) -> [arc…]
+  function clipArc(a, C, R) {
+    var q = clipCircle(a.c, a.r, C, R);
+    if (q === 'full') return [a];
+    if (!q) return [];
+    var out = [], w0 = q.a0, w1 = q.a1;
+    for (var j = -2; j <= 2; j++) {
+      var lo = Math.max(a.a0, w0 + 360 * j), hi = Math.min(a.a1, w1 + 360 * j);
+      if (hi - lo > 1e-9) out.push(Object.assign({}, a, { a0: lo, a1: hi }));
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ dimensions that follow the part
+  // A Smart Dimension placed by the user stores view geometry (model units in the view frame). Every render reattaches
+  // it to the edge or circle of the current projection that is geometrically the same one: unchanged; else the best
+  // of the collinear edges that overlap it (an edge that grew or shrank) and the parallel ones within a quarter of the
+  // view that overlap it by at least half of their union (a face that moved), scored by overlap / union and offset,
+  // so a moved full-length edge beats a short collinear leftover; circles by centre (a hole whose size changed), then
+  // by radius near the old centre (a hole that moved). The dimension then takes the new geometry and value. With no match it is
+  // flagged `dangling` and keeps its last geometry (drawn in the dangling colour), so undoing the change reattaches it.
+  function reattachDim(d, pr) {
+    var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6, reach = size * 0.25;
+    var best = null, bs = Infinity;
+    if (d.kind === 'dia') {
+      (pr.circlesAll || []).forEach(function (c) {
+        var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
+        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
+        if (s < bs) { bs = s; best = c; }
+      });
+      if (!best) { d.dangling = true; return false; }
+      d.c = best.c.slice(); d.r = best.r; d.value = 2 * best.r; delete d.dangling;
+      return true;
+    }
+    if (d.kind === 'rad') {
+      (pr.arcsAll || []).forEach(function (c) {
+        var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
+        var s = dc <= tol ? (dr <= tol ? 0 : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
+        if (s < bs) { bs = s; best = c; }
+      });
+      if (!best) { d.dangling = true; return false; }
+      d.c = best.c.slice(); d.r = best.r; d.a0 = best.a0; d.a1 = best.a1; d.value = best.r; delete d.dangling;
+      return true;
+    }
+    var a = d.a, bb = d.b, L = Math.hypot(bb[0] - a[0], bb[1] - a[1]);
+    if (L < 1e-12) { d.dangling = true; return false; }
+    var t = [(bb[0] - a[0]) / L, (bb[1] - a[1]) / L], hit = null;
+    // an edge on the view's outline (its left / right / bottom / top extreme) keeps that role: a part that grows moves
+    // it past nearer parallel edges (a hole silhouette must not take the place of the moved side)
+    function bound(m) {
+      if (Math.abs(m[0] - m[2]) <= tol) return Math.abs(m[0] - b.umin) <= tol ? 'umin' : Math.abs(m[0] - b.umax) <= tol ? 'umax' : null;
+      if (Math.abs(m[1] - m[3]) <= tol) return Math.abs(m[1] - b.vmin) <= tol ? 'vmin' : Math.abs(m[1] - b.vmax) <= tol ? 'vmax' : null;
+      return null;
+    }
+    (pr.all || []).forEach(function (m) {
+      var mx = m[2] - m[0], my = m[3] - m[1], ml = Math.hypot(mx, my);
+      if (ml < 1e-12 || Math.abs(t[0] * my - t[1] * mx) > ml * 1e-6) return;          // not parallel
+      var p0 = (m[0] - a[0]) * t[0] + (m[1] - a[1]) * t[1], p1 = (m[2] - a[0]) * t[0] + (m[3] - a[1]) * t[1];
+      var lo = Math.min(p0, p1), hi = Math.max(p0, p1), off = Math.abs(t[0] * (m[1] - a[1]) - t[1] * (m[0] - a[0]));
+      // score: 1 - overlap / union along the line, plus the offset in quarter-view sizes, less a little for a kept end
+      var ov = Math.min(hi, L) - Math.max(lo, 0), jac = ov / (Math.max(hi, L) - Math.min(lo, 0)), s = Infinity;
+      var sc = (1 - jac) + off / reach - (Math.abs(lo) <= tol || Math.abs(hi - L) <= tol ? 0.1 : 0) - (d.bound && bound(m) === d.bound ? 0.5 : 0);
+      if (off <= tol && Math.abs(lo) <= tol && Math.abs(hi - L) <= tol) s = -1;
+      else if (off <= tol && ov > tol) s = sc;                      // collinear: any overlap
+      else if (off <= reach && jac >= 0.5) s = sc;                  // parallel: most of it
+      if (s < bs) { bs = s; hit = { m: m, lo: lo, hi: hi, forward: p1 >= p0 }; }
+    });
+    if (!hit) { d.dangling = true; return false; }
+    var m0 = [hit.m[0], hit.m[1]], m1 = [hit.m[2], hit.m[3]], bd = bound(hit.m);
+    d.a = hit.forward ? m0 : m1; d.b = hit.forward ? m1 : m0;
+    if (bd) d.bound = bd; else delete d.bound;
+    d.value = d.kind === 'h' ? Math.abs(d.b[0] - d.a[0]) : d.kind === 'v' ? Math.abs(d.b[1] - d.a[1]) : hit.hi - hit.lo;
+    delete d.dangling;
+    return true;
+  }
+
+  D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
+  D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
+  _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;
+})(Drawing, Drawing._);
