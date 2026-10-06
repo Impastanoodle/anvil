@@ -383,8 +383,12 @@ if (typeof UI !== 'undefined') (function (UI) {
       var sk = UI.activeSketchFeature();
       if (!sk || !allows('entity')) return out;
       var pl = UI.activePlane();
+      // r15/snapaudit15: circles, arcs and slots are tested as drawn (UI.screenPolylines, a fraction of a pixel from the
+      // true curve at any zoom), not as the model's chord-tolerance polygon, whose flats lie several pixels inside the
+      // drawn curve once zoomed in, so a crossing box over the drawn arc missed it
+      var plsOf = UI.screenPolylines || K.entityPolylines;
       sk.entities.forEach(function (e, i) {
-        var pls = e.t === 'point' ? [{ pts: [[e.x, e.y]], closed: false }] : K.entityPolylines(e);
+        var pls = e.t === 'point' ? [{ pts: [[e.x, e.y]], closed: false }] : plsOf(e);
         if (!pls.length) return;
         var scr = pls.map(function (l) { return { pts: l.pts.map(function (q) { return S(K.to3D(pl, q[0], q[1])); }), closed: l.closed }; });
         var ok = mode === 'window' ? scr.every(function (l) { return BoxSelect.polyline(l.pts, l.closed, r, mode); }) : scr.some(function (l) { return BoxSelect.polyline(l.pts, l.closed, r, mode); });
