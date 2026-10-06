@@ -2,6 +2,14 @@
 # running on port 8812, then opens http://localhost:8812/ in its own window (Edge or Chrome app mode; the default
 # browser otherwise). The Desktop shortcut "Anvil" runs this. The server keeps running in the background; it uses
 # almost nothing and the next launch reuses it.
+# Bring the clone up to date first (fast-forward only, 15 s cap) so the window always shows the latest main;
+# offline or on a dirty tree it just carries on with what is on disk. Skip with -NoPull.
+param([switch]$NoPull)
+$repo = Split-Path $PSScriptRoot -Parent
+if (-not $NoPull -and (Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $repo '.git'))) {
+  $pull = Start-Process git -ArgumentList '-C', "`"$repo`"", 'pull', '--ff-only', '--quiet', 'origin', 'main' -WindowStyle Hidden -PassThru
+  if (-not $pull.WaitForExit(15000)) { try { $pull.Kill() } catch { } }
+}
 $port = 8812
 $url = "http://localhost:$port/"
 function Test-Up { try { (Invoke-WebRequest "$url" -UseBasicParsing -Method Head -TimeoutSec 2).StatusCode -eq 200 } catch { $false } }
