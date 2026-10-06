@@ -251,6 +251,9 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .pm-row .unit { color: var(--muted); margin-left: 3px; font-size: 11px; }
 .pm-row select { min-width: 120px; max-width: 160px; }
 .pm-row.check { grid-template-columns: auto 1fr; }
+/* a greyed option (DXF/DWG Output: Faces without a face, DWG without the converter) and the reason under it */
+.pm-row.check.disabled label { color: var(--muted); cursor: default; }
+.pm-note { color: var(--muted); font-size: 11px; line-height: 1.35; margin: -3px 0 2px 22px; }
 .pm-row .static { color: var(--muted); }
 .pm-pick { border: 1px solid var(--blue-line); background: var(--pick-bg); min-height: 26px; padding: 3px 6px; border-radius: 2px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .pm-pick.filled { color: var(--text); background: var(--pick-filled); }

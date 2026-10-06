@@ -731,6 +731,7 @@ Measured during the refinement rounds (2026-10-02 / 03) on the user's Windows ma
 | `anvil.busy()`, `anvil.workerOn()` / `anvil.workerOn(bool)` | Whether a rebuild is in flight; read or set background-rebuild mode. |
 | `anvil.script()` | Script regenerated from the model. |
 | `anvil.stl()`, `anvil.dxfFace(i)`, `anvil.dxfSketch(id)` | Export text. |
+| `anvil.dxfOutput(opts)`, `anvil.saveAs('dxf' \| 'dwg', base?, opts)` | The DXF/DWG Output PropertyManager's file without the PropertyManager: `opts` is `{ export: 'faces' \| 'views' \| 'sheet', face, views: ['Front', 'Top', 'Right', 'Isometric'], current, bendLines, notes }` (the PropertyManager's defaults apply when left out); `saveAs` downloads it, and for `dwg` returns a Promise (the local server converts). `UI.cmdDxfOutput({ format, name })` opens the PropertyManager (see *Exports*). |
 | `anvil.mass()`, `anvil.faces()`, `anvil.features()` | Mass properties; face list with index, normal, area, centroid; feature list with errors. |
 | `anvil.select(i)`, `anvil.view(name)`, `anvil.fit()` | Select a face, set a standard view, zoom to fit. |
 | `anvil.bodies()`, `anvil.selectBody(i)` | The solid bodies (`[{ index, featureId, name, volume }]`, volumes to 3 decimals); select one. |
@@ -904,6 +905,8 @@ In the app: `anvil.drawing.bomColumns()` / `bomColumns(list)`, `anvil.drawing.bo
 - **PNG** screenshot of the viewport.
 - **Drawing** of the part or assembly as SVG, DXF (one layer per view, plus `BOM` and `BALLOONS` for assemblies) or PDF (see *Drawings*).
 
+**DXF / DWG Output.** *File ▸ Save As* with type *DXF (\*.dxf)* or *DWG (\*.dwg)* (parts only), or *File ▸ Save As DXF / DWG…*, opens SolidWorks' **DXF/DWG Output** PropertyManager; ✓ downloads the file and the status bar reports its size. *Export*: *Faces / loops / edges* (the selected planar face, greyed with "Select a planar face first" until one is picked; a face clicked while the PropertyManager is open becomes the one exported), *Views* (the standard views on a sheet as a drawing export, one layer per view: check boxes Front, Top, Right, Isometric, default Front + Top + Right, plus *Current view*, the viewport's orientation projected as one more view on the `CURRENT` layer; it takes the pictorial corner, or shares it under the Isometric), or *Sheet metal* (the flat pattern, only on a part with a Base Flange: *Geometry* always, *Bend lines* and *Notes* drop the `BEND` / `NOTES` layers when unchecked). The default is Sheet metal on a sheet-metal part, else Faces when a face is selected, else Views. *Output format*: DXF, or DWG when the local server has a converter (`HEAD api/dxf2dwg`; greyed otherwise, with the reason; with LibreDWG a note recommends DXF for CAM or the ODA File Converter). *Version* shows what the writers produce: DXF R12 (AC1009), DWG R2000. *File name* defaults to the model name plus `_faceN`, `_views` or `_flat`. The published copy of Anvil has no server, so DWG is greyed there.
+
 Downloads are blocked inside some sandboxes; every export dialog also offers *Copy*.
 
 ## Import and export of neutral formats
@@ -946,7 +949,8 @@ If the kernel ever gets a registry for feature builders, the `import` case is `p
 ```js
 anvil.exportStep({ fileName }) -> STEP text      anvil.export3mf() -> Uint8Array      anvil.exportObj({ mtlName }) -> OBJ text      anvil.exportMtl()
 anvil.importFile(name, textOrBytes, { into: 'new' | 'current', units, sourceUnits, merge }) -> Promise of the summary
-anvil.saveAs(type, baseName?)   // type: json, script, step, 3mf, obj, stl; downloads and returns { name, data, mime, extra }
+anvil.saveAs(type, baseName?, opts?)   // type: json, script, step, 3mf, obj, stl, iges, dxf, dwg; downloads and returns { name, data, mime, extra }
+                                       // (dxf / dwg take the anvil.dxfOutput options; dwg returns a Promise, see *Exports*)
 Exchange.exportSTEP(model, build?, opts) / export3MF / exportOBJ / exportMTL      // parts and assemblies, build optional
 Exchange.importFile(name, data, opts) -> { format, name, file, units, solids: [{ name, positions, triangles }], warnings, stats }
 Exchange.importSTEP(text) / importSTL(data) / importOBJ(text) / import3MF(bytes) / parseStep(text)

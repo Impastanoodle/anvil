@@ -617,6 +617,8 @@
     if (hasExchange()) t.push(['step', 'STEP AP214 (*.step)'], ['3mf', '3D Manufacturing Format (*.3mf)'], ['obj', 'OBJ (*.obj) + materials (*.mtl)']);
     t.push(['stl', 'STL (*.stl)']);
     if (occtExports()) t.push(['iges', 'IGES 5.3 (*.igs)']);
+    // a part's 2D exports go through the DXF/DWG Output PropertyManager (ui-commands.js cmdDxfOutput)
+    if (!isAsm()) t.push(['dxf', 'DXF (*.dxf)'], ['dwg', 'DWG (*.dwg)']);
     return t;
   }
   // the part shown is OpenCascade's (Tools ▸ OpenCascade kernel): its STEP / IGES come straight from the B-rep
@@ -654,7 +656,9 @@
         v === 'step' ? 'Planar-faced B-rep (ADVANCED_FACE on planes): one solid per body' + (isAsm() ? ', components as assembly occurrences with their placements.' : '.') :
         v === '3mf' ? 'Mesh package in ' + (App.model.units === 'in' ? 'inches' : 'millimetres') + ': one object per body' + (isAsm() ? ', one build item per component.' : '.') :
         v === 'obj' ? 'Mesh with normals, one group per body' + (isAsm() ? ' per component' : '') + '; colours go into the .mtl downloaded with it.' :
-        v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' : 'The Anvil document, re-opened with File ▸ Open.';
+        v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' :
+        v === 'dxf' || v === 'dwg' ? 'Opens the DXF/DWG Output PropertyManager: a planar face, the standard views on a sheet, or the sheet-metal flat pattern.' + (v === 'dwg' ? ' DWG needs the local server\'s converter.' : '') :
+        'The Anvil document, re-opened with File ▸ Open.';
     }
     type.addEventListener('change', describe); describe();
     var body = el('div', { class: 'saveas-dialog' }, [
@@ -663,8 +667,11 @@
     UI.showModal({ title: 'Save As', body: body, buttons: [
       { label: 'Save', primary: true, action: function () {
         if (!App.mesh || (!App.mesh.triCount && type.value !== 'json' && type.value !== 'script')) { UI.toast('Nothing to export yet.'); return; }
+        var base = (name.value || '').trim().replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl|igs|dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || safeName();
+        // DXF / DWG: the DXF/DWG Output PropertyManager takes over, with the format and the typed name
+        if (type.value === 'dxf' || type.value === 'dwg') { UI.closeModal(); UI.cmdDxfOutput({ format: type.value, name: base }); return; }
         var out;
-        try { out = exportData(type.value, (name.value || '').trim().replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl)$/i, '').replace(/[^\w\-]+/g, '_') || safeName()); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
+        try { out = exportData(type.value, base); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
         download(out.name, out.data, out.mime);
         if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime);
         UI.closeModal();
@@ -859,9 +866,20 @@
     // STL / OBJ / 3MF file as a new part (Imported1), or as an Imported feature appended to the open part; .json / .js
     // open as documents
     importFile: function (name, data, opts) { return openFileData(name, data, opts); },
-    // saveAs(type, baseName?) downloads the file File ▸ Save As would (type: json, script, step, 3mf, obj, stl) and
-    // returns { name, data, mime, extra }
-    saveAs: function (type, base) { var out = exportData(type, base); download(out.name, out.data, out.mime); if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime); return out; },
+    // saveAs(type, baseName?, opts?) downloads the file File ▸ Save As would (type: json, script, step, 3mf, obj, stl,
+    // iges, dxf, dwg) and returns { name, data, mime, extra }. dxf / dwg take the dxfOutput options; dwg converts on
+    // the local server, so it returns a Promise of { name, data (ArrayBuffer), mime }
+    saveAs: function (type, base, opts) {
+      if (type === 'dxf' || type === 'dwg') {
+        var text = UI.dxfOutput(opts), nm = (base || safeName()) + '.' + type;
+        if (type === 'dxf') { download(nm, text, 'application/dxf'); return { name: nm, data: text, mime: 'application/dxf' }; }
+        return UI.dxfToDwg(text).then(function (bytes) { download(nm, bytes, 'application/acad'); return { name: nm, data: bytes, mime: 'application/acad' }; });
+      }
+      var out = exportData(type, base); download(out.name, out.data, out.mime); if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime); return out;
+    },
+    // dxfOutput({ export: 'faces' | 'views' | 'sheet', face, views: ['Front', 'Top', 'Right', 'Isometric'], current,
+    // bendLines, notes }) -> the DXF text the DXF/DWG Output PropertyManager would save, without opening it
+    dxfOutput: function (opts) { return UI.dxfOutput(opts); },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
     dxfSketch: function (id) { return K.exportDXFSketch(K.findFeature(App.model, id), App.model.units); },
     flat: function () { return K.flatPattern(App.model, App.build, App.mesh); },
@@ -995,7 +1013,7 @@
     $('cmd-search').addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
       var q = $('cmd-search').value.toLowerCase();
-      var cmds = { extrude: function () { UI.cmdExtrude(false); }, cut: function () { UI.cmdExtrude(true); }, revolve: function () { UI.cmdRevolve(false); }, sketch: UI.cmdSketch, hole: UI.cmdHole, pattern: function () { UI.cmdLinearPattern(); }, circular: function () { UI.cmdCircularPattern(); }, mirror: function () { UI.cmdMirror(); }, plane: function () { UI.cmdPlane(); }, measure: UI.cmdMeasure, mass: showMassProperties, section: UI.cmdSection, dxf: exportFaceDXF, stl: exportSTL, script: function () { openTaskPane('macro'); }, macro: function () { openTaskPane('macro'); }, mate: function () { UI.cmdMate(); }, insert: function () { UI.cmdInsertComponent(); }, component: function () { UI.cmdInsertComponent(); }, assembly: function () { newAssembly(); } };
+      var cmds = { extrude: function () { UI.cmdExtrude(false); }, cut: function () { UI.cmdExtrude(true); }, revolve: function () { UI.cmdRevolve(false); }, sketch: UI.cmdSketch, hole: UI.cmdHole, pattern: function () { UI.cmdLinearPattern(); }, circular: function () { UI.cmdCircularPattern(); }, mirror: function () { UI.cmdMirror(); }, plane: function () { UI.cmdPlane(); }, measure: UI.cmdMeasure, mass: showMassProperties, section: UI.cmdSection, dxf: function () { UI.cmdDxfOutput(); }, dwg: function () { UI.cmdDxfOutput({ format: 'dwg' }); }, stl: exportSTL, script: function () { openTaskPane('macro'); }, macro: function () { openTaskPane('macro'); }, mate: function () { UI.cmdMate(); }, insert: function () { UI.cmdInsertComponent(); }, component: function () { UI.cmdInsertComponent(); }, assembly: function () { newAssembly(); } };
       var hit = Object.keys(cmds).filter(function (c) { return q.indexOf(c) >= 0; })[0];
       if (hit) { cmds[hit](); $('cmd-search').value = ''; $('cmd-search').blur(); } else UI.toast('No command matches "' + q + '"');
     });
@@ -1003,7 +1021,7 @@
 
   // the Properties panel shows the material and density: redraw it after a material change made elsewhere
   UI.refreshTaskPane = function () { if (tpCurrent === 'props' && !$('tp-panel').hidden) openTaskPane('props'); };
-  UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog;
+  UI.openTaskPane = openTaskPane; UI.closeTaskPane = closeTaskPane; UI.runScript = runScript; UI.exportDialog = exportDialog; UI.download = download;
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
   UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.exportData = exportData;

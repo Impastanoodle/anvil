@@ -287,18 +287,25 @@
         return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), sel]);
       }
       case 'check': {
+        // f.disabled (bool or fn(v)): a greyed box that keeps its state (DXF/DWG Output's "Geometry", always on)
         var cb = el('input', { type: 'checkbox', 'data-key': f.key || '' });
         cb.checked = !!v[f.key];
+        var cbOff = typeof f.disabled === 'function' ? f.disabled(v) : !!f.disabled;
+        if (cbOff) cb.disabled = true;
         cb.addEventListener('change', function () { changed(cb.checked); });
-        return el('div', { class: 'pm-row check' }, [cb, el('label', { text: f.label, onclick: function () { cb.click(); } })]);
+        return el('div', { class: 'pm-row check' + (cbOff ? ' disabled' : '') }, [cb, el('label', { text: f.label, onclick: function () { if (!cbOff) cb.click(); } })]);
       }
       case 'radio': {   // r13/trim13: a column of option buttons, as in SolidWorks' PropertyManagers (Trim Entities' Options)
+        // f.disabledOption(value, v) -> a reason string greys that option and shows the reason under it (DXF/DWG Output)
         var rbox = el('div', { class: 'pm-radio' });
         f.options.forEach(function (o) {
           var rb = el('input', { type: 'radio', name: 'pm-' + f.key, value: String(o[0]), 'data-key': f.key + ':' + o[0] });
           rb.checked = String(v[f.key]) === String(o[0]);
+          var why = f.disabledOption ? f.disabledOption(o[0], v) : null;
+          if (why) rb.disabled = true;
           rb.addEventListener('change', function () { if (rb.checked) changed(o[0]); });
-          rbox.appendChild(el('div', { class: 'pm-row check' }, [rb, el('label', { text: o[1], onclick: function () { rb.click(); } })]));
+          rbox.appendChild(el('div', { class: 'pm-row check' + (why ? ' disabled' : '') }, [rb, el('label', { text: o[1], onclick: function () { if (!why) rb.click(); } })]));
+          if (why) rbox.appendChild(el('div', { class: 'pm-note', text: why }));
         });
         return rbox;
       }
@@ -2268,6 +2275,244 @@
     UI.exportDialog('Flat pattern DXF', (App.model.name || 'part').replace(/[^\w\-]+/g, '_') + '_flat.dxf', K.exportDXFFlat(flat, App.model.units), 'application/dxf');
   }
 
+  // ------------------------------------------------------------------ DXF/DWG Output (File ▸ Save As ▸ DXF / DWG)
+  // SolidWorks' DXF/DWG Output PropertyManager: one place for every 2D export of a part. Export = the selected planar
+  // face (Kernel.exportDXFFace), the standard views laid out on a sheet (a drawing document built the way the headless
+  // runner's `drawing` command does, never opened as a document, written by Drawing.toDXF), or the sheet-metal flat
+  // pattern (Kernel.exportDXFFlat, with its BEND / NOTES layers filtered out of the text here when unchecked; the
+  // kernel writer always writes them). DWG goes through the local server's converter (POST api/dxf2dwg, serve.ps1);
+  // the published copy has no server, so DWG is greyed there with the reason.
+  var DXF_VIEW_ROLES = { Front: 'front', Top: 'top', Right: 'right', Isometric: 'iso' };
+  var DXF_VIEW_NAMES = ['Front', 'Top', 'Right', 'Isometric'];
+  function dxfSafeName() { return (App.model.name || 'part').replace(/[^\w\-]+/g, '_'); }
+  function dxfUnits() { return App.model.units === 'in' ? 'in' : 'mm'; }
+  // the viewport's camera as a drawing frame: e toward the viewer, u sheet right, v sheet up (a view made with
+  // { frame: { e, u, v } } keeps it, as the drawing's projected views do; its orient 'Current' names the layer)
+  function currentViewFrame() {
+    var c = UI.cam, e = V.norm([c.dir.x, c.dir.y, c.dir.z]), up = [c.up.x, c.up.y, c.up.z];
+    var u = V.cross(up, e);
+    if (V.len(u) < 1e-6) u = V.cross([0, 0, 1], e);
+    if (V.len(u) < 1e-6) u = [1, 0, 0];
+    u = V.norm(u);
+    return { name: 'Current', e: e, u: u, v: V.cross(e, u) };
+  }
+  // The pictorial corner of the sheet (third angle: right of the Front / Top column, above the Front / Right row),
+  // the way Drawing.layout places the Isometric; the whole usable area when no standard view is on the sheet.
+  function pictorialBox(doc, mesh, units) {
+    var S = Drawing.sheetSize(doc, units), k = units === 'in' ? 1 / 25.4 : 1, g = 22 * k, sv = Drawing.scaleValue(doc.sheet.scale || [1, 1]);
+    var box = { x0: 10 * k, x1: S[0] - 10 * k, y0: 50 * k, y1: S[1] - 10 * k };   // BORDER 10, title block 40 (drawing-sheet.js)
+    doc.views.forEach(function (v) {
+      if (!v.role || v.role === 'iso') return;
+      var E = Drawing.extentsOf(mesh, v.orient);
+      if (v.role === 'front' || v.role === 'top') box.x0 = Math.max(box.x0, v.x + E.w * sv / 2 + g / 2);
+      if (v.role === 'front' || v.role === 'right') box.y0 = Math.max(box.y0, v.y + E.h * sv / 2 + g / 2);
+    });
+    return box;
+  }
+  // centre a view in a box, at the sheet scale when it fits, else the largest standard scale that does (as the
+  // Isometric in Drawing.layout)
+  function fitViewInBox(doc, mesh, units, v, frame, box) {
+    var E = Drawing.extentsOf(mesh, frame), sv = Drawing.scaleValue(doc.sheet.scale || [1, 1]), g = 22 * (units === 'in' ? 1 / 25.4 : 1);
+    var bw = box.x1 - box.x0 - g / 2, bh = box.y1 - box.y0 - g / 2, SC = Drawing.SCALES;
+    v.scale = null;
+    if (E.w * sv > bw || E.h * sv > bh) {
+      for (var j = 0; j < SC.length; j++) { var q = Drawing.scaleValue(SC[j]); if (q < sv && E.w * q <= bw && E.h * q <= bh) { v.scale = SC[j]; break; } }
+      if (!v.scale) v.scale = SC[SC.length - 1];
+    }
+    v.x = (box.x0 + box.x1) / 2; v.y = (box.y0 + box.y1) / 2;
+  }
+  // dropDxfLayers(text, ['BEND', 'NOTES']): the DXF with every entity on those layers left out (a POLYLINE goes with
+  // its VERTEX / SEQEND records); the layer table keeps the names, which readers accept
+  function dropDxfLayers(text, layers) {
+    if (!layers || !layers.length) return text;
+    var L = text.split('\n'), out = [], inEnt = false, skip = false;
+    for (var i = 0; i + 1 < L.length; i += 2) {
+      var code = L[i].trim(), val = L[i + 1];
+      if (code === '0') {
+        var name = val.trim();
+        if (name === 'SECTION' || name === 'ENDSEC' || name === 'EOF') { inEnt = false; skip = false; }
+        else if (inEnt && name !== 'VERTEX' && name !== 'SEQEND') {
+          // a new entity: its layer is the group 8 that follows before the next group 0
+          var layer = null;
+          for (var j = i + 2; j + 1 < L.length && L[j].trim() !== '0'; j += 2) if (L[j].trim() === '8') { layer = L[j + 1].trim(); break; }
+          skip = layer != null && layers.indexOf(layer) >= 0;
+        }
+      } else if (code === '2' && !inEnt && i >= 2 && L[i - 2].trim() === '0' && L[i - 1].trim() === 'SECTION' && val.trim() === 'ENTITIES') inEnt = true;
+      if (!skip) out.push(L[i], L[i + 1]);
+    }
+    if (L.length % 2) out.push(L[L.length - 1]);
+    return out.join('\n');
+  }
+  // the standard views (and the current one) on a sheet, as the drawing export writes them: one layer per view
+  function dxfViews(names, current) {
+    if (typeof Drawing === 'undefined') throw new Error('Views need drawing.js, which did not load.');
+    if (!App.mesh || !App.mesh.triCount) throw new Error('Nothing to export yet.');
+    var units = dxfUnits(), mesh = App.mesh, model = App.model;
+    var doc = Drawing.newDrawing(model, { projection: 'third', autoDims: false, name: 'DXF Output' });
+    var front = null, used = {};
+    names.forEach(function (n) {
+      var role = DXF_VIEW_ROLES[n];
+      if (!role || used[role]) return;
+      used[role] = n;
+      var props = { role: role };
+      if (role === 'top' && front) { props.parent = front.id; props.align = 'x'; }
+      if (role === 'right' && front) { props.parent = front.id; props.align = 'y'; }
+      var v = Drawing.addView(doc, n, props);
+      if (role === 'front') front = v;
+    });
+    var cur = null, frame = null;
+    if (current) { frame = currentViewFrame(); cur = Drawing.addView(doc, 'Current', { frame: { e: frame.e, u: frame.u, v: frame.v } }); }
+    if (!doc.views.length) throw new Error('Pick at least one view.');
+    if (doc.views.some(function (v) { return v.role; })) Drawing.layout(doc, mesh, units);   // only the current view: nothing to lay out
+    if (cur) {
+      // the current view takes the pictorial corner; with the Isometric there too, the two share it, Isometric above
+      var box = pictorialBox(doc, mesh, units), iso = doc.views.filter(function (v) { return v.role === 'iso'; })[0];
+      if (iso) {
+        var ym = (box.y0 + box.y1) / 2;
+        fitViewInBox(doc, mesh, units, iso, iso.orient, { x0: box.x0, x1: box.x1, y0: ym, y1: box.y1 });
+        fitViewInBox(doc, mesh, units, cur, frame, { x0: box.x0, x1: box.x1, y0: box.y0, y1: ym });
+      } else fitViewInBox(doc, mesh, units, cur, frame, box);
+    }
+    return Drawing.toDXF(Drawing.compute(doc, mesh, model));
+  }
+  // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
+  // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
+  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on) }
+  function dxfOutput(opts) {
+    opts = opts || {};
+    var what = opts.export || dxfDefaultExport();
+    if (what === 'faces') {
+      var fi = opts.face != null ? +opts.face : (App.sel && App.sel.kind === 'face' ? App.sel.index : -1);
+      if (!(fi >= 0) || !App.mesh || !App.mesh.faces[fi]) throw new Error('Select a planar face first.');
+      var dxf = K.exportDXFFace(App.mesh, fi, dxfUnits());
+      if (!dxf) throw new Error('Could not outline that face.');
+      return dxf;
+    }
+    if (what === 'views') return dxfViews(opts.views || ['Front', 'Top', 'Right'], !!opts.current);
+    if (what === 'sheet') {
+      if (!App.model.sheet) throw new Error('Sheet metal needs a Base Flange.');
+      var flat = K.flatPattern(App.model, App.build, App.mesh);
+      var drop = [];
+      if (opts.bendLines === false) drop.push('BEND');
+      if (opts.notes === false) drop.push('NOTES');
+      return dropDxfLayers(K.exportDXFFlat(flat, dxfUnits()), drop);
+    }
+    throw new Error('Unknown export "' + what + '" (faces, views or sheet).');
+  }
+  function dxfDefaultExport() { return App.model.sheet ? 'sheet' : App.sel && App.sel.kind === 'face' ? 'faces' : 'views'; }
+  function dxfSuffix(v) { return v.export === 'faces' ? '_face' + (App.sel && App.sel.kind === 'face' ? App.sel.index : '') : v.export === 'sheet' ? '_flat' : '_views'; }
+  // The converter on the local server: HEAD api/dxf2dwg answers 200 with X-Anvil-Converter: oda | libredwg when one is
+  // installed, 503 when not; the published copy has no endpoint at all (a 404 or a network error, both "none").
+  var dwgState = { probed: false, ok: false, converter: null, pending: null };
+  function probeDwg() {
+    if (dwgState.pending) return dwgState.pending;
+    var p;
+    try {
+      p = fetch('api/dxf2dwg', { method: 'HEAD' }).then(function (r) {
+        dwgState.ok = r.status === 200;
+        dwgState.converter = dwgState.ok ? (r.headers.get('X-Anvil-Converter') || 'oda') : null;
+      }, function () { dwgState.ok = false; dwgState.converter = null; });
+    } catch (e) { p = Promise.resolve(); dwgState.ok = false; }
+    dwgState.pending = p.then(function () { dwgState.probed = true; dwgState.pending = null; return dwgState; });
+    return dwgState.pending;
+  }
+  // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer); rejects with the server's error message
+  function dxfToDwg(dxfText) {
+    return fetch('api/dxf2dwg', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: dxfText }).then(function (r) {
+      if (r.status === 200) return r.arrayBuffer();
+      return r.text().then(function (t) {
+        var msg = 'DWG conversion failed (' + r.status + ')';
+        try { msg = JSON.parse(t).error || msg; } catch (e) { }
+        throw new Error(msg);
+      });
+    }, function () { throw new Error('DWG needs the local server (anvil/serve.ps1) and its converter.'); });
+  }
+  var DWG_NOTE = 'DWG needs the local server\'s converter (anvil/vendor/get-libredwg.ps1, or install the free ODA File Converter)';
+  var LIBREDWG_NOTE = 'LibreDWG\'s DWG writer is experimental; use DXF for CAM, or install the ODA File Converter for compliant DWG';
+  // cmdDxfOutput({ format: 'dxf' | 'dwg', name }) opens the PropertyManager (File ▸ Save As DXF / DWG…, Save As with
+  // type DXF / DWG carries the typed file name over)
+  function cmdDxfOutput(opts) {
+    opts = opts || {};
+    var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet;
+    var v = { export: dxfDefaultExport(), vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
+      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', bendLines: true, notes: true, name: '' };
+    var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
+    function autoName() { return dxfSafeName() + dxfSuffix(v); }
+    v.name = typed || (auto = autoName());
+    if (v.format === 'dwg' && !(dwgState.probed && dwgState.ok)) v.format = 'dxf';
+    function optsOf(x) {
+      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes };
+    }
+    function cleanName(x) { return String(x.name || '').trim().replace(/\.(dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || autoName(); }
+    function isViews(x) { return x.export === 'views'; }
+    function isSheet(x) { return x.export === 'sheet'; }
+    // a face clicked while the PropertyManager is open becomes the face to export (SolidWorks' selection box)
+    var command = { kind: 'dxfOutput', onPick: function (pk) {
+      if (!pk || pk.kind !== 'face') return false;
+      App.sel = { kind: 'face', index: pk.index }; UI.updateHighlights();
+      faceOk = true;
+      if (v.export === 'views') v.export = 'faces';
+      if (auto != null && v.name === auto) v.name = auto = autoName();
+      renderPM();
+      return true;
+    } };
+    var spec = {
+      title: 'DXF/DWG Output', icon: 'dxf', command: command, values: v,
+      message: 'Choose what to export and the format; ✓ downloads the file.',
+      groups: [
+        { title: 'Export', fields: [
+          { type: 'radio', key: 'export', rerender: true, options: [['faces', 'Faces / loops / edges'], ['views', 'Views'], ['sheet', 'Sheet metal']],
+            disabledOption: function (val) { return val === 'faces' && !faceOk ? 'Select a planar face first' : val === 'sheet' && !sheetOk ? 'Add a Base Flange first' : null; } },
+          { type: 'check', label: 'Front', key: 'vFront', show: isViews }, { type: 'check', label: 'Top', key: 'vTop', show: isViews },
+          { type: 'check', label: 'Right', key: 'vRight', show: isViews }, { type: 'check', label: 'Isometric', key: 'vIsometric', show: isViews },
+          { type: 'check', label: 'Current view', key: 'vCurrent', show: isViews },
+          { type: 'check', label: 'Geometry', key: 'geometry', disabled: true, show: isSheet },
+          { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet }, { type: 'check', label: 'Notes', key: 'notes', show: isSheet }
+        ] },
+        { title: 'Output format', fields: [
+          { type: 'radio', key: 'format', rerender: true, options: [['dxf', 'DXF'], ['dwg', 'DWG']],
+            disabledOption: function (val) { return val === 'dwg' && !(dwgState.probed && dwgState.ok) ? DWG_NOTE : null; } },
+          { type: 'html', show: function () { return dwgState.converter === 'libredwg'; }, html: '<div class="pm-note">' + LIBREDWG_NOTE + '</div>' },
+          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : [['R12', 'R12 (AC1009)']]; } }
+        ] },
+        { title: 'File name', fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function (x, key) {
+        if (key === 'export' && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
+        if (key === 'format') { x.version = x.format === 'dwg' ? 'R2000' : 'R12'; UI.renderPM(); }
+        if (key === 'name') auto = null;
+      },
+      onOK: function (x) {
+        var text;
+        if (isViews(x) && !optsOf(x).views.length && !x.vCurrent) { UI.toast('Pick at least one view.'); return false; }
+        try { text = dxfOutput(optsOf(x)); } catch (e) { UI.toast(e.message || String(e)); UI.setStatus('DXF/DWG Output: ' + (e.message || e)); return false; }
+        var base = cleanName(x);
+        v.geometry = true;
+        if (x.format !== 'dwg') {
+          UI.download(base + '.dxf', text, 'application/dxf');
+          UI.setStatus('Saved ' + base + '.dxf (' + (text.length / 1024).toFixed(1) + ' KB).');
+          return;
+        }
+        UI.setStatus('Converting ' + base + '.dwg…');
+        var p = dxfToDwg(text).then(function (bytes) {
+          UI.download(base + '.dwg', bytes, 'application/acad');
+          UI.setStatus('Saved ' + base + '.dwg (' + (bytes.byteLength / 1024).toFixed(1) + ' KB).');
+          if (pm.spec === spec) closePM();
+        }, function (e) { UI.toast(e.message || String(e)); UI.setStatus('DWG: ' + (e.message || e)); });
+        return { keepOpen: true, promise: p };
+      }
+    };
+    v.geometry = true;
+    openPM(spec);
+    probeDwg().then(function () {
+      if (pm.spec !== spec) return;
+      if (opts.format === 'dwg' && dwgState.ok) { v.format = 'dwg'; v.version = 'R2000'; }
+      renderPM();
+    });
+  }
+  UI.cmdDxfOutput = cmdDxfOutput; UI.dxfOutput = dxfOutput; UI.dxfToDwg = dxfToDwg; UI.dropDxfLayers = dropDxfLayers;
+  UI.dwgConverter = function () { return probeDwg().then(function (s) { return s.ok ? s.converter : null; }); };   // tests: the probe's result
+
   // ------------------------------------------------------------------ section view
   function cmdSection() {
     if (App.view.section) { App.view.section = null; UI.applyDisplayStyle(); UI.refreshHud(); return; }
@@ -3308,7 +3553,7 @@
   // part-only commands refuse in an assembly document (label = the SolidWorks command name for the message)
   [['cmdExtrude', 'Extruded Boss/Base'], ['cmdRevolve', 'Revolved Boss/Base'], ['cmdLinearPattern', 'Linear Pattern'], ['cmdCircularPattern', 'Circular Pattern'],
     ['cmdMirror', 'Mirror'], ['cmdPlane', 'Reference Plane'], ['cmdHole', 'Hole Wizard'], ['cmdBaseFlange', 'Base Flange/Tab'], ['cmdChamfer', 'Chamfer'], ['cmdFillet', 'Fillet'],
-    ['cmdEdgeFlange', 'Edge Flange'], ['cmdMiterFlange', 'Miter Flange'], ['cmdHem', 'Hem'], ['cmdJog', 'Jog'], ['cmdFlatten', 'Flatten'], ['exportFlatDXF', 'Flat to DXF'],
+    ['cmdEdgeFlange', 'Edge Flange'], ['cmdMiterFlange', 'Miter Flange'], ['cmdHem', 'Hem'], ['cmdJog', 'Jog'], ['cmdFlatten', 'Flatten'], ['exportFlatDXF', 'Flat to DXF'], ['cmdDxfOutput', 'DXF/DWG Output'],
     ['cmdConvertEntities', 'Convert Entities'], ['cmdOffsetEntities', 'Offset Entities'], ['cmdSketchFillet', 'Sketch Fillet'], ['cmdTrimEntities', 'Trim Entities'], ['cmdExtendEntities', 'Extend Entities'],
     ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSketchPattern', 'Linear Sketch Pattern'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
     ['editSketch', 'Edit Sketch']
