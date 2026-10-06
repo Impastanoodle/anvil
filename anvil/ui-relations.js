@@ -692,38 +692,79 @@
     // A dragged end point dropped on another sketch point (within 9 px) or on a line / circle / arc (within 7 px) snaps
     // there and gets a Coincident on release, as in SolidWorks. Points that sat with it when the drag began (already
     // coincident) move with it and are no targets.
+    // r15/snapaudit15: a line's or a rectangle / polygon edge's midpoint is a point target too (Midpoint on release, as
+    // the Line tool infers it there). Curves are measured analytically on every entity but the dragged one: the old
+    // UI.pickEntity lookup found the dragged entity itself under the cursor (its moving end sits there), so the snap to
+    // a line blinked on and off from one pixel to the next and a slow drop 2 px from the line merged with nothing; it
+    // also missed a circle between its facets when zoomed far in. A curve the point lay on when the drag began is no
+    // target (the point slides along it), and an arc is a target only inside its sweep. Equal distances keep the
+    // first entity in sketch order, so a drop on two coincident points always picks the same one.
     function dropTarget(q) {
-      var e0 = refEntity(ref), P0 = S.refPoint({ entities: start }, ref), best = null, bd = 9;
-      function excluded(i, pt0) { return i === e0 || (pt0 && P0 && Math.abs(pt0[0] - P0[0]) < 1e-9 && Math.abs(pt0[1] - P0[1]) < 1e-9); }
+      var e0 = refEntity(ref), P0 = S.refPoint({ entities: start }, ref), best = null, bd = 9, st0 = { entities: start };
+      function same(a, b) { return !!(a && b && Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9); }
+      function excluded(i, pt0) { return i === e0 || same(pt0, P0); }
+      function take(c) { var s = scr(pl, c.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < bd) { bd = d; best = c; } }
+      function lineMid(c) { return [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]; }
       f.entities.forEach(function (e, i) {
         S.pointRefs(f, i).forEach(function (pr) {
-          if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t))) return;
-          if (excluded(i, S.refPoint({ entities: start }, pr.ref))) return;
-          var s = scr(pl, pr.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
-          if (d < bd) { bd = d; best = { ref: pr.ref, pt: pr.pt }; }
+          if (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t)) return;
+          if (excluded(i, S.refPoint(st0, pr.ref))) return;
+          if (/\.mid$/.test(pr.ref)) { if (e.t === 'line') take({ ref: String(i), pt: pr.pt, mid: true }); return; }
+          take({ ref: pr.ref, pt: pr.pt });
+        });
+        if (i === e0) return;
+        S.curveRefs(f, i).forEach(function (cr) {
+          if (!/\.e\d+$/.test(cr)) return;
+          var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr);
+          if (c && c.kind === 'line' && !(c0 && same(lineMid(c0), P0))) take({ ref: cr, pt: lineMid(c), mid: true });
         });
       });
       var o = scr(pl, [0, 0]);
       if (!(P0 && Math.abs(P0[0]) < 1e-9 && Math.abs(P0[1]) < 1e-9) && Math.hypot(o[0] - q[0], o[1] - q[1]) < bd) best = { ref: 'O', pt: [0, 0] };
       if (best) return best;
-      var uv = UI.screenToPlane(q[0], q[1], pl), hit = UI.pickEntity(q[0], q[1]);
-      if (!uv || !hit || hit.index === e0) return null;
+      var uv = UI.screenToPlane(q[0], q[1], pl);
+      if (!uv) return null;
       var bc = null, bdc = 7;
-      S.curveRefs(f, hit.index).forEach(function (cr) {
-        var c = S.refCurve(f, cr), pt;
-        if (!c) return;
+      function onAt(c, e, P) {   // does P lie on curve c (of entity e) within its extent?
+        if (!P) return false;
+        var tol = 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]));
         if (c.kind === 'line') {
-          var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L2 = dx * dx + dy * dy || 1, t = Math.max(0, Math.min(1, ((uv[0] - c.a[0]) * dx + (uv[1] - c.a[1]) * dy) / L2));
-          pt = [c.a[0] + dx * t, c.a[1] + dy * t];
-        } else {
-          var vx = uv[0] - c.c[0], vy = uv[1] - c.c[1], r = Math.hypot(vx, vy);
-          if (r < 1e-12) return;
-          pt = [c.c[0] + vx / r * c.r, c.c[1] + vy / r * c.r];
+          var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L = Math.hypot(dx, dy);
+          return L > 0 && Math.abs((P[0] - c.a[0]) * dy - (P[1] - c.a[1]) * dx) / L < tol;
         }
-        var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
-        if (d < bdc) { bdc = d; bc = { ref: cr, pt: pt, curve: true }; }
+        return Math.abs(Math.hypot(P[0] - c.c[0], P[1] - c.c[1]) - c.r) < tol;
+      }
+      f.entities.forEach(function (e, i) {
+        if (i === e0 || !e || e.t === 'slot') return;   // a slot's curve ref is its (undrawn) centre line: no target, as in SketchSolver.onCurveRef
+        S.curveRefs(f, i).forEach(function (cr) {
+          var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr), pt;
+          if (!c || (c0 && onAt(c0, start[i], P0))) return;
+          if (c.kind === 'line') {
+            var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L2 = dx * dx + dy * dy;
+            if (!(L2 > 0)) return;
+            var t = ((uv[0] - c.a[0]) * dx + (uv[1] - c.a[1]) * dy) / L2;
+            if (t <= 0 || t >= 1) return;
+            pt = [c.a[0] + dx * t, c.a[1] + dy * t];
+          } else {
+            var vx = uv[0] - c.c[0], vy = uv[1] - c.c[1], r = Math.hypot(vx, vy);
+            if (r < 1e-12) return;
+            if (e.t === 'arc' && e.a1 - e.a0 < 360) {
+              var rel = ((Math.atan2(vy, vx) * 180 / Math.PI - e.a0) % 360 + 360) % 360;
+              if (rel > e.a1 - e.a0) return;
+            }
+            pt = [c.c[0] + vx / r * c.r, c.c[1] + vy / r * c.r];
+          }
+          var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
+          if (d < bdc) { bdc = d; bc = { ref: cr, pt: pt, curve: true }; }
+        });
       });
       return bc;
+    }
+    function dropKind(d) {
+      if (!d) return null;
+      if (d.mid) return 'midpoint';
+      var de = d.ref !== 'O' && f.entities[refEntity(d.ref)];
+      return /\.c$/.test(ref) && /\.c$/.test(d.ref) && de && /^(circle|arc)$/.test(de.t) ? 'concentric' : 'coincident';
     }
     function solveTo(q) {
       var uv = UI.screenToPlane(q[0], q[1], pl);
@@ -732,7 +773,7 @@
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
       if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; UI.updateSketches(); }
-      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, drop && /\.c$/.test(ref) && /\.c$/.test(drop.ref) ? 'concentric' : 'coincident');
+      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, dropKind(drop));   // r15/snapaudit15: the glyph names the relation the release adds
     }
     // the next frame, or 50 ms when animation frames are throttled (a background tab), whichever comes first
     var timer = 0;
@@ -753,12 +794,14 @@
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
         var merged = null;
         if (drop && moved) {
-          // a circle / arc centre dropped on another circle / arc centre: Concentric (as SolidWorks merges them)
-          var dropEnt = !/^O$/.test(drop.ref) && f.entities[refEntity(drop.ref)];
-          var conc = /\.c$/.test(ref) && /\.c$/.test(drop.ref) && dropEnt && /^(circle|arc)$/.test(dropEnt.t);
-          var r = conc ? S.addRelation(f, 'concentric', [ref.replace(/\.c$/, ''), drop.ref.replace(/\.c$/, '')], { rejectOver: true })
-            : S.addRelation(f, 'coincident', [ref, drop.ref], { rejectOver: true });
-          merged = r.ok ? (conc ? 'Concentric' : 'Coincident') + ' with ' + S.refName(f, drop.ref) + ' added. ' : null;
+          // a circle / arc centre dropped on another circle / arc centre: Concentric (as SolidWorks merges them); on a
+          // midpoint: Midpoint (r15/snapaudit15)
+          var kind = dropKind(drop), kname = S.TYPES[kind].name;
+          var r = kind === 'concentric' ? S.addRelation(f, 'concentric', [ref.replace(/\.c$/, ''), drop.ref.replace(/\.c$/, '')], { rejectOver: true })
+            : S.addRelation(f, kind, [ref, drop.ref], { rejectOver: true });
+          // r15/snapaudit15: a merge that would over-define the sketch is refused and says so; the point stays where it
+          // was dropped (it already sits there, so every other relation still holds)
+          merged = r.ok ? kname + ' with ' + S.refName(f, drop.ref) + ' added. ' : kname + ' with ' + S.refName(f, drop.ref) + ' not added: it would over-define the sketch. ';
         }
         drop = null;
         UI.updateSketches();
