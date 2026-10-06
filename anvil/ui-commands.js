@@ -107,6 +107,13 @@
     // r10/editpreview10: ✗ rolls forward at once; ✓ keeps the rolled-back part until the rebuilt one is applied
     if (pm.editUpto != null) { pm.editUpto = null; if (keepPreview) { if (UI.rollbackCommit) UI.rollbackCommit(); } else if (UI.rollForward) UI.rollForward(); }
     UI.updatePlanes();
+    // r15/sketchsel15: a sketch command consumes its selection, as in SolidWorks: whatever entities were selected
+    // when a PropertyManager opened in a sketch (Mirror, Pattern, Offset, Fillet, Trim, …) are deselected when it
+    // closes, by ✓ or ✗, so the next click starts clean (spec.keepSelection opts a PM out)
+    if (App.mode === 'sketch' && !spec.keepSelection) {
+      var hadSel = (App.sel && App.sel.kind === 'entity') || (UI.selection && UI.selection().some(function (s) { return s.kind === 'entity'; }));
+      if (hadSel) { App.sel = null; App.sel2 = null; if (UI.setSelection) UI.setSelection([]); else if (UI.updateSketches) UI.updateSketches(); }
+    }
     if (spec.onClose) spec.onClose();
     UI.refreshRibbon();
   }

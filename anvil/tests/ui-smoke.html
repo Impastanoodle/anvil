@@ -4344,8 +4344,12 @@
     var dims = (f.rels || []).filter(function (x) { return x.type === 'distance'; });
     assert(dims.length === 1 && dims[0].refs.join() === '0.c,2.c' && dims[0].dir === 'h' && Math.abs(dims[0].v - 20) < 1e-9, 'spacing dimension from the seed centre to the first copy centre: ' + JSON.stringify(dims));
     assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    // the selection is consumed by the command: nothing selected after ✓, and after ✗ too (r15/sketchsel15)
+    assert(!(UI.App.sel && UI.App.sel.kind === 'entity') && !UI.selection().some(function (x) { return x.kind === 'entity'; }), 'selection cleared after OK');
+    UI.setSelection([{ kind: 'entity', index: 1 }]); UI.cmdSketchPattern(); await wait(20); UI.pmCancel(); await wait(20);
+    assert(!(UI.App.sel && UI.App.sel.kind === 'entity') && !UI.selection().some(function (x) { return x.kind === 'entity'; }), 'selection cleared after Cancel');
     UI.exitSketch(true); await idle();
-    return 'copies at x = 50, 70; distance 0.c -> 2.c = 20 (horizontal)';
+    return 'copies at x = 50, 70; distance 0.c -> 2.c = 20 (horizontal); selection consumed';
   });
   step('true circles on screen: a sketch circle is tessellated for the zoom (sagitta under 0.2 px, 32+ segments), redrawn finer when zooming in; the kernel tessellation is untouched afterwards', async function () {
     await anvil.run('p.name("Circ"); p.sketch("Front").circle(0, 0, 5);');
