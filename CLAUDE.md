@@ -51,7 +51,7 @@ Choose **three to four tasks**, in this priority: open board requests, then `QUE
 | `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html`, `anvil/ui-holewizard.js`, `anvil/ui-materials.js`, `anvil/ui-evaluate.js` |
 | `assembly` | `anvil/assembly.js`, `anvil/ui-assembly.js` |
 | `drawing` | `anvil/drawing.js`, `anvil/drawing-curves.js`, `anvil/drawing-hlr.js`, `anvil/drawing-views.js`, `anvil/drawing-sheet.js`, `anvil/drawing-annotations.js`, `anvil/drawing-render.js`, `anvil/drawing-ui.js`, `anvil/drawing-ui-tools.js`, `anvil/drawing-ui-panels.js`, `anvil/drawing-worker.js`, `anvil/drawing.css` |
-| `headless` | `anvil/headless/`, `package.json` (the Node runner; it loads the engine files listed in `anvil/tests/kernel-tests.html`, so a lane that adds an engine file adds it there) |
+| `headless` | `anvil/headless/`, `package.json`, `anvil/serve.ps1`, `anvil/vendor/get-libredwg.ps1` (the Node runner, the local server with its `api/dxf2dwg` endpoint, and the LibreDWG fetch script; the runner loads the engine files listed in `anvil/tests/kernel-tests.html`, so a lane that adds an engine file adds it there) |
 | `occt` | `anvil/occt-kernel.js`, `anvil/occt-worker.js`, `anvil/ui-occt.js`, `anvil/vendor/get-occt.ps1`, `anvil/experiments/` (the OpenCascade engine itself lives in `anvil/vendor/occt/`, fetched by `vendor/get-occt.ps1`, not committed) |
 | `tests` | `anvil/tests/`, `anvil/examples/`, `anvil/README.md` |
 

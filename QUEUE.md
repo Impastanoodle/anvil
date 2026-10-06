@@ -25,6 +25,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (local-2026-10-06b) Save As DXF / DWG: DXF/DWG Output PropertyManager (faces, views on a sheet, flat pattern), DWG through serve.ps1's `api/dxf2dwg` (ODA File Converter or LibreDWG 0.14, `vendor/get-libredwg.ps1`) and the Node runner; Linear Sketch Pattern: Entities to Pattern box (no select-all), seed-to-copy spacing dimensions; ui-smoke 304/304.
 - (local-2026-10-06a) Standard toolbar Undo / Redo buttons next to the menus (user request); ui-smoke 302/302 headless.
 - (local-2026-10-06a) Structure: headless Node runner (`anvil/headless/anvil.js` build / drawing / example / test, `npm test`), kernel.js split into nine files, drawing.js into ten, behind `Kernel._` / `Drawing._` / `UI.drawingInternal`; kernel 811 (browser and Node), occt 56, examples 29/29.
 - (local-2026-10-04d) Round 14 (UI): drawing/PM bug fixed, all lines thick, ANSI sketch dimensions and crisp relation glyphs, ribbon flyouts, S Shortcut Bar, two-line tooltips, studio lighting, gradient background, clickable triad, View Selector cube, translucent blue / orange highlights; kernel 811, smoke 301, occt 56.
