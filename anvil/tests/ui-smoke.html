@@ -380,6 +380,56 @@
     UI.closeModal();
     return 'dxf ' + ta.value.length + ' chars';
   });
+  step('DXF/DWG Output PM (UI.cmdDxfOutput): Export defaults per part, anvil.dxfOutput views / sheet, DWG greyed without the converter', async function () {
+    await idle();
+    var errs0 = errors.length;
+    function layerTable(dxf) { var m = dxf.match(/\n0\nLAYER\n2\n([^\n]+)/g) || []; return m.map(function (s) { return s.replace(/[\s\S]*\n/, ''); }); }
+    // a sheet-metal part is open: Sheet metal is the default export, DXF the default format
+    UI.cmdDxfOutput();
+    assert(UI.hasPM() && UI.pmTitle() === 'DXF/DWG Output', 'PM not open: ' + UI.pmTitle());
+    assert(D.querySelector('#pm input[data-key="export:sheet"]').checked, 'Sheet metal should be the default export on a sheet-metal part');
+    assert(D.querySelector('#pm input[data-key="export:faces"]').disabled && /Select a planar face first/.test($('pm').textContent), 'Faces greyed without a face, with the note');
+    assert(D.querySelector('#pm input[data-key="format:dxf"]').checked, 'DXF should be the default format');
+    assert(D.querySelector('#pm input[data-key="bendLines"]').checked && D.querySelector('#pm input[data-key="notes"]').checked, 'Bend lines and Notes on by default');
+    assert(/_flat$/.test(pmField('Name').value), 'file name suffix _flat: ' + pmField('Name').value);
+    // sheet: the flat pattern, with and without BEND entities
+    var flat = anvil.dxfOutput({ export: 'sheet', bendLines: false });
+    assert(/\$ACADVER\n1\nAC1009\n/.test(flat) && /\n8\nOUTLINE\n/.test(flat) && !/\n8\nBEND\n/.test(flat), 'sheet without bend lines');
+    assert(/\n8\nBEND\n/.test(anvil.dxfOutput({ export: 'sheet' })), 'sheet with bend lines carries BEND entities');
+    assert(!/\n0\nTEXT\n/.test(anvil.dxfOutput({ export: 'sheet', notes: false })), 'notes off drops the TEXT entities');
+    // views: one layer per view, LINE / POLYLINE entities, R12 header
+    var views = anvil.dxfOutput({ export: 'views', views: ['Front', 'Top'] });
+    var lt = layerTable(views);
+    assert(/\$ACADVER\n1\nAC1009\n/.test(views), 'views header');
+    assert(lt.indexOf('FRONT') >= 0 && lt.indexOf('TOP') >= 0 && lt.indexOf('RIGHT') < 0, 'a LAYER per view: ' + lt.join(','));
+    assert(/\n8\nFRONT\n/.test(views) && /\n8\nTOP\n/.test(views) && (/\n0\nLINE\n/.test(views) || /\n0\nLWPOLYLINE\n/.test(views)), 'view entities');
+    var cur = anvil.dxfOutput({ export: 'views', views: ['Front', 'Isometric'], current: true });
+    assert(layerTable(cur).indexOf('CURRENT') >= 0 && /\n8\nCURRENT\n/.test(cur), 'the current view gets its own layer beside the Isometric');
+    UI.pmCancel();
+    // a plain part: Views is the default; with a face selected, Faces
+    await anvil.run('p.sketch("Top").rect(0, 0, 30, 20).extrude(10);');
+    await idle();
+    UI.cmdDxfOutput();
+    assert(D.querySelector('#pm input[data-key="export:views"]').checked && D.querySelector('#pm input[data-key="export:sheet"]').disabled, 'Views default on a plain part, Sheet metal greyed');
+    assert(/_views$/.test(pmField('Name').value), 'file name suffix _views');
+    UI.pmCancel();
+    anvil.select(faceWithNormal([0, 1, 0]));
+    UI.cmdDxfOutput();
+    assert(D.querySelector('#pm input[data-key="export:faces"]').checked && !D.querySelector('#pm input[data-key="export:faces"]').disabled, 'Faces default with a face selected');
+    var face = anvil.dxfOutput({ export: 'faces' });
+    assert(/\n8\nOUTLINE\n/.test(face) && /\n0\nPOLYLINE\n/.test(face), 'face outline');
+    // DWG: this server has no api/dxf2dwg (404 or 503), so the radio is greyed with the note, with no console error
+    var conv = await UI.dwgConverter();
+    assert(conv === null, 'no converter expected here, got ' + conv);
+    var dwg = D.querySelector('#pm input[data-key="format:dwg"]');
+    assert(dwg && dwg.disabled && /DWG needs the local server/.test($('pm').textContent), 'DWG greyed with the note');
+    assert(D.querySelector('#pm select[data-key="version"]').value === 'R12', 'version R12 for DXF');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    UI.pmCancel();
+    assert(!UI.hasPM(), 'PM should be closed');
+    anvil.clearSelection();
+    return 'views ' + views.length + ' chars (' + lt.join(',') + '), flat ' + flat.length + ' chars, face ' + face.length + ' chars';
+  });
   step('sheet metal: mitred two-edge flange via anvil.run, tree title says "mitred"', async function () {
     var s;
     try {
@@ -2789,7 +2839,7 @@
     near(anvil.summary().volume, 27875 - 320, 1e-3, 'volume after OK');
     return 'ok';
   });
-  step('exchange: File ▸ Save As lists Part / script / STEP / 3MF / OBJ / STL; File ▸ Export STEP AP214… preselects STEP and Save downloads it; exportData gives 3MF bytes and OBJ + .mtl', async function () {
+  step('exchange: File ▸ Save As lists Part / script / STEP / 3MF / OBJ / STL / DXF / DWG; File ▸ Export STEP AP214… preselects STEP and Save downloads it; exportData gives 3MF bytes and OBJ + .mtl', async function () {
     var rows = menuRows('Export STEP AP214');
     assert(rows.length === 1 && /File/.test(rows[0].menu), 'File ▸ Export STEP row');
     UI.closeMenus();
@@ -2801,7 +2851,7 @@
     assert(modalOpen() && /Save As/.test($('modal-title').textContent), 'Save As dialog');
     var sel = D.querySelector('#modal-body select');
     var opts = Array.prototype.map.call(sel.options, function (o) { return o.value; }).join(',');
-    assert(opts === 'json,script,step,3mf,obj,stl' && sel.value === 'step', 'types ' + opts + ' selected ' + sel.value);
+    assert(opts === 'json,script,step,3mf,obj,stl,dxf,dwg' && sel.value === 'step', 'types ' + opts + ' selected ' + sel.value);   // dxf / dwg: the DXF/DWG Output PropertyManager
     clickModalButton('Save');
     await wait(20);
     assert(!modalOpen() && /Saved \S+\.step/.test(statusText()), 'status ' + statusText());

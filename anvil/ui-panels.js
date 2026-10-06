@@ -948,6 +948,7 @@
         { label: 'Open…', key: 'Ctrl+O', action: UI.fileOpen },
         { label: 'Save', key: 'Ctrl+S', action: UI.fileSave },
         { label: 'Save As…', action: function () { UI.fileSaveAs(); } },
+        { label: 'Save As DXF / DWG…', action: function () { UI.cmdDxfOutput(); } },
         { label: 'Pack and Go…', action: function () { if (UI.packAndGo) UI.packAndGo(); } },
         { sep: true },
         { label: 'Export STEP AP214…', action: function () { UI.fileSaveAs('step'); } },
