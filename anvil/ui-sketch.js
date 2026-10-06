@@ -1001,7 +1001,7 @@
     var e = pr && !pr.o && f.entities[pr.e], c = S.refCurve(f, ref), pls;
     if (!e) return;
     if (c && c.kind === 'line' && pr.s === 'e') pls = [{ pts: [c.a, c.b], closed: false }];
-    else pls = e.t === 'point' ? [] : K.entityPolylines(e);
+    else pls = e.t === 'point' ? [] : (UI.screenPolylines || K.entityPolylines)(e);
     pls.forEach(function (l) {
       var pts = l.pts.map(function (q) { return scr(q).map(function (v) { return Math.round(v * 10) / 10; }).join(','); });
       if (l.closed && pts.length) pts.push(pts[0]);

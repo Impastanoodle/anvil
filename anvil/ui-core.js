@@ -1478,8 +1478,22 @@ var UI = (function () {
       groups.sketches.add(pts);
     });
   }
+  // r15/truecircles: sketch circles, arcs and slots are tessellated for the screen — a chord sagitta of about
+  // SCREEN_SAG_PX at the current zoom, 32 to 2048 segments per turn — instead of with the model's chord tolerance
+  // (0.05 mm, which makes a Ø10 circle 24-sided and visibly flat once zoomed in). The kernel's tessellation settings
+  // are swapped only for the call and restored at once (rebuild cache keys read them at rebuild time). Model edges
+  // already draw true curves finely (CURVE_SEGS). updateGrid redraws the sketches when the zoom has moved more than
+  // 30 % since they were tessellated, so zooming in never shows the flats.
+  var SCREEN_SAG_PX = 0.15, sketchSegsScale = 0;
+  function screenPolylines(e) {
+    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot') return K.entityPolylines(e);
+    var saved = K.setTessellation({});
+    try { K.setTessellation({ chordTol: Math.max(1e-9, SCREEN_SAG_PX * cam.scale), minSegs: 32, maxSegs: 2048 }); return K.entityPolylines(e); }
+    finally { K.setTessellation(saved); }
+  }
   function updateSketches() {
     App.dimsStale = true;
+    sketchSegsScale = cam.scale;
     sceneVer++;
     disposeGroup(groups.sketches);
     App.model.features.forEach(function (f) {
@@ -1492,7 +1506,7 @@ var UI = (function () {
       else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
       f.entities.forEach(function (e, i) {
-        var pls = K.entityPolylines(e);
+        var pls = screenPolylines(e);
         var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
         if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
@@ -1523,7 +1537,7 @@ var UI = (function () {
     if (!App.tempEntities.length || App.activeSketch == null) return;
     var pl = activePlane();
     App.tempEntities.forEach(function (e) {
-      var pls = K.entityPolylines(e);
+      var pls = screenPolylines(e);
       if (!pls.length) return;
       var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mats.temp);
       ls.renderOrder = 11;
@@ -1558,6 +1572,7 @@ var UI = (function () {
     return { min: min, max: max };
   }
   function updateGrid() {
+    if (App.gridStale && sketchSegsScale > 0 && groups.sketches.children.length && Math.abs(Math.log(cam.scale / sketchSegsScale)) > Math.log(1.3) && !App.sketchDragging) updateSketches();
     if (!App.gridStale) return;
     App.gridStale = false;
     disposeGroup(groups.grid);
@@ -2700,7 +2715,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, updateTemp: updateTemp, disposeGroup: disposeGroup,
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,

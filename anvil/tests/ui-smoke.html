@@ -4347,6 +4347,25 @@
     UI.exitSketch(true); await idle();
     return 'copies at x = 50, 70; distance 0.c -> 2.c = 20 (horizontal)';
   });
+  step('true circles on screen: a sketch circle is tessellated for the zoom (sagitta under 0.2 px, 32+ segments), redrawn finer when zooming in; the kernel tessellation is untouched afterwards', async function () {
+    await anvil.run('p.name("Circ"); p.sketch("Front").circle(0, 0, 5);');
+    var f = UI.App.model.features[0];
+    UI.editSketch(f.id); await idle();
+    var tess0 = K.setTessellation({});
+    function segsAt() { return UI.screenPolylines(f.entities[0])[0].pts.length; }
+    function sagPx(n) { var rPx = 5 / UI.cam.scale; return rPx * (1 - Math.cos(Math.PI / n)); }
+    UI.zoomView(0.05 / UI.cam.scale); await idle();   // 0.05 mm per px: r = 100 px
+    var n1 = segsAt();
+    assert(n1 >= 32 && sagPx(n1) < 0.2, 'r = 100 px: ' + n1 + ' segments, sagitta ' + sagPx(n1).toFixed(3) + ' px');
+    UI.zoomView(0.005 / UI.cam.scale); await idle();   // 10x closer: r = 1000 px
+    var n2 = segsAt();
+    assert(n2 > n1 && sagPx(n2) < 0.2 && n2 <= 2048, 'r = 1000 px: ' + n2 + ' segments (was ' + n1 + '), sagitta ' + sagPx(n2).toFixed(3) + ' px');
+    var tess1 = K.setTessellation({});
+    assert(tess1.chordTol === tess0.chordTol && tess1.minSegs === tess0.minSegs && tess1.maxSegs === tess0.maxSegs, 'kernel tessellation restored: ' + JSON.stringify(tess1));
+    assert(K.entityPolylines(f.entities[0])[0].pts.length === 24, 'the model-side polyline is still 24-sided for the profile (' + K.entityPolylines(f.entities[0])[0].pts.length + ')');
+    UI.zoomToFit(); UI.exitSketch(true); await idle();
+    return 'r = 100 px: ' + n1 + ' segs; r = 1000 px: ' + n2 + ' segs';
+  });
   // --- end refine/sketcher ---
   // --- smooth/sketchfeel ---
   function sfLayer() { return D.querySelector('#dim-layer .sk-feedback'); }
