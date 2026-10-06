@@ -320,15 +320,30 @@
         return out;
       }
     }
+    // 1c. r15/tangent15: a line ending tangent to a circle / arc. With the cursor within 7 px of a circle (or of an arc,
+    //     the tangent point inside its sweep) and within 6 px of one of the two tangent points from the line's first
+    //     point, the end takes that tangent point exactly; the click infers the end's Coincident and Tangent
+    //     (SketchSolver.inferCandidates). Both ends: this runs before the start's tangent-direction lock (2b), so when
+    //     the line starts on circle A and the cursor reaches a tangent point of circle B, the end tangent to B wins
+    //     (the start point cannot move, so both are rarely possible at once); the start then keeps its Coincident only,
+    //     and gets Tangent to A too only if the line from it to that tangent point already touches A (to the solver's
+    //     1e-7), as an end placed at a common tangent point does.
+    if (App.tool === 'line' && prev && !st.arcMode) {
+      var et = lineEndTangent(f, prev, raw, px);
+      if (et) { out.p = et.p; out.snap = { kind: 'on', pt: et.p }; out.tan = et; return out; }
+    }
     // 2. on a line / circle / arc (the solver infers a point-on-curve Coincident there)
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
     if (onCurve) { out.p = onCurve; out.snap = { kind: 'on', pt: onCurve }; return out; }
     // 2b. a line leaving an existing end point: along the tangent of the arc that ends there, or square to the line
     //     that ends there (within 6 px of that direction; the length is rounded like a free coordinate). The click then
     //     infers Tangent / Perpendicular (SketchSolver.inferCandidates). Axis-aligned directions are left to H / V.
+    //     r15/tangent15: also along the tangent of a circle / arc the line starts on (curveTangentDirs; the radial
+    //     direction gets nothing new), unless a line / arc already ends there (a chain going on from a point on the
+    //     circle: its Coincident is with that end, not the circle, and the solver could not add Tangent).
     if (App.tool === 'line' && prev && !st.arcMode) {
-      var bestDir = null, w = [raw[0] - prev[0], raw[1] - prev[1]];
-      smoothDirs(f, prev).dirs.forEach(function (c) {
+      var bestDir = null, w = [raw[0] - prev[0], raw[1] - prev[1]], sd = smoothDirs(f, prev);
+      sd.dirs.concat(sd.fwd ? [] : curveTangentDirs(f, prev)).forEach(function (c) {
         var s = w[0] * c.u[0] + w[1] * c.u[1], dd = Math.abs(w[0] * c.u[1] - w[1] * c.u[0]) / px;
         if (s > 0 && dd < INFER_PX.align && (!bestDir || dd < bestDir.d)) bestDir = { d: dd, c: c, s: s };
       });
@@ -336,6 +351,7 @@
         var sl = App.view.showGrid ? bestDir.s : niceRound(bestDir.s, 0.5 * px * 1.05), u = bestDir.c.u;
         out.p = [prev[0] + u[0] * sl, prev[1] + u[1] * sl];
         out.dir = { type: bestDir.c.type, from: prev, u: u };
+        if (bestDir.c.glyph) out.dir.glyph = bestDir.c.glyph;   // r15/tangent15: the Tangent glyph by the cursor
         return out;
       }
     }
@@ -427,6 +443,44 @@
         else if (!axis(t)) out.dirs.push({ type: 'perpendicular', u: [-t[1], t[0]] }, { type: 'perpendicular', u: [t[1], -t[0]] });
       }
     }
+    return out;
+  }
+  // r15/tangent15: Line tool, end tangent to a circle / arc. For each circle or arc of sketch f the cursor point raw is
+  // within 7 px of, the two points where a line from P touches it (computed exactly: c + r (cos, sin)(th ± acos(r / d))),
+  // an arc's only inside its sweep; the one nearest the cursor within 6 px: { p, e (entity index), from: P, d (px) },
+  // or null. P on or inside a circle has no tangent point on it.
+  function lineEndTangent(f, P, raw, px) {
+    var best = null;
+    f.entities.forEach(function (e, j) {
+      if (!e || (e.t !== 'circle' && e.t !== 'arc') || !(e.r > 0)) return;
+      var cx = +e.cx || 0, cy = +e.cy || 0, d = Math.hypot(P[0] - cx, P[1] - cy);
+      if (!(d > e.r * (1 + 1e-9))) return;
+      if (Math.abs(Math.hypot(raw[0] - cx, raw[1] - cy) - e.r) / px >= INFER_PX.curve) return;
+      var th = Math.atan2(P[1] - cy, P[0] - cx), al = Math.acos(e.r / d), cv = { c: [cx, cy], arc: e.t === 'arc' ? e : null };
+      [th + al, th - al].forEach(function (a) {
+        var T = [cx + e.r * Math.cos(a), cy + e.r * Math.sin(a)], dd = Math.hypot(raw[0] - T[0], raw[1] - T[1]) / px;
+        if (dd < INFER_PX.align && onArc(cv, T) && (!best || dd < best.d)) best = { d: dd, p: T, e: j, from: P };
+      });
+    });
+    return best;
+  }
+  // r15/tangent15: the directions a line leaving P runs tangent to a circle / arc that P lies on (to the solver's
+  // tolerance; inside an arc's sweep, not at its ends, which smoothDirs covers): [{ type: 'tangent', u, glyph }], both
+  // ways round. Axis-aligned ones are left to H / V (the solver still infers Tangent there).
+  function curveTangentDirs(f, P) {
+    var out = [], tol = Math.max(1e-7, 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1])) + 1e-9);
+    f.entities.forEach(function (e) {
+      if (!e || (e.t !== 'circle' && e.t !== 'arc') || !(e.r > 0)) return;
+      var vx = P[0] - (+e.cx || 0), vy = P[1] - (+e.cy || 0), L = Math.hypot(vx, vy);
+      if (Math.abs(L - e.r) >= tol) return;
+      if (e.t === 'arc') {
+        var sw = e.a1 - e.a0, rel = ((Math.atan2(vy, vx) * 180 / Math.PI - e.a0) % 360 + 360) % 360;
+        if (sw < 360 && (rel < 1e-7 || rel > sw - 1e-7)) return;
+      }
+      var t = [-vy / L, vx / L];
+      if (Math.abs(t[0]) < 1e-9 || Math.abs(t[1]) < 1e-9) return;
+      out.push({ type: 'tangent', u: t, glyph: 'tangent' }, { type: 'tangent', u: [-t[0], -t[1]], glyph: 'tangent' });
+    });
     return out;
   }
   // The arc that leaves P along unit direction t and ends at Q (SolidWorks' tangent arc), as a counter-clockwise

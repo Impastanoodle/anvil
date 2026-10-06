@@ -1164,7 +1164,8 @@ var SketchSolver = (function () {
   // Tangent / Perpendicular where an end of line or arc i meets an end of another line or arc at a matching angle, as
   // SolidWorks infers them while sketching from an existing end point: a line leaving an arc along its tangent, an arc
   // leaving a line or an arc smoothly (Tangent), a line at 90° to the line it starts from (Perpendicular; left to
-  // Horizontal / Vertical when both lines are axis-aligned).
+  // Horizontal / Vertical when both lines are axis-aligned); r15/tangent15: a line that starts or ends on a circle /
+  // arc square to its radius there (Tangent).
   function smoothCandidates(sketch, i, tol) {
     var E = sketch.entities, e = E[i], out = [], ANG = 1e-7;
     if (!e || (e.t !== 'line' && e.t !== 'arc')) return out;
@@ -1186,6 +1187,22 @@ var SketchSolver = (function () {
           } else if (Math.abs(crs(u, v)) < ANG) { out.push({ type: 'tangent', refs: [String(i), String(j)], at: pt }); seen[j] = true; }
           break;
         }
+      }
+      // r15/tangent15: a line end on a circle, or on an arc inside its sweep (an arc's own ends are handled above),
+      // with the line square to the radius there: the line touches it at that end (the Line tool's tangent snap).
+      // Tangent follows the end's on-curve Coincident, which inferCandidates lists first, so its equation is the
+      // shared-end one (radius square to the line) and the pair is not redundant.
+      if (e.t !== 'line') return;
+      for (var c = 0; c < E.length; c++) {
+        var ci = E[c];
+        if (c === i || seen[c] || !ci || (ci.t !== 'circle' && ci.t !== 'arc') || !(ci.r > 0)) continue;
+        var rv = sub(pt, [+ci.cx || 0, +ci.cy || 0]);
+        if (Math.abs(len(rv) - ci.r) >= Math.max(tol, 1e-7)) continue;
+        if (ci.t === 'arc') {
+          var sw = ci.a1 - ci.a0, rel = ((Math.atan2(rv[1], rv[0]) / D2R - ci.a0) % 360 + 360) % 360;
+          if (sw < 360 && (rel < 1e-7 || rel > sw - 1e-7)) continue;
+        }
+        if (Math.abs(dot(u, unit(rv))) < ANG) { out.push({ type: 'tangent', refs: [String(i), String(c)], at: pt }); seen[c] = true; }
       }
     });
     return out;
