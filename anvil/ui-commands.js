@@ -1343,42 +1343,104 @@
     });
     preview();
   }
+  // Linear Sketch Pattern (SolidWorks: Sketch tab ▸ Linear Sketch Pattern). Patterns the entities in its "Entities to
+  // Pattern" box only: the sketch selection when the command starts, plus anything selected in the graphics area while
+  // the PropertyManager is open (no "everything" fallback). Instances are the seed translated by i·spacing along
+  // Direction 1 (and j·spacing2 along Direction 2), so a copy sits spacing away from the seed, not from the sketch
+  // origin. With *Add spacing dimensions* (on by default) ✓ also adds a driving distance dimension from the seed's
+  // reference point (centre of a circle / arc / rectangle / slot, start of a line) to the same point on its first copy
+  // in each direction — horizontal or vertical when the direction is axis-aligned, aligned otherwise — so the spacing
+  // reads seed-to-copy on the sketch and editing it moves the pattern.
+  function sketchSelectionIndices(f) {
+    var out = [];
+    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
+    if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
+    return out.filter(function (i) { return f.entities[i]; }).sort(function (a, b) { return a - b; });
+  }
+  function entityLabel(e, i) {
+    var names = { line: 'Line', circle: 'Circle', arc: 'Arc', rect: 'Rectangle', crect: 'Rectangle', poly: 'Polygon', slot: 'Slot', point: 'Point', polyline: 'Polyline' };
+    return (names[e.t] || 'Entity') + (i + 1);
+  }
+  // the reference point a pattern dimension attaches to: '<i>.c' for anything with a centre, '<i>.p1' for a line
+  function patternRef(e, i) {
+    if (e.t === 'point') return String(i);
+    if (e.t === 'line' || e.t === 'polyline') return i + (e.t === 'line' ? '.p1' : '.v0');
+    return i + '.c';
+  }
   function cmdSketchPattern() {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     if (!f.entities.length) { UI.toast('Draw something to pattern first.'); return; }
-    var targets = entityTargets(f);
-    var v = { angle: 0, spacing: 20, count: 3, dir2: false, angle2: 90, spacing2: 20, count2: 2 };
+    var v = { entities: sketchSelectionIndices(f), angle: 0, spacing: 20, count: 3, dir2: false, angle2: 90, spacing2: 20, count2: 2, dims: true };
+    function steps() {
+      var a1 = v.angle * Math.PI / 180, a2 = v.angle2 * Math.PI / 180;
+      return { d1: [v.spacing * Math.cos(a1), v.spacing * Math.sin(a1)], d2: v.dir2 ? [v.spacing2 * Math.cos(a2), v.spacing2 * Math.sin(a2)] : [0, 0] };
+    }
+    // the copies in the order they are appended; `first1` / `first2` are the positions (in the returned list) of the
+    // first target's copy at (1, 0) and (0, 1), for the spacing dimensions
     function copies() {
-      var a1 = v.angle * Math.PI / 180, a2 = v.angle2 * Math.PI / 180, out = [];
+      var st = steps(), out = [], first1 = -1, first2 = -1;
       var n1 = Math.max(1, v.count | 0), n2 = v.dir2 ? Math.max(1, v.count2 | 0) : 1;
       for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
         if (!i && !j) continue;
-        var dx = i * v.spacing * Math.cos(a1) + j * (v.dir2 ? v.spacing2 * Math.cos(a2) : 0), dy = i * v.spacing * Math.sin(a1) + j * (v.dir2 ? v.spacing2 * Math.sin(a2) : 0);
-        targets.forEach(function (t) { out.push(roundPts(K.translateEntity(f.entities[t], dx, dy))); });
+        if (i === 1 && j === 0) first1 = out.length;
+        if (i === 0 && j === 1) first2 = out.length;
+        var dx = i * st.d1[0] + j * st.d2[0], dy = i * st.d1[1] + j * st.d2[1];
+        v.entities.forEach(function (t) { out.push(roundPts(K.translateEntity(f.entities[t], dx, dy))); });
       }
+      out.first1 = first1; out.first2 = first2;
       return out;
     }
-    function preview() { App.tempEntities = copies(); UI.updateTemp(); }
+    function preview() { App.tempEntities = v.entities.length ? copies() : []; UI.updateTemp(); }
+    function syncSelection() {
+      var sel = sketchSelectionIndices(f);
+      if (sel.join() === v.entities.join()) return;
+      v.entities = sel;
+      renderPM(); preview();
+    }
+    // a driving distance between the seed's reference point and the same point on its first copy
+    function addSpacingDim(seedIdx, copyIdx, angleDeg, spacing) {
+      if (!window.SketchSolver || !SketchSolver.addRelation) return false;
+      var a = ((angleDeg % 180) + 180) % 180, dir = a < 1e-9 ? 'h' : Math.abs(a - 90) < 1e-9 ? 'v' : null;
+      var refs = [patternRef(f.entities[seedIdx], seedIdx), patternRef(f.entities[copyIdx], copyIdx)];
+      var r = SketchSolver.addRelation(f, 'distance', refs, { dir: dir, value: Math.abs(spacing), off: dir === 'v' ? -10 : 10 });
+      return !!(r && r.ok);
+    }
     openPM({
       title: 'Linear Pattern', icon: 'sketchPattern', values: v,
-      message: targets.length === f.entities.length ? 'Patterning <b>all ' + f.entities.length + ' entities</b> (select one entity first to pattern just that one).' : 'Patterning the selected entity.',
+      onSelection: syncSelection,
       groups: [
+        { title: 'Entities to Pattern', fields: [
+          { type: 'pick', icon: 'sketchPattern', value: function (x) { return x.entities.length ? x.entities.length + ' entit' + (x.entities.length > 1 ? 'ies' : 'y') : ''; }, placeholder: 'Select sketch entities…',
+            items: function (x) { return x.entities.map(function (i) { return { label: entityLabel(f.entities[i], i) }; }); },
+            onRemove: function (x, i) { x.entities.splice(i, 1); if (UI.setSelection) UI.setSelection(x.entities.map(function (k) { return { kind: 'entity', index: k }; })); renderPM(); preview(); },
+            onClear: function (x) { x.entities.length = 0; if (UI.setSelection) UI.setSelection([]); renderPM(); preview(); } }
+        ] },
         { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Spacing', key: 'spacing', unit: 'u' }, { type: 'number', label: 'Instances', key: 'count', step: 1, min: 1 }] },
-        { title: 'Direction 2', fields: [{ type: 'check', label: 'Enable direction 2', key: 'dir2', rerender: true }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Spacing', key: 'spacing2', unit: 'u', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Instances', key: 'count2', step: 1, min: 1, show: function (x) { return x.dir2; } }] }
+        { title: 'Direction 2', fields: [{ type: 'check', label: 'Enable direction 2', key: 'dir2', rerender: true }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Spacing', key: 'spacing2', unit: 'u', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Instances', key: 'count2', step: 1, min: 1, show: function (x) { return x.dir2; } }] },
+        { title: 'Options', fields: [{ type: 'check', label: 'Add spacing dimensions', key: 'dims' }] }
       ],
       onChange: preview,
       onOK: function () {
+        if (!v.entities.length) { UI.toast('Select the entities to pattern first.'); return false; }
         var c = copies();
         if (!c.length) { UI.toast('Set at least 2 instances.'); return false; }
         UI.pushUndo(); App.sketchDirty = true;
+        var base = f.entities.length;
         c.forEach(function (e) { f.entities.push(e); });
-        App.tempEntities = []; UI.updateTemp(); App.sel = null; App.gridStale = true;
+        var nDims = 0;
+        if (v.dims) {
+          if (c.first1 >= 0 && addSpacingDim(v.entities[0], base + c.first1, v.angle, v.spacing)) nDims++;
+          if (c.first2 >= 0 && addSpacingDim(v.entities[0], base + c.first2, v.angle2, v.spacing2)) nDims++;
+        }
+        App.tempEntities = []; UI.updateTemp(); App.sel = null; App.sel2 = null; App.gridStale = true; App.dimsStale = true;
+        if (UI.setSelection) UI.setSelection([]);
         UI.updateSketches(); UI.refreshTree();
-        UI.setStatus('Added ' + c.length + ' patterned entit' + (c.length === 1 ? 'y' : 'ies') + '.');
+        UI.setStatus('Added ' + c.length + ' patterned entit' + (c.length === 1 ? 'y' : 'ies') + (nDims ? ' and ' + nDims + ' spacing dimension' + (nDims > 1 ? 's' : '') : '') + '.');
       },
       onCancel: function () { App.tempEntities = []; UI.updateTemp(); }
     });
+    if (!v.entities.length) UI.setStatus('Select the sketch entities to pattern in the graphics area.');
     preview();
   }
   function editSketch(id) {
@@ -2255,7 +2317,7 @@
     }
     return '<div class="kv" style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px">' + rows.map(function (r) { return '<span class="static">' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('') + '</div>';
   }
-  UI.onSelectionChanged = function () { if (pm.spec && pm.spec.title === 'Measure') renderPM(); };
+  UI.onSelectionChanged = function () { if (!pm.spec) return; if (pm.spec.title === 'Measure') renderPM(); if (pm.spec.onSelection) pm.spec.onSelection(); };
 
   // ------------------------------------------------------------------ sketch entity editing
   var ENTITY_FIELDS = {

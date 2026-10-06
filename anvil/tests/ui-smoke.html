@@ -4266,6 +4266,29 @@
     assert(rl.indexOf('symmetric:0,3,2') >= 0, 'symmetric: ' + rl.join(' '));
     return rl.join(' ');
   });
+  step('Linear Sketch Pattern patterns only the selected entities (no everything fallback), copies sit spacing away from the seed, and a driving distance dimension reads seed centre to copy centre', async function () {
+    await anvil.run('p.name("PatTest"); p.sketch("Front").circle(30, 20, 5).circle(60, 20, 5);');
+    var f = UI.App.model.features[0];
+    UI.editSketch(f.id); await idle();
+    UI.App.sel = null; if (UI.setSelection) UI.setSelection([]);
+    UI.cmdSketchPattern();
+    assert(UI.hasPM() && UI.pmTitle() === 'Linear Pattern', 'PM open');
+    assert(UI.App.tempEntities.length === 0, 'nothing selected: no preview, not every entity (' + UI.App.tempEntities.length + ')');
+    var r = UI.pmOK(); if (r && r.then) await r;
+    assert(UI.hasPM() && f.entities.length === 2, 'OK with nothing selected is refused');
+    UI.App.sel = { kind: 'entity', index: 0 }; if (UI.setSelection) UI.setSelection([{ kind: 'entity', index: 0 }]);
+    if (UI.onSelectionChanged) UI.onSelectionChanged();
+    await wait(20);
+    assert(UI.App.tempEntities.length === 2 && Math.abs(UI.App.tempEntities[0].cx - 50) < 1e-9 && Math.abs(UI.App.tempEntities[1].cx - 70) < 1e-9, 'only the selected circle, copies at 50 and 70: ' + JSON.stringify(UI.App.tempEntities.map(function (e) { return [e.t, e.cx, e.cy]; })));
+    var undo0 = UI.App.undo.length;
+    await pmAccept();
+    assert(f.entities.length === 4 && f.entities[2].t === 'circle' && Math.abs(f.entities[2].cx - 50) < 1e-9 && Math.abs(f.entities[2].cy - 20) < 1e-9, 'two copies added: ' + f.entities.length);
+    var dims = (f.rels || []).filter(function (x) { return x.type === 'distance'; });
+    assert(dims.length === 1 && dims[0].refs.join() === '0.c,2.c' && dims[0].dir === 'h' && Math.abs(dims[0].v - 20) < 1e-9, 'spacing dimension from the seed centre to the first copy centre: ' + JSON.stringify(dims));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    UI.exitSketch(true); await idle();
+    return 'copies at x = 50, 70; distance 0.c -> 2.c = 20 (horizontal)';
+  });
   // --- end refine/sketcher ---
   // --- smooth/sketchfeel ---
   function sfLayer() { return D.querySelector('#dim-layer .sk-feedback'); }
