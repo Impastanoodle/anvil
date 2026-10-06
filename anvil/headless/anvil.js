@@ -1,9 +1,10 @@
 // headless/anvil.js — Anvil without a browser: `node anvil/headless/anvil.js <command>` builds parts and assemblies
 // with the engine loaded by headless/load.js (plain Node built-ins, no npm packages) and prints a JSON summary, writes
-// STL / STEP / DXF / JSON / script files, makes drawings (SVG / DXF / PDF), builds the bundled examples against their
-// documented volumes, compares a part with OpenCascade (headless/occt.js) and runs tests/kernel-tests.html under a
-// small DOM and Worker shim. Paths are resolved from this file, so it works from any current directory. Exit codes:
-// 0 ok, 1 feature errors / failed checks / failed tests, 2 usage error or missing engine. `--help` prints the commands.
+// STL / STEP / DXF / DWG / JSON / script files (DWG through headless/dwg.js: the ODA File Converter or LibreDWG),
+// makes drawings (SVG / DXF / DWG / PDF), builds the bundled examples against their documented volumes, compares a
+// part with OpenCascade (headless/occt.js) and runs tests/kernel-tests.html under a small DOM and Worker shim. Paths
+// are resolved from this file, so it works from any current directory. Exit codes: 0 ok, 1 feature errors / failed
+// checks / failed tests, 2 usage error or missing engine / converter. `--help` prints the commands.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -14,9 +15,11 @@ const { load, ANVIL_DIR, TESTS_PAGE } = require('./load');
 const USAGE = [
   'usage: node anvil/headless/anvil.js <command> [options]',
   '',
-  '  build <file> [--stl out] [--step out] [--dxf-flat out] [--dxf-face <index> out] [--json out] [--script out] [--occt]',
+  '  build <file> [--stl out] [--step out] [--dxf-flat out] [--dxf-face <index> out] [--dwg-flat out] [--dwg-face <index> out]',
+  '               [--json out] [--script out] [--occt]',
   '      <file>: a part / assembly script (.js, the Builder API) or a saved model JSON. Prints a summary JSON.',
-  '  drawing <file> [--svg out] [--dxf out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
+  '      --dwg-*: the DXF through a converter (ODA File Converter, else vendor/libredwg from vendor/get-libredwg.ps1)',
+  '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
@@ -26,7 +29,7 @@ const USAGE = [
 ].join('\n');
 
 // ------------------------------------------------------------------ arguments
-const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2 };
+const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -54,6 +57,17 @@ function writeOut(file, text, encoding) {
   return { file: f, bytes: Buffer.byteLength(text, encoding || 'utf8') };
 }
 function note(quiet, s) { if (!quiet) process.stderr.write(s + '\n'); }
+
+// DXF text -> DWG bytes through headless/dwg.js; records which converter did it in summary.converter.
+// No converter: exit 2 with the hint; a converter failure: exit 1 with its first stderr lines.
+function toDwg(dxfText, summary) {
+  const Dwg = require('./dwg');
+  const conv = Dwg.which();
+  if (!conv) throw Object.assign(new Error('No DXF to DWG converter on this machine. ' + Dwg.HINT), { code: 2 });
+  const bytes = Dwg.convert(dxfText, conv);
+  summary.converter = conv.name;
+  return bytes;
+}
 
 // a part or assembly from a file: a script (.js) or a model JSON; { kind, name, code | model }
 function sourceFromFile(file) {
@@ -151,15 +165,21 @@ async function runBuildOptions(r, flags, quiet) {
     }
     outputs.step = Object.assign(writeOut(flags.step, text), { exact });
   }
-  if (flags['dxf-flat']) {
-    if (r.kind === 'assembly' || !r.model.sheet) throw Object.assign(new Error('--dxf-flat: the part has no sheet-metal parameters (model.sheet); it needs a Base Flange'), { code: 1 });
+  if (flags['dxf-flat'] || flags['dwg-flat']) {
+    const opt = flags['dxf-flat'] ? '--dxf-flat' : '--dwg-flat';
+    if (r.kind === 'assembly' || !r.model.sheet) throw Object.assign(new Error(opt + ': the part has no sheet-metal parameters (model.sheet); it needs a Base Flange'), { code: 1 });
     const flat = Kernel.flatPattern(r.model, r.build, r.mesh);
-    outputs.dxfFlat = Object.assign(writeOut(flags['dxf-flat'], Kernel.exportDXFFlat(flat, r.model.units || 'mm')), { bends: (flat.bends || []).length, bbox: flat.bbox });
+    const text = Kernel.exportDXFFlat(flat, r.model.units || 'mm'), info = { bends: (flat.bends || []).length, bbox: flat.bbox };
+    if (flags['dxf-flat']) outputs.dxfFlat = Object.assign(writeOut(flags['dxf-flat'], text), info);
+    if (flags['dwg-flat']) outputs.dwgFlat = Object.assign(writeOut(flags['dwg-flat'], toDwg(text, r.summary)), info);
   }
-  if (flags['dxf-face']) {
-    const idx = +flags['dxf-face'][0];
-    if (!(idx >= 0 && idx < r.mesh.faces.length)) throw usage('--dxf-face: face index ' + flags['dxf-face'][0] + ' is not in 0..' + (r.mesh.faces.length - 1));
-    outputs.dxfFace = writeOut(flags['dxf-face'][1], Kernel.exportDXFFace(r.mesh, idx, r.model.units || 'mm'));
+  for (const opt of ['dxf-face', 'dwg-face']) {
+    if (!flags[opt]) continue;
+    const idx = +flags[opt][0];
+    if (!(idx >= 0 && idx < r.mesh.faces.length)) throw usage('--' + opt + ': face index ' + flags[opt][0] + ' is not in 0..' + (r.mesh.faces.length - 1));
+    const text = Kernel.exportDXFFace(r.mesh, idx, r.model.units || 'mm');
+    if (opt === 'dxf-face') outputs.dxfFace = writeOut(flags[opt][1], text);
+    else outputs.dwgFace = writeOut(flags[opt][1], toDwg(text, r.summary));
   }
   if (flags.json) outputs.json = writeOut(flags.json, JSON.stringify(r.model, null, 1));
   if (flags.script) {
@@ -186,7 +206,7 @@ function parseScale(s) {
 }
 async function cmdDrawing(src, flags) {
   const { Drawing } = load();
-  if (!flags.svg && !flags.dxf && !flags.pdf) throw usage('drawing: give at least one of --svg, --dxf, --pdf');
+  if (!flags.svg && !flags.dxf && !flags.dwg && !flags.pdf) throw usage('drawing: give at least one of --svg, --dxf, --dwg, --pdf');
   const r = buildSource(src);
   if (r.summary.errors.length) note(flags.quiet, 'feature errors: ' + r.summary.errors.map((e) => (e.feature || e.id) + ': ' + e.message).join(' | '));
   if (!r.mesh.triCount) throw Object.assign(new Error('drawing: the model has no solid body to draw'), { code: 1 });
@@ -218,15 +238,17 @@ async function cmdDrawing(src, flags) {
   }
   const t0 = performance.now();
   const sheet = Drawing.compute(doc, r.mesh, r.model);
-  const outputs = {};
+  const outputs = {}, conv = {};
   if (flags.svg) outputs.svg = writeOut(flags.svg, Drawing.toSVG(sheet));
   if (flags.dxf) outputs.dxf = writeOut(flags.dxf, Drawing.toDXF(sheet));
+  if (flags.dwg) outputs.dwg = writeOut(flags.dwg, toDwg(Drawing.toDXF(sheet), conv));
   if (flags.pdf) outputs.pdf = writeOut(flags.pdf, Drawing.toPDF(sheet), 'latin1');
   const summary = {
     name: r.model.name, kind: r.kind, sheet: { format: doc.sheet.format, scale: doc.sheet.scale, projection: doc.sheet.projection, units },
     views: doc.views.map((v) => ({ id: v.id, name: v.name, orient: v.orient, x: r6(v.x), y: r6(v.y), scale: v.scale || null })),
     dims: (sheet.dims || []).length, computeMs: Math.round((performance.now() - t0) * 10) / 10, outputs, errors: r.summary.errors
   };
+  if (conv.converter) summary.converter = conv.converter;
   process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
   return r.summary.errors.length ? 1 : 0;
 }
@@ -413,7 +435,7 @@ async function main(argv) {
     case 'example':
       if (flags.all) return cmdExampleAll(flags);
       if (!args._[1]) throw usage('example: give a name or index, or --all');
-      if (flags.svg || flags.dxf || flags.pdf) return cmdDrawing(sourceFromExample(findExample(args._[1])), flags);
+      if (flags.svg || flags.dxf || flags.dwg || flags.pdf) return cmdDrawing(sourceFromExample(findExample(args._[1])), flags);
       return cmdBuild(sourceFromExample(findExample(args._[1])), flags);
     case 'test':
       return cmdTest(flags);

@@ -7,3 +7,5 @@ HEAD.lock
 *.log
 # OpenCascade experiment: the 64 MB opencascade.js package is fetched by anvil/vendor/get-occt.ps1, not committed
 anvil/vendor/occt/opencascade.full.*
+# LibreDWG (DXF to DWG fallback converter, 35 MB) is fetched by anvil/vendor/get-libredwg.ps1, not committed
+anvil/vendor/libredwg/
