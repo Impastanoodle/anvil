@@ -305,7 +305,14 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #hud .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
 #hud .dd { position: relative; }
 #hud .caret { font-size: 8px; color: var(--muted); margin-left: -3px; }
-#triad { position: absolute; left: 6px; bottom: 6px; width: 96px; height: 96px; z-index: 2; }   /* r14/viewui14: its axes take the mouse (click to orient) */
+#triad { position: absolute; left: 6px; bottom: 6px; width: 96px; height: 96px; z-index: 2; }
+/* r15/scalebar15: the scale bar at the bottom right: a 100 px bar labelled with its length in model units at the current zoom */
+#scale-bar { position: absolute; right: 12px; bottom: 10px; width: 100px; z-index: 2; pointer-events: none; color: var(--text); font: 600 11px/1.2 "Segoe UI", system-ui, sans-serif; text-align: center; letter-spacing: 0.01em; }
+#scale-bar-label { display: block; margin-bottom: 1px; white-space: nowrap; }
+#scale-bar-line { position: relative; height: 9px; border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor; }
+#scale-bar-line::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid currentColor; }
+#viewport.bg-dark #scale-bar { color: #e6e8eb; }
+#app.drawing-mode #scale-bar { display: none; }   /* a drawing document has its own sheet scale */   /* r14/viewui14: its axes take the mouse (click to orient) */
 /* r14/viewui14: the View Selector cube (Space), centred in the graphics area */
 #view-selector { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.18)); }
 #view-selector[hidden] { display: none; }

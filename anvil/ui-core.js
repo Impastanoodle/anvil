@@ -2040,12 +2040,28 @@ var UI = (function () {
     // back to the logical camera with the fixed depth range (picking, worldToScreen and scripts use it)
     poseCamera(cam.target, cam.dir, cam.up, cam.scale);
     drawTriad(right, up, dir);
+    updateScaleBar();
     if (vs.shown) drawViewSelector();   // r14/viewui14: the View Selector turns with the view
     if (UI.drawDims && App.dimsStale && !viewAnim) { App.dimsStale = false; UI.drawDims(); }
     needsRender = false;
     lastRenderAt = performance.now();
     lastSig = sig;
   }
+  // r15/scalebar15: the scale bar at the bottom right of the viewport (as Mastercam shows one): a SCALE_BAR_PX bar
+  // whose label is its length in model units at the current zoom, a size reference for the eye. Updated per frame
+  // (text only when it changes), hidden under a drawing document, which has its own sheet scale.
+  var SCALE_BAR_PX = 100, scaleBarShown = null;
+  function updateScaleBar() {
+    var el = document.getElementById('scale-bar');
+    if (!el) return;
+    var hide = !!(UI.drawingActive && UI.drawingActive()), u = unitLabel();
+    var txt = fmtNum(SCALE_BAR_PX * cam.scale, u === 'in' ? 4 : 2) + ' ' + u, key = (hide ? 'h|' : '') + txt;
+    if (key === scaleBarShown) return;
+    scaleBarShown = key;
+    el.hidden = hide;
+    document.getElementById('scale-bar-label').textContent = txt;
+  }
+  function scaleBarInfo() { return { px: SCALE_BAR_PX, value: SCALE_BAR_PX * cam.scale, text: document.getElementById('scale-bar-label').textContent, hidden: !!document.getElementById('scale-bar').hidden }; }
   function holdCamSig() {
     var e = camera.projectionMatrix.elements;
     return camera.position.toArray().concat(camera.quaternion.toArray(), [camera.zoom, camera.left, camera.right, camera.top, camera.bottom, e[0], e[5], e[10], e[14], size.w, size.h]).join(',');
@@ -2715,7 +2731,7 @@ var UI = (function () {
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
-    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,

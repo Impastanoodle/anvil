@@ -1242,4 +1242,6 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 
 **Verified (8812).** kernel-tests 818/818 (Node); ui-smoke 319/319 headless (two new steps: the tangent slide with Tangent + Coincident and the T toggle; the double-click stub removal).
 
+- **Scale bar** (user request with a Mastercam crop; `index.html` #scale-bar, `style.css`, `ui-core.js` updateScaleBar / `UI.scaleBar()`, README *Viewport*): a 100 px bar at the bottom right of the viewport labelled with its length in model units at the current zoom (2 decimals in mm, 4 in inches), updated per frame when the text changes, hidden under a drawing document. ui-smoke step added (320).
+
 **Next up.** A typed length while the start slides is measured from the clicked point, not the sliding tangent point; the sliding start has no Mastercam-style "which tangent" flip key (the nearer tangent point wins); serve.ps1 could get a write timeout so a slow client cannot stall it.

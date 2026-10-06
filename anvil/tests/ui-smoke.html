@@ -8657,6 +8657,29 @@
     assert(UI.App.undo.length - u0 <= 1, 'the stub left no undo step of its own (' + (UI.App.undo.length - u0) + ')');
     return 'stub removed, chain ended at (40, 0)';
   });
+  step('r15/scalebar15: the scale bar at the bottom right reads the length of its 100 px bar in model units at the current zoom, follows zoom and units, and hides under a drawing', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sketch("Top").rect(0, 0, 30, 20).extrude(10);'); await idle();
+    var el = D.getElementById('scale-bar');
+    assert(el && !el.hidden && el.getBoundingClientRect().width === 100, 'scale bar shown, 100 px wide');
+    await wait(400);   // the zoom-to-fit after the run glides; the label is written by the frame after the camera settles
+    var sb = UI.scaleBar();
+    near(sb.value, 100 * UI.cam.scale, 1e-12, 'value = 100 px × units per px');
+    assert(sb.text === UI.fmtNum(sb.value, 2) + ' mm', 'label ' + sb.text);
+    UI.zoomView(0.5); await idle(); await wait(400);
+    var sb2 = UI.scaleBar();
+    near(sb2.value, 100 * UI.cam.scale, 1e-12, 'follows the zoom');
+    assert(sb2.text !== sb.text && sb2.text === UI.fmtNum(sb2.value, 2) + ' mm', 'label changed with the zoom: ' + sb.text + ' -> ' + sb2.text);
+    UI.App.model.units = 'in'; UI.requestRender && UI.requestRender(); await wait(80); UI.zoomView(1.0000001); await wait(80);
+    assert(/ in$/.test(UI.scaleBar().text) && /\.\d{4} in$/.test(UI.scaleBar().text), 'inches with 4 decimals: ' + UI.scaleBar().text);
+    UI.App.model.units = 'mm';
+    UI.makeDrawing(); await idle(); await wait(120);
+    function sbVisible() { var e = D.getElementById('scale-bar'); return !e.hidden && W.getComputedStyle(e).display !== 'none'; }
+    assert(!sbVisible(), 'hidden under a drawing');
+    anvil.drawing.close(); await idle(); await wait(80);
+    assert(sbVisible(), 'back in the part');
+    return sb.text + ' -> ' + sb2.text;
+  });
   // --- end r15/snapaudit15 ---
 
   step('no uncaught errors or console.error calls during the run', async function () {

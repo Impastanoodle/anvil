@@ -25,7 +25,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
-- (local-2026-10-06d) Tangent line from a circle like Mastercam's Line Endpoints with Tangent (sliding start, T toggles); SolidWorks double-click ends the chain without the stub; headless smoke driver no longer deadlocks the local server; smoke 319.
+- (local-2026-10-06d) Tangent line from a circle like Mastercam's Line Endpoints with Tangent (sliding start, T toggles); SolidWorks double-click ends the chain without the stub; headless smoke driver no longer deadlocks the local server; scale bar (100 px, length in model units) at the bottom right of the viewport; smoke 320.
 - (local-2026-10-06c) True circles on screen (zoom-based tessellation of sketch curves); sketch commands consume their selection; Line tool tangent snapping to circles / arcs (both ends); snapping integrity audit: 11 defects fixed (drop merge, midpoint drops, over-define message, deep-zoom picking and box selection, rectangle / polygon edge snaps, stale woken points, self-snap, typed-value undo steps, grid snap ring, crossing Coincidents, centre policy); kernel 818, smoke 317.
 - (local-2026-10-06b) Save As DXF / DWG: DXF/DWG Output PropertyManager (faces, views on a sheet, flat pattern), DWG through serve.ps1's `api/dxf2dwg` (ODA File Converter or LibreDWG 0.14, `vendor/get-libredwg.ps1`) and the Node runner; Linear Sketch Pattern: Entities to Pattern box (no select-all), seed-to-copy spacing dimensions; ui-smoke 304/304.
 - (local-2026-10-06a) Standard toolbar Undo / Redo buttons next to the menus (user request); ui-smoke 302/302 headless.
