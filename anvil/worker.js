@@ -26,7 +26,7 @@
 // The worker keeps the rebuild cache between messages, so only the features after the first change are rebuilt.
 // Previews of a truncated model (editing a feature in the middle of the tree) keep a cache of their own, so the main
 // cache is not thrown away and repeated previews reuse the whole prefix.
-importScripts('csg.js', 'kernel.js', 'holewizard.js', 'exchange.js'); // holewizard.js and exchange.js register the Hole and Imported features
+importScripts('csg.js', 'kernel.js', 'kernel-sketch.js', 'kernel-curves.js', 'kernel-equations.js', 'kernel-mesh.js', 'kernel-rebuild.js', 'kernel-features.js', 'kernel-sheetmetal.js', 'kernel-script.js', 'holewizard.js', 'exchange.js'); // holewizard.js and exchange.js register the Hole and Imported features
 
 var cache = null, previewCache = null;
 
