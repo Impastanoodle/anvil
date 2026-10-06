@@ -1668,6 +1668,11 @@
     assert(n === 1 && sk.entities.length === 3 && sk.entities[0].t === 'arc', 'Power trim removed the one span: ' + n + ' ' + JSON.stringify(sk.entities[0]));
     near(sk.entities[0].a0, al * 180 / Math.PI, 1e-3, 'Power trim: the arc starts at the upper tangent point');
   });
+  test('r15/inches15: an inch document with no Image Quality of its own is built at the mm default scaled to inches (0.002 in), not 0.05 in', function () {
+    function faces(units) { var m = K.newModel('T'); K.runScript(m, 'p.units("' + units + '"); p.sketch("Top").circle(0, 0, 0.5).extrude(0.1);'); var b = K.rebuild(m); return K.meshFromBody(b.body).faces.length; }
+    var fin = faces('in'), fmm = faces('mm');
+    assert(fin === 42 && fmm === 18, 'a Ø1 in cylinder has ' + (fin - 2) + ' facets, the same numbers in mm ' + (fmm - 2) + ' (expected 40 and 16)');
+  });
   test('trim a rectangle edge inside a circle gives a closed keyhole profile', function () {
     // rect 0..40 × 0..20, circle r=6 centred on the top edge at (20, 20): trim the edge inside the circle and the arc inside the rect
     var r = build('var s = p.sketch("Top").rect(0, 0, 40, 20).circle(20, 20, 6);\ns.trim(0, [20, 20]);\ns.trim(1, [20, 16]);\ns.extrude(3);');

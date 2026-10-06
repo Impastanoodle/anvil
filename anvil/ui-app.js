@@ -230,7 +230,7 @@
       body.appendChild(el('h3', { text: 'Image Quality' }));
       var kv3 = el('div', { class: 'kv' });
       var qsel = el('select', { 'data-role': 'image-quality' });
-      UI.IMAGE_QUALITY.forEach(function (q) { var o = el('option', { value: q.key, text: q.label }); if (iq.preset === q.key) o.selected = true; qsel.appendChild(o); });
+      UI.imagePresets().forEach(function (q) { var o = el('option', { value: q.key, text: q.label }); if (iq.preset === q.key) o.selected = true; qsel.appendChild(o); });
       if (iq.preset === 'custom') { var oc = el('option', { value: 'custom', text: 'Custom (' + iq.chordTol + ' mm)' }); oc.selected = true; qsel.appendChild(oc); }
       var tolIn = el('input', { type: 'number', value: iq.chordTol, step: 'any', min: '0.001', 'data-role': 'chord-tol' });
       function applyQ(v) { UI.setImageQuality(v).then(function () { tpProps(body); }, function (e) { UI.toast(e.message); tpProps(body); }); }
@@ -331,7 +331,8 @@
     if (!hasAssembly()) { UI.toast('Assemblies need assembly.js, which did not load.'); return Promise.reject(new Error('assembly.js is not loaded')); }
     rememberPart();
     App.hiddenBodies = {};
-    return UI.loadModel(Assembly.newAssembly(name || 'Assem1')).then(function () {
+    var am = Assembly.newAssembly(name || 'Assem1'); am.units = UI.defaultUnits();   // r15/inches15
+    return UI.loadModel(am).then(function () {
       UI.setRibbonTab('Assembly');
       UI.setStatus('New assembly. Assembly tab → Insert Components to add parts, then Mate to position them.');
       return window.anvil.summary();
@@ -340,7 +341,8 @@
   function newPart(name) {
     rememberPart();
     App.hiddenBodies = {};
-    return UI.loadModel(K.newModel(name || 'Part1')).then(function () { return window.anvil.summary(); });
+    var pm0 = K.newModel(name || 'Part1'); pm0.units = UI.defaultUnits();   // r15/inches15: inches unless Tools ▸ Default units says mm
+    return UI.loadModel(pm0).then(function () { return window.anvil.summary(); });
   }
   // An assembly script calls a.insert / a.mate …; a script run while an assembly is open is one too unless it drives `p.`
   function isAssemblyCode(code) {
@@ -358,6 +360,7 @@
       if (replace) rememberPart();
       if (!replace && isAsm()) throw new Error('This is a part script: open a part (File ▸ New ▸ Part) to append to it.');
       model = replace ? K.newModel('Part1') : App.model;
+      if (replace) model.units = UI.defaultUnits();   // r15/inches15: a script's own .units() overrides
       if (!replace) UI.pushUndo();
       if (replace && !isAsm()) { model.color = App.model.color; model.density = App.model.density; if (App.model.material) model.material = App.model.material; }
       K.runScript(model, code);
@@ -376,6 +379,7 @@
       if (!replace && !isAsm()) throw new Error('This is an assembly script: open an assembly (File ▸ New ▸ Assembly) to append to it.');
       if (replace) rememberPart();
       model = replace ? Assembly.newAssembly('Assem1') : App.model;
+      if (replace) model.units = UI.defaultUnits();   // r15/inches15
       if (!replace) UI.pushUndo();
       Assembly.runScript(model, code);
       if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }

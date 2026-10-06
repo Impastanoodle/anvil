@@ -922,7 +922,7 @@
     var source = sel ? (sel.open ? [] : [sel.pts]) : (f.faceLoops || []);
     if (!source.length && !sel) { UI.toast('Select a sketch entity, or sketch on a face, then Offset.'); return; }
     // r6/sketch6: Add dimensions (on by default, as SolidWorks): a driving offset dimension between the entity and its copy
-    var v = { d: 2, reverse: false, construction: false, dims: true };
+    var v = { d: UI.lenDefault(2), reverse: false, construction: false, dims: true };
     var added = [];
     function apply(commit) {
       added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); });
@@ -958,7 +958,7 @@
   function cmdSketchFillet() {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
-    var v = { r: 2 };
+    var v = { r: UI.lenDefault(2) };
     openPM({
       title: 'Sketch Fillet', icon: 'fillet', values: v,
       message: 'Set the radius, then <b>click near a corner</b> where two lines meet, or a corner of a rectangle, polygon or polyline, to round it.',
@@ -1385,7 +1385,7 @@
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     if (!f.entities.length) { UI.toast('Draw something to pattern first.'); return; }
-    var v = { entities: sketchSelectionIndices(f), angle: 0, spacing: 20, count: 3, dir2: false, angle2: 90, spacing2: 20, count2: 2, dims: true };
+    var v = { entities: sketchSelectionIndices(f), angle: 0, spacing: UI.lenDefault(20), count: 3, dir2: false, angle2: 90, spacing2: UI.lenDefault(20), count2: 2, dims: true };
     function steps() {
       var a1 = v.angle * Math.PI / 180, a2 = v.angle2 * Math.PI / 180;
       return { d1: [v.spacing * Math.cos(a1), v.spacing * Math.sin(a1)], d2: v.dir2 ? [v.spacing2 * Math.cos(a2), v.spacing2 * Math.sin(a2)] : [0, 0] };
@@ -1502,7 +1502,7 @@
 
   function cmdExtrude(cut, existing) {
     withSketch(function (sid) {
-      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: !!cut, depth: 10, end: cut ? 'through' : 'blind', reverse: false, dir2: false, depth2: 10, end2: 'blind', sketch: pickDefaultSketch(sid) };
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'extrude', cut: !!cut, depth: UI.lenDefault(10), end: cut ? 'through' : 'blind', reverse: false, dir2: false, depth2: UI.lenDefault(10), end2: 'blind', sketch: pickDefaultSketch(sid) };
       if (existing) delete f.profile;
       // SolidWorks default: a new cut on a sheet-metal part is a Normal cut (perpendicular to the sheet faces, through the thickness)
       if (!existing && cut && App.model.sheet) f.normalCut = true;
@@ -1695,7 +1695,7 @@
 
   function cmdLinearPattern(existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
-    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'lpattern', feature: defaultSource(), d1: 'x', rev1: false, s1: 20, n1: 3, d2: null, rev2: false, s2: 20, n2: 2 };
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'lpattern', feature: defaultSource(), d1: 'x', rev1: false, s1: UI.lenDefault(20), n1: 3, d2: null, rev2: false, s2: UI.lenDefault(20), n2: 2 };
     if (!needSource(f)) return;
     initBodyFields(f, existing);
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, featureIsCut(v)); }
@@ -1760,7 +1760,7 @@
     if (!App.edges || !App.edges.length) { UI.toast('Create a solid first.'); return; }
     var isChamfer = kind === 'chamfer';
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: kind, edges: [], chain: true };
-    if (isChamfer) f.d = f.d != null ? f.d : 2; else f.r = f.r != null ? f.r : 2;
+    if (isChamfer) f.d = f.d != null ? f.d : UI.lenDefault(2); else f.r = f.r != null ? f.r : UI.lenDefault(2);   // r15/inches15: 0.0625 in in an inch document
     if (existing) f.chain = !(existing.edges || []).some(function (e) { return e.chain === false; });
     // seed with a pre-selected edge
     // r9/polish9: every pre-selected edge (a box or Ctrl selection, not only the first), and a pre-selected face gives
@@ -1894,7 +1894,7 @@
     function getBase() { if (!base) { base = bodyBefore(existing.id); baseMesh = K.meshFromBody(base); } return base; }
     function getBaseMesh() { getBase(); return baseMesh; }
     if (existing ? !App.build : !base) { UI.toast('Create a solid first, then shell it.'); return; }
-    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'shell', thickness: 2, faces: [] };
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'shell', thickness: UI.lenDefault(2), faces: [] };
     // r9/polish9: every pre-selected face (Ctrl / box selection too), each at its picked point or else inside its
     // first triangle; the faces move into the PropertyManager
     if (!existing) {
@@ -1973,7 +1973,7 @@
 
   // ------------------------------------------------------------------ reference plane
   function cmdPlane(existing) {
-    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'plane', ref: 'Front', offset: 20 };
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'plane', ref: 'Front', offset: UI.lenDefault(20) };
     openPM({
       title: existing ? existing.name : 'Plane', icon: 'plane', values: f, handles: function (v) { return offsetHandles(v.ref, v.offset, 'Offset distance'); },
       groups: [{ title: 'First Reference', fields: [{ type: 'select', label: 'Parallel to', key: 'ref', options: ['Front', 'Top', 'Right'] }, { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u' }] }, { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }],
@@ -1992,7 +1992,7 @@
   // ------------------------------------------------------------------ hole wizard (simple hole)
   function cmdHole() {
     if (App.mode === 'sketch') UI.exitSketch(true);
-    var v = { dia: 6.6, end: 'through', depth: 10, face: null, u: 0, vv: 0 };
+    var v = { dia: UI.lenDefault(6.6), end: 'through', depth: UI.lenDefault(10), face: null, u: 0, vv: 0 };
     openPM({
       title: 'Hole Wizard', icon: 'hole', values: v,
       message: 'Click a <b>planar face</b> to place the hole, then set the size.',
@@ -2078,9 +2078,9 @@
     kind = existing ? (existing.type === 'jog' ? 'jog' : existing.hem ? 'hem' : existing.miter ? 'miter' : 'flange') : (kind || 'flange');
     var isHem = kind === 'hem', isJog = kind === 'jog', isMiter = kind === 'miter', isFlange = !isHem && !isJog;
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
-      isJog ? { type: 'jog', edges: [], height: 10, length: 20, angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
-      isHem ? { type: 'flange', hem: true, edges: [], length: 10, angle: 180, reverse: false, radius: T / 4, position: 'bendOutside' } :
-      { type: 'flange', edges: [], length: 20, angle: 90, reverse: false, radius: null, position: 'bendOutside', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
+      isJog ? { type: 'jog', edges: [], height: UI.lenDefault(10), length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
+      isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside' } :
+      { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
     if (isHem) f.gap = Math.round((f.radius != null ? f.radius : T / 4) * 2 * 1e4) / 1e4;

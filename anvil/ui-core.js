@@ -43,6 +43,17 @@ var UI = (function () {
   }
   function fmtNum(n, d) { if (n == null || isNaN(n)) return '-'; var p = Math.pow(10, d == null ? 3 : d); return String(Math.round(n * p) / p); }
   function unitLabel() { return App.model.units === 'in' ? 'in' : 'mm'; }
+  // r15/inches15: Anvil defaults new documents to inches (IPS), the shop's unit system. Tools ▸ Default units changes it
+  // (localStorage anvil.units: 'in' | 'mm'); scripts that call .units() and saved documents keep their own units.
+  function defaultUnits() { try { var u = localStorage.getItem('anvil.units'); return u === 'mm' ? 'mm' : 'in'; } catch (e) { return 'in'; } }
+  function setDefaultUnits(u) { try { localStorage.setItem('anvil.units', u === 'mm' ? 'mm' : 'in'); } catch (e) { } return defaultUnits(); }
+  // A PropertyManager's default length, given in mm: the same in a mm document; in an inch document the nearest
+  // shop fraction (1/32 under 1/16 in, 1/16 under 1/4, 1/8 under 1 in, 1/4 above), so 10 mm reads 0.375 in, 20 mm 0.75 in and 2 mm 0.0625 in.
+  function lenDefault(mm) {
+    if (!App.model || App.model.units !== 'in') return mm;
+    var v = mm / 25.4, step = v < 0.0625 ? 32 : v < 0.25 ? 16 : v < 1 ? 8 : 4;
+    return Math.max(1 / 32, Math.round(v * step) / step);
+  }
 
   // ------------------------------------------------------------------ three.js scene
   var viewport = $('viewport');
@@ -2628,20 +2639,29 @@ var UI = (function () {
     { key: 'fine', label: 'Fine (0.02 mm)', chordTol: 0.02 },
     { key: 'finer', label: 'Finer (0.01 mm)', chordTol: 0.01 }
   ];
-  var DEFAULT_CHORD_TOL = 0.05;
+  // r15/inches15: an inch document uses the same presets scaled to inches (0.002 in ≈ 0.05 mm); Kernel.rebuild applies
+  // the inch default to an inch document that carries no Image Quality of its own
+  var IMAGE_QUALITY_IN = [
+    { key: 'coarse', label: 'Coarse (0.004 in)', chordTol: 0.004 },
+    { key: 'default', label: 'Default (0.002 in)', chordTol: 0.002 },
+    { key: 'fine', label: 'Fine (0.0008 in)', chordTol: 0.0008 },
+    { key: 'finer', label: 'Finer (0.0004 in)', chordTol: 0.0004 }
+  ];
+  function imagePresets() { return App.model && App.model.units === 'in' ? IMAGE_QUALITY_IN : IMAGE_QUALITY; }
+  function defaultChordTol() { return App.model && App.model.units === 'in' ? 0.002 : 0.05; }
   // -> { chordTol, preset (key or 'custom'), segsR10 (facets on a Ø20 circle, for the UI) }
   function imageQuality() {
-    var t = App.model && App.model.tessellation, tol = t && +t.chordTol > 0 ? +t.chordTol : DEFAULT_CHORD_TOL;
-    var pr = IMAGE_QUALITY.filter(function (q) { return Math.abs(q.chordTol - tol) < 1e-12; })[0];
+    var t = App.model && App.model.tessellation, tol = t && +t.chordTol > 0 ? +t.chordTol : defaultChordTol();
+    var pr = imagePresets().filter(function (q) { return Math.abs(q.chordTol - tol) < 1e-12; })[0];
     var segs = null;
     try { var saved = K.setTessellation({}); K.setTessellation({ chordTol: tol }); segs = K.segsForRadius(10); K.setTessellation(saved); } catch (e) { }
     return { chordTol: tol, preset: pr ? pr.key : 'custom', segsR10: segs };
   }
   // setImageQuality(preset key | chordTol number | { chordTol }) -> Promise of the build (an undo step unless unchanged)
   function setImageQuality(q) {
-    var tol = q && typeof q === 'object' ? +q.chordTol : typeof q === 'string' && isNaN(+q) ? (IMAGE_QUALITY.filter(function (p) { return p.key === q; })[0] || {}).chordTol : +q;
+    var tol = q && typeof q === 'object' ? +q.chordTol : typeof q === 'string' && isNaN(+q) ? (imagePresets().filter(function (p) { return p.key === q; })[0] || {}).chordTol : +q;
     if (!(tol > 0) || !isFinite(tol)) return Promise.reject(new Error('Image quality: a preset (' + IMAGE_QUALITY.map(function (p) { return p.key; }).join(', ') + ') or a positive chord tolerance in mm'));
-    tol = Math.max(0.001, Math.min(10, tol));
+    tol = Math.max(0.0001, Math.min(10, tol));   // r15/inches15: inch presets go down to 0.0004
     if (Math.abs(imageQuality().chordTol - tol) < 1e-12 && App.model.tessellation) return whenIdle();
     pushUndo();
     App.model.tessellation = Object.assign({}, App.model.tessellation || {}, { chordTol: tol });
@@ -2746,7 +2766,7 @@ var UI = (function () {
     setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,
     showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick,
     viewSelectorRegions: function () { return vs.cells.map(function (c) { return { id: c.id, center: [(c.q[0][0] + c.q[2][0]) / 2, (c.q[0][1] + c.q[2][1]) / 2] }; }); },
-    imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY,
+    imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY, imagePresets: imagePresets, defaultUnits: defaultUnits, setDefaultUnits: setDefaultUnits, lenDefault: lenDefault,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
     getBodyMesh: function () { return bodyMesh; },

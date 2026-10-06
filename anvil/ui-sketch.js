@@ -1346,7 +1346,7 @@
       p._rcOn = false; p._rcNext = null;
     }
   }
-  function fmtDim(n) { return UI.fmtNum(n, 2); }
+  function fmtDim(n) { return UI.fmtNum(n, UI.unitLabel() === 'in' ? 3 : 2); }   // r15/inches15: inch dimensions read 3 decimals (IPS)
 
   // driven dimensions shown automatically for an entity that has no placed dimension of the same kind
   function autoDims(e, i, placed) {

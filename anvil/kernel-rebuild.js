@@ -330,9 +330,12 @@
   // A model may carry its own tessellation (model.tessellation = { chordTol?, minSegs?, maxSegs?, legacy? }, the
   // document's image quality): it is in force for the rebuild and the global setting comes back afterwards.
   function withModelTess(model, fn) {
-    if (!model || !model.tessellation) return fn();
+    // r15/inches15: an inch document with no Image Quality of its own builds at the mm default scaled to inches
+    // (0.002 in ≈ 0.05 mm), not at 0.05 in, which would leave a Ø1 in circle 16-sided
+    var tess = model && (model.tessellation || (model.units === 'in' ? { chordTol: 0.002 } : null));
+    if (!tess) return fn();
     var saved = { chordTol: TESS.chordTol, minSegs: TESS.minSegs, maxSegs: TESS.maxSegs, legacy: TESS.legacy };
-    try { setTessellation(model.tessellation); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.legacy = saved.legacy; }
+    try { setTessellation(tess); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.legacy = saved.legacy; }
   }
   function rebuild(model, cache) { return withModelTess(model, function () { return rebuildModel(model, cache); }); }
   function rebuildModel(model, cache) {
