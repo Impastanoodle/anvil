@@ -203,6 +203,7 @@
       if (S) {
         S.pointRefs(f, i).forEach(function (pr) {
           var s = pr.ref.split('.')[1] || '';
+          if (s === 'c' && (e.t === 'rect' || e.t === 'slot')) return;   // r15/snapaudit15: not sketch points (SolidWorks), the solver adds nothing there
           pts.push({ pt: pr.pt, kind: s === 'mid' ? 'midpoint' : s === 'c' ? 'center' : 'end' });
         });
         S.curveRefs(f, i).forEach(function (r) {
@@ -283,6 +284,9 @@
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     // 1. an existing point
     var cands = sketchPoints(f).slice();
+    // r15/snapaudit15: a woken point whose entity is gone (Undo, Delete, a drag moved it) is forgotten, so nothing lines
+    // up with a point that is no longer there
+    if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || cands.some(function (c) { return c.pt[0] === w[0] && c.pt[1] === w[1]; }) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }); });
     cands.push({ pt: [0, 0], kind: 'origin' });
     st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
     var best = null, bestD = INFER_PX.point;
@@ -371,6 +375,8 @@
     var h = 0.5 * px * 1.05, grid = App.view.showGrid ? UI.snapStep() : 0;
     function free(v) { return grid ? +(Math.round(v / grid) * grid).toPrecision(12) : niceRound(v, h); }
     out.p = [ax ? ax.c.pt[0] : free(raw[0]), ay ? ay.c.pt[1] : free(raw[1])];
+    // r15/snapaudit15: a grid-rounded or aligned point that lands on a curve is a snap (the solver adds the Coincident), so the ring shows it
+    if ((grid || ax || ay) && window.SketchSolver && window.SketchSolver.onCurveRef && window.SketchSolver.onCurveRef(f, -1, out.p, 1e-7)) out.snap = { kind: 'on', pt: out.p.slice() };
     if (ax) out.align.push({ from: ax.c.pt, axis: 'x', prev: !!ax.c.prev });
     if (ay) out.align.push({ from: ay.c.pt, axis: 'y', prev: !!ay.c.prev });
     // a circle / polygon / arc radius is rounded as a length (R 12.5, not a rounded end point)
@@ -399,7 +405,7 @@
   function curveSnap(f, pl, scr, tolPx) {
     var best = null, bestD = tolPx;
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
-    f.entities.forEach(function (e) {
+    f.entities.forEach(function (e, i) {
       if (e.t === 'line') {
         var a = S([e.x1, e.y1]), b = S([e.x2, e.y2]), dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
         if (L2 < 1) return;
@@ -416,6 +422,20 @@
         if (e.t === 'arc') { var rel = ((ang - e.a0) % 360 + 360) % 360; if (rel > ((e.a1 - e.a0) % 360 + 360) % 360 && e.a1 - e.a0 < 360) return; }
         var q = [e.cx + vx / r * e.r, e.cy + vy / r * e.r], s = S(q), dd = Math.hypot(s[0] - scr[0], s[1] - scr[1]);
         if (dd < bestD) { bestD = dd; best = q; }
+      } else if ((e.t === 'rect' || e.t === 'crect' || e.t === 'poly' || e.t === 'polyline') && window.SketchSolver) {
+        // r15/snapaudit15: rectangle, polygon and polyline edges are on-curve targets too (alignment could land a point
+        // on one and the solver added its Coincident with no snap shown); slots stay out, as in SketchSolver.onCurveRef
+        var SS0 = window.SketchSolver;
+        SS0.curveRefs(f, i).forEach(function (cr) {
+          var c = SS0.refCurve(f, cr);
+          if (!c || c.kind !== 'line') return;
+          var a2 = S(c.a), b2 = S(c.b), ex = b2[0] - a2[0], ey = b2[1] - a2[1], E2 = ex * ex + ey * ey;
+          if (E2 < 1) return;
+          var tt = ((scr[0] - a2[0]) * ex + (scr[1] - a2[1]) * ey) / E2;
+          if (tt <= 0 || tt >= 1) return;
+          var d2 = Math.hypot(scr[0] - (a2[0] + tt * ex), scr[1] - (a2[1] + tt * ey));
+          if (d2 < bestD) { bestD = d2; best = [c.a[0] + tt * (c.b[0] - c.a[0]), c.a[1] + tt * (c.b[1] - c.a[1])]; }
+        });
       }
     });
     return best;
@@ -645,6 +665,9 @@
       cancelTool(true);
       return;
     }
+    // r15/snapaudit15: a point equal to one this tool already placed collapses the entity (a Centerpoint Arc ending on
+    // its own centre became a 360° arc, a slot's width point on its first centre a 0.01-wide slot): the click is not taken
+    if (st.pts.some(function (q) { return Math.abs(p[0] - q[0]) < 1e-9 && Math.abs(p[1] - q[1]) < 1e-9; })) { UI.setStatus('That point is already part of the entity being drawn: click somewhere else.'); return; }
     if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
     st.away = st.back = false;
@@ -944,6 +967,7 @@
       var cur = raw ? inferPoint(raw, m[0], m[1]).p : (App.toolState.pts[App.toolState.pts.length - 1] || [0, 0]);
       var p = typedPoint(cur, v);
       closeNumBox();
+      App.sketchDirty = false;   // r15/snapaudit15: each segment placed by a typed value is its own Ctrl+Z step (Enter in the box skips the keydown reset)
       placePoint(p, v);
       if (m) sketchMove(m[0], m[1]);
     } else if (ev.key === 'Escape') {
@@ -1197,7 +1221,13 @@
     if (info.snap) svg('circle', { cx: sp[0], cy: sp[1], r: info.snap.kind === 'on' ? 3 : 5, style: 'fill:' + (info.snap.kind === 'on' ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
     // relation glyphs by the cursor: what the click will infer
     var types = [];
-    if (info.snap && SNAP_GLYPH[info.snap.kind]) types.push(SNAP_GLYPH[info.snap.kind]);
+    if (info.snap && SNAP_GLYPH[info.snap.kind]) {
+      var sg = SNAP_GLYPH[info.snap.kind], stp = App.toolState || { pts: [] };
+      // r15/snapaudit15: a centre snap is Concentric only when the point being placed is itself a centre (the first point
+      // of a circle, Centerpoint Arc, polygon or Center Rectangle); a line end on a centre gets Coincident
+      if (info.snap.kind === 'center' && !(/^(circle|arc|polygon|crect)$/.test(App.tool) && !stp.pts.length)) sg = 'coincident';
+      types.push(sg);
+    }
     if ((info.dir && info.dir.glyph) || info.tan) types.push('tangent');   // the arc tools' tangent guidance
     (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
     types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });

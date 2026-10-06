@@ -1117,7 +1117,11 @@ var SketchSolver = (function () {
   function inferCandidates(sketch, i) {
     var e = sketch.entities[i], out = [];
     if (!e) return out;
-    var tol = 1e-9 * Math.max(1, Math.abs(e.x1 || e.x || e.cx || 0), Math.abs(e.y1 || e.y || e.cy || 0)) + 1e-9;
+    // r15/snapaudit15: the tolerance follows the entity's own coordinates (the old `e.x1 || e.x || e.cx` fell through
+    // to the next field whenever a coordinate was 0)
+    var mag = 1;
+    pointRefs(sketch, i).forEach(function (pr) { mag = Math.max(mag, Math.abs(pr.pt[0]), Math.abs(pr.pt[1])); });
+    var tol = 1e-9 * mag + 1e-9;
     symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
     if (e.t === 'line' || e.t === 'slot') {   // r9/sketch9: a straight slot drawn level / upright too (its centre line)
       var dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
@@ -1144,12 +1148,17 @@ var SketchSolver = (function () {
         // r9/sketch9: at the middle of a rectangle / polygon edge: Midpoint (as a line's midpoint already infers it)
         var oc = on && /\.e\d+$/.test(on) ? refCurve(sketch.entities, parseRef(on)) : null;
         if (oc && oc.kind === 'line' && len(sub(pr.pt, [(oc.a[0] + oc.b[0]) / 2, (oc.a[1] + oc.b[1]) / 2])) < Math.max(tol, 1e-7)) { out.push({ type: 'midpoint', refs: [pr.ref, on], at: pr.pt }); return; }
-        if (on) out.push({ type: 'coincident', refs: [pr.ref, on], at: pr.pt });
+        if (on) {
+          out.push({ type: 'coincident', refs: [pr.ref, on], at: pr.pt });
+          // r15/snapaudit15: at the crossing of two curves (the intersection snap) the point is on both of them
+          var on2 = onCurveRef(sketch, i, pr.pt, Math.max(tol, 1e-7), [parseRef(on).e]);
+          if (on2) out.push({ type: 'coincident', refs: [pr.ref, on2], at: pr.pt });
+        }
         return;
       }
       if (isCenterRef(sketch, pr.ref) && isCenterRef(sketch, hit.ref)) out.push({ type: 'concentric', refs: [pr.ref.replace(/\.c$/, ''), hit.ref.replace(/\.c$/, '')], at: pr.pt });
       else if (/\.mid$/.test(hit.ref)) out.push({ type: 'midpoint', refs: [pr.ref, hit.ref.replace(/\.mid$/, '')], at: pr.pt });
-      else if (/\.c$/.test(hit.ref) && /^(rect|crect|slot|poly)$/.test(sketch.entities[parseRef(hit.ref).e].t)) return;
+      else if (/\.c$/.test(hit.ref) && /^(rect|slot)$/.test(sketch.entities[parseRef(hit.ref).e].t)) return;   // r15/snapaudit15: a Polygon's / Center Rectangle's centre is a sketch point (Coincident); a Corner Rectangle's / slot's is not
       else out.push({ type: 'coincident', refs: [pr.ref, hit.ref], at: pr.pt });
     });
     smoothCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });

@@ -11159,16 +11159,16 @@
         assert(on([P[0], P[1] + off]) === '' && on([Q[0] + off, Q[1]]) === '', 'scale ' + k + ' off the curves: ' + on([P[0], P[1] + off]) + ' / ' + on([Q[0] + off, Q[1]]));
       });
     });
-    test('r15/snapaudit15 (known: an end at the crossing of two lines gets Coincident with one of them only) — the Line tool snaps to the intersection, inferCandidates adds one point-on-line', function () {
+    test('r15/snapaudit15: an end at the crossing of two lines gets Coincident with both — the Line tool snaps to the intersection, inferCandidates adds two point-on-line relations', function () {
       var sk = { entities: [line([0, 0], [60, 30]), line([0, 30], [30, 0]), line([20, 10], [20, -20])] };
       var got = SS.inferCandidates(sk, 2).map(function (c) { return c.type + ':' + c.refs.join(','); }).sort().join(' ');
-      assert(got === 'coincident:2.p1,0 vertical:2', 'known defect fixed? ' + got);
+      assert(got === 'coincident:2.p1,0 coincident:2.p1,1 vertical:2', got);
     });
-    test('r15/snapaudit15 (known: a line end on a Polygon / Center Rectangle / Corner Rectangle centre infers nothing) — the Line tool snaps there (orange ring) but no relation is added', function () {
+    test('r15/snapaudit15: a line end on a Polygon / Center Rectangle centre infers Coincident (they are sketch points); a Corner Rectangle centre, which is no sketch point, infers nothing', function () {
       [{ t: 'poly', cx: 20, cy: 20, r: 8, n: 6, rot: 0 }, { t: 'crect', cx: 20, cy: 20, w: 10, h: 6 }, { t: 'rect', x: 15, y: 17, w: 10, h: 6 }].forEach(function (shape) {
         var sk = { entities: [shape, line([0, 0], [20, 20])] };
         var got = SS.inferCandidates(sk, 1).map(function (c) { return c.type + ':' + c.refs.join(','); }).join(' ');
-        assert(got === 'coincident:1.p1,O', 'known defect fixed? ' + shape.t + ': ' + got);
+        assert(got === (shape.t === 'rect' ? 'coincident:1.p1,O' : 'coincident:1.p1,O coincident:1.p2,0.c'), shape.t + ': ' + got);
       });
     });
   })();

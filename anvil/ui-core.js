@@ -1709,7 +1709,7 @@ var UI = (function () {
     if (!f) return null;
     var pl = activePlane(), best = null, bestD = 7;
     f.entities.forEach(function (e, i) {
-      var pls = K.entityPolylines(e);
+      var pls = screenPolylines(e);   // r15/snapaudit15: the curve as drawn, not the model's chord polygon (a click between its facets picked nothing when zoomed in)
       if (e.t === 'point') pls = [{ pts: [[e.x, e.y], [e.x, e.y]], closed: false }];
       pls.forEach(function (l) {
         var n = l.pts.length, cnt = l.closed ? n : n - 1;

@@ -10,7 +10,7 @@
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function scr(pl, uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
   function iconName(type) { return type === 'distance' || type === 'angle' || type === 'offset' ? type : 'rel' + type.charAt(0).toUpperCase() + type.slice(1); }
-  var CENTERLESS = /^(rect|crect|slot|poly)$/;   // their centre is not offered as a pick (it is not a sketch point in SolidWorks)
+  var CENTERLESS = /^(rect|slot)$/;   // their centre is not offered as a pick (not a sketch point in SolidWorks); a Polygon's / Center Rectangle's is (r15/snapaudit15, as SketchSolver.inferCandidates)
   function markDirty() { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }
   function refresh() { App.gridStale = true; UI.updateSketches(); UI.refreshTree(); }
 
