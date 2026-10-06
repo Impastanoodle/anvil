@@ -5,6 +5,7 @@
   "description": "Anvil, a browser-based parametric CAD modeler; this file only names the headless Node runner's scripts (no dependencies)",
   "scripts": {
     "test": "node anvil/headless/anvil.js test",
-    "examples": "node anvil/headless/anvil.js example --all"
+    "examples": "node anvil/headless/anvil.js example --all",
+    "ui-smoke": "node anvil/headless/ui-smoke.js"
   }
 }
