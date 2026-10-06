@@ -127,7 +127,7 @@
   // ------------------------------------------------------------------ tools
   var TOOL_HINTS = {
     select: 'Click an entity to select it. <b>Delete</b> removes it. Double-click empty space to finish.',
-    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. <b>Esc</b> or right-click ends the chain.',
+    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. Started on a circle or arc the line stays tangent to it (<b>T</b>: from the point instead). <b>Esc</b> or right-click ends the chain.',
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
@@ -300,6 +300,20 @@
       if (!woken.some(function (w) { return w[0] === best.pt[0] && w[1] === best.pt[1]; })) { woken.push([best.pt[0], best.pt[1]]); if (woken.length > 8) woken.shift(); }
       return out;
     }
+    // r15/tanslide15: Line tool with a tangent-sliding start (the first point was clicked on a circle / arc, like
+    //     Mastercam's Line Endpoints with Tangent): the start follows the cursor round the curve (toolEntities,
+    //     tangentStart), so direction locks and alignments with the clicked point mean nothing; the free end still
+    //     snaps to points (above) and curves, and is rounded like a free coordinate otherwise
+    if (App.tool === 'line' && st.tanFrom && !st.tanFrom.off && !st.arcMode && st.pts.length === 1) {
+      var ocT = curveSnap(f, pl, [mx, my], INFER_PX.curve);
+      if (ocT) { out.p = ocT.slice(); out.snap = { kind: 'on', pt: out.p, e: ocT.e }; }
+      else {
+        var hT = 0.5 * px * 1.05, gT = App.view.showGrid ? UI.snapStep() : 0;
+        out.p = [gT ? +(Math.round(raw[0] / gT) * gT).toPrecision(12) : niceRound(raw[0], hT), gT ? +(Math.round(raw[1] / gT) * gT).toPrecision(12) : niceRound(raw[1], hT)];
+      }
+      out.tanSlide = true;
+      return out;
+    }
     // 1b. tangent guidance for the arc tools (the click then infers Tangent, SketchSolver.inferCandidates):
     //     3 Point Arc — the third point locks onto the arc tangent to the line / arc ending at its start or end point
     //     when within 6 px of it; Centerpoint Arc — the centre locks onto the line square to a line / arc end the
@@ -338,7 +352,7 @@
     }
     // 2. on a line / circle / arc (the solver infers a point-on-curve Coincident there)
     var onCurve = curveSnap(f, pl, [mx, my], INFER_PX.curve);
-    if (onCurve) { out.p = onCurve; out.snap = { kind: 'on', pt: onCurve }; return out; }
+    if (onCurve) { out.p = onCurve.slice(); out.snap = { kind: 'on', pt: out.p, e: onCurve.e }; return out; }
     // 2b. a line leaving an existing end point: along the tangent of the arc that ends there, or square to the line
     //     that ends there (within 6 px of that direction; the length is rounded like a free coordinate). The click then
     //     infers Tangent / Perpendicular (SketchSolver.inferCandidates). Axis-aligned directions are left to H / V.
@@ -412,7 +426,7 @@
         var t = ((scr[0] - a[0]) * dx + (scr[1] - a[1]) * dy) / L2;
         if (t <= 0 || t >= 1) return;
         var d = Math.hypot(scr[0] - (a[0] + t * dx), scr[1] - (a[1] + t * dy));
-        if (d < bestD) { bestD = d; best = [e.x1 + t * (e.x2 - e.x1), e.y1 + t * (e.y2 - e.y1)]; }
+        if (d < bestD) { bestD = d; best = [e.x1 + t * (e.x2 - e.x1), e.y1 + t * (e.y2 - e.y1)]; best.e = i; }
       } else if (e.t === 'circle' || e.t === 'arc') {
         var c = UI.screenToPlane(scr[0], scr[1], pl);
         if (!c) return;
@@ -421,7 +435,7 @@
         var ang = Math.atan2(vy, vx) * 180 / Math.PI;
         if (e.t === 'arc') { var rel = ((ang - e.a0) % 360 + 360) % 360; if (rel > ((e.a1 - e.a0) % 360 + 360) % 360 && e.a1 - e.a0 < 360) return; }
         var q = [e.cx + vx / r * e.r, e.cy + vy / r * e.r], s = S(q), dd = Math.hypot(s[0] - scr[0], s[1] - scr[1]);
-        if (dd < bestD) { bestD = dd; best = q; }
+        if (dd < bestD) { bestD = dd; best = q; best.e = i; }
       } else if ((e.t === 'rect' || e.t === 'crect' || e.t === 'poly' || e.t === 'polyline') && window.SketchSolver) {
         // r15/snapaudit15: rectangle, polygon and polyline edges are on-curve targets too (alignment could land a point
         // on one and the solver added its Coincident with no snap shown); slots stay out, as in SketchSolver.onCurveRef
@@ -434,7 +448,7 @@
           var tt = ((scr[0] - a2[0]) * ex + (scr[1] - a2[1]) * ey) / E2;
           if (tt <= 0 || tt >= 1) return;
           var d2 = Math.hypot(scr[0] - (a2[0] + tt * ex), scr[1] - (a2[1] + tt * ey));
-          if (d2 < bestD) { bestD = d2; best = [c.a[0] + tt * (c.b[0] - c.a[0]), c.a[1] + tt * (c.b[1] - c.a[1])]; }
+          if (d2 < bestD) { bestD = d2; best = [c.a[0] + tt * (c.b[0] - c.a[0]), c.a[1] + tt * (c.b[1] - c.a[1])]; best.e = i; }
         });
       }
     });
@@ -483,6 +497,25 @@
       });
     });
     return best;
+  }
+  // r15/tanslide15: the sliding start of a tangent line from a circle / arc (st.tanFrom: the entity the first point was
+  // clicked on, Mastercam's Line Endpoints with Tangent). For the cursor at Q the start is the tangent point of that
+  // curve on Q's side: the one nearer the previous start (continuity as the cursor sweeps round), the clicked point
+  // the first time; an arc's only inside its sweep. Inside the circle there is none: the line starts at the clicked
+  // point. The point is exact (c + r·(cos, sin)(θ ± acos(r / d))), so the click infers Tangent and Coincident.
+  function tangentStart(st, Q) {
+    var f = UI.activeSketchFeature(), tf = st.tanFrom, e = f && tf && f.entities[tf.e];
+    if (!e || (e.t !== 'circle' && e.t !== 'arc') || !(e.r > 0)) return null;
+    var cx = +e.cx || 0, cy = +e.cy || 0, d = Math.hypot(Q[0] - cx, Q[1] - cy);
+    if (!(d > e.r * (1 + 1e-9))) return null;
+    var th = Math.atan2(Q[1] - cy, Q[0] - cx), al = Math.acos(e.r / d), ref = tf.last || tf.p0, best = null, cv = { c: [cx, cy], arc: e.t === 'arc' ? e : null };
+    [th + al, th - al].forEach(function (a) {
+      var T = [cx + e.r * Math.cos(a), cy + e.r * Math.sin(a)], dd = Math.hypot(T[0] - ref[0], T[1] - ref[1]);
+      if (onArc(cv, T) && (!best || dd < best.d)) best = { d: dd, p: T };
+    });
+    if (!best) return null;
+    tf.last = best.p;
+    return best.p;
   }
   // r15/tangent15: the directions a line leaving P runs tangent to a circle / arc that P lies on (to the solver's
   // tolerance; inside an arc's sweep, not at its ends, which smoothDirs covers): [{ type: 'tangent', u, glyph }], both
@@ -575,7 +608,8 @@
     switch (t) {
       case 'line': {
         var st0 = App.toolState || {}, ta = st0.arcMode && st0.arcDir ? tangentArc(a, st0.arcDir, b) : null;
-        return [ta || { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
+        var a0 = !ta && st0.tanFrom && !st0.tanFrom.off ? (tangentStart(st0, b) || a) : a;   // r15/tanslide15: the start slides round the curve
+        return [ta || { t: 'line', x1: a0[0], y1: a0[1], x2: b[0], y2: b[1] }];
       }
       case 'rect': return [{ t: 'rect', x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) }];
       case 'crect': return [{ t: 'crect', cx: a[0], cy: a[1], w: Math.abs(b[0] - a[0]) * 2, h: Math.abs(b[1] - a[1]) * 2 }];
@@ -645,7 +679,8 @@
       return;
     }
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
-    var p = snap(raw, mx, my), typed = null;
+    var info0 = inferPoint(raw, mx, my), p = info0.p, typed = null;
+    App.toolState.lastSnap = info0.snap || null;   // r15/tanslide15: what the point landed on (a curve's index for the tangent slide)
     // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
     if (numBox) { typed = numValues(); if (Object.keys(typed).length) p = typedPoint(p, typed); else typed = null; closeNumBox(); }
     placePoint(p, typed);
@@ -670,6 +705,11 @@
     if (st.pts.some(function (q) { return Math.abs(p[0] - q[0]) < 1e-9 && Math.abs(p[1] - q[1]) < 1e-9; })) { UI.setStatus('That point is already part of the entity being drawn: click somewhere else.'); return; }
     if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
+    // r15/tanslide15: a Line started on a circle / arc (the on-curve snap, not one of its points) slides tangent to it
+    if (App.tool === 'line' && st.pts.length === 1 && st.lastSnap && st.lastSnap.kind === 'on' && st.lastSnap.e != null) {
+      var fT = UI.activeSketchFeature(), eT = fT && fT.entities[st.lastSnap.e];
+      if (eT && (eT.t === 'circle' || eT.t === 'arc')) { st.tanFrom = { e: st.lastSnap.e, p0: p.slice(), last: null, off: false }; UI.setStatus('Tangent line from the ' + eT.t + ': its start follows the cursor round the curve. T draws from the clicked point instead.'); }
+    }
     st.away = st.back = false;
     if (App.tool === 'arc' && st.pts.length === 2) { st.arcSweep = 0; st.lastAng = null; }   // the sweep starts at the start point
     if (st.pts.length >= stepsNeeded()) {
@@ -677,7 +717,11 @@
       var ents = toolEntities(st.pts);
       // a 3 Point Arc through three points in a line is no arc: the third click is not taken
       if (App.tool === 'arc3' && (!ents[0] || ents[0].t !== 'arc')) { st.pts.pop(); UI.setStatus('The three points are in a line: click a point off the line from start to end.'); return; }
+      var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
       ents.forEach(addEntity);
+      // r15/dblclick15: the segment just placed, for the double-click that ends the chain: placed within 500 ms of the
+      // previous one it may be the stub the double-click's second click made (the handler takes it back when it is tiny)
+      if (App.tool === 'line' && f && f.entities.length === n0 + 1) { var nowT = performance.now(); st.lastSeg = { index: f.entities.length - 1, at: nowT, quick: st.lastSegAt != null && nowT - st.lastSegAt < 500, pushed: pushedUndo }; st.lastSegAt = nowT; }
       // r6/sketch6: with Sketch Settings ▸ Enable on-screen numeric input on entity creation, every value of the new
       // entity gets a driving dimension (as SolidWorks), not only the typed ones
       var typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
@@ -687,6 +731,7 @@
         var last = st.pts[st.pts.length - 1];
         st.chainStart = st.chainStart || st.pts[0];
         st.pts = [last];
+        st.tanFrom = null;   // r15/tanslide15: the chain goes on from the free end
         // remember the chain start so closing the loop ends the tool
         st.pts.chainStart = st.chainStart;
         if (st.arcMode) setArcMode(false);   // after a tangent arc the chain goes on with lines, as in SolidWorks
@@ -982,6 +1027,13 @@
     if (App.mode !== 'sketch' || ev.ctrlKey || ev.metaKey || ev.altKey || numBox) return;
     var tag = (ev.target && ev.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || (ev.target && ev.target.isContentEditable)) return;
+    if (App.tool === 'line' && (ev.key === 't' || ev.key === 'T') && App.toolState.tanFrom) {   // r15/tanslide15
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      App.toolState.tanFrom.off = !App.toolState.tanFrom.off;
+      UI.setStatus(App.toolState.tanFrom.off ? 'Line from the clicked point (T: tangent to the curve again).' : 'Tangent line: the start follows the cursor round the curve (T: from the clicked point).');
+      if (lastMove) sketchMove(lastMove[0], lastMove[1]);
+      return;
+    }
     if (App.tool === 'line' && (ev.key === 'a' || ev.key === 'A') && App.toolState.pts.length) {
       ev.preventDefault(); ev.stopImmediatePropagation();
       setArcMode(!App.toolState.arcMode);
@@ -1228,7 +1280,7 @@
       if (info.snap.kind === 'center' && !(/^(circle|arc|polygon|crect)$/.test(App.tool) && !stp.pts.length)) sg = 'coincident';
       types.push(sg);
     }
-    if ((info.dir && info.dir.glyph) || info.tan) types.push('tangent');   // the arc tools' tangent guidance
+    if ((info.dir && info.dir.glyph) || info.tan || info.tanSlide) types.push('tangent');   // the arc tools' tangent guidance, the Line tool's tangent slide
     (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
     types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
     if (readout) {
@@ -2091,7 +2143,27 @@
   });
 
   viewport.addEventListener('dblclick', function (ev) {
-    if (App.mode === 'sketch') { finishChain(); return; }
+    if (App.mode === 'sketch') {
+      // r15/dblclick15: as in SolidWorks the double-click ends the chain without the stub its second click made (the two
+      // clicks a pixel or two apart placed a tiny segment): a line placed within 500 ms of the previous one and shorter
+      // than 6 px on screen is taken back with its relations, dimensions and undo snapshot
+      var stD = App.toolState, fD = UI.activeSketchFeature();
+      if (App.tool === 'line' && stD && stD.lastSeg && stD.lastSeg.quick && fD && fD.entities.length === stD.lastSeg.index + 1) {
+        var eD = fD.entities[stD.lastSeg.index], plD = UI.activePlane();
+        if (eD && eD.t === 'line') {
+          var sA = UI.worldToScreen(K.to3D(plD, eD.x1, eD.y1)), sB = UI.worldToScreen(K.to3D(plD, eD.x2, eD.y2));
+          if (Math.hypot(sA[0] - sB[0], sA[1] - sB[1]) < 6) {
+            fD.entities.pop();
+            if (window.SketchSolver) SketchSolver.removeEntity(fD, stD.lastSeg.index);
+            if (fD.dims) fD.dims = fD.dims.filter(function (d) { return d.e !== stD.lastSeg.index; });
+            if (stD.lastSeg.pushed) { App.undo.pop(); App.sketchDirty = false; }
+            stD.lastSeg = null;
+            UI.updateSketches(); UI.refreshTree();
+          }
+        }
+      }
+      finishChain(); return;
+    }
     var p = pos(ev), hit = UI.pickFace(p[0], p[1]);
     if (hit) {
       // double-clicking a face opens its owning feature for editing

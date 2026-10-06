@@ -4972,8 +4972,10 @@
     assert(D.querySelector('#dim-layer .sk-feedback use[href="#sk-ico-relTangent"]'), 'no Tangent glyph leaving the circle');
     rskClick(tq);
     var l2 = rskEnts()[2];
-    assert(l2 && l2.t === 'line' && l2.x1 === Q[0] && l2.y1 === Q[1], 'second line ' + JSON.stringify(l2));
-    near(((l2.x2 - l2.x1) * Math.cos(aq) + (l2.y2 - l2.y1) * Math.sin(aq)) / Math.hypot(l2.x2 - l2.x1, l2.y2 - l2.y1), 0, 1e-12, 'square to the radius');
+    // r15/tanslide15: the start slides to the exact tangent point for the cursor, so it stays on the circle (not necessarily at Q)
+    assert(l2 && l2.t === 'line' && Math.abs(Math.hypot(l2.x1 - c.cx, l2.y1 - c.cy) - c.r) < 1e-9, 'second line starts on the circle ' + JSON.stringify(l2));
+    var aq2 = Math.atan2(l2.y1 - c.cy, l2.x1 - c.cx);
+    near(((l2.x2 - l2.x1) * Math.cos(aq2) + (l2.y2 - l2.y1) * Math.sin(aq2)) / Math.hypot(l2.x2 - l2.x1, l2.y2 - l2.y1), 0, 1e-9, 'square to the radius');
     assert(r3sRels().indexOf('tangent:2,0') >= 0 && r3sRels().indexOf('coincident:2.p1,0') >= 0, 'relations ' + r3sRels().join(' '));
     st = UI.sketchStatus();
     assert(st.status === 'under' && st.rels.every(function (x) { return x === 'ok'; }), 'after the second line ' + JSON.stringify(st));
@@ -8616,6 +8618,44 @@
     assert(!rl.some(function (r) { return /(^|,)2\.c\b/.test(r.split(':')[1]); }) && ((saInfer(rskScr([-30, -25])).snap || {}).kind || '') !== 'center', 'rectangle centre: no relation, not a centre snap (the drawn line\'s end is there now): ' + rl.join(' '));
     assert(/relCoincident/.test(glyphs) && !/relConcentric/.test(glyphs) && rl.indexOf('coincident:4.p2,1.c') >= 0 && !rl.some(function (r) { return /^concentric/.test(r); }), 'circle centre glyphs ' + glyphs + ' / ' + rl.join(' '));
     return rl.join(' ');
+  });
+  step('r15/tanslide15: a Line started on a circle (not at one of its points) slides tangent to it like Mastercam\'s Line Endpoints with Tangent — the start follows the cursor round the circle, the click leaves a line Tangent and Coincident; T draws from the clicked point instead', async function () {
+    await rskNew();
+    saAdd([{ t: 'circle', cx: 0, cy: 0, r: 10 }]);
+    UI.setTool('line');
+    var a = [10 * Math.cos(Math.PI / 6), 10 * Math.sin(Math.PI / 6)];
+    var inf = saInfer(rskScr(a));
+    assert(inf.snap && inf.snap.kind === 'on' && inf.snap.e === 0, 'first point on the circle: ' + JSON.stringify(inf.snap));
+    rskClick(a);
+    assert(UI.App.toolState.tanFrom && UI.App.toolState.tanFrom.e === 0, 'tangent-sliding start armed');
+    function startFor(q) { selEv('mousemove', rskScr(q)); var t = UI.App.tempEntities[0]; return [t.x1, t.y1]; }
+    function tangentAt(T, Q) { return Math.abs(Math.hypot(T[0], T[1]) - 10) < 1e-9 && Math.abs(T[0] * (Q[0] - T[0]) + T[1] * (Q[1] - T[1])) < 1e-6; }
+    var T1 = startFor([30, -20]), T2 = startFor([-25, 25]);
+    assert(tangentAt(T1, [30, -20]) && tangentAt(T2, [-25, 25]) && Math.hypot(T1[0] - T2[0], T1[1] - T2[1]) > 1, 'the start slid round the circle and stayed tangent: ' + JSON.stringify([T1, T2]));
+    rskClick([30, -20]); selKey('Escape');
+    var e = rskEnts(), rl = sfRels();
+    assert(e.length === 2 && e[1].t === 'line' && tangentAt([e[1].x1, e[1].y1], [30, -20]) && e[1].x2 === 30 && e[1].y2 === -20, 'tangent line placed: ' + JSON.stringify(e[1]));
+    assert(rl.indexOf('tangent:1,0') >= 0 && rl.indexOf('coincident:1.p1,0') >= 0, 'Tangent + Coincident: ' + rl.join(' '));
+    assert(!UI.App.toolState.tanFrom, 'sliding start cleared after the segment');
+    var a2 = [10 * Math.cos(200 * Math.PI / 180), 10 * Math.sin(200 * Math.PI / 180)];   // away from the first line's points (a point snap would win there)
+    UI.setTool('line'); rskClick(a2); selKey('t');
+    assert(UI.App.toolState.tanFrom && UI.App.toolState.tanFrom.off, 'T turned the tangent slide off: ' + JSON.stringify(UI.App.toolState.tanFrom));
+    selEv('mousemove', rskScr([-30, -20]));
+    var t0 = UI.App.tempEntities[0], p0 = UI.App.toolState.pts[0];   // the clicked point as snapped onto the circle (a pixel-rounded click)
+    assert(Math.abs(t0.x1 - p0[0]) < 1e-9 && Math.abs(t0.y1 - p0[1]) < 1e-9 && Math.abs(Math.hypot(p0[0], p0[1]) - 10) < 1e-9, 'line from the clicked point: ' + JSON.stringify(t0) + ' vs ' + JSON.stringify(p0));
+    selKey('Escape'); selKey('Escape');
+    return 'start slid from ' + JSON.stringify(T1.map(fmt)) + ' to ' + JSON.stringify(T2.map(fmt)) + '; ' + rl.join(' ');
+  });
+  step('r15/dblclick15: a double-click ends the Line chain without the stub its second click made (as in SolidWorks) — click, click, then two clicks 2 px apart: the 2 px segment is taken back and the chain ends at the double-click point', async function () {
+    await rskNew();
+    UI.setTool('line'); rskClick([0, 0]); rskClick([20, 0]);
+    var u0 = UI.App.undo.length, p = rskScr([40, 0]);
+    selClick(p); selClick([p[0] + 2, p[1]]); selEv('dblclick', [p[0] + 2, p[1]], $('viewport'));
+    var e = rskEnts();
+    assert(e.length === 2 && e[1].x2 === 40 && e[1].y2 === 0, 'two segments, the chain ends at (40, 0): ' + JSON.stringify(e));
+    assert(!UI.App.toolState.pts.length, 'chain ended');
+    assert(UI.App.undo.length - u0 <= 1, 'the stub left no undo step of its own (' + (UI.App.undo.length - u0) + ')');
+    return 'stub removed, chain ended at (40, 0)';
   });
   // --- end r15/snapaudit15 ---
 

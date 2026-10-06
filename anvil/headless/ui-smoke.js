@@ -66,12 +66,14 @@ class Page {
 async function main() {
   const chrome = findChrome();
   if (!chrome) { console.error('No Chrome or Edge found; pass --chrome <path> or set CHROME_PATH.'); return 2; }
-  const probe = await fetch(url).catch(() => null);
+  // HEAD, and never a GET whose body goes unread: anvil/serve.ps1 is single-threaded and blocks on writing a response
+  // the client does not drain, which starved the browser's own request for the page
+  const probe = await fetch(url, { method: 'HEAD' }).catch(() => null);
   if (!probe || !probe.ok) { console.error('Nothing serves ' + url + ' (start anvil/serve.ps1 -Port 8812 first).'); return 2; }
 
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-ui-smoke-'));
-  const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    '--window-size=1600,1000', '--remote-debugging-port=' + port, '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-proxy-server', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
+    '--window-size=1600,1000', '--remote-debugging-port=' + port, '--user-data-dir=' + profile, url], { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   proc.stderr.on('data', (d) => { stderr += d; });
   const cleanup = () => { if (!keep) { try { proc.kill(); } catch (e) { } setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { } }, 500); } };
@@ -80,7 +82,10 @@ async function main() {
   const base = 'http://127.0.0.1:' + port;
   const version = await waitFor(() => fetchJson(base + '/json/version'), 15000);
   if (!version) { console.error('Chrome did not open its debugging port.\n' + stderr.slice(-600)); return 2; }
-  const target = await fetchJson(base + '/json/new?' + encodeURIComponent(url), 'PUT');
+  // the page is the tab Chrome opened for the URL on its command line (the same path as --dump-dom); creating a
+  // target with /json/new and navigating it over the protocol stopped loading pages with Chrome 154
+  const target = await waitFor(async () => (await fetchJson(base + '/json/list')).find((t) => t.type === 'page' && t.url.indexOf(url.split('?')[0]) === 0), 15000);
+  if (!target) { console.error('Chrome did not open the page tab.'); return 2; }
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('websocket failed')); });
   const page = new Page(ws);
