@@ -224,6 +224,16 @@
     UI.undo(); await idle(); near(anvil.summary().volume, 12000, 1e-6, 'after undo');
     UI.redo(); await idle(); near(anvil.summary().volume, 18000, 1e-6, 'after redo');
   });
+  step('Standard toolbar: the Undo / Redo buttons next to the menus act on the model and grey out with their stacks', async function () {
+    var u = D.getElementById('std-undo'), r = D.getElementById('std-redo');
+    assert(u && r && u.querySelector('svg') && r.querySelector('svg'), 'Undo / Redo buttons with icons in #std-toolbar');
+    assert(!u.disabled && r.disabled, 'after a redo: Undo enabled, Redo greyed (' + u.disabled + ' / ' + r.disabled + ')');
+    u.click(); await idle(); near(anvil.summary().volume, 12000, 1e-6, 'after the Undo button');
+    assert(!r.disabled, 'Redo enabled once something was undone');
+    r.click(); await idle(); near(anvil.summary().volume, 18000, 1e-6, 'after the Redo button');
+    assert(r.disabled && !u.disabled, 'Redo greyed again, Undo still enabled');
+    return 'Undo 18000 → 12000, Redo → 18000, greying follows the stacks';
+  });
   step('Hole Wizard on the +Z face (Ø6 through)', async function () {
     var idx = faceWithNormal([0, 0, 1]);
     UI.cmdHole();

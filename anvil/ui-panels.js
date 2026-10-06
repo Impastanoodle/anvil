@@ -567,6 +567,7 @@
     return row;
   }
   function refreshTree() {
+    syncStdToolbar();
     if (isAsm()) { refreshAssemblyTree(); return; }
     var tree = $('tree');
     tree.innerHTML = '';
@@ -1067,9 +1068,33 @@
       ] }
     ];
   }
+  // ------------------------------------------------------------------ Standard toolbar: Undo / Redo next to the menus
+  // SolidWorks keeps Undo and Redo on the Standard toolbar at the top left; here they sit right after the menus
+  // (#std-toolbar in index.html). Built once by renderMenuBar; syncStdToolbar greys each button when its stack is
+  // empty and is called from refreshTree, which every rebuild, undo, redo and rename reaches.
+  var stdBuilt = false;
+  function renderStdToolbar() {
+    var u = $('std-undo'), r = $('std-redo');
+    if (!u || !r || stdBuilt) return;
+    stdBuilt = true;
+    u.innerHTML = Icons('undo', 16); r.innerHTML = Icons('redo', 16);
+    u.addEventListener('click', function () { if (App.undo.length) UI.undo(); });
+    r.addEventListener('click', function () { if (App.redo.length) UI.redo(); });
+    syncStdToolbar();
+  }
+  function syncStdToolbar() {
+    var u = $('std-undo'), r = $('std-redo');
+    if (!u || !r) return;
+    var cu = App.undo.length > 0, cr = App.redo.length > 0;
+    if (u.disabled === cu) u.disabled = !cu;
+    if (r.disabled === cr) r.disabled = !cr;
+    setTip(u, { name: 'Undo', key: 'Ctrl+Z', desc: 'Reverse the last change', note: cu ? '' : 'Nothing to undo' });
+    setTip(r, { name: 'Redo', key: 'Ctrl+Y', desc: 'Repeat the change that was undone', note: cr ? '' : 'Nothing to redo' });
+  }
   function renderMenuBar() {
     var ul = $('menus');
     ul.innerHTML = '';
+    renderStdToolbar();
     MENUS().forEach(function (menu, i) {
       var li = el('li', { text: menu.label });
       li.addEventListener('mousedown', function (e) {
@@ -1729,7 +1754,7 @@
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
   UI.fitWorkspace = fitWorkspace;   // r12/chrome12: panel widths and the CommandManager fitted to the window now
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
-  UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
+  UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.syncStdToolbar = syncStdToolbar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
   UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;
   UI.refreshConfigPanel = refreshConfigPanel;

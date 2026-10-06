@@ -153,6 +153,12 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #doc-title { flex: 1; text-align: center; color: var(--muted); }
 #search { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); background: var(--input-bg); height: 20px; padding: 0 4px; width: 200px; }
 #search input { border: 0; height: 18px; width: 100%; padding: 0 2px; background: transparent; }
+/* Standard toolbar: Undo / Redo next to the menus (SolidWorks keeps them on the Standard toolbar, top left) */
+#std-toolbar { display: flex; align-items: center; gap: 1px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--line); height: 100%; flex: none; }
+.std-btn { display: flex; align-items: center; justify-content: center; width: 22px; height: 20px; padding: 0; border: 1px solid transparent; border-radius: 2px; background: none; color: var(--text); cursor: default; }
+.std-btn:hover { background: var(--hover); border-color: var(--blue-line); }
+.std-btn:disabled { opacity: 0.38; }
+.std-btn:disabled:hover { background: none; border-color: transparent; }
 
 /* ---------------------------------------------------------------- ribbon / CommandManager */
 #ribbon { background: var(--panel); border-bottom: 1px solid var(--line); }

@@ -128,6 +128,9 @@ var Icons = (function () {
     dxf: rect(2.5, 1.5, 11, 13, W, S, 1.1, 'rx="0.8"') + ln('M5 4.5 h6 M5 6.5 h6 M5 8.5 h4', L, 0.9) + txt(8, 12.8, 4.2, 'DXF', B, null, 700),
     // ---- view (heads-up toolbar)
     fit: ln('M2.5 5.5 V2.5 h3 M10.5 2.5 h3 v3 M13.5 10.5 v3 h-3 M5.5 13.5 h-3 v-3', S, 1.25) + rect(5.5, 5.5, 5, 5, PL, B, 1.2),
+    // Standard toolbar (next to the menus): curved arrows, SolidWorks' Undo / Redo
+    undo: ln('M4.5 5.5 h5.5 a3.5 3.5 0 0 1 0 7 H6', B, 1.6) + p('M5 5.5 l3 -2.8 v5.6 z', B, B, 1),
+    redo: ln('M11.5 5.5 H6 a3.5 3.5 0 0 0 0 7 h4', B, 1.6) + p('M11 5.5 l-3 -2.8 v5.6 z', B, B, 1),
     zoomArea: circ(7, 7, 4, 'none', S) + ln('M10 10 l3.5 3.5', S, 2) + rect(5, 5, 4, 4, 'none', B, 1, 'stroke-dasharray="1.2 1.2"'),
     prevView: ln('M10 3 L5 8 l5 5', S, 1.8),
     orient: blk(2, 3.5, 6, 5, 2.5) + circ(11.5, 11.5, 3, W, B, 1.1) + ln('M11.5 9.8 v1.7 l1.2 0.7', B, 1.1),
