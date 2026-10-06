@@ -1,0 +1,26 @@
+# Anvil CI: the headless Node runner on every push and pull request.
+# `npm test` runs anvil/tests/kernel-tests.html under Node (811 kernel tests, no browser);
+# `npm run examples` builds every bundled example and checks its documented volume.
+# The OpenCascade engine is not committed (anvil/vendor/get-occt.ps1 fetches it), so the
+# OpenCascade tests and the browser UI smoke test stay local; see CLAUDE.md step 4.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  headless:
+    name: Kernel tests and examples (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Kernel tests
+        run: npm test
+      - name: Example volumes
+        run: npm run examples
