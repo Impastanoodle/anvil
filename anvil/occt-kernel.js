@@ -112,9 +112,30 @@ var OcctKernel = (function () {
       return firstWire(N(mo.Shape()));
     }
 
-    // ---- sketch loops -> wires with exact circles and arcs
+    // ---- sketch loops -> wires with exact circles and arcs, B-spline and elliptic edges
+    // a spline / ellipse of profile.free (Kernel.sketchProfile) as one edge, over [u0, u1] of its parameter (the whole
+    // curve when u0 is null): splines as the B-spline of their Bézier spans (knots = Anvil's chord-length knots, interior
+    // multiplicity 3: the same curve exactly), ellipses as gp_Elips (the major axis is OpenCascade's X direction)
+    function freeEdge(F, plane, u0, u1) {
+      var to3 = function (p) { return K.to3D(plane, p[0], p[1]); };
+      if (F.t === 'ellipse') {
+        var ro = (F.rot || 0) * Math.PI / 180, swap = F.ry > F.rx, ang = ro + (swap ? Math.PI / 2 : 0);
+        var xd = [0, 1, 2].map(function (q) { return plane.x[q] * Math.cos(ang) + plane.y[q] * Math.sin(ang); });
+        var el = N(new oc.gp_Elips_2(N(new oc.gp_Ax2_2(P(to3([F.cx, F.cy])), Dir(plane.n), Dir(xd))), Math.max(F.rx, F.ry), Math.min(F.rx, F.ry)));
+        if (u0 == null) return N(N(new oc.BRepBuilderAPI_MakeEdge_12(el)).Edge());
+        var v0 = u0 - (swap ? Math.PI / 2 : 0), v1 = v0 + (u1 - u0);
+        while (v0 < 0) { v0 += 2 * Math.PI; v1 += 2 * Math.PI; }
+        return N(N(new oc.BRepBuilderAPI_MakeEdge_13(el, v0, v1)).Edge());
+      }
+      var m = F.bez.length, poles = N(new oc.TColgp_Array1OfPnt_2(1, 3 * m + 1)), kn = N(new oc.TColStd_Array1OfReal_2(1, m + 1)), mu = N(new oc.TColStd_Array1OfInteger_2(1, m + 1));
+      poles.SetValue(1, P(to3(F.bez[0][0])));
+      F.bez.forEach(function (B, j) { for (var q = 1; q <= 3; q++) poles.SetValue(3 * j + q + 1, P(to3(B[q]))); });
+      for (var j = 0; j <= m; j++) { kn.SetValue(j + 1, F.knots[j]); mu.SetValue(j + 1, j === 0 || j === m ? 4 : 3); }
+      var hc = N(new oc.Handle_Geom_Curve_2(new oc.Geom_BSplineCurve_1(poles, kn, mu, 3, false)));   // the handle owns the curve
+      return N(u0 == null ? N(new oc.BRepBuilderAPI_MakeEdge_24(hc)).Edge() : N(new oc.BRepBuilderAPI_MakeEdge_25(hc, u0, u1)).Edge());
+    }
     function loopWire(loop, profile, plane) {
-      var pts = loop.pts, n = pts.length, seg = loop.seg, curves = profile.curves || [];
+      var pts = loop.pts, n = pts.length, seg = loop.seg, curves = profile.curves || [], fseg = loop.fseg, free = profile.free || [];
       var to3 = function (p) { return K.to3D(plane, p[0], p[1]); };
       var mw = N(new oc.BRepBuilderAPI_MakeWire_1());
       if (seg && seg.every(function (k) { return k === seg[0] && k >= 0; }) && curves[seg[0]].full) {
@@ -122,15 +143,26 @@ var OcctKernel = (function () {
         mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_8(N(new oc.gp_Circ_2(ax, C.r)))).Edge()));
         return N(mw.Wire());
       }
+      // a closed spline or a full ellipse alone is one closed edge
+      var F0 = fseg && fseg[0] !== -1 ? free[fseg[0][0]] : null;
+      if (F0 && (F0.full || F0.closed) && fseg.every(function (q) { return q !== -1 && q[0] === fseg[0][0]; })) {
+        mw.Add_1(freeEdge(F0, plane, null, null));
+        return N(mw.Wire());
+      }
+      // the curve a segment lies on: a free curve 'f<k>', a circle / arc index, or -1 (straight)
+      function keyAt(q) { return fseg && fseg[q] !== -1 ? 'f' + fseg[q][0] : seg ? seg[q] : -1; }
       // start at a vertex where the curve index changes, so no run of chords wraps around the loop's start
       var start = 0;
-      if (seg) for (var s = 0; s < n; s++) if (seg[s] !== seg[(s + n - 1) % n]) { start = s; break; }
+      if (seg || fseg) for (var s = 0; s < n; s++) if (keyAt(s) !== keyAt((s + n - 1) % n)) { start = s; break; }
       var i = 0;
       while (i < n) {
-        var a = (start + i) % n, k = seg ? seg[a] : -1, len = 1;
-        if (k >= 0) while (i + len < n && seg[(start + i + len) % n] === k) len++;
+        var a = (start + i) % n, k = keyAt(a), len = 1;
+        if (k !== -1) while (i + len < n && keyAt((start + i + len) % n) === k) len++;
         var b = (start + i + len) % n;
-        if (k < 0) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(pts[a])), P(to3(pts[b])))).Edge()));
+        if (typeof k === 'string') {
+          var fa = fseg[a], fb = fseg[(a + len - 1) % n];
+          mw.Add_1(freeEdge(free[fa[0]], plane, Math.min(fa[1], fb[2]), Math.max(fa[1], fb[2])));
+        } else if (k < 0) mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_3(P(to3(pts[a])), P(to3(pts[b])))).Edge()));
         else {
           var Cc = curves[k], mid;
           if (len >= 2) mid = pts[(a + (len >> 1)) % n];

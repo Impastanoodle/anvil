@@ -108,8 +108,15 @@
     // a shell of a round part: exact walls in OpenCascade, polygonal in Anvil -> the loose tolerance, so it drives
     { name: 'closed shell of a cylinder', code: 'p.cylinder(20, 30);\np.shell(2, []);', exact: Math.PI * (400 * 30 - 324 * 26) },
     // a closed path: every corner mitred, the start / end joint too
-    { name: 'sweep along a closed rectangular path', code: 'var prof = p.sketch("Right").circle(0, 0, 3).id();\nvar path = p.sketch("Front").polyline([[0,0],[0,-30],[40,-30],[40,0]], true).id();\np.sweep({ profile: prof, path: path });', exact: Math.PI * 9 * 140 }
+    { name: 'sweep along a closed rectangular path', code: 'var prof = p.sketch("Right").circle(0, 0, 3).id();\nvar path = p.sketch("Front").polyline([[0,0],[0,-30],[40,-30],[40,0]], true).id();\np.sweep({ profile: prof, path: path });', exact: Math.PI * 9 * 140 },
     // --- end refine/perf ---
+    // --- sketch-spline: ellipses as gp_Elips edges, splines as B-spline edges (exact in both kernels for ellipses) ---
+    { name: 'ellipse (rotated) extruded', code: 'p.sketch("Front").ellipse(3, 2, 20, 10, 30).extrude(5);', exact: Math.PI * 200 * 5 },
+    { name: 'tall ellipse on Top (axes swapped for OpenCascade)', code: 'p.sketch("Top").ellipse(1, 1, 6, 10, 15).extrude(5);', exact: Math.PI * 60 * 5 },
+    { name: 'partial ellipse closed by a line, on Right', code: 'p.sketch("Right").partialEllipse(0, 0, 20, 10, 0, 0, 180).line(-20, 0, 20, 0).extrude(5);', exact: Math.PI * 100 * 5 },
+    { name: 'plate cut by an ellipse and a closed spline', code: 'p.sketch("Front").rect(-30, -20, 60, 40).extrude(4);\np.sketch("Front", 4).ellipse(0, 0, 10, 5, 20).spline([[12, 0], [18, 6], [24, 0], [18, -6]], true).cut("through", { reverse: true });' },
+    { name: 'open spline with a driving tangent closed by a line', code: 'p.sketch("Front").spline([[0, 0], [5, 4], [12, 3], [20, 0]], false, [[80, 1.5], null, null, null]).line(0, 0, 20, 0).extrude(1);' }
+    // --- end sketch-spline ---
   ];
   var EX = AnvilExamples.list || AnvilExamples;
   var parts = EX.filter(function (e) { return e.kind !== 'assembly'; }).map(function (e) { return { name: e.name, code: e.code, exact: e.volume || null }; }).concat(EXTRA);
@@ -551,6 +558,19 @@
     counts[why11.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'Face references: reversed caps and pattern copies (both kernels)', e.message); counts.fail++; }
   // --- end r11/faceref11 ---
+  // --- sketch-spline: the spline and ellipse sides are single swept faces of the true curves (no facets) ---
+  try {
+    var tsp = performance.now(), msp = anvilBuild('p.sketch("Front").rect(-30, -20, 60, 40).ellipse(0, 0, 10, 5, 20).spline([[12, 0], [18, 6], [24, 0], [18, -6]], true).partialEllipse(-18, 0, 6, 3, 0, 90, 270).line(-18, 3, -18, -3).extrude(4);').model;
+    var rsp = await occt(msp), kinds = {};
+    rsp.faces.forEach(function (f) { kinds[f.type] = (kinds[f.type] || 0) + 1; });
+    var curved = rsp.faces.length - (kinds.plane || 0), whySp = [];
+    if (!rsp.valid) whySp.push('invalid solid');
+    if (curved !== 3) whySp.push('curved faces ' + curved + ' (want 3: the ellipse, the spline and the partial ellipse, one face each): ' + JSON.stringify(kinds));
+    if (rsp.faces.length !== 10) whySp.push(rsp.faces.length + ' faces (want 10: 2 caps, 4 sides, the line, 3 curves)');
+    row(whySp.length ? 'bad' : 'ok', 'ellipse, closed spline and partial ellipse holes are one exact face each in OpenCascade', whySp.join('; ') || JSON.stringify(kinds) + ', volume ' + rsp.volume.toFixed(4), performance.now() - tsp);
+    counts[whySp.length ? 'fail' : 'pass']++;
+  } catch (e) { row('bad', 'ellipse / spline holes in OpenCascade', e.message); counts.fail++; }
+  // --- end sketch-spline ---
   // --- r11/occtswap11 ---
   // (a) Edit Feature's rolled-back part (worker `upto`): the first n features from the rebuild cache, the same solid as a
   // fresh build of those features, and the cache left as it was (the next whole build reuses every feature);

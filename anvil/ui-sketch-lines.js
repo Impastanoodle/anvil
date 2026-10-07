@@ -1,0 +1,772 @@
+// ui-sketch-lines.js — Line / Centerline / Midpoint Line, Rectangle types, Point: their SolidWorks PropertyManagers (on the tool and for a selected entity).
+// Registers tool PMs in UI.sketchToolPMs[tool] (opened by setTool in ui-sketch.js); see README *Sketch tab*.
+//
+// p9-sketchtab. As in SolidWorks 2024:
+// - Line, Centerline and Midpoint Line (the Line flyout) open the Insert Line PropertyManager: Message, Orientation (As
+//   sketched / Horizontal / Vertical / Angle), Options (For construction, Infinite length, Midpoint line) and, for a set
+//   orientation, Parameters (Length, Angle) that drive the next line. Centerline = For construction; Midpoint Line =
+//   Midpoint line (the first click is the line's midpoint). A set orientation, a midpoint line or an infinite line is
+//   one line per two clicks; As sketched chains as before (ui-sketch.js).
+// - A selected line opens Line Properties: Existing Relations, Add Relations, Options, Parameters (Length, Angle) and
+//   Additional Parameters (Start / End X, Y, Delta X, Y). A typed value drives the line through the solver with every
+//   relation and dimension kept (SketchSolver.driveEntity); one that would over-define the sketch is refused.
+// - Every rectangle tool opens the Rectangle PropertyManager: Rectangle Type (Corner, Center, 3 Point Corner, 3 Point
+//   Center, Parallelogram; the buttons switch the tool), Add construction lines (From Corners / From Midpoints) and
+//   Parameters (the four corners, and the center for the center types): live while drawing, and editable afterwards to
+//   drive the rectangle just drawn. 3 Point Corner / 3 Point Center Rectangle and Parallelogram are four lines with
+//   Coincident corners, two Parallel and (rectangles) one Perpendicular relation, so Smart Dimension, Sketch Fillet,
+//   Trim and DXF treat them as lines.
+// - Point: the Point PropertyManager (Parameters X, Y) on the tool and for a selected point, with Existing / Add
+//   Relations for a selected point.
+(function () {
+  'use strict';
+  if (typeof UI === 'undefined') return;
+  var App = UI.App, $ = UI.$;
+  UI.sketchToolPMs = UI.sketchToolPMs || {};
+  UI.sketchEntityPMs = UI.sketchEntityPMs || {};
+  UI.sketchToolHooks = UI.sketchToolHooks || {};
+  function SS() { return window.SketchSolver; }
+  function sketch() { return UI.activeSketchFeature ? UI.activeSketchFeature() : null; }
+  function clean(v) { return +(+v).toPrecision(12); }
+  function markDirty() { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }
+  function refresh() { App.dimsStale = true; App.gridStale = true; UI.updateSketches(); if (UI.refreshTree) UI.refreshTree(); if (UI.refreshStatus) UI.refreshStatus(); }
+  function hint(html) { var h = $('sketch-hint'); if (h && App.mode === 'sketch') h.innerHTML = html; }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  var D2R = Math.PI / 180;
+  function angDeg(dx, dy) { var a = Math.atan2(dy, dx) / D2R; a = a < 0 ? a + 360 : a; return Math.abs(a - 360) < 1e-9 ? 0 : clean(a); }
+
+  // ------------------------------------------------------------------ PropertyManager helpers
+  // Field values written in place (no re-render): the box being typed in keeps its text and the caret.
+  function syncFields(vals, skip) {
+    var spec = UI.pmSpec && UI.pmSpec(), pm = $('pm');
+    if (!spec || !spec.values || !pm) return;
+    Object.keys(vals).forEach(function (k) {
+      if (k === skip) return;
+      spec.values[k] = vals[k];
+      var inp = pm.querySelector('input.pm-num[data-key="' + k + '"]');
+      if (inp && document.activeElement !== inp) { if (inp.type !== 'number') inp.type = 'number'; inp.value = vals[k] == null ? '' : +(+vals[k]).toPrecision(10); }
+      var cb = pm.querySelector('input[type=checkbox][data-key="' + k + '"]');
+      if (cb) cb.checked = !!vals[k];
+    });
+  }
+  // a message line under the ✓ / ✗ (an edit that would over-define the sketch); null clears it
+  function pmNote(text, ok) {
+    var pm = $('pm');
+    if (!pm) return;
+    var box = pm.querySelector('.pm-msg.sk-lines-msg');
+    if (!text) { if (box) box.parentNode.removeChild(box); return; }
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'pm-msg sk-lines-msg';
+      var acts = pm.querySelector('.pm-actions');
+      if (acts && acts.nextSibling) pm.insertBefore(box, acts.nextSibling); else pm.appendChild(box);
+    }
+    box.classList.toggle('ok', !!ok);
+    box.textContent = text;
+  }
+  function refused(msg) { pmNote(msg); UI.setStatus(msg); }
+
+  // Existing Relations / Add Relations for a selection (refs): the dimensions / relations file's groups when it is
+  // loaded (UI.sketchRelationGroups), else a list of the relations on these entities with the entity's state, and a
+  // button per relation that applies (SketchSolver.applicable).
+  var REL_ICON = { horizontal: 'relHorizontal', vertical: 'relVertical', coincident: 'relCoincident', parallel: 'relParallel', perpendicular: 'relPerpendicular', tangent: 'relTangent', concentric: 'relConcentric', equal: 'relEqual', midpoint: 'relMidpoint', symmetric: 'relSymmetric', collinear: 'relCollinear', fix: 'relFix', distance: 'dim', angle: 'dim' };
+  function refEntity(r) { var m = /^(\d+)/.exec(String(r)); return m ? +m[1] : -1; }
+  function relationGroups(f, refs, reopen) {
+    if (UI.sketchRelationGroups) { try { var g = UI.sketchRelationGroups(f, refs); if (g) return g; } catch (e) { /* fall back */ } }
+    var S = SS();
+    if (!S) return [];
+    var ents = refs.map(refEntity), an = null;
+    try { an = S.analyze(f); } catch (e) { an = null; }
+    var rows = [];
+    (f.rels || []).forEach(function (rel, i) {
+      if (!rel.refs.some(function (r) { return ents.indexOf(refEntity(r)) >= 0; })) return;
+      var st = an && an.rels[i], word = st === 'conflict' ? 'Not Solved' : st === 'redundant' ? 'Over Defining' : st === 'driven' ? 'Driven' : 'Satisfied';
+      rows.push('<div class="rel-row" data-rel="' + i + '">' + Icons(REL_ICON[rel.type] || 'relations', 14) + '<span>' + esc(S.describe(f, rel)) + '</span><em>' + word + '</em></div>');
+    });
+    var est = ents.length === 1 && an && an.entities ? an.entities[ents[0]] : null;
+    var stText = est === 'full' ? 'Fully Defined' : est === 'over' || est === 'conflict' ? 'Over Defined' : 'Under Defined';
+    var types = [];
+    try { types = S.applicable(f, refs); } catch (e) { types = []; }
+    return [
+      { title: 'Existing Relations', fields: [{ type: 'html', html: '<div class="rel-list sk-existing">' + (rows.join('') || '<div class="rel-empty">None</div>') + '</div><div class="pm-row"><span class="static sk-defined">' + stText + '</span></div>' }] },
+      { title: 'Add Relations', fields: types.length ? [{ type: 'buttons', buttons: types.map(function (t) { return { label: S.TYPES[t].name, onclick: function () { addRelation(f, t, refs, reopen); } }; }) }]
+        : [{ type: 'static', label: '', value: 'No relation applies to this selection.' }] }
+    ];
+  }
+  function addRelation(f, type, refs, reopen) {
+    var S = SS();
+    markDirty();
+    var r = S.addRelation(f, type, refs);
+    if (!r.ok) { UI.toast(r.error); return; }
+    refresh();
+    var name = S.TYPES[type].name;
+    if (r.status === 'conflict') UI.setStatus(name + ' added, but the sketch cannot satisfy it: Over Defined. Delete it in Display/Delete Relations.');
+    else if (r.status === 'redundant') UI.setStatus(name + ' added; it repeats what other relations already say: Over Defined.');
+    else UI.setStatus(name + ' added. ' + S.STATUS_TEXT[r.analysis.status] + '.');
+    if (reopen) reopen();
+  }
+
+  // The sketch point (or the origin) at P other than entity `self`'s own: its ref, or null.
+  function pointRefAt(f, P, self) {
+    var S = SS(), tol = 1e-9 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]));
+    if (Math.abs(P[0]) < tol && Math.abs(P[1]) < tol) return 'O';
+    for (var j = 0; j < f.entities.length; j++) {
+      if (j === self || !f.entities[j]) continue;
+      var e = f.entities[j], prs = S.pointRefs(f, j);
+      for (var k = 0; k < prs.length; k++) {
+        if (/\.mid$/.test(prs[k].ref) || (/\.c$/.test(prs[k].ref) && (e.t === 'rect' || e.t === 'slot'))) continue;
+        if (Math.abs(prs[k].pt[0] - P[0]) < tol && Math.abs(prs[k].pt[1] - P[1]) < tol) return prs[k].ref;
+      }
+    }
+    return null;
+  }
+  // a driving dimension from typed input (as ui-sketch.js typedDims), left out when it would over-define the sketch
+  function typedDim(f, d) {
+    f.dims = f.dims || [];
+    f.dims.push(d);
+    if (SS() && SS().overDefines(f, 'dim', f.dims.length - 1)) f.dims.pop();
+    if (!f.dims.length) delete f.dims;
+    App.dimsStale = true;
+  }
+  function dimOff() { var s = (UI.cam && UI.cam.scale) || 0.1; return Math.round(14 * s * 1e4) / 1e4; }
+
+  // ------------------------------------------------------------------ Insert Line (Line, Centerline, Midpoint Line)
+  // LM: the Insert Line settings. orient 'free' (As sketched) | 'h' | 'v' | 'angle'; length / angle: the Parameters.
+  var LM = { orient: 'free', construction: false, infinite: false, midpoint: false, length: null, angle: 0 };
+  var pendingLine = null;   // which Line flyout command started the tool: 'centerline' | 'midline'
+  UI.lineMode = function () { return App.mode === 'sketch' && App.tool === 'line' ? (LM.midpoint ? 'midline' : LM.construction ? 'centerline' : 'line') : null; };
+  UI.lineOptions = function () { return JSON.parse(JSON.stringify(LM)); };
+  UI.cmdCenterline = function () {
+    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (UI.lineMode() === 'centerline') { UI.setTool('select'); return; }
+    pendingLine = 'centerline'; UI.setTool('line');
+  };
+  UI.cmdMidpointLine = function () {
+    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (UI.lineMode() === 'midline') { UI.setTool('select'); return; }
+    pendingLine = 'midline'; UI.setTool('line');
+  };
+  var LINE_HINT = {
+    line: null,   // ui-sketch.js TOOL_HINTS.line
+    centerline: 'Centerline: click the start and end points. Centerlines are construction geometry: axes for Symmetric relations, not part of the profile.',
+    midline: 'Midpoint Line: click the midpoint, then an end; the line is symmetric about the first point (it gets Midpoint where that point lies on a sketch point).'
+  };
+  function lineHint() {
+    var m = UI.lineMode() || 'line';
+    if (LINE_HINT[m]) hint(LINE_HINT[m]);
+    if (LM.orient !== 'free') hint((m === 'centerline' ? 'Centerline' : m === 'midline' ? 'Midpoint Line' : 'Line') + ' (' + { h: 'Horizontal', v: 'Vertical', angle: 'Angle ' + UI.fmtNum(LM.angle || 0, 2) + '°' }[LM.orient] + (LM.length > 0 ? ', length ' + UI.fmtNum(LM.length, 3) : '') + '): click the ' + (LM.midpoint ? 'midpoint' : 'start') + ', then the side it runs to.');
+  }
+  // one line per two clicks (no chain): a set orientation, a midpoint line, an infinite line
+  function lineSingle() { return !!(LM.midpoint || LM.orient !== 'free' || LM.infinite); }
+  // the end of the line from a toward the cursor b under the PropertyManager's orientation and length
+  function lineEnd(a, b) {
+    if (LM.orient === 'free') return b;
+    var u = LM.orient === 'h' ? [1, 0] : LM.orient === 'v' ? [0, 1] : [Math.cos((+LM.angle || 0) * D2R), Math.sin((+LM.angle || 0) * D2R)];
+    if (LM.orient === 'angle') { u = [clean(u[0]), clean(u[1])]; }
+    var s = (b[0] - a[0]) * u[0] + (b[1] - a[1]) * u[1];
+    var t = LM.length > 0 ? (s < 0 ? -1 : 1) * LM.length * (LM.midpoint ? 0.5 : 1) : s;
+    return [clean(a[0] + u[0] * t), clean(a[1] + u[1] * t)];
+  }
+  function specialLine(a, b) {
+    var e = lineEnd(a, b), s = LM.midpoint ? [clean(2 * a[0] - e[0]), clean(2 * a[1] - e[1])] : a;
+    return { t: 'line', x1: s[0], y1: s[1], x2: e[0], y2: e[1] };
+  }
+  // Infinite length: the line runs across the whole graphics area, well past both edges (trim it back to what is
+  // needed), through the two clicked points
+  function extendInfinite(e) {
+    var dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy);
+    if (L < 1e-12) return;
+    var s = (UI.cam && UI.cam.scale) || 0.1, R = Math.max(L, 1.5 * Math.hypot(UI.size.w || 800, UI.size.h || 600) * s);
+    var mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2, ux = dx / L, uy = dy / L;
+    e.x1 = clean(mx - ux * R); e.y1 = clean(my - uy * R); e.x2 = clean(mx + ux * R); e.y2 = clean(my + uy * R);
+  }
+  UI.sketchToolHooks.line = {
+    entities: function (pts, cur, all) {
+      if (!lineSingle() || all.length < 2) return null;
+      var e = specialLine(all[0], all[1]);
+      if (LM.infinite) extendInfinite(e);
+      return [e];
+    },
+    single: lineSingle,
+    commit: function (ents) {
+      var e = ents[0];
+      if (!lineSingle() || !e || e.t !== 'line') return false;
+      if (Math.hypot(e.x2 - e.x1, e.y2 - e.y1) < 1e-9) { UI.setStatus('That line would have no length: click away from the first point, along the line.'); return true; }
+      return false;
+    },
+    after: function (f, n0, st) {
+      var i = n0, e = f.entities[i], S = SS();
+      if (!lineSingle() || f.entities.length !== n0 + 1 || !e || e.t !== 'line' || !S) return;
+      if (LM.infinite) {
+        e.infinite = true;
+        // the clicked points that sit on sketch points keep them on the line (point on line)
+        (st.pts || []).slice(0, 2).forEach(function (P) {
+          var r = pointRefAt(f, P, i);
+          if (r) S.addRelation(f, 'coincident', [r, String(i)], { rejectOver: true });
+        });
+      }
+      if (LM.midpoint) {
+        var M = [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2], ref = pointRefAt(f, M, i);
+        if (ref) S.addRelation(f, 'midpoint', [ref, String(i)], { rejectOver: true });
+        else {
+          var on = S.onCurveRef(f, i, M, 1e-7 * Math.max(1, Math.abs(M[0]), Math.abs(M[1])));
+          if (on) S.addRelation(f, 'coincident', [i + '.mid', on], { rejectOver: true });
+        }
+      }
+      if (LM.midpoint || LM.infinite) refresh();
+    },
+    // typed L / A in the on-screen box: a midpoint line's L is its whole length
+    typedPoint: function (cur, v) {
+      var st = App.toolState, a = st.pts[0];
+      if (!lineSingle() || !a || st.pts.length !== 1) return null;
+      var dx = cur[0] - a[0], dy = cur[1] - a[1], len = v.len != null ? v.len * (LM.midpoint ? 0.5 : 1) : Math.hypot(dx, dy);
+      var ang = v.ang != null ? v.ang * D2R : (Math.hypot(dx, dy) > 1e-12 ? Math.atan2(dy, dx) : 0);
+      return [clean(a[0] + len * Math.cos(ang)), clean(a[1] + len * Math.sin(ang))];
+    },
+    liveValues: function (p) {
+      var st = App.toolState, a = st.pts[0];
+      if (!lineSingle() || !a) return null;
+      var e = specialLine(a, p);
+      return { len: Math.hypot(e.x2 - e.x1, e.y2 - e.y1), ang: angDeg(e.x2 - e.x1, e.y2 - e.y1) };
+    },
+    readout: function (pts, p) {
+      if (!lineSingle() || !pts[0]) return null;
+      var e = specialLine(pts[0], p), inch = UI.unitLabel() === 'in';
+      return 'L ' + UI.fmtNum(Math.hypot(e.x2 - e.x1, e.y2 - e.y1), inch ? 3 : 2) + '   A ' + UI.fmtNum(angDeg(e.x2 - e.x1, e.y2 - e.y1), 1) + '°';
+    }
+  };
+  UI.sketchToolPMs.line = function () {
+    var m = pendingLine || 'line';
+    pendingLine = null;
+    LM.construction = m === 'centerline'; LM.midpoint = m === 'midline'; LM.orient = 'free'; LM.infinite = false;
+    App.drawConstruction = LM.construction;
+    openInsertLine();
+    lineHint();
+  };
+  function openInsertLine() {
+    var v = { orient: LM.orient, construction: LM.construction, infinite: LM.infinite, midpoint: LM.midpoint, length: LM.length, angle: LM.angle };
+    var m = UI.lineMode() || 'line';
+    UI.openPM({
+      title: 'Insert Line', icon: m === 'midline' ? 'midline' : m === 'centerline' ? 'centerline' : 'line', sketchTool: 'line', noFocus: true, keepSelection: true, values: v,
+      groups: [
+        { title: 'Message', fields: [{ type: 'html', html: '<div class="pm-note sk-msg" style="margin:0 0 4px 2px">Edit the settings of the following entities or sketch a new line.</div>' }] },
+        { title: 'Orientation', fields: [{ type: 'radio', key: 'orient', rerender: true, options: [['free', 'As sketched'], ['h', 'Horizontal'], ['v', 'Vertical'], ['angle', 'Angle']] }] },
+        { title: 'Options', fields: [
+          { type: 'check', key: 'construction', label: 'For construction' },
+          { type: 'check', key: 'infinite', label: 'Infinite length' },
+          { type: 'check', key: 'midpoint', label: 'Midpoint line' }] },
+        { title: 'Parameters', show: function (x) { return x.orient !== 'free'; }, fields: [
+          { type: 'number', key: 'length', label: 'Length', unit: 'u', min: 0 },
+          { type: 'number', key: 'angle', label: 'Angle', unit: '°', show: function (x) { return x.orient === 'angle'; } }] }
+      ],
+      onChange: function (x, key) {
+        if (!key) return;
+        if (key === 'length') LM.length = x.length > 0 ? +x.length : null;
+        else if (key === 'angle') LM.angle = +x.angle || 0;
+        else LM[key] = x[key];
+        App.drawConstruction = !!LM.construction;
+        // a changed option starts the line again (a half-drawn chain would mix the two kinds)
+        if (key !== 'length' && key !== 'angle' && App.toolState && App.toolState.pts && App.toolState.pts.length) UI.cancelTool(true);
+        if (key === 'construction' || key === 'midpoint') {
+          var head = $('pm') && $('pm').querySelector('.pm-head');
+          if (head) head.innerHTML = Icons(LM.midpoint ? 'midline' : LM.construction ? 'centerline' : 'line', 20) + '<span>Insert Line</span>';
+          UI.refreshRibbon();
+        }
+        lineHint();
+      },
+      onOK: function () { if (App.tool === 'line') UI.setTool('select'); },
+      onCancel: function () { if (App.tool === 'line') UI.setTool('select'); }
+    });
+  }
+
+  // ------------------------------------------------------------------ Line Properties (a selected line)
+  function lineVals(e) {
+    return { construction: !!e.construction, infinite: !!e.infinite, len: clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)), ang: angDeg(e.x2 - e.x1, e.y2 - e.y1),
+      x1: clean(e.x1), y1: clean(e.y1), x2: clean(e.x2), y2: clean(e.y2), dx: clean(e.x2 - e.x1), dy: clean(e.y2 - e.y1) };
+  }
+  // Drive line i so that `key` reads val (Length, Angle, Start / End X / Y, Delta X / Y), keeping relations and
+  // dimensions. Returns { ok, error }. A driving length dimension on the line is changed instead (SetDim).
+  function driveLine(f, i, key, val) {
+    var S = SS(), e = f.entities[i];
+    if (!e || e.t !== 'line' || !S || !isFinite(val)) return { ok: false, error: 'Not a value.' };
+    if (key === 'len') {
+      if (!(val > 0)) return { ok: false, error: 'The length must be greater than 0.' };
+      var di = (f.dims || []).map(function (d, k) { return d.e === i && d.k === 'len' && !d.driven ? k : -1; }).filter(function (k) { return k >= 0; })[0];
+      if (di != null) return S.setDim(f, di, val);
+    }
+    var eq, guess, n = 1;
+    switch (key) {
+      case 'x1': case 'y1': case 'x2': case 'y2':
+        eq = function (E) { return [E[i][key] - val]; };
+        guess = function (E) { E[i][key] = val; };
+        break;
+      case 'dx': case 'dy': {
+        var a = key === 'dx' ? 'x' : 'y';
+        eq = function (E) { return [E[i][a + '2'] - E[i][a + '1'] - val]; };
+        guess = function (E) { E[i][a + '2'] = E[i][a + '1'] + val; };
+        break;
+      }
+      case 'len':
+        eq = function (E) { return [Math.hypot(E[i].x2 - E[i].x1, E[i].y2 - E[i].y1) - val]; };
+        guess = function (E) { var L = Math.hypot(E[i].x2 - E[i].x1, E[i].y2 - E[i].y1) || 1; E[i].x2 = E[i].x1 + (E[i].x2 - E[i].x1) * val / L; E[i].y2 = E[i].y1 + (E[i].y2 - E[i].y1) * val / L; };
+        break;
+      case 'ang': {
+        // the line turns about its start keeping its length (else a Horizontal line would take any angle by shrinking to nothing)
+        var c = Math.cos(val * D2R), s = Math.sin(val * D2R), L0 = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+        n = 2;
+        eq = function (E) { return [-s * (E[i].x2 - E[i].x1) + c * (E[i].y2 - E[i].y1), Math.hypot(E[i].x2 - E[i].x1, E[i].y2 - E[i].y1) - L0]; };
+        guess = function (E) { var L = Math.hypot(E[i].x2 - E[i].x1, E[i].y2 - E[i].y1); E[i].x2 = E[i].x1 + L * c; E[i].y2 = E[i].y1 + L * s; };
+        break;
+      }
+      default: return { ok: false, error: 'Unknown value ' + key };
+    }
+    var saved = JSON.parse(JSON.stringify(f.entities));
+    var r = S.driveEntity(f, i, n, eq, { guess: guess });
+    if (r.ok && key === 'ang') {
+      var e2 = f.entities[i];
+      if ((e2.x2 - e2.x1) * Math.cos(val * D2R) + (e2.y2 - e2.y1) * Math.sin(val * D2R) <= 0) {
+        saved.forEach(function (o, k) { if (f.entities[k]) Object.keys(o).forEach(function (q) { f.entities[k][q] = o[q]; }); });
+        return { ok: false, error: 'That angle would turn the line round: its relations hold it the other way.' };
+      }
+    }
+    return r;
+  }
+  function openLineProperties(index) {
+    var f = sketch(), e = f && f.entities[index];
+    if (!e) return;
+    var reopen = function () { if (App.mode === 'sketch' && sketch() === f && f.entities[index] && f.entities[index].t === 'line') openLineProperties(index); };
+    var num = function (key, label, unit) { return { type: 'number', key: key, label: label, unit: unit || 'u' }; };
+    UI.openPM({
+      title: 'Line Properties', icon: e.construction ? 'centerline' : 'line', values: lineVals(e), noFocus: true, entityIndex: index,
+      groups: relationGroups(f, [String(index)], reopen).concat([
+        { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'For construction' }, { type: 'check', key: 'infinite', label: 'Infinite length' }] },
+        { title: 'Parameters', fields: [num('len', 'Length'), num('ang', 'Angle', '°')] },
+        { title: 'Additional Parameters', fields: [num('x1', 'Start X'), num('y1', 'Start Y'), num('x2', 'End X'), num('y2', 'End Y'), num('dx', 'Delta X'), num('dy', 'Delta Y')] }
+      ]),
+      onChange: function (v, key) {
+        if (!key) return;
+        var f2 = sketch(), cur = f2 && f2.entities[index];
+        if (!cur || cur.t !== 'line') return;
+        markDirty();
+        if (key === 'construction') { if (v.construction) cur.construction = true; else delete cur.construction; refresh(); pmNote(null); return; }
+        if (key === 'infinite') {
+          if (v.infinite) { extendInfinite(cur); cur.infinite = true; if (f2.rels || f2.dims) SS().solve(f2); }
+          else delete cur.infinite;
+          refresh(); syncFields(lineVals(f2.entities[index]), key); pmNote(null);
+          return;
+        }
+        var r = driveLine(f2, index, key, +v[key]);
+        if (!r.ok) { refused(r.error); return; }
+        pmNote(null);
+        refresh();
+        syncFields(lineVals(f2.entities[index]), key);
+      },
+      onOK: function () { App.sel = null; UI.updateSketches(); }
+    });
+  }
+  UI.sketchEntityPMs.line = function (index) { openLineProperties(index); };
+  UI.driveSketchLine = function (index, key, val) { var f = sketch(); if (!f) return { ok: false }; markDirty(); var r = driveLine(f, index, key, val); refresh(); return r; };
+
+  // ------------------------------------------------------------------ Rectangle (all five types)
+  var RECT_TYPES = [['rect', 'Corner Rectangle', 'rect'], ['crect', 'Center Rectangle', 'crect'], ['rect3', '3 Point Corner Rectangle', 'rect3'], ['crect3', '3 Point Center Rectangle', 'crect3'], ['parallelogram', 'Parallelogram', 'parallelogram']];
+  var RECT_HINT = {
+    rect: 'Corner Rectangle: click the first corner, then the opposite corner.',
+    crect: 'Center Rectangle: click the center, then a corner.',
+    rect3: '3 Point Corner Rectangle: click the first corner, the second corner (the first side, at any angle), then a point that sets the height.',
+    crect3: '3 Point Center Rectangle: click the center, the midpoint of a side (the angle and half the width), then a point that sets the height.',
+    parallelogram: 'Parallelogram: click the first corner, the second corner, then the third; the fourth follows.'
+  };
+  function isCenter(t) { return t === 'crect' || t === 'crect3'; }
+  // RS: the Rectangle settings (remembered per type, as SolidWorks remembers them for the session)
+  var RS = { cons: { rect: false, crect: true, rect3: false, crect3: true, parallelogram: false }, fromMid: false };
+  var lastRect = null;   // the rectangle just drawn: { tool, i } (a Corner / Center Rectangle entity) or { tool, lines: [4], cons: [], center }
+  UI.lastSketchRectangle = function () { return lastRect ? JSON.parse(JSON.stringify(lastRect)) : null; };
+
+  // corners (counter-clockwise from the first click) of a 3 Point / Parallelogram rectangle through points p (3), or
+  // null when it would have no width or height
+  function rectGeom(tool, p) {
+    var A = p[0], B = p[1], C = p[2];
+    if (!A || !B || !C) return null;
+    var u = [B[0] - A[0], B[1] - A[1]], L = Math.hypot(u[0], u[1]);
+    if (L < 1e-9) return null;
+    var n = [-u[1] / L, u[0] / L], K;
+    if (tool === 'rect3') {
+      var h = (C[0] - A[0]) * n[0] + (C[1] - A[1]) * n[1];
+      if (Math.abs(h) < 1e-9) return null;
+      K = [A, B, [B[0] + n[0] * h, B[1] + n[1] * h], [A[0] + n[0] * h, A[1] + n[1] * h]];
+    } else if (tool === 'crect3') {
+      var b = (C[0] - A[0]) * n[0] + (C[1] - A[1]) * n[1];
+      if (Math.abs(b) < 1e-9) return null;
+      K = [[A[0] - u[0] - n[0] * b, A[1] - u[1] - n[1] * b], [B[0] - n[0] * b, B[1] - n[1] * b], [B[0] + n[0] * b, B[1] + n[1] * b], [A[0] - u[0] + n[0] * b, A[1] - u[1] + n[1] * b]];
+    } else {
+      if (Math.abs((C[0] - B[0]) * n[0] + (C[1] - B[1]) * n[1]) < 1e-9) return null;   // the three corners in a line
+      K = [A, B, C, [A[0] + C[0] - B[0], A[1] + C[1] - B[1]]];
+    }
+    // counter-clockwise, so edge k runs from corner k to corner k + 1 the same way round for every type
+    var area = 0;
+    for (var k = 0; k < 4; k++) area += K[k][0] * K[(k + 1) % 4][1] - K[(k + 1) % 4][0] * K[k][1];
+    if (area < 0) K = [K[1], K[0], K[3], K[2]];
+    return K.map(function (q) { return [clean(q[0]), clean(q[1])]; });
+  }
+  function centerOf(K) { return [clean((K[0][0] + K[2][0]) / 2), clean((K[0][1] + K[2][1]) / 2)]; }
+  function mid(a, b) { return [clean((a[0] + b[0]) / 2), clean((a[1] + b[1]) / 2)]; }
+  function lineOf(a, b, con) { var e = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }; if (con) e.construction = true; return e; }
+  // the construction lines of a rectangle with corners K: the diagonals (From Corners) or the lines joining the
+  // midpoints of opposite sides (From Midpoints)
+  function consLines(K) {
+    return RS.fromMid ? [lineOf(mid(K[0], K[1]), mid(K[2], K[3]), true), lineOf(mid(K[1], K[2]), mid(K[3], K[0]), true)]
+      : [lineOf(K[0], K[2], true), lineOf(K[1], K[3], true)];
+  }
+  function previewRect(tool, all) {
+    if (all.length < 3) return [{ t: 'line', x1: all[0][0], y1: all[0][1], x2: all[1][0], y2: all[1][1], construction: tool === 'crect3' }];
+    var K = rectGeom(tool, all);
+    if (!K) return [{ t: 'line', x1: all[0][0], y1: all[0][1], x2: all[1][0], y2: all[1][1] }];
+    var out = [0, 1, 2, 3].map(function (k) { return lineOf(K[k], K[(k + 1) % 4]); });
+    if (RS.cons[tool]) out = out.concat(consLines(K));
+    return out;
+  }
+  // 3 Point Corner / 3 Point Center Rectangle and Parallelogram: four lines, Coincident corners, Parallel opposite
+  // sides and (rectangles) a Perpendicular corner, plus the construction lines and, for the center type, a center
+  // point; then what SolidWorks infers where the corners land (Coincident, Horizontal / Vertical, …)
+  function commitRectLines(tool, pts, typed) {
+    var f = sketch(), S = SS();
+    if (!f || !S) return true;
+    var K = rectGeom(tool, pts);
+    if (!K) { UI.setStatus('That ' + (tool === 'parallelogram' ? 'parallelogram' : 'rectangle') + ' would have no width or height: start it again, with the last point off the first side.'); return true; }
+    markDirty();
+    var n0 = f.entities.length, L = [0, 1, 2, 3].map(function (k) { return n0 + k; }), rels = (f.rels = f.rels || []);
+    for (var k = 0; k < 4; k++) f.entities.push(lineOf(K[k], K[(k + 1) % 4]));
+    for (k = 0; k < 4; k++) rels.push({ type: 'coincident', refs: [L[k] + '.p2', L[(k + 1) % 4] + '.p1'] });
+    rels.push({ type: 'parallel', refs: [String(L[0]), String(L[2])] }, { type: 'parallel', refs: [String(L[1]), String(L[3])] });
+    if (tool !== 'parallelogram') rels.push({ type: 'perpendicular', refs: [String(L[0]), String(L[1])] });
+    var cons = [], center = null;
+    if (RS.cons[tool]) {
+      consLines(K).forEach(function (e, j) {
+        var ci = f.entities.length;
+        f.entities.push(e); cons.push(ci);
+        if (RS.fromMid) { rels.push({ type: 'midpoint', refs: [ci + '.p1', String(L[j])] }, { type: 'midpoint', refs: [ci + '.p2', String(L[j + 2])] }); }
+        else { rels.push({ type: 'coincident', refs: [ci + '.p1', L[j] + '.p1'] }, { type: 'coincident', refs: [ci + '.p2', L[j + 2] + '.p1'] }); }
+      });
+      if (isCenter(tool)) {
+        // the center point: Midpoint of the first construction line (the second crosses it there anyway)
+        var C = centerOf(K);
+        center = f.entities.length;
+        f.entities.push({ t: 'point', x: C[0], y: C[1] });
+        rels.push({ type: 'midpoint', refs: [String(center), String(cons[0])] });
+      }
+    }
+    L.forEach(function (i) { S.infer(f, i); });
+    if (center != null) S.infer(f, center);
+    // typed values (the on-screen box) become driving dimensions: the first side, then the second
+    if (typed) {
+      var off = dimOff(), first = tool === 'crect3' ? typed.w : typed.len;
+      if (first != null) typedDim(f, { e: L[0], k: 'len', off: -off });
+      if (typed.h != null) typedDim(f, { e: L[1], k: 'len', off: -off });
+    }
+    lastRect = { tool: tool, lines: L, cons: cons, center: center };
+    refresh();
+    rectFieldsNow();
+    UI.setStatus(RECT_TYPES.filter(function (t) { return t[0] === tool; })[0][1] + ' added: 4 lines' + (cons.length ? ', ' + cons.length + ' construction lines' : '') + (center != null ? ' and a center point' : '') + '.');
+    return true;
+  }
+  // a Corner / Center Rectangle entity: its construction lines (diagonals tied to its corners, or midpoint lines to
+  // its edges' midpoints)
+  function afterRectEntity(f, n0) {
+    var e = f.entities[n0];
+    if (!e || (e.t !== 'rect' && e.t !== 'crect')) return;
+    var cons = [];
+    if (RS.cons[App.tool]) {
+      var S = SS(), c = [[0, 2], [1, 3]], rels = (f.rels = f.rels || []);
+      var K = e.t === 'rect' ? [[e.x, e.y], [e.x + e.w, e.y], [e.x + e.w, e.y + e.h], [e.x, e.y + e.h]]
+        : [[e.cx - e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy + e.h / 2], [e.cx - e.w / 2, e.cy + e.h / 2]];
+      consLines(K).forEach(function (l, j) {
+        var ci = f.entities.length;
+        f.entities.push(l); cons.push(ci);
+        if (RS.fromMid) rels.push({ type: 'midpoint', refs: [ci + '.p1', n0 + '.e' + j] }, { type: 'midpoint', refs: [ci + '.p2', n0 + '.e' + (j + 2)] });
+        else rels.push({ type: 'coincident', refs: [ci + '.p1', n0 + '.v' + c[j][0]] }, { type: 'coincident', refs: [ci + '.p2', n0 + '.v' + c[j][1]] });
+      });
+      if (S) S.solve(f);
+      refresh();
+    }
+    lastRect = { tool: e.t, i: n0, cons: cons };
+    rectFieldsNow();
+  }
+  // the corner / center refs of the rectangle just drawn
+  function rectRefs(r) {
+    if (!r) return null;
+    if (r.i != null) return { corners: [0, 1, 2, 3].map(function (k) { return r.i + '.v' + k; }), center: r.tool === 'crect' ? r.i + '.c' : null };
+    return { corners: r.lines.map(function (i) { return i + '.p1'; }), center: r.center != null ? String(r.center) : null };
+  }
+  function rectAlive(f, r) {
+    if (!f || !r) return false;
+    if (r.i != null) return !!(f.entities[r.i] && f.entities[r.i].t === r.tool);
+    return r.lines.every(function (i) { return f.entities[i] && f.entities[i].t === 'line'; }) && (r.center == null || (f.entities[r.center] && f.entities[r.center].t === 'point'));
+  }
+  function cornerVals(K, C) {
+    var v = {};
+    K.forEach(function (q, k) { v['x' + (k + 1)] = clean(q[0]); v['y' + (k + 1)] = clean(q[1]); });
+    if (C) { v.cx = clean(C[0]); v.cy = clean(C[1]); }
+    return v;
+  }
+  function rectVals(f, r) {
+    var S = SS(), refs = rectRefs(r);
+    if (!refs || !rectAlive(f, r)) return null;
+    var K = refs.corners.map(function (ref) { return S.refPoint(f, ref); });
+    return cornerVals(K, isCenter(r.tool) ? (refs.center ? S.refPoint(f, refs.center) : centerOf(K)) : null);
+  }
+  function rectFieldsNow() { var f = sketch(), v = rectVals(f, lastRect); if (v && rectPMOpen()) syncFields(v); }
+  function rectPMOpen() { var s = UI.pmSpec && UI.pmSpec(); return !!(s && s.rectPM); }
+  // Drive a corner (k 0..3) or the center (k = 'c') of rectangle r to coordinate axis ax = val.
+  function driveRect(f, r, k, ax, val) {
+    var S = SS(), refs = rectRefs(r);
+    if (!refs || !rectAlive(f, r) || !isFinite(val)) return { ok: false, error: 'The rectangle is gone.' };
+    if (r.i != null) {
+      // a Corner / Center Rectangle entity: the opposite corner stays where it is (the center moves the whole rectangle)
+      var e = f.entities[r.i], K = refs.corners.map(function (ref) { return S.refPoint(f, ref); }), t = {};
+      if (k === 'c') {
+        var C = S.refPoint(f, refs.center), d = [ax === 0 ? val - C[0] : 0, ax === 1 ? val - C[1] : 0];
+        if (e.t === 'crect') { t.cx = e.cx + d[0]; t.cy = e.cy + d[1]; t.w = e.w; t.h = e.h; }
+        else { t.x = e.x + d[0]; t.y = e.y + d[1]; t.w = e.w; t.h = e.h; }
+      } else {
+        var P = K[k].slice(), O = K[(k + 2) % 4];
+        P[ax] = val;
+        var w = Math.abs(P[0] - O[0]), h = Math.abs(P[1] - O[1]);
+        if (w < 1e-9 || h < 1e-9) return { ok: false, error: 'The rectangle would have no width or height.' };
+        if (e.t === 'crect') { t.cx = (P[0] + O[0]) / 2; t.cy = (P[1] + O[1]) / 2; } else { t.x = Math.min(P[0], O[0]); t.y = Math.min(P[1], O[1]); }
+        t.w = w; t.h = h;
+      }
+      var keys = Object.keys(t);
+      return S.driveEntity(f, r.i, keys.length, function (E) { return keys.map(function (q) { return E[r.i][q] - t[q]; }); }, { guess: function (E) { keys.forEach(function (q) { E[r.i][q] = clean(t[q]); }); } });
+    }
+    // four lines: that corner's point (the lines meeting there follow through the Coincident); the center (no
+    // center point) is the mean of the corners
+    if (k === 'c' && !refs.center) {
+      return S.driveEntity(f, r.lines[0], 1, function (E) {
+        var s = 0;
+        refs.corners.forEach(function (ref) { s += S.refPoint({ entities: E }, ref)[ax]; });
+        return [s / 4 - val];
+      }, { ents: r.lines.slice() });
+    }
+    var ref = k === 'c' ? refs.center : refs.corners[k], ei = refEntity(ref);
+    return S.driveEntity(f, ei, 1, function (E) { return [S.refPoint({ entities: E }, ref)[ax] - val]; });
+  }
+  UI.driveSketchRectangle = function (k, ax, val) { var f = sketch(); if (!f) return { ok: false }; markDirty(); var r = driveRect(f, lastRect, k, ax, val); refresh(); return r; };
+
+  function rectParamFields(center) {
+    var out = [];
+    for (var k = 1; k <= 4; k++) out.push({ type: 'number', key: 'x' + k, label: 'Corner ' + k + ' X', unit: 'u' }, { type: 'number', key: 'y' + k, label: 'Corner ' + k + ' Y', unit: 'u' });
+    if (center) out.push({ type: 'number', key: 'cx', label: 'Center X', unit: 'u' }, { type: 'number', key: 'cy', label: 'Center Y', unit: 'u' });
+    return out;
+  }
+  // a typed corner / center value: k index from the field key
+  function rectFieldEdit(f, r, key, val) {
+    var m = /^([xy])([1-4])$/.exec(key), c = /^c([xy])$/.exec(key);
+    if (!m && !c) return null;
+    return driveRect(f, r, m ? +m[2] - 1 : 'c', (m ? m[1] : c[1]) === 'x' ? 0 : 1, val);
+  }
+  function openRectanglePM(tool) {
+    var f = sketch();
+    var v = { type: tool, cons: !!RS.cons[tool], fromMid: !!RS.fromMid };
+    var cur = f && lastRect && lastRect.tool === tool ? rectVals(f, lastRect) : null;
+    if (cur) Object.keys(cur).forEach(function (k) { v[k] = cur[k]; });
+    UI.openPM({
+      title: 'Rectangle', icon: tool, sketchTool: tool, rectPM: true, noFocus: true, keepSelection: true, values: v,
+      groups: [
+        { title: 'Rectangle Type', fields: [
+          { type: 'iconRadio', key: 'type', label: '', options: RECT_TYPES },
+          { type: 'check', key: 'cons', label: 'Add construction lines', rerender: true },
+          { type: 'radio', key: 'fromMid', options: [[false, 'From Corners'], [true, 'From Midpoints']], show: function (x) { return !!x.cons; } }] },
+        { title: 'Parameters', fields: rectParamFields(isCenter(tool)) }
+      ],
+      onChange: function (x, key) {
+        if (!key) return;
+        if (key === 'type') {
+          if (x.type !== App.tool) { var to = x.type; UI.withToolPM(function () { UI.setTool(to); }); }
+          return;
+        }
+        if (key === 'cons') { RS.cons[App.tool] = !!x.cons; return; }
+        if (key === 'fromMid') { RS.fromMid = x.fromMid === true || x.fromMid === 'true'; return; }
+        var f2 = sketch();
+        if (!f2 || !rectAlive(f2, lastRect)) { refused('Draw a rectangle first: the Parameters drive the rectangle just drawn.'); return; }
+        markDirty();
+        var r = rectFieldEdit(f2, lastRect, key, +x[key]);
+        if (!r) return;
+        if (!r.ok) { refused(r.error); return; }
+        pmNote(null);
+        refresh();
+        var nv = rectVals(f2, lastRect);
+        if (nv) syncFields(nv, key);
+      },
+      onOK: function () { if (App.tool === tool) UI.setTool('select'); },
+      onCancel: function () { if (App.tool === tool) UI.setTool('select'); }
+    });
+    hint(RECT_HINT[tool]);
+  }
+  RECT_TYPES.forEach(function (t) { UI.sketchToolPMs[t[0]] = openRectanglePM; });
+  // live Parameters while drawing: the corners (and center) of the rectangle under the cursor
+  function rectLive(pts, p, temp) {
+    if (!rectPMOpen()) return;
+    var t = App.tool, K = null, C = null, e = temp && temp[0];
+    if ((t === 'rect' || t === 'crect') && e && (e.t === 'rect' || e.t === 'crect')) {
+      K = e.t === 'rect' ? [[e.x, e.y], [e.x + e.w, e.y], [e.x + e.w, e.y + e.h], [e.x, e.y + e.h]]
+        : [[e.cx - e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy + e.h / 2], [e.cx - e.w / 2, e.cy + e.h / 2]];
+    } else if (pts.length >= 2) K = rectGeom(t, pts.concat([p]));
+    if (!K) return;
+    if (isCenter(t)) C = centerOf(K);
+    syncFields(cornerVals(K, C));
+  }
+  ['rect', 'crect'].forEach(function (t) { UI.sketchToolHooks[t] = { live: rectLive, after: function (f, n0) { afterRectEntity(f, n0); } }; });
+  // 3 Point Corner / 3 Point Center Rectangle, Parallelogram: three clicks; typed values in the on-screen box
+  function sideFrame() {
+    var pts = App.toolState.pts, A = pts[0], B = pts[1];
+    if (!A || !B) return null;
+    var u = [B[0] - A[0], B[1] - A[1]], L = Math.hypot(u[0], u[1]) || 1;
+    return { A: A, B: B, u: [u[0] / L, u[1] / L], n: [-u[1] / L, u[0] / L], L: L };
+  }
+  function threePointHooks(tool) {
+    return {
+      steps: function () { return 3; },
+      entities: function (pts, cur, all) { return previewRect(tool, all); },
+      commit: function (ents, st, typed) { return commitRectLines(tool, st.pts.slice(), typed); },
+      live: rectLive,
+      numFields: function (n) {
+        if (n === 1) return tool === 'crect3' ? [['W', 'w'], ['A', 'ang']] : [['L', 'len'], ['A', 'ang']];
+        return tool === 'parallelogram' ? [['L', 'h'], ['A', 'ang']] : [['H', 'h']];
+      },
+      liveValues: function (p) {
+        var pts = App.toolState.pts, A = pts[0];
+        if (!A) return null;
+        if (pts.length === 1) {
+          var d = Math.hypot(p[0] - A[0], p[1] - A[1]), a = angDeg(p[0] - A[0], p[1] - A[1]);
+          return tool === 'crect3' ? { w: 2 * d, ang: a } : { len: d, ang: a };
+        }
+        var fr = sideFrame();
+        if (tool === 'parallelogram') return { h: Math.hypot(p[0] - fr.B[0], p[1] - fr.B[1]), ang: angDeg(p[0] - fr.B[0], p[1] - fr.B[1]) };
+        var hh = Math.abs((p[0] - fr.A[0]) * fr.n[0] + (p[1] - fr.A[1]) * fr.n[1]);
+        return { h: tool === 'crect3' ? 2 * hh : hh };
+      },
+      typedPoint: function (cur, v) {
+        var pts = App.toolState.pts, A = pts[0];
+        if (!A) return null;
+        if (pts.length === 1) {
+          var len = tool === 'crect3' ? (v.w != null ? v.w / 2 : null) : v.len;
+          var dx = cur[0] - A[0], dy = cur[1] - A[1];
+          if (len == null) len = Math.hypot(dx, dy);
+          var ang = v.ang != null ? v.ang * D2R : (Math.hypot(dx, dy) > 1e-12 ? Math.atan2(dy, dx) : 0);
+          return [clean(A[0] + len * Math.cos(ang)), clean(A[1] + len * Math.sin(ang))];
+        }
+        var fr = sideFrame();
+        if (tool === 'parallelogram') {
+          var ex = cur[0] - fr.B[0], ey = cur[1] - fr.B[1], l2 = v.h != null ? v.h : Math.hypot(ex, ey);
+          var a2 = v.ang != null ? v.ang * D2R : (Math.hypot(ex, ey) > 1e-12 ? Math.atan2(ey, ex) : 0);
+          return [clean(fr.B[0] + l2 * Math.cos(a2)), clean(fr.B[1] + l2 * Math.sin(a2))];
+        }
+        if (v.h == null) return cur;
+        var side = (cur[0] - fr.A[0]) * fr.n[0] + (cur[1] - fr.A[1]) * fr.n[1] < 0 ? -1 : 1, hh = (tool === 'crect3' ? v.h / 2 : v.h) * side;
+        return [clean(fr.B[0] + fr.n[0] * hh), clean(fr.B[1] + fr.n[1] * hh)];
+      },
+      readout: function (pts, p) {
+        var lv = this.liveValues(p), inch = UI.unitLabel() === 'in', n = function (x) { return UI.fmtNum(x, inch ? 3 : 2); };
+        if (!lv) return null;
+        if (pts.length === 1) return (lv.w != null ? 'W ' + n(lv.w) : 'L ' + n(lv.len)) + '   A ' + UI.fmtNum(lv.ang, 1) + '°';
+        if (tool === 'parallelogram') return 'L ' + n(lv.h) + '   A ' + UI.fmtNum(lv.ang, 1) + '°';
+        var fr = sideFrame();
+        return n(tool === 'crect3' ? 2 * fr.L : fr.L) + ' × ' + n(lv.h);
+      }
+    };
+  }
+  ['rect3', 'crect3', 'parallelogram'].forEach(function (t) { UI.sketchToolHooks[t] = threePointHooks(t); });
+
+  // A selected Corner / Center Rectangle entity: its relations, For construction and the corner (center) Parameters.
+  function openRectEntityPM(index) {
+    var f = sketch(), e = f && f.entities[index];
+    if (!e) return;
+    var r = { tool: e.t, i: index }, v = rectVals(f, r) || {};
+    v.construction = !!e.construction;
+    var reopen = function () { if (App.mode === 'sketch' && f.entities[index] && f.entities[index].t === e.t) openRectEntityPM(index); };
+    UI.openPM({
+      title: e.t === 'crect' ? 'Center Rectangle' : 'Corner Rectangle', icon: e.t, values: v, noFocus: true, entityIndex: index,
+      groups: relationGroups(f, [String(index)], reopen).concat([
+        { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'For construction' }] },
+        { title: 'Parameters', fields: rectParamFields(e.t === 'crect') }
+      ]),
+      onChange: function (x, key) {
+        if (!key) return;
+        var f2 = sketch(), cur = f2 && f2.entities[index];
+        if (!cur || cur.t !== e.t) return;
+        markDirty();
+        if (key === 'construction') { if (x.construction) cur.construction = true; else delete cur.construction; refresh(); return; }
+        var res = rectFieldEdit(f2, r, key, +x[key]);
+        if (!res) return;
+        if (!res.ok) { refused(res.error); return; }
+        pmNote(null);
+        refresh();
+        var nv = rectVals(f2, r);
+        if (nv) syncFields(nv, key);
+      },
+      onOK: function () { App.sel = null; UI.updateSketches(); }
+    });
+  }
+  UI.sketchEntityPMs.rect = openRectEntityPM;
+  UI.sketchEntityPMs.crect = openRectEntityPM;
+
+  // ------------------------------------------------------------------ Point
+  var lastPoint = null;   // the point just placed with the Point tool (its index)
+  function drivePoint(f, i, key, val) {
+    var S = SS();
+    if (!f.entities[i] || f.entities[i].t !== 'point' || !isFinite(val)) return { ok: false, error: 'Not a value.' };
+    return S.driveEntity(f, i, 1, function (E) { return [E[i][key] - val]; }, { guess: function (E) { E[i][key] = val; } });
+  }
+  function pointChange(getIndex) {
+    return function (x, key) {
+      if (key !== 'x' && key !== 'y') return;
+      var f = sketch(), i = getIndex();
+      if (!f || i == null || !f.entities[i] || f.entities[i].t !== 'point') { refused('Place a point first: X and Y move the point just placed.'); return; }
+      markDirty();
+      var r = drivePoint(f, i, key, +x[key]);
+      if (!r.ok) { refused(r.error); return; }
+      pmNote(null);
+      refresh();
+      syncFields({ x: clean(f.entities[i].x), y: clean(f.entities[i].y) }, key);
+    };
+  }
+  UI.sketchToolPMs.point = function () {
+    lastPoint = null;   // X / Y fill in with the first point placed
+    UI.openPM({
+      title: 'Point', icon: 'point', sketchTool: 'point', noFocus: true, keepSelection: true, values: { x: null, y: null },
+      groups: [{ title: 'Parameters', fields: [{ type: 'number', key: 'x', label: 'X', unit: 'u' }, { type: 'number', key: 'y', label: 'Y', unit: 'u' }] }],
+      onChange: pointChange(function () { return lastPoint; }),
+      onOK: function () { if (App.tool === 'point') UI.setTool('select'); },
+      onCancel: function () { if (App.tool === 'point') UI.setTool('select'); }
+    });
+  };
+  UI.sketchToolHooks.point = {
+    after: function (f, n0) {
+      var e = f.entities[n0];
+      if (!e || e.t !== 'point') return;
+      lastPoint = n0;
+      var s = UI.pmSpec && UI.pmSpec();
+      if (s && s.sketchTool === 'point') syncFields({ x: clean(e.x), y: clean(e.y) });
+    }
+  };
+  function openPointProperties(index) {
+    var f = sketch(), e = f && f.entities[index];
+    if (!e) return;
+    var reopen = function () { if (App.mode === 'sketch' && f.entities[index] && f.entities[index].t === 'point') openPointProperties(index); };
+    UI.openPM({
+      title: 'Point', icon: 'point', values: { x: clean(e.x), y: clean(e.y) }, noFocus: true, entityIndex: index,
+      groups: relationGroups(f, [String(index)], reopen).concat([{ title: 'Parameters', fields: [{ type: 'number', key: 'x', label: 'X', unit: 'u' }, { type: 'number', key: 'y', label: 'Y', unit: 'u' }] }]),
+      onChange: pointChange(function () { return index; }),
+      onOK: function () { App.sel = null; UI.updateSketches(); }
+    });
+  }
+  UI.sketchEntityPMs.point = openPointProperties;
+
+  // A press in the graphics area while a sketch tool's PropertyManager is open takes the keyboard from the
+  // PropertyManager (a check box or value box clicked before), so a number typed next opens the on-screen value box
+  // and A / T / N reach the tool, as in SolidWorks.
+  if (UI.viewport) UI.viewport.addEventListener('mousedown', function () {
+    var s = UI.pmSpec && UI.pmSpec(), a = document.activeElement, pm = $('pm');
+    if (App.mode === 'sketch' && s && s.sketchTool && a && pm && pm.contains(a) && a.blur) a.blur();
+  }, true);
+})();

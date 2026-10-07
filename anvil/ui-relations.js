@@ -169,12 +169,14 @@
     var L0 = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
     var dir = rel.dir === 'h' && k0 !== 'line' && k1 !== 'line' ? [1, 0] : rel.dir === 'v' && k0 !== 'line' && k1 !== 'line' ? [0, 1] : L0 < 1e-12 ? [1, 0] : [(Q[0] - P[0]) / L0, (Q[1] - P[1]) / L0];
     if ((Q[0] - P[0]) * dir[0] + (Q[1] - P[1]) * dir[1] < 0) dir = [-dir[0], -dir[1]];
-    return { type: 'distance', P: P, Q: Q, dir: dir };
+    var gd = { type: 'distance', P: P, Q: Q, dir: dir };
+    return UI.relDimArcCond ? UI.relDimArcCond(f, rel, gd) : gd;   // sketchdims: Min / Max arc conditions move the ends
   }
   // Placement from the cursor: distance -> signed offset from P-Q; angle -> arc radius and which quadrant. A distance
   // being placed between two points (no value yet) also takes its direction from where the cursor is, as SolidWorks'
   // Smart Dimension does: above / below the two points -> horizontal, beside them -> vertical, otherwise aligned.
   function relDimPlacement(f, rel, uv) {
+    if (UI.relDimPlacementExt) { var ext = UI.relDimPlacementExt(f, rel, uv); if (ext) return ext; }   // sketchdims: arc length
     var out = {};
     if (rel.type === 'distance' && rel.v == null && !rel.driven && rel.dir !== 'r') {
       var k0 = S.refKind(f, rel.refs[0]), k1 = S.refKind(f, rel.refs[1]);
@@ -214,12 +216,14 @@
   }
   // Screen drawing data in the shape ui-sketch.js's drawOne takes: { lines, arrows, label, text }.
   function relDimScreenData(f, pl, rel) {
+    if (UI.relDimScreenExt) { var ext = UI.relDimScreenExt(f, pl, rel); if (ext) return ext; }   // sketchdims: arc length
     var g = relDimGeometry(f, rel);
     if (!g) return null;
     var s = UI.cam.scale;
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
-    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup);
+    var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup, rel.ac);
     var label = rel.type === 'angle' ? UI.fmtNum(value, 2) + '°' : UI.fmtDim ? UI.fmtDim(value) : UI.fmtNum(value, 2);   // p9-sketch: inch distances read like the other dimensions (.500)
+    if (UI.dimLabelText) label = UI.dimLabelText(rel, value, rel.type === 'angle' ? 'angle' : 'len');   // sketchdims: tolerance, precision, text
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
       var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);
@@ -574,7 +578,7 @@
       App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true;
       UI.showMenu(ev.clientX, ev.clientY, [
         { label: 'Delete ' + S.TYPES[d.rel.type].name, key: 'Del', action: function () { deleteRelation(d.i); } },
-        { label: 'Display/Delete Relations…', action: function () { cmdDisplayRelations(); } }
+        { label: 'Display/Delete Relations…', action: function () { UI.cmdDisplayRelations(); } }
       ]);
     });
   }

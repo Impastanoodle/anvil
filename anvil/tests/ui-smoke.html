@@ -2492,7 +2492,7 @@
     assert(st.status === 'over' && st.rels[n0] === 'redundant' && st.entities[0] === 'over', JSON.stringify(st));
     assert(/Over Defined/.test(statusRight()), 'status bar: ' + statusRight());
     var yellow = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id && o.userData.index === 0; })[0];
-    assert(yellow && yellow.material.color.getHex() === 0xd4a300, 'line 1 drawn yellow');
+    assert(yellow && yellow.material.color.getHex() === 0xd9302c, 'line 1 drawn red (over defined, as SolidWorks)');   // sketchdims: was yellow 0xd4a300
     UI.drawDims();
     assert(D.querySelectorAll('#dim-layer .rel-badge.redundant').length === 2, 'two yellow relation icons');
     await UI.pmOK();
@@ -9948,6 +9948,1106 @@
     UI.pmCancel();
     return 'Mirror about picked, then preselected';
   });
+  // ---- p9-sketchtab: Line / Centerline / Midpoint Line, the five rectangle types and Point: SolidWorks PropertyManagers
+  // on the tool and on a selected entity (ui-sketch-lines.js)
+  function stTitle() { var h = D.querySelector('#pm .pm-head span'); return UI.hasPM() && h ? h.textContent : ''; }
+  function stGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group > h4'), function (h) { return h.textContent.replace(/^[▸▾]/, '').trim(); }); }
+  function stField(key) { return D.querySelector('#pm input[data-key="' + key + '"]'); }
+  function stFlyMenu(group) { var w = c14Fly(group); w.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); w.querySelector('.rb-caret').click(); return c14MenuLabels(); }
+  function stRels() { return (UI.activeSketchFeature().rels || []).map(function (r) { return r.type + ' ' + r.refs.join('/'); }); }
+  function stLine(e, x1, y1, x2, y2, label) { assert(e && e.t === 'line', (label || 'line') + ' is ' + JSON.stringify(e)); near(e.x1, x1, 1e-6, label + ' x1'); near(e.y1, y1, 1e-6, label + ' y1'); near(e.x2, x2, 1e-6, label + ' x2'); near(e.y2, y2, 1e-6, label + ' y2'); }
+  step('p9-sketchtab: Line (the Line flyout: Line, Centerline, Midpoint Line) opens Insert Line at once — Message, Orientation (As sketched), Options (For construction, Infinite length, Midpoint line), no Parameters — which stays open while a chain is drawn; Esc puts the tool down and closes it', async function () {
+    await rskNew(); UI.setRibbonTab('Sketch');
+    var labels = stFlyMenu('line'); UI.closeMenus();
+    assert(/^Line/.test(labels[0]) && /^Centerline/.test(labels[1]) && /^Midpoint Line/.test(labels[2]) && labels.length === 3, 'Line flyout lists ' + labels.join(' | '));
+    c14Fly('line').querySelector('.rb').click();
+    assert(UI.App.tool === 'line' && stTitle() === 'Insert Line', 'PM ' + stTitle() + ', tool ' + UI.App.tool);
+    assert(stGroups().join('|') === 'Message|Orientation|Options', 'groups ' + stGroups().join('|'));
+    var radios = Array.prototype.map.call(D.querySelectorAll('#pm input[type=radio]'), function (r) { return r.value + (r.checked ? '*' : ''); }).join(',');
+    assert(radios === 'free*,h,v,angle', 'orientation ' + radios);
+    assert(['construction', 'infinite', 'midpoint'].every(function (k) { return stField(k) && !stField(k).checked; }), 'Options check boxes');
+    assert(D.activeElement === D.body || !$('pm').contains(D.activeElement), 'the PM took the keyboard');
+    rskClick([0, 0]); rskClick([30, 0]); rskClick([30, 20]);
+    var e = rskEnts();
+    assert(e.length === 2 && UI.App.tool === 'line' && stTitle() === 'Insert Line', 'chain of 2 with the PM open: ' + e.length + ' ' + stTitle());
+    assert(c14Fly('line').querySelector('.rb').classList.contains('active'), 'Line button not shown on');
+    selKey('Escape');
+    assert(UI.App.tool === 'select' && !UI.hasPM(), 'Esc left tool ' + UI.App.tool + ' / PM ' + stTitle());
+    return labels.join(' | ');
+  });
+  step('p9-sketchtab: Insert Line Orientation — Horizontal with Parameters Length 25 places 25-long level lines (one per two clicks, either way), Angle 30° / 10 an angled line, Vertical with no length follows the cursor', async function () {
+    await rskNew(); UI.setTool('line');
+    D.querySelector('#pm input[type=radio][value="h"]').click();
+    assert(stGroups().indexOf('Parameters') >= 0 && stField('length') && !stField('angle'), 'Horizontal: ' + stGroups().join('|'));
+    setInput(stField('length'), '25');
+    rskClick([5, 5]); rskClick([40, 9]);
+    rskClick([0, -10]); rskClick([-20, -12]);
+    var e = rskEnts();
+    assert(e.length === 2, 'not one line per two clicks: ' + e.length);
+    stLine(e[0], 5, 5, 30, 5, 'right'); stLine(e[1], 0, -10, -25, -10, 'left');
+    assert(stRels().indexOf('horizontal 0') >= 0 && stRels().indexOf('horizontal 1') >= 0, 'Horizontal relations: ' + stRels().join(', '));
+    D.querySelector('#pm input[type=radio][value="angle"]').click();
+    assert(stField('angle'), 'Angle field');
+    setInput(stField('angle'), '30'); setInput(stField('length'), '10');
+    rskClick([0, 20]); rskClick([10, 27]);
+    stLine(rskEnts()[2], 0, 20, 10 * Math.cos(Math.PI / 6), 25, 'angled');
+    D.querySelector('#pm input[type=radio][value="v"]').click();
+    setInput(stField('length'), '0');
+    rskClick([50, 0]); rskClick([52, 17]);
+    stLine(rskEnts()[3], 50, 0, 50, 17, 'vertical');
+    assert(UI.lineOptions().orient === 'v' && UI.lineOptions().length == null, 'options ' + JSON.stringify(UI.lineOptions()));
+    UI.setTool('select');
+    assert(!UI.hasPM(), 'the PM stayed after the tool went down');
+    return rskEnts().length + ' lines';
+  });
+  step('p9-sketchtab: Centerline and Midpoint Line from the Line flyout — Insert Line with For construction / Midpoint line checked; the centerline is construction, the midpoint line is symmetric about its first click (Midpoint relation with the origin) and does not chain', async function () {
+    await rskNew(); UI.setRibbonTab('Sketch');
+    stFlyMenu('line'); c14MenuRow('Centerline').click();
+    assert(UI.lineMode() === 'centerline' && stTitle() === 'Insert Line' && stField('construction').checked, 'Centerline: ' + UI.lineMode());
+    rskClick([-30, -30]); rskClick([-30, 30]); selEv('dblclick', rskScr([-30, 30]), $('viewport'));
+    assert(rskEnts()[0].construction === true, 'centerline ' + JSON.stringify(rskEnts()[0]));
+    stFlyMenu('line'); c14MenuRow('Midpoint Line').click();
+    assert(UI.lineMode() === 'midline' && stField('midpoint').checked && !stField('construction').checked, 'Midpoint Line: ' + UI.lineMode());
+    assert(c14Fly('line').querySelector('.rb').getAttribute('aria-label') === 'Midpoint Line', 'flyout face ' + c14Fly('line').querySelector('.rb').getAttribute('aria-label'));
+    rskClick([0, 0]); rskClick([20, 10]);
+    var e = rskEnts();
+    stLine(e[1], -20, -10, 20, 10, 'midpoint line');
+    assert(!e[1].construction && stRels().indexOf('midpoint O/1') >= 0, 'Midpoint with the origin: ' + stRels().join(', '));
+    rskClick([40, 0]); rskClick([50, 0]);
+    stLine(rskEnts()[2], 30, 0, 50, 0, 'second midpoint line');
+    assert(rskEnts().length === 3 && !UI.App.toolState.pts.length, 'chained: ' + rskEnts().length);
+    stField('midpoint').click();
+    assert(UI.lineMode() === 'line', 'unchecking Midpoint line: ' + UI.lineMode());
+    selKey('Escape');
+    UI.ribbonFlyFace('line', 0);
+    return stRels().join(', ');
+  });
+  step('p9-sketchtab: a selected line opens Line Properties (Existing / Add Relations, Options, Parameters, Additional Parameters); Length and End X drive it along its Horizontal, a Start Y held by the origin is refused with a message; Add Relations ▸ Vertical makes a free line vertical; For construction', async function () {
+    await rskNew(); UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); selKey('Escape');
+    UI.setTool('line'); rskClick([10, 10]); rskClick([30, 25]); selKey('Escape');
+    rskClick([20, 0]);
+    assert(stTitle() === 'Line Properties', 'PM ' + stTitle());
+    assert(stGroups().join('|') === 'Existing Relations|Add Relations|Options|Parameters|Additional Parameters', 'groups ' + stGroups().join('|'));
+    assert(/Horizontal/.test($('pm').textContent) && /Coincident/.test($('pm').textContent), 'Existing Relations: ' + $('pm').textContent.slice(0, 200));
+    near(+stField('len').value, 40, 1e-9, 'Length field'); near(+stField('x2').value, 40, 1e-9, 'End X field'); near(+stField('ang').value, 0, 1e-9, 'Angle field');
+    setInput(stField('len'), '50');
+    stLine(rskEnts()[0], 0, 0, 50, 0, 'after Length 50');
+    near(+stField('x2').value, 50, 1e-9, 'End X follows'); near(+stField('dx').value, 50, 1e-9, 'Delta X follows');
+    setInput(stField('y1'), '5');
+    stLine(rskEnts()[0], 0, 0, 50, 0, 'after a refused Start Y');
+    var msg = D.querySelector('#pm .pm-msg');
+    assert(msg && /over-define/.test(msg.textContent), 'no refusal message: ' + (msg && msg.textContent));
+    var said = msg.textContent;
+    setInput(stField('x2'), '60');
+    stLine(rskEnts()[0], 0, 0, 60, 0, 'after End X 60');
+    near(+stField('len').value, 60, 1e-9, 'Length follows');
+    setInput(stField('ang'), '30');
+    stLine(rskEnts()[0], 0, 0, 60, 0, 'after a refused Angle');
+    stField('construction').click();
+    assert(rskEnts()[0].construction === true, 'For construction');
+    await UI.pmOK();
+    rskClick([20, 17.5]);
+    assert(stTitle() === 'Line Properties', 'second line PM ' + stTitle());
+    clickPmButton('Vertical');
+    var l2 = rskEnts()[1];
+    assert(stRels().indexOf('vertical 1') >= 0 && Math.abs(l2.x1 - l2.x2) < 1e-9, 'Vertical added: ' + JSON.stringify(l2) + ' ' + stRels().join(', '));
+    assert(stTitle() === 'Line Properties' && /Vertical/.test(D.querySelector('#pm .pm-group').textContent), 'PM reopened with the relation listed');
+    setInput(stField('len'), '20');
+    near(Math.hypot(rskEnts()[1].x2 - rskEnts()[1].x1, rskEnts()[1].y2 - rskEnts()[1].y1), 20, 1e-6, 'free line length');
+    UI.pmCancel();
+    return said;
+  });
+  step('p9-sketchtab: Rectangle PM — Rectangle Type buttons (all five), Add construction lines (off for Corner, on with From Corners for Center), the corner Parameters live while drawing and driving the rectangle after; switching to Center Rectangle in the PM keeps the PM and the tool', async function () {
+    await rskNew(); UI.setRibbonTab('Sketch');
+    var labels = stFlyMenu('rect'); UI.closeMenus();
+    assert(labels.length === 5 && /^Corner Rectangle/.test(labels[0]) && /^Center Rectangle/.test(labels[1]) && /^3 Point Corner Rectangle/.test(labels[2]) && /^3 Point Center Rectangle/.test(labels[3]) && /^Parallelogram/.test(labels[4]), 'rectangle flyout lists ' + labels.join(' | '));
+    UI.ribbonFlyFace('rect', 0); UI.refreshRibbon();
+    c14Fly('rect').querySelector('.rb').click();
+    assert(UI.App.tool === 'rect' && stTitle() === 'Rectangle', 'PM ' + stTitle());
+    assert(stGroups().join('|') === 'Rectangle Type|Parameters', 'groups ' + stGroups().join('|'));
+    var types = Array.prototype.map.call(D.querySelectorAll('#pm .pm-icons button'), function (b) { return b.getAttribute('aria-label') + (b.classList.contains('on') ? '*' : ''); }).join('|');
+    assert(types === 'Corner Rectangle*|Center Rectangle|3 Point Corner Rectangle|3 Point Center Rectangle|Parallelogram', 'types ' + types);
+    assert(stField('cons') && !stField('cons').checked && stField('x4') && !stField('cx'), 'Corner: construction off, 4 corners, no center');
+    rskClick([0, 0]); selEv('mousemove', rskScr([30, 20]));
+    near(+stField('x3').value, 30, 1e-6, 'live corner 3 X'); near(+stField('y3').value, 20, 1e-6, 'live corner 3 Y');
+    rskClick([30, 20]);
+    var e = rskEnts();
+    assert(e.length === 1 && e[0].t === 'rect' && e[0].w === 30 && e[0].h === 20, 'rect ' + JSON.stringify(e));
+    setInput(stField('x3'), '40');
+    assert(rskEnts()[0].w === 40 && rskEnts()[0].x === 0, 'corner 3 X drove the width: ' + JSON.stringify(rskEnts()[0]));
+    D.querySelector('#pm .pm-icons button[aria-label="Center Rectangle"]').click();
+    assert(UI.App.tool === 'crect' && stTitle() === 'Rectangle' && stField('cons').checked && stField('cx'), 'Center Rectangle in the PM: ' + UI.App.tool + ' ' + stTitle());
+    assert(D.querySelector('#pm input[type=radio][data-key="fromMid:false"]').checked, 'From Corners');
+    rskClick([80, 0]); rskClick([90, 5]);
+    e = rskEnts();
+    assert(e.length === 4 && e[1].t === 'crect' && e[1].cx === 80 && e[1].w === 20 && e[1].h === 10, 'crect ' + JSON.stringify(e[1]));
+    assert(e[2].construction && e[3].construction, 'construction diagonals');
+    stLine(e[2], 70, -5, 90, 5, 'diagonal');
+    assert(UI.sketchStatus().status !== 'over', 'status ' + UI.sketchStatus().status);
+    near(+stField('cx').value, 80, 1e-9, 'Center X');
+    setInput(stField('cx'), '100');
+    assert(rskEnts()[1].cx === 100, 'center moved: ' + JSON.stringify(rskEnts()[1]));
+    near(rskEnts()[2].x1, 90, 1e-6, 'the diagonal followed');
+    selKey('Escape');
+    assert(!UI.hasPM() && UI.App.tool === 'select', 'Esc');
+    UI.ribbonFlyFace('rect', 0);
+    return types;
+  });
+  step('p9-sketchtab: 3 Point Corner Rectangle, Parallelogram and 3 Point Center Rectangle are four related lines (Coincident corners, Parallel sides, Perpendicular for rectangles; construction diagonals and a center point for the center type); nothing over defined; they extrude to 2500 + 2000 + 2000', async function () {
+    await rskNew();
+    UI.setTool('rect3');
+    assert(stTitle() === 'Rectangle' && D.querySelector('#pm .pm-icons button.on').getAttribute('aria-label') === '3 Point Corner Rectangle', 'rect3 PM');
+    rskClick([0, 0]); rskClick([15, 20]); selEv('mousemove', rskScr([7, 26]));
+    assert(UI.App.tempEntities.length === 4, 'preview of 4 lines: ' + UI.App.tempEntities.length + ' pts ' + JSON.stringify(UI.App.toolState.pts) + ' ents ' + rskEnts().length + ' tool ' + UI.App.tool);
+    near(+stField('x3').value, 7, 1e-6, 'live corner 3 X');
+    rskClick([7, 26]);
+    var e = rskEnts();
+    assert(e.length === 4 && e.every(function (x) { return x.t === 'line'; }), 'four lines: ' + JSON.stringify(e));
+    stLine(e[1], 15, 20, 7, 26, 'second side');
+    var rels = stRels();
+    assert(rels.filter(function (r) { return /^parallel/.test(r); }).length === 2 && rels.filter(function (r) { return /^perpendicular/.test(r); }).length === 1 && rels.indexOf('coincident 0.p2/1.p1') >= 0, 'relations ' + rels.join(', '));
+    D.querySelector('#pm .pm-icons button[aria-label="Parallelogram"]').click();
+    assert(UI.App.tool === 'parallelogram' && stTitle() === 'Rectangle', 'Parallelogram in the PM');
+    rskClick([30, 0]); rskClick([50, 0]); rskClick([55, 10]);
+    e = rskEnts();
+    assert(e.length === 8, 'parallelogram lines: ' + e.length);
+    stLine(e[6], 55, 10, 35, 10, 'parallelogram top');
+    assert(stRels().filter(function (r) { return /^perpendicular/.test(r); }).length === 1, 'a perpendicular on the parallelogram');
+    D.querySelector('#pm .pm-icons button[aria-label="3 Point Center Rectangle"]').click();
+    assert(UI.App.tool === 'crect3' && stField('cons').checked && stField('cx'), '3 Point Center: construction lines on, center fields');
+    rskClick([0, -30]); rskClick([10, -30]); rskClick([2.5, -25]);
+    e = rskEnts();
+    assert(e.length === 15 && e[14].t === 'point' && e[14].x === 0 && e[14].y === -30 && e[12].construction && e[13].construction, 'center type: ' + e.length + ' ' + JSON.stringify(e[14]));
+    near(+stField('cx').value, 0, 1e-9, 'Center X'); near(+stField('cy').value, -30, 1e-9, 'Center Y');
+    var st = UI.sketchStatus();
+    assert(st.status !== 'over', 'Over Defined: ' + JSON.stringify(st.rels));
+    setInput(stField('cy'), '-35');
+    near(rskEnts()[14].y, -35, 1e-6, 'center point'); near(Math.min(rskEnts()[8].y1, rskEnts()[8].y2), -40, 1e-6, 'bottom side');
+    setInput(stField('cy'), '-30');
+    selKey('Escape');
+    UI.exitSketch(); await idle();
+    var sk = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0];
+    await anvil.append('p.extrude(10, { sketch: ' + sk.id + ' });'); await idle();
+    near(anvil.summary().volume, 6500, 1e-3, 'volume');
+    return 'volume ' + anvil.summary().volume;
+  });
+  step('p9-sketchtab: typed values while drawing a 3 Point Corner Rectangle (L 50, A 30, then H 20) place it exactly and become driving dimensions; right-click ends a half-drawn one and keeps the tool', async function () {
+    await rskNew(); UI.setTool('rect3');
+    rskClick([0, 0]); selEv('mousemove', rskScr([30, 10])); selKey('5');
+    var box = UI.sketchNumBox();
+    assert(box && box.length === 2, 'L / A box');
+    r3sType(box[0], '50'); r3sType(box[1], '30'); r3sKey(box[1], 'Enter');
+    assert(UI.App.toolState.pts.length === 2, 'second corner placed: ' + JSON.stringify(UI.App.toolState.pts));
+    selEv('mousemove', rskScr([10, 30])); selKey('2');
+    box = UI.sketchNumBox();
+    assert(box && box.length === 1, 'H box');
+    r3sType(box[0], '20'); r3sKey(box[0], 'Enter');
+    var e = rskEnts(), c = Math.cos(Math.PI / 6), s = Math.sin(Math.PI / 6);
+    stLine(e[0], 0, 0, 50 * c, 50 * s, 'first side');
+    near(Math.hypot(e[1].x2 - e[1].x1, e[1].y2 - e[1].y1), 20, 1e-9, 'height');
+    var dims = (UI.activeSketchFeature().dims || []).map(function (d) { return d.e + d.k; }).join(',');
+    assert(dims === '0len,1len', 'dimensions ' + dims);
+    rskClick([-40, 0]); rskClick([-60, 10]);
+    selEv('mousedown', rskScr([-50, 30]), $('viewport'), { button: 2 }); selEv('mouseup', rskScr([-50, 30]), null, { button: 2 });
+    assert(UI.App.tool === 'rect3' && !UI.App.toolState.pts.length && UI.hasPM() && rskEnts().length === 4, 'right-click: tool ' + UI.App.tool + ', pts ' + UI.App.toolState.pts.length);
+    UI.setTool('select');
+    return dims;
+  });
+  step('p9-sketchtab: Point — the tool opens the Point PM (Parameters X, Y) which fills in with the point placed and moves it; a selected point opens Point with Existing / Add Relations', async function () {
+    await rskNew();
+    UI.setTool('point');
+    assert(stTitle() === 'Point' && stGroups().join('|') === 'Parameters' && stField('x').value === '', 'Point tool PM ' + stGroups().join('|'));
+    rskClick([12, 7]);
+    assert(UI.App.tool === 'point' && UI.hasPM(), 'tool and PM stay');
+    near(+stField('x').value, 12, 1e-9, 'X'); near(+stField('y').value, 7, 1e-9, 'Y');
+    setInput(stField('x'), '15');
+    assert(rskEnts()[0].x === 15, 'X moved the point: ' + JSON.stringify(rskEnts()[0]));
+    selKey('Escape');
+    rskClick([15, 7]);
+    assert(stTitle() === 'Point' && stGroups().join('|') === 'Existing Relations|Add Relations|Parameters', 'selected point: ' + stTitle() + ' ' + stGroups().join('|'));
+    setInput(stField('y'), '-3');
+    assert(rskEnts()[0].y === -3, 'Y moved it');
+    UI.pmCancel();
+    return JSON.stringify(rskEnts()[0]);
+  });
+  step('p9-sketchtab: Insert Line ▸ Infinite length draws one line through the two clicks right across the graphics area, on the origin it was started on (Coincident), flagged in Line Properties', async function () {
+    await rskNew(); UI.setTool('line');
+    stField('infinite').click();
+    rskClick([0, 0]); rskClick([10, 5]);
+    var e = rskEnts()[0], L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1), view = Math.hypot(UI.size.w, UI.size.h) * UI.cam.scale;
+    assert(rskEnts().length === 1 && e.infinite && L > 2 * view, 'infinite line ' + JSON.stringify(e) + ' view ' + view);
+    near((e.y2 - e.y1) / (e.x2 - e.x1), 0.5, 1e-9, 'through the clicks');
+    assert(stRels().indexOf('coincident O/0') >= 0, 'origin on the line: ' + stRels().join(', '));
+    selKey('Escape');
+    rskClick([4, 2]);
+    assert(stTitle() === 'Line Properties' && stField('infinite').checked, 'Infinite length in Line Properties');
+    UI.pmCancel();
+    return 'L ' + L.toFixed(0);
+  });
+  // --- sketchdims: Smart Dimension through SolidWorks' pick combinations, the Dimension PropertyManager, Add Relations
+  // with every relation, Display/Delete Relations' filters and Suppressed, status colours, Fully Define Sketch ---
+  // a sketch on Front with lines, circles, an arc and a point spread round the origin (0.25 mm per pixel)
+  async function dmNew() {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 5, y1: 0, x2: 45, y2: 0 }, { t: 'line', x1: 5, y1: 10, x2: 45, y2: 10 }, { t: 'line', x1: -40, y1: 0, x2: -20, y2: 15 },
+      { t: 'circle', cx: -30, cy: -20, r: 5 }, { t: 'circle', cx: -5, cy: -20, r: 4 }, { t: 'arc', cx: 30, cy: -20, r: 8, a0: 0, a1: 90 }, { t: 'point', x: 20, y: 25 });
+    UI.updateSketches(); UI.setTool('select'); UI.setSelection([]);
+    return f;
+  }
+  function dmDriven() { if (modalOpen() && $('drv-driven')) $('drv-driven').click(); }
+  function dmLast(f) { return f.rels[f.rels.length - 1]; }
+  function dmDone() { if (UI.isDimEditOpen()) UI.cancelDimEdit(); }
+  step('sketchdims: Smart Dimension pick combinations — line length, two parallel lines, an angle (and its supplement by placement), point to point (horizontal / vertical / aligned by placement), point to line, a circle\'s diameter, an arc\'s radius, arc length (arc then both ends), two circles, the origin', async function () {
+    need(UI, 'openDimensionPM'); need(UI, 'sketchRelationGroups'); need(UI, 'cmdFullyDefineSketch');
+    var f = await dmNew(), S = W.SketchSolver;
+    UI.setTool('dimension');
+    rskClick([25, 0]); rskClick([25, -6]);
+    assert(f.dims && f.dims.length === 1 && /^(len|dx)$/.test(f.dims[0].k) && f.dims[0].e === 0, 'line length ' + JSON.stringify(f.dims));
+    assert(UI.isDimEditOpen() && UI.pmTitle() === 'Dimension' && UI.App.tool === 'dimension', 'Modify box and Dimension PM open, the tool stays: ' + UI.pmTitle() + ' ' + UI.App.tool);
+    dmDone();
+    rskClick([15, 0]); rskClick([15, 10]); rskClick([52, 5]);
+    var d = dmLast(f);
+    assert(d.type === 'distance' && d.refs.join() === '0,1' && Math.abs(d.v - 10) < 1e-9, 'parallel lines ' + JSON.stringify(d));
+    dmDone();
+    rskClick([-30, 7.5]); rskClick([38, 0]); rskClick([0, 8]);
+    d = dmLast(f);
+    assert(d.type === 'angle' && Math.abs(d.v - 36.8699) < 1e-3 && !d.sup, 'acute angle ' + JSON.stringify(d));
+    dmDone(); dmDriven();
+    rskClick([-30, 7.5]); rskClick([38, 0]); rskClick([-52, 6]);
+    dmDriven(); dmDone();
+    d = dmLast(f);
+    assert(d.type === 'angle' && Math.abs(d.v - 143.1301) < 1e-3 && d.sup, 'supplement by placement ' + JSON.stringify(d));
+    var n0 = f.rels.length;
+    rskClick([20, 25]); rskClick([45, 10]); rskClick([32, 34]);
+    d = dmLast(f);
+    assert(f.rels.length === n0 + 1 && d.dir === 'h' && Math.abs(d.v - 25) < 1e-9, 'horizontal between two points ' + JSON.stringify(d));
+    dmDone(); dmDriven();
+    rskClick([20, 25]); rskClick([45, 10]); rskClick([55, 18]);
+    d = dmLast(f);
+    assert(d.dir === 'v' && Math.abs(d.v - 15) < 1e-9, 'vertical between two points ' + JSON.stringify(d));
+    dmDone(); dmDriven();
+    rskClick([20, 25]); rskClick([45, 10]); rskClick([45, 30]);
+    var asked = modalOpen();
+    dmDriven(); dmDone();
+    d = dmLast(f);
+    assert(asked && d.dir == null && Math.abs(d.v - Math.hypot(25, 15)) < 1e-9 && d.driven, 'aligned (over defining: Make Dimension Driven? -> driven) ' + JSON.stringify(d));
+    rskClick([20, 25]); rskClick([-36, 3]); rskClick([-50, 25]);
+    dmDriven(); dmDone();
+    d = dmLast(f);
+    assert(d.type === 'distance' && d.refs.join() === '6,2', 'point to line ' + JSON.stringify(d));
+    rskClick([-25, -20]); rskClick([-18, -12]);
+    var dd = f.dims[f.dims.length - 1];
+    assert(dd.e === 3 && dd.k === 'dia', 'circle diameter ' + JSON.stringify(dd));
+    dmDone();
+    var am = [30 + 8 * Math.SQRT1_2, -20 + 8 * Math.SQRT1_2];
+    rskClick(am); rskClick([45, -8]);
+    dd = f.dims[f.dims.length - 1];
+    assert(dd.e === 5 && dd.k === 'r', 'arc radius ' + JSON.stringify(dd));
+    dmDone();
+    rskClick(am); rskClick([38, -20]); rskClick([30, -12]); rskClick([44, -2]);
+    d = dmLast(f);
+    assert(d.type === 'arclength' && d.refs.join() === '5' && Math.abs(d.v - 4 * Math.PI) < 1e-9, 'arc length ' + JSON.stringify(d));
+    var ai = f.rels.length - 1;
+    UI.drawDims();
+    assert(Array.prototype.some.call(D.querySelectorAll('#dim-layer .dim text'), function (t) { return /^⌒12\.57$/.test(t.textContent); }), 'arc length label');
+    dmDone();
+    var r = UI.editRelDim(ai, '15');
+    assert(r.ok && Math.abs(S.measure(f, 'arclength', ['5']) - 15) < 1e-7 && Math.abs(f.entities[5].r - 8) < 1e-9, 'arc length drives ' + JSON.stringify(r));
+    rskClick([-30, -15]); rskClick([-5, -16]); rskClick([-17, -36]);
+    d = dmLast(f);
+    assert(d.type === 'distance' && d.refs.join() === '3,4' && Math.abs(d.v - 25) < 1e-9, 'two circles, centre to centre ' + JSON.stringify(d));
+    dmDone();
+    rskClick([0, 0]); rskClick([-5, -16]); rskClick([10, 5]);
+    d = dmLast(f);
+    assert(d.type === 'distance' && d.refs.indexOf('O') >= 0 && d.refs.indexOf('4') >= 0 && Math.abs(d.v - Math.hypot(5, 20)) < 1e-9, 'origin to a circle ' + JSON.stringify(d));
+    dmDone(); dmDriven();
+    UI.setTool('select');
+    return f.dims.length + ' Smart Dimensions, ' + f.rels.filter(function (x) { return S.TYPES[x.type].dim; }).length + ' distance / angle / arc length';
+  });
+  step('sketchdims: Dimension PropertyManager — a click on a dimension opens it (D1@Sketch name, value, Driven, tolerance, precision, text before / after, radius / diameter, arc conditions); every change is one undo step', async function () {
+    var f = await dmNew(), S = W.SketchSolver;
+    f.dims = [{ e: 0, k: 'len', off: -5 }, { e: 3, k: 'dia', ang: 45 }];
+    S.addRelation(f, 'distance', ['3', '4'], { off: -8 });
+    UI.updateSketches(); UI.drawDims();
+    function label(re) { return Array.prototype.filter.call(D.querySelectorAll('#dim-layer .dim text'), function (t) { return re.test(t.textContent); })[0]; }
+    var t40 = Array.prototype.filter.call(D.querySelectorAll('#dim-layer .dim text'), function (t) { return t._d && !t._d.auto && t._d.index === 0 && t._d.rel == null; })[0];
+    assert(t40 && t40.textContent === '40', 'the 40 label: ' + Array.prototype.map.call(D.querySelectorAll('#dim-layer .dim text'), function (t) { return t.textContent; }).join(' | '));
+    t40.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: 1, clientY: 1 }));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    assert(UI.pmTitle() === 'Dimension' && UI.App.sel && UI.App.sel.kind === 'dim' && UI.App.sel.index === 0, 'click opens the Dimension PM: ' + UI.pmTitle());
+    assert(pmField('Name').value === 'D1@' + f.name, 'name ' + pmField('Name').value);
+    near(+pmField('Value').value, 40, 1e-9, 'value');
+    var undo0 = UI.App.undo.length;
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    setInput(pmField('Value'), '42');
+    near(f.entities[0].x2 - f.entities[0].x1, 42, 1e-9, 'value drives the line');
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    setInput(pmField('Tolerance type'), 'symmetric');
+    setInput(pmField('Maximum variation'), '0.1');
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    setInput(pmField('Primary unit precision'), '2');
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    setInput(pmField('Text before'), '2X');
+    UI.drawDims();
+    assert(label(/^2X 42\.00 ±0\.10$/), 'label with text, precision and tolerance: ' + anvil.dimProps('dim', 0).label);
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    setInput(pmField('Name'), 'Width');
+    assert(anvil.dimProps('dim', 0).name === 'Width@' + f.name, 'renamed ' + anvil.dimProps('dim', 0).name);
+    assert(UI.App.undo.length === undo0 + 5, 'one undo step per change: ' + (UI.App.undo.length - undo0));
+    setInput(pmField('Tolerance type'), 'basic');
+    UI.drawDims();
+    assert(D.querySelector('#dim-layer .dim .dbox'), 'Basic draws a box');
+    // driven / driving
+    pmField('Driven').click();
+    assert(f.dims[0].driven === true && UI.sketchStatus().dims[0] === 'driven', 'Driven');
+    pmField('Driven').click();
+    assert(!f.dims[0].driven, 'driving again');
+    await UI.pmOK();
+    // the diameter shown as a radius: the Modify box takes the radius
+    UI.openDimensionPM({ kind: 'dim', index: 1 });
+    var rad = D.querySelector('#pm input[data-key="show:r"]');
+    assert(rad, 'Radius / Diameter display');
+    rad.click();
+    assert(f.dims[1].show === 'r' && anvil.dimProps('dim', 1).label === 'R5', 'shown as a radius: ' + anvil.dimProps('dim', 1).label);
+    var r = UI.editDim(1, '6');
+    assert(r.ok && Math.abs(f.entities[3].r - 6) < 1e-9, 'typed 6 is the radius: ' + f.entities[3].r);
+    await UI.pmOK();
+    // arc conditions of the two-circle distance
+    var ri = f.rels.length - 1;
+    UI.openDimensionPM({ kind: 'rel', index: ri });
+    setInput(pmField('First arc condition'), 'min');
+    setInput(pmField('Second arc condition'), 'max');
+    var rel = f.rels[ri];
+    assert(rel.ac && rel.ac.join() === 'min,max' && Math.abs(rel.v - (25 - 6 + 4)) < 1e-9, 'Min / Max ' + JSON.stringify(rel));
+    UI.drawDims();
+    assert(label(/^23$/), 'label reads 23');
+    r = UI.editRelDim(ri, '30');
+    var c3 = f.entities[3], c4 = f.entities[4];
+    near(Math.hypot(c4.cx - c3.cx, c4.cy - c3.cy) - c3.r + c4.r, 30, 1e-6, 'drives the gap');
+    await UI.pmOK();
+    return anvil.dimProps('dim', 0).label;
+  });
+  step('sketchdims: the Modify box — Enter accepts, Esc restores, spin arrows, 25mm in an inch part, an equation, and Reverse the sense of the dimension', async function () {
+    var f = await dmNew(), S = W.SketchSolver;
+    f.entities.splice(2);
+    S.addRelation(f, 'fix', ['0']);
+    S.addRelation(f, 'horizontal', ['1']);
+    S.addRelation(f, 'distance', ['1', '0'], { off: 5 });
+    f.dims = [{ e: 1, k: 'len' }];
+    UI.updateSketches();
+    var ri = f.rels.length - 1;
+    assert(UI.openRelDimEdit(ri), 'opened');
+    var inp = $('dim-edit').querySelector('input');
+    inp.value = '12';
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    assert(!UI.isDimEditOpen() && Math.abs(f.entities[1].y1 - 12) < 1e-9, 'Enter accepts: ' + f.entities[1].y1);
+    UI.openRelDimEdit(ri);
+    UI.spinDimEdit(1, {});
+    near(+UI.dimEditValue(), 13, 1e-9, 'spin up');
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert(!UI.isDimEditOpen() && Math.abs(f.entities[1].y1 - 12) < 1e-9, 'Esc restores: ' + f.entities[1].y1);
+    UI.openRelDimEdit(ri);
+    $('dim-edit').querySelector('.dm-reverse').click();
+    assert(Math.abs(f.entities[1].y1 + 12) < 1e-9 && Math.abs(f.entities[1].y2 + 12) < 1e-9, 'reversed below the fixed line: ' + JSON.stringify(f.entities[1]));
+    UI.cancelDimEdit();
+    assert(Math.abs(f.rels[ri].v - 12) < 1e-9 && !f.rels[ri].flip, 'still 12, no flip kept');
+    var e1 = UI.editRelDim(ri, '=2*7');
+    assert(e1.ok && Math.abs(f.entities[1].y1 + 14) < 1e-9, 'equation ' + JSON.stringify(e1));
+    UI.App.model.units = 'in';
+    var e2 = UI.editDim(0, '25.4mm');
+    UI.App.model.units = 'mm';
+    assert(e2.ok && Math.abs(e2.value - 1) < 1e-9, '25.4mm in an inch part is 1: ' + JSON.stringify(e2));
+    var line = f.entities[1], sx = line.x2 - line.x1;
+    var rv = UI.reverseDimSense({ kind: 'dim', index: 0 });
+    assert(rv.ok && Math.abs((line.x2 - line.x1) + sx) < 1e-9, 'line length reversed: ' + JSON.stringify(rv) + ' ' + JSON.stringify(line));
+    return 'ok';
+  });
+  step('sketchdims: Add Relations offers only what applies and adds each SolidWorks relation (Horizontal, Vertical, Merge, Coincident, Midpoint, Intersection, Collinear, Parallel, Perpendicular, Tangent, Concentric, Coradial, Equal, Symmetric, Fix); Existing Relations lists them with their state; × deletes', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), S = W.SketchSolver;
+    var cases = [
+      ['Horizontal', 'horizontal', [{ t: 'line', x1: 0, y1: 0, x2: 20, y2: 1 }], [0]],
+      ['Vertical', 'vertical', [{ t: 'line', x1: 0, y1: 0, x2: 1, y2: 20 }], [0]],
+      ['Merge', 'coincident', [{ t: 'point', x: 0, y: 0 }, { t: 'point', x: 1, y: 1 }], ['0', '1']],
+      ['Coincident', 'coincident', [{ t: 'point', x: 0, y: 1 }, { t: 'line', x1: -5, y1: 0, x2: 5, y2: 0 }], ['0', '1']],
+      ['Midpoint', 'midpoint', [{ t: 'point', x: 1, y: 1 }, { t: 'line', x1: -5, y1: 0, x2: 5, y2: 0 }], ['0', '1']],
+      ['Intersection', 'intersection', [{ t: 'point', x: 1, y: 1 }, { t: 'line', x1: -5, y1: 0, x2: 5, y2: 0 }, { t: 'line', x1: 0, y1: -5, x2: 0.5, y2: 5 }], ['0', '1', '2']],
+      ['Collinear', 'collinear', [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 12, y1: 1, x2: 20, y2: 1.5 }], ['0', '1']],
+      ['Parallel', 'parallel', [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 5, x2: 10, y2: 6 }], ['0', '1']],
+      ['Perpendicular', 'perpendicular', [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 1, y2: 10 }], ['0', '1']],
+      ['Tangent', 'tangent', [{ t: 'line', x1: -10, y1: 6, x2: 10, y2: 6 }, { t: 'circle', cx: 0, cy: 0, r: 5 }], ['0', '1']],
+      ['Concentric', 'concentric', [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'circle', cx: 1, cy: 1, r: 3 }], ['0', '1']],
+      ['Coradial', 'coradial', [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'arc', cx: 1, cy: 1, r: 4, a0: 0, a1: 90 }], ['0', '1']],
+      ['Equal', 'equal', [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 5, x2: 7, y2: 5 }], ['0', '1']],
+      ['Symmetric', 'symmetric', [{ t: 'point', x: -5, y: 1 }, { t: 'point', x: 4, y: 0 }, { t: 'line', x1: 0, y1: -5, x2: 0, y2: 5, construction: true }], ['0', '1', '2']],
+      ['Fix', 'fix', [{ t: 'point', x: 3, y: 3 }], ['0']]
+    ];
+    var done = [];
+    cases.forEach(function (c, k) {
+      var n0 = f.entities.length, dx = 40 * (k % 5), dy = 40 * Math.floor(k / 5);
+      c[2].forEach(function (e) { var o = JSON.parse(JSON.stringify(e)); ['x', 'x1', 'x2', 'cx'].forEach(function (q) { if (o[q] != null) o[q] += dx; }); ['y', 'y1', 'y2', 'cy'].forEach(function (q) { if (o[q] != null) o[q] += dy; }); f.entities.push(o); });
+      UI.updateSketches();
+      UI.setSelection(c[3].map(function (r) { return { kind: 'entity', index: +r + n0 }; }), { quiet: true });
+      UI.cmdAddRelations();
+      assert(UI.App.relPick.length === c[3].length, c[0] + ': selection listed ' + UI.App.relPick.join());
+      var labels = Array.prototype.map.call(D.querySelectorAll('#pm .pm-btns button'), function (x) { return x.textContent; });
+      assert(labels.indexOf(c[0]) >= 0, c[0] + ' offered for its picks: ' + labels.join(','));
+      if (c[0] === 'Merge') assert(labels.indexOf('Coincident') < 0, 'two points: Merge, not Coincident');
+      var nr = (f.rels || []).length;
+      clickPmButton(c[0]);
+      var rel = f.rels[f.rels.length - 1], st = UI.sketchStatus().rels[f.rels.length - 1];
+      assert(f.rels.length > nr && rel.type === c[1] && st === 'ok', c[0] + ' added: ' + JSON.stringify(rel) + ' ' + st);
+      done.push(c[0]);
+      UI.pmCancel();
+    });
+    // the shared groups: a line's PM gets Existing Relations (with the Horizontal it has) and Add Relations
+    var groups = UI.sketchRelationGroups(f, [0]);
+    assert(groups.length === 2 && groups[0].title === 'Existing Relations' && groups[1].title === 'Add Relations', 'groups ' + groups.map(function (g) { return g.title; }));
+    UI.openPM({ title: 'Line Properties', groups: groups });
+    var rows = D.querySelectorAll('#pm .rel-existing .rel-row');
+    assert(rows.length === 1 && /Horizontal/.test(rows[0].textContent) && rows[0].querySelector('.rel-state svg'), 'Existing Relations row with its state icon');
+    var nrel = f.rels.length;
+    rows[0].querySelector('.rel-del').click();
+    assert(f.rels.length === nrel - 1 && D.querySelectorAll('#pm .rel-existing .rel-row').length === 0, '× deleted it and the list follows');
+    clickPmButton('Horizontal');
+    assert(f.rels.length === nrel && D.querySelectorAll('#pm .rel-existing .rel-row').length === 1, 'Add Relations in the line PM');
+    UI.pmCancel();
+    return done.join(', ');
+  });
+  step('sketchdims: Display/Delete Relations — filters (All, Dangling, Overdefining/Not Solved, External, Defined in context, Locked, Broken, Selected Entities), Suppressed, the selected relation\'s Entities, Delete All of a filter', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), S = W.SketchSolver;
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 10, x2: 30, y2: 10 }, { t: 'line', x1: 0, y1: -20, x2: 30, y2: -20, construction: true, ext: true });
+    S.addRelation(f, 'horizontal', ['0']); S.addRelation(f, 'horizontal', ['1']); S.addRelation(f, 'fix', ['2']);
+    S.addRelation(f, 'parallel', ['0', '1']);   // over defining
+    S.addRelation(f, 'distance', ['0', '2'], { value: 20 });
+    UI.updateSketches();
+    UI.cmdDisplayRelations();
+    function rows() { return Array.prototype.map.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return r.textContent; }); }
+    var opts = Array.prototype.map.call(pmField('Filter').options, function (o) { return o.textContent; });
+    assert(opts.join('|') === 'All in this sketch|Dangling|Overdefining/Not Solved|External|Defined in context|Locked|Broken|Selected Entities', 'filters ' + opts.join('|'));
+    assert(rows().length === 5 && /Parallel/.test(rows()[0]), 'all, over defining first: ' + rows().join(' / '));
+    setInput(pmField('Filter'), 'over');
+    assert(rows().length === 1 && /Parallel/.test(rows()[0]) && D.querySelector('#rel-display .rel-row.redundant .rel-state svg'), 'over ' + rows().join(' / '));
+    setInput(pmField('Filter'), 'external');
+    assert(rows().length === 2 && rows().every(function (t) { return /Line3/.test(t); }), 'external ' + rows().join(' / '));
+    setInput(pmField('Filter'), 'dangling');
+    assert(!rows().length, 'no dangling');
+    setInput(pmField('Filter'), 'context');
+    assert(!rows().length && /in-context/.test($('rel-display').textContent), 'in context: none');
+    setInput(pmField('Filter'), 'all');
+    // Suppressed: the Horizontal of line 1 (row "Horizontal: Line2")
+    var row = Array.prototype.filter.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return /Horizontal: Line2/.test(r.textContent); })[0];
+    row.click();
+    assert(UI.App.sel && UI.App.sel.kind === 'rel' && /Line2/.test($('rel-entities').textContent) && /Current Sketch/.test($('rel-entities').textContent), 'Entities of the selected relation: ' + $('rel-entities').textContent);
+    var hi = UI.App.sel.index;
+    pmField('Suppressed').click();
+    assert(f.rels[hi].suppressed === true && UI.sketchStatus().rels[hi] === 'suppressed', 'suppressed');
+    assert(Array.prototype.some.call(D.querySelectorAll('#rel-display .rel-row.suppressed'), function (r) { return /Line2/.test(r.textContent); }), 'row greyed');
+    UI.drawDims();
+    assert(D.querySelector('#dim-layer .rel-badge.suppressed'), 'icon greyed');
+    f.entities[1].y2 = 13; UI.updateSketches();
+    UI.cmdDisplayRelations();
+    Array.prototype.filter.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return /Horizontal: Line2/.test(r.textContent); })[0].click();
+    pmField('Suppressed').click();
+    assert(!f.rels[hi].suppressed && Math.abs(f.entities[1].y2 - f.entities[1].y1) < 1e-9, 'unsuppressed: solved again ' + JSON.stringify(f.entities[1]));
+    setInput(pmField('Filter'), 'over');
+    var n = f.rels.length;
+    clickPmButton('Delete All');
+    assert(f.rels.length === n - 1 && !f.rels.some(function (r) { return r.type === 'parallel'; }), 'Delete All deletes only what the filter lists');
+    await UI.pmOK();
+    return f.rels.length + ' relations left';
+  });
+  step('sketchdims: status colours and text — blue Under Defined, black Fully Defined, red Over Defined (entities, status bar, (-) / (+) in the FeatureManager); construction dashed; a deleted entity takes its relations and dimensions with it in one undo step', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), S = W.SketchSolver;
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 10, x2: 30, y2: 10, construction: true });
+    UI.updateSketches(); UI.refreshTree();
+    function hex(i) { var o = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.sketch === f.id && x.userData.index === i; })[0]; return o && o.material.color.getHex(); }
+    function row() { return Array.prototype.filter.call(D.querySelectorAll('#tree .ti .nm'), function (n) { return /Sketch\d/.test(n.textContent); }).pop().textContent; }
+    function bar() { var s = D.querySelector('#status-right .sk-state'); return s ? s.textContent : ''; }
+    assert(hex(0) === 0x1f5fd0 && bar() === 'Under Defined' && /^\(-\) /.test(row()), 'under: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    var dashed = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.index === 1; })[0];
+    assert(dashed && dashed.material.type === 'LineDashedMaterial', 'construction dashed');
+    S.addRelation(f, 'fix', ['0']); S.addRelation(f, 'fix', ['1']);
+    UI.updateSketches(); UI.refreshTree();
+    assert(hex(0) === 0x15181d && bar() === 'Fully Defined' && !/^\(/.test(row()), 'full: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    S.addRelation(f, 'horizontal', ['0']);
+    UI.updateSketches(); UI.refreshTree();
+    assert(hex(0) === 0xd9302c && bar() === 'Over Defined' && /^\(\+\) /.test(row()), 'over: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    f.rels = [{ type: 'horizontal', refs: ['0'] }, { type: 'coincident', refs: ['1.p1', 'O'] }];
+    f.dims = [{ e: 0, k: 'len' }, { e: 1, k: 'len' }];
+    S.addRelation(f, 'distance', ['0', '1'], { driven: true });
+    UI.updateSketches();
+    var undo0 = UI.App.undo.length, rels0 = JSON.stringify(f.rels), dims0 = JSON.stringify(f.dims);
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    UI.deleteSketchEntity(0);
+    assert(f.entities.length === 1 && (f.rels || []).every(function (r) { return r.refs.every(function (x) { return x === 'O' || +String(x).split('.')[0] === 0; }); }) && f.dims.length === 1 && f.dims[0].e === 0, 'relations / dimensions of the deleted line gone, the rest re-pointed: ' + JSON.stringify([f.rels, f.dims]));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    UI.undo(); await idle();
+    var g = UI.activeSketchFeature();
+    assert(g.entities.length === 2 && JSON.stringify(g.rels) === rels0 && JSON.stringify(g.dims) === dims0, 'undo puts it all back');
+    return 'ok';
+  });
+  step('sketchdims: Fully Define Sketch (Sketch tab and Tools ▸ Dimensions) — Calculate adds Horizontal / Vertical and baseline dimensions from the origin until Fully Defined; Cancel puts the sketch back; OK keeps it as one undo step', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), S = W.SketchSolver;
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0.2 }, { t: 'line', x1: 40, y1: 0.2, x2: 40, y2: 25 }, { t: 'line', x1: 40, y1: 25, x2: 0, y2: 25 }, { t: 'line', x1: 0, y1: 25, x2: 0, y2: 0 }, { t: 'circle', cx: 12, cy: 12, r: 3 });
+    S.addRelation(f, 'coincident', ['0.p2', '1.p1']); S.addRelation(f, 'coincident', ['1.p2', '2.p1']); S.addRelation(f, 'coincident', ['2.p2', '3.p1']); S.addRelation(f, 'coincident', ['3.p2', '0.p1']);
+    UI.updateSketches();
+    var before = JSON.stringify([f.entities, f.rels, f.dims || null]);
+    var tools = menuRows('Fully Define Sketch');
+    assert(tools.length === 1 && /Tools/.test(tools[0].menu), 'Tools menu ' + JSON.stringify(tools.map(function (x) { return x.text; })));
+    UI.closeMenus();
+    UI.App.ribbonTab = 'Sketch'; UI.refreshRibbon();
+    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /Fully Define Sketch/.test(b.textContent); })[0];
+    assert(btn, 'ribbon button');
+    btn.click();
+    assert(UI.pmTitle() === 'Fully Define Sketch', 'PM ' + UI.pmTitle());
+    clickPmButton('Calculate');
+    var st = UI.sketchStatus();
+    assert(st.status === 'full' && st.dof === 0, 'fully defined ' + JSON.stringify(st));
+    assert(f.rels.some(function (r) { return r.type === 'distance' && r.dir === 'h' && r.refs[0] === 'O'; }) && f.dims.some(function (d) { return d.k === 'dia'; }), 'baseline from the origin and the circle size');
+    UI.pmCancel();
+    assert(JSON.stringify([f.entities, f.rels, f.dims || null]) === before, 'Cancel restores');
+    var undo0 = UI.App.undo.length;
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    UI.cmdFullyDefineSketch();
+    setInput(pmField('Horizontal dimensions scheme'), 'chain');
+    await UI.pmOK();
+    assert(UI.sketchStatus().status === 'full' && UI.App.undo.length === undo0 + 1, 'OK keeps it, one undo step');
+    UI.drawDims();
+    assert(UI.dimLabelClashes() === 0, 'labels clear of each other\'s lines: ' + UI.dimLabelClashes(true).join(', '));
+    UI.undo(); await idle();
+    assert(UI.sketchStatus().status === 'under', 'undone');
+    return 'ok';
+  });
+  // --- end sketchdims ---
+  // --- p9-sketch-curves: Circle / Perimeter Circle, the arcs, Polygon and the slot types with their SolidWorks
+  // PropertyManagers (ui-sketch-curves.js), driven like a user: ribbon, PM groups, clicks, PM values, entity PMs ---
+  function cvPM() { return D.getElementById('pm').innerText.replace(/\s*\n+\s*/g, ' | '); }
+  function cvBtn(key) { return D.querySelector('#pm button[data-key="' + key + '"]'); }
+  function cvVals() { return UI.pmSpec() ? UI.pmSpec().values : {}; }
+  function cvDefaults() { UI.sketchCurveOptions({ sides: 6, ins: true, slotDims: false, overall: false }); }
+  step('p9-sketch-curves: ribbon flyouts — Circle | Perimeter Circle, Centerpoint | Tangent | 3 Point Arc, the four slot types; picking one starts the tool with its PropertyManager open at once', async function () {
+    await rskNew(); cvDefaults();
+    UI.setRibbonTab('Sketch'); UI.refreshRibbon();
+    var want = { circle: ['Circle', 'Perimeter Circle'], arc: ['Centerpoint Arc', 'Tangent Arc', '3 Point Arc'], slot: ['Straight Slot', 'Centerpoint Straight Slot', '3 Point Arc Slot', 'Centerpoint Arc Slot'] }, got = [];
+    Object.keys(want).forEach(function (g) {
+      var fl = c14Fly(g);
+      assert(fl, 'no ' + g + ' flyout');
+      fl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); fl.querySelector('.rb-caret').click();
+      var labels = c14MenuLabels();
+      assert(labels.length === want[g].length && want[g].every(function (l, i) { return labels[i].indexOf(l) === 0; }), g + ' flyout lists ' + labels.join(' | '));
+      got.push(labels.length);
+      UI.closeMenus();
+    });
+    c14Fly('arc').querySelector('.rb-caret').click();
+    c14MenuRow('Tangent Arc').click();
+    assert(UI.App.tool === 'tarc' && UI.pmTitle() === 'Arc', 'Tangent Arc from the flyout: ' + UI.App.tool + ' / ' + UI.pmTitle());
+    assert(/Arc Type/.test(cvPM()) && cvBtn('type:tarc').classList.contains('on'), 'Arc Type with Tangent Arc pressed: ' + cvPM());
+    c14Fly('slot').querySelector('.rb-caret').click();
+    c14MenuRow('Centerpoint Arc Slot').click();
+    assert(UI.App.tool === 'aslot' && UI.pmTitle() === 'Slot' && /Slot Types.*Add dimensions.*Parameters/.test(cvPM()), 'Centerpoint Arc Slot PM: ' + cvPM());
+    selKey('Escape');
+    assert(UI.App.tool === 'select' && !UI.hasPM(), 'Esc put the tool and its PM down: ' + UI.App.tool + ' / ' + UI.pmTitle());
+    UI.ribbonFlyFace('arc', 0); UI.ribbonFlyFace('circle', 0); UI.ribbonFlyFace('slot', 0);
+    return got.join('/') + ' items';
+  });
+  step('p9-sketch-curves: Circle PM (Circle Type, Options, Parameters) follows the circle being drawn, then edits the one placed; Perimeter Circle from its type button takes three points and holds them (Coincident on the origin); a selected circle opens Circle', async function () {
+    await rskNew(); cvDefaults();
+    UI.setTool('circle');
+    assert(UI.pmTitle() === 'Circle' && /Circle Type.*Options.*For construction.*Parameters.*Center X.*Center Y.*Radius/.test(cvPM()), 'Circle PM groups: ' + cvPM());
+    assert(D.activeElement === D.body || !D.getElementById('pm').contains(D.activeElement), 'the PM does not take the keyboard');
+    rskClick([10, 5]); selEv('mousemove', rskScr([14, 5]));
+    assert(cvVals().cx === 10 && cvVals().cy === 5 && cvVals().r === 4, 'live: ' + JSON.stringify(cvVals()));
+    rskClick([14, 5]);
+    UI.pmSetField('r', '6'); UI.pmSetField('cx', '12');
+    var c = rskEnts()[0];
+    assert(c.t === 'circle' && c.r === 6 && c.cx === 12 && UI.App.tool === 'circle', 'edited after placing: ' + JSON.stringify(c));
+    cvBtn('type:pcircle').click();
+    assert(UI.App.tool === 'pcircle' && UI.pmTitle() === 'Circle' && cvBtn('type:pcircle').classList.contains('on'), 'Perimeter Circle: ' + UI.App.tool);
+    rskClick([0, 0]); rskClick([40, 0]); selEv('mousemove', rskScr([20, 20])); rskClick([20, 20]);
+    var p = rskEnts()[1], f = UI.activeSketchFeature();
+    near(p.cx, 20, 1e-9, 'perimeter centre x'); near(p.cy, 0, 1e-9, 'perimeter centre y'); near(p.r, 20, 1e-9, 'perimeter radius');
+    assert((f.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.indexOf('O') >= 0 && r.refs.indexOf('1') >= 0; }), 'on the origin: ' + JSON.stringify(f.rels));
+    selKey('Escape');
+    UI.setTool('select'); rskClick([18, 5]);
+    assert(UI.pmTitle() === 'Circle' && !/Circle Type/.test(cvPM()) && cvVals().r === 6, 'selected circle PM: ' + cvPM());
+    UI.pmSetField('r', '7');
+    assert(rskEnts()[0].r === 7, 'radius 7 from the selected circle PM');
+    UI.pmCancel();
+    return 'circle R6 → R7, perimeter R20';
+  });
+  step('p9-sketch-curves: Tangent Arc — from a line end it leaves tangent (Tangent + Coincident), back over the end it is the reverse tangent, square to it a normal arc; a click away from an end is refused; the Arc PM shows Center / Start / End / Radius / Angle and edits a selected arc', async function () {
+    await rskNew(); cvDefaults();
+    UI.setTool('line'); rskClick([0, 0]); rskClick([20, 0]); selKey('Escape');
+    UI.setTool('tarc');
+    rskClick([10, 10]);
+    assert(!UI.App.toolState.pts.length, 'a click off a line / arc end is refused');
+    rskClick([20, 0]); selEv('mousemove', rskScr([25, 0.5])); selEv('mousemove', rskScr([30, 10]));
+    assert(cvVals().r === 10 && cvVals().ang === 90 && cvVals().ex === 30, 'live arc values: ' + JSON.stringify(cvVals()));
+    rskClick([30, 10]);
+    var f = UI.activeSketchFeature(), a = rskEnts()[1];
+    assert(a.t === 'arc' && Math.abs(a.cx - 20) < 1e-9 && Math.abs(a.cy - 10) < 1e-9 && a.r === 10, 'tangent arc ' + JSON.stringify(a));
+    assert(f.rels.some(function (r) { return r.type === 'tangent' && r.refs.join() === '1,0'; }), 'Tangent: ' + JSON.stringify(f.rels));
+    rskClick([0, 0]); selEv('mousemove', rskScr([3, 0.3])); selEv('mousemove', rskScr([5, 6]));
+    assert(UI.App.toolState.tzone && UI.App.toolState.tzone.kind === 'reverse', 'reverse zone: ' + JSON.stringify(UI.App.toolState.tzone));
+    rskClick([5, 6]);
+    assert(f.rels.some(function (r) { return r.type === 'tangent' && r.refs.join() === '2,0'; }) && f.rels.some(function (r) { return r.type === 'coincident' && r.refs.join() === '2.p1,0.p1'; }), 'reverse arc held on the line start: ' + JSON.stringify(f.rels));
+    rskClick([30, 10]); selEv('mousemove', rskScr([34, 10])); selEv('mousemove', rskScr([40, 16]));
+    assert(UI.App.toolState.tzone && UI.App.toolState.tzone.kind === 'normal', 'normal zone: ' + JSON.stringify(UI.App.toolState.tzone));
+    rskClick([40, 16]);
+    var nrm = rskEnts()[3];
+    assert(nrm && nrm.t === 'arc' && Math.abs(nrm.cx - 30) < 1e-9, 'normal arc leaves square to the arc end (centre straight above or below it): ' + JSON.stringify(nrm));
+    assert(SketchStatus() !== 'over', 'not over defined');
+    selKey('Escape');
+    UI.setTool('select'); rskClick([20 + 10 * Math.cos(-0.7), 10 + 10 * Math.sin(-0.7)]);
+    assert(UI.pmTitle() === 'Arc' && /Start X.*Start Y.*End X.*End Y.*Radius.*Angle/.test(cvPM()), 'selected arc PM: ' + cvPM());
+    UI.pmCancel();
+    return 'tangent, reverse, normal';
+    function SketchStatus() { return W.SketchSolver.analyze(f).status; }
+  });
+  step('p9-sketch-curves: Polygon PM (Options, Parameters: sides, Inscribed / Circumscribed circle, center, circle diameter, angle, New Polygon) — inscribed by default (the click is the middle of a side), switching to circumscribed keeps the circle and moves the corners onto it; a typed R gets its dimension', async function () {
+    await rskNew(); cvDefaults();
+    UI.setTool('polygon');
+    assert(UI.pmTitle() === 'Polygon' && /Options.*For construction.*Parameters.*Number of sides.*Inscribed circle.*Circumscribed circle.*Center X.*Center Y.*Circle diameter.*Angle.*New Polygon/.test(cvPM()), 'Polygon PM: ' + cvPM());
+    rskClick([0, 0]); selEv('mousemove', rskScr([10, 0]));
+    assert(cvVals().dia === 20 && cvVals().n === 6, 'live diameter 20: ' + JSON.stringify(cvVals()));
+    rskClick([10, 0]);
+    var p = rskEnts()[0], pts = K.entityPolylines(p)[0].pts;
+    assert(p.ins === true && Math.abs(Math.max.apply(null, pts.map(function (q) { return q[0]; })) - 10) < 1e-9, 'inscribed: flats at x = ±10: ' + JSON.stringify(p));
+    var circ = D.querySelector('#pm input[type=radio][data-key="ins:circ"]'); circ.click();
+    p = rskEnts()[0];
+    assert(!p.ins && Math.abs(p.r - 10) < 1e-9, 'circumscribed: corners on the Ø20 circle: ' + JSON.stringify(p));
+    UI.pmSetField('n', '8');
+    assert(rskEnts()[0].n === 8, 'eight sides');
+    var nb = Array.prototype.filter.call(D.querySelectorAll('#pm button'), function (b) { return b.textContent === 'New Polygon'; })[0];
+    nb.click();
+    assert(cvVals().dia == null && cvVals().n === 8, 'New Polygon: blank parameters, sides kept: ' + JSON.stringify(cvVals()));
+    D.querySelector('#pm input[type=radio][data-key="ins:ins"]').click();
+    rskClick([40, 0]); selEv('mousemove', rskScr([45, 0]));
+    selKey('8');
+    var box = UI.sketchNumBox();
+    assert(box && box.length === 2, 'R / A box');
+    box[0].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    var q = rskEnts()[1], f = UI.activeSketchFeature();
+    assert(q.ins && q.n === 8, 'inscribed octagon ' + JSON.stringify(q));
+    near(K.dimValue(q, { k: 'r' }), 8, 1e-9, 'R 8 to the flats');
+    assert((f.dims || []).some(function (d) { return d.e === 1 && d.k === 'r'; }), 'typed R dimensioned: ' + JSON.stringify(f.dims));
+    var lines = K.exportDXFSketch(f, 'mm').split('\n').filter(function (l, i, a) { return a[i - 1] === '0' && l === 'LINE'; }).length;
+    assert(lines === 16, 'DXF: 16 LINEs for two octagons: ' + lines);
+    selKey('Escape');
+    UI.setTool('select'); rskClick([10, 0]);
+    assert(UI.pmTitle() === 'Polygon' && cvVals().ins === 'circ', 'selected polygon PM: ' + JSON.stringify(cvVals()));
+    UI.pmSetField('dia', '30');
+    near(rskEnts()[0].r, 15, 1e-9, 'diameter 30 from the selected polygon');
+    UI.pmCancel();
+    cvDefaults();
+    return 'inscribed / circumscribed, typed R 8';
+  });
+  step('p9-sketch-curves: Slot PM — Straight Slot with Add dimensions comes out fully defined; Overall Length; Centerpoint Straight Slot adds its center point (Midpoint); 3 Point Arc Slot and Centerpoint Arc Slot make true arc slots (4 ARCs in the DXF); a selected arc slot opens Slot and its width edits', async function () {
+    await rskNew(); cvDefaults();
+    UI.setTool('slot');
+    assert(UI.pmTitle() === 'Slot' && /Slot Types.*Add dimensions.*Length.*Parameters.*Center X.*Center Y.*Slot width.*Slot length/.test(cvPM()), 'Slot PM: ' + cvPM());
+    D.querySelector('#pm input[type=checkbox][data-key="slotDims"]').click();
+    rskClick([0, 0]); rskClick([20, 0]); selEv('mousemove', rskScr([10, 3])); rskClick([10, 3]);
+    var f = UI.activeSketchFeature();
+    assert(f.dims.length === 2 && W.SketchSolver.analyze(f).status === 'full', 'Add dimensions: ' + JSON.stringify(f.dims) + ' ' + W.SketchSolver.analyze(f).status);
+    cvBtn('lenType:overall').click();
+    assert(cvVals().len === 26, 'overall length 20 + 6: ' + cvVals().len);
+    cvBtn('type:cslot').click();
+    assert(UI.App.tool === 'cslot' && UI.pmTitle() === 'Slot', 'Centerpoint Straight Slot: ' + UI.App.tool);
+    rskClick([0, 20]); rskClick([10, 20]); selEv('mousemove', rskScr([0, 24])); rskClick([0, 24]);
+    var s = rskEnts()[1], pt = rskEnts()[2];
+    assert(s.t === 'slot' && s.x1 === -10 && s.x2 === 10 && s.w === 8 && pt.t === 'point' && pt.x === 0 && pt.y === 20, 'centerpoint slot + point: ' + JSON.stringify([s, pt]));
+    assert(f.rels.some(function (r) { return r.type === 'midpoint' && r.refs.join() === '2,1'; }), 'Midpoint: ' + JSON.stringify(f.rels));
+    assert(f.dims.some(function (d) { return d.e === 1 && d.k === 'olen'; }), 'Overall Length dimension: ' + JSON.stringify(f.dims));
+    D.querySelector('#pm input[type=checkbox][data-key="slotDims"]').click();
+    cvBtn('lenType:cc').click();
+    cvBtn('type:aslot3').click();
+    rskClick([-50, -10]); rskClick([-30, -10]); selEv('mousemove', rskScr([-40, 0])); rskClick([-40, 0]);
+    selEv('mousemove', rskScr([-40, 3])); rskClick([-40, 3]);
+    var a3 = rskEnts()[3];
+    assert(a3 && a3.t === 'aslot' && Math.abs(a3.r - 10) < 1e-9 && Math.abs(a3.cy + 10) < 1e-9 && Math.abs(a3.w - 6) < 1e-9 && Math.abs(a3.a1 - a3.a0 - 180) < 1e-9, '3 Point Arc Slot ' + JSON.stringify(a3));
+    cvBtn('type:aslot').click();
+    rskClick([40, -20]); rskClick([55, -20]); selEv('mousemove', rskScr([54, -24])); selEv('mousemove', rskScr([50, -31])); selEv('mousemove', rskScr([40, -35])); rskClick([40, -35]);
+    selEv('mousemove', rskScr([40, -38]));
+    assert(cvVals().r === 15 && cvVals().ang === 90, 'live arc slot values: ' + JSON.stringify(cvVals()));
+    rskClick([40, -38]);
+    var a4 = rskEnts()[4];
+    assert(a4 && a4.t === 'aslot' && a4.a0 === -90 && a4.a1 === 0 && Math.abs(a4.w - 6) < 1e-9, 'Centerpoint Arc Slot, swept clockwise: ' + JSON.stringify(a4));
+    var arcs = K.exportDXFSketch(f, 'mm').split('\n').filter(function (l, i, a) { return a[i - 1] === '0' && l === 'ARC'; }).length;
+    assert(arcs === 4 + 8, 'DXF ARCs: two slots × 2 + two arc slots × 4: ' + arcs);
+    assert(K.sketchProfile(f).loops.length === 4, 'four closed slot loops');
+    selKey('Escape');
+    assert(!UI.hasPM() && UI.App.tool === 'select', 'Esc ends the tool and closes its PM');
+    UI.setTool('select'); rskClick([40 + 18 * Math.cos(-Math.PI / 4) + 0.3, -20 + 18 * Math.sin(-Math.PI / 4) + 0.3]);
+    assert(UI.pmTitle() === 'Slot' && /Arc radius.*Arc angle.*Slot width/.test(cvPM()), 'selected arc slot PM: ' + cvPM());
+    UI.pmSetField('w', '3');
+    assert(rskEnts()[4].w === 3, 'width 3 from the PM');
+    UI.pmCancel();
+    cvDefaults();
+    return 'straight (dims), centerpoint, 3 point arc, centerpoint arc';
+  });
+  // --- end p9-sketch-curves ---
+
+  // ---- sketch-spline: Spline, Ellipse and Partial Ellipse drawn like a user (ui-sketch-spline.js)
+  function splRibbonButton(label) { return Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return (b.getAttribute('aria-label') || '') === label; })[0]; }
+  step('sketch-spline: the Spline, Ellipse ▸ Partial Ellipse buttons are live in a sketch and open their PropertyManager at once; a closed spline (click its first point) and a 3-click ellipse; ✓ puts the tool down', async function () {
+    var errs0 = errors.length;
+    UI.loadModel(K.newModel('Splines')); await idle();
+    UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
+    UI.zoomView(1); UI.refreshRibbon();
+    var sb = splRibbonButton('Spline'), eb = splRibbonButton('Ellipse');
+    assert(sb && !sb.disabled && eb && !eb.disabled, 'Spline / Ellipse buttons enabled in a sketch');
+    sb.click();
+    assert(UI.App.tool === 'spline' && UI.pmTitle() === 'Spline', 'tool ' + UI.App.tool + ', PM ' + UI.pmTitle());
+    assert(pmField('Show curvature') && pmField('Maintain internal continuity') && pmField('For construction'), 'Spline PM Options');
+    skClick(-10, -30); skClick(10, -40); skClick(30, -30); skClick(10, -15);
+    vpEvent('mousemove', skScreen(-10.1, -30));
+    assert(UI.App.tempEntities.length === 1 && UI.App.tempEntities[0].closed, 'the preview closes on the first point');
+    skClick(-10, -30);
+    var f = activeSketch();
+    assert(f.entities.length === 1 && f.entities[0].t === 'spline' && f.entities[0].closed && f.entities[0].pts.length === 4, JSON.stringify(f.entities));
+    assert(UI.App.tool === 'spline', 'the tool stays on for the next spline');
+    UI.setTool('ellipse');
+    assert(UI.pmTitle() === 'Ellipse', 'Ellipse PM on the tool: ' + UI.pmTitle());
+    skClick(0, 0); skClick(25, 0); skClick(8, 10);
+    await wait(30);
+    var e = f.entities[1];
+    assert(e && e.t === 'ellipse' && e.rx === 25 && e.ry === 10 && e.rot === 0, JSON.stringify(e));
+    assert(relList().indexOf('coincident 1.c/O') >= 0, 'centre on the origin: ' + relList().join(', '));
+    // the tool PM now shows the ellipse just drawn; a typed minor radius changes it
+    setInput(pmField('Minor radius'), 8);
+    assert(f.entities[1].ry === 8, 'typed minor radius: ' + JSON.stringify(f.entities[1]));
+    await UI.pmOK();
+    assert(UI.App.tool === 'select' && !UI.hasPM(), '✓ puts the tool down: ' + UI.App.tool);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return f.entities.map(function (x) { return x.t; }).join(', ');
+  });
+  step('sketch-spline: Partial Ellipse (centre, major end, start, round to the end), an open spline ended by a double-click and joined to a line; Esc ends a spline in progress', async function () {
+    var f = activeSketch();
+    UI.setTool('pellipse');
+    assert(UI.pmTitle() === 'Ellipse', 'PM ' + UI.pmTitle());
+    skClick(45, 20); skClick(60, 20); skClick(52, 26);
+    [[48, 27], [42, 25], [36, 20], [40, 14]].forEach(function (q) { vpEvent('mousemove', skScreen(q[0], q[1])); });
+    skClick(40, 14);
+    await wait(30);
+    var pe = f.entities[2];
+    assert(pe && pe.t === 'pellipse' && pe.rx === 15 && pe.a1 > pe.a0 && pe.a1 - pe.a0 > 150 && pe.a1 - pe.a0 < 270, JSON.stringify(pe));
+    UI.setTool('line'); skClick(-40, 20); skClick(-20, 20); UI.cancelTool();
+    UI.setTool('spline');
+    skClick(-20, 20); skClick(-10, 30); skClick(0, 20);
+    var p = skScreen(10, 30);
+    skClick(10, 30); skClick(10, 30);
+    var r = $('viewport').getBoundingClientRect();
+    $('viewport').dispatchEvent(new W.MouseEvent('dblclick', { bubbles: true, clientX: r.left + p[0], clientY: r.top + p[1] }));
+    var sp = f.entities[f.entities.length - 1];
+    assert(sp.t === 'spline' && !sp.closed && sp.pts.length === 4, 'double-click ends it with 4 points: ' + JSON.stringify(sp));
+    assert(relList().indexOf('coincident ' + (f.entities.length - 1) + '.p1/' + (f.entities.length - 2) + '.p2') >= 0, 'starts on the line end: ' + relList().join(', '));
+    skClick(-40, -40); skClick(-35, -35); skClick(-30, -40);
+    D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert(UI.App.tool === 'select' && f.entities[f.entities.length - 1].pts.length === 3, 'Esc keeps the 3-point spline and puts the tool down');
+    await wait(260);
+    assert(!UI.hasPM(), 'the tool PM went with the tool: ' + UI.pmTitle());
+    return f.entities.length + ' entities';
+  });
+  step('sketch-spline: selecting a spline opens the Spline PM on the point clicked; X / Y, Tangent Driving and Show curvature edit it; selecting the ellipse opens the Ellipse PM (Angle turns it)', async function () {
+    var f = activeSketch();
+    UI.setTool('select');
+    skClick(30, -30);
+    assert(UI.pmTitle() === 'Spline', 'PM ' + UI.pmTitle());
+    assert(+pmField('Spline point number').value === 3 && +pmField('X Coordinate').value === 30, 'point 3 picked: ' + pmField('Spline point number').value);
+    setInput(pmField('X Coordinate'), 34);
+    assert(f.entities[0].pts[2][0] === 34, 'moved: ' + JSON.stringify(f.entities[0].pts));
+    pmField('Tangent Driving').click(); await wait(20);
+    assert(f.entities[0].tans && f.entities[0].tans[2] && pmField('Tangent Radial Direction'), 'tangent driving on: ' + JSON.stringify(f.entities[0].tans));
+    setInput(pmField('Tangent Radial Direction'), 100);
+    assert(f.entities[0].tans[2][0] === 100, 'radial direction');
+    pmField('Show curvature').click();
+    assert(f.entities[0].showCurvature && UI.splineComb(f.entities[0]).length > 50, 'curvature comb');
+    await UI.pmOK();
+    skClick(0, 8);
+    assert(UI.pmTitle() === 'Ellipse' && pmField('Major radius') && pmField('Angle'), 'Ellipse PM: ' + UI.pmTitle());
+    setInput(pmField('Angle'), 30);
+    near(f.entities[1].rot, 30, 1e-9, 'angle');
+    await UI.pmOK();
+    return 'spline point 3 at ' + f.entities[0].pts[2].join(', ');
+  });
+  step('sketch-spline: exit and extrude: the closed spline and the ellipse are bodies of their exact areas; sketch DXF R2000 has SPLINE / ELLIPSE, R12 only chained ARCs and LINEs; the script round-trips', async function () {
+    var sid = UI.App.activeSketch, f = activeSketch();
+    var spl = f.entities[0], e = f.entities[1], g = K.splineGeom(spl), A = 0;
+    g.bez.forEach(function (B) { var N = 2000; for (var i = 0; i < N; i++) { var p = K.bezPoint(B, i / N), q = K.bezPoint(B, (i + 1) / N); A += (p[0] * q[1] - q[0] * p[1]) / 2; } });
+    // leave only the two closed curves in the profile (the open pieces would only warn)
+    var r12 = anvil.dxfOutput({ export: 'sketch', version: 'R12' }), r2k = anvil.dxfOutput({ export: 'sketch', version: 'R2000' });
+    assert(/\n0\nSPLINE\n/.test(r2k) && (r2k.match(/\n0\nELLIPSE\n/g) || []).length === 2, 'R2000: SPLINE and two ELLIPSEs');
+    assert(!/\n0\n(SPLINE|ELLIPSE)\n/.test(r12) && (r12.match(/\n0\nARC\n/g) || []).length > 20, 'R12: arcs only');
+    await UI.exitSketch(); await idle();
+    UI.App.sel = { kind: 'feature', id: sid };
+    UI.cmdExtrude(false); setInput(pmNumber(0), 5); await pmAccept();
+    var want = (Math.abs(A) + Math.PI * e.rx * e.ry) * 5;
+    near(anvil.summary().volume, want, 1e-3 * want, 'volume');
+    var script = anvil.script();
+    assert(/\.spline\(/.test(script) && /\.ellipse\(/.test(script) && /\.partialEllipse\(/.test(script), 'script has the curves');
+    await anvil.run(script); await idle();
+    near(anvil.summary().volume, want, 1e-3 * want, 'volume after the round trip');
+    return 'volume ' + anvil.summary().volume.toFixed(3) + ' (≈ ' + want.toFixed(3) + ')';
+  });
+  step('sketch-spline: Search Commands "spline" / "partial ellipse" picks the tool in a sketch', async function () {
+    var sk = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0];
+    UI.editFeature(sk); await idle();
+    var box = $('cmd-search');
+    box.value = 'partial ellipse';
+    box.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    assert(UI.App.tool === 'pellipse', 'tool ' + UI.App.tool);
+    box.value = 'Spline';
+    box.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    assert(UI.App.tool === 'spline' && UI.pmTitle() === 'Spline', 'tool ' + UI.App.tool);
+    UI.cancelTool();
+    await UI.exitSketch(); await idle();
+    return 'ok';
+  });
+  // ---- end sketch-spline
+  // ---- sketch tools (ui-sketch-tools.js): each Sketch-tab tool opens its SolidWorks PropertyManager at once (groups,
+  // fields, order, defaults) and is driven like a user (ribbon → PM → picks → options → ✓ → geometry / relations)
+  function stToolGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group h4'), function (h) { return h.textContent.replace(/^[▾▸]/, '').trim(); }); }
+  function stLabels() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-row label'), function (l) { return l.textContent.trim(); }).filter(function (t) { return t; }); }
+  function stCheck(key) { var cb = D.querySelector('#pm input[data-key="' + key + '"]'); assert(cb, 'no check box ' + key); cb.click(); }
+  function stRadio(key, val) { var rb = D.querySelector('#pm input[data-key="' + key + ':' + val + '"]'); assert(rb, 'no option ' + key + ':' + val); rb.click(); }
+  function stToolRels() { return (UI.activeSketchFeature().rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+  function stNoRedundant(label) { var st = UI.sketchStatus(); assert(st.rels.every(function (s) { return s === 'ok' || s === 'driven'; }) && (!st.dims || st.dims.every(function (s) { return s === 'ok' || s === 'driven'; })), label + ': ' + JSON.stringify(st)); return st; }
+  // a 40 × 20 Line-tool rectangle from the origin with its width and height dimensioned: Fully Defined
+  async function stRect() {
+    await rskNew();
+    UI.App.view.showGrid = false;
+    UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 20]); rskClick([0, 20]); rskClick([0, 0]);
+    UI.setTool('select');
+    var f = UI.activeSketchFeature();
+    f.dims = [{ e: 0, k: 'len', off: -3 }, { e: 1, k: 'len', off: 3 }];
+    UI.updateSketches();
+    assert(f.entities.length === 4 && UI.sketchStatus().status === 'full', 'rectangle Fully Defined: ' + UI.sketchStatus().status);
+    return f;
+  }
+  step('sketch-tools: the Sketch tab groups the tools as SolidWorks does — Sketch Fillet ▸ Sketch Chamfer, Trim ▸ Extend, Convert ▸ Intersection Curve, Offset Entities, and small Mirror / Linear Sketch Pattern ▸ Circular / Move Entities ▸ Copy, Rotate, Scale, Stretch flyouts; each opens its PropertyManager', async function () {
+    await rskNew();
+    ['skFillet', 'trim', 'convert', 'mirrorEnt', 'skPattern', 'moveEnt'].forEach(function (g) { UI.ribbonFlyFace(g, 0); });
+    UI.setRibbonTab('Sketch');
+    var lists = {};
+    ['skFillet', 'trim', 'convert', 'mirrorEnt', 'skPattern', 'moveEnt'].forEach(function (g) {
+      var fl = c14Fly(g);
+      assert(fl, 'no ' + g + ' flyout');
+      fl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); fl.querySelector('.rb-caret').click();
+      lists[g] = c14MenuLabels().map(function (t) { return t.replace(/\s*[A-Z]?$/, ''); }).join(' | ');
+      UI.closeMenus();
+    });
+    assert(/^Sketch Fillet \| Sketch Chamfer/.test(lists.skFillet) && /^Trim Entities \| Extend Entities/.test(lists.trim) && /^Convert Entities \| Intersection Curve/.test(lists.convert), JSON.stringify(lists));
+    assert(/^Linear Sketch Pattern \| Circular Sketch Pattern/.test(lists.skPattern) && /^Move Entities \| Copy Entities \| Rotate Entities \| Scale Entities \| Stretch Entities/.test(lists.moveEnt), JSON.stringify(lists));
+    assert(c14Fly('mirrorEnt').closest('.rb-stack') && c14Fly('moveEnt').closest('.rb-stack'), 'small flyouts sit in a stack');
+    var off = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons > .rb'), function (b) { return b.getAttribute('aria-label') === 'Offset Entities'; })[0];
+    assert(off, 'Offset Entities is a button of its own');
+    var fl = c14Fly('skFillet');
+    fl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); fl.querySelector('.rb-caret').click();
+    c14MenuRow('Sketch Chamfer').click(); await wait(20);
+    assert(UI.pmTitle() === 'Sketch Chamfer' && stToolGroups().join('|') === 'Entities to Chamfer|Chamfer Parameters', 'Chamfer PM: ' + UI.pmTitle() + ' ' + stToolGroups().join('|'));
+    UI.pmCancel();
+    var expect = { cmdMoveEntities: 'Move|Entities to Move|Parameters', cmdCopyEntities: 'Copy|Entities to Copy|Parameters', cmdRotateEntities: 'Rotate|Entities to Rotate|Parameters', cmdScaleEntities: 'Scale|Entities to Scale|Parameters', cmdStretchEntities: 'Stretch|Entities to Stretch|Parameters',
+      cmdCircularSketchPattern: 'Circular Pattern|Parameters|Entities to Pattern|Instances to Skip', cmdSketchPattern: 'Linear Pattern|Direction 1|Direction 2|Entities to Pattern|Instances to Skip',
+      cmdOffsetEntities: 'Offset Entities|Parameters', cmdConvertEntities: 'Convert Entities|Entities to Convert', cmdTrimEntities: 'Trim Entities|Options', cmdSketchFillet: 'Sketch Fillet|Entities to Fillet|Fillet Parameters' };
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 10, cy: 0, r: 2 }); UI.updateSketches();
+    Object.keys(expect).forEach(function (c) {
+      UI[c]();
+      var got = UI.pmTitle() + '|' + stToolGroups().join('|');
+      UI.pmCancel();
+      assert(got === expect[c], c + ': ' + got);
+    });
+    ['skFillet', 'trim', 'convert', 'mirrorEnt', 'skPattern', 'moveEnt'].forEach(function (g) { UI.ribbonFlyFace(g, 0); });
+    return Object.keys(lists).map(function (g) { return lists[g]; }).join(' / ');
+  });
+  step('sketch-tools: Sketch Fillet — the PM (Radius, Keep constrained corners on, Dimension each fillet off); two corners of a dimensioned rectangle get one R dimension and an Equal, the sketch stays Fully Defined with no redundancy; ✗ takes both fillets back; two picked entities (a line and an arc) are filleted', async function () {
+    var f = await stRect();
+    UI.cmdSketchFillet(); await wait(20);
+    assert(stLabels().join('|') === 'Radius|Keep constrained corners|Dimension each fillet' && UI.pmSpec().values.keepCorner === true && UI.pmSpec().values.dimEach === false, 'fields ' + stLabels().join('|'));
+    UI.pmSetField('r', '4');
+    var undo0 = UI.App.undo.length;
+    rskClick([40.3, 0.3]); rskClick([39.7, 20.2]);
+    var arcs = f.entities.filter(function (e) { return e.t === 'arc'; });
+    assert(arcs.length === 2 && arcs.every(function (a) { return Math.abs(a.r - 4) < 1e-9; }), 'two R4 fillets: ' + JSON.stringify(arcs));
+    assert(f.dims.filter(function (d) { return d.k === 'r'; }).length === 1 && stToolRels().some(function (r) { return /^equal:/.test(r); }), 'one R dimension + Equal: ' + stToolRels().join(' '));
+    var st = stNoRedundant('fillets');
+    assert(st.status === 'full' && UI.App.undo.length === undo0 + 2, 'Fully Defined, one undo step each: ' + st.status + ' ' + (UI.App.undo.length - undo0));
+    assert(D.querySelectorAll('#pm .pm-list .pm-item').length === 2, 'listed in Entities to Fillet');
+    UI.pmCancel();
+    assert(f.entities.length === 4 && !f.entities.some(function (e) { return e.t === 'arc'; }) && UI.App.undo.length === undo0 && UI.sketchStatus().status === 'full', '✗ took them back: ' + f.entities.length);
+    // a line and an arc that meet at a corner, picked one after the other
+    f.entities.push({ t: 'line', x1: 60, y1: 0, x2: 80, y2: 0 }, { t: 'arc', cx: 90, cy: 0, r: 10, a0: 0, a1: 180 });
+    f.rels.push({ type: 'coincident', refs: ['4.p2', '5.p2'] });
+    UI.updateSketches();
+    UI.cmdSketchFillet(); UI.pmSetField('r', '2');
+    rskClick([70, 0]); rskClick([90, 10]);
+    var fa = f.entities[f.entities.length - 1];
+    assert(fa.t === 'arc' && Math.abs(fa.r - 2) < 1e-9 && Math.abs(fa.cy - 2) < 1e-9 && Math.abs(Math.hypot(fa.cx - 90, fa.cy) - 12) < 1e-9, 'line–arc fillet tangent to both: ' + JSON.stringify(fa));
+    stNoRedundant('line–arc');
+    await pmAccept();
+    return 'R4 ×2 (one dimension + Equal), line–arc R2';
+  });
+  step('sketch-tools: Sketch Chamfer — Distance-distance with Equal distance by default; a corner of the dimensioned rectangle gets a 3 × 3 chamfer line, a virtual sharp and its dimensions (still Fully Defined); Angle-distance 5 @ 30°', async function () {
+    var f = await stRect();
+    UI.cmdSketchChamfer(); await wait(20);
+    var v = UI.pmSpec().values;
+    assert(v.type === 'distance' && v.equal === true && stLabels().join('|') === 'Angle-distance|Distance-distance|Equal distance|Distance 1', 'defaults / fields: ' + stLabels().join('|'));
+    UI.pmSetField('d1', '3');
+    rskClick([40, 20]);
+    var c = f.entities.filter(function (e) { return e.t === 'line'; })[4];
+    assert(c && Math.abs(c.x1 - 40) < 1e-9 && Math.abs(c.y1 - 17) < 1e-9 && Math.abs(c.x2 - 37) < 1e-9 && Math.abs(c.y2 - 20) < 1e-9, 'chamfer line ' + JSON.stringify(c));
+    assert(f.entities.some(function (e) { return e.sharp; }) && UI.sketchStatus().status === 'full', 'virtual sharp, Fully Defined: ' + UI.sketchStatus().status);
+    stNoRedundant('chamfer');
+    stRadio('type', 'angle');
+    assert(stLabels().indexOf('Direction 1 Angle') >= 0 && stLabels().indexOf('Distance 2') < 0, 'Angle-distance fields: ' + stLabels().join('|'));
+    UI.pmSetField('d1', '5'); UI.pmSetField('angle', '30');
+    rskClick([0, 0]);
+    var c2 = f.entities[f.entities.length - 2];
+    assert(c2.t === 'line' && Math.abs(Math.atan2(Math.abs(c2.y2 - c2.y1), Math.abs(c2.x2 - c2.x1)) * 180 / Math.PI - 30) < 1e-6, '30° off the first line ' + JSON.stringify(c2));
+    stNoRedundant('angle chamfer');
+    await pmAccept();
+    return 'chamfers 3 × 3 and 5 @ 30°';
+  });
+  step('sketch-tools: Offset Entities — the PM (Offset distance, Add dimensions, Reverse, Select chain, Bi-directional, Cap ends, Construction geometry: Base / Offset geometry); one picked line of the rectangle offsets the whole chain 2 out (preview first), one Offset relation and one dimension keep it Fully Defined; editing the dimension moves all four', async function () {
+    var f = await stRect();
+    rskClick([20, 0]);
+    UI.cmdOffsetEntities(); await wait(20);
+    assert(stLabels().join('|') === 'Offset distance|Add dimensions|Reverse|Select chain|Bi-directional|Cap ends|Construction geometry:|Base geometry|Offset geometry', 'fields ' + stLabels().join('|'));
+    var v = UI.pmSpec().values;
+    assert(v.dims && v.chain && !v.reverse && !v.bi, 'defaults');
+    assert(D.querySelector('#pm input[data-key="cap"]').disabled, 'Cap ends greyed until Bi-directional');
+    UI.pmSetField('d', '2'); await wait(20);
+    assert(UI.App.tempEntities.length === 4, 'preview of the chain: ' + UI.App.tempEntities.length);
+    stCheck('bi'); await wait(20);
+    assert(UI.App.tempEntities.length === 8 && !D.querySelector('#pm input[data-key="cap"]').disabled, 'bi-directional preview: ' + UI.App.tempEntities.length);
+    stCheck('bi');
+    await pmAccept();
+    var o = f.entities.slice(4).map(function (e) { return [e.x1, e.y1, e.x2, e.y2].map(function (x) { return Math.round(x * 1e6) / 1e6; }).join(','); }).sort().join(' ');
+    assert(o === '-2,-2,42,-2 -2,22,-2,-2 42,-2,42,22 42,22,-2,22', 'offset 2 out: ' + o);
+    assert(stToolRels().filter(function (r) { return /^offset:/.test(r); }).length === 1 && UI.sketchStatus().status === 'full', 'one Offset relation, Fully Defined: ' + stToolRels().join(' '));
+    stNoRedundant('offset');
+    var di = f.rels.map(function (r, i) { return r.type === 'distance' && r.v === 2 ? i : -1; }).filter(function (i) { return i >= 0; })[0];
+    var r = UI.editRelDim(di, '5');
+    assert(r.ok && Math.abs(f.entities[5].x1 - 45) < 1e-6, 'offset 5 moves the chain: ' + JSON.stringify(f.entities[5]));
+    return o;
+  });
+  step('sketch-tools: Trim Entities — the two check boxes under the options; with Keep trimmed entities as construction geometry the trimmed span stays as construction; with Ignore trimming of construction geometry a centerline is left alone', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }, { t: 'line', x1: 20, y1: -10, x2: 20, y2: 10 }, { t: 'line', x1: 0, y1: 5, x2: 40, y2: 5, construction: true });
+    UI.updateSketches();
+    UI.cmdTrimEntities(); await wait(20);
+    assert(stLabels().indexOf('Keep trimmed entities as construction geometry') >= 0 && stLabels().indexOf('Ignore trimming of construction geometry') >= 0, stLabels().join('|'));
+    stRadio('mode', 'closest');
+    stCheck('keepCons'); stCheck('ignoreCons');
+    rskClick([30, 0]);
+    var kept = f.entities.filter(function (e) { return e.construction && e.y1 === 0; })[0];
+    assert(kept && Math.abs(kept.x1 - 20) < 1e-9 && Math.abs(kept.x2 - 40) < 1e-9 && Math.abs(f.entities[0].x2 - 20) < 1e-9, 'the span stays as construction: ' + JSON.stringify(f.entities));
+    var n = f.entities.length;
+    rskClick([30, 5]);
+    assert(f.entities.length === n && f.entities.some(function (e) { return e.construction && e.y1 === 5 && e.x1 === 0 && e.x2 === 40; }), 'centerline untouched');
+    stCheck('keepCons'); stCheck('ignoreCons'); stRadio('mode', 'power');
+    UI.pmOK();
+    return 'kept as construction; centerline ignored';
+  });
+  step('sketch-tools: Move / Copy / Rotate / Scale Entities — X/Y ΔX moves a circle; Rotate about a clicked center (the origin) 90°; Copy with Keep relations; Scale with Copy (Number of copies 2)', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 20, cy: 0, r: 3 }, { t: 'line', x1: 23, y1: 0, x2: 40, y2: 0 });
+    f.rels = [{ type: 'coincident', refs: ['1.p1', '0'] }, { type: 'horizontal', refs: ['1'] }];
+    UI.updateSketches();
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    UI.cmdMoveEntities(); await wait(20);
+    assert(stLabels().join('|') === 'Keep relations|From/To|X/Y', 'Move fields ' + stLabels().join('|'));
+    stRadio('mode', 'xy');
+    UI.pmSetField('dx', '5'); UI.pmSetField('dy', '0'); await wait(20);
+    assert(UI.App.tempEntities.length === 1 && UI.App.tempEntities[0].cx === 25, 'preview at 25');
+    await pmAccept();
+    assert(f.entities[0].cx === 25 && f.entities[1].x1 === 23, 'moved, the line left (Keep relations off): ' + JSON.stringify(f.entities[1]));
+    UI.setSelection([{ kind: 'entity', index: 1 }]);
+    UI.cmdRotateEntities(); await wait(20);
+    assert(UI.pmSpec().values.box === 'base', 'Center of rotation is waiting for a click');
+    rskClick([0, 0]); await wait(20);
+    UI.pmSetField('angle', '90'); await wait(20);
+    await pmAccept();
+    var l = f.entities[1];
+    assert(Math.abs(l.x1) < 1e-9 && Math.abs(l.y1 - 23) < 1e-9 && Math.abs(l.y2 - 40) < 1e-9 && stToolRels().indexOf('vertical:1') >= 0, 'rotated 90° about the origin, Horizontal became Vertical: ' + JSON.stringify(l) + ' ' + stToolRels().join(' '));
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    UI.cmdScaleEntities(); await wait(20);
+    assert(stLabels().join('|') === 'Scale Factor|Copy|Number of copies' && UI.pmSpec().values.copy === true, 'Scale fields ' + stLabels().join('|'));
+    rskClick([25, 0]); await wait(20);
+    UI.pmSetField('scale', '2'); UI.pmSetField('count', '2'); await wait(20);
+    await pmAccept();
+    assert(f.entities.length === 4 && f.entities[2].r === 6 && f.entities[3].r === 12, 'two scaled copies: ' + JSON.stringify(f.entities.slice(2)));
+    stNoRedundant('transforms');
+    return 'moved, rotated, scaled ×2';
+  });
+  step('sketch-tools: Linear Sketch Pattern — Direction 1 / 2 (X-axis / Y-axis, Spacing, Dimension X / Y spacing, Number of instances, Angle), 3 × 2 of a hole with instance (2, 2) skipped by clicking it; the copies follow a spacing edit', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 5, cy: 5, r: 1 });
+    UI.updateSketches();
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    UI.cmdSketchPattern(); await wait(20);
+    var labels = stLabels().join('|');
+    assert(labels.indexOf('Reverse direction|Spacing|Dimension X spacing|Number of instances|Angle') >= 0 && labels.indexOf('Dimension Y spacing') >= 0 && labels.indexOf('Dimension angle between axes') >= 0, 'fields ' + labels);
+    UI.pmSetField('spacing', '10'); UI.pmSetField('count', '3'); UI.pmSetField('spacing2', '8'); UI.pmSetField('count2', '2'); await wait(20);
+    assert(UI.App.tempEntities.length === 5, 'preview 5 copies: ' + UI.App.tempEntities.length);
+    D.querySelectorAll('#pm .pm-pick')[3].click(); await wait(20);   // Instances to Skip
+    assert(UI.pmSpec().values.box === 'skip', 'skip box active');
+    rskClick([15, 13]); await wait(20);
+    assert(UI.pmSpec().values.skip.join() === '1,1' && UI.App.tempEntities.length === 4, 'instance skipped: ' + UI.pmSpec().values.skip.join());
+    await pmAccept();
+    assert(f.entities.length === 5 && !f.entities.some(function (e) { return e.t === 'circle' && e.cx === 15 && e.cy === 13; }), 'four copies, (2, 2) skipped');
+    stNoRedundant('pattern');
+    var di = f.rels.map(function (r, i) { return r.type === 'distance' && r.dir === 'h' ? i : -1; }).filter(function (i) { return i >= 0; })[0];
+    assert(UI.editRelDim(di, '12').ok, 'spacing 12');
+    var xs = f.entities.map(function (e) { return e.cx; }), x0 = Math.min.apply(null, xs);
+    assert(f.entities.every(function (e) { var k = (e.cx - x0) / 12; return Math.abs(k - Math.round(k)) < 1e-6; }) && Math.abs(Math.max.apply(null, xs) - x0 - 24) < 1e-6, 'the columns are 12 apart: ' + xs.join(' '));
+    return 'pattern 3 × 2 less one';
+  });
+  step('sketch-tools: Circular Sketch Pattern — defaults (center at the origin, 360° equal spacing, 4 instances, Dimension radius / angular spacing); 4 holes round the origin, Radius / Arc angle read the seed', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 20, cy: 0, r: 2 });
+    UI.updateSketches();
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    UI.cmdCircularSketchPattern(); await wait(20);
+    var v = UI.pmSpec().values;
+    assert(v.cx === 0 && v.cy === 0 && v.angle === 360 && v.equal && v.count === 4 && v.dimRadius && v.dimAngle && v.radius === 20 && v.arcAngle === 0, 'defaults ' + JSON.stringify(v));
+    assert(stLabels().join('|') === 'Reverse direction|Center X|Center Y|Spacing|Equal spacing|Dimension radius|Dimension angular spacing|Number of instances|Radius|Arc angle', 'fields ' + stLabels().join('|'));
+    assert(UI.App.tempEntities.length === 3, 'preview 3 copies');
+    await pmAccept();
+    var holes = f.entities.filter(function (e) { return e.t === 'circle'; });
+    assert(holes.length === 4 && holes.every(function (h, k) { return Math.abs(h.cx - 20 * Math.cos(k * Math.PI / 2)) < 1e-9 && Math.abs(h.cy - 20 * Math.sin(k * Math.PI / 2)) < 1e-9; }), 'holes ' + JSON.stringify(holes));
+    stNoRedundant('circular');
+    return '4 × R20';
+  });
+  step('sketch-tools: Convert Entities — in a sketch on the part\'s front face, clicking a model edge and the hole brings a line and a true circle in (On Edge)', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sketch("Front").rect(0, 0, 40, 20).circle(20, 10, 4).extrude(10);'); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    UI.zoomView(0.25 / UI.cam.scale); await wait(50);
+    UI.cmdConvertEntities(); await wait(20);
+    assert(stLabels().join('|') === 'Select chain|Inner loops', 'fields ' + stLabels().join('|'));
+    rskClick([40, 10]); await wait(20);
+    rskClick([24, 10]); await wait(20);
+    assert(UI.pmSpec().values.items.length === 2, 'two picks: ' + UI.pmSpec().values.items.map(function (x) { return x.kind; }).join());
+    await pmAccept();
+    var f = UI.activeSketchFeature(), c = f.entities.filter(function (e) { return e.t === 'circle'; })[0], l = f.entities.filter(function (e) { return e.t === 'line'; })[0];
+    assert(c && Math.abs(c.r - 4) < 1e-6 && Math.abs(c.cx - 20) < 1e-6 && Math.abs(c.cy - 10) < 1e-6, 'true circle ' + JSON.stringify(f.entities));
+    assert(l && Math.abs(l.x1 - 40) < 1e-6 && Math.abs(l.x2 - 40) < 1e-6 && Math.abs(Math.abs(l.y2 - l.y1) - 20) < 1e-6, 'the whole edge as one line ' + JSON.stringify(l));
+    assert(stToolRels().filter(function (r) { return /^onEdge:/.test(r); }).length === 2 && UI.sketchStatus().status === 'full', 'On Edge relations: ' + stToolRels().join(' '));
+    UI.exitSketch(true); await idle();
+    return 'line + circle R4';
+  });
+  // --- end sketch-tools ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

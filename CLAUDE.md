@@ -49,7 +49,7 @@ Choose **three to four tasks**, in this priority: open board requests, then `QUE
 | Lane | Files the subagent may edit |
 |---|---|
 | `kernel` | `anvil/csg.js`, `anvil/kernel.js`, `anvil/kernel-sketch.js`, `anvil/kernel-curves.js`, `anvil/kernel-equations.js`, `anvil/kernel-mesh.js`, `anvil/kernel-rebuild.js`, `anvil/kernel-features.js`, `anvil/kernel-sheetmetal.js`, `anvil/kernel-script.js`, `anvil/holewizard.js`, `anvil/exchange.js`, `anvil/materials.js`, `anvil/evaluate.js`, `anvil/worker.js` |
-| `sketch` | `anvil/ui-sketch.js`, `anvil/ui-core.js`, `anvil/sketch-solver.js`, `anvil/ui-relations.js`, `anvil/ui-select.js` |
+| `sketch` | `anvil/ui-sketch.js`, `anvil/ui-core.js`, `anvil/sketch-solver.js`, `anvil/ui-relations.js`, `anvil/ui-select.js`, `anvil/ui-sketch-lines.js`, `anvil/ui-sketch-curves.js`, `anvil/ui-sketch-tools.js`, `anvil/ui-sketch-dims.js`, `anvil/ui-sketch-spline.js` (sketch tool PropertyManagers, registered in `UI.sketchToolPMs`) |
 | `commands` | `anvil/ui-commands.js`, `anvil/ui-panels.js`, `anvil/ui-app.js`, `anvil/icons.js`, `anvil/style.css`, `anvil/index.html`, `anvil/ui-holewizard.js`, `anvil/ui-materials.js`, `anvil/ui-evaluate.js` |
 | `assembly` | `anvil/assembly.js`, `anvil/ui-assembly.js` |
 | `drawing` | `anvil/drawing.js`, `anvil/drawing-curves.js`, `anvil/drawing-hlr.js`, `anvil/drawing-views.js`, `anvil/drawing-sheet.js`, `anvil/drawing-annotations.js`, `anvil/drawing-render.js`, `anvil/drawing-ui.js`, `anvil/drawing-ui-tools.js`, `anvil/drawing-ui-panels.js`, `anvil/drawing-worker.js`, `anvil/drawing.css` |

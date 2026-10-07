@@ -77,13 +77,27 @@ var Icons = (function () {
     line: ln('M2.5 13 L13.5 3', B, 1.5) + circ(2.5, 13, 1.2, S, 'none') + circ(13.5, 3, 1.2, S, 'none'),
     rect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + circ(2.5, 4, 1.2, S, 'none') + circ(13.5, 12, 1.2, S, 'none'),
     crect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
+    // p9-sketchtab: Midpoint Line and the 3 Point / Parallelogram rectangle types
+    midline: ln('M2.5 13 L13.5 3', B, 1.5) + circ(8, 8, 1.5, S, 'none') + circ(2.5, 13, 1.1, S, 'none') + circ(13.5, 3, 1.1, S, 'none'),
+    rect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + circ(2, 9.5, 1.2, S, 'none') + circ(8.5, 3, 1.2, S, 'none') + circ(14, 8.5, 1.2, S, 'none'),
+    crect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + ln('M7 9 h2 M8 8 v2', S, 1.1) + circ(11.25, 5.75, 1.2, S, 'none'),
+    parallelogram: ln('M1.5 12.5 L5.5 3.5 H14.5 L10.5 12.5 z', B, 1.5) + circ(1.5, 12.5, 1.2, S, 'none') + circ(10.5, 12.5, 1.2, S, 'none') + circ(14.5, 3.5, 1.2, S, 'none'),
     circle: circ(8, 8, 5.5, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
     arc: ln('M5 3 A8 8 0 0 1 13 11', B, 1.5) + ln('M3.5 11 h3 M5 9.5 v3', S, 1.1),
     arc3: ln('M2.5 12.5 A7 7 0 0 1 13.5 12.5', B, 1.5) + circ(2.5, 12.5, 1.2, S, 'none') + circ(8, 5.5, 1.2, S, 'none') + circ(13.5, 12.5, 1.2, S, 'none'),
     polygon: ln('M8 2 l5.2 3 v6 l-5.2 3 l-5.2 -3 v-6 z', B, 1.5),
     slot: ln('M5 5 h6 a3 3 0 0 1 0 6 h-6 a3 3 0 0 1 0 -6 z', B, 1.5) + ln('M5 8 h6', S, 0.9, DASH),
+    // p9-sketch-curves: Perimeter Circle, Tangent Arc, the slot types and the slot length types
+    pcircle: circ(8, 8, 5.5, 'none', B, 1.5) + circ(2.5, 8, 1.2, S, 'none') + circ(10.75, 3.25, 1.2, S, 'none') + circ(10.75, 12.75, 1.2, S, 'none'),
+    tarc: ln('M1.5 12.5 h6', S, 1.3) + ln('M7.5 12.5 A5 5 0 0 0 12.5 7.5', B, 1.5) + circ(7.5, 12.5, 1.2, S, 'none'),
+    cslot: ln('M5 5 h6 a3 3 0 0 1 0 6 h-6 a3 3 0 0 1 0 -6 z', B, 1.5) + circ(8, 8, 1.2, S, 'none'),
+    aslot3: ln('M2 11.5 A7 7 0 0 1 14 11.5 A2 2 0 0 1 10.6 11.5 A3.6 3.6 0 0 0 5.4 11.5 A2 2 0 0 1 2 11.5 z', B, 1.4) + circ(3.7, 11.5, 1, S, 'none') + circ(8, 6.2, 1, S, 'none') + circ(12.3, 11.5, 1, S, 'none'),
+    aslot: ln('M2 11.5 A7 7 0 0 1 14 11.5 A2 2 0 0 1 10.6 11.5 A3.6 3.6 0 0 0 5.4 11.5 A2 2 0 0 1 2 11.5 z', B, 1.4) + circ(8, 12.5, 1.1, S, 'none'),
+    slotLenCC: ln('M5 6 h6 a2 2 0 0 1 0 4 h-6 a2 2 0 0 1 0 -4 z', B, 1.2) + ln('M5 13.5 h6 M5 12 v3 M11 12 v3', S, 1.1),
+    slotLenAll: ln('M5 6 h6 a2 2 0 0 1 0 4 h-6 a2 2 0 0 1 0 -4 z', B, 1.2) + ln('M3 13.5 h10 M3 12 v3 M13 12 v3', S, 1.1),
     spline: ln('M2 12.5 C5 1 10 15 14 3.5', B, 1.5) + circ(2, 12.5, 1.1, S, 'none') + circ(14, 3.5, 1.1, S, 'none'),
     ellipse: ell(8, 8, 6, 3.8, 'none', B, 1.5),
+    pellipse: ln('M2 9 A6 3.8 0 0 0 14 9', S, 0.8, DASH) + ln('M2 9 A6 3.8 0 0 1 14 9', B, 1.5) + circ(2, 9, 1.1, S, 'none') + circ(14, 9, 1.1, S, 'none') + circ(8, 9, 0.9, S, 'none'),   // ui-sketch-spline: Partial Ellipse
     point: circ(8, 8, 1.6, B, 'none') + ln('M8 3 v2.5 M8 10.5 v2.5 M3 8 h2.5 M10.5 8 h2.5', S, 1.1),
     text: txt(8, 12.5, 12, 'A', S, 'Georgia, serif', 600),
     trim: ln('M2 8 H8 M8 2 V14', B, 1.5) + ln('M9.6 8 H14.5', R, 1.8, 'stroke-dasharray="1.6 1.3"') + circ(8, 8, 1.2, S, 'none') + ln('M11.2 4 l2.6 -2.6 M11.2 1.4 l2.6 2.6', R, 1.2),   // r12/chrome12: the trimmed piece red, dashed
@@ -92,6 +106,19 @@ var Icons = (function () {
     offset: rect(4, 4, 8, 8, 'none', B, 1.5) + rect(1.5, 1.5, 13, 13, 'none', S, 1, DASH),
     mirrorEnt: ln('M8 2 v12', S, 0.9, DASH) + ln('M6 4.5 L2.5 11.5 h3.5 z', B, 1.4) + ln('M10 4.5 L13.5 11.5 h-3.5 z', B, 1.4, 'stroke-dasharray="1.5 1.5"'),
     sketchPattern: circ(3.5, 8, 1.8, 'none', B, 1.4) + circ(8, 8, 1.8, 'none', B, 1.4) + circ(12.5, 8, 1.8, 'none', B, 1.4) + ln('M2 12.5 h12', S, 0.9, DASH),
+    // sketch tools (ui-sketch-tools.js): Sketch Chamfer, Circular Sketch Pattern, the Move Entities flyout, Intersection
+    // Curve, Dynamic Mirror, and the On Edge / Pattern relation glyphs
+    skChamfer: ln('M2 14 V7.5 l4.5 -4.5 H14', B, 1.5) + ln('M2 7.5 l4.5 -4.5', Y, 2.2),
+    cSketchPattern: circ(8, 8, 5, 'none', S, 0.9, DASH) + circ(8, 3, 1.6, 'none', B, 1.4) + circ(12.5, 10.5, 1.6, 'none', B, 1.4) + circ(3.5, 10.5, 1.6, 'none', B, 1.4),
+    moveEnt: ln('M2 12 L7 7', B, 1.5) + ln('M9 2 v12 M7 4 l2 -2 2 2 M7 12 l2 2 2 -2 M3 8 h12 M5 6 l-2 2 2 2 M13 6 l2 2 -2 2', G, 1.1),
+    copyEnt: ln('M2 13 L7 8', B, 1.5, 'stroke-dasharray="1.6 1.3"') + ln('M8 9 L13 4', B, 1.5) + ln('M6 3.5 h4 M8 1.5 v4', G, 1.3),
+    rotateEnt: ln('M8 8 L13.5 4', B, 1.5) + ln('M8 8 H14', S, 0.9, DASH) + p('M3 9 a5 5 0 0 1 8.5 -4.5', 'none', G, 1.2) + ln('M11.8 1.8 l-0.3 2.7 -2.6 -0.6', G, 1.1) + circ(8, 8, 1.2, W, S, 1),
+    scaleEnt: rect(2, 8, 6, 6, 'none', B, 1.2, DASH) + rect(2, 2, 12, 12, 'none', B, 1.4) + ln('M8 8 L13 3 M10 3 h3 v3', G, 1.2),
+    stretchEnt: ln('M2 13 H9 L13 4', B, 1.5) + ln('M9 13 L14 7', B, 1.2, 'stroke-dasharray="1.6 1.3"') + ln('M11 13 h3.5 M12.8 11.5 l1.7 1.5 -1.7 1.5', G, 1.1),
+    intersectCurve: blk(1.5, 6, 9, 5, 3.5) + ln('M1 10 L15 6', B, 1.5),
+    dynMirror: ln('M8 2 v12', S, 0.9, DASH) + ln('M6.5 4 L3 12', B, 1.4) + ln('M9.5 4 L13 12', B, 1.4, 'stroke-dasharray="1.5 1.5"') + circ(13, 12, 1.3, Y, YD, 0.8),
+    relOnEdge: ln('M2 12.5 h12', G, 1.8) + rect(5, 4, 6, 6, 'none', G, 1.2),
+    relPattern: circ(3.5, 8, 1.6, G, 'none') + circ(8, 8, 1.6, G, 'none') + circ(12.5, 8, 1.6, G, 'none') + ln('M2 12 h12', G, 1),
     // r12/chrome12: a sketch corner with its green relation badge (Display/Delete: perpendicular; Add: plus)
     relations: ln('M2 13.5 H11 M2 13.5 V5', B, 1.5) + rect(8, 1.5, 6.5, 6.5, '#e3f4df', G, 1, 'rx="1"') + ln('M9.6 6.3 h3.3 M11.25 6.3 V3.1', GD, 1.2),
     addRelation: ln('M2 13.5 H11 M2 13.5 V5', B, 1.5) + rect(8, 1.5, 6.5, 6.5, '#e3f4df', G, 1, 'rx="1"') + ln('M11.25 2.9 v3.7 M9.4 4.75 h3.7', GD, 1.4),
@@ -105,6 +132,12 @@ var Icons = (function () {
     construction: ln('M2 13 L14 3', YD, 1.6, 'stroke-dasharray="2.5 1.6"') + circ(2.5, 12.5, 1.2, W, B) + circ(13.5, 3.5, 1.2, W, B),
     centerline: ln('M2 13 L14 3', B, 1.4, 'stroke-dasharray="4 1.5 1 1.5"'),
     relCollinear: ln('M2 8 h5 M9 8 h5', G, 1.8) + circ(8, 8, 0.8, G, 'none'), relFix: ln('M8 2.5 v8 M4 7 a4 4 0 0 0 8 0 M6 4.5 h4', G, 1.4),
+    // sketchdims: Coradial, Intersection, Merge relations; the arc length dimension; Fully Define Sketch
+    relCoradial: circ(8, 8, 5.5, 'none', G, 1.3) + circ(8, 8, 1.4, G, 'none') + ln('M8 8 L12 4.2', G, 1.1),
+    relIntersection: ln('M3 3 L13 13 M13 3 L3 13', G, 1.5) + circ(8, 8, 1.8, G, 'none'),
+    relMerge: circ(6, 8, 3, 'none', G, 1.2) + circ(10, 8, 3, 'none', G, 1.2) + circ(8, 8, 1.2, G, 'none'),
+    arclength: ln('M2.5 12 A6.5 6.5 0 0 1 13.5 12', B, 1.3) + ln('M3 6.5 A6 6 0 0 1 13 6.5', S, 1.1) + ln('M3 6.5 l1.9 -0.4 M3 6.5 l0.6 1.8 M13 6.5 l-1.9 -0.4 M13 6.5 l-0.6 1.8', S, 1.1),
+    fullyDefine: rect(2, 5, 9, 8, 'none', S, 1.3) + ln('M2 2.5 h9 M2 1.5 v2 M11 1.5 v2', B, 1) + ln('M13.5 5 v8 M12.5 5 h2 M12.5 13 h2', B, 1) + ln('M4.5 9.5 l2 2 l3.5 -4', G, 1.6),
     // ---- sheet metal (green sheet)
     flange: p(FLANGE_L, G, S) + ln('M2 12 h6.5 a3.5 3.5 0 0 0 3.5 -3.5 V2.5', Y, 1, 'stroke-dasharray="1.6 1.2"'),
     bend: p('M2 10.5 h6.5 v3 H2 z', F2, S) + p('M8.5 10.5 a2 2 0 0 0 2 -2 V2.5 h3 V8.5 a5 5 0 0 1 -5 5 v-3 z', G, S) + ln('M8.5 10.5 v3', B, 1.2),

@@ -964,403 +964,12 @@
   }
   UI.editSketchPlane = editSketchPlane;
 
-  // ------------------------------------------------------------------ sketch tools: convert / offset / sketch fillet
-  function selectedSketchEntityLoop() {
-    var f = UI.activeSketchFeature();
-    if (!f || !App.sel || App.sel.kind !== 'entity') return null;
-    var e = f.entities[App.sel.index];
-    if (!e) return null;
-    var pls = K.entityPolylines(e).filter(function (l) { return l.closed; });
-    if (!pls.length && (e.t === 'line' || e.t === 'arc')) return { entity: e, index: App.sel.index, pts: null, open: true };   // r6/sketch6: offset as a line / arc
-    return pls.length ? { entity: e, index: App.sel.index, pts: pls[0].pts } : null;
-  }
-  function cmdConvertEntities() {
-    var f = UI.activeSketchFeature();
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    if (!f.faceLoops || !f.faceLoops.length) { UI.toast('Convert Entities needs a sketch drawn on a face (its outline is projected).'); UI.setStatus('This sketch is on a plane; start a sketch on a model face to convert its edges.'); return; }
-    UI.pushUndo(); App.sketchDirty = true;
-    f.faceLoops.forEach(function (loop) { f.entities.push({ t: 'polyline', pts: loop.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true }); });
-    UI.updateSketches(); UI.refreshTree();
-    UI.setStatus('Converted ' + f.faceLoops.length + ' face loop' + (f.faceLoops.length === 1 ? '' : 's') + ' into sketch entities.');
-  }
-  function cmdOffsetEntities() {
-    var f = UI.activeSketchFeature();
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    var sel = selectedSketchEntityLoop();
-    var source = sel ? (sel.open ? [] : [sel.pts]) : (f.faceLoops || []);
-    if (!source.length && !sel) { UI.toast('Select a sketch entity, or sketch on a face, then Offset.'); return; }
-    // r6/sketch6: Add dimensions (on by default, as SolidWorks): a driving offset dimension between the entity and its copy
-    var v = { d: UI.lenDefault(2), reverse: false, construction: false, dims: true };
-    var added = [];
-    function apply(commit) {
-      added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); });
-      added = [];
-      // a circle, rectangle, slot or polygon offsets into the same kind of entity (sketch-solver.js), not a polyline
-      var exact = sel && window.SketchSolver ? SketchSolver.offsetEntity(sel.entity, (v.reverse ? -1 : 1) * Math.abs(+v.d || 0)) : null;
-      if (exact) { if (v.construction) exact.construction = true; f.entities.push(exact); added.push(exact); UI.updateSketches(); return; }
-      source.forEach(function (loop) {
-        var isCcw = K.signedArea(loop) >= 0, sign = (v.reverse ? -1 : 1) * (isCcw ? 1 : -1);
-        var out = K.offsetLoop(loop, sign * Math.abs(+v.d || 0));
-        var e = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
-        if (v.construction) e.construction = true;
-        f.entities.push(e); added.push(e);
-      });
-      UI.updateSketches();
-    }
-    openPM({
-      title: 'Offset Entities', icon: 'offset', values: v,
-      message: sel ? 'Offsetting the selected entity.' : 'Offsetting the face outline this sketch sits on (' + source.length + ' loop' + (source.length === 1 ? '' : 's') + ').',
-      groups: [{ title: 'Parameters', fields: [{ type: 'number', label: 'Offset distance', key: 'd', unit: 'u', min: 0 }, { type: 'check', label: 'Add dimensions', key: 'dims' }, { type: 'check', label: 'Reverse (inward)', key: 'reverse' }, { type: 'check', label: 'Construction geometry', key: 'construction' }] }],
-      onChange: function () { apply(); },
-      onOK: function () {
-        var oi = sel && added.length === 1 && window.SketchSolver ? f.entities.indexOf(added[0]) : -1;
-        if (oi >= 0) SketchSolver.offsetRelations(f, sel.index, oi).forEach(function (r) { (f.rels = f.rels || []).push(r); });
-        if (oi >= 0 && v.dims && SketchSolver.offsetDimensions) { SketchSolver.offsetDimensions(f, sel.index, oi, v.d); UI.updateSketches(); }
-        UI.refreshTree(); UI.setStatus('Offset ' + added.length + ' loop' + (added.length === 1 ? '' : 's') + ' by ' + v.d + '.'); added = []; },
-      onCancel: function () { added.forEach(function (e) { var i = f.entities.indexOf(e); if (i >= 0) f.entities.splice(i, 1); }); added = []; UI.updateSketches(); if (App.undo.length === undoN) App.undo.pop(); }
-    });
-    UI.pushUndo(); App.sketchDirty = true;   // the undo point is the sketch before the offset (the preview is live)
-    var undoN = App.undo.length;
-    apply();
-  }
-  function cmdSketchFillet() {
-    var f = UI.activeSketchFeature();
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    var v = { r: UI.lenDefault(2) };
-    openPM({
-      title: 'Sketch Fillet', icon: 'fillet', values: v,
-      message: 'Set the radius, then <b>click near a corner</b> where two lines meet, or a corner of a rectangle, polygon or polyline, to round it.',
-      command: { sketchFillet: true, onSketchPoint: function (uv) {
-        var best = null, bestD = Infinity;
-        f.entities.forEach(function (e, ei) {
-          if (e.t !== 'rect' && e.t !== 'crect' && e.t !== 'poly' && e.t !== 'polyline') return;
-          var pts = e.t === 'polyline' ? e.pts : K.entityPolylines(e)[0].pts;
-          if (e.t === 'polyline' && !e.closed) return;
-          pts.forEach(function (p, pi) { var d = Math.hypot(p[0] - uv[0], p[1] - uv[1]); if (d < bestD) { bestD = d; best = { e: e, ei: ei, pts: pts, pi: pi }; } });
-        });
-        // two lines meeting at a corner (a Line-tool chain): trimmed lines + a tangent arc (sketch-solver.js)
-        var lc = window.SketchSolver ? SketchSolver.lineCorner(f, uv, UI.gridStep()) : null;
-        var lcD = lc ? Math.hypot(lc.at[0] - uv[0], lc.at[1] - uv[1]) : Infinity, pushed = false, saved = null;
-        // a rectangle corner: the rectangle becomes four lines first (as SolidWorks draws it), then the lines are filleted
-        if (window.SketchSolver && best && (best.e.t === 'rect' || best.e.t === 'crect') && bestD <= UI.gridStep() && bestD < lcD) {
-          saved = JSON.stringify({ entities: f.entities, rels: f.rels || null, dims: f.dims || null });
-          pushed = !App.sketchDirty;
-          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-          var corner = best.pts[best.pi].slice();
-          SketchSolver.explodeRect(f, best.ei);
-          lc = SketchSolver.lineCorner(f, corner, 1e-6 * Math.max(1, Math.abs(corner[0]), Math.abs(corner[1])));
-          lcD = 0; best = null;
-        }
-        if (lc && (!best || lcD <= bestD)) {
-          if (!saved) { pushed = !App.sketchDirty; if (pushed) { UI.pushUndo(); App.sketchDirty = true; } }
-          var fr = SketchSolver.filletCorner(f, lc, +v.r);
-          if (!fr.ok) {
-            if (saved) { var s0 = JSON.parse(saved); f.entities = s0.entities; if (s0.rels) f.rels = s0.rels; else delete f.rels; if (s0.dims) f.dims = s0.dims; else delete f.dims; UI.updateSketches(); }
-            if (pushed) { App.undo.pop(); App.sketchDirty = false; }
-            UI.toast(fr.error); return;
-          }
-          App.gridStale = true; UI.updateSketches(); UI.refreshTree();
-          UI.setStatus('Corner filleted with R' + v.r + ' (tangent arc). Click another corner or press ✓.');
-          return;
-        }
-        if (!best || bestD > UI.gridStep()) { UI.toast('No corner near that point.'); return; }
-        try {
-          var out = K.filletPolyline(best.pts, best.pi, +v.r);
-          if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-          f.entities[best.ei] = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
-          UI.updateSketches(); UI.refreshTree();
-          UI.setStatus('Corner filleted with R' + v.r + '. Click another corner or press ✓.');
-        } catch (e) { UI.toast(e.message); }
-      } },
-      groups: [{ title: 'Fillet Parameters', fields: [{ type: 'number', label: 'Radius', key: 'r', unit: 'u', min: 0 }] }],
-      onChange: function () { }, onOK: function () { }
-    });
-  }
-  // ------------------------------------------------------------------ sketch tools: trim / mirror entities / linear sketch pattern
+  // Sketch Fillet / Chamfer, Offset, Convert, Trim / Extend Entities, Move / Copy / Rotate / Scale / Stretch and the sketch patterns: ui-sketch-tools.js
+  // ------------------------------------------------------------------ sketch tools: mirror entities
   function roundPts(e) {
     if (e.t === 'polyline') e.pts = e.pts.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; });
     else Object.keys(e).forEach(function (k) { if (typeof e[k] === 'number') e[k] = Math.round(e[k] * 1e4) / 1e4; });
     return e;
-  }
-  // r13/trim13: Trim Entities as in SolidWorks, with its five options (the last one used stays for the next time).
-  // Power trim (the default): press and drag; a grey trail follows the cursor and every entity segment it crosses goes
-  // at once (one undo step per drag). Pressed on the free end of a line or an arc, the drag extends or shortens it along
-  // itself instead, snapping onto the entities in its way. Corner: two entities meet, each keeping the side clicked.
-  // Trim away inside / outside: two bounding entities, then the entities to trim. Trim to closest: a click removes the
-  // segment under the cursor (Power trim's click does too). In every mode the part that would go is highlighted first.
-  var trimMode = 'power';
-  var TRIM_MODES = [['power', 'Power trim'], ['corner', 'Corner'], ['inside', 'Trim away inside'], ['outside', 'Trim away outside'], ['closest', 'Trim to closest']];
-  var TRIM_MSG = {
-    power: '<b>Press and drag across the entities to trim.</b> Every segment the trail crosses goes. Drag from the free end of a line or an arc to extend or shorten it; a click trims the segment under the cursor.',
-    corner: '<b>Select two entities.</b> They are extended or trimmed until they meet, each keeping the side you click.',
-    inside: '<b>Select two bounding entities, then the entities to trim.</b> The part between the bounding entities goes.',
-    outside: '<b>Select two bounding entities, then the entities to trim.</b> The parts outside the bounding entities go.',
-    closest: '<b>Click the part of an entity to remove.</b> The segment between its neighbouring intersections goes away; an entity with nothing crossing it is deleted.'
-  };
-  var TRIM_HINT = { power: '<b>Power trim:</b> drag across entities to trim them; drag a free end to extend it.', corner: '<b>Corner:</b> click two entities to make them meet.', inside: '<b>Trim away inside:</b> click two bounding entities, then the entities to trim.', outside: '<b>Trim away outside:</b> click two bounding entities, then the entities to trim.', closest: '<b>Trim to closest:</b> click the segment to remove.' };
-  var TRIM_SPAN = 'stroke:#e8891c;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.85';
-  var TRIM_PICK = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
-  var TRIM_TRAIL = 'stroke:#8c8c8c;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
-  UI.trimStats = { moves: 0, total: 0, max: 0 };   // per pointer move of a Power trim drag (ms), for the smoothness checks
-  function cmdTrimEntities() {
-    var f = UI.activeSketchFeature(), S = window.SketchSolver;
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    // the sketch as it is now (an undo or a rebuild may have replaced the feature object since the PM opened)
-    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
-    var count = 0, picks = [], vals = { mode: trimMode };   // picks: { e: the entity object, uv: where it was clicked }
-    var hint0 = $('sketch-hint') ? $('sketch-hint').innerHTML : null;
-    function setHint() { var h = $('sketch-hint'); if (h && App.mode === 'sketch') h.innerHTML = TRIM_HINT[mode()] || ''; }
-    function mode() { return vals.mode || 'power'; }
-    function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
-    function scr(q) { return UI.worldToScreen(K.to3D(UI.activePlane(), q[0], q[1])); }
-    function entPts(e) { return K.entityPolylines(e).map(function (l) { return l.closed && l.pts.length ? l.pts.concat([l.pts[0]]) : l.pts; }); }
-    function pickIdx() { picks = picks.filter(function (p) { return f.entities.indexOf(p.e) >= 0; }); return picks.map(function (p) { return f.entities.indexOf(p.e); }); }
-    function pickNames() { var ix = pickIdx(); return ix.length ? ix.map(function (i) { return S.refName(f, String(i)); }).join(', ') : '(none)'; }
-    function changedSketch(n) {
-      count += n; App.sel = null; App.gridStale = true;
-      UI.updateSketches(); UI.refreshTree();
-      UI.setStatus((mode() === 'corner' ? 'Made ' + count + ' corner' : 'Trimmed ' + count + ' segment') + (count === 1 ? '' : 's') + '. Continue, or press ✓ to finish.');
-    }
-    // the free end of a line or an arc within 8 px of the cursor (Power trim drags it): { i, end, pt }
-    function freeEndAt(mx, my) {
-      var best = null, bd = 8;
-      f.entities.forEach(function (e, i) {
-        if (e.t !== 'line' && e.t !== 'arc') return;
-        ['p1', 'p2'].forEach(function (end) {
-          var p = S.refPoint(f, i + '.' + end), s = p && scr(p), d = s ? Math.hypot(s[0] - mx, s[1] - my) : Infinity;
-          if (d < bd && !S.endJoined(f, i + '.' + end)) { bd = d; best = { i: i, end: end, pt: p }; }
-        });
-      });
-      return best;
-    }
-    function ring(p, px) {   // a small circle round sketch point p, px pixels across
-      var s = scr(p), out = [];
-      for (var k = 0; k <= 16; k++) { var a = k * Math.PI / 8, q = toUV(s[0] + px * Math.cos(a), s[1] + px * Math.sin(a)); if (q) out.push(q); }
-      return out;
-    }
-    function drawPicks() { pickIdx().forEach(function (i) { UI.sketchPreview(entPts(f.entities[i]), TRIM_PICK, 'sk-trim-pick'); }); }
-    // the hover preview: what a click (or a crossing) would remove, or what would be picked
-    function hover(uv, mx, my) {
-      fresh();
-      if (!S || !uv) return;
-      UI.sketchFeedbackClear();
-      drawPicks();
-      var m = mode(), hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
-      if (m === 'power' || m === 'closest') {
-        var fe = m === 'power' ? freeEndAt(mx, my) : null;
-        if (fe) { UI.sketchPreview([ring(fe.pt, 6)], TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2'), 'sk-trim-end'); return; }
-        var sp = e && e.t !== 'point' ? S.trimSpan(f, hit.index, uv) : null;
-        if (sp) UI.sketchPreview([sp.pts], TRIM_SPAN, 'sk-trim-span');
-        return;
-      }
-      if (!e || e.t === 'point') return;
-      var ix = pickIdx();
-      if (m === 'corner') {
-        UI.sketchPreview(entPts(e), TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2.5'), 'sk-trim-span');
-        if (ix.length === 1) {
-          var pv = S.cornerPreview(f, ix[0], picks[0].uv, hit.index, uv);
-          if (pv) UI.sketchPreview(pv.map(function (c) { return entPts(c)[0]; }));   // the dashed orange result
-        }
-        return;
-      }
-      if (ix.length < 2) { UI.sketchPreview(entPts(e), TRIM_SPAN.replace('stroke-width:4', 'stroke-width:2.5'), 'sk-trim-span'); return; }
-      var spans = S.betweenSpans(f, hit.index, uv, ix, m === 'outside');
-      if (spans) UI.sketchPreview(spans, TRIM_SPAN, 'sk-trim-span');
-    }
-    // a rectangle is four lines in SolidWorks: the edge picked becomes a line of its own (relations kept)
-    function explodeAt(hit, mx, my) {
-      var e = f.entities[hit.index];
-      if (!e || (e.t !== 'rect' && e.t !== 'crect')) return hit;
-      if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-      S.explodeRect(f, hit.index);
-      return UI.pickEntity(mx, my) || hit;
-    }
-    function click(uv, mx, my) {
-      fresh();
-      if (!S) return;
-      var m = mode(), hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index], pushed, r;
-      if (!e || e.t === 'point') { UI.setStatus(m === 'corner' || ((m === 'inside' || m === 'outside') && picks.length < 2) ? 'Click a line or an arc.' : 'Click on an entity to trim it.'); return; }
-      if (m === 'power' || m === 'closest') {
-        if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-        r = S.trimAt(f, hit.index, uv);
-        if (!r.ok) { UI.toast(r.error); return; }
-        changedSketch(1);
-      } else if (m === 'corner' && pickIdx().length < 1) {
-        hit = explodeAt(hit, mx, my);
-        picks = [{ e: f.entities[hit.index], uv: uv }];
-        renderPM(); UI.updateSketches();
-        UI.setStatus('Select the second entity.');
-      } else if (m === 'corner') {
-        hit = explodeAt(hit, mx, my);
-        var i0 = pickIdx()[0];
-        pushed = !App.sketchDirty;
-        if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-        r = S.cornerTrim(f, i0, picks[0].uv, hit.index, uv);
-        picks = [];
-        renderPM();
-        if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); UI.updateSketches(); }
-        else changedSketch(1);
-      } else if (pickIdx().length < 2) {
-        if (picks.some(function (p) { return p.e === e; })) return;
-        picks.push({ e: e, uv: uv });
-        renderPM();
-        UI.setStatus(picks.length < 2 ? 'Select the second bounding entity.' : 'Now click the entities to trim.');
-      } else {
-        hit = explodeAt(hit, mx, my);
-        pushed = !App.sketchDirty;
-        if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-        r = S.trimBetween(f, hit.index, uv, pickIdx(), m === 'outside');
-        if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); return; }
-        changedSketch(1);
-        renderPM();
-      }
-      hover(uv, mx, my);   // the highlight follows the new geometry
-    }
-    // The sketch is redrawn once per animation frame, in the frame itself (a fast drag across many entities never
-    // queues redraws, and nothing is drawn that the screen would not show). ctx.analysis, when a trim left one, is the
-    // sketch's state already: the redraw reuses it instead of analysing the sketch again.
-    function painter(ctx) {
-      var frame = 0;
-      function paint() {
-        frame = 0; App.gridStale = true;
-        var reuse = !!(ctx && ctx.analysis);
-        if (reuse) { App.sketchState = ctx.analysis; App.sketchDragging = true; }
-        try { UI.updateSketches(); } finally { if (reuse) App.sketchDragging = false; }
-      }
-      return {
-        mark: function () { if (!frame) frame = requestAnimationFrame(paint); },
-        flush: function () { if (frame) { cancelAnimationFrame(frame); paint(); } }
-      };
-    }
-    function trailHook(p) {
-      var uv0 = toUV(p[0], p[1]);
-      if (!uv0) return null;
-      var trail = [uv0], last = uv0, n0 = count, ctx = { conflicts: App.sketchState ? App.sketchState.conflicts : null }, pt = painter(ctx);
-      return {
-        start: function () { },
-        move: function (q) {
-          var uv = toUV(q[0], q[1]);
-          if (!uv) return;
-          var t0 = performance.now();
-          var n = S.powerTrim(f, last, uv, function () { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }, ctx);
-          trail.push(uv); last = uv;
-          if (n) { count += n; App.sel = null; pt.mark(); }
-          UI.sketchPreview([trail], TRIM_TRAIL, 'sk-trim-trail');
-          var dt = performance.now() - t0, st = UI.trimStats;
-          st.moves++; st.total += dt; if (dt > st.max) st.max = dt;
-        },
-        end: function () {
-          pt.flush();
-          UI.sketchFeedbackClear();
-          if (count > n0) changedSketch(0);
-        }
-      };
-    }
-    function extendHook(fe) {
-      var st = null, landed = false, pushed = false, ctx = {}, pt = painter(ctx);
-      return {
-        start: function () {
-          pushed = !App.sketchDirty;
-          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-          st = S.extendBegin(f, fe.i, fe.end);
-          ctx.analysis = st ? S.analyze(f) : null;   // the drag changes no relation: the state is drawn from this one
-        },
-        move: function (q) {
-          var uv = st && toUV(q[0], q[1]);
-          if (!uv) return;
-          var t0 = performance.now(), p = S.extendMove(f, st, uv, null), sp = scr(p), snap = null, bd = 8;
-          // it lands exactly on an entity its line (or circle) crosses when it comes within 8 px of the crossing
-          st.hits.forEach(function (h) { var s = scr(h), d = Math.hypot(s[0] - sp[0], s[1] - sp[1]); if (d < bd) { bd = d; snap = h; } });
-          if (snap) p = S.extendMove(f, st, uv, snap);
-          landed = !!snap;
-          pt.mark();
-          if (snap) UI.sketchSnapMark(p, q, true, 'coincident');
-          var dt = performance.now() - t0, s2 = UI.trimStats;
-          s2.moves++; s2.total += dt; if (dt > s2.max) s2.max = dt;
-        },
-        end: function () {
-          if (!st) return;
-          pt.flush();
-          UI.sketchFeedbackClear();
-          var r = S.extendEnd(f, st, landed);
-          if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); UI.updateSketches(); return; }
-          App.sel = null; App.gridStale = true; UI.updateSketches(); UI.refreshTree();
-          UI.setStatus(r.held ? 'Its relations or dimensions hold the entity where it was.' : landed ? 'Extended to the entity in its way.' : 'Extended. Drag another, or press ✓ to finish.');
-        }
-      };
-    }
-    function drag(p) {
-      fresh();
-      if (!S || mode() !== 'power') return null;
-      var fe = freeEndAt(p[0], p[1]);
-      return fe ? extendHook(fe) : trailHook(p);
-    }
-    openPM({
-      title: 'Trim Entities', icon: 'trim', values: vals, message: TRIM_MSG[vals.mode],
-      command: { ownHover: true, onSketchMove: hover, onSketchPoint: click, onSketchDrag: drag },
-      groups: [
-        { title: 'Options', fields: [{ type: 'radio', key: 'mode', options: TRIM_MODES }] },
-        { title: 'Selections', show: function (v) { return v.mode !== 'power' && v.mode !== 'closest'; }, fields: [
-          { type: 'static', label: 'Selected', value: pickNames },
-          { type: 'buttons', buttons: [{ label: 'Clear Selections', onclick: function () { picks = []; renderPM(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); } }] }
-        ] }
-      ],
-      onChange: function (v, key) {
-        if (key !== 'mode') return;
-        trimMode = v.mode; picks = [];
-        pm.spec.message = TRIM_MSG[v.mode] || TRIM_MSG.power;
-        renderPM();
-        if (UI.sketchFeedbackClear) UI.sketchFeedbackClear();
-        setHint();
-      },
-      onOK: function () { },
-      onClose: function () { var h = $('sketch-hint'); if (h && hint0 != null) h.innerHTML = hint0; if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
-    });
-    setHint();
-  }
-  // Extend Entities (r3/sketch3): the counterpart of Trim, as in SolidWorks — the end of a line or an arc nearest the
-  // click grows to the first entity in its way; hovering previews the extension (SketchSolver.extendTarget).
-  function cmdExtendEntities() {
-    var f = UI.activeSketchFeature();
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    var count = 0;
-    function target(uv, mx, my) {
-      var hit = window.SketchSolver ? UI.pickEntity(mx, my) : null, e = hit && f.entities[hit.index];
-      if (!e || (e.t !== 'line' && e.t !== 'arc')) return null;
-      var tg = SketchSolver.extendTarget(f, hit.index, uv);
-      return tg ? { i: hit.index, e: e, tg: tg } : null;
-    }
-    openPM({
-      title: 'Extend Entities', icon: 'extend',
-      message: '<b>Click a line or an arc near the end to lengthen.</b> It grows to the first entity in its way; the orange preview shows where.',
-      command: {
-        onSketchMove: function (uv, mx, my) {
-          var t = target(uv, mx, my);
-          if (!t || !UI.sketchPreview) return;
-          var pts = [t.tg.from, t.tg.to];
-          if (t.e.t === 'arc') {
-            var from = t.tg.end === 'p2' ? t.e.a1 : t.tg.a, to = t.tg.end === 'p2' ? t.tg.a : t.e.a0;
-            pts = [];
-            for (var k = 0; k <= 32; k++) { var a = (from + (to - from) * k / 32) * Math.PI / 180; pts.push([t.e.cx + t.e.r * Math.cos(a), t.e.cy + t.e.r * Math.sin(a)]); }
-          }
-          UI.sketchPreview([pts]);
-        },
-        onSketchPoint: function (uv, mx, my) {
-          var hit = UI.pickEntity(mx, my);
-          if (!hit || !window.SketchSolver) { UI.setStatus('Click a line or an arc near the end to extend.'); return; }
-          var pushed = !App.sketchDirty;
-          if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-          var r = SketchSolver.extendEntity(f, hit.index, uv);
-          if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); return; }
-          count++;
-          App.sel = null; App.gridStale = true;
-          UI.updateSketches(); UI.refreshTree();
-          UI.setStatus('Extended ' + count + ' entit' + (count === 1 ? 'y' : 'ies') + '. Click another, or press ✓ to finish.');
-        }
-      },
-      groups: [{ title: 'Options', fields: [{ type: 'static', label: 'Mode', value: 'Extend to closest' }] }],
-      onChange: function () { }, onOK: function () { }
-    });
   }
   // Mirror Entities (SolidWorks: Sketch tab ▸ Mirror Entities). *Entities to Mirror* holds the sketch selection when the
   // command starts plus anything clicked in the graphics area while it is open (a click toggles; no "everything"
@@ -1468,14 +1077,7 @@
     preview();
     UI.setStatus(v.box === 'axis' ? 'Mirror about: click a line or centerline in the sketch to mirror about.' : hasAxis() ? 'Click sketch entities to add them to Entities to Mirror (click again to remove).' : 'Select the entities to mirror, then click Mirror about and a line or centerline.');
   }
-  // Linear Sketch Pattern (SolidWorks: Sketch tab ▸ Linear Sketch Pattern). Patterns the entities in its "Entities to
-  // Pattern" box only: the sketch selection when the command starts, plus anything selected in the graphics area while
-  // the PropertyManager is open (no "everything" fallback). Instances are the seed translated by i·spacing along
-  // Direction 1 (and j·spacing2 along Direction 2), so a copy sits spacing away from the seed, not from the sketch
-  // origin. With *Add spacing dimensions* (on by default) ✓ also adds a driving distance dimension from the seed's
-  // reference point (centre of a circle / arc / rectangle / slot, start of a line) to the same point on its first copy
-  // in each direction — horizontal or vertical when the direction is axis-aligned, aligned otherwise — so the spacing
-  // reads seed-to-copy on the sketch and editing it moves the pattern.
+  // the sketch entities selected (graphics area / PropertyManager), and an entity's name in a selection box (Mirror Entities)
   function sketchSelectionIndices(f) {
     var out = [];
     if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
@@ -1485,88 +1087,6 @@
   function entityLabel(e, i) {
     var names = { line: 'Line', circle: 'Circle', arc: 'Arc', rect: 'Rectangle', crect: 'Rectangle', poly: 'Polygon', slot: 'Slot', point: 'Point', polyline: 'Polyline' };
     return (names[e.t] || 'Entity') + (i + 1);
-  }
-  // the reference point a pattern dimension attaches to: '<i>.c' for anything with a centre, '<i>.p1' for a line
-  function patternRef(e, i) {
-    if (e.t === 'point') return String(i);
-    if (e.t === 'line' || e.t === 'polyline') return i + (e.t === 'line' ? '.p1' : '.v0');
-    return i + '.c';
-  }
-  function cmdSketchPattern() {
-    var f = UI.activeSketchFeature();
-    if (!f) { UI.toast('Open a sketch first.'); return; }
-    if (!f.entities.length) { UI.toast('Draw something to pattern first.'); return; }
-    var v = { entities: sketchSelectionIndices(f), angle: 0, spacing: UI.lenDefault(20), count: 3, dir2: false, angle2: 90, spacing2: UI.lenDefault(20), count2: 2, dims: true };
-    function steps() {
-      var a1 = v.angle * Math.PI / 180, a2 = v.angle2 * Math.PI / 180;
-      return { d1: [v.spacing * Math.cos(a1), v.spacing * Math.sin(a1)], d2: v.dir2 ? [v.spacing2 * Math.cos(a2), v.spacing2 * Math.sin(a2)] : [0, 0] };
-    }
-    // the copies in the order they are appended; `first1` / `first2` are the positions (in the returned list) of the
-    // first target's copy at (1, 0) and (0, 1), for the spacing dimensions
-    function copies() {
-      var st = steps(), out = [], first1 = -1, first2 = -1;
-      var n1 = Math.max(1, v.count | 0), n2 = v.dir2 ? Math.max(1, v.count2 | 0) : 1;
-      for (var i = 0; i < n1; i++) for (var j = 0; j < n2; j++) {
-        if (!i && !j) continue;
-        if (i === 1 && j === 0) first1 = out.length;
-        if (i === 0 && j === 1) first2 = out.length;
-        var dx = i * st.d1[0] + j * st.d2[0], dy = i * st.d1[1] + j * st.d2[1];
-        v.entities.forEach(function (t) { out.push(roundPts(K.translateEntity(f.entities[t], dx, dy))); });
-      }
-      out.first1 = first1; out.first2 = first2;
-      return out;
-    }
-    function preview() { App.tempEntities = v.entities.length ? copies() : []; UI.updateTemp(); }
-    function syncSelection() {
-      var sel = sketchSelectionIndices(f);
-      if (sel.join() === v.entities.join()) return;
-      v.entities = sel;
-      renderPM(); preview();
-    }
-    // a driving distance between the seed's reference point and the same point on its first copy
-    function addSpacingDim(seedIdx, copyIdx, angleDeg, spacing) {
-      if (!window.SketchSolver || !SketchSolver.addRelation) return false;
-      var a = ((angleDeg % 180) + 180) % 180, dir = a < 1e-9 ? 'h' : Math.abs(a - 90) < 1e-9 ? 'v' : null;
-      var refs = [patternRef(f.entities[seedIdx], seedIdx), patternRef(f.entities[copyIdx], copyIdx)];
-      var r = SketchSolver.addRelation(f, 'distance', refs, { dir: dir, value: Math.abs(spacing), off: dir === 'v' ? -10 : 10 });
-      return !!(r && r.ok);
-    }
-    openPM({
-      title: 'Linear Pattern', icon: 'sketchPattern', values: v,
-      onSelection: syncSelection,
-      groups: [
-        { title: 'Entities to Pattern', fields: [
-          { type: 'pick', icon: 'sketchPattern', value: function (x) { return x.entities.length ? x.entities.length + ' entit' + (x.entities.length > 1 ? 'ies' : 'y') : ''; }, placeholder: 'Select sketch entities…',
-            items: function (x) { return x.entities.map(function (i) { return { label: entityLabel(f.entities[i], i) }; }); },
-            onRemove: function (x, i) { x.entities.splice(i, 1); if (UI.setSelection) UI.setSelection(x.entities.map(function (k) { return { kind: 'entity', index: k }; })); renderPM(); preview(); },
-            onClear: function (x) { x.entities.length = 0; if (UI.setSelection) UI.setSelection([]); renderPM(); preview(); } }
-        ] },
-        { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Spacing', key: 'spacing', unit: 'u' }, { type: 'number', label: 'Instances', key: 'count', step: 1, min: 1 }] },
-        { title: 'Direction 2', fields: [{ type: 'check', label: 'Enable direction 2', key: 'dir2', rerender: true }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Spacing', key: 'spacing2', unit: 'u', show: function (x) { return x.dir2; } }, { type: 'number', label: 'Instances', key: 'count2', step: 1, min: 1, show: function (x) { return x.dir2; } }] },
-        { title: 'Options', fields: [{ type: 'check', label: 'Add spacing dimensions', key: 'dims' }] }
-      ],
-      onChange: preview,
-      onOK: function () {
-        if (!v.entities.length) { UI.toast('Select the entities to pattern first.'); return false; }
-        var c = copies();
-        if (!c.length) { UI.toast('Set at least 2 instances.'); return false; }
-        UI.pushUndo(); App.sketchDirty = true;
-        var base = f.entities.length;
-        c.forEach(function (e) { f.entities.push(e); });
-        var nDims = 0;
-        if (v.dims) {
-          if (c.first1 >= 0 && addSpacingDim(v.entities[0], base + c.first1, v.angle, v.spacing)) nDims++;
-          if (c.first2 >= 0 && addSpacingDim(v.entities[0], base + c.first2, v.angle2, v.spacing2)) nDims++;
-        }
-        App.tempEntities = []; UI.updateTemp(); App.sel = null; App.sel2 = null; App.gridStale = true; App.dimsStale = true;
-        if (UI.setSelection) UI.setSelection([]);
-        UI.updateSketches(); UI.refreshTree();
-        UI.setStatus('Added ' + c.length + ' patterned entit' + (c.length === 1 ? 'y' : 'ies') + (nDims ? ' and ' + nDims + ' spacing dimension' + (nDims > 1 ? 's' : '') : '') + '.');
-      },
-      onCancel: function () { App.tempEntities = []; UI.updateTemp(); }
-    });
-    if (!v.entities.length) UI.setStatus('Select the sketch entities to pattern in the graphics area.');
-    preview();
   }
   function editSketch(id) {
     var f = K.findFeature(App.model, id);
@@ -3210,6 +2730,8 @@
     if (!f) return;
     var e = f.entities[index];
     if (!e) return;
+    // a type's own SolidWorks properties PM (Line Properties, Circle …), registered by the ui-sketch-*.js files
+    if (UI.sketchEntityPMs[e.t]) return UI.sketchEntityPMs[e.t](index, e, f);
     var fields = (ENTITY_FIELDS[e.t] || []).map(function (p) { return { type: 'number', label: p[1], key: p[0], unit: /X|Y|Width|Height|Radius/.test(p[1]) ? 'u' : undefined, step: p[0] === 'n' ? 1 : undefined }; });
     if (e.t === 'polyline') fields.push({ type: 'static', label: 'Points', value: e.pts.length + (e.closed ? ' (closed)' : ' (open)') });
     fields.push({ type: 'check', label: 'For construction', key: 'construction' });
@@ -3237,6 +2759,9 @@
     App.sel = null;
     UI.updateSketches();
   }
+  // UI.sketchEntityPMs[type] = function (index, entity, sketchFeature) { UI.openPM(…) }: the PM a selected entity opens
+  UI.sketchEntityPMs = UI.sketchEntityPMs || {};
+  UI.deleteSketchEntity = deleteEntity;
   function openToolPM(tool) {
     App.toolParams = App.toolParams || { sides: 6 };
     if (tool === 'polygon') openPM({
@@ -4179,7 +3704,7 @@
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;
   UI.cmdChamfer = cmdChamfer; UI.cmdFillet = cmdFillet;
   UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdMiterFlange = cmdMiterFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
-  UI.cmdConvertEntities = cmdConvertEntities; UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdSketchFillet = cmdSketchFillet; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdExtendEntities = cmdExtendEntities; UI.cmdMirrorEntities = cmdMirrorEntities; UI.cmdSketchPattern = cmdSketchPattern;
+  UI.cmdMirrorEntities = cmdMirrorEntities;   // Sketch Fillet, Offset, Convert, Trim, Extend, the sketch patterns …: ui-sketch-tools.js
   UI.cmdSweep = cmdSweep; UI.cmdLoft = cmdLoft; UI.cmdShell = cmdShell;
   UI.previewIdle = previewIdle;   // smooth/responsive: resolves once the newest live PropertyManager preview is shown
   // r10/editpreview10: the part was rolled back (on) or forward; the open PropertyManager re-resolves its picks on it
@@ -4190,8 +3715,7 @@
   [['cmdExtrude', 'Extruded Boss/Base'], ['cmdRevolve', 'Revolved Boss/Base'], ['cmdLinearPattern', 'Linear Pattern'], ['cmdCircularPattern', 'Circular Pattern'],
     ['cmdMirror', 'Mirror'], ['cmdPlane', 'Reference Plane'], ['cmdHole', 'Hole Wizard'], ['cmdBaseFlange', 'Base Flange/Tab'], ['cmdChamfer', 'Chamfer'], ['cmdFillet', 'Fillet'],
     ['cmdEdgeFlange', 'Edge Flange'], ['cmdMiterFlange', 'Miter Flange'], ['cmdHem', 'Hem'], ['cmdJog', 'Jog'], ['cmdFlatten', 'Flatten'], ['exportFlatDXF', 'Flat to DXF'], ['cmdDxfOutput', 'DXF/DWG Output'],
-    ['cmdConvertEntities', 'Convert Entities'], ['cmdOffsetEntities', 'Offset Entities'], ['cmdSketchFillet', 'Sketch Fillet'], ['cmdTrimEntities', 'Trim Entities'], ['cmdExtendEntities', 'Extend Entities'],
-    ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSketchPattern', 'Linear Sketch Pattern'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
+    ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
     ['editSketch', 'Edit Sketch']
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');

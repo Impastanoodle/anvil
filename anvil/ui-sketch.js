@@ -149,11 +149,17 @@
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
     hint.innerHTML = TOOL_HINTS[App.tool] || '';
-    if (App.tool === 'polygon') { toolPMOpening = true; try { UI.openToolPM('polygon'); } finally { toolPMOpening = false; } }
-    else if (App.tool !== 'select') UI.closePM();
+    // a sketch tool's own PropertyManager (Insert Line, Rectangle, Circle …, as SolidWorks opens on the tool): registered
+    // in UI.sketchToolPMs[tool] = function (tool) { UI.openPM(…) } by the ui-sketch-*.js files; opened here exempt from
+    // "a PM opening puts the sketch tool down"
+    var toolPM = UI.sketchToolPMs[App.tool] || (App.tool === 'polygon' ? function () { UI.openToolPM('polygon'); } : null);
+    if (toolPM) { toolPMOpening = true; try { toolPM(App.tool); } finally { toolPMOpening = false; } }
+    else if (App.tool !== 'select' || toolPMOpen()) UI.closePM();
     UI.refreshRibbon();
   }
   function cancelTool(keep) {
+    var hkF = UI.sketchFreeHooks[App.tool];   // ui-sketch-spline: Esc / another tool ends a spline with what it has
+    if (hkF && hkF.finish && App.toolState && App.toolState.pts && App.toolState.pts.length) hkF.finish(App.toolState);
     if (App.toolState && App.toolState.modelRefs && UI.dropUnusedModelRefs) UI.dropUnusedModelRefs(App.toolState.modelRefs);
     if (App.toolState && (App.toolState.arcMode || App.toolState.tanFrom) && App.mode === 'sketch') $('sketch-hint').innerHTML = TOOL_HINTS[App.tool] || '';
     App.toolState = { pts: [] };
@@ -164,8 +170,16 @@
     if (App.tempDim) { App.tempDim = null; App.dimsStale = true; }
     if (App.tempRelDim) { App.tempRelDim = null; App.dimsStale = true; }
     UI.updateTemp();
-    if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
+    if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); if (toolPMOpen()) UI.closePM(); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
   }
+  // p9-sketchtab: a sketch tool's own PropertyManager (spec.sketchTool, Insert Line / Rectangle / Point …) closes when
+  // the tool is put down (Esc, the tool's button again, the chain ended with nothing in progress), as in SolidWorks
+  function toolPMOpen() { var s = UI.pmSpec && UI.pmSpec(); return !!(s && s.sketchTool); }
+  // p9-sketchtab: per-tool hooks registered by the ui-sketch-*.js files: UI.sketchToolHooks[tool] = { entities(pts, cur),
+  // steps(), commit(ents, st, typed) -> true when it added the geometry itself, after(f, n0, st), single(), numFields(n),
+  // liveValues(p), typedPoint(cur, v), readout(pts, p), live(pts, p, temp) }; each optional, null / undefined falls through
+  UI.sketchToolHooks = UI.sketchToolHooks || {};
+  function toolHook() { return UI.sketchToolHooks[App.tool] || null; }
   // p9-sketchfix: a PropertyManager that opens in a sketch (Linear Sketch Pattern, Trim, DXF/DWG Output, …) puts the
   // sketch tool down, as SolidWorks does: Smart Dimension no longer takes the PM's first click, and Line / Circle /
   // Polygon / Smart Dimension no longer stay highlighted with their hint over it. Every PropertyManager goes through
@@ -192,6 +206,14 @@
     }
   });
   UI.endSketchTool = endSketchTool;
+  UI.sketchToolPMs = UI.sketchToolPMs || {};
+  // UI.sketchFreeHooks[tool] = { entities(pts, state) -> preview / new entities, steps(state) -> clicks needed,
+  // click(p, state) -> true when it took the click, finish(state) (a double-click, right-click, Esc), readout(pts, p) }:
+  // a drawing tool defined in another file (ui-sketch-spline.js: Spline, Ellipse, Partial Ellipse)
+  UI.sketchFreeHooks = UI.sketchFreeHooks || {};
+  // UI.withToolPM(fn): run fn (which opens or re-renders a PM) without putting the active sketch tool down — for a tool
+  // PM that reopens itself, e.g. when its type (Corner / Center Rectangle …) is switched from inside the PM
+  UI.withToolPM = function (fn) { var was = toolPMOpening; toolPMOpening = true; try { return fn(); } finally { toolPMOpening = was; } };
 
   // ------------------------------------------------------------------ inference while sketching (no grid)
   // As in SolidWorks there is no snap grid: a point lands where it is clicked and the sketcher infers instead. In order:
@@ -447,6 +469,7 @@
         out.align = [];
       }
     }
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].refine) UI.sketchToolDefs[App.tool].refine(out, raw, st, h, grid);   // p9-sketch-curves: a tool's own rounding (ui-sketch-*.js)
     return out;
   }
   function snap(uv, mx, my) { return inferPoint(uv, mx, my).p; }
@@ -689,7 +712,11 @@
   function toolEntities(pts, cur) {
     var t = App.tool, all = pts.concat(cur ? [cur] : []);
     if (all.length < 2 && t !== 'point') return [];
+    var hk = toolHook(), he = hk && hk.entities ? hk.entities(pts, cur, all) : null;
+    if (he) return he;
+    if (UI.sketchFreeHooks[t] && UI.sketchFreeHooks[t].entities) return UI.sketchFreeHooks[t].entities(all, App.toolState || { pts: [] });
     var a = all[0], b = all[1], c = all[2];
+    if (UI.sketchToolDefs[t] && UI.sketchToolDefs[t].entities) return UI.sketchToolDefs[t].entities(pts, cur, App.toolState || { pts: [] });   // p9-sketch-curves: tools defined in ui-sketch-*.js
     switch (t) {
       case 'line': {
         var st0 = App.toolState || {}, ta = st0.arcMode && st0.arcDir ? tangentArc(a, st0.arcDir, b) : null;
@@ -729,12 +756,21 @@
     return [];
   }
   function cleanLen(x) { return +x.toPrecision(12); }   // a radius rounded as a length stays 12.5, not 12.499999999999998
+  // p9-sketch-curves: drawing tools defined outside this file (ui-sketch-*.js): UI.sketchToolDefs[tool] = { steps,
+  // entities(pts, cur, st), accept(st, p, typed) -> false refuses the click, after(f, firstIndex, count, st), fields(n, st),
+  // live(pts, p, st), typed(pts, cur, v, st), readout(pts, p, fmt), refine(info, raw, st, h, grid) }; the helpers they share
+  UI.sketchToolDefs = UI.sketchToolDefs || {};
+  UI.sketchGeom = { tangentArc: tangentArc, threePointArc: threePointArc, smoothDirs: smoothDirs, arcClockwise: arcClockwise, distPointLine: distPointLine, cleanLen: cleanLen, niceRound: niceRound, pxSize: pxSize };
   function distPointLine(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
     if (L < 1e-9) return Math.hypot(p[0] - a[0], p[1] - a[1]);
     return Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / L;
   }
   function stepsNeeded() {
+    var hk = toolHook();
+    if (hk && hk.steps) return hk.steps();
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].steps) return UI.sketchToolDefs[App.tool].steps;   // p9-sketch-curves
+    if (UI.sketchFreeHooks[App.tool] && UI.sketchFreeHooks[App.tool].steps) return UI.sketchFreeHooks[App.tool].steps(App.toolState || { pts: [] });
     switch (App.tool) { case 'arc': case 'arc3': case 'slot': return 3; case 'point': return 1; default: return 2; }
   }
 
@@ -777,6 +813,7 @@
     // a second click on the point just placed (the first half of a double-click) adds nothing: no zero-length lines
     var lastPt = st.pts[st.pts.length - 1];
     if (lastPt && Math.abs(p[0] - lastPt[0]) < 1e-9 && Math.abs(p[1] - lastPt[1]) < 1e-9) return;
+    if (UI.sketchFreeHooks[App.tool] && UI.sketchFreeHooks[App.tool].click && UI.sketchFreeHooks[App.tool].click(p, st, typed)) return;   // ui-sketch-spline
     // clicking the chain's first point closes the loop and ends the chain (the Line tool stays active)
     if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
       var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
@@ -788,6 +825,7 @@
     // r15/snapaudit15: a point equal to one this tool already placed collapses the entity (a Centerpoint Arc ending on
     // its own centre became a 360° arc, a slot's width point on its first centre a 0.01-wide slot): the click is not taken
     if (st.pts.some(function (q) { return Math.abs(p[0] - q[0]) < 1e-9 && Math.abs(p[1] - q[1]) < 1e-9; })) { UI.setStatus('That point is already part of the entity being drawn: click somewhere else.'); return; }
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].accept && UI.sketchToolDefs[App.tool].accept(st, p, typed) === false) return;   // p9-sketch-curves
     if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
     // r15/tanslide15: a Line started on a circle / arc (the on-curve snap, not one of its points) slides tangent to it
@@ -811,16 +849,18 @@
         if (tv0.w != null && e0.t === 'slot') e0.w = tv0.w;
       }
       var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
-      ents.forEach(addEntity);
+      var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
+      if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(addEntity);
       // r15/dblclick15: the segment just placed, for the double-click that ends the chain: placed within 500 ms of the
       // previous one it may be the stub the double-click's second click made (the handler takes it back when it is tiny)
       if (App.tool === 'line' && f && f.entities.length === n0 + 1) { var nowT = performance.now(); st.lastSeg = { index: f.entities.length - 1, at: nowT, quick: st.lastSegAt != null && nowT - st.lastSegAt < 500, pushed: pushedUndo }; st.lastSegAt = nowT; }
       // r6/sketch6: with Sketch Settings ▸ Enable on-screen numeric input on entity creation, every value of the new
       // entity gets a driving dimension (as SolidWorks), not only the typed ones
-      var typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
       if (f && typedAll && f.entities.length === n0 + 1) typedDims(f, n0, typedAll);
+      if (hkP && hkP.after && f) hkP.after(f, n0, st);
+      if (f && UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].after) UI.sketchToolDefs[App.tool].after(f, n0, f.entities.length - n0, st);   // p9-sketch-curves: Add dimensions, relations, the tool PM
       st.typed = null;
-      if (App.tool === 'line') {
+      if (App.tool === 'line' && !(hkP && hkP.single && hkP.single())) {
         var last = st.pts[st.pts.length - 1];
         st.chainStart = st.chainStart || st.pts[0];
         st.pts = [last];
@@ -888,6 +928,9 @@
   function numFields() {
     var st = App.toolState || { pts: [] }, n = st.pts.length;
     if (!n || App.mode !== 'sketch' || (App.command && App.command.onSketchPoint)) return null;
+    var hk = toolHook(), hf = hk && hk.numFields ? hk.numFields(n) : null;
+    if (hf) return hf;
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].fields) return UI.sketchToolDefs[App.tool].fields(n, st);   // p9-sketch-curves
     switch (App.tool) {
       case 'line': return st.arcMode ? null : [['L', 'len'], ['A', 'ang']];
       case 'rect': case 'crect': return [['W', 'w'], ['H', 'h']];
@@ -949,7 +992,10 @@
   function liveValues(p) {
     var st = App.toolState || { pts: [] }, pts = st.pts, a = pts[0], out = {};
     if (!a || !p) return out;
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].live) return UI.sketchToolDefs[App.tool].live(pts, p, st) || out;   // p9-sketch-curves
     function ang(x, y) { var d = Math.atan2(y, x) * 180 / Math.PI; return d < 0 ? d + 360 : d; }
+    var hk = toolHook(), hv = hk && hk.liveValues ? hk.liveValues(p) : null;
+    if (hv) return hv;
     var dx = p[0] - a[0], dy = p[1] - a[1], L = Math.hypot(dx, dy);
     switch (App.tool) {
       case 'line': { var q = (sliding(st) && tangentStart(st, p)) || pts[pts.length - 1]; out.len = Math.hypot(p[0] - q[0], p[1] - q[1]); out.ang = ang(p[0] - q[0], p[1] - q[1]); break; }
@@ -1044,6 +1090,9 @@
   function typedPoint(cur, v) {
     var st = App.toolState, pts = st.pts, a = pts[0], last = pts[pts.length - 1], D = Math.PI / 180;
     if (!a || !v) return cur;
+    var hk = toolHook(), hp = hk && hk.typedPoint ? hk.typedPoint(cur, v) : null;
+    if (hp) return hp;
+    if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].typed) return UI.sketchToolDefs[App.tool].typed(pts, cur, v, st);   // p9-sketch-curves
     function polar(o, L, ang) { return [clean(o[0] + L * Math.cos(ang)), clean(o[1] + L * Math.sin(ang))]; }
     function sg(x) { return x < 0 ? -1 : 1; }
     var dx = cur[0] - a[0], dy = cur[1] - a[1];
@@ -1221,6 +1270,8 @@
     if (drawing && App.toolState.pts.length) {
       App.tempEntities = toolEntities(App.toolState.pts, p);
       UI.updateTemp();
+      var hkM = toolHook();
+      if (hkM && hkM.live) hkM.live(App.toolState.pts, p, App.tempEntities);   // p9-sketchtab: the tool PM's live values
       // yellow inference icons: the relations the entity being drawn would get
       var f = UI.activeSketchFeature();
       App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0]) : [];
@@ -1270,8 +1321,12 @@
     // p9-sketch: lengths read 3 places in an inch sketch (0.141, not 0.14 for a .281 hole), angles 1 place
     var a = pts[0], inch = UI.unitLabel() === 'in', n = function (v, d) { return UI.fmtNum(v, d === 2 && inch ? 3 : d); }, t = App.tool;
     if (!a) return '';
+    var hk = toolHook(), hr = hk && hk.readout ? hk.readout(pts, p) : null;
+    if (hr) return hr;
+    if (UI.sketchToolDefs[t] && UI.sketchToolDefs[t].readout) return UI.sketchToolDefs[t].readout(pts, p, n) || '';   // p9-sketch-curves
     var dx = p[0] - a[0], dy = p[1] - a[1], L = Math.hypot(dx, dy);
     function ang(x, y) { var d = Math.atan2(y, x) * 180 / Math.PI; return n(d < 0 ? d + 360 : d, 1) + '°'; }
+    if (UI.sketchFreeHooks[t] && UI.sketchFreeHooks[t].readout) return UI.sketchFreeHooks[t].readout(pts, p, n);
     switch (t) {
       case 'line': {
         var st1 = App.toolState || {}, q = (sliding(st1) && tangentStart(st1, p)) || pts[pts.length - 1], ta = st1.arcMode && st1.arcDir ? tangentArc(q, st1.arcDir, p) : null;
@@ -1666,6 +1721,7 @@
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
     var out = { lines: [], arrows: [], value: g.value, label: (g.prefix === '⌀' ? 'Ø' : g.prefix) + fmtDim(g.value) };   // r14/sketchui14: Century Gothic's Ø (it has no ⌀): the full-height diameter sign of SolidWorks' dimensions
+    if (UI.dimLabelText) out.label = UI.dimLabelText(d, g.value, g.prefix === '⌀' ? 'dia' : g.prefix === 'R' ? 'r' : 'len');   // sketchdims: tolerance, precision, text, radius / diameter
     if (g.type === 'linear') {
       var ld = linearDimScreen(pl, g.P, g.Q, g.dir, d.off, d.tx);
       ld.value = g.value; ld.label = out.label;
@@ -1810,6 +1866,7 @@
     if (it.rel != null) App.sel = { kind: 'rel', index: it.rel };
     else if (!it.auto) App.sel = { kind: 'dim', index: it.index };
     else return;
+    if (UI.openDimensionPM && UI.openDimensionPM(App.sel)) { UI.updateSketches(); return; }   // sketchdims: its Dimension PropertyManager
     UI.closePM(); UI.updateSketches();
   }
   function editDimItem(it) {
@@ -1905,6 +1962,8 @@
     if (!it.temp) { ta.tabindex = '0'; ta.role = 'button'; ta['aria-label'] = 'Dimension ' + sc.label + ', double-click to change, drag to move'; }
     var t = svg('text', ta, gEl);
     svgText(t, sc.label);
+    // sketchdims: a Basic dimension's value in a box
+    if (it.d && it.d.tol && it.d.tol.type === 'basic' && sc.box) svg('rect', { 'class': 'dbox', x: r2(sc.box[0] + 1), y: r2(sc.box[1] + 1), width: r2(sc.box[2] - sc.box[0] - 2), height: r2(sc.box[3] - sc.box[1] - 2) }, gEl);
     it.label = sc.label;
     if (!it.temp) {
       t._d = it;
@@ -2006,6 +2065,15 @@
   dmButton(dimBtns, 'dm-ok', 'OK (Enter): keep the value and close', DM_OK, function () { closeDimEdit(true, true); });
   dmButton(dimBtns, 'dm-cancel', 'Cancel (Esc): restore the value and close', DM_CANCEL, function () { closeDimEdit(false); });
   dmButton(dimBtns, 'dm-rebuild', 'Rebuild: regenerate the sketch with the typed value', DM_REBUILD, function () { var r = parseDimInput(dimInput.value); if (r.error != null) dimEditError(r.error); else previewDim(r.value); });
+  // sketchdims: Reverse the sense of the dimension (ui-sketch-dims.js UI.reverseDimSense), on the sketch as it was before any preview
+  dmButton(dimBtns, 'dm-reverse', 'Reverse the sense of the dimension', dmIcon('<path d="M3 5.5 H12.5 M10 3 L12.8 5.5 L10 8 M13 10.5 H3.5 M6 8 L3.2 10.5 L6 13" fill="none" stroke="#2f7fd6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'), function () {
+    var ed = dimEditing;
+    if (!ed || !UI.reverseDimSense || ed.auto) return;
+    restoreDimPreview();
+    var r = UI.reverseDimSense(ed.rel != null ? { kind: 'rel', index: ed.rel } : { kind: 'dim', index: ed.index });
+    if (!r.ok) dimEditError(r.error);
+    dimInput.focus();
+  });
   dimEdit.insertBefore(dimHead, dimInput);
   dimEdit.insertBefore(dimBtns, dimInput);
   dimEdit.insertBefore(dimRow, dimInput);
@@ -2016,8 +2084,10 @@
     var f = UI.activeSketchFeature();
     if (!f) return;
     if (dimEditing) closeDimEdit(true);
-    var value = it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d);
-    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: it.rel != null && f.rels[it.rel].type === 'angle' };
+    // sketchdims: scale = shown / stored (a circle's diameter shown as its radius: 0.5, UI.dimShowScale)
+    var scale = it.rel == null && UI.dimShowScale ? UI.dimShowScale(it.d) : 1;
+    var value = (it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d)) * scale;
+    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: it.rel != null && f.rels[it.rel].type === 'angle', scale: scale };
     dimEdit.hidden = false;
     dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
@@ -2070,7 +2140,7 @@
     var t0 = performance.now();
     if (!ed.snap) ed.snap = { entities: JSON.parse(JSON.stringify(f.entities)), relV: ed.rel != null ? f.rels[ed.rel].v : null };
     else restoreDimPreview(true);
-    var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, ed.preview) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, ed.preview);
+    var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, ed.preview) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, ed.preview / (ed.scale || 1));
     if (!res.ok) dimEditError(res.error);
     App.gridStale = true;
     UI.updateSketches();
@@ -2132,7 +2202,7 @@
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
       if (window.SketchSolver) {
         // a driving dimension: the whole sketch is re-solved with the new value (relations and other dimensions hold)
-        var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, v) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, v);
+        var res = ed.rel != null ? SketchSolver.setRelValue(f, ed.rel, v) : SketchSolver.setDim(f, ed.auto ? ed.d : ed.index, v / (ed.scale || 1));
         if (!res.ok) throw new Error(res.error);
       } else K.setDimValue(e, ed.d, v);
       App.gridStale = true;
@@ -2175,6 +2245,8 @@
     var f = UI.activeSketchFeature(), st = App.toolState;
     if (!f) return;
     if (st.relDim) {
+      // sketchdims: an arc length waits for the arc's other end point first (UI.dimPickNeed)
+      if (st.relDim.need && UI.dimPickNeed && UI.dimPickNeed(f, st.relDim, mx, my)) return;
       // third click of a two-entity dimension: place it, then type its value
       var rd = st.relDim;
       st.relDim = null; st.dim = null; App.tempRelDim = null;
@@ -2210,6 +2282,7 @@
       var it = null;
       list.forEach(function (x) { if (x.d === d) it = x; });
       if (it) openDimEdit(it);
+      if (UI.openDimensionPM) UI.openDimensionPM(App.sel);   // sketchdims: the Dimension PropertyManager beside the Modify box
       UI.setStatus('Dimension placed. Type a value and press Enter to drive the entity; Delete removes it.');
       return;
     }
@@ -2510,6 +2583,7 @@
   function finishChain() {
     if (App.tool === 'select') return;
     var st = App.toolState || {};
+    if (UI.sketchFreeHooks[App.tool] && UI.sketchFreeHooks[App.tool].finish && st.pts && st.pts.length) { UI.sketchFreeHooks[App.tool].finish(st); cancelTool(true); return; }   // ui-sketch-spline: the tool stays
     if ((st.pts && st.pts.length) || st.dim || st.relDim) {
       cancelTool(true);
       UI.setStatus('Chain ended. Click to start a new ' + (App.tool === 'line' ? 'line' : 'entity') + ', or press Esc to put the tool down.');

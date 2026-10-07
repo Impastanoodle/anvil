@@ -102,7 +102,7 @@ var UI = (function () {
     // active-sketch entities by definition state (sketch-solver.js): under = mats.sketch (blue), fully defined, over
     // defined (redundant, yellow), conflict (red)
     sketchFull: new THREE.LineBasicMaterial({ color: 0x15181d, depthTest: false }),
-    sketchOver: new THREE.LineBasicMaterial({ color: 0xd4a300, depthTest: false }),
+    sketchOver: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),   // sketchdims: over defined is red, as SolidWorks draws it
     sketchConflict: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),
     temp: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     planeFace: new THREE.MeshBasicMaterial({ color: 0x5a9be6, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
@@ -1540,7 +1540,7 @@ var UI = (function () {
   // 30 % since they were tessellated, so zooming in never shows the flats.
   var SCREEN_SAG_PX = 0.15, sketchSegsScale = 0;
   function screenPolylines(e) {
-    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot') return K.entityPolylines(e);
+    if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot' && e.t !== 'aslot') return K.entityPolylines(e);
     var saved = K.setTessellation({});
     try { K.setTessellation({ chordTol: Math.max(1e-9, SCREEN_SAG_PX * cam.scale), minSegs: 32, maxSegs: 2048 }); return K.entityPolylines(e); }
     finally { K.setTessellation(saved); }

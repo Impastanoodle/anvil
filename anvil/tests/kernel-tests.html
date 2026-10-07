@@ -12659,6 +12659,741 @@
   })();
   // --- end occt-flat ---
 
+  // --- p9-sketchtab: Line Properties / Rectangle / Point values drive the geometry through the solver
+  // (SketchSolver.driveEntity), and the 3 Point Corner / 3 Point Center Rectangle and Parallelogram tools make four lines
+  // with Coincident corners, Parallel sides and (rectangles) a Perpendicular corner (ui-sketch-lines.js) ---
+  (function () {
+    group('p9-sketchtab: driven entity values, 3 Point rectangles and parallelograms as related lines');
+    if (typeof SketchSolver === 'undefined') return;
+    var SS = SketchSolver;
+    function copy(o) { return JSON.parse(JSON.stringify(o)); }
+    // the relations ui-sketch-lines.js gives four lines through corners K (counter-clockwise)
+    function quad(K, perp) {
+      var s = { entities: [], rels: [] };
+      for (var k = 0; k < 4; k++) s.entities.push({ t: 'line', x1: K[k][0], y1: K[k][1], x2: K[(k + 1) % 4][0], y2: K[(k + 1) % 4][1] });
+      for (k = 0; k < 4; k++) s.rels.push({ type: 'coincident', refs: [k + '.p2', ((k + 1) % 4) + '.p1'] });
+      s.rels.push({ type: 'parallel', refs: ['0', '2'] }, { type: 'parallel', refs: ['1', '3'] });
+      if (perp) s.rels.push({ type: 'perpendicular', refs: ['0', '1'] });
+      return s;
+    }
+    function script(s, depth) {
+      var c = 'p.sketch("Front")';
+      s.entities.forEach(function (e) { c += '.line(' + [e.x1, e.y1, e.x2, e.y2].join(', ') + ')'; });
+      s.rels.forEach(function (r) { c += '.rel("' + r.type + '", ' + JSON.stringify(r.refs) + ')'; });
+      return c + '.extrude(' + depth + ');';
+    }
+    test('driveEntity: a line\'s End X moves it along its Horizontal relation; a Start Y the origin Coincident holds is refused with the sketch unchanged', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }], rels: [{ type: 'horizontal', refs: ['0'] }, { type: 'coincident', refs: ['0.p1', 'O'] }] };
+      var r = SS.driveEntity(s, 0, 1, function (E) { return [E[0].x2 - 55]; }, { guess: function (E) { E[0].x2 = 55; } });
+      assert(r.ok, 'End X refused: ' + r.error);
+      near(s.entities[0].x2, 55, 1e-9, 'x2'); near(s.entities[0].y2, 0, 1e-9, 'y2'); near(s.entities[0].x1, 0, 1e-9, 'x1');
+      var before = copy(s.entities);
+      r = SS.driveEntity(s, 0, 1, function (E) { return [E[0].y1 - 5]; }, { guess: function (E) { E[0].y1 = 5; } });
+      assert(!r.ok && /over-define/.test(r.error), 'Start Y taken: ' + JSON.stringify(r));
+      assert(JSON.stringify(s.entities) === JSON.stringify(before), 'sketch changed by a refused value');
+      return r.error;
+    });
+    test('3 Point Corner Rectangle: four related lines at 36.87° are Under Defined with 5 DOF and nothing redundant; a dragged corner keeps the right angle; extruded 10 it is 50 × 20 × 10 = 10000', function () {
+      var K = [[0, 0], [30, 40], [14, 52], [-16, 12]], s = quad(K, true), an = SS.analyze(s);
+      assert(an.status === 'under' && an.dof === 5 && !an.redundant && !an.conflicts, 'analysis ' + JSON.stringify({ st: an.status, dof: an.dof, red: an.redundant }));
+      var r = SS.driveEntity(s, 2, 1, function (E) { return [SS.refPoint({ entities: E }, '2.p1')[0] - 18]; });
+      assert(r.ok, 'corner refused: ' + r.error);
+      var e0 = s.entities[0], e1 = s.entities[1];
+      near((e0.x2 - e0.x1) * (e1.x2 - e1.x1) + (e0.y2 - e0.y1) * (e1.y2 - e1.y1), 0, 1e-6, 'right angle');
+      near(SS.refPoint(s, '2.p1')[0], 18, 1e-9, 'corner x');
+      var b = build(script(quad(K, true), 10));
+      noErrors(b);
+      near(b.mp.volume, 10000, 1e-6, 'volume');
+      return 'dof ' + an.dof + ', volume ' + b.mp.volume;
+    });
+    test('Parallelogram: no Perpendicular, 6 DOF, nothing redundant; base 40 × height 20 extruded 5 = 4000; its sketch DXF is 4 LINEs', function () {
+      var s = quad([[0, 0], [40, 0], [50, 20], [10, 20]], false), an = SS.analyze(s);
+      assert(an.dof === 6 && !an.redundant && !an.conflicts, 'analysis dof ' + an.dof + ' redundant ' + an.redundant);
+      var b = build(script(s, 5));
+      near(b.mp.volume, 4000, 1e-6, 'volume');
+      var dxf = K.exportDXFSketch(s, 'mm'), n = (dxf.match(/\n0\nLINE\n/g) || []).length;
+      assert(n === 4, 'DXF LINEs ' + n);
+      return 'dof ' + an.dof + ', ' + n + ' LINEs';
+    });
+    test('3 Point Center Rectangle with construction diagonals and a center point (Midpoint of the first diagonal) on the origin: nothing redundant, 3 DOF (angle, width, height)', function () {
+      var s = quad([[-20, -10], [20, -10], [20, 10], [-20, 10]], true);
+      s.entities.push({ t: 'line', x1: -20, y1: -10, x2: 20, y2: 10, construction: true }, { t: 'line', x1: 20, y1: -10, x2: -20, y2: 10, construction: true }, { t: 'point', x: 0, y: 0 });
+      s.rels.push({ type: 'coincident', refs: ['4.p1', '0.p1'] }, { type: 'coincident', refs: ['4.p2', '2.p1'] }, { type: 'coincident', refs: ['5.p1', '1.p1'] }, { type: 'coincident', refs: ['5.p2', '3.p1'] },
+        { type: 'midpoint', refs: ['6', '4'] }, { type: 'coincident', refs: ['6', 'O'] });
+      var an = SS.analyze(s);
+      assert(!an.redundant && !an.conflicts && an.dof === 3, 'analysis dof ' + an.dof + ' redundant ' + an.redundant);
+      // the center stays on the origin when a corner is driven
+      var r = SS.driveEntity(s, 1, 1, function (E) { return [SS.refPoint({ entities: E }, '1.p1')[0] - 30]; });
+      assert(r.ok, r.error);
+      near(SS.refPoint(s, '3.p1')[0], -30, 1e-6, 'opposite corner mirrors through the center');
+      return 'dof ' + an.dof;
+    });
+    test('Midpoint Line: a line with Midpoint on the origin stays symmetric when its end is driven', function () {
+      var s = { entities: [{ t: 'line', x1: -20, y1: -10, x2: 20, y2: 10 }], rels: [{ type: 'midpoint', refs: ['O', '0'] }] };
+      assert(SS.analyze(s).status === 'under', 'status');
+      var r = SS.driveEntity(s, 0, 2, function (E) { return [E[0].x2 - 30, E[0].y2 - 5]; });
+      assert(r.ok, r.error);
+      near(s.entities[0].x1, -30, 1e-9, 'x1'); near(s.entities[0].y1, -5, 1e-9, 'y1');
+      return JSON.stringify(s.entities[0]);
+    });
+  })();
+  // --- end p9-sketchtab ---
+  // --- sketchdims: SolidWorks' remaining 2D relations (Coradial, Intersection, Merge), arc conditions on distances to
+  // circles / arcs, the arc length dimension, Suppressed relations, Reverse the sense of a dimension (flip), Fully Define
+  // Sketch, and the Dimension PropertyManager's properties through scripts ---
+  (function () {
+    group('sketchdims: relations, arc conditions, arc length, suppressed, flip, Fully Define Sketch');
+    var SS = SketchSolver;
+    function relList(s) { return (s.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+    test('sketchdims: Coradial puts an arc on a circle (one centre, one radius); Intersection puts a point where two lines cross, refs in any order; Merge joins two points', function () {
+      var s = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'arc', cx: 1, cy: 2, r: 4, a0: 0, a1: 90 }] };
+      assert(SS.applicable(s, ['0', '1']).indexOf('coradial') >= 0, 'offered: ' + SS.applicable(s, ['0', '1']));
+      var r = SS.addRelation(s, 'coradial', ['0', '1']);
+      assert(r.ok && r.status === 'ok', JSON.stringify(r.status));
+      var c = s.entities[0], a = s.entities[1];
+      near(c.cx, a.cx, 1e-9, 'cx'); near(c.cy, a.cy, 1e-9, 'cy'); near(c.r, a.r, 1e-9, 'r');
+      s.dims = [{ e: 0, k: 'dia' }];
+      assert(SS.setDim(s, 0, 20).ok, 'diameter drives');
+      near(s.entities[1].r, 10, 1e-9, 'the arc follows the circle');
+      var t = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 5, y1: -5, x2: 5, y2: 5 }, { t: 'point', x: 3, y: 2 }] };
+      assert(SS.applicable(t, ['0', '2', '1']).indexOf('intersection') >= 0 && SS.applicable(t, ['0', '1']).indexOf('intersection') < 0, 'offered for a point and two lines only');
+      r = SS.addRelation(t, 'intersection', ['1', '0', '2']);
+      assert(r.ok && t.rels[0].refs.join() === '2,1,0', 'stored point first: ' + relList(t));
+      var p = t.entities[2], L0 = t.entities[0], L1 = t.entities[1];
+      near((p.x - L0.x1) * (L0.y2 - L0.y1) - (p.y - L0.y1) * (L0.x2 - L0.x1), 0, 1e-7, 'on line 0');
+      near((p.x - L1.x1) * (L1.y2 - L1.y1) - (p.y - L1.y1) * (L1.x2 - L1.x1), 0, 1e-7, 'on line 1');
+      var m = { entities: [{ t: 'point', x: 0, y: 0 }, { t: 'point', x: 1, y: 1 }] };
+      r = SS.addRelation(m, 'merge', ['0', '1']);
+      assert(r.ok && relList(m).join() === 'coincident:0,1' && Math.hypot(m.entities[0].x - m.entities[1].x, m.entities[0].y - m.entities[1].y) < 1e-9, 'merged: ' + relList(m));
+      return relList(s).concat(relList(t)).join(' ');
+    });
+    test('sketchdims: arc conditions — a distance between two circles measured centre / min / max (ac per ref), to a line from a circle\'s near side; driving and driven values follow', function () {
+      var s = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'circle', cx: 20, cy: 0, r: 3 }, { t: 'line', x1: -10, y1: -12, x2: 30, y2: -12 }] };
+      near(SS.measure(s, 'distance', ['0', '1']), 20, 1e-12, 'centres');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['min', 'min']), 12, 1e-12, 'min / min');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['max', 'max']), 28, 1e-12, 'max / max');
+      near(SS.measure(s, 'distance', ['0', '2'], null, null, ['min', 'c']), 7, 1e-12, 'circle near side to the line');
+      var r = SS.addRelation(s, 'distance', ['0', '1'], { ac: ['min', 'max'] });
+      assert(r.ok && s.rels[0].ac.join() === 'min,max', JSON.stringify(s.rels[0]));
+      near(s.rels[0].v, 18, 1e-12, 'value with conditions');
+      s.rels.push({ type: 'fix', refs: ['0'] });
+      s.dims = [{ e: 1, k: 'dia' }];
+      assert(SS.setRelValue(s, 0, 30).ok, 'drives');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['min', 'max']), 30, 1e-6, 'measures 30');
+      near(Math.hypot(s.entities[1].cx - s.entities[0].cx, s.entities[1].cy - s.entities[0].cy) - 5 + 3, 30, 1e-6, 'gap reads 30 with Min / Max');
+      var h = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 2 }, { t: 'circle', cx: 10, cy: 7, r: 1 }] };
+      r = SS.addRelation(h, 'distance', ['0', '1'], { dir: 'h', ac: ['max', 'max'], driven: true });
+      near(h.rels[0].v, 13, 1e-12, 'horizontal, outside to outside');
+      h.entities[1].cx = 12; SS.updateDriven(h);
+      near(h.rels[0].v, 15, 1e-12, 'driven follows');
+      return 'min/max ' + fmt(s.rels[0].v);
+    });
+    test('sketchdims: arc length (an arc\'s r · sweep) drives the arc, reads driven, and round-trips through a script', function () {
+      var s = { entities: [{ t: 'arc', cx: 0, cy: 0, r: 10, a0: 0, a1: 90 }] };
+      assert(SS.applicable(s, ['0']).indexOf('arclength') < 0, 'a dimension, not an Add Relations relation');
+      var r = SS.addRelation(s, 'arclength', ['0']);
+      assert(r.ok, r.error);
+      near(s.rels[0].v, 5 * Math.PI, 1e-12, 'quarter circle of R10');
+      s.rels.push({ type: 'fix', refs: ['0.c'] });
+      s.dims = [{ e: 0, k: 'r' }];
+      assert(SS.setRelValue(s, 0, 20).ok, 'drives');
+      var e = s.entities[0];
+      near(e.r, 10, 1e-9, 'radius held'); near(e.r * (e.a1 - e.a0) * Math.PI / 180, 20, 1e-7, 'arc length 20');
+      assert(!SS.addRelation({ entities: [{ t: 'circle', cx: 0, cy: 0, r: 3 }] }, 'arclength', ['0']).ok, 'a full circle has no arc length dimension');
+      var m = K.newModel('al');
+      K.runScript(m, 'p.sketch("Front").arc(0, 0, 10, 0, 90).rel("arclength", ["0"], 20).extrude(1);');
+      var sk = m.features[0];
+      near(SS.measure(sk, 'arclength', ['0']), 20, 1e-7, 'script drives it');
+      assert(/\.rel\("arclength", \["0"\], 20\)/.test(K.generateScript(m)), 'written back');
+      return SS.describe(s, s.rels[0]);
+    });
+    test('sketchdims: a suppressed relation holds nothing (analyze: suppressed) and stays in the script; unsuppressed it solves again', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 1 }], rels: [{ type: 'horizontal', refs: ['0'], suppressed: true }] };
+      var an = SS.analyze(s);
+      assert(an.rels[0] === 'suppressed' && an.dof === 4, JSON.stringify(an.rels) + ' dof ' + an.dof);
+      assert(SS.solve(s).ok && s.entities[0].y2 === 1, 'not applied');
+      delete s.rels[0].suppressed;
+      assert(SS.solve(s).ok && Math.abs(s.entities[0].y2 - s.entities[0].y1) < 1e-9, 'applied once unsuppressed');
+      var m = K.newModel('sup');
+      K.runScript(m, 'p.sketch("Front").line(0, 0, 10, 1).rel("horizontal", ["0"], { suppressed: true }).extrude(1);');
+      assert(m.features[0].rels[0].suppressed === true && m.features[0].entities[0].y2 === 1, 'script keeps it suppressed, unsolved');
+      assert(/\.rel\("horizontal", \["0"\], \{"suppressed":true\}\)/.test(K.generateScript(m)), K.generateScript(m));
+      return 'ok';
+    });
+    test('sketchdims: Reverse the sense of a dimension (rel.flip for one solve): a point goes to the other side of the line it is dimensioned to; a fixed geometry refuses', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'point', x: 3, y: 4 }], rels: [{ type: 'fix', refs: ['0'] }] };
+      SS.addRelation(s, 'distance', ['1', '0']);
+      var d = s.rels[1];
+      d.flip = true; var r = SS.solve(s); delete d.flip;
+      assert(r.ok, 'solved');
+      near(s.entities[1].y, -4, 1e-9, 'other side'); near(s.entities[1].x, 3, 1e-9, 'same x');
+      assert(SS.analyze(s).status === 'under' && SS.solve(s).ok && s.entities[1].y === -4, 'stays there');
+      s.rels.push({ type: 'fix', refs: ['1'] });
+      var before = JSON.stringify(s.entities);
+      d.flip = true; r = SS.solve(s); delete d.flip;
+      assert(!r.ok && JSON.stringify(s.entities) === before, 'a fixed point cannot reverse');
+      var a = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 8, y2: 6 }], rels: [{ type: 'fix', refs: ['0'] }, { type: 'coincident', refs: ['1.p1', '0.p1'] }] };
+      SS.addRelation(a, 'angle', ['0', '1']);
+      a.rels[2].flip = true; assert(SS.solve(a).ok, 'angle flip solves'); delete a.rels[2].flip;
+      var L = a.entities[1];
+      near(Math.atan2(L.y2 - L.y1, L.x2 - L.x1) * 180 / Math.PI, -Math.atan2(6, 8) * 180 / Math.PI, 1e-6, 'swung below');
+      return 'ok';
+    });
+    test('sketchdims: Fully Define Sketch — Horizontal / Vertical relations, then sizes, then baseline distances from the origin (Vertical / Horizontal with a level point): Fully Defined, DOF 0, nothing over defining; a second run adds nothing', function () {
+      var m = K.newModel('fd'), b = new K.Builder(m).sketch('Front');
+      b.line(0, 0, 60, 0.5).line(60, 0.5, 59, 30).line(59, 30, 0, 29).line(0, 29, 0, 0).circle(20, 15, 4).arc(40, 15, 5, 0, 180);
+      var f = b.f;
+      [0, 1, 2, 3].forEach(function (i) { SS.infer(f, i); });
+      var a0 = SS.analyze(f);
+      assert(a0.status === 'under' && a0.dof > 0, 'starts under defined');
+      var r = SS.fullyDefine(f, {});
+      assert(r.ok && r.status === 'full' && r.dof === 0, JSON.stringify({ status: r.status, dof: r.dof }));
+      var an = SS.analyze(f);
+      assert(!an.redundant && !an.conflicts, 'no over defining');
+      var types = r.rels.map(function (i) { return f.rels[i].type + (f.rels[i].dir ? '/' + f.rels[i].dir : ''); });
+      assert(types.indexOf('horizontal') >= 0 && types.indexOf('distance/h') >= 0 && types.indexOf('distance/v') >= 0, types.join(' '));
+      assert(r.dims.length === 2 && f.dims[r.dims[0]].k === 'dia' && f.dims[r.dims[1]].k === 'r', 'sizes: ' + JSON.stringify(r.dims.map(function (i) { return f.dims[i]; })));
+      assert(r.rels.every(function (i) { var x = f.rels[i]; return x.type !== 'distance' || x.refs[0] === 'O'; }), 'baseline: every distance from the origin');
+      // placed below / left of the sketch, nearest first
+      var hd = r.rels.map(function (i) { return f.rels[i]; }).filter(function (x) { return x.dir === 'h'; });
+      assert(hd.every(function (x) { return x.off < 0; }), 'below the sketch');
+      near(f.entities[0].y2, f.entities[0].y1, 1e-9, 'the bottom line is horizontal now');
+      var r2 = SS.fullyDefine(f, {});
+      assert(!r2.rels.length && !r2.dims.length, 'second run adds nothing');
+      var c = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 10, y1: 0, x2: 25, y2: 0 }, { t: 'line', x1: 25, y1: 0, x2: 45, y2: 0 }], rels: [{ type: 'coincident', refs: ['0.p1', 'O'] }, { type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }] };
+      var rc = SS.fullyDefine(c, { scheme: 'chain' });
+      var ch = rc.rels.map(function (i) { return c.rels[i]; }).filter(function (x) { return x.dir === 'h'; });
+      assert(rc.status === 'full' && ch.length === 3 && ch.map(function (x) { return fmt(x.v); }).join() === '10,15,20', 'chain: ' + ch.map(function (x) { return x.refs.join('>') + '=' + x.v; }).join(' '));
+      var sel = { entities: [{ t: 'circle', cx: 5, cy: 5, r: 1 }, { t: 'circle', cx: 15, cy: 5, r: 2 }] };
+      var rs = SS.fullyDefine(sel, { entities: [1], hDatum: 'O', vDatum: 'O' });
+      var st = SS.analyze(sel);
+      assert(st.entities[0] === 'under' && st.entities[1] === 'full' && rs.dims.length === 1, 'selected entities only: ' + st.entities.join());
+      return types.length + ' relations / distances, ' + r.dims.length + ' sizes';
+    });
+    test('sketchdims: the Dimension PropertyManager\'s properties (name, tolerance, precision, text, radius / diameter display, arc conditions) round-trip through scripts', function () {
+      var m = K.newModel('props'), p = new K.Builder(m);
+      var sk = p.sketch('Front').circle(0, 0, 5).circle(20, 0, 3);
+      sk.dim(0, 'dia');
+      sk.rel('distance', ['0', '1'], { value: 25, ac: ['max', 'c'], tol: { type: 'symmetric', plus: 0.1, minus: 0.1 }, name: 'Gap', prec: 3 });
+      sk.dimProps([[0, { prefix: '2X', suffix: 'TYP', show: 'r', tol: { type: 'bilateral', plus: 0.05, minus: 0.02 } }]]);
+      sk.extrude(2);
+      var f = m.features[0];
+      near(Math.hypot(f.entities[1].cx - f.entities[0].cx, f.entities[1].cy - f.entities[0].cy) + 5, 25, 1e-6, 'driven with its arc condition');
+      var code = K.generateScript(m);
+      assert(/\.dimProps\(\[\[0,\{"tol":\{"type":"bilateral","plus":0\.05,"minus":0\.02\},"prefix":"2X","suffix":"TYP","show":"r"\}\]\]\)/.test(code), code);
+      var m2 = K.newModel('again');
+      K.runScript(m2, code);
+      var g = m2.features[0];
+      assert(JSON.stringify(g.dims) === JSON.stringify(f.dims), 'dims ' + JSON.stringify(g.dims));
+      assert(JSON.stringify(g.rels) === JSON.stringify(f.rels), 'rels ' + JSON.stringify(g.rels));
+      assert(K.generateScript(m2) === code, 'same script');
+      return 'ok';
+    });
+  })();
+  // --- end sketchdims ---
+  // --- p9-sketch-curves: arc slots (3 Point / Centerpoint Arc Slot), the Polygon's inscribed circle, a slot's overall
+  // length (ui-sketch-curves.js; kernel-sketch.js, sketch-solver.js, kernel-script.js) ---
+  (function () {
+    group('p9-sketch-curves: arc slots, inscribed polygons, overall slot length');
+    var SS = window.SketchSolver, PI = Math.PI;
+    // an arc slot's area: the band (sweep · r · w) plus the two half-circle caps (π w² / 4)
+    function aslotArea(r, sweepDeg, w) { return sweepDeg * PI / 180 * r * w + PI * w * w / 4; }
+    test('p9-sketch-curves: an arc slot is one closed loop of its four true arcs; its extrude is exact (θ·r·w + π·w²/4) × depth, a through cut removes exactly that, and the script round-trips (.arcSlot)', function () {
+      var e = { t: 'aslot', cx: 0, cy: 0, r: 20, a0: 30, a1: 150, w: 6 };
+      var prof = K.sketchProfile({ entities: [e] });
+      assert(prof.loops.length === 1 && !prof.loops[0].cross, 'one simple loop: ' + prof.loops.length);
+      assert(prof.curves && prof.curves.length === 4, 'four true arcs: ' + (prof.curves || []).length);
+      assert(prof.loops[0].seg && prof.loops[0].seg.every(function (k) { return k >= 0; }), 'every segment on a true arc');
+      var radii = prof.curves.map(function (c) { return fmt(c.r); }).sort(function (a, b) { return a - b; }).join(',');
+      assert(radii === '3,3,17,23', 'radii r ± w/2 and the w/2 caps: ' + radii);
+      var a = build('p.sketch("Front").arcSlot(0, 0, 20, 30, 150, 6).extrude(5);');
+      noErrors(a);
+      nearRel(a.mp.volume, aslotArea(20, 120, 6) * 5, 1e-9, 'extrude volume');
+      var c = build('p.sketch("Top").rect(-40, -60, 80, 60).extrude(10);\np.sketch("Top", 10).arcSlot(0, -30, 20, 200, 340, 5).cut("through", { reverse: true });');
+      noErrors(c);
+      nearRel(c.mp.volume, 80 * 60 * 10 - aslotArea(20, 140, 5) * 10, 1e-9, 'plate with an arc slot cut through');
+      var rt = roundTrip('p.sketch("Front").rect(-30, -10, 60, 40).arcSlot(0, 0, 20, 30, 150, 6).extrude(4);');
+      assert(/\.arcSlot\(0, 0, 20, 30, 150, 6\)/.test(K.generateScript(a.model)), 'script writes .arcSlot');
+      return fmt(a.mp.volume) + ' mm³, round trip ' + rt;
+    });
+    test('p9-sketch-curves: an arc slot\'s sketch DXF is four ARCs (r ± w/2, two w/2 caps) chaining into one closed loop, on HOLES inside a plate outline', function () {
+      var s = { entities: [{ t: 'rect', x: -30, y: -10, w: 60, h: 40 }, { t: 'aslot', cx: 0, cy: 0, r: 20, a0: 30, a1: 150, w: 6 }] };
+      var dxf = K.exportDXFSketch(s, 'mm', { version: 'R2000' }), ents = sketchDxfEnts(dxf);
+      var arcs = ents.filter(function (x) { return x.t === 'ARC'; }), lines = ents.filter(function (x) { return x.t === 'LINE'; });
+      assert(arcs.length === 4 && lines.length === 4, 'entities: ' + ents.map(function (x) { return x.t; }).join(','));
+      assert(arcs.every(function (x) { return x['8'] === 'HOLES'; }) && lines.every(function (x) { return x['8'] === 'OUTLINE'; }), 'layers: ' + ents.map(function (x) { return x.t + '/' + x['8']; }).join(','));
+      var radii = arcs.map(function (x) { return fmt(x['40']); }).sort(function (p, q) { return p - q; }).join(',');
+      assert(radii === '3,3,17,23', 'arc radii ' + radii);
+      var chk = DxfCheck.check(dxf, { units: 'mm' });
+      assert(chk.ok, 'DXF check: ' + chk.errors.join('; '));
+      assert(chk.loops.length === 2 && chk.loops.every(function (l) { return l.closed; }), 'two closed loops: ' + JSON.stringify(chk.loops));
+      return 'ARC x4 on HOLES';
+    });
+    test('p9-sketch-curves: arc slot editing — mirror (runs the other way round), move, trim explodes it into arcs, Offset keeps an arc slot with a radial offset dimension that drives the width', function () {
+      var e = { t: 'aslot', cx: 10, cy: 0, r: 20, a0: 30, a1: 150, w: 6 };
+      var m = K.mirrorEntity(e, K.mirrorAxis('y'));
+      near(m.cx, -10, 1e-12, 'mirrored centre'); near(m.a1 - m.a0, 120, 1e-9, 'sweep kept'); near(m.w, 6, 0, 'width kept');
+      near(m.a0, 30, 1e-9, 'mirror of 30..150 about the Y axis is 30..150 round the mirrored centre');
+      var tr = K.translateEntity(e, 5, -2);
+      assert(tr.cx === 15 && tr.cy === -2 && tr.w === 6, 'moved ' + JSON.stringify(tr));
+      var trimmed = K.trimEntity([e, { t: 'line', x1: 10, y1: 0, x2: 10, y2: 40 }], 0, [10 + 23 * Math.cos(PI / 3), 23 * Math.sin(PI / 3)]);
+      assert(trimmed.filter(function (x) { return x.t === 'arc'; }).length >= 4, 'exploded into arcs: ' + trimmed.map(function (x) { return x.t; }).join(','));
+      var sk = { entities: [JSON.parse(JSON.stringify(e))] }, o = SS.offsetEntity(sk.entities[0], 1.5);
+      assert(o && o.t === 'aslot' && o.w === 9 && o.r === 20, 'offset copy ' + JSON.stringify(o));
+      sk.entities.push(o);
+      SS.offsetRelations(sk, 0, 1).forEach(function (rel) { SS.addRelation(sk, rel.type, rel.refs); });
+      var added = SS.offsetDimensions(sk, 0, 1, 1.5);
+      assert(added.length === 1 && sk.rels[added[0]].dir === 'r', 'one radial offset dimension: ' + JSON.stringify(sk.rels));
+      assert(SS.analyze(sk).status !== 'over', 'not over defined: ' + JSON.stringify(SS.analyze(sk).rels));
+      assert(SS.setRelValue(sk, added[0], 2.5).ok, 'offset edited');
+      near(sk.entities[1].w - sk.entities[0].w, 5, 1e-6, 'width difference 2 × 2.5');
+      near(sk.entities[1].cx, sk.entities[0].cx, 1e-6, 'same centre'); near(sk.entities[1].a1, sk.entities[0].a1, 1e-6, 'same end');
+      return 'ok';
+    });
+    test('p9-sketch-curves: arc slot relations and dimensions — its centre and cap centres are sketch points (Coincident, Concentric), R and width Smart Dimensions drive it, a fully defined arc slot is black', function () {
+      var sk = { entities: [{ t: 'aslot', cx: 0.3, cy: -0.2, r: 19, a0: 28, a1: 152, w: 5 }, { t: 'circle', cx: 0, cy: 0, r: 4 }] };
+      var refs = SS.pointRefs(sk, 0).map(function (p) { return p.ref; }).join(',');
+      assert(refs === '0.c,0.p1,0.p2', 'point refs ' + refs);
+      assert(SS.addRelation(sk, 'concentric', ['0', '1']).ok, 'concentric with the circle');
+      assert(SS.addRelation(sk, 'coincident', ['1.c', 'O']).ok, 'circle on the origin');
+      sk.dims = [{ e: 0, k: 'r' }, { e: 0, k: 'w' }, { e: 1, k: 'dia' }];
+      assert(SS.setDim(sk, 0, 20).ok && SS.setDim(sk, 1, 6).ok, 'R 20, width 6 drive');
+      near(sk.entities[0].r, 20, 1e-6, 'R'); near(sk.entities[0].w, 6, 1e-6, 'width');
+      near(sk.entities[0].cx, 0, 1e-6, 'concentric x'); near(sk.entities[0].cy, 0, 1e-6, 'concentric y');
+      // the cap centres: a horizontal line between them and a distance from the origin fix the sweep
+      assert(SS.addRelation(sk, 'horizontal', ['0.p1', '0.p2']).ok, 'cap centres level');
+      assert(SS.addRelation(sk, 'distance', ['0.p1', '0.p2'], { value: 20, dir: 'h' }).ok, 'cap centres 20 apart');
+      var an = SS.analyze(sk);
+      near(Math.abs(sk.entities[0].a1 - sk.entities[0].a0), 2 * Math.asin(10 / 20) * 180 / PI, 1e-6, 'sweep from the chord');
+      assert(an.status === 'full' && an.entities[0] === 'full', 'fully defined: ' + an.status + ' / ' + an.entities.join(','));
+      near(K.dimValue(sk.entities[0], { k: 'w' }), 6, 1e-9, 'width dimension value');
+      assert(K.dimForEntity(sk.entities[0], [0, 20]).k === 'r' && K.dimForEntity(sk.entities[0], [0, -20]).k === 'w', 'Smart Dimension on a side is R, on a cap the width');
+      return an.status;
+    });
+    test('p9-sketch-curves: a polygon with an inscribed circle (`ins`) keeps its corners; its R dimension and setDimValue go to the flats; mirror and offset keep it; .polygon(…, { inscribed: true }) round-trips', function () {
+      var p = { t: 'poly', cx: 0, cy: 0, r: 10 / Math.cos(PI / 6), n: 6, rot: 30, ins: true };
+      var pts = K.entityPolylines(p)[0].pts;
+      near(pts[0][0], 10, 1e-9, 'flat at x = 10 (the circle touches the flats)'); near(Math.hypot(pts[1][0], pts[1][1]), p.r, 1e-9, 'corner radius');
+      near(K.dimValue(p, { k: 'r' }), 10, 1e-9, 'R to the flats');
+      K.setDimValue(p, { k: 'r' }, 12);
+      near(K.dimValue(p, { k: 'r' }), 12, 1e-9, 'R set to 12'); near(p.r, 12 / Math.cos(PI / 6), 1e-9, 'corners follow');
+      var m = K.mirrorEntity(p, K.mirrorAxis('x'));
+      assert(m.ins === true, 'mirror keeps inscribed');
+      var o = SS.offsetEntity(p, 1);
+      assert(o.ins === true, 'offset keeps inscribed'); near(K.dimValue(o, { k: 'r' }), 13, 1e-9, 'offset flats 1 further');
+      var c = { t: 'poly', cx: 0, cy: 0, r: 10, n: 6, rot: 0 };
+      near(K.dimValue(c, { k: 'r' }), 10, 1e-12, 'circumscribed R to the corners');
+      var a = build('p.sketch("Front").polygon(0, 0, 11.547005383792516, 6, 30, { inscribed: true }).extrude(2);');
+      noErrors(a);
+      nearRel(a.mp.volume, 6 * 10 * 10 * Math.tan(PI / 6) * 2, 1e-9, 'hexagon 20 across flats, area 6·a²·tan30°');
+      assert(a.model.features[0].entities[0].ins === true, 'builder stores ins');
+      assert(/\.polygon\(0, 0, 11\.547005383792516, 6, 30, \{ inscribed: true \}\)/.test(K.generateScript(a.model)), 'script writes { inscribed: true }: ' + K.generateScript(a.model));
+      return roundTrip('p.sketch("Front").polygon(0, 0, 11.547005383792516, 6, 30, { inscribed: true }).extrude(2);');
+    });
+    test('p9-sketch-curves: a straight slot\'s Overall Length dimension (olen) is center to center plus the width; editing it moves the second end; the solver drives it', function () {
+      var s = { t: 'slot', x1: 0, y1: 0, x2: 20, y2: 0, w: 6 };
+      near(K.dimValue(s, { k: 'olen' }), 26, 1e-12, 'overall 26');
+      K.setDimValue(s, { k: 'olen' }, 30);
+      near(s.x2, 24, 1e-12, 'center to center 24');
+      var threw = false; try { K.setDimValue(s, { k: 'olen' }, 5); } catch (er) { threw = true; }
+      assert(threw, 'an overall length under the width is refused');
+      var sk = { entities: [{ t: 'slot', x1: 0, y1: 0, x2: 20, y2: 0, w: 6 }], dims: [{ e: 0, k: 'olen' }, { e: 0, k: 'w' }], rels: [{ type: 'coincident', refs: ['0.p1', 'O'] }, { type: 'horizontal', refs: ['0'] }] };
+      assert(SS.setDim(sk, 1, 8).ok, 'width 8');
+      near(K.dimValue(sk.entities[0], { k: 'olen' }), 26, 1e-6, 'overall length held at 26 while the width changes');
+      near(sk.entities[0].x2, 18, 1e-6, 'so the centers come closer');
+      assert(SS.analyze(sk).status === 'full', 'fully defined: ' + SS.analyze(sk).status);
+      return 'ok';
+    });
+  })();
+  // --- end p9-sketch-curves ---
+  // --- sketch-spline: Spline, Ellipse and Partial Ellipse (kernel-sketch.js splineGeom / ellipsePoint / area-true
+  // profiles, kernel-script.js SPLINE / ELLIPSE DXF and the builder, sketch-solver.js refs). Volumes are exact: the
+  // profile points of a spline or ellipse are moved off the curve so the polygon has the curve's own area ---
+  (function () {
+    group('sketch-spline: Spline, Ellipse and Partial Ellipse');
+    var SS = SketchSolver;
+    function near2(a, b, tol, label) { near(a[0], b[0], tol, label + ' x'); near(a[1], b[1], tol, label + ' y'); }
+    // exact area of a closed chain of Bézier spans (Green's theorem, 3-point Gauss-Legendre: exact for cubics)
+    function bezArea(bez) {
+      var g = [[-Math.sqrt(0.6), 5 / 9], [0, 8 / 9], [Math.sqrt(0.6), 5 / 9]], a = 0;
+      bez.forEach(function (B) {
+        g.forEach(function (gw) {
+          var s = 0.5 + 0.5 * gw[0], p = K.bezPoint(B, s), u = 1 - s;
+          var d = [3 * u * u * (B[1][0] - B[0][0]) + 6 * u * s * (B[2][0] - B[1][0]) + 3 * s * s * (B[3][0] - B[2][0]), 3 * u * u * (B[1][1] - B[0][1]) + 6 * u * s * (B[2][1] - B[1][1]) + 3 * s * s * (B[3][1] - B[2][1])];
+          a += 0.5 * gw[1] * 0.5 * (p[0] * d[1] - p[1] * d[0]);
+        });
+      });
+      return a;
+    }
+    function d1(B, s) { var u = 1 - s; return [3 * u * u * (B[1][0] - B[0][0]) + 6 * u * s * (B[2][0] - B[1][0]) + 3 * s * s * (B[3][0] - B[2][0]), 3 * u * u * (B[1][1] - B[0][1]) + 6 * u * s * (B[2][1] - B[1][1]) + 3 * s * s * (B[3][1] - B[2][1])]; }
+    function d2(B, s) { var u = 1 - s; return [6 * u * (B[2][0] - 2 * B[1][0] + B[0][0]) + 6 * s * (B[3][0] - 2 * B[2][0] + B[1][0]), 6 * u * (B[2][1] - 2 * B[1][1] + B[0][1]) + 6 * s * (B[3][1] - 2 * B[2][1] + B[1][1])]; }
+    test('sketch-spline: the spline passes through its points, is C2 (derivatives in chord-length parameter continuous at every point), natural at free ends, periodic when closed', function () {
+      var pts = [[0, 0], [5, 4], [12, 3], [20, 0], [26, 6]], g = K.splineGeom({ pts: pts }), h = [];
+      assert(g.bez.length === 4 && !g.closed, 'four spans');
+      g.bez.forEach(function (B, i) { near2(B[0], pts[i], 1e-12, 'span ' + i + ' start'); near2(B[3], pts[i + 1], 1e-12, 'span ' + i + ' end'); h.push(g.knots[i + 1] - g.knots[i]); });
+      for (var i = 1; i < 4; i++) {
+        var a = d1(g.bez[i - 1], 1), b = d1(g.bez[i], 0), A = d2(g.bez[i - 1], 1), Bv = d2(g.bez[i], 0);
+        near2([a[0] / h[i - 1], a[1] / h[i - 1]], [b[0] / h[i], b[1] / h[i]], 1e-9, 'C1 at point ' + i);
+        near2([A[0] / (h[i - 1] * h[i - 1]), A[1] / (h[i - 1] * h[i - 1])], [Bv[0] / (h[i] * h[i]), Bv[1] / (h[i] * h[i])], 1e-9, 'C2 at point ' + i);
+      }
+      near2(d2(g.bez[0], 0), [0, 0], 1e-9, 'natural start'); near2(d2(g.bez[3], 1), [0, 0], 1e-9, 'natural end');
+      var c = K.splineGeom({ pts: pts, closed: true }), m = c.bez.length, hc = function (k) { return c.knots[k + 1] - c.knots[k]; };
+      assert(c.closed && m === 5, 'closed: five spans');
+      near2(c.bez[m - 1][3], pts[0], 1e-12, 'closes on the first point');
+      var e1 = d2(c.bez[m - 1], 1), s1 = d2(c.bez[0], 0);
+      near2([e1[0] / (hc(m - 1) * hc(m - 1)), e1[1] / (hc(m - 1) * hc(m - 1))], [s1[0] / (hc(0) * hc(0)), s1[1] / (hc(0) * hc(0))], 1e-9, 'C2 through the first point');
+      return 'knots ' + g.knots.map(fmt).join(' ');
+    });
+    test('sketch-spline: Tangent Driving fixes the direction and speed at a point (weight 2 at 90°); Maintain internal continuity off (local) is C1 with the neighbours\' chord as tangent', function () {
+      var g = K.splineGeom({ pts: [[0, 0], [5, 4], [12, 3]], tans: [null, [90, 2], null] }), h0 = g.knots[1] - g.knots[0], h1 = g.knots[2] - g.knots[1];
+      var a = d1(g.bez[0], 1), b = d1(g.bez[1], 0);
+      near2([a[0] / h0, a[1] / h0], [0, 2], 1e-12, 'incoming tangent'); near2([b[0] / h1, b[1] / h1], [0, 2], 1e-12, 'outgoing tangent');
+      var l = K.splineGeom({ pts: [[0, 0], [5, 4], [12, 3], [20, 0]], local: true }), q = d1(l.bez[1], 0), hq = l.knots[2] - l.knots[1];
+      var want = [(12 - 0) / (l.knots[2] - l.knots[0]), (3 - 0) / (l.knots[2] - l.knots[0])];
+      near2([q[0] / hq, q[1] / hq], want, 1e-12, 'local tangent at point 1');
+      // a local spline: moving point 3 leaves the first span alone
+      var l2 = K.splineGeom({ pts: [[0, 0], [5, 4], [12, 3], [20, 6]], local: true });
+      near2(l2.bez[0][2], l.bez[0][2], 1e-12, 'first span unchanged');
+      return 'ok';
+    });
+    test('sketch-spline: Ellipse, Partial Ellipse and Spline extrude to their exact volumes (πab·h; spline area by Green\'s theorem) on Front, Top and Right', function () {
+      var r = build('p.sketch("Front").ellipse(3, 2, 20, 10, 30).extrude(5);');
+      noErrors(r); nearRel(r.mp.volume, Math.PI * 200 * 5, 1e-9, 'ellipse');
+      r = build('p.sketch("Top").ellipse(1, 1, 6, 10, 15).extrude(5);');
+      noErrors(r); nearRel(r.mp.volume, Math.PI * 60 * 5, 1e-9, 'tall ellipse, Top');
+      r = build('p.sketch("Right").partialEllipse(0, 0, 20, 10, 0, 0, 180).line(-20, 0, 20, 0).extrude(5);');
+      noErrors(r); nearRel(r.mp.volume, Math.PI * 100 * 5, 1e-9, 'half ellipse + line, Right');
+      var spl = { t: 'spline', pts: [[0, 0], [10, 5], [20, 0], [10, -5]], closed: true };
+      r = build('p.sketch("Front").spline(' + JSON.stringify(spl.pts) + ', true).extrude(2);');
+      noErrors(r); nearRel(r.mp.volume, Math.abs(bezArea(K.splineGeom(spl).bez)) * 2, 1e-9, 'closed spline');
+      var open = { t: 'spline', pts: [[0, 0], [5, 4], [12, 3], [20, 0]], tans: [[80, 1.5], null, null, null] };
+      r = build('p.sketch("Front").spline(' + JSON.stringify(open.pts) + ', false, ' + JSON.stringify(open.tans) + ').line(0, 0, 20, 0).extrude(1);');
+      noErrors(r);
+      nearRel(r.mp.volume, Math.abs(bezArea(K.splineGeom(open).bez)), 1e-9, 'open spline closed by a line');   // the line adds no area (it lies on y = 0)
+      var prof = r.model.features[0].profile;
+      assert(prof.free && prof.free.length === 1 && prof.free[0].t === 'spline', 'profile.free');
+      assert(prof.loops[0].fseg.filter(function (x) { return x !== -1; }).length === prof.loops[0].pts.length - 1, 'every chord but the line on the spline: ' + JSON.stringify(prof.loops[0].fseg));
+      return fmt(r.mp.volume);
+    });
+    test('sketch-spline: a Cut-Extrude of an ellipse and a closed spline through a plate removes exactly their areas; nested in a rectangle they are holes (sketch DXF layer HOLES)', function () {
+      var spl = [[12, 0], [18, 6], [24, 0], [18, -6]];
+      var r = build('p.sketch("Front").rect(-30, -20, 60, 40).extrude(4);\np.sketch("Front", 4).ellipse(0, 0, 10, 5, 20).spline(' + JSON.stringify(spl) + ', true).cut("through", { reverse: true });');
+      noErrors(r);
+      var holes = Math.PI * 50 + Math.abs(bezArea(K.splineGeom({ pts: spl, closed: true }).bez));
+      nearRel(r.mp.volume, (2400 - holes) * 4, 1e-9, 'plate minus holes');
+      var sk = { entities: [{ t: 'rect', x: -30, y: -20, w: 60, h: 40 }, { t: 'ellipse', cx: 0, cy: 0, rx: 10, ry: 5, rot: 20 }, { t: 'spline', pts: spl, closed: true }] };
+      var d = DxfCheck.parse(K.exportDXFSketch(sk, 'mm', { version: 'R2000' }));
+      var lay = d.entities.map(function (e) { return e.type + '@' + e.layer; }).sort().join(' ');
+      assert(lay === 'ELLIPSE@HOLES LINE@OUTLINE LINE@OUTLINE LINE@OUTLINE LINE@OUTLINE SPLINE@HOLES', lay);
+      return fmt(r.mp.volume);
+    });
+    test('sketch-spline: sketch DXF R2000 writes SPLINE (degree 3, knots = control points + 4, the spans\' own control points) and ELLIPSE (major axis, ratio ≤ 1, parameters; a tall ellipse swaps its axes)', function () {
+      var spl = { t: 'spline', pts: [[0, 0], [5, 4], [12, 3]] }, g = K.splineGeom(spl);
+      var txt = K.exportDXFSketch({ entities: [spl, { t: 'ellipse', cx: 1, cy: 2, rx: 4, ry: 9, rot: 0 }, { t: 'pellipse', cx: 0, cy: 0, rx: 5, ry: 3, rot: 0, a0: 90, a1: 270 }] }, 'mm', { version: 'R2000' });
+      var P = txt.split(/\r?\n/), pairs = [];
+      for (var i = 0; i + 1 < P.length; i += 2) pairs.push([+P[i], P[i + 1]]);
+      function entity(type, nth) { var k = -1, out = []; for (var j = 0; j < pairs.length; j++) { if (pairs[j][0] === 0) { if (out.length) break; if (pairs[j][1] === type && ++k === nth) out.push(pairs[j]); continue; } if (out.length) out.push(pairs[j]); } return out; }
+      function vals(ent, code) { return ent.filter(function (q) { return q[0] === code; }).map(function (q) { return +q[1]; }); }
+      var S = entity('SPLINE', 0), kn = vals(S, 40), cx = vals(S, 10), cy = vals(S, 20);
+      assert(vals(S, 71)[0] === 3 && vals(S, 72)[0] === kn.length && vals(S, 73)[0] === cx.length && kn.length === cx.length + 4, 'degree / counts: ' + kn.length + ' knots, ' + cx.length + ' control points');
+      assert(cx.length === 7, 'two spans: 7 control points');
+      near(cx[1], g.bez[0][1][0], 1e-6, 'first inner control point x'); near(cy[5], g.bez[1][2][1], 1e-6, 'last inner control point y');
+      near(kn[kn.length - 1], g.knots[2], 1e-9, 'last knot = chord length');
+      var E = entity('ELLIPSE', 0);
+      near(vals(E, 11)[0], 0, 1e-9, 'tall ellipse: major axis along y (x)'); near(vals(E, 21)[0], 9, 1e-9, 'major axis along y'); near(vals(E, 40)[0], 4 / 9, 1e-9, 'ratio');
+      near(vals(E, 41)[0], 0, 1e-9, 'start'); near(vals(E, 42)[0], 2 * Math.PI, 1e-8, 'end');
+      var PE = entity('ELLIPSE', 1);
+      near(vals(PE, 41)[0], Math.PI / 2, 1e-8, 'partial start'); near(vals(PE, 42)[0], 3 * Math.PI / 2, 1e-8, 'partial end');
+      return 'SPLINE ' + cx.length + ' / ' + kn.length + ', ELLIPSE ×2';
+    });
+    test('sketch-spline: sketch DXF R12 writes them as ARCs (LINE where straight) that chain end to end and stay within 0.001 mm (0.00004 in) of the curve; a laser-ready check passes', function () {
+      var ents = [{ t: 'ellipse', cx: 0, cy: 0, rx: 30, ry: 12, rot: 15 }, { t: 'spline', pts: [[-25, -15], [-20, -5], [-15, -15]] }, { t: 'line', x1: -25, y1: -15, x2: -15, y2: -15 },
+        { t: 'pellipse', cx: 15, cy: 0, rx: 5, ry: 3, rot: 0, a0: 90, a1: 270 }, { t: 'line', x1: 15, y1: 3, x2: 15, y2: -3 }];
+      var det = [];
+      ['mm', 'in'].forEach(function (u) {
+        var txt = K.exportDXFSketch({ entities: ents }, u), c = DxfCheck.check(txt, { units: u }), d = DxfCheck.parse(txt);
+        assert(c.ok, u + ': ' + c.errors.slice(0, 4).join('; '));
+        assert(!d.entities.some(function (e) { return e.type === 'SPLINE' || e.type === 'ELLIPSE' || e.type === 'LWPOLYLINE'; }), 'R12 has no SPLINE / ELLIPSE');
+        // every arc's middle lies on the ellipse within the tolerance (the first ellipse's arcs: centre near the origin)
+        var tol = u === 'in' ? 4e-5 : 1e-3, e = ents[0], worst = 0;
+        DxfCheck.parse(K.exportDXFSketch({ entities: [e] }, u)).entities.forEach(function (a) {
+          if (a.type !== 'ARC') return;
+          var a0 = a.a0, a1 = a.a1; while (a1 <= a0) a1 += 360;
+          var m = (a0 + a1) / 2 * Math.PI / 180, q = [a.c[0] + a.r * Math.cos(m), a.c[1] + a.r * Math.sin(m)];
+          var ro = e.rot * Math.PI / 180, lx = Math.cos(ro) * q[0] + Math.sin(ro) * q[1], ly = -Math.sin(ro) * q[0] + Math.cos(ro) * q[1];
+          var f = Math.sqrt(lx * lx / (e.rx * e.rx) + ly * ly / (e.ry * e.ry));   // the radial distance off the ellipse is about |f − 1|·r
+          worst = Math.max(worst, Math.abs(f - 1) * Math.hypot(lx, ly));
+        });
+        assert(worst < 2 * tol, u + ': arc off the ellipse by ' + worst);
+        det.push(u + ' ' + JSON.stringify(c.counts));
+      });
+      return det.join('; ');
+    });
+    test('sketch-spline: scripts round-trip .spline (closed, tangents), .ellipse and .partialEllipse; a mirrored copy and a translated copy stay true entities', function () {
+      var code = 'p.sketch("Front").spline([[0, 0], [5, 4], [12, 3]], false, [[45, 1.2], null, null]).line(0, 0, 12, 3).ellipse(30, 0, 8, 3, 10).partialEllipse(0, 20, 6, 2, 0, 0, 180).line(-6, 20, 6, 20).extrude(2);';
+      var r = build(code);
+      noErrors(r);
+      var s = K.generateScript(r.model);
+      assert(/\.spline\(\[\[0,0\],\[5,4\],\[12,3\]\], false, \[\[45,1\.2\],null,null\]\)/.test(s) && /\.ellipse\(30, 0, 8, 3, 10\)/.test(s) && /\.partialEllipse\(0, 20, 6, 2, 0, 0, 180\)/.test(s), s);
+      var r2 = build(s.replace(/^[\s\S]*?(p\.)/, '$1'));
+      noErrors(r2); nearRel(r2.mp.volume, r.mp.volume, 1e-12, 'same volume after the round trip');
+      var ax = K.mirrorAxis('y'), m = K.mirrorEntity({ t: 'pellipse', cx: 2, cy: 1, rx: 5, ry: 3, rot: 20, a0: 10, a1: 100 }, ax);
+      var p0 = K.ellipsePoint({ cx: 2, cy: 1, rx: 5, ry: 3, rot: 20 }, 10 * Math.PI / 180), q1 = K.ellipsePoint(m, m.a1 * Math.PI / 180);
+      assert(m.t === 'pellipse', 'still a partial ellipse');
+      near2(q1, [-p0[0], p0[1]], 1e-9, 'mirrored start becomes the mirror\'s end');
+      var ms = K.mirrorEntity({ t: 'spline', pts: [[1, 0], [2, 3]], tans: [[30, 1], null] }, ax);
+      assert(ms.t === 'spline' && ms.pts[1][0] === -2 && ms.tans[0][0] === 150, JSON.stringify(ms));
+      var tr = K.translateEntity({ t: 'ellipse', cx: 1, cy: 1, rx: 2, ry: 1, rot: 0 }, 3, 4);
+      assert(tr.cx === 4 && tr.cy === 5, JSON.stringify(tr));
+      return s.split('\n').filter(function (l) { return /spline|llipse/.test(l); }).length + ' curve lines';
+    });
+    test('sketch-spline: solver refs: spline ends p1 / p2 and points v1…, ellipse centre and axis ends v0…v3, partial ellipse ends; a spline drawn from a line end infers Coincident and follows a drag of the line', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'spline', pts: [[10, 0], [15, 5], [20, 0]] }, { t: 'pellipse', cx: 30, cy: 0, rx: 5, ry: 2, rot: 0, a0: 0, a1: 90 }], rels: [] };
+      assert(SS.pointRefs(s, 1).map(function (x) { return x.ref; }).join() === '1.p1,1.v1,1.p2', 'spline refs');
+      assert(SS.pointRefs(s, 2).map(function (x) { return x.ref; }).join() === '2.c,2.p1,2.p2,2.v0,2.v1,2.v2,2.v3', 'partial ellipse refs');
+      near2(SS.refPoint(s, '2.p2'), [30, 2], 1e-12, 'partial ellipse end at 90°'); near2(SS.refPoint(s, '2.v2'), [25, 0], 1e-12, 'major axis end 2');
+      assert(SS.curveRefs(s, 1).length === 0, 'a spline has no line edges');
+      SS.infer(s, 1);
+      assert(JSON.stringify(s.rels) === '[{"type":"coincident","refs":["1.p1","0.p2"]}]', JSON.stringify(s.rels));
+      assert(SS.drag(s, '0.p2', [12, 3], JSON.parse(JSON.stringify(s.entities))).ok, 'drag');
+      near2(s.entities[1].pts[0], [12, 3], 1e-6, 'the spline end follows');
+      near2(s.entities[1].pts[2], [20, 0], 1e-6, 'its far end stays');
+      assert(SS.refName(s, '1.v1') === 'Spline2 point 2' && SS.refName(s, '2.v1') === 'Partial Ellipse3 minor axis end', SS.refName(s, '2.v1'));
+      // dragging an ellipse's major axis end turns and stretches it about its centre
+      var e = { entities: [{ t: 'ellipse', cx: 0, cy: 0, rx: 10, ry: 4, rot: 0 }], rels: [] };
+      for (var st = 1; st <= 18; st++) {   // the mouse sweeps round in small moves, as a drag does
+        var an = st * 5 * Math.PI / 180, rr = 10 + 2 * st / 18;
+        assert(SS.drag(e, '0.v0', [rr * Math.cos(an), rr * Math.sin(an)], JSON.parse(JSON.stringify(e.entities))).ok, 'axis drag ' + st);
+      }
+      var E = e.entities[0];
+      assert(Math.hypot(E.cx, E.cy) < 1, 'the centre stays (' + E.cx + ', ' + E.cy + ')');
+      near2(SS.refPoint(e, '0.v0'), [0, 12], 1e-6, 'the axis end follows');
+      // dragging a partial ellipse's end slides it along the ellipse
+      var pe = { entities: [{ t: 'pellipse', cx: 0, cy: 0, rx: 10, ry: 4, rot: 0, a0: 0, a1: 90 }], rels: [] };
+      var target = K.ellipsePoint(pe.entities[0], 120 * Math.PI / 180);
+      assert(SS.drag(pe, '0.p2', target, JSON.parse(JSON.stringify(pe.entities))).ok, 'end drag');
+      near(pe.entities[0].rx, 10, 0.5, 'radius kept'); near(pe.entities[0].a1, 120, 3, 'end angle follows');
+      return SS.analyze(s).status;
+    });
+    test('sketch-spline: an ellipse\'s Smart Dimensions are its major / minor radii (rx / ry, the click picks the nearer axis) and drive it', function () {
+      var e = { t: 'ellipse', cx: 1, cy: 1, rx: 10, ry: 4, rot: 30 };
+      assert(K.dimForEntity(e, K.ellipsePoint(e, 0.1)).k === 'rx' && K.dimForEntity(e, K.ellipsePoint(e, Math.PI / 2 - 0.1)).k === 'ry', 'nearer axis');
+      var g = K.dimGeometry(e, { k: 'ry' });
+      near(g.value, 4, 1e-12, 'minor radius'); near2(g.Q, K.ellipsePoint(e, Math.PI / 2), 1e-12, 'to the minor axis end');
+      var s = { entities: [e], dims: [{ e: 0, k: 'rx' }, { e: 0, k: 'ry' }], rels: [{ type: 'coincident', refs: ['0.c', 'O'] }, { type: 'horizontal', refs: ['0.c', '0.v0'] }] };
+      SS.solve(s);   // the Horizontal levels it first
+      assert(SS.analyze(s).status === 'full', 'fully defined: ' + SS.analyze(s).status + ' dof ' + SS.analyze(s).dof);
+      assert(SS.setDim(s, 0, 12).ok, 'drive rx');
+      near(s.entities[0].rx, 12, 1e-9, 'rx'); near(s.entities[0].rot % 180, 0, 1e-6, 'level');
+      return 'dof ' + SS.analyze(s).dof;
+    });
+    test('sketch-spline: Trim refuses a spline / ellipse (for now) but trims a line where it crosses an ellipse', function () {
+      var ents = [{ t: 'ellipse', cx: 0, cy: 0, rx: 10, ry: 5, rot: 0 }, { t: 'line', x1: -20, y1: 0, x2: 0, y2: 0 }];
+      var threw = false;
+      try { K.trimEntity(ents, 0, [10, 0]); } catch (err) { threw = /cannot be trimmed/.test(err.message); }
+      assert(threw, 'spline / ellipse trim refused with a message');
+      var out = K.trimEntity(ents, 1, [-5, 0]);
+      assert(out.length === 2 && out[1].t === 'line', JSON.stringify(out));
+      near(Math.max(out[1].x1, out[1].x2), -10, 0.06, 'trimmed at the ellipse (to its chord tolerance)');
+      return JSON.stringify(out[1]);
+    });
+  })();
+  // --- end sketch-spline ---
+  // --- sketch-tools: the Sketch tab's tools in sketch-solver.js (ui-sketch-tools.js drives them): Sketch Fillet on lines
+  // and arcs, Sketch Chamfer, Offset Entities chains, Move / Copy / Rotate / Scale, Linear / Circular Sketch Pattern and
+  // the Trim options. Exact geometry, no new redundancy, DOF unchanged, all or nothing on failure, script round trip ---
+  group('sketch-tools: fillet, chamfer, offset, move, patterns, trim options');
+  (function () {
+    if (typeof SketchSolver === 'undefined') return;
+    var SS = SketchSolver;
+    function relList(s) { return (s.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+    function keyOf(r) { return r.type + ':' + r.refs.slice().sort().join(',') + (r.dir || '') + (r.driven ? 'd' : ''); }
+    function noRepeats(s) { var seen = {}; return (s.rels || []).every(function (r) { var k = keyOf(r); if (seen[k]) return false; seen[k] = true; return true; }); }
+    function clean(s, a0, label) {
+      var an = SS.analyze(s);
+      assert(!an.redundant && !an.conflicts, label + ': ' + an.redundant + ' redundant, ' + an.conflicts + ' conflicts');
+      assert(noRepeats(s), label + ': repeated relations ' + relList(s).join(' '));
+      if (a0) assert(an.dof === a0.dof, label + ': DOF ' + a0.dof + ' -> ' + an.dof);
+      return an;
+    }
+    function chainRect(w, h) {
+      return { entities: [{ t: 'line', x1: 0, y1: 0, x2: w, y2: 0 }, { t: 'line', x1: w, y1: 0, x2: w, y2: h }, { t: 'line', x1: w, y1: h, x2: 0, y2: h }, { t: 'line', x1: 0, y1: h, x2: 0, y2: 0 }],
+        rels: [{ type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }, { type: 'horizontal', refs: ['2'] }, { type: 'vertical', refs: ['3'] },
+          { type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }, { type: 'coincident', refs: ['2.p2', '3.p1'] },
+          { type: 'coincident', refs: ['0.p1', 'O'] }, { type: 'coincident', refs: ['3.p2', 'O'] }], dims: [{ e: 0, k: 'len' }, { e: 1, k: 'len' }] };
+    }
+    function tangentTo(arc, e) {   // the fillet arc touches e: its centre is r from a line, R ± r from an arc's centre
+      if (e.t === 'line') { var d = Math.abs((e.x2 - e.x1) * (arc.cy - e.y1) - (e.y2 - e.y1) * (arc.cx - e.x1)) / Math.hypot(e.x2 - e.x1, e.y2 - e.y1); return Math.abs(d - arc.r); }
+      var c = Math.hypot(arc.cx - e.cx, arc.cy - e.cy); return Math.min(Math.abs(c - (e.r + arc.r)), Math.abs(c - Math.abs(e.r - arc.r)));
+    }
+
+    test('sketch-tools: Sketch Fillet at a line–arc corner and an arc–arc corner — the fillet is tangent to both (exact), the entities end on it, DOF unchanged, no redundancy', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'arc', cx: 15, cy: 0, r: 5, a0: 0, a1: 180 }], rels: [{ type: 'coincident', refs: ['0.p2', '1.p2'] }] }, a0 = SS.analyze(s);
+      var c = SS.curveCorner(s, [10, 0.2], 1);
+      assert(c && c.i === 0 && c.j === 1, 'corner ' + JSON.stringify(c));
+      var r = SS.filletPair(s, c, 1);
+      assert(r.ok, r.error);
+      var f = s.entities[r.arc];
+      near(tangentTo(f, s.entities[0]), 0, 1e-9, 'tangent to the line'); near(tangentTo(f, s.entities[1]), 0, 1e-9, 'tangent to the arc');
+      near(s.entities[0].x2, f.cx, 1e-9, 'the line ends at the tangent point');
+      clean(s, a0, 'line–arc');
+      var t = { entities: [{ t: 'arc', cx: 0, cy: 0, r: 10, a0: 0, a1: 90 }, { t: 'arc', cx: 10, cy: 10, r: 10, a0: 180, a1: 270 }], rels: [{ type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['0.p1', '1.p2'] }] }, b0 = SS.analyze(t);
+      var r2 = SS.filletPair(t, SS.curveCorner(t, [0, 10], 1), 2), g = t.entities[r2.arc];
+      assert(r2.ok, r2.error);
+      near(Math.hypot(g.cx, g.cy), 8, 1e-9, 'inside the first arc (10 − 2)'); near(Math.hypot(g.cx - 10, g.cy - 10), 8, 1e-9, 'inside the second');
+      clean(t, b0, 'arc–arc');
+      return 'line–arc R1 at (' + fmt(f.cx) + ', ' + fmt(f.cy) + '); arc–arc R2 at (' + fmt(g.cx) + ', ' + fmt(g.cy) + ')';
+    });
+    test('sketch-tools: Sketch Fillet of picked entities that do not meet (extended / trimmed to the fillet, the side clicked kept), Keep constrained corners off (no virtual sharp, the corner\'s dimensions go), Dimension each fillet off (Equal to the first fillet), a radius too large leaves the sketch untouched', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 8, y2: 0 }, { t: 'line', x1: 10, y1: 2, x2: 10, y2: 10 }] };
+      var r = SS.filletPair(s, { i: 0, uvi: [2, 0], j: 1, uvj: [10, 8] }, 1);
+      assert(r.ok, r.error);
+      assert(s.entities[0].x2 === 9 && s.entities[1].y1 === 1 && s.entities[2].cx === 9 && s.entities[2].cy === 1, 'extended / trimmed to the fillet: ' + JSON.stringify(s.entities));
+      var x = { entities: [{ t: 'line', x1: -10, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: -10, x2: 0, y2: 10 }] };
+      assert(SS.filletPair(x, { i: 0, uvi: [5, 0], j: 1, uvj: [0, 5] }, 1).ok && x.entities[0].x1 === 1 && x.entities[1].y1 === 1, 'crossing lines: the quadrant clicked ' + JSON.stringify(x.entities));
+      var k = chainRect(8, 4);
+      var rk = SS.filletCorner(k, SS.lineCorner(k, [0, 0], 1), 1, { keepCorner: false });
+      assert(rk.ok && rk.sharp === -1 && !k.entities.some(function (e) { return e.sharp; }) && !relList(k).some(function (x) { return /O/.test(x); }), 'no sharp, the origin Coincident went: ' + relList(k).join(' '));
+      clean(k, null, 'keep corners off');
+      var q = chainRect(8, 4), a0 = SS.analyze(q);
+      var f1 = SS.filletCorner(q, SS.lineCorner(q, [8, 0], 1), 1), f2 = SS.filletCorner(q, SS.lineCorner(q, [8, 4], 1), 1, { equalTo: f1.arc, dimension: false });
+      assert(f1.ok && f2.ok, f1.error || f2.error);
+      assert(q.dims.filter(function (d) { return d.k === 'r'; }).length === 1 && relList(q).indexOf('equal:' + f1.arc + ',' + f2.arc) >= 0, 'one R dimension + Equal: ' + relList(q).join(' '));
+      assert(SS.setDim(q, q.dims.length - 1, 1.5).ok && Math.abs(q.entities[f2.arc].r - 1.5) < 1e-9, 'the Equal fillet follows the dimension');
+      var an = clean(q, a0, 'equal fillets');
+      assert(an.status === 'full', 'stays Fully Defined: ' + an.status);
+      var u = chainRect(8, 4), before = JSON.stringify(u), bad = SS.filletCorner(u, SS.lineCorner(u, [8, 4], 1), 5);
+      assert(!bad.ok && /Radius too large/.test(bad.error) && JSON.stringify(u) === before, 'refused, untouched: ' + bad.error);
+      return bad.error;
+    });
+    test('sketch-tools: Sketch Chamfer — distance-distance (1 × 2) and angle-distance (1, 30°) at a dimensioned corner: exact chamfer line, virtual sharp with the chamfer\'s driving dimensions, still Fully Defined; a free corner keeps its DOF; a distance too large changes nothing', function () {
+      var s = chainRect(8, 4), r = SS.chamferPair(s, SS.curveCorner(s, [8, 4], 1), { type: 'distance', d1: 1, d2: 2 }), c = s.entities[r.line];
+      assert(r.ok, r.error);
+      assert(c.x1 === 8 && c.y1 === 3 && c.x2 === 6 && c.y2 === 4, 'chamfer line ' + JSON.stringify(c));
+      assert(s.entities[r.sharp].sharp && s.entities[r.sharp].x === 8 && s.entities[r.sharp].y === 4, 'virtual sharp');
+      assert(SS.analyze(s).status === 'full', 'still Fully Defined');
+      clean(s, null, 'distance-distance');
+      var di = s.rels.map(function (x, i) { return x.type === 'distance' && x.v === 2 ? i : -1; }).filter(function (i) { return i >= 0; })[0];
+      assert(SS.setRelValue(s, di, 3).ok && Math.abs(s.entities[r.line].x2 - 5) < 1e-9, 'Distance 2 drives the chamfer');
+      var t = chainRect(8, 4), ra = SS.chamferPair(t, SS.curveCorner(t, [8, 0], 1), { type: 'angle', d1: 1, angle: 30 }), ca = t.entities[ra.line];
+      assert(ra.ok, ra.error);
+      near(ca.x1, 7, 1e-9, 'D1 along the bottom'); near(ca.y2, Math.tan(Math.PI / 6), 1e-9, 'at 30° from it');
+      assert(SS.analyze(t).status === 'full' && relList(t).indexOf('angle:0,' + ra.line) >= 0, 'angle dimension, Fully Defined');
+      clean(t, null, 'angle-distance');
+      var f = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 8, y2: 0 }, { t: 'line', x1: 8, y1: 0, x2: 8, y2: 4 }], rels: [{ type: 'coincident', refs: ['0.p2', '1.p1'] }] }, a0 = SS.analyze(f);
+      assert(SS.chamferPair(f, { i: 0, uvi: [2, 0], j: 1, uvj: [8, 3] }, { type: 'distance', d1: 1, equal: true }).ok, 'picked lines of a corner');
+      clean(f, a0, 'free corner');
+      var g = chainRect(8, 4), before = JSON.stringify(g), bad = SS.chamferPair(g, SS.curveCorner(g, [8, 4], 1), { type: 'distance', d1: 5, d2: 1 });
+      assert(!bad.ok && JSON.stringify(g) === before, 'refused, untouched: ' + bad.error);
+      return 'chamfer 1 × 2 and 1 @ 30°';
+    });
+    test('sketch-tools: Offset Entities on a chain — a Line-chain rectangle offset 1 out is a 10 × 6 rectangle of lines (sharp corners), one Offset relation and one driving dimension keep it Fully Defined; editing the offset or the base moves the chain', function () {
+      var s = chainRect(8, 4), a0 = SS.analyze(s), r = SS.offsetSelection(s, [0], { d: 1 });
+      assert(r.ok && r.added.length === 4, r.error);
+      var o = r.added.map(function (i) { return s.entities[i]; });
+      assert(JSON.stringify(o.map(function (e) { return [e.x1, e.y1, e.x2, e.y2]; })) === '[[-1,-1,9,-1],[9,-1,9,5],[9,5,-1,5],[-1,5,-1,-1]]', 'offset ' + JSON.stringify(o));
+      var an = clean(s, a0, 'offset rectangle');
+      assert(an.status === 'full' && relList(s).filter(function (x) { return /^offset:/.test(x); }).length === 1 && s.rels.filter(function (x) { return x.type === 'distance'; }).length === 1, 'one Offset, one dimension: ' + relList(s).join(' '));
+      var di = s.rels.map(function (x, i) { return x.type === 'distance' ? i : -1; }).filter(function (i) { return i >= 0; })[0];
+      assert(SS.setRelValue(s, di, 2).ok && s.entities[4].y1 === -2 && s.entities[5].x1 === 10, 'offset 2: ' + JSON.stringify(s.entities[5]));
+      assert(SS.setDim(s, 0, 10).ok && s.entities[5].x1 === 12, 'base 10 wide: the copy follows ' + JSON.stringify(s.entities[5]));
+      // with a fillet in the chain: the copy keeps the arc (concentric, R + 0.5) and the chain stays smooth
+      var t = chainRect(8, 4);
+      SS.filletCorner(t, SS.lineCorner(t, [8, 4], 1), 1);
+      var b0 = SS.analyze(t), rt = SS.offsetSelection(t, [0], { d: 0.5 }), arc = rt.added.map(function (i) { return t.entities[i]; }).filter(function (e) { return e.t === 'arc'; })[0];
+      assert(rt.ok && arc && arc.r === 1.5 && arc.cx === 7 && arc.cy === 3 && arc.a0 === 0 && arc.a1 === 90, 'offset arc ' + JSON.stringify(arc));
+      clean(t, b0, 'filleted chain');
+      return 'rectangle 10 × 6, then offset 2 and base 10: copy at x = 12';
+    });
+    test('sketch-tools: Offset Entities — Bi-directional with arc caps round an open L, Reverse goes inward, a single line and a circle as before, Select chain off takes only the selection, too large refuses and changes nothing', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 10, y1: 0, x2: 10, y2: 5 }], rels: [{ type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }, { type: 'coincident', refs: ['0.p1', 'O'] }], dims: [{ e: 0, k: 'len' }, { e: 1, k: 'len' }] };
+      var a0 = SS.analyze(s), r = SS.offsetSelection(s, [1], { d: 1, bi: true, cap: 'arc' }), g = r.added.map(function (i) { return s.entities[i]; });
+      assert(r.ok && g.length === 6 && g[4].t === 'arc' && g[4].cx === 0 && g[4].r === 1 && g[4].a0 === 90 && g[4].a1 === 270 && g[5].cx === 10 && g[5].cy === 5 && g[5].a0 === 0 && g[5].a1 === 180, 'both sides and caps ' + JSON.stringify(g));
+      assert(clean(s, a0, 'bi-directional').status === 'full', 'Fully Defined');
+      var t = chainRect(8, 4), rt = SS.offsetSelection(t, [2], { d: 1, reverse: true });
+      var inw = rt.added.map(function (i) { var e = t.entities[i]; return [e.x1, e.y1, e.x2, e.y2].join(','); }).sort().join(' ');
+      assert(rt.ok && inw === '1,1,7,1 1,3,1,1 7,1,7,3 7,3,1,3', 'inward 6 × 2: ' + inw);
+      var u = chainRect(8, 4), ru = SS.offsetSelection(u, [0], { d: 1, chain: false });
+      assert(ru.ok && ru.added.length === 1 && Math.abs(u.entities[4].y1) === 1 && u.entities[4].x1 === 0 && u.entities[4].x2 === 8, 'Select chain off: one line ' + ru.added.length);
+      var l = { entities: [{ t: 'line', x1: 0, y1: 30, x2: 30, y2: 30 }] }, rl = SS.offsetSelection(l, [0], { d: 4 });
+      assert(rl.ok && l.entities[1].y1 === 34 && relList(l).indexOf('parallel:0,1') >= 0 && relList(l).indexOf('distance:0,1') >= 0 && SS.analyze(l).dof === 4, 'single line ' + relList(l).join(' '));
+      var c = { entities: [{ t: 'circle', cx: 20, cy: 0, r: 8 }] }, rc = SS.offsetSelection(c, [0], { d: 3 });
+      assert(rc.ok && c.entities[1].t === 'circle' && c.entities[1].r === 11 && relList(c).join() === 'concentric:0,1,distance:0,1', 'circle ' + relList(c).join(' '));
+      var v = chainRect(8, 4), before = JSON.stringify(v), bad = SS.offsetSelection(v, [0], { d: 5, reverse: true });
+      assert(!bad.ok && JSON.stringify(v) === before, 'too large inward: refused, untouched: ' + bad.error);
+      return bad.error;
+    });
+    test('sketch-tools: Linear Sketch Pattern 3 × 2 of a dimensioned Ø hole — copies exact, one Pattern relation, Horizontal / Vertical and the X / Y spacing dimensions keep it Fully Defined; editing the spacing or the diameter moves / sizes every copy; a skipped first instance still works', function () {
+      var s = { entities: [{ t: 'circle', cx: 1, cy: 1, r: 0.133 }], rels: [{ type: 'distance', refs: ['0.c', 'O'], v: 1, dir: 'h' }, { type: 'distance', refs: ['0.c', 'O'], v: 1, dir: 'v' }], dims: [{ e: 0, k: 'dia' }] }, a0 = SS.analyze(s);
+      var r = SS.linearPattern(s, [0], { angle1: 0, spacing1: 3, count1: 3, angle2: 90, spacing2: 2, count2: 2, dimX: true, dimY: true });
+      assert(r.ok && r.copies.length === 5, r.error);
+      var pts = s.entities.map(function (e) { return fmt(e.cx) + ',' + fmt(e.cy); }).sort().join(' ');
+      assert(pts === '1,1 1,3 4,1 4,3 7,1 7,3', 'positions ' + pts);
+      assert(clean(s, a0, 'pattern').status === 'full' && relList(s).filter(function (x) { return /^pattern:/.test(x); }).length === 1, 'Fully Defined, one Pattern: ' + relList(s).join(' '));
+      var dx = s.rels.map(function (x, i) { return x.type === 'distance' && x.dir === 'h' && x.refs[1] !== 'O' ? i : -1; }).filter(function (i) { return i >= 0; })[0];
+      assert(SS.setRelValue(s, dx, 2.5).ok && s.entities.map(function (e) { return fmt(e.cx); }).sort().join() === '1,1,3.5,3.5,6,6', 'spacing 2.5 moves the columns');
+      assert(SS.setDim(s, 0, 0.5).ok && s.entities.every(function (e) { return Math.abs(e.r - 0.25) < 1e-9; }), 'Ø.5 on every copy');
+      var t = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 2, y2: 1 }] }, b0 = SS.analyze(t);
+      var rt = SS.linearPattern(t, [0], { angle1: 0, spacing1: 5, count1: 4, count2: 1, skip: ['1,0'], dimX: true });
+      assert(rt.ok && rt.copies.length === 2 && t.entities[1].x1 === 10 && t.entities[2].x1 === 15, 'instance 2 skipped ' + JSON.stringify(t.entities));
+      clean(t, b0, 'skipped');
+      return pts;
+    });
+    test('sketch-tools: Circular Sketch Pattern — 6 holes equally round 360° about the origin: exact positions, Fully Defined by the radius and angular spacing dimensions; editing the radius moves every hole', function () {
+      var s = { entities: [{ t: 'circle', cx: 5, cy: 0, r: 0.5 }], rels: [{ type: 'horizontal', refs: ['0.c', 'O'] }], dims: [{ e: 0, k: 'dia' }] };
+      var r = SS.circularPattern(s, [0], { cx: 0, cy: 0, count: 6, angle: 360, equal: true, dimRadius: true, dimAngle: true });
+      assert(r.ok && r.copies.length === 5 && r.lines.length === 2, r.error);
+      for (var k = 0; k < 6; k++) { var e = s.entities[k]; near(e.cx, 5 * Math.cos(k * Math.PI / 3), 1e-9, 'x ' + k); near(e.cy, 5 * Math.sin(k * Math.PI / 3), 1e-9, 'y ' + k); }
+      assert(clean(s, null, 'circular').status === 'full', 'Fully Defined');
+      var ri = s.dims.length - 1;
+      assert(SS.setDim(s, ri, 8).ok, 'radius 8');
+      for (var q = 0; q < 6; q++) near(Math.hypot(s.entities[q].cx, s.entities[q].cy), 8, 1e-9, 'on R8 ' + q);
+      var t = { entities: [{ t: 'rect', x: 4, y: -0.5, w: 2, h: 1 }] }, rt = SS.circularPattern(t, [0], { cx: 0, cy: 0, count: 4, angle: 360, equal: true });
+      assert(rt.ok && t.entities.filter(function (e) { return e.t === 'line' && !e.construction; }).length === 16, 'a rectangle turns as four lines: ' + t.entities.length);
+      clean(t, null, 'rectangle pattern');
+      return 'R5 → R8';
+    });
+    test('sketch-tools: Move / Rotate / Scale / Copy Entities — Keep relations drags what is tied to the selection (Stretch), cleared it breaks those ties; a fixed one is refused unchanged; a quarter turn swaps Horizontal / Vertical; Scale with Copy makes 2 copies with their relations', function () {
+      var s = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 1 }, { t: 'line', x1: 0, y1: 0, x2: 5, y2: 5 }], rels: [{ type: 'coincident', refs: ['1.p1', '0.c'] }] };
+      assert(SS.transformEntities(s, [0], { dx: 2, dy: 1 }, { keepRelations: true }).ok && s.entities[1].x1 === 2 && s.entities[1].y1 === 1 && s.entities[1].x2 === 5, 'the line stretches with the circle');
+      var t = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 1 }, { t: 'line', x1: 0, y1: 0, x2: 5, y2: 5 }], rels: [{ type: 'coincident', refs: ['1.p1', '0.c'] }] };
+      assert(SS.transformEntities(t, [0], { dx: 2, dy: 1 }, { keepRelations: false }).ok && t.entities[1].x1 === 0 && !t.rels, 'Keep relations off: the tie breaks');
+      var u = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 1 }], rels: [{ type: 'coincident', refs: ['0.c', 'O'] }] }, before = JSON.stringify(u), m = SS.transformEntities(u, [0], { dx: 2, dy: 1 }, { keepRelations: true });
+      assert(!m.ok && JSON.stringify(u) === before, 'held on the origin: refused, untouched');
+      var v = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 8, y2: 0 }, { t: 'line', x1: 8, y1: 0, x2: 8, y2: 4 }], rels: [{ type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }, { type: 'coincident', refs: ['0.p2', '1.p1'] }], dims: [{ e: 0, k: 'dx' }] };
+      assert(SS.transformEntities(v, [0, 1], { rot: 90, cx: 0, cy: 0 }, { keepRelations: true }).ok, 'rotate 90');
+      near(v.entities[0].y2, 8, 1e-9, 'turned'); assert(relList(v).join(' ') === 'vertical:0 horizontal:1 coincident:0.p2,1.p1' && v.dims[0].k === 'dy', relList(v).join(' '));
+      clean(v, null, 'rotated');
+      var w = { entities: [{ t: 'circle', cx: 2, cy: 0, r: 1 }, { t: 'line', x1: 3, y1: 0, x2: 6, y2: 0 }], rels: [{ type: 'coincident', refs: ['1.p1', '0'] }, { type: 'horizontal', refs: ['1'] }] };
+      var rc = SS.transformEntities(w, [0, 1], { s: 2, cx: 0, cy: 0 }, { copy: true, count: 2, keepRelations: true });
+      assert(rc.ok && rc.added.length === 4 && w.entities[4].r === 4 && w.entities[5].x2 === 24 && relList(w).indexOf('coincident:5.p1,4') >= 0, 'scaled copies ' + JSON.stringify(w.entities.slice(2)));
+      clean(w, null, 'scale copies');
+      return 'ok';
+    });
+    test('sketch-tools: Trim options — Keep trimmed entities as construction geometry leaves the removed span as a construction line joined to the cut; Ignore trimming of construction geometry leaves construction lines alone (click and Power trim)', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 5, y1: -5, x2: 5, y2: 5 }] };
+      assert(SS.trimAt(s, 0, [8, 0], { keepConstruction: true }).ok, 'trim');
+      var k = s.entities[2];
+      assert(s.entities[0].x2 === 5 && k && k.construction && k.x1 === 5 && k.x2 === 10 && relList(s).indexOf('coincident:2.p1,0.p2') >= 0, 'kept span ' + JSON.stringify(s.entities) + ' ' + relList(s).join(' '));
+      var t = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0, construction: true }, { t: 'line', x1: 5, y1: -5, x2: 5, y2: 5 }] };
+      assert(!SS.trimAt(t, 0, [8, 0], { ignoreConstruction: true }).ok && SS.powerTrim(t, [7, 1], [7, -1], null, { ignoreConstruction: true }) === 0 && t.entities.length === 2, 'construction left alone');
+      return 'ok';
+    });
+    test('sketch-tools: the Pattern and chain Offset relations round-trip through scripts (the rebuilt sketch has the same relations, geometry and status)', function () {
+      var m = K.newModel('T'), f = { id: 1, type: 'sketch', name: 'Sketch1', plane: { ref: 'Front', offset: 0 }, entities: [{ t: 'circle', cx: 1, cy: 1, r: 0.25 }, { t: 'line', x1: 0, y1: -4, x2: 8, y2: -4 }, { t: 'line', x1: 8, y1: -4, x2: 8, y2: 0 }], rels: [{ type: 'coincident', refs: ['1.p2', '2.p1'] }] };
+      m.nextId = 2; m.features.push(f);
+      assert(SS.linearPattern(f, [0], { angle1: 0, spacing1: 3, count1: 3, count2: 1, dimX: true }).ok && SS.offsetSelection(f, [1], { d: 1 }).ok && SS.circularPattern(f, [0], { cx: -2, cy: 1, count: 3, angle: 90, equal: true }).ok, 'made');
+      var code = K.generateScript(m), m2 = K.newModel('T2');
+      K.runScript(m2, code);
+      var g = m2.features.filter(function (x) { return x.type === 'sketch'; })[0];
+      assert(JSON.stringify(relList(g)) === JSON.stringify(relList(f)), 'relations\n' + relList(g).join(' ') + '\nvs\n' + relList(f).join(' '));
+      f.entities.forEach(function (e, i) { SS.paramNames(e).forEach(function (nm) { near(+g.entities[i][nm] || 0, +e[nm] || 0, 1e-6, 'entity ' + i + ' ' + nm); }); });
+      assert(SS.analyze(g).status === SS.analyze(f).status && !SS.analyze(g).redundant, 'status ' + SS.analyze(g).status);
+      return relList(g).filter(function (x) { return /^(pattern|offset)/.test(x); }).length + ' tool relations';
+    });
+  })();
+  // --- end sketch-tools ---
+
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
   allDeclared = true;

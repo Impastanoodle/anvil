@@ -299,6 +299,23 @@
     if (opts && opts.center) e.center = true;
     this.ents.push(e); this._grow(p[0], p[1]);
   };
+  // spline(layer, bez, knots): a cubic SPLINE (R2000 only) made of Bézier spans bez[i] = [B0, B1, B2, B3] running from
+  // knot i to knot i + 1 (interior knots of multiplicity 3: each span is exact, the curve as continuous as the spans)
+  DXF.prototype.spline = function (layer, bez, knots) {
+    var self = this;
+    this.ents.push({ k: 'SPLINE', layer: layer, bez: bez, knots: knots });
+    bez.forEach(function (B) { for (var i = 0; i <= 8; i++) { var p = K.bezPoint(B, i / 8); self._grow(p[0], p[1]); } });
+  };
+  // ellipse(layer, centre, major (vector from the centre to the major axis end), ratio (minor / major ≤ 1), start,
+  // end (parameters in radians, counterclockwise; 0 and 2π for a full ellipse)): an ELLIPSE (R2000 only)
+  DXF.prototype.ellipse = function (layer, c, maj, ratio, p0, p1) {
+    this.ents.push({ k: 'ELLIPSE', layer: layer, c: c, maj: maj, ratio: ratio, p0: p0, p1: p1 });
+    var L = Math.hypot(maj[0], maj[1]), ux = maj[0] / L, uy = maj[1] / L;
+    for (var i = 0; i <= 64; i++) {
+      var u = p0 + (p1 - p0) * i / 64, x = L * Math.cos(u), y = L * ratio * Math.sin(u);
+      this._grow(c[0] + ux * x - uy * y, c[1] + uy * x + ux * y);
+    }
+  };
   // polyline(layer, pts, closed, bulges?): bulges[i] = tan(sweep / 4) of the segment from pts[i] to the next point
   DXF.prototype.polyline = function (layer, pts, closed, bulges) {
     var self = this;
@@ -407,6 +424,20 @@
         P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(40, fmt(e.r));
         if (r2000) P(100, 'AcDbArc');
         P(50, fmtA(e.a0)); P(51, fmtA(e.a1));
+      } else if (e.k === 'SPLINE') {
+        // degree 3, planar (flag 8), clamped; one Bézier span per knot interval (interior knots × 3)
+        var kn = [e.knots[0], e.knots[0], e.knots[0], e.knots[0]], cps = [e.bez[0][0]];
+        e.bez.forEach(function (B, i) { cps.push(B[1], B[2], B[3]); var t = e.knots[i + 1]; kn.push(t, t, t); });
+        kn.push(e.knots[e.bez.length]);
+        head('SPLINE', e.layer, 'AcDbSpline');
+        P(210, 0); P(220, 0); P(230, 1); P(70, 8); P(71, 3); P(72, kn.length); P(73, cps.length); P(74, 0);
+        P(42, '0.0000000001'); P(43, '0.0000000001');
+        kn.forEach(function (t) { P(40, fmtA(t)); });
+        cps.forEach(function (q) { P(10, fmt(q[0])); P(20, fmt(q[1])); P(30, 0); });
+      } else if (e.k === 'ELLIPSE') {
+        head('ELLIPSE', e.layer, 'AcDbEllipse');
+        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(11, fmt(e.maj[0])); P(21, fmt(e.maj[1])); P(31, 0);
+        P(210, 0); P(220, 0); P(230, 1); P(40, fmtA(e.ratio)); P(41, fmtA(e.p0)); P(42, fmtA(e.p1));
       } else if (e.k === 'TEXT') {
         head('TEXT', e.layer, 'AcDbText');
         P(10, fmt(e.p[0])); P(20, fmt(e.p[1])); P(30, 0); P(40, fmt(e.h)); P(1, dxfText(e.s));
@@ -452,9 +483,66 @@
     return out.concat(body, ['0', 'EOF']).join('\n');
   };
 
+  // A spline or an ellipse in a sketch DXF: R2000 writes it exactly (SPLINE: the spline's own cubic spans; ELLIPSE:
+  // centre, major axis, ratio, start / end parameters); R12 has neither, so the curve goes out as ARCs (each through
+  // the curve at both ends and the middle of its piece, pieces halved until the curve stays within DXF_TOL.freeArc
+  // (0.001 mm, 0.00004 in) of every arc at its eighth points; the arcs share their end points, so a laser chains them
+  // like any contour). A straight piece is a LINE.
+  DXF_TOL.freeArc = { mm: 1e-3, 'in': 4e-5 };
+  function freeArcs(evalAt, u0, u1, tol, k0) {
+    var out = [];
+    function arcOf(a, b) {
+      var A = evalAt(a), B = evalAt(b), M = evalAt((a + b) / 2);
+      var ax = M[0] - A[0], ay = M[1] - A[1], bx = B[0] - A[0], by = B[1] - A[1], cr = ax * by - ay * bx, chord = Math.hypot(bx, by);
+      var dev = 0, q, t;
+      function lineDev() { for (t = 1; t < 8; t++) { q = evalAt(a + (b - a) * t / 8); dev = Math.max(dev, Math.abs(((q[0] - A[0]) * by - (q[1] - A[1]) * bx) / (chord || 1))); } return { line: true, A: A, B: B, dev: dev }; }
+      if (Math.abs(cr) < 1e-12 * chord * chord) return lineDev();
+      var a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, cx = (by * a2 - ay * b2) / (2 * cr), cy = (ax * b2 - bx * a2) / (2 * cr);
+      var c = [A[0] + cx, A[1] + cy], r = Math.hypot(cx, cy);
+      if (r > 1e5 * chord) return lineDev();
+      for (t = 1; t < 8; t++) { q = evalAt(a + (b - a) * t / 8); dev = Math.max(dev, Math.abs(Math.hypot(q[0] - c[0], q[1] - c[1]) - r)); }
+      return { A: A, B: B, c: c, r: r, ccw: cr > 0, dev: dev };
+    }
+    for (var k = k0; k <= 4096; k *= 2) {
+      out = [];
+      var ok = true;
+      for (var i = 0; i < k && ok; i++) { var p = arcOf(u0 + (u1 - u0) * i / k, u0 + (u1 - u0) * (i + 1) / k); if (p.dev > tol) ok = false; out.push(p); }
+      if (ok) break;
+    }
+    return out;
+  }
+  function dxfFreeCurve(d, layer, e) {
+    var r2000 = d.version === 'R2000', tol = DXF_TOL.freeArc[d.units] || DXF_TOL.freeArc.mm;
+    function emitArcs(list) {
+      list.forEach(function (p) {
+        if (p.line) { d.line(layer, p.A, p.B); return; }
+        var aa = Math.atan2(p.A[1] - p.c[1], p.A[0] - p.c[0]) * 180 / Math.PI, ab = Math.atan2(p.B[1] - p.c[1], p.B[0] - p.c[0]) * 180 / Math.PI;
+        if (p.ccw) d.arc(layer, p.c, p.r, aa, ab); else d.arc(layer, p.c, p.r, ab, aa);
+      });
+    }
+    if (e.t === 'spline') {
+      var g = K.splineGeom(e);
+      if (!g) return;
+      if (r2000) { d.spline(layer, g.bez, g.knots); return; }
+      g.bez.forEach(function (B) { emitArcs(freeArcs(function (s) { return K.bezPoint(B, s); }, 0, 1, tol, 1)); });
+      return;
+    }
+    if (!(e.rx > 0) || !(e.ry > 0)) return;
+    var full = e.t === 'ellipse', u0 = full ? 0 : e.a0 * Math.PI / 180, u1 = full ? 2 * Math.PI : e.a1 * Math.PI / 180;
+    if (r2000) {
+      var ro = (+e.rot || 0) * Math.PI / 180, swap = e.ry > e.rx, maj = swap ? [-Math.sin(ro) * e.ry, Math.cos(ro) * e.ry] : [Math.cos(ro) * e.rx, Math.sin(ro) * e.rx];
+      var p0 = swap ? u0 - Math.PI / 2 : u0, p1 = p0 + (u1 - u0);
+      if (full) { p0 = 0; p1 = 2 * Math.PI; }
+      else { while (p0 < 0) { p0 += 2 * Math.PI; p1 += 2 * Math.PI; } while (p0 >= 2 * Math.PI) { p0 -= 2 * Math.PI; p1 -= 2 * Math.PI; } }
+      d.ellipse(layer, [e.cx, e.cy], maj, swap ? e.rx / e.ry : e.ry / e.rx, p0, p1);
+      return;
+    }
+    emitArcs(freeArcs(function (u) { return K.ellipsePoint(e, u); }, u0, u1, tol, full ? 8 : 2));
+  }
+
   // exportDXFSketch(sketch, units, opts?) -> DXF text of a sketch as drawn, full size in the sketch's own 2D frame:
   // every entity as its exact pieces (K.entityPrimitives): lines as LINE, circles as CIRCLE, arcs as ARC, rectangles /
-  // polygons / polylines as their LINE edges, slots as two LINEs and two ARCs. Construction geometry (centerlines too)
+  // polygons / polylines as their LINE edges, slots as two LINEs and two ARCs, arc slots as four ARCs. Construction geometry (centerlines too)
   // is left out unless opts.construction, which puts it on layer CONSTRUCTION; points and dimensions are not written.
   // Layers as the flat pattern's: entities on a closed loop that lies inside another closed loop (holes, slots,
   // cutouts: the sketch profile's loops at depth 1 or more) go on HOLES; the outermost loops and open geometry on OUTLINE.
@@ -477,7 +565,7 @@
     }
     // HOLES when the entity's first chord lies on a nested loop and on no outermost one
     function isHole(e) {
-      var pl = K.entityPolylines(e)[0];
+      var pl = K.entityPolylines(e, true)[0];   // splines / ellipses: the area-true points the profile loops are made of
       if (!pl || pl.pts.length < 2) return false;
       var q = [(pl.pts[0][0] + pl.pts[1][0]) / 2, (pl.pts[0][1] + pl.pts[1][1]) / 2], hole = false;
       for (var i = 0; i < loops.length; i++) {
@@ -494,6 +582,7 @@
       // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
       // would flip an arc across 0°)
       if (e.t === 'arc') { d.arc(layer, [e.cx, e.cy], e.r, e.a0, e.a1); return; }
+      if (K.isFreeCurve(e)) { dxfFreeCurve(d, layer, e); return; }
       K.entityPrimitives(e).forEach(function (p) {
         if (p.kind === 'seg') d.line(layer, p.a, p.b);
         else if (p.full) d.circle(layer, p.c, p.r);
@@ -886,11 +975,25 @@
   SketchBuilder.prototype.rect = function (x, y, w, h) { var s = this; return this._e({ t: 'rect', x: s._v(x), y: s._v(y), w: s._v(w), h: s._v(h) }); };
   SketchBuilder.prototype.centerRect = function (cx, cy, w, h) { var s = this; return this._e({ t: 'crect', cx: s._v(cx), cy: s._v(cy), w: s._v(w), h: s._v(h) }); };
   SketchBuilder.prototype.circle = function (cx, cy, r) { var s = this; return this._e({ t: 'circle', cx: s._v(cx), cy: s._v(cy), r: s._v(r) }); };
-  SketchBuilder.prototype.polygon = function (cx, cy, r, n, rot) { var s = this; return this._e({ t: 'poly', cx: s._v(cx), cy: s._v(cy), r: s._v(r), n: s._v(n) | 0 || 6, rot: s._v(rot) || 0 }); };
+  // r is the corner radius; opts.inscribed (p9-sketch-curves): the polygon's circle is inscribed (it touches the flats,
+  // as SolidWorks' Inscribed circle): the shape is the same, its R dimension and the Polygon PM's diameter go to the flats
+  SketchBuilder.prototype.polygon = function (cx, cy, r, n, rot, opts) { var s = this, e = { t: 'poly', cx: s._v(cx), cy: s._v(cy), r: s._v(r), n: s._v(n) | 0 || 6, rot: s._v(rot) || 0 }; if (opts && opts.inscribed) e.ins = true; return this._e(e); };
   SketchBuilder.prototype.slot = function (x1, y1, x2, y2, w) { var s = this; return this._e({ t: 'slot', x1: s._v(x1), y1: s._v(y1), x2: s._v(x2), y2: s._v(y2), w: s._v(w) }); };
   SketchBuilder.prototype.arc = function (cx, cy, r, a0, a1) { var s = this; return this._e({ t: 'arc', cx: s._v(cx), cy: s._v(cy), r: s._v(r), a0: s._v(a0), a1: s._v(a1) }); };
+  // p9-sketch-curves: an arc slot w wide round the centre-line arc (centre, radius r, counter-clockwise a0 -> a1 degrees)
+  SketchBuilder.prototype.arcSlot = function (cx, cy, r, a0, a1, w) { var s = this; return this._e({ t: 'aslot', cx: s._v(cx), cy: s._v(cy), r: s._v(r), a0: s._v(a0), a1: s._v(a1), w: s._v(w) }); };
   SketchBuilder.prototype.polyline = function (pts, closed) { var s = this; return this._e({ t: 'polyline', pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }), closed: closed !== false }); };
   SketchBuilder.prototype.point = function (x, y) { var s = this; return this._e({ t: 'point', x: s._v(x), y: s._v(y) }); };
+  // spline(points, closed = false, tans?): the curve through the points (see Kernel.splineGeom); tans[i] = [angle°,
+  // weight] makes point i tangent-driving. ellipse(cx, cy, rx, ry, rot°); partialEllipse(cx, cy, rx, ry, rot°, a0°, a1°)
+  SketchBuilder.prototype.spline = function (pts, closed, tans) {
+    var s = this, e = { t: 'spline', pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }) };
+    if (closed) e.closed = true;
+    if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]] : null; });
+    return this._e(e);
+  };
+  SketchBuilder.prototype.ellipse = function (cx, cy, rx, ry, rot) { var s = this; return this._e({ t: 'ellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0) }); };
+  SketchBuilder.prototype.partialEllipse = function (cx, cy, rx, ry, rot, a0, a1) { var s = this; return this._e({ t: 'pellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0), a0: s._v(a0), a1: s._v(a1) }); };
   // mirror entities across 'x' | 'y' | a line entity index | {x1,y1,x2,y2}; opts.entities = indices (default all), opts.copy=false replaces
   SketchBuilder.prototype.mirrorEntities = function (axis, opts) {
     opts = opts || {};
@@ -989,11 +1092,15 @@
               case 'rect': s += '\n  .rect(' + [e.x, e.y, e.w, e.h].join(', ') + ')'; break;
               case 'crect': s += '\n  .centerRect(' + [e.cx, e.cy, e.w, e.h].join(', ') + ')'; break;
               case 'circle': s += '\n  .circle(' + [e.cx, e.cy, e.r].join(', ') + ')'; break;
-              case 'poly': s += '\n  .polygon(' + [e.cx, e.cy, e.r, e.n, e.rot || 0].join(', ') + ')'; break;
+              case 'poly': s += '\n  .polygon(' + [e.cx, e.cy, e.r, e.n, e.rot || 0].join(', ') + (e.ins ? ', { inscribed: true }' : '') + ')'; break;
               case 'slot': s += '\n  .slot(' + [e.x1, e.y1, e.x2, e.y2, e.w].join(', ') + ')'; break;
               case 'arc': s += '\n  .arc(' + [e.cx, e.cy, e.r, e.a0, e.a1].join(', ') + ')'; break;
+              case 'aslot': s += '\n  .arcSlot(' + [e.cx, e.cy, e.r, e.a0, e.a1, e.w].join(', ') + ')'; break;
               case 'polyline': s += '\n  .polyline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + ')'; break;
               case 'point': s += '\n  .point(' + e.x + ', ' + e.y + ')'; break;
+              case 'spline': s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : '') + ')'; break;
+              case 'ellipse': s += '\n  .ellipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0].join(', ') + ')'; break;
+              case 'pellipse': s += '\n  .partialEllipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0, e.a0, e.a1].join(', ') + ')'; break;
             }
           });
           (f.dims || []).forEach(function (d) {

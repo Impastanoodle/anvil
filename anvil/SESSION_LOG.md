@@ -1293,3 +1293,13 @@ Tests: kernel 895/895, ui-smoke 358/358 (headless). Not done (QUEUE): OCCT flat 
 - drawing/app: Close Drawing (ribbon, File, Window, part tab) asks Save / Don't Save / Cancel when the drawing changed (`anvil.drawing.isDirty()`); Mirror Entities starts with Mirror about empty and blocks ✓ until both boxes are filled (`spec.okBlocked`).
 - head: a new sketch on a standard plane opens at once instead of after the rebuild, so a tool picked right after Sketch is not lost while OpenCascade rebuilds.
 Tests: kernel 896/896, example --all --occt 29/29, ui-smoke 360/360, occt-tests 66/66.
+
+## 2026-10-07T12 (interactive head, 5 subagents): the Sketch tab, SolidWorks PropertyManagers on every tool
+
+- head: `UI.sketchToolPMs[tool]` (opened by setTool, exempt from "a PM ends the tool"), `UI.withToolPM`, `UI.sketchEntityPMs[type]` (openEntityPM), `UI.deleteSketchEntity`; one file per area: ui-sketch-lines / -curves / -tools / -dims / -spline.js. Merge fixes: the spline hooks moved to `UI.sketchFreeHooks` (the line tools own `UI.sketchToolHooks`, different signatures); duplicate ui-smoke helpers renamed (stToolRels, stToolGroups).
+- lines: Insert Line (Orientation, Options, Parameters), Line Properties (relations, Parameters, Additional Parameters, solver-driven, refusals named), Rectangle (5 types incl. 3 Point Corner / Center, Parallelogram; construction lines), Point; Line flyout with Centerline / Midpoint Line.
+- curves: Circle / Perimeter Circle, Arc (Centerpoint, Tangent, 3 Point), Polygon (inscribed / circumscribed, centre, diameter, angle), four slot types (new `aslot` entity, exact DXF), Add dimensions, Center to Center / Overall Length.
+- tools: Sketch Fillet (line/arc corners, keep constrained corners, dimension each fillet) and Chamfer, Offset Entities (chains, one Offset relation), Trim options + Extend, Convert Entities (true circles/arcs, On Edge), Move / Copy / Rotate / Scale / Stretch, Linear and Circular Sketch Pattern (instances to skip, pattern relation).
+- dims: Dimension PM (tolerance / precision, name, driven, reverse, text 2X / TYP / REF, arc condition), Modify box, Add Relations (Coradial, Intersection, Merge), Display/Delete filters + Suppressed, `UI.sketchRelationGroups`, red over-defined, Fully Define Sketch.
+- spline: Spline (C2, tangent driving, local mode), Ellipse, Partial Ellipse: profiles with exact volumes, OCCT true curves, DXF SPLINE / ELLIPSE (R2000). Sketch Text not done.
+Tests: kernel 934/934, examples 29/29, ui-smoke 395/395, occt-tests 72/72; hand check in the browser (Insert Line, Rectangle, Circle PM driving the radius, Smart Dimension PM + Modify, Sketch Fillet ×2 with one R + Equal, Slot PM).
