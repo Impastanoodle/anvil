@@ -803,10 +803,20 @@ var OcctKernel = (function () {
         // B-splines), in the model's units, the product named after the part
         var inch = m.units === 'in', name = String(m.name || 'Part').replace(/'/g, '');
         try {
-          if (oc.Interface_Static) oc.Interface_Static.SetCVal('write.step.unit', inch ? 'INCH' : 'MM');
+          // write.step.unit only names the unit in the file: OpenCascade takes the shape to be in xstep.cascade.unit
+          // (default MM) and scales it into the file's unit, so an inch part also sets the shape's unit to INCH (it was
+          // written 25.4 times too small); both go back to MM afterwards so imports keep reading millimetres. A first
+          // writer registers these parameters (in a fresh engine a SetCVal before any STEP object is lost and the file
+          // came out in MM); the writer that is used reads them when it is made, so it comes after the SetCVal
+          if (oc.Interface_Static) {
+            N(new oc.STEPControl_Writer_1());
+            oc.Interface_Static.SetCVal('xstep.cascade.unit', inch ? 'INCH' : 'MM'); oc.Interface_Static.SetCVal('write.step.unit', inch ? 'INCH' : 'MM');
+          }
           var sw = N(new oc.STEPControl_Writer_1());
-          sw.Transfer(all, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
-          sw.Write('/anvil-export.step');
+          try {
+            sw.Transfer(all, oc.STEPControl_StepModelType.STEPControl_AsIs, true, R());
+            sw.Write('/anvil-export.step');
+          } finally { if (oc.Interface_Static) { oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM'); oc.Interface_Static.SetCVal('write.step.unit', 'MM'); } }
           out.step = String(oc.FS.readFile('/anvil-export.step', { encoding: 'utf8' })).replace(/PRODUCT\s*\(\s*'[^']*'\s*,\s*'[^']*'/g, "PRODUCT('" + name + "','" + name + "'");
           oc.FS.unlink('/anvil-export.step');
         } catch (e) { out.exportError = 'STEP: ' + (e.message || e); }

@@ -1,7 +1,8 @@
 // ui-holewizard.js — the Hole Wizard PropertyManager (Type / Positions tabs) and the viewport's cosmetic threads.
 // Loaded after ui-commands.js; the kernel side (ISO table, 'hole' feature, script API) is holewizard.js.
 //
-// UI.cmdHoleWizard(existing?) opens the PM. Type tab: Hole Type, Hole Specifications (ISO size, fit), End Condition.
+// UI.cmdHoleWizard(existing?) opens the PM. Type tab: Hole Type, Hole Specifications (Standard: ANSI Inch, the default
+// in an inch part, or ISO; for an ANSI Inch Hole, screw clearances or drill sizes; size, fit), End Condition.
 // Positions tab: the first click on a planar face places the first hole there; further clicks on the same face add
 // holes; a click on another face starts over on that face. OK stores a points sketch on the face plus one 'hole'
 // feature in one undo step (an edit rewrites both). UI.updateCosmeticThreads() draws a dashed circle at the major
@@ -11,21 +12,24 @@
   var K = Kernel, HW = HoleWizard, App = UI.App;
 
   function fmt(x) { return UI.fmtNum(x, 2); }
+  function units() { return App.model && App.model.units === 'in' ? 'in' : 'mm'; }
+  function holeOf(v) { return { standard: v.standard, holeType: v.holeType, size: v.size, fit: v.fit, sizeType: v.holeType === 'hole' && v.sizeType === 'drill' ? 'drill' : undefined, end: v.end, depth: +v.depth, threadDepth: +v.threadDepth }; }
+  // the hole as its drawing callout ('Ø.281 THRU · ⌴ Ø.438 ↧ .250'), with the drill named for ANSI Inch
   function specText(v) {
-    var s;
-    try { s = HW.spec({ holeType: v.holeType, size: v.size, fit: v.fit }); } catch (e) { return ''; }
-    var t = 'Ø' + fmt(s.dia);
-    if (s.cbore) t += ' · CBORE Ø' + fmt(s.cbore.dia) + ' ↧ ' + fmt(s.cbore.depth);
-    if (s.csk) t += ' · CSK Ø' + fmt(s.csk.dia) + ' × ' + s.csk.angle + '°';
-    if (s.thread) t += ' · ' + s.thread.label + ' (tap drill)';
-    return t;
+    var s, lines;
+    try { s = HW.spec(holeOf(v), units()); lines = HW.callout(holeOf(v), units()); } catch (e) { return e.message || ''; }
+    return lines.join(' · ') + (s.drillName ? ' (' + s.drillName + ' drill)' : '');
   }
 
   function cmdHoleWizard(existing) {
     if (App.mode === 'sketch') UI.exitSketch(true);
     var sk = existing ? K.findFeature(App.model, existing.sketch) : null;
-    var v = existing ? { holeType: existing.holeType, size: existing.size, fit: existing.fit || 'normal', end: existing.end, depth: +existing.depth || 10, threadDepth: +(existing.threadDepth || existing.depth) || 10 }
-      : { holeType: 'cbore', size: 'M6', fit: 'normal', end: 'blind', depth: 16, threadDepth: 12 };
+    var inch = units() === 'in';
+    var v = existing ? { standard: HW.standardOf(existing), holeType: existing.holeType, sizeType: existing.sizeType === 'drill' ? 'drill' : 'clearance', size: existing.size, fit: existing.fit || 'normal', end: existing.end, depth: +existing.depth || 10, threadDepth: +(existing.threadDepth || existing.depth) || 10 }
+      : { standard: inch ? HW.ANSI : 'ISO', holeType: 'cbore', sizeType: 'clearance', size: inch ? '1/4' : 'M6', fit: 'normal', end: 'blind', depth: inch ? 0.75 : 16, threadDepth: inch ? 0.5 : 12 };
+    // a size the standard / type / size type no longer offers goes back to that list's default
+    function fixSize(x) { if (!HW.validSize(x.standard, x.holeType, x.sizeType, x.size)) x.size = HW.defaultSize(x.standard, x.holeType, x.sizeType); }
+    function isAnsiHole(x) { return x.standard === HW.ANSI && x.holeType === 'hole'; }
     v.tab = existing ? 'type' : 'positions';
     v.face = sk ? sk.plane : null;
     v.points = sk ? sk.entities.filter(function (e) { return e.t === 'point'; }).map(function (e) { return [e.x, e.y]; }) : [];
@@ -33,7 +37,7 @@
     function isType(x) { return x.tab === 'type'; }
     function isPos(x) { return x.tab === 'positions'; }
     function feature(sketchId) {
-      var f = HW.newFeature({ type: v.holeType, size: v.size, fit: v.fit, end: v.end, depth: v.end === 'blind' ? +v.depth : 0, threadDepth: +v.threadDepth });
+      var f = HW.newFeature({ standard: v.standard, type: v.holeType, sizeType: isAnsiHole(v) ? v.sizeType : null, size: v.size, fit: v.fit, end: v.end, depth: v.end === 'blind' ? +v.depth : 0, threadDepth: +v.threadDepth }, units());
       f.sketch = sketchId;
       return f;
     }
@@ -61,11 +65,12 @@
       groups: [
         // r14/fixes14: the pressed button is the tab on show (was a separate "Showing" row)
         { title: 'Tabs', fields: [{ type: 'buttons', buttons: [{ label: 'Type', active: isType, onclick: function () { tab('type'); } }, { label: 'Positions', active: isPos, onclick: function () { tab('positions'); } }] }] },
-        { title: 'Hole Type', show: isType, fields: [{ type: 'select', label: 'Type', key: 'holeType', options: HW.TYPES, rerender: true }] },
+        { title: 'Hole Type', show: isType, fields: [{ type: 'select', label: 'Type', key: 'holeType', options: HW.TYPES, rerender: true },
+          { type: 'select', label: 'Standard', key: 'standard', options: HW.STANDARDS, rerender: true },
+          { type: 'select', label: 'Hole type', key: 'sizeType', options: HW.SIZE_TYPES, rerender: true, show: isAnsiHole }] },
         { title: 'Hole Specifications', show: isType, fields: [
-          { type: 'static', label: 'Standard', value: 'ISO' },
-          { type: 'select', label: 'Size', key: 'size', options: HW.ISO.map(function (r) { return [r.size, r.size]; }), rerender: true },
-          { type: 'select', label: 'Fit', key: 'fit', options: HW.FITS, rerender: true, show: function (x) { return x.holeType !== 'tap'; } },
+          { type: 'select', label: 'Size', key: 'size', options: function (x) { return HW.sizeOptions(x.standard, x.holeType, x.sizeType); }, rerender: true },
+          { type: 'select', label: 'Fit', key: 'fit', options: HW.FITS, rerender: true, show: function (x) { return x.holeType !== 'tap' && !(isAnsiHole(x) && x.sizeType === 'drill'); } },
           { type: 'static', label: 'Hole', value: specText }] },
         { title: 'End Condition', show: isType, fields: [
           { type: 'select', label: 'End condition', key: 'end', options: [['blind', 'Blind'], ['through', 'Through All']], rerender: true },
@@ -80,7 +85,13 @@
             onClear: function (x) { x.points = []; UI.renderPM(); preview(); } },
           { type: 'buttons', buttons: [{ label: 'Remove last', onclick: function () { v.points.pop(); UI.renderPM(); preview(); } }, { label: 'Clear', onclick: function () { v.points = []; UI.renderPM(); preview(); } }] }] }
       ],
-      onChange: function () { preview(); },
+      onChange: function (x, key) {
+        if (key === 'standard' || key === 'holeType' || key === 'sizeType') {
+          fixSize(v);
+          UI.renderPM();
+        }
+        preview();
+      },
       onCancel: function () { UI.disposeGroup(UI.groups.preview); },
       onOK: function () {
         if (!v.face || !v.points.length) { UI.toast('Click a face to place the holes first.'); return false; }
@@ -91,7 +102,7 @@
         if (existing) {
           sk.plane = v.face; sk.entities = ents; delete sk.dims; delete sk.rels; delete sk.profile;
           var nf = feature(existing.sketch);
-          ['holeType', 'size', 'fit', 'end', 'depth', 'threadDepth', 'standard'].forEach(function (k) { if (nf[k] === undefined) delete existing[k]; else existing[k] = nf[k]; });
+          ['holeType', 'size', 'fit', 'end', 'depth', 'threadDepth', 'standard', 'sizeType'].forEach(function (k) { if (nf[k] === undefined) delete existing[k]; else existing[k] = nf[k]; });
           f = existing;
         } else {
           var s = { id: App.model.nextId++, type: 'sketch', plane: v.face, entities: ents };

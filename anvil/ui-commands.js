@@ -2689,14 +2689,18 @@
   }
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
-  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on) }
+  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on),
+  //   version: 'R12' (default) | 'R2000' (faces and sheet; views are R12), style: 'polyline' (default: one closed
+  //   polyline per loop) | 'entities' (LINE / ARC; faces and sheet) }. Faces and the flat pattern come out laser
+  //   ready (Kernel.exportDXFFlat): true circles and arcs, joined loops, the flat's lower-left corner at 0,0.
   function dxfOutput(opts) {
     opts = opts || {};
     var what = opts.export || dxfDefaultExport();
+    var wopts = { version: opts.version === 'R2000' ? 'R2000' : 'R12', style: opts.style === 'entities' ? 'entities' : 'polyline' };
     if (what === 'faces') {
       var fi = opts.face != null ? +opts.face : (App.sel && App.sel.kind === 'face' ? App.sel.index : -1);
       if (!(fi >= 0) || !App.mesh || !App.mesh.faces[fi]) throw new Error('Select a planar face first.');
-      var dxf = K.exportDXFFace(App.mesh, fi, dxfUnits());
+      var dxf = K.exportDXFFace(App.mesh, fi, dxfUnits(), wopts);
       if (!dxf) throw new Error('Could not outline that face.');
       return dxf;
     }
@@ -2704,10 +2708,8 @@
     if (what === 'sheet') {
       if (!App.model.sheet) throw new Error('Sheet metal needs a Base Flange.');
       var flat = K.flatPattern(App.model, App.build, App.mesh);
-      var drop = [];
-      if (opts.bendLines === false) drop.push('BEND');
-      if (opts.notes === false) drop.push('NOTES');
-      return dropDxfLayers(K.exportDXFFlat(flat, dxfUnits()), drop);
+      wopts.bendLines = opts.bendLines !== false; wopts.notes = opts.notes !== false;
+      return K.exportDXFFlat(flat, dxfUnits(), wopts);
     }
     throw new Error('Unknown export "' + what + '" (faces, views or sheet).');
   }
@@ -2747,13 +2749,15 @@
     opts = opts || {};
     var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet;
     var v = { export: dxfDefaultExport(), vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
-      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', bendLines: true, notes: true, name: '' };
+      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
     v.name = typed || (auto = autoName());
     if (v.format === 'dwg' && !(dwgState.probed && dwgState.ok)) v.format = 'dxf';
     function optsOf(x) {
-      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes };
+      // DWG: the converter gets an R2000 DXF (LibreDWG reads R12 entities without their model space)
+      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes,
+        version: x.format === 'dwg' || x.version === 'R2000' ? 'R2000' : 'R12', style: x.style };
     }
     function cleanName(x) { return String(x.name || '').trim().replace(/\.(dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || autoName(); }
     function isViews(x) { return x.export === 'views'; }
@@ -2785,12 +2789,14 @@
           { type: 'radio', key: 'format', rerender: true, options: [['dxf', 'DXF'], ['dwg', 'DWG']],
             disabledOption: function (val) { return val === 'dwg' && !(dwgState.probed && dwgState.ok) ? DWG_NOTE : null; } },
           { type: 'html', show: function () { return dwgState.converter === 'libredwg'; }, html: '<div class="pm-note">' + LIBREDWG_NOTE + '</div>' },
-          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : [['R12', 'R12 (AC1009)']]; } }
+          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : isViews(x) ? [['R12', 'R12 (AC1009)']] : [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']]; } },
+          { type: 'select', label: 'Loops as', key: 'style', show: function (x) { return !isViews(x); }, options: [['polyline', 'Polylines (one per loop)'], ['entities', 'Lines and arcs']] }
         ] },
         { title: 'File name', fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (x, key) {
         if (key === 'export' && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
+        if (key === 'export' && isViews(x) && x.format !== 'dwg' && x.version !== 'R12') { x.version = 'R12'; UI.renderPM(); }
         if (key === 'format') { x.version = x.format === 'dwg' ? 'R2000' : 'R12'; UI.renderPM(); }
         if (key === 'name') auto = null;
       },
