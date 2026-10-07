@@ -2,7 +2,8 @@
 // and standard scales, newDrawing / addView, the per-mesh projection cache with its lazy mode (LAZY: views still to be
 // worked out in drawing-worker.js) and the section jobs, projected / section / detail views placed beside their parent
 // or fitted onto the sheet, the title block with its $PRPSHEET / $PRP links, Standard 3 View and its layout, moving
-// and deleting views, automatic model dimensions (overall sizes, diameters, radii) and dimension text, and assembly
+// and deleting views, automatic model dimensions (overall sizes, diameters, radii, straight and arc slot callouts, the
+// part's sketch ordinate sets) and dimension text, and assembly
 // drawings: part info, the Bill of Materials rows, columns and box, Auto Balloon and balloon placement. Loads after
 // drawing-views.js; autoInsert, numText and dimLabel (drawing-annotations.js) and arcEnds (drawing-render.js) are late
 // bound.
@@ -668,6 +669,25 @@
         var s0 = groups[key][0];
         slotDims.push({ view: v.id, kind: 'rad', c: pick.c, r: pick.r, a0: pick.a0, a1: pick.a1, count: groups[key].length, value: pick.r, slot: { w: s0.w, len: s0.len }, auto: true });
       });
+      // arc slots (arcSlotsIn): the same, as "R1.500 ARC SLOT .375 WIDE 60°" (centre-line radius, width, the angle
+      // between the end caps' centres); their side arcs and caps get no radius of their own
+      var agroups = {}, agk = [];
+      arcSlotsIn(pr).forEach(function (s) {
+        slotArcs[v.id].push(s.ends[0], s.ends[1]);
+        s.sides.forEach(function (x) { slotArcs[v.id].push(x); });
+        var key = 'arc ' + fmtDim(s.R, units) + ' X ' + fmtDim(s.w, units) + ' X ' + Math.round(s.angle * 100) / 100;
+        if (sdone[key]) return;
+        if (!agroups[key]) { agroups[key] = []; agk.push(key); }
+        agroups[key].push(s);
+      });
+      agk.forEach(function (key) {
+        sdone[key] = true;
+        var ends = [];
+        agroups[key].forEach(function (s) { ends.push(s.ends[0], s.ends[1]); });
+        var pick = ends.sort(function (p, q) { return Math.hypot(q.c[0] - cu, q.c[1] - cv) - Math.hypot(p.c[0] - cu, p.c[1] - cv) || (q.c[0] + q.c[1]) - (p.c[0] + p.c[1]); })[0];
+        var s0 = agroups[key][0];
+        slotDims.push({ view: v.id, kind: 'rad', c: pick.c, r: pick.r, a0: pick.a0, a1: pick.a1, count: agroups[key].length, value: pick.r, slot: { arc: true, R: s0.R, w: s0.w, angle: s0.angle, center: s0.center }, auto: true });
+      });
     });
     function slotEnd(v, a) {
       return (slotArcs[v.id] || []).some(function (e) { return Math.abs(e.r - a.r) <= 1e-9 * (1 + a.r) && Math.hypot(e.c[0] - a.c[0], e.c[1] - a.c[1]) <= 1e-9 * (1 + Math.abs(a.c[0]) + Math.abs(a.c[1])); });
@@ -694,8 +714,117 @@
       });
     });
     dims = dims.concat(slotDims);
+    // the part's sketch ordinate sets (sketch-ordinate), as drawing ordinate dimensions in the first view that looks
+    // square at their sketch
+    dims = dims.concat(sketchOrdinates(doc, order, projections));
     dims.forEach(function (d) { d.text = dimText(d, units); });
     return dims;
+  }
+  // sketchOrdinates(doc, order, projections) -> ordinate model items: every ordinate set (SketchSolver.ordinateSets) of
+  // every unsuppressed sketch of the part being drawn (_.CTX.model), in the first ortho view of `order` whose direction
+  // is the sketch's normal; base and references are the zero's and the members' points (circle centres) or edges in
+  // that view's frame, the values their distances from the zero (signed; drawn as they read), on the side of the
+  // geometry the sketch set's values stand
+  function sketchOrdinates(doc, order, projections) {
+    var ctx = _.CTX, model = ctx && ctx.model, S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, out = [];
+    if (!model || model.type === 'assembly' || !model.features || !S || !S.ordinateSets) return out;
+    var rm;
+    try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var planes = ctx.build && ctx.build.planes || {};
+    (rm.features || []).forEach(function (f) {
+      if (f.type !== 'sketch' || f.suppressed || !f.rels || !f.rels.some(function (r) { return r.ord != null; })) return;
+      var pl, sets = S.ordinateSets(f);
+      try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
+      var v = null, F = null;
+      for (var i = 0; i < order.length && !v; i++) {
+        var Fi = viewFrame(doc, order[i]);
+        if (Fi && Math.abs(Math.abs(V.dot(pl.n, Fi.e)) - 1) < 1e-9 && projections[order[i].id]) { v = order[i]; F = Fi; }
+      }
+      if (!v) return;
+      function view2(x, y) { var p = K.to3D(pl, x, y); return [V.dot(p, F.u), V.dot(p, F.v)]; }
+      function viewRef(ref) {
+        var k = S.refKind(f, ref);
+        if (k === 'point') { var p = S.refPoint(f, ref); return p ? { kind: 'dia', c: view2(p[0], p[1]), r: 0, value: 0 } : null; }
+        if (k === 'circle') { var c = S.refCurve(f, ref); return { kind: 'dia', c: view2(c.c[0], c.c[1]), r: c.r, value: 2 * c.r }; }
+        if (k === 'line') {
+          var L = S.refCurve(f, ref), a = view2(L.a[0], L.a[1]), b = view2(L.b[0], L.b[1]), dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+          return { kind: Math.abs(dy) <= len * 1e-9 ? 'h' : Math.abs(dx) <= len * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: len };
+        }
+        return null;
+      }
+      Object.keys(sets).forEach(function (id) {
+        var set = sets[id], base = viewRef(set.zero);
+        if (!base) return;
+        var refs = set.members.map(function (i) { return viewRef(f.rels[i].refs[1]); });
+        if (refs.some(function (r) { return !r; })) return;
+        var sx = set.axis === 'y' ? [0, 1] : [1, 0], d3 = V.add(V.scale(pl.x, sx[0]), V.scale(pl.y, sx[1]));
+        var dir = Math.abs(V.dot(d3, F.u)) >= Math.abs(V.dot(d3, F.v)) ? 'h' : 'v', ax = dir === 'v' ? 1 : 0;
+        var pos = function (r, a) { return r.kind === 'dia' ? r.c[a] : (r.a[a] + r.b[a]) / 2; };
+        var d = { view: v.id, kind: 'ordinate', dir: dir, base: base, refs: refs, auto: true, sketchOrd: f.id + ':' + id };
+        d.values = refs.map(function (r) { return pos(r, ax) - pos(base, ax); });
+        // the side the values stand: where the sketch set has its text line, from the middle of its points
+        if (set.at != null) {
+          var mid = 0, all = [base].concat(refs);
+          all.forEach(function (r) { mid += pos(r, 1 - ax) / all.length; });
+          var lvl = (set.axis === 'y' ? view2(set.at, 0) : view2(0, set.at))[1 - ax];
+          d.side = lvl - mid < 0 ? -1 : 1;
+        }
+        // below / left of the view the overall sizes stand 10 mm out: the values stand outside them
+        if ((d.side || 1) < 0) d.outer = 10;
+        out.push(d);
+      });
+    });
+    return out;
+  }
+  // arcSlotsIn(pr) -> [{ ends: [arc, arc], sides: [outer arc, inner arc?], center, R, w, angle }]: the arc slots a
+  // projection shows — two 180° true end arcs of one radius r whose centres lie on a circle of radius R about the
+  // centre of a visible true side arc of radius R + r (and R - r, the inner side, when there is one), each cap facing
+  // along that circle, lying inside the view's outline. w = 2r; angle = the angle between the caps' centres about the
+  // slot's centre, the way the side arc runs (degrees).
+  function arcSlotsIn(pr) {
+    var b = pr.bounds, span = Math.max(b.umax - b.umin, b.vmax - b.vmin, 1e-9), tol = 1e-6 * span, caps = [], all = [], out = [], used = {};
+    function sweepOf(a) { return ((a.a1 - a.a0) % 360 + 360) % 360 || 360; }
+    (pr.arcs.visible || []).forEach(function (a) {
+      if (a.src !== 'arc') return;
+      all.push(a);
+      if (Math.abs(sweepOf(a) - 180) <= 0.5 && !caps.some(function (x) { return Math.abs(x.r - a.r) <= tol && Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol; })) caps.push(a);
+    });
+    function mid(a) { var m = (a.a0 + sweepOf(a) / 2) * Math.PI / 180; return [Math.cos(m), Math.sin(m)]; }
+    function inside(x, y) { return x > b.umin + tol && x < b.umax - tol && y > b.vmin + tol && y < b.vmax - tol; }
+    for (var i = 0; i < caps.length; i++) {
+      if (used[i]) continue;
+      for (var j = i + 1; j < caps.length; j++) {
+        if (used[j]) continue;
+        var A = caps[i], B = caps[j], r = A.r;
+        if (Math.abs(A.r - B.r) > tol) continue;
+        var found = null;
+        for (var k = 0; k < all.length && !found; k++) {
+          var X = all[k];
+          if (X === A || X === B || X.r <= r + tol) continue;
+          var R = X.r - r, C = X.c, dA = Math.hypot(A.c[0] - C[0], A.c[1] - C[1]), dB = Math.hypot(B.c[0] - C[0], B.c[1] - C[1]);
+          if (Math.abs(dA - R) > tol * 10 || Math.abs(dB - R) > tol * 10 || R <= tol) continue;
+          // each cap faces along the circle (square to its radius) and away from the other cap
+          var ra = [(A.c[0] - C[0]) / dA, (A.c[1] - C[1]) / dA], rb = [(B.c[0] - C[0]) / dB, (B.c[1] - C[1]) / dB], ma = mid(A), mb = mid(B);
+          if (Math.abs(ma[0] * ra[0] + ma[1] * ra[1]) > 0.01 || Math.abs(mb[0] * rb[0] + mb[1] * rb[1]) > 0.01) continue;
+          var ab = [B.c[0] - A.c[0], B.c[1] - A.c[1]];
+          if (ma[0] * ab[0] + ma[1] * ab[1] > 0 || mb[0] * ab[0] + mb[1] * ab[1] < 0) continue;
+          var inner = R - r > tol ? all.filter(function (Y) { return Y !== X && Math.abs(Y.r - (R - r)) <= tol * 10 && Math.hypot(Y.c[0] - C[0], Y.c[1] - C[1]) <= tol * 10; })[0] : null;
+          if (R - r > tol && !inner) continue;
+          // inside the outline: the caps and points along the outer side
+          var ok = [A, B].every(function (q) { return inside(q.c[0] - r, q.c[1] - r) && inside(q.c[0] + r, q.c[1] + r); });
+          for (var t = 0; ok && t <= 16; t++) { var ang = (X.a0 + sweepOf(X) * t / 16) * Math.PI / 180; ok = inside(C[0] + X.r * Math.cos(ang), C[1] + X.r * Math.sin(ang)); }
+          if (!ok) continue;
+          var th = Math.acos(Math.max(-1, Math.min(1, ra[0] * rb[0] + ra[1] * rb[1]))) * 180 / Math.PI;
+          if (sweepOf(X) > 180 + 0.5) th = 360 - th;
+          found = { ends: [A, B], sides: inner ? [X, inner] : [X], center: C.slice(), R: R, w: 2 * r, angle: th };
+        }
+        if (!found) continue;
+        used[i] = used[j] = true;
+        out.push(found);
+        break;
+      }
+    }
+    return out;
   }
   // slotsIn(pr) -> [{ ends: [arc, arc], w, len }]: the straight slots a projection shows — two 180° true arcs of one
   // radius, each bulging away from the other, whose tangent sides are visible straight lines, lying inside the view's
@@ -741,12 +870,15 @@
     }
     return out;
   }
-  // a slot callout's text: [N X ]W X L SLOT
+  // a slot callout's text: [N X ]W X L SLOT; an arc slot's [N X ]R<centre-line radius> ARC SLOT <width> WIDE <angle>°
   function slotText(d, units, prec) {
     var f = function (x) { return prec != null ? D.numText(x, units, prec) : fmtDim(x, units); };
+    if (d.slot.arc) return (d.count > 1 ? d.count + 'X ' : '') + 'R' + f(d.slot.R) + ' ARC SLOT ' + f(d.slot.w) + ' WIDE ' + String(Math.round(d.slot.angle * 100) / 100) + '°';
     return (d.count > 1 ? d.count + 'X ' : '') + f(d.slot.w) + ' X ' + f(d.slot.len) + ' SLOT';
   }
   function autoDimKey(d) {
+    if (d.kind === 'ordinate' && d.sketchOrd) return d.view + ':ord:' + d.sketchOrd;
+    if (d.slot && d.slot.arc) return d.view + ':arcslot:' + d.slot.R.toFixed(4) + 'x' + d.slot.w.toFixed(4) + 'x' + d.slot.angle.toFixed(2);
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
   }
@@ -1117,6 +1249,7 @@
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
+  D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;

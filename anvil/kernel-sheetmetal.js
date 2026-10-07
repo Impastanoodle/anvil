@@ -786,7 +786,7 @@
     if (!sketch || sketch.type !== 'sketch') throw new Error('Select the sketch with the bend line(s).');
     var plane = resolvePlane(sketch.plane, model, ctx.planes || {}), lines = [];
     (sketch.entities || []).forEach(function (e) {
-      if (e.construction || e.t === 'point' || K.noProfileEntity(sketch, e)) return;
+      if (e.construction || e.t === 'point' || e.t === 'text' || K.noProfileEntity(sketch, e)) return;
       if (e.t !== 'line') throw new Error('A sketched bend\'s sketch may hold only straight lines (it has a ' + e.t + ').');
       var P1 = to3D(plane, +e.x1, +e.y1), P2 = to3D(plane, +e.x2, +e.y2), L = len(sub(P2, P1));
       if (L > 1e-9) lines.push({ P1: P1, P2: P2, d: scale(sub(P2, P1), 1 / L), mid: scale(add(P1, P2), 0.5) });

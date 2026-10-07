@@ -1,7 +1,8 @@
 // kernel-sketch.js — Anvil kernel, sketches: sketch entities -> polylines (tessellation settings TESS), profiles (closed
 // loops with nesting), 2D sketch geometry utilities, 2D entity editing (mirror, pattern, trim) and sketch dimensions
-// (Smart Dimension). Loaded after kernel.js (vector helpers through Kernel._); uses `_.fmt` from kernel-script.js at run
-// time. No DOM.
+// (Smart Dimension), and Sketch Text (entity 'text': layout, Etch strokes / Cut outlines, text along a curve; the font
+// is sketch-font.js, used at run time when it is loaded). Loaded after kernel.js (vector helpers through Kernel._); uses
+// `_.fmt` from kernel-script.js at run time. No DOM.
 (function (K, _) {
   'use strict';
   var cross = _.cross;   // kernel.js
@@ -280,6 +281,7 @@
       }
       case 'polyline': return [{ pts: e.pts.map(function (p) { return [p[0], p[1]]; }), closed: !!e.closed }];
       case 'point': return [];
+      case 'text': return textPolylines(e);   // sketch-text: open strokes (Etch) or closed outlines (Cut)
     }
     return [];
   }
@@ -305,6 +307,7 @@
           { c: [e.x1, e.y1], r: r, a0: ang + Math.PI / 2, a1: ang + 3 * Math.PI / 2, full: false, step: Math.PI / segs }];
       }
       case 'aslot': return (aslotArcs(e) || []).map(function (c) { return { c: c.c, r: c.r, a0: c.a0, a1: c.a1, full: false, step: (c.a1 - c.a0) / c.n }; });
+      case 'text': { var to = e.mode === 'outline' ? textOutline(e) : null; return to ? to.curves.map(function (c) { return { c: c.c.slice(), r: c.r, a0: c.a0, a1: c.a1, full: c.full, step: c.step }; }) : []; }
     }
     return [];
   }
@@ -355,6 +358,7 @@
         if (e.t === 'pellipse') ep.push(ellipsePoint(e, e.a0 * Math.PI / 180), ellipsePoint(e, e.a1 * Math.PI / 180));
         return ep;
       }
+      case 'text': return [textAnchor(e)];   // sketch-text: the insertion point only
     }
     return [];
   }
@@ -486,9 +490,11 @@
   // for each segment on one (-1 elsewhere): OpenCascade builds them as true B-spline / ellipse edges.
   function sketchProfile(sketch) {
     var loops = [], chains = [], warnings = [], curves = [], free = [];
+    syncTextPaths(sketch);   // sketch-text: text along a line / arc follows it
     (sketch.entities || []).forEach(function (e) {
       if (e.construction || noProfileEntity(sketch, e)) return;   // sketch-layers: ETCH / BEND make no region
       if (e.t === 'line' && e.infinite) return;   // sketch-refine: an infinite line (or ray) bounds no region
+      if (e.t === 'text' && e.mode !== 'outline') return;   // sketch-text: single-stroke (Etch) text is open marking, never a region
       curves = curves.concat(entityCurves(e));
       if (isFree(e)) { var fr = freeRecord(e); if (fr) free.push(fr); }
       entityPolylines(e, true).forEach(function (pl) {
@@ -684,6 +690,27 @@
         } else out = { t: 'polyline', pts: pts, closed: pl.closed };
         break;
       }
+      case 'text': {
+        // sketch-text: a reflection is Rot(2φ − rot) · Flip vertical, so the copy turns to 2φ − rot and flips; text along
+        // a curve keeps its (mirrored) curve, flips, and runs the other way round an arc (see textLayout)
+        out = JSON.parse(JSON.stringify(e));
+        var ti = m(e.x, e.y);
+        out.x = ti[0]; out.y = ti[1]; out.rot = normDeg(2 * phi - (+e.rot || 0));
+        if (e.flipV) delete out.flipV; else out.flipV = true;
+        if (e.path) {
+          delete out.path.e;   // the copy does not follow the original curve
+          var g = e.path.g;
+          if (g && g.t === 'line') { var g1 = m(g.x1, g.y1), g2 = m(g.x2, g.y2); out.path.g = { t: 'line', x1: g1[0], y1: g1[1], x2: g2[0], y2: g2[1] }; }
+          else if (g && g.t === 'arc') {
+            var gc = m(g.cx, g.cy), b0 = 2 * phi - g.a1, b1 = 2 * phi - g.a0;
+            while (b0 < 0) { b0 += 360; b1 += 360; }
+            while (b0 >= 360) { b0 -= 360; b1 -= 360; }
+            out.path.g = { t: 'arc', cx: gc[0], cy: gc[1], r: g.r, a0: b0, a1: b1 };
+            if (e.path.flip) delete out.path.flip; else out.path.flip = true;
+          }
+        }
+        return out;
+      }
       default: return null;
     }
     if (e.construction) out.construction = true;
@@ -697,6 +724,7 @@
       case 'rect': case 'point': out.x += dx; out.y += dy; break;
       case 'crect': case 'circle': case 'poly': case 'arc': case 'aslot': case 'ellipse': case 'pellipse': out.cx += dx; out.cy += dy; break;
       case 'polyline': case 'spline': out.pts = e.pts.map(function (p) { return [p[0] + dx, p[1] + dy]; }); break;
+      case 'text': return transformText(e, { dx: dx, dy: dy });   // sketch-text
     }
     return out;
   }
@@ -977,6 +1005,7 @@
   function trimEntity(entities, idx, uv) {
     var e = entities[idx];
     if (!e || e.t === 'point') throw new Error('Nothing to trim there.');
+    if (e.t === 'text') throw new Error('Sketch text cannot be trimmed: edit its text, or delete it.');
     if (isFree(e)) throw new Error('Splines and ellipses cannot be trimmed yet: trim the entities that cross them, or delete the curve.');
     if (e.t === 'slot' || e.t === 'aslot') {
       var parts = entityPrimitives(e).map(function (p) {
@@ -1047,6 +1076,387 @@
     return entities.slice(0, idx).concat(pieces, entities.slice(idx + 1));
   }
 
+  // ------------------------------------------------------------------ Sketch Text (sketch-text)
+  // { t: 'text', x, y, str, h, rot, align: 'left' | 'center' | 'right', valign: 'baseline' | 'middle' | 'top',
+  //   widthFactor (1 = 100 %), spacing (1 = the font's normal gap), lineSpacing (baseline pitch in letter heights,
+  //   1.6), mode: 'stroke' | 'outline', strokeWidth (outline), mirror (Flip horizontal), flipV (Flip vertical),
+  //   path: { e: <line / arc index>, g: <its geometry when last seen>, flip } }
+  // The letters come from sketch-font.js (single-stroke lines and true arcs). (x, y) is the insertion point: the text
+  // block is aligned on it (align / valign, as SolidWorks' Sketch Text), Flip horizontal mirrors it about the vertical
+  // through it, Flip vertical about the baseline through it, then it turns by rot. Text along a curve (path, the
+  // SolidWorks Curves box) ignores x, y and rot: each letter sits rigidly with its baseline on the line, or as a chord of
+  // the arc (both ends of its baseline on the circle); left / center / right put the text at the curve's start, middle
+  // or end. An arc is read from outside (clockwise, letters upright on its convex side); path.flip runs it the other way
+  // (counter-clockwise, read from inside) and a line from its end. path.g keeps the curve's geometry: syncTextPaths
+  // refreshes it from entity path.e (sketchProfile does, ui-sketch-text.js on every redraw), so a text whose curve was
+  // deleted stays where it was.
+  // Mode 'stroke' (Etch, the default) is open single-stroke geometry: drawn, exported to DXF as LINE / ARC on its layer
+  // (ETCH when it has none), never part of a profile. Mode 'outline' (Cut) is each stroke offset by strokeWidth / 2 into a
+  // capsule (an arc into an arc slot, a full circle into a ring), all of them united (textUnion) into closed loops that
+  // the profile builder takes like any other: an O keeps its island, the round ends stay true arcs (exact volumes).
+  function normDeg(a) { a = a % 360; if (a < 0) a += 360; return Math.abs(a - 360) < 1e-9 ? 0 : a; }
+  function textPathGeom(e) {
+    var g = e && e.path && e.path.g;
+    if (!g) return null;
+    if (g.t === 'line' && Math.hypot(g.x2 - g.x1, g.y2 - g.y1) > 1e-12) return g;
+    if (g.t === 'arc' && g.r > 0 && g.a1 - g.a0 > 1e-9) return g;
+    return null;
+  }
+  // a rigid map (rotation, maybe with one reflection) p -> [a·x + b·y + tx, c·x + d·y + ty] applied to a font stroke
+  function mapStroke(s, M) {
+    function P(x, y) { return [M.a * x + M.b * y + M.tx, M.c * x + M.d * y + M.ty]; }
+    if (s.t === 'line') { var p = P(s.x1, s.y1), q = P(s.x2, s.y2); return { t: 'line', x1: p[0], y1: p[1], x2: q[0], y2: q[1] }; }
+    if (s.t === 'poly') return { t: 'poly', pts: s.pts.map(function (q) { return P(q[0], q[1]); }), closed: !!s.closed };
+    var c = P(s.cx, s.cy), det = M.a * M.d - M.b * M.c, sweep = s.a1 - s.a0;
+    function ang(a) { var r = a * Math.PI / 180, x = Math.cos(r), y = Math.sin(r); return Math.atan2(M.c * x + M.d * y, M.a * x + M.b * y) * 180 / Math.PI; }
+    var a0 = normDeg(det > 0 ? ang(s.a0) : ang(s.a1));
+    return { t: 'arc', cx: c[0], cy: c[1], r: s.r, a0: a0, a1: a0 + sweep };
+  }
+  // textLayout(e) -> { strokes (sketch coordinates), glyphs: [{ ch, p0, p1, blank }] (each letter's baseline from its
+  // left end p0 to p1, as placed), width, height, anchor }
+  function textLayout(e) {
+    var key = 'L' + textKey(e), hit = textCache[key];
+    if (hit) return hit;
+    var out = { strokes: [], glyphs: [], width: 0, height: 0, anchor: [+e.x || 0, +e.y || 0] };
+    if (typeof SketchFont === 'undefined' || !e || e.str == null) return textRemember(key, out);
+    var lay = SketchFont.layout(e.str, { height: +e.h > 0 ? +e.h : 1, widthFactor: e.widthFactor, charSpacing: e.spacing, lineSpacing: e.lineSpacing, align: e.align, valign: e.valign });
+    var mx = e.mirror ? -1 : 1, fy = e.flipV ? -1 : 1, g = textPathGeom(e);
+    out.width = lay.width; out.height = lay.height;
+    if (!g) {
+      var r = (+e.rot || 0) * Math.PI / 180, cr = Math.cos(r), sr = Math.sin(r), x0 = +e.x || 0, y0 = +e.y || 0;
+      var M = { a: cr * mx, b: -sr * fy, c: sr * mx, d: cr * fy, tx: x0, ty: y0 };
+      out.strokes = lay.strokes.map(function (s) { return mapStroke(s, M); });
+      lay.glyphs.forEach(function (gl) {
+        var p0 = [M.a * gl.x + M.b * gl.y + M.tx, M.c * gl.x + M.d * gl.y + M.ty], p1 = [M.a * (gl.x + gl.w) + M.b * gl.y + M.tx, M.c * (gl.x + gl.w) + M.d * gl.y + M.ty];
+        out.glyphs.push({ ch: gl.ch, p0: p0, p1: p1, blank: !gl.strokes.length });
+      });
+      return textRemember(key, out);
+    }
+    // along a curve: the letter box [bx0, bx0 + w] on baseline gy (after the flips) placed on the curve one by one
+    var fl = !!e.path.flip, line = g.t === 'line', S, T, N, L, C, R, ts, dir;
+    if (line) {
+      var A0 = fl ? [g.x2, g.y2] : [g.x1, g.y1], A1 = fl ? [g.x1, g.y1] : [g.x2, g.y2];
+      L = Math.hypot(A1[0] - A0[0], A1[1] - A0[1]); S = A0; T = [(A1[0] - A0[0]) / L, (A1[1] - A0[1]) / L]; N = [-T[1], T[0]];
+    } else {
+      C = [g.cx, g.cy]; R = g.r; L = R * (g.a1 - g.a0) * Math.PI / 180;
+      ts = (fl ? g.a0 : g.a1) * Math.PI / 180; dir = fl ? 1 : -1;   // clockwise from the a1 end (outside), or counter-clockwise from a0
+    }
+    var anchor = e.align === 'center' ? L / 2 : e.align === 'right' ? L : 0;
+    out.anchor = line ? [S[0] + T[0] * anchor, S[1] + T[1] * anchor] : [C[0] + R * Math.cos(ts + dir * anchor / R), C[1] + R * Math.sin(ts + dir * anchor / R)];
+    lay.glyphs.forEach(function (gl) {
+      var w = gl.w, bx0 = mx > 0 ? gl.x : -gl.x - w, gy = fy * gl.y, A, d;
+      if (line) { A = [S[0] + T[0] * (anchor + bx0) + N[0] * gy, S[1] + T[1] * (anchor + bx0) + N[1] * gy]; d = T; }
+      else {
+        var Rl = R - dir * gy;   // outside reading: up is away from the centre; inside: towards it
+        if (!(Rl > 1e-9 * R)) return;
+        var ta = ts + dir * (anchor / R + bx0 / Rl), tb = ta + dir * 2 * Math.asin(Math.min(1, w / (2 * Rl)));
+        A = [C[0] + Rl * Math.cos(ta), C[1] + Rl * Math.sin(ta)];
+        var B = [C[0] + Rl * Math.cos(tb), C[1] + Rl * Math.sin(tb)], bl = Math.hypot(B[0] - A[0], B[1] - A[1]);
+        d = bl > 1e-12 ? [(B[0] - A[0]) / bl, (B[1] - A[1]) / bl] : [-dir * Math.sin(ta), dir * Math.cos(ta)];
+      }
+      var n = [-d[1], d[0]];
+      // glyph-local (u, v) -> A + d·(mx·u + (mirrored ? w : 0)) + n·(fy·v)
+      var M2 = { a: d[0] * mx, b: n[0] * fy, c: d[1] * mx, d: n[1] * fy, tx: A[0] + (mx < 0 ? d[0] * w : 0), ty: A[1] + (mx < 0 ? d[1] * w : 0) };
+      gl.strokes.forEach(function (s) { out.strokes.push(mapStroke(s, M2)); });
+      out.glyphs.push({ ch: gl.ch, p0: A, p1: [A[0] + d[0] * w, A[1] + d[1] * w], blank: !gl.strokes.length });
+    });
+    return textRemember(key, out);
+  }
+  function textAnchor(e) {
+    if (!textPathGeom(e)) return [+e.x || 0, +e.y || 0];
+    var a = textLayout(e).anchor;
+    return [a[0], a[1]];
+  }
+  // a small cache of laid-out texts and outlines (both are pure functions of the entity and the tessellation)
+  var textCache = {}, textCacheN = 0;
+  function textKey(e) {
+    return JSON.stringify([e.x, e.y, e.str, e.h, e.rot, e.align, e.valign, e.widthFactor, e.spacing, e.lineSpacing, e.mode, e.strokeWidth, e.mirror, e.flipV,
+      e.path ? [e.path.g, !!e.path.flip] : null, tessKey()]);
+  }
+  function textRemember(key, v) {
+    if (++textCacheN > 400) { textCache = {}; textCacheN = 1; }
+    textCache[key] = v;
+    return v;
+  }
+  // a font stroke as a polyline: lines as is, arcs tessellated as sketch arcs are
+  function strokePolyline(s) {
+    if (s.t === 'line') return { pts: [[s.x1, s.y1], [s.x2, s.y2]], closed: false };
+    if (s.t === 'poly') return { pts: s.pts.map(function (q) { return [q[0], q[1]]; }), closed: !!s.closed };
+    var sw = (s.a1 - s.a0) * Math.PI / 180, full = sw >= Math.PI * 2 - 1e-9;
+    var n = full ? segsForRadius(s.r) : Math.max(4, Math.round(segsForRadius(s.r) * sw / (Math.PI * 2)));
+    var pts = arcPoints(s.cx, s.cy, s.r, s.a0 * Math.PI / 180, s.a0 * Math.PI / 180 + sw, n);
+    if (full) pts.pop();
+    return { pts: pts, closed: full };
+  }
+  function textPolylines(e) {
+    if (e.mode === 'outline') {
+      var o = textOutline(e);
+      if (o) return o.loops.map(function (l) { return { pts: l.pts.map(function (q) { return [q[0], q[1]]; }), closed: true }; });
+    }
+    return textLayout(e).strokes.map(strokePolyline);
+  }
+  // the outline width of a Cut text: strokeWidth, else 12 % of the letter height
+  function textStrokeWidth(e) { return +e.strokeWidth > 0 ? +e.strokeWidth : 0.12 * (+e.h > 0 ? +e.h : 1); }
+
+  // ---- outline (Cut) text: stroke shapes and their union
+  // shapes: [{ rings: [{ pts, src }], box }] — rings[0] counter-clockwise, rings[1] (a ring stroke's hole) clockwise;
+  // src[i] is what edge i -> i + 1 lies on: null (straight) or { id, c, r } (a chord of that circle). curves: the true
+  // arcs ({ c, r, a0, a1, full, step }, as entityCurves) whose chords the rings are made of.
+  function strokeShapes(strokes, hw) {
+    var shapes = [], curves = [], uid = 0;
+    function box(pts) { var b = [Infinity, Infinity, -Infinity, -Infinity]; pts.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); }); return b; }
+    function circleRing(c, r, ccw) {
+      var n = segsForRadius(r), pts = arcPoints(c[0], c[1], r, 0, Math.PI * 2, n), src = { id: uid++, c: c, r: r };
+      pts.pop();
+      curves.push({ c: c, r: r, a0: 0, a1: Math.PI * 2, full: true, step: Math.PI * 2 / n });
+      if (!ccw) pts.reverse();
+      return { pts: pts, src: pts.map(function () { return src; }) };
+    }
+    function capsule(a, b) {
+      var dx = b[0] - a[0], dy = b[1] - a[1];
+      if (Math.hypot(dx, dy) < 1e-12) { var rg = circleRing(a, hw, true); shapes.push({ rings: [rg], box: box(rg.pts) }); return; }
+      var ang = Math.atan2(dy, dx), segs = Math.max(8, Math.round(segsForRadius(hw) / 2));
+      var c2 = { id: uid++, c: b, r: hw }, c1 = { id: uid++, c: a, r: hw }, src = [], i;
+      var pts = arcPoints(b[0], b[1], hw, ang - Math.PI / 2, ang + Math.PI / 2, segs).concat(arcPoints(a[0], a[1], hw, ang + Math.PI / 2, ang + 3 * Math.PI / 2, segs));
+      for (i = 0; i < segs; i++) src.push(c2);
+      src.push(null);
+      for (i = 0; i < segs; i++) src.push(c1);
+      src.push(null);
+      curves.push({ c: b, r: hw, a0: ang - Math.PI / 2, a1: ang + Math.PI / 2, full: false, step: Math.PI / segs },
+        { c: a, r: hw, a0: ang + Math.PI / 2, a1: ang + 3 * Math.PI / 2, full: false, step: Math.PI / segs });
+      shapes.push({ rings: [{ pts: pts, src: src }], box: box(pts) });
+    }
+    function chain(pts) { for (var i = 0; i + 1 < pts.length; i++) capsule(pts[i], pts[i + 1]); }
+    strokes.forEach(function (s) {
+      if (s.t === 'line') { capsule([s.x1, s.y1], [s.x2, s.y2]); return; }
+      if (s.t === 'poly') { chain(s.closed ? s.pts.concat([s.pts[0]]) : s.pts); return; }
+      var sweep = s.a1 - s.a0, c = [s.cx, s.cy];
+      if (!(s.r - hw > 1e-6 * s.r)) { chain(strokePolyline(s).pts.concat(sweep >= 360 - 1e-9 ? [strokePolyline(s).pts[0]] : [])); return; }   // tighter than the stroke: a chain of capsules
+      if (sweep >= 360 - 1e-9) {   // a full circle: the ring between r ± w/2
+        var outer = circleRing(c, s.r + hw, true), inner = circleRing(c, s.r - hw, false);
+        shapes.push({ rings: [outer, inner], box: box(outer.pts) });
+        return;
+      }
+      // an arc: arc slots of at most 180° each (a longer one could close on itself)
+      var k = Math.max(1, Math.ceil(sweep / 180 - 1e-9));
+      for (var j = 0; j < k; j++) {
+        var as = aslotArcs({ cx: s.cx, cy: s.cy, r: s.r, a0: s.a0 + sweep * j / k, a1: s.a0 + sweep * (j + 1) / k, w: 2 * hw });
+        if (!as) continue;
+        var ring = [], src = [];
+        as.forEach(function (cv, q) {
+          var p = cv.back ? arcPoints(cv.c[0], cv.c[1], cv.r, cv.a1, cv.a0, cv.n) : arcPoints(cv.c[0], cv.c[1], cv.r, cv.a0, cv.a1, cv.n);
+          ring = ring.concat(q ? p.slice(1, q === 3 ? -1 : undefined) : p);
+          var sr = { id: uid++, c: cv.c, r: cv.r };
+          for (var m = 0; m < cv.n; m++) src.push(sr);
+          curves.push({ c: cv.c, r: cv.r, a0: cv.a0, a1: cv.a1, full: false, step: (cv.a1 - cv.a0) / cv.n });
+        });
+        shapes.push({ rings: [{ pts: ring, src: src }], box: box(ring) });
+      }
+    });
+    return { shapes: shapes, curves: curves };
+  }
+  // The union of the shapes as closed loops [{ pts, src }] (outer boundaries counter-clockwise, holes clockwise). Every
+  // edge is split where it crosses (or touches) an edge of another shape; a piece is kept when the union is on one side
+  // of it and not the other (probed a hair off its midpoint), oriented with the union on its left; pieces shared by two
+  // shapes in the same direction count once; the pieces are then chained (at a vertex where two boundaries touch, the
+  // sharpest right turn, so touching loops stay apart).
+  function textUnion(shapes, scale) {
+    var snapTol = 1e-10 * Math.max(1, scale), pool = {}, nid = 0, tolLen = 1e-10 * Math.max(1, scale), probe = 1e-8 * Math.max(1, scale);
+    function snap(p) {
+      var k = Math.round(p[0] / snapTol) + ',' + Math.round(p[1] / snapTol), q = pool[k];
+      if (!q) { q = pool[k] = [p[0], p[1]]; q.id = nid++; }
+      return q;
+    }
+    var edgesBy = shapes.map(function () { return []; });
+    shapes.forEach(function (sh, si) {
+      sh.rings.forEach(function (rg) {
+        var P = rg.pts.map(snap), n = P.length;
+        for (var i = 0; i < n; i++) { var a = P[i], b = P[(i + 1) % n]; if (a !== b) edgesBy[si].push({ a: a, b: b, src: rg.src[i], cuts: [] }); }
+      });
+    });
+    function boxesMeet(A, B, t) { return A[0] <= B[2] + t && B[0] <= A[2] + t && A[1] <= B[3] + t && B[1] <= A[3] + t; }
+    function eBox(E) { return [Math.min(E.a[0], E.b[0]), Math.min(E.a[1], E.b[1]), Math.max(E.a[0], E.b[0]), Math.max(E.a[1], E.b[1])]; }
+    function cut(E, t, p) { E.cuts.push([t, p]); }
+    function meet(E1, E2) {
+      var a = E1.a, b = E1.b, c = E2.a, d = E2.b;
+      var rx = b[0] - a[0], ry = b[1] - a[1], sx = d[0] - c[0], sy = d[1] - c[1], qx = c[0] - a[0], qy = c[1] - a[1];
+      var L1 = Math.hypot(rx, ry), L2 = Math.hypot(sx, sy), den = rx * sy - ry * sx, e1 = tolLen / L1, e2 = tolLen / L2;
+      if (Math.abs(den) > 1e-12 * L1 * L2) {
+        var t = (qx * sy - qy * sx) / den, u = (qx * ry - qy * rx) / den;
+        if (t < -e1 || t > 1 + e1 || u < -e2 || u > 1 + e2) return;
+        var inT = t > e1 && t < 1 - e1, inU = u > e2 && u < 1 - e2;
+        if (!inT && !inU) return;
+        var p = inT ? snap([a[0] + rx * t, a[1] + ry * t]) : t <= e1 ? a : b;
+        if (inT && !inU) p = u <= e2 ? c : d;   // an end of E2 on E1
+        if (inT) cut(E1, t, p);
+        if (inU) cut(E2, u, p);
+        return;
+      }
+      if (Math.abs(qx * ry - qy * rx) / L1 > tolLen) return;   // parallel, apart
+      // collinear: each is cut at the other's ends that fall inside it
+      [c, d].forEach(function (p) { var t = ((p[0] - a[0]) * rx + (p[1] - a[1]) * ry) / (L1 * L1); if (t > e1 && t < 1 - e1) cut(E1, t, p); });
+      [a, b].forEach(function (p) { var u = ((p[0] - c[0]) * sx + (p[1] - c[1]) * sy) / (L2 * L2); if (u > e2 && u < 1 - e2) cut(E2, u, p); });
+    }
+    for (var i = 0; i < shapes.length; i++) for (var j = i + 1; j < shapes.length; j++) {
+      if (!boxesMeet(shapes[i].box, shapes[j].box, tolLen)) continue;
+      var Bj = edgesBy[j].map(eBox);
+      edgesBy[i].forEach(function (E1) {
+        var b1 = eBox(E1);
+        edgesBy[j].forEach(function (E2, k) { if (boxesMeet(b1, Bj[k], tolLen)) meet(E1, E2); });
+      });
+    }
+    function inside(p) {
+      for (var s = 0; s < shapes.length; s++) {
+        var sh = shapes[s], b = sh.box;
+        if (p[0] < b[0] || p[0] > b[2] || p[1] < b[1] || p[1] > b[3]) continue;
+        if (pointInPoly(p, sh.rings[0].pts) && !(sh.rings[1] && pointInPoly(p, sh.rings[1].pts))) return true;
+      }
+      return false;
+    }
+    var kept = [], seen = {};
+    edgesBy.forEach(function (list) {
+      list.forEach(function (E) {
+        var pts = [E.a];
+        E.cuts.sort(function (x, y) { return x[0] - y[0]; }).forEach(function (c) { if (c[1] !== pts[pts.length - 1]) pts.push(c[1]); });
+        if (E.b !== pts[pts.length - 1]) pts.push(E.b);
+        for (var k = 0; k + 1 < pts.length; k++) {
+          var p = pts[k], q = pts[k + 1], dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy);
+          if (L < tolLen) continue;
+          var m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], nx = -dy / L * probe, ny = dx / L * probe;
+          var inL = inside([m[0] + nx, m[1] + ny]), inR = inside([m[0] - nx, m[1] - ny]);
+          if (inL === inR) continue;
+          var from = inL ? p : q, to = inL ? q : p, key = from.id + '>' + to.id;
+          if (seen[key]) continue;
+          seen[key] = true;
+          kept.push({ a: from, b: to, src: E.src, used: false });
+        }
+      });
+    });
+    var byStart = {};
+    kept.forEach(function (E) { (byStart[E.a.id] = byStart[E.a.id] || []).push(E); });
+    var loops = [];
+    kept.forEach(function (E0) {
+      if (E0.used) return;
+      var pts = [], src = [], cur = E0, guard = 0, closed = false;
+      while (cur && guard++ <= kept.length) {
+        cur.used = true; pts.push([cur.a[0], cur.a[1]]); src.push(cur.src);
+        if (cur.b === E0.a) { closed = true; break; }
+        var cands = (byStart[cur.b.id] || []).filter(function (x) { return !x.used; });
+        if (cands.length > 1) {
+          var din = [cur.b[0] - cur.a[0], cur.b[1] - cur.a[1]];
+          cands.sort(function (x, y) { return turn(din, x) - turn(din, y); });
+        }
+        cur = cands[0];
+      }
+      if (closed && pts.length >= 3 && Math.abs(signedArea(pts)) > tolLen * tolLen) loops.push({ pts: pts, src: src });
+    });
+    function turn(din, E) { var o = [E.b[0] - E.a[0], E.b[1] - E.a[1]]; return Math.atan2(din[0] * o[1] - din[1] * o[0], din[0] * o[0] + din[1] * o[1]); }
+    return loops;
+  }
+  // textOutline(e) -> { loops: [{ pts, src }], curves } of an outline (Cut) text, or null
+  function textOutline(e) {
+    var key = 'O' + textKey(e), hit = textCache[key];
+    if (hit) return hit;
+    var strokes = textLayout(e).strokes, hw = textStrokeWidth(e) / 2;
+    if (!strokes.length) return textRemember(key, { loops: [], curves: [] });
+    var sc = strokeShapes(strokes, hw), scale = 2 * hw;
+    sc.shapes.forEach(function (s) { scale = Math.max(scale, Math.abs(s.box[0]), Math.abs(s.box[1]), Math.abs(s.box[2]), Math.abs(s.box[3])); });
+    return textRemember(key, { loops: textUnion(sc.shapes, scale), curves: sc.curves });
+  }
+  // textDxf(e) -> what a DXF writer draws for a text: { strokes } (Etch: lines, arcs, polylines) or { polys: [{ pts,
+  // bulges }] } (Cut: one closed polyline per outline loop, a run of chords of one circle as a single bulged segment of
+  // it — at most a half turn — so each loop is one continuous closed contour)
+  function textDxf(e) {
+    if (e.mode !== 'outline') return { strokes: textLayout(e).strokes.map(function (s) { return JSON.parse(JSON.stringify(s)); }) };
+    var o = textOutline(e), polys = [];
+    (o ? o.loops : []).forEach(function (l) {
+      var n = l.pts.length, src = l.src, s0 = 0;
+      while (s0 < n && src[s0] && src[(s0 + n - 1) % n] && src[s0].id === src[(s0 + n - 1) % n].id) s0++;
+      if (s0 >= n) {   // the whole loop on one circle
+        var c0 = src[0].c, r0 = src[0].r;
+        polys.push({ circle: { c: [c0[0], c0[1]], r: r0 } });
+        return;
+      }
+      var pts = [], bul = [];
+      for (var i = 0; i < n;) {
+        var a = (s0 + i) % n, sr = src[a];
+        if (!sr) { pts.push(l.pts[a]); bul.push(0); i++; continue; }
+        var run = [a], k = i + 1;
+        while (k < n && src[(s0 + k) % n] && src[(s0 + k) % n].id === sr.id) { run.push((s0 + k) % n); k++; }
+        // the signed sweep of the run about its centre, split into pieces of at most 180°
+        var piece = [run[0]], sw = 0, c = sr.c;
+        run.forEach(function (j, q) {
+          var p = l.pts[j], p2 = l.pts[(j + 1) % n];
+          var d = Math.atan2((p[0] - c[0]) * (p2[1] - c[1]) - (p[1] - c[1]) * (p2[0] - c[0]), (p[0] - c[0]) * (p2[0] - c[0]) + (p[1] - c[1]) * (p2[1] - c[1]));
+          if (Math.abs(sw + d) > Math.PI + 1e-9 && q > 0) { pts.push(l.pts[piece[0]]); bul.push(Math.tan(sw / 4)); piece = [j]; sw = 0; }
+          sw += d;
+        });
+        pts.push(l.pts[piece[0]]); bul.push(Math.tan(sw / 4));
+        i = k;
+      }
+      polys.push({ pts: pts.map(function (q) { return [q[0], q[1]]; }), bulges: bul });
+    });
+    return { polys: polys };
+  }
+  // ---- text along a curve: keeping path.e / path.g in step with the sketch
+  function pathGeomOf(src) {
+    return src.t === 'line' ? { t: 'line', x1: +src.x1, y1: +src.y1, x2: +src.x2, y2: +src.y2 } : { t: 'arc', cx: +src.cx, cy: +src.cy, r: +src.r, a0: +src.a0, a1: +src.a1 };
+  }
+  // path.g from entity path.e for every text of the sketch (a path.e that no longer names a line or an arc is dropped:
+  // the text stays where it was); -> the number of texts changed
+  function syncTextPaths(sketch) {
+    var E = sketch && sketch.entities, n = 0;
+    if (!E) return 0;
+    for (var i = 0; i < E.length; i++) {
+      var e = E[i];
+      if (!e || e.t !== 'text' || !e.path) continue;
+      if (e.path.e == null) { if (!e.path.g) { delete e.path; n++; } continue; }
+      var src = E[e.path.e];
+      if (!src || src === e || (src.t !== 'line' && src.t !== 'arc')) { delete e.path.e; if (!e.path.g) delete e.path; n++; continue; }
+      var g = pathGeomOf(src), old = e.path.g;
+      if (!old || old.t !== g.t || Object.keys(g).some(function (k) { return g[k] !== old[k]; })) { e.path.g = g; n++; }
+    }
+    return n;
+  }
+  // entity `index` was deleted: text on it keeps its last place, path indices past it shift down
+  function textEntityRemoved(sketch, index) {
+    (sketch && sketch.entities || []).forEach(function (e) {
+      if (!e || e.t !== 'text' || !e.path || e.path.e == null) return;
+      if (e.path.e === index) delete e.path.e; else if (e.path.e > index) e.path.e--;
+    });
+  }
+  // the entity list was rebuilt from `before` (same objects where they survive): path indices follow their curves
+  function remapTextPaths(sketch, before) {
+    var E = sketch && sketch.entities;
+    if (!E || !before) return;
+    E.forEach(function (e) {
+      if (!e || e.t !== 'text' || !e.path || e.path.e == null) return;
+      var j = E.indexOf(before[e.path.e]);
+      if (j >= 0 && before[e.path.e]) e.path.e = j; else delete e.path.e;
+    });
+  }
+  // transformText(e, xf) -> a moved / turned / scaled copy: xf { dx, dy } | { rot (degrees), cx, cy } | { s, cx, cy }
+  // (SketchSolver's Move / Copy / Rotate / Scale form); the copy keeps its curve's geometry but no longer follows it
+  function transformText(e, xf) {
+    var o = JSON.parse(JSON.stringify(e)), rot = xf.rot != null ? +xf.rot : 0, k = xf.s != null ? +xf.s : 1;
+    function P(x, y) {
+      if (xf.rot != null) { var a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), u = x - xf.cx, v = y - xf.cy; return [xf.cx + c * u - s * v, xf.cy + s * u + c * v]; }
+      if (xf.s != null) return [xf.cx + (x - xf.cx) * k, xf.cy + (y - xf.cy) * k];
+      return [x + (+xf.dx || 0), y + (+xf.dy || 0)];
+    }
+    var q = P(+e.x || 0, +e.y || 0);
+    o.x = q[0]; o.y = q[1];
+    if (rot) o.rot = normDeg((+e.rot || 0) + rot);
+    if (k !== 1) { o.h = (+e.h || 1) * k; if (e.strokeWidth != null) o.strokeWidth = +e.strokeWidth * k; }
+    if (e.path) {
+      delete o.path.e;
+      var g = e.path.g;
+      if (g && g.t === 'line') { var a = P(g.x1, g.y1), b = P(g.x2, g.y2); o.path.g = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }; }
+      else if (g && g.t === 'arc') { var c = P(g.cx, g.cy), a0 = normDeg(g.a0 + rot); o.path.g = { t: 'arc', cx: c[0], cy: c[1], r: g.r * k, a0: a0, a1: a0 + (g.a1 - g.a0) }; }
+    }
+    return o;
+  }
+
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.entityPolylines = entityPolylines; K.entitySnapPoints = entitySnapPoints; K.sketchProfile = sketchProfile; K.signedArea = signedArea;
@@ -1056,9 +1466,12 @@
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
   K.splineGeom = splineGeom; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
+  K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
+  K.syncTextPaths = syncTextPaths; K.textEntityRemoved = textEntityRemoved; K.remapTextPaths = remapTextPaths; K.transformText = transformText;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.TESS = TESS; _.checkProfile = checkProfile; _.dimGeometry = dimGeometry; _.entityPolylines = entityPolylines; _.key2 = key2;
   _.mirrorAxis = mirrorAxis; _.mirrorEntity = mirrorEntity; _.offsetLoop = offsetLoop; _.pointInPoly = pointInPoly; _.segsForRadius = segsForRadius;
   _.setDimValue = setDimValue; _.setTessellation = setTessellation; _.signedArea = signedArea; _.sketchProfile = sketchProfile; _.tessKey = tessKey;
   _.translateEntity = translateEntity; _.trimEntity = trimEntity; _.splineGeom = splineGeom; _.ellipsePoint = ellipsePoint; _.freeSamples = freeSamples;
+  _.syncTextPaths = syncTextPaths; _.textDxf = textDxf;
 })(Kernel, Kernel._);

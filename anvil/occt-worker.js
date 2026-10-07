@@ -89,7 +89,7 @@ function cacheFor(key) {
 }
 
 const ready = (async () => {
-  for (const f of ['csg.js', 'kernel.js', 'kernel-sketch.js', 'kernel-curves.js', 'kernel-equations.js', 'kernel-mesh.js', 'kernel-rebuild.js', 'kernel-features.js', 'kernel-sheetmetal.js', 'kernel-script.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
+  for (const f of ['csg.js', 'kernel.js', 'sketch-font.js', 'kernel-sketch.js', 'kernel-curves.js', 'kernel-equations.js', 'kernel-mesh.js', 'kernel-rebuild.js', 'kernel-features.js', 'kernel-sheetmetal.js', 'kernel-script.js', 'holewizard.js', 'exchange.js', 'occt-kernel.js']) await classic(f);
   const t0 = performance.now();
   const [opencascade, wasmBinary] = await Promise.all([engineFactory(), engineBinary()]);
   const oc = await new opencascade({ wasmBinary, locateFile: (p) => OCCT_DIR + p });

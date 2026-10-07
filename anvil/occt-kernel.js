@@ -431,7 +431,7 @@ var OcctKernel = (function () {
     function sketchPathEdges(id, c0) {
       var sk = sketchById(id, 'Select a path sketch for the sweep.'), pl = K.resolvePlane(sk.plane, m, planes), segs = [];
       (sk.entities || []).forEach(function (e) {
-        if (e.construction || K.noProfileEntity(sk, e)) return;   // sketch-layers: ETCH / BEND entities are not the path
+        if (e.construction || e.t === 'text' || K.noProfileEntity(sk, e)) return;   // sketch-layers: ETCH / BEND entities (and text) are not the path
         if (e.t === 'line') segs.push({ a: [e.x1, e.y1], b: [e.x2, e.y2] });
         else if (e.t === 'arc') {
           var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180, am = (a0 + a1) / 2;

@@ -1411,6 +1411,7 @@ var SketchSolver = (function () {
     for (var k = 0; k < 4; k++) {
       var l = { t: 'line', x1: c[k][0], y1: c[k][1], x2: c[(k + 1) % 4][0], y2: c[(k + 1) % 4][1] };
       if (e.construction) l.construction = true;
+      if (e.layer != null) l.layer = e.layer;   // sketch-layers: the four lines stay on the rectangle's layer
       lines.push(l);
     }
     var usesCentre = (sketch.rels || []).some(function (rel) { return rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === idx && p.s === 'c'; }); });
@@ -2254,6 +2255,7 @@ var SketchSolver = (function () {
       if (e.showCurvature) o.showCurvature = true;
     }
     if (e.construction) o.construction = true;
+    if (e.layer != null) o.layer = e.layer;
     return o;
   }
   // Trim to closest on a spline / ellipse: the span at uv goes, the pieces left keep the relations that still hold on
@@ -2628,6 +2630,7 @@ var SketchSolver = (function () {
       else if (t1 === Infinity) { var q2 = at(t0), r2 = at(t0 + L); o = { t: 'line', x1: q2[0], y1: q2[1], x2: r2[0], y2: r2[1], infinite: 'p2' }; }
       else { var A = at(t0), B = at(t1); o = { t: 'line', x1: A[0], y1: A[1], x2: B[0], y2: B[1] }; }
       if (e.construction) o.construction = true;
+      if (e.layer != null) o.layer = e.layer;
       return tRound(o);
     }
     var pieces = [];
@@ -2665,6 +2668,7 @@ var SketchSolver = (function () {
     if (isFree(sketch.entities[idx])) return freeTrim(sketch, idx, uv, ctx);   // sketch-refine
     if (infSides(sketch.entities[idx])) return infiniteTrim(sketch, idx, uv, ctx);   // sketch-refine
     var keep = ctx && ctx.keepConstruction && !sketch.entities[idx].construction ? spanOf(sketch, idx, uv) : null;
+    if (keep && sketch.entities[idx].layer != null) keep.layer = sketch.entities[idx].layer;
     // a whole entity (nothing crosses it) becomes construction, keeping its relations and dimensions
     if (keep && keep.whole) { sketch.entities[idx].construction = true; if (ctx) { ctx.analysis = analyze(sketch); ctx.conflicts = ctx.analysis.conflicts; ctx.redundant = ctx.analysis.redundant; } return { ok: true, kept: true }; }
     var before = sketch.entities.slice(), out;
@@ -2685,6 +2689,7 @@ var SketchSolver = (function () {
   function keptPiece(sketch, sp, ctx) {
     var o = tRound(spanEntity(sp.prim, sp.lo, sp.hi)), E = sketch.entities, an0 = analyze(sketch), made = [];
     o.construction = true;
+    if (sp.layer != null) o.layer = sp.layer;
     E.push(o);
     var k = E.length - 1;
     ['p1', 'p2'].forEach(function (end) {
@@ -2854,6 +2859,7 @@ var SketchSolver = (function () {
   function cornerPlan(sketch, i, uvi, j, uvj) {
     var E = sketch.entities, a = E[i], b = E[j];
     if (i === j) return { ok: false, error: 'Select two different entities.' };
+    if (cornerFree(E, i, j)) return freeCornerPlan(sketch, i, uvi, j, uvj);   // sketch-tools2: a spline
     if (!a || !b || (a.t !== 'line' && a.t !== 'arc') || (b.t !== 'line' && b.t !== 'arc')) return { ok: false, error: 'Corner works on lines and arcs.' };
     var pts = carrierMeet(tCarrier(a), tCarrier(b));
     if (!pts.length) return { ok: false, error: 'Those entities cannot meet (parallel, or the circles do not cross).' };
@@ -2875,9 +2881,10 @@ var SketchSolver = (function () {
   function cornerPreview(sketch, i, uvi, j, uvj) {
     var pl = cornerPlan(sketch, i, uvi, j, uvj);
     if (!pl.ok) return null;
-    return [i, j].map(function (k, n) { var c = clone(sketch.entities[k]); applySide(c, pl.sides[n]); return c; });
+    return [i, j].map(function (k, n) { var c = clone(sketch.entities[k]); if (pl.sides[n].free) return freeSideEntity(c, pl.sides[n]); applySide(c, pl.sides[n]); return c; });
   }
   function cornerTrim(sketch, i, uvi, j, uvj) {
+    if (cornerFree(sketch.entities, i, j) && i !== j) return freeCornerTrim(sketch, i, uvi, j, uvj);   // sketch-tools2: a spline
     var pl = cornerPlan(sketch, i, uvi, j, uvj);
     if (!pl.ok) return pl;
     var ri = i + '.' + pl.sides[0].end, rj = j + '.' + pl.sides[1].end;
@@ -2889,6 +2896,88 @@ var SketchSolver = (function () {
     (sketch.rels = sketch.rels || []).push({ type: 'coincident', refs: [ri, rj] });
     var res = solve(sketch), an = analyze(sketch);
     if (!res.ok || an.conflicts > c0) { tRestore(sketch, saved); return { ok: false, error: 'The corner conflicts with the sketch\'s relations or dimensions.' }; }
+    return { ok: true, pt: pl.pt };
+  }
+  // ---- sketch-tools2: Corner with a spline. An open spline's end is cut back to where it meets the other entity, or
+  // carried on along its end span to it (as Extend Entities carries a spline: the point where it lands becomes its new
+  // end point, the old end stays a spline point); the other entity is a line, an arc or another open spline. Each
+  // keeps the side clicked, and the two ends are joined (Coincident).
+  function cornerFree(E, i, j) { return !!((E[i] && E[i].t === 'spline') || (E[j] && E[j].t === 'spline')); }
+  // the curve Corner follows along an open spline: the spline carried on three spans past each end
+  function cornerReach(fc) { return { e: fc.e, t0: fc.t0 - 3, t1: fc.t1 + 3, closed: false, per: fc.per, n: Math.ceil(24 * (fc.t1 - fc.t0 + 6)), pt: fc.pt, d1: fc.d1 }; }
+  function freeCornerPlan(sketch, i, uvi, j, uvj) {
+    var E = sketch.entities, a = E[i], b = E[j];
+    function usable(e) { return !!e && (e.t === 'line' || e.t === 'arc' || (e.t === 'spline' && !e.closed)); }
+    if (!usable(a) || !usable(b)) return { ok: false, error: (a && a.t === 'spline' && a.closed) || (b && b.t === 'spline' && b.closed) ? 'A closed spline has no end to make a corner with.' : 'Corner works on lines, arcs and open splines.' };
+    var fa = a.t === 'spline' ? freeCurve(a) : null, fb = b.t === 'spline' ? freeCurve(b) : null;
+    if ((a.t === 'spline' && !fa) || (b.t === 'spline' && !fb)) return { ok: false, error: 'That spline cannot make a corner.' };
+    // where the two meet: a spline carried on past its ends, a line's whole line, an arc's whole circle
+    var pts = [], A = fa ? cornerReach(fa) : null, B = fb ? cornerReach(fb) : null;
+    if (A && B) freeHits(A, { fc: B }).forEach(function (t) { pts.push(A.pt(t)); });
+    else { var F = A || B, o = A ? b : a; freeHits(F, tCarrier(o)).forEach(function (t) { pts.push(F.pt(t)); }); }
+    if (!pts.length) return { ok: false, error: 'Those entities cannot meet: the spline carried on along its end span never reaches the other entity.' };
+    function ends(e) { return e.t === 'spline' ? [e.pts[0], e.pts[e.pts.length - 1]] : tEnds(e); }
+    var ea = ends(a), eb = ends(b), P = null, bd = Infinity;
+    pts.forEach(function (p) {
+      var d = Math.min(len(sub(p, ea[0])), len(sub(p, ea[1]))) + Math.min(len(sub(p, eb[0])), len(sub(p, eb[1])));
+      if (d < bd) { bd = d; P = p; }
+    });
+    function side(e, fc, uv) {
+      if (!fc) return cornerSide(e, P, uv);
+      var tP = freeClosest(cornerReach(fc), P).t, tc = freeClosest(fc, uv).t, end = tc <= tP ? 'p2' : 'p1', tol = 1e-7 * (fc.t1 - fc.t0);
+      if (end === 'p2' ? tP <= fc.t0 + tol : tP >= fc.t1 - tol) return null;   // nothing would be left
+      var same = Math.abs(tP - (end === 'p2' ? fc.t1 : fc.t0)) <= tol;
+      return { free: true, end: end, t: tP, pt: P, same: same, cut: !same && tP > fc.t0 + tol && tP < fc.t1 - tol };
+    }
+    var si = side(a, fa, uvi), sj = side(b, fb, uvj);
+    if (!si || !sj) return { ok: false, error: 'The corner would leave an entity with no length.' };
+    return { ok: true, pt: P, sides: [si, sj] };
+  }
+  // the spline e as Corner leaves it (a copy, or e itself when its end is already there)
+  function freeSideEntity(e, s) {
+    if (s.same) return e;
+    var fc = freeCurve(e);
+    if (s.cut) return freePiece(fc, s.end === 'p2' ? fc.t0 : s.t, s.end === 'p2' ? s.t : fc.t1);
+    var o = clone(e), P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
+    if (s.end === 'p2') { o.pts.push(P); if (o.tans) o.tans.push(null); } else { o.pts.unshift(P); if (o.tans) o.tans.unshift(null); }
+    return o;
+  }
+  // apply a spline's side in the sketch: cut back as Trim cuts a spline (freeAfterTrim keeps the relations that still
+  // hold and joins the new end to what is there), or carried on as Extend Entities does
+  function freeSideApply(sketch, k, s, an0) {
+    var E = sketch.entities, e = E[k];
+    if (s.same) return;
+    if (s.cut) {
+      var before = E.slice();
+      sketch.entities = before.slice(0, k).concat([freeSideEntity(e, s)], before.slice(k + 1));
+      freeAfterTrim(sketch, before, k, 1, an0, null);
+      return;
+    }
+    var P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
+    if (s.end === 'p2') { e.pts.push(P); if (e.tans) e.tans.push(null); }
+    else {
+      e.pts.unshift(P); if (e.tans) e.tans.unshift(null);
+      (sketch.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { var p = parseRef(r); return p && !p.o && p.e === k && p.s === 'v' ? k + '.v' + (p.k + 1) : r; }); });
+    }
+    var n = e.pts.length;
+    (sketch.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { return r === k + '.' + s.end ? k + '.v' + (s.end === 'p2' ? n - 2 : 1) : r; }); });
+  }
+  function freeCornerTrim(sketch, i, uvi, j, uvj) {
+    var pl = freeCornerPlan(sketch, i, uvi, j, uvj);
+    if (!pl.ok) return pl;
+    var ri = i + '.' + pl.sides[0].end, rj = j + '.' + pl.sides[1].end;
+    if (endJoined(sketch, ri, rj) || endJoined(sketch, rj, ri)) return { ok: false, error: 'That end is joined to other geometry: only free ends can make the corner.' };
+    var saved = tSave(sketch), an0 = analyze(sketch);
+    try {
+      dropEndCoincidents(sketch, [ri, rj]);
+      // lines and arcs first, so a spline cut back finds the other entity's end where it lands
+      [0, 1].forEach(function (n) { if (!pl.sides[n].free) applySide(sketch.entities[n ? j : i], pl.sides[n]); });
+      [0, 1].forEach(function (n) { if (pl.sides[n].free) freeSideApply(sketch, n ? j : i, pl.sides[n], an0); });
+      var joined = (sketch.rels || []).some(function (rel) { return rel.type === 'coincident' && rel.refs.indexOf(ri) >= 0 && rel.refs.indexOf(rj) >= 0; });
+      if (!joined) (sketch.rels = sketch.rels || []).push({ type: 'coincident', refs: [ri, rj] });
+      var res = solve(sketch), an = analyze(sketch);
+      if (!res.ok || an.conflicts > an0.conflicts) { tRestore(sketch, saved); return { ok: false, error: 'The corner conflicts with the sketch\'s relations or dimensions.' }; }
+    } catch (err) { tRestore(sketch, saved); return { ok: false, error: 'The corner could not be made: ' + err.message }; }
     return { ok: true, pt: pl.pt };
   }
   // ---- Trim away inside / outside: entity idx is cut where it crosses the two bounding entities; inside removes the
@@ -2970,6 +3059,7 @@ var SketchSolver = (function () {
         while (o.a0 < 0) { o.a0 += 360; o.a1 += 360; }
       }
       if (e.construction) o.construction = true;
+      if (e.layer != null) o.layer = e.layer;
       return tRound(o);
     });
     var before = E.slice();
@@ -3236,6 +3326,58 @@ var SketchSolver = (function () {
       if (sketch.rels && !sketch.rels.length) delete sketch.rels;
       return { ok: true, arc: k, sharp: sharp, analysis: an };
     }
+  }
+  // ---- sketch-tools2: Sketch Fillet ▸ Fillet all corners of the chain
+  // The corners (curveCorner's shape) of the chain of lines and arcs joined end to end through corner c, c first, then
+  // in chain order (an open chain both ways); joins that already run on smoothly (tangent) are not corners.
+  function chainCorners(sketch, c) {
+    var E = sketch.entities, out = [c], seen = {};
+    seen[c.i] = seen[c.j] = true;
+    function partner(k, end) {
+      var P = endOf(E[k], end);
+      for (var m = 0; m < E.length; m++) {
+        if (m === k || !curveEnt(E[m])) continue;
+        for (var b = 1; b <= 2; b++) if (nearPt(P, endOf(E[m], 'p' + b), joinTol(P))) return { k: m, end: 'p' + b };
+      }
+      return null;
+    }
+    function add(k, ek, nb) {
+      var di = intoDir(E[k], ek), dj = intoDir(E[nb.k], nb.end), at = endOf(E[k], ek);
+      if (Math.abs(crs(di, dj)) < 1e-6 && dot(di, dj) < 0) return;   // smooth
+      if (out.some(function (o) { return nearPt(o.at, at, joinTol(at)); })) return;
+      out.push({ i: k, ei: ek, j: nb.k, ej: nb.end, at: at.slice() });
+    }
+    // from entity k, which the walk entered by its end `from`, on through its other end
+    function walk(k, from) {
+      for (var guard = 0; guard <= E.length; guard++) {
+        var ek = otherEnd(from), nb = partner(k, ek);
+        if (!nb) return;
+        add(k, ek, nb);
+        if (seen[nb.k]) return;   // round a closed chain
+        seen[nb.k] = true; k = nb.k; from = nb.end;
+      }
+    }
+    walk(c.j, c.ej);
+    walk(c.i, c.ei);
+    return out;
+  }
+  // Fillet every corner of the chain through corner c with radius r, all or nothing: the first fillet gets the radius
+  // dimension (or opts.equalTo, an earlier fillet arc: Equal to it), the others Equal to the first (opts.dimEach: each
+  // its own radius dimension); opts.keepCorner as filletPair's. Returns { ok, arcs, error }.
+  function filletChain(sketch, c, r, opts) {
+    opts = opts || {};
+    var corners = chainCorners(sketch, c).map(function (k) { return k.at; }), saved = tSave(sketch), arcs = [], first = opts.equalTo != null ? opts.equalTo : null;
+    for (var n = 0; n < corners.length; n++) {
+      var at = corners[n], cc = curveCorner(sketch, at, 1e-5 * Math.max(1, Math.abs(at[0]), Math.abs(at[1])));
+      if (!cc) { tRestore(sketch, saved); return { ok: false, error: 'The corner at (' + (Math.round(at[0] * 1e4) / 1e4) + ', ' + (Math.round(at[1] * 1e4) / 1e4) + ') is gone: an earlier fillet of the chain took it.' }; }
+      var o = { keepCorner: opts.keepCorner !== false };
+      if (first != null && !opts.dimEach && sketch.entities[first] && sketch.entities[first].t === 'arc') { o.equalTo = first; o.dimension = false; }
+      var res = filletPair(sketch, cc, r, o);
+      if (!res.ok) { tRestore(sketch, saved); return { ok: false, error: res.error + (corners.length > 1 ? ' (corner ' + (n + 1) + ' of ' + corners.length + ' in the chain)' : '') }; }
+      if (first == null) first = res.arc;
+      arcs.push(res.arc);
+    }
+    return { ok: true, arcs: arcs, analysis: analyze(sketch) };
   }
 
   // ---- Sketch Chamfer (SolidWorks: the Sketch Fillet flyout ▸ Sketch Chamfer)
@@ -3592,6 +3734,7 @@ var SketchSolver = (function () {
   // entity e moved by xf (a new object), or null for an entity xf cannot carry (a rectangle turned: explode it first)
   function xfEntity(e, xf) {
     var o = clone(e), rot = xf.rot != null ? +xf.rot : 0, k = xf.s != null ? +xf.s : 1, q;
+    if (e.t === 'text' && K && K.transformText) return K.transformText(e, xf);   // sketch-text: moved / turned / scaled copies
     switch (e.t) {
       case 'line': case 'slot':
         q = xfPt([e.x1, e.y1], xf); o.x1 = q[0]; o.y1 = q[1];
@@ -3919,6 +4062,7 @@ var SketchSolver = (function () {
   // ------------------------------------------------------------------ descriptions
   var ENTITY_NAMES = { line: 'Line', rect: 'Rectangle', crect: 'Rectangle', circle: 'Circle', poly: 'Polygon', slot: 'Slot', arc: 'Arc', point: 'Point', polyline: 'Polyline', aslot: 'Arc Slot' };
   ENTITY_NAMES.spline = 'Spline'; ENTITY_NAMES.ellipse = 'Ellipse'; ENTITY_NAMES.pellipse = 'Partial Ellipse';   // ui-sketch-spline
+  ENTITY_NAMES.text = 'Text';   // sketch-text
   function refName(sketch, ref) {
     var p = parseRef(ref);
     if (!p) return String(ref);
@@ -4220,6 +4364,7 @@ var SketchSolver = (function () {
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install,
+    chainCorners: chainCorners, filletChain: filletChain,   // sketch-tools2: Fillet all corners of the chain
     // sketch tools (ui-sketch-tools.js): Sketch Fillet / Chamfer, Offset Entities chains, Move / Copy / Rotate / Scale, the sketch patterns
     curveCorner: curveCorner, filletPair: filletPair, chamferPair: chamferPair, offsetChains: offsetChains, offsetSelection: offsetSelection,
     xfEntity: xfEntity, transformEntities: transformEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
@@ -4230,3 +4375,168 @@ var SketchSolver = (function () {
     isFree: isFree, freeCurve: freeCurve, infSides: infSides, freeClosest: freeClosest, freeHits: freeHits, freePts: freePts
   };
 })();
+
+// ------------------------------------------------------------------ ordinate dimensions (sketch-ordinate)
+// SolidWorks' Horizontal / Vertical Ordinate Dimension in a sketch (Smart Dimension flyout): a zero (a point, the
+// origin, a circle's or an arc's centre, or a line square to the measuring axis) and members, each a driving distance
+// from the zero along X ('x', a horizontal ordinate set) or Y ('y', a vertical one). A member is an ordinary distance
+// relation { type: 'distance', refs: [zero, target], dir: 'h' | 'v' (between two points), v } that also carries
+//   ord: the set's id ('o1', 'o2' …), ordAxis: 'x' | 'y', ordAt: where the values stand (the sketch y of a horizontal
+//   set's text line, the sketch x of a vertical set's),
+// so the solver drives it like any distance, and ui-sketch-dims.js draws and edits the members as one set (a "0" at
+// the zero, the values on one line, jogged leaders where they would overlap; deleting the zero deletes the set).
+// Fully Define Sketch takes scheme 'ordinate' (hScheme / vScheme): the Baseline distances, made one ordinate set per
+// direction. Scripts keep the set with `.ordinate([[relIndex, { ord, ordAxis, ordAt }], …])` after the `.rel(…)` lines.
+(function (S) {
+  'use strict';
+  if (!S) return;
+  var K = typeof Kernel !== 'undefined' ? Kernel : null;
+  // the part a ref can play in a set measured along axis ('x' | 'y'): 'point' (a point, the origin, a circle's / an
+  // arc's centre: the whole circle counts as its centre), 'line' (a line square to the axis: vertical for X), or null
+  function ordKind(sketch, ref, axis) {
+    var k = S.refKind(sketch, ref);
+    if (k === 'point' || k === 'circle') return 'point';
+    if (k !== 'line') return null;
+    var L = S.refCurve(sketch, ref), dx = L.b[0] - L.a[0], dy = L.b[1] - L.a[1], len = Math.hypot(dx, dy);
+    if (!(len > 1e-12)) return null;
+    return Math.abs(axis === 'y' ? dy : dx) <= 1e-6 * len ? 'line' : null;
+  }
+  // the sketch point a ref's leader starts from, nearest the text line `at` (a line: its end nearer that line)
+  function ordAnchor(sketch, ref, axis, at) {
+    var k = S.refKind(sketch, ref);
+    if (k === 'point') return S.refPoint(sketch, ref);
+    if (k === 'circle') return S.refCurve(sketch, ref).c;
+    if (k === 'line') {
+      var L = S.refCurve(sketch, ref), ax = axis === 'y' ? 0 : 1;
+      if (at == null) return [(L.a[0] + L.b[0]) / 2, (L.a[1] + L.b[1]) / 2];
+      return Math.abs(L.a[ax] - at) <= Math.abs(L.b[ax] - at) ? L.a : L.b;
+    }
+    return null;
+  }
+  // every ordinate set of the sketch: { id: { id, axis, at, zero, members: [rel index, …] } } (members in rels order)
+  function ordinateSets(sketch) {
+    var out = {};
+    (sketch.rels || []).forEach(function (rel, i) {
+      if (!rel || rel.ord == null || rel.type !== 'distance') return;
+      var s = out[rel.ord] || (out[rel.ord] = { id: String(rel.ord), axis: rel.ordAxis === 'y' ? 'y' : 'x', at: rel.ordAt, zero: rel.refs[0], members: [] });
+      if (s.at == null && rel.ordAt != null) s.at = rel.ordAt;
+      s.members.push(i);
+    });
+    return out;
+  }
+  function newOrdinateId(sketch) {
+    var n = 0;
+    (sketch.rels || []).forEach(function (r) { var m = /^o(\d+)$/.exec(String(r.ord == null ? '' : r.ord)); if (m) n = Math.max(n, +m[1]); });
+    return 'o' + (n + 1);
+  }
+  // addOrdinate(sketch, { zero, target, axis: 'x' | 'y', ord?, at? }) -> { ok, index, ord, driven, status } or
+  // { ok: false, error }: one more member of set `ord` (a new set when ord is not given): a driving distance from the
+  // zero to the target along the axis, holding what it measures now. One that would over-define the sketch is made
+  // driven (a reference dimension, drawn in parentheses), as SolidWorks offers.
+  function addOrdinate(sketch, spec) {
+    spec = spec || {};
+    var axis = spec.axis === 'y' ? 'y' : 'x', zero = String(spec.zero), target = String(spec.target), dirWord = axis === 'x' ? 'horizontal' : 'vertical';
+    var square = axis === 'x' ? 'vertical' : 'horizontal';
+    if (!ordKind(sketch, zero, axis)) return { ok: false, error: 'The zero of a ' + dirWord + ' ordinate set is a point, a circle\'s centre or a ' + square + ' line.' };
+    if (!ordKind(sketch, target, axis)) return { ok: false, error: 'A ' + dirWord + ' ordinate dimension goes to a point, a circle\'s centre or a ' + square + ' line.' };
+    if (zero === target) return { ok: false, error: 'That is the zero of the set.' };
+    var ord = spec.ord != null ? String(spec.ord) : newOrdinateId(sketch), set = ordinateSets(sketch)[ord];
+    if (set && set.zero !== zero) return { ok: false, error: 'Ordinate set ' + ord + ' measures from ' + S.refName(sketch, set.zero) + '.' };
+    if (set && set.members.some(function (i) { return sketch.rels[i].refs[1] === target; })) return { ok: false, error: S.refName(sketch, target) + ' is dimensioned in this set already.' };
+    var at = spec.at != null ? +spec.at : set && set.at != null ? set.at : null;
+    if (at == null) { var z = ordAnchor(sketch, zero, axis, null); at = z[axis === 'x' ? 1 : 0]; }
+    var r = S.addRelation(sketch, 'distance', [zero, target], { dir: axis === 'x' ? 'h' : 'v' });
+    if (!r.ok) return { ok: false, error: r.error };
+    var idx = r.rels[0], rel = sketch.rels[idx], driven = false;
+    rel.ord = ord; rel.ordAxis = axis; rel.ordAt = Math.round(at * 1e6) / 1e6;
+    if (r.status !== 'ok') { S.setDriven(sketch, 'rel', idx, true); driven = true; }
+    return { ok: true, index: idx, ord: ord, driven: driven, status: r.status };
+  }
+  // deleteOrdinateSet(sketch, ord) -> how many members went (deleting the zero of a set deletes all of it)
+  function deleteOrdinateSet(sketch, ord) {
+    if (!sketch.rels) return 0;
+    var n0 = sketch.rels.length;
+    sketch.rels = sketch.rels.filter(function (r) { return r.ord == null || String(r.ord) !== String(ord); });
+    var n = n0 - sketch.rels.length;
+    if (!sketch.rels.length) delete sketch.rels;
+    return n;
+  }
+  // the axis a distance relation measures along: dir h / v, else the axis its line runs square to (null: neither)
+  function relAxis(sketch, rel) {
+    if (rel.dir === 'h') return 'x';
+    if (rel.dir === 'v') return 'y';
+    for (var i = 0; i < rel.refs.length; i++) {
+      if (S.refKind(sketch, rel.refs[i]) !== 'line') continue;
+      if (ordKind(sketch, rel.refs[i], 'x') === 'line') return 'x';
+      if (ordKind(sketch, rel.refs[i], 'y') === 'line') return 'y';
+    }
+    return null;
+  }
+  // Fully Define Sketch, scheme 'ordinate': the Baseline distances (each from the datum), made one ordinate set per
+  // direction, its values standing below / above (left / right of) the sketch as hPlace / vPlace say
+  var baseFullyDefine = S.fullyDefine;
+  function fullyDefine(sketch, opts) {
+    opts = opts || {};
+    var sh = opts.hScheme || opts.scheme, sv = opts.vScheme || opts.scheme;
+    if (sh !== 'ordinate' && sv !== 'ordinate') return baseFullyDefine(sketch, opts);
+    var o2 = {};
+    Object.keys(opts).forEach(function (k) { o2[k] = opts[k]; });
+    o2.hScheme = sh === 'ordinate' ? 'baseline' : sh; o2.vScheme = sv === 'ordinate' ? 'baseline' : sv;
+    delete o2.scheme;
+    var r = baseFullyDefine(sketch, o2);
+    if (!r || !r.rels) return r;
+    // the sketch's extents (with the origin): where the values stand
+    var lo = [0, 0], hi = [0, 0];
+    (sketch.entities || []).forEach(function (e, i) {
+      S.pointRefs(sketch, i).forEach(function (p) { for (var a = 0; a < 2; a++) { lo[a] = Math.min(lo[a], p.pt[a]); hi[a] = Math.max(hi[a], p.pt[a]); } });
+      if ((e.t === 'circle' || e.t === 'arc') && e.r > 0) for (var a2 = 0; a2 < 2; a2++) { var c = a2 ? e.cy : e.cx; lo[a2] = Math.min(lo[a2], c - e.r); hi[a2] = Math.max(hi[a2], c + e.r); }
+    });
+    var gap = opts.gap > 0 ? +opts.gap : Math.max(Math.max(hi[0] - lo[0], hi[1] - lo[1], 1) * 0.08, +opts.minGap || 0);
+    r.ordinate = {};
+    [['x', sh, opts.hPlace === 'above' ? hi[1] + gap : lo[1] - gap], ['y', sv, opts.vPlace === 'right' ? hi[0] + gap : lo[0] - gap]].forEach(function (q) {
+      if (q[1] !== 'ordinate') return;
+      var list = r.rels.filter(function (i) { var rel = sketch.rels[i]; return rel && rel.type === 'distance' && rel.ord == null && relAxis(sketch, rel) === q[0]; });
+      // one set per zero (Baseline measures every one from the datum: one set)
+      var byZero = {}, zs = [];
+      list.forEach(function (i) { var z = sketch.rels[i].refs[0]; if (!byZero[z]) { byZero[z] = []; zs.push(z); } byZero[z].push(i); });
+      zs.forEach(function (z) {
+        var id = newOrdinateId(sketch);
+        byZero[z].forEach(function (i) {
+          var rel = sketch.rels[i];
+          rel.ord = id; rel.ordAxis = q[0]; rel.ordAt = Math.round(q[2] * 1e4) / 1e4;
+          delete rel.off; delete rel.tx;
+        });
+        r.ordinate[id] = byZero[z].slice();
+      });
+    });
+    return r;
+  }
+  S.fullyDefine = fullyDefine;
+  S.ordKind = ordKind; S.ordAnchor = ordAnchor; S.ordinateSets = ordinateSets; S.newOrdinateId = newOrdinateId;
+  S.addOrdinate = addOrdinate; S.deleteOrdinateSet = deleteOrdinateSet;
+  // script round trip: the sets' fields on the relations the `.rel(…)` lines made (written after them)
+  if (K && K.Builder && K.registerSketchScript && K.newModel && !K.__sketchOrdinate) {
+    K.__sketchOrdinate = true;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    // .ordinate([[i, { ord, ordAxis, ordAt }], …]): relation i is a member of ordinate set ord
+    SBP.ordinate = function (list) {
+      var self = this;
+      (list || []).forEach(function (p) {
+        var rel = (self.f.rels || [])[p[0]], o = p[1] || {};
+        if (!rel || rel.type !== 'distance') throw new Error('No sketch distance ' + p[0] + ' for an ordinate set.');
+        rel.ord = String(o.ord); rel.ordAxis = o.ordAxis === 'y' ? 'y' : 'x';
+        if (o.ordAt != null) rel.ordAt = +o.ordAt;
+      });
+      return this;
+    };
+    K.registerSketchScript(function (f) {
+      var list = (f.rels || []).map(function (r, i) {
+        if (r.ord == null) return null;
+        var o = { ord: r.ord, ordAxis: r.ordAxis === 'y' ? 'y' : 'x' };
+        if (r.ordAt != null) o.ordAt = Math.round(r.ordAt * 1e6) / 1e6;
+        return [i, o];
+      }).filter(function (x) { return x; });
+      return list.length ? '\n  .ordinate(' + JSON.stringify(list) + ')' : '';
+    });
+  }
+})(typeof SketchSolver !== 'undefined' ? SketchSolver : null);

@@ -13,8 +13,14 @@
   var current = {};   // sketch id -> layer name
   function layerRec(f, name) { return K.sketchLayer(f, { layer: name }); }
   function currentLayer(f) {
+    if (UI.levelCurrentKey) return UI.levelCurrentKey(f);   // levels (ui-levels.js): the part's main level
     var n = f ? current[f.id] : null;
     return n && layerRec(f, n) ? n : '0';
+  }
+  // levels (ui-levels.js): making a layer current makes its level the part's main level
+  function setCurrentLayer(f, name) {
+    if (UI.levelSetCurrentKey) UI.levelSetCurrentKey(f, name);
+    current[f.id] = name;
   }
   function entityLayerName(f, e) { return K.sketchLayer(f, e) ? e.layer : '0'; }
   function entityLayerHidden(f, e) { var l = K.sketchLayer(f, e); return !!(l && l.hidden); }
@@ -44,7 +50,7 @@
     if (!f) return null;
     if (name != null) {
       if (String(name) !== '0' && !layerRec(f, String(name))) throw new Error('No layer ' + name + ' in this sketch.');
-      current[f.id] = String(name);
+      setCurrentLayer(f, String(name));
     }
     return currentLayer(f);
   };
@@ -237,7 +243,7 @@
         var name = row.getAttribute('data-layer');
         row.addEventListener('click', function (ev) {
           var t = ev.target;
-          if (t.classList.contains('lyr-cur')) { current[f.id] = name; v.pick = name; UI.setStatus('Current layer: ' + name + '.'); render(); return; }
+          if (t.classList.contains('lyr-cur')) { setCurrentLayer(f, name); v.pick = name; UI.setStatus('Current layer: ' + name + '.'); render(); return; }
           if (t.classList.contains('lyr-eye')) { var r0 = layerRec(f, name); op('set', name, { hidden: !(r0 && r0.hidden) }); render(); return; }
           if (t.classList.contains('lyr-color')) return;
           if (v.pick !== name) { v.pick = name; render(); }
@@ -277,7 +283,8 @@
     // open ends: ends of the open pieces the profile builder chains, by its own point key
     var deg = {}, at = {}, key2 = K._.key2;
     f.entities.forEach(function (e) {
-      if (!e || e.construction || e.t === 'point' || K.noProfileEntity(f, e)) return;
+      // sketch-text: etched (single-stroke) text is open on purpose; an infinite line has no ends
+      if (!e || e.construction || e.t === 'point' || e.t === 'text' || (e.t === 'line' && e.infinite) || K.noProfileEntity(f, e)) return;
       K.entityPolylines(e, true).forEach(function (pl) {
         if (pl.closed || pl.pts.length < 2) return;
         [pl.pts[0], pl.pts[pl.pts.length - 1]].forEach(function (q) { var k = key2(q); deg[k] = (deg[k] || 0) + 1; at[k] = q; });
@@ -426,12 +433,44 @@
     UI.setStatus('Copied ' + ents.length + ' entit' + (ents.length === 1 ? 'y' : 'ies') + (rels.length ? ', ' + rels.length + ' relation' + (rels.length === 1 ? '' : 's') : '') + (dims.length ? ', ' + dims.length + ' dimension' + (dims.length === 1 ? '' : 's') : '') + '. Ctrl+V pastes in any sketch.');
     return { entities: ents.length, rels: rels.length, dims: dims.length };
   }
+  // ---- paste between unit systems: a copy from an inch document pasted into a mm one (or back) is scaled about the
+  // sketch origin by 25.4 (1 / 25.4) so it keeps its real size: entity lengths and positions, driving distance values,
+  // dimension placements and tolerances; angles (arc ends, rotations, angle dimensions, spline tangent directions) and
+  // counts are kept. unitsOf: Anvil documents are 'in' or else millimetres.
+  function unitsOf(u) { return u === 'in' ? 'in' : 'mm'; }
+  function clipScale(c) { var a = unitsOf(c.units), b = unitsOf(App.model.units); return a === b ? 1 : a === 'in' ? 25.4 : 1 / 25.4; }
+  var LEN_KEYS = ['x', 'y', 'w', 'h', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'size', 'height'];
+  function scaleEntity(e, s) {
+    var o = clone(e);
+    LEN_KEYS.forEach(function (k) { if (typeof o[k] === 'number') o[k] *= s; });
+    if (Array.isArray(o.pts)) o.pts = o.pts.map(function (p) { return [p[0] * s, p[1] * s]; });
+    return o;
+  }
+  function scaleTol(t, s) { if (t && typeof t === 'object') { if (typeof t.plus === 'number') t.plus *= s; if (typeof t.minus === 'number') t.minus *= s; } }
+  // the clipboard in the active document's units: -> { clip, scale }
+  function scaledClip(c) {
+    var s = clipScale(c);
+    if (s === 1) return { clip: c, scale: 1 };
+    var out = clone(c);
+    out.entities = c.entities.map(function (e) { return scaleEntity(e, s); });
+    out.rels.forEach(function (r) {
+      if (r.type === 'distance' && typeof r.v === 'number') { r.v *= s; scaleTol(r.tol, s); }
+      if (typeof r.off === 'number') r.off *= s;
+      if (typeof r.tx === 'number') r.tx *= s;
+    });
+    out.dims.forEach(function (d) { if (typeof d.off === 'number') d.off *= s; scaleTol(d.tol, s); });
+    out.anchor = [c.anchor[0] * s, c.anchor[1] * s];
+    out.units = unitsOf(App.model.units);
+    out.scale = s;   // placeClip reports it
+    return { clip: out, scale: s };
+  }
+  function scaleNote(c, s) { return s === 1 ? '' : ' (scaled × ' + UI.fmtNum(s, 6) + ': ' + (unitsOf(c.units) === 'in' ? 'inches to millimeters' : 'millimeters to inches') + ')'; }
   function moved(c, p) {
     var dx = p[0] - c.anchor[0], dy = p[1] - c.anchor[1];
     return c.entities.map(function (e) { return K.translateEntity(e, dx, dy); });
   }
   // puts the clipboard into the active sketch with its anchor at p: -> { first, count } (one undo step)
-  function placeClip(c, p) {
+  function placeClip(c, p, note) {
     var f = UI.activeSketchFeature();
     if (!f) return null;
     markDirty();
@@ -446,14 +485,16 @@
     for (var i = base; i < f.entities.length; i++) sel.push({ kind: 'entity', index: i });
     if (UI.setSelection) UI.setSelection(sel); else App.sel = sel[0] || null;
     refresh();
-    UI.setStatus('Pasted ' + c.entities.length + ' entit' + (c.entities.length === 1 ? 'y' : 'ies') + (c.units && c.units !== App.model.units ? ' (copied from a ' + c.units + ' document: sizes kept as numbers)' : '') + '.');
-    return { first: base, count: c.entities.length };
+    UI.setStatus('Pasted ' + c.entities.length + ' entit' + (c.entities.length === 1 ? 'y' : 'ies') + (note || '') + '.');
+    return { first: base, count: c.entities.length, scale: c.scale || 1 };
   }
   function sketchPaste(at) {
     var f = UI.activeSketchFeature(), c = readClip();
     if (!f) { UI.toast('Open a sketch first.'); return null; }
     if (!c) { UI.setStatus('Nothing to paste: select sketch entities and press Ctrl+C first.'); return null; }
-    if (at) return placeClip(c, [+at[0], +at[1]]);
+    var sc = scaledClip(c), note = scaleNote(c, sc.scale);   // a copy from a document in other units keeps its real size
+    c = sc.clip;
+    if (at) return placeClip(c, [+at[0], +at[1]], note);
     if (App.tool && App.tool !== 'select' && UI.setTool) UI.setTool('select');
     var hint = $('sketch-hint'), hint0 = hint ? hint.innerHTML : null;
     function anchorAt(raw, mx, my) { return UI.sketchInferPoint ? UI.sketchInferPoint(raw, mx, my) : { p: raw, snap: null }; }
@@ -475,13 +516,14 @@
           }
         },
         onSketchPoint: function (raw, mx, my) {
-          var r = placeClip(c, anchorAt(raw, mx, my).p);
+          var r = placeClip(c, anchorAt(raw, mx, my).p, note);
           clearPreview();
           UI.closePM();
           return r;
         }
       },
-      groups: [{ title: 'Clipboard', fields: [{ type: 'static', label: 'Entities', value: String(c.entities.length) }, { type: 'static', label: 'Relations / dimensions', value: c.rels.length + ' / ' + c.dims.length }] }],
+      groups: [{ title: 'Clipboard', fields: [{ type: 'static', label: 'Entities', value: String(c.entities.length) }, { type: 'static', label: 'Relations / dimensions', value: c.rels.length + ' / ' + c.dims.length }]
+        .concat(sc.scale !== 1 ? [{ type: 'static', label: 'Scale', value: note.replace(/^ \(scaled |\)$/g, '') }] : []) }],
       onChange: function () { }, onOK: function () { }, onCancel: function () { UI.setStatus('Paste cancelled.'); },
       onClose: function () { clearPreview(); if (hint && hint0 != null) hint.innerHTML = hint0; }
     });

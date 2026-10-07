@@ -444,6 +444,11 @@
       if (tol.type === 'symmetric') out.main += ' ±' + tn(plus);
       else if (tol.type === 'bilateral') { out.upper = '+' + tn(plus); out.lower = (minus ? '-' : '') + tn(minus); }
       else if (tol.type === 'limit') { out.upper = base(d.value + plus); out.lower = base(d.value - minus); out.main = null; }
+      // sketch-ordinate: the sketch Dimension PM's other kinds, brought in with a model item: MIN / MAX after the value,
+      // Basic (boxed on the sheet: out.basic)
+      else if (tol.type === 'min') out.main += ' MIN';
+      else if (tol.type === 'max') out.main += ' MAX';
+      else if (tol.type === 'basic') out.basic = true;
     }
     if (d.label != null && String(d.label) !== '' && out.main != null) out.main = String(d.label).split('<DIM>').join(out.main);
     out.text = out.main == null ? out.upper + '/' + out.lower : out.main + (out.upper != null ? ' ' + out.upper + '/' + out.lower : '');
@@ -521,6 +526,72 @@
       }
     });
     return best;
+  }
+  // ------------------------------------------------------------------ sketch dimension properties on model items
+  // sketch-ordinate: what the sketch's Dimension PropertyManager set on the dimension a model item shows comes onto the
+  // drawing with it (SolidWorks' Insert Model Items): the tolerance, the precision, the text before / after the value
+  // (2X, TYP, REF) and the name; a driven (reference) sketch dimension reads in parentheses. sketchDimProps(model,
+  // build, w, d) -> { tol, prec, label, name, driven, count } or null: d is a model item of view record w; its sketch
+  // dimension is the Smart Dimension of the entity dimSource traces it to (the circle's diameter, the rectangle's
+  // width …). A "2X"-style text before the value replaces the drawing's own count (no "2X 2X Ø.266"). The drawing's
+  // own Dimension PM settings (doc.dimProps) still win over these.
+  var SK_PROPS = ['tol', 'prec', 'prefix', 'suffix', 'name', 'driven'];
+  function hasSketchDimProps(model) {
+    return !!(model && model.features && model.features.some(function (f) {
+      return f.type === 'sketch' && (f.dims || []).some(function (x) { return SK_PROPS.some(function (k) { return x[k] != null && x[k] !== '' && x[k] !== false; }); });
+    }));
+  }
+  // (only Smart Dimensions that carry such a property are candidates: of two equal holes the one dimensioned "2X" is
+  // the one the model item shows, wherever on the sheet the item's leader went; among those the closest wins)
+  function sketchDimProps(model, build, w, d) {
+    if (!d || !d.auto || d.flat || d.value == null || !hasSketchDimProps(model)) return null;
+    if (d.kind !== 'dia' && d.kind !== 'rad' && d.kind !== 'h' && d.kind !== 'v' && d.kind !== 'aligned') return null;
+    if (d.slot || !w || !w.frame || w.flat || (w.view && w.view.kind === 'flat') || !isOrthoFrame(w.frame)) return null;
+    var F = w.frame, planes = build && build.planes || {}, val = d.value, tolV = Math.max(1e-6, Math.abs(val) * 1e-7), radial = d.kind === 'dia' || d.kind === 'rad';
+    var rm; try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    function view2(p) { return [V.dot(p, F.u), V.dot(p, F.v)]; }
+    var t2 = null, t3 = null, dm = null;
+    if (!radial) {
+      t2 = d.kind === 'h' ? [1, 0] : d.kind === 'v' ? [0, 1] : (function () { var x = d.b[0] - d.a[0], y = d.b[1] - d.a[1], L = Math.hypot(x, y); return [x / L, y / L]; })();
+      t3 = V.add(V.scale(F.u, t2[0]), V.scale(F.v, t2[1]));
+      dm = [(d.a[0] + d.b[0]) / 2, (d.a[1] + d.b[1]) / 2];
+    }
+    var f = null, idx = -1, bs = Infinity;
+    rm.features.forEach(function (rf, fi) {
+      var raw = model.features[fi];
+      if (rf.type !== 'sketch' || rf.suppressed || !raw || !raw.dims) return;
+      var pl; try { pl = K.resolvePlane(rf.plane, rm, planes); } catch (e) { return; }
+      raw.dims.forEach(function (x, i) {
+        if (!SK_PROPS.some(function (k) { return x[k] != null && x[k] !== '' && x[k] !== false; })) return;
+        var e = rf.entities && rf.entities[x.e], g = e && K.dimGeometry(e, x);
+        if (!g || Math.abs(g.value - val) > tolV) return;
+        var score;
+        if (g.type === 'radial') {
+          if (!radial || (d.kind === 'dia') !== (x.k === 'dia') || Math.abs(Math.abs(V.dot(pl.n, F.e)) - 1) > 1e-9) return;
+          var c2 = view2(K.to3D(pl, g.C[0], g.C[1]));
+          score = Math.hypot(c2[0] - d.c[0], c2[1] - d.c[1]);
+        } else {
+          if (radial || !g.dir) return;
+          var d3 = V.add(V.scale(pl.x, g.dir[0]), V.scale(pl.y, g.dir[1]));
+          if (Math.abs(Math.abs(V.dot(d3, t3)) - 1) > 1e-9) return;
+          var p0 = view2(K.to3D(pl, g.P[0], g.P[1])), p1 = view2(K.to3D(pl, g.Q[0], g.Q[1])), m = [(p0[0] + p1[0]) / 2 - dm[0], (p0[1] + p1[1]) / 2 - dm[1]];
+          score = Math.abs(m[0] * t2[0] + m[1] * t2[1]) + 1e-3 * Math.abs(m[0] * t2[1] - m[1] * t2[0]);
+        }
+        if (score < bs) { bs = score; f = raw; idx = i; }
+      });
+    });
+    if (idx < 0) return null;
+    var sd = f.dims[idx], out = {};
+    if (sd.tol && sd.tol.type && sd.tol.type !== 'none') out.tol = { type: sd.tol.type, plus: Math.abs(+sd.tol.plus || 0), minus: Math.abs(+(sd.tol.type === 'symmetric' ? sd.tol.plus : sd.tol.minus) || 0) };
+    if (sd.prec != null && sd.prec !== '' && +sd.prec >= 0) out.prec = +sd.prec;
+    var pre = sd.prefix ? String(sd.prefix) : '', suf = sd.suffix ? String(sd.suffix) : '';
+    if (pre && !/\s$/.test(pre)) pre += ' ';
+    if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
+    if (pre || suf || sd.driven) out.label = (sd.driven ? '(' : '') + pre + '<DIM>' + suf + (sd.driven ? ')' : '');
+    if (/^\s*\d+\s*[xX]\b/.test(pre)) out.count = 1;
+    if (sd.driven) out.driven = true;
+    out.name = (sd.name ? String(sd.name) : 'D' + (idx + 1)) + '@' + (f.name || K.featureName(f));
+    return out;
   }
   // driveDim(model, src, value): writes the new value into the feature the source names (a sketch entity through the
   // sketch solver when the sketch has relations, else the kernel's one-entity edit; an extrude's depth). The caller
@@ -734,6 +805,7 @@
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
+  D.sketchDimProps = sketchDimProps;
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.

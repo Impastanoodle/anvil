@@ -641,9 +641,22 @@
   // ---- the arc slots: the centre-line arc (3 points, or centre / start / end), then the width
   function aslotOf(arc, w) { return { t: 'aslot', cx: arc.cx, cy: arc.cy, r: arc.r, a0: arc.a0, a1: arc.a1, w: w }; }
   function widthOk(st, arc, p) {
-    var w = arc ? arcWidth(arc, p) : 0;
-    if (!(w > 1e-9) || !(w < 2 * arc.r)) { UI.setStatus('The slot width must be more than 0 and less than the arc\'s diameter: click nearer the arc.'); return false; }
+    if (!arc) { UI.setStatus('The slot\'s centre arc could not be made from those points: press Esc and draw it again.'); return false; }
+    var w = arcWidth(arc, p);
+    if (!(w > 1e-9)) { UI.setStatus('The width click is not taken: it lies on the slot\'s centre arc (width 0). Click beside the arc, at half the slot width from it.'); return false; }
+    if (!(w < 2 * arc.r * (1 - 1e-9))) { UI.setStatus('The width click is not taken: the slot would be ' + UI.fmtNum(w, 3) + ' wide, not less than the arc\'s diameter ' + UI.fmtNum(2 * arc.r, 3) + '. Click nearer the arc.'); return false; }
     return true;
+  }
+  // sketch-tools2: the width step of an arc slot does not snap onto the slot's own points (its start, end, centre or
+  // third point): a width click near the third point landed exactly on it, and ui-sketch.js refuses a point the tool
+  // has already placed. ui-sketch.js inferPoint offers the tool's points as snap and alignment targets through
+  // st.pts.forEach; while the width is picked that walk is left empty (the points stay in st.pts for the geometry).
+  function noOwnSnaps(st) {
+    var pts = st.pts;
+    if (!pts || pts.ownSnapsOff) return;
+    var each = Array.prototype.forEach;
+    Object.defineProperty(pts, 'ownSnapsOff', { value: true });
+    Object.defineProperty(pts, 'forEach', { configurable: true, writable: true, value: function (fn, self) { if (this.length >= 3) return; return each.call(this, fn, self); } });
   }
   function slotAfter(f, i0, st) {
     var which = {};
@@ -669,6 +682,7 @@
     },
     accept: function (st, p) {
       if (st.pts.length === 2 && !arc3Of(st.pts.concat([p]))) { UI.setStatus('The three points are in a line: click a point off the line from start to end.'); return false; }
+      if (st.pts.length === 2) noOwnSnaps(st);
       if (st.pts.length === 3) return widthOk(st, arc3Of(st.pts), p);
       return true;
     },
@@ -739,6 +753,7 @@
     accept: function (st, p) {
       if (st.pts.length === 1) { st.aFrom = null; st.aSweep = 0; st.aLast = null; }
       if (st.pts.length === 2 && !centerArc(st, st.pts[0], st.pts[1], p)) { UI.setStatus('Click the end of the arc away from its start and its center.'); return false; }
+      if (st.pts.length === 2) noOwnSnaps(st);
       if (st.pts.length === 3) return widthOk(st, centerArcOf(st, st.pts), p);
       return true;
     },

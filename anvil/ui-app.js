@@ -498,14 +498,15 @@
   // OBJ, 3MF — exchange.js), picked from disk or pasted. A neutral file opens as a new part whose one feature is
   // Imported1; Insert ▸ Features ▸ Imported… adds one to the open part instead.
   var OPEN_TYPES = [
-    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.igs;*.stl;*.obj;*.3mf;*.dxf)', '.json,.js,.step,.stp,.igs,.iges,.stl,.obj,.3mf,.dxf'],
+    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.igs;*.stl;*.obj;*.3mf;*.dxf;*.dwg)', '.json,.js,.step,.stp,.igs,.iges,.stl,.obj,.3mf,.dxf,.dwg'],
     ['anvil', 'Anvil documents and scripts (*.anvil.json;*.anvil.js)', '.json,.js'],
     ['step', 'STEP AP203/AP214 (*.step;*.stp)', '.step,.stp'],
     ['iges', 'IGES (*.igs;*.iges), read by OpenCascade', '.igs,.iges'],
     ['stl', 'STL (*.stl)', '.stl'],
     ['obj', 'OBJ (*.obj)', '.obj'],
     ['3mf', '3D Manufacturing Format (*.3mf)', '.3mf'],
-    ['dxf', 'DXF (*.dxf), as a 2D sketch on the Top Plane', '.dxf']   // dxf-import (ui-sketch-import.js)
+    ['dxf', 'DXF (*.dxf), as a 2D sketch on the Top Plane', '.dxf'],   // dxf-import (ui-sketch-import.js)
+    ['dwg', 'DWG (*.dwg), as a 2D sketch on the Top Plane (needs the local Anvil server)', '.dwg']   // dwg-import
   ];
   function hasExchange() { return typeof Exchange !== 'undefined'; }
   function neutralFile(name) { return /\.(step|stp|p21|igs|iges|stl|obj|3mf)$/i.test(String(name || '')); }
@@ -518,6 +519,7 @@
   function openFileData(name, data, opts) {
     opts = opts || {};
     if (/\.dxf$/i.test(String(name || '')) && UI.openDXFFile) return UI.openDXFFile(name, data);   // dxf-import: a new part, the DXF in Sketch1
+    if (/\.dwg$/i.test(String(name || '')) && UI.openDWGFile) return UI.openDWGFile(name, data);   // dwg-import: the same after the local server's conversion
     if (neutralFile(name) || opts.format) return opts.into === 'current' ? importIntoCurrent(name, data, opts) : importIntoNew(name, data, opts);
     var txt = typeof data === 'string' ? data : new TextDecoder('utf-8').decode(new Uint8Array(data));
     txt = txt.trim();

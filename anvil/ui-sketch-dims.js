@@ -13,7 +13,10 @@
 //     text every sketch dimension is drawn with (UI.dimLabelText).
 //   - Smart Dimension extras: arc length (the arc, then its end points), arc conditions on distances to circles and
 //     arcs (Center / Min / Max), Reverse the sense of the dimension (Modify box and PM).
-//   - Fully Define Sketch (Tools ▸ Dimensions ▸ Fully Define Sketch) with its PropertyManager.
+//   - Fully Define Sketch (Tools ▸ Dimensions ▸ Fully Define Sketch) with its PropertyManager (Baseline / Chain /
+//     Ordinate schemes).
+//   - The Smart Dimension flyout's Horizontal / Vertical Dimension and Horizontal / Vertical Ordinate Dimension, and
+//     the drawing of ordinate sets (a "0" at the zero, values on one line, jogged leaders; SketchSolver.addOrdinate).
 (function () {
   'use strict';
   if (typeof UI === 'undefined') return;
@@ -208,6 +211,7 @@
     return true;
   };
   UI.relDimPlacementExt = function (f, rel, uv) {
+    if (rel.ord != null && rel.type === 'distance') return ordPlacement(f, rel, uv);   // sketch-ordinate: the whole set's text line
     if (rel.type !== 'arclength') return null;
     var p = S.parseRef(rel.refs[0]), e = p && !p.o && f.entities[p.e];
     if (!e || e.t !== 'arc') return {};
@@ -216,6 +220,7 @@
   // an arc length: a dimension arc concentric with the arc at radius off, extension lines out from its ends, arrows,
   // the ⌒ value at the middle
   UI.relDimScreenExt = function (f, pl, rel) {
+    if (rel.ord != null && rel.type === 'distance') return ordScreen(f, pl, rel);   // sketch-ordinate: a member of an ordinate set
     if (rel.type !== 'arclength') return null;
     var p = S.parseRef(rel.refs[0]), e = p && !p.o && f.entities[p.e];
     if (!e || e.t !== 'arc') return null;
@@ -749,7 +754,7 @@
 
   // ------------------------------------------------------------------ Fully Define Sketch
   // Tools ▸ Dimensions ▸ Fully Define Sketch (and the Sketch tab). Relations to apply (Horizontal, Vertical), the
-  // dimension scheme (Baseline / Chain) and datum of each direction (the origin unless a point is picked: click the
+  // dimension scheme (Baseline / Chain / Ordinate: SketchSolver's ordinate block) and datum of each direction (the origin unless a point is picked: click the
   // datum box, then a point), where the dimensions go (below / above, left / right), all entities or the selected
   // ones. Calculate applies it (one undo step) and reports; Cancel puts the sketch back as it was.
   function cmdFullyDefineSketch() {
@@ -813,9 +818,9 @@
         ] },
         { title: 'Dimensions', fields: [
           { type: 'check', key: 'dims', label: 'Apply dimensions' },
-          { type: 'select', key: 'hScheme', label: 'Horizontal dimensions scheme', options: [['baseline', 'Baseline'], ['chain', 'Chain']] },
+          { type: 'select', key: 'hScheme', label: 'Horizontal dimensions scheme', options: [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']] },
           { type: 'pick', label: 'Horizontal datum', icon: 'origin', value: function () { return datumName(datum.h); }, active: function () { return active === 'h'; }, onActivate: function () { active = active === 'h' ? null : 'h'; render(); } },
-          { type: 'select', key: 'vScheme', label: 'Vertical dimensions scheme', options: [['baseline', 'Baseline'], ['chain', 'Chain']] },
+          { type: 'select', key: 'vScheme', label: 'Vertical dimensions scheme', options: [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']] },
           { type: 'pick', label: 'Vertical datum', icon: 'origin', value: function () { return datumName(datum.v); }, active: function () { return active === 'v'; }, onActivate: function () { active = active === 'v' ? null : 'v'; render(); } },
           { type: 'select', key: 'hPlace', label: 'Horizontal dimensions', options: [['below', 'Below sketch'], ['above', 'Above sketch']] },
           { type: 'select', key: 'vPlace', label: 'Vertical dimensions', options: [['left', 'Left of sketch'], ['right', 'Right of sketch']] }
@@ -827,6 +832,330 @@
     return spec;
   }
   UI.cmdFullyDefineSketch = cmdFullyDefineSketch;
+
+  // ------------------------------------------------------------------ ordinate dimensions (sketch-ordinate)
+  // Smart Dimension flyout ▸ Horizontal / Vertical Ordinate Dimension. Click the zero (a point, the origin, a circle's
+  // centre or a line square to the axis), click where the values go, then every point, hole or edge to dimension; ✓
+  // or Esc ends. Each member is a driving distance from the zero (SketchSolver.addOrdinate: rel.ord / ordAxis / ordAt),
+  // drawn SolidWorks' way: a "0" at the zero, every value on one text line square to its leader, the leaders jogged
+  // sideways where the values would overlap. Dragging any value moves the whole set's text line; a value edits (Modify
+  // box, Dimension PM) and drives like any dimension; selecting the "0" and Delete deletes the set.
+  var SVGNS = 'http://www.w3.org/2000/svg', ordLayer = null, ordStyle = false, ordPM = null;
+  // the roundest number within h of x (as a free sketch coordinate is rounded: -36, not -36.0547)
+  function niceRound(x, h) {
+    if (!(h > 0) || !isFinite(x)) return x;
+    for (var k = Math.ceil(Math.log10(2 * h)); k > -12; k--) {
+      var s1 = Math.pow(10, k), q = Math.round(x / s1) * s1;
+      if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, -k));
+      var s2 = s1 / 2;
+      q = Math.round(x / s2) * s2;
+      if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, 1 - k));
+    }
+    return x;
+  }
+  // the screen layout of a set: every item (the zero first) with its leader lines, text spot and label
+  function ordLayout(f, pl, set) {
+    var axis = set.axis, ai = axis === 'x' ? 0 : 1, oi = 1 - ai, s = (UI.cam && UI.cam.scale) || 0.1, cap = UI.DIM_CAP || 9.4;
+    var items = [{ idx: -1, ref: set.zero, label: '0' }];
+    set.members.forEach(function (i) {
+      var rel = f.rels[i], value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup, rel.ac), lab = dimLabelText(rel, value, 'len');
+      items.push({ idx: i, ref: rel.refs[1], label: rel.driven ? '(' + lab + ')' : lab, rel: rel });
+    });
+    var at = set.at;
+    items.forEach(function (it) { it.A = S.ordAnchor(f, it.ref, axis, at); });
+    items = items.filter(function (it) { return it.A && isFinite(it.A[0]) && isFinite(it.A[1]); });
+    if (!items.length) return null;
+    if (at == null || !isFinite(at)) at = items[0].A[oi];
+    function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
+    // u: the screen direction of the measuring axis; n: from the geometry toward the text line
+    var mean = 0;
+    items.forEach(function (it) { mean += it.A[oi] / items.length; });
+    var P = items[0].A, Pu = P.slice(), Pn = P.slice();
+    Pu[ai] += 10 * s; Pn[oi] += (at >= mean ? 1 : -1) * 10 * s;
+    var sP = scr(pl, P), u = unit(sP, scr(pl, Pu)), n = unit(sP, scr(pl, Pn));
+    items.forEach(function (it) {
+      var foot = it.A.slice(); foot[oi] = at;
+      it.sA = scr(pl, it.A); it.sF = scr(pl, foot);
+      it.t = (it.sF[0] - sP[0]) * u[0] + (it.sF[1] - sP[1]) * u[1];
+      it.ext = Math.abs(u[0]) * (UI.dimTextWidth ? UI.dimTextWidth(it.label) : it.label.length * 7) + Math.abs(u[1]) * cap;
+    });
+    // the values along the text line: each at its own leader unless that crowds a neighbour; crowded ones form a group
+    // spread evenly about where they would stand (SolidWorks jogs their leaders)
+    var order = items.slice().sort(function (a, b) { return a.t - b.t; }), groups = order.map(function (it) { return [it]; });
+    function gap(a, b) { return (a.ext + b.ext) / 2 + 6; }
+    function place(g) {
+      var offs = [0], c = 0;
+      for (var k = 1; k < g.length; k++) offs.push(offs[k - 1] + gap(g[k - 1], g[k]));
+      g.forEach(function (it, k) { c += (it.t - offs[k]) / g.length; });
+      g.forEach(function (it, k) { it.p = c + offs[k]; });
+    }
+    groups.forEach(place);
+    for (var guard = 0; guard < 200; guard++) {
+      var merged = false;
+      for (var gi = 1; gi < groups.length; gi++) {
+        var A = groups[gi - 1], B = groups[gi];
+        if (B[0].p - A[A.length - 1].p < gap(A[A.length - 1], B[0]) - 1e-6) { groups.splice(gi - 1, 2, A.concat(B)); place(groups[gi - 1]); merged = true; break; }
+      }
+      if (!merged) break;
+    }
+    items.forEach(function (it) {
+      var sh = it.p - it.t, F = [it.sF[0] + u[0] * sh, it.sF[1] + u[1] * sh], lines = [];
+      var toward = (it.sF[0] - it.sA[0]) * n[0] + (it.sF[1] - it.sA[1]) * n[1];
+      var d = Math.abs(toward) > 1e-6 ? (toward > 0 ? n : [-n[0], -n[1]]) : n, S0 = [it.sA[0] + d[0] * 3, it.sA[1] + d[1] * 3];
+      if (Math.abs(sh) > 0.5 && toward > 18) {
+        // jogged: straight to just short of the text line, across to where the value stands, then into it
+        var K1 = [it.sF[0] - n[0] * 12, it.sF[1] - n[1] * 12], K2 = [F[0] - n[0] * 5, F[1] - n[1] * 5];
+        lines.push([S0, K1], [K1, K2], [K2, F]);
+      } else lines.push([S0, F]);
+      it.lines = lines; it.F = F;
+      if (Math.abs(n[1]) >= Math.abs(n[0])) it.text = { x: F[0], y: n[1] > 0 ? F[1] + 3 + cap : F[1] - 3, anchor: 'middle' };
+      else it.text = { x: F[0] + n[0] * 3, y: F[1] + cap / 2, anchor: n[0] > 0 ? 'start' : 'end' };
+    });
+    return { items: items, zero: items[0].idx === -1 ? items[0] : null };
+  }
+  function ordSetOf(f, rel) { var sets = S.ordinateSets(f); return sets[rel.ord] || null; }
+  // a member's screen data for ui-sketch.js's drawOne; the first member also carries the zero's leader
+  function ordScreen(f, pl, rel) {
+    var set = ordSetOf(f, rel), i = (f.rels || []).indexOf(rel);
+    if (!set || i < 0) return null;
+    var L = ordLayout(f, pl, set);
+    if (!L) return null;
+    var it = L.items.filter(function (x) { return x.idx === i; })[0];
+    if (!it) return null;
+    var lines = it.lines.slice();
+    if (L.zero && set.members[0] === i) lines = lines.concat(L.zero.lines);
+    return { lines: lines, arrows: [], label: it.label, text: it.text, laid: true };
+  }
+  // a value dragged: the whole set's text line goes where it is dropped (nothing else of the dimension moves)
+  function ordPlacement(f, rel, uv) {
+    var set = ordSetOf(f, rel);
+    if (!set || !uv) return {};
+    var at = niceRound(uv[set.axis === 'x' ? 1 : 0], 0.5 * ((UI.cam && UI.cam.scale) || 0.01));
+    set.members.forEach(function (i) { f.rels[i].ordAt = at; });
+    return {};
+  }
+  // the zeros ("0") of the sets, and of the set being started, in a layer of their own over the dimensions (a click
+  // selects the set's zero: Delete then deletes the set)
+  function ordLayerEl() {
+    if (ordLayer && ordLayer.parentNode) return ordLayer;
+    var host = $('dim-layer');
+    if (!host || !host.parentNode) return null;
+    if (!ordStyle) {
+      ordStyle = true;
+      var css = document.createElement('style');
+      css.textContent = '#ord-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }' +
+        '#ord-layer text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: var(--dim-text); paint-order: stroke; stroke: var(--dim-halo); stroke-width: 2.5px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }' +
+        '#ord-layer text:hover { fill: var(--blue); } #ord-layer text.sel { fill: var(--green); } #ord-layer text.temp { fill: var(--blue); pointer-events: none; }' +
+        '#ord-layer path { stroke: var(--blue); stroke-dasharray: 4 3; fill: none; stroke-width: 1; }';
+      document.head.appendChild(css);
+    }
+    ordLayer = document.createElementNS(SVGNS, 'svg');
+    ordLayer.setAttribute('id', 'ord-layer');
+    ordLayer.setAttribute('aria-hidden', 'true');
+    host.parentNode.insertBefore(ordLayer, host.nextSibling);
+    return ordLayer;
+  }
+  function drawOrdZeros() {
+    var layer = ordLayerEl();
+    if (!layer) return;
+    while (layer.firstChild) layer.removeChild(layer.firstChild);
+    var f = UI.activeSketchFeature();
+    if (!f || App.mode !== 'sketch') return;
+    var pl = UI.activePlane(), sets = S.ordinateSets(f), list = [];
+    Object.keys(sets).forEach(function (id) { list.push({ set: sets[id] }); });
+    var tmp = ordPM && UI.pmSpec && UI.pmSpec() === ordPM ? App.tempOrd : null;   // (only while its PropertyManager is open)
+    if (tmp && tmp.zero && (!tmp.ord || !sets[tmp.ord])) list.push({ set: { id: tmp.ord || '', axis: tmp.axis, at: tmp.at, zero: tmp.zero, members: [] }, temp: true });
+    list.forEach(function (x) {
+      var L = ordLayout(f, pl, x.set);
+      if (!L || !L.zero) return;
+      var z = L.zero;
+      if (x.temp) {
+        // the zero of a set not started yet: its leader too (dashed, as a dimension being placed)
+        var p = document.createElementNS(SVGNS, 'path');
+        p.setAttribute('d', z.lines.map(function (ln) { return 'M' + ln[0][0].toFixed(1) + ' ' + ln[0][1].toFixed(1) + ' L' + ln[1][0].toFixed(1) + ' ' + ln[1][1].toFixed(1); }).join(' '));
+        layer.appendChild(p);
+      }
+      var t = document.createElementNS(SVGNS, 'text'), sel = !x.temp && App.sel && App.sel.kind === 'rel' && App.sel.ordZero === x.set.id;
+      t.setAttribute('x', z.text.x.toFixed(1)); t.setAttribute('y', z.text.y.toFixed(1)); t.setAttribute('text-anchor', z.text.anchor);
+      t.setAttribute('class', 'ord-zero' + (x.temp ? ' temp' : '') + (sel ? ' sel' : ''));
+      t.setAttribute('data-ord', x.set.id);
+      t.textContent = '0';
+      if (!x.temp) {
+        t.setAttribute('role', 'button'); t.setAttribute('tabindex', '0');
+        t.setAttribute('aria-label', 'Ordinate zero of ' + x.set.members.length + ' dimension' + (x.set.members.length === 1 ? '' : 's') + ': click to select the set, Delete deletes it');
+        var pick = function (ev) { ev.preventDefault(); ev.stopPropagation(); selectOrdZero(x.set.id); };
+        t.addEventListener('mousedown', pick);
+        t.addEventListener('click', function (ev) { ev.stopPropagation(); });
+        t.addEventListener('keydown', function (ev) { if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); ev.stopPropagation(); deleteOrdinateSet(x.set.id); } });
+      }
+      layer.appendChild(t);
+    });
+  }
+  if (UI.drawDims) {
+    var baseDrawDimsOrd = UI.drawDims;
+    UI.drawDims = function () { var r = baseDrawDimsOrd.apply(this, arguments); try { drawOrdZeros(); } catch (e) { /* the zeros are an overlay: never break the dimensions */ } return r; };
+  }
+  function selectOrdZero(id) {
+    var f = UI.activeSketchFeature(), set = f && S.ordinateSets(f)[id];
+    if (!set) return false;
+    App.sel = { kind: 'rel', index: set.members[0], ordZero: id };
+    App.dimsStale = true;
+    if (UI.requestRender) UI.requestRender();
+    UI.setStatus('Ordinate set from ' + S.refName(f, set.zero) + ' (' + set.members.length + ' dimension' + (set.members.length === 1 ? '' : 's') + ') selected. Delete deletes the whole set.');
+    return true;
+  }
+  function deleteOrdinateSet(id) {
+    var f = UI.activeSketchFeature();
+    if (!f || !S.ordinateSets(f)[id]) return 0;
+    markDirty();
+    var n = S.deleteOrdinateSet(f, id);
+    App.sel = null; App.relHover = null;
+    refresh();
+    closeDimPMIfGone();
+    UI.setStatus('Ordinate set deleted (' + n + ' dimension' + (n === 1 ? '' : 's') + ').');
+    return n;
+  }
+  // Delete with a set's zero selected deletes the set (a value alone deletes that value)
+  var baseDeleteRelOrd = UI.deleteRelation;
+  if (baseDeleteRelOrd) UI.deleteRelation = function (i) {
+    var s = App.sel;
+    if (s && s.kind === 'rel' && s.ordZero != null && s.index === i) return deleteOrdinateSet(s.ordZero) > 0;
+    return baseDeleteRelOrd.apply(this, arguments);
+  };
+  UI.deleteOrdinateSet = deleteOrdinateSet;
+  UI.selectOrdinateZero = selectOrdZero;
+  // the PropertyManager command
+  function cmdOrdinateDim(axis) {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    axis = axis === 'y' ? 'y' : 'x';
+    UI.setTool('select');
+    var name = axis === 'x' ? 'Horizontal Ordinate Dimension' : 'Vertical Ordinate Dimension', square = axis === 'x' ? 'vertical' : 'horizontal';
+    var st = { zero: null, at: null, ord: null, n: 0 };
+    function msg() {
+      return !st.zero ? 'Click the zero: a point, a circle\'s centre, the origin or a ' + square + ' line.'
+        : st.at == null ? 'Click where the ordinate dimensions go (the 0 follows the cursor).'
+        : 'Click the points, holes and ' + square + ' edges to dimension from ' + S.refName(f, st.zero) + (st.n ? ' (' + st.n + ' so far)' : '') + '. ✓ or Esc when done.';
+    }
+    function end() { App.tempOrd = null; App.dimsStale = true; if (UI.requestRender) UI.requestRender(); }
+    var spec = {
+      title: name, icon: axis === 'x' ? 'ordinateH' : 'ordinateV', values: {}, keepSelection: true,
+      command: {
+        onSketchPoint: function (uv, mx, my) { click(uv, UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null); },
+        onSketchMove: function (uv) { if (st.zero && st.at == null && App.tempOrd) { App.tempOrd.at = uv[axis === 'x' ? 1 : 0]; App.dimsStale = true; } }
+      },
+      groups: [],
+      onOK: end, onCancel: end
+    };
+    function render() {
+      spec.message = msg();
+      spec.groups = [{ title: 'Ordinate', fields: [
+        { type: 'static', label: 'Zero', value: st.zero ? S.refName(f, st.zero) : '—' },
+        { type: 'static', label: 'Dimensions', value: String(st.n) }
+      ] }];
+      UI.openPM(spec);
+      var h = $('sketch-hint');
+      if (h) h.textContent = spec.message;
+    }
+    // one click: the zero, then the text line, then the members (ref: what was clicked; uv: where)
+    function click(uv, ref) {
+      if (!st.zero) {
+        if (!ref) { UI.setStatus('Nothing there: ' + msg()); return; }
+        if (!S.ordKind(f, ref, axis)) { UI.toast('The zero of a ' + (axis === 'x' ? 'horizontal' : 'vertical') + ' ordinate set is a point, a circle\'s centre or a ' + square + ' line.'); return; }
+        st.zero = ref;
+        App.tempOrd = { zero: ref, axis: axis, at: uv ? uv[axis === 'x' ? 1 : 0] : null };
+      } else if (st.at == null) {
+        st.at = niceRound(uv[axis === 'x' ? 1 : 0], 0.5 * ((UI.cam && UI.cam.scale) || 0.01));
+        st.ord = S.newOrdinateId(f);
+        App.tempOrd = { zero: st.zero, axis: axis, at: st.at, ord: st.ord };
+      } else {
+        if (!ref) { UI.setStatus('Nothing there: ' + msg()); return; }
+        markDirty();
+        var r = S.addOrdinate(f, { zero: st.zero, target: ref, axis: axis, ord: st.ord, at: st.at });
+        if (!r.ok) { UI.toast(r.error); return; }
+        st.n++;
+        refresh();
+        var rel = f.rels[r.index];
+        UI.setStatus('Ordinate dimension ' + dimLabelText(rel, rel.v, 'len') + (r.driven ? ' added as driven (it would over-define the sketch).' : ' added.'));
+      }
+      App.dimsStale = true;
+      render();
+      return true;
+    }
+    spec.click = click;
+    ordPM = spec;
+    App.tempOrd = null;
+    render();
+    return spec;
+  }
+  UI.cmdOrdinateDim = cmdOrdinateDim;
+  // Horizontal / Vertical Dimension (Smart Dimension flyout): Smart Dimension held to one direction — two points (or a
+  // point and a line square to it, two such lines), then where the dimension goes; the Modify box opens as usual
+  function cmdDirDim(axis) {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    axis = axis === 'y' ? 'y' : 'x';
+    UI.setTool('select');
+    var name = axis === 'x' ? 'Horizontal Dimension' : 'Vertical Dimension', dir = axis === 'x' ? 'h' : 'v', st = { a: null, rd: null };
+    function hint() { return !st.a ? 'Click the first point or ' + (axis === 'x' ? 'vertical' : 'horizontal') + ' line.' : !st.rd ? 'Click the second one.' : 'Click where the dimension goes.'; }
+    function end() { App.tempRelDim = null; App.dimsStale = true; }
+    var spec = {
+      title: name, icon: axis === 'x' ? 'horizDim' : 'vertDim', values: {}, keepSelection: true,
+      command: {
+        onSketchPoint: function (uv, mx, my) {
+          var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+          if (!st.a) {
+            if (!ref || !S.ordKind(f, ref, axis)) { UI.setStatus(hint()); return; }
+            st.a = ref;
+          } else if (!st.rd) {
+            if (!ref || ref === st.a || !S.ordKind(f, ref, axis)) { UI.setStatus(hint()); return; }
+            var v = S.measure(f, 'distance', [st.a, ref], dir);
+            if (v == null) { UI.toast('No ' + (axis === 'x' ? 'horizontal' : 'vertical') + ' distance between those two.'); st.a = null; render(); return; }
+            st.rd = { type: 'distance', refs: [st.a, ref], dir: dir, v: v };
+            App.tempRelDim = Object.assign({}, st.rd, UI.relDimPlacement(f, st.rd, uv));
+          } else {
+            var pl = UI.relDimPlacement(f, st.rd, uv);
+            markDirty();
+            var r = S.addRelation(f, 'distance', st.rd.refs, { dir: dir, off: pl.off, tx: pl.tx });
+            st.a = null; st.rd = null; App.tempRelDim = null;
+            if (!r.ok) { UI.toast(r.error); render(); return; }
+            var idx = r.rels[0];
+            App.sel = { kind: 'rel', index: idx };
+            refresh();
+            if (!(UI.askDrivenIfOver && UI.askDrivenIfOver(f, 'rel', idx)) && UI.openRelDimEdit) UI.openRelDimEdit(idx);
+          }
+          App.dimsStale = true;
+          render();
+        },
+        onSketchMove: function (uv) { if (st.rd) { App.tempRelDim = Object.assign({}, st.rd, UI.relDimPlacement(f, st.rd, uv)); App.dimsStale = true; } }
+      },
+      groups: [], onOK: end, onCancel: end
+    };
+    function render() { spec.message = hint(); UI.openPM(spec); var h = $('sketch-hint'); if (h) h.textContent = spec.message; }
+    render();
+    return spec;
+  }
+  UI.cmdHorizontalDim = function () { return cmdDirDim('x'); };
+  UI.cmdVerticalDim = function () { return cmdDirDim('y'); };
+
+  if (window.anvil) {
+    // anvil.ordinate(axis, zeroRef, [targetRefs], at?) -> { ord, members, values }: an ordinate set made in one call
+    // on the active sketch (as the PropertyManager makes it); anvil.ordinateSets() lists the sets
+    window.anvil.ordinate = function (axis, zero, targets, at) {
+      var f = UI.activeSketchFeature();
+      if (!f) throw new Error('No active sketch.');
+      markDirty();
+      var ord = null, members = [];
+      (targets || []).forEach(function (t) {
+        var r = S.addOrdinate(f, { zero: zero, target: t, axis: axis, ord: ord, at: at });
+        if (!r.ok) throw new Error(r.error);
+        ord = r.ord; members.push(r.index);
+      });
+      refresh();
+      return { ord: ord, members: members, values: members.map(function (i) { return f.rels[i].v; }) };
+    };
+    window.anvil.ordinateSets = function () { var f = UI.activeSketchFeature(); return f ? JSON.parse(JSON.stringify(S.ordinateSets(f))) : {}; };
+  }
   if (window.anvil) {
     // anvil.fullyDefine(opts?): Fully Define Sketch on the active sketch -> { status, dof, rels, dims }
     window.anvil.fullyDefine = function (o) {

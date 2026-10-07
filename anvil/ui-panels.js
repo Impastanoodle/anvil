@@ -33,8 +33,9 @@
     var sk = App.mode === 'sketch' && App.sketchState ? App.sketchState : null;
     var skTxt = sk ? '<span class="sk-state ' + sk.status + '" title="Degrees of freedom: ' + sk.dof + '">' + (window.SketchSolver ? SketchSolver.STATUS_TEXT[sk.status] : sk.status) + '</span>' : '';
     // written only when it changed (refreshStatus runs on every solve and rebuild); the last span has a fixed width so
-    // a rebuild time growing from "9 ms" to "120 ms" does not shift the rest of the bar
-    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
+    // a rebuild time growing from "9 ms" to "120 ms" does not shift the rest of the bar; levels (ui-levels.js): the main
+    // level chip "Level: 3 ETCH" (a click opens the main-level picker)
+    var html = skTxt + (UI.occtStatusHtml ? UI.occtStatusHtml() : '') + (UI.rebuildStatusHtml ? UI.rebuildStatusHtml() : '<span>' + (errs ? errs + ' rebuild error' + (errs > 1 ? 's' : '') : 'Fully rebuilt') + '</span>') + (UI.levelStatusHtml && !asm ? UI.levelStatusHtml() : '') + '<span>' + mode + '</span><span>' + units + '</span><span class="st-ms">' + (App.lastRebuildMs != null ? UI.fmtNum(App.lastRebuildMs, 0) + ' ms' : '') + '</span>';
     var sr = $('status-right');
     if (sr._html !== html) { sr.innerHTML = html; sr._html = html; }
     var title = App.model.name + (App.mode === 'sketch' ? '  —  sketch' : '');
@@ -66,7 +67,13 @@
     ],
     Sketch: [
       { id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
-      { id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
+      // sketch-ordinate: the Smart Dimension flyout (SolidWorks): Horizontal / Vertical Dimension and Horizontal / Vertical
+      // Ordinate Dimension (ui-sketch-dims.js)
+      { fly: 'dim', items: [{ id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
+        { id: 'horizDim', label: 'Horizontal\nDimension', help: 'Dimension the horizontal distance between two points or vertical lines', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdHorizontalDim(); } },
+        { id: 'vertDim', label: 'Vertical\nDimension', help: 'Dimension the vertical distance between two points or horizontal lines', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdVerticalDim(); } },
+        { id: 'ordinateH', label: 'Horizontal Ordinate\nDimension', help: 'Dimension points, holes and edges horizontally from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('x'); } },
+        { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', help: 'Dimension points, holes and edges vertically from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('y'); } }] },
       { sep: true },
       // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line, Parallel Line) and all five rectangle types, as
       // SolidWorks (ui-sketch-lines.js: UI.lineMode, UI.cmdMidpointLine, UI.cmdParallelLine, the rect3 / crect3 /
@@ -91,7 +98,7 @@
       { id: 'slot', label: 'Straight\nSlot', tool: 'slot' },
       { id: 'point', label: 'Point', tool: 'point' },
       // ui-sketch-spline: Spline, the Ellipse ▸ Partial Ellipse flyout (small, inside the stack) and Text
-      { stack: [{ id: 'spline', label: 'Spline', tool: 'spline' }, { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' }] }, { id: 'text', label: 'Text' }] },
+      { stack: [{ id: 'spline', label: 'Spline', tool: 'spline' }, { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' }] }, { id: 'text', label: 'Text', tool: 'text' }] },
       { sep: true },
       // sketch tools (ui-sketch-tools.js), as SolidWorks 2024 groups them: Sketch Fillet ▸ Sketch Chamfer, Trim ▸ Extend,
       // Convert Entities ▸ Intersection Curve, Offset Entities, and the small Mirror / Sketch Pattern / Move Entities flyouts
@@ -99,9 +106,9 @@
       { fly: 'trim', items: [{ id: 'trim', label: 'Trim\nEntities', run: function () { UI.cmdTrimEntities(); } }, { id: 'extend', label: 'Extend\nEntities', run: function () { UI.cmdExtendEntities(); } },
         { id: 'splitEnt', label: 'Split\nEntities', help: 'Split a line, arc or circle at a point, or everything at its intersections', run: function () { if (UI.cmdSplitEntities) UI.cmdSplitEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('splitEnt')); } },
         { id: 'joinEnt', label: 'Join\nEntities', help: 'Join collinear lines, or arcs on one circle, into one', run: function () { if (UI.cmdJoinEntities) UI.cmdJoinEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('joinEnt')); } }] },
-      { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'intersectCurve', label: 'Intersection\nCurve' }] },
+      { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'intersectCurve', label: 'Intersection\nCurve', run: function () { if (UI.cmdIntersectionCurve) UI.cmdIntersectionCurve(); }, active: function () { return !!(UI.intersectionCurveOpen && UI.intersectionCurveOpen()); } }] },
       { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
-      { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror' }] },
+      { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
       { stack: [{ id: 'relations', label: 'Display/Delete Relations', run: function () { UI.cmdDisplayRelations(); } }] },
@@ -109,12 +116,14 @@
         { id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
         { id: 'centerline', label: 'Centerline', run: function () { UI.cmdCenterline(); } }] },
       { stack: [{ id: 'fullyDefine', label: 'Fully Define Sketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },   // sketchdims
-      { id: 'layers', label: 'Layers', help: 'Sketch layers: CUT, ETCH and BEND lines with their own colours, shown or hidden, written to the DXF on their layers', run: function () { if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },   // sketch-layers
+      // sketch-layers / levels: the Levels Manager tab (ui-levels.js, Mastercam's part-wide levels: CUT, ETCH and BEND
+      // with their own colours, shown or hidden, written to the DXF on their names); the sketch's Layers PM without it
+      { id: 'levels', label: 'Levels', help: 'Levels Manager: numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, written to the DXF on their names', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },
       { sep: true },
       { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
       { id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
       // dxf-import: Insert DXF, Check Sketch for Feature, Repair Sketch (ui-sketch-import.js)
-      { id: 'importDxf', label: 'Insert\nDXF', help: 'Import a DXF file into the sketch (a new sketch on the Top Plane when none is open)', run: function () { UI.cmdInsertDXF(); } },
+      { id: 'importDxf', label: 'Insert\nDXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
       { stack: [{ id: 'checkSketch', label: 'Check Sketch for Feature', help: 'Find open endpoints, gaps, duplicates and crossings that keep the sketch from making a feature', run: function () { UI.cmdCheckSketch(); } },
         { id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } }] }
     ],
@@ -567,12 +576,16 @@
   })();
 
   // ------------------------------------------------------------------ FeatureManager tabs
-  var FM_TABS = [['tree', 'tree', 'FeatureManager Design Tree'], ['pm', 'pm', 'PropertyManager'], ['config', 'config', 'ConfigurationManager'], ['dimx', 'dimx', 'DimXpertManager'], ['dispman', 'dispman', 'DisplayManager']];
+  // levels: the Levels Manager (ui-levels.js, #levels-panel) is available at any time, also beside an open
+  // PropertyManager (the PM tab brings the PM back); while it is the tab in use, a PropertyManager that closes returns
+  // to it rather than to the tree (levelsSticky, cleared by picking the tree or ConfigurationManager)
+  var FM_TABS = [['tree', 'tree', 'FeatureManager Design Tree'], ['pm', 'pm', 'PropertyManager'], ['config', 'config', 'ConfigurationManager'], ['dimx', 'dimx', 'DimXpertManager'], ['dispman', 'dispman', 'DisplayManager'], ['levels', 'levels', 'Levels Manager']];
+  var levelsSticky = false;
   function renderFmTabs() {
     var bar = $('fm-tabs');
     bar.innerHTML = '';
     FM_TABS.forEach(function (t) {
-      var b = el('button', { html: Icons(t[1], 18), title: t[2], onclick: function () { if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'tree' || t[0] === 'config') { if (!UI.hasPM()) setFmTab(t[0]); else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
+      var b = el('button', { html: Icons(t[1], 18), title: t[2], onclick: function () { if (t[0] === 'levels') { if (!$('levels-panel')) { toast('The Levels Manager did not load.'); return; } levelsSticky = true; setFmTab('levels'); return; } if (t[0] === 'pm' && !UI.hasPM()) { toast('The PropertyManager opens when a command is active.'); return; } if (t[0] === 'pm') { setFmTab('pm'); return; } if (t[0] === 'tree' || t[0] === 'config') { if (!UI.hasPM()) { levelsSticky = false; setFmTab(t[0]); } else toast('Finish or cancel the active command first (✓ or ✗).'); return; } if (t[0] !== 'pm') toast(t[2] + ' is not available in this build.'); } });
       b.dataset.tab = t[0];
       bar.appendChild(b);
     });
@@ -581,6 +594,19 @@
   // setFmTab('tree' | 'config' | 'pm'): marks the tab and shows its pane. The PropertyManager (ui-commands openPM /
   // closePM) shows and hides #pm and #fm-tree itself; here 'pm' only hides the ConfigurationManager.
   function setFmTab(name) {
+    // levels: a PropertyManager closing (pm -> tree) goes back to the Levels Manager while that is the tab in use
+    if (name === 'tree' && levelsSticky && (App.fmTab === 'pm' || App.fmTab === 'levels') && $('levels-panel')) name = 'levels';
+    var lp = $('levels-panel');
+    if (lp) lp.hidden = name !== 'levels';
+    if (name === 'levels') {
+      Array.prototype.forEach.call($('fm-tabs').children, function (b) { b.classList.toggle('active', b.dataset.tab === name); });
+      App.fmTab = name;
+      $('fm-tree').hidden = true; $('pm').hidden = true;
+      if ($('config-panel')) $('config-panel').hidden = true;
+      if (UI.refreshLevelsPanel) UI.refreshLevelsPanel();
+      return;
+    }
+    if (name === 'pm' && UI.hasPM && UI.hasPM()) $('pm').hidden = false;
     Array.prototype.forEach.call($('fm-tabs').children, function (b) { b.classList.toggle('active', b.dataset.tab === name); });
     App.fmTab = name;
     var cp = $('config-panel');
@@ -1023,7 +1049,7 @@
         { label: 'New ▸ Part', action: function () { UI.newPart(); } },
         { label: 'New ▸ Assembly', action: function () { UI.newAssembly(); } },
         { label: 'Open…', key: 'Ctrl+O', action: UI.fileOpen },
-        { label: 'Import DXF into Sketch…', action: function () { UI.cmdInsertDXF(); } },   // dxf-import
+        { label: 'Import DXF / DWG into Sketch…', action: function () { UI.cmdInsertDXF(); } },   // dxf-import, dwg-import
         { label: 'Save', key: 'Ctrl+S', action: UI.fileSave },
         { label: 'Save As…', action: function () { UI.fileSaveAs(); } },
         { label: 'Save As DXF / DWG…', action: function () { UI.cmdDxfOutput(); } },
@@ -1136,6 +1162,10 @@
         { label: 'Relations ▸ Add…', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Display/Delete…', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Dimensions ▸ Fully Define Sketch…', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
+        // dxf-import: Tools ▸ Sketch Tools, as SolidWorks has them (ui-sketch-import.js)
+        { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },
+        { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
+        { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
         { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } },
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },

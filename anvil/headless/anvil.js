@@ -29,6 +29,8 @@ const USAGE = [
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
   '  test                                        run tests/kernel-tests.html under Node',
+  '  dxf2sketch <file.dxf | file.dwg> [--dxf out] what File > Open brings into a sketch: units, layers, entities, extents,',
+  '                                              Check Sketch summary (a DWG through the ODA File Converter or LibreDWG)',
   '',
   'Global options: --quiet (summary only on stdout), --verbose (list the engine files as they load).'
 ].join('\n');
@@ -478,6 +480,39 @@ async function cmdTest(flags) {
   return failures.length ? 1 : 0;
 }
 
+// ------------------------------------------------------------------ dxf2sketch (DWG / DXF import)
+// What File ▸ Open of the file would bring into a sketch (dxf-import.js): units, layers, entities by type, extents and
+// Check Sketch for Feature's summary; a .dwg goes through headless/dwg.js toDxf (ODA File Converter or LibreDWG's
+// dwg2dxf) first. --dxf out also writes the DXF read. Exit 1 when there is no geometry in model space.
+function cmdDxf2Sketch(file, flags) {
+  const f = path.resolve(process.cwd(), file);
+  if (!fs.existsSync(f)) throw usage('no such file: ' + f);
+  load();
+  const DxfImport = globalThis.DxfImport;
+  let bytes = fs.readFileSync(f), converter = null;
+  if (/\.dwg$/i.test(f)) {
+    const Dwg = require('./dwg');
+    const conv = Dwg.which('dwg2dxf');
+    if (!conv) throw Object.assign(new Error('No DWG to DXF converter on this machine. ' + Dwg.HINT), { code: 2 });
+    bytes = Dwg.toDxf(bytes, conv);
+    converter = conv.name;
+  }
+  // DXF before AutoCAD 2007 (AC1021) is ANSI, later UTF-8
+  const head = bytes.slice(0, 4000).toString('latin1'), ver = /\$ACADVER\s*[\r\n]+\s*1\s*[\r\n]+\s*AC(\d{4})/.exec(head);
+  const text = ver && +ver[1] < 1021 ? bytes.toString('latin1') : bytes.toString('utf8');
+  const outputs = {};
+  if (flags.dxf) outputs.dxf = writeOut(flags.dxf, bytes, null);
+  const p = DxfImport.parse(text), byType = {};
+  p.entities.forEach((e) => { byType[e.t] = (byType[e.t] || 0) + 1; });
+  const b = DxfImport.bounds(p.entities), tol = p.units === 'in' ? 0.001 : 0.025, issues = DxfImport.check(p.entities, tol, { unit: p.units || '' });
+  const summary = { file: f, converter, version: ver ? 'AC' + ver[1] : null, units: p.units, entities: p.entities.length, byType,
+    layers: p.layers.map((l) => ({ name: l.name, color: l.color, count: l.count })),
+    extents: b ? { min: [r6(b[0]), r6(b[1])], max: [r6(b[2]), r6(b[3])], size: [r6(b[2] - b[0]), r6(b[3] - b[1])] } : null,
+    check: issues.summary || 'No problems found', contours: issues.contours || null, warnings: p.warnings, outputs };
+  process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+  return p.entities.length ? 0 : 1;
+}
+
 // ------------------------------------------------------------------ main
 async function main(argv) {
   const args = parseArgs(argv), cmd = args._[0], flags = args.flags;
@@ -499,6 +534,9 @@ async function main(argv) {
       return cmdBuild(sourceFromExample(findExample(args._[1])), flags);
     case 'test':
       return cmdTest(flags);
+    case 'dxf2sketch':
+      if (!args._[1]) throw usage('dxf2sketch: give a .dxf or .dwg file');
+      return cmdDxf2Sketch(args._[1], flags);
     default:
       throw usage('unknown command "' + cmd + '"');
   }

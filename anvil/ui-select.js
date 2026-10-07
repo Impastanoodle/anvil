@@ -396,6 +396,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       // drawn curve once zoomed in, so a crossing box over the drawn arc missed it
       var plsOf = UI.screenPolylines || K.entityPolylines;
       sk.entities.forEach(function (e, i) {
+        if (!e || (UI.entityLayerHidden && UI.entityLayerHidden(sk, e))) return;   // sketch-layers: a hidden layer is not drawn, so not boxed
         var pls = e.t === 'point' ? [{ pts: [[e.x, e.y]], closed: false }] : plsOf(e);
         if (!pls.length) return;
         var scr = pls.map(function (l) { return { pts: l.pts.map(function (q) { return S(K.to3D(pl, q[0], q[1])); }), closed: l.closed }; });

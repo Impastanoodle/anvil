@@ -292,6 +292,14 @@
     var dims = doc.autoDims && !anyPending ? autoDims(doc, projections, units).filter(function (d) {
       d.key = autoDimKey(d);
       var sk = d.view + ':' + d.kind; nth[sk] = nth[sk] || 0; d.style = styleKey(d, nth[sk]++);
+      // sketch-ordinate: the sketch dimension's tolerance, precision, text and name come with the model item
+      var vw0 = views.filter(function (w) { return w.view.id === d.view; })[0], sp = vw0 && D.sketchDimProps ? D.sketchDimProps(model, ctx.build, vw0, d) : null;
+      if (sp) {
+        ['tol', 'prec', 'label'].forEach(function (q) { if (sp[q] != null) d[q] = sp[q]; });
+        if (sp.count != null) d.count = sp.count;
+        d.sketchName = sp.name; if (sp.driven) d.driven = true;
+        d.text = dimText(d, units);
+      }
       var pp = doc.dimProps && doc.dimProps[d.style];
       if (pp) { setDimProps(d, pp); d.text = dimText(d, units); }
       return suppressed.indexOf(d.key) < 0;
@@ -656,7 +664,17 @@
     }
     // the dimension text at p (anchor, rotation): one text, or the value with its tolerance stacked beside it
     function label(p, anchor, rot, lab) {
-      if (lab.upper == null) { out.push({ k: 'text', p: p, h: th, text: lab.main, anchor: anchor, layer: L, rot: rot }); return; }
+      if (lab.upper == null) {
+        out.push({ k: 'text', p: p, h: th, text: lab.main, anchor: anchor, layer: L, rot: rot });
+        // sketch-ordinate: a Basic dimension (from the sketch's Dimension PM) in a box
+        if (lab.basic) {
+          var ra = rot * Math.PI / 180, tb = [Math.cos(ra), Math.sin(ra)], nb = [-tb[1], tb[0]], wb = textWidth(lab.main, th), pb = th * 0.35;
+          var sb = anchor === 'middle' ? -wb / 2 : anchor === 'end' ? -wb : 0;
+          var cnr = [[sb - pb, -pb], [sb + wb + pb, -pb], [sb + wb + pb, th + pb], [sb - pb, th + pb]].map(function (q) { return [p[0] + tb[0] * q[0] + nb[0] * q[1], p[1] + tb[1] * q[0] + nb[1] * q[1]]; });
+          for (var ci = 0; ci < 4; ci++) out.push({ k: 'line', a: cnr[ci], b: cnr[(ci + 1) % 4], layer: L, style: 'thin' });
+        }
+        return;
+      }
       var a = rot * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]], th2 = lab.main == null ? th * 0.8 : th * 0.7;
       var wm = lab.main == null ? 0 : textWidth(lab.main, th), gp = lab.main == null ? 0 : th * 0.4, wt = Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
       var W = wm + gp + wt, s0 = anchor === 'middle' ? -W / 2 : anchor === 'end' ? -W : 0;
@@ -774,7 +792,8 @@
         if (!q) { var e0 = vw.toSheet(it.ref.a), e1 = vw.toSheet(it.ref.b); q = (e0[1 - ax] - e1[1 - ax]) * side > 0 ? e0 : e1; if (Math.abs(e0[1 - ax] - e1[1 - ax]) < 1e-9) q = [(e0[0] + e1[0]) / 2, (e0[1] + e1[1]) / 2]; q[ax] = vw.toSheet(ax ? [0, refPos(it.ref, 1)] : [refPos(it.ref, 0), 0])[ax]; }
         it.p = q;
       });
-      var lvl = d.at != null ? vw.toSheet(hz2 ? [0, d.at] : [d.at, 0])[1 - ax] : (hz2 ? (side > 0 ? box.y1 : box.y0) : (side > 0 ? box.x1 : box.x0)) + side * 10 * k;
+      // (d.outer: paper mm more, a sketch's ordinate set beside the overall size below / left of the view)
+      var lvl = d.at != null ? vw.toSheet(hz2 ? [0, d.at] : [d.at, 0])[1 - ax] : (hz2 ? (side > 0 ? box.y1 : box.y0) : (side > 0 ? box.x1 : box.x0)) + side * (10 + (+d.outer || 0)) * k;
       d.lineAt = hz2 ? vw.fromSheet([0, lvl])[1] : vw.fromSheet([lvl, 0])[0];
       var prec = d.prec != null && d.prec !== '' ? +d.prec : null;
       if (d.kind === 'ordinate') {

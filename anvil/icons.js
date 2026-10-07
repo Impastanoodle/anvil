@@ -147,6 +147,11 @@ var Icons = (function () {
     relMerge: circ(6, 8, 3, 'none', G, 1.2) + circ(10, 8, 3, 'none', G, 1.2) + circ(8, 8, 1.2, G, 'none'),
     arclength: ln('M2.5 12 A6.5 6.5 0 0 1 13.5 12', B, 1.3) + ln('M3 6.5 A6 6 0 0 1 13 6.5', S, 1.1) + ln('M3 6.5 l1.9 -0.4 M3 6.5 l0.6 1.8 M13 6.5 l-1.9 -0.4 M13 6.5 l-0.6 1.8', S, 1.1),
     fullyDefine: rect(2, 5, 9, 8, 'none', S, 1.3) + ln('M2 2.5 h9 M2 1.5 v2 M11 1.5 v2', B, 1) + ln('M13.5 5 v8 M12.5 5 h2 M12.5 13 h2', B, 1) + ln('M4.5 9.5 l2 2 l3.5 -4', G, 1.6),
+    // sketch-ordinate: the Smart Dimension flyout's Horizontal / Vertical Dimension and Horizontal / Vertical Ordinate
+    horizDim: ln('M3 6 v8 M13 6 v8', S, 1.1) + ln('M3 10 h10', S, 1.1) + ln('M3 10 l2.3 -1.3 M3 10 l2.3 1.3 M13 10 l-2.3 -1.3 M13 10 l-2.3 1.3', B, 1.2) + ln('M5 3 h6', B, 1.4) + circ(3, 14, 1, B, 'none') + circ(13, 14, 1, B, 'none'),
+    vertDim: ln('M6 3 h8 M6 13 h8', S, 1.1) + ln('M10 3 v10', S, 1.1) + ln('M10 3 l-1.3 2.3 M10 3 l1.3 2.3 M10 13 l-1.3 -2.3 M10 13 l1.3 -2.3', B, 1.2) + ln('M3 5 v6', B, 1.4) + circ(14, 3, 1, B, 'none') + circ(14, 13, 1, B, 'none'),
+    ordinateH: ln('M1.5 14 h13', S, 1.1) + ln('M3 13.5 V5.5 M7.5 13.5 V5.5 M12.5 13.5 V8 L11.5 6.2 V5.5', B, 1) + txt(3, 4.4, 3.6, '0') + txt(7.5, 4.4, 3.6, '5') + txt(11.5, 4.4, 3.6, '9'),
+    ordinateV: ln('M2 1.5 v13', S, 1.1) + ln('M2.5 13 H10.5 M2.5 8.5 H10.5 M2.5 3.5 H8 L9.8 2.5 H10.5', B, 1) + txt(13, 14.2, 3.6, '0') + txt(13, 9.7, 3.6, '5') + txt(13, 3.7, 3.6, '9'),
     // ---- sheet metal (green sheet)
     flange: p(FLANGE_L, G, S) + ln('M2 12 h6.5 a3.5 3.5 0 0 0 3.5 -3.5 V2.5', Y, 1, 'stroke-dasharray="1.6 1.2"'),
     bend: p('M2 10.5 h6.5 v3 H2 z', F2, S) + p('M8.5 10.5 a2 2 0 0 0 2 -2 V2.5 h3 V8.5 a5 5 0 0 1 -5 5 v-3 z', G, S) + ln('M8.5 10.5 v3', B, 1.2),
@@ -279,7 +284,9 @@ var Icons = (function () {
     float: rect(5.5, 5.5, 5, 5, F2, S, 1) + ln('M8 1.5 v2.5 M6.8 2.7 l1.2 -1.2 1.2 1.2 M8 14.5 V12 M6.8 13.3 l1.2 1.2 1.2 -1.2 M1.5 8 H4 M2.7 6.8 l-1.2 1.2 1.2 1.2 M14.5 8 H12 M13.3 6.8 l1.2 1.2 -1.2 1.2', B, 1),
     // sketch-layers: Layers (three stacked sheets: cut, etch, bend), Paste sketch entities (a clipboard with a sketch on it)
     layers: p('M8 9.5 L14.5 12 L8 14.5 L1.5 12 z', RL, RD, 1) + p('M8 6 L14.5 8.5 L8 11 L1.5 8.5 z', GL, GD, 1) + p('M8 2.5 L14.5 5 L8 7.5 L1.5 5 z', '#bcd6f5', B, 1),
-    pasteSketch: rect(2.5, 2.5, 9, 12, '#e8d3a8', YD, 1) + rect(4.5, 1.5, 5, 2.5, F2, S, 0.9) + rect(6.5, 6, 8, 8.5, W, B, 1) + ln('M8.5 9 h4 M8.5 11.5 h2.5', B, 0.9)
+    pasteSketch: rect(2.5, 2.5, 9, 12, '#e8d3a8', YD, 1) + rect(4.5, 1.5, 5, 2.5, F2, S, 0.9) + rect(6.5, 6, 8, 8.5, W, B, 1) + ln('M8.5 9 h4 M8.5 11.5 h2.5', B, 0.9),
+    // levels (ui-levels.js): Levels Manager, a table of numbered levels with the main level's row in yellow
+    levels: rect(1.5, 1.5, 4.5, 3.5, Y, YD, 0.9) + ln('M8 3.25 h6.5', S, 1.3) + rect(1.5, 6.25, 4.5, 3.5, F1, S, 0.9) + ln('M8 8 h6.5', S, 1.3) + rect(1.5, 11, 4.5, 3.5, F1, S, 0.9) + ln('M8 12.75 h6.5', S, 1.3)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

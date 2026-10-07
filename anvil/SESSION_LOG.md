@@ -1323,3 +1323,12 @@ Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 413/413.
 - refine (branch sketch-refine-pass): spline / ellipse Trim and Extend, point-on-spline Coincident, spline Smart Dimension, Move / Copy / Rotate / Scale / patterns / Mirror carrying splines, ellipses and arc slots, Circular pattern of arc slots on the centre, spline Offset, From / To points with inference, Snap to Model while dragging (Ctrl suppresses), relation icon spacing after zoom-out, true infinite line (`infinite: true | 'p1' | 'p2'`, `SketchSolver.infSides`, `UI.infiniteLinePts`).
 - head: ui-core.js screenPolylines draws infinite lines across the view and sketchEndPoints skips their runaway ends; kernel-sketch.js sketchProfile and kernel-script.js sketch DXF skip infinite lines; ui-sketch.js curveSnap handles rays and snaps onto splines / ellipses, inferPoint is free while Ctrl is held.
 Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 423/423, occt-tests 72/72. Not fixed: 3 Point Arc Slot width click refused on its own third point; Corner trim on splines.
+
+## 2026-10-07T16 (interactive head, 5 subagents): Sketch Text, Levels Manager, DWG, missing tools, ordinate dimensions
+
+- text: `sketch-font.js` (own single-stroke font, 85 characters), `text` entity in kernel-sketch.js (Etch strokes; Cut capsules unioned into loops), along a line / arc, `ui-sketch-text.js` PM, DXF strokes, script `.text`, `Kernel.transformText`. Head: xfEntity / ENTITY_NAMES for text in sketch-solver.js; sketch-font.js in drawing-worker.js, occt-tests, bench, occt-lab; text skipped by sweep paths (both kernels) and Sketched Bend lines; open-end markers skip text and infinite lines.
+- levels: `ui-levels.js` Mastercam Levels Manager (part-wide `model.levels` / `mainLevel` synced into sketch layers). Head: `p.levels(list, main)` + generateScript in kernel-script.js, kernel test.
+- dwg: `api/dwg2dxf` in serve.ps1 (ODA or LibreDWG), .dwg in File > Open and Insert DXF / DWG, `anvil.js dxf2sketch`, paste scales between units, Tools > Sketch Tools entries, box select skips hidden layers. Head: layers kept through explodeRect, spline / ellipse / infinite trims and kept construction pieces (sketch-solver.js).
+- tools: Dynamic Mirror, Intersection Curve, Fillet Chain, arc slot width click, Corner trim with splines.
+- dims: Horizontal / Vertical Ordinate sets, Fully Define Ordinate scheme, sketch dimension properties and arc slot callouts on drawings.
+Tests: kernel 960/960, examples 29/29 (both kernels), ui-smoke 447/447, occt-tests 72/72.

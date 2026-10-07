@@ -603,7 +603,9 @@
       if (rec) {
         layer = dxfLayerName(rec.name);
         d.layer(layer, rec.aci > 0 ? rec.aci | 0 : rec.color ? nearestAci(rec.color) : 7, { dashed: rec.lineType === 'dashed', off: !!rec.hidden });
-      } else layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
+      } else if (e.t === 'text' && !e.construction && e.mode !== 'outline') { layer = 'ETCH'; d.layer('ETCH', 3); }   // sketch-text: Etch text is marking, never a cut
+      else layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
+      if (e.t === 'text') { dxfSketchText(d, layer, e); return; }
       // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
       // would flip an arc across 0°)
       if (e.t === 'arc') { d.arc(layer, [e.cx, e.cy], e.r, e.a0, e.a1); return; }
@@ -617,6 +619,20 @@
     return d.toString();
   }
 
+  // sketch-text: a text's geometry, never a TEXT entity (laser and punch software cut and etch geometry): Etch text as
+  // its strokes (LINE, ARC, CIRCLE; a letter stretched by a width factor as a polyline), Cut text as one closed
+  // polyline per outline loop with its round ends as bulged (true arc) segments (Kernel.textDxf)
+  function dxfSketchText(d, layer, e) {
+    var g = K.textDxf(e);
+    function deg(a) { a = a % 360; return a < 0 ? a + 360 : a; }
+    (g.strokes || []).forEach(function (s) {
+      if (s.t === 'line') d.line(layer, [s.x1, s.y1], [s.x2, s.y2]);
+      else if (s.t === 'poly') d.polyline(layer, s.pts, !!s.closed);
+      else if (s.a1 - s.a0 >= 360 - 1e-9) d.circle(layer, [s.cx, s.cy], s.r);
+      else d.arc(layer, [s.cx, s.cy], s.r, deg(s.a0), deg(s.a1));
+    });
+    (g.polys || []).forEach(function (p) { if (p.circle) d.circle(layer, p.circle.c, p.circle.r); else d.polyline(layer, p.pts, true, p.bulges); });
+  }
   // a sketch layer's name as a DXF layer name (R12: up to 31 of A-Z 0-9 $ - _)
   function dxfLayerName(n) { return (String(n).toUpperCase().replace(/[^A-Z0-9$_-]/g, '_').slice(0, 31)) || '0'; }
   // the AutoCAD Color Index nearest a '#rrggbb' colour: greys go to 7 / 8 / 9, other colours to the nearest hue among
@@ -673,6 +689,8 @@
   function num(x) { return isExpression(x) ? x : +x; }
   Builder.prototype.name = function (n) { this.model.name = String(n); return this; };
   Builder.prototype.units = function (u) { this.model.units = u === 'in' ? 'in' : 'mm'; return this; };
+  // the part's Levels Manager table (ui-levels.js): numbered levels, level sets and the main level
+  Builder.prototype.levels = function (list, main) { this.model.levels = JSON.parse(JSON.stringify(list || [])); if (main != null) this.model.mainLevel = +main; return this; };
   Builder.prototype.density = function (d) { this.model.density = +d; return this; };
   Builder.prototype.color = function (c) { this.model.color = String(c); return this; };
   // equations({ T: 10, W: '=T*2' }) or equations([{ name, expr }]): the model's global variables, in order (replaces
@@ -1038,6 +1056,42 @@
   };
   SketchBuilder.prototype.ellipse = function (cx, cy, rx, ry, rot) { var s = this; return this._e({ t: 'ellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0) }); };
   SketchBuilder.prototype.partialEllipse = function (cx, cy, rx, ry, rot, a0, a1) { var s = this; return this._e({ t: 'pellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0), a0: s._v(a0), a1: s._v(a1) }); };
+  // sketch-text: text(x, y, str, opts?) — Sketch Text in Anvil's single-stroke font (Kernel.textLayout): opts { h (letter
+  // height; default 3 mm / 0.125 in), rot (degrees), align ('left' | 'center' | 'right'), valign ('baseline' | 'middle' |
+  // 'top'), widthFactor (1 = 100 %), spacing (1 = the normal gap), lineSpacing (in letter heights), mode ('stroke': Etch,
+  // single-stroke marking, the default | 'outline': Cut, closed outlines strokeWidth wide), strokeWidth, mirror (Flip
+  // horizontal), flipV (Flip vertical), path (a line / arc entity index the baseline follows, or { e, flip, g }) }
+  SketchBuilder.prototype.text = function (x, y, str, opts) {
+    opts = opts || {};
+    var s = this, inch = this.part.model && this.part.model.units === 'in';
+    var e = { t: 'text', x: s._v(x), y: s._v(y), str: String(str == null ? '' : str), h: opts.h != null ? s._v(opts.h) : (inch ? 0.125 : 3) };
+    if (!(e.h > 0)) throw new Error('Text height must be greater than zero.');
+    var CHOICES = { align: ['left', 'center', 'right'], valign: ['baseline', 'middle', 'top'], mode: ['stroke', 'outline'] };
+    Object.keys(CHOICES).forEach(function (k) {
+      if (opts[k] == null) return;
+      if (CHOICES[k].indexOf(opts[k]) < 0) throw new Error('Text ' + k + ' must be one of ' + CHOICES[k].join(', ') + '.');
+      e[k] = opts[k];
+    });
+    if (opts.rot) e.rot = s._v(opts.rot);
+    ['widthFactor', 'spacing', 'lineSpacing', 'strokeWidth'].forEach(function (k) { if (opts[k] != null) e[k] = s._v(opts[k]); });
+    if (opts.mirror) e.mirror = true;
+    if (opts.flipV) e.flipV = true;
+    if (opts.path != null) {
+      var p = typeof opts.path === 'object' ? opts.path : { e: opts.path };
+      e.path = {};
+      if (p.e != null) {
+        var src = this.f.entities[p.e | 0];
+        if (!src || (src.t !== 'line' && src.t !== 'arc')) throw new Error('Text can follow a sketch line or arc only (entity ' + p.e + ').');
+        e.path.e = p.e | 0;
+      }
+      if (p.g) e.path.g = JSON.parse(JSON.stringify(p.g));
+      if (p.flip) e.path.flip = true;
+      if (e.path.e == null && !e.path.g) delete e.path;
+    }
+    this._e(e);
+    if (e.path) K.syncTextPaths(this.f);
+    return this;
+  };
   // mirror entities across 'x' | 'y' | a line entity index | {x1,y1,x2,y2}; opts.entities = indices (default all), opts.copy=false replaces
   SketchBuilder.prototype.mirrorEntities = function (axis, opts) {
     opts = opts || {};
@@ -1117,9 +1171,20 @@
     return b;
   }
 
+  // sketch-text: the .text() options of a text entity (only what differs from the defaults; a path keeps its geometry so
+  // a text whose curve was deleted stays where it was)
+  function textOptsOut(e) {
+    var o = { h: e.h };
+    ['rot', 'align', 'valign', 'widthFactor', 'spacing', 'lineSpacing', 'mode', 'strokeWidth'].forEach(function (k) { if (e[k] != null && e[k] !== 0 && e[k] !== '') o[k] = e[k]; });
+    if (e.mirror) o.mirror = true;
+    if (e.flipV) o.flipV = true;
+    if (e.path) { o.path = {}; if (e.path.e != null) o.path.e = e.path.e; if (e.path.g) o.path.g = e.path.g; if (e.path.flip) o.path.flip = true; }
+    return o;
+  }
   // Regenerate a script from a model so the two representations stay interchangeable.
   function generateScript(model) {
     var out = ['// ' + model.name + ' — generated by Anvil', 'p.name(' + JSON.stringify(model.name) + ').units(' + JSON.stringify(model.units) + ');'];
+    if (Array.isArray(model.levels) && model.levels.length) out.push('p.levels(' + JSON.stringify(model.levels) + (model.mainLevel != null ? ', ' + JSON.stringify(model.mainLevel) : '') + ');');
     scriptSections.forEach(function (sec) { if (sec.head) out = out.concat(sec.head(model) || []); });
     // equations first, so every "=" field below resolves against them; the array form keeps each expr string exactly
     if (Array.isArray(model.equations) && model.equations.length) out.push('p.equations(' + JSON.stringify(model.equations) + ');');
@@ -1168,6 +1233,7 @@
               case 'spline': s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : '') + ')'; break;
               case 'ellipse': s += '\n  .ellipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0].join(', ') + ')'; break;
               case 'pellipse': s += '\n  .partialEllipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0, e.a0, e.a1].join(', ') + ')'; break;
+              case 'text': s += '\n  .text(' + [e.x, e.y, JSON.stringify(String(e.str == null ? '' : e.str))].join(', ') + ', ' + JSON.stringify(textOptsOut(e)) + ')'; break;   // sketch-text
             }
           });
           (f.dims || []).forEach(function (d) {

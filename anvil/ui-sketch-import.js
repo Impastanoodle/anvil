@@ -1,8 +1,9 @@
 // ui-sketch-import.js — DXF into a sketch (Insert DXF, File ▸ Open of a .dxf), Check Sketch for Feature and Repair
 // Sketch: their SolidWorks PropertyManagers. The geometry is dxf-import.js's (DxfImport.parse / check / repair), so it
 // runs and is tested without the UI.
-//   UI.cmdInsertDXF()                  file picker, then the DXF/DWG Import PropertyManager into the active sketch (a new
-//                                      sketch on the Top Plane when none is open)
+//   UI.cmdInsertDXF()                  Insert DXF / DWG: file picker, then the DXF/DWG Import PropertyManager into the active
+//                                      sketch (a new sketch on the Top Plane when none is open); a .dwg is converted to DXF
+//                                      by the local server first (UI.dwgToDxf, UI.importDWGData, UI.openDWGFile below)
 //   UI.importDXFText(text, opts?)      the same from DXF text (scripts, tests): opts { name, units: 'file' | 'in' | 'mm',
 //                                      origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol, repair, relations,
 //                                      layers: { name: false }, ok: true (accept at once) } -> the PM values, or null
@@ -260,17 +261,70 @@
     var ver = /\$ACADVER\s*[\r\n]+\s*1\s*[\r\n]+\s*AC(\d{4})/.exec(head), enc = ver && +ver[1] < 1021 ? 'windows-1252' : 'utf-8';
     try { return new TextDecoder(enc).decode(bytes); } catch (e) { return new TextDecoder('utf-8').decode(bytes); }
   }
-  // Insert DXF (Sketch tab, File ▸ Import DXF into Sketch…)
+  // ------------------------------------------------------------------ DWG import
+  // A DWG goes to the local server (serve.ps1: POST api/dwg2dxf, LibreDWG's dwg2dxf or the ODA File Converter) and its
+  // DXF comes back into the DXF import above. The published static copy has no server API: it says so plainly.
+  //   UI.dwgToDxf(name, data)       -> Promise of the DXF text; rejects with a message (e.noServer when there is no API)
+  //   UI.openDWGFile(name, data)    File ▸ Open of a .dwg: as openDXFFile, after the conversion
+  //   UI.importDWGData(name, data, opts?) Insert DXF / DWG of a .dwg: the import PM (opts as importDXFText); failures toast
+  var DWG_NO_SERVER = 'DWG needs the local Anvil server; save the file as DXF or run Anvil from the desktop shortcut.';
+  function isDwg(name) { return /\.dwg$/i.test(String(name || '')); }
+  function dwgBytes(data) {
+    if (data instanceof Uint8Array) return data;
+    if (typeof data !== 'string') return new Uint8Array(data);
+    var b = new Uint8Array(data.length);
+    for (var i = 0; i < data.length; i++) b[i] = data.charCodeAt(i) & 255;
+    return b;
+  }
+  function noServer() { var e = new Error(DWG_NO_SERVER); e.noServer = true; return e; }
+  function dwgToDxf(name, data) {
+    var file = String(name || 'Drawing.dwg').replace(/^.*[\\\/]/, ''), bytes = dwgBytes(data);
+    // every DWG starts with its AutoCAD version, "AC1012" .. "AC1032"
+    if (bytes.length < 6 || bytes[0] !== 65 || bytes[1] !== 67) return Promise.reject(new Error(file + ' is not a DWG file.'));
+    if (typeof fetch !== 'function' || location.protocol === 'file:') return Promise.reject(noServer());
+    return fetch('api/dwg2dxf', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes }).then(function (r) {
+      if (r.ok) return r.arrayBuffer().then(function (buf) {
+        var text = decode(buf);
+        // a static host that answers every path with a page is not the converter
+        if (!/^\s*0\s*[\r\n]+\s*SECTION/i.test(text.slice(0, 2000)) && !/^\s*999/.test(text)) throw noServer();
+        return text;
+      });
+      var json = /json/i.test(r.headers.get('Content-Type') || '');
+      if (!json || r.status === 404 || r.status === 405 || r.status === 501) throw noServer();
+      return r.json().then(function (j) {
+        if (r.status === 503) throw new Error('No DWG converter on the local server: run anvil/vendor/get-libredwg.ps1, or install the free ODA File Converter, then open ' + file + ' again.');
+        throw new Error('Could not convert ' + file + ': ' + ((j && j.error) || 'HTTP ' + r.status) + '.');
+      }, function () { throw noServer(); });
+    }, function () { throw noServer(); });
+  }
+  function openDWGFile(name, data) {
+    UI.setStatus('Converting ' + String(name || '').replace(/^.*[\\\/]/, '') + ' to DXF…');
+    return dwgToDxf(name, data).then(function (text) { return openDXFFile(name, text); });
+  }
+  function importDWGData(name, data, opts) {
+    if (isAsm()) { UI.toast('DWG files are imported into a part sketch: open a part first.'); return Promise.resolve(null); }
+    UI.setStatus('Converting ' + String(name || '').replace(/^.*[\\\/]/, '') + ' to DXF…');
+    return dwgToDxf(name, data).then(function (text) {
+      var o = {}, k;
+      for (k in (opts || {})) o[k] = opts[k];
+      o.name = name;
+      return importDXFText(text, o);
+    }, function (e) { UI.toast(e.message); UI.setStatus('DWG: ' + e.message); return null; });
+  }
+  // Insert DXF / DWG (Sketch tab, File ▸ Import DXF / DWG into Sketch…, Tools ▸ Sketch Tools)
   function cmdInsertDXF() {
-    if (isAsm()) { UI.toast('DXF files are imported into a part sketch: open a part first.'); return; }
+    if (isAsm()) { UI.toast('DXF and DWG files are imported into a part sketch: open a part first.'); return; }
     var inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = '.dxf'; inp.style.display = 'none';
+    inp.type = 'file'; inp.accept = '.dxf,.dwg'; inp.style.display = 'none';
     inp.addEventListener('change', function () {
       var file = inp.files && inp.files[0];
       inp.remove();
       if (!file) return;
       var rd = file.arrayBuffer ? file.arrayBuffer() : new Promise(function (res, rej) { var fr = new FileReader(); fr.onload = function () { res(fr.result); }; fr.onerror = function () { rej(fr.error); }; fr.readAsArrayBuffer(file); });
-      rd.then(function (buf) { importDXFText(decode(buf), { name: file.name }); }, function (e) { UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
+      rd.then(function (buf) {
+        if (isDwg(file.name)) importDWGData(file.name, buf);
+        else importDXFText(decode(buf), { name: file.name });
+      }, function (e) { UI.toast('Could not read ' + file.name + ': ' + (e && e.message || e)); });
     });
     document.body.appendChild(inp);
     inp.click();
@@ -418,5 +472,6 @@
   }
 
   UI.cmdInsertDXF = cmdInsertDXF; UI.importDXFText = importDXFText; UI.openDXFFile = openDXFFile;
+  UI.dwgToDxf = dwgToDxf; UI.openDWGFile = openDWGFile; UI.importDWGData = importDWGData;   // DWG import
   UI.cmdCheckSketch = cmdCheckSketch; UI.cmdRepairSketch = cmdRepairSketch;
 })();

@@ -1,4 +1,4 @@
-// ui-sketch-tools.js — Sketch Fillet / Chamfer, Offset, Trim / Extend, Convert, Move / Copy / Rotate / Scale / Stretch, Linear / Circular Sketch Pattern: their SolidWorks PropertyManagers.
+// ui-sketch-tools.js — Sketch Fillet / Chamfer, Offset, Trim / Extend, Convert, Intersection Curve, Move / Copy / Rotate / Scale / Stretch, Linear / Circular Sketch Pattern, Dynamic Mirror: their SolidWorks PropertyManagers.
 // Registers tool PMs in UI.sketchToolPMs[tool] (opened by setTool in ui-sketch.js); see README *Sketch tab*.
 // These are commands (each opens its PropertyManager at once, with SolidWorks 2024's groups, fields, names and
 // defaults); the geometry is SketchSolver's (sketch-solver.js: filletPair, chamferPair, offsetSelection,
@@ -85,7 +85,7 @@
     if (!f) return;
     var chamfer = kind === 'chamfer';
     var v = chamfer ? { type: 'distance', equal: true, d1: UI.lenDefault(10), d2: UI.lenDefault(10), angle: 45, items: [] }
-      : { r: UI.lenDefault(10), keepCorner: true, dimEach: false, items: [] };
+      : { r: UI.lenDefault(10), keepCorner: true, dimEach: false, chain: false, items: [] };
     var snap = JSON.stringify({ entities: f.entities, rels: f.rels || null, dims: f.dims || null }), undo0 = App.undo.length, first = null, picked = null;
     function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
     function cornerTol(mx, my) { return 12 * pxWorld(mx, my); }
@@ -102,16 +102,31 @@
         if (spec.rect != null) { explode(spec.rect); var c = S.curveCorner(f, spec.at, 1e-6 * Math.max(1, Math.abs(spec.at[0]), Math.abs(spec.at[1]))); if (!c) return { ok: false, error: 'No corner there.' }; spec = c; }
         if (chamfer) return S.chamferPair(f, spec, { type: v.type, d1: +v.d1, d2: +v.d2, angle: +v.angle, equal: !!v.equal });
         var o = { keepCorner: v.keepCorner !== false };
-        if (!v.dimEach && first != null && f.entities[first] && f.entities[first].t === 'arc') { o.equalTo = first; o.dimension = false; }
+        var eqTo = !v.dimEach && first != null && f.entities[first] && f.entities[first].t === 'arc' ? first : null;
+        if (eqTo != null) { o.equalTo = eqTo; o.dimension = false; }
+        // sketch-tools2: Fillet all corners of the chain — a vertex rounds every corner of its chain of lines / arcs
+        if (v.chain && spec.ei) {
+          var rc = S.filletChain(f, spec, +v.r, { keepCorner: o.keepCorner, dimEach: !!v.dimEach, equalTo: eqTo });
+          if (rc.ok) { rc.arc = rc.arcs[0]; rc.count = rc.arcs.length; }
+          return rc;
+        }
         return S.filletPair(f, spec, +v.r, o);
       });
     }
     function done(r, label) {
       if (!r.ok) { UI.toast(r.error); UI.updateSketches(); return; }
       if (!chamfer && first == null) first = r.arc;
-      v.items.push(label);
+      var n = r.count || 1;
+      for (var k = 0; k < n; k++) v.items.push(n > 1 ? label + ' — chain ' + (k + 1) + '/' + n : label);
       changed(); UI.renderPM();
-      UI.setStatus((chamfer ? 'Chamfer' : 'Fillet R' + UI.fmtNum(+v.r, 4)) + ' made. Pick another vertex or two entities, or press ✓.');
+      UI.setStatus((chamfer ? 'Chamfer' : 'Fillet R' + UI.fmtNum(+v.r, 4)) + ' made' + (n > 1 ? ' at ' + n + ' corners of the chain' : '') + '. Pick another vertex or two entities, or press ✓.');
+    }
+    // sketch-tools2: every corner of a polygon / closed polyline rounded in place (Fillet all corners of the chain): the
+    // original corners from the last to the first, so the indices still to do do not move
+    function roundAll(pts) {
+      var out = pts.slice();
+      for (var k = pts.length - 1; k >= 0; k--) out = K.filletPolyline(out, k, +v.r);
+      return out;
     }
     // the nearest vertex of a rectangle, polygon or closed polyline: { e, ei, pts, pi, d }
     function shapeCorner(uv) {
@@ -133,11 +148,11 @@
         if (chamfer) { UI.toast('Sketch Chamfer works on lines: a polygon\'s corner cannot be chamfered.'); return; }
         // a polygon / polyline corner: the outline is rounded in place (it stays one entity)
         var r = step(function () {
-          var out = K.filletPolyline(sc.pts, sc.pi, +v.r);
+          var out = v.chain ? roundAll(sc.pts) : K.filletPolyline(sc.pts, sc.pi, +v.r);
           f.entities[sc.ei] = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
           if (sc.e.construction) f.entities[sc.ei].construction = true;
           S.clean(f);
-          return { ok: true };
+          return { ok: true, count: v.chain ? sc.pts.length : 1 };
         });
         done(r, 'Vertex ' + fmtPt(at));
         return;
@@ -156,7 +171,7 @@
       UI.sketchFeedbackClear();
       if (picked && f.entities[picked.i]) UI.sketchPreview(entPts(f.entities[picked.i]), PICK_STYLE, 'sk-trim-pick');
       var tol = cornerTol(mx, my), c = S.curveCorner(f, uv, tol), sc = shapeCorner(uv);
-      if (c) { UI.sketchPreview([ring(c.at, 7)], HOT_STYLE, 'sk-trim-end'); return; }
+      if (c) { UI.sketchPreview((!chamfer && v.chain ? S.chainCorners(f, c) : [c]).map(function (k) { return ring(k.at, 7); }), HOT_STYLE, 'sk-trim-end'); return; }
       if (sc && sc.d <= tol) { UI.sketchPreview([ring(sc.pts[sc.pi], 7)], HOT_STYLE, 'sk-trim-end'); return; }
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
       if (e && (e.t === 'line' || (!chamfer && e.t === 'arc'))) UI.sketchPreview(entPts(e), HOT_STYLE, 'sk-trim-span');
@@ -172,7 +187,8 @@
     else groups.push({ title: 'Fillet Parameters', fields: [
       { type: 'number', label: 'Radius', key: 'r', unit: 'u', min: 0 },
       { type: 'check', label: 'Keep constrained corners', key: 'keepCorner' },
-      { type: 'check', label: 'Dimension each fillet', key: 'dimEach' }
+      { type: 'check', label: 'Dimension each fillet', key: 'dimEach' },
+      { type: 'check', label: 'Fillet all corners of the chain', key: 'chain' }
     ] });
     UI.openPM({
       title: chamfer ? 'Sketch Chamfer' : 'Sketch Fillet', icon: chamfer ? 'skChamfer' : 'fillet', values: v,
@@ -948,9 +964,395 @@
   function cmdSketchPattern() { patternTool(false); }
   function cmdCircularSketchPattern() { patternTool(true); }
 
+  // ------------------------------------------------------------------ Intersection Curve (Convert Entities flyout)
+  // SolidWorks: Sketch tab ▸ Convert Entities ▸ Intersection Curve. Selections: model faces (planar or curved) picked in
+  // the graphics area (a click toggles; faces selected when the command starts come in too); ✓ adds sketch curves where
+  // the sketch plane cuts them. The cut is taken from the face's mesh triangles (each triangle against the plane, the
+  // pieces chained end to end); a planar face gives lines (collinear pieces joined), a cylinder or cone square to the
+  // sketch, or a sphere, a true circle or arc (the analytic surface records the facets carry, as Convert Entities uses
+  // App.curves), any other curved face a chain of lines. Like converted entities they are held by On Edge.
+  function r6(x) { return Math.round(x * 1e6) / 1e6; }
+  // the faces a picked face stands for: every facet of its curved face (UI.faceGroup), a planar face alone
+  function ixcGroup(fi) { var g = UI.faceGroup ? UI.faceGroup(fi) : [fi]; return g && g.length ? g.slice() : [fi]; }
+  // the pieces of the faces' triangles in the sketch plane: [[a, b]] in sketch coordinates, each piece once
+  function ixcSegments(group, pl) {
+    var M = App.mesh, P = M.positions64 || M.positions, n = pl.n, o = pl.origin, out = [], seen = {};
+    function key(p) { return Math.round(p[0] * 1e6) + ',' + Math.round(p[1] * 1e6); }
+    group.forEach(function (fi) {
+      var fc = M.faces[fi];
+      if (!fc) return;
+      for (var t = fc.start; t < fc.start + fc.count; t++) {
+        var v = [], d = [], big = 1, k;
+        for (k = 0; k < 3; k++) {
+          var b = (t * 3 + k) * 3, p = [P[b], P[b + 1], P[b + 2]];
+          v.push(p); d.push((p[0] - o[0]) * n[0] + (p[1] - o[1]) * n[1] + (p[2] - o[2]) * n[2]);
+          big = Math.max(big, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2]));
+        }
+        var eps = 1e-9 * big, pts = [];
+        for (k = 0; k < 3; k++) if (Math.abs(d[k]) <= eps) pts.push(v[k]);
+        if (pts.length === 3) continue;   // the triangle lies in the plane: no curve
+        for (k = 0; k < 3; k++) {
+          var l = (k + 1) % 3;
+          if ((d[k] > eps && d[l] < -eps) || (d[k] < -eps && d[l] > eps)) { var s = d[k] / (d[k] - d[l]); pts.push([v[k][0] + (v[l][0] - v[k][0]) * s, v[k][1] + (v[l][1] - v[k][1]) * s, v[k][2] + (v[l][2] - v[k][2]) * s]); }
+        }
+        if (pts.length !== 2) continue;   // touches the plane at a corner only
+        var a = K.to2D(pl, pts[0]), c = K.to2D(pl, pts[1]);
+        if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 1e-9 * big) continue;
+        var ka = key(a), kc = key(c), kk = ka < kc ? ka + '|' + kc : kc + '|' + ka;
+        if (seen[kk]) continue;   // an edge in the plane is in both triangles that share it
+        seen[kk] = true;
+        out.push([a, c]);
+      }
+    });
+    return out;
+  }
+  // the pieces chained end to end: [{ pts, closed }] (open chains from their free ends first)
+  function ixcChains(segs) {
+    function key(p) { return Math.round(p[0] * 1e5) + ',' + Math.round(p[1] * 1e5); }
+    var adj = {}, used = [], chains = [];
+    segs.forEach(function (s, i) { [0, 1].forEach(function (e) { var k = key(s[e]); (adj[k] = adj[k] || []).push({ i: i, e: e }); }); });
+    function walk(i0, e0) {
+      var pts = [segs[i0][e0], segs[i0][1 - e0]], cur = i0, end = 1 - e0;
+      used[i0] = true;
+      for (;;) {
+        var nx = (adj[key(segs[cur][end])] || []).filter(function (a) { return !used[a.i]; })[0];
+        if (!nx) break;
+        used[nx.i] = true; cur = nx.i; end = 1 - nx.e;
+        pts.push(segs[cur][end]);
+      }
+      var closed = pts.length > 3 && key(pts[0]) === key(pts[pts.length - 1]);
+      if (closed) pts.pop();
+      return { pts: pts, closed: closed };
+    }
+    segs.forEach(function (s, i) { [0, 1].forEach(function (e) { if (!used[i] && (adj[key(s[e])] || []).length === 1) chains.push(walk(i, e)); }); });
+    segs.forEach(function (s, i) { if (!used[i]) chains.push(walk(i, 0)); });
+    return chains;
+  }
+  // a chain with its collinear runs joined (the triangles of a planar face cut one straight line into pieces)
+  function ixcSimplify(ch) {
+    var p = ch.pts, n = p.length, out = [];
+    function straight(a, b, c) {
+      var u = [b[0] - a[0], b[1] - a[1]], w = [c[0] - b[0], c[1] - b[1]], lu = Math.hypot(u[0], u[1]), lw = Math.hypot(w[0], w[1]);
+      return lu < 1e-9 || lw < 1e-9 || (Math.abs(u[0] * w[1] - u[1] * w[0]) <= 1e-7 * lu * lw && u[0] * w[0] + u[1] * w[1] > 0);
+    }
+    for (var i = 0; i < n; i++) {
+      if (!ch.closed && (i === 0 || i === n - 1)) { out.push(p[i]); continue; }
+      var prev = out.length ? out[out.length - 1] : p[(i - 1 + n) % n];
+      if (!straight(prev, p[i], p[(i + 1) % n])) out.push(p[i]);
+    }
+    if (ch.closed) while (out.length > 3 && straight(out[out.length - 1], out[0], out[1])) out.shift();
+    return { pts: out, closed: ch.closed };
+  }
+  // the circle a curved face's surface makes in the sketch plane: { c: [u, v], r } or null (not a circle there)
+  function ixcCircle(group, pl) {
+    var fc = App.mesh.faces[group[0]], p0 = fc && fc.polys && fc.polys[0], S0 = p0 && p0.surf && p0.surf.s, V = K.vec;
+    if (!S0 || !S0.o || !S0.d) return null;
+    var n = pl.n, c3, R;
+    if (S0.t === 'cyl' || S0.t === 'cone') {
+      var dn = V.dot(S0.d, n);
+      if (Math.abs(Math.abs(dn) - 1) > 1e-9) return null;   // the axis is not square to the sketch
+      var z = V.dot(V.sub(pl.origin, S0.o), n) / dn;
+      c3 = V.add(S0.o, V.scale(S0.d, z)); R = S0.r + (S0.t === 'cone' ? (S0.k || 0) * z : 0);
+    } else if (S0.t === 'sph') {
+      var h = V.dot(V.sub(S0.o, pl.origin), n);
+      if (!(S0.r > Math.abs(h))) return null;
+      c3 = V.sub(S0.o, V.scale(n, h)); R = Math.sqrt(S0.r * S0.r - h * h);
+    } else return null;
+    return R > 1e-9 ? { c: K.to2D(pl, c3), r: R } : null;
+  }
+  // sketch entities where the sketch plane cuts the faces of one picked face: circles / arcs, else lines
+  function ixcGeometry(fi) {
+    var pl = UI.activePlane(), group = ixcGroup(fi), chains = ixcChains(ixcSegments(group, pl)), circ = chains.length ? ixcCircle(group, pl) : null, out = [];
+    chains.forEach(function (ch) {
+      if (circ && ch.pts.length >= 2) {
+        var C = circ.c, R = circ.r, onIt = ch.pts.every(function (q) { return Math.abs(Math.hypot(q[0] - C[0], q[1] - C[1]) - R) <= 0.05 * R + 1e-6; });
+        if (onIt) {
+          if (ch.closed) { out.push({ t: 'circle', cx: r6(C[0]), cy: r6(C[1]), r: r6(R) }); return; }
+          // an arc from the chain's first point to its last, the way the chain runs (stored counter-clockwise)
+          var ang = function (q) { return Math.atan2(q[1] - C[1], q[0] - C[0]); }, sweep = 0;
+          for (var k = 1; k < ch.pts.length; k++) { var dA = ang(ch.pts[k]) - ang(ch.pts[k - 1]); while (dA > Math.PI) dA -= 2 * Math.PI; while (dA < -Math.PI) dA += 2 * Math.PI; sweep += dA; }
+          var a0 = (sweep >= 0 ? ang(ch.pts[0]) : ang(ch.pts[ch.pts.length - 1])) * 180 / Math.PI, sw = Math.abs(sweep) * 180 / Math.PI;
+          if (sw >= 360 - 1e-6) { out.push({ t: 'circle', cx: r6(C[0]), cy: r6(C[1]), r: r6(R) }); return; }
+          while (a0 < 0) a0 += 360;
+          while (a0 >= 360) a0 -= 360;
+          out.push({ t: 'arc', cx: r6(C[0]), cy: r6(C[1]), r: r6(R), a0: r6(a0), a1: r6(a0 + sw) });
+          return;
+        }
+      }
+      var s = ixcSimplify(ch), q = s.pts, m = s.closed ? q.length : q.length - 1;
+      for (var i = 0; i < m; i++) {
+        var a = q[i], b = q[(i + 1) % q.length];
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-9) out.push({ t: 'line', x1: r6(a[0]), y1: r6(a[1]), x2: r6(b[0]), y2: r6(b[1]) });
+      }
+    });
+    return out;
+  }
+  UI.intersectionCurveGeometry = function (faces) { var out = []; (faces || []).forEach(function (fi) { out = out.concat(ixcGeometry(fi)); }); return out; };
+  UI.intersectionCurveOpen = function () { var sp = UI.pmSpec && UI.pmSpec(); return !!(sp && sp.intersectionCurve); };
+  function cmdIntersectionCurve(faces) {
+    var f = sketch();
+    if (!f) return;
+    if (!App.mesh || !App.mesh.faces || !App.mesh.faces.length) { UI.toast('There is no model yet: Intersection Curve cuts model faces with the sketch plane.'); return; }
+    var v = { items: [] };   // picked faces: { index, group }
+    function has(fi) { var k = -1; v.items.forEach(function (it, i) { if (it.group.indexOf(fi) >= 0) k = i; }); return k; }
+    function addFace(fi) { if (fi == null || !App.mesh.faces[fi]) return; var k = has(fi); if (k >= 0) v.items.splice(k, 1); else v.items.push({ index: fi, group: ixcGroup(fi) }); }
+    function geometry() { var out = []; v.items.forEach(function (it) { out = out.concat(ixcGeometry(it.index)); }); return out; }
+    function preview() {
+      var g = [];
+      try { g = geometry(); } catch (e) { UI.setStatus(e.message); }
+      App.tempEntities = g; UI.updateTemp();
+      if (v.items.length && !g.length) UI.setStatus('The sketch plane does not cut the selected faces.');
+    }
+    // faces selected when the command starts (or passed in by a script) come in at once
+    var pre = Array.isArray(faces) ? faces : (UI.selection ? UI.selection() : []).filter(function (s) { return s.kind === 'face'; }).map(function (s) { return s.index; });
+    pre.forEach(function (fi) { if (has(fi) < 0) addFace(fi); });
+    UI.openPM({
+      title: 'Intersection Curve', icon: 'intersectCurve', values: v, intersectionCurve: true,
+      message: 'Select faces to intersect with the sketch plane. The curves where the plane cuts them are added to the sketch.',
+      command: {
+        ownHover: true,
+        onSketchMove: function (uv, mx, my) {
+          UI.sketchFeedbackClear();
+          var fc = UI.pickFace ? UI.pickFace(mx, my) : null;
+          if (!fc || fc.index == null) return;
+          try { UI.sketchPreview(ixcGeometry(fc.index).map(function (e) { return entPts(e)[0]; }), HOT_STYLE, 'sk-trim-span'); } catch (e) { }
+        },
+        onSketchPoint: function (uv, mx, my) {
+          var fc = UI.pickFace ? UI.pickFace(mx, my) : null;
+          if (!fc || fc.index == null) { UI.setStatus('Click a model face.'); return; }
+          addFace(fc.index);
+          UI.renderPM(); preview();
+        }
+      },
+      groups: [{ title: 'Selections', fields: [
+        { type: 'pick', icon: 'intersectCurve', placeholder: 'Select faces…', value: function (x) { return x.items.length ? x.items.length + ' face' + (x.items.length > 1 ? 's' : '') : ''; },
+          items: function (x) { return x.items.map(function (it, k) { return { label: 'Face<' + (k + 1) + '>' }; }); },
+          onRemove: function (x, i) { x.items.splice(i, 1); UI.renderPM(); preview(); }, onClear: function (x) { x.items.length = 0; UI.renderPM(); preview(); } }
+      ] }],
+      onChange: preview,
+      okBlocked: function () { return v.items.length ? '' : 'Select the faces to intersect with the sketch plane.'; },
+      onOK: function () {
+        var geo = geometry(), n = 0;
+        if (!geo.length) { UI.toast('The sketch plane does not cut the selected faces.'); return false; }
+        var r = step(function () {
+          geo.forEach(function (g) {
+            var keys = S.paramNames(g);
+            var dup = f.entities.some(function (o) { return o.t === g.t && keys.every(function (k) { return Math.abs((+o[k] || 0) - g[k]) < 1e-6 * Math.max(1, Math.abs(g[k])); }); });
+            if (dup) return;
+            f.entities.push(g);
+            var ar = S.addRelation(f, 'onEdge', [String(f.entities.length - 1)]);
+            if (!ar.ok) throw new Error(ar.error);
+            n++;
+          });
+          return n ? { ok: true } : { ok: false, error: 'Those intersection curves are already in the sketch.' };
+        }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus('Intersection Curve: ' + n + ' entit' + (n === 1 ? 'y' : 'ies') + ' added where the sketch plane cuts the face' + (v.items.length === 1 ? '' : 's') + ' (On Edge).');
+      },
+      onCancel: clearPreview,
+      onClose: function () { UI.sketchFeedbackClear(); }
+    });
+    preview();
+    if (!v.items.length) UI.setStatus('Select model faces: the sketch plane cuts them in the curves added.');
+  }
+
+  // ------------------------------------------------------------------ Dynamic Mirror (Mirror Entities flyout)
+  // SolidWorks: Tools ▸ Sketch Tools ▸ Dynamic Mirror. With a centerline (or any line) selected, the button turns it on:
+  // the line shows "=" marks at its ends, and every entity drawn while it is on is mirrored about it — the mirror image
+  // shows while drawing, and on placement both go into the sketch, the copy held Symmetric to its original as Mirror
+  // Entities holds it (SketchSolver.mirrorRelations), in the same undo step. Nothing selected: the Mirror
+  // PropertyManager asks for the line. Off: the button again, Esc with no tool (Esc twice while drawing), or leaving the
+  // sketch. The drawing tools commit through ui-sketch.js placePoint / addEntity, which have no after-commit hook for
+  // every tool, so this watches the sketch being redrawn (UI.updateSketches) and mirrors what a drawing tool added once
+  // the click that added it is over (a microtask: the tool's own after() hooks, typed dimensions and the double-click
+  // logic have run by then).
+  var dyn = null;   // { sketch: id, axis: index, ax: [x1, y1, x2, y2], count, queued, last: { src, copies } }
+  var DYN_TOOLS_OFF = { select: 1, dimension: 1 };
+  function dynDrawing() { return App.mode === 'sketch' && !!App.tool && !DYN_TOOLS_OFF[App.tool] && !(App.command && App.command.onSketchPoint); }
+  // the mirror line in sketch f: its index (it may have moved in the list), or -1 when it is gone
+  function dynAxis(f) {
+    if (!dyn || !f) return -1;
+    var e = f.entities[dyn.axis];
+    if (e && e.t === 'line') { dyn.ax = [e.x1, e.y1, e.x2, e.y2]; return dyn.axis; }
+    for (var i = 0; i < f.entities.length; i++) {
+      var o = f.entities[i];
+      if (o && o.t === 'line' && Math.abs(o.x1 - dyn.ax[0]) < 1e-9 && Math.abs(o.y1 - dyn.ax[1]) < 1e-9 && Math.abs(o.x2 - dyn.ax[2]) < 1e-9 && Math.abs(o.y2 - dyn.ax[3]) < 1e-9) { dyn.axis = i; return i; }
+    }
+    return -1;
+  }
+  function tidy(e) { Object.keys(e).forEach(function (k) { if (typeof e[k] === 'number') e[k] = +e[k].toPrecision(12) + 0; }); if (e.pts) e.pts = e.pts.map(function (p) { return [+p[0].toPrecision(12) + 0, +p[1].toPrecision(12) + 0]; }); return e; }
+  // e's mirror image is e itself (a line along the mirror line, a circle centred on it …)
+  function selfMirror(e, m) {
+    if (e.t !== m.t) return false;
+    function near(a, b) { return Math.abs(a - b) <= 1e-7 * Math.max(1, Math.abs(a), Math.abs(b)); }
+    if (e.t === 'line' && near(e.x1, m.x2) && near(e.y1, m.y2) && near(e.x2, m.x1) && near(e.y2, m.y1)) return true;
+    if (e.pts || m.pts) return JSON.stringify(e.pts) === JSON.stringify(m.pts);
+    return S.paramNames(e).every(function (k) { return typeof e[k] !== 'number' || near(e[k], m[k]); });
+  }
+  function dynMirrorOf(f, ai, list) {
+    var ax = K.mirrorAxis(ai, f.entities), out = [];
+    list.forEach(function (e) { var m = null; try { m = K.mirrorEntity(e, ax); } catch (x) { m = null; } out.push(m && !selfMirror(e, m) ? tidy(m) : null); });
+    return out;
+  }
+  function dynOn(f, i) {
+    var e = f.entities[i];
+    dyn = { sketch: f.id, axis: i, ax: [e.x1, e.y1, e.x2, e.y2], count: f.entities.length, queued: false, last: null };
+    dynMarksHook();
+    UI.updateSketches(); UI.refreshRibbon();
+    UI.setStatus('Dynamic Mirror on about ' + (e.construction ? 'Centerline' : 'Line') + (i + 1) + ': what you draw is mirrored about it. Click Dynamic Mirror again (or Esc with no tool) to turn it off.');
+  }
+  function dynOff(msg) {
+    if (!dyn) return;
+    dyn = null;
+    if (App.tempEntities && App.tempEntities.length) UI.updateTemp();
+    UI.updateSketches(); UI.refreshRibbon();
+    if (msg) UI.setStatus(msg);
+  }
+  // after a redraw: entities a drawing tool just added are mirrored once its click is over; anything else that changed
+  // the count (Undo, Delete, Redo, a command) is only noted
+  function dynWatch() {
+    if (!dyn) return;
+    if (App.mode !== 'sketch' || App.activeSketch !== dyn.sketch) { dynOff(); return; }
+    var f = UI.activeSketchFeature(), n = f ? f.entities.length : 0;
+    if (!f || n === dyn.count) return;
+    if (n > dyn.count && dynDrawing() && App.sketchDirty) {
+      if (!dyn.queued) { dyn.queued = true; Promise.resolve().then(dynCommit); }
+      return;
+    }
+    if (!dyn.queued) dyn.count = n;
+  }
+  function dynCommit() {
+    if (!dyn) return;
+    dyn.queued = false;
+    var f = UI.activeSketchFeature();
+    if (!f || f.id !== dyn.sketch) return;
+    var n = f.entities.length;
+    if (n <= dyn.count) { dyn.count = n; return; }
+    var ai = dynAxis(f);
+    if (ai < 0) { dyn.count = n; dynOff('Dynamic Mirror is off: its mirror line is gone.'); return; }
+    var src = [], k;
+    for (k = dyn.count; k < n; k++) if (k !== ai && f.entities[k]) src.push(k);
+    var ms = dynMirrorOf(f, ai, src.map(function (i) { return f.entities[i]; })), pairs = [];
+    src.forEach(function (i, j) { if (!ms[j]) return; f.entities.push(ms[j]); pairs.push([i, f.entities.length - 1]); });
+    dyn.count = f.entities.length;
+    if (!pairs.length) return;
+    var nSym = 0;
+    try { nSym = S.mirrorRelations(f, pairs, ai); } catch (x) { nSym = 0; }
+    dyn.last = { src: pairs.map(function (p) { return p[0]; }), copies: pairs.map(function (p) { return p[1]; }) };
+    App.gridStale = true; App.dimsStale = true;
+    UI.updateSketches(); UI.refreshTree();
+    UI.setStatus('Dynamic Mirror: ' + pairs.length + ' entit' + (pairs.length === 1 ? 'y' : 'ies') + ' mirrored' + (nSym ? ', held Symmetric about Line' + (ai + 1) : '') + '.');
+  }
+  // the "=" marks at the mirror line's ends (drawn with the sketch, through the sketch-regions hook of the redraw)
+  var dynMat = null;
+  function dynMarks(f, pl) {
+    var ai = dynAxis(f);
+    if (ai < 0 || typeof THREE === 'undefined') return [];
+    var e = f.entities[ai], A = [e.x1, e.y1], B = [e.x2, e.y2], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (L < 1e-12) return [];
+    var s = (UI.cam && UI.cam.scale) || 0.1, u = [(B[0] - A[0]) / L, (B[1] - A[1]) / L], nr = [-u[1], u[0]], half = 5 * s, pos = [];
+    [[A, 1], [B, -1]].forEach(function (q) {
+      [7, 11].forEach(function (px) {
+        var c = [q[0][0] + u[0] * q[1] * Math.min(px * s, L / 3), q[0][1] + u[1] * q[1] * Math.min(px * s, L / 3)];
+        pos.push.apply(pos, K.to3D(pl, c[0] - nr[0] * half, c[1] - nr[1] * half));
+        pos.push.apply(pos, K.to3D(pl, c[0] + nr[0] * half, c[1] + nr[1] * half));
+      });
+    });
+    if (!dynMat) dynMat = new THREE.LineBasicMaterial({ color: 0x1f8a3a, depthTest: false, transparent: true });
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    var ls = new THREE.LineSegments(g, dynMat);
+    ls.renderOrder = 12;
+    ls.userData = { dynMirrorMarks: true };
+    return [ls];
+  }
+  // (hooked when Dynamic Mirror is first turned on: ui-sketch-layers.js, which defines the hook, loads after this file)
+  function dynMarksHook() {
+    if (UI.sketchRegionObjects && UI.sketchRegionObjects._dyn) return;
+    var base = UI.sketchRegionObjects;
+    var hook = function (f, pl) {
+      var out = base ? base.apply(this, arguments) || [] : [];
+      if (dyn && f && f.id === dyn.sketch) { try { out = out.concat(dynMarks(f, pl)); } catch (x) { /* the marks are never worth a broken redraw */ } }
+      return out;
+    };
+    hook._dyn = true;
+    UI.sketchRegionObjects = hook;
+  }
+  if (UI.updateSketches && !UI.updateSketches._dyn) {
+    var baseUpdateSketches = UI.updateSketches;
+    UI.updateSketches = function () { var r = baseUpdateSketches.apply(this, arguments); if (dyn) { try { dynWatch(); } catch (x) { /* never break a redraw */ } } return r; };
+    UI.updateSketches._dyn = true;
+  }
+  // the mirror image of the entity being drawn shows with it
+  if (UI.updateTemp && !UI.updateTemp._dyn) {
+    var baseUpdateTempDyn = UI.updateTemp;
+    UI.updateTemp = function () {
+      if (!dyn || !App.tempEntities || !App.tempEntities.length || !dynDrawing() || App.activeSketch !== dyn.sketch) return baseUpdateTempDyn.apply(this, arguments);
+      var f = UI.activeSketchFeature(), ai = dynAxis(f);
+      if (ai < 0) return baseUpdateTempDyn.apply(this, arguments);
+      var saved = App.tempEntities;
+      App.tempEntities = saved.concat(dynMirrorOf(f, ai, saved).filter(Boolean));
+      try { return baseUpdateTempDyn.apply(this, arguments); } finally { App.tempEntities = saved; }
+    };
+    UI.updateTemp._dyn = true;
+  }
+  // Esc with no tool and no PropertyManager (the second Esc while drawing) turns it off
+  document.addEventListener('keydown', function (ev) {
+    if (!dyn || ev.key !== 'Escape' || App.mode !== 'sketch') return;
+    var tag = (ev.target && ev.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (App.tool === 'select' && !(UI.hasPM && UI.hasPM())) dynOff('Dynamic Mirror off.');
+  }, true);
+  // A double-click ends a Line chain and ui-sketch.js takes back the stub its second click placed, when that stub is the
+  // last entity: its mirror image (added after it) goes first, so the stub can go too.
+  document.addEventListener('dblclick', function () {
+    if (!dyn || !dyn.last || App.mode !== 'sketch' || App.tool !== 'line') return;
+    var st = App.toolState, f = UI.activeSketchFeature(), L = dyn.last;
+    if (!st || !st.lastSeg || !st.lastSeg.quick || !f || L.src.length !== 1 || L.src[0] !== st.lastSeg.index || L.copies[0] !== f.entities.length - 1 || st.lastSeg.index !== f.entities.length - 2) return;
+    var e = f.entities[st.lastSeg.index], pl = UI.activePlane();
+    if (!e || e.t !== 'line') return;
+    var a = UI.worldToScreen(K.to3D(pl, e.x1, e.y1)), b = UI.worldToScreen(K.to3D(pl, e.x2, e.y2));
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) >= 6) return;
+    var ci = f.entities.length - 1;
+    f.entities.pop();
+    S.removeEntity(f, ci);
+    if (f.dims) f.dims = f.dims.filter(function (d) { return d.e !== ci; });
+    dyn.count = f.entities.length; dyn.last = null;
+  }, true);
+  UI.dynamicMirrorOn = function () { return !!dyn && App.mode === 'sketch' && App.activeSketch === dyn.sketch; };
+  UI.dynamicMirrorState = function () { return dyn ? { sketch: dyn.sketch, axis: dyn.axis, count: dyn.count } : null; };
+  function cmdDynamicMirror() {
+    if (dyn) { dynOff('Dynamic Mirror off.'); return; }
+    var f = sketch();
+    if (!f) return;
+    var lines = selIdx(f).filter(function (i) { return f.entities[i].t === 'line'; });
+    if (lines.length === 1) { dynOn(f, lines[0]); return; }
+    // nothing (or more than one line) selected: the Mirror PropertyManager asks for the line to mirror about
+    var v = { axis: null };
+    UI.openPM({
+      title: 'Mirror', icon: 'dynMirror', values: v,
+      message: 'Select a centerline or a line to mirror about. Dynamic Mirror then mirrors every entity you draw about it.',
+      onSelection: function () { },   // plain clicks come to this PM (UI.pmCollectsSelection), the line to onEntityPick
+      onEntityPick: function (hit) {
+        var e = f.entities[hit.index];
+        if (!e || e.t !== 'line') { UI.setStatus('Dynamic Mirror needs a line or centerline to mirror about.'); return true; }
+        v.axis = hit.index;
+        UI.closePM();
+        if (UI.setSelection) UI.setSelection([]);
+        dynOn(UI.activeSketchFeature() || f, hit.index);
+        return true;
+      },
+      groups: [{ title: 'Mirror about', fields: [{ type: 'pick', icon: 'centerline', placeholder: 'Select a line or centerline…', active: function () { return true; }, value: function () { return ''; } }] }],
+      okBlocked: function () { return 'Select a line or centerline to mirror about.'; },
+      onOK: function () { return false; }
+    });
+    UI.setStatus('Dynamic Mirror: click a centerline or a line to mirror about.');
+  }
+
   UI.cmdSketchFillet = cmdSketchFillet; UI.cmdSketchChamfer = cmdSketchChamfer;
   UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdExtendEntities = cmdExtendEntities;
-  UI.cmdConvertEntities = cmdConvertEntities;
+  UI.cmdConvertEntities = cmdConvertEntities; UI.cmdIntersectionCurve = cmdIntersectionCurve; UI.cmdDynamicMirror = cmdDynamicMirror;
   UI.cmdSketchPattern = cmdSketchPattern; UI.cmdCircularSketchPattern = cmdCircularSketchPattern;
   UI.cmdMoveEntities = function () { transformTool('move'); }; UI.cmdCopyEntities = function () { transformTool('copy'); };
   UI.cmdRotateEntities = function () { transformTool('rotate'); }; UI.cmdScaleEntities = function () { transformTool('scale'); };
