@@ -217,55 +217,75 @@
     var face = mesh.faces[faceIndex];
     if (!face) return null;
     var plane = planeFromFace(face.normal, scale(face.normal, face.w));
-    var verts = {}, edges = [];
+    // Vertices are welded once: each gets .k, the key of the first vertex within 1e-4 of it on every axis (looked up in
+    // its own and the neighbouring 1e-4 cells). That welds all the old key3 cell did (near-coincident CSG corners a few
+    // 1e-5 apart) and also two copies of one point that straddle a rounding midpoint, which key3 kept apart.
+    var WELD = 1e-4, verts = {}, cells = {}, edges = [];
+    function weld(q) {
+      var ix = Math.round(q[0] * 1e4), iy = Math.round(q[1] * 1e4), iz = Math.round(q[2] * 1e4);
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) for (var dz = -1; dz <= 1; dz++) {
+        var c = cells[(ix + dx) + ',' + (iy + dy) + ',' + (iz + dz)];
+        if (c) for (var j = 0; j < c.length; j++) { var r = c[j]; if (Math.abs(r[0] - q[0]) <= WELD && Math.abs(r[1] - q[1]) <= WELD && Math.abs(r[2] - q[2]) <= WELD) { q.k = r.k; return q; } }
+      }
+      var k = ix + ',' + iy + ',' + iz;
+      if (verts[k]) k += '#' + Object.keys(verts).length;   // a different point in the same cell keeps its own key
+      q.k = k; verts[k] = q; (cells[ix + ',' + iy + ',' + iz] = cells[ix + ',' + iy + ',' + iz] || []).push(q);
+      return q;
+    }
     face.polys.forEach(function (p) {
-      var vs = p.vertices.map(function (v) { var q = arr(v.pos); verts[key3(q)] = q; return q; });
+      var vs = p.vertices.map(function (v) { return weld(arr(v.pos)); });
       for (var i = 0; i < vs.length; i++) edges.push([vs[i], vs[(i + 1) % vs.length]]);
     });
     var vlist = Object.keys(verts).map(function (k) { return verts[k]; });
     // split edges at collinear interior vertices; on faces with many vertices only the vertices in the grid cells the
     // edge crosses are tested (r3/engine3: was every vertex against every edge, ~100 ms on the Flange)
     var near = vlist.length > outlineOptions.gridMin ? outlineGrid(vlist, plane) : null;
+    // The pieces keep the real vertex coordinates (the edge's own ends and the face vertex that splits it), never a
+    // point recomputed as a + u·t: vertices are welded on a 1e-4 grid, and a recomputed end that differs
+    // from the stored vertex by a few 1e-17 rounds to the other key when the coordinate sits on a rounding midpoint
+    // (an inch hole of radius .1405 at .5 has a point at x = .57025). The interior edge then loses its twin, counts as
+    // boundary, and the outline chains one hole into the next across the face (a slit through the flat DXF).
     var split = [];
     edges.forEach(function (e, ei) {
       var a = e[0], b = e[1], d = sub(b, a), L = len(d);
       if (L < 1e-9) return;
-      var u = scale(d, 1 / L), ts = [0, L];
+      var u = scale(d, 1 / L), ts = [{ t: 0, p: a }, { t: L, p: b }];
       function test(v) {
+        if (v.k === a.k || v.k === b.k) return;   // the edge's own ends (or their welded twins) never split it
         var w = sub(v, a), t = dot(w, u);
         if (t <= 1e-6 || t >= L - 1e-6) return;
         var perp = len(sub(w, scale(u, t)));
-        if (perp < 1e-5) ts.push(t);
+        if (perp < 1e-5) ts.push({ t: t, p: v });
       }
       if (near) near(a, b, ei, test); else vlist.forEach(test);
-      ts.sort(function (x, y) { return x - y; });
+      ts.sort(function (x, y) { return x.t - y.t; });
       for (var i = 0; i + 1 < ts.length; i++) {
-        if (ts[i + 1] - ts[i] < 1e-7) continue;
-        split.push([add(a, scale(u, ts[i])), add(a, scale(u, ts[i + 1]))]);
+        if (ts[i + 1].t - ts[i].t < 1e-7) continue;
+        split.push([ts[i].p, ts[i + 1].p]);
       }
     });
     // an edge is on the boundary when no opposite-direction twin exists
     var count = {};
     split.forEach(function (e) {
-      var k = key3(e[0]) + '>' + key3(e[1]);
+      var k = e[0].k + '>' + e[1].k;
       count[k] = (count[k] || 0) + 1;
     });
     var boundary = split.filter(function (e) {
-      var twin = key3(e[1]) + '>' + key3(e[0]);
+      var twin = e[1].k + '>' + e[0].k;
       return !count[twin];
     });
     // chain
     var next = {};
-    boundary.forEach(function (e) { next[key3(e[0])] = e; });
+    boundary.forEach(function (e) { next[e[0].k] = e; });
     var used = {}, loops = [];
     boundary.forEach(function (e) {
-      var k0 = key3(e[0]);
+      var k0 = e[0].k;
       if (used[k0]) return;
       var loop = [], cur = e, guard = 0;
-      while (cur && !used[key3(cur[0])] && guard++ < 100000) {
-        used[key3(cur[0])] = true;
+      while (cur && !used[cur[0].k] && guard++ < 100000) {
+        used[cur[0].k] = true;
         loop.push(to2D(plane, cur[0]));
-        cur = next[key3(cur[1])];
+        cur = next[cur[1].k];
       }
       if (loop.length >= 3) loops.push(loop);
     });

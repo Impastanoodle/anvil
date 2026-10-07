@@ -1263,3 +1263,15 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified (merged branch, 8812).** kernel-tests 862/862 (Node); examples 29/29 on both kernels; ui-smoke 333/333 headless; occt-tests 56/56.
 
 **Next up.** An OpenCascade build of an inch bracket folded a flange the wrong way (output lane's report; edge picking is nearest-wins, so the cause is unconfirmed: reproduce first); the flat can return a hole loop with a stray vertex (drawings tolerate it); bend notes keyed by index, not a bend id; drawing views export R12 only; occt-tests needs an inch STEP row; ANSI hole sizes left out (#12 clearance / counterbore / countersink, countersinks #2, #3, #5, 7/16–1); slot length is centre-to-centre only; Sketch Fillet status prints `R0.25`; labels can still clash when zoomed far out; README Files table still calls the Hole Wizard ISO only. App not republished (PR not merged).
+
+## Fix 2026-10-07 — corrupt flat DXF on the OpenCascade kernel
+
+**Context.** User: "fix the corrupt flat DXF". An inch bracket (Ø.281 holes at .5 from the edges) saved through File ▸ Save As DXF on the default OpenCascade kernel had two holes joined by a ~5 in slit across the blank, a stray sliver loop, and only 2 of 4 holes as circles; the same part unfolded from Anvil's own mesh was clean.
+
+**Cause.** `Kernel.faceOutline` (kernel-mesh.js) rebuilt each edge's far end as `a + u·t` and welded vertices with `key3` (rounded to 1e-4). A Ø.281 hole at .5 has points at x = .57025, exactly on a rounding midpoint, so the recomputed end rounded to the neighbouring key; the interior triangle edge lost its twin, counted as boundary, and the loop chained from one hole into the next. OpenCascade's triangulation (long triangles between holes) exposed it; Anvil's 24-gon holes never landed on a midpoint.
+
+**Fix.** The split pieces keep the real vertex coordinates (edge ends and the splitting vertex), and vertices are welded once by a 1e-4 neighbour-cell search (`.k`), so two copies of a point that straddle a midpoint share a key; a vertex welded to an edge's own end never splits that edge.
+
+**Verified.** kernel-tests 863/863 (new `flat-weld` test fails on the old code); occt-tests 57/57 (new row: the inch bracket's flat from OpenCascade's mesh has the outline, 4 holes and the slot, and its DXF has 4 CIRCLEs); examples 29/29 on both kernels; ui-smoke 335/335; in the app the flat DXF is 4 outline LINEs, 4 CIRCLEs, slot 2 LINEs + 2 ARCs.
+
+**Next up (DXF / DWG).** Views DXF is drawn at the sheet scale (a 60 × 40 plate came out 1:10) with the title block and always R12; no preview or native save dialog; edge-flange length / position defaults differ from SolidWorks (a 6 in base with 1.5 in flanges is 6.24 × 1.62 outside); DWG only via LibreDWG.
