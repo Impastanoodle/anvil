@@ -6,6 +6,8 @@ This folder is the workspace for the `daily-code-limit` scheduled task: keep pou
 
 Decision 2026-09-22: Anvil stays browser-based and is run locally (static files served by `anvil/serve.ps1`, rendered by a browser on the user's machine). A SolidWorks-style modeler is achievable in a browser; a desktop shell is a roadmap item, not a rewrite.
 
+**Scope (user, 2026-10-07).** The user runs a sheet-metal shop. Sketching, sheet metal with correct bend deductions, flat patterns, drawings with the right annotations, and DXF / DWG / STEP output must be perfect and come first. Surfacing, mold tools, weldments, direct editing and simulation are deferred indefinitely: do not plan them from the roadmap or the queue unless the user asks on the board. See `anvil/ROADMAP.md` *Scope* and *Phase 9*; plan from Phase 9 before any other unchecked roadmap item.
+
 ## The project: Anvil (`anvil/`)
 
 Browser-based parametric solid modeler. Static files, no build step. three.js r128 is vendored (`anvil/vendor/three.min.js`, so Anvil runs offline); the OpenCascade engine is fetched by `anvil/vendor/get-occt.ps1` (not committed, fingerprint-checked before it runs); everything else is hand-written.
@@ -42,7 +44,7 @@ You are not the head. Do not plan from the queue or the roadmap, do not republis
 
 ### 2. Plan the lanes
 
-Choose **three to four tasks**, in this priority: open board requests, then `QUEUE.md` "Do next", then the first unchecked roadmap items. Each task goes in exactly one lane. Lanes own files; two subagents never share a lane in the same run.
+Choose **three to four tasks**, in this priority: open board requests, then `QUEUE.md` "Do next", then the first unchecked Phase 9 items, then other unchecked roadmap items inside the *Scope*. Each task goes in exactly one lane. Lanes own files; two subagents never share a lane in the same run.
 
 | Lane | Files the subagent may edit |
 |---|---|

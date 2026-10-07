@@ -6,9 +6,9 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
+- Sheet-metal shop scope (user, 2026-10-07): sketching, bend deductions, flat patterns, flat-pattern drawings with annotations, DXF / DWG / STEP output come first. Plan from ROADMAP *Phase 9*.
+
 - Round-14 follow-ups: toasts centre on the window, not the graphics area; sketch dimension labels can sit on neighbouring dimension lines; Instant3D part dimensions can lie on model edges; View Selector centred on the viewport (not the model) and the Space menu can cover it; Dark background leaves CSS overlays in light colours; sheet-metal isometric views differ between kernels; Reference Geometry: Axis / Coordinate System / Point not implemented (greyed in the flyout); View Palette, rollback bar, mouse gestures (new areas — ask first).
-- Surfaces tab on the OpenCascade kernel (it is done and on by default: README *OpenCascade kernel*): extruded / revolved / lofted surfaces, knit (sew), thicken, trim; then Direct Editing (move / delete face) and Mold Tools (parting line, core / cavity split). Surface features need `occt-kernel.js` builders plus Anvil's kernel marking them 'OpenCascade only' (no CSG equivalent).
-- Variable-radius and face fillets on the OpenCascade kernel (BRepFilletAPI_MakeFillet Add_3 / Add_5), with PropertyManager UI.
 - Performance after true curves: `tests/bench.html` went from ~422 ms to ~775 ms (sum of medians) at the 0.05 mm default chord. Re-measured locally on 2026-09-26 (local-2026-09-26d, all 30 parts building): ~445-460 ms, i.e. ~1.07x, already inside the target; Funnel is ~57% of the total (~258 ms). Confirm on another machine before closing. Find the cost (mostly the Funnel shell and fine cylinders in booleans), e.g. coarser tessellation inside CSG with exact records restoring volumes, or caching; target within 1.3x of the old time with volumes still exact.
 
 
@@ -22,6 +22,11 @@ When a task is finished the head moves it to the Done section with the run id.
 ## Ideas (lower priority)
 
 - Desktop shell so Anvil opens as its own window with native file dialogs.
+
+## Deferred (out of scope since 2026-10-07; only on an explicit user request)
+
+- Surfaces tab on the OpenCascade kernel (it is done and on by default: README *OpenCascade kernel*): extruded / revolved / lofted surfaces, knit (sew), thicken, trim; then Direct Editing (move / delete face) and Mold Tools (parting line, core / cavity split). Surface features need `occt-kernel.js` builders plus Anvil's kernel marking them 'OpenCascade only' (no CSG equivalent).
+- Variable-radius and face fillets on the OpenCascade kernel (BRepFilletAPI_MakeFillet Add_3 / Add_5), with PropertyManager UI.
 
 ## Done
 
