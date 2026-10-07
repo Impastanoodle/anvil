@@ -253,21 +253,63 @@
     if ((f.cut || patternLike) && Array.isArray(opts.bodies) && opts.bodies.length) f.bodies = opts.bodies.map(function (i) { return i | 0; });
     return f;
   }
-  // Sheet metal parameters used by baseFlange/flange/flatten. K = 0.71 (steel) or 0.64 (aluminum) per shop practice.
-  Builder.prototype.sheet = function (thickness, bendRadius, kFactor) {
-    this.model.sheet = { thickness: num(thickness), bendRadius: bendRadius == null ? num(thickness) : num(bendRadius), kFactor: kFactor == null ? 0.71 : num(kFactor) };
+  // Sheet metal parameters used by baseFlange/flange/flatten: thickness T, inside bend radius R (default T) and the
+  // K-factor (BA = θ·(R + K·T); default 0.5, SolidWorks' default). opts (SolidWorks' Bend Allowance group and gauge
+  // table): bendAllowanceType ('kfactor' | 'allowance' | 'deduction' | 'table'), bendAllowance (BA), bendDeduction (BD),
+  // bendTable ({ kind: 'BA' | 'BD', name?, tolerance?, rows: [{ thickness, radius, angle, value }] }), gaugeTable (a
+  // built-in table name, Kernel.gaugeTables, or a table object) and gauge: with a gauge, T, R and K (or BD) that are
+  // left null come from the table's row.
+  Builder.prototype.sheet = function (thickness, bendRadius, kFactor, opts) {
+    opts = opts || {};
+    var g = null;
+    if (opts.gauge != null) {
+      g = K.gaugeRow(opts.gaugeTable, opts.gauge, this.model.units);
+      if (!g) throw new Error('Gauge ' + JSON.stringify(String(opts.gauge)) + ' is not in the gauge table ' + JSON.stringify((opts.gaugeTable && opts.gaugeTable.name) || opts.gaugeTable || K.DEFAULT_GAUGE_TABLE) + '.');
+    }
+    if (thickness == null && !g) throw new Error('sheet() needs a thickness (or a gauge).');
+    var T = thickness != null ? num(thickness) : g.thickness;
+    var o = { thickness: T, bendRadius: bendRadius != null ? num(bendRadius) : (g ? g.radius : T), kFactor: kFactor != null ? num(kFactor) : (g && g.kFactor != null ? g.kFactor : K.DEFAULT_K_FACTOR) };
+    o.bendAllowanceType = opts.bendAllowanceType || (g && g.bendDeduction != null && opts.bendDeduction == null ? 'deduction' : 'kfactor');
+    if (opts.bendAllowance != null) o.bendAllowance = num(opts.bendAllowance);
+    if (opts.bendDeduction != null) o.bendDeduction = num(opts.bendDeduction);
+    else if (g && g.bendDeduction != null) o.bendDeduction = g.bendDeduction;
+    if (opts.bendTable) o.bendTable = opts.bendTable;
+    if (g) { o.gaugeTable = opts.gaugeTable != null ? opts.gaugeTable : K.DEFAULT_GAUGE_TABLE; o.gauge = g.gauge; }
+    this.model.sheet = K.makeSheet(o);
     return this;
   };
   Builder.prototype.baseFlange = function (thickness, opts) {
     opts = opts || {};
-    if (!this.model.sheet || thickness != null) this.sheet(thickness != null ? thickness : 2, opts.bendRadius, opts.kFactor);
+    // no sheet yet: baseFlange(T) sets one (R = T, K = 0.5 unless opts say otherwise); after sheet(...) it keeps that
+    // sheet's radius, K-factor and bend allowance method and changes only what it is given
+    if (!this.model.sheet) this.sheet(thickness != null ? thickness : 2, opts.bendRadius, opts.kFactor);
+    else if (thickness != null || opts.bendRadius != null || opts.kFactor != null) {
+      var s = Object.assign({}, this.model.sheet);
+      if (thickness != null && num(thickness) !== s.thickness) { s.thickness = num(thickness); delete s.gauge; delete s.gaugeTable; }
+      if (opts.bendRadius != null) s.bendRadius = num(opts.bendRadius);
+      if (opts.kFactor != null) s.kFactor = num(opts.kFactor);
+      s.bendAllowanceType = s.bendAllowanceType || 'kfactor';
+      this.model.sheet = K.makeSheet(s);
+    }
     var T = this.model.sheet.thickness;
     var f = this.extrude(T, Object.assign({}, opts, { sheetBase: true, name: opts.name || 'Base-Flange1' }));
     return f;
   };
+  // Custom Bend Allowance of a flange, hem or jog: { type: 'kfactor' | 'allowance' | 'deduction' | 'table', value }
+  // (value: K, BA or BD; none for 'table', which uses the sheet's bend table), overriding the sheet's method
+  function customBendAllowance(f, c) {
+    if (!c) return f;
+    if (K.BEND_ALLOWANCE_TYPES.indexOf(c.type) < 0) throw new Error('bendAllowance.type must be one of ' + K.BEND_ALLOWANCE_TYPES.join(', ') + '.');
+    f.bendAllowance = { type: c.type };
+    if (c.type !== 'table') {
+      if (c.value == null || (!isExpression(c.value) && !isFinite(+c.value))) throw new Error('bendAllowance.value must be a number.');
+      f.bendAllowance.value = num(c.value);
+    }
+    return f;
+  }
   // edges: [[x,y,z], ...] points on straight edges of the flat sheet face
   // opts: angle, reverse, radius, position, toward, name, miter (bool), miterGap, relief ('none' | 'rect' | 'obround'),
-  // reliefWidth (default T), reliefDepth (default T/2)
+  // reliefWidth (default T), reliefDepth (default T/2), bendAllowance ({ type, value }: Custom Bend Allowance)
   Builder.prototype.flange = function (length, edges, opts) {
     opts = opts || {};
     var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [num(opts.toward[0]), num(opts.toward[1]), num(opts.toward[2])] : undefined,
@@ -276,6 +318,7 @@
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
   };
@@ -291,14 +334,15 @@
     if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
     else f.radius = Math.max(gap / 2, 0.02 * T);
     f.name = f.name || featureName(this.model, 'hem');
+    customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
   };
   // jog: two bends offsetting the sheet by `height`, then `length` of flat parallel to the base
   Builder.prototype.jog = function (height, length, edges, opts) {
     opts = opts || {};
-    this._add({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
-      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
+    this._add(customBendAllowance({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
+      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name }, opts.bendAllowance));
     return this;
   };
   Builder.prototype.cut = function (depth, opts) {
@@ -482,7 +526,16 @@
       out.push('p.configurations(' + JSON.stringify(model.configurations) + ');');
       if (model.activeConfiguration != null && findConfiguration(model, model.activeConfiguration)) out.push('p.activeConfiguration(' + JSON.stringify(String(model.activeConfiguration)) + ');');
     }
-    if (model.sheet) out.push('p.sheet(' + nv(model.sheet.thickness) + ', ' + nv(model.sheet.bendRadius) + ', ' + nv(model.sheet.kFactor) + ');');
+    if (model.sheet) {
+      // a sheet without a stored K (made before bend deductions existed) is written with the K its flat always used
+      var sh = model.sheet, so = {};
+      if (sh.bendAllowanceType && sh.bendAllowanceType !== 'kfactor') so.bendAllowanceType = sh.bendAllowanceType;
+      if (sh.bendAllowance != null) so.bendAllowance = numOut(sh.bendAllowance);
+      if (sh.bendDeduction != null) so.bendDeduction = numOut(sh.bendDeduction);
+      if (sh.bendTable) so.bendTable = sh.bendTable;
+      if (sh.gaugeTable != null && sh.gauge != null) { so.gaugeTable = sh.gaugeTable; so.gauge = sh.gauge; }
+      out.push('p.sheet(' + nv(sh.thickness) + ', ' + nv(sh.bendRadius) + ', ' + nv(sh.kFactor != null && sh.kFactor !== '' ? sh.kFactor : K.LEGACY_K_FACTOR) + (Object.keys(so).length ? ', ' + optsStr(so) : '') + ');');
+    }
     var idVar = {};
     model.features.forEach(function (f) {
       var v = 'f' + f.id;
@@ -549,9 +602,11 @@
           if (f.relief && f.relief !== 'none') fo.relief = f.relief;
           if (f.reliefWidth != null) fo.reliefWidth = numOut(f.reliefWidth);
           if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
+          if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
             if (f.reverse) ho.reverse = true;
+            if (f.bendAllowance) ho.bendAllowance = bendAllowanceOut(f.bendAllowance);
             out.push('var ' + v + ' = p.hem(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
           } else out.push('var ' + v + ' = p.flange(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(fo) + ').last();');
           break;
@@ -562,6 +617,7 @@
           if (f.reverse) jo.reverse = true;
           if (f.radius != null) jo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') jo.position = f.position;
+          if (f.bendAllowance) jo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           out.push('var ' + v + ' = p.jog(' + nv(f.height) + ', ' + nv(f.length) + ', ' + jspecs + ', ' + optsStr(jo) + ').last();');
           break;
         }
@@ -622,6 +678,7 @@
   function nv(x) { return isExpression(x) ? JSON.stringify(x) : String(x); }
   // numOut(x): an option value, a number or the equation string untouched (optsStr quotes strings)
   function numOut(x) { return isExpression(x) ? x : +x; }
+  function bendAllowanceOut(c) { var o = { type: c.type }; if (c.value != null) o.value = numOut(c.value); return o; }
   function bodyOptsOut(o, f) {
     if (f.merge === false) o.merge = false;
     if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();

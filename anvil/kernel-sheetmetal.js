@@ -12,10 +12,173 @@
   var findFeature = _.findFeature;   // kernel-rebuild.js
   var faceLoopsClassified = _.faceLoopsClassified;   // kernel-features.js
 
-  // ------------------------------------------------------------------ sheet metal: edge flange and flat pattern
+  // ------------------------------------------------------------------ sheet metal: parameters and bend allowance
+  // model.sheet = { thickness, bendRadius, kFactor, bendAllowanceType?, bendAllowance?, bendDeduction?, bendTable?,
+  // gaugeTable?, gauge? } (makeSheet's order). bendAllowanceType is SolidWorks' "Bend Allowance" group: 'kfactor'
+  // (default when absent), 'allowance' (a fixed BA), 'deduction' (a fixed BD) or 'table' (bendTable lookup).
+  //
+  // K is the usual K-factor: the neutral axis sits K·T from the inside face, so BA = θ·(R + K·T) (θ the bend angle in
+  // radians, R the inside radius). Physical values lie between 0 and 0.5; SolidWorks (and Anvil, for a new part)
+  // defaults to 0.5. Models saved before bend deductions existed always stored their K; one with a sheet but no stored
+  // K keeps the old fallback 0.71 so its flat does not change.
+  var DEFAULT_K = 0.5, LEGACY_K = 0.71;
+  var BA_TYPES = ['kfactor', 'allowance', 'deduction', 'table'];
   function sheetParams(model) {
-    return model.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
+    return model.sheet || { thickness: 2, bendRadius: 2, kFactor: DEFAULT_K };
   }
+  // the K-factor a sheet uses (also the fallback of a bend table that has no row for a bend)
+  function sheetKFactor(sheet) {
+    var k = sheet ? sheet.kFactor : null;
+    return k == null || k === '' || !isFinite(+k) ? LEGACY_K : +k;
+  }
+  // makeSheet(fields) -> model.sheet with its keys in one fixed order and only the fields that apply, so a sheet made
+  // by a script, by the Sheet Metal PropertyManager or by a gauge pick serializes the same way. Values are kept as
+  // given (numbers or "=" equation strings); kFactor is always stored.
+  function makeSheet(o) {
+    o = o || {};
+    var s = { thickness: o.thickness, bendRadius: o.bendRadius != null ? o.bendRadius : o.thickness, kFactor: o.kFactor != null && o.kFactor !== '' ? o.kFactor : DEFAULT_K };
+    var t = o.bendAllowanceType || 'kfactor';
+    if (BA_TYPES.indexOf(t) < 0) throw new Error('Unknown bend allowance type "' + t + '" (kfactor, allowance, deduction or table).');
+    if (t !== 'kfactor') s.bendAllowanceType = t;
+    if (t === 'allowance') s.bendAllowance = o.bendAllowance;
+    if (t === 'deduction') s.bendDeduction = o.bendDeduction;
+    if (o.bendTable && o.bendTable.rows && o.bendTable.rows.length) s.bendTable = normBendTable(o.bendTable);
+    else if (t === 'table') throw new Error('The bend table has no rows.');
+    if (o.gaugeTable != null && o.gauge != null && o.gauge !== '') { s.gaugeTable = o.gaugeTable; s.gauge = String(o.gauge); }
+    return s;
+  }
+  // bendTable = { kind: 'BA' | 'BD', name?, tolerance? (absolute, model units), rows: [{ thickness, radius, angle (°), value }] }
+  function normBendTable(t) {
+    var out = { kind: t.kind === 'BD' ? 'BD' : 'BA' };
+    if (t.name) out.name = String(t.name);
+    if (t.tolerance != null && t.tolerance !== '') out.tolerance = +t.tolerance;
+    out.rows = (t.rows || []).map(function (r) { return { thickness: +r.thickness, radius: +r.radius, angle: +r.angle, value: +r.value }; })
+      .filter(function (r) { return isFinite(r.thickness) && isFinite(r.radius) && isFinite(r.angle) && isFinite(r.value); });
+    return out;
+  }
+  // Outside setback of a bend (SolidWorks' bend deduction definitions): up to 90° the flange dimensions run to the
+  // virtual sharp, OSSB = (R + T)·tan(θ/2); beyond 90° they run to the tangent of the outside of the bend (the
+  // outermost point of the bend, square to each flat), so OSSB = R + T. Continuous at 90°.
+  function outsideSetback(angleRad, R, T) {
+    return angleRad <= Math.PI / 2 + 1e-12 ? (R + T) * Math.tan(angleRad / 2) : R + T;
+  }
+  // BD = 2·OSSB − BA: the flat length is A + B − BD with A, B the outside flange dimensions defined above.
+  function bendDeduction(angleRad, R, T, BA) { return 2 * outsideSetback(angleRad, R, T) - BA; }
+  // bendTableLookup(table, T, R, angleDeg) -> { value, kind } or { error }. Rows match on thickness and radius within
+  // the table's tolerance (default 0.5 % of the value, so 0.0598 finds a 0.060 row; the closest row wins); between the
+  // matched rows' angles the value is interpolated linearly. Outside their angle range there is no value.
+  function bendTableLookup(table, T, R, angleDeg) {
+    var rows = (table && table.rows) || [], kind = table && table.kind === 'BD' ? 'BD' : 'BA';
+    function tol(x) { return table && table.tolerance != null && isFinite(+table.tolerance) ? +table.tolerance : Math.max(1e-9, 0.005 * Math.abs(x)); }
+    function pick(list, key, want) {
+      var best = Infinity;
+      list.forEach(function (r) { var d = Math.abs(+r[key] - want); if (d <= tol(want) && d < best) best = d; });
+      return best === Infinity ? [] : list.filter(function (r) { return Math.abs(Math.abs(+r[key] - want) - best) < 1e-12; });
+    }
+    var hit = pick(pick(rows, 'thickness', T), 'radius', R);
+    if (!hit.length) return { error: 'no row for T = ' + fmtN(T) + ', R = ' + fmtN(R) };
+    var pts = hit.map(function (r) { return [+r.angle, +r.value]; }).sort(function (a, b) { return a[0] - b[0]; });
+    var lo = pts[0][0], hi = pts[pts.length - 1][0], eps = 1e-6;
+    if (angleDeg < lo - eps || angleDeg > hi + eps) return { error: 'no row for ' + fmtN(angleDeg) + '° at T = ' + fmtN(T) + ', R = ' + fmtN(R) + ' (rows ' + fmtN(lo) + '°–' + fmtN(hi) + '°)' };
+    for (var i = 0; i < pts.length; i++) if (Math.abs(pts[i][0] - angleDeg) <= eps) return { value: pts[i][1], kind: kind };
+    for (var j = 0; j + 1 < pts.length; j++) {
+      var a = pts[j], b = pts[j + 1];
+      if (angleDeg >= a[0] && angleDeg <= b[0]) return { value: a[1] + (b[1] - a[1]) * (angleDeg - a[0]) / (b[0] - a[0]), kind: kind };
+    }
+    return { error: 'no row for ' + fmtN(angleDeg) + '°' };
+  }
+  function fmtN(x) { return String(Math.round(x * 1e6) / 1e6); }
+  // bendCalc(sheet, angleRad, R, T, custom) -> { BA, BD, type, source: 'sheet' | 'custom', value, K, warning }.
+  // `custom` is a feature's Custom Bend Allowance { type: 'kfactor' | 'allowance' | 'deduction' | 'table', value }
+  // (value: K, BA or BD; a custom 'table' uses the sheet's bend table), which wins over the sheet's method.
+  // An entered BA or BD applies unchanged to every bend whatever its angle, as in SolidWorks (a bend table gives
+  // angle-dependent values). A bend the table has no row for falls back to the sheet's K-factor with a warning.
+  function bendCalc(sheet, angleRad, R, T, custom) {
+    sheet = sheet || {};
+    var source = custom && custom.type ? 'custom' : 'sheet';
+    var type = source === 'custom' ? custom.type : (sheet.bendAllowanceType || 'kfactor');
+    var K = sheetKFactor(sheet), deg = angleRad * 180 / Math.PI, warning = null, BA, value, k = null;
+    var what = source === 'custom' ? 'Custom bend allowance' : 'Sheet metal';
+    function need(v, label) {
+      if (v == null || v === '' || !isFinite(+v)) throw new Error(what + ': ' + label + ' must be a number.');
+      return +v;
+    }
+    if (type === 'kfactor') {
+      k = source === 'custom' ? need(custom.value, 'K-factor') : K;
+      BA = angleRad * (R + k * T); value = k;
+    } else if (type === 'allowance') {
+      value = need(source === 'custom' ? custom.value : sheet.bendAllowance, 'bend allowance');
+      BA = value;
+    } else if (type === 'deduction') {
+      value = need(source === 'custom' ? custom.value : sheet.bendDeduction, 'bend deduction');
+      BA = 2 * outsideSetback(angleRad, R, T) - value;
+    } else if (type === 'table') {
+      var tb = sheet.bendTable, r = tb ? bendTableLookup(tb, T, R, deg) : { error: 'the part has no bend table' };
+      if (r.error) {
+        warning = 'Bend table: ' + r.error + '; the K-factor ' + fmtN(K) + ' was used for that bend.';
+        k = K; BA = angleRad * (R + K * T); value = K; type = 'kfactor';
+      } else {
+        value = r.value;
+        BA = r.kind === 'BD' ? 2 * outsideSetback(angleRad, R, T) - r.value : r.value;
+      }
+    } else throw new Error(what + ': unknown bend allowance type "' + type + '" (kfactor, allowance, deduction or table).');
+    if (!isFinite(BA)) throw new Error(what + ': the bend allowance is not a number.');
+    if (BA < -1e-9) throw new Error(what + ': the bend deduction ' + fmtN(value) + ' is larger than twice the outside setback (' + fmtN(2 * outsideSetback(angleRad, R, T)) + ') of the ' + fmtN(deg) + '° bend: the bend allowance would be negative.');
+    return { BA: Math.max(0, BA), BD: bendDeduction(angleRad, R, T, BA), type: type, source: source, value: value, K: k, warning: warning };
+  }
+  // the parameters for the flat-pattern note: "T=0.06 R=0.06 K=0.5", "… BD=0.105", "… BA=0.12", "… BEND TABLE (BD)"
+  function sheetNote(sheet) {
+    var s = sheet || {}, t = s.bendAllowanceType || 'kfactor';
+    var head = (s.gauge != null ? s.gauge + ' GA ' : '') + 'T=' + fmtN(+s.thickness) + ' R=' + fmtN(+s.bendRadius);
+    if (t === 'allowance') return head + ' BA=' + fmtN(+s.bendAllowance);
+    if (t === 'deduction') return head + ' BD=' + fmtN(+s.bendDeduction);
+    if (t === 'table') return head + ' BEND TABLE' + (s.bendTable && s.bendTable.name ? ' ' + s.bendTable.name : '') + ' (' + (s.bendTable && s.bendTable.kind === 'BD' ? 'BD' : 'BA') + ', K=' + fmtN(sheetKFactor(s)) + ' outside it)';
+    return head + ' K=' + fmtN(sheetKFactor(s));
+  }
+
+  // ------------------------------------------------------------------ gauge tables (SolidWorks "Use gauge table")
+  // Thicknesses are the published standard gauges (inches): Manufacturers' Standard Gauge for sheet steel, Brown &
+  // Sharpe (AWG) for aluminium, U.S. Standard Gauge as commonly used for stainless. The bend radius (= T) and K (0.5)
+  // in every row are EXAMPLES, not shop data: the UI labels them "example — replace with your shop's values".
+  function gaugeRows(list) {
+    return list.map(function (g) { return { gauge: String(g[0]), thickness: g[1], radius: g[1], kFactor: DEFAULT_K }; });
+  }
+  var GAUGE_TABLES = {
+    'Steel (Manufacturers\' Standard Gauge)': { units: 'in', example: true, rows: gaugeRows([
+      ['3', 0.2391], ['4', 0.2242], ['5', 0.2092], ['6', 0.1943], ['7', 0.1793], ['8', 0.1644], ['9', 0.1495], ['10', 0.1345],
+      ['11', 0.1196], ['12', 0.1046], ['13', 0.0897], ['14', 0.0747], ['15', 0.0673], ['16', 0.0598], ['17', 0.0538],
+      ['18', 0.0478], ['19', 0.0418], ['20', 0.0359], ['21', 0.0329], ['22', 0.0299], ['23', 0.0269], ['24', 0.0239],
+      ['25', 0.0209], ['26', 0.0179], ['28', 0.0149], ['30', 0.0120]]) },
+    'Aluminum (Brown & Sharpe)': { units: 'in', example: true, rows: gaugeRows([
+      ['6', 0.1620], ['8', 0.1285], ['10', 0.1019], ['11', 0.0907], ['12', 0.0808], ['14', 0.0641], ['16', 0.0508],
+      ['18', 0.0403], ['20', 0.0320], ['22', 0.0253], ['24', 0.0201]]) },
+    'Stainless (U.S. Standard Gauge)': { units: 'in', example: true, rows: gaugeRows([
+      ['7', 0.1875], ['8', 0.1719], ['10', 0.1406], ['11', 0.1250], ['12', 0.1094], ['14', 0.0781], ['16', 0.0625],
+      ['18', 0.0500], ['20', 0.0375], ['22', 0.0312], ['24', 0.0250], ['26', 0.0188]]) }
+  };
+  Object.keys(GAUGE_TABLES).forEach(function (n) { GAUGE_TABLES[n].name = n; });
+  var DEFAULT_GAUGE_TABLE = 'Steel (Manufacturers\' Standard Gauge)';
+  // a table by name (built in), or the table object itself (a shop's own table: { name, units, rows: [{ gauge,
+  // thickness, radius, kFactor? | bendDeduction? }] })
+  function gaugeTable(ref) {
+    if (ref && typeof ref === 'object') return ref;
+    return GAUGE_TABLES[ref == null ? DEFAULT_GAUGE_TABLE : ref] || null;
+  }
+  // gaugeRow(tableRef, gauge, units) -> { gauge, thickness, radius, kFactor? , bendDeduction? } in the model's units, or null
+  function gaugeRow(ref, gauge, units) {
+    var t = gaugeTable(ref);
+    if (!t) return null;
+    var g = String(gauge).replace(/\s*(ga|gauge|gage)\.?$/i, '').trim();
+    var r = (t.rows || []).filter(function (x) { return String(x.gauge) === g; })[0];
+    if (!r) return null;
+    var k = (t.units || 'in') === (units === 'in' ? 'in' : 'mm') ? 1 : (t.units === 'in' ? 25.4 : 1 / 25.4);
+    var out = { gauge: String(r.gauge), thickness: +r.thickness * k, radius: (r.radius != null ? +r.radius : +r.thickness) * k };
+    if (r.bendDeduction != null) out.bendDeduction = +r.bendDeduction * k;
+    else out.kFactor = r.kFactor != null ? +r.kFactor : DEFAULT_K;
+    return out;
+  }
+
+  // ------------------------------------------------------------------ sheet metal: edge flange and flat pattern
 
   // Flange section in the (o, u) frame: o across the edge (outward), u along the fold. The strip o ∈ [-ov, 0] overlaps
   // the sheet so the union is watertight; the material actually added is the o >= 0 part (bend + wall).
@@ -152,10 +315,17 @@
       // miterPlanes: per end, the clip plane { n, w } (tool kept where n·p >= w) or null; the flat pattern uses it to
       // run the bend strip out to the mitre line. Plain arrays and numbers only: the record must survive a structured clone.
       info.push({ a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: ed.plane.origin, o: ed.o, u: ed.u, len: e.len, angle: A, R: R, L: L, T: T,
-        mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter],
+        ba: customBA(f), mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter],
         miterPlanes: ed.ends.map(function (en) { return en.miter ? { n: en.miter.n.slice(), w: en.miter.w } : null; }) });
     });
     return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
+  }
+  // a feature's Custom Bend Allowance as plain data for the flange records ({ type, value } or null)
+  function customBA(f) {
+    var c = f.bendAllowance;
+    if (!c || !c.type) return null;
+    if (BA_TYPES.indexOf(c.type) < 0) throw new Error('Custom bend allowance: unknown type "' + c.type + '" (kfactor, allowance, deduction or table).');
+    return { type: c.type, value: c.value == null ? null : +c.value };
   }
   function buildFlange(f, model, ctx) {
     var lay = flangeLayout(f, model, ctx);
@@ -184,7 +354,7 @@
     // rise = R(1−cosA) [first bend] + wall·sinA + R(1−cosA) − T·cosA [second bend, inner radius on the far face]
     var wall = (H - 2 * R * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
     if (!(wall > 0.01)) throw new Error('Jog height is too small for this bend radius and angle.');
-    var f1 = { id: f.id, edges: f.edges, angle: A * 180 / Math.PI, length: wall, reverse: !!f.reverse, radius: R, position: f.position };
+    var f1 = { id: f.id, edges: f.edges, angle: A * 180 / Math.PI, length: wall, reverse: !!f.reverse, radius: R, position: f.position, bendAllowance: f.bendAllowance };
     var tool1 = buildFlange(f1, model, ctx), cut1 = ctx.flangeCut, info1 = ctx.flanges[f.id];
     var body1 = cut1 ? ctx.body.subtract(cut1) : ctx.body;
     body1 = body1.union(tool1);
@@ -200,7 +370,7 @@
     var ctx2 = { body: body1, flanges: {}, tools: {} };
     var tools2 = [], infos2 = [];
     picks.forEach(function (pk) {
-      var f2 = { id: f.id, edges: [{ at: pk.at }], angle: A * 180 / Math.PI, length: L2, toward: pk.toward, radius: R, position: 'bendOutside' };
+      var f2 = { id: f.id, edges: [{ at: pk.at }], angle: A * 180 / Math.PI, length: L2, toward: pk.toward, radius: R, position: 'bendOutside', bendAllowance: f.bendAllowance };
       tools2.push(buildFlange(f2, model, ctx2));
       infos2 = infos2.concat(ctx2.flanges[f.id]);
     });
@@ -258,13 +428,16 @@
     return unionTree(prisms);
   }
 
-  // Bend allowance with the shop k-factor: arc length of the neutral axis.
+  // Bend allowance with a K-factor: arc length of the neutral axis.
   function bendAllowance(angleRad, R, T, K) { return angleRad * (R + K * T); }
 
-  // -> { loops: [[[u,v],...]] (outer first, CCW; holes after), bends: [{a:[u,v], b:[u,v], label, up, angle, R}], plane, sheet, bbox }
+  // -> { loops: [[[u,v],...]] (outer first, CCW; holes after), bends: [{a:[u,v], b:[u,v], label, up, angle, R, ba, bd,
+  // method, source}], plane, sheet (the resolved parameters, kFactor always filled in), bbox, size: [w, h] (the blank's
+  // bounding box), note (sheetNote: the parameters for the DXF / drawing note), warnings: [string] }
   // Recursive unfold on one side of the sheet: the base face (largest face on the +n side of the base sketch plane)
   // is mapped into the sketch frame; every flange attached to an unfolded face contributes a bend strip of length
-  // BA = angle·(R + K·T) beyond its edge and then unfolds its wall face (real outline, holes included) with a rigid
+  // BA (bendCalc: the sheet's bend allowance method, or the feature's custom one) beyond its edge and then unfolds its
+  // wall face (real outline, holes included) with a rigid
   // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged with the
   // CSG kernel (thin prisms) and the merged top face's outline is the blank.
   function flatPattern(model, build, mesh) {
@@ -277,7 +450,8 @@
     if (!base) throw new Error('No Base Flange feature found.');
     var sketch = findFeature(model, base.sketch);
     var plane = resolvePlane(sketch.plane, model, build.planes);
-    var K = +sheet.kFactor, T = +sheet.thickness;
+    var T = +sheet.thickness, warnings = [], kUsed = {};
+    function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
     var best = null;
     mesh.faces.forEach(function (face, i) {
       var d = dot(face.normal, plane.n);
@@ -328,7 +502,11 @@
         var o2 = [O2[0] - M2[0], O2[1] - M2[1]], ol = Math.hypot(o2[0], o2[1]);
         if (ol < 1e-9) return;
         o2 = [o2[0] / ol, o2[1] / ol];
-        var BA = bendAllowance(fi.angle, fi.R, T, K), eps = 1e-3;
+        var bc = bendCalc(sheet, fi.angle, fi.R, T, fi.ba), BA = bc.BA, eps = 1e-3;
+        warn(bc.warning);
+        if (bc.K != null) kUsed[bc.K] = true;
+        if ((bc.type === 'allowance' || bc.type === 'deduction') && Math.abs(fi.angle - Math.PI / 2) > 1e-6)
+          warn((bc.source === 'custom' ? 'A custom bend ' : 'The bend ') + (bc.type === 'allowance' ? 'allowance ' : 'deduction ') + fmtN(bc.value) + ' is applied unchanged to the ' + fmtN(fi.angle * 180 / Math.PI) + '° bend (as SolidWorks does); use a bend table for values that depend on the angle.');
         function off(p, d) { return [p[0] + o2[0] * d, p[1] + o2[1] * d]; }
         var trackedInner = dot(fi.u, nTracked) > 0;
         // the wall face on the tracked side of the sheet: inner radius when the fold comes toward this side
@@ -367,7 +545,7 @@
         else strip.push(off(A2, BA + eps));
         regions.push([strip]);
         // bend line: mid-strip, reaching the mitre line at a mitred end
-        bends.push({ a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, label: (trackedInner ? 'UP' : 'DOWN') + ' ' + Math.round(fi.angle * 180 / Math.PI) + '° R' + fi.R });
+        bends.push({ a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source, label: (trackedInner ? 'UP' : 'DOWN') + ' ' + Math.round(fi.angle * 180 / Math.PI) + '° R' + fi.R });
         var Pmid = add(add(fi.origin, scale(fi.o, Rt * sA)), scale(fi.u, fi.R - Rt * cA));
         var wn = trackedInner ? add(scale(fi.o, -sA), scale(fi.u, cA)) : add(scale(fi.o, sA), scale(fi.u, -cA));
         var tw = add(scale(fi.o, cA), scale(fi.u, sA));
@@ -421,7 +599,11 @@
     if (!loops.length || signedArea(loops[0]) <= 0) throw new Error('Could not build the flat pattern.');
     var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
     loops.forEach(function (l) { l.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); }); });
-    return { loops: loops, bends: bends, plane: plane, sheet: sheet, bbox: { min: min, max: max } };
+    Object.keys(kUsed).forEach(function (k) {
+      if (+k > 0.5 + 1e-9 || +k < 0) warn('K-factor ' + fmtN(+k) + ' is outside 0–0.5: the neutral axis would lie outside the sheet. If ' + fmtN(+k) + ' is a shop "material in bend" constant (BA = ' + fmtN(+k) + '·T + 1.571·R at 90°), the K-factor is ' + fmtN(+k) + ' / 1.5708 = ' + fmtN(Math.round(+k / (Math.PI / 2) * 1000) / 1000) + '.');
+    });
+    var outSheet = Object.assign({}, sheet, { kFactor: sheetKFactor(sheet) });
+    return { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings };
   }
   function near2(p, q) { return Math.abs(p[0] - q[0]) < 1e-3 && Math.abs(p[1] - q[1]) < 1e-3; }
 
@@ -429,6 +611,9 @@
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
   K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
+  K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
+  K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.buildFlange = buildFlange; _.buildJog = buildJog; _.normalCutTool = normalCutTool;
 })(Kernel, Kernel._);

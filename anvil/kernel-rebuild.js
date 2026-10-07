@@ -229,12 +229,14 @@
     return false;
   }
 
-  // Cache key of a feature: its JSON (minus the computed profile) plus the sheet parameters flanges depend on.
+  // Cache key of a feature: its JSON (minus the computed profile) plus the sheet parameters flanges depend on (the
+  // thickness and bend radius: the bend allowance method only changes the flat pattern, never the solid).
   // `f` and `model` are the RESOLVED feature and model (resolvedModel), so the key follows the values equations
   // produce: a variable change rebuilds just the features that use it, an equation edit that changes no value
   // reuses the whole cache.
   function featureKey(f, model) {
-    return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(model.sheet || null) + '|' + tessKey();
+    var sh = model.sheet ? [model.sheet.thickness, model.sheet.bendRadius] : null;
+    return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 
   // ------------------------------------------------------------------ bodies (multi-body parts)

@@ -542,6 +542,8 @@ var OcctKernel = (function () {
     }
     // ---- sheet metal. Edge flanges, hems and jogs use Kernel.flangeLayout (the same edges, mitres, reliefs and
     // trim-back as Anvil's), computed from the body's tessellation; the sections are built exactly (bend arcs).
+    // The bend allowance / deduction never changes the solid (only T, R, angle and length do): flat lengths come
+    // from Kernel.flatPattern (Kernel.bendCalc), the same for both kernels; a jog passes its custom bend allowance on.
     // an OpenCascade shape as a CSG solid (its triangles), for Kernel functions that read Anvil meshes
     function shapeToCSG(sh) {
       N(new oc.BRepMesh_IncrementalMesh_2(sh, 0.05, false, 0.35, false));
@@ -646,7 +648,7 @@ var OcctKernel = (function () {
       if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
       var wall = (H - 2 * Rr * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
       if (!(wall > 0.01)) throw new Error('Jog height is too small for this bend radius and angle.');
-      var f1 = { id: f.id, edges: f.edges, angle: A * 180 / Math.PI, length: wall, reverse: !!f.reverse, radius: Rr, position: f.position };
+      var f1 = { id: f.id, edges: f.edges, angle: A * 180 / Math.PI, length: wall, reverse: !!f.reverse, radius: Rr, position: f.position, bendAllowance: f.bendAllowance };
       var lay1 = K.flangeLayout(f1, m, { body: shapeToCSG(bodies[k]) });
       applyLayout(k, lay1, true);
       var sA = Math.sin(A), cA = Math.cos(A), csg1 = shapeToCSG(bodies[k] = unify(bodies[k]));
@@ -654,7 +656,7 @@ var OcctKernel = (function () {
         var innerEnd = V.add(V.add(fi.origin, V.scale(fi.o, Rr * sA + cA * wall)), V.scale(fi.u, Rr - Rr * cA + sA * wall));
         var outerDir = V.add(V.scale(fi.o, sA), V.scale(fi.u, -cA)), tw = V.add(V.scale(fi.o, cA), V.scale(fi.u, sA));
         var toward = V.norm(V.sub(fi.o, V.scale(tw, V.dot(fi.o, tw))));
-        var f2 = { id: f.id, edges: [{ at: V.add(innerEnd, V.scale(outerDir, T / 2)) }], angle: A * 180 / Math.PI, length: L2, toward: toward, radius: Rr, position: 'bendOutside' };
+        var f2 = { id: f.id, edges: [{ at: V.add(innerEnd, V.scale(outerDir, T / 2)) }], angle: A * 180 / Math.PI, length: L2, toward: toward, radius: Rr, position: 'bendOutside', bendAllowance: f.bendAllowance };
         applyLayout(k, K.flangeLayout(f2, m, { body: csg1 }), false);   // Anvil's jog keeps only the first bend's cuts
       });
     }
