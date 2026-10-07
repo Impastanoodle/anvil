@@ -343,12 +343,17 @@ if (typeof UI !== 'undefined') (function (UI) {
     setSelection(hit ? [hit] : [], { quiet: !hit });
   }
   // A click with the Select tool in a sketch: Ctrl / Shift toggle entities; the filter can block sketch entities.
+  // A sketch PropertyManager with a selection box (Linear Sketch Pattern, Mirror Entities: UI.pmCollectsSelection)
+  // takes plain clicks as SolidWorks does: a click toggles the entity in that box (or, with the PM's own entity pick,
+  // e.g. Mirror about, goes there) and the PM stays open; the entity's own PropertyManager is not opened.
   function sketchSelectClick(mx, my, ev) {
-    if (!allows('entity')) { App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
-    if (!(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey))) return false;
+    var collecting = !!(UI.pmCollectsSelection && UI.pmCollectsSelection());
+    if (!allows('entity')) { if (collecting) return true; App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
+    if (!collecting && !(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey))) return false;
     var hit = UI.pickEntity(mx, my);
     if (!hit) return true;
-    UI.closePM();
+    if (collecting && UI.pmEntityPick && UI.pmEntityPick(hit)) return true;
+    if (!collecting) UI.closePM();
     setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hit], 'toggle', selKey));
     return true;
   }

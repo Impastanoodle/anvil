@@ -257,6 +257,9 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .pm-row .static { color: var(--muted); }
 .pm-pick { border: 1px solid var(--blue-line); background: var(--pick-bg); min-height: 26px; padding: 3px 6px; border-radius: 2px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .pm-pick.filled { color: var(--text); background: var(--pick-filled); }
+.pm-pick.clickable { cursor: pointer; }
+/* the selection box graphics-area picks go to (SolidWorks shows the active box in pink) */
+.pm-pick.active { border-color: #d6489a; box-shadow: inset 0 0 0 1px #d6489a; }
 /* Interference Detection results (assembly Evaluate tab) */
 .intf-list { display: flex; flex-direction: column; gap: 2px; }
 .intf-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 6px; border: 1px solid transparent; border-radius: 2px; cursor: pointer; }

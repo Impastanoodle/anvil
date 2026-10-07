@@ -369,7 +369,9 @@
         return el('div', { class: 'pm-row' }, [el('label', { text: f.label }), el('span', { class: 'static', text: typeof f.value === 'function' ? f.value(v) : f.value })]);
       case 'pick': {
         var txt = typeof f.value === 'function' ? f.value(v) : f.value;
-        var pickBox = el('div', { class: 'pm-pick' + (txt ? ' filled' : ''), html: Icons(f.icon || 'plane', 16) + '<span>' + (txt || f.placeholder || 'Select…') + '</span>' });
+        var pickBox = el('div', { class: 'pm-pick' + (txt ? ' filled' : '') + (f.active && f.active(v) ? ' active' : ''), html: Icons(f.icon || 'plane', 16) + '<span>' + (txt || f.placeholder || 'Select…') + '</span>' });
+        // a PM with two selection boxes (Mirror Entities): clicking a box makes it the one graphics-area picks go to
+        if (f.onActivate) { pickBox.classList.add('clickable'); pickBox.addEventListener('click', function () { f.onActivate(v); }); }
         return f.items ? pickList(f, pickBox) : pickBox;
       }
       case 'buttons': {
@@ -1338,37 +1340,68 @@
       onChange: function () { }, onOK: function () { }
     });
   }
-  function entityTargets(f) {
-    if (App.sel && App.sel.kind === 'entity' && f.entities[App.sel.index]) return [App.sel.index];
-    return f.entities.map(function (e, i) { return i; });
-  }
+  // Mirror Entities (SolidWorks: Sketch tab ▸ Mirror Entities). *Entities to Mirror* holds the sketch selection when the
+  // command starts plus anything clicked in the graphics area while it is open (a click toggles; no "everything"
+  // fallback). *Mirror about* is the sketch Y / X axis or a line: pick it in the list, or click the box (it turns pink)
+  // and then click a line in the sketch.
   function cmdMirrorEntities() {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     if (!f.entities.length) { UI.toast('Draw something to mirror first.'); return; }
-    var targets = entityTargets(f);
-    var v = { axis: 'y', copy: true };
+    var v = { entities: sketchSelectionIndices(f), axis: 'y', copy: true, box: 'entities' };
+    function axisIndex() { return /^\d+$/.test(String(v.axis)) ? +v.axis : -1; }
     function axisOptions() {
       var opts = [['y', 'Sketch vertical axis (Y)'], ['x', 'Sketch horizontal axis (X)']];
       f.entities.forEach(function (e, i) { if (e.t === 'line') opts.push([String(i), 'Line ' + (i + 1) + '  (' + UI.fmtNum(e.x1, 1) + ', ' + UI.fmtNum(e.y1, 1) + ') → (' + UI.fmtNum(e.x2, 1) + ', ' + UI.fmtNum(e.y2, 1) + ')']); });
       return opts;
     }
+    function axisLabel() { var ai = axisIndex(); return ai >= 0 ? 'Line' + (ai + 1) : v.axis === 'x' ? 'Sketch X axis' : 'Sketch Y axis'; }
+    // the entities that are mirrored: the box minus the line mirrored about
+    function targets() { var ai = axisIndex(); return v.entities.filter(function (i) { return i !== ai && f.entities[i]; }); }
     function copies() {
       var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : v.axis;
       var ax = K.mirrorAxis(spec, f.entities);
-      return targets.filter(function (i) { return i !== spec; }).map(function (i) { return K.mirrorEntity(f.entities[i], ax); }).filter(Boolean).map(roundPts);
+      return targets().map(function (i) { return K.mirrorEntity(f.entities[i], ax); }).filter(Boolean).map(roundPts);
     }
-    function preview() { try { App.tempEntities = copies(); } catch (e) { App.tempEntities = []; UI.setStatus(e.message); } UI.updateTemp(); }
+    function preview() { try { App.tempEntities = v.entities.length ? copies() : []; } catch (e) { App.tempEntities = []; UI.setStatus(e.message); } UI.updateTemp(); }
+    function syncSelection() {
+      var sel = sketchSelectionIndices(f);
+      if (sel.join() === v.entities.join()) return;
+      v.entities = sel;
+      renderPM(); preview();
+    }
+    function setBox(b) { v.box = b; renderPM(); UI.setStatus(b === 'axis' ? 'Click a line in the sketch to mirror about.' : 'Click sketch entities to add them to Entities to Mirror (click again to remove).'); }
     openPM({
       title: 'Mirror Entities', icon: 'mirrorEnt', values: v,
-      message: targets.length === f.entities.length ? 'Mirroring <b>all ' + f.entities.length + ' entities</b> (select one entity first to mirror just that one).' : 'Mirroring the selected entity.',
-      groups: [{ title: 'Options', fields: [
-        { type: 'select', label: 'Mirror about', key: 'axis', options: axisOptions },
-        { type: 'check', label: 'Copy (keep originals)', key: 'copy' }
-      ] }],
+      onSelection: syncSelection,
+      // with Mirror about active, a clicked line becomes the mirror line (anything else is refused) and the entity box
+      // takes the next clicks again
+      onEntityPick: function (hit) {
+        if (v.box !== 'axis') return false;
+        var e = f.entities[hit.index];
+        if (!e || e.t !== 'line') { UI.setStatus('Mirror about needs a line or centerline.'); return true; }
+        v.axis = String(hit.index);
+        setBox('entities'); preview();
+        return true;
+      },
+      groups: [
+        { title: 'Entities to Mirror', fields: [
+          { type: 'pick', icon: 'mirrorEnt', value: function (x) { return x.entities.length ? x.entities.length + ' entit' + (x.entities.length > 1 ? 'ies' : 'y') : ''; }, placeholder: 'Select sketch entities…',
+            active: function (x) { return x.box === 'entities'; }, onActivate: function () { setBox('entities'); },
+            items: function (x) { return x.entities.map(function (i) { return { label: entityLabel(f.entities[i], i) }; }); },
+            onRemove: function (x, i) { x.entities.splice(i, 1); if (UI.setSelection) UI.setSelection(x.entities.map(function (k) { return { kind: 'entity', index: k }; })); renderPM(); preview(); },
+            onClear: function (x) { x.entities.length = 0; if (UI.setSelection) UI.setSelection([]); renderPM(); preview(); } },
+          { type: 'check', label: 'Copy (keep originals)', key: 'copy' }
+        ] },
+        { title: 'Mirror about', fields: [
+          { type: 'pick', icon: 'centerline', value: axisLabel, active: function (x) { return x.box === 'axis'; }, onActivate: function () { setBox('axis'); } },
+          { type: 'select', label: 'Mirror about', key: 'axis', options: axisOptions }
+        ] }
+      ],
       onChange: preview,
       onOK: function () {
-        var c;
+        if (!targets().length) { UI.toast('Select the entities to mirror first.'); return false; }
+        var c, targetsNow = targets();
         try { c = copies(); } catch (e) { UI.toast(e.message); return false; }
         UI.pushUndo(); App.sketchDirty = true;
         // r5/sketch5: mirrored in place, the dimensions go with their entities (labels mirrored too); the others keep
@@ -1376,11 +1409,11 @@
         var carry = [];
         if (!v.copy && f.dims && UI.dimAnchor) {
           var specC = /^\d+$/.test(String(v.axis)) ? +v.axis : v.axis, axC = K.mirrorAxis(specC, f.entities);
-          var src = targets.filter(function (i) { return i !== specC && K.mirrorEntity(f.entities[i], axC); });
+          var src = targetsNow.filter(function (i) { return i !== specC && K.mirrorEntity(f.entities[i], axC); });
           f.dims.forEach(function (d) { var k = src.indexOf(d.e), a = k >= 0 ? UI.dimAnchor(f.entities[d.e], d) : null; if (a) { var m = K.mirrorEntity({ t: 'point', x: a[0], y: a[1] }, axC); carry.push({ d: d, k: k, uv: [m.x, m.y] }); } });
         }
         if (!v.copy) {
-          var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targets.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before);
+          var spec = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, before = f.entities.slice(); f.entities = f.entities.filter(function (e, i) { return targetsNow.indexOf(i) < 0 || i === spec; }); if (window.SketchSolver) SketchSolver.remap(f, before);
           if (f.dims) { f.dims = f.dims.filter(function (d) { var n = f.entities.indexOf(before[d.e]); if (n >= 0) { d.e = n; return true; } return carry.some(function (x) { return x.d === d; }); }); }
         }
         c.forEach(function (e) { f.entities.push(e); });
@@ -1390,7 +1423,7 @@
         var specN = /^\d+$/.test(String(v.axis)) ? +v.axis : -1, nSym = 0;
         if (v.copy && specN >= 0 && window.SketchSolver) {
           var axM = K.mirrorAxis(specN, f.entities), k0 = f.entities.length - c.length, pairs = [];
-          targets.filter(function (i) { return i !== specN; }).forEach(function (i) { if (K.mirrorEntity(f.entities[i], axM)) pairs.push([i, k0++]); });
+          targetsNow.filter(function (i) { return i !== specN; }).forEach(function (i) { if (K.mirrorEntity(f.entities[i], axM)) pairs.push([i, k0++]); });
           nSym = SketchSolver.mirrorRelations(f, pairs, specN);
         }
         App.tempEntities = []; UI.updateTemp(); App.sel = null; App.gridStale = true;
@@ -2881,6 +2914,11 @@
     return '<div class="kv" style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px">' + rows.map(function (r) { return '<span class="static">' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('') + '</div>';
   }
   UI.onSelectionChanged = function () { if (!pm.spec) return; if (pm.spec.title === 'Measure') renderPM(); if (pm.spec.onSelection) pm.spec.onSelection(); };
+  // the open PropertyManager collects graphics-area selections (its onSelection hook): a plain click in a sketch
+  // selects into it instead of opening the clicked entity's PropertyManager (ui-select.js sketchSelectClick)
+  UI.pmCollectsSelection = function () { return !!(pm.spec && pm.spec.onSelection); };
+  // a PM's own use of a clicked entity before the selection box gets it (Mirror Entities ▸ Mirror about); true: taken
+  UI.pmEntityPick = function (hit) { return !!(pm.spec && pm.spec.onEntityPick && pm.spec.onEntityPick(hit)); };
 
   // ------------------------------------------------------------------ sketch entity editing
   var ENTITY_FIELDS = {
