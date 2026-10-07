@@ -455,7 +455,8 @@
       else if (App.sel && App.sel.kind === 'feature') { var f = K.findFeature(App.model, App.sel.id); if (f && f.type === 'sketch') sketch = f; else if (f && f.sketch != null) sketch = K.findFeature(App.model, f.sketch); }
     }
     if (!sketch) { UI.toast('Select a sketch in the tree (or open one) first.'); return; }
-    exportDialog('Export sketch as DXF', safeName() + '_' + sketch.name + '.dxf', K.exportDXFSketch(sketch, App.model.units), 'application/dxf');
+    // the DXF/DWG Output PropertyManager with Sketch chosen: version, construction geometry, DWG, file name
+    UI.cmdDxfOutput({ export: 'sketch', sketch: sketch.id });
   }
   function exportJSON() { exportDialog('Model JSON', safeName() + '.anvil.json', JSON.stringify(App.model, null, 1), 'application/json'); }
   function exportScript() { exportDialog(isAsm() ? 'Assembly as script' : 'Model as script', safeName() + '.anvil.js', modelScript(), 'text/javascript'); }
@@ -678,7 +679,9 @@
       el('label', { class: 'dlg-row' }, [el('span', { text: 'Save as type' }), type]), note]);
     UI.showModal({ title: 'Save As', body: body, buttons: [
       { label: 'Save', primary: true, action: function () {
-        if (!App.mesh || (!App.mesh.triCount && type.value !== 'json' && type.value !== 'script')) { UI.toast('Nothing to export yet.'); return; }
+        // a part with no solid yet still saves itself, and DXF / DWG of a sketch (the DXF/DWG Output PropertyManager's Sketch)
+        var sketchOnly = (type.value === 'dxf' || type.value === 'dwg') && (App.model.features || []).some(function (f) { return f.type === 'sketch' && (f.entities || []).some(function (e) { return e.t !== 'point'; }); });
+        if (!App.mesh || (!App.mesh.triCount && type.value !== 'json' && type.value !== 'script' && !sketchOnly)) { UI.toast(type.value === 'dxf' || type.value === 'dwg' ? 'Nothing to export yet: draw a sketch or build a solid first.' : 'Nothing to export yet.'); return; }
         var base = (name.value || '').trim().replace(/\.(anvil\.json|anvil\.js|json|js|step|stp|3mf|obj|stl|igs|dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || safeName();
         // DXF / DWG: the DXF/DWG Output PropertyManager takes over, with the format and the typed name
         if (type.value === 'dxf' || type.value === 'dwg') { UI.closeModal(); UI.cmdDxfOutput({ format: type.value, name: base }); return; }

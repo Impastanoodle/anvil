@@ -335,8 +335,11 @@
     table('LTYPE', ltypes.length, function () {
       ltypes.forEach(function (lt, i) { record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65); P(73, 0); P(40, 0); });
     });
-    table('LAYER', DXF_LAYERS.length, function () {
-      DXF_LAYERS.forEach(function (l, i) { record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, l[1]); P(6, cont); });
+    // the standard layers, plus any other layer an entity is on (e.g. a sketch's CONSTRUCTION, colour 8)
+    var layers = DXF_LAYERS.slice(), names = layers.map(function (l) { return l[0]; });
+    this.ents.forEach(function (e) { if (names.indexOf(e.layer) < 0) { names.push(e.layer); layers.push([e.layer, 8]); } });
+    table('LAYER', layers.length, function () {
+      layers.forEach(function (l, i) { record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, l[1]); P(6, cont); });
     });
     table('STYLE', 1, function () {
       record('STYLE', 'STYLE', 'AcDbTextStyleTableRecord', '11');
@@ -423,14 +426,26 @@
     return out.concat(body, ['0', 'EOF']).join('\n');
   };
 
+  // exportDXFSketch(sketch, units, opts?) -> DXF text of a sketch as drawn, full size in the sketch's own 2D frame:
+  // every entity as its exact pieces (K.entityPrimitives): lines as LINE, circles as CIRCLE, arcs as ARC, rectangles /
+  // polygons / polylines as their LINE edges, slots as two LINEs and two ARCs. Construction geometry (centerlines too)
+  // is left out unless opts.construction, which puts it on layer CONSTRUCTION; points and dimensions are not written.
+  // opts: { version: 'R12' (default) | 'R2000', construction }
   function exportDXFSketch(sketch, units, opts) {
-    var d = new DXF(units, opts);
+    opts = opts || {};
+    var d = new DXF(units, opts), R2D = 180 / Math.PI;
     (sketch.entities || []).forEach(function (e) {
-      if (e.t === 'circle') { d.circle('OUTLINE', [e.cx, e.cy], e.r); return; }
-      if (e.t === 'arc') { d.arc('OUTLINE', [e.cx, e.cy], e.r, e.a0, e.a1); return; }
-      if (e.t === 'line') { d.line('OUTLINE', [e.x1, e.y1], [e.x2, e.y2]); return; }
-      if (e.t === 'point') return;
-      entityPolylines(e).forEach(function (pl) { d.polyline('OUTLINE', pl.pts, pl.closed); });
+      if (!e || e.t === 'point') return;
+      if (e.construction && !opts.construction) return;
+      var layer = e.construction ? 'CONSTRUCTION' : 'OUTLINE';
+      // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
+      // would flip an arc across 0°)
+      if (e.t === 'arc') { d.arc(layer, [e.cx, e.cy], e.r, e.a0, e.a1); return; }
+      K.entityPrimitives(e).forEach(function (p) {
+        if (p.kind === 'seg') d.line(layer, p.a, p.b);
+        else if (p.full) d.circle(layer, p.c, p.r);
+        else d.arc(layer, p.c, p.r, p.a0 * R2D, p.a1 * R2D);
+      });
     });
     return d.toString();
   }

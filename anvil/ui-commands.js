@@ -2755,16 +2755,44 @@
       return dxf;
     }
     if (what === 'views') return dxfViews(opts.views || ['Front', 'Top', 'Right'], !!opts.current);
+    if (what === 'sketch') {
+      var sk = opts.sketch != null ? K.findFeature(App.model, opts.sketch) : dxfDefaultSketch();
+      if (!sk || sk.type !== 'sketch') throw new Error('Pick a sketch to export.');
+      if (!sk.entities.some(function (e) { return e.t !== 'point' && (opts.construction || !e.construction); })) throw new Error(sk.name + ' has nothing to export' + (opts.construction ? '.' : ' (only construction geometry or points).'));
+      return K.exportDXFSketch(sk, dxfUnits(), { version: wopts.version, construction: !!opts.construction });
+    }
     if (what === 'sheet') {
       if (!App.model.sheet) throw new Error('Sheet metal needs a Base Flange.');
       var flat = K.flatPattern(App.model, App.build, App.mesh);
       wopts.bendLines = opts.bendLines !== false; wopts.notes = opts.notes !== false;
       return K.exportDXFFlat(flat, dxfUnits(), wopts);
     }
-    throw new Error('Unknown export "' + what + '" (faces, views or sheet).');
+    throw new Error('Unknown export "' + what + '" (faces, views, sheet or sketch).');
   }
-  function dxfDefaultExport() { return App.model.sheet ? 'sheet' : App.sel && App.sel.kind === 'face' ? 'faces' : 'views'; }
-  function dxfSuffix(v) { return v.export === 'faces' ? '_face' + (App.sel && App.sel.kind === 'face' ? App.sel.index : '') : v.export === 'sheet' ? '_flat' : '_views'; }
+  // the part's sketches that have something to draw, in tree order
+  function dxfSketches() { return (App.model.features || []).filter(function (f) { return f.type === 'sketch' && (f.entities || []).some(function (e) { return e.t !== 'point'; }); }); }
+  // the sketch Sketch export takes by default: the one being edited, else the one selected in the tree (or the sketch
+  // of the selected feature), else the last one with geometry
+  function dxfDefaultSketch() {
+    if (App.mode === 'sketch' && UI.activeSketchFeature && UI.activeSketchFeature()) return UI.activeSketchFeature();
+    if (App.sel && App.sel.kind === 'feature') {
+      var f = K.findFeature(App.model, App.sel.id);
+      if (f && f.type === 'sketch') return f;
+      if (f && f.sketch != null) { var s = K.findFeature(App.model, f.sketch); if (s && s.type === 'sketch') return s; }
+    }
+    var list = dxfSketches();
+    return list.length ? list[list.length - 1] : null;
+  }
+  function hasSolid() { return !!(App.mesh && App.mesh.triCount); }
+  // in a sketch, or with a part that has no solid yet, Sketch is the default; then Sheet metal, Faces, Views
+  function dxfDefaultExport() {
+    if ((App.mode === 'sketch' || !hasSolid()) && dxfDefaultSketch()) return 'sketch';
+    return App.model.sheet ? 'sheet' : App.sel && App.sel.kind === 'face' ? 'faces' : 'views';
+  }
+  function dxfSuffix(v) {
+    if (v.export === 'sketch') { var s = v.sketch != null && v.sketch !== '' ? K.findFeature(App.model, +v.sketch) : dxfDefaultSketch(); return '_' + String(s ? s.name : 'sketch').replace(/[^\w\-]+/g, '_'); }
+    return v.export === 'faces' ? '_face' + (App.sel && App.sel.kind === 'face' ? App.sel.index : '') : v.export === 'sheet' ? '_flat' : '_views';
+  }
   // The converter on the local server: HEAD api/dxf2dwg answers 200 with X-Anvil-Converter: oda | libredwg when one is
   // installed, 503 when not; the published copy has no endpoint at all (a 404 or a network error, both "none").
   var dwgState = { probed: false, ok: false, converter: null, pending: null };
@@ -2797,8 +2825,9 @@
   // type DXF / DWG carries the typed file name over)
   function cmdDxfOutput(opts) {
     opts = opts || {};
-    var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet;
-    var v = { export: dxfDefaultExport(), vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
+    var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet, sketchOk = dxfSketches().length > 0;
+    var sk0 = opts.sketch != null ? K.findFeature(App.model, +opts.sketch) : dxfDefaultSketch();
+    var v = { export: opts.export === 'sketch' && sketchOk ? 'sketch' : dxfDefaultExport(), sketch: sk0 ? String(sk0.id) : '', construction: false, vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
       format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
@@ -2807,11 +2836,13 @@
     function optsOf(x) {
       // DWG: the converter gets an R2000 DXF (LibreDWG reads R12 entities without their model space)
       return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes,
+        sketch: x.sketch !== '' && x.sketch != null ? +x.sketch : null, construction: !!x.construction,
         version: x.format === 'dwg' || x.version === 'R2000' ? 'R2000' : 'R12', style: x.style };
     }
     function cleanName(x) { return String(x.name || '').trim().replace(/\.(dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || autoName(); }
     function isViews(x) { return x.export === 'views'; }
     function isSheet(x) { return x.export === 'sheet'; }
+    function isSketchX(x) { return x.export === 'sketch'; }
     // a face clicked while the PropertyManager is open becomes the face to export (SolidWorks' selection box)
     var command = { kind: 'dxfOutput', onPick: function (pk) {
       if (!pk || pk.kind !== 'face') return false;
@@ -2827,8 +2858,15 @@
       message: 'Choose what to export and the format; ✓ downloads the file.',
       groups: [
         { title: 'Export', fields: [
-          { type: 'radio', key: 'export', rerender: true, options: [['faces', 'Faces / loops / edges'], ['views', 'Views'], ['sheet', 'Sheet metal']],
-            disabledOption: function (val) { return val === 'faces' && !faceOk ? 'Select a planar face first' : val === 'sheet' && !sheetOk ? 'Add a Base Flange first' : null; } },
+          { type: 'radio', key: 'export', rerender: true, options: [['faces', 'Faces / loops / edges'], ['views', 'Views'], ['sheet', 'Sheet metal'], ['sketch', 'Sketch']],
+            disabledOption: function (val) {
+              if (val === 'sketch') return sketchOk ? null : 'Draw a sketch first';
+              if (!hasSolid()) return 'No solid yet';
+              return val === 'faces' && !faceOk ? 'Select a planar face first' : val === 'sheet' && !sheetOk ? 'Add a Base Flange first' : null;
+            } },
+          { type: 'select', label: 'Sketch', key: 'sketch', show: isSketchX, options: function () { return dxfSketches().map(function (s) { return [String(s.id), s.name]; }); } },
+          { type: 'check', label: 'Construction geometry', key: 'construction', show: isSketchX },
+          { type: 'html', show: isSketchX, html: '<div class="pm-note">Full size, in the sketch\'s own coordinates: lines, arcs and circles as drawn; dimensions are not written.</div>' },
           { type: 'check', label: 'Front', key: 'vFront', show: isViews }, { type: 'check', label: 'Top', key: 'vTop', show: isViews },
           { type: 'check', label: 'Right', key: 'vRight', show: isViews }, { type: 'check', label: 'Isometric', key: 'vIsometric', show: isViews },
           { type: 'check', label: 'Current view', key: 'vCurrent', show: isViews },
@@ -2841,12 +2879,12 @@
             disabledOption: function (val) { return val === 'dwg' && !(dwgState.probed && dwgState.ok) ? DWG_NOTE : null; } },
           { type: 'html', show: function () { return dwgState.converter === 'libredwg'; }, html: '<div class="pm-note">' + LIBREDWG_NOTE + '</div>' },
           { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : isViews(x) ? [['R12', 'R12 (AC1009)']] : [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']]; } },
-          { type: 'select', label: 'Loops as', key: 'style', show: function (x) { return !isViews(x); }, options: [['polyline', 'Polylines (one per loop)'], ['entities', 'Lines and arcs']] }
+          { type: 'select', label: 'Loops as', key: 'style', show: function (x) { return !isViews(x) && !isSketchX(x); }, options: [['polyline', 'Polylines (one per loop)'], ['entities', 'Lines and arcs']] }
         ] },
         { title: 'File name', fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (x, key) {
-        if (key === 'export' && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
+        if ((key === 'export' || key === 'sketch') && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
         if (key === 'export' && isViews(x) && x.format !== 'dwg' && x.version !== 'R12') { x.version = 'R12'; UI.renderPM(); }
         if (key === 'format') { x.version = x.format === 'dwg' ? 'R2000' : 'R12'; UI.renderPM(); }
         if (key === 'name') auto = null;
