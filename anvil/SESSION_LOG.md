@@ -1317,3 +1317,9 @@ Tests: kernel 934/934, examples 29/29, ui-smoke 399/399; hand check in the brows
 - layers: `ui-sketch-layers.js` + kernel-sketch.js (`f.layers`, `Kernel.noProfileEntity`, presets) + kernel-script.js (DXF layers / colours / DASHED, script `.layers` / `.layer`); shaded regions and open-end markers; copy / paste with relations. Head: noProfile filter added to sweep paths (both kernels), Sketched Bend lines and Hole Wizard points.
 - refine: a hand-test/fix pass of every Sketch tool was cut short by the session limit (see the next entry or its worktree).
 Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 413/413.
+
+## 2026-10-07T15 (interactive head): the Sketch refinement pass merged
+
+- refine (branch sketch-refine-pass): spline / ellipse Trim and Extend, point-on-spline Coincident, spline Smart Dimension, Move / Copy / Rotate / Scale / patterns / Mirror carrying splines, ellipses and arc slots, Circular pattern of arc slots on the centre, spline Offset, From / To points with inference, Snap to Model while dragging (Ctrl suppresses), relation icon spacing after zoom-out, true infinite line (`infinite: true | 'p1' | 'p2'`, `SketchSolver.infSides`, `UI.infiniteLinePts`).
+- head: ui-core.js screenPolylines draws infinite lines across the view and sketchEndPoints skips their runaway ends; kernel-sketch.js sketchProfile and kernel-script.js sketch DXF skip infinite lines; ui-sketch.js curveSnap handles rays and snaps onto splines / ellipses, inferPoint is free while Ctrl is held.
+Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 423/423, occt-tests 72/72. Not fixed: 3 Point Arc Slot width click refused on its own third point; Corner trim on splines.

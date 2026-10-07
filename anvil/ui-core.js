@@ -1510,8 +1510,10 @@ var UI = (function () {
   function sketchEndPoints(f, i, e, mat, ptsBy) {
     var S = window.SketchSolver;
     if (!S || !S.pointRefs || e.t === 'point') return;
+    var inf = S.infSides ? S.infSides(e) : null;   // sketch-refine: no dot on an infinite line's runaway end
     S.pointRefs(f, i).forEach(function (pr) {
       if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
+      if (inf && inf[pr.ref.split('.')[1]]) return;
       var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
       var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [] });
       if (ptsBy._seen && ptsBy._seen[key]) return;
@@ -1540,6 +1542,7 @@ var UI = (function () {
   // 30 % since they were tessellated, so zooming in never shows the flats.
   var SCREEN_SAG_PX = 0.15, sketchSegsScale = 0;
   function screenPolylines(e) {
+    if (e.t === 'line' && e.infinite && UI.infiniteLinePts) return [{ pts: UI.infiniteLinePts(e), closed: false }];   // sketch-refine: across the view at any zoom
     if (e.t !== 'circle' && e.t !== 'arc' && e.t !== 'slot' && e.t !== 'aslot') return K.entityPolylines(e);
     var saved = K.setTessellation({});
     try { K.setTessellation({ chordTol: Math.max(1e-9, SCREEN_SAG_PX * cam.scale), minSegs: 32, maxSegs: 2048 }); return K.entityPolylines(e); }

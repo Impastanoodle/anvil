@@ -488,6 +488,7 @@
     var loops = [], chains = [], warnings = [], curves = [], free = [];
     (sketch.entities || []).forEach(function (e) {
       if (e.construction || noProfileEntity(sketch, e)) return;   // sketch-layers: ETCH / BEND make no region
+      if (e.t === 'line' && e.infinite) return;   // sketch-refine: an infinite line (or ray) bounds no region
       curves = curves.concat(entityCurves(e));
       if (isFree(e)) { var fr = freeRecord(e); if (fr) free.push(fr); }
       entityPolylines(e, true).forEach(function (pl) {

@@ -63,7 +63,11 @@
     };
   }
   // the sketch point (an end, a centre, the origin) within 9 px of the cursor, else the point under it
+  // sketch-refine: where the drawing tools would put it (UI.sketchInferPoint: sketch and model points, curves,
+  // alignment, and a free point rounded to the roundest value under the cursor, 10 not 10.125), as SolidWorks infers
+  // the From / To points
   function snapPoint(f, uv, mx, my) {
+    if (UI.sketchInferPoint) { var inf = UI.sketchInferPoint(uv, mx, my); if (inf && inf.p) return inf.p.slice(); }
     var best = null, bd = 9;
     f.entities.forEach(function (e, i) { S.pointRefs(f, i).forEach(function (pr) { if (/\.mid$/.test(pr.ref)) return; var s = scr(pr.pt), d = Math.hypot(s[0] - mx, s[1] - my); if (d < bd) { bd = d; best = pr.pt; } }); });
     var o = scr([0, 0]);
@@ -310,7 +314,7 @@
     function freeEndAt(mx, my) {
       var best = null, bd = 8;
       f.entities.forEach(function (e, i) {
-        if ((e.t !== 'line' && e.t !== 'arc') || ignored(e)) return;
+        if ((e.t !== 'line' && e.t !== 'arc') || e.infinite || ignored(e)) return;
         ['p1', 'p2'].forEach(function (end) {
           var p = S.refPoint(f, i + '.' + end), s = p && scr(p), d = s ? Math.hypot(s[0] - mx, s[1] - my) : Infinity;
           if (d < bd && !S.endJoined(f, i + '.' + end)) { bd = d; best = { i: i, end: end, pt: p }; }
@@ -512,19 +516,22 @@
     var count = 0;
     function target(uv, mx, my) {
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
-      if (!e || (e.t !== 'line' && e.t !== 'arc')) return null;
+      if (!e || !(e.t === 'line' || e.t === 'arc' || e.t === 'pellipse' || (e.t === 'spline' && !e.closed))) return null;
       var tg = S.extendTarget(f, hit.index, uv);
       return tg ? { i: hit.index, e: e, tg: tg } : null;
     }
     UI.openPM({
       title: 'Extend Entities', icon: 'extend',
-      message: '<b>Click a line or an arc near the end to lengthen.</b> It grows to the first entity in its way; the orange preview shows where.',
+      message: '<b>Click a line, an arc, an open spline or a partial ellipse near the end to lengthen.</b> It grows to the first entity in its way; the orange preview shows where.',
       command: {
         onSketchMove: function (uv, mx, my) {
           var t = target(uv, mx, my);
           if (!t || !UI.sketchPreview) return;
           var pts = [t.tg.from, t.tg.to];
-          if (t.e.t === 'arc') {
+          // sketch-refine: a partial ellipse runs on round its ellipse, a spline along its end span
+          var fc = (t.e.t === 'spline' || t.e.t === 'pellipse') && S.freeCurve ? S.freeCurve(t.e) : null;
+          if (fc) pts = S.freePts(fc, t.tg.end === 'p2' ? fc.t1 : t.tg.t, t.tg.end === 'p2' ? t.tg.t : fc.t0);
+          else if (t.e.t === 'arc') {
             var from = t.tg.end === 'p2' ? t.e.a1 : t.tg.a, to = t.tg.end === 'p2' ? t.tg.a : t.e.a0;
             pts = [];
             for (var k = 0; k <= 32; k++) { var a = (from + (to - from) * k / 32) * Math.PI / 180; pts.push([t.e.cx + t.e.r * Math.cos(a), t.e.cy + t.e.r * Math.sin(a)]); }

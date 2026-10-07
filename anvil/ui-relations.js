@@ -33,6 +33,16 @@
     var hit = UI.pickEntity(mx, my);
     if (!hit) return null;
     var curves = S.curveRefs(f, hit.index);
+    // sketch-refine: Smart Dimension on an open spline (it has no dimension of its own) measures from its ends: the click
+    // picks the end nearer the cursor, and a second click on the same spline its other end (end to end)
+    var he = f.entities[hit.index];
+    if (App.tool === 'dimension' && he && he.t === 'spline' && !he.closed && he.pts.length > 1) {
+      var st = App.toolState || {}, e1 = hit.index + '.p1', e2 = hit.index + '.p2', q1 = S.refPoint(f, e1), q2 = S.refPoint(f, e2);
+      if (st.pt1 === e1) return e2;
+      if (st.pt1 === e2) return e1;
+      var s1 = scr(pl, q1), s2 = scr(pl, q2);
+      return Math.hypot(s1[0] - mx, s1[1] - my) <= Math.hypot(s2[0] - mx, s2[1] - my) ? e1 : e2;
+    }
     if (!curves.length) return String(hit.index);
     if (curves.length === 1) return curves[0];
     var bestC = curves[0], bdc = Infinity;
@@ -400,7 +410,11 @@
     var q = [a[0] + m.off[0], a[1] + m.off[1]];
     // (p9-sketchfix: a remembered place only has to stay clear of the labels and icons: freeKeep; a new one keeps off
     // the curves too)
-    var free = h.freeKeep || h.free;
+    // sketch-refine: zoomed out to two thirds of the size it had when the place was chosen (or less), it has to keep
+    // off the curves again: the geometry shrinks under icons that keep their pixel offsets, and they piled up over
+    // small entities (inside a small rectangle, over a hole)
+    var sc = UI.cam && UI.cam.scale, rezoom = !!(sc && m.scale && sc > 1.5 * m.scale);
+    var free = rezoom ? h.free : h.freeKeep || h.free;
     return { q: q, ok: !free || free([q[0] + 3, q[1] + 3, q[0] + 13, q[1] + 13]) || !!(UI.sketchZooming && UI.sketchZooming()) };
   }
   // must: the icon is drawn even with no free place (selected, hovered, or over defining / not solved); otherwise
@@ -414,7 +428,7 @@
     if (!p0) { if (h.take) h.take(qb); return q; }   // nowhere free (zoomed far out): it stays where it was
     if (memoKey) {
       if (!spotMemo[memoKey] && ++spotMemoN > 4000) { spotMemo = {}; spotMemoN = 0; }
-      spotMemo[memoKey] = { off: [p0[0] - a[0], p0[1] - a[1]], kind: kind, dir: dir };
+      spotMemo[memoKey] = { off: [p0[0] - a[0], p0[1] - a[1]], kind: kind, dir: dir, scale: UI.cam && UI.cam.scale };
     }
     return p0;
   }
@@ -780,6 +794,14 @@
   // ------------------------------------------------------------------ dragging sketch geometry
   // Pressing on an entity or point with the Select tool drags it; the solver keeps every relation and dimension, so
   // fully defined geometry stays put and under-defined geometry follows the mouse.
+  // sketch-refine: Ctrl held while dragging suppresses the snaps (no merge, no model snap), as SolidWorks' Ctrl does
+  // for inferences; the drag hook gets no modifier keys, so the state is followed here
+  var ctrlHeld = false;
+  window.addEventListener('keydown', function (ev) { if (ev.key === 'Control') ctrlHeld = true; }, true);
+  window.addEventListener('keyup', function (ev) { if (ev.key === 'Control') ctrlHeld = false; }, true);
+  window.addEventListener('mousemove', function (ev) { ctrlHeld = !!ev.ctrlKey; }, true);
+  window.addEventListener('blur', function () { ctrlHeld = false; });
+  UI.sketchCtrlHeld = function () { return ctrlHeld; };   // for the drawing tools' inference too (ui-sketch.js inferPoint)
   function sketchDragHook(p) {
     if (App.mode !== 'sketch' || App.tool !== 'select' || App.command) return null;
     var f = UI.activeSketchFeature(), ref = pickSketchRef(p[0], p[1]);
@@ -824,6 +846,15 @@
       });
       var o = scr(pl, [0, 0]);
       if (!(P0 && Math.abs(P0[0]) < 1e-9 && Math.abs(P0[1]) < 1e-9) && Math.hypot(o[0] - q[0], o[1] - q[1]) < bd) best = { ref: 'O', pt: [0, 0] };
+      // sketch-refine: Snap to Model while dragging too (as the drawing tools snap, ui-sketch.js inferPoint): a model
+      // vertex, edge midpoint, centre, face / part centre within 9 px, unless a sketch point is as near (a pixel's grace);
+      // it lands there exactly and adds no relation (sketches hold no external references)
+      var mc = UI.sketchModelSnaps ? UI.sketchModelSnaps() : null;
+      if (mc && mc.pts && mc.pts.length) {
+        var mb = null, mbd = 9;
+        mc.pts.forEach(function (c) { var s = scr(pl, c.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < mbd) { mbd = d; mb = c; } });
+        if (mb && (!best || mbd < bd - 1)) best = { ref: null, pt: mb.pt.slice(), model: true, label: mb.label };
+      }
       if (best) return best;
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv) return null;
@@ -846,7 +877,7 @@
             var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L2 = dx * dx + dy * dy;
             if (!(L2 > 0)) return;
             var t = ((uv[0] - c.a[0]) * dx + (uv[1] - c.a[1]) * dy) / L2;
-            if (t <= 0 || t >= 1) return;
+            if ((t <= 0 || t >= 1) && !(e.t === 'line' && e.infinite)) return;   // sketch-refine: an infinite line runs on
             pt = [c.a[0] + dx * t, c.a[1] + dy * t];
           } else {
             var vx = uv[0] - c.c[0], vy = uv[1] - c.c[1], r = Math.hypot(vx, vy);
@@ -860,11 +891,38 @@
           var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]);
           if (d < bdc) { bdc = d; bc = { ref: cr, pt: pt, curve: true }; }
         });
+        // sketch-refine: onto a spline / ellipse (point on curve), unless the point already lay on it
+        if (S.isFree && S.isFree(e) && !(start[i] && P0 && freeOn(start[i], P0))) {
+          var fc = S.freeCurve(e), cl = fc && S.freeClosest(fc, uv);
+          if (cl && !cl.end) { var sf = scr(pl, cl.p), df = Math.hypot(sf[0] - q[0], sf[1] - q[1]); if (df < bdc) { bdc = df; bc = { ref: String(i), pt: cl.p, curve: true }; } }
+        }
       });
-      return bc;
+      if (bc) return bc;
+      // sketch-refine: last, onto a model edge (no relation)
+      if (mc && (mc.segs.length || mc.arcs.length)) {
+        var me = null, med = 7;
+        var mtake = function (pt) { var s = scr(pl, pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < med) { med = d; me = pt; } };
+        mc.segs.forEach(function (sg) {
+          var dx = sg.b[0] - sg.a[0], dy = sg.b[1] - sg.a[1], L2 = dx * dx + dy * dy;
+          if (!(L2 > 0)) return;
+          var t = Math.max(0, Math.min(1, ((uv[0] - sg.a[0]) * dx + (uv[1] - sg.a[1]) * dy) / L2));
+          mtake([sg.a[0] + t * dx, sg.a[1] + t * dy]);
+        });
+        mc.arcs.forEach(function (ar) {
+          var vx = uv[0] - ar.c[0], vy = uv[1] - ar.c[1], r = Math.hypot(vx, vy);
+          if (r < 1e-12) return;
+          var ang = Math.atan2(vy, vx), rel = (((ang - ar.a0) * ar.sg) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+          if (!ar.full && rel > ar.sw + 1e-9) return;
+          mtake([ar.c[0] + vx / r * ar.r, ar.c[1] + vy / r * ar.r]);
+        });
+        if (me) return { ref: null, pt: me, model: true, curve: true, label: 'On edge' };
+      }
+      return null;
     }
+    // does point P lie on spline / ellipse e (as it was)?
+    function freeOn(e, P) { var fc = S.freeCurve(e), c = fc && S.freeClosest(fc, P); return !!(c && c.d < 1e-7 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]))); }
     function dropKind(d) {
-      if (!d) return null;
+      if (!d || d.model) return null;
       if (d.mid) return 'midpoint';
       var de = d.ref !== 'O' && f.entities[refEntity(d.ref)];
       return /\.c$/.test(ref) && /\.c$/.test(d.ref) && de && /^(circle|arc)$/.test(de.t) ? 'concentric' : 'coincident';
@@ -872,11 +930,15 @@
     function solveTo(q) {
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv || !uv0) return;
-      drop = point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
+      drop = !ctrlHeld && point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
       if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; UI.updateSketches(); }
-      if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, dropKind(drop));   // r15/snapaudit15: the glyph names the relation the release adds
+      if (drop && drop.model) {
+        // sketch-refine: a model snap shows the drawing tools' magenta ring (no relation glyph: none is added)
+        if (UI.sketchSnapMark) UI.sketchSnapMark(null);
+        if (UI.sketchPreview) { var s0 = scr(pl, drop.pt), ring = []; for (var k = 0; k <= 20; k++) { var w = UI.screenToPlane(s0[0] + 6 * Math.cos(k * Math.PI / 10), s0[1] + 6 * Math.sin(k * Math.PI / 10), pl); if (w) ring.push(w); } UI.sketchPreview([ring], 'stroke:#c2409f;stroke-width:1.5;fill:none', 'sk-model-snap'); }
+      } else if (UI.sketchSnapMark) UI.sketchSnapMark(drop ? drop.pt : null, q, drop && drop.curve, dropKind(drop));   // r15/snapaudit15: the glyph names the relation the release adds
     }
     // the next frame, or 50 ms when animation frames are throttled (a background tab), whichever comes first
     var timer = 0;
@@ -896,7 +958,8 @@
         App.sketchDragging = false;
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
         var merged = null;
-        if (drop && moved) {
+        if (drop && drop.model && moved) merged = 'Snapped to the model (' + (drop.label || 'model') + '): no relation added. ';
+        else if (drop && moved) {
           // a circle / arc centre dropped on another circle / arc centre: Concentric (as SolidWorks merges them); on a
           // midpoint: Midpoint (r15/snapaudit15)
           var kind = dropKind(drop), kname = S.TYPES[kind].name;

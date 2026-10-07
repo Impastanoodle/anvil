@@ -173,20 +173,29 @@
     var e = lineEnd(a, b), s = LM.midpoint ? [clean(2 * a[0] - e[0]), clean(2 * a[1] - e[1])] : a;
     return { t: 'line', x1: s[0], y1: s[1], x2: e[0], y2: e[1] };
   }
-  // Infinite length: the line runs across the whole graphics area, well past both edges (trim it back to what is
-  // needed), through the two clicked points
-  function extendInfinite(e) {
-    var dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy);
-    if (L < 1e-12) return;
-    var s = (UI.cam && UI.cam.scale) || 0.1, R = Math.max(L, 1.5 * Math.hypot(UI.size.w || 800, UI.size.h || 600) * s);
-    var mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2, ux = dx / L, uy = dy / L;
-    e.x1 = clean(mx - ux * R); e.y1 = clean(my - uy * R); e.x2 = clean(mx + ux * R); e.y2 = clean(my + uy * R);
-  }
+  // sketch-refine: Infinite length makes a true infinite line: the entity keeps the two points clicked (infinite: true)
+  // and stands for the whole line through them. The solver treats it as that line (SketchSolver: no end points, only
+  // its 2 degrees of freedom), Trim cuts it back to a finite line, profiles and DXF leave it out like construction
+  // geometry, and it is drawn right across the graphics area at any zoom: UI.infiniteLinePts(e) gives the points to
+  // draw, the line through e's points from fifty view diagonals before the middle of the view to fifty after it (the
+  // sketch is redrawn whenever the zoom changes by a third, so it always runs past the edges).
+  UI.infiniteLinePts = function (e) {
+    var a = [e.x1, e.y1], dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy);
+    if (!(L > 1e-15)) return [a, [e.x2, e.y2]];
+    var u = [dx / L, dy / L], pl = UI.activePlane ? UI.activePlane() : null, W = (UI.size && UI.size.w) || 800, H = (UI.size && UI.size.h) || 600;
+    var c = pl ? UI.screenToPlane(W / 2, H / 2, pl) : null, s = (UI.cam && UI.cam.scale) || 0.1;
+    if (!c) c = a;
+    var R = 50 * Math.hypot(W, H) * s, t = (c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1], t0 = t - R, t1 = t + R;
+    // a ray (Trim made it: infinite 'p1' / 'p2') starts at its one end point and runs on past the other
+    if (e.infinite === 'p2') { t0 = 0; t1 = Math.max(t1, L); }
+    else if (e.infinite === 'p1') { t1 = L; t0 = Math.min(t0, 0); }
+    return [[a[0] + u[0] * t0, a[1] + u[1] * t0], [a[0] + u[0] * t1, a[1] + u[1] * t1]];
+  };
   UI.sketchToolHooks.line = {
     entities: function (pts, cur, all) {
       if (!lineSingle() || all.length < 2) return null;
       var e = specialLine(all[0], all[1]);
-      if (LM.infinite) extendInfinite(e);
+      if (LM.infinite) e.infinite = true;
       return [e];
     },
     single: lineSingle,
@@ -352,7 +361,19 @@
         markDirty();
         if (key === 'construction') { if (v.construction) cur.construction = true; else delete cur.construction; refresh(); pmNote(null); return; }
         if (key === 'infinite') {
-          if (v.infinite) { extendInfinite(cur); cur.infinite = true; if (f2.rels || f2.dims) SS().solve(f2); }
+          // sketch-refine: the flag only (the line keeps its two points); relations on its ends go with the ends
+          if (v.infinite) {
+            cur.infinite = true;
+            // an end that sat on a point keeps the line through that point (point on line); what else held an end goes
+            if (f2.rels) f2.rels = f2.rels.map(function (r) {
+              var k = r.refs.indexOf(index + '.p1') >= 0 ? r.refs.indexOf(index + '.p1') : r.refs.indexOf(index + '.p2');
+              if (k < 0 && !r.refs.some(function (x) { return x === index + '.mid'; })) return r;
+              var other = r.type === 'coincident' && r.refs.length === 2 && k >= 0 ? r.refs[1 - k] : null;
+              return other && (other === 'O' || SS().refKind(f2, other) === 'point') ? { type: 'coincident', refs: [other, String(index)] } : null;
+            }).filter(function (r) { return r; });
+            if (f2.dims) f2.dims = f2.dims.filter(function (d) { return d.e !== index; });
+            SS().clean(f2); SS().solve(f2);
+          }
           else delete cur.infinite;
           refresh(); syncFields(lineVals(f2.entities[index]), key); pmNote(null);
           return;

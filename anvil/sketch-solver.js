@@ -117,7 +117,9 @@ var SketchSolver = (function () {
   function refKind(ents, r) {
     if (refPoint(ents, r)) return 'point';
     var c = refCurve(ents, r);
-    return c ? c.kind : null;
+    if (c) return c.kind;
+    // sketch-refine: a whole spline / ellipse (a point can lie on it: Coincident)
+    return r && !r.o && r.s === null && isFree(ents[r.e]) ? 'free' : null;
   }
   // a point, or the centre of a circle ref (what concentric / distance use)
   function refCenter(ents, r) {
@@ -189,7 +191,7 @@ var SketchSolver = (function () {
         for (var k = 2; k >= 0; k--) {
           if (kinds[k] !== 'line') continue;
           var o = [0, 1, 2].filter(function (q) { return q !== k; });
-          if (kinds[o[0]] === kinds[o[1]]) return [o[0], o[1], k];
+          if (kinds[o[0]] === kinds[o[1]] && kinds[o[0]] !== 'free') return [o[0], o[1], k];
         }
         return null;
       case 'horizontal': case 'vertical':
@@ -197,7 +199,7 @@ var SketchSolver = (function () {
         return n === 2 ? perm('point', 'point') : null;
       case 'coincident':
         if (n !== 2) return null;
-        return perm('point', 'point') || perm('point', 'line') || perm('point', 'circle');
+        return perm('point', 'point') || perm('point', 'line') || perm('point', 'circle') || perm('point', 'free');
       // p9-sketchfix: or three points, the first midway between the other two (a line cut in two by Trim: the middle of
       // its outer ends)
       case 'midpoint': return n === 2 ? perm('point', 'line') : n === 3 && kinds.every(function (k) { return k === 'point'; }) ? [0, 1, 2] : null;
@@ -307,6 +309,8 @@ var SketchSolver = (function () {
       case 'coincident':
         if (kB === 'point') { n = 2; f = function (E) { var a = P(A, E), b = P(B, E); return [a[0] - b[0], a[1] - b[1]]; }; }
         else if (kB === 'line') { n = 1; f = function (E) { return [lineDist(P(A, E), C(B, E))]; }; }
+        // sketch-refine: a point on a spline / ellipse (its signed distance from the curve)
+        else if (kB === 'free') { n = 1; f = function (E) { var fc = refFree(E, B); return [fc ? freeDist(fc, P(A, E)) : 1e6]; }; }
         else { n = 1; f = function (E) { var c = C(B, E); return [len(sub(P(A, E), c.c)) - c.r]; }; }
         break;
       case 'horizontal': case 'vertical': {
@@ -497,6 +501,17 @@ var SketchSolver = (function () {
       cons.push(q ? { src: 'dim', index: i, n: q.n, f: q.f, ents: q.ents } : { src: 'dim', index: i, n: 0, bad: true, ents: [] });
     });
     (opts.extra || []).forEach(function (q, i) { cons.push({ src: 'extra', index: i, n: q.n, f: q.f, ents: q.ents, soft: q.soft }); });
+    // sketch-refine: an infinite line is the line through its two points; how far each point sits along it means nothing,
+    // so each is held where it is along the line (2 degrees of freedom left, as a line has: a dimensioned infinite line
+    // is Fully Defined)
+    ents.forEach(function (e, i) {
+      var sd = infSides(e);
+      if (!sd || (only && !only[i])) return;
+      var u = unit([e.x2 - e.x1, e.y2 - e.y1]), a0 = [e.x1, e.y1], b0 = [e.x2, e.y2];
+      if (!(len(u) > 0.5)) return;
+      if (sd.p1) cons.push({ src: 'extra', index: -1, n: 1, ents: [i], gauge: true, f: function (E) { var l = E[i]; return [dot(sub([l.x1, l.y1], a0), u)]; } });
+      if (sd.p2) cons.push({ src: 'extra', index: -1, n: 1, ents: [i], gauge: true, f: function (E) { var l = E[i]; return [dot(sub([l.x2, l.y2], b0), u)]; } });
+    });
     if (only) cons = cons.filter(function (c) { return c.n && c.ents.some(function (e) { return only[e]; }); });
     var row = 0, byEnt = ents.map(function () { return []; });
     cons.forEach(function (c) { c.row = row; row += c.n; c.ents.forEach(function (e) { if (byEnt[e]) byEnt[e].push(c); }); });
@@ -1208,7 +1223,7 @@ var SketchSolver = (function () {
   // does point pt lie within the extent of line / arc e (between its ends, inside its sweep)?
   function onPieceExtent(pt, e) {
     var tol = 1e-6 * Math.max(1, Math.abs(pt[0]), Math.abs(pt[1]));
-    if (e.t === 'line') { var a = [e.x1, e.y1], d = sub([e.x2, e.y2], a), L = len(d); if (L < 1e-12) return false; var t = dot(sub(pt, a), d) / L; return t > -tol && t < L + tol; }
+    if (e.t === 'line') { var a = [e.x1, e.y1], d = sub([e.x2, e.y2], a), L = len(d), sd = infSides(e); if (L < 1e-12) return false; var t = dot(sub(pt, a), d) / L; return (t > -tol || !!(sd && sd.p1)) && (t < L + tol || !!(sd && sd.p2)); }
     if (e.t !== 'arc') return true;
     var r = ((Math.atan2(pt[1] - e.cy, pt[0] - e.cx) / D2R - e.a0) % 360 + 360) % 360;
     return r * D2R * e.r < (e.a1 - e.a0) * D2R * e.r + tol || (360 - r) * D2R * e.r < tol;
@@ -1311,8 +1326,8 @@ var SketchSolver = (function () {
       // the new ends: Coincident with whatever they were cut at (an end point there, or the cutting curve)
       pieces.forEach(function (pi) {
         [1, 2].forEach(function (k) {
-          var pt = refPoint(E, { e: pi, s: 'p', k: k });
-          if (!pt || near(pt, oldPt(1)) || near(pt, oldPt(2))) return;
+          var pt = refPoint(E, { e: pi, s: 'p', k: k }), sdk = infSides(E[pi]);
+          if (!pt || near(pt, oldPt(1)) || near(pt, oldPt(2)) || (sdk && sdk['p' + k])) return;   // (sketch-refine: a ray's far point is no end)
           var hit = null;
           for (var j = 0; j < E.length && !hit; j++) {
             if (pieces.indexOf(j) >= 0) continue;
@@ -1504,7 +1519,14 @@ var SketchSolver = (function () {
     function add(s) { var r = String(i) + (s ? '.' + s : ''), p = refPoint(sketch.entities, parseRef(r)); if (p) out.push({ ref: r, pt: p }); }
     switch (e.t) {
       case 'point': add(''); break;
-      case 'line': add('p1'); add('p2'); add('mid'); break;
+      case 'line': {
+        // sketch-refine: an infinite line has no end points, a ray only the one it starts from
+        var inf = infSides(e);
+        if (!inf || !inf.p1) add('p1');
+        if (!inf || !inf.p2) add('p2');
+        if (!inf) add('mid');
+        break;
+      }
       case 'slot': add('p1'); add('p2'); add('c'); break;
       case 'arc': case 'aslot': add('c'); add('p1'); add('p2'); break;
       case 'circle': add('c'); break;
@@ -1646,6 +1668,12 @@ var SketchSolver = (function () {
     var E = sketch.entities;
     for (var j = 0; j < E.length; j++) {
       if (j === self || !E[j] || E[j].t === 'slot' || E[j].t === 'aslot' || (skip && skip.indexOf(j) >= 0)) continue;
+      // sketch-refine: on a spline / ellipse, inside its extent (not at an open end, which is a point of its own)
+      if (isFree(E[j])) {
+        var fcj = freeCurve(E[j]), cj = fcj && freeClosest(fcj, pt);
+        if (cj && !cj.end && cj.d < tol && !(!fcj.closed && (len(sub(cj.p, fcj.pt(fcj.t0))) < tol || len(sub(cj.p, fcj.pt(fcj.t1))) < tol))) return String(j);
+        continue;
+      }
       var refs = curveRefs(sketch, j);
       for (var k = 0; k < refs.length; k++) {
         var c = refCurve(E, parseRef(refs[k]));
@@ -1654,7 +1682,8 @@ var SketchSolver = (function () {
           var d = sub(c.b, c.a), l2 = dot(d, d);
           if (l2 < 1e-18) continue;
           var t = dot(sub(pt, c.a), d) / l2;
-          if (t > 1e-9 && t < 1 - 1e-9 && Math.abs(lineDist(pt, c)) < tol) return refs[k];
+          var sj = infSides(E[j]);
+          if ((t > 1e-9 || (sj && sj.p1)) && (t < 1 - 1e-9 || (sj && sj.p2)) && Math.abs(lineDist(pt, c)) < tol) return refs[k];
         } else {
           var v = sub(pt, c.c);
           if (Math.abs(len(v) - c.r) >= tol) continue;
@@ -1768,6 +1797,7 @@ var SketchSolver = (function () {
   function offsetEntity(e, d) {
     d = +d;
     if (!e || !isFinite(d)) return null;
+    if (isFree(e)) return freeOffset(e, d);   // sketch-refine
     var o = null;
     switch (e.t) {
       case 'circle': if (e.r + d > 1e-9) o = { t: 'circle', cx: e.cx, cy: e.cy, r: e.r + d }; break;
@@ -1837,6 +1867,10 @@ var SketchSolver = (function () {
     if ((a.t === 'rect' || a.t === 'crect') && a.t === b.t) return [sym(A + '.c', B + '.c'), { type: 'equal', refs: [A + '.e0', B + '.e0'] }, { type: 'equal', refs: [A + '.e1', B + '.e1'] }];
     var ca = corners(a), cb = corners(b);
     if (b.t === 'polyline' && ca && cb && ca.length === cb.length) return ca.map(function (q, k) { return sym(A + '.v' + k, B + '.v' + k); });
+    // sketch-refine: a spline's points pair one for one; an ellipse's centre and major axis end (the mirror turns the
+    // minor axis end the other way round)
+    if (a.t === 'spline' && b.t === 'spline' && a.pts.length === b.pts.length) return a.pts.map(function (q, k) { return sym(A + '.v' + k, B + '.v' + k); });
+    if ((a.t === 'ellipse' || a.t === 'pellipse') && a.t === b.t) return [sym(A + '.c', B + '.c'), sym(A + '.v0', B + '.v0'), sym(A + '.v1', B + '.v3')];
     return [];
   }
   function mirrorRelations(sketch, pairs, axis) {
@@ -1894,14 +1928,16 @@ var SketchSolver = (function () {
   // null when nothing lies ahead.
   function extendTarget(sketch, i, uv, all) {   // all (r13/trim13): every point where the carrier meets other entities
     var E = sketch.entities, e = E[i];
+    if (!all && e && (e.t === 'spline' || e.t === 'pellipse')) return freeExtendTarget(sketch, i, uv);   // sketch-refine
     if (!e || (e.t !== 'line' && e.t !== 'arc')) return null;
     var q1 = refPoint(E, { e: i, s: 'p', k: 1 }), q2 = refPoint(E, { e: i, s: 'p', k: 2 });
     var end = len(sub(uv, q1)) <= len(sub(uv, q2)) ? 'p1' : 'p2', from = end === 'p1' ? q1 : q2;
-    var segs = [], circs = [];
+    var segs = [], circs = [], frees = [];
     E.forEach(function (o, j) {
       if (j === i || !o || o.t === 'point') return;
-      if (o.t === 'line') segs.push([[o.x1, o.y1], [o.x2, o.y2]]);
+      if (o.t === 'line') { var cs = carrierSeg(o); segs.push([cs.a, cs.b]); }
       else if (o.t === 'circle' || o.t === 'arc') circs.push(o);
+      else if (isFree(o)) { var fo = freeCurve(o); if (fo) frees.push(fo); }   // sketch-refine: onto the true curve
       else {
         var c = corners(o);
         if (c) { var n = c.length, last = closedCorners(o) ? n : n - 1; for (var k = 0; k < last; k++) segs.push([c[k], c[(k + 1) % n]]); }
@@ -1931,6 +1967,7 @@ var SketchSolver = (function () {
         var sq = Math.sqrt(disc);
         [-b - sq, -b + sq].forEach(function (t) { var p = [A[0] + d[0] * t, A[1] + d[1] * t]; if (onSweep(o, p)) hits.push(p); });
       });
+      frees.forEach(function (fo) { freeHits(fo, { kind: 'line', a: A, b: [A[0] + d[0], A[1] + d[1]] }).forEach(function (t) { hits.push(fo.pt(t)); }); });
     }
     function circleHits(C, R) {
       segs.forEach(function (sg) {
@@ -1947,6 +1984,7 @@ var SketchSolver = (function () {
         var al = (R * R - o.r * o.r + D * D) / (2 * D), hh = Math.sqrt(Math.max(0, R * R - al * al)), mx = C[0] + ex * al / D, my = C[1] + ey * al / D;
         [[mx - ey * hh / D, my + ex * hh / D], [mx + ey * hh / D, my - ex * hh / D]].forEach(function (p) { if (onSweep(o, p)) hits.push(p); });
       });
+      frees.forEach(function (fo) { freeHits(fo, { kind: 'circle', c: C, r: R }).forEach(function (t) { hits.push(fo.pt(t)); }); });
     }
     var best = null;
     if (e.t === 'line') {
@@ -1974,7 +2012,9 @@ var SketchSolver = (function () {
   // An end joined to another point cannot move: { ok: false, error }. Returns { ok, end, to }.
   function extendEntity(sketch, i, uv) {
     var E = sketch.entities, e = E[i];
-    if (!e || (e.t !== 'line' && e.t !== 'arc')) return { ok: false, error: 'Extend works on lines and arcs.' };
+    if (e && (e.t === 'spline' || e.t === 'pellipse')) return freeExtend(sketch, i, uv);   // sketch-refine
+    if (e && e.infinite) { var tgI = extendTarget(sketch, i, uv), sI = infSides(e); if (!tgI || sI[tgI.end]) return { ok: false, error: 'That end of the line runs on for ever: there is nothing to extend.' }; }
+    if (!e || (e.t !== 'line' && e.t !== 'arc')) return { ok: false, error: 'Extend works on lines, arcs, open splines and partial ellipses.' };
     var tg = extendTarget(sketch, i, uv);
     if (!tg) return { ok: false, error: 'Nothing to extend to in that direction.' };
     var endRef = i + '.' + tg.end;
@@ -2006,6 +2046,429 @@ var SketchSolver = (function () {
       return { ok: false, error: 'Extending conflicts with the sketch\'s relations or dimensions.' };
     }
     return { ok: true, end: tg.end, to: tg.to, at: at };
+  }
+
+  // ------------------------------------------------------------------ sketch-refine: free curves (splines, ellipses)
+  // A spline or (partial) ellipse as a curve: { e, t0, t1, closed, per, pt(t), d1(t) }. The parameter of a spline is its
+  // span index plus the span's Bézier parameter (spline point k sits at t = k), of an ellipse its parameter angle in
+  // radians (Kernel.ellipsePoint). An open spline's pt / d1 extrapolate its end spans past t0 / t1 (Extend). These are
+  // what point-on-curve Coincidents, Trim, Extend and the hover previews use, so each lands on the true curve.
+  function isFree(e) { return !!e && (e.t === 'spline' || e.t === 'ellipse' || e.t === 'pellipse'); }
+  function bzPt(B, s) { var u = 1 - s, b0 = u * u * u, b1 = 3 * u * u * s, b2 = 3 * u * s * s, b3 = s * s * s; return [b0 * B[0][0] + b1 * B[1][0] + b2 * B[2][0] + b3 * B[3][0], b0 * B[0][1] + b1 * B[1][1] + b2 * B[2][1] + b3 * B[3][1]]; }
+  function bzD1(B, s) { var u = 1 - s, d0 = 3 * u * u, d1 = 6 * u * s, d2 = 3 * s * s; return [d0 * (B[1][0] - B[0][0]) + d1 * (B[2][0] - B[1][0]) + d2 * (B[3][0] - B[2][0]), d0 * (B[1][1] - B[0][1]) + d1 * (B[2][1] - B[1][1]) + d2 * (B[3][1] - B[2][1])]; }
+  function freeCurve(e) {
+    if (!isFree(e)) return null;
+    if (e.t === 'spline') {
+      var g = K && K.splineGeom ? K.splineGeom(e) : null;
+      if (!g || !g.bez.length) return null;
+      var m = g.bez.length;
+      var at = function (t) {
+        var j, s;
+        if (g.closed) { var w = ((t % m) + m) % m; j = Math.min(m - 1, Math.floor(w)); s = w - j; }
+        else { j = Math.max(0, Math.min(m - 1, Math.floor(t))); s = t - j; }
+        return { B: g.bez[j], s: s };
+      };
+      return { e: e, g: g, t0: 0, t1: m, closed: g.closed, per: m, n: 24 * m,
+        pt: function (t) { var q = at(t); return bzPt(q.B, q.s); },
+        d1: function (t) { var q = at(t); return bzD1(q.B, q.s); },
+        // the derivative along the spline's own (chord-length knot) parameter: what a tangent-driving point's weight measures
+        knotD1: function (t) { var q = at(t), j = g.bez.indexOf(q.B), h = g.knots[j + 1] - g.knots[j], d = bzD1(q.B, q.s); return [d[0] / h, d[1] / h]; } };
+    }
+    if (!(e.rx > 0) || !(e.ry > 0)) return null;
+    var r = (+e.rot || 0) * D2R, cr = Math.cos(r), sr = Math.sin(r), full = e.t === 'ellipse';
+    var u0 = full ? 0 : +e.a0 * D2R, u1 = full ? 2 * Math.PI : +e.a1 * D2R;
+    if (!(u1 > u0)) return null;
+    return { e: e, t0: u0, t1: u1, closed: full, per: 2 * Math.PI, n: Math.max(16, Math.ceil(128 * (u1 - u0) / (2 * Math.PI))),
+      pt: function (u) { var x = e.rx * Math.cos(u), y = e.ry * Math.sin(u); return [e.cx + cr * x - sr * y, e.cy + sr * x + cr * y]; },
+      d1: function (u) { var x = -e.rx * Math.sin(u), y = e.ry * Math.cos(u); return [cr * x - sr * y, sr * x + cr * y]; } };
+  }
+  // samples of fc from t0 to t1: [{ t, p }] (n + 1 of them; a closed curve's last is its first again)
+  function freeSamples(fc) {
+    var out = [];
+    for (var k = 0; k <= fc.n; k++) { var t = fc.t0 + (fc.t1 - fc.t0) * k / fc.n; out.push({ t: t, p: fc.pt(t) }); }
+    return out;
+  }
+  // the point of fc nearest p: { t, p, d, end } (end: an open curve's t0 / t1 was the nearest; p lies past that end)
+  function freeClosest(fc, p, samples) {
+    var sm = samples || freeSamples(fc), bt = fc.t0, bd = Infinity;
+    sm.forEach(function (q) { var d = (q.p[0] - p[0]) * (q.p[0] - p[0]) + (q.p[1] - p[1]) * (q.p[1] - p[1]); if (d < bd) { bd = d; bt = q.t; } });
+    var t = bt, span = (fc.t1 - fc.t0) / fc.n, h = 1e-6 * Math.max(1, span);
+    for (var it = 0; it < 30; it++) {
+      var S = fc.pt(t), d = fc.d1(t), w = sub(S, p), g = dot(w, d);
+      var dd = sub(fc.d1(t + h), fc.d1(t - h)), d2 = [dd[0] / (2 * h), dd[1] / (2 * h)], gp = dot(d, d) + dot(w, d2);
+      if (!(gp > 1e-300)) gp = dot(d, d) || 1;
+      var step = g / gp;
+      if (Math.abs(step) > span) step = step > 0 ? span : -span;
+      var nt = t - step;
+      if (!fc.closed) nt = Math.max(fc.t0, Math.min(fc.t1, nt));
+      if (Math.abs(nt - t) < 1e-15 * Math.max(1, Math.abs(t))) { t = nt; break; }
+      t = nt;
+    }
+    var P = fc.pt(t), end = !fc.closed && (t <= fc.t0 + 1e-12 || t >= fc.t1 - 1e-12);
+    return { t: t, p: P, d: len(sub(P, p)), end: end };
+  }
+  // the signed distance from p to fc (positive on the left of its direction); past an open end, the distance to the end
+  function freeDist(fc, p) {
+    var c = freeClosest(fc, p), d = fc.d1(c.t), L = len(d);
+    if (c.end || L < 1e-15) { var v = sub(p, c.p), s = crs(d, v); return (s < 0 ? -1 : 1) * len(v); }
+    return crs(d, sub(p, c.p)) / L;
+  }
+  // a whole spline / ellipse ref ('3'): its curve, or null
+  function refFree(ents, r) {
+    if (!r || r.o || r.s !== null) return null;
+    var e = ents[r.e];
+    return isFree(e) ? freeCurve(e) : null;
+  }
+  // Parameters on fc where the carrier q crosses it. q: { kind: 'seg', a, b } (the segment), { kind: 'line', a, b } (the
+  // infinite line), { kind: 'arc', c, r, a0, a1 (radians), full } or { kind: 'circle', c, r }, or another free curve
+  // { fc }. Sign changes of the carrier's signed distance along the samples, refined by bisection then secant steps
+  // (curves crossing a free curve: its chords, then Newton on both true curves).
+  function freeHits(fc, q, samples) {
+    var sm = samples || freeSamples(fc), out = [];
+    if (q.fc) {
+      var sq = freeSamples(q.fc);
+      for (var i = 0; i < sm.length - 1; i++) for (var j = 0; j < sq.length - 1; j++) {
+        var A = sm[i].p, B = sm[i + 1].p, C = sq[j].p, Dq = sq[j + 1].p, d1 = sub(B, A), d2 = sub(Dq, C), den = crs(d1, d2);
+        if (Math.abs(den) < 1e-18) continue;
+        var w = sub(C, A), s = crs(w, d2) / den, u = crs(w, d1) / den;
+        if (s < -1e-9 || s > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) continue;
+        var t = sm[i].t + (sm[i + 1].t - sm[i].t) * s, v = sq[j].t + (sq[j + 1].t - sq[j].t) * u;
+        for (var it = 0; it < 30; it++) {
+          var F = sub(fc.pt(t), q.fc.pt(v)), Ja = fc.d1(t), Jb = q.fc.d1(v), dt = crs(Jb, Ja);
+          if (Math.abs(dt) < 1e-300) break;
+          // F + Ja·δt − Jb·δv = 0
+          var x = crs(Jb, [-F[0], -F[1]]) / -dt, y = crs(Ja, [-F[0], -F[1]]) / -dt;
+          t += x; v += y;
+          if (Math.abs(x) + Math.abs(y) < 1e-15 * Math.max(1, Math.abs(t))) break;
+        }
+        if (!fc.closed && (t < fc.t0 - 1e-9 || t > fc.t1 + 1e-9)) continue;
+        if (!q.fc.closed && (v < q.fc.t0 - 1e-9 || v > q.fc.t1 + 1e-9)) continue;
+        out.push(t);
+      }
+      return dedupT(fc, out);
+    }
+    var phi;
+    if (q.kind === 'seg' || q.kind === 'line') { var u0 = unit(sub(q.b, q.a)); phi = function (p) { return crs(u0, sub(p, q.a)); }; }
+    else phi = function (p) { return len(sub(p, q.c)) - q.r; };
+    function within(p) {
+      if (q.kind === 'seg') { var d = sub(q.b, q.a), L2 = dot(d, d), tt = L2 > 0 ? dot(sub(p, q.a), d) / L2 : 0; return tt > -1e-9 && tt < 1 + 1e-9; }
+      if (q.kind === 'arc' && !q.full) return tAngIn(Math.atan2(p[1] - q.c[1], p[0] - q.c[0]), q.a0, q.a1) != null;
+      return true;
+    }
+    var vals = sm.map(function (s) { return phi(s.p); });
+    for (var k = 0; k < sm.length - 1; k++) {
+      var fa = vals[k], fb = vals[k + 1], ta = sm[k].t, tb = sm[k + 1].t;
+      if (fa === 0) { if (within(sm[k].p)) out.push(ta); continue; }
+      if (fa * fb > 0) continue;
+      for (var b = 0; b < 60 && tb - ta > 1e-15 * Math.max(1, Math.abs(ta)); b++) {
+        var tm = (ta + tb) / 2, fm = phi(fc.pt(tm));
+        if (fm === 0) { ta = tb = tm; break; }
+        if (fa * fm < 0) { tb = tm; fb = fm; } else { ta = tm; fa = fm; }
+      }
+      var th = (ta + tb) / 2;
+      if (within(fc.pt(th))) out.push(th);
+    }
+    if (!fc.closed && vals[vals.length - 1] === 0 && within(sm[sm.length - 1].p)) out.push(sm[sm.length - 1].t);
+    return dedupT(fc, out);
+  }
+  function dedupT(fc, ts) {
+    ts.sort(function (a, b) { return a - b; });
+    var out = [], tol = 1e-7 * (fc.t1 - fc.t0);
+    ts.forEach(function (t) { if (!out.length || t - out[out.length - 1] > tol) out.push(t); });
+    if (fc.closed && out.length > 1 && out[0] + fc.per - out[out.length - 1] < tol) out.pop();
+    return out;
+  }
+  // the carriers of entity o that cut a free curve: K.entityPrimitives' segments and arcs, or o's own curve
+  function freeCutters(o) {
+    if (!o || o.t === 'point') return [];
+    if (isFree(o)) { var fo = freeCurve(o); return fo ? [{ fc: fo }] : []; }
+    return tPrims(o);
+  }
+  // the parameters on free entity idx where the other entities (only: those listed) cross it, in order
+  function freeCuts(sketch, idx, fc, only) {
+    var E = sketch.entities, sm = freeSamples(fc), ts = [];
+    E.forEach(function (o, oi) {
+      if (oi === idx || !o || o.t === 'point' || (only && only.indexOf(oi) < 0)) return;
+      freeCutters(o).forEach(function (q) { freeHits(fc, q, sm).forEach(function (t) { ts.push(t); }); });
+    });
+    return dedupT(fc, ts);
+  }
+  // Trim to closest on a free curve at uv: the span to remove { lo, hi, whole } between the neighbouring crossings (a
+  // closed curve needs two to be cut open), or null
+  function freeSpan(sketch, idx, uv) {
+    var e = sketch.entities[idx], fc = freeCurve(e);
+    if (!fc) return null;
+    var ts = freeCuts(sketch, idx, fc), kt = freeClosest(fc, uv).t, lo = null, hi = null, tol = 1e-9 * (fc.t1 - fc.t0);
+    if (fc.closed) {
+      if (ts.length < 2) return { fc: fc, whole: true, lo: fc.t0, hi: fc.t1 };
+      ts.forEach(function (t) { if (t < kt - tol && (lo == null || t > lo)) lo = t; if (t > kt + tol && (hi == null || t < hi)) hi = t; });
+      if (lo == null) lo = ts[ts.length - 1] - fc.per;
+      if (hi == null) hi = ts[0] + fc.per;
+      return { fc: fc, whole: false, lo: lo, hi: hi };
+    }
+    ts.forEach(function (t) { if (t > fc.t0 + tol && t < fc.t1 - tol) { if (t < kt - tol && (lo == null || t > lo)) lo = t; if (t > kt + tol && (hi == null || t < hi)) hi = t; } });
+    return { fc: fc, whole: lo == null && hi == null, lo: lo == null ? fc.t0 : lo, hi: hi == null ? fc.t1 : hi };
+  }
+  function freePts(fc, lo, hi) {
+    var n = Math.max(8, Math.ceil(fc.n * Math.abs(hi - lo) / (fc.t1 - fc.t0))), out = [];
+    for (var k = 0; k <= n; k++) out.push(fc.pt(lo + (hi - lo) * k / n));
+    return out;
+  }
+  // The piece of free curve fc from parameter ta to tb (ta < tb; a closed curve's may run past its seam) as an entity of
+  // the same family: a partial ellipse, or a spline through the cut points and the original points between them. A
+  // spline's cut end leaves along the original curve (a tangent-driving point with the curve's direction and speed
+  // there), and so does the original point next to it, so every span past it is exactly the original's (the C2 system
+  // beyond a point of known tangent is the original's) and only the span cut in two is redrawn through its new end;
+  // points it keeps keep their own tangents.
+  function freePiece(fc, ta, tb) {
+    var e = fc.e, o;
+    function r6(x) { return Math.round(x * 1e6) / 1e6; }
+    if (e.t !== 'spline') {
+      o = { t: 'pellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, rot: +e.rot || 0, a0: ta / D2R, a1: tb / D2R };
+      while (o.a0 >= 360) { o.a0 -= 360; o.a1 -= 360; }
+      while (o.a0 < 0) { o.a0 += 360; o.a1 += 360; }
+      o.a0 = r6(o.a0); o.a1 = r6(o.a1);
+    } else {
+      var n = e.pts.length, eps = 1e-6, pts = [], tans = [], any = false;
+      var tanAt = function (t) { var d = fc.knotD1(t); return [r6(Math.atan2(d[1], d[0]) / D2R), r6(len(d))]; };
+      var add = function (p, tg) { pts.push([r6(p[0]), r6(p[1])]); tans.push(tg || null); if (tg) any = true; };
+      var startOrig = !fc.closed && ta <= fc.t0 + eps, endOrig = !fc.closed && tb >= fc.t1 - eps, inner = [];
+      add(startOrig ? e.pts[0] : fc.pt(ta), startOrig ? (e.tans && e.tans[0]) : tanAt(ta));
+      for (var k = Math.floor(ta) + 1; k < tb - eps; k++) if (k > ta + eps) inner.push(k);
+      inner.forEach(function (k, q) {
+        var kk = ((k % n) + n) % n, own = e.tans && e.tans[kk];
+        add(e.pts[kk], own || ((q === 0 && !startOrig) || (q === inner.length - 1 && !endOrig) ? tanAt(k) : null));
+      });
+      if (endOrig) add(e.pts[n - 1], e.tans && e.tans[n - 1]);
+      else add(fc.pt(tb), tanAt(tb));
+      // a cut end's speed: the original's over the part of its span kept, per the new chord (so the redrawn span leaves
+      // the cut exactly as the original did)
+      var m = fc.g.bez.length;
+      var hOf = function (t) { var j = Math.floor(((t % m) + m) % m + 1e-12); j = Math.min(m - 1, Math.max(0, j)); return fc.g.knots[j + 1] - fc.g.knots[j]; };
+      var scaleTan = function (i, tc, tn) { var L = len(sub(pts[i === 0 ? 1 : pts.length - 2], pts[i])); if (tans[i] && L > 1e-12) tans[i][1] = r6(tans[i][1] * Math.abs(tn - tc) * hOf(Math.min(tc, tn) + 1e-9) / L); };
+      if (!startOrig && pts.length > 1) scaleTan(0, ta, inner.length ? inner[0] : tb);
+      if (!endOrig && pts.length > 1) scaleTan(pts.length - 1, tb, inner.length ? inner[inner.length - 1] : ta);
+      o = { t: 'spline', pts: pts };
+      if (any) o.tans = tans;
+      if (e.local) o.local = true;
+      if (e.showCurvature) o.showCurvature = true;
+    }
+    if (e.construction) o.construction = true;
+    return o;
+  }
+  // Trim to closest on a spline / ellipse: the span at uv goes, the pieces left keep the relations that still hold on
+  // them (their points, a point lying on them), the new ends get a Coincident with what they were cut at, an ellipse's
+  // radius dimensions go to its first piece. ctx as trimAt's. Returns { ok, error }.
+  function freeTrim(sketch, idx, uv, ctx) {
+    var sp = freeSpan(sketch, idx, uv);
+    if (!sp) return { ok: false, error: 'That curve cannot be trimmed.' };
+    var fc = sp.fc, e = sketch.entities[idx], keep = ctx && ctx.keepConstruction && !e.construction;
+    if (keep && sp.whole) { e.construction = true; if (ctx) { ctx.analysis = analyze(sketch); ctx.conflicts = ctx.analysis.conflicts; ctx.redundant = ctx.analysis.redundant; } return { ok: true, kept: true }; }
+    var pieces = [];
+    if (!sp.whole) {
+      if (fc.closed) pieces.push(freePiece(fc, sp.hi, sp.lo + fc.per));
+      else {
+        if (sp.lo > fc.t0 + 1e-9) pieces.push(freePiece(fc, fc.t0, sp.lo));
+        if (sp.hi < fc.t1 - 1e-9) pieces.push(freePiece(fc, sp.hi, fc.t1));
+      }
+    }
+    var before = sketch.entities.slice(), an0 = ctx && ctx.conflicts != null && ctx.redundant != null ? { conflicts: ctx.conflicts, redundant: ctx.redundant } : analyze(sketch);
+    sketch.entities = before.slice(0, idx).concat(pieces, before.slice(idx + 1));
+    freeAfterTrim(sketch, before, idx, pieces.length, an0, ctx);
+    if (keep) {
+      var kp = freePiece(fc, sp.lo, sp.hi);
+      kp.construction = true;
+      var E = sketch.entities, k = E.length, made = [], ka = analyze(sketch);
+      E.push(kp);
+      ['p1', 'p2'].forEach(function (end) {
+        var p = refPoint(E, parseRef(k + '.' + end)), hit = null;
+        for (var j = 0; j < k && !hit; j++) pointRefs(sketch, j).forEach(function (q) { if (!hit && !/\.(mid|c)$/.test(q.ref) && len(sub(q.pt, p)) < 1e-6 * Math.max(1, Math.abs(p[0]), Math.abs(p[1]))) hit = q.ref; });
+        if (hit) { var rel = { type: 'coincident', refs: [k + '.' + end, hit] }; (sketch.rels = sketch.rels || []).push(rel); made.push(rel); }
+      });
+      solve(sketch);
+      var an = made.length ? dropRedundant(sketch, made, ka) : analyze(sketch);
+      if (ctx) { ctx.analysis = an; ctx.conflicts = an.conflicts; ctx.redundant = an.redundant; }
+    }
+    return { ok: true };
+  }
+  // the relations and dimensions of free entity idx of `before` follow its nPieces pieces (now at idx …)
+  function freeAfterTrim(sketch, before, idx, nPieces, an0, ctx) {
+    var E = sketch.entities, old = before[idx], pieces = [];
+    for (var q = 0; q < nPieces; q++) pieces.push(idx + q);
+    var shift = nPieces - 1;
+    function mapIdx(j) { return j < idx ? j : j > idx ? j + shift : -1; }
+    function tolOf(p) { return 1e-6 * Math.max(1, Math.abs(p[0]), Math.abs(p[1])); }
+    // a point of the old curve: the same point on a piece
+    function onPiece(r) {
+      var P = refPoint(before, r);
+      if (!P) return null;
+      for (var a = 0; a < pieces.length; a++) {
+        var prs = pointRefs(sketch, pieces[a]);
+        for (var b = 0; b < prs.length; b++) if (!/\.mid$/.test(prs[b].ref) && len(sub(prs[b].pt, P)) < tolOf(P) && (r.s !== 'c' || /\.c$/.test(prs[b].ref))) return prs[b].ref;
+      }
+      return null;
+    }
+    // the piece a point lies on (within its extent), for a point-on-curve Coincident
+    function pieceUnder(P) {
+      for (var a = 0; a < pieces.length; a++) { var fp = freeCurve(E[pieces[a]]), c = fp && freeClosest(fp, P); if (c && !c.end && c.d < 1e-5 * Math.max(1, Math.abs(P[0]), Math.abs(P[1]))) return String(pieces[a]); }
+      return null;
+    }
+    var rels = [], moved = [];
+    (sketch.rels || []).forEach(function (rel) {
+      var ok = true, touches = false;
+      var refs = rel.refs.map(function (r) {
+        var p = parseRef(r);
+        if (!p || p.o) return r;
+        if (p.e !== idx) return String(mapIdx(p.e)) + String(r).slice(String(p.e).length);
+        touches = true;
+        if (p.s !== null) { var on = onPiece(p); if (!on) ok = false; return on; }
+        // the whole curve: only a point lying on it keeps its relation, on the piece it lies on
+        if (rel.type !== 'coincident' || rel.refs.length !== 2) { ok = false; return null; }
+        var other = rel.refs[0] === r ? rel.refs[1] : rel.refs[0], op = parseRef(other), P = op && refPoint(before, op);
+        var pu = P ? pieceUnder(P) : null;
+        if (!pu) ok = false;
+        return pu;
+      });
+      if (!ok) return;
+      var nr = clone(rel); nr.refs = refs;
+      rels.push(nr);
+      if (touches) moved.push(nr);
+    });
+    // the new ends: Coincident with what they were cut at (an end point there, or the cutting curve)
+    pieces.forEach(function (pi) {
+      [1, 2].forEach(function (k) {
+        var pt = refPoint(E, { e: pi, s: 'p', k: k });
+        if (!pt) return;
+        var was = [1, 2].some(function (k0) { var q0 = refPoint(before, { e: idx, s: 'p', k: k0 }); return q0 && len(sub(q0, pt)) < tolOf(pt); });
+        if (was) return;
+        var hit = null;
+        for (var j = 0; j < E.length && !hit; j++) {
+          if (pieces.indexOf(j) >= 0) continue;
+          pointRefs(sketch, j).forEach(function (pr) { if (!hit && !/\.(mid|c)$/.test(pr.ref) && len(sub(pr.pt, pt)) < 1e-6 * Math.max(1, Math.abs(pt[0]), Math.abs(pt[1]))) hit = pr.ref; });
+        }
+        var on = hit || onCurveRef(sketch, -1, pt, 1e-6 * Math.max(1, Math.abs(pt[0]), Math.abs(pt[1])), pieces);
+        if (!on) return;
+        var ce = { type: 'coincident', refs: [pi + '.p' + k, on] };
+        rels.push(ce); moved.push(ce);
+      });
+    });
+    sketch.rels = rels;
+    if (!rels.length) delete sketch.rels;
+    if (sketch.dims) {
+      sketch.dims = sketch.dims.filter(function (d) {
+        if (d.e !== idx) { var m = mapIdx(d.e); if (m < 0) return false; d.e = m; return true; }
+        if ((d.k === 'rx' || d.k === 'ry') && pieces.length && E[pieces[0]].t === 'pellipse') { d.e = pieces[0]; return true; }
+        return false;
+      });
+      if (!sketch.dims.length) delete sketch.dims;
+    }
+    clean(sketch);
+    var an1 = analyze(sketch);
+    if (an1.conflicts > an0.conflicts || an1.redundant > an0.redundant) {
+      // what the trim moved or made that over-defines the sketch goes, last first
+      for (var m = moved.length - 1; m >= 0 && (an1.conflicts > an0.conflicts || an1.redundant > an0.redundant); m--) {
+        var at = sketch.rels ? sketch.rels.indexOf(moved[m]) : -1;
+        if (at < 0) continue;
+        sketch.rels.splice(at, 1);
+        an1 = analyze(sketch);
+      }
+      if (sketch.rels && !sketch.rels.length) delete sketch.rels;
+    }
+    solve(sketch);
+    an1 = analyze(sketch);
+    if (ctx) { ctx.analysis = an1; ctx.conflicts = an1.conflicts; ctx.redundant = an1.redundant; }
+  }
+  // Extend Entities on a partial ellipse or an open spline: the end nearest uv runs on to the first entity in its way
+  // (a partial ellipse round its ellipse; a spline along its end span carried on, the point where it lands becoming
+  // its new end point). { end, from, to, a (partial ellipse: the new end angle, degrees) } or null.
+  function freeExtendTarget(sketch, i, uv) {
+    var E = sketch.entities, e = E[i];
+    if (!e || (e.t !== 'spline' && e.t !== 'pellipse') || (e.t === 'spline' && e.closed)) return null;
+    var fc = freeCurve(e);
+    if (!fc) return null;
+    var q1 = refPoint(E, { e: i, s: 'p', k: 1 }), q2 = refPoint(E, { e: i, s: 'p', k: 2 });
+    var end = len(sub(uv, q1)) <= len(sub(uv, q2)) ? 'p1' : 'p2', from = end === 'p1' ? q1 : q2;
+    // the carried-on curve: a whole turn of the ellipse, or the end span run on three times its length
+    var ext;
+    if (e.t === 'pellipse') {
+      var sw = fc.t1 - fc.t0, rest = 2 * Math.PI - sw;
+      if (rest < 1e-9) return null;
+      ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + rest } : { t0: fc.t0 - rest, t1: fc.t0 };
+    } else ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + 3 } : { t0: fc.t0 - 3, t1: fc.t0 };
+    var xc = { e: e, t0: ext.t0, t1: ext.t1, closed: false, per: fc.per, n: 96, pt: fc.pt, d1: fc.d1 }, sm = freeSamples(xc), best = null;
+    E.forEach(function (o, j) {
+      if (j === i || !o || o.t === 'point') return;
+      freeCutters(o).forEach(function (q) {
+        freeHits(xc, q, sm).forEach(function (t) {
+          var d = end === 'p2' ? t - ext.t0 : ext.t1 - t;
+          if (d > 1e-9 && (!best || d < best.d)) best = { d: d, t: t };
+        });
+      });
+    });
+    if (!best) return null;
+    var to = fc.pt(best.t), out = { end: end, from: from, to: to, t: best.t };
+    if (e.t === 'pellipse') out.a = best.t / D2R;
+    return out;
+  }
+  function freeExtend(sketch, i, uv) {
+    var E = sketch.entities, e = E[i], tg = freeExtendTarget(sketch, i, uv);
+    if (!tg) return { ok: false, error: 'Nothing to extend to in that direction.' };
+    var endRef = i + '.' + tg.end;
+    if (endJoined(sketch, endRef)) return { ok: false, error: 'That end is joined to other geometry: only a free end can be extended.' };
+    var saved = tSave(sketch), before = analyze(sketch);
+    dropEndCoincidents(sketch, [endRef]);
+    if (e.t === 'pellipse') { if (tg.end === 'p2') e.a1 = tg.a; else e.a0 = tg.a; normArc(e); }
+    else {
+      // the old end stays as a spline point; its relations stay on it (renumbered when the new point goes first)
+      var P = [Math.round(tg.to[0] * 1e6) / 1e6, Math.round(tg.to[1] * 1e6) / 1e6];
+      if (tg.end === 'p2') { e.pts.push(P); if (e.tans) e.tans.push(null); }
+      else {
+        e.pts.unshift(P); if (e.tans) e.tans.unshift(null);
+        (sketch.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { var p = parseRef(r); return p && !p.o && p.e === i && p.s === 'v' ? i + '.v' + (p.k + 1) : r; }); });
+      }
+      var n = e.pts.length;
+      (sketch.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { return r === i + '.' + (tg.end === 'p2' ? 'p2' : 'p1') ? i + '.v' + (tg.end === 'p2' ? n - 2 : 1) : r; }); });
+    }
+    var to = refPoint(sketch.entities, parseRef(endRef)), tol = 1e-6 * Math.max(1, Math.abs(to[0]), Math.abs(to[1])), at = null;
+    for (var j = 0; j < sketch.entities.length && !at; j++) {
+      if (j === i) continue;
+      pointRefs(sketch, j).forEach(function (pr) { if (!at && !/\.(mid|c)$/.test(pr.ref) && len(sub(pr.pt, to)) < tol) at = pr.ref; });
+    }
+    at = at || onCurveRef(sketch, i, to, tol);
+    if (at) {
+      (sketch.rels = sketch.rels || []).push({ type: 'coincident', refs: [endRef, at] });
+      if (analyze(sketch).rels[sketch.rels.length - 1] !== 'ok') { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; at = null; }
+    }
+    var res = solve(sketch), an = analyze(sketch);
+    if (!res.ok || an.conflicts > before.conflicts) { tRestore(sketch, saved); return { ok: false, error: 'Extending conflicts with the sketch\'s relations or dimensions.' }; }
+    return { ok: true, end: tg.end, to: tg.to, at: at };
+  }
+
+  // Offset Entities on a spline or an ellipse (sketch-refine): the offset curve is no spline or ellipse, so the copy is a
+  // spline through the offset points of the curve (four to a span, or 24 round an
+  // ellipse), within about a hundredth of the true offset for offsets well under the curve's radius. d > 0 goes out: away
+  // from what a closed curve encloses, or what an open one bends round (as Offset Entities' chains). null when the
+  // offset folds over (the distance is more than the curve's radius somewhere).
+  function freeOffset(e, d) {
+    var fc = freeCurve(e);
+    if (!fc) return null;
+    var ts = [], k, n = e.t === 'spline' ? fc.t1 * 4 : 24;
+    for (k = 0; k <= n; k++) ts.push(fc.t0 + (fc.t1 - fc.t0) * k / n);
+    if (fc.closed) ts.pop();
+    var sm = freeSamples(fc), area = 0;
+    for (k = 0; k < sm.length; k++) { var p = sm[k].p, q = sm[(k + 1) % sm.length].p; area += p[0] * q[1] - q[0] * p[1]; }
+    var side = area > 0 ? -1 : 1, pts = [];
+    for (k = 0; k < ts.length; k++) {
+      var P = fc.pt(ts[k]), u = unit(fc.d1(ts[k]));
+      if (!(len(u) > 0.5)) return null;
+      pts.push([Math.round((P[0] - u[1] * side * d) * 1e6) / 1e6, Math.round((P[1] + u[0] * side * d) * 1e6) / 1e6]);
+    }
+    // folded over: an offset chord running against the curve
+    for (k = 0; k + 1 < ts.length; k++) if (dot(sub(pts[k + 1], pts[k]), sub(fc.pt(ts[k + 1]), fc.pt(ts[k]))) <= 0) return null;
+    var o = { t: 'spline', pts: pts };
+    if (fc.closed) o.closed = true;
+    if (e.construction) o.construction = true;
+    return o;
   }
 
   // ------------------------------------------------------------------ r13/trim13: Trim Entities modes (SolidWorks)
@@ -2083,7 +2546,17 @@ var SketchSolver = (function () {
     for (var k = 0; k <= n; k++) out.push(tPrimPt(p, lo + (hi - lo) * k / n));
     return out;
   }
-  function tPrims(e) { return e && e.t !== 'point' && K && K.entityPrimitives ? K.entityPrimitives(e) : []; }
+  function tPrims(e) { if (e && e.t === 'line' && e.infinite) { var cs = carrierSeg(e); return [{ kind: 'seg', a: cs.a, b: cs.b }]; } return e && e.t !== 'point' && K && K.entityPrimitives ? K.entityPrimitives(e) : []; }
+  // sketch-refine: the segment that stands for a line in intersections: the line itself, or for an infinite line a
+  // segment a million times its defining length (and at least 10⁶) each way, through its two points
+  function carrierSeg(e) {
+    var a = [e.x1, e.y1], b = [e.x2, e.y2];
+    if (!e.infinite) return { a: a, b: b };
+    var d = sub(b, a), L = len(d), sd = infSides(e);
+    if (L < 1e-15) return { a: a, b: b };
+    var R = Math.max(1e6, 1e6 * L, 1e3 * Math.max(Math.abs(a[0]), Math.abs(a[1]))) / L;
+    return { a: sd.p1 ? [a[0] - d[0] * R, a[1] - d[1] * R] : a, b: sd.p2 ? [b[0] + d[0] * R, b[1] + d[1] * R] : b };
+  }
   // parameters on primitive k of entity idx where the other primitives cross it (only entities listed in `only`, if given)
   function tCuts(E, idx, k, prim, only) {
     var params = [];
@@ -2116,6 +2589,7 @@ var SketchSolver = (function () {
   }
   // The part of entity idx that Trim to closest removes at uv: { idx, pts: sketch points along it, whole }, or null.
   function trimSpan(sketch, idx, uv) {
+    if (isFree(sketch.entities[idx])) { var fs = freeSpan(sketch, idx, uv); return fs ? { idx: idx, whole: fs.whole, pts: freePts(fs.fc, fs.lo, fs.hi) } : null; }   // sketch-refine
     var s = spanOf(sketch, idx, uv);
     return s ? { idx: idx, whole: s.whole, pts: tPrimPts(s.prim, s.lo, s.hi) } : null;
   }
@@ -2133,6 +2607,50 @@ var SketchSolver = (function () {
   // ctx (sketch tools) may also carry the Trim Entities options: keepConstruction (Keep trimmed entities as
   // construction geometry: the part removed stays, as construction) and ignoreConstruction (Ignore trimming of
   // construction geometry: construction entities are left alone; they still cut the others).
+  // sketch-refine: Trim on an infinite line (or a ray). The span clicked, between the crossings either side of the click,
+  // goes; what is left is a finite line between two crossings, or a ray running on from a crossing (infinite: 'p1' /
+  // 'p2', the side it runs on past). A line nothing crosses is deleted. The pieces keep the relations that hold on
+  // them (afterTrim: Collinear between two pieces, a point on the line goes with the piece it lies on, Coincident at
+  // the new ends). Returns { ok }.
+  function infiniteTrim(sketch, idx, uv, ctx) {
+    var E = sketch.entities, e = E[idx], side = infSides(e);
+    var a = [e.x1, e.y1], d0 = sub([e.x2, e.y2], a), L = len(d0);
+    if (L < 1e-15) return { ok: false, error: 'That line has no direction.' };
+    var d = [d0[0] / L, d0[1] / L], lo0 = side.p1 ? -Infinity : 0, hi0 = side.p2 ? Infinity : L;
+    var hits = (extendTarget(sketch, idx, uv, true) || []).map(function (h) { return dot(sub(h, a), d); })
+      .filter(function (t) { return t > lo0 + 1e-9 * L && t < hi0 - 1e-9 * L; }).sort(function (x, y) { return x - y; });
+    var su = dot(sub(uv, a), d), lo = lo0, hi = hi0;
+    hits.forEach(function (t) { if (t < su && t > lo) lo = t; if (t > su && t < hi) hi = t; });
+    function at(t) { return [a[0] + d[0] * t, a[1] + d[1] * t]; }
+    function piece(t0, t1) {
+      var o;
+      if (t0 === -Infinity) { var q = at(t1), r = at(t1 - L); o = { t: 'line', x1: r[0], y1: r[1], x2: q[0], y2: q[1], infinite: 'p1' }; }
+      else if (t1 === Infinity) { var q2 = at(t0), r2 = at(t0 + L); o = { t: 'line', x1: q2[0], y1: q2[1], x2: r2[0], y2: r2[1], infinite: 'p2' }; }
+      else { var A = at(t0), B = at(t1); o = { t: 'line', x1: A[0], y1: A[1], x2: B[0], y2: B[1] }; }
+      if (e.construction) o.construction = true;
+      return tRound(o);
+    }
+    var pieces = [];
+    if (lo !== lo0) pieces.push(piece(lo0, lo));
+    if (hi !== hi0) pieces.push(piece(hi, hi0));
+    var before = E.slice();
+    sketch.entities = before.slice(0, idx).concat(pieces, before.slice(idx + 1));
+    afterTrim(sketch, before, idx, ctx);
+    // the two parts of a line cut in two stay on one line (Collinear), unless that over-defines the sketch
+    if (pieces.length === 2 && !(sketch.rels || []).some(function (r) { return r.type === 'collinear' && r.refs.indexOf(String(idx)) >= 0 && r.refs.indexOf(String(idx + 1)) >= 0; })) {
+      var an0 = analyze(sketch), col = { type: 'collinear', refs: [String(idx), String(idx + 1)] };
+      (sketch.rels = sketch.rels || []).push(col);
+      var an1 = analyze(sketch);
+      if (an1.redundant > an0.redundant || an1.conflicts > an0.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; an1 = an0; }
+      if (ctx) { ctx.analysis = an1; ctx.conflicts = an1.conflicts; ctx.redundant = an1.redundant; }
+    }
+    return { ok: true };
+  }
+  // which sides of line e run on for ever: { p1, p2 } (an infinite line: both; a ray: one), or null for a finite line
+  function infSides(e) {
+    if (!e || e.t !== 'line' || !e.infinite) return null;
+    return e.infinite === 'p1' ? { p1: true, p2: false } : e.infinite === 'p2' ? { p1: false, p2: true } : { p1: true, p2: true };
+  }
   function trimAt(sketch, idx, uv, ctx) {
     var e = sketch.entities[idx];
     if (!e || e.t === 'point') return { ok: false, error: 'Nothing to trim there.' };
@@ -2144,11 +2662,16 @@ var SketchSolver = (function () {
       for (var k = 0; k < 4; k++) { var l = sketch.entities[idx + k], d = segDistPt(uv, [l.x1, l.y1], [l.x2, l.y2]); if (d < bd) { bd = d; bi = idx + k; } }
       idx = bi;
     }
+    if (isFree(sketch.entities[idx])) return freeTrim(sketch, idx, uv, ctx);   // sketch-refine
+    if (infSides(sketch.entities[idx])) return infiniteTrim(sketch, idx, uv, ctx);   // sketch-refine
     var keep = ctx && ctx.keepConstruction && !sketch.entities[idx].construction ? spanOf(sketch, idx, uv) : null;
     // a whole entity (nothing crosses it) becomes construction, keeping its relations and dimensions
     if (keep && keep.whole) { sketch.entities[idx].construction = true; if (ctx) { ctx.analysis = analyze(sketch); ctx.conflicts = ctx.analysis.conflicts; ctx.redundant = ctx.analysis.redundant; } return { ok: true, kept: true }; }
     var before = sketch.entities.slice(), out;
-    try { out = K.trimEntity(sketch.entities, idx, uv); } catch (err) { return { ok: false, error: err.message }; }
+    // sketch-refine: infinite lines cut as the lines they are (Kernel.trimEntity sees the segment between their points)
+    var stand = sketch.entities.map(function (o, j) { if (j === idx || !o || o.t !== 'line' || !o.infinite) return o; var cs = carrierSeg(o); return { t: 'line', x1: cs.a[0], y1: cs.a[1], x2: cs.b[0], y2: cs.b[1], __for: j }; });
+    try { out = K.trimEntity(stand, idx, uv); } catch (err) { return { ok: false, error: err.message }; }
+    out = out.map(function (o) { return o && o.__for != null ? before[o.__for] : o; });
     sketch.entities = out.map(tRound);
     afterTrim(sketch, before, idx, ctx);
     if (keep) keptPiece(sketch, keep, ctx);
@@ -2231,7 +2754,7 @@ var SketchSolver = (function () {
   // a Coincident where it lands on another entity and solves (everything goes back on a conflict).
   function extendBegin(sketch, i, end) {
     var e = sketch.entities[i], endRef = i + '.' + end;
-    if (!e || (e.t !== 'line' && e.t !== 'arc') || endJoined(sketch, endRef)) return null;
+    if (!e || (e.t !== 'line' && e.t !== 'arc') || (infSides(e) && infSides(e)[end]) || endJoined(sketch, endRef)) return null;
     var st = { i: i, end: end, endRef: endRef, saved: tSave(sketch), conflicts: analyze(sketch).conflicts, sweep: e.a1 - e.a0, ang: null, hits: extendTarget(sketch, i, [0, 0], true) || [] };
     if (e.t === 'arc') st.ang = end === 'p2' ? e.a1 : e.a0;
     dropEndCoincidents(sketch, [endRef]);
@@ -2372,6 +2895,7 @@ var SketchSolver = (function () {
   // part between them, outside keeps only that part. { idx, prim, keep: [[lo, hi]], remove: [[lo, hi]] } or { error }.
   function betweenPlan(sketch, idx, uv, bounds, outside) {
     var E = sketch.entities, e = E[idx];
+    if (isFree(e) && bounds.indexOf(idx) < 0) return freeBetweenPlan(sketch, idx, uv, bounds, outside);   // sketch-refine
     if (!e || (e.t !== 'line' && e.t !== 'arc' && e.t !== 'circle')) return { error: 'Trim away ' + (outside ? 'outside' : 'inside') + ' works on lines, arcs and circles.' };
     if (bounds.indexOf(idx) >= 0) return { error: 'That is one of the bounding entities.' };
     var prim = tPrims(e)[0], kt = tPrimAt(prim, uv).t, hits = [];
@@ -2396,14 +2920,46 @@ var SketchSolver = (function () {
     }
     return outside ? { idx: idx, prim: prim, keep: mid, remove: rest } : { idx: idx, prim: prim, keep: rest, remove: mid };
   }
+  // sketch-refine: Trim away inside / outside on a spline or an ellipse: { fc, keep, remove } as betweenPlan's
+  function freeBetweenPlan(sketch, idx, uv, bounds, outside) {
+    var fc = freeCurve(sketch.entities[idx]);
+    if (!fc) return { error: 'That curve cannot be trimmed.' };
+    var kt = freeClosest(fc, uv).t, hits = [];
+    function dist(t) { var d = Math.abs(t - kt); return fc.closed ? Math.min(d % fc.per, fc.per - d % fc.per) : d; }
+    for (var b = 0; b < bounds.length; b++) {
+      var ps = freeCuts(sketch, idx, fc, [bounds[b]]);
+      if (!ps.length) return { error: 'The entity has to cross both bounding entities.' };
+      ps.sort(function (p, q) { return dist(p) - dist(q); });
+      hits.push(ps[0]);
+    }
+    var lo = Math.min(hits[0], hits[1]), hi = Math.max(hits[0], hits[1]), mid = [[lo, hi]], rest;
+    if (hi - lo < 1e-9) return { error: 'The bounding entities cross it at the same point.' };
+    if (fc.closed) {
+      var other = [[hi, lo + fc.per]];
+      if (!(kt >= lo && kt <= hi)) { rest = mid; mid = other; } else rest = other;
+    } else {
+      rest = [];
+      if (lo - fc.t0 > 1e-9) rest.push([fc.t0, lo]);
+      if (fc.t1 - hi > 1e-9) rest.push([hi, fc.t1]);
+    }
+    return outside ? { idx: idx, fc: fc, keep: mid, remove: rest } : { idx: idx, fc: fc, keep: rest, remove: mid };
+  }
   function betweenSpans(sketch, idx, uv, bounds, outside) {
     var pl = betweenPlan(sketch, idx, uv, bounds, outside);
+    if (pl.fc) return pl.remove.map(function (r) { return freePts(pl.fc, r[0], r[1]); });   // sketch-refine
     return pl.error ? null : pl.remove.map(function (r) { return tPrimPts(pl.prim, r[0], r[1]); });
   }
   function trimBetween(sketch, idx, uv, bounds, outside, ctx) {
     var pl = betweenPlan(sketch, idx, uv, bounds, outside);
     if (pl.error) return { ok: false, error: pl.error };
     if (ctx && ctx.ignoreConstruction && sketch.entities[idx].construction) return { ok: false, ignored: true, error: 'Construction geometry is not trimmed (Ignore trimming of construction geometry).' };
+    if (pl.fc) {
+      // sketch-refine: a spline / ellipse: the kept spans as pieces of the same family (freePiece), relations after them
+      var fp = pl.keep.map(function (r) { return freePiece(pl.fc, r[0], r[1]); }), bf = sketch.entities.slice(), a0 = analyze(sketch);
+      sketch.entities = bf.slice(0, idx).concat(fp, bf.slice(idx + 1));
+      freeAfterTrim(sketch, bf, idx, fp.length, a0, ctx);
+      return { ok: true, pieces: fp.length };
+    }
     var keepOff = ctx && ctx.keepConstruction && !sketch.entities[idx].construction ? pl.remove.map(function (r) { return { prim: pl.prim, lo: r[0], hi: r[1] }; }) : [];
     var E = sketch.entities, e = E[idx], pieces = pl.keep.map(function (r) {
       var o;
@@ -3056,6 +3612,18 @@ var SketchSolver = (function () {
         q = xfPt([e.x, e.y], xf); o.x = q[0]; o.y = q[1]; o.w = e.w * k; o.h = e.h * k;
         break;
       case 'polyline': o.pts = e.pts.map(function (p) { return xfPt(p, xf); }); break;
+      // sketch-refine: arc slots, splines and ellipses move, turn and scale too (Move / Copy / Rotate / Scale, the patterns)
+      case 'aslot':
+        q = xfPt([e.cx, e.cy], xf); o.cx = q[0]; o.cy = q[1]; o.r = e.r * k; o.w = e.w * k;
+        o.a0 = e.a0 + rot; o.a1 = e.a1 + rot; normArc(o);
+        break;
+      case 'spline':
+        o.pts = e.pts.map(function (p) { return xfPt(p, xf); });
+        if (e.tans) o.tans = e.tans.map(function (tg) { return tg ? [+tg[0] + rot, tg[1]] : tg; });   // the weight is per chord length: scale-free
+        break;
+      case 'ellipse': case 'pellipse':
+        q = xfPt([e.cx, e.cy], xf); o.cx = q[0]; o.cy = q[1]; o.rx = e.rx * k; o.ry = e.ry * k; o.rot = (+e.rot || 0) + rot;
+        break;
       default: return null;
     }
     return o;
@@ -3158,7 +3726,8 @@ var SketchSolver = (function () {
 
   // ---- Linear and Circular Sketch Pattern
   // The point a pattern holds an entity by (its anchor), and the two unknowns that are that point.
-  var ANCHOR = { line: ['p1', ['x1', 'y1']], slot: ['p1', ['x1', 'y1']], circle: ['c', ['cx', 'cy']], arc: ['c', ['cx', 'cy']], poly: ['c', ['cx', 'cy']], crect: ['c', ['cx', 'cy']], rect: ['v0', ['x', 'y']], polyline: ['v0', [0, 1]], point: ['', ['x', 'y']] };
+  var ANCHOR = { line: ['p1', ['x1', 'y1']], slot: ['p1', ['x1', 'y1']], circle: ['c', ['cx', 'cy']], arc: ['c', ['cx', 'cy']], poly: ['c', ['cx', 'cy']], crect: ['c', ['cx', 'cy']], rect: ['v0', ['x', 'y']], polyline: ['v0', [0, 1]], point: ['', ['x', 'y']],
+    aslot: ['c', ['cx', 'cy']], spline: ['v0', [0, 1]], ellipse: ['c', ['cx', 'cy']], pellipse: ['c', ['cx', 'cy']] };   // sketch-refine: arc slots, splines, ellipses
   function anchorRef(e, i) { var a = ANCHOR[e.t]; return a ? (a[0] ? i + '.' + a[0] : String(i)) : null; }
   // The Pattern relation (rel.pat { m: seeds, inst: [instance], nd | circ }, refs: the anchors, the m seeds, then the
   // copies instance by instance): every copy is its seed moved to its instance. Linear (nd directions): anchors are the
@@ -3304,6 +3873,14 @@ var SketchSolver = (function () {
         for (var z = 1; z <= 3; z++) sel.push(ri + z);
       }
       var E = sketch.entities, seeds = patternSeeds(sketch, sel), s0 = seeds[0], A00 = anchorRef(E[s0], s0), P0 = refPoint(E, parseRef(A00));
+      // sketch-refine: an arc, arc slot or partial ellipse round the pattern's own centre (slots on a bolt circle) is held
+      // by its start point instead of its centre (which is the pattern's centre); so is the first seed that has one
+      if (len(sub(P0, C)) < 1e-9 * Math.max(1, Math.abs(C[0]), Math.abs(C[1]))) {
+        for (var sq = 0; sq < seeds.length; sq++) {
+          var se = E[seeds[sq]], alt = se && /^(arc|aslot|pellipse|line|slot|spline)$/.test(se.t) ? seeds[sq] + (se.t === 'spline' ? '.v0' : '.p1') : anchorRef(se, seeds[sq]), ap = alt && refPoint(E, parseRef(alt));
+          if (ap && len(sub(ap, C)) > 1e-9 * Math.max(1, Math.abs(C[0]), Math.abs(C[1]))) { s0 = seeds[sq]; A00 = alt; P0 = ap; break; }
+        }
+      }
       if (len(sub(P0, C)) < 1e-9 * Math.max(1, Math.abs(C[0]), Math.abs(C[1]))) { tRestore(sketch, saved); return { ok: false, error: 'The centre is on the first entity\'s point: move the centre (Center X / Y) off it.' }; }
       var inst = [], copies = [], made = [], nOrig = E.length;
       for (var k = 1; k < n; k++) {
@@ -3457,6 +4034,13 @@ var SketchSolver = (function () {
       (Array.isArray(list) ? list : [list]).forEach(function (i) { var e = self.f.entities[i]; if (!e) throw new Error('No sketch entity ' + i + ' to make construction.'); e.construction = true; });
       return this;
     };
+    // .infinite([i, …]) (sketch-refine): lines i are infinite lines, the lines through their two points
+    SBP.infinite = function (list) {
+      var self = this;
+      // an item is a line index (infinite both ways) or [index, 'p1' | 'p2'] (a ray, running on past that point)
+      (Array.isArray(list) ? list : [list]).forEach(function (it) { var i = Array.isArray(it) ? it[0] : it, e = self.f.entities[i]; if (!e || e.t !== 'line') throw new Error('No sketch line ' + i + ' to make infinite.'); e.infinite = Array.isArray(it) && (it[1] === 'p1' || it[1] === 'p2') ? it[1] : true; });
+      return this;
+    };
     // .driven([i, …]): Smart Dimensions i become driven (reference) dimensions
     SBP.driven = function (list) {
       var self = this;
@@ -3492,9 +4076,10 @@ var SketchSolver = (function () {
       var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
       var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
       var shp = (f.entities || []).map(function (e, i) { return e.sharp && e.t === 'point' ? i : -1; }).filter(function (i) { return i >= 0; });
+      var inf = (f.entities || []).map(function (e, i) { return e.infinite && e.t === 'line' ? (e.infinite === 'p1' || e.infinite === 'p2' ? [i, e.infinite] : i) : -1; }).filter(function (i) { return i !== -1; });
       var dps = (f.dims || []).map(function (d, i) { var ex = extras(d, DIM_EXTRA); return ex ? [i, ex] : null; }).filter(function (x) { return x; });
       var txs = (f.dims || []).map(function (d, i) { return d.tx != null ? [i, Math.round(d.tx * 1e4) / 1e4] : null; }).filter(function (x) { return x; });
-      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (shp.length ? '\n  .sharp(' + JSON.stringify(shp) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (txs.length ? '\n  .dimText(' + JSON.stringify(txs) + ')' : '') + (dps.length ? '\n  .dimProps(' + JSON.stringify(dps) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
+      return (cons.length ? '\n  .construction(' + JSON.stringify(cons) + ')' : '') + (inf.length ? '\n  .infinite(' +JSON.stringify(inf) + ')' : '') + (shp.length ? '\n  .sharp(' + JSON.stringify(shp) + ')' : '') + (drv.length ? '\n  .driven(' + JSON.stringify(drv) + ')' : '') + (txs.length ? '\n  .dimText(' + JSON.stringify(txs) + ')' : '') + (dps.length ? '\n  .dimProps(' + JSON.stringify(dps) + ')' : '') + (f.rels || []).map(function (rel) { return '\n  .rel(' + relArgs(rel) + ')'; }).join('');
     });
   }
   if (K) install(K);
@@ -3640,6 +4225,8 @@ var SketchSolver = (function () {
     xfEntity: xfEntity, transformEntities: transformEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
     // r13/trim13: Trim Entities modes
     trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
-    cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined
+    cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined,
+    // sketch-refine: splines and ellipses as curves (closest point, crossings, the points along a stretch of one)
+    isFree: isFree, freeCurve: freeCurve, infSides: infSides, freeClosest: freeClosest, freeHits: freeHits, freePts: freePts
   };
 })();

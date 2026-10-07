@@ -598,6 +598,7 @@
     (sketch.entities || []).forEach(function (e) {
       if (!e || e.t === 'point') return;
       if (e.construction && !opts.construction) return;
+      if (e.t === 'line' && e.infinite) return;   // sketch-refine: an infinite line has no ends to cut to
       var rec = e.construction ? null : K.sketchLayer(sketch, e), layer;
       if (rec) {
         layer = dxfLayerName(rec.name);

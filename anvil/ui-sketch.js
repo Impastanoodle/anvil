@@ -598,6 +598,8 @@
     if (mx == null) { var s0 = UI.worldToScreen(K.to3D(pl, raw[0], raw[1])); mx = s0[0]; my = s0[1]; }
     var px = out.px = pxSize(pl, mx, my), st = App.toolState || { pts: [] }, prev = st.pts[st.pts.length - 1];
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
+    // sketch-refine: Ctrl held while moving suppresses every snap (the point stays under the cursor, rounded)
+    if (UI.sketchCtrlHeld && UI.sketchCtrlHeld()) { var hC = 0.5 * px * 1.05; out.p = [niceRound(raw[0], hC), niceRound(raw[1], hC)]; return out; }
     // 1. an existing point
     var cands = sketchPoints(f).slice(), mc = modelSnapOn() ? modelSnaps(pl) : null;
     // r15/snapaudit15: a woken point whose entity is gone (Undo, Delete, a drag moved it) is forgotten, so nothing lines
@@ -772,7 +774,9 @@
         var a = S([e.x1, e.y1]), b = S([e.x2, e.y2]), dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
         if (L2 < 1) return;
         var t = ((scr[0] - a[0]) * dx + (scr[1] - a[1]) * dy) / L2;
-        if (t <= 0 || t >= 1) return;
+        // sketch-refine: an infinite line (or ray) runs on past the end(s) it has no end at
+        var inf = window.SketchSolver && window.SketchSolver.infSides ? window.SketchSolver.infSides(e) : null;
+        if ((t <= 0 && !(inf && inf.p1)) || (t >= 1 && !(inf && inf.p2))) return;
         var d = Math.hypot(scr[0] - (a[0] + t * dx), scr[1] - (a[1] + t * dy));
         if (d < bestD) { bestD = d; best = [e.x1 + t * (e.x2 - e.x1), e.y1 + t * (e.y2 - e.y1)]; best.e = i; }
       } else if (e.t === 'circle' || e.t === 'arc') {
@@ -798,6 +802,14 @@
           var d2 = Math.hypot(scr[0] - (a2[0] + tt * ex), scr[1] - (a2[1] + tt * ey));
           if (d2 < bestD) { bestD = d2; best = [c.a[0] + tt * (c.b[0] - c.a[0]), c.a[1] + tt * (c.b[1] - c.a[1])]; best.e = i; }
         });
+      } else if ((e.t === 'spline' || e.t === 'ellipse' || e.t === 'pellipse') && window.SketchSolver && window.SketchSolver.freeCurve) {
+        // sketch-refine: splines and ellipses are on-curve targets (the solver keeps a point on them); not past an open end
+        var SF = window.SketchSolver, fc = SF.freeCurve(e), cu = fc && UI.screenToPlane(scr[0], scr[1], pl);
+        if (!cu) return;
+        var hit = SF.freeClosest(fc, cu);
+        if (!hit || hit.end) return;
+        var sq = S(hit.p), d3 = Math.hypot(sq[0] - scr[0], sq[1] - scr[1]);
+        if (d3 < bestD) { bestD = d3; best = [hit.p[0], hit.p[1]]; best.e = i; }
       }
     });
     if (best) best.d = bestD;
