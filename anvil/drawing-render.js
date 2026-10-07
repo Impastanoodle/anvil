@@ -24,11 +24,17 @@
   // compute(doc, mesh, model, ctx): ctx.lazy (r12/drawui12) leaves the views whose projection is not cached yet as
   // placeholders (sheet.pending lists the projections to work out, see cachedProjection); their dimensions,
   // annotations and balloons wait for them, and model items wait for every view (so none lands on the wrong view).
+  // While a sheet is worked out, _.DIMSTYLE holds the drawing's dimension style (fmtDim: inch precision, fractions)
+  // and _.CTX the model and build a flat-pattern view is unfolded from (flatData).
   function compute(doc, mesh, model, ctx) {
-    if (!ctx || !ctx.lazy) return computeSheet(doc, mesh, model, ctx);
-    var prev = _.LAZY;
-    _.LAZY = { mesh: mesh, missing: [], keys: {} };
-    try { var r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; return r; } finally { _.LAZY = prev; }
+    var prevStyle = _.DIMSTYLE, prevCtx = _.CTX;
+    _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null };
+    try {
+      if (!ctx || !ctx.lazy) return computeSheet(doc, mesh, model, ctx);
+      var prev = _.LAZY;
+      _.LAZY = { mesh: mesh, missing: [], keys: {} };
+      try { var r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; return r; } finally { _.LAZY = prev; }
+    } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; }
   }
   function computeSheet(doc, mesh, model, ctx) {
     ctx = ctx || {};
@@ -133,6 +139,15 @@
       ['visible', 'hidden'].forEach(function (st) { (pr.ellipses ? pr.ellipses[st] : []).forEach(function (el) { prims.push(ellipsePrim(el, toSheet, s, layer, st)); }); });
       var p0 = toSheet([bd.umin, bd.vmin]), p1 = toSheet([bd.umax, bd.vmax]);
       var box = { x0: p0[0], x1: p1[0], y0: p0[1], y1: p1[1] };
+      // a flat-pattern view: the bend centre lines, a little past the outline at both ends, UP on BEND_UP (thin solid),
+      // DOWN on BEND_DOWN (thin dashed), as SolidWorks' Bend Lines - Up / Down line fonts; a part that does not unfold
+      // says why in the view
+      var fd = ct.flat && !ct.flat.error ? ct.flat : null;
+      if (ct.flat && ct.flat.error) text([v.x, v.y], 3.5 * k, 'FLAT PATTERN: ' + ct.flat.error, 'middle', layer);
+      if (fd) fd.bends.forEach(function (bnd) {
+        var A = toSheet(bnd.a), B = toSheet(bnd.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, e = BEND_EXT * k;
+        prims.push({ k: 'line', a: [A[0] - dx / L * e, A[1] - dy / L * e], b: [B[0] + dx / L * e, B[1] + dy / L * e], layer: bnd.up ? 'BEND_UP' : 'BEND_DOWN', style: bnd.up ? 'bendup' : 'benddown', view: v.id, bend: bnd.i });
+      });
       // a view still being worked out (lazy compute): a placeholder over the paper it will take (svgParts, live only)
       if (pr.pending) prims.push({ k: 'pending', box: box, layer: layer });
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
@@ -145,8 +160,9 @@
         text([(box.x0 + box.x1) / 2, lb - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
         text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
       } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
-      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame),
-        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending });
+      // (a flat pattern is drawn at true size whatever plane the Base Flange was sketched on)
+      views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame) || !!fd,
+        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending, flat: fd });
     });
     var pendingView = {}, anyPending = false;
     views.forEach(function (w) { if (w.pending) { pendingView[w.view.id] = 1; anyPending = true; } });
@@ -288,8 +304,29 @@
       });
     });
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them
-    var threads = partThreads(model), annPre = {};
-    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads); }); });
+    var threads = partThreads(model), holeNames = D.holeSizeNames(model), annPre = {};
+    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames); }); });
+    // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
+    // dimensions so those keep clear of them
+    var flatPre = [];
+    views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k)); });
+    // notes (Annotation ▸ Note): multi-line text on the sheet
+    var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k); });
+    // the flat views' overall width and height (Document Properties ▸ Flat pattern ▸ overall dimensions): model items
+    // of their own, kept like the others (styles, suppressed keys), whether or not Model Items is on
+    if (D.docOptions(doc).flatDims) views.forEach(function (w) {
+      if (!w.flat) return;
+      var b = w.flat.bbox, list = [{ view: w.view.id, kind: 'h', a: [b.umin, b.vmin], b: [b.umax, b.vmin], side: -1, value: b.umax - b.umin, auto: true, flat: true },
+        { view: w.view.id, kind: 'v', a: [b.umin, b.vmin], b: [b.umin, b.vmax], side: -1, value: b.vmax - b.vmin, auto: true, flat: true }];
+      list.forEach(function (d) {
+        d.key = autoDimKey(d);
+        var sk = d.view + ':' + d.kind; nth[sk] = nth[sk] || 0; d.style = styleKey(d, nth[sk]++);
+        var pp = doc.dimProps && doc.dimProps[d.style];
+        if (pp) setDimProps(d, pp);
+        d.text = dimText(d, units);
+        if (suppressed.indexOf(d.key) < 0) dims.push(d);
+      });
+    });
     var placed = [], shown = [];
     // what a leader's text must keep clear of: the drawn geometry of every view (it may sit on empty paper inside its
     // own view, beside the hole it names), the other views, the title block, the BOM, and every dimension placed before
@@ -314,6 +351,8 @@
       sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 } };
     if (bom) obs.boxes.push({ box: bom.box });
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'line') geo.segs.push([x.a, x.b]); else if (x.k === 'text') obs.texts.push(textRect(x)); }); });
+    flatPre.concat(notePre).forEach(function (it) { if (!it.hidden) obs.texts.push(it.box); });
+    prims.forEach(function (p) { if (p.bend != null) geo.segs.push([p.a, p.b]); });
     dims.forEach(function (d) {
       var vw = views.filter(function (w) { return w.view.id === d.view; })[0];
       if (!vw) return;
@@ -358,10 +397,91 @@
         annotations.push({ id: an.id, view: w.view.id, index: i, type: an.type, style: an.style || null, auto: !!an.auto, text: r.text, dangling: r.dangling, box: bx, info: r.info });
       });
     });
-    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations };
+    // the flat views' bend notes, tags, Bend Tables and FLAT SIZE notes: annotations too (select, drag, hide), with
+    // ids 'f<view>:<key>' (key b0, b1 … per bend, 'table', 'size')
+    flatPre.forEach(function (it) {
+      if (!it.hidden) it.prims.forEach(function (x) { x.view = it.view; prims.push(x); });
+      annotations.push({ id: it.id, view: it.view, type: it.type, key: it.key, auto: true, flat: true, hidden: !!it.hidden, off: it.off, text: it.text, dangling: false, box: it.box, info: it.info || null });
+    });
+    var notes = notePre.map(function (it) {
+      it.prims.forEach(function (x) { prims.push(x); });
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box };
+    });
+    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes };
+  }
+  // ------------------------------------------------------------------ flat-pattern annotations and notes
+  // flatItems(w, doc, units, k) -> [{ id, view, key, type: 'bendNote' | 'bendTag' | 'bendTable' | 'flatSize', text,
+  // prims, box, hidden }] for flat-pattern view record w. Bend notes ('UP 90° R .030') run along their bend line,
+  // centred on it and just beside it (text upright: turned within ±90°); in Bend Table mode each line gets its tag
+  // (A, B, C …) there instead and a table TAG / DIRECTION / ANGLE / RADIUS goes under the view; the FLAT SIZE note
+  // (Document Properties) under the view, below the overall dimensions. view.flatAnn[key] = { off: [dx, dy] (paper,
+  // dragged), hidden } keeps what the user did to each; the texts follow the part on every render. Layers: BEND_NOTES
+  // (notes, tags, table) and NOTES (FLAT SIZE).
+  var BEND_EXT = 1.5, BEND_GAP = 1.2, NOTE_H = 3.5, TABLE_H = 2.5, TABLE_ROW = 6, TABLE_COLS = [[12, 'TAG'], [24, 'DIRECTION'], [18, 'ANGLE'], [22, 'RADIUS']];
+  function rectOfText(p, h, text, rot, anchor) {
+    var w = textWidth(text, h), a = (rot || 0) * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]], s0 = anchor === 'middle' ? -w / 2 : anchor === 'end' ? -w : 0;
+    var r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    [[s0, 0], [s0 + w, 0], [s0, h], [s0 + w, h]].forEach(function (q) {
+      var x = p[0] + t[0] * q[0] + n[0] * q[1], y = p[1] + t[1] * q[0] + n[1] * q[1];
+      r.x0 = Math.min(r.x0, x); r.x1 = Math.max(r.x1, x); r.y0 = Math.min(r.y0, y); r.y1 = Math.max(r.y1, y);
+    });
+    return r;
+  }
+  function flatItems(w, doc, units, k) {
+    var v = w.view, fd = w.flat, o = D.docOptions(doc), mode = v.bendNotes || o.bendNotes, own = v.flatAnn || {}, out = [], box = w.box;
+    function st(key) { return own[key] || {}; }
+    function item(key, type, text, prims, info) {
+      var s = st(key), off = s.off || [0, 0], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      prims.forEach(function (x) {
+        if (x.a) { x.a = [x.a[0] + off[0], x.a[1] + off[1]]; x.b = [x.b[0] + off[0], x.b[1] + off[1]]; [x.a, x.b].forEach(function (q) { r.x0 = Math.min(r.x0, q[0]); r.x1 = Math.max(r.x1, q[0]); r.y0 = Math.min(r.y0, q[1]); r.y1 = Math.max(r.y1, q[1]); }); }
+        if (x.k === 'text') { x.p = [x.p[0] + off[0], x.p[1] + off[1]]; var tr = rectOfText(x.p, x.h, x.text, x.rot, x.anchor); r.x0 = Math.min(r.x0, tr.x0); r.x1 = Math.max(r.x1, tr.x1); r.y0 = Math.min(r.y0, tr.y0); r.y1 = Math.max(r.y1, tr.y1); }
+      });
+      out.push({ id: 'f' + v.id + ':' + key, view: v.id, key: key, type: type, text: text, prims: prims, box: r, hidden: !!s.hidden, off: off.slice(), info: info || null });
+    }
+    if (mode !== 'none') fd.bends.forEach(function (b, i) {
+      var A = w.toSheet(b.a), B = w.toSheet(b.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, t = [dx / L, dy / L];
+      if (t[0] < -1e-9 || (Math.abs(t[0]) <= 1e-9 && t[1] < 0)) t = [-t[0], -t[1]];
+      var rot = Math.atan2(t[1], t[0]) * 180 / Math.PI, n = [-t[1], t[0]], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], g = BEND_GAP * k;
+      if (Math.abs(rot) < 1e-9) rot = 0;
+      var txt = mode === 'table' ? D.bendTag(i) : D.bendNoteText(b, units, { prec: v.bendPrec });
+      item('b' + i, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: NOTE_H * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
+        { bend: i, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
+    });
+    var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
+    if (v.flatSize != null ? !!v.flatSize : o.flatSizeNote) {
+      var W = fd.bbox.umax - fd.bbox.umin, H = fd.bbox.vmax - fd.bbox.vmin, ts = 'FLAT SIZE ' + D.numText(W, units, null) + ' × ' + D.numText(H, units, null);
+      item('size', 'flatSize', ts, [{ k: 'text', p: [cx, yTop - NOTE_H * k], h: NOTE_H * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H });
+      yTop -= (NOTE_H + 5) * k;
+    }
+    if (mode === 'table' && fd.bends.length) {
+      var cols = TABLE_COLS.map(function (c) { return c[0] * k; }), Wt = cols.reduce(function (s, x) { return s + x; }, 0), rh = TABLE_ROW * k, th = TABLE_H * k;
+      var x0 = box.x0, rows = fd.bends.map(function (b, i) { return [D.bendTag(i), b.up ? 'UP' : 'DOWN', (Math.round(b.angle * 10) / 10) + '°', 'R ' + D.numText(b.R, units, v.bendPrec)]; });
+      var ps = [], Ht = rh * (rows.length + 1), y1 = yTop;
+      function ln(a, b2, style) { ps.push({ k: 'line', a: a, b: b2, layer: 'BEND_NOTES', style: style || 'thin' }); }
+      ln([x0, y1], [x0 + Wt, y1], 'thick'); ln([x0 + Wt, y1], [x0 + Wt, y1 - Ht], 'thick'); ln([x0 + Wt, y1 - Ht], [x0, y1 - Ht], 'thick'); ln([x0, y1 - Ht], [x0, y1], 'thick');
+      for (var ri = 1; ri <= rows.length; ri++) ln([x0, y1 - ri * rh], [x0 + Wt, y1 - ri * rh]);
+      var cxs = [x0];
+      cols.forEach(function (c, ci) { cxs.push(cxs[ci] + c); if (ci < cols.length - 1) ln([cxs[ci + 1], y1], [cxs[ci + 1], y1 - Ht]); });
+      [TABLE_COLS.map(function (c) { return c[1]; })].concat(rows).forEach(function (r, ri) {
+        r.forEach(function (s, ci) { ps.push({ k: 'text', p: [(cxs[ci] + cxs[ci + 1]) / 2, y1 - (ri + 1) * rh + (rh - th) / 2], h: th, text: s, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }); });
+      });
+      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows });
+    }
+    return out;
+  }
+  // noteItem(note, k) -> { id, text, lines, p, h, prims, box }: a note's lines on the NOTES layer, the first line's
+  // baseline at note.p (paper), 1.6 × the text height apart, left aligned
+  function noteItem(nt, k) {
+    var h = (+nt.h > 0 ? +nt.h : NOTE_H) * k, lines = String(nt.text == null ? '' : nt.text).split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    lines.forEach(function (s, i) {
+      var p = [nt.p[0], nt.p[1] - i * h * 1.6];
+      if (s.length) prims.push({ k: 'text', p: p, h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
+      r.x0 = Math.min(r.x0, p[0]); r.x1 = Math.max(r.x1, p[0] + Math.max(textWidth(s, h), h * 0.5)); r.y0 = Math.min(r.y0, p[1]); r.y1 = Math.max(r.y1, p[1] + h);
+    });
+    return { id: nt.id, text: String(nt.text == null ? '' : nt.text), lines: lines, p: nt.p.slice(), h: h, prims: prims, box: r };
   }
   function layerName(v, used) {
-    var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : String(v.orient).toUpperCase(), name = base, n = 2;
+    var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : v.kind === 'flat' ? 'FLAT_PATTERN' : String(v.orient).toUpperCase(), name = base, n = 2;
     while (used[name]) name = base + '_' + n++;
     used[name] = true;
     return name;
@@ -660,7 +780,7 @@
   // dimension, leader and balloon arrowheads: 3 mm long, 1 mm wide (ASME Y14.2, SolidWorks' ANSI default 1 × 3 mm;
   // half-width 0.5), r12/drawui12 (were 1.8 mm wide). Section-view arrows keep their own, bolder size.
   var ARROW_W = 0.5;
-  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25 };
+  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25, bendup: 0.25, benddown: 0.25 };
   var CENTER_DASH = [6, 1.5, 1.5, 1.5];   // centre marks and centrelines: long dash, short dash (paper mm)
   // plainText(s): text for writers without the ASME symbol glyphs (DXF R12, PDF Helvetica): ↧ 10 -> X 10 DEEP,
   // ⌴ -> CBORE, ⌵ -> CSK (the words the symbols replaced)
@@ -754,7 +874,7 @@
           return;
         }
         var sw = num((STROKE[p.style] || 0.25) * k), cls = p.style ? ' class="' + p.style + '"' : '';
-        var dsh = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'chain' || p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : p.style === 'center' ? ' stroke-dasharray="' + center + '"' : '';
+        var dsh = p.style === 'hidden' || p.style === 'benddown' ? ' stroke-dasharray="' + dash + '"' : p.style === 'chain' || p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : p.style === 'center' ? ' stroke-dasharray="' + center + '"' : '';
         var col = p.color && COLORS[p.color];
         if (col) { dsh += p.k === 'fill' || p.k === 'text' ? '' : ' stroke="' + col + '"'; cls += ' data-color="' + p.color + '"'; }
         if (p.k === 'arc') {
@@ -791,7 +911,7 @@
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     pr(0, 'SECTION'); pr(2, 'HEADER');
     pr(9, '$ACADVER'); pr(1, 'AC1009');
     pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);
@@ -823,7 +943,7 @@
     pr(0, 'ENDSEC');
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) {
-      var ltn = p.style === 'hidden' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
+      var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
       var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
       // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
       if (p.k === 'line' && p.style === 'hatch') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
@@ -860,7 +980,7 @@
     var cur = null, curCol = '0 0 0', chain = [8, 1.5, 1.5, 1.5].map(function (x) { return num(x * k * ptPer); }).join(' '), center = CENTER_DASH.map(function (x) { return num(x * k * ptPer); }).join(' ');
     function style(s) {
       if (s === cur) return; cur = s;
-      c.push(num((STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : s === 'chain' || s === 'tanfont' ? '[' + chain + '] 0 d' : s === 'center' ? '[' + center + '] 0 d' : '[] 0 d'));
+      c.push(num((STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' || s === 'benddown' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : s === 'chain' || s === 'tanfont' ? '[' + chain + '] 0 d' : s === 'center' ? '[' + center + '] 0 d' : '[] 0 d'));
     }
     function color(p) {
       var col = p.color && PDF_COLORS[p.color] || '0 0 0';

@@ -40,6 +40,13 @@
     t.innerHTML = '';
     t.appendChild(row({ icon: 'drawing', name: dc.name, cls: 'dw-root', twisty: true, title: 'Drawing of ' + App.model.name }));
     t.appendChild(row({ icon: 'annotations', name: 'Annotations', depth: 1, badge: dc.autoDims ? 'model items' : '' }));
+    // notes on the sheet (Annotation ▸ Note)
+    (dc.notes || []).forEach(function (n) {
+      var first = String(n.text).split('\n')[0];
+      t.appendChild(row({ icon: 'note', name: 'Note' + n.id, depth: 2, cls: 'dw-note', data: { note: String(n.id) }, sel: D.sel && D.sel.kind === 'note' && D.sel.id === n.id, badge: first.length > 18 ? first.slice(0, 17) + '…' : first, title: n.text + '\n(double-click to edit)',
+        click: function () { D.sel = { kind: 'note', id: n.id }; drawOverlay(); renderTree(); }, dbl: function () { D.sel = { kind: 'note', id: n.id }; DW.openNoteEdit(Drawing.findNote(doc(), n.id)); },
+        menu: function () { return [{ label: 'Delete', action: function () { edit(function (dc2) { Drawing.deleteNote(dc2, n.id); }); } }]; } }));
+    });
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
     t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block' }));
     if (dc.bom && dc.bom.show !== false) {
@@ -53,7 +60,7 @@
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
       var st = w ? w.proj.stats : null;
       var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.orient;
-      t.appendChild(row({ icon: v.kind === 'section' ? 'sectionView' : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
+      t.appendChild(row({ icon: v.kind === 'section' ? 'sectionView' : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
         title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
         dbl: function () { cmdViewProperties(v.id); }, menu: function () { return viewMenu(v); } }));
@@ -66,6 +73,13 @@
           click: function () { D.sel = { kind: 'annot', id: list[0].id, view: v.id }; drawOverlay(); renderTree(); },
           menu: function () { return [{ label: 'Delete ' + tp[1], action: function () { edit(function (dc2) { var vv = Drawing.findView(dc2, v.id); if (vv) vv.annotations = (vv.annotations || []).filter(function (a) { return a.type !== tp[0]; }); }); } }]; } }));
       });
+      // a flat-pattern view: its bend notes (or Bend Table tags), shown / hidden
+      var fl = an.filter(function (a) { return a.flat && (a.type === 'bendNote' || a.type === 'bendTag'); });
+      if (fl.length) {
+        var hid = fl.filter(function (a) { return a.hidden; }).length;
+        t.appendChild(row({ icon: 'bendNote', name: fl[0].type === 'bendTag' ? 'Bend Table' : 'Bend Notes', depth: 3, cls: 'dw-annots dw-bendNotes', badge: String(fl.length - hid) + (hid ? ' (' + hid + ' hidden)' : ''), title: fl.map(function (a) { return a.text + (a.hidden ? ' (hidden)' : ''); }).join(', '),
+          dbl: function () { cmdViewProperties(v.id); } }));
+      }
       var nb = w && D.sheet.balloons ? D.sheet.balloons.filter(function (b) { return b.view === v.id; }).length : 0;
       if (nb) t.appendChild(row({ icon: 'autoBalloon', name: 'Balloons', depth: 3, cls: 'dw-balloons', badge: String(nb), title: nb + ' balloons linked to the Bill of Materials item numbers',
         menu: function () { return [{ label: 'Delete Balloons', action: function () { edit(function (dc2) { Drawing.deleteBalloons(dc2, v.id); }); } }]; } }));
@@ -108,6 +122,7 @@
     { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
     { id: 'stackBalloon', label: 'Stacked\nBalloon', run: function () { cmdBalloon(true); }, active: function () { return D.tool === 'stackballoon'; } },
     { id: 'holeCallout', label: 'Hole\nCallout', run: cmdHoleCallout, active: function () { return D.tool === 'holecallout'; } },
+    { id: 'note', label: 'Note', run: function () { DW.cmdNote(); }, active: function () { return D.tool === 'note'; } },
     { sep: true },
     { id: 'centerMark', label: 'Center\nMark', run: cmdCenterMark, active: function () { return D.tool === 'centermark'; } },
     { id: 'centerline', label: 'Centerline', run: cmdCenterline, active: function () { return D.tool === 'centerline'; } },
@@ -162,6 +177,8 @@
         { label: 'Drawing View \u25b8 Projected', action: cmdProjectedView },
         { label: 'Drawing View \u25b8 Section\u2026', action: cmdSectionView },
         { label: 'Drawing View \u25b8 Detail', action: cmdDetailView },
+        { label: 'Drawing View \u25b8 Flat Pattern\u2026', disabled: !DW.sheetMetal(), action: function () { DW.cmdFlatView(); } },
+        { label: 'Annotations \u25b8 Note', action: function () { DW.cmdNote(); } },
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
         { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems },
         { label: 'Annotations \u25b8 Auto Balloon', disabled: !isAsm(), action: cmdAutoBalloon },
@@ -254,8 +271,10 @@
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
           hatches: (w.hatches || []).map(function (h) { return { body: h.body, component: isAsm() && App.model.components[h.body] ? App.model.components[h.body].name : null, part: h.part != null ? (pnames || (pnames = partNames()))[h.part] || null : null, angle: h.angle, spacing: +h.spacing.toFixed(4), lines: h.lines, pattern: h.pattern }; }),
-          balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }) };
+          balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }),
+          flat: w.view.kind === 'flat' ? flatSummary(w) : undefined };
       }),
+      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
         type: D.sheet.bom.type, columns: D.sheet.bom.columns.map(function (c) { return c.title; }), cells: D.sheet.bom.cells.map(function (r) { return r.map(function (x) { return String(x); }); }),
         rows: D.sheet.bom.rows.map(function (r, i) { var o = { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; D.sheet.bom.columns.forEach(function (c, j) { if (c.type === 'property') o[c.prop] = String(D.sheet.bom.cells[i][j]); }); return o; }) } : null,
@@ -266,6 +285,17 @@
       annotations: (D.sheet.annotations || []).map(function (a) { return { id: a.id, view: a.view, type: a.type, style: a.style, text: a.text, auto: a.auto, dangling: a.dangling, box: [a.box.x0, a.box.y0, a.box.x1, a.box.y1].map(function (x) { return +x.toFixed(3); }), centers: a.info && a.info.centers ? a.info.centers.map(function (c) { return [+c[0].toFixed(3), +c[1].toFixed(3)]; }) : undefined }; }),
       options: Drawing.docOptions(dc)
     };
+  }
+  // a flat-pattern view in the summary: its bends (sheet points, direction, angle, radius, note text), the blank's size
+  // and what the bend notes / tags read
+  function flatSummary(w) {
+    var fd = w.content && w.content.flat;
+    if (!fd || fd.error) return { error: fd ? fd.error : 'no flat pattern' };
+    var r3 = function (x) { return +x.toFixed(4); };
+    return { size: [r3(fd.bbox.umax - fd.bbox.umin), r3(fd.bbox.vmax - fd.bbox.vmin)], bendNotes: w.view.bendNotes || Drawing.docOptions(doc()).bendNotes,
+      bends: fd.bends.map(function (b) { return { up: b.up, angle: r3(b.angle), R: r3(b.R), a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
+      circles: fd.circles.length, arcs: fd.arcs.length, lines: fd.lines.length,
+      annotations: (D.sheet.annotations || []).filter(function (a) { return a.flat && a.view === w.view.id; }).map(function (a) { return { id: a.id, key: a.key, type: a.type, text: a.text, hidden: a.hidden, box: [a.box.x0, a.box.y0, a.box.x1, a.box.y1].map(function (x) { return +x.toFixed(3); }) }; }) };
   }
   // runs an engine call on a scratch copy first, so a refused view (missing parent, detail of a detail…) leaves no undo step
   function viewApi(fn) {
@@ -344,12 +374,28 @@
         var r = applyDimensionPM(d, src, { value: value, tolType: d.tol ? d.tol.type : 'none', plus: d.tol ? d.tol.plus : 0, minus: d.tol ? d.tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', label: d.label, flip: d.flip });
         return r && r.then ? r.then(function () { return summary(); }) : Promise.resolve(r === false ? null : summary());
       },
+      // sheet metal: flatView({ x, y, scale, bendNotes: 'notes' | 'table' | 'none' }) adds the flat-pattern view (one
+      // undo step; null and a message on a part that is not sheet metal); flatViewProps(id, { bendNotes, flatSize });
+      // flatAnnotation(viewId, key ('b0', 'b1' … | 'table' | 'size'), { off: [dx, dy], hidden })
+      flatView: function (opts) {
+        opts = opts || {};
+        if (!doc() || !DW.flatReady()) return null;
+        return viewApi(function (dc) { return Drawing.addFlatView(dc, mesh(), { model: App.model, build: App.build, x: opts.x, y: opts.y, scale: opts.scale || null, bendNotes: opts.bendNotes, fit: true }); });
+      },
+      flatViewProps: function (id, props) { if (!doc()) return null; DW.setFlatViewProps(id, props || {}); return summary(); },
+      flatAnnotation: function (viewId, key, props) { return annotApi(function (dc) { return Drawing.flatAnnotation(dc, viewId, key, props || {}); }); },
+      // notes: note({ p: [x, y] (paper), text ('\n' between lines), h }), editNote(id, { text, p, h }), deleteNote(id),
+      // notes() -> [{ id, text, p, box }]; each change is one undo step
+      note: function (spec) { return annotApi(function (dc) { return Drawing.addNote(dc, spec || {}); }); },
+      editNote: function (id, props) { return annotApi(function (dc) { if (!Drawing.findNote(dc, id)) throw new Error('No note ' + id); Drawing.editNote(dc, id, props || {}); return true; }); },
+      deleteNote: function (id) { return annotApi(function (dc) { if (!Drawing.deleteNote(dc, id)) throw new Error('No note ' + id); return true; }); },
+      notes: function () { var s = summary(); return s ? s.notes : null; },
       balloon: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addBalloon(dc, App.model, viewId, spec || {}); }); },
       balloonProps: function (viewId, index, props) { if (!doc()) return null; setBalloonProps(viewId, index, props || {}); return summary(); }
     };
   }
   UI.makeDrawing = makeDrawing; UI.openDrawing = openDrawing; UI.closeDrawing = closeDrawing; UI.drawingActive = function () { return D.active; };
-  UI.drawing = { state: D, render: render, ready: ready, settle: settle, centerMark: cmdCenterMark, centerline: cmdCenterline, holeCallout: cmdHoleCallout, ordinate: function () { cmdChainDim('ordinate'); }, baseline: function () { cmdChainDim('baseline'); },
+  UI.drawing = { state: D, render: render, ready: ready, settle: settle, note: function () { DW.cmdNote(); }, noteAt: function (p) { return DW.noteAt(p); }, flatView: function () { DW.cmdFlatView(); }, centerMark: cmdCenterMark, centerline: cmdCenterline, holeCallout: cmdHoleCallout, ordinate: function () { cmdChainDim('ordinate'); }, baseline: function () { cmdChainDim('baseline'); },
     chamferDim: cmdChamferDim, balloon: function () { cmdBalloon(false); }, stackedBalloon: function () { cmdBalloon(true); }, docProps: cmdDocProps, dimensionPM: cmdDimensionPM, annotAt: annotAt, dimAt: dimAt, edgeAt: edgeAt, autoBalloon: cmdAutoBalloon, bom: cmdBOM, balloonAt: balloonAt, bomAt: bomAt, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
   DW.renderTree = renderTree;
   // the File menu gets its drawing entry through UI.menuHook; redraw the menu bar now that the hook exists

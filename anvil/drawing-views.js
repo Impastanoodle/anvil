@@ -435,6 +435,180 @@
     return true;
   }
 
+  // ------------------------------------------------------------------ flat-pattern views (sheet metal)
+  // A flat-pattern view (view.kind 'flat', SolidWorks: Model View ▸ Flat pattern) draws the blank Kernel.flatPattern
+  // unfolds, seen from the +n side of the Base Flange's sketch plane (UP bends come toward the viewer), in that plane's
+  // frame (u = plane.x, v = plane.y): the outline and the holes as true circles and arcs where the polygons the kernel
+  // returns lie on a circle (flatCurves), and the bend centre lines with their direction, angle and inside radius.
+
+  // flatCurves(loops, diag) -> { lines: [[x0, y0, x1, y1, 0]], circles: [{ c, r }], arcs: [{ c, r, a0, a1 (degrees CCW),
+  // src: 'arc', fit: true }] }: each closed polygon of the flat as drawing linework. A loop whose vertices lie on one
+  // circle (all but a stray vertex or two, which the CSG merge of the blank can leave on a small hole) is a circle; else
+  // runs of 3 or more chords whose vertices lie on one circle, turning the same way by under 30° each, are arcs (slot
+  // ends, rounded corners) and the rest are lines. Vertices are on the true curve to rounding (tessellation vertices),
+  // so the tolerance is tight: r · 2e-4 + diag · 1e-7.
+  function flatCurves(loops, diag) {
+    var out = { lines: [], circles: [], arcs: [] }, eps = diag * 1e-7 + 1e-12;
+    function circ3(A, B, C) {
+      var d = 2 * (A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1]));
+      if (Math.abs(d) < 1e-18) return null;
+      var a2 = A[0] * A[0] + A[1] * A[1], b2 = B[0] * B[0] + B[1] * B[1], c2 = C[0] * C[0] + C[1] * C[1];
+      var c = [(a2 * (B[1] - C[1]) + b2 * (C[1] - A[1]) + c2 * (A[1] - B[1])) / d, (a2 * (C[0] - B[0]) + b2 * (A[0] - C[0]) + c2 * (B[0] - A[0])) / d];
+      return { c: c, r: Math.hypot(A[0] - c[0], A[1] - c[1]) };
+    }
+    // algebraic (Kåsa) least-squares circle through points
+    function kasa(pts) {
+      var n = pts.length, mx = 0, my = 0;
+      pts.forEach(function (p) { mx += p[0] / n; my += p[1] / n; });
+      var suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+      pts.forEach(function (p) {
+        var u = p[0] - mx, v = p[1] - my;
+        suu += u * u; svv += v * v; suv += u * v; suuu += u * u * u; svvv += v * v * v; suvv += u * v * v; svuu += v * u * u;
+      });
+      var det = suu * svv - suv * suv;
+      if (Math.abs(det) < 1e-30) return null;
+      var bu = (suuu + suvv) / 2, bv = (svvv + svuu) / 2, uc = (bu * svv - bv * suv) / det, vc = (suu * bv - suv * bu) / det;
+      var c = [mx + uc, my + vc], r = 0;
+      pts.forEach(function (p) { r += Math.hypot(p[0] - c[0], p[1] - c[1]) / n; });
+      return { c: c, r: r };
+    }
+    function turn(a, b, c) { var ux = b[0] - a[0], uy = b[1] - a[1], vx = c[0] - b[0], vy = c[1] - b[1]; return Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy); }
+    loops.forEach(function (loop) {
+      // drop repeated vertices and vertices lying on the straight line between their neighbours (CSG splits)
+      var p = [];
+      loop.forEach(function (q) { if (!p.length || Math.hypot(q[0] - p[p.length - 1][0], q[1] - p[p.length - 1][1]) > eps) p.push([q[0], q[1]]); });
+      if (p.length > 1 && Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) <= eps) p.pop();
+      for (var changed = true; changed && p.length > 3;) {
+        changed = false;
+        for (var i = 0; i < p.length && p.length > 3; i++) {
+          var A = p[(i + p.length - 1) % p.length], B = p[i], C = p[(i + 1) % p.length], L = Math.hypot(C[0] - A[0], C[1] - A[1]);
+          if (L < eps) continue;
+          var off = Math.abs((C[0] - A[0]) * (B[1] - A[1]) - (C[1] - A[1]) * (B[0] - A[0])) / L, t = ((B[0] - A[0]) * (C[0] - A[0]) + (B[1] - A[1]) * (C[1] - A[1])) / (L * L);
+          if (off <= eps && t > 0 && t < 1) { p.splice(i, 1); changed = true; i--; }
+        }
+      }
+      var n = p.length;
+      if (n < 3) return;
+      // a whole circle: a least-squares fit that nearly every vertex sits on, the vertices all round it
+      if (n >= 8) {
+        var f = kasa(p);
+        for (var pass = 0; f && pass < 3; pass++) {
+          var tolC = f.r * 2e-4 + eps, inl = p.filter(function (q) { return Math.abs(Math.hypot(q[0] - f.c[0], q[1] - f.c[1]) - f.r) <= tolC; });
+          if (pass < 2 && inl.length < n) {
+            // a stray vertex pulls the first fit off every point: fit again to the three quarters nearest the circle
+            var fc = f, ranked = p.slice().sort(function (x, y) { return Math.abs(Math.hypot(x[0] - fc.c[0], x[1] - fc.c[1]) - fc.r) - Math.abs(Math.hypot(y[0] - fc.c[0], y[1] - fc.c[1]) - fc.r); });
+            if (inl.length < Math.ceil(0.85 * n)) { f = kasa(ranked.slice(0, Math.max(8, Math.ceil(0.75 * n)))); continue; }
+          }
+          if (inl.length === n || (pass > 0 && inl.length >= Math.max(8, Math.ceil(0.85 * n)))) {
+            var ang = inl.map(function (q) { return Math.atan2(q[1] - f.c[1], q[0] - f.c[0]); }).sort(function (x, y) { return x - y; }), gap = ang[0] + 2 * Math.PI - ang[ang.length - 1];
+            for (var g = 1; g < ang.length; g++) gap = Math.max(gap, ang[g] - ang[g - 1]);
+            var wild = p.some(function (q) { return Math.abs(Math.hypot(q[0] - f.c[0], q[1] - f.c[1]) - f.r) > f.r * 0.35; });
+            if (gap < Math.PI / 3 && !wild) { out.circles.push({ c: f.c, r: f.r, body: 0 }); return; }
+            break;
+          }
+          f = inl.length >= 8 ? kasa(inl) : null;
+        }
+      }
+      // start at the sharpest corner, so no arc is split by the loop's seam
+      var s0 = 0, best = -1;
+      for (var k = 0; k < n; k++) { var tk = Math.abs(turn(p[(k + n - 1) % n], p[k], p[(k + 1) % n])); if (tk > best) { best = tk; s0 = k; } }
+      var q = [];
+      for (var j = 0; j <= n; j++) q.push(p[(s0 + j) % n]);
+      // q[i..j] is one arc: on the circle through its ends and middle, turning one way by 0.1–30° per chord
+      function arcOf(i, j) {
+        var C = circ3(q[i], q[Math.floor((i + j) / 2)], q[j]);
+        if (!C || C.r > diag * 4) return null;
+        var tolA = C.r * 2e-4 + eps, sg = 0;
+        for (var m = i; m <= j; m++) if (Math.abs(Math.hypot(q[m][0] - C.c[0], q[m][1] - C.c[1]) - C.r) > tolA) return null;
+        for (var m2 = i + 1; m2 < j; m2++) {
+          var tt = turn(q[m2 - 1], q[m2], q[m2 + 1]);
+          if (Math.abs(tt) < 0.1 * Math.PI / 180 || Math.abs(tt) > Math.PI / 6) return null;
+          if (!sg) sg = tt > 0 ? 1 : -1; else if (tt * sg < 0) return null;
+        }
+        return C;
+      }
+      var i0 = 0, seq = [];
+      while (i0 < n) {
+        var j0 = -1, Cb = null;
+        for (var jj = i0 + 3; jj <= n; jj++) { var Cj = arcOf(i0, jj); if (Cj) { j0 = jj; Cb = Cj; } else if (j0 >= 0) break; }
+        if (j0 < 0) { seq.push({ line: [q[i0][0], q[i0][1], q[i0 + 1][0], q[i0 + 1][1], 0] }); i0++; continue; }
+        var sw = 0;
+        for (var m3 = i0; m3 < j0; m3++) {
+          var u0 = [q[m3][0] - Cb.c[0], q[m3][1] - Cb.c[1]], w0 = [q[m3 + 1][0] - Cb.c[0], q[m3 + 1][1] - Cb.c[1]];
+          sw += Math.atan2(u0[0] * w0[1] - u0[1] * w0[0], u0[0] * w0[0] + u0[1] * w0[1]);
+        }
+        seq.push({ c: Cb.c, r: Cb.r, t0: Math.atan2(q[i0][1] - Cb.c[1], q[i0][0] - Cb.c[0]) * 180 / Math.PI, sw: sw * 180 / Math.PI });
+        i0 = j0;
+      }
+      // an arc the loop's seam split in two (a loop with no sharp corner, such as a slot) is one arc
+      var fA = seq[0], lA = seq[seq.length - 1];
+      if (seq.length > 1 && !fA.line && !lA.line && Math.hypot(fA.c[0] - lA.c[0], fA.c[1] - lA.c[1]) <= fA.r * 1e-4 + eps && Math.abs(fA.r - lA.r) <= fA.r * 1e-4 + eps && fA.sw * lA.sw > 0) {
+        lA.sw += fA.sw; seq.shift();
+      }
+      seq.forEach(function (s) {
+        if (s.line) out.lines.push(s.line);
+        else out.arcs.push({ c: s.c, r: s.r, a0: s.sw > 0 ? s.t0 : s.t0 + s.sw, a1: s.sw > 0 ? s.t0 + s.sw : s.t0, body: 0, src: 'arc', fit: true });
+      });
+    });
+    return out;
+  }
+  // flatData(mesh, model?, build?) -> { units, frame: { e, u, v }, lines, circles, arcs, bends: [{ a, b, up, angle, R,
+  // i }], bbox: { umin, umax, vmin, vmax }, sheet, proj } | { error } | null: the flat pattern of the part shown by mesh,
+  // cached on the mesh (meshes are immutable once built, so a rebuild makes a new one). The model and build default to
+  // the ones the sheet being worked out belongs to (_.CTX, set by compute); with no build the part is rebuilt here.
+  // The kernel's flat needs Anvil's own mesh (its faces carry the sheet's walls), so with an OpenCascade mesh on screen
+  // the build's mesh is used instead.
+  function flatData(mesh, model, build) {
+    var ctx = _.CTX || {};
+    model = model || ctx.model; build = build || ctx.build;
+    var units = model ? (model.units === 'in' ? 'in' : 'mm') : null, c = mesh && mesh._drawingFlat;
+    if (c && (!units || c.units === units)) return c;
+    if (!model || model.type === 'assembly') return c || null;
+    var res;
+    try {
+      if (!model.sheet) throw new Error('Not a sheet-metal part: a flat-pattern view needs a Base Flange.');
+      var flat = null, err = null;
+      if (build && build.flanges && build.planes) {
+        try { flat = K.flatPattern(model, build, mesh); } catch (e) { err = e; }
+        if (!flat && build.body) try { flat = K.flatPattern(model, build, K.meshFromBody(build.body)); } catch (e2) { err = e2; }
+      }
+      if (!flat) {
+        var m2 = {}; Object.keys(model).forEach(function (k) { if (k !== 'drawings') m2[k] = model[k]; });
+        m2 = JSON.parse(JSON.stringify(m2));
+        var b2 = K.rebuild(m2);
+        try { flat = K.flatPattern(m2, b2, K.meshFromBody(b2.body)); } catch (e3) { throw err || e3; }
+      }
+      var P = flat.plane, bb = flat.bbox, diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]) || 1;
+      var cv = flatCurves(flat.loops, diag);
+      res = { units: units, frame: { e: P.n.slice(), u: P.x.slice(), v: P.y.slice() }, lines: cv.lines, circles: cv.circles, arcs: cv.arcs,
+        bends: flat.bends.map(function (b, i) { return { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i }; }),
+        bbox: { umin: bb.min[0], umax: bb.max[0], vmin: bb.min[1], vmax: bb.max[1] }, sheet: flat.sheet, loops: flat.loops.length };
+    } catch (e) { res = { units: units, error: String(e && e.message || e) }; }
+    if (mesh && typeof mesh === 'object') try { Object.defineProperty(mesh, '_drawingFlat', { value: res, configurable: true, writable: true, enumerable: false }); } catch (e4) { }
+    return res;
+  }
+  // flatProjection(fd) -> a projection (projectView's shape) of the flat: its linework is all visible, bends extra
+  function flatProjection(fd) {
+    if (fd.proj) return fd.proj;
+    var F = fd.frame, bb = fd.error ? { umin: 0, umax: 0, vmin: 0, vmax: 0 } : fd.bbox;
+    var pr = { orient: 'Flat pattern', u: F ? F.u : [1, 0, 0], v: F ? F.v : [0, 1, 0], e: F ? F.e : [0, 0, 1], flat: true,
+      lines: { visible: fd.lines || [], hidden: [] }, circles: { visible: fd.circles || [], hidden: [] }, arcs: { visible: fd.arcs || [], hidden: [] }, ellipses: { visible: [], hidden: [] },
+      all: fd.lines || [], circlesAll: fd.circles || [], arcsAll: fd.arcs || [], bends: fd.bends || [], error: fd.error || null,
+      bounds: { umin: bb.umin, umax: bb.umax, vmin: bb.vmin, vmax: bb.vmax },
+      stats: { visibleLines: (fd.lines || []).length, hiddenLines: 0, visibleCircles: (fd.circles || []).length, hiddenCircles: 0, bends: (fd.bends || []).length } };
+    try { Object.defineProperty(fd, 'proj', { value: pr, configurable: true, writable: true, enumerable: false }); } catch (e) { }
+    return pr;
+  }
+  // bendNoteText(bend, units, opts?) -> 'UP 90° R .030' (inches, ANSI: no leading zero) / 'DOWN 90° R 0.76' (mm): the
+  // direction, the bend angle and the inside radius, as SolidWorks' bend notes read; opts.prec overrides the places
+  function bendNoteText(b, units, opts) {
+    var ang = Math.round(+b.angle * 10) / 10;
+    return (b.up ? 'UP' : 'DOWN') + ' ' + ang + '° R ' + D.numText(+b.R, units, opts && opts.prec != null ? opts.prec : null);
+  }
+  // bendTag(i) -> 'A', 'B', … 'Z', 'AA', … (Bend Table tags)
+  function bendTag(i) { var s = ''; i = Math.max(0, i | 0); do { s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26) - 1; } while (i >= 0); return s; }
+
+  D.flatCurves = flatCurves; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;

@@ -41,6 +41,9 @@
     ordinateDim: '<path d="M3 13.5 V3 M7 13.5 V6 M12 13.5 V8" stroke="#2f7fd6" stroke-width="0.9"/><path d="M1.5 13.5 h13" stroke="currentColor" stroke-width="1.1"/><text x="3" y="2.6" font-size="3.4" font-family="Arial" text-anchor="middle" fill="currentColor">0</text>',
     baselineDim: '<path d="M2.5 14 V2" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 5 h7 M2.5 9 h11" stroke="#2f7fd6" stroke-width="0.9"/><path d="M9.5 3.5 v3 M13.5 7.5 v3" stroke="currentColor" stroke-width="0.9"/>',
     chamferDim: '<path d="M2 14 V7 L7 2 h7" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5 L8.5 8.5 h6" fill="none" stroke="#2f7fd6" stroke-width="0.9"/>',
+    note: '<path d="M2.5 2.5 h11 v8 l-3 3 h-8 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M10.5 13.5 v-3 h3" fill="none" stroke="currentColor" stroke-width="0.9"/><text x="7.5" y="9" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">A</text>',
+    flatView: '<path d="M1.5 4.5 h13 v7 h-13 z" fill="#bfcfe0" stroke="currentColor" stroke-width="1"/><path d="M4.5 3.5 v9 M11.5 3.5 v9" stroke="#2f7fd6" stroke-width="0.9"/><path d="M11.5 3.5 v9" stroke="#e0553c" stroke-width="0.9" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="8" r="1.3" fill="#fff" stroke="currentColor" stroke-width="0.8"/>',
+    bendNote: '<path d="M5 2 v12" stroke="#2f7fd6" stroke-width="1"/><text x="10.5" y="10" font-size="5.2" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">UP</text>',
     docProps: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><circle cx="8" cy="9" r="2.6" fill="none" stroke="#2f7fd6" stroke-width="1.3" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="9" r="0.9" fill="#2f7fd6"/>'
   };
   var baseIcons = Icons;
@@ -188,6 +191,7 @@
     D.prog = null; D.drag = null; D.sheet = null; D.sheetMesh = null; D.sheetDoc = null;
     if (!D.active) return;
     if (ownPM()) UI.pmCancel();
+    if (D.inline) D.inline.autoCommit = false;   // (a note being typed belongs to the document going away)
     DW.closeInlineEdit(false);
     D.active = false; D.tool = null; D.pending = null; D.sel = null; D.hover = null;
     $('app').classList.remove('drawing-mode', 'dw-pm');
@@ -495,9 +499,14 @@
       var bhov = D.hover && D.hover.kind === 'balloon' && D.hover.view === b.view && D.hover.index === b.index;
       if (bsel || bhov) svgNode('circle', { class: 'dw-hot' + (bsel ? '' : ' pre'), cx: b.c[0], cy: H - b.c[1], r: b.r + pad / 2, 'stroke-width': pxToPaper(2) }, g);
     });
+    (D.sheet.notes || []).forEach(function (n) {
+      var nsel = D.sel && D.sel.kind === 'note' && D.sel.id === n.id, nhov = D.hover && D.hover.kind === 'note' && D.hover.id === n.id;
+      if (!(nsel || nhov) || !isFinite(n.box.x0)) return;
+      svgNode('rect', { class: 'dw-dbox' + (nsel ? ' sel' : ''), x: n.box.x0 - pad / 2, y: H - n.box.y1 - pad / 2, width: n.box.x1 - n.box.x0 + pad, height: n.box.y1 - n.box.y0 + pad, 'stroke-width': sw }, g);
+    });
     (D.sheet.annotations || []).forEach(function (a) {
       var asel = D.sel && D.sel.kind === 'annot' && D.sel.id === a.id, ahov = D.hover && D.hover.kind === 'annot' && D.hover.id === a.id;
-      if (!(asel || ahov) || !isFinite(a.box.x0)) return;
+      if (!(asel || ahov) || a.hidden || !isFinite(a.box.x0)) return;
       svgNode('rect', { class: 'dw-dbox' + (asel ? ' sel' : ''), x: a.box.x0 - pad / 2, y: H - a.box.y1 - pad / 2, width: a.box.x1 - a.box.x0 + pad, height: a.box.y1 - a.box.y0 + pad, 'stroke-width': sw }, g);
     });
     if (D.tool === 'centermark' && D.pending && D.pending.view != null) {
@@ -612,6 +621,15 @@
     if (D.tool === 'ordinate' || D.tool === 'baseline') { DW.chainDimClick(p); return; }
     if (D.tool === 'chamferdim') { DW.chamferClick(p); return; }
     if (D.tool === 'balloon' || D.tool === 'stackballoon') { DW.balloonClick(p); return; }
+    if (D.tool === 'note') { DW.noteClick(p); return; }
+    var nt = DW.noteAt(p);
+    if (nt) {
+      D.sel = { kind: 'note', id: nt.id };
+      D.drag = { kind: 'note', id: nt.id, start: p, p0: nt.p.slice(), moved: false };
+      drawOverlay(); DW.renderTree();
+      UI.setStatus('Note "' + nt.lines[0] + (nt.lines.length > 1 ? '…' : '') + '" — drag to move it, double-click to edit it, Delete removes it.');
+      return;
+    }
     var bl = DW.balloonAt(p);
     if (bl) {
       D.sel = DW.balloonRef(bl);
@@ -623,7 +641,14 @@
     var an = DW.annotAt(p);
     if (an) {
       D.sel = { kind: 'annot', id: an.id, view: an.view };
-      if (an.type === 'holeCallout') D.drag = { kind: 'annot', id: an.id, start: p, lead0: (Drawing.findAnnotation(doc(), an.id).annotation.leadNow || [0, 0]).slice(), moved: false };
+      if (an.flat) {
+        // a flat view's bend note / tag / Bend Table / FLAT SIZE note: dragged by its offset from where it goes by itself
+        D.drag = { kind: 'flatann', view: an.view, key: an.key, start: p, off0: (an.off || [0, 0]).slice(), moved: false };
+        drawOverlay(); DW.renderTree();
+        UI.setStatus(an.text + ' — drag to move it, Delete hides it, double-click for the flat-pattern view\'s properties.');
+        return;
+      }
+      if (an.type === 'holeCallout') D.drag ={ kind: 'annot', id: an.id, start: p, lead0: (Drawing.findAnnotation(doc(), an.id).annotation.leadNow || [0, 0]).slice(), moved: false };
       drawOverlay(); DW.renderTree();
       UI.setStatus(an.text + (an.dangling ? ' (dangling: its geometry is gone)' : '') + (an.type === 'holeCallout' ? ' — drag to move it, double-click for its text' : '') + ', Delete removes it.');
       return;
@@ -672,6 +697,15 @@
       queueRender(true);
       return;
     }
+    if (D.drag && (D.drag.kind === 'note' || D.drag.kind === 'flatann')) {
+      var pn = toPaper(e), dn = D.drag;
+      if (!dn.moved && Math.hypot(pn[0] - dn.start[0], pn[1] - dn.start[1]) < pxToPaper(3)) return;
+      if (!dn.moved) { UI.pushUndo(); dn.moved = true; D.host.classList.add('dw-dragging'); }
+      if (dn.kind === 'note') Drawing.editNote(doc(), dn.id, { p: [dn.p0[0] + pn[0] - dn.start[0], dn.p0[1] + pn[1] - dn.start[1]] });
+      else Drawing.flatAnnotation(doc(), dn.view, dn.key, { off: [dn.off0[0] + pn[0] - dn.start[0], dn.off0[1] + pn[1] - dn.start[1]] });
+      queueRender(true);
+      return;
+    }
     if (D.drag && (D.drag.kind === 'dim' || D.drag.kind === 'balloon' || D.drag.kind === 'annot')) {
       var pd = toPaper(e), dd = D.drag;
       if (!dd.moved && Math.hypot(pd[0] - dd.start[0], pd[1] - dd.start[1]) < pxToPaper(3)) return;
@@ -708,6 +742,8 @@
   // what the cursor pre-highlights with no tool running (SolidWorks): a balloon, an annotation, a dimension, else the
   // model edge under it (in any view; its view's frame shows too), else the view
   function preHighlight(q) {
+    var nt = DW.noteAt(q);
+    if (nt) return { kind: 'note', id: nt.id };
     var bl = DW.balloonAt(q);
     if (bl) return { kind: 'balloon', view: bl.view, index: bl.index };
     var an = DW.annotAt(q);
@@ -725,7 +761,7 @@
     D.drag = null;
     if (D.host) D.host.classList.remove('dw-dragging', 'dw-panning');
     if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
-    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot') && dg.moved) { UI.autosave(); render(); }
+    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann') && dg.moved) { UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
   // proportion to its delta) adds to a pending zoom that eases out over ~50 ms; one notch (deltaY 100) is 1.15×.
@@ -794,8 +830,10 @@
     D.drag = null;
     var bq = DW.balloonAt(pp);
     if (bq) { DW.cmdBalloonProps(bq); return; }
+    var nq = DW.noteAt(pp);
+    if (nq) { D.sel = { kind: 'note', id: nq.id }; DW.openNoteEdit(Drawing.findNote(doc(), nq.id)); return; }
     var aq = DW.annotAt(pp);
-    if (aq) { if (aq.type === 'holeCallout') DW.cmdCalloutProps(aq); return; }
+    if (aq) { if (aq.type === 'holeCallout') DW.cmdCalloutProps(aq); else if (aq.flat) DW.cmdViewProperties(aq.view); return; }
     var dq = dimAt(pp);
     if (dq) { DW.cmdDimensionPM(DW.dimRef(dq)); DW.openInlineEdit(dq); return; }
     if (DW.bomAt(toPaper(e))) { DW.cmdBOM(); return; }

@@ -17,12 +17,17 @@
   // view frame) and is reattached to the current projection on every render, like a Smart Dimension; one whose
   // geometry is gone is drawn dangling (olive).
   // doc.options (Tools ▸ Options ▸ Document Properties): { autoCenterMarks, autoCenterlines (Auto insert on view
-  // creation), markSize (paper mm, 2.5), extLines (centre-mark extension lines, true), balloonQty (QTY on new balloons) }
+  // creation), markSize (paper mm, 2.5), extLines (centre-mark extension lines, true), balloonQty (QTY on new balloons),
+  // flatDims (overall width and height on every flat-pattern view, true), flatSizeNote (a FLAT SIZE W × H note under
+  // it, false), bendNotes ('notes' (default): UP 90° R .030 along each bend line | 'table': tags A, B, C and a Bend
+  // Table | 'none'), dimPrec (decimal places of dimension values; default 3 in inches, up to 2 in mm), fractions (inch
+  // drawings: fractional inches) and fracDenom (their finest denominator, 64) }
   var MARK_SIZE = 2.5, MARK_GAP = 1, MARK_EXT = 2.5, CL_EXT = 3;
   function docOptions(doc) {
-    var o = doc.options || {};
+    var o = doc.options || {}, st = D.dimStyle(doc);
     return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: +o.markSize > 0 ? +o.markSize : MARK_SIZE,
-      extLines: o.extLines !== false, balloonQty: !!o.balloonQty };
+      extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims !== false, flatSizeNote: !!o.flatSizeNote,
+      bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec, fractions: st.fractions, fracDenom: st.denom };
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
 
@@ -246,7 +251,7 @@
     if (!v) return 0;
     of = of || viewContents(doc, mesh);
     var ct = of(v);
-    if (!isOrthoFrame(ct.frame)) return 0;
+    if (!isOrthoFrame(ct.frame) && !ct.flat) return 0;
     var diag = meshDiag(mesh), tol = diag * 1e-6 + 1e-9, have = [], n = 0;
     (v.annotations || []).forEach(function (a) { if (a.type === 'centerMark') a.holes.forEach(function (h) { have.push(h.c); }); });
     var centres = [];
@@ -306,7 +311,7 @@
     if (!v || v.kind === 'detail') return 0;
     of = of || viewContents(doc, mesh);
     var ct = of(v);
-    if (!isOrthoFrame(ct.frame)) return 0;
+    if (!isOrthoFrame(ct.frame) || ct.flat) return 0;   // (a flat pattern has no cylinders seen from the side)
     var m = ct.section ? ct.section.mesh : mesh, n = 0, have = (v.annotations || []).filter(function (a) { return a.type === 'centerline'; });
     if (!m.faces.length) return 0;
     cylAxes(m, ct.frame).forEach(function (ax) {
@@ -416,7 +421,11 @@
   // d.prec (decimal places; default: up to 2 in mm / 3 in inches, trailing zeros dropped), d.tol = { type: 'none' |
   // 'bilateral' | 'limit' | 'symmetric', plus, minus, prec }, d.label (dimension text, "<DIM>" is the value)
   var TOL_TYPES = [['none', 'None'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric']];
-  function numText(x, units, prec) { return prec != null && prec !== '' && +prec >= 0 ? (Math.round(+x * Math.pow(10, +prec)) / Math.pow(10, +prec)).toFixed(+prec) : fmtDim(x, units); }
+  // (an explicit precision on an inch drawing still drops the leading zero, ANSI: .03, not 0.03)
+  function numText(x, units, prec) {
+    if (!(prec != null && prec !== '' && +prec >= 0)) return fmtDim(x, units);
+    return units === 'in' ? D.inchText(x, +prec) : (Math.round(+x * Math.pow(10, +prec)) / Math.pow(10, +prec)).toFixed(+prec);
+  }
   // dimLabel(d, units) -> { main, upper, lower, text }: main is null for a limit tolerance (upper over lower); text is
   // the one-line form ("100.00 +0.10/-0.05", "100.10/99.95", "100.00 ±0.05")
   function dimLabel(d, units) {
@@ -461,6 +470,7 @@
   // whose geometry projects closest to the dimension wins. `expr` flags a value that an equation drives.
   function dimSource(model, build, w, d) {
     if (!model || model.type === 'assembly' || !model.features || !w || !w.frame || d.value == null) return null;
+    if (d.flat || w.flat || (w.view && w.view.kind === 'flat')) return null;   // a flat blank's sizes are results, not parameters
     if (d.kind !== 'dia' && d.kind !== 'h' && d.kind !== 'v' && d.kind !== 'aligned') return null;
     var F = w.frame, planes = build && build.planes || {}, val = d.value, tolV = Math.max(1e-6, Math.abs(val) * 1e-7), best = null, bs = Infinity;
     if (!isOrthoFrame(F)) return null;
@@ -571,7 +581,32 @@
     return (threads || []).filter(function (t) { return Math.abs(Math.abs(V.dot(t.n, F.e)) - 1) < 1e-9; })
       .map(function (t) { return { c: [V.dot(t.p, F.u), V.dot(t.p, F.v)], r: t.r, depth: t.depth, label: t.label, drill: t.drill }; });
   }
-  function annotationPrims(an, w, k, mesh, doc, units, threads) {
+  // holeSizeNames(model) -> [{ dia, name, type }]: the standard thread size names the part's hole features carry (Hole
+  // Wizard: '1/4-20 UNC', 'M8' on a tapped hole …), with the drilled diameter each makes. Read generically: a hole feature's `size` (or
+  // `sizeName` / `name` of the standard) and its diameter from HoleWizard.spec when it knows the size, else the
+  // feature's own `dia` / `diameter` / `drill`. A hole callout whose drill diameter matches exactly one name adds it.
+  function holeSizeNames(model) {
+    var out = [];
+    if (!model || model.type === 'assembly') return out;
+    (model.features || []).forEach(function (f) {
+      if (f.suppressed || !/hole/i.test(String(f.type || ''))) return;
+      var name = f.size != null && f.size !== '' ? String(f.size) : f.sizeName ? String(f.sizeName) : null;
+      // (thread sizes only — a tapped hole, or a name that reads as a thread: 1/4-20 UNC, #10-32; a clearance or
+      // counterbore hole's callout is its diameters, as SolidWorks writes it)
+      if (!name || !(f.holeType === 'tap' || /UN[CEFS]?\b|\d\s*-\s*\d/i.test(name))) return;
+      var dia = null;
+      if (typeof HoleWizard !== 'undefined' && HoleWizard.spec) { try { dia = +HoleWizard.spec(f).dia; } catch (e) { dia = null; } }
+      if (!(dia > 0)) dia = +(f.dia || f.diameter || f.drill || 0);
+      if (dia > 0) out.push({ dia: dia, name: name, type: f.holeType || null });
+    });
+    return out;
+  }
+  function holeNameFor(names, dia) {
+    var hit = (names || []).filter(function (x) { return Math.abs(x.dia - dia) <= Math.max(1e-6, dia * 1e-5); }), uniq = [];
+    hit.forEach(function (x) { if (uniq.indexOf(x.name) < 0) uniq.push(x.name); });
+    return uniq.length === 1 ? uniq[0] : null;
+  }
+  function annotationPrims(an, w, k, mesh, doc, units, threads, holeNames) {
     var L = 'ANNOTATIONS', out = [], pr = w.proj, o = docOptions(doc), dangling = false, text = '', info = null;
     function line(a, b, style) { out.push({ k: 'line', a: a, b: b, layer: L, style: style || 'thin' }); }
     function mark(cs, rr, size, ext, only) {
@@ -587,7 +622,12 @@
     if (an.type === 'centerMark') {
       an.holes.forEach(function (h) {
         var ref = { kind: 'dia', c: h.c, r: h.r };
-        if (h.r > 0 && reattachDim(ref, pr)) { h.c = ref.c; h.r = ref.r; } else if (h.r > 0) dangling = true;
+        if (h.r > 0 && reattachDim(ref, pr)) { h.c = ref.c; h.r = ref.r; return; }
+        // a slot's or rounded end's mark sits on an arc (arcsAll), not a full circle: the same arc, or one of its size
+        // that moved, keeps it
+        var aref = { kind: 'rad', c: h.c, r: h.r };
+        if (h.r > 0 && (pr.arcsAll || []).length && reattachDim(aref, pr)) { h.c = aref.c; h.r = aref.r; return; }
+        if (h.r > 0) dangling = true;
       });
       var size = an.size || o.markSize, ext = an.ext != null ? an.ext : o.extLines, cs = an.holes.map(function (h) { return w.toSheet(h.c); });
       if (an.style === 'linear') {
@@ -634,8 +674,14 @@
     } else if (an.type === 'holeCallout') {
       var ref2 = { kind: 'dia', c: an.c, r: an.r };
       if (reattachDim(ref2, pr)) { an.c = ref2.c; an.r = ref2.r; } else dangling = true;
-      var h = w.ortho ? holeInfo(mesh, w.frame, an.c, an.r) : null, lines;
-      if (h) {
+      // (a flat pattern's holes all go through the blank: the callout reads the circle, counted over the flat)
+      var h = w.flat ? { c: an.c.slice(), dia: 2 * an.r, thru: true } : w.ortho ? holeInfo(mesh, w.frame, an.c, an.r) : null, lines;
+      if (h && w.flat) {
+        var nf = 0;
+        pr.circles.visible.forEach(function (c) { if (Math.abs(2 * c.r - h.dia) <= Math.max(1e-6, h.dia * 1e-6)) nf++; });
+        lines = holeText(h, units, Math.max(1, nf), an.prec);
+        info = { hole: h, count: Math.max(1, nf) };
+      } else if (h) {
         // 4X: the visible holes of the view that read the same (one per centre: a counterbore shows two circles)
         var one = holeText(h, units, 1, an.prec).join('|'), count = 0, seen = [];
         pr.circles.visible.forEach(function (c) {
@@ -649,6 +695,9 @@
         var tap = w.ortho ? threadsAlong(threads, w.frame).filter(function (t) { return Math.hypot(t.c[0] - h.c[0], t.c[1] - h.c[1]) <= 1e-6 * (1 + t.r) && Math.abs(t.drill - h.dia) <= 1e-6 * (1 + t.drill); })[0] : null;
         if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? ' THRU' : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
       } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
+      // the standard size the hole feature names (1/4-20 UNC, M6), when it is not in the callout already
+      var sz = holeNameFor(holeNames, h ? h.dia : 2 * an.r);
+      if (sz && lines.join(' ').indexOf(sz) < 0) { lines.push(sz); info = info || {}; info.size = sz; }
       if (an.text) lines = String(an.text).split('\n').map(function (s) { return s.split('<HOLE>').join(lines.join(' ')); });
       var c = w.toSheet(an.c), rr2 = an.r * w.scale, box = w.box, th = 3.5 * k, mid = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
       var lead = an.lead;
@@ -684,5 +733,46 @@
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
+  // ------------------------------------------------------------------ notes (Annotation ▸ Note)
+  // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
+  // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.
+  function addNote(doc, spec) {
+    if (!spec || !spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A note needs a position on the sheet');
+    var t = String(spec.text == null ? '' : spec.text);
+    if (!t.trim()) throw new Error('A note needs text');
+    var nt = { id: nextAnnotId(doc), p: [+spec.p[0], +spec.p[1]], text: t };
+    if (+spec.h > 0) nt.h = +spec.h;
+    (doc.notes || (doc.notes = [])).push(nt);
+    return nt;
+  }
+  function findNote(doc, id) { var l = doc.notes || []; for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+  // editNote(doc, id, { text, p, h }): an empty text deletes the note (as SolidWorks drops an emptied note)
+  function editNote(doc, id, props) {
+    var nt = findNote(doc, id);
+    if (!nt) return null;
+    if (props.text != null) { var t = String(props.text); if (!t.trim()) { deleteNote(doc, id); return null; } nt.text = t; }
+    if (props.p) nt.p = [+props.p[0], +props.p[1]];
+    if (props.h != null) { if (+props.h > 0) nt.h = +props.h; else delete nt.h; }
+    return nt;
+  }
+  function deleteNote(doc, id) {
+    var l = doc.notes || [], n0 = l.length;
+    doc.notes = l.filter(function (x) { return x.id !== id; });
+    return doc.notes.length < n0;
+  }
+  // flatAnnotation(doc, viewId, key, { off, hidden }): a flat view's bend note / tag ('b0', 'b1' …), Bend Table
+  // ('table') or FLAT SIZE note ('size') moved (off: paper offset from where it goes by itself) or hidden / shown
+  function flatAnnotation(doc, viewId, key, props) {
+    var v = findView(doc, viewId);
+    if (!v || v.kind !== 'flat') throw new Error('No flat-pattern view ' + viewId);
+    var own = v.flatAnn || (v.flatAnn = {}), s = own[key] || (own[key] = {});
+    if (props.off !== undefined) { if (props.off && (props.off[0] || props.off[1])) s.off = [+props.off[0], +props.off[1]]; else delete s.off; }
+    if (props.hidden !== undefined) { if (props.hidden) s.hidden = true; else delete s.hidden; }
+    if (!Object.keys(s).length) delete own[key];
+    if (!Object.keys(own).length) delete v.flatAnn;
+    return s;
+  }
+  D.addNote = addNote; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
+  D.holeSizeNames = holeSizeNames;
   _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);

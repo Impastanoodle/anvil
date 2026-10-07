@@ -30,22 +30,36 @@
     $('app').classList.add('dw-pm');
   }
   // Model View: choose an orientation, display style and scale, then click the sheet to place the view.
-  function cmdModelView() {
+  // (a sheet-metal part offers Flat pattern first, as SolidWorks' Model View does, with how its bends are noted)
+  var FLAT = 'Flat pattern', BEND_NOTE_OPTIONS = [['notes', 'Bend notes on the lines'], ['table', 'Bend Table (tags A, B, C)'], ['none', 'None']];
+  function sheetMetal() { return !isAsm() && Drawing.isSheetMetal(App.model); }
+  function cmdModelView(preset) {
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
+    var pre = typeof preset === 'string' ? preset : null, sm = sheetMetal(), flatFirst = pre === FLAT || (sm && pre == null);
     openDrawingPM({
       title: 'Model View', icon: 'modelView', command: 'modelView',
-      message: 'Pick the orientation, press OK, then click on the sheet to place the view.',
-      values: { orient: 'Isometric', display: 'hlr', scale: 'sheet' },
+      message: 'Pick the orientation, press OK, then click on the sheet to place the view.' + (sm ? ' Flat pattern draws the unfolded blank with its bend lines and notes.' : ''),
+      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scale: 'sheet', bendNotes: Drawing.docOptions(doc()).bendNotes },
       groups: [
-        { title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] },
-        { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
+        { title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: (sm ? [[FLAT, 'Flat pattern']] : []).concat(Drawing.ORIENTS) }] },
+        { title: 'Display Style', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
+        { title: 'Bend Notes', show: function (v) { return v.orient === FLAT; }, fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }] },
         { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
       ],
-      onOK: function (v) { startPlacing({ orient: v.orient, display: v.display, scale: v.scale === 'sheet' ? null : Drawing.parseScale(v.scale) }); }
+      onOK: function (v) { startPlacing({ orient: v.orient, flat: v.orient === FLAT, bendNotes: v.bendNotes, display: v.display, scale: v.scale === 'sheet' ? null : Drawing.parseScale(v.scale) }); }
     });
   }
+  // the flat pattern of the open part, worked out now (null and a message when it does not unfold)
+  function flatReady() {
+    var fd = sheetMetal() ? Drawing.flatData(mesh(), App.model, App.build) : { error: 'Flat pattern: the part is not sheet metal (it needs a Base Flange).' };
+    if (fd && !fd.error) return fd;
+    var msg = fd && fd.error ? (/^Flat pattern/.test(fd.error) ? fd.error : 'Flat pattern: ' + fd.error) : 'Flat pattern: nothing to unfold.';
+    UI.toast(msg); UI.setStatus(msg);
+    return null;
+  }
   function startPlacing(spec) {
-    var dc = doc(), s = Drawing.scaleValue(spec.scale || dc.sheet.scale), ext = Drawing.extentsOf(mesh(), spec.orient);
+    var dc = doc(), s = Drawing.scaleValue(spec.scale || dc.sheet.scale), ext;
+    if (spec.flat) { if (!flatReady()) return; ext = Drawing.flatExtents(mesh()); } else ext = Drawing.extentsOf(mesh(), spec.orient);
     D.tool = 'place';
     D.pending = { spec: spec, w: Math.max(ext.w * s, 1), h: Math.max(ext.h * s, 1), at: null };
     UI.setStatus('Model View (' + spec.orient + '): click on the sheet to place it. Esc cancels.');
@@ -56,18 +70,30 @@
     D.tool = null; D.pending = null;
     var v = editView(function (dc) {
       dc.layout = 'manual';
+      if (spec.flat) return Drawing.addFlatView(dc, mesh(), { model: App.model, build: App.build, x: p[0], y: p[1], scale: spec.scale || null, bendNotes: spec.bendNotes });
       return Drawing.addView(dc, spec.orient, { display: spec.display || (ORTHO_NAMES.indexOf(spec.orient) >= 0 ? 'hlv' : 'hlr'), scale: spec.scale || null, x: p[0], y: p[1] });
     });
     D.sel = { kind: 'view', id: v.id };
     drawOverlay(); DW.renderTree(); UI.refreshRibbon();
-    UI.setStatus(v.name + ' (' + v.orient + ') placed.');
+    UI.setStatus(v.name + ' (' + v.orient + ') placed.' + (spec.flat ? ' Bend lines: UP solid, DOWN dashed; drag a bend note to move it.' : ''));
     return v;
+  }
+  // Insert ▸ Drawing View ▸ Flat Pattern: Model View with Flat pattern chosen
+  function cmdFlatView() { if (!sheetMetal()) { flatReady(); return; } cmdModelView(FLAT); }
+  // a flat view's bend notes: 'notes' | 'table' | 'none'; FLAT SIZE note on / off (view-level, over the Document Properties)
+  function setFlatViewProps(id, props) {
+    edit(function (dc) {
+      var v = Drawing.findView(dc, id);
+      if (!v || v.kind !== 'flat') return;
+      if (props.bendNotes !== undefined) { if (props.bendNotes) v.bendNotes = props.bendNotes; else delete v.bendNotes; }
+      if (props.flatSize !== undefined) { if (props.flatSize == null) delete v.flatSize; else v.flatSize = !!props.flatSize; }
+    });
   }
   // ------------------------------------------------------------------ Projected, Section and Detail View tools
   function startTool(tool, pending) { D.tool = tool; D.pending = pending; D.hover = null; drawOverlay(); UI.refreshRibbon(); }
   function endTool(msg) { D.tool = null; D.pending = null; D.hover = null; drawOverlay(); UI.refreshRibbon(); UI.setStatus(msg || 'Ready'); }
   function sheetView(id) { return D.sheet && D.sheet.views.filter(function (w) { return w.view.id === id; })[0]; }
-  function parentAt(p) { var w = viewAt(p); return w && w.view.kind !== 'detail' ? w : null; }
+  function parentAt(p) { var w = viewAt(p); return w && w.view.kind !== 'detail' && w.view.kind !== 'flat' ? w : null; }
   // Projected View: the parent is the selected view or the next one clicked; then the preview follows the pointer to
   // whichever side of the parent it is on (up / down / left / right), aligned with it, and a click places the view.
   function cmdProjectedView() {
@@ -194,6 +220,30 @@
   function cmdViewProperties(id) {
     var v = Drawing.findView(doc(), id);
     if (!v) return;
+    if (v.kind === 'flat') {
+      var o = Drawing.docOptions(doc());
+      openDrawingPM({
+        title: v.name + ' (Flat pattern)', icon: 'flatView', command: 'viewProps',
+        message: 'The unfolded blank of ' + (App.model.name || 'the part') + ': bend lines UP (solid) and DOWN (dashed); drag a bend note to move it, Delete hides it.',
+        values: { bendNotes: v.bendNotes || o.bendNotes, flatSize: v.flatSize != null ? !!v.flatSize : o.flatSizeNote, scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet', showAll: false },
+        groups: [
+          { title: 'Bend Notes', fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }, { type: 'check', key: 'showAll', label: 'Show hidden bend notes again' }] },
+          { title: 'Flat Pattern', fields: [{ type: 'check', key: 'flatSize', label: 'FLAT SIZE note' }] },
+          { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
+        ],
+        onOK: function (val) {
+          edit(function (dc) {
+            var w = Drawing.findView(dc, id);
+            if (!w) return;
+            w.bendNotes = val.bendNotes; w.flatSize = !!val.flatSize;
+            w.scale = val.scale === 'sheet' ? null : Drawing.parseScale(val.scale);
+            if (val.showAll && w.flatAnn) Object.keys(w.flatAnn).forEach(function (k) { Drawing.flatAnnotation(dc, id, k, { hidden: false }); });
+            dc.layout = 'manual';
+          });
+        }
+      });
+      return;
+    }
     openDrawingPM({
       title: v.name, icon: 'drawingView', command: 'viewProps',
       values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet' },
@@ -237,7 +287,15 @@
     if (!s) return false;
     if (s.kind === 'view') { deleteView(s.id); return true; }
     if (s.kind === 'bom') { setBom(null); D.sel = null; render(); return true; }
+    if (s.kind === 'annot' && typeof s.id === 'string') {
+      // a flat view's bend note / tag / Bend Table / FLAT SIZE note is generated from the part: Delete hides it
+      // (view Properties ▸ Show hidden bend notes again brings it back)
+      var fa = (D.sheet && D.sheet.annotations || []).filter(function (a) { return a.id === s.id; })[0];
+      if (fa) edit(function (dc) { Drawing.flatAnnotation(dc, fa.view, fa.key, { hidden: true }); });
+      D.sel = null; render(); return true;
+    }
     if (s.kind === 'annot') { edit(function (dc) { Drawing.deleteAnnotation(dc, s.id); }); D.sel = null; render(); return true; }
+    if (s.kind === 'note') { edit(function (dc) { Drawing.deleteNote(dc, s.id); }); D.sel = null; render(); return true; }
     if (s.kind === 'balloon') {
       edit(function (dc) {
         var v = Drawing.findView(dc, s.view);
@@ -331,6 +389,19 @@
     else if (kind === 'pdf') UI.exportDialog('Save Drawing as PDF', safeName() + '.pdf', Drawing.toPDF(sh), 'application/pdf');
   }
   function viewMenu(v) {
+    if (v.kind === 'flat') {
+      var bn = v.bendNotes || Drawing.docOptions(doc()).bendNotes;
+      return [
+        { label: 'Properties…', action: function () { cmdViewProperties(v.id); } },
+        { sep: true },
+        { label: 'Bend Notes ▸ Notes on the Lines', checked: bn === 'notes', action: function () { setFlatViewProps(v.id, { bendNotes: 'notes' }); } },
+        { label: 'Bend Notes ▸ Bend Table', checked: bn === 'table', action: function () { setFlatViewProps(v.id, { bendNotes: 'table' }); } },
+        { label: 'Bend Notes ▸ None', checked: bn === 'none', action: function () { setFlatViewProps(v.id, { bendNotes: 'none' }); } },
+        { label: 'FLAT SIZE Note', checked: v.flatSize != null ? !!v.flatSize : Drawing.docOptions(doc()).flatSizeNote, action: function () { setFlatViewProps(v.id, { flatSize: !(v.flatSize != null ? v.flatSize : Drawing.docOptions(doc()).flatSizeNote) }); } },
+        { sep: true },
+        { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
+      ];
+    }
     return [
       { label: 'Properties\u2026', action: function () { cmdViewProperties(v.id); } },
       { sep: true },
@@ -491,8 +562,67 @@
   }
   function annotAt(p) {
     var t = pxToPaper(4), hit = null;
-    (D.sheet && D.sheet.annotations || []).forEach(function (a) { var b = a.box; if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = a; });
+    (D.sheet && D.sheet.annotations || []).forEach(function (a) { var b = a.box; if (b && !a.hidden && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = a; });
     return hit;
+  }
+  // the note under the paper point p (within 4 px of its text), or null
+  function noteAt(p) {
+    var t = pxToPaper(4), hit = null;
+    (D.sheet && D.sheet.notes || []).forEach(function (n) { var b = n.box; if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = n; });
+    return hit;
+  }
+
+  // ------------------------------------------------------------------ Note (Annotation ▸ Note)
+  // Click on the sheet: a text box opens there; type the note (Enter starts a new line), ✓ or Ctrl+Enter places it,
+  // clicking elsewhere places it too, Esc / ✗ drops it. The tool stays on for the next note until Esc. Double-click a
+  // note to edit it in place (emptying it deletes it), drag it to move it, Delete removes it.
+  function cmdNote() {
+    startTool('note', {});
+    UI.setStatus('Note: click on the sheet where the note goes, then type it (Enter: new line; Ctrl+Enter or ✓ places it). Esc ends.');
+  }
+  function noteClick(p) { openNoteEdit(null, p); }
+  function openNoteEdit(note, p) {
+    closeInlineEdit(false);
+    var ta = el('textarea', { rows: '3', spellcheck: 'false', 'aria-label': 'Note text' });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Ctrl+Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'note' }, [ta, el('div', { class: 'dw-edit-col' }, [ok, no])]);
+    ta.value = note ? note.text : '';
+    D.root.appendChild(box);
+    D.inline = { box: box, inp: ta, note: { id: note ? note.id : null, p: note ? note.p.slice() : p.slice(), shown: note ? note.text : '' }, autoCommit: true };
+    positionInlineEdit();
+    ta.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); closeInlineEdit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); if (D.inline) D.inline.autoCommit = false; closeInlineEdit(false); }
+    });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeInlineEdit(true); });
+    no.addEventListener('click', function () { if (D.inline) D.inline.autoCommit = false; closeInlineEdit(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { ta.focus({ preventScroll: true }); if (note) ta.select(); } catch (err) { }
+    UI.setStatus(note ? 'Edit the note (an empty note is deleted); Ctrl+Enter or ✓ applies, Esc cancels.' : 'Type the note; Enter starts a new line, Ctrl+Enter or ✓ places it, Esc cancels.');
+  }
+  // where the note box goes: over the note's text, or centred on the click for a new one
+  function noteRect(N) {
+    var n = N.id != null && D.sheet ? (D.sheet.notes || []).filter(function (x) { return x.id === N.id; })[0] : null;
+    return n ? n.box : { x0: N.p[0], x1: N.p[0], y0: N.p[1], y1: N.p[1] };
+  }
+  // places / changes the note an inline box was editing: one undo step
+  function commitNote(I) {
+    var txt = I.inp.value.replace(/\r/g, '').replace(/\s+$/, '');
+    if (I.note.id == null) {
+      if (!txt.trim()) return;
+      var nt = null;
+      edit(function (dc) { nt = Drawing.addNote(dc, { p: I.note.p, text: txt }); });
+      D.sel = nt ? { kind: 'note', id: nt.id } : null;
+      drawOverlay();
+      UI.setStatus('Note placed' + (D.tool === 'note' ? ': click for the next one, Esc ends.' : '.'));
+      return;
+    }
+    if (txt === I.note.shown) return;
+    edit(function (dc) { Drawing.editNote(dc, I.note.id, { text: txt }); });
+    if (!txt.trim()) D.sel = null;
+    UI.setStatus(txt.trim() ? 'Note changed.' : 'Note deleted.');
   }
   // nearest visible edge or circle of any view (pictorial ones too) within 6 px, with the body it belongs to
   function edgeAt(p) {
@@ -829,23 +959,42 @@
     cm.checked = o.autoCenterMarks; cl.checked = o.autoCenterlines; ex.checked = o.extLines; bq.checked = o.balloonQty;
     cm.id = 'dw-opt-cm'; cl.id = 'dw-opt-cl'; ex.id = 'dw-opt-ext'; bq.id = 'dw-opt-qty'; sz.id = 'dw-opt-size';
     function chk(inp, text) { return el('label', { class: 'dw-opt' }, [inp, el('span', { text: text })]); }
+    // (Phase 9) Units: decimal places and, in inches, fractions; Sheet Metal: the flat-pattern view's annotations
+    var fd = el('input', { type: 'checkbox', id: 'dw-opt-flatdims' }), fs = el('input', { type: 'checkbox', id: 'dw-opt-flatsize' }), fr = el('input', { type: 'checkbox', id: 'dw-opt-frac' });
+    var bn = el('select', { id: 'dw-opt-bend' }), pr = el('select', { id: 'dw-opt-prec' }), dn = el('select', { id: 'dw-opt-denom' }), inch = units() === 'in';
+    fd.checked = o.flatDims; fs.checked = o.flatSizeNote; fr.checked = o.fractions;
+    BEND_NOTE_OPTIONS.forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === o.bendNotes) op.selected = true; bn.appendChild(op); });
+    [['', 'Default (' + (inch ? '.123' : 'up to 0.12') + ')'], ['0', '0'], ['1', inch ? '.1' : '0.1'], ['2', inch ? '.12' : '0.12'], ['3', inch ? '.123' : '0.123'], ['4', inch ? '.1234' : '0.1234']].forEach(function (x) {
+      var op = el('option', { value: x[0], text: x[1] }); if (String(o.dimPrec == null ? '' : o.dimPrec) === x[0]) op.selected = true; pr.appendChild(op);
+    });
+    [8, 16, 32, 64].forEach(function (d) { var op = el('option', { value: String(d), text: '1/' + d }); if (o.fracDenom === d) op.selected = true; dn.appendChild(op); });
     var body = el('div', { class: 'dw-props dw-docprops' }, [
       el('div', { class: 'dw-tb-head', text: 'Detailing ▸ Auto insert on view creation' }),
       chk(cm, 'Center marks-holes'), chk(cl, 'Centerlines'),
       el('div', { class: 'dw-tb-head', text: 'Centerlines/Center Marks' }),
       chk(ex, 'Extended lines'), el('label', { text: 'Mark size (mm)' }), sz,
       el('div', { class: 'dw-tb-head', text: 'Balloons' }),
-      chk(bq, 'Show quantity (QTY) on new balloons')
-    ]);
+      chk(bq, 'Show quantity (QTY) on new balloons'),
+      el('div', { class: 'dw-tb-head', text: 'Units ▸ Dimensions (' + (inch ? 'inches, ANSI: .030' : 'millimetres') + ')' }),
+      el('label', { text: 'Decimal places' }), pr
+    ].concat(inch ? [chk(fr, 'Fractions'), el('label', { text: 'Finest fraction' }), dn] : []).concat([
+      el('div', { class: 'dw-tb-head', text: 'Sheet Metal ▸ Flat-pattern views' }),
+      chk(fd, 'Overall dimensions (blank width and height)'), chk(fs, 'FLAT SIZE note'),
+      el('label', { text: 'Bend notes' }), bn
+    ]));
     UI.showModal({ title: 'Document Properties - Detailing', body: body, buttons: [
-      { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); setDocOptions({ autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked }); } },
+      { label: 'OK', primary: true, id: 'dw-opt-ok', action: function () { UI.closeModal(); setDocOptions({ autoCenterMarks: cm.checked, autoCenterlines: cl.checked, extLines: ex.checked, markSize: +sz.value, balloonQty: bq.checked,
+        flatDims: fd.checked, flatSizeNote: fs.checked, bendNotes: bn.value, dimPrec: pr.value === '' ? '' : +pr.value, fractions: inch ? fr.checked : o.fractions, fracDenom: +dn.value || 64 }); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
   function setDocOptions(props) {
     edit(function (dc) {
       var o = dc.options || (dc.options = {});
-      Object.keys(props).forEach(function (k) { if (props[k] != null && !(k === 'markSize' && !(+props[k] > 0))) o[k] = props[k]; });
+      Object.keys(props).forEach(function (k) {
+        if (props[k] === '') { delete o[k]; return; }   // (back to the default: Decimal places ▸ Default)
+        if (props[k] != null && !(k === 'markSize' && !(+props[k] > 0))) o[k] = props[k];
+      });
     });
     return Drawing.docOptions(doc());
   }
@@ -901,7 +1050,7 @@
   function positionInlineEdit() {
     var I = D.inline, s = svgEl(), m = s && s.getScreenCTM();
     if (!I || !m || !D.sheet) return;
-    var d = I.field ? null : sheetDim(I.ref), tb = I.field ? I.field.rect : d && d.tbox;
+    var d = I.field || I.note ? null : sheetDim(I.ref), tb = I.field ? I.field.rect : I.note ? noteRect(I.note) : d && d.tbox;
     if (!tb) { closeInlineEdit(false); return; }
     var H = D.sheet.size[1], pt = s.createSVGPoint(), r = D.root.getBoundingClientRect();
     pt.x = (tb.x0 + tb.x1) / 2; pt.y = H - (tb.y0 + tb.y1) / 2;
@@ -940,6 +1089,8 @@
     if (!I) return;
     D.inline = null;
     if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
+    // a note is placed when the box is left by a click elsewhere too (as SolidWorks places a note), not after Esc / ✗
+    if (I.note) { if (commit || I.autoCommit) commitNote(I); return; }
     if (!commit) return;
     if (I.field) {
       var tv = I.inp.value.trim(), fm = {};
@@ -1022,6 +1173,7 @@
   // a balloon from the sheet list: its entry in the view's balloons (by position in the list)
   function balloonRef(b) { return { kind: 'balloon', view: b.view, index: b.index, key: b.key, component: b.component }; }
 
+  DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;
   DW.sectionPlacement = sectionPlacement; DW.sectionClick = sectionClick; DW.cmdDetailView = cmdDetailView; DW.detailClick = detailClick; DW.cmdViewProperties = cmdViewProperties;

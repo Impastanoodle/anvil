@@ -113,7 +113,34 @@
     for (var i = 0; i < abc.length; i++) if (!used[abc[i]]) return abc[i];
     for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
   }
-  function viewExtents(doc, mesh, v) { return extentsOf(mesh, viewFrame(doc, v)); }
+  function viewExtents(doc, mesh, v) {
+    if (v.kind === 'flat') { var fe = flatExtents(mesh); if (fe) return fe; }
+    return extentsOf(mesh, viewFrame(doc, v));
+  }
+  // the extents of the flat pattern (its blank's bounding box), or null when there is none to unfold
+  function flatExtents(mesh) {
+    var fd = D.flatData(mesh);
+    if (!fd || fd.error) return null;
+    var b = fd.bbox;
+    return { umin: b.umin, umax: b.umax, vmin: b.vmin, vmax: b.vmax, w: b.umax - b.umin, h: b.vmax - b.vmin, cu: (b.umin + b.umax) / 2, cv: (b.vmin + b.vmax) / 2 };
+  }
+  // addFlatView(doc, mesh, { model, build, x, y, scale, fit }) -> the view: the sheet-metal part's flat pattern (Model
+  // View ▸ Flat pattern), seen from the +n side of the Base Flange's sketch plane, with its bend lines and bend notes.
+  // Throws on a part that is not sheet metal. Without x / y it goes to the nearest clear spot on the sheet.
+  function addFlatView(doc, mesh, opts) {
+    opts = opts || {};
+    var fd = D.flatData(mesh, opts.model, opts.build);
+    if (!fd) throw new Error('A flat-pattern view needs the part (its model and build).');
+    if (fd.error) throw new Error(fd.error);
+    var S = sheetSize(doc, doc.units), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
+    var v = addView(doc, 'Flat pattern', { kind: 'flat', frame: { e: fd.frame.e.slice(), u: fd.frame.u.slice(), v: fd.frame.v.slice() }, display: 'hlv', scale: sc,
+      x: opts.x != null ? +opts.x : S[0] / 2, y: opts.y != null ? +opts.y : S[1] / 2 });
+    if (opts.bendNotes === 'notes' || opts.bendNotes === 'table' || opts.bendNotes === 'none') v.bendNotes = opts.bendNotes;
+    if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
+    delete v.offSheet;
+    doc.layout = 'manual';
+    return v;
+  }
   // addProjectedView(doc, mesh, parentId, dir, { x, y, fit }): a view projected up / down / left / right from a parent,
   // aligned with it (same scale; dragging it slides along the projection direction only, the parent drags it along).
   // Without x / y it is placed one gap beyond the parent.
@@ -122,6 +149,7 @@
     var par = findView(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('A view cannot be projected from a detail view');
+    if (par.kind === 'flat') throw new Error('A view cannot be projected from a flat-pattern view');
     var F = projectedFrame(viewFrame(doc, par), dir, doc.sheet.projection), vert = !DIRS[dir][0];
     var pos = besidePos(doc, mesh, par, F, dir);
     var v = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: vert ? 'x' : 'y', dir: dir,
@@ -142,9 +170,16 @@
   // { x0, y0, x1, y1 } in paper units
   function viewPaperBox(doc, mesh, v) {
     var k = paperK(doc.units), s = viewScale(doc, v), hw, hh, lab = 0;
+    var left = 0;
     if (v.kind === 'detail' && v.detail) { hw = hh = v.detail.r * s; lab = 14 * k; }
     else { var ex = viewExtents(doc, mesh, v); hw = ex.w * s / 2; hh = ex.h * s / 2; if (v.kind === 'section' || v.scale) lab = 14 * k; }
-    return { x0: v.x - hw, x1: v.x + hw, y0: v.y - hh - lab, y1: v.y + hh };
+    if (v.kind === 'flat') {
+      // a flat view carries its overall dimensions (left and below), the FLAT SIZE note and the Bend Table under it
+      var o = D.docOptions(doc), fd = D.flatData(mesh), nb = fd && fd.bends ? fd.bends.length : 0;
+      lab = (o.flatDims ? 16 : 4) * k + ((v.flatSize != null ? v.flatSize : o.flatSizeNote) ? 9 * k : 0) + ((v.bendNotes || o.bendNotes) === 'table' && nb ? (nb + 1) * 6 * k + 4 * k : 0);
+      if (o.flatDims) left = 16 * k;
+    }
+    return { x0: v.x - hw - left, x1: v.x + hw, y0: v.y - hh - lab, y1: v.y + hh };
   }
   // clearSpot(doc, mesh, v, free): moves a view just made by a script (no position given) to the nearest place on the
   // sheet where it covers no other view, the title block or the Bill of Materials, keeping a gap round it: an aligned
@@ -219,6 +254,7 @@
     var par = findView(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('A section cannot be cut in a detail view');
+    if (par.kind === 'flat') throw new Error('A section cannot be cut in a flat-pattern view');
     var axis = opts.axis === 'v' ? 'v' : 'h', sign = opts.sign < 0 ? -1 : 1, label = opts.label || nextLabel(doc);
     var F = sectionFrame(viewFrame(doc, par), axis, sign);
     var place = (axis === 'h' ? (sign > 0 ? 'up' : 'down') : (sign > 0 ? 'right' : 'left'));
@@ -246,6 +282,7 @@
     var par = findView(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
+    if (par.kind === 'flat') throw new Error('Detail views of flat-pattern views are not supported');
     if (!(opts.r > 0)) throw new Error('A detail circle needs a radius');
     var label = opts.label || nextLabel(doc), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : detailScale(par.scale || doc.sheet.scale || [1, 1]);
     var s = scaleValue(sc), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ps = viewScale(doc, par);
@@ -348,6 +385,11 @@
   // whole part's extents in their frame (not on what is left of it), so they stay aligned with their parent.
   function viewContent(doc, v, mesh, parentContent) {
     var par = v.parent != null ? findView(doc, v.parent) : null, s = viewScale(doc, v);
+    if (v.kind === 'flat') {
+      // the flat pattern, unfolded by the kernel (worked out here, not in the worker: it is a few ms of CSG)
+      var fd = D.flatData(mesh) || { error: 'No flat pattern' }, fpr = D.flatProjection(fd), FF = viewFrame(doc, v), fb = fpr.bounds;
+      return { frame: FF, proj: fpr, center: [(fb.umin + fb.umax) / 2, (fb.vmin + fb.vmax) / 2], caps: [], flat: fd, scale: s };
+    }
     if (v.kind === 'section' && par && parentContent) {
       var P = parentContent(par).frame, sc = v.section, F = sectionFrame(P, sc.axis, sc.sign), full = extentsOf(mesh, F);
       // (lazy compute: a cut not worked out yet is a job for drawing-worker.js, and a placeholder the size of the
@@ -517,10 +559,48 @@
   function findView(doc, id) { for (var i = 0; i < doc.views.length; i++) if (doc.views[i].id === id) return doc.views[i]; return null; }
 
   // ------------------------------------------------------------------ dimensions
+  // fmtDim(x, units): a dimension value as the drawing's dimension standard writes it. Inches follow ANSI Y14.5
+  // decimal-inch practice: a fixed number of places (3 by default, trailing zeros kept) and no zero before the point
+  // (.030, 4.000, Ø.281), or with Document Properties ▸ Units ▸ Fractions the nearest 1/denom (2 1/4, 3/16).
+  // Millimetres keep a leading zero and drop trailing zeros (up to 2 places: 0.76, 2, 120.5) unless a precision is
+  // set. The style (precision, fractions) is the drawing's, set by compute for the sheet it works out (_.DIMSTYLE,
+  // see dimStyle); with none the defaults apply.
+  _.DIMSTYLE = null;
   function fmtDim(x, units) {
-    var d = units === 'in' ? 3 : 2, p = Math.pow(10, d);
+    var st = _.DIMSTYLE || {};
+    if (units === 'in') {
+      if (st.fractions) return fracText(x, st.denom || 64);
+      return inchText(x, st.prec != null ? st.prec : 3);
+    }
+    if (st.prec != null) return (Math.round(x * Math.pow(10, st.prec)) / Math.pow(10, st.prec)).toFixed(st.prec);
+    var d = 2, p = Math.pow(10, d);
     var s = String(Math.round(x * p) / p);
     return s;
+  }
+  // a decimal inch with `prec` places and no leading zero: .030, -.500, 12.250; a value that rounds to zero is '0'
+  function inchText(x, prec) {
+    prec = Math.max(0, Math.min(6, Math.round(+prec)));
+    var p = Math.pow(10, prec), r = Math.round(Math.abs(+x) * p) / p;
+    if (r === 0) return '0';
+    var s = r.toFixed(prec);
+    if (s.charAt(0) === '0' && s.length > 1) s = s.slice(1);
+    return (+x < 0 ? '-' : '') + s;
+  }
+  // the nearest fraction of an inch with denominator `denom` (2 … 128), reduced: 2 1/4, 3/16, 5
+  function fracText(x, denom) {
+    denom = Math.max(2, Math.min(128, Math.round(+denom) || 64));
+    var n = Math.round(Math.abs(+x) * denom);
+    if (n === 0) return '0';
+    var whole = Math.floor(n / denom), num = n - whole * denom, den = denom;
+    while (num && num % 2 === 0 && den % 2 === 0) { num /= 2; den /= 2; }
+    var s = (whole ? String(whole) : '') + (num ? (whole ? ' ' : '') + num + '/' + den : '');
+    return (+x < 0 ? '-' : '') + s;
+  }
+  // dimStyle(doc) -> { prec, fractions, denom }: the drawing's dimension style from its Document Properties
+  // (doc.options.dimPrec, fractions, fracDenom); prec null is the default for the units
+  function dimStyle(doc) {
+    var o = (doc && doc.options) || {};
+    return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(6, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64 };
   }
   // autoDims(doc, projections, units) -> [{ view, kind: 'h' | 'v' | 'dia', … model-space geometry, text }]
   // Overall width and height on the Front view (below and to the left), overall depth on the Top view (left side),
@@ -946,10 +1026,13 @@
 
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
+  // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
+  D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };
+  D.addFlatView = addFlatView; D.flatExtents = flatExtents; D.viewExtents = viewExtents;
   D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
-  D.fmtDim = fmtDim; D.autoDims = autoDims; D.dimText = dimText;
+  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;
