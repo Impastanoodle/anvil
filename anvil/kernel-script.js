@@ -224,7 +224,8 @@
     });
     if (opts.notes !== false) {
       var w = box.max[0] - box.min[0], h = box.max[1] - box.min[1];
-      var note = 'T=' + s.thickness + ' R=' + s.bendRadius + ' K=' + s.kFactor + '  BLANK ' + noteNum(w, units) + ' X ' + noteNum(h, units) + (inch ? ' IN' : ' MM');
+      // flat.note names the bend allowance method actually used (K, BA, BD or the bend table)
+      var note = (flat.note || 'T=' + s.thickness + ' R=' + s.bendRadius + ' K=' + s.kFactor) + '  BLANK ' + noteNum(w, units) + ' X ' + noteNum(h, units) + (inch ? ' IN' : ' MM');
       d.text('NOTES', sh([box.min[0], box.min[1] - (inch ? Math.max(0.12, 2 * T) : Math.max(3, 2 * T))]), th, note);
     }
     return d.toString();

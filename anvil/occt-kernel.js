@@ -446,7 +446,7 @@ var OcctKernel = (function () {
     function holeTool(f) {
       var HW = typeof HoleWizard !== 'undefined' ? HoleWizard : (typeof self !== 'undefined' ? self.HoleWizard : null);
       if (!HW) throw unsupportedErr('Hole Wizard');
-      var s = HW.spec(f), sk = sketchById(f.sketch, 'Hole Wizard: select the positions sketch.'), plane = K.resolvePlane(sk.plane, m, planes);
+      var s = HW.spec(f, m.units), sk = sketchById(f.sketch, 'Hole Wizard: select the positions sketch.'), plane = K.resolvePlane(sk.plane, m, planes);
       var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction; });
       if (!pts.length) throw new Error('Hole Wizard: place at least one point on the face.');
       var L;

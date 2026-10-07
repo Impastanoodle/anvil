@@ -883,6 +883,8 @@
     // the local server, so it returns a Promise of { name, data (ArrayBuffer), mime }
     saveAs: function (type, base, opts) {
       if (type === 'dxf' || type === 'dwg') {
+        // the DWG converters read R2000 (an R12 file loses its model space in LibreDWG)
+        if (type === 'dwg') opts = Object.assign({}, opts, { version: 'R2000' });
         var text = UI.dxfOutput(opts), nm = (base || safeName()) + '.' + type;
         if (type === 'dxf') { download(nm, text, 'application/dxf'); return { name: nm, data: text, mime: 'application/dxf' }; }
         return UI.dxfToDwg(text).then(function (bytes) { download(nm, bytes, 'application/acad'); return { name: nm, data: bytes, mime: 'application/acad' }; });

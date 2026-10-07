@@ -15,10 +15,10 @@ Anvil is built for a sheet-metal shop. These areas must be **perfect** and come 
 Deferred indefinitely (do not plan them from the roadmap; only on an explicit user request): Surfaces, Mold Tools, Weldments, Direct Editing, simulation, Evaluate extras (Sensors, Undercut, Thickness, Curvature, Deviation), advanced / mechanical mates, exploded views in drawings, Parasolid, variable-radius / face fillets. Phase 7 items in those areas stay unchecked and are skipped. CAM (toolpaths) is out of scope: Anvil hands Mastercam a clean DXF / STEP.
 
 ## Phase 9 — sheet-metal shop (2026-10-07 →)
-- [ ] Bend allowance methods: K-factor, bend allowance, bend deduction, bend table (thickness × radius × angle), gauge table; per-flange override; flat size readout
-- [ ] Flat-pattern drawings: flat pattern view, bend lines up / down, bend notes, bend table, overall flat dimensions, inch ANSI dimension style, notes
-- [ ] Shop output: DXF with true arcs and joined outlines for the laser, R12 / 2000 choice, units header; STEP of sheet parts verified; ANSI inch Hole Wizard (clearance, tap, counterbore, countersink)
-- [ ] Sketching for inch shops: fractions and unit suffixes in every typed value, tangent-chain follow-ups, typed length while the start slides
+- [x] Bend allowance methods: K-factor, bend allowance, bend deduction, bend table (thickness × radius × angle), gauge table; per-flange override; flat size readout (local-2026-10-07a)
+- [x] Flat-pattern drawings: flat pattern view, bend lines up / down, bend notes, bend table, overall flat dimensions, inch ANSI dimension style, notes (local-2026-10-07a)
+- [x] Shop output: DXF with true arcs and joined outlines for the laser, R12 / 2000 choice, units header; STEP of sheet parts verified; ANSI inch Hole Wizard (clearance, tap, counterbore, countersink) (local-2026-10-07a)
+- [x] Sketching for inch shops: fractions and unit suffixes in every typed value, tangent-chain follow-ups, typed length while the start slides (local-2026-10-07a)
 
 ## Phase 1 — foundation (session 1, 2026-09-21)
 - [x] BSP CSG kernel (union / subtract / intersect / transform / signed volume)

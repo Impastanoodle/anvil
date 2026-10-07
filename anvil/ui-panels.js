@@ -154,7 +154,7 @@
   var RIBBON_HELP = {
     'Extruded Boss/Base': 'Extrude a closed sketch profile into a solid', 'Revolved Boss/Base': 'Revolve a sketch profile about an axis line',
     'Swept Boss/Base': 'Sweep a profile sketch along a path', 'Lofted Boss/Base': 'Loft a solid through two or more section sketches',
-    'Extruded Cut': 'Remove material by extruding a sketch profile', 'Hole Wizard': 'Counterbore, countersink, hole or straight tap holes (ISO M2–M20) at points on a face', 'Revolved Cut': 'Remove material by revolving a sketch profile',
+    'Extruded Cut': 'Remove material by extruding a sketch profile', 'Hole Wizard': 'Counterbore, countersink, hole or straight tap holes (ANSI Inch or ISO) at points on a face', 'Revolved Cut': 'Remove material by revolving a sketch profile',
     'Swept Cut': 'Remove material along a path', 'Lofted Cut': 'Remove material lofted through section sketches',
     'Fillet': 'Round the selected edges', 'Chamfer': 'Bevel the selected edges', 'Linear Pattern': 'Repeat a feature along one or two directions', 'Circular Pattern': 'Repeat a feature about an axis', 'Mirror': 'Mirror a feature or the body about a plane',
     'Shell': 'Hollow the body, removing the selected faces', 'Reference Geometry': 'Create an offset reference plane',
@@ -837,7 +837,7 @@
       case 'sweep': return (f.cut ? 'Cut' : 'Boss') + ' sweep along ' + (Array.isArray(f.path) ? f.path.length + ' points' : 'a path sketch');
       case 'loft': return (f.cut ? 'Cut' : 'Boss') + ' loft through ' + (f.sketches || []).length + ' sections';
       case 'import': return 'Imported ' + String(f.format || 'mesh').toUpperCase() + (f.file ? ' from ' + f.file : '') + ', ' + (f.solids || []).length + ' solid' + ((f.solids || []).length === 1 ? '' : 's') + (f.merge ? ', merged' : '');
-      case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ISO ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'through all' : 'blind ' + f.depth);
+      case 'hole': return 'Hole Wizard: ' + ({ cbore: 'Counterbore', csk: 'Countersink', hole: 'Hole', tap: 'Straight Tap' }[f.holeType] || f.holeType) + ' ' + (typeof HoleWizard !== 'undefined' && HoleWizard.standardOf ? HoleWizard.standardOf(f) : 'ISO') + ' ' + f.size + (f.holeType !== 'tap' ? ' ' + (f.fit || 'normal') + ' fit' : '') + ', ' + (f.end === 'through' ? 'through all' : 'blind ' + f.depth);
       case 'sketch': return 'Sketch on ' + (f.plane.custom ? 'face' + (f.plane.face && K.findFeature(App.model, f.plane.face.feature) ? ' of ' + K.findFeature(App.model, f.plane.face.feature).name : '') : f.plane.featureId != null ? 'Plane' + f.plane.featureId : f.plane.ref + (f.plane.offset ? ' + ' + f.plane.offset : ''));
     }
     return f.type;
