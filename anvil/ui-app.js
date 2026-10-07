@@ -669,7 +669,7 @@
         v === '3mf' ? 'Mesh package in ' + (App.model.units === 'in' ? 'inches' : 'millimetres') + ': one object per body' + (isAsm() ? ', one build item per component.' : '.') :
         v === 'obj' ? 'Mesh with normals, one group per body' + (isAsm() ? ' per component' : '') + '; colours go into the .mtl downloaded with it.' :
         v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' :
-        v === 'dxf' || v === 'dwg' ? 'Opens the DXF/DWG Output PropertyManager: a planar face, the standard views on a sheet, or the sheet-metal flat pattern.' + (v === 'dwg' ? ' DWG needs the local server\'s converter.' : '') :
+        v === 'dxf' || v === 'dwg' ? 'Opens the DXF/DWG Output PropertyManager: a planar face, the standard views at full size (1:1), or the sheet-metal flat pattern.' + (v === 'dwg' ? ' DWG needs the local server\'s converter.' : '') :
         'The Anvil document, re-opened with File ▸ Open.';
     }
     type.addEventListener('change', describe); describe();

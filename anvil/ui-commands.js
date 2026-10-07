@@ -2688,12 +2688,29 @@
     if (L.length % 2) out.push(L[L.length - 1]);
     return out.join('\n');
   }
-  // the standard views (and the current one) on a sheet, as the drawing export writes them: one layer per view
+  // The standard views (and the current one) at full size (1:1), one layer per view, for CAM: the views are laid out
+  // third angle on a sheet sized to the part (doc.sheet.paper), the sheet scale fixed at 1:1, and the sheet grown until
+  // no view had to be drawn smaller; the border and title block (layer SHEET) are left out of the file.
   function dxfViews(names, current) {
     if (typeof Drawing === 'undefined') throw new Error('Views need drawing.js, which did not load.');
     if (!App.mesh || !App.mesh.triCount) throw new Error('Nothing to export yet.');
-    var units = dxfUnits(), mesh = App.mesh, model = App.model;
-    var doc = Drawing.newDrawing(model, { projection: 'third', autoDims: false, name: 'DXF Output' });
+    var units = dxfUnits(), mesh = App.mesh, k = units === 'in' ? 25.4 : 1;   // model units -> paper mm
+    var F = Drawing.extentsOf(mesh, 'Front'), T = Drawing.extentsOf(mesh, 'Top'), I = Drawing.extentsOf(mesh, 'Isometric');
+    var C = current ? Drawing.extentsOf(mesh, currentViewFrame()) : { w: 0, h: 0 };
+    var gap = 22, piW = Math.max(I.w, C.w) * k, piH = (I.h + C.h) * k + gap;
+    // room for Front + Right + the pictorial corner across, Front + Top + the corner up, plus border and title block
+    var paper = [(F.w + T.h) * k + piW + 8 * gap + 20, (F.h + T.h) * k + piH + 8 * gap + 60], doc;
+    for (var tries = 0; tries < 8; tries++) {
+      doc = dxfViewsDoc(names, current, units, paper);
+      if (!doc.views.some(function (v) { return v.scale && Drawing.scaleValue(v.scale) !== 1; })) break;
+      paper = [paper[0] * 1.5, paper[1] * 1.5];
+    }
+    return dropDxfLayers(Drawing.toDXF(Drawing.compute(doc, mesh, App.model)), ['SHEET']);
+  }
+  function dxfViewsDoc(names, current, units, paper) {
+    var mesh = App.mesh, model = App.model;
+    var doc = Drawing.newDrawing(model, { projection: 'third', autoDims: false, name: 'DXF Output', scale: [1, 1] });
+    doc.sheet.paper = paper;
     var front = null, used = {};
     names.forEach(function (n) {
       var role = DXF_VIEW_ROLES[n];
@@ -2718,7 +2735,7 @@
         fitViewInBox(doc, mesh, units, cur, frame, { x0: box.x0, x1: box.x1, y0: box.y0, y1: ym });
       } else fitViewInBox(doc, mesh, units, cur, frame, box);
     }
-    return Drawing.toDXF(Drawing.compute(doc, mesh, model));
+    return doc;
   }
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
@@ -2815,6 +2832,7 @@
           { type: 'check', label: 'Front', key: 'vFront', show: isViews }, { type: 'check', label: 'Top', key: 'vTop', show: isViews },
           { type: 'check', label: 'Right', key: 'vRight', show: isViews }, { type: 'check', label: 'Isometric', key: 'vIsometric', show: isViews },
           { type: 'check', label: 'Current view', key: 'vCurrent', show: isViews },
+          { type: 'html', show: isViews, html: '<div class="pm-note">Full size (1:1), one layer per view; no border or title block.</div>' },
           { type: 'check', label: 'Geometry', key: 'geometry', disabled: true, show: isSheet },
           { type: 'check', label: 'Bend lines', key: 'bendLines', show: isSheet }, { type: 'check', label: 'Notes', key: 'notes', show: isSheet }
         ] },

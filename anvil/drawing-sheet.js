@@ -31,6 +31,8 @@
   }
   function paperK(units) { return units === 'in' ? 1 / MM : 1; }   // paper mm -> paper units
   function sheetSize(doc, units) {
+    // doc.sheet.paper = [w, h] in mm: a custom size (the 1:1 views DXF sizes its sheet to the part, ui-commands.js)
+    if (doc.sheet.paper) return [doc.sheet.paper[0] * paperK(units), doc.sheet.paper[1] * paperK(units)];
     var f = FORMATS[doc.sheet.format] || FORMATS.A3, k = paperK(units);
     return [f[0] * k, f[1] * k];
   }
