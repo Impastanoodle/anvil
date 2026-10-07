@@ -1286,3 +1286,10 @@ Context: the user hand-tested a bent channel and a complex sketch (`test-reports
 - sketch: fillet crash + duplicate origin relation, Trim keeps relations/dims (collinear, outer-end distance, 3-point midpoint), mirror holds slots/polygons/rectangles, circle+point dimension, single undo for driven, tool ends when a PM opens, labels/glyphs don't steal clicks, dimension to model edges, ctrl+click multi-select, Ø.266 on the part.
 - drawing: bend table on free paper with BEND DED. (optional BEND ALLOW., K-FACTOR), R.060, slot callout ".375 X 1.875 SLOT".
 Tests: kernel 895/895, ui-smoke 358/358 (headless). Not done (QUEUE): OCCT flat with relief notches, OCCT Sketched Bend, Close Drawing prompt, Mirror default axis.
+
+## 2026-10-07T11 (interactive head, 2 subagents): the rest of the test-report follow-ups
+
+- occt: the flat pattern from OpenCascade's mesh grouped faces wrongly when a relief slot left a sliver of bend face on a wall's plane (`planeFaces` in kernel-sheetmetal.js now groups coplanar B-rep faces per body, as Anvil's mesh does); the hand-test channel now gives 7.0213 × 7.5585 with 4 bends on both kernels. New `sketchedBendOp` in occt-kernel.js from `Kernel.sketchedBendLayout` (layout now returns `section`). 9 new occt-tests rows.
+- drawing/app: Close Drawing (ribbon, File, Window, part tab) asks Save / Don't Save / Cancel when the drawing changed (`anvil.drawing.isDirty()`); Mirror Entities starts with Mirror about empty and blocks ✓ until both boxes are filled (`spec.okBlocked`).
+- head: a new sketch on a standard plane opens at once instead of after the rebuild, so a tool picked right after Sketch is not lost while OpenCascade rebuilds.
+Tests: kernel 896/896, example --all --occt 29/29, ui-smoke 360/360, occt-tests 66/66.

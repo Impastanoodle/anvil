@@ -532,6 +532,7 @@
     var plane = resolvePlane(sketch.plane, model, build.planes);
     var T = +sheet.thickness, warnings = [], kUsed = {};
     function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
+    mesh = planeFaces(mesh);
     var best = null;
     mesh.faces.forEach(function (face, i) {
       var d = dot(face.normal, plane.n);
@@ -721,6 +722,32 @@
     return { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings };
   }
   function near2(p, q) { return Math.abs(p[0] - q[0]) < 1e-3 && Math.abs(p[1] - q[1]) < 1e-3; }
+  // The unfold works on whole planes of a body, as Anvil's own mesh groups them (meshFromBody: coplanar polygons of a
+  // body make one face). A mesh of OpenCascade's solid keeps every B-rep face apart (polygon.face), and a bend relief
+  // leaves a sliver of the bend as a separate B-rep face on the plane of the wall beside it (and on the base's): the
+  // unfold took that sliver for the wall and lost the wall, and the obround's slivers became stray loops. -> a mesh whose
+  // faces are the coplanar groups (normal, w, area, polys, body; face indices change), or `mesh` itself when untagged.
+  function planeFaces(mesh) {
+    if (!mesh.faces.some(function (f) { return f.polys && f.polys.length && f.polys[0].face != null; })) return mesh;
+    var groups = {}, faces = [];
+    mesh.faces.forEach(function (f) {
+      var k = [Math.round(f.normal[0] * 1000), Math.round(f.normal[1] * 1000), Math.round(f.normal[2] * 1000), Math.round(f.w * 100), f.body || 0, f.part != null ? f.part : ''].join('|');
+      var g = groups[k];
+      if (!g) {
+        g = groups[k] = { normal: f.normal, w: f.w, start: f.start, count: f.count, centroid: f.centroid.slice(), area: f.area, polys: f.polys.slice(), body: f.body };
+        if (f.part != null) g.part = f.part;
+        faces.push(g);
+        return;
+      }
+      var at = g.area + f.area;
+      if (at > 0) g.centroid = [0, 1, 2].map(function (i) { return (g.centroid[i] * g.area + f.centroid[i] * f.area) / at; });
+      g.area = at; g.count += f.count; g.polys = g.polys.concat(f.polys);
+    });
+    var out = {};
+    Object.keys(mesh).forEach(function (k) { out[k] = mesh[k]; });
+    out.faces = faces;
+    return out;
+  }
 
   // ------------------------------------------------------------------ sheet metal: sketched bend
   // Sketched Bend (SolidWorks): the sheet is bent along every straight line of a sketch drawn on one of its flat faces.
@@ -813,7 +840,8 @@
   // where it goes), bends: [{ loop, plane, t0, t1, motion }] (each bend: flangeProfile's section swept along the line
   // from t0 to t1 in the flat, then moved by `motion`), info (ctx.flanges' records: { move: { keep, R, t } } entries
   // that carry earlier flange records along with a moved piece, one { anchor } point on the fixed piece, then one
-  // flange-like record per line), BA, shift }. buildSketchedBend builds it with the CSG kernel.
+  // flange-like record per line), BA, shift, section: { A, R, T, L, ov } (the bend section's flangeProfile parameters,
+  // for an exact section) }. buildSketchedBend builds it with the CSG kernel; occt-kernel.js with exact bend arcs.
   function sketchedBendLayout(f, model, ctx) {
     if (!ctx.body) throw new Error('Create a Base Flange before adding a sketched bend.');
     var sheet = sheetParams(model);
@@ -918,7 +946,7 @@
     lines.forEach(function (ln, k) { if (ln.parent < 0) fixed.push(before(k)); });
     var root = lines[order[0]];
     var info = moves.concat([{ anchor: add(root.O, scale(root.m, -1e-3 * T)) }], records);
-    return { fixed: fixed, pieces: pieces, bends: bends, info: info, BA: BA, shift: shift };
+    return { fixed: fixed, pieces: pieces, bends: bends, info: info, BA: BA, shift: shift, section: { A: A, R: R, T: T, L: ov, ov: ov } };
   }
   // buildSketchedBend(f, model, ctx) -> { body (the bent part), tool (the bends), preview (what moved, with the bends) }
   function buildSketchedBend(f, model, ctx) {

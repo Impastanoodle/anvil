@@ -10,7 +10,7 @@
   if (typeof UI === 'undefined' || !UI.App || typeof document === 'undefined') return;
   var App = UI.App, $ = UI.$, el = UI.el;
   var DW = UI.drawingInternal, D = DW.D, doc = DW.doc, cctx = DW.cctx, syncBom = DW.syncBom, units = DW.units, mesh = DW.mesh, paperK = DW.paperK, edit = DW.edit, isAsm = DW.isAsm, docKind = DW.docKind;
-  var makeDrawing = DW.makeDrawing, openDrawing = DW.openDrawing, closeDrawing = DW.closeDrawing, detachDrawing = DW.detachDrawing, render = DW.render, settle = DW.settle, ready = DW.ready, queueRender = DW.queueRender;
+  var makeDrawing = DW.makeDrawing, openDrawing = DW.openDrawing, closeDrawing = DW.closeDrawing, requestClose = DW.requestClose, detachDrawing = DW.detachDrawing, render = DW.render, settle = DW.settle, ready = DW.ready, queueRender = DW.queueRender;
   var fitBox = DW.fitBox, fitSheet = DW.fitSheet, glideTo = DW.glideTo, toPaper = DW.toPaper, drawOverlay = DW.drawOverlay, dimMatches = DW.dimMatches, dimAt = DW.dimAt, entityAt = DW.entityAt;
   var cmdStandard3View = DW.cmdStandard3View, cmdModelView = DW.cmdModelView, startPlacing = DW.startPlacing, placePending = DW.placePending, cmdProjectedView = DW.cmdProjectedView, cmdSectionView = DW.cmdSectionView;
   var cmdDetailView = DW.cmdDetailView, cmdViewProperties = DW.cmdViewProperties, setViewTangent = DW.setViewTangent, deleteView = DW.deleteView, deleteSelection = DW.deleteSelection, addDimension = DW.addDimension;
@@ -105,7 +105,7 @@
     { id: 'dxfExport', label: 'Save as\nDXF', run: function () { exportAs('dxf'); } },
     { id: 'pdfExport', label: 'Save as\nPDF', run: function () { exportAs('pdf'); } },
     { sep: true },
-    { id: 'closeDoc', label: 'Close\nDrawing', run: function () { closeDrawing(); } }
+    { id: 'closeDoc', label: 'Close\nDrawing', run: function () { requestClose(); } }
   ];
   // Annotation tab (SolidWorks: Smart Dimension with its Ordinate / Baseline / Chamfer flyout, Model Items, Balloon,
   // Auto Balloon, Stacked Balloon, Hole Callout, Center Mark, Centerline)
@@ -167,7 +167,7 @@
         { label: 'Save Drawing as DXF\u2026', action: function () { exportAs('dxf'); } },
         { label: 'Save Drawing as PDF\u2026', action: function () { exportAs('pdf'); } },
         { sep: true },
-        { label: 'Close Drawing', action: closeDrawing }
+        { label: 'Close Drawing', action: requestClose }
       ]) },
       { label: 'Edit', items: (editMenu ? editMenu.items.slice(0, 2) : []).concat([{ label: 'Delete', key: 'Del', disabled: !D.sel || D.sel.kind === 'sheet', action: deleteSelection }]) },
       { label: 'View', items: [{ label: 'Zoom to Fit', key: 'F', action: fitSheet }] },
@@ -194,7 +194,7 @@
       ] },
       { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }, { label: 'Options \u25b8 Document Properties\u2026', action: cmdDocProps }] },
       { label: 'Window', items: [
-        { label: App.model.name + ' (' + docKind() + ')', action: closeDrawing },
+        { label: App.model.name + ' (' + docKind() + ')', action: requestClose },
         { label: (dc ? dc.name + ' - ' + dc.sheet.name : 'Drawing'), checked: true, action: function () { } }
       ] },
       help || { label: 'Help', items: [] }
@@ -320,6 +320,8 @@
       open: function (i) { return makeDrawing({ index: i || 0 }) ? summary() : null; },
       close: function () { closeDrawing(); },
       isOpen: function () { return D.active; },
+      // isDirty(): the open drawing has changes since it was opened, made or saved (Close Drawing would ask)
+      isDirty: function () { return DW.drawingDirty(); },
       summary: summary,
       standard3View: function () { cmdStandard3View(); return summary(); },
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary

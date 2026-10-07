@@ -479,14 +479,18 @@
     ] });
   }
   // SolidWorks' "Save changes to Part1?" before the open document is replaced (File ▸ New, Open, a saved file or a
-  // Design Library entry from the Task Pane) or put away (Close Drawing: drawing-ui-panels.js may call it). With no
+  // Design Library entry from the Task Pane) or put away (Close Drawing: drawing-ui.js requestClose). With no
   // unsaved changes onProceed runs at once. Save saves under the document's name in this browser (asking for one the
   // first time), then goes on; Don't Save goes on; Cancel leaves everything as it was.
-  function confirmDiscard(name, onProceed) {
-    if (!UI.isDirty || !UI.isDirty()) { onProceed(); return; }
+  // opts.dirty: whether to ask (default: the document has unsaved changes); opts.onDiscard: what Don't Save does
+  // instead of onProceed (Close Drawing puts the drawing back as it was, then closes it).
+  function confirmDiscard(name, onProceed, opts) {
+    opts = opts || {};
+    var dirty = opts.dirty != null ? !!opts.dirty : !!(UI.isDirty && UI.isDirty());
+    if (!dirty) { onProceed(); return; }
     UI.showModal({ title: 'Anvil', body: el('div', { class: 'save-changes' }, [el('p', { text: 'Save changes to ' + (name || App.model.name || (isAsm() ? 'Assem1' : 'Part1')) + '?' })]), buttons: [
       { label: 'Save', primary: true, action: function () { UI.closeModal(); if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
-      { label: "Don't Save", action: function () { UI.closeModal(); onProceed(); } },
+      { label: "Don't Save", action: function () { UI.closeModal(); (opts.onDiscard || onProceed)(); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }

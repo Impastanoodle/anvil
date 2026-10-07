@@ -127,6 +127,8 @@
       UI.setStatus(msg); UI.toast(msg);
       return UI.whenIdle();
     }
+    var why = okBlockedWhy();
+    if (why) { UI.setStatus(why); UI.toast(why); return UI.whenIdle(); }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
     if (r && r.keepOpen) return r.promise || UI.whenIdle();   // r3/assembly3: the Mate PM stays open for the next mate
     var pending = r && typeof r.then === 'function';
@@ -145,14 +147,17 @@
     closePM();
   }
 
-  // The ✓ button looks disabled (and pmOK refuses) while a number field holds an equation that does not evaluate.
+  // The ✓ button looks disabled (and pmOK refuses) while a number field holds an equation that does not evaluate, or
+  // while the command's spec.okBlocked(values) names something still missing (SolidWorks greys ✓ until the required
+  // boxes are filled: Mirror Entities with no Mirror about). The PM calls updateOkState() when its values change.
+  function okBlockedWhy() { var s = pm.spec; return s && s.okBlocked ? s.okBlocked(pm.values) || '' : ''; }
   function updateOkState() {
     var ok = pm.root.querySelector('.pm-ok');
     if (!ok) return;
-    var bad = Object.keys(pm.exprErrors || {});
-    ok.classList.toggle('disabled', bad.length > 0);
-    ok.setAttribute('aria-disabled', bad.length ? 'true' : 'false');
-    ok.title = bad.length ? 'OK (Enter) — fix the equation first: ' + pm.exprErrors[bad[0]] : 'OK (Enter)';
+    var bad = Object.keys(pm.exprErrors || {}), why = bad.length ? '' : okBlockedWhy();
+    ok.classList.toggle('disabled', bad.length > 0 || !!why);
+    ok.setAttribute('aria-disabled', bad.length || why ? 'true' : 'false');
+    ok.title = bad.length ? 'OK (Enter) — fix the equation first: ' + pm.exprErrors[bad[0]] : why ? 'OK (Enter) — ' + why : 'OK (Enter)';
   }
 
   function renderPM() {
@@ -191,6 +196,7 @@
       box.appendChild(fields);
       root.appendChild(box);
     });
+    if (spec.okBlocked) updateOkState();
     if (scroll && root.scrollTop !== scroll) root.scrollTop = scroll;
     if (focus) {
       var again = root.querySelector(focus.tag.toLowerCase() + '[data-key="' + focus.key + '"]');
@@ -854,6 +860,9 @@
     App.model.features.push(f);
     App.sketchSnapshot = JSON.stringify({ entities: [] });
     App.newSketchId = f.id;
+    // an empty sketch on a standard plane changes no geometry: the sketch opens at once, so a tool picked right after
+    // Sketch (Line, Corner Rectangle …) is not lost while an OpenCascade rebuild is still running
+    if (typeof ref === 'string') { UI.enterSketch(f.id); return UI.afterRebuild(UI.rebuild(), function () { }); }
     return UI.afterRebuild(UI.rebuild(), function () { UI.enterSketch(f.id); });
   }
   // r10/facesketch10: the sketch frame on a picked model face, with a reference to the feature that made the face
@@ -1355,20 +1364,25 @@
   }
   // Mirror Entities (SolidWorks: Sketch tab ▸ Mirror Entities). *Entities to Mirror* holds the sketch selection when the
   // command starts plus anything clicked in the graphics area while it is open (a click toggles; no "everything"
-  // fallback). *Mirror about* is the sketch Y / X axis or a line: pick it in the list, or click the box (it turns pink)
-  // and then click a line in the sketch.
+  // fallback). *Mirror about* starts empty, as in SolidWorks, and must be filled before the preview shows and ✓ is
+  // available: click the box (it turns pink) and then a line or centerline in the sketch, or pick a line or the sketch
+  // Y / X axis in the list. A centerline preselected with the entities goes straight into Mirror about (the box takes
+  // the focus when only entities were preselected).
   function cmdMirrorEntities() {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     if (!f.entities.length) { UI.toast('Draw something to mirror first.'); return; }
-    var v = { entities: sketchSelectionIndices(f), axis: 'y', copy: true, box: 'entities' };
+    var pre = sketchSelectionIndices(f), cls = pre.filter(function (i) { var e = f.entities[i]; return e.t === 'line' && e.construction; }), axis0 = '';
+    if (cls.length === 1) { axis0 = String(cls[0]); pre = pre.filter(function (i) { return i !== cls[0]; }); }
+    var v = { entities: pre, axis: axis0, copy: true, box: pre.length && !axis0 ? 'axis' : 'entities' };
     function axisIndex() { return /^\d+$/.test(String(v.axis)) ? +v.axis : -1; }
+    function hasAxis() { return v.axis === 'x' || v.axis === 'y' || axisIndex() >= 0; }
     function axisOptions() {
-      var opts = [['y', 'Sketch vertical axis (Y)'], ['x', 'Sketch horizontal axis (X)']];
-      f.entities.forEach(function (e, i) { if (e.t === 'line') opts.push([String(i), 'Line ' + (i + 1) + '  (' + UI.fmtNum(e.x1, 1) + ', ' + UI.fmtNum(e.y1, 1) + ') → (' + UI.fmtNum(e.x2, 1) + ', ' + UI.fmtNum(e.y2, 1) + ')']); });
+      var opts = [['', '(none: pick a line or centerline)'], ['y', 'Sketch vertical axis (Y)'], ['x', 'Sketch horizontal axis (X)']];
+      f.entities.forEach(function (e, i) { if (e.t === 'line') opts.push([String(i), (e.construction ? 'Centerline ' : 'Line ') + (i + 1) + '  (' + UI.fmtNum(e.x1, 1) + ', ' + UI.fmtNum(e.y1, 1) + ') → (' + UI.fmtNum(e.x2, 1) + ', ' + UI.fmtNum(e.y2, 1) + ')']); });
       return opts;
     }
-    function axisLabel() { var ai = axisIndex(); return ai >= 0 ? 'Line' + (ai + 1) : v.axis === 'x' ? 'Sketch X axis' : 'Sketch Y axis'; }
+    function axisLabel() { var ai = axisIndex(); return ai >= 0 ? 'Line' + (ai + 1) : v.axis === 'x' ? 'Sketch X axis' : v.axis === 'y' ? 'Sketch Y axis' : ''; }
     // the entities that are mirrored: the box minus the line mirrored about
     function targets() { var ai = axisIndex(); return v.entities.filter(function (i) { return i !== ai && f.entities[i]; }); }
     function copies() {
@@ -1376,9 +1390,13 @@
       var ax = K.mirrorAxis(spec, f.entities);
       return targets().map(function (i) { return K.mirrorEntity(f.entities[i], ax); }).filter(Boolean).map(roundPts);
     }
-    function preview() { try { App.tempEntities = v.entities.length ? copies() : []; } catch (e) { App.tempEntities = []; UI.setStatus(e.message); } UI.updateTemp(); }
+    // the preview appears only once both boxes are filled
+    function preview() {
+      try { App.tempEntities = targets().length && hasAxis() ? copies() : []; } catch (e) { App.tempEntities = []; UI.setStatus(e.message); }
+      UI.updateTemp(); updateOkState();
+    }
     function syncSelection() {
-      var sel = sketchSelectionIndices(f);
+      var ai = axisIndex(), sel = sketchSelectionIndices(f).filter(function (i) { return i !== ai; });
       if (sel.join() === v.entities.join()) return;
       v.entities = sel;
       renderPM(); preview();
@@ -1407,13 +1425,15 @@
           { type: 'check', label: 'Copy (keep originals)', key: 'copy' }
         ] },
         { title: 'Mirror about', fields: [
-          { type: 'pick', icon: 'centerline', value: axisLabel, active: function (x) { return x.box === 'axis'; }, onActivate: function () { setBox('axis'); } },
+          { type: 'pick', icon: 'centerline', value: axisLabel, placeholder: 'Select a line or centerline…', active: function (x) { return x.box === 'axis'; }, onActivate: function () { setBox('axis'); } },
           { type: 'select', label: 'Mirror about', key: 'axis', options: axisOptions }
         ] }
       ],
       onChange: preview,
+      okBlocked: function () { return !targets().length ? 'Select the entities to mirror first.' : !hasAxis() ? 'Select a line or centerline to mirror about.' : ''; },
       onOK: function () {
         if (!targets().length) { UI.toast('Select the entities to mirror first.'); return false; }
+        if (!hasAxis()) { UI.toast('Select a line or centerline to mirror about.'); return false; }
         var c, targetsNow = targets();
         try { c = copies(); } catch (e) { UI.toast(e.message); return false; }
         UI.pushUndo(); App.sketchDirty = true;
@@ -1446,6 +1466,7 @@
       onCancel: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     preview();
+    UI.setStatus(v.box === 'axis' ? 'Mirror about: click a line or centerline in the sketch to mirror about.' : hasAxis() ? 'Click sketch entities to add them to Entities to Mirror (click again to remove).' : 'Select the entities to mirror, then click Mirror about and a line or centerline.');
   }
   // Linear Sketch Pattern (SolidWorks: Sketch tab ▸ Linear Sketch Pattern). Patterns the entities in its "Entities to
   // Pattern" box only: the sketch selection when the command starts, plus anything selected in the graphics area while

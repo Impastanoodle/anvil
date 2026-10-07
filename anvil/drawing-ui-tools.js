@@ -934,6 +934,7 @@
       // drive the part: try it on a copy first, so a refused value leaves no undo step
       try { Drawing.driveDim(JSON.parse(JSON.stringify(App.model)), src, val); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
       UI.pushUndo();
+      D.dirty = true;
       var t = dimTarget(doc(), d);
       if (t) Drawing.setDimProps(t, props);
       cleanDimProps(doc());

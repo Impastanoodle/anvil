@@ -19,14 +19,15 @@
 // two directions, reverse, draft; bodies scope and merge: false), revolve / revolve cut, linear and circular patterns,
 // mirror of features and of the body (stage 1); fillet and chamfer (edges nearest the picked points, tangent
 // propagation), shell (faces nearest the picked points removed; none: closed hollow), loft, sweep (sketch path with
-// exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2). Sheet metal and anything else stops
+// exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2); sheet metal: edge flange, hem, jog
+// and Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs). Anything else stops
 // the build at that feature ('unsupported'), so the caller keeps Anvil's own result. `tolerance` is the relative
 // volume agreement to expect with Anvil (1e-4; 2e-2 with sweeps / lofts, which Anvil facets). OpenCascade objects
 // are freed after every build.
 var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
-    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1 };
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1 };
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -660,6 +661,41 @@ var OcctKernel = (function () {
         applyLayout(k, K.flangeLayout(f2, m, { body: csg1 }), false);   // Anvil's jog keeps only the first bend's cuts
       });
     }
+    // Sketched Bend (as Kernel.buildSketchedBend, from Kernel.sketchedBendLayout): the body nearest the first bend line
+    // is clipped into the fixed piece and each line's moving piece; each piece is moved by its rigid motion and each
+    // bend is the exact section (bend arcs, overlap strips into both sides) swept along its line, moved with the piece
+    // it rides on; all are joined into the bent part
+    function trsfOf(M) {
+      var tr = N(new oc.gp_Trsf_1()), Rm = M.R;
+      tr.SetValues(Rm[0][0], Rm[0][1], Rm[0][2], M.t[0], Rm[1][0], Rm[1][1], Rm[1][2], M.t[1], Rm[2][0], Rm[2][1], Rm[2][2], M.t[2]);
+      return tr;
+    }
+    function isIdentity(M) { for (var i = 0; i < 3; i++) { if (Math.abs(M.t[i]) > 1e-12) return false; for (var j = 0; j < 3; j++) if (Math.abs(M.R[i][j] - (i === j ? 1 : 0)) > 1e-12) return false; } return true; }
+    function sketchedBendOp(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var ctxS = { sketches: sketches, planes: planes };
+      var at = K._ && K._.sketchedBendPoint ? K._.sketchedBendPoint(f, m, ctxS) : null;
+      var k = pickBody(at);
+      if (k < 0) throw new Error('Create a Base Flange before adding a sketched bend.');
+      var src = bodies[k] = unify(bodies[k]);
+      var lay = K.sketchedBendLayout(f, m, { body: shapeToCSG(src), sketches: sketches, planes: planes });
+      function clipAll(sh, hs) { hs.forEach(function (h) { sh = clipKeep(sh, h.n, h.w); }); return sh; }
+      var parts = [], fixed = clipAll(src, lay.fixed);
+      if (volumeOf(fixed) > 1e-12) parts.push(fixed);
+      lay.pieces.forEach(function (pc) {
+        var b = clipAll(src, pc.keep);
+        if (volumeOf(b) > 1e-12) parts.push(transformed(b, trsfOf(pc.motion)));
+      });
+      lay.bends.forEach(function (bd) {
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(lay.section, bd.plane), bd.t0, bd.plane), Vec(V.scale(bd.plane.n, bd.t1 - bd.t0)), false, true)).Shape());
+        parts.push(isIdentity(bd.motion) ? tool : transformed(tool, trsfOf(bd.motion)));
+      });
+      if (!parts.length) throw new Error('Sketched Bend: nothing of the sheet is left.');
+      var body = parts[0];
+      if (parts.length > 1) body = boolMany('fuse', body, parts.slice(1), 'OpenCascade could not join the bent pieces.');
+      bodies[k] = unify(body);
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -756,6 +792,7 @@ var OcctKernel = (function () {
             case 'import': importOp(f); break;
             case 'flange': flangeOp(f); break;
             case 'jog': jogOp(f); break;
+            case 'sketchedBend': sketchedBendOp(f); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }
@@ -780,7 +817,7 @@ var OcctKernel = (function () {
         // edges (SolidWorks' tangent propagation); shells of curved faces and corners where three picked edges meet are
         // polygonal / mitred in Anvil (`approx`); everything else is exact
         tolerance: approx || m.features.some(function (f) {
-          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
+          return f.type === 'sweep' || f.type === 'loft' || f.type === 'import' || f.type === 'flange' || f.type === 'jog' || f.type === 'sketchedBend' || ((f.type === 'fillet' || f.type === 'chamfer') && (f.edges || []).some(function (e) { return e.chain === false; }));
         }) ? 2e-2 : 1e-4 };
       if (unsupported || !bodies.length) return out;
       // booleans leave faces split along old seams (a pocket floor in pieces): merge faces on the same surface

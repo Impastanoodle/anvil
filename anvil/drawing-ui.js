@@ -73,6 +73,7 @@
   function edit(fn) {
     settle();
     UI.pushUndo();
+    D.dirty = true;
     fn(doc());
     UI.autosave();
     render();
@@ -84,12 +85,46 @@
   function editView(fn) {
     settle();
     UI.pushUndo();
+    D.dirty = true;
     var v = fn(doc());
     UI.autosave();
     D.prog = { doc: doc(), insert: false, ids: [v.id], t0: performance.now() };
     render();
     return v;
   }
+
+  // ------------------------------------------------------------------ unsaved changes (Close Drawing asks)
+  // The drawing lives in the part / assembly document (model.drawings), so Save saves it with the document and the
+  // document's "*" and AutoRecover copy cover it. D.dirty says whether this drawing changed since it was opened, made or
+  // saved (every edit goes through edit / editView, a drag or a driven dimension), which is what SolidWorks asks about
+  // when a drawing is closed: "Save changes to Draw1?". D.clean is the drawing as it was then (JSON), which Don't Save
+  // puts back. Closing from a script (anvil.drawing.close, UI.closeDrawing) never asks.
+  function markDrawingClean() {
+    var dc = doc();
+    D.dirty = false;
+    D.clean = dc ? { index: D.index, json: JSON.stringify(dc) } : null;
+  }
+  function drawingDirty() { return !!(D.active && D.dirty && doc() && UI.isDirty && UI.isDirty()); }
+  // Don't Save: the drawing goes back to how it was when it was opened, made or saved (one undo step)
+  function revertDrawing() {
+    var c = D.clean, list = App.model && App.model.drawings;
+    D.dirty = false;
+    if (!c || !list || !list[c.index] || JSON.stringify(list[c.index]) === c.json) return;
+    UI.pushUndo();
+    list[c.index] = JSON.parse(c.json);
+    UI.autosave();
+  }
+  // requestClose(): Close Drawing from the ribbon, the File and Window menus or the part tab under the sheet
+  function requestClose() {
+    if (!D.active) return;
+    settle();
+    if (D.inline) DW.closeInlineEdit(false);   // (a note being typed is placed first, as a click elsewhere places it)
+    if (!drawingDirty()) { closeDrawing(); return; }
+    UI.confirmDiscard(doc().name, function () { closeDrawing(); }, { dirty: true, onDiscard: function () { closeDrawing(); revertDrawing(); } });
+  }
+  // a save (File ▸ Save, the Save of "Save changes to …?") makes the open drawing clean too
+  var baseMarkClean = UI.markClean;
+  UI.markClean = function () { var r = baseMarkClean.apply(UI, arguments); if (D.active) markDrawingClean(); else D.dirty = false; return r; };
 
   // ------------------------------------------------------------------ DOM
   function ensureDom() {
@@ -115,7 +150,7 @@
     tabs.innerHTML = '';
     tabs.appendChild(el('button', { class: 'dw-tab active', text: dc ? dc.sheet.name : 'Sheet1', title: 'Sheet (right-click for Sheet Properties)', oncontextmenu: function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, DW.sheetMenu()); } }));
     tabs.appendChild(el('span', { class: 'dw-sp' }));
-    tabs.appendChild(el('button', { class: 'dw-tab', html: Icons(isAsm() ? 'assembly' : 'part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the ' + (isAsm() ? 'assembly' : 'part') + ' document (Window menu)', onclick: function () { closeDrawing(); } }));
+    tabs.appendChild(el('button', { class: 'dw-tab', html: Icons(isAsm() ? 'assembly' : 'part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the ' + (isAsm() ? 'assembly' : 'part') + ' document (Window menu)', onclick: function () { requestClose(); } }));
   }
 
   // ------------------------------------------------------------------ open / close
@@ -155,6 +190,7 @@
     var t0 = performance.now();
     D.active = true; D.sel = null; D.hover = null; D.tool = null; D.pending = null; D.vb = null;
     D.prog = { doc: doc(), insert: !!(o && o.insert), t0: t0 };
+    markDrawingClean();
     $('app').classList.add('drawing-mode');
     D.root.hidden = false; D.tree.hidden = false;
     App.ribbonTab = 'View Layout';   // (SolidWorks' first drawing CommandManager tab, r12/drawui12)
@@ -189,6 +225,7 @@
   function detachDrawing(next) {
     D.renderQueued = false; D.renderFull = false; D.qtok = (D.qtok || 0) + 1;
     D.prog = null; D.drag = null; D.sheet = null; D.sheetMesh = null; D.sheetDoc = null;
+    D.dirty = false; D.clean = null;
     if (!D.active) return;
     if (ownPM()) UI.pmCancel();
     if (D.inline) D.inline.autoCommit = false;   // (a note being typed belongs to the document going away)
@@ -230,7 +267,7 @@
       if (lazy && D.sheet.pending.length) {
         requestProjections(D.sheet.pending);
         if (D.prog.hold && old) { D.sheet = old; return; }
-      } else { var pg = D.prog; D.prog = null; if ((pg.insert || pg.ids) && Drawing.autoInsert(dc, m, pg.ids || undefined)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); } D.openMs = performance.now() - pg.t0; }
+      } else { var pg = D.prog; D.prog = null; if ((pg.insert || pg.ids) && Drawing.autoInsert(dc, m, pg.ids || undefined)) { UI.autosave(); D.sheet = Drawing.compute(dc, m, App.model, cctx()); if (!D.dirty) markDrawingClean(); } D.openMs = performance.now() - pg.t0; }
     }
     D.sheetMesh = m; D.sheetDoc = dc;
     D.occtDrove = !!(UI.occt && UI.occt.status && UI.occt.status().driving);
@@ -761,7 +798,7 @@
     D.drag = null;
     if (D.host) D.host.classList.remove('dw-dragging', 'dw-panning');
     if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
-    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann') && dg.moved) { UI.autosave(); render(); }
+    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
   // proportion to its delta) adds to a pending zoom that eases out over ~50 ms; one notch (deltaY 100) is 1.15×.
@@ -854,6 +891,7 @@
 
   DW.D = D; DW.doc = doc; DW.cctx = cctx; DW.syncBom = syncBom; DW.relayout = relayout; DW.units = units; DW.mesh = mesh; DW.paperK = paperK; DW.edit = edit; DW.editView = editView;
   DW.isAsm = isAsm; DW.docKind = docKind; DW.makeDrawing = makeDrawing; DW.openDrawing = openDrawing; DW.closeDrawing = closeDrawing; DW.detachDrawing = detachDrawing;
+  DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;
   DW.render = render; DW.settle = settle; DW.ready = ready; DW.queueRender = queueRender; DW.svgEl = svgEl; DW.fitBox = fitBox; DW.fitSheet = fitSheet; DW.glideTo = glideTo;
   DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist;
 })();
