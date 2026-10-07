@@ -1203,8 +1203,9 @@ if (typeof UI !== 'undefined') (function (UI) {
     i3d.edit = null;
     editBox.hidden = true;
     if (!commit) return Promise.resolve(false);
-    var r = UI.evalInput ? UI.evalInput(editInput.value) : { value: parseFloat(editInput.value) };
     var h = ed.h;
+    // p9-sketch: shop input (3/8, 1-1/2, 25mm, 2*3/8; 45deg for an angle handle), "=…" equations as before
+    var r = UI.evalInput ? UI.evalInput(editInput.value, { kind: h.angle ? 'angle' : 'length' }) : { value: parseFloat(editInput.value) };
     if (r.error != null || !(r.value > (h.min || 0)) || (h.max != null && r.value > h.max)) {
       if (UI.setStatus) UI.setStatus('Value not changed: ' + (r.error || 'must be greater than 0' + (h.max != null ? ' and at most ' + h.max : '')));
       return Promise.resolve(false);

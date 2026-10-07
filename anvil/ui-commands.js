@@ -242,13 +242,38 @@
           delete pm.exprs[key]; delete pm.exprErrors[key];
           showHint();
         };
+        // p9-sketch: shop input. A fraction, mixed number, unit or sum ("3/8", "1-1/2", "25mm", "2*3/8"; UI.parseLength,
+        // converted to the document's units) cannot live in a number box: its first such character turns the box into a
+        // text box. The value it reads is applied as it is typed and shown in the hint ("= 0.375"); a bad entry shows
+        // the reason there, Enter is refused, and leaving the box puts the old value back.
+        var kind = f.unit === 'u' ? 'length' : /^(°|deg)$/.test(f.unit || '') ? 'angle' : 'number';
+        var shopRead = function (s) { return UI.parseLength ? UI.parseLength(s, { kind: kind }) : (isNaN(parseFloat(s)) ? { error: 'Not a number: ' + s } : { value: parseFloat(s) }); };
+        var shopHint = function (r) {
+          hint.hidden = !r;
+          hint.classList.toggle('err', !!(r && r.error != null));
+          inp.classList.toggle('expr-err', !!(r && r.error != null));
+          hint.textContent = !r ? '' : r.error != null ? r.error : '= ' + UI.fmtNum(r.value, 4);
+          hint.title = !r ? '' : r.error != null ? 'Not a value: ' + r.error : inp.value + ' reads ' + r.value + (kind === 'length' ? ' ' + UI.unitLabel() : '');
+        };
+        var shopText = function () { return inp.type === 'text' && pm.exprs[key] == null; };
         inp.addEventListener('input', function () {
           var s = inp.value;
           if (isExpr(s)) { if (inp.type !== 'text') { inp.type = 'text'; } setExpr(s); return; }
           clearExpr();
+          if (inp.type === 'text') {
+            var r = /^\s*[-+]?(\d+\.?\d*|\.\d+)\s*$/.test(s) ? null : shopRead(s);
+            shopHint(r);
+            if (!r) { var n0 = parseFloat(s); if (!isNaN(n0)) changed(n0); }
+            else if (r.error == null) changed(r.value);
+            return;
+          }
           var n = parseFloat(s); if (!isNaN(n)) changed(n);
         });
         inp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && shopText()) {
+            var re = shopRead(inp.value);
+            if (re.error != null) { e.preventDefault(); shopHint(re); UI.setStatus('Not a value: ' + re.error); return; }
+          }
           if (e.key === 'Enter') { e.preventDefault(); pmOK(); return; }
           // r4/features4: arrow keys spin by the field's increment (Shift ×10), the same for every PropertyManager
           if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && pm.exprs[key] == null) { e.preventDefault(); spinField(f, inp, e.key === 'ArrowUp' ? 1 : -1, e.shiftKey ? 10 : 1, changed); return; }
@@ -258,6 +283,16 @@
             inp.type = 'text'; inp.value = '=';
             try { inp.setSelectionRange(1, 1); } catch (er) { }
             setExpr('=');
+            return;
+          }
+          if (inp.type === 'number' && e.key.length === 1 && !/[0-9.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            // the box's text replaced by the key when it is all selected (as after focus), else the key appended
+            var old = inp.validity && inp.validity.badInput ? '' : inp.value, sel = window.getSelection ? String(window.getSelection()) : '';
+            var t = (sel && sel === old ? '' : old) + e.key;
+            inp.type = 'text'; inp.value = t;
+            try { inp.setSelectionRange(t.length, t.length); } catch (er) { }
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
             return;
           }
           // no spin increments on an equation
@@ -271,8 +306,17 @@
           spinField(f, inp, e.deltaY < 0 ? 1 : -1, e.shiftKey ? 10 : 1, changed);
         }, { passive: false });
         // leaving a text box that no longer holds an equation turns it back into a number box
+        inp.addEventListener('focus', function () { inp._before = v[key]; });
         inp.addEventListener('blur', function () {
-          if (inp.type === 'text' && pm.exprs[key] == null) { var s = inp.value; inp.type = 'number'; inp.value = isNaN(parseFloat(s)) ? (v[key] == null ? '' : v[key]) : parseFloat(s); }
+          if (!shopText()) return;
+          var rb = shopRead(inp.value);
+          // p9-sketch: back to a number box showing the value read (3/8 -> 0.375), or after a bad entry the value the
+          // box had when it took the focus (a "3" typed on the way to "3//8" is not kept)
+          var back = rb.error == null ? +rb.value.toPrecision(12) : inp._before != null ? inp._before : v[key];
+          inp.type = 'number'; inp.value = back == null ? '' : back;
+          shopHint(null);
+          if (rb.error != null && back != null && back !== v[key]) changed(back);
+          if (rb.error != null && UI.setStatus) UI.setStatus('Value not changed: ' + rb.error);
         });
         showHint();
         var wrap = el('span', { class: 'pm-num-wrap' }, [inp, f.unit ? el('span', { class: 'unit', text: f.unit === 'u' ? UI.unitLabel() : f.unit }) : null]);
@@ -440,7 +484,7 @@
     return 1;
   }
   function spinField(f, inp, dir, mult, changed) {
-    var cur = parseFloat(inp.value), step = spinStep(f) * (mult || 1);
+    var cur = inp.type === 'text' ? NaN : parseFloat(inp.value), step = spinStep(f) * (mult || 1);   // p9-sketch: "3/8" is no parseFloat
     if (isNaN(cur)) cur = +pm.values[f.key] || 0;
     var val = +(cur + dir * step).toPrecision(12);
     if (f.min != null && val < f.min) val = +f.min;
@@ -3797,7 +3841,8 @@
   UI.pmSetField = function (key, text) {
     var inp = pm.root.querySelector('input.pm-num[data-key="' + key + '"]');
     if (!inp) return false;
-    if (isExpr(text) && inp.type !== 'text') inp.type = 'text';
+    // an equation or shop input (p9-sketch: "3/8", "1-1/2", "25mm") goes in as text; a plain number stays a number box
+    if ((isExpr(text) || !/^\s*[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i.test(String(text))) && inp.type !== 'text') inp.type = 'text';
     inp.value = String(text);
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     return true;

@@ -200,6 +200,9 @@ var SketchSolver = (function () {
   // shared point on A's side, or null. Tangency at a shared end point is written as an angle condition there, because
   // the distance form (centre-to-line = radius) has a zero gradient at the touching point and would be dependent on
   // the Coincident that holds the ends together.
+  // p9-sketch: the join may also run through a chain of point-to-point Coincidents (a line drawn on from the end of
+  // another line that ends on circle B: its start is Coincident with that end, which lies on B), so each end of A
+  // collects the points coincident with it first.
   function sharedEnd(ents, rels, A, B) {
     if (!rels) return null;
     var ea = endRefs(ents, A), eb = endRefs(ents, B).concat([String(B.e)]);
@@ -207,6 +210,30 @@ var SketchSolver = (function () {
       var r = rels[i];
       if (r.type !== 'coincident' || !r.refs || r.refs.length !== 2) continue;
       for (var k = 0; k < 2; k++) if (ea.indexOf(r.refs[k]) >= 0 && eb.indexOf(r.refs[1 - k]) >= 0) return { ref: parseRef(r.refs[k]) };
+    }
+    for (var a = 0; a < ea.length; a++) {
+      var group = [ea[a]], changed = true;
+      while (changed) {
+        changed = false;
+        for (var j = 0; j < rels.length; j++) {
+          var rj = rels[j];
+          if (rj.type !== 'coincident' || !rj.refs || rj.refs.length !== 2) continue;
+          for (var s = 0; s < 2; s++) {
+            if (group.indexOf(rj.refs[s]) < 0 || group.indexOf(rj.refs[1 - s]) >= 0) continue;
+            var o = parseRef(rj.refs[1 - s]);
+            if (!o || o.o || refKind(ents, o) !== 'point') continue;   // a point, not a curve the end lies on
+            group.push(rj.refs[1 - s]); changed = true;
+          }
+        }
+      }
+      for (var g = 1; g < group.length; g++) {
+        if (eb.indexOf(group[g]) >= 0) return { ref: parseRef(ea[a]) };
+        for (var t = 0; t < rels.length; t++) {
+          var rt = rels[t];
+          if (rt.type !== 'coincident' || !rt.refs || rt.refs.length !== 2) continue;
+          for (var u = 0; u < 2; u++) if (rt.refs[u] === group[g] && eb.indexOf(rt.refs[1 - u]) >= 0) return { ref: parseRef(ea[a]) };
+        }
+      }
     }
     return null;
   }
@@ -2114,7 +2141,130 @@ var SketchSolver = (function () {
   }
   if (K) install(K);
 
+  // ------------------------------------------------------------------ shop input (p9-sketch)
+  // parseValue(text, { kind, units }) reads a value as a sheet-metal shop types it: decimals (.375), fractions (3/8),
+  // mixed numbers (1-1/2 or 1 1/2), unit suffixes converted to the document's units (`units`: 'in' | 'mm'; 25mm in an
+  // inch part is 0.984252…; in, inch, ", ft, foot, ', mm, cm, m; feet and inches side by side add: 1' 6-1/2"),
+  // angles (deg, °, rad) and arithmetic (+ - * / ^, parentheses: 2*3/8, 1.5+1/16). kind: 'length' (length units
+  // only), 'angle' (angle units only), 'number' (no units) or 'any'. A whole number, a hyphen and a proper fraction
+  // with no spaces is a mixed number (3-1/2 = 3.5); 3 - 1/2 with spaces subtracts. Returns { value } or { error };
+  // { equation: true } for text starting with "=" (the kernel's equations evaluate those), and { error, ident: true }
+  // when a name is neither a unit nor anything else readable (the caller may try it as an equation variable).
+  // No DOM, no Kernel: the kernel tests call it directly.
+  var LEN_MM = { mm: 1, millimeter: 1, millimeters: 1, millimetre: 1, millimetres: 1, cm: 10, m: 1000, 'in': 25.4, inch: 25.4, inches: 25.4, '"': 25.4, '″': 25.4, ft: 304.8, foot: 304.8, feet: 304.8, "'": 304.8, '′': 304.8 };
+  var ANG_DEG = { deg: 1, degs: 1, degree: 1, degrees: 1, '°': 1, rad: 180 / Math.PI, rads: 180 / Math.PI, radian: 180 / Math.PI, radians: 180 / Math.PI };
+  function parseValue(text, opts) {
+    opts = opts || {};
+    var kind = opts.kind || 'length', toMm = opts.units === 'in' ? 25.4 : 1;
+    var src = String(text == null ? '' : text).replace(/^\s+|\s+$/g, '');
+    if (!src) return { error: 'Enter a value' };
+    if (src.charAt(0) === '=') return { equation: true };
+    function bad(msg, extra) { var o = { error: msg }; if (extra) for (var k in extra) o[k] = extra[k]; return o; }
+    // tokens: num { v }, unit { u }, id { s }, op { v }
+    var toks = [], i = 0, m;
+    while (i < src.length) {
+      var c = src.charAt(i), rest = src.slice(i), prev = toks[toks.length - 1];
+      if (/\s/.test(c)) { i++; continue; }
+      // a mixed number, where an operand may start: at the start, after "(", "+", "-" or a unit (1' 6-1/2")
+      var mixOk = !prev || prev.t === 'unit' || (prev.t === 'op' && (prev.v === '(' || prev.v === '+' || prev.v === '-'));
+      if (mixOk && (m = /^(\d+)(?:-|[ \t]+)(\d+)\/(\d+)(?![\d.\/])/.exec(rest)) && +m[2] < +m[3]) {
+        toks.push({ t: 'num', v: +m[1] + m[2] / m[3], s: m[0] }); i += m[0].length; continue;
+      }
+      if ((m = /^(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/.exec(rest))) { toks.push({ t: 'num', v: parseFloat(m[0]), s: m[0] }); i += m[0].length; continue; }
+      if ((m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest))) {
+        var w = m[0].toLowerCase();
+        toks.push(LEN_MM.hasOwnProperty(w) || ANG_DEG.hasOwnProperty(w) ? { t: 'unit', u: w, s: m[0] } : { t: 'id', s: m[0] });
+        i += m[0].length; continue;
+      }
+      if (LEN_MM.hasOwnProperty(c) || ANG_DEG.hasOwnProperty(c)) { toks.push({ t: 'unit', u: c, s: c }); i++; continue; }
+      if (c === '*' && src.charAt(i + 1) === '*') { toks.push({ t: 'op', v: '^', s: '**' }); i += 2; continue; }
+      if ('+-*/^()'.indexOf(c) >= 0) { toks.push({ t: 'op', v: c, s: c }); i++; continue; }
+      if (c === '×') { toks.push({ t: 'op', v: '*', s: c }); i++; continue; }
+      if (c === '÷') { toks.push({ t: 'op', v: '/', s: c }); i++; continue; }
+      if (c === '−') { toks.push({ t: 'op', v: '-', s: c }); i++; continue; }
+      return bad('Cannot read "' + src + '": unexpected "' + c + '"');
+    }
+    for (var q = 0; q < toks.length; q++) {
+      if (toks[q].t === 'id') return bad('Unknown unit "' + toks[q].s + '": use in, ", ft, \', mm, cm' + (kind === 'angle' || kind === 'any' ? ' or deg' : ''), { ident: true });
+    }
+    var pos = 0, err = null;
+    function peek() { return toks[pos]; }
+    function isOp(v) { var t = toks[pos]; return !!(t && t.t === 'op' && t.v === v); }
+    function fail(msg) { if (!err) err = msg; return NaN; }
+    function unexpected() { var t = toks[pos]; return fail(t ? 'Cannot read "' + src + '": unexpected "' + t.s + '"' : 'Cannot read "' + src + '": it ends too soon'); }
+    // a unit after a number or ")": the value in the document's units (lengths) or degrees (angles)
+    function withUnit(v) {
+      var t = peek();
+      if (!t || t.t !== 'unit') return { v: v, unit: false };
+      pos++;
+      var isLen = LEN_MM.hasOwnProperty(t.u);
+      if (kind === 'number') return { v: fail('This value takes no units ("' + t.s + '")'), unit: true };
+      if (isLen && kind === 'angle') return { v: fail('"' + t.s + '" is a length unit: type an angle (45 or 45deg)'), unit: true };
+      if (!isLen && kind === 'length') return { v: fail('"' + t.s + '" is an angle unit: type a length (3/8, 1-1/2, 25mm)'), unit: true };
+      // inch units in an inch part and metric ones in a mm part convert without going through 25.4 (1ft = 12 exactly)
+      var inchU = LEN_MM[t.u] === 25.4 || LEN_MM[t.u] === 304.8, f = !isLen ? ANG_DEG[t.u] : toMm === 25.4 ? (inchU ? (LEN_MM[t.u] === 304.8 ? 12 : 1) : null) : (inchU ? null : LEN_MM[t.u]);
+      return { v: f != null ? v * f : v * LEN_MM[t.u] / toMm, unit: true, len: isLen };
+    }
+    function parseSum() {
+      var v = parseTerm();
+      while (!err && (isOp('+') || isOp('-'))) { var op = toks[pos++].v, r = parseTerm(); v = op === '+' ? v + r : v - r; }
+      return v;
+    }
+    function parseTerm() {
+      var v = parseUnary();
+      while (!err && (isOp('*') || isOp('/'))) {
+        var op = toks[pos++].v, r = parseUnary();
+        if (op === '*') v *= r;
+        else if (r === 0) return fail('Division by zero');
+        else v /= r;
+      }
+      return v;
+    }
+    function parseUnary() {
+      if (isOp('-')) { pos++; return -parseUnary(); }
+      if (isOp('+')) { pos++; return parseUnary(); }
+      return parsePower();
+    }
+    function parsePower() {
+      var b = parseQuantity();
+      if (!err && isOp('^')) { pos++; return Math.pow(b, parseUnary()); }
+      return b;
+    }
+    // a number or a parenthesised sum with its unit; lengths with units side by side add (1' 6-1/2", 1ft 3in)
+    function parseQuantity() {
+      var q = parseAtom();
+      if (err) return NaN;
+      var a = withUnit(q), v = a.v;
+      while (!err && a.len && peek() && peek().t === 'num') {
+        var save = pos, n = toks[pos++].v, b = withUnit(n);
+        if (!b.len) { pos = save; break; }
+        v += b.v; a = b;
+      }
+      return v;
+    }
+    function parseAtom() {
+      var t = toks[pos];
+      if (!t) return unexpected();
+      if (t.t === 'num') { pos++; return t.v; }
+      if (t.t === 'op' && t.v === '(') {
+        pos++;
+        var v = parseSum();
+        if (err) return NaN;
+        if (!isOp(')')) return unexpected();
+        pos++;
+        return v;
+      }
+      return unexpected();
+    }
+    var value = parseSum();
+    if (!err && pos < toks.length) unexpected();
+    if (err) return bad(err);
+    if (typeof value !== 'number' || !isFinite(value)) return bad('"' + src + '" is not a number');
+    return { value: value };
+  }
+
   return {
+    parseValue: parseValue,
     TYPES: TYPES, STATUS_TEXT: STATUS_TEXT, parseRef: parseRef, paramNames: paramNames,
     refPoint: function (sketch, ref) { return refPoint(sketch.entities, parseRef(ref)); },
     refCurve: function (sketch, ref) { return refCurve(sketch.entities, parseRef(ref)); },
