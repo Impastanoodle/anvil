@@ -246,10 +246,11 @@
   // the sketch changes.
   var candCache = { key: null, pts: null };
   function sketchPoints(f) {
-    var key = f.id + ':' + JSON.stringify(f.entities);
+    var key = f.id + ':' + JSON.stringify(f.entities) + (f.layers ? JSON.stringify(f.layers) : '');
     if (candCache.key === key) return candCache.pts;
     var S = window.SketchSolver, pts = [], curves = [];
     f.entities.forEach(function (e, i) {
+      if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;   // sketch-layers: hidden layers give no snaps
       if (S) {
         S.pointRefs(f, i).forEach(function (pr) {
           var s = pr.ref.split('.')[1] || '';
@@ -766,7 +767,7 @@
     var best = null, bestD = tolPx;
     function S(uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
     f.entities.forEach(function (e, i) {
-      if (i === skip) return;
+      if (i === skip || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
       if (e.t === 'line') {
         var a = S([e.x1, e.y1]), b = S([e.x2, e.y2]), dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
         if (L2 < 1) return;
@@ -1064,6 +1065,7 @@
     if (!f) return;
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     if (App.drawConstruction) e.construction = true;   // the Centerline tool (ui-relations.js)
+    if (UI.sketchLayerNew) UI.sketchLayerNew(f, e);   // sketch-layers: a new entity goes on the current layer
     f.entities.push(e);
     // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …)
     if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1);
@@ -1136,6 +1138,7 @@
       var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
       var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
       if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(addEntity);
+      if (f && UI.sketchLayerNew) f.entities.slice(n0).forEach(function (e) { UI.sketchLayerNew(f, e); });   // sketch-layers: a tool's own commit
       // r15/dblclick15: the segment just placed, for the double-click that ends the chain: placed within 500 ms of the
       // previous one it may be the stub the double-click's second click made (the handler takes it back when it is tiny)
       if (App.tool === 'line' && f && f.entities.length === n0 + 1) { var nowT = performance.now(); st.lastSeg = { index: f.entities.length - 1, at: nowT, quick: st.lastSegAt != null && nowT - st.lastSegAt < 500, pushed: pushedUndo }; st.lastSegAt = nowT; }

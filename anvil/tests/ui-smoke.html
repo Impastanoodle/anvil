@@ -2886,7 +2886,7 @@
     UI.fileOpen(); dontSaveIfAsked();   // the scripted part is unsaved: "Save changes to Blocky?" comes first
     assert(modalOpen() && /Open/.test($('modal-title').textContent), 'Open dialog');
     var sel = D.querySelector('#modal-body select'), inp = D.querySelector('#modal-body input[type=file]');
-    assert(sel.options.length === 7 && /\.step/.test(inp.accept) && /\.igs/.test(inp.accept) && /\.3mf/.test(inp.accept), 'type list / accept ' + inp.accept);
+    assert(sel.options.length === 8 && /\.step/.test(inp.accept) && /\.igs/.test(inp.accept) && /\.3mf/.test(inp.accept) && /\.dxf/.test(inp.accept), 'type list / accept ' + inp.accept);   // dxf-import: + DXF as a 2D sketch
     sel.value = 'stl'; sel.dispatchEvent(new W.Event('change'));
     assert(inp.accept === '.stl', 'filter narrows accept: ' + inp.accept);
     var dt = new W.DataTransfer();
@@ -7468,7 +7468,7 @@
     UI.setTool('select');
     UI.App.dimsStale = false; UI.drawDims();
     assert(!D.querySelector('#dim-layer g.dim'), 'no driven values drawn: ' + D.querySelectorAll('#dim-layer g.dim').length);
-    var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints; });
+    var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints && !(o.userData && o.userData.sketchOpenEnds); });   // sketch-layers: not the open-end markers
     var n = pts.reduce(function (s, o) { return s + o.geometry.getAttribute('position').count; }, 0);
     assert(n === 3, 'three end points (the shared corner once): ' + n);
     assert(pts.every(function (o) { return o.material.color.getHex() === UI.mats.sketch.color.getHex(); }), 'blue like the under-defined lines');
@@ -9959,7 +9959,7 @@
   step('p9-sketchtab: Line (the Line flyout: Line, Centerline, Midpoint Line) opens Insert Line at once — Message, Orientation (As sketched), Options (For construction, Infinite length, Midpoint line), no Parameters — which stays open while a chain is drawn; Esc puts the tool down and closes it', async function () {
     await rskNew(); UI.setRibbonTab('Sketch');
     var labels = stFlyMenu('line'); UI.closeMenus();
-    assert(/^Line/.test(labels[0]) && /^Centerline/.test(labels[1]) && /^Midpoint Line/.test(labels[2]) && /^Parallel Line/.test(labels[3]) && labels.length === 4, 'Line flyout lists ' + labels.join(' | '));
+    assert(/^Line/.test(labels[0]) && /^Centerline/.test(labels[1]) && /^Midpoint Line/.test(labels[2]) && /^Parallel Line/.test(labels[3]) && /^Tangent Line/.test(labels[4]) && /^Perpendicular Line/.test(labels[5]) && /^Bisector/.test(labels[6]) && labels.length === 7, 'Line flyout lists ' + labels.join(' | '));
     c14Fly('line').querySelector('.rb').click();
     assert(UI.App.tool === 'line' && stTitle() === 'Insert Line', 'PM ' + stTitle() + ', tool ' + UI.App.tool);
     assert(stGroups().join('|') === 'Message|Orientation|Options', 'groups ' + stGroups().join('|'));
@@ -10610,7 +10610,7 @@
   step('p9-sketch-curves: ribbon flyouts — Circle | Perimeter Circle, Centerpoint | Tangent | 3 Point Arc, the four slot types; picking one starts the tool with its PropertyManager open at once', async function () {
     await rskNew(); cvDefaults();
     UI.setRibbonTab('Sketch'); UI.refreshRibbon();
-    var want = { circle: ['Circle', 'Perimeter Circle'], arc: ['Centerpoint Arc', 'Tangent Arc', '3 Point Arc'], slot: ['Straight Slot', 'Centerpoint Straight Slot', '3 Point Arc Slot', 'Centerpoint Arc Slot'] }, got = [];
+    var want = { circle: ['Circle', 'Perimeter Circle', 'Tangent Circle'], arc: ['Centerpoint Arc', 'Tangent Arc', '3 Point Arc'], slot: ['Straight Slot', 'Centerpoint Straight Slot', '3 Point Arc Slot', 'Centerpoint Arc Slot'] }, got = [];
     Object.keys(want).forEach(function (g) {
       var fl = c14Fly(g);
       assert(fl, 'no ' + g + ' flyout');
@@ -11212,6 +11212,458 @@
     return 'line (' + e[n0].x1.toFixed(3) + ', ' + e[n0].y1.toFixed(3) + ') → (0, 60), no relations; above: ' + hc.snap.kind + ', ' + v.snap.kind + ', ' + fz.snap.kind;
   });
   // --- end p9-modelsnap ---
+  // --- sketch-layers: shaded regions and open ends, sketch layers, copy / paste sketch entities (ui-sketch-layers.js) ---
+  async function lyrPart(code, nm) {
+    await anvil.newPart(); await idle();
+    await anvil.run(code); await idle();
+    var f = UI.App.model.features.filter(function (g) { return g.name === nm; })[0];
+    assert(f, 'no sketch ' + nm);
+    UI.editSketch(f.id); await idle();
+    assert(UI.App.mode === 'sketch' && UI.App.activeSketch === f.id, 'not in ' + nm);
+    UI.zoomView(0.25 / UI.cam.scale);
+    return f;
+  }
+  function lyrMenu(label) { var li = Array.prototype.filter.call(D.querySelectorAll('#menus > li'), function (l) { return l.textContent === label; })[0]; li.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, view: W, detail: 1, button: 0 })); return li; }
+  function lyrMenuRow(re) { return Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return re.test(m.textContent); })[0]; }
+  function rgnMeshes() { return UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketchRegion != null; }); }
+  function rgnEnds() { return UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketchOpenEnds; }); }
+  function cpyKey(k) { D.body.dispatchEvent(new W.KeyboardEvent('keydown', { key: k, ctrlKey: true, bubbles: true, cancelable: true })); }
+  step('sketch-layers: a rectangle with a circle inside is one shaded region with a hole (translucent, under the lines, not pickable); an open two-line chain shows 2 red open-end squares; closing it adds a region; hover tints the region under the cursor; View ▸ Sketch Regions turns it off', async function () {
+    var f = await lyrPart('p.sketch("Front", 0, "Regions").rect(0, 0, 40, 20).circle(20, 10, 5).line(50, 0, 60, 0).line(60, 0, 60, 10);', 'Regions');
+    var rg = UI.sketchRegions();
+    var hole = Math.abs(K.signedArea(K.entityPolylines({ t: 'circle', cx: 20, cy: 10, r: 5 }, true)[0].pts));
+    assert(rg.length === 1 && rg[0].holes === 1 && rg[0].loops === 2, 'regions ' + JSON.stringify(rg));
+    near(rg[0].area, 800 - hole, 1e-6, 'region area');
+    var ends = UI.sketchOpenEnds().map(function (p) { return p.join(','); }).sort();
+    assert(ends.join(' ') === '50,0 60,10', 'open ends ' + ends.join(' '));
+    var ms = rgnMeshes(), pts = rgnEnds();
+    assert(ms.length === 1 && ms[0].material.transparent && ms[0].material.opacity < 0.5 && !ms[0].material.depthWrite && ms[0].renderOrder < 10, 'one translucent region mesh under the lines');
+    var hits = []; ms[0].raycast(new W.THREE.Raycaster(), hits);
+    assert(!hits.length, 'region mesh is not pickable');
+    assert(pts.length === 1 && pts[0].geometry.getAttribute('position').count === 2 && pts[0].material.color.getHex() === 0xe0262a, 'two red open-end squares');
+    // hover: inside the region tints it, over the hole nothing
+    selEv('mousemove', rskScr([5, 5]), null, { buttons: 0 });
+    assert(UI.sketchRegionHover() === 0 && rgnMeshes()[0].material.opacity > ms[0].material.opacity - 1e-9, 'hover region 0: ' + UI.sketchRegionHover());
+    selEv('mousemove', rskScr([20, 10]), null, { buttons: 0 });
+    assert(UI.sketchRegionHover() === -1, 'over the hole: ' + UI.sketchRegionHover());
+    // closing the chain: no open ends, a second region; construction geometry is ignored
+    f.entities.push({ t: 'line', x1: 60, y1: 10, x2: 50, y2: 0 }, { t: 'line', x1: -5, y1: -5, x2: -5, y2: 30, construction: true });
+    UI.updateSketches();
+    assert(UI.sketchOpenEnds().length === 0 && UI.sketchRegions().length === 2 && rgnEnds().length === 0, 'closed: ' + JSON.stringify(UI.sketchRegions()) + ' ends ' + JSON.stringify(UI.sketchOpenEnds()));
+    // View ▸ Sketch Regions off and on again
+    lyrMenu('View'); var row = lyrMenuRow(/Sketch Regions/);
+    assert(row, 'View ▸ Sketch Regions'); row.click();
+    assert(UI.App.view.sketchRegions === false && rgnMeshes().length === 0, 'regions hidden');
+    lyrMenu('View'); lyrMenuRow(/Sketch Regions/).click();
+    assert(UI.App.view.sketchRegions !== false && rgnMeshes().length === 2, 'regions back');
+    UI.exitSketch(true); await idle();
+    return 'area ' + rg[0].area.toFixed(3) + ', ends ' + ends.join(' ');
+  });
+  step('sketch-layers: Sketch tab ▸ Layers — Add ETCH / BEND presets, Move Selected to Layer puts the circle on ETCH (green, no hole in the region), the current layer takes new circles, a hidden layer is neither drawn nor picked; the Extruded Boss is the full 40 × 20 × 10 block; the sketch DXF has the circle on ETCH; the script round trip keeps the layers', async function () {
+    var f = await lyrPart('p.sketch("Front", 0, "Plate").rect(0, 0, 40, 20).circle(20, 10, 5);', 'Plate');
+    UI.setRibbonTab('Sketch');
+    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /^\s*Layers\s*$/.test(b.textContent); })[0];
+    assert(btn, 'Layers button on the Sketch tab'); btn.click();
+    assert(UI.pmTitle() === 'Layers', 'PM ' + UI.pmTitle());
+    function pmBtn(re) { return Array.prototype.filter.call(D.querySelectorAll('#pm .pm-btns button'), function (b) { return re.test(b.textContent); })[0]; }
+    function row(name) { return D.querySelector('#lyr-list .rel-row[data-layer="' + name + '"]'); }
+    pmBtn(/^Add ETCH$/).click(); pmBtn(/^Add BEND$/).click();
+    assert(row('ETCH') && row('BEND') && f.layers.length === 2 && f.layers[0].noProfile && f.layers[1].lineType === 'dashed', 'presets ' + JSON.stringify(f.layers));
+    // pick the circle in the graphics area (it selects, the Layers PM stays), then Move Selected to ETCH
+    rskClick([25, 10]);
+    assert(UI.pmTitle() === 'Layers' && anvil.selection().some(function (s) { return s.kind === 'entity' && s.index === 1; }), 'circle selected: ' + JSON.stringify(anvil.selection()));
+    row('ETCH').click();
+    var undo0 = UI.App.undo.length;
+    pmBtn(/^Move Selected to ETCH$/).click();
+    assert(f.entities[1].layer === 'ETCH' && UI.App.undo.length === undo0 + 1, 'circle on ETCH ' + JSON.stringify(f.entities[1]));
+    var ls = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.index === 1 && o.isLineSegments; })[0];
+    assert(UI.sketchRegions().length === 1 && UI.sketchRegions()[0].holes === 0, 'no hole: ' + JSON.stringify(UI.sketchRegions()));
+    UI.setSelection([]);
+    var ls2 = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.index === 1 && o.isLineSegments; })[0];
+    assert(ls2 && ls2.material.color.getHexString() === '1e9e3c', 'drawn in the ETCH colour: ' + (ls2 && ls2.material.color.getHexString()));
+    // current layer: ETCH; a circle drawn now goes on it
+    row('ETCH').querySelector('.lyr-cur').click();
+    assert(UI.sketchCurrentLayer() === 'ETCH', 'current ' + UI.sketchCurrentLayer());
+    UI.setTool('circle'); rskClick([8, 10]); rskClick([11, 10]); UI.setTool('select'); await idle();
+    var c2 = f.entities[f.entities.length - 1];
+    assert(f.entities.length === 3 && c2.t === 'circle' && c2.layer === 'ETCH', 'new circle on ETCH: ' + JSON.stringify(c2));
+    // hide ETCH: not drawn, not picked
+    UI.cmdSketchLayers(); row('ETCH').querySelector('.lyr-eye').click();
+    assert(f.layers[0].hidden && !UI.groups.sketches.children.some(function (o) { return o.userData && o.userData.index === 1; }) && !UI.pickEntity.apply(null, rskScr([25, 10])), 'hidden layer drawn or picked');
+    row('ETCH').querySelector('.lyr-eye').click();
+    assert(!f.layers[0].hidden, 'shown again');
+    UI.pmOK(); UI.exitSketch(); await idle();
+    await anvil.append('p.extrude(10, { sketch: ' + f.id + ' });'); await idle();
+    assert(!Object.keys(UI.App.build.errors || {}).length, 'build errors ' + JSON.stringify(UI.App.build.errors));
+    near(anvil.mass().volume, 8000, 1e-6, 'volume (ETCH circles make no holes)');
+    var dxf = anvil.dxfSketch(f.id);
+    assert((dxf.match(/\n0\nCIRCLE\n8\nETCH\n/g) || []).length === 2 && /\n2\nETCH\n70\n0\n62\n3\n/.test(dxf) && (dxf.match(/\n0\nLINE\n8\nOUTLINE\n/g) || []).length === 4, 'DXF: both circles on ETCH (colour 3), the rectangle on OUTLINE: ' + JSON.stringify(dxf.slice(dxf.indexOf('ENTITIES'))));
+    var code = anvil.script();
+    assert(code.indexOf('.layer("ETCH", [1,2])') > 0, 'script ' + code);
+    await anvil.run(code); await idle();
+    var g = UI.App.model.features.filter(function (x) { return x.name === 'Plate'; })[0];
+    assert(g && g.layers && g.layers.length === 2 && g.entities[1].layer === 'ETCH' && g.entities[2].layer === 'ETCH', 'round trip ' + JSON.stringify(g && g.layers));
+    near(anvil.mass().volume, 8000, 1e-6, 'round-trip volume');
+    return 'ETCH + BEND, volume 8000, DXF layers, script .layer("ETCH", [1,2])';
+  });
+  step('sketch-layers: Copy / Paste — Ctrl+C on a dimensioned slot in Sketch1, Ctrl+V in Sketch2: the copy follows the cursor, a click at (50, 0) places it (one undo step) with its length / width dimensions and Horizontal relation (the origin Coincident is dropped); Edit menu has Copy / Paste in a sketch', async function () {
+    try { W.localStorage.removeItem('anvil.sketchClipboard'); } catch (e) { }
+    var f1 = await lyrPart('p.sketch("Front", 0, "S1").slot(-10, 0, 10, 0, 6).dim(0, "len", { value: 20 }).dim(0, "w").rel("horizontal", ["0"]).rel("coincident", ["0.p1", "O"]);\np.sketch("Front", 0, "S2").point(-30, -30);', 'S1');
+    rskClick([0, 3]);
+    assert(anvil.selection().some(function (s) { return s.kind === 'entity' && s.index === 0; }), 'slot selected');
+    UI.closePM();
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    cpyKey('c');
+    var cb = UI.sketchClipboard();
+    assert(cb && cb.entities === 1 && cb.dims === 2 && cb.rels === 1, 'clipboard ' + JSON.stringify(cb));
+    assert(W.localStorage.getItem('anvil.sketchClipboard'), 'kept in localStorage');
+    lyrMenu('Edit');
+    assert(lyrMenuRow(/^Copy/) && lyrMenuRow(/^Paste/), 'Edit ▸ Copy / Paste in a sketch');
+    UI.closeMenus();
+    UI.exitSketch(true); await idle();
+    var f2 = UI.App.model.features.filter(function (x) { return x.name === 'S2'; })[0];
+    UI.editSketch(f2.id); await idle();
+    UI.zoomView(0.25 / UI.cam.scale);
+    var undo0 = UI.App.undo.length;
+    cpyKey('v');
+    assert(UI.pmTitle() === 'Paste', 'paste placement PM: ' + UI.pmTitle());
+    selEv('mousemove', rskScr([30, 12]), null, { buttons: 0 });
+    var t = UI.App.tempEntities[0];
+    assert(t && t.t === 'slot' && Math.abs((t.x1 + t.x2) / 2 - 30) < 0.3 && Math.abs(t.y1 - 12) < 0.3, 'preview follows the cursor ' + JSON.stringify(t));
+    rskClick([50, 0]); await idle();
+    var E = f2.entities, s = E[1];
+    assert(E.length === 2 && s.t === 'slot', 'pasted ' + JSON.stringify(E));
+    near(s.x1, 40, 1e-6, 'x1'); near(s.x2, 60, 1e-6, 'x2'); near(s.y1, 0, 1e-6, 'y1'); near(s.w, 6, 1e-9, 'width');
+    assert((f2.dims || []).length === 2 && f2.dims.every(function (d) { return d.e === 1; }), 'dims ' + JSON.stringify(f2.dims));
+    assert((f2.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }).join(' ') === 'horizontal:1', 'rels ' + JSON.stringify(f2.rels));
+    assert(UI.App.undo.length === undo0 + 1 && !UI.pmTitle() && UI.App.tempEntities.length === 0, 'one undo step, placement over');
+    assert(UI.sketchStatus().dims.every(function (x) { return x === 'ok'; }), 'dims ok ' + JSON.stringify(UI.sketchStatus()));
+    UI.undo(); await idle();
+    assert(UI.activeSketchFeature().entities.length === 1, 'undo takes the paste back');
+    // Esc cancels a placement
+    cpyKey('v'); selKey('Escape');
+    assert(!UI.pmTitle() && UI.activeSketchFeature().entities.length === 1 && !UI.App.tempEntities.length, 'Esc cancelled');
+    UI.exitSketch(true); await idle();
+    return 'slot at (' + s.x1 + ', ' + s.y1 + ') - (' + s.x2 + ', ' + s.y2 + '), 2 dims, Horizontal';
+  });
+  // --- end sketch-layers ---
+  // ---- sketch-construct: Tangent Line, Perpendicular Line, Bisector, Tangent Circle, Split / Join Entities
+  // (ui-sketch-construct.js), driven like a user: ribbon flyouts, PM, clicks in the graphics area, N for the next solution
+  function cstSketch(ents) { var f = UI.activeSketchFeature(); ents.forEach(function (e) { f.entities.push(e); }); UI.updateSketches(); return f; }
+  function cstHas(rel) { return stRels().indexOf(rel) >= 0; }
+  function cstAng(e) { return Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180 / Math.PI; }
+  step('sketch-construct: the ribbon — Line flyout ▸ Tangent Line / Perpendicular Line / Bisector, Circle flyout ▸ Tangent Circle, Trim flyout ▸ Split Entities / Join Entities; each opens its PropertyManager, a second click puts it down', async function () {
+    await rskNew(); UI.setRibbonTab('Sketch');
+    ['line', 'circle', 'trim'].forEach(function (g) { UI.ribbonFlyFace(g, 0); });
+    var trim = stFlyMenu('trim'); UI.closeMenus();
+    assert(/^Split Entities/.test(trim[2]) && /^Join Entities/.test(trim[3]) && trim.length === 4, 'Trim flyout lists ' + trim.join(' | '));
+    var want = { 'Tangent Line': ['line', 'Tangent Line', 'Line Type|Tangent To|Solution|Options'], 'Perpendicular Line': ['line', 'Perpendicular Line', 'Reference|Length|Options'], 'Bisector': ['line', 'Bisector', 'Lines to Bisect|Length|Solution|Options'],
+      'Tangent Circle': ['circle', 'Tangent Circle', 'Circle Type|Tangent To|Parameters|Solution|Options'], 'Split Entities': ['trim', 'Split Entities', 'Split Points|Options'], 'Join Entities': ['trim', 'Join Entities', 'Entities to Join'] };
+    var got = [];
+    Object.keys(want).forEach(function (row) {
+      stFlyMenu(want[row][0]); c14MenuRow(row).click();
+      assert(stTitle() === want[row][1] && UI.sketchConstructActive(), row + ': PM ' + stTitle());
+      assert(stGroups().join('|') === want[row][2], row + ' groups ' + stGroups().join('|'));
+      assert(c14Fly(want[row][0]).querySelector('.rb').classList.contains('active'), row + ': flyout face not shown on');
+      got.push(stTitle());
+      c14Fly(want[row][0]).querySelector('.rb').click();
+      assert(!UI.hasPM(), row + ': a second click did not put it down');
+    });
+    ['line', 'circle', 'trim'].forEach(function (g) { UI.ribbonFlyFace(g, 0); });
+    return got.join(', ');
+  });
+  step('sketch-construct: Tangent Line — circles R10 at (0,0) and R5 at (40,0), picked at their tops, give the outer tangent (1.25, 9.9216)-(40.625, 4.9608) with Tangent to both and its ends Coincident on them, one undo step; N cycles the four solutions in place; Esc ends', async function () {
+    await rskNew();
+    var f = cstSketch([{ t: 'circle', cx: 0, cy: 0, r: 10 }, { t: 'circle', cx: 40, cy: 0, r: 5 }]);
+    var G = UI.sketchConstruct.tangentLines({ kind: 'circle', c: [0, 0], r: 10 }, { kind: 'circle', c: [40, 0], r: 5 });
+    assert(G.length === 4 && G.filter(function (s) { return s.outer; }).length === 2, 'four tangents, two outer: ' + JSON.stringify(G));
+    UI.cmdTangentLine(); await wait(20);
+    assert(/tangent to both/.test($('sketch-hint').textContent), 'hint ' + $('sketch-hint').textContent);
+    var undo0 = UI.App.undo.length, ny = Math.sqrt(63 / 64);
+    rskClick([0, 10]); await wait(20);
+    assert(f.entities.length === 2 && /Circle1/.test(D.querySelector('#pm .pm-pick').textContent), 'first pick listed: ' + D.querySelector('#pm .pm-pick').textContent);
+    rskClick([40, 5]); await wait(20);
+    stLine(f.entities[2], 1.25, 10 * ny, 40.625, 5 * ny, 'outer tangent');
+    ['tangent 2/0', 'tangent 2/1', 'coincident 2.p1/0', 'coincident 2.p2/1'].forEach(function (r) { assert(cstHas(r), 'missing ' + r + ': ' + stRels().join(', ')); });
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
+    stNoRedundant('tangent line');
+    var seen = [JSON.stringify(f.entities[2])];
+    for (var k = 0; k < 3; k++) {
+      selKey('n'); await wait(20);
+      var e = f.entities[2];
+      assert(f.entities.length === 3 && UI.App.undo.length === undo0 + 1, 'N swaps in place: ' + f.entities.length);
+      near(Math.hypot(e.x1, e.y1), 10, 1e-6, 'start on R10'); near(Math.hypot(e.x2 - 40, e.y2), 5, 1e-6, 'end on R5');
+      near(Math.abs(e.x1 * (e.x2 - e.x1) + e.y1 * (e.y2 - e.y1)), 0, 1e-6, 'square to the radius');
+      seen.push(JSON.stringify(e));
+    }
+    assert(seen.filter(function (x, i) { return seen.indexOf(x) === i; }).length === 4, 'four different solutions: ' + seen.join(' '));
+    selKey('n'); await wait(20);
+    assert(JSON.stringify(f.entities[2]) === seen[0], 'N wraps to the first');
+    selKey('Escape');
+    assert(!UI.hasPM() && f.entities.length === 3, 'Esc ended, line kept');
+    return 'outer tangent (' + f.entities[2].x1 + ', ' + f.entities[2].y1.toFixed(4) + ') - (' + f.entities[2].x2 + ', ' + f.entities[2].y2.toFixed(4) + ')';
+  });
+  step('sketch-construct: Tangent Circle — TTR R5 between lines along X and Y gives the circle at (5, 5) with Tangent to both and an R5 dimension; TTT on a 3-4-5 triangle\'s sides gives the incircle R1 at (1, 1) (the 30-40-50 one picked in the graphics area: R10 at (10, 10))', async function () {
+    var SC = UI.sketchConstruct;
+    var L = function (a, b) { return { kind: 'line', a: a, b: b }; };
+    var ttr = SC.tangentCirclesTTR(L([0, 0], [30, 0]), L([0, 0], [0, 30]), 5);
+    assert(ttr.length === 4 && ttr.some(function (c) { return Math.abs(c.c[0] - 5) < 1e-9 && Math.abs(c.c[1] - 5) < 1e-9; }), 'TTR centres ' + JSON.stringify(ttr));
+    var ttt = SC.tangentCirclesTTT([L([0, 0], [4, 0]), L([4, 0], [0, 3]), L([0, 3], [0, 0])]);
+    var inc = ttt.filter(function (c) { return Math.abs(c.r - 1) < 1e-9; })[0];
+    assert(ttt.length === 4 && inc && Math.abs(inc.c[0] - 1) < 1e-9 && Math.abs(inc.c[1] - 1) < 1e-9, 'TTT 3-4-5: ' + JSON.stringify(ttt));
+    var ccc = SC.tangentCirclesTTT([{ kind: 'circle', c: [0, 0], r: 1 }, { kind: 'circle', c: [10, 0], r: 1 }, { kind: 'circle', c: [5, 8], r: 1 }]);
+    assert(ccc.length >= 2 && ccc.every(function (c) { return [[0, 0], [10, 0], [5, 8]].every(function (q) { var d = Math.hypot(c.c[0] - q[0], c.c[1] - q[1]); return Math.min(Math.abs(d - 1 - c.r), Math.abs(d - Math.abs(c.r - 1))) < 1e-6; }); }), 'TTT circles: ' + JSON.stringify(ccc));
+    var llc = SC.tangentCirclesTTT([L([-20, 0], [20, 0]), L([-20, 10], [20, 10]), { kind: 'circle', c: [0, 5], r: 2 }]);
+    assert(llc.length >= 2 && llc.every(function (c) { return Math.abs(c.r - 5) < 1e-9; }), 'TTT between parallel lines: ' + JSON.stringify(llc));
+    await rskNew();
+    var f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 30 }]);
+    stFlyMenu('circle'); c14MenuRow('Tangent Circle').click(); await wait(20);
+    assert(stTitle() === 'Tangent Circle' && D.querySelector('#pm input[data-key="type:ttr"]').checked, 'TTR by default');
+    UI.pmSetField('r', '5'); await wait(20);
+    var undo0 = UI.App.undo.length;
+    rskClick([15, 0]); rskClick([0, 15]); await wait(20);
+    var c = f.entities[2];
+    assert(c && c.t === 'circle' && Math.abs(c.cx - 5) < 1e-9 && Math.abs(c.cy - 5) < 1e-9 && Math.abs(c.r - 5) < 1e-9, 'TTR circle ' + JSON.stringify(c));
+    assert(cstHas('tangent 2/0') && cstHas('tangent 2/1'), 'Tangent to both: ' + stRels().join(', '));
+    assert((f.dims || []).some(function (d) { return d.e === 2 && d.k === 'dia' && d.show === 'r'; }), 'R dimension: ' + JSON.stringify(f.dims));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    UI.pmSetField('r', '4'); await wait(20);
+    assert(f.entities.length === 3 && Math.abs(f.entities[2].cx - 4) < 1e-9 && Math.abs(f.entities[2].r - 4) < 1e-9 && UI.App.undo.length === undo0 + 1, 'a new Radius redoes the circle just placed: ' + JSON.stringify(f.entities[2]));
+    stNoRedundant('TTR');
+    UI.pmCancel();
+    await rskNew();
+    f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }, { t: 'line', x1: 40, y1: 0, x2: 0, y2: 30 }, { t: 'line', x1: 0, y1: 30, x2: 0, y2: 0 }]);
+    UI.cmdTangentCircle('ttt'); await wait(20);
+    assert(D.querySelector('#pm input[data-key="type:ttt"]').checked && stGroups().indexOf('Parameters') < 0, 'TTT: no Radius');
+    rskClick([20, 0]); rskClick([20, 15]); rskClick([0, 15]); await wait(20);
+    c = f.entities[3];
+    assert(c && c.t === 'circle' && Math.abs(c.cx - 10) < 1e-6 && Math.abs(c.cy - 10) < 1e-6 && Math.abs(c.r - 10) < 1e-6, 'incircle ' + JSON.stringify(c));
+    assert(cstHas('tangent 3/0') && cstHas('tangent 3/1') && cstHas('tangent 3/2'), 'Tangent to the three sides: ' + stRels().join(', '));
+    stNoRedundant('TTT');
+    selKey('n'); await wait(20);
+    assert(f.entities.length === 4 && f.entities[3].r > 10.5, 'N: an excircle ' + JSON.stringify(f.entities[3]));
+    selKey('Escape');
+    return 'TTR (5, 5) R5; TTT incircle (10, 10) R10, next R' + f.entities[3].r.toFixed(3);
+  });
+  step('sketch-construct: Bisector — lines at 0° and 90° from a shared corner give the 45° bisector from the corner, the shorter line\'s length, construction, held there by a construction circle tangent to both; dragging the vertical line to 60° keeps it bisecting (30°)', async function () {
+    var b = UI.sketchConstruct.bisectors({ a: [0, 0], b: [30, 0] }, { a: [0, 0], b: [0, 20] }, [15, 0], [0, 10]);
+    near(Math.atan2(b.dirs[0][1], b.dirs[0][0]) * 180 / Math.PI, 45, 1e-9, 'pure bisector');
+    await rskNew();
+    var f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 20 }]);
+    f.rels = [{ type: 'coincident', refs: ['0.p1', '1.p1'] }, { type: 'fix', refs: ['0'] }]; UI.updateSketches();
+    stFlyMenu('line'); c14MenuRow('Bisector').click(); await wait(20);
+    rskClick([15, 0]); rskClick([0, 10]); await wait(20);
+    var e = f.entities[2];
+    assert(e && e.t === 'line' && e.construction, 'construction bisector ' + JSON.stringify(e));
+    near(e.x1, 0, 1e-9, 'x1'); near(e.y1, 0, 1e-9, 'y1'); near(cstAng(e), 45, 1e-6, 'angle'); near(Math.hypot(e.x2 - e.x1, e.y2 - e.y1), 20, 1e-6, 'length');
+    assert(cstHas('coincident 2.p1/0.p1') || cstHas('coincident 2.p1/1.p1'), 'from the corner: ' + stRels().join(', '));
+    var ci = f.entities[3];
+    assert(ci && ci.t === 'circle' && ci.construction && cstHas('tangent 3/0') && cstHas('tangent 3/1') && cstHas('midpoint 3.c/2'), 'holding circle: ' + JSON.stringify(ci) + ' ' + stRels().join(', '));
+    stNoRedundant('bisector');
+    selKey('Escape');
+    // the second line turned to 60°: the bisector follows to 30°
+    var r = SketchSolverOf().driveEntity(f, 1, 2, function (E) { return [E[1].x2 - 20 * Math.cos(Math.PI / 3), E[1].y2 - 20 * Math.sin(Math.PI / 3)]; });
+    assert(r.ok, 'drive: ' + JSON.stringify(r));
+    near(cstAng(f.entities[2]), 30, 1e-5, 'bisector follows');
+    return 'bisector 45° → 30° after the drag';
+  });
+  function SketchSolverOf() { return W.SketchSolver; }
+  step('sketch-construct: Perpendicular Line — a line (0,0)-(40,0) picked, then (10, 15) clicked: the line (10,0)-(10,15), Perpendicular and its start on the reference; Length 25 runs 25 towards the click', async function () {
+    await rskNew();
+    var f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }]);
+    stFlyMenu('line'); c14MenuRow('Perpendicular Line').click(); await wait(20);
+    rskClick([20, 0]); await wait(20);
+    assert(D.querySelector('#pm .pm-pick').classList.contains('filled') && f.entities.length === 1, 'reference picked');
+    rskClick([10, 15]); await wait(20);
+    stLine(f.entities[1], 10, 0, 10, 15, 'perpendicular');
+    assert(cstHas('perpendicular 0/1') && cstHas('coincident 1.p1/0'), 'relations ' + stRels().join(', '));
+    UI.pmSetField('len', '25'); await wait(20);
+    rskClick([30, -5]); await wait(20);
+    stLine(f.entities[2], 30, 0, 30, -25, 'length 25');
+    assert((f.dims || []).some(function (d) { return d.e === 2 && d.k === 'len'; }), 'length dimension');
+    stNoRedundant('perpendicular');
+    selKey('Escape');
+    return 'x = 10 and x = 30 (L 25)';
+  });
+  step('sketch-construct: Split Entities — a click at the middle of a line splits it into two lines joined there (Coincident, still one line), one undo step; two clicks split a circle into two arcs; Split all at intersections breaks a # of four lines into 12 lines, nothing over-defined', async function () {
+    await rskNew();
+    var f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }, { t: 'circle', cx: 20, cy: 30, r: 8 }]);
+    f.rels = [{ type: 'horizontal', refs: ['0'] }]; UI.updateSketches();
+    stFlyMenu('trim'); c14MenuRow('Split Entities').click(); await wait(20);
+    var undo0 = UI.App.undo.length;
+    rskClick([20.1, 0]); await wait(20);
+    stLine(f.entities[0], 0, 0, 20, 0, 'piece 1'); stLine(f.entities[1], 20, 0, 40, 0, 'piece 2');
+    assert(cstHas('coincident 0.p2/1.p1'), 'joined at the split: ' + stRels().join(', '));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    stNoRedundant('split line');
+    rskClick([28, 30]); await wait(20);
+    assert(f.entities[2].t === 'circle', 'one click on a circle waits for the second');
+    rskClick([12, 30]); await wait(20);
+    assert(f.entities[2].t === 'arc' && f.entities[3].t === 'arc' && f.entities.length === 4, 'circle → two arcs: ' + JSON.stringify(f.entities.slice(2)));
+    near(f.entities[2].a1 - f.entities[2].a0 + f.entities[3].a1 - f.entities[3].a0, 360, 1e-6, 'the arcs make the circle');
+    stNoRedundant('split circle');
+    assert(cstHas('tangent 2/3') && cstHas('coincident 2.p2/3.p1') && cstHas('coincident 3.p2/2.p1'), 'the arcs end to end: ' + stRels().join(', '));
+    cstSketch([{ t: 'arc', cx: -30, cy: 30, r: 8, a0: 0, a1: 180 }]);
+    rskClick([-30, 38.1]); await wait(20);
+    assert(f.entities[4].t === 'arc' && f.entities[5].t === 'arc' && Math.abs(f.entities[4].a1 - 90) < 1e-6 && Math.abs(f.entities[5].a0 - 90) < 1e-6, 'arc split at its middle: ' + JSON.stringify(f.entities.slice(4)));
+    stNoRedundant('split arc');
+    UI.pmCancel();
+    await rskNew();
+    f = cstSketch([{ t: 'line', x1: 0, y1: 10, x2: 40, y2: 10 }, { t: 'line', x1: 0, y1: 30, x2: 40, y2: 30 }, { t: 'line', x1: 10, y1: 0, x2: 10, y2: 40 }, { t: 'line', x1: 30, y1: 0, x2: 30, y2: 40 }]);
+    UI.cmdSplitEntities(); await wait(20);
+    undo0 = UI.App.undo.length;
+    Array.prototype.filter.call(D.querySelectorAll('#pm .pm-btns button'), function (b) { return /Split all/.test(b.textContent); })[0].click(); await wait(20);
+    assert(f.entities.length === 12 && f.entities.every(function (e) { return e.t === 'line'; }), '12 lines: ' + f.entities.length);
+    var lens = f.entities.map(function (e) { return Math.round(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); }).sort(function (a, b) { return a - b; }).join(',');
+    assert(lens === '10,10,10,10,10,10,10,10,20,20,20,20', 'pieces ' + lens);
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step for all');
+    var st = stNoRedundant('split all');
+    assert(st.status !== 'over', 'status ' + st.status);
+    UI.pmCancel();
+    return '# → ' + f.entities.length + ' lines, ' + (f.rels || []).length + ' relations';
+  });
+  step('sketch-construct: Join Entities — lines (0,0)-(30,0) and (20,0)-(50,0) selected join into (0,0)-(50,0) keeping Horizontal; two arcs of one circle that close it join into the circle; a gap is refused with a message', async function () {
+    await rskNew();
+    var f = cstSketch([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 20, y1: 0, x2: 50, y2: 0 }, { t: 'arc', cx: 0, cy: 30, r: 5, a0: 0, a1: 200 }, { t: 'arc', cx: 0, cy: 30, r: 5, a0: 190, a1: 360 }, { t: 'line', x1: 0, y1: -10, x2: 10, y2: -10 }, { t: 'line', x1: 15, y1: -10, x2: 25, y2: -10 }]);
+    f.rels = [{ type: 'horizontal', refs: ['0'] }]; UI.updateSketches();
+    UI.setSelection([{ kind: 'entity', index: 0 }, { kind: 'entity', index: 1 }]);
+    stFlyMenu('trim'); c14MenuRow('Join Entities').click(); await wait(20);
+    assert(/2 entities/.test(D.querySelector('#pm .pm-pick').textContent), 'the selection is in the box: ' + D.querySelector('#pm .pm-pick').textContent);
+    await pmAccept();
+    assert(!UI.hasPM() && f.entities.length === 5, 'joined: ' + f.entities.length);
+    stLine(f.entities[0], 0, 0, 50, 0, 'joined line');
+    assert(cstHas('horizontal 0'), 'Horizontal kept: ' + stRels().join(', '));
+    var r = UI.sketchConstruct.joinEntities(f, [1, 2]);
+    assert(r.ok && f.entities[1].t === 'circle' && f.entities.length === 4 && Math.abs(f.entities[1].r - 5) < 1e-9, 'arcs → circle: ' + JSON.stringify(r) + ' ' + JSON.stringify(f.entities[1]));
+    UI.setSelection([{ kind: 'entity', index: 2 }, { kind: 'entity', index: 3 }]);
+    UI.cmdJoinEntities(); await wait(20);
+    await pmAccept();
+    assert(UI.hasPM() && f.entities.length === 4, 'a gap is refused, the PM stays');
+    UI.pmCancel();
+    return 'line (0,0)-(50,0), circle R5';
+  });
+  // ---- end sketch-construct
+  // ---- dxf-import (ui-sketch-import.js): DXF/DWG Import into a sketch, File ▸ Open of a .dxf, Check Sketch for
+  // Feature and Repair Sketch, driven through their PropertyManagers
+  // the acceptance plate: a 4 × 2 in open LWPOLYLINE with an R0.5 corner (bulge) and a 0.0003 in gap, a Ø0.5 hole, the
+  // bottom edge again as a LINE, a block circle (INSERT scaled 2, turned 90°: Ø0.4 at 2.5, 1.5) and a TEXT
+  function dxiPlateText() {
+    var b = String(Math.tan(Math.PI / 8));
+    return ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '9', '$INSUNITS', '70', '1', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '8', '0', '2', 'HOLE', '70', '0', '10', '0.0', '20', '0.0', '30', '0.0',
+      '0', 'CIRCLE', '8', '0', '10', '0.25', '20', '0.0', '30', '0.0', '40', '0.1', '0', 'ENDBLK', '8', '0', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'LWPOLYLINE', '8', 'CUT', '90', '6', '70', '0', '10', '0', '20', '0', '10', '4', '20', '0', '10', '4', '20', '1.5', '42', b,
+      '10', '3.5', '20', '2', '10', '0', '20', '2', '10', '0', '20', '0.0003',
+      '0', 'CIRCLE', '8', 'CUT', '10', '1', '20', '1', '30', '0', '40', '0.25',
+      '0', 'LINE', '8', 'CUT', '10', '0', '20', '0', '30', '0', '11', '4', '21', '0', '31', '0',
+      '0', 'INSERT', '8', 'CUT', '2', 'HOLE', '10', '2.5', '20', '1', '30', '0', '41', '2', '42', '2', '50', '90',
+      '0', 'TEXT', '8', 'CUT', '10', '0', '20', '0', '40', '0.1', '1', 'PART 1',
+      '0', 'ENDSEC', '0', 'EOF'].join('\r\n') + '\r\n';
+  }
+  // the plate's area in in² (outline less the corner, less both holes)
+  var DXI_AREA = 8 - (0.25 - Math.PI * 0.0625) - Math.PI * (0.0625 + 0.04);
+  function dxiGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group h4'), function (h) { return h.textContent.replace(/^[▾▸]/, '').trim(); }); }
+  function dxiLabels() { return Array.prototype.map.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent.trim(); }); }
+  function dxiRels(f) { return (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+  step('dxf-import: UI.importDXFText on a new part opens DXF/DWG Import (Units, Layers, Position, Options) on a new Top Plane sketch with the repaired preview; ✓ adds 7 entities as one undo step with Coincident relations, and Extruded Boss of the closed profile has the plate\'s exact volume', async function () {
+    need(UI, 'importDXFText'); need(UI, 'cmdInsertDXF'); need(UI, 'cmdCheckSketch'); need(UI, 'cmdRepairSketch');
+    await anvil.newPart(); await idle();
+    var s = UI.App.model.units === 'in' ? 1 : 25.4;
+    var v = UI.importDXFText(dxiPlateText(), { name: 'plate.dxf' });
+    assert(v && UI.pmTitle() === 'DXF/DWG Import' && UI.App.mode === 'sketch', 'PM ' + UI.pmTitle() + ' in ' + UI.App.mode);
+    assert(dxiGroups().join() === 'Units,Layers,Position,Options', 'groups ' + dxiGroups());
+    var labels = dxiLabels();
+    ['File units', 'Import as', 'CUT (8)', 'Lower-left corner at the origin', 'Center on the origin', 'X offset', 'Y offset', 'Rotation', 'Merge points closer than', 'Repair after import', 'Add Coincident relations'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
+    var f = activeSketch();
+    assert(f && f.plane && f.plane.ref === 'Top' && f.entities.length === 0, 'a new sketch on the Top Plane: ' + JSON.stringify(f && f.plane));
+    assert(UI.App.tempEntities.length === 7 && /1 gap closed, 1 duplicate merged/.test($('pm').textContent) && /text entity/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
+    // a layer turned off empties the preview and greys ✓
+    D.querySelector('#pm input[data-key="L0"]').click();
+    assert(UI.App.tempEntities.length === 0 && D.querySelector('#pm .pm-ok').classList.contains('disabled'), 'layer off');
+    D.querySelector('#pm input[data-key="L0"]').click();   // the PropertyManager was drawn again
+    assert(UI.App.tempEntities.length === 7, 'layer back on');
+    var u0 = UI.App.undo.length;
+    await pmAccept();
+    assert(!UI.hasPM() && f.entities.length === 7 && UI.App.undo.length === u0 + 1 && UI.App.tempEntities.length === 0, 'accepted: ' + f.entities.length + ' entities, ' + (UI.App.undo.length - u0) + ' undo steps');
+    assert(dxiRels(f).filter(function (r) { return /^coincident:/.test(r); }).length === 5, 'Coincident relations: ' + dxiRels(f).join(' '));
+    var bc = f.entities.filter(function (e) { return e.t === 'circle' && Math.abs(e.r - 0.2 * s) < 1e-9; })[0];
+    assert(bc && Math.abs(bc.cx - 2.5 * s) < 1e-9 && Math.abs(bc.cy - 1.5 * s) < 1e-9, 'block circle ' + JSON.stringify(bc));
+    assert(/Imported 7 entities from plate\.dxf \(5 Coincident relations\)\. Check Sketch: no problems found/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
+    var sid = UI.App.activeSketch;
+    await UI.exitSketch(); await idle();
+    UI.App.sel = { kind: 'feature', id: sid };
+    UI.cmdExtrude(false); setInput(pmNumber(0), 0.25 * s); await pmAccept();
+    var want = DXI_AREA * s * s * 0.25 * s;
+    near(anvil.summary().volume, want, 1e-3 * want, 'volume');
+    return 'volume ' + anvil.summary().volume.toFixed(4) + ' (' + want.toFixed(4) + ')';
+  });
+  step('dxf-import: Check Sketch for Feature lists the gap, the duplicate and the shared endpoint with markers (Next / Previous walk them); Repair Sketch shows each option\'s count, ✓ fixes both in one undo step keeping the other relations (one on the duplicate goes), and Check finds nothing; Undo brings the problems back', async function () {
+    await anvil.newPart(); await idle();
+    UI.importDXFText(dxiPlateText(), { name: 'plate.dxf', repair: false, tol: 0, ok: true }); await idle();
+    var f = activeSketch();
+    assert(f.entities.length === 8, 'imported as drawn: ' + f.entities.length);
+    f.rels = (f.rels || []).concat([{ type: 'horizontal', refs: ['3'] }, { type: 'horizontal', refs: ['6'] }]);
+    var iss = UI.cmdCheckSketch();
+    assert(UI.pmTitle() === 'Check Sketch for Feature' && iss.map(function (x) { return x.type; }).sort().join() === 'branch,duplicate,gap', 'issues ' + iss.map(function (x) { return x.msg; }).join(' | '));
+    assert(/1 open contour, 1 gap < [\d.]+ (in|mm), 1 shared endpoint, 1 duplicate/.test(D.querySelector('#pm .pm-msg').textContent), 'summary ' + D.querySelector('#pm .pm-msg').textContent);
+    var mk = UI.sketchCheckMarks();
+    assert(mk && mk.list.length === 3 && mk.cur === -1 && D.querySelectorAll('#dim-layer .dxi-mark').length === 3, 'markers ' + JSON.stringify(mk));
+    clickPmButton('Next'); assert(UI.sketchCheckMarks().cur === 0 && D.querySelectorAll('#dim-layer .dxi-mark.cur').length === 1, 'Next');
+    clickPmButton('Next'); assert(UI.sketchCheckMarks().cur === 1, 'Next again');
+    clickPmButton('Previous'); clickPmButton('Previous'); assert(UI.sketchCheckMarks().cur === 2, 'Previous wraps to the last');
+    clickPmButton('Repair Sketch…');
+    assert(UI.pmTitle() === 'Repair Sketch' && D.querySelectorAll('#dim-layer .dxi-mark').length === 2, 'Repair Sketch with two fix markers');
+    var labels = dxiLabels();
+    ['Close gaps (1)', 'Merge overlapping / duplicate entities (1)', 'Join collinear lines and co-radial arcs (0)', 'Remove zero-length / tiny entities (below tolerance) (0)', 'Split at crossings'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
+    var u0 = UI.App.undo.length;
+    await pmAccept();
+    f = activeSketch();
+    assert(f.entities.length === 7 && UI.App.undo.length === u0 + 1 && !D.querySelectorAll('#dim-layer .dxi-mark').length, 'repaired: ' + f.entities.length);
+    var rels = dxiRels(f);
+    assert(rels.indexOf('horizontal:3') >= 0 && !rels.some(function (r) { return /:6$|,6\.|:6\./.test(r); }) && rels.indexOf('coincident:0.p1,4.p2') >= 0, 'relations ' + rels.join(' '));
+    assert(!UI.cmdCheckSketch().length && /No problems found/.test(D.querySelector('#pm .pm-msg').textContent), 'checked again: ' + D.querySelector('#pm .pm-msg').textContent);
+    UI.pmCancel();
+    UI.undo(); await idle();
+    assert(activeSketch().entities.length === 8, 'undo: ' + activeSketch().entities.length);
+    UI.redo(); await idle();
+    assert(activeSketch().entities.length === 7, 'redo: ' + activeSketch().entities.length);
+    await UI.exitSketch(true); await idle();
+    return rels.length + ' relations kept';
+  });
+  step('dxf-import: File ▸ Open of a .dxf (UI.openFileData) makes a new part named after the file with the DXF in Sketch1 on the Top Plane, the import PropertyManager open; the Sketch tab has Insert DXF, Check Sketch for Feature and Repair Sketch', async function () {
+    await UI.openFileData('Bracket-101.dxf', new W.TextEncoder().encode(dxiPlateText()).buffer); await idle();
+    var f = activeSketch();
+    assert(UI.App.model.name === 'Bracket-101' && UI.pmTitle() === 'DXF/DWG Import' && f && f.name === 'Sketch1' && f.plane.ref === 'Top', 'opened: ' + UI.App.model.name + ' / ' + UI.pmTitle() + ' / ' + (f && f.name));
+    await pmAccept();
+    assert(activeSketch().entities.length === 7, 'entities ' + activeSketch().entities.length);
+    await UI.exitSketch(); await idle();
+    UI.setRibbonTab('Sketch');
+    var txt = $('ribbon-buttons').textContent.replace(/\s+/g, ' ');
+    assert(/Insert DXF/.test(txt) && /Check Sketch for Feature/.test(txt) && /Repair Sketch/.test(txt), 'ribbon: ' + txt.slice(0, 400));
+    UI.setRibbonTab('Features');
+    return UI.App.model.name;
+  });
+  step('dxf-import: DXF layers become sketch layers: a CUT 2 × 1 rectangle and an ETCH circle come in on their layers, ETCH takes the preset (no solid), and Extruded Boss makes the full plate with no hole', async function () {
+    await anvil.newPart(); await idle();
+    var s = UI.App.model.units === 'in' ? 1 : 25.4;
+    function ln(x1, y1, x2, y2) { return ['0', 'LINE', '8', 'CUT', '10', String(x1), '20', String(y1), '11', String(x2), '21', String(y2)]; }
+    var txt = ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '1', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES']
+      .concat(ln(0, 0, 2, 0), ln(2, 0, 2, 1), ln(2, 1, 0, 1), ln(0, 1, 0, 0), ['0', 'CIRCLE', '8', 'ETCH', '62', '3', '10', '1', '20', '0.5', '40', '0.2'], ['0', 'ENDSEC', '0', 'EOF']).join('\n');
+    UI.importDXFText(txt, { name: 'etch.dxf', ok: true }); await idle();
+    var f = activeSketch(), byName = {};
+    (f.layers || []).forEach(function (l) { byName[l.name] = l; });
+    assert(byName.ETCH && byName.ETCH.noProfile && byName.CUT && !byName.CUT.noProfile, 'layers ' + JSON.stringify(f.layers));
+    assert(f.entities.filter(function (e) { return e.layer === 'ETCH'; }).length === 1 && f.entities.filter(function (e) { return e.layer === 'CUT'; }).length === 4, 'entity layers ' + JSON.stringify(f.entities.map(function (e) { return e.layer; })));
+    var sid = UI.App.activeSketch;
+    await UI.exitSketch(); await idle();
+    UI.App.sel = { kind: 'feature', id: sid };
+    UI.cmdExtrude(false); setInput(pmNumber(0), 0.1 * s); await pmAccept();
+    var want = 2 * s * 1 * s * 0.1 * s;
+    near(anvil.summary().volume, want, 1e-6 * want, 'volume (the ETCH circle cuts nothing)');
+    return 'layers ' + f.layers.map(function (l) { return l.name; }).join(', ');
+  });
+  // --- end dxf-import ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

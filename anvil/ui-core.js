@@ -1559,10 +1559,14 @@ var UI = (function () {
       if (active && App.sketchDragging && App.sketchState) state = App.sketchState;   // mid-drag: same relations, same state
       else if (active && window.SketchSolver) { try { SketchSolver.clean(f); state = App.sketchState = SketchSolver.analyze(f); } catch (err) { state = App.sketchState = null; } }
       var stateMat = { full: mats.sketchFull, over: mats.sketchOver, conflict: mats.sketchConflict }, ptsBy = {};
+      var layerStyle = UI.sketchLayerStyle;   // sketch-layers (ui-sketch-layers.js): hidden layers, layer colours, dashed layers
       f.entities.forEach(function (e, i) {
+        var ly = layerStyle ? layerStyle(f, e, active) : null;
+        if (ly && ly.hidden) return;
         var pls = screenPolylines(e);
         var selected = active && (UI.entitySelected ? UI.entitySelected(i) : App.sel && App.sel.kind === 'entity' && App.sel.index === i);
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
+        if (ly && ly.mat && !selected && !e.construction && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = ly.mat;   // over defined stays red
         if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
         if (e.t === 'point') {
           var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
@@ -1572,16 +1576,18 @@ var UI = (function () {
           return;
         }
         if (!pls.length) return;
-        var baseMat = mat;
-        if (e.construction) mat = dashedMat(mat);   // construction geometry / centerlines: dashed
+        var baseMat = mat, dashed = e.construction || !!(ly && ly.dashed);
+        if (dashed) mat = dashedMat(mat);   // construction geometry / centerlines (and BEND-type layers): dashed
         var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
-        if (e.construction) ls.computeLineDistances();
+        if (dashed) ls.computeLineDistances();
         ls.userData = { sketch: f.id, index: i };
         if (active) ls.renderOrder = 10;
         groups.sketches.add(ls);
         if (active) sketchEndPoints(f, i, e, baseMat, ptsBy);
       });
       if (active) addSketchPoints(pl, ptsBy);
+      // sketch-layers: closed regions shaded and open ends marked in the sketch being edited (View ▸ Sketch Regions)
+      if (active && UI.sketchRegionObjects) UI.sketchRegionObjects(f, pl).forEach(function (o) { groups.sketches.add(o); });
     });
     if (App.mode !== 'sketch') App.sketchState = null;
     else if (UI.refreshStatus) UI.refreshStatus();
@@ -1763,6 +1769,7 @@ var UI = (function () {
     if (!f) return null;
     var pl = activePlane(), best = null, bestD = 7;
     f.entities.forEach(function (e, i) {
+      if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;   // sketch-layers: a hidden layer is not picked
       var pls = screenPolylines(e);   // r15/snapaudit15: the curve as drawn, not the model's chord polygon (a click between its facets picked nothing when zoomed in)
       if (e.t === 'point') pls = [{ pts: [[e.x, e.y], [e.x, e.y]], closed: false }];
       pls.forEach(function (l) {

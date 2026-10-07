@@ -1309,3 +1309,11 @@ Tests: kernel 934/934, examples 29/29, ui-smoke 395/395, occt-tests 72/72; hand 
 - lines: Parallel Line in the Line flyout (`UI.cmdParallelLine`, ui-sketch-lines.js, icon `parallelLine`): reference sketch line / polygon edge / straight model edge; Through point, Distance (Flip side, Both sides), Tangent to arc; Same as reference or typed Length; Parallel + line-to-line distance off sketch lines, nothing off model edges. Head: the Reference box showed the line twice (value + list); the list was dropped.
 - snaps: model snap candidates in ui-sketch.js `inferPoint` (vertex, midpoint, centre, quadrant, face centre, part centre, centre of mass; then on model edge), cached per rebuild + plane, magenta ring + label, no relations; `App.view.snapModel` (View menu and the heads-up Hide/Show list).
 Tests: kernel 934/934, examples 29/29, ui-smoke 399/399; hand check in the browser (line from a hole centre to a plate corner, exact, no relations; parallel line through a corner with Parallel + distance; View ▸ Snap to Model).
+
+## 2026-10-07T14 (interactive head, 4 subagents): sketch features SolidWorks users wish for
+
+- import: `dxf-import.js` (DxfImport.parse / check / repair / transform, R12 + R2000, bulges, nested blocks, units), `ui-sketch-import.js` (DXF/DWG Import PM, File > Open .dxf, Insert DXF, Check Sketch for Feature, Repair Sketch). Head: DXF layers kept as sketch layers (presets for CUT / ETCH / BEND, ETCH-like names).
+- construct: `ui-sketch-construct.js`: Tangent Line, Perpendicular Line, Bisector, Tangent Circle (TTR / TTT), Split Entities (+ all at intersections), Join Entities; Circle is now a flyout (Circle, Perimeter Circle, Tangent Circle).
+- layers: `ui-sketch-layers.js` + kernel-sketch.js (`f.layers`, `Kernel.noProfileEntity`, presets) + kernel-script.js (DXF layers / colours / DASHED, script `.layers` / `.layer`); shaded regions and open-end markers; copy / paste with relations. Head: noProfile filter added to sweep paths (both kernels), Sketched Bend lines and Hole Wizard points.
+- refine: a hand-test/fix pass of every Sketch tool was cut short by the session limit (see the next entry or its worktree).
+Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 413/413.

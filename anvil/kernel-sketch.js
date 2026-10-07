@@ -359,6 +359,24 @@
     return [];
   }
 
+  // ------------------------------------------------------------------ sketch layers (AutoCAD layers; sketch-layers)
+  // sketch.layers = [{ name, color ('#rrggbb' | null: the entity's usual colour), hidden, noProfile, lineType
+  // ('continuous' | 'dashed'), aci (DXF colour number, optional) }]; an entity's `layer` names one. No `layer`, "0" or
+  // a name missing from the table is the default layer "0". Entities on a noProfile layer (ETCH marks, BEND lines) make
+  // no region: sketchProfile leaves them out, as it does construction geometry. LAYER_PRESETS are the shop's three.
+  var LAYER_PRESETS = [
+    { name: 'CUT', color: null, aci: 7 },
+    { name: 'ETCH', color: '#1e9e3c', aci: 3, noProfile: true },
+    { name: 'BEND', color: '#c77700', aci: 30, noProfile: true, lineType: 'dashed' }
+  ];
+  function sketchLayer(sketch, e) {
+    var n = e && e.layer, L = sketch && sketch.layers;
+    if (n == null || n === '' || n === '0' || !L) return null;
+    for (var i = 0; i < L.length; i++) if (L[i] && L[i].name === n) return L[i];
+    return null;
+  }
+  function noProfileEntity(sketch, e) { var l = sketchLayer(sketch, e); return !!(l && l.noProfile); }
+
   // ------------------------------------------------------------------ profiles: closed loops with nesting
   function signedArea(pts) {
     var a = 0;
@@ -469,7 +487,7 @@
   function sketchProfile(sketch) {
     var loops = [], chains = [], warnings = [], curves = [], free = [];
     (sketch.entities || []).forEach(function (e) {
-      if (e.construction) return;
+      if (e.construction || noProfileEntity(sketch, e)) return;   // sketch-layers: ETCH / BEND make no region
       curves = curves.concat(entityCurves(e));
       if (isFree(e)) { var fr = freeRecord(e); if (fr) free.push(fr); }
       entityPolylines(e, true).forEach(function (pl) {
@@ -668,6 +686,7 @@
       default: return null;
     }
     if (e.construction) out.construction = true;
+    if (e.layer != null) out.layer = e.layer;   // sketch-layers
     return out;
   }
   function translateEntity(e, dx, dy) {
@@ -962,6 +981,7 @@
       var parts = entityPrimitives(e).map(function (p) {
         var o = p.kind === 'seg' ? { t: 'line', x1: p.a[0], y1: p.a[1], x2: p.b[0], y2: p.b[1] } : { t: 'arc', cx: p.c[0], cy: p.c[1], r: p.r, a0: r2d(p.a0), a1: r2d(p.a1) };
         if (e.construction) o.construction = true;
+        if (e.layer != null) o.layer = e.layer;
         return o;
       });
       var list = entities.slice(0, idx).concat(parts, entities.slice(idx + 1));
@@ -993,12 +1013,13 @@
       var arc = { t: 'arc', cx: e.cx, cy: e.cy, r: e.r, a0: r2d(hi), a1: r2d(lo + 2 * Math.PI) };
       while (arc.a0 >= 360) { arc.a0 -= 360; arc.a1 -= 360; }
       if (e.construction) arc.construction = true;
+      if (e.layer != null) arc.layer = e.layer;
       return entities.slice(0, idx).concat([arc], entities.slice(idx + 1));
     }
     if (lo == null) lo = start;
     if (hi == null) hi = end;
     var pieces = [], tiny = span * 1e-6;
-    function keep(o) { if (e.construction) o.construction = true; pieces.push(o); }
+    function keep(o) { if (e.construction) o.construction = true; if (e.layer != null) o.layer = e.layer; pieces.push(o); }
     if (e.t === 'line') {
       if (lo - start > tiny) { var pa = primPoint(prim, lo); keep({ t: 'line', x1: e.x1, y1: e.y1, x2: pa[0], y2: pa[1] }); }
       if (end - hi > tiny) { var pb = primPoint(prim, hi); keep({ t: 'line', x1: pb[0], y1: pb[1], x2: e.x2, y2: e.y2 }); }
@@ -1033,6 +1054,7 @@
   K.trimEntity = trimEntity; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
   K.splineGeom = splineGeom; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
+  K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.TESS = TESS; _.checkProfile = checkProfile; _.dimGeometry = dimGeometry; _.entityPolylines = entityPolylines; _.key2 = key2;
   _.mirrorAxis = mirrorAxis; _.mirrorEntity = mirrorEntity; _.offsetLoop = offsetLoop; _.pointInPoly = pointInPoly; _.segsForRadius = segsForRadius;

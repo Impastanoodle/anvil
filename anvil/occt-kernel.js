@@ -431,7 +431,7 @@ var OcctKernel = (function () {
     function sketchPathEdges(id, c0) {
       var sk = sketchById(id, 'Select a path sketch for the sweep.'), pl = K.resolvePlane(sk.plane, m, planes), segs = [];
       (sk.entities || []).forEach(function (e) {
-        if (e.construction) return;
+        if (e.construction || K.noProfileEntity(sk, e)) return;   // sketch-layers: ETCH / BEND entities are not the path
         if (e.t === 'line') segs.push({ a: [e.x1, e.y1], b: [e.x2, e.y2] });
         else if (e.t === 'arc') {
           var a0 = e.a0 * Math.PI / 180, a1 = e.a1 * Math.PI / 180, am = (a0 + a1) / 2;
@@ -480,7 +480,7 @@ var OcctKernel = (function () {
       var HW = typeof HoleWizard !== 'undefined' ? HoleWizard : (typeof self !== 'undefined' ? self.HoleWizard : null);
       if (!HW) throw unsupportedErr('Hole Wizard');
       var s = HW.spec(f, m.units), sk = sketchById(f.sketch, 'Hole Wizard: select the positions sketch.'), plane = K.resolvePlane(sk.plane, m, planes);
-      var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction; });
+      var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction && !K.noProfileEntity(sk, e); });
       if (!pts.length) throw new Error('Hole Wizard: place at least one point on the face.');
       var L;
       if (f.end === 'through') {

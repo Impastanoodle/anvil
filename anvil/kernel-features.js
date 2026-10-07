@@ -15,7 +15,7 @@
   function sketchPath(sketch, plane, info) {
     var chains = [];
     (sketch.entities || []).forEach(function (e) {
-      if (e.construction) return;
+      if (e.construction || K.noProfileEntity(sketch, e)) return;   // sketch-layers: ETCH / BEND entities are not the path
       entityPolylines(e).forEach(function (pl) { chains.push(pl.closed ? pl.pts.concat([pl.pts[0]]) : pl.pts.slice()); });
     });
     if (!chains.length) throw new Error('Path sketch has no lines or arcs.');

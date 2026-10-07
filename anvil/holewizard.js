@@ -233,7 +233,7 @@ var HoleWizard = (function () {
     var sk = (ctx && ctx.sketches && ctx.sketches[f.sketch]) || K.findFeature(model, f.sketch);
     if (!sk || sk.type !== 'sketch') throw new Error('Hole Wizard: select the positions sketch.');
     var plane = K.resolvePlane(sk.plane, model, ctx && ctx.planes);
-    var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction; });
+    var pts = (sk.entities || []).filter(function (e) { return e.t === 'point' && !e.construction && !(K.noProfileEntity && K.noProfileEntity(sk, e)); });
     if (!pts.length) throw new Error('Hole Wizard: place at least one point on the face.');
     return { plane: plane, pts: pts.map(function (e) { return { uv: [e.x, e.y], p: K.to3D(plane, e.x, e.y) }; }) };
   }

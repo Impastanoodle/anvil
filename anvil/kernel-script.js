@@ -280,8 +280,13 @@
     this.insunits = this.units === 'in' ? 1 : 4;
     this.version = dxfVersion(opts && opts.version);
     this.ents = [];
+    this.layerDefs = {};
     this.min = [Infinity, Infinity]; this.max = [-Infinity, -Infinity];
   }
+  // layer(name, aci, { dashed, off }): the colour and line type of a layer (sketch-layers); a layer named here takes
+  // that colour even when it is one of the standard ones, a dashed one gets the DASHED line type, an off one a
+  // negative colour (AutoCAD's layer Off)
+  DXF.prototype.layer = function (name, aci, o) { this.layerDefs[name] = { aci: aci, dashed: !!(o && o.dashed), off: !!(o && o.off) }; };
   DXF.prototype._grow = function (x, y, r) {
     r = r || 0;
     this.min[0] = Math.min(this.min[0], x - r); this.min[1] = Math.min(this.min[1], y - r);
@@ -342,7 +347,9 @@
     // ---- handles first (R2000): tables, records, blocks, root dictionary
     var th = {};
     var ltypes = r2000 ? [['ByBlock', ''], ['ByLayer', ''], ['Continuous', 'Solid line']] : [['CONTINUOUS', 'Solid line']];
-    var cont = r2000 ? 'Continuous' : 'CONTINUOUS';
+    var cont = r2000 ? 'Continuous' : 'CONTINUOUS', defs = this.layerDefs;
+    var dashed = Object.keys(defs).some(function (n) { return defs[n].dashed; });
+    if (dashed) ltypes.push(['DASHED', 'Dashed __ __ __', 1]);
     var msBR = null, psBR = null, root = null, groups = null;
     if (r2000) {
       th = { BLOCK_RECORD: '1', LAYER: '2', STYLE: '3', LTYPE: '5', VIEW: '6', UCS: '7', VPORT: '8', APPID: '9', DIMSTYLE: 'A' };
@@ -373,13 +380,22 @@
       P(43, 0); P(44, 0); P(50, 0); P(51, 0); P(71, 0); P(72, 100); P(73, 1); P(74, 3); P(75, 0); P(76, 0); P(77, 0); P(78, 0);
     });
     table('LTYPE', ltypes.length, function () {
-      ltypes.forEach(function (lt, i) { record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65); P(73, 0); P(40, 0); });
+      ltypes.forEach(function (lt, i) {
+        record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65);
+        if (!lt[2]) { P(73, 0); P(40, 0); return; }
+        // sketch-layers: DASHED, a 0.5 dash and a 0.25 gap (drawing units; LTSCALE scales it)
+        P(73, 2); P(40, 0.75); P(49, 0.5); if (r2000) P(74, 0); P(49, -0.25); if (r2000) P(74, 0);
+      });
     });
     // the standard layers, plus any other layer an entity is on (e.g. a sketch's CONSTRUCTION, colour 8)
     var layers = DXF_LAYERS.slice(), names = layers.map(function (l) { return l[0]; });
     this.ents.forEach(function (e) { if (names.indexOf(e.layer) < 0) { names.push(e.layer); layers.push([e.layer, 8]); } });
+    Object.keys(defs).forEach(function (n) { if (names.indexOf(n) < 0) { names.push(n); layers.push([n, 7]); } });
     table('LAYER', layers.length, function () {
-      layers.forEach(function (l, i) { record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, l[1]); P(6, cont); });
+      layers.forEach(function (l, i) {
+        var d = defs[l[0]], c = d && d.aci ? d.aci : l[1];
+        record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, d && d.off ? -c : c); P(6, d && d.dashed ? 'DASHED' : cont);
+      });
     });
     table('STYLE', 1, function () {
       record('STYLE', 'STYLE', 'AcDbTextStyleTableRecord', '11');
@@ -546,12 +562,16 @@
   // is left out unless opts.construction, which puts it on layer CONSTRUCTION; points and dimensions are not written.
   // Layers as the flat pattern's: entities on a closed loop that lies inside another closed loop (holes, slots,
   // cutouts: the sketch profile's loops at depth 1 or more) go on HOLES; the outermost loops and open geometry on OUTLINE.
+  // Sketch layers (sketch-layers): an entity on a layer of the sketch's table (sketch.layers) goes on that layer, named
+  // as in the sketch (upper case, characters DXF does not allow as _), with its colour (the layer's aci, else the ACI
+  // colour nearest its colour, else 7), DASHED for a dashed layer and a negative colour for a hidden one; entities on
+  // the default layer keep OUTLINE / HOLES. Construction geometry stays on CONSTRUCTION whatever its layer.
   // opts: { version: 'R12' (default) | 'R2000', construction }
   function exportDXFSketch(sketch, units, opts) {
     opts = opts || {};
     var d = new DXF(units, opts), R2D = 180 / Math.PI;
     var loops = [];
-    try { loops = K.sketchProfile({ entities: (sketch.entities || []).filter(Boolean) }).loops; } catch (e) { loops = []; }
+    try { loops = K.sketchProfile({ entities: (sketch.entities || []).filter(Boolean), layers: sketch.layers }).loops; } catch (e) { loops = []; }
     var span = 0;
     loops.forEach(function (l) { l.pts.forEach(function (p) { span = Math.max(span, Math.abs(p[0]), Math.abs(p[1])); }); });
     var tol = 1e-6 * (1 + span);
@@ -578,7 +598,11 @@
     (sketch.entities || []).forEach(function (e) {
       if (!e || e.t === 'point') return;
       if (e.construction && !opts.construction) return;
-      var layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
+      var rec = e.construction ? null : K.sketchLayer(sketch, e), layer;
+      if (rec) {
+        layer = dxfLayerName(rec.name);
+        d.layer(layer, rec.aci > 0 ? rec.aci | 0 : rec.color ? nearestAci(rec.color) : 7, { dashed: rec.lineType === 'dashed', off: !!rec.hidden });
+      } else layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
       // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
       // would flip an arc across 0°)
       if (e.t === 'arc') { d.arc(layer, [e.cx, e.cy], e.r, e.a0, e.a1); return; }
@@ -591,6 +615,25 @@
     });
     return d.toString();
   }
+
+  // a sketch layer's name as a DXF layer name (R12: up to 31 of A-Z 0-9 $ - _)
+  function dxfLayerName(n) { return (String(n).toUpperCase().replace(/[^A-Z0-9$_-]/g, '_').slice(0, 31)) || '0'; }
+  // the AutoCAD Color Index nearest a '#rrggbb' colour: greys go to 7 / 8 / 9, other colours to the nearest hue among
+  // 1-6 and orange 30 (each colour scaled to its brightest channel first, so a dark green is still green, ACI 3)
+  var ACI_RGB = [[1, 255, 0, 0], [2, 255, 255, 0], [3, 0, 255, 0], [4, 0, 255, 255], [5, 0, 0, 255], [6, 255, 0, 255], [30, 255, 127, 0]];
+  function nearestAci(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!m) return 7;
+    var v = parseInt(m[1], 16), r = v >> 16, g = (v >> 8) & 255, b = v & 255, mx = Math.max(r, g, b), best = 7, bd = Infinity;
+    if (mx - Math.min(r, g, b) < 40) return mx < 100 || mx >= 220 ? 7 : mx < 160 ? 8 : 9;
+    var k = 255 / mx;
+    ACI_RGB.forEach(function (c) {
+      var dd = Math.pow(r * k - c[1], 2) + Math.pow(g * k - c[2], 2) + Math.pow(b * k - c[3], 2);
+      if (dd < bd) { bd = dd; best = c[0]; }
+    });
+    return best;
+  }
+  K.dxfNearestAci = nearestAci;
 
   // exportDXFFace(mesh, faceIndex, units, opts?) -> DXF text of a planar face's loops in the face's own frame (null for
   // a bad index): the largest loop on OUTLINE, the others on HOLES, cleaned and fitted as the flat pattern's.
@@ -1032,6 +1075,29 @@
     (this.f.dims = this.f.dims || []).push(d);
     return this;
   };
+  // sketch-layers: .layers([{ name, color, hidden, noProfile, lineType, aci }, ...]) sets the sketch's layer table (a
+  // name given twice keeps the last); .layer(name, [i, ...]) puts entities on a layer ("0": the default layer)
+  SketchBuilder.prototype.layers = function (list) {
+    var out = [];
+    (list || []).forEach(function (l) {
+      if (!l || l.name == null || String(l.name) === '' || String(l.name) === '0') return;
+      var r = { name: String(l.name) };
+      ['color', 'hidden', 'noProfile', 'lineType', 'aci'].forEach(function (k) { if (l[k] != null && l[k] !== false) r[k] = l[k]; });
+      out = out.filter(function (o) { return o.name !== r.name; });
+      out.push(r);
+    });
+    if (out.length) this.f.layers = out; else delete this.f.layers;
+    return this;
+  };
+  SketchBuilder.prototype.layer = function (name, list) {
+    var self = this;
+    (Array.isArray(list) ? list : [list]).forEach(function (i) {
+      var e = self.f.entities[i];
+      if (!e) throw new Error('No sketch entity ' + i + ' to put on a layer.');
+      if (name == null || String(name) === '' || String(name) === '0') delete e.layer; else e.layer = String(name);
+    });
+    return this;
+  };
   SketchBuilder.prototype.id = function () { return this.f.id; };
   SketchBuilder.prototype.end = function () { return this.part; };
   ['extrude', 'cut', 'revolve', 'revolveCut', 'baseFlange'].forEach(function (m) {
@@ -1110,6 +1176,11 @@
             if (d.ang != null) o.ang = Math.round(d.ang * 1e4) / 1e4;
             s += '\n  .dim(' + d.e + ', ' + JSON.stringify(d.k) + (Object.keys(o).length ? ', ' + optsStr(o) : '') + ')';
           });
+          // sketch-layers: the layer table, then the entities on each layer
+          if (Array.isArray(f.layers) && f.layers.length) s += '\n  .layers(' + JSON.stringify(f.layers) + ')';
+          var onLayer = {};
+          f.entities.forEach(function (e, i) { if (e.layer != null && e.layer !== '' && e.layer !== '0') (onLayer[e.layer] = onLayer[e.layer] || []).push(i); });
+          Object.keys(onLayer).forEach(function (n) { s += '\n  .layer(' + JSON.stringify(n) + ', ' + JSON.stringify(onLayer[n]) + ')'; });
           sketchScripts.forEach(function (fn) { s += fn(f) || ''; });
           out.push(s + '\n  .id();');
           break;

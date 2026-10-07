@@ -81,6 +81,13 @@ var Icons = (function () {
     midline: ln('M2.5 13 L13.5 3', B, 1.5) + circ(8, 8, 1.5, S, 'none') + circ(2.5, 13, 1.1, S, 'none') + circ(13.5, 3, 1.1, S, 'none'),
     // Parallel Line: the reference (ink), the new line (blue) and the distance between them
     parallelLine: ln('M1.5 9.5 L9.5 1.5', S, 1.3) + ln('M6.5 14.5 L14.5 6.5', B, 1.5) + ln('M6.2 6.2 L9.8 9.8', S, 1, 'stroke-dasharray="1.3 1"') + circ(6.5, 14.5, 1.1, S, 'none') + circ(14.5, 6.5, 1.1, S, 'none'),
+    // ui-sketch-construct.js: Tangent Line, Perpendicular Line, Bisector, Tangent Circle, Split / Join Entities
+    tangentLine: circ(4, 10.5, 3, 'none', S, 1.1) + circ(12, 10.5, 3, 'none', S, 1.1) + ln('M1 7.5 H15', B, 1.5) + circ(4, 7.5, 1.1, S, 'none') + circ(12, 7.5, 1.1, S, 'none'),
+    perpLine: ln('M1.5 13.5 H14.5', S, 1.3) + ln('M8 13.5 V2.5', B, 1.5) + ln('M8 10.5 H11 V13.5', S, 0.9) + circ(8, 2.5, 1.1, S, 'none'),
+    bisectorLine: ln('M2 14 H14.5 M2 14 V1.5', S, 1.3) + ln('M2 14 L12.5 3.5', B, 1.5, 'stroke-dasharray="2 1.4"') + ln('M7 14 A5 5 0 0 0 5.5 10.5 M5.5 10.5 A5 5 0 0 0 2 9', S, 0.9),
+    tangentCircle: ln('M1.5 14.5 H14.5 M1.5 14.5 V1.5', S, 1.3) + circ(6.5, 9.5, 5, 'none', B, 1.5) + circ(6.5, 14.5, 1, S, 'none') + circ(1.5, 9.5, 1, S, 'none'),
+    splitEnt: ln('M2 13 L6.8 8.2', B, 1.5) + ln('M9.2 5.8 L14 1', B, 1.5) + circ(8, 7, 1.5, Y, YD, 0.9) + ln('M4.5 4.5 l2 2 M11.5 11.5 l-2 -2', S, 0.9),
+    joinEnt: ln('M1.5 8 H6 M10 8 H14.5', B, 1.5) + ln('M6 8 H10', G, 2) + ln('M8 4 v2.2 M8 9.8 v2.2', G, 1.1),
     rect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + circ(2, 9.5, 1.2, S, 'none') + circ(8.5, 3, 1.2, S, 'none') + circ(14, 8.5, 1.2, S, 'none'),
     crect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + ln('M7 9 h2 M8 8 v2', S, 1.1) + circ(11.25, 5.75, 1.2, S, 'none'),
     parallelogram: ln('M1.5 12.5 L5.5 3.5 H14.5 L10.5 12.5 z', B, 1.5) + circ(1.5, 12.5, 1.2, S, 'none') + circ(10.5, 12.5, 1.2, S, 'none') + circ(14.5, 3.5, 1.2, S, 'none'),
@@ -175,6 +182,11 @@ var Icons = (function () {
     clearance: rect(1.5, 4.5, 5, 9, F2, S, 1) + rect(10.5, 2.5, 4, 9, '#f8e2b8', S, 1) + ln('M6.5 8 h4 M8 6.8 L6.6 8 8 9.2 M9 6.8 L10.4 8 9 9.2', B, 1),
     zebra: circ(8, 8, 5.5, F2, S) + ln('M3.5 5.5 c3 1.2 6 1.2 9 0 M3 8 c3 1.2 7 1.2 10 0 M3.5 10.5 c3 1.2 6 1.2 9 0', S, 1),
     dxf: rect(2.5, 1.5, 11, 13, W, S, 1.1, 'rx="0.8"') + ln('M5 4.5 h6 M5 6.5 h6 M5 8.5 h4', L, 0.9) + txt(8, 12.8, 4.2, 'DXF', B, null, 700),
+    // dxf-import: Insert DXF (a DXF sheet poured into a sketch outline), Check Sketch for Feature (an outline with a
+    // gap ringed in red), Repair Sketch (the gap bridged, with a wrench)
+    importDxf: rect(1.5, 1.5, 8, 10, W, S, 1, 'rx="0.7"') + txt(5.5, 8.6, 3.6, 'DXF', B, null, 700) + p('M7 14.5 h7.5 v-6', 'none', B, 1.4) + ln('M10.5 5.5 l2.5 2.5 2.5 -2.5 M13 8 V2.5', Y, 1.3),
+    checkSketch: p('M7 3 H2.5 V13.5 H13.5 V9', 'none', B, 1.4) + p('M10 3 H13.5 V6', 'none', B, 1.4) + circ(8.5, 3, 2.4, 'none', R, 1.2) + circ(13.5, 7.5, 2.4, 'none', R, 1.2),
+    repairSketch: p('M2.5 3 V13.5 H13.5 V9', 'none', B, 1.4) + p('M2.5 3 H8', 'none', G, 1.6) + ln('M9 9.5 l4.5 -4.5', S, 1.6) + circ(13.6, 4.1, 1.7, 'none', S, 1.2) + ln('M9 9.5 l-1.2 1.2', S, 2.2),
     // ---- view (heads-up toolbar)
     fit: ln('M2.5 5.5 V2.5 h3 M10.5 2.5 h3 v3 M13.5 10.5 v3 h-3 M5.5 13.5 h-3 v-3', S, 1.25) + rect(5.5, 5.5, 5, 5, PL, B, 1.2),
     // Standard toolbar (next to the menus): curved arrows, SolidWorks' Undo / Redo
@@ -264,7 +276,10 @@ var Icons = (function () {
     // Fix: a push pin
     fix: p('M6 2 h5 l-1 1.5 v3.5 l2 2 h-7 l2 -2 V3.5 z', R, RD, 1) + ln('M8.5 9 v5.5', S, 1.3),
     // Float: a block with four arrows around it
-    float: rect(5.5, 5.5, 5, 5, F2, S, 1) + ln('M8 1.5 v2.5 M6.8 2.7 l1.2 -1.2 1.2 1.2 M8 14.5 V12 M6.8 13.3 l1.2 1.2 1.2 -1.2 M1.5 8 H4 M2.7 6.8 l-1.2 1.2 1.2 1.2 M14.5 8 H12 M13.3 6.8 l1.2 1.2 -1.2 1.2', B, 1)
+    float: rect(5.5, 5.5, 5, 5, F2, S, 1) + ln('M8 1.5 v2.5 M6.8 2.7 l1.2 -1.2 1.2 1.2 M8 14.5 V12 M6.8 13.3 l1.2 1.2 1.2 -1.2 M1.5 8 H4 M2.7 6.8 l-1.2 1.2 1.2 1.2 M14.5 8 H12 M13.3 6.8 l1.2 1.2 -1.2 1.2', B, 1),
+    // sketch-layers: Layers (three stacked sheets: cut, etch, bend), Paste sketch entities (a clipboard with a sketch on it)
+    layers: p('M8 9.5 L14.5 12 L8 14.5 L1.5 12 z', RL, RD, 1) + p('M8 6 L14.5 8.5 L8 11 L1.5 8.5 z', GL, GD, 1) + p('M8 2.5 L14.5 5 L8 7.5 L1.5 5 z', '#bcd6f5', B, 1),
+    pasteSketch: rect(2.5, 2.5, 9, 12, '#e8d3a8', YD, 1) + rect(4.5, 1.5, 5, 2.5, F2, S, 0.9) + rect(6.5, 6, 8, 8.5, W, B, 1) + ln('M8.5 9 h4 M8.5 11.5 h2.5', B, 0.9)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;
