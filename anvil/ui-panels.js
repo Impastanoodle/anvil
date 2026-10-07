@@ -107,7 +107,7 @@
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
       { id: 'generic', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
-      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'bend', label: 'Sketched\nBend' },
+      { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
       { stack: [{ id: 'generic', label: 'Cross-Break' }, { id: 'generic', label: 'Corners' }, { id: 'generic', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', label: 'Vent' },
@@ -165,7 +165,7 @@
     'Measure': 'Measure distances, lengths and areas', 'Mass Properties': 'Volume, mass, centroid and bounding box', 'Section View': 'Cut the view with a section plane', 'Face to DXF': 'Export the selected face outline as DXF',
     'Base Flange/Tab': 'Turn a sketch into the first sheet-metal body and set the sheet parameters', 'Edge Flange': 'Bend a wall from a straight edge of the sheet',
     'Miter Flange': 'Bend walls from adjacent edges and join them at the corner', 'Hem': 'Fold the sheet back over itself along an edge', 'Jog': 'Step the sheet up or down with two bends',
-    'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF', 'Simple Hole': 'Cut a simple hole through the sheet',
+    'Flatten': 'Show the flat pattern with bend lines', 'Flat to DXF': 'Export the flat pattern as DXF or DWG (DXF/DWG Output)', 'Simple Hole': 'Cut a simple hole through the sheet',
     'Insert Components': 'Add a part to the assembly', 'Mate': 'Position components relative to each other (Coincident, Concentric, Distance, Angle)',
     'Move Component': 'Drag a floating component; its mates are solved again when you drop it', 'Rotate Component': 'Turn a floating component about its centre by dragging',
     'Interference Detection': 'Find selected components (or all) whose solids overlap and the overlapping volume',
@@ -367,7 +367,7 @@
     tabs.setAttribute('data-shape', shape.tabs);
     var tfrag = document.createDocumentFragment();
     shape.tabNames.forEach(function (name) {
-      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { setRibbonTab(name); } }));
+      tfrag.appendChild(el('button', { class: 'rtab' + (name === App.ribbonTab ? ' active' : ''), text: name, onclick: function () { if (App.mode !== 'sketch') tabBeforeSketch = null; setRibbonTab(name); } }));
     });
     shape.extraTabs.forEach(function (name) {
       tfrag.appendChild(el('button', { class: 'rtab off', text: name, title: 'Not available in this build', style: 'opacity:.5' }));
@@ -376,7 +376,20 @@
     tabs.appendChild(tfrag);
     fitRibbon();   // r12/chrome12: the tab strip changed
   }
-  function setRibbonTab(name) { App.ribbonTab = name; refreshRibbon(); }
+  // p9-pm: the CommandManager stays on the tab the user was on, as in SolidWorks. Opening a sketch shows the Sketch tab
+  // (ui-sketch.js enterSketch); closing it asks for Features (exitSketch), which goes back to the tab the sketch was
+  // started from instead (Sheet Metal ▸ Base Flange or Extruded Cut return to Sheet Metal). A tab the user clicks
+  // while sketching is where the sketch leaves them.
+  var tabBeforeSketch = null;
+  function setRibbonTab(name) {
+    if (name === 'Sketch' && App.mode === 'sketch') { if (App.ribbonTab !== 'Sketch' && tabBeforeSketch == null) tabBeforeSketch = App.ribbonTab; }
+    else if (name === 'Features' && App.mode !== 'sketch' && tabBeforeSketch != null) {
+      var back = App.ribbonTab === 'Sketch' ? tabBeforeSketch : App.ribbonTab;
+      tabBeforeSketch = null;
+      if (ribbonSet()[back]) name = back;
+    }
+    App.ribbonTab = name; refreshRibbon();
+  }
 
   // r12/chrome12: the CommandManager fits the window as in SolidWorks. Level 1 drops the labels of the small stacked
   // buttons, level 2 the labels of the large ones; whatever still does not fit moves, from the right end, into a »
@@ -551,6 +564,7 @@
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
     if (f.type === 'flange') return f.miter ? 'miter' : (f.hem ? 'hem' : 'bend');
     if (f.type === 'jog') return 'jog';
+    if (f.type === 'sketchedBend') return 'sketchedBend';
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {
@@ -830,6 +844,7 @@
       case 'plane': return 'Plane parallel to ' + f.ref + ' at ' + f.offset;
       case 'chamfer': return 'Chamfer ' + f.d + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'fillet': return 'Fillet R' + f.r + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
+      case 'sketchedBend': return 'Sketched bend ' + f.angle + '°, ' + ({ inside: 'material inside', outside: 'material outside', bendOutside: 'bend outside' }[f.position] || 'bend centerline') + (f.reverse ? ', reversed' : '') + (f.fixed ? ', fixed face picked' : '');
       case 'jog': return 'Jog ' + f.height + ' high, ' + f.length + ' flat, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's');
       case 'flange': return (f.hem ? 'Hem gap ' + Math.round(f.radius * 2 * 1e4) / 1e4 + ', ' : f.miter ? 'Miter flange ' : 'Edge flange ') + f.length + ' long, ' + f.angle + '°, ' + (f.edges || []).length + ' edge' + ((f.edges || []).length === 1 ? '' : 's') + (f.position === 'inside' ? ', material inside' : f.position === 'outside' ? ', material outside' : '') +
         (f.miter ? ', mitred' + (f.miterGap > 0 ? ' (gap ' + f.miterGap + ')' : '') : '') + (f.relief && f.relief !== 'none' ? ', relief ' + (f.relief === 'rect' ? 'rectangle' : f.relief) : '');
@@ -921,16 +936,45 @@
       if (it.icon) row.appendChild(el('span', { class: 'mi-ico', html: Icons(it.icon, 16) }));   // r12/chrome12: ribbon overflow rows
       row.appendChild(el('span', { text: it.label }));
       if (it.key) row.appendChild(el('span', { class: 'key', text: it.key }));
-      if (!it.disabled) row.addEventListener('click', function () { closeMenus(); it.action(); });
+      if (!it.disabled) {
+        // p9-pm: a row runs on the release of the button over it (a Windows menu: press on File, drag, release on the
+        // item also works) and the click that ends the same press is swallowed, so it never lands on the ribbon button
+        // that was under the menu; click alone (keyboard, scripted) still runs it, once
+        var ran = false;
+        var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); };
+        row.addEventListener('mouseup', function (e) { if (e.button !== 0) return; e.stopPropagation(); if (e.detail > 0) guardClick(e); run(); });
+        row.addEventListener('click', run);
+      }
       m.appendChild(row);
     });
     document.body.appendChild(m);
     var mw = m.offsetWidth, mh = m.offsetHeight;
-    m.style.left = Math.min(x, window.innerWidth - mw - 4) + 'px';
-    m.style.top = Math.min(y, window.innerHeight - mh - 4) + 'px';
+    m.style.left = Math.max(0, Math.min(x, window.innerWidth - mw - 4)) + 'px';
+    // p9-pm: a menu taller than the room below its title scrolls instead of moving up over the menu bar (where the next
+    // click on File would land on one of its rows) or past the top of the window
+    var room = window.innerHeight - 4 - (anchorLi ? y : 0);
+    if (anchorLi && mh > room) { m.style.maxHeight = Math.max(80, room) + 'px'; m.style.overflowY = 'auto'; mh = m.offsetHeight; }
+    m.style.top = (anchorLi ? y : Math.max(0, Math.min(y, window.innerHeight - mh - 4))) + 'px';
     openMenu = m;
     if (anchorLi) anchorLi.classList.add('open');
   }
+  // p9-pm: the click that completes a press which ran a menu row, or which closed a menu-bar menu by pressing outside
+  // it, goes nowhere (as in Windows): it never starts the ribbon command under the pointer. Matched by position, so a
+  // later click elsewhere is not affected; any new press clears it.
+  var clickGuard = null;
+  function guardClick(e) { clickGuard = { x: e.clientX, y: e.clientY, t: performance.now() }; }
+  document.addEventListener('mousedown', function (e) {
+    clickGuard = null;
+    // (detail: a press of the mouse; a scripted mousedown without it closes the menu but guards nothing)
+    if (openMenu && e.button === 0 && e.detail > 0 && document.querySelector('#menus > li.open') && !openMenu.contains(e.target) && !(e.target.closest && e.target.closest('#menus'))) guardClick(e);
+  }, true);
+  document.addEventListener('click', function (e) {
+    var g = clickGuard;
+    if (!g) return;
+    clickGuard = null;
+    if (performance.now() - g.t > 1500 || Math.abs(e.clientX - g.x) + Math.abs(e.clientY - g.y) > 8) return;
+    e.stopPropagation(); e.preventDefault();
+  }, true);
   document.addEventListener('mousedown', function (e) { if (openMenu && !openMenu.contains(e.target) && !(e.target.closest && e.target.closest('#menus'))) closeMenus(); });
   // a menu left open would float over the wrong place once the window is resized: close it, as Windows menus do
   window.addEventListener('resize', function () { if (openMenu) closeMenus(); });

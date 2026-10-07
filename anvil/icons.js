@@ -111,7 +111,21 @@ var Icons = (function () {
     miter: p('M1.5 12.5 L5.5 9.5 h8 l-4 3 z', F2, S) + p('M5.5 9.5 v-5 h8 v5 z', G, S) + p('M13.5 9.5 l-4 3 v-5 l4 -3 z', GD, S) + ln('M13.5 4.5 v5', B, 1.2, DASH),
     hem: p('M2 9 h9 a2.5 2.5 0 0 1 0 5 h-5 v-2 h5 a0.5 0.5 0 0 0 0 -1 H2 z', G, S),
     jog: p('M1.5 12.5 h4 l4 -6 h5 v-2.5 h-6 l-4 6 h-3 z', G, S),
+    sketchedBend: p('M1.5 12 h5.5 a2 2 0 0 0 2 -2 V2.5 h2.5 V10 a4.5 4.5 0 0 1 -4.5 4.5 H1.5 z', G, S) + ln('M7.2 15 l5.6 -5.6', B, 1.2, DASH),
     flatten: p('M1.5 12 l3 -8 h10 l-3 8 z', GL, S) + ln('M5.5 12 l3 -8 M9 12 l3 -8', B, 1, DASH),
+    // p9-pm: Edge Flange ▸ Flange Length reference: the bent sheet with the length dimension (blue) measured from the
+    // top of the flange to the outer virtual sharp, the inner virtual sharp, or the tangent where the bend starts
+    lenOuter: p(FLANGE_L, F2, S, 1) + ln('M13.5 8.5 V13.5 H8.5', R, 0.8, DASH) + ln('M15 2.5 V13.5 M14 2.5 h2 M14 13.5 h2', B, 1.1),
+    lenInner: p(FLANGE_L, F2, S, 1) + ln('M8.5 10.5 H10.5 V8.5 M10.5 10.5 H14', R, 0.8, DASH) + ln('M15 2.5 V10.5 M14 2.5 h2 M14 10.5 h2', B, 1.1),
+    lenTangent: p(FLANGE_L, F2, S, 1) + ln('M13.5 8.5 H14', R, 0.8, DASH) + ln('M15 2.5 V8.5 M14 2.5 h2 M14 8.5 h2', B, 1.1),
+    // Hem Type, side view of the sheet edge: Closed (flat on the sheet), Open (a gap), Tear Drop, Rolled
+    hemClosed: ln('M1.5 7 H11.5 a1 1 0 0 1 0 2 H5', GD, 1.8),
+    hemOpen: ln('M1.5 5.5 H11 a2.5 2.5 0 0 1 0 5 H5', GD, 1.8),
+    hemTeardrop: ln('M1.5 5.5 H9.5 a3 3 0 0 1 0 6 L5 7', GD, 1.8),
+    hemRolled: ln('M1.5 4.5 H9 a4 4 0 1 1 -4 4', GD, 1.8),
+    // Hem position against the edge the hem was made on (red dashes): Material Inside / Bend Outside
+    hemInside: ln('M12 2 v12', R, 1, DASH) + ln('M1.5 6 H8.5 a2 2 0 0 1 0 4 H4', GD, 1.8),
+    hemOutside: ln('M8.5 2 v12', R, 1, DASH) + ln('M1.5 6 H11 a2 2 0 0 1 0 4 H6.5', GD, 1.8),
     // ---- evaluate
     measure: p('M2 12 L12 2 l2 2 L4 14 z', Y, S) + ln('M4.5 9.5 l1 1 M6.5 7.5 l1 1 M8.5 5.5 l1 1 M10.5 3.5 l1 1', S, 1),
     mass: p('M4.5 6 h7 l2.5 8 h-12 z', F2, S) + circ(8, 3.9, 1.8, 'none', S, 1.2) + circ(8, 10.3, 2.3, W, S, 0.9) + p('M8 10.3 V8 A2.3 2.3 0 0 1 10.3 10.3 z M8 10.3 V12.6 A2.3 2.3 0 0 1 5.7 10.3 z', S, 'none'),   // r12/chrome12: a weight with the centre-of-mass mark

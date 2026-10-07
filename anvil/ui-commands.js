@@ -360,6 +360,19 @@
         });
         return rbox;
       }
+      case 'iconRadio': {   // p9-pm: a row of icon buttons, one pressed, as SolidWorks' Flange Length reference and Hem Type
+        // f.options: [[value, name, icon]]; the name is the tooltip and is shown under the label for the pressed one
+        var ibox = el('div', { class: 'pm-btns pm-icons', role: 'radiogroup', 'aria-label': f.label }), curName = '';
+        f.options.forEach(function (o) {
+          var on = String(v[f.key]) === String(o[0]);
+          if (on) curName = o[1];
+          var ib = el('button', { type: 'button', title: o[1], 'aria-label': o[1], role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-key': f.key + ':' + o[0], html: Icons(o[2] || 'generic', 18) });
+          if (on) ib.classList.add('on');
+          ib.addEventListener('click', function () { if (String(v[f.key]) === String(o[0])) return; changed(o[0]); if (!f.rerender && pm.spec) renderPM(); });
+          ibox.appendChild(ib);
+        });
+        return el('div', { class: 'pm-row' }, [el('label', {}, [document.createTextNode(f.label), el('div', { class: 'static', text: curName })]), ibox]);
+      }
       case 'text': {
         var t = el('input', { type: 'text', value: v[f.key] || '', 'data-key': f.key || '' });
         t.addEventListener('input', function () { changed(t.value); });
@@ -2378,6 +2391,25 @@
   // kind: 'flange' (edge flange), 'miter' (an edge flange with miter: true preset), 'hem' (a 180° flange folded back,
   // stored as a flange with hem: true) or 'jog'.
   // Plain flanges carry miter (bool), miterGap, relief ('none' | 'rect' | 'obround'), reliefWidth / reliefDepth (null = T / T/2).
+  // p9-pm: lengthRef ('outer' Outer Virtual Sharp | 'inner' Inner Virtual Sharp | 'tangent' Tangent Bend; new ones
+  // default to 'outer' as in SolidWorks; a flange without it is measured as the straight wall after the bend, which
+  // SolidWorks has no name for: editing one shows it as 'wall' (Wall Length, an extra choice only such flanges get), so
+  // an old part does not move when it is edited). Hems carry hemType ('closed' | 'open' | 'teardrop' | 'rolled'), hemPosition ('inside' Material Inside |
+  // 'outside' Bend Outside; an old hem without it shows Bend Outside), and for Tear Drop / Rolled hemRadius, hemAngle.
+  var LENGTH_REFS = [['outer', 'Outer Virtual Sharp', 'lenOuter'], ['inner', 'Inner Virtual Sharp', 'lenInner'], ['tangent', 'Tangent Bend', 'lenTangent']];
+  var HEM_TYPES = [['closed', 'Closed', 'hemClosed'], ['open', 'Open', 'hemOpen'], ['teardrop', 'Tear Drop', 'hemTeardrop'], ['rolled', 'Rolled', 'hemRolled']];
+  var HEM_POSITIONS = [['inside', 'Material Inside', 'hemInside'], ['outside', 'Bend Outside', 'hemOutside']];
+  var HEM_ANGLE = { teardrop: 200, rolled: 270 };   // SolidWorks' starting angles of a Tear Drop and a Rolled hem
+  // p9-pm: the Edge Flange and Hem PropertyManagers start with the values last accepted in this session, as SolidWorks
+  // does (per document units: a length remembered in inches is not offered to a millimetre part)
+  var smMemory = { flange: null, hem: null };
+  var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue'];
+  var HEM_MEMORY_KEYS = ['hemType', 'hemPosition', 'length', 'gap', 'hemRadius', 'hemAngle'];
+  // UI.sheetMetalMemory() -> copy of what is remembered; UI.sheetMetalMemory(null) forgets it (tests)
+  UI.sheetMetalMemory = function (set) {
+    if (set === null) smMemory = { flange: null, hem: null };
+    return JSON.parse(JSON.stringify(smMemory));
+  };
   function cmdEdgeFlange(existing, kind) {
     if (App.mode === 'sketch') UI.exitSketch(true);
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
@@ -2387,11 +2419,19 @@
     var isHem = kind === 'hem', isJog = kind === 'jog', isMiter = kind === 'miter', isFlange = !isHem && !isJog;
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
       isJog ? { type: 'jog', edges: [], height: UI.lenDefault(10), length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
-      isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside' } :
-      { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
+      isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside', hemType: 'open', hemPosition: 'inside' } :
+      { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', lengthRef: 'outer', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
-    if (isHem) f.gap = Math.round((f.radius != null ? f.radius : T / 4) * 2 * 1e4) / 1e4;
+    if (isHem) {
+      f.gap = Math.round((f.radius != null ? f.radius : T / 4) * 2 * 1e4) / 1e4;
+      if (!f.hemType) f.hemType = 'open';
+      if (!f.hemPosition) f.hemPosition = 'outside';
+      if (f.hemRadius == null) f.hemRadius = f.hemType === 'teardrop' || f.hemType === 'rolled' ? +f.radiusValue : +sheet.bendRadius;
+      if (f.hemAngle == null) f.hemAngle = HEM_ANGLE[f.hemType] || HEM_ANGLE.teardrop;
+    }
+    if (isFlange && !f.lengthRef) f.lengthRef = 'wall';
+    var lengthRefs = f.lengthRef === 'wall' ? LENGTH_REFS.concat([['wall', 'Wall Length (straight wall after the bend, as older Anvil flanges)', 'lenTangent']]) : LENGTH_REFS;
     // Custom Bend Allowance (SolidWorks): UI-only check / type / value keys, folded into f.bendAllowance by toFeature
     var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet);
     f.useCustomBA = !!cba;
@@ -2412,7 +2452,17 @@
       f.useDefaultReliefDepth = f.reliefDepth == null;
       f.reliefDepthValue = f.reliefDepth != null ? f.reliefDepth : T / 2;
     }
-    var titles = { flange: 'Edge-Flange', miter: 'Miter-Flange', hem: 'Hem', jog: 'Jog' };
+    var memKind = isHem ? 'hem' : isFlange ? 'flange' : null, mem = memKind && smMemory[memKind];
+    if (!existing && mem && mem.units === App.model.units) {
+      (isHem ? HEM_MEMORY_KEYS : FLANGE_MEMORY_KEYS).forEach(function (k) { if (mem[k] !== undefined) f[k] = mem[k]; });
+    }
+    function remember(v) {
+      if (existing || !memKind) return;
+      var m = { units: App.model.units };
+      (isHem ? HEM_MEMORY_KEYS : FLANGE_MEMORY_KEYS).forEach(function (k) { m[k] = v[k]; });
+      smMemory[memKind] = m;
+    }
+    var titles ={ flange: 'Edge-Flange', miter: 'Miter-Flange', hem: 'Hem', jog: 'Jog' };
     var RELIEF_NAMES = { none: 'None', rect: 'Rectangle', obround: 'Obround' };
     if (!existing && App.sel && App.sel.kind === 'edge') f.edges.push({ at: App.sel.edge.mid.slice() });
     var edgeList = [];
@@ -2432,8 +2482,19 @@
     var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
     function toFeature(v, forOK) {
       var out = JSON.parse(JSON.stringify(v));
-      if (isHem) { out.angle = 180; out.radius = Math.max((+v.gap || 0) / 2, 0.02 * T); out.position = 'bendOutside'; delete out.gap; }
+      if (isHem) {
+        // the hem's own fields; angle / radius / position stay what a kernel without them builds (a 180° fold, Bend
+        // Outside), the radius from the gap (Closed: none) or, for Tear Drop / Rolled, the hem radius
+        var ht = HEM_TYPES.some(function (o) { return o[0] === v.hemType; }) ? v.hemType : 'open', curl = ht === 'teardrop' || ht === 'rolled';
+        out.hemType = ht;
+        out.hemPosition = v.hemPosition === 'inside' ? 'inside' : 'outside';
+        out.angle = 180; out.position = 'bendOutside';
+        out.radius = curl ? Math.max(+v.hemRadius || 0, 0.02 * T) : Math.max((ht === 'open' ? +v.gap || 0 : 0) / 2, 0.02 * T);
+        if (curl) { out.hemRadius = +v.hemRadius; out.hemAngle = +v.hemAngle; } else { delete out.hemRadius; delete out.hemAngle; }
+        delete out.gap;
+      }
       else out.radius = v.useDefaultRadius ? null : +v.radiusValue;
+      if (isFlange) out.lengthRef = lengthRefs.some(function (o) { return o[0] === v.lengthRef; }) ? v.lengthRef : 'outer';
       delete out.useDefaultRadius; delete out.radiusValue;
       if (isFlange) {
         out.miter = !!v.miter;
@@ -2505,20 +2566,27 @@
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Jog Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside']] }] }
     ] : isHem ? [
-      { title: 'Hem Parameters', fields: [
+      // p9-pm: SolidWorks' Hem PropertyManager: Edges (with Material Inside / Bend Outside), then Type and Size
+      { title: 'Edges', fields: [
         { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear },
-        { type: 'number', label: 'Gap (open hem)', key: 'gap', unit: 'u', min: 0 },
-        { type: 'number', label: 'Hem length', key: 'length', unit: 'u', min: 0 },
+        { type: 'iconRadio', label: 'Position', key: 'hemPosition', options: HEM_POSITIONS },
         { type: 'check', label: 'Reverse direction', key: 'reverse' },
         { type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }
+      ] },
+      { title: 'Type and Size', fields: [
+        { type: 'iconRadio', label: 'Type', key: 'hemType', options: HEM_TYPES, rerender: true },
+        { type: 'number', label: 'Hem length', key: 'length', unit: 'u', min: 0, show: function (v) { return v.hemType === 'closed' || v.hemType === 'open'; } },
+        { type: 'number', label: 'Gap distance', key: 'gap', unit: 'u', min: 0, show: function (v) { return v.hemType === 'open'; } },
+        { type: 'number', label: 'Angle', key: 'hemAngle', unit: '°', min: 0, show: function (v) { return v.hemType === 'teardrop' || v.hemType === 'rolled'; } },
+        { type: 'number', label: 'Radius', key: 'hemRadius', unit: 'u', min: 0, show: function (v) { return v.hemType === 'teardrop' || v.hemType === 'rolled'; } }
       ] }
     ] : [
       { title: 'Flange Parameters', fields: [
         { type: 'pick', icon: 'flange', value: function (v) { return v.edges.length ? v.edges.length + ' edge' + (v.edges.length > 1 ? 's' : '') : ''; }, placeholder: 'Select edges…', items: flangeItems, onRemove: flangeRemove, onClear: flangeClear }
       ].concat(radiusFields, [{ type: 'buttons', buttons: [{ label: 'Clear selection', onclick: function (v) { v.edges.length = 0; renderPM(); resolveList(); preview(); } }] }]) },
       { title: 'Angle', fields: [{ type: 'number', label: 'Flange angle', key: 'angle', unit: '°', min: 0 }] },
-      { title: 'Flange Length', fields: [{ type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
-      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside']] }] },
+      { title: 'Flange Length', fields: [{ type: 'number', label: 'Length', key: 'length', unit: 'u', min: 0 }, { type: 'iconRadio', label: 'Measured from', key: 'lengthRef', options: lengthRefs }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] },
+      { title: 'Flange Position', fields: [{ type: 'select', label: 'Position', key: 'position', options: [['bendOutside', 'Bend Outside'], ['outside', 'Material Outside'], ['inside', 'Material Inside'], ['virtualSharp', 'Bend from Virtual Sharp']] }] },
       { title: 'Miter', fields: [
         { type: 'check', label: 'Miter corners', key: 'miter', rerender: true },
         { type: 'number', label: 'Gap', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
@@ -2546,7 +2614,7 @@
     openPM({
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
       exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD: toFeature(v, true))
-      message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. The gap is the opening between the two flats.' :
+      message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. <i>Material Inside</i> keeps the hem inside the edge; <i>Bend Outside</i> adds the bend beyond it. An Open hem\'s gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
       command: {
@@ -2561,9 +2629,14 @@
         }
       },
       groups: groups,
-      onChange: function () { resolveList(); preview(); },
+      onChange: function (v, key) {
+        // a Tear Drop and a Rolled hem start at their own angle (200°, 270°) unless one was typed
+        if (isHem && key === 'hemType' && HEM_ANGLE[v.hemType] && (v.hemAngle === HEM_ANGLE.teardrop || v.hemAngle === HEM_ANGLE.rolled) && v.hemAngle !== HEM_ANGLE[v.hemType]) { v.hemAngle = HEM_ANGLE[v.hemType]; renderPM(); }
+        resolveList(); preview();
+      },
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
+        remember(v);
         var feat = toFeature(v, true);
         if (!feat.name) {
           if (isHem) feat.name = K.featureName(App.model, 'hem');
@@ -2580,6 +2653,113 @@
   // Miter Flange: an Edge-Flange with "Miter corners" preset; flanges on adjacent edges meet at the corner.
   function cmdMiterFlange(existing) { cmdEdgeFlange(existing, 'miter'); }
 
+  // ------------------------------------------------------------------ sheet metal: sketched bend
+  // Sketched Bend (SolidWorks): bend the sheet along the line(s) of a sketch drawn on one of its flat faces. Bend
+  // Parameters in SolidWorks order: the sketch, Fixed face (a click on the sheet stores that point as `fixed`; none =
+  // the larger side stays put), Bend position, Reverse direction, Bend angle, the radius; then Custom Bend Allowance
+  // (as Edge Flange). The preview (what moves, with the bends) is built on the main thread.
+  var SKETCHED_BEND_POSITIONS = [['centerline', 'Bend Centerline'], ['inside', 'Material Inside'], ['outside', 'Material Outside'], ['bendOutside', 'Bend Outside']];
+  function cmdSketchedBend(existing) {
+    withSketch(function (sid) {
+      if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+      var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;   // resolved: the sheet parameters may be equations
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'sketchedBend', sketch: pickDefaultSketch(sid), fixed: null, position: 'centerline', angle: 90, reverse: false, radius: null };
+      if (f.sketch == null) { UI.toast('Sketch the bend line(s) on a flat face of the sheet first, then click Sketched Bend.'); return; }
+      if (!f.position) f.position = 'centerline';
+      f.useDefaultRadius = f.radius == null;
+      f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
+      var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet), R0 = +sheet.bendRadius, BA0 = K.bendAllowance(Math.PI / 2, R0, T, kSheet);
+      f.useCustomBA = !!cba;
+      f.cbaType = cba ? cba.type : 'kfactor';
+      f.cbaK = cba && cba.type === 'kfactor' ? cba.value : kSheet;
+      f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(BA0 * 1e4) / 1e4;
+      f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, R0, T, BA0) * 1e4) / 1e4;
+      delete f.bendAllowance;
+      var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
+      // the part the bend is made on: as it stands, or (editing) as it was before this feature
+      var base = null;
+      function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null); return base; }
+      function toFeature(v, forOK) {
+        var out = JSON.parse(JSON.stringify(v));
+        out.radius = v.useDefaultRadius ? null : +v.radiusValue;
+        out.fixed = v.fixed ? v.fixed.slice() : null;
+        if (v.useCustomBA) {
+          out.bendAllowance = { type: v.cbaType };
+          if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
+        } else delete out.bendAllowance;
+        // UI-only keys must never reach the model (feature JSON is the rebuild cache key)
+        delete out.useDefaultRadius; delete out.radiusValue;
+        delete out.useCustomBA; delete out.cbaType; delete out.cbaK; delete out.cbaBA; delete out.cbaBD;
+        return out;
+      }
+      function lineCount(v) {
+        var sk = K.findFeature(App.model, v.sketch);
+        return sk && sk.entities ? sk.entities.filter(function (e) { return e.t === 'line' && !e.construction; }).length : 0;
+      }
+      function bendText(feat) {
+        var R = +(feat.radius != null ? feat.radius : sheet.bendRadius), A = (feat.angle == null ? 90 : +feat.angle) * Math.PI / 180, bc;
+        try { bc = K.bendCalc(sheet, A, R, T, feat.bendAllowance); } catch (e) { return ' · ' + e.message; }
+        return ' · bend allowance ' + UI.fmtNum(bc.BA, 4) + ' ' + UI.unitLabel() + ' (BD ' + UI.fmtNum(bc.BD, 4) + ', ' + (bc.source === 'custom' ? 'custom ' : '') + (bc.type === 'kfactor' ? 'K-Factor ' + UI.fmtNum(bc.K, 4) : BA_NAMES[bc.type]) + ')';
+      }
+      function preview() {
+        UI.disposeGroup(UI.groups.preview);
+        var feat = toFeature(f), n = lineCount(f);
+        try {
+          if (!baseBody()) throw new Error('Create a Base Flange first.');
+          var r = K.buildSketchedBend(feat, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {}, flanges: {}, tools: {} });
+          if (r.preview && r.preview.polygons.length) addPreviewMesh(r.preview, UI.mats.preview);
+          UI.setStatus('Sketched Bend preview: ' + n + ' bend line' + (n === 1 ? '' : 's') + ', ' + (f.fixed ? 'fixed face picked' : 'the larger side fixed') + bendText(feat) + '.');
+        } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      }
+      var groups = [
+        { title: 'Bend Parameters', fields: [
+          sketchPickerField(f),
+          { type: 'pick', icon: 'sketchedBend', value: function (v) { return v.fixed ? 'Fixed face <1>' : ''; }, placeholder: 'Fixed face (default: the larger side)…' },
+          { type: 'buttons', show: function (v) { return !!v.fixed; }, buttons: [{ label: 'Clear fixed face', onclick: function (v) { v.fixed = null; renderPM(); preview(); } }] },
+          { type: 'select', label: 'Bend position', key: 'position', options: SKETCHED_BEND_POSITIONS },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' },
+          { type: 'number', label: 'Bend angle', key: 'angle', unit: '°', min: 0, max: 180 },
+          { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
+          { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
+        ] },
+        { title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
+          { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
+          { type: 'select', label: 'Type', key: 'cbaType', options: BA_OPTIONS, rerender: true, show: function (v) { return v.useCustomBA; } },
+          { type: 'number', label: 'K-factor', key: 'cbaK', step: 0.01, min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'kfactor'; } },
+          { type: 'number', label: 'Bend allowance', key: 'cbaBA', unit: 'u', min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'allowance'; } },
+          { type: 'number', label: 'Bend deduction', key: 'cbaBD', unit: 'u', show: function (v) { return v.useCustomBA && v.cbaType === 'deduction'; } },
+          { type: 'static', label: 'Bend table', value: sheet.bendTable ? sheet.bendTable.rows.length + ' rows (the part\'s table)' : 'none — add one in Sheet-Metal', show: function (v) { return v.useCustomBA && v.cbaType === 'table'; } }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ];
+      openPM({
+        title: existing ? existing.name : 'Sketched Bend', icon: 'sketchedBend', values: f,
+        exprMap: { radiusValue: 'radius' },   // (cbaK / cbaBA / cbaBD: toFeature(v, true))
+        message: 'Sketch <b>straight lines</b> on a flat face of the sheet; it bends along each line, extended to the face edges. Click the <b>face that stays fixed</b> (default: the larger side). The flat pattern keeps the plate\'s size.',
+        command: {
+          sketchId: f.sketch,
+          onPick: function (pk) {
+            if (pk.kind !== 'face' || !pk.point) return false;
+            f.fixed = pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+            renderPM(); preview();
+            return true;
+          }
+        },
+        groups: groups,
+        onChange: function (v, key) {
+          if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
+          preview();
+        },
+        onOK: function (v) {
+          if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch with the bend line(s).'); return false; }
+          var feat = toFeature(v, true);
+          if (!feat.name) delete feat.name;
+          return commitFeature(feat, existing);
+        }
+      });
+    });
+  }
+
   function flatSvg(flat, width) {
     var b = flat.bbox, w = b.max[0] - b.min[0], h = b.max[1] - b.min[1], pad = Math.max(w, h) * 0.08 + 2;
     var vb = [b.min[0] - pad, -(b.max[1] + pad), w + 2 * pad, h + 2 * pad];
@@ -2587,10 +2767,21 @@
     function pt(p) { return UI.fmtNum(p[0], 3) + ',' + UI.fmtNum(-p[1], 3); }
     var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb.join(' ') + '" width="' + width + '" style="max-width:100%;background:#fff;border:1px solid #d3d8de">';
     flat.loops.forEach(function (l, i) { s += '<polygon points="' + l.map(pt).join(' ') + '" fill="' + (i === 0 ? '#eef3f8' : '#fff') + '" stroke="' + (i === 0 ? '#24292f' : '#d9453b') + '" stroke-width="' + sw + '"/>'; });
+    var cx = (b.min[0] + b.max[0]) / 2, cy = -(b.min[1] + b.max[1]) / 2, fs = sw * 12;
     flat.bends.forEach(function (bd) {
       s += '<line x1="' + UI.fmtNum(bd.a[0], 3) + '" y1="' + UI.fmtNum(-bd.a[1], 3) + '" x2="' + UI.fmtNum(bd.b[0], 3) + '" y2="' + UI.fmtNum(-bd.b[1], 3) + '" stroke="#3fa34d" stroke-width="' + sw + '" stroke-dasharray="' + (sw * 6) + ' ' + (sw * 3) + '"/>';
+      // p9-pm: the shop note (Kernel.bendNoteText: "UP 90° R.060") along the bend line, on the side toward the middle
+      // of the blank so a bend near the edge does not write over the outline
+      var label = K.bendNoteText ? K.bendNoteText(bd, App.model.units) : bd.label;
       var mx = (bd.a[0] + bd.b[0]) / 2, my = -(bd.a[1] + bd.b[1]) / 2;
-      s += '<text x="' + UI.fmtNum(mx, 3) + '" y="' + UI.fmtNum(my - sw * 4, 3) + '" font-size="' + (sw * 12) + '" font-family="Segoe UI, sans-serif" fill="#1f6fc5" text-anchor="middle">' + bd.label + '</text>';
+      var ang = Math.atan2(-(bd.b[1] - bd.a[1]), bd.b[0] - bd.a[0]) * 180 / Math.PI;
+      if (ang > 90) ang -= 180; else if (ang <= -90) ang += 180;
+      var r = ang * Math.PI / 180, ux = Math.sin(r), uy = -Math.cos(r);   // the text's "up" in SVG coordinates
+      var side = (cx - mx) * ux + (cy - my) * uy >= 0 ? 1 : -1;
+      var off = side > 0 ? sw * 4 : -(sw * 4 + fs * 0.8);   // baseline above the line, or the text's top below it
+      var tx = mx + ux * off, ty = my + uy * off;
+      s += '<text x="' + UI.fmtNum(tx, 3) + '" y="' + UI.fmtNum(ty, 3) + '" font-size="' + fs + '" font-family="Segoe UI, sans-serif" fill="#1f6fc5" text-anchor="middle" data-role="bend-note"' +
+        (Math.abs(ang) > 1e-9 ? ' transform="rotate(' + UI.fmtNum(ang, 3) + ' ' + UI.fmtNum(tx, 3) + ' ' + UI.fmtNum(ty, 3) + ')"' : '') + '>' + smEsc(label) + '</text>';
     });
     s += '<text x="' + UI.fmtNum(b.min[0], 3) + '" y="' + UI.fmtNum(-b.min[1] + sw * 16, 3) + '" font-size="' + (sw * 11) + '" font-family="Segoe UI, sans-serif" fill="#6b7480">' + 'Flat size ' + UI.fmtNum(w, 4) + ' × ' + UI.fmtNum(h, 4) + ' ' + UI.unitLabel() + ' · ' + smEsc(flat.note || ('T=' + flat.sheet.thickness + ' R=' + flat.sheet.bendRadius + ' K=' + flat.sheet.kFactor)) + '</text>';
     return s + '</svg>';
@@ -2606,18 +2797,17 @@
     body.innerHTML = '<p>Flat pattern: <b data-role="flat-size">' + flatSizeText(flat) + '</b> blank, ' + flat.bends.length + ' bend' + (flat.bends.length === 1 ? '' : 's') + '. Bend lines sit at the centre of each bend allowance (' + smEsc(flat.note) + ').</p>' +
       (flat.warnings.length ? '<p class="err-text" data-role="flat-warnings">' + flat.warnings.map(smEsc).join('<br>') + '</p>' : '') + flatSvg(flat, 620);
     UI.setStatus(flatSizeText(flat) + ' · ' + flat.bends.length + ' bend' + (flat.bends.length === 1 ? '' : 's') + ' · ' + flat.note + (flat.warnings.length ? ' · ' + flat.warnings[0] : ''));
-    var dxf = K.exportDXFFlat(flat, App.model.units);
+    // p9-pm: Export DXF opens the DXF/DWG Output PropertyManager on Sheet metal (version, lines/arcs, DWG, layers)
     UI.showModal({ title: 'Flat Pattern — ' + App.model.name, body: body, buttons: [
-      { label: 'Export DXF', primary: true, action: function () { UI.closeModal(); UI.exportDialog('Flat pattern DXF', (App.model.name || 'part').replace(/[^\w\-]+/g, '_') + '_flat.dxf', dxf, 'application/dxf'); } },
+      { label: 'Export DXF', primary: true, action: function () { UI.closeModal(); cmdDxfOutput({ export: 'sheet' }); } },
       { label: 'Sheet metal parameters…', action: function () { UI.closeModal(); cmdSheetMetal(); } },
       { label: 'Close', action: UI.closeModal }
     ] });
   }
+  // Sheet Metal ▸ Flat to DXF: the DXF/DWG Output PropertyManager with Sheet metal chosen (p9-pm: was a text dialog)
   function exportFlatDXF() {
-    var flat;
-    try { flat = K.flatPattern(App.model, App.build, App.mesh); }
-    catch (e) { UI.toast(e.message); return; }
-    UI.exportDialog('Flat pattern DXF', (App.model.name || 'part').replace(/[^\w\-]+/g, '_') + '_flat.dxf', K.exportDXFFlat(flat, App.model.units), 'application/dxf');
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    cmdDxfOutput({ export: 'sheet' });
   }
 
   // ------------------------------------------------------------------ DXF/DWG Output (File ▸ Save As ▸ DXF / DWG)
@@ -2827,7 +3017,7 @@
     opts = opts || {};
     var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet, sketchOk = dxfSketches().length > 0;
     var sk0 = opts.sketch != null ? K.findFeature(App.model, +opts.sketch) : dxfDefaultSketch();
-    var v = { export: opts.export === 'sketch' && sketchOk ? 'sketch' : dxfDefaultExport(), sketch: sk0 ? String(sk0.id) : '', construction: false, vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
+    var v = { export: opts.export === 'sketch' && sketchOk ? 'sketch' : opts.export === 'sheet' && sheetOk ? 'sheet' : dxfDefaultExport(), sketch: sk0 ? String(sk0.id) : '', construction: false, vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
       format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
@@ -2923,8 +3113,14 @@
   // ------------------------------------------------------------------ section view
   function cmdSection() {
     if (App.view.section) { App.view.section = null; UI.applyDisplayStyle(); UI.refreshHud(); return; }
-    var v = { plane: 'Right', offset: 0, flip: false };
-    function apply(x) {
+    // p9-pm: the plane starts through the middle of the part (its bounding-box centre along the plane's normal), so the
+    // section cuts it in half wherever it sits; it follows a change of reference plane until an offset is typed
+    var bb = UI.modelBounds(), mid = [0, 1, 2].map(function (k) { return (bb.min[k] + bb.max[k]) / 2; });
+    function centreOffset(ref) { var n = K.makePlane(ref, 0).n; return +(mid[0] * n[0] + mid[1] * n[1] + mid[2] * n[2]).toPrecision(10); }
+    var v = { plane: 'Right', offset: centreOffset('Right'), flip: false }, offsetTyped = false;
+    function apply(x, key) {
+      if (key === 'offset') offsetTyped = true;
+      else if (key === 'plane' && !offsetTyped) { x.offset = centreOffset(x.plane); var oi = pm.root.querySelector('input.pm-num[data-key="offset"]'); if (oi) oi.value = x.offset; }
       var pl = K.makePlane(x.plane, +x.offset || 0);
       var n = new THREE.Vector3(pl.n[0], pl.n[1], pl.n[2]);
       if (!x.flip) n.negate();
@@ -3836,7 +4032,11 @@
     if (!f) return;
     // r10/editpreview10: the PropertyManager the command opens rolls the part back to just before this feature
     var idx = App.model && App.model.features ? App.model.features.indexOf(f) : -1;
-    if (f.type !== 'sketch' && idx >= 0 && !(UI.isAssembly && UI.isAssembly())) {
+    // p9-pm: not the Base Flange: its PropertyManager (Sheet-Metal) edits the whole part's sheet parameters and shows
+    // the part, as SolidWorks does (rolled back to before the Base Flange there would be nothing left on screen)
+    var sheetParams = f.type === 'extrude' && f.sheetBase && !f.cut;
+    if (sheetParams && pm.spec) pmCancel();
+    if (f.type !== 'sketch' && !sheetParams && idx >= 0 && !(UI.isAssembly && UI.isAssembly())) {
       if (pm.spec) pmCancel();   // one PropertyManager at a time: the one open is cancelled (and rolls forward)
       editNext = idx;
     }
@@ -3856,6 +4056,7 @@
       case 'fillet': cmdFillet(f); break;
       case 'flange': cmdEdgeFlange(f); break;
       case 'jog': cmdJog(f); break;
+      case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
@@ -3972,6 +4173,7 @@
     ['cmdMirrorEntities', 'Mirror Entities'], ['cmdSketchPattern', 'Linear Sketch Pattern'], ['cmdSweep', 'Swept Boss/Base'], ['cmdLoft', 'Lofted Boss/Base'], ['cmdShell', 'Shell'],
     ['editSketch', 'Edit Sketch']
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
+  UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

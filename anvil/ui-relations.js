@@ -44,6 +44,57 @@
     });
     return bestC;
   }
+  // p9-sketchfix: a model edge or vertex picked for a Smart Dimension or a relation in a sketch on a face. SolidWorks
+  // dimensions to the model directly; here the edge (or vertex) comes into the sketch as reference geometry: projected
+  // onto the sketch plane, construction, Fixed, so the dimension or relation has something to hold to and the model
+  // edge does not move. One already brought in at the same place is reused. Returns { ref, entity } or null (sketch
+  // geometry under the cursor always wins: callers try pickSketchRef first).
+  function pickModelRef(mx, my) {
+    var f = UI.activeSketchFeature();
+    if (!f || App.mode !== 'sketch' || !App.edges || !App.edges.length) return null;
+    var pl = UI.activePlane(), v = UI.pickVertex ? UI.pickVertex(mx, my) : null, ent = null;
+    function r4(x) { return Math.round(x * 1e6) / 1e6; }
+    if (v && v.point) { var q = K.to2D(pl, v.point); ent = { t: 'point', x: r4(q[0]), y: r4(q[1]) }; }
+    else {
+      var ed = UI.pickEdge ? UI.pickEdge(mx, my) : null;
+      if (!ed || !ed.edge || !ed.edge.a || !ed.edge.b) return null;
+      var a = K.to2D(pl, ed.edge.a), b = K.to2D(pl, ed.edge.b);
+      // an edge square to the sketch plane projects to a point
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]))) ent = { t: 'point', x: r4(a[0]), y: r4(a[1]) };
+      else ent = { t: 'line', x1: r4(a[0]), y1: r4(a[1]), x2: r4(b[0]), y2: r4(b[1]) };
+    }
+    ent.construction = true;
+    var keys = S.paramNames(ent), tol = 1e-6;
+    for (var i = 0; i < f.entities.length; i++) {
+      var o = f.entities[i];
+      if (!o || o.t !== ent.t || !o.construction) continue;
+      if (keys.every(function (k) { return Math.abs((+o[k] || 0) - ent[k]) < tol * Math.max(1, Math.abs(ent[k])); }) && (f.rels || []).some(function (r) { return r.type === 'fix' && r.refs.length === 1 && r.refs[0] === String(i); })) return { ref: String(i), entity: o };
+    }
+    markDirty();
+    f.entities.push(ent);
+    var idx = f.entities.length - 1;
+    S.addRelation(f, 'fix', [String(idx)]);
+    refresh();
+    UI.setStatus('Model ' + (ent.t === 'point' ? 'vertex' : 'edge') + ' brought into the sketch as fixed construction geometry (' + S.refName(f, String(idx)) + ').');
+    return { ref: String(idx), entity: ent };
+  }
+  // Model reference geometry brought in for a dimension or relation that was never made (the tool was put down, the
+  // PropertyManager cancelled): taken out again. entities: the entity objects pickModelRef returned.
+  function dropUnusedModelRefs(entities) {
+    var f = UI.activeSketchFeature();
+    if (!f || !entities || !entities.length) return 0;
+    var n = 0;
+    entities.map(function (e) { return f.entities.indexOf(e); }).filter(function (i) { return i >= 0; }).sort(function (a, b) { return b - a; }).forEach(function (i) {
+      var used = (f.dims || []).some(function (d) { return d.e === i; }) || (f.rels || []).some(function (r) { return r.type !== 'fix' && r.refs.some(function (x) { var p = S.parseRef(x); return p && !p.o && p.e === i; }); });
+      if (used) return;
+      f.entities.splice(i, 1);
+      S.removeEntity(f, i);
+      if (f.dims) f.dims.forEach(function (d) { if (d.e > i) d.e--; });
+      n++;
+    });
+    if (n) refresh();
+    return n;
+  }
   function segDist(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
     var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
@@ -241,7 +292,9 @@
       title: 'Make Dimension Driven?',
       body: '<p>Adding this dimension will make the sketch over defined or unable to solve.</p><p>Do you want to add this dimension as a driven (reference) dimension instead? A driven dimension shows the value the geometry has, in grey and in parentheses, and does not drive anything.</p>',
       buttons: [
-        { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); var g = item(); if (g) setDriven(g, kind, index, true); } },
+        // p9-sketchfix: the answer belongs to the placement (one undo step takes the whole dimension away, not first
+        // back to the over-defining driving one): no undo point of its own
+        { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); var g = item(); if (g) { App.sketchDirty = true; setDriven(g, kind, index, true); } } },
         { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } }
       ]
     });
@@ -341,12 +394,19 @@
     var m = memoKey && spotMemo[memoKey];
     if (!m || m.kind !== kind || (dir && m.dir && dir[0] * m.dir[0] + dir[1] * m.dir[1] < 0.999)) return null;
     var q = [a[0] + m.off[0], a[1] + m.off[1]];
-    return { q: q, ok: !h.free || h.free([q[0] + 3, q[1] + 3, q[0] + 13, q[1] + 13]) || !!(UI.sketchZooming && UI.sketchZooming()) };
+    // (p9-sketchfix: a remembered place only has to stay clear of the labels and icons: freeKeep; a new one keeps off
+    // the curves too)
+    var free = h.freeKeep || h.free;
+    return { q: q, ok: !free || free([q[0] + 3, q[1] + 3, q[0] + 13, q[1] + 13]) || !!(UI.sketchZooming && UI.sketchZooming()) };
   }
-  function badgeSpot(h, a, kind, dir, prev, memoKey) {
+  // must: the icon is drawn even with no free place (selected, hovered, or over defining / not solved); otherwise
+  // (p9-sketchfix) an icon with nowhere free to go, clear of the labels, the other icons and the sketch's curves, is
+  // left out (null): zoomed out, the icons no longer pile up over the sketch, as SolidWorks' fixed-size ones thin out
+  function badgeSpot(h, a, kind, dir, prev, memoKey, must) {
     var ms = memoSpot(h, a, kind, dir, memoKey), q = ms && ms.q, qb = q && [q[0] - 1, q[1] - 1, q[0] + 17, q[1] + 17];
     if (ms && ms.ok) { if (h.take) h.take(qb); return q; }
-    var p0 = badgeSpotNew(h, a, kind, dir, prev, !!q);
+    var p0 = badgeSpotNew(h, a, kind, dir, prev, !!q || !must);
+    if (!p0 && !must) return null;
     if (!p0) { if (h.take) h.take(qb); return q; }   // nowhere free (zoomed far out): it stays where it was
     if (memoKey) {
       if (!spotMemo[memoKey] && ++spotMemoN > 4000) { spotMemo = {}; spotMemoN = 0; }
@@ -390,6 +450,28 @@
   function mergedEnds(f, rel) {
     return rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.every(function (r) { return /^\d+\.p[12]$/.test(String(r)) && f.entities[refEntity(r)] && !f.entities[refEntity(r)].sharp; });
   }
+  // the size of entity i on screen (pixels across its larger side; a point: 0)
+  function screenSpan(f, i) {
+    var e = f.entities[i], s = UI.cam.scale || 1;
+    if (!e || e.t === 'point') return 0;
+    var pls;
+    try { pls = K.entityPolylines(e); } catch (err) { return Infinity; }
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    pls.forEach(function (l) { l.pts.forEach(function (q) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }); });
+    return Math.max(x1 - x0, y1 - y0) / s;
+  }
+  function tinyOnScreen(f, rel) {
+    var any = false;
+    for (var k = 0; k < rel.refs.length; k++) {
+      var p = S.parseRef(rel.refs[k]);
+      if (!p || p.o) continue;
+      var e = f.entities[p.e];
+      if (!e || e.t === 'point' || (e.construction && e.t === 'line')) continue;   // a point, a centerline: no size of its own
+      any = true;
+      if (!(screenSpan(f, p.e) < 20)) return false;
+    }
+    return any;
+  }
   function drawRelations(f, pl, layer, h) {
     var an = App.sketchState, slots = {}, jobs = [];
     if (spotSketch !== f.id) { spotSketch = f.id; spotMemo = {}; spotMemoN = 0; }
@@ -418,6 +500,9 @@
       var selected = App.sel && App.sel.kind === 'rel' && App.sel.index === i, hot = App.relHover === i;
       if (App.view.showRelations === false && !selected && !hot) return;
       if (mergedEnds(f, rel) && state === 'ok' && !selected && !hot) return;
+      // p9-sketchfix: zoomed out until every entity of the relation is a speck (under 20 px across), its icons are left
+      // out: fixed-size icons on tiny geometry only bury the sketch
+      if (state === 'ok' && !selected && !hot && tinyOnScreen(f, rel)) return;
       var drawn = [];
       rel.refs.forEach(function (ref) {
         if (ref === 'O') return;
@@ -437,9 +522,14 @@
       var ms = memoSpot(h, jb.a, jb.kind, jb.dir, jb.mk);
       if (ms && ms.ok) { jb.p = slots[jb.key] = ms.q; if (h.take) h.take([ms.q[0] - 1, ms.q[1] - 1, ms.q[0] + 17, ms.q[1] + 17]); }
     });
-    jobs.forEach(function (jb) { if (!jb.p) jb.p = slots[jb.key] = badgeSpot(h, jb.a, jb.kind, jb.dir, slots[jb.key], jb.mk); });
+    jobs.forEach(function (jb) {
+      if (jb.p) return;
+      jb.p = badgeSpot(h, jb.a, jb.kind, jb.dir, slots[jb.key], jb.mk, jb.selected || jb.hot || jb.state !== 'ok');
+      if (jb.p) slots[jb.key] = jb.p;
+    });
     jobs.forEach(function (jb) {
       var i = jb.i, rel = jb.rel, state = jb.state, selected = jb.selected, hot = jb.hot, p = jb.p;
+      if (!p) return;   // p9-sketchfix: no room for it (zoomed out): left out
       {
         var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''), i);
         // r12/sketchui12: the icon's node is reused from frame to frame (ui-sketch.js svg()): its listeners are attached
@@ -465,8 +555,12 @@
     });
   }
   function badgeListeners(g) {
+    // p9-sketchfix: while a PropertyManager or a tool wants an entity, a press on an icon lying on geometry picks the
+    // geometry (ui-sketch.js UI.labelPassThrough), not the relation
+    g.addEventListener('mousedown', function (ev) { g._passed = !!(UI.labelPassThrough && UI.labelPassThrough(ev)); });
     g.addEventListener('click', function (ev) {
       var d = g._d;
+      if (g._passed) { g._passed = false; ev.stopPropagation(); return; }
       if (!d) return;
       ev.stopPropagation(); App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(d.f, d.rel) + ' — ' + stateText(d.state) + '. Delete removes it.');
     });
@@ -530,26 +624,31 @@
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return; }
     App.relPick = [];
-    if (App.sel && App.sel.kind === 'entity' && f.entities[App.sel.index]) {
-      var c = S.curveRefs(f, App.sel.index);
-      App.relPick.push(c.length === 1 ? c[0] : String(App.sel.index));
-      if (!S.refKind(f, App.relPick[0])) App.relPick = [];
-    }
+    // p9-sketchfix: every pre-selected entity goes into Selected Entities (two circles selected with Ctrl: both listed,
+    // not just the first)
+    selectedEntities().forEach(function (i) {
+      if (!f.entities[i]) return;
+      var c = S.curveRefs(f, i), r = c.length === 1 ? c[0] : String(i);
+      if (S.refKind(f, r) && App.relPick.indexOf(r) < 0) App.relPick.push(r);
+    });
     UI.setTool('select');
     var spec = {
       title: 'Add Relations', icon: 'addRelation',
       message: 'Select sketch entities or points in the graphics area (click again to deselect), then click a relation to add.',
       command: { onSketchPoint: function (uv, mx, my) {
         var r = pickSketchRef(mx, my);
+        // p9-sketchfix: a model edge or vertex (sketch on a face) comes in as fixed reference geometry
+        if (!r) { var m = pickModelRef(mx, my); if (m) { r = m.ref; modelRefs.push(m.entity); } }
         if (!r) { UI.setStatus('Nothing there to select.'); return; }
         var i = App.relPick.indexOf(r);
         if (i >= 0) App.relPick.splice(i, 1); else App.relPick.push(r);
         render();
       } },
       groups: [],
-      onOK: function () { App.relPick = null; App.dimsStale = true; },
-      onCancel: function () { App.relPick = null; App.dimsStale = true; }
+      onOK: function () { App.relPick = null; App.dimsStale = true; dropUnusedModelRefs(modelRefs); },
+      onCancel: function () { App.relPick = null; App.dimsStale = true; dropUnusedModelRefs(modelRefs); }
     };
+    var modelRefs = [];
     function render() {
       var picks = App.relPick || [], types = S.applicable(f, picks);
       var existing = (f.rels || []).map(function (rel, i) { return { rel: rel, i: i }; }).filter(function (x) {
@@ -816,6 +915,8 @@
   // ------------------------------------------------------------------ script / test hooks
   function activeOrThrow() { var f = UI.activeSketchFeature(); if (!f) throw new Error('No active sketch.'); return f; }
   UI.pickSketchRef = pickSketchRef;
+  UI.pickModelRef = pickModelRef;
+  UI.dropUnusedModelRefs = dropUnusedModelRefs;
   UI.relDimFor = relDimFor;
   UI.relDimPlacement = relDimPlacement;
   UI.placeRelDim = placeRelDim;

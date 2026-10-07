@@ -553,7 +553,7 @@
     return out;
   }
   // flatData(mesh, model?, build?) -> { units, frame: { e, u, v }, lines, circles, arcs, bends: [{ a, b, up, angle, R,
-  // i }], bbox: { umin, umax, vmin, vmax }, sheet, proj } | { error } | null: the flat pattern of the part shown by mesh,
+  // i, ba, bd, method, source }] (ba / bd: the bend allowance and deduction Kernel.flatPattern used), bbox: { umin, umax, vmin, vmax }, sheet, proj } | { error } | null: the flat pattern of the part shown by mesh,
   // cached on the mesh (meshes are immutable once built, so a rebuild makes a new one). The model and build default to
   // the ones the sheet being worked out belongs to (_.CTX, set by compute); with no build the part is rebuilt here.
   // The kernel's flat needs Anvil's own mesh (its faces carry the sheet's walls), so with an OpenCascade mesh on screen
@@ -581,7 +581,9 @@
       var P = flat.plane, bb = flat.bbox, diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]) || 1;
       var cv = flatCurves(flat.loops, diag);
       res = { units: units, frame: { e: P.n.slice(), u: P.x.slice(), v: P.y.slice() }, lines: cv.lines, circles: cv.circles, arcs: cv.arcs,
-        bends: flat.bends.map(function (b, i) { return { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i }; }),
+        bends: flat.bends.map(function (b, i) {
+          return { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i, ba: b.ba != null ? +b.ba : null, bd: b.bd != null ? +b.bd : null, method: b.method || null, source: b.source || null };
+        }),
         bbox: { umin: bb.min[0], umax: bb.max[0], vmin: bb.min[1], vmax: bb.max[1] }, sheet: flat.sheet, loops: flat.loops.length };
     } catch (e) { res = { units: units, error: String(e && e.message || e) }; }
     if (mesh && typeof mesh === 'object') try { Object.defineProperty(mesh, '_drawingFlat', { value: res, configurable: true, writable: true, enumerable: false }); } catch (e4) { }
@@ -600,8 +602,13 @@
     return pr;
   }
   // bendNoteText(bend, units, opts?) -> 'UP 90° R .030' (inches, ANSI: no leading zero) / 'DOWN 90° R 0.76' (mm): the
-  // direction, the bend angle and the inside radius, as SolidWorks' bend notes read; opts.prec overrides the places
+  // direction, the bend angle and the inside radius, as SolidWorks' bend notes read; opts.prec overrides the places.
+  // Kernel.bendNoteText, when the kernel has it, writes the flat preview's and the flat DXF's notes: the drawing then
+  // uses the same text so the three read alike (a set precision still goes through the drawing's own format)
   function bendNoteText(b, units, opts) {
+    if (!(opts && opts.prec != null) && typeof K.bendNoteText === 'function') {
+      try { var kt = K.bendNoteText(b, units); if (kt) return String(kt); } catch (e) { }
+    }
     var ang = Math.round(+b.angle * 10) / 10;
     return (b.up ? 'UP' : 'DOWN') + ' ' + ang + '° R ' + D.numText(+b.R, units, opts && opts.prec != null ? opts.prec : null);
   }

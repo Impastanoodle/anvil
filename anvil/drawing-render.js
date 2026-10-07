@@ -306,12 +306,14 @@
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them
     var threads = partThreads(model), holeNames = D.holeSizeNames(model), annPre = {};
     views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames); }); });
-    // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
-    // dimensions so those keep clear of them
-    var flatPre = [];
-    views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k)); });
     // notes (Annotation ▸ Note): multi-line text on the sheet
     var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k); });
+    // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
+    // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
+    var flatPre = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [] };
+    Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
+    notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
+    views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k, flatCtx)); });
     // the flat views' overall width and height (Document Properties ▸ Flat pattern ▸ overall dimensions): model items
     // of their own, kept like the others (styles, suppressed keys), whether or not Model Items is on
     if (D.docOptions(doc).flatDims) views.forEach(function (w) {
@@ -413,11 +415,80 @@
   // flatItems(w, doc, units, k) -> [{ id, view, key, type: 'bendNote' | 'bendTag' | 'bendTable' | 'flatSize', text,
   // prims, box, hidden }] for flat-pattern view record w. Bend notes ('UP 90° R .030') run along their bend line,
   // centred on it and just beside it (text upright: turned within ±90°); in Bend Table mode each line gets its tag
-  // (A, B, C …) there instead and a table TAG / DIRECTION / ANGLE / RADIUS goes under the view; the FLAT SIZE note
-  // (Document Properties) under the view, below the overall dimensions. view.flatAnn[key] = { off: [dx, dy] (paper,
-  // dragged), hidden } keeps what the user did to each; the texts follow the part on every render. Layers: BEND_NOTES
-  // (notes, tags, table) and NOTES (FLAT SIZE).
-  var BEND_EXT = 1.5, BEND_GAP = 1.2, NOTE_H = 3.5, TABLE_H = 2.5, TABLE_ROW = 6, TABLE_COLS = [[12, 'TAG'], [24, 'DIRECTION'], [18, 'ANGLE'], [22, 'RADIUS']];
+  // (A, B, C …) there instead and a Bend Table (bendTableCols: TAG / DIRECTION / ANGLE / RADIUS / BEND DED. by
+  // default) goes on free paper (tableSpot: under the view when that is clear, else above the title block, beside
+  // the view or the first clear spot from the top left); the FLAT SIZE note (Document Properties) under the view,
+  // below the overall dimensions. view.flatAnn[key] = { off: [dx, dy] (paper, dragged), hidden } keeps what the user
+  // did to each; the texts follow the part on every render. Layers: BEND_NOTES (notes, tags, table) and NOTES (FLAT
+  // SIZE). ctx (computeSheet): { views, tb, bom, sheet, taken: [boxes] } — what a table keeps clear of; every item
+  // placed here is added to taken, so a second flat view's table keeps clear of the first.
+  var BEND_EXT = 1.5, BEND_GAP = 1.2, NOTE_H = 3.5, TABLE_H = 2.5, TABLE_ROW = 6;
+  // the Bend Table's columns: [key, min width (paper mm), header]; view.bendCols lists the optional ones shown
+  // ('bd' bend deduction, 'ba' bend allowance, 'k' K-factor, in that order; default ['bd']), as SolidWorks' bend table
+  // template takes extra columns
+  var TABLE_COLS = [['tag', 12, 'TAG'], ['dir', 24, 'DIRECTION'], ['angle', 18, 'ANGLE'], ['radius', 22, 'RADIUS']];
+  var TABLE_OPT_COLS = [['bd', 24, 'BEND DED.'], ['ba', 26, 'BEND ALLOW.'], ['k', 20, 'K-FACTOR']];
+  function bendTableCols(v) {
+    var on = Array.isArray(v.bendCols) ? v.bendCols : ['bd'];
+    return TABLE_COLS.concat(TABLE_OPT_COLS.filter(function (c) { return on.indexOf(c[0]) >= 0; }));
+  }
+  // a Bend Table cell: lengths with the drawing's precision (inch: 3 places, no leading zero, never a fraction —
+  // a bend deduction of 3/32 means nothing on the floor; mm: the dimension format), radius 'R.060' as dimensions read
+  function bendTableCell(key, b, i, units, prec, T) {
+    function len(x) { return x == null || !isFinite(x) ? '-' : numText(x, units, prec != null ? prec : units === 'in' ? 3 : null); }
+    if (key === 'tag') return D.bendTag(i);
+    if (key === 'dir') return b.up ? 'UP' : 'DOWN';
+    if (key === 'angle') return (Math.round(b.angle * 10) / 10) + '°';
+    if (key === 'radius') return 'R' + len(b.R);
+    if (key === 'bd') return len(b.bd);
+    if (key === 'ba') return len(b.ba);
+    if (key === 'k') {
+      // the K-factor the bend used (for a bend allowance / deduction / table bend: the one that gives the same BA)
+      var th = b.angle * Math.PI / 180, kf = b.ba != null && th > 1e-9 && T > 0 ? (b.ba / th - b.R) / T : null;
+      return kf == null || !isFinite(kf) ? '-' : (Math.round(kf * 1000) / 1000).toFixed(3).replace(/0$/, '');
+    }
+    return '';
+  }
+  // tableSpot(w, ctx, W, H, under, own, k) -> [x0, yTop]: where a Bend Table W × H (paper) goes: `under` ([x0, yTop]
+  // under the flat view, its old place) when that is clear, else stacked above the title block at the right, else
+  // beside the view (right, then left), else the first clear spot from the top left of the sheet. Clear: inside the
+  // border and apart from the title block, the BOM, every view (with room for its dimensions and label; `own` is the
+  // flat view's own paper, overall dimensions and FLAT SIZE note included) and ctx.taken. Tried with roomy margins
+  // round the other views first, then tight ones; with nothing clear it stays under the view.
+  function tableSpot(w, ctx, W, H, under, own, k) {
+    var g = 2 * k, sh = ctx.sheet, tb = ctx.tb, step = 2 * k;
+    function obstacles(pad) {
+      var list = [tb];
+      if (ctx.bom) list.push(ctx.bom.box);
+      ctx.views.forEach(function (o) {
+        if (o === w) { list.push(own); return; }
+        var b = o.box, v = o.view, lab = v.kind === 'section' || v.kind === 'detail' || v.scale ? 14 * k : 0;
+        list.push({ x0: b.x0 - 2 * pad, y0: b.y0 - 2 * pad - lab, x1: b.x1 + pad, y1: b.y1 + pad });
+      });
+      return list.concat(ctx.taken);
+    }
+    function fits(x0, y1, obs) {
+      var r = { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1 };
+      if (r.x0 < sh.x0 + g || r.y0 < sh.y0 + g || r.x1 > sh.x1 - g || r.y1 > sh.y1 - g) return false;
+      return obs.every(function (o) { return r.x1 + g <= o.x0 || o.x1 + g <= r.x0 || r.y1 + g <= o.y0 || o.y1 + g <= r.y0; });
+    }
+    var pads = [8 * k, 1 * k];
+    for (var pi = 0; pi < pads.length; pi++) {
+      var obs = obstacles(pads[pi]), y, x;
+      if (fits(under[0], under[1], obs)) return under;
+      // above the title block, right-aligned with it, stacked over what is there already
+      for (y = tb.y1 + g + H; y <= sh.y1; y += step) if (fits(tb.x1 - W, y, obs)) return [tb.x1 - W, y];
+      // beside the view: its top level first, then lower, then higher
+      var sides = [own.x1 + g, own.x0 - g - W];
+      for (var si = 0; si < sides.length; si++) {
+        for (y = own.y1; y - H >= sh.y0; y -= step) if (fits(sides[si], y, obs)) return [sides[si], y];
+        for (y = own.y1 + step; y <= sh.y1; y += step) if (fits(sides[si], y, obs)) return [sides[si], y];
+      }
+      // the first clear spot from the top left
+      for (y = sh.y1 - g; y - H >= sh.y0; y -= step) for (x = sh.x0 + g; x + W <= sh.x1; x += step) if (fits(x, y, obs)) return [x, y];
+    }
+    return under;
+  }
   function rectOfText(p, h, text, rot, anchor) {
     var w = textWidth(text, h), a = (rot || 0) * Math.PI / 180, t = [Math.cos(a), Math.sin(a)], n = [-t[1], t[0]], s0 = anchor === 'middle' ? -w / 2 : anchor === 'end' ? -w : 0;
     var r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -427,8 +498,9 @@
     });
     return r;
   }
-  function flatItems(w, doc, units, k) {
+  function flatItems(w, doc, units, k, ctx) {
     var v = w.view, fd = w.flat, o = D.docOptions(doc), mode = v.bendNotes || o.bendNotes, own = v.flatAnn || {}, out = [], box = w.box;
+    ctx = ctx || { views: [w], tb: { x0: Infinity, y0: Infinity, x1: Infinity, y1: Infinity }, bom: null, sheet: { x0: -Infinity, y0: -Infinity, x1: Infinity, y1: Infinity }, taken: [] };
     function st(key) { return own[key] || {}; }
     function item(key, type, text, prims, info) {
       var s = st(key), off = s.off || [0, 0], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -454,19 +526,30 @@
       yTop -= (NOTE_H + 5) * k;
     }
     if (mode === 'table' && fd.bends.length) {
-      var cols = TABLE_COLS.map(function (c) { return c[0] * k; }), Wt = cols.reduce(function (s, x) { return s + x; }, 0), rh = TABLE_ROW * k, th = TABLE_H * k;
-      var x0 = box.x0, rows = fd.bends.map(function (b, i) { return [D.bendTag(i), b.up ? 'UP' : 'DOWN', (Math.round(b.angle * 10) / 10) + '°', 'R ' + D.numText(b.R, units, v.bendPrec)]; });
-      var ps = [], Ht = rh * (rows.length + 1), y1 = yTop;
+      var spec = bendTableCols(v), rh = TABLE_ROW * k, th = TABLE_H * k, T = fd.sheet && +fd.sheet.thickness || 0;
+      var tprec = v.bendPrec != null && v.bendPrec !== '' ? +v.bendPrec : _.DIMSTYLE && _.DIMSTYLE.prec != null ? _.DIMSTYLE.prec : null;
+      var rows = fd.bends.map(function (b, i) { return spec.map(function (c) { return bendTableCell(c[0], b, i, units, tprec, T); }); });
+      // (a column is as wide as its longest text needs, at least its template width)
+      var cols = spec.map(function (c, ci) {
+        var cw = c[1] * k;
+        [c[2]].concat(rows.map(function (r) { return r[ci]; })).forEach(function (s) { cw = Math.max(cw, textWidth(s, th) + 4 * k); });
+        return cw;
+      });
+      var Wt = cols.reduce(function (s, x) { return s + x; }, 0), Ht = rh * (rows.length + 1);
+      var ownPaper = { x0: box.x0 - (o.flatDims ? 18 : 3) * k, y0: yTop + 2 * k, x1: box.x1 + 3 * k, y1: box.y1 + 3 * k };
+      var spot = tableSpot(w, ctx, Wt, Ht, [box.x0, yTop], ownPaper, k);
+      var x0 = spot[0], ps = [], y1 = spot[1];
       function ln(a, b2, style) { ps.push({ k: 'line', a: a, b: b2, layer: 'BEND_NOTES', style: style || 'thin' }); }
       ln([x0, y1], [x0 + Wt, y1], 'thick'); ln([x0 + Wt, y1], [x0 + Wt, y1 - Ht], 'thick'); ln([x0 + Wt, y1 - Ht], [x0, y1 - Ht], 'thick'); ln([x0, y1 - Ht], [x0, y1], 'thick');
       for (var ri = 1; ri <= rows.length; ri++) ln([x0, y1 - ri * rh], [x0 + Wt, y1 - ri * rh]);
       var cxs = [x0];
       cols.forEach(function (c, ci) { cxs.push(cxs[ci] + c); if (ci < cols.length - 1) ln([cxs[ci + 1], y1], [cxs[ci + 1], y1 - Ht]); });
-      [TABLE_COLS.map(function (c) { return c[1]; })].concat(rows).forEach(function (r, ri) {
+      [spec.map(function (c) { return c[2]; })].concat(rows).forEach(function (r, ri) {
         r.forEach(function (s, ci) { ps.push({ k: 'text', p: [(cxs[ci] + cxs[ci + 1]) / 2, y1 - (ri + 1) * rh + (rh - th) / 2], h: th, text: s, anchor: 'middle', layer: 'BEND_NOTES', rot: 0 }); });
       });
-      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows });
+      item('table', 'bendTable', 'Bend Table (' + rows.length + ')', ps, { rows: rows, columns: spec.map(function (c) { return c[2]; }), keys: spec.map(function (c) { return c[0]; }) });
     }
+    out.forEach(function (it) { if (!it.hidden) ctx.taken.push(it.box); });
     return out;
   }
   // noteItem(note, k) -> { id, text, lines, p, h, prims, box }: a note's lines on the NOTES layer, the first line's

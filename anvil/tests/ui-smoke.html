@@ -293,6 +293,7 @@
     UI.fileNew();
     assert(modalOpen(), 'New-part modal expected');
     clickModalButton('New part');
+    if (modalOpen()) clickModalButton("Don't Save");   // the part has unsaved changes: "Save changes to …?" (AutoRecover steps at the end)
     await idle();
     assert($('doc-title').textContent === 'Part1' && anvil.summary().features === 0, 'not reset');
   });
@@ -364,7 +365,7 @@
     await pmAccept();
     var s = anvil.summary();
     assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
-    near(s.volume, before + Math.PI / 4 * 12 * 60 + 20 * 2 * 60, 60, 'volume');
+    near(s.volume, before + Math.PI / 4 * 12 * 60 + (20 - 4) * 2 * 60, 60, 'volume');   // Outer Virtual Sharp (new flanges): the wall is L - (R + T)
     assert(names()[names().length - 1] === 'Edge-Flange1', names().join());
   });
   step('Flatten modal and Flat to DXF', async function () {
@@ -373,12 +374,14 @@
     assert(modalOpen() && /Flat pattern/.test($('modal-body').innerText), 'flatten modal');
     assert($('modal-body').querySelector('svg, canvas'), 'no drawing in the flatten modal');
     UI.closeModal();
+    // p9-pm: Flat to DXF opens the DXF/DWG Output PropertyManager on Sheet metal (was a text dialog)
     UI.exportFlatDXF();
-    assert(modalOpen(), 'dxf modal');
-    var ta = D.querySelector('#modal textarea');
-    assert(ta && ta.value.indexOf('BEND') > 0 && /\nEOF$/.test(ta.value), 'dxf content');
-    UI.closeModal();
-    return 'dxf ' + ta.value.length + ' chars';
+    assert(!modalOpen() && UI.hasPM() && UI.pmTitle() === 'DXF/DWG Output', 'DXF/DWG Output PM: ' + UI.pmTitle());
+    assert(D.querySelector('#pm input[data-key="export:sheet"]').checked, 'Sheet metal export chosen');
+    UI.pmCancel();
+    var dxf = K.exportDXFFlat(anvil.flat(), UI.App.model.units);
+    assert(dxf.indexOf('BEND') > 0 && /\nEOF$/.test(dxf), 'dxf content');
+    return 'dxf ' + dxf.length + ' chars';
   });
   step('DXF/DWG Output PM (UI.cmdDxfOutput): Export defaults per part, anvil.dxfOutput views / sheet, DWG greyed without the converter', async function () {
     await idle();
@@ -458,7 +461,7 @@
   });
   step('Miter Flange PM: pick two adjacent edges, accept, named Miter-Flange1', async function () {
     await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
-    var plain = (await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]]);')).volume;
+    var plain = (await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30], [50, 2, 0]], { lengthRef: "outer" });')).volume;
     await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
     await idle();
     UI.cmdMiterFlange();
@@ -1489,7 +1492,7 @@
     UI.openTaskPane('library');
     var btn = Array.prototype.filter.call(D.querySelectorAll('#tp-body button'), function (b) { return b.textContent.indexOf(ex.name) >= 0; })[0];
     assert(btn, 'Design Library button for ' + ex.name + ' missing');
-    btn.click();
+    btn.click(); dontSaveIfAsked();   // the open part is unsaved: "Save changes to …?" first
     for (var i = 0; i < 100 && !(UI.isAssembly() && anvil.summary().components === (ex.checks || []).length); i++) await wait(50);
     await idle();
     UI.closeTaskPane();
@@ -2119,7 +2122,7 @@
     if (UI.closeMenus) UI.closeMenus();
     var na = menuRows('New ▸ Assembly');
     assert(na.length && na[0].menu === 'File', 'File > New > Assembly in the drawing menus');
-    na[0].row.click();
+    na[0].row.click(); dontSaveIfAsked();   // the scripted part is unsaved: "Save changes to …?" first
     await idle(); await wait(80);
     assert(UI.isAssembly() && !UI.drawingActive() && $('drawing-doc').hidden, 'New Assembly should leave the drawing');
     assert(ribbonTabs().indexOf('View Layout') < 0 && ribbonTabs().indexOf('Assembly') >= 0, 'tabs ' + ribbonTabs());
@@ -2879,7 +2882,7 @@
   step('exchange: File ▸ Open has a Files of type filter; a 3MF picked in its file input opens as a new part (Imported1, same volume); pasting an ASCII STL opens too', async function () {
     await anvil.run('p.name("Blocky"); p.box(30, 20, 10); p.hole("Top", 15, -10, 6, { offset: 10 });'); await idle();
     var vol = anvil.summary().volume, bytes = anvil.export3mf(), stl = anvil.stl();
-    UI.fileOpen();
+    UI.fileOpen(); dontSaveIfAsked();   // the scripted part is unsaved: "Save changes to Blocky?" comes first
     assert(modalOpen() && /Open/.test($('modal-title').textContent), 'Open dialog');
     var sel = D.querySelector('#modal-body select'), inp = D.querySelector('#modal-body input[type=file]');
     assert(sel.options.length === 7 && /\.step/.test(inp.accept) && /\.igs/.test(inp.accept) && /\.3mf/.test(inp.accept), 'type list / accept ' + inp.accept);
@@ -2896,7 +2899,7 @@
     var s = anvil.summary();
     assert(!modalOpen() && s.name === 'blocky' && names().join() === 'Imported1', 'opened ' + s.name + ': ' + names().join());
     near(s.volume, vol, 1e-3 * vol, '3MF volume');
-    UI.fileOpen();
+    UI.fileOpen(); dontSaveIfAsked();
     D.querySelector('#modal-body textarea').value = stl;
     clickModalButton('Open');
     for (i = 0; i < 50 && modalOpen(); i++) await wait(50);
@@ -2934,7 +2937,7 @@
     var first = D.querySelector('#modal-body select').options[0].textContent;
     clickModalButton('Cancel');
     assert(/^Assembly/.test(first), 'first type ' + first);
-    await UI.newPart('Part1'); await idle();
+    await anvil.newPart('Part1'); await idle();   // (UI.newPart is the File menu's, which asks to save a changed document)
     return 'volume ' + anvil.summary().volume;
   });
   // ---- sub-assemblies and live links (run cloud-2026-09-25o)
@@ -8724,12 +8727,14 @@
     assert(fv && fv.flat && !fv.flat.error, 'flat view ' + JSON.stringify(fv && fv.flat));
     near(fv.x, 5.2, 0.03, 'x'); near(fv.y, 2.4, 0.03, 'y');   // (a click lands to the pixel: about .012 in on the fitted sheet)
     assert(fv.flat.bends.length === 2 && fv.flat.bends[0].up === true && fv.flat.bends[1].up === false, 'bends ' + JSON.stringify(fv.flat.bends));
-    assert(fv.flat.bends[0].note === 'UP 90° R .030' && fv.flat.bends[1].note === 'DOWN 90° R .030', 'notes ' + fv.flat.bends.map(function (b) { return b.note; }));
+    // (the note texts through Drawing.bendNoteText: the drawing's own 'UP 90° R .030', or Kernel.bendNoteText's)
+    var NUP = W.Drawing.bendNoteText({ up: true, angle: 90, R: 0.03 }, 'in'), NDN = W.Drawing.bendNoteText({ up: false, angle: 90, R: 0.03 }, 'in');
+    assert(fv.flat.bends[0].note === NUP && fv.flat.bends[1].note === NDN, 'notes ' + fv.flat.bends.map(function (b) { return b.note; }));
     assert(s.dims.indexOf('6.177') >= 0 && s.dims.filter(function (t) { return t === '2.000'; }).length >= 2, 'overall flat dims ' + s.dims.join(' '));
     var up = D.querySelectorAll('#drawing-sheet g[data-layer="BEND_UP"] line'), dn = D.querySelectorAll('#drawing-sheet g[data-layer="BEND_DOWN"] line');
     assert(up.length === 1 && !up[0].getAttribute('stroke-dasharray') && dn.length === 1 && dn[0].getAttribute('stroke-dasharray'), 'bend lines drawn: up ' + up.length + ' down ' + dn.length);
     var nt = Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="BEND_NOTES"] text'), function (t) { return t.textContent; });
-    assert(nt.indexOf('UP 90° R .030') >= 0 && nt.indexOf('DOWN 90° R .030') >= 0, 'bend notes drawn ' + nt);
+    assert(nt.indexOf(NUP) >= 0 && nt.indexOf(NDN) >= 0, 'bend notes drawn ' + nt);
     assert(D.querySelector('#drawing-tree .dw-flat') && D.querySelector('#drawing-tree .dw-bendNotes'), 'tree rows');
     var hs = anvil.drawing.holeCallout(fv.id, { c: [0.5, -0.5], r: 0.1405 });
     var hc = hs.annotations.filter(function (a) { return a.type === 'holeCallout' && a.view === fv.id; });
@@ -8741,7 +8746,7 @@
     assert(own && own.b0 && Math.abs(own.b0.off[0] + 0.4) < 0.03, 'note dragged ' + JSON.stringify(own));
     var dxf = anvil.drawing.dxf();
     ['BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'FLAT_PATTERN'].forEach(function (l) { assert(dxf.indexOf('\n2\n' + l + '\n') >= 0, 'DXF layer ' + l); });
-    assert(dxf.indexOf('UP 90%%d R .030') >= 0, 'DXF bend note');
+    assert(dxf.indexOf(NUP.replace('°', '%%d')) >= 0, 'DXF bend note');
     return fv.name + ': ' + fv.flat.bends.map(function (b) { return b.note; }).join(' / ') + ', ' + fv.flat.size.join(' × ') + ', ' + hc[0].text;
   });
   step('p9-drawing: Annotation ▸ Note: a click opens a text box, two lines typed and ✓ place the note; double-click edits it, a drag moves it, Delete removes it and Undo brings it back; SVG / DXF / PDF carry it', async function () {
@@ -9245,12 +9250,12 @@
     var f = UI.App.model.features[UI.App.model.features.length - 1];
     assert(f.type === 'flange' && f.bendAllowance && f.bendAllowance.type === 'deduction' && f.bendAllowance.value === 0.09, JSON.stringify(f));
     assert(!('useCustomBA' in f) && !('cbaBD' in f), 'UI-only keys leaked: ' + Object.keys(f).join());
-    near(anvil.flat().size[0], 4.12 + 1.62 - 0.09, 1e-9, 'flat with the custom BD');
+    near(anvil.flat().size[0], 4.12 + 1.5 - 0.09, 1e-9, 'flat with the custom BD');   // Outer Virtual Sharp: the flange is 1.5 outside
     assert(/p\.flange\(1\.5, .*bendAllowance: \{"type":"deduction","value":0\.09\}/.test(anvil.script()), 'script: ' + anvil.script().split('\n').pop());
     UI.cmdFlatten();
     assert(modalOpen(), 'flat pattern dialog');
     var fs = D.querySelector('#modal-body [data-role="flat-size"]');
-    assert(fs && /^Flat size 5\.65 × 3 in/.test(fs.textContent), 'flatten dialog: ' + (fs && fs.textContent));
+    assert(fs && /^Flat size 5\.53 × 3 in/.test(fs.textContent), 'flatten dialog: ' + (fs && fs.textContent));
     clickModalButton('Close');
     return fs.textContent;
   });
@@ -9282,6 +9287,597 @@
     assert(flat.warnings.length === 1 && /Bend table: no row/.test(flat.warnings[0]), 'the 14 ga bend falls back to K: ' + flat.warnings.join(' | '));
     return 'gauge 14: ' + UI.flatSizeText(flat);
   });
+  // ---- p9-bendtable: the Bend Table on free paper with a BEND DED. column; its columns in the flat view's PM
+  step('p9-bendtable: a flat view with a Bend Table placed by the title block: the table stays off the title block; its PM shows Bend Table Columns (BEND DED. on), K-factor ✓ adds a K-FACTOR column', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(P9_INCH); await idle();
+    anvil.drawing.make(); await UI.drawing.ready(); await wait(30);
+    anvil.drawing.flatView({ x: 14, y: 3.4, bendNotes: 'table' }); await UI.drawing.ready(); await wait(30);
+    var s = anvil.drawing.summary(), fv = s.views.filter(function (v) { return v.kind === 'flat'; })[0];
+    assert(fv && fv.flat && !fv.flat.error, 'flat view ' + JSON.stringify(fv && fv.flat));
+    var tab = fv.flat.annotations.filter(function (a) { return a.type === 'bendTable'; })[0], S = UI.drawing.state.sheet.size, Dr = W.Drawing, b1 = Dr._.BORDER / 25.4;
+    var tb = [S[0] - b1 - Dr._.TB_W / 25.4, b1, S[0] - b1, b1 + Dr._.TB_H / 25.4];
+    assert(tab && !(tab.box[0] < tb[2] && tb[0] < tab.box[2] && tab.box[1] < tb[3] && tb[1] < tab.box[3]), 'the table is off the title block: ' + JSON.stringify(tab && tab.box) + ' vs ' + JSON.stringify(tb));
+    function tableTexts() { return Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="BEND_NOTES"] text'), function (t) { return t.textContent; }); }
+    var t0 = tableTexts();
+    assert(t0.indexOf('BEND DED.') >= 0 && t0.indexOf('R.030') >= 0 && t0.indexOf('K-FACTOR') < 0, 'default columns ' + t0.join('|'));
+    UI.drawing.viewProperties(fv.id);
+    assert(UI.hasPM() && /Bend Table Columns/.test($('pm').innerText), 'Bend Table Columns group: ' + $('pm').innerText.replace(/\s+/g, ' ').slice(0, 300));
+    assert(pmField('Bend deduction').checked && !pmField('K-factor').checked, 'BEND DED. on, K-factor off');
+    pmField('K-factor').click();
+    await UI.pmOK(); await UI.drawing.ready(); await wait(30);
+    var v = anvil.drawing.doc().views.filter(function (x) { return x.kind === 'flat'; })[0], t1 = tableTexts();
+    assert(JSON.stringify(v.bendCols) === '["bd","k"]', 'bendCols ' + JSON.stringify(v.bendCols));
+    assert(t1.indexOf('K-FACTOR') >= 0 && t1.indexOf('0.44') >= 0 && t1.indexOf('BEND DED.') >= 0, 'K-FACTOR column drawn ' + t1.join('|'));
+    anvil.drawing.close();
+    return 'table at ' + tab.box.join(', ') + '; columns ' + t1.slice(0, 6).join(' / ');
+  });
+  // ---- p9-pm: sheet-metal PropertyManagers, ribbon tab, section default, menu click-through
+  function pmIconBtn(key, val) { return D.querySelector('#pm button[data-key="' + key + ':' + val + '"]'); }
+  function lastFeature() { var fs = UI.App.model.features; return fs[fs.length - 1]; }
+  step('p9-pm: Edge Flange Flange Length reference (new: Outer Virtual Sharp, old: Tangent Bend), Bend from Virtual Sharp, last values remembered', async function () {
+    await anvil.run(P9_LB);
+    await idle();
+    UI.sheetMetalMemory(null);
+    UI.cmdEdgeFlange();
+    assert(UI.hasPM(), 'Edge-Flange PM not open');
+    var titles = ['outer', 'inner', 'tangent'].map(function (r) { var b = pmIconBtn('lengthRef', r); return b ? b.title : '-'; });
+    assert(titles.join() === 'Outer Virtual Sharp,Inner Virtual Sharp,Tangent Bend', 'length reference buttons: ' + titles.join());
+    assert(pmIconBtn('lengthRef', 'outer').classList.contains('on') && !pmIconBtn('lengthRef', 'tangent').classList.contains('on'), 'a new flange defaults to Outer Virtual Sharp');
+    var pos = pmField('Position');
+    assert(pos && Array.prototype.some.call(pos.options, function (o) { return o.value === 'virtualSharp' && o.textContent === 'Bend from Virtual Sharp'; }), 'Position lacks Bend from Virtual Sharp');
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([0, 0.06, 1.5]) }) !== false, 'edge pick rejected');
+    setInput(pmField('Length'), 1.25);
+    setInput(pmField('Flange angle'), 80);
+    setInput(pmField('Position'), 'inside');
+    await pmAccept();
+    var f = lastFeature(), s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    assert(f.type === 'flange' && f.lengthRef === 'outer' && f.length === 1.25 && f.angle === 80 && f.position === 'inside', JSON.stringify(f));
+    // the next Edge Flange starts with the values just used (SolidWorks); Cancel does not change them
+    UI.cmdEdgeFlange();
+    assert(+pmField('Length').value === 1.25 && +pmField('Flange angle').value === 80 && pmField('Position').value === 'inside', 'not remembered: ' + JSON.stringify(UI.sheetMetalMemory()));
+    pmIconBtn('lengthRef', 'inner').click();
+    assert(pmIconBtn('lengthRef', 'inner').classList.contains('on') && !pmIconBtn('lengthRef', 'outer').classList.contains('on'), 'Inner Virtual Sharp not pressed');
+    assert(/Inner Virtual Sharp/.test($('pm').innerText), 'the chosen reference is named in the PM');
+    UI.pmCancel();
+    UI.cmdEdgeFlange();
+    assert(pmIconBtn('lengthRef', 'outer').classList.contains('on'), 'Cancel should not be remembered');
+    UI.pmCancel();
+    // a flange from before the field: Wall Length (today's geometry, an extra choice only it gets), its own length, and it keeps 'wall' on OK
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);');
+    await idle();
+    var old = lastFeature();
+    assert(!('lengthRef' in old), 'scripted flange has lengthRef: ' + JSON.stringify(old));
+    UI.editFeature(old);
+    assert(UI.hasPM() && pmIconBtn('lengthRef', 'wall').classList.contains('on'), 'an old flange should show Wall Length');
+    assert(+pmField('Length').value === 1.5 && pmField('Position').value === 'bendOutside', 'editing shows the feature, not the remembered values');
+    await pmAccept();
+    assert(lastFeature().lengthRef === 'wall', 'edited: ' + JSON.stringify(lastFeature()));
+    // a millimetre part is not offered the remembered inch length
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);');
+    await idle();
+    UI.cmdEdgeFlange();
+    assert(+pmField('Length').value !== 1.25 && pmIconBtn('lengthRef', 'outer').classList.contains('on'), 'inch values offered to a mm part: ' + pmField('Length').value);
+    UI.pmCancel();
+    return 'flange ' + JSON.stringify({ lengthRef: f.lengthRef, length: f.length, angle: f.angle, position: f.position });
+  });
+  step('p9-pm: Hem PM Type (Closed, Open, Tear Drop, Rolled) and Position (Material Inside, Bend Outside), size fields per type, remembered', async function () {
+    await anvil.run(P9_LB);
+    await idle();
+    UI.sheetMetalMemory(null);
+    UI.cmdHem();
+    assert(UI.hasPM(), 'Hem PM not open');
+    var types = Array.prototype.map.call(D.querySelectorAll('#pm button[data-key^="hemType:"]'), function (b) { return b.title; });
+    assert(types.join() === 'Closed,Open,Tear Drop,Rolled', 'hem types: ' + types.join());
+    var posns = Array.prototype.map.call(D.querySelectorAll('#pm button[data-key^="hemPosition:"]'), function (b) { return b.title; });
+    assert(posns.join() === 'Material Inside,Bend Outside', 'hem positions: ' + posns.join());
+    assert(pmIconBtn('hemType', 'open').classList.contains('on') && pmIconBtn('hemPosition', 'inside').classList.contains('on'), 'a new hem defaults to Open, Material Inside');
+    assert(pmField('Hem length') && pmField('Gap distance') && !pmField('Radius') && !pmField('Angle'), 'Open: length and gap');
+    pmIconBtn('hemType', 'closed').click();
+    assert(pmField('Hem length') && !pmField('Gap distance') && !pmField('Radius'), 'Closed: length only');
+    pmIconBtn('hemType', 'teardrop').click();
+    assert(pmField('Angle') && pmField('Radius') && !pmField('Hem length') && +pmField('Angle').value === 200, 'Tear Drop: angle 200° and radius');
+    pmIconBtn('hemType', 'rolled').click();
+    assert(+pmField('Angle').value === 270, 'Rolled starts at 270°: ' + pmField('Angle').value);
+    setInput(pmField('Radius'), 0.09);
+    pmIconBtn('hemPosition', 'outside').click();
+    assert(pmIconBtn('hemPosition', 'outside').classList.contains('on'), 'Bend Outside not pressed');
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([0, 0.06, 1.5]) }) !== false, 'edge pick rejected');
+    await pmAccept();
+    var f = lastFeature(), s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    assert(f.hem === true && f.hemType === 'rolled' && f.hemPosition === 'outside' && f.hemRadius === 0.09 && f.hemAngle === 270 && f.angle === 180 && !('gap' in f), JSON.stringify(f));
+    UI.cmdHem();
+    assert(pmIconBtn('hemType', 'rolled').classList.contains('on') && pmIconBtn('hemPosition', 'outside').classList.contains('on') && +pmField('Radius').value === 0.09, 'hem settings not remembered');
+    pmIconBtn('hemType', 'open').click();
+    setInput(pmField('Gap distance'), 0.03);
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([4, 0.06, 1.5]) }) !== false, 'second edge pick rejected');
+    await pmAccept();
+    var g = lastFeature();
+    assert(g.hemType === 'open' && !('hemRadius' in g) && !('hemAngle' in g) && Math.abs(g.radius - 0.015) < 1e-12, 'open hem: ' + JSON.stringify(g));
+    // a hem from before the fields: Open, Bend Outside
+    await anvil.run(P9_LB + '\np.hem(0.375, [[0, 0.06, 1.5]]);');
+    await idle();
+    var oh = lastFeature();
+    assert(oh.hem && !oh.hemType, 'scripted hem: ' + JSON.stringify(oh));
+    UI.editFeature(oh);
+    assert(UI.hasPM() && pmIconBtn('hemType', 'open').classList.contains('on') && pmIconBtn('hemPosition', 'outside').classList.contains('on'), 'an old hem should show Open, Bend Outside');
+    UI.pmCancel();
+    return 'hem ' + JSON.stringify({ hemType: f.hemType, hemPosition: f.hemPosition, hemRadius: f.hemRadius, hemAngle: f.hemAngle });
+  });
+  step('p9-pm: Flat to DXF and the Flatten preview\'s Export DXF open DXF/DWG Output on Sheet metal; bend notes sit inside the blank', async function () {
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);');
+    await idle();
+    UI.setRibbonTab('Sheet Metal');
+    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.getAttribute('aria-label') === 'Flat to DXF'; })[0];
+    assert(btn, 'Flat to DXF ribbon button');
+    btn.click();
+    assert(!modalOpen() && UI.hasPM() && UI.pmTitle() === 'DXF/DWG Output', 'Flat to DXF opened: ' + UI.pmTitle());
+    assert(D.querySelector('#pm input[data-key="export:sheet"]').checked, 'Sheet metal export not chosen');
+    UI.pmCancel();
+    UI.cmdFlatten();
+    assert(modalOpen(), 'flat pattern dialog');
+    var flat = anvil.flat(), notes = D.querySelectorAll('#modal-body text[data-role="bend-note"]');
+    assert(notes.length === flat.bends.length && notes.length === 1, 'bend notes: ' + notes.length);
+    var want = W.Kernel.bendNoteText ? W.Kernel.bendNoteText(flat.bends[0], 'in') : flat.bends[0].label;
+    assert(notes[0].textContent === want, 'bend note "' + notes[0].textContent + '", expected "' + want + '"');
+    var nx = +notes[0].getAttribute('x'), ny = -notes[0].getAttribute('y'), b = flat.bbox;
+    assert(nx > b.min[0] && nx < b.max[0] && ny > b.min[1] && ny < b.max[1], 'bend note anchor outside the blank: ' + nx + ', ' + ny + ' in ' + JSON.stringify(b));
+    clickModalButton('Export DXF');
+    assert(!modalOpen() && UI.hasPM() && UI.pmTitle() === 'DXF/DWG Output' && D.querySelector('#pm input[data-key="export:sheet"]').checked, 'Export DXF should open DXF/DWG Output on Sheet metal');
+    UI.pmCancel();
+    UI.setRibbonTab('Features');
+    return notes[0].textContent;
+  });
+  step('p9-pm: the CommandManager stays on Sheet Metal through Base Flange (sketch, OK) and a sketch opened from it; a tab clicked in a sketch is kept', async function () {
+    UI.loadModel(K.newModel('Tabs'));
+    await idle();
+    function tab() { return UI.App.ribbonTab; }
+    function clickTab(name) { var t = Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (x) { return x.textContent === name; })[0]; assert(t, 'tab ' + name); t.click(); }
+    clickTab('Sheet Metal');
+    UI.cmdSketch(); clickPmButton('Top Plane'); await idle();
+    assert(UI.App.mode === 'sketch' && tab() === 'Sketch', 'sketch: tab ' + tab());
+    UI.activeSketchFeature().entities.push({ t: 'rect', x: 0, y: -60, w: 100, h: 60 });
+    UI.cmdBaseFlange();
+    await idle();
+    assert(UI.hasPM() && UI.pmTitle() === 'Base Flange/Tab', 'Base Flange PM: ' + UI.pmTitle());
+    assert(tab() === 'Sheet Metal', 'closing the sketch for Base Flange went to ' + tab());
+    await pmAccept();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0 && s.volume > 0, 'base flange: ' + JSON.stringify(s.errors));
+    var act = D.querySelector('#ribbon-tabs .rtab.active');
+    assert(tab() === 'Sheet Metal' && act && act.textContent === 'Sheet Metal', 'after OK the tab is ' + tab());
+    UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
+    assert(tab() === 'Sketch', 'sketch tab ' + tab());
+    await UI.exitSketch(); await idle();
+    assert(tab() === 'Sheet Metal', 'Exit Sketch went to ' + tab());
+    UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
+    clickTab('Evaluate');
+    await UI.exitSketch(); await idle();
+    assert(tab() === 'Evaluate', 'a tab clicked in the sketch should stay: ' + tab());
+    clickTab('Features');
+    return 'tabs ok';
+  });
+  step('p9-pm: Edit Feature on Base-Flange1 (Sheet-Metal PM) keeps the part on screen', async function () {
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);');
+    await idle();
+    var mesh0 = UI.App.mesh, bf = UI.App.model.features.filter(function (q) { return q.sheetBase; })[0];
+    assert(bf, 'no Base Flange');
+    UI.editFeature(bf);
+    assert(UI.hasPM() && UI.pmTitle() === 'Sheet-Metal', 'PM: ' + UI.pmTitle());
+    await idle(); await wait(150);
+    assert(UI.App.rollback == null && UI.App.mesh === mesh0 && mesh0.triCount > 0, 'the part was rolled back to before the Base Flange (rollback ' + UI.App.rollback + ')');
+    UI.pmCancel();
+    await idle();
+    return mesh0.triCount + ' triangles shown';
+  });
+  step('p9-pm: Section View starts through the middle of the part (plane follows the reference until an offset is typed)', async function () {
+    await anvil.run('p.sketch("Front").rect(10, 0, 40, 20).extrude(10);');
+    await idle();
+    var bb = UI.modelBounds();
+    UI.cmdSection();
+    assert(UI.hasPM(), 'Section PM not open');
+    var off = pmField('Offset distance');
+    near(+off.value, (bb.min[0] + bb.max[0]) / 2, 1e-6, 'Right plane offset');
+    var c = new W.THREE.Vector3((bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2);
+    near(UI.App.view.section.plane.distanceToPoint(c), 0, 1e-6, 'section plane through the centre');
+    setInput(pmField('Reference plane'), 'Top');
+    near(+pmField('Offset distance').value, (bb.min[1] + bb.max[1]) / 2, 1e-6, 'Top plane offset');
+    setInput(pmField('Offset distance'), 3);
+    setInput(pmField('Reference plane'), 'Front');
+    near(+pmField('Offset distance').value, 3, 1e-12, 'a typed offset is kept');
+    UI.pmCancel();
+    assert(!UI.App.view.section, 'section left on');
+    return 'x ' + fmt((bb.min[0] + bb.max[0]) / 2);
+  });
+  step('p9-pm: a menu item click never reaches the ribbon under it; the press that closes a menu does not start a command; tall menus stay below the bar', async function () {
+    UI.loadModel(K.newModel('Menus'));
+    await idle();
+    UI.setRibbonTab('Features');
+    var rev = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (b) { return b.getAttribute('aria-label') === 'Revolved Boss/Base'; })[0];
+    assert(rev, 'Revolved Boss/Base button');
+    var r = rev.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var nRev = 0, nFit = 0, cmdRevolve = UI.cmdRevolve, zoomToFit = UI.zoomToFit;
+    function mouse(target, type) { target.dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, view: W, detail: 1, button: 0, clientX: x, clientY: y })); }
+    function openMenu(label) { var li = Array.prototype.filter.call(D.querySelectorAll('#menus > li'), function (l) { return l.textContent === label; })[0]; li.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, view: W, detail: 1, button: 0 })); return li; }
+    try {
+      UI.cmdRevolve = function () { nRev++; };
+      UI.zoomToFit = function () { nFit++; };
+      // a row pressed and released over the Revolve button's position: the row runs, the click that follows does not
+      var li = openMenu('View');
+      var row = Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return /Zoom to Fit/.test(m.textContent); })[0];
+      assert(row, 'View ▸ Zoom to Fit row');
+      var m = D.querySelector('.menu'), mr = m.getBoundingClientRect(), lr = li.getBoundingClientRect();
+      assert(mr.top >= lr.bottom - 1 && mr.bottom <= W.innerHeight + 1, 'the View menu should open below the bar and fit the window: ' + JSON.stringify([mr.top, mr.bottom, lr.bottom, W.innerHeight]));
+      mouse(row, 'mousedown'); mouse(row, 'mouseup'); mouse(rev, 'click'); row.click();
+      assert(nFit === 1 && nRev === 0 && !UI.menuOpen(), 'menu row: zoom ' + nFit + ', revolve ' + nRev);
+      // a press outside an open menu closes it and its click goes nowhere
+      openMenu('File');
+      assert(UI.menuOpen(), 'File menu not open');
+      mouse(rev, 'mousedown'); mouse(rev, 'mouseup'); mouse(rev, 'click');
+      assert(!UI.menuOpen() && nRev === 0, 'closing click started Revolve: ' + nRev);
+      // the next click on the button works
+      mouse(rev, 'mousedown'); mouse(rev, 'mouseup'); mouse(rev, 'click');
+      assert(nRev === 1, 'Revolve after the menu closed: ' + nRev);
+    } finally { UI.cmdRevolve = cmdRevolve; UI.zoomToFit = zoomToFit; if (UI.closeMenus) UI.closeMenus(); }
+    return 'zoom ' + nFit + ', revolve ' + nRev;
+  });
+  step('p9-sketchedbend: Sketched Bend from the Sheet Metal tab — line sketched on the face, fixed face click, ✓, tree row, flat size; Edit Feature to Material Inside', async function () {
+    var T = 0.0598, BA = Math.PI / 2 * (T + 0.5 * T);
+    await anvil.run('p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\np.sketch("Top", ' + T + ').line(3, 0, 3, -4);');
+    await idle();
+    UI.setRibbonTab('Sheet Metal');
+    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /Sketched\s*Bend/.test(b.textContent); })[0];
+    assert(btn && !btn.disabled, 'Sketched Bend ribbon button enabled');
+    btn.click();
+    assert(UI.hasPM() && UI.pmTitle() === 'Sketched Bend', 'PM: ' + (UI.hasPM() ? UI.pmTitle() : 'none'));
+    assert(pmField('Bend position').value === 'centerline', 'default Bend Centerline: ' + pmField('Bend position').value);
+    near(+pmField('Bend angle').value, 90, 1e-12, 'default bend angle');
+    // the fixed face: a click on the left half of the top face
+    assert(UI.App.command.onPick({ kind: 'face', index: faceWithNormal([0, 1, 0]), point: [1, T, 2] }) !== false, 'face pick rejected');
+    assert(/Fixed face <1>/.test($('pm').innerText), 'fixed face listed: ' + $('pm').innerText.replace(/\s+/g, ' ').slice(0, 200));
+    assert(UI.groups.preview.children.length > 0, 'preview shown');
+    await pmAccept();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'sketchedBend' && f.name === 'SketchBend1' && f.fixed[0] === 1 && f.position === 'centerline' && f.angle === 90, JSON.stringify(f));
+    var row = D.querySelector('#tree .ti[data-fid="' + f.id + '"]');
+    assert(row && /SketchBend1/.test(row.textContent), 'tree row');
+    near(s.bbox.max[0], 3 - BA / 2 + 2 * T, 1e-6, 'wall outside face'); near(s.bbox.max[1], 2 * T + 3 - BA / 2, 1e-6, 'wall top');
+    var flat = anvil.flat();
+    near(flat.size[0], 6, 1e-6, 'flat length'); near(flat.size[1], 4, 1e-6, 'flat width');
+    assert(flat.bends.length === 1 && /^UP 90°/.test(flat.bends[0].label) && Math.abs(flat.bends[0].a[0] - 3) < 1e-6, 'bend: ' + JSON.stringify(flat.bends));
+    // Edit Feature reopens the PropertyManager; Material Inside puts the wall's outside face on the line
+    UI.editFeature(f);
+    assert(UI.hasPM() && UI.pmTitle() === 'SketchBend1', 'edit PM: ' + (UI.hasPM() ? UI.pmTitle() : 'none'));
+    setInput(pmField('Bend position'), 'inside');
+    await pmAccept();
+    s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0 && f.position === 'inside', JSON.stringify(s.errors) + ' ' + JSON.stringify(f));
+    near(s.bbox.max[0], 3, 1e-6, 'Material Inside: wall outside face on the line');
+    flat = anvil.flat();
+    near(flat.size[0], 6, 1e-6, 'flat length after the edit');
+    return UI.flatSizeText(flat) + ', bend line at ' + fmt(flat.bends[0].a[0]);
+  });
+  // --- p9-sketchfix: sketcher UI bugs from the 2026-10-07 test reports ---
+  function p9sDist(f) { return (f.rels || []).filter(function (r) { return r.type === 'distance'; }); }
+  step('p9-sketchfix: Smart Dimension — a sketch point then a circle, or a circle then a point, gives the centre distance (not a second diameter); after "Make this dimension driven" one Undo takes the whole dimension away', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 20, cy: 10, r: 4 }, { t: 'point', x: 0, y: 0, construction: true }, { t: 'point', x: 40, y: 0 });
+    f.dims = [{ e: 0, k: 'dia', ang: 45 }];
+    UI.updateSketches(); UI.setTool('dimension');
+    rskClick([0, 0]); rskClick([16, 10]); rskClick([-5, 15]); await wait(20);
+    if (UI.isDimEditOpen()) UI.cancelDimEdit();
+    f = UI.activeSketchFeature();
+    var d1 = p9sDist(f);
+    assert(d1.length === 1 && d1[0].refs.indexOf('1') >= 0 && /^0(\.c)?$/.test(d1[0].refs.filter(function (r) { return r !== '1'; })[0]) && f.dims.length === 1, 'point then circle: centre distance: ' + JSON.stringify(f.rels) + ' ' + JSON.stringify(f.dims));
+    near(d1[0].v, Math.hypot(20, 10), 1e-6, 'centre distance');
+    rskClick([20, 6]); rskClick([40, 0]); rskClick([50, 20]); await wait(20);
+    if (UI.isDimEditOpen()) UI.cancelDimEdit();
+    f = UI.activeSketchFeature();
+    assert(p9sDist(f).length === 2 && f.dims.length === 1, 'circle then point: centre distance, no second diameter: ' + JSON.stringify(f.dims));
+    // a second diameter over-defines: made driven, one Undo removes it altogether
+    rskClick([16, 10]); rskClick([30, 0]); await wait(20);
+    assert(!$('modal').hidden && /Make Dimension Driven/.test($('modal').textContent), 'Make Dimension Driven? asked');
+    var b = Array.prototype.filter.call(D.querySelectorAll('#modal-buttons button'), function (x) { return x.textContent.trim() === 'Make this dimension driven'; })[0];
+    b.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true, cancelable: true })); b.click(); await wait(20);
+    f = UI.activeSketchFeature();
+    assert(f.dims.length === 2 && f.dims[1].driven, 'driven diameter: ' + JSON.stringify(f.dims));
+    UI.setTool('select');
+    UI.undo(); await idle();
+    f = UI.activeSketchFeature();
+    assert(UI.App.mode === 'sketch' && f.dims.length === 1 && !f.dims[0].driven && UI.sketchStatus().status !== 'over', 'one Undo: the dimension is gone, not back to driving: ' + JSON.stringify(f.dims));
+    return d1[0].refs.join(' → ') + ' = ' + d1[0].v.toFixed(3);
+  });
+  step('p9-sketchfix: a PropertyManager puts the sketch tool down — Smart Dimension under Linear Sketch Pattern no longer takes the first click (the circle goes into the box), Polygon\'s hint and highlight go when Trim opens; a press on a dimension label lying on geometry picks the geometry while the PM collects entities', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 20, cy: 10, r: 4 }, { t: 'line', x1: 0, y1: -10, x2: 40, y2: -10 });
+    f.dims = [{ e: 0, k: 'dia', ang: 45 }];
+    UI.updateSketches();
+    UI.setTool('dimension');
+    assert(UI.App.tool === 'dimension' && $('viewport').classList.contains('tool-cross'), 'Smart Dimension on');
+    UI.cmdSketchPattern(); await wait(20);
+    assert(UI.pmTitle() === 'Linear Pattern' && UI.App.tool === 'select' && !$('viewport').classList.contains('tool-cross'), 'tool put down: ' + UI.App.tool);
+    assert(!UI.App.toolState.dim && !UI.App.tempDim, 'no dimension half placed');
+    rskClick([24, 10]); await wait(20);
+    assert(UI.pmTitle() === 'Linear Pattern' && UI.pmSpec().values.entities.join() === '0' && !(f.dims.length > 1), 'the click picked the circle: ' + JSON.stringify(UI.pmSpec().values.entities));
+    // the label of the line's length laid over the circle's edge: a press on it (at the edge) picks the line
+    UI.App.dimsStale = false; UI.drawDims();
+    var lab = Array.prototype.filter.call(D.querySelectorAll('#dim-layer g.dim text'), function (t) { return /^Ø/.test(t.textContent); })[0];
+    assert(lab, 'diameter label drawn');
+    var at = rskScr([20, -10]);
+    selEv('mousedown', at, lab); selEv('mouseup', at, null); await wait(20);
+    assert(UI.pmTitle() === 'Linear Pattern' && UI.pmSpec().values.entities.slice().sort().join() === '0,1' && !(UI.App.sel && UI.App.sel.kind === 'dim'), 'press on the label went to the line under it: ' + JSON.stringify(UI.pmSpec().values.entities));
+    UI.pmCancel(); await wait(10);
+    UI.setTool('polygon');
+    assert(UI.pmTitle() === 'Polygon' && UI.App.tool === 'polygon', 'Polygon tool with its own PM');
+    UI.cmdTrimEntities(); await wait(20);
+    assert(UI.pmTitle() === 'Trim Entities' && UI.App.tool === 'select', 'Trim put Polygon down: ' + UI.App.tool);
+    UI.pmCancel(); await wait(30);
+    assert(!/Click the center, then a vertex/.test($('sketch-hint').innerHTML), 'no stale Polygon hint: ' + $('sketch-hint').innerHTML);
+    assert(typeof UI.endSketchTool === 'function', 'UI.endSketchTool exposed');
+    return 'tool ends with the PM';
+  });
+  step('p9-sketchfix: Ctrl+click adds a second circle to the selection (the first one\'s PropertyManager closes); Add Relation then lists both and offers Equal', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 10, cy: 10, r: 4 }, { t: 'circle', cx: 40, cy: 10, r: 3 });
+    UI.updateSketches(); UI.setTool('select'); UI.setSelection([]);
+    rskClick([14, 10]); await wait(20);
+    assert(UI.pmTitle() === 'Circle', 'first circle\'s PM: ' + UI.pmTitle());
+    selClick(rskScr([43, 10]), { ctrlKey: true }); await wait(20);
+    var sel = anvil.selection().filter(function (s) { return s.kind === 'entity'; });
+    assert(sel.length === 2, 'two entities selected: ' + JSON.stringify(anvil.selection()));
+    UI.cmdAddRelations(); await wait(20);
+    var picks = (UI.App.relPick || []).slice().sort().join();
+    assert(UI.pmTitle() === 'Add Relations' && picks === '0,1', 'both listed: ' + picks);
+    assert(Array.prototype.some.call(D.querySelectorAll('#pm button'), function (x) { return x.textContent.trim() === 'Equal'; }), 'Equal offered');
+    UI.pmCancel();
+    return picks;
+  });
+  step('p9-sketchfix: in a sketch on a model face, Smart Dimension from a circle to a model edge brings the edge in as fixed construction geometry and places the distance (no "No distance between those two")', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    UI.setView('Top'); await idle();
+    UI.App.sel = { kind: 'face', index: faceWithNormal([0, 1, 0]) };
+    UI.cmdSketch(); await idle(); await wait(50);
+    assert(UI.App.mode === 'sketch', 'sketch on the top face');
+    var f = UI.activeSketchFeature(), pl = UI.activePlane(), c = K.to2D(pl, [5, 10, 2]);
+    f.entities.push({ t: 'circle', cx: c[0], cy: c[1], r: 1.5 });
+    UI.updateSketches(); UI.zoomToFit(); await wait(50);
+    var edge = UI.App.edges.filter(function (e) { return Math.abs(e.a[0] - 20) < 1e-6 && Math.abs(e.b[0] - 20) < 1e-6 && Math.abs(e.a[1] - 10) < 1e-6 && Math.abs(e.b[1] - 10) < 1e-6; })[0];
+    assert(edge, 'the x = 20 edge of the top face');
+    var es = UI.worldToScreen(edge.mid);
+    assert(!UI.pickEntity(es[0], es[1]), 'no sketch geometry on the edge');
+    UI.setTool('dimension');
+    rskClick([c[0] + 1.5, c[1]]); await wait(20);
+    selClick(es); await wait(20);
+    var st = $('status-msg').textContent;
+    assert(!/No distance between those two/.test(st), st);
+    var ref = f.entities.length - 1, e = f.entities[ref];
+    assert(e && e.t === 'line' && e.construction && (f.rels || []).some(function (r) { return r.type === 'fix' && r.refs.join() === String(ref); }), 'edge brought in, construction, Fixed: ' + JSON.stringify(e));
+    var mid = rskScr([c[0], c[1] + 6]);
+    selClick(mid); await wait(20);
+    if (UI.isDimEditOpen()) UI.cancelDimEdit();
+    var d = p9sDist(f).filter(function (r) { return r.refs.indexOf(String(ref)) >= 0; })[0];
+    assert(d && Math.abs(d.v - 15) < 1e-6, 'distance circle centre to the edge = 15: ' + JSON.stringify(f.rels));
+    UI.setTool('select'); UI.exitSketch(); await idle();
+    return 'distance ' + d.v;
+  });
+  step('p9-sketchfix: a Ø.266 hole cut in an inch part shows its diameter on the part as the sketch does (Ø.266, not Ø0.27)', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.units("in");\np.sketch("Top").rect(-1, -1, 2, 2).extrude(0.25);\np.sketch("Top", 0.25).circle(0, 0, 0.133).dim(0, "dia").cut("through", { reverse: true });'); await idle();
+    var cut = anvil.model().features.filter(function (x) { return x.type === 'extrude' && x.cut; }).pop() || anvil.model().features[anvil.model().features.length - 1];
+    UI.setView('Top'); await idle();
+    UI.setSelection([{ kind: 'feature', id: cut.id }]);
+    await r4Until(function () { return D.querySelectorAll('#i3d-layer .i3d-dim-text').length >= 1; }, 10000);
+    var labs = Array.prototype.map.call(D.querySelectorAll('#i3d-layer .i3d-dim-text'), function (t) { return t.textContent; });
+    assert(labs.indexOf('Ø.266') >= 0 && !labs.some(function (t) { return /0\.27/.test(t); }), 'labels: ' + labs.join(' '));
+    UI.setSelection([]);
+    return labs.join(' ');
+  });
+  // --- end p9-sketchfix ---
+  // ---- AutoRecover, save prompts, Zoom to Fit, narrow window (bent-channel items 5, 11, 18; complex-sketch 8, 10, 12)
+  // the "Save changes to …?" box, when it is the one showing: Don't Save
+  function dontSaveIfAsked() { if (modalOpen() && /Save changes to/.test($('modal-body').textContent)) clickModalButton("Don't Save"); }
+  function recoverCopy() { try { return JSON.parse(W.localStorage.getItem('anvil.recover')); } catch (e) { return null; } }
+  step('autorecover: an edit makes the document dirty ("Dirty1 *", a recovery copy kept); undo to the opened state, Save and a plain rebuild leave it clean', async function () {
+    await anvil.newPart('Dirty1'); await idle();
+    assert(!UI.isDirty() && !$('doc-title').classList.contains('dirty') && recoverCopy() == null, 'a new part is not dirty');
+    await anvil.append('p.box(10, 10, 10);'); await idle();
+    assert(UI.isDirty() && $('doc-title').classList.contains('dirty'), 'not dirty after an edit');
+    var star = W.getComputedStyle($('doc-title'), '::after').content;
+    assert(/\*/.test(star) && $('doc-title').textContent === 'Dirty1' && D.title === 'Dirty1 * - Anvil', 'title star: ' + star + ' / ' + D.title);
+    var rec = recoverCopy();
+    assert(rec && rec.name === 'Dirty1' && rec.model.features.length === 2 && rec.savedAt > 0 && rec.drawing === null, 'recovery copy: ' + JSON.stringify(rec && { name: rec.name, n: rec.model.features.length }));
+    assert(anvil.summary().dirty === true, 'summary().dirty');
+    await UI.undo(); await idle();
+    assert(!UI.isDirty() && recoverCopy() == null && D.title === 'Dirty1 - Anvil', 'undo back to the opened state is clean, copy dropped');
+    await UI.redo(); await idle();
+    assert(UI.isDirty() && recoverCopy(), 'redo is dirty again');
+    UI.fileSave();
+    assert(modalOpen(), 'Save asks for a name');
+    D.querySelector('#modal-body input').value = 'SmokeDirty1';
+    clickModalButton('OK');
+    assert(!UI.isDirty() && recoverCopy() == null && UI.App.fileName === 'SmokeDirty1' && !$('doc-title').classList.contains('dirty'), 'Save cleared it');
+    await UI.rebuild(); await idle();
+    assert(!UI.isDirty(), 'a rebuild with no change made the saved part dirty');
+    forgetDocs(['SmokeDirty1']);
+    return D.title;
+  });
+  step('autorecover: start-up offers unsaved work ("Anvil found unsaved work from …: Dirty2") — Recover opens it still unsaved, Discard deletes the copy; a copy equal to the open part is not offered', async function () {
+    await anvil.newPart('Dirty2'); await idle();
+    await anvil.append('p.box(12, 8, 4);'); await idle();
+    var raw = W.localStorage.getItem('anvil.recover');
+    assert(raw, 'no recovery copy');
+    await anvil.newPart('Other'); await idle();
+    assert(recoverCopy() == null, 'New dropped the copy');
+    // Recover (UI.offerRecovery is what boot runs once the start-up part is up)
+    W.localStorage.setItem('anvil.recover', raw);
+    assert(UI.offerRecovery() === true && modalOpen(), 'no Document Recovery dialog');
+    var txt = $('modal-body').textContent;
+    assert(/Anvil found unsaved work from .+: Dirty2/.test(txt), 'dialog text: ' + txt);
+    clickModalButton('Recover');
+    await idle(); await wait(30); await idle();
+    var s = anvil.summary();
+    assert(s.name === 'Dirty2' && s.features === 2 && Math.abs(s.volume - 384) < 1e-6, 'recovered: ' + JSON.stringify({ name: s.name, f: s.features, v: s.volume }));
+    assert(UI.isDirty() && recoverCopy() && recoverCopy().name === 'Dirty2', 'the recovered part is still unsaved, its copy kept');
+    // Discard
+    await anvil.newPart('Other'); await idle();
+    W.localStorage.setItem('anvil.recover', raw);
+    assert(UI.offerRecovery() === true && modalOpen(), 'dialog for Discard');
+    clickModalButton('Discard');
+    assert(!modalOpen() && recoverCopy() == null && anvil.summary().name === 'Other', 'Discard kept the open part and deleted the copy');
+    // the copy matches the open document: dropped without asking
+    await anvil.append('p.box(1, 1, 1);'); await idle();
+    var same = W.localStorage.getItem('anvil.recover');
+    UI.markClean(); W.localStorage.setItem('anvil.recover', same);
+    assert(UI.offerRecovery() === false && !modalOpen() && recoverCopy() == null, 'a copy of the open part was offered');
+    return txt;
+  });
+  step('autorecover: File ▸ New, File ▸ New ▸ Part and Open with unsaved changes ask "Save changes to Keep1?" — Cancel keeps the part, Don\'t Save goes on, Save saves first; the page warns before unload', async function () {
+    await anvil.newPart('Keep1'); await idle();
+    await anvil.append('p.box(5, 5, 5);'); await idle();
+    UI.fileNew();
+    clickModalButton('New part');
+    assert(modalOpen() && /Save changes to Keep1\?/.test($('modal-body').textContent), 'no save prompt: ' + $('modal-body').textContent);
+    var btns = Array.prototype.map.call(D.querySelectorAll('#modal-buttons button'), function (b) { return b.textContent; }).join('|');
+    assert(btns === "Save|Don't Save|Cancel", 'buttons ' + btns);
+    clickModalButton('Cancel');
+    await idle();
+    assert(!modalOpen() && anvil.summary().name === 'Keep1' && anvil.summary().features === 2 && UI.isDirty(), 'Cancel did not keep the part');
+    // the page asks before it is closed or reloaded while dirty
+    var ev = new W.Event('beforeunload', { cancelable: true });
+    W.dispatchEvent(ev);
+    assert(ev.defaultPrevented, 'beforeunload not cancelled with unsaved changes');
+    UI.fileOpen();
+    assert(/Save changes to Keep1\?/.test($('modal-body').textContent), 'Open did not ask');
+    clickModalButton('Cancel');
+    assert(!modalOpen() && anvil.summary().name === 'Keep1', 'Open ▸ Cancel');
+    // File ▸ New ▸ Part (menu): Save, named in the prompt, then the new part
+    var p = UI.newPart();
+    assert(/Save changes to Keep1\?/.test($('modal-body').textContent), 'New ▸ Part did not ask');
+    clickModalButton('Save');
+    assert(modalOpen() && D.querySelector('#modal-body input'), 'Save asks for a name');
+    D.querySelector('#modal-body input').value = 'SmokeKeep1';
+    clickModalButton('OK');
+    await p; await idle();
+    var files = JSON.parse(W.localStorage.getItem('anvil.files') || '{}');
+    assert(files.SmokeKeep1 && files.SmokeKeep1.model.features.length === 2, 'not saved before New');
+    assert(anvil.summary().name === 'Part1' && anvil.summary().features === 0 && !UI.isDirty() && recoverCopy() == null, 'new part after Save');
+    ev = new W.Event('beforeunload', { cancelable: true });
+    W.dispatchEvent(ev);
+    assert(!ev.defaultPrevented, 'beforeunload cancelled with nothing unsaved');
+    // a clean document goes straight on
+    UI.fileNew(); clickModalButton('New part'); await idle();
+    assert(!modalOpen(), 'a clean part asked to save');
+    // Don't Save
+    await anvil.append('p.box(3, 3, 3);'); await idle();
+    p = UI.newPart('Fresh');
+    clickModalButton("Don't Save");
+    await p; await idle();
+    assert(anvil.summary().name === 'Fresh' && anvil.summary().features === 0 && !UI.isDirty(), "Don't Save");
+    assert(typeof UI.confirmDiscard === 'function', 'UI.confirmDiscard (Close Drawing) missing');
+    forgetDocs(['SmokeKeep1']);
+    return btns;
+  });
+  step('view: Zoom to Fit in a sketch keeps the geometry and the dimension labels inside the graphics area with a margin', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), showDims = UI.App.view.showDims;
+    UI.setTool('line'); rskClick([0, 0]); rskClick([60, 0]); rskClick([60, 40]); rskClick([0, 40]); rskClick([0, 0]);
+    UI.setTool('select');
+    // labels well away from the geometry (25 mm off a 60 × 40 rectangle)
+    f.dims = [{ e: 0, k: 'len', off: -25 }, { e: 1, k: 'len', off: 25 }, { e: 2, k: 'len', off: -25 }, { e: 3, k: 'len', off: 25 }];
+    UI.updateSketches();
+    UI.zoomView(0.3); UI.finishViewAnimation();
+    UI.zoomToFit(); UI.finishViewAnimation();
+    r4Dims();
+    var vr = $('viewport').getBoundingClientRect(), w = vr.width, h = vr.height;
+    var texts = Array.prototype.filter.call(D.querySelectorAll('#dim-layer g.dim text'), function (t) { return t.getBoundingClientRect().width > 0; });
+    assert(texts.length >= 4, texts.length + ' labels drawn');
+    var bad = [], m = Math.min(w, h) * 0.03;
+    texts.forEach(function (t) { var r = t.getBoundingClientRect(); if (r.left - vr.left < m || r.top - vr.top < m || r.right - vr.left > w - m || r.bottom - vr.top > h - m) bad.push(t.textContent + ' @ ' + Math.round(r.left - vr.left) + ',' + Math.round(r.top - vr.top)); });
+    assert(!bad.length, 'labels at the edge of a ' + Math.round(w) + ' × ' + Math.round(h) + ' view: ' + bad.join('; '));
+    var pl = UI.activePlane(), gx0 = Infinity, gx1 = -Infinity, gy0 = Infinity, gy1 = -Infinity;
+    [[0, 0], [60, 0], [60, 40], [0, 40]].forEach(function (q) { var s = UI.worldToScreen(K.to3D(pl, q[0], q[1])); gx0 = Math.min(gx0, s[0]); gx1 = Math.max(gx1, s[0]); gy0 = Math.min(gy0, s[1]); gy1 = Math.max(gy1, s[1]); });
+    assert(gx0 > w * 0.08 && gx1 < w * 0.92 && gy0 > h * 0.08 && gy1 < h * 0.92, 'geometry margin: ' + [gx0, gy0, gx1, gy1].map(Math.round).join(','));
+    UI.App.view.showDims = showDims;
+    UI.exitSketch(true); await idle();
+    return 'geometry ' + [gx0, gy0, gx1, gy1].map(Math.round).join(',') + ' in ' + Math.round(w) + ' × ' + Math.round(h);
+  });
+  step('view: F zooms to fit right after OK in a PropertyManager (and with a check box focused)', async function () {
+    await anvil.run('p.box(40, 30, 20);'); await idle();
+    UI.cmdPlane(); await idle();
+    assert(UI.hasPM(), 'Plane PM');
+    var ok = D.querySelector('#pm .pm-ok');
+    assert(ok, 'no ✓ button');
+    ok.focus(); ok.click(); await idle();
+    assert(!UI.hasPM(), 'the PM stayed open');
+    UI.zoomView(0.1); UI.finishViewAnimation();
+    var s0 = UI.cam.scale, t = D.activeElement || D.body;
+    t.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true }));
+    UI.finishViewAnimation();
+    assert(UI.cam.scale > s0 * 3, 'F did not fit after OK (focus on ' + t.tagName + '): ' + s0 + ' → ' + UI.cam.scale);
+    // a focused check box does not take F (it keeps Space)
+    var cb = D.createElement('input'); cb.type = 'checkbox'; $('tp-strip').appendChild(cb); cb.focus();
+    UI.zoomView(0.1); UI.finishViewAnimation();
+    var s1 = UI.cam.scale;
+    cb.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'F', bubbles: true, cancelable: true }));
+    UI.finishViewAnimation();
+    cb.remove();
+    assert(UI.cam.scale > s1 * 3, 'F with a check box focused: ' + s1 + ' → ' + UI.cam.scale);
+    // a text box still keeps its letters
+    var tx = $('cmd-search'); tx.focus();
+    UI.zoomView(0.5); UI.finishViewAnimation();
+    var s2 = UI.cam.scale;
+    tx.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true }));
+    tx.blur();
+    assert(UI.cam.scale === s2, 'F typed into Search Commands zoomed');
+    UI.zoomToFit(); UI.finishViewAnimation();
+    return 'scale ' + s0.toFixed(4) + ' → fit';
+  });
+  step('api: anvil.dxfFlat() / flat() during a rebuild say "rebuild in progress" (summary().rebuilding); the Async forms wait and match the finished build', async function () {
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);'); await idle();
+    var before = anvil.flat().size.slice();
+    UI.pushUndo();
+    UI.App.model.sheet.thickness = 0.075;   // a parameter change, rebuilt in the background
+    var p = UI.rebuild();
+    if (!UI.rebuildPending()) { await p; return 'main-thread build (worker off): nothing pending to test'; }
+    var msg = '';
+    try { anvil.dxfFlat(); } catch (e) { msg = e.message; }
+    assert(/rebuild in progress/.test(msg), 'dxfFlat during the rebuild: ' + (msg || 'no error'));
+    msg = ''; try { anvil.flat(); } catch (e) { msg = e.message; }
+    assert(/rebuild in progress/.test(msg), 'flat during the rebuild: ' + (msg || 'no error'));
+    assert(anvil.summary().rebuilding === true, 'summary().rebuilding');
+    var dxf = await anvil.dxfFlatAsync();
+    assert(/SECTION/.test(dxf) && /EOF/.test(dxf), 'dxfFlatAsync text');
+    var after = anvil.flat();
+    assert(anvil.summary().rebuilding === false && Math.abs(after.size[0] - before[0]) > 1e-6, 'flat after the rebuild: ' + before + ' → ' + after.size);
+    return msg;
+  });
+  step('layout: a 400 px window does not scroll sideways (menu bar fits, the app and the graphics area cannot be scrolled)', async function () {
+    await withFrameWidth(400, async function () {
+      await wait(60);
+      var sw = D.documentElement.scrollWidth;
+      assert(sw <= W.innerWidth, 'page ' + sw + ' px wide in a ' + W.innerWidth + ' px window');
+      var mr = $('menus').getBoundingClientRect();
+      assert(mr.width > 0 && mr.right <= W.innerWidth, 'menus ' + Math.round(mr.right));
+      D.scrollingElement.scrollLeft = 80; $('app').scrollLeft = 80; $('viewport').scrollLeft = 80;
+      assert(D.scrollingElement.scrollLeft === 0 && $('app').scrollLeft === 0 && $('viewport').scrollLeft === 0, 'scrolled: page ' + D.scrollingElement.scrollLeft + ', app ' + $('app').scrollLeft + ', viewport ' + $('viewport').scrollLeft);
+      // the Modify box focused at the right edge of the graphics area moves nothing
+      var de = $('dim-edit'), x0 = $('viewport').getBoundingClientRect().left;
+      de.hidden = false; de.style.left = ($('viewport').clientWidth - 20) + 'px'; de.style.top = '60px';
+      de.querySelector('input').focus();
+      var moved = $('viewport').getBoundingClientRect().left - x0 || D.scrollingElement.scrollLeft || $('viewport').scrollLeft;
+      de.querySelector('input').blur(); de.hidden = true; de.style.left = ''; de.style.top = '';
+      assert(!moved, 'focusing the Modify box shifted the app ' + moved + ' px');
+    });
+    return 'ok';
+  });
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {
@@ -9308,6 +9904,8 @@
     el.className = passed === total ? 'ok' : 'bad';
     el.textContent = passed + ' / ' + total + ' passed' + (passed === total ? '' : ' — ' + (total - passed) + ' FAILED');
     window.__anvilSmoke = { passed: passed, total: total, results: results, errors: errors };
+    // the suite's documents are not the user's unsaved work: no recovery copy for the next session, no "leave the page?"
+    try { if (UI && UI.markClean) UI.markClean(); localStorage.removeItem('anvil.recover'); } catch (e) { }
   }
 
   var frame = document.getElementById('app');
@@ -9332,7 +9930,9 @@
   try { localStorage.removeItem('anvil.theme'); } catch (e) { }
   // r12/chrome12: and the FeatureManager / Task Pane widths a user dragged (they change the graphics area's size)
   try { localStorage.removeItem('anvil.fmWidth'); localStorage.removeItem('anvil.tpWidth'); } catch (e) { }
-  try { localStorage.setItem('anvil.units', 'mm'); } catch (e) { }   // r15/inches15: the suite's geometry is metric; new documents default to inches otherwise
+  try { localStorage.setItem('anvil.units', 'mm'); } catch (e) { }
+  // AutoRecover: a recovery copy left by an earlier run (or by the user) would open the Document Recovery dialog at boot
+  try { localStorage.removeItem('anvil.recover'); localStorage.removeItem('anvil.autosave'); } catch (e) { }   // r15/inches15: the suite's geometry is metric; new documents default to inches otherwise
   frame.src = '../index.html';
 })();
 </script>

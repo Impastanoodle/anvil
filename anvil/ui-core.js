@@ -297,7 +297,49 @@ var UI = (function () {
   }
   var sceneVer = 0;   // bumped when the body or the sketches are redrawn
 
-  function zoomToFit() { fitBox(modelBounds()); }
+  // Zoom to Fit (F): the body and the sketches with a margin all round (fitCam); in a sketch also the dimension labels
+  // and relation icons drawn round it, which sit off the geometry at a fixed size on screen: fit the geometry, draw the
+  // dimensions for that view, take the box of what was drawn (screen pixels back onto the view plane) into the bounds
+  // and fit again, until the labels are inside the margin (bent-channel item 11, complex-sketch item 10).
+  function zoomToFit() {
+    var b = modelBounds();
+    if (App.mode !== 'sketch' || !UI.drawDims) { fitBox(b); return; }
+    var from = viewPose();
+    fitCam(b);
+    for (var pass = 0; pass < 3; pass++) {
+      var lb = overlayBounds();
+      if (!lb) break;
+      var m = fitMargin(), inside = lb.x0 >= m.x * 0.5 && lb.y0 >= m.y * 0.5 && lb.x1 <= size.w - m.x * 0.5 && lb.y1 <= size.h - m.y * 0.5;
+      if (inside) break;
+      var grown = { min: b.min.slice(), max: b.max.slice() };
+      [[lb.x0, lb.y0], [lb.x1, lb.y0], [lb.x0, lb.y1], [lb.x1, lb.y1]].forEach(function (q) {
+        var w = cam.target.clone().addScaledVector(cam.right, (q[0] - size.w / 2) * cam.scale).addScaledVector(cam.up, (size.h / 2 - q[1]) * cam.scale);
+        for (var k = 0; k < 3; k++) { var v = w.getComponent(k); if (v < grown.min[k]) grown.min[k] = v; if (v > grown.max[k]) grown.max[k] = v; }
+      });
+      b = grown;
+      fitCam(b);
+    }
+    App.dimsStale = true;
+    animateViewFrom(from);
+  }
+  // the screen box (viewport pixels) of the sketch overlay as drawn for the current camera: dimension lines, labels and
+  // relation icons (not the cursor feedback); null when nothing is drawn
+  function overlayBounds() {
+    var layer = $('dim-layer');
+    if (!layer || !UI.drawDims) return null;
+    try { UI.drawDims(); } catch (e) { return null; }
+    App.dimsStale = false;
+    var vr = viewport.getBoundingClientRect(), x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    Array.prototype.forEach.call(layer.querySelectorAll('text, line, path, polyline, rect, use'), function (n) {
+      if (n.closest('defs, .sk-feedback')) return;
+      var r = n.getBoundingClientRect();
+      if (!r.width && !r.height) return;
+      x0 = Math.min(x0, r.left - vr.left); y0 = Math.min(y0, r.top - vr.top); x1 = Math.max(x1, r.right - vr.left); y1 = Math.max(y1, r.bottom - vr.top);
+    });
+    return x0 < x1 ? { x0: x0, y0: y0, x1: x1, y1: y1 } : null;
+  }
+  // Zoom to Fit's margin on each side, in pixels: 9% of the graphics area, at least 60 px
+  function fitMargin() { return { x: Math.max(60, size.w * 0.09), y: Math.max(60, size.h * 0.09) }; }
 
   // Bounding box {min, max} of one body of a multi-body part, from the combined-mesh faces tagged with that body
   // (face.body, see bodyOfFace). Null when the index has no triangles.
@@ -336,7 +378,8 @@ var UI = (function () {
       ex = Math.max(ex, Math.abs(p.dot(cam.right))); ey = Math.max(ey, Math.abs(p.dot(cam.up)));
     }
     ex = Math.max(ex, 1); ey = Math.max(ey, 1);
-    cam.scale = Math.max(ex * 2 / Math.max(size.w - 120, 100), ey * 2 / Math.max(size.h - 120, 100));
+    var m = fitMargin();
+    cam.scale = Math.max(ex * 2 / Math.max(size.w - 2 * m.x, 100), ey * 2 / Math.max(size.h - 2 * m.y, 100));
     applyCamera();
   }
 
@@ -2686,8 +2729,68 @@ var UI = (function () {
     return rebuild();
   }
 
+  // ------------------------------------------------------------------ unsaved changes and AutoRecover
+  // SolidWorks' "Part1 *" and Tools ▸ Options ▸ Backup/Recover. The document is dirty while App.model differs from what
+  // was last opened, created or saved (compared as JSON on every applied rebuild and on every edit that calls
+  // autosave(), so undoing back to the saved state is clean again). While dirty the title shows "*", the page asks
+  // before it is closed (ui-app.js) and a recovery copy is kept in localStorage 'anvil.recover' as
+  // { v, savedAt, name, fileName, drawing (index of the open drawing or null), model }; it is dropped on Save, New, Open
+  // and Discard. At start-up ui-app.js offers it (Recover / Discard) instead of restoring it silently. The drawings
+  // live in the model (model.drawings), so they are in the copy too.
+  var RECOVER_KEY = 'anvil.recover';
+  // json: the clean state ('' = never saved, null = not known yet); loading: a document is being opened (its first
+  // rebuild writes the sketch profiles back into the model); hold: the start-up dialog has not been answered yet
+  var clean = { json: null, loading: false, hold: false };
+  App.dirty = false;
+  function modelJson() { try { return JSON.stringify(App.model); } catch (e) { return null; } }
   function autosave() {
-    try { localStorage.setItem('anvil.autosave', JSON.stringify(App.model)); } catch (e) { }
+    if (clean.loading || !App.model) return;
+    var json = modelJson();
+    if (json == null) return;
+    var was = App.dirty;
+    App.dirty = clean.json != null && json !== clean.json;
+    // the recovery dialog closed with ✕ and work started: the new work is what needs protecting now
+    if (clean.hold && App.dirty && $('modal').hidden) clean.hold = false;
+    if (!clean.hold) {
+      if (App.dirty) writeRecovery(json);
+      else if (was) dropRecovery();
+    }
+    showDirty();
+  }
+  function writeRecovery(json) {
+    var dw = null;
+    try { if (UI.drawingActive && UI.drawingActive() && UI.drawing && UI.drawing.state) dw = UI.drawing.state.index; } catch (e) { }
+    try {
+      localStorage.setItem(RECOVER_KEY, '{"v":1,"savedAt":' + Date.now() + ',"name":' + JSON.stringify(App.model.name || '') + ',"fileName":' + JSON.stringify(App.fileName || null) +
+        ',"drawing":' + JSON.stringify(dw == null ? null : dw) + ',"model":' + json + '}');
+    } catch (e) { }
+  }
+  function dropRecovery() { try { localStorage.removeItem(RECOVER_KEY); } catch (e) { } }
+  function readRecovery() {
+    var raw = null;
+    try { raw = localStorage.getItem(RECOVER_KEY); } catch (e) { return null; }
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { dropRecovery(); return null; }
+  }
+  // markClean(): the open document now matches what was opened, created or saved; its recovery copy goes
+  function markClean() {
+    clean.loading = false;
+    clean.json = modelJson();
+    App.dirty = false;
+    if (!clean.hold) dropRecovery();
+    showDirty();
+  }
+  // markUnsaved(): a document that was never saved (a model made by a script, a recovered copy) stays dirty until saved
+  function markUnsaved() { clean.loading = false; clean.json = ''; autosave(); }
+  function isDirty() { return !!App.dirty; }
+  function holdRecovery(on) { clean.hold = !!on; }
+  // "Part1 *": a class on #doc-title (style.css adds the star, so the title text the panels write stays the name) and
+  // the browser tab's title
+  function showDirty() {
+    var t = $('doc-title');
+    if (t) t.classList.toggle('dirty', !!App.dirty);
+    var title = App.model && App.model.name ? App.model.name + (App.dirty ? ' *' : '') + ' - Anvil' : 'Anvil';
+    if (document.title !== title) document.title = title;
   }
   function pushUndo() {
     App.undo.push(JSON.stringify(App.model));
@@ -2730,9 +2833,13 @@ var UI = (function () {
     App.sel = null; App.sel2 = null;
     App.hiddenBodies = {}; // hidden bodies/components are viewport state of the previous document
     App.activeSketch = null; App.mode = 'part';
-    var p = rebuild();
+    // the opened document is clean once its first rebuild is applied (markClean below; a rejected build too)
+    clean.loading = true;
+    var p;
+    try { p = rebuild(); } catch (e) { markClean(); throw e; }
+    if (!p.applied) p.then(null, function () { if (clean.loading) markClean(); });
     $('doc-title').textContent = model.name;
-    return afterRebuild(p, function (b) { zoomToFit(); return b; });
+    return afterRebuild(p, function (b) { markClean(); zoomToFit(); return b; });
   }
 
   window.addEventListener('resize', resize);
@@ -2787,6 +2894,9 @@ var UI = (function () {
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY, imagePresets: imagePresets, defaultUnits: defaultUnits, setDefaultUnits: setDefaultUnits, lenDefault: lenDefault,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,
     autosave: autosave, pushUndo: pushUndo, undo: undo, redo: redo, loadModel: loadModel,
+    // unsaved changes and AutoRecover (ui-app.js: title star, save prompts, the start-up Recover / Discard dialog)
+    isDirty: isDirty, markClean: markClean, markUnsaved: markUnsaved, readRecovery: readRecovery, dropRecovery: dropRecovery, holdRecovery: holdRecovery,
+    rebuildPending: function () { return !!(wk.inflight || wk.pending); },
     getBodyMesh: function () { return bodyMesh; },
     // multi-body parts (viewport side): see the "bodies" section
     // assembly documents

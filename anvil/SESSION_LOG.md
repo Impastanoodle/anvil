@@ -1275,3 +1275,14 @@ Newest entry last. Each entry: what was done, decisions, and "next up" for the f
 **Verified.** kernel-tests 863/863 (new `flat-weld` test fails on the old code); occt-tests 57/57 (new row: the inch bracket's flat from OpenCascade's mesh has the outline, 4 holes and the slot, and its DXF has 4 CIRCLEs); examples 29/29 on both kernels; ui-smoke 335/335; in the app the flat DXF is 4 outline LINEs, 4 CIRCLEs, slot 2 LINEs + 2 ARCs.
 
 **Next up (DXF / DWG).** Views DXF is drawn at the sheet scale (a 60 × 40 plate came out 1:10) with the title block and always R12; no preview or native save dialog; edge-flange length / position defaults differ from SolidWorks (a 6 in base with 1.5 in flanges is 6.24 × 1.62 outside); DWG only via LibreDWG.
+
+## 2026-10-07T09 (interactive head, 7 subagents in worktrees): fixes from the two hand-test reports
+
+Context: the user hand-tested a bent channel and a complex sketch (`test-reports/2026-10-07-*.md`) and asked to fix every bug with agents.
+- kernel: relief notches in the flat pattern/DXF; Edge Flange `lengthRef` ('outer' default for new flanges, 'inner', 'tangent', 'wall' = legacy/absent); position 'virtualSharp'; hem `hemType` (open/closed/teardrop/rolled) and `hemPosition`; `Kernel.bendNoteText` ("UP 90° R.060") in the flat DXF; sketch DXF puts nested loops on HOLES.
+- new feature: Sketched Bend (`sketchedBend`, CSG kernel, PM, flat pattern, tests).
+- commands: flange length reference / hem type & position in the PMs (old flanges show "Wall Length"), last values remembered, Flatten / Flat to DXF use DXF/DWG Output, Sheet-Metal edit keeps the part on screen, ribbon tab kept, Section View through the middle, menu click-through.
+- app/core: AutoRecover prompt instead of silent restore, `*` dirty title, Save / Don't Save / Cancel on New/Open, beforeunload, Zoom to Fit margin + labels, F after PM OK, flat API during rebuild, no sideways scroll when narrow.
+- sketch: fillet crash + duplicate origin relation, Trim keeps relations/dims (collinear, outer-end distance, 3-point midpoint), mirror holds slots/polygons/rectangles, circle+point dimension, single undo for driven, tool ends when a PM opens, labels/glyphs don't steal clicks, dimension to model edges, ctrl+click multi-select, Ø.266 on the part.
+- drawing: bend table on free paper with BEND DED. (optional BEND ALLOW., K-FACTOR), R.060, slot callout ".375 X 1.875 SLOT".
+Tests: kernel 895/895, ui-smoke 358/358 (headless). Not done (QUEUE): OCCT flat with relief notches, OCCT Sketched Bend, Close Drawing prompt, Mirror default axis.

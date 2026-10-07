@@ -353,8 +353,11 @@ if (typeof UI !== 'undefined') (function (UI) {
     var hit = UI.pickEntity(mx, my);
     if (!hit) return true;
     if (collecting && UI.pmEntityPick && UI.pmEntityPick(hit)) return true;
+    // p9-sketchfix: the selection is read before the entity's PropertyManager closes: closing it consumes the selection
+    // (ui-commands.js closePM), so Ctrl+click on a second circle replaced the first instead of adding to it
+    var had = selection().filter(function (s) { return s.kind === 'entity'; });
     if (!collecting) UI.closePM();
-    setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hit], 'toggle', selKey));
+    setSelection(BoxSelect.combine(had, [hit], 'toggle', selKey));
     return true;
   }
 
@@ -773,7 +776,7 @@ if (typeof UI !== 'undefined') (function (UI) {
         h = linearHandle({ O: K.to3D(pl, g.C[0], g.C[1]), dir: to3Ddir(pl, u), k: g.prefix === '⌀' ? 2 : 1, g: g });
       }
       h.kind = 'sdim'; h.sketch = sk.id; h.dim = it.d; h.dimIndex = it.index; h.auto = !!it.auto; h.value = g.value; h.live = !!liveSketch;
-      h.label = sk.name + ' ' + (g.prefix || '') + UI.fmtNum(g.value, 2); h.prefix = g.prefix || ''; h.min = 0;
+      h.label = sk.name + ' ' + (g.prefix === '⌀' ? 'Ø' : g.prefix || '') + dimText(g.value); h.prefix = g.prefix || ''; h.min = 0;
       h.apply = function (v) {
         var skNow = K.findFeature(App.model, sk.id), ent = skNow && skNow.entities[it.d.e];
         if (!ent) return false;
@@ -882,6 +885,9 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
 
   // ---- drawing
+  // p9-sketchfix: a sketch dimension shown on the part reads as it does in the sketch (ui-sketch.js fmtDim: Ø.266 in an
+  // inch part, not Ø0.27)
+  function dimText(v) { return UI.fmtDim ? UI.fmtDim(v) : UI.fmtNum(v, 2); }
   function unit2(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy); return L < 1e-9 ? null : [dx / L, dy / L]; }
   function arrowHead(g, tip, u, size, cls) {
     var px = -u[1] * size * 0.38, py = u[0] * size * 0.38;
@@ -912,7 +918,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!gg) return;
     var P = function (uv) { return S(K.to3D(pl, uv[0], uv[1])); };
     var dg = svg('g', { 'class': 'i3d-dim' }, g), label, at;
-    var text = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + UI.fmtNum(v != null ? v : gg.value, 2);
+    var text = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + dimText(v != null ? v : gg.value);
     // r14/sketchui14: laid out exactly as the sketch's own dimensions (ui-sketch.js dimLayout): SolidWorks ANSI,
     // Century Gothic, the text horizontal in a break of the line, slim arrows, radius / diameter leaders with a shoulder
     var sc = UI.dimLayout && (gg.type === 'linear' ? UI.linearDimScreen(pl, gg.P, gg.Q, gg.dir, h.off, null) : UI.radialDimScreen(pl, gg.C, gg.r, h.dim.ang, null));
@@ -945,7 +951,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       at = [T[0], T[1] - 4];
     }
     label = svg('text', { x: at[0], y: at[1], 'text-anchor': 'middle', 'class': 'i3d-dim-text' }, dg);
-    label.textContent = gg.prefix + UI.fmtNum(v != null ? v : gg.value, 2);
+    label.textContent = (gg.prefix === '⌀' ? 'Ø' : gg.prefix) + dimText(v != null ? v : gg.value);
     label.addEventListener('mousedown', function (ev) { ev.stopPropagation(); ev.preventDefault(); openEdit(h); });
     label.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
   }
@@ -1014,7 +1020,13 @@ if (typeof UI !== 'undefined') (function (UI) {
         } else if (d) { var tx = svg('text', { 'class': 'i3d-value', x: tip[0] + (u ? u[0] * 10 : 0), y: tip[1] + (u ? u[1] * 10 : 0) - 6, 'text-anchor': 'middle' }, g); tx.textContent = fmtV(v, h); }
       }
       hg.setAttribute('aria-label', h.label + ' ' + fmtV(v, h) + ' — drag to change');
-      hg.addEventListener('mousedown', function (ev) { if (ev.button !== 0) return; ev.stopPropagation(); ev.preventDefault(); startDrag(h, ev); });
+      // p9-sketchfix: a sketch's grip left on screen after a tool or a PropertyManager took over (it is redrawn with the
+      // dimensions) lets the press through to the sketch: it swallowed Smart Dimension's click on a circle
+      hg.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0) return;
+        if (h.live && (App.mode !== 'sketch' || App.tool !== 'select' || App.command)) { App.dimsStale = true; return; }
+        ev.stopPropagation(); ev.preventDefault(); startDrag(h, ev);
+      });
       hg.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
     });
     if (i3d.edit && !i3d.drag) positionEdit();

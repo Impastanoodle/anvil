@@ -293,7 +293,7 @@
     if (!fd || fd.error) return { error: fd ? fd.error : 'no flat pattern' };
     var r3 = function (x) { return +x.toFixed(4); };
     return { size: [r3(fd.bbox.umax - fd.bbox.umin), r3(fd.bbox.vmax - fd.bbox.vmin)], bendNotes: w.view.bendNotes || Drawing.docOptions(doc()).bendNotes,
-      bends: fd.bends.map(function (b) { return { up: b.up, angle: r3(b.angle), R: r3(b.R), a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
+      bends: fd.bends.map(function (b) { return { up: b.up, angle: r3(b.angle), R: r3(b.R), ba: b.ba != null ? r3(b.ba) : null, bd: b.bd != null ? r3(b.bd) : null, a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
       circles: fd.circles.length, arcs: fd.arcs.length, lines: fd.lines.length,
       annotations: (D.sheet.annotations || []).filter(function (a) { return a.flat && a.view === w.view.id; }).map(function (a) { return { id: a.id, key: a.key, type: a.type, text: a.text, hidden: a.hidden, box: [a.box.x0, a.box.y0, a.box.x1, a.box.y1].map(function (x) { return +x.toFixed(3); }) }; }) };
   }
@@ -375,7 +375,8 @@
         return r && r.then ? r.then(function () { return summary(); }) : Promise.resolve(r === false ? null : summary());
       },
       // sheet metal: flatView({ x, y, scale, bendNotes: 'notes' | 'table' | 'none' }) adds the flat-pattern view (one
-      // undo step; null and a message on a part that is not sheet metal); flatViewProps(id, { bendNotes, flatSize });
+      // undo step; null and a message on a part that is not sheet metal); flatViewProps(id, { bendNotes, flatSize,
+      // bendCols: ['bd', 'ba', 'k'] (the Bend Table's optional columns; null: BEND DED. only) });
       // flatAnnotation(viewId, key ('b0', 'b1' … | 'table' | 'size'), { off: [dx, dy], hidden })
       flatView: function (opts) {
         opts = opts || {};

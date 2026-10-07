@@ -143,16 +143,18 @@
     App.tool = name || 'select';
     App.toolState = { pts: [] };
     App.drawConstruction = false;
+    App.dimsStale = true;   // p9-sketchfix: the dimension grips (Instant3D) show with the Select tool only: redrawn now
     viewport.classList.toggle('tool-cross', App.tool !== 'select');
     viewport.setAttribute('data-sktool', App.tool);   // r12/sketchui12: the pencil cursor with the tool's glyph (style.css)
     var hint = $('sketch-hint');
     hint.hidden = App.mode !== 'sketch';
     hint.innerHTML = TOOL_HINTS[App.tool] || '';
-    if (App.tool === 'polygon') UI.openToolPM('polygon');
+    if (App.tool === 'polygon') { toolPMOpening = true; try { UI.openToolPM('polygon'); } finally { toolPMOpening = false; } }
     else if (App.tool !== 'select') UI.closePM();
     UI.refreshRibbon();
   }
   function cancelTool(keep) {
+    if (App.toolState && App.toolState.modelRefs && UI.dropUnusedModelRefs) UI.dropUnusedModelRefs(App.toolState.modelRefs);
     if (App.toolState && (App.toolState.arcMode || App.toolState.tanFrom) && App.mode === 'sketch') $('sketch-hint').innerHTML = TOOL_HINTS[App.tool] || '';
     App.toolState = { pts: [] };
     closeNumBox();
@@ -164,6 +166,32 @@
     UI.updateTemp();
     if (!keep) { App.tool = 'select'; viewport.classList.remove('tool-cross'); UI.refreshRibbon(); if (App.mode === 'sketch') { $('sketch-hint').innerHTML = TOOL_HINTS.select; } }
   }
+  // p9-sketchfix: a PropertyManager that opens in a sketch (Linear Sketch Pattern, Trim, DXF/DWG Output, …) puts the
+  // sketch tool down, as SolidWorks does: Smart Dimension no longer takes the PM's first click, and Line / Circle /
+  // Polygon / Smart Dimension no longer stay highlighted with their hint over it. Every PropertyManager goes through
+  // App.command (ui-commands.js openPM / closePM set it), so the hook is there: set while a PM is open (UI.hasPM) =
+  // a PM opening; the tool's own PM (Polygon's sides) is opened by setTool and exempt. When a PM closes with the Select
+  // tool, the hint goes back to the Select tool's (a command's onClose may have put back the hint of the tool it found).
+  var toolPMOpening = false, commandNow = App.command;
+  function endSketchTool() {
+    if (App.mode !== 'sketch' || !App.tool || App.tool === 'select') return false;
+    cancelTool();
+    return true;
+  }
+  Object.defineProperty(App, 'command', {
+    configurable: true, enumerable: true,
+    get: function () { return commandNow; },
+    set: function (v) {
+      commandNow = v;
+      if (App.mode !== 'sketch' || toolPMOpening) return;
+      if (UI.hasPM ? UI.hasPM() : v != null) { endSketchTool(); return; }
+      if (App.tool === 'select') setTimeout(function () {
+        var h = $('sketch-hint');
+        if (h && App.mode === 'sketch' && App.tool === 'select' && !(UI.hasPM && UI.hasPM())) h.innerHTML = TOOL_HINTS.select;
+      }, 0);
+    }
+  });
+  UI.endSketchTool = endSketchTool;
 
   // ------------------------------------------------------------------ inference while sketching (no grid)
   // As in SolidWorks there is no snap grid: a point lands where it is clicked and the sketcher infers instead. In order:
@@ -1696,20 +1724,60 @@
     return [x0 - DIM_GAP, y - DIM_CAP - DIM_GAP, x0 + w + DIM_GAP, y + DIM_GAP];
   }
   // owner (a dimension's key): its label must also stay off the other dimensions' lines (dimSegs, second pass)
-  function boxFree(b, owner) {
+  // geo (p9-sketchfix): and off the sketch's own geometry (geoSegs: a label slides off a hole it landed on, a relation
+  // icon that finds no free place clear of the curves is not drawn, so zoomed out the icons no longer cover the sketch)
+  function boxFree(b, owner, geo) {
     for (var i = 0; i < labelBoxes.length; i++) { var o = labelBoxes[i]; if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return false; }
     if (owner != null && dimSegs && onOtherLines(b, owner, dimSegs)) return false;
+    if (geo && geoSegs && onGeometry(b)) return false;
     return true;
   }
+  // the active sketch's curves on screen as segments (with their boxes, for a quick reject), made once per drawDims
+  var geoSegs = null;
+  function screenGeometry(f, pl) {
+    var out = [], W = UI.size ? UI.size.w : 1e9, H = UI.size ? UI.size.h : 1e9;
+    (f.entities || []).forEach(function (e) {
+      if (!e || e.t === 'point') return;
+      var pls;
+      try { pls = K.entityPolylines(e); } catch (err) { return; }
+      pls.forEach(function (l) {
+        var s = l.pts.map(function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }), n = s.length, cnt = l.closed ? n : n - 1;
+        for (var k = 0; k < cnt; k++) {
+          var a = s[k], c = s[(k + 1) % n];
+          if (!a || !c) continue;
+          var x0 = Math.min(a[0], c[0]), x1 = Math.max(a[0], c[0]), y0 = Math.min(a[1], c[1]), y1 = Math.max(a[1], c[1]);
+          if (x1 < -50 || y1 < -50 || x0 > W + 50 || y0 > H + 50) continue;
+          out.push({ a: a, b: c, box: [x0, y0, x1, y1] });
+        }
+      });
+    });
+    return out;
+  }
+  function onGeometry(b) {
+    for (var i = 0; i < geoSegs.length; i++) {
+      var g = geoSegs[i], q = g.box;
+      if (q[2] < b[0] || q[0] > b[2] || q[3] < b[1] || q[1] > b[3]) continue;
+      if (segHitsBox(g.a, g.b, b)) return true;
+    }
+    return false;
+  }
+  UI.sketchGeometryAt = function (b) { var f = UI.activeSketchFeature(); if (!f || App.mode !== 'sketch') return false; geoSegs = screenGeometry(f, UI.activePlane()); var r = onGeometry(b); geoSegs = null; return r; };
   function placeLabel(sc, it) {
     if (!sc.text) return;
     var own = it.temp ? null : dimKey(it);
     var al = sc.along, s0 = al && al.shift || 0, b = labelBox(sc, al ? al.u[0] * s0 : 0, al ? al.u[1] * s0 : 0), best = s0;
-    if (al && !it.temp && !boxFree(b, own)) {
+    if (al && !it.temp && !boxFree(b, own, true)) {
       var w = b[2] - b[0], step = al.radial ? 14 : Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b[3] - b[1]) + 4, tries = al.radial ? [1, 2, 3, 4, 5] : [1, -1, 2, -2, 3, -3, 4, -4];
-      for (var k = 0; k < tries.length; k++) {
-        var t = s0 + tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
-        if (boxFree(bb, own)) { best = t; b = bb; break; }
+      // p9-sketchfix: first a place clear of the sketch's curves too; failing that, clear of the labels and lines only
+      // (where it is, if it is), as before
+      for (var pass = 0; pass < 2; pass++) {
+        var geo = pass === 0, found = false;
+        if (!geo && boxFree(b, own, false)) break;
+        for (var k = 0; k < tries.length; k++) {
+          var t = s0 + tries[k] * step, bb = labelBox(sc, al.u[0] * t, al.u[1] * t);
+          if (boxFree(bb, own, geo)) { best = t; b = bb; found = true; break; }
+        }
+        if (found) break;
       }
     }
     if (al && best) {
@@ -1748,8 +1816,41 @@
     if (it.d.driven && UI.drivenDimClick) { UI.drivenDimClick(it); return; }
     openDimEdit(it);
   }
+  // p9-sketchfix: while a PropertyManager collects a selection (Linear Sketch Pattern, Mirror Entities, Add Relations …)
+  // or a tool is waiting for an entity (a drawing tool, Smart Dimension's second pick), a press on a dimension's text
+  // that also lies on sketch geometry goes to the geometry, as the click was meant: the 3.000 label sitting on a Ø.266
+  // hole no longer opens the dimension instead of picking the hole.
+  function geometryUnderLabel(ev) {
+    var st = App.toolState || {};
+    var wants = (App.command && (App.command.onSketchPoint || App.command.onPick)) || (UI.pmCollectsSelection && UI.pmCollectsSelection()) ||
+      (App.tool && App.tool !== 'select' && (App.tool !== 'dimension' || st.dim || st.pt1 || st.relDim));
+    if (!wants) return null;
+    var p = pos(ev);
+    return UI.pickEntity(p[0], p[1]) ? p : null;
+  }
+  function passToGeometry(ev, p) {
+    ev.stopPropagation(); ev.preventDefault();
+    function up(e2) {
+      window.removeEventListener('mouseup', up, true);
+      var q = pos(e2);
+      if (Math.hypot(q[0] - p[0], q[1] - p[1]) > 4 || e2.button !== 0) return;
+      e2.stopPropagation();
+      sketchClick(p[0], p[1], e2);
+    }
+    window.addEventListener('mouseup', up, true);
+  }
+  // the same for a relation icon (ui-relations.js): true when the press went to the geometry under it
+  UI.labelPassThrough = function (ev) {
+    if (ev.button !== 0) return false;
+    var p = geometryUnderLabel(ev);
+    if (!p) return false;
+    passToGeometry(ev, p);
+    return true;
+  };
   function dimPress(ev, it) {
     if (ev.button !== 0) return;
+    var through = geometryUnderLabel(ev);
+    if (through) { passToGeometry(ev, through); return; }
     ev.stopPropagation(); ev.preventDefault();
     var key = dimKey(it), now = performance.now();
     if (lastDimDown && lastDimDown.key === key && now - lastDimDown.t < 450) { lastDimDown = null; editDimItem(it); return; }
@@ -1825,6 +1926,8 @@
     var f = UI.activeSketchFeature(), out, now = performance.now(), busy = now - lastDimDraw < 120;
     lastDimDraw = now;
     dimSegs = null;
+    var fG = UI.activeSketchFeature();
+    geoSegs = fG && App.mode === 'sketch' ? screenGeometry(fG, UI.activePlane()) : null;
     // p9-sketch: a second pass when a label landed on another dimension's line, with every line as an obstacle
     // (and a third when a label moved in the second ran a neighbour's line on into another label). While the view or
     // the sketch changes every frame (zoom, pan, drag) one pass is drawn and the full layout follows 150 ms after the
@@ -1840,7 +1943,7 @@
       if (pass === 2 || !drawnLabels.some(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); })) break;
       dimSegs = dimSegs ? dimSegs.concat(dimSegsNow) : dimSegsNow;
     }
-    dimSegs = null;
+    dimSegs = null; geoSegs = null;
     lastClashes = drawnLabels.filter(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); }).map(function (x) {
       return x.label + ' on ' + dimSegsNow.filter(function (g) { return g.owner !== x.owner && segHitsBox(g.a, g.b, x.box); }).map(function (g) { return g.owner; }).join('/');
     });
@@ -1864,7 +1967,7 @@
       drawOne(sc, it);
     });
     // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
-    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, icon: iconUse, free: boxFree, take: function (b) { labelBoxes.push(b); } });
+    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, icon: iconUse, free: function (b) { return boxFree(b, null, true); }, freeKeep: function (b) { return boxFree(b, null, false); }, take: function (b) { labelBoxes.push(b); } });
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });
@@ -2081,7 +2184,7 @@
     }
     if (st.dim) {
       // a second entity or point clicked: distance / angle between the two, as SolidWorks' Smart Dimension does
-      var ref2 = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+      var ref2 = (UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null) || modelRef(mx, my, st);
       var two = ref2 && st.ref1 && UI.relDimFor ? UI.relDimFor(f, st.ref1, ref2) : null;
       if (two) {
         st.relDim = two; st.dim = null; App.tempDim = null;
@@ -2113,7 +2216,7 @@
     if (st.pt1) {
       // p9-sketch: a point clicked first (a circle's or a slot's centre, a sketch point): the second click names the
       // other point or entity of a distance dimension, as SolidWorks' Smart Dimension does
-      var refB = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, twoB = refB && UI.relDimFor ? UI.relDimFor(f, st.pt1, refB) : null;
+      var refB = (UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null) || modelRef(mx, my, st), twoB = refB && UI.relDimFor ? UI.relDimFor(f, st.pt1, refB) : null;
       st.pt1 = null;
       if (!twoB) { $('sketch-hint').innerHTML = TOOL_HINTS.dimension; UI.setStatus('No distance between those two: click a point, then another point or a line.'); return; }
       st.relDim = twoB;
@@ -2122,18 +2225,23 @@
       $('sketch-hint').innerHTML = 'Click where the ' + (twoB.type === 'angle' ? 'angle' : 'distance') + ' dimension should sit.';
       return;
     }
-    var hit = UI.pickEntity(mx, my);
-    if (!hit) {
+    var hit = UI.pickEntity(mx, my), t = hit ? K.dimForEntity(f.entities[hit.index], raw) : null;
+    // p9-sketchfix: a sketch point (the virtual sharp on the origin after a fillet, a Point) has no dimension of its own:
+    // it starts a distance too (it said "no dimension to place", and the circle clicked next got a second diameter)
+    if (!hit || !t) {
       // p9-sketch: a point that lies on no curve (a circle's or a slot's centre, a sketch point) starts a distance
       var pr = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, sp = pr && window.SketchSolver ? SketchSolver.parseRef(pr) : null;
       if (pr && (pr === 'O' || (sp && window.SketchSolver.refKind(f, pr) === 'point'))) {
         st.pt1 = pr;
         $('sketch-hint').innerHTML = 'Click a second point or a line for the distance from this point.';
+        return;
       }
+      // p9-sketchfix: a model edge or vertex (sketch on a face) first: the distance from it
+      var mr = modelRef(mx, my, st);
+      if (mr) { st.pt1 = mr; $('sketch-hint').innerHTML = 'Click a sketch point, line or circle for the distance from this model ' + (window.SketchSolver.refKind(f, mr) === 'point' ? 'vertex.' : 'edge.'); }
+      else if (hit) UI.toast('That entity has no dimension to place.');
       return;
     }
-    var t = K.dimForEntity(f.entities[hit.index], raw);
-    if (!t) { UI.toast('That entity has no dimension to place.'); return; }
     t.e = hit.index;
     st.dim = t;
     st.ref1 = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
@@ -2141,6 +2249,14 @@
     App.tempDim = Object.assign({}, t, pv);
     App.dimsStale = true;
     $('sketch-hint').innerHTML = 'Click where the dimension should sit, or click a second entity for the distance / angle between them.' + (f.entities[hit.index].t === 'line' ? ' Move above/below or beside a slanted line for its horizontal or vertical distance.' : '');
+  }
+  // p9-sketchfix: a model edge / vertex under the cursor as a sketch ref (ui-relations.js pickModelRef brings it in as
+  // fixed construction geometry); remembered on the tool state so a dimension never placed takes it out again
+  function modelRef(mx, my, st) {
+    var m = UI.pickModelRef ? UI.pickModelRef(mx, my) : null;
+    if (!m) return null;
+    (st.modelRefs = st.modelRefs || []).push(m.entity);
+    return m.ref;
   }
   function dimToolMove(raw) {
     var f = UI.activeSketchFeature(), st = App.toolState;

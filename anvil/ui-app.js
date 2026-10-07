@@ -120,7 +120,7 @@
     function addList(items) {
       var list = el('div', { class: 'list' });
       items.forEach(function (ex) {
-        list.appendChild(el('button', { html: '<b>' + ex.name + '</b><small>' + ex.note + '</small>', onclick: function () { openExample(ex); } }));
+        list.appendChild(el('button', { html: '<b>' + ex.name + '</b><small>' + ex.note + '</small>', onclick: function () { confirmDiscard(null, function () { openExample(ex); }); } }));
       });
       body.appendChild(list);
     }
@@ -135,6 +135,7 @@
   // Design Library entry -> a new part or assembly document (an assembly entry's code is an assembly script)
   function openExample(ex) {
     return runScript(ex.code, true, ex.kind === 'assembly' ? 'assembly' : 'part').then(function (r) {
+      if (!r.error) UI.markClean();   // opened from the Design Library, not made by the user: nothing to save yet
       UI.toast(r.error ? ex.name + ': ' + r.error.split('\n')[0] : 'Loaded ' + ex.name);
       return r;
     });
@@ -149,7 +150,7 @@
       var f = files[n];
       var isA = f.model && f.model.type === 'assembly';
       var b = el('button', { html: '<b>' + n + '</b><small>' + (isA ? 'assembly, ' + ((f.model.components || []).length) + ' components' : (typeof f.features === 'number' ? f.features : (f.features ? f.features.length : 0)) + ' features') + ' · ' + new Date(f.savedAt || 0).toLocaleString() + '</small>' });
-      b.addEventListener('click', function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); });
+      b.addEventListener('click', function () { confirmDiscard(null, function () { rememberPart(); UI.loadModel(JSON.parse(JSON.stringify(f.model))); App.fileName = n; UI.toast('Opened ' + n); }); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, [{ label: 'Delete ' + n, action: function () { delete files[n]; localStorage.setItem('anvil.files', JSON.stringify(files)); openTaskPane('files'); } }]); });
       list.appendChild(b);
     });
@@ -178,7 +179,7 @@
     });
     body.appendChild(sw);
     var inp = el('input', { type: 'color', value: App.model.color || '#a8adb6' });
-    inp.addEventListener('input', function () { App.model.color = inp.value; UI.applyDisplayStyle(); });
+    inp.addEventListener('input', function () { App.model.color = inp.value; UI.applyDisplayStyle(); UI.autosave(); });
     body.appendChild(el('div', { class: 'row' }, [el('span', { text: 'Custom: ' }), inp]));
     body.appendChild(el('h3', { text: 'Scene' }));
     var g = el('div', { class: 'views' });
@@ -372,13 +373,16 @@
       if (!replace) UI.pushUndo();
       if (replace && !isAsm()) { model.color = App.model.color; model.density = App.model.density; if (App.model.material) model.material = App.model.material; }
       K.runScript(model, code);
-      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }
+      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = unsavedAfter(UI.loadModel(model)); App.undo = undo; }
       else p = UI.rebuild();
     } catch (e) {
       return Promise.resolve({ error: (e && e.message) || String(e) });
     }
     return finishScript(p);
   }
+  // a model a script made replaces the document as a new, unsaved one (Design Library entries and opened scripts are
+  // marked clean again by their callers)
+  function unsavedAfter(p) { return p.then(function (b) { UI.markUnsaved(); return b; }); }
   // Assembly scripts (a.insert / a.mate): replace = a new assembly document, else appended to the open assembly.
   function runAssemblyScript(code, replace) {
     var model, p;
@@ -390,7 +394,7 @@
       if (replace) model.units = UI.defaultUnits();   // r15/inches15
       if (!replace) UI.pushUndo();
       Assembly.runScript(model, code);
-      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = UI.loadModel(model); App.undo = undo; }
+      if (replace) { UI.pushUndo(); var undo = App.undo; App.hiddenBodies = {}; p = unsavedAfter(UI.loadModel(model)); App.undo = undo; }
       else p = UI.rebuild();
     } catch (e) {
       return Promise.resolve({ error: (e && e.message) || String(e) });
@@ -469,8 +473,20 @@
   // New SOLIDWORKS-style document: Part or Assembly (the current one stays in File Explorer only if it was saved).
   function fileNew() {
     UI.showModal({ title: 'New Document', body: '<p>Start a new document? The current one stays in File Explorer only if you saved it.</p><p><b>Part</b>: a single design component. <b>Assembly</b>: parts positioned by mates.</p>', buttons: [
-      { label: 'New part', primary: true, action: function () { UI.closeModal(); newPart('Part1'); } },
-      { label: 'New assembly', action: function () { UI.closeModal(); newAssembly('Assem1'); } },
+      { label: 'New part', primary: true, action: function () { UI.closeModal(); confirmDiscard(null, function () { newPart('Part1'); }); } },
+      { label: 'New assembly', action: function () { UI.closeModal(); confirmDiscard(null, function () { newAssembly('Assem1'); }); } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+  }
+  // SolidWorks' "Save changes to Part1?" before the open document is replaced (File ▸ New, Open, a saved file or a
+  // Design Library entry from the Task Pane) or put away (Close Drawing: drawing-ui-panels.js may call it). With no
+  // unsaved changes onProceed runs at once. Save saves under the document's name in this browser (asking for one the
+  // first time), then goes on; Don't Save goes on; Cancel leaves everything as it was.
+  function confirmDiscard(name, onProceed) {
+    if (!UI.isDirty || !UI.isDirty()) { onProceed(); return; }
+    UI.showModal({ title: 'Anvil', body: el('div', { class: 'save-changes' }, [el('p', { text: 'Save changes to ' + (name || App.model.name || (isAsm() ? 'Assem1' : 'Part1')) + '?' })]), buttons: [
+      { label: 'Save', primary: true, action: function () { UI.closeModal(); if (App.fileName) { if (saveInBrowser(App.fileName)) onProceed(); } else fileSave(onProceed); } },
+      { label: "Don't Save", action: function () { UI.closeModal(); onProceed(); } },
       { label: 'Cancel', action: UI.closeModal }
     ] });
   }
@@ -504,7 +520,7 @@
       rememberPart(); App.hiddenBodies = {};
       return UI.loadModel(jm).then(function () { return window.anvil.summary(); });
     }
-    return runScript(txt, true).then(function (r) { if (r.error) throw new Error(r.error); return window.anvil.summary(); });
+    return runScript(txt, true).then(function (r) { if (r.error) throw new Error(r.error); UI.markClean(); return window.anvil.summary(); });
   }
   function importStatus(res, what) {
     var st = res.stats || {};
@@ -569,7 +585,8 @@
     document.body.appendChild(inp);
     inp.click();
   }
-  function fileOpen() {
+  function fileOpen() { confirmDiscard(null, showOpenDialog); }
+  function showOpenDialog() {
     var chosen = null;
     var type = el('select', { 'aria-label': 'Files of type' });
     OPEN_TYPES.forEach(function (t) { type.appendChild(el('option', { value: t[0], text: t[1] })); });
@@ -611,16 +628,23 @@
       importIntoCurrent(name, data).catch(function (e) { UI.toast((e && e.message) || String(e)); });
     });
   }
-  function fileSave() {
+  // File ▸ Save (Ctrl+S): asks for the name (the last one offered), saves in this browser; onSaved (a function) runs
+  // after a successful save (the Save of "Save changes to Part1?")
+  function fileSave(onSaved) {
     UI.promptDialog('Save', 'Save as (kept in this browser):', App.fileName || App.model.name, function (name) {
       name = (name || '').trim();
       if (!name) return;
-      var files = savedFiles();
-      files[name] = { model: App.model, features: App.model.features.length, components: isAsm() ? (App.model.components || []).length : undefined, savedAt: Date.now() };
-      try { localStorage.setItem('anvil.files', JSON.stringify(files)); App.fileName = name; UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); return; }
-      if (UI.afterSaveHook) UI.afterSaveHook(name);   // an assembly also saves its edited referenced documents (ui-assembly.js)
-      if (tpCurrent === 'files') openTaskPane('files');
+      if (saveInBrowser(name) && typeof onSaved === 'function') onSaved();
     });
+  }
+  function saveInBrowser(name) {
+    var files = savedFiles();
+    files[name] = { model: App.model, features: App.model.features.length, components: isAsm() ? (App.model.components || []).length : undefined, savedAt: Date.now() };
+    try { localStorage.setItem('anvil.files', JSON.stringify(files)); App.fileName = name; UI.toast('Saved "' + name + '"'); } catch (e) { UI.toast('Could not save: ' + e.message); return false; }
+    if (UI.afterSaveHook) UI.afterSaveHook(name);   // an assembly also saves its edited referenced documents (ui-assembly.js)
+    UI.markClean();
+    if (tpCurrent === 'files') openTaskPane('files');
+    return true;
   }
   // File ▸ Save As: the document (JSON), its script, or a neutral format through exchange.js (STEP AP214, 3MF, OBJ with
   // its .mtl, STL). exportData(type, base) -> { name, data, mime, extra? } is also what anvil.saveAs downloads.
@@ -689,6 +713,7 @@
         try { out = exportData(type.value, base); } catch (e) { UI.toast('Export failed: ' + ((e && e.message) || e)); return; }
         download(out.name, out.data, out.mime);
         if (out.extra) download(out.extra.name, out.extra.data, out.extra.mime);
+        if (type.value === 'json' || type.value === 'script') UI.markClean();   // the document itself was saved (STEP, STL… are exports)
         UI.closeModal();
         UI.setStatus('Saved ' + out.name + (out.extra ? ' and ' + out.extra.name : '') + ' (' + ((out.data.length || out.data.byteLength) / 1024).toFixed(1) + ' KB).');
       } },
@@ -784,9 +809,18 @@
     fit: 'F', undo: 'Ctrl+Z', redo: 'Ctrl+Y', rebuild: 'Ctrl+B', save: 'Ctrl+S', new: 'Ctrl+N', open: 'Ctrl+O', normalTo: 'Ctrl+8', prevView: 'Shift+Ctrl+Z', orient: 'Space', delete: 'Del', rename: 'F2'
   };
   UI.shortcutFor = function (id) { return SHORTCUTS[id] || null; };
+  // Typing goes to a text box, a list or an editable element that is still on screen; a check box, a button or a box
+  // that went away with its PropertyManager (✓ leaves the focus on a PM control) does not keep the view keys (F, Z…).
+  function typingIn(t) {
+    if (!t || t === document.body || !t.tagName) return false;
+    var tag = t.tagName.toLowerCase();
+    var text = tag === 'textarea' || tag === 'select' || t.isContentEditable ||
+      (tag === 'input' && !/^(checkbox|radio|button|submit|reset|range|color|file|image)$/i.test(t.type || ''));
+    return !!text && t.isConnected && !!(t.offsetWidth || t.offsetHeight || t.getClientRects().length);
+  }
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
-    var typing = tag === 'input' || tag === 'textarea' || tag === 'select';
+    var typing = typingIn(e.target);
     if (!$('modal').hidden) {
       if (e.key === 'Escape') UI.closeModal();
       // Enter = the dialog's default (primary) button, as in SolidWorks dialogs; not from a text area, a focused
@@ -806,6 +840,8 @@
       return;
     }
     if (typing) return;
+    // a focused check box or option keeps Space, Enter and Delete for itself
+    if (tag === 'input' && e.target.isConnected && (e.key === ' ' || e.key === 'Enter' || e.key === 'Delete' || e.key === 'Backspace')) return;
     var k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && !e.shiftKey && k >= '1' && k <= '7') { e.preventDefault(); UI.setView(['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Isometric'][+k - 1]); return; }
     if (ctrl && k === '8') { e.preventDefault(); UI.normalToSelection(); return; }
@@ -886,6 +922,7 @@
     // the local server, so it returns a Promise of { name, data (ArrayBuffer), mime }
     saveAs: function (type, base, opts) {
       if (type === 'dxf' || type === 'dwg') {
+        built('saveAs ' + type);
         // the DWG converters read R2000 (an R12 file loses its model space in LibreDWG)
         if (type === 'dwg') opts = Object.assign({}, opts, { version: 'R2000' });
         var text = UI.dxfOutput(opts), nm = (base || safeName()) + '.' + type;
@@ -896,11 +933,16 @@
     },
     // dxfOutput({ export: 'faces' | 'views' | 'sheet', face, views: ['Front', 'Top', 'Right', 'Isometric'], current,
     // bendLines, notes }) -> the DXF text the DXF/DWG Output PropertyManager would save, without opening it
-    dxfOutput: function (opts) { return UI.dxfOutput(opts); },
+    dxfOutput: function (opts) { built('dxfOutput'); return UI.dxfOutput(opts); },
     dxfFace: function (i) { return K.exportDXFFace(App.mesh, i, App.model.units); },
     dxfSketch: function (id) { return K.exportDXFSketch(K.findFeature(App.model, id), App.model.units); },
-    flat: function () { return K.flatPattern(App.model, App.build, App.mesh); },
-    dxfFlat: function () { return K.exportDXFFlat(K.flatPattern(App.model, App.build, App.mesh), App.model.units); },
+    // the flat pattern reads the model and its build together: while a rebuild is queued or running (a parameter just
+    // changed) they would not match, so these throw "rebuild in progress" (await anvil.idle() first, or use the
+    // ...Async forms, which wait for it)
+    flat: function () { built('flat'); return K.flatPattern(App.model, App.build, App.mesh); },
+    dxfFlat: function () { built('dxfFlat'); return K.exportDXFFlat(K.flatPattern(App.model, App.build, App.mesh), App.model.units); },
+    flatAsync: function () { return UI.whenIdle().then(function () { return window.anvil.flat(); }); },
+    dxfFlatAsync: function () { return UI.whenIdle().then(function () { return window.anvil.dxfFlat(); }); },
     edges: function () { return (App.edges || []).filter(function (e) { return !e.smooth && e.faces.length === 2; }).map(function (e, i) { return { mid: e.mid.map(function (x) { return +x.toFixed(3); }), len: +e.len.toFixed(3), convex: e.convex }; }); },
     // mass properties; parts go through materials.js (bodies with their own material, massKg), same fields as Kernel.massProps
     mass: function () { return isAsm() && hasAssembly() ? Assembly.massProps(App.model, App.build) : typeof Materials !== 'undefined' ? Materials.massProps(App.model, App.build, App.mesh) : K.massProps(App.mesh, App.model.density); },
@@ -929,9 +971,10 @@
       return UI.configurations.set(list, active).then(function () { return window.anvil.summary(); });
     },
     activateConfiguration: function (name) { return UI.configurations.activate(name).then(function () { return window.anvil.summary(); }); },
+    // summary(): the build last applied (rebuilding: true while a newer one is queued or running; await anvil.idle())
     summary: function () {
       if (isAsm()) return asmSummary();
-      var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, type: 'part', features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
+      var mp = App.mesh.triCount ? K.massProps(App.mesh, App.model.density) : null; return { name: App.model.name, type: 'part', rebuilding: rebuilding(), dirty: !!App.dirty, features: App.model.features.length, errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length, bodies: UI.bodyList ? UI.bodyList().length : (App.mesh.triCount ? 1 : 0), rebuildMs: +App.lastRebuildMs.toFixed(1), equations: JSON.parse(JSON.stringify((App.build && App.build.equations) || {})), equationErrors: JSON.parse(JSON.stringify((App.build && App.build.equationErrors) || {})), configuration: UI.configurations.active(), configurations: UI.configurations.list().map(function (c) { return c.name; }) }; },
     examples: EXAMPLES,
     // ---- assembly documents. Each change is one undo step and resolves to the summary once rebuilt; the calls that
     // need an assembly reject with "Not an assembly document" in a part.
@@ -976,11 +1019,13 @@
     removeComponent: function (id) { return needAsm().then(function () { return UI.asm.removeComponent(id); }).then(function () { return window.anvil.summary(); }); },
     removeMate: function (id) { return needAsm().then(function () { return UI.asm.removeMate(id); }).then(function () { return window.anvil.summary(); }); }
   };
+  function rebuilding() { return !!(UI.rebuildPending && UI.rebuildPending()); }
+  function built(what) { if (rebuilding()) throw new Error('anvil.' + what + '(): rebuild in progress. Wait for it (await anvil.idle()) and call again.'); }
   function needAsm() { return isAsm() && hasAssembly() ? Promise.resolve() : Promise.reject(new Error('Not an assembly document')); }
   function asmSummary() {
     var mp = null;
     try { mp = (App.model.components || []).length ? Assembly.massProps(App.model, App.build) : null; } catch (e) { mp = null; }
-    return { name: App.model.name, type: 'assembly', features: 0, components: (App.model.components || []).length, mates: (App.model.mates || []).length,
+    return { name: App.model.name, type: 'assembly', rebuilding: rebuilding(), dirty: !!App.dirty, features: 0, components: (App.model.components || []).length, mates: (App.model.mates || []).length,
       errors: App.build.errors, volume: mp ? +mp.volume.toFixed(3) : 0, bbox: mp ? mp.bbox : null, faces: App.mesh.faces.length,
       bodies: UI.bodyList ? UI.bodyList().length : 0, rebuildMs: +(App.lastRebuildMs || 0).toFixed(1), equations: {}, equationErrors: {}, configuration: null, configurations: [] };
   }
@@ -1000,23 +1045,19 @@
     UI.renderFmTabs();
     renderTaskStrip();
     UI.refreshHud();
-    var model = null;
-    try { var raw = localStorage.getItem('anvil.autosave'); if (raw) model = JSON.parse(raw); } catch (e) { }
+    // the start-up document is the first Design Library part; unsaved work from an earlier session is offered once it
+    // is up (offerRecovery), never restored silently
+    var model = K.newModel('Mounting Bracket');
+    try { K.runScript(model, EXAMPLES[0].code); } catch (e) { console.error(e); }
     try { var lp = localStorage.getItem('anvil.lastPart'); if (lp) App.lastPart = JSON.parse(lp); } catch (e) { }
-    var asmOk = model && model.type === 'assembly' && hasAssembly() && Array.isArray(model.components);
-    if (model && model.type === 'assembly' && !asmOk) model = null;
-    if (asmOk) model.features = model.features || [];
-    if (!asmOk && (!model || !model.features || !model.features.length)) {
-      model = K.newModel('Mounting Bracket');
-      try { K.runScript(model, EXAMPLES[0].code); } catch (e) { console.error(e); }
-    }
     App.model = model;
-    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }), (model.components || []).map(function (c) { return c.id; }), (model.mates || []).map(function (m) { return m.id; }))) + 1);
-    if (asmOk) App.ribbonTab = 'Assembly';
+    App.model.nextId = App.model.nextId || (Math.max.apply(null, [0].concat(model.features.map(function (f) { return f.id; }))) + 1);
     UI.renderMenuBar();
     UI.refreshRibbon();
     UI.resize();
     UI.rebuild({ noSave: true, sync: true });   // boot builds on the main thread so the first frame already shows the body
+    UI.holdRecovery(true);   // the start-up part is clean, and an earlier session's recovery copy waits for offerRecovery
+    UI.markClean();
     UI.frame();
     // fit once the viewport has real dimensions (the pane may still be laying out)
     var fitTries = 0;
@@ -1034,7 +1075,58 @@
       var hit = Object.keys(cmds).filter(function (c) { return q.indexOf(c) >= 0; })[0];
       if (hit) { cmds[hit](); $('cmd-search').value = ''; $('cmd-search').blur(); } else UI.toast('No command matches "' + q + '"');
     });
+    offerRecovery();
   }
+
+  // ------------------------------------------------------------------ AutoRecover at start-up
+  // A recovery copy (ui-core.js, localStorage 'anvil.recover') left by a session that closed with unsaved changes is
+  // offered as SolidWorks' Document Recovery does: "Anvil found unsaved work from <time>: Part1" with Recover (opens
+  // it, still unsaved, with its drawing if one was open) and Discard (deletes the copy). A copy that matches a document
+  // saved in this browser, or the start-up part, is dropped without asking. The old always-on 'anvil.autosave' (before
+  // AutoRecover) is read once as such a copy and removed.
+  function offerRecovery() {
+    var rec = UI.readRecovery(), legacy = null;
+    try { legacy = localStorage.getItem('anvil.autosave'); if (legacy != null) localStorage.removeItem('anvil.autosave'); } catch (e) { }
+    if (!rec && legacy) { try { rec = { v: 1, savedAt: null, model: JSON.parse(legacy) }; } catch (e) { rec = null; } }
+    var m = rec && rec.model;
+    var usable = m && typeof m === 'object' && Array.isArray(m.features) &&
+      (m.type !== 'assembly' ? m.features.length || (m.drawings || []).length : hasAssembly() && Array.isArray(m.components));
+    if (!usable) { UI.holdRecovery(false); UI.dropRecovery(); return false; }
+    var mj = JSON.stringify(m), files = savedFiles();
+    var same = mj === JSON.stringify(App.model) || Object.keys(files).some(function (n) { return files[n] && files[n].model && JSON.stringify(files[n].model) === mj; });
+    if (same) { UI.holdRecovery(false); UI.dropRecovery(); return false; }
+    UI.holdRecovery(true);
+    var name = m.name || (m.type === 'assembly' ? 'Assem1' : 'Part1');
+    var when = rec.savedAt ? new Date(rec.savedAt).toLocaleString() : 'an earlier session';
+    UI.showModal({ title: 'Document Recovery', body: el('div', { class: 'recover-dialog' }, [
+      el('p', { text: 'Anvil found unsaved work from ' + when + ': ' + name }),
+      el('p', { class: 'dlg-note', text: 'Recover opens it as it was, still unsaved: save it to keep it. Discard deletes the recovered copy.' })
+    ]), buttons: [
+      { label: 'Recover', primary: true, action: function () { UI.closeModal(); recoverDocument(rec); } },
+      { label: 'Discard', action: function () { UI.closeModal(); UI.holdRecovery(false); UI.dropRecovery(); UI.setStatus('Discarded the unsaved copy of ' + name + '.'); } }
+    ] });
+    return true;
+  }
+  function recoverDocument(rec) {
+    var m = rec.model;
+    rememberPart(); App.hiddenBodies = {};
+    return UI.loadModel(m).then(function () {
+      App.fileName = rec.fileName || null;
+      UI.holdRecovery(false);
+      UI.markUnsaved();   // "Part1 *" until saved; the recovery copy is kept meanwhile
+      if (m.type === 'assembly' && UI.setRibbonTab) UI.setRibbonTab('Assembly');
+      if (rec.drawing != null && UI.makeDrawing && (m.drawings || [])[rec.drawing]) UI.makeDrawing({ index: rec.drawing });
+      UI.setStatus('Recovered ' + (m.name || 'the document') + '. Save it (Ctrl+S) to keep it.');
+      return window.anvil.summary();
+    }, function (e) { UI.holdRecovery(false); UI.toast('Could not recover: ' + ((e && e.message) || e)); });
+  }
+  // closing or reloading the page with unsaved changes asks first (the recovery copy is kept either way)
+  window.addEventListener('beforeunload', function (e) {
+    if (!UI.isDirty || !UI.isDirty()) return;
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  });
 
   // the Properties panel shows the material and density: redraw it after a material change made elsewhere
   UI.refreshTaskPane = function () { if (tpCurrent === 'props' && !$('tp-panel').hidden) openTaskPane('props'); };
@@ -1042,7 +1134,12 @@
   UI.exportSTL = exportSTL; UI.exportFaceDXF = exportFaceDXF; UI.exportSketchDXF = exportSketchDXF; UI.exportScript = exportScript; UI.exportJSON = exportJSON; UI.screenshot = screenshot;
   UI.fileNew = fileNew; UI.fileOpen = fileOpen; UI.fileSave = fileSave; UI.fileSaveAs = fileSaveAs;
   UI.cmdInsertImported = cmdInsertImported; UI.openFileData = openFileData; UI.exportData = exportData;
-  UI.newAssembly = newAssembly; UI.newPart = newPart; UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
+  // File ▸ New ▸ Part / Assembly (menus): "Save changes to Part1?" first when the document has unsaved changes (the
+  // promise waits for the answer and never settles on Cancel); anvil.newPart / newAssembly (scripts) never ask
+  UI.newAssembly = function (name) { return new Promise(function (res) { confirmDiscard(null, function () { res(newAssembly(name)); }); }); };
+  UI.newPart = function (name) { return new Promise(function (res) { confirmDiscard(null, function () { res(newPart(name)); }); }); };
+  UI.confirmDiscard = confirmDiscard; UI.offerRecovery = offerRecovery; UI.recoverDocument = recoverDocument;
+  UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
   UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

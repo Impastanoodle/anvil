@@ -664,6 +664,15 @@ body.splitting #viewport { pointer-events: none; }
 #hud { max-width: calc(100% - 12px); overflow: hidden; }
 @media (max-width: 1100px) { #brand { display: none; } #status-coords { min-width: 0; flex: 0 1 auto; } }
 @media (max-width: 760px) { #menus > li { padding: 0 6px; } #status-right { gap: 8px; } #status-right span { padding-left: 8px; } }
+/* complex-sketch item 12: below ~450 px the menu bar was wider than the window and the page scrolled sideways (a box
+   focused near the edge, such as the Modify box of a dimension, pulled the whole app 65 px left). The app and the
+   graphics area clip instead of scrolling (overflow: clip cannot be scrolled even by focus or scrollIntoView), the
+   menu bar drops the command search and the Standard toolbar, and the panels scroll inside themselves. */
+#app, #menubar, #viewport { overflow: clip; }
+#menus { flex: none; min-width: 0; }
+@media (max-width: 560px) { #search, #std-toolbar { display: none; } #menus > li { padding: 0 5px; } #logo { margin-right: 2px; } }
+/* unsaved changes: "Part1 *" (ui-core.js showDirty) */
+#doc-title.dirty::after { content: ' *'; }
 #taskpane { position: relative; }
 #taskpane.tp-overlay #tp-panel { position: absolute; right: 100%; top: 0; bottom: 0; z-index: 8; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -6px 0 16px var(--shadow); }
 

@@ -644,6 +644,34 @@
         dims.push({ view: v.id, kind: 'dia', c: pick.c, r: pick.r, count: list.length, value: 2 * pick.r, auto: true });
       });
     });
+    // straight slots (slotsIn): every distinct size once, in the first ortho view that shows it, as SolidWorks' slot
+    // callout ("2X .375 X 1.875 SLOT": width X overall length), with its leader on the end arc farthest from the view
+    // centre; their end arcs get no radius of their own. (Pushed after the radii, so the radii keep their style keys.)
+    var sdone = {}, slotDims = [], slotArcs = {};
+    order.forEach(function (v) {
+      var pr = projections[v.id];
+      if (!pr || !pr.arcs) return;
+      var groups = {}, gk = [], cu = (pr.bounds.umin + pr.bounds.umax) / 2, cv = (pr.bounds.vmin + pr.bounds.vmax) / 2;
+      slotArcs[v.id] = [];
+      slotsIn(pr).forEach(function (s) {
+        slotArcs[v.id].push(s.ends[0], s.ends[1]);
+        var key = fmtDim(s.w, units) + ' X ' + fmtDim(s.len, units);
+        if (sdone[key]) return;
+        if (!groups[key]) { groups[key] = []; gk.push(key); }
+        groups[key].push(s);
+      });
+      gk.forEach(function (key) {
+        sdone[key] = true;
+        var ends = [];
+        groups[key].forEach(function (s) { ends.push(s.ends[0], s.ends[1]); });
+        var pick = ends.sort(function (p, q) { return Math.hypot(q.c[0] - cu, q.c[1] - cv) - Math.hypot(p.c[0] - cu, p.c[1] - cv) || (q.c[0] + q.c[1]) - (p.c[0] + p.c[1]); })[0];
+        var s0 = groups[key][0];
+        slotDims.push({ view: v.id, kind: 'rad', c: pick.c, r: pick.r, a0: pick.a0, a1: pick.a1, count: groups[key].length, value: pick.r, slot: { w: s0.w, len: s0.len }, auto: true });
+      });
+    });
+    function slotEnd(v, a) {
+      return (slotArcs[v.id] || []).some(function (e) { return Math.abs(e.r - a.r) <= 1e-9 * (1 + a.r) && Math.hypot(e.c[0] - a.c[0], e.c[1] - a.c[1]) <= 1e-9 * (1 + Math.abs(a.c[0]) + Math.abs(a.c[1])); });
+    }
     // true arcs of the model (slot ends, rounded corners, partial revolves; not circles cut by hidden lines): every
     // distinct radius once, in the first ortho view that shows it ("4X R5"), on the arc farthest from the view centre
     var rdone = {};
@@ -652,7 +680,7 @@
       if (!pr || !pr.arcs) return;
       var groups = {}, gk = [];
       pr.arcs.visible.forEach(function (a) {
-        if (a.src !== 'arc') return;
+        if (a.src !== 'arc' || slotEnd(v, a)) return;
         var key = fmtDim(a.r, units);
         if (rdone[key]) return;
         if (!groups[key]) { groups[key] = []; gk.push(key); }
@@ -665,10 +693,63 @@
         dims.push({ view: v.id, kind: 'rad', c: pick.c, r: pick.r, a0: pick.a0, a1: pick.a1, count: list.length, value: pick.r, auto: true });
       });
     });
+    dims = dims.concat(slotDims);
     dims.forEach(function (d) { d.text = dimText(d, units); });
     return dims;
   }
-  function autoDimKey(d) { return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(',')); }
+  // slotsIn(pr) -> [{ ends: [arc, arc], w, len }]: the straight slots a projection shows — two 180° true arcs of one
+  // radius, each bulging away from the other, whose tangent sides are visible straight lines, lying inside the view's
+  // outline (not on it: a bar with full round ends is no slot). w = 2r, len = the centre distance + 2r (overall).
+  function slotsIn(pr) {
+    var b = pr.bounds, span = Math.max(b.umax - b.umin, b.vmax - b.vmin, 1e-9), tol = 1e-6 * span, arcs = [], out = [], used = {};
+    (pr.arcs.visible || []).forEach(function (a) {
+      if (a.src !== 'arc') return;
+      var sw = ((a.a1 - a.a0) % 360 + 360) % 360;
+      if (Math.abs(sw - 180) > 0.5) return;
+      if (arcs.some(function (x) { return Math.abs(x.r - a.r) <= tol && Math.hypot(x.c[0] - a.c[0], x.c[1] - a.c[1]) <= tol; })) return;
+      arcs.push(a);
+    });
+    function mid(a) { var m = (a.a0 + (((a.a1 - a.a0) % 360 + 360) % 360) / 2) * Math.PI / 180; return [Math.cos(m), Math.sin(m)]; }
+    function hasSide(P, Q) {
+      var d = [Q[0] - P[0], Q[1] - P[1]], L = Math.hypot(d[0], d[1]), t = [d[0] / L, d[1] / L];
+      return (pr.lines.visible || []).some(function (l) {
+        var ends = [[l[0], l[1]], [l[2], l[3]]];
+        return ends.every(function (e) {
+          var x = e[0] - P[0], y = e[1] - P[1], s = x * t[0] + y * t[1];
+          return Math.abs(x * t[1] - y * t[0]) <= tol && s >= -tol && s <= L + tol;
+        }) && Math.hypot(l[2] - l[0], l[3] - l[1]) > tol;
+      });
+    }
+    for (var i = 0; i < arcs.length; i++) {
+      if (used[i]) continue;
+      for (var j = i + 1; j < arcs.length; j++) {
+        if (used[j]) continue;
+        var A = arcs[i], B = arcs[j], r = A.r;
+        if (Math.abs(A.r - B.r) > tol) continue;
+        var d = [B.c[0] - A.c[0], B.c[1] - A.c[1]], L = Math.hypot(d[0], d[1]);
+        if (L <= tol) continue;
+        var u = [d[0] / L, d[1] / L], ma = mid(A), mb = mid(B);
+        if (ma[0] * u[0] + ma[1] * u[1] > -0.999 || mb[0] * u[0] + mb[1] * u[1] < 0.999) continue;
+        var n = [-u[1] * r, u[0] * r];
+        if (!hasSide([A.c[0] + n[0], A.c[1] + n[1]], [B.c[0] + n[0], B.c[1] + n[1]]) || !hasSide([A.c[0] - n[0], A.c[1] - n[1]], [B.c[0] - n[0], B.c[1] - n[1]])) continue;
+        var x0 = Math.min(A.c[0], B.c[0]) - r, x1 = Math.max(A.c[0], B.c[0]) + r, y0 = Math.min(A.c[1], B.c[1]) - r, y1 = Math.max(A.c[1], B.c[1]) + r;
+        if (x0 <= b.umin + tol || x1 >= b.umax - tol || y0 <= b.vmin + tol || y1 >= b.vmax - tol) continue;
+        used[i] = used[j] = true;
+        out.push({ ends: [A, B], w: 2 * r, len: L + 2 * r });
+        break;
+      }
+    }
+    return out;
+  }
+  // a slot callout's text: [N X ]W X L SLOT
+  function slotText(d, units, prec) {
+    var f = function (x) { return prec != null ? D.numText(x, units, prec) : fmtDim(x, units); };
+    return (d.count > 1 ? d.count + 'X ' : '') + f(d.slot.w) + ' X ' + f(d.slot.len) + ' SLOT';
+  }
+  function autoDimKey(d) {
+    if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
+    return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
+  }
   function dimText(d, units) {
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var p = d.prec != null && d.prec !== '' ? +d.prec : null;
@@ -676,6 +757,7 @@
     }
     if (d.prec != null || d.tol || d.label != null || d.kind === 'chamfer') return D.dimLabel(d, units).text;
     if (d.kind === 'dia') return (d.count > 1 ? d.count + 'X ' : '') + '\u00d8' + fmtDim(d.value, units);
+    if (d.kind === 'rad' && d.slot) return slotText(d, units, null);
     if (d.kind === 'rad') return (d.count > 1 ? d.count + 'X ' : '') + 'R' + fmtDim(d.value, units);
     return fmtDim(d.value, units);
   }
@@ -1034,7 +1116,7 @@
   D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
-  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText;
+  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;

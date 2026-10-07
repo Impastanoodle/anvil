@@ -202,6 +202,19 @@
   }
   // a number for note text: up to 4 decimals in inches, 3 in mm, no trailing zeros
   function noteNum(x, units) { var k = units === 'in' ? 1e4 : 1e3; return String(Math.round(x * k) / k); }
+  // bendNotePlace(bend, h) -> { p, rot }: where a bend note of text height h goes, as the drawing places them: centred
+  // on the bend line, its baseline a quarter of h beside it, running along the line and kept readable (rot in
+  // (−90°, 90°]). The note then lies in the bend strip and the wall or sheet beside it, never across the blank's edge
+  // at the line's ends, whatever the bend's direction (an end flange's vertical line included).
+  function bendNotePlace(b, h) {
+    var dx = b.b[0] - b.a[0], dy = b.b[1] - b.a[1], l = Math.hypot(dx, dy) || 1;
+    dx /= l; dy /= l;
+    if (dx < -1e-9 || (Math.abs(dx) <= 1e-9 && dy < 0)) { dx = -dx; dy = -dy; }
+    var g = 0.25 * h, m = [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2];
+    var rot = Math.atan2(dy, dx) * 180 / Math.PI;
+    return { p: [m[0] - dy * g, m[1] + dx * g], rot: Math.abs(rot) < 1e-9 ? 0 : rot };
+  }
+  K.bendNotePlace = bendNotePlace;
 
   // exportDXFFlat(flat, units, opts?) -> DXF text of a Kernel.flatPattern result. opts: { version: 'R12' (AC1009,
   // default) | 'R2000' (AC1015), style: 'polyline' (default) | 'entities', bendLines (default true), notes (default
@@ -220,7 +233,10 @@
     function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
     flat.bends.forEach(function (b) {
       if (opts.bendLines !== false) d.line('BEND', sh(b.a), sh(b.b));
-      if (opts.notes !== false) d.text('NOTES', sh([(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2]), th, b.label);
+      if (opts.notes !== false) {
+        var pl = bendNotePlace(b, th);
+        d.text('NOTES', sh(pl.p), th, K.bendNoteText(b, units), { rot: pl.rot, center: true });
+      }
     });
     if (opts.notes !== false) {
       var w = box.max[0] - box.min[0], h = box.max[1] - box.min[1];
@@ -275,7 +291,14 @@
   DXF.prototype.circle = function (layer, c, r) { this.ents.push({ k: 'CIRCLE', layer: layer, c: c, r: r }); this._grow(c[0], c[1], r); };
   // arc(layer, centre, r, start°, end°): counterclockwise from start to end
   DXF.prototype.arc = function (layer, c, r, a0, a1) { this.ents.push({ k: 'ARC', layer: layer, c: c, r: r, a0: a0, a1: a1 }); this._grow(c[0], c[1], r); };
-  DXF.prototype.text = function (layer, p, height, text) { this.ents.push({ k: 'TEXT', layer: layer, p: p, h: height, s: text }); this._grow(p[0], p[1]); };
+  // text(layer, p, height, text, opts?): opts.rot (degrees, counterclockwise) and opts.center (p is then the middle of
+  // the baseline: horizontal justification 1, alignment point 11/21)
+  DXF.prototype.text = function (layer, p, height, text, opts) {
+    var e = { k: 'TEXT', layer: layer, p: p, h: height, s: text };
+    if (opts && opts.rot) e.rot = opts.rot;
+    if (opts && opts.center) e.center = true;
+    this.ents.push(e); this._grow(p[0], p[1]);
+  };
   // polyline(layer, pts, closed, bulges?): bulges[i] = tan(sweep / 4) of the segment from pts[i] to the next point
   DXF.prototype.polyline = function (layer, pts, closed, bulges) {
     var self = this;
@@ -387,7 +410,10 @@
       } else if (e.k === 'TEXT') {
         head('TEXT', e.layer, 'AcDbText');
         P(10, fmt(e.p[0])); P(20, fmt(e.p[1])); P(30, 0); P(40, fmt(e.h)); P(1, dxfText(e.s));
-        if (r2000) { P(7, 'Standard'); P(100, 'AcDbText'); }
+        if (e.rot) P(50, fmtA(e.rot));
+        if (r2000) P(7, 'Standard');
+        if (e.center) { P(72, 1); P(11, fmt(e.p[0])); P(21, fmt(e.p[1])); P(31, 0); }
+        if (r2000) P(100, 'AcDbText');
       } else if (e.k === 'POLY') {
         if (r2000) {
           head('LWPOLYLINE', e.layer, 'AcDbPolyline');
@@ -430,14 +456,41 @@
   // every entity as its exact pieces (K.entityPrimitives): lines as LINE, circles as CIRCLE, arcs as ARC, rectangles /
   // polygons / polylines as their LINE edges, slots as two LINEs and two ARCs. Construction geometry (centerlines too)
   // is left out unless opts.construction, which puts it on layer CONSTRUCTION; points and dimensions are not written.
+  // Layers as the flat pattern's: entities on a closed loop that lies inside another closed loop (holes, slots,
+  // cutouts: the sketch profile's loops at depth 1 or more) go on HOLES; the outermost loops and open geometry on OUTLINE.
   // opts: { version: 'R12' (default) | 'R2000', construction }
   function exportDXFSketch(sketch, units, opts) {
     opts = opts || {};
     var d = new DXF(units, opts), R2D = 180 / Math.PI;
+    var loops = [];
+    try { loops = K.sketchProfile({ entities: (sketch.entities || []).filter(Boolean) }).loops; } catch (e) { loops = []; }
+    var span = 0;
+    loops.forEach(function (l) { l.pts.forEach(function (p) { span = Math.max(span, Math.abs(p[0]), Math.abs(p[1])); }); });
+    var tol = 1e-6 * (1 + span);
+    function onLoop(q, pts) {
+      for (var i = 0; i < pts.length; i++) {
+        var a = pts[i], b = pts[(i + 1) % pts.length], vx = b[0] - a[0], vy = b[1] - a[1], ll = vx * vx + vy * vy;
+        var t = ll > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / ll)) : 0;
+        if (Math.hypot(a[0] + vx * t - q[0], a[1] + vy * t - q[1]) <= tol) return true;
+      }
+      return false;
+    }
+    // HOLES when the entity's first chord lies on a nested loop and on no outermost one
+    function isHole(e) {
+      var pl = K.entityPolylines(e)[0];
+      if (!pl || pl.pts.length < 2) return false;
+      var q = [(pl.pts[0][0] + pl.pts[1][0]) / 2, (pl.pts[0][1] + pl.pts[1][1]) / 2], hole = false;
+      for (var i = 0; i < loops.length; i++) {
+        if (!onLoop(q, loops[i].pts)) continue;
+        if (loops[i].depth === 0) return false;
+        hole = true;
+      }
+      return hole;
+    }
     (sketch.entities || []).forEach(function (e) {
       if (!e || e.t === 'point') return;
       if (e.construction && !opts.construction) return;
-      var layer = e.construction ? 'CONSTRUCTION' : 'OUTLINE';
+      var layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
       // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
       // would flip an arc across 0°)
       if (e.t === 'arc') { d.arc(layer, [e.cx, e.cy], e.r, e.a0, e.a1); return; }
@@ -663,6 +716,10 @@
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    if (opts.lengthRef != null) {
+      if (K.FLANGE_LENGTH_REFS.indexOf(opts.lengthRef) < 0) throw new Error('lengthRef must be one of ' + K.FLANGE_LENGTH_REFS.join(', ') + '.');
+      f.lengthRef = opts.lengthRef;
+    }
     customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
@@ -670,13 +727,28 @@
   // hem: a 180° flange folded back over the sheet; `gap` is the opening between the flats (default T/2, open hem).
   // A numeric gap is stored as the bend radius; a gap (or sheet thickness) given as an equation is kept as `gap`
   // and the radius is derived from it at rebuild.
+  // opts.hemType ('open' | 'closed' | 'teardrop' | 'rolled'; absent = the legacy open hem), hemPosition ('inside':
+  // Material Inside, within the flange's height | 'outside': Bend Outside, the legacy placement), hemRadius and
+  // hemAngle (tear drop / rolled: the curl's inner radius, default the sheet radius, and sweep, default 270°). A closed,
+  // tear drop or rolled hem has no gap (its radius comes from its type).
   Builder.prototype.hem = function (length, edges, opts) {
     opts = opts || {};
     var T = this.model.sheet ? this.model.sheet.thickness : 2;
     var gap = opts.gap != null ? num(opts.gap) : (isExpression(T) ? '=(' + T.replace(/^\s*=/, '') + ')/2' : T / 2);
     var f = { type: 'flange', hem: true, length: num(length), angle: 180, reverse: !!opts.reverse, position: 'bendOutside',
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name };
-    if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
+    if (opts.hemType != null) {
+      if (K.HEM_TYPES.indexOf(opts.hemType) < 0) throw new Error('hemType must be one of ' + K.HEM_TYPES.join(', ') + '.');
+      f.hemType = opts.hemType;
+    }
+    if (opts.hemPosition != null) {
+      if (opts.hemPosition !== 'inside' && opts.hemPosition !== 'outside') throw new Error('hemPosition must be "inside" or "outside".');
+      f.hemPosition = opts.hemPosition;
+    }
+    if (opts.hemRadius != null) f.hemRadius = num(opts.hemRadius);
+    if (opts.hemAngle != null) f.hemAngle = num(opts.hemAngle);
+    if (f.hemType && f.hemType !== 'open') f.radius = null;
+    else if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
     else f.radius = Math.max(gap / 2, 0.02 * T);
     f.name = f.name || featureName(this.model, 'hem');
     customBendAllowance(f, opts.bendAllowance);
@@ -688,6 +760,19 @@
     opts = opts || {};
     this._add(customBendAllowance({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name }, opts.bendAllowance));
+    return this;
+  };
+  // sketchedBend(angle, opts): bend the sheet along every line of a sketch drawn on one of its flat faces (SolidWorks'
+  // Sketched Bend; the flat is kept, each bend rolls up BA of it). opts: sketch (default: the last sketch), fixed ([x, y,
+  // z] on the side that stays put; default the largest piece), position ('centerline' (default) | 'inside' | 'outside' |
+  // 'bendOutside'), reverse (fold away from the sketch normal), radius, bendAllowance ({ type, value }), name
+  Builder.prototype.sketchedBend = function (angle, opts) {
+    opts = opts || {};
+    var position = opts.position || 'centerline';
+    if (K.SKETCHED_BEND_POSITIONS.indexOf(position) < 0) throw new Error('sketchedBend position must be one of ' + K.SKETCHED_BEND_POSITIONS.join(', ') + '.');
+    var f = { type: 'sketchedBend', sketch: this._sketchId(opts), angle: angle == null ? 90 : num(angle), position: position, reverse: !!opts.reverse,
+      radius: opts.radius != null ? num(opts.radius) : null, fixed: opts.fixed ? [+opts.fixed[0], +opts.fixed[1], +opts.fixed[2]] : null, name: opts.name };
+    this._add(customBendAllowance(f, opts.bendAllowance));
     return this;
   };
   Builder.prototype.cut = function (depth, opts) {
@@ -853,6 +938,8 @@
     };
   });
 
+  SketchBuilder.prototype.sketchedBend = function (a, opts) { return this.part.sketchedBend(a, Object.assign({}, opts || {}, { sketch: this.f.id })); };
+
   function runScript(model, code) {
     var b = new Builder(model);
     var fn = new Function('p', 'part', 'Math', '"use strict";\n' + code);
@@ -941,6 +1028,7 @@
           if (f.reverse) fo.reverse = true;
           if (f.radius != null) fo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') fo.position = f.position;
+          if (f.lengthRef != null) fo.lengthRef = f.lengthRef;
           if (f.toward) fo.toward = f.toward.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e4) / 1e4; });
           if (f.miter) fo.miter = true;
           if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) fo.miterGap = numOut(f.miterGap);
@@ -949,7 +1037,11 @@
           if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
-            var ho = { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
+            var ho = !f.hemType || f.hemType === 'open' ? { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name } : { name: f.name };
+            if (f.hemType) ho.hemType = f.hemType;
+            if (f.hemPosition) ho.hemPosition = f.hemPosition;
+            if (f.hemRadius != null) ho.hemRadius = numOut(f.hemRadius);
+            if (f.hemAngle != null) ho.hemAngle = numOut(f.hemAngle);
             if (f.reverse) ho.reverse = true;
             if (f.bendAllowance) ho.bendAllowance = bendAllowanceOut(f.bendAllowance);
             out.push('var ' + v + ' = p.hem(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
@@ -964,6 +1056,16 @@
           if (f.position && f.position !== 'bendOutside') jo.position = f.position;
           if (f.bendAllowance) jo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           out.push('var ' + v + ' = p.jog(' + nv(f.height) + ', ' + nv(f.length) + ', ' + jspecs + ', ' + optsStr(jo) + ').last();');
+          break;
+        }
+        case 'sketchedBend': {
+          var sbo = { sketch: '@' + idVar[f.sketch], name: f.name };
+          if (f.fixed) sbo.fixed = f.fixed.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+          if (f.position && f.position !== 'centerline') sbo.position = f.position;
+          if (f.reverse) sbo.reverse = true;
+          if (f.radius != null) sbo.radius = numOut(f.radius);
+          if (f.bendAllowance) sbo.bendAllowance = bendAllowanceOut(f.bendAllowance);
+          out.push('var ' + v + ' = p.sketchedBend(' + nv(f.angle == null ? 90 : f.angle) + ', ' + optsStr(sbo) + ').last();');
           break;
         }
         case 'revolve': {

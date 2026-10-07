@@ -173,7 +173,9 @@ var SketchSolver = (function () {
       case 'coincident':
         if (n !== 2) return null;
         return perm('point', 'point') || perm('point', 'line') || perm('point', 'circle');
-      case 'midpoint': return n === 2 ? perm('point', 'line') : null;
+      // p9-sketchfix: or three points, the first midway between the other two (a line cut in two by Trim: the middle of
+      // its outer ends)
+      case 'midpoint': return n === 2 ? perm('point', 'line') : n === 3 && kinds.every(function (k) { return k === 'point'; }) ? [0, 1, 2] : null;
       case 'parallel': case 'perpendicular': case 'collinear': return n === 2 ? perm('line', 'line') : null;
       case 'tangent': return n === 2 ? perm('line', 'circle') || perm('circle', 'circle') : null;
       case 'concentric': return n === 2 ? perm('circle', 'circle') || perm('point', 'circle') : null;
@@ -276,7 +278,11 @@ var SketchSolver = (function () {
         else f = function (E) { return [P(A, E)[ax] - P(B, E)[ax]]; };
         break;
       }
-      case 'midpoint': n = 2; f = function (E) { var a = P(A, E), l = C(B, E); return [a[0] - (l.a[0] + l.b[0]) / 2, a[1] - (l.a[1] + l.b[1]) / 2]; }; break;
+      case 'midpoint':
+        n = 2;
+        if (Ax) f = function (E) { var a = P(A, E), b = P(B, E), c = P(Ax, E); return [a[0] - (b[0] + c[0]) / 2, a[1] - (b[1] + c[1]) / 2]; };
+        else f = function (E) { var a = P(A, E), l = C(B, E); return [a[0] - (l.a[0] + l.b[0]) / 2, a[1] - (l.a[1] + l.b[1]) / 2]; };
+        break;
       case 'parallel': case 'perpendicular': {
         n = 1;
         var par = rel.type === 'parallel';
@@ -299,7 +305,9 @@ var SketchSolver = (function () {
           pairs = [[function (E) { return C(A, E).a; }, function (E) { var l = C(B, E); return swap ? l.b : l.a; }],
                    [function (E) { return C(A, E).b; }, function (E) { var l = C(B, E); return swap ? l.a : l.b; }]];
         }
-        n = pairs.length * 2 + (kA === 'circle' ? 1 : 0);
+        // p9-sketchfix: two slots are mirror images: their widths are equal too (Mirror Entities holds a slot copy so)
+        var slots = kA === 'line' && slotPair(ents, A, B);
+        n = pairs.length * 2 + (kA === 'circle' || slots ? 1 : 0);
         f = function (E) {
           var L = C(Ax, E), dir = unit(sub(L.b, L.a)), out = [];
           pairs.forEach(function (pr) {
@@ -307,6 +315,7 @@ var SketchSolver = (function () {
             out.push(lineDist([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], L), dot(sub(b, a), dir));
           });
           if (kA === 'circle') out.push(C(A, E).r - C(B, E).r);
+          if (slots) out.push(E[A.e].w - E[B.e].w);
           return out;
         };
         break;
@@ -843,6 +852,7 @@ var SketchSolver = (function () {
       var kinds = refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); });
       groups = kinds[0] === 'point' && kinds[1] === 'point' ? [refs] : refs.map(function (r) { return [r]; });
     } else if (type === 'symmetric') groups = [symOrder(sketch, refs)];
+    else if (type === 'midpoint' && refs.length === 3 && match('midpoint', refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); }))) groups = [refs];
     else groups = type === 'distance' || type === 'angle' ? [refs] : expand(type, refs);
     var added = [], saved = clone(sketch.entities), savedRels = clone(sketch.rels || []), before = analyze(sketch);
     sketch.rels = sketch.rels || [];
@@ -918,7 +928,15 @@ var SketchSolver = (function () {
   // a point lying on it, ... and the relations of an end that survives), and each new end gets a Coincident with the
   // entity it was trimmed at. Placed dimensions follow their entities (a radius stays on the arc). Falls back to
   // dropping the trimmed entity's relations when keeping them would leave the sketch unsolvable.
+  // p9-sketchfix: a line (or an arc) cut in two keeps its degrees of freedom. The two pieces stay on one carrier
+  // (Collinear; an arc's pieces Concentric + Equal), each relation of the whole line goes to one piece only (the piece
+  // the other entity of the relation joins, else the longer one) instead of to both (that over-defined the sketch), a
+  // length dimension becomes the distance between the two outer ends (same value, same side), and a Midpoint on the
+  // line becomes a Midpoint between those two ends. Relations of a surviving point (an end, an arc's centre) are kept
+  // whatever their type (a circle's centre held at a line's midpoint kept it). A relation the trim moved or made that
+  // still over-defines the sketch afterwards is dropped.
   var KEEP_ON_PIECE = { horizontal: 1, vertical: 1, parallel: 1, perpendicular: 1, collinear: 1, tangent: 1, concentric: 1, coincident: 1, angle: 1, distance: 1 };
+  var KEEP_ON_ARC = { equal: 1, symmetric: 1 };   // a circle / arc piece keeps its radius and centre: these hold on it too
   // does point pt lie within the extent of line / arc e (between its ends, inside its sweep)?
   function onPieceExtent(pt, e) {
     var tol = 1e-6 * Math.max(1, Math.abs(pt[0]), Math.abs(pt[1]));
@@ -927,16 +945,17 @@ var SketchSolver = (function () {
     var r = ((Math.atan2(pt[1] - e.cy, pt[0] - e.cx) / D2R - e.a0) % 360 + 360) % 360;
     return r * D2R * e.r < (e.a1 - e.a0) * D2R * e.r + tol || (360 - r) * D2R * e.r < tol;
   }
-  // (r13/trim13) ctx, optional: { conflicts } of the sketch before (a Power trim drag knows it from the trim before),
-  // and on return { conflicts, analysis } of the result, so a run of trims analyses each state once.
+  // (r13/trim13) ctx, optional: { conflicts, redundant } of the sketch before (a Power trim drag knows them from the trim
+  // before), and on return { conflicts, redundant, analysis } of the result, so a run of trims analyses each state once.
   function afterTrim(sketch, before, idx, ctx) {
     var E = sketch.entities, old = before[idx];
     var map = before.map(function (e) { return E.indexOf(e); });
     var pieces = [];
     E.forEach(function (e, i) { if (before.indexOf(e) < 0) pieces.push(i); });
     var simple = !!old && (old.t === 'line' || old.t === 'arc' || old.t === 'circle') && pieces.every(function (i) { return E[i].t === 'line' || E[i].t === 'arc'; });
+    var split = simple && pieces.length === 2 && (old.t === 'line' || old.t === 'arc') && E[pieces[0]].t === old.t && E[pieces[1]].t === old.t;
     var savedRels = sketch.rels ? clone(sketch.rels) : null, savedDims = sketch.dims ? clone(sketch.dims) : null;
-    var an0 = !simple ? null : ctx && ctx.conflicts != null ? { conflicts: ctx.conflicts } : analyze({ entities: before, rels: sketch.rels, dims: sketch.dims });
+    var an0 = !simple ? null : ctx && ctx.conflicts != null && ctx.redundant != null ? { conflicts: ctx.conflicts, redundant: ctx.redundant } : analyze({ entities: before, rels: sketch.rels, dims: sketch.dims });
     function near(a, b) { return !!(a && b) && Math.abs(a[0] - b[0]) < 1e-6 * Math.max(1, Math.abs(a[0])) && Math.abs(a[1] - b[1]) < 1e-6 * Math.max(1, Math.abs(a[1])); }
     function oldPt(k) { return refPoint(before, { e: idx, s: 'p', k: k }); }
     // where an old point ref of the trimmed entity lives now ('3.p1', an arc piece's centre), or null
@@ -947,22 +966,57 @@ var SketchSolver = (function () {
       for (var j = 0; j < pieces.length; j++) for (var k = 1; k <= 2; k++) if (near(refPoint(E, { e: pieces[j], s: 'p', k: k }), at)) return pieces[j] + '.p' + k;
       return null;
     }
-    var rels = [];
+    // split: the outer ends (the old ends, on the first and the last piece) and the piece each relation goes to
+    var outer = split ? [pointOnPiece({ s: 'p', k: 1 }), pointOnPiece({ s: 'p', k: 2 })] : null;
+    if (split && !(outer[0] && outer[1])) split = false;
+    function pieceLen(pi) { var e = E[pi]; return e.t === 'line' ? len([e.x2 - e.x1, e.y2 - e.y1]) : (e.a1 - e.a0) * D2R * e.r; }
+    var longest = pieces.length ? pieces.reduce(function (a, b) { return pieceLen(b) > pieceLen(a) * (1 + 1e-9) ? b : a; }) : -1;
+    function pieceFor(rel) {
+      var tol = 1e-3;   // the pieces were rounded to 1e-4 (tRound)
+      for (var r = 0; r < rel.refs.length; r++) {
+        var p = parseRef(rel.refs[r]);
+        if (!p || p.o || p.e === idx || !(map[p.e] >= 0)) continue;
+        var pts = pointRefs(sketch, map[p.e]);
+        for (var j = 0; j < pieces.length; j++) {
+          for (var k = 1; k <= 2; k++) {
+            var q = refPoint(E, { e: pieces[j], s: 'p', k: k });
+            if (pts.some(function (pr) { return !/\.(mid|c)$/.test(pr.ref) && len(sub(pr.pt, q)) < tol; })) return pieces[j];
+          }
+        }
+      }
+      return longest;
+    }
+    var rels = [], moved = [];   // moved: relations this trim moved onto a piece or made (dropped first if they over-define)
     (sketch.rels || []).forEach(function (rel) {
-      var touches = false, ok = true;
+      var touches = false, ok = true, whole = false;
       var refs = rel.refs.map(function (r) {
         var p = parseRef(r);
         if (!p || p.o) return [r];
         if (p.e !== idx) { if (map[p.e] < 0) ok = false; return [String(map[p.e]) + String(r).slice(String(p.e).length)]; }
         touches = true;
-        if (p.s === null) return pieces.map(String);          // the whole curve: each piece
+        if (p.s === null) { whole = true; return pieces.map(String); }          // the whole curve: each piece
         var q = simple ? pointOnPiece(p) : null;
         if (!q) ok = false;
         return [q];
       });
       if (!ok) return;
       if (!touches) { rel.refs = refs.map(function (x) { return x[0]; }); rels.push(rel); return; }
-      if (!simple || !KEEP_ON_PIECE[rel.type]) return;
+      if (!simple) return;
+      // only surviving points of the trimmed entity (an end, the centre): the relation holds as it did
+      if (!whole) { var keepPt = clone(rel); keepPt.refs = refs.map(function (x) { return x[0]; }); rels.push(keepPt); return; }
+      // a point at the middle of a line cut in two: the middle of its outer ends
+      if (split && old.t === 'line' && rel.type === 'midpoint' && rel.refs.length === 2) {
+        var pr = refs.filter(function (x) { return x.length === 1; })[0];
+        if (pr) { var mp = { type: 'midpoint', refs: [pr[0], outer[0], outer[1]] }; rels.push(mp); moved.push(mp); }
+        return;
+      }
+      if (!KEEP_ON_PIECE[rel.type] && !(old.t !== 'line' && KEEP_ON_ARC[rel.type])) return;
+      if (split && rel.type !== 'coincident') {
+        var pi = pieceFor(rel), one = clone(rel);
+        one.refs = refs.map(function (x) { return x.length > 1 ? String(pi) : x[0]; });
+        rels.push(one); moved.push(one);
+        return;
+      }
       var n = Math.max.apply(null, refs.map(function (x) { return x.length; }));
       for (var k = 0; k < n; k++) {
         var copy = clone(rel);
@@ -976,9 +1030,15 @@ var SketchSolver = (function () {
           var opt = op && refKind(E, op) === 'point' ? refPoint(E, op) : null;
           if (opt && !onPieceExtent(opt, E[+cr])) continue;
         }
-        rels.push(copy);
+        rels.push(copy); moved.push(copy);
       }
     });
+    if (split) {
+      // the two pieces stay on the old line (Collinear) or the old circle (Concentric + Equal)
+      var A = String(pieces[0]), B = String(pieces[1]);
+      if (old.t === 'line') rels.push({ type: 'collinear', refs: [A, B] });
+      else rels.push({ type: 'concentric', refs: [A, B] }, { type: 'equal', refs: [A, B] });
+    }
     if (simple) {
       // the new ends: Coincident with whatever they were cut at (an end point there, or the cutting curve)
       pieces.forEach(function (pi) {
@@ -994,30 +1054,58 @@ var SketchSolver = (function () {
           if (!on) return;
           // the other entity's end was already Coincident with (lying on) the trimmed curve: the end-to-end one replaces it
           if (hit) rels = rels.filter(function (r) { return !(r.type === 'coincident' && r.refs.indexOf(hit) >= 0 && r.refs.indexOf(String(pi)) >= 0); });
-          rels.push({ type: 'coincident', refs: [pi + '.p' + k, on] });
+          var ce = { type: 'coincident', refs: [pi + '.p' + k, on] };
+          rels.push(ce); moved.push(ce);
         });
       });
     }
     sketch.rels = rels;
     if (!rels.length) delete sketch.rels;
-    // placed dimensions follow their entity; a radius / diameter of the trimmed circle or arc goes to its first arc
+    // placed dimensions follow their entity; a radius / diameter of the trimmed circle or arc goes to its first arc; the
+    // length of a line cut in two becomes the distance between its outer ends
     var firstArc = pieces.filter(function (i) { return E[i].t === 'arc'; })[0];
     function moveDims() {
       if (!sketch.dims) return;
       sketch.dims = sketch.dims.filter(function (d) {
         if (d.e !== idx) { if (!(map[d.e] >= 0)) return false; d.e = map[d.e]; return true; }
         if (simple && (d.k === 'r' || d.k === 'dia') && firstArc != null) { d.e = firstArc; d.k = 'r'; return true; }
+        if (simple && split && old.t === 'line' && (d.k === 'len' || d.k === 'dx' || d.k === 'dy') && K) {
+          var v = K.dimValue(old, d);
+          if (v == null) return false;
+          // it ran p1 -> p2 along the line: from the first piece's start to the last piece's end keeps its side
+          var dr = { type: 'distance', refs: [outer[0], outer[1]], v: v };
+          if (d.k === 'dx') dr.dir = 'h'; else if (d.k === 'dy') dr.dir = 'v';
+          if (d.off != null) dr.off = d.off;
+          if (d.tx != null) dr.tx = d.tx;
+          if (d.driven) dr.driven = true;
+          (sketch.rels = sketch.rels || []).push(dr); moved.push(dr);
+        }
         return false;
       });
       if (!sketch.dims.length) delete sketch.dims;
     }
     moveDims();
     clean(sketch);
+    dedupe(sketch, true);
+    if (sketch.rels && !sketch.rels.length) delete sketch.rels;
     if (simple) solve(sketch);   // the cut point was rounded: close the new Coincidents exactly
     var an1 = simple ? analyze(sketch) : null;
-    if (ctx) { ctx.conflicts = an1 ? an1.conflicts : null; ctx.analysis = an1; }
+    // whatever the trim moved or made that still repeats what the rest says goes, last first (dropping a repeat frees
+    // nothing: the degrees of freedom stay)
+    if (simple && an0 && an0.redundant != null && an1.redundant > an0.redundant) {
+      for (var m = moved.length - 1; m >= 0 && an1.redundant > an0.redundant; m--) {
+        var at = sketch.rels ? sketch.rels.indexOf(moved[m]) : -1;
+        if (at < 0) continue;
+        sketch.rels.splice(at, 1);
+        var anT = analyze(sketch);
+        if (anT.redundant < an1.redundant && anT.dof === an1.dof && anT.conflicts <= an1.conflicts) an1 = anT;
+        else sketch.rels.splice(at, 0, moved[m]);
+      }
+      if (sketch.rels && !sketch.rels.length) delete sketch.rels;
+    }
+    if (ctx) { ctx.conflicts = an1 ? an1.conflicts : null; ctx.redundant = an1 ? an1.redundant : null; ctx.analysis = an1; }
     if (simple && an1.conflicts > an0.conflicts) {
-      if (ctx) { ctx.conflicts = null; ctx.analysis = null; }
+      if (ctx) { ctx.conflicts = null; ctx.redundant = null; ctx.analysis = null; }
       // keeping them fights the geometry: the trimmed entity's relations go, as before
       if (savedRels) sketch.rels = savedRels; else delete sketch.rels;
       if (savedDims) sketch.dims = savedDims; else delete sketch.dims;
@@ -1099,14 +1187,45 @@ var SketchSolver = (function () {
     });
     clean(sketch);
   }
-  // Drop relations whose refs no longer name anything of the right kind (an entity changed type, went away).
+  // Drop relations whose refs no longer name anything of the right kind (an entity changed type, went away), and
+  // relations that repeat another one exactly (dedupe).
   function clean(sketch) {
     if (!sketch.rels) return 0;
     var n = sketch.rels.length;
     sketch.rels = sketch.rels.filter(function (rel) { return !!relEquation(sketch.entities, rel); });
-    var dropped = n - sketch.rels.length;
-    if (!sketch.rels.length) delete sketch.rels;
+    dedupe(sketch);
+    var dropped = n - (sketch.rels ? sketch.rels.length : 0);
+    if (sketch.rels && !sketch.rels.length) delete sketch.rels;
     return dropped;
+  }
+  // p9-sketchfix: the identity of a relation, for spotting exact repeats: the type and its refs in either order (a
+  // Symmetric's two mirrored items in either order, its axis last; a three-point Midpoint's two ends in either order).
+  // A dimension also keys on its direction / supplement; with dims false, dimensions never count as repeats (a driven
+  // reference dimension may well repeat a driving one, and a repeated driving one is the user's to settle).
+  function relKey(rel, dims) {
+    var t = TYPES[rel.type];
+    if (!t || !rel.refs) return null;
+    if (t.dim && !dims) return null;
+    var refs = rel.refs.map(String);
+    if (refs.length === 2 && refs[0] === refs[1]) return 'self';
+    if (rel.type === 'symmetric' && refs.length === 3) refs = refs.slice(0, 2).sort().concat([refs[2]]);
+    else if (rel.type === 'midpoint' && refs.length === 3) refs = [refs[0]].concat(refs.slice(1).sort());
+    else refs = refs.slice().sort();
+    return rel.type + '|' + refs.join(',') + (t.dim ? '|' + (rel.dir || '') + '|' + (rel.sup ? 1 : 0) + '|' + (rel.driven ? 'd' : '') : '');
+  }
+  // Remove relations that repeat an earlier one exactly (same type, same refs in either order), and a relation of a
+  // point with itself; with dims, repeated dimensions too (same refs, direction and driven state). Returns how many went.
+  function dedupe(sketch, dims) {
+    if (!sketch.rels) return 0;
+    var seen = {}, n = sketch.rels.length;
+    sketch.rels = sketch.rels.filter(function (rel) {
+      var k = relKey(rel, dims);
+      if (k == null) return true;
+      if (k === 'self' || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+    return n - sketch.rels.length;
   }
 
   // ------------------------------------------------------------------ inference (automatic relations while sketching)
@@ -1421,20 +1540,37 @@ var SketchSolver = (function () {
   // Mirror Entities about a line entity: each copy is held Symmetric to its original about that line (lines, circles,
   // arcs, points), as SolidWorks does. pairs = [[original, copy], ...]. A relation that would over-define is skipped.
   // Returns the number added.
+  // p9-sketchfix: compound entities are held too, so a mirrored slot or polygon follows its original: a slot by one
+  // Symmetric of the two slots (ends mirrored, equal width), a polygon by its centre and first corner (Symmetric
+  // points: size and turn follow), a rectangle mirrored about an upright / level line by its centre and Equal sides,
+  // and a polyline (or a rectangle mirrored about a slanted line, which comes out as one) corner by corner.
+  // A pair counts once however many relations hold it.
+  function mirrorPairRels(E, i, j, axis) {
+    var a = E[i], b = E[j], A = String(i), B = String(j), X = String(axis);
+    function sym(ra, rb) { return { type: 'symmetric', refs: [ra, rb, X] }; }
+    if (!a || !b) return [];
+    if (a.t === b.t && /^(line|circle|arc|point|slot)$/.test(a.t)) return [sym(A, B)];
+    if (a.t === 'poly' && b.t === 'poly') return [sym(A + '.c', B + '.c'), sym(A + '.v0', B + '.v0')];
+    if ((a.t === 'rect' || a.t === 'crect') && a.t === b.t) return [sym(A + '.c', B + '.c'), { type: 'equal', refs: [A + '.e0', B + '.e0'] }, { type: 'equal', refs: [A + '.e1', B + '.e1'] }];
+    var ca = corners(a), cb = corners(b);
+    if (b.t === 'polyline' && ca && cb && ca.length === cb.length) return ca.map(function (q, k) { return sym(A + '.v' + k, B + '.v' + k); });
+    return [];
+  }
   function mirrorRelations(sketch, pairs, axis) {
     var n = 0, E = sketch.entities, ax = E[axis];
     if (!ax || ax.t !== 'line') return 0;
     pairs.forEach(function (p) {
-      var a = E[p[0]], b = E[p[1]];
-      if (!a || !b || a.t !== b.t || !/^(line|circle|arc|point)$/.test(a.t)) return;
-      var rel = { type: 'symmetric', refs: [String(p[0]), String(p[1]), String(axis)] };
-      if (!relEquation(E, rel, sketch.rels)) return;
-      var before = analyze(sketch);
-      (sketch.rels = sketch.rels || []).push(rel);
-      solve(sketch);   // the copies were rounded to 1e-4: close the relation exactly
-      var an = analyze(sketch);
-      if (an.rels[sketch.rels.length - 1] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
-      n++;
+      var held = 0;
+      mirrorPairRels(sketch.entities, p[0], p[1], axis).forEach(function (rel) {
+        if (!relEquation(sketch.entities, rel, sketch.rels)) return;
+        var before = analyze(sketch);
+        (sketch.rels = sketch.rels || []).push(rel);
+        solve(sketch);   // the copies were rounded to 1e-4: close the relation exactly
+        var an = analyze(sketch);
+        if (an.rels[sketch.rels.length - 1] !== 'ok' || an.redundant > before.redundant || an.conflicts > before.conflicts) { sketch.rels.pop(); if (!sketch.rels.length) delete sketch.rels; return; }
+        held++;
+      });
+      if (held) n++;
     });
     return n;
   }
@@ -1486,6 +1622,15 @@ var SketchSolver = (function () {
     var sw = ((a1 - a0) % 360 + 360) % 360;
     if (sw > 180) { var tmp = a0; a0 = a1; a1 = tmp; swap = true; sw = 360 - sw; }
     var savedE = clone(E), savedR = sketch.rels ? clone(sketch.rels) : null, savedD = sketch.dims ? clone(sketch.dims) : null, before = analyze(sketch);
+    function restore() {
+      sketch.entities = savedE;
+      if (savedR) sketch.rels = savedR; else delete sketch.rels;
+      if (savedD) sketch.dims = savedD; else delete sketch.dims;
+    }
+    // p9-sketchfix: all or nothing. Anything that throws part way (the first fillet of a sketch with no dimensions threw
+    // once, after the lines were trimmed and the arc added) puts the sketch back as it was.
+    try { return filletApply(); } catch (err) { restore(); return { ok: false, error: 'The fillet could not be made: ' + err.message }; }
+    function filletApply() {
     function setEnd(e, s, p) { if (s === 'p1') { e.x1 = p[0]; e.y1 = p[1]; } else { e.x2 = p[0]; e.y2 = p[1]; } }
     var lens = {};   // the lengths the two lines had to the corner (their length dimensions measure to the virtual sharp)
     lens[c.i] = { len: la, dx: Math.abs(A[0] - P[0]), dy: Math.abs(A[1] - P[1]) }; lens[c.j] = { len: lb, dx: Math.abs(B[0] - P[0]), dy: Math.abs(B[1] - P[1]) };
@@ -1519,7 +1664,7 @@ var SketchSolver = (function () {
         if (d.driven) rel.driven = true;
         keep.push(rel);
       });
-      sketch.dims = sketch.dims.filter(function (d) { return lenDims.indexOf(d) < 0; });
+      if (sketch.dims) sketch.dims = sketch.dims.filter(function (d) { return lenDims.indexOf(d) < 0; });
     }
     if (sketch.rels) {
       sketch.rels = sketch.rels.filter(function (rel) { return keep.indexOf(rel) >= 0 || !rel.refs.some(function (x) { return gone.indexOf(String(x)) >= 0; }); });
@@ -1531,16 +1676,18 @@ var SketchSolver = (function () {
                      { type: 'coincident', refs: [gone[1], k + (swap ? '.p1' : '.p2')] },
                      { type: 'tangent', refs: [String(c.i), String(k)] },
                      { type: 'tangent', refs: [String(c.j), String(k)] });
+    // p9-sketchfix: both lines' ends can carry the same relation (each end Coincident with the origin, as a line chain
+    // started there draws them): moved onto the virtual sharp they are one relation, not two (the second over-defined)
+    dedupe(sketch, true);
     // the radius is dimensioned, as SolidWorks dimensions the first fillet, so the corner stays as defined as it was
     (sketch.dims = sketch.dims || []).push({ e: k, k: 'r', ang: Math.round(Math.atan2(-bis[1], -bis[0]) / D2R * 10) / 10, off: Math.round(dc * 1e4) / 1e4 });
     var res = solve(sketch), an = analyze(sketch);
     if (!res.ok || an.conflicts > before.conflicts) {
-      sketch.entities = savedE;
-      if (savedR) sketch.rels = savedR; else delete sketch.rels;
-      if (savedD) sketch.dims = savedD; else delete sketch.dims;
+      restore();
       return { ok: false, error: 'The fillet conflicts with the sketch\'s relations or dimensions.' };
     }
     return { ok: true, arc: k, sharp: sharp, analysis: an };
+    }
   }
 
   // ------------------------------------------------------------------ extend (the counterpart of Trim)

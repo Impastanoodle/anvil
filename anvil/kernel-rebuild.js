@@ -21,6 +21,7 @@
     sketch: 'Sketch', plane: 'Plane', extrude: 'Boss-Extrude', cut: 'Cut-Extrude', revolve: 'Revolve',
     revolveCut: 'Cut-Revolve', lpattern: 'LPattern', cpattern: 'CirPattern', mirror: 'Mirror', chamfer: 'Chamfer', fillet: 'Fillet', flange: 'Edge-Flange', sweep: 'Sweep', loft: 'Loft', shell: 'Shell', hem: 'Hem', jog: 'Jog'
   };
+  NAME_BASE.sketchedBend = 'SketchBend';
 
   function featureName(model, type, cut) {
     var base = NAME_BASE[type] || 'Feature';
@@ -236,6 +237,7 @@
   // reuses the whole cache.
   function featureKey(f, model) {
     var sh = model.sheet ? [model.sheet.thickness, model.sheet.bendRadius] : null;
+    if (sh && f.type === 'sketchedBend') sh = model.sheet;   // its bend allowance sets how much flat each bend rolls up
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 
@@ -399,6 +401,7 @@
     // sketches used as sweep paths are open by design: no "open contour" warning for them
     var pathIds = {};
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
+    model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
     while (p < model.features.length && p < prev.length && prev[p].key === keys[p]) p++;
@@ -438,6 +441,16 @@
             var jb = ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body;
             putBody(jk, jb.union(jg.first).union(jg.second));
             ctx.tools[f.id] = jg.first.union(jg.second);
+            break;
+          }
+          case 'sketchedBend': {
+            // Sketched Bend: acts on the body nearest its first bend line and replaces it with the bent part
+            if (sheetError) throw new Error(sheetError);
+            var sbk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, _.sketchedBendPoint(f, model, ctx))) : -1;
+            ctx.body = sbk >= 0 ? ctx.bodies[sbk] : null;
+            var sb = _.buildSketchedBend(f, model, ctx);
+            putBody(sbk, sb.body);
+            ctx.tools[f.id] = sb.tool;
             break;
           }
           case 'sketch': {
