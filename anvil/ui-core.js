@@ -2267,14 +2267,11 @@ var UI = (function () {
     }
     return {};
   }
-  // Evaluate what the user typed in a numeric box: "=T*2" or plain arithmetic "25.4*2" (evaluated as "=25.4*2").
-  // Returns {value} or {error}. Falls back to parseFloat when the kernel has no expression evaluator.
-  function evalInput(text) {
-    var s = String(text == null ? '' : text).trim();
-    if (!s) return { error: 'Enter a value' };
-    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return { value: parseFloat(s) };
+  // An equation typed in a value box ("=T*2", variables from Tools ▸ Equations), or plain text the kernel's
+  // expression evaluator reads ("T*2" is taken as "=T*2"): {value} or {error}.
+  function evalEquation(s) {
     if (typeof K.evalExpression !== 'function') {
-      var v = parseFloat(s);
+      var v = parseFloat(String(s).replace(/^\s*=/, ''));
       return isNaN(v) ? { error: 'Not a number: ' + s } : { value: v };
     }
     var expr = s.charAt(0) === '=' ? s : '=' + s;
@@ -2284,6 +2281,27 @@ var UI = (function () {
       return { value: n };
     } catch (err) { return { error: (err && err.message) || String(err) }; }
   }
+  // p9-sketch: shop input. What the user typed in any value box -> {value} in the document's units, or {error} with a
+  // message for the user. "=…" is an equation, evaluated by the kernel exactly as before; anything else is read by
+  // SketchSolver.parseValue: decimals (.375), fractions (3/8), mixed numbers (1-1/2, 1 1/2), unit suffixes converted
+  // to the document's units (25mm in an inch part -> 0.984252), feet-inches (1' 6"), angles (45deg, 45°) and
+  // arithmetic (2*3/8, 1.5+1/16). opts.kind: 'length' | 'angle' | 'number' | 'any' (the default: both kinds of unit);
+  // opts.units overrides the document's 'in' | 'mm'. A name that is no unit falls back to the equation evaluator
+  // (an equation variable typed without "=", as before).
+  function parseLength(text, opts) {
+    opts = opts || {};
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return { error: 'Enter a value' };
+    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return { value: parseFloat(s) };
+    if (s.charAt(0) === '=') return evalEquation(s);
+    var S = window.SketchSolver;
+    if (!S || !S.parseValue) return evalEquation(s);
+    var r = S.parseValue(s, { kind: opts.kind || 'any', units: opts.units || unitLabel() });
+    if (r.ident) { var q = evalEquation(s); return q.error != null ? { error: r.error } : q; }
+    return r.error != null ? { error: r.error } : { value: r.value };
+  }
+  // Evaluate what the user typed in a numeric box (kept for its callers): parseLength with opts.
+  function evalInput(text, opts) { return parseLength(text, opts); }
 
   // Run fn once the build behind promise p is applied: immediately when p came from the sync path
   // (so callers that read App.build / App.mesh straight afterwards behave as before), else in .then().
@@ -2776,7 +2794,7 @@ var UI = (function () {
     bodyInfo: bodyInfo, bodyName: bodyName, bodyCount: bodyCount, selectBody: selectBody,
     setBodyHidden: setBodyHidden, isBodyHidden: isBodyHidden, bodyBounds: bodyBounds, zoomToBody: zoomToBody, fitBox: fitBox,
     // equations (global variables)
-    equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput,
+    equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput, parseLength: parseLength,
     // whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
     faceGroup: faceGroup, faceGroups: function () { return faceGroups(App.mesh); }
   };

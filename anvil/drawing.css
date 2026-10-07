@@ -58,6 +58,10 @@
 #dw-edit .dw-edit-btn:hover { background: var(--btn-hover, rgba(0, 0, 0, 0.08)); }
 /* r5/drawings5: a title block field edited in place (double-click a cell) */
 #dw-edit.tb input { width: 180px; }
+/* Phase 9: a note typed in place (Annotation ▸ Note): a small text area with ✓ / ✗ beside it */
+#dw-edit.note { align-items: stretch; }
+#dw-edit.note textarea { width: 220px; min-height: 44px; border: 0; outline: 0; resize: both; font: 12px "Segoe UI", sans-serif; padding: 3px 5px; background: transparent; color: var(--text, #000); }
+#dw-edit .dw-edit-col { display: flex; flex-direction: column; justify-content: flex-start; }
 /* r12/drawui12: a view still being worked out when the drawing opens (drawing-worker.js): a soft panel over the paper
    it will take, gently pulsing until its linework drops in */
 #drawing-sheet .dw-pending { fill: #e9edf2; animation: dw-pulse 0.9s ease-in-out infinite alternate; }

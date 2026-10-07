@@ -9,24 +9,232 @@
   var faceOutline = _.faceOutline;   // kernel-mesh.js
   var featureName = _.featureName, featureTypes = _.featureTypes, scriptSections = _.scriptSections, sketchScripts = _.sketchScripts;   // kernel-rebuild.js
 
-  function exportDXFFlat(flat, units) {
-    var d = new DXF(units);
-    flat.loops.forEach(function (l, i) {
-      var layer = i === 0 ? 'OUTLINE' : 'HOLES';
-      var c = loopAsCircle(l);
-      if (c) d.circle(layer, c.c, c.r); else d.polyline(layer, l, true);
+  // ------------------------------------------------------------------ DXF output (laser / Mastercam ready)
+  // Every 2D export of a part goes through the writer below. A loop of a face or of the flat pattern arrives as the
+  // vertices of a tessellated outline: true circles and arcs as chords, straight edges cut where the CSG split them,
+  // near-coincident corners where two unfolded regions meet. dxfLoopCurves turns it back into what was drawn:
+  //   1. weld: a segment shorter than `weld` (1e-3 model units) collapses onto the corner its neighbours meet at (or
+  //      its midpoint), the closing duplicate goes;
+  //   2. a vertex on the straight line through its neighbours (within 1e-6) goes: the points CSG split edges at;
+  //   3. a run of three or more chords of equal length turning by the same small angle (at most 25° each: Anvil
+  //      tessellates every circle with 16 or more segments and every arc with 4 or more) is fitted with a circle
+  //      (least squares); when every vertex of the run lies on it within 1e-6·(1 + r) the run is an arc (its centre
+  //      moved onto the perpendicular bisector of its ends, so both ends lie on it exactly), a whole loop of such
+  //      chords is a circle;
+  //   4. straight runs left are merged into one line (a vertex within 1e-4 of the line through its neighbours goes).
+  // The writer emits a circle as CIRCLE and any other loop as one closed polyline with bulges (style 'polyline', the
+  // default: joined end to end by construction; POLYLINE + VERTEX in R12, LWPOLYLINE in R2000) or as LINE and ARC
+  // entities that share their end points (style 'entities').
+  var DXF_TOL = { weld: 1e-3, onLine: 1e-6, merge: 1e-4, maxStep: 25 * Math.PI / 180, minChords: 3 };
+
+  function dist2(a, b) { return Math.hypot(b[0] - a[0], b[1] - a[1]); }
+  // distance of p from the line a–b, and whether p projects strictly between a and b
+  function offLine(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+    if (L2 < 1e-30) return { d: dist2(p, a), inside: false };
+    var t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
+    return { d: Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / Math.sqrt(L2), inside: t > 0 && t < 1 };
+  }
+  // the crossing of the lines a1–a2 and b1–b2 (null when parallel)
+  function crossLines(a1, a2, b1, b2) {
+    var ux = a2[0] - a1[0], uy = a2[1] - a1[1], vx = b2[0] - b1[0], vy = b2[1] - b1[1], den = ux * vy - uy * vx;
+    if (Math.abs(den) < 1e-12 * Math.hypot(ux, uy) * Math.hypot(vx, vy)) return null;
+    var t = ((b1[0] - a1[0]) * vy - (b1[1] - a1[1]) * vx) / den;
+    return [a1[0] + ux * t, a1[1] + uy * t];
+  }
+  function dropCollinear(pts, tol) {
+    for (var again = true; again && pts.length > 3;) {
+      again = false;
+      for (var i = 0; i < pts.length && pts.length > 3; i++) {
+        var o = offLine(pts[i], pts[(i + pts.length - 1) % pts.length], pts[(i + 1) % pts.length]);
+        if (o.inside && o.d <= tol) { pts.splice(i, 1); i--; again = true; }
+      }
+    }
+    return pts;
+  }
+  // cleanLoop(pts, weld) -> the loop's vertices without duplicates, slivers and on-line points (steps 1 and 2)
+  function cleanLoop(pts, weld) {
+    var p = [];
+    (pts || []).forEach(function (q) {
+      if (!q || !isFinite(q[0]) || !isFinite(q[1])) return;
+      q = [+q[0], +q[1]];
+      if (!p.length || dist2(p[p.length - 1], q) > 1e-12) p.push(q);
     });
+    while (p.length > 1 && dist2(p[0], p[p.length - 1]) <= 1e-12) p.pop();
+    // collapse the shortest segment under `weld` first, onto the corner its neighbours meet at when that is near
+    for (;;) {
+      var n = p.length, best = -1, bl = Infinity;
+      if (n < 3) break;
+      for (var i = 0; i < n; i++) { var l = dist2(p[i], p[(i + 1) % n]); if (l <= weld && l < bl) { bl = l; best = i; } }
+      if (best < 0) break;
+      var a = p[best], b = p[(best + 1) % n], X = null;
+      if (n >= 4) {
+        X = crossLines(p[(best + n - 1) % n], a, b, p[(best + 2) % n]);
+        if (X && (dist2(X, a) > 10 * weld || dist2(X, b) > 10 * weld)) X = null;
+      }
+      p[best] = X || [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      p.splice((best + 1) % n, 1);
+    }
+    return dropCollinear(p, DXF_TOL.onLine);
+  }
+  // fitCircle(pts) -> { c, r, err (largest |distance − r|) } by least squares (Kåsa, about the centroid), or null
+  function fitCircle(pts) {
+    var n = pts.length, mx = 0, my = 0, i;
+    for (i = 0; i < n; i++) { mx += pts[i][0]; my += pts[i][1]; }
+    mx /= n; my /= n;
+    var suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+    for (i = 0; i < n; i++) {
+      var u = pts[i][0] - mx, v = pts[i][1] - my;
+      suu += u * u; svv += v * v; suv += u * v; suuu += u * u * u; svvv += v * v * v; suvv += u * v * v; svuu += v * u * u;
+    }
+    var det = suu * svv - suv * suv;
+    if (!(Math.abs(det) > 1e-30)) return null;
+    var bu = (suuu + suvv) / 2, bv = (svvv + svuu) / 2;
+    var c = [mx + (bu * svv - bv * suv) / det, my + (bv * suu - bu * suv) / det], r = 0, err = 0;
+    for (i = 0; i < n; i++) r += dist2(c, pts[i]);
+    r /= n;
+    for (i = 0; i < n; i++) err = Math.max(err, Math.abs(dist2(c, pts[i]) - r));
+    return isFinite(r) && r > 0 ? { c: c, r: r, err: err } : null;
+  }
+  function fitTol(r) { return 1e-6 * (1 + r); }
+  // arcThrough(run, ccw) -> { t: 'arc', a, b, c, r, ccw, sweep (signed, radians) } through the run's ends, or null
+  function arcThrough(run, ccw) {
+    var f = fitCircle(run);
+    if (!f || f.err > fitTol(f.r)) return null;
+    var A = run[0], B = run[run.length - 1], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], L = dist2(A, B);
+    var c = f.c;
+    if (L > 1e-12) {   // the centre onto the perpendicular bisector of A–B: both ends then lie on the arc exactly
+      var nx = -(B[1] - A[1]) / L, ny = (B[0] - A[0]) / L, t = (c[0] - M[0]) * nx + (c[1] - M[1]) * ny;
+      c = [M[0] + nx * t, M[1] + ny * t];
+    }
+    var r = dist2(c, A), sw = Math.atan2(B[1] - c[1], B[0] - c[0]) - Math.atan2(A[1] - c[1], A[0] - c[0]);
+    if (ccw) { while (sw <= 0) sw += 2 * Math.PI; } else { while (sw >= 0) sw -= 2 * Math.PI; }
+    return { t: 'arc', a: A, b: B, c: c, r: r, ccw: !!ccw, sweep: sw };
+  }
+
+  // dxfLoopCurves(loop, tol?) -> { circle: { c, r } } | { segs: [{ t: 'line', a, b } | { t: 'arc', a, b, c, r, ccw,
+  // sweep }] } (closed, in loop order, each segment starting where the last ended) | null for a degenerate loop
+  function dxfLoopCurves(loop, tol) {
+    tol = tol || DXF_TOL;
+    var p = cleanLoop(loop, tol.weld), n = p.length, i, k;
+    if (n < 3) return null;
+    var L = [], T = [];
+    for (i = 0; i < n; i++) L.push(dist2(p[i], p[(i + 1) % n]));
+    for (i = 0; i < n; i++) {
+      var o = p[(i + n - 1) % n], q = p[(i + 1) % n];
+      var ux = p[i][0] - o[0], uy = p[i][1] - o[1], wx = q[0] - p[i][0], wy = q[1] - p[i][1];
+      T.push(Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy));
+    }
+    function sameLen(a, b) { return Math.abs(L[a] - L[b]) <= 1e-7 + 1e-4 * Math.max(L[a], L[b]); }
+    function sameTurn(a, b) { return Math.abs(a - b) <= 1e-7 + 1e-3 * Math.abs(b); }
+    // inner[k]: vertex k lies inside a run of chords (a small turn between two chords of equal length)
+    var inner = T.map(function (t, j) { return Math.abs(t) > 1e-9 && Math.abs(t) <= tol.maxStep && sameLen((j + n - 1) % n, j); });
+    if (n >= 8 && inner.every(Boolean) && T.every(function (t) { return sameTurn(t, T[0]); })) {
+      var fc = fitCircle(p);
+      if (fc && fc.err <= fitTol(fc.r)) return { circle: { c: fc.c, r: fc.r } };
+    }
+    // walk the loop from a vertex where no run passes through (a corner, or the end of an arc)
+    var s0 = inner.indexOf(false);
+    if (s0 < 0) for (s0 = 0, k = 0; k < n; k++) if (!sameTurn(T[k], T[(k + n - 1) % n])) { s0 = k; break; }
+    var segs = [];
+    for (i = 0; i < n;) {
+      var a = (s0 + i) % n, m = 0;
+      while (i + m + 1 < n) {
+        var v = (a + m + 1) % n;
+        if (!inner[v] || !sameTurn(T[v], T[(a + 1) % n]) || !sameLen(v, a)) break;
+        m++;
+      }
+      if (m + 1 >= tol.minChords) {
+        var run = [];
+        for (k = 0; k <= m + 1; k++) run.push(p[(a + k) % n]);
+        var arc = arcThrough(run, T[(a + 1) % n] > 0);
+        if (arc) { segs.push(arc); i += m + 1; continue; }
+      }
+      segs.push({ t: 'line', a: p[a], b: p[(a + 1) % n] });
+      i++;
+    }
+    // step 4: merge straight runs
+    for (var again = true; again && segs.length > 2;) {
+      again = false;
+      for (i = 0; i < segs.length; i++) {
+        var j = (i + 1) % segs.length, s = segs[i], t2 = segs[j];
+        if (s.t !== 'line' || t2.t !== 'line') continue;
+        var ol = offLine(s.b, s.a, t2.b);
+        if (ol.inside && ol.d <= tol.merge) { s.b = t2.b; segs.splice(j, 1); again = true; break; }
+      }
+    }
+    return segs.length >= 2 ? { segs: segs } : null;
+  }
+  // the extents of loops given as dxfLoopCurves results (arcs bulge past their ends where they cross an axis)
+  function curvesBox(list) {
+    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    function grow(x, y) { min[0] = Math.min(min[0], x); min[1] = Math.min(min[1], y); max[0] = Math.max(max[0], x); max[1] = Math.max(max[1], y); }
+    list.forEach(function (cv) {
+      if (!cv) return;
+      if (cv.circle) { grow(cv.circle.c[0] - cv.circle.r, cv.circle.c[1] - cv.circle.r); grow(cv.circle.c[0] + cv.circle.r, cv.circle.c[1] + cv.circle.r); return; }
+      cv.segs.forEach(function (s) {
+        grow(s.a[0], s.a[1]); grow(s.b[0], s.b[1]);
+        if (s.t !== 'arc') return;
+        var a0 = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]);
+        for (var q = 0; q < 4; q++) {
+          var th = q * Math.PI / 2, d = s.ccw ? th - a0 : a0 - th;
+          d = ((d % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+          if (d < Math.abs(s.sweep)) grow(s.c[0] + s.r * Math.cos(th), s.c[1] + s.r * Math.sin(th));
+        }
+      });
+    });
+    return { min: min, max: max };
+  }
+  function degrees(rad) { var d = rad * 180 / Math.PI; d = ((d % 360) + 360) % 360; return d >= 360 - 1e-10 ? 0 : d; }
+  // one loop on a layer, moved by `shift`
+  function emitLoop(d, layer, cv, style, shift) {
+    function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
+    if (cv.circle) { d.circle(layer, sh(cv.circle.c), cv.circle.r); return; }
+    if (style === 'entities') {
+      cv.segs.forEach(function (s) {
+        if (s.t === 'line') { d.line(layer, sh(s.a), sh(s.b)); return; }
+        var aa = Math.atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]), ab = Math.atan2(s.b[1] - s.c[1], s.b[0] - s.c[0]);
+        if (s.ccw) d.arc(layer, sh(s.c), s.r, degrees(aa), degrees(ab)); else d.arc(layer, sh(s.c), s.r, degrees(ab), degrees(aa));
+      });
+      return;
+    }
+    d.polyline(layer, cv.segs.map(function (s) { return sh(s.a); }), true, cv.segs.map(function (s) { return s.t === 'arc' ? Math.tan(s.sweep / 4) : 0; }));
+  }
+  // a number for note text: up to 4 decimals in inches, 3 in mm, no trailing zeros
+  function noteNum(x, units) { var k = units === 'in' ? 1e4 : 1e3; return String(Math.round(x * k) / k); }
+
+  // exportDXFFlat(flat, units, opts?) -> DXF text of a Kernel.flatPattern result. opts: { version: 'R12' (AC1009,
+  // default) | 'R2000' (AC1015), style: 'polyline' (default) | 'entities', bendLines (default true), notes (default
+  // true: the bend labels and the sheet note), origin (default true: the blank's lower-left corner at 0,0) }.
+  // Layers: OUTLINE (the blank), HOLES (every inner loop; round holes are CIRCLEs), BEND (bend centre lines), NOTES.
+  // Coordinates are in the part's units ($INSUNITS 1 inch / 4 mm, $MEASUREMENT 0 / 1).
+  function exportDXFFlat(flat, units, opts) {
+    opts = opts || {};
+    units = units === 'in' ? 'in' : 'mm';
+    var d = new DXF(units, opts), style = opts.style === 'entities' ? 'entities' : 'polyline';
+    var cvs = flat.loops.map(function (l) { return dxfLoopCurves(l); });
+    var box = curvesBox(cvs), shift = opts.origin === false || !isFinite(box.min[0]) ? [0, 0] : [-box.min[0], -box.min[1]];
+    cvs.forEach(function (cv, i) { if (cv) emitLoop(d, i === 0 ? 'OUTLINE' : 'HOLES', cv, style, shift); });
+    var s = flat.sheet, T = +s.thickness, inch = units === 'in';
+    var th = inch ? Math.max(0.08, T) : Math.max(1.5, T);
+    function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
     flat.bends.forEach(function (b) {
-      d.line('BEND', b.a, b.b);
-      d.text('NOTES', [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2], Math.max(1.5, flat.sheet.thickness), b.label);
+      if (opts.bendLines !== false) d.line('BEND', sh(b.a), sh(b.b));
+      if (opts.notes !== false) d.text('NOTES', sh([(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2]), th, b.label);
     });
-    var s = flat.sheet;
-    d.text('NOTES', [flat.bbox.min[0], flat.bbox.min[1] - Math.max(3, s.thickness * 2)], Math.max(1.5, s.thickness), 'T=' + s.thickness + ' R=' + s.bendRadius + ' K=' + s.kFactor);
+    if (opts.notes !== false) {
+      var w = box.max[0] - box.min[0], h = box.max[1] - box.min[1];
+      // flat.note names the bend allowance method actually used (K, BA, BD or the bend table)
+      var note = (flat.note || 'T=' + s.thickness + ' R=' + s.bendRadius + ' K=' + s.kFactor) + '  BLANK ' + noteNum(w, units) + ' X ' + noteNum(h, units) + (inch ? ' IN' : ' MM');
+      d.text('NOTES', sh([box.min[0], box.min[1] - (inch ? Math.max(0.12, 2 * T) : Math.max(3, 2 * T))]), th, note);
+    }
     return d.toString();
   }
 
   // ------------------------------------------------------------------ exports
   function fmt(n) { return (Math.round(n * 1e6) / 1e6).toString(); }
+  // angles in degrees and bulges carry more digits: an arc's end then lands within 1e-8·r of its neighbour's
+  function fmtA(n) { return (Math.round(n * 1e9) / 1e9).toString(); }
 
   function exportSTL(mesh, name) {
     var p = mesh.positions, n = mesh.normals, out = ['solid ' + (name || 'anvil')];
@@ -41,63 +249,182 @@
     return out.join('\n');
   }
 
-  function DXF(units) {
-    this.lines = [];
-    this.insunits = units === 'in' ? 1 : 4;
+  // DXF(units, { version }) collects entities and writes them as R12 (AC1009: HEADER, TABLES, ENTITIES; POLYLINE +
+  // VERTEX) or R2000 (AC1015: HEADER with $HANDSEED, CLASSES, the nine symbol tables, BLOCKS for model / paper space,
+  // ENTITIES with handles and subclass markers, OBJECTS with the root dictionary; LWPOLYLINE). Both carry $INSUNITS,
+  // $MEASUREMENT, $EXTMIN / $EXTMAX and an *Active viewport on the extents. Text is plain ASCII: °, Ø and ± become
+  // %%d, %%c and %%p (DXF before 2007 is codepage text, not UTF-8).
+  var DXF_LAYERS = [['0', 7], ['OUTLINE', 7], ['HOLES', 1], ['BEND', 3], ['NOTES', 5]];
+  function dxfVersion(v) { return /^(r?2000|ac1015)$/i.test(String(v || '').trim()) ? 'R2000' : 'R12'; }
+  function dxfText(s) {
+    return String(s == null ? '' : s).replace(/[\r\n]+/g, ' ').replace(/°/g, '%%d').replace(/[Ø⌀]/g, '%%c').replace(/±/g, '%%p').replace(/[^\x20-\x7e]/g, '?');
   }
-  DXF.prototype.pair = function (code, value) { this.lines.push(String(code), String(value)); };
-  DXF.prototype.line = function (layer, a, b) {
-    this.pair(0, 'LINE'); this.pair(8, layer);
-    this.pair(10, fmt(a[0])); this.pair(20, fmt(a[1])); this.pair(30, 0);
-    this.pair(11, fmt(b[0])); this.pair(21, fmt(b[1])); this.pair(31, 0);
+  function DXF(units, opts) {
+    this.units = units === 'in' ? 'in' : 'mm';
+    this.insunits = this.units === 'in' ? 1 : 4;
+    this.version = dxfVersion(opts && opts.version);
+    this.ents = [];
+    this.min = [Infinity, Infinity]; this.max = [-Infinity, -Infinity];
+  }
+  DXF.prototype._grow = function (x, y, r) {
+    r = r || 0;
+    this.min[0] = Math.min(this.min[0], x - r); this.min[1] = Math.min(this.min[1], y - r);
+    this.max[0] = Math.max(this.max[0], x + r); this.max[1] = Math.max(this.max[1], y + r);
   };
-  DXF.prototype.circle = function (layer, c, r) {
-    this.pair(0, 'CIRCLE'); this.pair(8, layer);
-    this.pair(10, fmt(c[0])); this.pair(20, fmt(c[1])); this.pair(30, 0); this.pair(40, fmt(r));
-  };
-  DXF.prototype.arc = function (layer, c, r, a0, a1) {
-    this.pair(0, 'ARC'); this.pair(8, layer);
-    this.pair(10, fmt(c[0])); this.pair(20, fmt(c[1])); this.pair(30, 0); this.pair(40, fmt(r));
-    this.pair(50, fmt(a0)); this.pair(51, fmt(a1));
-  };
-  DXF.prototype.text = function (layer, p, height, text) {
-    this.pair(0, 'TEXT'); this.pair(8, layer);
-    this.pair(10, fmt(p[0])); this.pair(20, fmt(p[1])); this.pair(30, 0); this.pair(40, fmt(height)); this.pair(1, text);
-  };
-  DXF.prototype.polyline = function (layer, pts, closed) {
-    this.pair(0, 'POLYLINE'); this.pair(8, layer); this.pair(66, 1); this.pair(70, closed ? 1 : 0);
-    for (var i = 0; i < pts.length; i++) {
-      this.pair(0, 'VERTEX'); this.pair(8, layer);
-      this.pair(10, fmt(pts[i][0])); this.pair(20, fmt(pts[i][1])); this.pair(30, 0);
-    }
-    this.pair(0, 'SEQEND');
+  DXF.prototype.line = function (layer, a, b) { this.ents.push({ k: 'LINE', layer: layer, a: a, b: b }); this._grow(a[0], a[1]); this._grow(b[0], b[1]); };
+  DXF.prototype.circle = function (layer, c, r) { this.ents.push({ k: 'CIRCLE', layer: layer, c: c, r: r }); this._grow(c[0], c[1], r); };
+  // arc(layer, centre, r, start°, end°): counterclockwise from start to end
+  DXF.prototype.arc = function (layer, c, r, a0, a1) { this.ents.push({ k: 'ARC', layer: layer, c: c, r: r, a0: a0, a1: a1 }); this._grow(c[0], c[1], r); };
+  DXF.prototype.text = function (layer, p, height, text) { this.ents.push({ k: 'TEXT', layer: layer, p: p, h: height, s: text }); this._grow(p[0], p[1]); };
+  // polyline(layer, pts, closed, bulges?): bulges[i] = tan(sweep / 4) of the segment from pts[i] to the next point
+  DXF.prototype.polyline = function (layer, pts, closed, bulges) {
+    var self = this;
+    this.ents.push({ k: 'POLY', layer: layer, pts: pts, closed: !!closed, bulges: bulges || null });
+    pts.forEach(function (q, i) {
+      self._grow(q[0], q[1]);
+      var b = bulges && bulges[i];
+      if (b && (closed || i + 1 < pts.length)) {   // a bulged segment can reach out to the arc's radius
+        var q2 = pts[(i + 1) % pts.length], c = Math.hypot(q2[0] - q[0], q2[1] - q[1]) / 2, r = c * (1 + b * b) / (2 * Math.abs(b));
+        self._grow((q[0] + q2[0]) / 2, (q[1] + q2[1]) / 2, r);
+      }
+    });
   };
   DXF.prototype.toString = function () {
-    var head = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '9', '$INSUNITS', '70', String(this.insunits), '0', 'ENDSEC',
-      '0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER', '70', '4',
-      '0', 'LAYER', '2', 'OUTLINE', '70', '0', '62', '7', '6', 'CONTINUOUS',
-      '0', 'LAYER', '2', 'HOLES', '70', '0', '62', '1', '6', 'CONTINUOUS',
-      '0', 'LAYER', '2', 'BEND', '70', '0', '62', '3', '6', 'CONTINUOUS',
-      '0', 'LAYER', '2', 'NOTES', '70', '0', '62', '5', '6', 'CONTINUOUS',
-      '0', 'ENDTAB', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES'];
-    return head.concat(this.lines, ['0', 'ENDSEC', '0', 'EOF']).join('\n');
+    var r2000 = this.version === 'R2000', out = [];
+    function P(code, value) { out.push(String(code), String(value)); }
+    // R2000 handles: the fixed ones AutoCAD's own drawings use (tables 1–A, root dictionary C, ACAD_GROUP D, layer 0
+    // 10, Standard 11, ACAD 12, ByBlock / ByLayer / Continuous 14–16, paper space 1B–1D, model space 1F–21; LibreDWG's
+    // DXF reader treats 1F as the model space record), every other one from 30 up
+    var h = 0x2F;
+    function H() { return (++h).toString(16).toUpperCase(); }
+    var hasExt = isFinite(this.min[0]);
+    var mn = hasExt ? this.min : [0, 0], mx = hasExt ? this.max : [1, 1];
+    // ---- handles first (R2000): tables, records, blocks, root dictionary
+    var th = {};
+    var ltypes = r2000 ? [['ByBlock', ''], ['ByLayer', ''], ['Continuous', 'Solid line']] : [['CONTINUOUS', 'Solid line']];
+    var cont = r2000 ? 'Continuous' : 'CONTINUOUS';
+    var msBR = null, psBR = null, root = null, groups = null;
+    if (r2000) {
+      th = { BLOCK_RECORD: '1', LAYER: '2', STYLE: '3', LTYPE: '5', VIEW: '6', UCS: '7', VPORT: '8', APPID: '9', DIMSTYLE: 'A' };
+      msBR = '1F'; psBR = '1B'; root = 'C'; groups = 'D';
+    }
+    function table(name, count, records) {
+      P(0, 'TABLE'); P(2, name);
+      if (r2000) { P(5, th[name]); P(330, 0); P(100, 'AcDbSymbolTable'); }
+      P(70, count);
+      if (r2000 && name === 'DIMSTYLE') P(100, 'AcDbDimStyleTable');
+      records();
+      P(0, 'ENDTAB');
+    }
+    function record(type, tname, sub, handle) {
+      P(0, type);
+      if (r2000) { P(type === 'DIMSTYLE' ? 105 : 5, handle || H()); P(330, th[tname]); P(100, 'AcDbSymbolTableRecord'); P(100, sub); }
+    }
+    var body = [];
+    // ---- CLASSES, TABLES
+    if (r2000) { P(0, 'SECTION'); P(2, 'CLASSES'); P(0, 'ENDSEC'); }
+    P(0, 'SECTION'); P(2, 'TABLES');
+    table('VPORT', 1, function () {
+      var w = Math.max(mx[0] - mn[0], 1e-6), hh = Math.max(mx[1] - mn[1], 1e-6);
+      record('VPORT', 'VPORT', 'AcDbViewportTableRecord');
+      P(2, r2000 ? '*Active' : '*ACTIVE'); P(70, 0); P(10, 0); P(20, 0); P(11, 1); P(21, 1);
+      P(12, fmt((mn[0] + mx[0]) / 2)); P(22, fmt((mn[1] + mx[1]) / 2)); P(13, 0); P(23, 0); P(14, 1); P(24, 1); P(15, 0); P(25, 0);
+      P(16, 0); P(26, 0); P(36, 1); P(17, 0); P(27, 0); P(37, 0); P(40, fmt(Math.max(hh, w / 1.5) * 1.1)); P(41, 1.5); P(42, 50);
+      P(43, 0); P(44, 0); P(50, 0); P(51, 0); P(71, 0); P(72, 100); P(73, 1); P(74, 3); P(75, 0); P(76, 0); P(77, 0); P(78, 0);
+    });
+    table('LTYPE', ltypes.length, function () {
+      ltypes.forEach(function (lt, i) { record('LTYPE', 'LTYPE', 'AcDbLinetypeTableRecord', ['14', '15', '16'][i]); P(2, lt[0]); P(70, 0); P(3, lt[1]); P(72, 65); P(73, 0); P(40, 0); });
+    });
+    table('LAYER', DXF_LAYERS.length, function () {
+      DXF_LAYERS.forEach(function (l, i) { record('LAYER', 'LAYER', 'AcDbLayerTableRecord', i ? null : '10'); P(2, l[0]); P(70, 0); P(62, l[1]); P(6, cont); });
+    });
+    table('STYLE', 1, function () {
+      record('STYLE', 'STYLE', 'AcDbTextStyleTableRecord', '11');
+      P(2, r2000 ? 'Standard' : 'STANDARD'); P(70, 0); P(40, 0); P(41, 1); P(50, 0); P(71, 0); P(42, 2.5); P(3, 'txt'); P(4, '');
+    });
+    table('VIEW', 0, function () { });
+    table('UCS', 0, function () { });
+    table('APPID', 1, function () { record('APPID', 'APPID', 'AcDbRegAppTableRecord', '12'); P(2, 'ACAD'); P(70, 0); });
+    table('DIMSTYLE', 1, function () { record('DIMSTYLE', 'DIMSTYLE', 'AcDbDimStyleTableRecord'); P(2, r2000 ? 'Standard' : 'STANDARD'); P(70, 0); });
+    if (r2000) table('BLOCK_RECORD', 2, function () {
+      record('BLOCK_RECORD', 'BLOCK_RECORD', 'AcDbBlockTableRecord', msBR); P(2, '*Model_Space');
+      record('BLOCK_RECORD', 'BLOCK_RECORD', 'AcDbBlockTableRecord', psBR); P(2, '*Paper_Space');
+    });
+    P(0, 'ENDSEC');
+    // ---- BLOCKS (R2000: the model and paper space blocks)
+    if (r2000) {
+      P(0, 'SECTION'); P(2, 'BLOCKS');
+      [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
+        P(0, 'BLOCK'); P(5, b[3]); P(330, b[0]); P(100, 'AcDbEntity'); if (b[2]) P(67, 1); P(8, 0); P(100, 'AcDbBlockBegin');
+        P(2, b[1]); P(70, 0); P(10, 0); P(20, 0); P(30, 0); P(3, b[1]); P(1, '');
+        P(0, 'ENDBLK'); P(5, b[4]); P(330, b[0]); P(100, 'AcDbEntity'); if (b[2]) P(67, 1); P(8, 0); P(100, 'AcDbBlockEnd');
+      });
+      P(0, 'ENDSEC');
+    }
+    // ---- ENTITIES
+    P(0, 'SECTION'); P(2, 'ENTITIES');
+    function head(type, layer, sub) {
+      P(0, type);
+      if (r2000) { P(5, H()); P(330, msBR); P(100, 'AcDbEntity'); }
+      P(8, layer);
+      if (r2000 && sub) P(100, sub);
+    }
+    this.ents.forEach(function (e) {
+      if (e.k === 'LINE') {
+        head('LINE', e.layer, 'AcDbLine');
+        P(10, fmt(e.a[0])); P(20, fmt(e.a[1])); P(30, 0); P(11, fmt(e.b[0])); P(21, fmt(e.b[1])); P(31, 0);
+      } else if (e.k === 'CIRCLE') {
+        head('CIRCLE', e.layer, 'AcDbCircle');
+        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(40, fmt(e.r));
+      } else if (e.k === 'ARC') {
+        head('ARC', e.layer, 'AcDbCircle');
+        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(40, fmt(e.r));
+        if (r2000) P(100, 'AcDbArc');
+        P(50, fmtA(e.a0)); P(51, fmtA(e.a1));
+      } else if (e.k === 'TEXT') {
+        head('TEXT', e.layer, 'AcDbText');
+        P(10, fmt(e.p[0])); P(20, fmt(e.p[1])); P(30, 0); P(40, fmt(e.h)); P(1, dxfText(e.s));
+        if (r2000) { P(7, 'Standard'); P(100, 'AcDbText'); }
+      } else if (e.k === 'POLY') {
+        if (r2000) {
+          head('LWPOLYLINE', e.layer, 'AcDbPolyline');
+          P(90, e.pts.length); P(70, e.closed ? 1 : 0); P(43, 0);
+          e.pts.forEach(function (q, i) { P(10, fmt(q[0])); P(20, fmt(q[1])); if (e.bulges && e.bulges[i]) P(42, fmtA(e.bulges[i])); });
+        } else {
+          head('POLYLINE', e.layer); P(66, 1); P(10, 0); P(20, 0); P(30, 0); P(70, e.closed ? 1 : 0);
+          e.pts.forEach(function (q, i) {
+            P(0, 'VERTEX'); P(8, e.layer); P(10, fmt(q[0])); P(20, fmt(q[1])); P(30, 0);
+            if (e.bulges && e.bulges[i]) P(42, fmtA(e.bulges[i]));
+          });
+          P(0, 'SEQEND'); P(8, e.layer);
+        }
+      }
+    });
+    P(0, 'ENDSEC');
+    // ---- OBJECTS (R2000): the root dictionary with ACAD_GROUP
+    if (r2000) {
+      P(0, 'SECTION'); P(2, 'OBJECTS');
+      P(0, 'DICTIONARY'); P(5, root); P(330, 0); P(100, 'AcDbDictionary'); P(281, 1); P(3, 'ACAD_GROUP'); P(350, groups);
+      P(0, 'DICTIONARY'); P(5, groups); P(330, root); P(100, 'AcDbDictionary'); P(281, 1);
+      P(0, 'ENDSEC');
+    }
+    body = out; out = [];
+    // ---- HEADER (written last: $HANDSEED is the next free handle)
+    P(0, 'SECTION'); P(2, 'HEADER');
+    P(9, '$ACADVER'); P(1, r2000 ? 'AC1015' : 'AC1009');
+    P(9, '$DWGCODEPAGE'); P(3, 'ANSI_1252');
+    if (r2000) { P(9, '$HANDSEED'); P(5, (h + 1).toString(16).toUpperCase()); }
+    P(9, '$INSUNITS'); P(70, this.insunits);
+    P(9, '$MEASUREMENT'); P(70, this.units === 'in' ? 0 : 1);
+    P(9, '$LUNITS'); P(70, 2);
+    P(9, '$EXTMIN'); P(10, fmt(mn[0])); P(20, fmt(mn[1])); P(30, 0);
+    P(9, '$EXTMAX'); P(10, fmt(mx[0])); P(20, fmt(mx[1])); P(30, 0);
+    P(0, 'ENDSEC');
+    return out.concat(body, ['0', 'EOF']).join('\n');
   };
 
-  // A loop that is a regular sampling of a circle becomes a true CIRCLE entity.
-  function loopAsCircle(pts) {
-    if (pts.length < 12) return null;
-    var cx = 0, cy = 0;
-    pts.forEach(function (p) { cx += p[0]; cy += p[1]; });
-    cx /= pts.length; cy /= pts.length;
-    var r = 0;
-    pts.forEach(function (p) { r += Math.hypot(p[0] - cx, p[1] - cy); });
-    r /= pts.length;
-    for (var i = 0; i < pts.length; i++) if (Math.abs(Math.hypot(pts[i][0] - cx, pts[i][1] - cy) - r) > r * 0.01 + 1e-6) return null;
-    return { c: [cx, cy], r: r };
-  }
-
-  function exportDXFSketch(sketch, units) {
-    var d = new DXF(units);
+  function exportDXFSketch(sketch, units, opts) {
+    var d = new DXF(units, opts);
     (sketch.entities || []).forEach(function (e) {
       if (e.t === 'circle') { d.circle('OUTLINE', [e.cx, e.cy], e.r); return; }
       if (e.t === 'arc') { d.arc('OUTLINE', [e.cx, e.cy], e.r, e.a0, e.a1); return; }
@@ -108,19 +435,22 @@
     return d.toString();
   }
 
-  function exportDXFFace(mesh, faceIndex, units) {
+  // exportDXFFace(mesh, faceIndex, units, opts?) -> DXF text of a planar face's loops in the face's own frame (null for
+  // a bad index): the largest loop on OUTLINE, the others on HOLES, cleaned and fitted as the flat pattern's.
+  // opts: { version, style, origin (default false: the face frame's coordinates; true: lower-left at 0,0) }
+  function exportDXFFace(mesh, faceIndex, units, opts) {
+    opts = opts || {};
     var o = faceOutline(mesh, faceIndex);
     if (!o) return null;
-    var d = new DXF(units);
+    var d = new DXF(units, opts), style = opts.style === 'entities' ? 'entities' : 'polyline';
     var areas = o.loops.map(function (l) { return Math.abs(signedArea(l)); });
     var outerIdx = areas.indexOf(Math.max.apply(null, areas));
-    o.loops.forEach(function (l, i) {
-      var layer = i === outerIdx ? 'OUTLINE' : 'HOLES';
-      var c = loopAsCircle(l);
-      if (c) d.circle(layer, c.c, c.r); else d.polyline(layer, l, true);
-    });
+    var cvs = o.loops.map(function (l) { return dxfLoopCurves(l); });
+    var box = curvesBox(cvs), shift = opts.origin === true && isFinite(box.min[0]) ? [-box.min[0], -box.min[1]] : [0, 0];
+    cvs.forEach(function (cv, i) { if (cv) emitLoop(d, i === outerIdx ? 'OUTLINE' : 'HOLES', cv, style, shift); });
     return d.toString();
   }
+  K.dxfLoopCurves = dxfLoopCurves; K.DXF_TOL = DXF_TOL;
 
   // ------------------------------------------------------------------ script builder (the API scripts talk to)
   function Builder(model) {
@@ -253,21 +583,63 @@
     if ((f.cut || patternLike) && Array.isArray(opts.bodies) && opts.bodies.length) f.bodies = opts.bodies.map(function (i) { return i | 0; });
     return f;
   }
-  // Sheet metal parameters used by baseFlange/flange/flatten. K = 0.71 (steel) or 0.64 (aluminum) per shop practice.
-  Builder.prototype.sheet = function (thickness, bendRadius, kFactor) {
-    this.model.sheet = { thickness: num(thickness), bendRadius: bendRadius == null ? num(thickness) : num(bendRadius), kFactor: kFactor == null ? 0.71 : num(kFactor) };
+  // Sheet metal parameters used by baseFlange/flange/flatten: thickness T, inside bend radius R (default T) and the
+  // K-factor (BA = θ·(R + K·T); default 0.5, SolidWorks' default). opts (SolidWorks' Bend Allowance group and gauge
+  // table): bendAllowanceType ('kfactor' | 'allowance' | 'deduction' | 'table'), bendAllowance (BA), bendDeduction (BD),
+  // bendTable ({ kind: 'BA' | 'BD', name?, tolerance?, rows: [{ thickness, radius, angle, value }] }), gaugeTable (a
+  // built-in table name, Kernel.gaugeTables, or a table object) and gauge: with a gauge, T, R and K (or BD) that are
+  // left null come from the table's row.
+  Builder.prototype.sheet = function (thickness, bendRadius, kFactor, opts) {
+    opts = opts || {};
+    var g = null;
+    if (opts.gauge != null) {
+      g = K.gaugeRow(opts.gaugeTable, opts.gauge, this.model.units);
+      if (!g) throw new Error('Gauge ' + JSON.stringify(String(opts.gauge)) + ' is not in the gauge table ' + JSON.stringify((opts.gaugeTable && opts.gaugeTable.name) || opts.gaugeTable || K.DEFAULT_GAUGE_TABLE) + '.');
+    }
+    if (thickness == null && !g) throw new Error('sheet() needs a thickness (or a gauge).');
+    var T = thickness != null ? num(thickness) : g.thickness;
+    var o = { thickness: T, bendRadius: bendRadius != null ? num(bendRadius) : (g ? g.radius : T), kFactor: kFactor != null ? num(kFactor) : (g && g.kFactor != null ? g.kFactor : K.DEFAULT_K_FACTOR) };
+    o.bendAllowanceType = opts.bendAllowanceType || (g && g.bendDeduction != null && opts.bendDeduction == null ? 'deduction' : 'kfactor');
+    if (opts.bendAllowance != null) o.bendAllowance = num(opts.bendAllowance);
+    if (opts.bendDeduction != null) o.bendDeduction = num(opts.bendDeduction);
+    else if (g && g.bendDeduction != null) o.bendDeduction = g.bendDeduction;
+    if (opts.bendTable) o.bendTable = opts.bendTable;
+    if (g) { o.gaugeTable = opts.gaugeTable != null ? opts.gaugeTable : K.DEFAULT_GAUGE_TABLE; o.gauge = g.gauge; }
+    this.model.sheet = K.makeSheet(o);
     return this;
   };
   Builder.prototype.baseFlange = function (thickness, opts) {
     opts = opts || {};
-    if (!this.model.sheet || thickness != null) this.sheet(thickness != null ? thickness : 2, opts.bendRadius, opts.kFactor);
+    // no sheet yet: baseFlange(T) sets one (R = T, K = 0.5 unless opts say otherwise); after sheet(...) it keeps that
+    // sheet's radius, K-factor and bend allowance method and changes only what it is given
+    if (!this.model.sheet) this.sheet(thickness != null ? thickness : 2, opts.bendRadius, opts.kFactor);
+    else if (thickness != null || opts.bendRadius != null || opts.kFactor != null) {
+      var s = Object.assign({}, this.model.sheet);
+      if (thickness != null && num(thickness) !== s.thickness) { s.thickness = num(thickness); delete s.gauge; delete s.gaugeTable; }
+      if (opts.bendRadius != null) s.bendRadius = num(opts.bendRadius);
+      if (opts.kFactor != null) s.kFactor = num(opts.kFactor);
+      s.bendAllowanceType = s.bendAllowanceType || 'kfactor';
+      this.model.sheet = K.makeSheet(s);
+    }
     var T = this.model.sheet.thickness;
     var f = this.extrude(T, Object.assign({}, opts, { sheetBase: true, name: opts.name || 'Base-Flange1' }));
     return f;
   };
+  // Custom Bend Allowance of a flange, hem or jog: { type: 'kfactor' | 'allowance' | 'deduction' | 'table', value }
+  // (value: K, BA or BD; none for 'table', which uses the sheet's bend table), overriding the sheet's method
+  function customBendAllowance(f, c) {
+    if (!c) return f;
+    if (K.BEND_ALLOWANCE_TYPES.indexOf(c.type) < 0) throw new Error('bendAllowance.type must be one of ' + K.BEND_ALLOWANCE_TYPES.join(', ') + '.');
+    f.bendAllowance = { type: c.type };
+    if (c.type !== 'table') {
+      if (c.value == null || (!isExpression(c.value) && !isFinite(+c.value))) throw new Error('bendAllowance.value must be a number.');
+      f.bendAllowance.value = num(c.value);
+    }
+    return f;
+  }
   // edges: [[x,y,z], ...] points on straight edges of the flat sheet face
   // opts: angle, reverse, radius, position, toward, name, miter (bool), miterGap, relief ('none' | 'rect' | 'obround'),
-  // reliefWidth (default T), reliefDepth (default T/2)
+  // reliefWidth (default T), reliefDepth (default T/2), bendAllowance ({ type, value }: Custom Bend Allowance)
   Builder.prototype.flange = function (length, edges, opts) {
     opts = opts || {};
     var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [num(opts.toward[0]), num(opts.toward[1]), num(opts.toward[2])] : undefined,
@@ -276,6 +648,7 @@
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
+    customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
   };
@@ -291,14 +664,15 @@
     if (isExpression(gap) || isExpression(T)) { f.gap = gap; f.radius = null; }
     else f.radius = Math.max(gap / 2, 0.02 * T);
     f.name = f.name || featureName(this.model, 'hem');
+    customBendAllowance(f, opts.bendAllowance);
     this._add(f);
     return this;
   };
   // jog: two bends offsetting the sheet by `height`, then `length` of flat parallel to the base
   Builder.prototype.jog = function (height, length, edges, opts) {
     opts = opts || {};
-    this._add({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
-      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name });
+    this._add(customBendAllowance({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
+      edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name }, opts.bendAllowance));
     return this;
   };
   Builder.prototype.cut = function (depth, opts) {
@@ -482,7 +856,16 @@
       out.push('p.configurations(' + JSON.stringify(model.configurations) + ');');
       if (model.activeConfiguration != null && findConfiguration(model, model.activeConfiguration)) out.push('p.activeConfiguration(' + JSON.stringify(String(model.activeConfiguration)) + ');');
     }
-    if (model.sheet) out.push('p.sheet(' + nv(model.sheet.thickness) + ', ' + nv(model.sheet.bendRadius) + ', ' + nv(model.sheet.kFactor) + ');');
+    if (model.sheet) {
+      // a sheet without a stored K (made before bend deductions existed) is written with the K its flat always used
+      var sh = model.sheet, so = {};
+      if (sh.bendAllowanceType && sh.bendAllowanceType !== 'kfactor') so.bendAllowanceType = sh.bendAllowanceType;
+      if (sh.bendAllowance != null) so.bendAllowance = numOut(sh.bendAllowance);
+      if (sh.bendDeduction != null) so.bendDeduction = numOut(sh.bendDeduction);
+      if (sh.bendTable) so.bendTable = sh.bendTable;
+      if (sh.gaugeTable != null && sh.gauge != null) { so.gaugeTable = sh.gaugeTable; so.gauge = sh.gauge; }
+      out.push('p.sheet(' + nv(sh.thickness) + ', ' + nv(sh.bendRadius) + ', ' + nv(sh.kFactor != null && sh.kFactor !== '' ? sh.kFactor : K.LEGACY_K_FACTOR) + (Object.keys(so).length ? ', ' + optsStr(so) : '') + ');');
+    }
     var idVar = {};
     model.features.forEach(function (f) {
       var v = 'f' + f.id;
@@ -549,9 +932,11 @@
           if (f.relief && f.relief !== 'none') fo.relief = f.relief;
           if (f.reliefWidth != null) fo.reliefWidth = numOut(f.reliefWidth);
           if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
+          if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           if (f.hem) {
             var ho = { gap: f.gap != null ? numOut(f.gap) : Math.round(f.radius * 2 * 1e4) / 1e4, name: f.name };
             if (f.reverse) ho.reverse = true;
+            if (f.bendAllowance) ho.bendAllowance = bendAllowanceOut(f.bendAllowance);
             out.push('var ' + v + ' = p.hem(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(ho) + ').last();');
           } else out.push('var ' + v + ' = p.flange(' + nv(f.length) + ', ' + fspecs + ', ' + optsStr(fo) + ').last();');
           break;
@@ -562,6 +947,7 @@
           if (f.reverse) jo.reverse = true;
           if (f.radius != null) jo.radius = f.radius;
           if (f.position && f.position !== 'bendOutside') jo.position = f.position;
+          if (f.bendAllowance) jo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           out.push('var ' + v + ' = p.jog(' + nv(f.height) + ', ' + nv(f.length) + ', ' + jspecs + ', ' + optsStr(jo) + ').last();');
           break;
         }
@@ -622,6 +1008,7 @@
   function nv(x) { return isExpression(x) ? JSON.stringify(x) : String(x); }
   // numOut(x): an option value, a number or the equation string untouched (optsStr quotes strings)
   function numOut(x) { return isExpression(x) ? x : +x; }
+  function bendAllowanceOut(c) { var o = { type: c.type }; if (c.value != null) o.value = numOut(c.value); return o; }
   function bodyOptsOut(o, f) {
     if (f.merge === false) o.merge = false;
     if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();

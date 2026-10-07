@@ -242,13 +242,38 @@
           delete pm.exprs[key]; delete pm.exprErrors[key];
           showHint();
         };
+        // p9-sketch: shop input. A fraction, mixed number, unit or sum ("3/8", "1-1/2", "25mm", "2*3/8"; UI.parseLength,
+        // converted to the document's units) cannot live in a number box: its first such character turns the box into a
+        // text box. The value it reads is applied as it is typed and shown in the hint ("= 0.375"); a bad entry shows
+        // the reason there, Enter is refused, and leaving the box puts the old value back.
+        var kind = f.unit === 'u' ? 'length' : /^(°|deg)$/.test(f.unit || '') ? 'angle' : 'number';
+        var shopRead = function (s) { return UI.parseLength ? UI.parseLength(s, { kind: kind }) : (isNaN(parseFloat(s)) ? { error: 'Not a number: ' + s } : { value: parseFloat(s) }); };
+        var shopHint = function (r) {
+          hint.hidden = !r;
+          hint.classList.toggle('err', !!(r && r.error != null));
+          inp.classList.toggle('expr-err', !!(r && r.error != null));
+          hint.textContent = !r ? '' : r.error != null ? r.error : '= ' + UI.fmtNum(r.value, 4);
+          hint.title = !r ? '' : r.error != null ? 'Not a value: ' + r.error : inp.value + ' reads ' + r.value + (kind === 'length' ? ' ' + UI.unitLabel() : '');
+        };
+        var shopText = function () { return inp.type === 'text' && pm.exprs[key] == null; };
         inp.addEventListener('input', function () {
           var s = inp.value;
           if (isExpr(s)) { if (inp.type !== 'text') { inp.type = 'text'; } setExpr(s); return; }
           clearExpr();
+          if (inp.type === 'text') {
+            var r = /^\s*[-+]?(\d+\.?\d*|\.\d+)\s*$/.test(s) ? null : shopRead(s);
+            shopHint(r);
+            if (!r) { var n0 = parseFloat(s); if (!isNaN(n0)) changed(n0); }
+            else if (r.error == null) changed(r.value);
+            return;
+          }
           var n = parseFloat(s); if (!isNaN(n)) changed(n);
         });
         inp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && shopText()) {
+            var re = shopRead(inp.value);
+            if (re.error != null) { e.preventDefault(); shopHint(re); UI.setStatus('Not a value: ' + re.error); return; }
+          }
           if (e.key === 'Enter') { e.preventDefault(); pmOK(); return; }
           // r4/features4: arrow keys spin by the field's increment (Shift ×10), the same for every PropertyManager
           if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && pm.exprs[key] == null) { e.preventDefault(); spinField(f, inp, e.key === 'ArrowUp' ? 1 : -1, e.shiftKey ? 10 : 1, changed); return; }
@@ -258,6 +283,16 @@
             inp.type = 'text'; inp.value = '=';
             try { inp.setSelectionRange(1, 1); } catch (er) { }
             setExpr('=');
+            return;
+          }
+          if (inp.type === 'number' && e.key.length === 1 && !/[0-9.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            // the box's text replaced by the key when it is all selected (as after focus), else the key appended
+            var old = inp.validity && inp.validity.badInput ? '' : inp.value, sel = window.getSelection ? String(window.getSelection()) : '';
+            var t = (sel && sel === old ? '' : old) + e.key;
+            inp.type = 'text'; inp.value = t;
+            try { inp.setSelectionRange(t.length, t.length); } catch (er) { }
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
             return;
           }
           // no spin increments on an equation
@@ -271,8 +306,17 @@
           spinField(f, inp, e.deltaY < 0 ? 1 : -1, e.shiftKey ? 10 : 1, changed);
         }, { passive: false });
         // leaving a text box that no longer holds an equation turns it back into a number box
+        inp.addEventListener('focus', function () { inp._before = v[key]; });
         inp.addEventListener('blur', function () {
-          if (inp.type === 'text' && pm.exprs[key] == null) { var s = inp.value; inp.type = 'number'; inp.value = isNaN(parseFloat(s)) ? (v[key] == null ? '' : v[key]) : parseFloat(s); }
+          if (!shopText()) return;
+          var rb = shopRead(inp.value);
+          // p9-sketch: back to a number box showing the value read (3/8 -> 0.375), or after a bad entry the value the
+          // box had when it took the focus (a "3" typed on the way to "3//8" is not kept)
+          var back = rb.error == null ? +rb.value.toPrecision(12) : inp._before != null ? inp._before : v[key];
+          inp.type = 'number'; inp.value = back == null ? '' : back;
+          shopHint(null);
+          if (rb.error != null && back != null && back !== v[key]) changed(back);
+          if (rb.error != null && UI.setStatus) UI.setStatus('Value not changed: ' + rb.error);
         });
         showHint();
         var wrap = el('span', { class: 'pm-num-wrap' }, [inp, f.unit ? el('span', { class: 'unit', text: f.unit === 'u' ? UI.unitLabel() : f.unit }) : null]);
@@ -440,7 +484,7 @@
     return 1;
   }
   function spinField(f, inp, dir, mult, changed) {
-    var cur = parseFloat(inp.value), step = spinStep(f) * (mult || 1);
+    var cur = inp.type === 'text' ? NaN : parseFloat(inp.value), step = spinStep(f) * (mult || 1);   // p9-sketch: "3/8" is no parseFloat
     if (isNaN(cur)) cur = +pm.values[f.key] || 0;
     var val = +(cur + dir * step).toPrecision(12);
     if (f.min != null && val < f.min) val = +f.min;
@@ -2041,30 +2085,261 @@
     }
   }
 
+  // ------------------------------------------------------------------ sheet metal: parameters (SolidWorks' Sheet-Metal PropertyManager groups)
+  // The Base Flange/Tab PropertyManager (a new part) and Sheet Metal (UI.cmdSheetMetal: edit model.sheet of a part that
+  // has one) share these groups: Sheet Metal Gauges (Use gauge table), Sheet Metal Parameters (T, R), Bend Allowance
+  // (Bend Table / K-Factor / Bend Allowance / Bend Deduction with its value, the bend table grid). PM keys: thickness,
+  // bendRadius, kFactor, baType, bendAllowance, bendDeduction, bendTable, useGauge, gaugeTable (a built-in table's name
+  // or '__custom'), customGauge (the part's own gauge table), gauge.
+  var BA_OPTIONS = [['table', 'Bend Table'], ['kfactor', 'K-Factor'], ['allowance', 'Bend Allowance'], ['deduction', 'Bend Deduction']];
+  var BA_NAMES = { table: 'Bend Table', kfactor: 'K-Factor', allowance: 'Bend Allowance', deduction: 'Bend Deduction' };
+  var SHEET_PM_KEYS = ['thickness', 'bendRadius', 'kFactor', 'baType', 'bendAllowance', 'bendDeduction', 'bendTable', 'useGauge', 'gaugeTable', 'customGauge', 'gauge'];
+  var EXAMPLE_NOTE = 'example — replace with your shop\'s values';
+  // a new part's sheet: 2 mm (or 3/32 in) thick, R = T, K = 0.5
+  function defaultSheet() { var t = UI.lenDefault(2); return { thickness: t, bendRadius: t, kFactor: K.DEFAULT_K_FACTOR }; }
+  function sheetToValues(sm, v) {
+    v = v || {};
+    v.thickness = sm.thickness; v.bendRadius = sm.bendRadius != null ? sm.bendRadius : sm.thickness;
+    v.kFactor = sm.kFactor != null && sm.kFactor !== '' ? sm.kFactor : K.LEGACY_K_FACTOR;
+    v.baType = sm.bendAllowanceType || 'kfactor';
+    var T = +sm.thickness || 0, R = +v.bendRadius || 0;
+    v.bendAllowance = sm.bendAllowance != null ? sm.bendAllowance : Math.round(K.bendAllowance(Math.PI / 2, R, T, +v.kFactor || K.DEFAULT_K_FACTOR) * 1e4) / 1e4;
+    v.bendDeduction = sm.bendDeduction != null ? sm.bendDeduction : Math.round(K.bendDeduction(Math.PI / 2, R, T, K.bendAllowance(Math.PI / 2, R, T, +v.kFactor || K.DEFAULT_K_FACTOR)) * 1e4) / 1e4;
+    v.bendTable = sm.bendTable ? JSON.parse(JSON.stringify(sm.bendTable)) : null;
+    v.useGauge = sm.gauge != null;
+    v.customGauge = sm.gaugeTable && typeof sm.gaugeTable === 'object' ? JSON.parse(JSON.stringify(sm.gaugeTable)) : null;
+    v.gaugeTable = v.customGauge ? '__custom' : (typeof sm.gaugeTable === 'string' && K.gaugeTables[sm.gaugeTable] ? sm.gaugeTable : K.DEFAULT_GAUGE_TABLE);
+    v.gauge = sm.gauge != null ? String(sm.gauge) : '16';
+    return v;
+  }
+  function gaugeRef(v) { return v.gaugeTable === '__custom' ? v.customGauge : v.gaugeTable; }
+  // model.sheet from the PM values; `exprs` keeps equation fields as their text (on ✓), else the evaluated numbers
+  function sheetFromValues(v, exprs) {
+    function val(k) { return exprs ? pmExpr(k, +v[k]) : +v[k]; }
+    return K.makeSheet({ thickness: val('thickness'), bendRadius: val('bendRadius'), kFactor: val('kFactor'), bendAllowanceType: v.baType,
+      bendAllowance: val('bendAllowance'), bendDeduction: val('bendDeduction'), bendTable: v.bendTable,
+      gaugeTable: v.useGauge ? gaugeRef(v) : null, gauge: v.useGauge ? v.gauge : null });
+  }
+  // a gauge pick fills T, R and K (or BD) from the table's row
+  function applyGauge(v) {
+    var row = K.gaugeRow(gaugeRef(v), v.gauge, App.model.units);
+    if (!row) return false;
+    ['thickness', 'bendRadius', 'kFactor', 'bendDeduction'].forEach(function (k) { if (pm.exprs) { delete pm.exprs[k]; delete pm.exprErrors[k]; } });
+    v.thickness = Math.round(row.thickness * 1e6) / 1e6; v.bendRadius = Math.round(row.radius * 1e6) / 1e6;
+    if (row.bendDeduction != null) { v.bendDeduction = Math.round(row.bendDeduction * 1e6) / 1e6; v.baType = 'deduction'; }
+    else { v.kFactor = row.kFactor; if (v.baType !== 'table') v.baType = 'kfactor'; }
+    return true;
+  }
+  function gaugeOptions(v) {
+    var t = K.gaugeTable(gaugeRef(v)), u = UI.unitLabel(), k = (t && t.units || 'in') === u ? 1 : (u === 'mm' ? 25.4 : 1 / 25.4);
+    return t ? t.rows.map(function (r) { return [String(r.gauge), r.gauge + ' ga — ' + UI.fmtNum(r.thickness * k, 4) + ' ' + u]; }) : [];
+  }
+  function gaugeTableOptions(v) {
+    var o = Object.keys(K.gaugeTables).map(function (n) { return [n, n]; });
+    if (v.customGauge) o.push(['__custom', v.customGauge.name || 'Shop gauge table']);
+    return o;
+  }
+  // a table of inputs in a dialog: columns [{ key, label, type: 'number' | 'text' }], rows [{...}]; the dialog's own
+  // controls go in `head`; onOK(rows) gets the edited rows (blank rows dropped). Text pasted from a spreadsheet (tab,
+  // comma or space separated, one row per line, in column order) is added with the Paste button.
+  // DOM: #<id> wrapper, table.grid-table, tr.grid-row with input[data-col], .grid-del; #<id>-add, #<id>-paste (textarea),
+  // #<id>-paste-add; modal buttons #<id>-ok, #<id>-cancel.
+  function gridDialog(o) {
+    var rows = (o.rows || []).map(function (r) { var c = {}; o.columns.forEach(function (col) { c[col.key] = r[col.key]; }); return c; });
+    var wrap = el('div', { id: o.id, class: 'grid-dialog' });
+    if (o.head) wrap.appendChild(o.head);
+    var table = el('table', { class: 'grid-table eq-table' });
+    table.appendChild(el('thead', {}, [el('tr', {}, o.columns.map(function (c) { return el('th', { text: c.label }); }).concat([el('th', { text: '' })]))]));
+    var tbody = el('tbody');
+    table.appendChild(tbody);
+    function render() {
+      tbody.innerHTML = '';
+      rows.forEach(function (r, i) {
+        var tr = el('tr', { class: 'grid-row', 'data-index': String(i) });
+        o.columns.forEach(function (c) {
+          var inp = el('input', { type: c.type === 'text' ? 'text' : 'number', step: 'any', 'data-col': c.key, value: r[c.key] == null ? '' : r[c.key] });
+          inp.addEventListener('input', function () { r[c.key] = c.type === 'text' ? inp.value : (inp.value === '' ? null : parseFloat(inp.value)); });
+          inp.addEventListener('keydown', function (e) { e.stopPropagation(); });
+          tr.appendChild(el('td', {}, [inp]));
+        });
+        tr.appendChild(el('td', {}, [el('button', { class: 'btn grid-del', text: '✕', title: 'Delete row', onclick: function () { rows.splice(i, 1); render(); } })]));
+        tbody.appendChild(tr);
+      });
+    }
+    render();
+    wrap.appendChild(el('div', { style: 'max-height:46vh;overflow:auto' }, [table]));
+    wrap.appendChild(el('div', { class: 'row' }, [el('button', { id: o.id + '-add', class: 'btn', text: '+ Add row', onclick: function () { var c = {}; o.columns.forEach(function (col) { c[col.key] = rows.length ? rows[rows.length - 1][col.key] : null; }); rows.push(c); render(); } })]));
+    var paste = el('textarea', { id: o.id + '-paste', rows: '3', placeholder: 'Paste rows from a spreadsheet: ' + o.columns.map(function (c) { return c.label; }).join(', ') + ' per line', style: 'width:100%' });
+    paste.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    wrap.appendChild(paste);
+    wrap.appendChild(el('div', { class: 'row' }, [el('button', { id: o.id + '-paste-add', class: 'btn', text: 'Add pasted rows', onclick: function () {
+      String(paste.value).split(/\r?\n/).forEach(function (line) {
+        var cells = line.trim().split(/\t|,|;|\s+/).filter(function (x) { return x !== ''; });
+        if (cells.length < o.columns.length) return;
+        var c = {}, ok = true;
+        o.columns.forEach(function (col, j) { var x = cells[j]; if (col.type === 'text') c[col.key] = x; else { c[col.key] = parseFloat(x); if (!isFinite(c[col.key])) ok = false; } });
+        if (ok) rows.push(c);
+      });
+      paste.value = ''; render();
+    } })]));
+    if (o.note) wrap.appendChild(el('p', { html: '<small>' + o.note + '</small>' }));
+    UI.showModal({ title: o.title, body: wrap, buttons: [
+      { label: 'OK', primary: true, id: o.id + '-ok', action: function () {
+        var out = rows.filter(function (r) { return o.columns.every(function (c) { return c.type === 'text' ? String(r[c.key] == null ? '' : r[c.key]).trim() !== '' : isFinite(r[c.key]) && r[c.key] != null; }); });
+        UI.closeModal(); o.onOK(out);
+      } },
+      { label: 'Cancel', id: o.id + '-cancel', action: UI.closeModal }
+    ] });
+    $('modal-card').classList.add('wide');
+  }
+  // Bend Table: rows thickness × radius × angle → BA or BD (SolidWorks bend table), saved in the part (model.sheet.bendTable)
+  function editBendTable(v) {
+    var t = v.bendTable || { kind: 'BD', rows: [] };
+    var kindSel = el('select', { id: 'bt-kind' }, [el('option', { value: 'BD', text: 'Bend Deduction (BD)' }), el('option', { value: 'BA', text: 'Bend Allowance (BA)' })]);
+    kindSel.value = t.kind === 'BA' ? 'BA' : 'BD';
+    var name = el('input', { id: 'bt-name', type: 'text', value: t.name || '', placeholder: 'e.g. Press brake 1, mild steel' });
+    name.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    var head = el('div', { class: 'kv' }, [el('span', { text: 'Values are' }), kindSel, el('span', { text: 'Table name' }), name]);
+    gridDialog({ id: 'bt-dialog', title: 'Bend Table', head: head, rows: t.rows,
+      columns: [{ key: 'thickness', label: 'Thickness (' + UI.unitLabel() + ')' }, { key: 'radius', label: 'Radius (' + UI.unitLabel() + ')' }, { key: 'angle', label: 'Angle (°)' }, { key: 'value', label: 'Value (' + UI.unitLabel() + ')' }],
+      note: 'A bend uses the rows whose thickness and inside radius match it (within 0.5 %); between two angles the value is interpolated. A bend the table does not cover falls back to the K-factor, with a warning on the flat pattern. Angles are bend angles (90° for an L).',
+      onOK: function (rows) {
+        v.bendTable = { kind: kindSel.value, rows: rows.map(function (r) { return { thickness: +r.thickness, radius: +r.radius, angle: +r.angle, value: +r.value }; }) };
+        if (name.value.trim()) v.bendTable.name = name.value.trim();
+        if (!v.bendTable.rows.length) v.bendTable = null;
+        renderPM(); if (pm.spec && pm.spec.onChange) pm.spec.onChange(v, 'bendTable');
+      } });
+  }
+  // the part's own gauge table, started from the selected one (SolidWorks' gauge table file)
+  function editGaugeTable(v) {
+    var t = K.gaugeTable(gaugeRef(v)) || { units: 'in', rows: [] };
+    var name = el('input', { id: 'gt-name', type: 'text', value: v.customGauge ? v.customGauge.name || '' : 'Shop — ' + (t.name || 'gauges') });
+    name.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    var u = t.units || 'in';
+    gridDialog({ id: 'gt-dialog', title: 'Gauge Table', head: el('div', { class: 'kv' }, [el('span', { text: 'Table name' }), name]), rows: t.rows,
+      columns: [{ key: 'gauge', label: 'Gauge', type: 'text' }, { key: 'thickness', label: 'Thickness (' + u + ')' }, { key: 'radius', label: 'Bend radius (' + u + ')' }, { key: 'kFactor', label: 'K-factor' }],
+      note: (t.example ? 'The radius and K-factor columns of the shipped tables are an <b>' + EXAMPLE_NOTE + '</b>. ' : '') + 'The table is saved in this part.',
+      onOK: function (rows) {
+        v.customGauge = { name: name.value.trim() || 'Shop gauge table', units: u, rows: rows.map(function (r) { return { gauge: String(r.gauge).trim(), thickness: +r.thickness, radius: +r.radius, kFactor: +r.kFactor }; }) };
+        v.gaugeTable = '__custom'; v.useGauge = true;
+        if (!K.gaugeRow(v.customGauge, v.gauge, App.model.units) && v.customGauge.rows.length) v.gauge = v.customGauge.rows[0].gauge;
+        applyGauge(v);
+        renderPM(); if (pm.spec && pm.spec.onChange) pm.spec.onChange(v, 'gauge');
+      } });
+  }
+  function bendTableSummary(v) {
+    var t = v.bendTable;
+    if (!t || !t.rows.length) return 'No rows — edit the table';
+    return (t.name ? t.name + ': ' : '') + t.rows.length + ' row' + (t.rows.length === 1 ? '' : 's') + ' of ' + (t.kind === 'BA' ? 'bend allowance' : 'bend deduction');
+  }
+  // the groups both PropertyManagers show
+  function sheetGroups(extra) {
+    var isBuiltIn = function (v) { return v.gaugeTable !== '__custom'; };
+    return [
+      { title: 'Sheet Metal Gauges', fields: [
+        { type: 'check', label: 'Use gauge table', key: 'useGauge', rerender: true },
+        { type: 'select', label: 'Table', key: 'gaugeTable', options: gaugeTableOptions, rerender: true, show: function (v) { return v.useGauge; } },
+        { type: 'select', label: 'Gauge', key: 'gauge', options: gaugeOptions, rerender: true, show: function (v) { return v.useGauge; } },
+        { type: 'html', html: '<div class="pm-note" style="margin:2px 0 4px">Thicknesses are the published standard gauges; the bend radius and K-factor in this table are an <b>' + EXAMPLE_NOTE + '</b>.</div>', show: function (v) { return v.useGauge && isBuiltIn(v); } },
+        { type: 'buttons', show: function (v) { return v.useGauge; }, buttons: [{ label: 'Edit gauge table…', onclick: editGaugeTable }] }
+      ] },
+      { title: 'Sheet Metal Parameters', fields: [{ type: 'number', label: 'Thickness  T', key: 'thickness', unit: 'u', min: 0 }, { type: 'number', label: 'Bend radius', key: 'bendRadius', unit: 'u', min: 0 }].concat(extra || []) },
+      { title: 'Bend Allowance', fields: [
+        { type: 'select', label: 'Type', key: 'baType', options: BA_OPTIONS, rerender: true },
+        { type: 'number', label: 'K-factor', key: 'kFactor', step: 0.01, min: 0, show: function (v) { return v.baType === 'kfactor' || v.baType === 'table'; } },
+        { type: 'number', label: 'Bend allowance', key: 'bendAllowance', unit: 'u', min: 0, show: function (v) { return v.baType === 'allowance'; } },
+        { type: 'number', label: 'Bend deduction', key: 'bendDeduction', unit: 'u', show: function (v) { return v.baType === 'deduction'; } },
+        { type: 'static', label: 'Bend table', value: bendTableSummary, show: function (v) { return v.baType === 'table'; } },
+        { type: 'buttons', show: function (v) { return v.baType === 'table'; }, buttons: [{ label: 'Edit bend table…', onclick: editBendTable }] },
+        { type: 'html', html: function (v) {
+          if (v.baType === 'kfactor') return '<div class="pm-note" style="margin:2px 0 4px">BA = angle × (R + K·T). K lies between 0 and 0.5 (0.5: neutral axis at mid-thickness). A 90° "material in bend" constant such as 0.71 in BA = 0.71·T + 1.57·R is K = 0.71 / 1.5708 = 0.452.' + (+v.kFactor > 0.5 ? ' <b>K above 0.5 puts the neutral axis outside the sheet.</b>' : '') + '</div>';
+          if (v.baType === 'table') return '<div class="pm-note" style="margin:2px 0 4px">Bends the table does not cover use the K-factor above.</div>';
+          return '<div class="pm-note" style="margin:2px 0 4px">Applied unchanged to every bend, whatever its angle (as SolidWorks does); flat = A + B − BD with A, B the outside dimensions (to the virtual sharp up to 90°, to the outside tangent beyond). Use a bend table for angle-dependent values.</div>';
+        } }
+      ] }
+    ];
+  }
+  function smEsc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function flatSizeText(flat) { return 'Flat size ' + UI.fmtNum(flat.size[0], 4) + ' × ' + UI.fmtNum(flat.size[1], 4) + ' ' + UI.unitLabel(); }
+  UI.flatSizeText = flatSizeText;
+
   // ------------------------------------------------------------------ sheet metal: base flange = thin extrude with sheet parameters
   function cmdBaseFlange() {
     withSketch(function (sid) {
-      var sm = App.model.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
-      var f = { type: 'extrude', cut: false, depth: sm.thickness, end: 'blind', reverse: false, dir2: false, depth2: 0, end2: 'blind', sketch: pickDefaultSketch(sid), thickness: sm.thickness, bendRadius: sm.bendRadius, kFactor: sm.kFactor };
+      var sm = App.model.sheet || defaultSheet();
+      var f = { type: 'extrude', cut: false, depth: sm.thickness, end: 'blind', reverse: false, dir2: false, depth2: 0, end2: 'blind', sketch: pickDefaultSketch(sid) };
+      sheetToValues(sm, f);
       if (f.sketch == null) { UI.toast('Draw the flange profile in a sketch first.'); return; }
+      function feature(v) { var o = {}; Object.keys(v).forEach(function (k) { if (SHEET_PM_KEYS.indexOf(k) < 0) o[k] = v[k]; }); return o; }
       openPM({
         title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
-        groups: [
-          { title: 'Sketch', fields: [sketchPickerField(f)] },
-          { title: 'Sheet Metal Parameters', fields: [{ type: 'number', label: 'Thickness  T', key: 'thickness', unit: 'u', min: 0 }, { type: 'number', label: 'Bend radius', key: 'bendRadius', unit: 'u', min: 0 }, { type: 'number', label: 'K-factor', key: 'kFactor', step: 0.01, min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }] }
-        ],
-        onChange: function (v) { v.depth = v.thickness; App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(v); UI.setStatus(err ? 'Preview: ' + err : 'Previewing base flange (thickness ' + v.thickness + ').'); },
+        groups: [{ title: 'Sketch', fields: [sketchPickerField(f)] }].concat(sheetGroups([{ type: 'check', label: 'Reverse direction', key: 'reverse' }])),
+        onChange: function (v, key) {
+          if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+          v.depth = v.thickness; App.command.sketchId = v.sketch; UI.updateSketches();
+          var err = showPreview(feature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing base flange (thickness ' + v.thickness + ').');
+        },
         onOK: function (v) {
           // the sheet parameters may be equations too (the kernel resolves model.sheet like a feature)
-          App.model.sheet = { thickness: pmExpr('thickness', +v.thickness), bendRadius: pmExpr('bendRadius', +v.bendRadius), kFactor: pmExpr('kFactor', +v.kFactor) };
-          v.depth = pmExpr('thickness', +v.thickness); v.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
-          v.sheetBase = true;
-          delete v.thickness; delete v.bendRadius; delete v.kFactor;
-          return commitFeature(v, null);
+          var sheet;
+          try { sheet = sheetFromValues(v, true); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return false; }
+          App.model.sheet = sheet;
+          var feat = feature(v);
+          feat.depth = pmExpr('thickness', +v.thickness); feat.name = 'Base-Flange' + (App.model.features.filter(function (q) { return /^Base-Flange\d+$/.test(q.name || ''); }).length + 1);
+          feat.sheetBase = true;
+          return commitFeature(feat, null);
         }
       });
     });
   }
+  // Sheet Metal (SolidWorks' Sheet-Metal feature): the part's sheet parameters and bend allowance, with the flat size
+  // of the part as it stands updated live (a change of T or R needs the rebuild: the size follows after ✓).
+  function cmdSheetMetal() {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    var old = App.model.sheet, v0 = sheetToValues(old, {}), cache = { key: null, text: '' };
+    var resolved = previewModel().sheet || old;
+    function flatText(v) {
+      var sheet;
+      try { sheet = sheetFromValues(v, false); } catch (e) { return e.message; }
+      if (Math.abs(+sheet.thickness - +resolved.thickness) > 1e-12 || Math.abs(+sheet.bendRadius - +resolved.bendRadius) > 1e-12) return 'updates after ✓ (thickness or radius changed)';
+      var key = JSON.stringify(sheet);
+      if (cache.key === key) return cache.text;
+      var m = {}; Object.keys(App.model).forEach(function (k) { m[k] = App.model[k]; });
+      m.sheet = sheet;
+      try { var flat = K.flatPattern(m, App.build, App.mesh); cache.text = UI.fmtNum(flat.size[0], 4) + ' × ' + UI.fmtNum(flat.size[1], 4) + ' ' + UI.unitLabel() + (flat.warnings.length ? ' (' + flat.warnings.length + ' warning' + (flat.warnings.length === 1 ? '' : 's') + ')' : ''); cache.warnings = flat.warnings; }
+      catch (e) { cache.text = e.message; cache.warnings = []; }
+      cache.key = key;
+      return cache.text;
+    }
+    openPM({
+      title: 'Sheet-Metal', icon: 'flange', values: v0,
+      groups: sheetGroups().concat([{ title: 'Flat Pattern', fields: [
+        { type: 'static', label: 'Flat size', value: flatText },
+        { type: 'html', html: function () { return cache.warnings && cache.warnings.length ? '<div class="pm-note" style="margin:2px 0 4px">' + cache.warnings.map(function (w) { return smEsc(w); }).join('<br>') + '</div>' : ''; } }
+      ] }]),
+      onChange: function (v, key) {
+        if (v.useGauge && (key === 'useGauge' || key === 'gaugeTable' || key === 'gauge') && applyGauge(v)) renderPM();
+        else if (key !== 'useGauge' && key !== 'baType' && key !== 'gaugeTable' && key !== 'gauge') renderPM();   // the flat size follows the typed value
+        UI.setStatus('Sheet metal: flat size ' + flatText(v) + '.');
+      },
+      onOK: function (v) {
+        var sheet;
+        try { sheet = sheetFromValues(v, true); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return false; }
+        UI.pushUndo();
+        App.model.sheet = sheet;
+        // the Base Flange is extruded by the sheet thickness: it follows a new T (equation text included)
+        App.model.features.forEach(function (q) { if (q.sheetBase && q.type === 'extrude') q.depth = sheet.thickness; });
+        return UI.afterRebuild(UI.rebuild(), function () {
+          UI.refreshTree();
+          var msg = 'Sheet metal parameters updated.';
+          try { var flat = K.flatPattern(App.model, App.build, App.mesh); msg += ' ' + flatSizeText(flat) + '.' + (flat.warnings.length ? ' ' + flat.warnings[0] : ''); } catch (e) { msg += ' ' + e.message; }
+          UI.setStatus(msg);
+        });
+      }
+    });
+  }
+  UI.cmdSheetMetal = cmdSheetMetal;
 
   // ------------------------------------------------------------------ sheet metal: edge flange & flatten
   // kind: 'flange' (edge flange), 'miter' (an edge flange with miter: true preset), 'hem' (a 180° flange folded back,
@@ -2084,6 +2359,14 @@
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
     if (isHem) f.gap = Math.round((f.radius != null ? f.radius : T / 4) * 2 * 1e4) / 1e4;
+    // Custom Bend Allowance (SolidWorks): UI-only check / type / value keys, folded into f.bendAllowance by toFeature
+    var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet);
+    f.useCustomBA = !!cba;
+    f.cbaType = cba ? cba.type : 'kfactor';
+    f.cbaK = cba && cba.type === 'kfactor' ? cba.value : kSheet;
+    f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(K.bendAllowance(Math.PI / 2, +sheet.bendRadius, T, kSheet) * 1e4) / 1e4;
+    f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, +sheet.bendRadius, T, K.bendAllowance(Math.PI / 2, +sheet.bendRadius, T, kSheet)) * 1e4) / 1e4;
+    delete f.bendAllowance;
     if (isFlange) {
       // older flanges lack the miter/relief fields: fill the defaults, then split relief sizes into UI-only check + value pairs
       if (f.miter == null) f.miter = false;
@@ -2113,7 +2396,8 @@
     }
     function flangeRemove(v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }
     function flangeClear(v) { v.edges.length = 0; renderPM(); resolveList(); preview(); }
-    function toFeature(v) {
+    var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
+    function toFeature(v, forOK) {
       var out = JSON.parse(JSON.stringify(v));
       if (isHem) { out.angle = 180; out.radius = Math.max((+v.gap || 0) / 2, 0.02 * T); out.position = 'bendOutside'; delete out.gap; }
       else out.radius = v.useDefaultRadius ? null : +v.radiusValue;
@@ -2125,18 +2409,28 @@
         out.reliefWidth = out.relief !== 'none' && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
         out.reliefDepth = out.relief !== 'none' && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
       }
+      if (v.useCustomBA) {
+        out.bendAllowance = { type: v.cbaType };
+        if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
+      } else delete out.bendAllowance;
       // UI-only keys must never reach the model (feature JSON is the rebuild cache key)
       delete out.useDefaultReliefWidth; delete out.reliefWidthValue; delete out.useDefaultReliefDepth; delete out.reliefDepthValue;
+      delete out.useCustomBA; delete out.cbaType; delete out.cbaK; delete out.cbaBA; delete out.cbaBD;
       return out;
+    }
+    // ' · bend allowance 3.142 mm (BD 4.858, K-Factor 0.5)': the bend this feature makes, by the sheet's method or its own
+    function bendText(feat) {
+      var R = +(feat.radius != null ? feat.radius : sheet.bendRadius), A = (feat.angle == null ? 90 : +feat.angle) * Math.PI / 180, bc;
+      try { bc = K.bendCalc(sheet, A, R, T, feat.bendAllowance); } catch (e) { return ' · ' + e.message; }
+      var how = bc.type === 'kfactor' ? 'K-Factor ' + UI.fmtNum(bc.K, 4) : BA_NAMES[bc.type] + (bc.type === 'table' ? '' : ' ' + UI.fmtNum(bc.value, 4));
+      return ' · bend allowance ' + UI.fmtNum(bc.BA, 4) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (BD ' + UI.fmtNum(bc.BD, 4) + ', ' + (bc.source === 'custom' ? 'custom ' : '') + how + ')' + (bc.warning ? ' — ' + bc.warning : '');
     }
     function flangeStatus(feat) {
       var ne = edgeList.length || (feat.edges || []).length;   // editing: the picks are on the sheet before this feature
-      var R = feat.radius != null ? feat.radius : sheet.bendRadius;
-      var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);
       var extra = '';
       if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
       if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
-      UI.setStatus(titles[kind] + ' preview: ' + ne + ' edge' + (ne === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ')' + extra + '.');
+      UI.setStatus(titles[kind] + ' preview: ' + ne + ' edge' + (ne === 1 ? '' : 's') + bendText(feat) + extra + '.');
     }
     // built in the worker (livePreview); previewSync without it
     function preview() {
@@ -2158,12 +2452,10 @@
         var mesh = K.meshFromBody(tool), g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(UI.analyticNormals(mesh), 3));
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.preview));
-        var R = feat.radius != null ? feat.radius : sheet.bendRadius;
-        var BA = K.bendAllowance(feat.angle * Math.PI / 180, R, T, sheet.kFactor);
         var extra = '';
         if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
         if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
-        UI.setStatus(titles[kind] + ' preview: ' + edgeList.length + ' edge' + (edgeList.length === 1 ? '' : 's') + ' · bend allowance ' + UI.fmtNum(BA, 3) + ' ' + UI.unitLabel() + (isJog ? ' per bend' : '') + ' (K=' + sheet.kFactor + ')' + extra + '.');
+        UI.setStatus(titles[kind] + ' preview: ' + edgeList.length + ' edge' + (edgeList.length === 1 ? '' : 's') + bendText(feat) + extra + '.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
     var radiusFields = [
@@ -2206,11 +2498,21 @@
         { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefDepth; } }
       ] }
     ];
-    groups.push({ title: 'Sheet', fields: [{ type: 'static', label: 'Thickness', value: T + ' ' + UI.unitLabel() }, { type: 'static', label: 'K-factor', value: String(sheet.kFactor) }] });
+    groups.push({ title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
+      { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
+      { type: 'select', label: 'Type', key: 'cbaType', options: BA_OPTIONS, rerender: true, show: function (v) { return v.useCustomBA; } },
+      { type: 'number', label: 'K-factor', key: 'cbaK', step: 0.01, min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'kfactor'; } },
+      { type: 'number', label: 'Bend allowance', key: 'cbaBA', unit: 'u', min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'allowance'; } },
+      { type: 'number', label: 'Bend deduction', key: 'cbaBD', unit: 'u', show: function (v) { return v.useCustomBA && v.cbaType === 'deduction'; } },
+      { type: 'static', label: 'Bend table', value: sheet.bendTable ? sheet.bendTable.rows.length + ' rows (the part\'s table)' : 'none — add one in Sheet-Metal', show: function (v) { return v.useCustomBA && v.cbaType === 'table'; } }
+    ] });
+    var sheetHow = (sheet.bendAllowanceType || 'kfactor') === 'kfactor' ? 'K-Factor ' + K.sheetKFactor(sheet) : BA_NAMES[sheet.bendAllowanceType] + (sheet.bendAllowanceType === 'allowance' ? ' ' + sheet.bendAllowance : sheet.bendAllowanceType === 'deduction' ? ' ' + sheet.bendDeduction : '');
+    groups.push({ title: 'Sheet', fields: [{ type: 'static', label: 'Thickness', value: T + ' ' + UI.unitLabel() }, { type: 'static', label: 'K-factor', value: String(K.sheetKFactor(sheet)) }, { type: 'static', label: 'Bend allowance', value: sheetHow },
+      { type: 'buttons', buttons: [{ label: 'Sheet metal parameters…', onclick: function () { pmCancel(); cmdSheetMetal(); } }] }] });
     groups.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
     openPM({
       title: existing ? existing.name : titles[kind], icon: isMiter ? 'miter' : 'flange', values: f,
-      exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },
+      exprMap: { radiusValue: 'radius', reliefWidthValue: 'reliefWidth', reliefDepthValue: 'reliefDepth' },   // (cbaK / cbaBA / cbaBD: toFeature(v, true))
       message: isJog ? 'Click <b>straight edges</b>: the sheet steps up by the jog height and continues flat. Reverse steps it down.' : isHem ? 'Click <b>straight edges</b> to fold the sheet back over itself. The gap is the opening between the two flats.' :
         (isMiter ? 'Click <b>two or more adjacent straight edges</b> of the flat sheet; the flanges are joined at each shared corner.' : 'Click <b>straight edges</b> of the flat sheet. Placement is <i>Bend Outside</i>; use Reverse to flip the flange to the other side.') +
         ' <i>Miter</i> joins flanges on adjacent edges at their corner, and <i>Relief</i> cuts a slot where a flange ends inside the plate.',
@@ -2229,7 +2531,7 @@
       onChange: function () { resolveList(); preview(); },
       onOK: function (v) {
         if (!v.edges.length) { UI.toast('Select at least one edge.'); return false; }
-        var feat = toFeature(v);
+        var feat = toFeature(v, true);
         if (!feat.name) {
           if (isHem) feat.name = K.featureName(App.model, 'hem');
           else if (isFlange && feat.miter) feat.name = 'Miter-Flange' + (App.model.features.filter(function (q) { return /^Miter-Flange\d+$/.test(q.name || ''); }).length + 1);
@@ -2257,7 +2559,7 @@
       var mx = (bd.a[0] + bd.b[0]) / 2, my = -(bd.a[1] + bd.b[1]) / 2;
       s += '<text x="' + UI.fmtNum(mx, 3) + '" y="' + UI.fmtNum(my - sw * 4, 3) + '" font-size="' + (sw * 12) + '" font-family="Segoe UI, sans-serif" fill="#1f6fc5" text-anchor="middle">' + bd.label + '</text>';
     });
-    s += '<text x="' + UI.fmtNum(b.min[0], 3) + '" y="' + UI.fmtNum(-b.min[1] + sw * 16, 3) + '" font-size="' + (sw * 11) + '" font-family="Segoe UI, sans-serif" fill="#6b7480">' + UI.fmtNum(w, 2) + ' × ' + UI.fmtNum(h, 2) + ' ' + UI.unitLabel() + ' · T=' + flat.sheet.thickness + ' R=' + flat.sheet.bendRadius + ' K=' + flat.sheet.kFactor + '</text>';
+    s += '<text x="' + UI.fmtNum(b.min[0], 3) + '" y="' + UI.fmtNum(-b.min[1] + sw * 16, 3) + '" font-size="' + (sw * 11) + '" font-family="Segoe UI, sans-serif" fill="#6b7480">' + 'Flat size ' + UI.fmtNum(w, 4) + ' × ' + UI.fmtNum(h, 4) + ' ' + UI.unitLabel() + ' · ' + smEsc(flat.note || ('T=' + flat.sheet.thickness + ' R=' + flat.sheet.bendRadius + ' K=' + flat.sheet.kFactor)) + '</text>';
     return s + '</svg>';
   }
 
@@ -2268,10 +2570,13 @@
     catch (e) { UI.toast(e.message); UI.setStatus(e.message); return; }
     var w = flat.bbox.max[0] - flat.bbox.min[0], h = flat.bbox.max[1] - flat.bbox.min[1];
     var body = UI.el('div', {});
-    body.innerHTML = '<p>Flat pattern: <b>' + UI.fmtNum(w, 2) + ' × ' + UI.fmtNum(h, 2) + ' ' + UI.unitLabel() + '</b> blank, ' + flat.bends.length + ' bend' + (flat.bends.length === 1 ? '' : 's') + '. Bend lines sit at the centre of each bend allowance (K=' + flat.sheet.kFactor + ').</p>' + flatSvg(flat, 620);
+    body.innerHTML = '<p>Flat pattern: <b data-role="flat-size">' + flatSizeText(flat) + '</b> blank, ' + flat.bends.length + ' bend' + (flat.bends.length === 1 ? '' : 's') + '. Bend lines sit at the centre of each bend allowance (' + smEsc(flat.note) + ').</p>' +
+      (flat.warnings.length ? '<p class="err-text" data-role="flat-warnings">' + flat.warnings.map(smEsc).join('<br>') + '</p>' : '') + flatSvg(flat, 620);
+    UI.setStatus(flatSizeText(flat) + ' · ' + flat.bends.length + ' bend' + (flat.bends.length === 1 ? '' : 's') + ' · ' + flat.note + (flat.warnings.length ? ' · ' + flat.warnings[0] : ''));
     var dxf = K.exportDXFFlat(flat, App.model.units);
     UI.showModal({ title: 'Flat Pattern — ' + App.model.name, body: body, buttons: [
       { label: 'Export DXF', primary: true, action: function () { UI.closeModal(); UI.exportDialog('Flat pattern DXF', (App.model.name || 'part').replace(/[^\w\-]+/g, '_') + '_flat.dxf', dxf, 'application/dxf'); } },
+      { label: 'Sheet metal parameters…', action: function () { UI.closeModal(); cmdSheetMetal(); } },
       { label: 'Close', action: UI.closeModal }
     ] });
   }
@@ -2384,14 +2689,18 @@
   }
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
-  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on) }
+  //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on),
+  //   version: 'R12' (default) | 'R2000' (faces and sheet; views are R12), style: 'polyline' (default: one closed
+  //   polyline per loop) | 'entities' (LINE / ARC; faces and sheet) }. Faces and the flat pattern come out laser
+  //   ready (Kernel.exportDXFFlat): true circles and arcs, joined loops, the flat's lower-left corner at 0,0.
   function dxfOutput(opts) {
     opts = opts || {};
     var what = opts.export || dxfDefaultExport();
+    var wopts = { version: opts.version === 'R2000' ? 'R2000' : 'R12', style: opts.style === 'entities' ? 'entities' : 'polyline' };
     if (what === 'faces') {
       var fi = opts.face != null ? +opts.face : (App.sel && App.sel.kind === 'face' ? App.sel.index : -1);
       if (!(fi >= 0) || !App.mesh || !App.mesh.faces[fi]) throw new Error('Select a planar face first.');
-      var dxf = K.exportDXFFace(App.mesh, fi, dxfUnits());
+      var dxf = K.exportDXFFace(App.mesh, fi, dxfUnits(), wopts);
       if (!dxf) throw new Error('Could not outline that face.');
       return dxf;
     }
@@ -2399,10 +2708,8 @@
     if (what === 'sheet') {
       if (!App.model.sheet) throw new Error('Sheet metal needs a Base Flange.');
       var flat = K.flatPattern(App.model, App.build, App.mesh);
-      var drop = [];
-      if (opts.bendLines === false) drop.push('BEND');
-      if (opts.notes === false) drop.push('NOTES');
-      return dropDxfLayers(K.exportDXFFlat(flat, dxfUnits()), drop);
+      wopts.bendLines = opts.bendLines !== false; wopts.notes = opts.notes !== false;
+      return K.exportDXFFlat(flat, dxfUnits(), wopts);
     }
     throw new Error('Unknown export "' + what + '" (faces, views or sheet).');
   }
@@ -2442,13 +2749,15 @@
     opts = opts || {};
     var faceOk = !!(App.sel && App.sel.kind === 'face'), sheetOk = !!App.model.sheet;
     var v = { export: dxfDefaultExport(), vFront: true, vTop: true, vRight: true, vIsometric: false, vCurrent: false,
-      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', bendLines: true, notes: true, name: '' };
+      format: opts.format === 'dwg' ? 'dwg' : 'dxf', version: 'R12', style: 'polyline', bendLines: true, notes: true, name: '' };
     var typed = opts.name && opts.name !== dxfSafeName() ? opts.name : null, auto = null;
     function autoName() { return dxfSafeName() + dxfSuffix(v); }
     v.name = typed || (auto = autoName());
     if (v.format === 'dwg' && !(dwgState.probed && dwgState.ok)) v.format = 'dxf';
     function optsOf(x) {
-      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes };
+      // DWG: the converter gets an R2000 DXF (LibreDWG reads R12 entities without their model space)
+      return { export: x.export, views: DXF_VIEW_NAMES.filter(function (n) { return x['v' + n]; }), current: !!x.vCurrent, bendLines: !!x.bendLines, notes: !!x.notes,
+        version: x.format === 'dwg' || x.version === 'R2000' ? 'R2000' : 'R12', style: x.style };
     }
     function cleanName(x) { return String(x.name || '').trim().replace(/\.(dxf|dwg)$/i, '').replace(/[^\w\-]+/g, '_') || autoName(); }
     function isViews(x) { return x.export === 'views'; }
@@ -2480,12 +2789,14 @@
           { type: 'radio', key: 'format', rerender: true, options: [['dxf', 'DXF'], ['dwg', 'DWG']],
             disabledOption: function (val) { return val === 'dwg' && !(dwgState.probed && dwgState.ok) ? DWG_NOTE : null; } },
           { type: 'html', show: function () { return dwgState.converter === 'libredwg'; }, html: '<div class="pm-note">' + LIBREDWG_NOTE + '</div>' },
-          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : [['R12', 'R12 (AC1009)']]; } }
+          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : isViews(x) ? [['R12', 'R12 (AC1009)']] : [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']]; } },
+          { type: 'select', label: 'Loops as', key: 'style', show: function (x) { return !isViews(x); }, options: [['polyline', 'Polylines (one per loop)'], ['entities', 'Lines and arcs']] }
         ] },
         { title: 'File name', fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (x, key) {
         if (key === 'export' && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
+        if (key === 'export' && isViews(x) && x.format !== 'dwg' && x.version !== 'R12') { x.version = 'R12'; UI.renderPM(); }
         if (key === 'format') { x.version = x.format === 'dwg' ? 'R2000' : 'R12'; UI.renderPM(); }
         if (key === 'name') auto = null;
       },
@@ -3440,7 +3751,8 @@
   function editDispatch(f) {
     switch (f.type) {
       case 'sketch': editSketch(f.id); break;
-      case 'extrude': cmdExtrude(f.cut, f); break;
+      // a Base Flange's depth is the sheet thickness: it is edited with the sheet's parameters, not as an extrude
+      case 'extrude': if (f.sheetBase && !f.cut) cmdSheetMetal(); else cmdExtrude(f.cut, f); break;
       case 'revolve': cmdRevolve(f.cut, f); break;
       case 'lpattern': cmdLinearPattern(f); break;
       case 'cpattern': cmdCircularPattern(f); break;
@@ -3535,7 +3847,8 @@
   UI.pmSetField = function (key, text) {
     var inp = pm.root.querySelector('input.pm-num[data-key="' + key + '"]');
     if (!inp) return false;
-    if (isExpr(text) && inp.type !== 'text') inp.type = 'text';
+    // an equation or shop input (p9-sketch: "3/8", "1-1/2", "25mm") goes in as text; a plain number stays a number box
+    if ((isExpr(text) || !/^\s*[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i.test(String(text))) && inp.type !== 'text') inp.type = 'text';
     inp.value = String(text);
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     return true;

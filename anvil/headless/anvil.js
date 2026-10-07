@@ -17,7 +17,12 @@ const USAGE = [
   '',
   '  build <file> [--stl out] [--step out] [--dxf-flat out] [--dxf-face <index> out] [--dwg-flat out] [--dwg-face <index> out]',
   '               [--json out] [--script out] [--occt]',
+  '               [--dxf-version r12|2000] [--dxf-style polyline|entities] [--no-bends] [--no-notes] [--no-origin] [--origin]',
   '      <file>: a part / assembly script (.js, the Builder API) or a saved model JSON. Prints a summary JSON.',
+  '      --dxf-*: laser-ready (true circles and arcs, joined loops, units header), R12 by default; the flat at 0,0, a face',
+  '               in its own frame unless --origin; each file is read back by headless/dxf-check.js and the result is in',
+  '               the summary (a failed check exits 1)',
+  "      --step: OpenCascade's exact STEP with --occt, else Anvil's own; the summary names the file's length unit",
   '      --dwg-*: the DXF through a converter (ODA File Converter, else vendor/libredwg from vendor/get-libredwg.ps1)',
   '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
@@ -29,7 +34,8 @@ const USAGE = [
 ].join('\n');
 
 // ------------------------------------------------------------------ arguments
-const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2 };
+const VALUED = { stl: 1, step: 1, 'dxf-flat': 1, 'dwg-flat': 1, json: 1, script: 1, svg: 1, dxf: 1, dwg: 1, pdf: 1, views: 1, scale: 1, 'dxf-face': 2, 'dwg-face': 2,
+  'dxf-version': 1, 'dxf-style': 1 };
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -151,6 +157,39 @@ async function withOcct(r, wantStep, quiet) {
   return o;
 }
 
+// the DXF writer options from the flags: --dxf-version r12 | 2000, --dxf-style polyline | entities, --no-bends,
+// --no-notes, --no-origin; a DWG is always converted from an R2000 DXF (LibreDWG reads R12 entities without their
+// model space)
+function dxfOptions(flags, forDwg) {
+  const v = String(flags['dxf-version'] || 'r12').toLowerCase().replace(/^ac/, '');
+  let version;
+  if (/^r?12$|^1009$/.test(v)) version = 'R12';
+  else if (/^r?2000$|^1015$/.test(v)) version = 'R2000';
+  else throw usage('--dxf-version: r12 or 2000, not "' + flags['dxf-version'] + '"');
+  const style = String(flags['dxf-style'] || 'polyline').toLowerCase();
+  if (style !== 'polyline' && style !== 'entities') throw usage('--dxf-style: polyline or entities, not "' + flags['dxf-style'] + '"');
+  return { version: forDwg ? 'R2000' : version, style, bendLines: !flags['no-bends'], notes: !flags['no-notes'], origin: !flags['no-origin'] };
+}
+// a written DXF read back (headless/dxf-check.js): the summary's `check`, and a failed check as a summary error
+function dxfChecked(text, units, summary, what) {
+  const DxfCheck = require('./dxf-check');
+  const c = DxfCheck.check(text, { units });
+  const loops = c.loops.length, circles = c.circles.length;
+  const out = { ok: c.ok, version: c.version, insunits: c.insunits, loops, closed: c.loops.filter((l) => l.closed).length, circles,
+    radii: Array.from(new Set(c.circles.map((q) => r6(q.r)))).sort((a, b) => a - b), counts: c.counts,
+    extents: c.extents ? { min: c.extents.min.map(r6), max: c.extents.max.map(r6) } : null };
+  if (!c.ok) { out.errors = c.errors.slice(0, 20); summary.errors.push({ id: null, feature: 'DXF check (' + what + ')', message: c.errors.slice(0, 5).join('; ') }); }
+  return out;
+}
+// the length unit a STEP file declares: 'in', 'mm' (or another SI prefix + 'm'), null when none is found
+function stepUnits(text) {
+  const cb = /CONVERSION_BASED_UNIT\s*\(\s*'([^']+)'/.exec(text);
+  if (cb) return /INCH/i.test(cb[1]) ? 'in' : cb[1].toLowerCase();
+  const si = /LENGTH_UNIT\s*\(\s*\)\s*NAMED_UNIT\s*\(\s*\*\s*\)\s*SI_UNIT\s*\(\s*(\$|\.(\w+)\.)\s*,\s*\.METRE\.\s*\)/.exec(text) || /SI_UNIT\s*\(\s*(\$|\.(\w+)\.)\s*,\s*\.METRE\.\s*\)/.exec(text);
+  if (si) return si[2] === 'MILLI' ? 'mm' : si[2] === 'CENTI' ? 'cm' : si[1] === '$' ? 'm' : (si[2] || '').toLowerCase() + 'm';
+  return null;
+}
+
 async function runBuildOptions(r, flags, quiet) {
   const { Kernel, Exchange } = load();
   const outputs = {};
@@ -163,22 +202,43 @@ async function runBuildOptions(r, flags, quiet) {
       if (flags.occt) note(quiet, 'OpenCascade gave no STEP (' + (occ ? (occ.unsupported ? 'unsupported feature ' + occ.unsupported : occ.exportError || 'solid not valid') : 'not a part') + '); writing Anvil\'s own STEP instead');
       text = Exchange.exportSTEP(r.model, r.build);
     }
-    outputs.step = Object.assign(writeOut(flags.step, text), { exact });
+    const units = stepUnits(text), want = r.model.units === 'in' ? 'in' : 'mm';
+    outputs.step = Object.assign(writeOut(flags.step, text), { exact, units });
+    if (units !== want) r.summary.errors.push({ id: null, feature: 'STEP units', message: 'the STEP file declares ' + units + ' for a part in ' + want });
+    // OpenCascade's STEP read back by OpenCascade (in mm): its size must be the B-rep's own times 25.4 for an inch part
+    if (exact && occ && occ.bbox) {
+      const { OcctKernel } = load({ occt: true });
+      const { oc } = await require('./occt').loadOpenCascade();
+      const imp = OcctKernel.importFile(oc, 'step', text), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      imp.solids.forEach((s) => { for (let i = 0; i < s.positions.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], s.positions[i + k]); hi[k] = Math.max(hi[k], s.positions[i + k]); } });
+      const k = want === 'in' ? 25.4 : 1, size = hi.map((x, i) => x - lo[i]), expect = [0, 1, 2].map((i) => (occ.bbox[1][i] - occ.bbox[0][i]) * k);
+      const ok = size.every((x, i) => Math.abs(x - expect[i]) <= 1e-4 * (1 + expect[i]));
+      outputs.step.readBack = { sizeMm: size.map(r6), expectedMm: expect.map(r6), ok };
+      if (!ok) r.summary.errors.push({ id: null, feature: 'STEP size', message: 'read back the STEP is ' + size.map(r6).join(' × ') + ' mm, the part ' + expect.map(r6).join(' × ') + ' mm' });
+    }
   }
   if (flags['dxf-flat'] || flags['dwg-flat']) {
     const opt = flags['dxf-flat'] ? '--dxf-flat' : '--dwg-flat';
     if (r.kind === 'assembly' || !r.model.sheet) throw Object.assign(new Error(opt + ': the part has no sheet-metal parameters (model.sheet); it needs a Base Flange'), { code: 1 });
-    const flat = Kernel.flatPattern(r.model, r.build, r.mesh);
-    const text = Kernel.exportDXFFlat(flat, r.model.units || 'mm'), info = { bends: (flat.bends || []).length, bbox: flat.bbox };
-    if (flags['dxf-flat']) outputs.dxfFlat = Object.assign(writeOut(flags['dxf-flat'], text), info);
-    if (flags['dwg-flat']) outputs.dwgFlat = Object.assign(writeOut(flags['dwg-flat'], toDwg(text, r.summary)), info);
+    const flat = Kernel.flatPattern(r.model, r.build, r.mesh), units = r.model.units === 'in' ? 'in' : 'mm';
+    const info = { bends: (flat.bends || []).length, bbox: flat.bbox };
+    if (flags['dxf-flat']) {
+      const o = dxfOptions(flags, false), text = Kernel.exportDXFFlat(flat, units, o);
+      outputs.dxfFlat = Object.assign(writeOut(flags['dxf-flat'], text), info, { version: o.version, style: o.style, check: dxfChecked(text, units, r.summary, 'flat') });
+    }
+    if (flags['dwg-flat']) {
+      const text = Kernel.exportDXFFlat(flat, units, dxfOptions(flags, true));
+      outputs.dwgFlat = Object.assign(writeOut(flags['dwg-flat'], toDwg(text, r.summary)), info);
+    }
   }
   for (const opt of ['dxf-face', 'dwg-face']) {
     if (!flags[opt]) continue;
     const idx = +flags[opt][0];
     if (!(idx >= 0 && idx < r.mesh.faces.length)) throw usage('--' + opt + ': face index ' + flags[opt][0] + ' is not in 0..' + (r.mesh.faces.length - 1));
-    const text = Kernel.exportDXFFace(r.mesh, idx, r.model.units || 'mm');
-    if (opt === 'dxf-face') outputs.dxfFace = writeOut(flags[opt][1], text);
+    const units = r.model.units === 'in' ? 'in' : 'mm', o = dxfOptions(flags, opt === 'dwg-face');
+    o.origin = !!flags.origin;   // a face keeps its own frame's coordinates unless --origin
+    const text = Kernel.exportDXFFace(r.mesh, idx, units, o);
+    if (opt === 'dxf-face') outputs.dxfFace = Object.assign(writeOut(flags[opt][1], text), { version: o.version, check: dxfChecked(text, units, r.summary, 'face ' + idx) });
     else outputs.dwgFace = writeOut(flags[opt][1], toDwg(text, r.summary));
   }
   if (flags.json) outputs.json = writeOut(flags.json, JSON.stringify(r.model, null, 1));

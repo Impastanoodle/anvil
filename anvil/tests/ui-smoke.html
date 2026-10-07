@@ -8705,11 +8705,467 @@
   });
   // --- end r15/snapaudit15 ---
 
+  // --- p9-drawing: shop drawings of sheet-metal parts (run local-2026-10-07a): the flat-pattern view through Model
+  // View, bend lines and notes, inch ANSI text, the Note tool
+  var P9_INCH = 'p.name("Bracket").units("in");\np.sheet(0.06, 0.03, 0.44);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\n' +
+    'p.sketch("Top", 0.06).slot(1.5, -1, 2.5, -1, 0.3).cut("through", { reverse: true });\np.flange(1, [[0, 0.06, 1]]);\np.flange(1, [[4, 0.06, 1]], { reverse: true });\n' +
+    'p.hole("Top", 0.5, -0.5, 0.281, { offset: 0.06 });\np.hole("Top", 3.5, -0.5, 0.281, { offset: 0.06 });\np.hole("Top", 0.5, -1.5, 0.281, { offset: 0.06 });\np.hole("Top", 3.5, -1.5, 0.281, { offset: 0.06 });';
+  step('p9-drawing: Model View offers Flat pattern on an inch sheet-metal part; a click places it: bend lines UP solid on BEND_UP, DOWN dashed on BEND_DOWN, notes "UP 90° R .030", overall 6.177 × 2.000, a Ø.281 callout; a bend note drags', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(P9_INCH); await idle();
+    anvil.drawing.make(); await UI.drawing.ready(); await wait(30);
+    assert(anvil.drawing.summary().dims.indexOf('4.180') >= 0, 'inch model items read ANSI (4.180): ' + anvil.drawing.summary().dims.join(' '));
+    ribbonButton('Model View').click();
+    assert(UI.hasPM() && pmField('View').value === 'Flat pattern', 'Model View opens on Flat pattern for a sheet-metal part: ' + (pmField('View') && pmField('View').value));
+    await UI.pmOK();
+    assert(UI.drawing.state.tool === 'place', 'placing mode');
+    sheetMouse('mousedown', [5.2, 2.4]); await UI.drawing.ready(); await wait(30);
+    var s = anvil.drawing.summary(), fv = s.views.filter(function (v) { return v.kind === 'flat'; })[0];
+    assert(fv && fv.flat && !fv.flat.error, 'flat view ' + JSON.stringify(fv && fv.flat));
+    near(fv.x, 5.2, 0.03, 'x'); near(fv.y, 2.4, 0.03, 'y');   // (a click lands to the pixel: about .012 in on the fitted sheet)
+    assert(fv.flat.bends.length === 2 && fv.flat.bends[0].up === true && fv.flat.bends[1].up === false, 'bends ' + JSON.stringify(fv.flat.bends));
+    assert(fv.flat.bends[0].note === 'UP 90° R .030' && fv.flat.bends[1].note === 'DOWN 90° R .030', 'notes ' + fv.flat.bends.map(function (b) { return b.note; }));
+    assert(s.dims.indexOf('6.177') >= 0 && s.dims.filter(function (t) { return t === '2.000'; }).length >= 2, 'overall flat dims ' + s.dims.join(' '));
+    var up = D.querySelectorAll('#drawing-sheet g[data-layer="BEND_UP"] line'), dn = D.querySelectorAll('#drawing-sheet g[data-layer="BEND_DOWN"] line');
+    assert(up.length === 1 && !up[0].getAttribute('stroke-dasharray') && dn.length === 1 && dn[0].getAttribute('stroke-dasharray'), 'bend lines drawn: up ' + up.length + ' down ' + dn.length);
+    var nt = Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="BEND_NOTES"] text'), function (t) { return t.textContent; });
+    assert(nt.indexOf('UP 90° R .030') >= 0 && nt.indexOf('DOWN 90° R .030') >= 0, 'bend notes drawn ' + nt);
+    assert(D.querySelector('#drawing-tree .dw-flat') && D.querySelector('#drawing-tree .dw-bendNotes'), 'tree rows');
+    var hs = anvil.drawing.holeCallout(fv.id, { c: [0.5, -0.5], r: 0.1405 });
+    var hc = hs.annotations.filter(function (a) { return a.type === 'holeCallout' && a.view === fv.id; });
+    assert(hc.length === 1 && hc[0].text === '4X Ø.281 THRU', 'flat callout ' + JSON.stringify(hc));
+    // drag the UP note 0.4 in to the left: its offset is kept on the view
+    var b0 = fv.flat.annotations.filter(function (a) { return a.key === 'b0'; })[0].box, mid = boxMid(b0);
+    sheetDrag(mid, [mid[0] - 0.4, mid[1]]); await wait(60);
+    var own = anvil.drawing.doc().views.filter(function (v) { return v.kind === 'flat'; })[0].flatAnn;
+    assert(own && own.b0 && Math.abs(own.b0.off[0] + 0.4) < 0.03, 'note dragged ' + JSON.stringify(own));
+    var dxf = anvil.drawing.dxf();
+    ['BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'FLAT_PATTERN'].forEach(function (l) { assert(dxf.indexOf('\n2\n' + l + '\n') >= 0, 'DXF layer ' + l); });
+    assert(dxf.indexOf('UP 90%%d R .030') >= 0, 'DXF bend note');
+    return fv.name + ': ' + fv.flat.bends.map(function (b) { return b.note; }).join(' / ') + ', ' + fv.flat.size.join(' × ') + ', ' + hc[0].text;
+  });
+  step('p9-drawing: Annotation ▸ Note: a click opens a text box, two lines typed and ✓ place the note; double-click edits it, a drag moves it, Delete removes it and Undo brings it back; SVG / DXF / PDF carry it', async function () {
+    Array.prototype.filter.call(D.querySelectorAll('#ribbon-tabs .rtab'), function (b) { return b.textContent === 'Annotation'; })[0].click();
+    ribbonButton('Note').click();
+    assert(UI.drawing.state.tool === 'note', 'Note tool');
+    sheetMouse('mousedown', [1.4, 9.8]);
+    var ta = D.querySelector('#dw-edit.note textarea');
+    assert(ta, 'note text box');
+    ta.value = 'DEBURR ALL EDGES\nBREAK SHARP CORNERS .010 MAX';
+    D.querySelector('#dw-edit .dw-edit-btn.ok').click(); await wait(30);
+    key('Escape');
+    var ns = anvil.drawing.notes();
+    assert(ns.length === 1 && ns[0].text === 'DEBURR ALL EDGES\nBREAK SHARP CORNERS .010 MAX' && UI.drawing.state.tool === null, 'note ' + JSON.stringify(ns));
+    near(ns[0].p[0], 1.4, 0.03, 'note x');
+    var tx = Array.prototype.map.call(D.querySelectorAll('#drawing-sheet g[data-layer="NOTES"] text'), function (t) { return t.textContent; });
+    assert(tx.indexOf('DEBURR ALL EDGES') >= 0 && tx.indexOf('BREAK SHARP CORNERS .010 MAX') >= 0, 'note drawn ' + tx);
+    assert(D.querySelector('#drawing-tree .dw-note'), 'tree row');
+    // double-click: edit in place
+    sheetMouse('dblclick', boxMid(ns[0].box));
+    ta = D.querySelector('#dw-edit.note textarea');
+    assert(ta && ta.value === ns[0].text, 'edit box with the text');
+    ta.value = 'DEBURR ALL EDGES';
+    D.querySelector('#dw-edit .dw-edit-btn.ok').click(); await wait(30);
+    ns = anvil.drawing.notes();
+    assert(ns.length === 1 && ns[0].text === 'DEBURR ALL EDGES', 'edited ' + JSON.stringify(ns));
+    // drag it 1 in right
+    var m0 = boxMid(ns[0].box);
+    sheetDrag(m0, [m0[0] + 1, m0[1]]); await wait(60);
+    near(anvil.drawing.notes()[0].p[0], 2.4, 0.03, 'dragged x');
+    var dxf = anvil.drawing.dxf(), pdf = anvil.drawing.pdf(), svg = anvil.drawing.svg();
+    assert(dxf.indexOf('\n2\nNOTES\n') >= 0 && dxf.indexOf('DEBURR ALL EDGES') >= 0 && pdf.indexOf('(DEBURR ALL EDGES)') >= 0 && svg.indexOf('>DEBURR ALL EDGES<') >= 0, 'exports carry the note');
+    // select and Delete; Undo restores
+    sheetMouse('mousedown', boxMid(anvil.drawing.notes()[0].box));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true }));
+    assert(UI.drawing.state.sel && UI.drawing.state.sel.kind === 'note', 'selected');
+    key('Delete');
+    assert(anvil.drawing.notes().length === 0, 'deleted');
+    await UI.undo(); await idle(); await wait(60);
+    assert(UI.drawingActive() && anvil.drawing.notes().length === 1, 'undo restores the note');
+    return 'note ' + JSON.stringify(anvil.drawing.notes()[0].text);
+  });
+  // --- end p9-drawing ---
+  // --- p9-sketch: shop input (fractions, mixed numbers, unit suffixes, arithmetic), the tangent-line follow-ups and the
+  // shop-part audit (a 6 × 4 inch blank sketched and dimensioned through the UI only)
+  async function p9Inch() {
+    await anvil.newPart(); await idle();
+    UI.App.model.units = 'in';   // the suite presets new documents to mm (anvil.units); this group is inch, as the shop works
+  }
+  function p9Field(key) { return D.querySelector('#pm input.pm-num[data-key="' + key + '"]'); }
+  function p9Hint(key) { return D.querySelector('#pm .pm-expr-hint[data-key="' + key + '"]'); }
+  step('p9-sketch: a PropertyManager number field of an inch part takes shop input — "3" then "/" turns the box into a text box, 3/8 reads 0.375 (hint "= 0.375"), leaving it shows 0.375 in a number box again; 1-1/2, 25mm (0.984252 in) and 2*3/8 read right; a bad entry (3//8) refuses Enter and leaving puts the value back; OK commits the value read', async function () {
+    await p9Inch();
+    await anvil.run('p.units("in"); p.sketch("Top").circle(0, 0, 0.5);'); await idle();
+    assert(UI.App.model.units === 'in', 'inch part');
+    UI.cmdExtrude(false); await wait(30);
+    var inp = p9Field('depth');
+    assert(inp && inp.type === 'number', 'depth is a number box');
+    inp.focus(); inp.select();
+    r3sType(inp, '3');
+    r3sKey(inp, '/');
+    assert(inp.type === 'text' && inp.value === '3/', 'the "/" key made a text box holding "3/": ' + inp.type + ' "' + inp.value + '"');
+    r3sType(inp, '3/8');
+    near(UI.pmSpec().values.depth, 0.375, 1e-15, '3/8');
+    assert(!p9Hint('depth').hidden && p9Hint('depth').textContent === '= 0.375', 'hint ' + p9Hint('depth').textContent);
+    inp.blur();
+    assert(inp.type === 'number' && +inp.value === 0.375 && p9Hint('depth').hidden, 'back to a number box showing 0.375: ' + inp.type + ' ' + inp.value);
+    var cases = [['1-1/2', 1.5], ['1 1/2', 1.5], ['25mm', 25 / 25.4], ['2*3/8', 0.75], ['3/8"', 0.375]];
+    cases.forEach(function (c) { UI.pmSetField('depth', c[0]); near(UI.pmSpec().values.depth, c[1], 1e-12, c[0]); });
+    inp.focus(); inp.select();
+    UI.pmSetField('depth', '1-1/2');
+    UI.pmSetField('depth', '3//8');
+    assert(p9Hint('depth').classList.contains('err') && /unexpected "\/"/.test(p9Hint('depth').textContent), 'error shown: ' + p9Hint('depth').textContent);
+    r3sKey(inp, 'Enter');
+    assert(UI.hasPM(), 'Enter refused with a bad entry');
+    inp.blur();
+    assert(inp.type === 'number' && /not changed/.test(statusText()), 'bad entry left: ' + inp.type + ' / ' + statusText());
+    inp.focus(); UI.pmSetField('depth', '1-1/2'); inp.blur();
+    await pmAccept();
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'extrude' && f.depth === 1.5, 'committed depth ' + f.depth);
+    return 'depth 1-1/2 -> ' + f.depth + ' in';
+  });
+  step('p9-sketch: the Modify box and the on-screen numeric input of an inch sketch read shop input — 1-3/4, 2 3/8, 25.4mm, 2*3/8, =2*3/8 (an equation, as before); a bad entry keeps the value; a line typed as 1-1/2 long is 1.5 exactly; inch dimensions read .750 / 1.500', async function () {
+    await p9Inch();
+    await UI.newSketchOnPlane('Front'); await idle();
+    UI.zoomView(0.01 / UI.cam.scale);
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 2, y2: 0 }); f.dims = [{ e: 0, k: 'len', off: 0.2 }];
+    UI.updateSketches();
+    [['1-3/4', 1.75], ['2 3/8', 2.375], ['25.4mm', 1], ['2*3/8', 0.75], ['=2*3/8', 0.75]].forEach(function (c) {
+      var r = UI.editDim(0, c[0]);
+      assert(r.ok, c[0] + ': ' + JSON.stringify(r));
+      near(f.entities[0].x2, c[1], 1e-12, c[0]);
+    });
+    var bad = UI.editDim(0, '3 furlongs');
+    assert(!bad.ok && /Unknown unit "furlongs"/.test(bad.error), 'bad entry: ' + JSON.stringify(bad));
+    UI.cancelDimEdit();
+    near(f.entities[0].x2, 0.75, 1e-12, 'kept');
+    UI.App.dimsStale = true; UI.drawDims();
+    var labels = Array.prototype.map.call(D.querySelectorAll('#dim-layer g.dim:not(.temp) text'), function (t) { return t.textContent; });
+    assert(labels.indexOf('.750') >= 0, 'inch label .750: ' + labels.join(' '));
+    // the numeric input while drawing: L typed as a mixed number, the angle as 90deg
+    UI.setTool('line'); rskClick([0, 1]);
+    selEv('mousemove', rskScr([0.8, 1.6]));
+    selKey('1');
+    var box = UI.sketchNumBox();
+    assert(box && box.length === 2, 'L / A box');
+    r3sType(box[0], '1-1/2'); r3sType(box[1], '90deg'); r3sKey(box[0], 'Enter');
+    selKey('Escape');
+    var l = f.entities[f.entities.length - 1];
+    assert(l.t === 'line' && Math.abs(l.x2 - l.x1) < 1e-12 && Math.abs(l.y2 - l.y1 - 1.5) < 1e-12, 'line 1-1/2 at 90deg: ' + JSON.stringify(l));
+    UI.App.dimsStale = true; UI.drawDims();
+    labels = Array.prototype.map.call(D.querySelectorAll('#dim-layer g.dim:not(.temp) text'), function (t) { return t.textContent; });
+    assert(labels.indexOf('1.500') >= 0, 'typed length dimensioned 1.500: ' + labels.join(' '));
+    // a circle typed by its diameter (Ø, after R): exact radius, a Ø dimension
+    UI.setTool('circle'); rskClick([3, 1]); selEv('mousemove', rskScr([3.2, 1.1]));
+    selKey('.'); box = UI.sketchNumBox();
+    assert(box && box.length === 2 && box[1].getAttribute('aria-label') === 'Diameter', 'R / Ø box');
+    r3sType(box[1], '.281'); r3sKey(box[1], 'Enter');
+    selKey('Escape');
+    var c = f.entities[f.entities.length - 1];
+    assert(c.t === 'circle' && c.r === 0.1405, 'hole Ø.281: r ' + c.r);
+    return labels.join(' ');
+  });
+  step('p9-sketch: tangent through a chain — a Line chain whose first segment ends on a circle goes on tangent to it: the direction lock offers the tangent at the shared point, and the click adds Tangent with the circle (not redundant); near the start that lock beats the snap onto the circle, while a pick on the circle away from the start still lands on it', async function () {
+    await rskNew();
+    saAdd([{ t: 'circle', cx: 0, cy: 0, r: 10 }]);
+    var a = 30 * Math.PI / 180, P = [10 * Math.cos(a), 10 * Math.sin(a)], u = [-Math.sin(a), Math.cos(a)], px = 0.25;
+    UI.setTool('line'); rskClick([-30, 30]);
+    var inf0 = saInfer(rskScr(P));
+    assert(inf0.snap && inf0.snap.kind === 'on' && inf0.snap.e === 0, 'end on the circle: ' + JSON.stringify(inf0.snap));
+    rskClick(P);
+    var Q = UI.App.toolState.pts[0];
+    near(Math.hypot(Q[0], Q[1]), 10, 1e-9, 'chain point on the circle');
+    a = Math.atan2(Q[1], Q[0]); u = [-Math.sin(a), Math.cos(a)];   // the tangent where the click landed
+    // near the start (3 mm along the tangent the circle is 1.8 px away): the tangent lock, not the circle
+    var near3 = [Q[0] + u[0] * 3, Q[1] + u[1] * 3], i3 = saInfer(rskScr(near3));
+    assert(i3.dir && i3.dir.type === 'tangent' && !(i3.snap && i3.snap.kind === 'on'), 'tangent lock near the start: ' + JSON.stringify({ dir: i3.dir && i3.dir.type, snap: i3.snap && i3.snap.kind }));
+    // a pick on the circle well away from the start: the circle
+    var b = 250 * Math.PI / 180, onC = saInfer(rskScr([10 * Math.cos(b), 10 * Math.sin(b)]));
+    assert(onC.snap && onC.snap.kind === 'on' && onC.snap.e === 0, 'a pick on the circle away from the start: ' + JSON.stringify(onC.snap));
+    // along the tangent, 1.5 px off it: locked, Tangent glyph; the click adds Tangent with the circle
+    var tq = [Q[0] + u[0] * 15 + Math.cos(a) * 1.5 * px, Q[1] + u[1] * 15 + Math.sin(a) * 1.5 * px];
+    selEv('mousemove', rskScr(tq));
+    assert(D.querySelector('#dim-layer .sk-feedback use[href="#sk-ico-relTangent"]'), 'Tangent glyph on the chained line');
+    rskClick(tq); selKey('Escape');
+    var rl = sfRels(), l2 = rskEnts()[2];
+    near(((l2.x2 - l2.x1) * Math.cos(a) + (l2.y2 - l2.y1) * Math.sin(a)) / Math.hypot(l2.x2 - l2.x1, l2.y2 - l2.y1), 0, 1e-9, 'square to the radius');
+    assert(rl.indexOf('tangent:2,0') >= 0 && rl.indexOf('coincident:2.p1,1.p2') >= 0, 'Tangent through the chain: ' + rl.join(' '));
+    var st = UI.sketchStatus();
+    assert(st.rels.every(function (x) { return x === 'ok'; }), 'no redundant relation: ' + JSON.stringify(st.rels));
+    return rl.join(' ');
+  });
+  step('p9-sketch: a tangent line with a typed length measures it from the sliding tangent point (not the clicked point), and N flips the sliding start to the other tangent point (shown in the hint)', async function () {
+    await rskNew();
+    saAdd([{ t: 'circle', cx: 0, cy: 0, r: 10 }]);
+    UI.setTool('line');
+    rskClick([10 * Math.cos(Math.PI / 6), 10 * Math.sin(Math.PI / 6)]);
+    assert(UI.App.toolState.tanFrom, 'sliding start armed');
+    assert(/<b>N<\/b>/.test($('sketch-hint').innerHTML), 'hint names N: ' + $('sketch-hint').textContent);
+    selEv('mousemove', rskScr([30, -20]));
+    selKey('2'); var box = UI.sketchNumBox();
+    r3sType(box[0], '25'); r3sKey(box[0], 'Enter');
+    var l = rskEnts()[1];
+    assert(l && l.t === 'line', 'line placed');
+    near(Math.hypot(l.x1, l.y1), 10, 1e-9, 'starts on the circle');
+    near(Math.hypot(l.x2 - l.x1, l.y2 - l.y1), 25, 1e-9, 'length 25 from the tangent point');
+    near(l.x1 * (l.x2 - l.x1) + l.y1 * (l.y2 - l.y1), 0, 1e-6, 'tangent at its start');
+    var rl = sfRels();
+    assert(rl.indexOf('tangent:1,0') >= 0 && rl.indexOf('coincident:1.p1,0') >= 0, 'Tangent + Coincident: ' + rl.join(' '));
+    assert(rl.some(function (r) { return /^distance|^dim/.test(r); }) || (UI.activeSketchFeature().dims || []).some(function (d) { return d.e === 1 && d.k === 'len'; }), 'the typed length is a dimension');
+    selKey('Escape'); selKey('Escape');
+    // N: the other tangent point
+    UI.setTool('line');
+    rskClick([10 * Math.cos(200 * Math.PI / 180), 10 * Math.sin(200 * Math.PI / 180)]);
+    var cur = [-30, -20];
+    selEv('mousemove', rskScr(cur));
+    var t1 = UI.App.tempEntities[0], T1 = [t1.x1, t1.y1];
+    selKey('n');
+    var t2 = UI.App.tempEntities[0], T2 = [t2.x1, t2.y1];
+    function tangentAt(T, Q) { return Math.abs(Math.hypot(T[0], T[1]) - 10) < 1e-9 && Math.abs(T[0] * (Q[0] - T[0]) + T[1] * (Q[1] - T[1])) < 1e-6; }
+    assert(tangentAt(T1, cur) && tangentAt(T2, cur) && Math.hypot(T1[0] - T2[0], T1[1] - T2[1]) > 5, 'N took the other tangent point: ' + JSON.stringify([T1, T2]));
+    selEv('mousemove', rskScr([-31, -20]));
+    var t3 = UI.App.tempEntities[0];
+    assert(Math.hypot(t3.x1 - T2[0], t3.y1 - T2[1]) < 1, 'it stays on that side as the cursor moves');
+    rskClick([-31, -20]); selKey('Escape'); selKey('Escape');
+    var l2 = rskEnts()[2];
+    assert(Math.hypot(l2.x1 - T2[0], l2.y1 - T2[1]) < 1 && sfRels().indexOf('tangent:2,0') >= 0, 'the line leaves the flipped point, Tangent: ' + JSON.stringify(l2));
+    return 'L 25 from ' + JSON.stringify([fmt(l.x1), fmt(l.y1)]) + '; N: ' + JSON.stringify(T1.map(fmt)) + ' -> ' + JSON.stringify(T2.map(fmt));
+  });
+  step('p9-sketch: shop audit — a 6 × 4 inch blank sketched through the UI as a shop types it (corner rectangle W 6 H 4, Sketch Fillet R 1/4 on the corners, four Ø.281 holes typed as Ø, a .5 wide slot 1 between centres, Smart Dimensions from the hole and slot centres to the edges typed 1/2, .5, 2-1/2) ends Fully Defined with exact sizes, ANSI inch labels clear of each other\'s lines, and extrudes to the analytic volume', async function () {
+    await p9Inch();
+    await UI.newSketchOnPlane('Front'); await idle();
+    UI.zoomView(0.012 / UI.cam.scale);
+    UI.setTool('rect'); rskClick([0, 0]); selEv('mousemove', rskScr([2.8, 1.7])); selKey('6');
+    var box = UI.sketchNumBox();
+    r3sType(box[0], '6'); r3sType(box[1], '4'); r3sKey(box[1], 'Enter');
+    UI.setTool('select');
+    UI.zoomToFit(); await wait(700); UI.zoomView(1.5); await wait(600);
+    [[-0.9, -0.6], [6.6, 4.6]].forEach(function (q) { var s = rskScr(q); assert(s[0] > 0 && s[1] > 0 && s[0] < UI.size.w && s[1] < UI.size.h, 'placement area on screen: ' + q + ' -> ' + s); });
+    UI.cmdSketchFillet(); await wait(30);
+    var rf = p9Field('r'); rf.focus(); rf.select(); r3sType(rf, '1'); r3sKey(rf, '/'); r3sType(rf, '1/4');
+    near(UI.pmSpec().values.r, 0.25, 0, 'fillet radius 1/4');
+    [[0, 0], [6, 0], [6, 4], [0, 4]].forEach(function (c) { rskClick(c); });
+    await pmAccept();
+    assert(rskEnts().filter(function (e) { return e.t === 'arc' && e.r === 0.25; }).length === 4, 'four R.25 fillets');
+    var holes = [[0.5, 0.5], [5.5, 0.5], [5.5, 3.5], [0.5, 3.5]];
+    UI.setTool('circle');
+    holes.forEach(function (h) {
+      rskClick(h); selEv('mousemove', rskScr([h[0] + 0.12, h[1] + 0.05])); selKey('.');
+      var b = UI.sketchNumBox(); r3sType(b[0], '.'); r3sType(b[1], '.281'); r3sKey(b[1], 'Enter');
+    });
+    UI.setTool('slot');
+    rskClick([2.5, 2]); selEv('mousemove', rskScr([3.4, 2])); selKey('1');
+    box = UI.sketchNumBox(); r3sType(box[0], '1'); r3sType(box[1], '0'); r3sKey(box[0], 'Enter');
+    selEv('mousemove', rskScr([3, 2.3])); selKey('.');
+    box = UI.sketchNumBox(); r3sType(box[0], '1/2'); r3sKey(box[0], 'Enter');
+    UI.setTool('select');
+    var dimInput = D.querySelector('#dim-edit input'), placed = 0;
+    function dim2(a, b, place, text) {
+      UI.setTool('dimension');
+      rskClick(a); rskClick(b); rskClick(place);
+      assert(!$('dim-edit').hidden, 'Modify box for ' + JSON.stringify(a) + ' -> ' + JSON.stringify(b) + ' (' + statusText() + ')');
+      dimInput.value = text; r3sKey(dimInput, 'Enter');
+      placed++;
+    }
+    dim2([0.5, 0.5], [0, 2], [0.25, -0.5], '1/2'); dim2([0.5, 0.5], [3, 0], [-0.5, 0.25], '1/2');
+    dim2([5.5, 0.5], [6, 2], [5.75, -0.5], '.5'); dim2([5.5, 0.5], [3, 0], [6.5, 0.25], '.5');
+    dim2([5.5, 3.5], [6, 2], [5.75, 4.5], '.5'); dim2([5.5, 3.5], [3, 4], [6.5, 3.75], '.5');
+    dim2([0.5, 3.5], [0, 2], [0.25, 4.5], '.5'); dim2([0.5, 3.5], [3, 4], [-0.5, 3.75], '.5');
+    dim2([2.5, 2], [0, 2.6], [1.25, 4.8], '2-1/2'); dim2([2.5, 2], [3, 0], [-0.9, 1], '2');
+    UI.setTool('select');
+    var st = UI.sketchStatus();
+    assert(st.status === 'full', 'Fully Defined: ' + st.text + ' dof ' + st.dof);
+    var E = rskEnts(), circles = E.filter(function (e) { return e.t === 'circle'; }), slot = E.filter(function (e) { return e.t === 'slot'; })[0];
+    assert(circles.length === 4 && circles.every(function (c) { return c.r === 0.1405; }), 'holes Ø.281 exactly: ' + circles.map(function (c) { return c.r; }).join());
+    circles.forEach(function (c, i) { near(c.cx, holes[i][0], 1e-9, 'hole ' + i + ' x'); near(c.cy, holes[i][1], 1e-9, 'hole ' + i + ' y'); });
+    assert(slot && slot.w === 0.5 && Math.abs(slot.x1 - 2.5) < 1e-9 && Math.abs(slot.x2 - 3.5) < 1e-9 && Math.abs(slot.y1 - 2) < 1e-9, 'slot ' + JSON.stringify(slot));
+    // labels clear of the other dimensions' lines at a working zoom (0.0104 in per pixel: .5 is 48 px)
+    UI.zoomView(0.0104 / UI.cam.scale); await wait(600);
+    UI.App.dimsStale = true; if (UI.requestRender) UI.requestRender(); await wait(400);   // the settled layout (all passes), drawn by the render loop
+    var labels = Array.prototype.map.call(D.querySelectorAll('#dim-layer g.dim:not(.temp) text'), function (t) { return t.textContent; });
+    ['R.250', 'Ø.281', '.500', '6.000', '4.000', '2.500', '2.000', '1.000'].forEach(function (x) { assert(labels.indexOf(x) >= 0, 'label ' + x + ' in ' + labels.join(' ')); });
+    assert(UI.dimLabelClashes() === 0, 'labels on another dimension\'s lines: ' + UI.dimLabelClashes(true).join(', '));
+    UI.exitSketch(); await idle();
+    assert(UI.App.mode !== 'sketch', 'sketch closed');
+    UI.cmdExtrude(false); await wait(30);
+    UI.pmSetField('depth', '.0598'); await pmAccept();
+    var area = 24 - 4 * (0.0625 - Math.PI * 0.0625 / 4) - 4 * Math.PI * 0.1405 * 0.1405 - (0.5 + Math.PI * 0.0625);
+    var vol = anvil.mass().volume;
+    assert(Math.abs(vol - area * 0.0598) < 1e-6 * area * 0.0598, 'volume ' + vol + ', expected ' + area * 0.0598);
+    return st.text + ' · ' + placed + ' dimensions typed · volume ' + vol.toFixed(6) + ' in³';
+  });
+  // --- end p9-sketch ---
+  // ---- p9-output (run local-2026-10-07a, headless lane): laser-ready DXF options and the ANSI Inch Hole Wizard
+  step('p9-output: DXF/DWG Output on the U-bracket — Version R12 / R2000 and Loops as polylines / lines and arcs in the PM, ✓ writes the chosen kind (R2000 lines and arcs: 6 CIRCLEs, 2 ARCs, no LWPOLYLINE in R12, flat at 0,0); Views stay R12', async function () {
+    await anvil.run(exByName('Sheet-metal U-bracket').code); await idle();
+    var errs0 = errors.length;
+    UI.cmdDxfOutput();
+    assert(UI.hasPM() && UI.pmTitle() === 'DXF/DWG Output', 'PM: ' + UI.pmTitle());
+    var ver = pmSelect('version'), sty = pmSelect('style');
+    assert(ver && optionValues(ver).join() === 'R12,R2000' && ver.value === 'R12', 'version options ' + (ver && optionValues(ver).join()));
+    assert(sty && optionValues(sty).join() === 'polyline,entities' && sty.value === 'polyline', 'Loops as options ' + (sty && optionValues(sty).join()));
+    setInput(ver, 'R2000'); setInput(pmSelect('style'), 'entities');
+    var got = null, saved = UI.download;
+    UI.download = function (name, data) { got = { name: name, data: data }; };
+    try { await pmAccept(); } finally { UI.download = saved; }
+    assert(got && /_flat\.dxf$/.test(got.name), 'downloaded ' + (got && got.name));
+    var t = got.data;
+    assert(/\$ACADVER\n1\nAC1015\n/.test(t) && /\$INSUNITS\n70\n4\n/.test(t) && /\$MEASUREMENT\n70\n1\n/.test(t), 'R2000 mm header');
+    assert((t.match(/\n0\nCIRCLE\n/g) || []).length === 6 && (t.match(/\n0\nARC\n/g) || []).length === 2 && t.indexOf('LWPOLYLINE') < 0, 'lines and arcs: ' + (t.match(/\n0\n[A-Z]+\n/g) || []).join(''));
+    assert(/\$EXTMIN\n10\n0\n20\n/.test(t) && /\$EXTMAX\n10\n210\.744247\n20\n60\n/.test(t), 'the flat runs from x = 0 to its 210.744 length and up to y = 60 (the sheet note sits below y = 0)');
+    var r12 = anvil.dxfOutput({ export: 'sheet', version: 'R12' });
+    assert(/AC1009/.test(r12) && r12.indexOf('LWPOLYLINE') < 0 && (r12.match(/\n0\nPOLYLINE\n/g) || []).length === 2 && /\n42\n/.test(r12), 'R12: two bulged POLYLINEs (blank, slot)');
+    var r2k = anvil.dxfOutput({ export: 'sheet', version: 'R2000' });
+    assert((r2k.match(/\n0\nLWPOLYLINE\n/g) || []).length === 2 && /\nOBJECTS\n/.test(r2k), 'R2000 polylines are LWPOLYLINEs');
+    UI.cmdDxfOutput();
+    D.querySelector('#pm input[data-key="export:views"]').click(); await idle();
+    assert(optionValues(pmSelect('version')).join() === 'R12' && !pmSelect('style'), 'views: R12 only, no Loops as: ' + optionValues(pmSelect('version')).join());
+    UI.pmCancel();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'R2000 lines/arcs ' + t.length + ' chars, R12 ' + r12.length + ' chars';
+  });
+
+  step('p9-output: Hole Wizard in an inch part — Standard defaults to ANSI Inch, Size lists 1/4 / #10, the spec reads "Ø.281 … ⌴ Ø.438 ↧ .250"; Straight Tap switches the size to 1/4-20 UNC, Hole offers drill sizes; ✓ makes a CBORE for 1/4 (volume exact); edit to ISO M6 scales to inches; script round trip keeps standard: "ANSI Inch"', async function () {
+    await anvil.run('p.units("in");\np.box(2, 2, 1, { centered: true });'); await idle();
+    assert(UI.App.model.units === 'in', 'inch part');
+    var idx = faceWithNormal([0, 1, 0]);
+    UI.cmdHoleWizard();
+    assert(UI.App.command.onPick({ kind: 'face', index: idx, point: [-0.5, 1, 0] }) !== false, 'pick rejected');
+    clickPmButton('Type');
+    assert(pmSelect('standard') && pmSelect('standard').value === 'ANSI Inch', 'Standard: ' + (pmSelect('standard') && pmSelect('standard').value));
+    var sizes = optionValues(pmSelect('size'));
+    assert(sizes.indexOf('1/4') >= 0 && sizes.indexOf('#10') >= 0 && sizes.indexOf('M6') < 0, 'sizes ' + sizes.join());
+    setInput(pmSelect('holeType'), 'cbore'); setInput(pmSelect('size'), '1/4'); setInput(pmSelect('fit'), 'normal'); setInput(pmSelect('end'), 'blind');
+    setInput(pmNumber(0), 0.75);
+    var txt = $('pm').textContent;
+    assert(txt.indexOf('Ø.281') >= 0 && txt.indexOf('⌴ Ø.438 ↧ .250') >= 0 && txt.indexOf('9/32 drill') >= 0, 'spec text: ' + txt.slice(0, 400));
+    setInput(pmSelect('holeType'), 'tap'); await idle();
+    assert(pmSelect('size').value === '1/4-20 UNC' && !pmSelect('fit'), 'tap size ' + pmSelect('size').value);
+    assert(/1\/4-20 UNC - 2B/.test($('pm').textContent) && /#7 drill/.test($('pm').textContent), 'tap spec');
+    setInput(pmSelect('holeType'), 'hole'); await idle();
+    assert(pmSelect('sizeType'), 'Hole type select for an ANSI Hole');
+    setInput(pmSelect('sizeType'), 'drill'); await idle();
+    var drills = optionValues(pmSelect('size'));
+    assert(drills.indexOf('#7') >= 0 && drills.indexOf('F') >= 0 && drills.indexOf('17/64') >= 0 && !pmSelect('fit'), 'drill sizes: ' + drills.length);
+    setInput(pmSelect('holeType'), 'cbore'); setInput(pmSelect('size'), '1/4'); setInput(pmSelect('fit'), 'normal');
+    await pmAccept();
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'hole' && f.standard === 'ANSI Inch' && f.holeType === 'cbore' && f.size === '1/4' && f.depth === 0.75 && !f.sizeType, JSON.stringify(f));
+    assert(f.name === 'CBORE for 1/4 Socket Head Cap Screw1', f.name);
+    var Rc = 0.4375 / 2, R = 0.28125 / 2;
+    near(anvil.mass().volume, 4 - (Math.PI * Rc * Rc * 0.25 + Math.PI * R * R * 0.5), 1e-8, 'counterbore volume (in³)');
+    var code = anvil.script();
+    assert(/standard: "ANSI Inch", type: "cbore", size: "1\/4"/.test(code), code);
+    var v0 = anvil.mass().volume;
+    await anvil.run(code); await idle();
+    near(anvil.mass().volume, v0, 1e-8, 'round trip');
+    f = UI.App.model.features[UI.App.model.features.length - 1];
+    UI.editFeature(f);
+    setInput(pmSelect('standard'), 'ISO'); await idle();
+    assert(pmSelect('size').value === 'M6', 'ISO size ' + pmSelect('size').value);
+    await pmAccept();
+    assert(f.standard === 'ISO' && f.size === 'M6', JSON.stringify(f));
+    var k = 1 / 25.4, Rc2 = 5.5 * k, R2 = 3.3 * k, dc = 6.5 * k;
+    near(anvil.mass().volume, 4 - (Math.PI * Rc2 * Rc2 * dc + Math.PI * R2 * R2 * (0.75 - dc)), 1e-8, 'ISO M6 counterbore in inches');
+    return 'ANSI 1/4 cbore ' + v0.toFixed(6) + ' in³';
+  });
+  // --- end p9-output ---
+
   step('no uncaught errors or console.error calls during the run', async function () {
     await idle();
     assert(errors.length === 0, errors.join('\n'));
   });
 
+  // ---- p9-bend: bend allowance methods in the Sheet-Metal PropertyManager, Custom Bend Allowance, flat size readout
+  // L bracket in inches, T = R = 0.060, base 4 × 3, a 90° flange of wall 1.5 on the x = 0 edge: outside dimensions
+  // A = 4.12, B = 1.62, flat length A + B − BD.
+  var P9_LB = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();';
+  function p9FlatText() {
+    var lab = Array.prototype.filter.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent === 'Flat size'; })[0];
+    assert(lab, 'no Flat size row in the PM');
+    return lab.parentElement.querySelector('.static').textContent;
+  }
+  step('p9-bend: Sheet-Metal PM: switch to Bend Deduction, type 0.1, the flat size follows; ✓ stores it and the status bar shows the flat size', async function () {
+    var errs0 = errors.length;
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);');
+    await idle();
+    UI.cmdSheetMetal();
+    assert(UI.hasPM() && /Sheet-Metal/.test($('pm').innerText), 'Sheet-Metal PM not open: ' + $('pm').innerText.slice(0, 80));
+    var BDk = 2 * 0.12 - Math.PI / 2 * (0.06 + 0.5 * 0.06);
+    var before = p9FlatText();
+    assert(before.indexOf(UI.fmtNum(4.12 + 1.62 - BDk, 4) + ' × 3 in') === 0, 'K-factor flat size: ' + before);
+    setInput(pmField('Type'), 'deduction');
+    var bd = pmField('Bend deduction');
+    assert(bd && bd.type === 'number', 'Bend deduction field missing');
+    setInput(bd, 0.1);
+    var after = p9FlatText();
+    assert(after.indexOf('5.64 × 3 in') === 0, 'flat size after BD 0.1: ' + after + ' (was ' + before + ')');
+    await pmAccept();
+    assert(!UI.hasPM(), 'PM still open');
+    var sh = UI.App.model.sheet;
+    assert(sh.bendAllowanceType === 'deduction' && sh.bendDeduction === 0.1 && sh.kFactor === 0.5, 'sheet: ' + JSON.stringify(sh));
+    assert(/Flat size 5\.64 × 3 in/.test(statusText()), 'status: ' + statusText());
+    near(anvil.flat().size[0], 5.64, 1e-9, 'kernel flat length');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return before + ' → ' + after;
+  });
+  step('p9-bend: Edge-Flange PM Custom Bend Allowance (Bend Deduction 0.09) wins over the sheet\'s 0.1', async function () {
+    await anvil.run(P9_LB.replace('p.sheet(0.06, 0.06, 0.5);', 'p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });'));
+    await idle();
+    UI.cmdEdgeFlange();
+    assert(UI.hasPM(), 'Edge-Flange PM not open');
+    assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([0, 0.06, 1.5]) }) !== false, 'edge pick rejected');
+    setInput(pmField('Length'), 1.5);
+    var cb = pmField('Custom bend allowance');
+    assert(cb && cb.type === 'checkbox' && !cb.checked, 'Custom bend allowance check');
+    cb.click();
+    setInput(pmField('Type'), 'deduction');
+    setInput(pmField('Bend deduction'), 0.09);
+    await pmAccept();
+    var s = anvil.summary();
+    assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+    var f = UI.App.model.features[UI.App.model.features.length - 1];
+    assert(f.type === 'flange' && f.bendAllowance && f.bendAllowance.type === 'deduction' && f.bendAllowance.value === 0.09, JSON.stringify(f));
+    assert(!('useCustomBA' in f) && !('cbaBD' in f), 'UI-only keys leaked: ' + Object.keys(f).join());
+    near(anvil.flat().size[0], 4.12 + 1.62 - 0.09, 1e-9, 'flat with the custom BD');
+    assert(/p\.flange\(1\.5, .*bendAllowance: \{"type":"deduction","value":0\.09\}/.test(anvil.script()), 'script: ' + anvil.script().split('\n').pop());
+    UI.cmdFlatten();
+    assert(modalOpen(), 'flat pattern dialog');
+    var fs = D.querySelector('#modal-body [data-role="flat-size"]');
+    assert(fs && /^Flat size 5\.65 × 3 in/.test(fs.textContent), 'flatten dialog: ' + (fs && fs.textContent));
+    clickModalButton('Close');
+    return fs.textContent;
+  });
+  step('p9-bend: Bend Table grid (pasted rows, BD by angle) and gauge pick in the Sheet-Metal PM', async function () {
+    await anvil.run(P9_LB + '\np.flange(1.5, [[0, 0.06, 1.5]]);');
+    await idle();
+    UI.cmdSheetMetal();
+    setInput(pmField('Type'), 'table');
+    clickPmButton('Edit bend table…');
+    assert(modalOpen() && $('bt-dialog'), 'bend table dialog');
+    $('bt-dialog-paste').value = '0.06\t0.06\t60\t0.05\n0.06\t0.06\t120\t0.15';
+    $('bt-dialog-paste-add').click();
+    assert(D.querySelectorAll('#bt-dialog tr.grid-row').length === 2, 'pasted rows: ' + D.querySelectorAll('#bt-dialog tr.grid-row').length);
+    $('bt-dialog-ok').click();
+    assert(!modalOpen(), 'dialog closed');
+    assert(/2 rows of bend deduction/.test($('pm').innerText), 'table summary: ' + $('pm').innerText.replace(/\s+/g, ' ').slice(0, 300));
+    var t = p9FlatText();
+    assert(t.indexOf('5.64 × 3 in') === 0, 'table flat (90° interpolated to 0.1): ' + t);
+    var ug = pmField('Use gauge table');
+    ug.click();
+    assert(/example — replace with your shop's values/.test($('pm').innerText), 'gauge example label');
+    setInput(pmField('Gauge'), '14');
+    near(+pmField('Thickness').value, 0.0747, 1e-12, '14 ga thickness');
+    assert(/updates after ✓/.test(p9FlatText()), 'T changed: ' + p9FlatText());
+    await pmAccept();
+    var sh = UI.App.model.sheet;
+    assert(sh.thickness === 0.0747 && sh.gauge === '14' && sh.bendAllowanceType === 'table' && sh.bendTable.rows.length === 2, JSON.stringify(sh));
+    var flat = anvil.flat();
+    assert(flat.warnings.length === 1 && /Bend table: no row/.test(flat.warnings[0]), 'the 14 ga bend falls back to K: ' + flat.warnings.join(' | '));
+    return 'gauge 14: ' + UI.flatSizeText(flat);
+  });
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

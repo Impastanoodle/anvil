@@ -242,16 +242,24 @@
       body.appendChild(el('p', { html: '<small>Curved faces are meshed so no chord strays more than this from the true surface' + (iq.segsR10 ? ' (a Ø20 circle: ' + iq.segsR10 + ' facets)' : '') + '. Mass properties use the exact surfaces at every setting.</small>' }));
     }
     if (UI.occtOptionsSection) body.appendChild(UI.occtOptionsSection(function () { tpProps(body); }));   // r12/occtui12: OpenCascade kernel, After an edit
-    var sm = m.sheet || { thickness: 2, bendRadius: 2, kFactor: 0.71 };
-    body.appendChild(el('h3', { text: 'Sheet metal defaults' }));
-    var kv2 = el('div', { class: 'kv' });
-    [['Thickness', 'thickness'], ['Bend radius', 'bendRadius'], ['K-factor', 'kFactor']].forEach(function (f) {
-      var i = el('input', { type: 'number', value: sm[f[1]], step: 'any' });
-      i.addEventListener('change', function () { m.sheet = m.sheet || sm; m.sheet[f[1]] = +i.value; UI.autosave(); });
-      kv2.appendChild(el('span', { text: f[0] })); kv2.appendChild(i);
-    });
-    body.appendChild(kv2);
-    body.appendChild(el('p', { html: '<small>K-factor 0.71 is the shop default for steel; use 0.64 for aluminum.</small>' }));
+    // sheet metal: the part's parameters read-only here; Sheet metal parameters… opens the Sheet-Metal PropertyManager
+    // (gauge, T, R, bend allowance method, bend table), which rebuilds and is undoable
+    body.appendChild(el('h3', { text: 'Sheet metal' }));
+    if (m.sheet) {
+      var sm = m.sheet, smType = sm.bendAllowanceType || 'kfactor';
+      var kv2 = el('div', { class: 'kv', 'data-role': 'sheet-props' });
+      var smRows = [['Thickness', sm.thickness], ['Bend radius', sm.bendRadius]];
+      if (sm.gauge != null) smRows.unshift(['Gauge', sm.gauge + ' ga (' + (typeof sm.gaugeTable === 'object' ? sm.gaugeTable.name || 'shop table' : sm.gaugeTable) + ')']);
+      smRows.push(['Bend allowance', { kfactor: 'K-Factor', allowance: 'Bend Allowance', deduction: 'Bend Deduction', table: 'Bend Table' }[smType] || smType]);
+      if (smType === 'kfactor' || smType === 'table') smRows.push(['K-factor', K.sheetKFactor(sm)]);
+      if (smType === 'allowance') smRows.push(['BA', sm.bendAllowance]);
+      if (smType === 'deduction') smRows.push(['BD', sm.bendDeduction]);
+      if (smType === 'table' && sm.bendTable) smRows.push(['Bend table', sm.bendTable.rows.length + ' rows (' + sm.bendTable.kind + ')']);
+      smRows.forEach(function (r) { kv2.appendChild(el('span', { text: r[0] })); kv2.appendChild(el('span', { text: String(r[1]) })); });
+      body.appendChild(kv2);
+      try { var flat = K.flatPattern(m, App.build, App.mesh); body.appendChild(el('p', { 'data-role': 'flat-size', text: UI.flatSizeText ? UI.flatSizeText(flat) : '' })); } catch (e) { }
+      body.appendChild(el('div', { class: 'row' }, [el('button', { class: 'btn', text: 'Sheet metal parameters…', onclick: function () { if (UI.cmdSheetMetal) UI.cmdSheetMetal(); } })]));
+    } else body.appendChild(el('p', { html: '<small>No sheet metal parameters: a Base Flange/Tab sets them (Sheet Metal tab). New parts default to K = 0.5.</small>' }));
   }
 
   var lastScript = null;
@@ -875,6 +883,8 @@
     // the local server, so it returns a Promise of { name, data (ArrayBuffer), mime }
     saveAs: function (type, base, opts) {
       if (type === 'dxf' || type === 'dwg') {
+        // the DWG converters read R2000 (an R12 file loses its model space in LibreDWG)
+        if (type === 'dwg') opts = Object.assign({}, opts, { version: 'R2000' });
         var text = UI.dxfOutput(opts), nm = (base || safeName()) + '.' + type;
         if (type === 'dxf') { download(nm, text, 'application/dxf'); return { name: nm, data: text, mime: 'application/dxf' }; }
         return UI.dxfToDwg(text).then(function (bytes) { download(nm, bytes, 'application/acad'); return { name: nm, data: bytes, mime: 'application/acad' }; });

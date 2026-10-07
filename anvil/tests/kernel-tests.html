@@ -52,6 +52,7 @@
 <script src="../drawing-render.js"></script>
 <script src="../evaluate.js"></script>
 <script src="../ui-select.js"></script>
+<script src="../headless/dxf-check.js"></script>
 <script>
 (function () {
   'use strict';
@@ -1005,7 +1006,7 @@
     assert(base && base.type === 'extrude' && base.depth === 2, 'base flange feature: ' + JSON.stringify(base));
     near(r.mp.volume, 100 * 60 * 2, 1e-6, 'volume');
     var d = build('p.sketch("Top").rect(0, 0, 10, 10).end().baseFlange(1.5);');
-    assert(d.model.sheet.thickness === 1.5 && d.model.sheet.bendRadius === 1.5 && d.model.sheet.kFactor === 0.71, 'defaults: ' + JSON.stringify(d.model.sheet));
+    assert(d.model.sheet.thickness === 1.5 && d.model.sheet.bendRadius === 1.5 && d.model.sheet.kFactor === K.DEFAULT_K_FACTOR && K.DEFAULT_K_FACTOR === 0.5, 'defaults (K 0.5 for a new part since p9-bend): ' + JSON.stringify(d.model.sheet));
   });
   test('edge flange adds a bend plus a wall along the whole edge', function () {
     var r = build(SHEET + '\np.flange(20, [[0, 2, 30]]);');
@@ -4397,7 +4398,7 @@
       assert(r.doc.sheet.format === 'ANSI B' && r.sheet.units === 'in', r.doc.sheet.format);
       near(r.sheet.size[0], 17, 1e-9); near(r.sheet.size[1], 11, 1e-9);
       var dims = r.sheet.dims.map(function (d) { return d.text; });
-      assert(JSON.stringify(dims) === '["4","1","2"]', JSON.stringify(dims));
+      assert(JSON.stringify(dims) === '["4.000","1.000","2.000"]', JSON.stringify(dims));   // ANSI inch: three places, trailing zeros kept (r16/p9-drawing)
       return DW.scaleText(r.doc.sheet.scale);
     });
     test('SVG: well-formed, real sheet size, one dashed element per hidden line or circle', function () {
@@ -7629,7 +7630,7 @@
       assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0 } }).lower === '0.00', 'zero lower');
       assert(L({ kind: 'dia', value: 8, count: 4, prec: 1, label: '<DIM> TYP' }).text === '4X Ø8.0 TYP', 'dia with text');
       assert(L({ kind: 'dia', value: 8, count: 1, tol: { type: 'limit', plus: 0.02, minus: 0 }, prec: 2 }).text === 'Ø8.02/Ø8.00', 'dia limit');
-      assert(L({ kind: 'v', value: 4, prec: 3, tol: { type: 'bilateral', plus: 0.005, minus: 0.002 } }, 'in').text === '4.000 +0.005/-0.002', 'inch');
+      assert(L({ kind: 'v', value: 4, prec: 3, tol: { type: 'bilateral', plus: 0.005, minus: 0.002 } }, 'in').text === '4.000 +.005/-.002', 'inch (ANSI: no leading zeros on inch tolerances)');
       assert(L({ kind: 'h', value: 12.3456 }).text === '12.35' && L({ kind: 'h', value: 12.3456, prec: 0 }).text === '12', 'precision');
       // on the sheet: the overall width (model item Front:h:0) with a bilateral tolerance, stacked 0.7 high beside the value
       var r = annDrawing(PLATE2), F = r.view('Front');
@@ -11190,6 +11191,746 @@
     });
   })();
   // --- end r15/snapaudit15 ---
+
+  // ------------------------------------------------------------------ p9-bend: bend allowance methods (SolidWorks' Bend Allowance group)
+  // An L bracket in inches, T = R = 0.060: base 4 × 3 on Top, a 90° Edge-Flange of wall 1.5 on the x = 0 edge (Bend
+  // Outside). Outside dimensions A = 4 + R + T (base) and B = 1.5 + R + T (flange), so the flat length must be A + B − BD
+  // for whatever method gives the bend its BD.
+  (function () {
+    group('p9-bend: bend allowance, bend deduction, bend tables, gauges, custom bend allowance');
+    var T = 0.06, R = 0.06, W = 4, D = 3, L = 1.5, A90 = Math.PI / 2;
+    var OA = W + R + T, OB = L + R + T;
+    function lbracket(sheetLine, flangeOpts, angle) {
+      var o = flangeOpts ? flangeOpts : '';
+      if (angle != null) o = o ? o.replace(/^\{ /, '{ angle: ' + angle + ', ') : '{ angle: ' + angle + ' }';
+      return 'p.units("in");\n' + sheetLine + '\np.sketch("Top").rect(0, -' + D + ', ' + W + ', ' + D + ').end().baseFlange();\np.flange(' + L + ', [[0, ' + T + ', 1.5]]' + (o ? ', ' + o : '') + ');';
+    }
+    function flatOf(code) {
+      var r = build(code);
+      noErrors(r);
+      return { r: r, flat: K.flatPattern(r.model, r.build, r.mesh) };
+    }
+    var BD_K = K.bendDeduction(A90, R, T, K.bendAllowance(A90, R, T, 0.5));
+    test('p9-bend: the relations BA = θ(R + K·T), OSSB = (R+T)·tan(θ/2) up to 90° and R + T beyond, BD = 2·OSSB − BA', function () {
+      near(K.bendAllowance(A90, R, T, 0.5), A90 * (R + 0.5 * T), 1e-15, 'BA');
+      near(K.outsideSetback(A90, R, T), R + T, 1e-15, 'OSSB 90°');
+      near(K.outsideSetback(Math.PI / 4, R, T), (R + T) * Math.tan(Math.PI / 8), 1e-15, 'OSSB 45°');
+      near(K.outsideSetback(3 * Math.PI / 4, R, T), R + T, 1e-15, 'OSSB 135° (outside tangent)');
+      near(BD_K, 2 * (R + T) - A90 * (R + 0.5 * T), 1e-15, 'BD 90°');
+      var c = K.bendCalc({ thickness: T, bendRadius: R, kFactor: 0.5, bendAllowanceType: 'deduction', bendDeduction: 0.1 }, A90, R, T, null);
+      near(c.BA, 2 * (R + T) - 0.1, 1e-15, 'BA from BD'); near(c.BD, 0.1, 1e-15, 'BD back'); assert(c.type === 'deduction' && c.source === 'sheet', JSON.stringify(c));
+      var o = K.bendCalc({ thickness: T, bendRadius: R, kFactor: 0.5 }, A90, R, T, { type: 'allowance', value: 0.13 });
+      assert(o.source === 'custom' && o.BA === 0.13, 'custom BA wins: ' + JSON.stringify(o));
+      var bad = false; try { K.bendCalc({ thickness: T, bendRadius: R, bendAllowanceType: 'deduction', bendDeduction: 1 }, A90, R, T); } catch (e) { bad = /negative/.test(e.message); }
+      assert(bad, 'a BD larger than 2·OSSB is refused');
+    });
+    test('p9-bend: L bracket T = R = 0.060 in, K-factor 0.5 (stated and the new default): flat = A + B − BD', function () {
+      var a = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5);'));
+      near(a.flat.size[0], OA + OB - BD_K, 1e-9, 'flat length');
+      near(a.flat.size[1], D, 1e-9, 'flat width');
+      near(a.flat.bends[0].ba, K.bendAllowance(A90, R, T, 0.5), 1e-12, 'bend record BA'); near(a.flat.bends[0].bd, BD_K, 1e-12, 'bend record BD');
+      assert(a.flat.bends[0].method === 'kfactor' && a.flat.note === 'T=0.06 R=0.06 K=0.5' && !a.flat.warnings.length, a.flat.note + ' ' + a.flat.warnings.join(' | '));
+      var d = flatOf(lbracket('p.sheet(0.06);'));
+      assert(d.r.model.sheet.kFactor === 0.5, 'default K: ' + JSON.stringify(d.r.model.sheet));
+      near(d.flat.size[0], a.flat.size[0], 1e-12, 'default K = 0.5');
+      return 'flat ' + fmt(a.flat.size[0]) + ' × ' + fmt(a.flat.size[1]) + ' in, BD ' + BD_K.toFixed(5);
+    });
+    test('p9-bend: L bracket with a bend deduction entered (0.100) and with a bend allowance entered (0.120)', function () {
+      var d = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });'));
+      near(d.flat.size[0], OA + OB - 0.1, 1e-9, 'BD flat');
+      assert(d.flat.note === 'T=0.06 R=0.06 BD=0.1', d.flat.note);
+      var a = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "allowance", bendAllowance: 0.12 });'));
+      near(a.flat.size[0], OA + OB - (2 * (R + T) - 0.12), 1e-9, 'BA flat = A + B − (2·OSSB − BA)');
+      near(a.flat.size[0], W + L + 0.12, 1e-9, 'BA flat = flats + BA');
+      assert(a.flat.note === 'T=0.06 R=0.06 BA=0.12', a.flat.note);
+    });
+    var TABLE = { kind: 'BD', name: 'Brake 1', rows: [{ thickness: 0.06, radius: 0.06, angle: 60, value: 0.05 }, { thickness: 0.06, radius: 0.06, angle: 120, value: 0.15 },
+      { thickness: 0.06, radius: 0.06, angle: 180, value: 0.2 }, { thickness: 0.0747, radius: 0.0747, angle: 90, value: 0.13 }] };
+    test('p9-bend: bend table lookup: exact match on T and R, linear interpolation in angle, fallback to K with a warning', function () {
+      var s = 'p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "table", bendTable: ' + JSON.stringify(TABLE) + ' });';
+      var t = flatOf(lbracket(s));
+      near(t.flat.size[0], OA + OB - 0.1, 1e-9, '90° interpolated between 60° (0.05) and 120° (0.15)');
+      assert(t.flat.bends[0].method === 'table' && !t.flat.warnings.length, JSON.stringify(t.flat.bends[0]) + ' ' + t.flat.warnings.join(' | '));
+      assert(/BEND TABLE Brake 1 \(BD/.test(t.flat.note), t.flat.note);
+      var lk = K.bendTableLookup(TABLE, 0.0598, 0.0598, 90);
+      assert(!lk.error && Math.abs(lk.value - 0.1) < 1e-12, 'a 16 ga (0.0598) sheet finds the 0.060 rows (within 0.5 %): ' + JSON.stringify(lk));
+      lk = K.bendTableLookup(TABLE, 0.0748, 0.0747, 90);
+      assert(!lk.error && lk.value === 0.13, 'within 0.5 %: ' + JSON.stringify(lk));
+      assert(K.bendTableLookup(TABLE, 0.06, 0.06, 45).error, 'below the rows');
+      assert(K.bendTableLookup(TABLE, 0.048, 0.048, 90).error, 'no thickness');
+      near(K.bendTableLookup(TABLE, 0.06, 0.06, 150).value, 0.175, 1e-12, 'interpolated 150°');
+      var off = flatOf(lbracket(s, null, 45));
+      assert(off.flat.warnings.length === 1 && /Bend table: no row for 45° .*K-factor 0\.5/.test(off.flat.warnings[0]), off.flat.warnings.join(' | '));
+      near(off.flat.size[0], W + L + K.bendAllowance(Math.PI / 4, R, T, 0.5), 1e-9, 'fallback K-factor');
+      var ba = JSON.parse(JSON.stringify(TABLE)); ba.kind = 'BA';
+      var b = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "table", bendTable: ' + JSON.stringify(ba) + ' });'));
+      near(b.flat.size[0], W + L + 0.1, 1e-9, 'a BA table adds the value');
+    });
+    test('p9-bend: Custom Bend Allowance on the flange wins over the sheet default (deduction, K-factor, allowance, table)', function () {
+      var sheet = 'p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1, bendTable: ' + JSON.stringify(TABLE) + ' });';
+      var d = flatOf(lbracket(sheet, '{ bendAllowance: { type: "deduction", value: 0.09 } }'));
+      near(d.flat.size[0], OA + OB - 0.09, 1e-9, 'custom BD');
+      assert(d.flat.bends[0].source === 'custom', JSON.stringify(d.flat.bends[0]));
+      var k = flatOf(lbracket(sheet, '{ bendAllowance: { type: "kfactor", value: 0.33 } }'));
+      near(k.flat.size[0], W + L + K.bendAllowance(A90, R, T, 0.33), 1e-9, 'custom K');
+      var a = flatOf(lbracket(sheet, '{ bendAllowance: { type: "allowance", value: 0.11 } }'));
+      near(a.flat.size[0], W + L + 0.11, 1e-9, 'custom BA');
+      var t = flatOf(lbracket(sheet, '{ bendAllowance: { type: "table" } }'));
+      near(t.flat.size[0], OA + OB - 0.1, 1e-9, 'custom table');
+      var plain = flatOf(lbracket(sheet));
+      near(plain.flat.size[0], OA + OB - 0.1, 1e-9, 'sheet default without the override');
+      var rad = flatOf(lbracket(sheet, '{ radius: 0.12, bendAllowance: { type: "deduction", value: 0.2 } }'));
+      near(rad.flat.size[0], (W + 0.12 + T) + (L + 0.12 + T) - 0.2, 1e-9, 'custom radius with custom BD');
+      expectErrorAny(lbracket(sheet, '{ bendAllowance: { type: "guess", value: 1 } }'), /bendAllowance\.type/);
+    });
+    test('p9-bend: a 135° bend: BD runs to the outside tangent (OSSB = R + T); K-factor and an entered BD (with a warning)', function () {
+      var A = 3 * Math.PI / 4;
+      var k = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5);', null, 135));
+      var BAk = K.bendAllowance(A, R, T, 0.5);
+      near(k.flat.size[0], W + L + BAk, 1e-9, 'K flat');
+      near(k.flat.bends[0].bd, 2 * (R + T) - BAk, 1e-12, 'BD at 135°');
+      // the outside dimensions beyond 90°: each flat plus R + T (to the tangent of the outside of the bend)
+      near(k.flat.size[0], (W + R + T) + (L + R + T) - k.flat.bends[0].bd, 1e-9, 'flat = A + B − BD at 135°');
+      var d = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });', null, 135));
+      near(d.flat.size[0], (W + R + T) + (L + R + T) - 0.1, 1e-9, 'entered BD applied unchanged at 135°');
+      assert(d.flat.warnings.length === 1 && /applied unchanged to the 135° bend/.test(d.flat.warnings[0]), d.flat.warnings.join(' | '));
+    });
+    test('p9-bend: hem and jog take the sheet\'s bend deduction and their own custom bend allowance', function () {
+      var sheet = 'p.units("in");\np.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();';
+      var h = flatOf(sheet + '\np.hem(0.5, [[0, 0.06, 1.5]], { gap: 0.04 });');
+      var Rh = 0.02;
+      near(h.flat.size[0], W + 0.5 + (2 * (Rh + T) - 0.1), 1e-9, 'hem: BA = 2(R + T) − BD at 180°');
+      var hc = flatOf(sheet + '\np.hem(0.5, [[0, 0.06, 1.5]], { gap: 0.04, bendAllowance: { type: "allowance", value: 0.1 } });');
+      near(hc.flat.size[0], W + 0.5 + 0.1, 1e-9, 'hem with custom BA');
+      var H = 0.5, L2 = 1;
+      var j = flatOf(sheet + '\np.jog(' + H + ', ' + L2 + ', [[0, 0.06, 1.5]]);');
+      var wall = H - 2 * R;   // 90° jog: wall = H − 2R(1 − cos A) + T cos A
+      near(j.flat.size[0], W + 2 * (2 * (R + T) - 0.1) + wall + L2, 1e-9, 'jog: two bends at BD each');
+      assert(j.flat.bends.length === 2 && j.flat.bends.every(function (b) { return Math.abs(b.bd - 0.1) < 1e-12; }), JSON.stringify(j.flat.bends.map(function (b) { return b.bd; })));
+      var jc = flatOf(sheet + '\np.jog(' + H + ', ' + L2 + ', [[0, 0.06, 1.5]], { bendAllowance: { type: "deduction", value: 0.08 } });');
+      near(jc.flat.size[0], W + 2 * (2 * (R + T) - 0.08) + wall + L2, 1e-9, 'jog with custom BD on both bends');
+    });
+    test('p9-bend: gauge table: 16 ga steel is 0.0598 in (standard), radius and K are examples; mm parts convert', function () {
+      var r = build('p.units("in");\np.sheet(null, null, null, { gauge: "16" });\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();');
+      noErrors(r);
+      var s = r.model.sheet;
+      assert(s.thickness === 0.0598 && s.bendRadius === 0.0598 && s.kFactor === 0.5 && s.gauge === '16' && s.gaugeTable === K.DEFAULT_GAUGE_TABLE, JSON.stringify(s));
+      near(r.mp.volume, 4 * 3 * 0.0598, 1e-12, 'base volume');
+      var mm = K.gaugeRow(K.DEFAULT_GAUGE_TABLE, '16 ga', 'mm');
+      near(mm.thickness, 0.0598 * 25.4, 1e-12, '16 ga in mm');
+      assert(K.gaugeRow('Aluminum (Brown & Sharpe)', '16', 'in').thickness === 0.0508 && K.gaugeRow('Stainless (U.S. Standard Gauge)', '16', 'in').thickness === 0.0625, 'aluminium / stainless 16 ga');
+      Object.keys(K.gaugeTables).forEach(function (n) { assert(K.gaugeTables[n].example === true, n + ' is flagged as example data'); });
+      var own = { name: 'Shop', units: 'in', rows: [{ gauge: '14', thickness: 0.0747, radius: 0.09, bendDeduction: 0.13 }] };
+      var o = build('p.units("in");\np.sheet(null, null, null, { gaugeTable: ' + JSON.stringify(own) + ', gauge: "14" });\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();');
+      assert(o.model.sheet.bendAllowanceType === 'deduction' && o.model.sheet.bendDeduction === 0.13 && o.model.sheet.bendRadius === 0.09, 'a shop row with a BD: ' + JSON.stringify(o.model.sheet));
+      var bad = false; try { build('p.sheet(null, null, null, { gauge: "99" });'); } catch (e) { bad = /Gauge "99" is not in the gauge table/.test(e.message); }
+      assert(bad, 'unknown gauge refused');
+    });
+    test('p9-bend: script round trip of every new field (sheet method, value, table, gauge; flange / hem / jog custom bend allowance)', function () {
+      var code = 'p.units("in");\np.sheet(0.0598, 0.0598, 0.45, { bendAllowanceType: "table", bendTable: ' + JSON.stringify(TABLE) + ', gaugeTable: "Steel (Manufacturers\' Standard Gauge)", gauge: "16" });\n' +
+        'p.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n' +
+        'p.flange(1, [[0, 0.0598, 1.5]], { bendAllowance: { type: "deduction", value: 0.1 } });\n' +
+        'p.hem(0.5, [[2, 0.0598, 0]], { bendAllowance: { type: "kfactor", value: 0.4 } });\n' +
+        'p.jog(0.5, 1, [[4, 0.0598, 1.5]], { bendAllowance: { type: "table" } });';
+      var a = build(code);
+      noErrors(a);
+      var script = K.generateScript(a.model);
+      assert(/p\.sheet\(0\.0598, 0\.0598, 0\.45, \{ bendAllowanceType: "table", bendTable: /.test(script) && /gauge: "16"/.test(script), script.split('\n').filter(function (l) { return /sheet/.test(l); })[0]);
+      var b = build(script);
+      noErrors(b);
+      assert(JSON.stringify(b.model.sheet) === JSON.stringify(a.model.sheet), 'sheet: ' + JSON.stringify(b.model.sheet));
+      ['flange', 'jog'].forEach(function (t) {
+        var fa = a.model.features.filter(function (f) { return f.type === t; }), fb = b.model.features.filter(function (f) { return f.type === t; });
+        assert(fa.length === fb.length && fa.every(function (f, i) { return JSON.stringify(f.bendAllowance) === JSON.stringify(fb[i].bendAllowance) && f.bendAllowance; }), t + ' overrides: ' + JSON.stringify(fb.map(function (f) { return f.bendAllowance; })));
+      });
+      assert(K.generateScript(b.model) === script, 'round-trip fixed point');
+      var fa2 = K.flatPattern(a.model, a.build, a.mesh), fb2 = K.flatPattern(b.model, b.build, b.mesh);
+      near(fb2.size[0], fa2.size[0], 1e-12, 'same flat'); near(fb2.size[1], fa2.size[1], 1e-12, 'same flat');
+      // a deduction or allowance sheet, too
+      var c = build('p.sheet(2, 3, 0.4, { bendAllowanceType: "allowance", bendAllowance: 4.2 });\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange();');
+      var cs = K.generateScript(c.model);
+      assert(/p\.sheet\(2, 3, 0\.4, \{ bendAllowanceType: "allowance", bendAllowance: 4\.2 \}\);/.test(cs), cs);
+      assert(JSON.stringify(build(cs).model.sheet) === JSON.stringify(c.model.sheet), 'allowance sheet');
+    });
+    test('p9-bend: a saved part without a stored K keeps the legacy 0.71 (flat and script); a stored K is kept', function () {
+      var r = build('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30]]);');
+      noErrors(r);
+      var flatStored = K.flatPattern(r.model, r.build, r.mesh);
+      near(flatStored.size[0], 100 + 20 + K.bendAllowance(A90, 2, 2, 0.71), 1e-9, 'stored 0.71 kept');
+      assert(flatStored.warnings.length === 1 && /0\.71 \/ 1\.5708 = 0\.452/.test(flatStored.warnings[0]), 'K above 0.5 is flagged: ' + flatStored.warnings.join(' | '));
+      var legacy = JSON.parse(JSON.stringify(r.model));
+      delete legacy.sheet.kFactor;
+      var flatLegacy = K.flatPattern(legacy, r.build, r.mesh);
+      near(flatLegacy.size[0], flatStored.size[0], 1e-12, 'no stored K: legacy 0.71');
+      assert(flatLegacy.sheet.kFactor === 0.71 && / K=0\.71$/.test(flatLegacy.note), 'flat.sheet carries the K used: ' + flatLegacy.note);
+      assert(/p\.sheet\(2, 2, 0\.71\);/.test(K.generateScript(legacy)), 'script writes the legacy K');
+    });
+    test('p9-bend: the flat-pattern DXF note still carries the parameters; the flat result has size, note and warnings', function () {
+      var d = flatOf(lbracket('p.sheet(0.06, 0.06, 0.5, { bendAllowanceType: "deduction", bendDeduction: 0.1 });'));
+      var dxf = K.exportDXFFlat(d.flat, 'in');
+      assert(/T=0\.06/.test(dxf) && /R=0\.06/.test(dxf), 'DXF NOTES carry T and R');
+      assert(/\nNOTES\n/.test(dxf) && /\nBEND\n/.test(dxf), 'NOTES and BEND layers');
+      assert(Array.isArray(d.flat.size) && d.flat.size.length === 2 && Array.isArray(d.flat.warnings) && typeof d.flat.note === 'string', 'flat fields');
+      near(d.flat.size[0], d.flat.bbox.max[0] - d.flat.bbox.min[0], 1e-12, 'size = bbox');
+    });
+    test('p9-bend: makeSheet keeps one key order and refuses an empty table or an unknown type', function () {
+      var s = K.makeSheet({ gauge: '16', gaugeTable: 'x', bendDeduction: 0.1, bendAllowanceType: 'deduction', kFactor: 0.4, bendRadius: 0.06, thickness: 0.06 });
+      assert(JSON.stringify(Object.keys(s)) === JSON.stringify(['thickness', 'bendRadius', 'kFactor', 'bendAllowanceType', 'bendDeduction', 'gaugeTable', 'gauge']), JSON.stringify(s));
+      var e1 = false, e2 = false;
+      try { K.makeSheet({ thickness: 1, bendAllowanceType: 'table' }); } catch (e) { e1 = /no rows/.test(e.message); }
+      try { K.makeSheet({ thickness: 1, bendAllowanceType: 'mib' }); } catch (e) { e2 = /Unknown bend allowance type/.test(e.message); }
+      assert(e1 && e2, 'refusals');
+      assert(K.makeSheet({ thickness: 1 }).kFactor === 0.5 && !('bendAllowanceType' in K.makeSheet({ thickness: 1 })), 'K-factor sheets keep the old shape');
+    });
+  })();
+  // --- end p9-bend ---
+  // --- p9-drawing: shop drawings of sheet-metal parts (run local-2026-10-07a): the flat-pattern view (bend lines UP /
+  // DOWN, bend notes, Bend Table, overall dimensions, FLAT SIZE), inch ANSI dimension text, notes, DXF layers
+  (function () {
+    group('p9-drawing: flat-pattern views, bend notes, inch ANSI dimensions, notes');
+    if (typeof Drawing === 'undefined') return;
+    var DW = Drawing;
+    var UB = AnvilExamples.filter(function (e) { return e.name === 'Sheet-metal U-bracket'; })[0].code;
+    // 0.060 in steel, R .030, K .44: a 4 × 2 base, one flange up on the left edge, one down on the right, a slot and
+    // four Ø.281 holes
+    var INCH = 'p.name("Bracket").units("in");\np.sheet(0.06, 0.03, 0.44);\np.sketch("Top").rect(0, -2, 4, 2).end().baseFlange();\n' +
+      'p.sketch("Top", 0.06).slot(1.5, -1, 2.5, -1, 0.3).cut("through", { reverse: true });\np.flange(1, [[0, 0.06, 1]]);\np.flange(1, [[4, 0.06, 1]], { reverse: true });\n' +
+      'p.hole("Top", 0.5, -0.5, 0.281, { offset: 0.06 });\np.hole("Top", 3.5, -0.5, 0.281, { offset: 0.06 });\np.hole("Top", 0.5, -1.5, 0.281, { offset: 0.06 });\np.hole("Top", 3.5, -1.5, 0.281, { offset: 0.06 });';
+    function flatDrawing(code, opts, docOpts) {
+      var r = build(code);
+      noErrors(r);
+      r.flat = K.flatPattern(r.model, r.build, r.mesh);
+      r.doc = DW.newDrawing(r.model, { date: '2026-10-07', options: docOpts || {} });
+      r.view = DW.addFlatView(r.doc, r.mesh, Object.assign({ model: r.model, build: r.build }, opts || {}));
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); r.w = r.sheet.views.filter(function (w) { return w.view.id === r.view.id; })[0]; return r.sheet; };
+      r.recompute();
+      return r;
+    }
+    function flatAnns(r, type) { return r.sheet.annotations.filter(function (a) { return a.flat && (!type || a.type === type); }); }
+
+    test('p9-drawing: the U-bracket flat-pattern view draws one bend line per bend of Kernel.flatPattern, on its centre line, 1.5 mm past the outline at both ends, UP on BEND_UP (thin solid)', function () {
+      var r = flatDrawing(UB), w = r.w, bl = r.sheet.prims.filter(function (p) { return p.bend != null; });
+      assert(r.view.kind === 'flat' && r.view.orient === 'Flat pattern' && w.layer === 'FLAT_PATTERN', 'view ' + r.view.kind + ' ' + w.layer);
+      assert(bl.length === r.flat.bends.length && bl.length === 2, 'bend lines ' + bl.length + ' vs ' + r.flat.bends.length);
+      r.flat.bends.forEach(function (b, i) {
+        var p = bl.filter(function (x) { return x.bend === i; })[0], A = w.toSheet(b.a), B = w.toSheet(b.b), L = Math.hypot(B[0] - A[0], B[1] - A[1]), t = [(B[0] - A[0]) / L, (B[1] - A[1]) / L];
+        assert(p && p.layer === (b.up ? 'BEND_UP' : 'BEND_DOWN') && p.style === (b.up ? 'bendup' : 'benddown'), 'bend ' + i + ' ' + JSON.stringify(p));
+        nearVec([p.a[0], p.a[1], 0], [A[0] - t[0] * 1.5, A[1] - t[1] * 1.5, 0], 1e-9, 'start ' + i);
+        nearVec([p.b[0], p.b[1], 0], [B[0] + t[0] * 1.5, B[1] + t[1] * 1.5, 0], 1e-9, 'end ' + i);
+        assert(b.up === true, 'the U-bracket legs both fold up');
+      });
+      // the outline: the bend lines run across the blank, from edge to edge
+      near(w.box.y1 - w.box.y0, 60, 1e-6, 'blank height'); near(bl[0].a[1] - bl[0].b[1], 63, 1e-6, 'line 60 + 2 × 1.5');
+      return bl.map(function (p) { return p.layer + ' x=' + fmt(p.a[0]); }).join(', ');
+    });
+    test('p9-drawing: the flat\'s holes are true circles (4 × Ø6, 2 × Ø8 in the legs), the slot\'s ends two 180° arcs R4.5, the outline 4 lines; a Hole Callout on the flat reads 4X Ø6 THRU; centre marks go on the holes and the slot', function () {
+      var r = flatDrawing(UB, null, { autoCenterMarks: true }), pr = r.w.proj;
+      var dias = pr.circles.visible.map(function (c) { return +(2 * c.r).toFixed(6); }).sort();
+      assert(JSON.stringify(dias) === '[6,6,6,6,8,8]', 'circles ' + JSON.stringify(dias));
+      assert(pr.arcs.visible.length === 2 && pr.arcs.visible.every(function (a) { return Math.abs(a.r - 4.5) < 1e-6 && Math.abs(a.a1 - a.a0 - 180) < 1e-4 && a.src === 'arc'; }), 'slot arcs ' + JSON.stringify(pr.arcs.visible));
+      assert(pr.lines.visible.length === 6, 'outline 4 + slot sides 2: ' + pr.lines.visible.length);
+      var c6 = pr.circles.visible.filter(function (c) { return Math.abs(c.r - 3) < 1e-6; })[0];
+      DW.addHoleCallout(r.doc, r.view.id, { c: c6.c, r: c6.r });
+      DW.autoInsert(r.doc, r.mesh, [r.view.id]);
+      r.recompute();
+      var hc = r.sheet.annotations.filter(function (a) { return a.type === 'holeCallout'; });
+      assert(hc.length === 1 && hc[0].text === '4X Ø6 THRU' && !hc[0].dangling, 'callout ' + JSON.stringify(hc.map(function (a) { return a.text; })));
+      var cm = r.sheet.annotations.filter(function (a) { return a.type === 'centerMark'; });
+      assert(cm.length === 7 && cm.some(function (a) { return a.style === 'linear'; }) && cm.every(function (a) { return !a.dangling; }), 'centre marks ' + cm.map(function (a) { return a.text + (a.dangling ? '!' : ''); }));
+      assert(!r.sheet.annotations.some(function (a) { return a.type === 'centerline'; }), 'no centrelines on a flat');
+      return dias.join(' ') + ', slot R4.5 × 2, ' + hc[0].text;
+    });
+    test('p9-drawing: bend notes carry the model\'s direction, angle and inside radius — "UP 90° R 2" (mm), "UP 90° R .030" / "DOWN 90° R .030" (inch, no leading zero), centred on their bend line, upright along it', function () {
+      var r = flatDrawing(UB), n = flatAnns(r, 'bendNote');
+      assert(n.length === 2 && n.every(function (a) { return a.text === 'UP 90° R 2'; }), 'mm notes ' + n.map(function (a) { return a.text; }));
+      var q = flatDrawing(INCH), m = flatAnns(q, 'bendNote');
+      assert(q.flat.bends.length === 2 && q.flat.bends[0].up && !q.flat.bends[1].up, 'inch bends ' + JSON.stringify(q.flat.bends));
+      assert(m.length === 2 && m[0].text === 'UP 90° R .030' && m[1].text === 'DOWN 90° R .030', 'inch notes ' + m.map(function (a) { return a.text; }));
+      var tp = q.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'BEND_NOTES'; });
+      assert(tp.length === 2 && tp.every(function (p) { return p.rot === 90 && p.anchor === 'middle'; }), 'notes run along the vertical bend lines: ' + JSON.stringify(tp.map(function (p) { return p.rot; })));
+      q.flat.bends.forEach(function (b, i) {
+        var A = q.w.toSheet(b.a), B = q.w.toSheet(b.b);
+        near(tp[i].p[1], (A[1] + B[1]) / 2, 1e-9, 'note ' + i + ' centred on its line');
+        near(tp[i].p[0], A[0] - 1.2 / 25.4, 1e-9, 'note ' + i + ' just beside its line');
+      });
+      assert(DW.bendNoteText({ up: false, angle: 45, R: 0.76 }, 'mm') === 'DOWN 45° R 0.76' && DW.bendNoteText({ up: true, angle: 135.04, R: 0.125 }, 'in') === 'UP 135° R .125', 'bendNoteText');
+      return m.map(function (a) { return a.text; }).join(' / ') + ' | ' + n[0].text;
+    });
+    test('p9-drawing: overall dimensions on the flat equal the blank\'s bounding box (210.74 × 60; inch 6.177 × 2.000), FLAT SIZE note on request; Document Properties ▸ flatDims off removes them; they do not drive the part', function () {
+      var r = flatDrawing(UB), bb = r.flat.bbox;
+      var fdims = r.sheet.dims.filter(function (d) { return d.flat; });
+      assert(fdims.length === 2, 'flat dims ' + r.sheet.dims.map(function (d) { return d.text; }));
+      near(fdims[0].value, bb.max[0] - bb.min[0], 1e-9, 'width'); near(fdims[1].value, bb.max[1] - bb.min[1], 1e-9, 'height');
+      assert(fdims[0].text === '210.74' && fdims[1].text === '60', 'texts ' + fdims.map(function (d) { return d.text; }));
+      assert(DW.dimSource(r.model, r.build, r.w, fdims[1]) === null, 'a blank size drives nothing');
+      var q = flatDrawing(INCH, null, { flatSizeNote: true }), qd = q.sheet.dims.filter(function (d) { return d.flat; }).map(function (d) { return d.text; });
+      var W = q.flat.bbox.max[0] - q.flat.bbox.min[0];
+      near(W, 4 + 2 * (1 + (Math.PI / 2) * (0.03 + 0.44 * 0.06)), 1e-9, 'inch blank: 4 + 2 (L + BA)');
+      assert(JSON.stringify(qd) === '["6.177","2.000"]', 'inch flat dims ' + JSON.stringify(qd));
+      var sz = flatAnns(q, 'flatSize');
+      assert(sz.length === 1 && sz[0].text === 'FLAT SIZE 6.177 × 2.000', 'flat size note ' + JSON.stringify(sz.map(function (a) { return a.text; })));
+      assert(q.sheet.prims.some(function (p) { return p.k === 'text' && p.layer === 'NOTES' && p.text === 'FLAT SIZE 6.177 × 2.000'; }), 'drawn on NOTES');
+      q.doc.options.flatDims = false; q.recompute();
+      assert(!q.sheet.dims.some(function (d) { return d.flat; }), 'flatDims off');
+      return fdims.map(function (d) { return d.text; }).join(' × ') + ' | ' + qd.join(' × ') + ' | ' + sz[0].text;
+    });
+    test('p9-drawing: Bend Table mode: tags A, B on the bend lines and a table TAG / DIRECTION / ANGLE / RADIUS under the view (A UP 90° R .030, B DOWN 90° R .030)', function () {
+      var q = flatDrawing(INCH, { bendNotes: 'table' }), tags = flatAnns(q, 'bendTag'), tb = flatAnns(q, 'bendTable');
+      assert(tags.map(function (a) { return a.text; }).join() === 'A,B' && !flatAnns(q, 'bendNote').length, 'tags ' + JSON.stringify(tags.map(function (a) { return a.text; })));
+      assert(tb.length === 1 && JSON.stringify(tb[0].info.rows) === '[["A","UP","90°","R .030"],["B","DOWN","90°","R .030"]]', 'table ' + JSON.stringify(tb[0] && tb[0].info));
+      var txt = q.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'BEND_NOTES'; }).map(function (p) { return p.text; });
+      ['TAG', 'DIRECTION', 'ANGLE', 'RADIUS', 'UP', 'DOWN', 'R .030'].forEach(function (s) { assert(txt.indexOf(s) >= 0, 'table text ' + s); });
+      assert(tb[0].box.y1 < q.w.box.y0, 'the table is under the view');
+      q.view.bendNotes = 'none'; q.recompute();
+      assert(!flatAnns(q).length, 'none: no notes, tags or table');
+      return tags.map(function (a) { return a.text; }).join(', ') + ' + table of ' + tb[0].info.rows.length;
+    });
+    test('p9-drawing: the flat follows the part: a longer flange widens the blank and moves the bend; a dragged note keeps its offset, a hidden one stays hidden, the text follows a new radius', function () {
+      var r = flatDrawing(INCH);
+      DW.flatAnnotation(r.doc, r.view.id, 'b0', { off: [0.3, 0.1] });
+      DW.flatAnnotation(r.doc, r.view.id, 'b1', { hidden: true });
+      r.recompute();
+      var n0 = flatAnns(r, 'bendNote'), W0 = r.sheet.dims.filter(function (d) { return d.flat && d.kind === 'h'; })[0].value;
+      assert(n0[1].hidden && !r.sheet.prims.some(function (p) { return p.k === 'text' && p.text === 'DOWN 90° R .030'; }), 'b1 hidden');
+      var json = JSON.parse(JSON.stringify(r.doc));
+      // the part changes: the left flange 1.5 in long, R .060
+      r.model.features.filter(function (f) { return f.type === 'flange'; })[0].length = 1.5;
+      r.model.sheet.bendRadius = 0.06;
+      r.build = K.rebuild(r.model); r.mesh = K.meshFromBody(r.build.body);
+      r.doc = json; r.view = DW.findView(json, r.view.id);
+      r.recompute();
+      var W1 = r.sheet.dims.filter(function (d) { return d.flat && d.kind === 'h'; })[0].value, n1 = flatAnns(r, 'bendNote');
+      var BA = function (R) { return Math.PI / 2 * (R + 0.44 * 0.06); };
+      near(W1 - W0, 0.5 + 2 * (BA(0.06) - BA(0.03)), 1e-9, 'the blank grows by the longer flange and the larger allowances');
+      assert(n1[0].text === 'UP 90° R .060' && n1[1].hidden, 'texts follow the radius; b1 still hidden: ' + JSON.stringify(n1.map(function (a) { return [a.text, a.hidden]; })));
+      var tp = r.sheet.prims.filter(function (p) { return p.k === 'text' && p.text === 'UP 90° R .060'; })[0], A = r.w.toSheet(r.w.flat.bends[0].a), B = r.w.toSheet(r.w.flat.bends[0].b);
+      near(tp.p[0], A[0] - 1.2 / 25.4 + 0.3, 1e-9, 'dragged x kept'); near(tp.p[1], (A[1] + B[1]) / 2 + 0.1, 1e-9, 'dragged y kept');
+      return fmt(W0) + ' -> ' + fmt(W1) + ', ' + n1[0].text;
+    });
+    test('p9-drawing: inch ANSI dimension text: .030, 4.000, -.500, 0 (three places, no leading zero), a set precision .03 / 4.0, fractions 2 1/4 and 3/16; millimetres unchanged (0.76, 2, 120.5); an inch drawing\'s hole callout reads Ø.281 THRU', function () {
+      var f = function (x) { return DW.fmtDim(x, 'in'); };
+      assert([f(0.03), f(4), f(-0.5), f(0), f(12.25)].join(' ') === '.030 4.000 -.500 0 12.250', [f(0.03), f(4), f(-0.5), f(0), f(12.25)].join(' '));
+      assert(DW.numText(0.03, 'in', 2) === '.03' && DW.numText(4, 'in', 1) === '4.0' && DW.numText(0.76, 'mm', 2) === '0.76', 'set precision');
+      assert(DW.fmtDim(0.76, 'mm') === '0.76' && DW.fmtDim(2, 'mm') === '2' && DW.fmtDim(120.5, 'mm') === '120.5', 'mm');
+      assert(DW.fracText(2.25, 64) === '2 1/4' && DW.fracText(0.1875, 64) === '3/16' && DW.fracText(0.281, 64) === '9/32' && DW.fracText(0.281, 16) === '1/4' && DW.fracText(5, 16) === '5', 'fractions');
+      var q = flatDrawing(INCH);
+      q.doc.options.fractions = true; q.recompute();
+      assert(q.sheet.dims.filter(function (d) { return d.flat; }).map(function (d) { return d.text; }).join() === '6 11/64,2', 'fractions on the sheet: ' + q.sheet.dims.map(function (d) { return d.text; }));
+      q.doc.options.fractions = false; q.doc.options.dimPrec = 2; q.recompute();
+      assert(q.sheet.dims.filter(function (d) { return d.flat; }).map(function (d) { return d.text; }).join() === '6.18,2.00', 'two places: ' + q.sheet.dims.map(function (d) { return d.text; }));
+      assert(DW.fmtDim(0.03, 'in') === '.030', 'the style is the sheet\'s only while it is worked out');
+      // a standard drawing of the inch part: model items and a callout on the Top view
+      var r = build(INCH), doc = DW.newDrawing(r.model, { date: '2026-10-07' });
+      DW.standard3View(doc, r.mesh, r.model.units);
+      var sh = DW.compute(doc, r.mesh, r.model, { build: r.build }), T = sh.views.filter(function (w) { return w.view.orient === 'Top'; })[0];
+      var c = T.proj.circles.visible.filter(function (x) { return Math.abs(2 * x.r - 0.281) < 1e-6; })[0];
+      DW.addHoleCallout(doc, T.view.id, { c: c.c, r: c.r });
+      sh = DW.compute(doc, r.mesh, r.model, { build: r.build });
+      var hc = sh.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0];
+      assert(hc.text === '4X Ø.281 THRU', 'callout ' + hc.text);
+      assert(sh.dims.indexOf(sh.dims.filter(function (d) { return d.text === '4.180'; })[0]) >= 0 && sh.dims.some(function (d) { return d.text === '4X Ø.281'; }), 'model items ' + sh.dims.map(function (d) { return d.text; }));
+      return hc.text + ', ' + sh.dims.map(function (d) { return d.text; }).join(' ');
+    });
+    test('p9-drawing: a hole feature with a thread size name adds it to the callout (1/4-20 UNC); clearance and counterbore sizes do not', function () {
+      var m = { type: 'part', features: [{ type: 'hole', holeType: 'tap', size: '1/4-20 UNC', dia: 0.201 }, { type: 'hole', holeType: 'hole', size: 'M6', dia: 6.6 }, { type: 'hole', size: '#10-32 UNF', drill: 0.159 }] };
+      var names = DW.holeSizeNames(m).map(function (x) { return x.name + '@' + x.dia; });
+      assert(names.length === 2 && /^#10-32 UNF@/.test(names[1]) &&/^1\/4-20 UNC@/.test(names[0]), 'names ' + JSON.stringify(names));
+      return names.join(', ');
+    });
+    test('p9-drawing: Note round trip: addNote (two lines) / editNote / deleteNote, kept through a JSON save; drawn on NOTES in SVG, DXF (one TEXT per line) and PDF; an emptied note is deleted', function () {
+      var r = flatDrawing(UB);
+      var nt = DW.addNote(r.doc, { p: [30, 40], text: 'NOTES:\n1. BREAK ALL EDGES' });
+      assert(nt.id > 0 && r.doc.notes.length === 1, 'added');
+      var back = JSON.parse(JSON.stringify(r.doc));
+      assert(back.notes[0].text === 'NOTES:\n1. BREAK ALL EDGES' && back.notes[0].p[0] === 30, 'saved');
+      r.doc = back; r.recompute();
+      var tp = r.sheet.prims.filter(function (p) { return p.layer === 'NOTES' && p.k === 'text'; });
+      assert(tp.length === 2 && tp[0].text === 'NOTES:' && tp[1].text === '1. BREAK ALL EDGES' && tp[0].p[1] > tp[1].p[1], 'two lines, first on top: ' + JSON.stringify(tp.map(function (p) { return p.text; })));
+      near(tp[0].p[0], 30, 1e-12); near(tp[0].p[1], 40, 1e-12); near(tp[0].p[1] - tp[1].p[1], 3.5 * 1.6, 1e-9, 'line pitch');
+      assert(r.sheet.notes.length === 1 && r.sheet.notes[0].box.x0 === 30, 'sheet.notes');
+      var svg = DW.toSVG(r.sheet), dxf = DW.toDXF(r.sheet), pdf = DW.toPDF(r.sheet);
+      var d = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      var st = Array.prototype.map.call(d.querySelectorAll('g[data-layer="NOTES"] text'), function (t) { return t.textContent; });
+      assert(st.join('|') === 'NOTES:|1. BREAK ALL EDGES', 'SVG ' + st.join('|'));
+      assert((dxf.match(/\n0\nTEXT\n8\nNOTES\n/g) || []).length === 2 && dxf.indexOf('\n1\n1. BREAK ALL EDGES\n') >= 0, 'DXF two TEXTs on NOTES');
+      assert(pdf.indexOf('(NOTES:) Tj') >= 0 && pdf.indexOf('(1. BREAK ALL EDGES) Tj') >= 0, 'PDF');
+      DW.editNote(r.doc, nt.id, { text: 'DEBURR', p: [50, 45] }); r.recompute();
+      assert(r.sheet.notes[0].text === 'DEBURR' && r.sheet.notes[0].p[0] === 50, 'edited');
+      DW.editNote(r.doc, nt.id, { text: '  ' });
+      assert(!r.doc.notes.length, 'an emptied note is deleted');
+      DW.addNote(r.doc, { p: [1, 1], text: 'X' });
+      assert(DW.deleteNote(r.doc, r.doc.notes[0].id) && !r.doc.notes.length, 'deleted');
+      var threw = false; try { DW.addNote(r.doc, { p: [1, 1], text: ' ' }); } catch (e) { threw = true; }
+      assert(threw, 'an empty note is refused');
+      return 'SVG / DXF / PDF carry the note';
+    });
+    test('p9-drawing: DXF layers: FLAT_PATTERN (outline, CIRCLE holes, ARC slot ends), BEND_UP (colour 3), BEND_DOWN (colour 1, HIDDEN), BEND_NOTES (UP 90%%d R .030), NOTES; SVG groups; PDF dashes the DOWN line', function () {
+      var q = flatDrawing(INCH, null, { flatSizeNote: true });
+      DW.addNote(q.doc, { p: [1, 10], text: 'MATERIAL: 16 GA CRS' });
+      q.recompute();
+      var dxf = DW.toDXF(q.sheet);
+      function layerColour(n) { var m = new RegExp('\\n0\\nLAYER\\n2\\n' + n + '\\n70\\n0\\n62\\n(\\d+)\\n').exec(dxf); return m ? +m[1] : null; }
+      assert(layerColour('BEND_UP') === 3 && layerColour('BEND_DOWN') === 1 && layerColour('BEND_NOTES') === 3 && layerColour('NOTES') === 7 && layerColour('FLAT_PATTERN') === 7, 'layer colours');
+      assert(/\n0\nLINE\n8\nBEND_DOWN\n6\nHIDDEN\n/.test(dxf) && /\n0\nLINE\n8\nBEND_UP\n10\n/.test(dxf), 'DOWN line on HIDDEN, UP continuous');
+      assert((dxf.match(/\n0\nCIRCLE\n8\nFLAT_PATTERN\n/g) || []).length === 4 && (dxf.match(/\n0\nARC\n8\nFLAT_PATTERN\n/g) || []).length === 2, 'true circles and arcs on the flat layer');
+      assert(dxf.indexOf('\n1\nUP 90%%d R .030\n') >= 0 && dxf.indexOf('\n1\nDOWN 90%%d R .030\n') >= 0 && dxf.indexOf('\n1\nFLAT SIZE 6.177 x 2.000\n') >= 0 && dxf.indexOf('\n1\nMATERIAL: 16 GA CRS\n') >= 0, 'texts');
+      var d = new DOMParser().parseFromString(DW.toSVG(q.sheet), 'image/svg+xml');
+      ['FLAT_PATTERN', 'BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'NOTES'].forEach(function (l) { assert(d.querySelector('g[data-layer="' + l + '"]'), 'SVG layer ' + l); });
+      assert(d.querySelector('g[data-layer="BEND_DOWN"] line').getAttribute('stroke-dasharray') && !d.querySelector('g[data-layer="BEND_UP"] line').getAttribute('stroke-dasharray'), 'SVG dashes DOWN only');
+      var pdf = DW.toPDF(q.sheet);
+      assert(pdf.indexOf('(UP 90\\260 R .030) Tj') >= 0 && pdf.indexOf('(FLAT SIZE 6.177 \\327 2.000) Tj') >= 0, 'PDF text');
+      return 'layers ' + ['FLAT_PATTERN', 'BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'NOTES'].join(', ');
+    });
+    test('p9-drawing: a part that is not sheet metal has no flat-pattern view (addFlatView refuses it); a flat view whose part lost its Base Flange says why in the view; projected / section / detail views of a flat are refused', function () {
+      var r = build('p.box(10, 10, 2);'), doc = DW.newDrawing(r.model, {}), threw = null;
+      try { DW.addFlatView(doc, r.mesh, { model: r.model, build: r.build }); } catch (e) { threw = e.message; }
+      assert(threw && /sheet-metal|Base Flange/.test(threw) && !DW.isSheetMetal(r.model), 'refused: ' + threw);
+      var q = flatDrawing(UB);
+      assert(DW.isSheetMetal(q.model), 'U-bracket is sheet metal');
+      ['addProjectedView', 'addSectionView', 'addDetailView'].forEach(function (fn) {
+        var t = null; try { DW[fn](q.doc, q.mesh, q.view.id, fn === 'addProjectedView' ? 'down' : { r: 5, c: [0, 0] }); } catch (e) { t = e.message; }
+        assert(t && /flat-pattern/.test(t), fn + ': ' + t);
+      });
+      var json = JSON.parse(JSON.stringify(q.doc)), sh = DW.compute(json, r.mesh, r.model, { build: r.build });
+      assert(sh.prims.some(function (p) { return p.k === 'text' && /^FLAT PATTERN: /.test(p.text); }) && !sh.dims.some(function (d) { return d.flat; }), 'the reason shows in the view');
+      return threw;
+    });
+    test('p9-drawing: flatCurves keeps a circle whose CSG merge left a stray vertex, drops collinear split vertices, and joins an arc the loop seam split', function () {
+      var circ = [];
+      for (var i = 0; i < 18; i++) { var a = i / 18 * 2 * Math.PI; circ.push([2 + 0.1405 * Math.cos(a), -1 + 0.1405 * Math.sin(a)]); }
+      circ.splice(5, 0, circ[4].slice()); circ.push([1.897, -1.051]);                 // a repeated vertex and a stray one
+      var sq = [[0, 0], [5, 0], [10, 0], [10, 4], [0, 4]];                             // a split vertex on the bottom edge
+      var slot = [];
+      for (var j = 0; j <= 12; j++) { var b = -Math.PI / 2 + j / 12 * Math.PI; slot.push([20 + 3 * Math.cos(b), 3 * Math.sin(b)]); }
+      for (var k2 = 0; k2 <= 12; k2++) { var c2 = Math.PI / 2 + k2 / 12 * Math.PI; slot.push([10 + 3 * Math.cos(c2), 3 * Math.sin(c2)]); }
+      slot = slot.slice(3).concat(slot.slice(0, 3));                                     // the seam inside an end arc
+      var cv = DW.flatCurves([circ, sq, slot], 30);
+      assert(cv.circles.length === 1 && Math.abs(cv.circles[0].r - 0.1405) < 1e-6 && Math.abs(cv.circles[0].c[0] - 2) < 1e-6, 'circle ' + JSON.stringify(cv.circles));
+      assert(cv.lines.length === 4 + 2, 'square 4 lines + slot 2: ' + cv.lines.length);
+      assert(cv.arcs.length === 2 && cv.arcs.every(function (a) { return Math.abs(a.r - 3) < 1e-9 && Math.abs(a.a1 - a.a0 - 180) < 1e-6; }), 'slot ends ' + JSON.stringify(cv.arcs));
+      return '1 circle, 6 lines, 2 arcs';
+    });
+  })();
+  // --- end p9-drawing ---
+  // --- p9-sketch: shop input (SketchSolver.parseValue, behind UI.parseLength) and the chained tangent ---
+  (function () {
+    group('p9-sketch: fractions, mixed numbers, unit suffixes and arithmetic in typed values; Tangent through a chain');
+    if (typeof SketchSolver === 'undefined' || !SketchSolver.parseValue) return;
+    var SS = SketchSolver;
+    function pv(t, kind, units) { return SS.parseValue(t, { kind: kind || 'length', units: units || 'in' }); }
+    function val(t, kind, units) { var r = pv(t, kind, units); assert(r.error == null, JSON.stringify(t) + ' -> error ' + r.error); return r.value; }
+    test('p9-sketch: decimals and fractions read exactly (.375, 3/8, 0.375, 5/16, -3/8)', function () {
+      assert(val('.375') === 0.375 && val('3/8') === 0.375 && val('0.375') === 0.375 && val('5/16') === 0.3125 && val('-3/8') === -0.375, 'values');
+      assert(val('  3/8  ') === 0.375, 'spaces around');
+    });
+    test('p9-sketch: mixed numbers — 1-1/2 and 1 1/2 are 1.5, 10-3/4 is 10.75, 3-1/2 is 3.5 (shop), 3 - 1/2 with spaces subtracts, 5-3/2 (not a proper fraction) subtracts', function () {
+      assert(val('1-1/2') === 1.5 && val('1 1/2') === 1.5 && val('10-3/4') === 10.75 && val('3-1/2') === 3.5, 'mixed');
+      assert(val('3 - 1/2') === 2.5 && val('5-3/2') === 3.5, 'subtraction');
+      assert(val('-1-1/2') === -1.5 && val('2+1-1/2') === 3.5 && val('(1-1/2)*2') === 3, 'mixed inside arithmetic');
+      assert(val('3/4-1/2') === 0.25, 'a fraction minus a fraction is a subtraction: ' + val('3/4-1/2'));
+    });
+    test('p9-sketch: unit suffixes convert to the document units — 25mm in an inch part is 25/25.4, 1in in a mm part 25.4, 2.5cm, 1ft = 12 in, 1\' 6-1/2" = 18.5 in, 3/8" and 3/8 in', function () {
+      nearRel(val('25mm'), 25 / 25.4, 1e-15, '25mm');
+      assert(Math.abs(val('25mm') - 0.984251968503937) < 1e-12, '25mm = 0.984252');
+      assert(val('25 mm', 'length', 'mm') === 25 && val('1in', 'length', 'mm') === 25.4 && val('2.5cm', 'length', 'mm') === 25, 'mm part');
+      assert(val('1ft') === 12 && val("1'") === 12 && val('3/8"') === 0.375 && val('3/8 in') === 0.375 && val('3/8IN') === 0.375, 'inch part');
+      assert(val("1' 6-1/2\"") === 18.5 && val('1ft 3in') === 15 && val("2'6\"") === 30, 'feet and inches add: ' + val("1' 6-1/2\""));
+      nearRel(val('1in + 25.4mm'), 2, 1e-15, 'mixed units in a sum');
+      nearRel(val('(1+1/2)in', 'length', 'mm'), 38.1, 1e-14, 'a unit after parentheses');
+    });
+    test('p9-sketch: arithmetic — 2*3/8 = 0.75, 1.5+1/16 = 1.5625, (1+1/2)*2 = 3, 2^3 = 8, 6/4 = 1.5', function () {
+      assert(val('2*3/8') === 0.75 && val('1.5+1/16') === 1.5625 && val('(1+1/2)*2') === 3 && val('2^3') === 8 && val('6/4') === 1.5, 'arithmetic');
+      assert(val('2×3/8') === 0.75, 'the times sign');
+    });
+    test('p9-sketch: angles — 45, 45deg, 45°, 22-1/2°, pi/4 rad as 45; an angle unit in a length box and a length unit in an angle box are refused with the reason', function () {
+      assert(val('45', 'angle') === 45 && val('45deg', 'angle') === 45 && val('45°', 'angle') === 45 && val('22-1/2°', 'angle') === 22.5, 'angles');
+      nearRel(val('0.7853981633974483rad', 'angle'), 45, 1e-12, 'rad');
+      var a = pv('45deg', 'length'), b = pv('25mm', 'angle'), c = pv('3mm', 'number');
+      assert(a.error && /angle unit/.test(a.error), 'deg in a length: ' + a.error);
+      assert(b.error && /length unit/.test(b.error), 'mm in an angle: ' + b.error);
+      assert(c.error && /no units/.test(c.error), 'units in a count: ' + c.error);
+      assert(val('45deg', 'any') === 45 && val('25mm', 'any', 'mm') === 25, 'kind any takes both');
+    });
+    test('p9-sketch: errors are messages, never NaN — empty, 3//8, 1/0, (1+2, 3/, 1\' 6 (no unit), an unknown name (flagged ident so the UI may try it as an equation variable)', function () {
+      ['', '   ', '3//8', '1/0', '(1+2', '3/', "1' 6", '1..5', '3 # 8'].forEach(function (t) {
+        var r = pv(t);
+        assert(r.error && typeof r.error === 'string' && r.value === undefined, JSON.stringify(t) + ' -> ' + JSON.stringify(r));
+      });
+      assert(/Division by zero/.test(pv('1/0').error), pv('1/0').error);
+      var u = pv('3 xyz');
+      assert(u.ident && /Unknown unit "xyz"/.test(u.error), JSON.stringify(u));
+      assert(pv('T*2').ident, 'a variable name is flagged ident');
+    });
+    test('p9-sketch: "=" text is left to the equations (passthrough): parseValue answers { equation: true } and the kernel evaluates it as before', function () {
+      assert(pv('=T*3').equation === true && pv('  =3/8').equation === true, 'equation passthrough');
+      assert(Kernel.evalExpression('=3/8', {}) === 0.375 && Kernel.evalExpression('=T*3', { T: 2 }) === 6, 'kernel equations unchanged');
+    });
+    test('p9-sketch: Tangent through a chain — a line drawn on from the end of a line that ends on a circle gets Tangent with the circle (the start Coincident is with the chain end, not the circle), not redundant', function () {
+      // circle R10 at the origin; line 1 from (-30, 10) ends on the circle top (0, 10); line 2 leaves (0, 10) along +x
+      var sk = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 10 }, { t: 'line', x1: -30, y1: 20, x2: 0, y2: 10 }] };
+      SS.infer(sk, 1);
+      assert((sk.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.join() === '1.p2,0'; }), 'line 1 end on the circle: ' + JSON.stringify(sk.rels));
+      sk.entities.push({ t: 'line', x1: 0, y1: 10, x2: 25, y2: 10 });
+      var added = SS.infer(sk, 2).map(function (r) { return r.type + ':' + r.refs.join(','); }).sort().join(' ');
+      assert(/tangent:2,0/.test(added) && /coincident:2.p1,1.p2/.test(added), 'chained line: ' + added);
+      var an = SS.analyze(sk);
+      assert(!an.redundant && !an.conflicts, 'not over-defined: ' + JSON.stringify(an));
+      // the Tangent holds: drag line 2's end down and the line stays tangent at (0, 10)
+      var res = SS.drag(sk, '2.p2', [25, 2], JSON.parse(JSON.stringify(sk.entities)));
+      assert(res.ok, 'drag solved');
+      var e = sk.entities[2], c = sk.entities[0], ux = e.x2 - e.x1, uy = e.y2 - e.y1, L = Math.hypot(ux, uy);
+      var dist = Math.abs((c.cx - e.x1) * uy - (c.cy - e.y1) * ux) / L;
+      near(dist, c.r, 1e-6, 'centre-to-line distance after the drag');
+    });
+  })();
+  // --- end p9-sketch ---
+  // ------------------------------------------------------------------ p9-output: shop output (laser DXF, STEP units, ANSI Inch Hole Wizard)
+  (function () {
+    group('p9-output: laser-ready flat / face DXF (R12 / R2000), DXF read back, STEP units, ANSI Inch Hole Wizard');
+    if (typeof DxfCheck === 'undefined') { test('headless/dxf-check.js loaded', function () { fail('DxfCheck is undefined'); }); return; }
+    var HW = typeof HoleWizard !== 'undefined' ? HoleWizard : null;
+    var INCH_BRACKET = 'p.name("Inch Bracket").units("in");\np.sheet(0.06, 0.06, 0.71);\n' +
+      'p.sketch("Top").line(0, 0, 5.75, 0).arc(5.75, -0.25, 0.25, 0, 90).line(6, -0.25, 6, -2.75).arc(5.75, -2.75, 0.25, 270, 360)' +
+      '.line(5.75, -3, 0, -3).line(0, -3, 0, 0).end().baseFlange(0.06);\n' +
+      'p.hole("Top", 4.5, -1.5, 0.28125, { offset: 0.06 });\np.hole("Top", 3, -0.75, 0.201, { offset: 0.06 });\np.flange(1, [[0, 0.06, 1.5]]);';
+    function uBracket() {
+      var ex = AnvilExamples.filter(function (e) { return e.name === 'Sheet-metal U-bracket'; })[0];
+      if (!ex) fail('no "Sheet-metal U-bracket" example');
+      var r = build(ex.code);
+      noErrors(r);
+      return { r: r, flat: K.flatPattern(r.model, r.build, r.mesh) };
+    }
+    function radii(c) { return c.circles.map(function (q) { return q.r; }).sort(function (a, b) { return a - b; }); }
+    function count(c, key) { return c.counts[key] || 0; }
+
+    test('p9-output: U-bracket flat DXF in R12 and R2000, as polylines and as lines / arcs: read back, every loop closed, 6 CIRCLEs of exactly R3 / R4, the slot as 2 arcs + 2 lines, lower-left at 0,0, units header', function () {
+      var u = uBracket(), out = [];
+      var W = u.flat.bbox.max[0] - u.flat.bbox.min[0], H = u.flat.bbox.max[1] - u.flat.bbox.min[1];
+      ['R12', 'R2000'].forEach(function (ver) {
+        ['polyline', 'entities'].forEach(function (style) {
+          var dxf = K.exportDXFFlat(u.flat, 'mm', { version: ver, style: style }), c = DxfCheck.check(dxf, { units: 'mm' }), tag = ver + '/' + style;
+          assert(c.ok, tag + ': ' + c.errors.join('; '));
+          assert(c.version === (ver === 'R12' ? 'AC1009' : 'AC1015'), tag + ' version ' + c.version);
+          assert(c.insunits === 4 && c.measurement === 1, tag + ' units header');
+          assert(JSON.stringify(radii(c)) === '[3,3,3,3,4,4]', tag + ' radii ' + JSON.stringify(radii(c)));
+          assert(c.loops.length === 8 && c.loops.every(function (l) { return l.closed; }), tag + ' loops ' + JSON.stringify(c.loops));
+          near(c.extents.min[0], 0, 0, tag + ' min x'); near(c.extents.min[1], 0, 0, tag + ' min y');
+          near(c.extents.max[0], W, 1e-6, tag + ' blank width'); near(c.extents.max[1], H, 1e-6, tag + ' blank height');
+          assert(count(c, 'LINE@BEND') === 2 && count(c, 'TEXT@NOTES') === 3, tag + ' bend lines / notes ' + JSON.stringify(c.counts));
+          if (ver === 'R12') assert(dxf.indexOf('LWPOLYLINE') < 0, 'R12 has no LWPOLYLINE');
+          else assert(/\n\$HANDSEED\n5\n[0-9A-F]+\n/.test(dxf) && /\nOBJECTS\n/.test(dxf) && /\n\*Model_Space\n/.test(dxf), 'R2000 structure');
+          if (style === 'entities') {
+            assert(count(c, 'LINE@OUTLINE') === 4 && count(c, 'ARC@HOLES') === 2 && count(c, 'LINE@HOLES') === 2, tag + ' ' + JSON.stringify(c.counts));
+            var arcs = DxfCheck.parse(dxf).entities.filter(function (e) { return e.type === 'ARC'; });
+            assert(arcs.every(function (a) { return a.r === 4.5 && Math.abs(((a.a1 - a.a0) % 360 + 360) % 360 - 180) < 1e-6; }), 'slot ends: R4.5 half circles');
+          } else {
+            var polyKey = ver === 'R12' ? 'POLYLINE' : 'LWPOLYLINE';
+            assert(count(c, polyKey + '@OUTLINE') === 1 && count(c, polyKey + '@HOLES') === 1, tag + ' ' + JSON.stringify(c.counts));
+            var pl = DxfCheck.parse(dxf).entities.filter(function (e) { return e.type === polyKey && e.layer === 'OUTLINE'; })[0];
+            assert(pl.pts.length === 4, 'the blank is 4 vertices: ' + pl.pts.length);
+          }
+          out.push(tag + ' ' + dxf.length);
+        });
+      });
+      var bare = DxfCheck.check(K.exportDXFFlat(u.flat, 'mm', { bendLines: false, notes: false }));
+      assert(bare.ok && !count(bare, 'LINE@BEND') && !count(bare, 'TEXT@NOTES'), 'bend lines / notes off: ' + JSON.stringify(bare.counts));
+      var kept = DxfCheck.check(K.exportDXFFlat(u.flat, 'mm', { origin: false }));
+      near(kept.extents.min[0], u.flat.bbox.min[0], 1e-6, 'origin: false keeps the flat frame');
+      return out.join(', ');
+    });
+
+    test('p9-output: an inch flat (0.06 sheet, R.25 rounded corners, Ø.28125 and Ø.201 holes, one 1" flange): $INSUNITS 1, $MEASUREMENT 0, inch coordinates, exact hole radii, R.25 ARCs, 7.161164 × 3 blank at 0,0', function () {
+      var r = build(INCH_BRACKET);
+      noErrors(r);
+      assert(r.model.units === 'in', 'inch part');
+      var flat = K.flatPattern(r.model, r.build, r.mesh);
+      var BA = Math.PI / 2 * (0.06 + 0.71 * 0.06);
+      ['R12', 'R2000'].forEach(function (ver) {
+        var dxf = K.exportDXFFlat(flat, 'in', { version: ver, style: 'entities' }), c = DxfCheck.check(dxf, { units: 'in' });
+        assert(c.ok, ver + ': ' + c.errors.join('; '));
+        assert(c.insunits === 1 && c.measurement === 0, ver + ' inch header');
+        assert(JSON.stringify(radii(c)) === '[0.1005,0.140625]', ver + ' hole radii ' + JSON.stringify(radii(c)));
+        var arcs = DxfCheck.parse(dxf).entities.filter(function (e) { return e.type === 'ARC' && e.layer === 'OUTLINE'; });
+        assert(arcs.length === 2 && arcs.every(function (a) { return a.r === 0.25; }), 'two R.25 corner arcs: ' + JSON.stringify(arcs));
+        assert(count(c, 'LINE@OUTLINE') === 4, 'four straight outline edges: ' + JSON.stringify(c.counts));
+        near(c.extents.min[0], 0, 0, 'min x'); near(c.extents.min[1], 0, 0, 'min y');
+        near(c.extents.max[0], 6 + BA + 1, 1e-6, 'blank length 6 + BA + 1');
+        near(c.extents.max[1], 3, 1e-9, 'blank width');
+        assert(/BLANK 7\.1612 X 3 IN/.test(dxf), 'the sheet note names the blank in inches');
+      });
+      var poly = DxfCheck.check(K.exportDXFFlat(flat, 'in', { version: 'R2000' }), { units: 'in' });
+      assert(poly.ok && count(poly, 'LWPOLYLINE@OUTLINE') === 1, 'R2000 polyline: ' + JSON.stringify(poly.counts));
+      return 'blank ' + (6 + BA + 1).toFixed(6) + ' × 3 in';
+    });
+
+    test('p9-output: dxfLoopCurves — a 24-chord loop is one circle (exact centre and radius), a hexagon stays six lines, CSG split points and a 3.7e-4 sliver go, a slot is 2 arcs + 2 lines', function () {
+      var circ = [], i;
+      for (i = 0; i < 24; i++) circ.push([10 + 3 * Math.cos(i * Math.PI / 12), -5 + 3 * Math.sin(i * Math.PI / 12)]);
+      var c = K.dxfLoopCurves(circ);
+      assert(c && c.circle, 'circle: ' + JSON.stringify(c));
+      near(c.circle.r, 3, 1e-12, 'r'); near(c.circle.c[0], 10, 1e-12, 'cx'); near(c.circle.c[1], -5, 1e-12, 'cy');
+      var hex = [];
+      for (i = 0; i < 6; i++) hex.push([Math.cos(i * Math.PI / 3), Math.sin(i * Math.PI / 3)]);
+      var h = K.dxfLoopCurves(hex);
+      assert(h.segs && h.segs.length === 6 && h.segs.every(function (s) { return s.t === 'line'; }), 'hexagon: ' + JSON.stringify(h));
+      // a square with split points along its edges and a 3.7e-4 sliver at one corner (an unfolded seam)
+      var sq = [[0, 0], [5, 0], [10, 0], [10, 3], [10, 10], [0.00037, 10], [0, 10], [0, 4]];
+      var q = K.dxfLoopCurves(sq);
+      assert(q.segs.length === 4 && q.segs.every(function (s) { return s.t === 'line'; }), 'square: ' + JSON.stringify(q.segs));
+      // slot: two half circles of 8 chords and two straight sides
+      var slot = [];
+      for (i = 0; i <= 8; i++) slot.push([20 + 2 * Math.cos(-Math.PI / 2 + i * Math.PI / 8), 2 * Math.sin(-Math.PI / 2 + i * Math.PI / 8)]);
+      for (i = 0; i <= 8; i++) slot.push([2 * Math.cos(Math.PI / 2 + i * Math.PI / 8), 2 * Math.sin(Math.PI / 2 + i * Math.PI / 8)]);
+      var s = K.dxfLoopCurves(slot), kinds = s.segs.map(function (x) { return x.t; }).join(',');
+      assert(s.segs.length === 4 && (kinds === 'arc,line,arc,line' || kinds === 'line,arc,line,arc'), 'slot: ' + kinds);
+      s.segs.forEach(function (x) { if (x.t === 'arc') { near(x.r, 2, 1e-12, 'slot radius'); near(Math.abs(x.sweep), Math.PI, 1e-12, 'half circle'); } });
+      return 'ok';
+    });
+
+    test('p9-output: face DXF — the top face of a plate with a Ø6 hole and a R5 rounded corner: CIRCLE r 3, ARC r 5 (lines / arcs) or one bulged polyline, closed; origin: true moves it to 0,0', function () {
+      var r = build('p.sketch("Top").line(0, 0, 35, 0).arc(35, -5, 5, 0, 90).line(40, -5, 40, -20).line(40, -20, 0, -20).line(0, -20, 0, 0).extrude(4);\np.hole("Top", 10, -10, 6, { offset: 4 });');
+      noErrors(r);
+      var top = -1;
+      r.mesh.faces.forEach(function (f, i) { if (f.normal[1] > 0.99) top = i; });
+      var e = K.exportDXFFace(r.mesh, top, 'mm', { style: 'entities', version: 'R2000' }), c = DxfCheck.check(e, { units: 'mm' });
+      assert(c.ok, c.errors.join('; '));
+      assert(JSON.stringify(radii(c)) === '[3]' && count(c, 'ARC@OUTLINE') === 1 && count(c, 'LINE@OUTLINE') === 4, JSON.stringify(c.counts) + ' ' + JSON.stringify(radii(c)));
+      assert(DxfCheck.parse(e).entities.filter(function (x) { return x.type === 'ARC'; })[0].r === 5, 'R5 corner');
+      var p = DxfCheck.check(K.exportDXFFace(r.mesh, top, 'mm'), { units: 'mm' });
+      assert(p.ok && count(p, 'POLYLINE@OUTLINE') === 1 && p.circles.length === 1, 'R12 polyline: ' + JSON.stringify(p.counts));
+      var o = DxfCheck.check(K.exportDXFFace(r.mesh, top, 'mm', { origin: true }));
+      near(o.extents.min[0], 0, 0, 'origin x'); near(o.extents.min[1], 0, 0, 'origin y'); near(o.extents.max[0], 40, 1e-6, 'width'); near(o.extents.max[1], 20, 1e-6, 'height');
+      return 'ok';
+    });
+
+    test('p9-output: DxfCheck finds what a laser import would choke on: an open chain, a zero-length LINE, a duplicate, LWPOLYLINE in R12, no $INSUNITS', function () {
+      function dxf(ver, ents, units) {
+        return ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', ver].concat(units === false ? [] : ['9', '$INSUNITS', '70', '4'], ['0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES'], ents, ['0', 'ENDSEC', '0', 'EOF']).join('\n');
+      }
+      function line(a, b) { return ['0', 'LINE', '8', 'OUTLINE', '10', a[0], '20', a[1], '30', 0, '11', b[0], '21', b[1], '31', 0]; }
+      var sq = [].concat(line([0, 0], [1, 0]), line([1, 0], [1, 1]), line([1, 1], [0, 1]), line([0, 1], [0, 0]));
+      assert(DxfCheck.check(dxf('AC1009', sq)).ok, 'a closed square passes');
+      var open = DxfCheck.check(dxf('AC1009', [].concat(line([0, 0], [1, 0]), line([1, 0], [1, 1]), line([1, 1], [0, 1]))));
+      assert(!open.ok && open.errors.some(function (e) { return /does not close|loose end/.test(e); }), 'open chain: ' + open.errors);
+      var zero = DxfCheck.check(dxf('AC1009', sq.concat(line([2, 2], [2, 2]))));
+      assert(zero.errors.some(function (e) { return /zero-length/.test(e); }), 'zero length: ' + zero.errors);
+      var dup = DxfCheck.check(dxf('AC1009', sq.concat(line([0, 0], [1, 0]))));
+      assert(dup.errors.some(function (e) { return /duplicate/.test(e); }), 'duplicate: ' + dup.errors);
+      var lw = DxfCheck.check(dxf('AC1009', ['0', 'LWPOLYLINE', '8', 'OUTLINE', '90', 3, '70', 1, '10', 0, '20', 0, '10', 1, '20', 0, '10', 0, '20', 1]));
+      assert(lw.errors.some(function (e) { return /LWPOLYLINE in an R12/.test(e); }), 'LWPOLYLINE in R12: ' + lw.errors);
+      var nu = DxfCheck.check(dxf('AC1009', sq, false));
+      assert(nu.errors.some(function (e) { return /INSUNITS/.test(e); }), 'no units: ' + nu.errors);
+      assert(!DxfCheck.check(dxf('AC1009', sq), { units: 'in' }).ok, 'mm header for an inch part is an error');
+      return 'ok';
+    });
+
+    test('p9-output: STEP of the inch sheet-metal part (Anvil\'s writer): CONVERSION_BASED_UNIT INCH = 25.4 mm, coordinates in inches; read back in mm it is 25.4× the part, in inches the part itself', function () {
+      var r = build(INCH_BRACKET);
+      noErrors(r);
+      var step = Exchange.exportSTEP(r.model, r.build);
+      assert(/CONVERSION_BASED_UNIT\('INCH',#\d+\)/.test(step) && /LENGTH_MEASURE_WITH_UNIT\(LENGTH_MEASURE\(25\.4\),#\d+\)/.test(step), 'INCH unit of 25.4 mm');
+      assert(/GLOBAL_UNIT_ASSIGNED_CONTEXT\(\(#(\d+),/.test(step), 'unit context');
+      function box(res) {
+        var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+        res.solids.forEach(function (s) { for (var i = 0; i < s.positions.length; i += 3) for (var k = 0; k < 3; k++) { min[k] = Math.min(min[k], s.positions[i + k]); max[k] = Math.max(max[k], s.positions[i + k]); } });
+        return { min: min, max: max };
+      }
+      var mm = box(Exchange.importFile('bracket.step', step, { units: 'mm' })), inch = box(Exchange.importFile('bracket.step', step, { units: 'in' }));
+      var b = r.mp.bbox;
+      for (var k = 0; k < 3; k++) {
+        near(mm.max[k] - mm.min[k], 25.4 * (b.max[k] - b.min[k]), 1e-6, 'mm extent ' + k);
+        near(inch.max[k] - inch.min[k], b.max[k] - b.min[k], 1e-9, 'inch extent ' + k);
+      }
+      var mstep = Exchange.exportSTEP(uBracket().r.model, uBracket().r.build);
+      assert(/SI_UNIT\(\.MILLI\.,\.METRE\.\)/.test(mstep) && mstep.indexOf("CONVERSION_BASED_UNIT('INCH'") < 0, 'a mm part is in millimetres');
+      return 'mm extents ' + (mm.max[0] - mm.min[0]).toFixed(4) + ' × ' + (mm.max[2] - mm.min[2]).toFixed(4);
+    });
+
+    if (!HW) { test('holewizard.js loaded', function () { fail('HoleWizard is undefined'); }); return; }
+    test('p9-output: ANSI Inch tables — 1/4 clearance close .2656 / normal .2812 / loose .2969 (ASME B18.2.8), 1/4-20 tap drill #7 = .201, 1/4 counterbore Ø.4375 ↧ .25 (B18.3), #10 countersink Ø.385 × 82°', function () {
+      var A = HW.ANSI;
+      function sp(o) { o.standard = A; return HW.spec(o, 'in'); }
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'normal' }).dia, 0.28125, 1e-12, '1/4 normal');
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'close' }).dia, 17 / 64, 1e-12, '1/4 close');
+      near(sp({ holeType: 'hole', size: '1/4', fit: 'loose' }).dia, 19 / 64, 1e-12, '1/4 loose');
+      near(sp({ holeType: 'hole', size: '#10', fit: 'normal' }).dia, 0.221, 1e-12, '#10 normal (#2 drill)');
+      var t = sp({ holeType: 'tap', size: '1/4-20 UNC' });
+      near(t.dia, 0.201, 1e-12, '1/4-20 tap drill'); assert(t.drillName === '#7' && t.thread.label === '1/4-20 UNC - 2B', t.drillName + ' ' + t.thread.label);
+      near(t.thread.pitch, 0.05, 1e-12, 'pitch');
+      near(sp({ holeType: 'tap', size: '3/8-16 UNC' }).dia, 0.3125, 1e-12, '3/8-16 tap drill 5/16');
+      near(sp({ holeType: 'tap', size: '#10-32 UNF' }).dia, 0.159, 1e-12, '#10-32 tap drill #21');
+      var cb = sp({ holeType: 'cbore', size: '1/4', fit: 'normal' });
+      near(cb.dia, 0.28125, 1e-12, 'cbore thru'); near(cb.cbore.dia, 0.4375, 1e-12, 'cbore Ø'); near(cb.cbore.depth, 0.25, 1e-12, 'cbore depth');
+      var cs = sp({ holeType: 'csk', size: '#10', fit: 'normal' });
+      near(cs.csk.dia, 0.385, 1e-12, 'csk Ø'); assert(cs.csk.angle === 82, 'csk angle');
+      near(sp({ holeType: 'hole', sizeType: 'drill', size: 'F' }).dia, 0.257, 1e-12, 'F drill');
+      near(sp({ holeType: 'hole', sizeType: 'drill', size: '#36' }).dia, 0.1065, 1e-12, '#36 drill');
+      assert(HW.DRILLS.filter(function (d) { return d.kind === 'number'; }).length === 60 && HW.DRILLS.filter(function (d) { return d.kind === 'letter'; }).length === 26, 'number / letter drills');
+      HW.ANSI_SCREWS.forEach(function (s) {
+        var c = s.clr.map(HW.drill);
+        assert(c[0] > s.d && c[0] < c[1] && c[1] < c[2], s.size + ' clearances ' + c);
+        assert(HW.drill(s.cb.dia) > c[2] && HW.drill(s.cb.drills[0]) > s.d, s.size + ' counterbore');
+        if (s.csk) assert(s.csk > c[2], s.size + ' countersink');
+      });
+      HW.ANSI_THREADS.forEach(function (th) { assert(th.tap < th.d && th.tap > th.d - 1.3 / th.tpi, th.size + ' tap drill ' + th.tap); });
+      // ANSI in a metric part and ISO in an inch part come out the right size
+      near(HW.spec({ standard: A, holeType: 'hole', size: '1/4', fit: 'normal' }, 'mm').dia, 0.28125 * 25.4, 1e-12, 'ANSI in mm');
+      near(HW.spec({ standard: 'ISO', holeType: 'hole', size: 'M8', fit: 'normal' }, 'in').dia, 9 / 25.4, 1e-12, 'ISO in inches');
+      return HW.ANSI_SCREWS.length + ' screw sizes, ' + HW.ANSI_THREADS.length + ' threads, ' + HW.DRILLS.length + ' drills';
+    });
+
+    test('p9-output: ANSI Inch callouts — "Ø.281 THRU", "Ø.281 THRU" + "⌴ Ø.438 ↧ .250", "Ø.201 ↧ .750" + "1/4-20 UNC - 2B ↧ .500", "Ø.221 THRU" + "⌵ Ø.385 X 82°"', function () {
+      function co(o) { return HW.callout(HW.newFeature(o, 'in'), 'in').join(' | '); }
+      var a = co({ type: 'hole', size: '1/4', fit: 'normal', end: 'through' }), b = co({ type: 'cbore', size: '1/4', end: 'through' });
+      var c = co({ type: 'tap', size: '1/4-20 UNC', depth: 0.75, threadDepth: 0.5 }), d = co({ type: 'csk', size: '#10', end: 'through' });
+      assert(a === 'Ø.281 THRU', a); assert(b === 'Ø.281 THRU | ⌴ Ø.438 ↧ .250', b);
+      assert(c === 'Ø.201 ↧ .750 | 1/4-20 UNC - 2B ↧ .500', c); assert(d === 'Ø.221 THRU | ⌵ Ø.385 X 82°', d);
+      var iso = HW.callout(HW.newFeature({ type: 'tap', size: 'M8', depth: 16, threadDepth: 12 }, 'mm'), 'mm').join(' | ');
+      assert(iso === 'Ø6.8 ↧ 16 | M8x1.25 ↧ 12', iso);
+      return [a, b, c, d].join(' / ');
+    });
+
+    test('p9-output: ANSI Inch holes in an inch block (2 × 2 × 1 in): counterbore and tap volumes equal their formulas; the feature stores standard and size; script round trip rebuilds the same part', function () {
+      var BLOCK = 'p.units("in");\np.box(2, 2, 1, { centered: true });\n';
+      var code = BLOCK + 'p.holeWizard({ face: "Top", offset: 1, points: [[-0.5, 0]], standard: "ANSI Inch", type: "cbore", size: "1/4", fit: "normal", depth: 0.75 });\n' +
+        'p.holeWizard({ face: "Top", offset: 1, points: [[0.5, 0.5], [0.5, -0.5]], type: "tap", size: "1/4-20 UNC", depth: 0.6, threadDepth: 0.5 });\n' +
+        'p.holeWizard({ face: "Top", offset: 1, points: [[0, -0.6]], type: "hole", sizeType: "drill", size: "F", end: "through" });';
+      var r = build(code);
+      noErrors(r);
+      var holes = r.model.features.filter(function (f) { return f.type === 'hole'; });
+      assert(holes.length === 3 && holes.every(function (f) { return f.standard === HW.ANSI; }), 'standard stored: ' + holes.map(function (f) { return f.standard; }));
+      assert(holes[0].size === '1/4' && holes[1].size === '1/4-20 UNC' && holes[2].size === 'F' && holes[2].sizeType === 'drill', 'sizes stored');
+      assert(holes[0].name === 'CBORE for 1/4 Socket Head Cap Screw1' && holes[1].name === '1/4-20 UNC Tapped Hole2' && holes[2].name === 'F Drill Hole3', holes.map(function (f) { return f.name; }).join(' / '));
+      var Rc = 0.4375 / 2, R = 0.28125 / 2, Rt = 0.201 / 2, Rf = 0.257 / 2;
+      var cut = Math.PI * Rc * Rc * 0.25 + Math.PI * R * R * (0.75 - 0.25) + 2 * Math.PI * Rt * Rt * 0.6 + Math.PI * Rf * Rf * 1;
+      nearRel(4 - r.mp.volume, cut, 1e-9, 'removed volume');
+      var script = K.generateScript(r.model);
+      assert(/p\.holeWizard\(\{ sketch: f\d+, standard: "ANSI Inch", type: "cbore", size: "1\/4", fit: "normal", depth: 0\.75, name: "CBORE for 1\/4 Socket Head Cap Screw1" \}\)/.test(script), script);
+      assert(/sizeType: "drill", size: "F"/.test(script) && /size: "1\/4-20 UNC", fit: "normal", depth: 0\.6, threadDepth: 0\.5/.test(script), 'drill / tap emitted');
+      var r2 = build(script);
+      noErrors(r2);
+      nearRel(r2.mp.volume, r.mp.volume, 1e-12, 'round trip volume');
+      assert(K.generateScript(r2.model) === script, 'generator is a fixed point');
+      var th = HW.threads(r.model);
+      assert(th.length === 2 && th[0].label === '1/4-20 UNC - 2B' && Math.abs(th[0].r - 0.125) < 1e-12 && Math.abs(th[0].drill - 0.201) < 1e-12 && th[0].depth === 0.5, 'cosmetic threads: ' + JSON.stringify(th[0]));
+      return 'removed ' + cut.toFixed(6) + ' in³';
+    });
+
+    test('p9-output: Hole Wizard standard defaults — no standard: an "M" size is ISO, any other ANSI Inch, none at all follows the part (ANSI Inch in inches, ISO in mm); unknown sizes fail the feature', function () {
+      assert(HW.newFeature({ size: 'M6' }, 'in').standard === 'ISO', 'M6');
+      assert(HW.newFeature({ size: '#10' }, 'mm').standard === HW.ANSI, '#10');
+      assert(HW.newFeature({}, 'in').standard === HW.ANSI && HW.newFeature({}, 'in').size === '1/4', 'inch part default');
+      assert(HW.newFeature({}, 'mm').standard === 'ISO' && HW.newFeature({}, 'mm').size === 'M6', 'mm part default');
+      near(HW.newFeature({ type: 'tap', size: '1/4-20 UNC' }, 'in').depth, 0.75, 1e-12, 'default tap depth 2·D + .25');
+      var threw = '';
+      try { build('p.units("in");\np.box(2, 2, 1, { centered: true });\np.holeWizard({ face: "Top", offset: 1, points: [[0, 0]], standard: "ANSI Inch", type: "csk", size: "#2" });'); } catch (e) { threw = e.message; }
+      assert(/No 82° countersink size for a #2/.test(threw), 'no #2 countersink: ' + threw);
+      try { build('p.units("in");\np.box(2, 2, 1, { centered: true });\np.holeWizard({ face: "Top", offset: 1, points: [[0, 0]], type: "tap", size: "1/4-21 UNC" });'); threw = ''; } catch (e) { threw = e.message; }
+      assert(/Unknown ANSI Inch thread/.test(threw), threw);
+      return 'ok';
+    });
+  })();
+  // --- end p9-output ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.

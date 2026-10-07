@@ -168,7 +168,7 @@
     var s = UI.cam.scale;
     function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
     var value = rel.v != null && !rel.driven ? rel.v : S.measure(f, rel.type, rel.refs, rel.dir, rel.sup);
-    var label = UI.fmtNum(value, 2) + (rel.type === 'angle' ? '°' : '');
+    var label = rel.type === 'angle' ? UI.fmtNum(value, 2) + '°' : UI.fmtDim ? UI.fmtDim(value) : UI.fmtNum(value, 2);   // p9-sketch: inch distances read like the other dimensions (.500)
     if (rel.driven) label = '(' + label + ')';
     if (g.type === 'distance') {
       var ld = UI.linearDimScreen(pl, g.P, g.Q, g.dir, rel.off, rel.tx);

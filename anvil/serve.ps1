@@ -3,11 +3,22 @@
 # else LibreDWG's dxf2dwg from vendor/get-libredwg.ps1 (R2000, experimental writer). HEAD answers 200 with
 # X-Anvil-Converter: oda | libredwg (503 when neither exists); POST with the DXF as the body answers the DWG bytes
 # (application/acad, the same header, Content-Disposition attachment) or JSON { error, converter } 400 / 503.
+# The server is single-threaded, so no client may hold it: every response body is written with a deadline (5 s plus
+# half a second per MB) and the response is aborted when the client stops reading; HTTP.sys's own timeouts (idle
+# connection, header wait, request body, minimum send rate) are set too where the platform has them.
 # Usage: powershell -ExecutionPolicy Bypass -File serve.ps1 [-Port 8765]
 param([int]$Port = 8765)
 $root = $PSScriptRoot
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
+try {
+  $tm = $listener.TimeoutManager
+  $tm.IdleConnection = [TimeSpan]::FromSeconds(30)
+  $tm.HeaderWait = [TimeSpan]::FromSeconds(15)
+  $tm.EntityBody = [TimeSpan]::FromSeconds(30)
+  $tm.DrainEntityBody = [TimeSpan]::FromSeconds(10)
+  $tm.MinSendBytesPerSecond = 65536
+} catch { Write-Host "HttpListener timeouts not available here: $($_.Exception.Message)" }
 $listener.Start()
 Write-Host "Serving $root at http://localhost:$Port/"
 $types = @{ ".html"="text/html; charset=utf-8"; ".js"="text/javascript; charset=utf-8"; ".css"="text/css; charset=utf-8"; ".json"="application/json"; ".wasm"="application/wasm"; ".mjs"="text/javascript; charset=utf-8"; ".png"="image/png"; ".svg"="image/svg+xml"; ".md"="text/plain; charset=utf-8"; ".gz"="application/gzip" }
@@ -82,12 +93,26 @@ function Convert-DxfToDwg($conv, [string]$dxf) {
   } finally { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 }
 
+# Writes a response body with a deadline: a client that stops reading (a GET whose body is never drained) would
+# otherwise block this single-threaded server forever. On a timeout the response is aborted (the connection reset).
+function Write-Body($ctx, [byte[]]$bytes) {
+  $ms = 5000 + [int]($bytes.Length / 2000)
+  $task = $ctx.Response.OutputStream.WriteAsync($bytes, 0, $bytes.Length)
+  $done = $false
+  try { $done = $task.Wait($ms) } catch { $done = $false }
+  if (-not $done) {
+    Write-Host ("write timed out after $ms ms (" + $bytes.Length + " bytes to " + $ctx.Request.RemoteEndPoint + " " + $ctx.Request.Url.AbsolutePath + "): response aborted")
+    try { $ctx.Response.Abort() } catch { }
+    throw "write timeout"
+  }
+}
+
 function Send-Json($ctx, [int]$status, $obj) {
   $ctx.Response.StatusCode = $status
   $ctx.Response.ContentType = "application/json; charset=utf-8"
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $obj -Compress))
   $ctx.Response.ContentLength64 = $bytes.Length
-  $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+  Write-Body $ctx $bytes
 }
 
 function Invoke-DxfToDwgApi($ctx) {
@@ -123,7 +148,7 @@ function Invoke-DxfToDwgApi($ctx) {
   $ctx.Response.ContentType = "application/acad"
   $ctx.Response.Headers.Add("Content-Disposition", 'attachment; filename="output.dwg"')
   $ctx.Response.ContentLength64 = $r.bytes.Length
-  $ctx.Response.OutputStream.Write($r.bytes, 0, $r.bytes.Length)
+  Write-Body $ctx $r.bytes
 }
 
 # ---- requests ----------------------------------------------------------------------------------------------------
@@ -147,14 +172,15 @@ while ($listener.IsListening) {
         } else {
           $bytes = [System.IO.File]::ReadAllBytes($file)
           $ctx.Response.ContentLength64 = $bytes.Length
-          $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+          Write-Body $ctx $bytes
         }
       } else {
         $ctx.Response.StatusCode = 404
         $msg = [System.Text.Encoding]::UTF8.GetBytes("404 " + $path)
-        $ctx.Response.OutputStream.Write($msg, 0, $msg.Length)
+        Write-Body $ctx $msg
       }
     }
-  } catch { $ctx.Response.StatusCode = 500 }
-  $ctx.Response.OutputStream.Close()
+  } catch { try { $ctx.Response.StatusCode = 500 } catch { } }
+  # an aborted response (write timeout, client gone) throws here; the server goes on to the next request
+  try { $ctx.Response.OutputStream.Close() } catch { }
 }
