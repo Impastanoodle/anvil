@@ -1,4 +1,4 @@
-// ui-sketch-lines.js — Line / Centerline / Midpoint Line, Rectangle types, Point: their SolidWorks PropertyManagers (on the tool and for a selected entity).
+// ui-sketch-lines.js — Line / Centerline / Midpoint Line / Parallel Line, Rectangle types, Point: their SolidWorks PropertyManagers (on the tool and for a selected entity).
 // Registers tool PMs in UI.sketchToolPMs[tool] (opened by setTool in ui-sketch.js); see README *Sketch tab*.
 //
 // p9-sketchtab. As in SolidWorks 2024:
@@ -18,6 +18,8 @@
 //   Trim and DXF treat them as lines.
 // - Point: the Point PropertyManager (Parameters X, Y) on the tool and for a selected point, with Existing / Add
 //   Relations for a selected point.
+// - Parallel Line (Line flyout, UI.cmdParallelLine): Mastercam's Line Parallel as a SolidWorks command PropertyManager
+//   (Reference, Placement, Length, Options); see its section below.
 (function () {
   'use strict';
   if (typeof UI === 'undefined') return;
@@ -761,6 +763,282 @@
     });
   }
   UI.sketchEntityPMs.point = openPointProperties;
+
+  // ------------------------------------------------------------------ Parallel Line
+  // Mastercam's Line Parallel with a SolidWorks PropertyManager (Sketch tab ▸ Line flyout ▸ Parallel Line). Reference:
+  // a sketch line (or one edge of a rectangle, polygon or polyline) or a straight model edge, projected onto the sketch
+  // plane as Convert Entities does. Placement: Through point (the line follows the cursor through the normal sketch
+  // inference, so it can pass through an existing point: Coincident there), Distance (on the cursor's side; Flip side,
+  // Both sides; a click or ✓ places) or Tangent to arc (click a circle / arc: tangent to it on the side nearest the
+  // click, with a Tangent relation). Length: Same as reference (its ends carried straight across) or a set Length
+  // centred on the reference's midpoint. To a sketch line the new line is held Parallel, with a distance dimension
+  // (Add dimensions); a model edge gets neither (sketches hold no external references). The reference stays picked
+  // after each line so the next click places another; ✓ / Esc ends. Each placement is one undo step.
+  var PL_PICK = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
+  var PL_HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
+  // the settings, remembered for the session as SolidWorks remembers a PropertyManager's
+  var PLS = { place: 'point', d: null, flip: false, both: false, lenMode: 'same', len: null, construction: false, dims: true };
+  var PL_HINT = {
+    ref: 'Select a line or edge to be parallel to.',
+    point: 'Click where the line passes through.',
+    distance: 'Click on the side the line goes, or press ✓ to place it on the side shown.',
+    tangent: 'Select a circle or arc to be tangent to.'
+  };
+  UI.parallelLineActive = function () { var s = UI.pmSpec && UI.pmSpec(); return !!(s && s.parallelLine); };
+  UI.cmdParallelLine = function () {
+    if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; }
+    if (UI.parallelLineActive()) { UI.pmCancel(); return; }
+    openParallelLine();
+  };
+  function plScr(q) { return UI.worldToScreen(UI.K.to3D(UI.activePlane(), q[0], q[1])); }
+  function segPx(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+  }
+  // the sketch line under the cursor as a ref: a line, or the nearest edge of a rectangle / polygon / polyline (a
+  // slot's own ref is its centre line, not a side, so slots are left out)
+  function lineRefAt(f, mx, my) {
+    var S = SS(), hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index], best = null, bd = Infinity;
+    if (!S || !e) return null;
+    S.curveRefs(f, hit.index).forEach(function (r) {
+      if (r === String(hit.index) && e.t !== 'line') return;
+      var c = S.refCurve(f, r);
+      if (!c || c.kind !== 'line') return;
+      var d = segPx([mx, my], plScr(c.a), plScr(c.b));
+      if (d < bd) { bd = d; best = { r: r, seg: { a: c.a.slice(), b: c.b.slice() } }; }
+    });
+    return best;
+  }
+  // a straight model edge under the cursor projected onto the sketch plane, the collinear pieces it was split into
+  // joined (a face outline splits an edge): { seg } | { bad: why } | null
+  function modelEdgeAt(mx, my) {
+    if (App.mode !== 'sketch' || !App.edges || !App.edges.length || !UI.pickEdge) return null;
+    var pk = UI.pickEdge(mx, my), e = pk && pk.edge, V = UI.K.vec;
+    if (!e || !e.a || !e.b) return null;
+    if (e.curve != null && App.curves && App.curves[e.curve]) return { bad: 'Select a straight edge: a Parallel Line follows a line or a straight edge.' };
+    var d = V.sub(e.b, e.a), L = V.len(d);
+    if (L < 1e-12) return null;
+    var u = V.scale(d, 1 / L), tol = 1e-6 * Math.max(1, L), lo = 0, hi = L, spans = [];
+    App.edges.forEach(function (o) {
+      if (o === e || o.smooth || !o.a || !o.b || (o.curve != null && App.curves && App.curves[o.curve])) return;
+      var off = function (p) { var w = V.sub(p, e.a); return V.len(V.sub(w, V.scale(u, V.dot(w, u)))); };
+      if (off(o.a) > tol || off(o.b) > tol) return;
+      var ta = V.dot(V.sub(o.a, e.a), u), tb = V.dot(V.sub(o.b, e.a), u);
+      spans.push([Math.min(ta, tb), Math.max(ta, tb)]);
+    });
+    for (var grew = true; grew;) {
+      grew = false;
+      spans.forEach(function (s) {
+        if (s[1] > hi + 1e-9 && s[0] <= hi + tol) { hi = s[1]; grew = true; }
+        if (s[0] < lo - 1e-9 && s[1] >= lo - tol) { lo = s[0]; grew = true; }
+      });
+    }
+    var pl = UI.activePlane(), r6 = function (x) { return Math.round(x * 1e6) / 1e6; };
+    var a = UI.K.to2D(pl, V.add(e.a, V.scale(u, lo))), b = UI.K.to2D(pl, V.add(e.a, V.scale(u, hi)));
+    a = [r6(a[0]), r6(a[1])]; b = [r6(b[0]), r6(b[1])];
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) return { bad: 'That edge is square to the sketch plane: select an edge that lies along it.' };
+    return { seg: { a: a, b: b } };
+  }
+  // the reference a click at (mx, my) would pick: sketch geometry first, then a model edge
+  function plCandidate(f, mx, my) {
+    var lr = lineRefAt(f, mx, my), S = SS();
+    if (lr) { var nm = 'Line'; try { nm = S.refName(f, lr.r); } catch (e) { } return { kind: 'sketch', r: lr.r, seg: lr.seg, label: nm }; }
+    var hit = UI.pickEntity(mx, my);
+    if (hit && f.entities[hit.index]) return { bad: 'Select a line or a straight edge: a Parallel Line follows a line.' };
+    var me = modelEdgeAt(mx, my);
+    if (me && me.seg) return { kind: 'edge', seg: me.seg, label: 'Edge<1>' };
+    return me;
+  }
+  // the reference's segment now (a sketch line is read again: a solve or an undo may have moved it), as a frame:
+  // { a, b, u (along), n (left normal), L } or null
+  function plFrame(f, ref) {
+    var seg = null;
+    if (ref && ref.kind === 'sketch') { var c = SS().refCurve(f, ref.r); if (c && c.kind === 'line') seg = { a: c.a, b: c.b }; }
+    else if (ref) seg = ref.seg;
+    if (!seg) return null;
+    var dx = seg.b[0] - seg.a[0], dy = seg.b[1] - seg.a[1], L = Math.hypot(dx, dy);
+    return L < 1e-12 ? null : { a: seg.a, b: seg.b, u: [dx / L, dy / L], n: [-dy / L, dx / L], L: L };
+  }
+  function plSide(fr, P) { return (P[0] - fr.a[0]) * fr.n[0] + (P[1] - fr.a[1]) * fr.n[1]; }
+  function openParallelLine() {
+    var f0 = sketch();
+    if (!f0) return;
+    if (PLS.d == null) PLS.d = UI.lenDefault(10);
+    var v = { place: PLS.place, d: PLS.d, flip: PLS.flip, both: PLS.both, lenMode: PLS.lenMode, len: PLS.len, construction: PLS.construction, dims: PLS.dims, box: 'ref' };
+    var ref = null, last = null, fresh = true, count = 0;
+    // a sketch line selected when the command starts is the reference (as SolidWorks takes a preselection)
+    var pre = (UI.selection ? UI.selection() : []).filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });
+    if (App.sel && App.sel.kind === 'entity' && pre.indexOf(App.sel.index) < 0) pre.push(App.sel.index);
+    if (pre.length === 1 && f0.entities[pre[0]] && f0.entities[pre[0]].t === 'line') {
+      var pc = SS().refCurve(f0, String(pre[0]));
+      ref = { kind: 'sketch', r: String(pre[0]), seg: { a: pc.a, b: pc.b }, label: SS().refName(f0, String(pre[0])) };
+      v.box = null;
+    }
+    function picking() { return !ref || v.box === 'ref'; }
+    function hintNow() { var t = PL_HINT[picking() ? 'ref' : v.place]; hint('<b>Parallel Line:</b> ' + t); UI.setStatus(t); }
+    function clearRef() { ref = null; v.box = 'ref'; fresh = true; UI.renderPM(); hintNow(); draw(); }
+    // the line through offset s (signed, along the reference's left normal)
+    function lineAt(fr, s) {
+      var a, b;
+      if (v.lenMode === 'length' && +v.len > 0) {
+        var m = [(fr.a[0] + fr.b[0]) / 2 + fr.n[0] * s, (fr.a[1] + fr.b[1]) / 2 + fr.n[1] * s], h = +v.len / 2;
+        a = [m[0] - fr.u[0] * h, m[1] - fr.u[1] * h]; b = [m[0] + fr.u[0] * h, m[1] + fr.u[1] * h];
+      } else { a = [fr.a[0] + fr.n[0] * s, fr.a[1] + fr.n[1] * s]; b = [fr.b[0] + fr.n[0] * s, fr.b[1] + fr.n[1] * s]; }
+      var e = { t: 'line', x1: clean(a[0]), y1: clean(a[1]), x2: clean(b[0]), y2: clean(b[1]) };
+      if (v.construction) e.construction = true;
+      return e;
+    }
+    // what a click at uv (screen mx, my) would place: { s: [offsets], P: through point, info, tan: circle index } or
+    // { error }
+    function offsets(f, fr, uv, mx, my) {
+      var o;
+      if (v.place === 'distance') {
+        var d = +v.d;
+        if (!(d > 0)) return { error: 'Set a distance greater than 0.' };
+        var side = uv && plSide(fr, uv) < 0 ? -1 : 1;
+        if (v.flip) side = -side;
+        o = { s: v.both ? [side * d, -side * d] : [side * d] };
+      } else if (v.place === 'tangent') {
+        var hit = mx != null ? UI.pickEntity(mx, my) : null, c = hit && f.entities[hit.index];
+        if (!c || (c.t !== 'circle' && c.t !== 'arc')) return { error: PL_HINT.tangent };
+        var sc = plSide(fr, [c.cx, c.cy]), sq = uv ? plSide(fr, uv) : sc - c.r;
+        o = { s: [Math.abs(sq - (sc - c.r)) <= Math.abs(sq - (sc + c.r)) ? sc - c.r : sc + c.r], tan: hit.index };
+      } else {
+        if (!uv) return { error: PL_HINT.point };
+        var info = UI.sketchInferPoint ? UI.sketchInferPoint(uv, mx, my) : { p: uv };
+        o = { s: [plSide(fr, info.p)], P: info.p, info: info };
+      }
+      o.s = o.s.map(function (s) { return clean(s); });
+      if (o.s.some(function (s) { return Math.abs(s) < 1e-9; })) { o.error = 'The line would lie on the reference: place it off the reference.'; o.s = o.s.filter(function (s) { return Math.abs(s) >= 1e-9; }); }
+      return o;
+    }
+    function draw() {
+      var f = UI.activeSketchFeature();
+      if (!f || !UI.sketchFeedbackClear) return;
+      UI.sketchFeedbackClear();
+      App.tempEntities = [];
+      var fr = ref ? plFrame(f, ref) : null;
+      if (ref && !fr) { ref = null; v.box = 'ref'; UI.renderPM(); hintNow(); }
+      if (picking()) {
+        var c = last ? plCandidate(f, last.mx, last.my) : null;
+        if (fr) UI.sketchPreview([[fr.a, fr.b]], PL_PICK, 'sk-trim-pick');
+        if (c && c.seg) UI.sketchPreview([[c.seg.a, c.seg.b]], PL_HOT, 'sk-trim-span');
+        UI.updateTemp();
+        return;
+      }
+      var o = v.place === 'distance' || last ? offsets(f, fr, last && last.uv, last && last.mx, last && last.my) : null;
+      if (o && o.info && o.info.snap && last) UI.sketchSnapMark(o.info.p, [last.mx, last.my], o.info.snap.kind === 'on');
+      UI.sketchPreview([[fr.a, fr.b]], PL_PICK, 'sk-trim-pick');
+      if (o && o.tan != null && f.entities[o.tan]) UI.sketchPreview(UI.K.entityPolylines(f.entities[o.tan]).map(function (l) { return l.closed && l.pts.length ? l.pts.concat([l.pts[0]]) : l.pts; }), PL_HOT, 'sk-trim-span');
+      if (o && o.s) App.tempEntities = o.s.map(function (s) { return lineAt(fr, s); });
+      UI.updateTemp();
+    }
+    // the line(s) of o into the sketch, with their relations and dimensions: one undo step; false when refused
+    function place(o) {
+      var f = UI.activeSketchFeature(), S = SS(), fr = f && plFrame(f, ref);
+      if (!f || !fr || !S) return false;
+      if (o.error) { UI.setStatus(o.error); if (!o.s || !o.s.length) return false; }
+      if (!o.s || !o.s.length) return false;
+      var saved = JSON.stringify({ entities: f.entities, rels: f.rels || null }), n0 = f.entities.length, skipped = 0;
+      UI.pushUndo(); App.sketchDirty = true;
+      var fail = null;
+      try {
+        o.s.forEach(function (s) { f.entities.push(lineAt(fr, s)); });
+        o.s.forEach(function (s, k) {
+          if (fail || ref.kind !== 'sketch') return;
+          var pr = S.addRelation(f, 'parallel', [ref.r, String(n0 + k)], { rejectOver: true });
+          if (!pr.ok && pr.status) fail = 'Parallel would over-define the sketch: the line was not added.';
+        });
+        if (!fail && o.tan != null) S.addRelation(f, 'tangent', [String(n0), String(o.tan)], { rejectOver: true });
+        if (!fail && o.P) { var pref = pointRefAt(f, o.P, n0); if (pref) S.addRelation(f, 'coincident', [pref, String(n0)], { rejectOver: true }); }
+        if (!fail && v.dims && ref.kind === 'sketch') o.s.forEach(function (s, k) {
+          var dr = S.addRelation(f, 'distance', [ref.r, String(n0 + k)], { value: Math.abs(s), rejectOver: true });
+          if (!dr.ok) skipped++;
+        });
+      } catch (er) { fail = er.message || String(er); }
+      if (fail) {
+        var s0 = JSON.parse(saved);
+        f.entities = s0.entities;
+        if (s0.rels) f.rels = s0.rels; else delete f.rels;
+        App.undo.pop(); App.sketchDirty = false;
+        UI.toast(fail); refresh();
+        return false;
+      }
+      count += o.s.length; fresh = false;
+      App.tempEntities = []; UI.updateTemp();
+      refresh();
+      UI.setStatus('Parallel Line placed' + (o.s.length > 1 ? ' on both sides' : '') + (skipped ? ' (distance dimension left out: it would over-define the sketch)' : '') + ' (' + count + ' so far). Place another, or press ✓ / Esc to finish.');
+      return true;
+    }
+    function pmChange(x, key) {
+      if (!key) return;
+      if (key === 'lenMode' && x.lenMode === 'length' && !(+x.len > 0)) {
+        var fr = ref && plFrame(UI.activeSketchFeature(), ref);
+        x.len = fr ? clean(fr.L) : UI.lenDefault(20);
+        UI.renderPM();
+      }
+      Object.keys(PLS).forEach(function (k) { PLS[k] = x[k]; });
+      fresh = true;
+      if (key === 'place') hintNow();
+      draw();
+    }
+    UI.openPM({
+      title: 'Parallel Line', icon: 'parallelLine', parallelLine: true, noFocus: true, values: v,
+      message: 'Select a line or edge to be parallel to, then place the line: through a point, at a distance or tangent to an arc.',
+      command: {
+        ownHover: true,
+        onSketchMove: function (uv, mx, my) { last = { uv: uv, mx: mx, my: my }; draw(); },
+        onSketchPoint: function (uv, mx, my) {
+          var f = UI.activeSketchFeature();
+          if (!f) return;
+          if (!uv) uv = UI.screenToPlane(mx, my, UI.activePlane());
+          last = { uv: uv, mx: mx, my: my };
+          if (picking()) {
+            var c = plCandidate(f, mx, my);
+            if (!c) { UI.setStatus(PL_HINT.ref); return; }
+            if (c.bad) { UI.setStatus(c.bad); return; }
+            ref = c; v.box = null; fresh = true;
+            UI.renderPM(); hintNow(); draw();
+            return;
+          }
+          var fr = plFrame(f, ref);
+          if (!fr) { clearRef(); return; }
+          var o = offsets(f, fr, uv, mx, my);
+          if (o.error && (!o.s || !o.s.length)) { UI.setStatus(o.error); return; }
+          place(o);
+          draw();
+        }
+      },
+      groups: [
+        { title: 'Reference', fields: [{ type: 'pick', icon: 'line', placeholder: 'Line or edge',
+          value: function () { return ref ? ref.label : ''; }, active: function () { return picking(); },
+          onActivate: function () { v.box = 'ref'; UI.renderPM(); hintNow(); draw(); } }] },
+        { title: 'Placement', fields: [
+          { type: 'radio', key: 'place', rerender: true, options: [['point', 'Through point'], ['distance', 'Distance'], ['tangent', 'Tangent to arc']] },
+          { type: 'number', key: 'd', label: 'Distance', unit: 'u', min: 0, show: function (x) { return x.place === 'distance'; } },
+          { type: 'check', key: 'flip', label: 'Flip side', show: function (x) { return x.place === 'distance'; } },
+          { type: 'check', key: 'both', label: 'Both sides', show: function (x) { return x.place === 'distance'; } }] },
+        { title: 'Length', fields: [
+          { type: 'radio', key: 'lenMode', rerender: true, options: [['same', 'Same as reference'], ['length', 'Length']] },
+          { type: 'number', key: 'len', label: 'Length', unit: 'u', min: 0, show: function (x) { return x.lenMode === 'length'; } }] },
+        { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'For construction' }, { type: 'check', key: 'dims', label: 'Add dimensions' }] }
+      ],
+      onChange: pmChange,
+      // ✓ places the line shown in Distance (once per setting: a line already placed with these settings is not doubled)
+      onOK: function () {
+        if (v.place !== 'distance' || !ref || v.box === 'ref' || !fresh) return;
+        var f = UI.activeSketchFeature(), fr = f && plFrame(f, ref);
+        if (!fr) return;
+        var o = offsets(f, fr, last && last.uv, null, null);
+        if (o.error && (!o.s || !o.s.length)) { UI.toast(o.error); return false; }
+        if (!place(o)) return false;
+      },
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
+    });
+    UI.refreshRibbon();
+    hintNow();
+    draw();
+  }
 
   // A press in the graphics area while a sketch tool's PropertyManager is open takes the keyboard from the
   // PropertyManager (a check box or value box clicked before), so a number typed next opens the on-screen value box

@@ -324,6 +324,271 @@
     });
     return out;
   }
+
+  // ---- p9-modelsnap: snapping onto the model while sketching on (or above / below) a solid. The model's useful points
+  // (vertices, edge midpoints, arc / hole centres and quadrants, the centres of the faces parallel to the sketch, the
+  // part's centre in the sketch view and its centre of mass) and its edges are projected straight onto the sketch plane,
+  // worked out once per model rebuild and sketch plane (modelSnaps), so a mouse move is a distance scan. They come after
+  // the sketch's own points (a sketch point as near wins) and after sketch curves, add no relation (a sketch has no
+  // external references: SketchSolver.inferCandidates only sees sketch geometry) and are drawn in their own colour with
+  // a label naming them. View ▸ Snap to Model turns them off (App.view.snapModel).
+  var MODEL_RANK = { mvertex: 0, mcenter: 1, mmid: 2, mquad: 3, mface: 4, mpart: 5, mmass: 6 };
+  var MODEL_LABEL = { mvertex: 'Vertex', mcenter: 'Center', mmid: 'Midpoint', mquad: 'Quadrant', mface: 'Face center', mpart: 'Part center', mmass: 'Center of mass', medge: 'On edge' };
+  var MODEL_MAX = 5000, MODEL_FACES_MAX = 400, MODEL_COLOR = '#c2409f';
+  var modelCache = { key: null };
+  function modelSnapOn() { return App.view.snapModel !== false && !!App.mesh && App.mesh.triCount > 0; }
+  // { pts: [{ pt, kind, model: true, label }], segs: [{ a, b, lo, hi }], arcs: [{ c, r, full, a0, sw, sg }] } for plane pl
+  function modelSnaps(pl) {
+    var m = App.mesh, key = [pl.origin, pl.x, pl.y, pl.n].join(';');
+    if (modelCache.mesh === m && modelCache.edges === App.edges && modelCache.curves === App.curves && modelCache.hidden === App.triHidden && modelCache.key === key) return modelCache;
+    var res = { mesh: m, edges: App.edges, curves: App.curves, hidden: App.triHidden, key: key, pts: [], segs: [], arcs: [] };
+    try { buildModelSnaps(m, pl, res); } catch (err) { res.pts = []; res.segs = []; res.arcs = []; }
+    modelCache = res;
+    return res;
+  }
+  // is angle ang (radians, in the sketch) on the projected model arc ar?
+  function onModelArc(ar, ang) {
+    if (ar.full) return true;
+    var rel = (((ang - ar.a0) * ar.sg) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+    return rel <= ar.sw + 1e-9;
+  }
+  function buildModelSnaps(m, pl, res) {
+    var V = K.vec, n = pl.n, th = App.triHidden, curves = App.curves || [], edges = App.edges || [], seen = {};
+    function p2(p) { return K.to2D(pl, p); }
+    function add(q, kind) {
+      var k = Math.round(q[0] * 1e5) + ',' + Math.round(q[1] * 1e5), o = seen[k];
+      if (o) { if (MODEL_RANK[kind] < MODEL_RANK[o.kind]) { o.kind = kind; o.label = MODEL_LABEL[kind]; } return; }
+      seen[k] = o = { pt: [q[0], q[1]], kind: kind, model: true, label: MODEL_LABEL[kind] };
+      res.pts.push(o);
+    }
+    function faceShown(fi) { var fc = m.faces[fi]; return !!fc && !(th && th[fc.start]); }
+    function square(v) { return Math.abs(Math.abs(V.dot(v, n)) - 1) < 1e-6; }
+    // the part's extent in the sketch view: every shown facet corner, and the exact extremes of the true curves
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    function grow(q) { if (q[0] < lo[0]) lo[0] = q[0]; if (q[1] < lo[1]) lo[1] = q[1]; if (q[0] > hi[0]) hi[0] = q[0]; if (q[1] > hi[1]) hi[1] = q[1]; }
+    var P = m.positions64 || m.positions;
+    m.faces.forEach(function (fc) {
+      if (th && th[fc.start]) return;
+      for (var i = fc.start * 9; i < (fc.start + fc.count) * 9; i += 3) grow(p2([P[i], P[i + 1], P[i + 2]]));
+    });
+    // true circles and arcs: their ends are vertices; square to the sketch also their centre, middle, quadrants and the
+    // curve itself (an "on edge" target)
+    var arcOf = {};
+    curves.forEach(function (c, ci) {
+      var C = c && c.curve;
+      if (!C || (c.edges && c.edges.length && !c.edges.some(function (e) { return e.faces.some(faceShown); }))) return;
+      var yd = V.cross(C.normal, C.xdir), sweep = C.a1 - C.a0, full = sweep >= 2 * Math.PI - 1e-6;
+      function at(a) { return V.add(C.center, V.add(V.scale(C.xdir, Math.cos(a) * C.radius), V.scale(yd, Math.sin(a) * C.radius))); }
+      function within(a) { if (full) return true; var rel = ((a - C.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI); return rel <= sweep + 1e-9; }
+      [pl.x, pl.y].forEach(function (d) {
+        var cx = V.dot(C.xdir, d), cy = V.dot(yd, d);
+        if (Math.hypot(cx, cy) < 1e-12) return;
+        var a = Math.atan2(cy, cx);
+        [a, a + Math.PI].forEach(function (b) { if (within(b)) grow(p2(at(b))); });
+      });
+      if (!full) { add(p2(at(C.a0)), 'mvertex'); add(p2(at(C.a1)), 'mvertex'); }
+      if (!square(C.normal)) return;
+      var cen = p2(C.center), s0 = p2(at(C.a0));
+      var ar = arcOf[ci] = { c: cen, r: C.radius, full: full, a0: Math.atan2(s0[1] - cen[1], s0[0] - cen[0]), sw: sweep, sg: V.dot(C.normal, n) > 0 ? 1 : -1 };
+      res.arcs.push(ar);
+      add(cen, 'mcenter');
+      if (!full) add(p2(at((C.a0 + C.a1) / 2)), 'mmid');
+      [0, 0.5, 1, 1.5].forEach(function (t) { var a = t * Math.PI; if (onModelArc(ar, a)) add([cen[0] + C.radius * Math.cos(a), cen[1] + C.radius * Math.sin(a)], 'mquad'); });
+    });
+    // straight edges: collinear pieces meeting at a point no other edge reaches (a face outline split them) are joined
+    // into one edge first, so their joints are not vertices and the midpoint is the whole edge's (as Convert Entities)
+    var useSmooth = curves.length > 0;   // facets of one curved face are flagged (seam) only where the curves were found: tangent edges count then
+    function vk(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
+    var inc = {}, lines = [];
+    edges.forEach(function (e) {
+      if (e.seam || (e.smooth && !useSmooth) || !e.faces || !e.faces.some(faceShown)) return;
+      var ka = e.ka || vk(e.a), kb = e.kb || vk(e.b);
+      (inc[ka] = inc[ka] || []).push(e); (inc[kb] = inc[kb] || []).push(e);
+      if (e.curve == null || !curves[e.curve]) lines.push({ e: e, ka: ka, kb: kb });
+    });
+    function udir(e) { var d = V.sub(e.b, e.a), l = V.len(d); return l > 1e-12 ? V.scale(d, 1 / l) : null; }
+    function joint(k) {
+      var l = inc[k];
+      if (!l || l.length !== 2 || l.some(function (e) { return e.curve != null && curves[e.curve]; })) return false;
+      var u = udir(l[0]), w = udir(l[1]);
+      return !!(u && w && V.len(V.cross(u, w)) < 1e-7);
+    }
+    var byEdge = new Map(), used = new Set();
+    lines.forEach(function (L) { byEdge.set(L.e, L); });
+    lines.forEach(function (L) {
+      if (used.has(L.e)) return;
+      used.add(L.e);
+      // walk out through joints from end key k of L: the far end point of the joined run
+      function walk(k) {
+        var e = L.e, key = k, p = k === L.ka ? L.e.a : L.e.b, guard = 0;
+        while (joint(key) && guard++ < 10000) {
+          var nx = inc[key][0] === e ? inc[key][1] : inc[key][0], NL = byEdge.get(nx);
+          if (!NL || used.has(nx)) break;
+          used.add(nx);
+          var far = NL.ka === key ? NL.kb : NL.ka;
+          p = far === NL.ka ? nx.a : nx.b; key = far; e = nx;
+        }
+        return p;
+      }
+      var A = walk(L.ka), B = walk(L.kb), a = p2(A), b = p2(B);
+      add(a, 'mvertex'); add(b, 'mvertex');
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) return;   // square to the sketch: a point
+      add([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], 'mmid');
+      if (res.segs.length < MODEL_MAX) res.segs.push({ a: a, b: b, lo: [Math.min(a[0], b[0]), Math.min(a[1], b[1])], hi: [Math.max(a[0], b[0]), Math.max(a[1], b[1])] });
+    });
+    // faces parallel to the sketch (the one it sits on first): the area centroid of each connected region
+    var nf = 0, onPlane = [], other = [], fedges = {};
+    m.faces.forEach(function (fc, fi) {
+      if (!fc.normal || !square(fc.normal) || !faceShown(fi) || (fc.polys && fc.polys[0] && fc.polys[0].surf)) return;
+      var hf = fc.centroid ? V.dot(n, fc.centroid) : fc.w * (V.dot(fc.normal, n) > 0 ? 1 : -1), h0 = V.dot(n, pl.origin);
+      (Math.abs(hf - h0) < 1e-6 * Math.max(1, Math.abs(h0)) ? onPlane : other).push(fi);
+      fedges[fi] = [];
+    });
+    edges.forEach(function (e) { (e.faces || []).forEach(function (fi) { if (fedges[fi]) fedges[fi].push(e); }); });
+    onPlane.concat(other).forEach(function (fi) {
+      if (nf++ >= MODEL_FACES_MAX) return;
+      faceCenters(m, fi, pl, fedges[fi], arcOf).forEach(function (q) { add(q, 'mface'); });
+    });
+    if (isFinite(lo[0])) add([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2], 'mpart');
+    if (!th) {
+      var mp = null;
+      try { mp = K.massProps(m); } catch (e) { mp = null; }
+      if (mp && mp.volume > 1e-12 && mp.centroid) add(p2(mp.centroid), 'mmass');
+    }
+    if (res.pts.length > MODEL_MAX) res.pts = res.pts.sort(function (x, y) { return MODEL_RANK[x.kind] - MODEL_RANK[y.kind]; }).slice(0, MODEL_MAX);
+  }
+  // The area centroids (sketch coordinates) of the connected regions of planar face fi, which is parallel to plane pl,
+  // from its outline edges fe in App.edges (bodyEdges: the first face listed on an edge runs it a -> b with the face on
+  // its left, the second b -> a): one loop per connected set of edges, each hole taken out of the outer loop around it,
+  // and the circular segment between each facet chord of a true arc (e.curve) and the arc itself added or taken away,
+  // so a face with round holes or round ends has its exact centre. Falls back to the facets' centroid.
+  function faceCenters(m, fi, pl, fe, arcOf) {
+    var fc = m.faces[fi], V = K.vec, s = V.dot(fc.normal, pl.n) > 0 ? 1 : -1;
+    if (!fe || fe.length < 3) {
+      var P = m.positions64 || m.positions, A = 0, c = [0, 0, 0];
+      for (var t = fc.start; t < fc.start + fc.count; t++) {
+        var i = t * 9, a = [P[i], P[i + 1], P[i + 2]], b = [P[i + 3], P[i + 4], P[i + 5]], d = [P[i + 6], P[i + 7], P[i + 8]];
+        var w = V.len(V.cross(V.sub(b, a), V.sub(d, a))) / 2;
+        A += w; for (var k = 0; k < 3; k++) c[k] += w * (a[k] + b[k] + d[k]) / 3;
+      }
+      return A > 1e-12 ? [K.to2D(pl, [c[0] / A, c[1] / A, c[2] / A])] : [];
+    }
+    // loops: edges joined through shared end keys (union-find)
+    var up = {}, loops = {}, list = [];
+    function vk(p) { return Math.round(p[0] * 1000) + ',' + Math.round(p[1] * 1000) + ',' + Math.round(p[2] * 1000); }
+    function root(k) { while (up[k] !== k) { up[k] = up[up[k]]; k = up[k]; } return k; }
+    fe.forEach(function (e) {
+      var ka = e.ka || vk(e.a), kb = e.kb || vk(e.b);
+      if (up[ka] == null) up[ka] = ka;
+      if (up[kb] == null) up[kb] = kb;
+      var ra = root(ka), rb = root(kb);
+      if (ra !== rb) up[ra] = rb;
+    });
+    fe.forEach(function (e) {
+      var r = root(e.ka || vk(e.a)), L = loops[r];
+      if (!L) { L = loops[r] = { segs: [], A: 0, Mx: 0, My: 0 }; list.push(L); }
+      var fwd = e.faces[0] === fi, p = K.to2D(pl, fwd ? e.a : e.b), q = K.to2D(pl, fwd ? e.b : e.a);
+      L.segs.push([p, q]);
+      // shoelace terms, signed about the face's own normal (outer loops positive, holes negative)
+      var cr = s * (p[0] * q[1] - q[0] * p[1]);
+      L.A += cr / 2; L.Mx += (p[0] + q[0]) * cr / 6; L.My += (p[1] + q[1]) * cr / 6;
+      var ar = e.curve != null ? arcOf[e.curve] : null;
+      if (!ar) return;
+      var tol = 1e-5 * Math.max(1, ar.r);
+      if (Math.abs(Math.hypot(p[0] - ar.c[0], p[1] - ar.c[1]) - ar.r) > tol || Math.abs(Math.hypot(q[0] - ar.c[0], q[1] - ar.c[1]) - ar.r) > tol) return;   // a piece of a chord
+      var th = 2 * Math.asin(Math.min(1, Math.hypot(q[0] - p[0], q[1] - p[1]) / (2 * ar.r)));
+      var mx = (p[0] + q[0]) / 2 - ar.c[0], my = (p[1] + q[1]) / 2 - ar.c[1], ml = Math.hypot(mx, my);
+      if (th < 1e-6 || ml < 1e-12) return;
+      var u = [mx / ml, my / ml], As = ar.r * ar.r / 2 * (th - Math.sin(th)), dc = 4 * ar.r * Math.pow(Math.sin(th / 2), 3) / (3 * (th - Math.sin(th)));
+      // the segment lies on the bulge side (u) of the chord: it adds to the face when that side is outside the loop
+      // (right of the chord, the face being on its left), as on a round end, and is taken away for a hole
+      var sg = s * ((q[0] - p[0]) * u[1] - (q[1] - p[1]) * u[0]) < 0 ? 1 : -1;
+      L.A += sg * As; L.Mx += sg * As * (ar.c[0] + u[0] * dc); L.My += sg * As * (ar.c[1] + u[1] * dc);
+    });
+    // crossing number of a ray from pt against a loop's segments (in any order)
+    function inside(pt, segs) {
+      var c = false;
+      segs.forEach(function (g) {
+        var a = g[0], b = g[1];
+        if ((a[1] > pt[1]) !== (b[1] > pt[1]) && pt[0] < (b[0] - a[0]) * (pt[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+      });
+      return c;
+    }
+    // each hole belongs to the smallest outer loop around it
+    var outers = list.filter(function (l) { return l.A > 0; });
+    outers.forEach(function (l) { l.sum = { A: l.A, Mx: l.Mx, My: l.My }; });
+    list.forEach(function (l) {
+      if (l.A > 0) return;
+      var own = null, pt = l.segs[0][0];
+      outers.forEach(function (ol) { if ((!own || ol.A < own.A) && inside(pt, ol.segs)) own = ol; });
+      if (own) { own.sum.A += l.A; own.sum.Mx += l.Mx; own.sum.My += l.My; }
+    });
+    var out = [];
+    outers.forEach(function (l) { if (l.sum.A > 1e-12) out.push([l.sum.Mx / l.sum.A, l.sum.My / l.sum.A]); });
+    return out;
+  }
+  // The model point nearest the cursor within tolPx screen pixels, or null; candidates within 1 px of the nearest go by
+  // rank (a vertex before a centre before a midpoint …), so a face centre and the centre of mass a hair apart read as one.
+  function modelPointSnap(mc, pl, raw, mx, my, px, tolPx) {
+    var lim = 3 * tolPx * px, hits = [], dmin = Infinity;
+    for (var i = 0; i < mc.pts.length; i++) {
+      var c = mc.pts[i];
+      if (Math.abs(c.pt[0] - raw[0]) > lim || Math.abs(c.pt[1] - raw[1]) > lim) continue;
+      var s = UI.worldToScreen(K.to3D(pl, c.pt[0], c.pt[1])), d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d < tolPx - 1e-9) { hits.push({ c: c, d: d }); if (d < dmin) dmin = d; }
+    }
+    var best = null;
+    hits.forEach(function (h) {
+      if (h.d > dmin + 1) return;
+      if (!best || MODEL_RANK[h.c.kind] < MODEL_RANK[best.c.kind] || (MODEL_RANK[h.c.kind] === MODEL_RANK[best.c.kind] && h.d < best.d)) best = h;
+    });
+    return best;
+  }
+  // The nearest point on a projected model edge (straight, or a true circle / arc square to the sketch) within tolPx
+  // screen pixels of the cursor: { p, d, seg | arc }, or null.
+  function modelEdgeSnap(mc, pl, raw, mx, my, px, tolPx) {
+    var lim = 3 * tolPx * px, best = null;
+    function consider(q, src) {
+      var s = UI.worldToScreen(K.to3D(pl, q[0], q[1])), d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d < (best ? best.d : tolPx)) best = { p: q, d: d, seg: src.seg, arc: src.arc };
+    }
+    mc.segs.forEach(function (sg) {
+      if (raw[0] < sg.lo[0] - lim || raw[0] > sg.hi[0] + lim || raw[1] < sg.lo[1] - lim || raw[1] > sg.hi[1] + lim) return;
+      var dx = sg.b[0] - sg.a[0], dy = sg.b[1] - sg.a[1], L2 = dx * dx + dy * dy;
+      var t = Math.max(0, Math.min(1, ((raw[0] - sg.a[0]) * dx + (raw[1] - sg.a[1]) * dy) / L2));
+      consider([sg.a[0] + t * dx, sg.a[1] + t * dy], { seg: sg });
+    });
+    mc.arcs.forEach(function (ar) {
+      var vx = raw[0] - ar.c[0], vy = raw[1] - ar.c[1], r = Math.hypot(vx, vy);
+      if (r < 1e-12 || Math.abs(r - ar.r) > lim || !onModelArc(ar, Math.atan2(vy, vx))) return;
+      consider([ar.c[0] + vx / r * ar.r, ar.c[1] + vy / r * ar.r], { arc: ar });
+    });
+    return best;
+  }
+  // where model edge hit (from modelEdgeSnap) crosses the line coordinate k (0: x, 1: y) = v, nearest raw; or null
+  function modelEdgeAt(hit, k, v, raw) {
+    var j = 1 - k, q = null;
+    if (hit.seg) {
+      var a = hit.seg.a, b = hit.seg.b, d = b[k] - a[k], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (Math.abs(d) > 1e-9 * L) {
+        var t = (v - a[k]) / d;
+        if (t < -1e-9 || t > 1 + 1e-9) return null;
+        q = []; q[k] = v; q[j] = a[j] + t * (b[j] - a[j]);
+      } else if (Math.abs(a[k] - v) < 1e-9 * Math.max(1, Math.abs(v))) { q = []; q[k] = v; q[j] = hit.p[j]; }   // along the edge itself
+      return q;
+    }
+    var ar = hit.arc, off = v - ar.c[k];
+    if (Math.abs(off) > ar.r) return null;
+    var s = Math.sqrt(ar.r * ar.r - off * off), best = null;
+    [s, -s].forEach(function (sj) {
+      var c = []; c[k] = v; c[j] = ar.c[j] + sj;
+      if (!onModelArc(ar, Math.atan2(c[1] - ar.c[1], c[0] - ar.c[0]))) return;
+      if (!best || Math.hypot(c[0] - raw[0], c[1] - raw[1]) < Math.hypot(best[0] - raw[0], best[1] - raw[1])) best = c;
+    });
+    return best;
+  }
+  UI.sketchModelSnaps = function () { return App.mode === 'sketch' && modelSnapOn() ? modelSnaps(UI.activePlane()) : null; };   // test / script hook
+
   // Where a drawing tool's next point goes for the cursor at sketch point raw (screen mx, my):
   // { p, snap: { kind, pt } | null, align: [{ from, axis: 'x' | 'y', prev }], px }.
   function inferPoint(raw, mx, my) {
@@ -333,10 +598,11 @@
     var px = out.px = pxSize(pl, mx, my), st = App.toolState || { pts: [] }, prev = st.pts[st.pts.length - 1];
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     // 1. an existing point
-    var cands = sketchPoints(f).slice();
+    var cands = sketchPoints(f).slice(), mc = modelSnapOn() ? modelSnaps(pl) : null;
     // r15/snapaudit15: a woken point whose entity is gone (Undo, Delete, a drag moved it) is forgotten, so nothing lines
-    // up with a point that is no longer there
-    if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || cands.some(function (c) { return c.pt[0] === w[0] && c.pt[1] === w[1]; }) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }); });
+    // up with a point that is no longer there (p9-modelsnap: a model point stays while the model has it)
+    function has(list, w) { return list.some(function (c) { return c.pt[0] === w[0] && c.pt[1] === w[1]; }); }
+    if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || has(cands, w) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }) || (mc && has(mc.pts, w)); });
     cands.push({ pt: [0, 0], kind: 'origin' });
     st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
     var best = null, bestD = INFER_PX.point;
@@ -344,6 +610,12 @@
       var s = scr(c.pt), d = Math.hypot(s[0] - mx, s[1] - my);
       if (d < bestD - 1e-9) { bestD = d; best = c; }
     });
+    // p9-modelsnap: then a model point (vertex, midpoint, centre, face / part centre …); a sketch point wins unless the
+    // model point is more than a pixel nearer
+    if (mc && mc.pts.length) {
+      var mp = modelPointSnap(mc, pl, raw, mx, my, px, INFER_PX.point);
+      if (mp && (!best || mp.d < bestD - 1)) best = mp.c;
+    }
     if (best) {
       out.p = [best.pt[0], best.pt[1]]; out.snap = best;
       // a point the cursor has passed over is "woken": inference lines can then align with it (as in SolidWorks)
@@ -445,6 +717,19 @@
       if (dx < tol && (!ax || dx < ax.d - 1e-9)) ax = { d: dx, c: c };
       if (dy < tol && (!ay || dy < ay.d - 1e-9)) ay = { d: dy, c: c };
     });
+    // p9-modelsnap: on a model edge (after the sketch's curves and direction locks). With one inference line the point
+    // goes where that line crosses the edge, so both hold; with none, or no crossing near the cursor, the nearest point
+    // on the edge; with two, the aligned point stands.
+    var mE = mc && !(ax && ay) && (mc.segs.length || mc.arcs.length) ? modelEdgeSnap(mc, pl, raw, mx, my, px, INFER_PX.curve) : null;
+    if (mE) {
+      var fx = ay ? { k: 1, al: ay } : ax ? { k: 0, al: ax } : null, qE = mE.p;
+      if (fx) {
+        var qa = modelEdgeAt(mE, fx.k, fx.al.c.pt[fx.k], raw), sa = qa && scr(qa);
+        if (qa && Math.hypot(sa[0] - mx, sa[1] - my) < INFER_PX.curve) { qE = qa; out.align.push({ from: fx.al.c.pt, axis: fx.k ? 'y' : 'x', prev: !!fx.al.c.prev }); }
+      }
+      out.p = qE.slice(); out.snap = { kind: 'medge', pt: out.p, model: true, label: MODEL_LABEL.medge };
+      return out;
+    }
     var h = 0.5 * px * 1.05, grid = App.view.showGrid ? UI.snapStep() : 0;
     function free(v) { return grid ? +(Math.round(v / grid) * grid).toPrecision(12) : niceRound(v, h); }
     out.p = [ax ? ax.c.pt[0] : free(raw[0]), ay ? ay.c.pt[1] : free(raw[1])];
@@ -1452,7 +1737,11 @@
       var a0 = scr(info.dir.from), vx = sp[0] - a0[0], vy = sp[1] - a0[1], vl = Math.hypot(vx, vy) || 1;
       svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
     }
-    if (info.snap) svg('circle', { cx: sp[0], cy: sp[1], r: info.snap.kind === 'on' ? 3 : 5, style: 'fill:' + (info.snap.kind === 'on' ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
+    // (p9-modelsnap: a point on the model in its own colour, MODEL_COLOR)
+    if (info.snap) {
+      var sCol = info.snap.model ? MODEL_COLOR : '#e8891c', sDot = info.snap.kind === 'on' || info.snap.kind === 'medge';
+      svg('circle', { cx: sp[0], cy: sp[1], r: sDot ? 3 : 5, 'class': info.snap.model ? 'sk-model-snap' : 'sk-snap', style: 'fill:' + (sDot ? sCol : 'none') + ';stroke:' + sCol + ';stroke-width:1.5' }, layer);
+    }
     // relation glyphs by the cursor: what the click will infer
     var types = [];
     if (info.snap && SNAP_GLYPH[info.snap.kind]) {
@@ -1465,6 +1754,14 @@
     if ((info.dir && info.dir.glyph) || info.tan || info.tanSlide) types.push('tangent');   // the arc tools' tangent guidance, the Line tool's tangent slide
     (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
     types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
+    // p9-modelsnap: a model snap adds no relation (no glyph); a small label by the cursor names it instead
+    if (info.snap && info.snap.model && info.snap.label) {
+      var ly = my + 12 + (types.length ? 20 : 0), lw = Math.round(info.snap.label.length * 6.2 + 10);
+      var lg = svg('g', { 'class': 'sk-snap-label' }, layer);
+      svg('rect', { x: mx + 14, y: ly, width: lw, height: 16, rx: 3, style: 'fill:var(--menu-bg);stroke:' + MODEL_COLOR + ';stroke-width:1' }, lg);
+      var lt = svg('text', { x: mx + 19, y: ly + 12, style: 'fill:var(--text);font-size:11px' }, lg);
+      lt.textContent = info.snap.label;
+    }
     if (readout) {
       var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:var(--blue);font-size:11px;pointer-events:none' }, layer);
       t.textContent = readout;

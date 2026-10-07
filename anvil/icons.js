@@ -79,6 +79,8 @@ var Icons = (function () {
     crect: rect(2.5, 4, 11, 8, 'none', B, 1.5) + ln('M6.5 8 h3 M8 6.5 v3', S, 1.1),
     // p9-sketchtab: Midpoint Line and the 3 Point / Parallelogram rectangle types
     midline: ln('M2.5 13 L13.5 3', B, 1.5) + circ(8, 8, 1.5, S, 'none') + circ(2.5, 13, 1.1, S, 'none') + circ(13.5, 3, 1.1, S, 'none'),
+    // Parallel Line: the reference (ink), the new line (blue) and the distance between them
+    parallelLine: ln('M1.5 9.5 L9.5 1.5', S, 1.3) + ln('M6.5 14.5 L14.5 6.5', B, 1.5) + ln('M6.2 6.2 L9.8 9.8', S, 1, 'stroke-dasharray="1.3 1"') + circ(6.5, 14.5, 1.1, S, 'none') + circ(14.5, 6.5, 1.1, S, 'none'),
     rect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + circ(2, 9.5, 1.2, S, 'none') + circ(8.5, 3, 1.2, S, 'none') + circ(14, 8.5, 1.2, S, 'none'),
     crect3: ln('M2 9.5 L8.5 3 L14 8.5 L7.5 15 z', B, 1.5) + ln('M7 9 h2 M8 8 v2', S, 1.1) + circ(11.25, 5.75, 1.2, S, 'none'),
     parallelogram: ln('M1.5 12.5 L5.5 3.5 H14.5 L10.5 12.5 z', B, 1.5) + circ(1.5, 12.5, 1.2, S, 'none') + circ(10.5, 12.5, 1.2, S, 'none') + circ(14.5, 3.5, 1.2, S, 'none'),

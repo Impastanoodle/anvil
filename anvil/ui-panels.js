@@ -68,11 +68,13 @@
       { id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
       { id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
       { sep: true },
-      // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line) and all five rectangle types, as SolidWorks
-      // (ui-sketch-lines.js: UI.lineMode, UI.cmdMidpointLine, the rect3 / crect3 / parallelogram tools)
+      // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line, Parallel Line) and all five rectangle types, as
+      // SolidWorks (ui-sketch-lines.js: UI.lineMode, UI.cmdMidpointLine, UI.cmdParallelLine, the rect3 / crect3 /
+      // parallelogram tools)
       { fly: 'line', items: [{ id: 'line', label: 'Line', tool: 'line', active: function () { return !UI.lineMode || UI.lineMode() === 'line'; } },
         { id: 'centerline', label: 'Centerline', tool: 'line', run: function () { UI.cmdCenterline(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'centerline'); } },
-        { id: 'midline', label: 'Midpoint\nLine', tool: 'line', help: 'Draw a line symmetric about its first point', run: function () { if (UI.cmdMidpointLine) UI.cmdMidpointLine(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'midline'); } }] },
+        { id: 'midline', label: 'Midpoint\nLine', tool: 'line', help: 'Draw a line symmetric about its first point', run: function () { if (UI.cmdMidpointLine) UI.cmdMidpointLine(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'midline'); } },
+        { id: 'parallelLine', label: 'Parallel\nLine', help: 'Draw a line parallel to a line or edge: through a point, at a distance or tangent to an arc', run: function () { if (UI.cmdParallelLine) UI.cmdParallelLine(); }, active: function () { return !!(UI.parallelLineActive && UI.parallelLineActive()); } }] },
       { fly: 'rect', items: [{ id: 'rect', label: 'Corner\nRectangle', tool: 'rect' }, { id: 'crect', label: 'Center\nRectangle', tool: 'crect' },
         { id: 'rect3', label: '3 Point Corner\nRectangle', tool: 'rect3', help: 'Rectangle at any angle from two corners and its height' },
         { id: 'crect3', label: '3 Point Center\nRectangle', tool: 'crect3', help: 'Rectangle at any angle from its center, a side midpoint and its height' },
@@ -1059,6 +1061,7 @@
         { label: 'Origins', checked: v.showOrigin, action: function () { v.showOrigin = !v.showOrigin; UI.updateOrigin(); } },
         { label: 'All Sketches', checked: v.showSketches, action: function () { v.showSketches = !v.showSketches; UI.updateSketches(); } },
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
+        { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
         { label: 'Sketch Relations', checked: v.showRelations !== false, action: function () { v.showRelations = v.showRelations === false; App.dimsStale = true; UI.setStatus(v.showRelations ? 'Relation icons shown next to sketch entities.' : 'Relation icons hidden.'); } },
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
@@ -1219,7 +1222,8 @@
       { label: 'Planes', checked: App.view.showPlanes, action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } },
       { label: 'Origins', checked: App.view.showOrigin, action: function () { App.view.showOrigin = !App.view.showOrigin; UI.updateOrigin(); } },
       { label: 'Sketches', checked: App.view.showSketches, action: function () { App.view.showSketches = !App.view.showSketches; UI.updateSketches(); } },
-      { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } }
+      { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } },
+      { label: 'Snap to model', checked: App.view.snapModel !== false, action: function () { App.view.snapModel = App.view.snapModel === false; } }   // p9-modelsnap
     ]; });
     hud.appendChild(el('span', { class: 'sep' }));
     btn('appearance', 'Edit Appearance', function () { UI.openTaskPane('appearance'); });

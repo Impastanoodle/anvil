@@ -14,7 +14,7 @@ var UI = (function () {
     mode: 'part', activeSketch: null,
     tool: null, toolState: null, tempEntities: [],
     command: null,
-    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: false, showDims: false, section: null, bg: 'gradient' },
+    view: { style: 'shadedEdges', showPlanes: false, showOrigin: true, showSketches: false, showGrid: false, snapModel: true, showDims: false, section: null, bg: 'gradient' },
     ribbonTab: 'Features',
     viewHistory: [],
     sketchDirty: false,

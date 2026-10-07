@@ -1303,3 +1303,9 @@ Tests: kernel 896/896, example --all --occt 29/29, ui-smoke 360/360, occt-tests 
 - dims: Dimension PM (tolerance / precision, name, driven, reverse, text 2X / TYP / REF, arc condition), Modify box, Add Relations (Coradial, Intersection, Merge), Display/Delete filters + Suppressed, `UI.sketchRelationGroups`, red over-defined, Fully Define Sketch.
 - spline: Spline (C2, tangent driving, local mode), Ellipse, Partial Ellipse: profiles with exact volumes, OCCT true curves, DXF SPLINE / ELLIPSE (R2000). Sketch Text not done.
 Tests: kernel 934/934, examples 29/29, ui-smoke 395/395, occt-tests 72/72; hand check in the browser (Insert Line, Rectangle, Circle PM driving the radius, Smart Dimension PM + Modify, Sketch Fillet ×2 with one R + Equal, Slot PM).
+
+## 2026-10-07T13 (interactive head, 2 subagents): Parallel Line and Snap to Model
+
+- lines: Parallel Line in the Line flyout (`UI.cmdParallelLine`, ui-sketch-lines.js, icon `parallelLine`): reference sketch line / polygon edge / straight model edge; Through point, Distance (Flip side, Both sides), Tangent to arc; Same as reference or typed Length; Parallel + line-to-line distance off sketch lines, nothing off model edges. Head: the Reference box showed the line twice (value + list); the list was dropped.
+- snaps: model snap candidates in ui-sketch.js `inferPoint` (vertex, midpoint, centre, quadrant, face centre, part centre, centre of mass; then on model edge), cached per rebuild + plane, magenta ring + label, no relations; `App.view.snapModel` (View menu and the heads-up Hide/Show list).
+Tests: kernel 934/934, examples 29/29, ui-smoke 399/399; hand check in the browser (line from a hole centre to a plate corner, exact, no relations; parallel line through a corner with Parallel + distance; View ▸ Snap to Model).
