@@ -295,6 +295,8 @@
     return { size: [r3(fd.bbox.umax - fd.bbox.umin), r3(fd.bbox.vmax - fd.bbox.vmin)], bendNotes: w.view.bendNotes || Drawing.docOptions(doc()).bendNotes,
       bends: fd.bends.map(function (b) { return { up: b.up, angle: r3(b.angle), R: r3(b.R), ba: b.ba != null ? r3(b.ba) : null, bd: b.bd != null ? r3(b.bd) : null, a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
       circles: fd.circles.length, arcs: fd.arcs.length, lines: fd.lines.length,
+      // the etch marks: how many the flat has, whether the view shows them, how many sheet primitives they drew
+      etch: (fd.etch || []).length, showEtch: w.view.showEtch !== false, etchPrims: D.sheet.prims.filter(function (p) { return p.etch && p.view === w.view.id; }).length,
       annotations: (D.sheet.annotations || []).filter(function (a) { return a.flat && a.view === w.view.id; }).map(function (a) { return { id: a.id, key: a.key, type: a.type, text: a.text, hidden: a.hidden, box: [a.box.x0, a.box.y0, a.box.x1, a.box.y1].map(function (x) { return +x.toFixed(3); }) }; }) };
   }
   // runs an engine call on a scratch copy first, so a refused view (missing parent, detail of a detail…) leaves no undo step
@@ -378,7 +380,8 @@
       },
       // sheet metal: flatView({ x, y, scale, bendNotes: 'notes' | 'table' | 'none' }) adds the flat-pattern view (one
       // undo step; null and a message on a part that is not sheet metal); flatViewProps(id, { bendNotes, flatSize,
-      // bendCols: ['bd', 'ba', 'k'] (the Bend Table's optional columns; null: BEND DED. only) });
+      // bendCols: ['bd', 'ba', 'k'] (the Bend Table's optional columns; null: BEND DED. only), showEtch (false hides
+      // the etch marks) });
       // flatAnnotation(viewId, key ('b0', 'b1' … | 'table' | 'size'), { off: [dx, dy], hidden })
       flatView: function (opts) {
         opts = opts || {};

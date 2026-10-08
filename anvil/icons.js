@@ -286,7 +286,26 @@ var Icons = (function () {
     layers: p('M8 9.5 L14.5 12 L8 14.5 L1.5 12 z', RL, RD, 1) + p('M8 6 L14.5 8.5 L8 11 L1.5 8.5 z', GL, GD, 1) + p('M8 2.5 L14.5 5 L8 7.5 L1.5 5 z', '#bcd6f5', B, 1),
     pasteSketch: rect(2.5, 2.5, 9, 12, '#e8d3a8', YD, 1) + rect(4.5, 1.5, 5, 2.5, F2, S, 0.9) + rect(6.5, 6, 8, 8.5, W, B, 1) + ln('M8.5 9 h4 M8.5 11.5 h2.5', B, 0.9),
     // levels (ui-levels.js): Levels Manager, a table of numbered levels with the main level's row in yellow
-    levels: rect(1.5, 1.5, 4.5, 3.5, Y, YD, 0.9) + ln('M8 3.25 h6.5', S, 1.3) + rect(1.5, 6.25, 4.5, 3.5, F1, S, 0.9) + ln('M8 8 h6.5', S, 1.3) + rect(1.5, 11, 4.5, 3.5, F1, S, 0.9) + ln('M8 12.75 h6.5', S, 1.3)
+    levels: rect(1.5, 1.5, 4.5, 3.5, Y, YD, 0.9) + ln('M8 3.25 h6.5', S, 1.3) + rect(1.5, 6.25, 4.5, 3.5, F1, S, 0.9) + ln('M8 8 h6.5', S, 1.3) + rect(1.5, 11, 4.5, 3.5, F1, S, 0.9) + ln('M8 12.75 h6.5', S, 1.3),
+    // rfC: the rest of SolidWorks 2024's Sketch tab, in the sketch-entity style above (blue entity 1.5, ink points 1.1,
+    // yellow for the part a tool makes): Sketch Fillet (the round in yellow, as Sketch Chamfer), 3D Sketch, 3D Sketch On
+    // Plane, Style Spline, Equation Driven Curve, Parabola, Conic, Quick Snaps, Rapid Sketch, Shaded Sketch Contours,
+    // Sketch Picture
+    skFillet: ln('M2 14 V8 a5 5 0 0 1 5 -5 H14', B, 1.5) + ln('M2 8 a5 5 0 0 1 5 -5', Y, 2.2) + ln('M2 8 V3 H7', S, 0.9, DASH),
+    sketch3d: ln('M1.5 14.5 h6 M1.5 14.5 V8 M1.5 14.5 l3.4 -3.4', P, 1.2) + ln('M3 6 L7.5 2 L12.5 4.5', B, 1.5) + circ(3, 6, 1.1, S, 'none') + circ(12.5, 4.5, 1.1, S, 'none') + PENCIL,
+    sketch3dPlane: p('M1.5 10.5 l3.5 -6 h9 l-3.5 6 z', PL, P, 1.1) + ln('M4.5 8.5 L10 6', B, 1.5) + PENCIL,
+    styleSpline: ln('M2 13 L5 3 L11 13 L14 3', S, 0.9, DASH) + ln('M2 13 C5 1 11 15 14 3', B, 1.5) + circ(5, 3, 1, S, 'none') + circ(11, 13, 1, S, 'none'),
+    eqnCurve: ln('M1.5 9.5 C4 2 6.5 2 8.5 7 S12.5 12.5 14.5 4.5', B, 1.5) + txt(5, 15, 5, 'f(x)', S, 'Georgia, serif', 600),
+    parabola: ln('M2 2 Q8 22 14 2', B, 1.5) + circ(8, 8.5, 1.1, S, 'none') + ln('M5 12 h6', S, 0.9, DASH),
+    conic: ln('M2 13 L4.5 3 L14 3.5', S, 0.9, DASH) + ln('M2 13 Q4.5 3 14 3.5', B, 1.5) + circ(2, 13, 1.1, S, 'none') + circ(14, 3.5, 1.1, S, 'none'),
+    quickSnaps: circ(8, 8, 4.5, 'none', S, 1.1) + ln('M8 1.5 v3 M8 11.5 v3 M1.5 8 h3 M11.5 8 h3', S, 1.1) + circ(8, 8, 1.7, Y, YD, 0.9),
+    rapidSketch: blk(1.5, 6.5, 8, 6, 3) + ln('M3 13.5 L6 10.5', B, 1.4) + PENCIL,
+    shadedContours: p('M2.5 13 V3.5 h6 l5 4.5 V13 z', '#bcd6f5', B, 1.5) + rect(5, 6, 3, 3, W, B, 1.1),
+    sketchPicture: rect(1.5, 2.5, 13, 11, W, S, 1.1, 'rx="0.6"') + p('M2.2 12.8 l3.8 -4.8 3 3 2 -2 3.3 3.8 z', GL, GD, 0.9) + circ(11, 5.5, 1.3, Y, 'none') + ln('M3.5 5 h4', B, 1.3),
+    // selection lists (ui-commands.js pickList): the kind of each listed item, as SolidWorks' selection boxes show it
+    edgeSel: blk(2, 4.5, 9, 7, 3.5) + ln('M2 8 h9', B, 2),
+    faceSel: blk(2, 4.5, 9, 7, 3.5, '#9ec5f0'),
+    vertexSel: blk(2, 4.5, 9, 7, 3.5) + circ(11, 8, 1.8, B, W, 0.9)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

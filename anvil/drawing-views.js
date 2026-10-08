@@ -553,7 +553,10 @@
     return out;
   }
   // flatData(mesh, model?, build?) -> { units, frame: { e, u, v }, lines, circles, arcs, bends: [{ a, b, up, angle, R,
-  // i, ba, bd, method, source }] (ba / bd: the bend allowance and deduction Kernel.flatPattern used), bbox: { umin, umax, vmin, vmax }, sheet, proj } | { error } | null: the flat pattern of the part shown by mesh,
+  // i, ba, bd, method, source }] (ba / bd: the bend allowance and deduction Kernel.flatPattern used), etch (the flat's
+  // marks, Kernel.flatPattern's flat.etch: Etch text strokes and ETCH-layer geometry, in the view's coordinates: { t:
+  // 'line', a, b } | { t: 'arc', c, r, a0, a1 (degrees, counterclockwise) } | { t: 'circle', c, r } | { t: 'poly', pts,
+  // closed }), bbox: { umin, umax, vmin, vmax }, sheet, proj } | { error } | null: the flat pattern of the part shown by mesh,
   // cached on the mesh (meshes are immutable once built, so a rebuild makes a new one). The model and build default to
   // the ones the sheet being worked out belongs to (_.CTX, set by compute); with no build the part is rebuilt here.
   // The kernel's flat needs Anvil's own mesh (its faces carry the sheet's walls), so with an OpenCascade mesh on screen
@@ -584,6 +587,7 @@
         bends: flat.bends.map(function (b, i) {
           return { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i, ba: b.ba != null ? +b.ba : null, bd: b.bd != null ? +b.bd : null, method: b.method || null, source: b.source || null };
         }),
+        etch: (flat.etch || []).map(function (it) { return JSON.parse(JSON.stringify(it)); }),
         bbox: { umin: bb.min[0], umax: bb.max[0], vmin: bb.min[1], vmax: bb.max[1] }, sheet: flat.sheet, loops: flat.loops.length };
     } catch (e) { res = { units: units, error: String(e && e.message || e) }; }
     if (mesh && typeof mesh === 'object') try { Object.defineProperty(mesh, '_drawingFlat', { value: res, configurable: true, writable: true, enumerable: false }); } catch (e4) { }

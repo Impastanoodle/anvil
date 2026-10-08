@@ -65,8 +65,19 @@
       { id: 'curves', label: 'Curves' },
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
+    // rfC: the Sketch tab as SolidWorks 2024's CommandManager lays it out: Sketch ▾ (3D Sketch) and Smart Dimension ▾
+    // large; the sketch entities as a grid of small icon buttons, three rows filled column by column (Line ▾ / Circle ▾ /
+    // Spline ▾, Rectangle ▾ / Arc ▾ / Ellipse ▾, Slot ▾ / Polygon / Sketch Fillet ▾, Text / Plane / Point); Trim
+    // Entities ▾, Convert Entities ▾ and Offset Entities large; the Mirror Entities ▾ / Linear Sketch Pattern ▾ / Move
+    // Entities ▾ column; Display/Delete Relations ▾ (Add Relation, Fully Define Sketch) large; the Repair Sketch / Quick
+    // Snaps / Rapid Sketch column and Construction Geometry / Shaded Sketch Contours / Sketch Picture; then Anvil's own
+    // sheet-metal-shop commands after a separator (Levels, Sketch to DXF, Insert DXF / DWG, Check Sketch for Feature).
+    // Every item keeps its id / tool / run (other files and the tests find them by id and label); `icon` names the glyph
+    // when the id is shared with another command; an item with neither run nor tool is SolidWorks' and greyed.
     Sketch: [
-      { id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
+      { fly: 'sketch', items: [{ id: 'sketch', label: 'Sketch', run: function () { UI.cmdSketch(); }, dyn: function () { return App.mode === 'sketch' ? { id: 'exitSketch', label: 'Exit\nSketch' } : null; } },
+        { id: 'sketch3d', label: '3D Sketch', help: 'Sketch lines, splines and points in space, not on a plane' },
+        { id: 'sketch3dPlane', label: '3D Sketch On Plane', help: 'Sketch on a plane inside a 3D sketch' }] },
       // sketch-ordinate: the Smart Dimension flyout (SolidWorks): Horizontal / Vertical Dimension and Horizontal / Vertical
       // Ordinate Dimension (ui-sketch-dims.js)
       { fly: 'dim', items: [{ id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
@@ -75,34 +86,46 @@
         { id: 'ordinateH', label: 'Horizontal Ordinate\nDimension', help: 'Dimension points, holes and edges horizontally from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('x'); } },
         { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', help: 'Dimension points, holes and edges vertically from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('y'); } }] },
       { sep: true },
-      // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line, Parallel Line) and all five rectangle types, as
-      // SolidWorks (ui-sketch-lines.js: UI.lineMode, UI.cmdMidpointLine, UI.cmdParallelLine, the rect3 / crect3 /
-      // parallelogram tools)
-      { fly: 'line', items: [{ id: 'line', label: 'Line', tool: 'line', active: function () { return !UI.lineMode || UI.lineMode() === 'line'; } },
-        { id: 'centerline', label: 'Centerline', tool: 'line', run: function () { UI.cmdCenterline(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'centerline'); } },
-        { id: 'midline', label: 'Midpoint\nLine', tool: 'line', help: 'Draw a line symmetric about its first point', run: function () { if (UI.cmdMidpointLine) UI.cmdMidpointLine(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'midline'); } },
-        { id: 'parallelLine', label: 'Parallel\nLine', help: 'Draw a line parallel to a line or edge: through a point, at a distance or tangent to an arc', run: function () { if (UI.cmdParallelLine) UI.cmdParallelLine(); }, active: function () { return !!(UI.parallelLineActive && UI.parallelLineActive()); } },
-        // ui-sketch-construct.js: Tangent Line, Perpendicular Line, Bisector (Mastercam / AutoCAD construction lines)
-        { id: 'tangentLine', label: 'Tangent\nLine', help: 'Draw a line tangent to two circles or arcs, or to one at an angle', run: function () { if (UI.cmdTangentLine) UI.cmdTangentLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentLine')); } },
-        { id: 'perpLine', label: 'Perpendicular\nLine', help: 'Draw a line square to a line or edge through a point', run: function () { if (UI.cmdPerpendicularLine) UI.cmdPerpendicularLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('perpLine')); } },
-        { id: 'bisectorLine', label: 'Bisector', help: 'Draw the line bisecting the angle between two lines', run: function () { if (UI.cmdBisectorLine) UI.cmdBisectorLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('bisectorLine')); } }] },
-      { fly: 'rect', items: [{ id: 'rect', label: 'Corner\nRectangle', tool: 'rect' }, { id: 'crect', label: 'Center\nRectangle', tool: 'crect' },
-        { id: 'rect3', label: '3 Point Corner\nRectangle', tool: 'rect3', help: 'Rectangle at any angle from two corners and its height' },
-        { id: 'crect3', label: '3 Point Center\nRectangle', tool: 'crect3', help: 'Rectangle at any angle from its center, a side midpoint and its height' },
-        { id: 'parallelogram', label: 'Parallelogram', tool: 'parallelogram', help: 'Parallelogram from three corners' }] },
-      // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
-      { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter\nCircle', tool: 'pcircle', help: 'Circle through three points on it' },
-        { id: 'tangentCircle', label: 'Tangent\nCircle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
-      { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint\nArc', tool: 'arc' }, { id: 'arc3', label: '3 Point\nArc', tool: 'arc3' }] },
-      { id: 'polygon', label: 'Polygon', tool: 'polygon' },
-      { id: 'slot', label: 'Straight\nSlot', tool: 'slot' },
-      { id: 'point', label: 'Point', tool: 'point' },
-      // ui-sketch-spline: Spline, the Ellipse ▸ Partial Ellipse flyout (small, inside the stack) and Text
-      { stack: [{ id: 'spline', label: 'Spline', tool: 'spline' }, { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' }] }, { id: 'text', label: 'Text', tool: 'text' }] },
+      { grid: true, stack: [
+        // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line, Parallel Line; ui-sketch-lines.js) with the
+        // construction lines of ui-sketch-construct.js (Tangent Line, Perpendicular Line, Bisector)
+        { fly: 'line', items: [{ id: 'line', label: 'Line', tool: 'line', active: function () { return !UI.lineMode || UI.lineMode() === 'line'; } },
+          { id: 'centerline', label: 'Centerline', tool: 'line', run: function () { UI.cmdCenterline(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'centerline'); } },
+          { id: 'midline', label: 'Midpoint Line', tool: 'line', help: 'Draw a line symmetric about its first point', run: function () { if (UI.cmdMidpointLine) UI.cmdMidpointLine(); }, active: function () { return !!(UI.lineMode && UI.lineMode() === 'midline'); } },
+          { id: 'parallelLine', label: 'Parallel Line', help: 'Draw a line parallel to a line or edge: through a point, at a distance or tangent to an arc', run: function () { if (UI.cmdParallelLine) UI.cmdParallelLine(); }, active: function () { return !!(UI.parallelLineActive && UI.parallelLineActive()); } },
+          { id: 'tangentLine', label: 'Tangent Line', help: 'Draw a line tangent to two circles or arcs, or to one at an angle', run: function () { if (UI.cmdTangentLine) UI.cmdTangentLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentLine')); } },
+          { id: 'perpLine', label: 'Perpendicular Line', help: 'Draw a line square to a line or edge through a point', run: function () { if (UI.cmdPerpendicularLine) UI.cmdPerpendicularLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('perpLine')); } },
+          { id: 'bisectorLine', label: 'Bisector', help: 'Draw the line bisecting the angle between two lines', run: function () { if (UI.cmdBisectorLine) UI.cmdBisectorLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('bisectorLine')); } }] },
+        // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
+        { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter Circle', tool: 'pcircle', help: 'Circle through three points on it' },
+          { id: 'tangentCircle', label: 'Tangent Circle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
+        // ui-sketch-spline: Spline (SolidWorks' Style Spline and Equation Driven Curve greyed)
+        { fly: 'spline', items: [{ id: 'spline', label: 'Spline', tool: 'spline' },
+          { id: 'styleSpline', label: 'Style Spline', help: 'A single Bézier curve shaped by its control polygon' },
+          { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)' }] },
+        // all five rectangle types (ui-sketch-lines.js: the rect3 / crect3 / parallelogram tools)
+        { fly: 'rect', items: [{ id: 'rect', label: 'Corner Rectangle', tool: 'rect' }, { id: 'crect', label: 'Center Rectangle', tool: 'crect' },
+          { id: 'rect3', label: '3 Point Corner Rectangle', tool: 'rect3', help: 'Rectangle at any angle from two corners and its height' },
+          { id: 'crect3', label: '3 Point Center Rectangle', tool: 'crect3', help: 'Rectangle at any angle from its center, a side midpoint and its height' },
+          { id: 'parallelogram', label: 'Parallelogram', tool: 'parallelogram', help: 'Parallelogram from three corners' }] },
+        // the Arc flyout: Centerpoint Arc, Tangent Arc, 3 Point Arc (ui-sketch-curves.js)
+        { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint Arc', tool: 'arc' }, { id: 'tarc', label: 'Tangent Arc', tool: 'tarc', help: 'Arc tangent to the end of a line or arc' }, { id: 'arc3', label: '3 Point Arc', tool: 'arc3' }] },
+        // the Ellipse flyout: Ellipse, Partial Ellipse (ui-sketch-spline.js); Parabola and Conic greyed
+        { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' },
+          { id: 'parabola', label: 'Parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
+        // the Slot flyout: the four slot types (ui-sketch-curves.js)
+        { fly: 'slot', items: [{ id: 'slot', label: 'Straight Slot', tool: 'slot' }, { id: 'cslot', label: 'Centerpoint Straight Slot', tool: 'cslot', help: 'Slot from its center, one end and a width' },
+          { id: 'aslot3', label: '3 Point Arc Slot', tool: 'aslot3', help: 'Curved slot from three points on its centerline and a width' },
+          { id: 'aslot', label: 'Centerpoint Arc Slot', tool: 'aslot', help: 'Curved slot from an arc center, its start and end and a width' }] },
+        { id: 'polygon', label: 'Polygon', tool: 'polygon' },
+        // ui-sketch-tools.js: Sketch Fillet ▸ Sketch Chamfer
+        { fly: 'skFillet', items: [{ id: 'fillet', icon: 'skFillet', label: 'Sketch Fillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } }, { id: 'skChamfer', label: 'Sketch Chamfer', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchChamfer(); } }] },
+        { id: 'text', label: 'Text', tool: 'text' },
+        { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
+        { id: 'point', label: 'Point', tool: 'point' }] },
       { sep: true },
-      // sketch tools (ui-sketch-tools.js), as SolidWorks 2024 groups them: Sketch Fillet ▸ Sketch Chamfer, Trim ▸ Extend,
-      // Convert Entities ▸ Intersection Curve, Offset Entities, and the small Mirror / Sketch Pattern / Move Entities flyouts
-      { fly: 'skFillet', items: [{ id: 'fillet', label: 'Sketch\nFillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } }, { id: 'skChamfer', label: 'Sketch\nChamfer', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchChamfer(); } }] },
+      // sketch tools (ui-sketch-tools.js, ui-sketch-construct.js), as SolidWorks 2024 groups them: Trim ▸ Extend / Split /
+      // Join, Convert Entities ▸ Intersection Curve, Offset Entities, and the small Mirror / Sketch Pattern / Move flyouts
       { fly: 'trim', items: [{ id: 'trim', label: 'Trim\nEntities', run: function () { UI.cmdTrimEntities(); } }, { id: 'extend', label: 'Extend\nEntities', run: function () { UI.cmdExtendEntities(); } },
         { id: 'splitEnt', label: 'Split\nEntities', help: 'Split a line, arc or circle at a point, or everything at its intersections', run: function () { if (UI.cmdSplitEntities) UI.cmdSplitEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('splitEnt')); } },
         { id: 'joinEnt', label: 'Join\nEntities', help: 'Join collinear lines, or arcs on one circle, into one', run: function () { if (UI.cmdJoinEntities) UI.cmdJoinEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('joinEnt')); } }] },
@@ -111,21 +134,28 @@
       { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
-      { stack: [{ id: 'relations', label: 'Display/Delete Relations', run: function () { UI.cmdDisplayRelations(); } }] },
-      { stack: [{ id: 'addRelation', label: 'Add Relation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } },
-        { id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
-        { id: 'centerline', label: 'Centerline', run: function () { UI.cmdCenterline(); } }] },
-      { stack: [{ id: 'fullyDefine', label: 'Fully Define Sketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },   // sketchdims
+      { sep: true },
+      // the Display/Delete Relations flyout (SolidWorks): Display/Delete Relations, Add Relation, Fully Define Sketch
+      // (ui-relations.js, ui-sketch-dims.js)
+      { fly: 'relations', items: [{ id: 'relations', label: 'Display/Delete\nRelations', run: function () { UI.cmdDisplayRelations(); } },
+        { id: 'addRelation', label: 'Add\nRelation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } },
+        { id: 'fullyDefine', label: 'Fully Define\nSketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },
+      // dxf-import: Repair Sketch (ui-sketch-import.js); Quick Snaps and Rapid Sketch are SolidWorks' and greyed
+      { stack: [{ id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } },
+        { id: 'quickSnaps', label: 'Quick Snaps', help: 'Snap the next point to one kind of geometry only (a midpoint, a center, an intersection…)' },
+        { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any face without starting a sketch on it first' }] },
+      // Construction Geometry (ui-relations.js); Shaded Sketch Contours is View ▸ Sketch Regions (ui-sketch-layers.js)
+      { stack: [{ id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
+        { id: 'shadedContours', label: 'Shaded Sketch Contours', help: 'Shade the closed regions of the sketch and mark its open ends (View ▸ Sketch Regions)', run: function () { toggleSketchRegions(); }, active: function () { return App.view.sketchRegions !== false; } },
+        { id: 'sketchPicture', label: 'Sketch Picture', help: 'Place a picture in the sketch to trace over' }] },
+      { sep: true },
       // sketch-layers / levels: the Levels Manager tab (ui-levels.js, Mastercam's part-wide levels: CUT, ETCH and BEND
       // with their own colours, shown or hidden, written to the DXF on their names); the sketch's Layers PM without it
       { id: 'levels', label: 'Levels', help: 'Levels Manager: numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, written to the DXF on their names', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },
-      { sep: true },
-      { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
       { id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
-      // dxf-import: Insert DXF, Check Sketch for Feature, Repair Sketch (ui-sketch-import.js)
-      { id: 'importDxf', label: 'Insert\nDXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
-      { stack: [{ id: 'checkSketch', label: 'Check Sketch for Feature', help: 'Find open endpoints, gaps, duplicates and crossings that keep the sketch from making a feature', run: function () { UI.cmdCheckSketch(); } },
-        { id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } }] }
+      // dxf-import: Insert DXF / DWG, Check Sketch for Feature (ui-sketch-import.js)
+      { stack: [{ id: 'importDxf', label: 'Insert DXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
+        { id: 'checkSketch', label: 'Check Sketch for Feature', help: 'Find open endpoints, gaps, duplicates and crossings that keep the sketch from making a feature', run: function () { UI.cmdCheckSketch(); } }] }
     ],
     Evaluate: [
       { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
@@ -197,10 +227,10 @@
     'Swept Cut': 'Remove material along a path', 'Lofted Cut': 'Remove material lofted through section sketches',
     'Fillet': 'Round the selected edges', 'Chamfer': 'Bevel the selected edges', 'Linear Pattern': 'Repeat a feature along one or two directions', 'Circular Pattern': 'Repeat a feature about an axis', 'Mirror': 'Mirror a feature or the body about a plane',
     'Shell': 'Hollow the body, removing the selected faces', 'Reference Geometry': 'Create an offset reference plane',
-    'Sketch': 'Start a sketch on the selected plane or face', 'Exit Sketch': 'Close the sketch and return to the part', 'Smart Dimension': 'Dimension sketch entities',
-    'Line': 'Draw a line', 'Corner Rectangle': 'Rectangle from two corners', 'Center Rectangle': 'Rectangle from its center', 'Circle': 'Circle from center and radius', 'Centerpoint Arc': 'Arc from center, start and end', '3 Point Arc': 'Arc from its start, end and a point on it', 'Polygon': 'Regular polygon', 'Straight Slot': 'Slot from two centers and a width', 'Point': 'Sketch point',
-    'Sketch Fillet': 'Round a sketch corner', 'Sketch Chamfer': 'Bevel a sketch corner', 'Intersection Curve': 'Sketch where a plane or face crosses the model', 'Trim Entities': 'Trim or extend sketch entities', 'Convert Entities': 'Project model edges into the sketch', 'Offset Entities': 'Offset sketch entities by a distance',
-    'Plane': 'Create an offset reference plane', 'Sketch to DXF': 'Export the active sketch as DXF',
+    'Sketch': 'Start a sketch on the selected plane or face', 'Exit Sketch': 'Close the sketch and return to the part', 'Smart Dimension': 'Dimension sketch entities: click an entity (or two), then where the value goes',
+    'Line': 'Draw lines: click point after point, or press and drag for one', 'Corner Rectangle': 'Rectangle from two corners', 'Center Rectangle': 'Rectangle from its center', 'Circle': 'Circle from center and radius', 'Centerpoint Arc': 'Arc from center, start and end', '3 Point Arc': 'Arc from its start, end and a point on it', 'Polygon': 'Regular polygon from its center and a side or corner', 'Straight Slot': 'Slot from two centers and a width', 'Point': 'Place a sketch point',
+    'Sketch Fillet': 'Round a sketch corner with a tangent arc', 'Sketch Chamfer': 'Bevel a sketch corner', 'Intersection Curve': 'Sketch where a plane or face crosses the model', 'Trim Entities': 'Trim or extend sketch entities to where they cross', 'Convert Entities': 'Project model edges into the sketch', 'Offset Entities': 'Offset sketch entities by a distance',
+    'Plane': 'Create an offset reference plane', 'Sketch to DXF': 'Export the active sketch as DXF (layers, colours and line types kept)',
     'Measure': 'Measure distances, lengths and areas', 'Mass Properties': 'Volume, mass, centroid and bounding box', 'Section View': 'Cut the view with a section plane', 'Face to DXF': 'Export the selected face outline as DXF',
     'Base Flange/Tab': 'Turn a sketch into the first sheet-metal body and set the sheet parameters', 'Edge Flange': 'Bend a wall from a straight edge of the sheet',
     'Miter Flange': 'Bend walls from adjacent edges and join them at the corner', 'Hem': 'Fold the sheet back over itself along an edge', 'Jog': 'Step the sheet up or down with two bends',
@@ -218,7 +248,7 @@
     'Draft': 'Taper faces by an angle to a neutral plane', 'Intersect': 'Intersect solids, surfaces or planes to keep or remove regions',
     'Rib': 'Add a thin wall from an open sketch', 'Wrap': 'Wrap a sketch onto a face', 'Curves': 'Helix, projected and composite curves',
     'Axis': 'Create a reference axis', 'Coordinate System': 'Create a reference coordinate system',
-    'Spline': 'Draw a smooth curve through points', 'Ellipse': 'Ellipse from center and two radii', 'Text': 'Sketch text along a line or curve',
+    'Spline': 'Draw a smooth curve through points', 'Ellipse': 'Ellipse from center and two radii', 'Text': 'Single-stroke etch text or cut outlines, straight or along a line or arc',
     'Partial Ellipse': 'Elliptical arc from center, two radii, start and end',
     'Extend Entities': 'Lengthen a sketch entity to the next entity in its way', 'Mirror Entities': 'Mirror sketch entities about a centerline',
     'Linear Sketch Pattern': 'Repeat sketch entities in rows and columns', 'Circular Sketch Pattern': 'Repeat sketch entities round a centre', 'Dynamic Mirror': 'Mirror sketch entities as you draw them',
@@ -254,17 +284,18 @@
   function ribbonTip(id, label, enabled, needsSketch, help) {
     var key = UI.shortcutFor ? UI.shortcutFor(id) : null;
     var desc = help || (UI.drawingActive && UI.drawingActive() && DRAW_HELP[label]) || RIBBON_HELP[label] || '';
-    if (!enabled) return { name: label, key: '', desc: desc, note: 'Not available in this build yet' };
+    if (!enabled) return { name: label, key: '', desc: desc, note: 'Not available in Anvil yet' };   // rfC: SolidWorks' command, greyed
     return { name: label, key: key || '', desc: desc, note: needsSketch ? 'Open a sketch first' : '' };
   }
-  // the state a ribbon item shows now: { id, label, flat, disabled, active, tip }
+  // the state a ribbon item shows now: { id, icon, label, flat, disabled, active, tip }; `icon` is the glyph drawn (an
+  // item's own `icon` when its id is shared with another command, such as Sketch Fillet and the Fillet feature)
   function itemState(item) {
     var d = item.dyn && item.dyn();
     var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
     var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch', active = false;
     if (item.tool) active = App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
-    return { id: id, label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help) };
+    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help) };
   }
   function runItem(item) {
     if (item.tool && !item.run) UI.setTool(itemState(item).active ? 'select' : item.tool);
@@ -280,8 +311,8 @@
       var face = s.id + '|' + s.label;
       if (face !== shown) {
         shown = face;
-        b.innerHTML = Icons(s.id, small ? 18 : 32) + '<span>' + (small ? item.label : s.label) + '</span>';
-        b.setAttribute('aria-label', s.flat); b.dataset.icon = s.id;
+        b.innerHTML = Icons(s.icon, small ? 18 : 32) + '<span>' + (small ? item.label : s.label) + '</span>';
+        b.setAttribute('aria-label', s.flat); b.dataset.icon = s.icon;
       }
       setTip(b, s.tip);
       if (b.disabled !== s.disabled) b.disabled = s.disabled;
@@ -318,7 +349,7 @@
   function flyMenuItems(item) {
     return item.items.map(function (it, i) {
       var s = itemState(it);
-      return { label: s.flat, icon: s.id, key: s.tip.key, checked: s.active, disabled: s.disabled, action: function () { setFlyFace(item, i); runItem(it); refreshRibbon(); } };
+      return { label: s.flat, icon: s.icon, key: s.tip.key, checked: s.active, disabled: s.disabled, action: function () { setFlyFace(item, i); runItem(it); refreshRibbon(); } };
     });
   }
   function ribbonFlyout(item, small) {
@@ -330,8 +361,8 @@
       if (face !== shown) {
         var refit = shown !== null;
         shown = face;
-        b.innerHTML = Icons(s.id, small ? 18 : 32) + '<span>' + (small ? s.flat : label) + '</span>';
-        b.setAttribute('aria-label', item.label ? item.label.replace(/\n/g, ' ') : s.flat); b.dataset.icon = s.id;
+        b.innerHTML = Icons(s.icon, small ? 18 : 32) + '<span>' + (small ? s.flat : label) + '</span>';
+        b.setAttribute('aria-label', item.label ? item.label.replace(/\n/g, ' ') : s.flat); b.dataset.icon = s.icon;
         c.setAttribute('aria-label', (item.label ? item.label.replace(/\n/g, ' ') : s.flat) + ' options');
         if (refit && wrap.isConnected) fitRibbon();   // a longer label may need the room of another button
       }
@@ -389,7 +420,9 @@
     shape.items.forEach(function (item) {
       if (item.sep) { frag.appendChild(el('div', { class: 'rb-sep' })); return; }
       if (item.stack) {
-        var st = el('div', { class: 'rb-stack' });
+        // rfC: a grid stack (the sketch entities) shows icons only, three rows filled column by column, as SolidWorks
+        // does; its labels stay in the buttons (hidden) for the accessible names, the » menu and lookups by label
+        var st = el('div', { class: 'rb-stack' + (item.grid ? ' rb-grid' : '') });
         item.stack.forEach(function (s) { st.appendChild(s.fly ? ribbonFlyout(s, true) : ribbonButton(s, true)); });   // a small flyout in a stack (Ellipse)
         frag.appendChild(st);
         return;
@@ -985,8 +1018,65 @@
     if (openMenu) { openMenu.remove(); openMenu = null; }
     Array.prototype.forEach.call(document.querySelectorAll('#menus > li.open, .rb-more.open, .rb-fly.open'), function (li) { li.classList.remove('open'); });
   }
+  // rfC: the sketch's shortcut menu as SolidWorks 2024 has it (right-click with the Select tool). On sketch entities:
+  // Construction Geometry, Smart Dimension, Add Relation, Display/Delete Relations, Trim / Offset / Mirror Entities,
+  // Properties… (one entity: its PropertyManager), Delete; on empty space: Smart Dimension and the common entities with
+  // their keys, Convert / Trim Entities, the relation commands, Zoom to Fit; always Exit Sketch and Discard Changes and
+  // Exit. ui-sketch.js's sketchMenu selects the entity under the pointer and builds a shorter menu; showMenu takes its
+  // Exit Sketch / Discard rows' actions and shows this list instead (UI.sketchMenuItems(orig) for ui-sketch.js to call).
+  function sketchMenuItems(orig) {
+    orig = orig || [];
+    var f = UI.activeSketchFeature ? UI.activeSketchFeature() : null;
+    function act(label, fallback) { for (var i = 0; i < orig.length; i++) if (orig[i] && orig[i].label === label && orig[i].action) return orig[i].action; return fallback; }
+    function tool(t) { return function () { UI.setTool(t); }; }
+    function inSketch(fn) { return function () { if (App.mode !== 'sketch') return; fn(); }; }
+    var sel = [];
+    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && sel.indexOf(s.index) < 0) sel.push(s.index); });
+    if (App.sel && App.sel.kind === 'entity' && sel.indexOf(App.sel.index) < 0) sel.push(App.sel.index);
+    sel = sel.filter(function (i) { return f && f.entities[i]; });
+    var items = [];
+    if (sel.length) {
+      var allCon = sel.every(function (i) { return f.entities[i].construction; });
+      items.push({ label: 'Construction Geometry', icon: 'construction', checked: allCon, action: act('Construction Geometry', function () { UI.toggleConstruction(sel); }) });
+      items.push({ sep: true });
+      items.push({ label: 'Smart Dimension', key: 'D', icon: 'dim', action: tool('dimension') });
+      items.push({ label: 'Add Relation…', icon: 'addRelation', action: inSketch(function () { UI.cmdAddRelations(); }) });
+      items.push({ label: 'Display/Delete Relations…', icon: 'relations', action: function () { UI.cmdDisplayRelations('selected'); } });
+      items.push({ sep: true });
+      items.push({ label: 'Trim Entities', icon: 'trim', action: function () { UI.cmdTrimEntities(); } });
+      items.push({ label: 'Offset Entities…', icon: 'offset', action: function () { UI.cmdOffsetEntities(); } });
+      items.push({ label: 'Mirror Entities…', icon: 'mirrorEnt', action: function () { UI.cmdMirrorEntities(); } });
+      items.push({ sep: true });
+      if (sel.length === 1 && UI.openEntityPM) items.push({ label: 'Properties…', icon: 'props', action: function () { UI.openEntityPM(sel[0]); } });
+      items.push({ label: 'Delete', key: 'Del', icon: 'cancel', action: act('Delete', function () { UI.deleteSelection(); }) });
+    } else {
+      items.push({ label: 'Smart Dimension', key: 'D', icon: 'dim', action: tool('dimension') });
+      items.push({ label: 'Line', key: 'L', icon: 'line', action: tool('line') });
+      items.push({ label: 'Corner Rectangle', key: 'R', icon: 'rect', action: tool('rect') });
+      items.push({ label: 'Circle', key: 'C', icon: 'circle', action: tool('circle') });
+      items.push({ sep: true });
+      items.push({ label: 'Convert Entities…', icon: 'convert', action: function () { UI.cmdConvertEntities(); } });
+      items.push({ label: 'Trim Entities', icon: 'trim', action: function () { UI.cmdTrimEntities(); } });
+      items.push({ sep: true });
+      items.push({ label: 'Add Relation…', icon: 'addRelation', action: inSketch(function () { UI.cmdAddRelations(); }) });
+      items.push({ label: 'Display/Delete Relations…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); } });
+      items.push({ label: 'Fully Define Sketch…', icon: 'fullyDefine', action: inSketch(function () { UI.cmdFullyDefineSketch(); }) });
+      items.push({ sep: true });
+      items.push({ label: 'Zoom to Fit', key: 'F', icon: 'fit', action: function () { UI.zoomToFit(); } });
+    }
+    items.push({ sep: true });
+    items.push({ label: 'Exit Sketch', icon: 'exitSketch', action: act('Exit Sketch', function () { UI.exitSketch(); }) });
+    items.push({ label: 'Discard Changes and Exit', icon: 'cancel', action: act('Discard Changes and Exit', function () { UI.confirmCancelSketch(); }) });
+    items.sketchMenu = true;
+    return items;
+  }
+  function isSketchMenu(items) {
+    function has(l) { return items.some(function (it) { return it && it.label === l; }); }
+    return !items.sketchMenu && App.mode === 'sketch' && has('Exit Sketch') && has('Discard Changes and Exit');
+  }
   function showMenu(x, y, items, anchorLi) {
     closeMenus();
+    if (!anchorLi && isSketchMenu(items)) items = sketchMenuItems(items);
     var m = el('div', { class: 'menu' });
     items.forEach(function (it) {
       if (it.sep) { m.appendChild(el('div', { class: 'sep' })); return; }
@@ -1007,13 +1097,22 @@
       m.appendChild(row);
     });
     document.body.appendChild(m);
-    var mw = m.offsetWidth, mh = m.offsetHeight;
-    m.style.left = Math.max(0, Math.min(x, window.innerWidth - mw - 4)) + 'px';
+    var mw = m.offsetWidth, mh = m.offsetHeight, W = window.innerWidth, H = window.innerHeight;
     // p9-pm: a menu taller than the room below its title scrolls instead of moving up over the menu bar (where the next
     // click on File would land on one of its rows) or past the top of the window
-    var room = window.innerHeight - 4 - (anchorLi ? y : 0);
+    var room = H - 4 - (anchorLi ? y : 0);
     if (anchorLi && mh > room) { m.style.maxHeight = Math.max(80, room) + 'px'; m.style.overflowY = 'auto'; mh = m.offsetHeight; }
-    m.style.top = (anchorLi ? y : Math.max(0, Math.min(y, window.innerHeight - mh - 4))) + 'px';
+    if (anchorLi) { m.style.left = Math.max(0, Math.min(x, W - mw - 4)) + 'px'; m.style.top = y + 'px'; }
+    else {
+      // rfC: a context menu opens beside the clicked point and never over it (as Windows menus do): below and to the
+      // right when there is room, else to the left and / or above it; one taller than the window scrolls (the point
+      // stays clear, the menu being beside it)
+      if (mh > H - 8) { m.style.maxHeight = (H - 8) + 'px'; m.style.overflowY = 'auto'; mh = m.offsetHeight; }
+      var left = x + 1, top = y + 1;
+      if (left + mw > W - 4) left = Math.max(0, x - mw - 1);
+      if (top + mh > H - 4) top = Math.max(4, Math.min(y - mh - 1, H - 4 - mh));
+      m.style.left = left + 'px'; m.style.top = top + 'px';
+    }
     openMenu = m;
     if (anchorLi) anchorLi.classList.add('open');
   }
@@ -1106,7 +1205,7 @@
         { label: 'Origins', checked: v.showOrigin, action: function () { v.showOrigin = !v.showOrigin; UI.updateOrigin(); } },
         { label: 'All Sketches', checked: v.showSketches, action: function () { v.showSketches = !v.showSketches; UI.updateSketches(); } },
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
-        { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: function () { v.sketchRegions = v.sketchRegions === false; UI.updateSketches(); UI.setStatus(v.sketchRegions ? 'Closed regions of the sketch are shaded and open ends marked.' : 'Sketch regions and open ends not shown.'); } },   // sketch-layers
+        { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
         { label: 'Sketch Relations', checked: v.showRelations !== false, action: function () { v.showRelations = v.showRelations === false; App.dimsStale = true; UI.setStatus(v.showRelations ? 'Relation icons shown next to sketch entities.' : 'Relation icons hidden.'); } },
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
@@ -1225,6 +1324,13 @@
       li.addEventListener('mouseenter', function () { if (openMenu && !li.classList.contains('open') && document.querySelector('#menus > li.open')) { var r = li.getBoundingClientRect(); showMenu(r.left, r.bottom, MENUS()[i].items, li); } });
       ul.appendChild(li);
     });
+  }
+  // View ▸ Sketch Regions and the Sketch tab's Shaded Sketch Contours (SolidWorks' name for the same toggle)
+  function toggleSketchRegions() {
+    var v = App.view;
+    v.sketchRegions = v.sketchRegions === false;
+    UI.updateSketches(); refreshRibbon();
+    UI.setStatus(v.sketchRegions ? 'Closed regions of the sketch are shaded and open ends marked.' : 'Sketch regions and open ends not shown.');
   }
   function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); }
   function setBg(b) { return UI.setBackground(b); }   // r14/viewui14: keeps the viewport's other classes (was className =), remembered
@@ -1744,7 +1850,7 @@
       'Linear Pattern', 'Circular Pattern', 'Mirror', 'Plane', 'Measure', 'Mass Properties', 'Section View', 'Instant3D'],
     sketch: ['Exit Sketch', 'Smart Dimension', 'Line', 'Corner Rectangle', 'Center Rectangle', 'Circle', 'Centerpoint Arc', '3 Point Arc',
       'Polygon', 'Straight Slot', 'Point', 'Spline', 'Ellipse', 'Centerline', 'Sketch Fillet', 'Trim Entities', 'Extend Entities', 'Offset Entities',
-      'Convert Entities', 'Mirror Entities', 'Add Relation', 'Construction Geometry'],
+      'Convert Entities', 'Mirror Entities', 'Add Relation', 'Construction Geometry', 'Display/Delete Relations', 'Text'],
     assembly: ['Insert Components', 'Mate', 'Move Component', 'Rotate Component', 'Linear Component Pattern', 'Hide/Show Components',
       'Exploded View', 'Interference Detection', 'Measure', 'Mass Properties', 'Section View'],
     drawing: ['Model View', 'Projected View', 'Section View', 'Detail View', 'Smart Dimension', 'Model Items', 'Balloon', 'Auto Balloon',
@@ -1808,8 +1914,8 @@
     var bar = el('div', { id: 'scbar', class: 'scbar', role: 'toolbar', 'aria-label': 'Shortcut Bar' });
     bar.style.gridTemplateColumns = 'repeat(' + Math.min(SC_COLS, items.length) + ', auto)';
     var buttons = items.map(function (it, i) {
-      var s = itemState(it), b = el('button', { class: 'sc-btn' + (s.active ? ' active' : ''), html: Icons(s.id, 20), 'aria-label': s.flat });
-      b.dataset.icon = s.id;
+      var s = itemState(it), b = el('button', { class: 'sc-btn' + (s.active ? ' active' : ''), html: Icons(s.icon, 20), 'aria-label': s.flat });
+      b.dataset.icon = s.icon;
       b.disabled = s.disabled;
       setTip(b, s.tip);
       b.addEventListener('click', function () { scPress(i); });
@@ -1857,7 +1963,7 @@
   document.addEventListener('wheel', function (e) { if (sc && !sc.el.contains(e.target)) closeShortcutBar(); }, { passive: true, capture: true });
   window.addEventListener('resize', closeShortcutBar);
   window.addEventListener('blur', closeShortcutBar);
-  UI.showShortcutBar = showShortcutBar; UI.closeShortcutBar = closeShortcutBar;
+  UI.showShortcutBar = showShortcutBar; UI.closeShortcutBar = closeShortcutBar; UI.sketchMenuItems = sketchMenuItems;
   UI.shortcutBar = {
     open: showShortcutBar, close: closeShortcutBar, isOpen: function () { return !!sc; },
     context: function () { return sc ? sc.ctx : scContext(); },

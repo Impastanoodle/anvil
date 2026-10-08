@@ -1205,9 +1205,21 @@
   // items: { t: 'line', a, b } | { t: 'arc', c, r, a0, a1 } (degrees, counterclockwise from a0 to a1) | { t: 'circle',
   // c, r } | { t: 'poly', pts, closed }; layer: { name: 'ETCH', aci, color } of the first ETCH-type layer used (null
   // when only text was found: the DXF then uses colour 3).
+  // A Sketched Bend after the sketch folds the face its marks were drawn on (sketch-text2 lane): each mark goes with
+  // the piece of the sheet its first point lies on through every later Sketched Bend's motion (build.flanges' move
+  // records, as sketchedBendRecords carries flange records), so it reaches the moved face and unfolds with it, its
+  // marks in the bend strip staying with the fixed side. Marks are grouped by the pieces they rode on; each group finds
+  // its face and its map as one sketch would.
   function flatEtch(model, build, faceRecs, T, warn) {
     var items = [], layer = null, R2D = 180 / Math.PI;
-    model.features.forEach(function (sk) {
+    // the Sketched Bends' moving pieces, in feature order: [{ at (feature index), moves: [{ keep, R, t }] }]
+    var bendMoves = [];
+    model.features.forEach(function (f, fi) {
+      if (f.type !== 'sketchedBend' || f.suppressed || (build.errors && build.errors[f.id])) return;
+      var mv = ((build.flanges && build.flanges[f.id]) || []).filter(function (r) { return r.move; }).map(function (r) { return r.move; });
+      if (mv.length) bendMoves.push({ at: fi, moves: mv });
+    });
+    model.features.forEach(function (sk, si) {
       if (sk.type !== 'sketch' || sk.suppressed || (build.errors && build.errors[sk.id])) return;
       var ents = (sk.entities || []).filter(function (e) {
         if (!e || e.construction || e.t === 'point' || (e.t === 'line' && e.infinite)) return false;
@@ -1217,57 +1229,84 @@
       if (!ents.length) return;
       var pl;
       try { pl = resolvePlane((build.facePlanes && build.facePlanes[sk.id]) || sk.plane, model, build.planes || {}); } catch (err) { return; }
-      var n = norm(pl.n), O = to3D(pl, 0, 0), tol = 1e-5 * (1 + len(O));
-      var cands = faceRecs.filter(function (fr) {
-        if (Math.abs(Math.abs(dot(n, fr.normal)) - 1) > 1e-6) return false;
-        var off = dot(fr.normal, O) - fr.w;
-        return Math.abs(off) < tol || Math.abs(off + T) < tol;
-      });
-      var name = sk.name || ('Sketch ' + sk.id);
-      if (!cands.length) { warn(name + ': its etch marks do not lie on a flat face of the sheet, so they are left out of the flat pattern.'); return; }
-      // the sketch's own points, one per entity, to pick the face
-      var probes = ents.map(function (e) { var s = K.entitySnapPoints ? K.entitySnapPoints(e) : null; return s && s.length ? s[0] : null; }).filter(Boolean);
-      function F(fr) {
-        return function (x, y) { var Q = to3D(pl, x, y); Q = sub(Q, scale(fr.normal, dot(fr.normal, Q) - fr.w)); return fr.map(Q); };
-      }
-      var best = null;
-      cands.forEach(function (fr) {
-        var f = F(fr), hits = 0;
-        probes.forEach(function (q) {
-          var p = f(q[0], q[1]), k = 0;
-          fr.loops.forEach(function (l) { if (pointInPoly(p, l)) k++; });
-          if (k % 2 === 1) hits++;
-        });
-        if (!best || hits > best.hits) best = { fr: fr, hits: hits };
-      });
-      // the sketch frame -> the flat as one affine map: P0 + X·x + Y·y (X, Y unit, det −1 when the sketch is mirrored)
-      var f = F(best.fr), P0 = f(0, 0), X = sub2(f(1, 0), P0), Y = sub2(f(0, 1), P0), det = X[0] * Y[1] - X[1] * Y[0];
-      function pt(q) { return [P0[0] + X[0] * q[0] + Y[0] * q[1], P0[1] + X[1] * q[0] + Y[1] * q[1]]; }
-      function ang(deg) { var a = deg / R2D, d = [X[0] * Math.cos(a) + Y[0] * Math.sin(a), X[1] * Math.cos(a) + Y[1] * Math.sin(a)]; return Math.atan2(d[1], d[0]) * R2D; }
-      function arc(c, r, a0, a1) {   // a sketch arc, counterclockwise from a0 to a1 (degrees)
-        if (a1 - a0 >= 360 - 1e-9) { items.push({ t: 'circle', c: pt(c), r: r }); return; }
-        var b0 = ang(a0), b1 = ang(a1);
-        items.push(det > 0 ? { t: 'arc', c: pt(c), r: r, a0: b0, a1: b1 } : { t: 'arc', c: pt(c), r: r, a0: b1, a1: b0 });
-      }
+      var name = sk.name || ('Sketch ' + sk.id), later = bendMoves.filter(function (b) { return b.at > si; });
+      // the marks in the sketch frame, each with the point that says which piece of the sheet it is on: { k: 'line',
+      // a, b } | { k: 'arc', c, r, a0, a1 (degrees) } | { k: 'poly', pts, closed }
+      var marks = [];
       ents.forEach(function (e) {
         if (e.t === 'text') {
           (K.textDxf(e).strokes || []).forEach(function (s) {
-            if (s.t === 'line') items.push({ t: 'line', a: pt([s.x1, s.y1]), b: pt([s.x2, s.y2]) });
-            else if (s.t === 'poly') items.push({ t: 'poly', pts: s.pts.map(pt), closed: !!s.closed });
-            else arc([s.cx, s.cy], s.r, s.a0, s.a1);
+            if (s.t === 'line') marks.push({ k: 'line', a: [s.x1, s.y1], b: [s.x2, s.y2], probe: [s.x1, s.y1] });
+            else if (s.t === 'poly') marks.push({ k: 'poly', pts: s.pts, closed: !!s.closed, probe: s.pts[0] });
+            else marks.push({ k: 'arc', c: [s.cx, s.cy], r: s.r, a0: s.a0, a1: s.a1, probe: [s.cx + s.r * Math.cos(s.a0 / R2D), s.cy + s.r * Math.sin(s.a0 / R2D)] });
           });
           return;
         }
         var lr = etchLayerOf(sk, e);
         if (!layer && lr) layer = { name: 'ETCH', aci: lr.aci > 0 ? lr.aci | 0 : null, color: lr.color || null };
-        if (e.t === 'arc') { arc([e.cx, e.cy], e.r, e.a0, e.a1 < e.a0 ? e.a1 + 360 : e.a1); return; }
-        if (K.isFreeCurve(e)) { (K.entityPolylines(e) || []).forEach(function (p) { items.push({ t: 'poly', pts: p.pts.map(pt), closed: !!p.closed }); }); return; }
+        var sp = K.entitySnapPoints ? K.entitySnapPoints(e) : null, probe = sp && sp.length ? sp[0] : null;
+        if (e.t === 'arc') { marks.push({ k: 'arc', c: [e.cx, e.cy], r: e.r, a0: e.a0, a1: e.a1 < e.a0 ? e.a1 + 360 : e.a1, probe: probe }); return; }
+        if (K.isFreeCurve(e)) { (K.entityPolylines(e) || []).forEach(function (p) { marks.push({ k: 'poly', pts: p.pts, closed: !!p.closed, probe: probe || p.pts[0] }); }); return; }
         K.entityPrimitives(e).forEach(function (p) {
-          if (p.kind === 'seg') items.push({ t: 'line', a: pt(p.a), b: pt(p.b) });
-          else arc(p.c, p.r, p.full ? 0 : p.a0 * R2D, p.full ? 360 : p.a1 * R2D);
+          if (p.kind === 'seg') marks.push({ k: 'line', a: p.a, b: p.b, probe: probe || p.a });
+          else marks.push({ k: 'arc', c: p.c, r: p.r, a0: p.full ? 0 : p.a0 * R2D, a1: p.full ? 360 : p.a1 * R2D, probe: probe || p.c });
         });
       });
-      if (Math.abs(Math.abs(det) - 1) > 1e-6) warn(name + ': its plane is not mapped rigidly into the flat (scale ' + fmtN(Math.sqrt(Math.abs(det))) + ').');
+      // each mark through the later bends: the moves it took (one per bend: a move, or null when it stayed)
+      var groups = {}, order = [];
+      marks.forEach(function (mk) {
+        var P = to3D(pl, mk.probe[0], mk.probe[1]), path = [];
+        later.forEach(function (b) {
+          var M = null;
+          for (var q = 0; q < b.moves.length; q++) if (inHalfSpaces(b.moves[q].keep, P, 1e-6)) { M = b.moves[q]; break; }
+          path.push(M);
+          if (M) P = mPt(M, P);
+        });
+        var key = path.map(function (M, q) { return M ? later[q].moves.indexOf(M) : '-'; }).join(',');
+        if (!groups[key]) { groups[key] = { path: path, marks: [] }; order.push(key); }
+        groups[key].marks.push(mk);
+      });
+      var lost = false;
+      order.forEach(function (key) {
+        var gr = groups[key];
+        // the sketch plane carried along: the frame's origin and axes through the same moves
+        var O3 = to3D(pl, 0, 0), X3 = to3D(pl, 1, 0), Y3 = to3D(pl, 0, 1);
+        gr.path.forEach(function (M) { if (M) { O3 = mPt(M, O3); X3 = mPt(M, X3); Y3 = mPt(M, Y3); } });
+        var xa = sub(X3, O3), ya = sub(Y3, O3), n = norm(cross(xa, ya)), tol = 1e-5 * (1 + len(O3));
+        function Q3(x, y) { return add(O3, add(scale(xa, x), scale(ya, y))); }
+        var cands = faceRecs.filter(function (fr) {
+          if (Math.abs(Math.abs(dot(n, fr.normal)) - 1) > 1e-6) return false;
+          var off = dot(fr.normal, O3) - fr.w;
+          return Math.abs(off) < tol || Math.abs(off + T) < tol;
+        });
+        if (!cands.length) { lost = true; return; }
+        function F(fr) {
+          return function (x, y) { var Q = Q3(x, y); Q = sub(Q, scale(fr.normal, dot(fr.normal, Q) - fr.w)); return fr.map(Q); };
+        }
+        // the face that holds most of the group's marks (several faces on one plane: two walls apart)
+        var best = null;
+        cands.forEach(function (fr) {
+          var f = F(fr), hits = 0;
+          gr.marks.forEach(function (mk) {
+            var p = f(mk.probe[0], mk.probe[1]), k = 0;
+            fr.loops.forEach(function (l) { if (pointInPoly(p, l)) k++; });
+            if (k % 2 === 1) hits++;
+          });
+          if (!best || hits > best.hits) best = { fr: fr, hits: hits };
+        });
+        // the sketch frame -> the flat as one affine map: P0 + X·x + Y·y (X, Y unit, det −1 when the sketch is mirrored)
+        var f = F(best.fr), P0 = f(0, 0), X = sub2(f(1, 0), P0), Y = sub2(f(0, 1), P0), det = X[0] * Y[1] - X[1] * Y[0];
+        function pt(q) { return [P0[0] + X[0] * q[0] + Y[0] * q[1], P0[1] + X[1] * q[0] + Y[1] * q[1]]; }
+        function ang(deg) { var a = deg / R2D, d = [X[0] * Math.cos(a) + Y[0] * Math.sin(a), X[1] * Math.cos(a) + Y[1] * Math.sin(a)]; return Math.atan2(d[1], d[0]) * R2D; }
+        gr.marks.forEach(function (mk) {
+          if (mk.k === 'line') items.push({ t: 'line', a: pt(mk.a), b: pt(mk.b) });
+          else if (mk.k === 'poly') items.push({ t: 'poly', pts: mk.pts.map(pt), closed: !!mk.closed });
+          else if (mk.a1 - mk.a0 >= 360 - 1e-9) items.push({ t: 'circle', c: pt(mk.c), r: mk.r });   // a sketch arc, counterclockwise from a0 to a1
+          else { var b0 = ang(mk.a0), b1 = ang(mk.a1); items.push(det > 0 ? { t: 'arc', c: pt(mk.c), r: mk.r, a0: b0, a1: b1 } : { t: 'arc', c: pt(mk.c), r: mk.r, a0: b1, a1: b0 }); }
+        });
+        if (Math.abs(Math.abs(det) - 1) > 1e-6) warn(name + ': its plane is not mapped rigidly into the flat (scale ' + fmtN(Math.sqrt(Math.abs(det))) + ').');
+      });
+      if (lost) warn(name + ': ' + (order.length > 1 ? 'some of its' : 'its') + ' etch marks do not lie on a flat face of the sheet, so they are left out of the flat pattern.');
     });
     return { items: items, layer: layer };
   }

@@ -477,6 +477,12 @@
   function dimSource(model, build, w, d) {
     if (!model || model.type === 'assembly' || !model.features || !w || !w.frame || d.value == null) return null;
     if (d.flat || w.flat || (w.view && w.view.kind === 'flat')) return null;   // a flat blank's sizes are results, not parameters
+    // a sketch location dimension (Drawing.sketchDistances): the distance relation itself
+    if (d.sketchRel && d.relSrc) {
+      var sf = K.findFeature(model, d.relSrc.f), rl = sf && sf.rels && sf.rels[d.relSrc.i];
+      if (!rl || rl.type !== 'distance' || rl.driven) return null;
+      return { feature: sf.id, featureName: sf.name || K.featureName(sf), kind: 'rel', index: d.relSrc.i, value: +rl.v, what: 'distance', expr: K.isExpression && K.isExpression(rl.v) ? String(rl.v) : null };
+    }
     if (d.kind !== 'dia' && d.kind !== 'h' && d.kind !== 'v' && d.kind !== 'aligned') return null;
     var F = w.frame, planes = build && build.planes || {}, val = d.value, tolV = Math.max(1e-6, Math.abs(val) * 1e-7), best = null, bs = Infinity;
     if (!isOrthoFrame(F)) return null;
@@ -543,8 +549,45 @@
   }
   // (only Smart Dimensions that carry such a property are candidates: of two equal holes the one dimensioned "2X" is
   // the one the model item shows, wherever on the sheet the item's leader went; among those the closest wins)
+  // A model item made from a sketch's distance relation (a location dimension, d.relSrc: Drawing.sketchDistances)
+  // takes that relation's properties and name; an overall size that also is one takes them when the relation has any.
   function sketchDimProps(model, build, w, d) {
-    if (!d || !d.auto || d.flat || d.value == null || !hasSketchDimProps(model)) return null;
+    if (!d || !d.auto || d.flat || d.value == null) return null;
+    var rp = d.relSrc ? relDimProps(model, d.relSrc) : null;
+    if (rp && rp.own) { delete rp.own; return rp; }
+    var ep = entityDimProps(model, build, w, d);
+    if (ep || !rp) return ep;
+    delete rp.own;
+    return rp;
+  }
+  // the props of sketch dimension sd (a Smart Dimension or a distance relation) as a model item takes them; n: its
+  // number in the sketch's D1, D2 … order, f: the sketch
+  function dimPropsOf(sd, f, n) {
+    var out = {};
+    if (sd.tol && sd.tol.type && sd.tol.type !== 'none') out.tol = { type: sd.tol.type, plus: Math.abs(+sd.tol.plus || 0), minus: Math.abs(+(sd.tol.type === 'symmetric' ? sd.tol.plus : sd.tol.minus) || 0) };
+    if (sd.prec != null && sd.prec !== '' && +sd.prec >= 0) out.prec = +sd.prec;
+    var pre = sd.prefix ? String(sd.prefix) : '', suf = sd.suffix ? String(sd.suffix) : '';
+    if (pre && !/\s$/.test(pre)) pre += ' ';
+    if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
+    if (pre || suf || sd.driven) out.label = (sd.driven ? '(' : '') + pre + '<DIM>' + suf + (sd.driven ? ')' : '');
+    if (/^\s*\d+\s*[xX]\b/.test(pre)) out.count = 1;
+    if (sd.driven) out.driven = true;
+    out.name = (sd.name ? String(sd.name) : 'D' + n) + '@' + (f.name || K.featureName(f));
+    return out;
+  }
+  // relSrc { f (sketch id), i (relation index) } -> its props ({ …, own: the relation sets one of them }) or null
+  var DIM_RELS = { distance: 1, angle: 1, arclength: 1 };
+  function relDimProps(model, src) {
+    var f = K.findFeature(model, src.f), rel = f && f.rels && f.rels[src.i];
+    if (!rel) return null;
+    var n = (f.dims || []).length;
+    for (var i = 0; i <= src.i; i++) if (f.rels[i] && DIM_RELS[f.rels[i].type]) n++;
+    var out = dimPropsOf(rel, f, n);
+    out.own = SK_PROPS.some(function (k) { return k !== 'name' && rel[k] != null && rel[k] !== '' && rel[k] !== false; }) || !!rel.name;
+    return out;
+  }
+  function entityDimProps(model, build, w, d) {
+    if (!hasSketchDimProps(model)) return null;
     if (d.kind !== 'dia' && d.kind !== 'rad' && d.kind !== 'h' && d.kind !== 'v' && d.kind !== 'aligned') return null;
     if (d.slot || !w || !w.frame || w.flat || (w.view && w.view.kind === 'flat') || !isOrthoFrame(w.frame)) return null;
     var F = w.frame, planes = build && build.planes || {}, val = d.value, tolV = Math.max(1e-6, Math.abs(val) * 1e-7), radial = d.kind === 'dia' || d.kind === 'rad';
@@ -581,17 +624,7 @@
       });
     });
     if (idx < 0) return null;
-    var sd = f.dims[idx], out = {};
-    if (sd.tol && sd.tol.type && sd.tol.type !== 'none') out.tol = { type: sd.tol.type, plus: Math.abs(+sd.tol.plus || 0), minus: Math.abs(+(sd.tol.type === 'symmetric' ? sd.tol.plus : sd.tol.minus) || 0) };
-    if (sd.prec != null && sd.prec !== '' && +sd.prec >= 0) out.prec = +sd.prec;
-    var pre = sd.prefix ? String(sd.prefix) : '', suf = sd.suffix ? String(sd.suffix) : '';
-    if (pre && !/\s$/.test(pre)) pre += ' ';
-    if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
-    if (pre || suf || sd.driven) out.label = (sd.driven ? '(' : '') + pre + '<DIM>' + suf + (sd.driven ? ')' : '');
-    if (/^\s*\d+\s*[xX]\b/.test(pre)) out.count = 1;
-    if (sd.driven) out.driven = true;
-    out.name = (sd.name ? String(sd.name) : 'D' + (idx + 1)) + '@' + (f.name || K.featureName(f));
-    return out;
+    return dimPropsOf(f.dims[idx], f, idx + 1);
   }
   // driveDim(model, src, value): writes the new value into the feature the source names (a sketch entity through the
   // sketch solver when the sketch has relations, else the kernel's one-entity edit; an extrude's depth). The caller
@@ -603,6 +636,12 @@
     var f = K.findFeature(model, src.feature);
     if (!f) throw new Error('The feature this dimension drives is gone');
     if (src.kind === 'depth') { f.depth = value; return model; }
+    if (src.kind === 'rel') {   // a sketch location dimension: the relation's value, solved with the sketch
+      if (typeof SketchSolver === 'undefined') throw new Error('The sketch solver is not loaded');
+      var rr = SketchSolver.setRelValue(f, src.index, value);
+      if (!rr.ok) throw new Error(rr.error || 'The sketch cannot take that value');
+      return model;
+    }
     var e = f.entities && f.entities[src.e];
     if (!e) throw new Error('The sketch entity this dimension drives is gone');
     if (typeof SketchSolver !== 'undefined' && f.rels && f.rels.length) {

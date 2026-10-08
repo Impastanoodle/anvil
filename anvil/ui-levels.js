@@ -8,7 +8,8 @@
 //     type of its own, and goes to the DXF on OUTLINE / HOLES as before;
 //   - an entity on any other level has `layer` = the level's key: its name when it has one, else its number as a
 //     string ("7"). Names are unique (ignoring case) and never all digits, so a key names one level. Renaming a level
-//     re-keys its entities in every sketch (one undo step); the DXF writes each entity on its key, so a sketch DXF
+//     re-keys its entities in every sketch (one undo step; the Layers PropertyManager's Rename comes here too,
+//     UI.levelRenameKey, so it never makes a second level); the DXF writes each entity on its key, so a sketch DXF
 //     carries the level names (Mastercam writes level names as DXF layers) and the number for an unnamed level;
 //   - every sketch has a layer record { name: key, color, hidden, noProfile, lineType, aci } for each level its
 //     entities are on (plus any it had); while level 1 is hidden a record named "1" marks it (no entity has key "1").
@@ -437,6 +438,20 @@
     UI.refreshStatus();
     renderPane(true);
   };
+  // the Layers PropertyManager's Rename (ui-sketch-layers.js): the level a sketch layer stands for takes the new name
+  // in every sketch, as Rename in this manager does (one undo step; a name used by another level, or all digits, is
+  // refused the same way). -> { ok, name (the layer's key now), error? }, or null when no level stands for the layer
+  UI.levelRenameKey = function (f, from, to) {
+    var m = App.model;
+    if (!isPart(m)) return null;
+    sync(m);
+    var L = resolve(m, from, false);
+    if (!L || L.number === 1) return null;
+    var n = L.number, r = run('rename', n, to);
+    if (!r.ok) return r;
+    var L2 = byNumber(m, n);
+    return { ok: true, name: L2 ? keyOf(L2) : String(to), number: n };
+  };
   // hidden levels: not drawn (sketchLayerStyle), not picked, snapped to or box-selected (entityLayerHidden). Levels
   // other than 1 are hidden through their layer records; level 1's entities have no record, so the table answers.
   var baseHidden = UI.entityLayerHidden, baseStyle = UI.sketchLayerStyle;
@@ -711,56 +726,4 @@
   };
   if (window.anvil) window.anvil.levels = function (op) { return op ? run.apply(null, arguments) : levelList(App.model); };
 
-  // ------------------------------------------------------------------ styles (kept here so style.css stays untouched)
-  var css = [
-    '#levels-panel{display:flex;flex-direction:column;min-height:0;flex:1;font-size:12px}',
-    '#levels-panel[hidden],#app.drawing-mode #levels-panel{display:none!important}',
-    '#levels-panel{--lvl-main:#ffe680;--lvl-main-text:#3d3000}',
-    ':root[data-theme="dark"] #levels-panel{--lvl-main:#6b5a17;--lvl-main-text:#fff4c2}',
-    '.lvl-head{display:flex;align-items:center;gap:6px;padding:5px 8px;font-weight:600;border-bottom:1px solid var(--line-2);background:var(--panel-2);white-space:nowrap}',
-    '.lvl-head svg{display:block}',
-    '.lvl-tools{display:flex;flex-wrap:wrap;gap:4px;padding:5px 6px;border-bottom:1px solid var(--line-2)}',
-    '.lvl-tools button{padding:2px 8px;border:1px solid var(--line);border-radius:3px;background:var(--input-bg);color:var(--text)}',
-    '.lvl-tools button:hover{background:var(--hover);border-color:var(--blue-line)}',
-    '.lvl-tools select{flex:1;min-width:0;max-width:100%;background:var(--input-bg);color:var(--text);border:1px solid var(--input-line);border-radius:3px}',
-    '#lvl-grid{overflow:auto;flex:1;min-height:60px;padding-bottom:12px}',
-    '.lvl-row{display:grid;grid-template-columns:40px 38px 18px minmax(40px,1fr) 44px minmax(50px,.9fr);align-items:center;min-height:21px;column-gap:3px;padding:0 4px;white-space:nowrap;cursor:default}',
-    '.lvl-row:not(.lvl-hdr):hover{background:var(--hover)}',
-    '.lvl-hdr{position:sticky;top:0;z-index:1;background:var(--panel-2);border-bottom:1px solid var(--line-2);color:var(--muted);font-size:11px}',
-    '.lvl-row.main{background:var(--lvl-main);color:var(--lvl-main-text);font-weight:700}',
-    '.lvl-row.main:hover{background:var(--lvl-main)}',
-    '.lvl-row.off:not(.main) .lvl-name,.lvl-row.off:not(.main) .lvl-num{color:var(--muted)}',
-    '.lvl-num{text-align:right;padding-right:6px;cursor:pointer}',
-    '.lvl-num:hover{text-decoration:underline}',
-    '.lvl-vis{text-align:center;font-weight:700;cursor:pointer;border:1px solid var(--line-2);border-radius:2px;height:15px;line-height:15px;margin:0 8px}',
-    '.lvl-row.main .lvl-vis{cursor:not-allowed}',
-    '.lvl-color{width:16px;height:15px;padding:0;border:0;background:none;cursor:pointer}',
-    '.lvl-color[data-none]{opacity:.35}',
-    '.lvl-nocolor{display:inline-block;width:14px;height:12px;border:1px dashed var(--modal-line);box-sizing:border-box}',
-    '.lvl-name,.lvl-set{overflow:hidden;text-overflow:ellipsis;cursor:text;min-height:15px}',
-    '.lvl-name em{font-style:normal;font-weight:400;font-size:10px;color:var(--muted)}',
-    '.lvl-row.main .lvl-name em{color:inherit;opacity:.75}',
-    '.lvl-count{text-align:right;padding-right:6px;font-variant-numeric:tabular-nums}',
-    '.lvl-edit{width:100%;box-sizing:border-box;font:inherit;font-weight:400;padding:0 2px;border:1px solid var(--blue);background:var(--input-bg);color:var(--text)}',
-    '.lvl-main{border-top:1px solid var(--line);padding:6px 8px 8px;display:grid;grid-template-columns:1fr;gap:4px;background:var(--panel-2)}',
-    '.lvl-sec{font-weight:600}',
-    '.lvl-main label{display:grid;grid-template-columns:72px 1fr;align-items:center;gap:4px}',
-    '.lvl-main input,.lvl-main select{min-width:0;font:inherit;background:var(--input-bg);color:var(--text);border:1px solid var(--input-line);border-radius:3px;padding:1px 3px}',
-    '.lvl-foot{color:var(--muted);font-size:11px;line-height:1.35;white-space:normal}',
-    '.lvl-empty{margin:8px;color:var(--muted);line-height:1.4}',
-    '#status-right .lvl-chip{cursor:pointer}',
-    '#status-right .lvl-chip:hover{text-decoration:underline}',
-    '.lvl-pop{position:fixed;z-index:60;min-width:170px;max-width:280px;background:var(--menu-bg);border:1px solid var(--menu-line);box-shadow:0 3px 10px var(--menu-shadow);font-size:12px;color:var(--text)}',
-    '.lvl-pop-title{padding:4px 8px;font-weight:600;border-bottom:1px solid var(--line-2)}',
-    '.lvl-pop-list{max-height:240px;overflow:auto}',
-    '.lvl-pop-row{display:flex;gap:6px;padding:2px 8px;cursor:pointer;white-space:nowrap}',
-    '.lvl-pop-row b{min-width:28px;text-align:right}',
-    '.lvl-pop-row em{margin-left:auto;padding-left:10px;font-style:normal;color:var(--muted)}',
-    '.lvl-pop-row:hover{background:var(--hover)}',
-    '.lvl-pop-row.main{background:var(--lvl-main,#ffe680);color:var(--lvl-main-text,#3d3000);font-weight:700}',
-    '.lvl-pop-row.off{color:var(--muted)}',
-    '.lvl-pop-num{display:flex;align-items:center;gap:6px;padding:4px 8px;border-top:1px solid var(--line-2)}',
-    '.lvl-pop-num input{width:70px;font:inherit;background:var(--input-bg);color:var(--text);border:1px solid var(--input-line)}'
-  ].join('\n');
-  document.head.appendChild(el('style', { id: 'levels-css', text: css }));
 })(UI);

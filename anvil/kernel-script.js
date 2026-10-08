@@ -1074,8 +1074,9 @@
   // sketch-text: text(x, y, str, opts?) — Sketch Text in Anvil's single-stroke font (Kernel.textLayout): opts { h (letter
   // height; default 3 mm / 0.125 in), rot (degrees), align ('left' | 'center' | 'right'), valign ('baseline' | 'middle' |
   // 'top'), widthFactor (1 = 100 %), spacing (1 = the normal gap), lineSpacing (in letter heights), mode ('stroke': Etch,
-  // single-stroke marking, the default | 'outline': Cut, closed outlines strokeWidth wide), strokeWidth, mirror (Flip
-  // horizontal), flipV (Flip vertical), path (a line / arc entity index the baseline follows, or { e, flip, g }) }
+  // single-stroke marking, the default | 'outline': Cut, closed outlines strokeWidth wide), strokeWidth, stencil (Cut:
+  // islands kept by bridges), bridge (their width; default 0.03 in / 0.8 mm), mirror (Flip horizontal), flipV (Flip
+  // vertical), path (a line / arc / spline / ellipse / partial ellipse entity index the baseline follows, or { e, flip, g }) }
   SketchBuilder.prototype.text = function (x, y, str, opts) {
     opts = opts || {};
     var s = this, inch = this.part.model && this.part.model.units === 'in';
@@ -1089,6 +1090,8 @@
     });
     if (opts.rot) e.rot = s._v(opts.rot);
     ['widthFactor', 'spacing', 'lineSpacing', 'strokeWidth'].forEach(function (k) { if (opts[k] != null) e[k] = s._v(opts[k]); });
+    if (opts.stencil) { e.stencil = true; e.bridge = opts.bridge != null ? s._v(opts.bridge) : (inch ? 0.03 : 0.8); }   // sketch-text2
+    if (e.stencil && !(e.bridge > 0)) throw new Error('Stencil bridge width must be greater than zero.');
     if (opts.mirror) e.mirror = true;
     if (opts.flipV) e.flipV = true;
     if (opts.path != null) {
@@ -1096,7 +1099,7 @@
       e.path = {};
       if (p.e != null) {
         var src = this.f.entities[p.e | 0];
-        if (!src || (src.t !== 'line' && src.t !== 'arc')) throw new Error('Text can follow a sketch line or arc only (entity ' + p.e + ').');
+        if (!src || (K.TEXT_PATH_TYPES || ['line', 'arc']).indexOf(src.t) < 0) throw new Error('Text can follow a sketch line or arc, a spline or an ellipse only (entity ' + p.e + ').');
         e.path.e = p.e | 0;
       }
       if (p.g) e.path.g = JSON.parse(JSON.stringify(p.g));
@@ -1191,6 +1194,7 @@
   function textOptsOut(e) {
     var o = { h: e.h };
     ['rot', 'align', 'valign', 'widthFactor', 'spacing', 'lineSpacing', 'mode', 'strokeWidth'].forEach(function (k) { if (e[k] != null && e[k] !== 0 && e[k] !== '') o[k] = e[k]; });
+    if (e.stencil) { o.stencil = true; if (e.bridge != null) o.bridge = e.bridge; }   // sketch-text2
     if (e.mirror) o.mirror = true;
     if (e.flipV) o.flipV = true;
     if (e.path) { o.path = {}; if (e.path.e != null) o.path.e = e.path.e; if (e.path.g) o.path.g = e.path.g; if (e.path.flip) o.path.flip = true; }

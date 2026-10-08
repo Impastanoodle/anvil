@@ -47,6 +47,17 @@
   // r10/editpreview10: editNext is the feature count Edit Feature rolls back to, taken by the PropertyManager it opens
   // (pm.editUpto: previews of the feature are built on the part before it; ui-core.js rollbackTo shows that part)
   var editNext = null;
+  // rfC: the sketch commands that run in their PropertyManager rather than as a drawing tool get the pencil (or the
+  // dimension arrow) with their glyph as the cursor while they are open: the viewport carries data-pmtool = the PM's
+  // icon, and style.css has a cursor for each of these
+  var PM_TOOL_CURSORS = { parallelLine: 1, tangentLine: 1, perpLine: 1, bisectorLine: 1, tangentCircle: 1, splitEnt: 1, joinEnt: 1, dynMirror: 1,
+    intersectCurve: 1, trim: 1, extend: 1, convert: 1, offset: 1, fillet: 1, skFillet: 1, skChamfer: 1, ordinateH: 1, ordinateV: 1, horizDim: 1, vertDim: 1 };
+  function markPmTool(spec) {
+    var vp = $('viewport'), name = spec && App.mode === 'sketch' && PM_TOOL_CURSORS[spec.icon] ? spec.icon : null;
+    if (!vp) return;
+    if (name) { if (vp.getAttribute('data-pmtool') !== name) vp.setAttribute('data-pmtool', name); }
+    else if (vp.hasAttribute('data-pmtool')) vp.removeAttribute('data-pmtool');
+  }
   function openPM(spec) {
     if (editNext != null) { pm.editUpto = editNext; editNext = null; if (UI.rollbackTo) UI.rollbackTo(pm.editUpto); }
     else if (pm.editUpto != null) { pm.editUpto = null; if (UI.rollForward) UI.rollForward(); }   // another command replaced the edit
@@ -62,6 +73,7 @@
     });
     App.command = spec.command || null;
     App.dimsStale = true;   // r4/features4: on-model handles of the new PropertyManager
+    markPmTool(spec);
     var fresh = pm.root.hidden;
     pm.collapsed = {};
     if (fresh) pm.root.scrollTop = 0;
@@ -92,12 +104,25 @@
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmCancel(); return; }
     if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmOK(); }
   });
+  // rfC: a sketch tool's PropertyManager (spec.noFocus: Insert Line, Rectangle, Circle, Sketch Text …) never takes the
+  // keyboard from the graphics area: a click on its buttons, check boxes and option buttons acts without focusing them
+  // (typed lengths, L / C / A and Enter keep going to the sketch), and a list closes back to the graphics area. Value
+  // boxes still take the focus when clicked, to be typed in.
+  pm.root.addEventListener('mousedown', function (e) {
+    if (!pm.spec || !pm.spec.noFocus || e.button !== 0) return;
+    var t = e.target.closest ? e.target.closest('button, input[type=checkbox], input[type=radio], label, .pm-pick, .pm-group > h4') : null;
+    if (t && pm.root.contains(t) && !t.closest('.pm-item')) e.preventDefault();
+  }, true);
+  pm.root.addEventListener('change', function (e) {
+    if (pm.spec && pm.spec.noFocus && e.target.tagName === 'SELECT') { try { e.target.blur(); } catch (er) { } }
+  });
   function closePM(keepPreview) {
     if (!pm.spec) return;
     var spec = pm.spec;
     pm.spec = null; pm.values = null; pm.exprs = {}; pm.exprErrors = {};
     App.command = null;
     App.dimsStale = true;   // r4/features4: its on-model handles go with it
+    markPmTool(null);
     pm.root.hidden = true;
     pm.root.innerHTML = '';
     $('fm-tree').hidden = false;
@@ -173,19 +198,25 @@
     root.appendChild(el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' }));
     var actions = el('div', { class: 'pm-actions' });
     actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 20), onclick: pmOK }));
-    actions.appendChild(el('button', { title: 'Cancel (Esc)', html: Icons('cancel', 18), onclick: pmCancel }));
+    actions.appendChild(el('button', { title: 'Cancel (Esc)', class: 'pm-cancel', html: Icons('cancel', 18), onclick: pmCancel }));
     if (spec.extraActions) spec.extraActions.forEach(function (a) { actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
     root.appendChild(actions);
-    if (spec.message) root.appendChild(el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : ''), html: spec.message }));
+    // rfC: the Message box (SolidWorks' yellow Message group; its title is drawn by the stylesheet, so the text read
+    // from .pm-msg is the message alone)
+    if (spec.message) root.appendChild(el('div', { class: 'pm-msg' + (spec.messageOk ? ' ok' : ''), role: 'status', html: spec.message }));
     (spec.groups || []).forEach(function (g) {
       if (g.show && !g.show(pm.values)) return;   // a group may hide itself, like a field
       var folded = pm.collapsed && pm.collapsed[g.title] != null ? pm.collapsed[g.title] : !!g.collapsed;
-      var box = el('div', { class: 'pm-group' + (folded ? ' collapsed' : '') });
-      var h = el('h4', { html: '<span class="tw">' + (folded ? '▸' : '▾') + '</span>' + g.title });
+      // rfC: a group titled Message (Insert Line …) gets the yellow Message look; the collapse arrow is SolidWorks'
+      // round chevron at the right of the blue header band (drawn by the stylesheet: the header's text is its title)
+      var box = el('div', { class: 'pm-group' + (folded ? ' collapsed' : '') + (g.title === 'Message' ? ' pm-group-msg' : '') });
+      var h = el('h4', { html: '<span class="pm-gt"></span><span class="tw" aria-hidden="true"></span>' });
+      h.firstChild.textContent = g.title;
+      h.setAttribute('aria-expanded', folded ? 'false' : 'true');
       h.addEventListener('click', function () {
         var c = box.classList.toggle('collapsed');
         if (pm.collapsed) pm.collapsed[g.title] = c;
-        h.querySelector('.tw').textContent = c ? '▸' : '▾';
+        h.setAttribute('aria-expanded', c ? 'false' : 'true');
       });
       box.appendChild(h);
       var fields = el('div', { class: 'pm-fields' });
@@ -325,7 +356,28 @@
           if (rb.error != null && UI.setStatus) UI.setStatus('Value not changed: ' + rb.error);
         });
         showHint();
-        var wrap = el('span', { class: 'pm-num-wrap' }, [inp, f.unit ? el('span', { class: 'unit', text: f.unit === 'u' ? UI.unitLabel() : f.unit }) : null]);
+        // rfC: SolidWorks' value box: the number, its unit inside the box at a fixed place, and spin arrows at its right
+        // edge (press and hold to repeat; Shift ×10). The arrows never take the focus, so a sketch tool's PropertyManager
+        // leaves the keyboard with the graphics area; Tab goes from box to box.
+        var spin = el('span', { class: 'pm-spin', 'aria-hidden': 'true' }), held = null;
+        function stopSpin() { if (held) { clearTimeout(held.t); clearInterval(held.i); held = null; } }
+        [['up', 1], ['down', -1]].forEach(function (d) {
+          var sb = el('button', { type: 'button', class: 'pm-spin-' + d[0], tabindex: '-1', html: '<svg width="8" height="5" viewBox="0 0 8 5"><path d="' + (d[1] > 0 ? 'M0.5 4.5 L4 1 L7.5 4.5' : 'M0.5 0.5 L4 4 L7.5 0.5') + '" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>' });
+          sb.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            if (pm.exprs[key] != null || inp.disabled) return;   // no spin increments on an equation
+            var go = function () { spinField(f, inp, d[1], e.shiftKey ? 10 : 1, changed); };
+            stopSpin(); go();
+            held = { t: setTimeout(function () { if (held) held.i = setInterval(go, 70); }, 380) };
+          });
+          ['mouseup', 'mouseleave'].forEach(function (t) { sb.addEventListener(t, stopSpin); });
+          spin.appendChild(sb);
+        });
+        var unitText = f.unit === 'u' ? UI.unitLabel() : (f.unit || '');
+        var wrap = el('span', { class: 'pm-num-wrap' + (unitText ? '' : ' no-unit') }, [inp, el('span', { class: 'unit', text: unitText }), spin]);
+        // a click on the unit or the box's padding puts the caret in the number, as in a single box
+        wrap.addEventListener('mousedown', function (e) { if (e.target === wrap || e.target.classList.contains('unit')) { e.preventDefault(); try { inp.focus(); inp.select(); } catch (er) { } } });
         return el('div', { class: 'pm-row pm-row-num' }, [el('label', { text: f.label }), wrap, hint]);
       }
       case 'select': {
@@ -524,14 +576,26 @@
     App.dimsStale = true;
     if (UI.requestRender) UI.requestRender();
   }
+  // rfC: the icon of a listed selection, from its SolidWorks-style name (Line3, Arc1, Edge<2>, Face<1> …), so a box that
+  // mixes kinds shows each one's own; an item may name its icon itself (it.icon)
+  var PICK_ICONS = [[/^(Poly|Center)?[Ll]ine(\d|<|\s|$)/, 'line'], [/^Circle/, 'circle'], [/^Arc/, 'arc'], [/^Rectangle/, 'rect'], [/^Polygon/, 'polygon'],
+    [/^Slot/, 'slot'], [/^(Point|Sketch ?Point)/, 'point'], [/^Spline/, 'spline'], [/^(Partial )?Ellipse/, 'ellipse'], [/^Text/, 'text'],
+    [/^Edge/, 'edgeSel'], [/^Face/, 'faceSel'], [/^Vertex/, 'vertexSel'], [/^(Plane|.* Plane$)/, 'planeSmall']];
+  function pickIcon(it, f) {
+    if (it.icon) return it.icon;
+    var s = String(it.label || '');
+    for (var i = 0; i < PICK_ICONS.length; i++) if (PICK_ICONS[i][0].test(s)) return PICK_ICONS[i][1];
+    return f.icon || 'plane';
+  }
   function pickList(f, pickBox) {
     var v = pm.values, items = f.items(v) || [];
     var wrap = el('div', { class: 'pm-pickwrap' }, [pickBox]);
     if (!items.length) return wrap;
+    wrap.classList.add('has-list');   // rfC: the box and its list read as one SolidWorks selection box
     var list = el('div', { class: 'pm-list', role: 'listbox', 'aria-label': f.placeholder || 'Selections' });
     function remove(i) { setHoverItem(null); if (f.onRemove) f.onRemove(v, i); var rows = pm.root.querySelectorAll('.pm-list .pm-item'); var r = rows[Math.min(i, rows.length - 1)]; if (r) try { r.focus({ preventScroll: true }); } catch (e) { } }
     items.forEach(function (it, i) {
-      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: it.label + ' (Delete or right-click to remove)', html: Icons(f.icon || 'plane', 14) + '<span></span>' });
+      var row = el('div', { class: 'pm-item', role: 'option', tabindex: '-1', 'data-index': String(i), title: it.label + ' (Delete or right-click to remove)', html: Icons(pickIcon(it, f), 14) + '<span></span>' });
       row.lastChild.textContent = it.label;
       row.addEventListener('mouseenter', function () { setHoverItem(it); });
       row.addEventListener('mouseleave', function () { if (App.command && App.command.hoverItem === it) setHoverItem(null); });

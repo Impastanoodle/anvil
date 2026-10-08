@@ -186,7 +186,7 @@
       var mob = {}; mob[i] = 1e-4;
       S.solve(f, { mob: mob });
       var now = params(f.entities[i]) || {};
-      if (key !== 'ins' && now[key] != null && Math.abs(now[key] - (+val)) > 1e-6 * Math.max(1, Math.abs(+val))) UI.setStatus('That value is held by a relation or a dimension: ' + UI.fmtNum(now[key], 4) + ' kept.');
+      if (key !== 'ins' && now[key] != null && Math.abs(now[key] - (+val)) > 1e-6 * Math.max(1, Math.abs(+val))) UI.setStatus('That value is held by a relation or a dimension: ' + (key === 'ang' || key === 'rot' ? UI.fmtNum(now[key], 2) + '°' : key === 'n' ? Math.round(now[key]) : UI.fmtLen(now[key])) + ' kept.');   // sketch-units
     }
     App.gridStale = true; App.dimsStale = true;
     UI.updateSketches();
@@ -396,7 +396,15 @@
   ['circle', 'arc', 'arc3'].forEach(function (t) {
     UI.sketchToolDefs[t] = { after: function (f, i0) { after(f, i0); } };
   });
-  UI.sketchToolDefs.slot = { after: function (f, i0) { if (opt.slotDims) slotDims(f, i0); after(f, i0); } };
+  UI.sketchToolDefs.slot = {
+    // slot-overall: a typed overall length must be more than the width (ui-sketch.js places the far centre at L - w)
+    accept: function (st, p, typed) {
+      if (st.pts.length !== 2) return true;
+      var w = typed && typed.w != null ? typed.w : 2 * geom().distPointLine(p, st.pts[0], st.pts[1]);
+      return overallTooShort(st, w) ? overallRefused(st, w) : true;
+    },
+    after: function (f, i0) { if (opt.slotDims) slotDims(f, i0); after(f, i0); }
+  };
 
   // ---- shared helpers for the slot and arc tools
   function unit(v) { var L = Math.hypot(v[0], v[1]); return L > 1e-15 ? [v[0] / L, v[1] / L] : [1, 0]; }
@@ -595,6 +603,18 @@
 
   // ---- Centerpoint Straight Slot: center, the center of one end (the other mirrors it), the width
   function cslotAxis(c, b) { return [[2 * c[0] - b[0], 2 * c[1] - b[1]], b]; }
+  // slot-overall: a length typed with Overall Length is the slot's length cap to cap: once the width w is known the
+  // ends come in to (L - w) / 2 from the center (the direction clicked holds); null when L is not more than w
+  function cslotOverall(c, b, st, w) {
+    var L = typedR(st, 'len'), d = Math.hypot(b[0] - c[0], b[1] - c[1]);
+    if (L == null || !opt.overall || !(d > 1e-12)) return cslotAxis(c, b);
+    if (!(L - w > 1e-9)) return null;
+    var h = (L - w) / 2, u = [(b[0] - c[0]) / d, (b[1] - c[1]) / d];
+    return [[cleanLen(c[0] - u[0] * h), cleanLen(c[1] - u[1] * h)], [cleanLen(c[0] + u[0] * h), cleanLen(c[1] + u[1] * h)]];
+  }
+  // the overall length typed is not more than the width: the width click is refused
+  function overallTooShort(st, w) { var L = typedR(st, 'len'); return opt.overall && L != null && !(L - w > 1e-9); }
+  function overallRefused(st, w) { UI.setStatus('The width click is not taken: the overall length ' + UI.fmtLen(typedR(st, 'len')) + ' must be more than the slot width ' + UI.fmtLen(w) + '.'); return false; }
   UI.sketchToolDefs.cslot = {
     steps: 3,
     entities: function (pts, cur, st) {
@@ -603,7 +623,13 @@
       var ax = cslotAxis(all[0], all[1]);
       if (all.length === 2) return [{ t: 'line', x1: ax[0][0], y1: ax[0][1], x2: ax[1][0], y2: ax[1][1] }];
       var w = !cur && typedR(st, 'w') != null ? typedR(st, 'w') : cleanLen(Math.max(2 * geom().distPointLine(all[2], ax[0], ax[1]), 0.01));
+      ax = cslotOverall(all[0], all[1], st, w) || ax;
       return [{ t: 'slot', x1: ax[0][0], y1: ax[0][1], x2: ax[1][0], y2: ax[1][1], w: w }];
+    },
+    accept: function (st, p, typed) {
+      if (st.pts.length !== 2) return true;
+      var ax = cslotAxis(st.pts[0], st.pts[1]), w = typed && typed.w != null ? typed.w : 2 * geom().distPointLine(p, ax[0], ax[1]);
+      return overallTooShort(st, w) ? overallRefused(st, w) : true;
     },
     fields: function (n) { return n === 1 ? [['L', 'len'], ['A', 'ang']] : [['W', 'w']]; },
     live: function (pts, p) {
@@ -624,8 +650,10 @@
     readout: function (pts, p, n) {
       var c = pts[0];
       if (pts.length === 1) return 'L ' + n(2 * Math.hypot(p[0] - c[0], p[1] - c[1]), 2);
-      var ax = cslotAxis(c, pts[1]);
-      return 'L ' + n(2 * Math.hypot(pts[1][0] - c[0], pts[1][1] - c[1]), 2) + '   W ' + n(2 * geom().distPointLine(p, ax[0], ax[1]), 2);
+      var ax = cslotAxis(c, pts[1]), w = 2 * geom().distPointLine(p, ax[0], ax[1]), st = App.toolState || {}, tl = typedR(st, 'len');
+      // slot-overall: the overall length while the width is picked (the typed one holds)
+      var L = opt.overall ? (tl != null ? tl : 2 * Math.hypot(pts[1][0] - c[0], pts[1][1] - c[1]) + w) : 2 * Math.hypot(pts[1][0] - c[0], pts[1][1] - c[1]);
+      return 'L ' + n(L, 2) + '   W ' + n(w, 2);
     },
     // SolidWorks' centerpoint slot has its center point: a sketch point held at the middle of the slot (Midpoint)
     after: function (f, i0, cnt, st) {
@@ -644,20 +672,13 @@
     if (!arc) { UI.setStatus('The slot\'s centre arc could not be made from those points: press Esc and draw it again.'); return false; }
     var w = arcWidth(arc, p);
     if (!(w > 1e-9)) { UI.setStatus('The width click is not taken: it lies on the slot\'s centre arc (width 0). Click beside the arc, at half the slot width from it.'); return false; }
-    if (!(w < 2 * arc.r * (1 - 1e-9))) { UI.setStatus('The width click is not taken: the slot would be ' + UI.fmtNum(w, 3) + ' wide, not less than the arc\'s diameter ' + UI.fmtNum(2 * arc.r, 3) + '. Click nearer the arc.'); return false; }
+    if (!(w < 2 * arc.r * (1 - 1e-9))) { UI.setStatus('The width click is not taken: the slot would be ' + UI.fmtLen(w) + ' wide, not less than the arc\'s diameter ' + UI.fmtLen(2 * arc.r) + '. Click nearer the arc.'); return false; }
     return true;
   }
   // sketch-tools2: the width step of an arc slot does not snap onto the slot's own points (its start, end, centre or
   // third point): a width click near the third point landed exactly on it, and ui-sketch.js refuses a point the tool
-  // has already placed. ui-sketch.js inferPoint offers the tool's points as snap and alignment targets through
-  // st.pts.forEach; while the width is picked that walk is left empty (the points stay in st.pts for the geometry).
-  function noOwnSnaps(st) {
-    var pts = st.pts;
-    if (!pts || pts.ownSnapsOff) return;
-    var each = Array.prototype.forEach;
-    Object.defineProperty(pts, 'ownSnapsOff', { value: true });
-    Object.defineProperty(pts, 'forEach', { configurable: true, writable: true, value: function (fn, self) { if (this.length >= 3) return; return each.call(this, fn, self); } });
-  }
+  // has already placed (sketch-hooks: UI.sketchToolDefs[tool].noOwnSnap, read by ui-sketch.js inferPoint)
+  function widthStep(st) { return st.pts.length >= 3; }
   function slotAfter(f, i0, st) {
     var which = {};
     if (typedR(st, 'r') != null || numericOn()) which.r = 1;
@@ -682,10 +703,10 @@
     },
     accept: function (st, p) {
       if (st.pts.length === 2 && !arc3Of(st.pts.concat([p]))) { UI.setStatus('The three points are in a line: click a point off the line from start to end.'); return false; }
-      if (st.pts.length === 2) noOwnSnaps(st);
       if (st.pts.length === 3) return widthOk(st, arc3Of(st.pts), p);
       return true;
     },
+    noOwnSnap: widthStep,
     fields: function (n) { return n === 1 ? [['L', 'len'], ['A', 'ang']] : n === 2 ? [['R', 'r']] : [['W', 'w']]; },
     live: function (pts, p) {
       var a = pts[0];
@@ -753,10 +774,10 @@
     accept: function (st, p) {
       if (st.pts.length === 1) { st.aFrom = null; st.aSweep = 0; st.aLast = null; }
       if (st.pts.length === 2 && !centerArc(st, st.pts[0], st.pts[1], p)) { UI.setStatus('Click the end of the arc away from its start and its center.'); return false; }
-      if (st.pts.length === 2) noOwnSnaps(st);
       if (st.pts.length === 3) return widthOk(st, centerArcOf(st, st.pts), p);
       return true;
     },
+    noOwnSnap: widthStep,
     fields: function (n) { return n === 1 ? [['R', 'r']] : n === 2 ? [['A', 'sweep']] : [['W', 'w']]; },
     live: function (pts, p, st) {
       var c = pts[0];

@@ -1,6 +1,7 @@
 // ui-sketch-import.js — DXF into a sketch (Insert DXF, File ▸ Open of a .dxf), Check Sketch for Feature and Repair
 // Sketch: their SolidWorks PropertyManagers. The geometry is dxf-import.js's (DxfImport.parse / check / repair), so it
-// runs and is tested without the UI.
+// runs and is tested without the UI. The file's TEXT / MTEXT come in as Etch Sketch Text on their layers; its
+// DIMENSIONs and HATCHes are left out and counted in the message ("2 dimensions and 1 hatch skipped").
 //   UI.cmdInsertDXF()                  Insert DXF / DWG: file picker, then the DXF/DWG Import PropertyManager into the active
 //                                      sketch (a new sketch on the Top Plane when none is open); a .dwg is converted to DXF
 //                                      by the local server first (UI.dwgToDxf, UI.importDWGData, UI.openDWGFile below)
@@ -188,8 +189,10 @@
       UI.updateTemp();
       var rep = built.report;
       if (spec) {
-        spec.message = '<b>' + esc(name) + '</b>: ' + plural(built.entities.length, 'entity', 'entities') + ' to import' +
+        var nTxt = built.entities.filter(function (e) { return e.t === 'text'; }).length;
+        spec.message = '<b>' + esc(name) + '</b>: ' + plural(built.entities.length, 'entity', 'entities') + ' to import' + (nTxt ? ', ' + plural(nTxt, 'text') + ' as Etch Sketch Text' : '') +
           (rep && (rep.gaps || rep.merged || rep.removed) ? ' (' + [rep.gaps ? plural(rep.gaps, 'gap') + ' closed' : '', rep.merged ? plural(rep.merged, 'duplicate') + ' merged' : '', rep.removed ? plural(rep.removed, 'tiny entity', 'tiny entities') + ' removed' : ''].filter(Boolean).join(', ') + ')' : '') + '.' +
+          (parsed.skippedNote ? ' ' + esc(parsed.skippedNote.charAt(0).toUpperCase() + parsed.skippedNote.slice(1)) + '.' : '') +
           (parsed.warnings.length ? '<br>' + parsed.warnings.map(esc).join('<br>') : '');
         UI.renderPM();
       }
@@ -241,7 +244,9 @@
         clearPreview(); changed();
         frame(DxfImport.bounds(geo));
         var g2 = UI.activeSketchFeature() || f, chk = DxfImport.check(g2.entities.slice(n0), gapTol(), { unit: UI.unitLabel() });
-        UI.setStatus('Imported ' + plural(geo.length, 'entity', 'entities') + ' from ' + name + ' (' + plural(nRel, 'Coincident relation') + '). ' +
+        var nTx = geo.filter(function (e) { return e.t === 'text'; }).length;
+        UI.setStatus('Imported ' + plural(geo.length, 'entity', 'entities') + ' from ' + name + ' (' + plural(nRel, 'Coincident relation') + (nTx ? ', ' + plural(nTx, 'text') : '') + '). ' +
+          (parsed.skippedNote ? parsed.skippedNote.charAt(0).toUpperCase() + parsed.skippedNote.slice(1) + '. ' : '') +
           (chk.summary === 'No problems found' ? 'Check Sketch: no problems found.' : 'Check Sketch: ' + chk.summary + '.'));
       },
       onCancel: clearPreview,

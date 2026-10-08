@@ -735,7 +735,7 @@
     }
     function rowKey(x) { return (x.dim ? 'd' : 'r') + x.i; }
     function selKey() { return App.sel && App.sel.kind === 'rel' ? 'r' + App.sel.index : App.sel && App.sel.kind === 'dim' ? 'd' + App.sel.index : ''; }
-    function dimText(x) { var e = f.entities[x.dim.e], val = e ? K.dimValue(e, x.dim) : null; return 'Dimension ' + (val != null ? UI.fmtNum(val, 2) : '') + ' on ' + S.refName(f, String(x.dim.e)); }
+    function dimText(x) { var e = f.entities[x.dim.e], val = e ? K.dimValue(e, x.dim) : null; return 'Dimension ' + (val != null ? (UI.fmtDim ? UI.fmtDim(val) : UI.fmtNum(val, 2)) : '') + ' on ' + S.refName(f, String(x.dim.e)); }   // sketch-units
     function selectRow(row) {
       var key = row.getAttribute('data-key');
       App.sel = { kind: key.charAt(0) === 'd' ? 'dim' : 'rel', index: +key.slice(1) };
@@ -802,14 +802,17 @@
   window.addEventListener('mousemove', function (ev) { ctrlHeld = !!ev.ctrlKey; }, true);
   window.addEventListener('blur', function () { ctrlHeld = false; });
   UI.sketchCtrlHeld = function () { return ctrlHeld; };   // for the drawing tools' inference too (ui-sketch.js inferPoint)
-  function sketchDragHook(p) {
+  function sketchDragHook(p, ev, own) {   // own: the ref to drag (a Sketch Text pressed on its letters), else the one under p
     if (App.mode !== 'sketch' || App.tool !== 'select' || App.command) return null;
-    var f = UI.activeSketchFeature(), ref = pickSketchRef(p[0], p[1]);
+    var f = UI.activeSketchFeature(), ref = own || pickSketchRef(p[0], p[1]);
     if (!f || !ref || ref === 'O') return null;
     var pl = UI.activePlane(), start = null, uv0 = null, point = !!S.refPoint(f, ref), moved = false;
     if (!point) ref = String(refEntity(ref));
     // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
     var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');
+    // sketch-text-ref: a Sketch Text is its insertion point (SketchSolver point ref '5'): grabbed anywhere on its letters
+    // it keeps the grab offset, its insertion point snaps onto points and curves and the solver holds its relations
+    var textGrab = null;
     // At most one solve per animation frame: the first move of a frame is solved at once (no added latency), later ones
     // in the same frame only replace the pending target, solved when the frame comes (or at once on release). While
     // dragging, the sketch is redrawn without re-analysing it (its degrees of freedom cannot change mid-drag).
@@ -930,6 +933,7 @@
     function solveTo(q) {
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv || !uv0) return;
+      if (textGrab) { uv = [uv[0] + textGrab[0], uv[1] + textGrab[1]]; q = scr(pl, uv); }   // where the insertion point goes
       drop = !ctrlHeld && point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
@@ -946,7 +950,11 @@
     function unschedule() { if (frame) cancelAnimationFrame(frame); if (timer) clearTimeout(timer); frame = timer = 0; }
     function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); schedule(); } }
     return {
-      start: function () { markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); App.sketchDragging = true; },
+      start: function () {
+        markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); App.sketchDragging = true;
+        var P0 = ent && ent.t === 'text' && uv0 ? S.refPoint(f, ref) : null;
+        if (P0) textGrab = [P0[0] - uv0[0], P0[1] - uv0[1]];
+      },
       move: function (q) {
         if (frame) { pending = q; return; }
         solveTo(q);
@@ -982,6 +990,7 @@
   // ------------------------------------------------------------------ script / test hooks
   function activeOrThrow() { var f = UI.activeSketchFeature(); if (!f) throw new Error('No active sketch.'); return f; }
   UI.pickSketchRef = pickSketchRef;
+  UI.sketchPointDragHook = sketchDragHook;   // the solver drag itself (ui-sketch.js takes it for a free Sketch Text)
   UI.pickModelRef = pickModelRef;
   UI.dropUnusedModelRefs = dropUnusedModelRefs;
   UI.relDimFor = relDimFor;

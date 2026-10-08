@@ -2584,11 +2584,15 @@
     W.SketchSolver.infer(f, 0); UI.updateSketches();
     UI.App.ribbonTab = 'Sketch'; UI.refreshRibbon();
     function ribbonBtn(re) { return Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return re.test(b.textContent); })[0]; }
-    var add = ribbonBtn(/Add Relation/), disp = ribbonBtn(/Display\/Delete Relations/);
-    assert(add && disp, 'ribbon buttons');
-    add.click();
+    // rfC: Add Relation is in the Display/Delete Relations flyout, as on SolidWorks 2024's Sketch tab
+    UI.ribbonFlyFace('relations', 0);
+    var rfl = c14Fly('relations'), disp = rfl && rfl.querySelector('.rb');
+    assert(disp && /Display\/Delete Relations/.test(disp.textContent.replace(/\s+/g, ' ')), 'ribbon buttons');
+    rfl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); rfl.querySelector('.rb-caret').click();
+    c14MenuRow('Add Relation').click();
     assert(UI.hasPM() && /Add Relations/.test($('pm').textContent), 'Add Relations from the ribbon');
     UI.pmCancel();
+    UI.ribbonFlyFace('relations', 0);
     disp.click();
     assert(UI.hasPM() && D.querySelectorAll('#rel-display .rel-row').length === 2, 'Display/Delete from the ribbon');
     clickPmButton('Delete All');
@@ -2615,9 +2619,12 @@
     UI.zoomView(1);
     UI.App.ribbonTab = 'Sketch'; UI.refreshRibbon();
     function ribbonBtn(re) { return Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return re.test(b.textContent); })[0]; }
-    var cl = ribbonBtn(/^Centerline$/), cg = ribbonBtn(/Construction Geometry/);
-    assert(cl && cg, 'ribbon Centerline / Construction Geometry');
-    cl.click();
+    // rfC: Centerline is in the Line flyout, as on SolidWorks 2024's Sketch tab
+    var lfl = c14Fly('line'), cg = ribbonBtn(/Construction Geometry/);
+    assert(lfl && cg, 'ribbon Centerline / Construction Geometry');
+    lfl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); lfl.querySelector('.rb-caret').click();
+    c14MenuRow('Centerline').click();
+    UI.ribbonFlyFace('line', 0);
     skClick(0, -20); skClick(0, 20);
     UI.setTool('select');
     var f = activeSketch();
@@ -10582,9 +10589,12 @@
     assert(tools.length === 1 && /Tools/.test(tools[0].menu), 'Tools menu ' + JSON.stringify(tools.map(function (x) { return x.text; })));
     UI.closeMenus();
     UI.App.ribbonTab = 'Sketch'; UI.refreshRibbon();
-    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return /Fully Define Sketch/.test(b.textContent); })[0];
-    assert(btn, 'ribbon button');
-    btn.click();
+    // rfC: Fully Define Sketch is in the Display/Delete Relations flyout, as on SolidWorks 2024's Sketch tab
+    var rfl = c14Fly('relations');
+    assert(rfl, 'ribbon button');
+    rfl.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); rfl.querySelector('.rb-caret').click();
+    c14MenuRow('Fully Define Sketch').click();
+    UI.ribbonFlyFace('relations', 0);
     assert(UI.pmTitle() === 'Fully Define Sketch', 'PM ' + UI.pmTitle());
     clickPmButton('Calculate');
     var st = UI.sketchStatus();
@@ -11575,7 +11585,7 @@
   function dxiGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group h4'), function (h) { return h.textContent.replace(/^[▾▸]/, '').trim(); }); }
   function dxiLabels() { return Array.prototype.map.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent.trim(); }); }
   function dxiRels(f) { return (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
-  step('dxf-import: UI.importDXFText on a new part opens DXF/DWG Import (Units, Layers, Position, Options) on a new Top Plane sketch with the repaired preview; ✓ adds 7 entities as one undo step with Coincident relations, and Extruded Boss of the closed profile has the plate\'s exact volume', async function () {
+  step('dxf-import: UI.importDXFText on a new part opens DXF/DWG Import (Units, Layers, Position, Options) on a new Top Plane sketch with the repaired preview; ✓ adds 7 entities and the TEXT (as Sketch Text) as one undo step with Coincident relations, and Extruded Boss of the closed profile has the plate\'s exact volume', async function () {
     need(UI, 'importDXFText'); need(UI, 'cmdInsertDXF'); need(UI, 'cmdCheckSketch'); need(UI, 'cmdRepairSketch');
     await anvil.newPart(); await idle();
     var s = UI.App.model.units === 'in' ? 1 : 25.4;
@@ -11583,22 +11593,22 @@
     assert(v && UI.pmTitle() === 'DXF/DWG Import' && UI.App.mode === 'sketch', 'PM ' + UI.pmTitle() + ' in ' + UI.App.mode);
     assert(dxiGroups().join() === 'Units,Layers,Position,Options', 'groups ' + dxiGroups());
     var labels = dxiLabels();
-    ['File units', 'Import as', 'CUT (8)', 'Lower-left corner at the origin', 'Center on the origin', 'X offset', 'Y offset', 'Rotation', 'Merge points closer than', 'Repair after import', 'Add Coincident relations'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
+    ['File units', 'Import as', 'CUT (9)', 'Lower-left corner at the origin', 'Center on the origin', 'X offset', 'Y offset', 'Rotation', 'Merge points closer than', 'Repair after import', 'Add Coincident relations'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
     var f = activeSketch();
     assert(f && f.plane && f.plane.ref === 'Top' && f.entities.length === 0, 'a new sketch on the Top Plane: ' + JSON.stringify(f && f.plane));
-    assert(UI.App.tempEntities.length === 7 && /1 gap closed, 1 duplicate merged/.test($('pm').textContent) && /text entity/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
+    assert(UI.App.tempEntities.length === 8 && /1 gap closed, 1 duplicate merged/.test($('pm').textContent) && /1 text as Etch Sketch Text/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
     // a layer turned off empties the preview and greys ✓
     D.querySelector('#pm input[data-key="L0"]').click();
     assert(UI.App.tempEntities.length === 0 && D.querySelector('#pm .pm-ok').classList.contains('disabled'), 'layer off');
     D.querySelector('#pm input[data-key="L0"]').click();   // the PropertyManager was drawn again
-    assert(UI.App.tempEntities.length === 7, 'layer back on');
+    assert(UI.App.tempEntities.length === 8, 'layer back on');
     var u0 = UI.App.undo.length;
     await pmAccept();
-    assert(!UI.hasPM() && f.entities.length === 7 && UI.App.undo.length === u0 + 1 && UI.App.tempEntities.length === 0, 'accepted: ' + f.entities.length + ' entities, ' + (UI.App.undo.length - u0) + ' undo steps');
+    assert(!UI.hasPM() && f.entities.length === 8 && UI.App.undo.length === u0 + 1 && UI.App.tempEntities.length === 0, 'accepted: ' + f.entities.length + ' entities, ' + (UI.App.undo.length - u0) + ' undo steps');
     assert(dxiRels(f).filter(function (r) { return /^coincident:/.test(r); }).length === 5, 'Coincident relations: ' + dxiRels(f).join(' '));
     var bc = f.entities.filter(function (e) { return e.t === 'circle' && Math.abs(e.r - 0.2 * s) < 1e-9; })[0];
     assert(bc && Math.abs(bc.cx - 2.5 * s) < 1e-9 && Math.abs(bc.cy - 1.5 * s) < 1e-9, 'block circle ' + JSON.stringify(bc));
-    assert(/Imported 7 entities from plate\.dxf \(5 Coincident relations\)\. Check Sketch: no problems found/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
+    assert(/Imported 8 entities from plate\.dxf \(5 Coincident relations, 1 text\)\. Check Sketch: no problems found/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
     var sid = UI.App.activeSketch;
     await UI.exitSketch(); await idle();
     UI.App.sel = { kind: 'feature', id: sid };
@@ -11611,7 +11621,7 @@
     await anvil.newPart(); await idle();
     UI.importDXFText(dxiPlateText(), { name: 'plate.dxf', repair: false, tol: 0, ok: true }); await idle();
     var f = activeSketch();
-    assert(f.entities.length === 8, 'imported as drawn: ' + f.entities.length);
+    assert(f.entities.length === 9 && f.entities[8].t === 'text', 'imported as drawn: ' + f.entities.length);
     f.rels = (f.rels || []).concat([{ type: 'horizontal', refs: ['3'] }, { type: 'horizontal', refs: ['6'] }]);
     var iss = UI.cmdCheckSketch();
     assert(UI.pmTitle() === 'Check Sketch for Feature' && iss.map(function (x) { return x.type; }).sort().join() === 'branch,duplicate,gap', 'issues ' + iss.map(function (x) { return x.msg; }).join(' | '));
@@ -11628,15 +11638,15 @@
     var u0 = UI.App.undo.length;
     await pmAccept();
     f = activeSketch();
-    assert(f.entities.length === 7 && UI.App.undo.length === u0 + 1 && !D.querySelectorAll('#dim-layer .dxi-mark').length, 'repaired: ' + f.entities.length);
+    assert(f.entities.length === 8 && UI.App.undo.length === u0 + 1 && !D.querySelectorAll('#dim-layer .dxi-mark').length, 'repaired: ' + f.entities.length);
     var rels = dxiRels(f);
     assert(rels.indexOf('horizontal:3') >= 0 && !rels.some(function (r) { return /:6$|,6\.|:6\./.test(r); }) && rels.indexOf('coincident:0.p1,4.p2') >= 0, 'relations ' + rels.join(' '));
     assert(!UI.cmdCheckSketch().length && /No problems found/.test(D.querySelector('#pm .pm-msg').textContent), 'checked again: ' + D.querySelector('#pm .pm-msg').textContent);
     UI.pmCancel();
     UI.undo(); await idle();
-    assert(activeSketch().entities.length === 8, 'undo: ' + activeSketch().entities.length);
+    assert(activeSketch().entities.length === 9, 'undo: ' + activeSketch().entities.length);
     UI.redo(); await idle();
-    assert(activeSketch().entities.length === 7, 'redo: ' + activeSketch().entities.length);
+    assert(activeSketch().entities.length === 8, 'redo: ' + activeSketch().entities.length);
     await UI.exitSketch(true); await idle();
     return rels.length + ' relations kept';
   });
@@ -11645,7 +11655,7 @@
     var f = activeSketch();
     assert(UI.App.model.name === 'Bracket-101' && UI.pmTitle() === 'DXF/DWG Import' && f && f.name === 'Sketch1' && f.plane.ref === 'Top', 'opened: ' + UI.App.model.name + ' / ' + UI.pmTitle() + ' / ' + (f && f.name));
     await pmAccept();
-    assert(activeSketch().entities.length === 7, 'entities ' + activeSketch().entities.length);
+    assert(activeSketch().entities.length === 8, 'entities ' + activeSketch().entities.length);
     await UI.exitSketch(); await idle();
     UI.setRibbonTab('Sketch');
     var txt = $('ribbon-buttons').textContent.replace(/\s+/g, ' ');
@@ -11689,7 +11699,7 @@
   function dwgBytes() { var b = new Uint8Array(64); 'AC1015'.split('').forEach(function (c, i) { b[i] = c.charCodeAt(0); }); return b.buffer; }
   function dwgDxfResponse(text) { return Promise.resolve(new W.Response(new W.TextEncoder().encode(text), { status: 200, headers: { 'Content-Type': 'application/dxf', 'X-Anvil-Converter': 'libredwg' } })); }
   function dwgToast() { var t = D.querySelector('.toast'); return t ? t.textContent : ''; }
-  step('dwg-import: File ▸ Open of a .dwg (UI.openFileData) posts the file to api/dwg2dxf and opens the DXF that comes back as a new part with the DXF/DWG Import PropertyManager (7 entities); Insert DXF / DWG of a .dwg into an open sketch does the same; the Open dialog lists DWG', async function () {
+  step('dwg-import: File ▸ Open of a .dwg (UI.openFileData) posts the file to api/dwg2dxf and opens the DXF that comes back as a new part with the DXF/DWG Import PropertyManager (7 entities and a text); Insert DXF / DWG of a .dwg into an open sketch does the same; the Open dialog lists DWG', async function () {
     need(UI, 'openDWGFile'); need(UI, 'importDWGData'); need(UI, 'dwgToDxf');
     var m = dwgFetch(function () { return dwgDxfResponse(dxiPlateText()); });
     try {
@@ -11698,14 +11708,14 @@
       assert(m.calls.length === 1 && c.method === 'POST' && body && String.fromCharCode(body[0], body[1], body[2], body[3]) === 'AC10', 'POST of the DWG bytes ' + JSON.stringify(m.calls.map(function (x) { return x.method + ' ' + x.url; })));
       var f = activeSketch();
       assert(UI.App.model.name === 'Bracket-202' && UI.pmTitle() === 'DXF/DWG Import' && f && f.name === 'Sketch1' && f.plane.ref === 'Top', 'opened: ' + UI.App.model.name + ' / ' + UI.pmTitle());
-      assert(UI.App.tempEntities.length === 7 && /Bracket-202\.dwg/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
+      assert(UI.App.tempEntities.length === 8 && /Bracket-202\.dwg/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
       await pmAccept();
-      assert(activeSketch().entities.length === 7, 'entities ' + activeSketch().entities.length);
+      assert(activeSketch().entities.length === 8, 'entities ' + activeSketch().entities.length);
       // Insert DXF / DWG of a .dwg into the open sketch: the PM again, adding to it
       var v = await UI.importDWGData('Etch-3.dwg', dwgBytes(), { dx: 10 }); await idle();
       assert(v && UI.pmTitle() === 'DXF/DWG Import' && m.calls.length === 2, 'insert: ' + UI.pmTitle());
       await pmAccept();
-      assert(activeSketch().entities.length === 14, 'inserted: ' + activeSketch().entities.length);
+      assert(activeSketch().entities.length === 16, 'inserted: ' + activeSketch().entities.length);
       await UI.exitSketch(true); await idle();
     } finally { m.restore(); }
     UI.fileOpen(); dontSaveIfAsked();
@@ -11713,7 +11723,7 @@
     var opts = Array.prototype.map.call(sel.options, function (o) { return o.value; });
     assert(opts.indexOf('dwg') >= 0 && /\.dwg/.test(inp.accept), 'Open lists DWG: ' + opts.join() + ' / ' + inp.accept);
     clickModalButton('Cancel');
-    return 'Bracket-202.dwg -> 7 entities, + Etch-3.dwg -> 14';
+    return 'Bracket-202.dwg -> 8 entities, + Etch-3.dwg -> 16';
   });
   step('dwg-import: without the local server\'s API (404 page, network error) a .dwg says plainly that DWG needs the local Anvil server, in a toast; no converter (503) names get-libredwg.ps1; a converter error is passed on; a file that is not a DWG is refused before any request', async function () {
     var NO = 'DWG needs the local Anvil server; save the file as DXF or run Anvil from the desktop shortcut.';
@@ -12087,7 +12097,7 @@
     assert(UI.pmTitle() === 'Mirror' && !UI.dynamicMirrorOn(), 'the Mirror PM asks for the line: ' + UI.pmTitle());
     rskClick([0, 20]); await wait(20);
     assert(UI.dynamicMirrorOn() && !UI.hasPM() && UI.dynamicMirrorState().axis === 0, 'on about the centerline: ' + JSON.stringify(UI.dynamicMirrorState()) + ' PM ' + UI.pmTitle());
-    var marks = UI.sketchRegionObjects(UI.activeSketchFeature(), UI.activePlane()).filter(function (o) { return o.userData && o.userData.dynMirrorMarks; });
+    var marks = UI.sketchOverlayObjects(UI.activeSketchFeature(), UI.activePlane()).filter(function (o) { return o.userData && o.userData.dynMirrorMarks; });   // sketch-hooks: UI.sketchOverlayHooks
     assert(marks.length === 1 && marks[0].geometry.attributes.position.count === 8, '"=" marks at both ends: ' + marks.length);
     UI.setTool('line');
     var undo0 = UI.App.undo.length;
@@ -12703,6 +12713,924 @@
     return 'R50 → R60 followed, kept after delete';
   });
   // --- end sketch-text ---
+  // --- rfC: UI polish — the Sketch tab laid out as SolidWorks 2024's (order, flyouts, icons, tooltips with keys), the S
+  // Shortcut Bar, tool cursors, the sketch's shortcut menu, the PropertyManager renderer, the status bar, dark grounds
+  // (ui-panels.js, ui-commands.js, style.css, icons.js)
+  function rfcTop() {   // the Sketch tab's top level: a separator, a flyout's group, a stack (grid) or a button's name
+    return Array.prototype.filter.call($('ribbon-buttons').children, function (c) { return !c.classList.contains('rb-more'); }).map(function (c) {
+      return c.classList.contains('rb-sep') ? '|' : c._fly ? c._fly.fly : c.classList.contains('rb-grid') ? 'grid' : c.classList.contains('rb-stack') ? 'stack' : c.getAttribute('aria-label');
+    }).join(',');
+  }
+  function rfcSketchItems() {   // every item of the Sketch tab, flyout members and stack rows included: [{ it, fly }]
+    var out = [];
+    UI.RIBBON.Sketch.forEach(function (x) {
+      (x.stack || [x]).forEach(function (s) { if (s.fly) s.items.forEach(function (it, i) { out.push({ it: it, fly: s.fly, i: i }); }); else if (!s.sep) out.push({ it: s }); });
+    });
+    return out;
+  }
+  function rfcMenu() { var m = D.querySelector('.menu'); return m ? Array.prototype.map.call(m.querySelectorAll('.mi'), function (r) { return r.textContent; }) : []; }
+  step('rfC: the Sketch tab in SolidWorks 2024 order — Sketch ▾, Smart Dimension ▾ | the entity grid (Line / Circle / Spline, Rectangle / Arc / Ellipse, Slot / Polygon / Sketch Fillet, Text / Plane / Point; icons only) | Trim ▾, Convert ▾, Offset, Mirror / Pattern / Move | Display/Delete Relations ▾ (Add Relation, Fully Define Sketch), Repair / Quick Snaps / Rapid Sketch … | the shop commands; every button has its own icon and a tooltip (name, help, key); greyed ones say so; the ribbon keeps its height', async function () {
+    await anvil.newPart(); await idle();
+    UI.setRibbonTab('Features'); var h0 = $('ribbon').offsetHeight;
+    UI.setRibbonTab('Sketch');
+    assert($('ribbon').offsetHeight === h0, 'the Sketch tab changes the ribbon height: ' + $('ribbon').offsetHeight + ' vs ' + h0);
+    var top = rfcTop();
+    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,stack,|,relations,stack,stack,|,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);
+    var grid = D.querySelector('#ribbon-buttons .rb-grid');
+    var cells = Array.prototype.map.call(grid.children, function (c) { return c._fly ? c._fly.fly : c.getAttribute('aria-label'); }).join(',');
+    assert(cells === 'line,circle,spline,rect,arc,ellipse,slot,Polygon,skFillet,Text,Plane,Point', 'entity grid ' + cells);
+    var gs = W.getComputedStyle(grid);
+    assert(gs.display === 'grid' && gs.gridAutoFlow === 'column' && W.getComputedStyle(grid.querySelector('.rb span')).display === 'none', 'grid: three rows of icons, column by column (' + gs.display + ' ' + gs.gridAutoFlow + ')');
+    var rows = {}; Array.prototype.forEach.call(grid.children, function (c) { rows[Math.round(c.getBoundingClientRect().top)] = 1; });
+    assert(Object.keys(rows).length === 3, 'grid rows ' + Object.keys(rows).join(','));
+    // the flyouts' members, as SolidWorks groups them
+    var groups = {};
+    UI.RIBBON.Sketch.forEach(function (x) { (x.stack || [x]).forEach(function (s) { if (s.fly) groups[s.fly] = s.items.map(function (it) { return it.label.replace(/\n/g, ' '); }).join('|'); }); });
+    assert(groups.sketch === 'Sketch|3D Sketch|3D Sketch On Plane' && groups.relations === 'Display/Delete Relations|Add Relation|Fully Define Sketch' && groups.skFillet === 'Sketch Fillet|Sketch Chamfer' && /^Spline\|Style Spline/.test(groups.spline) && /^Ellipse\|Partial Ellipse\|Parabola\|Conic$/.test(groups.ellipse), JSON.stringify(groups));
+    // every item: its own icon (not the generic square) and a one-line description; greyed ones say they are not in Anvil
+    var items = rfcSketchItems(), bad = [], keys = {};
+    items.forEach(function (x) {
+      var icon = x.it.icon || x.it.id;
+      if (!W.Icons.has(icon)) bad.push(x.it.label + ': no icon ' + icon);
+      if (x.fly) UI.ribbonFlyFace(x.fly, x.i);
+      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.it.label.replace(/\n/g, ' '); })[0];
+      if (!b || !b._tip) { bad.push(x.it.label + ': no button / tooltip'); return; }
+      var t = b._tip;
+      if (!t.desc) bad.push(x.it.label + ': no help line');
+      if (t.key) keys[t.name] = t.key;
+      if (!(x.it.run || x.it.tool) && !(b.disabled && /Not available in Anvil yet/.test(t.note))) bad.push(x.it.label + ': greyed without its note');
+    });
+    UI.RIBBON.Sketch.forEach(function (x) { (x.stack || [x]).forEach(function (s) { if (s.fly) UI.ribbonFlyFace(s.fly, 0); }); });
+    assert(!bad.length, bad.join('; '));
+    var want = { 'Line': 'L', 'Circle': 'C', 'Corner Rectangle': 'R', 'Centerpoint Arc': 'A', '3 Point Arc': 'A, A', 'Smart Dimension': 'D', 'Polygon': 'P', 'Straight Slot': 'T', 'Sketch': 'S, S' };
+    Object.keys(want).forEach(function (n) { assert(keys[n] === want[n], n + ' key ' + keys[n]); });
+    // the tooltip as drawn for a grid button: bold name, the key, the help line
+    var line = c14Fly('line').querySelector('.rb'), tip = await c14Tip(line);
+    assert(tip && tip.querySelector('b').textContent === 'Line' && tip.querySelector('.tip-key').textContent === 'L' && /Draw lines/.test(tip.querySelector('.tip-desc').textContent), 'Line tooltip ' + (tip && tip.textContent));
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    UI.setRibbonTab('Features');
+    return items.length + ' commands; ' + top;
+  });
+  step('rfC: the Shortcut Bar (S) in a sketch — at the pointer, the sketch tools with their icons and tooltips; a pick runs the tool and closes the bar, Esc closes it', async function () {
+    await rskNew();
+    var vp = $('viewport').getBoundingClientRect(), cx = vp.left + vp.width * 0.4, cy = vp.top + vp.height * 0.45;
+    $('viewport').dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+    c14Key('s');
+    var bar = $('scbar'), labels = UI.shortcutBar.labels();
+    assert(bar && UI.shortcutBar.context() === 'sketch', 'no sketch Shortcut Bar');
+    ['Exit Sketch', 'Smart Dimension', 'Line', 'Corner Rectangle', 'Circle', 'Sketch Fillet', 'Trim Entities', 'Offset Entities', 'Convert Entities', 'Add Relation', 'Display/Delete Relations', 'Text'].forEach(function (n) { assert(labels.indexOf(n) >= 0, 'bar lacks ' + n + ': ' + labels.join(', ')); });
+    var bad = Array.prototype.filter.call(bar.querySelectorAll('button'), function (b) { return !W.Icons.has(b.dataset.icon) || !b._tip || !b._tip.desc; }).map(function (b) { return b.getAttribute('aria-label'); });
+    assert(!bad.length, 'buttons without icon / tooltip: ' + bad.join(', '));
+    var b0 = bar.querySelector('button').getBoundingClientRect();
+    assert(b0.left <= cx && cx <= b0.right && b0.top <= cy && cy <= b0.bottom, 'not at the pointer');
+    var circ = Array.prototype.filter.call(bar.querySelectorAll('button'), function (b) { return b.getAttribute('aria-label') === 'Circle'; })[0];
+    circ.click();
+    assert(!UI.shortcutBar.isOpen() && UI.App.tool === 'circle', 'a pick: tool ' + UI.App.tool + ', bar ' + UI.shortcutBar.isOpen());
+    UI.setTool('select');
+    c14Key('s'); assert(UI.shortcutBar.isOpen(), 'bar did not open again');
+    c14Key('Escape'); assert(!UI.shortcutBar.isOpen() && UI.App.mode === 'sketch', 'Esc closes the bar only');
+    return labels.length + ' buttons';
+  });
+  step('rfC: cursors — every drawing tool shows the pencil with its glyph (Smart Dimension the arrow); the PropertyManager tools (Parallel / Tangent / Perpendicular Line, Bisector, Tangent Circle, Split / Join, Trim, ordinate and H / V dimensions) mark the graphics area and get theirs, cleared on close', async function () {
+    await rskNew();
+    var vp = $('viewport'), f = UI.activeSketchFeature(), bad = [];
+    f.entities.push({ t: 'line', x1: -20, y1: -10, x2: 20, y2: -10 }, { t: 'circle', cx: 0, cy: 10, r: 6 }); UI.updateSketches();
+    function cur() { return W.getComputedStyle(vp).cursor; }
+    ['line', 'rect', 'crect', 'rect3', 'crect3', 'parallelogram', 'circle', 'pcircle', 'arc', 'tarc', 'arc3', 'polygon', 'slot', 'cslot', 'aslot3', 'aslot', 'point', 'spline', 'ellipse', 'pellipse', 'dimension', 'text'].forEach(function (t) {
+      UI.setTool(t);
+      if (!/^url\(/.test(cur())) bad.push(t + ': ' + cur().slice(0, 30));
+      UI.setTool('select');
+    });
+    var pmTools = { cmdParallelLine: 'parallelLine', cmdTangentLine: 'tangentLine', cmdPerpendicularLine: 'perpLine', cmdBisectorLine: 'bisectorLine', cmdTangentCircle: 'tangentCircle', cmdSplitEntities: 'splitEnt', cmdJoinEntities: 'joinEnt', cmdTrimEntities: 'trim', cmdHorizontalDim: 'horizDim', cmdVerticalDim: 'vertDim' };
+    Object.keys(pmTools).forEach(function (c) {
+      if (!UI[c]) { bad.push(c + ' missing'); return; }
+      UI.App.sel = null; if (UI.setSelection) UI.setSelection([]);
+      UI[c]();
+      if (vp.getAttribute('data-pmtool') !== pmTools[c] || !/^url\(/.test(cur())) bad.push(c + ': ' + vp.getAttribute('data-pmtool') + ' ' + cur().slice(0, 20));
+      if (UI.hasPM()) UI.pmCancel();
+      if (vp.hasAttribute('data-pmtool')) bad.push(c + ': mark left after ✗');
+    });
+    UI.cmdOrdinateDim('x');
+    if (vp.getAttribute('data-pmtool') !== 'ordinateH' || !/^url\(/.test(cur())) bad.push('ordinate: ' + vp.getAttribute('data-pmtool'));
+    if (UI.hasPM()) UI.pmCancel();
+    UI.setTool('select');
+    assert(!bad.length, bad.join('; '));
+    assert(!/^url\(/.test(cur()), 'the Select tool keeps the arrow: ' + cur().slice(0, 30));
+    return '22 drawing tools, 11 PropertyManager tools';
+  });
+  step('rfC: the sketch\'s shortcut menu (right-click) — on empty space Smart Dimension, Line, Convert / Trim, Add Relation, Display/Delete Relations, Fully Define, Zoom to Fit, Exit Sketch; on a line Construction Geometry, Smart Dimension, the relation commands, Trim / Offset / Mirror, Properties…, Delete; it never covers the clicked point', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature(), r = $('viewport').getBoundingClientRect();
+    f.entities.push({ t: 'line', x1: -20, y1: 0, x2: 20, y2: 0 }); UI.updateSketches(); UI.setTool('select');
+    function covers(px, py) { var m = D.querySelector('.menu').getBoundingClientRect(); return px >= m.left && px <= m.right && py >= m.top && py <= m.bottom; }
+    var pe = rskScr([0, 30]);
+    UI.sketchMenu(pe[0], pe[1]);
+    var empty = rfcMenu().join(' | ');
+    ['Smart Dimension', 'Line', 'Convert Entities', 'Trim Entities', 'Add Relation', 'Display/Delete Relations', 'Fully Define Sketch', 'Zoom to Fit', 'Exit Sketch', 'Discard Changes and Exit'].forEach(function (n) { assert(empty.indexOf(n) >= 0, 'empty-space menu lacks ' + n + ': ' + empty); });
+    assert(!covers(r.left + pe[0], r.top + pe[1]), 'the menu covers the clicked point');
+    UI.closeMenus();
+    var pl = rskScr([5, 0]);
+    UI.sketchMenu(pl[0], pl[1]);
+    var on = rfcMenu().join(' | ');
+    ['Construction Geometry', 'Smart Dimension', 'Add Relation', 'Display/Delete Relations', 'Trim Entities', 'Offset Entities', 'Mirror Entities', 'Properties…', 'Delete', 'Exit Sketch'].forEach(function (n) { assert(on.indexOf(n) >= 0, 'entity menu lacks ' + n + ': ' + on); });
+    assert(!covers(r.left + pl[0], r.top + pl[1]), 'the entity menu covers the clicked point');
+    Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return /Properties…/.test(m.textContent); })[0].click();
+    assert(UI.pmTitle() === 'Line Properties', 'Properties… opens ' + UI.pmTitle());
+    UI.closePM();
+    // near the window's bottom-right corner the menu opens up and to the left of the point
+    var Wd = W.innerWidth, Ht = W.innerHeight;
+    UI.showMenu(Wd - 6, Ht - 6, UI.sketchMenuItems([]));
+    var m = D.querySelector('.menu').getBoundingClientRect();
+    assert(m.right <= Wd - 6 && m.left >= 0 && m.top >= 0 && !covers(Wd - 6, Ht - 6), 'corner menu at ' + JSON.stringify([m.left, m.top, m.right, m.bottom]));
+    UI.closeMenus();
+    return 'empty space: ' + empty.split(' | ').length + ' rows, on a line: ' + on.split(' | ').length + ' rows';
+  });
+  step('rfC: PropertyManager renderer — groups with the blue header band and the round collapse chevron (title text only), value boxes with the unit inside and spin arrows that step without taking the focus, the yellow Message box, a sketch tool\'s PM keeps the keyboard with the graphics area, Enter accepts and Esc cancels, opening and closing moves nothing', async function () {
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 30, y1: 0, x2: 30, y2: 20 }); UI.updateSketches();
+    var vp0 = $('viewport').getBoundingClientRect(), left0 = $('left').getBoundingClientRect(), rib0 = $('ribbon').offsetHeight;
+    UI.cmdSketchFillet();
+    var h = D.querySelector('#pm .pm-group > h4'), g = h.parentElement;
+    assert(h.textContent === 'Entities to Fillet' && h.querySelector('.tw') && h.querySelector('.tw').textContent === '' && h.getAttribute('aria-expanded') === 'true', 'group header ' + h.textContent);
+    assert(/gradient/.test(W.getComputedStyle(h).backgroundImage) && W.getComputedStyle(h.querySelector('.tw'), '::after').content !== 'none', 'blue band with the chevron');
+    h.click();
+    assert(g.classList.contains('collapsed') && h.getAttribute('aria-expanded') === 'false', 'collapse');
+    h.click();
+    var msg = D.querySelector('#pm .pm-msg');
+    assert(msg && W.getComputedStyle(msg, '::before').content === '"Message"' && /Select a sketch vertex/.test(msg.textContent), 'Message box ' + (msg && W.getComputedStyle(msg, '::before').content));
+    var inp = D.querySelector('#pm input.pm-num[data-key="r"]') || D.querySelector('#pm input.pm-num'), wrap = inp.parentElement;
+    assert(wrap.classList.contains('pm-num-wrap') && wrap.querySelector('.unit').textContent === UI.unitLabel() && wrap.querySelectorAll('.pm-spin button').length === 2, 'value box: number, unit, spin arrows');
+    var key = inp.getAttribute('data-key'), v0 = +UI.pmSpec().values[key];
+    if (D.activeElement && D.activeElement.blur) D.activeElement.blur();
+    var up = wrap.querySelector('.pm-spin-up'), ev = new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 });
+    up.dispatchEvent(ev); up.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    near(+UI.pmSpec().values[key], v0 + (UI.unitLabel() === 'in' ? 0.1 : 1), 1e-9, 'spin up');
+    assert(ev.defaultPrevented && D.activeElement !== up, 'the spin arrow took the focus');
+    // the boxes of a PM share one width (aligned)
+    var widths = {}; Array.prototype.forEach.call(D.querySelectorAll('#pm .pm-num-wrap'), function (w) { widths[w.offsetWidth] = 1; });
+    assert(Object.keys(widths).length === 1, 'value box widths ' + Object.keys(widths).join(','));
+    inp.focus(); inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    assert(!UI.hasPM(), 'Enter did not accept');
+    UI.cmdOffsetEntities();
+    $('pm').dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert(!UI.hasPM(), 'Esc did not cancel');
+    // a sketch tool's PM (noFocus): its Message group is yellow; a click on a check box acts without focusing it
+    UI.setTool('line');
+    var mg = Array.prototype.filter.call(D.querySelectorAll('#pm .pm-group'), function (x) { return x.querySelector('h4').textContent === 'Message'; })[0];
+    assert(mg && mg.classList.contains('pm-group-msg'), 'Insert Line Message group');
+    var cb = D.querySelector('#pm input[type=checkbox][data-key="construction"]'), md = new W.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 });
+    cb.dispatchEvent(md);
+    assert(md.defaultPrevented && D.activeElement !== cb, 'the check box took the focus in a sketch tool PM');
+    UI.setTool('select');
+    assert(!UI.hasPM(), 'Insert Line closed with the tool');
+    // a selection list shows each item's own icon (Line1: the line glyph)
+    UI.setSelection([{ kind: 'entity', index: 0 }]); UI.cmdMirrorEntities();
+    var it0 = D.querySelector('#pm .pm-item'), ref = D.createElement('div'); ref.innerHTML = W.Icons('line', 14);
+    assert(it0 && /^Line1/.test(it0.textContent) && it0.firstChild.outerHTML === ref.firstChild.outerHTML && it0.closest('.pm-pickwrap').classList.contains('has-list'), 'selection list row ' + (it0 && it0.textContent));
+    UI.pmCancel();
+    var vp1 = $('viewport').getBoundingClientRect(), left1 = $('left').getBoundingClientRect();
+    assert(vp1.left === vp0.left && vp1.width === vp0.width && vp1.top === vp0.top && left1.width === left0.width && $('ribbon').offsetHeight === rib0, 'layout moved: ' + JSON.stringify([vp0.left, vp1.left, vp0.width, vp1.width, left0.width, left1.width]));
+    return 'ok';
+  });
+  step('rfC: status bar — Under / Fully / Over Defined in SolidWorks\' colours with a dot; the pointer readout has a fixed slot, so nothing beside it moves', async function () {
+    await rskNew();
+    UI.refreshStatus();
+    var st = D.querySelector('#status-right .sk-state');
+    assert(st && st.classList.contains('under') && W.getComputedStyle(st).color === 'rgb(31, 95, 208)' && W.getComputedStyle(st, '::before').content !== 'none', 'Under Defined in blue: ' + (st && W.getComputedStyle(st).color));
+    var co = $('status-coords'), right = $('status-right');
+    co.textContent = 'X: 1'; var w1 = co.offsetWidth, r1 = right.getBoundingClientRect().left;
+    co.textContent = 'X:   12345.67   Y:   -9876.54  mm   L 1234.56   A 179.9°'; var w2 = co.offsetWidth, r2 = right.getBoundingClientRect().left;
+    co.textContent = '';
+    assert(w1 === w2 && r1 === r2, 'the readout moved the bar: ' + [w1, w2, r1, r2].join(', '));
+    await UI.exitSketch(true); await idle();
+    return 'ok';
+  });
+  step('rfC: dark grounds — with the Dark background (light theme) or the dark theme the sketch overlays (dimension text and arrows, inference lines, relation glyphs) take the dark-ground colours; the Levels pane is styled from style.css', async function () {
+    var dl = $('dim-layer');
+    function v(name) { return W.getComputedStyle(dl).getPropertyValue(name).trim().toLowerCase(); }
+    UI.setTheme('light'); UI.setBackground('gradient');
+    var light = [v('--dim-text'), v('--blue')];
+    UI.setBackground('dark');
+    var dark = [v('--dim-text'), v('--blue')];
+    UI.setBackground('gradient'); UI.setTheme('dark');
+    var theme = [v('--dim-text'), v('--blue')];
+    UI.setTheme('light'); UI.setBackground('gradient');
+    assert(light[0] === '#000' && dark[0] === '#f2f4f7' && theme[0] === '#f2f4f7' && dark[1] === '#6fa8ea' && theme[1] === '#6fa8ea', 'light ' + light + ' / dark bg ' + dark + ' / dark theme ' + theme);
+    var css = Array.prototype.filter.call(D.styleSheets, function (s) { return /style\.css$/.test(s.href || ''); })[0];
+    assert(css && Array.prototype.some.call(css.cssRules, function (r) { return r.selectorText === '.lvl-row.main'; }), 'the Levels rules are not in style.css');
+    return 'ok';
+  });
+  step('rfC: every Sketch tab command runs in a sketch without a console error (each one, then ✗ / Esc)', async function () {
+    var errs0 = errors.length, ran = [];
+    await rskNew();
+    function reset() {
+      if (!$('modal').hidden) UI.closeModal();
+      UI.closeMenus(); if (UI.closeShortcutBar) UI.closeShortcutBar();
+      if (UI.hasPM()) UI.pmCancel();
+      if (UI.App.mode === 'sketch' && UI.App.tool !== 'select') UI.setTool('select');
+      var tree = D.querySelector('#fm-tabs button[data-tab="tree"]'); if (UI.App.fmTab === 'levels' && tree) tree.click();
+    }
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: -20, y1: -10, x2: 20, y2: -10 }, { t: 'line', x1: 20, y1: -10, x2: 20, y2: 10 }, { t: 'circle', cx: 0, cy: 10, r: 6 }); UI.updateSketches();
+    UI.setRibbonTab('Sketch');
+    var skip = { sketch: 1, importDxf: 1 };   // Sketch is Exit Sketch here; Insert DXF / DWG opens the file dialog
+    var list = rfcSketchItems().filter(function (x) { return (x.it.run || x.it.tool) && !skip[x.it.id]; });
+    for (var k = 0; k < list.length; k++) {
+      var x = list[k];
+      if (UI.App.mode !== 'sketch') { await UI.newSketchOnPlane('Front'); await idle(); UI.setRibbonTab('Sketch'); }
+      if (x.fly) UI.ribbonFlyFace(x.fly, x.i);
+      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.it.label.replace(/\n/g, ' '); })[0];
+      assert(b && !b.disabled, x.it.label + ': no live button');
+      b.click(); await wait(10);
+      if (x.it.id === 'shadedContours') b.click();   // a view toggle: put it back
+      ran.push(x.it.label.replace(/\n/g, ' '));
+      reset(); await idle();
+      assert(errors.length === errs0, x.it.label + ': ' + errors.slice(errs0).join(' | '));
+    }
+    UI.RIBBON.Sketch.forEach(function (x) { (x.stack || [x]).forEach(function (s) { if (s.fly) UI.ribbonFlyFace(s.fly, 0); }); });
+    if (UI.App.mode === 'sketch') { await UI.exitSketch(true); await idle(); }
+    UI.setRibbonTab('Features');
+    assert(errors.length === errs0, errors.slice(errs0).join(' | '));
+    return ran.length + ' commands';
+  });
+  // --- end rfC ---
+  // --- rfB (sketch-text2 lane): Stencil text and text along a spline in the Sketch Text PM, the Layers PM's Rename as a
+  // level rename, etch marks on flat-pattern drawing views, sketch location dimensions as model items, DXF text import ---
+  var RFB_LAY = '.layers([{ name: "ETCH", color: "#1e9e3c", aci: 3, noProfile: true }])';
+  function rfBDxf(extra) {
+    return ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '4', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'LWPOLYLINE', '8', 'CUT', '90', '4', '70', '1', '10', '0', '20', '0', '10', '80', '20', '0', '10', '80', '20', '40', '10', '0', '20', '40',
+      '0', 'TEXT', '8', 'ETCH', '10', '5', '20', '5', '40', '4', '1', 'PN 1234 %%c6', '50', '0',
+      '0', 'MTEXT', '8', 'MARK', '10', '40', '20', '30', '40', '3', '71', '5', '1', 'REV\\PB'].concat(extra || [],
+      ['0', 'DIMENSION', '8', 'DIM', '2', '*D1', '0', 'DIMENSION', '8', 'DIM', '2', '*D2', '0', 'HATCH', '8', 'H', '0', 'ENDSEC', '0', 'EOF']).join('\n') + '\n';
+  }
+  step('rfB: Sketch Text ▸ Cut ▸ Stencil (Bridge width 0.8 mm by default) keeps the islands of "O8B" attached (no hole in the profile; its PM edits the width); with a spline selected, Text takes it into Curves and ✓ runs the text along it (baselines on the spline, Spline<n> in the box)', async function () {
+    var errs0 = errors.length;
+    UI.loadModel(K.newModel('Stencil')); await idle();
+    UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
+    UI.zoomView(1); UI.refreshRibbon();
+    var f = activeSketch();
+    UI.setTool('text');
+    assert(UI.pmTitle() === 'Sketch Text', 'PM ' + UI.pmTitle());
+    txtType('O8B'); setInput(pmField('Height'), 10);
+    D.querySelector('#pm input[type=radio][value="outline"]').click();
+    var st = pmField('Stencil');
+    assert(st && st.type === 'checkbox' && !st.checked && !pmField('Bridge width'), 'Stencil box, off; no Bridge width yet');
+    st.click();
+    assert(pmField('Bridge width') && Math.abs(+pmField('Bridge width').value - 0.8) < 1e-9, 'Bridge width 0.8: ' + (pmField('Bridge width') && pmField('Bridge width').value));
+    skClick(5, 5);
+    var e = f.entities[0];
+    assert(e && e.t === 'text' && e.mode === 'outline' && e.stencil === true && e.bridge === 0.8, 'placed ' + JSON.stringify(e));
+    var prof = K.sketchProfile(f);
+    assert(prof.loops.length > 3 && !prof.loops.some(function (l) { return l.hole || l.cross; }), 'no island in the profile: ' + prof.loops.length + ' loops');
+    assert(UI.pmTitle() === 'Sketch Text' && UI.pmSpec()._txtEntity, 'the new text\'s PM');
+    setInput(pmField('Bridge width'), 1.2);
+    assert(e.bridge === 1.2 && K.textOutline(e).bridges.every(function (b) { return Math.abs(Math.hypot(b[1][0] - b[0][0], b[1][1] - b[0][1]) - 1.2) < 1e-9; }), 'bridges 1.2 wide');
+    await UI.pmOK();
+    f.entities.push({ t: 'spline', pts: [[0, -30], [20, -20], [40, -30], [60, -20]] });
+    var k = f.entities.length - 1;
+    UI.updateSketches();
+    UI.App.sel = { kind: 'entity', index: k };
+    UI.setTool('text');
+    assert(UI.sketchTextValues().pathE === k && /Spline/.test($('pm').innerText), 'Curves: the spline ' + JSON.stringify(UI.sketchTextValues().pathE));
+    txtType('ON A SPLINE'); setInput(pmField('Height'), 3);
+    var etch = D.querySelector('#pm input[type=radio][value="stroke"]'); if (!etch.checked) etch.click();
+    await UI.pmOK();
+    var t = f.entities[f.entities.length - 1], fc = W.SketchSolver.freeCurve(f.entities[k]), worst = 0;
+    assert(t.t === 'text' && t.path && t.path.e === k && t.path.g.t === 'spline' && !t.stencil, 'text on the spline: ' + JSON.stringify(t));
+    K.textLayout(t).glyphs.forEach(function (g) { [g.p0, g.p1].forEach(function (p) { worst = Math.max(worst, W.SketchSolver.freeClosest(fc, p).d); }); });
+    assert(worst < 1e-9, 'baselines off the spline by ' + worst);
+    UI.closePM(); UI.exitSketch(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'stencil bridges ' + K.textOutline(e).bridges.length + ', spline text worst ' + worst;
+  });
+  step('rfB: Layers PM ▸ Rename renames the part-wide level — in both sketches, one undo step, no second level — and the Levels Manager agrees; a name another level has is refused', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sketch("Front", 0, "S1").rect(0, 0, 40, 20).circle(10, 10, 3).layers([{ name: "Marks", color: "#ff0000" }]).layer("Marks", [1]);\n' +
+      'p.sketch("Front", 0, "S2").rect(50, 0, 30, 10).circle(60, 5, 2).layers([{ name: "Marks", color: "#ff0000" }]).layer("Marks", [1]);'); await idle();
+    var marks = UI.levels.list().filter(function (l) { return l.name === 'Marks'; })[0], n0 = UI.levels.list().length;
+    assert(marks && marks.count === 2, 'Marks level ' + JSON.stringify(marks));
+    var f1 = lvlFeat('S1'), f2 = lvlFeat('S2');
+    UI.editSketch(f1.id); await idle();
+    UI.cmdSketchLayers();
+    var row = D.querySelector('#lyr-list .rel-row[data-layer="Marks"]');
+    assert(row, 'Marks in the Layers PM'); row.click();
+    setInput(pmField('Name'), 'ENGRAVE');
+    var u0 = UI.App.undo.length;
+    clickPmButton('Rename');
+    var L = UI.levels.list();
+    assert(L.length === n0 && L.some(function (l) { return l.name === 'ENGRAVE' && l.number === marks.number && l.count === 2; }) && !L.some(function (l) { return l.name === 'Marks'; }), 'one level renamed: ' + JSON.stringify(L.map(function (l) { return l.number + ' ' + l.name + ' ' + l.count; })));
+    assert(f1.entities[1].layer === 'ENGRAVE' && f2.entities[1].layer === 'ENGRAVE' && f2.layers.some(function (r) { return r.name === 'ENGRAVE'; }) && !f2.layers.some(function (r) { return r.name === 'Marks'; }), 'both sketches re-keyed: ' + JSON.stringify([f1.entities[1], f2.layers]));
+    assert(UI.App.undo.length === u0 + 1, 'one undo step: ' + (UI.App.undo.length - u0));
+    assert(D.querySelector('#lyr-list .rel-row[data-layer="ENGRAVE"]') && !D.querySelector('#lyr-list .rel-row[data-layer="Marks"]') && UI.levels.list().length === n0, 'the PM shows it renamed');
+    UI.levels.op('preset', 'ETCH');
+    var r = UI.sketchLayerOp('rename', 'ENGRAVE', 'etch');
+    assert(!r.ok && /already named ETCH/.test(r.error) && f1.entities[1].layer === 'ENGRAVE', 'a name another level has: ' + JSON.stringify(r));
+    UI.closePM(); UI.exitSketch(true); await idle();
+    return 'Marks → ENGRAVE (level ' + marks.number + ')';
+  });
+  step('rfB: a flat-pattern drawing view shows the etch marks (Etch text, ETCH lines) thin green on layer ETCH — summary, SVG, DXF; Show etch marks off (view Properties, or flatViewProps) hides them; the view menu has Show Etch Marks', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sheet(2, 2, 0.71);\np.sketch("Top").rect(0, -60, 100, 60).end().baseFlange(2);\np.flange(20, [[0, 2, 30]]);\np.sketch("Top", 2).text(50, -30, "PN 123", { h: 5 }).line(60, -10, 90, -10)' + RFB_LAY + '.layer("ETCH", [0, 1]).end();'); await idle();
+    anvil.drawing.make({ fresh: true }); await UI.drawing.ready(); await wait(30);
+    anvil.drawing.flatView({ x: 140, y: 60 }); await UI.drawing.ready(); await wait(30);
+    var s = anvil.drawing.summary(), fv = s.views.filter(function (v) { return v.kind === 'flat'; })[0];
+    assert(fv && fv.flat && fv.flat.etch > 5 && fv.flat.showEtch && fv.flat.etchPrims >= fv.flat.etch, 'flat view etch ' + JSON.stringify(fv && fv.flat && [fv.flat.etch, fv.flat.etchPrims]));
+    var svg = anvil.drawing.svg(), dxf = anvil.drawing.dxf();
+    assert(/<g data-layer="ETCH"/.test(svg) && svg.indexOf('stroke="#1e9e3c"') >= 0, 'SVG ETCH group in green');
+    assert(/\n0\nLAYER\n2\nETCH\n70\n0\n62\n3\n/.test(dxf) && /\n0\nLINE\n8\nETCH\n/.test(dxf), 'DXF ETCH layer');
+    assert(D.querySelector('#drawing-sheet g[data-layer="ETCH"]'), 'on the sheet');
+    UI.drawing.viewProperties(fv.id);
+    var se = pmField('Show etch marks');
+    assert(se && se.checked, 'Show etch marks, on');
+    se.click();
+    await UI.pmOK(); await UI.drawing.ready(); await wait(30);
+    s = anvil.drawing.summary(); fv = s.views.filter(function (v) { return v.kind === 'flat'; })[0];
+    assert(!fv.flat.showEtch && fv.flat.etchPrims === 0 && anvil.drawing.dxf().indexOf('\nETCH\n') < 0 && !D.querySelector('#drawing-sheet g[data-layer="ETCH"]'), 'hidden ' + JSON.stringify([fv.flat.showEtch, fv.flat.etchPrims]));
+    s = anvil.drawing.flatViewProps(fv.id, { showEtch: true });
+    assert(s.views.filter(function (v) { return v.id === fv.id; })[0].flat.etchPrims > 0, 'shown again');
+    anvil.drawing.close();
+    return fv.flat.etch + ' marks';
+  });
+  step('rfB: Make Drawing brings a sketch\'s location dimensions (distance relations) in as model items with their Dimension PM properties: "1.000 ±.005" and ".500 TYP" on the Front view, in the SVG and the DXF', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.units("in");\np.sketch("Front").rect(0, 0, 4, 2).circle(1, 0.5, 0.125).rel("distance", ["0.e3", "1"], { value: 1, dir: "h", tol: { type: "symmetric", plus: 0.005, minus: 0.005 }, prec: 3 })' +
+      '.rel("distance", ["0.e0", "1"], { value: 0.5, dir: "v", prec: 3, suffix: "TYP" }).extrude(0.25);'); await idle();
+    anvil.drawing.make({ fresh: true }); await UI.drawing.ready(); await wait(30);
+    var s = anvil.drawing.summary(), front = dwView('Front');
+    var hx = s.dimDetails.filter(function (d) { return d.text === '1.000 ±.005'; })[0], vy = s.dimDetails.filter(function (d) { return d.text === '.500 TYP'; })[0];
+    assert(hx && hx.auto && hx.kind === 'h' && hx.view === front.id, 'horizontal ' + s.dims.join(' | '));
+    assert(vy && vy.auto && vy.kind === 'v' && vy.view === front.id, 'vertical ' + s.dims.join(' | '));
+    var svg = anvil.drawing.svg(), dxf = anvil.drawing.dxf();
+    assert(svg.indexOf('.500 TYP') >= 0 && /\n\.500 TYP\n/.test(dxf), 'SVG / DXF');
+    anvil.drawing.close();
+    return s.dims.join(' | ');
+  });
+  step('rfB: DXF import brings TEXT / MTEXT in as Etch Sketch Text on their layers (ETCH from the preset, MARK as a marking layer); DIMENSION and HATCH are left out quietly: the PM and the status say "2 dimensions and 1 hatch skipped", with no warning lines', async function () {
+    await anvil.newPart(); await idle();
+    UI.importDXFText(rfBDxf(), { name: 'Plate.dxf' });
+    var msg = $('pm').innerText;
+    assert(/2 texts as Etch Sketch Text/.test(msg) && /2 dimensions and 1 hatch skipped/.test(msg) && !/DIMENSION|HATCH|Skipped/.test(msg), 'PM message: ' + msg.replace(/\s+/g, ' ').slice(0, 400));
+    await UI.pmOK(); await idle();
+    var f = activeSketch(), T = f.entities.filter(function (e) { return e.t === 'text'; });
+    assert(T.length === 2 && T[0].str === 'PN 1234 Ø6' && T[0].h === 4 && T[0].layer === 'ETCH' && T[1].str === 'REV\nB' && T[1].align === 'center' && T[1].valign === 'middle' && T[1].layer === 'MARK', 'texts ' + JSON.stringify(T));
+    assert((f.layers || []).some(function (l) { return l.name === 'ETCH' && l.noProfile; }) && (f.layers || []).some(function (l) { return l.name === 'MARK' && l.noProfile; }), 'marking layers ' + JSON.stringify(f.layers));
+    assert(/2 texts/.test(statusText()) && /2 dimensions and 1 hatch skipped/.test(statusText()), 'status: ' + statusText());
+    assert(K.sketchProfile(f).loops.length === 1, 'the plate is the only region');
+    UI.exitSketch(true); await idle();
+    return T.length + ' texts';
+  });
+  // --- end rfB ---
+  // --- rfD (sketch fidelity audit, test-reports/2026-10-08-sketch-fidelity.md): SolidWorks-user flows found correct on
+  //     e8707d2 that had no regression step: an inch flat blank end to end, Smart Dimension of a slanted line by cursor ---
+  async function rfdSketch(ppu, centre) {   // an inch part, a Front sketch at ppu pixels per inch, centred on centre
+    await anvil.run('p.units("in");'); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    assert(UI.App.mode === 'sketch' && UI.App.model.units === 'in', 'an inch sketch');
+    UI.zoomView((1 / ppu) / UI.cam.scale);
+    var a = rskScr(centre); UI.panView(UI.size.w / 2 - a[0], UI.size.h / 2 - a[1]);
+    UI.App.gridStale = true;
+    return UI.activeSketchFeature();
+  }
+  // values typed while drawing: the cursor at `at`, a key opens the on-screen box, each field set (null: left empty), Enter
+  function rfdType(at, vals) {
+    selEv('mousemove', rskScr(at)); selKey('.');
+    var box = UI.sketchNumBox(), last = null;
+    assert(box && box.length >= vals.length, 'the on-screen box opened');
+    vals.forEach(function (v, i) { r3sType(box[i], v == null ? '' : v); if (v != null) last = box[i]; });
+    r3sKey(last, 'Enter');
+  }
+  function rfdSame(a, b, path, out) {   // deep equality, numbers to 1e-12, key order free
+    if (typeof a === 'number' && typeof b === 'number') { if (Math.abs(a - b) > 1e-12 * Math.max(1, Math.abs(a))) out.push(path + ' ' + a + ' / ' + b); return out; }
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+      Object.keys(a).concat(Object.keys(b)).forEach(function (k) { if (!(a[k] === undefined && b[k] === false)) rfdSame(a[k], b[k], path + '.' + k, out); });
+      return out;
+    }
+    if (a !== b) out.push(path + ' ' + JSON.stringify(a) + ' / ' + JSON.stringify(b));
+    return out;
+  }
+  step('rfD/blank: an inch flat blank drawn like a SolidWorks user — Corner Rectangle typed 6 Tab 4 from the origin, four Ø.281 holes typed into Ø, a slot typed .375 wide, a notch (rectangle, one Power-trim drag, two clicks), Horizontal / Vertical Ordinate sets from the left / bottom edges (6.000 and 4.000 come out driven), Fully Define Sketch: Fully Defined; the sketch DXF (R12, R2000) reads back exactly and the script round trip is identical', async function () {
+    var errs0 = errors.length, f = await rfdSketch(55, [3, 2]);
+    UI.setTool('rect'); rskClick([0, 0]); rfdType([2, 1.5], ['6', '4']); UI.setTool('select');
+    var r = f.entities[0];
+    assert(f.entities.length === 1 && r.t === 'rect' && r.x === 0 && r.y === 0 && r.w === 6 && r.h === 4 && f.dims.length === 2, 'rectangle ' + JSON.stringify(f.entities));
+    UI.setTool('circle');
+    [[0.5, 0.5], [5.5, 0.5], [0.5, 3.5], [5.5, 3.5]].forEach(function (c) { rskClick(c); rfdType([c[0] + 0.3, c[1] + 0.1], [null, '.281']); });
+    UI.setTool('slot'); rskClick([2.5, 2]); rskClick([3.5, 2]); rfdType([3.5, 2.3], ['.375']); UI.setTool('select');
+    var holes = f.entities.filter(function (e) { return e.t === 'circle'; }), slot = f.entities[f.entities.length - 1];
+    assert(holes.length === 4 && holes.every(function (h) { return Math.abs(h.r - 0.1405) < 1e-12; }) && f.dims.filter(function (d) { return d.k === 'dia'; }).length === 4, 'holes ' + JSON.stringify(holes));
+    assert(slot.t === 'slot' && slot.w === 0.375 && slot.x1 === 2.5 && slot.x2 === 3.5 && slot.y1 === 2 && slot.y2 === 2, 'slot ' + JSON.stringify(slot));
+    UI.setTool('rect'); rskClick([2.5, 3.5]); rskClick([3.5, 4.6]); UI.setTool('select');
+    UI.cmdTrimEntities(); trimMode('power');
+    await trimDrag([[3, 4.8], [3, 4.6], [3, 4.4], [3, 4.2], [3, 4], [3, 3.85]]);
+    rskClick([2.5, 4.3]); rskClick([3.5, 4.3]);
+    await UI.pmOK(); await idle();
+    var prof = K.sketchProfile(f);
+    assert(prof.loops.length === 6 && !f.entities.some(function (e) { return e.t === 'line' && (e.y1 > 4 + 1e-9 || e.y2 > 4 + 1e-9); }), 'outline with the notch, four holes, the slot: ' + prof.loops.length + ' loops');
+    UI.cmdOrdinateDim('x');
+    rskClick([0, 2]); rskClick([1.5, -0.6]);
+    [[0.5, 0.5], [2.5, 3.75], [2.5, 2], [3.5, 3.75], [5.5, 0.5], [6, 2]].forEach(rskClick);
+    await UI.pmOK();
+    UI.cmdOrdinateDim('y');
+    rskClick([1.5, 0]); rskClick([-0.6, 1.5]);
+    [[0.5, 0.5], [2.5, 2], [3, 3.5], [0.5, 3.5], [1, 4]].forEach(rskClick);
+    await UI.pmOK();
+    var sets = W.SketchSolver.ordinateSets(f), ids = Object.keys(sets);
+    var sx = ids.map(function (k) { return sets[k]; }).filter(function (s) { return s.axis === 'x'; })[0], sy = ids.map(function (k) { return sets[k]; }).filter(function (s) { return s.axis === 'y'; })[0];
+    assert(ids.length === 2 && sx && sy, 'two ordinate sets ' + JSON.stringify(sets));
+    assert(JSON.stringify(ordValues(f, sx)) === '[0.5,2.5,2.5,3.5,5.5,6]' && JSON.stringify(ordValues(f, sy)) === '[0.5,2,3.5,3.5,4]', 'values ' + ordValues(f, sx) + ' / ' + ordValues(f, sy));
+    var drv = sx.members.concat(sy.members).filter(function (i) { return f.rels[i].driven; }).map(function (i) { return f.rels[i].v; });
+    assert(JSON.stringify(drv) === '[6,4]', 'the over-defining 6 and 4 are driven: ' + JSON.stringify(drv));
+    UI.cmdFullyDefineSketch(); clickPmButton('Calculate');
+    assert(UI.sketchStatus().status === 'full', 'Fully Defined: ' + JSON.stringify(UI.sketchStatus()));
+    await UI.pmOK(); await idle();
+    // the sketch DXF: every line, circle and slot arc comes back from DxfImport exactly
+    var src = [];
+    f.entities.forEach(function (e) {
+      if (e.t === 'line') src.push(['line', e.x1, e.y1, e.x2, e.y2]);
+      else if (e.t === 'circle') src.push(['circle', e.cx, e.cy, e.r]);
+      else if (e.t === 'slot') src.push(['line', 2.5, 2.1875, 3.5, 2.1875], ['line', 2.5, 1.8125, 3.5, 1.8125], ['arc', 2.5, 2, 0.1875], ['arc', 3.5, 2, 0.1875]);
+    });
+    ['r12', '2000'].forEach(function (ver) {
+      var back = W.DxfImport.parse(K.exportDXFSketch(f, 'in', { version: ver }));
+      assert(back.units === 'in' && back.entities.length === src.length, ver + ': ' + back.entities.length + ' entities, ' + back.units);
+      src.forEach(function (q) {
+        var hit = back.entities.some(function (g) {
+          if (q[0] === 'line' && g.t === 'line') return Math.max(Math.abs(g.x1 - q[1]), Math.abs(g.y1 - q[2]), Math.abs(g.x2 - q[3]), Math.abs(g.y2 - q[4])) <= 1e-9 || Math.max(Math.abs(g.x2 - q[1]), Math.abs(g.y2 - q[2]), Math.abs(g.x1 - q[3]), Math.abs(g.y1 - q[4])) <= 1e-9;
+          return g.t === q[0] && Math.max(Math.abs(g.cx - q[1]), Math.abs(g.cy - q[2]), Math.abs(g.r - q[3])) <= 1e-9;
+        });
+        assert(hit, ver + ': not read back exactly: ' + JSON.stringify(q));
+      });
+    });
+    var m2 = K.newModel('RT'); K.runScript(m2, K.generateScript(UI.App.model));
+    var s2 = m2.features.filter(function (x) { return x.type === 'sketch'; })[0], diff = [];
+    ['entities', 'rels', 'dims'].forEach(function (k) { rfdSame(f[k], s2[k], k, diff); });
+    assert(!diff.length && m2.units === 'in', 'script round trip: ' + diff.slice(0, 5).join('; '));
+    UI.exitSketch(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return f.entities.length + ' entities, ' + f.rels.length + ' relations, ' + f.dims.length + ' dimensions, Fully Defined';
+  });
+  step('rfD/dims: Smart Dimension of a slanted line in an inch part — placed off its side it is the length, above it the horizontal (dx), beside it the vertical (dy: over-defining, Make Dimension Driven?); in the Modify box a typed value then Esc keeps the old value (no undo step); on a circle ↑ steps the Ø 0.1 in with a live preview and Enter drives it in one undo step', async function () {
+    var errs0 = errors.length, f = await rfdSketch(60, [1.5, 1]);
+    f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 3, y2: 2 }, { t: 'circle', cx: -1.5, cy: 1, r: 0.5 }); UI.updateSketches();
+    function len() { var e = f.entities[0]; return Math.hypot(e.x2 - e.x1, e.y2 - e.y1); }
+    var inp = $('dim-edit').querySelector('input');
+    UI.setTool('dimension');
+    rskClick([1.5, 1]); selEv('mousemove', rskScr([1.0, 1.8])); rskClick([1.0, 1.8]);
+    assert(f.dims.length === 1 && f.dims[0].k === 'len' && UI.isDimEditOpen() && UI.dimEditValue() === '3.6056', 'length ' + JSON.stringify(f.dims) + ' box ' + UI.dimEditValue());
+    var u0 = UI.App.undo.length;
+    r3sType(inp, '5'); r3sKey(inp, 'Escape');
+    assert(!UI.isDimEditOpen() && f.dims.length === 1 && UI.App.undo.length === u0 && UI.App.tool === 'dimension', 'Esc: closed, kept, nothing to undo');
+    near(len(), Math.sqrt(13), 1e-12, 'length kept');
+    rskClick([1.0, 2 / 3]); selEv('mousemove', rskScr([1.3, 3.4])); rskClick([1.3, 3.4]);
+    assert(f.dims.length === 2 && f.dims[1].k === 'dx' && UI.dimEditValue() === '3', 'above: horizontal ' + JSON.stringify(f.dims[1]) + ' ' + UI.dimEditValue());
+    r3sKey(inp, 'Escape');
+    rskClick([2, 4 / 3]); selEv('mousemove', rskScr([4.4, 1.2])); rskClick([4.4, 1.2]);
+    assert(modalOpen() && $('drv-driven'), 'beside: the vertical one over-defines, Make Dimension Driven? asks');
+    $('drv-driven').click();
+    assert(f.dims.length === 3 && f.dims[2].k === 'dy' && f.dims[2].driven, 'vertical, driven ' + JSON.stringify(f.dims[2]));
+    // the circle's Ø: placed, Escape, then a double press on its label reopens the Modify box; ↑ is 0.1 in
+    rskClick([-1, 1]); selEv('mousemove', rskScr([-0.6, 1.8])); rskClick([-0.6, 1.8]);
+    assert(f.dims.length === 4 && f.dims[3].k === 'dia' && UI.dimEditValue() === '1', 'Ø ' + JSON.stringify(f.dims[3]) + ' box ' + UI.dimEditValue());
+    r3sKey(inp, 'Escape');
+    UI.setTool('select');
+    UI.App.dimsStale = false; UI.drawDims();
+    var lab = Array.prototype.filter.call(D.querySelectorAll('#dim-layer text'), function (t) { return t.textContent === 'Ø1.000'; })[0];
+    assert(lab, 'the label Ø1.000: ' + Array.prototype.map.call(D.querySelectorAll('#dim-layer text'), function (t) { return t.textContent; }).join(' '));
+    var vr = $('viewport').getBoundingClientRect(), b = lab.getBoundingClientRect(), p = [b.left + b.width / 2 - vr.left, b.top + b.height / 2 - vr.top];
+    D.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true }));
+    selEv('mousedown', p, lab); selEv('mouseup', p); selEv('mousedown', p, lab); selEv('mouseup', p);
+    assert(UI.isDimEditOpen() && UI.dimEditValue() === '1', 'double press: the Modify box on 1');
+    var u1 = UI.App.undo.length;
+    r3sKey(inp, 'ArrowUp'); await wait(40);
+    assert(UI.dimEditValue() === '1.1', 'ArrowUp: +0.1 in ' + UI.dimEditValue());
+    near(f.entities[1].r, 0.55, 1e-9, 'live preview');
+    r3sKey(inp, 'Enter');
+    assert(!UI.isDimEditOpen() && UI.App.undo.length === u1 + 1, 'Enter: one undo step');
+    near(f.entities[1].r, 0.55, 1e-12, 'Ø1.1'); near(len(), Math.sqrt(13), 1e-12, 'the line untouched');
+    UI.exitSketch(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'len / dx / (dy); Ø1.000 → 1.100';
+  });
+  // --- end rfD ---
+  // ---- rfA: Sketch tab refinement — commit hooks (Dynamic Mirror for every drawing tool, no wrappers), ordinate edits
+  // that move only the target, Sketch Text as a point (Smart Dimension, relations, drag), Sketch Fillet / Chamfer on
+  // every pair, Straight Slot Overall Length, unit formatting of the sketch messages, and what a user's pass over the
+  // drawing tools turned up (ui-sketch.js, ui-sketch-*.js, ui-relations.js, sketch-solver.js)
+  var rfAErr0 = 0;
+  function rfAEnts() { return UI.activeSketchFeature().entities; }
+  function rfARels() { return (UI.activeSketchFeature().rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+  function rfASym(i, j, ax) { return (UI.activeSketchFeature().rels || []).some(function (r) { if (r.type !== 'symmetric') return false; var e = r.refs.map(function (x) { return +String(x).split('.')[0]; }); return e[0] === i && e[1] === j && e[2] === ax; }); }
+  function rfAType(s) { s.split('').forEach(function (ch) { selKey(ch); }); }
+  // a press, moves (button held) and release in the graphics area, in sketch coordinates
+  async function rfADrag(a, b) { var p = rskScr(a), q = rskScr(b); await selDrag(p, q); }
+  // the screen point of a text's first stroke (a press on its letters)
+  function rfATextAt(e) { var s = K.textLayout(e).strokes.filter(function (x) { return x.t === 'line'; })[0]; return [(s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2]; }
+  async function rfAText(str, at) {
+    var n0 = UI.activeSketchFeature().entities.length;
+    UI.setTool('text'); await wait(10);
+    txtType(str);
+    selEv('mousemove', rskScr(at)); rskClick(at); await wait(10);
+    UI.closePM(); await wait(10);
+    var f = UI.activeSketchFeature();
+    for (var i = n0; i < f.entities.length; i++) if (f.entities[i].t === 'text' && f.entities[i].str === str) return i;
+    return -1;
+  }
+  step('rfA: sketch hooks — Dynamic Mirror mirrors what every drawing tool places in the same click and the same undo step (circle, rectangle, polygon, straight slot, point, ellipse, spline, text, Parallel Line), each copy held Symmetric; no redraw function is wrapped and the arc slot\'s width step leaves its points\' forEach alone', async function () {
+    rfAErr0 = errors.length;
+    await rskNew();
+    UI.App.view.showGrid = false;
+    var f = fxSk([{ t: 'line', x1: 0, y1: -60, x2: 0, y2: 60, construction: true }]);
+    assert(!UI.updateSketches._dyn && !UI.updateTemp._dyn && !(UI.sketchRegionObjects && UI.sketchRegionObjects._dyn), 'no Dynamic Mirror wrappers on the redraw functions');
+    assert(typeof UI.afterSketchCommit === 'function' && UI.sketchCommitHooks.length >= 1, 'commit hooks');
+    UI.setSelection([{ kind: 'entity', index: 0 }]); UI.cmdDynamicMirror();
+    assert(UI.dynamicMirrorOn(), 'Dynamic Mirror on');
+    var done = [];
+    async function tool(name, clicks, extra) {
+      var n0 = rfAEnts().length, u0 = UI.App.undo.length;
+      UI.setTool(name); await wait(10);
+      for (var k = 0; k < clicks.length; k++) { selEv('mousemove', rskScr(clicks[k])); rskClick(clicks[k]); }
+      if (extra) await extra();
+      await wait(10);
+      var n1 = rfAEnts().length, made = (n1 - n0) / 2;
+      assert(made >= 1 && n1 - n0 === 2 * made, name + ': ' + (n1 - n0) + ' entities added: ' + JSON.stringify(rfAEnts().slice(n0)));
+      for (var q = 0; q < made; q++) assert(rfASym(n0 + q, n0 + made + q, 0), name + ': copy ' + (n0 + made + q) + ' Symmetric to ' + (n0 + q) + ': ' + rfARels().join(' '));
+      assert(UI.App.undo.length === u0 + 1, name + ': one undo step, got ' + (UI.App.undo.length - u0));
+      selKey('Escape');
+      done.push(name);
+    }
+    await tool('circle', [[20, 25], [25, 25]]);
+    await tool('rect', [[8, 12], [16, 20]]);
+    await tool('polygon', [[32, 15], [36, 15]]);
+    await tool('slot', [[8, -5], [20, -5], [14, -3]]);
+    await tool('point', [[10, 4]]);
+    await tool('ellipse', [[32, -8], [38, -8], [32, -6]]);
+    await tool('spline', [[4, -14], [10, -11], [16, -14]], async function () { rskDbl([22, -12]); });
+    // Text: its click places it and puts the tool down; the copy is the mirrored text
+    var n0 = rfAEnts().length, u0 = UI.App.undo.length;
+    var ti = await rfAText('AB', [12, -24]);
+    var tx = rfAEnts();
+    assert(ti === n0 && tx.length === n0 + 2 && tx[n0 + 1].t === 'text' && tx[n0 + 1].flipV && Math.abs(tx[n0 + 1].x + tx[n0].x) < 1e-9 && rfASym(n0, n0 + 1, 0) && UI.App.undo.length === u0 + 1, 'text mirrored in one step: ' + JSON.stringify(tx.slice(n0)) + ' undo ' + (UI.App.undo.length - u0));
+    done.push('text');
+    // Parallel Line (a command that places lines): through a point, mirrored too
+    var li = rfAEnts().length;
+    UI.setTool('line'); var tl0 = UI.App.tool + '/' + UI.pmTitle(); rskClick([28, -26]); var tl1 = JSON.stringify(UI.App.toolState.pts) + ' ' + $('status-msg').textContent; rskClick([42, -26]);
+    assert(rfAEnts().length === li + 2, 'line drawn and mirrored: ' + tl0 + ' | ' + tl1 + ' | ' + JSON.stringify(rfAEnts().slice(li)));
+    selKey('Escape'); selKey('Escape');
+    UI.setSelection([{ kind: 'entity', index: 0 }]); UI.cmdDynamicMirror();
+    assert(UI.dynamicMirrorOn(), 'on again');
+    n0 = rfAEnts().length; u0 = UI.App.undo.length;
+    UI.setSelection([]); UI.App.sel = null;
+    UI.cmdParallelLine(); await wait(10);
+    [["place", "point"], ["lenMode", "same"]].forEach(function (q) { var rb = D.querySelector("#pm input[type=radio][value=\"" + q[1] + "\"]"); if (rb && !rb.checked) rb.click(); });   // (the PM keeps the last settings)
+    await wait(10);
+    assert(UI.pmTitle() === 'Parallel Line', 'PL PM: ' + UI.pmTitle() + ' tool ' + UI.App.tool + ' msg ' + $('status-msg').textContent);
+    rskClick([35, -26]); await wait(10);
+    assert(/passes through/.test($('status-msg').textContent), 'reference picked: ' + $('status-msg').textContent + ' ents ' + JSON.stringify(rfAEnts().slice(-3)));
+    selEv('mousemove', rskScr([32, -22])); rskClick([32, -22]); await wait(10);
+    var pe = rfAEnts();
+    assert(pe.length === n0 + 2 && pe[n0].t === 'line' && Math.abs(pe[n0].y1 + 22) < 1e-9 && pe[n0 + 1].t === 'line' && Math.abs(pe[n0 + 1].x1 + pe[n0].x1) < 1e-9 && rfASym(n0, n0 + 1, 0) && UI.App.undo.length === u0 + 1, 'Parallel Line mirrored: ' + JSON.stringify(pe.slice(n0)) + ' ' + rfARels().slice(-3).join(' '));
+    done.push('Parallel Line');
+    UI.closePM(); await wait(10);
+    selKey('Escape'); selKey('Escape');
+    assert(!UI.dynamicMirrorOn(), 'Esc twice: off');
+    // the arc slot's width step: its own points are not offered as snaps, without touching st.pts.forEach
+    await rskNew();
+    UI.setTool('aslot3'); rskClick([-50, -10]); rskClick([-30, -10]); selEv('mousemove', rskScr([-40, 0])); rskClick([-40, 0]);
+    var st = UI.App.toolState;
+    assert(st.pts.length === 3 && st.pts.forEach === W.Array.prototype.forEach && UI.sketchToolDefs.aslot3.noOwnSnap(st), 'width step: noOwnSnap, forEach untouched');
+    selEv('mousemove', rskScr([-40, 0.6])); rskClick([-40, 0.6]); await wait(10);
+    var as = rfAEnts()[rfAEnts().length - 1];
+    assert(as.t === 'aslot' && as.w > 0.5 && as.w < 2, 'width click near the third point taken: ' + JSON.stringify(as));
+    selKey('Escape');
+    return 'mirrored: ' + done.join(', ');
+  });
+  step('rfA: ordinate dimensions — editing a member in an under-defined sketch moves only the target and what hangs on it: the zero (a rectangle\'s left side) stays, another sketch piece is not dragged along, the other members keep their values', async function () {
+    await rskNew();
+    function rect(x, y, w, h, b) { return [{ t: 'line', x1: x, y1: y, x2: x + w, y2: y }, { t: 'line', x1: x + w, y1: y, x2: x + w, y2: y + h }, { t: 'line', x1: x + w, y1: y + h, x2: x, y2: y + h }, { t: 'line', x1: x, y1: y + h, x2: x, y2: y }]; }
+    function rels(b) { var r = []; for (var k = 0; k < 4; k++) r.push({ type: 'coincident', refs: [(b + k) + '.p2', (b + (k + 1) % 4) + '.p1'] }); r.push({ type: 'horizontal', refs: [String(b)] }, { type: 'horizontal', refs: [String(b + 2)] }, { type: 'vertical', refs: [String(b + 1)] }, { type: 'vertical', refs: [String(b + 3)] }); return r; }
+    var f = fxSk(rect(0, 0, 40, 20).concat(rect(50, 0, 10, 10), [{ t: 'circle', cx: 10, cy: 10, r: 2 }, { t: 'circle', cx: 30, cy: 10, r: 2 }]), rels(0).concat(rels(4)));
+    var o = anvil.ordinate('x', '3', ['8.c', '9.c', '5'], -5);
+    assert(o.members.length === 3, 'ordinate set: ' + JSON.stringify(o));
+    var before = JSON.stringify(f.entities.slice(0, 4)), r1 = UI.editRelDim(o.members[1], '25');
+    f = UI.activeSketchFeature();
+    assert(r1.ok && JSON.stringify(f.entities.slice(0, 4)) === before, 'the zero side stays: ' + JSON.stringify(f.entities.slice(0, 4)));
+    near(f.entities[9].cx, 25, 1e-6, 'the second hole moved to 25'); near(f.entities[8].cx, 10, 1e-6, 'the first member kept 10');
+    near(f.entities[4].x1, 50, 1e-6, 'the other rectangle stayed');
+    var r2 = UI.editRelDim(o.members[2], '55');
+    f = UI.activeSketchFeature();
+    assert(r2.ok && JSON.stringify(f.entities.slice(0, 4)) === before, 'zero still in place');
+    near(f.entities[5].x1, 55, 1e-6, 'the second rectangle\'s right side at 55');
+    near(f.entities[9].cx, 25, 1e-6, 'the hole kept its 25');
+    return 'zero held; members 25, 55';
+  });
+  step('rfA: Sketch Text is a point to the solver — Smart Dimension from a point to the text (the text moves to the typed value), Add Relations offers Merge / Horizontal / Vertical for a text and a point, a text dragged by its letters snaps its insertion point onto a sketch point (Coincident on release) and then follows that point', async function () {
+    await rskNew();
+    var f = fxSk([{ t: 'point', x: 40, y: 10 }, { t: 'point', x: -20, y: -15 }]);
+    var ti = await rfAText('HI', [10, 10]);
+    f = UI.activeSketchFeature();
+    var t = f.entities[ti];
+    assert(ti === 2 && t.x === 10 && t.y === 10, 'text placed: ' + JSON.stringify(t));
+    assert(W.SketchSolver.pointRefs(f, ti).length === 1 && W.SketchSolver.refKind(f, String(ti)) === 'point', 'its insertion point is a point ref');
+    // Smart Dimension: the point, then the text (on a letter), then below them: a horizontal distance
+    UI.setTool('dimension');
+    rskClick([40, 10]);
+    rskClick(rfATextAt(t));
+    rskClick([25, 0]); await wait(20);
+    var ri = (f.rels || []).length - 1, rel = f.rels[ri];
+    assert(rel && rel.type === 'distance' && rel.refs.join() === '0,' + ti && Math.abs(rel.v - 30) < 1e-9, 'distance point → text: ' + JSON.stringify(rel));
+    var ed = UI.editRelDim(ri, '22');
+    t = UI.activeSketchFeature().entities[ti];
+    assert(ed.ok, 'Modify ' + JSON.stringify(ed));
+    near(t.x, 18, 1e-6, 'the text followed the dimension'); near(UI.activeSketchFeature().entities[0].x, 40, 1e-9, 'the point picked first stayed');
+    UI.cancelDimEdit(); selKey('Escape'); selKey('Escape');
+    // Add Relations: text + the second point
+    UI.App.sel = null; UI.setSelection([]);
+    UI.cmdAddRelations(); await wait(10);
+    UI.App.command.onSketchPoint(null, rskScr(rfATextAt(t))[0], rskScr(rfATextAt(t))[1]);
+    UI.App.command.onSketchPoint(null, rskScr([-20, -15])[0], rskScr([-20, -15])[1]);
+    var labels = Array.prototype.map.call(D.querySelectorAll('#pm .pm-btns button'), function (x) { return x.textContent; });
+    assert(labels.indexOf('Merge') >= 0 && labels.indexOf('Horizontal') >= 0 && labels.indexOf('Vertical') >= 0, 'offered: ' + labels.join(', '));
+    clickPmButton('Vertical');
+    await UI.pmOK(); await wait(10);
+    t = UI.activeSketchFeature().entities[ti];
+    f = UI.activeSketchFeature();
+    assert(rfARels().indexOf('vertical:' + ti + ',1') >= 0 || rfARels().indexOf('vertical:1,' + ti) >= 0, 'Vertical added: ' + rfARels().join(' '));
+    near(t.x, f.entities[1].x, 1e-6, 'Vertical holds: the text over the point');
+    near(t.x - f.entities[0].x, -22, 1e-6, 'the distance still holds');
+    return 'text at (' + fmt(t.x) + ', ' + fmt(t.y) + ')';
+  });
+  step('rfA: a Sketch Text dragged by its letters keeps the grab offset, its insertion point snaps onto a sketch point within reach and gets a Coincident on release; dragging that point then carries the text (the solver holds it)', async function () {
+    await rskNew();
+    fxSk([{ t: 'point', x: 40, y: 10 }]);
+    var ti = await rfAText('HI', [10, 10]), f = UI.activeSketchFeature(), t = f.entities[ti];
+    UI.setTool('select');
+    // a plain move first: the text moves by the drag, no snap, no relation
+    var g0 = rfATextAt(t);
+    await rfADrag(g0, [g0[0] + 5, g0[1] + 3]);
+    t = UI.activeSketchFeature().entities[ti];
+    near(t.x, 15, 0.3, 'moved by the drag x'); near(t.y, 13, 0.3, 'moved by the drag y');
+    assert(!(UI.activeSketchFeature().rels || []).length, 'no relation from a free move: ' + rfARels().join(' '));
+    // then onto the point: within a few pixels the insertion point lands on it
+    var grab = rfATextAt(t), off = [grab[0] - t.x, grab[1] - t.y];
+    await rfADrag(grab, [40 + off[0] + 0.4, 10 + off[1] - 0.3]);
+    f = UI.activeSketchFeature(); t = f.entities[ti];
+    near(t.x, 40, 1e-9, 'snapped x'); near(t.y, 10, 1e-9, 'snapped y');
+    assert(rfARels().indexOf('coincident:' + ti + ',0') >= 0, 'Coincident text–point on release: ' + rfARels().join(' '));
+    // drag the point: the text follows
+    await rfADrag([40, 10], [30, 20]);
+    t = UI.activeSketchFeature().entities[ti];
+    var p = UI.activeSketchFeature().entities[0];
+    assert(Math.abs(p.x - 40) > 1 && Math.abs(t.x - p.x) < 1e-6 && Math.abs(t.y - p.y) < 1e-6, 'the text follows the point: ' + JSON.stringify([p, { x: t.x, y: t.y }]));
+    assert(errors.length === rfAErr0, 'console errors: ' + errors.slice(rfAErr0).join(' | '));
+    return 'text on the point at (' + fmt(t.x) + ', ' + fmt(t.y) + ')';
+  });
+  // Sketch Fillet / Chamfer through their PropertyManagers, entities picked with the mouse; f: the sketch after
+  async function rfAFillet(ents, rels, r, clicks) {
+    await rskNew();
+    fxSk(ents, rels);
+    UI.cmdSketchFillet(); await wait(10);
+    setInput(pmField('Radius'), r);
+    clicks.forEach(function (q) { selEv('mousemove', rskScr(q)); rskClick(q); });
+    await wait(10);
+    var f = UI.activeSketchFeature(), an = W.SketchSolver.analyze(f), msg = statusText();
+    await UI.pmOK(); await wait(10);
+    return { f: UI.activeSketchFeature(), an: an, msg: msg };
+  }
+  function rfAArc(f) { var a = f.entities.filter(function (e) { return e.t === 'arc' && !e.construction; }); return a[a.length - 1]; }
+  function rfAFilletOk(res, label, r) {
+    var f = res.f, k = f.entities.indexOf(rfAArc(f)), rr = (f.rels || []).filter(function (x) { return x.refs.indexOf(String(k)) >= 0 || x.refs.some(function (y) { return String(y).split('.')[0] === String(k); }); });
+    assert(/^Fillet R/.test(res.msg), label + ': ' + res.msg);
+    assert(k >= 0 && Math.abs(f.entities[k].r - r) < 1e-9, label + ': fillet arc R' + r + ' ' + JSON.stringify(f.entities));
+    assert(rr.filter(function (x) { return x.type === 'tangent'; }).length === 2 && rr.filter(function (x) { return x.type === 'coincident'; }).length === 2, label + ': Tangent and Coincident at both ends: ' + rfARels().join(' '));
+    assert((f.dims || []).some(function (d) { return d.e === k && d.k === 'r'; }), label + ': the R dimension: ' + JSON.stringify(f.dims));
+    assert(res.an.conflicts === 0 && res.an.redundant === 0, label + ': solved, nothing over defining: ' + JSON.stringify([res.an.status, res.an.dof]));
+    return k;
+  }
+  step('rfA: Sketch Fillet on every pair SolidWorks fillets — line–arc and arc–arc corners, line–circle and arc–circle (the circle stays whole), a line meeting a spline end (the spline cut back, Tangent), a polygon corner (still regular), two sides of a rectangle and a slot side with a line, each with Tangent + Coincident at both ends and its R dimension', async function () {
+    var res, f, k;
+    res = await rfAFillet([{ t: 'line', x1: -20, y1: 0, x2: 0, y2: 0 }, { t: 'arc', cx: 6, cy: 0, r: 6, a0: 90, a1: 180 }], [{ type: 'coincident', refs: ['0.p2', '1.p2'] }], 2, [[0, 0]]);
+    rfAFilletOk(res, 'line–arc corner', 2);
+    res = await rfAFillet([{ t: 'arc', cx: 0, cy: 0, r: 15, a0: 0, a1: 90 }, { t: 'arc', cx: 15, cy: 15, r: 15, a0: 180, a1: 270 }], [{ type: 'coincident', refs: ['0.p2', '1.p1'] }], 2, [[0, 15]]);
+    rfAFilletOk(res, 'arc–arc corner', 2);
+    res = await rfAFillet([{ t: 'line', x1: -20, y1: 0, x2: 20, y2: 0 }, { t: 'circle', cx: 0, cy: 10, r: 4 }], null, 4, [[-15, 0], [-4, 10]]);
+    k = rfAFilletOk(res, 'line–circle', 4);
+    f = res.f;
+    assert(f.entities[1].t === 'circle' && f.entities[1].r === 4 && f.entities[0].x1 === -20 && Math.abs(f.entities[0].x2 - f.entities[k].cx) < 1e-6, 'the circle stays whole, the line ends under the fillet: ' + JSON.stringify(f.entities));
+    res = await rfAFillet([{ t: 'arc', cx: 0, cy: -10, r: 20, a0: 0, a1: 180 }, { t: 'circle', cx: 0, cy: 15, r: 4 }], null, 2, [[-14.14, 4.14], [-4, 15]]);
+    rfAFilletOk(res, 'arc–circle', 2);
+    res = await rfAFillet([{ t: 'line', x1: -20, y1: 0, x2: 0, y2: 0 }, { t: 'spline', pts: [[0, 0], [6, 6], [15, 8]] }], [{ type: 'coincident', refs: ['0.p2', '1.p1'] }], 2, [[0, 0]]);
+    k = rfAFilletOk(res, 'line–spline end', 2);
+    f = res.f;
+    var sp = f.entities[1], arc = f.entities[k], e1 = [arc.cx + 2 * Math.cos(arc.a1 * Math.PI / 180), arc.cy + 2 * Math.sin(arc.a1 * Math.PI / 180)];
+    assert(sp.t === 'spline' && Math.hypot(sp.pts[0][0] - e1[0], sp.pts[0][1] - e1[1]) < 1e-5 && sp.pts[sp.pts.length - 1][0] === 15, 'the spline starts where the fillet ends: ' + JSON.stringify(sp) + ' ' + JSON.stringify(arc));
+    res = await rfAFillet([{ t: 'poly', cx: 0, cy: 0, r: 15, n: 6, rot: 0 }], null, 3, [[15, 0]]);
+    k = rfAFilletOk(res, 'polygon corner', 3);
+    f = res.f;
+    var sides = f.entities.filter(function (e) { return e.t === 'line' && !e.construction; });
+    assert(sides.length === 6 && f.entities.some(function (e) { return e.t === 'circle' && e.construction && e.r === 15 && e.cx === 0 && e.cy === 0; }), 'six sides and the construction circle, unmoved: ' + JSON.stringify(f.entities));
+    near(Math.hypot(sides[1].x2 - sides[1].x1, sides[1].y2 - sides[1].y1), 15, 1e-6, 'an untouched side is still 15');
+    assert(f.entities.some(function (e) { return e.t === 'point' && e.sharp && Math.abs(e.x - 15) < 1e-9 && Math.abs(e.y) < 1e-9; }), 'the corner is kept as a virtual sharp');
+    res = await rfAFillet([{ t: 'rect', x: -10, y: -5, w: 20, h: 10 }], null, 2, [[0, -5], [10, 0]]);
+    rfAFilletOk(res, 'two sides of a rectangle', 2);
+    assert(res.f.entities.filter(function (e) { return e.t === 'line'; }).length === 4 && rfARels().filter(function (x) { return /^(horizontal|vertical):/.test(x); }).length === 4, 'the rectangle\'s lines keep Horizontal / Vertical: ' + rfARels().join(' '));
+    res = await rfAFillet([{ t: 'slot', x1: -10, y1: 0, x2: 10, y2: 0, w: 6 }, { t: 'line', x1: 0, y1: 10, x2: 0, y2: 20 }], null, 2, [[6, 3.05], [0, 15]]);
+    k = rfAFilletOk(res, 'slot side and a line', 2);
+    near(res.f.entities[k].cx, 2, 1e-6, 'fillet right of the line'); near(res.f.entities[k].cy, 5, 1e-6, 'fillet above the slot side');
+    return 'line–arc, arc–arc, line–circle, arc–circle, line–spline, polygon, rectangle sides, slot side';
+  });
+  step('rfA: Sketch Chamfer — Distance-distance (2 × 3) and Angle-distance (2 at 30°) at a corner of two lines, as SolidWorks: the chamfer line Coincident at both ends, a virtual sharp at the corner with the two distances (or the distance and the angle) driving it; two sides of a polygon chamfer too', async function () {
+    await rskNew();
+    fxSk([{ t: 'line', x1: -20, y1: 0, x2: 0, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 15 }], [{ type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }]);
+    UI.cmdSketchChamfer(); await wait(10);
+    D.querySelector('#pm input[type=radio][value="distance"]').click(); await wait(10);
+    var eq = D.querySelector('#pm input[type=checkbox][data-key="equal"]');
+    if (eq && eq.checked) { eq.click(); await wait(10); }
+    setInput(pmField('Distance 1'), 2); setInput(pmField('Distance 2'), 3);
+    selEv('mousemove', rskScr([0, 0])); rskClick([0, 0]); await wait(10);
+    var f = UI.activeSketchFeature(), ch = f.entities[2];
+    assert(/^Chamfer 2 mm × 3 mm made/.test(statusText()), 'status: ' + statusText());
+    assert(ch && ch.t === 'line' && Math.abs(ch.x1 + 2) < 1e-9 && Math.abs(ch.y1) < 1e-9 && Math.abs(ch.x2) < 1e-9 && Math.abs(ch.y2 - 3) < 1e-9, 'chamfer line (-2, 0)-(0, 3): ' + JSON.stringify(ch));
+    assert(rfARels().indexOf('coincident:0.p2,2.p1') >= 0 && rfARels().indexOf('coincident:1.p1,2.p2') >= 0 && f.rels.filter(function (r) { return r.type === 'distance'; }).length === 2 && f.entities[3].sharp, 'Coincident ends, two distances from the sharp: ' + rfARels().join(' '));
+    await UI.pmOK();
+    await rskNew();
+    fxSk([{ t: 'line', x1: -20, y1: 0, x2: 0, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 15 }], [{ type: 'coincident', refs: ['0.p2', '1.p1'] }]);
+    UI.cmdSketchChamfer(); await wait(10);
+    D.querySelector('#pm input[type=radio][value="angle"]').click(); await wait(10);
+    setInput(pmField('Distance 1'), 2); setInput(pmField('Direction 1 Angle'), 30);
+    selEv('mousemove', rskScr([0, 0])); rskClick([0, 0]); await wait(10);
+    f = UI.activeSketchFeature(); ch = f.entities[2];
+    assert(/^Chamfer 2 mm × 30° made/.test(statusText()), 'status: ' + statusText());
+    near(Math.atan2(ch.y2 - ch.y1, ch.x2 - ch.x1) * 180 / Math.PI, 30, 1e-6, 'chamfer at 30° to the first line');
+    near(ch.x1, -2, 1e-9, 'distance 2 along the first line');
+    assert(f.rels.some(function (r) { return r.type === 'angle' && Math.abs(r.v - 30) < 1e-9; }), 'the angle drives it: ' + rfARels().join(' '));
+    await UI.pmOK();
+    await rskNew();
+    fxSk([{ t: 'poly', cx: 0, cy: 0, r: 15, n: 6, rot: 0 }]);
+    UI.cmdSketchChamfer(); await wait(10);
+    D.querySelector('#pm input[type=radio][value="distance"]').click(); await wait(10);
+    eq = D.querySelector('#pm input[type=checkbox][data-key="equal"]');
+    if (eq && !eq.checked) { eq.click(); await wait(10); }
+    setInput(pmField('Distance 1'), 2);
+    selEv('mousemove', rskScr([15, 0])); rskClick([15, 0]); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(/^Chamfer 2 mm made/.test(statusText()) && f.entities.filter(function (e) { return e.t === 'line' && !e.construction; }).length === 7, 'polygon corner chamfered: ' + statusText() + ' ' + JSON.stringify(f.entities));
+    assert(W.SketchSolver.analyze(f).conflicts === 0, 'solved');
+    await UI.pmOK();
+    return 'chamfers 2 × 3, 2 at 30°, polygon corner';
+  });
+  step('rfA: Straight Slot Length ▸ Overall Length — a length typed while drawing is the overall length (30 typed, width 8 typed: centres 22 apart) and its dimension is the overall one (30); the Centerpoint Straight Slot keeps its centre (ends ±11); an overall length not more than the width is refused with its reason', async function () {
+    await rskNew();
+    UI.sketchCurveOptions({ overall: true, slotDims: false });
+    try {
+      UI.setTool('slot');
+      rskClick([-15, 0]); selEv('mousemove', rskScr([0, 0]));
+      selKey('3'); r3sType(UI.sketchNumBox()[0], '30'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      selEv('mousemove', rskScr([0, 3]));
+      assert(/(^|\s)L 30(\.00)?(\s|$)/.test($('status-coords').textContent), 'the readout shows the overall length 30: ' + $('status-coords').textContent);
+      selKey('8'); r3sType(UI.sketchNumBox()[0], '8'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      var f = UI.activeSketchFeature(), s = f.entities[0];
+      assert(s && s.t === 'slot' && s.w === 8 && Math.abs(s.x1 + 15) < 1e-9 && Math.abs(s.x2 - 7) < 1e-9, 'centres 22 apart from -15: ' + JSON.stringify(s));
+      var od = (f.dims || []).filter(function (d) { return d.e === 0 && d.k === 'olen'; })[0];
+      assert(od && Math.abs(K.dimValue(s, od) - 30) < 1e-9 && (f.dims || []).some(function (d) { return d.e === 0 && d.k === 'w'; }), 'Overall Length dimension 30 and the width: ' + JSON.stringify(f.dims));
+      selKey('Escape');
+      UI.setTool('cslot');
+      rskClick([0, -15]); selEv('mousemove', rskScr([10, -15]));
+      selKey('3'); r3sType(UI.sketchNumBox()[0], '30'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      selEv('mousemove', rskScr([0, -12]));
+      selKey('8'); r3sType(UI.sketchNumBox()[0], '8'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      f = UI.activeSketchFeature(); s = f.entities[1];
+      assert(s && s.t === 'slot' && Math.abs(s.x1 + 11) < 1e-9 && Math.abs(s.x2 - 11) < 1e-9 && Math.abs(s.y1 + 15) < 1e-9 && s.w === 8, 'centerpoint slot: ends at ±11 about its centre: ' + JSON.stringify(s));
+      selKey('Escape');
+      var n = f.entities.length;
+      UI.setTool('slot');
+      rskClick([-15, 15]); selEv('mousemove', rskScr([0, 15]));
+      selKey('5'); r3sType(UI.sketchNumBox()[0], '5'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      selEv('mousemove', rskScr([-12, 18]));
+      selKey('8'); r3sType(UI.sketchNumBox()[0], '8'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+      assert(UI.activeSketchFeature().entities.length === n && /overall length 5 mm must be more than the slot width 8 mm/.test(statusText()), 'refused: ' + statusText());
+      selKey('Escape'); selKey('Escape');
+    } finally { UI.sketchCurveOptions({ overall: false }); }
+    return 'overall 30 → centres 22; centerpoint ±11';
+  });
+  step('rfA: sketch messages use the part\'s units — in an inch part Sketch Fillet reports R.250 in (not R0.25), a fillet too large names its limit as R… in, Chamfer and the Offset status read .125 in, a value a relation holds reads .500 in', async function () {
+    await rskNew();
+    UI.App.model.units = 'in';
+    try {
+      fxSk([{ t: 'line', x1: -2, y1: 0, x2: 0, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 1.5 }], [{ type: 'coincident', refs: ['0.p2', '1.p1'] }]);
+      UI.zoomView(0.01 / UI.cam.scale);
+      UI.cmdSketchFillet(); await wait(10);
+      setInput(pmField('Radius'), 0.25);
+      selEv('mousemove', rskScr([0, 0])); rskClick([0, 0]); await wait(10);
+      assert(/^Fillet R\.250 in made/.test(statusText()), 'fillet status: ' + statusText());
+      await UI.pmOK();
+      fxSk([{ t: 'line', x1: -2, y1: -2, x2: -1, y2: -2 }, { t: 'line', x1: -1, y1: -2, x2: -1, y2: -1.8 }], [{ type: 'coincident', refs: ['3.p2', '4.p1'] }]);
+      var f = UI.activeSketchFeature(), r = W.SketchSolver.filletPair(f, W.SketchSolver.curveCorner(f, [-1, -2], 1e-6), 1);
+      assert(!r.ok && /at most R\.200 in/.test(r.error), 'too large: ' + r.error);
+      UI.cmdSketchChamfer(); await wait(10);
+      D.querySelector('#pm input[type=radio][value="distance"]').click(); await wait(10);
+      var eq = D.querySelector('#pm input[type=checkbox][data-key="equal"]');
+      if (eq && !eq.checked) { eq.click(); await wait(10); }
+      setInput(pmField('Distance 1'), 0.125);
+      selEv('mousemove', rskScr([-1, -2])); rskClick([-1, -2]); await wait(10);
+      assert(/^Chamfer \.125 in made/.test(statusText()), 'chamfer status: ' + statusText());
+      await UI.pmOK();
+      assert(UI.fmtLen(0.5) === '.500 in' && W.SketchSolver.fmtLen(1.25) === '1.250 in', 'fmtLen: ' + UI.fmtLen(0.5));
+    } finally { UI.App.model.units = 'mm'; }
+    return 'R.250 in, R.200 in, .125 in';
+  });
+  step('rfA: drawing tools as a user — an ellipse\'s minor axis click near its centre is taken (it snapped onto the centre and was refused); a tangent arc whose computed centre lands on a rectangle edge\'s midpoint infers nothing there; an outline typed segment by segment and closed on its start gets the closing Coincident and is Fully Defined; a line rotated 90° lands on exact coordinates', async function () {
+    await rskNew();
+    UI.setTool('ellipse');
+    rskClick([0, 0]); selEv('mousemove', rskScr([12, 0])); rskClick([12, 0]); selEv('mousemove', rskScr([0, 1.5])); rskClick([0, 1.5]); await wait(10);
+    var el = rfAEnts()[0];
+    assert(el && el.t === 'ellipse' && Math.abs(el.ry - 1.5) < 0.3, 'narrow ellipse made: ' + JSON.stringify(rfAEnts()) + ' ' + statusText());
+    selKey('Escape');
+    await rskNew();
+    // a line whose midpoint (10, 5) is where the tangent arc's centre will be computed
+    fxSk([{ t: 'rect', x: 20, y: 0, w: 10, h: 10 }, { t: 'line', x1: 0, y1: -5, x2: 10, y2: -5 }, { t: 'line', x1: 5, y1: 5, x2: 15, y2: 5, construction: true }]);
+    UI.setTool('tarc');
+    rskClick([10, -5]); selEv('mousemove', rskScr([18, 1])); selEv('mousemove', rskScr([20, 5])); rskClick([20, 5]); await wait(10);
+    var f = UI.activeSketchFeature(), ta = f.entities[3];
+    assert(ta && ta.t === 'arc' && Math.abs(ta.cx - 10) < 1e-6 && Math.abs(ta.cy - 5) < 1e-6, 'tangent arc centred (10, 5): ' + JSON.stringify(ta));
+    selKey('Escape'); selKey('Escape');
+    assert(!rfARels().some(function (r) { return /(^|[,:])3\.c(,|$)/.test(r); }), 'no relation at the computed centre: ' + rfARels().join(' '));
+    assert(rfARels().indexOf('tangent:3,1') >= 0 || rfARels().indexOf('tangent:1,3') >= 0, 'Tangent to the line: ' + rfARels().join(' '));
+    assert(rfARels().some(function (r) { return /^midpoint:3\.p2,0\.e3$/.test(r); }), 'its clicked end on the rectangle edge\'s midpoint: Midpoint: ' + rfARels().join(' '));
+    // an L outline by typed lengths, closed on its start point
+    await rskNew();
+    UI.setTool('line');
+    rskClick([0, 0]);
+    [[[20, 0.5], '40'], [[40.5, 10], '15'], [[30, 15.5], '25'], [[15.5, 30], '20'], [[10, 35.5], '15']].forEach(function (s) {
+      selEv('mousemove', rskScr(s[0])); selKey(s[1].charAt(0)); r3sType(UI.sketchNumBox()[0], s[1]); r3sKey(UI.sketchNumBox()[0], 'Enter');
+    });
+    selEv('mousemove', rskScr([0.2, 20])); rskClick([0, 0]); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(f.entities.length === 6 && rfARels().indexOf('coincident:5.p2,O') >= 0 && UI.sketchStatus().status === 'full', 'closed with a Coincident, Fully Defined: ' + rfARels().join(' ') + ' ' + JSON.stringify(UI.sketchStatus().status));
+    selKey('Escape');
+    // Rotate 90° about a free line's start
+    await rskNew();
+    fxSk([{ t: 'line', x1: 10, y1: 0, x2: 30, y2: 0 }]);
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    UI.cmdRotateEntities(); await wait(10);
+    rskClick([10, 0]); await wait(10);
+    setInput(pmField('Angle'), 90);
+    await UI.pmOK(); await wait(10);
+    var l0 = UI.activeSketchFeature().entities[0];
+    assert(l0.x1 === 10 && l0.y1 === 0 && l0.x2 === 10 && l0.y2 === 20, 'rotated exactly: ' + JSON.stringify(l0));
+    return 'ellipse ry ' + fmt(el.ry) + ', tangent arc free centre, L closed, rotated to (10, 20)';
+  });
+  step('rfA: the keyboard after Smart Dimension — Enter in the Modify box gives the keyboard back (the hidden box kept the focus: Esc no longer put the tool down), the status names the value with its unit; the Spline and Ellipse PropertyManagers close when Esc puts their tool down; an ordinate dimension\'s status has its unit', async function () {
+    await rskNew();
+    fxSk([{ t: 'circle', cx: 0, cy: 0, r: 5 }]);
+    UI.setTool('dimension');
+    rskClick([5, 0]); rskClick([10, 8]); await wait(10);
+    var inp = $('dim-edit').querySelector('input');
+    assert(UI.isDimEditOpen() && D.activeElement === inp, 'the Modify box has the keyboard');
+    r3sType(inp, '12'); r3sKey(inp, 'Enter'); await wait(10);
+    assert(!UI.isDimEditOpen() && D.activeElement !== inp, 'closed and the keyboard given back: ' + (D.activeElement && D.activeElement.tagName));
+    assert(/Dimension set to 12 mm\./.test(statusText()) || /set to Ø12 mm\./.test(statusText()), 'status with the unit: ' + statusText());
+    near(rfAEnts()[0].r, 6, 1e-9, 'Ø12');
+    selKey('Escape'); selKey('Escape');
+    assert(UI.App.tool === 'select' && !UI.hasPM(), 'Esc put Smart Dimension down: ' + UI.App.tool + ' ' + UI.pmTitle());
+    ['spline', 'ellipse'].forEach(function (t) {
+      UI.setTool(t);
+      assert(UI.pmTitle() === (t === 'spline' ? 'Spline' : 'Ellipse'), t + ' PM');
+      rskClick([-20, -10]); rskClick([-15, -8]);
+      selKey('Escape');
+      if (UI.App.tool !== 'select') selKey('Escape');
+      assert(UI.App.tool === 'select' && !UI.hasPM(), t + ': tool and PM gone: ' + UI.App.tool + ' ' + UI.pmTitle());
+    });
+    await rskNew();
+    fxSk([{ t: 'point', x: 0, y: 5 }, { t: 'point', x: 20, y: 5 }]);
+    UI.cmdOrdinateDim('x'); await wait(10);
+    rskClick([0, 5]); rskClick([0, -5]); rskClick([20, 5]); await wait(10);
+    assert(/^Ordinate dimension 20 mm added/.test(statusText()), 'ordinate status: ' + statusText());
+    await UI.pmOK();
+    assert(errors.length === rfAErr0, 'console errors: ' + errors.slice(rfAErr0).join(' | '));
+    return 'keyboard back, Spline / Ellipse PMs closed';
+  });
+  step('rfA: Snap to Model — a line started on a model edge (not at one of its points) lands on the edge at a round coordinate (x -15 on the block\'s bottom edge, not -14.95…), as a free point is rounded; no relation is added', async function () {
+    await anvil.newPart(); await idle();
+    await anvil.run(BLOCK); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    UI.zoomView(0.25 / UI.cam.scale);
+    var f = UI.activeSketchFeature(), pl = UI.activePlane();
+    UI.setTool('line');
+    // aim a third of a pixel off the edge and off the round x
+    var px = UI.cam.scale, a = [-15 + 0.3 * px, 0.3 * px];
+    selEv('mousemove', rskScr(a)); rskClick(a);
+    selEv('mousemove', rskScr([-5, 0.2 * px])); rskClick([-5, 0.2 * px]); await wait(10);
+    f = UI.activeSketchFeature();
+    var l = f.entities[0];
+    assert(l && l.t === 'line' && l.x1 === -15 && l.y1 === 0 && l.x2 === -5 && l.y2 === 0, 'on the edge at round coordinates: ' + JSON.stringify(l));
+    assert(!(f.rels || []).some(function (r) { return r.type !== 'horizontal'; }), 'no relation to the model: ' + rfARels().join(' '));
+    selKey('Escape');
+    UI.exitSketch(true); await idle();
+    return 'line (-15, 0) → (-5, 0)';
+  });
+  // --- end rfA ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

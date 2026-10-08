@@ -27,6 +27,9 @@
   --msg-bg: #fff8dc;
   --msg-line: #e6d28a;
   --msg-text: #5a4a00;
+  --msg-head: #fbeaa6;
+  --pick-active: #fdf0f7;
+  --group-text: #1d3a5c;
   --ok-bg: #e8f6ea;
   --ok-line: #a9d8b1;
   --ok-text: #1f5f2a;
@@ -87,6 +90,9 @@
   --msg-bg: #3b3520;
   --msg-line: #6b5a1e;
   --msg-text: #f0d27a;
+  --msg-head: #4d4322;
+  --pick-active: #3a2633;
+  --group-text: #dce6f2;
   --ok-bg: #1f3a26;
   --ok-line: #2f6b3c;
   --ok-text: #9fe0ab;
@@ -111,7 +117,7 @@
   --viewport-dark: linear-gradient(#2c3340, #171b22);
   --dim: #a7b0bb;
   --sketch: #6fa8ea;
-  --dim-ink: #d4d8de;
+  --dim-ink: #9eabbc;   /* rfC: a mid tone, so dimension lines read on the dark ground and on a light face alike */
   --dim-text: #f2f4f7;
   --dim-halo: rgba(30,33,38,0.9);
   color-scheme: dark;
@@ -433,6 +439,31 @@ html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #33465c; 
 #viewport.tool-cross[data-sktool="ellipse"] { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><ellipse cx='25' cy='8' rx='6.5' ry='4'/><circle cx='25' cy='8' r='0.8' fill='%231f5fd0'/></g></svg>") 2 30, crosshair; }
 #viewport.tool-cross[data-sktool="pellipse"] { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M18.5 9 A6.5 4 0 0 1 31.5 9'/><circle cx='25' cy='9' r='0.8' fill='%231f5fd0'/></g></svg>") 2 30, crosshair; }
 #viewport.tool-cross[data-sktool="dimension"] { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 2 L2 19 L6.5 15 L10 22.5 L13 21 L9.6 13.8 L15.5 13.8 Z' fill='%23fff' stroke='%23222' stroke-width='1.1' stroke-linejoin='round'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 19 L17 29 M31 19 L31 29 M17 25 L31 25'/><path d='M17 25 L20 23.5 L20 26.5 Z M31 25 L28 23.5 L28 26.5 Z' fill='%231f5fd0' stroke='none'/></g></svg>") 2 2, crosshair; }
+/* rfC: cursors for the tools that run in a PropertyManager rather than as a drawing tool (Parallel / Tangent /
+   Perpendicular Line, Bisector, Tangent Circle, Split / Join, Dynamic Mirror, Intersection Curve, Trim, Extend, Convert,
+   Offset, Sketch Fillet / Chamfer: the pencil with the glyph; the dimension tools: the arrow with theirs). ui-commands.js
+   openPM marks the graphics area with data-pmtool (the PropertyManager's icon) while one of them is open in a sketch;
+   Text is a drawing tool (data-sktool). */
+#viewport.tool-cross[data-sktool="text"] { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M18.5 13 L24 1.5 L29.5 13 M20.6 8.8 L27.4 8.8'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="parallelLine"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 9 L24.5 1.5' stroke='%23555' stroke-width='1.2'/><path d='M21.5 13.5 L30.5 4.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="tangentLine"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><circle cx='24' cy='9.5' r='4' stroke='%23555' stroke-width='1.2'/><path d='M17 5.5 L31 5.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="perpLine"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 13 L31 13' stroke='%23555' stroke-width='1.2'/><path d='M24 13 L24 1.5'/><path d='M24 10 L27 10 L27 13' stroke-width='1'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="bisectorLine"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17.5 13 L31 13 M17.5 13 L17.5 1' stroke='%23555' stroke-width='1.2'/><path d='M17.5 13 L28 2.5' stroke-dasharray='2.2 1.6'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="tangentCircle"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 13.5 L31 13.5 M17 13.5 L17 1' stroke='%23555' stroke-width='1.2'/><circle cx='22.5' cy='8' r='5.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="splitEnt"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 13 L21.6 8.4 M25.4 4.6 L30 0'/><circle cx='23.5' cy='6.5' r='1.6' fill='%23f2c230' stroke='%23c9961a' stroke-width='0.9'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="joinEnt"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 7 L21.5 7 M26.5 7 L31 7'/><path d='M21.5 7 L26.5 7' stroke='%233ba776' stroke-width='2.2'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="dynMirror"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M24 1 L24 14' stroke='%23555' stroke-width='1.2' stroke-dasharray='2 1.5'/><path d='M22 2.5 L18 12.5'/><path d='M26 2.5 L30 12.5' stroke-dasharray='1.6 1.4'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="intersectCurve"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17.5 5 L25.5 5 L30.5 1 M25.5 5 L25.5 13' stroke='%23555' stroke-width='1.2'/><path d='M17 11.5 L31 6.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="trim"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 8 L24 8 M24 1.5 L24 14'/><path d='M26.5 8 L31 8' stroke='%23e0553c' stroke-dasharray='1.6 1.3'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="extend"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 8 L24 8'/><path d='M24 8 L28 8' stroke-dasharray='1.6 1.3'/><path d='M30 1.5 L30 14' stroke='%23555' stroke-width='1.2'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="convert"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><rect x='17.5' y='2' width='12' height='11' fill='%23bfcfe0' stroke='%23555' stroke-width='1.2'/><rect x='20.5' y='5' width='6' height='5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="offset"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><rect x='20.5' y='4.5' width='7' height='6'/><rect x='17.5' y='1.5' width='13' height='12' stroke-width='1' stroke-dasharray='2 1.4'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="fillet"]:not(.tool-grab):not(.tool-cross), #viewport[data-pmtool="skFillet"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M18 14 L18 8 A5.5 5.5 0 0 1 23.5 2.5 L31 2.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="skChamfer"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 30 L5 23 L17 11 L21 15 L9 27 Z' fill='%23fffbe6' stroke='%23222' stroke-width='1.2' stroke-linejoin='round'/><path d='M5 23 L9 27' stroke='%23222' stroke-width='1.2'/><path d='M2 30 L3.4 26.6 L5.4 28.6 Z' fill='%23222'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M18 14 L18 7.5 L23 2.5 L31 2.5'/></g></svg>") 2 30, crosshair; }
+#viewport[data-pmtool="ordinateH"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 2 L2 19 L6.5 15 L10 22.5 L13 21 L9.6 13.8 L15.5 13.8 Z' fill='%23fff' stroke='%23222' stroke-width='1.1' stroke-linejoin='round'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 30 L31 30' stroke='%23555' stroke-width='1.2'/><path d='M18.5 29 L18.5 20 M24 29 L24 20 M29.5 29 L29.5 22.5 L28.5 20.5'/></g></svg>") 2 2, crosshair; }
+#viewport[data-pmtool="ordinateV"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 2 L2 19 L6.5 15 L10 22.5 L13 21 L9.6 13.8 L15.5 13.8 Z' fill='%23fff' stroke='%23222' stroke-width='1.1' stroke-linejoin='round'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 17 L17 31' stroke='%23555' stroke-width='1.2'/><path d='M18 18.5 L27 18.5 M18 24 L27 24 M18 29.5 L24.5 29.5 L26.5 28.5'/></g></svg>") 2 2, crosshair; }
+#viewport[data-pmtool="horizDim"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 2 L2 19 L6.5 15 L10 22.5 L13 21 L9.6 13.8 L15.5 13.8 Z' fill='%23fff' stroke='%23222' stroke-width='1.1' stroke-linejoin='round'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M17 19 L17 29 M31 19 L31 29 M17 25 L31 25'/><path d='M17 25 L20 23.5 L20 26.5 Z M31 25 L28 23.5 L28 26.5 Z' fill='%231f5fd0' stroke='none'/></g></svg>") 2 2, crosshair; }
+#viewport[data-pmtool="vertDim"]:not(.tool-grab):not(.tool-cross) { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M2 2 L2 19 L6.5 15 L10 22.5 L13 21 L9.6 13.8 L15.5 13.8 Z' fill='%23fff' stroke='%23222' stroke-width='1.1' stroke-linejoin='round'/><g fill='none' stroke='%231f5fd0' stroke-width='1.6' stroke-linecap='round'><path d='M18 17 L28 17 M18 31 L28 31 M24 17 L24 31'/><path d='M24 17 L22.5 20 L25.5 20 Z M24 31 L22.5 28 L25.5 28 Z' fill='%231f5fd0' stroke='none'/></g></svg>") 2 2, crosshair; }
 #viewport.tool-cross.tool-grab { cursor: grabbing; }
 
 /* ---------------------------------------------------------------- task pane */
@@ -761,6 +792,17 @@ body.splitting #viewport { pointer-events: none; }
 .rb-stack .rb-fly-small > .rb { min-width: 99px; }
 .rb-stack .rb-fly-small .rb-caret { align-items: center; padding: 0; }
 #ribbon.fit-2 .rb-stack .rb-fly-small > .rb { width: auto; justify-content: flex-start; }
+/* rfC: the sketch-entity grid of the Sketch tab (SolidWorks): small icon buttons, three rows filled column by column;
+   the labels stay in the DOM (hidden) for the accessible names, the » menu and the tooltips */
+.rb-stack.rb-grid { display: grid; grid-template-rows: repeat(3, 22px); grid-auto-flow: column; grid-auto-columns: auto; gap: 1px 1px; align-content: center; padding: 0 2px; }
+.rb-grid .rb, .rb-stack.rb-grid .rb-fly-small > .rb { min-width: 0; width: 26px; height: 22px; padding: 1px 4px; justify-content: center; }
+.rb-grid .rb span, #ribbon.fit-2 .rb-grid .rb span { display: none; }
+.rb-grid > .rb-fly { width: auto; }
+.rb-grid > .rb-fly .rb-caret, .rb-stack.rb-grid .rb-fly-small .rb-caret { width: 11px; padding: 0; align-items: center; font-size: 9px; }
+.rb-grid > .rb:not(.rb-face) { width: 37px; }   /* a plain button lines up with the flyouts beside it (face + ▾) */
+#ribbon.fit-2 .rb-stack.rb-grid .rb-fly-small > .rb { width: 26px; justify-content: center; }
+/* the small labelled columns (Mirror Entities …, Repair Sketch …): one width per column, label after the icon */
+.rb-stack:not(.rb-grid) > .rb, .rb-stack:not(.rb-grid) > .rb-fly { height: 22px; }
 /* the Shortcut Bar: a small floating toolbar at the pointer */
 .scbar { position: fixed; z-index: 45; display: grid; gap: 1px; padding: 3px; background: var(--menu-bg); border: 1px solid var(--menu-line); border-radius: 4px; box-shadow: 0 6px 18px var(--menu-shadow); animation: scbar-in 90ms ease-out; }
 .scbar .sc-btn { width: 30px; height: 28px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: none; padding: 0; }
@@ -777,3 +819,172 @@ body.splitting #viewport { pointer-events: none; }
 .tip-desc { margin-top: 1px; }
 .tip-note { margin-top: 2px; color: var(--muted); font-style: italic; }
 @media (prefers-reduced-motion: reduce) { .scbar { animation: none; } }
+
+/* ---- rfC: PropertyManager polish (SolidWorks 2024) ---------------------------------------------------------------
+   One look for every PropertyManager, the sketch files' included (they all go through ui-commands.js renderPM): the
+   title, the ✓ ✗ corner, the yellow Message box, groups with a blue header band and the round collapse chevron at its
+   right, value boxes with the unit inside at a fixed place and spin arrows, selection boxes with each item's icon. The
+   scrollbar's room is kept, so nothing moves when a tall PropertyManager starts to scroll. */
+#pm { scrollbar-gutter: stable; scrollbar-width: thin; padding-bottom: 10px; }
+.pm-head { gap: 7px; padding: 6px 8px 4px; font-size: 13px; border-bottom: 0; background: var(--panel); }
+.pm-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-actions { gap: 2px; padding: 0 6px 6px; border-bottom: 1px solid var(--line-2); }
+.pm-actions button { width: 30px; height: 26px; border-color: transparent; background: transparent; }
+.pm-actions button:hover { background: var(--hover); border-color: var(--blue-line); }
+/* the Message box: a yellow group whose title the stylesheet draws (.pm-msg's own text is the message) */
+.pm-msg { margin: 6px 6px 0; padding: 0 8px 6px; border-radius: 3px; overflow: hidden; }
+.pm-msg::before { content: 'Message'; display: block; margin: 0 -8px 5px; padding: 0 8px; height: 22px; line-height: 22px; font-weight: 600; color: var(--text); background: var(--msg-head); border-bottom: 1px solid var(--msg-line); }
+.pm-msg.ok::before { background: var(--ok-line); border-bottom-color: var(--ok-line); }
+.pm-group { margin: 6px 6px 0; border-radius: 3px; overflow: hidden; }
+.pm-group > h4 { height: 24px; padding: 0 5px 0 8px; gap: 6px; color: var(--group-text); }
+.pm-group > h4 .pm-gt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-group > h4 .tw { position: relative; flex: none; width: 15px; height: 15px; border: 1px solid var(--blue-line); border-radius: 50%; background: var(--panel); color: var(--muted); font-size: 0; }
+.pm-group > h4 .tw::after { content: ''; position: absolute; left: 4.2px; top: 5.2px; width: 4px; height: 4px; border-left: 1.4px solid currentColor; border-top: 1.4px solid currentColor; transform: rotate(45deg); }
+.pm-group.collapsed > h4 .tw::after { top: 2.8px; transform: rotate(225deg); }
+.pm-group > h4:hover .tw { color: var(--blue); border-color: var(--blue); }
+.pm-group.pm-group-msg { border-color: var(--msg-line); }
+.pm-group.pm-group-msg > h4 { background: var(--msg-head); border-bottom-color: var(--msg-line); color: var(--text); }
+.pm-group.pm-group-msg > h4 .tw { border-color: var(--msg-line); }
+.pm-group.pm-group-msg .pm-fields { background: var(--msg-bg); color: var(--msg-text); }
+.pm-group.pm-group-msg .pm-note { color: var(--msg-text); font-size: 12px; margin: 0 !important; }
+.pm-fields { padding: 6px 8px 7px; gap: 5px; }
+.pm-row { gap: 6px; }
+.pm-row > label { min-width: 0; overflow-wrap: anywhere; }
+/* a value box: number, unit and spin arrows in one bordered box of one width, so the boxes of a group line up */
+.pm-row.pm-row-num { grid-template-columns: minmax(0, 1fr) auto; }
+.pm-num-wrap { display: inline-flex; align-items: stretch; width: 124px; height: 22px; border: 1px solid var(--input-line); border-radius: 2px; background: var(--input-bg); cursor: text; }
+.pm-num-wrap:hover { border-color: var(--blue-line); }
+.pm-num-wrap:focus-within { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue-soft); }
+.pm-row .pm-num-wrap input.pm-num { flex: 1 1 auto; min-width: 0; width: 10px; height: 20px; border: 0; border-radius: 0; padding: 0 2px 0 5px; background: transparent; box-shadow: none; -moz-appearance: textfield; }
+.pm-row .pm-num-wrap input.pm-num:focus-visible { outline: none; }
+.pm-num-wrap input.pm-num::-webkit-inner-spin-button, .pm-num-wrap input.pm-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.pm-row .pm-num-wrap .unit { flex: none; align-self: center; width: 24px; margin: 0; padding-right: 2px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.pm-num-wrap.no-unit .unit { width: 2px; padding: 0; }
+.pm-row .pm-num-wrap input.pm-num.expr-err { color: var(--red); }
+.pm-num-wrap:has(input.expr-err) { border-color: var(--red); }
+.pm-spin { flex: none; display: flex; flex-direction: column; width: 14px; border-left: 1px solid var(--line-2); }
+.pm-spin button { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0; color: var(--muted); cursor: default; }
+.pm-spin button:hover { background: var(--hover); color: var(--blue); }
+.pm-spin button:active { background: var(--sel); }
+.pm-row select { min-width: 124px; height: 22px; }
+/* check boxes and option buttons: one row height, the box in a fixed column */
+.pm-row.check { grid-template-columns: 14px minmax(0, 1fr); gap: 7px; min-height: 20px; }
+.pm-row.check input { margin: 0; width: 13px; height: 13px; accent-color: var(--blue); }
+.pm-row.check label { cursor: default; }
+.pm-radio { display: grid; gap: 3px; }
+/* a selection box and its list read as one box; the box graphics-area picks go to is pink, as in SolidWorks */
+.pm-pick { min-height: 24px; padding: 2px 6px; }
+.pm-pick.active { background: var(--pick-active); }
+#pm .pm-pickwrap.has-list > .pm-pick { border-radius: 2px 2px 0 0; }
+#pm .pm-pickwrap.has-list > .pm-list { margin-top: -1px; border-color: var(--blue-line); border-radius: 0 0 2px 2px; }
+#pm .pm-pickwrap.has-list > .pm-pick.active + .pm-list { border-color: #d6489a; }
+#pm .pm-item { min-height: 20px; }
+#pm .pm-item svg { flex: none; }
+.pm-btns button { height: 24px; }
+.pm-icons button { width: 30px; padding: 0; display: inline-grid; place-items: center; }
+
+/* ---- rfC: status bar (SolidWorks): the sketch's definition state in its colour (Under Defined blue, Fully Defined
+   black, Over Defined red) with a dot, the pointer readout in a fixed-width slot, the chips at even spacing */
+#statusbar { gap: 0; padding: 0 0 0 8px; }
+#status-msg { padding-right: 12px; }
+#status-coords { flex: none; width: 360px; min-width: 0; max-width: none; padding: 0 10px; border-left: 1px solid var(--line); color: var(--text); }
+#status-coords:empty { visibility: hidden; }
+#status-right { gap: 0; align-items: center; height: 100%; }
+#status-right > span { display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 10px; border-left: 1px solid var(--line); white-space: nowrap; }
+#status-right .sk-state { min-width: 112px; justify-content: flex-start; font-weight: 600; }
+#status-right .sk-state::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+#status-right .sk-state.under { color: #1f5fd0; }
+#status-right .sk-state.full { color: var(--text); }
+#status-right .sk-state.over, #status-right .sk-state.conflict { color: #d9302c; }
+:root[data-theme="dark"] #status-right .sk-state.under { color: #6fa8ea; }
+:root[data-theme="dark"] #status-right .sk-state.over, :root[data-theme="dark"] #status-right .sk-state.conflict { color: #ff7a72; }
+#status-right .st-ms { min-width: 58px; justify-content: flex-end; }
+#status-right .lvl-chip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1100px) { #status-coords { width: 260px; } }
+@media (max-width: 760px) { #status-coords { display: none; } #status-right > span { padding: 0 6px; } }
+
+/* ---- rfC: sketch overlays on a dark ground. The dark theme and View ▸ Background ▸ Dark (in either theme) both put the
+   sketch on a dark ground; the SVG overlays drawn there (dimensions and their arrows, relation glyphs, the inference
+   lines and the pointer readout, the model-snap label, ordinate sets, Instant3D handles) take the dark-ground colours.
+   The three.js lines follow the same rule in ui-core.js (darkViewport). */
+#viewport.bg-dark #dim-layer, #viewport.bg-dark #ord-layer, #viewport.bg-dark #i3d-layer {
+  --dim: #a7b0bb; --sketch: #6fa8ea; --dim-ink: #9eabbc; --dim-text: #f2f4f7; --dim-halo: rgba(30,33,38,0.9);
+  --blue: #6fa8ea; --green: #5cc46a; --text: #e6e9ee; --menu-bg: #2b2f36;
+}
+:root[data-theme="dark"] #dim-layer, :root[data-theme="dark"] #ord-layer { --blue: #6fa8ea; }
+#viewport.bg-dark #dim-layer .rel-badge { color: #8fe083; } #viewport.bg-dark #dim-layer .rel-badge rect { fill: #1f2a1d; stroke: #5fb455; }
+#viewport.bg-dark #dim-layer .rel-badge:hover rect, #viewport.bg-dark #dim-layer .rel-badge.sel rect { fill: #2b4527; stroke: #8fe083; }
+#viewport.bg-dark #dim-layer .rel-badge.infer { color: #ffd75a; } #viewport.bg-dark #dim-layer .rel-badge.infer rect { fill: #3a3218; stroke: #d4a300; }
+#viewport.bg-dark #dim-layer .rel-badge.redundant, #viewport.bg-dark #dim-layer .rel-badge.conflict { color: #ff8a84; }
+#viewport.bg-dark #dim-layer .rel-badge.redundant rect, #viewport.bg-dark #dim-layer .rel-badge.conflict rect { fill: #3d1f1d; stroke: #e0524d; }
+#viewport.bg-dark #dim-layer .rel-badge.hot, :root[data-theme="dark"] #dim-layer .rel-badge.hot { color: #ffc27a; }
+#viewport.bg-dark #dim-layer .rel-badge.hot rect, :root[data-theme="dark"] #dim-layer .rel-badge.hot rect { fill: #3d2c16; stroke: #e8891c; }
+#viewport.bg-dark #dim-layer .rel-badge.suppressed, :root[data-theme="dark"] #dim-layer .rel-badge.suppressed { color: #a7b0bb; }
+#viewport.bg-dark #dim-layer .rel-badge.suppressed rect, :root[data-theme="dark"] #dim-layer .rel-badge.suppressed rect { fill: #2b2f36; stroke: #7d8691; }
+#viewport.bg-dark #dim-layer .dim.driven text, :root[data-theme="dark"] #dim-layer .dim.driven text { fill: #a7b0bb; }
+#viewport.bg-dark #dim-layer .dim.redundant text, #viewport.bg-dark #dim-layer .dim.conflict text,
+:root[data-theme="dark"] #dim-layer .dim.redundant text, :root[data-theme="dark"] #dim-layer .dim.conflict text { fill: #ff7a72; }
+#viewport.bg-dark #i3d-layer .i3d-ruler, #viewport.bg-dark #i3d-layer .i3d-tick { stroke: #d8dde3; }
+#viewport.bg-dark #i3d-layer .i3d-tick-label { fill: #d8dde3; }
+#viewport.bg-dark #i3d-layer .i3d-value, #viewport.bg-dark #i3d-layer .i3d-dim-text { stroke: #1e232b; }
+#viewport.bg-dark #i3d-layer .i3d-dim line, #viewport.bg-dark #i3d-layer .i3d-dim .i3d-dim-line,
+:root[data-theme="dark"] #i3d-layer .i3d-dim line, :root[data-theme="dark"] #i3d-layer .i3d-dim .i3d-dim-line { stroke: #6fa8ea; }
+#viewport.bg-dark #i3d-layer .i3d-dim polygon, #viewport.bg-dark #i3d-layer .i3d-dim .i3d-dim-arrow,
+:root[data-theme="dark"] #i3d-layer .i3d-dim polygon, :root[data-theme="dark"] #i3d-layer .i3d-dim .i3d-dim-arrow { fill: #6fa8ea; }
+#viewport.bg-dark #i3d-layer .i3d-dim-text, #viewport.bg-dark #i3d-layer .i3d-value,
+:root[data-theme="dark"] #i3d-layer .i3d-dim-text, :root[data-theme="dark"] #i3d-layer .i3d-value { fill: #79b0ea; }
+/* the hint and the confirmation corner float over a dark ground in the light theme too */
+#viewport.bg-dark #sketch-hint { background: rgba(43,47,54,0.9); border-color: #4a515c; color: #b8c0ca; }
+#viewport.bg-dark #sketch-hint b { color: #e6e9ee; }
+#viewport.bg-dark #exit-sketch button:hover { background: rgba(255,255,255,0.08); }
+
+/* ---- rfC: the Levels Manager pane and the status bar's Level chip (ui-levels.js; moved here from the style element the
+   script injected) */
+#levels-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; font-size: 12px; }
+#levels-panel[hidden], #app.drawing-mode #levels-panel { display: none !important; }
+#levels-panel, :root { --lvl-main: #ffe680; --lvl-main-text: #3d3000; }
+:root[data-theme="dark"] #levels-panel, :root[data-theme="dark"] { --lvl-main: #6b5a17; --lvl-main-text: #fff4c2; }
+.lvl-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); background: var(--panel-2); white-space: nowrap; }
+.lvl-head svg { display: block; }
+.lvl-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line-2); }
+.lvl-tools button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--input-bg); color: var(--text); }
+.lvl-tools button:hover { background: var(--hover); border-color: var(--blue-line); }
+.lvl-tools select { flex: 1; min-width: 0; max-width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); border-radius: 3px; }
+#lvl-grid { overflow: auto; flex: 1; min-height: 60px; padding-bottom: 12px; scrollbar-gutter: stable; }
+.lvl-row { display: grid; grid-template-columns: 40px 38px 18px minmax(40px, 1fr) 44px minmax(50px, .9fr); align-items: center; min-height: 21px; column-gap: 3px; padding: 0 4px; white-space: nowrap; cursor: default; }
+.lvl-row:not(.lvl-hdr):hover { background: var(--hover); }
+.lvl-hdr { position: sticky; top: 0; z-index: 1; background: var(--panel-2); border-bottom: 1px solid var(--line-2); color: var(--muted); font-size: 11px; }
+.lvl-row.main { background: var(--lvl-main); color: var(--lvl-main-text); font-weight: 700; }
+.lvl-row.main:hover { background: var(--lvl-main); }
+.lvl-row.off:not(.main) .lvl-name, .lvl-row.off:not(.main) .lvl-num { color: var(--muted); }
+.lvl-num { text-align: right; padding-right: 6px; cursor: pointer; }
+.lvl-num:hover { text-decoration: underline; }
+.lvl-vis { text-align: center; font-weight: 700; cursor: pointer; border: 1px solid var(--line-2); border-radius: 2px; height: 15px; line-height: 15px; margin: 0 8px; }
+.lvl-row.main .lvl-vis { cursor: not-allowed; }
+.lvl-color { width: 16px; height: 15px; padding: 0; border: 0; background: none; cursor: pointer; }
+.lvl-color[data-none] { opacity: .35; }
+.lvl-nocolor { display: inline-block; width: 14px; height: 12px; border: 1px dashed var(--modal-line); box-sizing: border-box; }
+.lvl-name, .lvl-set { overflow: hidden; text-overflow: ellipsis; cursor: text; min-height: 15px; }
+.lvl-name em { font-style: normal; font-weight: 400; font-size: 10px; color: var(--muted); }
+.lvl-row.main .lvl-name em { color: inherit; opacity: .75; }
+.lvl-count { text-align: right; padding-right: 6px; font-variant-numeric: tabular-nums; }
+.lvl-edit { width: 100%; box-sizing: border-box; font: inherit; font-weight: 400; padding: 0 2px; border: 1px solid var(--blue); background: var(--input-bg); color: var(--text); }
+.lvl-main { border-top: 1px solid var(--line); padding: 6px 8px 8px; display: grid; grid-template-columns: 1fr; gap: 4px; background: var(--panel-2); }
+.lvl-sec { font-weight: 600; }
+.lvl-main label { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 4px; }
+.lvl-main input, .lvl-main select { min-width: 0; font: inherit; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); border-radius: 3px; padding: 1px 3px; }
+.lvl-foot { color: var(--muted); font-size: 11px; line-height: 1.35; white-space: normal; }
+.lvl-empty { margin: 8px; color: var(--muted); line-height: 1.4; }
+#status-right .lvl-chip { cursor: pointer; }
+#status-right .lvl-chip:hover { text-decoration: underline; }
+.lvl-pop { position: fixed; z-index: 60; min-width: 170px; max-width: 280px; background: var(--menu-bg); border: 1px solid var(--menu-line); box-shadow: 0 3px 10px var(--menu-shadow); font-size: 12px; color: var(--text); }
+.lvl-pop-title { padding: 4px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); }
+.lvl-pop-list { max-height: 240px; overflow: auto; }
+.lvl-pop-row { display: flex; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+.lvl-pop-row b { min-width: 28px; text-align: right; }
+.lvl-pop-row em { margin-left: auto; padding-left: 10px; font-style: normal; color: var(--muted); }
+.lvl-pop-row:hover { background: var(--hover); }
+.lvl-pop-row.main { background: var(--lvl-main, #ffe680); color: var(--lvl-main-text, #3d3000); font-weight: 700; }
+.lvl-pop-row.off { color: var(--muted); }
+.lvl-pop-num { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--line-2); }
+.lvl-pop-num input { width: 70px; font: inherit; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); }

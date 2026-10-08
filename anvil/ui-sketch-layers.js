@@ -100,6 +100,12 @@
       var v = validName(f, to, from);
       if (v.error) return { ok: false, error: v.error };
       if (v.name === from) return { ok: true, name: from };
+      // levels (ui-levels.js): a layer is a part-wide level, so renaming it renames the level in every sketch (one
+      // undo step), exactly as the Levels Manager does; the two never disagree
+      if (UI.levelRenameKey) {
+        var lr = UI.levelRenameKey(f, from, v.name);
+        if (lr) { if (lr.ok && current[f.id] === from) current[f.id] = lr.name; return lr; }
+      }
       markDirty();
       r.name = v.name;
       f.entities.forEach(function (e) { if (e.layer === from) e.layer = v.name; });

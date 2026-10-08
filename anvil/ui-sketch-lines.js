@@ -156,7 +156,7 @@
   function lineHint() {
     var m = UI.lineMode() || 'line';
     if (LINE_HINT[m]) hint(LINE_HINT[m]);
-    if (LM.orient !== 'free') hint((m === 'centerline' ? 'Centerline' : m === 'midline' ? 'Midpoint Line' : 'Line') + ' (' + { h: 'Horizontal', v: 'Vertical', angle: 'Angle ' + UI.fmtNum(LM.angle || 0, 2) + '°' }[LM.orient] + (LM.length > 0 ? ', length ' + UI.fmtNum(LM.length, 3) : '') + '): click the ' + (LM.midpoint ? 'midpoint' : 'start') + ', then the side it runs to.');
+    if (LM.orient !== 'free') hint((m === 'centerline' ? 'Centerline' : m === 'midline' ? 'Midpoint Line' : 'Line') + ' (' + { h: 'Horizontal', v: 'Vertical', angle: 'Angle ' + UI.fmtNum(LM.angle || 0, 2) + '°' }[LM.orient] + (LM.length > 0 ? ', length ' + (UI.fmtLen ? UI.fmtLen(LM.length) : UI.fmtNum(LM.length, 3)) : '') + '): click the ' + (LM.midpoint ? 'midpoint' : 'start') + ', then the side it runs to.');
   }
   // one line per two clicks (no chain): a set orientation, a midpoint line, an infinite line
   function lineSingle() { return !!(LM.midpoint || LM.orient !== 'free' || LM.infinite); }
@@ -987,6 +987,7 @@
       }
       count += o.s.length; fresh = false;
       App.tempEntities = []; UI.updateTemp();
+      if (UI.afterSketchCommit) UI.afterSketchCommit(f, n0);   // sketch-hooks: Dynamic Mirror mirrors the line(s) in this step
       refresh();
       UI.setStatus('Parallel Line placed' + (o.s.length > 1 ? ' on both sides' : '') + (skipped ? ' (distance dimension left out: it would over-define the sketch)' : '') + ' (' + count + ' so far). Place another, or press ✓ / Esc to finish.');
       return true;
@@ -1007,7 +1008,7 @@
       title: 'Parallel Line', icon: 'parallelLine', parallelLine: true, noFocus: true, values: v,
       message: 'Select a line or edge to be parallel to, then place the line: through a point, at a distance or tangent to an arc.',
       command: {
-        ownHover: true,
+        ownHover: true, dynMirror: true,   // sketch-hooks: Dynamic Mirror shows and makes the mirror image of what it places
         onSketchMove: function (uv, mx, my) { last = { uv: uv, mx: mx, my: my }; draw(); },
         onSketchPoint: function (uv, mx, my) {
           var f = UI.activeSketchFeature();

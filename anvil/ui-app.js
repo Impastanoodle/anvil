@@ -799,7 +799,7 @@
       '<tr><th>Space</th><td>View orientation menu</td></tr>' +
       '<tr><th>S</th><td>Shortcut Bar at the pointer: the common commands for the part, sketch, assembly or drawing (arrows and Enter pick one, Esc closes it)</td></tr>' +
       '<tr><th>S, S</th><td>Start a sketch (or exit the current one): the first button of the Shortcut Bar</td></tr>' +
-      '<tr><th>L, R, C, A, P, T</th><td>In a sketch: Line, Rectangle, Circle, Arc (A again: 3 Point Arc), Polygon, Slot</td></tr>' +
+      '<tr><th>L, R, C, A, P, T, D</th><td>In a sketch: Line, Rectangle, Circle, Arc (A again: 3 Point Arc), Polygon, Slot, Smart Dimension (the same key again puts the tool down)</td></tr>' +
       '<tr><th>Esc</th><td>Cancel tool / command / selection</td></tr><tr><th>Enter</th><td>Accept the PropertyManager</td></tr>' +
       '<tr><th>Delete</th><td>Delete selected entity or feature</td></tr><tr><th>F2</th><td>Rename selected feature</td></tr>' +
       '<tr><th>Ctrl+Z / Ctrl+Y</th><td>Undo / Redo</td></tr><tr><th>Ctrl+B</th><td>Rebuild</td></tr><tr><th>Ctrl+S</th><td>Save</td></tr>' +

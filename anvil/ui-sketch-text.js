@@ -6,13 +6,16 @@
 // Kernel.textLayout, Etch / Cut outlines, text along a curve), kernel-script.js (DXF as LINE / ARC, .text() scripts).
 //
 //   Text          the text (several lines: Enter in the box starts a new line)
-//   Curves        optional: a sketch line or arc the baseline follows (Reverse direction reads an arc from inside)
+//   Curves        optional: a sketch line, arc, spline, ellipse or partial ellipse the baseline follows (Reverse
+//                 direction reads it the other way: an arc or ellipse from inside)
 //   Alignment     Left / Center / Right about the insertion point (on a curve: its start, middle or end); Vertical
 //                 Baseline / Middle / Top
 //   Height        the capital letter height (default 3 mm / 0.125 in); Width factor and Spacing in %; Line spacing %
 //                 of the height; Rotation (free text); Flip horizontal (mirror) / Flip vertical
 //   Mode          Etch (single stroke: laser marking, on layer ETCH, never a region) or Cut (each stroke offset into a
-//                 closed outline Stroke width wide, which a Cut-Extrude cuts through; on the CUT or current layer)
+//                 closed outline Stroke width wide, which a Cut-Extrude cuts through; on the CUT or current layer);
+//                 Cut ▸ Stencil keeps the islands of O, A, B, 0, 8 … attached by bridges Bridge width wide (default
+//                 0.03 in / 0.8 mm), so a part number cut through the sheet does not drop its centres
 //   Layer         the sketch layer the text goes on (ETCH is created from the shop preset when it is missing)
 (function () {
   'use strict';
@@ -27,11 +30,14 @@
   function markDirty() { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }
   function refresh() { App.gridStale = true; UI.updateSketches(); if (UI.refreshTree) UI.refreshTree(); }
   function inch() { return !!(App.model && App.model.units === 'in'); }
-  var HINT = 'Type the text in the PropertyManager, then click in the graphics area to place it. To run it along a line or an arc, click the <b>Curves</b> box and pick the curve.';
-  var PICK_HINT = 'Click a sketch line or arc for the text to follow.';
+  var HINT = 'Type the text in the PropertyManager, then click in the graphics area to place it. To run it along a line, arc, spline or ellipse, click the <b>Curves</b> box and pick the curve.';
+  var PICK_HINT = 'Click a sketch line, arc, spline or ellipse for the text to follow.';
+  var PATH_TYPES = K.TEXT_PATH_TYPES || ['line', 'arc'];
+  function bridgeDefault() { return inch() ? 0.03 : 0.8; }
 
   // ------------------------------------------------------------------ values <-> entity
-  // PM values: { str, pathE, flip, align, valign, h, wf, sp, ls (%), rot, mirror, flipV, mode, sw, layer, layerSet }
+  // PM values: { str, pathE, flip, align, valign, h, wf, sp, ls (%), rot, mirror, flipV, mode, sw, stencil, bw (bridge
+  // width), layer, layerSet }
   var toolVals = null;   // the tool's values, kept for the next text (per session)
   var st = { picking: false, at: null, scr: null };   // Curves box picking; the last cursor point (sketch) and screen position
   function defaultLayer(f, mode) {
@@ -43,13 +49,14 @@
   function freshValues(f) {
     var h = inch() ? 0.125 : 3;
     return { str: '', pathE: null, flip: false, align: 'left', valign: 'baseline', h: h, wf: 100, sp: 100, ls: 160, rot: 0, mirror: false, flipV: false,
-      mode: 'stroke', sw: clean(h * 0.12), layer: defaultLayer(f, 'stroke'), layerSet: false };
+      mode: 'stroke', sw: clean(h * 0.12), stencil: false, bw: bridgeDefault(), layer: defaultLayer(f, 'stroke'), layerSet: false };
   }
   function valuesFrom(e, f) {
     return { str: e.str == null ? '' : String(e.str), pathE: e.path && e.path.e != null ? e.path.e : null, flip: !!(e.path && e.path.flip),
       align: e.align || 'left', valign: e.valign || 'baseline', h: clean(+e.h || 1),
       wf: clean((e.widthFactor > 0 ? +e.widthFactor : 1) * 100), sp: clean((e.spacing != null ? +e.spacing : 1) * 100), ls: clean((e.lineSpacing > 0 ? +e.lineSpacing : 1.6) * 100),
       rot: clean(+e.rot || 0), mirror: !!e.mirror, flipV: !!e.flipV, mode: e.mode === 'outline' ? 'outline' : 'stroke', sw: clean(K.textStrokeWidth(e)),
+      stencil: !!e.stencil, bw: +e.bridge > 0 ? clean(+e.bridge) : bridgeDefault(),
       layer: e.layer != null && e.layer !== '' ? String(e.layer) : '0', keepG: e.path && e.path.e == null && e.path.g ? e.path : null,
       // a text on its mode's default layer (Etch on ETCH) moves with the mode (Cut goes to CUT / the current layer)
       layerSet: (e.layer || '0') !== defaultLayer(f, e.mode === 'outline' ? 'outline' : 'stroke') };
@@ -62,6 +69,7 @@
     if (!(+v.ls > 0)) return 'The line spacing must be greater than zero.';
     if (!isFinite(+v.rot)) return 'The rotation must be a number.';
     if (v.mode === 'outline' && !(+v.sw > 0)) return 'The stroke width must be greater than zero.';
+    if (v.mode === 'outline' && v.stencil && !(+v.bw > 0)) return 'The bridge width must be greater than zero.';
     return '';
   }
   // the entity the values describe, inserted at `at`
@@ -74,11 +82,12 @@
     if (+v.sp !== 100) e.spacing = clean(v.sp / 100);
     if (+v.ls !== 160) e.lineSpacing = clean(v.ls / 100);
     if (v.mode === 'outline') { e.mode = 'outline'; e.strokeWidth = +v.sw; }
+    if (v.mode === 'outline' && v.stencil) { e.stencil = true; e.bridge = +v.bw; }
     if (v.mirror) e.mirror = true;
     if (v.flipV) e.flipV = true;
     var src = v.pathE != null && f ? f.entities[v.pathE] : null;
-    if (src && (src.t === 'line' || src.t === 'arc')) {
-      e.path = { e: v.pathE, g: src.t === 'line' ? { t: 'line', x1: src.x1, y1: src.y1, x2: src.x2, y2: src.y2 } : { t: 'arc', cx: src.cx, cy: src.cy, r: src.r, a0: src.a0, a1: src.a1 } };
+    if (src && PATH_TYPES.indexOf(src.t) >= 0) {
+      e.path = { e: v.pathE, g: K.textPathOf ? K.textPathOf(src) : { t: 'line', x1: src.x1, y1: src.y1, x2: src.x2, y2: src.y2 } };
       if (v.flip) e.path.flip = true;
     } else if (v.keepG) { e.path = JSON.parse(JSON.stringify(v.keepG)); if (v.flip) e.path.flip = true; else delete e.path.flip; }
     e.layer = v.layer || '0';   // "0" too: the drawing tools would otherwise put it on the current layer
@@ -97,10 +106,11 @@
     if (v.layer && names.indexOf(v.layer) < 0) names.push(v.layer);
     return names.map(function (n) { return [n, n === '0' ? '0 (default)' : n + (f && K.sketchLayer(f, { layer: n }) ? '' : ' (new)')]; });
   }
+  var CURVE_NAMES = { line: 'Line', arc: 'Arc', spline: 'Spline', ellipse: 'Ellipse', pellipse: 'Partial Ellipse' };
   function curveName(f, i) {
     var e = f && f.entities[i];
     if (!e) return '';
-    return (e.t === 'arc' ? 'Arc' : 'Line') + (i + 1);
+    return (CURVE_NAMES[e.t] || 'Curve') + (i + 1);
   }
 
   // ------------------------------------------------------------------ the PropertyManager (tool and entity)
@@ -109,7 +119,7 @@
     var D = function () { return v.pathE == null && !v.keepG; };
     return [
       { title: 'Curves', fields: [
-        { type: 'pick', icon: 'arc', key: 'pathE', placeholder: 'Select a line or arc (optional)', value: function (x) { return x.pathE != null ? curveName(f, x.pathE) : x.keepG ? 'Curve deleted (kept its place)' : ''; },
+        { type: 'pick', icon: 'arc', key: 'pathE', placeholder: 'Select a curve (optional)', value: function (x) { return x.pathE != null ? curveName(f, x.pathE) : x.keepG ? 'Curve deleted (kept its place)' : ''; },
           active: function () { return st.picking; }, onActivate: function () { setPicking(!st.picking); } },
         { type: 'buttons', show: function (x) { return x.pathE != null || !!x.keepG; }, buttons: [{ label: 'Clear Curves', onclick: function (x) { x.pathE = null; x.keepG = null; x.flip = false; changed(x, 'pathE'); UI.renderPM(); } }] },
         { type: 'check', label: 'Reverse direction', key: 'flip', show: function (x) { return x.pathE != null || !!x.keepG; } }
@@ -133,6 +143,8 @@
       { title: 'Mode', fields: [
         { type: 'radio', key: 'mode', rerender: true, options: [['stroke', 'Etch (single stroke)'], ['outline', 'Cut (outline)']] },
         { type: 'number', label: 'Stroke width', key: 'sw', unit: 'u', min: 0, show: function (x) { return x.mode === 'outline'; } },
+        { type: 'check', label: 'Stencil (bridges keep the islands)', key: 'stencil', rerender: true, show: function (x) { return x.mode === 'outline'; } },
+        { type: 'number', label: 'Bridge width', key: 'bw', unit: 'u', min: 0, show: function (x) { return x.mode === 'outline' && x.stencil; } },
         { type: 'select', label: 'Layer', key: 'layer', options: function (x) { return layerOptions(f, x); } }
       ] }
     ];
@@ -173,10 +185,10 @@
     setHint(on ? PICK_HINT : cur && cur.edit ? 'Edit the text in the PropertyManager; drag it in the graphics area to move it.' : HINT);
     if (UI.renderPM) UI.renderPM();
   }
-  // a click in the graphics area while the Curves box is active: the line / arc under it
+  // a click in the graphics area while the Curves box is active: the line / arc / spline / ellipse under it
   function pickAt(raw, mx, my) {
     var f = UI.activeSketchFeature(), hit = UI.pickEntity(mx, my), e = hit && f && f.entities[hit.index];
-    if (!e || (e.t !== 'line' && e.t !== 'arc')) { UI.setStatus('Sketch text can follow a line or an arc: click one.'); return; }
+    if (!e || PATH_TYPES.indexOf(e.t) < 0) { UI.setStatus('Sketch text can follow a line, an arc, a spline or an ellipse: click one.'); return; }
     if (!cur) return;
     cur.v.pathE = hit.index; cur.v.keepG = null;
     setPicking(false);
@@ -228,9 +240,9 @@
     if (!toolVals) toolVals = freshValues(f);
     toolVals.pathE = null; toolVals.keepG = null; toolVals.flip = false;
     if (!toolVals.layerSet) toolVals.layer = defaultLayer(f, toolVals.mode);
-    // a line or arc selected before the tool started is the curve to follow (as SolidWorks takes it into Curves)
+    // a curve selected before the tool started is the one to follow (as SolidWorks takes it into Curves)
     var sel = App.sel && App.sel.kind === 'entity' ? App.sel.index : null, se = sel != null && f ? f.entities[sel] : null;
-    if (se && (se.t === 'line' || se.t === 'arc')) toolVals.pathE = sel;
+    if (se && PATH_TYPES.indexOf(se.t) >= 0) toolVals.pathE = sel;
     st.at = null;
     openTextPM(toolVals, f, null);
     preview();
@@ -292,7 +304,7 @@
   UI.sketchDragHook = function (p, ev) {
     if (App.mode === 'sketch' && App.tool === 'select' && !(App.command && App.command.onSketchPoint)) {
       var f = UI.activeSketchFeature(), hit = f ? UI.pickEntity(p[0], p[1]) : null, e = hit && f.entities[hit.index];
-      if (e && e.t === 'text') return textDrag(f, hit.index, e, p);
+      if (e && e.t === 'text' && e.path) return textDrag(f, hit.index, e, p);   // a free text drags through the solver (ui-sketch.js)
     }
     return baseDragHook ? baseDragHook.apply(this, arguments) : null;
   };
@@ -315,7 +327,7 @@
         if (onCurve || !uv0) return;
         App.sketchDragging = false;
         refresh();
-        UI.setStatus('Moved Text' + (index + 1) + ' to (' + UI.fmtNum(e.x, 3) + ', ' + UI.fmtNum(e.y, 3) + ').');
+        UI.setStatus('Moved Text' + (index + 1) + ' to (' + UI.fmtLen(e.x) + ', ' + UI.fmtLen(e.y) + ').');
       }
     };
   }

@@ -1231,7 +1231,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (Math.abs(r.value - h.value) < 1e-12) return Promise.resolve(true);
     var d = { pushed: ed.pushed };
     pushUndoOnce(d);
-    if (h.apply(r.value) === false) { if (UI.setStatus) UI.setStatus('Value not changed: the sketch cannot reach ' + r.value + '.'); return Promise.resolve(false); }
+    if (h.apply(r.value) === false) { if (UI.setStatus) UI.setStatus('Value not changed: the sketch cannot reach ' + fmtV(r.value, h) + '.'); return Promise.resolve(false); }   // sketch-units
     if (UI.setStatus) UI.setStatus(h.label.replace(/ [\d.]+$/, '') + ' set to ' + fmtV(r.value, h) + '.');
     if (App.mode === 'sketch') { App.gridStale = true; UI.updateSketches(); return Promise.resolve(true); }
     var session = { fid: h.fid != null ? h.fid : ownerFeature(), side: h.side, kind: h.kind };

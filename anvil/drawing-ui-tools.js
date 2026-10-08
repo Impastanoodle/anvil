@@ -81,13 +81,15 @@
   // Insert ▸ Drawing View ▸ Flat Pattern: Model View with Flat pattern chosen
   function cmdFlatView() { if (!sheetMetal()) { flatReady(); return; } cmdModelView(FLAT); }
   // a flat view's bend notes: 'notes' | 'table' | 'none'; FLAT SIZE note on / off (view-level, over the Document
-  // Properties); bendCols: the Bend Table's optional columns
+  // Properties); bendCols: the Bend Table's optional columns; showEtch: Show etch marks (the flat's Etch text and
+  // ETCH-layer marks, thin green on layer ETCH; on unless set false)
   function setFlatViewProps(id, props) {
     edit(function (dc) {
       var v = Drawing.findView(dc, id);
       if (!v || v.kind !== 'flat') return;
       if (props.bendNotes !== undefined) { if (props.bendNotes) v.bendNotes = props.bendNotes; else delete v.bendNotes; }
       if (props.flatSize !== undefined) { if (props.flatSize == null) delete v.flatSize; else v.flatSize = !!props.flatSize; }
+      if (props.showEtch !== undefined) { if (props.showEtch === false) v.showEtch = false; else delete v.showEtch; }
       if (props.bendCols !== undefined) setBendCols(v, props.bendCols);
     });
   }
@@ -235,13 +237,13 @@
         title: v.name + ' (Flat pattern)', icon: 'flatView', command: 'viewProps',
         message: 'The unfolded blank of ' + (App.model.name || 'the part') + ': bend lines UP (solid) and DOWN (dashed); drag a bend note to move it, Delete hides it.',
         values: { bendNotes: v.bendNotes || o.bendNotes, flatSize: v.flatSize != null ? !!v.flatSize : o.flatSizeNote, scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet', showAll: false,
-          colBD: bendColsOf(v).indexOf('bd') >= 0, colBA: bendColsOf(v).indexOf('ba') >= 0, colK: bendColsOf(v).indexOf('k') >= 0 },
+          colBD: bendColsOf(v).indexOf('bd') >= 0, colBA: bendColsOf(v).indexOf('ba') >= 0, colK: bendColsOf(v).indexOf('k') >= 0, showEtch: v.showEtch !== false },
         groups: [
           { title: 'Bend Notes', fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }, { type: 'check', key: 'showAll', label: 'Show hidden bend notes again' }] },
           // (SolidWorks' bend table template takes these columns besides TAG / DIRECTION / ANGLE / RADIUS)
           { title: 'Bend Table Columns', show: function (val) { return val.bendNotes === 'table'; }, fields: [{ type: 'check', key: 'colBD', label: 'Bend deduction (BEND DED.)' },
             { type: 'check', key: 'colBA', label: 'Bend allowance (BEND ALLOW.)' }, { type: 'check', key: 'colK', label: 'K-factor' }] },
-          { title: 'Flat Pattern', fields: [{ type: 'check', key: 'flatSize', label: 'FLAT SIZE note' }] },
+          { title: 'Flat Pattern', fields: [{ type: 'check', key: 'flatSize', label: 'FLAT SIZE note' }, { type: 'check', key: 'showEtch', label: 'Show etch marks' }] },
           { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
         ],
         onOK: function (val) {
@@ -249,6 +251,7 @@
             var w = Drawing.findView(dc, id);
             if (!w) return;
             w.bendNotes = val.bendNotes; w.flatSize = !!val.flatSize;
+            if (val.showEtch === false) w.showEtch = false; else delete w.showEtch;
             setBendCols(w, [val.colBD && 'bd', val.colBA && 'ba', val.colK && 'k'].filter(Boolean));
             w.scale = val.scale === 'sheet' ? null : Drawing.parseScale(val.scale);
             if (val.showAll && w.flatAnn) Object.keys(w.flatAnn).forEach(function (k) { Drawing.flatAnnotation(dc, id, k, { hidden: false }); });
@@ -412,6 +415,7 @@
         { label: 'Bend Notes ▸ Bend Table', checked: bn === 'table', action: function () { setFlatViewProps(v.id, { bendNotes: 'table' }); } },
         { label: 'Bend Notes ▸ None', checked: bn === 'none', action: function () { setFlatViewProps(v.id, { bendNotes: 'none' }); } },
         { label: 'FLAT SIZE Note', checked: v.flatSize != null ? !!v.flatSize : Drawing.docOptions(doc()).flatSizeNote, action: function () { setFlatViewProps(v.id, { flatSize: !(v.flatSize != null ? v.flatSize : Drawing.docOptions(doc()).flatSizeNote) }); } },
+        { label: 'Show Etch Marks', checked: v.showEtch !== false, action: function () { setFlatViewProps(v.id, { showEtch: v.showEtch === false }); } },
         { sep: true },
         { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
       ];

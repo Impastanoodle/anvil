@@ -707,6 +707,13 @@
             while (b0 >= 360) { b0 -= 360; b1 -= 360; }
             out.path.g = { t: 'arc', cx: gc[0], cy: gc[1], r: g.r, a0: b0, a1: b1 };
             if (e.path.flip) delete out.path.flip; else out.path.flip = true;
+          } else if (g && (g.t === 'spline' || g.t === 'ellipse' || g.t === 'pellipse')) {
+            // sketch-text2: the curve mirrors as the entity would; an ellipse's parameter runs backwards (u -> −u), so the
+            // copy reads it the other way (a spline's points keep their order: no change)
+            var gm = mirrorEntity(g, axis);
+            delete gm.layer; delete gm.construction;
+            out.path.g = gm;
+            if (g.t !== 'spline') { if (e.path.flip) delete out.path.flip; else out.path.flip = true; }
           }
         }
         return out;
@@ -1079,8 +1086,9 @@
   // ------------------------------------------------------------------ Sketch Text (sketch-text)
   // { t: 'text', x, y, str, h, rot, align: 'left' | 'center' | 'right', valign: 'baseline' | 'middle' | 'top',
   //   widthFactor (1 = 100 %), spacing (1 = the font's normal gap), lineSpacing (baseline pitch in letter heights,
-  //   1.6), mode: 'stroke' | 'outline', strokeWidth (outline), mirror (Flip horizontal), flipV (Flip vertical),
-  //   path: { e: <line / arc index>, g: <its geometry when last seen>, flip } }
+  //   1.6), mode: 'stroke' | 'outline', strokeWidth (outline), stencil, bridge (outline: stencil bridges and their
+  //   width), mirror (Flip horizontal), flipV (Flip vertical), path: { e: <line / arc / spline / ellipse / partial
+  //   ellipse index>, g: <its geometry when last seen>, flip } }
   // The letters come from sketch-font.js (single-stroke lines and true arcs). (x, y) is the insertion point: the text
   // block is aligned on it (align / valign, as SolidWorks' Sketch Text), Flip horizontal mirrors it about the vertical
   // through it, Flip vertical about the baseline through it, then it turns by rot. Text along a curve (path, the
@@ -1093,14 +1101,97 @@
   // Mode 'stroke' (Etch, the default) is open single-stroke geometry: drawn, exported to DXF as LINE / ARC on its layer
   // (ETCH when it has none), never part of a profile. Mode 'outline' (Cut) is each stroke offset by strokeWidth / 2 into a
   // capsule (an arc into an arc slot, a full circle into a ring), all of them united (textUnion) into closed loops that
-  // the profile builder takes like any other: an O keeps its island, the round ends stay true arcs (exact volumes).
+  // the profile builder takes like any other: an O keeps its island, the round ends stay true arcs (exact volumes:
+  // where the union cuts a round end, trueArcs lays its chords again on the true circle between the exact crossings).
+  // Text along a spline, ellipse or partial ellipse (sketch-text2; SolidWorks' Sketch Text follows any sketch curve):
+  // each letter's baseline is a chord of the curve from its place by length along it (freePath), the letters upright
+  // on the left of the reading direction, later lines offset square to the curve. A spline reads from its first point
+  // to its last (path.flip: from the last back); a partial ellipse as an arc, clockwise from its a1 end with the letters
+  // outside (flip: counter-clockwise from a0, inside); a whole ellipse clockwise from the end of its minor axis at
+  // −90° (the bottom when it is not turned), so centred text sits outside across the top (flip: counter-clockwise from
+  // +90°, centred text inside across the bottom, as on a seal).
+  // Stencil (sketch-text2, Cut text only): every island the outline leaves (the centre of an O, A, B, 0, 8, a, e, @ …:
+  // a hole of the letter's union) stays attached by bridges `bridge` wide (default: the stroke width) cut across the
+  // strokes round it — one rectangle through the island from the letter's outside above it to its outside below it,
+  // or left to right when the counter is narrower than two bridges and taller than wide (textBridges) — so cut-through
+  // part numbers keep their centres on the laser.
   function normDeg(a) { a = a % 360; if (a < 0) a += 360; return Math.abs(a - 360) < 1e-9 ? 0 : a; }
+  var TEXT_PATH_TYPES = ['line', 'arc', 'spline', 'ellipse', 'pellipse'];
   function textPathGeom(e) {
     var g = e && e.path && e.path.g;
     if (!g) return null;
     if (g.t === 'line' && Math.hypot(g.x2 - g.x1, g.y2 - g.y1) > 1e-12) return g;
     if (g.t === 'arc' && g.r > 0 && g.a1 - g.a0 > 1e-9) return g;
+    if (g.t === 'spline' && g.pts && g.pts.length >= 2) return g;
+    if ((g.t === 'ellipse' || g.t === 'pellipse') && g.rx > 0 && g.ry > 0 && (g.t === 'ellipse' || g.a1 - g.a0 > 1e-9)) return g;
     return null;
+  }
+  // ---- text along a spline / ellipse: the curve by its length (sketch-text2)
+  // freePath(g, flip) -> { L, closed, at(s) -> { p, d } } or null: the path geometry g (a spline, ellipse or partial
+  // ellipse, as its entity) by length s along it in the reading direction (see above; flip reverses it), from where the
+  // reading starts, d the unit tangent that way; past an open curve's ends it runs on along its end tangents, round a
+  // closed one it goes on round. The parameter is SketchSolver.freeCurve's (a spline's span index plus the span's
+  // Bézier parameter, an ellipse's parameter angle); lengths are |dP/dt| integrated (5-point Gauss-Legendre per
+  // sample, Newton for the inverse).
+  var GL5 = [[-0.906179845938664, 0.2369268850561891], [-0.5384693101056831, 0.4786286704993665], [0, 0.5688888888888889], [0.5384693101056831, 0.4786286704993665], [0.906179845938664, 0.2369268850561891]];
+  function freePath(g, flip) {
+    var pt, d1, t0, t1, closed, N;
+    if (g.t === 'spline') {
+      var sg = splineGeom(g);
+      if (!sg || !sg.bez.length) return null;
+      var m = sg.bez.length;
+      var span = function (t) { var j = Math.max(0, Math.min(m - 1, Math.floor(t))); return { B: sg.bez[j], s: t - j }; };
+      pt = function (t) { var q = span(t); return bezPoint(q.B, q.s); };
+      d1 = function (t) { var q = span(t); return bezDeriv(q.B, q.s); };
+      t0 = 0; t1 = m; closed = sg.closed; N = 16 * m;
+    } else {
+      if (!(g.rx > 0) || !(g.ry > 0)) return null;
+      var full = g.t === 'ellipse', r = (+g.rot || 0) * Math.PI / 180, cr = Math.cos(r), sr = Math.sin(r);
+      t0 = full ? 0 : +g.a0 * Math.PI / 180; t1 = full ? 2 * Math.PI : +g.a1 * Math.PI / 180;
+      if (!(t1 > t0)) return null;
+      pt = function (u) { return ellipsePoint(g, u); };
+      d1 = function (u) { var x = -g.rx * Math.sin(u), y = g.ry * Math.cos(u); return [cr * x - sr * y, sr * x + cr * y]; };
+      closed = full; N = Math.max(32, Math.ceil(128 * (t1 - t0) / (2 * Math.PI)));
+    }
+    function speed(t) { var d = d1(t); return Math.hypot(d[0], d[1]); }
+    function seg(a, b) { var h = (b - a) / 2, c = (a + b) / 2, s = 0; GL5.forEach(function (q) { s += q[1] * speed(c + h * q[0]); }); return s * h; }
+    var ts = [], cum = [0], i;
+    for (i = 0; i <= N; i++) ts.push(t0 + (t1 - t0) * i / N);
+    for (i = 0; i < N; i++) cum.push(cum[i] + seg(ts[i], ts[i + 1]));
+    var L = cum[N];
+    if (!(L > 0)) return null;
+    function param(s) {   // the parameter at length s (0..L) from t0
+      var lo = 0, hi = N;
+      while (hi - lo > 1) { var md = (lo + hi) >> 1; if (cum[md] <= s) lo = md; else hi = md; }
+      var ta = ts[lo], tb = ts[lo + 1], want = s - cum[lo], span0 = cum[lo + 1] - cum[lo], t = ta + (tb - ta) * (span0 > 0 ? want / span0 : 0);
+      for (var it = 0; it < 8; it++) {
+        var v = speed(t);
+        if (!(v > 1e-300)) break;
+        var nt = Math.max(ta, Math.min(tb, t - (seg(ta, t) - want) / v));
+        if (Math.abs(nt - t) <= 1e-15 * Math.max(1, Math.abs(t))) { t = nt; break; }
+        t = nt;
+      }
+      return t;
+    }
+    // reading backwards along the parameter (ellipses unless flipped, splines when flipped), from base (the length from
+    // t0 to where the reading starts: an end, or a whole ellipse's minor axis end at −90° / +90°)
+    var back = g.t === 'spline' ? !!flip : !flip, base = back ? L : 0;
+    if (closed && g.t === 'ellipse') {
+      var u0 = back ? 1.5 * Math.PI : 0.5 * Math.PI, k0 = Math.min(N - 1, Math.floor(u0 / (t1 - t0) * N));
+      base = cum[k0] + seg(ts[k0], u0);
+    }
+    var sgn = back ? -1 : 1;
+    function at(s) {
+      if (!closed && (s < 0 || s > L)) {
+        var e0 = at(s < 0 ? 0 : L), ex = s < 0 ? s : s - L;
+        return { p: [e0.p[0] + e0.d[0] * ex, e0.p[1] + e0.d[1] * ex], d: e0.d };
+      }
+      var q = base + sgn * s;
+      if (closed) { q = q % L; if (q < 0) q += L; }
+      var t = param(Math.max(0, Math.min(L, q))), d = d1(t), l = Math.hypot(d[0], d[1]) || 1;
+      return { p: pt(t), d: [sgn * d[0] / l, sgn * d[1] / l] };
+    }
+    return { L: L, closed: closed, at: at };
   }
   // a rigid map (rotation, maybe with one reflection) p -> [a·x + b·y + tx, c·x + d·y + ty] applied to a font stroke
   function mapStroke(s, M) {
@@ -1112,27 +1203,61 @@
     var a0 = normDeg(det > 0 ? ang(s.a0) : ang(s.a1));
     return { t: 'arc', cx: c[0], cy: c[1], r: s.r, a0: a0, a1: a0 + sweep };
   }
-  // textLayout(e) -> { strokes (sketch coordinates), glyphs: [{ ch, p0, p1, blank }] (each letter's baseline from its
-  // left end p0 to p1, as placed), width, height, anchor }
+  // textLayout(e) -> { strokes (sketch coordinates), glyphs: [{ ch, p0, p1, blank, s0, s1, u, v }] (each letter's
+  // baseline from its left end p0 to p1, as placed; its strokes strokes[s0 .. s1 − 1]; u, v: where the letter's own x
+  // and y axes point in the sketch, unit vectors), width, height, anchor }
   function textLayout(e) {
     var key = 'L' + textKey(e), hit = textCache[key];
     if (hit) return hit;
     var out = { strokes: [], glyphs: [], width: 0, height: 0, anchor: [+e.x || 0, +e.y || 0] };
     if (typeof SketchFont === 'undefined' || !e || e.str == null) return textRemember(key, out);
     var lay = SketchFont.layout(e.str, { height: +e.h > 0 ? +e.h : 1, widthFactor: e.widthFactor, charSpacing: e.spacing, lineSpacing: e.lineSpacing, align: e.align, valign: e.valign });
-    var mx = e.mirror ? -1 : 1, fy = e.flipV ? -1 : 1, g = textPathGeom(e);
+    var mx = e.mirror ? -1 : 1, fy = e.flipV ? -1 : 1, g = textPathGeom(e), fp = null;
     out.width = lay.width; out.height = lay.height;
+    if (g && g.t !== 'line' && g.t !== 'arc') { fp = freePath(g, !!e.path.flip); if (!fp) g = null; }
     if (!g) {
       var r = (+e.rot || 0) * Math.PI / 180, cr = Math.cos(r), sr = Math.sin(r), x0 = +e.x || 0, y0 = +e.y || 0;
-      var M = { a: cr * mx, b: -sr * fy, c: sr * mx, d: cr * fy, tx: x0, ty: y0 };
+      var M = { a: cr * mx, b: -sr * fy, c: sr * mx, d: cr * fy, tx: x0, ty: y0 }, s0 = 0;
       out.strokes = lay.strokes.map(function (s) { return mapStroke(s, M); });
       lay.glyphs.forEach(function (gl) {
         var p0 = [M.a * gl.x + M.b * gl.y + M.tx, M.c * gl.x + M.d * gl.y + M.ty], p1 = [M.a * (gl.x + gl.w) + M.b * gl.y + M.tx, M.c * (gl.x + gl.w) + M.d * gl.y + M.ty];
-        out.glyphs.push({ ch: gl.ch, p0: p0, p1: p1, blank: !gl.strokes.length });
+        out.glyphs.push({ ch: gl.ch, p0: p0, p1: p1, blank: !gl.strokes.length, s0: s0, s1: s0 + gl.strokes.length, u: [M.a, M.c], v: [M.b, M.d] });
+        s0 += gl.strokes.length;
       });
       return textRemember(key, out);
     }
-    // along a curve: the letter box [bx0, bx0 + w] on baseline gy (after the flips) placed on the curve one by one
+    // a glyph placed with its baseline from A along the unit d (its local up the left normal of d, flipped by Flip
+    // vertical; Flip horizontal mirrors it within its box w long)
+    function placeGlyph(gl, A, d, w) {
+      var n = [-d[1], d[0]], s0 = out.strokes.length;
+      // glyph-local (u, v) -> A + d·(mx·u + (mirrored ? w : 0)) + n·(fy·v)
+      var M2 = { a: d[0] * mx, b: n[0] * fy, c: d[1] * mx, d: n[1] * fy, tx: A[0] + (mx < 0 ? d[0] * w : 0), ty: A[1] + (mx < 0 ? d[1] * w : 0) };
+      gl.strokes.forEach(function (s) { out.strokes.push(mapStroke(s, M2)); });
+      out.glyphs.push({ ch: gl.ch, p0: A, p1: [A[0] + d[0] * w, A[1] + d[1] * w], blank: !gl.strokes.length, s0: s0, s1: out.strokes.length, u: [M2.a, M2.c], v: [M2.b, M2.d] });
+    }
+    if (fp) {
+      // along a spline / ellipse: the letter box [bx0, bx0 + w] from length anchor + bx0, its baseline the chord to the
+      // point of the (offset) curve w away
+      var La = fp.L, an = e.align === 'center' ? La / 2 : e.align === 'right' ? La : 0;
+      out.anchor = fp.at(an).p;
+      lay.glyphs.forEach(function (gl) {
+        var w = gl.w, bx0 = mx > 0 ? gl.x : -gl.x - w, gy = fy * gl.y, sa = an + bx0, a0 = fp.at(sa);
+        var Q = function (s) { var q = fp.at(s); return gy ? [q.p[0] - q.d[1] * gy, q.p[1] + q.d[0] * gy] : q.p; };
+        var A = Q(sa), d = a0.d;
+        if (w > 0) {
+          var f = function (s) { var q = Q(s); return Math.hypot(q[0] - A[0], q[1] - A[1]) - w; }, lo = sa, hi = sa + w, k = 0;
+          while (f(hi) < 0 && k++ < 8) { lo = hi; hi += w; }
+          if (f(hi) >= 0) {
+            for (var it = 0; it < 64 && hi - lo > 1e-15 * Math.max(1, Math.abs(hi)); it++) { var md = (lo + hi) / 2; if (f(md) < 0) lo = md; else hi = md; }
+            var B = Q(hi), bl = Math.hypot(B[0] - A[0], B[1] - A[1]);
+            if (bl > 1e-12 * w) d = [(B[0] - A[0]) / bl, (B[1] - A[1]) / bl];
+          }
+        }
+        placeGlyph(gl, A, d, w);
+      });
+      return textRemember(key, out);
+    }
+    // along a line or an arc: the letter box [bx0, bx0 + w] on baseline gy (after the flips) placed on the curve one by one
     var fl = !!e.path.flip, line = g.t === 'line', S, T, N, L, C, R, ts, dir;
     if (line) {
       var A0 = fl ? [g.x2, g.y2] : [g.x1, g.y1], A1 = fl ? [g.x1, g.y1] : [g.x2, g.y2];
@@ -1154,11 +1279,7 @@
         var B = [C[0] + Rl * Math.cos(tb), C[1] + Rl * Math.sin(tb)], bl = Math.hypot(B[0] - A[0], B[1] - A[1]);
         d = bl > 1e-12 ? [(B[0] - A[0]) / bl, (B[1] - A[1]) / bl] : [-dir * Math.sin(ta), dir * Math.cos(ta)];
       }
-      var n = [-d[1], d[0]];
-      // glyph-local (u, v) -> A + d·(mx·u + (mirrored ? w : 0)) + n·(fy·v)
-      var M2 = { a: d[0] * mx, b: n[0] * fy, c: d[1] * mx, d: n[1] * fy, tx: A[0] + (mx < 0 ? d[0] * w : 0), ty: A[1] + (mx < 0 ? d[1] * w : 0) };
-      gl.strokes.forEach(function (s) { out.strokes.push(mapStroke(s, M2)); });
-      out.glyphs.push({ ch: gl.ch, p0: A, p1: [A[0] + d[0] * w, A[1] + d[1] * w], blank: !gl.strokes.length });
+      placeGlyph(gl, A, d, w);
     });
     return textRemember(key, out);
   }
@@ -1171,7 +1292,7 @@
   var textCache = {}, textCacheN = 0;
   function textKey(e) {
     return JSON.stringify([e.x, e.y, e.str, e.h, e.rot, e.align, e.valign, e.widthFactor, e.spacing, e.lineSpacing, e.mode, e.strokeWidth, e.mirror, e.flipV,
-      e.path ? [e.path.g, !!e.path.flip] : null, tessKey()]);
+      e.path ? [e.path.g, !!e.path.flip] : null, tessKey(), e.stencil ? [true, e.bridge] : null]);
   }
   function textRemember(key, v) {
     if (++textCacheN > 400) { textCache = {}; textCacheN = 1; }
@@ -1259,7 +1380,8 @@
   // edge is split where it crosses (or touches) an edge of another shape; a piece is kept when the union is on one side
   // of it and not the other (probed a hair off its midpoint), oriented with the union on its left; pieces shared by two
   // shapes in the same direction count once; the pieces are then chained (at a vertex where two boundaries touch, the
-  // sharpest right turn, so touching loops stay apart).
+  // sharpest right turn, so touching loops stay apart). A shape with `sub` (a stencil bridge) is taken away instead: the
+  // region is in a shape and in no `sub` shape, and the bridges' edges join the pool the same way.
   function textUnion(shapes, scale) {
     var snapTol = 1e-10 * Math.max(1, scale), pool = {}, nid = 0, tolLen = 1e-10 * Math.max(1, scale), probe = 1e-8 * Math.max(1, scale);
     function snap(p) {
@@ -1305,13 +1427,18 @@
         edgesBy[j].forEach(function (E2, k) { if (boxesMeet(b1, Bj[k], tolLen)) meet(E1, E2); });
       });
     }
+    function inShape(sh, p) {
+      var b = sh.box;
+      if (p[0] < b[0] || p[0] > b[2] || p[1] < b[1] || p[1] > b[3]) return false;
+      return pointInPoly(p, sh.rings[0].pts) && !(sh.rings[1] && pointInPoly(p, sh.rings[1].pts));
+    }
+    var adds = shapes.filter(function (sh) { return !sh.sub; }), subs = shapes.filter(function (sh) { return sh.sub; });
     function inside(p) {
-      for (var s = 0; s < shapes.length; s++) {
-        var sh = shapes[s], b = sh.box;
-        if (p[0] < b[0] || p[0] > b[2] || p[1] < b[1] || p[1] > b[3]) continue;
-        if (pointInPoly(p, sh.rings[0].pts) && !(sh.rings[1] && pointInPoly(p, sh.rings[1].pts))) return true;
-      }
-      return false;
+      var s, hitAdd = false;
+      for (s = 0; s < adds.length && !hitAdd; s++) if (inShape(adds[s], p)) hitAdd = true;
+      if (!hitAdd) return false;
+      for (s = 0; s < subs.length; s++) if (inShape(subs[s], p)) return false;
+      return true;
     }
     var kept = [], seen = {};
     edgesBy.forEach(function (list) {
@@ -1353,15 +1480,174 @@
     function turn(din, E) { var o = [E.b[0] - E.a[0], E.b[1] - E.a[1]]; return Math.atan2(din[0] * o[1] - din[1] * o[0], din[0] * o[0] + din[1] * o[1]); }
     return loops;
   }
-  // textOutline(e) -> { loops: [{ pts, src }], curves } of an outline (Cut) text, or null
+  // textOutline(e) -> { loops: [{ pts, src }], curves, bridges } of an outline (Cut) text, or null; bridges: the stencil
+  // bridges taken out (rectangles, sketch coordinates), [] without Stencil
   function textOutline(e) {
     var key = 'O' + textKey(e), hit = textCache[key];
     if (hit) return hit;
-    var strokes = textLayout(e).strokes, hw = textStrokeWidth(e) / 2;
-    if (!strokes.length) return textRemember(key, { loops: [], curves: [] });
-    var sc = strokeShapes(strokes, hw), scale = 2 * hw;
+    var lay = textLayout(e), strokes = lay.strokes, hw = textStrokeWidth(e) / 2;
+    if (!strokes.length) return textRemember(key, { loops: [], curves: [], bridges: [] });
+    var sc = strokeShapes(strokes, hw), scale = 2 * hw, shapes = sc.shapes, bridges = [];
     sc.shapes.forEach(function (s) { scale = Math.max(scale, Math.abs(s.box[0]), Math.abs(s.box[1]), Math.abs(s.box[2]), Math.abs(s.box[3])); });
-    return textRemember(key, { loops: textUnion(sc.shapes, scale), curves: sc.curves });
+    if (e.stencil) {
+      bridges = textBridges(lay, hw, textBridgeWidth(e), scale);
+      shapes = shapes.concat(bridges.map(function (pts) { return { sub: true, rings: [{ pts: pts, src: pts.map(function () { return null; }) }], box: polyBox(pts) }; }));
+    }
+    var ta = trueArcs(textUnion(shapes, scale), scale);
+    return textRemember(key, { loops: ta.loops, curves: sc.curves.concat(ta.curves), bridges: bridges });
+  }
+  // the stencil bridge width of a text: bridge, else its stroke width
+  function textBridgeWidth(e) { return +e.bridge > 0 ? +e.bridge : textStrokeWidth(e); }
+  function polyBox(pts) {
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    pts.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); });
+    return b;
+  }
+  // textBridges(lay, hw, bw, scale) -> [[4 corners, counter-clockwise]]: the stencil bridges of a laid-out text, letter
+  // by letter in each letter's own frame (glyph u, v: so text that is turned, mirrored or on a curve is bridged square
+  // to its letters). For each island of a letter (a hole of the union of its strokes): the bridge line runs through the
+  // island's centroid (else the middle of its box), up its letter's y axis — along x when the counter is narrower than
+  // two bridges and taller than wide; from the middle of the stretch of that line inside the island it goes out each
+  // way through the strokes round the island to where the line leaves the letter, on the line and on both edges of
+  // the bridge (the furthest of the three, then a tenth of the width more), and the bridge is that stretch bw wide.
+  function textBridges(lay, hw, bw, scale) {
+    var out = [], b = bw / 2, m = Math.max(0.1 * bw, 1e-9 * scale);
+    lay.glyphs.forEach(function (gl) {
+      if (!(gl.s1 > gl.s0)) return;
+      var loops = textUnion(strokeShapes(lay.strokes.slice(gl.s0, gl.s1), hw).shapes, scale);
+      var holes = loops.filter(function (l) { return signedArea(l.pts) < 0; });
+      if (!holes.length) return;
+      var u = gl.u, v = gl.v;
+      function loc(p) { return [p[0] * u[0] + p[1] * u[1], p[0] * v[0] + p[1] * v[1]]; }
+      function glob(q) { return [q[0] * u[0] + q[1] * v[0], q[0] * u[1] + q[1] * v[1]]; }
+      var Lg = loops.map(function (l) { return l.pts.map(loc); });
+      // where the line {coordinate ax = c} crosses the loops: the other coordinate of each crossing, sorted
+      function cuts(list, ax, c) {
+        var o = 1 - ax, ys = [];
+        list.forEach(function (l) {
+          for (var i = 0; i < l.length; i++) {
+            var p = l[i], q = l[(i + 1) % l.length];
+            if ((p[ax] > c) !== (q[ax] > c)) ys.push(p[o] + (q[o] - p[o]) * (c - p[ax]) / (q[ax] - p[ax]));
+          }
+        });
+        return ys.sort(function (x, y) { return x - y; });
+      }
+      // from y0 along the line (dir ±1): the crossing where the line leaves the letter for good, after being in it
+      function exit(ys, y0, dir) {
+        var inside = ys.filter(function (y) { return y < y0; }).length % 2 === 1, seen = inside;
+        var ahead = ys.filter(function (y) { return dir > 0 ? y > y0 : y < y0; });
+        if (dir < 0) ahead.reverse();
+        for (var i = 0; i < ahead.length; i++) {
+          inside = !inside;
+          if (inside) seen = true;
+          else if (seen) return ahead[i];
+        }
+        return null;
+      }
+      holes.forEach(function (hl) {
+        var H = hl.pts.map(loc), bb = polyBox(H), A2 = 0, cx = 0, cy = 0;
+        H.forEach(function (p, i) { var q = H[(i + 1) % H.length], cr = p[0] * q[1] - q[0] * p[1]; A2 += cr; cx += (p[0] + q[0]) * cr; cy += (p[1] + q[1]) * cr; });
+        var cen = Math.abs(A2) > 1e-300 ? [cx / (3 * A2), cy / (3 * A2)] : [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2];
+        var wd = bb[2] - bb[0], ht = bb[3] - bb[1], ax = wd < 2 * bw && ht > wd ? 1 : 0, o = 1 - ax;
+        var c = cen[ax], hc = cuts([H], ax, c);
+        if (hc.length < 2) { c = (bb[ax] + bb[ax + 2]) / 2; hc = cuts([H], ax, c); }
+        if (hc.length < 2) return;
+        var lo = hc[0], hi = hc[1], best = -1;
+        for (var k = 0; k + 1 < hc.length; k += 2) {
+          if (cen[o] >= hc[k] && cen[o] <= hc[k + 1]) { lo = hc[k]; hi = hc[k + 1]; break; }
+          if (hc[k + 1] - hc[k] > best) { best = hc[k + 1] - hc[k]; lo = hc[k]; hi = hc[k + 1]; }
+        }
+        var mid = (lo + hi) / 2, top = -Infinity, bot = Infinity;
+        [c - b, c, c + b].forEach(function (cp) {
+          var ys = cuts(Lg, ax, cp), up = exit(ys, mid, 1), dn = exit(ys, mid, -1);
+          if (up != null) top = Math.max(top, up);
+          if (dn != null) bot = Math.min(bot, dn);
+        });
+        if (!isFinite(top) || !isFinite(bot)) return;
+        function P(along, across) { var q = [0, 0]; q[ax] = across; q[o] = along; return glob(q); }
+        var rect = [P(bot - m, c - b), P(bot - m, c + b), P(top + m, c + b), P(top + m, c - b)];
+        out.push(signedArea(rect) < 0 ? rect.reverse() : rect);
+      });
+    });
+    return out;
+  }
+  // trueArcs(loops, scale) -> { loops, curves }: a union's loops with the chords that came from one stroke circle (src)
+  // laid again on the true circle between the exact points where it meets its neighbours (the next round end, a
+  // straight side, a stencil bridge), each run evenly in chords no longer than the circle's tessellation step, with a
+  // curve record of its own: an outline of whole chords of true arcs (exact volumes, DXF bulges through points on the
+  // circle) instead of the partial chords the union left. A crossing that does not meet the true curves within a
+  // chord's length of where the chords met (curves almost tangent) keeps its chords; a loop all on one circle as it is.
+  function trueArcs(loops, scale) {
+    var extra = [], eq = 1e-12 * Math.max(1, scale);
+    function cid(s) { return s ? Math.round(s.c[0] / eq) + ',' + Math.round(s.c[1] / eq) + ',' + Math.round(s.r / eq) : null; }
+    function onC(p, s) { return Math.abs(Math.hypot(p[0] - s.c[0], p[1] - s.c[1]) - s.r) <= 1e-9 * Math.max(1, s.r); }
+    // the point where the line through `far` and p meets circle s, nearest p (null when the line nearly touches it:
+    // under 3° between them the crossing is ill-conditioned)
+    function lineCircle(far, p, s) {
+      var d = [p[0] - far[0], p[1] - far[1]], f = [far[0] - s.c[0], far[1] - s.c[1]], A = d[0] * d[0] + d[1] * d[1];
+      if (!(A > 0)) return null;
+      var B = 2 * (f[0] * d[0] + f[1] * d[1]), C = f[0] * f[0] + f[1] * f[1] - s.r * s.r, disc = B * B - 4 * A * C;
+      if (disc < 0) return null;
+      var sq = Math.sqrt(disc), t1 = (-B - sq) / (2 * A), t2 = (-B + sq) / (2 * A), t = Math.abs(t1 - 1) < Math.abs(t2 - 1) ? t1 : t2;
+      var q = [far[0] + d[0] * t, far[1] + d[1] * t];
+      if (Math.abs(d[0] * (q[0] - s.c[0]) + d[1] * (q[1] - s.c[1])) / (Math.sqrt(A) * s.r) < 0.05) return null;
+      return q;
+    }
+    // the crossing of circles a and b nearest p (null when they nearly touch or nearly coincide: under 3° between them)
+    function circleCircle(a, b, p) {
+      var dx = b.c[0] - a.c[0], dy = b.c[1] - a.c[1], D = Math.hypot(dx, dy);
+      if (!(D > eq) || D > a.r + b.r || D < Math.abs(a.r - b.r)) return null;
+      var cosX = (a.r * a.r + b.r * b.r - D * D) / (2 * a.r * b.r);
+      if (1 - cosX * cosX < 0.0025) return null;
+      var a2 = (a.r * a.r - b.r * b.r + D * D) / (2 * D), h = Math.sqrt(Math.max(0, a.r * a.r - a2 * a2)), mx = a.c[0] + dx / D * a2, my = a.c[1] + dy / D * a2;
+      var q1 = [mx - h * dy / D, my + h * dx / D], q2 = [mx + h * dy / D, my - h * dx / D];
+      return Math.hypot(q1[0] - p[0], q1[1] - p[1]) <= Math.hypot(q2[0] - p[0], q2[1] - p[1]) ? q1 : q2;
+    }
+    var out = loops.map(function (l) {
+      var P = l.pts, S = l.src, n = P.length, ids = S.map(cid);
+      if (n < 3 || !ids.some(Boolean) || ids.every(function (x) { return x && x === ids[0]; })) return l;
+      // 1. the run boundaries, moved onto the true curves
+      var at = P.slice(), k, s0 = -1;
+      for (k = 0; k < n; k++) {
+        var ia = ids[(k + n - 1) % n], ib = ids[k];
+        if (ia === ib) continue;
+        if (s0 < 0) s0 = k;
+        var a = ia ? S[(k + n - 1) % n] : null, b = ib ? S[k] : null, p = P[k], q = null;
+        if (a && b) q = onC(p, a) && onC(p, b) ? p : circleCircle(a, b, p);
+        else if (a) q = onC(p, a) ? p : lineCircle(P[(k + 1) % n], p, a);
+        else q = onC(p, b) ? p : lineCircle(P[(k + n - 1) % n], p, b);
+        var lim = Math.max(Math.hypot(P[(k + n - 1) % n][0] - p[0], P[(k + n - 1) % n][1] - p[1]), Math.hypot(P[(k + 1) % n][0] - p[0], P[(k + 1) % n][1] - p[1]));
+        if (q && Math.hypot(q[0] - p[0], q[1] - p[1]) <= lim) at[k] = q;
+      }
+      if (s0 < 0) return l;
+      // 2. each run of one circle from boundary to boundary, evenly on its true arc when both ends lie on it
+      var pts = [], src = [];
+      for (var i = 0; i < n;) {
+        var k0 = (s0 + i) % n, sr = ids[k0] ? S[k0] : null;
+        if (!sr) { pts.push(at[k0]); src.push(S[k0]); i++; continue; }
+        var j = i + 1;
+        while (j < n && ids[(s0 + j) % n] === ids[k0]) j++;
+        var A = at[k0], B = at[(s0 + j) % n], c = sr.c, r = sr.r, q2;
+        if (!onC(A, sr) || !onC(B, sr)) {
+          for (q2 = i; q2 < j; q2++) { pts.push(q2 === i ? A : P[(s0 + q2) % n]); src.push(sr); }
+          i = j;
+          continue;
+        }
+        var sw = 0, prev = A;
+        for (q2 = i + 1; q2 <= j; q2++) {
+          var cur = q2 === j ? B : P[(s0 + q2) % n], u0 = [prev[0] - c[0], prev[1] - c[1]], u1 = [cur[0] - c[0], cur[1] - c[1]];
+          sw += Math.atan2(u0[0] * u1[1] - u0[1] * u1[0], u0[0] * u1[0] + u0[1] * u1[1]);
+          prev = cur;
+        }
+        var mseg = Math.max(1, Math.ceil(Math.abs(sw) / (2 * Math.PI / segsForRadius(r)) - 1e-9)), th = Math.atan2(A[1] - c[1], A[0] - c[0]);
+        pts.push(A); src.push(sr);
+        for (q2 = 1; q2 < mseg; q2++) { var t = th + sw * q2 / mseg; pts.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]); src.push(sr); }
+        extra.push({ c: [c[0], c[1]], r: r, a0: Math.min(th, th + sw), a1: Math.max(th, th + sw), full: false, step: Math.abs(sw) / mseg });
+        i = j;
+      }
+      return { pts: pts, src: src };
+    });
+    return { loops: out, curves: extra };
   }
   // textDxf(e) -> what a DXF writer draws for a text: { strokes } (Etch: lines, arcs, polylines) or { polys: [{ pts,
   // bulges }] } (Cut: one closed polyline per outline loop, a run of chords of one circle as a single bulged segment of
@@ -1399,11 +1685,25 @@
     return { polys: polys };
   }
   // ---- text along a curve: keeping path.e / path.g in step with the sketch
+  // pathGeomOf(src) -> the geometry a text keeps of the curve it follows (a copy of the line / arc / spline / ellipse /
+  // partial ellipse's own fields), or null for any other entity
   function pathGeomOf(src) {
-    return src.t === 'line' ? { t: 'line', x1: +src.x1, y1: +src.y1, x2: +src.x2, y2: +src.y2 } : { t: 'arc', cx: +src.cx, cy: +src.cy, r: +src.r, a0: +src.a0, a1: +src.a1 };
+    if (!src || TEXT_PATH_TYPES.indexOf(src.t) < 0) return null;
+    if (src.t === 'line') return { t: 'line', x1: +src.x1, y1: +src.y1, x2: +src.x2, y2: +src.y2 };
+    if (src.t === 'arc') return { t: 'arc', cx: +src.cx, cy: +src.cy, r: +src.r, a0: +src.a0, a1: +src.a1 };
+    if (src.t === 'spline') {
+      var g = { t: 'spline', pts: (src.pts || []).map(function (p) { return [+p[0], +p[1]]; }) };
+      if (src.closed) g.closed = true;
+      if (src.tans) g.tans = src.tans.map(function (tg) { return tg ? [+tg[0], tg[1] == null ? 1 : +tg[1]] : null; });
+      if (src.local) g.local = true;
+      return g;
+    }
+    var o = { t: src.t, cx: +src.cx, cy: +src.cy, rx: +src.rx, ry: +src.ry, rot: +src.rot || 0 };
+    if (src.t === 'pellipse') { o.a0 = +src.a0; o.a1 = +src.a1; }
+    return o;
   }
-  // path.g from entity path.e for every text of the sketch (a path.e that no longer names a line or an arc is dropped:
-  // the text stays where it was); -> the number of texts changed
+  // path.g from entity path.e for every text of the sketch (a path.e that no longer names a curve a text can follow is
+  // dropped: the text stays where it was); -> the number of texts changed
   function syncTextPaths(sketch) {
     var E = sketch && sketch.entities, n = 0;
     if (!E) return 0;
@@ -1411,10 +1711,10 @@
       var e = E[i];
       if (!e || e.t !== 'text' || !e.path) continue;
       if (e.path.e == null) { if (!e.path.g) { delete e.path; n++; } continue; }
-      var src = E[e.path.e];
-      if (!src || src === e || (src.t !== 'line' && src.t !== 'arc')) { delete e.path.e; if (!e.path.g) delete e.path; n++; continue; }
-      var g = pathGeomOf(src), old = e.path.g;
-      if (!old || old.t !== g.t || Object.keys(g).some(function (k) { return g[k] !== old[k]; })) { e.path.g = g; n++; }
+      var src = E[e.path.e], g = src && src !== e ? pathGeomOf(src) : null;
+      if (!g) { delete e.path.e; if (!e.path.g) delete e.path; n++; continue; }
+      var old = e.path.g;
+      if (!old || old.t !== g.t || JSON.stringify(g) !== JSON.stringify(old)) { e.path.g = g; n++; }
     }
     return n;
   }
@@ -1447,12 +1747,19 @@
     var q = P(+e.x || 0, +e.y || 0);
     o.x = q[0]; o.y = q[1];
     if (rot) o.rot = normDeg((+e.rot || 0) + rot);
-    if (k !== 1) { o.h = (+e.h || 1) * k; if (e.strokeWidth != null) o.strokeWidth = +e.strokeWidth * k; }
+    if (k !== 1) { o.h = (+e.h || 1) * k; if (e.strokeWidth != null) o.strokeWidth = +e.strokeWidth * k; if (e.bridge != null) o.bridge = +e.bridge * k; }
     if (e.path) {
       delete o.path.e;
       var g = e.path.g;
       if (g && g.t === 'line') { var a = P(g.x1, g.y1), b = P(g.x2, g.y2); o.path.g = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }; }
       else if (g && g.t === 'arc') { var c = P(g.cx, g.cy), a0 = normDeg(g.a0 + rot); o.path.g = { t: 'arc', cx: c[0], cy: c[1], r: g.r * k, a0: a0, a1: a0 + (g.a1 - g.a0) }; }
+      else if (g && g.t === 'spline') {   // sketch-text2: a driving tangent turns with it (its weight is per unit of chord length)
+        o.path.g.pts = g.pts.map(function (q) { return P(q[0], q[1]); });
+        if (g.tans) o.path.g.tans = g.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + rot), tg[1]] : null; });
+      } else if (g && (g.t === 'ellipse' || g.t === 'pellipse')) {
+        var ce = P(g.cx, g.cy);
+        o.path.g.cx = ce[0]; o.path.g.cy = ce[1]; o.path.g.rx = g.rx * k; o.path.g.ry = g.ry * k; o.path.g.rot = normDeg((+g.rot || 0) + rot);
+      }
     }
     return o;
   }
@@ -1468,6 +1775,7 @@
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
   K.syncTextPaths = syncTextPaths; K.textEntityRemoved = textEntityRemoved; K.remapTextPaths = remapTextPaths; K.transformText = transformText;
+  K.textPathOf = pathGeomOf; K.TEXT_PATH_TYPES = TEXT_PATH_TYPES.slice(); K.textBridgeWidth = textBridgeWidth;   // sketch-text2
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.TESS = TESS; _.checkProfile = checkProfile; _.dimGeometry = dimGeometry; _.entityPolylines = entityPolylines; _.key2 = key2;
   _.mirrorAxis = mirrorAxis; _.mirrorEntity = mirrorEntity; _.offsetLoop = offsetLoop; _.pointInPoly = pointInPoly; _.segsForRadius = segsForRadius;

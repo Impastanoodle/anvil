@@ -513,9 +513,10 @@
     if (!f || !SS()) return { ok: false, error: 'Open a sketch first.' };
     var snap = snapState(f), dirty0 = App.sketchDirty;
     UI.pushUndo(); App.sketchDirty = true;
-    var depth = App.undo.length, r;
+    var depth = App.undo.length, r, n0 = f.entities.length;
     try { r = fn(f) || { ok: false }; } catch (er) { r = { ok: false, error: er.message || String(er) }; }
     if (!r.ok) { restoreState(f, snap); if (App.undo.length === depth) App.undo.pop(); App.sketchDirty = dirty0; }
+    else if (UI.afterSketchCommit) UI.afterSketchCommit(sketch() || f, n0);   // sketch-hooks: Dynamic Mirror copies what this step placed, in the same undo step
     refresh();
     if (r.ok) { var g = sketch() || f; r.undo = { snap: snap, after: snapState(g), key: placedKey(g), depth: depth, dirty0: dirty0 }; }
     return r;
@@ -543,7 +544,7 @@
     UI.openPM({
       title: o.title, icon: o.icon, construct: o.id, noFocus: true, keepSelection: !!o.keepSelection, values: o.values, message: o.message,
       command: o.onPoint ? {
-        ownHover: true,
+        ownHover: true, dynMirror: true,   // sketch-hooks: Dynamic Mirror mirrors the lines / circles these commands place
         onSketchMove: function (uv, mx, my) { if (o.onMove) o.onMove(uv, mx, my); },
         onSketchPoint: function (uv, mx, my) { if (!uv) uv = toUV(mx, my); if (uv) o.onPoint(uv, mx, my); }
       } : null,

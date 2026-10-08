@@ -1341,3 +1341,11 @@ Tests: kernel 960/960, examples 29/29 (both kernels), ui-smoke 447/447, occt-tes
 - hole wizard: #12 and 9/16 clearances, countersinks #2 / #3 / #5, #12, 7/16–1, #12-28 UNF; no counterbore for #12 / 9/16 (none in B18.3). Head: README.
 - head: occt-tests DXF entity counts compared in a fixed key order (the two kernels' loops start at different points).
 Tests: kernel 976/976, examples 29/29 (both kernels), ui-smoke 447/447, occt-tests 82/82.
+
+## 2026-10-08b (interactive head, 4 Opus subagents, resumed from two WIP branches): the Sketch tab round
+
+- refinement: `UI.afterSketchCommit` / `UI.sketchCommitHooks` and `sketchToolDefs[tool].noOwnSnap` replace the Dynamic Mirror and arc-slot wrappers (Dynamic Mirror for every tool, one undo step); ordinate edits hold the zero; a Text's insertion point is a solver point; Sketch Fillet / Chamfer on every pair (`explodePoly` / `explodeSlot`); slot Overall Length; unit-formatted messages; 7 tool defects fixed while driving the tools. Head: the construct commands commit through the hook with `dynMirror`.
+- completion: Stencil text (bridges), Layers rename = level rename, etch marks on flat drawing views (`showEtch`, ETCH layer in DXF / SVG / PDF), location dimensions as Model Items (`rel.mark`; head: script round trip in relArgs / SBP.rel and the Dimension PM's *Mark for drawing*), marks through Sketched Bends, text along splines / ellipses, DXF TEXT / MTEXT import.
+- polish: SolidWorks 2024 Sketch ribbon (order, flyouts, icons, tooltips with keys), S Shortcut Bar entries, PM renderer (header band, spin fields with units, icons in pick lists, no focus steal, no layout shift), cursors, status bar colours, dark-ground overlays, Levels CSS in style.css (head: injected copy removed), sketch context menu through `UI.sketchMenuItems`. Head: THEME_COLORS sketch / temp / sketchSel, Sketch Fillet PM icon.
+- fidelity: `test-reports/2026-10-08-sketch-fidelity.md`, 14 findings against SolidWorks 2024 (golden flat blank, DXF read-back, script round trip, inference 17/20). Head fixed #1 (blocker: editing one Smart Dimension on a line silently changed the other — `setDim` now holds every sibling driving dimension, not only a slot's); #2–#14 in QUEUE.
+Tests: kernel 986/986, examples 29/29 (both kernels), ui-smoke 473/466, occt-tests 82/82.

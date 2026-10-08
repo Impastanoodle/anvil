@@ -58,6 +58,7 @@
     App.mode = 'part';
     App.activeSketch = null;
     App.sel = null;
+    UI.sketchExitHooks.forEach(function (h) { try { h(f); } catch (e) { /* leaving the sketch goes on */ } });   // sketch-hooks: Dynamic Mirror turns off …
     // a brand-new sketch left empty is discarded, as SolidWorks does
     if (f && App.newSketchId === f.id && !f.entities.length) {
       App.model.features = App.model.features.filter(function (g) { return g !== f; });
@@ -553,11 +554,17 @@
       var s = UI.worldToScreen(K.to3D(pl, q[0], q[1])), d = Math.hypot(s[0] - mx, s[1] - my);
       if (d < (best ? best.d : tolPx)) best = { p: q, d: d, seg: src.seg, arc: src.arc };
     }
+    // rfA: the point lands on the edge rounded as a free point is (x -5, not -4.950000000000003): a level / upright
+    // edge's free coordinate, a slanted edge's distance from its start
+    var h = 0.5 * px * 1.05;
     mc.segs.forEach(function (sg) {
       if (raw[0] < sg.lo[0] - lim || raw[0] > sg.hi[0] + lim || raw[1] < sg.lo[1] - lim || raw[1] > sg.hi[1] + lim) return;
-      var dx = sg.b[0] - sg.a[0], dy = sg.b[1] - sg.a[1], L2 = dx * dx + dy * dy;
-      var t = Math.max(0, Math.min(1, ((raw[0] - sg.a[0]) * dx + (raw[1] - sg.a[1]) * dy) / L2));
-      consider([sg.a[0] + t * dx, sg.a[1] + t * dy], { seg: sg });
+      var dx = sg.b[0] - sg.a[0], dy = sg.b[1] - sg.a[1], L2 = dx * dx + dy * dy, L = Math.sqrt(L2);
+      var t = Math.max(0, Math.min(1, ((raw[0] - sg.a[0]) * dx + (raw[1] - sg.a[1]) * dy) / L2)), q = [sg.a[0] + t * dx, sg.a[1] + t * dy];
+      if (Math.abs(dy) <= 1e-9 * L) q = [Math.max(sg.lo[0], Math.min(sg.hi[0], niceRound(q[0], h))), sg.a[1]];
+      else if (Math.abs(dx) <= 1e-9 * L) q = [sg.a[0], Math.max(sg.lo[1], Math.min(sg.hi[1], niceRound(q[1], h)))];
+      else { var tr = Math.max(0, Math.min(1, niceRound(t * L, h) / L)); q = [sg.a[0] + tr * dx, sg.a[1] + tr * dy]; }
+      consider(q, { seg: sg });
     });
     mc.arcs.forEach(function (ar) {
       var vx = raw[0] - ar.c[0], vy = raw[1] - ar.c[1], r = Math.hypot(vx, vy);
@@ -607,7 +614,14 @@
     function has(list, w) { return list.some(function (c) { return c.pt[0] === w[0] && c.pt[1] === w[1]; }); }
     if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || has(cands, w) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }) || (mc && has(mc.pts, w)); });
     cands.push({ pt: [0, 0], kind: 'origin' });
-    st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
+    // sketch-hooks: the tool's own points are snap and alignment targets unless its definition says this step must not
+    // land on them (UI.sketchToolDefs[tool].noOwnSnap(st) or UI.sketchFreeHooks[tool].noOwnSnap(st): an arc slot's width
+    // click near its third point, an ellipse's minor axis point near its centre)
+    var tdef = UI.sketchToolDefs[App.tool] || UI.sketchFreeHooks[App.tool], ownSnap = !(tdef && tdef.noOwnSnap && tdef.noOwnSnap(st));   // (an ellipse's minor axis point too)
+    if (ownSnap) st.pts.forEach(function (p) { cands.push({ pt: p, kind: 'end' }); });
+    // rfA: … nor on any point sitting where one of them is (an ellipse centred on the origin: its minor axis click near
+    // the centre snapped onto the origin, the centre again, and was refused)
+    else cands = cands.filter(function (c) { return !st.pts.some(function (q) { return Math.abs(q[0] - c.pt[0]) < 1e-9 && Math.abs(q[1] - c.pt[1]) < 1e-9; }); });
     var best = null, bestD = INFER_PX.point;
     cands.forEach(function (c) {
       var s = scr(c.pt), d = Math.hypot(s[0] - mx, s[1] - my);
@@ -712,9 +726,12 @@
     var tol = INFER_PX.align * px, boxTool = App.tool === 'rect' || App.tool === 'crect';
     var ax = null, ay = null;
     var alignC = [];
-    if (prev && !boxTool) alignC.push({ pt: prev, prev: true });
-    st.pts.forEach(function (p) { if (p !== prev && !(boxTool && p === st.pts[0])) alignC.push({ pt: p }); });
-    woken.forEach(function (p) { if (!(boxTool && st.pts[0] && p[0] === st.pts[0][0] && p[1] === st.pts[0][1])) alignC.push({ pt: p }); });
+    if (prev && !boxTool && ownSnap) alignC.push({ pt: prev, prev: true });
+    if (ownSnap) st.pts.forEach(function (p) { if (p !== prev && !(boxTool && p === st.pts[0])) alignC.push({ pt: p }); });
+    // (rfA: a step that must not land on the tool's own points lines up with none of them either: an ellipse's minor
+    // axis point lined up with the major axis end, and the ellipse came out flat)
+    function own(p) { return st.pts.some(function (q) { return q[0] === p[0] && q[1] === p[1]; }); }
+    woken.forEach(function (p) { if (!(boxTool && st.pts[0] && p[0] === st.pts[0][0] && p[1] === st.pts[0][1]) && (ownSnap || !own(p))) alignC.push({ pt: p }); });
     alignC.forEach(function (c) {
       var dx = Math.abs(raw[0] - c.pt[0]), dy = Math.abs(raw[1] - c.pt[1]);
       if (dx < tol && (!ax || dx < ax.d - 1e-9)) ax = { d: dx, c: c };
@@ -1046,18 +1063,44 @@
       }
       case 'slot': {
         if (!c) return [{ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }];
-        var w = 2 * distPointLine(c, a, b);
-        return [{ t: 'slot', x1: a[0], y1: a[1], x2: b[0], y2: b[1], w: cleanLen(Math.max(w, 0.01)) }];
+        var w = cleanLen(Math.max(2 * distPointLine(c, a, b), 0.01)), b2 = slotFarCentre(a, b, w);
+        return [{ t: 'slot', x1: a[0], y1: a[1], x2: b2[0], y2: b2[1], w: w }];
       }
       case 'point': return [{ t: 'point', x: a[0], y: a[1] }];
     }
     return [];
   }
   function cleanLen(x) { return +x.toPrecision(12); }   // a radius rounded as a length stays 12.5, not 12.499999999999998
+  // slot-overall: the Slot PropertyManager's Length option (ui-sketch-curves.js, Center to Center / Overall Length)
+  // decides what a typed L means: with Overall Length the slot is L from cap to cap, so once its width w is known the
+  // far centre comes in to L - w from the first (the clicked direction holds); the typed dimension is the overall one
+  function slotOverall() { return !!(UI.sketchCurveOptions && UI.sketchCurveOptions().overall); }
+  function slotFarCentre(a, b, w) {
+    var st = App.toolState || {}, tl = st.typed && st.typed.len;
+    if (tl == null || !slotOverall()) return b;
+    var ux = b[0] - a[0], uy = b[1] - a[1], L0 = Math.hypot(ux, uy);
+    if (!(L0 > 1e-12) || !(tl - w > 1e-9)) return b;
+    return [cleanLen(a[0] + ux / L0 * (tl - w)), cleanLen(a[1] + uy / L0 * (tl - w))];
+  }
   // p9-sketch-curves: drawing tools defined outside this file (ui-sketch-*.js): UI.sketchToolDefs[tool] = { steps,
   // entities(pts, cur, st), accept(st, p, typed) -> false refuses the click, after(f, firstIndex, count, st), fields(n, st),
   // live(pts, p, st), typed(pts, cur, v, st), readout(pts, p, fmt), refine(info, raw, st, h, grid) }; the helpers they share
   UI.sketchToolDefs = UI.sketchToolDefs || {};
+  // sketch-hooks: what runs once a drawing tool has committed its entities, in the same click (and so the same undo
+  // step): UI.sketchCommitHooks is a list of functions (f, n0, st) — f the sketch, n0 the index of the first entity the
+  // tool added (f.entities.slice(n0) is what it added, with its typed dimensions and relations in place), st the tool
+  // state. placePoint calls UI.afterSketchCommit(f, n0, st) for every tool that commits through it; a tool that adds
+  // its entities itself (Spline, Parallel Line) calls it after they are in, and a UI.sketchFreeHooks tool whose click
+  // added entities without calling it (Text) is committed by placePoint once its click is over. Dynamic Mirror
+  // (ui-sketch-tools.js) mirrors the new entities from here.
+  UI.sketchCommitHooks = UI.sketchCommitHooks || [];
+  UI.sketchExitHooks = UI.sketchExitHooks || [];   // functions (f) run as sketch f is left (exitSketch)
+  var commitSeq = 0;   // how many commits have run (placePoint tells whether a free tool's click made its own)
+  UI.afterSketchCommit = function (f, n0, st) {
+    if (!f || !(n0 < f.entities.length)) return;
+    commitSeq++;
+    UI.sketchCommitHooks.forEach(function (h) { try { h(f, n0, st || App.toolState || { pts: [] }); } catch (e) { console.error('sketch commit hook: ' + (e && e.message)); } });
+  };
   UI.sketchGeom = { tangentArc: tangentArc, threePointArc: threePointArc, smoothDirs: smoothDirs, arcClockwise: arcClockwise, distPointLine: distPointLine, cleanLen: cleanLen, niceRound: niceRound, pxSize: pxSize };
   function distPointLine(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
@@ -1072,6 +1115,16 @@
     switch (App.tool) { case 'arc': case 'arc3': case 'slot': return 3; case 'point': return 1; default: return 2; }
   }
 
+  // rfA: points a tool computes rather than places infer nothing, as SolidWorks infers relations only where points are
+  // placed: the centre of a Tangent / 3 Point Arc, a Perimeter Circle, a 3 Point Arc Slot and the Line tool's tangent arc
+  // (a tangent arc whose centre happened to land on a rectangle edge's midpoint got a Midpoint), an ellipse's other axis
+  // ends. The point refs skipped (SketchSolver.infer opts.skip), or null.
+  var COMPUTED_CENTRE = { tarc: 1, arc3: 1, pcircle: 1, aslot3: 1 };
+  function inferSkip() {
+    if (COMPUTED_CENTRE[App.tool] || (App.tool === 'line' && App.toolState && App.toolState.arcMode)) return { skip: /\.c$/ };
+    if (App.tool === 'ellipse' || App.tool === 'pellipse') return { skip: /\.v[123]$/ };
+    return undefined;
+  }
   function addEntity(e) {
     var f = UI.activeSketchFeature();
     if (!f) return;
@@ -1080,7 +1133,7 @@
     if (UI.sketchLayerNew) UI.sketchLayerNew(f, e);   // sketch-layers: a new entity goes on the current layer
     f.entities.push(e);
     // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …)
-    if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1);
+    if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1, inferSkip());
     App.gridStale = true;
     UI.updateSketches();
     UI.refreshTree();
@@ -1112,12 +1165,20 @@
     // a second click on the point just placed (the first half of a double-click) adds nothing: no zero-length lines
     var lastPt = st.pts[st.pts.length - 1];
     if (lastPt && Math.abs(p[0] - lastPt[0]) < 1e-9 && Math.abs(p[1] - lastPt[1]) < 1e-9) return;
-    if (UI.sketchFreeHooks[App.tool] && UI.sketchFreeHooks[App.tool].click && UI.sketchFreeHooks[App.tool].click(p, st, typed)) return;   // ui-sketch-spline
+    if (UI.sketchFreeHooks[App.tool] && UI.sketchFreeHooks[App.tool].click) {   // ui-sketch-spline, ui-sketch-text
+      var fF = UI.activeSketchFeature(), nF = fF ? fF.entities.length : 0, seqF = commitSeq;
+      if (UI.sketchFreeHooks[App.tool].click(p, st, typed)) {
+        // sketch-hooks: what the click added is committed (Dynamic Mirror) unless the tool did it itself
+        if (fF && commitSeq === seqF && fF.entities.length > nF && UI.activeSketchFeature() === fF) UI.afterSketchCommit(fF, nF, st);
+        return;
+      }
+    }
     // clicking the chain's first point closes the loop and ends the chain (the Line tool stays active)
     if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
       var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
       addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0]);
       if (fc && numericInputOn() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6
+      UI.afterSketchCommit(fc, nc, st);   // sketch-hooks: the closing segment is committed too (Dynamic Mirror)
       cancelTool(true);
       return;
     }
@@ -1145,7 +1206,7 @@
       if (tv0 && e0 && ents.length === 1) {
         if (tv0.r != null && (e0.t === 'circle' || e0.t === 'poly' || (e0.t === 'arc' && App.tool === 'arc'))) e0.r = tv0.r;
         else if (tv0.d != null && e0.t === 'circle') e0.r = tv0.d / 2;
-        if (tv0.w != null && e0.t === 'slot') e0.w = tv0.w;
+        if (tv0.w != null && e0.t === 'slot' && App.tool === 'slot') { e0.w = tv0.w; var fc2 = slotFarCentre([e0.x1, e0.y1], st.pts[1], e0.w); e0.x2 = fc2[0]; e0.y2 = fc2[1]; }   // slot-overall: the exact width sets the far centre (the Centerpoint Straight Slot's own entities do this)
       }
       var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
       var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
@@ -1159,6 +1220,7 @@
       if (f && typedAll && f.entities.length === n0 + 1) typedDims(f, n0, typedAll);
       if (hkP && hkP.after && f) hkP.after(f, n0, st);
       if (f && UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].after) UI.sketchToolDefs[App.tool].after(f, n0, f.entities.length - n0, st);   // p9-sketch-curves: Add dimensions, relations, the tool PM
+      UI.afterSketchCommit(f, n0, st);   // sketch-hooks: the entities are in, with their dimensions and relations
       st.typed = null;
       if (App.tool === 'line' && !(hkP && hkP.single && hkP.single())) {
         var last = st.pts[st.pts.length - 1];
@@ -1207,7 +1269,7 @@
       case 'poly': if (typed.r != null) rad('r'); break;
       // p9-sketch: outside the slot — the length beside its side, the width beyond its first end (both sat inside it,
       // the width's label on the length's line)
-      case 'slot': if (typed.len != null) lin('len', Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); if (typed.w != null) lin('w', -Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); break;
+      case 'slot': if (typed.len != null) lin(slotOverall() ? 'olen' : 'len', Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); if (typed.w != null) lin('w', -Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); break;   // slot-overall
     }
     list.forEach(function (d) {
       f.dims = f.dims || [];
@@ -1556,7 +1618,8 @@
       positionNumBox();
     }
     var readout = drawing && App.toolState.pts.length ? toolReadout(App.toolState.pts, p) : '';
-    $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], 2).padStart(9) + '   Y: ' + UI.fmtNum(p[1], 2).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
+    var cd = UI.unitLabel() === 'in' ? 3 : 2;   // sketch-units: inch coordinates read 3 places, as the dimensions do
+    $('status-coords').textContent = 'X: ' + UI.fmtNum(p[0], cd).padStart(9) + '   Y: ' + UI.fmtNum(p[1], cd).padStart(9) + '  ' + UI.unitLabel() + (readout ? '   ' + readout : '');
     if (!drawing) {
       // pre-highlight what a click would pick (select, Smart Dimension, Add Relations, Trim …), as SolidWorks does
       var own = !!(App.command && App.command.ownHover);   // r13/trim13: Trim highlights the span it would remove itself
@@ -1574,7 +1637,7 @@
       if (hkM && hkM.live) hkM.live(App.toolState.pts, p, App.tempEntities);   // p9-sketchtab: the tool PM's live values
       // yellow inference icons: the relations the entity being drawn would get
       var f = UI.activeSketchFeature();
-      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0]) : [];
+      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], inferSkip()) : [];
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
     if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
@@ -1649,7 +1712,11 @@
         var ta3 = toolEntities(pts, p)[0];
         return ta3 && ta3.t === 'arc' ? 'R ' + n(ta3.r, 2) + '   A ' + n(ta3.a1 - ta3.a0, 1) + '°' : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2);
       }
-      case 'slot': return pts.length < 2 ? 'L ' + n(L, 2) : 'L ' + n(Math.hypot(pts[1][0] - a[0], pts[1][1] - a[1]), 2) + '   W ' + n(2 * distPointLine(p, a, pts[1]), 2);
+      case 'slot': {
+        if (pts.length < 2) return 'L ' + n(L, 2);
+        var sw = 2 * distPointLine(p, a, pts[1]), sb = slotFarCentre(a, pts[1], cleanLen(Math.max(sw, 0.01))), sl = Math.hypot(sb[0] - a[0], sb[1] - a[1]);
+        return 'L ' + n(sl + (slotOverall() ? sw : 0), 2) + '   W ' + n(sw, 2);   // slot-overall: the overall length while the width is picked
+      }
     }
     return '';
   }
@@ -1850,6 +1917,11 @@
     return (n < 0 ? '-' : '') + t.replace(/^0\./, '.');
   }
   UI.fmtDim = fmtDim;
+  // sketch-units: a length in a status bar or toast message: the dimension style plus the document's unit (.250 in,
+  // 6.35 mm). The solver's own messages (a fillet's largest radius, a corner's position) go through SketchSolver.fmtLen.
+  function fmtLen(n) { return fmtDim(n) + ' ' + UI.unitLabel(); }
+  UI.fmtLen = fmtLen;
+  if (window.SketchSolver) SketchSolver.fmtLen = fmtLen;
 
   // driven dimensions shown automatically for an entity that has no placed dimension of the same kind
   function autoDims(e, i, placed) {
@@ -2501,6 +2573,9 @@
     var previewed = restoreDimPreview(true);
     dimEditing = null;
     dimEdit.hidden = true;
+    // rfA: the hidden box gives the keyboard back (it kept the focus: Esc no longer put Smart Dimension down, and the
+    // tool shortcuts went nowhere until the next click)
+    if (document.activeElement === dimInput) dimInput.blur();
     if (r && r.error != null) UI.setStatus('Dimension not changed: ' + r.error);
     dimEditError('');
     var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && (ed.rel != null ? f.rels && f.rels[ed.rel] : f.entities[ed.d.e]);
@@ -2703,6 +2778,15 @@
 
   // Click-drag sketching, as in SolidWorks: with a drawing tool, pressing and dragging draws (the press is the first
   // point, the release the next one) instead of rotating the view; a dragged single line does not start a chain.
+  // sketch-text-ref: a Sketch Text that stands on its own is a point to the solver (its insertion point): pressed on its
+  // letters with the Select tool it is dragged as a point is (ui-relations.js: the solver holds its relations, the
+  // insertion point snaps onto sketch points and curves and gets the Coincident); text along a curve is placed by the
+  // curve and keeps the Sketch Text drag (ui-sketch-text.js)
+  function freeTextDrag(p) {
+    if (App.mode !== 'sketch' || App.tool !== 'select' || App.command || !UI.sketchPointDragHook) return null;
+    var f = UI.activeSketchFeature(), hit = f ? UI.pickEntity(p[0], p[1]) : null, e = hit && f.entities[hit.index];
+    return e && e.t === 'text' && !e.path ? UI.sketchPointDragHook(p, null, String(hit.index)) : null;
+  }
   function sketchDrawHook(p) {
     if (App.mode !== 'sketch' || App.tool === 'select' || App.tool === 'dimension' || (App.command && (App.command.onSketchPoint || App.command.onPick))) return null;
     var fresh = !App.toolState.pts.length;
@@ -2739,7 +2823,7 @@
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
     // (r13/trim13: a sketch command may take the drag itself, as Power trim does)
     var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && App.command && App.command.onSketchDrag && !App.zoomAreaMode ? App.command.onSketchDrag(p, ev) : null) ||
-      (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
+      freeTextDrag(p) || (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
     // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
     if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }
@@ -2791,9 +2875,9 @@
       if (UI.isAssembly && UI.isAssembly()) txt += '  Component: ' + UI.bodyName(f.body || 0);
       else if (UI.bodyCount && UI.bodyCount() > 1) txt += '  Body: ' + UI.bodyName(f.body || 0);
       $('status-coords').textContent = txt;
-    } else if (hover && hover.kind === 'edge') $('status-coords').textContent = 'Edge  length ' + UI.fmtNum(hover.edge.len, 2) + ' ' + UI.unitLabel() + (hover.edge.convex ? '' : '  (concave)');
+    } else if (hover && hover.kind === 'edge') $('status-coords').textContent = 'Edge  length ' + fmtLen(hover.edge.len) + (hover.edge.convex ? '' : '  (concave)');
     else if (hover && hover.kind === 'plane') $('status-coords').textContent = hover.name;
-    else if (hover && hover.kind === 'vertex') $('status-coords').textContent = 'Vertex  ' + hover.point.map(function (x) { return UI.fmtNum(x, 2); }).join(', ') + ' ' + UI.unitLabel();
+    else if (hover && hover.kind === 'vertex') $('status-coords').textContent = 'Vertex  ' + hover.point.map(fmtDim).join(', ') + ' ' + UI.unitLabel();
     else if (hover && hover.kind === 'body') $('status-coords').textContent = (UI.isAssembly && UI.isAssembly() ? 'Component: ' : 'Body: ') + UI.bodyName(hover.index);
     else $('status-coords').textContent = '';
   });

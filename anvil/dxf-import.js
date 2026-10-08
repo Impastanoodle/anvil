@@ -6,7 +6,10 @@
 //     partial), POINT and INSERT of BLOCKS (exploded with base point, scale, rotation and MINSERT arrays; nested), in R12
 //     and R2000+ layouts, in model space only (paper space is skipped with a warning). $INSUNITS (1 in, 4 mm; feet, cm and
 //     m are converted) with $MEASUREMENT as the fallback. Entities in an object coordinate system (210/220/230; 0,0,-1
-//     mirrors X) are mapped to the drawing's XY. TEXT / MTEXT, HATCH, DIMENSION … are counted in the warnings.
+//     mirrors X) are mapped to the drawing's XY. TEXT, MTEXT and visible ATTRIBs become Sketch Text (Etch: single-
+//     stroke marking, on their layer) with the file's height, rotation, width factor and alignment (TEXT's 72 / 73
+//     justification, MTEXT's attachment point); DIMENSION and HATCH (and ATTDEF) are skipped quietly: counted in
+//     `skipped` / `skippedNote` for the import message, not in the warnings; other entities are counted in the warnings.
 //   DxfImport.check(entities, tol) -> issues (Check Sketch for Feature): open endpoints, gaps (with their size),
 //     endpoints shared by three or more entities, zero-length and tiny entities, duplicate / overlapping entities,
 //     crossings and endpoints touching the middle of another entity. issues.summary is the one-line summary.
@@ -265,8 +268,10 @@ var DxfImport = (function () {
   // ------------------------------------------------------------------ parse
   var UNITS = { 1: ['in', 1], 2: ['in', 12], 4: ['mm', 1], 5: ['mm', 10], 6: ['mm', 1000], 8: ['in', 1e-6], 9: ['in', 1e-3], 10: ['in', 36], 13: ['mm', 1e-3], 14: ['mm', 100] };
   var UNIT_NAMES = { 2: 'feet', 5: 'centimetres', 6: 'metres', 8: 'microinches', 9: 'mils', 10: 'yards', 13: 'microns', 14: 'decimetres' };
-  var TEXT_TYPES = { TEXT: 1, MTEXT: 1, ATTRIB: 1, ATTDEF: 1 };
+  var TEXT_TYPES = { TEXT: 1, MTEXT: 1, ATTRIB: 1 };
   var QUIET = { VERTEX: 1, SEQEND: 1, VIEWPORT: 1 };
+  // skipped without a warning, counted for the import message: a drawing's annotation, not geometry to cut
+  var SKIP_QUIET = { DIMENSION: 'dimension', HATCH: 'hatch', ATTDEF: 'attribute definition' };
   // layers whose lines are not part of the outline: Anvil's own construction and bend-line layers
   var CONSTRUCTION_LAYER = /^(CONSTRUCTION|BEND)$/i;
   function parse(text, opts) {
@@ -301,7 +306,7 @@ var DxfImport = (function () {
       if (r.type === 'ENDBLK') { blk = null; return; }
       if (blk) blk.ents.push(r);
     });
-    var ctx = { out: [], skipped: {}, text: 0, paper: 0, tilted: 0, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
+    var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
       curveTol: opts.curveTol || (units === 'in' ? 1e-4 : units === 'mm' ? 2.5e-3 : 0) };
     var top = records(sec.ENTITIES || []);
     top.forEach(function (r) {
@@ -318,7 +323,7 @@ var DxfImport = (function () {
       if (CONSTRUCTION_LAYER.test(e.layer) && e.t !== 'point') e.construction = true;
     });
     var layers = layerOrder.filter(function (n) { return counts[n]; }).map(function (n) { return { name: n, color: layerColor[n] == null ? 7 : layerColor[n], count: counts[n] }; });
-    if (ctx.text) warnings.push('Skipped ' + ctx.text + ' text entit' + (ctx.text === 1 ? 'y' : 'ies') + ' (TEXT / MTEXT are not imported).');
+    if (ctx.text) warnings.push('Skipped ' + ctx.text + ' text entit' + (ctx.text === 1 ? 'y' : 'ies') + ' (empty, or with no height).');
     var sk = Object.keys(ctx.skipped);
     if (sk.length) warnings.push('Skipped ' + sk.map(function (k) { return ctx.skipped[k] + ' ' + k; }).join(', ') + '.');
     if (ctx.paper) warnings.push('Skipped ' + ctx.paper + ' entit' + (ctx.paper === 1 ? 'y' : 'ies') + ' in paper space (only model space is imported).');
@@ -330,7 +335,95 @@ var DxfImport = (function () {
     var miss = Object.keys(ctx.missing);
     if (miss.length) warnings.push('Missing block' + (miss.length === 1 ? '' : 's') + ': ' + miss.join(', ') + '.');
     if (ctx.deep) warnings.push('Blocks nested deeper than 16 levels were not exploded.');
-    return { units: units, layers: layers, entities: out, warnings: warnings };
+    // the quiet ones, for the import message: "2 dimensions and 1 hatch skipped"
+    var qk = Object.keys(SKIP_QUIET).filter(function (k) { return ctx.quiet[k]; }), parts = qk.map(function (k) { return ctx.quiet[k] + ' ' + SKIP_QUIET[k] + (ctx.quiet[k] === 1 ? '' : (SKIP_QUIET[k] === 'hatch' ? 'es' : 's')); });
+    var note = parts.length ? (parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0]) + ' skipped' : '';
+    var nText = out.filter(function (e) { return e.t === 'text'; }).length;
+    return { units: units, layers: layers, entities: out, warnings: warnings, skipped: ctx.quiet, skippedNote: note, texts: nText };
+  }
+  // ------------------------------------------------------------------ text (TEXT, MTEXT, ATTRIB -> Sketch Text)
+  // DXF text to plain characters: %%c %%d %%p (Ø ° ±), %%% (%), %%nnn (a character code), \U+xxxx; %%u / %%o (underline
+  // / overline toggles) dropped
+  function plainDxfText(s) {
+    return String(s == null ? '' : s).replace(/\\U\+([0-9A-Fa-f]{4})/g, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
+      .replace(/%%([cCdDpP%]|[uUoOkK]|\d{3})/g, function (m, c) {
+        var u = c.toUpperCase();
+        if (u === 'C') return 'Ø';
+        if (u === 'D') return '°';
+        if (u === 'P') return '±';
+        if (u === '%') return '%';
+        if (/^\d{3}$/.test(c)) return String.fromCharCode(parseInt(c, 10));
+        return '';
+      });
+  }
+  // MTEXT's string (its 3 chunks, then 1) without the formatting codes: \P (new paragraph) a new line, \~ a space,
+  // \S a^b; / a/b; a stacked fraction a/b, the font / height / colour / width / tracking … codes and the braces gone
+  function mtextString(r) {
+    var s = '';
+    r.g.forEach(function (p) { if (p[0] === 3) s += p[1]; });
+    r.g.forEach(function (p) { if (p[0] === 1) s += p[1]; });
+    s = s.replace(/\\\\/g, '\u0001').replace(/\\\{/g, '\u0002').replace(/\\\}/g, '\u0003');
+    s = s.replace(/\\[Pp]/g, '\n').replace(/\\~/g, ' ').replace(/\\S([^;]*);/g, function (m, f) { return f.replace(/[\^#]/g, '/'); })
+      .replace(/\\[ACcFfHhQqTtWwp][^;\\]*;/g, '').replace(/\\[LlOoKkNX]/g, '').replace(/[{}]/g, '');
+    return plainDxfText(s.replace(/\u0001/g, '\\').replace(/\u0002/g, '{').replace(/\u0003/g, '}'));
+  }
+  // textEntity(r, M) -> a Sketch Text entity { t: 'text', x, y, str, h, rot, align, valign, widthFactor, lineSpacing,
+  // mirror, flipV } for a TEXT / ATTRIB / MTEXT record through the map M, or null (empty, no height). TEXT: the first
+  // alignment point (10) when left / baseline, else the second (11) with the justification 72 (0 left, 1 center, 2
+  // right, 3 aligned, 4 middle, 5 fit) and 73 (74 for ATTRIB: 0 baseline, 1 bottom, 2 middle, 3 top; bottom is taken
+  // as the baseline), rotation 50 (degrees), width factor 41, generation flags 71 (2 mirrored in X, 4 upside down);
+  // Aligned / Fit run the text from the first point to the second (Fit by its width factor, Aligned by its height).
+  // MTEXT: insertion point 10, attachment point 71 (1–9: top / middle / bottom × left / centre / right; bottom puts the
+  // last line's baseline on the point), its direction 11 / 21 (else rotation 50, radians), line spacing factor 44
+  // (× 5/3 of the height, AutoCAD's single spacing).
+  function textEntity(r, M, ctx) {
+    var mt = r.type === 'MTEXT', s = mt ? mtextString(r) : plainDxfText(str(r, 1, '')), h = num(r, 40, 0);
+    s = s.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+    if (!s.replace(/\s+/g, '') || !(h > 0)) return null;
+    var p, rot, wf = num(r, 41, 1) > 0 && !mt ? num(r, 41, 1) : 1, align = 'left', valign = 'baseline', mir = false, up = false, ls = null, Mt = M;
+    if (mt) {
+      var at = Math.max(1, Math.min(9, num(r, 71, 1) | 0)), col = (at - 1) % 3, row = Math.floor((at - 1) / 3);
+      align = ['left', 'center', 'right'][col]; valign = ['top', 'middle', 'baseline'][row];
+      p = [num(r, 10, 0), num(r, 20, 0)];
+      var xd = [num(r, 11, 0), num(r, 21, 0)];
+      rot = xd[0] || xd[1] ? Math.atan2(xd[1], xd[0]) : num(r, 50, 0);
+      ls = 5 / 3 * (num(r, 44, 1) > 0 ? num(r, 44, 1) : 1);
+      var nl = s.split('\n').length;
+      if (row === 2 && nl > 1) { var sh = (nl - 1) * ls * h; p = [p[0] - Math.sin(rot) * sh, p[1] + Math.cos(rot) * sh]; }
+      if (row === 1 && nl > 1) valign = 'middle';
+    } else {
+      Mt = mul(M, ocs(r, num(r, 30, 0), ctx));
+      var hj = num(r, 72, 0) | 0, vj = num(r, r.type === 'ATTRIB' ? 74 : 73, 0) | 0, gen = num(r, 71, 0) | 0;
+      var p1 = [num(r, 10, 0), num(r, 20, 0)], p2 = [num(r, 11, NaN), num(r, 21, NaN)], has2 = isFinite(p2[0]) && isFinite(p2[1]);
+      rot = num(r, 50, 0) * D2R;
+      mir = !!(gen & 2); up = !!(gen & 4);
+      if ((hj === 3 || hj === 5) && has2 && dist(p1, p2) > 1e-12) {
+        p = p1; rot = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
+        var Sf = typeof SketchFont !== 'undefined' ? SketchFont : null, w0 = Sf ? Sf.layout(s.split('\n')[0], { height: h, widthFactor: wf }).width : 0;
+        if (w0 > 0) { var kf = dist(p1, p2) / w0; if (hj === 5) wf *= kf; else h *= kf; }
+      } else if (hj === 0 && vj === 0) p = p1;
+      else {
+        p = has2 ? p2 : p1;
+        align = hj === 1 || hj === 4 ? 'center' : hj === 2 ? 'right' : 'left';
+        valign = hj === 4 || vj === 2 ? 'middle' : vj === 3 ? 'top' : 'baseline';
+      }
+    }
+    // through the map: the point, the direction of the baseline and of "up" (their lengths scale the width and height)
+    var P = ap(Mt, p[0], p[1]), dx = apv(Mt, Math.cos(rot), Math.sin(rot)), dy = apv(Mt, -Math.sin(rot), Math.cos(rot));
+    var lx = hyp(dx[0], dx[1]), ly = hyp(dy[0], dy[1]);
+    if (!(lx > 0) || !(ly > 0)) return null;
+    if (dx[0] * dy[1] - dx[1] * dy[0] < 0) mir = !mir;   // a mirrored insertion mirrors the letters
+    var e = { t: 'text', x: P[0], y: P[1], str: s, h: h * ly };
+    var deg = normDeg(Math.round(Math.atan2(dx[1], dx[0]) * R2D * 1e9) / 1e9);   // (a 30° rotation stays 30, not 29.999999999999993)
+    if (deg > 1e-9) e.rot = deg;
+    if (align !== 'left') e.align = align;
+    if (valign !== 'baseline') e.valign = valign;
+    var wfx = wf * lx / ly;
+    if (Math.abs(wfx - 1) > 1e-9) e.widthFactor = wfx;
+    if (ls != null && Math.abs(ls - 1.6) > 1e-9) e.lineSpacing = ls;
+    if (mir) e.mirror = true;
+    if (up) e.flipV = true;
+    return e;
   }
   // one record into ctx.out, through the map M (block insertions); layer: the INSERT's layer for entities on layer 0
   function emit(r, M, insLayer, depth, ctx, blocks) {
@@ -392,11 +485,13 @@ var DxfImport = (function () {
           var Mb = mul(Mo2, mul([cs, sn, -sn, cs, num(r, 10, 0), num(r, 20, 0)], mul([1, 0, 0, 1, ci * csp, ri * rsp], [sx, 0, 0, sy, -sx * b.base[0], -sy * b.base[1]])));
           b.ents.forEach(function (be) { if (num(be, 67, 0) !== 1) emit(be, Mb, layer, depth + 1, ctx, blocks); });
         }
-        if (r.attribs) ctx.text += r.attribs.length;
+        // its attributes (part numbers, revisions …) stand where the INSERT puts them already: through M only
+        (r.attribs || []).forEach(function (at) { if (!(num(at, 70, 0) & 1)) emit(at, M, layer, depth, ctx, blocks); });
         return;
       }
     }
-    if (TEXT_TYPES[r.type]) { ctx.text++; return; }
+    if (TEXT_TYPES[r.type]) { var te = textEntity(r, M, ctx); if (te) add(te); else ctx.text++; return; }
+    if (SKIP_QUIET[r.type]) { ctx.quiet[r.type] = (ctx.quiet[r.type] || 0) + 1; return; }
     if (!QUIET[r.type]) ctx.skipped[r.type] = (ctx.skipped[r.type] || 0) + 1;
 
     function poly(vs, closed, Mp) {
@@ -487,6 +582,10 @@ var DxfImport = (function () {
           e.pts = e.pts.map(function (p) { return P(p[0], p[1]); });
           if (e.tans) e.tans = e.tans.map(function (t) { return t ? [(+t[0] || 0) + rot, t[1]] : t; });
           break;
+        case 'text':   // its insertion point moves, its height scales, it turns
+          q = P(e.x, e.y); e.x = q[0]; e.y = q[1]; e.h *= Math.abs(s);
+          if (rot) { e.rot = normDeg((+e.rot || 0) + rot); if (!e.rot) delete e.rot; }
+          break;
       }
       return e;
     });
@@ -531,7 +630,7 @@ var DxfImport = (function () {
     }
     return [];
   }
-  function geomEntity(e) { return !!e && !e.construction && e.t !== 'point'; }
+  function geomEntity(e) { return !!e && !e.construction && e.t !== 'point' && e.t !== 'text'; }   // (text is marking: no ends, never repaired)
   function entLength(e) {
     switch (e.t) {
       case 'line': return hyp(e.x2 - e.x1, e.y2 - e.y1);

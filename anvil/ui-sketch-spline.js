@@ -53,6 +53,7 @@
     UI.addEntity(e);   // the undo step, the Centerline / For construction flag and the inferred Coincidents
     App.tempEntities = []; UI.updateTemp();
     madeEntity('spline', f.entities.length - 1);
+    if (UI.afterSketchCommit) UI.afterSketchCommit(f, f.entities.length - 1, App.toolState);   // sketch-hooks: Dynamic Mirror
     UI.setStatus('Spline' + (f.entities.length) + ' added: ' + pts.length + ' points' + (closed ? ', closed' : '') + '. Click to start another spline, or press Esc.');
   }
   UI.sketchFreeHooks.spline = {
@@ -121,9 +122,10 @@
   }
   function watchMade(tool) {
     var f = UI.activeSketchFeature(), n0 = f ? f.entities.length : 0;
+    // (the one this click made is at n0: Dynamic Mirror may have added its mirror image after it)
     setTimeout(function () {
-      var e = f && f.entities[f.entities.length - 1];
-      if (f && f.entities.length > n0 && e && (e.t === tool || (tool === 'pellipse' && e.t === 'pellipse'))) madeEntity(tool, f.entities.length - 1);
+      var e = f && f.entities[n0];
+      if (f && f.entities.length > n0 && e && e.t === tool) madeEntity(tool, n0);
     }, 0);
   }
   UI.sketchFreeHooks.ellipse = {
@@ -133,6 +135,9 @@
       return e ? [tidyEllipse(normalizeEllipse(e))] : [];
     },
     click: function (p, st) { if (st.pts.length === 2) watchMade('ellipse'); return false; },
+    // rfA: the minor axis point is a distance from the major axis: a click near the centre (a narrow ellipse) is taken
+    // where it is, not pulled onto the centre (and refused as a point already placed)
+    noOwnSnap: function (st) { return st.pts.length >= 2; },
     readout: function (pts, p, n) {
       var e = ellipseFrom(pts[0], pts[1] || p, pts[1] ? p : null);
       if (!e) return '';
@@ -156,6 +161,7 @@
       var pe = { t: 'pellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, rot: e.rot, a0: clean(a0 / D2R), a1: clean(a1 / D2R) };
       return [tidyEllipse(normalizeEllipse(pe))];
     },
+    noOwnSnap: function (st) { return st.pts.length >= 2; },   // rfA: the minor axis and end points (as the Ellipse's)
     click: function (p, st) {
       // the end point on the start point (no sweep yet) would make no arc
       if (st.pts.length === 3 && !(Math.abs(st.pelSweep || 0) > 1e-6)) { UI.setStatus('Move round the ellipse from the start point, then click the end point.'); return true; }
@@ -198,7 +204,9 @@
     else if (made) { var ef = ellipseFields(made.e); groups.push({ title: 'Parameters', fields: ef }); ellipseValues(made.e, values); }
     else groups.push({ title: 'Parameters', fields: [{ type: 'static', label: '', value: tool === 'spline' ? 'Place the first point.' : 'Click the center.' }] });
     UI.openPM({
-      title: tool === 'spline' ? 'Spline' : 'Ellipse', icon: tool, values: values, _skTool: tool, keepSelection: true, noFocus: true,
+      // sketchTool (rfA): the PM closes when the tool is put down (Esc), as Insert Line's does; it stayed open over the
+      // Select tool
+      title: tool === 'spline' ? 'Spline' : 'Ellipse', icon: tool, values: values, _skTool: tool, sketchTool: tool, keepSelection: true, noFocus: true,
       message: HINTS[tool],
       groups: groups,
       onChange: function (v, key) {

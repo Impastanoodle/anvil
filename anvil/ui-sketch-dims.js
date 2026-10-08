@@ -53,6 +53,8 @@
   // way (d.show), precision (d.prec), tolerance (d.tol: { type: none | basic | bilateral | limit | symmetric | min | max,
   // plus, minus }) and the text before / after the value (d.prefix, d.suffix: "2X ", " TYP"). A driven dimension's
   // parentheses are added by the caller.
+  // rfA: a length's unit after its value in a status message (' in', ' mm'; an angle has its degree sign already)
+  function unitAfter(kind) { return kind === 'angle' ? '' : ' ' + UI.unitLabel(); }
   function dimLabelText(d, value, kind) {
     if (value == null || !isFinite(value)) return '';
     d = d || {};
@@ -142,7 +144,7 @@
     var r = info.kind === 'rel' ? S.setRelValue(f, info.index, v) : S.setDim(f, info.index, v);
     refresh();
     if (!r.ok) UI.setStatus('Dimension not changed: ' + r.error);
-    else UI.setStatus('Dimension ' + fullName(f, info.d) + ' set to ' + dimLabelText(info.d, v, info.kindText) + '.');
+    else UI.setStatus('Dimension ' + fullName(f, info.d) + ' set to ' + dimLabelText(info.d, v, info.kindText) + unitAfter(info.kindText) + '.');   // rfA: with the unit
     return r;
   }
   // Reverse the sense of the dimension (SolidWorks' Modify box button): the free geometry goes to the other side of
@@ -288,6 +290,7 @@
       v.name = fullName(f, d);
       v.value = +(+it.shown).toPrecision(12);
       v.driven = !!d.driven;
+      v.mark = d.mark != null ? !!d.mark : !d.driven;   // rfB: marked for drawing (Model Items); off by default for a driven one
       v.tolType = d.tol && d.tol.type ? d.tol.type : 'none';
       v.plus = d.tol && d.tol.plus != null ? d.tol.plus : 0;
       v.minus = d.tol && d.tol.minus != null ? d.tol.minus : 0;
@@ -314,6 +317,7 @@
           { type: 'text', key: 'name', label: 'Name' },
           { type: 'number', key: 'value', label: info.kind === 'rel' && d.type === 'angle' ? 'Angle' : 'Value', unit: unit },
           { type: 'check', key: 'driven', label: 'Driven (reference dimension)' },
+          { type: 'check', key: 'mark', label: 'Mark for drawing' },
           { type: 'buttons', buttons: [{ label: 'Reverse direction', onclick: function () { var r = reverseSense({ d: d }); if (!r.ok) UI.toast(r.error); rerender(); } }] }
         ] },
         { title: 'Dimension Text', fields: [
@@ -371,6 +375,9 @@
       } else if (key === 'tolType' || key === 'plus' || key === 'minus') {
         if (v.tolType === 'none') delete d.tol;
         else d.tol = { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) };
+      } else if (key === 'mark') {
+        // the default (on for a driving dimension, off for a driven one) is not stored
+        if (!!v.mark === !d.driven) delete d.mark; else d.mark = !!v.mark;
       } else if (key === 'prec') {
         if (v.prec === 'auto') delete d.prec; else d.prec = +v.prec;
       } else if (key === 'prefix' || key === 'suffix') {
@@ -662,7 +669,7 @@
     }
     function rowKey(x) { return (x.dim ? 'd' : 'r') + x.i; }
     function selKey() { return App.sel && App.sel.kind === 'rel' ? 'r' + App.sel.index : App.sel && App.sel.kind === 'dim' ? 'd' + App.sel.index : ''; }
-    function dimText(x) { var e = f.entities[x.dim.e], val = e ? K.dimValue(e, x.dim) : null; return 'Dimension ' + fullName(f, x.dim) + ' ' + (val != null ? UI.fmtNum(val, 3) : '') + ' on ' + S.refName(f, String(x.dim.e)); }
+    function dimText(x) { var e = f.entities[x.dim.e], val = e ? K.dimValue(e, x.dim) : null; return 'Dimension ' + fullName(f, x.dim) + ' ' + (val != null ? fmtVal(val, x.dim.prec, false) : '') + ' on ' + S.refName(f, String(x.dim.e)); }   // sketch-units
     function selectRow(row) {
       var key = row.getAttribute('data-key');
       App.sel = { kind: key.charAt(0) === 'd' ? 'dim' : 'rel', index: +key.slice(1) };
@@ -1076,7 +1083,7 @@
         st.n++;
         refresh();
         var rel = f.rels[r.index];
-        UI.setStatus('Ordinate dimension ' + dimLabelText(rel, rel.v, 'len') + (r.driven ? ' added as driven (it would over-define the sketch).' : ' added.'));
+        UI.setStatus('Ordinate dimension ' + dimLabelText(rel, rel.v, 'len') + unitAfter('len') + (r.driven ? ' added as driven (it would over-define the sketch).' : ' added.'));   // rfA: with the unit
       }
       App.dimsStale = true;
       render();

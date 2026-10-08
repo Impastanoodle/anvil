@@ -148,6 +148,19 @@
         var A = toSheet(bnd.a), B = toSheet(bnd.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, e = BEND_EXT * k;
         prims.push({ k: 'line', a: [A[0] - dx / L * e, A[1] - dy / L * e], b: [B[0] + dx / L * e, B[1] + dy / L * e], layer: bnd.up ? 'BEND_UP' : 'BEND_DOWN', style: bnd.up ? 'bendup' : 'benddown', view: v.id, bend: bnd.i });
       });
+      // the flat's etch marks (Etch text, ETCH-layer lines: flat.etch) as thin green lines on layer ETCH, unless the
+      // view's Show etch marks is off (v.showEtch false); a laser marks them, so they go to DXF / DWG on ETCH too
+      if (fd && v.showEtch !== false) (fd.etch || []).forEach(function (it) {
+        var E = { layer: 'ETCH', style: 'etch', color: 'etch', view: v.id, etch: true };
+        function add(p) { Object.keys(E).forEach(function (q) { p[q] = E[q]; }); prims.push(p); }
+        if (it.t === 'line') add({ k: 'line', a: toSheet(it.a), b: toSheet(it.b) });
+        else if (it.t === 'circle') add({ k: 'circle', c: toSheet(it.c), r: it.r * s });
+        else if (it.t === 'arc') add({ k: 'arc', c: toSheet(it.c), r: it.r * s, a0: it.a0, a1: it.a1 });
+        else if (it.t === 'poly' && it.pts && it.pts.length > 1) {
+          var Pq = it.pts.map(toSheet), np = it.closed ? Pq.length : Pq.length - 1;
+          for (var qi = 0; qi < np; qi++) add({ k: 'line', a: Pq[qi], b: Pq[(qi + 1) % Pq.length] });
+        }
+      });
       // a view still being worked out (lazy compute): a placeholder over the paper it will take (svgParts, live only)
       if (pr.pending) prims.push({ k: 'pending', box: box, layer: layer });
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
@@ -882,15 +895,16 @@
   // dimension, leader and balloon arrowheads: 3 mm long, 1 mm wide (ASME Y14.2, SolidWorks' ANSI default 1 × 3 mm;
   // half-width 0.5), r12/drawui12 (were 1.8 mm wide). Section-view arrows keep their own, bolder size.
   var ARROW_W = 0.5;
-  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25, bendup: 0.25, benddown: 0.25 };
+  var STROKE = { visible: 0.5, hidden: 0.35, thin: 0.25, thick: 0.7, hatch: 0.18, chain: 0.7, center: 0.25, tangent: 0.35, tanfont: 0.25, bendup: 0.25, benddown: 0.25, etch: 0.25 };
   var CENTER_DASH = [6, 1.5, 1.5, 1.5];   // centre marks and centrelines: long dash, short dash (paper mm)
   // plainText(s): text for writers without the ASME symbol glyphs (DXF R12, PDF Helvetica): ↧ 10 -> X 10 DEEP,
   // ⌴ -> CBORE, ⌵ -> CSK (the words the symbols replaced)
   function plainText(t) {
     return String(t).replace(/\u21a7\s*([^\s,]+)/g, 'X $1 DEEP').replace(/\u2334\s*/g, 'CBORE ').replace(/\u2335\s*/g, 'CSK ');
   }
-  // SolidWorks draws dangling annotations (their model reference is gone) in olive brown
-  var COLORS = { dangling: '#a07c00' }, DXF_COLORS = { dangling: 42 }, PDF_COLORS = { dangling: '0.627 0.486 0' };
+  // SolidWorks draws dangling annotations (their model reference is gone) in olive brown; a flat pattern's etch marks
+  // are green, as the sketches' ETCH layer (ACI 3)
+  var COLORS = { dangling: '#a07c00', etch: '#1e9e3c' }, DXF_COLORS = { dangling: 42, etch: 3 }, PDF_COLORS = { dangling: '0.627 0.486 0', etch: '0.118 0.62 0.235' };
   // a CCW arc (degrees) as start / end points
   function arcEnds(p) {
     var a0 = p.a0 * Math.PI / 180, a1 = p.a1 * Math.PI / 180;
@@ -1013,7 +1027,7 @@
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     pr(0, 'SECTION'); pr(2, 'HEADER');
     pr(9, '$ACADVER'); pr(1, 'AC1009');
     pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);

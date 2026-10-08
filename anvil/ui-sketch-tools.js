@@ -74,7 +74,7 @@
     if (Math.hypot(o[0] - mx, o[1] - my) < bd) best = [0, 0];
     return best ? best.slice() : uv.slice();
   }
-  function fmtPt(p) { return '(' + UI.fmtNum(p[0], 3) + ', ' + UI.fmtNum(p[1], 3) + ')'; }
+  function fmtPt(p) { return '(' + UI.fmtDim(p[0]) + ', ' + UI.fmtDim(p[1]) + ')'; }   // sketch-units: the document's dimension style
 
   // ------------------------------------------------------------------ Sketch Fillet / Sketch Chamfer
   // SolidWorks: Sketch tab ▸ Sketch Fillet (flyout: Sketch Chamfer). Pick a vertex (a corner where two lines / arcs
@@ -97,9 +97,55 @@
       if (first != null && first > i) first += shift;
       if (picked && picked.i > i) picked.i += shift;
     }
+    // sketch-fillet2: what each tool takes as it is (lines; a fillet: arcs, circles and open splines too) and what is made
+    // into lines (and arcs) first, as SolidWorks draws it: a rectangle, a polygon, a straight slot
+    function direct(e) { return !!e && (e.t === 'line' || (!chamfer && (e.t === 'arc' || e.t === 'circle' || (e.t === 'spline' && !e.closed && e.pts.length > 1)))); }
+    function explodable(e) { return !!e && (e.t === 'rect' || e.t === 'crect' || e.t === 'poly' || e.t === 'slot'); }
+    // entity i made into its lines (and arcs): the indices of the block it became (later indices shift)
+    function explodeBlock(i) {
+      var e = f.entities[i], n0 = f.entities.length;
+      if (e.t === 'rect' || e.t === 'crect') S.explodeRect(f, i); else if (e.t === 'poly') S.explodePoly(f, i); else if (e.t === 'slot') S.explodeSlot(f, i); else return null;
+      var shift = f.entities.length - n0, out = [];
+      for (var k = i; k <= i + shift; k++) out.push(k);
+      if (first != null && first > i) first += shift;
+      return { list: out, shift: shift };
+    }
+    function distTo(e, uv) {
+      var best = Infinity;
+      K.entityPolylines(e).forEach(function (l) {
+        var pts = l.closed && l.pts.length ? l.pts.concat([l.pts[0]]) : l.pts;
+        for (var k = 0; k + 1 < pts.length; k++) {
+          var a = pts[k], b = pts[k + 1], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 > 0 ? Math.max(0, Math.min(1, ((uv[0] - a[0]) * dx + (uv[1] - a[1]) * dy) / L2)) : 0;
+          best = Math.min(best, Math.hypot(uv[0] - a[0] - t * dx, uv[1] - a[1] - t * dy));
+        }
+      });
+      return best;
+    }
+    // the curve of a block the tool takes that lies nearest uv (not its construction geometry), other than `not`
+    function nearestIn(list, uv, not) {
+      var best = null, bd = Infinity;
+      list.forEach(function (k) { var e = f.entities[k]; if (k === not || !direct(e) || e.construction) return; var d = distTo(e, uv); if (d < bd) { bd = d; best = k; } });
+      return best;
+    }
+    // two picks { i, uvi, j, uvj }: a rectangle, polygon or slot picked is made into lines first and the line (or arc)
+    // picked in it is taken; null when that leaves nothing the tool takes
+    function resolvePicks(spec) {
+      var i = spec.i, j = spec.j;
+      if (i === j) {
+        var b0 = explodable(f.entities[i]) ? explodeBlock(i) : null;
+        if (!b0) return null;
+        var a0 = nearestIn(b0.list, spec.uvi), c0 = nearestIn(b0.list, spec.uvj, a0);
+        return a0 != null && c0 != null ? { i: a0, uvi: spec.uvi, j: c0, uvj: spec.uvj } : null;
+      }
+      if (explodable(f.entities[i])) { var bi = explodeBlock(i); if (j > i) j += bi.shift; i = nearestIn(bi.list, spec.uvi); if (i == null) return null; }
+      if (explodable(f.entities[j])) { var bj = explodeBlock(j); if (i > j) i += bj.shift; j = nearestIn(bj.list, spec.uvj); if (j == null) return null; }
+      return { i: i, uvi: spec.uvi, j: j, uvj: spec.uvj };
+    }
     function make(spec) {
       return step(function () {
         if (spec.rect != null) { explode(spec.rect); var c = S.curveCorner(f, spec.at, 1e-6 * Math.max(1, Math.abs(spec.at[0]), Math.abs(spec.at[1]))); if (!c) return { ok: false, error: 'No corner there.' }; spec = c; }
+        if (spec.poly != null) { explodeBlock(spec.poly); var cp = S.curveCorner(f, spec.at, 1e-6 * Math.max(1, Math.abs(spec.at[0]), Math.abs(spec.at[1]))); if (!cp) return { ok: false, error: 'No corner there.' }; spec = cp; }
+        if (spec.uvi && !spec.ei) { spec = resolvePicks(spec); if (!spec) return { ok: false, error: chamfer ? 'Pick two lines (or two sides of a rectangle or polygon).' : 'Pick two lines, arcs or circles (or a spline and a line or arc).' }; }
         if (chamfer) return S.chamferPair(f, spec, { type: v.type, d1: +v.d1, d2: +v.d2, angle: +v.angle, equal: !!v.equal });
         var o = { keepCorner: v.keepCorner !== false };
         var eqTo = !v.dimEach && first != null && f.entities[first] && f.entities[first].t === 'arc' ? first : null;
@@ -119,7 +165,7 @@
       var n = r.count || 1;
       for (var k = 0; k < n; k++) v.items.push(n > 1 ? label + ' — chain ' + (k + 1) + '/' + n : label);
       changed(); UI.renderPM();
-      UI.setStatus((chamfer ? 'Chamfer' : 'Fillet R' + UI.fmtNum(+v.r, 4)) + ' made' + (n > 1 ? ' at ' + n + ' corners of the chain' : '') + '. Pick another vertex or two entities, or press ✓.');
+      UI.setStatus((chamfer ? 'Chamfer ' + UI.fmtLen(+v.d1) + (v.type === 'angle' ? ' × ' + UI.fmtNum(+v.angle, 2) + '°' : v.equal ? '' : ' × ' + UI.fmtLen(+v.d2)) : 'Fillet R' + UI.fmtLen(+v.r)) + ' made' + (n > 1 ? ' at ' + n + ' corners of the chain' : '') + '. Pick another vertex or two entities, or press ✓.');   // sketch-units
     }
     // sketch-tools2: every corner of a polygon / closed polyline rounded in place (Fillet all corners of the chain): the
     // original corners from the last to the first, so the indices still to do do not move
@@ -145,7 +191,10 @@
       if (sc && sc.d <= tol && sc.d < cd) {
         var at = sc.pts[sc.pi].slice();
         if (sc.e.t === 'rect' || sc.e.t === 'crect') { picked = null; done(make({ rect: sc.ei, at: at }), 'Vertex ' + fmtPt(at)); return; }
-        if (chamfer) { UI.toast('Sketch Chamfer works on lines: a polygon\'s corner cannot be chamfered.'); return; }
+        // sketch-fillet2: a polygon's corner: the polygon becomes its lines (still a regular polygon) and the corner is
+        // rounded (chamfered) with its relations and the radius dimension, as SolidWorks does
+        if (sc.e.t === 'poly') { picked = null; done(make({ poly: sc.ei, at: at }), 'Vertex ' + fmtPt(at)); return; }
+        if (chamfer) { UI.toast('Sketch Chamfer works on lines: a polyline\'s corner cannot be chamfered.'); return; }
         // a polygon / polyline corner: the outline is rounded in place (it stays one entity)
         var r = step(function () {
           var out = v.chain ? roundAll(sc.pts) : K.filletPolyline(sc.pts, sc.pi, +v.r);
@@ -158,10 +207,10 @@
         return;
       }
       if (c) { picked = null; done(make(c), 'Vertex ' + fmtPt(c.at)); return; }
-      // two entities picked one after the other
+      // two entities picked one after the other (two sides of one rectangle, polygon or slot too)
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
-      if (!e || !(e.t === 'line' || (!chamfer && e.t === 'arc'))) { UI.setStatus(chamfer ? 'Pick a corner, or two lines.' : 'Pick a corner, or two lines or arcs.'); return; }
-      if (!picked || picked.i === hit.index) { picked = { i: hit.index, uv: uv }; UI.sketchFeedbackClear(); UI.sketchPreview(entPts(e), PICK_STYLE, 'sk-trim-pick'); UI.setStatus('Pick the second entity.'); return; }
+      if (!e || !(direct(e) || explodable(e))) { UI.setStatus(chamfer ? 'Pick a corner, or two lines.' : 'Pick a corner, or two sketch entities: lines, arcs, circles, or a spline and a line or arc.'); return; }
+      if (!picked || (picked.i === hit.index && !explodable(e))) { picked = { i: hit.index, uv: uv }; UI.sketchFeedbackClear(); UI.sketchPreview(entPts(e), PICK_STYLE, 'sk-trim-pick'); UI.setStatus('Pick the second entity.'); return; }
       var spec = { i: picked.i, uvi: picked.uv, j: hit.index, uvj: uv }, li = entityLabel(f.entities[picked.i], picked.i) + ', ' + entityLabel(e, hit.index);
       picked = null;
       done(make(spec), li);
@@ -174,7 +223,7 @@
       if (c) { UI.sketchPreview((!chamfer && v.chain ? S.chainCorners(f, c) : [c]).map(function (k) { return ring(k.at, 7); }), HOT_STYLE, 'sk-trim-end'); return; }
       if (sc && sc.d <= tol) { UI.sketchPreview([ring(sc.pts[sc.pi], 7)], HOT_STYLE, 'sk-trim-end'); return; }
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
-      if (e && (e.t === 'line' || (!chamfer && e.t === 'arc'))) UI.sketchPreview(entPts(e), HOT_STYLE, 'sk-trim-span');
+      if (e && (direct(e) || explodable(e))) UI.sketchPreview(entPts(e), HOT_STYLE, 'sk-trim-span');
     }
     var groups = [{ title: chamfer ? 'Entities to Chamfer' : 'Entities to Fillet', fields: [{ type: 'pick', icon: chamfer ? 'skChamfer' : 'fillet', placeholder: 'Select sketch vertices or entities…', value: function (x) { return x.items.length ? x.items.length + (chamfer ? ' chamfer' : ' fillet') + (x.items.length > 1 ? 's' : '') : ''; }, items: function (x) { return x.items.map(function (t) { return { label: t }; }); } }] }];
     if (chamfer) groups.push({ title: 'Chamfer Parameters', fields: [
@@ -191,7 +240,7 @@
       { type: 'check', label: 'Fillet all corners of the chain', key: 'chain' }
     ] });
     UI.openPM({
-      title: chamfer ? 'Sketch Chamfer' : 'Sketch Fillet', icon: chamfer ? 'skChamfer' : 'fillet', values: v,
+      title: chamfer ? 'Sketch Chamfer' : 'Sketch Fillet', icon: chamfer ? 'skChamfer' : 'skFillet', values: v,
       message: chamfer ? 'Select a sketch vertex or two sketch lines to chamfer.' : 'Select a sketch vertex or two sketch entities to fillet.',
       command: { ownHover: true, sketchFillet: true, onSketchPoint: click, onSketchMove: hover },
       groups: groups,
@@ -209,9 +258,14 @@
       onClose: function () { UI.sketchFeedbackClear(); }
     });
     // two entities selected when the command starts: they are filleted (chamfered) at once
-    var pre = selIdx(f).filter(function (i) { var e = f.entities[i]; return e.t === 'line' || (!chamfer && e.t === 'arc'); });
+    var pre = selIdx(f).filter(function (i) { return direct(f.entities[i]); });
     if (pre.length === 2) {
-      var mid = function (e) { return e.t === 'line' ? [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2] : [e.cx + e.r * Math.cos((e.a0 + e.a1) / 2 * Math.PI / 180), e.cy + e.r * Math.sin((e.a0 + e.a1) / 2 * Math.PI / 180)]; };
+      var mid = function (e) {
+        if (e.t === 'line') return [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2];
+        if (e.t === 'spline') return e.pts[Math.floor(e.pts.length / 2)].slice();
+        var am = e.t === 'circle' ? 90 : (e.a0 + e.a1) / 2;
+        return [e.cx + e.r * Math.cos(am * Math.PI / 180), e.cy + e.r * Math.sin(am * Math.PI / 180)];
+      };
       var spec0 = { i: pre[0], uvi: mid(f.entities[pre[0]]), j: pre[1], uvj: mid(f.entities[pre[1]]) }, lab = entityLabel(f.entities[pre[0]], pre[0]) + ', ' + entityLabel(f.entities[pre[1]], pre[1]);
       done(make(spec0), lab);
     }
@@ -271,13 +325,13 @@
           var loops = faceLoopsOffset();
           step(function () { loops.forEach(function (e) { f.entities.push(e); }); return { ok: true }; }, true);
           clearPreview(); changed();
-          UI.setStatus('Offset ' + loops.length + ' face loop' + (loops.length === 1 ? '' : 's') + ' by ' + v.d + '.');
+          UI.setStatus('Offset ' + loops.length + ' face loop' + (loops.length === 1 ? '' : 's') + ' by ' + UI.fmtLen(+v.d) + '.');
           return;
         }
         var r = step(function () { return S.offsetSelection(f, v.entities, opts()); }, true);
         if (!r.ok) { UI.toast(r.error); return false; }
         clearPreview(); changed();
-        UI.setStatus('Offset ' + r.added.length + ' entit' + (r.added.length === 1 ? 'y' : 'ies') + ' by ' + v.d + (v.dims ? ', with the offset dimension.' : '.'));
+        UI.setStatus('Offset ' + r.added.length + ' entit' + (r.added.length === 1 ? 'y' : 'ies') + ' by ' + UI.fmtLen(+v.d) + (v.dims ? ', with the offset dimension.' : '.'));
       },
       onCancel: clearPreview
     });
@@ -1163,13 +1217,18 @@
   // shows while drawing, and on placement both go into the sketch, the copy held Symmetric to its original as Mirror
   // Entities holds it (SketchSolver.mirrorRelations), in the same undo step. Nothing selected: the Mirror
   // PropertyManager asks for the line. Off: the button again, Esc with no tool (Esc twice while drawing), or leaving the
-  // sketch. The drawing tools commit through ui-sketch.js placePoint / addEntity, which have no after-commit hook for
-  // every tool, so this watches the sketch being redrawn (UI.updateSketches) and mirrors what a drawing tool added once
-  // the click that added it is over (a microtask: the tool's own after() hooks, typed dimensions and the double-click
-  // logic have run by then).
-  var dyn = null;   // { sketch: id, axis: index, ax: [x1, y1, x2, y2], count, queued, last: { src, copies } }
+  // sketch. sketch-hooks: the drawing tools commit through ui-sketch.js placePoint (Spline and the tools that add
+  // their own entities call UI.afterSketchCommit themselves), and UI.sketchCommitHooks runs dynCommit in that same
+  // click, after the tool's own after() hooks and typed dimensions; the mirror image of the entity being drawn comes
+  // through UI.tempEntityHooks and the "=" marks through UI.sketchOverlayHooks (ui-core.js).
+  var dyn = null;   // { sketch: id, axis: index, ax: [x1, y1, x2, y2], last: { src, copies } }
   var DYN_TOOLS_OFF = { select: 1, dimension: 1 };
-  function dynDrawing() { return App.mode === 'sketch' && !!App.tool && !DYN_TOOLS_OFF[App.tool] && !(App.command && App.command.onSketchPoint); }
+  // a drawing tool is out, or a command that places sketch entities and says so (command.dynMirror: Parallel Line)
+  function dynDrawing() {
+    if (App.mode !== 'sketch') return false;
+    if (App.command && App.command.dynMirror) return true;
+    return !!App.tool && !DYN_TOOLS_OFF[App.tool] && !(App.command && App.command.onSketchPoint);
+  }
   // the mirror line in sketch f: its index (it may have moved in the list), or -1 when it is gone
   function dynAxis(f) {
     if (!dyn || !f) return -1;
@@ -1197,8 +1256,7 @@
   }
   function dynOn(f, i) {
     var e = f.entities[i];
-    dyn = { sketch: f.id, axis: i, ax: [e.x1, e.y1, e.x2, e.y2], count: f.entities.length, queued: false, last: null };
-    dynMarksHook();
+    dyn = { sketch: f.id, axis: i, ax: [e.x1, e.y1, e.x2, e.y2], last: null };
     UI.updateSketches(); UI.refreshRibbon();
     UI.setStatus('Dynamic Mirror on about ' + (e.construction ? 'Centerline' : 'Line') + (i + 1) + ': what you draw is mirrored about it. Click Dynamic Mirror again (or Esc with no tool) to turn it off.');
   }
@@ -1209,33 +1267,19 @@
     UI.updateSketches(); UI.refreshRibbon();
     if (msg) UI.setStatus(msg);
   }
-  // after a redraw: entities a drawing tool just added are mirrored once its click is over; anything else that changed
-  // the count (Undo, Delete, Redo, a command) is only noted
-  function dynWatch() {
-    if (!dyn) return;
-    if (App.mode !== 'sketch' || App.activeSketch !== dyn.sketch) { dynOff(); return; }
-    var f = UI.activeSketchFeature(), n = f ? f.entities.length : 0;
-    if (!f || n === dyn.count) return;
-    if (n > dyn.count && dynDrawing() && App.sketchDirty) {
-      if (!dyn.queued) { dyn.queued = true; Promise.resolve().then(dynCommit); }
-      return;
-    }
-    if (!dyn.queued) dyn.count = n;
-  }
-  function dynCommit() {
-    if (!dyn) return;
-    dyn.queued = false;
-    var f = UI.activeSketchFeature();
-    if (!f || f.id !== dyn.sketch) return;
+  // a drawing tool committed f.entities.slice(n0) (UI.sketchCommitHooks): each is mirrored at once, in the same undo
+  // step, the copy held Symmetric to its original (only drawing tools call the hook: Text has already put itself
+  // down when it does, so the tool in hand is not asked again)
+  function dynCommit(f, n0) {
+    if (!dyn || !f || f.id !== dyn.sketch || App.mode !== 'sketch' || App.activeSketch !== dyn.sketch) return;
     var n = f.entities.length;
-    if (n <= dyn.count) { dyn.count = n; return; }
+    if (!(n0 < n)) return;
     var ai = dynAxis(f);
-    if (ai < 0) { dyn.count = n; dynOff('Dynamic Mirror is off: its mirror line is gone.'); return; }
+    if (ai < 0) { dynOff('Dynamic Mirror is off: its mirror line is gone.'); return; }
     var src = [], k;
-    for (k = dyn.count; k < n; k++) if (k !== ai && f.entities[k]) src.push(k);
+    for (k = n0; k < n; k++) if (k !== ai && f.entities[k]) src.push(k);
     var ms = dynMirrorOf(f, ai, src.map(function (i) { return f.entities[i]; })), pairs = [];
     src.forEach(function (i, j) { if (!ms[j]) return; f.entities.push(ms[j]); pairs.push([i, f.entities.length - 1]); });
-    dyn.count = f.entities.length;
     if (!pairs.length) return;
     var nSym = 0;
     try { nSym = S.mirrorRelations(f, pairs, ai); } catch (x) { nSym = 0; }
@@ -1267,36 +1311,16 @@
     ls.userData = { dynMirrorMarks: true };
     return [ls];
   }
-  // (hooked when Dynamic Mirror is first turned on: ui-sketch-layers.js, which defines the hook, loads after this file)
-  function dynMarksHook() {
-    if (UI.sketchRegionObjects && UI.sketchRegionObjects._dyn) return;
-    var base = UI.sketchRegionObjects;
-    var hook = function (f, pl) {
-      var out = base ? base.apply(this, arguments) || [] : [];
-      if (dyn && f && f.id === dyn.sketch) { try { out = out.concat(dynMarks(f, pl)); } catch (x) { /* the marks are never worth a broken redraw */ } }
-      return out;
-    };
-    hook._dyn = true;
-    UI.sketchRegionObjects = hook;
-  }
-  if (UI.updateSketches && !UI.updateSketches._dyn) {
-    var baseUpdateSketches = UI.updateSketches;
-    UI.updateSketches = function () { var r = baseUpdateSketches.apply(this, arguments); if (dyn) { try { dynWatch(); } catch (x) { /* never break a redraw */ } } return r; };
-    UI.updateSketches._dyn = true;
-  }
-  // the mirror image of the entity being drawn shows with it
-  if (UI.updateTemp && !UI.updateTemp._dyn) {
-    var baseUpdateTempDyn = UI.updateTemp;
-    UI.updateTemp = function () {
-      if (!dyn || !App.tempEntities || !App.tempEntities.length || !dynDrawing() || App.activeSketch !== dyn.sketch) return baseUpdateTempDyn.apply(this, arguments);
-      var f = UI.activeSketchFeature(), ai = dynAxis(f);
-      if (ai < 0) return baseUpdateTempDyn.apply(this, arguments);
-      var saved = App.tempEntities;
-      App.tempEntities = saved.concat(dynMirrorOf(f, ai, saved).filter(Boolean));
-      try { return baseUpdateTempDyn.apply(this, arguments); } finally { App.tempEntities = saved; }
-    };
-    UI.updateTemp._dyn = true;
-  }
+  // sketch-hooks: the marks go with the active sketch's redraw, the mirror image of the entity being drawn with the
+  // preview, the copies in the committing click, and leaving the sketch turns it off
+  if (UI.sketchOverlayHooks) UI.sketchOverlayHooks.push(function (f, pl) { return dyn && f && f.id === dyn.sketch ? dynMarks(f, pl) : []; });
+  if (UI.tempEntityHooks) UI.tempEntityHooks.push(function (list) {
+    if (!dyn || !list || !list.length || !dynDrawing() || App.activeSketch !== dyn.sketch) return null;
+    var f = UI.activeSketchFeature(), ai = dynAxis(f);
+    return ai < 0 ? null : dynMirrorOf(f, ai, list).filter(Boolean);
+  });
+  if (UI.sketchCommitHooks) UI.sketchCommitHooks.push(dynCommit);
+  if (UI.sketchExitHooks) UI.sketchExitHooks.push(function () { if (dyn) dynOff(); });
   // Esc with no tool and no PropertyManager (the second Esc while drawing) turns it off
   document.addEventListener('keydown', function (ev) {
     if (!dyn || ev.key !== 'Escape' || App.mode !== 'sketch') return;
@@ -1318,10 +1342,10 @@
     f.entities.pop();
     S.removeEntity(f, ci);
     if (f.dims) f.dims = f.dims.filter(function (d) { return d.e !== ci; });
-    dyn.count = f.entities.length; dyn.last = null;
+    dyn.last = null;
   }, true);
   UI.dynamicMirrorOn = function () { return !!dyn && App.mode === 'sketch' && App.activeSketch === dyn.sketch; };
-  UI.dynamicMirrorState = function () { return dyn ? { sketch: dyn.sketch, axis: dyn.axis, count: dyn.count } : null; };
+  UI.dynamicMirrorState = function () { return dyn ? { sketch: dyn.sketch, axis: dyn.axis } : null; };
   function cmdDynamicMirror() {
     if (dyn) { dynOff('Dynamic Mirror off.'); return; }
     var f = sketch();

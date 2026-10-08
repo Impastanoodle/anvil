@@ -3,7 +3,7 @@
 // worked out in drawing-worker.js) and the section jobs, projected / section / detail views placed beside their parent
 // or fitted onto the sheet, the title block with its $PRPSHEET / $PRP links, Standard 3 View and its layout, moving
 // and deleting views, automatic model dimensions (overall sizes, diameters, radii, straight and arc slot callouts, the
-// part's sketch ordinate sets) and dimension text, and assembly
+// part's sketch ordinate sets and its sketch location dimensions, marked for drawing) and dimension text, and assembly
 // drawings: part info, the Bill of Materials rows, columns and box, Auto Balloon and balloon placement. Loads after
 // drawing-views.js; autoInsert, numText and dimLabel (drawing-annotations.js) and arcEnds (drawing-render.js) are late
 // bound.
@@ -717,8 +717,101 @@
     // the part's sketch ordinate sets (sketch-ordinate), as drawing ordinate dimensions in the first view that looks
     // square at their sketch
     dims = dims.concat(sketchOrdinates(doc, order, projections));
+    // the sketches' location dimensions (distance relations), marked for drawing (sketch-text2 lane: Model Items ▸
+    // Marked for drawing); pushed last, so the items above keep their style keys
+    dims = dims.concat(sketchDistances(doc, order, projections, dims));
     dims.forEach(function (d) { d.text = dimText(d, units); });
     return dims;
+  }
+  // sketchDistances(doc, order, projections, dims) -> model items for the part's sketch location dimensions, as
+  // SolidWorks' Insert Model Items ▸ Marked for drawing brings them: every distance relation of every unsuppressed
+  // sketch — point to point (horizontal, vertical or aligned), point to line, between parallel lines; a circle or arc
+  // by its centre — that is marked for drawing (rel.mark: on unless false; a driven one only when set true), not a
+  // member of an ordinate set (those come as ordinate dimensions) and not radial, in the first ortho view of `order`
+  // that looks square at its sketch: a linear dimension between the two points it measures (kind h / v as the
+  // relation's direction lies in the view, else h / v / aligned as the points lie), on the side of the view nearer to
+  // them, with sketchRel 'sketchId:relIndex' (its key) and relSrc { f, i } (Drawing.sketchDimProps then gives it the
+  // relation's tolerance, precision, text and name). One that measures what an item in `dims` already shows (an
+  // overall size) is not added again: that item takes the relation's relSrc instead.
+  function sketchDistances(doc, order, projections, dims) {
+    var ctx = _.CTX, model = ctx && ctx.model, S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, out = [];
+    if (!model || model.type === 'assembly' || !model.features || !S || !S.refKind) return out;
+    var rm;
+    try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var planes = ctx.build && ctx.build.planes || {};
+    function sub2(p, q) { return [p[0] - q[0], p[1] - q[1]]; }
+    // the sketch point a ref stands for (a circle / arc: its centre), or a line { a, b }
+    function refGeo(f, r) {
+      var k = S.refKind(f, r);
+      if (k === 'point') return { p: S.refPoint(f, r) };
+      if (k === 'circle') return { p: S.refCurve(f, r).c };
+      if (k === 'line') { var L = S.refCurve(f, r); return { a: L.a, b: L.b }; }
+      return null;
+    }
+    // the foot of p on the infinite line a–b; along an axis (ax 0 / 1) instead: where the line through p along it meets a–b
+    function onLine(p, L, ax) {
+      var d = sub2(L.b, L.a), dd = d[0] * d[0] + d[1] * d[1];
+      if (!(dd > 0)) return null;
+      if (ax == null) { var t = ((p[0] - L.a[0]) * d[0] + (p[1] - L.a[1]) * d[1]) / dd; return [L.a[0] + d[0] * t, L.a[1] + d[1] * t]; }
+      var o = 1 - ax;
+      if (Math.abs(d[o]) < 1e-12 * Math.sqrt(dd)) return null;
+      var q = [0, 0]; q[o] = p[o]; q[ax] = L.a[ax] + d[ax] * (p[o] - L.a[o]) / d[o];
+      return q;
+    }
+    (rm.features || []).forEach(function (f) {
+      if (f.type !== 'sketch' || f.suppressed || !f.rels) return;
+      var list = [];
+      f.rels.forEach(function (rel, i) {
+        if (!rel || rel.type !== 'distance' || rel.ord != null || rel.suppressed || rel.dir === 'r' || !rel.refs || rel.refs.length !== 2) return;
+        if (rel.mark === false || (rel.driven && rel.mark !== true)) return;
+        list.push(i);
+      });
+      if (!list.length) return;
+      var pl;
+      try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
+      var v = null, F = null;
+      for (var j = 0; j < order.length && !v; j++) {
+        var Fj = viewFrame(doc, order[j]);
+        if (Fj && Math.abs(Math.abs(V.dot(pl.n, Fj.e)) - 1) < 1e-9 && projections[order[j].id]) { v = order[j]; F = Fj; }
+      }
+      if (!v) return;
+      var bd = projections[v.id].bounds, cu = (bd.umin + bd.umax) / 2, cv = (bd.vmin + bd.vmax) / 2, span = Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9), tol = 1e-7 * span;
+      function view2(p) { var q = K.to3D(pl, p[0], p[1]); return [V.dot(q, F.u), V.dot(q, F.v)]; }
+      list.forEach(function (i) {
+        var rel = f.rels[i], A = refGeo(f, rel.refs[0]), B = refGeo(f, rel.refs[1]);
+        if (!A || !B) return;
+        var ax = rel.dir === 'h' ? 0 : rel.dir === 'v' ? 1 : null, a, b;
+        if (A.p && B.p) { a = A.p; b = B.p; }
+        else if (A.p || B.p) { a = A.p || B.p; b = onLine(a, A.p ? B : A, ax); }
+        else { a = [(A.a[0] + A.b[0]) / 2, (A.a[1] + A.b[1]) / 2]; b = onLine(a, B, ax); }   // two (parallel) lines
+        if (!a || !b) return;
+        var a2 = view2(a), b2 = view2(b), kind;
+        if (ax != null) {
+          var d3 = ax === 0 ? pl.x : pl.y;
+          kind = Math.abs(Math.abs(V.dot(d3, F.u)) - 1) < 1e-9 ? 'h' : Math.abs(Math.abs(V.dot(d3, F.v)) - 1) < 1e-9 ? 'v' : null;
+        } else {
+          var dx = b2[0] - a2[0], dy = b2[1] - a2[1], ln = Math.hypot(dx, dy);
+          kind = Math.abs(dy) <= 1e-9 * ln ? 'h' : Math.abs(dx) <= 1e-9 * ln ? 'v' : 'aligned';
+        }
+        if (!kind) return;
+        var value = kind === 'h' ? Math.abs(b2[0] - a2[0]) : kind === 'v' ? Math.abs(b2[1] - a2[1]) : Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
+        if (!(value > tol)) return;
+        var d = { view: v.id, kind: kind, a: a2, b: b2, value: value, auto: true, sketchRel: f.id + ':' + i, relSrc: { f: f.id, i: i } };
+        if (kind === 'h') d.side = (a2[1] + b2[1]) / 2 > cv ? 1 : -1;
+        else if (kind === 'v') d.side = (a2[0] + b2[0]) / 2 > cu ? 1 : -1;
+        // the same span as an item already there: that item carries the relation
+        var ix = kind === 'v' ? 1 : 0;
+        function same(x) {
+          if (x.view !== d.view || x.kind !== kind || !x.a || !x.b || Math.abs(x.value - value) > tol) return false;
+          if (kind === 'aligned') return (Math.hypot(x.a[0] - a2[0], x.a[1] - a2[1]) <= tol && Math.hypot(x.b[0] - b2[0], x.b[1] - b2[1]) <= tol) || (Math.hypot(x.a[0] - b2[0], x.a[1] - b2[1]) <= tol && Math.hypot(x.b[0] - a2[0], x.b[1] - a2[1]) <= tol);
+          return Math.abs(Math.min(x.a[ix], x.b[ix]) - Math.min(a2[ix], b2[ix])) <= tol;
+        }
+        var dup = dims.filter(same)[0] || out.filter(same)[0];
+        if (dup) { if (!dup.relSrc) dup.relSrc = d.relSrc; return; }
+        out.push(d);
+      });
+    });
+    return out;
   }
   // sketchOrdinates(doc, order, projections) -> ordinate model items: every ordinate set (SketchSolver.ordinateSets) of
   // every unsuppressed sketch of the part being drawn (_.CTX.model), in the first ortho view of `order` whose direction
@@ -878,6 +971,7 @@
   }
   function autoDimKey(d) {
     if (d.kind === 'ordinate' && d.sketchOrd) return d.view + ':ord:' + d.sketchOrd;
+    if (d.sketchRel) return d.view + ':rel:' + d.sketchRel;
     if (d.slot && d.slot.arc) return d.view + ':arcslot:' + d.slot.R.toFixed(4) + 'x' + d.slot.w.toFixed(4) + 'x' + d.slot.angle.toFixed(2);
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
@@ -1249,7 +1343,7 @@
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
-  D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates;
+  D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;

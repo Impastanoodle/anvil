@@ -122,8 +122,8 @@ var UI = (function () {
   // dark theme swaps them here. `light` is exactly the set of colours the materials are created with.
   // The HLR body colour follows the theme too: it exists to occlude hidden lines, so it must read as "background".
   var THEME_COLORS = {
-    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d },
-    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5 }
+    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d, sketch: 0x1f5fd0, temp: 0x1f5fd0, sketchSel: 0x1fa653 },
+    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5, sketch: 0x6fa8ea, temp: 0x6fa8ea, sketchSel: 0x5cc46a }   // rfC: under-defined blue and the selection green readable on dark grounds
   };
   var viewportTheme = 'light';
   // r14/viewui14: the line palette follows what the lines are drawn over. The dark palette applies with the dark theme or
@@ -1591,15 +1591,32 @@ var UI = (function () {
       if (active) addSketchPoints(pl, ptsBy);
       // sketch-layers: closed regions shaded and open ends marked in the sketch being edited (View ▸ Sketch Regions)
       if (active && UI.sketchRegionObjects) UI.sketchRegionObjects(f, pl).forEach(function (o) { groups.sketches.add(o); });
+      if (active) sketchOverlayObjects(f, pl).forEach(function (o) { groups.sketches.add(o); });   // sketch-hooks: Dynamic Mirror's "=" marks …
     });
     if (App.mode !== 'sketch') App.sketchState = null;
     else if (UI.refreshStatus) UI.refreshStatus();
+  }
+  // sketch-hooks: other files add to what the sketch being edited shows without wrapping the redraw functions.
+  // UI.sketchOverlayHooks: functions (f, pl) -> THREE objects drawn with the active sketch (Dynamic Mirror's "=" marks).
+  // UI.tempEntityHooks: functions (entities) -> more entities to draw with the ones a drawing tool previews (the
+  // mirror image of the entity being drawn). A hook that throws is skipped: a redraw is never worth breaking.
+  // (the lists live here and are exported below: UI is not assigned until this file has run)
+  var sketchOverlayHooks = [], tempEntityHooks = [];
+  function sketchOverlayObjects(f, pl) {
+    var out = [];
+    sketchOverlayHooks.forEach(function (h) { try { out = out.concat(h(f, pl) || []); } catch (e) { /* skipped */ } });
+    return out;
+  }
+  function tempEntitiesShown() {
+    var list = App.tempEntities;
+    tempEntityHooks.forEach(function (h) { try { list = list.concat(h(App.tempEntities) || []); } catch (e) { /* skipped */ } });
+    return list;
   }
   function updateTemp() {
     disposeGroup(groups.temp);
     if (!App.tempEntities.length || App.activeSketch == null) return;
     var pl = activePlane();
-    App.tempEntities.forEach(function (e) {
+    tempEntitiesShown().forEach(function (e) {
       var pls = screenPolylines(e);
       if (!pls.length) return;
       var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mats.temp);
@@ -2887,6 +2904,7 @@ var UI = (function () {
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
     updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
     updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
+    sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
     screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
