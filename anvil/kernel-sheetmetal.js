@@ -4,7 +4,7 @@
 // kernel-features.js. No DOM.
 (function (K, _) {
   'use strict';
-  var add = _.add, cross = _.cross, dot = _.dot, len = _.len, makePlane = _.makePlane, norm = _.norm, resolvePlane = _.resolvePlane, scale = _.scale, sub = _.sub, to2D = _.to2D, to3D = _.to3D;   // kernel.js
+  var add = _.add, cross = _.cross, dot = _.dot, len = _.len, makePlane = _.makePlane, norm = _.norm, resolvePlane = _.resolvePlane, scale = _.scale, sub = _.sub, to2D = _.to2D, to3D = _.to3D, triangulate = _.triangulate;   // kernel.js
   var pointInPoly = _.pointInPoly, signedArea = _.signedArea;   // kernel-sketch.js
   var prism = _.prism, unionAll = _.unionAll, unionTree = _.unionTree;   // kernel-curves.js
   var resolvedModel = _.resolvedModel;   // kernel-equations.js
@@ -197,6 +197,33 @@
     return loop;
   }
 
+  // ---- flange edge resolution (r12/inchflange12). meshFromBody keys a face by its plane with the offset rounded to
+  // 0.01 model units, so polygons of one face whose offsets differ by rounding noise land in two faces when the offset
+  // sits on a rounding boundary: 0.075 in or 0.125 in, the top face of a 14 ga or 1/8 in sheet (a cut, the overlap
+  // strip of an earlier flange or OpenCascade's per-triangle planes give such noise). The split face hid the picked
+  // edge (or made the sheet face look smaller than the thickness face beside it), and the pick then fell on the edge
+  // on the other side of the sheet, T away, which the old tolerance max(0.5, T) — 0.5 in on an inch part — accepted:
+  // the flange folded the wrong way. coplanarBody(body) -> the body's polygons with every set of coplanar ones (normal
+  // and offset equal within noise) sharing one plane, for meshing only (geometry, tags and the body are unchanged).
+  // EDGE_PICK_TOL: a pick is accepted within this fraction of T of an edge, so it can never reach the opposite edge.
+  var EDGE_PICK_TOL = 0.75;
+  function coplanarBody(body) {
+    var reps = [];
+    return { polygons: body.polygons.map(function (p) {
+      var n = p.plane.normal, w = p.plane.w, rep = null;
+      for (var i = 0; i < reps.length && !rep; i++) {
+        var r = reps[i];
+        if (Math.abs(r.w - w) < 1e-8 && n.x * r.normal.x + n.y * r.normal.y + n.z * r.normal.z > 1 - 1e-10) rep = r;
+      }
+      if (!rep) { reps.push(p.plane); return p; }
+      if (rep === p.plane) return p;
+      var q = Object.create(p);
+      q.plane = rep;
+      return q;
+    }) };
+  }
+  // ---- end r12/inchflange12
+
   // Edge flange: bend (inner radius R, thickness T, sweep angle) plus a flat wall of length L, swept along each
   // selected straight edge of a flat sheet face. "Bend outside" placement: the flange sits beyond the edge.
   // `miter`: flanges on two selected edges that share a corner are extended past it and clipped by the corner's
@@ -206,8 +233,8 @@
   // added, from reliefDepth (default T/2) inside the edge out past the bend zone. Ends shared with another selected
   // edge (mitred or collinear) get no relief.
   // flangeLayout(f, model, ctx) -> the flange as plain data, from the edges of ctx.body (a CSG): { parts: [{ loop,
-  // plane, t0, t1, clips: [{ n, w }] }] (each a prism of the section `loop` in `plane` from t0 to t1, kept where
-  // n·p >= w for each clip), cuts: [{ loop, plane, a, b }] (prisms taken from the sheet first: trim-back and reliefs),
+  // plane, t0, t1, clips: [{ n, w }], voids?, band?, BA? }] (each a prism of the section `loop` in `plane` from t0 to t1,
+  // kept where n·p >= w for each clip, less the holes / slots of the sheet across its bend: voids, see bendVoids), cuts: [{ loop, plane, a, b }] (prisms taken from the sheet first: trim-back and reliefs),
   // info (ctx.flanges' records), section: { A, R, T, L, ov } (flangeProfile's parameters) }. buildFlange builds it with
   // the CSG kernel; occt-kernel.js builds the same layout with exact bend arcs.
   function flangeLayout(f, model, ctx) {
@@ -251,9 +278,9 @@
     var rw = f.reliefWidth != null ? +f.reliefWidth : T, rd = f.reliefDepth != null ? +f.reliefDepth : T / 2;
     if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
     if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
-    var mesh = meshFromBody(ctx.body);
+    var mesh = meshFromBody(coplanarBody(ctx.body));   // r12/inchflange12: see coplanarBody
     var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
-    var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, Math.max(0.5, T));
+    var selected = resolveEdges((f.edges || []).map(function (e) { return { at: e.at, chain: false }; }), edges, EDGE_PICK_TOL * T);
     if (!selected.length) throw new Error('No edge selected for the flange.');
     // placement: 'bendOutside' (default: bend and wall beyond the edge), 'outside' (Material Outside: the wall's inner
     // face at the edge), 'inside' (Material Inside: the wall's outer face at the edge), 'virtualSharp' (Bend from
@@ -325,8 +352,14 @@
     eds.forEach(function (ed) {
       var t0 = ed.ends[0].miter ? ed.ends[0].miter.tExt : ed.ends[0].t;
       var t1 = ed.ends[1].miter ? ed.ends[1].miter.tExt : ed.ends[1].t;
-      tools.push({ loop: ed.loop, plane: ed.plane, t0: Math.min(t0, t1), t1: Math.max(t0, t1),
-        clips: ed.ends.filter(function (en) { return en.miter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) });
+      var part = { loop: ed.loop, plane: ed.plane, t0: Math.min(t0, t1), t1: Math.max(t0, t1),
+        clips: ed.ends.filter(function (en) { return en.miter; }).map(function (en) { return { n: en.miter.n, w: en.miter.w }; }) };
+      // holes / slots in the sheet across the bend's band (the overlap strip, and the strip a Material Inside / Outside
+      // / Virtual Sharp placement trims off): voids { loops (s, t), band, BA } that the sweep must not fill in
+      var band = { s0: -ov, s1: shift, t0: Math.min(ed.ends[0].t, ed.ends[1].t), t1: Math.max(ed.ends[0].t, ed.ends[1].t) };
+      var voids = bendVoids(ctx.body, ed.plane, band, T, { ends: false });
+      if (voids.length) { part.voids = voids; part.band = band; part.BA = zoneBA(sheet, A, R, T, f); ed.cutouts = flatCutouts(voids, ed.ends[0].t, ed.ends[1].t >= ed.ends[0].t ? 1 : -1); }
+      tools.push(part);
       if (relief !== 'none') ed.ends.forEach(function (en) {
         if (en.shared) return;
         // does the sheet continue beyond this end? probe half a thickness past it at mid-thickness, inside the
@@ -357,6 +390,9 @@
       // reliefs: per end (a, b), the bend relief cut there ({ w, d0, d1, obround }) or null; flatPattern cuts it from the
       // blank as a notch w wide past the end, from d0 inside the edge line to d1 beyond the flat bend zone
       if (ed.ends[0].relief || ed.ends[1].relief) rec.reliefs = ed.ends.map(function (en) { return en.relief || null; });
+      // cutouts: the voids that cross the bend (bendVoids), as loops of [d, τ]: d from the (trimmed) edge line across the
+      // flat strip, τ along the edge from a toward b; flatPattern cuts them from the blank where the flat put them
+      if (ed.cutouts && ed.cutouts.length) rec.cutouts = ed.cutouts;
       info.push(rec);
     });
     return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
@@ -392,11 +428,245 @@
     if (BA_TYPES.indexOf(c.type) < 0) throw new Error('Custom bend allowance: unknown type "' + c.type + '" (kfactor, allowance, deduction or table).');
     return { type: c.type, value: c.value == null ? null : +c.value };
   }
+
+  // ------------------------------------------------------------------ sheet metal: cuts that cross a bend zone
+  // A hole, slot or notch cut in the flat sheet before an Edge Flange or a Sketched Bend stays a hole where it crosses
+  // the bend (SolidWorks): the bend rolls up the flat as it is, so the cut is wrapped round the bend and runs on into
+  // the wall, and the flat pattern shows it once, in its original place. The bend section is swept across the whole
+  // edge / line, so each void of the sheet inside the bend's band (the flat strip the section replaces, plus the
+  // overlap strips it lays into the sheet) is found (bendVoids), wrapped (wrapCut: radial through the thickness, the
+  // flat length s mapped to the bend angle A·s/BA on the neutral axis) and taken out of the section's sweep.
+  // A section plane { origin, x, y, n } (flangeProfile's frame: x = o across the fold, y = u toward the fold, n along
+  // it) holds the flat sheet at u ∈ [−T, 0]; band { s0, s1, t0, t1 }: s along x (0 = the bend's start), t along n.
+
+  // a point inside a simple polygon (scan lines across its middle), or null
+  function loopInteriorPoint(l) {
+    var lo = Infinity, hi = -Infinity, fr = [0.5, 0.3713, 0.6287, 0.2, 0.8, 0.05, 0.95];
+    l.forEach(function (p) { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); });
+    for (var k = 0; k < fr.length; k++) {
+      var y = lo + (hi - lo) * fr[k], xs = [], best = null;
+      for (var i = 0; i < l.length; i++) {
+        var a = l[i], b = l[(i + 1) % l.length];
+        if ((a[1] > y) !== (b[1] > y)) xs.push(a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+      }
+      xs.sort(function (p, q) { return p - q; });
+      for (var j = 0; j + 1 < xs.length; j += 2) if (!best || xs[j + 1] - xs[j] > best[1] - best[0]) best = [xs[j], xs[j + 1]];
+      if (best && best[1] - best[0] > 1e-9) return [(best[0] + best[1]) / 2, y];
+    }
+    return null;
+  }
+  // the slab of the band at 45–55 % of the thickness, where bendVoids reads the voids: bandSlabSpec -> { loop, plane,
+  // a, b } (a prism of `loop` in `plane` from a to b, as prism() takes it), bandSlab -> that prism as a CSG solid
+  function bandSlabSpec(plane, band, T) { return { loop: [[band.s0, -0.55 * T], [band.s1, -0.55 * T], [band.s1, -0.45 * T], [band.s0, -0.45 * T]], plane: plane, a: band.t0, b: band.t1 }; }
+  function bandSlab(plane, band, T) { var s = bandSlabSpec(plane, band, T); return prism(s.loop, s.plane, s.a, s.b); }
+  // bendVoids(body, plane, band, T, opts) -> [[[s, t], ...]] (CCW in (s, t)): the through-thickness voids of the sheet
+  // (holes, slots, notches) inside the band, as outlines at mid-thickness. A void that does not go through the sheet
+  // (a blind pocket: metal at 10 % or 90 % of the thickness inside it) is left out. opts.ends false (edge flanges):
+  // voids that reach the band's ends (t0 / t1) are left out too: the flange is as wide as its edge, whatever the sheet
+  // does past it. The voids are the band's slab at 45–55 % of the thickness less the sheet; opts.voids: that solid
+  // when the caller made it (OpenCascade: exactly, meshed finely), `body` then only answers the through-sheet probes.
+  function bendVoids(body, plane, band, T, opts) {
+    opts = opts || {};
+    var M = opts.voids || bandSlab(plane, band, T).subtract(body);
+    if (!M.polygons.length || !(M.volume() > 1e-9 * (band.s1 - band.s0) * (band.t1 - band.t0) * 0.1 * T)) return [];
+    var mesh = meshFromBody(M), w0 = dot(plane.y, plane.origin) - 0.45 * T, fi = -1;
+    mesh.faces.forEach(function (fc, i) { if (fi < 0 && dot(fc.normal, plane.y) > 0.999 && Math.abs(fc.w - w0) < 1e-6 * Math.max(1, Math.abs(w0)) + 1e-9) fi = i; });
+    if (fi < 0) return [];
+    var o = faceOutline(mesh, fi);
+    if (!o) return [];
+    var loops = o.loops.map(function (l) {
+      return l.map(function (p) { var q = sub(to3D(o.plane, p[0], p[1]), plane.origin); return [dot(q, plane.x), dot(q, plane.n)]; });
+    }).filter(function (l) { return Math.abs(signedArea(l)) > 1e-6 * T * T; });
+    var inside = null, tolE = 1e-6 * Math.max(1, band.t1 - band.t0), out = [];
+    loops.forEach(function (l) {
+      // outer loops of the void only (a loop inside an odd number of others is an island of metal in a void)
+      var probe = loopInteriorPoint(l), depth = 0;
+      if (!probe) return;
+      loops.forEach(function (m) { if (m !== l && pointInPoly(probe, m)) depth++; });
+      if (depth % 2) return;
+      if (!opts.ends && l.some(function (p) { return p[1] < band.t0 + tolE || p[1] > band.t1 - tolE; })) return;
+      if (!inside) inside = body.pointTester();
+      var P = add(add(plane.origin, scale(plane.x, probe[0])), scale(plane.n, probe[1]));
+      if ([0.1, 0.5, 0.9].some(function (fz) { return inside(sub(P, scale(plane.y, fz * T))); })) return;
+      out.push(signedArea(l) < 0 ? l.slice().reverse() : l);
+    });
+    return out;
+  }
+  // bendZoneMap(sec, BA, segs) -> fn(s, z) = [o, u]: where the flat point s along the strip (0 = the bend's start), z
+  // deep below the face the bend folds toward (0 inner face, T outer), lands in the section plane. s < 0: the sheet
+  // before the bend (unchanged); 0..BA: the bend, at angle A·s/BA, radial through the thickness (segs facets as
+  // flangeProfile's, linear across a facet; a fine count stands for the true arcs); s > BA: the wall, s − BA along it.
+  // fn.zones: the s values where the map's pieces meet (a piece maps planes to planes at constant z).
+  function bendZoneMap(sec, BA, segs) {
+    var A = sec.A, R = sec.R, T = sec.T, tx = Math.cos(A), ty = Math.sin(A);
+    function inner(th) { return [R * Math.sin(th), R - R * Math.cos(th)]; }
+    function outer(th) { return [(R + T) * Math.sin(th), R - (R + T) * Math.cos(th)]; }
+    function at(I, O, z) { return [I[0] + (O[0] - I[0]) * z / T, I[1] + (O[1] - I[1]) * z / T]; }
+    var fn = function (s, z, zone) {
+      if (zone == null) zone = s <= 0 ? -1 : s >= BA ? Infinity : Math.min(segs - 1, Math.floor(s / BA * segs));
+      if (zone < 0) return [s, -z];
+      if (zone === Infinity) {
+        var w = s - BA, iE = inner(A), oE = outer(A);
+        return at([iE[0] + tx * w, iE[1] + ty * w], [oE[0] + tx * w, oE[1] + ty * w], z);
+      }
+      var ta = A * zone / segs, tb = A * (zone + 1) / segs, f = s / BA * segs - zone;
+      var Ia = inner(ta), Ib = inner(tb), Oa = outer(ta), Ob = outer(tb);
+      return at([Ia[0] + (Ib[0] - Ia[0]) * f, Ia[1] + (Ib[1] - Ia[1]) * f], [Oa[0] + (Ob[0] - Oa[0]) * f, Oa[1] + (Ob[1] - Oa[1]) * f], z);
+    };
+    fn.zones = [];
+    for (var k = 0; k <= segs; k++) fn.zones.push(BA * k / segs);
+    return fn;
+  }
+  // wrapMesh(loop, sec, BA, plane, segs, eps) -> [[P, ...]]: one void outline (s, t, CCW) pushed through the thickness
+  // (z from −eps to T + eps) and mapped by bendZoneMap into `plane`, as a closed, watertight set of outward planar convex
+  // faces (no T-junctions: every point where an edge crosses a zone line is computed once from the edge's ends). The
+  // outline's edges are split where they cross the zone lines and each piece walled by a quad (planar when the edge runs
+  // along s or t) or four triangles to its true centre; the caps are the outline's triangulation, cut into convex
+  // pieces along the zone lines (each lands on a plane).
+  function wrapMesh(loop, sec, BA, plane, segs, eps) {
+    var map = bendZoneMap(sec, BA, segs), Z = map.zones, T = sec.T, memo = {}, tris = [];
+    // a corner a hair off a zone line goes onto it (else the line would cut a sliver off next to it)
+    loop = loop.map(function (p) {
+      for (var j = 0; j < Z.length; j++) if (Math.abs(p[0] - Z[j]) < 1e-4 * T) return [Z[j], p[1]];
+      return p;
+    }).filter(function (p, j, l) { var q = l[(j + 1) % l.length]; return Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) > 1e-9 * T; });
+    function zoneOf(s) { return s <= 0 ? -1 : s >= BA ? Infinity : Math.min(segs - 1, Math.floor(s / BA * segs)); }
+    function key(p) { return p[0] + ',' + p[1]; }
+    // the crossing of edge a–b with s = z, the same for a–b and b–a
+    function cross2(a, b, z) {
+      var k = key(a) < key(b) ? key(a) + '|' + key(b) + '|' + z : key(b) + '|' + key(a) + '|' + z;
+      if (!memo[k]) { var p = key(a) < key(b) ? a : b, q = p === a ? b : a, f = (z - p[0]) / (q[0] - p[0]); memo[k] = [z, p[1] + (q[1] - p[1]) * f]; }
+      return memo[k];
+    }
+    // the zone lines strictly between a and b, in order from a
+    function crossings(a, b) {
+      var lo = Math.min(a[0], b[0]), hi = Math.max(a[0], b[0]), out = [];
+      Z.forEach(function (z) { if (z > lo && z < hi) out.push(cross2(a, b, z)); });
+      return a[0] <= b[0] ? out : out.reverse();
+    }
+    function at(p, z, zone) {
+      var ou = map(p[0], z, zone);
+      return add(add(add(plane.origin, scale(plane.x, ou[0])), scale(plane.y, ou[1])), scale(plane.n, p[1]));
+    }
+    function zoneOfPoly(ps) { var s = 0; ps.forEach(function (p) { s += p[0]; }); return zoneOf(s / ps.length); }
+    // caps: the outline (a convex one: a round hole, a slot, a rectangle) or each triangle of it cut along the zone lines
+    // into convex pieces, at both depths
+    var n = loop.length, convex = true;
+    for (var v = 0; v < n && convex; v++) {
+      var e1 = sub2(loop[(v + 1) % n], loop[v]), e2 = sub2(loop[(v + 2) % n], loop[(v + 1) % n]);
+      if (e1[0] * e2[1] - e1[1] * e2[0] < -1e-12 * Math.max(1e-12, Math.hypot(e1[0], e1[1]) * Math.hypot(e2[0], e2[1]))) convex = false;
+    }
+    function sub2(p, q) { return [p[0] - q[0], p[1] - q[1]]; }
+    (convex ? [loop] : triangulate(loop).map(function (t) { return [loop[t[0]], loop[t[1]], loop[t[2]]]; })).forEach(function (tri) {
+      var lo = Infinity, hi = -Infinity;
+      tri.forEach(function (p) { lo = Math.min(lo, p[0]); hi = Math.max(hi, p[0]); });
+      var cuts = [-Infinity].concat(Z.filter(function (z) { return z > lo && z < hi; }), [Infinity]);
+      for (var c = 0; c + 1 < cuts.length; c++) {
+        var za = cuts[c], zb = cuts[c + 1], pc = [];
+        for (var i = 0; i < tri.length; i++) {
+          var a = tri[i], b = tri[(i + 1) % tri.length];
+          if (a[0] >= za && a[0] <= zb) pc.push(a);
+          crossings(a, b).forEach(function (x) { if (x[0] === za || x[0] === zb) pc.push(x); });
+        }
+        if (pc.length < 3) continue;
+        var zone = zoneOfPoly(pc);
+        // a convex piece of a cap lands on a plane: one face each side
+        tris.push(pc.map(function (p) { return at(p, -eps, zone); }), pc.map(function (p) { return at(p, T + eps, zone); }).reverse());
+      }
+    });
+    // walls: each outline edge split at the zone lines
+    for (var i = 0; i < loop.length; i++) {
+      var a = loop[i], b = loop[(i + 1) % loop.length], pts = [a].concat(crossings(a, b), [b]);
+      for (var k = 0; k + 1 < pts.length; k++) {
+        var p = pts[k], q = pts[k + 1], zone = zoneOf((p[0] + q[0]) / 2);
+        var p0 = at(p, -eps, zone), q0 = at(q, -eps, zone), p1 = at(p, T + eps, zone), q1 = at(q, T + eps, zone);
+        // a slanted wall in the bend twists (radial lines turn along it): four triangles to its true centre
+        if (len(sub(sub(q1, q0), sub(p1, p0))) < 1e-9 * Math.max(1, T)) { tris.push([p0, p1, q1, q0]); continue; }
+        var cm = at([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], T / 2, zone);
+        tris.push([p0, cm, q0], [q0, cm, q1], [q1, cm, p1], [p1, cm, p0]);
+      }
+    }
+    // outward: flip all when the enclosed volume comes out negative
+    var vol = 0;
+    tris.forEach(function (t) { for (var j = 1; j + 1 < t.length; j++) vol += dot(t[0], cross(t[j], t[j + 1])); });
+    if (vol < 0) tris.forEach(function (t) { t.reverse(); });
+    return tris;
+  }
+  // wrapCut(loops, sec, BA, plane, opts) -> a CSG solid (null for no loops): the void outlines wrapped by wrapMesh, so
+  // that cutting it from the section's sweep (built in `plane`) leaves each void where the flat put it. ε = 1 % T (at
+  // most half the bend radius). opts.segs: the bend's facets (default flangeProfile's); opts.grow: { s0, s1, t0, t1 }
+  // band edges: where a void outline runs along one of them it is carried on past it (growLoop), so the cut never ends
+  // on a face of the sweep; opts.shared: the polygons' tag. opts.faces: return wrapMesh's faces (all loops) instead of
+  // a solid (OpenCascade sews them).
+  function wrapCut(loops, sec, BA, plane, opts) {
+    opts = opts || {};
+    var T = sec.T, segs = opts.segs || Math.max(4, Math.round(8 * sec.A / (Math.PI / 2))), eps = Math.min(0.01 * T, 0.5 * sec.R), tris = [];
+    loops.forEach(function (l0) {
+      var l = opts.grow ? growLoop(l0, opts.grow, T) : l0;
+      if (signedArea(l) < 0) l = l.slice().reverse();
+      tris = tris.concat(wrapMesh(l, sec, BA, plane, segs, eps));
+    });
+    if (opts.faces) return tris;
+    var polys = [];
+    tris.forEach(function (t) {
+      var pg = CSG.Polygon.tryCreate(t.map(function (p) { return new CSG.Vertex(new CSG.Vector(p[0], p[1], p[2])); }), opts.shared);
+      if (pg) polys.push(pg);
+    });
+    return polys.length ? CSG.fromPolygons(polys) : null;
+  }
+  // growLoop(l, band, T) -> the outline with each edge that runs along a band edge (s0, s1, t0 or t1, where set) carried
+  // 2 % T out past it as a rectangle: the edges inside the band stay exactly where they were (a void cut off by the band
+  // edge goes on beyond it, so the sweep is cut clean through there; a sheet edge the band ends on is cut past)
+  function growLoop(l, band, T) {
+    var tol = 1e-6 * Math.max(1, T), gr = 0.02 * T, out = [];
+    function side(p, q) {
+      if (band.s0 != null && Math.abs(p[0] - band.s0) < tol && Math.abs(q[0] - band.s0) < tol) return [-gr, 0];
+      if (band.s1 != null && Math.abs(p[0] - band.s1) < tol && Math.abs(q[0] - band.s1) < tol) return [gr, 0];
+      if (band.t0 != null && Math.abs(p[1] - band.t0) < tol && Math.abs(q[1] - band.t0) < tol) return [0, -gr];
+      if (band.t1 != null && Math.abs(p[1] - band.t1) < tol && Math.abs(q[1] - band.t1) < tol) return [0, gr];
+      return null;
+    }
+    var n = l.length, sides = [], i, k0 = -1;
+    for (i = 0; i < n; i++) sides.push(side(l[i], l[(i + 1) % n]));
+    function same(a, b) { return a && b && a[0] === b[0] && a[1] === b[1]; }
+    // start where a run of edges along one band edge begins (or anywhere when there is none / one run all round)
+    for (i = 0; i < n && k0 < 0; i++) if (!same(sides[(i + n - 1) % n], sides[i])) k0 = i;
+    if (k0 < 0) return l;
+    for (var c = 0; c < n;) {
+      var k = (k0 + c) % n, d = sides[k], p = l[k];
+      out.push(p);
+      if (!d) { c++; continue; }
+      // a run of edges along this band edge, from vertex k to vertex k + run: its inner vertices go (they lie inside
+      // the grown outline), the run's ends stay and the outline steps out past the band edge between them
+      var run = 1;
+      while (c + run < n && same(sides[(k0 + c + run) % n], d)) run++;
+      var q = l[(k0 + c + run) % n];
+      out.push([p[0] + d[0], p[1] + d[1]], [q[0] + d[0], q[1] + d[1]]);
+      c += run;
+    }
+    return out;
+  }
+  // BA for a flange's bend (bendCalc, as its flat pattern will use it; the K-factor's when the method has no answer)
+  function zoneBA(sheet, A, R, T, f) {
+    try { return bendCalc(sheet, A, R, T, customBA(f)).BA; } catch (e) { return bendAllowance(A, R, T, sheetKFactor(sheet)); }
+  }
+  // the voids as the flat pattern places them: (d, τ) = (s, distance from the record's end a toward b), only those
+  // that reach past the bend's start (the rest are holes of the sheet before the bend, already in the flat)
+  function flatCutouts(loops, ta, sign) {
+    return loops.filter(function (l) { return l.some(function (p) { return p[0] > 1e-9; }); })
+      .map(function (l) { return l.map(function (p) { return [p[0], (p[1] - ta) * sign]; }); });
+  }
+
   function buildFlange(f, model, ctx) {
     var lay = flangeLayout(f, model, ctx);
     var tools = lay.parts.map(function (p) {
       var tool = prism(p.loop, p.plane, p.t0, p.t1, f.id);
       p.clips.forEach(function (c) { tool = tool.clipByPlane(c.n, c.w); });
+      // cuts across the bend zone (bendVoids): wrapped round the bend and taken out of it
+      if (p.voids && p.voids.length) {
+        var w = wrapCut(p.voids, lay.section, p.BA, p.plane, { grow: { s0: p.band.s0 }, shared: f.id });
+        if (w) tool = tool.subtract(w);
+      }
       return tool;
     });
     ctx.flanges[f.id] = lay.info;
@@ -511,15 +781,218 @@
   // Bend allowance with a K-factor: arc length of the neutral axis.
   function bendAllowance(angleRad, R, T, K) { return angleRad * (R + K * T); }
 
+  // ------------------------------------------------------------------ flat pattern: 2D region merge and loop hygiene
+  // mergeFlatRegions(regions, notches, W) -> the loops of (∪ regions) − (∪ notches), each with the blank on its left
+  // (outer loops CCW, holes CW), or null when a boundary does not close (the caller then merges with CSG).
+  // regions: [[loop, …]] (one per unfolded face or bend strip; a point is in a region when an odd number of its loops
+  // hold it, so a face's holes stay holes); notches: [loop] (bend reliefs, cut from the merged blank). An arrangement
+  // of the loops' edges:
+  //   1. every point is welded to the nearest one already seen within W (the regions come from rigid maps of real
+  //      faces, whose shared corners sit a few 1e-5 apart); where two edges cross, the crossing becomes a point too;
+  //   2. each edge is cut at every point within W of it, so near-coincident edges are made of the very same pieces;
+  //   3. a piece is on the boundary when the blank lies on one side of it only, tested a hair off its middle against
+  //      the loops rebuilt from those welded points (a seam of two regions is then never a gap nor a double edge);
+  //   4. the kept pieces, the blank on their left, are chained into loops (where two loops touch, the sharpest right
+  //      turn: they stay two loops), then collinear points and zero-width spikes are dropped.
+  // The CSG merge this replaces (thin prisms, union, outline of the top face) could split a blank in two where several
+  // region edges meet at one corner (a mitred tray corner: BSP fragments 1e-5 apart the outline tracer did not chain).
+  // flatOptions.merge: '2d' (default) or 'csg' (the old merge, for comparison); FLAT_WELD: mergeFlatRegions' W, the
+  // weld distance faceOutline uses for the same near-coincident corners
+  var flatOptions = { merge: '2d' }, FLAT_WELD = 1e-4;
+  function mergeFlatRegions(regions, notches, W) {
+    var P = [], grid = {}, S = 1;
+    function vid(p) {
+      var ix = Math.floor(p[0] / W), iy = Math.floor(p[1] / W), best = -1, bd = W;
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        var c = grid[(ix + dx) + ',' + (iy + dy)];
+        if (c) for (var j = 0; j < c.length; j++) { var q = P[c[j]], d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d <= bd) { bd = d; best = c[j]; } }
+      }
+      if (best >= 0) return best;
+      P.push([+p[0], +p[1]]);
+      S = Math.max(S, Math.abs(p[0]), Math.abs(p[1]));
+      (grid[ix + ',' + iy] = grid[ix + ',' + iy] || []).push(P.length - 1);
+      return P.length - 1;
+    }
+    var shapes = [], edges = [];
+    function addShape(loops, cut) {
+      var sh = { loops: [], cut: cut };
+      loops.forEach(function (l) {
+        if (!l || l.length < 3 || !(Math.abs(signedArea(l)) >= 1e-9)) return;
+        var ids = [];
+        l.forEach(function (p) { var k = vid(p); if (!ids.length || ids[ids.length - 1] !== k) ids.push(k); });
+        while (ids.length > 1 && ids[0] === ids[ids.length - 1]) ids.pop();
+        if (ids.length < 3) return;
+        var lp = [];
+        for (var i = 0; i < ids.length; i++) { var e = { a: ids[i], b: ids[(i + 1) % ids.length] }; lp.push(e); edges.push(e); }
+        sh.loops.push(lp);
+      });
+      if (sh.loops.length) shapes.push(sh);
+    }
+    regions.forEach(function (rg) { addShape(rg, false); });
+    (notches || []).forEach(function (n) { addShape([n], true); });
+    if (!shapes.some(function (s) { return !s.cut; })) return null;
+    function boxOf(e) { var a = P[e.a], b = P[e.b]; e.x0 = Math.min(a[0], b[0]); e.x1 = Math.max(a[0], b[0]); e.y0 = Math.min(a[1], b[1]); e.y1 = Math.max(a[1], b[1]); }
+    edges.forEach(boxOf);
+    // 1. crossings (a sweep over x)
+    var byX = edges.slice().sort(function (p, q) { return p.x0 - q.x0; }), i, j;
+    for (i = 0; i < byX.length; i++) {
+      var e = byX[i];
+      for (j = i + 1; j < byX.length && byX[j].x0 <= e.x1 + W; j++) {
+        var f = byX[j];
+        if (f.y0 > e.y1 + W || f.y1 < e.y0 - W || f.a === e.a || f.a === e.b || f.b === e.a || f.b === e.b) continue;
+        var a1 = P[e.a], a2 = P[e.b], b1 = P[f.a], b2 = P[f.b];
+        var rx = a2[0] - a1[0], ry = a2[1] - a1[1], sx = b2[0] - b1[0], sy = b2[1] - b1[1], den = rx * sy - ry * sx;
+        if (Math.abs(den) <= 1e-12 * Math.hypot(rx, ry) * Math.hypot(sx, sy)) continue;   // parallel: step 2 joins them
+        var qx = b1[0] - a1[0], qy = b1[1] - a1[1], t = (qx * sy - qy * sx) / den, u = (qx * ry - qy * rx) / den;
+        if (t > 0 && t < 1 && u > 0 && u < 1) vid([a1[0] + rx * t, a1[1] + ry * t]);
+      }
+    }
+    // 2. every edge cut at the points within W of it
+    var order = P.map(function (p, k) { return k; }).sort(function (p, q) { return P[p][0] - P[q][0]; }), xs = order.map(function (k) { return P[k][0]; });
+    function firstAtLeast(x) { var lo = 0, hi = xs.length; while (lo < hi) { var m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; } return lo; }
+    edges.forEach(function (e) {
+      var a = P[e.a], b = P[e.b], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), ux = dx / L, uy = dy / L, cuts = [{ t: 0, id: e.a }];
+      for (var k = firstAtLeast(e.x0 - W); k < order.length && xs[k] <= e.x1 + W; k++) {
+        var id = order[k], p = P[id];
+        if (id === e.a || id === e.b || p[1] < e.y0 - W || p[1] > e.y1 + W) continue;
+        var wx = p[0] - a[0], wy = p[1] - a[1], t = wx * ux + wy * uy;
+        if (t > 0 && t < L && Math.abs(wx * uy - wy * ux) <= W) cuts.push({ t: t, id: id });
+      }
+      cuts.sort(function (p, q) { return p.t - q.t; });
+      cuts.push({ t: L, id: e.b });
+      e.chain = [];
+      cuts.forEach(function (c) { if (e.chain[e.chain.length - 1] !== c.id) e.chain.push(c.id); });
+    });
+    // the loops again, through the welded points
+    shapes.forEach(function (sh) {
+      sh.polys = sh.loops.map(function (lp) { var pts = []; lp.forEach(function (e) { for (var k = 0; k + 1 < e.chain.length; k++) pts.push(P[e.chain[k]]); }); return pts; });
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      sh.polys.forEach(function (pl) { pl.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }); });
+      sh.box = [x0, y0, x1, y1];
+    });
+    function inShape(sh, q) {
+      if (q[0] < sh.box[0] || q[0] > sh.box[2] || q[1] < sh.box[1] || q[1] > sh.box[3]) return false;
+      var c = false;
+      for (var k = 0; k < sh.polys.length; k++) if (pointInPoly(q, sh.polys[k])) c = !c;
+      return c;
+    }
+    function inBlank(q) {
+      var k, hit = false;
+      for (k = 0; k < shapes.length && !hit; k++) if (!shapes[k].cut && inShape(shapes[k], q)) hit = true;
+      if (!hit) return false;
+      for (k = 0; k < shapes.length; k++) if (shapes[k].cut && inShape(shapes[k], q)) return false;
+      return true;
+    }
+    // 3. the boundary pieces, each geometric piece tested once
+    var seen = {}, kept = [];
+    edges.forEach(function (e) {
+      for (var k = 0; k + 1 < e.chain.length; k++) {
+        var u = e.chain[k], v = e.chain[k + 1], key = u < v ? u + '|' + v : v + '|' + u;
+        if (seen[key]) continue;
+        seen[key] = true;
+        var p = P[u], q = P[v], dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy);
+        if (!(L > 0)) continue;
+        var h = Math.min(1e-7 * S, W / 10, 0.05 * L), m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], nx = -dy / L * h, ny = dx / L * h;
+        var inL = inBlank([m[0] + nx, m[1] + ny]), inR = inBlank([m[0] - nx, m[1] - ny]);
+        if (inL === inR) continue;
+        kept.push(inL ? { a: u, b: v } : { a: v, b: u });
+      }
+    });
+    // 4. chain
+    var out = {};
+    kept.forEach(function (e) { (out[e.a] = out[e.a] || []).push(e); });
+    function turn(din, e) { var o = [P[e.b][0] - P[e.a][0], P[e.b][1] - P[e.a][1]]; return Math.atan2(din[0] * o[1] - din[1] * o[0], din[0] * o[0] + din[1] * o[1]); }
+    var loops = [], closedAll = true;
+    kept.forEach(function (e0) {
+      if (e0.used) return;
+      var ids = [], cur = e0, closed = false;
+      while (cur && !cur.used) {
+        cur.used = true; ids.push(cur.a);
+        if (cur.b === e0.a) { closed = true; break; }
+        var cands = (out[cur.b] || []).filter(function (x) { return !x.used; });
+        if (cands.length > 1) {
+          var din = [P[cur.b][0] - P[cur.a][0], P[cur.b][1] - P[cur.a][1]];
+          cands.sort(function (x, y) { return turn(din, x) - turn(din, y); });
+        }
+        cur = cands[0];
+      }
+      if (!closed) { closedAll = false; return; }
+      var pts = cleanFlatLoop(ids.map(function (id) { return P[id].slice(); }), Math.min(W, 1e-7 * S));
+      if (!pts) return;
+      var per = 0;
+      pts.forEach(function (p, k) { var q = pts[(k + 1) % pts.length]; per += Math.hypot(q[0] - p[0], q[1] - p[1]); });
+      if (Math.abs(signedArea(pts)) > 0.5 * W * per) loops.push(pts);   // a sliver narrower than W is no loop
+    });
+    return closedAll && loops.length ? loops : null;
+  }
+  // cleanFlatLoop(pts, tol) -> the loop without consecutive duplicates (within tol), points within tol of the straight
+  // line through their neighbours (collinear points on a straight run, and spikes: a point the outline goes out to
+  // and straight back from), or null when fewer than 3 points are left. No point that stays is moved.
+  function cleanFlatLoop(pts, tol) {
+    var p = pts.filter(function (q) { return q && isFinite(q[0]) && isFinite(q[1]); });
+    for (var again = true; again && p.length >= 3;) {
+      again = false;
+      for (var i = 0; i < p.length && p.length >= 3; i++) {
+        var n = p.length, o = p[(i + n - 1) % n], q = p[i], r = p[(i + 1) % n];
+        var dx = r[0] - o[0], dy = r[1] - o[1], L = Math.hypot(dx, dy);
+        // (neighbours on one point: q is the tip of a spike, or a duplicate)
+        var off = L > tol ? Math.abs((q[0] - o[0]) * dy - (q[1] - o[1]) * dx) / L : 0;
+        if (Math.hypot(q[0] - o[0], q[1] - o[1]) <= tol || off <= tol) { p.splice(i, 1); i--; again = true; }
+      }
+    }
+    return p.length >= 3 ? p : null;
+  }
+
+  // csgMerge(regions, notches) -> the merged blank's loops the CSG way: thin prisms in the Front frame, union, the
+  // notches subtracted, the outline of the top face (mergeFlatRegions' fallback, and flatOptions.merge 'csg')
+  function csgMerge(regions, notches) {
+    var fp = makePlane('Front', 0), solids = [];
+    regions.forEach(function (loops) {
+      var cl = [];
+      loops.forEach(function (l) {
+        var a = signedArea(l);
+        if (Math.abs(a) < 1e-9) return;
+        cl.push({ pts: a > 0 ? l : l.slice().reverse(), depth: 0 });
+      });
+      cl.forEach(function (x) {
+        var probe = [(x.pts[0][0] + x.pts[1][0]) / 2, (x.pts[0][1] + x.pts[1][1]) / 2];
+        cl.forEach(function (y) { if (x !== y && pointInPoly(probe, y.pts)) x.depth++; });
+      });
+      var outers = cl.filter(function (x) { return x.depth % 2 === 0; }).map(function (x) { return prism(x.pts, fp, 0, 1); });
+      var holes = cl.filter(function (x) { return x.depth % 2 === 1; }).map(function (x) { return prism(x.pts, fp, -0.01, 1.01); });
+      if (!outers.length) return;
+      var s = unionAll(outers);
+      if (holes.length) s = s.subtract(unionAll(holes));
+      solids.push(s);
+    });
+    if (!solids.length) throw new Error('Could not build the flat pattern.');
+    // The regions come from rigid maps of real faces, so their shared corners carry near-coincident vertices (a few
+    // 1e-5 apart). Merged with every BSP fragment kept, both sides of such a seam get the same split vertices and the
+    // outline tracer welds them; with CSG's whole-polygon restore a seam becomes a T-junction beyond its tolerance and
+    // the blank falls apart into two loops. So this one merge keeps all fragments.
+    var keepWhole = CSG.options ? CSG.options.restoreWhole : null, merged;
+    if (CSG.options) CSG.options.restoreWhole = false;
+    try {
+      merged = unionTree(solids);
+      // bend reliefs: the strips are plain rectangles, so the notches are cut from the merged blank
+      if (notches.length) merged = merged.subtract(unionAll(notches.map(function (l) { return prism(l, fp, -0.01, 1.01); })));
+    } finally { if (CSG.options) CSG.options.restoreWhole = keepWhole; }
+    var fm = meshFromBody(merged), topIdx = -1;
+    fm.faces.forEach(function (fc, i) { if (fc.normal[2] > 0.999 && Math.abs(fc.w - 1) < 1e-6) topIdx = i; });
+    if (topIdx < 0) throw new Error('Could not build the flat pattern.');
+    var fo = faceOutline(fm, topIdx);
+    return fo.loops.map(function (l) { return l.map(function (p) { var q = to3D(fo.plane, p[0], p[1]); return [q[0], q[1]]; }); });
+  }
   // -> { loops: [[[u,v],...]] (outer first, CCW; holes after), bends: [{a:[u,v], b:[u,v], label, up, angle, R, ba, bd,
   // method, source}], plane, sheet (the resolved parameters, kFactor always filled in), bbox, size: [w, h] (the blank's
-  // bounding box), note (sheetNote: the parameters for the DXF / drawing note), warnings: [string] }
+  // bounding box), note (sheetNote: the parameters for the DXF / drawing note), warnings: [string], etch: [item]
+  // and etchLayer (flatEtch: the Etch text and ETCH-layer marks of sketches on the sheet's faces, in flat coordinates) }
   // Recursive unfold on one side of the sheet: the base face (largest face on the +n side of the base sketch plane)
   // is mapped into the sketch frame; every flange attached to an unfolded face contributes a bend strip of length
   // BA (bendCalc: the sheet's bend allowance method, or the feature's custom one) beyond its edge and then unfolds its
   // wall face (real outline, holes included) with a rigid
-  // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged with the
-  // CSG kernel (thin prisms) and the merged top face's outline is the blank.
+  // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged in 2D
+  // (mergeFlatRegions; the CSG merge, csgMerge, only as its fallback) and every loop is cleaned (cleanFlatLoop).
   function flatPattern(model, build, mesh) {
     var rmodel = resolvedModel(model);
     if (rmodel.sheetError) throw new Error(rmodel.sheetError);
@@ -537,7 +1010,9 @@
     mesh.faces.forEach(function (face, i) {
       var d = dot(face.normal, plane.n);
       if (Math.abs(d) < 0.999) return;
-      var score = face.area * (d > 0 ? 1 + 1e-9 : 1);
+      // the face on the sketch's side wins a tie (to 1e-6: an OpenCascade mesh gives the two faces of one plate areas a
+      // few 1e-8 apart, and the unfold must not change sides on that)
+      var score = face.area * (d > 0 ? 1 + 1e-6 : 1);
       if (!best || score > best.score) best = { face: face, i: i, score: score };
     });
     if (!best) throw new Error('Could not find the flat sheet face.');
@@ -555,7 +1030,7 @@
         var d = dot(face.normal, plane.n);
         var off = Math.abs(dot(face.normal, pt) - face.w);   // either face of the sheet there
         if (Math.abs(d) < 0.999 || (off > 1e-4 && Math.abs(off - T) > 1e-4)) return;
-        var score = face.area * (d > 0 ? 1 + 1e-9 : 1);
+        var score = face.area * (d > 0 ? 1 + 1e-6 : 1);
         if (!ab || score > ab.score) ab = { face: face, i: i, score: score };
       });
       if (ab) best = ab;
@@ -574,13 +1049,22 @@
       var lo = Math.max(0, Math.min(tA, tB)), hi = Math.min(L, Math.max(tA, tB));
       return hi > lo ? hi - lo : 0;
     }
+    // the rigid map each unfolded face went into the flat with; two maps agree when they take three points spanning the
+    // face's plane (P, P + s·d, P + s·t) to the same places
+    var faceMaps = {}, faceRecs = [];
+    function sameMap(m1, m2, P, d, t, s) {
+      var tol = 1e-6 * (1 + s);
+      return [P, add(P, scale(d, s)), add(P, scale(t, s))].every(function (Q) { var a = m1(Q), b = m2(Q); return Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol; });
+    }
     function unfold(faceIdx, map, nTracked, depth) {
       if (usedFaces[faceIdx] || depth > 16) return;
       usedFaces[faceIdx] = true;
+      faceMaps[faceIdx] = map;
       var face = mesh.faces[faceIdx], o = faceOutline(mesh, faceIdx);
       if (!o) return;
       var loops2 = o.loops.map(function (l) { return l.map(function (p) { return map(to3D(o.plane, p[0], p[1])); }); });
       regions.push(loops2);
+      faceRecs.push({ map: map, normal: face.normal, w: face.w, loops: loops2 });
       flanges.forEach(function (fi, k) {
         if (usedFlanges[k] || Math.abs(dot(fi.u, face.normal)) < 0.999) return;
         var dm = dot(fi.mid, face.normal) - face.w;
@@ -653,6 +1137,11 @@
           } else nt.push(corner(r, lo, w), corner(r, lo, 0));
           notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
         });
+        // holes / slots cut before the bend that cross it (fi.cutouts, [d, τ] from end a): cut from the blank in place
+        (fi.cutouts || []).forEach(function (cl) {
+          var nt = cl.map(function (p) { return corner(eA, p[0], -p[1]); });
+          notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
+        });
         // bend line: mid-strip, reaching the mitre line at a mitred end
         var bend = { a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
         bend.label = bendNoteText(bend, model.units);
@@ -669,68 +1158,134 @@
         // (a rolled hem is all bend: no wall after it)
         if (fi.L > 1e-9) mesh.faces.forEach(function (fc, i) { if (wIdx < 0 && dot(fc.normal, wn) > 0.999 && Math.abs(dot(fc.normal, Pmid) - fc.w) < 1e-3) wIdx = i; });
         if (wIdx >= 0 && !usedFaces[wIdx]) unfold(wIdx, wallMap, wn, depth + 1);
+        // Coplanar walls are one mesh face (two flanges on one edge line either side of a tab: the Tray's back walls),
+        // so the first flange's unfold already laid this wall down, holes and all. When that unfold put it where this
+        // flange would, there is nothing more to add: the stand-in rectangle below would cover the wall's holes and,
+        // starting at BA − eps with a mitre corner of its own, leave a stray vertex in the blank's outline.
+        else if (wIdx >= 0 && faceMaps[wIdx] && sameMap(faceMaps[wIdx], wallMap, Pmid, dir3, tw, Math.max(fi.len || 0, fi.L, T))) return;
         else if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
           corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
       });
     }
     unfold(best.i, function (Q) { return to2D(plane, Q); }, best.face.normal, 0);
-    // merge: thin prisms in the Front frame, union, outline of the top face
-    var fp = makePlane('Front', 0), solids = [];
-    regions.forEach(function (loops) {
-      var cl = [];
-      loops.forEach(function (l) {
-        var a = signedArea(l);
-        if (Math.abs(a) < 1e-9) return;
-        cl.push({ pts: a > 0 ? l : l.slice().reverse(), depth: 0 });
-      });
-      cl.forEach(function (x) {
-        var probe = [(x.pts[0][0] + x.pts[1][0]) / 2, (x.pts[0][1] + x.pts[1][1]) / 2];
-        cl.forEach(function (y) { if (x !== y && pointInPoly(probe, y.pts)) x.depth++; });
-      });
-      var outers = cl.filter(function (x) { return x.depth % 2 === 0; }).map(function (x) { return prism(x.pts, fp, 0, 1); });
-      var holes = cl.filter(function (x) { return x.depth % 2 === 1; }).map(function (x) { return prism(x.pts, fp, -0.01, 1.01); });
-      if (!outers.length) return;
-      var s = unionAll(outers);
-      if (holes.length) s = s.subtract(unionAll(holes));
-      solids.push(s);
-    });
-    if (!solids.length) throw new Error('Could not build the flat pattern.');
-    // The regions come from rigid maps of real faces, so their shared corners carry near-coincident vertices (a few
-    // 1e-5 apart). Merged with every BSP fragment kept, both sides of such a seam get the same split vertices and the
-    // outline tracer welds them; with CSG's whole-polygon restore a seam becomes a T-junction beyond its tolerance and
-    // the blank falls apart into two loops. So this one merge keeps all fragments.
-    var keepWhole = CSG.options ? CSG.options.restoreWhole : null, merged;
-    if (CSG.options) CSG.options.restoreWhole = false;
-    try {
-      merged = unionTree(solids);
-      // bend reliefs: the strips are plain rectangles, so the notches are cut from the merged blank
-      if (notches.length) merged = merged.subtract(unionAll(notches.map(function (l) { return prism(l, fp, -0.01, 1.01); })));
-    } finally { if (CSG.options) CSG.options.restoreWhole = keepWhole; }
-    var fm = meshFromBody(merged), topIdx = -1;
-    fm.faces.forEach(function (fc, i) { if (fc.normal[2] > 0.999 && Math.abs(fc.w - 1) < 1e-6) topIdx = i; });
-    if (topIdx < 0) throw new Error('Could not build the flat pattern.');
-    var fo = faceOutline(fm, topIdx);
-    var loops = fo.loops.map(function (l) { return l.map(function (p) { var q = to3D(fo.plane, p[0], p[1]); return [q[0], q[1]]; }); });
+    // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
+    var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
+    if (!loops) loops = csgMerge(regions, notches);
     loops.sort(function (a, b) { return signedArea(b) - signedArea(a); });
     if (!loops.length || signedArea(loops[0]) <= 0) throw new Error('Could not build the flat pattern.');
+    // last pass (laser hygiene): no duplicate, collinear or spike point survives, and no point moves (1e-9 × size)
+    var lo0 = [Infinity, Infinity], hi0 = [-Infinity, -Infinity];
+    loops[0].forEach(function (p) { for (var k = 0; k < 2; k++) { lo0[k] = Math.min(lo0[k], p[k]); hi0[k] = Math.max(hi0[k], p[k]); } });
+    var hyg = 1e-9 * Math.hypot(hi0[0] - lo0[0], hi0[1] - lo0[1]);
+    loops = loops.map(function (l) { return cleanFlatLoop(l, hyg); }).filter(Boolean);
     var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
     loops.forEach(function (l) { l.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); }); });
     Object.keys(kUsed).forEach(function (k) {
       if (+k > 0.5 + 1e-9 || +k < 0) warn('K-factor ' + fmtN(+k) + ' is outside 0–0.5: the neutral axis would lie outside the sheet. If ' + fmtN(+k) + ' is a shop "material in bend" constant (BA = ' + fmtN(+k) + '·T + 1.571·R at 90°), the K-factor is ' + fmtN(+k) + ' / 1.5708 = ' + fmtN(Math.round(+k / (Math.PI / 2) * 1000) / 1000) + '.');
     });
     var outSheet = Object.assign({}, sheet, { kFactor: sheetKFactor(sheet) });
-    return { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings };
+    var etch = flatEtch(model, build, faceRecs, T, warn);
+    return { loops: loops, bends: bends, plane: plane, sheet: outSheet, bbox: { min: min, max: max }, size: [max[0] - min[0], max[1] - min[1]], note: sheetNote(outSheet), warnings: warnings,
+      etch: etch.items, etchLayer: etch.layer };
   }
+  // A layer of marks, not cuts: a noProfile layer (the ETCH preset, or any such layer of the user's) other than BEND
+  // (bend lines come from the flat's own bends)
+  function etchLayerOf(sketch, e) {
+    var l = K.sketchLayer(sketch, e);
+    return l && l.noProfile && !/BEND/i.test(String(l.name)) ? l : null;
+  }
+  // flatEtch(model, build, faceRecs, T, warn) -> { items, layer }: the marking of sketches drawn on a face of the sheet
+  // (Sketch Text in Etch mode, and lines / arcs / circles / any other entity on an ETCH-type layer; never construction
+  // geometry, points, BEND-layer lines or Cut text, which the solid already holds as holes), in flat coordinates.
+  // A sketch belongs to an unfolded face (faceRecs: { map, normal, w, loops }) when its plane is that face's plane or
+  // the sheet's other side T behind it; its points are dropped onto the face along the normal and go through the face's
+  // own unfold map, exactly as the face's holes do (a wall's marks unfold with it). A sketch on the other side comes out
+  // mirrored, as the mark lies on the sheet seen from the flat's side. With several such faces (one plane holding two
+  // walls apart), the one whose outline holds most of the sketch's points (one point per entity).
+  // items: { t: 'line', a, b } | { t: 'arc', c, r, a0, a1 } (degrees, counterclockwise from a0 to a1) | { t: 'circle',
+  // c, r } | { t: 'poly', pts, closed }; layer: { name: 'ETCH', aci, color } of the first ETCH-type layer used (null
+  // when only text was found: the DXF then uses colour 3).
+  function flatEtch(model, build, faceRecs, T, warn) {
+    var items = [], layer = null, R2D = 180 / Math.PI;
+    model.features.forEach(function (sk) {
+      if (sk.type !== 'sketch' || sk.suppressed || (build.errors && build.errors[sk.id])) return;
+      var ents = (sk.entities || []).filter(function (e) {
+        if (!e || e.construction || e.t === 'point' || (e.t === 'line' && e.infinite)) return false;
+        if (e.t === 'text') return e.mode !== 'outline' && !(K.sketchLayer(sk, e) && /BEND/i.test(String(K.sketchLayer(sk, e).name)));
+        return !!etchLayerOf(sk, e);
+      });
+      if (!ents.length) return;
+      var pl;
+      try { pl = resolvePlane((build.facePlanes && build.facePlanes[sk.id]) || sk.plane, model, build.planes || {}); } catch (err) { return; }
+      var n = norm(pl.n), O = to3D(pl, 0, 0), tol = 1e-5 * (1 + len(O));
+      var cands = faceRecs.filter(function (fr) {
+        if (Math.abs(Math.abs(dot(n, fr.normal)) - 1) > 1e-6) return false;
+        var off = dot(fr.normal, O) - fr.w;
+        return Math.abs(off) < tol || Math.abs(off + T) < tol;
+      });
+      var name = sk.name || ('Sketch ' + sk.id);
+      if (!cands.length) { warn(name + ': its etch marks do not lie on a flat face of the sheet, so they are left out of the flat pattern.'); return; }
+      // the sketch's own points, one per entity, to pick the face
+      var probes = ents.map(function (e) { var s = K.entitySnapPoints ? K.entitySnapPoints(e) : null; return s && s.length ? s[0] : null; }).filter(Boolean);
+      function F(fr) {
+        return function (x, y) { var Q = to3D(pl, x, y); Q = sub(Q, scale(fr.normal, dot(fr.normal, Q) - fr.w)); return fr.map(Q); };
+      }
+      var best = null;
+      cands.forEach(function (fr) {
+        var f = F(fr), hits = 0;
+        probes.forEach(function (q) {
+          var p = f(q[0], q[1]), k = 0;
+          fr.loops.forEach(function (l) { if (pointInPoly(p, l)) k++; });
+          if (k % 2 === 1) hits++;
+        });
+        if (!best || hits > best.hits) best = { fr: fr, hits: hits };
+      });
+      // the sketch frame -> the flat as one affine map: P0 + X·x + Y·y (X, Y unit, det −1 when the sketch is mirrored)
+      var f = F(best.fr), P0 = f(0, 0), X = sub2(f(1, 0), P0), Y = sub2(f(0, 1), P0), det = X[0] * Y[1] - X[1] * Y[0];
+      function pt(q) { return [P0[0] + X[0] * q[0] + Y[0] * q[1], P0[1] + X[1] * q[0] + Y[1] * q[1]]; }
+      function ang(deg) { var a = deg / R2D, d = [X[0] * Math.cos(a) + Y[0] * Math.sin(a), X[1] * Math.cos(a) + Y[1] * Math.sin(a)]; return Math.atan2(d[1], d[0]) * R2D; }
+      function arc(c, r, a0, a1) {   // a sketch arc, counterclockwise from a0 to a1 (degrees)
+        if (a1 - a0 >= 360 - 1e-9) { items.push({ t: 'circle', c: pt(c), r: r }); return; }
+        var b0 = ang(a0), b1 = ang(a1);
+        items.push(det > 0 ? { t: 'arc', c: pt(c), r: r, a0: b0, a1: b1 } : { t: 'arc', c: pt(c), r: r, a0: b1, a1: b0 });
+      }
+      ents.forEach(function (e) {
+        if (e.t === 'text') {
+          (K.textDxf(e).strokes || []).forEach(function (s) {
+            if (s.t === 'line') items.push({ t: 'line', a: pt([s.x1, s.y1]), b: pt([s.x2, s.y2]) });
+            else if (s.t === 'poly') items.push({ t: 'poly', pts: s.pts.map(pt), closed: !!s.closed });
+            else arc([s.cx, s.cy], s.r, s.a0, s.a1);
+          });
+          return;
+        }
+        var lr = etchLayerOf(sk, e);
+        if (!layer && lr) layer = { name: 'ETCH', aci: lr.aci > 0 ? lr.aci | 0 : null, color: lr.color || null };
+        if (e.t === 'arc') { arc([e.cx, e.cy], e.r, e.a0, e.a1 < e.a0 ? e.a1 + 360 : e.a1); return; }
+        if (K.isFreeCurve(e)) { (K.entityPolylines(e) || []).forEach(function (p) { items.push({ t: 'poly', pts: p.pts.map(pt), closed: !!p.closed }); }); return; }
+        K.entityPrimitives(e).forEach(function (p) {
+          if (p.kind === 'seg') items.push({ t: 'line', a: pt(p.a), b: pt(p.b) });
+          else arc(p.c, p.r, p.full ? 0 : p.a0 * R2D, p.full ? 360 : p.a1 * R2D);
+        });
+      });
+      if (Math.abs(Math.abs(det) - 1) > 1e-6) warn(name + ': its plane is not mapped rigidly into the flat (scale ' + fmtN(Math.sqrt(Math.abs(det))) + ').');
+    });
+    return { items: items, layer: layer };
+  }
+  function sub2(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
   function near2(p, q) { return Math.abs(p[0] - q[0]) < 1e-3 && Math.abs(p[1] - q[1]) < 1e-3; }
   // The unfold works on whole planes of a body, as Anvil's own mesh groups them (meshFromBody: coplanar polygons of a
   // body make one face). A mesh of OpenCascade's solid keeps every B-rep face apart (polygon.face), and a bend relief
   // leaves a sliver of the bend as a separate B-rep face on the plane of the wall beside it (and on the base's): the
   // unfold took that sliver for the wall and lost the wall, and the obround's slivers became stray loops. -> a mesh whose
   // faces are the coplanar groups (normal, w, area, polys, body; face indices change), or `mesh` itself when untagged.
+  // A facet of a curved B-rep face (polygon.surf: a bend) is never part of a plane, however flat it lies (a hole cut
+  // across a bend leaves facets next to the sheet within the grouping's rounding): those keep their own faces, after
+  // all the planes, so the unfold always meets a real plane first.
   function planeFaces(mesh) {
     if (!mesh.faces.some(function (f) { return f.polys && f.polys.length && f.polys[0].face != null; })) return mesh;
-    var groups = {}, faces = [];
+    var groups = {}, faces = [], curved = [];
     mesh.faces.forEach(function (f) {
+      if (f.polys && f.polys.length && f.polys[0].surf) { curved.push(f); return; }
       var k = [Math.round(f.normal[0] * 1000), Math.round(f.normal[1] * 1000), Math.round(f.normal[2] * 1000), Math.round(f.w * 100), f.body || 0, f.part != null ? f.part : ''].join('|');
       var g = groups[k];
       if (!g) {
@@ -745,7 +1300,7 @@
     });
     var out = {};
     Object.keys(mesh).forEach(function (k) { out[k] = mesh[k]; });
-    out.faces = faces;
+    out.faces = faces.concat(curved);
     return out;
   }
 
@@ -838,7 +1393,8 @@
   // sketchedBendLayout(f, model, ctx) -> the bend as plain data, in the coordinates of ctx.body (a CSG): { fixed: [{ n,
   // w }] (half-spaces of the piece that stays put), pieces: [{ keep: [{ n, w }], motion }] (each line's moving piece and
   // where it goes), bends: [{ loop, plane, t0, t1, motion }] (each bend: flangeProfile's section swept along the line
-  // from t0 to t1 in the flat, then moved by `motion`), info (ctx.flanges' records: { move: { keep, R, t } } entries
+  // from t0 to t1 in the flat, then moved by `motion`; voids? / band?: the holes / slots across its strip, see
+  // bendVoids), info (ctx.flanges' records: { move: { keep, R, t } } entries
   // that carry earlier flange records along with a moved piece, one { anchor } point on the fixed piece, then one
   // flange-like record per line), BA, shift, section: { A, R, T, L, ov } (the bend section's flangeProfile parameters,
   // for an exact section) }. buildSketchedBend builds it with the CSG kernel; occt-kernel.js with exact bend arcs.
@@ -935,12 +1491,23 @@
       var keep = region(k).concat([beyond(k)]);
       pieces.push({ keep: keep, motion: G[k] });
       moves.push({ move: { keep: keep, R: G[k].R, t: G[k].t } });
-      bends.push({ loop: loop, plane: { origin: Oc, x: ln.m, y: up, n: ln.a }, t0: -half, t1: half, motion: Gp });
+      var bend = { loop: loop, plane: { origin: Oc, x: ln.m, y: up, n: ln.a }, t0: -half, t1: half, motion: Gp };
+      // holes, slots and notches of the sheet across the strip (and the overlaps into both sides): voids { loops (s,
+      // t), band } the bend's sweep must not fill in (bendVoids; wrapped round the bend by wrapCut). A sheet edge that
+      // is not square to the line counts too, so the bend follows the sheet's outline.
+      var sbBand = { s0: -ov, s1: BA + ov, t0: -half, t1: half };
+      var voids = bendVoids(ctx.body, bend.plane, sbBand, T, { ends: true });
+      if (voids.length) { bend.voids = voids; bend.band = sbBand; }
+      bends.push(bend);
       var reach = regionExtent(ctx.body, keep, ln.O, ln.m);
       // one record per line, shaped like an edge flange's (flangeLayout): the edge is the strip's start line
-      records.push({ a: mPt(Gp, add(Oc, scale(ln.a, -half))), b: mPt(Gp, add(Oc, scale(ln.a, half))), mid: mPt(Gp, Oc), origin: mPt(Gp, Oc),
+      var rec = { a: mPt(Gp, add(Oc, scale(ln.a, -half))), b: mPt(Gp, add(Oc, scale(ln.a, half))), mid: mPt(Gp, Oc), origin: mPt(Gp, Oc),
         o: mDir(Gp, ln.m), u: mDir(Gp, up), len: 2 * half, angle: A, R: R, L: reach ? Math.max(T, reach[1] - BA) : T, T: T, ba: ba,
-        mitred: [false, false], miterPlanes: [null, null], sketched: true });
+        mitred: [false, false], miterPlanes: [null, null], sketched: true };
+      // the voids in the flat (flatCutouts), carried past the strip's ends where they run along them (growLoop)
+      var cut = flatCutouts(voids.map(function (l) { return growLoop(l, { t0: -half, t1: half }, T); }), -half, 1);
+      if (cut.length) rec.cutouts = cut;
+      records.push(rec);
     });
     var fixed = [];
     lines.forEach(function (ln, k) { if (ln.parent < 0) fixed.push(before(k)); });
@@ -954,7 +1521,14 @@
     function clip(body, hs) { hs.forEach(function (h) { if (body.polygons.length) body = body.clipByPlane(h.n, h.w); }); return body; }
     var fixed = clip(ctx.body, lay.fixed), moved = [];
     lay.pieces.forEach(function (pc) { var b = clip(ctx.body, pc.keep); if (b.polygons.length) moved.push(mBody(b, pc.motion)); });
-    var bends = lay.bends.map(function (bd) { return mBody(prism(bd.loop, bd.plane, bd.t0, bd.t1, f.id), bd.motion); });
+    var bends = lay.bends.map(function (bd) {
+      var tool = prism(bd.loop, bd.plane, bd.t0, bd.t1, f.id);
+      if (bd.voids) {   // cuts across the bend: wrapped round it and taken out (bendVoids, wrapCut)
+        var w = wrapCut(bd.voids, lay.section, lay.BA, bd.plane, { grow: bd.band, shared: f.id });
+        if (w) tool = tool.subtract(w);
+      }
+      return mBody(tool, bd.motion);
+    });
     ctx.flanges[f.id] = lay.info;
     return { body: unionTree([fixed].concat(moved, bends)), tool: unionAll(bends), preview: unionTree(moved.concat(bends)) };
   }
@@ -981,7 +1555,7 @@
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
-  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
   K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();
@@ -990,5 +1564,7 @@
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.buildFlange = buildFlange; _.buildJog = buildJog; _.normalCutTool = normalCutTool;
   K.buildSketchedBend = buildSketchedBend; K.sketchedBendLayout = sketchedBendLayout; K.SKETCHED_BEND_POSITIONS = SB_POSITIONS.slice();
+  // cuts across a bend zone (occt-kernel.js reads the voids again from its exact solid and cuts them from its sweep)
+  K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.bendZoneMap = bendZoneMap;
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
 })(Kernel, Kernel._);

@@ -237,7 +237,9 @@
   // reuses the whole cache.
   function featureKey(f, model) {
     var sh = model.sheet ? [model.sheet.thickness, model.sheet.bendRadius] : null;
-    if (sh && f.type === 'sketchedBend') sh = model.sheet;   // its bend allowance sets how much flat each bend rolls up
+    // its bend allowance sets how much flat each bend rolls up (sketched bends; and p9-cutbend: a cut crossing a
+    // flange's or jog's bend is wrapped round it by BA, so the solid changes with K / BA too)
+    if (sh && /^(sketchedBend|flange|jog|hem)$/.test(f.type)) sh = model.sheet;
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 

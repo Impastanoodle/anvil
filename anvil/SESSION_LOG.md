@@ -1332,3 +1332,12 @@ Tests: kernel 945/945, examples 29/29 (both kernels), ui-smoke 423/423, occt-tes
 - tools: Dynamic Mirror, Intersection Curve, Fillet Chain, arc slot width click, Corner trim with splines.
 - dims: Horizontal / Vertical Ordinate sets, Fully Define Ordinate scheme, sketch dimension properties and arc slot callouts on drawings.
 Tests: kernel 960/960, examples 29/29 (both kernels), ui-smoke 447/447, occt-tests 72/72.
+
+## 2026-10-08 (interactive head, 4 Opus subagents): shop-accuracy bugs
+
+- cut across a bend: `bendVoids` / `wrapCut` / `wrapMesh` in kernel-sheetmetal.js wrap through-cuts in a bend's band round the bend (by BA) and subtract them from the sweep; flat records carry `cutouts`; a slanted Sketched Bend line follows the plate edges; OpenCascade re-reads the cuts from the exact solid and drops the overlap strip. Head: `featureKey` includes model.sheet for flange / jog / hem (the solid now depends on BA).
+- flat: coplanar walls of two flanges on one edge line no longer add a stand-in rectangle (stray vertex, hidden wall holes); `mergeFlatRegions` 2D merge replaces the CSG region merge (`K.flatOptions.merge = 'csg'` keeps the old); `K.cleanFlatLoop`; `flat.etch` + ETCH layer in `exportDXFFlat`.
+- inch flange: `meshFromBody` planeKey rounding split a sheet's top face on offsets like 0.075 in; the pick fell to the bottom edge under the mm-sized `max(0.5, T)` tolerance and the flange folded down. `coplanarBody` before meshing, picks within 0.75·T; OpenCascade `shapeToCSG` gives a planar face one plane and a 0.05 mm chord in model units. Inch STEP row in occt-tests.
+- hole wizard: #12 and 9/16 clearances, countersinks #2 / #3 / #5, #12, 7/16–1, #12-28 UNF; no counterbore for #12 / 9/16 (none in B18.3). Head: README.
+- head: occt-tests DXF entity counts compared in a fixed key order (the two kernels' loops start at different points).
+Tests: kernel 976/976, examples 29/29 (both kernels), ui-smoke 447/447, occt-tests 82/82.

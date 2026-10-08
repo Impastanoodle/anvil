@@ -11923,7 +11923,7 @@
       HW.ANSI_SCREWS.forEach(function (s) {
         var c = s.clr.map(HW.drill);
         assert(c[0] > s.d && c[0] < c[1] && c[1] < c[2], s.size + ' clearances ' + c);
-        assert(HW.drill(s.cb.dia) > c[2] && HW.drill(s.cb.drills[0]) > s.d, s.size + ' counterbore');
+        if (s.cb) assert(HW.drill(s.cb.dia) > c[2] && HW.drill(s.cb.drills[0]) > s.d, s.size + ' counterbore');
         if (s.csk) assert(s.csk > c[2], s.size + ' countersink');
       });
       HW.ANSI_THREADS.forEach(function (th) { assert(th.tap < th.d && th.tap > th.d - 1.3 / th.tpi, th.size + ' tap drill ' + th.tap); });
@@ -11977,11 +11977,111 @@
       assert(HW.newFeature({}, 'mm').standard === 'ISO' && HW.newFeature({}, 'mm').size === 'M6', 'mm part default');
       near(HW.newFeature({ type: 'tap', size: '1/4-20 UNC' }, 'in').depth, 0.75, 1e-12, 'default tap depth 2·D + .25');
       var threw = '';
-      try { build('p.units("in");\np.box(2, 2, 1, { centered: true });\np.holeWizard({ face: "Top", offset: 1, points: [[0, 0]], standard: "ANSI Inch", type: "csk", size: "#2" });'); } catch (e) { threw = e.message; }
-      assert(/No 82° countersink size for a #2/.test(threw), 'no #2 countersink: ' + threw);
+      try { build('p.units("in");\np.box(2, 2, 1, { centered: true });\np.holeWizard({ face: "Top", offset: 1, points: [[0, 0]], standard: "ANSI Inch", type: "cbore", size: "#12" });'); } catch (e) { threw = e.message; }
+      assert(/No counterbore size for a #12 socket head cap screw/.test(threw), 'no #12 counterbore (no B18.3 socket head cap screw): ' + threw);
       try { build('p.units("in");\np.box(2, 2, 1, { centered: true });\np.holeWizard({ face: "Top", offset: 1, points: [[0, 0]], type: "tap", size: "1/4-21 UNC" });'); threw = ''; } catch (e) { threw = e.message; }
       assert(/Unknown ANSI Inch thread/.test(threw), threw);
       return 'ok';
+    });
+
+    // --- hw-ansi-sizes: the ANSI Inch sizes that were missing (#12, 9/16, countersinks for #2, #3, #5 and 7/16 – 1,
+    // #12-28 UNF) resolve to their table values, show in the PropertyManager size lists and cut their analytic volume ---
+    test('hw-ansi-sizes: #12 and 9/16 clearances (B18.2.8 steps), #12-28 UNF tap #14, 82° countersinks #2 / #3 / #5 / #12 / 7/16 – 1 (B18.6.3; 7/8, 1 B18.6.2); no #12 / 9/16 counterbore; existing rows unchanged', function () {
+      var A = HW.ANSI;
+      function sp(o) { o.standard = A; return HW.spec(o, 'in'); }
+      var FITS = ['close', 'normal', 'loose'];
+      var CLR = { '#12': [15 / 64, 0.25, 17 / 64], '9/16': [19 / 32, 5 / 8, 43 / 64] };
+      Object.keys(CLR).forEach(function (size) {
+        FITS.forEach(function (fit, i) {
+          near(sp({ holeType: 'hole', size: size, fit: fit }).dia, CLR[size][i], 1e-12, size + ' ' + fit);
+          near(sp({ holeType: 'csk', size: size, fit: fit }).dia, CLR[size][i], 1e-12, size + ' csk ' + fit + ' thru hole');
+        });
+        var threw = '';
+        try { sp({ holeType: 'cbore', size: size }); } catch (e) { threw = e.message; }
+        assert(/No counterbore size for a/.test(threw), size + ' counterbore: ' + threw);
+      });
+      assert(sp({ holeType: 'hole', size: '#12', fit: 'close' }).drillName === '15/64' && sp({ holeType: 'hole', size: '9/16', fit: 'loose' }).drillName === '43/64', 'drill names');
+      var CSK = { '#2': 0.172, '#3': 0.199, '#4': 0.225, '#5': 0.252, '#6': 0.279, '#8': 0.332, '#10': 0.385, '#12': 0.438, '1/4': 0.507, '5/16': 0.635, '3/8': 0.762,
+        '7/16': 0.812, '1/2': 0.875, '9/16': 1.000, '5/8': 1.125, '3/4': 1.375, '7/8': 1.625, '1': 1.875 };
+      Object.keys(CSK).forEach(function (size) {
+        var c = sp({ holeType: 'csk', size: size, fit: 'normal' });
+        near(c.csk.dia, CSK[size], 1e-12, size + ' csk Ø'); assert(c.csk.angle === 82, size + ' csk angle');
+        near(HW.spec({ standard: A, holeType: 'csk', size: size }, 'mm').csk.dia, CSK[size] * 25.4, 1e-9, size + ' csk Ø in mm');
+      });
+      var TAP = { '#12-24 UNC': ['#16', 0.177, 24], '#12-28 UNF': ['#14', 0.182, 28], '7/16-14 UNC': ['U', 0.368, 14], '7/16-20 UNF': ['25/64', 25 / 64, 20],
+        '1/2-13 UNC': ['27/64', 27 / 64, 13], '1/2-20 UNF': ['29/64', 29 / 64, 20], '9/16-12 UNC': ['31/64', 31 / 64, 12], '9/16-18 UNF': ['33/64', 33 / 64, 18],
+        '5/8-11 UNC': ['17/32', 17 / 32, 11], '5/8-18 UNF': ['37/64', 37 / 64, 18], '3/4-10 UNC': ['21/32', 21 / 32, 10], '3/4-16 UNF': ['11/16', 11 / 16, 16],
+        '7/8-9 UNC': ['49/64', 49 / 64, 9], '7/8-14 UNF': ['13/16', 13 / 16, 14], '1-8 UNC': ['7/8', 7 / 8, 8], '1-12 UNF': ['59/64', 59 / 64, 12] };
+      Object.keys(TAP).forEach(function (size) {
+        var t = sp({ holeType: 'tap', size: size });
+        assert(t.drillName === TAP[size][0] && t.thread.tpi === TAP[size][2] && t.thread.label === size + ' - 2B', size + ': ' + t.drillName + ' ' + t.thread.label);
+        near(t.dia, TAP[size][1], 1e-12, size + ' tap drill');
+      });
+      near(sp({ holeType: 'tap', size: '#12-28 unf' }).thread.major, 0.216, 1e-12, '#12 major');
+      // existing rows unchanged (spot checks)
+      var r8 = HW.screwRow('#8'), r1 = HW.screwRow('1'), r716 = HW.screwRow('7/16'), r2 = HW.screwRow('#2');
+      assert(r8.clr.join() === '#15,#9,#3' && r8.cb.drills.join() === '#15,#10' && r8.cb.dia === '5/16' && r8.csk === 0.332, '#8 row');
+      assert(r1.clr.join() === '1-1/32,1-3/32,1-5/32' && r1.cb.drills.join() === '1-1/64,1-1/32' && r1.cb.dia === '1-5/8', '1 row');
+      assert(r716.clr.join() === '29/64,15/32,31/64' && r716.cb.dia === '23/32' && r2.clr.join() === '3/32,#38,#32' && r2.cb.dia === '3/16', '7/16, #2 rows');
+      var cb38 = sp({ holeType: 'cbore', size: '3/8', fit: 'close' });
+      near(cb38.dia, 25 / 64, 1e-12, '3/8 cbore close drill'); near(cb38.cbore.dia, 0.625, 1e-12, '3/8 cbore Ø'); near(cb38.cbore.depth, 0.375, 1e-12, '3/8 cbore depth');
+      var cb34 = sp({ holeType: 'cbore', size: '3/4', fit: 'loose' });
+      near(cb34.dia, 29 / 32, 1e-12, '3/4 cbore loose = B18.2.8 loose'); near(cb34.cbore.dia, 1.1875, 1e-12, '3/4 cbore Ø');
+      near(sp({ holeType: 'hole', size: '5/16', fit: 'loose' }).dia, 23 / 64, 1e-12, '5/16 loose');
+      near(sp({ holeType: 'tap', size: '5/16-18 UNC' }).dia, 0.257, 1e-12, '5/16-18 tap F');
+      // the PropertyManager's Size lists (ui-holewizard.js reads HW.sizeOptions)
+      function opts(t) { return HW.sizeOptions(A, t, 'clearance').map(function (o) { return o[0]; }); }
+      var all = ['#2', '#3', '#4', '#5', '#6', '#8', '#10', '#12', '1/4', '5/16', '3/8', '7/16', '1/2', '9/16', '5/8', '3/4', '7/8', '1'];
+      assert(opts('hole').join() === all.join(), 'hole list ' + opts('hole'));
+      assert(opts('csk').join() === all.join(), 'csk list ' + opts('csk'));
+      assert(opts('cbore').join() === all.filter(function (s) { return s !== '#12' && s !== '9/16'; }).join(), 'cbore list ' + opts('cbore'));
+      var taps = HW.sizeOptions(A, 'tap').map(function (o) { return o[0]; });
+      assert(taps.indexOf('#12-28 UNF') === taps.indexOf('#12-24 UNC') + 1 && taps.length === 36, 'tap list ' + taps.length);
+      assert(HW.validSize(A, 'csk', 'clearance', '#2') && HW.validSize(A, 'csk', 'clearance', '1') && !HW.validSize(A, 'cbore', 'clearance', '#12'), 'validSize');
+      var co = HW.callout(HW.newFeature({ type: 'csk', size: '1', end: 'through' }, 'in'), 'in').join(' | ');
+      assert(co === 'Ø1.094 THRU | ⌵ Ø1.875 X 82°', co);
+      var co12 = HW.callout(HW.newFeature({ type: 'tap', size: '#12-28 UNF', depth: 0.5, threadDepth: 0.4 }, 'in'), 'in').join(' | ');
+      assert(co12 === 'Ø.182 ↧ .500 | #12-28 UNF - 2B ↧ .400', co12);
+      return HW.ANSI_SCREWS.length + ' screw sizes, ' + taps.length + ' threads; ' + co;
+    });
+
+    test('hw-ansi-sizes: the new sizes cut their analytic volumes in an inch block (8 × 4 × 2 in high): 82° countersinks 1 / 9/16 / #12 / #5 / #3 / #2, #12 clearance, #12-28 UNF and 9/16-12 UNC taps; script round trip', function () {
+      var A = HW.ANSI;
+      function vol(s, D) {   // one hole of depth D from the face, flat bottom; countersink cone at its own angle
+        var R = s.dia / 2;
+        if (s.cbore) { var Rc = s.cbore.dia / 2, dc = s.cbore.depth; return Math.PI * Rc * Rc * dc + Math.PI * R * R * (D - dc); }
+        if (s.csk) { var Rs = s.csk.dia / 2, h = (Rs - R) / Math.tan(s.csk.angle / 2 * Math.PI / 180); return Math.PI * h / 3 * (Rs * Rs + Rs * R + R * R) + Math.PI * R * R * (D - h); }
+        return Math.PI * R * R * D;
+      }
+      var HOLES = [
+        { at: [-2.8, 0], o: { type: 'csk', size: '1', fit: 'normal', depth: 1 } },
+        { at: [-0.5, 0], o: { type: 'csk', size: '9/16', fit: 'close', depth: 0.75 } },
+        { at: [1, 1], o: { type: 'csk', size: '#12', fit: 'loose', end: 'through' } },
+        { at: [1, -1], o: { type: 'hole', size: '#12', fit: 'normal', end: 'through' } },
+        { at: [2.2, 1], o: { type: 'tap', size: '#12-28 UNF', depth: 0.5, threadDepth: 0.4 } },
+        { at: [2.2, -1], o: { type: 'tap', size: '9/16-12 UNC', depth: 0.9, threadDepth: 0.75 } },
+        { at: [3.4, 0], o: { type: 'csk', size: '#5', fit: 'normal', depth: 0.4 } },
+        { at: [3.4, 1.2], o: { type: 'csk', size: '#2', fit: 'close', depth: 0.3 } },
+        { at: [3.4, -1.2], o: { type: 'csk', size: '#3', fit: 'loose', depth: 0.3 } }
+      ];
+      var code = 'p.units("in");\np.box(8, 4, 2, { centered: true });\n', cut = 0;
+      HOLES.forEach(function (h) {
+        var o = Object.assign({ face: 'Top', offset: 2, points: [h.at], standard: A }, h.o);
+        code += 'p.holeWizard(' + JSON.stringify(o) + ');\n';
+        var f = HW.newFeature(o, 'in'), s = HW.spec(f, 'in');
+        cut += vol(s, f.end === 'through' ? 2 : f.depth);
+      });
+      var r = build(code);
+      noErrors(r);
+      var holes = r.model.features.filter(function (f) { return f.type === 'hole'; });
+      assert(holes.length === HOLES.length && holes[0].name === 'CSK for 1 Flat Head Screw1' && holes[4].name === '#12-28 UNF Tapped Hole5', holes.map(function (f) { return f.name; }).join(' / '));
+      nearRel(64 - r.mp.volume, cut, 1e-9, 'removed volume');
+      var th = HW.threads(r.model);
+      assert(th.length === 2 && Math.abs(th[0].r - 0.108) < 1e-12 && th[0].label === '#12-28 UNF - 2B' && Math.abs(th[1].r - 0.28125) < 1e-12, 'cosmetic threads');
+      var script = K.generateScript(r.model), r2 = build(script);
+      noErrors(r2);
+      nearRel(r2.mp.volume, r.mp.volume, 1e-12, 'round trip volume');
+      return 'removed ' + cut.toFixed(6) + ' in³ by ' + HOLES.length + ' holes';
     });
   })();
   // --- end p9-output ---
@@ -12120,6 +12220,121 @@
     });
   })();
   // --- end p9-sketchedbend ---
+
+  // --- p9-cutbend: a hole, slot or notch cut in the flat before an Edge Flange or a Sketched Bend that crosses the bend
+  // zone stays cut (SolidWorks): the bend rolls up the flat as it is, so the cut wraps round the bend (radial through the
+  // thickness, flat length s at angle A·s/BA) and the flat pattern shows it once, in its original place. Before, the
+  // bend's sweep filled it in: a Ø.2 hole on a Material Inside bend line unfolded as a .04-wide D, a hole across a
+  // sketched bend line as two D's ---
+  (function () {
+    group('p9-cutbend: cuts across a bend zone stay cut (Edge Flange, Sketched Bend), the flat shows them in place');
+    var T = 0.06, R = 0.06, A90 = Math.PI / 2, BA = K.bendAllowance(A90, R, T, 0.5);
+    var PLATE = 'p.units("in");\np.sheet(0.06, 0.06, 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
+    // Anvil's bend has 8 facets per 90°: flat area dA rolled into a facet of angle δ keeps T·dA·sin δ / δ of metal
+    var DTH = A90 / 8, ROLL = Math.sin(DTH) / DTH;
+    function cutSq(cx, cz, h) { return 'p.sketch("Top", 0.06).rect(' + (cx - h) + ', ' + (-cz - h) + ', ' + 2 * h + ', ' + 2 * h + ').cut("through", { reverse: true });\n'; }
+    function flatOf(code) { var r = build(code); noErrors(r); return { r: r, flat: K.flatPattern(r.model, r.build, r.mesh) }; }
+    function box2(l) { var b = [Infinity, Infinity, -Infinity, -Infinity]; l.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); }); return b; }
+    function area2(l) { var a = 0; l.forEach(function (p, i) { var q = l[(i + 1) % l.length]; a += p[0] * q[1] - q[0] * p[1]; }); return Math.abs(a / 2); }
+    function nearBox(l, want, label) { box2(l).forEach(function (v, i) { near(v, want[i], 1e-9, label + ' [' + i + ']'); }); }
+    // a point at mid-thickness in a 90° up bend that starts at x = x0 on the top face (y = T), s of flat into the bend
+    function inBend(x0, s, z) { var th = A90 * s / BA, rho = R + T / 2; return [x0 + rho * Math.sin(th), T + R - rho * Math.cos(th), z]; }
+    var FL_IN = 'p.flange(1, [[4, 0.06, 1.5]], { position: "inside" });';
+    test('p9-cutbend: Edge Flange, Material Inside: a .2 square / Ø.2 hole centred on the bend line wraps round the bend and unfolds in place', function () {
+      var plain = flatOf(PLATE + FL_IN), sq = flatOf(PLATE + cutSq(3.88, 1.5, 0.1) + FL_IN);
+      // the trim line (bend start) is x = 4 − (R + T) = 3.88: half the square stays in the base, half rolls into the bend
+      near(sq.r.mp.volume, plain.r.mp.volume - T * 0.02 - T * 0.02 * ROLL, 1e-9, 'volume = flanged plate − base half − rolled half');
+      near(sq.flat.size[0], plain.flat.size[0], 1e-9, 'flat length unchanged'); near(sq.flat.size[1], plain.flat.size[1], 1e-9, 'flat width unchanged');
+      assert(sq.flat.loops.length === 2, sq.flat.loops.length + ' loops (outline + the hole)');
+      nearBox(sq.flat.loops[1], [3.78, -1.6, 3.98, -1.4], 'the square in the flat, where it was cut');
+      near(area2(sq.flat.loops[1]), 0.04, 1e-9, 'square area');
+      var body = sq.r.body;
+      assert(!body.containsPoint(inBend(3.88, 0.05, 1.5)) && !body.containsPoint(inBend(3.88, 0.095, 1.45)), 'no metal in the bend inside the square');
+      assert(body.containsPoint(inBend(3.88, 0.05, 1.75)) && body.containsPoint(inBend(3.88, 0.12, 1.5)), 'metal in the bend beside and past it');
+      assert(!body.containsPoint([3.83, T / 2, 1.5]), 'no metal in the base half');
+      // a round hole: the flat's hole loop is the plate's own hole loop, point for point in place
+      var hole = 'p.sketch("Top", 0.06).circle(3.88, -1.5, 0.1).cut("through", { reverse: true });\n';
+      var rh = flatOf(PLATE + hole + FL_IN), ph = flatOf(PLATE + hole + 'p.flange(1, [[2, 0.06, 0]]);');
+      var hl = rh.flat.loops[1], pl = ph.flat.loops[1];
+      assert(rh.flat.loops.length === 2 && hl.length === pl.length, 'hole loop of ' + (hl && hl.length) + ' points (plate: ' + pl.length + ')');
+      box2(hl).forEach(function (v, i) { near(v, box2(pl)[i], 1e-9, 'round hole bbox [' + i + ']'); });
+      near(area2(hl), area2(pl), 1e-9, 'round hole area');
+      return 'square: ' + fmt(sq.r.mp.volume) + ' in³, round hole loop ' + hl.length + ' points, ' + box2(hl).map(fmt).join(', ');
+    });
+    test('p9-cutbend: Edge Flange, Bend Outside / Material Outside / hem / jog: a hole in the overlap strip or across the bend is not filled', function () {
+      // Bend Outside: the sweep laid a T-wide overlap strip into the sheet, filling the edge side of a hole within T of the edge
+      var cases = [
+        ['Bend Outside', 'p.flange(1, [[4, 0.06, 1.5]]);', cutSq(3.95, 1.5, 0.03), T * 0.0036, [3.92, -1.53, 3.98, -1.47]],
+        // Material Outside: the bend starts R = .06 in, at x = 3.94; the square x ∈ [3.87, 3.97] reaches .03 into it
+        ['Material Outside', 'p.flange(1, [[4, 0.06, 1.5]], { position: "outside" });', cutSq(3.92, 1.5, 0.05), T * 0.007 + T * 0.003 * ROLL, [3.87, -1.55, 3.97, -1.45]],
+        ['hem', 'p.hem(0.3, [[4, 0.06, 1.5]]);', cutSq(3.95, 1.5, 0.03), T * 0.0036, [3.92, -1.53, 3.98, -1.47]],
+        ['jog', 'p.jog(0.5, 1, [[4, 0.06, 1.5]]);', cutSq(3.95, 1.5, 0.03), T * 0.0036, [3.92, -1.53, 3.98, -1.47]]];
+      cases.forEach(function (c) {
+        var plain = flatOf(PLATE + c[1]), cut = flatOf(PLATE + c[2] + c[1]);
+        near(cut.r.mp.volume, plain.r.mp.volume - c[3], 1e-9, c[0] + ': volume');
+        assert(cut.flat.loops.length === 2, c[0] + ': ' + cut.flat.loops.length + ' loops');
+        nearBox(cut.flat.loops[1], c[4], c[0] + ': hole in the flat');
+        near(cut.flat.size[0], plain.flat.size[0], 1e-9, c[0] + ': flat length');
+      });
+      return cases.length + ' placements';
+    });
+    test('p9-cutbend: a notch at the edge across the bend: flanges on both edge pieces leave it open through bend and wall', function () {
+      // notch x ∈ [3.8, 4], z ∈ [1.3, 1.7]: the x = 4 edge is two edges, 1.3 long each; a flange on both
+      var NOTCH = 'p.sketch("Top", 0.06).rect(3.8, -1.7, 0.3, 0.4).cut("through", { reverse: true });\n';
+      var plain = flatOf(PLATE + 'p.flange(1, [[4, 0.06, 1.5]]);'), two = flatOf(PLATE + NOTCH + 'p.flange(1, [[4, 0.06, 0.5], [4, 0.06, 2.5]]);');
+      var one = flatOf(PLATE + NOTCH + 'p.flange(1, [[4, 0.06, 0.5]]);');
+      var perLen = (plain.r.mp.volume - 0.72) / 3;   // one flange's metal per unit of edge
+      near(two.r.mp.volume, 0.72 - T * 0.08 + 2.6 * perLen, 1e-9, 'two flanges: plate − notch + 2 × 1.3 of flange');
+      near(one.r.mp.volume, 0.72 - T * 0.08 + 1.3 * perLen, 1e-9, 'one flange: plate − notch + 1.3 of flange');
+      assert(two.flat.loops.length === 1 && two.flat.bends.length === 2, 'one blank, two bends');
+      near(area2(two.flat.loops[0]), 12 - 0.08 + 2.6 * (BA + 1), 1e-9, 'blank: the notch runs on through strip and wall');
+      near(area2(one.flat.loops[0]), 12 - 0.08 + 1.3 * (BA + 1), 1e-9, 'blank with one flange');
+      return 'notched blank ' + fmt(area2(two.flat.loops[0])) + ' in²';
+    });
+    var SB = function (pos) { return 'p.sketch("Top", 0.06).line(2, 0, 2, -3).sketchedBend(90, { fixed: [1, 0, 1]' + (pos ? ', position: "' + pos + '"' : '') + ' });'; };
+    test('p9-cutbend: Sketched Bend across a .4 square hole, a slot and a side notch: wrapped round the bend, the flat is the plate as cut', function () {
+      var plain = flatOf(PLATE + SB());
+      near(plain.r.mp.volume, 0.72 - T * 3 * BA * (1 - ROLL), 1e-9, 'plain bend');
+      ['centerline', 'inside'].forEach(function (pos) {
+        var sq = flatOf(PLATE + cutSq(2, 1.5, 0.2) + SB(pos === 'centerline' ? null : pos));
+        // the square x ∈ [1.8, 2.2] covers the whole strip (BA = .1414 wide) for z ∈ [1.3, 1.7]
+        near(sq.r.mp.volume, plain.r.mp.volume - T * (0.16 - 0.4 * BA) - T * 0.4 * BA * ROLL, 1e-9, pos + ': volume');
+        assert(sq.flat.loops.length === 2, pos + ': ' + sq.flat.loops.length + ' loops (the square was two D-shaped halves)');
+        nearBox(sq.flat.loops[0], [0, -3, 4, 0], pos + ': the blank is the plate');
+        nearBox(sq.flat.loops[1], [1.8, -1.7, 2.2, -1.3], pos + ': the square in place');
+        near(area2(sq.flat.loops[1]), 0.16, 1e-9, pos + ': square area');
+      });
+      var sq = flatOf(PLATE + cutSq(2, 1.5, 0.2) + SB()), x0 = 2 - BA / 2;
+      assert(!sq.r.body.containsPoint(inBend(x0, BA / 2, 1.5)) && sq.r.body.containsPoint(inBend(x0, BA / 2, 1.0)), 'no metal in the bend inside the square, metal beside it');
+      var slot = flatOf(PLATE + 'p.sketch("Top", 0.06).slot(1.5, -1.5, 2.5, -1.5, 0.25).cut("through", { reverse: true });\n' + SB());
+      assert(slot.flat.loops.length === 2, 'slot: ' + slot.flat.loops.length + ' loops');
+      nearBox(slot.flat.loops[1], [1.375, -1.625, 2.625, -1.375], 'slot in place');
+      var notch = flatOf(PLATE + 'p.sketch("Top", 0.06).rect(1.8, -0.3, 0.4, 0.3).cut("through", { reverse: true });\n' + SB());
+      near(notch.r.mp.volume, plain.r.mp.volume - T * (0.12 - 0.3 * BA) - T * 0.3 * BA * ROLL, 1e-9, 'side notch: volume');
+      assert(notch.flat.loops.length === 1, 'side notch: one outline');
+      near(area2(notch.flat.loops[0]), 12 - 0.12, 1e-9, 'side notch: the blank is the notched plate');
+      return 'square ' + fmt(sq.r.mp.volume) + ' in³; slot ' + box2(slot.flat.loops[1]).map(fmt).join(', ');
+    });
+    test('p9-cutbend: a Sketched Bend line slanted across the plate: the bend follows the plate\'s edges, the flat is the plate', function () {
+      // line (1.5, 0) → (2.5, 3): the strip is a parallelogram BA × √10; before, its square-ended sweep stuck out past both edges
+      var r = flatOf(PLATE + 'p.sketch("Top", 0.06).line(1.5, 0, 2.5, -3).sketchedBend(90, { fixed: [0.5, 0, 1] });');
+      nearRel(r.r.mp.volume, 0.72 - T * BA * Math.sqrt(10) * (1 - ROLL), 1e-7, 'volume = plate − strip + bend');
+      assert(r.flat.loops.length === 1 && r.flat.loops[0].length === 4, 'blank: ' + r.flat.loops.map(function (l) { return l.length; }).join(', ') + ' points');
+      nearBox(r.flat.loops[0], [0, -3, 4, 0], 'the blank is the 4 × 3 plate');
+      return 'blank ' + r.flat.size.map(fmt).join(' × ');
+    });
+    test('p9-cutbend: no cut across the bend: no voids, no flat cutouts, a hole away from the bend is just a hole', function () {
+      var far = flatOf(PLATE + cutSq(2, 1.5, 0.1) + FL_IN), plain = flatOf(PLATE + FL_IN);
+      near(far.r.mp.volume, plain.r.mp.volume - T * 0.04, 1e-12, 'flange: volume');
+      var recs = far.r.build.flanges[far.r.model.features[far.r.model.features.length - 1].id];
+      assert(recs.every(function (fi) { return !fi.cutouts; }), 'no flange record carries cutouts');
+      var sb = flatOf(PLATE + cutSq(1, 1.5, 0.1) + SB()), sbp = flatOf(PLATE + SB());
+      near(sb.r.mp.volume, sbp.r.mp.volume - T * 0.04, 1e-12, 'sketched bend: volume');
+      assert(sb.r.build.flanges[sb.r.model.features[sb.r.model.features.length - 1].id].every(function (fi) { return !fi.cutouts; }), 'no sketched bend record carries cutouts');
+      return 'ok';
+    });
+  })();
+  // --- end p9-cutbend ---
 
   // --- p9-bendtable: the bent-channel report (test-reports/2026-10-07-bent-channel.md items 7 and 17): a Bend Table goes
   // on free paper (never on the title block, the border or a view), carries the bend deduction (BEND DED.; BEND ALLOW.
@@ -13948,6 +14163,72 @@
     });
   })();
   // --- end sketch-text ---
+
+  // --- r12/inchflange12: inch flanges fold the way the pick says. The top face of a sheet whose thickness sits on a
+  // 0.01 rounding boundary (0.035, 0.045, 0.075, 0.125 in) was split in two by meshFromBody once a cut had touched it,
+  // the picked edge vanished from flangeLayout's candidates and the pick fell on the edge on the other side of the
+  // sheet (T away, inside the old 0.5-unit tolerance): the flange folded down instead of up ---
+  (function () {
+    group('r12/inchflange12: inch flange edge picks (thin sheets, faces with cut fragments, the opposite edge T away)');
+    // the U-bracket example scaled to inches: a slot through the base before the two legs
+    function uBracket(T, slot) {
+      return 'p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -2.4, 4.8, 2.4).end().baseFlange();\n' +
+        (slot ? 'p.sketch("Top", ' + T + ').slot(1.6, -1.2, 3.2, -1.2, 0.36).cut("through", { reverse: true });\n' : '') +
+        'p.flange(1.6, [[0, ' + T + ', 1.2]]);\np.flange(1.6, [[4.8, ' + T + ', 1.2]]);';
+    }
+    test('inch U-bracket (slot cut before the legs) at T = 0.035 / 0.075 / 0.125: both legs fold up, the slot takes exactly its own volume', function () {
+      var out = [];
+      [0.035, 0.0598, 0.075, 0.125].forEach(function (T) {
+        var r = build(uBracket(T, true)), plain = build(uBracket(T, false)), base = build('p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -2.4, 4.8, 2.4).end().baseFlange();');
+        noErrors(r); noErrors(plain);
+        var bb = r.mp.bbox, R = T;
+        near(bb.min[1], 0, 1e-9, T + ': nothing below the base (a leg folded down)');
+        near(bb.max[1], T + R + 1.6, 1e-9, T + ': legs stand L + R + T');
+        near(bb.min[0], -(R + T), 1e-9, T + ': left leg outside x = 0');
+        near(bb.max[0], 4.8 + R + T, 1e-9, T + ': right leg outside x = 4.8');
+        // the slot (a 1.6 × 0.36 obround through T) is all the two parts differ by
+        var slotV = (1.6 * 0.36 + Math.PI * 0.18 * 0.18) * T, legs = plain.mp.volume - base.mp.volume;
+        nearRel(r.mp.volume, base.mp.volume - slotV + legs, 2e-3, T + ': volume = base − slot + the plain part\'s legs');
+        out.push(T + ' ' + fmt(bb.max[1]));
+      });
+      return out.join(', ');
+    });
+    test('a flange picked on the top or the bottom edge of a cut 0.045 / 0.075 in sheet folds up or down; a pick on an edge of the far side is never taken for it', function () {
+      var n = 0;
+      [0.045, 0.075, 2.005].forEach(function (T) {
+        var mm = T > 1, s = mm ? 25 : 1, W = 4 * s, D = 3 * s;
+        var head = 'p.units("' + (mm ? 'mm' : 'in') + '");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -' + D + ', ' + W + ', ' + D + ').end().baseFlange();\n' +
+          'p.sketch("Top", ' + T + ').slot(' + W / 3 + ', -' + D / 2 + ', ' + 2 * W / 3 + ', -' + D / 2 + ', ' + 0.3 * s + ').cut("through", { reverse: true });\n' +
+          'p.hole("Top", ' + 0.5 * s + ', -' + 0.5 * s + ', ' + 0.25 * s + ', { offset: ' + T + ' });\n';
+        [[0, D / 2], [W, D / 2], [W / 2, 0], [W / 2, D]].forEach(function (xz) {
+          [T, 0].forEach(function (y) {
+            var r = build(head + 'p.flange(' + s + ', [[' + xz[0] + ', ' + y + ', ' + xz[1] + ']]);');
+            noErrors(r);
+            var bb = r.mp.bbox, tag = T + ' edge ' + xz + ' on the ' + (y ? 'top' : 'bottom');
+            if (y) { near(bb.min[1], 0, 1e-9, tag + ': folds up'); near(bb.max[1], 2 * T + s, 1e-9, tag + ': L + R + T tall'); }
+            else { near(bb.max[1], T, 1e-9, tag + ': folds down'); near(bb.min[1], T - (2 * T + s), 1e-9, tag + ': L + R + T below'); }
+            n++;
+          });
+        });
+      });
+      return n + ' flanges';
+    });
+    test('a pick is resolved within 0.75·T of an edge (inch and mm alike): a little off the edge still finds it, 0.9·T away from every edge is refused, never snapped to the opposite edge', function () {
+      [[0.048, 'in'], [2, 'mm']].forEach(function (c) {
+        var T = c[0], s = c[1] === 'mm' ? 25 : 1;
+        var head = 'p.units("' + c[1] + '");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -' + 3 * s + ', ' + 4 * s + ', ' + 3 * s + ').end().baseFlange();\n';
+        // 0.3·T down the side face from the top edge: still the top edge (fold up)
+        var r = build(head + 'p.flange(' + s + ', [[0, ' + 0.7 * T + ', ' + 1.5 * s + ']]);');
+        noErrors(r); near(r.mp.bbox.min[1], 0, 1e-9, c[1] + ': 0.3·T off the top edge folds up');
+        // 0.9·T out from the top edge, in the sheet plane: 0.9·T from the top edge, 1.35·T from the bottom one
+        var far = build(head + 'p.flange(' + s + ', [[' + (-0.9 * T) + ', ' + T + ', ' + 1.5 * s + ']]);');
+        var msg = Object.keys(far.errors).map(function (k) { return far.errors[k]; }).join(' | ');
+        assert(/No edge selected/.test(msg), c[1] + ': a pick 0.9·T from every edge is refused, got ' + JSON.stringify(far.errors));
+      });
+      return 'ok';
+    });
+  })();
+  // --- end r12/inchflange12 ---
   group('levels: the Levels Manager table survives the script round trip');
   test('p.levels(list, main) and generateScript keep numbers, names, sets and the main level', function () {
     var lv = [{ number: 1 }, { number: 2, name: 'ETCH', noProfile: true, set: 'MARKING' }, { number: 10, name: 'BEND', noProfile: true, lineType: 'dashed', set: 'MARKING' }];
@@ -13959,6 +14240,148 @@
     noErrors(b);
     assert(JSON.stringify(b.model.levels) === JSON.stringify(lv) && b.model.mainLevel === 2, 'kept: ' + JSON.stringify([b.model.levels, b.model.mainLevel]));
   });
+
+  // --- flat-hygiene: the flat pattern's loops go straight to the laser. Coplanar walls (the Tray's two back walls, one
+  // mesh face) were unfolded by the first flange and then covered again by a stand-in rectangle for the second, which
+  // hid that wall's holes and left a stray vertex 3.7e-4 off the mitre corner; the CSG region merge could split a
+  // blank in two at a mitred corner. The merge is now 2D (mergeFlatRegions) and a last pass (Kernel.cleanFlatLoop)
+  // drops duplicate, collinear and spike points. Etch marks sketched on the sheet go to flat.etch and the ETCH layer ---
+  (function () {
+    group('flat-hygiene: flat-pattern loops without stray vertices; ETCH marks on the flat and in its DXF');
+    var TRAY = 'p.sheet(2, 2, 0.71);\np.sketch("Top").polyline([[0, 0], [120, 0], [120, -80], [90, -80], [90, -100], [30, -100], [30, -80], [0, -80]], true).end().baseFlange(2);\n' +
+      'p.flange(15, [[0, 2, 40], [60, 2, 0], [120, 2, 40], [105, 2, 80], [15, 2, 80]], { miter: true, relief: "obround" });';
+    var Ti = 0.0598, HEAD = 'p.units("in");\np.sheet(' + Ti + ', ' + Ti + ', 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\n';
+    function flatOf(code) { var r = build(code); noErrors(r); r.flat = K.flatPattern(r.model, r.build, r.mesh); return r; }
+    // every problem a laser path must not have: consecutive duplicates (1e-9 of the blank's size), a point on the
+    // straight line through its neighbours (collinear, or a spike going out and straight back), fewer than 3 points
+    function loopIssues(loops) {
+      var min = [Infinity, Infinity], max = [-Infinity, -Infinity], out = [];
+      loops.forEach(function (l) { l.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); }); });
+      var tol = 1e-9 * Math.hypot(max[0] - min[0], max[1] - min[1]);
+      loops.forEach(function (l, li) {
+        var n = l.length;
+        if (n < 3) out.push('loop ' + li + ': ' + n + ' points');
+        for (var i = 0; i < n; i++) {
+          var o = l[(i + n - 1) % n], p = l[i], q = l[(i + 1) % n], d1 = Math.hypot(p[0] - o[0], p[1] - o[1]), d2 = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          if (d2 <= tol) { out.push('loop ' + li + ' duplicate at ' + i); continue; }
+          if (d1 <= tol) continue;
+          var oq = Math.hypot(q[0] - o[0], q[1] - o[1]), off = oq > tol ? Math.abs((p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])) / oq : d1;
+          var dt = ((p[0] - o[0]) * (q[0] - p[0]) + (p[1] - o[1]) * (q[1] - p[1])) / (d1 * d2);
+          if (off <= 1e-7 * Math.hypot(max[0] - min[0], max[1] - min[1])) out.push('loop ' + li + (dt > 0 ? ' collinear' : ' spike') + ' at ' + i + ' ' + JSON.stringify(p));
+          else if (dt < -0.9999) out.push('loop ' + li + ' spike at ' + i + ' ' + JSON.stringify(p));
+        }
+      });
+      return out;
+    }
+    var CASES = {
+      'base hole + two flanges': SHEET + '\np.hole("Top", 50, -30, 10, { offset: 2 });\np.flange(20, [[0, 2, 30]]);\np.flange(15, [[50, 2, 0]], { reverse: true });',
+      'wall hole and slot': SHEET + '\np.flange(25, [[0, 2, 30]]);\np.sketch("Right", -30).circle(-30, 12, 3).slot(-50, 18, -40, 18, 3).cut(40);',
+      'hole near the bend': SHEET + '\np.flange(20, [[0, 2, 30]]);\np.sketch("Top", 2).circle(5, -30, 3).cut("through", { reverse: true });',
+      'Z bracket with wall holes': SHEET + '\np.flange(30, [[0, 2, 30]]);\np.flange(25, [[-3, 34, 30]]);\np.sketch("Right", -30).circle(-30, 15, 3).circle(-15, 15, 2).cut(40);',
+      'inch channel: hem, relief, slot, wall holes': HEAD + 'p.flange(1.5, [[3, ' + Ti + ', 0], [3, ' + Ti + ', 4]], { position: "inside" });\np.hem(0.375, [[3, 1.6196, 4]], { gap: 0.0299 });\n' +
+        'p.flange(1.0, [[0, ' + Ti + ', 2]], { position: "inside", relief: "rect" });\np.sketch("Top", ' + Ti + ').slot(2.25, -2, 3.75, -2, 0.375).circle(1, -1, 0.133).circle(5, -1, 0.133).cut("through", { reverse: true });\n' +
+        'p.sketch("Front", 0).slot(1, 0.7, 2.5, 0.7, 0.25).circle(4.5, 0.75, 0.125).cut("through");',
+      'sketched bend with holes': HEAD + 'p.sketch("Top", ' + Ti + ').circle(0.5, -2, 0.1).circle(5.5, -2, 0.1).cut("through", { reverse: true });\np.sketch("Top", ' + Ti + ').line(1.5, 0, 1.5, -4).line(4.5, -1, 4.5, -3).sketchedBend(90);',
+      'mitred tray with wall holes': TRAY + '\np.sketch("Front", 0).circle(60, 10, 2).cut(10, { reverse: true });\np.sketch("Right", 0).circle(-40, 10, 2).slot(-20, 10, -30, 10, 2).cut(10, { reverse: true });\np.sketch("Front", 80).circle(15, 10, 2).circle(105, 10, 2).cut(10);'
+    };
+    (typeof AnvilExamples !== 'undefined' ? AnvilExamples : []).forEach(function (ex) { if (!isAsmExample(ex) && /baseFlange/.test(ex.code)) CASES['example ' + ex.name] = ex.code; });
+    test('flat-hygiene: no duplicate, collinear or spike point in any loop of the flat of seven sheet parts and every sheet example; one blank loop each', function () {
+      var det = [];
+      Object.keys(CASES).forEach(function (name) {
+        var r = flatOf(CASES[name]), iss = loopIssues(r.flat.loops);
+        assert(!iss.length, name + ': ' + iss.slice(0, 4).join('; '));
+        assert(r.flat.loops.filter(function (l) { return K.signedArea(l) > 0; }).length === 1 && K.signedArea(r.flat.loops[0]) > 0, name + ': one CCW blank, areas ' + r.flat.loops.map(function (l) { return fmt(K.signedArea(l)); }).join(', '));
+        det.push(r.flat.loops.length);
+      });
+      return Object.keys(CASES).length + ' parts, loops ' + det.join(' ');
+    });
+    test('flat-hygiene: the Tray\'s back walls (one plane, two flanges): the blank has no stray vertex at the mitre (24 points, none 3.7e-4 off a corner) and a hole on each back wall reaches the flat', function () {
+      var r = flatOf(TRAY), BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71), o = r.flat.loops[0];
+      assert(o.length === 24, 'outline points ' + o.length + ' (25 with the stray vertex)');
+      assert(!o.some(function (p) { return Math.abs(p[0] + 2) > 1e-9 && Math.abs(p[0] + 2) < 1e-3; }), 'no point a hair off x = −2: ' + JSON.stringify(o.filter(function (p) { return Math.abs(p[0] + 2) < 1e-3; })));
+      var h = flatOf(TRAY + '\np.sketch("Front", 80).circle(15, 10, 2).circle(105, 10, 2).cut(10);');
+      var holes = h.flat.loops.slice(1).filter(function (l) { return Math.abs(Math.abs(K.signedArea(l)) - polyCircleArea(2)) < 1e-6 * polyCircleArea(2); });
+      var cs = holes.map(function (l) { return l.reduce(function (s, p) { return [s[0] + p[0] / l.length, s[1] + p[1] / l.length]; }, [0, 0]); }).sort(function (a, b) { return a[0] - b[0]; });
+      assert(cs.length === 2, 'two back-wall holes, got ' + cs.length);
+      near(cs[0][0], 15, 1e-6, 'left back hole x'); near(cs[1][0], 105, 1e-6, 'right back hole x');
+      // 10 up the wall from the base's top (y = 2), the wall's inner face starting R above it: 80 + BA + (10 − 4) out
+      near(cs[0][1], -(80 + BA + 6), 1e-6, 'left back hole v'); near(cs[1][1], cs[0][1], 1e-9, 'both on one line');
+      nearRel(K.signedArea(h.flat.loops[0]), K.signedArea(o), 1e-9, 'same blank');
+      return 'outline ' + o.length + ' points, back holes at v = ' + fmt(cs[0][1]);
+    });
+    test('flat-hygiene: a hole on the Tray\'s left wall used to split the CSG-merged blank in two at the mitred corner; the 2D merge gives one blank, the same as the CSG merge wherever that one held', function () {
+      var r = flatOf(TRAY + '\np.sketch("Right", 0).circle(-40, 10, 2).cut(10, { reverse: true });'), plain = flatOf(TRAY);
+      assert(r.flat.loops.filter(function (l) { return K.signedArea(l) > 0; }).length === 1, 'one blank: ' + r.flat.loops.map(function (l) { return fmt(K.signedArea(l)); }).join(', '));
+      nearRel(K.signedArea(r.flat.loops[0]), K.signedArea(plain.flat.loops[0]), 1e-9, 'blank area as without the hole');
+      ['base hole + two flanges', 'wall hole and slot', 'inch channel: hem, relief, slot, wall holes'].forEach(function (name) {
+        var q = flatOf(CASES[name]), keep = K.flatOptions.merge, c;
+        K.flatOptions.merge = 'csg';
+        try { c = K.flatPattern(q.model, q.build, q.mesh); } finally { K.flatOptions.merge = keep; }
+        assert(c.loops.length === q.flat.loops.length, name + ': loops ' + q.flat.loops.length + ' vs CSG ' + c.loops.length);
+        q.flat.loops.forEach(function (l, i) { nearRel(K.signedArea(l), K.signedArea(c.loops[i]), 1e-9, name + ' loop ' + i + ' area'); assert(l.length === c.loops[i].length, name + ' loop ' + i + ' points ' + l.length + ' vs ' + c.loops[i].length); });
+      });
+      var junk = K.cleanFlatLoop([[0, 0], [5, 0], [10, 0], [10, 0], [10, 5], [10, 8], [10, 3], [10, 10], [0, 10]], 1e-9);
+      assert(JSON.stringify(junk) === JSON.stringify([[0, 0], [10, 0], [10, 10], [0, 10]]), 'cleanFlatLoop: collinear, duplicate and spike points go: ' + JSON.stringify(junk));
+      return 'blank ' + fmt(K.signedArea(r.flat.loops[0]));
+    });
+    // a part with marks on the base's top face, its bottom face (a frame looking up: the marks come out mirrored) and
+    // the left flange's inner wall face; a BEND line and a construction ETCH line that must stay out
+    var LAY = '.layers([{ name: "ETCH", color: "#1e9e3c", aci: 3, noProfile: true }, { name: "BEND", color: "#c77700", aci: 30, noProfile: true, lineType: "dashed" }])';
+    var ETCH_PART = SHEET + '\np.flange(20, [[0, 2, 30]]);\n' +
+      'p.sketch("Top", 2).text(50, -30, "PN 123", { h: 5 }).line(60, -10, 90, -10).line(60, -50, 90, -50).line(60, -20, 90, -20)' + LAY + '.layer("ETCH", [1, 3]).layer("BEND", [2]).end();\n' +
+      'p.sketch({ custom: true, origin: [0, 0, 0], x: [1, 0, 0], y: [0, 0, 1], n: [0, -1, 0] }).text(20, 30, "PN 123", { h: 4 }).line(10, 10, 30, 10).arc(20, 20, 3, 0, 90)' + LAY + '.layer("ETCH", [1, 2]).end();\n' +
+      'p.sketch("Right", -2).text(-30, 10, "PN 123", { h: 3 }).line(-50, 8, -10, 8)' + LAY + '.layer("ETCH", [1]).end();';
+    function etchPart() {
+      var m = K.newModel('Etch');
+      K.runScript(m, ETCH_PART);
+      var top = m.features.filter(function (f) { return f.type === 'sketch'; })[1];
+      top.entities[3].construction = true;   // a construction line on ETCH: not a mark
+      var b = K.rebuild(m);
+      assert(!Object.keys(b.errors).length, 'errors ' + JSON.stringify(b.errors));
+      return { model: m, build: b, flat: K.flatPattern(m, b, K.meshFromBody(b.body)), sketches: m.features.filter(function (f) { return f.type === 'sketch'; }) };
+    }
+    test('flat-hygiene: Etch text "PN 123" and ETCH lines / arcs on the base\'s top face, its bottom face and a flange wall go to flat.etch in flat coordinates (wall unfolded, bottom mirrored); BEND, construction and the blank\'s own loops do not', function () {
+      var r = etchPart(), f = r.flat, BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71), sk = r.sketches;
+      var nText = [sk[1], sk[2], sk[3]].reduce(function (s, x) { return s + K.textDxf(x.entities[0]).strokes.length; }, 0);
+      assert(f.etch.length === nText + 1 + 2 + 1, 'etch items ' + f.etch.length + ', expected ' + (nText + 4));
+      assert(f.etchLayer && f.etchLayer.name === 'ETCH' && f.etchLayer.aci === 3, 'layer ' + JSON.stringify(f.etchLayer));
+      function hasLine(a, b) { return f.etch.some(function (it) { return it.t === 'line' && ((Math.hypot(it.a[0] - a[0], it.a[1] - a[1]) < 1e-9 && Math.hypot(it.b[0] - b[0], it.b[1] - b[1]) < 1e-9) || (Math.hypot(it.a[0] - b[0], it.a[1] - b[1]) < 1e-9 && Math.hypot(it.b[0] - a[0], it.b[1] - a[1]) < 1e-9)); }); }
+      assert(hasLine([60, -10], [90, -10]), 'top-face line as drawn (the Top frame is the flat\'s)');
+      assert(!hasLine([60, -50], [90, -50]) && !hasLine([60, -20], [90, -20]), 'no BEND or construction line');
+      assert(hasLine([10, -10], [30, -10]), 'bottom-face line: (x, y) -> (x, −y)');
+      var w = -(BA + 8 - 4);   // 8 up the wall's inner face (x = −2), which starts R = 2 above the base's top
+      assert(hasLine([w, -50], [w, -10]), 'wall line unfolded to u = −(BA + 4) = ' + fmt(w));
+      var arc = f.etch.filter(function (it) { return it.t === 'arc' && Math.abs(it.r - 3) < 1e-12; })[0];
+      assert(arc && Math.hypot(arc.c[0] - 20, arc.c[1] + 20) < 1e-9, 'bottom arc centre ' + JSON.stringify(arc));
+      near(((arc.a0 % 360) + 360) % 360, 270, 1e-9, 'mirrored arc runs ccw from −90°'); near(((arc.a1 % 360) + 360) % 360, 0, 1e-9, '… to 0°');
+      // one stroke of each text, mapped analytically
+      [[sk[1], function (q) { return q; }], [sk[2], function (q) { return [q[0], -q[1]]; }], [sk[3], function (q) { return [-(BA + q[1] - 4), q[0]]; }]].forEach(function (c, k) {
+        var s = K.textLayout(c[0].entities[0]).strokes.filter(function (x) { return x.t === 'line'; })[0];
+        assert(hasLine(c[1]([s.x1, s.y1]), c[1]([s.x2, s.y2])), 'text ' + k + ': stroke ' + JSON.stringify(s) + ' at ' + JSON.stringify([c[1]([s.x1, s.y1]), c[1]([s.x2, s.y2])]));
+      });
+      assert(f.loops.length === 1 && f.loops[0].length === 4, 'the marks are not cut: a plain blank');
+      return f.etch.length + ' marks (' + nText + ' text strokes)';
+    });
+    test('flat-hygiene: exportDXFFlat writes the marks on layer ETCH (colour 3) in R12 and R2000 at the blank\'s 0,0 origin, nothing extra on OUTLINE / HOLES; etch: false leaves them out', function () {
+      var r = etchPart(), f = r.flat, BA = K.bendAllowance(Math.PI / 2, 2, 2, 0.71), sh = [-f.bbox.min[0], -f.bbox.min[1]], w = -(BA + 8 - 4);
+      ['R12', 'R2000'].forEach(function (v) {
+        var dxf = K.exportDXFFlat(f, 'mm', { version: v }), ents = sketchDxfEnts(dxf).filter(function (e) { return e.t !== 'VERTEX' && e.t !== 'SEQEND'; });
+        var on = function (layer) { return ents.filter(function (e) { return e['8'] === layer; }); };
+        assert(on('ETCH').length === f.etch.length, v + ' ETCH entities ' + on('ETCH').length + ' of ' + f.etch.length);
+        assert(on('ETCH').every(function (e) { return /^(LINE|ARC|CIRCLE)$/.test(e.t); }), v + ' marks are LINE / ARC / CIRCLE');
+        assert(on('OUTLINE').length === 1 && on('HOLES').length === 0, v + ' OUTLINE ' + on('OUTLINE').length + ', HOLES ' + on('HOLES').length);
+        assert(/\n2\nETCH\n70\n0\n62\n3\n/.test(dxf), v + ' ETCH layer colour 3');
+        var hit = on('ETCH').filter(function (e) { return e.t === 'LINE' && Math.abs(e['10'] - (w + sh[0])) < 1e-6 && Math.abs(e['11'] - (w + sh[0])) < 1e-6 && Math.abs(Math.min(e['20'], e['21']) - (-50 + sh[1])) < 1e-6 && Math.abs(Math.max(e['20'], e['21']) - (-10 + sh[1])) < 1e-6; });
+        assert(hit.length === 1, v + ' the wall line at u = ' + fmt(w + sh[0]) + ' in the DXF');
+        var c = DxfCheck.check(dxf, { units: 'mm' });
+        assert(c.ok, v + ' read back: ' + c.errors.slice(0, 3).join('; '));
+      });
+      assert(K.exportDXFFlat(f, 'mm', { etch: false }).indexOf('ETCH') < 0, 'etch: false');
+      assert(K.exportDXFFlat(flatOf(SHEET).flat, 'mm').indexOf('ETCH') < 0, 'no ETCH layer without marks');
+      return f.etch.length + ' ETCH entities';
+    });
+  })();
+  // --- end flat-hygiene ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.

@@ -80,8 +80,11 @@ var HoleWizard = (function () {
   // Screws: d basic major diameter; clr: clearance drills [close, normal, loose] per ASME B18.2.8; cb: socket head cap
   // screw counterbore per ASME B18.3 (appendix: close and normal drill, counterbore diameter; depth = head height = D);
   // csk: 82° countersink diameter for flat countersunk head machine screws, ASME B18.6.3 head diameter max (theoretical
-  // sharp). Sizes the reference tables did not settle are left out: #12 (no B18.2.8 row), countersinks for #2, #3, #5
-  // and 7/16 – 1.
+  // sharp; the countersinks of #2, #3, #5 and 7/16 – 1 are in ANSI_CSK_MORE below).
+  // #12 and 9/16 are inside B18.2.8's #0 – 1-1/2 range but not tabulated in it; their clearances follow the table's own
+  // steps (#5 – 3/8: close D + 1/64, normal D + 1/32, loose D + 3/64; 1/2 and 5/8: D + 1/32, D + 1/16, D + 7/64), taken
+  // up to the next standard drill: #12 (.216) 15/64 .2344, 1/4 .2500, 17/64 .2656; 9/16 19/32, 5/8, 43/64. Neither
+  // has a socket head cap screw in ASME B18.3, so neither has a counterbore (no cb; spec says so).
   var ANSI_SCREWS = [
     { size: '#2', d: 0.086, clr: ['3/32', '#38', '#32'], cb: { drills: ['3/32', '#36'], dia: '3/16' } },
     { size: '#3', d: 0.099, clr: ['#36', '#32', '#30'], cb: { drills: ['#36', '#31'], dia: '7/32' } },
@@ -90,22 +93,31 @@ var HoleWizard = (function () {
     { size: '#6', d: 0.138, clr: ['#23', '#18', '#13'], cb: { drills: ['#23', '#18'], dia: '9/32' }, csk: 0.279 },
     { size: '#8', d: 0.164, clr: ['#15', '#9', '#3'], cb: { drills: ['#15', '#10'], dia: '5/16' }, csk: 0.332 },
     { size: '#10', d: 0.190, clr: ['#5', '#2', 'B'], cb: { drills: ['#5', '#2'], dia: '3/8' }, csk: 0.385 },
+    { size: '#12', d: 0.216, clr: ['15/64', '1/4', '17/64'], csk: 0.438 },
     { size: '1/4', d: 0.250, clr: ['17/64', '9/32', '19/64'], cb: { drills: ['17/64', '9/32'], dia: '7/16' }, csk: 0.507 },
     { size: '5/16', d: 0.3125, clr: ['21/64', '11/32', '23/64'], cb: { drills: ['21/64', '11/32'], dia: '17/32' }, csk: 0.635 },
     { size: '3/8', d: 0.375, clr: ['25/64', '13/32', '27/64'], cb: { drills: ['25/64', '13/32'], dia: '5/8' }, csk: 0.762 },
     { size: '7/16', d: 0.4375, clr: ['29/64', '15/32', '31/64'], cb: { drills: ['29/64', '15/32'], dia: '23/32' } },
     { size: '1/2', d: 0.500, clr: ['17/32', '9/16', '39/64'], cb: { drills: ['33/64', '17/32'], dia: '13/16' } },
+    { size: '9/16', d: 0.5625, clr: ['19/32', '5/8', '43/64'], csk: 1.000 },
     { size: '5/8', d: 0.625, clr: ['21/32', '11/16', '47/64'], cb: { drills: ['41/64', '21/32'], dia: '1' } },
     { size: '3/4', d: 0.750, clr: ['25/32', '13/16', '29/32'], cb: { drills: ['49/64', '25/32'], dia: '1-3/16' } },
     { size: '7/8', d: 0.875, clr: ['29/32', '15/16', '1-1/32'], cb: { drills: ['57/64', '29/32'], dia: '1-3/8' } },
     { size: '1', d: 1.000, clr: ['1-1/32', '1-3/32', '1-5/32'], cb: { drills: ['1-1/64', '1-1/32'], dia: '1-5/8' } }
   ];
+  // 82° countersinks for the rows above that carry none: Ø = head diameter max (theoretical sharp) of ASME B18.6.3 flat
+  // countersunk head machine screws, as the rows above (#2 .172, #3 .199, #5 .252, 7/16 .812, 1/2 .875, 5/8 1.125,
+  // 3/4 1.375; #12 .438 and 9/16 1.000 are in their rows). B18.6.3 stops at 3/4, so 7/8 and 1 take ASME B18.6.2 slotted
+  // flat countersunk head cap screws (7/8 1.625, 1 1.875), the same 82° slotted flat head, whose table agrees with
+  // B18.6.3 from 7/16 to 3/4.
+  var ANSI_CSK_MORE = { '#2': 0.172, '#3': 0.199, '#5': 0.252, '7/16': 0.812, '1/2': 0.875, '5/8': 1.125, '3/4': 1.375, '7/8': 1.625, '1': 1.875 };
+  ANSI_SCREWS.forEach(function (r) { if (r.csk == null && ANSI_CSK_MORE[r.size] != null) r.csk = ANSI_CSK_MORE[r.size]; });
   // Unified threads (ASME B1.1, class 2B), tap drill for about 75 % thread
   var ANSI_THREADS = [
     ['#2-56 UNC', 0.086, 56, '#50'], ['#2-64 UNF', 0.086, 64, '#50'], ['#3-48 UNC', 0.099, 48, '#47'], ['#3-56 UNF', 0.099, 56, '#45'],
     ['#4-40 UNC', 0.112, 40, '#43'], ['#4-48 UNF', 0.112, 48, '#42'], ['#5-40 UNC', 0.125, 40, '#38'], ['#5-44 UNF', 0.125, 44, '#37'],
     ['#6-32 UNC', 0.138, 32, '#36'], ['#6-40 UNF', 0.138, 40, '#33'], ['#8-32 UNC', 0.164, 32, '#29'], ['#8-36 UNF', 0.164, 36, '#29'],
-    ['#10-24 UNC', 0.190, 24, '#25'], ['#10-32 UNF', 0.190, 32, '#21'], ['#12-24 UNC', 0.216, 24, '#16'],
+    ['#10-24 UNC', 0.190, 24, '#25'], ['#10-32 UNF', 0.190, 32, '#21'], ['#12-24 UNC', 0.216, 24, '#16'], ['#12-28 UNF', 0.216, 28, '#14'],
     ['1/4-20 UNC', 0.250, 20, '#7'], ['1/4-28 UNF', 0.250, 28, '#3'], ['5/16-18 UNC', 0.3125, 18, 'F'], ['5/16-24 UNF', 0.3125, 24, 'I'],
     ['3/8-16 UNC', 0.375, 16, '5/16'], ['3/8-24 UNF', 0.375, 24, 'Q'], ['7/16-14 UNC', 0.4375, 14, 'U'], ['7/16-20 UNF', 0.4375, 20, '25/64'],
     ['1/2-13 UNC', 0.500, 13, '27/64'], ['1/2-20 UNF', 0.500, 20, '29/64'], ['9/16-12 UNC', 0.5625, 12, '31/64'], ['9/16-18 UNF', 0.5625, 18, '33/64'],
@@ -161,6 +173,7 @@ var HoleWizard = (function () {
       out.dia = drill(f.size); out.drillName = String(f.size).trim(); out.row = DRILL[out.drillName];
     } else {
       var sr = screwRow(f.size || '1/4');
+      if (t === 'cbore' && !sr.cb) throw new Error('No counterbore size for a ' + sr.size + ' socket head cap screw (ASME B18.3 has none).');
       out.row = sr;
       out.drillName = t === 'cbore' && fi < 2 ? sr.cb.drills[fi] : sr.clr[fi];
       out.dia = drill(out.drillName);
@@ -186,7 +199,7 @@ var HoleWizard = (function () {
     if (standardName(standard) === 'ISO') return ISO.map(function (r) { return [r.size, r.size]; });
     if (holeType === 'tap') return ANSI_THREADS.map(function (r) { return [r.size, r.size]; });
     if (holeType === 'hole' && sizeType === 'drill') return DRILL_SIZES.map(function (d) { return [d.name, d.name + '  (' + inchText(d.dia, 4) + ')']; });
-    return ANSI_SCREWS.filter(function (r) { return holeType !== 'csk' || r.csk; }).map(function (r) { return [r.size, r.size]; });
+    return ANSI_SCREWS.filter(function (r) { return holeType === 'csk' ? r.csk : holeType === 'cbore' ? r.cb : true; }).map(function (r) { return [r.size, r.size]; });
   }
   function defaultSize(standard, holeType, sizeType) {
     if (standardName(standard) === 'ISO') return 'M6';

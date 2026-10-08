@@ -170,6 +170,60 @@
       counts[why.length ? 'fail' : 'pass']++;
     }
   } catch (e) { row('bad', 'STEP / IGES round trip', e.message); counts.fail++; }
+  // --- r12/inchflange12: inch sheet metal on both kernels, and an inch STEP. The U-bracket example scaled to inches
+  // (a slot cut through the base before the two legs) at thicknesses whose top face sits on a 0.01 rounding boundary:
+  // both kernels fold both legs up (a split top face once sent the pick to the bottom edge, T away), same volume,
+  // same box to 0.002 in. Then the 0.075 in bracket's exact STEP: declared in inches, read back by OpenCascade (mm)
+  // 25.4 times the inch box, and rebuilt as an Imported feature of an inch part with the same volume and box ---
+  function inchBracket(T) {
+    return 'p.units("in");\np.sheet(' + T + ', ' + T + ', 0.5);\np.sketch("Top").rect(0, -2.4, 4.8, 2.4).end().baseFlange();\n' +
+      'p.sketch("Top", ' + T + ').slot(1.6, -1.2, 3.2, -1.2, 0.36).cut("through", { reverse: true });\n' +
+      'p.flange(1.6, [[0, ' + T + ', 1.2]]);\np.flange(1.6, [[4.8, ' + T + ', 1.2]], { angle: 120 });\np.hem(0.3, [[2.4, ' + T + ', 0]], { hemType: "closed" });';
+  }
+  function boxDiff(a, b) { var d = 0; for (var c = 0; c < 2; c++) for (var k = 0; k < 3; k++) d = Math.max(d, Math.abs(a[c][k] - b[c][k])); return d; }
+  for (var Ti of [0.035, 0.075, 0.125]) {
+    try {
+      var t12 = performance.now(), a12 = anvilBuild(inchBracket(Ti)), r12 = await occt(a12.model), why12 = [];
+      Object.keys(r12.status).forEach(function (id) { if (r12.status[id] !== 'ok') why12.push('feature ' + id + ': ' + r12.status[id]); });
+      if (a12.errors.length) why12.push('Anvil errors ' + a12.errors.join(', '));
+      if (!r12.valid) why12.push('invalid solid');
+      var dv12 = Math.abs(r12.volume - a12.volume) / a12.volume;
+      if (!(dv12 <= r12.tolerance)) why12.push('volume ' + r12.volume.toFixed(5) + ' vs Anvil ' + a12.volume.toFixed(5));
+      [['Anvil', a12.bbox], ['OpenCascade', r12.bbox]].forEach(function (q) {
+        if (!q[1]) { why12.push(q[0] + ': no solid'); return; }
+        if (!(Math.abs(q[1][0][1]) < 1e-6)) why12.push(q[0] + ': something below the base (min y ' + q[1][0][1].toFixed(4) + '): a leg folded down');
+        if (!(Math.abs(q[1][1][1] - (2 * Ti + 1.6)) < 1e-6)) why12.push(q[0] + ': legs ' + q[1][1][1].toFixed(4) + ' tall, not L + R + T = ' + (2 * Ti + 1.6).toFixed(4));
+      });
+      var db12 = a12.bbox && r12.bbox ? boxDiff(a12.bbox, r12.bbox) : Infinity;
+      if (!(db12 <= 0.002)) why12.push('bbox off by ' + db12.toExponential(2) + ' in');
+      row(why12.length ? 'bad' : 'ok', 'inch U-bracket T = ' + Ti + ' in (slot before the legs, 90° and 120° legs, closed hem): both kernels fold every flange the same way',
+        why12.join('\n') || 'volume ' + r12.volume.toFixed(5) + ' in³ (d ' + dv12.toExponential(1) + '), box ' + JSON.stringify(r12.bbox.map(function (p) { return p.map(function (x) { return +x.toFixed(4); }); })), performance.now() - t12);
+      counts[why12.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'inch U-bracket T = ' + Ti + ' in', e.message); counts.fail++; }
+  }
+  try {
+    var t13 = performance.now(), a13 = anvilBuild(inchBracket(0.075)), r13 = await occt(a13.model, { exports: true }), why13 = [];
+    if (!r13.step) throw new Error('no STEP: ' + (r13.exportError || 'solid not valid'));
+    var cb13 = /CONVERSION_BASED_UNIT\s*\(\s*'([^']+)'/.exec(r13.step);
+    if (!cb13 || !/INCH/i.test(cb13[1])) why13.push('the STEP does not declare inches (' + (cb13 ? cb13[1] : 'no conversion-based unit') + ')');
+    var imp13 = await occtImport('step', r13.step), lo13 = [Infinity, Infinity, Infinity], hi13 = [-Infinity, -Infinity, -Infinity];
+    imp13.solids.forEach(function (s) { for (var i = 0; i < s.positions.length; i += 3) for (var k = 0; k < 3; k++) { lo13[k] = Math.min(lo13[k], s.positions[i + k]); hi13[k] = Math.max(hi13[k], s.positions[i + k]); } });
+    var dmm13 = boxDiff([lo13, hi13], r13.bbox.map(function (p) { return p.map(function (x) { return x * 25.4; }); }));
+    if (!(dmm13 <= 0.05)) why13.push('read back in mm: box off the inch box × 25.4 by ' + dmm13.toFixed(4) + ' mm');
+    var res13 = Exchange.finishImport('step', { units: 'in' }, imp13.solids, 1, []);
+    var im13 = K.newModel('RT'); im13.units = 'in';
+    im13.features.push({ id: 1, type: 'import', name: 'Imported1', file: 'bracket.step', format: 'step', units: 'in', solids: Exchange.encodeSolids(res13.solids), brep: { format: 'step', text: r13.step } });
+    im13.nextId = 2;
+    var back13 = await occt(im13), dvol13 = Math.abs(back13.volume - r13.volume) / r13.volume;
+    if (back13.unsupported || !back13.valid) why13.push('rebuild ' + (back13.unsupported || 'invalid'));
+    if (!(dvol13 < 1e-6)) why13.push('volume ' + back13.volume.toFixed(6) + ' in³ vs ' + r13.volume.toFixed(6));
+    var db13 = back13.bbox ? boxDiff(back13.bbox, r13.bbox) : Infinity;
+    if (!(db13 < 1e-5)) why13.push('box off by ' + db13.toExponential(2) + ' in');
+    row(why13.length ? 'bad' : 'ok', 'inch U-bracket → STEP (INCH) → OpenCascade import into an inch part (exact rebuild from the kept file)',
+      why13.join('\n') || 'STEP ' + (r13.step.length / 1024).toFixed(0) + ' KB in ' + cb13[1] + ', read back ' + (hi13[1] - lo13[1]).toFixed(3) + ' mm tall, re-built ' + back13.volume.toFixed(5) + ' in³ (d ' + dvol13.toExponential(1) + ')', performance.now() - t13);
+    counts[why13.length ? 'fail' : 'pass']++;
+  } catch (e) { row('bad', 'inch STEP round trip', e.message); counts.fail++; }
+  // --- end r12/inchflange12 ---
   // the worker's rebuild cache: after an edit to one feature, the build that reuses the unchanged prefix gives the same
   // solid as a build from scratch, and reuses the features before the edit
   try {
@@ -302,7 +356,9 @@
         if (fo.bends.length !== sc.bends || fa.bends.length !== sc.bends) whyS.push('bends ' + fo.bends.length + ' / Anvil ' + fa.bends.length + ', want ' + sc.bends);
         if (fo.loops.length !== sc.loops || fa.loops.length !== sc.loops) whyS.push('loops ' + fo.loops.length + ' / Anvil ' + fa.loops.length + ', want ' + sc.loops);
         var dO = shDxf(fo), dA = shDxf(fa);
-        if (JSON.stringify(dO) !== JSON.stringify(dA)) whyS.push('DXF ' + JSON.stringify(dO) + ' vs Anvil ' + JSON.stringify(dA));
+        // entity counts per type / layer, whatever order the loops start in
+        function sorted(o) { var s = {}; Object.keys(o).sort().forEach(function (k) { s[k] = o[k]; }); return JSON.stringify(s); }
+        if (sorted(dO) !== sorted(dA)) whyS.push('DXF ' + JSON.stringify(dO) + ' vs Anvil ' + JSON.stringify(dA));
         if (sc.arcs != null && (dO['ARC/OUTLINE'] || 0) !== sc.arcs) whyS.push((dO['ARC/OUTLINE'] || 0) + ' ARCs on OUTLINE, want ' + sc.arcs);
         if (Object.keys(dO).some(function (k) { return /HOLES/.test(k); }) && sc.loops === 1) whyS.push('HOLES entities on a blank with no holes: ' + JSON.stringify(dO));
       }
@@ -311,6 +367,58 @@
     } catch (e) { row('bad', 'sheet metal, OpenCascade = Anvil: ' + sc.name, e.message); counts.fail++; }
   }
   // --- end occt-sheet ---
+  // --- cutbend: a hole, slot or notch cut before an edge flange or a sketched bend that crosses the bend zone stays cut:
+  // OpenCascade cuts it from the exact sweep (round holes wrapped exactly: an ellipse on the bend's cylinder, thickened
+  // radially). With K .5 the neutral axis is the mid-surface, so the metal a cut takes is T × its flat area wherever it
+  // lies: OpenCascade's volume must be the uncut part's less exactly that. Both kernels' flats: same size, bends and
+  // loops (the cut once, in place); DXF entities equal where the cut has no curve (a round hole's loop in OpenCascade's
+  // flat joins its exact tessellation in the sheet to Anvil's 16-gon in the bend, so it is not checked as a CIRCLE) ---
+  var CB_CUT = function (s) { return 'p.sketch("Top", ' + SH_T + ')' + s + '.cut("through", { reverse: true });\n'; };
+  var CB_FLIN = 'p.flange(1, [[6, ' + SH_T + ', 2]], { position: "inside" });', CB_SB = 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).sketchedBend(90, { fixed: [1, 0, 2] });';
+  var CB_CASES = [
+    // Material Inside: the bend starts 2T in, at x = 5.8804; the cut is centred on that line
+    { name: 'Edge Flange (Material Inside) over a Ø.2 hole on its bend line', plain: SH_HEAD + CB_FLIN, code: SH_HEAD + CB_CUT('.circle(5.8804, -2, 0.1)') + CB_FLIN, area: Math.PI * 0.01, loops: 2 },
+    { name: 'Edge Flange (Material Inside) over a .2 square on its bend line', plain: SH_HEAD + CB_FLIN, code: SH_HEAD + CB_CUT('.rect(5.7804, -2.1, 0.2, 0.2)') + CB_FLIN, area: 0.04, loops: 2, dxf: true },
+    // Bend Outside: a hole within T of the edge sat under the sweep's overlap strip into the sheet
+    { name: 'Edge Flange (Bend Outside) beside a Ø.06 hole .02 from the edge', plain: SH_HEAD + 'p.flange(1, [[6, ' + SH_T + ', 2]]);', code: SH_HEAD + CB_CUT('.circle(5.95, -2, 0.03)') + 'p.flange(1, [[6, ' + SH_T + ', 2]]);', area: Math.PI * 0.0009, loops: 2, dxf: true },
+    { name: 'Sketched Bend across a Ø.5 hole and a .375 slot', plain: SH_HEAD + CB_SB, code: SH_HEAD + CB_CUT('.circle(3, -1, 0.25)') + CB_CUT('.slot(2.5, -3, 3.5, -3, 0.375)') + CB_SB, area: Math.PI * 0.0625 + 0.375 + Math.PI * 0.375 * 0.375 / 4, loops: 3 },
+    { name: 'Sketched Bend across a notch in the plate\'s edge', plain: SH_HEAD + CB_SB, code: SH_HEAD + CB_CUT('.rect(2.8, -0.3, 0.4, 0.3)') + CB_SB, area: 0.12, loops: 1, dxf: true },
+    // a line slanted across the plate: the bend follows the plate's edges, the flat is the plate
+    { name: 'Sketched Bend along a line slanted across the plate', plain: null, code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(2.5, 0, 3.5, -4).sketchedBend(90, { fixed: [1, 0, 2] });', exact: 24 * SH_T, loops: 1, dxf: true }
+  ];
+  for (var cbi = 0; cbi < CB_CASES.length; cbi++) {
+    var cb = CB_CASES[cbi], tcb = performance.now();
+    try {
+      var cbm = K.newModel('T'); K.runScript(cbm, cb.code);
+      var cbb = K.rebuild(cbm), cbmesh = K.meshFromBody(cbb.body), whyC = [];
+      if (Object.keys(cbb.errors).length) whyC.push('Anvil errors ' + JSON.stringify(cbb.errors));
+      var cbr = await occt(cbm, { noCache: true });
+      if (cbr.unsupported) whyC.push('OpenCascade: unsupported ' + cbr.unsupported);
+      Object.keys(cbr.status).forEach(function (id) { if (cbr.status[id] !== 'ok') whyC.push('OpenCascade feature ' + id + ': ' + cbr.status[id]); });
+      if (!cbr.valid) whyC.push('invalid solid');
+      var cva = K.massProps(cbmesh, 1).volume, cdv = Math.abs(cbr.volume - cva) / cva;
+      if (!(cdv <= (cbr.tolerance || 1e-4))) whyC.push('volume ' + cbr.volume.toFixed(6) + ' vs Anvil ' + cva.toFixed(6));
+      var want = cb.exact;
+      if (cb.plain) { var pm = K.newModel('T'); K.runScript(pm, cb.plain); K.rebuild(pm); var pr = await occt(pm, { noCache: true }); want = pr.volume - SH_T * cb.area; }
+      if (!(Math.abs(cbr.volume - want) <= 1e-6 * want)) whyC.push('OpenCascade volume ' + cbr.volume.toFixed(7) + ', exact ' + want.toFixed(7));
+      var cbb2 = cbb.body.getBounds(), cdb = 0;
+      if (cbr.bbox) for (var c3 = 0; c3 < 3; c3++) cdb = Math.max(cdb, Math.abs(cbr.bbox[0][c3] - cbb2.min[c3]), Math.abs(cbr.bbox[1][c3] - cbb2.max[c3])); else cdb = Infinity;
+      if (!(cdb <= 1e-4)) whyC.push('bbox off by ' + cdb.toExponential(2));
+      var cfa = K.flatPattern(cbm, cbb, cbmesh), cfo = null;
+      if (!whyC.length) {
+        var cob = OcctKernel.toBuild(cbr, cbb, cbmesh, null, CSG, K);
+        cfo = K.flatPattern(cbm, cob, K.meshFromBody(cob.body));
+        [0, 1].forEach(function (k) { if (Math.abs(cfo.size[k] - cfa.size[k]) > 1e-6) whyC.push('flat ' + 'wh'[k] + ' ' + cfo.size[k].toFixed(4) + ' vs Anvil ' + cfa.size[k].toFixed(4)); });
+        if (cfo.loops.length !== cb.loops || cfa.loops.length !== cb.loops) whyC.push('loops ' + cfo.loops.length + ' / Anvil ' + cfa.loops.length + ', want ' + cb.loops);
+        if (cfo.bends.length !== cfa.bends.length) whyC.push('bends ' + cfo.bends.length + ' / Anvil ' + cfa.bends.length);
+        var srt = function (o) { var s = {}; Object.keys(o).sort().forEach(function (k) { s[k] = o[k]; }); return JSON.stringify(s); };
+        if (cb.dxf && srt(shDxf(cfo)) !== srt(shDxf(cfa))) whyC.push('DXF ' + JSON.stringify(shDxf(cfo)) + ' vs Anvil ' + JSON.stringify(shDxf(cfa)));
+      }
+      row(whyC.length ? 'bad' : 'ok', 'cut across a bend, OpenCascade = Anvil: ' + cb.name, whyC.join('\n') || ('volume ' + cbr.volume.toFixed(7) + ' (exact ' + want.toFixed(7) + ', Anvil ' + cva.toFixed(6) + '), flat ' + cfo.size.map(function (v) { return v.toFixed(4); }).join(' × ') + ' in, ' + cfo.loops.length + ' loop' + (cfo.loops.length === 1 ? '' : 's') + ', DXF ' + JSON.stringify(shDxf(cfo))), performance.now() - tcb);
+      counts[whyC.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'cut across a bend, OpenCascade = Anvil: ' + cb.name, e.message); counts.fail++; }
+  }
+  // --- end cutbend ---
   // --- r4/drawings4 ---
   // drawings of OpenCascade's Mug: where the handle's tube meets the wall the edge is drawn from points on the true
   // intersection of the two cylinders (no chord more than 0.005 mm off it), and the handle's outline in the isometric

@@ -577,21 +577,38 @@ var OcctKernel = (function () {
     // trim-back as Anvil's), computed from the body's tessellation; the sections are built exactly (bend arcs).
     // The bend allowance / deduction never changes the solid (only T, R, angle and length do): flat lengths come
     // from Kernel.flatPattern (Kernel.bendCalc), the same for both kernels; a jog passes its custom bend allowance on.
-    // an OpenCascade shape as a CSG solid (its triangles), for Kernel functions that read Anvil meshes
-    function shapeToCSG(sh) {
-      N(new oc.BRepMesh_IncrementalMesh_2(sh, 0.05, false, 0.35, false));
+    // an OpenCascade shape as a CSG solid (its triangles), for Kernel functions that read Anvil meshes; lin / ang: the
+    // mesh's linear and angular deflection (default 0.05 mm in the model's units, 0.35).
+    // r12/inchflange12: the default chord is 0.05 mm in the model's units (it was 0.05 units: 1.27 mm on an inch part),
+    // and the triangles of one planar B-rep face all get the same plane (the face's own, area-weighted), not each its
+    // own plane from three rounded nodes: Anvil's mesh groups faces by the plane rounded to 0.01 units, and
+    // per-triangle noise on an offset like 0.075 in split the top face of a 14 ga sheet in two (see Kernel.flangeLayout)
+    function shapeToCSG(sh, lin, ang) {
+      N(new oc.BRepMesh_IncrementalMesh_2(sh, lin || (m.units === 'in' ? 0.05 / 25.4 : 0.05), false, ang || 0.35, false));
       var polys = [];
       facesOf(sh).forEach(function (f) {
         var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(f, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
         if (h.IsNull()) return;
         var tri = h.get(), tr = N(loc.Transformation()), rev = f.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
         for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); nodes[i] = new CSGlib.Vector(p.X(), p.Y(), p.Z()); }
+        var fps = [];
         for (var j = 1; j <= tri.NbTriangles(); j++) {
           var T = N(tri.Triangle(j)), a = T.Value(1), b = T.Value(2), c = T.Value(3);
           if (rev) { var x = b; b = c; c = x; }
           var pg = CSGlib.Polygon.tryCreate([new CSGlib.Vertex(nodes[a]), new CSGlib.Vertex(nodes[b]), new CSGlib.Vertex(nodes[c])], null);
-          if (pg) polys.push(pg);
+          if (pg) fps.push(pg);
         }
+        var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), st = ad.GetType();
+        if (fps.length > 1 && (st && st.value != null ? st.value : st) === 0) {
+          var nx = 0, ny = 0, nz = 0, ws = 0, as = 0;
+          fps.forEach(function (q) {
+            var v = q.vertices, ar = v[1].pos.minus(v[0].pos).cross(v[2].pos.minus(v[0].pos)).length();
+            nx += q.plane.normal.x * ar; ny += q.plane.normal.y * ar; nz += q.plane.normal.z * ar; ws += q.plane.w * ar; as += ar;
+          });
+          var nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+          if (nl > 0 && as > 0) fps.forEach(function (q) { q.plane = new CSGlib.Plane(new CSGlib.Vector(nx / nl, ny / nl, nz / nl), ws / as); });
+        }
+        Array.prototype.push.apply(polys, fps);
       });
       return CSGlib.fromPolygons(polys);
     }
@@ -648,16 +665,150 @@ var OcctKernel = (function () {
     }
     // a flange layout onto body k: its cuts (trim-back, reliefs) first, then each part's exact sweep, mitred
     function applyLayout(k, lay, withCuts) {
-      var body = bodies[k];
+      var body = bodies[k], src = body, srcCSG = null;
       if (withCuts && lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (c) { return prismOf(c.loop, c.plane, c.a, c.b); }), 'OpenCascade could not cut the body.');
       var walls = lay.parts.map(function (p) {
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(lay.section, p.plane), p.t0, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0)), false, true)).Shape());
+        // a part whose band holds a hole / slot of the sheet (p.voids): no overlap strip, and the cut wrapped round the bend
+        var cutters = p.voids ? bendCutters(src, srcCSG || (srcCSG = shapeToCSG(src)), p.plane, p.band, lay.section, p.BA, false) : [];
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(p.voids ? noOverlap(lay.section, false) : lay.section, p.plane), p.t0, p.plane), Vec(V.scale(p.plane.n, p.t1 - p.t0)), false, true)).Shape());
+        if (cutters.length) tool = boolMany('cut', tool, cutters, 'OpenCascade could not cut the hole across the bend.');
         p.clips.forEach(function (c) { tool = clipKeep(tool, c.n, c.w); });
         return tool;
       });
       if (walls.length) body = boolMany('fuse', body, walls, 'OpenCascade could not join the bodies.');
       bodies[k] = body;
     }
+    // --- cutbend: a hole, slot or notch cut in the flat before an edge flange or a sketched bend that crosses the bend
+    // zone stays cut (Kernel.bendVoids / Kernel.wrapCut, as Anvil's kernel). The layout found the voids on the coarse
+    // mesh; they are read again from the exact solid (the band's slab less the body, meshed finely) and each becomes a
+    // cutter taken out of the exact sweep. That sweep then has no overlap strip into the sheet (noOverlap): it meets the
+    // sheet face to face, so the sheet's own exact hole is never refilled up to a facetted one.
+    // -> [solid] (one per void that reaches the sweep: past the bend's start, and for a sketched bend, whose sweep ends
+    // with the bend, before its end), [] when there is none.
+    function bendCutters(src, srcCSG, plane, band, sec, BA, sketched) {
+      var T = sec.T, slab = K.bandSlabSpec(plane, band, T);
+      var M = cut(prismOf(slab.loop, slab.plane, slab.a, slab.b), src);
+      if (!(volumeOf(M) > 0)) return [];
+      var loops = K.bendVoids(srcCSG, plane, band, T, { ends: sketched, voids: shapeToCSG(M, 4e-3 * T, 0.1) }).filter(function (l) {
+        return l.some(function (q) { return q[0] > 1e-9; }) && (!sketched || l.some(function (q) { return q[0] < BA - 1e-9; }));
+      });
+      // a void that stays within the bend (a flange's wall starts at BA; a sketched bend's sweep ends there): exact
+      return loops.map(function (l) { return sketched || l.every(function (q) { return q[0] < BA - 1e-9; }) ? cylinderCutter(l, plane, sec, BA) : wrappedCutter(l, plane, sec, BA); });
+    }
+    // the void outline drawn on the cylinder of the bend's inner face (ε inside it: angle A·s/BA, axial t, straight in
+    // those coordinates) and thickened radially through the thickness (ε past the outer face): its walls are the exact
+    // radial walls of the wrapped cut. The cylinder carries on past the bend's ends, where the sweep has no metal.
+    function cylinderCutter(l, plane, sec, BA) {
+      var R0 = sec.R, T = sec.T, eps = Math.min(0.01 * T, 0.5 * R0);
+      // axis through the bend centre along the edge; angle 0 at the sheet (−y from the centre), growing toward +x
+      var ax = N(new oc.gp_Ax3_3(P(V.add(plane.origin, V.scale(plane.y, R0))), Dir(plane.n), Dir(V.scale(plane.y, -1))));
+      var surf = N(new oc.Handle_Geom_Surface_2(N(new oc.Geom_CylindricalSurface_1(ax, R0 - eps))));
+      var ku = sec.A / BA, uv = l.map(function (q) { return [ku * q[0], q[1]]; }), mw = N(new oc.BRepBuilderAPI_MakeWire_1());
+      function pnt2(q) { return N(new oc.gp_Pnt2d_3(ku * q[0], q[1])); }
+      // the outline's points lie on the cut's true edge (a circle's, a slot's): between corners (a turn of more than
+      // 30°) each smooth run is drawn as the C1 cubic through them (chord-length Catmull-Rom), so the cut meets the
+      // sheet's own exact hole at the bend's start without a step; a run of two points is a straight edge
+      var n = l.length, corners = [];
+      l.forEach(function (p, i) {
+        var a = l[(i + n - 1) % n], b = l[(i + 1) % n], d1 = [p[0] - a[0], p[1] - a[1]], d2 = [b[0] - p[0], b[1] - p[1]];
+        if (Math.abs(Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1])) > 0.5) corners.push(i);
+      });
+      var runs = [];
+      if (!corners.length) runs.push({ pts: l.concat([l[0]]), closed: true });
+      else corners.forEach(function (c, j) {
+        var e = corners[(j + 1) % corners.length], pts = [];
+        for (var i = c; ; i = (i + 1) % n) { pts.push(l[i]); if (i === e && pts.length > 1) break; }
+        runs.push({ pts: pts, closed: false });
+      });
+      runs.forEach(function (run) {
+        var P0 = run.pts, m = P0.length - 1, crv, cf = m >= 2 ? fitCircle(P0) : null;
+        if (m < 2) crv = N(N(new oc.GCE2d_MakeSegment_1(pnt2(P0[0]), pnt2(P0[1]))).Value()).get();
+        else if (cf) {
+          // a run on one circle (a round hole, a slot's end): the circle wrapped round the bend is an ellipse in
+          // (angle, t), exactly; major axis along the angle when ku > 1
+          var cu = ku * cf.c[0], cv = cf.c[1], au = ku * cf.r, av = cf.r, alongU = au >= av;
+          var el = N(new oc.gp_Elips2d_2(N(new oc.gp_Ax2d_2(N(new oc.gp_Pnt2d_3(cu, cv)), N(new oc.gp_Dir2d_4(alongU ? 1 : 0, alongU ? 0 : 1)))), Math.max(au, av), Math.min(au, av), true));
+          var phi = function (q) { var x = ku * q[0] - cu, y = q[1] - cv; return alongU ? Math.atan2(y / av, x / au) : Math.atan2(-x / au, y / av); };
+          if (run.closed) crv = new oc.Geom2d_Ellipse_1(el);   // the handle below owns it
+          else crv = N(N(new oc.GCE2d_MakeArcOfEllipse_1(el, phi(P0[0]), phi(P0[m]), cf.ccw)).Value()).get();
+        } else {
+          var d = [], tg = [];
+          for (var i = 0; i < m; i++) d.push(Math.max(1e-12, Math.hypot(P0[i + 1][0] - P0[i][0], P0[i + 1][1] - P0[i][1])));
+          for (i = 0; i <= m; i++) {
+            var pi = i > 0 ? i - 1 : run.closed ? m - 1 : 0, ni = i < m ? i + 1 : run.closed ? 1 : m;
+            var dl = i > 0 ? d[i - 1] : run.closed ? d[m - 1] : 0, dr = i < m ? d[i] : run.closed ? d[0] : 0;
+            tg.push([(P0[ni][0] - P0[pi][0]) / (dl + dr), (P0[ni][1] - P0[pi][1]) / (dl + dr)]);   // d(point)/d(arc length)
+          }
+          var poles = N(new oc.TColgp_Array1OfPnt2d_2(1, 3 * m + 1)), kn = N(new oc.TColStd_Array1OfReal_2(1, m + 1)), mu = N(new oc.TColStd_Array1OfInteger_2(1, m + 1));
+          poles.SetValue(1, pnt2(P0[0]));
+          for (i = 0; i < m; i++) {
+            poles.SetValue(3 * i + 2, pnt2([P0[i][0] + tg[i][0] * d[i] / 3, P0[i][1] + tg[i][1] * d[i] / 3]));
+            poles.SetValue(3 * i + 3, pnt2([P0[i + 1][0] - tg[i + 1][0] * d[i] / 3, P0[i + 1][1] - tg[i + 1][1] * d[i] / 3]));
+            poles.SetValue(3 * i + 4, pnt2(P0[i + 1]));
+          }
+          for (i = 0; i <= m; i++) { kn.SetValue(i + 1, i); mu.SetValue(i + 1, i === 0 || i === m ? 4 : 3); }
+          crv = new oc.Geom2d_BSplineCurve_1(poles, kn, mu, 3, false);   // the handle below owns the curve
+        }
+        mw.Add_1(N(N(new oc.BRepBuilderAPI_MakeEdge_30(N(new oc.Handle_Geom2d_Curve_2(crv)), surf)).Edge()));
+      });
+      if (!mw.IsDone()) throw new Error('OpenCascade could not outline the cut across the bend.');
+      var wire = N(mw.Wire());
+      oc.BRepLib.BuildCurves3d_2(wire);
+      // the cutter's volume: the outline's area in (angle, t) times the annulus between the two radii per unit angle
+      var area = 0;
+      uv.forEach(function (a, j) { var b = uv[(j + 1) % uv.length]; area += a[0] * b[1] - b[0] * a[1]; });
+      var want = Math.abs(area / 2) * (Math.pow(R0 + T + eps, 2) - Math.pow(R0 - eps, 2)) / 2;
+      // on a closed surface a wire bounds two regions: when the face came out as the rest of the cylinder, reverse it
+      for (var k = 0; k < 2; k++) {
+        var w = k ? N(oc.TopoDS.Wire_1(N(wire.Reversed()))) : wire;
+        var face = N(N(new oc.BRepBuilderAPI_MakeFace_21(surf, w, true)).Face());
+        var th = N(new oc.BRepOffsetAPI_MakeThickSolid());
+        th.MakeThickSolidBySimple(face, T + 2 * eps);
+        if (!th.IsDone()) continue;
+        var sh = N(th.Shape()), v = volumeOf(sh);   // (the thickened face comes out inside out: negative)
+        if (Math.abs(v) < 1.5 * want) return v < 0 ? N(sh.Reversed()) : sh;
+      }
+      throw new Error('OpenCascade could not make the cut across the bend.');
+    }
+    // fitCircle(pts) -> { c, r, ccw } when every point lies on the circle through the first, middle and last (to 1e-7
+    // plus 1e-6 of the radius: points of an exact circle's mesh), else null; ccw: the run turns counterclockwise
+    function fitCircle(pts) {
+      var a = pts[0], b = pts[pts.length >> 1], c = pts[pts.length - 1];
+      if (V.len(V.sub([c[0], c[1], 0], [a[0], a[1], 0])) < 1e-9) c = pts[(pts.length * 3) >> 2];   // a closed run
+      var d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+      if (Math.abs(d) < 1e-15) return null;
+      var a2 = a[0] * a[0] + a[1] * a[1], b2 = b[0] * b[0] + b[1] * b[1], c2 = c[0] * c[0] + c[1] * c[1];
+      var cx = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d, cy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+      var r = Math.hypot(a[0] - cx, a[1] - cy), tol = 1e-7 + 1e-6 * r;
+      if (!pts.every(function (p) { return Math.abs(Math.hypot(p[0] - cx, p[1] - cy) - r) < tol; })) return null;
+      var turn = 0;
+      for (var i = 0; i + 1 < pts.length; i++) turn += (pts[i][0] - cx) * (pts[i + 1][1] - cy) - (pts[i][1] - cy) * (pts[i + 1][0] - cx);
+      return { c: [cx, cy], r: r, ccw: turn > 0 };
+    }
+    // a void that runs on into the wall: Kernel.wrapCut's polyhedron (bend zones of at most 5°, fine enough that a cap's
+    // chord stays outside the outer face), sewn
+    function wrappedCutter(l, plane, sec, BA) {
+      var T = sec.T, eps = Math.min(0.01 * T, 0.5 * sec.R), dth = Math.min(Math.PI / 36, 2 * Math.acos(1 - 0.5 * eps / (sec.R + T + eps)));
+      var faces = K.wrapCut([l], sec, BA, plane, { segs: Math.max(4, Math.ceil(sec.A / dth)), faces: true });
+      var sew = N(new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false));
+      faces.forEach(function (t) {
+        // drop points that repeat (a zone line through a corner) and faces with no area left
+        var q = t.filter(function (p, i) { return V.len(V.sub(p, t[(i + 1) % t.length])) > 1e-7; });
+        if (q.length < 3) return;
+        var nrm = [0, 0, 0];
+        for (var i = 1; i + 1 < q.length; i++) nrm = V.add(nrm, V.cross(V.sub(q[i], q[0]), V.sub(q[i + 1], q[0])));
+        if (V.len(nrm) > 1e-14) sew.Add(polyFace3(q));
+      });
+      sew.Perform(R());
+      var shells = explore(N(sew.SewedShape()), ENUM.TopAbs_SHELL);
+      if (shells.length !== 1) throw new Error('OpenCascade could not close the cut across the bend.');
+      var so = N(N(new oc.BRepBuilderAPI_MakeSolid_3(N(oc.TopoDS.Shell_1(shells[0])))).Solid());
+      return volumeOf(so) < 0 ? N(so.Reversed()) : so;
+    }
+    // the bend section without the strip it lays into the sheet before the bend (and, for a sketched bend, the one past
+    // it into the moving piece: wall L = 0)
+    function noOverlap(sec, sketched) { return { A: sec.A, R: sec.R, T: sec.T, L: sketched ? 0 : sec.L, ov: 0 }; }
+    // --- end cutbend ---
     function sheetBody(f) {
       if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
       if (rm.sheetError) throw new Error(rm.sheetError);
@@ -711,7 +862,7 @@ var OcctKernel = (function () {
       var k = pickBody(at);
       if (k < 0) throw new Error('Create a Base Flange before adding a sketched bend.');
       var src = bodies[k] = unify(bodies[k]);
-      var lay = K.sketchedBendLayout(f, m, { body: shapeToCSG(src), sketches: sketches, planes: planes });
+      var srcCSG = shapeToCSG(src), lay = K.sketchedBendLayout(f, m, { body: srcCSG, sketches: sketches, planes: planes });
       function clipAll(sh, hs) { hs.forEach(function (h) { sh = clipKeep(sh, h.n, h.w); }); return sh; }
       var parts = [], fixed = clipAll(src, lay.fixed);
       if (volumeOf(fixed) > 1e-12) parts.push(fixed);
@@ -720,7 +871,10 @@ var OcctKernel = (function () {
         if (volumeOf(b) > 1e-12) parts.push(transformed(b, trsfOf(pc.motion)));
       });
       lay.bends.forEach(function (bd) {
-        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(lay.section, bd.plane), bd.t0, bd.plane), Vec(V.scale(bd.plane.n, bd.t1 - bd.t0)), false, true)).Shape());
+        // holes / slots / notches across the strip (bd.voids): the bend meets both pieces face to face, the cut wrapped round it
+        var cutters = bd.voids ? bendCutters(src, srcCSG, bd.plane, bd.band, lay.section, lay.BA, true) : [];
+        var tool = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(flangeSection(bd.voids ? noOverlap(lay.section, true) : lay.section, bd.plane), bd.t0, bd.plane), Vec(V.scale(bd.plane.n, bd.t1 - bd.t0)), false, true)).Shape());
+        if (cutters.length) tool = boolMany('cut', tool, cutters, 'OpenCascade could not cut the hole across the bend.');
         parts.push(isIdentity(bd.motion) ? tool : transformed(tool, trsfOf(bd.motion)));
       });
       if (!parts.length) throw new Error('Sketched Bend: nothing of the sheet is left.');

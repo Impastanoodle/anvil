@@ -218,8 +218,10 @@
 
   // exportDXFFlat(flat, units, opts?) -> DXF text of a Kernel.flatPattern result. opts: { version: 'R12' (AC1009,
   // default) | 'R2000' (AC1015), style: 'polyline' (default) | 'entities', bendLines (default true), notes (default
-  // true: the bend labels and the sheet note), origin (default true: the blank's lower-left corner at 0,0) }.
-  // Layers: OUTLINE (the blank), HOLES (every inner loop; round holes are CIRCLEs), BEND (bend centre lines), NOTES.
+  // true: the bend labels and the sheet note), origin (default true: the blank's lower-left corner at 0,0), etch
+  // (default true: flat.etch, the marks sketched on the sheet's faces) }.
+  // Layers: OUTLINE (the blank), HOLES (every inner loop; round holes are CIRCLEs), BEND (bend centre lines), NOTES,
+  // ETCH (marking: Etch text strokes and ETCH-layer lines / arcs / circles, colour from the sketch's layer, default 3).
   // Coordinates are in the part's units ($INSUNITS 1 inch / 4 mm, $MEASUREMENT 0 / 1).
   function exportDXFFlat(flat, units, opts) {
     opts = opts || {};
@@ -231,6 +233,19 @@
     var s = flat.sheet, T = +s.thickness, inch = units === 'in';
     var th = inch ? Math.max(0.08, T) : Math.max(1.5, T);
     function sh(q) { return [q[0] + shift[0], q[1] + shift[1]]; }
+    // marking (flat.etch: Etch text strokes and ETCH-layer geometry of sketches on the sheet's faces), never a cut:
+    // LINE / ARC / CIRCLE (a stretched letter as a polyline) on ETCH, in the layer's colour (default 3, green)
+    var etch = opts.etch === false ? [] : (flat.etch || []);
+    if (etch.length) {
+      var el = flat.etchLayer || {};
+      d.layer('ETCH', el.aci > 0 ? el.aci | 0 : el.color ? nearestAci(el.color) : 3);
+      etch.forEach(function (it) {
+        if (it.t === 'line') d.line('ETCH', sh(it.a), sh(it.b));
+        else if (it.t === 'circle') d.circle('ETCH', sh(it.c), it.r);
+        else if (it.t === 'arc') d.arc('ETCH', sh(it.c), it.r, degrees(it.a0 * Math.PI / 180), degrees(it.a1 * Math.PI / 180));
+        else if (it.t === 'poly' && it.pts && it.pts.length > 1) d.polyline('ETCH', it.pts.map(sh), !!it.closed);
+      });
+    }
     flat.bends.forEach(function (b) {
       if (opts.bendLines !== false) d.line('BEND', sh(b.a), sh(b.b));
       if (opts.notes !== false) {
