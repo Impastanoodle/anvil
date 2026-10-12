@@ -15795,6 +15795,330 @@
   })();
   // --- end rfV ---
 
+  // ------------------------------------------------------------------ rfZ: Detail View Profile / outlines / circle styles, partial sections, Scale with model changes, True dimensions
+  (function () {
+    if (typeof Drawing === 'undefined') return;
+    group('rfZ: detail Profile and Full / Jagged outline, detail circle styles, Partial section, Scale with model changes, Dimension Type True');
+    var DW = Drawing, PLATE = 'p.sketch("Front").rect(0, 0, 100, 50).circle(20, 25, 5).circle(80, 25, 5).extrude(10);';
+    function rfZDoc(code) {
+      var r = build(code);
+      noErrors(r);
+      r.doc = DW.newDrawing(r.model, { date: '2026-10-12' });
+      DW.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      r.recompute();
+      r.byId = function (id) { return r.sheet.views.filter(function (w) { return w.view.id === id; })[0]; };
+      r.front = function () { return r.doc.views.filter(function (v) { return v.orient === 'Front'; })[0]; };
+      return r;
+    }
+    test('rfZ: Detail View Profile — a 40 × 50 rectangle round the left hole shows that hole whole, edges cut at u = 40, its box is the rectangle at twice the scale; the parent shows the rectangle (4 thick lines), not a circle; Full outline draws it round the view; a profile needs two corners', function () {
+      var r = rfZDoc(PLATE), F = r.front();
+      var v = DW.addDetailView(r.doc, r.mesh, F.id, { shape: 'profile', a: [40, 50], b: [0, 0], outline: 'full', x: 300, y: 150 });
+      assert(v.detail.shape === 'profile' && v.detail.a[0] === 0 && v.detail.b[0] === 40 && v.detail.outline === 'full', 'stored ' + JSON.stringify(v.detail));
+      var sh = r.recompute(), w = r.byId(v.id), s = w.scale;
+      assert(w.proj.circles.visible.length === 1 && Math.abs(w.proj.circles.visible[0].c[0] - 20) < 1e-9, 'one hole, whole: ' + JSON.stringify(w.proj.stats));
+      assert(w.proj.lines.visible.every(function (l) { return Math.max(l[0], l[2]) <= 40 + 1e-9; }), 'nothing past u = 40');
+      near(w.box.x1 - w.box.x0, 40 * s, 1e-9, 'box width'); near(w.box.y1 - w.box.y0, 50 * s, 1e-9, 'box height');
+      near(s, 2 * DW.scaleValue(F.scale || r.doc.sheet.scale), 1e-12, 'twice the parent scale');
+      var marks = sh.prims.filter(function (p) { return p.detailMark === v.id; });
+      assert(marks.length === 4 && marks.every(function (p) { return p.k === 'line' && p.style === 'thick'; }), 'rectangle on the parent ' + marks.map(function (p) { return p.k; }));
+      var ol = sh.prims.filter(function (p) { return p.detailOutline === v.id; });
+      assert(ol.length === 4 && ol.every(function (p) { return p.k === 'line' && p.layer === w.layer; }), 'full outline round the view ' + ol.length);
+      near(Math.min.apply(null, ol.map(function (p) { return Math.min(p.a[0], p.b[0]); })), w.box.x0, 1e-9, 'outline on the box');
+      assert(sh.prims.some(function (p) { return p.k === 'text' && p.text === 'DETAIL ' + v.label; }), 'label');
+      var bad = null; try { DW.addDetailView(r.doc, r.mesh, F.id, { shape: 'profile', a: [0, 0], b: [0, 10] }); } catch (e) { bad = e.message; }
+      assert(bad && /corners/.test(bad), 'zero-width profile refused: ' + bad);
+      return 'detail ' + v.label + ' ' + (w.box.x1 - w.box.x0).toFixed(2) + ' × ' + (w.box.y1 - w.box.y0).toFixed(2);
+    });
+    test('rfZ: detail circle outlines and styles — Full outline is a circle of the detail radius round the view, Jagged a closed zig-zag; Broken leaves a gap for the letter, With Leader adds a thin leader, Connected a thin line to the detail view; setDetailOptions changes and clears them', function () {
+      var r = rfZDoc(PLATE), F = r.front();
+      var v = DW.addDetailView(r.doc, r.mesh, F.id, { c: [80, 25], r: 12, outline: 'full', x: 330, y: 270 });
+      var sh = r.recompute(), w = r.byId(v.id), ol = sh.prims.filter(function (p) { return p.detailOutline === v.id; });
+      assert(ol.length === 1 && ol[0].k === 'circle', 'full: one circle'); near(ol[0].r, 12 * w.scale, 1e-9, 'radius');
+      DW.setDetailOptions(r.doc, v.id, { outline: 'jagged' });
+      sh = r.recompute(); ol = sh.prims.filter(function (p) { return p.detailOutline === v.id; });
+      assert(ol.length >= 12 && ol.every(function (p) { return p.k === 'line'; }), 'jagged: zig-zag lines ' + ol.length);
+      near(Math.hypot(ol[0].a[0] - ol[ol.length - 1].b[0], ol[0].a[1] - ol[ol.length - 1].b[1]), 0, 1e-9, 'closed');
+      var circ = function () { return r.sheet.prims.filter(function (p) { return p.detailMark === v.id; }); };
+      assert(circ().length === 1 && circ()[0].k === 'circle', 'per standard: the circle');
+      DW.setDetailOptions(r.doc, v.id, { style: 'broken', outline: null });
+      r.recompute();
+      var arc = circ().filter(function (p) { return p.k === 'arc'; })[0];
+      assert(arc && !circ().some(function (p) { return p.k === 'circle'; }) && arc.a1 - arc.a0 < 360 - 1 && arc.a1 - arc.a0 > 180, 'broken: an arc with a gap ' + (arc && (arc.a1 - arc.a0)));
+      assert(!r.sheet.prims.some(function (p) { return p.detailOutline === v.id; }), 'outline cleared');
+      DW.setDetailOptions(r.doc, v.id, { style: 'leader' });
+      r.recompute();
+      assert(r.sheet.prims.some(function (p) { return p.detailLeader === v.id && p.style === 'thin'; }), 'with leader');
+      DW.setDetailOptions(r.doc, v.id, { style: 'connected' });
+      sh = r.recompute(); w = r.byId(v.id);
+      var cn = sh.prims.filter(function (p) { return p.detailConnect === v.id; })[0];
+      assert(cn, 'connected line');
+      assert(cn.b[0] >= w.box.x0 - 1e-9 && cn.b[0] <= w.box.x1 + 1e-9 && cn.b[1] >= w.box.y0 - 1e-9 && cn.b[1] <= w.box.y1 + 1e-9, 'ends on the detail view');
+      DW.setDetailOptions(r.doc, v.id, { style: null });
+      assert(!r.doc.views.filter(function (x) { return x.id === v.id; })[0].detail.style, 'style cleared');
+      var dxf = DW.toDXF(sh), svg = DW.toSVG(sh);
+      assert(dxf.indexOf('DETAIL ' + v.label) > 0 && svg.indexOf('DETAIL ' + v.label) > 0, 'exports');
+      return ol.length + ' jagged pieces';
+    });
+    test('rfZ: Partial section — a horizontal cut at v = 25 from u = 0 to 40 keeps that band of the section (the left hole cut, nothing past 40), the cutting line on Front stops at its two ends; partial on a half section is refused; partial: null takes it off', function () {
+      var r = rfZDoc(PLATE), F = r.front();
+      var full = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'h', at: 25, sign: 1 }), sh = r.recompute(), wf = r.byId(full.id);
+      var fullW = wf.proj.bounds.umax - wf.proj.bounds.umin;
+      DW.deleteView(r.doc, full.id);
+      var v = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'h', at: 25, sign: 1, partial: [40, 0] });
+      assert(v.section.partial[0] === 0 && v.section.partial[1] === 40, 'stored sorted ' + JSON.stringify(v.section));
+      sh = r.recompute();
+      var w = r.byId(v.id), pw = r.byId(F.id);
+      near(fullW, 100, 1e-6, 'the full section is 100 wide');
+      assert(w.proj.bounds.umax <= 40 + 1e-9 && w.proj.bounds.umin >= -1e-9, 'band 0..40: ' + JSON.stringify(w.proj.bounds));
+      assert(w.hatch > 0, 'hatched');
+      var chain = sh.prims.filter(function (p) { return p.layer === pw.layer && p.k === 'line' && p.style === 'chain' && p.view == null; });
+      assert(chain.length === 1, 'one cutting line ' + chain.length);
+      var A = pw.toSheet([0, 25]), B = pw.toSheet([40, 25]);
+      near(Math.min(chain[0].a[0], chain[0].b[0]), A[0], 1e-9, 'starts at u = 0'); near(Math.max(chain[0].a[0], chain[0].b[0]), B[0], 1e-9, 'ends at u = 40');
+      near(chain[0].a[1], A[1], 1e-9, 'at v = 25');
+      var bad = null; try { DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'h', at: 25, sign: 1, type: 'half', c: 50, side: 1, partial: [0, 40] }); } catch (e) { bad = e.message; }
+      assert(bad && /partial/i.test(bad) && r.doc.views.length === 5, 'half + partial refused, view taken off: ' + bad);
+      DW.setSectionOptions(r.doc, r.mesh, v.id, { partial: null });
+      r.recompute();
+      near(r.byId(v.id).proj.bounds.umax - r.byId(v.id).proj.bounds.umin, 100, 1e-6, 'partial off: the whole section');
+      return 'band ' + (w.proj.bounds.umax - w.proj.bounds.umin).toFixed(3);
+    });
+    test('rfZ: Scale with model changes — a vertical cut at u = 75 of a 100 wide plate moves to u = 150 when the plate is made 200 wide (same place on the part), a partial line\'s ends too; without it the line stays at 75', function () {
+      var r = rfZDoc(PLATE), F = r.front();
+      var a = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'v', at: 75, sign: 1, scaleWithModel: true, label: 'A' });
+      var b = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'v', at: 75, sign: 1, label: 'B', partial: [10, 40], scaleWithModel: true });
+      var c = DW.addSectionView(r.doc, r.mesh, F.id, { axis: 'v', at: 75, sign: 1, label: 'C' });
+      near(a.section.rel.at, 0.75, 1e-12, 'fraction'); assert(!c.section.rel && !c.section.scaleWithModel, 'off by default');
+      var r2 = build('p.sketch("Front").rect(0, 0, 200, 100).circle(20, 25, 5).extrude(10);');
+      noErrors(r2);
+      var sh = DW.compute(r.doc, r2.mesh, r2.model, { build: r2.build });
+      near(a.section.at, 150, 1e-9, 'A follows the part'); near(c.section.at, 75, 1e-12, 'C stays');
+      near(b.section.partial[0], 20, 1e-9, 'partial from'); near(b.section.partial[1], 80, 1e-9, 'partial to');
+      var wa = sh.views.filter(function (w) { return w.view.id === a.id; })[0];
+      assert(wa && wa.hatch > 0, 'A still cuts the part');
+      DW.compute(r.doc, r.mesh, r.model, { build: r.build });
+      near(a.section.at, 75, 1e-9, 'back to 75 with the old part');
+      DW.setSectionOptions(r.doc, r.mesh, a.id, { scaleWithModel: false });
+      assert(!a.section.rel && !a.section.scaleWithModel, 'off again');
+      return 'A at ' + a.section.at;
+    });
+    test('rfZ: Dimension Type True — in an isometric view the longest edge (the 100 long one, drawn 81.65) reads 100 with True and 81.65 with Projected; a vertex-to-vertex dimension reads the 3D distance 111.803; trueLength lifts the 2D points onto the part; orthographic and section views ignore it', function () {
+      var r = rfZDoc('p.sketch("Front").rect(0, 0, 100, 50).extrude(10);');
+      var iso = r.doc.views.filter(function (v) { return v.orient === 'Isometric'; })[0], F0 = DW.frameOf(DW.orientation('Isometric'));
+      function pj(p) { return [Kernel.vec.dot(p, F0.u), Kernel.vec.dot(p, F0.v)]; }
+      near(DW.trueLength(r.mesh, F0, pj([0, 50, 10]), pj([100, 50, 10])), 100, 1e-9, 'an X edge');
+      near(DW.trueLength(r.mesh, F0, pj([0, 50, 10]), pj([50, 50, 10])), 50, 1e-9, 'half of it');
+      near(DW.trueLength(r.mesh, F0, pj([0, 50, 10]), pj([100, 0, 10])), Math.hypot(100, 50), 1e-9, 'two vertices');
+      var w = r.sheet.views.filter(function (x) { return x.view.id === iso.id; })[0], L = 0, best = null;
+      w.proj.lines.visible.forEach(function (l) { var d = Math.hypot(l[2] - l[0], l[3] - l[1]); if (d > L) { L = d; best = l; } });
+      near(L, 100 * Math.sqrt(2 / 3), 1e-6, 'drawn foreshortened');
+      var d = DW.smartDim({ edge: [[best[0], best[1]], [best[2], best[3]]] }, null, [best[0], best[1] + 20], { scale: w.scale, aligned: true });
+      assert(d.kind === 'aligned', 'along the edge: ' + d.kind);
+      iso.dims = [d];
+      r.recompute();
+      var sd = r.sheet.dims.filter(function (x) { return x.view === iso.id; })[0];
+      near(sd.value, L, 1e-9, 'Projected (default) ' + sd.text);
+      DW.setDimType(r.doc, iso.id, 'true');
+      r.recompute();
+      sd = r.sheet.dims.filter(function (x) { return x.view === iso.id; })[0];
+      near(sd.value, 100, 1e-9, 'True'); assert(sd.text === '100' && sd.trueDim, 'text ' + sd.text);
+      assert(r.sheet.views.filter(function (x) { return x.view.id === iso.id; })[0].trueDims, 'the view reads true lengths');
+      iso.dims.push(DW.smartDim({ point: pj([0, 50, 10]) }, { point: pj([100, 0, 10]) }, null, { aligned: true }));
+      r.recompute();
+      near(r.sheet.dims.filter(function (x) { return x.view === iso.id; })[1].value, Math.hypot(100, 50), 1e-9, 'vertex to vertex');
+      var front = r.front(), bad = null;
+      DW.setDimType(r.doc, front.id, 'true'); r.recompute();
+      assert(!r.sheet.views.filter(function (x) { return x.view.id === front.id; })[0].trueDims, 'orthographic: nothing to correct');
+      var sv = DW.addSectionView(r.doc, r.mesh, front.id, { axis: 'h', at: 25, sign: 1 });
+      try { DW.setDimType(r.doc, sv.id, 'true'); } catch (e) { bad = e.message; }
+      assert(bad, 'a section view has no Dimension Type');
+      DW.setDimType(r.doc, iso.id, 'projected');
+      assert(!iso.dimType, 'back to projected');
+      return sd.text + ' (drawn ' + L.toFixed(3) + ')';
+    });
+  })();
+  // --- end rfZ ---
+  // ------------------------------------------------------------------ rfY: arc slots as real entities, slot cap drags
+  (function () {
+    if (typeof SketchSolver === 'undefined') return;
+    group('rfY: Arc Slot exploded as SolidWorks draws it, slot end-cap and side drags');
+    var SS = SketchSolver, PI = Math.PI;
+    function aslotArea(r, sweepDeg, w) { return sweepDeg * PI / 180 * r * w + PI * w * w / 4; }
+    function arcScript(s) {
+      var code = 'p.sketch("Front")';
+      s.entities.forEach(function (e) { code += '.arc(' + [e.cx, e.cy, e.r, e.a0, e.a1].join(', ') + ')'; });
+      return code + '.construction([4]).extrude(5);';
+    }
+    test('rfY: explodeSlot of an arc slot gives the outer arc, an end arc, the inner arc, an end arc and a construction arc: Coincident / Tangent joins, nothing redundant, 6 degrees of freedom; refs and dimensions follow; its extrude is the exact arc-slot volume', function () {
+      var s = { entities: [{ t: 'aslot', cx: 0, cy: 0, r: 20, a0: 30, a1: 150, w: 6 }, { t: 'point', x: 0, y: 0 }], rels: [{ type: 'coincident', refs: ['0.c', '1'] }], dims: [{ e: 0, k: 'r' }, { e: 0, k: 'w' }] };
+      assert(SS.explodeSlot(s, 0) === 0, 'exploded');
+      var E = s.entities;
+      assert(E.length === 6 && E.slice(0, 5).every(function (e) { return e.t === 'arc'; }) && E[4].construction && E[5].t === 'point', 'five arcs then the point ' + JSON.stringify(E));
+      near(E[0].r, 23, 1e-12, 'outer'); near(E[2].r, 17, 1e-12, 'inner'); near(E[1].r, 3, 1e-12, 'cap'); near(E[3].r, 3, 1e-12, 'cap');
+      assert(s.rels.some(function (r) { return r.type === 'coincident' && r.refs.join() === '4.c,5'; }), 'the centre ref follows to the construction arc ' + JSON.stringify(s.rels[0]));
+      assert(s.dims.length === 1 && s.dims[0].e === 4 && s.dims[0].k === 'r', 'R on the construction arc ' + JSON.stringify(s.dims));
+      assert(s.rels.some(function (r) { return r.type === 'distance' && r.dir === 'r' && r.refs.join() === '2,0' && r.v === 6; }), 'the width between inner and outer');
+      var an = SS.analyze({ entities: E.slice(0, 5), rels: s.rels.filter(function (r) { return r.refs.every(function (x) { return !/^5/.test(x); }) && r.type !== 'distance'; }) });
+      assert(an.redundant === 0 && an.conflicts === 0 && an.dof === 6, 'dof 6, nothing over defined: ' + JSON.stringify(an));
+      var a = build(arcScript({ entities: E.slice(0, 5) }));
+      noErrors(a);
+      nearRel(a.mp.volume, aslotArea(20, 120, 6) * 5, 1e-9, 'extrude volume');
+      return an.dof + ' dof, ' + fmt(a.mp.volume) + ' mm³';
+    });
+    test('rfY: dragging an arc slot\'s or straight slot\'s end cap (opts.cap) keeps its radius and moves its centre; slotCap / slotAxisOf find the caps and the centre line; a free arc is no cap', function () {
+      var s = { entities: [{ t: 'slot', x1: 10, y1: 0, x2: 30, y2: 0, w: 6 }, { t: 'arc', cx: -30, cy: 0, r: 5, a0: 0, a1: 180 }] };
+      SS.explodeSlot(s, 0);
+      assert(SS.slotCap(s, 1) && SS.slotCap(s, 3) && !SS.slotCap(s, 5), 'caps 1 and 3, not the free arc');
+      assert(SS.slotAxisOf(s, 0) === 4 && SS.slotAxisOf(s, 2) === 4 && SS.slotAxisOf(s, 5) === -1, 'sides hold the centerline');
+      var start = JSON.parse(JSON.stringify(s.entities));
+      assert(SS.drag(s, '1', [7, 3], start, { cap: true }).ok, 'drag');
+      near(s.entities[1].r, 3, 1e-9, 'cap radius kept'); near(s.entities[3].r, 3, 1e-9, 'other cap');
+      near(s.entities[1].cx, 37, 1e-6, 'cap centre x'); near(s.entities[1].cy, 3, 1e-6, 'cap centre y');
+      near(s.entities[3].cx, 10, 0.01, 'the other end stays (about: nothing pins it)');
+      start = JSON.parse(JSON.stringify(s.entities));
+      assert(SS.drag(s, '0', [0, 0], start, { hold: 4 }).ok, 'side drag (no move)');
+      var a = { entities: [{ t: 'aslot', cx: 0, cy: 0, r: 20, a0: 0, a1: 90, w: 4 }] };
+      SS.explodeSlot(a, 0);
+      assert(SS.slotCap(a, 1) && SS.slotCap(a, 3) && !SS.slotCap(a, 0) && SS.slotAxisOf(a, 0) === 4, 'arc slot caps and axis');
+      start = JSON.parse(JSON.stringify(a.entities));
+      assert(SS.drag(a, '1', [-5, -2], start, { cap: true }).ok, 'arc slot cap drag');
+      near(a.entities[1].r, 2, 1e-9, 'cap radius kept'); near(a.entities[0].r - a.entities[2].r, 4, 1e-9, 'width kept');
+      assert(a.entities[4].a1 - a.entities[4].a0 > 90, 'the sweep grew: ' + (a.entities[4].a1 - a.entities[4].a0));
+      var an = SS.analyze(a);
+      assert(an.redundant === 0 && an.conflicts === 0, 'still consistent ' + JSON.stringify(an.rels));
+      return 'cap at ' + fmt(s.entities[1].cx) + ', arc sweep ' + fmt(a.entities[4].a1 - a.entities[4].a0) + '°';
+    });
+  })();
+  // --- end rfY ---
+  // --- rfAB: Model Items bring the sketch dimensions (typed 10 x 6, ordinates) into the Top view and the flat-pattern view ---
+  (function () {
+    group('rfAB: Model Items of an inch sheet-metal part — sketch Smart Dimensions and ordinates where they read true (Top view, flat pattern), hole callouts, flange lengths; slots drawn as lines and arcs keep their callouts');
+    if (typeof Drawing === 'undefined' || typeof SketchSolver === 'undefined') return;
+    var DW = Drawing, SS = SketchSolver;
+    // the shop audit's blank: a 10 x 6 Top sketch drawn as four lines with typed lengths (Smart Dimensions on lines 0
+    // and 1), four Ø.281 holes, a straight slot and an arc slot drawn as lines and arcs, a horizontal ordinate set from
+    // the left edge to two holes; 16 ga Base Flange, a 1.5 Edge Flange on the x = 0 edge and a 1.0 one on y = 0
+    function rfABPart() {
+      var m = K.newModel('rfAB');
+      K.runScript(m, ['p.name("Shop").units("in");', 'p.sheet(0.0598, 0.0598, 0.5);',
+        'p.sketch("Top").line(0,0,10,0).line(10,0,10,6).line(10,6,0,6).line(0,6,0,0)',
+        '.circle(1,1,0.1405).circle(9,1,0.1405).circle(1,5,0.1405).circle(9,5,0.1405)',
+        '.slot(4.5,3,5.5,3,0.375).arcSlot(7,3,1,30,90,0.25)',
+        '.dim(0, "len", {value: 10}).dim(1, "len", {value: 6})',
+        '.end().baseFlange(0.0598);',
+        'p.flange(1.5, [[0, 0.0598, -3]]);', 'p.flange(1.0, [[5, 0.0598, 0]], { reverse: true });'].join('\n'));
+      var f = m.features[0];
+      SS.explodeSlot(f, 8);
+      SS.explodeSlot(f, f.entities.map(function (e) { return e.t; }).indexOf('aslot'));
+      var cl = -1;
+      f.entities.forEach(function (e, i) { if (cl < 0 && e.t === 'line' && e.construction && Math.abs(e.y1 - 3) < 1e-9 && Math.abs(e.y2 - 3) < 1e-9) cl = i; });
+      if (cl >= 0) f.dims.push({ e: cl, k: 'len' });   // the slot's centre distance, as the typed slot places it
+      var o = SS.addOrdinate(f, { zero: '3', target: '4', axis: 'x', at: -0.5 });
+      SS.addOrdinate(f, { zero: '3', target: '5', axis: 'x', ord: o.ord });
+      var b = K.rebuild(m), mesh = K.meshFromBody(b.body);
+      var doc = DW.newDrawing(m, { date: '2026-10-12' });
+      DW.standard3View(doc, mesh, 'in');
+      var fv = DW.addFlatView(doc, mesh, { model: m, build: b, x: 300, y: 80 });
+      var r = { model: m, build: b, mesh: mesh, doc: doc, flat: fv, cl: cl };
+      r.compute = function (mi) { r.doc.modelItems = mi; r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      r.texts = function (vid) { return r.sheet.dims.filter(function (d) { return vid == null || d.view === vid; }).map(function (d) { return d.text; }); };
+      r.role = function (role) { return r.doc.views.filter(function (v) { return v.role === role; })[0]; };
+      return r;
+    }
+    test('rfAB: Model Items (Entire model, all views) put the blank\'s typed 10.000 / 6.000 and the ordinate set 0, 1.000, 9.000 on the Top view, the hole callout 4X Ø.281 and the slot callouts there, the flange lengths 1.620 / 1.120 on Front / Right; the slot\'s own centre distance is not repeated', function () {
+      var r = rfABPart();
+      noErrors({ errors: r.build.errors });
+      r.compute({ source: 'entire' });
+      var top = r.role('top'), tt = r.texts(top.id);
+      ['10.000', '6.000', '0, 1.000, 9.000', '4X Ø.281', '.375 X 1.375 SLOT', 'R1.000 ARC SLOT .250 WIDE 60°'].forEach(function (x) { assert(tt.indexOf(x) >= 0, x + ' on Top: ' + tt.join(' | ')); });
+      assert(r.texts(r.role('front').id).indexOf('1.620') >= 0 && r.texts(r.role('right').id).indexOf('1.120') >= 0, 'flange lengths ' + r.texts().join(' | '));
+      var w = r.sheet.dims.filter(function (d) { return d.view === top.id && d.text === '10.000'; })[0];
+      assert(w && w.kind === 'h' && w.sketchDim === r.model.features[0].id + ':0' && w.side === -1, '10.000 horizontal below, from the sketch: ' + JSON.stringify(w && { k: w.kind, s: w.sketchDim, side: w.side }));
+      var sk = r.model.features[0], ci = sk.dims.length - 1;
+      assert(r.cl >= 0 && sk.dims[ci].e === r.cl, 'slot centreline dimensioned');
+      assert(!r.sheet.dims.some(function (d) { return d.sketchDim === sk.id + ':' + ci; }), 'no slot centre distance: ' + tt.join(' | '));
+      return tt.join(' | ');
+    });
+    test('rfAB: Model Items into the flat-pattern view only (the audit: the flat view selected) insert the blank\'s 10.000 / 6.000, its ordinates and hole callouts at their flat positions, hole locations from the flat\'s edges, and no bend radius / bend deduction texts', function () {
+      var r = rfABPart();
+      r.compute({ source: 'entire', views: [r.flat.id] });
+      var t = r.texts();
+      assert(r.sheet.dims.length && r.sheet.dims.every(function (d) { return d.view === r.flat.id; }), 'flat only: ' + t.join(' | '));
+      ['10.000', '6.000', '0, 1.000, 9.000', '4X Ø.281', '.375 X 1.375 SLOT'].forEach(function (x) { assert(t.indexOf(x) >= 0, x + ' on the flat: ' + t.join(' | ')); });
+      assert(!t.some(function (x) { return /^R?\.060$|^\.098$/.test(x); }), 'no bend radius / deduction: ' + t.join(' | '));
+      // the blank's bottom edge sits where it lies in the sketch (the flat is the sketch plane): 0 .. 10 at v = 0
+      var w = r.sheet.dims.filter(function (d) { return d.text === '10.000'; })[0];
+      near(Math.min(w.a[0], w.b[0]), 0, 1e-9, 'from x 0'); near(w.a[1], 0, 1e-9, 'at the bottom edge');
+      // holes located from the flat's left edge (1.5 flange + 1 = 2.641 with the bend deduction)
+      var fd = DW.flatData(r.mesh), hl = r.sheet.dims.filter(function (d) { return d.hole && d.kind === 'h'; }).map(function (d) { return d.value; });
+      assert(hl.some(function (x) { return Math.abs(x - (1 - fd.bbox.umin)) < 1e-9; }), 'hole location from the flat edge ' + hl.join());
+      var ann = (r.sheet.annotations || []).filter(function (a) { return a.type === 'bendNote'; });
+      assert(ann.length === 2, 'bend notes stay notes: ' + ann.length);
+      return t.join(' | ');
+    });
+    test('rfAB: Selected feature (the blank\'s sketch) brings its 10.000 / 6.000 to the Top view and the flat; a dimension marked off (mark: false) stays out; the bracket without sketch dimensions keeps its set', function () {
+      var r = rfABPart(), sk = r.model.features[0];
+      r.compute({ source: 'feature', feature: sk.id });
+      var t = r.texts();
+      assert(t.filter(function (x) { return x === '10.000'; }).length === 2 && t.filter(function (x) { return x === '6.000'; }).length === 2, 'Top and flat: ' + t.join(' | '));
+      sk.dims[1].mark = false;
+      r.compute({ source: 'entire' });
+      assert(r.texts().indexOf('6.000') < 0 && r.texts().indexOf('10.000') >= 0, 'unmarked: ' + r.texts().join(' | '));
+      return t.join(' | ');
+    });
+  })();
+  // --- end rfAB ---
+
+  // ------------------------------------------------------------------ rfAC: a closed contour crossing another is refused
+  // (shop workflow finding 1: a Ø.281 hole centred on the notch corner was silently dropped from the Base Flange)
+  (function () {
+    group('rfAC: crossing contours refused by Base Flange / Extrude, sketch DXF keeps the stray hole on HOLES');
+    // the shop blank: 10 x 6 with a 1 x 1 notch at the top-right corner, four Ø.281 holes, the last one on the notch corner
+    function blank(lastHole) {
+      var c = lastHole || [9, 5];
+      return 'p.sketch("Top").polyline([[0, 0], [10, 0], [10, 5], [9, 5], [9, 6], [0, 6]], true).circle(1, 1, 0.1405).circle(9, 1, 0.1405).circle(1, 5, 0.1405).circle(' + c[0] + ', ' + c[1] + ', 0.1405)';
+    }
+    test('rfAC: a hole circle centred on the notch corner (crossing the outline at vertices of its chords) is refused by Base Flange and Boss-Extrude with "Sketch contours intersect near (x, y)"; nothing is built', function () {
+      var a = build('p.sheet(0.0598, 0.0598, 0.5);\n' + blank() + '.end().baseFlange(0.0598);');
+      var ids = Object.keys(a.errors);
+      assert(ids.length === 1 && /Sketch contours intersect near \(9(\.\d+)?, 5(\.\d+)?\)/.test(a.errors[ids[0]]), 'Base Flange error: ' + JSON.stringify(a.errors));
+      assert(!a.body || a.mp.volume === 0, 'no body: ' + (a.mp && a.mp.volume));
+      var b = build(blank() + '.end().extrude(0.1);');
+      assert(Object.keys(b.errors).length === 1 && /Sketch contours intersect/.test(b.errors[Object.keys(b.errors)[0]]), 'Extrude error: ' + JSON.stringify(b.errors));
+      var c = build(blank([9.0091, 5.0051]) + '.end().extrude(0.1);');   // the audit's corner, a pixel off: proper crossings
+      assert(Object.keys(c.errors).length === 1 && /Sketch contours intersect near/.test(c.errors[Object.keys(c.errors)[0]]), 'off-vertex crossing: ' + JSON.stringify(c.errors));
+      var prof = K.sketchProfile(a.model.features[0]), stray = prof.loops.filter(function (l) { return l.meetInner; });
+      var xs = stray.length === 1 ? stray[0].pts.map(function (p) { return p[0]; }) : [0];
+      assert(stray.length === 1 && Math.abs(Math.max.apply(null, xs) - Math.min.apply(null, xs) - 0.281) < 1e-3, 'the circle is the stray loop');
+      return a.errors[ids[0]];
+    });
+    test('rfAC: legitimate contours still build — holes clear of the outline (exact volume), a circle tangent inside an edge, two rectangles sharing an edge, a rectangle inside another touching its edge', function () {
+      var A = 10 * 6 - 1, H = Math.PI * 0.1405 * 0.1405;
+      var a = build(blank([8, 4]) + '.end().extrude(0.5);');
+      noErrors(a);
+      nearRel(a.mp.volume, (A - 4 * H) * 0.5, 1e-3, 'four holes');
+      var t = build('p.sketch("Front").rect(0, 0, 20, 10).circle(5, 3, 3).end().extrude(1);');   // tangent to y = 0 from inside
+      noErrors(t);
+      nearRel(t.mp.volume, 200 - Math.PI * 9, 5e-3, 'tangent hole');
+      var s = build('p.sketch("Front").rect(0, 0, 10, 10).rect(10, 0, 10, 10).end().extrude(1);');
+      noErrors(s);
+      var n = build('p.sketch("Front").rect(0, 0, 20, 10).rect(0, 2, 5, 5).end().extrude(1);');
+      assert(!Object.keys(n.errors).some(function (id) { return /contours intersect/.test(n.errors[id]); }), 'touching inside is not a crossing: ' + JSON.stringify(n.errors));
+      return fmt(a.mp.volume) + ' in³';
+    });
+    test('rfAC: sketch DXF puts a hole circle drawn over the outline on HOLES (as drawn), the outline on OUTLINE', function () {
+      var m = K.newModel('t');
+      K.runScript(m, blank() + '.end();');
+      var ents = sketchDxfEnts(K.exportDXFSketch(m.features[0], 'in'));
+      var circ = ents.filter(function (e) { return e.t === 'CIRCLE'; }), lines = ents.filter(function (e) { return e.t === 'LINE'; });
+      assert(circ.length === 4 && circ.every(function (e) { return e['8'] === 'HOLES'; }), 'four CIRCLEs on HOLES: ' + circ.map(function (e) { return e['8']; }).join(','));
+      assert(lines.length === 6 && lines.every(function (e) { return e['8'] === 'OUTLINE'; }), 'six outline LINEs on OUTLINE');
+      return 'CIRCLE@HOLES 4';
+    });
+  })();
+  // --- end rfAC ---
+
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
   allDeclared = true;

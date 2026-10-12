@@ -663,7 +663,8 @@
       }
       var P = flat.plane, bb = flat.bbox, diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]) || 1;
       var cv = flatCurves(flat.loops, diag), src = bendSources(flat, model, fb, diag);
-      res = { units: units, frame: { e: P.n.slice(), u: P.x.slice(), v: P.y.slice() }, lines: cv.lines, circles: cv.circles, arcs: cv.arcs,
+      // (rfAB) origin: the base sketch plane's origin, so a point of the base maps to the flat as to2D(plane, p)
+      res = { units: units, frame: { e: P.n.slice(), u: P.x.slice(), v: P.y.slice() }, origin: (P.origin || [0, 0, 0]).slice(), lines: cv.lines, circles: cv.circles, arcs: cv.arcs,
         bends: flat.bends.map(function (b, i) {
           var x = { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i, ba: b.ba != null ? +b.ba : null, bd: b.bd != null ? +b.bd : null, method: b.method || null, source: b.source || null };
           x.id = src[i]; x.key = bendKey(x);
@@ -1319,6 +1320,195 @@
     }
     return [x, y];
   }
+
+  // ------------------------------------------------------------------ rfZ: detail profiles and outlines, partial
+  // sections, section lines that scale with the model, True dimensions (SolidWorks' Detail View / Section View PMs and
+  // Model View ▸ Dimension Type)
+  //   * view.detail = { c, r, shape: 'circle' (default) | 'profile', a, b (a profile's rectangle corners, model units of
+  //     the parent's frame; c its centre, r its half diagonal), style: 'standard' | 'broken' | 'leader' | 'noleader' |
+  //     'connected', outline: 'full' | 'jagged' }: a profile detail shows the parent inside the rectangle; Full outline
+  //     draws the circle / rectangle round the detail view, Jagged outline a zig-zag one (no outline: the lines just end);
+  //   * view.section.partial = [lo, hi]: a partial section (full sections only): the cutting line runs from lo to hi
+  //     along itself (the parent's u for a horizontal line, v for a vertical one) and the view keeps only that band;
+  //   * view.section.scaleWithModel (+ rel, the line's place as fractions of the parent's extents): when the part
+  //     changes size the cutting line (and a partial line's ends) keep their place relative to it (resolveSectionScale);
+  //   * view.dimType = 'true' (a pictorial model view): its linear dimensions read the true 3D length (trueLength).
+  var DETAIL_STYLES = ['standard', 'broken', 'leader', 'noleader', 'connected'];
+  function detailHalf(dt) {
+    if (dt && dt.shape === 'profile' && dt.a && dt.b) return [Math.abs(dt.b[0] - dt.a[0]) / 2, Math.abs(dt.b[1] - dt.a[1]) / 2];
+    return [dt ? dt.r : 0, dt ? dt.r : 0];
+  }
+  // a profile detail's content: the parent's clipped to the rectangle, its box the whole rectangle
+  function detailProfileContent(pc, dt, s) {
+    var R = [Math.min(dt.a[0], dt.b[0]), Math.min(dt.a[1], dt.b[1]), Math.max(dt.a[0], dt.b[0]), Math.max(dt.a[1], dt.b[1])];
+    var o = cropContent({ frame: pc.frame, proj: pc.proj, caps: pc.caps, center: pc.center, scale: s }, { type: 'rect', a: [R[0], R[1]], b: [R[2], R[3]] });
+    o.proj.bounds = { umin: R[0], umax: R[2], vmin: R[1], vmax: R[3] };
+    o.center = [(R[0] + R[2]) / 2, (R[1] + R[3]) / 2];
+    o.profile = R;
+    delete o.crop;
+    return o;
+  }
+  // detailOpts(dt, opts): the style / outline of a detail from opts (undefined keeps, null clears)
+  function detailOpts(dt, opts) {
+    if (opts.style !== undefined) { if (DETAIL_STYLES.indexOf(opts.style) > 0) dt.style = opts.style; else delete dt.style; }
+    if (opts.outline !== undefined) { if (opts.outline === 'full' || opts.outline === 'jagged') dt.outline = opts.outline; else delete dt.outline; }
+  }
+  // a detail's profile rectangle from opts.a / opts.b (null when opts asks for a circle)
+  function detailProfile(opts) {
+    if (!(opts.shape === 'profile' || (opts.a && opts.b && !(opts.r > 0)))) return null;
+    var a = opts.a, b = opts.b;
+    if (!a || !b || Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9) throw new Error('A detail profile needs two opposite corners: { a: [u, v], b: [u, v] }');
+    var lo = [Math.min(+a[0], +b[0]), Math.min(+a[1], +b[1])], hi = [Math.max(+a[0], +b[0]), Math.max(+a[1], +b[1])];
+    return { c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2], r: Math.hypot(hi[0] - lo[0], hi[1] - lo[1]) / 2, shape: 'profile', a: lo, b: hi };
+  }
+  // the outline round a detail view (sheet units): circle / rectangle (full) or a zig-zag of either (jagged)
+  function detailOutline(prims, w, k) {
+    var v = w.view, dt = v.detail;
+    if (!dt || !dt.outline) return;
+    var L = w.layer, c = w.toSheet(dt.c), hf = detailHalf(dt), s = w.scale, E = { layer: L, style: 'thin', detailOutline: v.id };
+    function put(p) { Object.keys(E).forEach(function (q) { p[q] = E[q]; }); prims.push(p); }
+    function seg(a, b) { put({ k: 'line', a: a, b: b }); }
+    var prof = dt.shape === 'profile', hw = hf[0] * s, hh = hf[1] * s;
+    var Q = [[c[0] - hw, c[1] - hh], [c[0] + hw, c[1] - hh], [c[0] + hw, c[1] + hh], [c[0] - hw, c[1] + hh]];
+    if (dt.outline === 'full') {
+      if (!prof) put({ k: 'circle', c: c, r: hw });
+      else for (var i = 0; i < 4; i++) seg(Q[i], Q[(i + 1) % 4]);
+      return;
+    }
+    // jagged: points round the boundary, every other one a little outside it (about 2 mm apart)
+    var amp = 1.2 * k, step = 2 * k, pts = [];
+    if (!prof) {
+      var n = Math.max(12, 2 * Math.round(Math.PI * hw / step));
+      for (var j = 0; j < n; j++) { var t = j / n * 2 * Math.PI, rr = hw + (j % 2 ? amp : 0); pts.push([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t)]); }
+    } else {
+      var nrm = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+      for (var e = 0; e < 4; e++) {
+        var A = Q[e], B = Q[(e + 1) % 4], len = Math.hypot(B[0] - A[0], B[1] - A[1]), m = Math.max(2, 2 * Math.round(len / step / 2));
+        for (var q2 = 0; q2 < m; q2++) { var f = q2 / m, o = q2 % 2 ? amp : 0; pts.push([A[0] + (B[0] - A[0]) * f + nrm[e][0] * o, A[1] + (B[1] - A[1]) * f + nrm[e][1] * o]); }
+      }
+    }
+    for (var z = 0; z < pts.length; z++) seg(pts[z], pts[(z + 1) % pts.length]);
+  }
+  // the parent extents a section line is measured against when it scales with the model: [lo, hi] across the line
+  // (where it cuts) and along it
+  function sectionSpan(doc, mesh, v) {
+    var par = findV(doc, v.parent);
+    if (!par || !mesh) return null;
+    var ex = D.extentsOf(mesh, D.viewFrame(doc, par));
+    if (!isFinite(ex.umin) || !isFinite(ex.vmin)) return null;
+    return v.section.axis === 'h' ? { cross: [ex.vmin, ex.vmax], along: [ex.umin, ex.umax] } : { cross: [ex.umin, ex.umax], along: [ex.vmin, ex.vmax] };
+  }
+  function frac(x, r) { return r[1] - r[0] > 1e-12 ? (x - r[0]) / (r[1] - r[0]) : 0.5; }
+  function unfrac(f, r) { return r[0] + f * (r[1] - r[0]); }
+  // remembers where the line is as fractions of the parent's extents (at, c, partial ends, offset jogs)
+  function sectionRel(doc, mesh, v) {
+    var sp = sectionSpan(doc, mesh, v), sc = v.section;
+    if (!sp) return;
+    var rel = { at: frac(sc.at, sp.cross) };
+    if (sc.c != null) rel.c = frac(sc.c, sp.along);
+    if (sc.partial) rel.partial = [frac(sc.partial[0], sp.along), frac(sc.partial[1], sp.along)];
+    if (sc.jogs) rel.jogs = sc.jogs.map(function (j) { return { t: frac(j.t, sp.along), at: frac(j.at, sp.cross) }; });
+    sc.rel = rel;
+  }
+  // resolveSectionScale(doc, mesh): every section line set to scale with the model goes to its place on the part as
+  // it is now (drawing-render.js compute, before the views are worked out)
+  function resolveSectionScale(doc, mesh) {
+    if (!doc || !doc.views || !mesh) return;
+    doc.views.forEach(function (v) {
+      var sc = v.kind === 'section' && v.section;
+      if (!sc || !sc.scaleWithModel || !sc.rel) return;
+      var sp = sectionSpan(doc, mesh, v), r = sc.rel;
+      if (!sp) return;
+      sc.at = unfrac(r.at, sp.cross);
+      if (r.c != null && sc.c != null) sc.c = unfrac(r.c, sp.along);
+      if (r.partial && sc.partial) sc.partial = [unfrac(r.partial[0], sp.along), unfrac(r.partial[1], sp.along)];
+      if (r.jogs && sc.jogs && r.jogs.length === sc.jogs.length) sc.jogs = r.jogs.map(function (j) { return { t: unfrac(j.t, sp.along), at: unfrac(j.at, sp.cross) }; });
+    });
+  }
+  // setSectionOptions(doc, mesh, id, { partial: [lo, hi] | null, scaleWithModel: bool }) -> the view
+  function setSectionOptions(doc, mesh, id, opts) {
+    var v = findV(doc, id);
+    if (!v || v.kind !== 'section' || !v.section) throw new Error('No section view ' + id);
+    opts = opts || {};
+    if (opts.partial !== undefined) {
+      if (opts.partial == null || opts.partial === false) delete v.section.partial;
+      else {
+        if (v.section.type) throw new Error('A partial section is a full section whose cutting line stops short: a ' + v.section.type + ' section crosses the part');
+        var lo = Math.min(+opts.partial[0], +opts.partial[1]), hi = Math.max(+opts.partial[0], +opts.partial[1]);
+        if (!(hi - lo > 1e-9)) throw new Error('A partial section needs the two ends of its cutting line: partial: [from, to]');
+        v.section.partial = [lo, hi];
+      }
+    }
+    if (opts.scaleWithModel !== undefined) { if (opts.scaleWithModel) v.section.scaleWithModel = true; else delete v.section.scaleWithModel; }
+    if (v.section.scaleWithModel) sectionRel(doc, mesh, v); else delete v.section.rel;
+    return v;
+  }
+  // a partial section's content: the band of the full section its cutting line covers (the section view's u is the
+  // parent's u for a horizontal line, its v the parent's v for a vertical one)
+  function partialContent(v, ct) {
+    var p = v.kind === 'section' && v.section && !v.section.type && v.section.partial;
+    if (!p || !ct || !ct.proj) return ct;
+    var B = 1e9, o = v.section.axis === 'h' ? { type: 'rect', a: [p[0], -B], b: [p[1], B] } : { type: 'rect', a: [-B, p[0]], b: [B, p[1]] };
+    var r = cropContent(ct, o);
+    delete r.crop;
+    return r;
+  }
+  // ---- True dimensions: a pictorial view's 2D points lifted back onto the part
+  // trueLength(mesh, F, a, b) -> the 3D length of what the view's segment a-b (model units of frame F) stands for, or
+  // null: a part edge whose projection holds both points scales the projected length by its foreshortening (the edge
+  // nearest the viewer when several line up); else both points are lifted to the part vertices they show.
+  function trueLength(mesh, F, a, b) {
+    F = D.frameOf(F);
+    var E = D.meshEdges(mesh), tol = meshDiag(mesh) * 1e-6, L2 = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    function pj(p) { return [V.dot(p, F.u), V.dot(p, F.v)]; }
+    function onSeg(p, A, B) {
+      var dx = B[0] - A[0], dy = B[1] - A[1], l = Math.hypot(dx, dy);
+      if (l < tol) return false;
+      var t = ((p[0] - A[0]) * dx + (p[1] - A[1]) * dy) / (l * l), off = Math.abs((p[0] - A[0]) * dy - (p[1] - A[1]) * dx) / l;
+      return off <= tol * 10 && t >= -1e-6 && t <= 1 + 1e-6;
+    }
+    var best = null, bz = -Infinity;
+    if (L2 > tol) E.forEach(function (ed) {
+      var A = pj(ed.a), B = pj(ed.b);
+      if (!onSeg(a, A, B) || !onSeg(b, A, B)) return;
+      var z = (V.dot(ed.a, F.e) + V.dot(ed.b, F.e)) / 2;
+      if (z > bz) { bz = z; best = ed; }
+    });
+    if (best) {
+      // the points as parameters along the edge (an end within a millionth of the edge snaps onto it: exact lengths)
+      var pa = pj(best.a), pb = pj(best.b), dx = pb[0] - pa[0], dy = pb[1] - pa[1], lp2 = dx * dx + dy * dy;
+      if (!(lp2 > tol * tol)) return null;
+      var par = function (p) { var t = ((p[0] - pa[0]) * dx + (p[1] - pa[1]) * dy) / lp2; return Math.abs(t) < 1e-6 ? 0 : Math.abs(t - 1) < 1e-6 ? 1 : t; };
+      return Math.abs(par(b) - par(a)) * V.len(V.sub(best.b, best.a));
+    }
+    function lift(p) {
+      var q = null, qz = -Infinity;
+      E.forEach(function (ed) { [ed.a, ed.b].forEach(function (x) { var s = pj(x); if (Math.hypot(s[0] - p[0], s[1] - p[1]) <= tol * 10) { var z = V.dot(x, F.e); if (z > qz) { qz = z; q = x; } } }); });
+      return q;
+    }
+    var A3 = lift(a), B3 = lift(b);
+    return A3 && B3 ? V.len(V.sub(B3, A3)) : null;
+  }
+  // a view whose linear dimensions read true lengths: a pictorial model view set to True
+  function isTrueView(v, F) { return !!(v && v.dimType === 'true' && !v.kind && F && !D.isOrthoFrame(D.frameOf(F))); }
+  // setDetailOptions(doc, id, { style, outline }) -> the detail view (undefined keeps, null back to the default)
+  function setDetailOptions(doc, id, opts) {
+    var v = findV(doc, id);
+    if (!v || v.kind !== 'detail' || !v.detail) throw new Error('No detail view ' + id);
+    detailOpts(v.detail, opts || {});
+    return v;
+  }
+  D.setDetailOptions = setDetailOptions;
+  // setDimType(doc, id, 'true' | 'projected') -> the view (True is a model view's option; Projected is the default)
+  function setDimType(doc, id, t) {
+    var v = findV(doc, id);
+    if (!v) throw new Error('No drawing view ' + id);
+    if (t === 'true') { if (v.kind) throw new Error('True dimensions are a model view\'s option'); v.dimType = 'true'; } else delete v.dimType;
+    return v;
+  }
+  _.detailHalf = detailHalf; _.detailProfileContent = detailProfileContent; _.detailOpts = detailOpts; _.detailProfile = detailProfile; _.detailOutline = detailOutline;
+  _.resolveSectionScale = resolveSectionScale; _.sectionRel = sectionRel; _.partialContent = partialContent; _.isTrueView = isTrueView;
+  D.DETAIL_STYLES = DETAIL_STYLES; D.setSectionOptions = setSectionOptions; D.trueLength = trueLength; D.setDimType = setDimType; D.resolveSectionScale = resolveSectionScale;
   _.typedSection = typedSection; _.pathContent = pathContent; _.auxCenter = auxCenter; _.cropContent = cropContent; _.viewKindMarks = viewKindMarks;
   _.auxSlide = auxSlide; _.carryAux = carryAux; _.viewPositions = positions;
   D.setSectionType = setSectionType; D.sectionSteps = sectionSteps; D.alignedLegs = alignedLegs; D.pathSectionOf = pathSectionOf;

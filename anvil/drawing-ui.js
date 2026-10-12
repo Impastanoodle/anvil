@@ -694,13 +694,18 @@
     if (D.tool === 'project' && P && P.parent != null && P.at) { var pl = DW.projectPlacement(P.at); if (pl) ghost(pl.x, pl.y, pl.w, pl.h); }
     if (D.tool === 'section' && P && P.at) {
       // (rfW) a half / offset / aligned cutting line shows every leg while it is clicked, the one to come at the pointer
-      var sl = P.parent != null ? P.line : DW.sectionLineAt(P.at), sdash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
+      var sl = P.parent != null ? (P.partial && DW.partialLine ? DW.partialLine(P) : P.line) : DW.sectionLineAt(P.at), sdash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
       var legs = P.parent != null && DW.sectionPreview ? DW.sectionPreview(P) : null;
       if (legs) svgNode('polyline', { class: 'dw-cut dw-legs', points: legs.pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': pxToPaper(2), 'stroke-dasharray': sdash }, g);
       else if (sl) svgNode('line', { class: 'dw-cut', x1: sl.a[0], y1: H - sl.a[1], x2: sl.b[0], y2: H - sl.b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': sdash }, g);
-      if (P.parent != null && (!legs || legs.ghost)) { var sp = DW.sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
+      if (P.parent != null && (!legs || legs.ghost) && !(P.partial && P.to == null)) { var sp = DW.sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
     }
-    if (D.tool === 'detail' && P && P.parent != null) {
+    if (D.tool === 'detail' && P && P.parent != null && P.profile) {
+      // (rfZ) a Profile: the rectangle from the first corner to the pointer, then the enlarged view at the pointer
+      var q2 = P.cp2 || P.at;
+      if (q2) svgNode('rect', { class: 'dw-cut', x: Math.min(P.cp[0], q2[0]), y: H - Math.max(P.cp[1], q2[1]), width: Math.abs(q2[0] - P.cp[0]), height: Math.abs(q2[1] - P.cp[1]), fill: 'none', 'stroke-width': pxToPaper(2) }, g);
+      if (P.cp2 && P.at) { var pds = Drawing.scaleValue(P.scale) / DW.sheetView(P.parent).scale; ghost(P.at[0], P.at[1], Math.abs(P.cp2[0] - P.cp[0]) * pds, Math.abs(P.cp2[1] - P.cp[1]) * pds); }
+    } else if (D.tool === 'detail' && P && P.parent != null) {
       var dw = DW.sheetView(P.parent), rr = P.r != null ? P.r : P.at ? Math.hypot(P.at[0] - P.cp[0], P.at[1] - P.cp[1]) / dw.scale : 0;
       if (rr > 0) svgNode('circle', { class: 'dw-cut', cx: P.cp[0], cy: H - P.cp[1], r: rr * dw.scale, 'stroke-width': pxToPaper(2) }, g);
       if (P.r != null && P.at) { var ds = Drawing.scaleValue(P.scale); ghost(P.at[0], P.at[1], 2 * P.r * ds, 2 * P.r * ds); }
@@ -725,7 +730,7 @@
   function entityAt(p, any) {
     var tol = pxToPaper(6), best = null, bd = tol;
     D.sheet.views.forEach(function (w) {
-      if (!w.ortho && !any) return;   // lengths in a pictorial view are foreshortened (any: pre-highlight only)
+      if (!w.ortho && !w.trueDims && !any) return;   // lengths in a pictorial view are foreshortened (any: pre-highlight only; rfZ: a True view reads true lengths)
       var b = w.box;
       if (p[0] < b.x0 - tol || p[0] > b.x1 + tol || p[1] < b.y0 - tol || p[1] > b.y1 + tol) return;
       w.proj.lines.visible.forEach(function (l) {

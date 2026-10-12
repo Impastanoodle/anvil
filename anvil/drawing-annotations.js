@@ -457,7 +457,8 @@
   //   { edge: [a, b] } | { circle: { c, r } } | { arc: { c, r, a0, a1 } } | { point: [x, y] } (a vertex / end point)
   //   | { center: { c, r } } (a circle's or an arc's centre)
   // smartDim(p1, p2 | null, at (the placement point, view model units), { scale (paper per model unit), minmax:
-  // 'min' | 'max' (Shift: circle to circle / edge, nearest or farthest sides) }) -> a view dimension (h, v, aligned,
+  // 'min' | 'max' (Shift: circle to circle / edge, nearest or farthest sides), aligned (rfZ, a True view: a length
+  // runs along what it measures, never horizontal / vertical by the pointer) }) -> a view dimension (h, v, aligned,
   // dia, rad, angle), or null when the picks make none. One pick: an edge's length (horizontal / vertical / aligned by
   // where the pointer is, an oblique edge), a circle's Ø, an arc's R. Two picks: point / centre / circle to point
   // (point to point, centre to centre: horizontal / vertical / aligned by the pointer), to an edge (the perpendicular
@@ -549,7 +550,7 @@
         return d;
       }
       if (!isEdgeRef(r1)) return null;   // a point alone measures nothing
-      var a = r1.a.slice(), b = r1.b.slice(), k1 = linKind(a, b, at);
+      var a = r1.a.slice(), b = r1.b.slice(), k1 = linKind(a, b, opts.aligned ? null : at);   // (rfZ) a True view: along the edge
       d = { kind: k1, a: a, b: b, value: k1 === 'h' ? Math.abs(b[0] - a[0]) : k1 === 'v' ? Math.abs(b[1] - a[1]) : Math.hypot(b[0] - a[0], b[1] - a[1]) };
       return placeLinear(d, at, sc);
     }
@@ -578,7 +579,7 @@
       d.kind = Math.abs(te[1]) < 1e-9 ? 'v' : Math.abs(te[0]) < 1e-9 ? 'h' : 'aligned';
     } else {
       if (Math.hypot(refPt(r1)[0] - refPt(r2)[0], refPt(r1)[1] - refPt(r2)[1]) < 1e-12) return null;
-      d.kind = linKind(refPt(r1), refPt(r2), at);
+      d.kind = linKind(refPt(r1), refPt(r2), opts.aligned ? null : at);
     }
     measurePair(d);
     if (!(d.value > 1e-12)) return null;

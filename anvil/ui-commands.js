@@ -807,8 +807,9 @@
     return UI.afterRebuild(UI.rebuild(), function () {
       App.sel = { kind: 'feature', id: f.id };
       UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
-      var err = App.build.errors[f.id];
-      UI.setStatus(err ? f.name + ' failed: ' + err : f.name + (existing ? ' updated' : ' created') + '. Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.');
+      var err = App.build.errors[f.id], ow = App.build.warnings && App.build.warnings[f.id];
+      ow = ow && /over defined/.test(ow) ? ' Warning: ' + ow + ' Edit the sketch: make the extra dimension driven or delete it.' : '';   // rfAC
+      UI.setStatus(err ? f.name + ' failed: ' + err : f.name + (existing ? ' updated' : ' created') + '. Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms.' + ow);
       return f;
     });
   }
@@ -3803,4 +3804,47 @@
     suppressMate: asmSuppressMate, setHidden: asmSetHidden, isHidden: asmIsHidden, move: asmMove, rotate: asmRotate };
   UI.commands = { insertComponent: cmdInsertComponent, mate: cmdMate, editMate: editMate };
   UI.bodyList = bodyList; UI.bodyInfos = bodyInfos; UI.bodyTitle = bodyTitle; UI.selectBodyRow = selectBody;
+
+  // rfAC: a sketch left over defined (a dimension kept driving after Make Dimension Driven?, a repeated relation) is a
+  // rebuild warning on the sketch and on every feature built from it, as SolidWorks flags them, so a Base Flange from an
+  // over-defined sketch never goes out unnoticed. The solver (sketch-solver.js) lives on the page, not in worker.js, so
+  // the warnings are added to each applied build here; the analysis is cached per sketch on its content.
+  var overCache = typeof WeakMap === 'function' ? new WeakMap() : null, overWarned = {};
+  function sketchOverInfo(f) {
+    var S = window.SketchSolver;
+    if (!S || !f.entities || !f.entities.length || (!f.dims && !f.rels)) return null;
+    var key = JSON.stringify([f.entities, f.rels || null, f.dims || null]), c = overCache && overCache.get(f);
+    if (c && c.key === key) return c.info;
+    var info = null;
+    try { var an = S.analyze(f); if (an.status === 'over') info = { n: (an.redundant || 0) + (an.conflicts || 0), conflicts: an.conflicts || 0 }; } catch (e) { info = null; }
+    if (overCache) overCache.set(f, { key: key, info: info });
+    return info;
+  }
+  function overDefinedWarnings(build) {
+    if (!build || !App.model || !App.model.features || App.model.type === 'assembly') return;
+    var W = build.warnings = build.warnings || {}, errs = build.errors || {}, now = {}, fresh = null, added = false;
+    function add(id, msg) {
+      if (errs[id] || (W[id] && W[id].indexOf(msg) >= 0)) return;
+      W[id] = W[id] ? W[id] + ' ' + msg : msg; added = true;
+    }
+    var over = {};
+    App.model.features.forEach(function (f) {
+      if (f.type !== 'sketch' || f.suppressed) return;
+      var info = sketchOverInfo(f);
+      if (!info) return;
+      over[f.id] = f;
+      add(f.id, 'This sketch is over defined: ' + info.n + ' dimension(s) / relation(s) ' + (info.conflicts ? 'conflict with' : 'repeat') + ' what the others define. Make the extra dimension driven or delete it (Display/Delete Relations).');
+    });
+    App.model.features.forEach(function (f) {
+      if (f.type === 'sketch' || f.sketch == null || !over[f.sketch]) return;
+      var msg = 'Built from ' + over[f.sketch].name + ', which is over defined.';
+      add(f.id, msg); now[f.id] = true;
+      if (!overWarned[f.id] && !fresh) fresh = f.name + ': ' + msg;
+    });
+    overWarned = now;
+    if (added) { if (UI.refreshTree) UI.refreshTree(); if (UI.refreshStatus) UI.refreshStatus(); }
+    if (fresh) UI.toast(fresh);   // (the command's own status line names the warning: commitFeature)
+  }
+  (UI.onBuild = UI.onBuild || []).push(overDefinedWarnings);
+  UI.overDefinedWarnings = overDefinedWarnings;
 })(UI);

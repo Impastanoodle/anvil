@@ -473,15 +473,92 @@
     return null;
   }
 
-  // Throws when any loop of a profile crosses itself; builders call it before making solids from the loops.
+  // rfAC: where two closed loops of a profile cross each other -> point | null. Loops that only touch (a circle tangent
+  // to an edge, two contours sharing an edge or a corner, a hole wholly inside) do not cross. Two tests: a proper
+  // crossing of two edges, and (for crossings that land on vertices, as a circle centred on a corner does: its chord
+  // ends lie on the corner's edges) one loop having vertices strictly inside and strictly outside the other.
+  function loopBox(pts) {
+    var b = [Infinity, Infinity, -Infinity, -Infinity];
+    pts.forEach(function (p) { b[0] = Math.min(b[0], p[0]); b[1] = Math.min(b[1], p[1]); b[2] = Math.max(b[2], p[0]); b[3] = Math.max(b[3], p[1]); });
+    return b;
+  }
+  function onPolyEdge(q, pts, tol) {
+    for (var i = 0, n = pts.length; i < n; i++) {
+      var a = pts[i], b = pts[(i + 1) % n], vx = b[0] - a[0], vy = b[1] - a[1], ll = vx * vx + vy * vy;
+      var t = ll > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / ll)) : 0;
+      if (Math.abs(a[0] + vx * t - q[0]) <= tol && Math.abs(a[1] + vy * t - q[1]) <= tol) return true;
+    }
+    return false;
+  }
+  function loopsCross(A, B, ba, bb, tol) {
+    var na = A.length, nb = B.length, i, j;
+    for (i = 0; i < na; i++) {
+      var a = A[i], b = A[(i + 1) % na];
+      if (Math.max(a[0], b[0]) < bb[0] - tol || Math.min(a[0], b[0]) > bb[2] + tol || Math.max(a[1], b[1]) < bb[1] - tol || Math.min(a[1], b[1]) > bb[3] + tol) continue;
+      for (j = 0; j < nb; j++) {
+        var c = B[j], d = B[(j + 1) % nb];
+        if (Math.max(a[0], b[0]) < Math.min(c[0], d[0]) || Math.min(a[0], b[0]) > Math.max(c[0], d[0]) || Math.max(a[1], b[1]) < Math.min(c[1], d[1]) || Math.min(a[1], b[1]) > Math.max(c[1], d[1])) continue;
+        var x = segCross(a, b, c, d);
+        if (x) return x;
+      }
+    }
+    function mixed(P, Q, bq) {
+      var st = P.map(function (p) {
+        if (p[0] < bq[0] - tol || p[0] > bq[2] + tol || p[1] < bq[1] - tol || p[1] > bq[3] + tol) return 'out';
+        if (onPolyEdge(p, Q, tol)) return 'on';
+        return pointInPoly(p, Q) ? 'in' : 'out';
+      });
+      if (st.indexOf('in') < 0 || st.indexOf('out') < 0) return null;
+      // the crossing: the vertex on Q between an inside and an outside run, else the middle of the edge that jumps
+      var n = P.length, start = st.indexOf('in'), last = start;
+      for (var k = 1; k <= n; k++) {
+        var idx = (start + k) % n;
+        if (st[idx] === 'on') continue;
+        if (st[idx] === 'out') {
+          var prev = (idx - 1 + n) % n;
+          if (st[prev] === 'on') return P[prev].slice();
+          return [(P[last][0] + P[idx][0]) / 2, (P[last][1] + P[idx][1]) / 2];
+        }
+        last = idx;
+      }
+      return null;
+    }
+    return mixed(A, B, bb) || mixed(B, A, ba);
+  }
+  // Marks loops that cross another loop: loop.meet = the crossing point on both, loop.meetInner on the smaller of the two
+  // (the circle that strays over the outline: the sketch DXF keeps it on HOLES). checkProfile then refuses the profile.
+  function markLoopCrossings(out) {
+    if (out.length < 2) return;
+    var span = 0;
+    out.forEach(function (l) { l.pts.forEach(function (p) { span = Math.max(span, Math.abs(p[0]), Math.abs(p[1])); }); });
+    var tol = 1e-7 * (1 + span), boxes = out.map(function (l) { return loopBox(l.pts); });
+    for (var i = 0; i < out.length; i++) {
+      for (var j = i + 1; j < out.length; j++) {
+        var bi = boxes[i], bj = boxes[j];
+        if (bi[2] < bj[0] - tol || bj[2] < bi[0] - tol || bi[3] < bj[1] - tol || bj[3] < bi[1] - tol) continue;
+        var x = loopsCross(out[i].pts, out[j].pts, bi, bj, tol);
+        if (!x) continue;
+        if (!out[i].meet) out[i].meet = x;
+        if (!out[j].meet) out[j].meet = x;
+        if (Math.abs(signedArea(out[i].pts)) <= Math.abs(signedArea(out[j].pts))) out[i].meetInner = true; else out[j].meetInner = true;
+      }
+    }
+  }
+
+  // Throws when any loop of a profile crosses itself or another loop (SolidWorks: "Sketch contours intersect" — the
+  // feature is refused rather than built from part of the sketch); builders call it before making solids from the loops.
   function checkProfile(profile) {
     (profile.loops || []).forEach(function (l) {
       if (l.cross) throw new Error('Sketch profile crosses itself near (' + _.fmt(l.cross[0]) + ', ' + _.fmt(l.cross[1]) + '). Trim or move the entities so the contour does not self-intersect.');
     });
+    (profile.loops || []).forEach(function (l) {
+      if (l.meet) throw new Error('Sketch contours intersect near (' + _.fmt(l.meet[0]) + ', ' + _.fmt(l.meet[1]) + '): a closed contour crosses another one. Move it clear of the other contour, or trim both so they make one contour.');
+    });
   }
 
-  // -> { loops: [{pts, hole, depth, cross?}], warnings }. A loop with `cross` (a self-intersection point) is kept for
-  // display but every feature built from the profile errors through checkProfile.
+  // -> { loops: [{pts, hole, depth, cross?, meet?, meetInner?}], warnings }. A loop with `cross` (a self-intersection
+  // point) or `meet` (where it crosses another loop; markLoopCrossings) is kept for display but every feature built
+  // from the profile errors through checkProfile.
   // Loops made of chords of circles and arcs keep the exact curves: profile.curves lists them ({ c, r, a0, a1, full,
   // step }, sketch coordinates) and loop.seg[i] is the curve index of segment i -> i+1 (-1 straight), absent when the
   // loop has no curved segment.
@@ -532,6 +609,7 @@
       out[i].depth = depth;
       out[i].hole = depth % 2 === 1;
     }
+    markLoopCrossings(out);   // rfAC: a hole circle over the outline is refused (checkProfile), never dropped
     var prof = { loops: out, warnings: warnings };
     if (out.some(function (l) { return l.seg; })) prof.curves = curves;
     if (out.some(function (l) { return l.fseg; })) prof.free = free.map(function (r) { return r.rec; });

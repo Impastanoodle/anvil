@@ -174,6 +174,54 @@
     }
   };
 
+  // rfY (fidelity 3 #5): on-screen numeric input for Ellipse / Partial Ellipse, as the other tools have it: after the
+  // centre R (major radius) and A (its angle), after the major axis end R (the minor radius), and for a partial
+  // ellipse after its start point A (the sweep, the way the mouse went). ui-sketch.js reads UI.sketchToolHooks[tool].
+  UI.sketchToolHooks = UI.sketchToolHooks || {};
+  function angDeg(v) { var a = Math.atan2(v[1], v[0]) / D2R; return a < 0 ? a + 360 : a; }
+  function minorOf(c, a, p) {
+    var dx = a[0] - c[0], dy = a[1] - c[1], L = Math.hypot(dx, dy);
+    return L > 1e-12 ? Math.abs(-(p[0] - c[0]) * dy / L + (p[1] - c[1]) * dx / L) : 0;
+  }
+  function ellipseNum(tool) {
+    return {
+      numFields: function (n) { return n === 1 ? [['R', 'r'], ['A', 'ang']] : n === 2 ? [['R', 'ry']] : n === 3 && tool === 'pellipse' ? [['A', 'sweep']] : null; },
+      liveValues: function (p) {
+        var st = App.toolState, pts = st.pts, c = pts[0];
+        if (pts.length === 1) return { r: Math.hypot(p[0] - c[0], p[1] - c[1]), ang: angDeg([p[0] - c[0], p[1] - c[1]]) };
+        if (pts.length === 2) return { ry: minorOf(c, pts[1], p) };
+        return { sweep: Math.abs(st.pelSweep || 0) / D2R };
+      },
+      typedPoint: function (cur, v) {
+        var st = App.toolState, pts = st.pts, c = pts[0];
+        if (!c) return null;
+        if (pts.length === 1) {
+          var d = Math.hypot(cur[0] - c[0], cur[1] - c[1]), a = v.ang != null ? v.ang * D2R : d > 1e-12 ? Math.atan2(cur[1] - c[1], cur[0] - c[0]) : 0, L = v.r != null ? v.r : d;
+          return [clean(c[0] + L * Math.cos(a)), clean(c[1] + L * Math.sin(a))];
+        }
+        var b = pts[1], dx = b[0] - c[0], dy = b[1] - c[1], rx = Math.hypot(dx, dy);
+        if (!(rx > 1e-12)) return null;
+        var ux = dx / rx, uy = dy / rx;
+        if (pts.length === 2) {
+          if (v.ry == null) return cur;
+          var lx = (cur[0] - c[0]) * ux + (cur[1] - c[1]) * uy, ly = -(cur[0] - c[0]) * uy + (cur[1] - c[1]) * ux, sg = ly < 0 ? -1 : 1;
+          // on the cursor's side of the major axis, at the typed distance from it (where the cursor is along it)
+          return [clean(c[0] + ux * lx - uy * sg * v.ry), clean(c[1] + uy * lx + ux * sg * v.ry)];
+        }
+        if (tool !== 'pellipse' || pts.length !== 3 || v.sweep == null) return cur;
+        var e = ellipseFrom(c, b, pts[2]);
+        if (!e) return cur;
+        // the end at the typed sweep from the start, the way the mouse went (counter-clockwise when it has not moved)
+        var sw = (st.pelSweep || 0) < 0 ? -v.sweep * D2R : v.sweep * D2R, u = e.u + sw, ry = e.ry;
+        var q = [clean(c[0] + ux * rx * Math.cos(u) - uy * ry * Math.sin(u)), clean(c[1] + uy * rx * Math.cos(u) + ux * ry * Math.sin(u))];
+        st.pelLast = paramAt({ cx: c[0], cy: c[1], rx: e.rx, ry: e.ry, rot: e.rot }, q); st.pelSweep = sw;   // the preview takes this sweep exactly
+        return q;
+      }
+    };
+  }
+  UI.sketchToolHooks.ellipse = ellipseNum('ellipse');
+  UI.sketchToolHooks.pellipse = ellipseNum('pellipse');
+
   // ------------------------------------------------------------------ tool PropertyManagers
   // SolidWorks opens the entity's PropertyManager with the tool: Options (For construction …) and, once one is drawn,
   // the Parameters of the entity just made (typed values change it while the tool stays on). ✓ or ✗ puts the tool down.

@@ -818,6 +818,12 @@
     if (!point) ref = String(refEntity(ref));
     // grabbing a circle or an arc on its curve changes its radius (the centre point moves it), as in SolidWorks
     var ent = f.entities[refEntity(ref)], radius = !point && ent && (ent.t === 'circle' || ent.t === 'arc');
+    // rfY (fidelity 3 #2): a slot's end cap moves that end (the slot stretches, its width holds), as in SolidWorks
+    var cap = radius && ent.t === 'arc' && !!(S.slotCap && S.slotCap(f, refEntity(ref)));
+    if (cap) radius = false;
+    // and a side (line or arc) moves alone: the slot's centre line holds, so the width changes symmetrically about it
+    var hold = !point && !cap && S.slotAxisOf ? S.slotAxisOf(f, refEntity(ref)) : -1;
+    if (hold < 0) hold = null;
     // sketch-text-ref: a Sketch Text is its insertion point (SketchSolver point ref '5'): grabbed anywhere on its letters
     // it keeps the grab offset, its insertion point snaps onto points and curves and the solver holds its relations
     var textGrab = null;
@@ -945,7 +951,7 @@
       drop = !ctrlHeld && point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
-      if (S.drag(f, ref, to, start, { radius: radius }).ok) { moved = true; UI.updateSketches(); }
+      if (S.drag(f, ref, to, start, { radius: radius, cap: cap, hold: hold }).ok) { moved = true; UI.updateSketches(); }
       if (drop && drop.model) {
         // sketch-refine: a model snap shows the drawing tools' magenta ring (no relation glyph: none is added)
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);

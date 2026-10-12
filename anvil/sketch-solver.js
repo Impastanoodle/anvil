@@ -545,7 +545,7 @@ var SketchSolver = (function () {
       // sketchdims: a suppressed relation (Display/Delete Relations' Suppressed) holds nothing until it is unsuppressed
       if (rel.suppressed) { cons.push({ src: 'rel', index: i, n: 0, suppressed: true, ents: [] }); return; }
       var q = relEquation(ents, r, sketch.rels);
-      cons.push(q ? { src: 'rel', index: i, n: q.n, f: q.f, ents: q.ents } : { src: 'rel', index: i, n: 0, bad: true, ents: [] });
+      cons.push(q ? { src: 'rel', index: i, n: q.n, f: q.f, ents: q.ents, implied: !!rel.implied } : { src: 'rel', index: i, n: 0, bad: true, ents: [] });
     });
     (sketch.dims || []).forEach(function (d, i) {
       if (d.driven) { cons.push({ src: 'dim', index: i, n: 0, driven: true, ents: [] }); return; }
@@ -770,7 +770,8 @@ var SketchSolver = (function () {
       else {
         var bad = false;
         for (var k = 0; k < c.n; k++) if (Math.abs(r[c.row + k]) > tol) bad = true;
-        if (bad) st = 'conflict'; else if (info.dep[ci]) st = 'redundant';
+        // rfY: an implied relation (an arc slot's fourth join) repeats part of what the others say by construction
+        if (bad) st = 'conflict'; else if (info.dep[ci] && !c.implied) st = 'redundant';
       }
       (c.src === 'rel' ? out.rels : out.dims)[c.index] = st;
       if (st === 'conflict') out.conflicts++;
@@ -1659,6 +1660,7 @@ var SketchSolver = (function () {
   // arcs' far sides. Later entities shift by 4. Returns idx, or -1.
   function explodeSlot(sketch, idx) {
     var e = sketch.entities[idx];
+    if (e && e.t === 'aslot') return explodeArcSlot(sketch, idx);   // rfY
     if (!e || e.t !== 'slot') return -1;
     var A = [e.x1, e.y1], B = [e.x2, e.y2], u = unit(sub(B, A)), nn = [-u[1], u[0]], h = e.w / 2, an = Math.atan2(nn[1], nn[0]) / D2R;
     if (!(len(sub(B, A)) > 1e-12)) return -1;
@@ -1689,6 +1691,54 @@ var SketchSolver = (function () {
       var rel = d.k === 'w' ? { type: 'distance', refs: [L1, L2], v: e.w } : d.k === 'olen' ? { type: 'distance', refs: [A1, A2], ac: ['max', 'max'], v: len(sub(B, A)) + e.w } : null;
       if (rel && d.driven) rel.driven = true;
       if (rel && d.off != null) rel.off = d.off;
+      return rel;
+    }, own);
+    sketch.entities[idx + 4].construction = true;
+    return idx;
+  }
+  // rfY: an Arc Slot becomes what SolidWorks draws: the outer arc, the end arc at the slot's end (a1), the inner arc, the
+  // end arc at its start (a0) and the construction centre-line arc. The outer and inner arcs are centred on the
+  // construction arc's centre (its centre point is the slot's), the end arcs on its ends; the four joins are Coincident
+  // and Tangent. The fourth join is `implied` (SketchSolver.analyze: a consistent repeat is not over-defining): with the
+  // other three joins its radial part repeats what they say (outer - r = r - inner = the end arcs' radius), as
+  // SolidWorks' own solver accepts it. Refs follow: c -> the construction arc's centre, p1 / p2 -> its ends, the whole
+  // slot -> the construction arc; the radius dimension -> the construction arc's, the width -> the radial distance
+  // between the inner and the outer arc. Later entities shift by 4. Returns idx, or -1.
+  function explodeArcSlot(sketch, idx) {
+    var e = sketch.entities[idx];
+    if (!e || e.t !== 'aslot') return -1;
+    var h = e.w / 2, r = e.r, a0 = e.a0, a1 = e.a1;
+    if (!(h > 1e-12) || !(r - h > 1e-12) || !(a1 - a0 > 1e-9)) return -1;
+    function tidy(x) { return Math.abs(x) < 1e-12 * Math.max(1, r) ? 0 : +x.toPrecision(14); }   // (cos 90° is 6e-17, not 0)
+    function at(a, rr) { return [tidy(e.cx + rr * Math.cos(a * D2R)), tidy(e.cy + rr * Math.sin(a * D2R))]; }
+    var P1 = at(a0, r), P2 = at(a1, r);
+    var block = [
+      normArc({ t: 'arc', cx: e.cx, cy: e.cy, r: r + h, a0: a0, a1: a1 }),
+      normArc({ t: 'arc', cx: P2[0], cy: P2[1], r: h, a0: a1, a1: a1 + 180 }),
+      normArc({ t: 'arc', cx: e.cx, cy: e.cy, r: r - h, a0: a0, a1: a1 }),
+      normArc({ t: 'arc', cx: P1[0], cy: P1[1], r: h, a0: a0 + 180, a1: a0 + 360 }),
+      normArc({ t: 'arc', cx: e.cx, cy: e.cy, r: r, a0: a0, a1: a1, construction: true })
+    ];
+    var O = String(idx), C2 = String(idx + 1), I = String(idx + 2), C1 = String(idx + 3), CA = String(idx + 4);
+    var own = [
+      { type: 'coincident', refs: [O + '.c', CA + '.c'] }, { type: 'coincident', refs: [I + '.c', CA + '.c'] },
+      { type: 'coincident', refs: [C1 + '.c', CA + '.p1'] }, { type: 'coincident', refs: [C2 + '.c', CA + '.p2'] },
+      { type: 'coincident', refs: [O + '.p2', C2 + '.p1'] }, { type: 'coincident', refs: [C2 + '.p2', I + '.p2'] },
+      { type: 'coincident', refs: [I + '.p1', C1 + '.p1'] },
+      { type: 'tangent', refs: [O, C2] }, { type: 'tangent', refs: [I, C2] }, { type: 'tangent', refs: [I, C1] }, { type: 'tangent', refs: [O, C1] },
+      { type: 'coincident', refs: [C1 + '.p2', O + '.p1'], implied: true }
+    ];
+    explodeInto(sketch, idx, block, function (p) {
+      if (p.s === 'p' && (p.k === 1 || p.k === 2)) return CA + '.p' + p.k;
+      if (p.s === 'c') return CA + '.c';
+      if (p.s === null) return CA;
+      return null;
+    }, function (d) {
+      if (d.k === 'r') return { e: idx + 4, k: 'r' };
+      if (d.k !== 'w') return null;
+      var rel = { type: 'distance', refs: [I, O], dir: 'r', v: e.w };
+      if (d.driven) rel.driven = true;
+      if (d.off != null) rel.off = d.off;
       return rel;
     }, own);
     sketch.entities[idx + 4].construction = true;
@@ -2040,9 +2090,15 @@ var SketchSolver = (function () {
     var targets = {};                                  // dimension values held at their drag-start values
     var base = { entities: start || sketch.entities, dims: sketch.dims, rels: sketch.rels };
     (sketch.dims || []).forEach(function (d, i) { var v = K && base.entities[d.e] ? K.dimValue(base.entities[d.e], d) : null; if (v != null) targets[i] = v; });
-    var w = 0.1, pull;
+    var w = 0.1, pull, capHold = null;
     var P0 = refPoint(base.entities, R), eR = base.entities[R.e];
-    if (opts && opts.radius && R.s === null && eR && (eR.t === 'circle' || eR.t === 'arc')) {
+    if (opts && opts.cap && R.s === null && eR && eR.t === 'arc') {
+      // rfY: a slot's end cap (slotCap) grabbed on its curve moves that end of the slot: its centre follows the mouse
+      // (`to` is the move from the grab) and its radius holds, so the slot stretches and keeps its width (SolidWorks)
+      var cT = [eR.cx + to[0], eR.cy + to[1]], rC = eR.r;
+      pull = { n: 2, ents: [R.e], soft: true, f: function (E) { var a = E[R.e]; return [w * (a.cx - cT[0]), w * (a.cy - cT[1])]; } };
+      capHold = { n: 1, ents: [R.e], f: function (E) { return [E[R.e].r - rC]; } };   // (held exactly: the width does not creep)
+    } else if (opts && opts.radius && R.s === null && eR && (eR.t === 'circle' || eR.t === 'arc')) {
       var rTo = len(sub(to, [eR.cx, eR.cy]));
       pull = { n: 1, ents: [R.e], soft: true, f: function (E) { return [w * (E[R.e].r - rTo)]; } };
     } else if (P0) pull = { n: 2, ents: [R.e], soft: true, f: function (E) { var p = refPoint(E, R); return [w * (p[0] - to[0]), w * (p[1] - to[1])]; } };
@@ -2052,17 +2108,58 @@ var SketchSolver = (function () {
       var tgt = K.translateEntity(e0, to[0], to[1]), names = paramNames(e0);
       pull = { n: names.length, ents: [R.e], soft: true, f: function (E) { return names.map(function (nm) { return w * (pget(E[R.e], nm) - pget(tgt, nm)); }); } };
     }
-    var sys = buildSystem(sketch, { dimTargets: targets, extra: [pull] });
+    var extra = capHold ? [pull, capHold] : [pull];
+    // rfY: opts.hold = an entity held where it was (softly): a slot's centre line while one of its sides is dragged
+    var eH = opts && opts.hold != null && opts.hold !== R.e ? base.entities[opts.hold] : null;
+    if (eH) {
+      var hn = paramNames(eH), hi = opts.hold;
+      extra.push({ n: hn.length, ents: [hi], soft: true, f: function (E) { return hn.map(function (nm) { return w * (pget(E[hi], nm) - pget(eH, nm)); }); } });
+    }
+    var sys = buildSystem(sketch, { dimTargets: targets, extra: extra });
     // only the geometry tied to the dragged entity (through relations and dimensions) can move: solve that part alone
     // (much smaller matrices in a sketch of several separate pieces; a conflict elsewhere does not block the drag)
     var part = connected(sys, R.e);
-    if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: [pull], entities: part.set });
+    if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: part.set });
     var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : null;   // ui-sketch-spline
     lm(sys, { leastSquares: true, maxIt: 60, mob: dm });
     var r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
     if (!r.ok) return { ok: false };
     writeBack(sketch, sys);
     return { ok: true };
+  }
+
+  // rfY (sketch fidelity 3, finding 2): is arc i a slot's end cap? Its centre sits on an end of a construction line or
+  // arc (a straight slot's centerline, an arc slot's centre-line arc) and it is Tangent to something (the slot's
+  // sides). Dragging a cap stretches the slot (drag opts.cap) instead of changing its radius as a free arc's drag does.
+  function slotCap(sketch, i) {
+    var E = sketch.entities, e = E[i], c = i + '.c', tangent = false, onEnd = false;
+    if (!e || e.t !== 'arc' || !sketch.rels) return false;
+    sketch.rels.forEach(function (rel) {
+      if (rel.suppressed || !rel.refs) return;
+      if (rel.type === 'tangent' && rel.refs.indexOf(String(i)) >= 0) tangent = true;
+      if (rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.indexOf(c) >= 0) {
+        var m = /^(\d+)\.p[12]$/.exec(rel.refs[0] === c ? rel.refs[1] : rel.refs[0]), o = m && E[+m[1]];
+        if (o && o.construction && (o.t === 'line' || o.t === 'arc')) onEnd = true;
+      }
+    });
+    return tangent && onEnd;
+  }
+  // rfY: the construction centre line (or centre-line arc) of the slot whose side line / arc i is (Tangent to a slot
+  // cap), or -1. Dragging a side holds it (drag opts.hold), so the width changes symmetrically about it (SolidWorks).
+  function slotAxisOf(sketch, i) {
+    var E = sketch.entities, out = -1, s = String(i);
+    if (!E[i] || E[i].construction || !sketch.rels) return -1;
+    sketch.rels.forEach(function (rel) {
+      if (out >= 0 || rel.type !== 'tangent' || rel.refs.indexOf(s) < 0) return;
+      var j = +(rel.refs[0] === s ? rel.refs[1] : rel.refs[0]);
+      if (!(j >= 0) || !slotCap(sketch, j)) return;
+      sketch.rels.forEach(function (r2) {
+        if (out >= 0 || r2.type !== 'coincident' || r2.refs.indexOf(j + '.c') < 0) return;
+        var m = /^(\d+)\.p[12]$/.exec(r2.refs[0] === j + '.c' ? r2.refs[1] : r2.refs[0]);
+        if (m && E[+m[1]] && E[+m[1]].construction) out = +m[1];
+      });
+    });
+    return out;
   }
 
   // ------------------------------------------------------------------ offset of a whole entity
@@ -4497,7 +4594,7 @@ var SketchSolver = (function () {
   // sketchdims: what a relation or dimension carries besides its geometry, kept through scripts: arc conditions, the
   // Dimension PropertyManager's name / tolerance / precision / text before and after / radius-or-diameter display, and
   // Suppressed (Display/Delete Relations). A Smart Dimension's go through .dimProps([[i, { … }], …]).
-  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed'];
+  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied'];   // rfY: implied (an arc slot's fourth join)
   var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show'];
   function extras(item, keys) {
     var o = null;
@@ -4591,6 +4688,7 @@ var SketchSolver = (function () {
       var self = this, ex = opt && typeof opt === 'object' ? extras(opt, DIM_EXTRA) : null;
       if (opt && typeof opt === 'object' && opt.mark != null && r.rels) r.rels.forEach(function (i) { self.f.rels[i].mark = !!opt.mark; });   // rfB: marked for drawing
       if (ex) r.rels.forEach(function (i) { Object.keys(ex).forEach(function (k) { self.f.rels[i][k] = ex[k]; }); });
+      if (opt && typeof opt === 'object' && opt.implied && r.rels) r.rels.forEach(function (i) { self.f.rels[i].implied = true; });   // rfY
       return this;
     };
     SBP.solve = function () { solve(this.f); return this; };
@@ -4782,7 +4880,7 @@ var SketchSolver = (function () {
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
     setDim: setDim, setRelValue: setRelValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, relArgs: relArgs,
-    removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, clean: clean,
+    removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install,

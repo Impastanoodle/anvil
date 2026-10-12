@@ -27,6 +27,7 @@
   // While a sheet is worked out, _.DIMSTYLE holds the drawing's dimension style (fmtDim: inch precision, fractions)
   // and _.CTX the model and build a flat-pattern view is unfolded from (flatData).
   function compute(doc, mesh, model, ctx) {
+    _.resolveSectionScale(doc, mesh);   // (rfZ) section lines set to scale with model changes go to their place on the part
     var prevStyle = _.DIMSTYLE, prevCtx = _.CTX;
     _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null, mesh: mesh };
     var prevGeo = _.DIMGEO; _.DIMGEO = D.dimGeometry(doc);
@@ -188,7 +189,7 @@
       if (pr.pending) prims.push({ k: 'pending', box: box, layer: layer });
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
       var lb = box.y0;
-      doc.views.forEach(function (dv) { if (dv.parent === v.id && dv.kind === 'detail' && dv.detail) lb = Math.min(lb, toSheet(dv.detail.c)[1] - dv.detail.r * s); });
+      doc.views.forEach(function (dv) { if (dv.parent === v.id && dv.kind === 'detail' && dv.detail) lb = Math.min(lb, toSheet(dv.detail.c)[1] - _.detailHalf(dv.detail)[1] * s); });
       if (v.kind === 'section') {
         text([v.x, lb - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
         if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
@@ -196,9 +197,12 @@
         text([(box.x0 + box.x1) / 2, lb - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
         text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
       } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
+      // (rfZ) a detail view's Full / Jagged outline
+      if (v.kind === 'detail' && v.detail && v.detail.outline) _.detailOutline(prims, { view: v, layer: layer, toSheet: toSheet, scale: s }, k);
       // (a flat pattern is drawn at true size whatever plane the Base Flange was sketched on)
       views.push({ view: v, proj: pr, box: box, layer: layer, toSheet: toSheet, fromSheet: fromSheet, scale: s, frame: ct.frame, ortho: isOrthoFrame(ct.frame) || !!fd,
-        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending, flat: fd });
+        section: ct.section || null, hatch: hatch, hatches: hatches, clip: clip, content: ct, pending: !!pr.pending, flat: fd,
+        trueDims: _.isTrueView(v, ct.frame) });   // (rfZ) Dimension Type True: its linear dimensions read true 3D lengths
     });
     var pendingView = {}, anyPending = false;
     views.forEach(function (w) { if (w.pending) { pendingView[w.view.id] = 1; anyPending = true; } });
@@ -216,9 +220,11 @@
         if (sc.axis === 'h') {
           var y = pw.toSheet([0, sc.at])[1];
           a = [pw.box.x0 - ext, y]; b = [pw.box.x1 + ext, y]; dv = [0, -sc.sign];
+          if (sc.partial) { a = [pw.toSheet([sc.partial[0], sc.at])[0], y]; b = [pw.toSheet([sc.partial[1], sc.at])[0], y]; }   // (rfZ) partial: it stops at its ends
         } else {
           var x = pw.toSheet([sc.at, 0])[0];
           a = [x, pw.box.y0 - ext]; b = [x, pw.box.y1 + ext]; dv = [-sc.sign, 0];
+          if (sc.partial) { a = [x, pw.toSheet([sc.at, sc.partial[0]])[1]]; b = [x, pw.toSheet([sc.at, sc.partial[1]])[1]]; }
         }
         line(a, b, L, 'chain');
         [a, b].forEach(function (e0) {
@@ -229,26 +235,48 @@
           text(tp, lh, v.label, 'middle', L);
         });
       } else if (v.kind === 'detail') {
-        var dc = pw.toSheet(v.detail.c), r = v.detail.r * pw.scale;
-        prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick' });
+        // (rfZ) a Profile detail is a rectangle; the circle styles: Per standard / No leader (the letter beside it),
+        // With leader (the letter further out on a thin leader), Broken (the letter in a gap of the circle), Connected
+        // (a thin line from the circle to the detail view)
+        var dtl = v.detail, hfd = _.detailHalf(dtl), prof = dtl.shape === 'profile', dc = pw.toSheet(dtl.c), r = hfd[0] * pw.scale, rh = hfd[1] * pw.scale;
+        var dst = dtl.style || 'standard', broken = dst === 'broken' && !prof, lead = dst === 'leader' ? 6 * k : 0;
+        function sup(cx, cy) { return prof ? Math.abs(cx) * r + Math.abs(cy) * rh : r; }   // centre to the boundary along (cx, cy)
+        if (prof) [[-1, -1, 1, -1], [1, -1, 1, 1], [1, 1, -1, 1], [-1, 1, -1, -1]].forEach(function (q) { prims.push({ k: 'line', a: [dc[0] + q[0] * r, dc[1] + q[1] * rh], b: [dc[0] + q[2] * r, dc[1] + q[3] * rh], layer: L, style: 'thick', detailMark: v.id }); });
+        else if (!broken) prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick', detailMark: v.id });
         // the letter goes just outside the circle where it covers the least of the parent's linework and hatching
         // (upper right first, then the other diagonals and sides), as SolidWorks keeps it readable (r11/hatch11)
-        var lh2 = 5 * k, lw = textWidth(v.label, lh2 * CAP_EM), pad = 0.6 * k, bestP = null, bestN = Infinity;
+        var lh2 = 5 * k, lw = textWidth(v.label, lh2 * CAP_EM), pad = 0.6 * k, bestP = null, bestN = Infinity, bestTh = Math.PI / 4, clearTh = null;
         var own = prims.filter(function (p) { return p.layer === L || p.k === 'text'; });
         // (a clear spot 2 mm further out beats one on the hatching; with none clear, the least covered beside the circle)
         var clearP = null;
         [0, 2].forEach(function (ex) { [45, 135, -45, -135, 90, 0, 180, -90].forEach(function (deg) {
           if (clearP) return;
           var th = deg * Math.PI / 180, cx = Math.cos(th), cy = Math.sin(th);
-          var dist = r + (1.5 + ex) * k + Math.abs(cx) * lw / 2 + Math.abs(cy) * lh2 / 2;
+          var dist = broken ? r : sup(cx, cy) + (1.5 + ex) * k + lead + Math.abs(cx) * lw / 2 + Math.abs(cy) * lh2 / 2;
           var cen = [dc[0] + cx * dist, dc[1] + cy * dist], R = [cen[0] - lw / 2 - pad, cen[1] - lh2 / 2 - pad, cen[0] + lw / 2 + pad, cen[1] + lh2 / 2 + pad];
           var n = 0;
           own.forEach(function (p) { if (primHitsRect(p, p.k === 'text' ? [R[0] - 3 * k, R[1] - 3 * k, R[2] + 3 * k, R[3] + 3 * k] : R)) n += p.k === 'text' ? 10 : 1; });   // (by a label: worst, it would read as part of it)
-          if (!n) clearP = cen;
-          else if (!ex && n < bestN) { bestN = n; bestP = cen; }
+          if (!n) { clearP = cen; clearTh = th; }
+          else if (!ex && n < bestN) { bestN = n; bestP = cen; bestTh = th; }
         }); });
-        bestP = clearP || bestP;
+        bestP = clearP || bestP; if (clearTh != null) bestTh = clearTh;
         text([bestP[0], bestP[1] - lh2 / 2], lh2, v.label, 'middle', L);
+        var bcx = Math.cos(bestTh), bcy = Math.sin(bestTh), edgeP = [dc[0] + bcx * sup(bcx, bcy), dc[1] + bcy * sup(bcx, bcy)];
+        if (broken) {
+          // the circle stops either side of the letter
+          var gap = Math.min(80, Math.asin(Math.min(1, (Math.hypot(lw, lh2) / 2 + pad) / Math.max(r, 1e-9))) * 180 / Math.PI), tdeg = bestTh * 180 / Math.PI;
+          prims.push({ k: 'arc', c: dc, r: r, a0: tdeg + gap, a1: tdeg - gap + 360, layer: L, style: 'thick', detailMark: v.id });
+        }
+        if (lead) {
+          var lend = [bestP[0] - bcx * (Math.abs(bcx) * lw / 2 + Math.abs(bcy) * lh2 / 2 + pad), bestP[1] - bcy * (Math.abs(bcx) * lw / 2 + Math.abs(bcy) * lh2 / 2 + pad)];
+          prims.push({ k: 'line', a: edgeP, b: lend, layer: L, style: 'thin', detailMark: v.id, detailLeader: v.id });
+        }
+        if (dst === 'connected') {
+          // from the circle toward the detail view, to the nearest point of its box
+          var tx = v.x - dc[0], ty = v.y - dc[1], tl = Math.hypot(tx, ty) || 1, ux = tx / tl, uy = ty / tl, st = [dc[0] + ux * sup(ux, uy), dc[1] + uy * sup(ux, uy)];
+          var en = [Math.max(w.box.x0, Math.min(w.box.x1, st[0])), Math.max(w.box.y0, Math.min(w.box.y1, st[1]))];
+          if (Math.hypot(en[0] - st[0], en[1] - st[1]) > k) prims.push({ k: 'line', a: st, b: en, layer: L, style: 'thin', detailMark: v.id, detailConnect: v.id });
+        }
         // on hatching, the hatch stops round the letter (a clear island, as a hatch keeps text readable)
         if (!clearP) {
           var isl = [bestP[0] - lw / 2 - pad, bestP[1] - lh2 / 2 - pad, bestP[0] + lw / 2 + pad, bestP[1] + lh2 / 2 + pad];
@@ -367,9 +395,13 @@
     }) : [];
     doc.views.forEach(function (v) {
       if (pendingView[v.id]) return;
+      var tw = views.filter(function (x) { return x.view.id === v.id && x.trueDims; })[0];
       (v.dims || []).forEach(function (d, i) {
         if (projections[v.id]) reattachUserDim(d, projections[v.id]);
-        var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i; c.text = dimText(c, units); dims.push(c);
+        var c = JSON.parse(JSON.stringify(d)); c.view = v.id; c.index = i;
+        // (rfZ) Dimension Type True: a linear dimension in a pictorial view reads the true length of what it measures
+        if (tw && c.a && c.b && /^(h|v|aligned)$/.test(c.kind)) { var tl = D.trueLength(mesh, tw.frame, c.a, c.b); if (tl != null) { c.value = tl; c.trueDim = true; } }
+        c.text = dimText(c, units); dims.push(c);
       });
     });
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them

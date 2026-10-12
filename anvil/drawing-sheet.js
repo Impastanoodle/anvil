@@ -178,7 +178,7 @@
   function viewPaperBox(doc, mesh, v) {
     var k = paperK(doc.units), s = viewScale(doc, v), hw, hh, lab = 0;
     var left = 0;
-    if (v.kind === 'detail' && v.detail) { hw = hh = v.detail.r * s; lab = 14 * k; }
+    if (v.kind === 'detail' && v.detail) { var dh = _.detailHalf(v.detail); hw = dh[0] * s; hh = dh[1] * s; lab = 14 * k; }
     else { var ex = viewExtents(doc, mesh, v); hw = ex.w * s / 2; hh = ex.h * s / 2; if (v.kind === 'section' || v.scale) lab = 14 * k; }
     if (v.kind === 'flat') {
       // a flat view carries its overall dimensions (left and below), the FLAT SIZE note and the Bend Table under it
@@ -259,11 +259,16 @@
   // and on the arrows' side in first angle; cut faces are hatched ANSI31 and the view is labelled SECTION A-A.
   // (rfV) opts.type 'half' | 'offset' | 'aligned' (+ c, side, jogs, angle …): the full section, then
   // Drawing.setSectionType (drawing-views.js); a refused type takes the new view off again
+  // (rfZ) opts.partial [from, to] (a full section's cutting line stops at its ends) and opts.scaleWithModel (the line
+  // keeps its place on the part as it changes size): Drawing.setSectionOptions
   function addSectionView(doc, mesh, parentId, opts) {
-    var t = opts && opts.type;
-    if (!t || t === 'full') return addFullSection(doc, mesh, parentId, opts);
+    var t = opts && opts.type, more = opts && (opts.partial || opts.scaleWithModel);
+    if ((!t || t === 'full') && !more) return addFullSection(doc, mesh, parentId, opts);
     var nv = doc.views.length, nn = doc.nextView, v = addFullSection(doc, mesh, parentId, opts);
-    try { D.setSectionType(doc, v.id, opts); } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
+    try {
+      if (t && t !== 'full') D.setSectionType(doc, v.id, opts);
+      if (more) D.setSectionOptions(doc, mesh, v.id, { partial: opts.partial || undefined, scaleWithModel: opts.scaleWithModel ? true : undefined });
+    } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
     return v;
   }
   function addFullSection(doc, mesh, parentId, opts) {
@@ -301,12 +306,17 @@
     if (!par) throw new Error('No drawing view ' + parentId);
     if (par.kind === 'detail') throw new Error('Detail views of detail views are not supported');
     if (par.kind === 'flat') throw new Error('Detail views of flat-pattern views are not supported');
-    if (!(opts.r > 0)) throw new Error('A detail circle needs a radius');
+    // (rfZ) a Profile (opts.shape 'profile', a, b: a rectangle's corners) instead of the circle; opts.style (Per standard /
+    // Broken / Leader / No leader / Connected) and opts.outline ('full' | 'jagged'): see drawing-views.js
+    var prof = _.detailProfile(opts);
+    if (!prof && !(opts.r > 0)) throw new Error('A detail circle needs a radius');
+    var dt = prof || { c: [+opts.c[0], +opts.c[1]], r: +opts.r };
+    _.detailOpts(dt, opts);
     var label = opts.label || nextLabel(doc), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : detailScale(par.scale || doc.sheet.scale || [1, 1]);
     var s = scaleValue(sc), g = GAP * paperK(doc.units), pe = viewExtents(doc, mesh, par), ps = viewScale(doc, par);
     var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
-      detail: { c: [+opts.c[0], +opts.c[1]], r: +opts.r }, scale: sc, display: par.display,
-      x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + opts.r * s, y: opts.y != null ? opts.y : par.y });
+      detail: dt, scale: sc, display: par.display,
+      x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + _.detailHalf(dt)[0] * s, y: opts.y != null ? opts.y : par.y });
     if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
     if (v.scale !== sc) v.name = 'Detail View ' + label + ' (' + scaleText(v.scale) + ')';
     doc.layout = 'manual';
@@ -453,6 +463,7 @@
     if (!ct || !ct.proj) return ct;
     _.auxCenter(doc, v, ct, parentContent);
     if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = _.cropContent(ct, v.crop);
+    if (v.kind === 'section' && v.section && v.section.partial) ct = _.partialContent(v, ct);   // (rfZ) a partial section
     return ct;
   }
   function plainContent(doc, v, mesh, parentContent) {
@@ -483,6 +494,7 @@
     }
     if (v.kind === 'detail' && par && parentContent) {
       var pc = parentContent(par), dt = v.detail;
+      if (dt.shape === 'profile' && dt.a && dt.b) return _.detailProfileContent(pc, dt, s);   // (rfZ) a rectangle profile
       var dpr = clipProjection(pc.proj, dt.c, dt.r);
       if (pc.proj.pending) dpr.pending = true;   // (its parent still being worked out, r13/drawings13)
       return { frame: pc.frame, proj: dpr, center: dt.c.slice(), caps: pc.caps, clip: { c: dt.c.slice(), r: dt.r }, scale: s };
@@ -750,6 +762,18 @@
       var bt = projections[top.id].bounds;
       dims.push({ view: top.id, kind: 'v', a: [bt.umin, bt.vmin], b: [bt.umin, bt.vmax], side: -1, value: bt.vmax - bt.vmin, auto: true });
     }
+    perViews(order, false);
+    // (rfAB) a flat-pattern view is a configuration of its own (SolidWorks' flat pattern): the Model Items PM brings it
+    // the blank's items as well — the hole callouts, slots and radii it shows and the dimensions of the sketches that lie
+    // on the base (the Base Flange's sketch: its dimensions and ordinates read true in the flat), plus the hole
+    // locations. No bend radius or bend deduction: those are the bend notes' and the Bend Table's.
+    if (MI.pm) doc.views.forEach(function (fv) {
+      if (fv.kind === 'flat' && projections[fv.id] && !projections[fv.id].error && (!MI.views || MI.views.indexOf(fv.id) >= 0)) perViews([fv], true);
+    });
+    dims.forEach(function (d) { d.text = dimText(d, units); });
+    return dims;
+    // the items of the views of `order` (flat: one flat-pattern view)
+    function perViews(order, flat) {
     var done = {};
     if (MI.holeCallouts) order.forEach(function (v) {
       var pr = projections[v.id];
@@ -857,10 +881,12 @@
     if (MI.marked) dims = dims.concat(sketchDistances(doc, order, projections, dims));
     // (rfT) from the Model Items PM only (drawings made before it keep their items and style keys): flange lengths
     // and the hole locations
-    if (MI.pm && MI.marked) dims = dims.concat(flangeLengths(doc, order, projections, dims, null, MI));
+    // (rfAB) the sketches' own Smart Dimensions (a line's length, a rectangle's width / height: the typed 10 x 6 of a
+    // blank), from the Model Items PM only
+    if (MI.pm && MI.marked) dims = dims.concat(sketchEntityDims(doc, order, projections, dims));
+    if (MI.pm && MI.marked && !flat) dims = dims.concat(flangeLengths(doc, order, projections, dims, null, MI));
     if (MI.pm && MI.holeLocations) dims = dims.concat(holeLocations(doc, order, projections, dims, MI));
-    dims.forEach(function (d) { d.text = dimText(d, units); });
-    return dims;
+    }
   }
   // the sheet thickness of the part being drawn (0 when it is not sheet metal)
   function sheetThickness() {
@@ -964,7 +990,14 @@
     if (!f) return out;
     var sk = f.type === 'sketch' ? f.id : f.sketch;
     if (MI.marked && sk != null) out = sketchDistances(doc, order, projections, [], sk);
+    if (MI.marked && sk != null) out = out.concat(sketchEntityDims(doc, order, projections, out, sk));   // (rfAB)
     if (MI.marked && f.type === 'flange') out = out.concat(flangeLengths(doc, order, projections, out, f.id, MI));
+    // (rfAB) and in each flat-pattern view, when the feature's sketch lies on the base
+    if (MI.marked && sk != null) doc.views.forEach(function (fv) {
+      if (fv.kind !== 'flat' || !projections[fv.id] || projections[fv.id].error || (MI.views && MI.views.indexOf(fv.id) < 0)) return;
+      var fo = sketchDistances(doc, [fv], projections, out, sk);
+      out = out.concat(fo, sketchEntityDims(doc, [fv], projections, out.concat(fo), sk));
+    });
     out.forEach(function (d) { d.text = dimText(d, units); });
     return out;
   }
@@ -1014,14 +1047,12 @@
       if (!list.length) return;
       var pl;
       try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
-      var v = null, F = null;
-      for (var j = 0; j < order.length && !v; j++) {
-        var Fj = viewFrame(doc, order[j]);
-        if (Fj && Math.abs(Math.abs(V.dot(pl.n, Fj.e)) - 1) < 1e-9 && projections[order[j].id]) { v = order[j]; F = Fj; }
-      }
-      if (!v) return;
+      var tg = sketchTarget(doc, order, projections, pl);
+      if (!tg) return;
+      var v = tg.v, F = tg.F;
       var bd = projections[v.id].bounds, cu = (bd.umin + bd.umax) / 2, cv = (bd.vmin + bd.vmax) / 2, span = Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9), tol = 1e-7 * span;
-      function view2(p) { var q = K.to3D(pl, p[0], p[1]); return [V.dot(q, F.u), V.dot(q, F.v)]; }
+      function view2(p) { return tg.at(K.to3D(pl, p[0], p[1])); }
+      var zones = slotZones(projections[v.id]);
       list.forEach(function (i) {
         var rel = f.rels[i], A = refGeo(f, rel.refs[0]), B = refGeo(f, rel.refs[1]);
         if (!A || !B) return;
@@ -1040,7 +1071,7 @@
         }
         if (!kind) return;
         var value = kind === 'h' ? Math.abs(b2[0] - a2[0]) : kind === 'v' ? Math.abs(b2[1] - a2[1]) : Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
-        if (!(value > tol)) return;
+        if (!(value > tol) || inSlot(zones, a2, b2, 10 * tol)) return;   // (rfAB) a slot's own size: its callout says it
         var d = { view: v.id, kind: kind, a: a2, b: b2, value: value, auto: true, sketchRel: f.id + ':' + i, relSrc: { f: f.id, i: i } };
         if (kind === 'h') d.side = (a2[1] + b2[1]) / 2 > cv ? 1 : -1;
         else if (kind === 'v') d.side = (a2[0] + b2[0]) / 2 > cu ? 1 : -1;
@@ -1053,6 +1084,90 @@
         }
         var dup = dims.filter(same)[0] || out.filter(same)[0];
         if (dup) { if (!dup.relSrc) dup.relSrc = d.relSrc; return; }
+        out.push(d);
+      });
+    });
+    return out;
+  }
+  // (rfAB) sketchTarget(doc, order, projections, pl) -> { v, F: { e, u, v }, at(p3) -> [u, v] } or null: the first view
+  // of `order` that looks square at sketch plane pl — an orthographic view (its frame), or a flat-pattern view when the
+  // sketch lies on the base (parallel to the flat, within a sheet thickness of the Base Flange's sketch plane): a point
+  // of the base sits in the flat where it lies on its sketch plane (the flat is that plane's to2D)
+  function sketchTarget(doc, order, projections, pl) {
+    for (var j = 0; j < order.length; j++) {
+      var v = order[j];
+      if (!projections[v.id]) continue;
+      if (v.kind === 'flat') {
+        var fd = D.flatData(_.CTX && _.CTX.mesh);
+        if (!fd || fd.error || !fd.origin) continue;
+        var fe = fd.frame.e, fo = fd.origin, T = sheetThickness();
+        if (Math.abs(Math.abs(V.dot(pl.n, fe)) - 1) > 1e-9 || Math.abs(V.dot(V.sub(pl.origin, fo), fe)) > T * (1 + 1e-6) + 1e-9) continue;
+        return flatTarget(v, fd);
+      }
+      var F = viewFrame(doc, v);
+      if (F && Math.abs(Math.abs(V.dot(pl.n, F.e)) - 1) < 1e-9) return orthoTarget(v, F);
+    }
+    return null;
+  }
+  function orthoTarget(v, F) { return { v: v, F: F, at: function (q) { return [V.dot(q, F.u), V.dot(q, F.v)]; } }; }
+  function flatTarget(v, fd) {
+    var F = { e: fd.frame.e, u: fd.frame.u, v: fd.frame.v }, o = fd.origin;
+    return { v: v, F: F, at: function (q) { var d = V.sub(q, o); return [V.dot(d, F.u), V.dot(d, F.v)]; } };
+  }
+  // (rfAB) the slots a projection shows, as zones: a straight slot's stadium (centre segment a–b, half width r), an arc
+  // slot's band (centre C, centre-line radius R, half width r). A sketch dimension with both ends in one zone measures
+  // the slot (its width, centre distance or overall length, of a slot drawn as lines and arcs): the slot callout says it.
+  function slotZones(pr) {
+    if (!pr || !pr.arcs) return [];
+    var z = slotsIn(pr).map(function (s) { return { a: s.ends[0].c, b: s.ends[1].c, r: s.w / 2 }; });
+    return z.concat(arcSlotsIn(pr).map(function (s) { return { C: s.center, R: s.R, r: s.w / 2 }; }));
+  }
+  function inSlot(zones, p, q, tol) {
+    function inZ(z, x) {
+      if (z.C) return Math.abs(Math.hypot(x[0] - z.C[0], x[1] - z.C[1]) - z.R) <= z.r + tol;
+      var d = [z.b[0] - z.a[0], z.b[1] - z.a[1]], dd = d[0] * d[0] + d[1] * d[1];
+      var t = dd > 0 ? Math.max(0, Math.min(1, ((x[0] - z.a[0]) * d[0] + (x[1] - z.a[1]) * d[1]) / dd)) : 0;
+      return Math.hypot(x[0] - z.a[0] - d[0] * t, x[1] - z.a[1] - d[1] * t) <= z.r + tol;
+    }
+    return zones.some(function (z) { return inZ(z, p) && inZ(z, q); });
+  }
+  // (rfAB) sketchEntityDims(doc, order, projections, dims, onlySketch) -> model items for the sketches' Smart Dimensions
+  // on entities (sketch.dims: a line's length, dx / dy, a rectangle's width / height, a polyline segment), as
+  // SolidWorks' Insert Model Items > Marked for drawing brings them: every one that is marked (x.mark: on unless false;
+  // a driven one only when set true), in the first view of `order` that looks square at its sketch (sketchTarget: the
+  // Top view of a blank sketched on Top, a flat-pattern view for the Base Flange's sketch), between the points it
+  // measures, on the side of the view nearer to them, with sketchDim 'sketchId:dimIndex' (its key). Diameters and radii
+  // come as hole callouts and radii, slot sizes as slot callouts; one that shows what an item in `dims` already shows
+  // (an overall size) is not added again.
+  function sketchEntityDims(doc, order, projections, dims, onlySketch) {
+    var ctx = _.CTX, model = ctx && ctx.model, out = [];
+    if (!model || model.type === 'assembly' || !model.features) return out;
+    var rm;
+    try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var planes = ctx.build && ctx.build.planes || {};
+    (rm.features || []).forEach(function (f) {
+      if (f.type !== 'sketch' || f.suppressed || !f.dims || !f.dims.length || (onlySketch != null && f.id !== onlySketch)) return;
+      var pl;
+      try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
+      var tg = sketchTarget(doc, order, projections, pl);
+      if (!tg) return;
+      var v = tg.v, F = tg.F, pr = projections[v.id], bd = pr.bounds, cu = (bd.umin + bd.umax) / 2, cv = (bd.vmin + bd.vmax) / 2;
+      var span = Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9), tol = 1e-7 * span, zones = slotZones(pr);
+      f.dims.forEach(function (x, i) {
+        if (!x || x.mark === false || (x.driven && x.mark !== true)) return;
+        var e = f.entities && f.entities[x.e];
+        if (!e || e.t === 'slot' || e.t === 'aslot') return;
+        var g = K.dimGeometry(e, x);
+        if (!g || g.type !== 'linear' || !g.dir) return;
+        var a2 = tg.at(K.to3D(pl, g.P[0], g.P[1])), b2 = tg.at(K.to3D(pl, g.Q[0], g.Q[1]));
+        var d3 = V.add(V.scale(pl.x, g.dir[0]), V.scale(pl.y, g.dir[1]));
+        var kind = Math.abs(Math.abs(V.dot(d3, F.u)) - 1) < 1e-9 ? 'h' : Math.abs(Math.abs(V.dot(d3, F.v)) - 1) < 1e-9 ? 'v' : 'aligned';
+        var value = kind === 'h' ? Math.abs(b2[0] - a2[0]) : kind === 'v' ? Math.abs(b2[1] - a2[1]) : Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
+        if (!(value > tol) || Math.abs(value - g.value) > 1e-6 * (1 + g.value) || inSlot(zones, a2, b2, 1e-6 * span)) return;
+        var d = { view: v.id, kind: kind, a: a2, b: b2, value: value, auto: true, sketchDim: f.id + ':' + i };
+        if (kind === 'h') d.side = (a2[1] + b2[1]) / 2 > cv ? 1 : -1;
+        else if (kind === 'v') d.side = (a2[0] + b2[0]) / 2 > cu ? 1 : -1;
+        if (dims.some(function (y) { return sameSpan(y, d, tol); }) || out.some(function (y) { return sameSpan(y, d, tol); })) return;
         out.push(d);
       });
     });
@@ -1073,13 +1188,10 @@
       if (f.type !== 'sketch' || f.suppressed || !f.rels || !f.rels.some(function (r) { return r.ord != null; })) return;
       var pl, sets = S.ordinateSets(f);
       try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
-      var v = null, F = null;
-      for (var i = 0; i < order.length && !v; i++) {
-        var Fi = viewFrame(doc, order[i]);
-        if (Fi && Math.abs(Math.abs(V.dot(pl.n, Fi.e)) - 1) < 1e-9 && projections[order[i].id]) { v = order[i]; F = Fi; }
-      }
-      if (!v) return;
-      function view2(x, y) { var p = K.to3D(pl, x, y); return [V.dot(p, F.u), V.dot(p, F.v)]; }
+      var tg = sketchTarget(doc, order, projections, pl);
+      if (!tg) return;
+      var v = tg.v, F = tg.F;
+      function view2(x, y) { return tg.at(K.to3D(pl, x, y)); }
       function viewRef(ref) {
         var k = S.refKind(f, ref);
         if (k === 'point') { var p = S.refPoint(f, ref); return p ? { kind: 'dia', c: view2(p[0], p[1]), r: 0, value: 0 } : null; }
@@ -1228,6 +1340,7 @@
   function autoDimKey(d) {
     if (d.kind === 'ordinate' && d.sketchOrd) return d.view + ':ord:' + d.sketchOrd;
     if (d.sketchRel) return d.view + ':rel:' + d.sketchRel;
+    if (d.sketchDim) return d.view + ':dim:' + d.sketchDim;
     if (d.slot && d.slot.arc) return d.view + ':arcslot:' + d.slot.R.toFixed(4) + 'x' + d.slot.w.toFixed(4) + 'x' + d.slot.angle.toFixed(2);
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));

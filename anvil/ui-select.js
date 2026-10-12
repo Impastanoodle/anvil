@@ -1462,6 +1462,10 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.selectOtherAt = function (mx, my) { return UI.pickFacesAll ? UI.pickFacesAll(mx, my).map(function (fc) { return { index: fc.index, label: faceLabel(fc.index) }; }) : []; };
 
   // ================================================================== keys
+  // rfY (fidelity 3 #3): Esc with a menu or ribbon flyout open only closes it (ui-app.js); the multi-selection stays.
+  // ui-app.js closes the menu before this listener runs, so whether one was open is read in the capture phase.
+  var escOnMenu = false;
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') escOnMenu = !!(UI.menuOpen && UI.menuOpen()) || !!document.querySelector('.rb-fly.open, .rb-more.open, #menus > li.open'); }, true);
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -1470,7 +1474,8 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (e.key === 'Escape') {
       if (boxing) { boxing.cancelled = true; boxEl.hidden = true; }
       if (i3d.edit) closeEdit(false);
-      App.multi = [];
+      if (!escOnMenu) App.multi = [];
+      escOnMenu = false;
     }
   });
 

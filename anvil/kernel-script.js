@@ -626,6 +626,7 @@
       var q = [(pl.pts[0][0] + pl.pts[1][0]) / 2, (pl.pts[0][1] + pl.pts[1][1]) / 2], hole = false;
       for (var i = 0; i < loops.length; i++) {
         if (!onLoop(q, loops[i].pts)) continue;
+        if (loops[i].meetInner) return true;   // rfAC: a hole drawn over the outline stays a hole as drawn (no feature builds from it)
         if (loops[i].depth === 0) return false;
         hole = true;
       }

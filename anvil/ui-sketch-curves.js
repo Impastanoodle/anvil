@@ -250,7 +250,9 @@
   // a Polygon its n lines and a construction circle held by the Polygon relation (SketchSolver.explodePoly), a Straight
   // Slot its two lines, two arcs (Tangent, Equal) and a construction centerline (explodeSlot). The relations and
   // dimensions follow (a typed R: the circle's diameter; W / L: the distance between the sides / the centerline's
-  // length). Arc slots stay single entities. A script's .polygon() / .slot() stays one entity.
+  // length). rfY: an Arc Slot its outer / inner arcs, two end arcs and a construction arc (explodeArcSlot). A script's
+  // .polygon() / .slot() / .arcSlot() stays one entity.
+  // rfY: Arc Slots too (SketchSolver.explodeArcSlot: outer arc, end arc, inner arc, end arc, construction arc)
   function shapeCount(sh) { return sh.kind === 'poly' ? sh.n + 1 : 5; }
   function shapeAlive(f, sh) {
     var E = f && f.entities;
@@ -259,7 +261,8 @@
       for (var k = 0; k < sh.n; k++) if (!E[sh.first + k] || E[sh.first + k].t !== 'line') return false;
       return !!(E[sh.first + sh.n] && E[sh.first + sh.n].t === 'circle');
     }
-    return ['line', 'arc', 'line', 'arc', 'line'].every(function (t, k) { return E[sh.first + k] && E[sh.first + k].t === t; });
+    var kinds = sh.kind === 'aslot' ? ['arc', 'arc', 'arc', 'arc', 'arc'] : ['line', 'arc', 'line', 'arc', 'line'];
+    return kinds.every(function (t, k) { return E[sh.first + k] && E[sh.first + k].t === t; });
   }
   // the shape as one poly / slot entity (its parameters, as the PM shows them)
   function shapeEntity(f, sh) {
@@ -272,6 +275,7 @@
       if (l0.layer != null) e.layer = l0.layer;
       return e;
     }
+    if (sh.kind === 'aslot') { var ca = E[sh.first + 4]; return { t: 'aslot', cx: ca.cx, cy: ca.cy, r: ca.r, a0: ca.a0, a1: ca.a1, w: E[sh.first].r - E[sh.first + 2].r }; }
     var cl = E[sh.first + 4], a = E[sh.first + 3];
     return { t: 'slot', x1: cl.x1, y1: cl.y1, x2: cl.x2, y2: cl.y2, w: 2 * a.r };
   }
@@ -309,6 +313,13 @@
       if (key === 'ang') return function (E) { var c = E[ci], l = E[i], a = Math.atan2(l.y1 - c.cy, l.x1 - c.cx) * R2D - (sh.ins ? 180 / n : 0) - val; return [(a % 360 + 540) % 360 - 180]; };
       return null;
     }
+    if (sh.kind === 'aslot') {
+      var ci2 = i + 4;
+      if (key === 'cx' || key === 'cy' || key === 'r') return function (E) { return [E[ci2][key] - val]; };
+      if (key === 'ang') return function (E) { return [E[ci2].a1 - E[ci2].a0 - val]; };
+      if (key === 'w') return function (E) { return [E[i].r - E[i + 2].r - val]; };
+      return null;
+    }
     var cl = i + 4, a1 = i + 3;
     if (key === 'cx') return function (E) { return [(E[cl].x1 + E[cl].x2) / 2 - val]; };
     if (key === 'cy') return function (E) { return [(E[cl].y1 + E[cl].y2) / 2 - val]; };
@@ -333,9 +344,16 @@
       for (var k = 0; k < shapeCount(sh); k++) mob[sh.first + k] = 1e-4;
       S.solve(f, { mob: mob });
     } else {
-      var fn = shapeResidual(sh, key, +val), ents = [];
+      var fn = shapeResidual(sh, key, +val), ents = [], nEq = 1;
       for (var q = 0; q < shapeCount(sh); q++) ents.push(sh.first + q);
-      var r = fn ? S.driveEntity(f, sh.first, 1, fn, { ents: ents }) : { ok: true };
+      if (fn && sh.kind === 'aslot') {
+        // rfY: an arc slot's other parameters hold (an angle in degrees would otherwise pull the radius and width along)
+        var keys = ['cx', 'cy', 'r', 'ang', 'w'], tv = { cx: trial.cx, cy: trial.cy, r: trial.r, ang: trial.a1 - trial.a0, w: trial.w };
+        var fns = keys.map(function (k) { return shapeResidual(sh, k, tv[k]); });
+        fn = function (E) { return fns.map(function (g) { return g(E)[0]; }); };
+        nEq = keys.length;
+      }
+      var r = fn ? S.driveEntity(f, sh.first, nEq, fn, { ents: ents }) : { ok: true };
       if (!r.ok) UI.setStatus(r.error);
     }
     App.gridStale = true; App.dimsStale = true;
@@ -347,8 +365,8 @@
   // the poly / slot entity i0 just committed becomes its lines (and arcs); the tool PM follows the shape
   function explodeShape(f, i0) {
     var S = SS(), e = f.entities[i0];
-    if (!S || !e || (e.t !== 'poly' && e.t !== 'slot')) return null;
-    var sh = e.t === 'poly' ? { kind: 'poly', first: i0, n: e.n | 0, ins: !!e.ins } : { kind: 'slot', first: i0 };
+    if (!S || !e || (e.t !== 'poly' && e.t !== 'slot' && e.t !== 'aslot')) return null;
+    var sh = e.t === 'poly' ? { kind: 'poly', first: i0, n: e.n | 0, ins: !!e.ins } : { kind: e.t, first: i0 };
     if ((e.t === 'poly' ? S.explodePoly(f, i0) : S.explodeSlot(f, i0)) < 0) return null;
     App.gridStale = true; App.dimsStale = true;
     placedShape(f, sh);
@@ -754,7 +772,7 @@
   // ---- Polygon: the click after the center is a corner (Circumscribed circle) or the middle of a side (Inscribed)
   function polyFrom(c, b, st, exact) {
     var n = opt.sides | 0 || 6, d = Math.hypot(b[0] - c[0], b[1] - c[1]), a = Math.atan2(b[1] - c[1], b[0] - c[0]) * R2D;
-    if (exact && typedR(st, 'pr') != null) d = typedR(st, 'pr');
+    if (exact && typedR(st, 'pd') != null) d = typedR(st, 'pd') / 2;   // rfY: the typed Ø is the PM's Circle diameter
     if (!(d > 1e-12)) return null;
     var e = { t: 'poly', cx: c[0], cy: c[1], r: opt.ins ? d / Math.cos(Math.PI / n) : cleanLen(d), n: n, rot: opt.ins ? a + 180 / n : a };
     if (opt.ins) e.ins = true;
@@ -763,15 +781,17 @@
   UI.sketchToolDefs.polygon = {
     steps: 2,
     entities: function (pts, cur, st) { var e = polyFrom(pts[0], cur || pts[1], st, !cur); return e ? [e] : []; },
-    fields: function () { return [['R', 'pr'], ['A', 'ang']]; },
-    live: function (pts, p) { var c = pts[0]; return { pr: Math.hypot(p[0] - c[0], p[1] - c[1]), ang: angOf([p[0] - c[0], p[1] - c[1]]) }; },
+    // rfY (shop audit): the box takes the circle's diameter (Ø), as the PM's Circle diameter shows it: to the flats for
+    // an inscribed circle, through the corners for a circumscribed one
+    fields: function () { return [['Ø', 'pd'], ['A', 'ang']]; },
+    live: function (pts, p) { var c = pts[0]; return { pd: 2 * Math.hypot(p[0] - c[0], p[1] - c[1]), ang: angOf([p[0] - c[0], p[1] - c[1]]) }; },
     typed: function (pts, cur, v) {
       var c = pts[0], d = Math.hypot(cur[0] - c[0], cur[1] - c[1]), a = d > 1e-12 ? Math.atan2(cur[1] - c[1], cur[0] - c[0]) : 0;
-      return polar(c, v.pr != null ? v.pr : d, v.ang != null ? v.ang * D2R : a);
+      return polar(c, v.pd != null ? v.pd / 2 : d, v.ang != null ? v.ang * D2R : a);
     },
-    readout: function (pts, p, n) { var c = pts[0]; return 'R ' + n(Math.hypot(p[0] - c[0], p[1] - c[1]), 2) + '   A ' + n(angOf([p[0] - c[0], p[1] - c[1]]), 1) + '°'; },
+    readout: function (pts, p, n) { var c = pts[0]; return 'Ø ' + n(2 * Math.hypot(p[0] - c[0], p[1] - c[1]), 2) + '   A ' + n(angOf([p[0] - c[0], p[1] - c[1]]), 1) + '°'; },
     after: function (f, i0, cnt, st) {
-      if (typedR(st, 'pr') != null && !numericOn()) radDim(f, i0, 45);
+      if (typedR(st, 'pd') != null && !numericOn()) radDim(f, i0, 45);
       if (!explodeShape(f, i0)) after(f, i0);
     }
   };
@@ -860,7 +880,7 @@
     if (typedR(st, 'w') != null || numericOn()) which.w = 1;
     if (opt.slotDims) which = { r: 1, w: 1 };
     if (which.r || which.w) slotDims(f, i0, which);
-    after(f, i0);
+    if (!explodeShape(f, i0)) after(f, i0);   // rfY: an arc slot is its arcs, as SolidWorks draws it
   }
   // 3 Point Arc Slot
   function arc3Of(pts) { var t = pts.length >= 3 && geom().threePointArc(pts[0], pts[1], pts[2]); return isArc(t) ? t : null; }
