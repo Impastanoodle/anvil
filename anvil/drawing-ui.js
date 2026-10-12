@@ -43,6 +43,11 @@
     chamferDim: '<path d="M2 14 V7 L7 2 h7" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5 L8.5 8.5 h6" fill="none" stroke="#2f7fd6" stroke-width="0.9"/>',
     note: '<path d="M2.5 2.5 h11 v8 l-3 3 h-8 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M10.5 13.5 v-3 h3" fill="none" stroke="currentColor" stroke-width="0.9"/><text x="7.5" y="9" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">A</text>',
     flatView: '<path d="M1.5 4.5 h13 v7 h-13 z" fill="#bfcfe0" stroke="currentColor" stroke-width="1"/><path d="M4.5 3.5 v9 M11.5 3.5 v9" stroke="#2f7fd6" stroke-width="0.9"/><path d="M11.5 3.5 v9" stroke="#e0553c" stroke-width="0.9" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="8" r="1.3" fill="#fff" stroke="currentColor" stroke-width="0.8"/>',
+    // (rfM) shop symbols and the Revision Table
+    surfaceFinish: '<path d="M2.5 7.5 L5.5 13 L11 2.5 H14.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 7.5 H8.2" stroke="currentColor" stroke-width="1.1"/>',
+    datumFeature: '<rect x="4.5" y="1.5" width="7" height="6.5" fill="#fff" stroke="currentColor" stroke-width="1"/><text x="8" y="6.9" font-size="5.5" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">A</text><path d="M8 8 v3.5" stroke="currentColor" stroke-width="1"/><path d="M5 14.5 L8 11 L11 14.5 z" fill="#2f7fd6" stroke="currentColor" stroke-width="0.6"/>',
+    gtol: '<rect x="1" y="4.5" width="14" height="7" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M5.5 4.5 v7 M11 4.5 v7" stroke="currentColor" stroke-width="0.9"/><circle cx="3.25" cy="8" r="1.4" fill="none" stroke="#2f7fd6" stroke-width="0.9"/><path d="M1.6 8 h3.3 M3.25 6.3 v3.4" stroke="#2f7fd6" stroke-width="0.8"/><text x="13" y="10.3" font-size="5" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">A</text>',
+    revTable: '<rect x="1.5" y="2.5" width="13" height="11" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M1.5 5.5 h13 M1.5 8.5 h13 M1.5 11 h13 M5 5.5 v8" stroke="currentColor" stroke-width="0.7"/><text x="3.3" y="10.6" font-size="3.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">B</text>',
     bendNote: '<path d="M5 2 v12" stroke="#2f7fd6" stroke-width="1"/><text x="10.5" y="10" font-size="5.2" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">UP</text>',
     docProps: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><circle cx="8" cy="9" r="2.6" fill="none" stroke="#2f7fd6" stroke-width="1.3" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="9" r="0.9" fill="#2f7fd6"/>'
   };
@@ -541,6 +546,16 @@
       if (!(nsel || nhov) || !isFinite(n.box.x0)) return;
       svgNode('rect', { class: 'dw-dbox' + (nsel ? ' sel' : ''), x: n.box.x0 - pad / 2, y: H - n.box.y1 - pad / 2, width: n.box.x1 - n.box.x0 + pad, height: n.box.y1 - n.box.y0 + pad, 'stroke-width': sw }, g);
     });
+    // (rfM) shop symbols and the Revision Table
+    (D.sheet.symbols || []).forEach(function (y) {
+      var ysel = D.sel && D.sel.kind === 'symbol' && D.sel.id === y.id, yhov = D.hover && D.hover.kind === 'symbol' && D.hover.id === y.id;
+      if (!(ysel || yhov) || !isFinite(y.box.x0)) return;
+      svgNode('rect', { class: 'dw-dbox' + (ysel ? ' sel' : ''), x: y.box.x0 - pad / 2, y: H - y.box.y1 - pad / 2, width: y.box.x1 - y.box.x0 + pad, height: y.box.y1 - y.box.y0 + pad, 'stroke-width': sw }, g);
+    });
+    if (D.sheet.revisions && ((D.sel && D.sel.kind === 'revtable') || (D.hover && D.hover.kind === 'revtable'))) {
+      var rb = D.sheet.revisions.box, rsel = D.sel && D.sel.kind === 'revtable';
+      svgNode('rect', { class: 'dw-dbox' + (rsel ? ' sel' : ''), x: rb.x0 - pad / 2, y: H - rb.y1 - pad / 2, width: rb.x1 - rb.x0 + pad, height: rb.y1 - rb.y0 + pad, 'stroke-width': sw }, g);
+    }
     (D.sheet.annotations || []).forEach(function (a) {
       var asel = D.sel && D.sel.kind === 'annot' && D.sel.id === a.id, ahov = D.hover && D.hover.kind === 'annot' && D.hover.id === a.id;
       if (!(asel || ahov) || a.hidden || !isFinite(a.box.x0)) return;
@@ -659,6 +674,31 @@
     if (D.tool === 'chamferdim') { DW.chamferClick(p); return; }
     if (D.tool === 'balloon' || D.tool === 'stackballoon') { DW.balloonClick(p); return; }
     if (D.tool === 'note') { DW.noteClick(p); return; }
+    if (D.tool === 'symbol') { DW.symbolClick(p); return; }
+    // a leader's arrow tip (a note's or a symbol's): drag it to another point
+    var lt = leaderTipAt(p);
+    if (lt) {
+      D.sel = { kind: lt.kind, id: lt.id };
+      D.drag = { kind: 'tip', of: lt.kind, id: lt.id, start: p, t0: lt.tip.slice(), moved: false };
+      drawOverlay(); DW.renderTree();
+      UI.setStatus('Leader arrow — drag it to the point it should touch.');
+      return;
+    }
+    var sy = symbolAt(p);
+    if (sy) {
+      D.sel = { kind: 'symbol', id: sy.id };
+      var sy0 = Drawing.findSymbol(doc(), sy.id);
+      D.drag = { kind: 'symbol', id: sy.id, start: p, p0: sy0.p.slice(), moved: false };
+      drawOverlay(); DW.renderTree();
+      UI.setStatus(sy.text + ' \u2014 drag to move it, double-click for its properties, Delete removes it.');
+      return;
+    }
+    if (revTableAt(p)) {
+      D.sel = { kind: 'revtable' };
+      drawOverlay(); DW.renderTree();
+      UI.setStatus('Revision Table (' + D.sheet.revisions.rows.length + ' revisions) \u2014 right-click for Add Revision, double-click a row to edit it, Delete removes the table.');
+      return;
+    }
     var nt = DW.noteAt(p);
     if (nt) {
       D.sel = { kind: 'note', id: nt.id };
@@ -734,6 +774,23 @@
       queueRender(true);
       return;
     }
+    if (D.drag && D.drag.kind === 'tip') {
+      var pt = toPaper(e), dt = D.drag;
+      if (!dt.moved && Math.hypot(pt[0] - dt.start[0], pt[1] - dt.start[1]) < pxToPaper(3)) return;
+      if (!dt.moved) { UI.pushUndo(); dt.moved = true; D.host.classList.add('dw-dragging'); }
+      var nl = [dt.t0[0] + pt[0] - dt.start[0], dt.t0[1] + pt[1] - dt.start[1]];
+      if (dt.of === 'note') Drawing.editNote(doc(), dt.id, { leader: nl }); else Drawing.editSymbol(doc(), dt.id, { leader: nl });
+      queueRender(true);
+      return;
+    }
+    if (D.drag && D.drag.kind === 'symbol') {
+      var py = toPaper(e), dy = D.drag;
+      if (!dy.moved && Math.hypot(py[0] - dy.start[0], py[1] - dy.start[1]) < pxToPaper(3)) return;
+      if (!dy.moved) { UI.pushUndo(); dy.moved = true; D.host.classList.add('dw-dragging'); }
+      Drawing.editSymbol(doc(), dy.id, { p: [dy.p0[0] + py[0] - dy.start[0], dy.p0[1] + py[1] - dy.start[1]] });
+      queueRender(true);
+      return;
+    }
     if (D.drag && (D.drag.kind === 'note' || D.drag.kind === 'flatann')) {
       var pn = toPaper(e), dn = D.drag;
       if (!dn.moved && Math.hypot(pn[0] - dn.start[0], pn[1] - dn.start[1]) < pxToPaper(3)) return;
@@ -779,6 +836,9 @@
   // what the cursor pre-highlights with no tool running (SolidWorks): a balloon, an annotation, a dimension, else the
   // model edge under it (in any view; its view's frame shows too), else the view
   function preHighlight(q) {
+    var sy = symbolAt(q);
+    if (sy) return { kind: 'symbol', id: sy.id };
+    if (revTableAt(q)) return { kind: 'revtable' };
     var nt = DW.noteAt(q);
     if (nt) return { kind: 'note', id: nt.id };
     var bl = DW.balloonAt(q);
@@ -798,7 +858,7 @@
     D.drag = null;
     if (D.host) D.host.classList.remove('dw-dragging', 'dw-panning');
     if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
-    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
+    if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
   // proportion to its delta) adds to a pending zoom that eases out over ~50 ms; one notch (deltaY 100) is 1.15×.
@@ -867,6 +927,10 @@
     D.drag = null;
     var bq = DW.balloonAt(pp);
     if (bq) { DW.cmdBalloonProps(bq); return; }
+    var sq = symbolAt(pp);
+    if (sq) { D.sel = { kind: 'symbol', id: sq.id }; DW.cmdSymbol(Drawing.findSymbol(doc(), sq.id).type, sq.id); return; }
+    var rq = D.sheet ? Drawing.revRowAt(doc(), units(), pp) : null;
+    if (rq != null) { D.sel = { kind: 'revtable' }; DW.cmdRevision(rq >= 0 ? rq : null); return; }
     var nq = DW.noteAt(pp);
     if (nq) { D.sel = { kind: 'note', id: nq.id }; DW.openNoteEdit(Drawing.findNote(doc(), nq.id)); return; }
     var aq = DW.annotAt(pp);
@@ -884,11 +948,41 @@
     e.preventDefault(); e.stopPropagation();
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
+    if (revTableAt(p)) { D.sel = { kind: 'revtable' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.revTableMenu(Drawing.revRowAt(doc(), units(), p))); return; }
+    var nm = DW.noteAt(p);
+    if (nm) { D.sel = { kind: 'note', id: nm.id }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, noteMenu(nm.id)); return; }
+    var sm = symbolAt(p);
+    if (sm) { D.sel = { kind: 'symbol', id: sm.id }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.symbolMenu(sm.id)); return; }
     if (DW.bomAt(p)) { D.sel = { kind: 'bom' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.bomMenu()); return; }
     if (w) { D.sel = { kind: 'view', id: w.view.id }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.viewMenu(w.view)); }
     else UI.showMenu(e.clientX, e.clientY, DW.sheetMenu());
   }
 
+  // (rfM) the shop symbol under paper point p (within 3 px of its box), the Revision Table under it
+  function symbolAt(p) {
+    var t = pxToPaper(3), hit = null;
+    (D.sheet && D.sheet.symbols || []).forEach(function (y) { var b = y.box; if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = y; });
+    return hit;
+  }
+  function revTableAt(p) { var r = D.sheet && D.sheet.revisions, b = r && r.box; return b && p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 ? r : null; }
+  // the leader arrow tip within 4 px of p: { kind: 'note' | 'symbol', id, tip }, or null
+  function leaderTipAt(p) {
+    var t = pxToPaper(4), hit = null, dc = doc();
+    if (!dc) return null;
+    (dc.notes || []).forEach(function (n) { if (n.leader && Math.hypot(p[0] - n.leader[0], p[1] - n.leader[1]) <= t) hit = { kind: 'note', id: n.id, tip: n.leader }; });
+    (dc.symbols || []).forEach(function (y) { if (y.leader && Math.hypot(p[0] - y.leader[0], p[1] - y.leader[1]) <= t) hit = { kind: 'symbol', id: y.id, tip: y.leader }; });
+    return hit;
+  }
+  // a note's right-click menu: Add / Remove Leader (the arrow goes down-left of the note; drag its tip), Delete
+  function noteMenu(id) {
+    var n = Drawing.findNote(doc(), id), k = paperK();
+    return [
+      { label: 'Edit Text', action: function () { DW.openNoteEdit(Drawing.findNote(doc(), id)); } },
+      { label: n.leader ? 'Remove Leader' : 'Add Leader', action: function () { edit(function (dc) { Drawing.editNote(dc, id, { leader: n.leader ? null : [n.p[0] - 15 * k, n.p[1] - 10 * k] }); }); } },
+      { label: 'Delete', key: 'Del', action: function () { edit(function (dc) { Drawing.deleteNote(dc, id); }); D.sel = null; render(); } }
+    ];
+  }
+  DW.symbolAt = symbolAt; DW.revTableAt = revTableAt; DW.leaderTipAt = leaderTipAt; DW.noteMenu = noteMenu;
   DW.D = D; DW.doc = doc; DW.cctx = cctx; DW.syncBom = syncBom; DW.relayout = relayout; DW.units = units; DW.mesh = mesh; DW.paperK = paperK; DW.edit = edit; DW.editView = editView;
   DW.isAsm = isAsm; DW.docKind = docKind; DW.makeDrawing = makeDrawing; DW.openDrawing = openDrawing; DW.closeDrawing = closeDrawing; DW.detachDrawing = detachDrawing;
   DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;

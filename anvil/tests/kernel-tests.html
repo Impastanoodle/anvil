@@ -7760,7 +7760,7 @@
       assert(bi.main === '100.00' && bi.upper === '+0.10' && bi.lower === '-0.05' && bi.text === '100.00 +0.10/-0.05', JSON.stringify(bi));
       assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'limit', plus: 0.1, minus: 0.05 } }).text === '100.10/99.95', 'limit');
       assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'symmetric', plus: 0.05 } }).text === '100.00 ±0.05', 'symmetric');
-      assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0 } }).lower === '0.00', 'zero lower');
+      assert(L({ kind: 'h', value: 100, prec: 2, tol: { type: 'bilateral', plus: 0.1, minus: 0 } }).lower === '0', 'zero lower (rfM: ASME Y14.5 metric, a single 0)');
       assert(L({ kind: 'dia', value: 8, count: 4, prec: 1, label: '<DIM> TYP' }).text === '4X Ø8.0 TYP', 'dia with text');
       assert(L({ kind: 'dia', value: 8, count: 1, tol: { type: 'limit', plus: 0.02, minus: 0 }, prec: 2 }).text === 'Ø8.02/Ø8.00', 'dia limit');
       assert(L({ kind: 'v', value: 4, prec: 3, tol: { type: 'bilateral', plus: 0.005, minus: 0.002 } }, 'in').text === '4.000 +.005/-.002', 'inch (ANSI: no leading zeros on inch tolerances)');
@@ -14941,6 +14941,343 @@
     });
   })();
   // --- end rfH ---
+  // --- rfM: drawing Revision Table, shop symbols, notes with leaders and $PRP links, title block blocks, unilateral tolerances ---
+  (function () {
+    group('rfM: Revision Table, Surface Finish / Datum / Geometric Tolerance, notes, title block');
+    if (typeof Drawing === 'undefined') return;
+    var DW = Drawing;
+    var PLATE = 'p.name("Plate").units("in");\np.sketch("Front").rect(0, 0, 6, 3).extrude(0.25);\np.hole("Front", 1, 1, 0.281, { offset: 0.25 });';
+    function rfMDoc(code, opts) {
+      var r = build(code || PLATE);
+      noErrors(r);
+      r.doc = DW.newDrawing(r.model, Object.assign({ date: '2026-10-12' }, opts || {}));
+      DW.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      r.recompute();
+      return r;
+    }
+    function texts(sheet, layer) { return sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === layer; }).map(function (p) { return p.text; }); }
+    function inside(a, b) { return a.x0 >= b.x0 - 1e-9 && a.x1 <= b.x1 + 1e-9 && a.y0 >= b.y0 - 1e-9 && a.y1 <= b.y1 + 1e-9; }
+    function meets(a, b) { return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1; }
+
+    test('rfM: revision letters run A … H, J … N, P, R, T … W, Y, AA (I, O, Q, S, X, Z skipped, ASME Y14.35 / SolidWorks); nextRev goes on from a letter or a number', function () {
+      var l = []; for (var i = 0; i < 22; i++) l.push(DW.revLetter(i));
+      assert(l.join(',') === 'A,B,C,D,E,F,G,H,J,K,L,M,N,P,R,T,U,V,W,Y,AA,AB', l.join(','));
+      assert(DW.nextRev('') === 'A' && DW.nextRev('H') === 'J' && DW.nextRev('N') === 'P' && DW.nextRev('R') === 'T' && DW.nextRev('W') === 'Y' && DW.nextRev('Y') === 'AA', 'next');
+      assert(DW.nextRev('I') === 'J' && DW.nextRev('O') === 'P' && DW.nextRev('7') === '8', 'from outside the list');
+      return l.slice(0, 10).join('');
+    });
+    test('rfM: Revision Table — Add Revision fills ZONE / REV / DESCRIPTION / DATE / APPROVED rows A, B, C, the title block REV reads the latest, top-right inside the border, kept through a JSON save, views kept clear; SVG / DXF R12 / R2000 / PDF carry it', function () {
+      var r = rfMDoc();
+      assert(r.sheet.titleBlock === undefined && DW.titleBlock(r.doc, r.model).rev === '', 'no REV yet');
+      DW.addRevision(r.doc, { description: 'INITIAL RELEASE', date: '2026-10-12', approved: 'LH' });
+      DW.addRevision(r.doc, { description: 'HOLE WAS .257', date: '2026-10-13', zone: 'B2' });
+      var rc = DW.addRevision(r.doc, { description: 'ADDED FLANGE NOTE' });
+      assert(rc.rev === 'C' && /^\d{4}-\d\d-\d\d$/.test(rc.date), 'C with today: ' + JSON.stringify(rc));
+      r.doc = JSON.parse(JSON.stringify(r.doc));
+      DW.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute();
+      assert(DW.titleBlock(r.doc, r.model).rev === 'C', 'title block REV ' + DW.titleBlock(r.doc, r.model).rev);
+      var rv = r.sheet.revisions, S = r.sheet.size, b = 10 / 25.4;
+      assert(rv && rv.rows.length === 3 && rv.latest === 'C', 'sheet.revisions');
+      near(rv.box.x1, S[0] - b, 1e-9, 'right on the border'); near(rv.box.y1, S[1] - b, 1e-9, 'top on the border');
+      near(rv.box.y1 - rv.box.y0, 5 * 6 / 25.4, 1e-9, 'title, header and three rows');
+      var t = texts(r.sheet, 'REVISIONS');
+      ['REVISIONS', 'ZONE', 'REV', 'DESCRIPTION', 'DATE', 'APPROVED', 'A', 'B', 'C', 'INITIAL RELEASE', 'B2', 'LH', '2026-10-13'].forEach(function (s) { assert(t.indexOf(s) >= 0, 'text ' + s + ' in ' + t.join('|')); });
+      r.sheet.views.forEach(function (w) { assert(!meets(w.box, rv.box), w.view.name + ' clear of the table'); });
+      var revT = r.sheet.prims.filter(function (p) { return p.layer === 'SHEET' && p.k === 'text' && p.text === 'C'; });
+      assert(revT.length === 1, 'REV C in the title block');
+      var svg = DW.toSVG(r.sheet), d = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      var st = Array.prototype.map.call(d.querySelectorAll('g[data-layer="REVISIONS"] text'), function (x) { return x.textContent; });
+      assert(st.indexOf('ADDED FLANGE NOTE') >= 0, 'SVG ' + st.join('|'));
+      [DW.toDXF(r.sheet), DW.toDXF(r.sheet, { version: 'R2000' })].forEach(function (dxf, i) {
+        assert(/\n2\nREVISIONS\n70\n0\n62\n7\n/.test(dxf), 'layer REVISIONS ' + i);
+        assert(dxf.indexOf('\n1\nHOLE WAS .257\n') >= 0 && dxf.indexOf('\n1\nAPPROVED\n') >= 0, 'DXF texts ' + i);
+      });
+      assert(DW.toPDF(r.sheet).indexOf('(INITIAL RELEASE) Tj') >= 0, 'PDF');
+      // edit, delete a row, delete the table
+      DW.editRevision(r.doc, 2, { description: 'ADDED NOTE 3', rev: 'd' });
+      assert(r.doc.revisions.rows[2].rev === 'D' && DW.latestRev(r.doc) === 'D', 'edited');
+      assert(DW.deleteRevision(r.doc, 2) && DW.latestRev(r.doc) === 'B', 'row deleted');
+      assert(DW.addRevision(r.doc, {}).rev === 'C', 'next after B');
+      DW.titleBlock(r.doc, r.model);
+      r.doc.titleBlock = { rev: 'X1' };
+      assert(DW.titleBlock(r.doc, r.model).rev === 'X1', 'an edited REV field wins');
+      assert(DW.deleteRevisionTable(r.doc) && !r.recompute().revisions, 'table removed');
+      return t.length + ' texts';
+    });
+    test('rfM: a BOM anchored top-right goes under the Revision Table; revRowAt finds a row', function () {
+      var r = rfMDoc();
+      DW.addRevision(r.doc, { description: 'A' }); DW.addRevision(r.doc, { description: 'B' });
+      r.doc.bom = { show: true, anchor: 'top-right' };
+      var bb = DW.bomBox(r.doc, 'in', 2), rv = DW.revBox(r.doc, 'in');
+      assert(bb.y1 <= rv.y0 + 1e-9, 'BOM under the table: ' + bb.y1 + ' / ' + rv.y0);
+      assert(DW.revRowAt(r.doc, 'in', [rv.x0 + 1, rv.y1 - 0.1]) === -1 && DW.revRowAt(r.doc, 'in', [rv.x0 + 1, rv.y0 + 0.05]) === 1 && DW.revRowAt(r.doc, 'in', [rv.x0 - 1, rv.y0 + 0.05]) === null, 'rows');
+      return 'ok';
+    });
+    test('rfM: title block blocks — COMPANY, DRAWN / CHECKED and dates from the drawing\'s properties, GENERAL TOLERANCES (inch .XX ±.01 .XXX ±.005 ANGLES ±1°), editable cells; an A4 sheet leaves the tolerance block out', function () {
+      var r = rfMDoc();
+      r.doc.properties = { CompanyName: 'Acme Sheet Metal', DrawnBy: 'LH', DrawnDate: '2026-10-12', CheckedBy: 'JS' };
+      var tb = DW.titleBlock(r.doc, r.model);
+      assert(tb.company === 'ACME SHEET METAL' && tb.drawnBy === 'LH' && tb.drawnDate === '2026-10-12' && tb.checkedBy === 'JS' && tb.checkedDate === '', JSON.stringify(tb));
+      assert(tb.tolerances.split('\n').join('|') === 'DIMENSIONS ARE IN INCHES|TOLERANCES:|.XX ±.01|.XXX ±.005|ANGLES ±1°', tb.tolerances);
+      r.recompute();
+      var t = texts(r.sheet, 'SHEET');
+      ['UNLESS OTHERWISE SPECIFIED', 'COMPANY', 'DRAWN', 'CHECKED', 'ACME SHEET METAL', 'LH', '.XX ±.01', '.XXX ±.005', 'ANGLES ±1°'].forEach(function (s) { assert(t.indexOf(s) >= 0, s + ' in ' + t.join('|')); });
+      var f = DW.TB_FIELDS.filter(function (x) { return x.key === 'drawnBy'; })[0], R = DW.fieldRect(f, r.sheet.size, 'in');
+      var hit = DW.titleFieldAt(r.sheet.size, 'in', [(R.x0 + R.x1) / 2, (R.y0 + R.y1) / 2]);
+      assert(hit && hit.field.key === 'drawnBy', 'cell hit');
+      r.doc.titleBlock = { checkedBy: 'MK' };
+      assert(DW.titleBlock(r.doc, r.model).checkedBy === 'MK', 'edited cell');
+      var dxf = DW.toDXF(r.recompute());
+      assert(dxf.indexOf('\n1\n.XXX %%p.005\n') >= 0 && dxf.indexOf('\n1\nANGLES %%p1%%d\n') >= 0, 'DXF tolerance text');
+      var mm = DW.newDrawing({ units: 'mm', name: 'P' }, { format: 'A4' });
+      var on = DW.tbBlocks([297, 210], 'mm');
+      assert(on.eng && !on.tol, 'A4: ' + JSON.stringify(on));
+      assert(/MILLIMETERS/.test(DW.titleBlock(mm, null).tolerances), 'mm block');
+      return t.length + ' sheet texts';
+    });
+    test('rfM: a note links custom properties ($PRPSHEET:"Material", $PRP:"DrawnBy") and takes a leader (shoulder, line, arrow at the point); the raw text is kept', function () {
+      var r = rfMDoc();
+      Materials.setProperty(r.model, 'Finish', 'POWDER COAT BLACK');
+      r.doc.properties = { DrawnBy: 'LH' };
+      var nt = DW.addNote(r.doc, { p: [1, 2], text: 'FINISH: $PRPSHEET:"Finish"\nBY $PRP:"DrawnBy"', leader: [0.6, 1.5] });
+      r.recompute();
+      var sn = r.sheet.notes[0];
+      assert(sn.text === 'FINISH: POWDER COAT BLACK\nBY LH' && sn.raw === nt.text && DW.findNote(r.doc, nt.id).text === nt.text, 'evaluated: ' + JSON.stringify(sn.text));
+      var np = r.sheet.prims.filter(function (p) { return p.layer === 'NOTES'; });
+      var fills = np.filter(function (p) { return p.k === 'fill'; }), lines = np.filter(function (p) { return p.k === 'line'; });
+      assert(fills.length === 1 && lines.length === 2, 'two lines and an arrow');
+      near(fills[0].pts[0][0], 0.6, 1e-12); near(fills[0].pts[0][1], 1.5, 1e-12, 'arrow tip');
+      assert(lines[0].a[0] < sn.box.x0 && Math.abs(lines[0].a[1] - lines[0].b[1]) < 1e-12, 'horizontal shoulder on the left');
+      DW.editNote(r.doc, nt.id, { leader: null }); r.recompute();
+      assert(!r.sheet.prims.some(function (p) { return p.layer === 'NOTES' && p.k === 'fill'; }), 'leader removed');
+      return sn.text.replace('\n', ' / ');
+    });
+    test('rfM: Surface Finish, Datum Feature (A, B … skipping I, O, Q) and Geometric Tolerance (position Ø.010 (M) | A | B | C(M)) symbols: drawn on SYMBOLS as lines / circles / fills / text in SVG, DXF R12 and R2000, PDF; edit and delete', function () {
+      var r = rfMDoc();
+      var sf = DW.addSymbol(r.doc, { type: 'surfaceFinish', p: [2, 3], symbol: 'machined', ra: '63', leader: [2.2, 2.6] });
+      var da = DW.addSymbol(r.doc, { type: 'datum', p: [3, 3] }), db = DW.addSymbol(r.doc, { type: 'datum', p: [4, 3] });
+      assert(da.label === 'A' && db.label === 'B', 'datum letters');
+      var g = DW.addSymbol(r.doc, { type: 'gtol', p: [5, 3.5], char: 'position', dia: true, tol: '.010', mod: 'M', datums: ['A', 'B', 'C(M)'], leader: [4.5, 2.8] });
+      r.recompute();
+      var sy = r.sheet.symbols;
+      assert(sy.length === 4 && sy[3].text === 'POSITION Ø.010(M) | A | B | C(M)' && sy[0].text === 'SURFACE FINISH 63 (MACHINED)' && sy[1].text === 'DATUM A', JSON.stringify(sy.map(function (s) { return s.text; })));
+      var gp = r.sheet.prims.filter(function (p) { return p.symbol === g.id; });
+      var gl = gp.filter(function (p) { return p.k === 'line'; }), gc = gp.filter(function (p) { return p.k === 'circle'; }), gt = gp.filter(function (p) { return p.k === 'text'; }).map(function (p) { return p.text; });
+      // frame: 4 sides + 4 dividers (5 cells), glyph: 2 lines + a circle, 2 MMC circles, a leader: shoulder + line + arrow
+      assert(gl.length === 4 + 4 + 2 + 2 && gc.length === 3 && gp.filter(function (p) { return p.k === 'fill'; }).length === 1, 'frame lines ' + gl.length + ', circles ' + gc.length);
+      assert(gt.join('|') === 'Ø.010|M|A|B|C|M', gt.join('|'));
+      var dp = r.sheet.prims.filter(function (p) { return p.symbol === da.id; });
+      assert(dp.filter(function (p) { return p.k === 'fill'; }).length === 1 && dp.filter(function (p) { return p.k === 'line'; }).length === 5, 'datum: frame, leader, triangle');
+      var sp = r.sheet.prims.filter(function (p) { return p.symbol === sf.id; });
+      assert(sp.filter(function (p) { return p.k === 'line'; }).length === 4 && sp.some(function (p) { return p.k === 'text' && p.text === '63'; }), 'surface finish: V, bar, leader, 63');
+      var d = new DOMParser().parseFromString(DW.toSVG(r.sheet), 'image/svg+xml');
+      assert(d.querySelectorAll('g[data-layer="SYMBOLS"] line').length >= gl.length && d.querySelectorAll('g[data-layer="SYMBOLS"] circle').length >= 3, 'SVG');
+      [DW.toDXF(r.sheet), DW.toDXF(r.sheet, { version: 'R2000' })].forEach(function (dxf, i) {
+        assert(dxf.indexOf('\n1\n%%c.010\n') >= 0 && /\n0\nCIRCLE\n(5\n[0-9A-F]+\n330\n1F\n100\nAcDbEntity\n)?8\nSYMBOLS\n/.test(dxf) && /\n0\nSOLID\n(5\n[0-9A-F]+\n330\n1F\n100\nAcDbEntity\n)?8\nSYMBOLS\n/.test(dxf), 'DXF ' + i);
+      });
+      var pdf = DW.toPDF(r.sheet);
+      assert(pdf.indexOf('(\\330.010) Tj') >= 0 && pdf.indexOf('(63) Tj') >= 0, 'PDF');
+      DW.editSymbol(r.doc, g.id, { char: 'flatness', dia: false, mod: '', datums: [], tol: '.005' });
+      assert(DW.symbolText(DW.findSymbol(r.doc, g.id)) === 'FLATNESS .005', DW.symbolText(DW.findSymbol(r.doc, g.id)));
+      var bad = false; try { DW.editSymbol(r.doc, g.id, { char: 'wobble' }); } catch (e) { bad = true; }
+      assert(bad && DW.findSymbol(r.doc, g.id).char === 'flatness', 'bad characteristic refused, symbol unchanged');
+      assert(DW.deleteSymbol(r.doc, db.id) && DW.nextDatum(r.doc) === 'B', 'deleted; B free again');
+      DW.addSymbol(r.doc, { type: 'datum', p: [1, 1], label: 'H' });
+      ['B', 'C', 'D', 'E', 'F', 'G'].forEach(function (L) { DW.addSymbol(r.doc, { type: 'datum', p: [1, 1], label: L }); });
+      assert(DW.nextDatum(r.doc) === 'J', 'skips I: ' + DW.nextDatum(r.doc));
+      return sy.map(function (s) { return s.text; }).join('; ');
+    });
+    test('rfM: a bilateral tolerance with a zero limit is written at the other limit\'s precision: inch +.003 / -.000 and +.000 / -.002 (ASME Y14.5 unilateral), mm a single 0', function () {
+      function L(d, u) { return DW.dimLabel(d, u); }
+      var a = L({ kind: 'h', value: 2, tol: { type: 'bilateral', plus: 0.003, minus: 0 } }, 'in');
+      assert(a.upper === '+.003' && a.lower === '-.000' && a.text === '2.000 +.003/-.000', JSON.stringify(a));
+      var b = L({ kind: 'h', value: 2, prec: 2, tol: { type: 'bilateral', plus: 0, minus: 0.02 } }, 'in');
+      assert(b.upper === '+.00' && b.lower === '-.02', JSON.stringify(b));
+      var c = L({ kind: 'h', value: 2, tol: { type: 'bilateral', plus: 0.0005, minus: 0, prec: 4 } }, 'in');
+      assert(c.upper === '+.0005' && c.lower === '-.0000', JSON.stringify(c));
+      var m = L({ kind: 'h', value: 32, prec: 2, tol: { type: 'bilateral', plus: 0, minus: 0.02 } }, 'mm');
+      assert(m.upper === '0' && m.lower === '-0.02', JSON.stringify(m));
+      return a.text + ', ' + b.text + ', ' + m.text;
+    });
+  })();
+  // --- end rfM ---
+
+
+  // ---- rfL (lane L, 2026-10-12): sketch DXF of a closed spline whose last point repeats the first
+  (function () {
+    test('rfL: a closed spline whose last point repeats the first exports to R12 as chained ARCs with no r = 0 / NaN arc (the zero-length closing span writes nothing), one closed loop, and to R2000 as one SPLINE', function () {
+      var m = K.newModel('rfL'), b = new K.Builder(m);
+      b.sketch('Front').spline([[0, 40], [10, 50], [20, 40], [0, 40]], true);
+      var f = m.features[0];
+      ['mm', 'in'].forEach(function (u) {
+        var r12 = K.exportDXFSketch(f, u);
+        assert(!/NaN|Infinity/.test(r12), u + ': no NaN / Infinity in the R12 file');
+        var ents = DxfCheck.parse(r12).entities, arcs = ents.filter(function (e) { return e.type === 'ARC'; });
+        assert(arcs.length > 10 && arcs.every(function (a) { return a.r > 1e-6 && isFinite(a.a0) && isFinite(a.a1); }), u + ': arcs all real: ' + arcs.length);
+        assert(!ents.some(function (e) { return e.type === 'SPLINE'; }), 'R12 has no SPLINE');
+        var c = DxfCheck.check(r12, { units: u });
+        assert(c.ok && c.loops.length === 1 && c.loops[0].closed, u + ': one closed loop: ' + JSON.stringify([c.errors, c.loops.length]));
+      });
+      var r2000 = K.exportDXFSketch(f, 'mm', { version: 'R2000' });
+      assert(DxfCheck.parse(r2000).entities.filter(function (e) { return e.type === 'SPLINE'; }).length === 1, 'R2000: one SPLINE');
+      return 'R12 ' + DxfCheck.parse(K.exportDXFSketch(f, 'mm')).entities.filter(function (e) { return e.type === 'ARC'; }).length + ' arcs';
+    });
+  })();
+  // --- end rfL ---
+
+  // ---- rfN (lane N, 2026-10-12): Auxiliary, Crop and Broken drawing views
+  (function () {
+    if (typeof Drawing === 'undefined') return;
+    group('rfN: Auxiliary View, Crop View, Break (broken view)');
+    var DR = Drawing;
+    function sheetOf(code, opts) {
+      var r = build(code);
+      noErrors(r);
+      r.doc = DR.newDrawing(r.model, Object.assign({ date: '2026-10-12' }, opts || {}));
+      DR.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute = function () { r.sheet = DR.compute(r.doc, r.mesh, r.model); return r.sheet; };
+      r.recompute();
+      r.w = function (id) { return r.sheet.views.filter(function (w) { return w.view.id === id; })[0]; };
+      r.front = r.doc.views.filter(function (v) { return v.orient === 'Front'; })[0];
+      return r;
+    }
+    function throws(f) { try { f(); return false; } catch (e) { return true; } }
+    function len(l) { return Math.hypot(l[2] - l[0], l[3] - l[1]); }
+    var WEDGE = 'p.sketch("Front").polyline([[0, 0], [100, 0], [100, 20], [0, 60]], true).extrude(30);';
+    test('rfN: auxFrame — square onto a horizontal edge of Front is Top (third angle) / the view from below placed above (first angle); any edge gives a right-handed orthonormal frame looking along the edge normal', function () {
+      var F = DR.orientation('Front'), T = DR.orientation('Top');
+      var A = DR.auxFrame(F, [0, 0], [1, 0], 1, 'third');
+      nearVec(A.e, T.e, 1e-12, 'e'); nearVec(A.u, T.u, 1e-12, 'u'); nearVec(A.v, T.v, 1e-12, 'v');
+      var A1 = DR.auxFrame(F, [0, 0], [1, 0], 1, 'first');
+      nearVec(A1.e, [0, -1, 0], 1e-12, 'first angle: seen from below');
+      var B = DR.auxFrame(F, [100, 20], [0, 60], -1, 'third'), L = Math.hypot(100, 40), V = Kernel.vec;
+      nearVec(B.e, [40 / L, 100 / L, 0], 1e-12, 'looks along the edge normal');
+      near(V.dot(B.u, B.v), 0, 1e-12, 'u.v'); near(V.len(B.u), 1, 1e-12, '|u|'); nearVec(V.cross(B.u, B.v), B.e, 1e-12, 'u x v = e');
+      near(B.dir[0], 40 / L, 1e-12, 'placed along the normal x'); near(B.dir[1], 100 / L, 1e-12, 'placed along the normal y');
+      return 'ok';
+    });
+    test('rfN: Auxiliary View of a 21.8° wedge face — the face is drawn at true size (107.703 × 30), the view stays aligned square to the edge, slides only along its axis, follows its parent, VIEW A-A label and arrow in SVG / DXF R12 + R2000 / PDF', function () {
+      var r = sheetOf(WEDGE), L = Math.hypot(100, 40);
+      var v = DR.addAuxiliaryView(r.doc, r.mesh, r.front.id, { a: [100, 20], b: [0, 60], sign: -1 });
+      assert(v.kind === 'aux' && v.label === 'A', 'kind / label ' + v.kind + ' ' + v.label);
+      var sh = r.recompute(), w = r.w(v.id), pw = r.w(r.front.id);
+      assert(w && w.ortho, 'aux view is orthographic (dimensionable)');
+      // the inclined face's corners in the view: a true 107.703 × 30 rectangle; its 30 edges are drawn visible
+      var vis = w.proj.lines.visible, Vv = Kernel.vec, F = w.frame;
+      function at(X) { return [Vv.dot(X, F.u), Vv.dot(X, F.v)]; }
+      var A = at([100, 20, 0]), B = at([0, 60, 0]), C = at([0, 60, 30]), D = at([100, 20, 30]);
+      near(Math.hypot(B[0] - A[0], B[1] - A[1]), L, 1e-9, 'true length of the inclined edge');
+      near(Math.hypot(D[0] - A[0], D[1] - A[1]), 30, 1e-9, 'true width');
+      near((B[0] - A[0]) * (D[0] - A[0]) + (B[1] - A[1]) * (D[1] - A[1]), 0, 1e-9, 'square corner');
+      function drawn(P, Q) { return vis.some(function (l) { return Math.hypot(l[0] - P[0], l[1] - P[1]) + Math.hypot(l[2] - Q[0], l[3] - Q[1]) < 1e-6 || Math.hypot(l[0] - Q[0], l[1] - Q[1]) + Math.hypot(l[2] - P[0], l[3] - P[1]) < 1e-6; }); }
+      assert(drawn(A, D) && drawn(B, C), 'the face\'s 30 edges are visible lines');
+      // alignment: a corner of the edge in the parent and in the aux view lie on one line along the view's axis
+      function checkAligned(tag) {
+        var W = r.w(v.id), P = r.w(r.front.id), F = W.frame, X = [100, 20, 0], V = Kernel.vec;
+        var a = P.toSheet([100, 20]), b = W.toSheet([V.dot(X, F.u), V.dot(X, F.v)]), d = v.aux.dir;
+        near((b[0] - a[0]) * d[1] - (b[1] - a[1]) * d[0], 0, 1e-9, tag + ': projection line square to the edge');
+        assert((b[0] - a[0]) * d[0] + (b[1] - a[1]) * d[1] > 0, tag + ': view on the arrow side');
+      }
+      checkAligned('placed');
+      var x0 = v.x, y0 = v.y;
+      DR.moveView(r.doc, v.id, x0 + 40, y0 - 7);
+      near((v.x - x0) * v.aux.dir[1] - (v.y - y0) * v.aux.dir[0], 0, 1e-9, 'drag slides along the axis only');
+      r.recompute(); checkAligned('dragged');
+      var ax = v.x, ay = v.y;
+      DR.moveView(r.doc, r.front.id, r.front.x + 10, r.front.y + 5);
+      near(v.x - ax, 10, 1e-9, 'follows the parent x'); near(v.y - ay, 5, 1e-9, 'follows the parent y');
+      sh = r.recompute(); checkAligned('parent moved');
+      var lab = sh.prims.filter(function (p) { return p.k === 'text' && p.text === 'VIEW A-A'; });
+      assert(lab.length === 1, 'one VIEW A-A label');
+      var arrow = sh.prims.filter(function (p) { return p.auxArrow === v.id; });
+      assert(arrow.some(function (p) { return p.k === 'fill'; }) && arrow.some(function (p) { return p.k === 'text' && p.text === 'A'; }), 'arrow and letter on the parent');
+      assert(arrow.every(function (p) { return p.layer === r.w(r.front.id).layer; }), 'on the parent layer');
+      var svg = DR.toSVG(sh), dxf = DR.toDXF(sh), dxf2 = DR.toDXF(sh, { version: 'R2000' }), pdf = DR.toPDF(sh);
+      assert(svg.indexOf('VIEW A-A') >= 0 && dxf.indexOf('VIEW A-A') >= 0 && dxf2.indexOf('VIEW A-A') >= 0 && pdf.indexOf('VIEW A-A') >= 0, 'label in SVG / DXF / PDF');
+      assert(/\nAUXILIARY\r?\n/.test(dxf), 'own DXF layer');
+      // saved with the drawing: a JSON round trip computes the same sheet
+      var doc2 = JSON.parse(JSON.stringify(r.doc)), sh2 = DR.compute(doc2, r.mesh, r.model);
+      assert(sh2.prims.length === sh.prims.length, 'JSON round trip ' + sh2.prims.length + ' vs ' + sh.prims.length);
+      assert(throws(function () { DR.addAuxiliaryView(r.doc, r.mesh, r.front.id, { a: [0, 0], b: [0, 0] }); }), 'a zero-length edge is refused');
+      return 'ok';
+    });
+    var PLATE = 'p.sketch("Front").rect(0, 0, 100, 50).circle(20, 25, 5).circle(80, 25, 5).extrude(10);';
+    test('rfN: Crop View — a rectangle keeps the left half (edges clipped exactly at u = 50, the right hole gone, a hole on the boundary becomes a 180° arc), a circle keeps one hole; Remove Crop restores the view; SVG / DXF follow', function () {
+      var r = sheetOf(PLATE), id = r.front.id, full = r.w(id).proj.stats;
+      DR.setCrop(r.doc, id, { type: 'rect', a: [0, 0], b: [50, 50] });
+      var w = r.recompute() && r.w(id), pr = w.proj;
+      assert(pr.circles.visible.length === 1, 'one hole left: ' + pr.circles.visible.length);
+      near(pr.circles.visible[0].c[0], 20, 1e-6, 'the left hole');
+      pr.lines.visible.forEach(function (l) { assert(l[0] <= 50 + 1e-9 && l[2] <= 50 + 1e-9, 'line inside the crop ' + l); });
+      assert(pr.lines.visible.filter(function (l) { return Math.abs(len(l) - 50) < 1e-6 && Math.abs(l[1] - l[3]) < 1e-9; }).length === 2, 'top and bottom edges clipped to 50');
+      near(pr.bounds.umax, 50, 1e-9, 'bounds end at the crop');
+      DR.setCrop(r.doc, id, { type: 'rect', a: [0, 0], b: [20, 50] });
+      pr = r.recompute() && r.w(id).proj;
+      var sweep = 0; pr.arcs.visible.forEach(function (a) { sweep += a.a1 - a.a0; near(a.r, 5, 1e-6, 'arc radius'); });
+      near(sweep, 180, 1e-6, 'hole on the boundary: a half circle');
+      DR.setCrop(r.doc, id, { type: 'circle', c: [80, 25], r: 10 });
+      var sh = r.recompute(); pr = r.w(id).proj;
+      assert(pr.circles.visible.length === 1 && pr.lines.visible.length === 0, 'circle crop: the right hole only');
+      assert(DR.toDXF(sh).indexOf('CIRCLE') >= 0 && DR.toSVG(sh).length > 0, 'exports');
+      DR.setCrop(r.doc, id, null);
+      assert(r.recompute() && r.w(id).proj.stats.visibleLines === full.visibleLines, 'Remove Crop restores the view');
+      assert(throws(function () { DR.setCrop(r.doc, id, { type: 'rect', a: [0, 0], b: [0, 5] }); }), 'a degenerate rectangle is refused');
+      return 'ok';
+    });
+    test('rfN: Crop View of a section view clips its hatching to the rectangle', function () {
+      var r = sheetOf(PLATE), sv = DR.addSectionView(r.doc, r.mesh, r.front.id, { axis: 'h', at: 25, sign: 1 });
+      var w = r.recompute() && r.w(sv.id), n0 = w.hatch;
+      assert(n0 > 0, 'hatched');
+      var b = w.proj.bounds, mid = (b.umin + b.umax) / 2;
+      DR.setCrop(r.doc, sv.id, { type: 'rect', a: [b.umin - 1, b.vmin - 1], b: [mid, b.vmax + 1] });
+      var sh = r.recompute(); w = r.w(sv.id);
+      assert(w.hatch > 0 && w.hatch < n0, 'fewer hatch lines ' + w.hatch + ' < ' + n0);
+      var xm = w.toSheet([mid, 0])[0];
+      sh.prims.forEach(function (p) { if (p.layer === w.layer && p.style === 'hatch') assert(Math.max(p.a[0], p.b[0]) <= xm + 1e-6, 'hatch inside the crop'); });
+      return 'ok';
+    });
+    var BAR = 'p.sketch("Front").rect(0, 0, 200, 20).circle(20, 10, 4).circle(180, 10, 4).extrude(10);';
+    test('rfN: Break — a 200 bar broken between u = 50 and 150 closes up to the gap, keeps its centre, the overall dimension still reads 200, holes on both sides kept; zig-zag and straight break lines; Un-Break restores', function () {
+      var r = sheetOf(BAR), id = r.front.id, w0 = r.w(id), box0 = w0.box, s = w0.scale;
+      var dim0 = r.sheet.dims.filter(function (d) { return d.view === id && d.kind === 'h' && Math.abs(d.value - 200) < 1e-6; })[0];
+      assert(dim0, 'overall 200 dimension');
+      DR.addBreak(r.doc, id, { dir: 'vertical', a: 50, b: 150, gap: 10, style: 'straight' });
+      var sh = r.recompute(), w = r.w(id), box = w.box;
+      near((box.x1 - box.x0), (box0.x1 - box0.x0) - (100 * s - 10), 1e-6, 'closed up to the gap');
+      near((box.x0 + box.x1) / 2, (box0.x0 + box0.x1) / 2, 1e-6, 'centre kept');
+      var bl = sh.prims.filter(function (p) { return p.breakLine && p.layer === w.layer; });
+      assert(bl.length === 2, 'two straight break lines: ' + bl.length);
+      near(Math.abs(bl[1].a[0] - bl[0].a[0]), 10, 1e-9, 'gap between the break lines');
+      var lo = Math.min(bl[0].a[0], bl[1].a[0]), hi = Math.max(bl[0].a[0], bl[1].a[0]);
+      sh.prims.forEach(function (p) {
+        if (p.layer !== w.layer || p.breakLine || p.k !== 'line') return;
+        assert(!(Math.min(p.a[0], p.b[0]) < hi - 1e-6 && Math.max(p.a[0], p.b[0]) > lo + 1e-6), 'no linework in the gap');
+      });
+      assert(sh.prims.filter(function (p) { return p.layer === w.layer && p.k === 'circle'; }).length === 2, 'both holes kept');
+      var d = sh.dims.filter(function (x) { return x.view === id && x.kind === 'h' && Math.abs(x.value - 200) < 1e-6; })[0];
+      assert(d, 'dimension across the break still 200');
+      assert(sh.prims.some(function (p) { return p.k === 'text' && p.view === id && /200/.test(p.text); }), 'its text reads 200');
+      // the dimension's own lines are pulled in with the view
+      var dl = sh.prims.filter(function (p) { return p.view === id && p.k === 'line' && Math.abs(p.a[1] - p.b[1]) < 1e-9 && p.a[1] > box.y1; });
+      assert(dl.every(function (p) { return Math.max(p.a[0], p.b[0]) <= box.x1 + 1e-6 && Math.min(p.a[0], p.b[0]) >= box.x0 - 1e-6; }), 'dimension line within the shortened view');
+      // a model point right of the break maps across (picking)
+      var pt = w.toSheet([180, 10]); var back = w.fromSheet(pt); near(back[0], 180, 1e-9, 'fromSheet inverts toSheet u'); near(back[1], 10, 1e-9, 'fromSheet inverts toSheet v');
+      DR.addBreak(r.doc, id, { dir: 'vertical', a: 50, b: 150, gap: 10 });
+      sh = r.recompute(); w = r.w(id);
+      assert(sh.prims.filter(function (p) { return p.breakLine; }).length > 2, 'zig-zag break lines');
+      var dxf = DR.toDXF(sh), dxf2 = DR.toDXF(sh, { version: 'R2000' }), svg = DR.toSVG(sh), pdf = DR.toPDF(sh);
+      assert(dxf.length && dxf2.length && svg.length && pdf.length, 'exports');
+      var doc2 = JSON.parse(JSON.stringify(r.doc));
+      assert(DR.compute(doc2, r.mesh, r.model).prims.length === sh.prims.length, 'saved with the drawing');
+      DR.clearBreaks(r.doc, id);
+      near(r.recompute() && r.w(id).box.x1 - r.w(id).box.x0, box0.x1 - box0.x0, 1e-9, 'Un-Break restores');
+      assert(throws(function () { DR.addBreak(r.doc, id, { a: 5, b: 5 }); }), 'equal break lines refused');
+      return 'ok';
+    });
+  })();
+  // --- end rfN ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.

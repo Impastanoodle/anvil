@@ -305,7 +305,11 @@ var Icons = (function () {
     // selection lists (ui-commands.js pickList): the kind of each listed item, as SolidWorks' selection boxes show it
     edgeSel: blk(2, 4.5, 9, 7, 3.5) + ln('M2 8 h9', B, 2),
     faceSel: blk(2, 4.5, 9, 7, 3.5, '#9ec5f0'),
-    vertexSel: blk(2, 4.5, 9, 7, 3.5) + circ(11, 8, 1.8, B, W, 0.9)
+    vertexSel: blk(2, 4.5, 9, 7, 3.5) + circ(11, 8, 1.8, B, W, 0.9),
+    // drawing views (rfN): Auxiliary View, Crop View, Break
+    auxView: rect(1.5, 8.5, 6.5, 6, W, S, 1.1) + p('M9.5 1.5 l5 3 -2.2 3.7 -5 -3 z', '#bcd6f5', B, 1.1) + ln('M6.5 8.5 L9.2 4.6', B, 1.2) + p('M9.9 3.6 l-0.2 2.1 -1.7 -1.2 z', B, B, 0.6),
+    cropView: rect(4, 4, 8, 8, '#bcd6f5', 'none', 0) + ln('M4 1 V12 H15 M1 4 H12 V15', B, 1.4),
+    breakView: rect(1, 5, 5, 6, '#bcd6f5', B, 1) + rect(10, 5, 5, 6, '#bcd6f5', B, 1) + ln('M7 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 M9 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5', S, 0.9)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

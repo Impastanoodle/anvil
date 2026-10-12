@@ -194,6 +194,7 @@
     var k = paperK(doc.units), S = sheetSize(doc, doc.units), g = GAP * k, sep = g * 0.6, b1 = BORDER * k;
     var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) { return viewPaperBox(doc, mesh, o); });
     obs.push({ x0: S[0] - b1 - TB_W * k, y0: b1, x1: S[0] - b1, y1: b1 + TB_H * k });
+    var rvb = revBox(doc, doc.units); if (rvb) obs.push(rvb);
     if (doc.bom && doc.bom.show !== false && doc.bomRows) { var bb = bomBox(doc, doc.units, doc.bomRows); obs.push({ x0: bb.x0, y0: bb.y0, x1: bb.x1, y1: bb.y1 }); }
     var me = viewPaperBox(doc, mesh, v), ox = v.x, oy = v.y;
     function boxAt(x, y) { return { x0: me.x0 + x - ox, x1: me.x1 + x - ox, y0: me.y0 + y - oy, y1: me.y1 + y - oy }; }
@@ -315,8 +316,36 @@
     { key: 'date', label: 'DATE', row: 2, x0: 0, x1: 45, link: '$PRP:"SW-Date"' },
     { key: 'mass', label: 'MASS', row: 2, x0: 45, x1: 105, link: '$PRPSHEET:"Mass"' },
     { key: 'projection', label: 'PROJECTION', row: 2, x0: 105, x1: 140, link: '$PRP:"SW-Projection"' },
-    { key: 'sheet', label: 'SHEET', row: 2, x0: 140, x1: 180, link: '$PRP:"SW-Sheet"' }
+    { key: 'sheet', label: 'SHEET', row: 2, x0: 140, x1: 180, link: '$PRP:"SW-Sheet"' },
+    // the sheet format's left blocks (rfM), in the strip left of the title block (it is kept clear of views already):
+    // COMPANY, DRAWN / CHECKED with their dates (the drawing's own properties, SolidWorks' template names), and the
+    // GENERAL TOLERANCES block (UNLESS OTHERWISE SPECIFIED, inch defaults .XX ±.01 .XXX ±.005 ANGLES ±1°). `block`
+    // names the group: a sheet too narrow for a group leaves it out (tol first, then eng).
+    { key: 'company', label: 'COMPANY', row: 0, x0: -60, x1: 0, link: '$PRP:"CompanyName"', block: 'eng', upper: true },
+    { key: 'drawnBy', label: 'DRAWN', row: 1, x0: -60, x1: -25, link: '$PRP:"DrawnBy"', block: 'eng' },
+    { key: 'drawnDate', label: 'DATE', row: 1, x0: -25, x1: 0, link: '$PRP:"DrawnDate"', block: 'eng' },
+    { key: 'checkedBy', label: 'CHECKED', row: 2, x0: -60, x1: -25, link: '$PRP:"CheckedBy"', block: 'eng' },
+    { key: 'checkedDate', label: 'DATE', row: 2, x0: -25, x1: 0, link: '$PRP:"CheckedDate"', block: 'eng' },
+    { key: 'tolerances', label: 'UNLESS OTHERWISE SPECIFIED', row: 0, rows: 3, x0: -125, x1: -60, link: '$PRP:"GeneralTolerances"', block: 'tol', multi: true }
   ];
+  // the sheet format blocks left of the title block: [name, x0 (paper mm from the title block's left edge)]
+  var TB_BLOCKS = { eng: -60, tol: -125 };
+  // tbBlocks(S, units) -> { eng: bool, tol: bool }: which left blocks fit inside the border on this sheet
+  function tbBlocks(S, units) {
+    var k = paperK(units), room = (S[0] - 2 * BORDER * k) / k - TB_W, out = {};
+    Object.keys(TB_BLOCKS).forEach(function (b) { out[b] = room >= -TB_BLOCKS[b] - 1e-9; });
+    return out;
+  }
+  // the inch general tolerances (ASME Y14.5 decimal-place tolerances, a sheet-metal shop's usual block) and mm ones
+  function generalTolerances(units) {
+    return units === 'in' ? 'DIMENSIONS ARE IN INCHES\nTOLERANCES:\n.XX \u00b1.01\n.XXX \u00b1.005\nANGLES \u00b11\u00b0' :
+      'DIMENSIONS ARE IN MILLIMETERS\nTOLERANCES:\nX.X \u00b10.2\nX.XX \u00b10.1\nANGLES \u00b11\u00b0';
+  }
+  // fieldRect(f, S, units) -> the paper rectangle of title block field f
+  function fieldRect(f, S, units) {
+    var k = paperK(units), b1 = BORDER * k, tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3;
+    return { x0: tx0 + f.x0 * k, x1: tx0 + f.x1 * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + (f.rows || 1)) * row };
+  }
   function drawingProp(doc, name, units) {
     switch (String(name).trim().toLowerCase()) {
       case 'sw-file name': return doc.name;
@@ -327,8 +356,11 @@
       case 'sw-projection': return doc.sheet.projection === 'first' ? 'FIRST ANGLE' : 'THIRD ANGLE';
       case 'sw-sheet': return '1 OF 1';
     }
-    var own = doc.properties || {};
-    for (var k in own) if (k.toLowerCase() === String(name).trim().toLowerCase()) return String(own[k]);
+    var own = doc.properties || {}, key = String(name).trim().toLowerCase();
+    for (var k in own) if (k.toLowerCase() === key) return String(own[k]);
+    // (rfM) the general tolerances block's default text; Revision: the latest row of the Revision Table
+    if (key === 'generaltolerances') return generalTolerances(units);
+    if (key === 'revision') return latestRev(doc) || '';
     return '';
   }
   // titleText(text, doc, model, ctx?) -> the text with its $PRPSHEET / $PRP links replaced
@@ -347,12 +379,20 @@
   // titleFieldAt(sheetSize, units, p) -> { field (a TB_FIELDS entry), rect: { x0, y0, x1, y1 } } of the title block cell
   // under the paper point p, or null (r5/drawings5)
   function titleFieldAt(S, units, p) {
-    var k = paperK(units), b1 = BORDER * k, tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3, hit = null;
+    var hit = null, on = tbBlocks(S, units);
     TB_FIELDS.forEach(function (f) {
-      var r = { x0: tx0 + f.x0 * k, x1: tx0 + f.x1 * k, y1: ty0 + th - f.row * row, y0: ty0 + th - (f.row + 1) * row };
+      if (f.block && !on[f.block]) return;
+      var r = fieldRect(f, S, units);
       if (!hit && p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1) hit = { field: f, rect: r };
     });
     return hit;
+  }
+  // tbRects(S, units) -> the paper boxes of the title block and the left blocks that fit (kept clear of annotations)
+  function tbRects(S, units) {
+    var k = paperK(units), b1 = BORDER * k, x1 = S[0] - b1, tx0 = x1 - TB_W * k, on = tbBlocks(S, units), out = [{ x0: tx0, y0: b1, x1: x1, y1: b1 + TB_H * k }];
+    var lo = 0; Object.keys(TB_BLOCKS).forEach(function (b) { if (on[b]) lo = Math.min(lo, TB_BLOCKS[b]); });
+    if (lo < 0) out.push({ x0: tx0 + lo * k, y0: b1, x1: tx0, y1: b1 + TB_H * k });
+    return out;
   }
   // titleBlock(doc, model, ctx?) -> { key: evaluated text } for every TB_FIELDS entry
   function titleBlock(doc, model, ctx) {
@@ -378,7 +418,10 @@
     }
     TB_FIELDS.forEach(function (f) {
       var v = titleText(own[f.key] != null ? own[f.key] : f.link, doc, model, ctx).trim();
+      // (rfM) REV: a Revision Table's latest revision (SolidWorks' table drives REV), unless the field was edited
+      if (f.key === 'rev' && own.rev == null && latestRev(doc)) v = latestRev(doc);
       if (!v && f.fallback) v = String(model && model.name || 'Part');
+      if (f.multi) v = v.replace(/\\n/g, '\n');   // (a block typed on one line: a backslash-n between its lines)
       out[f.key] = f.upper ? v.toUpperCase() : v;
     });
     return out;
@@ -467,7 +510,10 @@
     var availW = A.x1 - A.x0, availH = A.y1 - A.y0;
     // an assembly drawing's Bill of Materials is a keep-out box: the Front / Top / Right block must not cover it
     var bomK = doc.bom && doc.bom.show !== false && doc.bomRows ? bomBox(doc, units, doc.bomRows) : null;
-    function hitsBom(b) { return bomK && b.x1 > bomK.x0 - g / 2 && b.x0 < bomK.x1 + g / 2 && b.y1 > bomK.y0 - g / 2 && b.y0 < bomK.y1 + g / 2; }
+    // (rfM) a Revision Table is one too
+    var revK = revBox(doc, units);
+    function hitsBox(K, b) { return K && b.x1 > K.x0 - g / 2 && b.x0 < K.x1 + g / 2 && b.y1 > K.y0 - g / 2 && b.y0 < K.y1 + g / 2; }
+    function hitsBom(b) { return hitsBox(bomK, b) || hitsBox(revK, b); }
     // place(sv, packed): view centres for scale sv, the block centred in the usable area (or packed into the corner
     // away from the BOM); null when a view would cover the BOM
     function place(sv, packed) {
@@ -509,6 +555,7 @@
         var ov = bomK.x1 > isoBox.x0 && bomK.x0 < isoBox.x1 && bomK.y1 > isoBox.y0 && bomK.y0 < isoBox.y1;
         if (ov) { if (/top/.test(bomK.anchor)) isoBox.y1 = Math.min(isoBox.y1, bomK.y0 - g / 2); else isoBox.y0 = Math.max(isoBox.y0, bomK.y1 + g / 2); }
       }
+      if (revK && revK.x1 > isoBox.x0 && revK.x0 < isoBox.x1 && revK.y1 > isoBox.y0 && revK.y0 < isoBox.y1) isoBox.y1 = Math.min(isoBox.y1, revK.y0 - g / 2);
       var I = extentsOf(mesh, byRole.iso.orient), bw = isoBox.x1 - isoBox.x0 - g / 2, bh = isoBox.y1 - isoBox.y0 - g / 2;
       byRole.iso.scale = null;
       if (I.w * sv2 > bw || I.h * sv2 > bh) {
@@ -1259,6 +1306,9 @@
     else {
       x0 = /left/.test(anchor) ? b : S[0] - b - W;
       y1 = /top/.test(anchor) ? S[1] - b : b + (/right/.test(anchor) ? TB_H * k : 0) + H;
+      // (rfM) a Revision Table owns its top corner: a BOM anchored there goes under it
+      var rv = /top/.test(anchor) ? revBox(doc, units) : null;
+      if (rv && rv.x0 < x0 + W && rv.x1 > x0) y1 = rv.y0 - 2 * k;
     }
     var cols = [x0]; columns.forEach(function (c) { cols.push(cols[cols.length - 1] + c.width * k); });
     return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: BOM_ROW * k, cols: cols, anchor: anchor, columns: columns };
@@ -1348,12 +1398,94 @@
     return out;
   }
 
+  // ------------------------------------------------------------------ Revision Table (rfM)
+  // doc.revisions = { rows: [{ zone, rev, description, date, approved }], anchor: 'top-right' | 'top-left' }: SolidWorks'
+  // Insert ▸ Tables ▸ Revision Table — ZONE / REV / DESCRIPTION / DATE / APPROVED under a REVISIONS title row, anchored
+  // to the top corner of the border. Add Revision bumps the letter A, B, C … skipping I, O, Q, S, X, Z (ASME Y14.35,
+  // SolidWorks' default list), after Y AA, AB …; the latest revision fills the title block's REV ($PRP:"Revision").
+  var REV_LETTERS = 'ABCDEFGHJKLMNPRTUVWY', REV_COLS = [['ZONE', 15, 'zone'], ['REV', 12, 'rev'], ['DESCRIPTION', 75, 'description'], ['DATE', 25, 'date'], ['APPROVED', 25, 'approved']];
+  var REV_ROW = 6, REV_TEXT = 2.5;
+  // revLetter(i) -> the i-th revision (0: A … 19: Y, 20: AA)
+  function revLetter(i) {
+    var n = REV_LETTERS.length;
+    i = Math.max(0, i | 0);
+    if (i < n) return REV_LETTERS[i];
+    i -= n;
+    return REV_LETTERS[Math.floor(i / n) % n] + REV_LETTERS[i % n];
+  }
+  function revIndex(r) {
+    r = String(r || '').trim().toUpperCase();
+    for (var i = 0; i < 420; i++) if (revLetter(i) === r) return i;
+    return -1;
+  }
+  // nextRev(prev) -> the revision after prev ('' / null: A); a letter outside the list (I, O …) goes on from the one
+  // before it in the alphabet; a number counts up
+  function nextRev(prev) {
+    var r = String(prev || '').trim().toUpperCase();
+    if (!r) return 'A';
+    var i = revIndex(r);
+    if (i >= 0) return revLetter(i + 1);
+    if (/^[A-Z]$/.test(r)) { for (var j = REV_LETTERS.length - 1; j >= 0; j--) if (REV_LETTERS[j] < r) return revLetter(j + 1); return 'A'; }
+    if (/^\d+$/.test(r)) return String(+r + 1);
+    return 'A';
+  }
+  function latestRev(doc) { var rv = doc && doc.revisions, l = rv && rv.show !== false && rv.rows || []; return l.length ? String(l[l.length - 1].rev || '') : null; }
+  // insertRevisionTable(doc, { anchor }) -> the table (kept when there is one)
+  function insertRevisionTable(doc, opts) {
+    opts = opts || {};
+    var t = doc.revisions || (doc.revisions = { rows: [] });
+    t.anchor = opts.anchor === 'top-left' ? 'top-left' : 'top-right';
+    delete t.show;
+    return t;
+  }
+  // addRevision(doc, { description, date, approved, zone, rev }) -> the new row (the table is inserted if missing)
+  function addRevision(doc, spec) {
+    spec = spec || {};
+    var t = doc.revisions && doc.revisions.show !== false ? doc.revisions : insertRevisionTable(doc, {});
+    var prev = t.rows.length ? t.rows[t.rows.length - 1].rev : null;
+    var row = { zone: String(spec.zone || ''), rev: spec.rev ? String(spec.rev).toUpperCase() : nextRev(prev), description: String(spec.description == null ? '' : spec.description), date: spec.date != null ? String(spec.date) : todayISO(), approved: String(spec.approved || '') };
+    t.rows.push(row);
+    return row;
+  }
+  // editRevision(doc, i, props) / deleteRevision(doc, i) / deleteRevisionTable(doc)
+  function editRevision(doc, i, props) {
+    var r = doc.revisions && doc.revisions.rows[i];
+    if (!r) throw new Error('No revision row ' + i);
+    REV_COLS.forEach(function (c) { if (props[c[2]] != null) r[c[2]] = c[2] === 'rev' ? String(props[c[2]]).toUpperCase() : String(props[c[2]]); });
+    return r;
+  }
+  function deleteRevision(doc, i) { var t = doc.revisions; if (!t || !t.rows[i]) return false; t.rows.splice(i, 1); return true; }
+  function deleteRevisionTable(doc) { var had = !!doc.revisions; delete doc.revisions; return had; }
+  // revBox(doc, units) -> { x0, y0, x1, y1, rowH, cols: [x…], anchor } of the Revision Table (title row, header row and
+  // one row per revision), or null without one
+  function revBox(doc, units) {
+    var t = doc && doc.revisions;
+    if (!t || t.show === false) return null;
+    var k = paperK(units), S = sheetSize(doc, units), b = BORDER * k, W = 0;
+    REV_COLS.forEach(function (c) { W += c[1]; });
+    W *= k;
+    var H = (t.rows.length + 2) * REV_ROW * k, x0 = t.anchor === 'top-left' ? b : S[0] - b - W, y1 = S[1] - b;
+    var cols = [x0]; REV_COLS.forEach(function (c) { cols.push(cols[cols.length - 1] + c[1] * k); });
+    return { x0: x0, y0: y1 - H, x1: x0 + W, y1: y1, rowH: REV_ROW * k, cols: cols, anchor: t.anchor || 'top-right' };
+  }
+  // revRowAt(doc, units, p) -> the index of the revision row under paper point p (-1: the title / header rows), or null
+  function revRowAt(doc, units, p) {
+    var bx = revBox(doc, units);
+    if (!bx || p[0] < bx.x0 || p[0] > bx.x1 || p[1] < bx.y0 || p[1] > bx.y1) return null;
+    var r = Math.floor((bx.y1 - p[1]) / bx.rowH) - 2;
+    return r < 0 ? -1 : Math.min(r, doc.revisions.rows.length - 1);
+  }
+
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };
   D.addFlatView = addFlatView; D.flatExtents = flatExtents; D.viewExtents = viewExtents;
   D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
+  D.TB_BLOCKS = TB_BLOCKS; D.tbBlocks = tbBlocks; D.tbRects = tbRects; D.fieldRect = fieldRect; D.generalTolerances = generalTolerances;
+  D.todayISO = todayISO; D.REV_COLS = REV_COLS; D.revLetter = revLetter; D.nextRev = nextRev; D.latestRev = latestRev; D.insertRevisionTable = insertRevisionTable; D.addRevision = addRevision;
+  D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;
+  _.REV_TEXT = REV_TEXT;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;

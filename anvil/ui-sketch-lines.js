@@ -361,7 +361,9 @@
         { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'For construction' }, { type: 'check', key: 'infinite', label: 'Infinite length' }] },
         { title: 'Parameters', fields: [num('len', 'Length'), num('ang', 'Angle', '°')] },
         { title: 'Additional Parameters', fields: [num('x1', 'Start X'), num('y1', 'Start Y'), num('x2', 'End X'), num('y2', 'End Y'), num('dx', 'Delta X'), num('dy', 'Delta Y')] }
-      ]),
+      ]).concat(UI.polygonOf && UI.polygonOf(index, f) && UI.editPolygon ? [   // rfL: a polygon's side: Edit Polygon (its Polygon PM)
+        { title: 'Polygon', fields: [{ type: 'buttons', buttons: [{ label: 'Edit Polygon', onclick: function () { UI.editPolygon(index); } }] }] }
+      ] : []),
       onChange: function (v, key) {
         if (!key) return;
         var f2 = sketch(), cur = f2 && f2.entities[index];

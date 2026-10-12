@@ -442,7 +442,18 @@
       var tp = tol.prec != null && tol.prec !== '' ? +tol.prec : prec, plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
       var tn = function (x) { return numText(x, units, tp); };
       if (tol.type === 'symmetric') out.main += ' ±' + tn(plus);
-      else if (tol.type === 'bilateral') { out.upper = '+' + tn(plus); out.lower = (minus ? '-' : '') + tn(minus); }
+      else if (tol.type === 'bilateral') {
+        // (rfM) a zero limit is written at the other limit's precision: inch '-.000' / '+.000' (ASME Y14.5 unilateral,
+        // SolidWorks), mm a single '0' with no sign
+        var zero = function (other, sign) {
+          if (units !== 'in') return '0';
+          var m = /\.(\d+)/.exec(other);
+          return sign + (m ? '.' + new Array(m[1].length + 1).join('0') : '0');
+        };
+        var pt = tn(plus), mt = tn(minus);
+        out.upper = plus ? '+' + pt : zero(mt, '+');
+        out.lower = minus ? '-' + mt : zero(pt, '-');
+      }
       else if (tol.type === 'limit') { out.upper = base(d.value + plus); out.lower = base(d.value - minus); out.main = null; }
       // sketch-ordinate: the sketch Dimension PM's other kinds, brought in with a model item: MIN / MAX after the value,
       // Basic (boxed on the sheet: out.basic)
@@ -927,6 +938,7 @@
     if (!t.trim()) throw new Error('A note needs text');
     var nt = { id: nextAnnotId(doc), p: [+spec.p[0], +spec.p[1]], text: t };
     if (+spec.h > 0) nt.h = +spec.h;
+    if (spec.leader) nt.leader = [+spec.leader[0], +spec.leader[1]];   // (rfM) the arrow tip, paper
     (doc.notes || (doc.notes = [])).push(nt);
     return nt;
   }
@@ -938,6 +950,7 @@
     if (props.text != null) { var t = String(props.text); if (!t.trim()) { deleteNote(doc, id); return null; } nt.text = t; }
     if (props.p) nt.p = [+props.p[0], +props.p[1]];
     if (props.h != null) { if (+props.h > 0) nt.h = +props.h; else delete nt.h; }
+    if (props.leader !== undefined) { if (props.leader) nt.leader = [+props.leader[0], +props.leader[1]]; else delete nt.leader; }
     return nt;
   }
   function deleteNote(doc, id) {
@@ -966,6 +979,181 @@
     if (!Object.keys(own).length) delete v.flatAnn;
     return s;
   }
+  // ------------------------------------------------------------------ shop symbols (rfM): Surface Finish, Datum Feature,
+  // Geometric Tolerance. doc.symbols = [{ id, type: 'surfaceFinish' | 'datum' | 'gtol', p: [x, y] (paper), leader:
+  // [x, y] (paper: the arrow / triangle tip; none: no leader), … }], SolidWorks' Annotation tab tools. Every symbol is
+  // drawn as lines, circles, arcs, fills and plain text, so SVG, DXF (R12 / R2000) and PDF carry it the same.
+  //  surfaceFinish: { symbol: 'basic' | 'machined' | 'prohibited', ra: '63' (roughness, above the short leg), method:
+  //    'GRIND' (on the extension bar) }, p the symbol's root (the point of the V) (ASME Y14.36)
+  //  datum: { label: 'A' }, p the frame's centre; the leader ends in a filled datum triangle (ASME Y14.5-2009)
+  //  gtol: { char: GTOL_CHARS key, dia: bool, tol: '.010', mod: 'M' | 'L' | '', datums: ['A', 'B(M)', 'C'] }, p the
+  //    frame's left end, middle height (the feature control frame)
+  var GTOL_CHARS = [['position', 'Position'], ['flatness', 'Flatness'], ['straightness', 'Straightness'], ['circularity', 'Circularity'], ['cylindricity', 'Cylindricity'],
+    ['profileLine', 'Profile of a Line'], ['profileSurface', 'Profile of a Surface'], ['perpendicularity', 'Perpendicularity'], ['parallelism', 'Parallelism'], ['angularity', 'Angularity'],
+    ['concentricity', 'Concentricity'], ['symmetry', 'Symmetry'], ['circularRunout', 'Circular Runout'], ['totalRunout', 'Total Runout']];
+  var SF_SYMBOLS = [['basic', 'Basic'], ['machined', 'Machining Required'], ['prohibited', 'Machining Prohibited']];
+  var SYMBOL_TYPES = { surfaceFinish: 1, datum: 1, gtol: 1 };
+  // the next datum letter: A, B, C … skipping I, O, Q (ASME Y14.5), past the ones the drawing uses
+  function nextDatum(doc) {
+    var used = {}; (doc.symbols || []).forEach(function (s) { if (s.type === 'datum') used[String(s.label).toUpperCase()] = 1; });
+    var L = 'ABCDEFGHJKLMNPRSTUVWXYZ';
+    for (var i = 0; i < L.length; i++) if (!used[L[i]]) return L[i];
+    return 'AA';
+  }
+  function cleanSymbol(s, spec) {
+    if (spec.p) s.p = [+spec.p[0], +spec.p[1]];
+    if (spec.leader !== undefined) { if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader; }
+    if (s.type === 'surfaceFinish') {
+      if (spec.symbol != null) s.symbol = spec.symbol === 'machined' || spec.symbol === 'prohibited' ? spec.symbol : 'basic';
+      ['ra', 'method'].forEach(function (q) { if (spec[q] != null) { if (String(spec[q]).trim()) s[q] = String(spec[q]).trim(); else delete s[q]; } });
+      if (!s.symbol) s.symbol = 'basic';
+    } else if (s.type === 'datum') {
+      if (spec.label != null) s.label = String(spec.label).trim().toUpperCase();
+      if (!s.label) throw new Error('A datum feature needs a letter');
+    } else {
+      if (spec.char != null) { if (!GTOL_CHARS.some(function (c) { return c[0] === spec.char; })) throw new Error('No geometric characteristic ' + spec.char); s.char = spec.char; }
+      if (spec.dia != null) { if (spec.dia) s.dia = true; else delete s.dia; }
+      if (spec.tol != null) s.tol = String(spec.tol).trim();
+      if (spec.mod != null) { var md = String(spec.mod).toUpperCase().replace(/[()]/g, ''); if (md === 'M' || md === 'L') s.mod = md; else delete s.mod; }
+      if (spec.datums != null) s.datums = (Array.isArray(spec.datums) ? spec.datums : String(spec.datums).split(/[\s,|]+/)).map(function (x) { return String(x).trim().toUpperCase(); }).filter(Boolean).slice(0, 3);
+      if (!s.char) s.char = 'position';
+      if (!s.tol) throw new Error('A feature control frame needs a tolerance value');
+    }
+    return s;
+  }
+  // addSymbol(doc, { type, p, leader, … }) -> the symbol (one entry of doc.symbols)
+  function addSymbol(doc, spec) {
+    spec = spec || {};
+    if (!SYMBOL_TYPES[spec.type]) throw new Error('Unknown symbol type ' + spec.type);
+    if (!spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A symbol needs a position on the sheet');
+    var s = { id: nextAnnotId(doc), type: spec.type };
+    if (spec.type === 'datum' && spec.label == null) spec = Object.assign({}, spec, { label: nextDatum(doc) });
+    cleanSymbol(s, spec);
+    (doc.symbols || (doc.symbols = [])).push(s);
+    return s;
+  }
+  function findSymbol(doc, id) { var l = doc.symbols || []; for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+  function editSymbol(doc, id, props) {
+    var s = findSymbol(doc, id);
+    if (!s) throw new Error('No symbol ' + id);
+    var c = JSON.parse(JSON.stringify(s));
+    cleanSymbol(c, props || {});
+    Object.keys(s).forEach(function (q) { delete s[q]; }); Object.assign(s, c);
+    return s;
+  }
+  function deleteSymbol(doc, id) {
+    var l = doc.symbols || [], n0 = l.length;
+    doc.symbols = l.filter(function (x) { return x.id !== id; });
+    return doc.symbols.length < n0;
+  }
+  // parse 'B(M)' -> { ref: 'B', mod: 'M' }
+  function datumRef(x) { var m = /^([A-Z]+(?:-[A-Z]+)?)\s*\(?([ML])?\)?$/.exec(String(x).toUpperCase().replace(/\s+/g, '')); return m ? { ref: m[1], mod: m[2] || null } : { ref: String(x), mod: null }; }
+  // symbolText(s) -> one line for lists and the summary: 'POSITION Ø.010(M) | A | B | C', 'DATUM A', 'SURFACE FINISH 63'
+  function symbolText(s) {
+    if (s.type === 'datum') return 'DATUM ' + s.label;
+    if (s.type === 'surfaceFinish') return 'SURFACE FINISH' + (s.ra ? ' ' + s.ra : '') + (s.method ? ' ' + s.method : '') + (s.symbol === 'machined' ? ' (MACHINED)' : s.symbol === 'prohibited' ? ' (NO MACHINING)' : '');
+    var nm = (GTOL_CHARS.filter(function (c) { return c[0] === s.char; })[0] || ['', ''])[1].toUpperCase();
+    return [nm + ' ' + (s.dia ? 'Ø' : '') + s.tol + (s.mod ? '(' + s.mod + ')' : '')].concat(s.datums || []).join(' | ');
+  }
+  // symbolPrims(s, k, textWidth) -> { prims, box, text }: the symbol as sheet primitives on the SYMBOLS layer
+  // (k: paper mm -> paper units; textWidth from drawing-render.js)
+  function symbolPrims(s, k, textWidth, arrowW) {
+    var L = 'SYMBOLS', out = [], h = 3.5 * k, p = s.p;
+    function ln(a, b, st) { out.push({ k: 'line', a: a, b: b, layer: L, style: st || 'thin', symbol: s.id }); }
+    function tx(q, t, anchor, hh) { out.push({ k: 'text', p: q, h: hh || h, text: t, anchor: anchor || 'start', layer: L, rot: 0, symbol: s.id }); }
+    function circ(c, r) { out.push({ k: 'circle', c: c, r: r, layer: L, style: 'thin', symbol: s.id }); }
+    function fill(pts) { out.push({ k: 'fill', pts: pts, layer: L, symbol: s.id }); }
+    function arrow(tip, from) {
+      var d = [tip[0] - from[0], tip[1] - from[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], w = (arrowW || 0.5) * k;
+      fill([tip, [tip[0] - u[0] * 3 * k + u[1] * w, tip[1] - u[1] * 3 * k - u[0] * w], [tip[0] - u[0] * 3 * k - u[1] * w, tip[1] - u[1] * 3 * k + u[0] * w]]);
+    }
+    if (s.type === 'surfaceFinish') {
+      var t60 = Math.tan(Math.PI / 3), H1 = 5 * k, H2 = 10 * k, aL = [p[0] - H1 / t60, p[1] + H1], aR = [p[0] + H2 / t60, p[1] + H2];
+      ln(p, aL); ln(p, aR);
+      if (s.symbol === 'machined') ln(aL, [p[0] + H1 / t60, p[1] + H1]);
+      if (s.symbol === 'prohibited') circ([p[0], p[1] + 3.2 * k], 1.6 * k);
+      if (s.ra) tx([p[0] + 2.4 * k, p[1] + 5.9 * k], s.ra, 'end');
+      if (s.method) { var mw = textWidth(s.method, h) + 2 * k; ln(aR, [aR[0] + mw, aR[1]]); tx([aR[0] + 1 * k, aR[1] + 1 * k], s.method, 'start'); }
+      // a leader from the root to the surface
+      if (s.leader) { ln(s.leader, p); arrow(s.leader, p); }
+    } else if (s.type === 'datum') {
+      var a = 3.5 * k, tw = Math.max(2 * a, textWidth(s.label, h) + 2.5 * k) / 2;
+      ln([p[0] - tw, p[1] - a], [p[0] + tw, p[1] - a], 'thin'); ln([p[0] + tw, p[1] - a], [p[0] + tw, p[1] + a], 'thin');
+      ln([p[0] + tw, p[1] + a], [p[0] - tw, p[1] + a], 'thin'); ln([p[0] - tw, p[1] + a], [p[0] - tw, p[1] - a], 'thin');
+      tx([p[0], p[1] - h / 2], s.label, 'middle');
+      var tip = s.leader || [p[0], p[1] - a - 6 * k];
+      // the leader leaves the frame's nearest side, ends in a filled equilateral triangle standing on the surface
+      var dx = tip[0] - p[0], dy = tip[1] - p[1], from = Math.abs(dy) * tw >= Math.abs(dx) * a ? [p[0], p[1] + (dy < 0 ? -a : a)] : [p[0] + (dx < 0 ? -tw : tw), p[1]];
+      var d = [tip[0] - from[0], tip[1] - from[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], th = 3 * k * Math.sqrt(3) / 2, base = [tip[0] - u[0] * th, tip[1] - u[1] * th];
+      ln(from, base);
+      fill([[base[0] + u[1] * 1.5 * k, base[1] - u[0] * 1.5 * k], [base[0] - u[1] * 1.5 * k, base[1] + u[0] * 1.5 * k], tip]);
+      // (the triangle's base lies on the surface: its apex points back up the leader, as ASME draws it)
+      out[out.length - 1].pts = [[tip[0] + u[1] * 1.5 * k, tip[1] - u[0] * 1.5 * k], [tip[0] - u[1] * 1.5 * k, tip[1] + u[0] * 1.5 * k], base];
+    } else {
+      var fh = 7 * k, cw = 8 * k, y0 = p[1] - fh / 2, y1 = p[1] + fh / 2, x = p[0], mr = 1.7 * k, gap = 0.8 * k;
+      var cells = [x];
+      // characteristic cell
+      var c0 = [x + cw / 2, p[1]], q = 1.8 * k;
+      gtolGlyph(s.char, c0, q, ln, circ, fill, out, L, s.id);
+      x += cw; cells.push(x);
+      // tolerance cell: [Ø] value [(M)]
+      var tt = (s.dia ? 'Ø' : '') + s.tol, tw2 = textWidth(tt, h);
+      tx([x + 1.5 * k, p[1] - h / 2], tt, 'start');
+      x += 1.5 * k + tw2;
+      if (s.mod) { x += gap; circ([x + mr, p[1]], mr); tx([x + mr, p[1] - 1.1 * k], s.mod, 'middle', 2.2 * k); x += 2 * mr; }
+      x += 1.5 * k; cells.push(x);
+      (s.datums || []).forEach(function (dn) {
+        var dr = datumRef(dn), w = textWidth(dr.ref, h) + 3 * k + (dr.mod ? 2 * mr + gap : 0);
+        w = Math.max(w, cw);
+        var tx0 = x + (w - textWidth(dr.ref, h) - (dr.mod ? 2 * mr + gap : 0)) / 2;
+        tx([tx0, p[1] - h / 2], dr.ref, 'start');
+        if (dr.mod) { var mc = [tx0 + textWidth(dr.ref, h) + gap + mr, p[1]]; circ(mc, mr); tx([mc[0], p[1] - 1.1 * k], dr.mod, 'middle', 2.2 * k); }
+        x += w; cells.push(x);
+      });
+      ln([cells[0], y0], [x, y0]); ln([x, y0], [x, y1]); ln([x, y1], [cells[0], y1]); ln([cells[0], y1], [cells[0], y0]);
+      for (var ci = 1; ci < cells.length - 1; ci++) ln([cells[ci], y0], [cells[ci], y1]);
+      if (s.leader) {
+        // from the nearer end of the frame, a short shoulder, then to the arrow
+        var left = s.leader[0] < (cells[0] + x) / 2, at = left ? [cells[0], p[1]] : [x, p[1]], sh = [at[0] + (left ? -3 : 3) * k, p[1]];
+        ln(at, sh); ln(sh, s.leader); arrow(s.leader, sh);
+      }
+    }
+    var r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    function grow(q) { r.x0 = Math.min(r.x0, q[0]); r.x1 = Math.max(r.x1, q[0]); r.y0 = Math.min(r.y0, q[1]); r.y1 = Math.max(r.y1, q[1]); }
+    out.forEach(function (x2) {
+      if (x2.a) { grow(x2.a); grow(x2.b); }
+      if (x2.k === 'circle') { grow([x2.c[0] - x2.r, x2.c[1] - x2.r]); grow([x2.c[0] + x2.r, x2.c[1] + x2.r]); }
+      if (x2.k === 'arc') { grow([x2.c[0] - x2.r, x2.c[1] - x2.r]); grow([x2.c[0] + x2.r, x2.c[1] + x2.r]); }
+      if (x2.k === 'fill') x2.pts.forEach(grow);
+      if (x2.k === 'text') { var w2 = textWidth(x2.text, x2.h), s0 = x2.anchor === 'middle' ? -w2 / 2 : x2.anchor === 'end' ? -w2 : 0; grow([x2.p[0] + s0, x2.p[1]]); grow([x2.p[0] + s0 + w2, x2.p[1] + x2.h]); }
+    });
+    return { prims: out, box: r, text: symbolText(s) };
+  }
+  // the geometric characteristic symbols (ASME Y14.5) drawn about c, half-size q
+  function gtolGlyph(ch, c, q, ln, circ, fill, out, L, id) {
+    function P(x, y) { return [c[0] + x * q, c[1] + y * q]; }
+    function arc(cx, cy, r, a0, a1) { out.push({ k: 'arc', c: P(cx, cy), r: r * q, a0: a0, a1: a1, layer: L, style: 'thin', symbol: id }); }
+    function arrowUp(a, b) { var d = [b[0] - a[0], b[1] - a[1]], n = Math.hypot(d[0], d[1]), u = [d[0] / n, d[1] / n], w = 0.25 * q; fill([b, [b[0] - u[0] * 0.6 * q + u[1] * w, b[1] - u[1] * 0.6 * q - u[0] * w], [b[0] - u[0] * 0.6 * q - u[1] * w, b[1] - u[1] * 0.6 * q + u[0] * w]]); }
+    switch (ch) {
+      case 'straightness': ln(P(-1, 0), P(1, 0)); break;
+      case 'flatness': ln(P(-1, -0.55), P(0.45, -0.55)); ln(P(0.45, -0.55), P(1, 0.55)); ln(P(1, 0.55), P(-0.45, 0.55)); ln(P(-0.45, 0.55), P(-1, -0.55)); break;
+      case 'circularity': circ(c, 0.9 * q); break;
+      case 'cylindricity': circ(c, 0.6 * q); ln(P(-1, -0.9), P(-0.2, 0.9)); ln(P(0.2, -0.9), P(1, 0.9)); break;
+      case 'profileLine': arc(0, -0.45, 0.95, 0, 180); break;
+      case 'profileSurface': arc(0, -0.45, 0.95, 0, 180); ln(P(-0.95, -0.45), P(0.95, -0.45)); break;
+      case 'perpendicularity': ln(P(-0.9, -0.8), P(0.9, -0.8)); ln(P(0, -0.8), P(0, 0.9)); break;
+      case 'parallelism': ln(P(-0.9, -0.8), P(-0.1, 0.8)); ln(P(0.1, -0.8), P(0.9, 0.8)); break;
+      case 'angularity': ln(P(-0.9, -0.8), P(0.9, -0.8)); ln(P(-0.9, -0.8), P(0.7, 0.8)); break;
+      case 'concentricity': circ(c, 0.4 * q); circ(c, 0.9 * q); break;
+      case 'symmetry': ln(P(-1, 0), P(1, 0)); ln(P(-0.6, 0.5), P(0.6, 0.5)); ln(P(-0.6, -0.5), P(0.6, -0.5)); break;
+      case 'circularRunout': ln(P(-0.5, -0.9), P(0.5, 0.9)); arrowUp(P(-0.5, -0.9), P(0.5, 0.9)); break;
+      case 'totalRunout': ln(P(-0.9, -0.9), P(0.9, -0.9)); ln(P(-0.9, -0.9), P(-0.2, 0.9)); ln(P(0, -0.9), P(0.7, 0.9)); arrowUp(P(-0.9, -0.9), P(-0.2, 0.9)); arrowUp(P(0, -0.9), P(0.7, 0.9)); break;
+      default: circ(c, 0.6 * q); ln(P(-1, 0), P(1, 0)); ln(P(0, -1), P(0, 1));   // position
+    }
+  }
+  D.GTOL_CHARS = GTOL_CHARS; D.SF_SYMBOLS = SF_SYMBOLS; D.nextDatum = nextDatum; D.addSymbol = addSymbol; D.findSymbol = findSymbol; D.editSymbol = editSymbol; D.deleteSymbol = deleteSymbol;
+  D.symbolText = symbolText; D.symbolPrims = symbolPrims; D.datumRef = datumRef;
+
   D.addNote = addNote; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
   D.holeSizeNames = holeSizeNames;
   _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;

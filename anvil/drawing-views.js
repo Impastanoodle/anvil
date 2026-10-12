@@ -701,6 +701,420 @@
   // bendTag(i) -> 'A', 'B', … 'Z', 'AA', … (Bend Table tags)
   function bendTag(i) { var s = ''; i = Math.max(0, i | 0); do { s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26) - 1; } while (i >= 0); return s; }
 
+  // ------------------------------------------------------------------ Auxiliary, Crop and Broken views
+  // (SolidWorks: Insert ▸ Drawing View ▸ Auxiliary / Crop / Break.) They hook into viewContent, compute, moveView and
+  // layout (drawing-sheet.js / drawing-render.js) through _.hook, so those files stay as they are:
+  //   * an Auxiliary view (kind 'aux') looks square onto a straight edge of its parent: its frame is the parent's turned
+  //     about that edge, it lies along the edge's normal on the sheet (aligned like a projected view, dragged along that
+  //     axis only), the parent shows an arrow and the letter, the view is labelled VIEW A-A;
+  //   * a Crop (view.crop = { type: 'rect', a: [u, v], b: [u, v] } | { type: 'circle', c: [u, v], r }, model units of
+  //     the view's frame) keeps what lies inside: lines, circles, arcs and hatching are clipped exactly;
+  //   * a Break (view.breaks = [{ dir: 'vertical' | 'horizontal', a, b, gap, style: 'zigzag' | 'straight' }]: break
+  //     lines at u = a and u = b for vertical lines, v for horizontal, gap in paper units) removes the geometry between
+  //     the lines and closes the two sides up to the gap; dimensions keep the true values.
+  function findV(doc, id) { for (var i = 0; i < doc.views.length; i++) if (doc.views[i].id === id) return doc.views[i]; return null; }
+  // auxFrame(P, a, b, sign, projection): the frame seen square onto the edge a-b (parent frame, model units) from the
+  // side n = sign × (the edge turned 90° CCW). F.dir = n on the sheet (where the view goes); the edge runs along F.dir
+  // turned 90° CW in the view and the parent's depth along F.dir, as Front + up = Top.
+  function auxFrame(P, a, b, sign, projection) {
+    var tx = b[0] - a[0], ty = b[1] - a[1], L = Math.hypot(tx, ty);
+    if (!(L > 1e-12)) throw new Error('An auxiliary view needs a straight edge of some length');
+    tx /= L; ty /= L;
+    var s = sign < 0 ? -1 : 1, d2 = [-ty * s, tx * s], p2 = [d2[1], -d2[0]], sg = projection === 'first' ? -1 : 1;
+    var q3 = V.add(V.scale(P.u, p2[0]), V.scale(P.v, p2[1])), w3 = V.scale(P.e, -sg);
+    var Fu = V.add(V.scale(q3, p2[0]), V.scale(w3, d2[0])), Fv = V.add(V.scale(q3, p2[1]), V.scale(w3, d2[1]));
+    var F = D.frameOf({ e: V.cross(Fu, Fv), u: Fu, v: Fv, name: 'Auxiliary' });
+    F.dir = d2;
+    return F;
+  }
+  // addAuxiliaryView(doc, mesh, parentId, { a, b, sign, x, y, label }): the auxiliary view of edge a-b of the parent
+  // (model units in its frame), placed on the side sign picks (1: left of a→b, -1: right), one gap out, aligned. A
+  // given x / y is slid onto the alignment axis; without them the view goes outward along it to the first clear spot.
+  function addAuxiliaryView(doc, mesh, parentId, opts) {
+    opts = opts || {};
+    var par = findV(doc, parentId);
+    if (!par) throw new Error('No drawing view ' + parentId);
+    if (par.kind === 'detail' || par.kind === 'flat') throw new Error('An auxiliary view cannot be made from a ' + (par.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view');
+    if (!opts.a || !opts.b) throw new Error('An auxiliary view needs the edge it looks square onto: { a: [u, v], b: [u, v] }');
+    var sign = opts.sign < 0 ? -1 : 1, label = opts.label || D.nextLabel(doc), P = D.viewFrame(doc, par), F = auxFrame(P, opts.a, opts.b, sign, doc.sheet.projection);
+    var d2 = F.dir, p2 = [d2[1], -d2[0]], s = _.viewScale(doc, par), k = _.paperK(doc.units || 'mm'), g = _.GAP * k;
+    var pe = mesh ? D.viewExtents(doc, mesh, par) : { w: 0, h: 0, cu: 0, cv: 0 }, ae = mesh ? D.extentsOf(mesh, F) : { w: 0, h: 0, cu: 0, cv: 0 };
+    var dist = (Math.abs(d2[0]) * pe.w + Math.abs(d2[1]) * pe.h) * s / 2 + (Math.abs(d2[0]) * ae.w + Math.abs(d2[1]) * ae.h) * s / 2 + g;
+    var off = s * ((ae.cu - pe.cu) * p2[0] + (ae.cv - pe.cv) * p2[1]);
+    var base = [par.x + d2[0] * dist + p2[0] * off, par.y + d2[1] * dist + p2[1] * off];
+    var v = D.addView(doc, 'Auxiliary', { kind: 'aux', name: 'Auxiliary View ' + label + '-' + label, label: label, parent: par.id, align: null,
+      frame: { e: F.e, u: F.u, v: F.v }, aux: { a: [+opts.a[0], +opts.a[1]], b: [+opts.b[0], +opts.b[1]], sign: sign, dir: d2.slice() },
+      scale: par.scale ? par.scale.slice() : null, display: 'hlv', x: base[0], y: base[1] });
+    if (opts.x != null || opts.y != null) {
+      var t = ((opts.x != null ? +opts.x : base[0]) - base[0]) * d2[0] + ((opts.y != null ? +opts.y : base[1]) - base[1]) * d2[1];
+      v.x = base[0] + d2[0] * t; v.y = base[1] + d2[1] * t;
+    } else if (mesh) auxClear(doc, mesh, v);
+    doc.layout = 'manual';
+    return v;
+  }
+  // slides a new auxiliary view outward along its axis until its paper box is clear of the other views
+  function auxClear(doc, mesh, v) {
+    var k = _.paperK(doc.units || 'mm'), sep = _.GAP * k * 0.6, d2 = v.aux.dir, s = _.viewScale(doc, v), ae = D.extentsOf(mesh, D.viewFrame(doc, v));
+    var obs = doc.views.filter(function (o) { return o !== v; }).map(function (o) {
+      var e = o.kind === 'detail' && o.detail ? { w: 2 * o.detail.r, h: 2 * o.detail.r } : D.viewExtents(doc, mesh, o), so = _.viewScale(doc, o);
+      return { x0: o.x - e.w * so / 2, x1: o.x + e.w * so / 2, y0: o.y - e.h * so / 2 - 14 * k, y1: o.y + e.h * so / 2 };
+    });
+    var x0 = v.x, y0 = v.y;
+    for (var t = 0; t < 2000 * k; t += 2 * k) {
+      var x = x0 + d2[0] * t, y = y0 + d2[1] * t, b = { x0: x - ae.w * s / 2, x1: x + ae.w * s / 2, y0: y - ae.h * s / 2 - 14 * k, y1: y + ae.h * s / 2 };
+      if (obs.every(function (o) { return b.x1 + sep <= o.x0 || o.x1 + sep <= b.x0 || b.y1 + sep <= o.y0 || o.y1 + sep <= b.y0; })) { v.x = x; v.y = y; return; }
+    }
+  }
+  // setCrop(doc, viewId, region | null): crops a view to a rectangle { type: 'rect', a, b } or a circle { type:
+  // 'circle', c, r } (model units in the view's frame); null takes the crop off (SolidWorks: Crop View ▸ Remove Crop)
+  function setCrop(doc, viewId, region) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (region == null) { delete v.crop; return v; }
+    if (v.kind === 'detail' || v.kind === 'flat') throw new Error('A ' + (v.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view cannot be cropped');
+    if (region.type === 'circle' || (region.c && region.r != null)) {
+      if (!(region.r > 0)) throw new Error('A crop circle needs a radius');
+      v.crop = { type: 'circle', c: [+region.c[0], +region.c[1]], r: +region.r };
+    } else {
+      var a = region.a, b = region.b;
+      if (!a || !b || Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9) throw new Error('A crop rectangle needs two opposite corners: { a: [u, v], b: [u, v] }');
+      v.crop = { type: 'rect', a: [Math.min(a[0], b[0]), Math.min(a[1], b[1])], b: [Math.max(a[0], b[0]), Math.max(a[1], b[1])] };
+    }
+    return v;
+  }
+  // addBreak(doc, viewId, { dir: 'vertical' | 'horizontal', a, b, gap, style }) -> the view: break lines at a and b
+  // (model units along u for vertical lines, along v for horizontal ones); gap (paper units) defaults to 10 mm / 0.4 in;
+  // style 'zigzag' (default) or 'straight'. A break overlapping one of the same direction replaces it.
+  // clearBreaks(doc, viewId): Un-Break View.
+  function addBreak(doc, viewId, opts) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (v.kind === 'detail' || v.kind === 'flat') throw new Error('A ' + (v.kind === 'flat' ? 'flat-pattern' : 'detail') + ' view cannot be broken');
+    opts = opts || {};
+    var dir = /^h/i.test(opts.dir || '') ? 'horizontal' : 'vertical', a = Math.min(+opts.a, +opts.b), b = Math.max(+opts.a, +opts.b);
+    if (!isFinite(a) || !isFinite(b) || b - a < 1e-9) throw new Error('A break needs two different break line positions a and b');
+    var gap = opts.gap != null ? +opts.gap : (doc.units === 'in' ? 0.4 : 10);
+    var brk = { dir: dir, a: a, b: b, gap: Math.max(0, gap), style: opts.style === 'straight' ? 'straight' : 'zigzag' };
+    var list = (v.breaks || []).filter(function (o) { return o.dir !== dir || o.b < a || o.a > b; });
+    list.push(brk);
+    list.sort(function (x, y) { return x.a - y.a; });
+    v.breaks = list;
+    return v;
+  }
+  function clearBreaks(doc, viewId) { var v = findV(doc, viewId); if (v) delete v.breaks; return v; }
+
+  // ---- crop: a projection clipped to a rectangle R = [u0, v0, u1, v1]
+  function segInRect(l, R) {
+    var x0 = l[0], y0 = l[1], dx = l[2] - l[0], dy = l[3] - l[1], t0 = 0, t1 = 1;
+    var pq = [[-dx, x0 - R[0]], [dx, R[2] - x0], [-dy, y0 - R[1]], [dy, R[3] - y0]];
+    for (var i = 0; i < 4; i++) {
+      var p = pq[i][0], q = pq[i][1];
+      if (Math.abs(p) < 1e-15) { if (q < 0) return null; continue; }
+      var r = q / p;
+      if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; } else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    if (t1 - t0 < 1e-12) return null;
+    var out = l.slice(); out[0] = x0 + dx * t0; out[1] = y0 + dy * t0; out[2] = x0 + dx * t1; out[3] = y0 + dy * t1;
+    return out;
+  }
+  // the angle ranges (degrees, CCW, a0 < a1, a0 in [0, 360)) of circle (c, r) on which inside(point) holds, split at the
+  // crossing angles cuts (radians); 'full' when all of it does
+  function circleRanges(c, r, cuts, inside) {
+    var ang = cuts.map(function (t) { var d = t * 180 / Math.PI % 360; return d < 0 ? d + 360 : d; }).sort(function (x, y) { return x - y; });
+    if (!ang.length) return inside([c[0] + r, c[1]]) ? 'full' : [];
+    var out = [];
+    for (var i = 0; i < ang.length; i++) {
+      var lo = ang[i], hi = i + 1 < ang.length ? ang[i + 1] : ang[0] + 360;
+      if (hi - lo < 1e-9) continue;
+      var mid = (lo + hi) / 2 * Math.PI / 180;
+      if (inside([c[0] + r * Math.cos(mid), c[1] + r * Math.sin(mid)])) {
+        if (out.length && Math.abs(out[out.length - 1].a1 - lo) < 1e-9) out[out.length - 1].a1 = hi; else out.push({ a0: lo, a1: hi });
+      }
+    }
+    if (out.length > 1 && Math.abs(out[out.length - 1].a1 - 360 - out[0].a0) < 1e-9) { var last = out.pop(); out[0] = { a0: last.a0, a1: out[0].a1 + 360 }; }
+    if (out.length === 1 && out[0].a1 - out[0].a0 >= 360 - 1e-9) return 'full';
+    return out;
+  }
+  // crossings of circle (c, r) with the lines x = X (xs) and y = Y (ys): angles in radians
+  function circleCuts(c, r, xs, ys) {
+    var cuts = [];
+    xs.forEach(function (X) { var q = (X - c[0]) / r; if (Math.abs(q) < 1) { var t = Math.acos(q); cuts.push(t, -t); } });
+    ys.forEach(function (Y) { var q = (Y - c[1]) / r; if (Math.abs(q) < 1) { var t = Math.asin(q); cuts.push(t, Math.PI - t); } });
+    return cuts;
+  }
+  function arcPieces(a, ranges) {
+    if (ranges === 'full') return [a];
+    var out = [];
+    ranges.forEach(function (w) {
+      for (var j = -2; j <= 2; j++) {
+        var lo = Math.max(a.a0, w.a0 + 360 * j), hi = Math.min(a.a1, w.a1 + 360 * j);
+        if (hi - lo > 1e-9) out.push(Object.assign({}, a, { a0: lo, a1: hi }));
+      }
+    });
+    return out;
+  }
+  function clipProjectionRect(pr, R) {
+    var eps = 1e-9;
+    function inside(p) { return p[0] >= R[0] - eps && p[0] <= R[2] + eps && p[1] >= R[1] - eps && p[1] <= R[3] + eps; }
+    function ranges(c, r) { return circleRanges(c, r, circleCuts(c, r, [R[0], R[2]], [R[1], R[3]]), inside); }
+    var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [], tangent: [] }, circles: { visible: [], hidden: [], tangent: [] }, arcs: { visible: [], hidden: [], tangent: [] },
+      ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [] };
+    if (pr.pending) out.pending = true;
+    ['visible', 'hidden', 'tangent'].forEach(function (k) {
+      (pr.lines[k] || []).forEach(function (l) { var q = segInRect(l, R); if (q) out.lines[k].push(q); });
+      (pr.circles[k] || []).forEach(function (c) {
+        var q = ranges(c.c, c.r);
+        if (q === 'full') out.circles[k].push(c); else q.forEach(function (w) { out.arcs[k].push({ c: c.c, r: c.r, a0: w.a0, a1: w.a1, body: c.body || 0 }); });
+      });
+      (pr.arcs && pr.arcs[k] || []).forEach(function (a) { arcPieces(a, ranges(a.c, a.r)).forEach(function (x) { out.arcs[k].push(x); }); });
+      if (k === 'tangent') return;
+      (pr.ellipses ? pr.ellipses[k] : []).forEach(function (el) {
+        var inAll = true, n = Math.max(8, Math.ceil((el.t1 - el.t0) / TWO_PI * 144)), pts = [];
+        for (var i = 0; i <= n; i++) { var t = el.t0 + (el.t1 - el.t0) * i / n, p = [el.c[0] + el.ax[0] * Math.cos(t) + el.ay[0] * Math.sin(t), el.c[1] + el.ax[1] * Math.cos(t) + el.ay[1] * Math.sin(t)]; pts.push(p); if (!inside(p)) inAll = false; }
+        if (inAll) { out.ellipses[k].push(el); return; }
+        for (var j = 1; j < pts.length; j++) { var q2 = segInRect([pts[j - 1][0], pts[j - 1][1], pts[j][0], pts[j][1], el.body || 0], R); if (q2) out.lines[k].push(q2); }
+      });
+    });
+    (pr.all || []).forEach(function (l) { var q = segInRect(l, R); if (q) out.all.push(q); });
+    (pr.circlesAll || []).forEach(function (c) { if (ranges(c.c, c.r) === 'full') out.circlesAll.push(c); });
+    (pr.arcsAll || []).forEach(function (a) { if (inside([a.c[0] - a.r, a.c[1] - a.r]) && inside([a.c[0] + a.r, a.c[1] + a.r])) out.arcsAll.push(a); });
+    var b = pr.bounds || { umin: R[0], umax: R[2], vmin: R[1], vmax: R[3] };
+    out.bounds = { umin: Math.max(b.umin, R[0]), umax: Math.min(b.umax, R[2]), vmin: Math.max(b.vmin, R[1]), vmax: Math.min(b.vmax, R[3]) };
+    if (out.bounds.umin > out.bounds.umax) out.bounds.umin = out.bounds.umax = (R[0] + R[2]) / 2;
+    if (out.bounds.vmin > out.bounds.vmax) out.bounds.vmin = out.bounds.vmax = (R[1] + R[3]) / 2;
+    out.stats = { visibleLines: out.lines.visible.length, hiddenLines: out.lines.hidden.length, visibleCircles: out.circles.visible.length, hiddenCircles: out.circles.hidden.length,
+      visibleArcs: out.arcs.visible.length, hiddenArcs: out.arcs.hidden.length };
+    return out;
+  }
+  // a polygon loop clipped to the rectangle (Sutherland–Hodgman)
+  function loopInRect(loop, R) {
+    var pts = loop;
+    [[0, 1, R[0]], [0, -1, R[2]], [1, 1, R[1]], [1, -1, R[3]]].forEach(function (cl) {
+      var ax = cl[0], sg = cl[1], lim = cl[2], out = [];
+      function inn(p) { return sg * (p[ax] - lim) >= 0; }
+      for (var i = 0; i < pts.length; i++) {
+        var P = pts[i], Q = pts[(i + 1) % pts.length], pi = inn(P), qi = inn(Q);
+        if (pi) out.push(P);
+        if (pi !== qi) { var t = (lim - P[ax]) / (Q[ax] - P[ax]); out.push([P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t]); }
+      }
+      pts = out;
+    });
+    return pts.length >= 3 ? pts : null;
+  }
+  // cropContent(ct, crop): the view content limited to the crop region (a fresh object; cached projections untouched)
+  function cropContent(ct, crop) {
+    var o = {}; Object.keys(ct).forEach(function (q) { o[q] = ct[q]; });
+    if (crop.type === 'circle') {
+      o.proj = clipProjection(ct.proj, crop.c, crop.r);
+      var b0 = ct.proj.bounds, b1 = o.proj.bounds;
+      if (b0) o.proj.bounds = { umin: Math.max(b0.umin, b1.umin), umax: Math.min(b0.umax, b1.umax), vmin: Math.max(b0.vmin, b1.vmin), vmax: Math.min(b0.vmax, b1.vmax) };
+      if (!o.clip) o.clip = { c: crop.c.slice(), r: crop.r };
+    } else {
+      var R = [crop.a[0], crop.a[1], crop.b[0], crop.b[1]];
+      o.proj = clipProjectionRect(ct.proj, R);
+      o.caps = (ct.caps || []).map(function (cap) {
+        var c2 = {}; Object.keys(cap).forEach(function (q) { c2[q] = cap[q]; });
+        c2.loops = cap.loops.map(function (l) { return loopInRect(l, R); }).filter(Boolean);
+        return c2;
+      }).filter(function (c) { return c.loops.length; });
+    }
+    o.crop = crop;
+    return o;
+  }
+  _.hook(_, 'viewContent', function (base) {
+    return function (doc, v, mesh, parentContent) {
+      var ct = base(doc, v, mesh, parentContent);
+      if (!ct || !ct.proj) return ct;
+      // an auxiliary view keeps its projection lines square to the parent's edge wherever it sits along them
+      if (v.kind === 'aux' && v.aux && v.parent != null && parentContent) {
+        var par = findV(doc, v.parent);
+        if (par && Math.abs(_.viewScale(doc, par) - ct.scale) < 1e-12) {
+          var pc = parentContent(par), d2 = v.aux.dir, p2 = [d2[1], -d2[0]], s = ct.scale;
+          var want = pc.center[0] * p2[0] + pc.center[1] * p2[1] + ((v.x - par.x) * p2[0] + (v.y - par.y) * p2[1]) / s;
+          var have = ct.center[0] * p2[0] + ct.center[1] * p2[1];
+          ct.center = [ct.center[0] + (want - have) * p2[0], ct.center[1] + (want - have) * p2[1]];
+        }
+      }
+      if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = cropContent(ct, v.crop);
+      return ct;
+    };
+  });
+
+  // ---- breaks: a piecewise-linear map of the sheet along one axis
+  // bandMap(bands): bands [{ lo, hi, gap }] in sheet units, sorted -> { fwd(x), inv(x), bands: [{ lo, hi, olo, ohi }] }:
+  // the paper between lo and hi is squeezed into the gap and the two sides move in by half the removed length each, so
+  // the view keeps its centre
+  function bandMap(bands) {
+    var T = 0; bands.forEach(function (b) { T += Math.max(0, b.hi - b.lo - b.gap); });
+    var kin = [], kout = [], acc = T / 2, out = [];
+    bands.forEach(function (b) {
+      var R = Math.max(0, b.hi - b.lo - b.gap);
+      kin.push(b.lo, b.hi); kout.push(b.lo + acc, b.lo + acc + (b.hi - b.lo - R));
+      out.push({ lo: b.lo, hi: b.hi, olo: b.lo + acc, ohi: b.lo + acc + (b.hi - b.lo - R) });
+      acc -= R;
+    });
+    function pw(x, A, B) {
+      if (!A.length) return x;
+      if (x <= A[0]) return x + B[0] - A[0];
+      for (var i = 1; i < A.length; i++) if (x <= A[i]) return A[i] - A[i - 1] > 1e-15 ? B[i - 1] + (x - A[i - 1]) * (B[i] - B[i - 1]) / (A[i] - A[i - 1]) : B[i];
+      return x + B[A.length - 1] - A[A.length - 1];
+    }
+    return { fwd: function (x) { return pw(x, kin, kout); }, inv: function (x) { return pw(x, kout, kin); }, bands: out };
+  }
+  function inBand(x, bands) { for (var i = 0; i < bands.length; i++) if (x > bands[i].lo + 1e-9 && x < bands[i].hi - 1e-9) return true; return false; }
+  function copyOf(p) { var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); return q; }
+  // applyBreaks(sheet, w, k): the view's linework clipped out of the bands and closed up, its dimensions and
+  // annotations moved with it (their values stay the true ones), break lines drawn at the edges of every gap
+  function applyBreaks(sheet, w, k) {
+    var v = w.view, ts = w.toSheet, fs = w.fromSheet;
+    var vb = [], hb = [];
+    v.breaks.forEach(function (b) {
+      if (b.dir === 'horizontal') { var y0 = ts([0, b.a])[1], y1 = ts([0, b.b])[1]; hb.push({ lo: Math.min(y0, y1), hi: Math.max(y0, y1), gap: b.gap, style: b.style }); }
+      else { var x0 = ts([b.a, 0])[0], x1 = ts([b.b, 0])[0]; vb.push({ lo: Math.min(x0, x1), hi: Math.max(x0, x1), gap: b.gap, style: b.style }); }
+    });
+    vb.sort(function (p, q) { return p.lo - q.lo; }); hb.sort(function (p, q) { return p.lo - q.lo; });
+    var MX = bandMap(vb), MY = bandMap(hb);
+    function M(p) { return [MX.fwd(p[0]), MY.fwd(p[1])]; }
+    function cut(p) { return inBand(p[0], vb) || inBand(p[1], hb); }
+    var xs = [], ys = [];
+    vb.forEach(function (b) { xs.push(b.lo, b.hi); }); hb.forEach(function (b) { ys.push(b.lo, b.hi); });
+    var out = [], L = w.layer;
+    sheet.prims.forEach(function (p) {
+      var mine = p.layer === L && p.view == null, ann = p.view === v.id;
+      if (!mine && !ann) { out.push(p); return; }
+      var q = copyOf(p);
+      if (ann || p.k === 'text' || p.k === 'fill' || p.k === 'pending') {
+        if (q.a) q.a = M(q.a); if (q.b) q.b = M(q.b); if (q.p) q.p = M(q.p); if (q.c) q.c = M(q.c);
+        if (q.pts) q.pts = q.pts.map(M);
+        if (q.box) { var b0 = M([q.box.x0, q.box.y0]), b1 = M([q.box.x1, q.box.y1]); q.box = { x0: b0[0], y0: b0[1], x1: b1[0], y1: b1[1] }; }
+        out.push(q); return;
+      }
+      delete q.chain;
+      if (p.k === 'line') {
+        var dx = p.b[0] - p.a[0], dy = p.b[1] - p.a[1], tt = [0, 1];
+        xs.forEach(function (X) { if (Math.abs(dx) > 1e-15) { var t = (X - p.a[0]) / dx; if (t > 0 && t < 1) tt.push(t); } });
+        ys.forEach(function (Y) { if (Math.abs(dy) > 1e-15) { var t = (Y - p.a[1]) / dy; if (t > 0 && t < 1) tt.push(t); } });
+        tt.sort(function (x, y) { return x - y; });
+        for (var i = 1; i < tt.length; i++) {
+          if (tt[i] - tt[i - 1] < 1e-12) continue;
+          var tm = (tt[i] + tt[i - 1]) / 2;
+          if (cut([p.a[0] + dx * tm, p.a[1] + dy * tm])) continue;
+          var r = copyOf(q);
+          r.a = M([p.a[0] + dx * tt[i - 1], p.a[1] + dy * tt[i - 1]]); r.b = M([p.a[0] + dx * tt[i], p.a[1] + dy * tt[i]]);
+          out.push(r);
+        }
+        return;
+      }
+      if (p.k === 'circle' || p.k === 'arc') {
+        var rg = circleRanges(p.c, p.r, circleCuts(p.c, p.r, xs, ys), function (pt) { return !cut(pt); });
+        var pieces = p.k === 'circle' ? (rg === 'full' ? ['full'] : rg) : arcPieces({ a0: p.a0, a1: p.a1 }, rg);
+        pieces.forEach(function (pc) {
+          var mid = pc === 'full' ? 0 : (pc.a0 + pc.a1) / 2 * Math.PI / 180, mp = [p.c[0] + p.r * Math.cos(mid), p.c[1] + p.r * Math.sin(mid)], m2 = M(mp);
+          var r = copyOf(q);
+          r.c = [p.c[0] + m2[0] - mp[0], p.c[1] + m2[1] - mp[1]];
+          if (pc !== 'full') { r.k = 'arc'; r.a0 = pc.a0; r.a1 = pc.a1; }
+          out.push(r);
+        });
+        return;
+      }
+      if (p.k === 'ellipse') {
+        var ext = Math.hypot(p.major[0], p.major[1]);
+        if (xs.some(function (X) { return Math.abs(X - p.c[0]) < ext; }) || ys.some(function (Y) { return Math.abs(Y - p.c[1]) < ext; })) { if (cut(p.c)) return; }
+        q.c = M(p.c); out.push(q); return;
+      }
+      out.push(q);
+    });
+    // break lines (thin), straight or zig-zag, at both edges of every gap and a little past the view
+    var bx0 = MX.fwd(w.box.x0), bx1 = MX.fwd(w.box.x1), by0 = MY.fwd(w.box.y0), by1 = MY.fwd(w.box.y1), ov = 3 * k;
+    function brk(a, b, style) {
+      if (style !== 'zigzag') { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin', breakLine: true }); return; }
+      var dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), n = Math.max(2, Math.round(len / (6 * k))), amp = 1.5 * k, nx = -dy / len, ny = dx / len, prev = a;
+      for (var i = 1; i <= 2 * n; i++) {
+        var t = i / (2 * n), o = i === 2 * n ? 0 : (i % 2 ? amp : -amp), pt = [a[0] + dx * t + nx * o, a[1] + dy * t + ny * o];
+        out.push({ k: 'line', a: prev, b: pt, layer: L, style: 'thin', breakLine: true }); prev = pt;
+      }
+    }
+    MX.bands.forEach(function (b, i) { [b.olo, b.ohi].forEach(function (x) { brk([x, by0 - ov], [x, by1 + ov], vb[i].style); }); });
+    MY.bands.forEach(function (b, i) { [b.olo, b.ohi].forEach(function (y) { brk([bx0 - ov, y], [bx1 + ov, y], hb[i].style); }); });
+    sheet.prims = out;
+    w.box = { x0: bx0, x1: bx1, y0: by0, y1: by1 };
+    w.toSheet = function (p) { return M(ts(p)); };
+    w.fromSheet = function (p) { return fs([MX.inv(p[0]), MY.inv(p[1])]); };
+    w.breaks = { vertical: MX.bands, horizontal: MY.bands };
+    function mapBox(b) { var a0 = M([b.x0, b.y0]), a1 = M([b.x1, b.y1]); return { x0: a0[0], y0: a0[1], x1: a1[0], y1: a1[1] }; }
+    (sheet.dims || []).forEach(function (d) {
+      if (d.view !== v.id) return;
+      if (d.box && isFinite(d.box.x0)) d.box = mapBox(d.box);
+      if (d.tbox) d.tbox = mapBox(d.tbox);
+      if (d.arrows) d.arrows = d.arrows.map(M);
+    });
+    (sheet.annotations || []).forEach(function (an) { if (an.view === v.id && an.box && isFinite(an.box.x0)) an.box = mapBox(an.box); });
+  }
+  // the auxiliary view's label (VIEW A-A) and, on the parent, the arrow square to the edge with the letter
+  function auxMarks(sheet, w, pw, k, projection) {
+    var v = w.view, L = w.layer, CAP = _.CAP_EM || 1;
+    sheet.prims = sheet.prims.filter(function (p) { return !(p.k === 'text' && p.layer === L && p.view == null && /^AUXILIARY/.test(p.text)); });
+    sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 7 * k], h: 3.5 * k * CAP, text: 'VIEW ' + v.label + '-' + v.label, anchor: 'middle', layer: L, rot: 0, auxLabel: v.id });
+    if (v.scale && D.scaleValue(v.scale) !== D.scaleValue(sheet.scale || [1, 1])) sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 12 * k], h: 3 * k * CAP, text: D.scaleLabel(v.scale), anchor: 'middle', layer: L, rot: 0 });
+    if (!pw) return;
+    var PL = pw.layer, A = pw.toSheet(v.aux.a), B = pw.toSheet(v.aux.b), M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], d2 = v.aux.dir, sg = projection === 'first' ? -1 : 1;
+    var side = [d2[0] * sg, d2[1] * sg], gap = 3 * k, shaft = 10 * k, ar = 3 * k, aw = 0.9 * k, lh = 5 * k;
+    var tip = [M[0] + side[0] * gap, M[1] + side[1] * gap], tail = [M[0] + side[0] * (gap + shaft), M[1] + side[1] * (gap + shaft)], dir = [-side[0], -side[1]], n = [-dir[1], dir[0]];
+    sheet.prims.push({ k: 'line', a: tail, b: tip, layer: PL, style: 'thick', auxArrow: v.id });
+    sheet.prims.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: PL, auxArrow: v.id });
+    sheet.prims.push({ k: 'text', p: [tail[0] + side[0] * lh * 0.8, tail[1] + side[1] * lh * 0.8 - lh * 0.5], h: lh * CAP, text: v.label, anchor: 'middle', layer: PL, rot: 0, auxArrow: v.id });
+  }
+  _.hook(D, 'compute', function (base) {
+    return function (doc, mesh, model, ctx) {
+      var sheet = base(doc, mesh, model, ctx);
+      if (!sheet || !sheet.views) return sheet;
+      var k = _.paperK(sheet.units), byId = {};
+      sheet.views.forEach(function (w) { byId[w.view.id] = w; });
+      sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
+      sheet.views.forEach(function (w) {
+        if (w.view.kind !== 'aux' || !w.view.aux) return;
+        w.ortho = true;   // seen square: edges parallel to the sheet are true length, so Smart Dimension works on it
+        auxMarks(sheet, w, w.view.parent != null ? byId[w.view.parent] : null, k, doc.sheet.projection);
+      });
+      return sheet;
+    };
+  });
+  // auxiliary views follow their parent and slide only along their axis
+  function carryAux(doc, before) {
+    var moved = {};
+    doc.views.forEach(function (v) { var b = before[v.id]; if (b && (Math.abs(b[0] - v.x) > 1e-12 || Math.abs(b[1] - v.y) > 1e-12)) moved[v.id] = [v.x - b[0], v.y - b[1]]; });
+    for (var pass = 0, changed = true; changed && pass < 20; pass++) {
+      changed = false;
+      doc.views.forEach(function (c) {
+        if (c.kind !== 'aux' || moved[c.id] || c.parent == null || !moved[c.parent]) return;
+        var dlt = moved[c.parent]; c.x += dlt[0]; c.y += dlt[1]; moved[c.id] = dlt; changed = true;
+        doc.views.forEach(function (g) { if (g.parent === c.id && g.align && !moved[g.id]) { g.x += dlt[0]; g.y += dlt[1]; moved[g.id] = dlt; } });
+      });
+    }
+  }
+  function positions(doc) { var b = {}; (doc.views || []).forEach(function (v) { b[v.id] = [v.x, v.y]; }); return b; }
+  _.hook(D, 'moveView', function (base) {
+    return function (doc, id, x, y) {
+      var v = findV(doc, id);
+      if (v && v.kind === 'aux' && v.aux && v.parent != null && findV(doc, v.parent)) {
+        var d2 = v.aux.dir, t = (x - v.x) * d2[0] + (y - v.y) * d2[1];
+        x = v.x + d2[0] * t; y = v.y + d2[1] * t;
+      }
+      var before = positions(doc), r = base(doc, id, x, y);
+      carryAux(doc, before);
+      return r;
+    };
+  });
+  _.hook(D, 'layout', function (base) {
+    return function (doc) {
+      var before = positions(doc), r = base.apply(this, arguments);
+      carryAux(doc, before);
+      return r;
+    };
+  });
+  D.auxFrame = auxFrame; D.addAuxiliaryView = addAuxiliaryView; D.setCrop = setCrop; D.addBreak = addBreak; D.clearBreaks = clearBreaks;
+  D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap;
+
   D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;

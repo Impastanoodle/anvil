@@ -13,7 +13,7 @@
   var dimLabel = D.dimLabel, numText = D.numText, styleKey = D.styleKey, setDimProps = D.setDimProps, STACK_DIRS = D.STACK_DIRS;
   var TWO_PI = _.TWO_PI, chainLines = _.chainLines, clipSeg = _.clipSeg, primHitsRect = _.primHitsRect, segOutsideRect = _.segOutsideRect;
   var MM = _.MM, paperK = _.paperK, viewScale = _.viewScale, BORDER = _.BORDER, TB_W = _.TB_W, TB_H = _.TB_H, HATCH = _.HATCH, BOM_TEXT = _.BOM_TEXT;
-  var viewContent = _.viewContent, autoDimKey = _.autoDimKey, hasMaterials = _.hasMaterials, bomCell = _.bomCell;
+  var viewContent = _.viewContent, autoDimKey = _.autoDimKey, hasMaterials = _.hasMaterials, bomCell = _.bomCell, REV_TEXT = _.REV_TEXT;
   var refPos = _.refPos, reattachUserDim = _.reattachUserDim, partThreads = _.partThreads, threadsAlong = _.threadsAlong, annotationPrims = _.annotationPrims;
 
   // ------------------------------------------------------------------ sheet primitives
@@ -56,13 +56,27 @@
     // drawing's) links, evaluated now; doc.titleBlock overrides a field's text
     var tb = titleBlock(doc, model, ctx), scale = doc.sheet.scale || [1, 1];
     var tbRect = { x0: tx0, y0: ty0, x1: S[0] - b1, y1: ty0 + th };
-    var colX = {};
+    var colX = {}, blocks = D.tbBlocks(S, units), tbBoxes = D.tbRects(S, units);
+    // (rfM) the sheet format's left blocks: COMPANY / DRAWN / CHECKED and the general tolerances, when they fit
+    if (tbBoxes[1]) {
+      var ex = tbBoxes[1];
+      rect([ex.x0, ex.y0], [ex.x1, ex.y1], 'SHEET', 'thick');
+      if (blocks.eng) { var ex0 = tx0 + D.TB_BLOCKS.eng * k; line([ex0, ty0 + row], [tx0, ty0 + row], 'SHEET', 'thin'); line([ex0, ty0 + 2 * row], [tx0, ty0 + 2 * row], 'SHEET', 'thin'); }
+      if (blocks.tol && blocks.eng) line([tx0 + D.TB_BLOCKS.eng * k, ty0], [tx0 + D.TB_BLOCKS.eng * k, ty0 + th], 'SHEET', 'thick');
+    }
     TB_FIELDS.forEach(function (f) {
+      if (f.block && !blocks[f.block]) return;
       var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
-      if (f.x0 > 0 && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; line([x0, yTop - row], [x0, yTop], 'SHEET', 'thin'); }
+      if ((f.x0 > 0 || (f.block && f.x0 > D.TB_BLOCKS[f.block])) && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; line([x0, yTop - row * (f.rows || 1)], [x0, yTop], 'SHEET', 'thin'); }
       var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
-      if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
       text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
+      if (f.multi && v) {
+        // a block of lines (the general tolerances), 2.2 mm text, 1.5 × apart
+        var ls = String(v).split(/\r?\n/), lh = 2.2 * k;
+        ls.forEach(function (s, i) { if (s) text([x0 + pad, yTop - pad - lab - 4 * k - i * lh * 1.5], lh / CAP_EM, s, 'start', 'SHEET'); });
+        return;
+      }
+      if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
       if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
     });
     function rect(a, b, layer, style) { line([a[0], a[1]], [b[0], a[1]], layer, style); line([b[0], a[1]], [b[0], b[1]], layer, style); line([b[0], b[1]], [a[0], b[1]], layer, style); line([a[0], b[1]], [a[0], a[1]], layer, style); }
@@ -263,6 +277,27 @@
       cells.forEach(function (cr, i) { cr.forEach(function (t, j) { cellText(i + 1, j, t); }); });
       bom = { rows: rows, box: bb, layer: BL, columns: bb.columns, cells: cells, type: bomType(doc.bom.type) };
     }
+    // (rfM) Revision Table: REVISIONS title row, ZONE / REV / DESCRIPTION / DATE / APPROVED, one row per revision, on
+    // the REVISIONS layer; a description longer than its cell is cut with '...'
+    var revBx = D.revBox(doc, units), revisions = null;
+    if (revBx) {
+      var RL = 'REVISIONS', rth = REV_TEXT * k, rrows = doc.revisions.rows || [];
+      rect([revBx.x0, revBx.y0], [revBx.x1, revBx.y1], RL, 'thick');
+      for (var rr = 1; rr <= rrows.length + 1; rr++) line([revBx.x0, revBx.y1 - rr * revBx.rowH], [revBx.x1, revBx.y1 - rr * revBx.rowH], RL, rr === 2 ? 'thick' : 'thin');
+      for (var rc = 1; rc < revBx.cols.length - 1; rc++) line([revBx.cols[rc], revBx.y0], [revBx.cols[rc], revBx.y1 - revBx.rowH], RL, 'thin');
+      var rcell = function (ri, ci, t, al) {
+        var x0c = revBx.cols[ci], x1c = revBx.cols[ci + 1], y = revBx.y1 - (ri + 1) * revBx.rowH + (revBx.rowH - rth) / 2;
+        var maxCh = Math.floor((x1c - x0c - 2 * k) / (rth * 0.78));
+        t = t == null ? '' : String(t);
+        if (!t) return;
+        if (t.length > maxCh) t = t.slice(0, Math.max(1, maxCh - 3)) + '...';
+        prims.push({ k: 'text', p: [al === 'start' ? x0c + 1.2 * k : (x0c + x1c) / 2, y], h: rth, text: t, anchor: al || 'middle', layer: RL, rot: 0 });
+      };
+      prims.push({ k: 'text', p: [(revBx.x0 + revBx.x1) / 2, revBx.y1 - revBx.rowH + (revBx.rowH - rth) / 2], h: rth, text: 'REVISIONS', anchor: 'middle', layer: RL, rot: 0 });
+      D.REV_COLS.forEach(function (c, ci) { rcell(1, ci, c[0]); });
+      rrows.forEach(function (r, ri) { D.REV_COLS.forEach(function (c, ci) { rcell(ri + 2, ci, r[c[2]], c[2] === 'description' ? 'start' : 'middle'); }); });
+      revisions = { box: revBx, rows: rrows.map(function (r) { return JSON.parse(JSON.stringify(r)); }), latest: D.latestRev(doc), anchor: revBx.anchor };
+    }
     // a part drawing without a Bill of Materials still numbers its manual balloons: the part is item 1
     var brows = rows;
     if (!brows.length && model.type !== 'assembly' && views.some(function (w) { return (w.view.balloons || []).length; })) {
@@ -332,12 +367,24 @@
     var threads = partThreads(model), holeNames = D.holeSizeNames(model), annPre = {};
     views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames); }); });
     // notes (Annotation ▸ Note): multi-line text on the sheet
-    var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k); });
+    // (rfM) a note's $PRP:"name" / $PRPSHEET:"name" links read the drawing's / the part's custom properties, as a title
+    // block field does; a leader ends in an arrow at nt.leader. Shop symbols (Surface Finish, Datum Feature, Geometric
+    // Tolerance) are paper items like notes.
+    var noteCtx = null, noteText = function (t) {
+      if (!/\$PRP/.test(t)) return t;
+      if (!noteCtx && typeof Materials !== 'undefined' && model) { var asmN = model.type === 'assembly', bN = ctx.build && !!ctx.build.assembly === asmN ? ctx.build : null; noteCtx = { build: bN, mesh: mesh, props: Materials.context(model, { build: bN, mesh: asmN ? null : mesh }) }; }
+      return D.titleText(t, doc, model, noteCtx || {});
+    };
+    var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k, noteText); });
+    var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W); r.id = sy.id; r.type = sy.type; return r; });
+    // what dimensions and Bend Tables keep clear of besides: the Revision Table, the sheet format's left blocks, symbols
+    var keepOut = (revBx ? [revBx] : []).concat(tbBoxes.slice(1), symPre.map(function (it) { return it.box; }));
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
     var flatPre = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [] };
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'text') flatCtx.taken.push(textRect(x)); }); });
     notePre.forEach(function (it) { flatCtx.taken.push(it.box); });
+    keepOut.forEach(function (b) { flatCtx.taken.push(b); });
     views.forEach(function (w) { if (w.flat) flatPre = flatPre.concat(flatItems(w, doc, units, k, flatCtx)); });
     // the flat views' overall width and height (Document Properties ▸ Flat pattern ▸ overall dimensions): model items
     // of their own, kept like the others (styles, suppressed keys), whether or not Model Items is on
@@ -379,6 +426,7 @@
     if (bom) obs.boxes.push({ box: bom.box });
     Object.keys(annPre).forEach(function (key) { annPre[key].prims.forEach(function (x) { if (x.k === 'line') geo.segs.push([x.a, x.b]); else if (x.k === 'text') obs.texts.push(textRect(x)); }); });
     flatPre.concat(notePre).forEach(function (it) { if (!it.hidden) obs.texts.push(it.box); });
+    keepOut.forEach(function (b) { obs.boxes.push({ box: b }); });
     prims.forEach(function (p) { if (p.bend != null) geo.segs.push([p.a, p.b]); });
     dims.forEach(function (d) {
       var vw = views.filter(function (w) { return w.view.id === d.view; })[0];
@@ -432,9 +480,13 @@
     });
     var notes = notePre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
-      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box };
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null };
     });
-    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes };
+    var symbols = symPre.map(function (it) {
+      it.prims.forEach(function (x) { prims.push(x); });
+      return { id: it.id, type: it.type, text: it.text, box: it.box };
+    });
+    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions };
   }
   // ------------------------------------------------------------------ flat-pattern annotations and notes
   // flatItems(w, doc, units, k) -> [{ id, view, key, type: 'bendNote' | 'bendTag' | 'bendTable' | 'flatSize', text,
@@ -587,14 +639,23 @@
   }
   // noteItem(note, k) -> { id, text, lines, p, h, prims, box }: a note's lines on the NOTES layer, the first line's
   // baseline at note.p (paper), 1.6 × the text height apart, left aligned
-  function noteItem(nt, k) {
-    var h = (+nt.h > 0 ? +nt.h : NOTE_H) * k, lines = String(nt.text == null ? '' : nt.text).split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  // (rfM) evalText(text) evaluates the $PRP / $PRPSHEET links (the note keeps its raw text, the sheet shows the value);
+  // nt.leader: a leader from the nearer side of the first line (a 4 mm shoulder) to an arrow at that paper point
+  function noteItem(nt, k, evalText) {
+    var raw = String(nt.text == null ? '' : nt.text), shown = evalText ? evalText(raw) : raw;
+    var h = (+nt.h > 0 ? +nt.h : NOTE_H) * k, lines = shown.split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     lines.forEach(function (s, i) {
       var p = [nt.p[0], nt.p[1] - i * h * 1.6];
       if (s.length) prims.push({ k: 'text', p: p, h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
       r.x0 = Math.min(r.x0, p[0]); r.x1 = Math.max(r.x1, p[0] + Math.max(textWidth(s, h), h * 0.5)); r.y0 = Math.min(r.y0, p[1]); r.y1 = Math.max(r.y1, p[1] + h);
     });
-    return { id: nt.id, text: String(nt.text == null ? '' : nt.text), lines: lines, p: nt.p.slice(), h: h, prims: prims, box: r };
+    if (nt.leader) {
+      var tip = nt.leader, left = tip[0] < (r.x0 + r.x1) / 2, y = nt.p[1] + h / 2, at = [left ? r.x0 - 1 * k : r.x1 + 1 * k, y], sh = [at[0] + (left ? -SHOULDER : SHOULDER) * k, y];
+      var d = [tip[0] - sh[0], tip[1] - sh[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], w = ARROW_W * k;
+      prims.push({ k: 'line', a: at, b: sh, layer: 'NOTES', style: 'thin', note: nt.id }, { k: 'line', a: sh, b: tip, layer: 'NOTES', style: 'thin', note: nt.id });
+      prims.push({ k: 'fill', pts: [tip, [tip[0] - u[0] * 3 * k + u[1] * w, tip[1] - u[1] * 3 * k - u[0] * w], [tip[0] - u[0] * 3 * k - u[1] * w, tip[1] - u[1] * 3 * k + u[0] * w]], layer: 'NOTES', note: nt.id });
+    }
+    return { id: nt.id, text: shown, raw: raw, lines: lines, p: nt.p.slice(), h: h, prims: prims, box: r, leader: nt.leader ? nt.leader.slice() : null };
   }
   function layerName(v, used) {
     var base = v.kind === 'section' ? 'SECTION_' + v.label : v.kind === 'detail' ? 'DETAIL_' + v.label : v.kind === 'flat' ? 'FLAT_PATTERN' : String(v.orient).toUpperCase(), name = base, n = 2;
@@ -1046,7 +1107,7 @@
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3, SYMBOLS: 7, REVISIONS: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     var inch = sheet.units === 'in';
     // R2000 handles: the fixed ones AutoCAD's own drawings use (tables 1–A, root dictionary C, ACAD_GROUP D, layer 0
     // 10, Standard 11, ACAD 12, ByBlock / ByLayer / Continuous 14–16, paper space 1B–1D, model space 1F–21), every

@@ -538,6 +538,8 @@
       var A = evalAt(a), B = evalAt(b), M = evalAt((a + b) / 2);
       var ax = M[0] - A[0], ay = M[1] - A[1], bx = B[0] - A[0], by = B[1] - A[1], cr = ax * by - ay * bx, chord = Math.hypot(bx, by);
       var dev = 0, q, t;
+      // a piece whose ends meet (a loop inside one span) has no arc through A, M, B: halve it again (rfL)
+      if (chord < 1e-9 * (1 + Math.hypot(ax, ay)) && Math.hypot(ax, ay) > 1e-9) return { A: A, B: B, dev: Infinity };
       function lineDev() { for (t = 1; t < 8; t++) { q = evalAt(a + (b - a) * t / 8); dev = Math.max(dev, Math.abs(((q[0] - A[0]) * by - (q[1] - A[1]) * bx) / (chord || 1))); } return { line: true, A: A, B: B, dev: dev }; }
       if (Math.abs(cr) < 1e-12 * chord * chord) return lineDev();
       var a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, cx = (by * a2 - ay * b2) / (2 * cr), cy = (ax * b2 - bx * a2) / (2 * cr);
@@ -552,7 +554,7 @@
       for (var i = 0; i < k && ok; i++) { var p = arcOf(u0 + (u1 - u0) * i / k, u0 + (u1 - u0) * (i + 1) / k); if (p.dev > tol) ok = false; out.push(p); }
       if (ok) break;
     }
-    return out;
+    return out.filter(function (p) { return isFinite(p.dev) && (p.line ? Math.hypot(p.B[0] - p.A[0], p.B[1] - p.A[1]) > 1e-9 : p.r > 1e-9 && isFinite(p.r)); });
   }
   function dxfFreeCurve(d, layer, e) {
     var r2000 = d.version === 'R2000', tol = DXF_TOL.freeArc[d.units] || DXF_TOL.freeArc.mm;
@@ -567,7 +569,14 @@
       var g = K.splineGeom(e);
       if (!g) return;
       if (r2000) { d.spline(layer, g.bez, g.knots); return; }
-      g.bez.forEach(function (B) { emitArcs(freeArcs(function (s) { return K.bezPoint(B, s); }, 0, 1, tol, 1)); });
+      // a span of zero length (a closed spline whose last point repeats the first) writes nothing (rfL: it wrote an
+      // ARC with r = 0 and NaN angles)
+      g.bez.forEach(function (B) {
+        var ext = 0;
+        for (var j = 1; j < 4; j++) ext = Math.max(ext, Math.hypot(B[j][0] - B[0][0], B[j][1] - B[0][1]));
+        if (ext <= 1e-9) return;
+        emitArcs(freeArcs(function (s) { return K.bezPoint(B, s); }, 0, 1, tol, 1));
+      });
       return;
     }
     if (!(e.rx > 0) || !(e.ry > 0)) return;

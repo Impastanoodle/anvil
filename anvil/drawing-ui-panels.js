@@ -20,6 +20,157 @@
   var cmdHoleCallout = DW.cmdHoleCallout, cmdChainDim = DW.cmdChainDim, cmdChamferDim = DW.cmdChamferDim, cmdBalloon = DW.cmdBalloon, setBalloonProps = DW.setBalloonProps, cmdDimensionPM = DW.cmdDimensionPM;
   var applyDimensionPM = DW.applyDimensionPM, cmdDocProps = DW.cmdDocProps, setDocOptions = DW.setDocOptions, autoInsertViews = DW.autoInsertViews;
 
+  // ------------------------------------------------------------------ rfM: Revision Table, shop symbols, drawing properties
+  // A PropertyManager of the drawing (as drawing-ui-tools.js opens them): the sheet stays live under it
+  function pmOpen(spec, tool, pending) {
+    var onClose = spec.onClose;
+    spec.onClose = function () {
+      $('app').classList.remove('dw-pm'); DW.closeInlineEdit(false);
+      if (tool && D.tool === tool) { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); }
+      if (onClose) onClose();
+      if (D.active) { UI.setFmTab('tree'); render(); }
+    };
+    UI.openPM(spec);
+    $('app').classList.add('dw-pm');
+    if (tool) { D.tool = tool; D.pending = pending; D.hover = null; drawOverlay(); UI.refreshRibbon(); }
+  }
+  var SYM_TITLES = { surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance' };
+  var MOD_OPTIONS = [['', 'None (RFS)'], ['M', 'Ⓜ Maximum material condition'], ['L', 'Ⓛ Least material condition']];
+  // symbol PM values <-> symbol fields
+  function symValues(type, s) {
+    s = s || {};
+    if (type === 'surfaceFinish') return { symbol: s.symbol || 'machined', ra: s.ra != null ? s.ra : units() === 'in' ? '125' : '3.2', method: s.method || '', leader: s.id ? !!s.leader : true };
+    if (type === 'datum') return { label: s.label || Drawing.nextDatum(doc()), leader: true };
+    var d = s.datums || [];
+    return { char: s.char || 'position', dia: s.id ? !!s.dia : true, tol: s.tol || (units() === 'in' ? '.010' : '0.2'), mod: s.mod || '', d1: d[0] || '', d2: d[1] || '', d3: d[2] || '', leader: s.id ? !!s.leader : true };
+  }
+  function symSpec(type, v) {
+    if (type === 'surfaceFinish') return { symbol: v.symbol, ra: v.ra, method: v.method };
+    if (type === 'datum') return { label: v.label };
+    return { char: v.char, dia: !!v.dia, tol: v.tol, mod: v.mod, datums: [v.d1, v.d2, v.d3].filter(function (x) { return String(x || '').trim(); }) };
+  }
+  function symGroups(type, editing) {
+    var lead = { title: 'Leader', fields: [{ type: 'check', key: 'leader', label: editing ? 'Leader (drag its arrow on the sheet)' : 'Leader: first click the arrow point, then the symbol' }] };
+    if (type === 'surfaceFinish') return [
+      { title: 'Symbol', fields: [{ type: 'select', key: 'symbol', label: 'Symbol', options: Drawing.SF_SYMBOLS }] },
+      { title: 'Symbol Layout', fields: [{ type: 'text', key: 'ra', label: 'Maximum roughness (Ra)' }, { type: 'text', key: 'method', label: 'Production method' }] }, lead];
+    if (type === 'datum') return [{ title: 'Label Settings', fields: [{ type: 'text', key: 'label', label: 'Label' }] }, lead];
+    return [
+      { title: 'Symbol', fields: [{ type: 'select', key: 'char', label: 'Characteristic', options: Drawing.GTOL_CHARS }] },
+      { title: 'Tolerance 1', fields: [{ type: 'check', key: 'dia', label: 'Ø Diameter' }, { type: 'text', key: 'tol', label: 'Tolerance' }, { type: 'select', key: 'mod', label: 'Material condition', options: MOD_OPTIONS }] },
+      { title: 'Datums', fields: [{ type: 'text', key: 'd1', label: 'Primary (e.g. A, B(M))' }, { type: 'text', key: 'd2', label: 'Secondary' }, { type: 'text', key: 'd3', label: 'Tertiary' }] }, lead];
+  }
+  // cmdSymbol(type, id?): with id, the symbol's PropertyManager (OK applies, one undo step); without, the insert tool —
+  // click the sheet to place the symbol (with Leader: the arrow point first), ✓ / Esc ends
+  function cmdSymbol(type, id) {
+    var title = SYM_TITLES[type];
+    if (id != null) {
+      var s = Drawing.findSymbol(doc(), id);
+      if (!s) return;
+      pmOpen({ title: title, icon: type === 'gtol' ? 'gtol' : type === 'datum' ? 'datumFeature' : 'surfaceFinish', command: type, message: Drawing.symbolText(s), values: symValues(type, s), groups: symGroups(type, true),
+        onOK: function (v) {
+          var spec = symSpec(type, v);
+          if (!v.leader) spec.leader = null; else if (!s.leader) spec.leader = [s.p[0] - 12 * paperK(), s.p[1] - 8 * paperK()];
+          try { Drawing.editSymbol(JSON.parse(JSON.stringify(doc())), id, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return; }
+          edit(function (dc) { Drawing.editSymbol(dc, id, spec); });
+          UI.setStatus(title + ' changed.');
+        } });
+      return;
+    }
+    if (D.tool === 'symbol' && D.pending && D.pending.type === type) { if (UI.hasPM && UI.hasPM()) UI.pmCancel(); return; }
+    var vals = symValues(type, null);
+    pmOpen({ title: title, icon: type === 'gtol' ? 'gtol' : type === 'datum' ? 'datumFeature' : 'surfaceFinish', command: type,
+      message: 'Set the symbol, then click on the sheet to place it' + (vals.leader ? ' (Leader on: click the arrow point first)' : '') + '. Esc or ✓ ends.', values: vals, groups: symGroups(type, false),
+      onChange: function (v) { if (D.pending) { D.pending.values = v; if (!v.leader) D.pending.tip = null; } } }, 'symbol', { type: type, values: vals, tip: null });
+    UI.setStatus(title + ': ' + (vals.leader ? 'click the point the leader arrow touches, then where the symbol goes.' : 'click where the symbol goes.'));
+  }
+  function symbolClick(p) {
+    var P = D.pending;
+    if (!P) return;
+    if (P.values.leader && !P.tip) { P.tip = p; UI.setStatus(SYM_TITLES[P.type] + ': now click where the symbol goes.'); return; }
+    var spec = Object.assign({ type: P.type, p: p }, symSpec(P.type, P.values));
+    if (P.tip) spec.leader = P.tip;
+    try { Drawing.addSymbol(JSON.parse(JSON.stringify(doc())), spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return; }
+    var made;
+    edit(function (dc) { made = Drawing.addSymbol(dc, spec); });
+    D.sel = { kind: 'symbol', id: made.id };
+    P.tip = null;
+    // the next datum gets the next letter
+    if (P.type === 'datum') { P.values.label = Drawing.nextDatum(doc()); if (UI.pmSet) try { UI.pmSet({ label: P.values.label }); } catch (e) { } }
+    UI.setStatus(Drawing.symbolText(made) + ' placed — click for the next one, Esc ends.');
+    drawOverlay();
+  }
+  function symbolMenu(id) {
+    var s = Drawing.findSymbol(doc(), id);
+    return [
+      { label: 'Properties…', action: function () { cmdSymbol(s.type, id); } },
+      { label: s.leader ? 'Remove Leader' : 'Add Leader', action: function () { edit(function (dc) { Drawing.editSymbol(dc, id, { leader: s.leader ? null : [s.p[0] - 12 * paperK(), s.p[1] - 8 * paperK()] }); }); } },
+      { label: 'Delete', key: 'Del', action: function () { edit(function (dc) { Drawing.deleteSymbol(dc, id); }); D.sel = null; render(); } }
+    ];
+  }
+  // Revision Table: insert (anchored top-right), Add Revision (the next letter, today's date), edit a row
+  function insertRevisionTable(anchor) {
+    edit(function (dc) { Drawing.insertRevisionTable(dc, { anchor: anchor }); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); });
+    D.sel = { kind: 'revtable' };
+    UI.setStatus('Revision Table inserted (top-right). Right-click it for Add Revision.');
+  }
+  function addRevision(spec) {
+    var row = null;
+    edit(function (dc) { row = Drawing.addRevision(dc, spec || {}); });
+    D.sel = { kind: 'revtable' };
+    return row;
+  }
+  // cmdRevision(i): the row's PropertyManager (null: Add Revision with the next letter)
+  function cmdRevision(i) {
+    var t = doc().revisions, r = i != null && t && t.rows[i];
+    var next = Drawing.nextRev(Drawing.latestRev(doc()));
+    pmOpen({ title: r ? 'Revision ' + r.rev : 'Add Revision', icon: 'revTable', command: 'revision',
+      message: r ? 'Edit the revision row; OK applies it (one undo step).' : 'The new revision is ' + next + ' (I, O, Q, S, X, Z are skipped). The title block REV follows the latest revision.',
+      values: r ? { rev: r.rev, zone: r.zone, description: r.description, date: r.date, approved: r.approved } : { rev: next, zone: '', description: '', date: Drawing.todayISO ? Drawing.todayISO() : new Date().toISOString().slice(0, 10), approved: '' },
+      groups: [{ title: 'Revision', fields: [{ type: 'text', key: 'rev', label: 'REV' }, { type: 'text', key: 'zone', label: 'ZONE' }, { type: 'text', key: 'description', label: 'DESCRIPTION' }, { type: 'text', key: 'date', label: 'DATE' }, { type: 'text', key: 'approved', label: 'APPROVED' }] }],
+      onOK: function (v) {
+        if (r) { edit(function (dc) { Drawing.editRevision(dc, i, v); }); UI.setStatus('Revision ' + String(v.rev).toUpperCase() + ' changed.'); }
+        else { var row = addRevision(v); UI.setStatus('Revision ' + row.rev + ' added; the title block REV reads ' + row.rev + '.'); }
+      } });
+  }
+  function revTableMenu(i) {
+    var items = [{ label: 'Add Revision', action: function () { cmdRevision(null); } }];
+    if (i != null && i >= 0) {
+      items.push({ label: 'Edit Revision ' + doc().revisions.rows[i].rev + '…', action: function () { cmdRevision(i); } });
+      items.push({ label: 'Delete Revision ' + doc().revisions.rows[i].rev, action: function () { edit(function (dc) { Drawing.deleteRevision(dc, i); }); } });
+    }
+    items.push({ label: 'Delete Table', key: 'Del', action: function () { edit(function (dc) { Drawing.deleteRevisionTable(dc); }); D.sel = null; render(); } });
+    return items;
+  }
+  // File ▸ Properties… of the drawing: the custom properties the sheet format's $PRP links read
+  var DRAWING_PROPS = [['CompanyName', 'Company name'], ['DrawnBy', 'Drawn by'], ['DrawnDate', 'Drawn date'], ['CheckedBy', 'Checked by'], ['CheckedDate', 'Checked date'], ['GeneralTolerances', 'General tolerances (\\n between lines)']];
+  function setDrawingProps(map) {
+    edit(function (dc) {
+      var own = dc.properties || {};
+      Object.keys(map || {}).forEach(function (k) { var v = map[k]; if (v == null || String(v).trim() === '') delete own[k]; else own[k] = String(v).replace(/\\n/g, '\n'); });
+      if (Object.keys(own).length) dc.properties = own; else delete dc.properties;
+    });
+  }
+  function cmdDrawingProps() {
+    var own = doc().properties || {}, values = {};
+    DRAWING_PROPS.forEach(function (p) { values[p[0]] = own[p[0]] != null ? String(own[p[0]]).replace(/\n/g, '\\n') : ''; });
+    pmOpen({ title: 'Drawing Properties', icon: 'sheetFormat', command: 'drawingProps',
+      message: 'Custom properties of the drawing: the title block reads them through $PRP:"name" (an empty general tolerances box gives the ' + (units() === 'in' ? 'inch' : 'mm') + ' defaults).',
+      values: values, groups: [{ title: 'Custom', fields: DRAWING_PROPS.map(function (p) { return { type: 'text', key: p[0], label: p[1] }; }) }],
+      onOK: function (v) { setDrawingProps(v); UI.setStatus('Drawing properties applied.'); } });
+  }
+  // Delete for the new kinds, then the rest
+  var baseDeleteSelection = deleteSelection;
+  deleteSelection = function () {
+    var s = D.sel;
+    if (s && s.kind === 'symbol') { edit(function (dc) { Drawing.deleteSymbol(dc, s.id); }); D.sel = null; render(); return true; }
+    if (s && s.kind === 'revtable') { edit(function (dc) { Drawing.deleteRevisionTable(dc); }); D.sel = null; render(); return true; }
+    return baseDeleteSelection.apply(this, arguments);
+  };
+  DW.cmdSymbol = cmdSymbol; DW.symbolClick = symbolClick; DW.symbolMenu = symbolMenu; DW.cmdRevision = cmdRevision; DW.revTableMenu = revTableMenu;
+  DW.insertRevisionTable = insertRevisionTable; DW.cmdDrawingProps = cmdDrawingProps;
+
+
   // ------------------------------------------------------------------ drawing FeatureManager
   function row(opts) {
     var r = el('div', { class: 'ti' + (opts.sel ? ' selected' : '') + (opts.cls ? ' ' + opts.cls : '') });
@@ -47,8 +198,20 @@
         click: function () { D.sel = { kind: 'note', id: n.id }; drawOverlay(); renderTree(); }, dbl: function () { D.sel = { kind: 'note', id: n.id }; DW.openNoteEdit(Drawing.findNote(doc(), n.id)); },
         menu: function () { return [{ label: 'Delete', action: function () { edit(function (dc2) { Drawing.deleteNote(dc2, n.id); }); } }]; } }));
     });
+    (dc.symbols || []).forEach(function (sy) {
+      var nm = { surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance' }[sy.type] + sy.id;
+      t.appendChild(row({ icon: sy.type === 'gtol' ? 'gtol' : sy.type === 'datum' ? 'datumFeature' : 'surfaceFinish', name: nm, depth: 2, cls: 'dw-symbol', data: { symbol: String(sy.id) }, sel: D.sel && D.sel.kind === 'symbol' && D.sel.id === sy.id,
+        badge: sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.ra || '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
+        click: function () { D.sel = { kind: 'symbol', id: sy.id }; drawOverlay(); renderTree(); }, dbl: function () { cmdSymbol(sy.type, sy.id); }, menu: function () { return symbolMenu(sy.id); } }));
+    });
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
-    t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block' }));
+    t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block (File ▸ Properties… sets DRAWN / CHECKED / COMPANY / tolerances)', dbl: cmdDrawingProps }));
+    if (dc.revisions && dc.revisions.show !== false) {
+      var nrv = dc.revisions.rows.length;
+      t.appendChild(row({ icon: 'revTable', name: 'Revision Table1', depth: 2, cls: 'dw-revtable', sel: D.sel && D.sel.kind === 'revtable', badge: nrv ? 'REV ' + Drawing.latestRev(dc) : 'no revisions',
+        title: 'Revision Table (' + nrv + ' revision' + (nrv === 1 ? '' : 's') + '). Right-click for Add Revision.',
+        click: function () { D.sel = { kind: 'revtable' }; drawOverlay(); renderTree(); }, dbl: function () { cmdRevision(null); }, menu: function () { return revTableMenu(null); } }));
+    }
     if (dc.bom && dc.bom.show !== false) {
       var nr = D.sheet && D.sheet.bom ? D.sheet.bom.rows.length : 0;
       t.appendChild(row({ icon: 'bom', name: 'Bill of Materials1', depth: 2, cls: 'dw-bom', sel: D.sel && D.sel.kind === 'bom', badge: nr + (nr === 1 ? ' item' : ' items'),
@@ -123,6 +286,12 @@
     { id: 'stackBalloon', label: 'Stacked\nBalloon', run: function () { cmdBalloon(true); }, active: function () { return D.tool === 'stackballoon'; } },
     { id: 'holeCallout', label: 'Hole\nCallout', run: cmdHoleCallout, active: function () { return D.tool === 'holecallout'; } },
     { id: 'note', label: 'Note', run: function () { DW.cmdNote(); }, active: function () { return D.tool === 'note'; } },
+    { stack: [
+      { id: 'surfaceFinish', label: 'Surface Finish', run: function () { cmdSymbol('surfaceFinish'); }, active: function () { return D.tool === 'symbol' && D.pending && D.pending.type === 'surfaceFinish'; } },
+      { id: 'datumFeature', label: 'Datum Feature', run: function () { cmdSymbol('datum'); }, active: function () { return D.tool === 'symbol' && D.pending && D.pending.type === 'datum'; } },
+      { id: 'gtol', label: 'Geometric Tolerance', run: function () { cmdSymbol('gtol'); }, active: function () { return D.tool === 'symbol' && D.pending && D.pending.type === 'gtol'; } }
+    ] },
+    { id: 'revTable', label: 'Revision\nTable', run: function () { if (doc().revisions) cmdRevision(null); else insertRevisionTable(); }, active: function () { return !!(doc() && doc().revisions); } },
     { sep: true },
     { id: 'centerMark', label: 'Center\nMark', run: cmdCenterMark, active: function () { return D.tool === 'centermark'; } },
     { id: 'centerline', label: 'Centerline', run: cmdCenterline, active: function () { return D.tool === 'centerline'; } },
@@ -163,6 +332,8 @@
     return [
       { label: 'File', items: docItems.concat([
         { sep: true },
+        { label: 'Properties\u2026', action: cmdDrawingProps },
+        { sep: true },
         { label: 'Save Drawing as SVG\u2026', action: function () { exportAs('svg'); } },
         { label: 'Save Drawing as DXF\u2026', action: function () { exportAs('dxf'); } },
         { label: 'Save Drawing as PDF\u2026', action: function () { exportAs('pdf'); } },
@@ -179,6 +350,9 @@
         { label: 'Drawing View \u25b8 Detail', action: cmdDetailView },
         { label: 'Drawing View \u25b8 Flat Pattern\u2026', disabled: !DW.sheetMetal(), action: function () { DW.cmdFlatView(); } },
         { label: 'Annotations \u25b8 Note', action: function () { DW.cmdNote(); } },
+        { label: 'Annotations \u25b8 Surface Finish Symbol\u2026', action: function () { cmdSymbol('surfaceFinish'); } },
+        { label: 'Annotations \u25b8 Datum Feature\u2026', action: function () { cmdSymbol('datum'); } },
+        { label: 'Annotations \u25b8 Geometric Tolerance\u2026', action: function () { cmdSymbol('gtol'); } },
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
         { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems },
         { label: 'Annotations \u25b8 Auto Balloon', disabled: !isAsm(), action: cmdAutoBalloon },
@@ -190,7 +364,9 @@
         { label: 'Dimensions \u25b8 Ordinate', action: function () { cmdChainDim('ordinate'); } },
         { label: 'Dimensions \u25b8 Baseline', action: function () { cmdChainDim('baseline'); } },
         { label: 'Dimensions \u25b8 Chamfer', action: cmdChamferDim },
-        { label: 'Tables \u25b8 Bill of Materials\u2026', action: cmdBOM }
+        { label: 'Tables \u25b8 Bill of Materials\u2026', action: cmdBOM },
+        { label: 'Tables \u25b8 Revision Table', disabled: !!(dc && dc.revisions), action: function () { insertRevisionTable(); } },
+        { label: 'Tables \u25b8 Add Revision\u2026', action: function () { cmdRevision(null); } }
       ] },
       { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }, { label: 'Options \u25b8 Document Properties\u2026', action: cmdDocProps }] },
       { label: 'Window', items: [
@@ -274,7 +450,9 @@
           balloons: (D.sheet.balloons || []).filter(function (b) { return b.view === w.view.id; }).map(function (b) { return b.item; }),
           flat: w.view.kind === 'flat' ? flatSummary(w) : undefined };
       }),
-      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      revisions: D.sheet.revisions ? { rows: D.sheet.revisions.rows, latest: D.sheet.revisions.latest, anchor: D.sheet.revisions.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.revisions.box[q].toFixed(3); }) } : null,
+      symbols: (D.sheet.symbols || []).map(function (y) { var s0 = Drawing.findSymbol(dc, y.id) || {}; return { id: y.id, type: y.type, text: y.text, p: s0.p, leader: s0.leader || null, box: [y.box.x0, y.box.y0, y.box.x1, y.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, raw: n.raw, leader: n.leader, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
         type: D.sheet.bom.type, columns: D.sheet.bom.columns.map(function (c) { return c.title; }), cells: D.sheet.bom.cells.map(function (r) { return r.map(function (x) { return String(x); }); }),
         rows: D.sheet.bom.rows.map(function (r, i) { var o = { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; D.sheet.bom.columns.forEach(function (c, j) { if (c.type === 'property') o[c.prop] = String(D.sheet.bom.cells[i][j]); }); return o; }) } : null,
@@ -397,6 +575,26 @@
       editNote: function (id, props) { return annotApi(function (dc) { if (!Drawing.findNote(dc, id)) throw new Error('No note ' + id); Drawing.editNote(dc, id, props || {}); return true; }); },
       deleteNote: function (id) { return annotApi(function (dc) { if (!Drawing.deleteNote(dc, id)) throw new Error('No note ' + id); return true; }); },
       notes: function () { var s = summary(); return s ? s.notes : null; },
+      // (rfM) Revision Table: revisionTable({ anchor }) inserts it, revisionTable(null) removes it, revisionTable() -> the
+      // summary's revisions; addRevision({ description, date, approved, zone, rev }) (next letter by default),
+      // editRevision(i, props), deleteRevision(i); each one undo step, returning the summary's revisions
+      revisionTable: function (opts) {
+        if (!doc()) return null;
+        if (opts === null) edit(function (dc) { Drawing.deleteRevisionTable(dc); });
+        else if (opts !== undefined) insertRevisionTable(opts && opts.anchor);
+        return summary().revisions;
+      },
+      addRevision: function (spec) { if (!doc()) return null; addRevision(spec || {}); return summary().revisions; },
+      editRevision: function (i, props) { return annotApi(function (dc) { return Drawing.editRevision(dc, i, props || {}); }) ? summary().revisions : null; },
+      deleteRevision: function (i) { return annotApi(function (dc) { if (!Drawing.deleteRevision(dc, i)) throw new Error('No revision row ' + i); return true; }) ? summary().revisions : null; },
+      // shop symbols: symbol({ type: 'surfaceFinish' | 'datum' | 'gtol', p, leader, … }) (see Drawing.addSymbol),
+      // editSymbol(id, props), deleteSymbol(id), symbols() -> [{ id, type, text, p, leader, box }]
+      symbol: function (spec) { return annotApi(function (dc) { return Drawing.addSymbol(dc, spec || {}); }); },
+      editSymbol: function (id, props) { return annotApi(function (dc) { return Drawing.editSymbol(dc, id, props || {}); }); },
+      deleteSymbol: function (id) { return annotApi(function (dc) { if (!Drawing.deleteSymbol(dc, id)) throw new Error('No symbol ' + id); return true; }); },
+      symbols: function () { var s = summary(); return s ? s.symbols : null; },
+      // the drawing's custom properties ($PRP:"name"): properties() -> them; properties({ name: value | null })
+      properties: function (map) { if (!doc()) return null; if (map) setDrawingProps(map); return JSON.parse(JSON.stringify(doc().properties || {})); },
       balloon: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addBalloon(dc, App.model, viewId, spec || {}); }); },
       balloonProps: function (viewId, index, props) { if (!doc()) return null; setBalloonProps(viewId, index, props || {}); return summary(); }
     };

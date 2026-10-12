@@ -446,6 +446,9 @@
       { label: 'Tangent Edge \u25b8 Tangent Edges With Font', disabled: v.kind === 'detail', checked: v.tangent === 'font', action: function () { setViewTangent(v.id, 'font'); } },
       { label: 'Tangent Edge \u25b8 Tangent Edges Removed', disabled: v.kind === 'detail', checked: !v.tangent || v.tangent === 'removed', action: function () { setViewTangent(v.id, 'removed'); } },
       { sep: true },
+      { label: 'Crop View ▸ Remove Crop', disabled: !v.crop, action: function () { removeCrop(v.id); } },
+      { label: 'Un-Break View', disabled: !(v.breaks && v.breaks.length), action: function () { unBreak(v.id); } },
+      { sep: true },
       { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
     ];
   }
@@ -1205,6 +1208,178 @@
   // a balloon from the sheet list: its entry in the view's balloons (by position in the list)
   function balloonRef(b) { return { kind: 'balloon', view: b.view, index: b.index, key: b.key, component: b.component }; }
 
+  // ------------------------------------------------------------------ Auxiliary View, Crop View, Break (rfN)
+  // SolidWorks: View Layout ▸ Auxiliary View (click a straight edge, then the side the view goes), Crop View (the
+  // crop profile: a rectangle by two corners or a circle by centre and radius, clicked in the view), Break (Broken
+  // View PropertyManager: break line orientation, gap, style; click the two break lines). Their clicks come through
+  // a capture listener on the sheet; the ribbon buttons, the Insert ▸ Drawing View entries and the anvil.drawing calls
+  // are added to what drawing-ui-panels.js defines when it defines them (see addRibbon / addMenus / addApi).
+  function needPart() {
+    if (App.mesh && App.mesh.triCount) return true;
+    UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.');
+    return false;
+  }
+  // runs a view change on a scratch copy first, so a refused one leaves no undo step; returns false when refused
+  function tryEdit(fn) {
+    try { fn(JSON.parse(JSON.stringify(doc()))); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
+    edit(fn);
+    return true;
+  }
+  function cmdAuxiliaryView() {
+    if (D.tool === 'aux') { endTool(); return; }
+    if (!needPart()) return;
+    startTool('aux', { parent: null, edge: null, label: Drawing.nextLabel(doc()) });
+    UI.setStatus('Auxiliary View: click a straight edge in a view; the new view looks square onto it. Esc cancels.');
+  }
+  function auxClick(p) {
+    var P = D.pending;
+    if (P.parent == null) {
+      var ent = entityAt(p), w = ent && ent.la ? sheetView(ent.view) : null;
+      if (!w || w.view.kind === 'detail' || w.view.kind === 'flat') { UI.setStatus('Auxiliary View: click a straight visible edge of a model, projected, section or auxiliary view.'); return; }
+      P.parent = w.view.id; P.edge = { a: ent.la, b: ent.lb, pa: ent.a, pb: ent.b };
+      D.sel = { kind: 'view', id: w.view.id }; drawOverlay();
+      UI.setStatus('Auxiliary View ' + P.label + '-' + P.label + ': click on the side of the edge where the view goes.');
+      return;
+    }
+    var e = P.edge, n = [-(e.pb[1] - e.pa[1]), e.pb[0] - e.pa[0]], m = [(e.pa[0] + e.pb[0]) / 2, (e.pa[1] + e.pb[1]) / 2];
+    var spec = { a: e.a, b: e.b, sign: (p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1] >= 0 ? 1 : -1, label: P.label, x: p[0], y: p[1] }, parent = P.parent, v;
+    endTool();
+    try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+    v = editView(function (dc) { return Drawing.addAuxiliaryView(dc, mesh(), parent, spec); });
+    D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
+    UI.setStatus(v.name + ' placed: square to the edge; drag it along its arrow.');
+    return v;
+  }
+  function cmdCropView() {
+    if (D.tool === 'crop') { endTool(); return; }
+    if (!needPart()) return;
+    openDrawingPM({
+      title: 'Crop View', icon: 'cropView', command: 'cropView',
+      message: 'Pick the crop profile, press OK, then click two points in a view: opposite corners of the rectangle, or the centre and a point on the circle. The view keeps what is inside.',
+      values: { shape: 'rect' },
+      groups: [{ title: 'Crop Profile', fields: [{ type: 'select', key: 'shape', label: 'Profile', options: [['rect', 'Rectangle'], ['circle', 'Circle']] }] }],
+      onOK: function (val) {
+        startTool('crop', { shape: val.shape === 'circle' ? 'circle' : 'rect', view: null, p0: null });
+        UI.setStatus('Crop View: click ' + (val.shape === 'circle' ? 'the centre of the circle' : 'the first corner') + ' in a view. Esc cancels.');
+      }
+    });
+  }
+  function cropClick(p) {
+    var P = D.pending;
+    if (P.view == null) {
+      var w = parentAt(p);
+      if (!w) { UI.setStatus('Crop View: click inside a model, projected, section or auxiliary view.'); return; }
+      P.view = w.view.id; P.p0 = w.fromSheet(p); P.s0 = p;
+      UI.setStatus('Crop View: click ' + (P.shape === 'circle' ? 'a point on the circle.' : 'the opposite corner.'));
+      return;
+    }
+    var w2 = sheetView(P.view), q = w2 ? w2.fromSheet(p) : null, id = P.view, region;
+    endTool();
+    if (!q) return;
+    region = P.shape === 'circle' ? { type: 'circle', c: P.p0, r: Math.hypot(p[0] - P.s0[0], p[1] - P.s0[1]) / w2.scale } : { type: 'rect', a: P.p0, b: q };
+    if (tryEdit(function (dc) { Drawing.setCrop(dc, id, region); })) { D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree(); UI.setStatus(w2.view.name + ' cropped (right-click ▸ Crop View ▸ Remove Crop takes it off).'); }
+  }
+  function removeCrop(id) { if (tryEdit(function (dc) { Drawing.setCrop(dc, id, null); })) UI.setStatus('Crop removed.'); }
+  function cmdBreakView() {
+    if (D.tool === 'brk') { endTool(); return; }
+    if (!needPart()) return;
+    var inch = units() === 'in';
+    openDrawingPM({
+      title: 'Broken View', icon: 'breakView', command: 'breakView',
+      message: 'Pick the break line orientation, gap and style, press OK, then click in a view where the first and the second break line go. The geometry between them is removed; dimensions keep their true values.',
+      values: { dir: 'vertical', gap: inch ? 0.4 : 10, style: 'zigzag' },
+      groups: [{ title: 'Broken View Settings', fields: [
+        { type: 'select', key: 'dir', label: 'Break lines', options: [['vertical', 'Add vertical break line'], ['horizontal', 'Add horizontal break line']] },
+        { type: 'number', key: 'gap', label: 'Gap size', unit: 'u', min: 0 },
+        { type: 'select', key: 'style', label: 'Break line style', options: [['zigzag', 'Zig Zag Cut'], ['straight', 'Straight Cut']] }
+      ] }],
+      onOK: function (val) {
+        startTool('brk', { dir: val.dir === 'horizontal' ? 'horizontal' : 'vertical', gap: +val.gap >= 0 ? +val.gap : (inch ? 0.4 : 10), style: val.style === 'straight' ? 'straight' : 'zigzag', view: null, a: null });
+        UI.setStatus('Break: click in a view where the first break line goes. Esc cancels.');
+      }
+    });
+  }
+  function breakClick(p) {
+    var P = D.pending, ax = P.dir === 'horizontal' ? 1 : 0;
+    if (P.view == null) {
+      var w = parentAt(p);
+      if (!w) { UI.setStatus('Break: click inside a model, projected, section or auxiliary view.'); return; }
+      P.view = w.view.id; P.a = w.fromSheet(p)[ax];
+      UI.setStatus('Break: click where the second break line goes.');
+      return;
+    }
+    var w2 = sheetView(P.view), id = P.view, spec = { dir: P.dir, a: P.a, b: w2 ? w2.fromSheet(p)[ax] : P.a, gap: P.gap, style: P.style };
+    endTool();
+    if (tryEdit(function (dc) { Drawing.addBreak(dc, id, spec); })) { D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree(); UI.setStatus((w2 ? w2.view.name : 'View') + ' broken (right-click ▸ Un-Break View restores it).'); }
+  }
+  function unBreak(id) { if (tryEdit(function (dc) { Drawing.clearBreaks(dc, id); })) UI.setStatus('Break removed.'); }
+  var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick };
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
+    if (D.inline && D.inline.box.contains(e.target)) return;
+    e.preventDefault(); e.stopPropagation();
+    settle();
+    RF_TOOLS[D.tool](DW.toPaper(e));
+  }, true);
+  // an object property that drawing-ui-panels.js assigns later: each value assigned is passed through fix first
+  function onAssign(obj, key, fix) {
+    var cur = obj[key];
+    Object.defineProperty(obj, key, { configurable: true, enumerable: true, get: function () { return cur; }, set: function (x) { cur = fix(x); } });
+    if (cur != null) cur = fix(cur);
+  }
+  // View Layout tab: Auxiliary View after Projected View, Break and Crop View after Detail View (SolidWorks order)
+  onAssign(UI.RIBBON, 'View Layout', function (list) {
+    if (!Array.isArray(list) || list._rfN) return list;
+    var out = [];
+    list.forEach(function (b) {
+      out.push(b);
+      if (b.id === 'projView') out.push({ id: 'auxView', label: 'Auxiliary\nView', run: cmdAuxiliaryView, active: function () { return D.tool === 'aux'; } });
+      if (b.id === 'detailView') {
+        out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
+        out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop'; } });
+      }
+    });
+    Object.defineProperty(out, '_rfN', { value: true });
+    return out;
+  });
+  // Insert ▸ Drawing View ▸ Auxiliary / Break / Crop
+  onAssign(UI, 'menuHook', function (f) {
+    if (typeof f !== 'function' || f._rfN) return f;
+    var g = function (menus) {
+      var m = f(menus);
+      (m || []).forEach(function (menu) {
+        if (!menu || menu.label !== 'Insert' || !Array.isArray(menu.items)) return;
+        var items = [];
+        menu.items.forEach(function (it) {
+          items.push(it);
+          if (it && it.label === 'Drawing View ▸ Projected') items.push({ label: 'Drawing View ▸ Auxiliary', action: cmdAuxiliaryView });
+          if (it && it.label === 'Drawing View ▸ Detail') { items.push({ label: 'Drawing View ▸ Break', action: cmdBreakView }); items.push({ label: 'Drawing View ▸ Crop', action: cmdCropView }); }
+        });
+        menu.items = items;
+      });
+      return m;
+    };
+    g._rfN = true;
+    return g;
+  });
+  // anvil.drawing.auxiliaryView(parentId, { a, b, sign, x, y, label }), crop(viewId, region | null),
+  // breakView(viewId, { dir, a, b, gap, style }), unbreak(viewId): one undo step each, return the summary
+  if (window.anvil) onAssign(window.anvil, 'drawing', function (api) {
+    if (!api || api._rfN) return api;
+    api.auxiliaryView = function (parentId, opts) {
+      if (!doc()) return null;
+      var v;
+      try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parentId, opts || {}); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+      edit(function (dc) { v = Drawing.addAuxiliaryView(dc, mesh(), parentId, opts || {}); autoInsertViews(dc, [v.id]); });
+      D.sel = { kind: 'view', id: v.id };
+      return api.summary();
+    };
+    api.crop = function (viewId, region) { return doc() && tryEdit(function (dc) { Drawing.setCrop(dc, viewId, region == null ? null : region); }) ? api.summary() : null; };
+    api.breakView = function (viewId, opts) { return doc() && tryEdit(function (dc) { Drawing.addBreak(dc, viewId, opts || {}); }) ? api.summary() : null; };
+    api.unbreak = function (viewId) { return doc() && tryEdit(function (dc) { Drawing.clearBreaks(dc, viewId); }) ? api.summary() : null; };
+    Object.defineProperty(api, '_rfN', { value: true });
+    return api;
+  });
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;

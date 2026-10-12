@@ -427,9 +427,11 @@
     if (fam === 'poly' && (key === 'n' || key === 'ins')) {
       var n = Math.round(+v.n);
       if (key === 'n' && !(n >= 3 && n <= 40)) { UI.setStatus('A polygon has 3 to 40 sides.'); return; }
-      if (key === 'n') opt.sides = n; else opt.ins = v.ins === 'ins';
-      saveOpt();
-      hint(polygonHint());
+      if (!spec._curves.edit) {   // rfL: Edit Polygon leaves the tool's remembered sides / circle type alone
+        if (key === 'n') opt.sides = n; else opt.ins = v.ins === 'ins';
+        saveOpt();
+        hint(polygonHint());
+      }
       if (li != null && !drawing()) applyParam(f, li, key, key === 'n' ? n : v.ins);
       else if (sh && !drawing()) applyShapeParam(f, key, key === 'n' ? n : v.ins);
       return;
@@ -444,6 +446,8 @@
     applyParam(f, li, key, v[key]);
   }
   function newPolygon() {
+    var spec0 = UI.pmSpec && UI.pmSpec();
+    if (spec0 && spec0._curves && spec0._curves.edit) { UI.closePM(); if (UI.setTool) UI.setTool('polygon'); return; }   // rfL: from Edit Polygon
     tp.last = null; tp.shape = null;
     if (drawing() && UI.cancelTool) UI.cancelTool(true);
     var spec = UI.pmSpec && UI.pmSpec();
@@ -451,6 +455,45 @@
     refreshValues();
     UI.setStatus('New Polygon: click its center.');
   }
+  // rfL: Edit Polygon (SolidWorks: right-click a side ▸ Edit Polygon, or Tools ▸ Sketch Tools ▸ Polygon): the Polygon
+  // PM for a polygon already placed — the n lines and the construction circle its Polygon relation ties (refs: the
+  // circle, then the sides in order). Its Parameters (sides, Inscribed / Circumscribed, centre, diameter, angle) edit
+  // it as they edit the polygon just drawn (applyShapeParam). polygonOf(f, i) -> { kind: 'poly', first, n, ins, rel }
+  // for entity i (a side or the circle), or null; a polygon whose sides are no longer consecutive entities followed
+  // by the circle (a side trimmed or filleted apart) is not one: its relation index says why (.error).
+  function polygonOf(f, i) {
+    if (!f || !f.rels || i == null) return null;
+    var key = String(i), out = null;
+    f.rels.some(function (rel) {
+      if (rel.type !== 'polygon' || rel.refs.indexOf(key) < 0) return false;
+      var ci = +rel.refs[0], lines = rel.refs.slice(1).map(Number), n = lines.length, first = lines[0];
+      var ok = n >= 3 && lines.every(function (li, k) { return li === first + k; }) && ci === first + n;
+      out = ok ? { kind: 'poly', first: first, n: n, ins: !!rel.ins } : { error: 'The polygon\'s sides were split or rounded: edit its lines and circle one by one.' };
+      if (ok && !shapeAlive(f, out)) out = { error: 'The polygon\'s sides are no longer lines.' };
+      return true;
+    });
+    return out;
+  }
+  function editPolygon(i) {
+    var f = sketch(), sh = polygonOf(f, i);
+    if (!sh) { UI.setStatus('Not a polygon: Edit Polygon works on a side or the circle of a polygon.'); return false; }
+    if (sh.error) { UI.setStatus(sh.error); return false; }
+    if (App.tool && App.tool !== 'select' && UI.cancelTool) UI.cancelTool();
+    tp = { last: null, sketch: f.id, shape: sh };
+    var spec = {
+      title: TITLES.poly, icon: 'polygon', values: { construction: !!f.entities[sh.first].construction, n: sh.n, ins: sh.ins ? 'ins' : 'circ' }, noFocus: true,
+      _curves: { kind: 'tool', fam: 'poly', tool: 'polygon', edit: true },
+      onChange: function (v, key) { toolChange(spec, v, key); },
+      onOK: function () { tp = { last: null, sketch: null, shape: null }; },
+      onClose: function () { }
+    };
+    spec.groups = toolGroups(spec);
+    UI.openPM(spec);
+    refreshValues();
+    return true;
+  }
+  UI.polygonOf = function (i, f) { var r = polygonOf(f || sketch(), i); return r && !r.error ? r : null; };
+  UI.editPolygon = editPolygon;
   // an entity placed by one of these tools: its Parameters (and relations) are shown and can be edited
   function placed(f, i) {
     var spec = UI.pmSpec && UI.pmSpec();
@@ -490,7 +533,7 @@
     var baseRefreshRibbon = UI.refreshRibbon;
     UI.refreshRibbon = function () {
       var r = baseRefreshRibbon.apply(this, arguments), spec = UI.pmSpec && UI.pmSpec();
-      if (spec && spec._curves && spec._curves.kind === 'tool' && (App.mode !== 'sketch' || FAM[App.tool] !== spec._curves.fam)) UI.closePM();
+      if (spec && spec._curves && spec._curves.kind === 'tool' && (App.mode !== 'sketch' || (!spec._curves.edit && FAM[App.tool] !== spec._curves.fam))) UI.closePM();
       return r;
     };
     UI.refreshRibbon._curves = true;

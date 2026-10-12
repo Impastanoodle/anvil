@@ -2200,7 +2200,7 @@
   // p9-sketch: and clear of the other dimensions' lines (a label sitting on a neighbour's extension or dimension line,
   // QUEUE Round-14). drawDims collects every dimension's lines as it draws (dimSegsNow, with the owner's key) and,
   // when a label landed on another dimension's line, draws once more with those lines as obstacles (dimSegs).
-  var dimSegs = null, dimSegsNow = [], drawnLabels = [];
+  var dimSegs = null, dimSegsNow = [], drawnLabels = [], prevLabels = null;   // prevLabels: the labels of the previous layout pass
   function segHitsBox(p, q, b) {
     var dx = q[0] - p[0], dy = q[1] - p[1], t0 = 0, t1 = 1;
     var P4 = [-dx, dx, -dy, dy], Q4 = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
@@ -2428,7 +2428,7 @@
   function drawDims() {
     var f = UI.activeSketchFeature(), out, now = performance.now(), busy = now - lastDimDraw < 120;
     lastDimDraw = now;
-    dimSegs = null;
+    dimSegs = null; prevLabels = null;
     var fG = UI.activeSketchFeature();
     geoSegs = fG && App.mode === 'sketch' ? screenGeometry(fG, UI.activePlane()) : null;
     // p9-sketch: a second pass when a label landed on another dimension's line, with every line as an obstacle
@@ -2439,18 +2439,49 @@
       clearTimeout(settleTimer);
       settleTimer = setTimeout(function () { lastDimDraw = 0; App.dimsStale = true; if (UI.requestRender) UI.requestRender(); }, 150);
     }
-    for (var pass = 0; pass < (busy ? 1 : 3); pass++) {
-      labelBoxes = []; drawnLabels = []; dimSegsNow = [];
-      rcBegin(dimLayer, iconDefs && iconDefs.parentNode === dimLayer ? iconDefs.nextSibling : dimLayer.firstChild);
-      try { out = drawDimsIn(f); } finally { rcEnd(); }
-      if (pass === 2 || !drawnLabels.some(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); })) break;
-      dimSegs = dimSegs ? dimSegs.concat(dimSegsNow) : dimSegsNow;
+    function layout(turn) {
+      radialTurnOn = turn; radialTurned = false; dimSegs = null; prevLabels = null;
+      for (var pass = 0; pass < (busy ? 1 : 3); pass++) {
+        labelBoxes = []; drawnLabels = []; dimSegsNow = [];
+        rcBegin(dimLayer, iconDefs && iconDefs.parentNode === dimLayer ? iconDefs.nextSibling : dimLayer.firstChild);
+        try { out = drawDimsIn(f); } finally { rcEnd(); }
+        if (pass === 2 || !drawnLabels.some(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); })) break;
+        dimSegs = dimSegs ? dimSegs.concat(dimSegsNow) : dimSegsNow;
+        prevLabels = drawnLabels.slice();
+      }
+      return drawnLabels.filter(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); }).length;
     }
-    dimSegs = null; geoSegs = null;
+    // a layout with turned Ø / R leaders is kept only when it ends with fewer labels on other lines than the plain one
+    var withTurn = layout(true);
+    if (radialTurned && withTurn > 0 && layout(false) > withTurn) layout(true);
+    radialTurnOn = true;
+    dimSegs = null; geoSegs = null; prevLabels = null;
     lastClashes = drawnLabels.filter(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); }).map(function (x) {
       return x.label + ' on ' + dimSegsNow.filter(function (g) { return g.owner !== x.owner && segHitsBox(g.a, g.b, x.box); }).map(function (g) { return g.owner; }).join('/');
     });
     return out;
+  }
+  // A Ø / R dimension the user has not turned (no `ang`) whose leader crossed another dimension's label, or whose own
+  // label had no free place, in the previous layout pass: the leader turns to the first angle clear of both (45° stays
+  // when nothing is free), as SolidWorks places radial dimensions away from their neighbours
+  var RADIAL_TRIES = [135, -45, -135, 90, -90, 0, 180, 30, 150, -30, -150, 60, 120, -60, -120];
+  var radialTurnOn = true, radialTurned = false;
+  function radialClear(pl, e, it, sc) {
+    if (!radialTurnOn) return sc;
+    var own = dimKey(it);
+    function clashes(c) {
+      var segs = c.lines.map(function (l) { return { a: l[0], b: l[1], owner: own }; });
+      if (prevLabels.some(function (x) { return x.owner !== own && onOtherLines(x.box, x.owner, segs); })) return true;
+      return !boxFree(labelBox(c, 0, 0), own, false);
+    }
+    if (!clashes(sc)) return sc;
+    for (var k = 0; k < RADIAL_TRIES.length; k++) {
+      var d2 = {}; for (var key in it.d) d2[key] = it.d[key];
+      d2.ang = RADIAL_TRIES[k];
+      var c = dimScreen(pl, e, d2);
+      if (c && !clashes(c)) { radialTurned = true; return c; }
+    }
+    return sc;
   }
   // p9-sketch: test hook — how many labels of the last drawing sit on another dimension's lines (0 when all are clear);
   // list: which ("R.250 on r3")
@@ -2466,6 +2497,7 @@
     list.forEach(function (it) {
       var e = f.entities[it.d.e], sc = e && dimScreen(pl, e, it.d);
       if (!sc) { if (it.index != null) stale.push(it.index); return; }
+      if (prevLabels && !it.temp && sc.along && sc.along.radial && it.d.ang == null) sc = radialClear(pl, e, it, sc);
       if (it.d.driven) sc.label = '(' + sc.label + ')';   // driven (reference) dimension
       drawOne(sc, it);
     });
@@ -3090,6 +3122,15 @@
     items.push({ sep: true });
     items.push({ label: 'Exit Sketch', action: function () { exitSketch(); } });
     items.push({ label: 'Discard Changes and Exit', action: function () { confirmCancelSketch(); } });
+    // rfL: Edit Polygon on a polygon's side or circle (SolidWorks puts it with the entity's commands)
+    if (sel.length === 1 && UI.polygonOf && UI.polygonOf(sel[0], f) && UI.editPolygon) {
+      if (UI.sketchMenuItems) items = UI.sketchMenuItems(items);
+      var pk = -1;
+      items.forEach(function (it, k) { if (it && it.label === 'Properties…') pk = k; });
+      if (pk < 0) items.forEach(function (it, k) { if (pk < 0 && it && it.label === 'Delete') pk = k; });
+      var edit = { label: 'Edit Polygon', icon: 'polygon', action: function () { if (App.mode === 'sketch') UI.editPolygon(sel[0]); } };
+      if (pk < 0) items.unshift(edit); else items.splice(pk, 0, edit);
+    }
     UI.showMenu(ev.clientX, ev.clientY, items);
   }
   UI.sketchMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); sketchMenu(mx, my, { clientX: r.left + mx, clientY: r.top + my }); };

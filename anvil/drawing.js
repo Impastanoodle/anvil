@@ -589,6 +589,23 @@ Object.defineProperty(Drawing, '_', { value: {}, enumerable: false, configurable
     return any ? lines.filter(function (l, i) { return !drop[i]; }) : lines;
   }
 
+  // ------------------------------------------------------------------ view kinds added by later engine files
+  // _.hook(obj, name, wrap): wrap(f) -> f' is applied to whatever function a later file puts on obj[name] (and to the
+  // one there now), so drawing-views.js can extend viewContent, compute, moveView and layout for the Auxiliary, Crop
+  // and Broken views without editing the files that define them. Several wraps on one name compose in order.
+  _.hook = function (obj, name, wrap) {
+    var d = Object.getOwnPropertyDescriptor(obj, name), st = d && d.get && d.get.hookState;
+    if (!st) {
+      st = { raw: d ? d.value : undefined, wraps: [], fn: undefined };
+      var get = function () { return st.fn; };
+      get.hookState = st;
+      Object.defineProperty(obj, name, { configurable: true, enumerable: obj === D, get: get,
+        set: function (f) { st.raw = f; st.fn = f; if (typeof f === 'function') st.wraps.forEach(function (w) { st.fn = w(st.fn); }); } });
+    }
+    st.wraps.push(wrap);
+    st.fn = st.raw;
+    if (typeof st.fn === 'function') st.wraps.forEach(function (w) { st.fn = w(st.fn); });
+  };
 
   D.ORIENTS = Object.keys(ORIENTS); D.orientation = orientation; D.frameOf = frameOf; D.isOrthoFrame = isOrthoFrame;
   D.projectedFrame = projectedFrame; D.sectionFrame = sectionFrame;
