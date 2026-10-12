@@ -98,7 +98,7 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Variable-radius fillets, face fillets (OpenCascade has them: BRepFilletAPI_MakeFillet Add_3 / Add_5; needs PropertyManager UI)
 - [ ] Placeholder features on the Features tab: Draft (as a feature on faces), Rib, Wrap, Intersect, Boundary Boss/Cut, Curves (helix / spiral, projected curve)
 - [x] Sketch solver follow-ups: Symmetric relation (points / lines / circles about a centerline, inferred), driven (reference) dimensions with the "Make this dimension driven?" question, Construction Geometry toggle and Centerline tool (cloud-2026-09-26s)
-- [ ] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves
+- [x] Sketch tools still placeholders: Spline, Ellipse, Text; sketch fillet/chamfer on curves (all built by 2026-10-08b; Style Spline still open)
 - [x] Hole Wizard types: counterbore, countersink, hole and straight tap with cosmetic threads, ISO M2–M20 (clearance fits, ISO 4762 counterbores, ISO 10642 countersinks, tap drills), Type / Positions PropertyManager, one editable `hole` feature, drawing callouts `M8x1.25 ↧ 12` (cloud-2026-09-26t; hole series, drill points, ANSI inch sizes and pipe taps not done)
 - [x] STEP AP214 import (planar / faceted B-reps, assemblies flattened to placed solids) and export (planar ADVANCED_FACE B-rep, assemblies as NEXT_ASSEMBLY_USAGE_OCCURRENCEs); 3MF and OBJ export and import; STL import; the Imported feature (`exchange.js`) (cloud-2026-09-25k)
 - [x] IGES import and export, STEP import and export of any surfaces incl. B-splines (OpenCascade kernel, local-2026-09-26m)
@@ -110,15 +110,19 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [ ] Assemblies: Collision Detection while moving; more Advanced / Mechanical mates (Symmetric, Profile Center, Path, Linear Coupler, Cam, Slot, Hinge, Rack Pinion, Screw)
 - [x] Exploded View: explode steps (pick or drag along an axis), explode lines, ExplView in the ConfigurationManager, Explode / Collapse and animation (cloud-2026-09-25l)
 - [ ] Exploded views in drawings: a per-view "Show in exploded state" option in drawing.js using the `Assembly.explodedBodies` hook; exploded views per configuration; rotation in explode steps
-- [ ] Drawings: auxiliary views, broken-out / half / aligned / offset sections, broken views, crop views
+- [x] Drawings: auxiliary views, half / aligned / offset sections, broken views, crop views, detail profile / outline styles, partial sections, True dimensions (2026-10-12c–g)
+- [ ] Drawings: broken-out section
 - [x] Drawings: centre marks (single, linear, circular, extension lines) and centrelines with Auto insert on view creation (Document Properties), hole callouts read from the solid (THRU / depth / counterbore / countersink, 4X), ordinate and baseline dimensions, chamfer dimensions, dimension dragging and the Dimension PropertyManager (tolerance bilateral / limit / symmetric, precision, text, flip arrows; a model item's value drives the part) (cloud-2026-09-25m)
 - [x] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text (cloud-2026-09-25m)
-- [ ] Drawings: magnetic lines for balloons; notes, surface finish, datum and geometric tolerance symbols
+- [x] Drawings: notes with leaders and property links, surface finish, datum and geometric tolerance symbols (2026-10-12c)
+- [ ] Drawings: magnetic lines for balloons
 - [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
 - [x] Drawings: indented BOM and Parts only across sub-assemblies (`Drawing.bomRows` calls `Assembly.bom(model, build, { type })`; BOM Type Top-level only / Indented / Parts only) (cloud-2026-09-26r)
-- [ ] Drawings: revision table, general tables
+- [x] Drawings: revision table (2026-10-12c)
+- [ ] Drawings: general tables
 - [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
-- [ ] Drawings: multiple sheets, editable sheet formats / title-block custom properties, drawing templates, a separate `.drawing` document that references the part file
+- [x] Drawings: multiple sheets, title-block custom properties (2026-10-12c–d)
+- [ ] Drawings: editable sheet formats, drawing templates, a separate `.drawing` document that references the part file
 - [x] Custom properties and materials: material library in classes (`materials.js`: density, E, Poisson, tensile / yield, appearance), Edit Material dialog, Material row in the FeatureManager, per-body materials, viewport colour follows the material, Mass Properties with material densities; File ▸ Properties (Summary, Custom, Configuration Specific, "SW-Material" / "SW-Mass" links) on parts and assemblies, round-tripped through the script; drawings and BOMs read them (cloud-2026-09-25j)
 - [ ] Surfaces (extruded / revolved / lofted surfaces, knit, thicken), Weldments, Mold Tools, Direct Editing (move face) — the greyed tabs. Surfaces, Mold Tools and Direct Editing are unblocked by the OpenCascade kernel (open shells, sewing, thicken, face moves)
 - [x] Evaluate: Check (open / non-manifold edges, zero-area faces, self-intersections, click-to-highlight), Zebra Stripes (shader overlay, stripe count / direction / sharpness), Section Properties (area, centroid, Ixx / Iyy / Ixy, principal axes of a face or sketch), Draft Analysis (positive / negative / requires draft / straddle), Clearance Verification (minimum distance and closest points) and Interference Detection limited to selected components (`evaluate.js`, `ui-evaluate.js`) (cloud-2026-09-25n)
