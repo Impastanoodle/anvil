@@ -62,6 +62,13 @@
 #dw-edit.note { align-items: stretch; }
 #dw-edit.note textarea { width: 220px; min-height: 44px; border: 0; outline: 0; resize: both; font: 12px "Segoe UI", sans-serif; padding: 3px 5px; background: transparent; color: var(--text, #000); }
 #dw-edit .dw-edit-col { display: flex; flex-direction: column; justify-content: flex-start; }
+/* rfQ: the general tolerances block typed in place, one line per row */
+#dw-edit.tb.multi { align-items: stretch; }
+#dw-edit.tb.multi textarea { width: 200px; min-height: 60px; border: 0; outline: 0; resize: both; font: 12px "Segoe UI", sans-serif; line-height: 1.35; padding: 3px 5px; background: transparent; color: var(--text, #000); }
+/* rfQ: sheet tabs (one per sheet), the Add Sheet tab, a tab being renamed */
+#drawing-tabs .dw-tab.dw-add-sheet { padding: 0 6px; }
+#drawing-tabs .dw-tab-rename { width: 90px; font: inherit; font-size: 12px; padding: 0 3px; border: 1px solid var(--blue, #1f6fc5); outline: 0; background: var(--input-bg, #fff); color: var(--text, #000); }
+.dw-muted { color: var(--muted, #666); font-size: 11px; }
 /* r12/drawui12: a view still being worked out when the drawing opens (drawing-worker.js): a soft panel over the paper
    it will take, gently pulsing until its linework drops in */
 #drawing-sheet .dw-pending { fill: #e9edf2; animation: dw-pulse 0.9s ease-in-out infinite alternate; }

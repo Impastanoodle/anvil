@@ -701,6 +701,231 @@
   // bendTag(i) -> 'A', 'B', … 'Z', 'AA', … (Bend Table tags)
   function bendTag(i) { var s = ''; i = Math.max(0, i | 0); do { s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26) - 1; } while (i >= 0); return s; }
 
+  // ------------------------------------------------------------------ Half, Offset and Aligned sections (rfP)
+  // (SolidWorks: Section View ▸ Half Section, an offset cutting line, Aligned section.) A section view's v.section may
+  // carry a type besides the full section's { axis, at, sign } (t is the coordinate along the cutting line: u for a
+  // horizontal line, v for a vertical one; n the one across it; model units in the parent's frame):
+  //   * { type: 'half', c, side }: only the half of the line on the side `side` (+1: t > c) cuts; the other half is
+  //     seen from outside. The quarter on the viewer's side of the cut half is taken away; the parent shows the L-shaped
+  //     cutting line (the cut leg along the line to the centre c, then square to it out of the part) with one arrow;
+  //   * { type: 'offset', jogs: [{ t, at }] }: a stepped cutting line, at depth `at` up to jogs[0].t, then jogs[0].at
+  //     up to jogs[1].t, …; every leg is hatched and the steps are not drawn in the view (ASME Y14.3);
+  //   * { type: 'aligned', c, side, angle }: two legs from the centre (c along the line, on it): leg 1 along the line
+  //     towards `side`, leg 2 at `angle` degrees (parent frame); what lies behind leg 2 is turned about the centre into
+  //     leg 1's plane, so both cut faces show at true size.
+  // The cut is worked out on the main thread (a few CSG booleans) and cached on the mesh like a full section.
+  function secAxes(P, sc) {
+    var N3 = sc.axis === 'h' ? P.v : P.u, T3 = sc.axis === 'h' ? P.u : P.v, s = sc.sign < 0 ? -1 : 1;
+    return { e: V.scale(N3, s), t: T3, z: V.cross(P.u, P.v), s: s, n2: sc.axis === 'h' ? [0, s] : [s, 0], t2: sc.axis === 'h' ? [1, 0] : [0, 1] };
+  }
+  // the kept steps of a half / offset section: [{ lo, hi, at }] along t (at null: nothing cut there)
+  function sectionSteps(sc) {
+    var I = Infinity;
+    if (sc.type === 'half') return sc.side < 0 ? [{ lo: -I, hi: sc.c, at: sc.at }, { lo: sc.c, hi: I, at: null }] : [{ lo: -I, hi: sc.c, at: null }, { lo: sc.c, hi: I, at: sc.at }];
+    var js = (sc.jogs || []).slice().sort(function (p, q) { return p.t - q.t; }), out = [], lo = -I, at = sc.at;
+    js.forEach(function (j) { out.push({ lo: lo, hi: j.t, at: at }); lo = j.t; at = j.at; });
+    out.push({ lo: lo, hi: I, at: at });
+    return out;
+  }
+  function rangeOn(P, a) {
+    var mn = Infinity, mx = -Infinity;
+    for (var i = 0; i < P.length; i += 3) { var x = P[i] * a[0] + P[i + 1] * a[1] + P[i + 2] * a[2]; if (x < mn) mn = x; if (x > mx) mx = x; }
+    return P.length ? [mn, mx] : [0, 0];
+  }
+  function rot2(d, th) { var c = Math.cos(th), s = Math.sin(th); return [d[0] * c - d[1] * s, d[0] * s + d[1] * c]; }
+  function to3(P, d) { return V.add(V.scale(P.u, d[0]), V.scale(P.v, d[1])); }
+  // the legs of an aligned section in the parent frame: { C, d1, d2, n1, n2, th } (th turns d2 onto -d1)
+  function alignedLegs(sc) {
+    var ax = secAxes({ u: [1, 0, 0], v: [0, 1, 0], e: [0, 0, 1] }, sc), side = sc.side < 0 ? -1 : 1;
+    var d1 = [ax.t2[0] * side, ax.t2[1] * side], a = (+sc.angle || 0) * Math.PI / 180, d2 = [Math.cos(a), Math.sin(a)];
+    var C = sc.axis === 'h' ? [sc.c, sc.at] : [sc.at, sc.c];
+    var th = Math.atan2(-d1[1], -d1[0]) - Math.atan2(d2[1], d2[0]);
+    return { C: C, d1: d1, d2: d2, n1: ax.n2, n2: rot2(ax.n2, -th), th: th };
+  }
+  function secKey(P, sc) {
+    var r = function (x) { return Math.round(x * 1e9); };
+    return 'P|' + [P.u, P.v].map(function (a) { return a.map(r).join(','); }).join('|') + '|' + JSON.stringify({ t: sc.type, a: sc.axis, s: sc.sign, at: sc.at, c: sc.c, side: sc.side, ang: sc.angle, j: sc.jogs });
+  }
+  // pathSectionOf(mesh, P, sc) -> { mesh, caps, area, e, w }: the part cut along a half / offset / aligned line
+  function pathSectionOf(mesh, P, sc) {
+    var cache = mesh._drawingSections || (mesh._drawingSections = {}), key = secKey(P, sc);
+    if (cache[key]) return cache[key];
+    var X = secAxes(P, sc), Pp = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), m = diag * 0.25 + 1;
+    function box(ax, lo, hi) {   // a null / infinite end: the part's range on that axis, widened
+      var L = [], H = [];
+      for (var i = 0; i < 3; i++) { var r = rangeOn(Pp, ax[i]); L.push(lo[i] == null || lo[i] === -Infinity ? r[0] - m : lo[i]); H.push(hi[i] == null || hi[i] === Infinity ? r[1] + m : hi[i]); }
+      return boxSolid(ax, L, H);
+    }
+    var pieces = [], ws = [];   // [{ region: CSG, turn: point map | null }]
+    if (sc.type === 'aligned') {
+      var G = alignedLegs(sc), C3 = to3(P, G.C), n1 = to3(P, G.n1), d1 = to3(P, G.d1), n2 = to3(P, G.n2), d2 = to3(P, G.d2), ct = Math.cos(G.th), st = Math.sin(G.th);
+      pieces.push({ region: box([n1, d1, X.z], [null, V.dot(d1, C3), null], [V.dot(n1, C3), null, null]), turn: null });
+      pieces.push({ region: box([n2, d2, X.z], [null, V.dot(d2, C3), null], [V.dot(n2, C3), null, null]), turn: function (q) {
+        var p = [q.x - C3[0], q.y - C3[1], q.z - C3[2]], a = V.dot(p, P.u), b = V.dot(p, P.v), r = V.sub(p, V.add(V.scale(P.u, a), V.scale(P.v, b)));
+        var o = V.add(C3, V.add(r, V.add(V.scale(P.u, a * ct - b * st), V.scale(P.v, a * st + b * ct))));
+        return new CSG.Vector(o[0], o[1], o[2]);
+      } });
+      ws.push(V.dot(n1, C3));
+    } else {
+      var keep = null;
+      sectionSteps(sc).forEach(function (s0) {
+        if (!(s0.hi > s0.lo)) return;
+        var b = box([X.e, X.t, X.z], [null, s0.lo, null], [s0.at == null ? null : X.s * s0.at, s0.hi, null]);
+        keep = keep ? keep.union(b) : b;
+        if (s0.at != null) ws.push(X.s * s0.at);
+      });
+      pieces.push({ region: keep, turn: null });
+    }
+    var byBody = {}, order = [];
+    mesh.faces.forEach(function (f) {
+      (f.polys || []).forEach(function (pg) {
+        var b = pg.body || 0, pt = pg.part != null ? pg.part : f.part, k = b + '|' + (pt != null ? pt : '');
+        if (!byBody[k]) { byBody[k] = []; order.push({ k: k, b: b, part: pt }); }
+        var c = pg.clone(); if (pt != null) c.part = pt; byBody[k].push(c);
+      });
+    });
+    var polys = [];
+    order.forEach(function (g) {
+      var solid = CSG.fromPolygons(byBody[g.k]), acc = null;
+      pieces.forEach(function (pc) {
+        var r = solid.intersect(pc.region);
+        if (pc.turn) r = r.transform(pc.turn, false);
+        acc = acc ? acc.union(r) : r;
+      });
+      (acc ? acc.polygons : []).forEach(function (pg) { pg.body = g.b; if (g.part != null) pg.part = g.part; polys.push(pg); });
+    });
+    var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
+    sm.faces.forEach(function (f, fi) {
+      if (V.dot(f.normal, X.e) > 1 - 1e-9 && ws.some(function (w) { return Math.abs(f.w - w) <= tol; })) { caps.push(fi); area += f.area; }
+    });
+    var out = { mesh: sm, caps: caps, area: area, e: X.e.slice(), w: ws[0], path: sc.type };
+    cache[key] = out;
+    return out;
+  }
+  // drops the lines of a stepped section's projection that run between two hatched faces (the steps of an offset line,
+  // the seam of an aligned one): a section view does not show them
+  function dropSeams(pr, caps) {
+    var all = []; caps.forEach(function (c) { c.loops.forEach(function (l) { all.push(l); }); });
+    if (!all.length) return pr;
+    function inside(p) {
+      var n = 0;
+      all.forEach(function (l) {
+        for (var i = 0, j = l.length - 1; i < l.length; j = i++) {
+          if ((l[i][1] > p[1]) !== (l[j][1] > p[1]) && p[0] < (l[j][0] - l[i][0]) * (p[1] - l[i][1]) / (l[j][1] - l[i][1]) + l[i][0]) n++;
+        }
+      });
+      return n % 2 === 1;
+    }
+    var b = pr.bounds || { umin: 0, umax: 1, vmin: 0, vmax: 1 }, dl = Math.max(b.umax - b.umin, b.vmax - b.vmin, 1e-9) * 1e-4;
+    function seam(l) {
+      var dx = l[2] - l[0], dy = l[3] - l[1], L = Math.hypot(dx, dy);
+      if (!(L > 0)) return false;
+      var mx = (l[0] + l[2]) / 2, my = (l[1] + l[3]) / 2, nx = -dy / L * dl, ny = dx / L * dl;
+      return inside([mx + nx, my + ny]) && inside([mx - nx, my - ny]);
+    }
+    var out = copyOf(pr);
+    out.lines = {}; Object.keys(pr.lines).forEach(function (q) { out.lines[q] = (pr.lines[q] || []).filter(function (l) { return !seam(l); }); });
+    if (pr.stats) { out.stats = copyOf(pr.stats); out.stats.visibleLines = out.lines.visible.length; out.stats.hiddenLines = (out.lines.hidden || []).length; }
+    return out;
+  }
+  // the content of a half / offset / aligned section view (in place of drawing-sheet.js's full-section branch);
+  // centred on the whole part like a full section, so it stays aligned with its parent
+  function pathContent(doc, v, mesh, parentContent) {
+    var par = findV(doc, v.parent), P = parentContent(par).frame, sc = v.section, F = D.sectionFrame(P, sc.axis, sc.sign), full = D.extentsOf(mesh, F);
+    var S = pathSectionOf(mesh, P, sc), pr;
+    if (!S.mesh.faces.length) pr = { orient: F.name, u: F.u, v: F.v, e: F.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
+      bounds: { umin: full.cu, umax: full.cu, vmin: full.cv, vmax: full.cv }, stats: { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 } };
+    else pr = _.cachedProjection(S.mesh, F, v.display, v.tangent);
+    var caps = capLoops(S, F);
+    if (sc.type !== 'half') pr = dropSeams(pr, caps);
+    return { frame: F, proj: pr, center: [full.cu, full.cv], caps: caps, section: S, scale: _.viewScale(doc, v) };
+  }
+  // setSectionType(doc, viewId, spec) -> the view: makes a section view a half ({ type: 'half', c, side }), offset
+  // ({ type: 'offset', jogs: [{ t, at }] }) or aligned ({ type: 'aligned', c, side, angle }) one; { type: 'full' } undoes it
+  function setSectionType(doc, viewId, spec) {
+    var v = findV(doc, viewId);
+    if (!v || v.kind !== 'section') throw new Error('No section view ' + viewId);
+    var sc = v.section, t = spec && spec.type, keep = JSON.parse(JSON.stringify(sc));
+    ['type', 'c', 'side', 'jogs', 'angle'].forEach(function (q) { delete sc[q]; });
+    if (!t || t === 'full') return v;
+    function fail(msg) { v.section = keep; throw new Error(msg); }
+    if (t === 'half') {
+      if (!isFinite(+spec.c) || spec.c === null) fail('A half section needs the centre c along the cutting line');
+      sc.type = 'half'; sc.c = +spec.c; sc.side = spec.side < 0 ? -1 : 1;
+    } else if (t === 'offset') {
+      var js = (spec.jogs || []).map(function (j) { return { t: +j.t, at: +j.at }; }).filter(function (j) { return isFinite(j.t) && isFinite(j.at); });
+      if (!js.length || js.length > 4) fail('An offset section needs one to four steps: jogs [{ t, at }]');
+      js.sort(function (p, q) { return p.t - q.t; });
+      sc.type = 'offset'; sc.jogs = js;
+    } else if (t === 'aligned') {
+      if (!isFinite(+spec.c) || spec.c === null || !isFinite(+spec.angle) || spec.angle === null) fail('An aligned section needs the centre c and the angle of its second leg');
+      sc.type = 'aligned'; sc.c = +spec.c; sc.side = spec.side < 0 ? -1 : 1; sc.angle = +spec.angle;
+      var G = alignedLegs(sc);
+      if (Math.abs(G.d1[0] * G.d2[1] - G.d1[1] * G.d2[0]) < 1e-6) fail('The second leg of an aligned section must be at an angle to the first');
+    } else fail('Section type must be full, half, offset or aligned');
+    return v;
+  }
+  // the cutting line of a typed section on its parent pw: thin chain legs with thick corners, an arrow at each end that
+  // cuts (pointing along the line of sight) and the letter, in place of the straight line drawing-render.js drew
+  function sectionPathLine(sheet, w, pw, k) {
+    var v = w.view, sc = v.section, L = pw.layer, ts = pw.toSheet, X = secAxes({ u: [1, 0, 0], v: [0, 1, 0], e: [0, 0, 1] }, sc);
+    var ext = 5 * k, shaft = 8 * k, lh = 5 * k, ar = 3 * k, aw = 0.9 * k, box = pw.box, CAP = _.CAP_EM || 1;
+    // (the full section's straight line, arrows and letters: taken off again)
+    var A, B, dv0;
+    if (sc.axis === 'h') { var y = ts([0, sc.at])[1]; A = [box.x0 - ext, y]; B = [box.x1 + ext, y]; dv0 = [0, -sc.sign]; }
+    else { var x = ts([sc.at, 0])[0]; A = [x, box.y0 - ext]; B = [x, box.y1 + ext]; dv0 = [-sc.sign, 0]; }
+    function near(p, q, tl) { return p && q && Math.abs(p[0] - q[0]) <= tl && Math.abs(p[1] - q[1]) <= tl; }
+    var tips = [A, B].map(function (e0) { return [e0[0] + dv0[0] * shaft, e0[1] + dv0[1] * shaft]; }), eps = 1e-6 * (1 + Math.abs(A[0]) + Math.abs(A[1]));
+    sheet.prims = sheet.prims.filter(function (p) {
+      if (p.layer !== L || p.view != null || p.cutLine != null) return true;
+      if (p.k === 'line' && p.style === 'chain' && near(p.a, A, eps) && near(p.b, B, eps)) return false;
+      if (p.k === 'line' && p.style === 'thick' && ((near(p.a, A, eps) && near(p.b, tips[0], eps)) || (near(p.a, B, eps) && near(p.b, tips[1], eps)))) return false;
+      if (p.k === 'fill' && p.pts && (near(p.pts[0], tips[0], eps) || near(p.pts[0], tips[1], eps))) return false;
+      if (p.k === 'text' && p.text === v.label && (near(p.p, tips[0], 12 * k) || near(p.p, tips[1], 12 * k))) return false;
+      return true;
+    });
+    function sdir(m0, d) { var a = ts(m0), b = ts([m0[0] + d[0], m0[1] + d[1]]), l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[0] - a[0]) / l, (b[1] - a[1]) / l]; }
+    function out(p, d) {   // from sheet point p along unit d to just past the parent's box
+      var t = Infinity;
+      if (Math.abs(d[0]) > 1e-12) t = Math.min(t, ((d[0] > 0 ? box.x1 : box.x0) - p[0]) / d[0]);
+      if (Math.abs(d[1]) > 1e-12) t = Math.min(t, ((d[1] > 0 ? box.y1 : box.y0) - p[1]) / d[1]);
+      t = Math.max(0, t) + ext;
+      return [p[0] + d[0] * t, p[1] + d[1] * t];
+    }
+    function m2(t, n) { return sc.axis === 'h' ? [t, n] : [n, t]; }
+    var sT = sdir(m2(0, sc.at), X.t2), sN = sdir(m2(0, sc.at), X.n2), pts, arrows = [];
+    if (sc.type === 'half') {
+      var Cs = ts(m2(sc.c, sc.at)), endA = out(Cs, [sT[0] * sc.side, sT[1] * sc.side]), endB = out(Cs, sN);
+      pts = [endA, Cs, endB]; arrows.push({ at: endA, dv: [-sN[0], -sN[1]] });
+    } else if (sc.type === 'offset') {
+      pts = [];
+      sectionSteps(sc).forEach(function (s0) {
+        var lo = isFinite(s0.lo) ? ts(m2(s0.lo, s0.at)) : null, hi = isFinite(s0.hi) ? ts(m2(s0.hi, s0.at)) : null;
+        if (!lo) lo = out(hi, [-sT[0], -sT[1]]);
+        if (!hi) hi = out(lo, sT);
+        pts.push(lo, hi);
+      });
+      arrows.push({ at: pts[0], dv: [-sN[0], -sN[1]] }, { at: pts[pts.length - 1], dv: [-sN[0], -sN[1]] });
+    } else {
+      var G = alignedLegs(sc), Cs2 = ts(G.C), q1 = sdir(G.C, G.n1), q2 = sdir(G.C, G.n2), e1 = out(Cs2, sdir(G.C, G.d1)), e2 = out(Cs2, sdir(G.C, G.d2));
+      pts = [e1, Cs2, e2]; arrows.push({ at: e1, dv: [-q1[0], -q1[1]] }, { at: e2, dv: [-q2[0], -q2[1]] });
+    }
+    for (var i = 1; i < pts.length; i++) if (Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) > 1e-9) sheet.prims.push({ k: 'line', a: pts[i - 1], b: pts[i], layer: L, style: 'chain', cutLine: v.id });
+    // (thick at the changes of direction, as ASME Y14.2 draws a cutting plane line's corners)
+    for (var j = 1; j < pts.length - 1; j++) [pts[j - 1], pts[j + 1]].forEach(function (o) {
+      var dx = o[0] - pts[j][0], dy = o[1] - pts[j][1], l = Math.hypot(dx, dy);
+      if (l > 1e-9) sheet.prims.push({ k: 'line', a: pts[j], b: [pts[j][0] + dx / l * Math.min(l, 3 * k), pts[j][1] + dy / l * Math.min(l, 3 * k)], layer: L, style: 'thick', cutLine: v.id });
+    });
+    arrows.forEach(function (aw0) {
+      var e0 = aw0.at, dv = aw0.dv, tip = [e0[0] + dv[0] * shaft, e0[1] + dv[1] * shaft], n = [-dv[1], dv[0]];
+      sheet.prims.push({ k: 'line', a: e0, b: tip, layer: L, style: 'thick', cutLine: v.id });
+      sheet.prims.push({ k: 'fill', pts: [tip, [tip[0] - dv[0] * ar + n[0] * aw, tip[1] - dv[1] * ar + n[1] * aw], [tip[0] - dv[0] * ar - n[0] * aw, tip[1] - dv[1] * ar - n[1] * aw]], layer: L, cutLine: v.id });
+      var tp = [tip[0] + dv[0] * 2 * k + (Math.abs(dv[0]) > 0.5 ? dv[0] * k : 0), tip[1] + dv[1] * 2 * k - (dv[1] > 0.5 ? 0 : dv[1] < -0.5 ? lh : lh / 2)];
+      sheet.prims.push({ k: 'text', p: tp, h: lh * CAP, text: v.label, anchor: 'middle', layer: L, rot: 0, cutLine: v.id });
+    });
+    w.cutPath = pts;
+  }
+
   // ------------------------------------------------------------------ Auxiliary, Crop and Broken views
   // (SolidWorks: Insert ▸ Drawing View ▸ Auxiliary / Crop / Break.) They hook into viewContent, compute, moveView and
   // layout (drawing-sheet.js / drawing-render.js) through _.hook, so those files stay as they are:
@@ -923,7 +1148,8 @@
   }
   _.hook(_, 'viewContent', function (base) {
     return function (doc, v, mesh, parentContent) {
-      var ct = base(doc, v, mesh, parentContent);
+      var typed = v.kind === 'section' && v.section && v.section.type && v.parent != null && parentContent && findV(doc, v.parent);
+      var ct = typed ? pathContent(doc, v, mesh, parentContent) : base(doc, v, mesh, parentContent);
       if (!ct || !ct.proj) return ct;
       // an auxiliary view keeps its projection lines square to the parent's edge wherever it sits along them
       if (v.kind === 'aux' && v.aux && v.parent != null && parentContent) {
@@ -1041,6 +1267,8 @@
     w.toSheet = function (p) { return M(ts(p)); };
     w.fromSheet = function (p) { return fs([MX.inv(p[0]), MY.inv(p[1])]); };
     w.breaks = { vertical: MX.bands, horizontal: MY.bands };
+    // (sheet x / y with and without the breaks, so a dimension dragged in the view maps through them, rfP)
+    w.breakMap = { fwd: function (p) { return [MX.fwd(p[0]), MY.fwd(p[1])]; }, inv: function (p) { return [MX.inv(p[0]), MY.inv(p[1])]; } };
     function mapBox(b) { var a0 = M([b.x0, b.y0]), a1 = M([b.x1, b.y1]); return { x0: a0[0], y0: a0[1], x1: a1[0], y1: a1[1] }; }
     (sheet.dims || []).forEach(function (d) {
       if (d.view !== v.id) return;
@@ -1070,6 +1298,10 @@
       if (!sheet || !sheet.views) return sheet;
       var k = _.paperK(sheet.units), byId = {};
       sheet.views.forEach(function (w) { byId[w.view.id] = w; });
+      sheet.views.forEach(function (w) {
+        var sv = w.view;
+        if (sv.kind === 'section' && sv.section && sv.section.type && sv.parent != null && byId[sv.parent]) sectionPathLine(sheet, w, byId[sv.parent], k);
+      });
       sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
       sheet.views.forEach(function (w) {
         if (w.view.kind !== 'aux' || !w.view.aux) return;
@@ -1112,6 +1344,18 @@
       return r;
     };
   });
+  // Section View with a type: addSectionView(doc, mesh, parentId, { axis, at, sign, type: 'half' | 'offset' | 'aligned',
+  // c, side, jogs, angle, … }) makes the full section, then setSectionType
+  _.hook(D, 'addSectionView', function (base) {
+    return function (doc, mesh, parentId, opts) {
+      var t = opts && opts.type;
+      if (!t || t === 'full') return base(doc, mesh, parentId, opts);
+      var nv = doc.views.length, nn = doc.nextView, v = base(doc, mesh, parentId, opts);
+      try { setSectionType(doc, v.id, opts); } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
+      return v;
+    };
+  });
+  D.setSectionType = setSectionType; D.sectionSteps = sectionSteps; D.alignedLegs = alignedLegs; D.pathSectionOf = pathSectionOf;
   D.auxFrame = auxFrame; D.addAuxiliaryView = addAuxiliaryView; D.setCrop = setCrop; D.addBreak = addBreak; D.clearBreaks = clearBreaks;
   D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap;
 

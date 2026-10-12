@@ -20,6 +20,76 @@
   var cmdHoleCallout = DW.cmdHoleCallout, cmdChainDim = DW.cmdChainDim, cmdChamferDim = DW.cmdChamferDim, cmdBalloon = DW.cmdBalloon, setBalloonProps = DW.setBalloonProps, cmdDimensionPM = DW.cmdDimensionPM;
   var applyDimensionPM = DW.applyDimensionPM, cmdDocProps = DW.cmdDocProps, setDocOptions = DW.setDocOptions, autoInsertViews = DW.autoInsertViews;
 
+  // ------------------------------------------------------------------ rfQ: several sheets in the exports
+  // sheetOf(i) -> sheet i worked out (the active one is the sheet on screen); the others are laid out and worked out
+  // whole, without switching the sheet on screen
+  function sheetOf(i) {
+    var dc = doc(), a = dc.activeSheet | 0;
+    if (i == null || i === a) return current();
+    var sd = Drawing.sheetDoc(dc, i);
+    if (sd.layout === 'auto') Drawing.layout(sd, mesh(), units());
+    return Drawing.compute(sd, mesh(), App.model, cctx());
+  }
+  function everySheet() { var out = []; for (var i = 0; i < Drawing.sheetCount(doc()); i++) out.push(sheetOf(i)); return out; }
+  // Save as PDF writes every sheet, one page each (as SolidWorks saves a multi-sheet drawing); Save as SVG / DXF
+  // write one sheet, the active one, and the save dialog gets a Sheet choice when the drawing has more than one
+  // (choosing another sheet activates it and writes that one)
+  var baseExportAs = DW.exportAs;
+  exportAs = DW.exportAs = function (kind, opts) {
+    opts = opts || {};
+    var dc = doc();
+    if (!dc) return;
+    if (opts.sheet != null && Drawing.sheetIndex(dc, opts.sheet) >= 0) DW.activateSheet(opts.sheet);
+    var n = Drawing.sheetCount(dc);
+    if (kind === 'pdf' && n > 1) {
+      settle();
+      var nm = (dc.name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_');
+      UI.exportDialog('Save Drawing as PDF (' + n + ' sheets, one page each)', nm + '.pdf', Drawing.toPDF(everySheet()), 'application/pdf');
+      return;
+    }
+    baseExportAs(kind, opts);
+    if (n < 2 || kind === 'pdf') return;
+    var ta = document.querySelector('#modal textarea');
+    if (!ta) return;
+    var sel = el('select', { id: 'dw-export-sheet', title: 'The sheet to save' });
+    Drawing.sheets(doc()).forEach(function (s) { var op = el('option', { value: String(s.index), text: s.name }); if (s.active) op.selected = true; sel.appendChild(op); });
+    sel.onchange = function () { exportAs(kind, { sheet: +sel.value }); };
+    ta.parentNode.insertBefore(el('p', {}, [el('label', { text: 'Sheet ' }), sel, el('span', { class: 'dw-muted', text: '  one sheet per ' + kind.toUpperCase() + ' file (Save as PDF writes every sheet)' })]), ta);
+    var vs = document.getElementById('dw-dxf-version');
+    if (vs) vs.onchange = function () { exportAs('dxf', { version: vs.value }); };
+  };
+
+  // ------------------------------------------------------------------ rfQ: the general tolerances block edits as lines
+  // A title block field of several lines (f.multi: the general tolerances) is edited in place in a box of lines:
+  // Enter / Shift+Enter starts a new line, Ctrl+Enter or ✓ applies, Esc / ✗ cancels (as a note is typed). The other
+  // fields keep their one-line box (drawing-ui-tools.js).
+  var baseTitleEdit = DW.openTitleEdit;
+  DW.openTitleEdit = function (tf) {
+    if (!tf || !tf.field || !tf.field.multi) return baseTitleEdit(tf);
+    DW.closeInlineEdit(false);
+    var dc = doc(), own = dc.titleBlock && dc.titleBlock[tf.field.key];
+    var shown = own != null ? String(own) : Drawing.titleBlock(dc, App.model, { build: App.build || null, mesh: mesh() })[tf.field.key] || '';
+    var ta = el('textarea', { rows: String(Math.max(3, Math.min(8, shown.split('\n').length + 1))), spellcheck: 'false', 'aria-label': tf.field.label });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Ctrl+Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'text tb multi' }, [ta, el('div', { class: 'dw-edit-col' }, [ok, no])]);
+    ta.value = shown;
+    D.root.appendChild(box);
+    D.inline = { box: box, inp: ta, field: { key: tf.field.key, rect: tf.rect, shown: shown, multi: true } };
+    DW.positionInlineEdit();
+    ta.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); DW.closeInlineEdit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); DW.closeInlineEdit(false); }
+    });
+    ta.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === ta && !box.contains(document.activeElement)) DW.closeInlineEdit(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { DW.closeInlineEdit(true); });
+    no.addEventListener('click', function () { DW.closeInlineEdit(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { ta.focus({ preventScroll: true }); ta.select(); } catch (err) { }
+    UI.setStatus(tf.field.label + ': one line per row (Enter starts a new line; empty restores the default); Ctrl+Enter or ✓ applies, Esc cancels.');
+  };
+
   // ------------------------------------------------------------------ rfM: Revision Table, shop symbols, drawing properties
   // A PropertyManager of the drawing (as drawing-ui-tools.js opens them): the sheet stays live under it
   function pmOpen(spec, tool, pending) {
@@ -204,6 +274,14 @@
         badge: sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.ra || '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
         click: function () { D.sel = { kind: 'symbol', id: sy.id }; drawOverlay(); renderTree(); }, dbl: function () { cmdSymbol(sy.type, sy.id); }, menu: function () { return symbolMenu(sy.id); } }));
     });
+    // (rfQ) the other sheets: one row each, in sheet order around the active one (whose views are listed under it);
+    // double-click or Activate brings one up
+    var allSheets = Drawing.sheets(dc), act = dc.activeSheet | 0;
+    function otherSheet(s) {
+      t.appendChild(row({ icon: 'sheet', name: s.name, depth: 1, twisty: true, cls: 'dw-sheet-off', data: { sheetIndex: String(s.index) }, badge: s.format + '  ' + s.scale, title: s.name + ': ' + s.views + ' view' + (s.views === 1 ? '' : 's') + '. Double-click to activate.',
+        dbl: function () { DW.activateSheet(s.index); }, menu: function () { return DW.sheetTabMenu(s.index); } }));
+    }
+    allSheets.slice(0, act).forEach(otherSheet);
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
     t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block (File ▸ Properties… sets DRAWN / CHECKED / COMPANY / tolerances)', dbl: cmdDrawingProps }));
     if (dc.revisions && dc.revisions.show !== false) {
@@ -247,6 +325,7 @@
       if (nb) t.appendChild(row({ icon: 'autoBalloon', name: 'Balloons', depth: 3, cls: 'dw-balloons', badge: String(nb), title: nb + ' balloons linked to the Bill of Materials item numbers',
         menu: function () { return [{ label: 'Delete Balloons', action: function () { edit(function (dc2) { Drawing.deleteBalloons(dc2, v.id); }); } }]; } }));
     });
+    allSheets.slice(act + 1).forEach(otherSheet);
   }
 
   // ------------------------------------------------------------------ ribbon, menus, keys
@@ -343,6 +422,7 @@
       { label: 'Edit', items: (editMenu ? editMenu.items.slice(0, 2) : []).concat([{ label: 'Delete', key: 'Del', disabled: !D.sel || D.sel.kind === 'sheet', action: deleteSelection }]) },
       { label: 'View', items: [{ label: 'Zoom to Fit', key: 'F', action: fitSheet }] },
       { label: 'Insert', items: [
+        { label: 'Sheet\u2026', action: function () { DW.addSheet(); } },
         { label: 'Drawing View \u25b8 Standard 3 View', action: cmdStandard3View },
         { label: 'Drawing View \u25b8 Model\u2026', action: cmdModelView },
         { label: 'Drawing View \u25b8 Projected', action: cmdProjectedView },
@@ -439,7 +519,7 @@
     if (D.active && D.renderQueued) render();   // a script reads the sheet as it is now, not a held / queued one
     if (!D.sheet || !D.active) { syncBom(dc); if (dc.layout === 'auto') Drawing.layout(dc, mesh(), units()); D.sheet = Drawing.compute(dc, mesh(), App.model, cctx()); }
     return {
-      name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection },
+      name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection, index: dc.activeSheet | 0, count: Drawing.sheetCount(dc) }, sheets: Drawing.sheets(dc),
       views: D.sheet.views.map(function (w) {
         var b = w.proj.bounds;
         return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent,
@@ -451,8 +531,8 @@
           flat: w.view.kind === 'flat' ? flatSummary(w) : undefined };
       }),
       revisions: D.sheet.revisions ? { rows: D.sheet.revisions.rows, latest: D.sheet.revisions.latest, anchor: D.sheet.revisions.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.revisions.box[q].toFixed(3); }) } : null,
-      symbols: (D.sheet.symbols || []).map(function (y) { var s0 = Drawing.findSymbol(dc, y.id) || {}; return { id: y.id, type: y.type, text: y.text, p: s0.p, leader: s0.leader || null, box: [y.box.x0, y.box.y0, y.box.x1, y.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
-      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, raw: n.raw, leader: n.leader, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      symbols: (D.sheet.symbols || []).map(function (y) { var s0 = Drawing.findSymbol(dc, y.id) || {}; return { id: y.id, type: y.type, text: y.text, p: s0.p, leader: s0.leader || null, view: y.view || null, box: [y.box.x0, y.box.y0, y.box.x1, y.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
+      notes: (D.sheet.notes || []).map(function (n) { return { id: n.id, text: n.text, raw: n.raw, leader: n.leader, view: n.view || null, p: [+n.p[0].toFixed(3), +n.p[1].toFixed(3)], box: [n.box.x0, n.box.y0, n.box.x1, n.box.y1].map(function (x) { return +x.toFixed(3); }) }; }),
       bom: D.sheet.bom ? { anchor: dc.bom.x != null ? 'moved' : dc.bom.anchor, box: ['x0', 'y0', 'x1', 'y1'].map(function (q) { return +D.sheet.bom.box[q].toFixed(3); }),
         type: D.sheet.bom.type, columns: D.sheet.bom.columns.map(function (c) { return c.title; }), cells: D.sheet.bom.cells.map(function (r) { return r.map(function (x) { return String(x); }); }),
         rows: D.sheet.bom.rows.map(function (r, i) { var o = { item: r.item, partNumber: r.partNumber, description: r.description, qty: r.qty, components: r.components.map(function (id) { var c = Assembly.findComponent(App.model, id); return c ? c.name : id; }) }; D.sheet.bom.columns.forEach(function (c, j) { if (c.type === 'property') o[c.prop] = String(D.sheet.bom.cells[i][j]); }); return o; }) } : null,
@@ -525,10 +605,20 @@
       addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },
-      svg: function () { return Drawing.toSVG(current()); },
-      // dxf({ version: 'R12' (default) | 'R2000' }): the sheet as DXF, one layer per view
-      dxf: function (opts) { return Drawing.toDXF(current(), opts); },
-      pdf: function () { return Drawing.toPDF(current()); },
+      // svg(i): one sheet (default: the active one, rfQ)
+      svg: function (i) { if (!doc()) return null; return Drawing.toSVG(sheetOf(i == null ? null : Drawing.sheetIndex(doc(), i))); },
+      // dxf({ version: 'R12' (default) | 'R2000', sheet: i | name }): one sheet (default: the active one) as DXF, one layer per view
+      dxf: function (opts) { if (!doc()) return null; return Drawing.toDXF(sheetOf(opts && opts.sheet != null ? Drawing.sheetIndex(doc(), opts.sheet) : null), opts); },
+      // pdf(): every sheet, one page each (rfQ)
+      pdf: function () { if (!doc()) return null; settle(); return Drawing.toPDF(Drawing.sheetCount(doc()) > 1 ? everySheet() : current()); },
+      // sheets (rfQ): sheets() lists them; addSheet({ name, format, scale, projection }) adds one and activates it,
+      // activateSheet(i | name) -> the summary, deleteSheet(i | name), renameSheet(i | name, newName); each edit is one
+      // undo step and returns the list of sheets (null when refused)
+      sheets: function () { return doc() ? Drawing.sheets(doc()) : null; },
+      addSheet: function (opts) { if (!doc()) return null; return DW.addSheet(opts) < 0 ? null : Drawing.sheets(doc()); },
+      activateSheet: function (i) { if (!doc() || !DW.activateSheet(i)) return null; return summary(); },
+      deleteSheet: function (i) { if (!doc() || !DW.deleteSheet(i, true)) return null; return Drawing.sheets(doc()); },
+      renameSheet: function (i, name) { if (!doc() || name == null || !DW.renameSheet(i, name)) return null; return Drawing.sheets(doc()); },
       doc: function () { return JSON.parse(JSON.stringify(doc())); },
       // annotations: each is one undo step and returns the summary (null and a status message when refused)
       options: function (props) { if (!doc()) return null; if (props) setDocOptions(props); return Drawing.docOptions(doc()); },

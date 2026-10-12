@@ -354,7 +354,7 @@
       case 'sw-units': return String(units).toUpperCase();
       case 'sw-date': return doc.date;
       case 'sw-projection': return doc.sheet.projection === 'first' ? 'FIRST ANGLE' : 'THIRD ANGLE';
-      case 'sw-sheet': return '1 OF 1';
+      case 'sw-sheet': return ((doc.activeSheet | 0) + 1) + ' OF ' + sheetCount(doc);
     }
     var own = doc.properties || {}, key = String(name).trim().toLowerCase();
     for (var k in own) if (k.toLowerCase() === key) return String(own[k]);
@@ -1476,6 +1476,112 @@
     return r < 0 ? -1 : Math.min(r, doc.revisions.rows.length - 1);
   }
 
+  // ------------------------------------------------------------------ several sheets (rfQ)
+  // A drawing has one or more sheets (SolidWorks: the tabs under the sheet, right-click ▸ Add Sheet / Delete / Rename /
+  // Properties). The active sheet's contents stay where a one-sheet document keeps them (doc.sheet, doc.views,
+  // doc.notes, doc.symbols, doc.bom, doc.bomRows, doc.layout), so everything that works out, edits or writes a sheet
+  // reads the active one unchanged; doc.sheets lists every sheet, the active one as null (its contents are the
+  // document's own) and the others as { sheet, views, notes, symbols, bom, bomRows, layout }; doc.activeSheet is its
+  // index. A document without doc.sheets (saved before rfQ) is one sheet. View and annotation ids stay unique across
+  // the sheets (doc.nextView, doc.nextAnnot); the revisions, title block texts, properties and options are the drawing's.
+  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout'];
+  function sheetCount(doc) { return doc.sheets && doc.sheets.length ? doc.sheets.length : 1; }
+  function sheetsOf(doc) {
+    if (!doc.sheets || !doc.sheets.length) { doc.sheets = [null]; doc.activeSheet = 0; }
+    if (!(doc.activeSheet >= 0 && doc.activeSheet < doc.sheets.length)) doc.activeSheet = 0;
+    return doc.sheets;
+  }
+  function stash(doc) { var r = {}; SHEET_KEYS.forEach(function (q) { if (doc[q] !== undefined) r[q] = doc[q]; }); return r; }
+  // sheetRecord(doc, i) -> sheet i's contents ({ sheet, views, … }; the active one's are the document's own)
+  function sheetRecord(doc, i) {
+    if (i == null || i === (doc.activeSheet | 0)) return stash(doc);
+    return doc.sheets && doc.sheets[i] || null;
+  }
+  // sheetDoc(doc, i) -> a document whose active sheet is sheet i, to work out or write a sheet that is not the active
+  // one (its views, notes and sheet are sheet i's own objects; the drawing's own fields are shared)
+  function sheetDoc(doc, i) {
+    if (i == null || i === (doc.activeSheet | 0)) return doc;
+    var r = sheetRecord(doc, i), d = {};
+    if (!r) throw new Error('No sheet ' + i);
+    Object.keys(doc).forEach(function (q) { d[q] = doc[q]; });
+    SHEET_KEYS.forEach(function (q) { if (q in r) d[q] = r[q]; else delete d[q]; });
+    if (!d.views) d.views = r.views = [];
+    d.activeSheet = i;
+    return d;
+  }
+  // sheets(doc) -> [{ index, name, format, scale, autoScale, projection, views, active }]
+  function sheets(doc) {
+    var n = sheetCount(doc), out = [];
+    for (var i = 0; i < n; i++) {
+      var r = sheetRecord(doc, i) || {}, s = r.sheet || {};
+      out.push({ index: i, name: s.name, format: s.format, scale: scaleText(s.scale || [1, 1]), autoScale: !!s.autoScale, projection: s.projection || 'third', views: (r.views || []).length, active: i === (doc.activeSheet | 0) });
+    }
+    return out;
+  }
+  // sheetIndex(doc, i | name) -> the sheet's index, or -1
+  function sheetIndex(doc, which) {
+    if (typeof which === 'number') return which >= 0 && which < sheetCount(doc) && which === Math.floor(which) ? which : -1;
+    var l = sheets(doc);
+    for (var i = 0; i < l.length; i++) if (String(l[i].name).toLowerCase() === String(which).trim().toLowerCase()) return i;
+    return -1;
+  }
+  function freeSheetName(doc) {
+    var used = {};
+    sheets(doc).forEach(function (s) { used[String(s.name).toLowerCase()] = 1; });
+    for (var k = sheetCount(doc) + 1; ; k++) if (!used['sheet' + k]) return 'Sheet' + k;
+  }
+  // activateSheet(doc, i | name) -> the index now active
+  function activateSheet(doc, which) {
+    var i = sheetIndex(doc, which);
+    if (i < 0) throw new Error('No sheet ' + which);
+    if (i === (doc.activeSheet | 0)) return i;
+    var l = sheetsOf(doc), r = l[i];
+    l[doc.activeSheet] = stash(doc);
+    SHEET_KEYS.forEach(function (q) { if (q in r) doc[q] = r[q]; else delete doc[q]; });
+    if (!doc.views) doc.views = [];
+    l[i] = null; doc.activeSheet = i;
+    return i;
+  }
+  // addSheet(doc, { name, format, scale, projection, activate }) -> the new sheet's index. It goes after the last sheet
+  // with the active sheet's format, scale and projection (SolidWorks' Add Sheet copies the current sheet's
+  // properties), and becomes the active sheet unless activate === false.
+  function addSheet(doc, opts) {
+    opts = opts || {};
+    var nm = opts.name != null && String(opts.name).trim() ? String(opts.name).trim() : freeSheetName(doc);
+    if (sheetIndex(doc, nm) >= 0) throw new Error('A sheet named ' + nm + ' already exists');
+    if (opts.format && !FORMATS[opts.format]) throw new Error('No sheet format ' + opts.format);
+    var l = sheetsOf(doc), cur = doc.sheet || {}, sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
+    l.push({ sheet: { name: nm, format: opts.format || cur.format || 'A3', scale: sc || (cur.scale || [1, 1]).slice(), autoScale: sc ? false : cur.autoScale !== false,
+      projection: opts.projection === 'first' || opts.projection === 'third' ? opts.projection : cur.projection || 'third' },
+      views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto' });
+    var i = l.length - 1;
+    if (opts.activate !== false) activateSheet(doc, i);
+    return i;
+  }
+  // deleteSheet(doc, i | name): the last sheet cannot go; deleting the active sheet activates the one before it
+  // (the first sheet's neighbour when it is the first). One sheet left: the document is a one-sheet document again.
+  function deleteSheet(doc, which) {
+    var i = sheetIndex(doc, which);
+    if (i < 0) throw new Error('No sheet ' + which);
+    if (sheetCount(doc) < 2) throw new Error('A drawing keeps at least one sheet');
+    var l = sheetsOf(doc);
+    if (i === doc.activeSheet) activateSheet(doc, i > 0 ? i - 1 : 1);
+    l.splice(i, 1);
+    if (doc.activeSheet > i) doc.activeSheet--;
+    if (l.length === 1) { delete doc.sheets; delete doc.activeSheet; }
+    return true;
+  }
+  // renameSheet(doc, i | name, newName) -> the new name (sheet names are unique, case-insensitive)
+  function renameSheet(doc, which, name) {
+    var i = sheetIndex(doc, which), nm = String(name == null ? '' : name).trim();
+    if (i < 0) throw new Error('No sheet ' + which);
+    if (!nm) throw new Error('A sheet needs a name');
+    var j = sheetIndex(doc, nm);
+    if (j >= 0 && j !== i) throw new Error('A sheet named ' + nm + ' already exists');
+    if (i === (doc.activeSheet | 0)) doc.sheet.name = nm; else doc.sheets[i].sheet.name = nm;
+    return nm;
+  }
+
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
@@ -1486,6 +1592,8 @@
   D.todayISO = todayISO; D.REV_COLS = REV_COLS; D.revLetter = revLetter; D.nextRev = nextRev; D.latestRev = latestRev; D.insertRevisionTable = insertRevisionTable; D.addRevision = addRevision;
   D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;
   _.REV_TEXT = REV_TEXT;
+  D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
+  D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;

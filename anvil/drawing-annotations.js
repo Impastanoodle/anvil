@@ -932,6 +932,47 @@
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.
+  // (rfQ) A note or symbol placed on a view (its leader's tip, or with no leader its position, inside the view's
+  // linework box) belongs to that view and moves with it, as in SolidWorks; one placed on free paper stays on the
+  // sheet. a.view: the view's id (0: on the sheet; not set yet: decided by the next compute), a.vxy: the view's
+  // position when a.p / a.leader were last placed, so a.p - a.vxy is the offset from the view. spec.view on add /
+  // edit: a view id attaches it to that view, 0 / false / null puts it on the sheet.
+  function setAttach(a, view) {
+    if (view === undefined) return;
+    delete a.vxy;
+    a.view = view ? +view : 0;
+  }
+  // followViews(doc, views, k): compute's pass before it draws the notes and symbols (views: compute's view list with
+  // their paper boxes): new ones are attached to the view they sit on, the attached ones follow their view's move, and
+  // those whose view went away stay where they are, on the sheet
+  function followViews(doc, views, k) {
+    var byId = {}, m = 3 * (k || 1);
+    views.forEach(function (w) { byId[w.view.id] = w; });
+    [doc.notes || [], doc.symbols || []].forEach(function (list) {
+      list.forEach(function (a) {
+        if (a.view === undefined) {
+          var q = a.leader || a.p, hit = null, area = Infinity;
+          if (q) views.forEach(function (w) {
+            var b = w.box, ar = (b.x1 - b.x0) * (b.y1 - b.y0);
+            if (q[0] >= b.x0 - m && q[0] <= b.x1 + m && q[1] >= b.y0 - m && q[1] <= b.y1 + m && ar < area) { hit = w; area = ar; }
+          });
+          a.view = hit ? hit.view.id : 0;
+          if (hit) a.vxy = [hit.view.x, hit.view.y];
+          return;
+        }
+        if (!a.view) return;
+        var w = byId[a.view];
+        if (!w) { a.view = 0; delete a.vxy; return; }
+        var v = w.view;
+        if (!a.vxy) { a.vxy = [v.x, v.y]; return; }
+        var dx = v.x - a.vxy[0], dy = v.y - a.vxy[1];
+        if (!dx && !dy) return;
+        if (a.p) a.p = [a.p[0] + dx, a.p[1] + dy];
+        if (a.leader) a.leader = [a.leader[0] + dx, a.leader[1] + dy];
+        a.vxy = [v.x, v.y];
+      });
+    });
+  }
   function addNote(doc, spec) {
     if (!spec || !spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A note needs a position on the sheet');
     var t = String(spec.text == null ? '' : spec.text);
@@ -939,6 +980,7 @@
     var nt = { id: nextAnnotId(doc), p: [+spec.p[0], +spec.p[1]], text: t };
     if (+spec.h > 0) nt.h = +spec.h;
     if (spec.leader) nt.leader = [+spec.leader[0], +spec.leader[1]];   // (rfM) the arrow tip, paper
+    setAttach(nt, spec.view);
     (doc.notes || (doc.notes = [])).push(nt);
     return nt;
   }
@@ -951,6 +993,7 @@
     if (props.p) nt.p = [+props.p[0], +props.p[1]];
     if (props.h != null) { if (+props.h > 0) nt.h = +props.h; else delete nt.h; }
     if (props.leader !== undefined) { if (props.leader) nt.leader = [+props.leader[0], +props.leader[1]]; else delete nt.leader; }
+    setAttach(nt, props.view);
     return nt;
   }
   function deleteNote(doc, id) {
@@ -1002,6 +1045,7 @@
   }
   function cleanSymbol(s, spec) {
     if (spec.p) s.p = [+spec.p[0], +spec.p[1]];
+    setAttach(s, spec.view);
     if (spec.leader !== undefined) { if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader; }
     if (s.type === 'surfaceFinish') {
       if (spec.symbol != null) s.symbol = spec.symbol === 'machined' || spec.symbol === 'prohibited' ? spec.symbol : 'basic';
@@ -1154,7 +1198,7 @@
   D.GTOL_CHARS = GTOL_CHARS; D.SF_SYMBOLS = SF_SYMBOLS; D.nextDatum = nextDatum; D.addSymbol = addSymbol; D.findSymbol = findSymbol; D.editSymbol = editSymbol; D.deleteSymbol = deleteSymbol;
   D.symbolText = symbolText; D.symbolPrims = symbolPrims; D.datumRef = datumRef;
 
-  D.addNote = addNote; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
+  D.addNote = addNote; D.followViews = followViews; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
   D.holeSizeNames = holeSizeNames;
   _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);

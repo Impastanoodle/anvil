@@ -375,6 +375,8 @@
       if (!noteCtx && typeof Materials !== 'undefined' && model) { var asmN = model.type === 'assembly', bN = ctx.build && !!ctx.build.assembly === asmN ? ctx.build : null; noteCtx = { build: bN, mesh: mesh, props: Materials.context(model, { build: bN, mesh: asmN ? null : mesh }) }; }
       return D.titleText(t, doc, model, noteCtx || {});
     };
+    // (rfQ) notes and symbols placed on a view move with it
+    D.followViews(doc, views, k);
     var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k, noteText); });
     var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W); r.id = sy.id; r.type = sy.type; return r; });
     // what dimensions and Bend Tables keep clear of besides: the Revision Table, the sheet format's left blocks, symbols
@@ -478,13 +480,16 @@
       if (!it.hidden) it.prims.forEach(function (x) { x.view = it.view; prims.push(x); });
       annotations.push({ id: it.id, view: it.view, type: it.type, key: it.key, auto: true, flat: true, hidden: !!it.hidden, off: it.off, text: it.text, dangling: false, box: it.box, info: it.info || null });
     });
-    var notes = notePre.map(function (it) {
-      it.prims.forEach(function (x) { prims.push(x); });
-      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null };
+    // (rfQ) a note / symbol attached to a view carries its id (x.view), so a dragged view takes it along live
+    var notes = notePre.map(function (it, i) {
+      var of = (doc.notes[i] || {}).view || null;
+      it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
+      return { id: it.id, text: it.text, lines: it.lines, p: it.p, h: it.h, box: it.box, raw: it.raw, leader: it.leader || null, view: of };
     });
-    var symbols = symPre.map(function (it) {
-      it.prims.forEach(function (x) { prims.push(x); });
-      return { id: it.id, type: it.type, text: it.text, box: it.box };
+    var symbols = symPre.map(function (it, i) {
+      var of = (doc.symbols[i] || {}).view || null;
+      it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
+      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
     });
     return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions };
   }
@@ -1258,8 +1263,27 @@
     return L.concat(body, ['0', 'EOF']).join('\n');
   }
 
-  // PDF 1.4, one page at the sheet's real size, Helvetica (WinAnsi) text; pure ASCII so it survives a text Blob.
-  function toPDF(sheet) {
+  // PDF 1.4, one page per sheet at the sheet's real size, Helvetica (WinAnsi) text; pure ASCII so it survives a text
+  // Blob. toPDF(sheet) writes one sheet; toPDF([sheet1, sheet2, …]) one page per sheet, in order (rfQ: a drawing's
+  // sheets, as SolidWorks saves a multi-sheet drawing as one PDF).
+  function toPDF(sheets) {
+    var list = Array.isArray(sheets) ? sheets : [sheets], pages = list.map(pdfPage), objs = ['<< /Type /Catalog /Pages 2 0 R >>', null], font = 3 + 2 * list.length;
+    objs[1] = '<< /Type /Pages /Kids [' + list.map(function (s, i) { return (3 + 2 * i) + ' 0 R'; }).join(' ') + '] /Count ' + list.length + ' >>';
+    pages.forEach(function (pg, i) {
+      objs.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pg.W + ' ' + pg.H + '] /Contents ' + (4 + 2 * i) + ' 0 R /Resources << /Font << /F1 ' + font + ' 0 R >> >> >>');
+      objs.push('<< /Length ' + pg.content.length + ' >>\nstream\n' + pg.content + '\nendstream');
+    });
+    objs.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+    var out = '%PDF-1.4\n', offs = [];
+    objs.forEach(function (o, i) { offs.push(out.length); out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+    var xref = out.length;
+    out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
+    offs.forEach(function (o) { out += ('0000000000' + o).slice(-10) + ' 00000 n \n'; });
+    out += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+    return out;
+  }
+  // pdfPage(sheet) -> { W, H, content }: one sheet's page size (points) and content stream
+  function pdfPage(sheet) {
     var ptPer = sheet.units === 'in' ? 72 : 72 / MM, k = sheet.units === 'in' ? 1 / MM : 1;
     function P(x) { return num(x * ptPer); }
     var c = ['1 J 1 j'];
@@ -1341,22 +1365,7 @@
         c.push('BT /F1 ' + num(fs) + ' Tf ' + num(ca) + ' ' + num(sa) + ' ' + num(-sa) + ' ' + num(ca) + ' ' + num(x0) + ' ' + num(y0) + ' Tm (' + pdfText(p.text) + ') Tj ET');
       }
     });
-    var content = c.join('\n');
-    var W = P(sheet.size[0]), H = P(sheet.size[1]);
-    var objs = [
-      '<< /Type /Catalog /Pages 2 0 R >>',
-      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W + ' ' + H + '] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
-      '<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream',
-      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
-    ];
-    var out = '%PDF-1.4\n', offs = [];
-    objs.forEach(function (o, i) { offs.push(out.length); out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
-    var xref = out.length;
-    out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
-    offs.forEach(function (o) { out += ('0000000000' + o).slice(-10) + ' 00000 n \n'; });
-    out += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
-    return out;
+    return { W: P(sheet.size[0]), H: P(sheet.size[1]), content: c.join('\n') };
   }
 
   D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;

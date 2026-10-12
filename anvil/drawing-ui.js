@@ -150,12 +150,121 @@
     D.host.addEventListener('contextmenu', onContext);
     window.addEventListener('resize', function () { if (D.active) strokeFloor(); });
   }
+  // the sheet tabs under the sheet (rfQ): one per sheet, the active one raised; a click activates a sheet, right-click
+  // gives Add Sheet… / Delete / Rename / Properties… (SolidWorks' sheet tab menu), the tab after the last adds a sheet
   function renderTabs() {
     var tabs = $('drawing-tabs'), dc = doc();
+    if (D.renaming != null) return;   // (a tab being renamed keeps its box until Enter / Esc)
     tabs.innerHTML = '';
-    tabs.appendChild(el('button', { class: 'dw-tab active', text: dc ? dc.sheet.name : 'Sheet1', title: 'Sheet (right-click for Sheet Properties)', oncontextmenu: function (e) { e.preventDefault(); UI.showMenu(e.clientX, e.clientY, DW.sheetMenu()); } }));
+    (dc ? Drawing.sheets(dc) : [{ index: 0, name: 'Sheet1', active: true }]).forEach(function (s) {
+      tabs.appendChild(el('button', { class: 'dw-tab dw-sheet-tab' + (s.active ? ' active' : ''), text: s.name, 'data-sheet': String(s.index),
+        title: s.name + (s.format ? ' (' + s.format + ', ' + s.scale + ')' : '') + (s.active ? '' : ': click to activate') + '. Right-click for Add Sheet, Delete, Rename, Properties.',
+        onclick: function () { activateSheet(s.index); },
+        oncontextmenu: function (e) { e.preventDefault(); e.stopPropagation(); UI.showMenu(e.clientX, e.clientY, sheetTabMenu(s.index)); } }));
+    });
+    tabs.appendChild(el('button', { class: 'dw-tab dw-add-sheet', html: '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M3 2.5 h7 l3 3 v8 H3 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M8 6.5 v5 M5.5 9 h5" stroke="#1f9d3a" stroke-width="1.6"/></svg>',
+      title: 'Add Sheet', 'aria-label': 'Add Sheet', onclick: function () { addSheet(); } }));
     tabs.appendChild(el('span', { class: 'dw-sp' }));
     tabs.appendChild(el('button', { class: 'dw-tab', html: Icons(isAsm() ? 'assembly' : 'part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the ' + (isAsm() ? 'assembly' : 'part') + ' document (Window menu)', onclick: function () { requestClose(); } }));
+  }
+
+  // ------------------------------------------------------------------ sheets (rfQ)
+  // activateSheet(i | name): the sheet comes up as a drawing opens (its views drop in from drawing-worker.js) and is
+  // fitted to the window; the selection and any tool are dropped. Not an undo step (SolidWorks: switching sheets is not
+  // an edit). -> true when that sheet is now active
+  function activateSheet(which) {
+    var dc = doc();
+    if (!dc) return false;
+    var i = Drawing.sheetIndex(dc, which);
+    if (i < 0) return false;
+    if (i === (dc.activeSheet | 0)) return true;
+    settle();
+    if (D.inline) DW.closeInlineEdit(false);
+    Drawing.activateSheet(dc, i);
+    D.sel = null; D.hover = null; D.tool = null; D.pending = null; D.vb = null;
+    if (D.active) D.prog = { doc: dc, insert: false, t0: performance.now() };
+    UI.autosave();
+    if (D.active) { UI.refreshRibbon(); render(); fitSheet(); UI.setStatus('Sheet ' + dc.sheet.name + ' (' + (i + 1) + ' of ' + Drawing.sheetCount(dc) + ').'); }
+    return true;
+  }
+  // addSheet(opts): Add Sheet (the tab after the last sheet tab, right-click ▸ Add Sheet…, the API): one undo step;
+  // the new sheet takes the active one's format and becomes active. -> its index, or -1 when refused
+  function addSheet(opts) {
+    if (!doc()) return -1;
+    try { Drawing.addSheet(JSON.parse(JSON.stringify(doc())), opts); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return -1; }
+    if (D.inline) DW.closeInlineEdit(false);
+    var i = -1;
+    D.sel = null; D.tool = null; D.pending = null;
+    edit(function (dc) { i = Drawing.addSheet(dc, opts); });
+    fitSheet();
+    UI.setStatus('Added ' + doc().sheet.name + ': Model View or Standard 3 View puts views on it; right-click its tab for Properties.');
+    return i;
+  }
+  // deleteSheet(i, confirmed): SolidWorks asks first ("Delete Sheet2 and its views?"); the last sheet cannot go
+  function deleteSheet(which, confirmed) {
+    var dc = doc();
+    if (!dc) return false;
+    var i = Drawing.sheetIndex(dc, which);
+    if (i < 0) return false;
+    if (Drawing.sheetCount(dc) < 2) { UI.toast('A drawing keeps at least one sheet.'); return false; }
+    var s = Drawing.sheets(dc)[i];
+    if (!confirmed) {
+      UI.showModal({ title: 'Confirm Delete', body: el('p', { text: 'Delete ' + s.name + (s.views ? ' and its ' + s.views + ' view' + (s.views === 1 ? '' : 's') : '') + '?' }), buttons: [
+        { label: 'Yes', primary: true, action: function () { UI.closeModal(); deleteSheet(i, true); } },
+        { label: 'No', action: UI.closeModal }
+      ] });
+      return false;
+    }
+    if (D.inline) DW.closeInlineEdit(false);
+    D.sel = null; D.tool = null; D.pending = null;
+    edit(function (d2) { var a = d2.activeSheet; Drawing.deleteSheet(d2, i); if (a === i) D.prog = { doc: d2, insert: false, t0: performance.now() }; });
+    fitSheet();
+    UI.setStatus('Deleted ' + s.name + '.');
+    return true;
+  }
+  // renameSheet(i, name): one undo step; with no name the tab becomes a text box (Enter applies, Esc cancels)
+  function renameSheet(which, name) {
+    var dc = doc();
+    if (!dc) return false;
+    var i = Drawing.sheetIndex(dc, which);
+    if (i < 0) return false;
+    if (name == null) { startRenameTab(i); return false; }
+    var nm = String(name).trim();
+    if (nm === Drawing.sheets(dc)[i].name) return true;
+    try { Drawing.renameSheet(JSON.parse(JSON.stringify(dc)), i, nm); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
+    edit(function (d2) { Drawing.renameSheet(d2, i, nm); });
+    return true;
+  }
+  function startRenameTab(i) {
+    var tab = document.querySelector('#drawing-tabs .dw-sheet-tab[data-sheet="' + i + '"]');
+    if (!tab) return;
+    var old = Drawing.sheets(doc())[i].name, inp = el('input', { type: 'text', class: 'dw-tab-rename', value: old, spellcheck: 'false', 'aria-label': 'Sheet name' }), done = false;
+    function finish(ok) {
+      if (done) return; done = true;
+      D.renaming = null;
+      var v = inp.value;
+      if (!ok || !renameSheet(i, v)) renderTabs();
+    }
+    D.renaming = i;
+    tab.textContent = '';
+    tab.appendChild(inp);
+    inp.addEventListener('keydown', function (ev) { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); finish(true); } else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); } });
+    inp.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    inp.addEventListener('blur', function () { finish(true); });
+    try { inp.focus(); inp.select(); } catch (err) { }
+  }
+  // the sheet tab's menu (SolidWorks: Add Sheet…, Copy, Delete, Rename, Properties…); a right-click on another sheet's
+  // tab activates that sheet first, so Properties… and the rest act on the sheet the tab names
+  function sheetTabMenu(i) {
+    var n = doc() ? Drawing.sheetCount(doc()) : 1;
+    return [
+      { label: 'Add Sheet…', action: function () { addSheet(); } },
+      { label: 'Delete', disabled: n < 2, action: function () { deleteSheet(i); } },
+      { label: 'Rename', action: function () { renameSheet(i); } },
+      { label: 'Properties…', action: function () { if (activateSheet(i)) DW.cmdSheetProperties(); } },
+      { sep: true },
+      { label: 'Activate', checked: doc() && (doc().activeSheet | 0) === i, action: function () { activateSheet(i); } }
+    ];
   }
 
   // ------------------------------------------------------------------ open / close
@@ -986,6 +1095,7 @@
   DW.D = D; DW.doc = doc; DW.cctx = cctx; DW.syncBom = syncBom; DW.relayout = relayout; DW.units = units; DW.mesh = mesh; DW.paperK = paperK; DW.edit = edit; DW.editView = editView;
   DW.isAsm = isAsm; DW.docKind = docKind; DW.makeDrawing = makeDrawing; DW.openDrawing = openDrawing; DW.closeDrawing = closeDrawing; DW.detachDrawing = detachDrawing;
   DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;
+  DW.activateSheet = activateSheet; DW.addSheet = addSheet; DW.deleteSheet = deleteSheet; DW.renameSheet = renameSheet; DW.sheetTabMenu = sheetTabMenu; DW.renderTabs = renderTabs;
   DW.render = render; DW.settle = settle; DW.ready = ready; DW.queueRender = queueRender; DW.svgEl = svgEl; DW.fitBox = fitBox; DW.fitSheet = fitSheet; DW.glideTo = glideTo;
   DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist;
 })();

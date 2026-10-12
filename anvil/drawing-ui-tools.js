@@ -145,15 +145,18 @@
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
     openDrawingPM({
       title: 'Section View', icon: 'sectionView', command: 'sectionView',
-      message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes.',
-      values: { axis: 'h', label: Drawing.nextLabel(doc()) },
+      message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes. Half: the click is the centre where the line turns. Offset: click each leg (2 or 3), then the side. Aligned: click the centre, then a point on the second leg, then the side.',
+      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()) },
       groups: [
+        { title: 'Section Type', fields: [{ type: 'select', key: 'type', label: 'Type', options: [['full', 'Full Section'], ['half', 'Half Section'], ['offset', 'Offset Section'], ['aligned', 'Aligned Section']] }] },
         { title: 'Cutting Line', fields: [{ type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] },
+        { title: 'Half Section', show: function (v) { return v.type === 'half'; }, fields: [{ type: 'select', key: 'side', label: 'Cut half', options: [['1', 'Right / Top'], ['-1', 'Left / Bottom']] }] },
         { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }] }
       ],
       onOK: function (val) {
-        startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', label: cleanLabel(val.label), parent: null, at: null });
-        UI.setStatus('Section View: click in a view to place the ' + (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line. Esc cancels.');
+        var ty = /^(half|offset|aligned)$/.test(val.type) ? val.type : 'full';
+        startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', type: ty, side: +val.side < 0 ? -1 : 1, label: cleanLabel(val.label), parent: null, at: null, pts: [] });
+        UI.setStatus('Section View: click in a view to place the ' + (ty === 'half' ? 'centre of the half section' : ty === 'aligned' ? 'centre of the aligned section' : (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line') + '. Esc cancels.');
       }
     });
   }
@@ -179,18 +182,54 @@
     var F = Drawing.sectionFrame(w.frame, P.axis, sign), ext = Drawing.extentsOf(mesh(), F);
     return { sign: sign, x: P.axis === 'h' ? w.view.x : p[0], y: P.axis === 'h' ? p[1] : w.view.y, w: ext.w * w.scale, h: ext.h * w.scale };
   }
+  // (rfP) a point of the parent in model units, each coordinate snapped to a hole centre within 8 px
+  function snapCentre(w, p) {
+    var mp = w.fromSheet(p), snap = pxToPaper(8), bu = snap, bv = snap, out = mp.slice();
+    w.proj.circles.visible.concat(w.proj.circles.hidden).forEach(function (c) {
+      var cs = w.toSheet(c.c), du = Math.abs(cs[0] - p[0]), dv = Math.abs(cs[1] - p[1]);
+      if (du < bu) { bu = du; out[0] = c.c[0]; }
+      if (dv < bv) { bv = dv; out[1] = c.c[1]; }
+    });
+    return out;
+  }
+  function inBox(w, p) { return w && p[0] >= w.box.x0 && p[0] <= w.box.x1 && p[1] >= w.box.y0 && p[1] <= w.box.y1; }
   function sectionClick(p) {
-    var P = D.pending;
+    var P = D.pending, ty = P.type || 'full', ti = P.axis === 'h' ? 0 : 1;
     if (P.parent == null) {
       var sl = sectionLineAt(p);
       if (!sl) { UI.setStatus('Section View: click inside a model, projected or section view to place the cutting line.'); return; }
       P.parent = sl.w.view.id; P.at = p; P.cut = sl.at; P.line = sl;
+      if (ty !== 'full') { var m0 = snapCentre(sl.w, p); m0[1 - ti] = sl.at; P.c = m0[ti]; P.pts = [m0]; }
       drawOverlay();
-      UI.setStatus('Section View ' + P.label + '-' + P.label + ': click on the side of the cutting line where the view goes (the arrows point away from it).');
+      UI.setStatus('Section View ' + P.label + '-' + P.label + ': ' + (ty === 'aligned' ? 'click a point on the second leg (it is turned about the centre into the first).' :
+        (ty === 'offset' ? 'click the next leg of the cutting line inside the view, or ' : '') + 'click on the side of the cutting line where the view goes (the arrows point away from it).'));
+      return;
+    }
+    var w0 = sheetView(P.parent);
+    if (ty === 'aligned' && P.angle == null) {
+      if (!w0) { endTool(); return; }
+      var q = snapCentre(w0, p), C = P.axis === 'h' ? [P.c, P.cut] : [P.cut, P.c], dx = q[0] - C[0], dy = q[1] - C[1];
+      if (Math.hypot(dx, dy) < 1e-9) { UI.setStatus('Section View: click a point away from the centre for the second leg.'); return; }
+      P.angle = Math.atan2(dy, dx) * 180 / Math.PI; if (P.angle < 0) P.angle += 360;
+      P.side = (P.axis === 'h' ? dx : dy) > 0 ? -1 : 1;
+      UI.setStatus('Section View ' + P.label + '-' + P.label + ': click on the side of the first leg where the view goes.');
+      return;
+    }
+    if (ty === 'offset' && inBox(w0, p) && P.pts.length < 3) {
+      P.pts.push(snapCentre(w0, p));
+      UI.setStatus('Section View ' + P.label + '-' + P.label + ': ' + P.pts.length + ' legs; ' + (P.pts.length < 3 ? 'click another leg, or ' : '') + 'click outside the view on the side where the section view goes.');
       return;
     }
     var pl = sectionPlacement(p), spec = { axis: P.axis, at: P.cut, sign: pl.sign, x: pl.x, y: pl.y, label: P.label }, parent = P.parent, v;
+    if (ty === 'half') { spec.type = 'half'; spec.c = P.c; spec.side = P.side; }
+    else if (ty === 'aligned') { spec.type = 'aligned'; spec.c = P.c; spec.side = P.side; spec.angle = P.angle; }
+    else if (ty === 'offset' && P.pts.length > 1) {
+      var ni = 1 - ti, pts = P.pts.slice().sort(function (a, b) { return a[ti] - b[ti]; });
+      spec.type = 'offset'; spec.at = pts[0][ni];
+      spec.jogs = pts.slice(1).map(function (q2, i) { return { t: (pts[i][ti] + q2[ti]) / 2, at: q2[ni] }; });
+    }
     endTool();
+    if (spec.type) { try { Drawing.addSectionView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; } }
     v = editView(function (dc) { return Drawing.addSectionView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
     UI.setStatus(v.name + ' placed, cut at ' + Drawing.fmtDim(spec.at, units()) + ' ' + units() + '.');
@@ -1188,6 +1227,12 @@
   function dragDim(p) {
     var dg = D.drag, d = dg.d, w = sheetView(d.view), dx = p[0] - dg.start[0], dy = p[1] - dg.start[1], props = {};
     if (!w) return;
+    // (rfP) in a broken view the pointer's move is taken back through the break, so the dimension keeps its model place
+    // (anchored on the text as it was drawn, so the pointer's pixel rounding is not magnified inside a gap)
+    if (w.breakMap) {
+      var tb = d.tbox && isFinite(d.tbox.x0) ? [(d.tbox.x0 + d.tbox.x1) / 2, (d.tbox.y0 + d.tbox.y1) / 2] : dg.start;
+      var u0 = w.breakMap.inv(tb), u1 = w.breakMap.inv([tb[0] + dx, tb[1] + dy]); dx = u1[0] - u0[0]; dy = u1[1] - u0[1];
+    }
     if (d.kind === 'h') { props.at = d.lineAt + dy / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx; }
     else if (d.kind === 'v') { props.at = d.lineAt + dx / w.scale; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dy; }
     else if (d.kind === 'aligned') {

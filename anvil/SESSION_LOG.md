@@ -1374,3 +1374,11 @@ Tests: kernel 999/999, examples 29/29 (both kernels), ui-smoke 495/495, occt-tes
 - drawing views (lane N): Auxiliary View (`Drawing.addAuxiliaryView`, `VIEW A-A`, AUXILIARY layer), Crop View (`Drawing.setCrop`, rectangle or circle, exact clipping), Broken View (`Drawing.addBreak` / `clearBreaks`, zig-zag or straight, true dimension values); plugged in through `Drawing._.hook` wrappers.
 - head: radial (Ø / R) leaders with no user angle turn to the first angle whose leader and label are clear of the previous pass's labels (`radialClear`); the turned layout is kept only when it ends with fewer clashes than the plain one.
 Tests: kernel 1012/1012, examples 29/29 (both kernels), ui-smoke 503/503, occt-tests 87/87.
+
+## 2026-10-12d (interactive head, 2 Opus 5.5 + 1 Fable 5.1 subagents in worktrees): section types, sheets, drawing audit
+
+- views (lane P): `v.section.type` half (`c`, `side`; L-shaped cutting line, one arrow), offset (`jogs: [{ t, at }]`, every leg hatched, step lines dropped), aligned (`c`, `side`, `angle`; the far leg rotated into the first leg's plane); Section Type / Cut half in the Section View PM; `Drawing.addSectionView(…, { type })`, `Drawing.setSectionType`; broken views expose `breakMap.fwd / inv` and `dragDim` maps through the break.
+- sheets (lane Q): `doc.sheets` / `doc.activeSheet` (the active sheet keeps the old fields, old documents load as one sheet); `Drawing.addSheet / activateSheet / deleteSheet / renameSheet / sheets / sheetDoc`; sheet tabs with right-click menu, Insert ▸ Sheet…, tree rows; `toPDF([...])` one page per sheet, SVG / DXF Sheet choice, `anvil.drawing.svg(i)` / `dxf({ sheet })`; notes and symbols store `view` + `vxy` and follow a dragged view; the tolerance block edits in a textarea.
+- audit (lane R, Fable, report only): test-reports/2026-10-12-drawing-fidelity.md, 13 findings (0 blocker, 3 major); top: single-pick drawing Smart Dimension, no drawing DWG, Model Items without a PM. Queued at the top of QUEUE.
+- head: `UI.drawDims(full)` lays out fully even right after another draw (the rfL clash test was timing dependent).
+Tests: kernel 1019/1019, examples 29/29 (both kernels), ui-smoke 509/509, occt-tests 87/87.

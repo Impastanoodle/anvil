@@ -2425,8 +2425,8 @@
 
   // Redraw every dimension of the active sketch. Called from the render loop whenever App.dimsStale is set.
   var lastDimDraw = 0, settleTimer = 0;
-  function drawDims() {
-    var f = UI.activeSketchFeature(), out, now = performance.now(), busy = now - lastDimDraw < 120;
+  function drawDims(full) {   // full: the whole layout even right after another draw (tests)
+    var f = UI.activeSketchFeature(), out, now = performance.now(), busy = !full && now - lastDimDraw < 120;
     lastDimDraw = now;
     dimSegs = null; prevLabels = null;
     var fG = UI.activeSketchFeature();
