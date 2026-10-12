@@ -397,12 +397,25 @@
     ] });
   }
   function safeName() { return (doc().name + '_' + (App.model.name || 'part')).replace(/[^\w\-]+/g, '_'); }
-  function exportAs(kind) {
+  // exportAs('dxf', { version }): the export dialog has a Version choice, R12 (AC1009) or R2000 (AC1015, true
+  // ellipses and line weights; what AutoCAD 2000 and later, and the DWG converters, read natively); the choice is
+  // remembered for the session (D.dxfVersion)
+  function exportAs(kind, opts) {
     settle();
     if (!D.sheet) render();
     var sh = D.sheet;
     if (kind === 'svg') UI.exportDialog('Save Drawing as SVG', safeName() + '.svg', Drawing.toSVG(sh), 'image/svg+xml');
-    else if (kind === 'dxf') UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh), 'application/dxf');
+    else if (kind === 'dxf') {
+      var ver = D.dxfVersion = opts && opts.version === 'R2000' ? 'R2000' : opts && opts.version ? 'R12' : D.dxfVersion || 'R12';
+      UI.exportDialog('Save Drawing as DXF (one layer per view)', safeName() + '.dxf', Drawing.toDXF(sh, { version: ver }), 'application/dxf');
+      var ta = document.querySelector('#modal textarea');
+      if (ta) {
+        var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
+        [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']].forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === ver) op.selected = true; sel.appendChild(op); });
+        sel.onchange = function () { exportAs('dxf', { version: sel.value }); };
+        ta.parentNode.insertBefore(el('p', {}, [el('label', { text: 'Version ' }), sel]), ta);
+      }
+    }
     else if (kind === 'pdf') UI.exportDialog('Save Drawing as PDF', safeName() + '.pdf', Drawing.toPDF(sh), 'application/pdf');
   }
   function viewMenu(v) {

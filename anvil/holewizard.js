@@ -109,7 +109,9 @@ var HoleWizard = (function () {
   // countersunk head machine screws, as the rows above (#2 .172, #3 .199, #5 .252, 7/16 .812, 1/2 .875, 5/8 1.125,
   // 3/4 1.375; #12 .438 and 9/16 1.000 are in their rows). B18.6.3 stops at 3/4, so 7/8 and 1 take ASME B18.6.2 slotted
   // flat countersunk head cap screws (7/8 1.625, 1 1.875), the same 82° slotted flat head, whose table agrees with
-  // B18.6.3 from 7/16 to 3/4.
+  // B18.6.3 from 7/16 to 3/4. r16/csk: checked 2026-10-12 against ASME B18.3's flat countersunk (82°) socket head cap
+  // screws, whose head diameter max (theoretical sharp) is the same 1.625 (7/8) and 1.875 (1); both tables run
+  // 2·D − 1/8 from 1/2 up (.875, 1.000, 1.125, 1.375, 1.625, 1.875), so the values stand.
   var ANSI_CSK_MORE = { '#2': 0.172, '#3': 0.199, '#5': 0.252, '7/16': 0.812, '1/2': 0.875, '5/8': 1.125, '3/4': 1.375, '7/8': 1.625, '1': 1.875 };
   ANSI_SCREWS.forEach(function (r) { if (r.csk == null && ANSI_CSK_MORE[r.size] != null) r.csk = ANSI_CSK_MORE[r.size]; });
   // Unified threads (ASME B1.1, class 2B), tap drill for about 75 % thread

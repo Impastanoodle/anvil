@@ -1142,25 +1142,36 @@
     if (App.tool === 'ellipse' || App.tool === 'pellipse') return { skip: /\.v[123]$/ };
     return undefined;
   }
-  // the preview glyphs follow the commit: a Corner / Center Rectangle infers only for the points its clicks place
-  // (fidelity #8, ui-sketch-lines.js afterRectEntity)
-  function previewInferOpts(p) {
+  // fidelity #8 (lane C for the rectangles, rfH for every tool): SolidWorks infers Coincident / Midpoint / Tangent only
+  // where a point is placed, so SketchSolver.infer gets the points the tool placed (opts.placed: st.pts, plus the
+  // sliding start of a tangent line, which is where the click landed on the curve): a point the tool computes (a
+  // centerpoint slot's far centre, a polygon's other corners) infers nothing even where it lands on a line. A chain's
+  // closing click is not pushed into st.pts: its segment infers at every point (the loop closes on the first point).
+  // pts: the points placed; e: the entity (null for none); closing: the chain-closing segment
+  function inferOpts(pts, e, closing) {
     var o = inferSkip(), st = App.toolState;
-    if ((App.tool === 'rect' || App.tool === 'crect') && st && st.pts) {
-      o = o ? Object.assign({}, o) : {};
-      o.placed = st.pts.concat([p]).map(function (q) { return [q[0], q[1]]; });
-    }
+    if (closing || !pts || !pts.length) return o;
+    o = o ? Object.assign({}, o) : {};
+    o.placed = pts.map(function (q) { return [q[0], q[1]]; });
+    if (e && e.t === 'line' && App.tool === 'line' && st && st.tanFrom && !st.tanFrom.off && !st.arcMode) o.placed.push([e.x1, e.y1]);
     return o;
   }
-  function addEntity(e) {
+  // the preview glyphs follow the commit (the point under the cursor is the one about to be placed)
+  function previewInferOpts(p, e) {
+    var st = App.toolState, pts = st && st.pts ? st.pts : [];
+    var closing = App.tool === 'line' && pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9;
+    return inferOpts(pts.concat([p]), e, closing);
+  }
+  function addEntity(e, closing) {
     var f = UI.activeSketchFeature();
     if (!f) return;
     if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
     if (App.drawConstruction) e.construction = true;   // the Centerline tool (ui-relations.js)
     if (UI.sketchLayerNew) UI.sketchLayerNew(f, e);   // sketch-layers: a new entity goes on the current layer
     f.entities.push(e);
-    // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …)
-    if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1, inferSkip());
+    // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …), for the
+    // points the tool placed (rfH)
+    if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1, inferOpts(App.toolState && App.toolState.pts, e, closing === true));
     App.gridStale = true;
     UI.updateSketches();
     UI.refreshTree();
@@ -1171,11 +1182,9 @@
     if (!raw) return;
     if (App.command && App.command.onSketchPoint) { App.command.onSketchPoint(raw, mx, my); return; }
     if (App.tool === 'select') {
-      if (UI.sketchSelectClick && UI.sketchSelectClick(mx, my, ev)) return;   // Ctrl / Shift toggle, Selection Filter (ui-select.js)
-      var hit = UI.pickEntity(mx, my);
-      App.sel = hit;
-      UI.updateSketches();
-      if (hit) UI.openEntityPM(hit.index); else UI.closePM();
+      // a click selects the point or entity under the cursor, Ctrl / Shift toggle, the Selection Filter (ui-select.js,
+      // which takes every Select-tool click: rfH, the plain pick that followed it here could not run)
+      if (UI.sketchSelectClick) UI.sketchSelectClick(mx, my, ev);
       return;
     }
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
@@ -1203,7 +1212,7 @@
     // clicking the chain's first point closes the loop and ends the chain (the Line tool stays active)
     if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
       var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
-      addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0]);
+      addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0], true);   // rfH: the closing point is in no st.pts
       if (fc && numericInputOn() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6
       UI.afterSketchCommit(fc, nc, st);   // sketch-hooks: the closing segment is committed too (Dynamic Mirror)
       cancelTool(true);
@@ -1242,7 +1251,7 @@
       }
       var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
       var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
-      if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(addEntity);
+      if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(function (e) { addEntity(e); });
       if (f && UI.sketchLayerNew) f.entities.slice(n0).forEach(function (e) { UI.sketchLayerNew(f, e); });   // sketch-layers: a tool's own commit
       // r15/dblclick15: the segment just placed, for the double-click that ends the chain: placed within 500 ms of the
       // previous one it may be the stub the double-click's second click made (the handler takes it back when it is tiny)
@@ -1687,7 +1696,7 @@
       if (hkM && hkM.live) hkM.live(App.toolState.pts, p, App.tempEntities);   // p9-sketchtab: the tool PM's live values
       // yellow inference icons: the relations the entity being drawn would get
       var f = UI.activeSketchFeature();
-      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], previewInferOpts(p)) : [];
+      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], previewInferOpts(p, App.tempEntities[0])) : [];
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
     if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
@@ -1845,6 +1854,7 @@
       case 'relTangent': body = C(8, 6.6, 3.6, 1.4) + R(3, 11, 13, 13); break;
       case 'relMidpoint': body = R(2.5, 9, 13.5, 11) + '<path d="M8 4.2 L10.6 6.8 L8 9.4 L5.4 6.8 Z"/>'; break;
       case 'relSymmetric': body = P('M8 2.5 V13.5', 1, ' stroke-dasharray="2 1.6" stroke-linecap="butt"') + R(3, 5, 5, 11) + R(11, 5, 13, 11); break;
+      case 'relPolygon': body = P('M8 2.6 L12.7 5.3 L12.7 10.7 L8 13.4 L3.3 10.7 L3.3 5.3 Z', 1.5, ' stroke-linejoin="round"'); break;   // rfH
       case 'relFix': body = P('M8 3 V10.5 M4.6 7.5 A3.6 3.6 0 0 0 11.4 7.5', 1.5) + R(5.5, 3, 10.5, 5); break;
       case 'offset': body = '<rect x="2.9" y="2.9" width="10.2" height="10.2" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="1.6 1.2"/>' + '<rect x="5.6" y="5.6" width="4.8" height="4.8" fill="none" stroke="currentColor" stroke-width="1.6"/>'; break;
       default: return null;
@@ -3197,5 +3207,5 @@
   UI.cancelSketch = cancelSketch;
   UI.setTool = setTool;
   UI.cancelTool = cancelTool;
-  UI.addEntity = addEntity;
+  UI.addEntity = function (e) { addEntity(e); };   // (Spline, Text: the points their tool placed)
 })(UI);

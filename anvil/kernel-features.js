@@ -373,7 +373,7 @@
     var T = +f.thickness;
     if (!(T > 0)) throw new Error('Shell thickness must be greater than zero.');
     var mesh = meshFromBody(ctx.body);
-    var removed = resolveFaces(f.faces || [], mesh, Math.max(0.5, T / 2));
+    var removed = resolveFaces(f.faces || [], mesh, _.pickTol(ctx.units, T / 2));   // r16/picktol (kernel-mesh.js)
     if ((f.faces || []).length && removed.length < f.faces.length) throw new Error('A face to remove was not found on the body. Select the faces again.');
     // dihedral turn angle per body edge, keyed like bodyEdges
     var turn = {};

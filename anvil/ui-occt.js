@@ -331,7 +331,7 @@
       for (var i = 0; i < m.faces.length; i++) if (test(m.faces[i])) { idx.push(i); faces.push(m.faces[i]); }
       if (!faces.length) return -1;
       var hit = [];
-      try { hit = K.resolveFaces([{ at: p.at }], { faces: faces }, 0.5); } catch (e) { }
+      try { hit = K.resolveFaces([{ at: p.at }], { faces: faces }, K.pickTol ? K.pickTol(App.model && App.model.units) : 0.5); } catch (e) { }
       return hit.length ? idx[hit[0]] : -1;
     }
     function body(f) { return p.body == null || (f.body || 0) === p.body; }

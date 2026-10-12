@@ -964,10 +964,21 @@
     return out;
   }
   // a slot callout's text: [N X ]W X L SLOT; an arc slot's [N X ]R<centre-line radius> ARC SLOT <width> WIDE <angle>°
+  // (rfJ: d.slot.props { w, len | R }: a part's own sketch dimension's tolerance, precision and text, Drawing.slotDimProps;
+  // the drawing's own precision still wins, and a "2X" in a part's text replaces the callout's count)
   function slotText(d, units, prec) {
-    var f = function (x) { return prec != null ? D.numText(x, units, prec) : fmtDim(x, units); };
-    if (d.slot.arc) return (d.count > 1 ? d.count + 'X ' : '') + 'R' + f(d.slot.R) + ' ARC SLOT ' + f(d.slot.w) + ' WIDE ' + String(Math.round(d.slot.angle * 100) / 100) + '°';
-    return (d.count > 1 ? d.count + 'X ' : '') + f(d.slot.w) + ' X ' + f(d.slot.len) + ' SLOT';
+    var pp = d.slot.props || {}, lead = null;
+    var f = function (x, part) {
+      var q = pp[part];
+      if (!q || !(q.tol || q.prec != null || q.label != null)) return prec != null ? D.numText(x, units, prec) : fmtDim(x, units);
+      var lab = q.label, m = lab != null && /^(\(?)\s*(\d+)\s*[xX]\s+/.exec(lab);
+      if (m) { lead = lead || m[2] + 'X '; lab = m[1] + lab.slice(m[0].length); }   // "2X" leads the whole callout
+      return D.dimLabel({ kind: 'h', value: x, prec: prec != null ? prec : q.prec, tol: q.tol, label: lab }, units).text;
+    };
+    var parts = d.slot.arc ? [f(d.slot.R, 'R'), f(d.slot.w, 'w')] : [f(d.slot.w, 'w'), f(d.slot.len, 'len')];
+    var cnt = lead || (d.count > 1 ? d.count + 'X ' : '');
+    if (d.slot.arc) return cnt + 'R' + parts[0] + ' ARC SLOT ' + parts[1] + ' WIDE ' + String(Math.round(d.slot.angle * 100) / 100) + '°';
+    return cnt + parts[0] + ' X ' + parts[1] + ' SLOT';
   }
   function autoDimKey(d) {
     if (d.kind === 'ordinate' && d.sketchOrd) return d.view + ':ord:' + d.sketchOrd;
@@ -979,7 +990,10 @@
   function dimText(d, units) {
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var p = d.prec != null && d.prec !== '' ? +d.prec : null;
-      return (d.kind === 'ordinate' ? ['0'] : []).concat((d.values || []).map(function (x) { return D.numText(Math.abs(x), units, p); })).join(', ');
+      return (d.kind === 'ordinate' ? ['0'] : []).concat((d.values || []).map(function (x, i) {
+        var vp = d.valueProps && d.valueProps[i];
+        return vp && D.ordinateValueText ? D.ordinateValueText(Math.abs(x), vp, units, p) : D.numText(Math.abs(x), units, p);
+      })).join(', ');
     }
     if (d.prec != null || d.tol || d.label != null || d.kind === 'chamfer') return D.dimLabel(d, units).text;
     if (d.kind === 'dia') return (d.count > 1 ? d.count + 'X ' : '') + '\u00d8' + fmtDim(d.value, units);

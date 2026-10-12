@@ -6647,7 +6647,8 @@
     await rskNew();
     UI.App.view.showGrid = false;   // (a failed earlier step may have left the sketch grid on)
     UI.setTool('rect'); rskClick([-30, -10]); rskClick([10, 10]);
-    UI.setTool('slot'); rskClick([20, 0]); rskClick([40, 0]); rskClick([30, 4]);
+    // rfH: the Straight Slot tool draws lines and arcs now; a slot entity (as a script makes it) keeps its radial offset
+    UI.activeSketchFeature().entities.push({ t: 'slot', x1: 20, y1: 0, x2: 40, y2: 0, w: 8 }); UI.updateSketches();
     var f = UI.activeSketchFeature();
     // lane C, fidelity #13: the rectangle is four lines (0 bottom … 3 left); a click on its top edge selects that line,
     // and Offset (Select chain) takes the closed chain of four
@@ -8767,10 +8768,11 @@
     var hc = hs.annotations.filter(function (a) { return a.type === 'holeCallout' && a.view === fv.id; });
     assert(hc.length === 1 && hc[0].text === '4X Ø.281 THRU', 'flat callout ' + JSON.stringify(hc));
     // drag the UP note 0.4 in to the left: its offset is kept on the view
-    var b0 = fv.flat.annotations.filter(function (a) { return a.key === 'b0'; })[0].box, mid = boxMid(b0);
+    // (a bend note's key is its bend's stable key, rfJ: 'bend:<feature>:<edge>')
+    var k0 = fv.flat.bends[0].key, b0 = fv.flat.annotations.filter(function (a) { return a.key === k0; })[0].box, mid = boxMid(b0);
     sheetDrag(mid, [mid[0] - 0.4, mid[1]]); await wait(60);
     var own = anvil.drawing.doc().views.filter(function (v) { return v.kind === 'flat'; })[0].flatAnn;
-    assert(own && own.b0 && Math.abs(own.b0.off[0] + 0.4) < 0.03, 'note dragged ' + JSON.stringify(own));
+    assert(own && own[k0] && Math.abs(own[k0].off[0] + 0.4) < 0.03, 'note dragged ' + JSON.stringify(own));
     var dxf = anvil.drawing.dxf();
     ['BEND_UP', 'BEND_DOWN', 'BEND_NOTES', 'FLAT_PATTERN'].forEach(function (l) { assert(dxf.indexOf('\n2\n' + l + '\n') >= 0, 'DXF layer ' + l); });
     assert(dxf.indexOf(NUP.replace('°', '%%d')) >= 0, 'DXF bend note');
@@ -9010,10 +9012,12 @@
     UI.setTool('select');
     var st = UI.sketchStatus();
     assert(st.status === 'full', 'Fully Defined: ' + st.text + ' dof ' + st.dof);
-    var E = rskEnts(), circles = E.filter(function (e) { return e.t === 'circle'; }), slot = E.filter(function (e) { return e.t === 'slot'; })[0];
+    // rfH: the slot is two lines, two arcs and its construction centerline
+    var E = rskEnts(), circles = E.filter(function (e) { return e.t === 'circle'; }), slot = E.filter(function (e) { return e.t === 'line' && e.construction; })[0];
+    var slotEnds = E.filter(function (e) { return e.t === 'arc' && Math.abs(e.r - 0.25) < 1e-9 && Math.abs(e.cy - 2) < 1e-9; });
     assert(circles.length === 4 && circles.every(function (c) { return c.r === 0.1405; }), 'holes Ø.281 exactly: ' + circles.map(function (c) { return c.r; }).join());
     circles.forEach(function (c, i) { near(c.cx, holes[i][0], 1e-9, 'hole ' + i + ' x'); near(c.cy, holes[i][1], 1e-9, 'hole ' + i + ' y'); });
-    assert(slot && slot.w === 0.5 && Math.abs(slot.x1 - 2.5) < 1e-9 && Math.abs(slot.x2 - 3.5) < 1e-9 && Math.abs(slot.y1 - 2) < 1e-9, 'slot ' + JSON.stringify(slot));
+    assert(slot && slotEnds.length === 2 && Math.abs(slot.x1 - 2.5) < 1e-9 && Math.abs(slot.x2 - 3.5) < 1e-9 && Math.abs(slot.y1 - 2) < 1e-9, 'slot ' + JSON.stringify([slot, slotEnds]));
     // labels clear of the other dimensions' lines at a working zoom (0.0104 in per pixel: .5 is 48 px)
     UI.zoomView(0.0104 / UI.cam.scale); await wait(600);
     UI.App.dimsStale = true; if (UI.requestRender) UI.requestRender(); await wait(400);   // the settled layout (all passes), drawn by the render loop
@@ -9031,7 +9035,7 @@
   });
   // --- end p9-sketch ---
   // ---- p9-output (run local-2026-10-07a, headless lane): laser-ready DXF options and the ANSI Inch Hole Wizard
-  step('p9-output: DXF/DWG Output on the U-bracket — Version R12 / R2000 and Loops as polylines / lines and arcs in the PM, ✓ writes the chosen kind (R2000 lines and arcs: 6 CIRCLEs, 2 ARCs, no LWPOLYLINE in R12, flat at 0,0); Views stay R12', async function () {
+  step('p9-output: DXF/DWG Output on the U-bracket — Version R12 / R2000 and Loops as polylines / lines and arcs in the PM, ✓ writes the chosen kind (R2000 lines and arcs: 6 CIRCLEs, 2 ARCs, no LWPOLYLINE in R12, flat at 0,0); Views in R12 or R2000', async function () {
     await anvil.run(exByName('Sheet-metal U-bracket').code); await idle();
     var errs0 = errors.length;
     UI.cmdDxfOutput();
@@ -9056,7 +9060,9 @@
     assert((r2k.match(/\n0\nLWPOLYLINE\n/g) || []).length === 2 && /\nOBJECTS\n/.test(r2k), 'R2000 polylines are LWPOLYLINEs');
     UI.cmdDxfOutput();
     D.querySelector('#pm input[data-key="export:views"]').click(); await idle();
-    assert(optionValues(pmSelect('version')).join() === 'R12' && !pmSelect('style'), 'views: R12 only, no Loops as: ' + optionValues(pmSelect('version')).join());
+    assert(optionValues(pmSelect('version')).join() === 'R12,R2000' && !pmSelect('style'), 'views: R12 / R2000, no Loops as: ' + optionValues(pmSelect('version')).join());
+    var v2k = anvil.dxfOutput({ export: 'views', views: ['Front'], version: 'R2000' });
+    assert(/AC1015/.test(v2k) && /\nOBJECTS\n/.test(v2k) && !/\n8\nSHEET\n/.test(v2k.split('ENTITIES')[1] || ''), 'views in R2000, no SHEET entities');
     UI.pmCancel();
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return 'R2000 lines/arcs ' + t.length + ' chars, R12 ' + r12.length + ' chars';
@@ -10734,13 +10740,14 @@
     rskClick([0, 0]); selEv('mousemove', rskScr([10, 0]));
     assert(cvVals().dia === 20 && cvVals().n === 6, 'live diameter 20: ' + JSON.stringify(cvVals()));
     rskClick([10, 0]);
-    var p = rskEnts()[0], pts = K.entityPolylines(p)[0].pts;
-    assert(p.ins === true && Math.abs(Math.max.apply(null, pts.map(function (q) { return q[0]; })) - 10) < 1e-9, 'inscribed: flats at x = ±10: ' + JSON.stringify(p));
+    // rfH: the polygon is its six sides and a construction circle (Inscribed: touching the flats), one Polygon relation
+    var f0 = UI.activeSketchFeature(), E = rskEnts(), sides = E.slice(0, 6);
+    assert(E.length === 7 && sides.every(function (e) { return e.t === 'line' && !e.construction; }) && E[6].t === 'circle' && E[6].construction && Math.abs(E[6].r - 10) < 1e-9 && Math.abs(Math.max.apply(null, sides.map(function (e) { return e.x1; })) - 10) < 1e-9 && f0.rels.some(function (x) { return x.type === 'polygon' && x.ins; }), 'inscribed: flats at x = ±10: ' + JSON.stringify(E));
     var circ = D.querySelector('#pm input[type=radio][data-key="ins:circ"]'); circ.click();
-    p = rskEnts()[0];
-    assert(!p.ins && Math.abs(p.r - 10) < 1e-9, 'circumscribed: corners on the Ø20 circle: ' + JSON.stringify(p));
+    E = rskEnts();
+    assert(!f0.rels.some(function (x) { return x.type === 'polygon' && x.ins; }) && Math.abs(E[6].r - 10) < 1e-9 && Math.abs(Math.hypot(E[0].x1, E[0].y1) - 10) < 1e-9, 'circumscribed: corners on the Ø20 circle: ' + JSON.stringify(E));
     UI.pmSetField('n', '8');
-    assert(rskEnts()[0].n === 8, 'eight sides');
+    assert(rskEnts().filter(function (e) { return e.t === 'line'; }).length === 8 && rskEnts()[8].t === 'circle', 'eight sides');
     var nb = Array.prototype.filter.call(D.querySelectorAll('#pm button'), function (b) { return b.textContent === 'New Polygon'; })[0];
     nb.click();
     assert(cvVals().dia == null && cvVals().n === 8, 'New Polygon: blank parameters, sides kept: ' + JSON.stringify(cvVals()));
@@ -10750,18 +10757,22 @@
     var box = UI.sketchNumBox();
     assert(box && box.length === 2, 'R / A box');
     box[0].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    var q = rskEnts()[1], f = UI.activeSketchFeature();
-    assert(q.ins && q.n === 8, 'inscribed octagon ' + JSON.stringify(q));
-    near(K.dimValue(q, { k: 'r' }), 8, 1e-9, 'R 8 to the flats');
-    assert((f.dims || []).some(function (d) { return d.e === 1 && d.k === 'r'; }), 'typed R dimensioned: ' + JSON.stringify(f.dims));
+    var q = rskEnts()[17], f = UI.activeSketchFeature();
+    assert(q.t === 'circle' && rskEnts().slice(9, 17).every(function (e) { return e.t === 'line'; }) && f.rels.some(function (x) { return x.type === 'polygon' && x.ins && x.refs[0] === '17'; }), 'inscribed octagon ' + JSON.stringify(rskEnts().slice(9)));
+    near(q.r, 8, 1e-9, 'R 8 to the flats');
+    assert((f.dims || []).some(function (d) { return d.e === 17 && d.k === 'dia'; }), 'typed R dimensioned (the circle\'s diameter): ' + JSON.stringify(f.dims));
+    // the tool PM's Parameters drive the polygon just drawn: Angle turns it (a side's middle at 10°, its first corner at 32.5°)
+    UI.pmSetField('ang', '10');
+    near(Math.atan2(rskEnts()[9].y1, rskEnts()[9].x1 - 40) * 180 / Math.PI, 32.5, 1e-6, 'turned by the Angle');
     var lines = K.exportDXFSketch(f, 'mm').split('\n').filter(function (l, i, a) { return a[i - 1] === '0' && l === 'LINE'; }).length;
     assert(lines === 16, 'DXF: 16 LINEs for two octagons: ' + lines);
     selKey('Escape');
-    UI.setTool('select'); rskClick([10, 0]);
-    assert(UI.pmTitle() === 'Polygon' && cvVals().ins === 'circ', 'selected polygon PM: ' + JSON.stringify(cvVals()));
-    UI.pmSetField('dia', '30');
-    near(rskEnts()[0].r, 15, 1e-9, 'diameter 30 from the selected polygon');
-    UI.pmCancel();
+    // rfH: a click on a side selects that line (Line Properties), as in SolidWorks
+    UI.setTool('select'); rskClick([10 * Math.cos(Math.PI / 8) * Math.cos(Math.PI / 8), 10 * Math.cos(Math.PI / 8) * Math.sin(Math.PI / 8)]);
+    assert(UI.App.sel && UI.App.sel.kind === 'entity' && rskEnts()[UI.App.sel.index].t === 'line', 'a side selects as a line: ' + JSON.stringify(UI.App.sel));
+    var an = W.SketchSolver.analyze(f);
+    assert(an.conflicts === 0 && an.redundant === 0, 'solved: ' + JSON.stringify([an.status, an.dof]));
+    UI.closePM();
     cvDefaults();
     return 'inscribed / circumscribed, typed R 8';
   });
@@ -10772,29 +10783,30 @@
     D.querySelector('#pm input[type=checkbox][data-key="slotDims"]').click();
     rskClick([0, 0]); rskClick([20, 0]); selEv('mousemove', rskScr([10, 3])); rskClick([10, 3]);
     var f = UI.activeSketchFeature();
-    assert(f.dims.length === 2 && W.SketchSolver.analyze(f).status === 'full', 'Add dimensions: ' + JSON.stringify(f.dims) + ' ' + W.SketchSolver.analyze(f).status);
+    // rfH: the slot is lines and arcs: its length the centerline's (4), its width the distance between the sides
+    assert(f.dims.length === 1 && f.dims[0].e === 4 && f.dims[0].k === 'len' && f.rels.some(function (x) { return x.type === 'distance' && x.refs.join() === '0,2' && x.v === 6; }) && W.SketchSolver.analyze(f).status === 'full', 'Add dimensions: ' + JSON.stringify(f.dims) + ' ' + W.SketchSolver.analyze(f).status);
     cvBtn('lenType:overall').click();
     assert(cvVals().len === 26, 'overall length 20 + 6: ' + cvVals().len);
     cvBtn('type:cslot').click();
     assert(UI.App.tool === 'cslot' && UI.pmTitle() === 'Slot', 'Centerpoint Straight Slot: ' + UI.App.tool);
     rskClick([0, 20]); rskClick([10, 20]); selEv('mousemove', rskScr([0, 24])); rskClick([0, 24]);
-    var s = rskEnts()[1], pt = rskEnts()[2];
-    assert(s.t === 'slot' && s.x1 === -10 && s.x2 === 10 && s.w === 8 && pt.t === 'point' && pt.x === 0 && pt.y === 20, 'centerpoint slot + point: ' + JSON.stringify([s, pt]));
-    assert(f.rels.some(function (r) { return r.type === 'midpoint' && r.refs.join() === '2,1'; }), 'Midpoint: ' + JSON.stringify(f.rels));
-    assert(f.dims.some(function (d) { return d.e === 1 && d.k === 'olen'; }), 'Overall Length dimension: ' + JSON.stringify(f.dims));
+    var s = rskEnts()[9], pt = rskEnts()[10];
+    assert(s.t === 'line' && s.construction && s.x1 === -10 && s.x2 === 10 && rskEnts()[8].r === 4 && pt.t === 'point' && pt.x === 0 && pt.y === 20, 'centerpoint slot + point: ' + JSON.stringify(rskEnts().slice(5)));
+    assert(f.rels.some(function (r) { return r.type === 'midpoint' && r.refs.join() === '10,9'; }), 'Midpoint: ' + JSON.stringify(f.rels));
+    assert(f.rels.some(function (r) { return r.type === 'distance' && r.ac && r.refs.join() === '8,6' && r.v === 28; }), 'Overall Length dimension: ' + JSON.stringify(f.rels));
     D.querySelector('#pm input[type=checkbox][data-key="slotDims"]').click();
     cvBtn('lenType:cc').click();
     cvBtn('type:aslot3').click();
     rskClick([-50, -10]); rskClick([-30, -10]); selEv('mousemove', rskScr([-40, 0])); rskClick([-40, 0]);
     selEv('mousemove', rskScr([-40, 3])); rskClick([-40, 3]);
-    var a3 = rskEnts()[3];
+    var a3 = rskEnts()[11];
     assert(a3 && a3.t === 'aslot' && Math.abs(a3.r - 10) < 1e-9 && Math.abs(a3.cy + 10) < 1e-9 && Math.abs(a3.w - 6) < 1e-9 && Math.abs(a3.a1 - a3.a0 - 180) < 1e-9, '3 Point Arc Slot ' + JSON.stringify(a3));
     cvBtn('type:aslot').click();
     rskClick([40, -20]); rskClick([55, -20]); selEv('mousemove', rskScr([54, -24])); selEv('mousemove', rskScr([50, -31])); selEv('mousemove', rskScr([40, -35])); rskClick([40, -35]);
     selEv('mousemove', rskScr([40, -38]));
     assert(cvVals().r === 15 && cvVals().ang === 90, 'live arc slot values: ' + JSON.stringify(cvVals()));
     rskClick([40, -38]);
-    var a4 = rskEnts()[4];
+    var a4 = rskEnts()[12];
     assert(a4 && a4.t === 'aslot' && a4.a0 === -90 && a4.a1 === 0 && Math.abs(a4.w - 6) < 1e-9, 'Centerpoint Arc Slot, swept clockwise: ' + JSON.stringify(a4));
     var arcs = K.exportDXFSketch(f, 'mm').split('\n').filter(function (l, i, a) { return a[i - 1] === '0' && l === 'ARC'; }).length;
     assert(arcs === 4 + 8, 'DXF ARCs: two slots × 2 + two arc slots × 4: ' + arcs);
@@ -10804,7 +10816,7 @@
     UI.setTool('select'); rskClick([40 + 18 * Math.cos(-Math.PI / 4) + 0.3, -20 + 18 * Math.sin(-Math.PI / 4) + 0.3]);
     assert(UI.pmTitle() === 'Slot' && /Arc radius.*Arc angle.*Slot width/.test(cvPM()), 'selected arc slot PM: ' + cvPM());
     UI.pmSetField('w', '3');
-    assert(rskEnts()[4].w === 3, 'width 3 from the PM');
+    assert(rskEnts()[12].w === 3, 'width 3 from the PM');
     UI.pmCancel();
     cvDefaults();
     return 'straight (dims), centerpoint, 3 point arc, centerpoint arc';
@@ -10887,7 +10899,7 @@
     pmField('Show curvature').click();
     assert(f.entities[0].showCurvature && UI.splineComb(f.entities[0]).length > 50, 'curvature comb');
     await UI.pmOK();
-    skClick(0, 8);
+    skClick(-12.5, -8.66);   // rfH: on the curve (an axis end selects as a point, as in SolidWorks)
     assert(UI.pmTitle() === 'Ellipse' && pmField('Major radius') && pmField('Angle'), 'Ellipse PM: ' + UI.pmTitle());
     setInput(pmField('Angle'), 30);
     near(f.entities[1].rot, 30, 1e-9, 'angle');
@@ -13148,7 +13160,9 @@
     UI.setTool('slot'); rskClick([2.5, 2]); rskClick([3.5, 2]); rfdType([3.5, 2.3], ['.375']); UI.setTool('select');
     var holes = f.entities.filter(function (e) { return e.t === 'circle'; }), slot = f.entities[f.entities.length - 1];
     assert(holes.length === 4 && holes.every(function (h) { return Math.abs(h.r - 0.1405) < 1e-12; }) && f.dims.filter(function (d) { return d.k === 'dia'; }).length === 4, 'holes ' + JSON.stringify(holes));
-    assert(slot.t === 'slot' && slot.w === 0.375 && slot.x1 === 2.5 && slot.x2 === 3.5 && slot.y1 === 2 && slot.y2 === 2, 'slot ' + JSON.stringify(slot));
+    // rfH: the slot is two lines and two arcs on its construction centerline (the last entity), its width .375 a driving distance between the sides
+    var slotArc = f.entities[f.entities.length - 2];
+    assert(slot.t === 'line' && slot.construction && slot.x1 === 2.5 && slot.x2 === 3.5 && slot.y1 === 2 && slot.y2 === 2 && slotArc.t === 'arc' && slotArc.r === 0.1875 && f.rels.some(function (x) { return x.type === 'distance' && x.v === 0.375; }), 'slot ' + JSON.stringify([slot, slotArc]));
     UI.setTool('rect'); rskClick([2.5, 3.5]); rskClick([3.5, 4.6]); UI.setTool('select');
     UI.cmdTrimEntities(); trimMode('power');
     await trimDrag([[3, 4.8], [3, 4.6], [3, 4.4], [3, 4.2], [3, 4], [3, 3.85]]);
@@ -13176,8 +13190,10 @@
     // the sketch DXF: every line, circle and slot arc comes back from DxfImport exactly
     var src = [];
     f.entities.forEach(function (e) {
+      if (e.construction) return;   // (rfH: the slot's centerline is not written)
       if (e.t === 'line') src.push(['line', e.x1, e.y1, e.x2, e.y2]);
       else if (e.t === 'circle') src.push(['circle', e.cx, e.cy, e.r]);
+      else if (e.t === 'arc') src.push(['arc', e.cx, e.cy, e.r]);
       else if (e.t === 'slot') src.push(['line', 2.5, 2.1875, 3.5, 2.1875], ['line', 2.5, 1.8125, 3.5, 1.8125], ['arc', 2.5, 2, 0.1875], ['arc', 3.5, 2, 0.1875]);
     });
     ['r12', '2000'].forEach(function (ver) {
@@ -13518,18 +13534,20 @@
       selEv('mousemove', rskScr([0, 3]));
       assert(/(^|\s)L 30(\.00)?(\s|$)/.test($('status-coords').textContent), 'the readout shows the overall length 30: ' + $('status-coords').textContent);
       selKey('8'); r3sType(UI.sketchNumBox()[0], '8'); r3sKey(UI.sketchNumBox()[0], 'Enter');
-      var f = UI.activeSketchFeature(), s = f.entities[0];
-      assert(s && s.t === 'slot' && s.w === 8 && Math.abs(s.x1 + 15) < 1e-9 && Math.abs(s.x2 - 7) < 1e-9, 'centres 22 apart from -15: ' + JSON.stringify(s));
-      var od = (f.dims || []).filter(function (d) { return d.e === 0 && d.k === 'olen'; })[0];
-      assert(od && Math.abs(K.dimValue(s, od) - 30) < 1e-9 && (f.dims || []).some(function (d) { return d.e === 0 && d.k === 'w'; }), 'Overall Length dimension 30 and the width: ' + JSON.stringify(f.dims));
+      // rfH: the slot is its sides 0 / 2, end arcs 1 / 3 and construction centerline 4; the overall length is the
+      // distance across the arcs' far sides, the width the distance between the sides
+      var f = UI.activeSketchFeature(), s = f.entities[4];
+      assert(s && s.t === 'line' && s.construction && f.entities[3].r === 4 && Math.abs(s.x1 + 15) < 1e-9 && Math.abs(s.x2 - 7) < 1e-9, 'centres 22 apart from -15: ' + JSON.stringify(f.entities));
+      var od = (f.rels || []).filter(function (x) { return x.type === 'distance' && x.ac; })[0];
+      assert(od && od.refs.join() === '3,1' && Math.abs(W.SketchSolver.measure(f, 'distance', od.refs, null, null, od.ac) - 30) < 1e-9 && Math.abs(od.v - 30) < 1e-9 && (f.rels || []).some(function (x) { return x.type === 'distance' && x.refs.join() === '0,2' && x.v === 8; }), 'Overall Length dimension 30 and the width: ' + JSON.stringify(f.rels));
       selKey('Escape');
       UI.setTool('cslot');
       rskClick([0, -15]); selEv('mousemove', rskScr([10, -15]));
       selKey('3'); r3sType(UI.sketchNumBox()[0], '30'); r3sKey(UI.sketchNumBox()[0], 'Enter');
       selEv('mousemove', rskScr([0, -12]));
       selKey('8'); r3sType(UI.sketchNumBox()[0], '8'); r3sKey(UI.sketchNumBox()[0], 'Enter');
-      f = UI.activeSketchFeature(); s = f.entities[1];
-      assert(s && s.t === 'slot' && Math.abs(s.x1 + 11) < 1e-9 && Math.abs(s.x2 - 11) < 1e-9 && Math.abs(s.y1 + 15) < 1e-9 && s.w === 8, 'centerpoint slot: ends at ±11 about its centre: ' + JSON.stringify(s));
+      f = UI.activeSketchFeature(); s = f.entities[9];
+      assert(s && s.t === 'line' && s.construction && Math.abs(s.x1 + 11) < 1e-9 && Math.abs(s.x2 - 11) < 1e-9 && Math.abs(s.y1 + 15) < 1e-9 && f.entities[8].r === 4 && f.entities[10].t === 'point', 'centerpoint slot: ends at ±11 about its centre: ' + JSON.stringify(f.entities.slice(5)));
       selKey('Escape');
       var n = f.entities.length;
       UI.setTool('slot');
@@ -14022,7 +14040,7 @@
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return 'line: horizontal only · rectangle: ' + onLine[0].refs.join('/');
   });
-  step('rfG: a Corner Rectangle is four lines with 2 Horizontal + 2 Vertical (one undo step); an edge click opens Line Properties; Display/Delete Relations lists the H / V and deleting a Vertical frees one degree; the script round trip is identical. A Center Rectangle on the origin: four lines, construction diagonals and a center point Coincident with the origin. Polygon and Straight Slot stay single entities', async function () {
+  step('rfG: a Corner Rectangle is four lines with 2 Horizontal + 2 Vertical (one undo step); an edge click opens Line Properties; Display/Delete Relations lists the H / V and deleting a Vertical frees one degree; the script round trip is identical. A Center Rectangle on the origin: four lines, construction diagonals and a center point Coincident with the origin. Polygon and Straight Slot are lines and arcs too (rfH)', async function () {
     var errs0 = errors.length;
     await rskNew();
     var u0 = UI.App.undo.length;
@@ -14058,15 +14076,322 @@
     assert(rl.filter(function (x) { return /^horizontal [0-3]$/.test(x); }).length === 2 && rl.filter(function (x) { return /^vertical [0-3]$/.test(x); }).length === 2, 'H / V ' + rl.join(', '));
     var st = UI.sketchStatus();
     assert(st.status === 'under' && st.dof === 2 && st.rels.every(function (s) { return s === 'ok'; }), 'width and height free: ' + JSON.stringify(st));
-    // polygon and slot: single entities (lane C left them; see the report)
+    // polygon and slot: lines (a construction circle) and lines and arcs (a construction centerline), rfH
     UI.setTool('polygon'); rskClick([60, 0]); rskClick([70, 0]);
     UI.setTool('slot'); rskClick([-60, 0]); rskClick([-40, 0]); rskClick([-50, 4]); UI.setTool('select');
     var t = f.entities.map(function (e) { return e.t; });
-    assert(t.indexOf('poly') >= 0 && t.indexOf('slot') >= 0, 'polygon / slot entities ' + t.join());
+    assert(t.indexOf('poly') < 0 && t.indexOf('slot') < 0 && t.indexOf('circle') >= 0 && t.indexOf('arc') >= 0, 'polygon / slot as lines and arcs ' + t.join());
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return 'rect: ' + f.entities.length + ' entities · H / V listed, Vertical deleted';
   });
   // --- end rfG ---
+  // ---- rfJ: drawing output — R2000 drawing DXF (read back by headless/dxf-check.js), sketch dimension properties on
+  // slot callouts and ordinate values, bend notes keyed by a stable bend id
+  var rfJ_PART = 'p.units("in");\np.sketch("Front").rect(0, 0, 4, 2).circle(1, 1, 0.133).circle(3, 1, 0.133)' +
+    '.rel("distance", ["0.e3", "1"], { value: 1, dir: "h" }).rel("distance", ["0.e3", "2"], { value: 3, dir: "h", tol: { type: "symmetric", plus: 0.002 }, prec: 3 }).rel("distance", ["0.e3", "0.e1"], { value: 4, dir: "h", suffix: "REF" })' +
+    '.ordinate([[0, { ord: "o1", ordAxis: "x", ordAt: -0.5 }], [1, { ord: "o1", ordAxis: "x", ordAt: -0.5 }], [2, { ord: "o1", ordAxis: "x", ordAt: -0.5 }]]).extrude(0.25);\n' +
+    'p.sketch("Front", 0.25).arcSlot(2, 1, 0.6, 210, 330, 0.25).dim(0, "r").dim(0, "w").dimProps([[1, { tol: { type: "bilateral", plus: 0.003, minus: 0 } }]]).cut("through", { reverse: true });\n' +
+    'p.sketch("Front", 0.25).slot(0.5, 1.6, 1.5, 1.6, 0.25).slot(2.5, 1.6, 3.5, 1.6, 0.25).dim(0, "w").dim(0, "olen").dimProps([[0, { tol: { type: "symmetric", plus: 0.005 } }], [1, { prefix: "2X", prec: 2 }]]).cut("through", { reverse: true });';
+  function rfJLoadCheck() {
+    if (window.DxfCheck) return Promise.resolve(window.DxfCheck);
+    return new Promise(function (res, rej) { var s = document.createElement('script'); s.src = '../headless/dxf-check.js'; s.onload = function () { res(window.DxfCheck); }; s.onerror = function () { rej(new Error('dxf-check.js did not load')); }; document.head.appendChild(s); });
+  }
+  step('rfJ: Make Drawing of an inch part — the slot callout carries its width / length Smart Dimensions (2X .250 ±.005 X 1.25 SLOT), the arc slot its width tolerance, the ordinate set its members\' (3.000 ±.002, 4.000 REF) on the sheet, SVG and DXF; Save as DXF offers R2000: AC1015 with true ELLIPSEs that headless/dxf-check.js reads back; R12 stays the default', async function () {
+    var errs0 = errors.length, Chk = await rfJLoadCheck();
+    await anvil.newPart(); await idle();
+    await anvil.run(rfJ_PART); await idle();
+    anvil.drawing.make({ fresh: true }); await UI.drawing.ready(); await wait(30);
+    var s = anvil.drawing.summary();
+    ['2X .250 ±.005 X 1.25 SLOT', 'R.600 ARC SLOT .250 +.003/0 WIDE 120°', '0, 1.000, 3.000 ±.002, 4.000 REF', '2X Ø.266'].forEach(function (t) { assert(s.dims.indexOf(t) >= 0, t + ' in ' + s.dims.join(' | ')); });
+    var svg = anvil.drawing.svg();
+    assert(svg.indexOf('2X .250 ±.005 X 1.25 SLOT') >= 0 && svg.indexOf('3.000 ±.002') >= 0 && svg.indexOf('4.000 REF') >= 0, 'SVG texts');
+    var d12 = anvil.drawing.dxf(), d2k = anvil.drawing.dxf({ version: 'R2000' });
+    assert(/\$ACADVER\n1\nAC1009\n/.test(d12) && d12.indexOf('\nELLIPSE\n') < 0 && /3\.000 %%p\.002/.test(d12), 'R12 default');
+    assert(/\$ACADVER\n1\nAC1015\n/.test(d2k) && /\$HANDSEED\n5\n/.test(d2k) && d2k.indexOf('\nELLIPSE\n') > 0 && d2k.indexOf('\n100\nAcDbText\n') > 0 && /2X \.250 %%p\.005 X 1\.25 SLOT/.test(d2k), 'R2000 content');
+    var c = Chk.check(d2k, { units: 'in', layers: [] }), c12 = Chk.check(d12, { units: 'in', layers: [] });
+    assert(c.ok && c.version === 'AC1015' && c.counts['ELLIPSE@ISOMETRIC'] > 0 && c12.ok && c12.version === 'AC1009', 'read back: ' + JSON.stringify([c.errors, c12.errors, c.counts]));
+    // every handle once
+    var hs = {}, dup = 0, Lx = d2k.split('\n'), sec = '';
+    for (var li = 0; li + 1 < Lx.length; li += 2) {
+      if (Lx[li] === '2' && Lx[li - 2] === '0' && Lx[li - 1] === 'SECTION') sec = Lx[li + 1];
+      if ((Lx[li] === '5' || Lx[li] === '105') && sec !== 'HEADER') { if (hs[Lx[li + 1]]) dup++; hs[Lx[li + 1]] = 1; }
+    }
+    assert(!dup && Object.keys(hs).length > 50, 'handles unique: ' + dup + ' duplicates of ' + Object.keys(hs).length);
+    // Save as DXF: the Version choice
+    ribbonButton('Save as DXF').click();
+    var sel = D.getElementById('dw-dxf-version');
+    assert(modalOpen() && sel && sel.value === 'R12' && D.querySelector('#modal textarea').value.indexOf('AC1009') > 0, 'dialog opens on R12');
+    sel.value = 'R2000'; sel.dispatchEvent(new W.Event('change'));
+    sel = D.getElementById('dw-dxf-version');
+    assert(sel && sel.value === 'R2000' && D.querySelector('#modal textarea').value.indexOf('AC1015') > 0, 'R2000 chosen');
+    clickModalButton('Close');
+    ribbonButton('Save as DXF').click();
+    assert(D.getElementById('dw-dxf-version').value === 'R2000', 'the choice is remembered');
+    sel = D.getElementById('dw-dxf-version'); sel.value = 'R12'; sel.dispatchEvent(new W.Event('change'));
+    clickModalButton('Close');
+    anvil.drawing.close();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return c.entities + ' R2000 entities, ' + (c.counts['ELLIPSE@ISOMETRIC'] || 0) + ' ellipses · ' + s.dims.filter(function (t) { return /SLOT|,/.test(t); }).join(' | ');
+  });
+  step('rfJ: a bend note dragged on the flat view keeps its bend (stable key bend:<feature>:<edge>) when the part swaps its two flanges in the tree and lengthens one; the note\'s text follows; Undo; a bend without a source is found again by its place', async function () {
+    var errs0 = errors.length;
+    await anvil.newPart(); await idle();
+    await anvil.run(P9_INCH); await idle();
+    anvil.drawing.make(); await UI.drawing.ready(); await wait(30);
+    anvil.drawing.flatView({ x: 14, y: 4, bendNotes: 'notes' }); await UI.drawing.ready(); await wait(30);
+    function flat() { var fv = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'flat'; })[0]; return fv && fv.flat; }
+    var f0 = flat(), fvId = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'flat'; })[0].id;
+    assert(f0 && f0.bends.length === 2 && f0.bends.every(function (b) { return /^bend:\d+:0$/.test(b.key) && b.key === 'bend:' + b.id; }), 'stable keys ' + JSON.stringify(f0 && f0.bends.map(function (b) { return b.key; })));
+    var downKey = f0.bends.filter(function (b) { return !b.up; })[0].key;
+    // 'b<n>' names the bend in order and lands on its stable key
+    anvil.drawing.flatAnnotation(fvId, 'b' + f0.bends.map(function (b) { return b.key; }).indexOf(downKey), { off: [0.3, 0.2] }); await UI.drawing.ready(); await wait(30);
+    var own = anvil.drawing.doc().views.filter(function (v) { return v.kind === 'flat'; })[0].flatAnn;
+    assert(own && own[downKey] && own[downKey].off[0] === 0.3 && !Object.keys(own).some(function (k) { return /^b\d+$/.test(k); }), 'flatAnn ' + JSON.stringify(own));
+    // swap the flanges in the tree (ids kept) and make the DOWN one 1.5 long
+    var fl = UI.App.model.features.filter(function (f) { return f.type === 'flange'; }), F = UI.App.model.features, i0 = F.indexOf(fl[0]), i1 = F.indexOf(fl[1]);
+    UI.pushUndo(); F[i0] = fl[1]; F[i1] = fl[0];
+    var dn = fl.filter(function (f) { return 'bend:' + f.id + ':0' === downKey; })[0];
+    assert(dn, 'the DOWN bend is flange ' + downKey);
+    dn.length = 1.5;
+    await UI.rebuild(); await idle(); await UI.drawing.ready(); await wait(80);
+    var f1 = flat(), bi = f1.bends.map(function (b) { return b.key; }).indexOf(downKey);
+    assert(bi === 0 && !f1.bends[0].up, 'the DOWN bend now comes first: ' + JSON.stringify(f1.bends.map(function (b) { return [b.key, b.up]; })));
+    var note = f1.annotations.filter(function (a) { return a.key === downKey; })[0], other = f1.annotations.filter(function (a) { return a.type === 'bendNote' && a.key !== downKey; })[0];
+    var NDN = W.Drawing.bendNoteText({ up: false, angle: 90, R: 0.03 }, 'in');
+    assert(note && note.text === NDN && other && other.text !== NDN, 'note follows its bend ' + JSON.stringify(f1.annotations.map(function (a) { return [a.key, a.text]; })));
+    var on = UI.drawing.state.sheet.annotations.filter(function (a) { return a.flat && a.key === downKey; })[0];
+    assert(on && Math.abs(on.off[0] - 0.3) < 1e-9 && Math.abs(on.off[1] - 0.2) < 1e-9, 'offset kept ' + JSON.stringify(on && on.off));
+    await UI.undo(); await idle(); await UI.drawing.ready(); await wait(80);
+    assert(flat().bends.map(function (b) { return b.key; }).indexOf(downKey) === 1, 'undo puts it back second');
+    // the place key (a bend whose source is not known) is found again after the bends move
+    var DWg = W.Drawing, bends = [{ a: [0, 0], b: [0, 2], up: true, angle: 90, R: 0.03 }, { a: [4, 0], b: [4, 2], up: false, angle: 90, R: 0.03 }];
+    var k0 = DWg.bendKey(bends[1]), own2 = {}; own2[k0] = { off: [1, 0] };
+    var moved = [{ a: [0, 0], b: [0, 2], up: true, angle: 90, R: 0.03 }, { a: [4.6, 0], b: [4.6, 2], up: false, angle: 90, R: 0.03 }];
+    var keys = DWg.bendKeyMatch([moved[1], moved[0]], own2, 5);
+    assert(keys[0] === k0 && keys[1] === DWg.bendKey(moved[0]), 'place key re-found: ' + JSON.stringify(keys));
+    anvil.drawing.close();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return downKey + ' kept ' + JSON.stringify(on.off) + ' through the swap';
+  });
+  // --- end rfJ ---
+  // --- rfK (sheet-metal fidelity audit, test-reports/2026-10-12-sheetmetal-fidelity.md): the PropertyManager never
+  //     clips a group's last row, Base Flange/Tab without a sketch asks for a plane, and a 16 ga golden flat ---
+  var RFK_BASE = 'p.units("in");\np.sheet(0.0598, 0.0598, 0.44);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();';
+  function rfKGroup(title) { return Array.prototype.filter.call(D.querySelectorAll('#pm .pm-group'), function (g) { return g.querySelector('h4').textContent.trim() === title; })[0]; }
+  step('rfK/pm: the Edge-Flange PropertyManager in a frame shorter than its content — no group shrinks (its fields stay inside its box, the Reverse direction check and the Sheet metal parameters… button are reachable), the Message box keeps its text, the PM scrolls instead; the relief group reads Custom Relief Type', async function () {
+    await anvil.run(RFK_BASE); await idle();
+    UI.cmdEdgeFlange();
+    assert(UI.hasPM(), 'Edge-Flange PM');
+    var pmEl = $('pm'), groups = D.querySelectorAll('#pm .pm-group');
+    assert(groups.length >= 8 && pmEl.scrollHeight > pmEl.clientHeight, 'a PM taller than the panel: ' + groups.length + ' groups, ' + pmEl.scrollHeight + ' > ' + pmEl.clientHeight);
+    Array.prototype.forEach.call(groups, function (g) {
+      if (g.classList.contains('collapsed')) return;
+      var gr = g.getBoundingClientRect(), fr = g.querySelector('.pm-fields').getBoundingClientRect();
+      assert(fr.bottom <= gr.bottom + 0.5 && fr.top >= gr.top, g.querySelector('h4').textContent.trim() + ': fields ' + Math.round(fr.top) + '-' + Math.round(fr.bottom) + ' outside the group ' + Math.round(gr.top) + '-' + Math.round(gr.bottom));
+    });
+    var msg = D.querySelector('#pm .pm-msg');
+    assert(msg && msg.scrollHeight <= msg.clientHeight + 1, 'the Message box shows all of its text (' + (msg && msg.scrollHeight) + ' / ' + (msg && msg.clientHeight) + ')');
+    var rev = D.querySelector('#pm input[type=checkbox][data-key="reverse"]'), rr = rev.getBoundingClientRect(), gl = rfKGroup('Flange Length').getBoundingClientRect();
+    assert(rr.bottom <= gl.bottom + 0.5, 'Reverse direction inside Flange Length: ' + Math.round(rr.bottom) + ' / ' + Math.round(gl.bottom));
+    rev.scrollIntoView({ block: 'center' });
+    var hit = D.elementFromPoint(rr.left + rr.width / 2, rev.getBoundingClientRect().top + rr.height / 2);
+    assert(hit === rev, 'the check is what the mouse reaches: ' + (hit && hit.tagName + '.' + hit.className));
+    assert(rfKGroup('Custom Relief Type') && !rfKGroup('Auto Relief'), 'Custom Relief Type group');
+    assert(rfKGroup('Sheet').querySelector('button') && rfKGroup('Sheet').querySelector('button').getBoundingClientRect().bottom <= rfKGroup('Sheet').getBoundingClientRect().bottom + 0.5, 'Sheet metal parameters… inside its group');
+    UI.pmCancel();
+    return groups.length + ' groups, PM ' + pmEl.scrollHeight + ' px in ' + pmEl.clientHeight;
+  });
+  step('rfK/base: Base Flange/Tab on a part with no sketch asks for a plane (Top Plane opens the sketch); a rectangle drawn, Exit Sketch brings the Base Flange/Tab PM back on that sketch and ✓ makes Base-Flange1; an empty sketch is discarded and nothing reopens', async function () {
+    await anvil.run('p.units("in");'); await idle();
+    var errs0 = errors.length;
+    UI.cmdBaseFlange();
+    assert(UI.hasPM() && D.querySelector('#pm .pm-head span').textContent === 'Base Flange/Tab' && UI.App.command && UI.App.command.pickPlane, 'the plane picker');
+    clickPmButton('Top Plane'); await idle();
+    assert(UI.App.mode === 'sketch', 'sketch mode');
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'line', x1: 0, y1: -3, x2: 4, y2: -3 }, { t: 'line', x1: 4, y1: -3, x2: 4, y2: 0 }, { t: 'line', x1: 4, y1: 0, x2: 0, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: -3 }); UI.updateSketches();
+    await UI.exitSketch(); await idle(); await wait(50);
+    assert(UI.App.mode === 'part' && UI.hasPM() && D.querySelector('#pm .pm-head span').textContent === 'Base Flange/Tab' && pmField('Thickness'), 'Base Flange/Tab PM after Exit Sketch: ' + (UI.hasPM() && D.querySelector('#pm .pm-head span').textContent));
+    setInput(pmField('Thickness'), 0.0598); setInput(pmField('Bend radius'), 0.0598);
+    await pmAccept();
+    var names = UI.App.model.features.map(function (q) { return q.name; });
+    assert(names.join() === 'Sketch1,Base-Flange1' && UI.App.model.sheet && UI.App.model.sheet.thickness === 0.0598, 'features ' + names.join() + ' sheet ' + JSON.stringify(UI.App.model.sheet));
+    near(anvil.flat().size[0], 4, 1e-9, 'flat 4'); near(anvil.flat().size[1], 3, 1e-9, 'flat 3');
+    // an empty sketch: discarded, no PM
+    await anvil.run('p.units("in");'); await idle();
+    UI.cmdBaseFlange(); clickPmButton('Front Plane'); await idle();
+    await UI.exitSketch(); await idle(); await wait(50);
+    assert(!UI.hasPM() && UI.App.model.features.length === 0, 'empty sketch discarded, nothing reopened: ' + UI.App.model.features.length + ' features, PM ' + UI.hasPM());
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return names.join(', ');
+  });
+  step('rfK/golden: 16 ga (T = R = .0598, K .44) 4 × 3 base, Edge-Flange 1.5 Material Inside / Outer Virtual Sharp through the PM: flat 4 + 1.5 − BD = 5.39606 (BA .13526, BD .10394, bend line at 3.948, note UP 90° R.060); Material Outside 5.45586, Bend Outside 5.51566; Reverse direction makes it DOWN', async function () {
+    var T = 0.0598, Kf = 0.44, BA = Math.PI / 2 * (T + Kf * T), BD = 2 * (T + T) - BA;
+    near(BA, 0.135264, 1e-6, 'hand BA'); near(BD, 0.103936, 1e-6, 'hand BD');
+    async function flange(position, reverse) {
+      await anvil.run(RFK_BASE); await idle();
+      UI.cmdEdgeFlange();
+      assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([4, 0.0598, 1.5]) }) !== false, 'edge pick');
+      setInput(pmField('Length'), 1.5); setInput(pmField('Flange angle'), 90);
+      var ovs = D.querySelector('#pm [data-key="lengthRef:outer"]'); ovs.click();
+      setInput(pmField('Position'), position);
+      var rev = D.querySelector('#pm input[type=checkbox][data-key="reverse"]'); if (rev.checked !== !!reverse) rev.click();
+      await pmAccept();
+      var s = anvil.summary(); assert(Object.keys(s.errors).length === 0, JSON.stringify(s.errors));
+      return anvil.flat();
+    }
+    var fl = await flange('inside', false);
+    near(fl.size[0], 4 + 1.5 - BD, 1e-9, 'Material Inside flat'); near(fl.size[1], 3, 1e-9, 'width');
+    assert(fl.bends.length === 1 && fl.bends[0].up && fl.bends[0].angle === 90, 'one UP 90° bend ' + JSON.stringify(fl.bends[0]));
+    near(fl.bends[0].ba, BA, 1e-9, 'BA'); near(fl.bends[0].bd, BD, 1e-9, 'BD');
+    near(fl.bends[0].a[0], 4 - (T + T) + BA / 2, 1e-9, 'bend line at the middle of the allowance (3.948)');
+    assert(K.bendNoteText(fl.bends[0], 'in') === 'UP 90° R.060', 'note ' + K.bendNoteText(fl.bends[0], 'in'));
+    near((await flange('outside', false)).size[0], 4 + T + 1.5 - BD, 1e-9, 'Material Outside flat');
+    near((await flange('bendOutside', false)).size[0], 4 + T + T + 1.5 - BD, 1e-9, 'Bend Outside flat');
+    var rv = await flange('inside', true);
+    near(rv.size[0], 4 + 1.5 - BD, 1e-9, 'reverse flat'); assert(!rv.bends[0].up && K.bendNoteText(rv.bends[0], 'in') === 'DOWN 90° R.060', 'reverse: DOWN ' + JSON.stringify(rv.bends[0]));
+    return 'flat ' + fmt(fl.size[0]) + ' × ' + fmt(fl.size[1]) + ', BA ' + fmt(BA) + ', BD ' + fmt(BD);
+  });
+  // --- end rfK ---
+  // ---- rfH (lane H, 2026-10-12): Polygon and Straight Slot as lines and arcs, placed-point inference for every tool,
+  // points of whole entities select as points
+  function rfHRels(f) { return (f.rels || []).map(function (r) { return r.type + ' ' + r.refs.join('/'); }); }
+  function rfHTypes(list) { return list.map(function (e) { return e.t + (e.construction ? '(c)' : ''); }).join(','); }
+  function rfHSel() { return anvil.selection().map(function (s) { return s.kind === 'sketchPoint' ? 'pt:' + s.ref : s.kind + ':' + s.index; }).join(' '); }
+  function rfHRoundTrip(f) {
+    var m2 = K.newModel('RT'); K.runScript(m2, K.generateScript(UI.App.model));
+    var s2 = m2.features.filter(function (x) { return x.type === 'sketch'; })[0], diff = [];
+    ['entities', 'rels', 'dims'].forEach(function (k) { rfdSame(f[k], s2[k], k, diff); });
+    return diff;
+  }
+  step('rfH: Polygon tool — a hexagon drawn from the origin is six lines and a construction circle held by one Polygon relation (one undo step, the centre Coincident with the origin, size and turn free); the tool PM\'s Circle diameter and Number of sides drive it; Display/Delete Relations lists Polygon; the script round trip is identical; the extrude has the hexagon\'s volume', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    UI.sketchCurveOptions({ sides: 6, ins: false, slotDims: false, overall: false });
+    try {
+      var u0 = UI.App.undo.length;
+      UI.setTool('polygon'); rskClick([0, 0]); rskClick([10, 0]);
+      var f = UI.activeSketchFeature();
+      assert(rfHTypes(f.entities) === 'line,line,line,line,line,line,circle(c)' && UI.App.undo.length === u0 + 1, 'six lines and a construction circle, one undo step: ' + rfHTypes(f.entities) + ' undo +' + (UI.App.undo.length - u0));
+      var rl = rfHRels(f);
+      assert(rl.indexOf('polygon 6/0/1/2/3/4/5') >= 0 && rl.indexOf('coincident 6.c/O') >= 0 && rl.filter(function (x) { return /\/O$/.test(x); }).length === 1 && !rl.some(function (x) { return /^(horizontal|vertical|equal) /.test(x); }), 'one Polygon relation, the centre on the origin: ' + rl.join(', '));
+      var st = UI.sketchStatus();
+      assert(st.status === 'under' && st.dof === 2, 'size and turn free: ' + JSON.stringify([st.status, st.dof]));
+      assert(UI.pmTitle() === 'Polygon' && UI.pmSpec().values.dia === 20 && UI.pmSpec().values.n === 6, 'the tool PM shows the hexagon: ' + JSON.stringify(UI.pmSpec().values));
+      UI.pmSetField('dia', '30');
+      near(f.entities[6].r, 15, 1e-9, 'Ø30 circle');
+      f.entities.slice(0, 6).forEach(function (l, k) { near(Math.hypot(l.x1, l.y1), 15, 1e-9, 'corner ' + k + ' on the Ø30 circle'); });
+      UI.pmSetField('n', '5');
+      assert(rfHTypes(f.entities) === 'line,line,line,line,line,circle(c)' && rfHRels(f).indexOf('polygon 5/0/1/2/3/4') >= 0 && rfHRels(f).indexOf('coincident 5.c/O') >= 0, 'five sides, the circle and its origin Coincident kept: ' + rfHTypes(f.entities) + ' ' + rfHRels(f).join(', '));
+      UI.pmSetField('n', '6');
+      selKey('Escape'); UI.setTool('select');
+      UI.cmdDisplayRelations();
+      var rows = Array.prototype.map.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return r.textContent; });
+      assert(rows.some(function (t) { return /Polygon/.test(t); }), 'Display/Delete Relations: ' + rows.join(' | '));
+      await UI.pmOK();
+      var diff = rfHRoundTrip(f);
+      assert(!diff.length, 'script round trip: ' + diff.slice(0, 5).join('; '));
+      UI.exitSketch(); await idle();
+      UI.cmdExtrude(false); await wait(30);
+      UI.pmSetField('depth', '5'); await pmAccept();
+      var vol = anvil.mass().volume, want = 1.5 * Math.sqrt(3) * 225 * 5;
+      near(vol, want, 1e-6 * want, 'hexagon prism volume');
+      assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+      return 'Ø30 hexagon, volume ' + vol.toFixed(3);
+    } finally { UI.sketchCurveOptions({ sides: 6, ins: true }); }
+  });
+  step('rfH: Straight Slot — two lines, two arcs (Tangent, Equal) and a construction centerline; drawn level from the origin it has Horizontal on the centerline and its start on the origin (length and width free); the tool PM\'s width and length drive it; typed values become the centerline\'s length and the distance between the sides (Fully Defined); script round trip identical; extrude volume', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    UI.sketchCurveOptions({ slotDims: false, overall: false });
+    var u0 = UI.App.undo.length;
+    UI.setTool('slot'); rskClick([0, 0]); rskClick([20, 0]); selEv('mousemove', rskScr([10, 3])); rskClick([10, 3]);
+    var f = UI.activeSketchFeature();
+    assert(rfHTypes(f.entities) === 'line,arc,line,arc,line(c)' && UI.App.undo.length === u0 + 1, 'two lines, two arcs, a centerline, one undo step: ' + rfHTypes(f.entities) + ' undo +' + (UI.App.undo.length - u0));
+    var rl = rfHRels(f);
+    ['tangent 0/1', 'tangent 2/1', 'tangent 2/3', 'tangent 0/3', 'equal 3/1', 'horizontal 4', 'coincident 4.p1/O'].forEach(function (x) { assert(rl.indexOf(x) >= 0, x + ' in ' + rl.join(', ')); });
+    var st = UI.sketchStatus();
+    assert(st.status === 'under' && st.dof === 2, 'length and width free: ' + JSON.stringify([st.status, st.dof]));
+    UI.pmSetField('w', '8');
+    near(f.entities[1].r, 4, 1e-9, 'width 8: R4 ends'); near(Math.abs(f.entities[0].y1 - f.entities[2].y1), 8, 1e-9, 'sides 8 apart');
+    UI.pmSetField('len', '30');
+    var cl = f.entities[4];
+    near(Math.hypot(cl.x2 - cl.x1, cl.y2 - cl.y1), 30, 1e-9, 'length 30'); near(Math.hypot(cl.x1, cl.y1), 0, 1e-9, 'still on the origin');
+    selKey('Escape');
+    // typed L and W while drawing: driving dimensions (the centerline's length, the distance between the sides)
+    UI.setTool('slot');
+    rskClick([0, 30]); selEv('mousemove', rskScr([12, 30])); selKey('1');
+    r3sType(UI.sketchNumBox()[0], '15'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+    selEv('mousemove', rskScr([7, 33])); selKey('6');
+    r3sType(UI.sketchNumBox()[0], '6'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+    selKey('Escape'); UI.setTool('select');
+    assert(rfHTypes(f.entities.slice(5)) === 'line,arc,line,arc,line(c)', 'second slot ' + rfHTypes(f.entities));
+    assert((f.dims || []).some(function (d) { return d.e === 9 && d.k === 'len'; }) && (f.rels || []).some(function (x) { return x.type === 'distance' && x.refs.join() === '5,7' && x.v === 6; }), 'typed L on the centerline, W between the sides: ' + JSON.stringify([f.dims, f.rels.filter(function (x) { return x.type === 'distance'; })]));
+    near(f.entities[9].x2 - f.entities[9].x1, 15, 1e-9, 'L 15');
+    var diff = rfHRoundTrip(f);
+    assert(!diff.length, 'script round trip: ' + diff.slice(0, 5).join('; '));
+    UI.exitSketch(); await idle();
+    UI.cmdExtrude(false); await wait(30);
+    UI.pmSetField('depth', '2'); await pmAccept();
+    var vol = anvil.mass().volume, want = ((30 * 8 + Math.PI * 16) + (15 * 6 + Math.PI * 9)) * 2;
+    near(vol, want, 1e-6 * want, 'two slots extruded 2');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'slots 30 x 8 and 15 x 6, volume ' + vol.toFixed(3);
+  });
+  step('rfH: relations are inferred only where a tool places a point (fidelity #8, every tool): a Centerpoint Straight Slot\'s computed far end on a point gets no Coincident (nor its preview glyph); a Line from a line\'s midpoint to an arc\'s end, a Tangent Arc from a line end, a Circle centred on a point and a Point on a line still get Midpoint / Coincident / Tangent; a chain closed on its first point is Coincident there', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    UI.sketchCurveOptions({ slotDims: false, overall: false });
+    var f = fxSk([{ t: 'point', x: -10, y: 20 }, { t: 'line', x1: 30, y1: -20, x2: 50, y2: -20 }, { t: 'arc', cx: 0, cy: -40, r: 10, a0: 0, a1: 90 }, { t: 'point', x: 30, y: 20 }]);
+    UI.setTool('cslot'); rskClick([0, 20]); rskClick([10, 20]); selEv('mousemove', rskScr([0, 23]));
+    var pv = (UI.App.inferPreview || []).map(function (c) { return c.type; });
+    assert(pv.indexOf('coincident') < 0, 'no Coincident glyph at the computed end: ' + pv.join());
+    rskClick([0, 23]); selKey('Escape');
+    assert(!(f.rels || []).some(function (x) { return x.refs.indexOf('0') >= 0; }) && rfHTypes(f.entities.slice(4)) === 'line,arc,line,arc,line(c),point', 'the far end on the point is not held: ' + rfHRels(f).join(', '));
+    var n = f.entities.length;
+    UI.setTool('line'); rskClick([40, -20]); rskClick([10, -40]); selKey('Escape'); selKey('Escape');
+    var rl = rfHRels(f);
+    assert(rl.indexOf('midpoint ' + n + '.p1/1') >= 0 && rl.indexOf('coincident ' + n + '.p2/2.p1') >= 0, 'line: Midpoint and Coincident where clicked: ' + rl.join(', '));
+    n = f.entities.length;
+    UI.setTool('tarc'); rskClick([50, -20]); selEv('mousemove', rskScr([55, -18])); selEv('mousemove', rskScr([60, -10])); rskClick([60, -10]); selKey('Escape');
+    rl = rfHRels(f);
+    assert(f.entities[n] && f.entities[n].t === 'arc' && rl.some(function (x) { return x === 'tangent ' + n + '/1' || x === 'tangent 1/' + n; }) && rl.some(function (x) { return new RegExp('^coincident ' + n + '\\.p[12]/1\\.p2$').test(x); }), 'tangent arc: Tangent and Coincident at the line end: ' + rl.join(', '));
+    n = f.entities.length;
+    UI.setTool('circle'); rskClick([30, 20]); rskClick([34, 20]); selKey('Escape');
+    assert(rfHRels(f).indexOf('coincident ' + n + '.c/3') >= 0, 'circle centred on the point: ' + rfHRels(f).join(', '));
+    n = f.entities.length;
+    UI.setTool('point'); rskClick([35, -20]); selKey('Escape');
+    assert(rfHRels(f).indexOf('coincident ' + n + '/1') >= 0, 'point on the line: ' + rfHRels(f).join(', '));
+    n = f.entities.length;
+    UI.setTool('line'); rskClick([60, 30]); rskClick([80, 30]); rskClick([80, 45]); selEv('mousemove', rskScr([60, 30]));
+    pv = (UI.App.inferPreview || []).map(function (c) { return c.type; });
+    assert(pv.indexOf('coincident') >= 0, 'the closing click shows its Coincident: ' + pv.join());
+    rskClick([60, 30]); selKey('Escape'); selKey('Escape');
+    rl = rfHRels(f);
+    assert(f.entities.length === n + 3 && rl.some(function (x) { return x === 'coincident ' + (n + 2) + '.p2/' + n + '.p1' || x === 'coincident ' + n + '.p1/' + (n + 2) + '.p2'; }), 'the chain closed on its first point: ' + rl.join(', '));
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return rl.length + ' relations';
+  });
+  step('rfH: a Select-tool click on a point of a whole entity selects the point (Point PM), as a line end does: an ellipse\'s axis end, a script rectangle\'s corner, an arc slot\'s end; a click on the curve still opens the entity\'s PM; a corner rectangle\'s middle is no point', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    var f = fxSk([{ t: 'ellipse', cx: 0, cy: 0, rx: 20, ry: 10, rot: 0 }, { t: 'rect', x: 30, y: -10, w: 20, h: 10 }, { t: 'aslot', cx: -40, cy: 0, r: 10, a0: 0, a1: 90, w: 4 }]);
+    UI.setTool('select');
+    rskClick([20, 0]);
+    assert(rfHSel() === 'pt:0.v0' && UI.pmTitle() === 'Point', 'ellipse axis end: ' + rfHSel() + ' ' + UI.pmTitle());
+    rskClick([50, 0]);
+    assert(rfHSel() === 'pt:1.v2' && UI.pmTitle() === 'Point', 'rectangle corner: ' + rfHSel() + ' ' + UI.pmTitle());
+    rskClick([-30, 0]);
+    assert(rfHSel() === 'pt:2.p1' && UI.pmTitle() === 'Point', 'arc slot end: ' + rfHSel() + ' ' + UI.pmTitle());
+    rskClick([-20 * Math.cos(Math.PI / 3), -10 * Math.sin(Math.PI / 3)]);
+    assert(rfHSel() === 'entity:0' && UI.pmTitle() === 'Ellipse', 'the ellipse curve: ' + rfHSel() + ' ' + UI.pmTitle());
+    UI.closePM();
+    rskClick([40, -5]);
+    assert(rfHSel() === '', 'nothing at a corner rectangle\'s middle: ' + rfHSel());
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'ellipse, rectangle and arc slot points';
+  });
+  // --- end rfH ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

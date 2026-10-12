@@ -561,6 +561,86 @@
   // the ones the sheet being worked out belongs to (_.CTX, set by compute); with no build the part is rebuilt here.
   // The kernel's flat needs Anvil's own mesh (its faces carry the sheet's walls), so with an OpenCascade mesh on screen
   // the build's mesh is used instead.
+  // ------------------------------------------------------------------ stable bend ids (dragged bend notes)
+  // bendSources(flat, model, build, diag) -> per flat bend the feature and edge it comes from ('<feature id>:<n>', n
+  // the record's place in build.flanges[feature]) or null. The kernel's own id wins (bend.id, or bend.feature +
+  // bend.edge); else a flange whose edge lies on the face the unfold starts from is found the way the flat lays it
+  // down: that face maps to the flat by projection onto its plane, and the bend line runs parallel to the projected
+  // edge, BA / 2 out along the flange's o direction (which lies in that plane), over the same stretch. A flange on a
+  // wall (its o leaves the plane) has no id: its notes fall back to the bend's place (bendKey).
+  function bendSources(flat, model, build, diag) {
+    var out = flat.bends.map(function (b) {
+      if (b.id != null) return String(b.id);
+      if (b.feature != null) return b.feature + ':' + (b.edge != null ? b.edge : 0);
+      return null;
+    });
+    if (out.every(function (x) { return x != null; }) || !build || !build.flanges || !flat.plane || !flat.plane.origin) return out;
+    var P = flat.plane, tol = 1e-6 * (1 + diag), cands = [];
+    function p2(q) { return K.to2D(P, q); }
+    (model.features || []).forEach(function (f) {
+      (build.flanges[f.id] || []).forEach(function (fi, j) {
+        if (!fi || !fi.a || !fi.b || !fi.o || !fi.mid || fi.a.length !== 3) return;
+        var od = V.dot(fi.o, P.n);
+        if (Math.abs(od) > 1e-6) return;
+        var A = p2(fi.a), B = p2(fi.b), M = p2(fi.mid), O = p2(V.add(fi.mid, fi.o)), o2 = [O[0] - M[0], O[1] - M[1]], ol = Math.hypot(o2[0], o2[1]);
+        if (!(ol > 0.999)) return;
+        cands.push({ src: f.id + ':' + j, A: A, B: B, o: [o2[0] / ol, o2[1] / ol] });
+      });
+    });
+    var pairs = [];
+    flat.bends.forEach(function (b, i) {
+      if (out[i] != null || b.ba == null) return;
+      var d = [b.b[0] - b.a[0], b.b[1] - b.a[1]], L = Math.hypot(d[0], d[1]), m = [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2];
+      if (!(L > tol)) return;
+      cands.forEach(function (c, ci) {
+        var e = [c.B[0] - c.A[0], c.B[1] - c.A[1]], El = Math.hypot(e[0], e[1]);
+        if (!(El > tol) || Math.abs(d[0] * e[1] - d[1] * e[0]) > 1e-6 * L * El) return;
+        var w = [m[0] - c.A[0], m[1] - c.A[1]], off = w[0] * c.o[0] + w[1] * c.o[1], along = (w[0] * e[0] + w[1] * e[1]) / El;
+        var err = Math.abs(off - b.ba / 2), lat = Math.abs(w[0] * e[1] - w[1] * e[0]) / El;
+        // (the bend's middle over the edge's stretch; its distance from the edge line is all along o)
+        if (err > 1e-4 * (1 + diag) || along < -tol || along > El + tol || Math.abs(lat - Math.abs(off)) > 1e-4 * (1 + diag)) return;
+        pairs.push({ i: i, c: ci, err: err + 1e-9 * Math.abs(along - El / 2) });
+      });
+    });
+    pairs.sort(function (p, q) { return p.err - q.err; });
+    var usedC = {};
+    pairs.forEach(function (p) { if (out[p.i] == null && !usedC[p.c]) { out[p.i] = cands[p.c].src; usedC[p.c] = true; } });
+    return out;
+  }
+  // bendKey(bend) -> the key its note's own settings (view.flatAnn) go under: 'bend:<feature id>:<n>' when the bend's
+  // source is known, else 'bend@<u>,<v>,<U|D><angle>,R<radius>' (the middle of the bend line in the flat, which
+  // bendKeyMatch finds again after a change moved it)
+  function bendKey(b) {
+    if (b.id != null) return 'bend:' + b.id;
+    var m = [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2];
+    return 'bend@' + m[0].toFixed(4) + ',' + m[1].toFixed(4) + ',' + (b.up ? 'U' : 'D') + (+b.angle).toFixed(2) + ',R' + (+b.R).toFixed(4);
+  }
+  // bendKeyMatch(bends, own, diag) -> per bend the key of view.flatAnn its note uses: its own key when it has settings;
+  // else a place key ('bend@…') no bend has any more, nearest first (a change that moved the bends; the same
+  // direction, angle and radius preferred), within a quarter of the flat's diagonal; else its own key. A source key
+  // ('bend:…') is only ever its own bend's.
+  function bendKeyMatch(bends, own, diag) {
+    own = own || {};
+    var keys = bends.map(function (b) { return b.key || bendKey(b); }), out = keys.map(function (k) { return own[k] ? k : null; }), taken = {};
+    out.forEach(function (k) { if (k) taken[k] = true; });
+    var stale = Object.keys(own).filter(function (k) { return !taken[k] && /^bend@/.test(k); }).map(function (k) {
+      var m = /^bend@(-?[\d.]+),(-?[\d.]+),([UD])(-?[\d.]+),R(-?[\d.]+)$/.exec(k);
+      return m ? { k: k, m: [+m[1], +m[2]], up: m[3] === 'U', angle: +m[4], R: +m[5] } : null;
+    }).filter(Boolean);
+    var pairs = [], lim = 0.25 * (diag || 1);
+    stale.forEach(function (s) {
+      bends.forEach(function (b, i) {
+        if (out[i]) return;
+        var m = [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2], d = Math.hypot(m[0] - s.m[0], m[1] - s.m[1]);
+        if (d > lim) return;
+        var same = s.up === !!b.up && Math.abs(s.angle - b.angle) < 0.01 && Math.abs(s.R - b.R) < 1e-4 * (1 + s.R);
+        pairs.push({ s: s.k, i: i, d: d + (same ? 0 : lim) });
+      });
+    });
+    pairs.sort(function (p, q) { return p.d - q.d; });
+    pairs.forEach(function (p) { if (!out[p.i] && !taken[p.s]) { out[p.i] = p.s; taken[p.s] = true; } });
+    return out.map(function (k, i) { return k || keys[i]; });
+  }
   function flatData(mesh, model, build) {
     var ctx = _.CTX || {};
     model = model || ctx.model; build = build || ctx.build;
@@ -570,7 +650,7 @@
     var res;
     try {
       if (!model.sheet) throw new Error('Not a sheet-metal part: a flat-pattern view needs a Base Flange.');
-      var flat = null, err = null;
+      var flat = null, err = null, fb = build;
       if (build && build.flanges && build.planes) {
         try { flat = K.flatPattern(model, build, mesh); } catch (e) { err = e; }
         if (!flat && build.body) try { flat = K.flatPattern(model, build, K.meshFromBody(build.body)); } catch (e2) { err = e2; }
@@ -579,13 +659,15 @@
         var m2 = {}; Object.keys(model).forEach(function (k) { if (k !== 'drawings') m2[k] = model[k]; });
         m2 = JSON.parse(JSON.stringify(m2));
         var b2 = K.rebuild(m2);
-        try { flat = K.flatPattern(m2, b2, K.meshFromBody(b2.body)); } catch (e3) { throw err || e3; }
+        try { flat = K.flatPattern(m2, b2, K.meshFromBody(b2.body)); fb = b2; } catch (e3) { throw err || e3; }
       }
       var P = flat.plane, bb = flat.bbox, diag = Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]) || 1;
-      var cv = flatCurves(flat.loops, diag);
+      var cv = flatCurves(flat.loops, diag), src = bendSources(flat, model, fb, diag);
       res = { units: units, frame: { e: P.n.slice(), u: P.x.slice(), v: P.y.slice() }, lines: cv.lines, circles: cv.circles, arcs: cv.arcs,
         bends: flat.bends.map(function (b, i) {
-          return { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i, ba: b.ba != null ? +b.ba : null, bd: b.bd != null ? +b.bd : null, method: b.method || null, source: b.source || null };
+          var x = { a: b.a.slice(), b: b.b.slice(), up: !!b.up, angle: +b.angle, R: +b.R, i: i, ba: b.ba != null ? +b.ba : null, bd: b.bd != null ? +b.bd : null, method: b.method || null, source: b.source || null };
+          x.id = src[i]; x.key = bendKey(x);
+          return x;
         }),
         etch: (flat.etch || []).map(function (it) { return JSON.parse(JSON.stringify(it)); }),
         bbox: { umin: bb.min[0], umax: bb.max[0], vmin: bb.min[1], vmax: bb.max[1] }, sheet: flat.sheet, loops: flat.loops.length };
@@ -619,7 +701,7 @@
   // bendTag(i) -> 'A', 'B', … 'Z', 'AA', … (Bend Table tags)
   function bendTag(i) { var s = ''; i = Math.max(0, i | 0); do { s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26) - 1; } while (i >= 0); return s; }
 
-  D.flatCurves = flatCurves; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
+  D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;

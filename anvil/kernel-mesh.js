@@ -8,8 +8,48 @@
   var rotatePoint = _.rotatePoint, unionAll = _.unionAll;   // kernel-curves.js
 
   // ------------------------------------------------------------------ meshing
-  function planeKey(pl) {
-    return [Math.round(pl.normal.x * 1000), Math.round(pl.normal.y * 1000), Math.round(pl.normal.z * 1000), Math.round(pl.w * 100)].join('|');
+  // r16/planeclust: coplanar polygons are clustered by tolerance, not by a rounded key. The old key rounded the offset
+  // to 0.01 units, so a face whose offset sat on a rounding boundary (0.075 in, 0.005, 0.015: the top of a 14 ga
+  // sheet) split in two when its polygons carried noise of 1e-12. Normals within PLANE_COS (1e-3 rad, the old key's
+  // resolution) and offsets within planeTol(diag) = max(2e-5, 1e-5 × the body's bounding diagonal) are one plane:
+  // above the CSG's absolute 1e-5 coplanar epsilon and Float32 noise of imported meshes, far below any sheet or
+  // feature thickness. The first plane of a cluster is its plane.
+  var PLANE_COS = Math.cos(1e-3);
+  function planeTol(diag) { return Math.max(2e-5, 1e-5 * (diag || 0)); }
+  function bodyDiag(polys) {
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    polys.forEach(function (p) {
+      p.vertices.forEach(function (v) {
+        var q = v.pos;
+        if (q.x < lo[0]) lo[0] = q.x; if (q.y < lo[1]) lo[1] = q.y; if (q.z < lo[2]) lo[2] = q.z;
+        if (q.x > hi[0]) hi[0] = q.x; if (q.y > hi[1]) hi[1] = q.y; if (q.z > hi[2]) hi[2] = q.z;
+      });
+    });
+    return lo[0] <= hi[0] ? len(sub(hi, lo)) : 0;
+  }
+  // planeClusters(tol) -> { find(plane, tag), add(plane, tag, value) }: find returns the cluster ({ plane, value })
+  // with the same tag whose normal is within PLANE_COS and offset within tol of the plane, or null. Offsets are
+  // bucketed by tol, so a lookup scans three buckets.
+  function planeClusters(tol) {
+    var buckets = {};
+    function find(pl, tag) {
+      var b = Math.floor(pl.w / tol), n = pl.normal;
+      for (var d = -1; d <= 1; d++) {
+        var list = buckets[tag + '#' + (b + d)];
+        if (!list) continue;
+        for (var i = 0; i < list.length; i++) {
+          var c = list[i], cn = c.plane.normal;
+          if (Math.abs(c.plane.w - pl.w) <= tol && n.x * cn.x + n.y * cn.y + n.z * cn.z >= PLANE_COS) return c;
+        }
+      }
+      return null;
+    }
+    function add(pl, tag, value) {
+      var k = tag + '#' + Math.floor(pl.w / tol), c = { plane: pl, value: value };
+      (buckets[k] || (buckets[k] = [])).push(c);
+      return c;
+    }
+    return { find: find, add: add };
   }
 
   // -> { positions, normals, faces:[{normal,w,start,count,centroid,area,body}], triCount, polygons }
@@ -18,16 +58,16 @@
   // assembly part tag (polygon.part, assembly.js), so coplanar faces of two parts in a sub-assembly stay apart (`face.part`).
   function meshFromBody(body) {
     if (!body) return { positions: new Float32Array(0), normals: new Float32Array(0), faces: [], triCount: 0 };
-    var groups = {}, order = [];
+    var clusters = planeClusters(planeTol(bodyDiag(body.polygons))), order = [];
     body.polygons.forEach(function (p) {
-      var bi = p.body || 0, k = planeKey(p.plane) + '|' + bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '');   // OpenCascade faces / assembly parts stay apart
-      if (!groups[k]) { groups[k] = { polys: [], plane: p.plane, body: bi, part: p.part }; order.push(k); }
-      groups[k].polys.push(p);
+      var bi = p.body || 0, tag = bi + (p.face != null ? '|f' + p.face : '') + (p.part != null ? '|p' + p.part : '');   // OpenCascade faces / assembly parts stay apart
+      var c = clusters.find(p.plane, tag);
+      if (!c) { c = clusters.add(p.plane, tag, { polys: [], plane: p.plane, body: bi, part: p.part }); order.push(c.value); }
+      c.value.polys.push(p);
     });
     var tris = [];
     var faces = [];
-    order.forEach(function (k) {
-      var g = groups[k];
+    order.forEach(function (g) {
       var start = tris.length / 9, cx = 0, cy = 0, cz = 0, cnt = 0, area = 0;
       g.polys.forEach(function (p) {
         var vs = p.vertices;
@@ -467,6 +507,14 @@
     return { v: v, n: norm(nm), ext: 0 };
   }
 
+  // r16/picktol: the distance within which a recorded pick (an edge's or face's `at`) still finds its edge or face.
+  // It was max(0.5, size) in model units: 12.7 mm on an inch part, so on a thin inch part a pick whose own edge or
+  // face was gone landed on the one on the other side of the sheet. Now the floor is 0.5 mm in the model's units
+  // (0.5 / 25.4 in an inch part); the feature's own size (fillet radius, chamfer distance, half the shell
+  // thickness) still widens it. Both kernels use it (occt-kernel.js edgeOp / shellOp).
+  var PICK_MM = 0.5;
+  function pickTol(units, size) { return Math.max(units === 'in' ? PICK_MM / 25.4 : PICK_MM, +size || 0); }
+
   // -> { cut: CSG|null, add: CSG|null, count }
   function buildEdgeFeature(f, ctx) {
     if (!ctx.body) throw new Error('Nothing to ' + f.type + ' yet.');
@@ -474,7 +522,7 @@
     if (!(size > 0)) throw new Error((f.type === 'chamfer' ? 'Distance' : 'Radius') + ' must be greater than zero.');
     var mesh = meshFromBody(ctx.body);
     var edges = bodyEdges(mesh).filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
-    var selected = resolveEdges(f.edges, edges, Math.max(0.5, size));
+    var selected = resolveEdges(f.edges, edges, pickTol(ctx.units, size));   // r16/picktol
     if (!selected.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
     var byKey = {};
     selected.forEach(function (e) { (byKey[e.ka] = byKey[e.ka] || []).push(e); (byKey[e.kb] = byKey[e.kb] || []).push(e); });
@@ -490,8 +538,9 @@
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildEdgeFeature = buildEdgeFeature; K.meshFromBody = meshFromBody; K.meshQuality = meshQuality; K.faceOutline = faceOutline;
-  K.outlineOptions = outlineOptions; K.bodyEdges = bodyEdges; K.resolveEdges = resolveEdges; K.pointSegmentDistance = pointSegmentDistance;
+  K.outlineOptions = outlineOptions; K.bodyEdges = bodyEdges; K.resolveEdges = resolveEdges; K.pointSegmentDistance = pointSegmentDistance; K.pickTol = pickTol;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.bodyEdges = bodyEdges; _.buildEdgeFeature = buildEdgeFeature; _.ekey = ekey; _.faceOutline = faceOutline; _.meshFromBody = meshFromBody;
-  _.pointSegmentDistance = pointSegmentDistance; _.resolveEdges = resolveEdges;
+  _.pointSegmentDistance = pointSegmentDistance; _.resolveEdges = resolveEdges; _.pickTol = pickTol;
+  _.planeClusters = planeClusters; _.planeTol = planeTol; _.bodyDiag = bodyDiag;
 })(Kernel, Kernel._);

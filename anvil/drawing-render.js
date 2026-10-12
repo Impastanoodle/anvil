@@ -3,7 +3,7 @@
 // lines and detail circles, the Bill of Materials and balloons, dimensions placed clear of each other, cosmetic threads,
 // annotations), with the lazy mode that leaves placeholders for views still being worked out in drawing-worker.js;
 // dimension primitives in SolidWorks' ANSI style; the drawing text metrics (Century Gothic, capitals' height), line
-// widths and colours; and the writers: toSVG / svgParts (one group per layer, patchable), toDXF (R12, one layer per
+// widths and colours; and the writers: toSVG / svgParts (one group per layer, patchable), toDXF (R12 or R2000, one layer per
 // view) and toPDF. Loads last of the engine files.
 (function (D, _) {
   'use strict';
@@ -310,6 +310,10 @@
       if (sp) {
         ['tol', 'prec', 'label'].forEach(function (q) { if (sp[q] != null) d[q] = sp[q]; });
         if (sp.count != null) d.count = sp.count;
+        // (rfJ: a slot callout's width / length / radius each with its own sketch dimension's; an ordinate set's values each
+        // with its member's)
+        if (sp.slotProps) d.slot = Object.assign({}, d.slot, { props: sp.slotProps });
+        if (sp.valueProps) d.valueProps = sp.valueProps;
         d.sketchName = sp.name; if (sp.driven) d.driven = true;
         d.text = dimText(d, units);
       }
@@ -531,14 +535,22 @@
       });
       out.push({ id: 'f' + v.id + ':' + key, view: v.id, key: key, type: type, text: text, prims: prims, box: r, hidden: !!s.hidden, off: off.slice(), info: info || null });
     }
+    // a bend note's settings go under its bend's stable key (Drawing.bendKeyMatch: the feature and edge it comes from,
+    // else its place in the flat, found again after a change), so a dragged or hidden note stays with its bend when a
+    // rebuild reorders or changes the bends; an older drawing's 'b<n>' (the bend's index) still counts until the note
+    // is moved again. view._bendKeys (not saved) lets Drawing.flatAnnotation take a 'b<n>' for that bend's key.
+    var bkeys = fd.bends && D.bendKeyMatch ? D.bendKeyMatch(fd.bends, own, fd.bbox ? Math.hypot(fd.bbox.umax - fd.bbox.umin, fd.bbox.vmax - fd.bbox.vmin) : 1) : [];
+    try { Object.defineProperty(v, '_bendKeys', { value: bkeys.slice(), configurable: true, writable: true, enumerable: false }); } catch (e) { }
     if (mode !== 'none') fd.bends.forEach(function (b, i) {
       var A = w.toSheet(b.a), B = w.toSheet(b.b), dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1, t = [dx / L, dy / L];
       if (t[0] < -1e-9 || (Math.abs(t[0]) <= 1e-9 && t[1] < 0)) t = [-t[0], -t[1]];
       var rot = Math.atan2(t[1], t[0]) * 180 / Math.PI, n = [-t[1], t[0]], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], g = BEND_GAP * k;
       if (Math.abs(rot) < 1e-9) rot = 0;
       var txt = mode === 'table' ? D.bendTag(i) : D.bendNoteText(b, units, { prec: v.bendPrec });
-      item('b' + i, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: NOTE_H * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
-        { bend: i, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
+      var bk = bkeys[i] || 'b' + i;
+      if (!own[bk] && own['b' + i]) own = Object.assign({}, own, (function () { var o2 = {}; o2[bk] = own['b' + i]; return o2; })());
+      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: NOTE_H * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
+        { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
     });
     var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
     if (v.flatSize != null ? !!v.flatSize : o.flatSizeNote) {
@@ -797,7 +809,7 @@
       else label([pos, c - th / 2], 'middle', 0, lab);
     }
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
-      var hz2 = d.dir !== 'v', ax = hz2 ? 0 : 1, items = [{ ref: d.base, val: 0 }].concat(d.refs.map(function (r2, i) { return { ref: r2, val: (d.values || [])[i] || 0 }; }));
+      var hz2 = d.dir !== 'v', ax = hz2 ? 0 : 1, items = [{ ref: d.base, val: 0 }].concat(d.refs.map(function (r2, i) { return { ref: r2, val: (d.values || [])[i] || 0, vp: d.valueProps && d.valueProps[i] || null }; }));
       var side = d.side || 1, sp = function (ref) { return ref.kind === 'dia' ? vw.toSheet(ref.c) : null; };
       // the feature point of a reference: a circle centre, or the end of an edge nearest the dimension side
       items.forEach(function (it) {
@@ -820,7 +832,8 @@
           var from = it.p[1 - ax] + (lvl > it.p[1 - ax] ? 1 : -1) * gapE, sgl = lvl > it.p[1 - ax] ? 1 : -1;
           if (Math.abs(it.t - it.p[ax]) < 1e-9) line(Q(it.p[ax], from), Q(it.p[ax], lvl));
           else { line(Q(it.p[ax], from), Q(it.p[ax], lvl - sgl * 4 * k)); line(Q(it.p[ax], lvl - sgl * 4 * k), Q(it.t, lvl - sgl * 2 * k)); line(Q(it.t, lvl - sgl * 2 * k), Q(it.t, lvl)); }
-          var tt = numText(Math.abs(it.val), units, prec);
+          // (a member with its sketch dimension's tolerance / precision / text: d.valueProps, Drawing.sketchOrdinateProps)
+          var tt = it.vp ? D.ordinateValueText(Math.abs(it.val), it.vp, units, prec) : numText(Math.abs(it.val), units, prec);
           if (hz2) out.push({ k: 'text', p: [it.t + th / 2, lvl + sgl * 1 * k], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 90 });
           else out.push({ k: 'text', p: [lvl + sgl * 1 * k, it.t - th / 2], h: th, text: tt, anchor: sgl > 0 ? 'start' : 'end', layer: L, rot: 0 });
         });
@@ -1020,71 +1033,168 @@
     return res;
   }
 
-  // DXF R12: one layer per drawing view (FRONT, TOP, RIGHT, ISOMETRIC…), plus DIMENSIONS and SHEET; hidden edges use
-  // the HIDDEN linetype. Paper units ($INSUNITS 4 = mm, 1 = in).
-  function toDXF(sheet) {
+  // toDXF(sheet, { version }): one layer per drawing view (FRONT, TOP, RIGHT, ISOMETRIC…), plus DIMENSIONS and SHEET;
+  // hidden edges use the HIDDEN linetype. Paper units ($INSUNITS 4 = mm, 1 = in). version 'R12' (AC1009, the default:
+  // HEADER, TABLES, ENTITIES; an ellipse as a POLYLINE) or 'R2000' (AC1015, laid out as Kernel.exportDXFFlat writes it:
+  // HEADER with $HANDSEED, CLASSES, the nine symbol tables, BLOCKS for model / paper space, ENTITIES with handles and
+  // subclass markers, OBJECTS with the root dictionary; a true ELLIPSE, and each line's weight (370) from the sheet's
+  // strokes). Both write true LINE / CIRCLE / ARC, SOLID arrowheads and TEXT (dimensions exploded, as on the sheet).
+  function dxfVersionOf(v) { return /^(r?2000|ac1015|1015)$/i.test(String(v || '').trim()) ? 'R2000' : 'R12'; }
+  function toDXF(sheet, opts) {
+    var r2000 = dxfVersionOf(opts && opts.version) === 'R2000';
     var L = [];
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
     var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
-    pr(0, 'SECTION'); pr(2, 'HEADER');
-    pr(9, '$ACADVER'); pr(1, 'AC1009');
-    pr(9, '$INSUNITS'); pr(70, sheet.units === 'in' ? 1 : 4);
-    pr(9, '$MEASUREMENT'); pr(70, sheet.units === 'in' ? 0 : 1);
-    pr(9, '$EXTMIN'); pr(10, 0); pr(20, 0); pr(30, 0);
-    pr(9, '$EXTMAX'); pr(10, num(sheet.size[0])); pr(20, num(sheet.size[1])); pr(30, 0);
-    pr(9, '$LTSCALE'); pr(40, sheet.units === 'in' ? 0.04 : 1);
-    pr(0, 'ENDSEC');
+    var inch = sheet.units === 'in';
+    // R2000 handles: the fixed ones AutoCAD's own drawings use (tables 1–A, root dictionary C, ACAD_GROUP D, layer 0
+    // 10, Standard 11, ACAD 12, ByBlock / ByLayer / Continuous 14–16, paper space 1B–1D, model space 1F–21), every
+    // other one from 30 up (as Kernel.exportDXFFlat)
+    var h = 0x2F;
+    function H() { return (++h).toString(16).toUpperCase(); }
+    var th = { BLOCK_RECORD: '1', LAYER: '2', STYLE: '3', LTYPE: '5', VIEW: '6', UCS: '7', VPORT: '8', APPID: '9', DIMSTYLE: 'A' }, msBR = '1F', psBR = '1B';
+    function table(name, count, records) {
+      pr(0, 'TABLE'); pr(2, name);
+      if (r2000) { pr(5, th[name]); pr(330, 0); pr(100, 'AcDbSymbolTable'); }
+      pr(70, count);
+      if (r2000 && name === 'DIMSTYLE') pr(100, 'AcDbDimStyleTable');
+      records();
+      pr(0, 'ENDTAB');
+    }
+    function record(type, sub, handle) {
+      pr(0, type);
+      if (r2000) { pr(type === 'DIMSTYLE' ? 105 : 5, handle || H()); pr(330, th[type]); pr(100, 'AcDbSymbolTableRecord'); pr(100, sub); }
+    }
     pr(0, 'SECTION'); pr(2, 'TABLES');
-    var useCenter = sheet.prims.some(function (p) { return p.style === 'center'; });   // CENTER only when a centre mark / line uses it
-    pr(0, 'TABLE'); pr(2, 'LTYPE'); pr(70, useCenter ? 4 : 3);
-    pr(0, 'LTYPE'); pr(2, 'CONTINUOUS'); pr(70, 0); pr(3, 'Solid line'); pr(72, 65); pr(73, 0); pr(40, 0);
-    pr(0, 'LTYPE'); pr(2, 'HIDDEN'); pr(70, 0); pr(3, '__ __ __ __'); pr(72, 65); pr(73, 2); pr(40, 4.5); pr(49, 3); pr(49, -1.5);
-    pr(0, 'LTYPE'); pr(2, 'PHANTOM'); pr(70, 0); pr(3, '____ _ ____ _'); pr(72, 65); pr(73, 4); pr(40, 12.5); pr(49, 8); pr(49, -1.5); pr(49, 1.5); pr(49, -1.5);
-    if (useCenter) { pr(0, 'LTYPE'); pr(2, 'CENTER'); pr(70, 0); pr(3, '____ _ ____ _'); pr(72, 65); pr(73, 4); pr(40, 10.5); pr(49, 6); pr(49, -1.5); pr(49, 1.5); pr(49, -1.5); }
-    pr(0, 'ENDTAB');
-    // the text style: Century Gothic (GOTHIC.TTF), as on the sheet (r13/drawings13); a reader without it substitutes its own
-    pr(0, 'TABLE'); pr(2, 'STYLE'); pr(70, 1);
-    pr(0, 'STYLE'); pr(2, 'STANDARD'); pr(70, 0); pr(40, 0); pr(41, 1); pr(50, 0); pr(71, 0); pr(42, num(3.5 * (sheet.units === 'in' ? 1 / MM : 1))); pr(3, 'GOTHIC.TTF'); pr(4, '');
-    pr(0, 'ENDTAB');
-    pr(0, 'TABLE'); pr(2, 'LAYER'); pr(70, layers.length);
-    layers.forEach(function (n) {
-      // view layers plot black / white (7) like the sheet; thin lines (hatch, tangent edges, centre marks) on them are
-      // colour 8, so a plot-by-colour pen table gives the thick / thin weights (R12 has no lineweights) (r5/drawings5)
-      var col = colors[n] || 7;
-      pr(0, 'LAYER'); pr(2, n); pr(70, 0); pr(62, col); pr(6, 'CONTINUOUS');
+    if (r2000) table('VPORT', 1, function () {
+      var S = sheet.size;
+      record('VPORT', 'AcDbViewportTableRecord');
+      pr(2, '*Active'); pr(70, 0); pr(10, 0); pr(20, 0); pr(11, 1); pr(21, 1);
+      pr(12, num(S[0] / 2)); pr(22, num(S[1] / 2)); pr(13, 0); pr(23, 0); pr(14, 1); pr(24, 1); pr(15, 0); pr(25, 0);
+      pr(16, 0); pr(26, 0); pr(36, 1); pr(17, 0); pr(27, 0); pr(37, 0); pr(40, num(Math.max(S[1], S[0] / 1.5) * 1.05)); pr(41, 1.5); pr(42, 50);
+      pr(43, 0); pr(44, 0); pr(50, 0); pr(51, 0); pr(71, 0); pr(72, 100); pr(73, 1); pr(74, 3); pr(75, 0); pr(76, 0); pr(77, 0); pr(78, 0);
     });
-    pr(0, 'ENDTAB');
+    var useCenter = sheet.prims.some(function (p) { return p.style === 'center'; });   // CENTER only when a centre mark / line uses it
+    // [name, description, total, dashes (paper mm; $LTSCALE takes them to inches)]
+    var ltypes = [['HIDDEN', '__ __ __ __', 4.5, [3, -1.5]], ['PHANTOM', '____ _ ____ _', 12.5, [8, -1.5, 1.5, -1.5]]];
+    if (useCenter) ltypes.push(['CENTER', '____ _ ____ _', 10.5, [6, -1.5, 1.5, -1.5]]);
+    var std = r2000 ? [['ByBlock', '', '14'], ['ByLayer', '', '15'], ['Continuous', 'Solid line', '16']] : [['CONTINUOUS', 'Solid line']];
+    var cont = r2000 ? 'Continuous' : 'CONTINUOUS';
+    table('LTYPE', std.length + ltypes.length, function () {
+      std.forEach(function (lt) { record('LTYPE', 'AcDbLinetypeTableRecord', lt[2]); pr(2, lt[0]); pr(70, 0); pr(3, lt[1]); pr(72, 65); pr(73, 0); pr(40, 0); });
+      ltypes.forEach(function (lt) {
+        record('LTYPE', 'AcDbLinetypeTableRecord'); pr(2, lt[0]); pr(70, 0); pr(3, lt[1]); pr(72, 65); pr(73, lt[3].length); pr(40, lt[2]);
+        lt[3].forEach(function (d) { pr(49, d); if (r2000) pr(74, 0); });
+      });
+    });
+    // the text style: Century Gothic (GOTHIC.TTF), as on the sheet (r13/drawings13); a reader without it substitutes its own
+    var styleName = r2000 ? 'Standard' : 'STANDARD';
+    table('STYLE', 1, function () {
+      record('STYLE', 'AcDbTextStyleTableRecord', '11');
+      pr(2, styleName); pr(70, 0); pr(40, 0); pr(41, 1); pr(50, 0); pr(71, 0); pr(42, num(3.5 * (inch ? 1 / MM : 1))); pr(3, 'GOTHIC.TTF'); pr(4, '');
+    });
+    // the view layers plot black / white (7) like the sheet; thin lines (hatch, tangent edges, centre marks) on them are
+    // colour 8, so a plot-by-colour pen table gives the thick / thin weights (R12 has no lineweights) (r5/drawings5);
+    // R2000 also carries each line's weight and lists layer 0 first (AutoCAD's own)
+    var lay = (r2000 && layers.indexOf('0') < 0 ? ['0'] : []).concat(layers);
+    table('LAYER', lay.length, function () {
+      lay.forEach(function (n) {
+        record('LAYER', 'AcDbLayerTableRecord', r2000 && n === '0' ? '10' : null);
+        pr(2, n); pr(70, 0); pr(62, colors[n] || 7); pr(6, cont);
+      });
+    });
+    if (r2000) {
+      table('VIEW', 0, function () { });
+      table('UCS', 0, function () { });
+      table('APPID', 1, function () { record('APPID', 'AcDbRegAppTableRecord', '12'); pr(2, 'ACAD'); pr(70, 0); });
+      table('DIMSTYLE', 1, function () { record('DIMSTYLE', 'AcDbDimStyleTableRecord'); pr(2, 'Standard'); pr(70, 0); });
+      table('BLOCK_RECORD', 2, function () {
+        record('BLOCK_RECORD', 'AcDbBlockTableRecord', msBR); pr(2, '*Model_Space');
+        record('BLOCK_RECORD', 'AcDbBlockTableRecord', psBR); pr(2, '*Paper_Space');
+      });
+    }
     pr(0, 'ENDSEC');
+    if (r2000) {
+      pr(0, 'SECTION'); pr(2, 'BLOCKS');
+      [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
+        pr(0, 'BLOCK'); pr(5, b[3]); pr(330, b[0]); pr(100, 'AcDbEntity'); if (b[2]) pr(67, 1); pr(8, 0); pr(100, 'AcDbBlockBegin');
+        pr(2, b[1]); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, b[1]); pr(1, '');
+        pr(0, 'ENDBLK'); pr(5, b[4]); pr(330, b[0]); pr(100, 'AcDbEntity'); if (b[2]) pr(67, 1); pr(8, 0); pr(100, 'AcDbBlockEnd');
+      });
+      pr(0, 'ENDSEC');
+    }
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) {
       var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
-      var lt = function () { if (ltn) pr(6, ltn); if (dc) pr(62, dc); };
+      // an entity's head: type, (R2000: handle, owner, AcDbEntity,) layer, line type, colour, (R2000: weight, subclass)
+      function head(type, sub, lw) {
+        pr(0, type);
+        if (r2000) { pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); }
+        pr(8, p.layer);
+        if (ltn) pr(6, ltn);
+        if (dc) pr(62, dc);
+        if (r2000 && lw && STROKE[p.style]) pr(370, Math.round(STROKE[p.style] * 100));
+        if (r2000 && sub) pr(100, sub);
+      }
       // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
-      if (p.k === 'line' && p.style === 'hatch') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
-      else if (p.k === 'line') { pr(0, 'LINE'); pr(8, p.layer); lt(); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
-      else if (p.k === 'circle') { pr(0, 'CIRCLE'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
-      else if (p.k === 'arc') { pr(0, 'ARC'); pr(8, p.layer); lt(); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); pr(50, num(((p.a0 % 360) + 360) % 360)); pr(51, num(((p.a1 % 360) + 360) % 360)); }
-      else if (p.k === 'ellipse') {
+      if (p.k === 'line' && p.style === 'hatch') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(11, num(p.b[0])); pr(21, num(p.b[1])); }
+      else if (p.k === 'line') { head('LINE', 'AcDbLine', true); pr(10, num(p.a[0])); pr(20, num(p.a[1])); pr(30, 0); pr(11, num(p.b[0])); pr(21, num(p.b[1])); pr(31, 0); }
+      else if (p.k === 'circle') { head('CIRCLE', 'AcDbCircle', true); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r)); }
+      else if (p.k === 'arc') {
+        head('ARC', 'AcDbCircle', true); pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(40, num(p.r));
+        if (r2000) pr(100, 'AcDbArc');
+        pr(50, num(((p.a0 % 360) + 360) % 360)); pr(51, num(((p.a1 % 360) + 360) % 360));
+      } else if (p.k === 'ellipse' && r2000) {
+        // R2000: a true ELLIPSE (major axis from the centre, minor / major ≤ 1, start / end parameters CCW in radians;
+        // ellipseAt's parameter is the DXF one: c + major·cos t + (n × major)·ratio·sin t)
+        var M = p.major, ratio = p.ratio, t0 = p.t0, t1 = p.t1;
+        if (ratio > 1) { M = [-M[1] * ratio, M[0] * ratio]; ratio = 1 / ratio; t0 -= Math.PI / 2; t1 -= Math.PI / 2; }
+        var TWO = 2 * Math.PI, sw0 = p.full ? TWO : Math.min(TWO, t1 - t0), s0 = p.full ? 0 : ((t0 % TWO) + TWO) % TWO;
+        var r9 = function (x) { return String(Math.round(x * 1e9) / 1e9); };
+        head('ELLIPSE', 'AcDbEllipse', true);
+        pr(10, num(p.c[0])); pr(20, num(p.c[1])); pr(30, 0); pr(11, r9(M[0])); pr(21, r9(M[1])); pr(31, 0);
+        pr(210, 0); pr(220, 0); pr(230, 1); pr(40, r9(ratio)); pr(41, r9(s0)); pr(42, r9(s0 + sw0));
+      } else if (p.k === 'ellipse') {
         // DXF R12 has no ELLIPSE entity: a 2D POLYLINE through points on the exact ellipse (chord error under 0.01 mm)
-        var Rm = Math.hypot(p.major[0], p.major[1]), tolE = 0.01 * (sheet.units === 'in' ? 1 / MM : 1), sw = p.t1 - p.t0;
+        var Rm = Math.hypot(p.major[0], p.major[1]), tolE = 0.01 * (inch ? 1 / MM : 1), sw = p.t1 - p.t0;
         var step = Rm > tolE ? 2 * Math.acos(Math.max(-1, 1 - tolE / Rm)) : Math.PI / 4, n = Math.max(8, Math.min(720, Math.ceil(sw / step)));
-        pr(0, 'POLYLINE'); pr(8, p.layer); lt(); pr(66, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(70, p.full ? 1 : 0);
+        head('POLYLINE'); pr(66, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(70, p.full ? 1 : 0);
         for (var i = 0; i < (p.full ? n : n + 1); i++) { var ep = ellipseAt(p, p.t0 + sw * i / n).p; pr(0, 'VERTEX'); pr(8, p.layer); pr(10, num(ep[0])); pr(20, num(ep[1])); pr(30, 0); }
         pr(0, 'SEQEND'); pr(8, p.layer);
       } else if (p.k === 'fill') {
-        pr(0, 'SOLID'); pr(8, p.layer); lt();
+        head('SOLID', 'AcDbTrace');
         var q = [p.pts[0], p.pts[1], p.pts[2], p.pts[2]];
         q.forEach(function (pt, i) { pr(10 + i, num(pt[0])); pr(20 + i, num(pt[1])); pr(30 + i, 0); });
       } else if (p.k === 'text') {
-        pr(0, 'TEXT'); pr(8, p.layer); lt(); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, plainText(p.text).replace(/\u00d8/g, '%%c').replace(/\u00b1/g, '%%p').replace(/\u00b0/g, '%%d').replace(/\u00d7/g, 'x').replace(/[^\x20-\x7e]/g, '?'));
+        head('TEXT', 'AcDbText'); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, plainText(p.text).replace(/Ø/g, '%%c').replace(/±/g, '%%p').replace(/°/g, '%%d').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?'));
         if (p.rot) pr(50, num(p.rot));
+        if (r2000) pr(7, styleName);
         if (p.anchor !== 'start') { pr(72, p.anchor === 'middle' ? 1 : 2); pr(11, num(p.p[0])); pr(21, num(p.p[1])); pr(31, 0); }
+        if (r2000) pr(100, 'AcDbText');
       }
     });
-    pr(0, 'ENDSEC'); pr(0, 'EOF');
-    return L.join('\n');
+    pr(0, 'ENDSEC');
+    if (r2000) {
+      pr(0, 'SECTION'); pr(2, 'OBJECTS');
+      pr(0, 'DICTIONARY'); pr(5, 'C'); pr(330, 0); pr(100, 'AcDbDictionary'); pr(281, 1); pr(3, 'ACAD_GROUP'); pr(350, 'D');
+      pr(0, 'DICTIONARY'); pr(5, 'D'); pr(330, 'C'); pr(100, 'AcDbDictionary'); pr(281, 1);
+      pr(0, 'ENDSEC');
+    }
+    var body = L; L = [];
+    // the HEADER, written last (R2000's $HANDSEED is the next free handle); R2000 then the empty CLASSES section
+    pr(0, 'SECTION'); pr(2, 'HEADER');
+    pr(9, '$ACADVER'); pr(1, r2000 ? 'AC1015' : 'AC1009');
+    if (r2000) { pr(9, '$DWGCODEPAGE'); pr(3, 'ANSI_1252'); pr(9, '$HANDSEED'); pr(5, (h + 1).toString(16).toUpperCase()); }
+    pr(9, '$INSUNITS'); pr(70, inch ? 1 : 4);
+    pr(9, '$MEASUREMENT'); pr(70, inch ? 0 : 1);
+    pr(9, '$EXTMIN'); pr(10, 0); pr(20, 0); pr(30, 0);
+    pr(9, '$EXTMAX'); pr(10, num(sheet.size[0])); pr(20, num(sheet.size[1])); pr(30, 0);
+    pr(9, '$LTSCALE'); pr(40, inch ? 0.04 : 1);
+    if (r2000) { pr(9, '$LWDISPLAY'); pr(290, 1); }
+    pr(0, 'ENDSEC');
+    if (r2000) { pr(0, 'SECTION'); pr(2, 'CLASSES'); pr(0, 'ENDSEC'); }
+    return L.concat(body, ['0', 'EOF']).join('\n');
   }
 
   // PDF 1.4, one page at the sheet's real size, Helvetica (WinAnsi) text; pure ASCII so it survives a text Blob.

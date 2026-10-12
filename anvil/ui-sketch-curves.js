@@ -232,11 +232,130 @@
   // ------------------------------------------------------------------ the tool PropertyManagers
   // tp: the open tool PM's state — last: the index of the entity this tool placed last in the active sketch (its
   // Parameters are shown and edited until the next one starts)
-  var tp = { last: null, sketch: null }, carryConstruction = null;
+  // shape (rfH): the Polygon / Straight Slot placed last, which became lines (and arcs) as SolidWorks draws them
+  // ({ kind, first, n, ins }, below): its Parameters are those of the shape as a whole
+  var tp = { last: null, sketch: null, shape: null }, carryConstruction = null;
   function lastEntity(fam) {
     var f = sketch(), e = f && tp.last != null && f.id === tp.sketch ? f.entities[tp.last] : null;
     return e && FAM_TYPES[fam].indexOf(e.t) >= 0 ? tp.last : null;
   }
+  function lastShape(fam) {
+    var f = sketch(), sh = tp.shape;
+    return sh && f && f.id === tp.sketch && FAM_TYPES[fam].indexOf(sh.kind) >= 0 && shapeAlive(f, sh) ? sh : null;
+  }
+
+  // ------------------------------------------------------------------ rfH: Polygon and Straight Slot as real entities
+  // (fidelity #13, as the Corner / Center Rectangle in ui-sketch-lines.js): the tool commits one poly / slot entity
+  // (ui-sketch.js placePoint: its inferred relations and typed dimensions on it), then it becomes what SolidWorks draws:
+  // a Polygon its n lines and a construction circle held by the Polygon relation (SketchSolver.explodePoly), a Straight
+  // Slot its two lines, two arcs (Tangent, Equal) and a construction centerline (explodeSlot). The relations and
+  // dimensions follow (a typed R: the circle's diameter; W / L: the distance between the sides / the centerline's
+  // length). Arc slots stay single entities. A script's .polygon() / .slot() stays one entity.
+  function shapeCount(sh) { return sh.kind === 'poly' ? sh.n + 1 : 5; }
+  function shapeAlive(f, sh) {
+    var E = f && f.entities;
+    if (!E || !sh) return false;
+    if (sh.kind === 'poly') {
+      for (var k = 0; k < sh.n; k++) if (!E[sh.first + k] || E[sh.first + k].t !== 'line') return false;
+      return !!(E[sh.first + sh.n] && E[sh.first + sh.n].t === 'circle');
+    }
+    return ['line', 'arc', 'line', 'arc', 'line'].every(function (t, k) { return E[sh.first + k] && E[sh.first + k].t === t; });
+  }
+  // the shape as one poly / slot entity (its parameters, as the PM shows them)
+  function shapeEntity(f, sh) {
+    var E = f.entities;
+    if (sh.kind === 'poly') {
+      var c = E[sh.first + sh.n], l0 = E[sh.first], n = sh.n;
+      var e = { t: 'poly', cx: c.cx, cy: c.cy, r: sh.ins ? c.r / Math.cos(Math.PI / n) : c.r, n: n, rot: deg360(Math.atan2(l0.y1 - c.cy, l0.x1 - c.cx) * R2D) };
+      if (sh.ins) e.ins = true;
+      if (l0.construction) e.construction = true;
+      if (l0.layer != null) e.layer = l0.layer;
+      return e;
+    }
+    var cl = E[sh.first + 4], a = E[sh.first + 3];
+    return { t: 'slot', x1: cl.x1, y1: cl.y1, x2: cl.x2, y2: cl.y2, w: 2 * a.r };
+  }
+  function shapeBlock(v) {
+    var S = SS(), s = { entities: [JSON.parse(JSON.stringify(v))] };
+    return (v.t === 'poly' ? S.explodePoly(s, 0) : S.explodeSlot(s, 0)) < 0 ? null : s;
+  }
+  // a polygon with another number of sides (or circle type): new lines and Polygon relation; the circle stays (with
+  // its relations and dimensions: centred on the origin, its diameter); relations on the old sides go
+  function polyRebuild(f, sh, v) {
+    var S = SS(), s = shapeBlock(v);
+    if (!s) return null;
+    var n1 = v.n | 0, E = f.entities, before = E.slice(), circle = E[sh.first + sh.n], sc = s.entities[n1];
+    circle.cx = sc.cx; circle.cy = sc.cy; circle.r = sc.r;
+    f.entities = E.slice(0, sh.first).concat(s.entities.slice(0, n1), [circle], E.slice(sh.first + sh.n + 1));
+    S.remap(f, before);
+    if (f.dims) {
+      f.dims = f.dims.filter(function (d) { var j = f.entities.indexOf(before[d.e]); if (j < 0) return false; d.e = j; return true; });
+      if (!f.dims.length) delete f.dims;
+    }
+    (s.rels || []).forEach(function (rel) {
+      rel.refs = rel.refs.map(function (r) { var m = /^(\d+)(.*)$/.exec(String(r)); return m ? (+m[1] + sh.first) + m[2] : r; });
+      (f.rels = f.rels || []).push(rel);
+    });
+    S.clean(f);
+    return { kind: 'poly', first: sh.first, n: n1, ins: !!v.ins };
+  }
+  // the equation "shape parameter `key` = val" on the entities E (SketchSolver.driveEntity), or null
+  function shapeResidual(sh, key, val) {
+    var i = sh.first;
+    if (sh.kind === 'poly') {
+      var ci = i + sh.n, n = sh.n;
+      if (key === 'cx' || key === 'cy') return function (E) { return [E[ci][key] - val]; };
+      if (key === 'dia') return function (E) { return [2 * E[ci].r - val]; };
+      if (key === 'ang') return function (E) { var c = E[ci], l = E[i], a = Math.atan2(l.y1 - c.cy, l.x1 - c.cx) * R2D - (sh.ins ? 180 / n : 0) - val; return [(a % 360 + 540) % 360 - 180]; };
+      return null;
+    }
+    var cl = i + 4, a1 = i + 3;
+    if (key === 'cx') return function (E) { return [(E[cl].x1 + E[cl].x2) / 2 - val]; };
+    if (key === 'cy') return function (E) { return [(E[cl].y1 + E[cl].y2) / 2 - val]; };
+    if (key === 'w') return function (E) { return [2 * E[a1].r - val]; };
+    if (key === 'len') return function (E) { var c = E[cl]; return [Math.hypot(c.x2 - c.x1, c.y2 - c.y1) + (opt.overall ? 2 * E[a1].r : 0) - val]; };
+    return null;
+  }
+  // Edit parameter `key` of the shape placed last (the tool PM's Parameters), one undo step: the value is driven
+  // through the solver (SketchSolver.driveEntity), so its relations hold and what is fixed stays (a slot started on
+  // the origin grows from there); a value a relation or dimension holds is refused with the reason. A polygon's
+  // Number of sides / circle type rebuilds its sides (polyRebuild).
+  function applyShapeParam(f, key, val) {
+    var sh = tp.shape, S = SS();
+    if (!S || !shapeAlive(f, sh)) return false;
+    var trial = shapeEntity(f, sh), err = setParam(trial, key, val);
+    if (err) { UI.setStatus(err); refreshValues(); return false; }
+    if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
+    if (trial.t === 'poly' && ((trial.n | 0) !== sh.n || !!trial.ins !== !!sh.ins)) {
+      var nsh = polyRebuild(f, sh, trial);
+      if (nsh) tp.shape = sh = nsh;
+      var mob = {};
+      for (var k = 0; k < shapeCount(sh); k++) mob[sh.first + k] = 1e-4;
+      S.solve(f, { mob: mob });
+    } else {
+      var fn = shapeResidual(sh, key, +val), ents = [];
+      for (var q = 0; q < shapeCount(sh); q++) ents.push(sh.first + q);
+      var r = fn ? S.driveEntity(f, sh.first, 1, fn, { ents: ents }) : { ok: true };
+      if (!r.ok) UI.setStatus(r.error);
+    }
+    App.gridStale = true; App.dimsStale = true;
+    UI.updateSketches();
+    if (UI.refreshTree) UI.refreshTree();
+    refreshValues();
+    return true;
+  }
+  // the poly / slot entity i0 just committed becomes its lines (and arcs); the tool PM follows the shape
+  function explodeShape(f, i0) {
+    var S = SS(), e = f.entities[i0];
+    if (!S || !e || (e.t !== 'poly' && e.t !== 'slot')) return null;
+    var sh = e.t === 'poly' ? { kind: 'poly', first: i0, n: e.n | 0, ins: !!e.ins } : { kind: 'slot', first: i0 };
+    if ((e.t === 'poly' ? S.explodePoly(f, i0) : S.explodeSlot(f, i0)) < 0) return null;
+    App.gridStale = true; App.dimsStale = true;
+    placedShape(f, sh);
+    return sh;
+  }
+  // the entity whose relations the tool PM lists for a shape: the polygon's circle, the slot's centerline
+  function shapeRelIndex(sh) { return sh ? sh.first + (sh.kind === 'poly' ? sh.n : 4) : null; }
   function isArcSlotTool(tool) { return tool === 'aslot' || tool === 'aslot3'; }
   function paramFields(fam, tool, entType) {
     var key = fam === 'slot' ? (entType ? (entType === 'aslot' ? 'aslot' : 'slot') : (isArcSlotTool(tool) ? 'aslot' : 'slot')) : fam;
@@ -253,6 +372,7 @@
   }
   function toolGroups(spec) {
     var c = spec._curves, fam = c.fam, g = [], f = sketch(), li = lastEntity(fam), ty = TYPE_OPTS[fam];
+    if (li == null && lastShape(fam)) li = shapeRelIndex(lastShape(fam));
     if (ty) {
       var tf = [{ type: 'iconRadio', label: ty.label, key: 'type', options: ty.opts }];
       if (fam === 'slot') tf.push({ type: 'check', label: 'Add dimensions', key: 'slotDims' }, { type: 'iconRadio', label: 'Length', key: 'lenType', options: LEN_TYPES });
@@ -268,7 +388,7 @@
   function openToolPM(tool) {
     var fam = FAM[tool];
     if (!fam) return;
-    tp = { last: null, sketch: null };
+    tp = { last: null, sketch: null, shape: null };
     if (carryConstruction != null) { App.drawConstruction = carryConstruction; carryConstruction = null; }
     var values = { type: tool, construction: !!App.drawConstruction };
     if (fam === 'slot') { values.slotDims = !!opt.slotDims; values.lenType = opt.overall ? 'overall' : 'cc'; }
@@ -288,7 +408,7 @@
     refreshValues();
   }
   function toolChange(spec, v, key) {
-    var fam = spec._curves.fam, f = sketch(), li = lastEntity(fam);
+    var fam = spec._curves.fam, f = sketch(), li = lastEntity(fam), sh = li == null ? lastShape(fam) : null;
     if (key === 'type') {
       if (v.type === App.tool) return;
       carryConstruction = !!App.drawConstruction;
@@ -299,6 +419,7 @@
     if (key === 'construction') {
       App.drawConstruction = !!v.construction;
       if (li != null && !drawing()) setConstruction(f, li, v.construction);
+      else if (sh && sh.kind === 'poly' && !drawing()) for (var ck = 0; ck < sh.n; ck++) setConstruction(f, sh.first + ck, v.construction);   // rfH: the sides (the circle stays construction)
       return;
     }
     if (key === 'slotDims') { opt.slotDims = !!v.slotDims; saveOpt(); return; }
@@ -310,9 +431,11 @@
       saveOpt();
       hint(polygonHint());
       if (li != null && !drawing()) applyParam(f, li, key, key === 'n' ? n : v.ins);
+      else if (sh && !drawing()) applyShapeParam(f, key, key === 'n' ? n : v.ins);
       return;
     }
     if (NUM_KEYS.indexOf(key) < 0) return;   // (a relation group's own fields)
+    if (sh && !drawing()) { applyShapeParam(f, key, v[key]); return; }
     if (li == null || drawing()) {
       UI.setStatus('Draw the ' + TITLES[fam].toLowerCase() + ' first: its parameters follow it while it is drawn and can be changed once it is placed.');
       refreshValues();
@@ -321,7 +444,7 @@
     applyParam(f, li, key, v[key]);
   }
   function newPolygon() {
-    tp.last = null;
+    tp.last = null; tp.shape = null;
     if (drawing() && UI.cancelTool) UI.cancelTool(true);
     var spec = UI.pmSpec && UI.pmSpec();
     if (spec && spec._curves) UI.withToolPM(function () { spec.groups = toolGroups(spec); UI.renderPM(); });
@@ -331,7 +454,13 @@
   // an entity placed by one of these tools: its Parameters (and relations) are shown and can be edited
   function placed(f, i) {
     var spec = UI.pmSpec && UI.pmSpec();
-    tp.last = i; tp.sketch = f.id;
+    tp.last = i; tp.sketch = f.id; tp.shape = null;
+    if (spec && spec._curves && spec._curves.kind === 'tool') UI.withToolPM(function () { spec.groups = toolGroups(spec); UI.renderPM(); });
+  }
+  // rfH: a shape placed (it became lines): its Parameters (and its circle's / centerline's relations) are shown
+  function placedShape(f, sh) {
+    var spec = UI.pmSpec && UI.pmSpec();
+    tp.last = null; tp.shape = sh; tp.sketch = f.id;
     if (spec && spec._curves && spec._curves.kind === 'tool') UI.withToolPM(function () { spec.groups = toolGroups(spec); UI.renderPM(); });
   }
   // The open PM's Parameters follow the entity being drawn (the tool PM), the entity placed last, or the selected one.
@@ -340,9 +469,10 @@
     if (!spec || !spec._curves) return;
     var c = spec._curves, e = null, f = sketch();
     if (c.kind === 'tool') {
-      var tmp = (App.tempEntities || [])[0], li = lastEntity(c.fam);
+      var tmp = (App.tempEntities || [])[0], li = lastEntity(c.fam), lsh = li == null ? lastShape(c.fam) : null;
       if (tmp && drawing() && FAM_TYPES[c.fam].indexOf(tmp.t) >= 0) e = tmp;
       else if (li != null && !drawing()) e = f.entities[li];
+      else if (lsh && !drawing()) e = shapeEntity(f, lsh);
     } else {
       e = f && f.entities[c.index];
       if (!e || e.t !== c.type) return;
@@ -405,7 +535,7 @@
       var w = typed && typed.w != null ? typed.w : 2 * geom().distPointLine(p, st.pts[0], st.pts[1]);
       return overallTooShort(st, w) ? overallRefused(st, w) : true;
     },
-    after: function (f, i0) { if (opt.slotDims) slotDims(f, i0); after(f, i0); }
+    after: function (f, i0) { if (opt.slotDims) slotDims(f, i0); if (!explodeShape(f, i0)) after(f, i0); }
   };
 
   // ---- shared helpers for the slot and arc tools
@@ -599,7 +729,7 @@
     readout: function (pts, p, n) { var c = pts[0]; return 'R ' + n(Math.hypot(p[0] - c[0], p[1] - c[1]), 2) + '   A ' + n(angOf([p[0] - c[0], p[1] - c[1]]), 1) + '°'; },
     after: function (f, i0, cnt, st) {
       if (typedR(st, 'pr') != null && !numericOn()) radDim(f, i0, 45);
-      after(f, i0);
+      if (!explodeShape(f, i0)) after(f, i0);
     }
   };
 
@@ -664,7 +794,7 @@
       var pi = f.entities.length - 1;
       if (S) { S.infer(f, pi); S.addRelation(f, 'midpoint', [String(pi), String(i0)], { rejectOver: true }); }
       if (opt.slotDims) slotDims(f, i0);
-      after(f, i0);
+      if (!explodeShape(f, i0)) after(f, i0);
     }
   };
 

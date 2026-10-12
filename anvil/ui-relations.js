@@ -522,8 +522,9 @@
       // out: fixed-size icons on tiny geometry only bury the sketch
       if (state === 'ok' && !selected && !hot && tinyOnScreen(f, rel)) return;
       var drawn = [];
-      rel.refs.forEach(function (ref) {
+      rel.refs.forEach(function (ref, rk) {
         if (ref === 'O') return;
+        if (rel.type === 'polygon' && rk > 0 && !selected && !hot) return;   // rfH: one Polygon icon, on its circle
         var a = anchorOf(f, pl, ref);
         // one icon where both ends of the relation meet (a Coincident between two end points)
         if (!a || drawn.some(function (q) { return Math.hypot(q[0] - a[0], q[1] - a[1]) < 4; })) return;

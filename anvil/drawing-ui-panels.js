@@ -293,7 +293,7 @@
     if (!fd || fd.error) return { error: fd ? fd.error : 'no flat pattern' };
     var r3 = function (x) { return +x.toFixed(4); };
     return { size: [r3(fd.bbox.umax - fd.bbox.umin), r3(fd.bbox.vmax - fd.bbox.vmin)], bendNotes: w.view.bendNotes || Drawing.docOptions(doc()).bendNotes,
-      bends: fd.bends.map(function (b) { return { up: b.up, angle: r3(b.angle), R: r3(b.R), ba: b.ba != null ? r3(b.ba) : null, bd: b.bd != null ? r3(b.bd) : null, a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
+      bends: fd.bends.map(function (b, i) { return { id: b.id || null, key: (w.view._bendKeys && w.view._bendKeys[i]) || b.key || null, up: b.up, angle: r3(b.angle), R: r3(b.R), ba: b.ba != null ? r3(b.ba) : null, bd: b.bd != null ? r3(b.bd) : null, a: w.toSheet(b.a).map(r3), b: w.toSheet(b.b).map(r3), note: Drawing.bendNoteText(b, units()) }; }),
       circles: fd.circles.length, arcs: fd.arcs.length, lines: fd.lines.length,
       // the etch marks: how many the flat has, whether the view shows them, how many sheet primitives they drew
       etch: (fd.etch || []).length, showEtch: w.view.showEtch !== false, etchPrims: D.sheet.prims.filter(function (p) { return p.etch && p.view === w.view.id; }).length,
@@ -348,7 +348,8 @@
       setSheet: function (props) { setSheet(props || {}); return summary(); },
       modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },
       svg: function () { return Drawing.toSVG(current()); },
-      dxf: function () { return Drawing.toDXF(current()); },
+      // dxf({ version: 'R12' (default) | 'R2000' }): the sheet as DXF, one layer per view
+      dxf: function (opts) { return Drawing.toDXF(current(), opts); },
       pdf: function () { return Drawing.toPDF(current()); },
       doc: function () { return JSON.parse(JSON.stringify(doc())); },
       // annotations: each is one undo step and returns the summary (null and a status message when refused)

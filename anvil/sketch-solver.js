@@ -174,6 +174,11 @@ var SketchSolver = (function () {
     // the commands only, never offered in Add Relations.
     onEdge: { name: 'On Edge', glyph: 'E' },
     pattern: { name: 'Pattern', glyph: '⋯' },
+    // rfH: a Polygon drawn by the Polygon tool (or exploded for a fillet), refs [its construction circle, its n sides in
+    // order]: the corners (where consecutive sides meet, extended) lie at n equal turns about the circle's centre, on the
+    // circle (rel.ins false) or with the circle touching the sides (rel.ins true, SolidWorks' Inscribed circle). Made by
+    // the Polygon tool only, never offered in Add Relations.
+    polygon: { name: 'Polygon', glyph: '⬡' },
     fix: { name: 'Fix', glyph: 'F' },
     // sketchdims: SolidWorks' Coradial (two arcs / circles on one centre with one radius) and Intersection (a point
     // where two lines cross)
@@ -314,6 +319,7 @@ var SketchSolver = (function () {
     if (!TYPES[rel.type] || R.some(function (r) { return !r; })) return null;
     // sketch tools: a whole offset chain (Offset Entities) and a sketch pattern are one relation each (below)
     if (rel.type === 'pattern') return patternEquation(ents, rel, R);
+    if (rel.type === 'polygon') return polygonEquation(ents, rel, R);
     if (rel.type === 'offset' && rel.chain) return chainEquation(ents, rel, R);
     if (rel.type === 'offset') {
       // r9/sketch9: (w' - w) - (h' - h) = 0 between a rectangle and its offset copy (same kind, whole entities)
@@ -1486,6 +1492,36 @@ var SketchSolver = (function () {
     }
     return true;
   }
+  // rfH: the Polygon relation (refs [circle, side 0 … side n-1]): corner k is where side k-1 meets side k (the lines
+  // extended, so a filleted or chamfered corner still counts as its virtual sharp); corner 0 lies at the circle's radius
+  // from its centre (inscribed: radius / cos(180° / n)), and corner k is corner 0 turned k × 360° / n about the centre,
+  // the way the sides run (taken from the geometry the equation is built on). 2n - 1 equations: with the sides' end
+  // Coincidents the polygon keeps 4 degrees of freedom (centre, size, rotation).
+  function polygonEquation(ents, rel, R) {
+    var n = R.length - 1;
+    if (n < 3 || R.some(function (r) { return r.o || r.s !== null || !ents[r.e]; })) return null;
+    if (ents[R[0].e].t !== 'circle' || R.slice(1).some(function (r) { return ents[r.e].t !== 'line'; })) return null;
+    var ins = !!rel.ins, kR = ins ? 1 / Math.cos(Math.PI / n) : 1;
+    function corner(E, k) {
+      var a = refCurve(E, R[1 + (k + n - 1) % n]), b = refCurve(E, R[1 + k]);
+      var d1 = sub(a.b, a.a), d2 = sub(b.b, b.a), den = crs(d1, d2);
+      if (Math.abs(den) < 1e-300) return b.a;
+      var t = crs(sub(b.a, a.a), d2) / den;
+      return [a.a[0] + d1[0] * t, a.a[1] + d1[1] * t];
+    }
+    var c0 = refCurve(ents, R[0]).c, s0 = sgn(crs(sub(corner(ents, 0), c0), sub(corner(ents, 1), c0)));
+    var f = function (E) {
+      var cc = refCurve(E, R[0]), c = cc.c, v0 = sub(corner(E, 0), c), out = [len(v0) - cc.r * kR];
+      for (var k = 1; k < n; k++) {
+        var a = s0 * 2 * Math.PI * k / n, co = Math.cos(a), si = Math.sin(a), q = corner(E, k);
+        out.push(q[0] - (c[0] + v0[0] * co - v0[1] * si), q[1] - (c[1] + v0[0] * si + v0[1] * co));
+      }
+      return out;
+    };
+    var used = [];
+    R.forEach(function (r) { if (used.indexOf(r.e) < 0) used.push(r.e); });
+    return { n: 2 * n - 1, f: f, ents: used };
+  }
   // A rectangle entity (corner or centre) becomes four lines, as SolidWorks' rectangle tools draw them: line k runs
   // from corner k to corner k+1 (bottom, right, top, left), held by Horizontal / Vertical and corner Coincidents.
   // Relations follow (corner vk -> line k start, edge ek -> line k); a width / height dimension becomes the length of
@@ -1583,21 +1619,25 @@ var SketchSolver = (function () {
     return idx;
   }
   // sketch-fillet2: a Polygon becomes its n lines and its construction circle, as SolidWorks draws a polygon (Sketch
-  // Fillet rounds one of its corners): line k from corner k to corner k+1, corners Coincident and on the circle, sides
-  // Equal. Refs follow: corner vk -> line k's start, edge ek -> line k, the centre -> the circle's; the radius dimension
-  // becomes the circle's diameter (an inscribed polygon's: the distance from the centre to a side). Later entities
-  // shift by n. Returns idx, or -1.
+  // Fillet rounds one of its corners; rfH: the Polygon tool draws it so): line k from corner k to corner k+1, the
+  // corners Coincident, the whole held regular by one Polygon relation (refs [the circle, the sides]). The circle runs
+  // through the corners (Circumscribed) or touches the sides (Inscribed, e.ins: its radius is the distance to the
+  // flats). Refs follow: corner vk -> line k's start, edge ek -> line k, the centre -> the circle's; the radius
+  // dimension becomes the circle's diameter. Later entities shift by n. Returns idx, or -1.
   function explodePoly(sketch, idx) {
     var e = sketch.entities[idx];
     if (!e || e.t !== 'poly') return -1;
     var c = corners(e), n = c.length, block = [], own = [], ci = idx + n;
+    if (n < 3) return -1;
     for (var k = 0; k < n; k++) block.push({ t: 'line', x1: c[k][0], y1: c[k][1], x2: c[(k + 1) % n][0], y2: c[(k + 1) % n][1] });
-    block.push({ t: 'circle', cx: e.cx, cy: e.cy, r: e.r, construction: true });
+    block.push({ t: 'circle', cx: e.cx, cy: e.cy, r: e.ins ? e.r * Math.cos(Math.PI / n) : e.r, construction: true });
+    var pg = { type: 'polygon', refs: [String(ci)] };
+    if (e.ins) pg.ins = true;
     for (k = 0; k < n; k++) {
       own.push({ type: 'coincident', refs: [(idx + k) + '.p2', (idx + (k + 1) % n) + '.p1'] });
-      own.push({ type: 'coincident', refs: [(idx + k) + '.p1', String(ci)] });
-      if (k) own.push({ type: 'equal', refs: [String(idx), String(idx + k)] });
+      pg.refs.push(String(idx + k));
     }
+    own.push(pg);
     explodeInto(sketch, idx, block, function (p) {
       if (p.s === 'c') return ci + '.c';
       if (p.s === 'v' && p.k != null && p.k < n) return (idx + p.k) + '.p1';
@@ -1605,11 +1645,8 @@ var SketchSolver = (function () {
       return null;
     }, function (d) {
       if (d.k !== 'r') return null;
-      // the circle's diameter (corners on it); an inscribed polygon's radius to the flats: the centre's distance to a side
-      if (!e.ins) return { e: ci, k: 'dia' };
-      var rel = { type: 'distance', refs: [ci + '.c', String(idx)], v: e.r * Math.cos(Math.PI / n) };
-      if (d.driven) rel.driven = true;
-      return rel;
+      // the circle's diameter: through the corners, or (inscribed) touching the flats
+      return { e: ci, k: 'dia' };   // (its placement, ang / off, and driven state stay)
     }, own);
     sketch.entities[ci].construction = true;
     return idx;
@@ -3635,7 +3672,9 @@ var SketchSolver = (function () {
       // construction point stays at the crossing of the two entities (on both, so it adds no freedom) and carries them;
       // a line's length becomes the distance from its far end to it.
       // (not at a spline's end: the sharp would lie on the spline's cut-off part, which no curve carries on)
-      if (corner && opts.keepCorner !== false && (keep.length || lenDims.length) && !pl.sa.free && !pl.sb.free) {
+      // (rfH: a Polygon relation holds the corner of its two sides too: the sharp shows the corner it keeps regular)
+      var polyHeld = corner && (sketch.rels || []).some(function (rel) { return rel.type === 'polygon' && rel.refs.indexOf(String(spec.i)) > 0 && rel.refs.indexOf(String(spec.j)) > 0; });
+      if (corner && opts.keepCorner !== false && (keep.length || lenDims.length || polyHeld) && !pl.sa.free && !pl.sb.free) {
         E.push({ t: 'point', x: P[0], y: P[1], construction: true, sharp: true });
         sharp = E.length - 1;
         var sref = String(sharp);
@@ -4497,6 +4536,7 @@ var SketchSolver = (function () {
     }
     else if ((rel.type === 'fix' || rel.type === 'onEdge') && rel.at) s += ', ' + JSON.stringify({ at: rel.at });
     else if (rel.type === 'pattern' && rel.pat) s += ', ' + JSON.stringify({ pat: rel.pat });   // sketch tools
+    else if (rel.type === 'polygon' && rel.ins) s += ', ' + JSON.stringify({ ins: true });   // rfH
     else if (rel.type === 'offset' && rel.chain) s += ', ' + JSON.stringify({ chain: rel.chain });
     return s;
   }
@@ -4524,6 +4564,15 @@ var SketchSolver = (function () {
         return this;
       }
       // sketch tools: a sketch pattern's / an offset chain's relation, with its layout (pat / chain) as made
+      // rfH: a Polygon relation (its inscribed flag as made)
+      if (type === 'polygon') {
+        var pr = { type: 'polygon', refs: refs.map(String) };
+        if (opt && opt.ins) pr.ins = true;
+        if (!relEquation(this.f.entities, pr)) throw new Error('rel("polygon"): does not apply to those entities');
+        (this.f.rels = this.f.rels || []).push(pr);
+        solve(this.f);
+        return this;
+      }
       if ((type === 'pattern' && opt && opt.pat) || (type === 'offset' && opt && opt.chain)) {
         var raw = { type: type, refs: refs.map(String) };
         if (type === 'pattern') raw.pat = clone(opt.pat); else raw.chain = clone(opt.chain);

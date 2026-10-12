@@ -943,6 +943,64 @@
     return p.length >= 3 ? p : null;
   }
 
+  // ---- r16/flatcircle: a round hole that crosses a bend reaches the flat as two kinds of points: those of the hole in
+  // the flat sheet (on the circle) and the bend's cutout polygon (vertices on the circle, but where the two meet the
+  // outline turns on a chord, up to a sagitta inside). OpenCascade's flat joined its exact tessellation to Anvil's
+  // polygon so the chords were unequal and the DXF writer drew LINE / ARC pieces instead of one CIRCLE.
+  // snapFlatCircle(loop, tol) -> the loop redrawn as a regular polygon (max(16, n) points, same start angle and turn
+  // direction) on its circle, when it is one: every point within tol inside the smallest circle enclosing them all
+  // (the true circle: its own points lie on it, chord points inside), no gap between neighbours wider than 30° as
+  // seen from the centre and one full turn; else the loop unchanged. A loop that is already a regular polygon on its
+  // circle is returned as is.
+  function enclosingCircle(pts) {
+    function c2(a, b) { return { c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], r: Math.hypot(a[0] - b[0], a[1] - b[1]) / 2 }; }
+    function c3(a, b, c) {
+      var d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+      if (Math.abs(d) < 1e-300) return null;
+      var a2 = a[0] * a[0] + a[1] * a[1], b2 = b[0] * b[0] + b[1] * b[1], cc = c[0] * c[0] + c[1] * c[1];
+      var x = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + cc * (a[1] - b[1])) / d, y = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + cc * (b[0] - a[0])) / d;
+      return { c: [x, y], r: Math.hypot(a[0] - x, a[1] - y) };
+    }
+    function inside(C, p) { return C && Math.hypot(p[0] - C.c[0], p[1] - C.c[1]) <= C.r * (1 + 1e-12) + 1e-12; }
+    var C = null;
+    for (var i = 0; i < pts.length; i++) {
+      if (inside(C, pts[i])) continue;
+      C = { c: pts[i].slice(), r: 0 };
+      for (var j = 0; j < i; j++) {
+        if (inside(C, pts[j])) continue;
+        C = c2(pts[i], pts[j]);
+        for (var k = 0; k < j; k++) if (!inside(C, pts[k])) C = c3(pts[i], pts[j], pts[k]) || C;
+      }
+    }
+    return C;
+  }
+  function snapFlatCircle(loop, tol) {
+    var n = loop.length;
+    if (n < 8) return loop;
+    var C = enclosingCircle(loop);
+    if (!C || !(C.r > 0)) return loop;
+    var r = C.r, cx = C.c[0], cy = C.c[1], worst = 0, turn = 0, gap = 0, i;
+    for (i = 0; i < n; i++) {
+      var p = loop[i], q = loop[(i + 1) % n];
+      worst = Math.max(worst, r - Math.hypot(p[0] - cx, p[1] - cy));
+      var da = Math.atan2((p[0] - cx) * (q[1] - cy) - (p[1] - cy) * (q[0] - cx), (p[0] - cx) * (q[0] - cx) + (p[1] - cy) * (q[1] - cy));
+      turn += da; gap = Math.max(gap, Math.abs(da));
+    }
+    if (worst > tol || gap > Math.PI / 6 + 1e-9 || Math.abs(Math.abs(turn) - 2 * Math.PI) > 1e-6) return loop;
+    var chord = 2 * r * Math.sin(Math.PI / n), regular = worst <= 1e-9 * (1 + r);
+    for (i = 0; regular && i < n; i++) if (Math.abs(Math.hypot(loop[(i + 1) % n][0] - loop[i][0], loop[(i + 1) % n][1] - loop[i][1]) - chord) > 1e-9 * (1 + r)) regular = false;
+    if (regular) return loop;
+    var N = Math.max(16, n), a0 = Math.atan2(loop[0][1] - cy, loop[0][0] - cx), s = turn > 0 ? 1 : -1, out = [];
+    for (i = 0; i < N; i++) { var a = a0 + s * 2 * Math.PI * i / N; out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+    return out;
+  }
+  // the snap tolerance: 0.003 in / 0.075 mm (above the sagitta Anvil's default tessellation leaves on a cutout's chord),
+  // or the sagitta at the 128-chord cap for a large hole, never more than 3 % of the radius
+  function flatCircleTol(units, r) {
+    return Math.min(0.03 * r, Math.max(units === 'in' ? 0.003 : 0.075, 1.5 * r * (1 - Math.cos(Math.PI / 128))));
+  }
+  // ---- end r16/flatcircle
+
   // csgMerge(regions, notches) -> the merged blank's loops the CSG way: thin prisms in the Front frame, union, the
   // notches subtracted, the outline of the top face (mergeFlatRegions' fallback, and flatOptions.merge 'csg')
   function csgMerge(regions, notches) {
@@ -1178,7 +1236,9 @@
     loops[0].forEach(function (p) { for (var k = 0; k < 2; k++) { lo0[k] = Math.min(lo0[k], p[k]); hi0[k] = Math.max(hi0[k], p[k]); } });
     var hyg = 1e-9 * Math.hypot(hi0[0] - lo0[0], hi0[1] - lo0[1]);
     loops = loops.map(function (l) { return cleanFlatLoop(l, hyg); }).filter(Boolean);
-    var min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    // r16/flatcircle: a round hole is a circle in the flat, whichever kernel's points it was joined from
+    loops = loops.map(function (l) { var C = enclosingCircle(l); return C ? snapFlatCircle(l, flatCircleTol(model.units, C.r)) : l; });
+    var min =[Infinity, Infinity], max = [-Infinity, -Infinity];
     loops.forEach(function (l) { l.forEach(function (p) { min[0] = Math.min(min[0], p[0]); min[1] = Math.min(min[1], p[1]); max[0] = Math.max(max[0], p[0]); max[1] = Math.max(max[1], p[1]); }); });
     Object.keys(kUsed).forEach(function (k) {
       if (+k > 0.5 + 1e-9 || +k < 0) warn('K-factor ' + fmtN(+k) + ' is outside 0–0.5: the neutral axis would lie outside the sheet. If ' + fmtN(+k) + ' is a shop "material in bend" constant (BA = ' + fmtN(+k) + '·T + 1.571·R at 90°), the K-factor is ' + fmtN(+k) + ' / 1.5708 = ' + fmtN(Math.round(+k / (Math.PI / 2) * 1000) / 1000) + '.');
@@ -1594,7 +1654,7 @@
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
-  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
+  K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
   K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();

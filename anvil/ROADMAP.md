@@ -12,6 +12,8 @@ Anvil is built for a sheet-metal shop. These areas must be **perfect** and come 
 4. **Drawings with the right annotations** — flat-pattern views, bend notes, inch ANSI dimensions, hole callouts, notes.
 5. **Output** — DXF (laser / punch ready), DWG, STEP.
 
+**Order (user, 2026-10-12): complete the Sketch tab and Drawings first.** An open-ended run ("continue", "make progress") plans its lanes from sketch and drawing work (SolidWorks-fidelity sketching, relations, dimensions, DXF / DWG in and out; drawing views, flat-pattern drawings, annotations, callouts, drawing output) until both are complete, and only then moves to other areas, including other sheet-metal work, unless the user names them.
+
 Deferred indefinitely (do not plan them from the roadmap; only on an explicit user request): Surfaces, Mold Tools, Weldments, Direct Editing, simulation, Evaluate extras (Sensors, Undercut, Thickness, Curvature, Deviation), advanced / mechanical mates, exploded views in drawings, Parasolid, variable-radius / face fillets. Phase 7 items in those areas stay unchecked and are skipped. CAM (toolpaths) is out of scope: Anvil hands Mastercam a clean DXF / STEP.
 
 ## Phase 9 — sheet-metal shop (2026-10-07 →)

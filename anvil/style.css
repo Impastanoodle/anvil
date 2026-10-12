@@ -835,6 +835,10 @@ body.splitting #viewport { pointer-events: none; }
 .pm-msg { margin: 6px 6px 0; padding: 0 8px 6px; border-radius: 3px; overflow: hidden; }
 .pm-msg::before { content: 'Message'; display: block; margin: 0 -8px 5px; padding: 0 8px; height: 22px; line-height: 22px; font-weight: 600; color: var(--text); background: var(--msg-head); border-bottom: 1px solid var(--msg-line); }
 .pm-msg.ok::before { background: var(--ok-line); border-bottom-color: var(--ok-line); }
+/* rfK: nothing in the PropertyManager shrinks to fit the panel (#pm is a column flexbox; overflow: hidden on a group
+   or the Message box let it shrink below its content, which hid the last row of every group — Reverse direction,
+   Clear selection, Sheet metal parameters… — in a PM taller than the panel); the PM scrolls instead */
+#pm > * { flex: none; }
 .pm-group { margin: 6px 6px 0; border-radius: 3px; overflow: hidden; }
 .pm-group > h4 { height: 24px; padding: 0 5px 0 8px; gap: 6px; color: var(--group-text); }
 .pm-group > h4 .pm-gt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

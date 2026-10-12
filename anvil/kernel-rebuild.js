@@ -351,7 +351,7 @@
     model = resolved.model;
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
     function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.sheetBase || (f.cut && f.normalCut); }
-    var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings };
+    var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings, units: model.units || 'mm' };   // units: pick tolerances (Kernel.pickTol)
     function syncBody() { ctx.body = combineBodies(ctx.bodies); }
     // a boss tool joins the part: merged into the bodies it meets, or appended as a new body
     function addBoss(tool, f) {

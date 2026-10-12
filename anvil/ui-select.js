@@ -373,10 +373,15 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   // What a Select-tool click at (mx, my) selects in the active sketch: { kind: 'sketchPoint', ref } for a line's or an
   // arc's end point or a circle's / arc's centre within 9 px (when it is no farther than the curve under the cursor, or
-  // within 4 px of it: a small hole's edge still selects the circle), else { kind: 'entity', index }, or null. Corners
-  // of rectangles / polygons, slot and ellipse points stay with their entity's PM (it edits them), spline points with
-  // the Spline PM (it shows the point nearest the click); a sketch point entity is the point itself.
-  var POINT_PICK = { line: 1, arc: 1, circle: 1 };
+  // within 4 px of it: a small hole's edge still selects the circle), else { kind: 'entity', index }, or null.
+  // rfH: the Rectangle / Polygon / Straight Slot tools draw lines and arcs, so their corners are line ends; the points
+  // of the entities that stay whole select as points too, as SolidWorks' do: an ellipse's centre and axis ends (a
+  // partial ellipse's ends), an arc slot's centre and arc ends, and the corners (a centre rectangle's / polygon's
+  // centre) of a rectangle, polygon, slot or polyline a script or an import made. Not a corner rectangle's or a slot's
+  // middle (no sketch point there in SolidWorks). Spline points stay with the Spline PM (it shows the point nearest the
+  // click); a sketch point entity is the point itself.
+  var POINT_PICK = { line: 1, arc: 1, circle: 1, ellipse: 1, pellipse: 1, aslot: 1, rect: 1, crect: 1, poly: 1, slot: 1, polyline: 1 };
+  var NO_POINT_PICK = { rect: /\.c$/, slot: /\.c$/ };
   function pickSketchPoint(mx, my) {
     var f = UI.activeSketchFeature(), SS = window.SketchSolver;
     if (!f || !SS || !SS.pointRefs) return null;
@@ -385,6 +390,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       if (!e || !POINT_PICK[e.t] || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
       SS.pointRefs(f, i).forEach(function (pr) {
         if (/\.mid$/.test(pr.ref)) return;   // a line's midpoint is not a point of its own
+        if (NO_POINT_PICK[e.t] && NO_POINT_PICK[e.t].test(pr.ref)) return;
         var q = UI.worldToScreen(K.to3D(pl, pr.pt[0], pr.pt[1])), d = Math.hypot(q[0] - mx, q[1] - my);
         if (d < bd) { bd = d; best = { ref: pr.ref, d: d }; }
       });

@@ -510,7 +510,7 @@ var OcctKernel = (function () {
       facesOf(body).forEach(function (fc) {
         explore(fc, ENUM.TopAbs_EDGE).forEach(function (s) { var e = N(oc.TopoDS.Edge_1(s)); if (oc.BRep_Tool.IsClosed_2(e, fc) || oc.BRep_Tool.Degenerated(e)) seams.Add(e); });
       });
-      var es = nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), Math.max(0.5, size));
+      var es = nearest(f.edges, edgesOf(body).filter(function (e) { return !seams.Contains(e); }), K.pickTol(m.units, size));   // r16/picktol
       if (!es.length) throw new Error('No edges found for this ' + f.type + '. Select edges again.');
       var mk = f.type === 'chamfer' ? N(new oc.BRepFilletAPI_MakeChamfer(body)) : N(new oc.BRepFilletAPI_MakeFillet(body, oc.ChFi3d_FilletShape.ChFi3d_Rational));
       es.forEach(function (e) { mk.Add_2(size, e); });
@@ -540,7 +540,9 @@ var OcctKernel = (function () {
       if (!(T > 0)) throw new Error('Shell thickness must be greater than zero.');
       var k = pickBody(f.faces && f.faces[0] && f.faces[0].at);
       if (k < 0) throw new Error('Nothing to shell yet.');
-      var body = unify(bodies[k]), rm = nearest(f.faces, facesOf(body), Math.max(0.5, T / 2)), res;
+      var body = unify(bodies[k]), rm = nearest(f.faces, facesOf(body), K.pickTol(m.units, T / 2)), res;   // r16/picktol
+      // a pick that found no face is an error, as in Kernel.buildShell (it used to fall through to a closed shell)
+      if ((f.faces || []).length && rm.length < f.faces.length) throw new Error('A face to remove was not found on the body. Select the faces again.');
       var join = oc.GeomAbs_JoinType.GeomAbs_Intersection, mode = oc.BRepOffset_Mode.BRepOffset_Skin;
       // Anvil offsets curved faces facet by facet (a polygonal cavity); OpenCascade's walls are the exact offset
       if (facesOf(body).some(function (fc) { var t = N(new oc.BRepAdaptor_Surface_2(fc, true)).GetType(); return (t && t.value != null ? t.value : t) !== 0; })) approx = true;

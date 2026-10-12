@@ -25,6 +25,7 @@ const USAGE = [
   "      --step: OpenCascade's exact STEP with --occt, else Anvil's own; the summary names the file's length unit",
   '      --dwg-*: the DXF through a converter (ODA File Converter, else vendor/libredwg from vendor/get-libredwg.ps1)',
   '  drawing <file> [--svg out] [--dxf out] [--dwg out] [--pdf out] [--views Front,Top,Right,Isometric] [--scale 1:2]',
+  '               [--dxf-version r12|2000]   the sheet DXF (one layer per view) R12 by default; a DWG is made from R2000',
   '  example <name | index> [build options]     a bundled example (name case-insensitive, prefix allowed)',
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
@@ -302,8 +303,14 @@ async function cmdDrawing(src, flags) {
   const sheet = Drawing.compute(doc, r.mesh, r.model);
   const outputs = {}, conv = {};
   if (flags.svg) outputs.svg = writeOut(flags.svg, Drawing.toSVG(sheet));
-  if (flags.dxf) outputs.dxf = writeOut(flags.dxf, Drawing.toDXF(sheet));
-  if (flags.dwg) outputs.dwg = writeOut(flags.dwg, toDwg(Drawing.toDXF(sheet), conv));
+  // the drawing DXF: R12 by default, --dxf-version 2000 for R2000; read back by dxf-check (no cut layers on a drawing:
+  // the check is the header, units and entities); a DWG goes through an R2000 DXF, as the flat's does
+  if (flags.dxf) {
+    const dv = dxfOptions(flags, false).version, text = Drawing.toDXF(sheet, { version: dv }), c = require('./dxf-check').check(text, { units, layers: [] });
+    outputs.dxf = Object.assign(writeOut(flags.dxf, text), { version: dv, check: { ok: c.ok, version: c.version, insunits: c.insunits, entities: c.entities, counts: c.counts } });
+    if (!c.ok) r.summary.errors.push({ id: null, feature: 'DXF check (drawing)', message: c.errors.slice(0, 5).join('; ') });
+  }
+  if (flags.dwg) outputs.dwg = writeOut(flags.dwg, toDwg(Drawing.toDXF(sheet, { version: 'R2000' }), conv));
   if (flags.pdf) outputs.pdf = writeOut(flags.pdf, Drawing.toPDF(sheet), 'latin1');
   const summary = {
     name: r.model.name, kind: r.kind, sheet: { format: doc.sheet.format, scale: doc.sheet.scale, projection: doc.sheet.projection, units },

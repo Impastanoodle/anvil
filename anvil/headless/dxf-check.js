@@ -1,6 +1,7 @@
 // headless/dxf-check.js — reads a DXF back and checks it the way a laser / CAM import would: every cut loop closed end
 // to end, no zero-length or duplicate entities, circles with real radii, the units header present, no LWPOLYLINE in an
-// R12 (AC1009) file. Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
+// R12 (AC1009) file, no SPLINE / ELLIPSE in one either (R2000 has both: on a cut layer an open one's ends chain into
+// the loops like a LINE's, a closed spline or a full ellipse is a loop of its own). Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
 // (headless/anvil.js) with require.
 //
 //   DxfCheck.parse(text)            -> { version, header: { $VAR: value }, entities: [{ type, layer, …geometry }] }
@@ -40,14 +41,18 @@
         continue;
       }
       if (section !== 'ENTITIES') continue;
-      if (c === 0) { finish(); cur = { type: v.trim(), layer: '0', g: {}, verts: [], bul: [] }; continue; }
+      if (c === 0) { finish(); cur = { type: v.trim(), layer: '0', g: {}, verts: [], bul: [], knots: [] }; continue; }
       if (!cur) continue;
       if (c === 8) cur.layer = v.trim();
+      else if (cur.type === 'SPLINE' && c === 10) cur.verts.push([num(v), 0]);
+      else if (cur.type === 'SPLINE' && c === 20) { if (cur.verts.length) cur.verts[cur.verts.length - 1][1] = num(v); }
+      else if (cur.type === 'SPLINE' && c === 40) cur.knots.push(num(v));
+      else if (cur.type === 'SPLINE' && (c === 11 || c === 21 || c === 30 || c === 31 || c === 41)) continue;   // fit points, z, weights
       else if (cur.type === 'LWPOLYLINE' && c === 10) { cur.verts.push([num(v), 0]); cur.bul.push(0); }
       else if (cur.type === 'LWPOLYLINE' && c === 20) cur.verts[cur.verts.length - 1][1] = num(v);
       else if (cur.type === 'LWPOLYLINE' && c === 42) cur.bul[cur.bul.length - 1] = num(v);
       else if (c === 1) cur.g[1] = v;
-      else if ((c >= 10 && c <= 59) || (c >= 70 && c <= 79) || c === 90) cur.g[c] = num(v);
+      else if ((c >= 10 && c <= 59) || (c >= 70 && c <= 79) || c === 90 || c === 230) cur.g[c] = num(v);
     }
     finish();
     var ver = header.$ACADVER;
@@ -61,6 +66,10 @@
       case 'ARC': return { type: 'ARC', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0, a0: g[50] || 0, a1: g[51] || 0 };
       case 'TEXT': return { type: 'TEXT', layer: e.layer, p: [g[10] || 0, g[20] || 0], h: g[40] || 0, text: g[1] || '' };
       case 'LWPOLYLINE': return { type: 'LWPOLYLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), pts: e.verts, bulges: e.bul };
+      case 'SPLINE': return { type: 'SPLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), degree: g[71] != null ? g[71] : 3, knots: e.knots, cps: e.verts };
+      // (the minor axis is n × major · ratio: an extrusion of -Z runs the parameter the other way round)
+      case 'ELLIPSE': return { type: 'ELLIPSE', layer: e.layer, c: [g[10] || 0, g[20] || 0], major: [g[11] || 0, g[21] || 0], ratio: g[40] || 0,
+        t0: g[41] || 0, t1: g[42] != null ? g[42] : 2 * Math.PI, nz: g[230] != null && g[230] < 0 ? -1 : 1 };
     }
     return { type: e.type, layer: e.layer };
   }
@@ -71,6 +80,30 @@
     return [[e.c[0] + e.r * Math.cos(a0), e.c[1] + e.r * Math.sin(a0)], [e.c[0] + e.r * Math.cos(a1), e.c[1] + e.r * Math.sin(a1)]];
   }
   function sweepDeg(e) { var s = ((e.a1 - e.a0) % 360 + 360) % 360; return s; }
+  // a point of an ELLIPSE at parameter t; its sweep (end after start, at most a full turn)
+  function ellipsePt(e, t) {
+    var M = e.major, N = [-M[1] * e.ratio * e.nz, M[0] * e.ratio * e.nz];
+    return [e.c[0] + M[0] * Math.cos(t) + N[0] * Math.sin(t), e.c[1] + M[1] * Math.cos(t) + N[1] * Math.sin(t)];
+  }
+  function ellipseSweep(e) { var s = e.t1 - e.t0; while (s <= 1e-12) s += 2 * Math.PI; return Math.min(s, 2 * Math.PI); }
+  // a point of a SPLINE at parameter u (de Boor, weights ignored), or null when its knots and control points disagree;
+  // splineRange: the parameter range [knot p, knot n + 1]
+  function splinePt(e, u) {
+    var p = e.degree, U = e.knots, P = e.cps, n = P.length - 1;
+    if (!(p >= 1) || U.length !== n + p + 2 || n < p) return null;
+    var k = p;
+    while (k < n && u >= U[k + 1]) k++;
+    var d = [];
+    for (var j = 0; j <= p; j++) d.push(P[k - p + j].slice());
+    for (var r = 1; r <= p; r++) {
+      for (var jj = p; jj >= r; jj--) {
+        var i = k - p + jj, den = U[i + p - r + 1] - U[i], a = den > 0 ? (u - U[i]) / den : 0;
+        d[jj] = [(1 - a) * d[jj - 1][0] + a * d[jj][0], (1 - a) * d[jj - 1][1] + a * d[jj][1]];
+      }
+    }
+    return d[p];
+  }
+  function splineRange(e) { return [e.knots[e.degree], e.knots[e.cps.length]]; }
 
   function check(text, opts) {
     opts = opts || {};
@@ -89,7 +122,30 @@
     d.entities.forEach(function (e) {
       var key = e.type + '@' + e.layer;
       counts[key] = (counts[key] || 0) + 1;
-      if (e.type === 'LWPOLYLINE' && d.version === 'AC1009') errors.push('LWPOLYLINE in an R12 (AC1009) file');
+      if ((e.type === 'LWPOLYLINE' || e.type === 'SPLINE' || e.type === 'ELLIPSE') && d.version === 'AC1009') errors.push(e.type + ' in an R12 (AC1009) file');
+      // SPLINE / ELLIPSE (R2000): a sound shape on any layer; on a cut layer a full ellipse or a closed spline is a loop,
+      // an open one's ends chain with the LINE / ARC entities
+      if (e.type === 'SPLINE' || e.type === 'ELLIPSE') {
+        var pts2 = [], closed2 = false;
+        if (e.type === 'ELLIPSE') {
+          var ML = Math.hypot(e.major[0], e.major[1]);
+          if (!(ML > 1e-9) || !(e.ratio > 0) || e.ratio > 1 + 1e-9) { errors.push('degenerate ELLIPSE on ' + e.layer + ' (major axis ' + ML + ', ratio ' + e.ratio + ')'); return; }
+          var esw = ellipseSweep(e);
+          closed2 = esw >= 2 * Math.PI - 1e-9;
+          for (var q2 = 0; q2 <= 64; q2++) pts2.push(ellipsePt(e, e.t0 + esw * q2 / 64));
+        } else {
+          var rg = splineRange(e);
+          if (!splinePt(e, rg[0]) || !(rg[1] > rg[0])) { errors.push('SPLINE on ' + e.layer + ' with ' + e.cps.length + ' control points and ' + e.knots.length + ' knots (degree ' + e.degree + ')'); return; }
+          for (var q3 = 0; q3 <= 64; q3++) pts2.push(splinePt(e, q3 === 64 ? rg[1] : rg[0] + (rg[1] - rg[0]) * q3 / 64));
+          var e0 = pts2[0], e1 = pts2[64];
+          closed2 = e.closed || Math.hypot(e1[0] - e0[0], e1[1] - e0[1]) <= 1e-9 * (1 + Math.abs(e0[0]) + Math.abs(e0[1]));
+        }
+        if (layers.indexOf(e.layer) < 0) return;
+        pts2.forEach(function (q) { grow(q); });
+        if (closed2) loops.push({ layer: e.layer, kind: e.type.toLowerCase(), closed: true, n: 1 });
+        else cut.push({ a: pts2[0], b: pts2[64], layer: e.layer });
+        return;
+      }
       if (layers.indexOf(e.layer) < 0) return;
       var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts]);
       if (seen[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer); seen[sig] = true;

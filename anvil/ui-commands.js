@@ -1482,9 +1482,9 @@
     var edgeList = [];
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex !== null; });
-      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: f.chain }; }), sharp, Math.max(0.5, isChamfer ? +f.d : +f.r));
+      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: f.chain }; }), sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r));
       // r4/features4: each pick's own edges, for its row in the selection list
-      perPick = f.edges.map(function (e) { try { return K.resolveEdges([{ at: e.at, chain: f.chain }], sharp, Math.max(0.5, isChamfer ? +f.d : +f.r)); } catch (er) { return []; } });
+      perPick = f.edges.map(function (e) { try { return K.resolveEdges([{ at: e.at, chain: f.chain }], sharp, K.pickTol(App.model.units, isChamfer ? +f.d : +f.r)); } catch (er) { return []; } });
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
     }
@@ -1537,7 +1537,7 @@
           // toggle: remove a spec whose resolved chain contains this edge, else add
           var hitIdx = -1;
           f.edges.forEach(function (spec, i) {
-            var chain = K.resolveEdges([{ at: spec.at, chain: f.chain }], App.edges.filter(function (x) { return !x.smooth && x.faces.length === 2; }), 0.5);
+            var chain = K.resolveEdges([{ at: spec.at, chain: f.chain }], App.edges.filter(function (x) { return !x.smooth && x.faces.length === 2; }), K.pickTol(App.model.units));
             if (chain.indexOf(e) >= 0) hitIdx = i;
           });
           if (hitIdx >= 0) f.edges.splice(hitIdx, 1); else f.edges.push({ at: e.mid.slice(), chain: f.chain });
@@ -1601,7 +1601,7 @@
       });
       if (preF.length && UI.setSelection) UI.setSelection([]);
     }
-    function tol() { return Math.max(0.5, (+f.thickness || 1) / 2); }
+    function tol() { return K.pickTol(App.model.units, (+f.thickness || 1) / 2); }
     function resolveList() {
       var idx = [];
       if (!existing || App.rollback != null) try { idx = K.resolveFaces(f.faces, getBaseMesh(), tol()); } catch (e) { }
@@ -1920,7 +1920,17 @@
       var sm = App.model.sheet || defaultSheet();
       var f = { type: 'extrude', cut: false, depth: sm.thickness, end: 'blind', reverse: false, dir2: false, depth2: 0, end2: 'blind', sketch: pickDefaultSketch(sid) };
       sheetToValues(sm, f);
-      if (f.sketch == null) { UI.toast('Draw the flange profile in a sketch first.'); return; }
+      if (f.sketch == null) {
+        // rfK (SolidWorks): Base Flange/Tab with nothing to use asks for a plane, opens the sketch, and comes back to
+        // this PropertyManager when the sketch is exited (an empty sketch is discarded and nothing reopens)
+        openPM({
+          title: 'Base Flange/Tab', icon: 'flange',
+          message: 'Select a <b>plane</b> or a <b>planar face</b> to sketch the flange profile on, then <b>Exit Sketch</b> to size the flange.',
+          command: { pickPlane: true, onPick: function (pk) { if (pk.kind === 'plane') newSketchOnPlane(pk.ref); else newSketchOnFace(pk); App.pendingAfterSketch = function () { cmdBaseFlange(); }; return true; } },
+          groups: [{ title: 'Standard planes', fields: [{ type: 'buttons', buttons: ['Front', 'Top', 'Right'].map(function (r) { return { label: r + ' Plane', onclick: function () { newSketchOnPlane(r); App.pendingAfterSketch = function () { cmdBaseFlange(); }; } }; }) }] }]
+        });
+        return;
+      }
       function feature(v) { var o = {}; Object.keys(v).forEach(function (k) { if (SHEET_PM_KEYS.indexOf(k) < 0) o[k] = v[k]; }); return o; }
       openPM({
         title: 'Base Flange/Tab', icon: 'flange', values: f, command: { sketchId: f.sketch },
@@ -2073,14 +2083,14 @@
     var edgeList = [];
     function resolveList() {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
-      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: false }; }), sharp, Math.max(0.5, sheet.thickness));
+      edgeList = K.resolveEdges(f.edges.map(function (e) { return { at: e.at, chain: false }; }), sharp, K.pickTol(App.model.units, sheet.thickness));
       if (App.command) App.command.edgeList = edgeList;
       UI.updateHighlights();
     }
     // r4/features4: a list row per edge (hover lights it, Delete / right-click removes it)
     function flangeItems(v) {
       var sharp = App.edges.filter(function (e) { return !e.smooth && e.faces.length === 2 && e.convex; });
-      return v.edges.map(function (spec, i) { return { label: 'Edge<' + (i + 1) + '>', at: spec.at, get edges() { try { return existing ? [] : K.resolveEdges([{ at: spec.at, chain: false }], sharp, Math.max(0.5, sheet.thickness)); } catch (e) { return []; } } }; });
+      return v.edges.map(function (spec, i) { return { label: 'Edge<' + (i + 1) + '>', at: spec.at, get edges() { try { return existing ? [] : K.resolveEdges([{ at: spec.at, chain: false }], sharp, K.pickTol(App.model.units, sheet.thickness)); } catch (e) { return []; } } }; });
     }
     function flangeRemove(v, i) { v.edges.splice(i, 1); renderPM(); resolveList(); preview(); }
     function flangeClear(v) { v.edges.length = 0; renderPM(); resolveList(); preview(); }
@@ -2196,7 +2206,7 @@
         { type: 'check', label: 'Miter corners', key: 'miter', rerender: true },
         { type: 'number', label: 'Gap', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
       ] },
-      { title: 'Auto Relief', fields: [
+      { title: 'Custom Relief Type', fields: [   // rfK: SolidWorks' group name on the Edge-Flange PM (Auto Relief is the sheet's default, in the Sheet-Metal feature)
         { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], rerender: true },
         { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.relief !== 'none'; } },
         { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefWidth; } },
@@ -2486,7 +2496,7 @@
   // The standard views (and the current one) at full size (1:1), one layer per view, for CAM: the views are laid out
   // third angle on a sheet sized to the part (doc.sheet.paper), the sheet scale fixed at 1:1, and the sheet grown until
   // no view had to be drawn smaller; the border and title block (layer SHEET) are left out of the file.
-  function dxfViews(names, current) {
+  function dxfViews(names, current, version) {
     if (typeof Drawing === 'undefined') throw new Error('Views need drawing.js, which did not load.');
     if (!App.mesh || !App.mesh.triCount) throw new Error('Nothing to export yet.');
     var units = dxfUnits(), mesh = App.mesh, k = units === 'in' ? 25.4 : 1;   // model units -> paper mm
@@ -2500,7 +2510,7 @@
       if (!doc.views.some(function (v) { return v.scale && Drawing.scaleValue(v.scale) !== 1; })) break;
       paper = [paper[0] * 1.5, paper[1] * 1.5];
     }
-    return dropDxfLayers(Drawing.toDXF(Drawing.compute(doc, mesh, App.model)), ['SHEET']);
+    return dropDxfLayers(Drawing.toDXF(Drawing.compute(doc, mesh, App.model), { version: version === 'R2000' ? 'R2000' : 'R12' }), ['SHEET']);
   }
   function dxfViewsDoc(names, current, units, paper) {
     var mesh = App.mesh, model = App.model;
@@ -2535,7 +2545,7 @@
   // dxfOutput(opts) -> DXF text, without the PropertyManager (anvil.dxfOutput):
   // { export: 'faces' | 'views' | 'sheet', face (index, default the selected face), views: ['Front', 'Top', 'Right',
   //   'Isometric'], current (bool: the viewport's orientation as one more view), bendLines, notes (sheet, default on),
-  //   version: 'R12' (default) | 'R2000' (faces and sheet; views are R12), style: 'polyline' (default: one closed
+  //   version: 'R12' (default) | 'R2000' (faces, views, sketch and sheet), style: 'polyline' (default: one closed
   //   polyline per loop) | 'entities' (LINE / ARC; faces and sheet) }. Faces and the flat pattern come out laser
   //   ready (Kernel.exportDXFFlat): true circles and arcs, joined loops, the flat's lower-left corner at 0,0.
   function dxfOutput(opts) {
@@ -2549,7 +2559,7 @@
       if (!dxf) throw new Error('Could not outline that face.');
       return dxf;
     }
-    if (what === 'views') return dxfViews(opts.views || ['Front', 'Top', 'Right'], !!opts.current);
+    if (what === 'views') return dxfViews(opts.views || ['Front', 'Top', 'Right'], !!opts.current, wopts.version);
     if (what === 'sketch') {
       var sk = opts.sketch != null ? K.findFeature(App.model, opts.sketch) : dxfDefaultSketch();
       if (!sk || sk.type !== 'sketch') throw new Error('Pick a sketch to export.');
@@ -2673,14 +2683,13 @@
           { type: 'radio', key: 'format', rerender: true, options: [['dxf', 'DXF'], ['dwg', 'DWG']],
             disabledOption: function (val) { return val === 'dwg' && !(dwgState.probed && dwgState.ok) ? DWG_NOTE : null; } },
           { type: 'html', show: function () { return dwgState.converter === 'libredwg'; }, html: '<div class="pm-note">' + LIBREDWG_NOTE + '</div>' },
-          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : isViews(x) ? [['R12', 'R12 (AC1009)']] : [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']]; } },
+          { type: 'select', label: 'Version', key: 'version', options: function (x) { return x.format === 'dwg' ? [['R2000', 'R2000']] : [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']]; } },
           { type: 'select', label: 'Loops as', key: 'style', show: function (x) { return !isViews(x) && !isSketchX(x); }, options: [['polyline', 'Polylines (one per loop)'], ['entities', 'Lines and arcs']] }
         ] },
         { title: 'File name', fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (x, key) {
         if ((key === 'export' || key === 'sketch') && auto != null && x.name === auto) { x.name = auto = autoName(); UI.renderPM(); }
-        if (key === 'export' && isViews(x) && x.format !== 'dwg' && x.version !== 'R12') { x.version = 'R12'; UI.renderPM(); }
         if (key === 'format') { x.version = x.format === 'dwg' ? 'R2000' : 'R12'; UI.renderPM(); }
         if (key === 'name') auto = null;
       },

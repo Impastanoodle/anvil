@@ -516,8 +516,8 @@
     var e = f.entities[n0], S = SS();
     if (!e || (e.t !== 'rect' && e.t !== 'crect') || !S) return;
     var tool = e.t, cons = [], center = null;
-    // the rectangle is new, so every relation on it was inferred by addEntity (for every corner): they go, and are
-    // inferred below for the placed points only
+    // the rectangle is new, so every relation on it was inferred by addEntity (for its placed corners, rfH): they go,
+    // and are inferred again below on the four lines, for the placed points only
     if (f.rels) {
       f.rels = f.rels.filter(function (rel) { return !rel.refs.some(function (r) { return refEntity(r) === n0; }); });
       if (!f.rels.length) delete f.rels;

@@ -551,8 +551,15 @@
   // the one the model item shows, wherever on the sheet the item's leader went; among those the closest wins)
   // A model item made from a sketch's distance relation (a location dimension, d.relSrc: Drawing.sketchDistances)
   // takes that relation's properties and name; an overall size that also is one takes them when the relation has any.
+  // rfJ: every kind of sketch dimension a model item shows brings its properties: a slot callout (slotDimProps: the
+  // slot's width / overall length or arc radius Smart Dimensions, each on its own part of the callout) and an
+  // ordinate set (sketchOrdinateProps: each member's, on its own value) as well as the linear / radial ones on
+  // entities and the location dimensions (distance relations, rel.mark) below
   function sketchDimProps(model, build, w, d) {
-    if (!d || !d.auto || d.flat || d.value == null) return null;
+    if (!d || !d.auto || d.flat) return null;
+    if (d.kind === 'ordinate' && d.sketchOrd) return sketchOrdinateProps(model, d);
+    if (d.value == null) return null;
+    if (d.slot) return slotDimProps(model, build, w, d);
     var rp = d.relSrc ? relDimProps(model, d.relSrc) : null;
     if (rp && rp.own) { delete rp.own; return rp; }
     var ep = entityDimProps(model, build, w, d);
@@ -585,6 +592,72 @@
     var out = dimPropsOf(rel, f, n);
     out.own = SK_PROPS.some(function (k) { return k !== 'name' && rel[k] != null && rel[k] !== '' && rel[k] !== false; }) || !!rel.name;
     return out;
+  }
+  function hasDimProps(x) { return SK_PROPS.some(function (k) { return x[k] != null && x[k] !== '' && x[k] !== false; }); }
+  // sketchOrdinateProps(model, d) -> { valueProps: [props | null per member], name } or null: the members of the
+  // ordinate set a model item d (d.sketchOrd 'sketchId:setId') shows, each with its own relation's tolerance,
+  // precision and text (the order of SketchSolver.ordinateSets, as d.refs / d.values)
+  function sketchOrdinateProps(model, d) {
+    var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, s = String(d.sketchOrd), cut = s.indexOf(':');
+    if (!S || !S.ordinateSets || cut < 0) return null;
+    var fid = s.slice(0, cut), sid = s.slice(cut + 1), f = (model.features || []).filter(function (x) { return String(x.id) === fid; })[0];
+    var set = f && f.rels && S.ordinateSets(f)[sid];
+    if (!set) return null;
+    var name = null, vals = set.members.map(function (i) {
+      var p = relDimProps(model, { f: f.id, i: i });
+      if (!p || !(p.tol || p.prec != null || p.label != null)) return null;
+      delete p.own; name = name || p.name;
+      return p;
+    });
+    return vals.some(Boolean) ? { valueProps: vals, name: name } : null;
+  }
+  // an ordinate value's text with its member's props (the drawing's own precision, prec, still wins)
+  function ordinateValueText(x, vp, units, prec) {
+    return dimLabel({ kind: 'h', value: x, prec: prec != null ? prec : vp.prec, tol: vp.tol, label: vp.label }, units).text;
+  }
+  // slotDimProps(model, build, w, d) -> { slotProps: { w, len } (straight) | { R, w } (arc), name } or null: the
+  // sketch slot a slot callout d shows (same size, its sketch square to the view; of several, the one whose Smart
+  // Dimensions carry properties, nearest the callout's end arc / centre) and the props of its width ('w'), overall
+  // length ('olen', else the centre distance 'len') or centre-line radius ('r') dimensions
+  function slotDimProps(model, build, w, d) {
+    if (!hasSketchDimProps(model) || !w || !w.frame || w.flat || !isOrthoFrame(w.frame)) return null;
+    var F = w.frame, planes = build && build.planes || {}, s = d.slot, tolV = 1e-6 * (1 + Math.abs(s.len || s.R || 0) + s.w);
+    var rm; try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var best = null;
+    rm.features.forEach(function (rf, fi) {
+      var raw = model.features[fi];
+      if (rf.type !== 'sketch' || rf.suppressed || !raw || !raw.dims) return;
+      var pl; try { pl = K.resolvePlane(rf.plane, rm, planes); } catch (e) { return; }
+      if (Math.abs(Math.abs(V.dot(pl.n, F.e)) - 1) > 1e-9) return;
+      function view2(x, y) { var p = K.to3D(pl, x, y); return [V.dot(p, F.u), V.dot(p, F.v)]; }
+      (rf.entities || []).forEach(function (e, ei) {
+        var dims = [];
+        raw.dims.forEach(function (x, i) { if (x.e === ei && hasDimProps(x)) dims.push({ x: x, i: i }); });
+        if (!dims.length || !e) return;
+        var score;
+        if (!s.arc && e.t === 'slot') {
+          var L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+          if (Math.abs(e.w - s.w) > tolV || Math.abs(L + e.w - s.len) > tolV) return;
+          var c1 = view2(e.x1, e.y1), c2 = view2(e.x2, e.y2);
+          score = Math.min(Math.hypot(c1[0] - d.c[0], c1[1] - d.c[1]), Math.hypot(c2[0] - d.c[0], c2[1] - d.c[1]));
+        } else if (s.arc && e.t === 'aslot') {
+          if (Math.abs(e.r - s.R) > tolV || Math.abs(e.w - s.w) > tolV) return;
+          var c = view2(e.cx, e.cy), sc = s.center || d.c;
+          score = Math.hypot(c[0] - sc[0], c[1] - sc[1]);
+        } else return;
+        if (!best || score < best.score) best = { score: score, f: raw, dims: dims };
+      });
+    });
+    if (!best) return null;
+    var props = {}, name = null, olen = false;
+    best.dims.forEach(function (o) {
+      var k = o.x.k, part = s.arc ? (k === 'r' ? 'R' : k === 'w' ? 'w' : null) : (k === 'w' ? 'w' : k === 'olen' || k === 'len' ? 'len' : null);
+      if (!part || (part === 'len' && k === 'len' && olen)) return;
+      if (k === 'olen') olen = true;
+      props[part] = dimPropsOf(o.x, best.f, o.i + 1);
+      name = name || props[part].name;
+    });
+    return Object.keys(props).length ? { slotProps: props, name: name } : null;
   }
   function entityDimProps(model, build, w, d) {
     if (!hasSketchDimProps(model)) return null;
@@ -844,7 +917,7 @@
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
-  D.sketchDimProps = sketchDimProps;
+  D.sketchDimProps = sketchDimProps; D.sketchOrdinateProps = sketchOrdinateProps; D.ordinateValueText = ordinateValueText; D.slotDimProps = slotDimProps;
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.
@@ -872,12 +945,21 @@
     doc.notes = l.filter(function (x) { return x.id !== id; });
     return doc.notes.length < n0;
   }
-  // flatAnnotation(doc, viewId, key, { off, hidden }): a flat view's bend note / tag ('b0', 'b1' …), Bend Table
-  // ('table') or FLAT SIZE note ('size') moved (off: paper offset from where it goes by itself) or hidden / shown
+  // flatAnnotation(doc, viewId, key, { off, hidden }): a flat view's bend note / tag (its bend's stable key, 'bend:…'
+  // or 'bend@…', as the view's annotations list it; 'b0', 'b1' … name the bends in order and become that bend's key
+  // once the view has been worked out), Bend Table ('table') or FLAT SIZE note ('size') moved (off: paper offset from
+  // where it goes by itself) or hidden / shown. A bend still under its older 'b<n>' key moves to its stable key.
   function flatAnnotation(doc, viewId, key, props) {
     var v = findView(doc, viewId);
     if (!v || v.kind !== 'flat') throw new Error('No flat-pattern view ' + viewId);
-    var own = v.flatAnn || (v.flatAnn = {}), s = own[key] || (own[key] = {});
+    var bk = v._bendKeys, m = /^b(\d+)$/.exec(String(key));
+    if (bk && m && bk[+m[1]]) key = bk[+m[1]];
+    var own = v.flatAnn || (v.flatAnn = {}), bi = bk ? bk.indexOf(key) : -1;
+    if (bi >= 0 && key !== 'b' + bi && own['b' + bi]) {
+      if (!own[key]) own[key] = JSON.parse(JSON.stringify(own['b' + bi]));
+      delete own['b' + bi];
+    }
+    var s = own[key] || (own[key] = {});
     if (props.off !== undefined) { if (props.off && (props.off[0] || props.off[1])) s.off = [+props.off[0], +props.off[1]]; else delete s.off; }
     if (props.hidden !== undefined) { if (props.hidden) s.hidden = true; else delete s.hidden; }
     if (!Object.keys(s).length) delete own[key];

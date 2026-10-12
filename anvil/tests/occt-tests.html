@@ -371,8 +371,9 @@
   // OpenCascade cuts it from the exact sweep (round holes wrapped exactly: an ellipse on the bend's cylinder, thickened
   // radially). With K .5 the neutral axis is the mid-surface, so the metal a cut takes is T × its flat area wherever it
   // lies: OpenCascade's volume must be the uncut part's less exactly that. Both kernels' flats: same size, bends and
-  // loops (the cut once, in place); DXF entities equal where the cut has no curve (a round hole's loop in OpenCascade's
-  // flat joins its exact tessellation in the sheet to Anvil's 16-gon in the bend, so it is not checked as a CIRCLE) ---
+  // loops (the cut once, in place); DXF entities equal where the cut has no curve. rfI: a round hole's loop in
+  // OpenCascade's flat joins its exact tessellation in the sheet to Anvil's polygon in the bend; Kernel.flatPattern
+  // snaps it to its circle (snapFlatCircle), so both kernels write it as one CIRCLE (`circle`: checked on both) ---
   var CB_CUT = function (s) { return 'p.sketch("Top", ' + SH_T + ')' + s + '.cut("through", { reverse: true });\n'; };
   var CB_FLIN = 'p.flange(1, [[6, ' + SH_T + ', 2]], { position: "inside" });', CB_SB = 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).sketchedBend(90, { fixed: [1, 0, 2] });';
   var CB_CASES = [
@@ -381,7 +382,9 @@
     { name: 'Edge Flange (Material Inside) over a .2 square on its bend line', plain: SH_HEAD + CB_FLIN, code: SH_HEAD + CB_CUT('.rect(5.7804, -2.1, 0.2, 0.2)') + CB_FLIN, area: 0.04, loops: 2, dxf: true },
     // Bend Outside: a hole within T of the edge sat under the sweep's overlap strip into the sheet
     { name: 'Edge Flange (Bend Outside) beside a Ø.06 hole .02 from the edge', plain: SH_HEAD + 'p.flange(1, [[6, ' + SH_T + ', 2]]);', code: SH_HEAD + CB_CUT('.circle(5.95, -2, 0.03)') + 'p.flange(1, [[6, ' + SH_T + ', 2]]);', area: Math.PI * 0.0009, loops: 2, dxf: true },
-    { name: 'Sketched Bend across a Ø.5 hole and a .375 slot', plain: SH_HEAD + CB_SB, code: SH_HEAD + CB_CUT('.circle(3, -1, 0.25)') + CB_CUT('.slot(2.5, -3, 3.5, -3, 0.375)') + CB_SB, area: Math.PI * 0.0625 + 0.375 + Math.PI * 0.375 * 0.375 / 4, loops: 3 },
+    { name: 'Sketched Bend across a Ø.5 hole and a .375 slot', plain: SH_HEAD + CB_SB, code: SH_HEAD + CB_CUT('.circle(3, -1, 0.25)') + CB_CUT('.slot(2.5, -3, 3.5, -3, 0.375)') + CB_SB, area: Math.PI * 0.0625 + 0.375 + Math.PI * 0.375 * 0.375 / 4, loops: 3, dxf: true, circle: 1 },
+    // rfI: a Ø.281 clearance hole through the bend of an Edge Flange (Material Inside): one CIRCLE in both flats
+    { name: 'Edge Flange (Material Inside) over a Ø.281 hole through its bend', plain: SH_HEAD + CB_FLIN, code: SH_HEAD + CB_CUT('.circle(5.85, -2, 0.1405)') + CB_FLIN, area: Math.PI * 0.1405 * 0.1405, loops: 2, dxf: true, circle: 1 },
     { name: 'Sketched Bend across a notch in the plate\'s edge', plain: SH_HEAD + CB_SB, code: SH_HEAD + CB_CUT('.rect(2.8, -0.3, 0.4, 0.3)') + CB_SB, area: 0.12, loops: 1, dxf: true },
     // a line slanted across the plate: the bend follows the plate's edges, the flat is the plate
     { name: 'Sketched Bend along a line slanted across the plate', plain: null, code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(2.5, 0, 3.5, -4).sketchedBend(90, { fixed: [1, 0, 2] });', exact: 24 * SH_T, loops: 1, dxf: true }
@@ -413,12 +416,44 @@
         if (cfo.bends.length !== cfa.bends.length) whyC.push('bends ' + cfo.bends.length + ' / Anvil ' + cfa.bends.length);
         var srt = function (o) { var s = {}; Object.keys(o).sort().forEach(function (k) { s[k] = o[k]; }); return JSON.stringify(s); };
         if (cb.dxf && srt(shDxf(cfo)) !== srt(shDxf(cfa))) whyC.push('DXF ' + JSON.stringify(shDxf(cfo)) + ' vs Anvil ' + JSON.stringify(shDxf(cfa)));
+        if (cb.circle != null) [['OpenCascade', cfo], ['Anvil', cfa]].forEach(function (q) { var dq = shDxf(q[1]); if ((dq['CIRCLE/HOLES'] || 0) !== cb.circle) whyC.push(q[0] + ' flat DXF ' + JSON.stringify(dq) + ', want ' + cb.circle + ' CIRCLE on HOLES'); });
       }
       row(whyC.length ? 'bad' : 'ok', 'cut across a bend, OpenCascade = Anvil: ' + cb.name, whyC.join('\n') || ('volume ' + cbr.volume.toFixed(7) + ' (exact ' + want.toFixed(7) + ', Anvil ' + cva.toFixed(6) + '), flat ' + cfo.size.map(function (v) { return v.toFixed(4); }).join(' × ') + ' in, ' + cfo.loops.length + ' loop' + (cfo.loops.length === 1 ? '' : 's') + ', DXF ' + JSON.stringify(shDxf(cfo))), performance.now() - tcb);
       counts[whyC.length ? 'fail' : 'pass']++;
     } catch (e) { row('bad', 'cut across a bend, OpenCascade = Anvil: ' + cb.name, e.message); counts.fail++; }
   }
   // --- end cutbend ---
+  // --- rfI: pick tolerances in the model's units on both kernels (0.5 mm, 0.5 / 25.4 in an inch part, or the feature's
+  // size): on a small inch part a fillet picked 0.3 mm off its edge and a shell picked on its face build to the exact
+  // volume; a fillet picked 1.5 mm off and a shell picked .15 in above the face are refused by both (OpenCascade's shell
+  // used to fall through to a closed shell when its pick found no face) ---
+  var RFI_HEAD = 'p.units("in");\np.box(1, 0.5, 0.1);\n', RFI_SHELL = 'p.units("in");\np.box(1, 1, 0.5);\n';
+  var RFI_CASES = [
+    { name: 'inch fillet R.03 picked 0.3 mm off its edge', code: RFI_HEAD + 'p.fillet(0.03, [[0.5, 0.1, ' + 0.3 / 25.4 + ']]);', exact: 0.05 - (1 - Math.PI / 4) * 0.0009 },
+    { name: 'inch fillet R.03 picked 1.5 mm off its edge is refused', code: RFI_HEAD + 'p.fillet(0.03, [[0.5, 0.1, ' + 1.5 / 25.4 + ']]);', refused: /No edges found/ },
+    { name: 'inch shell .05 with the top open', code: RFI_SHELL + 'p.shell(0.05, [[0.5, 0.5, 0.5]]);', exact: 0.5 - 0.9 * 0.9 * 0.45 },
+    { name: 'inch shell .05 picked .15 in above the top is refused', code: RFI_SHELL + 'p.shell(0.05, [[0.5, 0.65, 0.5]]);', refused: /not found/ }
+  ];
+  for (var rfi = 0; rfi < RFI_CASES.length; rfi++) {
+    var rc = RFI_CASES[rfi], trf = performance.now();
+    try {
+      var ra = anvilBuild(rc.code), rr = await occt(ra.model, { noCache: true }), whyR = [], last = ra.model.features[ra.model.features.length - 1].id;
+      var rst = rr.status[last] || '';
+      if (rc.refused) {
+        if (ra.errors.indexOf(String(last)) < 0 && ra.errors.indexOf(last) < 0) whyR.push('Anvil built it');
+        if (rst === 'ok' || !rc.refused.test(rst)) whyR.push('OpenCascade: ' + JSON.stringify(rst));
+      } else {
+        if (ra.errors.length) whyR.push('Anvil errors ' + ra.errors.join(', '));
+        Object.keys(rr.status).forEach(function (id) { if (rr.status[id] !== 'ok') whyR.push('OpenCascade feature ' + id + ': ' + rr.status[id]); });
+        if (!rr.valid) whyR.push('invalid solid');
+        if (!(Math.abs(rr.volume - rc.exact) <= 1e-6 * rc.exact)) whyR.push('OpenCascade volume ' + rr.volume.toFixed(7) + ', exact ' + rc.exact.toFixed(7));
+        if (!(Math.abs(ra.volume - rc.exact) <= 2e-3 * rc.exact)) whyR.push('Anvil volume ' + ra.volume.toFixed(7) + ', exact ' + rc.exact.toFixed(7));
+      }
+      row(whyR.length ? 'bad' : 'ok', 'rfI pick tolerance, both kernels: ' + rc.name, whyR.join('\n') || (rc.refused ? 'refused: ' + rst : 'volume ' + rr.volume.toFixed(7) + ' in³ (exact ' + rc.exact.toFixed(7) + ', Anvil ' + ra.volume.toFixed(7) + ')'), performance.now() - trf);
+      counts[whyR.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'rfI pick tolerance, both kernels: ' + rc.name, e.message); counts.fail++; }
+  }
+  // --- end rfI ---
   // --- r4/drawings4 ---
   // drawings of OpenCascade's Mug: where the handle's tube meets the wall the edge is drawn from points on the true
   // intersection of the two cylinders (no chord more than 0.005 mm off it), and the handle's outline in the isometric
