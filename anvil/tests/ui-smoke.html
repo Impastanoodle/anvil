@@ -2612,7 +2612,7 @@
     await UI.exitSketch(); await idle();
     return n + ' icons, hidden and shown';
   });
-  step('sketch: Centerline (dashed, construction), a line across it infers Symmetric; a second dimension on it asks "Make this dimension driven?" in a page modal, the driven one is grey in parentheses and follows a 16 -> 30 edit; Construction Geometry toggles the line', async function () {
+  step('sketch: Centerline (dashed, construction), a level line across it infers Horizontal only (Symmetric added with Add Relations); a second dimension on it asks "Make this dimension driven?" in a page modal, the driven one is grey in parentheses and follows a 16 -> 30 edit; Construction Geometry toggles the line', async function () {
     need(UI, 'toggleConstruction'); need(UI, 'cmdCenterline'); need(UI, 'askDrivenIfOver');
     UI.loadModel(K.newModel('Symmetric')); await idle();
     UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
@@ -2636,7 +2636,12 @@
     UI.setTool('select');
     assert(f.entities.length === 2 && !f.entities[1].construction, 'line after the centerline is ordinary geometry');
     var rl = relList();
-    assert(rl.indexOf('symmetric 1.p1/1.p2/0') >= 0 && rl.indexOf('horizontal 1') < 0, 'inferred ' + rl.join(', ')); 
+    // lane C, fidelity #7: drawing infers Horizontal only (SolidWorks never infers Symmetric while sketching); the
+    // Symmetric comes from Add Relations, the Horizontal it repeats going first
+    assert(rl.indexOf('horizontal 1') >= 0 && !rl.some(function (x) { return /^symmetric/.test(x); }), 'inferred ' + rl.join(', '));
+    f.rels = f.rels.filter(function (x) { return !(x.type === 'horizontal' && x.refs.join() === '1'); });
+    var symR = W.SketchSolver.addRelation(f, 'symmetric', ['1.p1', '1.p2', '0']);
+    assert(symR.ok && relList().indexOf('symmetric 1.p1/1.p2/0') >= 0, 'Symmetric added ' + JSON.stringify(symR) + ' ' + relList().join(', '));
     UI.setTool('dimension');
     skClick(4, 4); skClick(4, 8);
     assert(f.dims && f.dims.length === 1 && UI.isDimEditOpen() && $('modal').hidden, 'first dimension: Modify box, no question');
@@ -4291,8 +4296,9 @@
   step('refine/sketcher: Sketch Fillet on a corner of a Corner Rectangle turns it into four lines (H/V, corner Coincidents) and rounds the corner with a tangent arc; Trim on one of its edges keeps the others\' relations', async function () {
     await rskNew();
     UI.setTool('rect'); rskClick([0, 0]); rskClick([40, 30]);
-    var r0 = rskEnts()[0];
-    assert(r0.t === 'rect', 'a rectangle');
+    // lane C, fidelity #13: the Corner Rectangle is four lines from the start
+    var r0 = { x: 0, y: 0, w: 40, h: 30 };
+    assert(rskEnts().map(function (e) { return e.t; }).join() === 'line,line,line,line', 'a rectangle (four lines)');
     UI.setTool('select');
     UI.cmdSketchFillet(); UI.pmSetField('r', '4');
     rskClick([r0.x + r0.w, r0.y + r0.h]);
@@ -4936,9 +4942,11 @@
     UI.setTool('rect'); rskClick([0, 0]); rskClick([40, 20]);
     UI.setTool('select');
     f = UI.activeSketchFeature();
-    f.dims = [{ e: 0, k: 'w', off: -3 }, { e: 0, k: 'h', off: 3 }];
+    // lane C, fidelity #13: the rectangle is four lines (bottom 0, right 1, top 2, left 3): its width and height are
+    // the bottom and left lines' lengths
+    f.dims = [{ e: 0, k: 'len', off: -3 }, { e: 3, k: 'len', off: -3 }];
     UI.updateSketches();
-    assert(UI.sketchStatus().status === 'full', 'rectangle fully defined');
+    assert(UI.sketchStatus().status === 'full', 'rectangle fully defined ' + JSON.stringify(UI.sketchStatus()) + ' ' + JSON.stringify(f.rels));
     UI.cmdSketchFillet(); UI.pmSetField('r', '4');
     rskClick([0.2, 0.2]);
     UI.pmOK();
@@ -6467,7 +6475,9 @@
       UI.setTool('rect'); rskClick([0, 30]); rskClick([20, 40]);
       UI.setTool('select');
       var ks = (f.dims || []).map(function (d) { return d.e + ':' + d.k; }).join(' ');
-      assert(ks === '1:dia 2:w 2:h', 'dims: ' + ks);
+      // lane C, fidelity #13: the rectangle is four lines (2..5): W and H are the bottom (2) and left (5) lines' lengths
+      assert(ks === '1:dia 2:len 5:len', 'dims: ' + ks);
+      near(K.dimValue(f.entities[2], f.dims[1]), 20, 1e-9, 'W 20'); near(K.dimValue(f.entities[5], f.dims[2]), 10, 1e-9, 'H 10');
       return ks;
     } finally { UI.sketchNumericInput(was); }
   });
@@ -6624,8 +6634,11 @@
       assert(box && box.length === 2, 'W / H box');
       near(+box[0].value, 16, 0.05, 'W'); near(+box[1].value, 10, 0.05, 'H');
       rskClick([16, -20]);
-      var r = rskEnts()[rskEnts().length - 1];
-      assert(r.t === 'rect' && Math.abs(r.w - 16) < 0.05 && Math.abs(r.h - 10) < 0.05 && !UI.sketchNumBox(), 'rect at the cursor: ' + JSON.stringify(r));
+      // lane C, fidelity #13: the rectangle is its four lines (the last four entities)
+      var E4 = rskEnts().slice(-4), xs = [], ys = [];
+      E4.forEach(function (e) { xs.push(e.x1, e.x2); ys.push(e.y1, e.y2); });
+      var r = { w: Math.max.apply(null, xs) - Math.min.apply(null, xs), h: Math.max.apply(null, ys) - Math.min.apply(null, ys) };
+      assert(E4.every(function (e) { return e.t === 'line'; }) && Math.abs(r.w - 16) < 0.05 && Math.abs(r.h - 10) < 0.05 && !UI.sketchNumBox(), 'rect at the cursor: ' + JSON.stringify(E4));
       selKey('Escape');
       return 'line 30, rect ' + r.w + ' x ' + r.h;
     } finally { UI.sketchNumericInput(was); }
@@ -6636,16 +6649,20 @@
     UI.setTool('rect'); rskClick([-30, -10]); rskClick([10, 10]);
     UI.setTool('slot'); rskClick([20, 0]); rskClick([40, 0]); rskClick([30, 4]);
     var f = UI.activeSketchFeature();
+    // lane C, fidelity #13: the rectangle is four lines (0 bottom … 3 left); a click on its top edge selects that line,
+    // and Offset (Select chain) takes the closed chain of four
     UI.setTool('select'); rskClick([-10, 10]);
-    assert(UI.App.sel && UI.App.sel.index === 0, 'rect selected ' + JSON.stringify(UI.App.sel));
+    assert(UI.App.sel && UI.App.sel.index === 2 && f.entities[2].t === 'line', 'top line selected ' + JSON.stringify(UI.App.sel));
+    var n0o = f.entities.length;
     UI.cmdOffsetEntities(); UI.pmSetField('d', '3'); await wait(20); UI.pmOK();
     var dists = f.rels.filter(function (x) { return x.type === 'distance'; });
-    assert(dists.length === 1 && dists[0].v === 3 && f.rels.some(function (x) { return x.type === 'offset'; }), 'one dimension + Offset: ' + JSON.stringify(f.rels));
-    var ri = f.rels.indexOf(dists[0]), o = f.entities[2];
+    assert(f.entities.length === n0o + 4 && dists.length === 1 && dists[0].v === 3 && f.rels.some(function (x) { return x.type === 'offset'; }), 'four offset lines, one dimension + Offset: ' + JSON.stringify(f.rels));
+    function bbOf(list) { var xs = [], ys = []; list.forEach(function (e) { xs.push(e.x1, e.x2); ys.push(e.y1, e.y2); }); return { w: Math.max.apply(null, xs) - Math.min.apply(null, xs), h: Math.max.apply(null, ys) - Math.min.apply(null, ys) }; }
+    var ri = f.rels.indexOf(dists[0]);
     var res = UI.editRelDim(ri, '5');
-    o = f.entities[2];
     assert(res.ok, res.error);
-    near(o.w - f.entities[0].w, 10, 1e-6, 'width grows by 2 x 5'); near(o.h - f.entities[0].h, 10, 1e-6, 'height grows by 2 x 5');
+    var bo = bbOf(f.entities.slice(n0o, n0o + 4)), bi = bbOf(f.entities.slice(0, 4));
+    near(Math.abs(bo.w - bi.w), 10, 1e-6, 'width changes by 2 x 5'); near(Math.abs(bo.h - bi.h), 10, 1e-6, 'height changes by 2 x 5');
     UI.setTool('select'); rskClick([30, 4]);
     var si = UI.App.sel && UI.App.sel.index;
     assert(f.entities[si] && f.entities[si].t === 'slot', 'slot selected ' + JSON.stringify(UI.App.sel));
@@ -8635,7 +8652,7 @@
   step('r15/tanslide15: a Line started on a circle (not at one of its points) slides tangent to it like Mastercam\'s Line Endpoints with Tangent — the start follows the cursor round the circle, the click leaves a line Tangent and Coincident; T draws from the clicked point instead', async function () {
     await rskNew();
     saAdd([{ t: 'circle', cx: 0, cy: 0, r: 10 }]);
-    UI.setTool('line');
+    UI.setTool('line'); UI.setLineTangentStart(true);   // rfE: Tangent start is opt-in (T), SolidWorks starts where clicked
     var a = [10 * Math.cos(Math.PI / 6), 10 * Math.sin(Math.PI / 6)];
     var inf = saInfer(rskScr(a));
     assert(inf.snap && inf.snap.kind === 'on' && inf.snap.e === 0, 'first point on the circle: ' + JSON.stringify(inf.snap));
@@ -8656,7 +8673,7 @@
     selEv('mousemove', rskScr([-30, -20]));
     var t0 = UI.App.tempEntities[0], p0 = UI.App.toolState.pts[0];   // the clicked point as snapped onto the circle (a pixel-rounded click)
     assert(Math.abs(t0.x1 - p0[0]) < 1e-9 && Math.abs(t0.y1 - p0[1]) < 1e-9 && Math.abs(Math.hypot(p0[0], p0[1]) - 10) < 1e-9, 'line from the clicked point: ' + JSON.stringify(t0) + ' vs ' + JSON.stringify(p0));
-    selKey('Escape'); selKey('Escape');
+    selKey('Escape'); selKey('Escape'); UI.setLineTangentStart(false);
     return 'start slid from ' + JSON.stringify(T1.map(fmt)) + ' to ' + JSON.stringify(T2.map(fmt)) + '; ' + rl.join(' ');
   });
   step('r15/dblclick15: a double-click ends the Line chain without the stub its second click made (as in SolidWorks) — click, click, then two clicks 2 px apart: the 2 px segment is taken back and the chain ends at the double-click point', async function () {
@@ -8914,7 +8931,7 @@
   step('p9-sketch: a tangent line with a typed length measures it from the sliding tangent point (not the clicked point), and N flips the sliding start to the other tangent point (shown in the hint)', async function () {
     await rskNew();
     saAdd([{ t: 'circle', cx: 0, cy: 0, r: 10 }]);
-    UI.setTool('line');
+    UI.setTool('line'); UI.setLineTangentStart(true);   // rfE: Tangent start is opt-in (T)
     rskClick([10 * Math.cos(Math.PI / 6), 10 * Math.sin(Math.PI / 6)]);
     assert(UI.App.toolState.tanFrom, 'sliding start armed');
     assert(/<b>N<\/b>/.test($('sketch-hint').innerHTML), 'hint names N: ' + $('sketch-hint').textContent);
@@ -8946,6 +8963,7 @@
     rskClick([-31, -20]); selKey('Escape'); selKey('Escape');
     var l2 = rskEnts()[2];
     assert(Math.hypot(l2.x1 - T2[0], l2.y1 - T2[1]) < 1 && sfRels().indexOf('tangent:2,0') >= 0, 'the line leaves the flipped point, Tangent: ' + JSON.stringify(l2));
+    UI.setLineTangentStart(false);
     return 'L 25 from ' + JSON.stringify([fmt(l.x1), fmt(l.y1)]) + '; N: ' + JSON.stringify(T1.map(fmt)) + ' -> ' + JSON.stringify(T2.map(fmt));
   });
   step('p9-sketch: shop audit — a 6 × 4 inch blank sketched through the UI as a shop types it (corner rectangle W 6 H 4, Sketch Fillet R 1/4 on the corners, four Ø.281 holes typed as Ø, a .5 wide slot 1 between centres, Smart Dimensions from the hole and slot centres to the edges typed 1/2, .5, 2-1/2) ends Fully Defined with exact sizes, ANSI inch labels clear of each other\'s lines, and extrudes to the analytic volume', async function () {
@@ -9029,7 +9047,9 @@
     var t = got.data;
     assert(/\$ACADVER\n1\nAC1015\n/.test(t) && /\$INSUNITS\n70\n4\n/.test(t) && /\$MEASUREMENT\n70\n1\n/.test(t), 'R2000 mm header');
     assert((t.match(/\n0\nCIRCLE\n/g) || []).length === 6 && (t.match(/\n0\nARC\n/g) || []).length === 2 && t.indexOf('LWPOLYLINE') < 0, 'lines and arcs: ' + (t.match(/\n0\n[A-Z]+\n/g) || []).join(''));
-    assert(/\$EXTMIN\n10\n0\n20\n/.test(t) && /\$EXTMAX\n10\n210\.744247\n20\n60\n/.test(t), 'the flat runs from x = 0 to its 210.744 length and up to y = 60 (the sheet note sits below y = 0)');
+    // rfE: DXF coordinates are written at full precision (210.74424…, not rounded to 210.744247)
+    var xmax = /\$EXTMAX\n10\n([-0-9.]+)\n20\n60\n/.exec(t);
+    assert(/\$EXTMIN\n10\n0\n20\n/.test(t) && xmax && Math.abs(+xmax[1] - 210.744247) < 5e-7, 'the flat runs from x = 0 to its 210.744 length and up to y = 60 (the sheet note sits below y = 0): ' + (xmax && xmax[1]));
     var r12 = anvil.dxfOutput({ export: 'sheet', version: 'R12' });
     assert(/AC1009/.test(r12) && r12.indexOf('LWPOLYLINE') < 0 && (r12.match(/\n0\nPOLYLINE\n/g) || []).length === 2 && /\n42\n/.test(r12), 'R12: two bulged POLYLINEs (blank, slot)');
     var r2k = anvil.dxfOutput({ export: 'sheet', version: 'R2000' });
@@ -10080,23 +10100,30 @@
     rskClick([0, 0]); selEv('mousemove', rskScr([30, 20]));
     near(+stField('x3').value, 30, 1e-6, 'live corner 3 X'); near(+stField('y3').value, 20, 1e-6, 'live corner 3 Y');
     rskClick([30, 20]);
-    var e = rskEnts();
-    assert(e.length === 1 && e[0].t === 'rect' && e[0].w === 30 && e[0].h === 20, 'rect ' + JSON.stringify(e));
+    // lane C, fidelity #13: a Corner / Center Rectangle is four lines (2 Horizontal + 2 Vertical), as SolidWorks draws it
+    function bbox4(list) { var xs = [], ys = []; list.forEach(function (q) { xs.push(q.x1, q.x2); ys.push(q.y1, q.y2); }); var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys); return { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 }; }
+    var e = rskEnts(), bb = bbox4(e);
+    assert(e.length === 4 && e.every(function (q) { return q.t === 'line'; }) && bb.w === 30 && bb.h === 20, 'rect ' + JSON.stringify(e));
+    var hv = stRels().filter(function (r) { return /^(horizontal|vertical) /.test(r); }).length;
+    assert(hv === 4, 'H / V: ' + stRels().join(', '));
     setInput(stField('x3'), '40');
-    assert(rskEnts()[0].w === 40 && rskEnts()[0].x === 0, 'corner 3 X drove the width: ' + JSON.stringify(rskEnts()[0]));
+    bb = bbox4(rskEnts());
+    near(bb.w, 40, 1e-9, 'corner 3 X drove the width: ' + JSON.stringify(rskEnts())); near(bb.x, 0, 1e-9, 'the first corner stays on the origin');
     D.querySelector('#pm .pm-icons button[aria-label="Center Rectangle"]').click();
     assert(UI.App.tool === 'crect' && stTitle() === 'Rectangle' && stField('cons').checked && stField('cx'), 'Center Rectangle in the PM: ' + UI.App.tool + ' ' + stTitle());
     assert(D.querySelector('#pm input[type=radio][data-key="fromMid:false"]').checked, 'From Corners');
     rskClick([80, 0]); rskClick([90, 5]);
-    e = rskEnts();
-    assert(e.length === 4 && e[1].t === 'crect' && e[1].cx === 80 && e[1].w === 20 && e[1].h === 10, 'crect ' + JSON.stringify(e[1]));
-    assert(e[2].construction && e[3].construction, 'construction diagonals');
-    stLine(e[2], 70, -5, 90, 5, 'diagonal');
+    e = rskEnts(); bb = bbox4(e.slice(4, 8));
+    assert(e.length === 11 && e.slice(4, 8).every(function (q) { return q.t === 'line' && !q.construction; }) && bb.x === 70 && bb.w === 20 && bb.h === 10, 'crect ' + JSON.stringify(e.slice(4)));
+    assert(e[8].construction && e[9].construction, 'construction diagonals');
+    assert(e[10].t === 'point' && e[10].x === 80 && e[10].y === 0, 'center point ' + JSON.stringify(e[10]));
+    stLine(e[8], 70, -5, 90, 5, 'diagonal');
     assert(UI.sketchStatus().status !== 'over', 'status ' + UI.sketchStatus().status);
     near(+stField('cx').value, 80, 1e-9, 'Center X');
     setInput(stField('cx'), '100');
-    assert(rskEnts()[1].cx === 100, 'center moved: ' + JSON.stringify(rskEnts()[1]));
-    near(rskEnts()[2].x1, 90, 1e-6, 'the diagonal followed');
+    near(rskEnts()[10].x, 100, 1e-6, 'center moved: ' + JSON.stringify(rskEnts()[10]));
+    near(rskEnts()[8].x1, 90, 1e-6, 'the diagonal followed');
+    near(bbox4(rskEnts().slice(4, 8)).w, 20, 1e-6, 'the width stayed');
     selKey('Escape');
     assert(!UI.hasPM() && UI.App.tool === 'select', 'Esc');
     UI.ribbonFlyFace('rect', 0);
@@ -13113,8 +13140,9 @@
   step('rfD/blank: an inch flat blank drawn like a SolidWorks user — Corner Rectangle typed 6 Tab 4 from the origin, four Ø.281 holes typed into Ø, a slot typed .375 wide, a notch (rectangle, one Power-trim drag, two clicks), Horizontal / Vertical Ordinate sets from the left / bottom edges (6.000 and 4.000 come out driven), Fully Define Sketch: Fully Defined; the sketch DXF (R12, R2000) reads back exactly and the script round trip is identical', async function () {
     var errs0 = errors.length, f = await rfdSketch(55, [3, 2]);
     UI.setTool('rect'); rskClick([0, 0]); rfdType([2, 1.5], ['6', '4']); UI.setTool('select');
-    var r = f.entities[0];
-    assert(f.entities.length === 1 && r.t === 'rect' && r.x === 0 && r.y === 0 && r.w === 6 && r.h === 4 && f.dims.length === 2, 'rectangle ' + JSON.stringify(f.entities));
+    // lane C, fidelity #13: four lines from the origin, W 6 and H 4 the bottom and left lines' driving lengths
+    var rl4 = f.entities.map(function (e) { return [e.t, e.x1, e.y1, e.x2, e.y2].join(); }).join(' ');
+    assert(rl4 === 'line,0,0,6,0 line,6,0,6,4 line,6,4,0,4 line,0,4,0,0' && f.dims.length === 2 && f.dims.map(function (d) { return d.e + ':' + d.k; }).join() === '0:len,3:len', 'rectangle ' + rl4 + ' ' + JSON.stringify(f.dims));
     UI.setTool('circle');
     [[0.5, 0.5], [5.5, 0.5], [0.5, 3.5], [5.5, 3.5]].forEach(function (c) { rskClick(c); rfdType([c[0] + 0.3, c[1] + 0.1], [null, '.281']); });
     UI.setTool('slot'); rskClick([2.5, 2]); rskClick([3.5, 2]); rfdType([3.5, 2.3], ['.375']); UI.setTool('select');
@@ -13631,6 +13659,414 @@
     return 'line (-15, 0) → (-5, 0)';
   });
   // --- end rfA ---
+  // --- rfE (sketch fidelity findings 2, 5, 9, 10, 11, 14: Modify box, Tangent start, Smart Dimension preselection,
+  // the Line chain's right-click menu, the Dimension PM value, the status bar / hint per command) ---
+  // a new Front sketch at 0.025 units per pixel (a 3 × 2 line is about 120 px wide)
+  async function rfENew(ents) {
+    await rskNew();
+    UI.zoomView(0.025 / UI.cam.scale);
+    UI.App.gridStale = true;
+    var f = UI.activeSketchFeature();
+    (ents || []).forEach(function (e) { f.entities.push(JSON.parse(JSON.stringify(e))); });
+    UI.updateSketches(); UI.setTool('select'); UI.setSelection([]);
+    return f;
+  }
+  function rfERclick(uv) {
+    var p = rskScr(uv);
+    selEv('mousemove', p);
+    selEv('mousedown', p, $('viewport'), { button: 2, buttons: 2 });
+    selEv('mouseup', p, null, { button: 2, buttons: 0 });
+  }
+  function rfEMenu() { var ms = D.querySelectorAll('body > .menu'), m = ms[ms.length - 1]; return m ? Array.prototype.slice.call(m.querySelectorAll('.mi')) : []; }
+  function rfEMenuRow(re) { return rfEMenu().filter(function (r) { return re.test(r.textContent); })[0]; }
+  step('rfE: Modify box — ✓ / Enter / a click elsewhere with the shown text (3.6056) untouched keep a √13 line exactly (no undo step, no "Dimension set to"); a typed value still drives it', async function () {
+    var f = await rfENew([{ t: 'line', x1: 0, y1: 0, x2: 3, y2: 2 }]), R13 = Math.sqrt(13);
+    UI.setTool('dimension');
+    rskClick([1.5, 1]); rskClick([-0.6, 2.6]); await wait(10);
+    assert(f.dims && f.dims.length === 1 && f.dims[0].k === 'len' && UI.isDimEditOpen(), 'length dimension placed, Modify box open: ' + JSON.stringify(f.dims));
+    var inp = $('dim-edit').querySelector('input');
+    assert(UI.dimEditValue() === '3.6056', 'shown rounded: ' + UI.dimEditValue());
+    UI.setStatus('rfE marker');
+    r3sKey(inp, 'Enter'); await wait(10);
+    var l = f.entities[0];
+    assert(!UI.isDimEditOpen() && l.x1 === 0 && l.y1 === 0 && l.x2 === 3 && l.y2 === 2, 'Enter kept the line exactly: ' + JSON.stringify(l));
+    assert(!/Dimension set to/.test(statusText()), 'no "Dimension set to": ' + statusText());
+    // ✓ and blur with the sketch clean: no undo step either
+    UI.App.sketchDirty = false;
+    var u0 = UI.App.undo.length;
+    assert(UI.openDimEdit(0), 'reopened');
+    $('dim-edit').querySelector('.dm-ok').click(); await wait(10);
+    assert(UI.openDimEdit(0), 'reopened again');
+    inp.blur(); await wait(10);
+    l = f.entities[0];
+    assert(l.x1 === 0 && l.y1 === 0 && l.x2 === 3 && l.y2 === 2, 'still the √13 line after ✓ and blur: ' + JSON.stringify(l));
+    near(K.dimValue(l, f.dims[0]), R13, 1e-15, '√13');
+    assert(UI.App.undo.length === u0 && !UI.App.sketchDirty, 'no undo step: ' + UI.App.undo.length + ' vs ' + u0);
+    // a typed value is a change: one undo step
+    var r = UI.editDim(0, '4');
+    assert(r.ok, 'typed 4: ' + JSON.stringify(r));
+    near(K.dimValue(f.entities[0], f.dims[0]), 4, 1e-9, 'driven to 4');
+    assert(UI.App.undo.length === u0 + 1 && /Dimension set to/.test(statusText()), 'one undo step and the status: ' + statusText());
+    if (UI.hasPM()) await UI.pmOK();
+    selKey('Escape'); selKey('Escape');
+    return 'kept ' + K.dimValue({ t: 'line', x1: 0, y1: 0, x2: 3, y2: 2 }, { k: 'len' });
+  });
+  step('rfE: Line ▸ Tangent start is off by default (a line started on a circle starts where clicked, Coincident only); T with the Line tool turns it on (status note) and the start slides to the tangent point; T again turns it off', async function () {
+    var f = await rfENew([{ t: 'circle', cx: 0, cy: 0, r: 1 }]);
+    assert(UI.lineTangentStart && UI.lineTangentStart() === false, 'off by default');
+    UI.setTool('line');
+    var a = [Math.cos(Math.PI / 6), Math.sin(Math.PI / 6)];
+    rskClick(a);
+    var p0 = UI.App.toolState.pts[0];
+    assert(Math.abs(Math.hypot(p0[0], p0[1]) - 1) < 1e-9, 'start on the circle: ' + JSON.stringify(p0));
+    selEv('mousemove', rskScr([2.5, -1.5]));
+    var t0 = UI.App.tempEntities[0];
+    assert(t0 && Math.abs(t0.x1 - p0[0]) < 1e-12 && Math.abs(t0.y1 - p0[1]) < 1e-12, 'the preview starts at the clicked point: ' + JSON.stringify(t0));
+    rskClick([2.5, -1.5]); selKey('Escape');
+    var l = f.entities[1], rl = sfRels();
+    assert(l && l.t === 'line' && Math.abs(l.x1 - p0[0]) < 1e-12 && Math.abs(l.y1 - p0[1]) < 1e-12, 'the line starts where clicked: ' + JSON.stringify(l));
+    assert(rl.indexOf('coincident:1.p1,0') >= 0 && !rl.some(function (x) { return /^tangent/.test(x); }), 'Coincident only: ' + rl.join(' '));
+    selKey('Escape');
+    // T turns it on (also before the start is clicked) and says so
+    UI.setTool('line');
+    selKey('t');
+    assert(UI.lineTangentStart() === true && /Tangent start on/.test(statusText()), 'T: on, status ' + statusText());
+    var a2 = [Math.cos(200 * Math.PI / 180), Math.sin(200 * Math.PI / 180)];
+    rskClick(a2);
+    assert(UI.App.toolState.tanFrom && !UI.App.toolState.tanFrom.off, 'the start slides');
+    selEv('mousemove', rskScr([-3, -2]));
+    var t1 = UI.App.tempEntities[0], T = [t1.x1, t1.y1], Q = [-3, -2];
+    assert(Math.abs(Math.hypot(T[0], T[1]) - 1) < 1e-9 && Math.abs(T[0] * (Q[0] - T[0]) + T[1] * (Q[1] - T[1])) < 1e-6, 'start at the tangent point: ' + JSON.stringify(T));
+    selKey('t');
+    assert(UI.lineTangentStart() === false && UI.App.toolState.tanFrom.off && /Tangent start off/.test(statusText()), 'T again: off ' + statusText());
+    selKey('Escape'); selKey('Escape');
+    UI.setLineTangentStart(false);
+    return rl.join(' ');
+  });
+  step('rfE: Smart Dimension with a preselection — a circle clicked with the Select tool, then the ribbon\'s Smart Dimension: the Ø is on the cursor and the next click places it; two parallel lines selected give their distance', async function () {
+    var f = await rfENew([{ t: 'circle', cx: 0, cy: 0, r: 1 }, { t: 'line', x1: 2, y1: 0, x2: 4, y2: 0 }, { t: 'line', x1: 2, y1: 1, x2: 4, y2: 1 }]);
+    rskClick([1, 0]); await wait(10);
+    assert(UI.selection().some(function (s) { return s.kind === 'entity' && s.index === 0; }), 'circle selected: ' + JSON.stringify(UI.selection()));
+    ribbonButton('Smart Dimension').click(); await wait(10);
+    var st = UI.App.toolState;
+    assert(UI.App.tool === 'dimension' && st.dim && st.dim.e === 0 && st.dim.k === 'dia' && UI.App.tempDim, 'Ø on the cursor: ' + JSON.stringify({ tool: UI.App.tool, dim: st.dim }));
+    assert(!UI.selection().length, 'the selection is used up');
+    selEv('mousemove', rskScr([1.5, 1.5])); rskClick([1.5, 1.5]); await wait(10);
+    assert(f.dims && f.dims.length === 1 && f.dims[0].e === 0 && f.dims[0].k === 'dia', 'Ø placed by the next click: ' + JSON.stringify(f.dims));
+    if (UI.isDimEditOpen()) UI.cancelDimEdit();
+    if (UI.hasPM()) await UI.pmOK();
+    UI.setTool('select');
+    UI.setSelection([{ kind: 'entity', index: 1 }, { kind: 'entity', index: 2 }]);
+    UI.setTool('dimension');
+    st = UI.App.toolState;
+    assert(st.relDim && st.relDim.type === 'distance' && UI.App.tempRelDim, 'the distance between the lines on the cursor: ' + JSON.stringify(st.relDim));
+    var n0 = (f.rels || []).length;
+    selEv('mousemove', rskScr([4.5, 0.5])); rskClick([4.5, 0.5]); await wait(10);
+    var rel = (f.rels || [])[n0];
+    assert(rel && rel.type === 'distance' && Math.abs(rel.v - 1) < 1e-9, 'distance 1 placed: ' + JSON.stringify(rel));
+    if (UI.isDimEditOpen()) UI.cancelDimEdit();
+    if (UI.hasPM()) await UI.pmOK();
+    selKey('Escape'); selKey('Escape');
+    return 'Ø and distance ' + rel.v;
+  });
+  step('rfE: right-click while drawing a Line chain opens End Chain / Select / Smart Dimension / Exit Sketch (the chain goes on until a row is picked); End Chain keeps the Line tool, Smart Dimension switches to it', async function () {
+    var f = await rfENew([]);
+    UI.setTool('line');
+    rskClick([0, 0]); rskClick([2, 0]);
+    rfERclick([2.5, 1]);
+    var rows = rfEMenu().map(function (r) { return r.textContent; });
+    assert(D.querySelector('body > .menu') && rfEMenuRow(/End Chain/) && rfEMenuRow(/^.?Select$/) && rfEMenuRow(/Smart Dimension/) && rfEMenuRow(/Exit Sketch/), 'the chain menu: ' + rows.join(' | '));
+    assert(UI.App.tool === 'line' && UI.App.toolState.pts.length === 1 && f.entities.length === 1, 'the chain is still going');
+    rfEMenuRow(/End Chain/).click();
+    assert(!D.querySelector('body > .menu') && UI.App.tool === 'line' && !UI.App.toolState.pts.length, 'End Chain: chain ended, Line tool kept');
+    rskClick([0, 1]); rskClick([2, 1]);
+    rfERclick([2.5, 2]);
+    rfEMenuRow(/Smart Dimension/).click();
+    assert(UI.App.tool === 'dimension' && f.entities.length === 2, 'Smart Dimension: ' + UI.App.tool);
+    // with nothing in progress a right-click still puts the tool down (no menu)
+    UI.setTool('line');
+    rfERclick([3, 3]);
+    assert(!D.querySelector('body > .menu') && UI.App.tool === 'select', 'nothing drawn: tool put down, no menu');
+    UI.closeMenus();
+    return rows.join(' | ');
+  });
+  step('rfE: the Dimension PM\'s Primary Value shows the document precision and follows a Modify-box edit; a value typed in the PM keeps its full precision', async function () {
+    var f = await rfENew([{ t: 'line', x1: 0, y1: 0, x2: 3, y2: 2 }]);
+    UI.setTool('dimension');
+    rskClick([1.5, 1]); rskClick([-0.6, 2.6]); await wait(10);
+    assert(UI.dimensionPMOpen() && UI.isDimEditOpen(), 'Dimension PM beside the Modify box');
+    var inch = UI.unitLabel() === 'in', val = pmField('Value');
+    assert(val, 'Value field');
+    assert(+val.value === (inch ? 3.606 : 3.61), 'Value at the document precision: ' + val.value);
+    var inp = $('dim-edit').querySelector('input');
+    r3sType(inp, '4'); r3sKey(inp, 'Enter'); await wait(10);
+    near(K.dimValue(f.entities[0], f.dims[0]), 4, 1e-9, 'driven to 4');
+    val = pmField('Value');
+    assert(UI.dimensionPMOpen() && +val.value === 4, 'the PM follows the Modify box: ' + (val && val.value));
+    setInput(val, '3.60555127546'); await wait(10);
+    near(K.dimValue(f.entities[0], f.dims[0]), 3.60555127546, 1e-9, 'typed in the PM at full precision');
+    f.dims[0].prec = 1;
+    UI.refreshDimensionPM();
+    assert(+pmField('Value').value === 3.6, 'the dimension\'s own precision (1 place): ' + pmField('Value').value);
+    await UI.pmOK();
+    selKey('Escape'); selKey('Escape');
+    return 'value ' + (inch ? '3.606' : '3.61') + ' → 4';
+  });
+  step('rfE: the status bar and the hint follow the active command — a tool after another command\'s prompt shows its own prompt; Extend Entities puts its message in the hint line (not the Select tool\'s)', async function () {
+    var f = await rfENew([{ t: 'line', x1: 0, y1: 0, x2: 2, y2: 0 }]);
+    UI.setStatus('Select two lines: a stale prompt');
+    UI.setTool('rect');
+    var h = $('sketch-hint').textContent.replace(/\s+/g, ' ').trim();
+    assert(!/stale prompt/.test(statusText()) && statusText() === h && h.length > 5, 'status = the Corner Rectangle hint: "' + statusText() + '" / "' + h + '"');
+    UI.setStatus('Select two lines: a stale prompt');
+    UI.setTool('dimension');
+    assert(/^Click a line/.test(statusText()), 'Smart Dimension prompt: ' + statusText());
+    selKey('Escape');
+    assert(UI.App.tool === 'select', 'Select tool');
+    UI.cmdExtendEntities(); await wait(10);
+    assert(/lengthen/i.test($('sketch-hint').textContent) && !/Click an entity to select it/.test($('sketch-hint').textContent), 'Extend hint: ' + $('sketch-hint').textContent);
+    UI.pmCancel(); await wait(10);
+    assert(/Click an entity to select it/.test($('sketch-hint').textContent), 'back to the Select hint: ' + $('sketch-hint').textContent);
+    return statusText();
+  });
+  // --- end rfE ---
+  // --- rfF: Select tool — entity PMs keep the keyboard, multi-selection Properties PM, point selection, drag snaps ---
+  function rfFGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group > h4'), function (h) { return h.textContent.trim(); }); }
+  function rfFButtons() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group button'), function (b) { return b.textContent.trim(); }); }
+  // a key pressed where the keyboard is (the focused PM box, else the page), as a real key press arrives
+  function rfFKey(k) { var t = D.activeElement && D.activeElement !== D.body ? D.activeElement : D; t.dispatchEvent(new W.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }
+  function rfFSel() { return anvil.selection().map(function (s) { return s.kind === 'sketchPoint' ? 'pt:' + s.ref : s.kind + ':' + s.index; }).join(' '); }
+  function rfFRels() { return (UI.activeSketchFeature().rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+  step('rfF: Select + Delete deletes a circle, an arc, a slot, a polygon and an ellipse — their PropertyManagers leave the keyboard with the graphics area (Delete blanked Center X before)', async function () {
+    await rskNew();
+    var f = fxSk([{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'arc', cx: 20, cy: 0, r: 5, a0: 0, a1: 180 }, { t: 'slot', x1: 40, y1: 0, x2: 50, y2: 0, w: 6 },
+      { t: 'poly', cx: -25, cy: 0, r: 6, n: 6, rot: 0 }, { t: 'ellipse', cx: 0, cy: 25, rx: 10, ry: 5, rot: 0 }]);
+    UI.setTool('select');
+    var picks = [['circle', [0, -5], 'Circle'], ['arc', [20, 5], 'Arc'], ['slot', [45, 3], 'Slot'], ['poly', [-29.5, 2.598], 'Polygon'], ['ellipse', [6, 25 - 4], 'Ellipse']], done = [];
+    for (var k = 0; k < picks.length; k++) {
+      var t = picks[k][0], n0 = f.entities.length;
+      rskClick(picks[k][1]); await wait(10);
+      assert(rfFSel() === 'entity:' + f.entities.map(function (e) { return e.t; }).indexOf(t), t + ' selected: ' + rfFSel());
+      assert(UI.pmTitle() && UI.pmTitle().indexOf(picks[k][2]) >= 0, t + ' PM: ' + UI.pmTitle());
+      var a = D.activeElement;
+      assert(!(a && $('pm').contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)), t + ': the PM took the keyboard (' + (a && a.tagName) + ' ' + (a && a.getAttribute('data-key')) + ')');
+      rfFKey('Delete'); await wait(10);
+      f = UI.activeSketchFeature();
+      assert(f.entities.length === n0 - 1 && !f.entities.some(function (e) { return e.t === t; }), t + ' deleted: ' + JSON.stringify(f.entities.map(function (e) { return e.t; })));
+      assert(!UI.hasPM(), t + ': PM closed: ' + UI.pmTitle());
+      done.push(t);
+    }
+    UI.exitSketch(true); await idle();
+    return done.join(', ') + ' deleted';
+  });
+  step('rfF: two sketch entities selected (Ctrl+click, Shift+click, a box) show the Properties PM with Selected Entities, Existing Relations and Add Relations; Parallel adds the relation; Ctrl+click back to one shows Line Properties, to none closes it', async function () {
+    await rskNew();
+    var f = fxSk([{ t: 'line', x1: 0, y1: 0, x2: 20, y2: 2 }, { t: 'line', x1: 0, y1: 10, x2: 20, y2: 15 }, { t: 'circle', cx: 40, cy: 5, r: 4 }]);
+    UI.setTool('select');
+    rskClick([10, 1]); await wait(10);
+    assert(UI.pmTitle() === 'Line Properties', 'one line: ' + UI.pmTitle());
+    selClick(rskScr([10, 12.5]), { ctrlKey: true }); await wait(10);
+    assert(rfFSel() === 'entity:0 entity:1', 'Ctrl+click adds: ' + rfFSel());
+    assert(UI.pmTitle() === 'Properties', 'Properties PM: ' + UI.pmTitle());
+    var g = rfFGroups();
+    assert(g.indexOf('Selected Entities') >= 0 && g.indexOf('Existing Relations') >= 0 && g.indexOf('Add Relations') >= 0, 'groups ' + g.join(' | '));
+    var b = rfFButtons();
+    assert(b.indexOf('Parallel') >= 0 && b.indexOf('Perpendicular') >= 0 && b.indexOf('Equal') >= 0, 'relation buttons ' + b.join(' | '));
+    var a = D.activeElement;
+    assert(!(a && $('pm').contains(a) && a.tagName === 'INPUT'), 'the Properties PM took the keyboard');
+    clickPmButton('Parallel'); await wait(10);
+    assert(rfFRels().some(function (r) { return /^parallel:0,1$|^parallel:1,0$/.test(r); }), 'Parallel added: ' + rfFRels().join(' '));
+    f = UI.activeSketchFeature();
+    near((f.entities[0].y2 - f.entities[0].y1) * (f.entities[1].x2 - f.entities[1].x1) - (f.entities[0].x2 - f.entities[0].x1) * (f.entities[1].y2 - f.entities[1].y1), 0, 1e-7, 'lines parallel');
+    assert(UI.pmTitle() === 'Properties' && rfFSel() === 'entity:0 entity:1' && /Parallel/.test($('pm').textContent), 'still Properties, the relation listed: ' + UI.pmTitle() + ' ' + rfFSel());
+    var l1 = f.entities[1];
+    selClick(rskScr([(l1.x1 + l1.x2) / 2, (l1.y1 + l1.y2) / 2]), { ctrlKey: true }); await wait(10);
+    assert(rfFSel() === 'entity:0' && UI.pmTitle() === 'Line Properties', 'Ctrl+click back to one: ' + rfFSel() + ' ' + UI.pmTitle());
+    var l0 = f.entities[0];
+    selClick(rskScr([(l0.x1 + l0.x2) / 2, (l0.y1 + l0.y2) / 2]), { ctrlKey: true }); await wait(10);
+    assert(rfFSel() === '' && !UI.hasPM(), 'Ctrl+click to none: ' + rfFSel() + ' ' + UI.pmTitle());
+    // Shift+click: a line and the circle (Tangent offered)
+    rskClick([(l0.x1 + l0.x2) / 2, (l0.y1 + l0.y2) / 2]); await wait(10);
+    selClick(rskScr([44, 5]), { shiftKey: true }); await wait(10);
+    assert(rfFSel() === 'entity:0 entity:2' && UI.pmTitle() === 'Properties' && rfFButtons().indexOf('Tangent') >= 0, 'Shift+click: ' + rfFSel() + ' ' + UI.pmTitle() + ' ' + rfFButtons().join(' | '));
+    rskClick([60, 30]); await wait(10);
+    assert(rfFSel() === '' && !UI.hasPM(), 'a click on nothing clears it: ' + rfFSel() + ' ' + UI.pmTitle());
+    // a box round the two lines
+    anvil.boxSelect(rskScr([-5, -5]), rskScr([25, 25])); await wait(10);
+    assert(rfFSel() === 'entity:0 entity:1' && UI.pmTitle() === 'Properties', 'box: ' + rfFSel() + ' ' + UI.pmTitle());
+    // Delete removes both and closes it
+    rfFKey('Delete'); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(f.entities.length === 1 && f.entities[0].t === 'circle' && !UI.hasPM(), 'both deleted: ' + JSON.stringify(f.entities) + ' ' + UI.pmTitle());
+    UI.exitSketch(true); await idle();
+    return 'Ctrl / Shift / box -> Properties, Parallel, back to Line Properties';
+  });
+  step('rfF: clicking a line\'s end point (an arc end, a circle centre) selects the point — the Point PM with X / Y, Existing and Add Relations; Delete deletes nothing and leaves X; X moves the end; two points Ctrl+clicked take a Horizontal', async function () {
+    await rskNew();
+    var f = fxSk([{ t: 'line', x1: -20, y1: -8, x2: -12, y2: -4 }, { t: 'line', x1: 0, y1: 0, x2: 15, y2: 6 }, { t: 'circle', cx: 30, cy: 10, r: 6 }, { t: 'arc', cx: 30, cy: -15, r: 5, a0: 0, a1: 90 }]);
+    UI.setTool('select');
+    rskClick([-12, -4]); await wait(10);
+    assert(rfFSel() === 'pt:0.p2', 'the end point selected: ' + rfFSel());
+    assert(UI.pmTitle() === 'Point' && pmField('X') && +pmField('X').value === -12 && +pmField('Y').value === -4, 'Point PM: ' + UI.pmTitle());
+    var g = rfFGroups();
+    assert(g.indexOf('Existing Relations') >= 0 && g.indexOf('Add Relations') >= 0 && g.indexOf('Parameters') >= 0, 'groups ' + g.join(' | '));
+    assert(rfFButtons().indexOf('Fix') >= 0, 'Fix offered for a point: ' + rfFButtons().join(' | '));
+    var u0 = UI.App.undo.length;
+    rfFKey('Delete'); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(f.entities.length === 4 && UI.pmTitle() === 'Point' && pmField('X').value !== '' && +pmField('X').value === -12 && UI.App.undo.length === u0, 'Delete: nothing deleted, X kept: ' + f.entities.length + ' ' + UI.pmTitle() + ' "' + (pmField('X') && pmField('X').value) + '"');
+    UI.pmSetField('x', '-10'); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(Math.abs(f.entities[0].x2 + 10) < 1e-9 && Math.abs(f.entities[0].y2 + 4) < 1e-6 && Math.abs(f.entities[0].x1 + 20) < 1e-6, 'X moved the end: ' + JSON.stringify(f.entities[0]));
+    rskClick([-15, -6]); await wait(10);
+    assert(rfFSel() === 'entity:0' && UI.pmTitle() === 'Line Properties', 'the line\'s middle: ' + rfFSel() + ' ' + UI.pmTitle());
+    rskClick([30, 10]); await wait(10);
+    assert(rfFSel() === 'pt:2.c' && UI.pmTitle() === 'Point', 'circle centre: ' + rfFSel() + ' ' + UI.pmTitle());
+    rskClick([30, 4]); await wait(10);
+    assert(rfFSel() === 'entity:2' && UI.pmTitle() === 'Circle', 'circle edge: ' + rfFSel() + ' ' + UI.pmTitle());
+    rskClick([35, -15]); await wait(10);
+    assert(rfFSel() === 'pt:3.p1' && UI.pmTitle() === 'Point', 'arc end: ' + rfFSel() + ' ' + UI.pmTitle());
+    // the line's end and the other line's start: Properties, Horizontal between the two points
+    rskClick([-10, -4]); await wait(10);
+    selClick(rskScr([0, 0]), { ctrlKey: true }); await wait(10);
+    assert(rfFSel() === 'pt:0.p2 pt:1.p1' && UI.pmTitle() === 'Properties' && rfFButtons().indexOf('Horizontal') >= 0, 'two points: ' + rfFSel() + ' ' + UI.pmTitle() + ' ' + rfFButtons().join(' | '));
+    clickPmButton('Horizontal'); await wait(10);
+    f = UI.activeSketchFeature();
+    assert(rfFRels().indexOf('horizontal:0.p2,1.p1') >= 0 && Math.abs(f.entities[0].y2 - f.entities[1].y1) < 1e-9, 'Horizontal between the points: ' + rfFRels().join(' '));
+    UI.pmCancel(); await wait(10);
+    assert(rfFSel() === '' && !UI.hasPM(), 'Esc / ✗ clears it: ' + rfFSel());
+    UI.exitSketch(true); await idle();
+    return 'end point, centre, arc end: Point PM; Horizontal between two points';
+  });
+  step('rfF: dragging a line\'s end snaps onto another sketch point (Coincident) and onto a model corner (no relation); with Ctrl held it lands where it is dropped', async function () {
+    var f = await msBox('{ face: b, normal: [0, 0, 1] }, 0', 'DragSnapL');
+    f = UI.activeSketchFeature();
+    var n0 = f.entities.length;
+    f.entities.push({ t: 'line', x1: 50, y1: 30, x2: 70, y2: 40 }, { t: 'point', x: 80, y: 20 });
+    UI.updateSketches();
+    var L = n0, P = n0 + 1, r0 = (f.rels || []).length;
+    UI.setTool('select');
+    var q = rskScr([80, 20]);
+    await selDrag(rskScr([70, 40]), [q[0] + 4, q[1] - 3]);
+    f = UI.activeSketchFeature();
+    assert(f.entities[L].x2 === 80 && f.entities[L].y2 === 20 && (f.rels || []).some(function (r) { return r.type === 'coincident' && r.refs.indexOf(L + '.p2') >= 0 && r.refs.indexOf(String(P)) >= 0; }), 'onto the sketch point, Coincident: ' + JSON.stringify(f.entities[L]) + ' ' + rfFRels().join(' '));
+    UI.undo(); await idle();
+    f = UI.activeSketchFeature();
+    assert(f.entities[L].x2 === 70 && (f.rels || []).length === r0, 'undone');
+    var v = rskScr([100, 60]);
+    await selDrag(rskScr([70, 40]), [v[0] - 3, v[1] + 4]);
+    f = UI.activeSketchFeature();
+    assert(f.entities[L].x2 === 100 && f.entities[L].y2 === 60 && (f.rels || []).length === r0, 'onto the model corner, no relation: ' + JSON.stringify(f.entities[L]) + ' ' + rfFRels().join(' '));
+    var c = rskScr([80, 20]);
+    await selDrag(rskScr([100, 60]), [c[0] + 3, c[1] + 2], null, { ctrlKey: true });
+    f = UI.activeSketchFeature();
+    var e = f.entities[L];
+    assert(Math.abs(e.x2 - 80) > 0.3 && Math.abs(e.x2 - 80) < 2 && (f.rels || []).length === r0, 'Ctrl: no snap to the point: ' + JSON.stringify(e) + ' ' + rfFRels().join(' '));
+    UI.exitSketch(true); await idle();
+    return 'Coincident on the point, model corner exact, Ctrl free at (' + e.x2.toFixed(2) + ', ' + e.y2.toFixed(2) + ')';
+  });
+  step('rfF: hidden levels and layers — a box selects nothing on them, a click on their curve or end point selects nothing; shown again, both select', async function () {
+    var f = await lyrPart('p.sketch("Front", 0, "BoxF").line(0, 0, 30, 0).circle(15, 15, 5);', 'BoxF');
+    UI.setTool('select');
+    var r1 = UI.levels.op('makeMain', 2), r2 = UI.levels.op('setVisible', 1, false);
+    assert(r1.ok && r2.ok, 'level 1 hidden: ' + JSON.stringify([r1, r2]));
+    f = UI.activeSketchFeature();
+    assert(UI.entityLayerHidden(f, f.entities[0]), 'level 1 entities hidden');
+    anvil.boxSelect(rskScr([-5, -5]), rskScr([35, 25])); await wait(10);
+    assert(rfFSel() === '' && !UI.hasPM(), 'box on a hidden level: ' + rfFSel());
+    rskClick([10, 0]); rskClick([30, 0]); rskClick([15, 15]); await wait(10);
+    assert(rfFSel() === '' && !UI.hasPM(), 'clicks on a hidden level: ' + rfFSel() + ' ' + UI.pmTitle());
+    UI.levels.op('setVisible', 1, true); await wait(10);
+    anvil.boxSelect(rskScr([-5, -5]), rskScr([35, 25])); await wait(10);
+    assert(rfFSel() === 'entity:0 entity:1' && UI.pmTitle() === 'Properties', 'shown: ' + rfFSel() + ' ' + UI.pmTitle());
+    UI.pmCancel();
+    // a hidden sketch layer, the same
+    f.layers = (f.layers || []).concat([{ name: 'HID', hidden: true }]); f.entities[1].layer = 'HID'; UI.updateSketches();
+    rskClick([15, 15]); await wait(10);
+    assert(rfFSel() === '', 'circle centre on a hidden layer: ' + rfFSel());
+    anvil.boxSelect(rskScr([-5, -5]), rskScr([35, 25])); await wait(10);
+    assert(rfFSel() === 'entity:0' && UI.pmTitle() === 'Line Properties', 'box with the layer hidden: ' + rfFSel() + ' ' + UI.pmTitle());
+    UI.setSelection([]); UI.closePM();
+    await UI.exitSketch(true); await idle();
+    return 'nothing picked on hidden level 1 / layer HID';
+  });
+  // --- end rfF ---
+  // --- rfG (lane C: sketch fidelity #7, #8, #13 — test-reports/2026-10-08-sketch-fidelity.md) ---
+  function rfgRels() { return (UI.activeSketchFeature().rels || []).map(function (r) { return r.type + ' ' + r.refs.join('/'); }); }
+  function rfgTypes(list) { return list.map(function (e) { return e.t + (e.construction ? '(c)' : ''); }).join(','); }
+  step('rfG: inference while drawing — a level line across a centerline infers Horizontal only (no Symmetric, none in the preview glyphs); a Corner Rectangle started on a line gets ONE Coincident (the clicked corner), not one per corner on the line', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    UI.cmdCenterline(); rskClick([10, -20]); rskDbl([10, 20]); selKey('Escape');
+    var f = UI.activeSketchFeature();
+    assert(f.entities.length === 1 && f.entities[0].construction, 'centerline ' + JSON.stringify(f.entities));
+    UI.setTool('line'); rskClick([6, -8]); selEv('mousemove', rskScr([14, -8]));
+    var prev = (UI.App.inferPreview || []).map(function (c) { return c.type; });
+    assert(prev.indexOf('symmetric') < 0, 'preview glyphs ' + prev.join());
+    rskClick([14, -8]); selKey('Escape'); UI.setTool('select');
+    var l = f.entities[1];
+    assert(l && l.t === 'line' && l.x1 === 6 && l.x2 === 14 && l.y1 === -8 && l.y2 === -8, 'mirrored ends ' + JSON.stringify(l));
+    var on1 = rfgRels().filter(function (r) { return / 1(\.|\/|$)/.test(r); });
+    assert(on1.join() === 'horizontal 1', 'the line infers Horizontal only: ' + rfgRels().join(', '));
+    // a Corner Rectangle (10,0)-(30,-15) whose top edge lies on the line y = 0
+    await rskNew();
+    UI.setTool('line'); rskClick([-10, 0]); rskClick([60, 0]); selKey('Escape');
+    UI.setTool('rect'); rskClick([10, 0]); rskClick([30, -15]); UI.setTool('select');
+    f = UI.activeSketchFeature();
+    var onLine = (f.rels || []).filter(function (r) { return r.type === 'coincident' && r.refs.indexOf('0') >= 0; });
+    assert(onLine.length === 1, 'one Coincident with the line: ' + rfgRels().join(', '));
+    var P = W.SketchSolver.refPoint(f, onLine[0].refs[0] === '0' ? onLine[0].refs[1] : onLine[0].refs[0]);
+    assert(Math.abs(P[0] - 10) < 0.5 && Math.abs(P[1]) < 1e-9, 'at the clicked corner ' + JSON.stringify(P));   // (a point snapped onto a line keeps the pixel's x)
+    var st = UI.sketchStatus();
+    assert(st.status === 'under' && st.rels.every(function (s) { return s === 'ok'; }), 'status ' + JSON.stringify(st));
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'line: horizontal only · rectangle: ' + onLine[0].refs.join('/');
+  });
+  step('rfG: a Corner Rectangle is four lines with 2 Horizontal + 2 Vertical (one undo step); an edge click opens Line Properties; Display/Delete Relations lists the H / V and deleting a Vertical frees one degree; the script round trip is identical. A Center Rectangle on the origin: four lines, construction diagonals and a center point Coincident with the origin. Polygon and Straight Slot stay single entities', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    var u0 = UI.App.undo.length;
+    UI.setTool('rect'); rskClick([0, 0]); rskClick([40, 20]); UI.setTool('select');
+    var f = UI.activeSketchFeature();
+    assert(rfgTypes(f.entities) === 'line,line,line,line' && UI.App.undo.length === u0 + 1, 'four lines, one undo step: ' + rfgTypes(f.entities) + ' undo +' + (UI.App.undo.length - u0));
+    var rl = rfgRels();
+    ['horizontal 0', 'vertical 1', 'horizontal 2', 'vertical 3', 'coincident 0.p2/1.p1', 'coincident 3.p2/0.p1'].forEach(function (x) { assert(rl.indexOf(x) >= 0, x + ' in ' + rl.join(', ')); });
+    assert(rl.some(function (x) { return /^coincident 0\.p1\/O$|^coincident 3\.p2\/O$/.test(x); }) && rl.filter(function (x) { return /\/O$/.test(x); }).length === 1, 'the first corner on the origin, once: ' + rl.join(', '));
+    // an edge selects as a line
+    rskClick([20, 0]);
+    assert(UI.App.sel && UI.App.sel.kind === 'entity' && UI.App.sel.index === 0 && stTitle() === 'Line Properties', 'edge click: ' + JSON.stringify(UI.App.sel) + ' ' + stTitle());
+    UI.closePM(); UI.App.sel = null;
+    // Display/Delete Relations: the H / V are listed and a Vertical can be deleted (the rectangle may then skew)
+    UI.cmdDisplayRelations();
+    var rows = Array.prototype.map.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return r.textContent; });
+    assert(rows.length === f.rels.length && rows.filter(function (t) { return /Horizontal/.test(t); }).length === 2 && rows.filter(function (t) { return /Vertical/.test(t); }).length === 2, 'rows ' + rows.join(' | '));
+    var dof0 = UI.sketchStatus().dof, vRow = Array.prototype.filter.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return /Vertical/.test(r.textContent); })[0];
+    vRow.click(); clickPmButton('Delete');
+    assert(f.rels.filter(function (r) { return r.type === 'vertical'; }).length === 1 && UI.sketchStatus().dof === dof0 + 1, 'Vertical deleted: dof ' + dof0 + ' -> ' + UI.sketchStatus().dof);
+    await UI.pmOK();
+    var m2 = K.newModel('RT'); K.runScript(m2, K.generateScript(UI.App.model));
+    var s2 = m2.features.filter(function (x) { return x.type === 'sketch'; })[0], diff = [];
+    ['entities', 'rels', 'dims'].forEach(function (k) { rfdSame(f[k], s2[k], k, diff); });
+    assert(!diff.length, 'script round trip: ' + diff.slice(0, 5).join('; '));
+    // Center Rectangle on the origin
+    await rskNew();
+    UI.setTool('crect'); rskClick([0, 0]); rskClick([20, 10]); UI.setTool('select');
+    f = UI.activeSketchFeature();
+    assert(rfgTypes(f.entities) === 'line,line,line,line,line(c),line(c),point', 'center rectangle ' + rfgTypes(f.entities));
+    rl = rfgRels();
+    assert(rl.filter(function (x) { return /\/O$/.test(x); }).join() === 'coincident 6/O', 'the center point on the origin, nothing else: ' + rl.join(', '));
+    assert(rl.filter(function (x) { return /^horizontal [0-3]$/.test(x); }).length === 2 && rl.filter(function (x) { return /^vertical [0-3]$/.test(x); }).length === 2, 'H / V ' + rl.join(', '));
+    var st = UI.sketchStatus();
+    assert(st.status === 'under' && st.dof === 2 && st.rels.every(function (s) { return s === 'ok'; }), 'width and height free: ' + JSON.stringify(st));
+    // polygon and slot: single entities (lane C left them; see the report)
+    UI.setTool('polygon'); rskClick([60, 0]); rskClick([70, 0]);
+    UI.setTool('slot'); rskClick([-60, 0]); rskClick([-40, 0]); rskClick([-50, 4]); UI.setTool('select');
+    var t = f.entities.map(function (e) { return e.t; });
+    assert(t.indexOf('poly') >= 0 && t.indexOf('slot') >= 0, 'polygon / slot entities ' + t.join());
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'rect: ' + f.entities.length + ' entities · H / V listed, Vertical deleted';
+  });
+  // --- end rfG ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

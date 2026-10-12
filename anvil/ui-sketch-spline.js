@@ -297,7 +297,7 @@
   function openEllipsePM(index, e, f) {
     var v = ellipseValues(e, {});
     UI.openPM({
-      title: 'Ellipse', icon: e.t, values: v, _skEntity: { index: index, t: e.t },
+      title: 'Ellipse', icon: e.t, values: v, noFocus: true, _skEntity: { index: index, t: e.t },
       groups: relationGroups(f, index, [index + '.c']).concat([
         { title: 'Options', fields: [{ type: 'check', label: 'For construction', key: 'construction' }] },
         { title: 'Parameters', fields: ellipseFields(e) }
@@ -389,7 +389,7 @@
     splineSel.pt = Math.max(0, Math.min(e.pts.length - 1, splineSel.pt));
     var v = splineValues(e, {}), u = 'u';
     UI.openPM({
-      title: 'Spline', icon: 'spline', values: v, _skEntity: { index: index, t: 'spline' },
+      title: 'Spline', icon: 'spline', values: v, noFocus: true, _skEntity: { index: index, t: 'spline' },
       groups: relationGroups(f, index, [index + '.v' + splineSel.pt]).concat([
         { title: 'Options', fields: [
           { type: 'check', label: 'For construction', key: 'construction' },

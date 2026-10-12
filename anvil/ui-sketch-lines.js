@@ -254,8 +254,14 @@
     openInsertLine();
     lineHint();
   };
+  // the Tangent start box follows the T key (ui-sketch.js setLineTangentStart)
+  UI.lineTangentStartChanged = function (on) {
+    var pm = $('pm'), box = pm && pm.querySelector('input[data-key="tangentStart"]');
+    if (box) box.checked = !!on;
+  };
   function openInsertLine() {
-    var v = { orient: LM.orient, construction: LM.construction, infinite: LM.infinite, midpoint: LM.midpoint, length: LM.length, angle: LM.angle };
+    var v = { orient: LM.orient, construction: LM.construction, infinite: LM.infinite, midpoint: LM.midpoint, length: LM.length, angle: LM.angle,
+      tangentStart: UI.lineTangentStart ? !!UI.lineTangentStart() : false };
     var m = UI.lineMode() || 'line';
     UI.openPM({
       title: 'Insert Line', icon: m === 'midline' ? 'midline' : m === 'centerline' ? 'centerline' : 'line', sketchTool: 'line', noFocus: true, keepSelection: true, values: v,
@@ -265,13 +271,15 @@
         { title: 'Options', fields: [
           { type: 'check', key: 'construction', label: 'For construction' },
           { type: 'check', key: 'infinite', label: 'Infinite length' },
-          { type: 'check', key: 'midpoint', label: 'Midpoint line' }] },
+          { type: 'check', key: 'midpoint', label: 'Midpoint line' },
+          { type: 'check', key: 'tangentStart', label: 'Tangent start (T)' }] },
         { title: 'Parameters', show: function (x) { return x.orient !== 'free'; }, fields: [
           { type: 'number', key: 'length', label: 'Length', unit: 'u', min: 0 },
           { type: 'number', key: 'angle', label: 'Angle', unit: '°', show: function (x) { return x.orient === 'angle'; } }] }
       ],
       onChange: function (x, key) {
         if (!key) return;
+        if (key === 'tangentStart') { if (UI.setLineTangentStart) UI.setLineTangentStart(!!x.tangentStart); return; }   // ui-sketch.js; T toggles it too
         if (key === 'length') LM.length = x.length > 0 ? +x.length : null;
         else if (key === 'angle') LM.angle = +x.angle || 0;
         else LM[key] = x[key];
@@ -478,8 +486,12 @@
         rels.push({ type: 'midpoint', refs: [String(center), String(cons[0])] });
       }
     }
-    L.forEach(function (i) { S.infer(f, i); });
-    if (center != null) S.infer(f, center);
+    // lane C, fidelity #8: only the corners (center) the clicks placed infer Coincident / Midpoint …: a 3 Point
+    // rectangle's computed corners do not, even where they land on a line (the third click of a 3 Point Corner
+    // Rectangle sets the height and is no corner; a Parallelogram's is)
+    var io = { placed: pts.map(function (p) { return [p[0], p[1]]; }) };
+    L.forEach(function (i) { S.infer(f, i, io); });
+    if (center != null) S.infer(f, center, io);
     // typed values (the on-screen box) become driving dimensions: the first side, then the second
     if (typed) {
       var off = dimOff(), first = tool === 'crect3' ? typed.w : typed.len;
@@ -492,27 +504,53 @@
     UI.setStatus(RECT_TYPES.filter(function (t) { return t[0] === tool; })[0][1] + ' added: 4 lines' + (cons.length ? ', ' + cons.length + ' construction lines' : '') + (center != null ? ' and a center point' : '') + '.');
     return true;
   }
-  // a Corner / Center Rectangle entity: its construction lines (diagonals tied to its corners, or midpoint lines to
-  // its edges' midpoints)
-  function afterRectEntity(f, n0) {
-    var e = f.entities[n0];
-    if (!e || (e.t !== 'rect' && e.t !== 'crect')) return;
-    var cons = [];
-    if (RS.cons[App.tool]) {
-      var S = SS(), c = [[0, 2], [1, 3]], rels = (f.rels = f.rels || []);
-      var K = e.t === 'rect' ? [[e.x, e.y], [e.x + e.w, e.y], [e.x + e.w, e.y + e.h], [e.x, e.y + e.h]]
-        : [[e.cx - e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy - e.h / 2], [e.cx + e.w / 2, e.cy + e.h / 2], [e.cx - e.w / 2, e.cy + e.h / 2]];
+  // A Corner / Center Rectangle just drawn (ui-sketch.js placePoint commits it as one rect / crect entity, with the
+  // relations it inferred and the typed W / H dimensions): it becomes four lines held by 2 Horizontal + 2 Vertical and
+  // corner Coincidents, as SolidWorks draws it (lane C, fidelity #13: an edge selects as a line, Display/Delete lists
+  // the H / V, and deleting one lets the rectangle skew), plus its construction lines (diagonals tied to the corners,
+  // or midpoint lines to the sides' midpoints) and, for the Center Rectangle, a center point. The typed W / H become
+  // the length dimensions of the bottom / left lines (SketchSolver.explodeRect). Then the relations are inferred again
+  // for the points the clicks placed only (lane C, fidelity #8: a rectangle started on a line gets one Coincident,
+  // not one for each corner that lies on the line). A script's .rect() stays one entity (Kernel / generateScript).
+  function afterRectEntity(f, n0, st) {
+    var e = f.entities[n0], S = SS();
+    if (!e || (e.t !== 'rect' && e.t !== 'crect') || !S) return;
+    var tool = e.t, cons = [], center = null;
+    // the rectangle is new, so every relation on it was inferred by addEntity (for every corner): they go, and are
+    // inferred below for the placed points only
+    if (f.rels) {
+      f.rels = f.rels.filter(function (rel) { return !rel.refs.some(function (r) { return refEntity(r) === n0; }); });
+      if (!f.rels.length) delete f.rels;
+    }
+    if (S.explodeRect(f, n0) < 0) return;
+    var L = [n0, n0 + 1, n0 + 2, n0 + 3], K = L.map(function (i) { return [f.entities[i].x1, f.entities[i].y1]; });
+    var rels = (f.rels = f.rels || []);
+    if (RS.cons[tool]) {
       consLines(K).forEach(function (l, j) {
         var ci = f.entities.length;
+        if (e.layer != null) l.layer = e.layer;   // sketch-layers: on the rectangle's layer
         f.entities.push(l); cons.push(ci);
-        if (RS.fromMid) rels.push({ type: 'midpoint', refs: [ci + '.p1', n0 + '.e' + j] }, { type: 'midpoint', refs: [ci + '.p2', n0 + '.e' + (j + 2)] });
-        else rels.push({ type: 'coincident', refs: [ci + '.p1', n0 + '.v' + c[j][0]] }, { type: 'coincident', refs: [ci + '.p2', n0 + '.v' + c[j][1]] });
+        if (RS.fromMid) rels.push({ type: 'midpoint', refs: [ci + '.p1', String(L[j])] }, { type: 'midpoint', refs: [ci + '.p2', String(L[j + 2])] });
+        else rels.push({ type: 'coincident', refs: [ci + '.p1', L[j] + '.p1'] }, { type: 'coincident', refs: [ci + '.p2', L[j + 2] + '.p1'] });
       });
-      if (S) S.solve(f);
-      refresh();
+      if (tool === 'crect') {
+        // the center point: Midpoint of the first construction line (the second crosses it there anyway)
+        var C = centerOf(K);
+        center = f.entities.length;
+        var cp = { t: 'point', x: C[0], y: C[1] };
+        if (e.layer != null) cp.layer = e.layer;
+        f.entities.push(cp);
+        rels.push({ type: 'midpoint', refs: [String(center), String(cons[0])] });
+      }
     }
-    lastRect = { tool: e.t, i: n0, cons: cons };
+    var placed = st && st.pts && st.pts.length ? st.pts.map(function (p) { return [p[0], p[1]]; }) : null, io = placed ? { placed: placed } : undefined;
+    L.forEach(function (i) { S.infer(f, i, io); });
+    if (center != null) S.infer(f, center, io);
+    if (f.rels && !f.rels.length) delete f.rels;
+    lastRect = { tool: tool, lines: L, cons: cons, center: center };
+    refresh();
     rectFieldsNow();
+    UI.setStatus(RECT_TYPES.filter(function (t) { return t[0] === tool; })[0][1] + ' added: 4 lines' + (cons.length ? ', ' + cons.length + ' construction lines' : '') + (center != null ? ' and a center point' : '') + '.');
   }
   // the corner / center refs of the rectangle just drawn
   function rectRefs(r) {
@@ -638,7 +676,7 @@
     if (isCenter(t)) C = centerOf(K);
     syncFields(cornerVals(K, C));
   }
-  ['rect', 'crect'].forEach(function (t) { UI.sketchToolHooks[t] = { live: rectLive, after: function (f, n0) { afterRectEntity(f, n0); } }; });
+  ['rect', 'crect'].forEach(function (t) { UI.sketchToolHooks[t] = { live: rectLive, after: function (f, n0, st) { afterRectEntity(f, n0, st); } }; });
   // 3 Point Corner / 3 Point Center Rectangle, Parallelogram: three clicks; typed values in the on-screen box
   function sideFrame() {
     var pts = App.toolState.pts, A = pts[0], B = pts[1];

@@ -1784,9 +1784,12 @@ var UI = (function () {
     var u = hits[0].object.userData;
     return { kind: 'plane', ref: u.ref, plane: u.plane, name: u.name, point: [hits[0].point.x, hits[0].point.y, hits[0].point.z] };
   }
-  function pickEntity(mx, my) {
+  // The sketch entity whose drawn curve passes within 7 px of (mx, my): { kind: 'entity', index }, or null.
+  // rfF: pickEntityDist(mx, my) -> { hit, d } also gives the pixel distance (the Select tool weighs it against a point's).
+  function pickEntity(mx, my) { return pickEntityDist(mx, my).hit; }
+  function pickEntityDist(mx, my) {
     var f = activeSketchFeature();
-    if (!f) return null;
+    if (!f) return { hit: null, d: Infinity };
     var pl = activePlane(), best = null, bestD = 7;
     f.entities.forEach(function (e, i) {
       if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;   // sketch-layers: a hidden layer is not picked
@@ -1802,7 +1805,7 @@ var UI = (function () {
         }
       });
     });
-    return best;
+    return { hit: best, d: best ? bestD : Infinity };
   }
   function distToSegment(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
@@ -2906,7 +2909,7 @@ var UI = (function () {
     updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
-    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEdge: pickEdge,
+    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,

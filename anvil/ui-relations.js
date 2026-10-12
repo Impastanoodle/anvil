@@ -571,6 +571,13 @@
         h.svg('polyline', { 'class': 'rel-pick', points: pts.join(' ') }, layer);
       }
     });
+    // rfF: sketch points selected with the Select tool (an end point, a centre: ui-select.js): a dot in the selection blue
+    if (UI.selection) UI.selection().forEach(function (s) {
+      var p = s.kind === 'sketchPoint' ? S.refPoint(f, s.ref) : null;
+      if (!p) return;
+      var q = scr(pl, p);
+      h.svg('circle', { 'class': 'sk-selpt', cx: q[0], cy: q[1], r: 4.5, style: 'fill:#1f6fe8;stroke:#fff;stroke-width:1.2;pointer-events:none' }, layer);
+    });
   }
   function badgeListeners(g) {
     // p9-sketchfix: while a PropertyManager or a tool wants an entity, a press on an icon lying on geometry picks the

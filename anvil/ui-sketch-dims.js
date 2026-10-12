@@ -277,7 +277,17 @@
   var TOL_TYPES = [['none', 'None'], ['basic', 'Basic'], ['bilateral', 'Bilateral'], ['limit', 'Limit'], ['symmetric', 'Symmetric'], ['min', 'MIN'], ['max', 'MAX']];
   var PREC = [['auto', 'Document (' + 'default)'], ['0', '0'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234'], ['5', '.12345'], ['6', '.123456']];
   var ARC_COND = [['c', 'Center'], ['min', 'Min'], ['max', 'Max']];
-  var dimPM = null;   // { d, spec } while the Dimension PM is open
+  var dimPM = null;   // { d, spec, rerender } while the Dimension PM is open
+  // rfE: Primary Value as SolidWorks shows it: the dimension's own precision (d.prec decimal places), else the
+  // document's (inch .123, mm and angles .12); a value that would round to 0 keeps 3 significant digits. A value
+  // typed in the box is applied at full precision (apply('value')).
+  function pmShown(x, prec, angle) {
+    x = +x;
+    if (!isFinite(x)) return x;
+    var p = prec != null && prec !== '' && prec !== 'auto' && +prec >= 0 ? +prec : angle ? 2 : inch() ? 3 : 2;
+    var r = +x.toFixed(p);
+    return r === 0 && x !== 0 ? +x.toPrecision(3) : r;
+  }
   function openDimensionPM(sel) {
     var info = dimInfo(sel);
     if (!info || App.mode !== 'sketch') return false;
@@ -288,7 +298,7 @@
       if (!it) return null;
       info = it;
       v.name = fullName(f, d);
-      v.value = +(+it.shown).toPrecision(12);
+      v.value = pmShown(it.shown, d.prec, it.kindText === 'angle');
       v.driven = !!d.driven;
       v.mark = d.mark != null ? !!d.mark : !d.driven;   // rfB: marked for drawing (Model Items); off by default for a driven one
       v.tolType = d.tol && d.tol.type ? d.tol.type : 'none';
@@ -402,13 +412,15 @@
       if (UI.requestRender) UI.requestRender();
     }
     message();
-    dimPM = { d: d, spec: spec };
+    dimPM = { d: d, spec: spec, rerender: rerender };
     var open = function () { UI.openPM(spec); };
     if (App.tool && App.tool !== 'select' && UI.withToolPM) UI.withToolPM(open); else open();
     return true;
   }
   UI.openDimensionPM = openDimensionPM;
   UI.dimensionPMOpen = function () { return !!(dimPM && UI.pmSpec && UI.pmSpec() === dimPM.spec); };
+  // rfE: re-read the open Dimension PM (Primary Value, message) after its value changed elsewhere (the Modify box)
+  UI.refreshDimensionPM = function () { if (UI.dimensionPMOpen()) dimPM.rerender(); };
   // a dimension deleted while its PropertyManager is open closes it
   function closeDimPMIfGone() {
     if (!dimPM || !UI.pmSpec || UI.pmSpec() !== dimPM.spec) return;
@@ -552,6 +564,8 @@
       var c = S.curveRefs(f, i), r = c.length === 1 ? c[0] : String(i);
       if (S.refKind(f, r) && App.relPick.indexOf(r) < 0) App.relPick.push(r);
     });
+    // a selected sketch point (an end or a centre picked with the Select tool) comes in as that point
+    if (UI.selectedSketchRefs) UI.selectedSketchRefs().forEach(function (r) { if (App.relPick.indexOf(r) < 0) App.relPick.push(r); });
     UI.setTool('select');
     var modelRefs = [], v = { construction: false };
     var spec = {

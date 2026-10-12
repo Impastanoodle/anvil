@@ -1762,6 +1762,12 @@ var SketchSolver = (function () {
   // lands exactly on an existing point (or the origin), horizontal / vertical for an axis-aligned line.
   // opts.skip: a RegExp of the entity's point refs that were not placed by a click (rfA: the centre a Tangent / 3 Point
   // Arc or a Perimeter Circle is computed to) and so infer nothing, as SolidWorks infers only where points are placed
+  // opts.placed (lane C, fidelity #8): the points [[x, y], …] the tool actually placed (clicked or snapped). Only the
+  // entity's points lying on one of them infer Coincident / Concentric / Midpoint and the Tangent / Perpendicular of a
+  // shared end; a corner the tool computed (a Corner Rectangle's other two corners) infers nothing, even where it lands
+  // on a line. Without it every point of the entity infers (scripts, paste, the engine tests).
+  // opts.symmetric (lane C, fidelity #7): also Symmetric about a centerline. SolidWorks never infers Symmetric while
+  // sketching (Mirror Entities, Dynamic Mirror and Add Relations make it), so the drawing tools leave it out.
   function inferCandidates(sketch, i, opts) {
     var e = sketch.entities[i], out = [], skip = opts && opts.skip;
     if (!e) return out;
@@ -1769,8 +1775,8 @@ var SketchSolver = (function () {
     // to the next field whenever a coordinate was 0)
     var mag = 1;
     pointRefs(sketch, i).forEach(function (pr) { mag = Math.max(mag, Math.abs(pr.pt[0]), Math.abs(pr.pt[1])); });
-    var tol = 1e-9 * mag + 1e-9;
-    symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
+    var tol = 1e-9 * mag + 1e-9, placed = placedTest(opts && opts.placed, Math.max(tol, 1e-7 * mag));
+    if (opts && opts.symmetric) symCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
     if (e.t === 'line' || e.t === 'slot') {   // r9/sketch9: a straight slot drawn level / upright too (its centre line)
       var dx = Math.abs(e.x2 - e.x1), dy = Math.abs(e.y2 - e.y1);
       if (dy < tol && dx > tol) out.push({ type: 'horizontal', refs: [String(i)], at: [(e.x1 + e.x2) / 2, e.y1] });
@@ -1781,13 +1787,19 @@ var SketchSolver = (function () {
       // Coincident with it); a corner rectangle's and a slot's centre are not
       if (/\.mid$/.test(pr.ref) || (/\.c$/.test(pr.ref) && (e.t === 'rect' || e.t === 'slot'))) return;
       if (skip && skip.test(pr.ref)) return;
+      if (placed && !placed(pr.pt)) return;   // fidelity #8: a point the tool computed, not placed
       if (Math.abs(pr.pt[0]) < tol && Math.abs(pr.pt[1]) < tol) { out.push({ type: 'coincident', refs: [pr.ref, 'O'], at: pr.pt }); return; }
+      // lane C: a point already Coincident with this one (the corner a rectangle's next line shares, made with the
+      // lines) is no new point to land on: look past it, so a corner placed on a line still finds the line
+      var joined = {};
+      (sketch.rels || []).forEach(function (rel) { if (rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.indexOf(pr.ref) >= 0) joined[rel.refs[0] === pr.ref ? rel.refs[1] : rel.refs[0]] = true; });
       var hit = null;
       for (var j = 0; j < sketch.entities.length && !hit; j++) {
         if (j === i) continue;
         var cands = pointRefs(sketch, j);
         for (var k = 0; k < cands.length; k++) {
           var q = cands[k];
+          if (joined[q.ref]) continue;
           if (Math.abs(q.pt[0] - pr.pt[0]) < tol && Math.abs(q.pt[1] - pr.pt[1]) < tol) { hit = q; break; }
         }
       }
@@ -1810,8 +1822,18 @@ var SketchSolver = (function () {
       else if (/\.c$/.test(hit.ref) && /^(rect|slot)$/.test(sketch.entities[parseRef(hit.ref).e].t)) return;   // r15/snapaudit15: a Polygon's / Center Rectangle's centre is a sketch point (Coincident); a Corner Rectangle's / slot's is not
       else out.push({ type: 'coincident', refs: [pr.ref, hit.ref], at: pr.pt });
     });
-    smoothCandidates(sketch, i, tol).forEach(function (c) { out.push(c); });
+    smoothCandidates(sketch, i, tol, placed).forEach(function (c) { out.push(c); });
     return out;
+  }
+  // opts.placed as a test: function (pt) -> whether pt is one of the placed points (within ptol), or null (no list)
+  function placedTest(list, ptol) {
+    if (!list || typeof list.length !== 'number') return null;
+    var P = [];
+    for (var k = 0; k < list.length; k++) if (list[k] && isFinite(list[k][0]) && isFinite(list[k][1])) P.push(list[k]);
+    return function (pt) {
+      for (var m = 0; m < P.length; m++) if (Math.abs(P[m][0] - pt[0]) <= ptol && Math.abs(P[m][1] - pt[1]) <= ptol) return true;
+      return false;
+    };
   }
   // The unit direction of line / arc entity e at its end point pt (the line's direction; the arc's tangent there).
   function endDir(e, pt) {
@@ -1824,14 +1846,15 @@ var SketchSolver = (function () {
   // leaving a line or an arc smoothly (Tangent), a line at 90° to the line it starts from (Perpendicular; left to
   // Horizontal / Vertical when both lines are axis-aligned); r15/tangent15: a line that starts or ends on a circle /
   // arc square to its radius there (Tangent).
-  function smoothCandidates(sketch, i, tol) {
+  // placed (inferCandidates' opts.placed test, or null): only the ends the tool placed
+  function smoothCandidates(sketch, i, tol, placed) {
     var E = sketch.entities, e = E[i], out = [], ANG = 1e-7;
     if (!e || (e.t !== 'line' && e.t !== 'arc')) return out;
     function axis(d) { return Math.abs(d[0]) < ANG || Math.abs(d[1]) < ANG; }
     var seen = {};
     ['p1', 'p2'].forEach(function (s) {
       var pt = refPoint(E, { e: i, s: 'p', k: s === 'p1' ? 1 : 2 }), u = pt && endDir(e, pt);
-      if (!u || len(u) < 0.5) return;
+      if (!u || len(u) < 0.5 || (placed && !placed(pt))) return;
       for (var j = 0; j < E.length; j++) {
         var o = E[j];
         if (j === i || seen[j] || !o || (o.t !== 'line' && o.t !== 'arc')) continue;
@@ -3462,6 +3485,19 @@ var SketchSolver = (function () {
     var s = reshapeTo(e, T, keepEnd, uv);
     return s ? [s] : [];
   }
+  // lane C: whether line e's carrier (the line extended both ways) crosses or touches open spline sp within its ends
+  function lineMeetsFree(e, sp) {
+    var fc = freeCurve(sp);
+    if (!fc) return false;
+    var L = { a: [e.x1, e.y1], b: [e.x2, e.y2] }, N = Math.max(96, 2 * fc.n), prev = null;
+    if (len(sub(L.b, L.a)) < 1e-12) return false;
+    for (var k = 0; k <= N; k++) {
+      var d = lineDist(fc.pt(fc.t0 + (fc.t1 - fc.t0) * k / N), L);
+      if (d === 0 || (prev != null && prev * d < 0)) return true;
+      prev = d;
+    }
+    return false;
+  }
   // sketch-fillet2: the fillets of radius r between an open spline and a line, arc or circle: centres at r from the
   // spline (along its normal, either side) that lie on an offset of the other entity, found along the spline by the
   // sign changes of that offset's distance and refined by bisection. The spline keeps its far end (a corner) or the side
@@ -3557,6 +3593,13 @@ var SketchSolver = (function () {
       if (corner && A.t === 'line' && B.t === 'line') {
         var la = len(sub(endOf(A, otherEnd(spec.ei)), spec.at)), lb = len(sub(endOf(B, otherEnd(spec.ej)), spec.at));
         return { ok: false, error: 'Radius too large: the fillet would be longer than the lines (at most R' + fmtL(Math.min(la, lb) * Math.tan(th / 2)) + ').' };
+      }
+      // lane C: a line and a spline that do not meet. The line is extended (or cut back) to the fillet as SolidWorks does
+      // (freeFilletPlan); what cannot be done is extending the spline, so say which it is
+      if (!corner && (splineOpen(A) || splineOpen(B))) {
+        var sp = splineOpen(A) ? A : B, other = sp === A ? B : A;
+        if (other.t === 'line' && !lineMeetsFree(other, sp)) return { ok: false, error: 'The line, even extended, does not reach the spline: a fillet would have to touch the spline beyond its end, and Sketch Fillet extends lines and arcs, not splines. Extend the spline (or move the line) first.' };
+        return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the ' + other.t + ' and the spline' + (other.t === 'line' ? ' (the line is extended to it; the spline is not extended past its ends)' : '') + ': try a smaller radius.' };
       }
       return { ok: false, error: corner ? 'Radius too large: the fillet would be longer than the entities.' : 'No fillet of that radius fits between those entities.' };
     }

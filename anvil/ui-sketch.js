@@ -128,7 +128,7 @@
   // ------------------------------------------------------------------ tools
   var TOOL_HINTS = {
     select: 'Click an entity to select it. <b>Delete</b> removes it. Double-click empty space to finish.',
-    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. Started on a circle or arc the line stays tangent to it (<b>N</b>: the other tangent point, <b>T</b>: from the point instead). <b>Esc</b> or right-click ends the chain.',
+    line: 'Click the start point, then each next point, or press and drag for one line. Type a number for the length; <b>A</b> draws a tangent arc. Started on a circle or arc the line starts where you click; <b>T</b> turns Tangent start on (the start slides round to the tangent point, <b>N</b>: the other one). Double-click or <b>Esc</b> ends the chain; right-click for End Chain.',
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
@@ -140,6 +140,10 @@
     dimension: 'Click a line, circle, arc, rectangle, slot or polygon (or two points), then click where the dimension should sit: above / below or beside two points for a horizontal or vertical distance. Double-click a value to change it, drag it to move it; <b>Delete</b> removes a selected dimension.'
   };
   function setTool(name) {
+    // rfE: Smart Dimension with one or two sketch entities selected starts from them (SolidWorks: the dimension is on
+    // the cursor, the next click places it); read before an entity's PropertyManager closes and drops the selection
+    var presel = name === 'dimension' && App.mode === 'sketch' ? dimPreselection() : null;
+    var statusBefore = $('status-msg') ? $('status-msg').textContent : null;
     cancelTool(true);
     App.tool = name || 'select';
     App.toolState = { pts: [] };
@@ -156,8 +160,13 @@
     var toolPM = UI.sketchToolPMs[App.tool] || (App.tool === 'polygon' ? function () { UI.openToolPM('polygon'); } : null);
     if (toolPM) { toolPMOpening = true; try { toolPM(App.tool); } finally { toolPMOpening = false; } }
     else if (App.tool !== 'select' || toolPMOpen()) UI.closePM();
+    if (presel) startDimFrom(presel);
+    // rfE: the status bar describes the new tool too (it kept the previous command's prompt), unless the tool's own
+    // PropertyManager put a message there already; the Select tool leaves the last message (Exited, Chain ended …)
+    if (App.mode === 'sketch' && App.tool !== 'select' && $('status-msg') && $('status-msg').textContent === statusBefore) UI.setStatus(hintText());
     UI.refreshRibbon();
   }
+  function hintText() { var h = $('sketch-hint'); return h ? String(h.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
   function cancelTool(keep) {
     var hkF = UI.sketchFreeHooks[App.tool];   // ui-sketch-spline: Esc / another tool ends a spline with what it has
     if (hkF && hkF.finish && App.toolState && App.toolState.pts && App.toolState.pts.length) hkF.finish(App.toolState);
@@ -199,13 +208,21 @@
     set: function (v) {
       commandNow = v;
       if (App.mode !== 'sketch' || toolPMOpening) return;
-      if (UI.hasPM ? UI.hasPM() : v != null) { endSketchTool(); return; }
+      if (UI.hasPM ? UI.hasPM() : v != null) { endSketchTool(); pmHint(); return; }
       if (App.tool === 'select') setTimeout(function () {
         var h = $('sketch-hint');
         if (h && App.mode === 'sketch' && App.tool === 'select' && !(UI.hasPM && UI.hasPM())) h.innerHTML = TOOL_HINTS.select;
       }, 0);
     }
   });
+  // rfE (fidelity finding 14): a sketch command's PropertyManager (Extend, Move, Rotate, Offset, Trim, Bisector …) puts
+  // its message in the sketch hint line, which kept the Select tool's "Click an entity to select it"; a property PM on
+  // a selection (Dimension, Line / Circle Properties: no message, or the Dimension's state) leaves the hint alone
+  function pmHint() {
+    var spec = UI.pmSpec && UI.pmSpec(), h = $('sketch-hint');
+    if (!spec || !h || !spec.message || spec.sketchTool || (UI.dimensionPMOpen && UI.dimensionPMOpen())) return;
+    h.innerHTML = spec.message;
+  }
   UI.endSketchTool = endSketchTool;
   UI.sketchToolPMs = UI.sketchToolPMs || {};
   // UI.sketchFreeHooks[tool] = { entities(pts, state) -> preview / new entities, steps(state) -> clicks needed,
@@ -1125,6 +1142,16 @@
     if (App.tool === 'ellipse' || App.tool === 'pellipse') return { skip: /\.v[123]$/ };
     return undefined;
   }
+  // the preview glyphs follow the commit: a Corner / Center Rectangle infers only for the points its clicks place
+  // (fidelity #8, ui-sketch-lines.js afterRectEntity)
+  function previewInferOpts(p) {
+    var o = inferSkip(), st = App.toolState;
+    if ((App.tool === 'rect' || App.tool === 'crect') && st && st.pts) {
+      o = o ? Object.assign({}, o) : {};
+      o.placed = st.pts.concat([p]).map(function (q) { return [q[0], q[1]]; });
+    }
+    return o;
+  }
   function addEntity(e) {
     var f = UI.activeSketchFeature();
     if (!f) return;
@@ -1188,10 +1215,15 @@
     if (UI.sketchToolDefs[App.tool] && UI.sketchToolDefs[App.tool].accept && UI.sketchToolDefs[App.tool].accept(st, p, typed) === false) return;   // p9-sketch-curves
     if (typed) st.typed = Object.assign(st.typed || {}, typed);
     st.pts.push(p);
-    // r15/tanslide15: a Line started on a circle / arc (the on-curve snap, not one of its points) slides tangent to it
+    // r15/tanslide15: a Line started on a circle / arc (the on-curve snap, not one of its points) can slide tangent to
+    // it. rfE (fidelity finding 5): only with Tangent start on (T with the Line tool, UI.setLineTangentStart); by
+    // default the line starts where clicked with Coincident, as in SolidWorks (tanFrom.off: T still turns it on here)
     if (App.tool === 'line' && st.pts.length === 1 && st.lastSnap && st.lastSnap.kind === 'on' && st.lastSnap.e != null) {
       var fT = UI.activeSketchFeature(), eT = fT && fT.entities[st.lastSnap.e];
-      if (eT && (eT.t === 'circle' || eT.t === 'arc')) { st.tanFrom = { e: st.lastSnap.e, p0: p.slice(), last: null, off: false }; UI.setStatus('Tangent line from the ' + eT.t + ': its start follows the cursor round the curve. N takes the other tangent point, T draws from the clicked point instead.'); if ($('sketch-hint')) $('sketch-hint').innerHTML = 'Tangent line: its start slides round the ' + eT.t + '. Click the end, or type its length. <b>N</b>: the other tangent point. <b>T</b>: from the clicked point.'; }
+      if (eT && (eT.t === 'circle' || eT.t === 'arc')) {
+        st.tanFrom = { e: st.lastSnap.e, p0: p.slice(), last: null, off: !lineTanStart };
+        if (lineTanStart) { UI.setStatus('Tangent line from the ' + eT.t + ': its start follows the cursor round the curve. N takes the other tangent point, T draws from the clicked point instead.'); if ($('sketch-hint')) $('sketch-hint').innerHTML = 'Tangent line: its start slides round the ' + eT.t + '. Click the end, or type its length. <b>N</b>: the other tangent point. <b>T</b>: from the clicked point.'; }
+      }
     }
     st.away = st.back = false;
     if (App.tool === 'arc' && st.pts.length === 2) { st.arcSweep = 0; st.lastAng = null; }   // the sweep starts at the start point
@@ -1548,11 +1580,9 @@
     if (App.mode !== 'sketch' || ev.ctrlKey || ev.metaKey || ev.altKey || numBox) return;
     var tag = (ev.target && ev.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || (ev.target && ev.target.isContentEditable)) return;
-    if (App.tool === 'line' && (ev.key === 't' || ev.key === 'T') && App.toolState.tanFrom) {   // r15/tanslide15
+    if (App.tool === 'line' && (ev.key === 't' || ev.key === 'T')) {   // r15/tanslide15, rfE: T toggles Tangent start
       ev.preventDefault(); ev.stopImmediatePropagation();
-      App.toolState.tanFrom.off = !App.toolState.tanFrom.off;
-      UI.setStatus(App.toolState.tanFrom.off ? 'Line from the clicked point (T: tangent to the curve again).' : 'Tangent line: the start follows the cursor round the curve (N: the other tangent point, T: from the clicked point).');
-      if (lastMove) sketchMove(lastMove[0], lastMove[1]);
+      setLineTangentStart(!lineTanStart);
       return;
     }
     // p9-sketch: N takes the other tangent point of the sliding start (Mastercam's choice of tangent); no other
@@ -1574,6 +1604,26 @@
       openNumBox(ev.key);
     }
   }, true);
+  // rfE (fidelity finding 5): Line ▸ Tangent start, off by default (SolidWorks starts a line where it is clicked on a
+  // circle or arc, Coincident only). On, a line started on a circle / arc slides round it to the tangent point for the
+  // cursor (Mastercam's Line Endpoints ▸ Tangent; N the other tangent point). T with the Line tool toggles it, also for
+  // a start already clicked; it stays as set for the session. UI.lineTangentStart() reads it.
+  var lineTanStart = false;
+  function setLineTangentStart(on) {
+    lineTanStart = !!on;
+    var st = App.toolState;
+    if (st && st.tanFrom) st.tanFrom.off = !lineTanStart;
+    var sliding0 = !!(st && st.tanFrom && !st.tanFrom.off);
+    UI.setStatus(lineTanStart
+      ? (sliding0 ? 'Tangent start on: the start follows the cursor round the curve (N: the other tangent point, T: from the clicked point).' : 'Tangent start on: a line started on a circle or arc slides round it to the tangent point (T turns it off).')
+      : (st && st.tanFrom ? 'Tangent start off: the line starts at the clicked point (T: tangent to the curve again).' : 'Tangent start off: a line started on a circle or arc starts where you click (T turns it on).'));
+    if (App.mode === 'sketch' && App.tool === 'line' && $('sketch-hint') && !(st && st.arcMode)) $('sketch-hint').innerHTML = sliding0 ? 'Tangent line: its start slides round the curve. Click the end, or type its length. <b>N</b>: the other tangent point. <b>T</b>: from the clicked point.' : TOOL_HINTS.line;
+    if (lastMove && App.mode === 'sketch' && App.tool === 'line') sketchMove(lastMove[0], lastMove[1]);
+    if (UI.lineTangentStartChanged) UI.lineTangentStartChanged(lineTanStart);   // a Line PM check box can follow (ui-sketch-lines.js)
+    return lineTanStart;
+  }
+  UI.lineTangentStart = function () { return lineTanStart; };
+  UI.setLineTangentStart = setLineTangentStart;
   // p9-sketch: the sliding tangent start goes to the other tangent point (the N key); false when nothing slides
   UI.flipTangent = function () {
     var st = App.toolState;
@@ -1637,7 +1687,7 @@
       if (hkM && hkM.live) hkM.live(App.toolState.pts, p, App.tempEntities);   // p9-sketchtab: the tool PM's live values
       // yellow inference icons: the relations the entity being drawn would get
       var f = UI.activeSketchFeature();
-      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], inferSkip()) : [];
+      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], previewInferOpts(p)) : [];
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
     if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
@@ -2475,6 +2525,9 @@
     dimEdit.hidden = false;
     dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
+    // rfE: the text as shown (rounded to 4 places); ✓ / Enter / a click elsewhere with it untouched is no change (a √13
+    // line keeps 3.6055513, not the 3.6056 shown), as the SolidWorks Modify box only shows the value rounded
+    dimEditing.text = dimInput.value;
     positionDimEdit();
     dimInput.focus(); dimInput.select();
   }
@@ -2580,7 +2633,8 @@
     dimEditError('');
     var f = UI.activeSketchFeature(), e = f && f.id === ed.sketchId && (ed.rel != null ? f.rels && f.rels[ed.rel] : f.entities[ed.d.e]);
     var v = r && r.value;
-    if (!commit || !r || r.error != null || !e || Math.abs(v - ed.value) < 1e-9) {
+    var untouched = ed.text != null && String(dimInput.value).trim() === ed.text;   // rfE: the shown text kept: no change, no undo step
+    if (!commit || !r || r.error != null || !e || untouched || Math.abs(v - ed.value) < 1e-9) {
       if (previewed) { App.gridStale = true; UI.updateSketches(); }
       return;
     }
@@ -2595,6 +2649,7 @@
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
       UI.setStatus('Dimension set to ' + fmtDim(v) + ' ' + UI.unitLabel() + '.');
+      if (UI.refreshDimensionPM) UI.refreshDimensionPM();   // rfE: an open Dimension PM shows the new value
     } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; if (previewed) UI.updateSketches(); }
   }
   dimInput.addEventListener('keydown', function (ev) {
@@ -2727,6 +2782,61 @@
     if (e.t === 'line') { var t = K.dimForEntity(e, raw); if (t) st.dim.k = t.k; }
     App.tempDim = Object.assign({}, st.dim, dimPlacement(e, st.dim, raw));
     App.dimsStale = true;
+  }
+  // rfE (finding 9): Smart Dimension started with a preselection. dimPreselection() reads one or two selected sketch
+  // entities (nothing else selected) as [index]; startDimFrom(list) puts the tool where the clicks on them would
+  // have: one entity -> its own dimension on the cursor, two -> the distance / angle between them on the cursor. The
+  // selection is used up, as a click would.
+  function dimPreselection() {
+    var f = UI.activeSketchFeature();
+    if (!f) return null;
+    var list = UI.selection ? UI.selection() : [App.sel, App.sel2].filter(Boolean), idx = [];
+    if (!list.length || list.length > 2) return null;
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (!s || s.kind !== 'entity' || !f.entities[s.index]) return null;
+      if (idx.indexOf(s.index) < 0) idx.push(s.index);
+    }
+    return idx;
+  }
+  function entityRef(f, i) {
+    var S = window.SketchSolver, cs = S && S.curveRefs ? S.curveRefs(f, i) : [];
+    return cs.length === 1 ? cs[0] : !cs.length ? String(i) : null;
+  }
+  function entityAnchor(e) {
+    if (lastMove) { var q = UI.screenToPlane(lastMove[0], lastMove[1], UI.activePlane()); if (q) return q; }
+    var pls = (UI.screenPolylines || K.entityPolylines)(e), pts = pls && pls[0] ? pls[0].pts : null;
+    return pts && pts.length ? pts[Math.floor(pts.length / 2)].slice() : [+e.cx || +e.x || 0, +e.cy || +e.y || 0];
+  }
+  function startDimFrom(idx) {
+    var f = UI.activeSketchFeature(), st = App.toolState;
+    if (!f || App.tool !== 'dimension' || !st) return false;
+    var e0 = f.entities[idx[0]], at = entityAnchor(e0);
+    function useSel() { if (UI.setSelection) UI.setSelection([]); else { App.sel = null; App.sel2 = null; } }
+    if (idx.length === 2) {
+      var r1 = entityRef(f, idx[0]), r2 = entityRef(f, idx[1]), two = r1 && r2 && UI.relDimFor ? UI.relDimFor(f, r1, r2) : null;
+      if (two) {
+        useSel();
+        st.relDim = two;
+        App.tempRelDim = Object.assign({}, two, UI.relDimPlacement(f, two, at));
+        App.dimsStale = true;
+        $('sketch-hint').innerHTML = 'Click where the ' + (two.type === 'angle' ? 'angle' : 'distance') + ' dimension should sit.';
+        UI.updateSketches();
+        return true;
+      }
+    }
+    // one entity with no dimension of its own (a sketch point, a text): the tool starts empty, as before
+    var t = idx.length === 1 ? K.dimForEntity(e0, null) : null;
+    if (!t) return false;
+    useSel();
+    t.e = idx[0];
+    st.dim = t;
+    st.ref1 = entityRef(f, idx[0]);
+    App.tempDim = Object.assign({}, t, dimPlacement(e0, t, at));
+    App.dimsStale = true;
+    $('sketch-hint').innerHTML = 'Click where the dimension should sit, or click a second entity for the distance / angle between them.' + (e0.t === 'line' ? ' Move above/below or beside a slanted line for its horizontal or vertical distance.' : '');
+    UI.updateSketches();
+    return true;
   }
 
   UI.drawDims = drawDims;
@@ -2900,7 +3010,7 @@
     viewport.classList.remove('tool-grab');
     if (d.kind === 'hook') { d.hook.end(p); return; }
     if (d.kind === 'rotate' || d.kind === 'zoom' || (d.kind === 'pan' && d.moved)) return;
-    if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else finishChain(); } return; }
+    if (ev.button === 2) { if (App.mode === 'sketch') { if (App.tool === 'select' && !(App.command && App.command.onSketchPoint) && !(ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'))) sketchMenu(p[0], p[1], ev); else if (chainMenuWanted(ev)) chainMenu(ev); else finishChain(); } return; }
     if (ev.button !== 0) return;
     if (p[0] < 0 || p[1] < 0 || p[0] > UI.size.w || p[1] > UI.size.h) return;
     if (ev.target.closest && ev.target.closest('#hud, #exit-sketch, #sketch-hint, #dim-layer, #dim-edit, #sk-num')) return;
@@ -2973,6 +3083,24 @@
     UI.showMenu(ev.clientX, ev.clientY, items);
   }
   UI.sketchMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); sketchMenu(mx, my, { clientX: r.left + mx, clientY: r.top + my }); };
+  // rfE (fidelity finding 10): right-click while a Line chain is being drawn opens SolidWorks' short menu (End Chain,
+  // Select, Smart Dimension, Exit Sketch) instead of ending the chain at once; double-click and Esc still end it
+  function chainMenuWanted(ev) {
+    var st = App.toolState;
+    if (App.tool !== 'line' || !st || !st.pts || !st.pts.length || (App.command && App.command.onSketchPoint)) return false;
+    return !(ev && ev.target && ev.target.closest && ev.target.closest('#dim-layer, #dim-edit, #sk-num, #hud, #exit-sketch'));
+  }
+  function chainMenu(ev) {
+    var items = [
+      { label: 'End Chain (double-click)', icon: 'line', action: function () { if (App.mode === 'sketch' && App.tool === 'line') finishChain(); } },
+      { label: 'Select', action: function () { if (App.mode === 'sketch') cancelTool(); } },
+      { label: 'Smart Dimension', key: 'D', icon: 'dim', action: function () { if (App.mode === 'sketch') setTool('dimension'); } },
+      { sep: true },
+      { label: 'Exit Sketch', icon: 'exitSketch', action: function () { if (App.mode === 'sketch') exitSketch(); } }
+    ];
+    UI.showMenu(ev.clientX, ev.clientY, items);
+  }
+  UI.chainMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); if (!chainMenuWanted(null)) return false; chainMenu({ clientX: r.left + mx, clientY: r.top + my }); return true; };
 
   // Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and the tool stays active
   // for the next one; with nothing in progress the tool is put down.

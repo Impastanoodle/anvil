@@ -266,6 +266,18 @@
   function fmt(n) { return (Math.round(n * 1e6) / 1e6).toString(); }
   // angles in degrees and bulges carry more digits: an arc's end then lands within 1e-8·r of its neighbour's
   function fmtA(n) { return (Math.round(n * 1e9) / 1e9).toString(); }
+  // rfE: a DXF coordinate / length at full precision (14 significant digits, at most 13 decimals, as AutoCAD and
+  // SolidWorks write them): a non-terminating value (a 3 point arc's centre -5.5333333333333, a trig point) reads back
+  // to 5e-14, where fmt's six decimals left it up to 5e-7 off (fmt stays for STL). The 15th digit is left out: it is
+  // float noise (an R.25 flat corner came out 0.249999999999996). Plain decimal (never 1e-7 notation), no -0.
+  function fmtD(n) {
+    n = +n;
+    if (!isFinite(n) || Math.abs(n) < 5e-14) return '0';
+    var v = +(+n.toFixed(13)).toPrecision(14), s = String(v);
+    if (v === 0) return '0';
+    if (/e/i.test(s)) s = Math.abs(v) >= 1 ? v.toFixed(0) : v.toFixed(Math.min(20, 15 - Math.floor(Math.log(Math.abs(v)) / Math.LN10))).replace(/\.?0+$/, '');
+    return s;
+  }
 
   function exportSTL(mesh, name) {
     var p = mesh.positions, n = mesh.normals, out = ['solid ' + (name || 'anvil')];
@@ -390,8 +402,8 @@
       var w = Math.max(mx[0] - mn[0], 1e-6), hh = Math.max(mx[1] - mn[1], 1e-6);
       record('VPORT', 'VPORT', 'AcDbViewportTableRecord');
       P(2, r2000 ? '*Active' : '*ACTIVE'); P(70, 0); P(10, 0); P(20, 0); P(11, 1); P(21, 1);
-      P(12, fmt((mn[0] + mx[0]) / 2)); P(22, fmt((mn[1] + mx[1]) / 2)); P(13, 0); P(23, 0); P(14, 1); P(24, 1); P(15, 0); P(25, 0);
-      P(16, 0); P(26, 0); P(36, 1); P(17, 0); P(27, 0); P(37, 0); P(40, fmt(Math.max(hh, w / 1.5) * 1.1)); P(41, 1.5); P(42, 50);
+      P(12, fmtD((mn[0] + mx[0]) / 2)); P(22, fmtD((mn[1] + mx[1]) / 2)); P(13, 0); P(23, 0); P(14, 1); P(24, 1); P(15, 0); P(25, 0);
+      P(16, 0); P(26, 0); P(36, 1); P(17, 0); P(27, 0); P(37, 0); P(40, fmtD(Math.max(hh, w / 1.5) * 1.1)); P(41, 1.5); P(42, 50);
       P(43, 0); P(44, 0); P(50, 0); P(51, 0); P(71, 0); P(72, 100); P(73, 1); P(74, 3); P(75, 0); P(76, 0); P(77, 0); P(78, 0);
     });
     table('LTYPE', ltypes.length, function () {
@@ -446,13 +458,13 @@
     this.ents.forEach(function (e) {
       if (e.k === 'LINE') {
         head('LINE', e.layer, 'AcDbLine');
-        P(10, fmt(e.a[0])); P(20, fmt(e.a[1])); P(30, 0); P(11, fmt(e.b[0])); P(21, fmt(e.b[1])); P(31, 0);
+        P(10, fmtD(e.a[0])); P(20, fmtD(e.a[1])); P(30, 0); P(11, fmtD(e.b[0])); P(21, fmtD(e.b[1])); P(31, 0);
       } else if (e.k === 'CIRCLE') {
         head('CIRCLE', e.layer, 'AcDbCircle');
-        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(40, fmt(e.r));
+        P(10, fmtD(e.c[0])); P(20, fmtD(e.c[1])); P(30, 0); P(40, fmtD(e.r));
       } else if (e.k === 'ARC') {
         head('ARC', e.layer, 'AcDbCircle');
-        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(40, fmt(e.r));
+        P(10, fmtD(e.c[0])); P(20, fmtD(e.c[1])); P(30, 0); P(40, fmtD(e.r));
         if (r2000) P(100, 'AcDbArc');
         P(50, fmtA(e.a0)); P(51, fmtA(e.a1));
       } else if (e.k === 'SPLINE') {
@@ -464,27 +476,27 @@
         P(210, 0); P(220, 0); P(230, 1); P(70, 8); P(71, 3); P(72, kn.length); P(73, cps.length); P(74, 0);
         P(42, '0.0000000001'); P(43, '0.0000000001');
         kn.forEach(function (t) { P(40, fmtA(t)); });
-        cps.forEach(function (q) { P(10, fmt(q[0])); P(20, fmt(q[1])); P(30, 0); });
+        cps.forEach(function (q) { P(10, fmtD(q[0])); P(20, fmtD(q[1])); P(30, 0); });
       } else if (e.k === 'ELLIPSE') {
         head('ELLIPSE', e.layer, 'AcDbEllipse');
-        P(10, fmt(e.c[0])); P(20, fmt(e.c[1])); P(30, 0); P(11, fmt(e.maj[0])); P(21, fmt(e.maj[1])); P(31, 0);
+        P(10, fmtD(e.c[0])); P(20, fmtD(e.c[1])); P(30, 0); P(11, fmtD(e.maj[0])); P(21, fmtD(e.maj[1])); P(31, 0);
         P(210, 0); P(220, 0); P(230, 1); P(40, fmtA(e.ratio)); P(41, fmtA(e.p0)); P(42, fmtA(e.p1));
       } else if (e.k === 'TEXT') {
         head('TEXT', e.layer, 'AcDbText');
-        P(10, fmt(e.p[0])); P(20, fmt(e.p[1])); P(30, 0); P(40, fmt(e.h)); P(1, dxfText(e.s));
+        P(10, fmtD(e.p[0])); P(20, fmtD(e.p[1])); P(30, 0); P(40, fmtD(e.h)); P(1, dxfText(e.s));
         if (e.rot) P(50, fmtA(e.rot));
         if (r2000) P(7, 'Standard');
-        if (e.center) { P(72, 1); P(11, fmt(e.p[0])); P(21, fmt(e.p[1])); P(31, 0); }
+        if (e.center) { P(72, 1); P(11, fmtD(e.p[0])); P(21, fmtD(e.p[1])); P(31, 0); }
         if (r2000) P(100, 'AcDbText');
       } else if (e.k === 'POLY') {
         if (r2000) {
           head('LWPOLYLINE', e.layer, 'AcDbPolyline');
           P(90, e.pts.length); P(70, e.closed ? 1 : 0); P(43, 0);
-          e.pts.forEach(function (q, i) { P(10, fmt(q[0])); P(20, fmt(q[1])); if (e.bulges && e.bulges[i]) P(42, fmtA(e.bulges[i])); });
+          e.pts.forEach(function (q, i) { P(10, fmtD(q[0])); P(20, fmtD(q[1])); if (e.bulges && e.bulges[i]) P(42, fmtA(e.bulges[i])); });
         } else {
           head('POLYLINE', e.layer); P(66, 1); P(10, 0); P(20, 0); P(30, 0); P(70, e.closed ? 1 : 0);
           e.pts.forEach(function (q, i) {
-            P(0, 'VERTEX'); P(8, e.layer); P(10, fmt(q[0])); P(20, fmt(q[1])); P(30, 0);
+            P(0, 'VERTEX'); P(8, e.layer); P(10, fmtD(q[0])); P(20, fmtD(q[1])); P(30, 0);
             if (e.bulges && e.bulges[i]) P(42, fmtA(e.bulges[i]));
           });
           P(0, 'SEQEND'); P(8, e.layer);
@@ -508,8 +520,8 @@
     P(9, '$INSUNITS'); P(70, this.insunits);
     P(9, '$MEASUREMENT'); P(70, this.units === 'in' ? 0 : 1);
     P(9, '$LUNITS'); P(70, 2);
-    P(9, '$EXTMIN'); P(10, fmt(mn[0])); P(20, fmt(mn[1])); P(30, 0);
-    P(9, '$EXTMAX'); P(10, fmt(mx[0])); P(20, fmt(mx[1])); P(30, 0);
+    P(9, '$EXTMIN'); P(10, fmtD(mn[0])); P(20, fmtD(mn[1])); P(30, 0);
+    P(9, '$EXTMAX'); P(10, fmtD(mx[0])); P(20, fmtD(mx[1])); P(30, 0);
     P(0, 'ENDSEC');
     return out.concat(body, ['0', 'EOF']).join('\n');
   };
@@ -1412,4 +1424,5 @@
   K.Builder = Builder; K.runScript = runScript; K.generateScript = generateScript;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.fmt = fmt;
+  _.fmtD = fmtD;
 })(Kernel, Kernel._);

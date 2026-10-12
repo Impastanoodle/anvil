@@ -111,6 +111,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       case 'vertex': return 'vertex:' + s.point.map(round6).join(',');
       case 'feature': return 'feature:' + s.id;
       case 'plane': return 'plane:' + s.ref;
+      case 'sketchPoint': return 'sketchPoint:' + s.ref;   // rfF: an end point / centre picked with the Select tool
     }
     return s.kind + ':' + JSON.stringify(s);
   }
@@ -120,7 +121,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     return [App.sel, App.sel2].filter(Boolean);
   }
   function describe(list) {
-    var names = { face: 'face', edge: 'edge', vertex: 'vertex', body: isAsm() ? 'component' : 'body', entity: 'sketch entity', feature: 'feature', plane: 'plane', dim: 'dimension', rel: 'relation' };
+    var names = { face: 'face', edge: 'edge', vertex: 'vertex', body: isAsm() ? 'component' : 'body', entity: 'sketch entity', feature: 'feature', plane: 'plane', dim: 'dimension', rel: 'relation', sketchPoint: 'sketch point' };
     var plural = { vertex: 'vertices', entity: 'sketch entities', body: isAsm() ? 'components' : 'bodies' };
     var counts = {};
     list.forEach(function (s) { counts[s.kind] = (counts[s.kind] || 0) + 1; });
@@ -342,23 +343,161 @@ if (typeof UI !== 'undefined') (function (UI) {
     }
     setSelection(hit ? [hit] : [], { quiet: !hit });
   }
-  // A click with the Select tool in a sketch: Ctrl / Shift toggle entities; the filter can block sketch entities.
+  // A click with the Select tool in a sketch (ui-sketch.js sketchClick hands every one here; true: handled).
   // A sketch PropertyManager with a selection box (Linear Sketch Pattern, Mirror Entities: UI.pmCollectsSelection)
   // takes plain clicks as SolidWorks does: a click toggles the entity in that box (or, with the PM's own entity pick,
   // e.g. Mirror about, goes there) and the PM stays open; the entity's own PropertyManager is not opened.
+  // rfF: otherwise a plain click selects what is under the cursor (an end point / centre within a few pixels: the
+  // point, else the entity) and shows its PropertyManager; Ctrl / Shift toggle it in the selection, and two or more
+  // selected items show the Properties PM (Selected Entities, Existing Relations, Add Relations), as in SolidWorks.
+  function isSketchItem(s) { return s.kind === 'entity' || s.kind === 'sketchPoint'; }
   function sketchSelectClick(mx, my, ev) {
     var collecting = !!(UI.pmCollectsSelection && UI.pmCollectsSelection());
     if (!allows('entity')) { if (collecting) return true; App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
-    if (!collecting && !(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey))) return false;
-    var hit = UI.pickEntity(mx, my);
-    if (!hit) return true;
-    if (collecting && UI.pmEntityPick && UI.pmEntityPick(hit)) return true;
-    // p9-sketchfix: the selection is read before the entity's PropertyManager closes: closing it consumes the selection
-    // (ui-commands.js closePM), so Ctrl+click on a second circle replaced the first instead of adding to it
-    var had = selection().filter(function (s) { return s.kind === 'entity'; });
-    if (!collecting) UI.closePM();
-    setSelection(BoxSelect.combine(had, [hit], 'toggle', selKey));
+    var mod = !!(ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey));
+    if (collecting) {
+      var hitC = UI.pickEntity(mx, my);
+      if (!hitC) return true;
+      if (UI.pmEntityPick && UI.pmEntityPick(hitC)) return true;
+      setSelection(BoxSelect.combine(selection().filter(function (s) { return s.kind === 'entity'; }), [hitC], 'toggle', selKey));
+      return true;
+    }
+    var item = sketchPickItem(mx, my);
+    if (mod && !item) return true;
+    // p9-sketchfix: the selection is read before anything replaces the PropertyManager (closing one consumes the
+    // selection, ui-commands.js closePM)
+    var list = mod ? BoxSelect.combine(selection().filter(isSketchItem), [item], 'toggle', selKey) : item ? [item] : [];
+    setSelection(list, { quiet: !mod });
+    sketchSelectionPM(list, true);
     return true;
+  }
+  // What a Select-tool click at (mx, my) selects in the active sketch: { kind: 'sketchPoint', ref } for a line's or an
+  // arc's end point or a circle's / arc's centre within 9 px (when it is no farther than the curve under the cursor, or
+  // within 4 px of it: a small hole's edge still selects the circle), else { kind: 'entity', index }, or null. Corners
+  // of rectangles / polygons, slot and ellipse points stay with their entity's PM (it edits them), spline points with
+  // the Spline PM (it shows the point nearest the click); a sketch point entity is the point itself.
+  var POINT_PICK = { line: 1, arc: 1, circle: 1 };
+  function pickSketchPoint(mx, my) {
+    var f = UI.activeSketchFeature(), SS = window.SketchSolver;
+    if (!f || !SS || !SS.pointRefs) return null;
+    var pl = UI.activePlane(), best = null, bd = 9;
+    f.entities.forEach(function (e, i) {
+      if (!e || !POINT_PICK[e.t] || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      SS.pointRefs(f, i).forEach(function (pr) {
+        if (/\.mid$/.test(pr.ref)) return;   // a line's midpoint is not a point of its own
+        var q = UI.worldToScreen(K.to3D(pl, pr.pt[0], pr.pt[1])), d = Math.hypot(q[0] - mx, q[1] - my);
+        if (d < bd) { bd = d; best = { ref: pr.ref, d: d }; }
+      });
+    });
+    return best;
+  }
+  function sketchPickItem(mx, my) {
+    var pe = UI.pickEntityDist ? UI.pickEntityDist(mx, my) : { hit: UI.pickEntity(mx, my), d: 0 };
+    var f = UI.activeSketchFeature(), he = pe.hit && f && f.entities[pe.hit.index];
+    if (he && he.t === 'point') return pe.hit;   // a sketch point entity is the point
+    var pt = pickSketchPoint(mx, my);
+    if (pt && (!pe.hit || pt.d <= 4 || pt.d <= pe.d + 1e-9)) return { kind: 'sketchPoint', ref: pt.ref };
+    return pe.hit;
+  }
+  // The sketch refs of a selection (an entity: its curve, or the entity; a sketch point: its ref), in order. Smart
+  // Dimension / Add Relations can take a preselection from here (UI.selectedSketchRefs()).
+  function selectedSketchRefs(list) {
+    var f = UI.activeSketchFeature(), SS = window.SketchSolver, out = [];
+    if (!f || !SS) return out;
+    (list || selection()).forEach(function (s) {
+      var r = null;
+      if (s.kind === 'sketchPoint') r = s.ref;
+      else if (s.kind === 'entity' && f.entities[s.index]) { var c = SS.curveRefs(f, s.index); r = c.length === 1 ? c[0] : String(s.index); }
+      if (r && SS.refKind(f, r) && out.indexOf(r) < 0) out.push(r);
+    });
+    return out;
+  }
+  // The PropertyManager that follows the sketch selection: one entity -> its own PM; one sketch point -> the Point PM
+  // of that point; two or more -> Properties; nothing -> closed. byClick: from a Select-tool click (any PM gives way,
+  // as a click always replaced it); else (a box) only a PM that shows the selection itself is replaced.
+  var selPMSpec = null;
+  function showsSelection(spec) {
+    return !!(spec && (spec === selPMSpec || spec.selectionPM || spec.entityIndex != null || spec._skEntity || spec._txtEntity || (spec._curves && spec._curves.kind === 'entity')));
+  }
+  function sketchSelectionPM(list, byClick) {
+    var spec = UI.pmSpec ? UI.pmSpec() : null;
+    if (spec && !byClick && !showsSelection(spec)) return;
+    var items = (list || selection()).filter(isSketchItem);
+    if (!items.length) { if (spec) UI.closePM(); return; }
+    if (items.length === 1 && items[0].kind === 'entity') {
+      App.sel = items[0];
+      UI.openEntityPM(items[0].index);
+      selPMSpec = UI.pmSpec ? UI.pmSpec() : null;
+      keyboardToGraphics();
+      return;
+    }
+    openSelectionPM(items);
+  }
+  // rfF: a PropertyManager opened by a click in the graphics area leaves the keyboard there (Delete deletes, typed keys
+  // go to the sketch), whichever entity PM it is
+  function keyboardToGraphics() {
+    var a = document.activeElement, pmEl = $('pm');
+    if (a && pmEl && pmEl.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { try { a.blur(); } catch (e) { } }
+  }
+  function sketchDirty() { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }
+  function clean10(x) { return Math.round(x * 1e10) / 1e10; }
+  function escHtml(t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  // Properties (two or more items) or Point (one sketch point): Selected Entities, Existing Relations, Add Relations
+  // (ui-sketch-dims.js UI.sketchRelationGroups), For construction for whole entities, X / Y for a point. It sets no
+  // command, so clicks, Ctrl+clicks and boxes keep selecting (and the PM follows the selection).
+  function openSelectionPM(items) {
+    var f = UI.activeSketchFeature(), SS = window.SketchSolver;
+    if (!f || !SS) return;
+    var refs = selectedSketchRefs(items);
+    var pointRef = items.length === 1 && items[0].kind === 'sketchPoint' ? items[0].ref : null;
+    var ents = items.filter(function (s) { return s.kind === 'entity' && f.entities[s.index]; }).map(function (s) { return s.index; });
+    var v = {};
+    if (pointRef) { var P = SS.refPoint(f, pointRef); v.x = P ? clean10(P[0]) : 0; v.y = P ? clean10(P[1]) : 0; }
+    if (ents.length) v.construction = ents.every(function (i) { return !!f.entities[i].construction; });
+    var spec;
+    function rerender() { if (UI.pmSpec && UI.pmSpec() === spec && App.mode === 'sketch') openSelectionPM(items); }
+    function refreshSketch() { App.gridStale = true; UI.updateSketches(); UI.refreshTree(); }
+    var groups = [];
+    if (!pointRef) groups.push({ title: 'Selected Entities', fields: [{ type: 'html', html: '<div class="rel-list" id="sel-props-list">' + refs.map(function (r) { return '<div class="rel-row">' + escHtml(SS.refName(f, r)) + '</div>'; }).join('') + '</div>' }] });
+    var rg = UI.sketchRelationGroups ? UI.sketchRelationGroups(f, refs, { onChange: rerender }) : null;
+    if (!rg) {
+      var types = SS.applicable(f, refs);
+      rg = [{ title: 'Add Relations', fields: types.length ? [{ type: 'buttons', buttons: types.map(function (t) { return { label: SS.TYPES[t].name, onclick: function () { sketchDirty(); var r = SS.addRelation(f, t, refs); if (!r.ok) UI.toast(r.error); refreshSketch(); rerender(); } }; }) }] : [{ type: 'static', label: '', value: 'No relation applies to this selection.' }] }];
+    }
+    groups = groups.concat(rg);
+    if (ents.length) groups.push({ title: 'Options', fields: [{ type: 'check', label: 'For construction', key: 'construction' }] });
+    if (pointRef) groups.push({ title: 'Parameters', fields: [{ type: 'number', key: 'x', label: 'X', unit: 'u' }, { type: 'number', key: 'y', label: 'Y', unit: 'u' }] });
+    function deselect() { setSelection([], { quiet: true }); }
+    spec = {
+      title: pointRef ? 'Point' : 'Properties', icon: pointRef ? 'point' : 'props', values: v, noFocus: true, selectionPM: true,
+      message: pointRef ? SS.refName(f, pointRef) + ': type X / Y to move it, or add a relation.' : refs.length + ' items selected: add a relation, or Ctrl+click to change the selection.',
+      groups: groups,
+      onChange: function (vals, key) {
+        if (key === 'construction') {
+          sketchDirty();
+          ents.forEach(function (i) { if (!f.entities[i]) return; if (vals.construction) f.entities[i].construction = true; else delete f.entities[i].construction; });
+          refreshSketch();
+          UI.setStatus((ents.length === 1 ? 'Entity' : ents.length + ' entities') + (vals.construction ? ' changed to construction geometry.' : ' changed back to sketch geometry.'));
+          return;
+        }
+        if (!pointRef || (key !== 'x' && key !== 'y')) return;
+        var val = +vals[key], k = key === 'x' ? 0 : 1, pr = SS.parseRef(pointRef);
+        if (!pr || pr.o || !isFinite(val)) return;
+        var Q0 = SS.refPoint(f, pointRef);
+        if (Q0 && Math.abs(Q0[k] - val) < 1e-12) return;
+        sketchDirty();
+        var r = SS.driveEntity(f, pr.e, 1, function (E) { var Q = SS.refPoint({ entities: E }, pointRef); return [Q ? Q[k] - val : 0]; });
+        if (!r.ok) { UI.setStatus(r.error); UI.toast(r.error); rerender(); return; }
+        refreshSketch();
+        UI.setStatus(SS.refName(f, pointRef) + ' moved to ' + (key === 'x' ? 'X ' : 'Y ') + (UI.fmtLen ? UI.fmtLen(val) : val) + '.');
+      },
+      onOK: deselect, onCancel: deselect
+    };
+    App.relPick = null;
+    UI.openPM(spec);
+    selPMSpec = spec;
+    keyboardToGraphics();
+    App.dimsStale = true;
   }
 
   // ================================================================== box selection
@@ -462,8 +601,10 @@ if (typeof UI !== 'undefined') (function (UI) {
       return selection();
     }
     var op = mods.shift ? 'toggle' : mods.ctrl ? 'add' : 'replace';
-    var list = BoxSelect.combine(selection(), items, op, selKey);
+    var list = BoxSelect.combine(App.mode === 'sketch' ? selection().filter(isSketchItem) : selection(), items, op, selKey);
     setSelection(list, { quiet: true });
+    // rfF: a box in a sketch shows the selection's PropertyManager (Properties for two or more) unless another PM is open
+    if (App.mode === 'sketch' && !(UI.pmCollectsSelection && UI.pmCollectsSelection())) sketchSelectionPM(list, false);
     if (UI.setStatus) UI.setStatus((r.mode === 'window' ? 'Window' : 'Crossing') + ' selection: ' + (list.length ? describe(list) + ' selected.' : 'nothing selected.'));
     return list;
   }
@@ -576,15 +717,20 @@ if (typeof UI !== 'undefined') (function (UI) {
   }, true);
 
   // Delete with several sketch entities selected removes them all (one undo step, highest index first).
+  // rfF: selected sketch points (an end point, a centre) are part of their entities: Delete leaves them (and the
+  // Point / Properties PM) alone, as SolidWorks does; with entities selected too, only the entities go.
   var baseDelete = UI.deleteSelection;
   UI.deleteSelection = function () {
     var list = selection();
-    if (App.mode === 'sketch' && list.length > 1 && list.every(function (s) { return s.kind === 'entity'; })) {
-      list.map(function (s) { return s.index; }).sort(function (a, b) { return b - a; }).forEach(function (i) {
+    if (App.mode === 'sketch' && list.length && list.every(isSketchItem) && (list.length > 1 || list[0].kind === 'sketchPoint')) {
+      var ents = list.filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });
+      if (!ents.length) { UI.setStatus('A sketch point belongs to its entity: select the line, arc or circle to delete it.'); return; }
+      if (UI.pmSpec && showsSelection(UI.pmSpec())) UI.closePM();
+      ents.sort(function (a, b) { return b - a; }).forEach(function (i) {
         App.sel = { kind: 'entity', index: i }; App.sel2 = null; App.multi = [];
         baseDelete();
       });
-      App.sel = null; UI.updateSketches();
+      App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches();
       return;
     }
     return baseDelete.apply(this, arguments);
@@ -1346,6 +1492,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   UI.selectionFilter = selectionFilter; UI.selectionFilterAllows = allows; UI.toggleSelectionFilterBar = toggleBar;
   UI.selectionFilterBarShown = function () { return filter.bar; };
   UI.pickVertex = pickVertex; UI.pickFiltered = pick; UI.pickHover = pickHover; UI.selectClick = selectClick; UI.sketchSelectClick = sketchSelectClick;
+  UI.sketchPickItem = sketchPickItem; UI.selectedSketchRefs = selectedSketchRefs; UI.sketchSelectionPM = sketchSelectionPM;   // rfF
   UI.boxSelectHook = boxSelectHook; UI.boxItems = boxItems; UI.applyBox = applyBox;
   UI.instant3DOn = function () { return i3d.on; }; UI.toggleInstant3D = setInstant3D;
   UI.instant3DHandles = function () { drawI3D(); return handleList.slice(); };

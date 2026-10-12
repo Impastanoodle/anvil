@@ -377,7 +377,9 @@
     groups.push({ title: 'Options', fields: [{ type: 'check', label: 'For construction', key: 'construction' }] });
     groups.push({ title: 'Parameters', fields: paramFields(fam, null, e.t) });
     UI.openPM({
-      title: TITLES[fam], icon: e.t === 'poly' ? 'polygon' : e.t, values: values, groups: groups,
+      // rfF: noFocus, as the Line / Rectangle / Point PMs: the keyboard stays with the graphics area, so Delete deletes the
+      // selected circle / arc / slot / polygon (it blanked the focused Center X box instead)
+      title: TITLES[fam], icon: e.t === 'poly' ? 'polygon' : e.t, values: values, groups: groups, noFocus: true,
       _curves: { kind: 'entity', index: index, type: e.t, fam: fam },
       onChange: function (v, key) {
         if (key === 'construction') { setConstruction(f, index, v.construction); return; }
