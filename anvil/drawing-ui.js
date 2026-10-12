@@ -693,15 +693,20 @@
     if (D.tool === 'place' && P && P.at) ghost(P.at[0], P.at[1], P.w, P.h);
     if (D.tool === 'project' && P && P.parent != null && P.at) { var pl = DW.projectPlacement(P.at); if (pl) ghost(pl.x, pl.y, pl.w, pl.h); }
     if (D.tool === 'section' && P && P.at) {
-      var sl = P.parent != null ? P.line : DW.sectionLineAt(P.at);
-      if (sl) svgNode('line', { class: 'dw-cut', x1: sl.a[0], y1: H - sl.a[1], x2: sl.b[0], y2: H - sl.b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) }, g);
-      if (P.parent != null) { var sp = DW.sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
+      // (rfW) a half / offset / aligned cutting line shows every leg while it is clicked, the one to come at the pointer
+      var sl = P.parent != null ? P.line : DW.sectionLineAt(P.at), sdash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
+      var legs = P.parent != null && DW.sectionPreview ? DW.sectionPreview(P) : null;
+      if (legs) svgNode('polyline', { class: 'dw-cut dw-legs', points: legs.pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': pxToPaper(2), 'stroke-dasharray': sdash }, g);
+      else if (sl) svgNode('line', { class: 'dw-cut', x1: sl.a[0], y1: H - sl.a[1], x2: sl.b[0], y2: H - sl.b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': sdash }, g);
+      if (P.parent != null && (!legs || legs.ghost)) { var sp = DW.sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
     }
     if (D.tool === 'detail' && P && P.parent != null) {
       var dw = DW.sheetView(P.parent), rr = P.r != null ? P.r : P.at ? Math.hypot(P.at[0] - P.cp[0], P.at[1] - P.cp[1]) / dw.scale : 0;
       if (rr > 0) svgNode('circle', { class: 'dw-cut', cx: P.cp[0], cy: H - P.cp[1], r: rr * dw.scale, 'stroke-width': pxToPaper(2) }, g);
       if (P.r != null && P.at) { var ds = Drawing.scaleValue(P.scale); ghost(P.at[0], P.at[1], 2 * P.r * ds, 2 * P.r * ds); }
     }
+    D.preview = null;
+    if (/^(aux|crop|brk)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
   }
   function dimMatches(ref, d) { return ref.view === d.view && (ref.key ? ref.key === d.key : ref.index === d.index && d.index != null); }
 
@@ -781,6 +786,8 @@
     if (D.tool === 'balloon' || D.tool === 'stackballoon') { DW.balloonClick(p); return; }
     if (D.tool === 'note') { DW.noteClick(p); return; }
     if (D.tool === 'symbol') { DW.symbolClick(p); return; }
+    // a click anywhere but on a dimension closes the Dimension PM a single click opened (with its edits, as SolidWorks)
+    if (DW.clickPM() && !dimAt(p) && !DW.arrowAt(p)) DW.closeClickPM(true);
     // a leader's arrow tip (a note's or a symbol's): drag it to another point
     var lt = leaderTipAt(p);
     if (lt) {
@@ -848,7 +855,7 @@
     var fl = DW.arrowAt(p);
     if (fl) { DW.flipArrows(fl); return; }
     var dm = dimAt(p);
-    if (dm) { D.sel = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; DW.startDimDrag(dm, p); drawOverlay(); DW.renderTree(); UI.setStatus('Dimension ' + dm.text + (dm.auto ? ' (model item)' : '') + ' \u2014 drag to move it (it snaps in line with the others), click an arrowhead to flip the arrows, double-click to edit the value in place, Delete removes it.'); return; }
+    if (dm) { D.sel = { kind: 'dim', view: dm.view, key: dm.key || null, index: dm.index }; DW.startDimDrag(dm, p); D.drag.clickPM = true; drawOverlay(); DW.renderTree(); UI.setStatus('Dimension ' + dm.text + (dm.auto ? ' (model item)' : '') + ' \u2014 drag to move it (it snaps in line with the others), click an arrowhead to flip the arrows, double-click to edit the value in place, Delete removes it.'); return; }
     var w = viewAt(p);
     if (w) {
       D.sel = { kind: 'view', id: w.view.id };
@@ -931,6 +938,12 @@
     if (e.target && e.target.nodeType && D.host.contains(e.target)) {
       var q = toPaper(e), h = null;
       if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
+      // (rfW) Auxiliary / Crop / Break follow the pointer; before its edge is picked, Auxiliary pre-highlights straight edges
+      if (/^(aux|crop|brk)$/.test(D.tool) && D.pending) {
+        D.pending.at = q;
+        if (D.tool === 'aux' && D.pending.parent == null) { var ea = entityAt(q); D.hover = ea && ea.la ? ea : null; } else D.hover = null;
+        drawOverlay(); return;
+      }
       if (D.pending && (D.tool === 'balloon' || D.tool === 'stackballoon')) D.pending.at = q;
       if (D.tool === 'dim') { DW.smartDimMove(q, e); return; }   // (rfS) pre-highlight and the preview
       if (/^(centermark|holecallout|ordinate|baseline|chamferdim)$/.test(D.tool)) h = entityAt(q);
@@ -965,6 +978,9 @@
     D.drag = null;
     if (D.host) D.host.classList.remove('dw-dragging', 'dw-panning');
     if (D.snapGuide) { D.snapGuide = null; drawOverlay(); }
+    // (SolidWorks) a click on a dimension, without a drag, opens its Dimension PropertyManager; the keyboard stays on
+    // the sheet (Delete deletes it, D starts Smart Dimension)
+    if (dg.kind === 'dim' && dg.clickPM && !dg.moved && D.active) DW.openClickDimPM(dg.ref);
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in

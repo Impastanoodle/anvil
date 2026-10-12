@@ -115,8 +115,12 @@ if (typeof UI !== 'undefined') (function (UI) {
     }
     return s.kind + ':' + JSON.stringify(s);
   }
+  // rfX (sketch fidelity 3, finding 1): a sketch selection (entities, points, dimensions, relations) does not depend on
+  // the mesh, so a rebuild that finishes while the user is still Ctrl-clicking (the sketch's own feature, in the worker)
+  // must not throw the list away: before, four preselected slot entities reached Linear Sketch Pattern as two.
+  function sketchOnly(list) { return list.every(function (s) { return s && (s.kind === 'entity' || s.kind === 'sketchPoint' || s.kind === 'dim' || s.kind === 'rel'); }); }
   function selection() {
-    if (App.multi.length && App.multi[0] === App.sel && App.multiMesh === App.mesh && App.multiMode === App.mode) return App.multi.slice();
+    if (App.multi.length && App.multi[0] === App.sel && (App.multiMesh === App.mesh || sketchOnly(App.multi)) && App.multiMode === App.mode) return App.multi.slice();
     App.multi = [];
     return [App.sel, App.sel2].filter(Boolean);
   }

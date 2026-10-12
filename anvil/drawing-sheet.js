@@ -257,7 +257,16 @@
   // The viewer stands on the side sign points to (sign × the parent's v or u) and looks at the cut, so the arrows
   // point the other way. The view is aligned with the parent, placed on the viewer's side in third-angle projection
   // and on the arrows' side in first angle; cut faces are hatched ANSI31 and the view is labelled SECTION A-A.
+  // (rfV) opts.type 'half' | 'offset' | 'aligned' (+ c, side, jogs, angle …): the full section, then
+  // Drawing.setSectionType (drawing-views.js); a refused type takes the new view off again
   function addSectionView(doc, mesh, parentId, opts) {
+    var t = opts && opts.type;
+    if (!t || t === 'full') return addFullSection(doc, mesh, parentId, opts);
+    var nv = doc.views.length, nn = doc.nextView, v = addFullSection(doc, mesh, parentId, opts);
+    try { D.setSectionType(doc, v.id, opts); } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
+    return v;
+  }
+  function addFullSection(doc, mesh, parentId, opts) {
     opts = opts || {};
     var par = findView(doc, parentId);
     if (!par) throw new Error('No drawing view ' + parentId);
@@ -436,7 +445,17 @@
   // viewContent(doc, v, mesh, parentContent) -> { frame, proj, center: [u, v] (the model point at the view's x, y),
   // caps (section faces to hatch), clip (a detail circle), section }. Section and detail views are centred on the
   // whole part's extents in their frame (not on what is left of it), so they stay aligned with their parent.
+  // (rfV) the view kinds of drawing-views.js, directly: a half / offset / aligned section is cut along its path
+  // (_.pathContent), an auxiliary view stays square to its parent's edge (_.auxCenter), a crop keeps what lies inside
+  // it (_.cropContent); plainContent is everything else
   function viewContent(doc, v, mesh, parentContent) {
+    var ct = _.typedSection(doc, v, parentContent) ? _.pathContent(doc, v, mesh, parentContent) : plainContent(doc, v, mesh, parentContent);
+    if (!ct || !ct.proj) return ct;
+    _.auxCenter(doc, v, ct, parentContent);
+    if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = _.cropContent(ct, v.crop);
+    return ct;
+  }
+  function plainContent(doc, v, mesh, parentContent) {
     var par = v.parent != null ? findView(doc, v.parent) : null, s = viewScale(doc, v);
     if (v.kind === 'flat') {
       // the flat pattern, unfolded by the kernel (worked out here, not in the worker: it is a few ms of CSG)
@@ -507,6 +526,12 @@
   }
   // layout(doc, mesh, units): positions the standard views (roles front / top / right / iso) and, when the sheet
   // scale is automatic, chooses it. A view's (x, y) is where the centre of its projected bounding box sits on the sheet.
+  // layoutViews(doc, mesh, units): layout, then auxiliary views follow their parents (_.carryAux; Drawing.layout)
+  function layoutViews(doc) {
+    var before = _.viewPositions(doc), r = layout.apply(this, arguments);
+    _.carryAux(doc, before);
+    return r;
+  }
   function layout(doc, mesh, units) {
     var k = paperK(units), A = usableArea(doc, units), g = GAP * k;
     var byRole = {}, before = {};
@@ -597,7 +622,13 @@
   }
   // moveView(doc, id, x, y): a parent view drags its projected children along; a projected view slides along its
   // alignment only (Top stays above Front, Right stays level with it).
+  // (rfV) an auxiliary view slides along its axis only (_.auxSlide) and follows its parent (_.carryAux, drawing-views.js)
   function moveView(doc, id, x, y) {
+    var at = _.auxSlide(doc, id, x, y), before = _.viewPositions(doc), r = moveOneView(doc, id, at[0], at[1]);
+    _.carryAux(doc, before);
+    return r;
+  }
+  function moveOneView(doc, id, x, y) {
     var v = findView(doc, id);
     if (!v) return;
     if (v.parent != null && findView(doc, v.parent)) { if (v.align === 'x') x = v.x; else if (v.align === 'y') y = v.y; }
@@ -1762,7 +1793,7 @@
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
-  D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
+  D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layoutViews; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
   D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;

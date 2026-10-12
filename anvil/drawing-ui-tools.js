@@ -36,17 +36,32 @@
   function cmdModelView(preset) {
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
     var pre = typeof preset === 'string' ? preset : null, sm = sheetMetal(), flatFirst = pre === FLAT || (sm && pre == null);
+    // (rfW, SolidWorks' groups) Orientation: the standard-view buttons and the named views (Flat pattern first on sheet
+    // metal); Options: Auto-start projected view (on: the Projected View tool follows from the placed view); Display
+    // Style; Scale: Use sheet scale / Use custom scale; Dimension Type (projected; true is not drawn yet)
+    var std = (sm ? [FLAT] : []).concat(['Front', 'Top', 'Right', 'Back', 'Bottom', 'Left', 'Isometric']);
+    var custom = scaleOptions().slice(1), sheetSc = Drawing.scaleText(doc().sheet.scale || [1, 1]);
     openDrawingPM({
       title: 'Model View', icon: 'modelView', command: 'modelView',
       message: 'Pick the orientation, press OK, then click on the sheet to place the view.' + (sm ? ' Flat pattern draws the unfolded blank with its bend lines and notes.' : ''),
-      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scale: 'sheet', bendNotes: Drawing.docOptions(doc()).bendNotes },
+      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scaleMode: 'sheet', scale: custom.some(function (o) { return o[0] === sheetSc; }) ? sheetSc : custom[0][0], bendNotes: Drawing.docOptions(doc()).bendNotes, autoProj: true, dimType: 'projected' },
       groups: [
-        { title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: (sm ? [[FLAT, 'Flat pattern']] : []).concat(Drawing.ORIENTS) }] },
-        { title: 'Display Style', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
+        { title: 'Orientation', fields: [
+          { type: 'buttons', key: 'stdViews', buttons: std.map(function (o) { return { label: o === FLAT ? '(A) Flat pattern' : o, active: function (v) { return v.orient === o; }, onclick: function (v) { v.orient = o; if (o !== FLAT && ORTHO_NAMES.indexOf(o) < 0 && v.display === 'hlv') v.display = 'hlr'; UI.renderPM(); } }; }) },
+          { type: 'select', key: 'orient', label: 'View', rerender: true, options: (sm ? [[FLAT, 'Flat pattern']] : []).concat(Drawing.ORIENTS) }] },
+        { title: 'Options', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'check', key: 'autoProj', label: 'Auto-start projected view' }] },
+        { title: 'Display Style', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'radio', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
         { title: 'Bend Notes', show: function (v) { return v.orient === FLAT; }, fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }] },
-        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
+        { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['sheet', 'Use sheet scale (' + sheetSc + ')'], ['custom', 'Use custom scale']] },
+          { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: custom }] },
+        { title: 'Dimension Type', show: function (v) { return v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0; }, fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']],
+          disabledOption: function (o) { return o === 'true' ? 'True dimensions in a pictorial view are not drawn yet: dimension the orthographic views.' : null; } }] }
       ],
-      onOK: function (v) { startPlacing({ orient: v.orient, flat: v.orient === FLAT, bendNotes: v.bendNotes, display: v.display, scale: v.scale === 'sheet' ? null : Drawing.parseScale(v.scale) }); }
+      onOK: function (v) {
+        // (the API's old values: scale 'sheet' or a scale text in `scale` alone)
+        var sc = v.scaleMode === 'custom' ? v.scale : v.scaleMode === 'sheet' ? 'sheet' : v.scale;
+        startPlacing({ orient: v.orient, flat: v.orient === FLAT, bendNotes: v.bendNotes, display: v.display, scale: !sc || sc === 'sheet' ? null : Drawing.parseScale(sc), autoProj: !!v.autoProj && v.orient !== FLAT });
+      }
     });
   }
   // the flat pattern of the open part, worked out now (null and a message when it does not unfold)
@@ -76,6 +91,11 @@
     D.sel = { kind: 'view', id: v.id };
     drawOverlay(); DW.renderTree(); UI.refreshRibbon();
     UI.setStatus(v.name + ' (' + v.orient + ') placed.' + (spec.flat ? ' Bend lines: UP solid, DOWN dashed; drag a bend note to move it.' : ''));
+    // (rfW) Options ▸ Auto-start projected view: the Projected View tool goes on from the new view until Esc
+    if (spec.autoProj && !spec.flat) {
+      startTool('project', { parent: v.id, at: null, chain: true });
+      UI.setStatus(v.name + ' placed. Projected View from it: move the pointer to a side and click to place; Esc ends.');
+    }
     return v;
   }
   // Insert ▸ Drawing View ▸ Flat Pattern: Model View with Flat pattern chosen
@@ -132,10 +152,12 @@
     }
     var pl = projectPlacement(p), parent = D.pending.parent, v;
     if (!pl) { endTool(); return; }
+    var chain = !!D.pending.chain;
     endTool();
     v = editView(function (dc) { return Drawing.addProjectedView(dc, mesh(), parent, pl.dir, { x: pl.x, y: pl.y }); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
-    UI.setStatus(v.name + ' (' + v.orient + ') projected ' + pl.dir + ' from its parent, aligned with it.');
+    UI.setStatus(v.name + ' (' + v.orient + ') projected ' + pl.dir + ' from its parent, aligned with it.' + (chain ? ' Click for another projection, Esc ends.' : ''));
+    if (chain) startTool('project', { parent: parent, at: null, chain: true });   // (rfW) Auto-start projected view goes on
     return v;
   }
   // Section View: PropertyManager (cutting line Horizontal / Vertical, label), then click in a view to put the cutting
@@ -146,16 +168,21 @@
     openDrawingPM({
       title: 'Section View', icon: 'sectionView', command: 'sectionView',
       message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes. Half: the click is the centre where the line turns. Offset: click each leg (2 or 3), then the side. Aligned: click the centre, then a point on the second leg, then the side.',
-      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()) },
+      // (rfW) SolidWorks' groups: Section Line (type, orientation, half), Section View (label, Flip direction),
+      // Scale (Use parent scale / Use custom scale)
+      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()), flip: false, scaleMode: 'parent', scale: scaleOptions()[1][0] },
       groups: [
-        { title: 'Section Type', fields: [{ type: 'select', key: 'type', label: 'Type', options: [['full', 'Full Section'], ['half', 'Half Section'], ['offset', 'Offset Section'], ['aligned', 'Aligned Section']] }] },
-        { title: 'Cutting Line', fields: [{ type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] },
-        { title: 'Half Section', show: function (v) { return v.type === 'half'; }, fields: [{ type: 'select', key: 'side', label: 'Cut half', options: [['1', 'Right / Top'], ['-1', 'Left / Bottom']] }] },
-        { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }] }
+        { title: 'Section Line', fields: [{ type: 'select', key: 'type', label: 'Type', rerender: true, options: [['full', 'Full Section'], ['half', 'Half Section'], ['offset', 'Offset Section'], ['aligned', 'Aligned Section']] },
+          { type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] },
+          { type: 'select', key: 'side', label: 'Cut half', show: function (v) { return v.type === 'half'; }, options: [['1', 'Right / Top'], ['-1', 'Left / Bottom']] }] },
+        { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }] },
+        { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['parent', 'Use parent scale'], ['custom', 'Use custom scale']] },
+          { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }
       ],
       onOK: function (val) {
         var ty = /^(half|offset|aligned)$/.test(val.type) ? val.type : 'full';
-        startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', type: ty, side: +val.side < 0 ? -1 : 1, label: cleanLabel(val.label), parent: null, at: null, pts: [] });
+        startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', type: ty, side: +val.side < 0 ? -1 : 1, label: cleanLabel(val.label), parent: null, at: null, pts: [],
+          flip: !!val.flip, scale: val.scaleMode === 'custom' && val.scale ? Drawing.parseScale(val.scale) : null });
         UI.setStatus('Section View: click in a view to place the ' + (ty === 'half' ? 'centre of the half section' : ty === 'aligned' ? 'centre of the aligned section' : (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line') + '. Esc cancels.');
       }
     });
@@ -178,7 +205,7 @@
     var P = D.pending, w = sheetView(P.parent);
     if (!w) return null;
     var side = P.axis === 'h' ? (p[1] >= P.line.a[1] ? 1 : -1) : (p[0] >= P.line.a[0] ? 1 : -1);
-    var sign = doc().sheet.projection === 'first' ? -side : side;
+    var sign = (doc().sheet.projection === 'first' ? -side : side) * (P.flip ? -1 : 1);   // (rfW) Flip direction
     var F = Drawing.sectionFrame(w.frame, P.axis, sign), ext = Drawing.extentsOf(mesh(), F);
     return { sign: sign, x: P.axis === 'h' ? w.view.x : p[0], y: P.axis === 'h' ? p[1] : w.view.y, w: ext.w * w.scale, h: ext.h * w.scale };
   }
@@ -230,7 +257,8 @@
     }
     endTool();
     if (spec.type) { try { Drawing.addSectionView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; } }
-    v = editView(function (dc) { return Drawing.addSectionView(dc, mesh(), parent, spec); });
+    var vsc = P.scale;
+    v = editView(function (dc) { var nv = Drawing.addSectionView(dc, mesh(), parent, spec); if (vsc) nv.scale = vsc.slice(); return nv; });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
     UI.setStatus(v.name + ' placed, cut at ' + Drawing.fmtDim(spec.at, units()) + ' ' + units() + '.');
     return v;
@@ -238,9 +266,24 @@
   // Detail View: click the centre of the detail circle in a view, click again to set its radius, then click where
   // the enlarged view goes (twice the parent's scale; change it in the view's properties).
   function cmdDetailView() {
-    if (D.tool === 'detail') { endTool(); return; }
+    if (D.tool === 'detail') { endToolPM(); return; }
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
-    startTool('detail', { parent: null, at: null });
+    var vals = { label: Drawing.nextLabel(doc()), shape: 'circle', scaleMode: 'default', scale: scaleOptions()[1][0] };
+    startTool('detail', { parent: null, at: null, pm: vals });
+    // (rfW) its PropertyManager opens with the tool (SolidWorks): Detail Circle (label, Circle; a sketched profile is not
+    // supported yet) and Scale (twice the parent's, or a custom one); the keyboard stays on the sheet
+    openDrawingPM({
+      title: 'Detail View', icon: 'detailView', command: 'detailView', noFocus: true, values: vals,
+      message: 'Click the centre of the detail circle in a view, click again for its radius, then click where the view goes. Esc cancels.',
+      groups: [
+        { title: 'Detail Circle', fields: [{ type: 'text', key: 'label', label: 'Label' },
+          { type: 'radio', key: 'shape', label: 'Shape', options: [['circle', 'Circle'], ['profile', 'Profile']], disabledOption: function (o) { return o === 'profile' ? 'A sketched profile is not supported yet: the circle is used.' : null; } }] },
+        { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['default', 'Twice the parent\'s scale'], ['custom', 'Use custom scale']] },
+          { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }
+      ],
+      onOK: function () { if (D.tool === 'detail') endTool(); },
+      onClose: function () { if (D.tool === 'detail' && D.pending && D.pending.pm === vals) endTool(); }
+    });
     UI.setStatus('Detail View: click the centre of the detail circle in a view. Esc cancels.');
   }
   function detailClick(p) {
@@ -256,12 +299,14 @@
     if (P.r == null) {
       var r = Math.hypot(p[0] - P.cp[0], p[1] - P.cp[1]) / w2.scale;
       if (!(r > 0)) return;
-      P.r = r; P.scale = Drawing.detailScale(w2.view.scale || doc().sheet.scale || [1, 1]);
+      P.r = r; P.scale = P.pm && P.pm.scaleMode === 'custom' && P.pm.scale ? Drawing.parseScale(P.pm.scale) : Drawing.detailScale(w2.view.scale || doc().sheet.scale || [1, 1]);
       UI.setStatus('Detail View (' + Drawing.scaleText(P.scale) + '): click where the view goes.');
       return;
     }
     var spec = { c: P.c, r: P.r, scale: P.scale, x: p[0], y: p[1] }, parent = P.parent, v;
+    if (P.pm && P.pm.label) spec.label = cleanLabel(P.pm.label);
     endTool();
+    if (P.pm && UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === P.pm) UI.pmCancel();
     v = editView(function (dc) { return Drawing.addDetailView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
     UI.setStatus(v.name + ' placed.');
@@ -341,6 +386,7 @@
   function deleteSelection() {
     var s = D.sel;
     if (!s) return false;
+    closeClickPM(false);   // (its dimension is going)
     if (s.kind === 'view') { deleteView(s.id); return true; }
     if (s.kind === 'bom') { setBom(null); D.sel = null; render(); return true; }
     if (s.kind === 'annot' && typeof s.id === 'string') {
@@ -564,7 +610,7 @@
       ln([c[0] + v[0] / vl * r, c[1] + v[1] / vl * r], P.at); tx([P.at[0], P.at[1] + 1 * k]);
     } else if (d.kind === 'angle') {
       d.text = text;
-      Drawing._anglePrims(d, w, k).forEach(function (x) {
+      Drawing._anglePrims(d, w, k, D.sheet && D.sheet.dimStyle ? D.sheet.dimStyle.paper : undefined).forEach(function (x) {
         if (x.k === 'line') ln(x.a, x.b);
         else if (x.k === 'arc') {
           var a0 = x.a0 * Math.PI / 180, a1 = x.a1 * Math.PI / 180, s = [x.c[0] + x.r * Math.cos(a0), x.c[1] + x.r * Math.sin(a0)], e2 = [x.c[0] + x.r * Math.cos(a1), x.c[1] + x.r * Math.sin(a1)];
@@ -948,7 +994,7 @@
       values: { style: 'single', ext: o.extLines, size: o.markSize },
       groups: [
         { title: 'Manual Insert Options', fields: [{ type: 'select', key: 'style', label: 'Style', options: [['single', 'Single Center Mark'], ['linear', 'Linear Center Mark'], ['circular', 'Circular Center Mark']] }] },
-        { title: 'Display Attributes', fields: [{ type: 'check', key: 'ext', label: 'Extended lines' }, { type: 'number', key: 'size', label: 'Mark size', unit: 'mm', min: 0.5 }] }
+        { title: 'Display Attributes', fields: [{ type: 'check', key: 'ext', label: 'Extended lines' }, { type: 'number', key: 'size', label: 'Mark size', unit: 'u', min: 0.01 }] }
       ],
       onChange: function (v) { if (D.pending) { D.pending.style = v.style; D.pending.ext = !!v.ext; D.pending.size = +v.size || o.markSize; } },
       onOK: function (v) {
@@ -1158,7 +1204,9 @@
   // Dimension PropertyManager (double-click a dimension): Primary Value (a model item's value drives the part),
   // Tolerance/Precision (None, Bilateral, Limit, Symmetric; decimals), Dimension Text (<DIM> is the value), Leaders (flip)
   var PREC_OPTIONS = [['auto', 'Document default'], ['0', '1'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234']];
-  function cmdDimensionPM(ref, onClose) {
+  // noFocus (a single click on a dimension, SolidWorks): the PM opens with the keyboard left on the sheet, so Delete
+  // still deletes the selected dimension; it closes on a model change (D.clickPM, see closeClickPM)
+  function cmdDimensionPM(ref, onClose, noFocus) {
     var d = sheetDim(ref);
     if (!d) return;
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
@@ -1168,7 +1216,7 @@
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
     openDrawingPM({
-      title: 'Dimension', icon: 'dim', command: 'dimension',
+      title: 'Dimension', icon: 'dim', command: 'dimension', noFocus: !!noFocus, clickDim: !!noFocus, dimRef: dimRef(d),
       message: src ? 'A model item: a new value changes ' + src.featureName + ' and rebuilds the part.' : d.auto ? 'A model item. Its text, tolerance and arrows can be edited here.' : 'A reference dimension: it follows the model; text, tolerance and arrows can be edited here.',
       values: values,
       groups: [
@@ -1184,6 +1232,27 @@
       ],
       onOK: function (v) { return applyDimensionPM(d, src, v); }, onClose: onClose
     });
+  }
+  // The Dimension PM a single click opened (spec.clickDim), or null. It shows the dimension as it was when clicked, so a
+  // model change (rebuild, undo / redo), a delete or a click elsewhere closes it (closeClickPM) before the sheet is
+  // worked out again; an open PM never holds the sheet back.
+  function clickPM() { var s = UI.pmSpec && UI.pmSpec(); return s && s.clickDim ? s : null; }
+  function sameDimRef(a, b) { return !!a && !!b && a.view === b.view && (a.key || null) === (b.key || null) && a.index === b.index && (a.style || null) === (b.style || null); }
+  // a single click on a dimension (no tool running): its PM, unless another command's PM is open or it already shows
+  function openClickDimPM(ref) {
+    var s = UI.pmSpec && UI.pmSpec(), d = sheetDim(ref);
+    if (!d) return;
+    if (s && s.command === 'dimension' && sameDimRef(s.dimRef, dimRef(d))) return;
+    if (s && !s.clickDim) return;
+    if (s) closeClickPM(true);
+    d = sheetDim(ref);
+    if (d) cmdDimensionPM(dimRef(d), null, true);
+  }
+  // apply: keep what was typed in it (a click elsewhere, as SolidWorks); else drop it (the model changed under it)
+  function closeClickPM(apply) {
+    if (!clickPM()) return false;
+    if (apply) UI.pmOK(); else UI.pmCancel();
+    return true;
   }
   function dimPropsFromPM(v) {
     var label = String(v.label == null ? '' : v.label);
@@ -1232,7 +1301,7 @@
   function cmdDocProps() {
     var dc = doc(), o = Drawing.docOptions(dc);
     var cm = el('input', { type: 'checkbox' }), cl = el('input', { type: 'checkbox' }), ex = el('input', { type: 'checkbox' }), bq = el('input', { type: 'checkbox' });
-    var sz = el('input', { type: 'number', step: '0.5', min: '0.5', value: String(o.markSize) });
+    var sz = el('input', { type: 'number', step: units() === 'in' ? '0.01' : '0.5', min: '0.01', value: String(o.markSize) });
     cm.checked = o.autoCenterMarks; cl.checked = o.autoCenterlines; ex.checked = o.extLines; bq.checked = o.balloonQty;
     cm.id = 'dw-opt-cm'; cl.id = 'dw-opt-cl'; ex.id = 'dw-opt-ext'; bq.id = 'dw-opt-qty'; sz.id = 'dw-opt-size';
     function chk(inp, text) { return el('label', { class: 'dw-opt' }, [inp, el('span', { text: text })]); }
@@ -1479,9 +1548,19 @@
     return true;
   }
   function cmdAuxiliaryView() {
-    if (D.tool === 'aux') { endTool(); return; }
+    if (D.tool === 'aux') { endToolPM(); return; }
     if (!needPart()) return;
-    startTool('aux', { parent: null, edge: null, label: Drawing.nextLabel(doc()) });
+    var vals = { label: Drawing.nextLabel(doc()), flip: false };
+    startTool('aux', { parent: null, edge: null, label: vals.label, pm: vals });
+    // (rfW) its PropertyManager opens with the tool (SolidWorks): Arrow (label, Flip direction)
+    openDrawingPM({
+      title: 'Auxiliary View', icon: 'auxView', command: 'auxView', noFocus: true, values: vals,
+      message: 'Click a straight edge in a view, then click where the view goes along its arrow. Esc cancels.',
+      groups: [{ title: 'Arrow', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }] }],
+      onChange: function (v) { var P = D.pending; if (D.tool === 'aux' && P && P.pm === vals) { P.label = cleanLabel(v.label); P.ghosts = null; drawOverlay(); } },
+      onOK: function () { if (D.tool === 'aux') endTool(); },
+      onClose: function () { if (D.tool === 'aux' && D.pending && D.pending.pm === vals) endTool(); }
+    });
     UI.setStatus('Auxiliary View: click a straight edge in a view; the new view looks square onto it. Esc cancels.');
   }
   function auxClick(p) {
@@ -1495,8 +1574,9 @@
       return;
     }
     var e = P.edge, n = [-(e.pb[1] - e.pa[1]), e.pb[0] - e.pa[0]], m = [(e.pa[0] + e.pb[0]) / 2, (e.pa[1] + e.pb[1]) / 2];
-    var spec = { a: e.a, b: e.b, sign: (p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1] >= 0 ? 1 : -1, label: P.label, x: p[0], y: p[1] }, parent = P.parent, v;
+    var spec = { a: e.a, b: e.b, sign: ((p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1] >= 0 ? 1 : -1) * (P.pm && P.pm.flip ? -1 : 1), label: P.label, x: p[0], y: p[1] }, parent = P.parent, v;
     endTool();
+    if (P.pm && UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === P.pm) UI.pmCancel();
     try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
     v = editView(function (dc) { return Drawing.addAuxiliaryView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
@@ -1566,6 +1646,102 @@
     if (tryEdit(function (dc) { Drawing.addBreak(dc, id, spec); })) { D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree(); UI.setStatus((w2 ? w2.view.name : 'View') + ' broken (right-click ▸ Un-Break View restores it).'); }
   }
   function unBreak(id) { if (tryEdit(function (dc) { Drawing.clearBreaks(dc, id); })) UI.setStatus('Break removed.'); }
+  // ---- (rfW) live previews while placing, as SolidWorks draws them: every leg of a half / offset / aligned cutting line
+  // as it is clicked (sectionPreview), the auxiliary view's outline sliding along its arrow, the crop rectangle or
+  // circle as it is dragged out, the break lines as they are placed (liveOverlay, called from drawOverlay)
+  // from sheet point p along unit d to just past view w's box
+  function outOfBox(w, p, d) {
+    var t = Infinity, box = w.box, ext = 5 * paperK();
+    if (Math.abs(d[0]) > 1e-12) t = Math.min(t, ((d[0] > 0 ? box.x1 : box.x0) - p[0]) / d[0]);
+    if (Math.abs(d[1]) > 1e-12) t = Math.min(t, ((d[1] > 0 ? box.y1 : box.y0) - p[1]) / d[1]);
+    t = (isFinite(t) ? Math.max(0, t) : 0) + ext;
+    return [p[0] + d[0] * t, p[1] + d[1] * t];
+  }
+  // -> { pts (sheet polyline), ghost (the view outline follows the pointer too) } for a typed section, or null (full)
+  function sectionPreview(P) {
+    var ty = P.type || 'full', w = sheetView(P.parent);
+    if (ty === 'full' || !w || !P.at) return null;
+    var ti = P.axis === 'h' ? 0 : 1, ni = 1 - ti, sT = P.axis === 'h' ? [1, 0] : [0, 1];
+    function m2(t, n) { return P.axis === 'h' ? [t, n] : [n, t]; }
+    function ts(t, n) { return w.toSheet(m2(t, n)); }
+    if (ty === 'half') {
+      var Cs = ts(P.c, P.cut), pl = sectionPlacement(P.at), sg = pl ? pl.sign : 1, side = P.side < 0 ? -1 : 1;
+      return { pts: [outOfBox(w, Cs, [sT[0] * side, sT[1] * side]), Cs, outOfBox(w, Cs, P.axis === 'h' ? [0, sg] : [sg, 0])], ghost: true };
+    }
+    if (ty === 'offset') {
+      var legs = P.pts.slice(), inside = inBox(w, P.at);
+      if (inside && legs.length < 3) legs.push(snapCentre(w, P.at));
+      legs.sort(function (a, b) { return a[ti] - b[ti]; });
+      var pts = [outOfBox(w, ts(legs[0][ti], legs[0][ni]), [-sT[0], -sT[1]])];
+      for (var i = 0; i + 1 < legs.length; i++) { var tb = (legs[i][ti] + legs[i + 1][ti]) / 2; pts.push(ts(tb, legs[i][ni]), ts(tb, legs[i + 1][ni])); }
+      var L = legs[legs.length - 1];
+      pts.push(outOfBox(w, ts(L[ti], L[ni]), sT));
+      return { pts: pts, ghost: !inside };
+    }
+    // aligned: leg 1 along the line from the centre, leg 2 to the pointer until its angle is clicked
+    var C = m2(P.c, P.cut), Cs2 = w.toSheet(C), d2, sd;
+    if (P.angle == null) {
+      var q = snapCentre(w, P.at), dx = q[0] - C[0], dy = q[1] - C[1], l = Math.hypot(dx, dy);
+      if (l < 1e-9) return { pts: [Cs2, outOfBox(w, Cs2, sT)], ghost: false };
+      d2 = [dx / l, dy / l]; sd = (P.axis === 'h' ? dx : dy) > 0 ? -1 : 1;
+    } else { var a = P.angle * Math.PI / 180; d2 = [Math.cos(a), Math.sin(a)]; sd = P.side < 0 ? -1 : 1; }
+    return { pts: [outOfBox(w, Cs2, [sT[0] * sd, sT[1] * sd]), Cs2, outOfBox(w, Cs2, d2)], ghost: P.angle != null };
+  }
+  // the auxiliary view the pointer would place: { x, y, w, h, d (its axis), m (the edge's midpoint) }, worked out once
+  // per side of the edge on a scratch copy of the drawing and slid along the axis to the pointer
+  function auxPreview(P, p) {
+    var e = P.edge, n = [-(e.pb[1] - e.pa[1]), e.pb[0] - e.pa[0]], m = [(e.pa[0] + e.pb[0]) / 2, (e.pa[1] + e.pb[1]) / 2];
+    var sign = ((p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1] >= 0 ? 1 : -1) * (P.pm && P.pm.flip ? -1 : 1);
+    P.ghosts = P.ghosts || {};
+    var c = P.ghosts[sign];
+    if (c === undefined) {
+      c = null;
+      try {
+        var dc = JSON.parse(JSON.stringify(doc())), v = Drawing.addAuxiliaryView(dc, mesh(), P.parent, { a: e.a, b: e.b, sign: sign, label: P.label, x: m[0], y: m[1] });
+        var ext = Drawing.extentsOf(mesh(), Drawing.viewFrame(dc, v)), pw = sheetView(P.parent), sc = pw ? pw.scale : 1;
+        c = { x: v.x, y: v.y, d: v.aux.dir.slice(), w: ext.w * sc, h: ext.h * sc };
+      } catch (err) { c = null; }
+      P.ghosts[sign] = c;
+    }
+    if (!c) return null;
+    var t = (p[0] - c.x) * c.d[0] + (p[1] - c.y) * c.d[1];
+    return { x: c.x + c.d[0] * t, y: c.y + c.d[1] * t, w: c.w, h: c.h, d: c.d, m: m };
+  }
+  // a break line across view w at sheet coordinate s (x for vertical breaks, y for horizontal), zig zag or straight
+  function breakLinePts(w, dir, s, style) {
+    var ext = 3 * paperK(), v = dir !== 'horizontal', lo = (v ? w.box.y0 : w.box.x0) - ext, hi = (v ? w.box.y1 : w.box.x1) + ext;
+    var pts = [[lo, 0]];
+    if (style !== 'straight') {
+      var mid = (lo + hi) / 2, amp = 2 * paperK(), step = 2.5 * paperK();
+      pts.push([mid - 2 * step, 0], [mid - step, amp], [mid + step, -amp], [mid + 2 * step, 0]);
+    }
+    pts.push([hi, 0]);
+    return pts.map(function (q) { return v ? [s + q[1], q[0]] : [q[0], s + q[1]]; });
+  }
+  function liveOverlay(g, H, node, ghost) {
+    var P = D.pending, sw = pxToPaper(2), dash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
+    if (!P || !P.at) return;
+    function poly(pts, cls, dashed) { var a = { class: cls || 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': sw }; if (dashed) a['stroke-dasharray'] = dash; return node('polyline', a, g); }
+    if (D.tool === 'aux' && P.parent != null && P.edge) {
+      var ag = auxPreview(P, P.at);
+      if (!ag) return;
+      poly([ag.m, [ag.x, ag.y]], 'dw-cut dw-aux-axis', true);
+      ghost(ag.x, ag.y, ag.w, ag.h);
+      D.preview = { kind: 'aux', x: ag.x, y: ag.y, w: ag.w, h: ag.h };
+    } else if (D.tool === 'crop' && P.view != null && P.s0) {
+      var a = P.s0, b = P.at;
+      if (P.shape === 'circle') { var r = Math.hypot(b[0] - a[0], b[1] - a[1]); node('circle', { class: 'dw-cut dw-crop', cx: a[0], cy: H - a[1], r: r, fill: 'none', 'stroke-width': sw }, g); D.preview = { kind: 'crop', shape: 'circle', c: a.slice(), r: r }; }
+      else { node('rect', { class: 'dw-cut dw-crop', x: Math.min(a[0], b[0]), y: H - Math.max(a[1], b[1]), width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]), fill: 'none', 'stroke-width': sw }, g); D.preview = { kind: 'crop', shape: 'rect', a: a.slice(), b: b.slice() }; }
+    } else if (D.tool === 'brk') {
+      var w = P.view != null ? sheetView(P.view) : parentAt(P.at), ax = P.dir === 'horizontal' ? 1 : 0;
+      if (!w) return;
+      var lines = [];
+      if (P.view != null) lines.push(w.toSheet(P.dir === 'horizontal' ? [0, P.a] : [P.a, 0])[ax]);
+      lines.push(P.at[ax]);
+      lines.forEach(function (s0) { poly(breakLinePts(w, P.dir, s0, P.style), 'dw-cut dw-break'); });
+      D.preview = { kind: 'break', at: lines.slice() };
+    }
+  }
   var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick };
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
@@ -1662,7 +1838,7 @@
   DW.bomMenu = bomMenu; DW.bomAt = bomAt; DW.balloonAt = balloonAt; DW.dimRef = dimRef; DW.setDimProps = setDimProps; DW.annotAt = annotAt; DW.edgeAt = edgeAt;
   DW.cmdCenterMark = cmdCenterMark; DW.centerMarkClick = centerMarkClick; DW.cmdCenterline = cmdCenterline; DW.centerlineClick = centerlineClick; DW.cmdHoleCallout = cmdHoleCallout;
   DW.holeCalloutClick = holeCalloutClick; DW.cmdChainDim = cmdChainDim; DW.chainDimClick = chainDimClick; DW.cmdChamferDim = cmdChamferDim; DW.chamferClick = chamferClick;
-  DW.cmdBalloon = cmdBalloon; DW.balloonClick = balloonClick; DW.cmdBalloonProps = cmdBalloonProps; DW.setBalloonProps = setBalloonProps; DW.cmdDimensionPM = cmdDimensionPM;
+  DW.cmdBalloon = cmdBalloon; DW.balloonClick = balloonClick; DW.cmdBalloonProps = cmdBalloonProps; DW.setBalloonProps = setBalloonProps; DW.cmdDimensionPM = cmdDimensionPM; DW.sectionPreview = sectionPreview; DW.liveOverlay = liveOverlay; DW.openClickDimPM = openClickDimPM; DW.closeClickPM = closeClickPM; DW.clickPM = clickPM;
   DW.applyDimensionPM = applyDimensionPM; DW.cmdCalloutProps = cmdCalloutProps; DW.cmdDocProps = cmdDocProps; DW.setDocOptions = setDocOptions; DW.defaultDocOptions = defaultDocOptions;
   DW.autoInsertViews = autoInsertViews; DW.startDimDrag = startDimDrag; DW.FLIP_KINDS = FLIP_KINDS; DW.arrowAt = arrowAt; DW.flipArrows = flipArrows; DW.openInlineEdit = openInlineEdit;
   DW.positionInlineEdit = positionInlineEdit; DW.openTitleEdit = openTitleEdit; DW.closeInlineEdit = closeInlineEdit; DW.dragDim = dragDim; DW.balloonRef = balloonRef;

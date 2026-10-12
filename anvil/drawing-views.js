@@ -866,24 +866,11 @@
     return v;
   }
   // the cutting line of a typed section on its parent pw: thin chain legs with thick corners, an arrow at each end that
-  // cuts (pointing along the line of sight) and the letter, in place of the straight line drawing-render.js drew
+  // cuts (pointing along the line of sight) and the letter (drawing-render.js draws no straight line for a section
+  // with a type, rfV)
   function sectionPathLine(sheet, w, pw, k) {
     var v = w.view, sc = v.section, L = pw.layer, ts = pw.toSheet, X = secAxes({ u: [1, 0, 0], v: [0, 1, 0], e: [0, 0, 1] }, sc);
     var ext = 5 * k, shaft = 8 * k, lh = 5 * k, ar = 3 * k, aw = 0.9 * k, box = pw.box, CAP = _.CAP_EM || 1;
-    // (the full section's straight line, arrows and letters: taken off again)
-    var A, B, dv0;
-    if (sc.axis === 'h') { var y = ts([0, sc.at])[1]; A = [box.x0 - ext, y]; B = [box.x1 + ext, y]; dv0 = [0, -sc.sign]; }
-    else { var x = ts([sc.at, 0])[0]; A = [x, box.y0 - ext]; B = [x, box.y1 + ext]; dv0 = [-sc.sign, 0]; }
-    function near(p, q, tl) { return p && q && Math.abs(p[0] - q[0]) <= tl && Math.abs(p[1] - q[1]) <= tl; }
-    var tips = [A, B].map(function (e0) { return [e0[0] + dv0[0] * shaft, e0[1] + dv0[1] * shaft]; }), eps = 1e-6 * (1 + Math.abs(A[0]) + Math.abs(A[1]));
-    sheet.prims = sheet.prims.filter(function (p) {
-      if (p.layer !== L || p.view != null || p.cutLine != null) return true;
-      if (p.k === 'line' && p.style === 'chain' && near(p.a, A, eps) && near(p.b, B, eps)) return false;
-      if (p.k === 'line' && p.style === 'thick' && ((near(p.a, A, eps) && near(p.b, tips[0], eps)) || (near(p.a, B, eps) && near(p.b, tips[1], eps)))) return false;
-      if (p.k === 'fill' && p.pts && (near(p.pts[0], tips[0], eps) || near(p.pts[0], tips[1], eps))) return false;
-      if (p.k === 'text' && p.text === v.label && (near(p.p, tips[0], 12 * k) || near(p.p, tips[1], 12 * k))) return false;
-      return true;
-    });
     function sdir(m0, d) { var a = ts(m0), b = ts([m0[0] + d[0], m0[1] + d[1]]), l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[0] - a[0]) / l, (b[1] - a[1]) / l]; }
     function out(p, d) {   // from sheet point p along unit d to just past the parent's box
       var t = Infinity;
@@ -927,8 +914,9 @@
   }
 
   // ------------------------------------------------------------------ Auxiliary, Crop and Broken views
-  // (SolidWorks: Insert ▸ Drawing View ▸ Auxiliary / Crop / Break.) They hook into viewContent, compute, moveView and
-  // layout (drawing-sheet.js / drawing-render.js) through _.hook, so those files stay as they are:
+  // (SolidWorks: Insert ▸ Drawing View ▸ Auxiliary / Crop / Break.) drawing-sheet.js's viewContent, moveView, layout and
+  // addSectionView and drawing-render.js's compute call the helpers below directly (rfV: _.typedSection, _.pathContent,
+  // _.auxCenter, _.cropContent, _.auxSlide, _.carryAux, _.viewPositions, _.viewKindMarks):
   //   * an Auxiliary view (kind 'aux') looks square onto a straight edge of its parent: its frame is the parent's turned
   //     about that edge, it lies along the edge's normal on the sheet (aligned like a projected view, dragged along that
   //     axis only), the parent shows an arrow and the letter, the view is labelled VIEW A-A;
@@ -1146,25 +1134,22 @@
     o.crop = crop;
     return o;
   }
-  _.hook(_, 'viewContent', function (base) {
-    return function (doc, v, mesh, parentContent) {
-      var typed = v.kind === 'section' && v.section && v.section.type && v.parent != null && parentContent && findV(doc, v.parent);
-      var ct = typed ? pathContent(doc, v, mesh, parentContent) : base(doc, v, mesh, parentContent);
-      if (!ct || !ct.proj) return ct;
-      // an auxiliary view keeps its projection lines square to the parent's edge wherever it sits along them
-      if (v.kind === 'aux' && v.aux && v.parent != null && parentContent) {
-        var par = findV(doc, v.parent);
-        if (par && Math.abs(_.viewScale(doc, par) - ct.scale) < 1e-12) {
-          var pc = parentContent(par), d2 = v.aux.dir, p2 = [d2[1], -d2[0]], s = ct.scale;
-          var want = pc.center[0] * p2[0] + pc.center[1] * p2[1] + ((v.x - par.x) * p2[0] + (v.y - par.y) * p2[1]) / s;
-          var have = ct.center[0] * p2[0] + ct.center[1] * p2[1];
-          ct.center = [ct.center[0] + (want - have) * p2[0], ct.center[1] + (want - have) * p2[1]];
-        }
-      }
-      if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = cropContent(ct, v.crop);
-      return ct;
-    };
-  });
+  // typedSection(doc, v, parentContent): a half / offset / aligned section, cut along its path (pathContent) rather
+  // than the full section's plane (drawing-sheet.js viewContent)
+  function typedSection(doc, v, parentContent) {
+    return !!(v.kind === 'section' && v.section && v.section.type && v.parent != null && parentContent && findV(doc, v.parent));
+  }
+  // auxCenter(doc, v, ct, parentContent): an auxiliary view keeps its projection lines square to the parent's edge
+  // wherever it sits along them (ct.center slid along the edge; drawing-sheet.js viewContent)
+  function auxCenter(doc, v, ct, parentContent) {
+    if (!(v.kind === 'aux' && v.aux && v.parent != null && parentContent)) return;
+    var par = findV(doc, v.parent);
+    if (!(par && Math.abs(_.viewScale(doc, par) - ct.scale) < 1e-12)) return;
+    var pc = parentContent(par), d2 = v.aux.dir, p2 = [d2[1], -d2[0]], s = ct.scale;
+    var want = pc.center[0] * p2[0] + pc.center[1] * p2[1] + ((v.x - par.x) * p2[0] + (v.y - par.y) * p2[1]) / s;
+    var have = ct.center[0] * p2[0] + ct.center[1] * p2[1];
+    ct.center = [ct.center[0] + (want - have) * p2[0], ct.center[1] + (want - have) * p2[1]];
+  }
 
   // ---- breaks: a piecewise-linear map of the sheet along one axis
   // bandMap(bands): bands [{ lo, hi, gap }] in sheet units, sorted -> { fwd(x), inv(x), bands: [{ lo, hi, olo, ohi }] }:
@@ -1292,25 +1277,24 @@
     sheet.prims.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: PL, auxArrow: v.id });
     sheet.prims.push({ k: 'text', p: [tail[0] + side[0] * lh * 0.8, tail[1] + side[1] * lh * 0.8 - lh * 0.5], h: lh * CAP, text: v.label, anchor: 'middle', layer: PL, rot: 0, auxArrow: v.id });
   }
-  _.hook(D, 'compute', function (base) {
-    return function (doc, mesh, model, ctx) {
-      var sheet = base(doc, mesh, model, ctx);
-      if (!sheet || !sheet.views) return sheet;
-      var k = _.paperK(sheet.units), byId = {};
-      sheet.views.forEach(function (w) { byId[w.view.id] = w; });
-      sheet.views.forEach(function (w) {
-        var sv = w.view;
-        if (sv.kind === 'section' && sv.section && sv.section.type && sv.parent != null && byId[sv.parent]) sectionPathLine(sheet, w, byId[sv.parent], k);
-      });
-      sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
-      sheet.views.forEach(function (w) {
-        if (w.view.kind !== 'aux' || !w.view.aux) return;
-        w.ortho = true;   // seen square: edges parallel to the sheet are true length, so Smart Dimension works on it
-        auxMarks(sheet, w, w.view.parent != null ? byId[w.view.parent] : null, k, doc.sheet.projection);
-      });
-      return sheet;
-    };
-  });
+  // viewKindMarks(doc, sheet): what the view kinds add once the sheet is laid out (drawing-render.js compute, before
+  // the angle dimensions): typed sections' cutting lines on their parents, breaks, auxiliary arrows and labels
+  function viewKindMarks(doc, sheet) {
+    if (!sheet || !sheet.views) return sheet;
+    var k = _.paperK(sheet.units), byId = {};
+    sheet.views.forEach(function (w) { byId[w.view.id] = w; });
+    sheet.views.forEach(function (w) {
+      var sv = w.view;
+      if (sv.kind === 'section' && sv.section && sv.section.type && sv.parent != null && byId[sv.parent]) sectionPathLine(sheet, w, byId[sv.parent], k);
+    });
+    sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
+    sheet.views.forEach(function (w) {
+      if (w.view.kind !== 'aux' || !w.view.aux) return;
+      w.ortho = true;   // seen square: edges parallel to the sheet are true length, so Smart Dimension works on it
+      auxMarks(sheet, w, w.view.parent != null ? byId[w.view.parent] : null, k, doc.sheet.projection);
+    });
+    return sheet;
+  }
   // auxiliary views follow their parent and slide only along their axis
   function carryAux(doc, before) {
     var moved = {};
@@ -1325,36 +1309,18 @@
     }
   }
   function positions(doc) { var b = {}; (doc.views || []).forEach(function (v) { b[v.id] = [v.x, v.y]; }); return b; }
-  _.hook(D, 'moveView', function (base) {
-    return function (doc, id, x, y) {
-      var v = findV(doc, id);
-      if (v && v.kind === 'aux' && v.aux && v.parent != null && findV(doc, v.parent)) {
-        var d2 = v.aux.dir, t = (x - v.x) * d2[0] + (y - v.y) * d2[1];
-        x = v.x + d2[0] * t; y = v.y + d2[1] * t;
-      }
-      var before = positions(doc), r = base(doc, id, x, y);
-      carryAux(doc, before);
-      return r;
-    };
-  });
-  _.hook(D, 'layout', function (base) {
-    return function (doc) {
-      var before = positions(doc), r = base.apply(this, arguments);
-      carryAux(doc, before);
-      return r;
-    };
-  });
-  // Section View with a type: addSectionView(doc, mesh, parentId, { axis, at, sign, type: 'half' | 'offset' | 'aligned',
-  // c, side, jogs, angle, … }) makes the full section, then setSectionType
-  _.hook(D, 'addSectionView', function (base) {
-    return function (doc, mesh, parentId, opts) {
-      var t = opts && opts.type;
-      if (!t || t === 'full') return base(doc, mesh, parentId, opts);
-      var nv = doc.views.length, nn = doc.nextView, v = base(doc, mesh, parentId, opts);
-      try { setSectionType(doc, v.id, opts); } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
-      return v;
-    };
-  });
+  // auxSlide(doc, id, x, y) -> [x, y]: where a dragged auxiliary view may go (along its axis only; drawing-sheet.js
+  // moveView); any other view goes to the point itself
+  function auxSlide(doc, id, x, y) {
+    var v = findV(doc, id);
+    if (v && v.kind === 'aux' && v.aux && v.parent != null && findV(doc, v.parent)) {
+      var d2 = v.aux.dir, t = (x - v.x) * d2[0] + (y - v.y) * d2[1];
+      x = v.x + d2[0] * t; y = v.y + d2[1] * t;
+    }
+    return [x, y];
+  }
+  _.typedSection = typedSection; _.pathContent = pathContent; _.auxCenter = auxCenter; _.cropContent = cropContent; _.viewKindMarks = viewKindMarks;
+  _.auxSlide = auxSlide; _.carryAux = carryAux; _.viewPositions = positions;
   D.setSectionType = setSectionType; D.sectionSteps = sectionSteps; D.alignedLegs = alignedLegs; D.pathSectionOf = pathSectionOf;
   D.auxFrame = auxFrame; D.addAuxiliaryView = addAuxiliaryView; D.setCrop = setCrop; D.addBreak = addBreak; D.clearBreaks = clearBreaks;
   D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap;

@@ -30,12 +30,20 @@
     var prevStyle = _.DIMSTYLE, prevCtx = _.CTX;
     _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null, mesh: mesh };
     var prevGeo = _.DIMGEO; _.DIMGEO = D.dimGeometry(doc);
+    var r;
     try {
-      if (!ctx || !ctx.lazy) return computeSheet(doc, mesh, model, ctx);
-      var prev = _.LAZY;
-      _.LAZY = { mesh: mesh, missing: [], keys: {} };
-      try { var r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; return r; } finally { _.LAZY = prev; }
+      if (!ctx || !ctx.lazy) r = computeSheet(doc, mesh, model, ctx);
+      else {
+        var prev = _.LAZY;
+        _.LAZY = { mesh: mesh, missing: [], keys: {} };
+        try { r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; } finally { _.LAZY = prev; }
+      }
     } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; _.DIMGEO = prevGeo; }
+    // (rfV) then the view kinds' marks (drawing-views.js: typed sections' cutting lines, breaks, auxiliary arrows) and
+    // the angle dimensions (drawing-annotations.js), which need the views where they finally are
+    _.viewKindMarks(doc, r);
+    if (r && r.dims && r.prims) _.finishAngles(r);
+    return r;
   }
   function computeSheet(doc, mesh, model, ctx) {
     ctx = ctx || {};
@@ -203,7 +211,7 @@
         var n = [-dir[1], dir[0]];
         prims.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: L });
       }
-      if (v.kind === 'section') {
+      if (v.kind === 'section' && !v.section.type) {   // (a half / offset / aligned section: drawing-views.js draws its path)
         var sc = v.section, ext = 5 * k, shaft = 8 * k, lh = 5 * k, a, b, dv;
         if (sc.axis === 'h') {
           var y = pw.toSheet([0, sc.at])[1];
@@ -365,8 +373,8 @@
       });
     });
     // annotations (centre marks, centrelines, hole callouts) are worked out first, so leader texts keep clear of them
-    var threads = partThreads(model), holeNames = D.holeSizeNames(model), annPre = {};
-    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames); }); });
+    var threads = partThreads(model), holeNames = D.holeSizeNames(model), holeEnds = _.holeEnds(model), annPre = {};
+    views.forEach(function (w) { if (w.pending) return; (w.view.annotations || []).forEach(function (an, i) { annPre[w.view.id + ':' + i] = annotationPrims(an, w, k, mesh, doc, units, threads, holeNames, holeEnds); }); });
     // notes (Annotation ▸ Note): multi-line text on the sheet
     // (rfM) a note's $PRP:"name" / $PRPSHEET:"name" links read the drawing's / the part's custom properties, as a title
     // block field does; a leader ends in an arrow at nt.leader. Shop symbols (Surface Finish, Datum Feature, Geometric
@@ -502,7 +510,7 @@
   // flatItems(w, doc, units, k) -> [{ id, view, key, type: 'bendNote' | 'bendTag' | 'bendTable' | 'flatSize', text,
   // prims, box, hidden }] for flat-pattern view record w. Bend notes ('UP 90° R .030') run along their bend line,
   // centred on it and just beside it (text upright: turned within ±90°); in Bend Table mode each line gets its tag
-  // (A, B, C …) there instead and a Bend Table (bendTableCols: TAG / DIRECTION / ANGLE / RADIUS / BEND DED. by
+  // (A, B, C …) there instead and a Bend Table (bendTableCols: TAG / DIRECTION / ANGLE / INNER RADIUS / BEND DED. by
   // default) goes on free paper (tableSpot: under the view when that is clear, else above the title block, beside
   // the view or the first clear spot from the top left); the FLAT SIZE note (Document Properties) under the view,
   // below the overall dimensions. view.flatAnn[key] = { off: [dx, dy] (paper, dragged), hidden } keeps what the user
@@ -513,20 +521,21 @@
   // the Bend Table's columns: [key, min width (paper mm), header]; view.bendCols lists the optional ones shown
   // ('bd' bend deduction, 'ba' bend allowance, 'k' K-factor, in that order; default ['bd']), as SolidWorks' bend table
   // template takes extra columns
-  var TABLE_COLS = [['tag', 12, 'TAG'], ['dir', 24, 'DIRECTION'], ['angle', 18, 'ANGLE'], ['radius', 22, 'RADIUS']];
+  var TABLE_COLS = [['tag', 12, 'TAG'], ['dir', 24, 'DIRECTION'], ['angle', 18, 'ANGLE'], ['radius', 30, 'INNER RADIUS']];
   var TABLE_OPT_COLS = [['bd', 24, 'BEND DED.'], ['ba', 26, 'BEND ALLOW.'], ['k', 20, 'K-FACTOR']];
   function bendTableCols(v) {
     var on = Array.isArray(v.bendCols) ? v.bendCols : ['bd'];
     return TABLE_COLS.concat(TABLE_OPT_COLS.filter(function (c) { return on.indexOf(c[0]) >= 0; }));
   }
   // a Bend Table cell: lengths with the drawing's precision (inch: 3 places, no leading zero, never a fraction —
-  // a bend deduction of 3/32 means nothing on the floor; mm: the dimension format), radius 'R.060' as dimensions read
+  // a bend deduction of 3/32 means nothing on the floor; mm: the dimension format); the INNER RADIUS cell is the plain
+  // value '.060' under its header, as SolidWorks' bend table--standard template writes it (rfV)
   function bendTableCell(key, b, i, units, prec, T) {
     function len(x) { return x == null || !isFinite(x) ? '-' : numText(x, units, prec != null ? prec : units === 'in' ? 3 : null); }
     if (key === 'tag') return D.bendTag(i);
     if (key === 'dir') return b.up ? 'UP' : 'DOWN';
     if (key === 'angle') return (Math.round(b.angle * 10) / 10) + '°';
-    if (key === 'radius') return 'R' + len(b.R);
+    if (key === 'radius') return len(b.R);
     if (key === 'bd') return len(b.bd);
     if (key === 'ba') return len(b.ba);
     if (key === 'k') {
@@ -1126,12 +1135,12 @@
   function toDXF(sheet, opts) {
     var r2000 = dxfVersionOf(opts && opts.version) === 'R2000';
     var L = [];
-    // (rfT) R2000: every linear / aligned / diameter / radius dimension is a true DIMENSION entity, its drawn lines,
+    // (rfT) R2000: every linear / aligned / diameter / radius (rfV: and angle) dimension is a true DIMENSION entity, its drawn lines,
     // arrows and text in its own anonymous block *D1, *D2 … (what AutoCAD writes, so a reader without dimension
     // support still shows them, and AutoCAD / Mastercam read the value and can restyle it); R12 keeps them exploded.
     var dimGroups = [], dimOf = {};
     if (r2000 && opts && opts.dimensions !== false) (sheet.dims || []).forEach(function (d, i) {
-      if (!d || !d.dxf || d.kind === 'angle' || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1 }[d.kind]) return;   // angles etc. stay exploded
+      if (!d || !d.dxf || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1, angle: 1 }[d.kind]) return;   // ordinate / baseline / chamfer stay exploded
       var g = { d: d, prims: [], name: '*D' + (dimGroups.length + 1) };
       dimOf[i] = g; dimGroups.push(g);
     });
@@ -1235,17 +1244,19 @@
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
     sheet.prims.forEach(function (p) { if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR); });
     dimGroups.forEach(function (g) {
-      var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4 }[X.type];
+      var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4, angular: 5 }[X.type];
       function pt(c, q) { pr(c, num(q[0])); pr(c + 10, num(q[1])); pr(c + 20, 0); }
       pr(0, 'DIMENSION'); pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); pr(8, 'DIMENSIONS');
       if (d.dangling && DXF_COLORS.dangling) pr(62, DXF_COLORS.dangling);
       pr(100, 'AcDbDimension'); pr(2, g.name); pt(10, X.p10); pt(11, X.p11); pr(70, type | 32 | 128); pr(71, 5);
-      if (isFinite(d.value)) pr(42, num(d.value));
+      if (isFinite(d.value) && X.type !== 'angular') pr(42, num(d.value));   // (an angle's measurement would be radians: left to the reader)
       pr(1, dxfText(d.text || '')); pr(3, 'Standard');
       if (X.type === 'linear' || X.type === 'aligned') { pr(100, 'AcDbAlignedDimension'); pt(13, X.p13); pt(14, X.p14); }
       if (X.type === 'linear') { pr(50, X.ang); pr(100, 'AcDbRotatedDimension'); }
       if (X.type === 'dia') { pr(100, 'AcDbDiametricDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
       if (X.type === 'rad') { pr(100, 'AcDbRadialDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
+      // (rfV) an angle: 3-point angular, 13 / 14 on the two lines, 15 the vertex, 10 on the dimension arc
+      if (X.type === 'angular') { pr(100, 'AcDb3PointAngularDimension'); pt(13, X.p13); pt(14, X.p14); pt(15, X.p15); }
     });
     function entity(p, owner) {
       var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);

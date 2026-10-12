@@ -429,21 +429,12 @@
     { id: 'modelView', label: 'Model\nView', run: cmdModelView, active: function () { return D.tool === 'place'; } },
     { id: 'projView', label: 'Projected\nView', run: cmdProjectedView, active: function () { return D.tool === 'project'; } },
     { id: 'sectionView', label: 'Section\nView', run: cmdSectionView, active: function () { return D.tool === 'section'; } },
-    { id: 'detailView', label: 'Detail\nView', run: cmdDetailView, active: function () { return D.tool === 'detail'; } },
-    { sep: true },
-    { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
-    { id: 'modelItems', label: 'Model\nItems', run: cmdModelItemsPM, active: function () { return !!(doc() && doc().autoDims); } },
-    { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
-    { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false); } },
-    { sep: true },
-    { id: 'sheetProps', label: 'Sheet\nProperties', run: cmdSheetProperties },
-    { sep: true },
-    { id: 'svgExport', label: 'Save as\nSVG', run: function () { exportAs('svg'); } },
-    { id: 'dxfExport', label: 'Save as\nDXF', run: function () { exportAs('dxf'); } },
-    { id: 'pdfExport', label: 'Save as\nPDF', run: function () { exportAs('pdf'); } },
-    { sep: true },
-    { id: 'closeDoc', label: 'Close\nDrawing', run: function () { requestClose(); } }
+    { id: 'detailView', label: 'Detail\nView', run: cmdDetailView, active: function () { return D.tool === 'detail'; } }
   ];
+  // (rfW, SolidWorks 2024) View Layout holds the drawing views only (Auxiliary View, Break and Crop View are added by
+  // drawing-ui-tools.js in SolidWorks' order). Smart Dimension, Model Items, Auto Balloon and the Tables (Bill of
+  // Materials, Revision Table) are on Annotation; Save as SVG / DXF / DWG / PDF and Close Drawing in the File menu;
+  // Sheet Properties in Tools and the sheet's right-click menu.
   // Annotation tab (SolidWorks: Smart Dimension with its Ordinate / Baseline / Chamfer flyout, Model Items, Balloon,
   // Auto Balloon, Stacked Balloon, Hole Callout, Center Mark, Centerline)
   UI.RIBBON.Annotation = [
@@ -465,6 +456,7 @@
       { id: 'datumFeature', label: 'Datum Feature', run: function () { cmdSymbol('datum'); }, active: function () { return D.tool === 'symbol' && D.pending && D.pending.type === 'datum'; } },
       { id: 'gtol', label: 'Geometric Tolerance', run: function () { cmdSymbol('gtol'); }, active: function () { return D.tool === 'symbol' && D.pending && D.pending.type === 'gtol'; } }
     ] },
+    { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false); } },
     { id: 'revTable', label: 'Revision\nTable', run: function () { if (doc().revisions) cmdRevision(null); else insertRevisionTable(); }, active: function () { return !!(doc() && doc().revisions); } },
     { sep: true },
     { id: 'centerMark', label: 'Center\nMark', run: cmdCenterMark, active: function () { return D.tool === 'centermark'; } },
@@ -578,6 +570,8 @@
   var baseRefreshTree = UI.refreshTree;
   UI.refreshTree = function () {
     var r = baseRefreshTree.apply(this, arguments);
+    // the Dimension PM a single click opened shows the dimension as it was: a model change closes it (unapplied)
+    if (D.active && DW.clickPM && DW.clickPM() && !D.inRefreshClose) { D.inRefreshClose = true; try { DW.closeClickPM(false); } finally { D.inRefreshClose = false; } }
     if (D.active) queueRender();
     return r;
   };

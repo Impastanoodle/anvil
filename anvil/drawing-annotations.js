@@ -17,16 +17,27 @@
   // view frame) and is reattached to the current projection on every render, like a Smart Dimension; one whose
   // geometry is gone is drawn dangling (olive).
   // doc.options (Tools ▸ Options ▸ Document Properties): { autoCenterMarks, autoCenterlines (Auto insert on view
-  // creation), markSize (paper mm, 2.5), extLines (centre-mark extension lines, true), balloonQty (QTY on new balloons),
-  // flatDims (overall width and height on every flat-pattern view, true), flatSizeNote (a FLAT SIZE W × H note under
-  // it, false), bendNotes ('notes' (default): UP 90° R .030 along each bend line | 'table': tags A, B, C and a Bend
-  // Table | 'none'), dimPrec (decimal places of dimension values; default 3 in inches, up to 2 in mm), fractions (inch
-  // drawings: fractional inches) and fracDenom (their finest denominator, 64) }
-  var MARK_SIZE = 2.5, MARK_GAP = 1, MARK_EXT = 2.5, CL_EXT = 3;
+  // creation), markSize (in the drawing's units, SolidWorks' Centerlines / Center Marks size: ANSI inch .1, mm 2.5;
+  // markPaper gives paper mm), extLines (centre-mark extension lines, true), balloonQty (QTY on new balloons),
+  // flatDims (overall width and height on every flat-pattern view; false: SolidWorks adds them only on request),
+  // flatSizeNote (a FLAT SIZE W × H note under it, false), bendNotes ('notes' (default): UP 90° R .030 along each
+  // bend line | 'table': tags A, B, C and a Bend Table | 'none'), dimPrec (decimal places of dimension values;
+  // default 3 in inches, up to 2 in mm), fractions (inch drawings: fractional inches) and fracDenom (their finest
+  // denominator, 64) }
+  var MARK_SIZE = 2.5, MARK_SIZE_IN = 0.1, MARK_GAP = 1, MARK_EXT = 2.5, CL_EXT = 3;
+  // (rfV) a mark size in the drawing's units -> paper mm. On an inch drawing a size of 1 or more is a paper-mm value
+  // saved before rfV (markSize was paper mm everywhere; a centre mark an inch wide is never meant) and stays mm.
+  function markPaper(doc, size) {
+    var inch = doc && doc.units === 'in';
+    if (!(+size > 0)) size = inch ? MARK_SIZE_IN : MARK_SIZE;
+    return inch && +size < 1 ? +size * 25.4 : +size;
+  }
   function docOptions(doc) {
-    var o = doc.options || {}, st = D.dimStyle(doc);
-    return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: +o.markSize > 0 ? +o.markSize : MARK_SIZE,
-      extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims !== false, flatSizeNote: !!o.flatSizeNote,
+    var o = doc.options || {}, st = D.dimStyle(doc), inch = doc.units === 'in';
+    var ms = +o.markSize > 0 ? +o.markSize : inch ? MARK_SIZE_IN : MARK_SIZE;
+    if (inch && ms >= 1) ms = Math.round(ms / 25.4 * 1e4) / 1e4;   // (a pre-rfV paper-mm value, shown in inches)
+    return { autoCenterMarks: !!o.autoCenterMarks, autoCenterlines: !!o.autoCenterlines, markSize: ms,
+      extLines: o.extLines !== false, balloonQty: !!o.balloonQty, flatDims: o.flatDims === true, flatSizeNote: !!o.flatSizeNote,
       bendNotes: o.bendNotes === 'table' || o.bendNotes === 'none' ? o.bendNotes : 'notes', dimPrec: st.prec, fractions: st.fractions, fracDenom: st.denom };
   }
   function nextAnnotId(doc) { doc.nextAnnot = (doc.nextAnnot || 0) + 1; return doc.nextAnnot; }
@@ -146,10 +157,10 @@
     if (!thru) out.depth = entry - (s > 0 ? g0 : -g1);
     return out;
   }
-  // holeText(info, units, count, prec) -> callout lines: '4X Ø6.6 THRU', '⌴ Ø11 ↧ 6.8' / '⌵ Ø12 X 90°'
+  // holeText(info, units, count, prec) -> callout lines: '4X Ø6.6 THRU' (info.thruAll: 'THRU ALL', rfV), '⌴ Ø11 ↧ 6.8' / '⌵ Ø12 X 90°'
   function holeText(h, units, count, prec) {
     function n(x) { return numText(x, units, prec); }
-    var lines = [(count > 1 ? count + 'X ' : '') + 'Ø' + n(h.dia) + (h.thru ? ' THRU' : ' ↧ ' + n(h.depth))];
+    var lines = [(count > 1 ? count + 'X ' : '') + 'Ø' + n(h.dia) + (h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + n(h.depth))];
     if (h.cbore) lines.push('⌴ Ø' + n(h.cbore.dia) + ' ↧ ' + n(h.cbore.depth));
     if (h.csk) lines.push('⌵ Ø' + n(h.csk.dia) + ' X ' + fmtAngle(h.csk.angle) + '°');
     return lines;
@@ -595,9 +606,12 @@
   }
   // an angle dimension's paper primitives (drawing-render.js draws none for it): the arc through the pointer's place
   // between the two lines, arrows at its ends, extension lines where the edges stop short of it, the text outside the
-  // arc's middle. Fills d.box, d.tbox, d.arrows as the renderer does for the others.
-  function anglePrims(d, w, k) {
-    var out = [], L = 'DIMENSIONS', th = 3.5 * k, ar = 3 * k, aw = 0.5 * k, gapE = 1.5 * k, ext = 2 * k;
+  // arc's middle. Fills d.box, d.tbox, d.arrows as the renderer does for the others, and d.dxf (a 3-point angular
+  // DIMENSION). G: the sheet's dimension style in sheet units (sheet.dimStyle.paper: ANSI inch .125 text, .125 × .042
+  // arrows, .0625 gap, .125 beyond; rfV), else the ISO millimetre sizes.
+  function anglePrims(d, w, k, G) {
+    G = G || { text: 3.5 * k, arrow: 3 * k, arrowW: 1 * k, gap: 1.5 * k, ext: 2 * k };
+    var out = [], L = 'DIMENSIONS', th = G.text, ar = G.arrow, aw = G.arrowW / 2, gapE = G.gap, ext = G.ext;
     var V0 = w.toSheet(d.c), R = Math.max(6 * k, (d.rad || 0) * w.scale);
     function dirOf(u) { var q = w.toSheet([d.c[0] + u[0], d.c[1] + u[1]]); return unit([q[0] - V0[0], q[1] - V0[1]]); }
     var q1 = dirOf(d.u[0]), q2 = dirOf(d.u[1]), th1 = Math.atan2(q1[1], q1[0]), th2 = Math.atan2(q2[1], q2[0]);
@@ -629,26 +643,23 @@
     d.tbox = { x0: C[0] - tw / 2, y0: C[1] - th / 2, x1: C[0] + tw / 2, y1: C[1] + th / 2 };
     grow([d.tbox.x0, d.tbox.y0]); grow([d.tbox.x1, d.tbox.y1]);
     d.box = bx; d.arrows = [tA, tB]; d.radNow = R / w.scale;
+    d.dxf = { type: 'angular', p13: tA.slice(), p14: tB.slice(), p15: V0.slice(), p10: [V0[0] + R * Math.cos(am), V0[1] + R * Math.sin(am)], p11: C.slice() };
     return out;
   }
   function angleText(d, units) { return d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : fmtAngle(d.value) + '°'; }
-  // the sheet's angle dimensions get their primitives after the renderer has placed the others (Drawing.compute is
-  // wrapped when drawing-render.js defines it)
+  // the sheet's angle dimensions get their primitives after the renderer has placed the others (drawing-render.js
+  // compute calls it last, rfV); each primitive carries its dimension's index (dimIx) for the DXF DIMENSION block
   function finishAngles(sheet) {
-    var k = sheet.units === 'in' ? 1 / 25.4 : 1;
-    (sheet.dims || []).forEach(function (d) {
+    var k = sheet.units === 'in' ? 1 / 25.4 : 1, G = sheet.dimStyle && sheet.dimStyle.paper || null;
+    (sheet.dims || []).forEach(function (d, ix) {
       if (d.kind !== 'angle' || !d.u || !d.c) return;
       var w = (sheet.views || []).filter(function (x) { return x.view.id === d.view; })[0];
       if (!w) return;
       d.text = angleText(d, sheet.units);
-      anglePrims(d, w, k).forEach(function (x) { x.view = d.view; if (d.dangling) x.color = 'dangling'; sheet.prims.push(x); });
+      anglePrims(d, w, k, G).forEach(function (x) { x.view = d.view; x.dimIx = ix; if (d.dangling) x.color = 'dangling'; sheet.prims.push(x); });
     });
     return sheet;
   }
-  // (drawing.js _.hook: the wrap applies when drawing-render.js defines compute, with the other hooks)
-  _.hook(D, 'compute', function (base) {
-    return function () { var r = base.apply(this, arguments); if (r && r.dims && r.prims) finishAngles(r); return r; };
-  });
 
   // ------------------------------------------------------------------ dimension text: precision, tolerance, text
   // d.prec (decimal places; default: up to 2 in mm / 3 in inches, trailing zeros dropped), d.tol = { type: 'none' |
@@ -1030,12 +1041,42 @@
     });
     return out;
   }
+  // (rfV) holeEnds(model) -> [{ dia, thruAll }]: the hole diameters the part's cut features make and whether that
+  // feature's end condition is Through All (Cut-Extrude end / end2 'through': its sketch's circles; a Hole Wizard hole
+  // end 'through': its drill). SolidWorks' callout writes THRU ALL for those, THRU for a blind hole that happens to
+  // clear the part. A drill size that both a Through All and a blind cut make reads THRU (the callout cannot tell them
+  // apart from the solid).
+  function holeEnds(model) {
+    var out = [];
+    if (!model || model.type === 'assembly') return out;
+    var feats = model.features || [], byId = {};
+    feats.forEach(function (f) { if (f && f.id != null) byId[f.id] = f; });
+    feats.forEach(function (f) {
+      if (!f || f.suppressed) return;
+      if (f.type === 'hole') {
+        var dia = null;
+        if (typeof HoleWizard !== 'undefined' && HoleWizard.spec) { try { dia = +HoleWizard.spec(f, model.units).dia; } catch (e) { dia = null; } }
+        if (dia > 0) out.push({ dia: dia, thruAll: f.end === 'through' });
+        return;
+      }
+      if (f.type !== 'extrude' || !f.cut) return;
+      var sk = byId[f.sketch], thru = f.end === 'through' || (!!f.dir2 && f.end2 === 'through');
+      ((sk && sk.entities) || []).forEach(function (e) {
+        if (e && e.t === 'circle' && !e.construction && +e.r > 0) out.push({ dia: 2 * +e.r, thruAll: thru });
+      });
+    });
+    return out;
+  }
+  function thruAllFor(ends, dia) {
+    var hit = (ends || []).filter(function (x) { return Math.abs(x.dia - dia) <= Math.max(1e-6, dia * 1e-5); });
+    return hit.length > 0 && hit.every(function (x) { return x.thruAll; });
+  }
   function holeNameFor(names, dia) {
     var hit = (names || []).filter(function (x) { return Math.abs(x.dia - dia) <= Math.max(1e-6, dia * 1e-5); }), uniq = [];
     hit.forEach(function (x) { if (uniq.indexOf(x.name) < 0) uniq.push(x.name); });
     return uniq.length === 1 ? uniq[0] : null;
   }
-  function annotationPrims(an, w, k, mesh, doc, units, threads, holeNames) {
+  function annotationPrims(an, w, k, mesh, doc, units, threads, holeNames, ends) {
     var L = 'ANNOTATIONS', out = [], pr = w.proj, o = docOptions(doc), dangling = false, text = '', info = null;
     function line(a, b, style) { out.push({ k: 'line', a: a, b: b, layer: L, style: style || 'thin' }); }
     function mark(cs, rr, size, ext, only) {
@@ -1058,7 +1099,7 @@
         if (h.r > 0 && (pr.arcsAll || []).length && reattachDim(aref, pr)) { h.c = aref.c; h.r = aref.r; return; }
         if (h.r > 0) dangling = true;
       });
-      var size = an.size || o.markSize, ext = an.ext != null ? an.ext : o.extLines, cs = an.holes.map(function (h) { return w.toSheet(h.c); });
+      var size = markPaper(doc, an.size || (doc.options || {}).markSize), ext = an.ext != null ? an.ext : o.extLines, cs = an.holes.map(function (h) { return w.toSheet(h.c); });
       if (an.style === 'linear') {
         // marks on every hole, connection lines between consecutive centres (sorted along the row)
         var t = [cs[cs.length - 1][0] - cs[0][0], cs[cs.length - 1][1] - cs[0][1]];
@@ -1105,6 +1146,9 @@
       if (reattachDim(ref2, pr)) { an.c = ref2.c; an.r = ref2.r; } else dangling = true;
       // (a flat pattern's holes all go through the blank: the callout reads the circle, counted over the flat)
       var h = w.flat ? { c: an.c.slice(), dia: 2 * an.r, thru: true } : w.ortho ? holeInfo(mesh, w.frame, an.c, an.r) : null, lines;
+      // (rfV) THRU ALL when the cut that makes this drill size ends Through All
+      var allOf = function (q) { if (q && q.thru && thruAllFor(ends, q.dia)) q.thruAll = true; return q; };
+      allOf(h);
       if (h && w.flat) {
         var nf = 0;
         pr.circles.visible.forEach(function (c) { if (Math.abs(2 * c.r - h.dia) <= Math.max(1e-6, h.dia * 1e-6)) nf++; });
@@ -1115,14 +1159,14 @@
         var one = holeText(h, units, 1, an.prec).join('|'), count = 0, seen = [];
         pr.circles.visible.forEach(function (c) {
           if (seen.some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= 1e-6 * (1 + Math.abs(q[0]) + Math.abs(q[1])); })) return;
-          var q = holeInfo(mesh, w.frame, c.c, c.r);
+          var q = allOf(holeInfo(mesh, w.frame, c.c, c.r));
           if (q && holeText(q, units, 1, an.prec).join('|') === one) { count++; seen.push(c.c); }
         });
         lines = holeText(h, units, Math.max(1, count), an.prec);
         info = { hole: h, count: Math.max(1, count) };
         // a Straight Tap hole of the Hole Wizard: the tap drill line, then the thread 'M8x1.25 ↧ 12' / 'M8x1.25 THRU'
         var tap = w.ortho ? threadsAlong(threads, w.frame).filter(function (t) { return Math.hypot(t.c[0] - h.c[0], t.c[1] - h.c[1]) <= 1e-6 * (1 + t.r) && Math.abs(t.drill - h.dia) <= 1e-6 * (1 + t.drill); })[0] : null;
-        if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? ' THRU' : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
+        if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
       } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
       // the standard size the hole feature names (1/4-20 UNC, M6), when it is not in the callout already
       var sz = holeNameFor(holeNames, h ? h.dia : 2 * an.r);
@@ -1158,7 +1202,7 @@
 
   D.circlesAlong = circlesAlong; D.holeInfo = holeInfo; D.holeText = holeText; D.cylAxes = cylAxes; D.fitCircle = fitCircle; D.lineIntervals = lineIntervals;
   D.addCenterMark = addCenterMark; D.autoCenterMarks = autoCenterMarks; D.addCenterline = addCenterline; D.autoCenterlines = autoCenterlines; D.autoInsert = autoInsert;
-  D.addHoleCallout = addHoleCallout; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions;
+  D.addHoleCallout = addHoleCallout; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
@@ -1435,5 +1479,5 @@
   D.addNote = addNote; D.followViews = followViews; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
   D.holeSizeNames = holeSizeNames;
   D.smartDim = smartDim; D.addSmartDim = addSmartDim; D.measurePair = measurePair; D.finishAngles = finishAngles; D._anglePrims = anglePrims;
-  _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
+  _.holeEnds = holeEnds; _.finishAngles = finishAngles; _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);
