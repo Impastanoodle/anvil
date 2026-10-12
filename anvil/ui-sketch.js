@@ -218,10 +218,16 @@
   // rfE (fidelity finding 14): a sketch command's PropertyManager (Extend, Move, Rotate, Offset, Trim, Bisector …) puts
   // its message in the sketch hint line, which kept the Select tool's "Click an entity to select it"; a property PM on
   // a selection (Dimension, Line / Circle Properties: no message, or the Dimension's state) leaves the hint alone
+  var pmHintSpec = null;
   function pmHint() {
     var spec = UI.pmSpec && UI.pmSpec(), h = $('sketch-hint');
     if (!spec || !h || !spec.message || spec.sketchTool || (UI.dimensionPMOpen && UI.dimensionPMOpen())) return;
     h.innerHTML = spec.message;
+    // and the status bar, which still showed the previous command's prompt (re-audit 2026-10-12, #14 / #15)
+    // (once per PropertyManager: a command that later writes its own status, e.g. an ordinate's value, keeps it)
+    if (spec === pmHintSpec) return;
+    pmHintSpec = spec;
+    if (UI.setStatus) UI.setStatus(String(spec.message).replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
   }
   UI.endSketchTool = endSketchTool;
   UI.sketchToolPMs = UI.sketchToolPMs || {};

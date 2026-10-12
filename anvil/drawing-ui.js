@@ -679,6 +679,7 @@
       svgNode('line', { class: 'dw-cut', x1: ap[0], y1: H - ap[1], x2: D.pending.at[0], y2: H - D.pending.at[1], 'stroke-width': pxToPaper(1.5) }, g);
       svgNode('circle', { class: 'dw-cut', cx: D.pending.at[0], cy: H - D.pending.at[1], r: 5 * paperK(), 'stroke-width': pxToPaper(1.5) }, g);
     }
+    if (D.tool === 'dim' && DW.smartDimOverlay) DW.smartDimOverlay(g, H, svgNode);   // (rfS)
     if (D.hover && D.hover.kind === 'entity') {
       var h = D.hover, hc = 'dw-hot' + (h.pre ? ' pre' : ''), hw = pxToPaper(h.pre ? 2.4 : 3);
       if (h.circle) svgNode('circle', { class: hc, cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': hw }, g);
@@ -771,11 +772,7 @@
     if (D.tool === 'project' && D.pending) { DW.projectClick(p); return; }
     if (D.tool === 'section' && D.pending) { DW.sectionClick(p); return; }
     if (D.tool === 'detail' && D.pending) { DW.detailClick(p); return; }
-    if (D.tool === 'dim') {
-      var ent = entityAt(p);
-      if (ent) DW.addDimension(ent); else UI.setStatus('Smart Dimension: click a visible edge or circle of an orthographic view.');
-      return;
-    }
+    if (D.tool === 'dim') { DW.smartDimClick(p, e); return; }   // (rfS) first pick, second pick, placement
     if (D.tool === 'centermark') { DW.centerMarkClick(p); return; }
     if (D.tool === 'centerline') { DW.centerlineClick(p); return; }
     if (D.tool === 'holecallout') { DW.holeCalloutClick(p); return; }
@@ -935,7 +932,8 @@
       var q = toPaper(e), h = null;
       if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
       if (D.pending && (D.tool === 'balloon' || D.tool === 'stackballoon')) D.pending.at = q;
-      if (/^(dim|centermark|holecallout|ordinate|baseline|chamferdim)$/.test(D.tool)) h = entityAt(q);
+      if (D.tool === 'dim') { DW.smartDimMove(q, e); return; }   // (rfS) pre-highlight and the preview
+      if (/^(centermark|holecallout|ordinate|baseline|chamferdim)$/.test(D.tool)) h = entityAt(q);
       else if (D.tool === 'balloon' || D.tool === 'stackballoon') { var eg = DW.edgeAt(q); h = eg ? { kind: 'edge', view: eg.view, body: eg.body } : null; if (D.pending && D.pending.item && !D.pending.placed) { D.hover = h; drawOverlay(); return; } }
       else if (D.tool === 'centerline') h = null;
       else h = preHighlight(q);

@@ -1,13 +1,17 @@
 // headless/dxf-check.js — reads a DXF back and checks it the way a laser / CAM import would: every cut loop closed end
 // to end, no zero-length or duplicate entities, circles with real radii, the units header present, no LWPOLYLINE in an
 // R12 (AC1009) file, no SPLINE / ELLIPSE in one either (R2000 has both: on a cut layer an open one's ends chain into
-// the loops like a LINE's, a closed spline or a full ellipse is a loop of its own). Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
+// the loops like a LINE's, a closed spline or a full ellipse is a loop of its own). R2000 DIMENSION entities (rfT: a
+// drawing's dimensions) must name an anonymous block of the BLOCKS section that holds their drawn geometry, and a
+// dimension style of the DIMSTYLE table. Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
 // (headless/anvil.js) with require.
 //
-//   DxfCheck.parse(text)            -> { version, header: { $VAR: value }, entities: [{ type, layer, …geometry }] }
+//   DxfCheck.parse(text)            -> { version, header: { $VAR: value }, entities: [{ type, layer, …geometry }],
+//                                        blocks: { name: [entities] }, dimstyles: [names] }
 //   DxfCheck.check(text, opts?)     -> { ok, errors: [..], version, insunits, measurement, counts: { 'TYPE@LAYER': n },
 //                                        circles: [{ layer, c, r }], loops: [{ layer, kind, closed, n }], extents,
-//                                        gap (largest end-point mismatch in a chained loop) }
+//                                        gap (largest end-point mismatch in a chained loop), dimensions: [{ layer,
+//                                        block, kind, text, value, entities (in its block) }] }
 //   opts: { layers (the cut layers, default ['OUTLINE', 'HOLES']), tol (end-point match, default 1e-5 · (1 + size)),
 //           units ('in' | 'mm': $INSUNITS must say so) }
 (function (root) {
@@ -23,13 +27,17 @@
   }
 
   function parse(text) {
-    var P = pairs(text), header = {}, entities = [], section = null, i, cur = null, poly = null;
+    var P = pairs(text), header = {}, entities = [], section = null, i, cur = null, poly = null, blocks = {}, block = null, dimstyles = [], table = null;
     function finish() {
       if (!cur) return;
+      var into = section === 'BLOCKS' ? (block ? blocks[block] : null) : entities;
+      if (cur.type === 'BLOCK') { block = cur.s[2] || ''; blocks[block] = blocks[block] || []; cur = null; return; }
+      if (cur.type === 'ENDBLK') { block = null; cur = null; return; }
+      if (!into) { cur = null; return; }
       if (cur.type === 'VERTEX' && poly) { poly.pts.push([cur.g[10] || 0, cur.g[20] || 0]); poly.bulges.push(cur.g[42] || 0); }
-      else if (cur.type === 'SEQEND') { if (poly) entities.push(poly); poly = null; }
+      else if (cur.type === 'SEQEND') { if (poly) into.push(poly); poly = null; }
       else if (cur.type === 'POLYLINE') poly = { type: 'POLYLINE', layer: cur.layer, closed: !!((cur.g[70] || 0) & 1), pts: [], bulges: [] };
-      else entities.push(shape(cur));
+      else into.push(shape(cur));
       cur = null;
     }
     for (i = 0; i < P.length; i++) {
@@ -40,10 +48,16 @@
         if (c === 9) { var name = v.trim(), vals = []; while (P[i + 1] && P[i + 1][0] !== 9 && P[i + 1][0] !== 0) { vals.push(P[i + 1]); i++; } header[name] = vals.length === 1 ? vals[0][1].trim() : vals.map(function (q) { return q[1].trim(); }); }
         continue;
       }
-      if (section !== 'ENTITIES') continue;
-      if (c === 0) { finish(); cur = { type: v.trim(), layer: '0', g: {}, verts: [], bul: [], knots: [] }; continue; }
+      if (section === 'TABLES') {
+        if (c === 0) table = v.trim() === 'DIMSTYLE' ? 'DIMSTYLE' : v.trim() === 'TABLE' || v.trim() === 'ENDTAB' ? null : table;
+        else if (c === 2 && table === 'DIMSTYLE') dimstyles.push(v.trim());
+        continue;
+      }
+      if (section !== 'ENTITIES' && section !== 'BLOCKS') continue;
+      if (c === 0) { finish(); cur = { type: v.trim(), layer: '0', g: {}, s: {}, verts: [], bul: [], knots: [] }; continue; }
       if (!cur) continue;
       if (c === 8) cur.layer = v.trim();
+      else if (c === 2 || c === 3) cur.s[c] = v.trim();
       else if (cur.type === 'SPLINE' && c === 10) cur.verts.push([num(v), 0]);
       else if (cur.type === 'SPLINE' && c === 20) { if (cur.verts.length) cur.verts[cur.verts.length - 1][1] = num(v); }
       else if (cur.type === 'SPLINE' && c === 40) cur.knots.push(num(v));
@@ -56,7 +70,7 @@
     }
     finish();
     var ver = header.$ACADVER;
-    return { version: typeof ver === 'string' ? ver : null, header: header, entities: entities };
+    return { version: typeof ver === 'string' ? ver : null, header: header, entities: entities, blocks: blocks, dimstyles: dimstyles };
   }
   function shape(e) {
     var g = e.g;
@@ -65,6 +79,9 @@
       case 'CIRCLE': return { type: 'CIRCLE', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0 };
       case 'ARC': return { type: 'ARC', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0, a0: g[50] || 0, a1: g[51] || 0 };
       case 'TEXT': return { type: 'TEXT', layer: e.layer, p: [g[10] || 0, g[20] || 0], h: g[40] || 0, text: g[1] || '' };
+      // (rfT) 70 & 7: 0 rotated (horizontal / vertical), 1 aligned, 2 angular, 3 diameter, 4 radius, 6 ordinate
+      case 'DIMENSION': return { type: 'DIMENSION', layer: e.layer, block: e.s[2] || '', style: e.s[3] || '', kind: ['linear', 'aligned', 'angular', 'diameter', 'radius', 'angular3', 'ordinate'][(g[70] || 0) & 7] || 'linear',
+        text: g[1] || '', value: g[42] != null ? g[42] : null, p10: [g[10] || 0, g[20] || 0], p11: [g[11] || 0, g[21] || 0] };
       case 'LWPOLYLINE': return { type: 'LWPOLYLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), pts: e.verts, bulges: e.bul };
       case 'SPLINE': return { type: 'SPLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), degree: g[71] != null ? g[71] : 3, knots: e.knots, cps: e.verts };
       // (the minor axis is n × major · ratio: an extrusion of -Z runs the parameter the other way round)
@@ -118,7 +135,16 @@
     if (insunits == null) errors.push('no $INSUNITS in the header');
     if (opts.units && insunits !== (opts.units === 'in' ? 1 : 4)) errors.push('$INSUNITS is ' + insunits + ', expected ' + (opts.units === 'in' ? '1 (inch)' : '4 (mm)'));
     if (opts.units && measurement != null && measurement !== (opts.units === 'in' ? 0 : 1)) errors.push('$MEASUREMENT is ' + measurement + ' for ' + opts.units);
-    var cut = [], seen = {};
+    var cut = [], seen = {}, dims = [], hasBlocks = Object.keys(d.blocks).length > 0;
+    d.entities.forEach(function (e) {
+      if (e.type !== 'DIMENSION') return;
+      var be = d.blocks[e.block];
+      if (d.version === 'AC1009' && !hasBlocks) { dims.push({ layer: e.layer, block: e.block, kind: e.kind, text: e.text, value: e.value, entities: 0 }); return; }
+      if (!e.block || !be) errors.push('DIMENSION on ' + e.layer + ' names block "' + e.block + '", which the BLOCKS section does not have');
+      else if (!be.length) errors.push('DIMENSION block ' + e.block + ' is empty');
+      if (e.style && d.dimstyles.length && d.dimstyles.indexOf(e.style) < 0) errors.push('DIMENSION on ' + e.layer + ' uses dimension style "' + e.style + '", not in the DIMSTYLE table');
+      dims.push({ layer: e.layer, block: e.block, kind: e.kind, text: e.text, value: e.value, entities: be ? be.length : 0 });
+    });
     d.entities.forEach(function (e) {
       var key = e.type + '@' + e.layer;
       counts[key] = (counts[key] || 0) + 1;
@@ -216,7 +242,7 @@
     var uniq = [];
     errors.forEach(function (e) { if (uniq.indexOf(e) < 0) uniq.push(e); });
     return { ok: !uniq.length, errors: uniq, version: d.version, insunits: insunits, measurement: measurement, counts: counts, circles: circles,
-      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length };
+      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims };
   }
 
   var api = { parse: parse, check: check };

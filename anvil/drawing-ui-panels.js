@@ -20,6 +20,101 @@
   var cmdHoleCallout = DW.cmdHoleCallout, cmdChainDim = DW.cmdChainDim, cmdChamferDim = DW.cmdChamferDim, cmdBalloon = DW.cmdBalloon, setBalloonProps = DW.setBalloonProps, cmdDimensionPM = DW.cmdDimensionPM;
   var applyDimensionPM = DW.applyDimensionPM, cmdDocProps = DW.cmdDocProps, setDocOptions = DW.setDocOptions, autoInsertViews = DW.autoInsertViews;
 
+  // ------------------------------------------------------------------ rfT: Model Items PM, ANSI scales, Dimensions page
+  // An inch drawing lists the ANSI scales (1:1, 1:2, 1:4, 1:8 …): Sheet Properties and the Model View PM build their
+  // scale lists from Drawing.SCALES while they open, so it holds the drawing's unit set for that call
+  function withUnitScales(fn) {
+    return function () {
+      var S = Drawing.SCALES, want = Drawing.scalesFor ? Drawing.scalesFor(units()) : S;
+      if (want === S) return fn.apply(this, arguments);
+      var keep = S.slice();
+      S.length = 0; want.forEach(function (x) { S.push(x.slice()); });
+      try { return fn.apply(this, arguments); } finally { S.length = 0; keep.forEach(function (x) { S.push(x); }); }
+    };
+  }
+  cmdSheetProperties = withUnitScales(cmdSheetProperties); cmdModelView = withUnitScales(cmdModelView);
+  // Model Items (SolidWorks' Insert Model Items PropertyManager): Source / Destination, Dimensions (Marked for drawing,
+  // Hole Wizard locations, Hole callouts), Annotations, Options (Eliminate duplicates); OK inserts them (one undo step)
+  // as the drawing's model items, kept in doc.modelItems (Drawing.modelItems)
+  function modelItemFeatures() {
+    return (App.model.features || []).filter(function (f) { return !f.suppressed && (f.type === 'sketch' || f.type === 'flange' || f.sketch != null); })
+      .map(function (f) { return [String(f.id), f.name || f.type]; });
+  }
+  function applyModelItems(o) {
+    o = o || {};
+    var dc0 = doc(), views = dc0.views.map(function (v) { return v.id; });
+    var mi = { source: o.source === 'feature' && o.feature != null && o.feature !== '' ? 'feature' : 'entire', marked: o.marked !== false, holeLocations: o.holeLocations !== false,
+      holeCallouts: o.holeCallouts !== false, annotations: o.annotations !== false, dedupe: o.dedupe !== false };
+    if (mi.source === 'feature') mi.feature = isNaN(+o.feature) ? o.feature : +o.feature;
+    var dest = o.views && o.views !== 'all' ? [].concat(o.views).map(function (x) { return +x; }).filter(function (x) { return views.indexOf(x) >= 0; }) : [];
+    if (dest.length) mi.views = dest;
+    edit(function (dc) {
+      dc.modelItems = mi; dc.autoDims = true; dc.suppressed = [];
+      if (mi.annotations && autoInsertViews) { try { autoInsertViews(dc, dest.length ? dest : null); } catch (e) { } }
+    });
+    UI.setStatus('Model Items inserted' + (mi.source === 'feature' ? ' from the selected feature' : '') + (dest.length ? ' into ' + dest.length + ' view' + (dest.length > 1 ? 's' : '') : ' into all views') + '.');
+  }
+  function cmdModelItemsPM() {
+    var dc = doc();
+    if (!dc) return;
+    if (isAsm()) { cmdModelItems(); return; }
+    var cur = Drawing.modelItems(dc), feats = modelItemFeatures(), sel = D.sel && D.sel.kind === 'view' ? D.sel.id : null;
+    var viewOpts = dc.views.map(function (v) { return [String(v.id), v.name]; });
+    var vals = { source: cur.source, feature: cur.feature != null ? String(cur.feature) : (feats[0] ? feats[0][0] : ''), dest: cur.views || sel != null ? 'selected' : 'all',
+      view: String(cur.views ? cur.views[0] : sel != null ? sel : (dc.views[0] ? dc.views[0].id : '')), marked: cur.marked, holeLocations: cur.pm ? cur.holeLocations : true,
+      holeCallouts: cur.holeCallouts, annotations: cur.annotations, dedupe: cur.dedupe };
+    pmOpen({
+      title: 'Model Items', icon: 'modelItems', command: 'modelItems',
+      message: 'Inserts the part\'s dimensions into the drawing views: the sketch and feature dimensions marked for drawing, flange lengths, hole locations and hole callouts.',
+      values: vals,
+      groups: [
+        { title: 'Source/Destination', fields: [
+          { type: 'radio', key: 'source', label: 'Source', options: [['entire', 'Entire model'], ['feature', 'Selected feature']] },
+          { type: 'select', key: 'feature', label: 'Feature', options: feats.length ? feats : [['', '(none)']] },
+          { type: 'radio', key: 'dest', label: 'Destination', options: [['all', 'Import items into all views'], ['selected', 'Selected view']] },
+          { type: 'select', key: 'view', label: 'View', options: viewOpts.length ? viewOpts : [['', '(none)']] }
+        ] },
+        { title: 'Dimensions', fields: [
+          { type: 'check', key: 'marked', label: 'Marked for drawing' },
+          { type: 'check', key: 'holeLocations', label: 'Hole Wizard locations' },
+          { type: 'check', key: 'holeCallouts', label: 'Hole callout' }
+        ] },
+        { title: 'Annotations', fields: [{ type: 'check', key: 'annotations', label: 'Center marks and centerlines' }] },
+        { title: 'Options', fields: [{ type: 'check', key: 'dedupe', label: 'Eliminate duplicates' }] }
+      ],
+      onOK: function (v) {
+        applyModelItems({ source: v.source, feature: v.feature, views: v.dest === 'selected' && v.view !== '' ? [v.view] : 'all', marked: !!v.marked, holeLocations: !!v.holeLocations,
+          holeCallouts: !!v.holeCallouts, annotations: !!v.annotations, dedupe: !!v.dedupe });
+      }
+    }, 'modelItems', {});
+    UI.setStatus('Model Items: choose the source, the destination views and the items, then OK.');
+  }
+  DW.cmdModelItemsPM = cmdModelItemsPM; DW.applyModelItems = applyModelItems;
+  // Document Properties > Dimensions (ANSI inch / ISO mm): text height, arrow length and width, extension-line gap and
+  // extension beyond the dimension line, in the drawing's units, stored in doc.options (Drawing.dimSizes); a page added
+  // to the Document Properties dialog, applied with its OK
+  var baseDocProps = cmdDocProps;
+  cmdDocProps = function () {
+    baseDocProps();
+    var body = document.querySelector('.dw-docprops'), ok = document.getElementById('dw-opt-ok');
+    if (!body || !doc()) return;
+    var z = Drawing.dimSizes(doc()), inch = z.units === 'in', un = inch ? 'in' : 'mm', inputs = {};
+    var rows = [['dimText', 'Text height'], ['arrowLen', 'Arrow length'], ['arrowWidth', 'Arrow width'], ['extGap', 'Extension line gap'], ['extBeyond', 'Extension beyond dimension line']];
+    var kids = [el('div', { class: 'dw-tb-head', text: 'Dimensions (' + (inch ? 'ANSI, inches' : 'ISO, millimetres') + ')' })];
+    rows.forEach(function (r) {
+      var inp = el('input', { type: 'number', step: inch ? '0.001' : '0.1', min: '0', value: String(z[r[0]]), id: 'dw-opt-' + r[0] });
+      inputs[r[0]] = inp;
+      kids.push(el('label', { text: r[1] + ' (' + un + ')' }), inp);
+    });
+    var sec = el('div', { class: 'dw-docprops-dims' }, kids);
+    body.appendChild(sec);
+    if (ok) ok.addEventListener('click', function () {
+      var props = {}, df = Drawing.DIM_SIZES[z.units];
+      rows.forEach(function (r) { var x = +inputs[r[0]].value; props[r[0]] = x > 0 && Math.abs(x - df[r[0]]) > 1e-12 ? x : ''; });
+      setDocOptions(props);
+    }, true);
+  };
+
   // ------------------------------------------------------------------ rfQ: several sheets in the exports
   // sheetOf(i) -> sheet i worked out (the active one is the sheet on screen); the others are laid out and worked out
   // whole, without switching the sheet on screen
@@ -337,7 +432,7 @@
     { id: 'detailView', label: 'Detail\nView', run: cmdDetailView, active: function () { return D.tool === 'detail'; } },
     { sep: true },
     { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
-    { id: 'modelItems', label: 'Model\nItems', run: cmdModelItems, active: function () { return !!(doc() && doc().autoDims); } },
+    { id: 'modelItems', label: 'Model\nItems', run: cmdModelItemsPM, active: function () { return !!(doc() && doc().autoDims); } },
     { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
     { id: 'bom', label: 'Bill of\nMaterials', run: function () { cmdBOM(); }, active: function () { return !!(doc() && doc().bom && doc().bom.show !== false); } },
     { sep: true },
@@ -358,7 +453,7 @@
       { id: 'baselineDim', label: 'Baseline Dimension', run: function () { cmdChainDim('baseline'); }, active: function () { return D.tool === 'baseline'; } },
       { id: 'chamferDim', label: 'Chamfer Dimension', run: cmdChamferDim, active: function () { return D.tool === 'chamferdim'; } }
     ] },
-    { id: 'modelItems', label: 'Model\nItems', run: cmdModelItems, active: function () { return !!(doc() && doc().autoDims); } },
+    { id: 'modelItems', label: 'Model\nItems', run: cmdModelItemsPM, active: function () { return !!(doc() && doc().autoDims); } },
     { sep: true },
     { id: 'balloon', label: 'Balloon', run: function () { cmdBalloon(false); }, active: function () { return D.tool === 'balloon'; } },
     { id: 'autoBalloon', label: 'Auto\nBalloon', run: function () { cmdAutoBalloon(); } },
@@ -434,7 +529,7 @@
         { label: 'Annotations \u25b8 Datum Feature\u2026', action: function () { cmdSymbol('datum'); } },
         { label: 'Annotations \u25b8 Geometric Tolerance\u2026', action: function () { cmdSymbol('gtol'); } },
         { label: 'Annotations \u25b8 Smart Dimension', key: 'D', action: cmdSmartDimension },
-        { label: 'Annotations \u25b8 Model Items', checked: !!(dc && dc.autoDims), action: cmdModelItems },
+        { label: 'Annotations \u25b8 Model Items\u2026', checked: !!(dc && dc.autoDims), action: cmdModelItemsPM },
         { label: 'Annotations \u25b8 Auto Balloon', disabled: !isAsm(), action: cmdAutoBalloon },
         { label: 'Annotations \u25b8 Balloon', action: function () { cmdBalloon(false); } },
         { label: 'Annotations \u25b8 Stacked Balloon', action: function () { cmdBalloon(true); } },
@@ -604,7 +699,14 @@
       titleBlock: function (map) { if (!doc()) return null; if (map) setTitleBlock(map); return Drawing.titleBlock(doc(), App.model, cctx()); },
       addView: function (orient, opts) { opts = opts || {}; startPlacing({ orient: orient, display: opts.display, scale: opts.scale ? Drawing.parseScale(opts.scale) : null }); placePending([opts.x != null ? opts.x : 60 * paperK(), opts.y != null ? opts.y : 100 * paperK()]); return summary(); },
       setSheet: function (props) { setSheet(props || {}); return summary(); },
-      modelItems: function (on) { if (!!doc().autoDims !== !!on) cmdModelItems(); return summary(); },
+      // modelItems(on): the model items on / off (the drawing's default set); modelItems({ source, feature, views,
+      // marked, holeLocations, holeCallouts, annotations, dedupe }): as the Model Items PM's OK (rfT)
+      modelItems: function (on) {
+        if (on && typeof on === 'object') applyModelItems(on);
+        else if (!!doc().autoDims !== !!on) cmdModelItems();
+        return summary();
+      },
+      modelItemsPM: function () { cmdModelItemsPM(); return true; },
       // svg(i): one sheet (default: the active one, rfQ)
       svg: function (i) { if (!doc()) return null; return Drawing.toSVG(sheetOf(i == null ? null : Drawing.sheetIndex(doc(), i))); },
       // dxf({ version: 'R12' (default) | 'R2000', sheet: i | name }): one sheet (default: the active one) as DXF, one layer per view

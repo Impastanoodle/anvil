@@ -22,6 +22,10 @@
     'ANSI A': [11 * MM, 8.5 * MM], 'ANSI B': [17 * MM, 11 * MM], 'ANSI C': [22 * MM, 17 * MM], 'ANSI D': [34 * MM, 22 * MM]
   };
   var SCALES = [[10, 1], [5, 1], [4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 5], [1, 10], [1, 20], [1, 25], [1, 50], [1, 100], [1, 200]];
+  // (rfT) inch drawings use the ANSI (ASME Y14.1) scale set: halving from 8:1 down to 1:64, no 1:5 / 1:10 / 1:25
+  var ANSI_SCALES = [[8, 1], [4, 1], [2, 1], [1, 1], [1, 2], [1, 4], [1, 8], [1, 16], [1, 32], [1, 64]];
+  // scalesFor(units | doc) -> the standard scales of the drawing's unit system, largest first
+  function scalesFor(u) { var units = u && typeof u === 'object' ? u.units : u; return units === 'in' ? ANSI_SCALES : SCALES; }
   function scaleValue(s) { return s[0] / s[1]; }
   function scaleText(s) { return s[0] + ':' + s[1]; }
   // The scale as SolidWorks writes it under a view label: 'SCALE 2 : 1' (spaces round the colon).
@@ -239,7 +243,7 @@
   function fitOnSheet(doc, mesh, v, free) {
     var x0 = v.x, y0 = v.y, sc0 = v.scale, al0 = v.align, s0 = viewScale(doc, v);
     var par = v.kind === 'detail' && v.parent != null ? findView(doc, v.parent) : null, lo = par ? viewScale(doc, par) : 0;
-    var smaller = SCALES.filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
+    var smaller = scalesFor(doc).filter(function (s) { var q = scaleValue(s); return q < s0 - 1e-9 && q >= s0 / 4 - 1e-9 && q > lo + 1e-9; });
     function at(sc, align) { v.x = x0; v.y = y0; v.scale = sc; v.align = align; return clearSpot(doc, mesh, v, align ? free : null); }
     var tries = al0 ? [[sc0, al0], [sc0, null]] : [[sc0, null]];
     smaller.forEach(function (s) { if (al0) tries.push([s.slice(), al0]); tries.push([s.slice(), null]); });
@@ -275,7 +279,8 @@
   // detail scale: twice the parent's, as a standard scale when there is one
   function detailScale(ps) {
     var want = 2 * scaleValue(ps);
-    for (var i = 0; i < SCALES.length; i++) if (Math.abs(scaleValue(SCALES[i]) - want) < 1e-9) return SCALES[i].slice();
+    var all = SCALES.concat(ANSI_SCALES);
+    for (var i = 0; i < all.length; i++) if (Math.abs(scaleValue(all[i]) - want) < 1e-9) return all[i].slice();
     return want >= 1 ? [Math.round(want * 1000) / 1000, 1] : [1, Math.round(1000 / want) / 1000];
   }
   // addDetailView(doc, mesh, parentId, { c: [u, v], r, scale, x, y, label, fit }): the parent inside the circle (c, r)
@@ -420,6 +425,8 @@
       var v = titleText(own[f.key] != null ? own[f.key] : f.link, doc, model, ctx).trim();
       // (rfM) REV: a Revision Table's latest revision (SolidWorks' table drives REV), unless the field was edited
       if (f.key === 'rev' && own.rev == null && latestRev(doc)) v = latestRev(doc);
+      // (rfT) an unset material prints an empty cell: 'Material <not specified>' is SolidWorks' tree text, never on a print
+      if (f.key === 'material' && own.material == null && /<\s*not specified\s*>/i.test(v)) v = '';
       if (!v && f.fallback) v = String(model && model.name || 'Part');
       if (f.multi) v = v.replace(/\\n/g, '\n');   // (a block typed on one line: a backslash-n between its lines)
       out[f.key] = f.upper ? v.toUpperCase() : v;
@@ -516,12 +523,15 @@
     function hitsBom(b) { return hitsBox(bomK, b) || hitsBox(revK, b); }
     // place(sv, packed): view centres for scale sv, the block centred in the usable area (or packed into the corner
     // away from the BOM); null when a view would cover the BOM
+    // (rfT) the margin round the Front / Top / Right block: a full view gap on metric sheets; a quarter of one on inch
+    // sheets, so a part fills the sheet at the largest ANSI scale that fits (a 6 x 4 bracket on ANSI B at 1:1)
+    var m = units === 'in' ? g / 4 : g;
     function place(sv, packed) {
       var W = Wm * sv, H = Hm * sv, D = Dm * sv, blockW = W + g + D, blockH = H + g + D, P = {};
-      var left = A.x0 + Math.max(g, (availW - blockW) / 2), bottom = A.y0 + Math.max(g, (availH - blockH) / 2);
+      var left = A.x0 + Math.max(m, (availW - blockW) / 2), bottom = A.y0 + Math.max(m, (availH - blockH) / 2);
       if (packed) {
-        left = bomK && /left/.test(bomK.anchor) ? A.x1 - g - blockW : A.x0 + g;
-        bottom = bomK && /bottom/.test(bomK.anchor) ? A.y1 - g - blockH : A.y0 + g;
+        left = bomK && /left/.test(bomK.anchor) ? A.x1 - m - blockW : A.x0 + m;
+        bottom = bomK && /bottom/.test(bomK.anchor) ? A.y1 - m - blockH : A.y0 + m;
       }
       if (doc.sheet.projection === 'first') {
         // first angle: Top below Front, Right to the left of Front
@@ -537,10 +547,18 @@
       if (boxes.some(hitsBom)) return null;
       return P;
     }
-    function fits(sv) { return (Wm + Dm) * sv + 3 * g <= availW && (Hm + Dm) * sv + 3 * g <= availH && (place(sv) || place(sv, true)); }
+    // (rfT) on an inch sheet the isometric must fit its corner at half the sheet scale or more (it may drop one step)
+    var Iso = units === 'in' && byRole.iso ? extentsOf(mesh, byRole.iso.orient) : null;
+    function isoFits(P, sv) {
+      if (!Iso || !P) return !!P;
+      var bw0 = P.isoBox.x1 - P.isoBox.x0 - g / 2, bh0 = P.isoBox.y1 - P.isoBox.y0 - g / 2;
+      return Iso.w * sv / 2 <= bw0 + 1e-9 && Iso.h * sv / 2 <= bh0 + 1e-9;
+    }
+    function fits(sv) { return (Wm + Dm) * sv + g + 2 * m <= availW && (Hm + Dm) * sv + g + 2 * m <= availH && (isoFits(place(sv), sv) || isoFits(place(sv, true), sv)); }
+    var SC = scalesFor(units);
     if (doc.sheet.autoScale || !doc.sheet.scale) {
-      var s = SCALES[SCALES.length - 1];
-      for (var i = 0; i < SCALES.length; i++) if (fits(scaleValue(SCALES[i]))) { s = SCALES[i]; break; }
+      var s = SC[SC.length - 1];
+      for (var i = 0; i < SC.length; i++) if (fits(scaleValue(SC[i]))) { s = SC[i]; break; }
       doc.sheet.scale = s;
     }
     var sv2 = scaleValue(doc.sheet.scale);
@@ -559,8 +577,8 @@
       var I = extentsOf(mesh, byRole.iso.orient), bw = isoBox.x1 - isoBox.x0 - g / 2, bh = isoBox.y1 - isoBox.y0 - g / 2;
       byRole.iso.scale = null;
       if (I.w * sv2 > bw || I.h * sv2 > bh) {
-        for (var j = 0; j < SCALES.length; j++) { var q = scaleValue(SCALES[j]); if (q < sv2 && I.w * q <= bw && I.h * q <= bh) { byRole.iso.scale = SCALES[j]; break; } }
-        if (!byRole.iso.scale) byRole.iso.scale = SCALES[SCALES.length - 1];
+        for (var j = 0; j < SC.length; j++) { var q = scaleValue(SC[j]); if (q < sv2 && I.w * q <= bw && I.h * q <= bh) { byRole.iso.scale = SC[j]; break; } }
+        if (!byRole.iso.scale) byRole.iso.scale = SC[SC.length - 1];
       }
       byRole.iso.x = (isoBox.x0 + isoBox.x1) / 2; byRole.iso.y = (isoBox.y0 + isoBox.y1) / 2;
     }
@@ -652,27 +670,57 @@
     var o = (doc && doc.options) || {};
     return { prec: o.dimPrec != null && o.dimPrec !== '' && +o.dimPrec >= 0 ? Math.min(6, Math.round(+o.dimPrec)) : null, fractions: !!o.fractions, denom: +o.fracDenom > 0 ? +o.fracDenom : 64 };
   }
+  // (rfT) the dimension style's sizes (Document Properties > Dimensions), in the drawing's units: ANSI inch (ASME
+  // Y14.2 / SolidWorks' ANSI template) .125 text, .125 x .042 arrows (3:1), a .0625 gap from the part and .125 beyond
+  // the dimension line; ISO millimetre drawings keep 3.5 text, 3 x 1 arrows, 1.5 gap, 2 beyond. doc.options.dimText,
+  // arrowLen, arrowWidth, extGap, extBeyond override them.
+  var DIM_SIZES = { 'in': { dimText: 0.125, arrowLen: 0.125, arrowWidth: 0.042, extGap: 0.0625, extBeyond: 0.125 }, mm: { dimText: 3.5, arrowLen: 3, arrowWidth: 1, extGap: 1.5, extBeyond: 2 } };
+  // dimSizes(doc) -> { units, dimText, arrowLen, arrowWidth, extGap, extBeyond } in the drawing's units
+  function dimSizes(doc) {
+    var u = doc && doc.units === 'in' ? 'in' : 'mm', o = doc && doc.options || {}, df = DIM_SIZES[u], out = { units: u };
+    Object.keys(df).forEach(function (q) { out[q] = +o[q] > 0 ? +o[q] : df[q]; });
+    return out;
+  }
+  // dimGeometry(doc) -> the same in paper mm: { text, arrow, arrowW (full width), gap, ext } (drawing-render.js)
+  function dimGeometry(doc) {
+    var z = dimSizes(doc), f = z.units === 'in' ? MM : 1;
+    return { text: z.dimText * f, arrow: z.arrowLen * f, arrowW: z.arrowWidth * f, gap: z.extGap * f, ext: z.extBeyond * f };
+  }
   // autoDims(doc, projections, units) -> [{ view, kind: 'h' | 'v' | 'dia', … model-space geometry, text }]
   // Overall width and height on the Front view (below and to the left), overall depth on the Top view (left side),
   // and every distinct circle diameter once, in the first ortho view that shows it as a visible circle ("4X Ø8").
+  // (rfT) modelItems(doc) -> the Model Items PropertyManager's choices (doc.modelItems, written by its OK; absent on a
+  // drawing made before it or never given Model Items: today's set, overall sizes / diameters / radii / slots / sketch
+  // dimensions): source 'entire' | 'feature' (+ feature: the feature id: only that feature's dimensions), views null
+  // (all) or [view ids] (Destination: the selected views), marked (Marked for drawing: the sketch / feature
+  // dimensions, overall sizes, radii, slots, flange lengths), holeLocations (Hole Wizard locations: every hole centre
+  // located from the view's left and bottom edges when no sketch dimension locates it), holeCallouts (the hole
+  // diameters), annotations (centre marks and centrelines), dedupe (Options > Eliminate duplicates), pm (set by the PM)
+  function modelItems(doc) {
+    var m = doc && doc.modelItems || null;
+    return { pm: !!m, source: m && m.source === 'feature' && m.feature != null ? 'feature' : 'entire', feature: m && m.source === 'feature' ? m.feature : null,
+      views: m && Array.isArray(m.views) && m.views.length ? m.views.slice() : null, marked: !m || m.marked !== false, holeLocations: !!m && m.holeLocations !== false,
+      holeCallouts: !m || m.holeCallouts !== false, annotations: !m || m.annotations !== false, dedupe: !m || m.dedupe !== false };
+  }
   function autoDims(doc, projections, units) {
-    var dims = [];
-    var order = doc.views.filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id]; });
+    var MI = modelItems(doc), dims = [];
+    var order = doc.views.filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id] && (!MI.views || MI.views.indexOf(v.id) >= 0); });
+    if (MI.source === 'feature') return featureItems(doc, order, projections, units, MI);
     var roleOrder = { front: 0, top: 1, right: 2 };
     order.sort(function (a, b) { return (roleOrder[a.role] != null ? roleOrder[a.role] : 5) - (roleOrder[b.role] != null ? roleOrder[b.role] : 5) || a.id - b.id; });
     var front = order.filter(function (v) { return v.role === 'front'; })[0] || order[0];
     var top = order.filter(function (v) { return v.role === 'top'; })[0];
-    if (front) {
+    if (front && MI.marked) {
       var b = projections[front.id].bounds;
       dims.push({ view: front.id, kind: 'h', a: [b.umin, b.vmin], b: [b.umax, b.vmin], side: -1, value: b.umax - b.umin, auto: true });
       dims.push({ view: front.id, kind: 'v', a: [b.umin, b.vmin], b: [b.umin, b.vmax], side: -1, value: b.vmax - b.vmin, auto: true });
     }
-    if (top) {
+    if (top && top !== front && MI.marked) {
       var bt = projections[top.id].bounds;
       dims.push({ view: top.id, kind: 'v', a: [bt.umin, bt.vmin], b: [bt.umin, bt.vmax], side: -1, value: bt.vmax - bt.vmin, auto: true });
     }
     var done = {};
-    order.forEach(function (v) {
+    if (MI.holeCallouts) order.forEach(function (v) {
       var pr = projections[v.id];
       if (!pr) return;
       var groups = {}, gk = [];
@@ -741,13 +789,22 @@
     }
     // true arcs of the model (slot ends, rounded corners, partial revolves; not circles cut by hidden lines): every
     // distinct radius once, in the first ortho view that shows it ("4X R5"), on the arc farthest from the view centre
-    var rdone = {};
-    order.forEach(function (v) {
+    var rdone = {}, T = sheetThickness();
+    // (rfT) a sheet-metal bend's outside radius (R + T, concentric with the inside one) is no model dimension: only the
+    // bend radius is inserted, as SolidWorks does
+    function outsideBend(pr, a) {
+      if (!(T > 0) || !(a.r > T)) return false;
+      var tl = 1e-6 * (1 + a.r);
+      return [pr.arcs.visible, pr.arcs.hidden || []].some(function (list) {
+        return list.some(function (b) { return Math.abs(b.r - (a.r - T)) <= tl && Math.hypot(b.c[0] - a.c[0], b.c[1] - a.c[1]) <= tl; });
+      });
+    }
+    if (MI.marked) order.forEach(function (v) {
       var pr = projections[v.id];
       if (!pr || !pr.arcs) return;
       var groups = {}, gk = [];
       pr.arcs.visible.forEach(function (a) {
-        if (a.src !== 'arc' || slotEnd(v, a)) return;
+        if (a.src !== 'arc' || slotEnd(v, a) || outsideBend(pr, a)) return;
         var key = fmtDim(a.r, units);
         if (rdone[key]) return;
         if (!groups[key]) { groups[key] = []; gk.push(key); }
@@ -760,15 +817,125 @@
         dims.push({ view: v.id, kind: 'rad', c: pick.c, r: pick.r, a0: pick.a0, a1: pick.a1, count: list.length, value: pick.r, auto: true });
       });
     });
-    dims = dims.concat(slotDims);
+    if (MI.marked) dims = dims.concat(slotDims);
     // the part's sketch ordinate sets (sketch-ordinate), as drawing ordinate dimensions in the first view that looks
     // square at their sketch
-    dims = dims.concat(sketchOrdinates(doc, order, projections));
+    if (MI.marked) dims = dims.concat(sketchOrdinates(doc, order, projections));
     // the sketches' location dimensions (distance relations), marked for drawing (sketch-text2 lane: Model Items ▸
     // Marked for drawing); pushed last, so the items above keep their style keys
-    dims = dims.concat(sketchDistances(doc, order, projections, dims));
+    if (MI.marked) dims = dims.concat(sketchDistances(doc, order, projections, dims));
+    // (rfT) from the Model Items PM only (drawings made before it keep their items and style keys): flange lengths
+    // and the hole locations
+    if (MI.pm && MI.marked) dims = dims.concat(flangeLengths(doc, order, projections, dims, null, MI));
+    if (MI.pm && MI.holeLocations) dims = dims.concat(holeLocations(doc, order, projections, dims, MI));
     dims.forEach(function (d) { d.text = dimText(d, units); });
     return dims;
+  }
+  // the sheet thickness of the part being drawn (0 when it is not sheet metal)
+  function sheetThickness() {
+    var ctx = _.CTX, model = ctx && ctx.model;
+    if (!model || !model.sheet) return 0;
+    var fl = ctx.build && ctx.build.flanges, T = 0;
+    if (fl) Object.keys(fl).forEach(function (id) { (fl[id] || []).forEach(function (r) { if (!T && r && r.T > 0) T = r.T; }); });
+    if (!T) { try { T = +K.resolvedModel(model).model.sheet.thickness; } catch (e) { T = +model.sheet.thickness; } }
+    return T > 0 ? T : 0;
+  }
+  // sameSpan(x, d, tol): x shows the span d does (Options > Eliminate duplicates)
+  function sameSpan(x, d, tol) {
+    if (x.view !== d.view || x.kind !== d.kind || !x.a || !x.b || Math.abs(x.value - d.value) > tol) return false;
+    var ix = d.kind === 'v' ? 1 : 0;
+    if (d.kind === 'aligned') return Math.hypot(x.a[0] - d.a[0], x.a[1] - d.a[1]) <= tol && Math.hypot(x.b[0] - d.b[0], x.b[1] - d.b[1]) <= tol;
+    return Math.abs(Math.min(x.a[ix], x.b[ix]) - Math.min(d.a[ix], d.b[ix])) <= tol;
+  }
+  // flangeLengths(doc, order, projections, dims, onlyId, MI) -> the Edge Flange lengths (rfT), as the shop dimensions
+  // them: from the outside of the sheet the flange rises from to the flange's end (its outer virtual sharp at 90 deg),
+  // in the first view of `order` that looks along the flange's edge (the flange seen edge-on, as an L); one per
+  // distinct span, none where an item already shows it (an overall height). 90 deg flanges only; onlyId: one feature.
+  function flangeLengths(doc, order, projections, dims, onlyId, MI) {
+    var ctx = _.CTX, model = ctx && ctx.model, fl = ctx && ctx.build && ctx.build.flanges, mesh = ctx && ctx.mesh, out = [];
+    if (!model || !model.features || !fl || !mesh) return out;
+    var P = mesh.positions64 || mesh.positions;
+    model.features.forEach(function (f) {
+      if (f.type !== 'flange' || f.hem || f.suppressed || (onlyId != null && f.id !== onlyId)) return;
+      (fl[f.id] || []).forEach(function (rec) {
+        if (!rec || Math.abs(rec.angle - Math.PI / 2) > 1e-6 || !rec.u || !rec.o) return;
+        var t3 = V.sub(rec.b, rec.a), Le = V.len(t3);
+        if (!(Le > 0)) return;
+        t3 = V.scale(t3, 1 / Le);
+        var maxU = -Infinity, tl = 1e-6 * (1 + Le);
+        for (var i = 0; i < P.length; i += 3) {
+          var p = [P[i], P[i + 1], P[i + 2]], along = V.dot(V.sub(p, rec.a), t3);
+          if (V.dot(V.sub(p, rec.mid), rec.o) < -tl || along < -tl || along > Le + tl) continue;
+          var hu = V.dot(V.sub(p, rec.origin), rec.u);
+          if (hu > maxU) maxU = hu;
+        }
+        if (!(maxU > 0)) return;
+        var value = maxU + rec.T, v = null, F = null;
+        for (var j = 0; j < order.length && !v; j++) { var Fj = viewFrame(doc, order[j]); if (Fj && Math.abs(Math.abs(V.dot(t3, Fj.e)) - 1) < 1e-9) { v = order[j]; F = Fj; } }
+        if (!v) return;
+        var kind = Math.abs(Math.abs(V.dot(rec.u, F.v)) - 1) < 1e-9 ? 'v' : Math.abs(Math.abs(V.dot(rec.u, F.u)) - 1) < 1e-9 ? 'h' : null;
+        if (!kind) return;
+        // the outer face of the sheet at the edge (T below the face the flange rises from) and the flange's outer end
+        var m0 = V.add(rec.mid, V.scale(rec.u, -V.dot(V.sub(rec.mid, rec.origin), rec.u) - rec.T));
+        var p1 = V.add(V.add(m0, V.scale(rec.u, value)), V.scale(rec.o, rec.R + rec.T));
+        var a2 = [V.dot(m0, F.u), V.dot(m0, F.v)], b2 = [V.dot(p1, F.u), V.dot(p1, F.v)];
+        var bd = projections[v.id].bounds, cu = (bd.umin + bd.umax) / 2, cv = (bd.vmin + bd.vmax) / 2;
+        var d = { view: v.id, kind: kind, a: a2, b: b2, value: value, auto: true, flange: f.id };
+        d.side = kind === 'v' ? (b2[0] > cu ? 1 : -1) : (b2[1] > cv ? 1 : -1);
+        var tol = 1e-7 * (1 + Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin));
+        if (MI.dedupe !== false && (dims.some(function (x) { return sameSpan(x, d, tol); }) || out.some(function (x) { return sameSpan(x, d, tol); }))) return;
+        out.push(d);
+      });
+    });
+    return out;
+  }
+  // holeLocations(doc, order, projections, dims, MI) -> Model Items > Hole Wizard locations (rfT): every hole (a
+  // visible circle) of a view that looks along it, located from the view's left edge (horizontal, above the view) and
+  // bottom edge (vertical, right of the view) unless a sketch dimension already locates it that way; holes in line
+  // share one (Eliminate duplicates). A hole axis is located in the first view of `order` that shows it.
+  function holeLocations(doc, order, projections, dims, MI) {
+    var out = [], axes = {};
+    order.forEach(function (v) {
+      var pr = projections[v.id], F = viewFrame(doc, v);
+      if (!pr || !F) return;
+      var ak = F.e.map(function (x) { return Math.round(Math.abs(x) * 1e6); }).join(',');
+      if (axes[ak]) return;
+      var bd = pr.bounds, span = Math.max(bd.umax - bd.umin, bd.vmax - bd.vmin, 1e-9), tol = 1e-6 * span, cs = [];
+      pr.circles.visible.forEach(function (c) { if (!c.sil && !cs.some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= tol; })) cs.push(c.c); });
+      if (!cs.length) return;
+      axes[ak] = 1;
+      function located(c, kind) {
+        return dims.some(function (x) {
+          if (x.view !== v.id || x.kind !== kind || !x.a || !x.b) return false;
+          return [x.a, x.b].some(function (p) { return Math.hypot(p[0] - c[0], p[1] - c[1]) <= tol; });
+        });
+      }
+      [['h', 0], ['v', 1]].forEach(function (k2) {
+        var kind = k2[0], ax = k2[1], lo = ax ? bd.vmin : bd.umin, seen = [];
+        cs.slice().sort(function (p, q) { return p[ax] - q[ax]; }).forEach(function (c) {
+          if (c[ax] - lo <= tol || located(c, kind)) return;
+          if (MI.dedupe !== false && seen.some(function (x) { return Math.abs(x - c[ax]) <= tol; })) return;
+          seen.push(c[ax]);
+          var a = ax ? [bd.umax, lo] : [lo, bd.vmax];
+          out.push({ view: v.id, kind: kind, a: a, b: c.slice(), value: c[ax] - lo, side: 1, auto: true, hole: true });
+        });
+      });
+    });
+    return out;
+  }
+  // featureItems(doc, order, projections, units, MI): Model Items > Source: Selected feature, the dimensions of that
+  // feature only: its sketch's marked location dimensions (a sketch, or a feature made from one) and, for an Edge
+  // Flange, its flange lengths
+  function featureItems(doc, order, projections, units, MI) {
+    var ctx = _.CTX, model = ctx && ctx.model, out = [];
+    if (!model || !model.features) return out;
+    var f = model.features.filter(function (x) { return x.id === MI.feature; })[0];
+    if (!f) return out;
+    var sk = f.type === 'sketch' ? f.id : f.sketch;
+    if (MI.marked && sk != null) out = sketchDistances(doc, order, projections, [], sk);
+    if (MI.marked && f.type === 'flange') out = out.concat(flangeLengths(doc, order, projections, out, f.id, MI));
+    out.forEach(function (d) { d.text = dimText(d, units); });
+    return out;
   }
   // sketchDistances(doc, order, projections, dims) -> model items for the part's sketch location dimensions, as
   // SolidWorks' Insert Model Items ▸ Marked for drawing brings them: every distance relation of every unsuppressed
@@ -780,7 +947,7 @@
   // them, with sketchRel 'sketchId:relIndex' (its key) and relSrc { f, i } (Drawing.sketchDimProps then gives it the
   // relation's tolerance, precision, text and name). One that measures what an item in `dims` already shows (an
   // overall size) is not added again: that item takes the relation's relSrc instead.
-  function sketchDistances(doc, order, projections, dims) {
+  function sketchDistances(doc, order, projections, dims, onlySketch) {
     var ctx = _.CTX, model = ctx && ctx.model, S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, out = [];
     if (!model || model.type === 'assembly' || !model.features || !S || !S.refKind) return out;
     var rm;
@@ -806,7 +973,7 @@
       return q;
     }
     (rm.features || []).forEach(function (f) {
-      if (f.type !== 'sketch' || f.suppressed || !f.rels) return;
+      if (f.type !== 'sketch' || f.suppressed || !f.rels || (onlySketch != null && f.id !== onlySketch)) return;
       var list = [];
       f.rels.forEach(function (rel, i) {
         if (!rel || rel.type !== 'distance' || rel.ord != null || rel.suppressed || rel.dir === 'r' || !rel.refs || rel.refs.length !== 2) return;
@@ -1582,7 +1749,7 @@
     return nm;
   }
 
-  D.FORMATS = FORMATS; D.SCALES = SCALES; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
+  D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;
   // isSheetMetal(model): a part with sheet-metal parameters and a Base Flange (Model View offers Flat pattern)
   D.isSheetMetal = function (model) { return !!(model && model.type !== 'assembly' && model.sheet && (model.features || []).some(function (f) { return f.sheetBase && !f.suppressed; })); };
@@ -1596,7 +1763,7 @@
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet;
   D.TB_FIELDS = TB_FIELDS; D.titleText = titleText; D.titleFieldAt = titleFieldAt; D.titleBlock = titleBlock;
   D.standard3View = standard3View; D.extentsOf = extentsOf; D.layout = layout; D.moveView = moveView; D.deleteView = deleteView; D.findView = findView;
-  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
+  D.fmtDim = fmtDim; D.inchText = inchText; D.fracText = fracText; D.dimStyle = dimStyle; D.autoDims = autoDims; D.modelItems = modelItems; D.dimSizes = dimSizes; D.dimGeometry = dimGeometry; D.DIM_SIZES = DIM_SIZES; D.dimText = dimText; D.slotsIn = slotsIn; D.slotText = slotText;
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;

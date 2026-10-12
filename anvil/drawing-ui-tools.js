@@ -22,7 +22,7 @@
     UI.setStatus('Standard 3 View: Front, Top and Right (' + (doc().sheet.projection === 'first' ? 'first' : 'third') + '-angle) plus an Isometric, scale ' + Drawing.scaleText(doc().sheet.scale) + '.');
   }
   var ORTHO_NAMES = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom'];
-  function scaleOptions() { return [['sheet', 'Use sheet scale']].concat(Drawing.SCALES.map(function (s) { return [Drawing.scaleText(s), Drawing.scaleText(s)]; })); }
+  function scaleOptions() { return [['sheet', 'Use sheet scale']].concat((Drawing.scalesFor ? Drawing.scalesFor(units()) : Drawing.SCALES).map(function (s) { return [Drawing.scaleText(s), Drawing.scaleText(s)]; })); }
   function openDrawingPM(spec) {
     var onClose = spec.onClose;
     spec.onClose = function () { $('app').classList.remove('dw-pm'); closeInlineEdit(false); if (onClose) onClose(); if (D.active) { UI.setFmTab('tree'); render(); } };
@@ -389,10 +389,189 @@
     UI.setStatus('Dimension ' + Drawing.dimText(d, units()) + ' added to ' + v.name + '.');
     return d;
   }
+  // ------------------------------------------------------------------ rfS: Smart Dimension, SolidWorks style
+  // The first pick (an edge, a circle / arc, a vertex / end point, a circle's centre), an optional second pick in the
+  // same view, then a placement click; a preview follows the pointer from the first pick on, and the kind follows the
+  // picks and where the pointer is (Drawing.smartDim). The tool stays on after a placement (the Dimension
+  // PropertyManager opens on the new dimension); Esc ends it. Shift held on a circle pick measures to its near (min) or
+  // far (max) side, the side clicked.
+  var SD_MSG = 'Smart Dimension: click an edge, a circle or arc, a vertex or a circle’s centre in an orthographic view. Esc ends.';
   function cmdSmartDimension() {
     D.tool = D.tool === 'dim' ? null : 'dim'; D.pending = null; D.hover = null;
     drawOverlay(); UI.refreshRibbon();
-    UI.setStatus(D.tool === 'dim' ? 'Smart Dimension: click a visible edge (length) or circle (diameter) in an orthographic view. Esc ends.' : 'Ready');
+    UI.setStatus(D.tool === 'dim' ? SD_MSG : 'Ready');
+  }
+  // pickAt(p, viewId?) -> { view, w, pick (model units), at (sheet), hl (what the overlay outlines) } or null: a
+  // circle's / arc's centre or an edge's end within 6 px first, else the nearest visible edge, circle or arc
+  function pickAt(p, viewId) {
+    var tol = pxToPaper(6), best = null, bd = tol;
+    (D.sheet ? D.sheet.views : []).forEach(function (w) {
+      if (!w.ortho || w.pending || (viewId != null && w.view.id !== viewId)) return;
+      var b = w.box;
+      if (p[0] < b.x0 - tol || p[0] > b.x1 + tol || p[1] < b.y0 - tol || p[1] > b.y1 + tol) return;
+      w.proj.circles.visible.concat(w.proj.arcs ? w.proj.arcs.visible : []).forEach(function (c) {
+        var q = w.toSheet(c.c), dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
+        if (dd < bd) { bd = dd; best = { view: w.view.id, w: w, pick: { center: { c: c.c.slice(), r: c.r } }, hl: { pt: q } }; }
+      });
+      w.proj.lines.visible.forEach(function (l) {
+        [[l[0], l[1]], [l[2], l[3]]].forEach(function (m) {
+          var q = w.toSheet(m), dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
+          if (dd < bd) { bd = dd; best = { view: w.view.id, w: w, pick: { point: m.slice() }, hl: { pt: q } }; }
+        });
+      });
+    });
+    var ent = entityAt(p);
+    if (ent && viewId != null && ent.view !== viewId) ent = null;
+    if (best) {
+      // a point wins when the pointer is on it (within 4 px) and not clearly nearer the edge or circle itself: a small
+      // hole clicked on its outline is the circle, its middle is the centre; an edge's end is the vertex
+      var de = Infinity;
+      if (ent && ent.circle) de = Math.abs(Math.hypot(p[0] - ent.circle.c[0], p[1] - ent.circle.c[1]) - ent.circle.r);
+      else if (ent && ent.arc) de = Math.abs(Math.hypot(p[0] - ent.arc.c[0], p[1] - ent.arc.c[1]) - ent.arc.r);
+      else if (ent) de = segDist(p, ent.a, ent.b);
+      if (!ent || (bd <= pxToPaper(4) && bd < de + pxToPaper(2))) { best.at = p; return best; }
+    }
+    if (!ent) return null;
+    var w0 = sheetView(ent.view), pk;
+    if (ent.circle) pk = { circle: { c: ent.mc.c.slice(), r: ent.mc.r } };
+    else if (ent.arc) pk = { arc: { c: ent.ma.c.slice(), r: ent.ma.r, a0: ent.ma.a0, a1: ent.ma.a1 } };
+    else pk = { edge: [ent.la.slice(), ent.lb.slice()] };
+    return { view: ent.view, w: w0, pick: pk, at: p, hl: ent };
+  }
+  function samePick(a, b) { return a && b && a.view === b.view && JSON.stringify(a.pick) === JSON.stringify(b.pick); }
+  // Shift on a circle pick: min when the side clicked is nearer the other pick than the centre is, else max
+  function minmaxOf(P) {
+    var cp = [P.first, P.second].filter(function (x) { return x && x.shift && (x.pick.circle || x.pick.arc); })[0];
+    if (!cp || !P.second) return null;
+    var other = cp === P.first ? P.second : P.first, w = cp.w, c = (cp.pick.circle || cp.pick.arc).c, clk = w.fromSheet(cp.at);
+    var op = other.pick.edge ? null : other.pick.point || (other.pick.center || other.pick.circle || other.pick.arc).c;
+    function dist(q) {
+      if (op) return Math.hypot(q[0] - op[0], q[1] - op[1]);
+      var e = other.pick.edge, t = [e[1][0] - e[0][0], e[1][1] - e[0][1]], L = Math.hypot(t[0], t[1]) || 1;
+      return Math.abs((q[0] - e[0][0]) * t[1] - (q[1] - e[0][1]) * t[0]) / L;
+    }
+    return dist(clk) < dist(c) ? 'min' : 'max';
+  }
+  // the dimension the picks and the pointer make now (null: not enough picks)
+  function smartSpec(P, p) {
+    if (!P || !P.first) return null;
+    var w = P.first.w;
+    return Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P) });
+  }
+  function smartDimClick(p, e) {
+    var P = D.pending, hit;
+    if (!P || !P.first) {
+      hit = pickAt(p);
+      if (!hit) { UI.setStatus('Smart Dimension: click a visible edge, circle, arc, vertex or circle centre of an orthographic view.'); return; }
+      // the previous dimension's PropertyManager closes, keeping its edits, as the next one starts
+      if (UI.hasPM && UI.hasPM() && $('app').classList.contains('dw-pm')) { D.sdNext = true; try { UI.pmOK(); } finally { D.sdNext = false; } D.tool = 'dim'; }
+      hit.shift = !!(e && e.shiftKey);
+      D.pending = { view: hit.view, first: hit, second: null, at: p };
+      D.hover = null; drawOverlay(); UI.refreshRibbon();
+      UI.setStatus(hit.pick.point || hit.pick.center ? 'Smart Dimension: click a second item (a point, a centre, a circle or an edge). Esc cancels.'
+        : 'Smart Dimension: click where the dimension goes, or a second item (distance or angle). Esc cancels.');
+      return;
+    }
+    if (!P.second) {
+      hit = pickAt(p, P.view);
+      if (hit && !samePick(hit, P.first)) {
+        hit.shift = !!(e && e.shiftKey);
+        var trial = Drawing.smartDim(P.first.pick, hit.pick, null, {});
+        if (trial) {
+          P.second = hit; P.at = p; drawOverlay();
+          UI.setStatus('Smart Dimension: click where the dimension goes (' + (trial.kind === 'angle' ? 'angle' : 'distance') + '). Esc cancels.');
+          return;
+        }
+      }
+    }
+    var w = P.first.w, spec = smartSpec(P, p);
+    if (!spec) { UI.setStatus('Smart Dimension: a point needs a second item to measure to. Esc cancels.'); return; }
+    var index = -1;
+    edit(function (dc) {
+      var v = Drawing.findView(dc, P.view);
+      if (!v) return;
+      v.dims = (v.dims || []).concat([spec]);
+      index = v.dims.length - 1;
+    });
+    D.pending = null; D.hover = null;
+    if (index < 0) return;
+    var ref = { kind: 'dim', view: P.view, key: null, index: index };
+    D.sel = ref;
+    var sd = sheetDim(ref);
+    UI.setStatus('Dimension ' + (sd ? sd.text : '') + ' added to ' + w.view.name + '. Pick the next item, or Esc to end.');
+    // (✓ or Esc on it ends Smart Dimension, as SolidWorks; the next pick closes it with its edits and goes on)
+    if (sd) {
+      cmdDimensionPM(ref, function () { D.sdPM = false; if (!D.sdNext && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); UI.setStatus('Ready'); } });
+      D.sdPM = true;
+    }
+    D.tool = 'dim'; drawOverlay(); UI.refreshRibbon();
+    return spec;
+  }
+  // Esc while the placed dimension's PropertyManager is open: close it and end Smart Dimension (before the drawing's
+  // own key handler, which leaves Esc to an open PropertyManager)
+  window.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || !D.active || !D.sdPM || D.tool !== 'dim' || !(UI.hasPM && UI.hasPM())) return;
+    var tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    UI.pmCancel();
+    if (D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); }
+    drawOverlay();
+  }, true);
+  // the pointer over the sheet while the tool runs: what the next click picks, and the preview
+  function smartDimMove(q, e) {
+    var P = D.pending;
+    if (P && P.first) { P.at = q; P.shiftNow = !!(e && e.shiftKey); }
+    var hit = pickAt(q, P && P.first ? P.view : null);
+    D.hover = hit ? (hit.hl.pt ? { kind: 'dimpt', view: hit.view, pt: hit.hl.pt } : hit.hl) : null;
+    drawOverlay();
+  }
+  // drawOverlay's part: the picked items, the point under the pointer, and the dimension as it would be placed
+  function smartDimOverlay(g, H, svgNode) {
+    var P = D.pending, col = { stroke: '#1a73e8', fill: 'none' }, sw = pxToPaper(1.4);
+    function dot(q, r) { svgNode('circle', { class: 'dw-hot', cx: q[0], cy: H - q[1], r: r || pxToPaper(4), 'stroke-width': pxToPaper(2) }, g); }
+    if (D.hover && D.hover.kind === 'dimpt') dot(D.hover.pt, pxToPaper(5));
+    if (!P || !P.first) return;
+    [P.first, P.second].forEach(function (x) {
+      if (!x) return;
+      var h = x.hl;
+      if (h.pt) dot(h.pt);
+      else if (h.circle) svgNode('circle', { class: 'dw-hot', cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': pxToPaper(3) }, g);
+      else if (h.arc) svgNode('circle', { class: 'dw-hot', cx: h.arc.c[0], cy: H - h.arc.c[1], r: h.arc.r, 'stroke-width': pxToPaper(2) }, g);
+      else if (h.a) svgNode('line', { class: 'dw-hot', x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': pxToPaper(3) }, g);
+    });
+    if (!P.at) return;
+    var d = smartSpec(P, P.at);
+    if (!d) return;
+    var w = P.first.w, k = paperK(), th = 3.5 * k, u = units(), text;
+    if (d.kind === 'angle') text = Math.round(d.value * 100) / 100 + '°'; else text = Drawing.dimText(d, u);
+    function ln(a, b) { svgNode('line', { x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], stroke: col.stroke, 'stroke-width': sw, class: 'dw-sdprev' }, g); }
+    function tx(q) { var t = svgNode('text', { x: q[0], y: H - q[1], 'font-size': th / 0.72, 'text-anchor': 'middle', fill: col.stroke, class: 'dw-sdprev' }, g); t.textContent = text; }
+    var A, B;
+    if (d.kind === 'h' || d.kind === 'v') {
+      A = w.toSheet(d.a); B = w.toSheet(d.b);
+      var hz = d.kind === 'h', pos = hz ? P.at[1] : P.at[0];
+      var A2 = hz ? [A[0], pos] : [pos, A[1]], B2 = hz ? [B[0], pos] : [pos, B[1]];
+      ln(A, A2); ln(B, B2); ln(A2, B2);
+      tx(hz ? [(A2[0] + B2[0]) / 2, pos + 1 * k] : [pos, (A2[1] + B2[1]) / 2 + 1 * k]);
+    } else if (d.kind === 'aligned') {
+      A = w.toSheet(d.a); B = w.toSheet(d.b);
+      var t = [B[0] - A[0], B[1] - A[1]], L = Math.hypot(t[0], t[1]) || 1, n = [-t[1] / L, t[0] / L], o = d.off || 0;
+      var A3 = [A[0] + n[0] * o, A[1] + n[1] * o], B3 = [B[0] + n[0] * o, B[1] + n[1] * o];
+      ln(A, A3); ln(B, B3); ln(A3, B3); tx([(A3[0] + B3[0]) / 2, (A3[1] + B3[1]) / 2 + 1 * k]);
+    } else if (d.kind === 'dia' || d.kind === 'rad') {
+      var c = w.toSheet(d.c), r = d.r * w.scale, v = [P.at[0] - c[0], P.at[1] - c[1]], vl = Math.hypot(v[0], v[1]) || 1;
+      ln([c[0] + v[0] / vl * r, c[1] + v[1] / vl * r], P.at); tx([P.at[0], P.at[1] + 1 * k]);
+    } else if (d.kind === 'angle') {
+      d.text = text;
+      Drawing._anglePrims(d, w, k).forEach(function (x) {
+        if (x.k === 'line') ln(x.a, x.b);
+        else if (x.k === 'arc') {
+          var a0 = x.a0 * Math.PI / 180, a1 = x.a1 * Math.PI / 180, s = [x.c[0] + x.r * Math.cos(a0), x.c[1] + x.r * Math.sin(a0)], e2 = [x.c[0] + x.r * Math.cos(a1), x.c[1] + x.r * Math.sin(a1)];
+          svgNode('path', { d: 'M' + s[0] + ' ' + (H - s[1]) + ' A' + x.r + ' ' + x.r + ' 0 0 0 ' + e2[0] + ' ' + (H - e2[1]), fill: 'none', stroke: col.stroke, 'stroke-width': sw, class: 'dw-sdprev' }, g);
+        } else if (x.k === 'text') tx([x.p[0], x.p[1]]);
+      });
+    }
   }
   function cmdModelItems() {
     edit(function (dc) { dc.autoDims = !dc.autoDims; if (dc.autoDims) dc.suppressed = []; });
@@ -452,10 +631,34 @@
         var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
         [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']].forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === ver) op.selected = true; sel.appendChild(op); });
         sel.onchange = function () { exportAs('dxf', { version: sel.value }); };
-        ta.parentNode.insertBefore(el('p', {}, [el('label', { text: 'Version ' }), sel]), ta);
+        // (rfS) the same sheet as DWG, through the local server's converter
+        var dwgBtn = el('button', { id: 'dw-save-dwg', type: 'button', text: 'Save as DWG…', title: 'Converts the R2000 DXF of this sheet to DWG on the local server' });
+        dwgBtn.onclick = function () { exportAs('dwg'); };
+        ta.parentNode.insertBefore(el('p', {}, [el('label', { text: 'Version ' }), sel, el('span', { text: '  ' }), dwgBtn]), ta);
       }
     }
+    else if (kind === 'dwg') return saveDWG(sh);
     else if (kind === 'pdf') UI.exportDialog('Save Drawing as PDF', safeName() + '.pdf', Drawing.toPDF(sh), 'application/pdf');
+  }
+  // (rfS) File ▸ Save Drawing as DWG: the active sheet's R2000 DXF, converted by the local server (POST api/dxf2dwg, as
+  // the part's DXF/DWG Output does); without a converter (or the published copy, which has no server) the part path's
+  // message. Returns a promise of { name, bytes } (null when nothing was saved).
+  var DWG_NOTE = 'DWG needs the local server\'s converter (anvil/vendor/get-libredwg.ps1, or install the free ODA File Converter)';
+  function saveDWG(sh) {
+    var text = Drawing.toDXF(sh, { version: 'R2000' }), name = safeName() + '.dwg';
+    if (document.getElementById('modal') && !$('modal').hidden) UI.closeModal();
+    var probe = UI.dwgConverter ? UI.dwgConverter() : Promise.resolve(null);
+    UI.setStatus('Save Drawing as DWG: checking for the converter…');
+    return probe.then(function (conv) {
+      if (!conv || !UI.dxfToDwg) { UI.toast(DWG_NOTE); UI.setStatus('DWG: ' + DWG_NOTE + '. Save as DXF (R2000) instead.'); D.lastDwg = { ok: false, note: DWG_NOTE }; return null; }
+      UI.setStatus('Converting ' + name + '…');
+      return UI.dxfToDwg(text).then(function (bytes) {
+        UI.download(name, bytes, 'application/acad');
+        UI.setStatus('Saved ' + name + ' (' + (bytes.byteLength / 1024).toFixed(1) + ' KB).');
+        D.lastDwg = { ok: true, name: name, size: bytes.byteLength };
+        return { name: name, bytes: bytes };
+      }, function (e) { var m = e && e.message || String(e); UI.toast(m); UI.setStatus('DWG: ' + m); D.lastDwg = { ok: false, note: m }; return null; });
+    });
   }
   function viewMenu(v) {
     if (v.kind === 'flat') {
@@ -496,7 +699,7 @@
       { label: 'Properties\u2026', action: cmdSheetProperties },
       { label: 'Standard 3 View', action: cmdStandard3View },
       { label: 'Model View\u2026', action: cmdModelView },
-      { label: 'Model Items', checked: !!(doc() && doc().autoDims), action: cmdModelItems },
+      { label: 'Model Items…', checked: !!(doc() && doc().autoDims), action: function () { if (DW.cmdModelItemsPM) DW.cmdModelItemsPM(); else cmdModelItems(); } },
       { label: 'Document Properties\u2026', action: cmdDocProps },
       { sep: true },
       { label: 'Zoom to Fit', key: 'F', action: fitSheet }
@@ -955,7 +1158,7 @@
   // Dimension PropertyManager (double-click a dimension): Primary Value (a model item's value drives the part),
   // Tolerance/Precision (None, Bilateral, Limit, Symmetric; decimals), Dimension Text (<DIM> is the value), Leaders (flip)
   var PREC_OPTIONS = [['auto', 'Document default'], ['0', '1'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234']];
-  function cmdDimensionPM(ref) {
+  function cmdDimensionPM(ref, onClose) {
     var d = sheetDim(ref);
     if (!d) return;
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
@@ -963,7 +1166,7 @@
     var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
-      : [{ type: 'static', label: 'Value', value: single ? Drawing.numText(d.value, u) + ' ' + u + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
+      : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
     openDrawingPM({
       title: 'Dimension', icon: 'dim', command: 'dimension',
       message: src ? 'A model item: a new value changes ' + src.featureName + ' and rebuilds the part.' : d.auto ? 'A model item. Its text, tolerance and arrows can be edited here.' : 'A reference dimension: it follows the model; text, tolerance and arrows can be edited here.',
@@ -979,7 +1182,7 @@
         { title: 'Dimension Text', fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
         { title: 'Leaders', fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
       ],
-      onOK: function (v) { return applyDimensionPM(d, src, v); }
+      onOK: function (v) { return applyDimensionPM(d, src, v); }, onClose: onClose
     });
   }
   function dimPropsFromPM(v) {
@@ -1242,6 +1445,11 @@
       props.off = (d.offNow || 0) + dx * n0[0] + dy * n0[1]; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx * tt[0] + dy * tt[1];
     } else if (d.kind === 'dia' || d.kind === 'rad' || d.kind === 'chamfer') props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];
     else if (d.kind === 'ordinate' || d.kind === 'baseline') props.at = d.lineAt + (d.dir === 'v' ? dx : dy) / w.scale;
+    else if (d.kind === 'angle' && d.c) {
+      // (rfS) the arc moves in or out with the pointer, along the line from the vertex to where the drag started
+      var vc = w.toSheet(d.c), um = [dg.start[0] - vc[0], dg.start[1] - vc[1]], ul = Math.hypot(um[0], um[1]) || 1;
+      props.rad = Math.max(1e-9, ((d.radNow || d.rad || 0) * w.scale + (dx * um[0] + dy * um[1]) / ul) / w.scale);
+    }
     if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) props.tx = null; }
     var hadGuide = !!D.snapGuide;
     if (!dg.noSnap) snapDim(d, w, props); else D.snapGuide = null;
@@ -1383,6 +1591,7 @@
         out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
         out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop'; } });
       }
+      if (b.id === 'dxfExport') out.push({ id: 'dwgExport', label: 'Save as\nDWG', run: function () { exportAs('dwg'); } });   // (rfS)
     });
     Object.defineProperty(out, '_rfN', { value: true });
     return out;
@@ -1393,6 +1602,12 @@
     var g = function (menus) {
       var m = f(menus);
       (m || []).forEach(function (menu) {
+        // (rfS) File ▸ Save Drawing as DWG… after the DXF entry (a drawing document's File menu only)
+        if (menu && menu.label === 'File' && Array.isArray(menu.items) && D.active) {
+          var fi = [];
+          menu.items.forEach(function (it) { fi.push(it); if (it && it.label === 'Save Drawing as DXF…') fi.push({ label: 'Save Drawing as DWG…', action: function () { DW.exportAs('dwg'); } }); });
+          menu.items = fi;
+        }
         if (!menu || menu.label !== 'Insert' || !Array.isArray(menu.items)) return;
         var items = [];
         menu.items.forEach(function (it) {
@@ -1422,9 +1637,21 @@
     api.crop = function (viewId, region) { return doc() && tryEdit(function (dc) { Drawing.setCrop(dc, viewId, region == null ? null : region); }) ? api.summary() : null; };
     api.breakView = function (viewId, opts) { return doc() && tryEdit(function (dc) { Drawing.addBreak(dc, viewId, opts || {}); }) ? api.summary() : null; };
     api.unbreak = function (viewId) { return doc() && tryEdit(function (dc) { Drawing.clearBreaks(dc, viewId); }) ? api.summary() : null; };
+    // (rfS) smartDim(viewId, pick1, pick2 | null, at, { minmax }) -> the dimension added (Drawing.smartDim picks, view
+    // model units), one undo step; dwg() -> a promise of { name, bytes } or null (no converter: the message is shown)
+    api.smartDim = function (viewId, p1, p2, at, opts) {
+      if (!doc()) return null;
+      var w = sheetView(viewId), o = Object.assign({ scale: w ? w.scale : 1 }, opts || {}), d = Drawing.smartDim(p1, p2 || null, at || null, o);
+      if (!d) return null;
+      edit(function (dc) { var v = Drawing.findView(dc, viewId); if (v) v.dims = (v.dims || []).concat([d]); });
+      var v2 = Drawing.findView(doc(), viewId), sd = v2 && sheetDim({ kind: 'dim', view: viewId, key: null, index: v2.dims.length - 1 });
+      return sd ? { kind: sd.kind, value: sd.value, text: sd.text, index: sd.index, view: viewId } : null;
+    };
+    api.dwg = function () { if (!doc()) return Promise.resolve(null); settle(); if (!D.sheet) render(); return saveDWG(D.sheet); };
     Object.defineProperty(api, '_rfN', { value: true });
     return api;
   });
+  DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;
   DW.cmdProjectedView = cmdProjectedView; DW.projectPlacement = projectPlacement; DW.projectClick = projectClick; DW.cmdSectionView = cmdSectionView; DW.sectionLineAt = sectionLineAt;

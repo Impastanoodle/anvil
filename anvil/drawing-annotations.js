@@ -414,8 +414,241 @@
       chamferValue(d);
       return ok2;
     }
+    if (d.refs && d.refs.length === 2) {
+      // (rfS) a Smart Dimension between two picks: reattach each, then measure again
+      var okR = d.refs.map(function (r) { return reattachRef(r, pr); }).every(Boolean);
+      if (okR) { delete d.dangling; measurePair(d); } else d.dangling = true;
+      return okR;
+    }
     return reattachDim(d, pr);
   }
+  // (rfS) one reference of a two-pick dimension: a circle / arc (by centre and radius), an edge, or a point (a vertex:
+  // the nearest end of a visible edge or circle centre within a thousandth of the view size, else it is gone)
+  function reattachRef(r, pr) {
+    if (r.kind === 'pt') {
+      var b = pr.bounds, tol = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)) * 1e-3, best = null, bd = tol;
+      (pr.all || []).forEach(function (m) { [[m[0], m[1]], [m[2], m[3]]].forEach(function (q) { var dd = Math.hypot(q[0] - r.p[0], q[1] - r.p[1]); if (dd <= bd) { bd = dd; best = q; } }); });
+      (pr.circlesAll || []).concat(pr.arcsAll || []).forEach(function (c) { var dd = Math.hypot(c.c[0] - r.p[0], c.c[1] - r.p[1]); if (dd <= bd) { bd = dd; best = c.c.slice(); } });
+      if (!best) return false;
+      r.p = best.slice();
+      return true;
+    }
+    if (r.kind === 'arc') { var ra = { kind: 'rad', c: r.c, r: r.r, a0: r.a0, a1: r.a1 }, ok = reattachDim(ra, pr); if (ok) { r.c = ra.c; r.r = ra.r; } return ok; }
+    if (r.kind === 'dia') { var rc = { kind: 'dia', c: r.c, r: r.r }, ok2 = reattachDim(rc, pr); if (ok2) { r.c = rc.c; r.r = rc.r; } return ok2; }
+    var re = { kind: r.kind, a: r.a, b: r.b, value: r.value }, ok3 = reattachDim(re, pr);
+    if (ok3) { r.a = re.a; r.b = re.b; r.value = re.value; }
+    return ok3;
+  }
+
+  // ------------------------------------------------------------------ rfS: Smart Dimension from picks
+  // SolidWorks' drawing Smart Dimension: the first pick, an optional second pick, then a placement click; the kind
+  // follows the picks and where the pointer is. A pick (view model units, the view's 2D frame):
+  //   { edge: [a, b] } | { circle: { c, r } } | { arc: { c, r, a0, a1 } } | { point: [x, y] } (a vertex / end point)
+  //   | { center: { c, r } } (a circle's or an arc's centre)
+  // smartDim(p1, p2 | null, at (the placement point, view model units), { scale (paper per model unit), minmax:
+  // 'min' | 'max' (Shift: circle to circle / edge, nearest or farthest sides) }) -> a view dimension (h, v, aligned,
+  // dia, rad, angle), or null when the picks make none. One pick: an edge's length (horizontal / vertical / aligned by
+  // where the pointer is, an oblique edge), a circle's Ø, an arc's R. Two picks: point / centre / circle to point
+  // (point to point, centre to centre: horizontal / vertical / aligned by the pointer), to an edge (the perpendicular
+  // distance), two parallel edges (their distance), two edges at an angle (the angle in the pointer's quadrant).
+  // A two-pick dimension keeps its references (d.refs: { kind: 'pt', p } | { kind: 'dia' | 'arc', c, r } | an edge
+  // { kind: 'h' | 'v' | 'aligned', a, b }) and is measured again from them when the part changes (measurePair).
+  function pickRef(pk) {
+    if (pk.edge) return refFrom({ a: pk.edge[0], b: pk.edge[1] });
+    if (pk.circle) return { kind: 'dia', c: [+pk.circle.c[0], +pk.circle.c[1]], r: +pk.circle.r };
+    if (pk.arc) return { kind: 'arc', c: [+pk.arc.c[0], +pk.arc.c[1]], r: +pk.arc.r, a0: pk.arc.a0, a1: pk.arc.a1 };
+    if (pk.center) return { kind: 'pt', p: [+pk.center.c[0], +pk.center.c[1]], center: true };
+    if (pk.point) return { kind: 'pt', p: [+pk.point[0], +pk.point[1]] };
+    return null;
+  }
+  function isEdgeRef(r) { return r.kind === 'h' || r.kind === 'v' || r.kind === 'aligned'; }
+  function refPt(r) { return r.kind === 'pt' ? r.p : r.c; }
+  // the kind of a linear dimension between points a and b with the pointer at `at`: horizontal when it is above or
+  // below them, vertical when it is beside them, aligned otherwise (a horizontal / vertical pair is always h / v)
+  function linKind(a, b, at) {
+    var dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]), L = Math.hypot(dx, dy), tol = Math.max(1e-12, L * 1e-9);
+    if (dy <= tol) return 'h';
+    if (dx <= tol) return 'v';
+    if (!at) return 'aligned';
+    var inX = at[0] > Math.min(a[0], b[0]) && at[0] < Math.max(a[0], b[0]), inY = at[1] > Math.min(a[1], b[1]) && at[1] < Math.max(a[1], b[1]);
+    if (inX && !inY) return 'h';
+    if (inY && !inX) return 'v';
+    return 'aligned';
+  }
+  function unit(v) { var L = Math.hypot(v[0], v[1]) || 1; return [v[0] / L, v[1] / L]; }
+  // measurePair(d): d.a, d.b, d.value (an angle's c, u, value too) from d.refs, d.kind and d.minmax
+  function measurePair(d) {
+    var r1 = d.refs[0], r2 = d.refs[1];
+    if (d.kind === 'angle') {
+      var t1 = unit([r1.b[0] - r1.a[0], r1.b[1] - r1.a[1]]), t2 = unit([r2.b[0] - r2.a[0], r2.b[1] - r2.a[1]]), cr = t1[0] * t2[1] - t1[1] * t2[0];
+      if (Math.abs(cr) < 1e-9) { d.dangling = true; return d; }
+      var w = [r2.a[0] - r1.a[0], r2.a[1] - r1.a[1]], s = (w[0] * t2[1] - w[1] * t2[0]) / cr;
+      d.c = [r1.a[0] + t1[0] * s, r1.a[1] + t1[1] * s];
+      var s1 = d.s ? d.s[0] : 1, s2 = d.s ? d.s[1] : 1, u1 = [t1[0] * s1, t1[1] * s1], u2 = [t2[0] * s2, t2[1] * s2];
+      d.u = [u1, u2];
+      d.value = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1]))) * 180 / Math.PI;
+      d.a = d.c.slice(); d.b = [d.c[0] + u1[0], d.c[1] + u1[1]];
+      return d;
+    }
+    var e1 = isEdgeRef(r1), e2 = isEdgeRef(r2);
+    if (e1 && e2) {
+      // two parallel edges: from the first edge's end nearest the second's middle, square to the second
+      var t = unit([r2.b[0] - r2.a[0], r2.b[1] - r2.a[1]]), m2 = [(r2.a[0] + r2.b[0]) / 2, (r2.a[1] + r2.b[1]) / 2];
+      var pa = Math.hypot(r1.a[0] - m2[0], r1.a[1] - m2[1]) <= Math.hypot(r1.b[0] - m2[0], r1.b[1] - m2[1]) ? r1.a : r1.b;
+      return pointToEdge(d, pa.slice(), r2, t);
+    }
+    if (e1 || e2) {
+      var er = e1 ? r1 : r2, pr0 = e1 ? r2 : r1, p = refPt(pr0).slice(), te = unit([er.b[0] - er.a[0], er.b[1] - er.a[1]]);
+      // Shift (min / max): a circle's nearest / farthest side from the edge
+      if (pr0.r && d.minmax) {
+        var nrm = [-te[1], te[0]], sd = (p[0] - er.a[0]) * nrm[0] + (p[1] - er.a[1]) * nrm[1], sg = (sd >= 0 ? 1 : -1) * (d.minmax === 'min' ? -1 : 1);
+        p = [p[0] + nrm[0] * pr0.r * sg, p[1] + nrm[1] * pr0.r * sg];
+      }
+      return pointToEdge(d, p, er, te, e1);
+    }
+    var A = refPt(r1).slice(), B = refPt(r2).slice();
+    if (d.minmax && (r1.r || r2.r)) {
+      // circle to circle (or to a point), Shift: the nearest / farthest sides along what the dimension measures
+      var dir = d.kind === 'h' ? [B[0] >= A[0] ? 1 : -1, 0] : d.kind === 'v' ? [0, B[1] >= A[1] ? 1 : -1] : unit([B[0] - A[0], B[1] - A[1]]), sgn = d.minmax === 'min' ? 1 : -1;
+      if (r1.r) A = [A[0] + dir[0] * r1.r * sgn, A[1] + dir[1] * r1.r * sgn];
+      if (r2.r) B = [B[0] - dir[0] * r2.r * sgn, B[1] - dir[1] * r2.r * sgn];
+    }
+    d.a = A; d.b = B;
+    d.value = d.kind === 'h' ? Math.abs(B[0] - A[0]) : d.kind === 'v' ? Math.abs(B[1] - A[1]) : Math.hypot(B[0] - A[0], B[1] - A[1]);
+    return d;
+  }
+  // a point to an edge's line: a horizontal edge -> a vertical dimension to the edge's nearer end, a vertical edge -> a
+  // horizontal one, an oblique edge -> aligned, square to it (to the foot on its line). edgeFirst: the edge is d.a.
+  function pointToEdge(d, p, er, te, edgeFirst) {
+    var q;
+    if (d.kind === 'h' || d.kind === 'v') q = Math.hypot(er.a[0] - p[0], er.a[1] - p[1]) <= Math.hypot(er.b[0] - p[0], er.b[1] - p[1]) ? er.a.slice() : er.b.slice();
+    else { var s = (p[0] - er.a[0]) * te[0] + (p[1] - er.a[1]) * te[1]; q = [er.a[0] + te[0] * s, er.a[1] + te[1] * s]; }
+    d.a = edgeFirst ? q : p.slice(); d.b = edgeFirst ? p.slice() : q;
+    d.value = d.kind === 'h' ? Math.abs(q[0] - p[0]) : d.kind === 'v' ? Math.abs(q[1] - p[1]) : Math.hypot(q[0] - p[0], q[1] - p[1]);
+    return d;
+  }
+  function smartDim(p1, p2, at, opts) {
+    opts = opts || {};
+    var sc = +opts.scale > 0 ? +opts.scale : 1, r1 = p1 && pickRef(p1), r2 = p2 && pickRef(p2), d;
+    if (!r1) return null;
+    if (!r2) {
+      if (r1.kind === 'dia' || r1.kind === 'arc') {
+        d = r1.kind === 'dia' ? { kind: 'dia', c: r1.c.slice(), r: r1.r, count: 1, value: 2 * r1.r } : { kind: 'rad', c: r1.c.slice(), r: r1.r, a0: r1.a0, a1: r1.a1, count: 1, value: r1.r };
+        if (at && Math.hypot(at[0] - r1.c[0], at[1] - r1.c[1]) > r1.r * 1.05) d.lead = [(at[0] - r1.c[0]) * sc, (at[1] - r1.c[1]) * sc];
+        return d;
+      }
+      if (!isEdgeRef(r1)) return null;   // a point alone measures nothing
+      var a = r1.a.slice(), b = r1.b.slice(), k1 = linKind(a, b, at);
+      d = { kind: k1, a: a, b: b, value: k1 === 'h' ? Math.abs(b[0] - a[0]) : k1 === 'v' ? Math.abs(b[1] - a[1]) : Math.hypot(b[0] - a[0], b[1] - a[1]) };
+      return placeLinear(d, at, sc);
+    }
+    var e1 = isEdgeRef(r1), e2 = isEdgeRef(r2);
+    d = { refs: [r1, r2] };
+    if (opts.minmax === 'min' || opts.minmax === 'max') d.minmax = opts.minmax;
+    if (e1 && e2) {
+      var t1 = unit([r1.b[0] - r1.a[0], r1.b[1] - r1.a[1]]), t2 = unit([r2.b[0] - r2.a[0], r2.b[1] - r2.a[1]]), cr = t1[0] * t2[1] - t1[1] * t2[0];
+      delete d.minmax;
+      if (Math.abs(cr) > 1e-6) {
+        // an angle: the quadrant the pointer is in picks the sides of the two lines
+        d.kind = 'angle';
+        measurePair(d);
+        if (at) {
+          var w = [at[0] - d.c[0], at[1] - d.c[1]], al = (w[0] * t2[1] - w[1] * t2[0]) / cr, be = (t1[0] * w[1] - t1[1] * w[0]) / cr;
+          d.s = [al < 0 ? -1 : 1, be < 0 ? -1 : 1];
+          d.rad = Math.hypot(w[0], w[1]);
+          measurePair(d);
+        }
+        if (!(d.rad > 0)) d.rad = Math.hypot(r1.b[0] - r1.a[0], r1.b[1] - r1.a[1]) / 2;
+        return d;
+      }
+      d.kind = Math.abs(t2[1]) < 1e-9 ? 'v' : Math.abs(t2[0]) < 1e-9 ? 'h' : 'aligned';
+    } else if (e1 || e2) {
+      var er = e1 ? r1 : r2, te = unit([er.b[0] - er.a[0], er.b[1] - er.a[1]]);
+      d.kind = Math.abs(te[1]) < 1e-9 ? 'v' : Math.abs(te[0]) < 1e-9 ? 'h' : 'aligned';
+    } else {
+      if (Math.hypot(refPt(r1)[0] - refPt(r2)[0], refPt(r1)[1] - refPt(r2)[1]) < 1e-12) return null;
+      d.kind = linKind(refPt(r1), refPt(r2), at);
+    }
+    measurePair(d);
+    if (!(d.value > 1e-12)) return null;
+    return placeLinear(d, at, sc);
+  }
+  // where a linear dimension's line goes: through the pointer (h: d.at is its v, v: its u; aligned: d.off, paper)
+  function placeLinear(d, at, sc) {
+    if (!at) return d;
+    if (d.kind === 'h') { d.at = at[1]; d.side = at[1] >= (d.a[1] + d.b[1]) / 2 ? 1 : -1; }
+    else if (d.kind === 'v') { d.at = at[0]; d.side = at[0] >= (d.a[0] + d.b[0]) / 2 ? 1 : -1; }
+    else if (d.kind === 'aligned') {
+      var t = unit([d.b[0] - d.a[0], d.b[1] - d.a[1]]), n = [-t[1], t[0]], o = ((at[0] - d.a[0]) * n[0] + (at[1] - d.a[1]) * n[1]) * sc;
+      if (Math.abs(o) > 1e-9) d.off = o;
+    }
+    return d;
+  }
+  // addSmartDim(doc, viewId, p1, p2, at, opts) -> the dimension added to the view (null: the picks make none)
+  function addSmartDim(doc, viewId, p1, p2, at, opts) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    var d = smartDim(p1, p2, at, opts);
+    if (!d) return null;
+    (v.dims || (v.dims = [])).push(d);
+    return d;
+  }
+  // an angle dimension's paper primitives (drawing-render.js draws none for it): the arc through the pointer's place
+  // between the two lines, arrows at its ends, extension lines where the edges stop short of it, the text outside the
+  // arc's middle. Fills d.box, d.tbox, d.arrows as the renderer does for the others.
+  function anglePrims(d, w, k) {
+    var out = [], L = 'DIMENSIONS', th = 3.5 * k, ar = 3 * k, aw = 0.5 * k, gapE = 1.5 * k, ext = 2 * k;
+    var V0 = w.toSheet(d.c), R = Math.max(6 * k, (d.rad || 0) * w.scale);
+    function dirOf(u) { var q = w.toSheet([d.c[0] + u[0], d.c[1] + u[1]]); return unit([q[0] - V0[0], q[1] - V0[1]]); }
+    var q1 = dirOf(d.u[0]), q2 = dirOf(d.u[1]), th1 = Math.atan2(q1[1], q1[0]), th2 = Math.atan2(q2[1], q2[0]);
+    var sw = th2 - th1; while (sw < 0) sw += 2 * Math.PI; while (sw >= 2 * Math.PI) sw -= 2 * Math.PI;
+    var a0 = th1;
+    if (sw > Math.PI) { a0 = th2; sw = 2 * Math.PI - sw; }
+    out.push({ k: 'arc', c: V0, r: R, a0: a0 * 180 / Math.PI, a1: (a0 + sw) * 180 / Math.PI, layer: L, style: 'thin' });
+    function arrow(tip, dir) {
+      var n = [-dir[1], dir[0]];
+      out.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * ar + n[0] * aw, tip[1] - dir[1] * ar + n[1] * aw], [tip[0] - dir[0] * ar - n[0] * aw, tip[1] - dir[1] * ar - n[1] * aw]], layer: L });
+    }
+    var tA = [V0[0] + R * Math.cos(a0), V0[1] + R * Math.sin(a0)], tB = [V0[0] + R * Math.cos(a0 + sw), V0[1] + R * Math.sin(a0 + sw)];
+    arrow(tA, [Math.sin(a0), -Math.cos(a0)]); arrow(tB, [-Math.sin(a0 + sw), Math.cos(a0 + sw)]);
+    // extension lines: along each line from where its edge ends to just past the arc
+    d.refs.forEach(function (r, i) {
+      var q = i === 0 ? q1 : q2, A = w.toSheet(r.a), B = w.toSheet(r.b);
+      var ta = (A[0] - V0[0]) * q[0] + (A[1] - V0[1]) * q[1], tb = (B[0] - V0[0]) * q[0] + (B[1] - V0[1]) * q[1], lo = Math.min(ta, tb), hi = Math.max(ta, tb);
+      if (R >= lo - 1e-9 && R <= hi + 1e-9) return;
+      var from = R > hi ? hi + gapE : lo - gapE, to = R > hi ? R + ext : R - ext;
+      out.push({ k: 'line', a: [V0[0] + q[0] * from, V0[1] + q[1] * from], b: [V0[0] + q[0] * to, V0[1] + q[1] * to], layer: L, style: 'thin' });
+    });
+    var am = a0 + sw / 2, um = [Math.cos(am), Math.sin(am)], text = String(d.text), tw = text.length * th * 0.78;
+    var reach = R + 1.5 * k + Math.abs(um[0]) * tw / 2 + Math.abs(um[1]) * th / 2, C = [V0[0] + um[0] * reach, V0[1] + um[1] * reach];
+    out.push({ k: 'text', p: [C[0], C[1] - th / 2], h: th, text: text, anchor: 'middle', layer: L, rot: 0 });
+    var bx = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    function grow(p) { bx.x0 = Math.min(bx.x0, p[0]); bx.x1 = Math.max(bx.x1, p[0]); bx.y0 = Math.min(bx.y0, p[1]); bx.y1 = Math.max(bx.y1, p[1]); }
+    grow(tA); grow(tB);
+    for (var i = 1; i < 8; i++) { var ai = a0 + sw * i / 8; grow([V0[0] + R * Math.cos(ai), V0[1] + R * Math.sin(ai)]); }
+    d.tbox = { x0: C[0] - tw / 2, y0: C[1] - th / 2, x1: C[0] + tw / 2, y1: C[1] + th / 2 };
+    grow([d.tbox.x0, d.tbox.y0]); grow([d.tbox.x1, d.tbox.y1]);
+    d.box = bx; d.arrows = [tA, tB]; d.radNow = R / w.scale;
+    return out;
+  }
+  function angleText(d, units) { return d.tol || d.label != null || d.prec != null ? dimLabel(d, units).text : fmtAngle(d.value) + '°'; }
+  // the sheet's angle dimensions get their primitives after the renderer has placed the others (Drawing.compute is
+  // wrapped when drawing-render.js defines it)
+  function finishAngles(sheet) {
+    var k = sheet.units === 'in' ? 1 / 25.4 : 1;
+    (sheet.dims || []).forEach(function (d) {
+      if (d.kind !== 'angle' || !d.u || !d.c) return;
+      var w = (sheet.views || []).filter(function (x) { return x.view.id === d.view; })[0];
+      if (!w) return;
+      d.text = angleText(d, sheet.units);
+      anglePrims(d, w, k).forEach(function (x) { x.view = d.view; if (d.dangling) x.color = 'dangling'; sheet.prims.push(x); });
+    });
+    return sheet;
+  }
+  // (drawing.js _.hook: the wrap applies when drawing-render.js defines compute, with the other hooks)
+  _.hook(D, 'compute', function (base) {
+    return function () { var r = base.apply(this, arguments); if (r && r.dims && r.prims) finishAngles(r); return r; };
+  });
 
   // ------------------------------------------------------------------ dimension text: precision, tolerance, text
   // d.prec (decimal places; default: up to 2 in mm / 3 in inches, trailing zeros dropped), d.tol = { type: 'none' |
@@ -432,6 +665,7 @@
     var prec = d.prec != null && d.prec !== '' ? +d.prec : null, tol = d.tol && d.tol.type && d.tol.type !== 'none' ? d.tol : null;
     function base(x) {
       if (d.kind === 'chamfer') return numText(x, units, prec) + ' X ' + fmtAngle(d.angle) + '°';
+      if (d.kind === 'angle') return (prec != null ? (+x).toFixed(prec) : fmtAngle(x)) + '°';   // (rfS)
       if (d.kind === 'dia') return (d.count > 1 ? d.count + 'X ' : '') + 'Ø' + numText(x, units, prec);
       if (d.kind === 'rad' && d.slot) return D.slotText(d, units, prec);   // a slot callout: W X L SLOT
       if (d.kind === 'rad') return (d.count > 1 ? d.count + 'X ' : '') + 'R' + numText(x, units, prec);
@@ -467,7 +701,7 @@
   }
   // the dimension properties the Dimension PropertyManager edits; a model item keeps them in doc.dimProps under
   // styleKey (view:kind:n, stable when the part changes size), a Smart Dimension on itself
-  var DIM_PROPS = ['at', 'tx', 'lead', 'off', 'flip', 'tol', 'prec', 'label'];
+  var DIM_PROPS = ['at', 'tx', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad'];   // (rad: an angle's arc radius, rfS)
   function styleKey(d, n) { return d.view + ':' + d.kind + ':' + n; }
   function setDimProps(target, props) {
     DIM_PROPS.forEach(function (k) {
@@ -1200,5 +1434,6 @@
 
   D.addNote = addNote; D.followViews = followViews; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
   D.holeSizeNames = holeSizeNames;
+  D.smartDim = smartDim; D.addSmartDim = addSmartDim; D.measurePair = measurePair; D.finishAngles = finishAngles; D._anglePrims = anglePrims;
   _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);

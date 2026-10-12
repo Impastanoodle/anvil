@@ -15484,6 +15484,208 @@
     });
   })();
   // --- end rfQ ---
+  // --- rfT: Model Items options, ANSI inch dimension style and scales, DIMENSION entities in the R2000 drawing DXF ---
+  (function () {
+    group('rfT: Model Items (flange lengths, hole locations, selected feature / views, no outside bend radius), ANSI inch dimension style, ANSI scales, R2000 DIMENSION entities');
+    if (typeof Drawing === 'undefined') return;
+    var DW = Drawing;
+    var BRACKET = ['p.name("Bracket").units("in");', 'p.sheet(0.0598, 0.0598, 0.44);',
+      'p.sketch("Top").rect(0, -4, 6, 4).end().baseFlange(0.0598);',
+      'p.sketch("Top", 0.0598).circle(1, -1, 0.1405).circle(5, -1, 0.1405).circle(3, -3, 0.25).cut("through", { reverse: true });',
+      'p.flange(1.5, [[0, 0.0598, 2]]);', 'p.flange(1.0, [[6, 0.0598, 2]], { reverse: true });'].join('\n');
+    function rfTDoc(code, opts) {
+      var r = build(code || BRACKET);
+      noErrors(r);
+      r.doc = DW.newDrawing(r.model, Object.assign({ date: '2026-10-12' }, opts || {}));
+      DW.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      r.recompute();
+      r.texts = function () { return r.sheet.dims.map(function (d) { return d.text; }); };
+      return r;
+    }
+    test('rfT: inch drawings use the ANSI scales (8:1 … 1:64, no 1:5 / 1:10); the 6 x 4 bracket goes on ANSI B at 1:1; metric drawings keep the ISO list', function () {
+      var A = DW.scalesFor('in').map(DW.scaleText);
+      assert(A.join() === '8:1,4:1,2:1,1:1,1:2,1:4,1:8,1:16,1:32,1:64', 'ANSI list ' + A.join());
+      assert(DW.scalesFor('mm') === DW.SCALES && DW.SCALES.map(DW.scaleText).indexOf('1:5') >= 0, 'ISO list');
+      var r = rfTDoc();
+      assert(r.doc.sheet.format === 'ANSI B' && DW.scaleText(r.doc.sheet.scale) === '1:1', 'bracket at ' + DW.scaleText(r.doc.sheet.scale));
+      // a 60 x 40 inch plate: 1:8 (no 1:5 / 1:10 on an inch sheet)
+      var big = rfTDoc('p.name("Big").units("in");\np.sketch("Front").rect(0, 0, 60, 40).extrude(1);');
+      assert(DW.scalesFor('in').some(function (s) { return DW.scaleText(s) === DW.scaleText(big.doc.sheet.scale); }), 'big plate on an ANSI scale: ' + DW.scaleText(big.doc.sheet.scale));
+      return DW.scaleText(big.doc.sheet.scale);
+    });
+    test('rfT: the default model items drop the outside bend radius (R.120 = R + T) and keep R.060; the MATERIAL cell is blank when the part has no material', function () {
+      var r = rfTDoc(), t = r.texts();
+      assert(t.indexOf('2X R.060') >= 0 && !t.some(function (x) { return /R\.120/.test(x); }), 'radii ' + t.join(' | '));
+      assert(t.indexOf('1.620') < 0 && t.indexOf('1.000') < 0, 'no flange / hole locations without the PM: ' + t.join(' | '));
+      assert(DW.titleBlock(r.doc, r.model, { build: r.build, mesh: r.mesh }).material === '', 'material blank');
+      r.model.materialName = 'AISI 304';
+      var m = DW.titleBlock(r.doc, r.model, { build: r.build, mesh: r.mesh }).material;
+      return 'material with a name: ' + JSON.stringify(m);
+    });
+    test('rfT: Model Items (doc.modelItems) inserts the flange length 1.620 (R + T + 1.5, outside) in the Front view and the hole locations from the left / bottom edges (1.120, 3.120, 5.120; 1.000, 3.000), one per line of holes; Eliminate duplicates off repeats them', function () {
+      var r = rfTDoc();
+      r.doc.modelItems = { source: 'entire' };
+      var t = r.recompute() && r.texts();
+      ['6.239', '2.679', '4.000', '2X Ø.281', 'Ø.500', '2X R.060', '1.620', '1.120', '3.120', '5.120', '1.000', '3.000'].forEach(function (x) { assert(t.indexOf(x) >= 0, x + ' in ' + t.join(' | ')); });
+      assert(t.filter(function (x) { return x === '1.000'; }).length === 1, 'holes in line share one: ' + t.join(' | '));
+      var fl = r.sheet.dims.filter(function (d) { return d.flange; })[0], front = r.doc.views.filter(function (v) { return v.role === 'front'; })[0];
+      assert(fl && fl.view === front.id && fl.kind === 'v' && Math.abs(fl.value - (1.5 + 2 * 0.0598)) < 1e-9, 'flange item ' + JSON.stringify(fl && { v: fl.view, k: fl.kind, x: fl.value }));
+      r.doc.modelItems = { source: 'entire', dedupe: false };
+      var t2 = r.recompute() && r.texts();
+      assert(t2.filter(function (x) { return x === '3.000'; }).length === 2, 'no dedupe: ' + t2.join(' | '));
+      r.doc.modelItems = { source: 'entire', holeLocations: false, holeCallouts: false };
+      var t3 = r.recompute() && r.texts();
+      assert(t3.indexOf('1.000') < 0 && !t3.some(function (x) { return /Ø/.test(x); }) && t3.indexOf('1.620') >= 0, 'locations and callouts off: ' + t3.join(' | '));
+      return t.length + ' items';
+    });
+    test('rfT: Model Items ▸ Selected feature inserts only that feature\'s dimensions (Edge-Flange1: 1.620; a sketch: its marked distances); Destination limits the views', function () {
+      var r = rfTDoc(), f1 = r.model.features.filter(function (f) { return f.type === 'flange'; })[0];
+      r.doc.modelItems = { source: 'feature', feature: f1.id };
+      var t = r.recompute() && r.texts();
+      assert(t.join() === '1.620', 'flange only: ' + t.join(' | '));
+      var top = r.doc.views.filter(function (v) { return v.role === 'top'; })[0];
+      r.doc.modelItems = { source: 'entire', views: [top.id] };
+      r.recompute();
+      assert(r.sheet.dims.every(function (d) { return d.view === top.id; }) && r.texts().indexOf('2.679') < 0, 'Top only: ' + r.texts().join(' | '));
+      assert(DW.modelItems({}).pm === false && DW.modelItems({ modelItems: { views: [] } }).views === null, 'options');
+      return 'ok';
+    });
+    test('rfT: ANSI inch dimension style: .125 text, .125 x .042 arrows, .0625 gap, .125 beyond; ISO mm keeps 3.5 / 3 x 1 / 1.5 / 2; doc.options override; the R2000 DIMSTYLE carries them', function () {
+      var r = rfTDoc(), z = DW.dimSizes(r.doc);
+      assert(z.dimText === 0.125 && z.arrowLen === 0.125 && z.arrowWidth === 0.042 && z.extGap === 0.0625 && z.extBeyond === 0.125, 'inch ' + JSON.stringify(z));
+      var tx = r.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'DIMENSIONS'; });
+      assert(tx.length && tx.every(function (p) { return Math.abs(p.h - 0.125) < 1e-12; }), 'text .125: ' + tx[0].h);
+      var ar = r.sheet.prims.filter(function (p) { return p.k === 'fill' && p.layer === 'DIMENSIONS'; })[0], L = Math.hypot((ar.pts[1][0] + ar.pts[2][0]) / 2 - ar.pts[0][0], (ar.pts[1][1] + ar.pts[2][1]) / 2 - ar.pts[0][1]), Wd = Math.hypot(ar.pts[1][0] - ar.pts[2][0], ar.pts[1][1] - ar.pts[2][1]);
+      assert(Math.abs(L - 0.125) < 1e-9 && Math.abs(Wd - 0.042) < 1e-9, 'arrow ' + L + ' x ' + Wd);
+      // the overall width below the Front view: its extension lines start .0625 from the part and end .125 past the line
+      var d = r.sheet.dims.filter(function (x) { return x.kind === 'h' && x.text === '6.239'; })[0], vw = r.sheet.views.filter(function (w) { return w.view.id === d.view; })[0];
+      var a = vw.toSheet(d.a), yl = vw.toSheet([0, d.lineAt])[1];
+      var ext = r.sheet.prims.filter(function (p) { return p.k === 'line' && p.dimIx != null && Math.abs(p.a[0] - a[0]) < 1e-9 && Math.abs(p.b[0] - a[0]) < 1e-9; })[0];
+      assert(ext && Math.abs(Math.abs(ext.a[1] - a[1]) - 0.0625) < 1e-9 && Math.abs(Math.abs(ext.b[1] - yl) - 0.125) < 1e-9, 'extension line ' + JSON.stringify(ext));
+      var mm = rfTDoc('p.name("P").units("mm");\np.sketch("Front").rect(0, 0, 100, 50).extrude(10);'), zm = DW.dimSizes(mm.doc);
+      assert(zm.dimText === 3.5 && zm.arrowLen === 3 && zm.arrowWidth === 1 && zm.extGap === 1.5 && zm.extBeyond === 2, 'mm ' + JSON.stringify(zm));
+      assert(mm.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'DIMENSIONS'; }).every(function (p) { return Math.abs(p.h - 3.5) < 1e-12; }), 'mm text 3.5');
+      r.doc.options.dimText = 0.18;
+      r.recompute();
+      assert(Math.abs(r.sheet.prims.filter(function (p) { return p.k === 'text' && p.layer === 'DIMENSIONS'; })[0].h - 0.18) < 1e-12, 'override');
+      var dxf = DW.toDXF(r.sheet, { version: 'R2000' });
+      assert(/\n140\n0\.18\n/.test(dxf) && /\n41\n0\.125\n/.test(dxf) && /\n42\n0\.0625\n/.test(dxf) && /\n44\n0\.125\n/.test(dxf) && /\n78\n4\n/.test(dxf) && /\n271\n3\n/.test(dxf), 'DIMSTYLE');
+      return 'ok';
+    });
+    test('rfT: the R2000 drawing DXF writes each linear / diameter / radius dimension as a DIMENSION with its own *D block (read back by dxf-check: blocks present, DIMSTYLE known); R12 stays exploded', function () {
+      var r = rfTDoc();
+      r.doc.modelItems = { source: 'entire' };
+      r.recompute();
+      var dxf = DW.toDXF(r.sheet, { version: 'R2000' }), c = DxfCheck.check(dxf, { units: 'in', layers: [] });
+      assert(c.ok, 'check ' + c.errors.join('; '));
+      assert(c.dimensions.length === r.sheet.dims.length && c.dimensions.every(function (d) { return d.entities > 0 && /^\*D\d+$/.test(d.block); }), 'dimensions ' + JSON.stringify(c.dimensions.slice(0, 3)));
+      assert(!c.counts['LINE@DIMENSIONS'] && !c.counts['TEXT@DIMENSIONS'], 'no exploded dimension geometry in ENTITIES: ' + JSON.stringify(c.counts));
+      var kinds = {}; c.dimensions.forEach(function (d) { kinds[d.kind] = (kinds[d.kind] || 0) + 1; });
+      assert(kinds.linear && kinds.diameter && kinds.radius, 'kinds ' + JSON.stringify(kinds));
+      var dia = c.dimensions.filter(function (d) { return d.kind === 'diameter'; }).map(function (d) { return d.text; });
+      assert(dia.indexOf('%%c.500') >= 0 && dia.indexOf('2X %%c.281') >= 0, 'diameter texts ' + dia.join());
+      var w = c.dimensions.filter(function (d) { return d.text === '6.239'; })[0];
+      assert(w && Math.abs(w.value - 6.2392) < 1e-3, 'measurement ' + JSON.stringify(w));
+      var bad = DxfCheck.check(dxf.replace(/\n2\n\*D1\n70\n1\n/, '\n2\n*X1\n70\n1\n'), { layers: [] });
+      assert(!bad.ok && /\*D1/.test(bad.errors.join()), 'a missing block is an error: ' + bad.errors.join());
+      var r12 = DW.toDXF(r.sheet, { version: 'R12' }), c12 = DxfCheck.check(r12, { units: 'in', layers: [] });
+      assert(c12.ok && !c12.dimensions.length && c12.counts['TEXT@DIMENSIONS'] === r.sheet.dims.length, 'R12 exploded ' + JSON.stringify(c12.counts));
+      return c.dimensions.length + ' DIMENSION';
+    });
+  })();
+  // --- end rfT ---
+
+  // ------------------------------------------------------------------ rfS: drawing Smart Dimension from picks
+  (function () {
+    var DW = Drawing;
+    var PLATE = AnvilExamples.filter(function (e) { return e.name === 'Plate with bolt holes'; })[0].code;
+    function rfSDoc(code) {
+      var r = build(code || PLATE);
+      noErrors(r);
+      r.doc = DW.newDrawing(r.model, { date: '2026-10-12' });
+      DW.standard3View(r.doc, r.mesh, r.model.units);
+      r.recompute = function () { r.sheet = DW.compute(r.doc, r.mesh, r.model, { build: r.build }); return r.sheet; };
+      r.recompute();
+      r.view = function (orient) { return r.sheet.views.filter(function (w) { return w.view.orient === orient; })[0]; };
+      return r;
+    }
+    function rfSUser(r, viewId) { return r.sheet.dims.filter(function (d) { return d.view === viewId && d.index != null; }); }
+    // the Top view of the 100 x 60 plate: u = x in [0, 100], v = -z in [-60, 0]; holes Ø8 at (10 | 90, -10 | -50)
+    var C1 = { c: [10, -10], r: 4 }, C2 = { c: [90, -10], r: 4 }, LEFT = [[0, 0], [0, -60]], RIGHT = [[100, 0], [100, -60]], TOP = [[0, 0], [100, 0]], BOT = [[0, -60], [100, -60]];
+    test('rfS: Smart Dimension picks: edge length, hole centre to edge, hole to hole (centre, min, max), parallel edges, point to point by the pointer\'s quadrant', function () {
+      var S = DW.smartDim, out = [];
+      function chk(d, kind, v, what) { assert(d && d.kind === kind, what + ': kind ' + (d && d.kind)); near(d.value, v, 1e-9, what); out.push(what + ' ' + d.kind + ' ' + d.value); }
+      chk(S({ edge: TOP }, null, [50, 10]), 'h', 100, 'edge length');
+      chk(S({ edge: LEFT }, null, [-10, -30]), 'v', 60, 'vertical edge');
+      chk(S({ center: C1 }, { edge: LEFT }, [5, 10]), 'h', 10, 'centre to left edge');
+      chk(S({ edge: TOP }, { circle: C1 }, [-10, -5]), 'v', 10, 'top edge to hole (centre)');
+      chk(S({ circle: C1 }, { circle: C2 }, [50, 10]), 'h', 80, 'hole to hole');
+      chk(S({ circle: C1 }, { circle: C2 }, [50, 10], { minmax: 'min' }), 'h', 72, 'hole to hole, min');
+      chk(S({ circle: C1 }, { circle: C2 }, [50, 10], { minmax: 'max' }), 'h', 88, 'hole to hole, max');
+      chk(S({ circle: C1 }, { edge: LEFT }, [5, 10], { minmax: 'min' }), 'h', 6, 'hole edge to left edge, min');
+      chk(S({ edge: TOP }, { edge: BOT }, [110, -30]), 'v', 60, 'parallel edges');
+      chk(S({ edge: LEFT }, { edge: RIGHT }, [50, 10]), 'h', 100, 'parallel vertical edges');
+      chk(S({ point: [0, 0] }, { point: [100, -60] }, [50, 10]), 'h', 100, 'corners, pointer above');
+      chk(S({ point: [0, 0] }, { point: [100, -60] }, [110, -30]), 'v', 60, 'corners, pointer beside');
+      chk(S({ point: [0, 0] }, { point: [100, -60] }, [60, -20]), 'aligned', Math.hypot(100, 60), 'corners, pointer between');
+      chk(S({ center: C1 }, { center: { c: [90, -50], r: 4 } }, [50, -20]), 'aligned', Math.hypot(80, 40), 'diagonal hole centres');
+      chk(S({ circle: C1 }, null, [30, 10], { scale: 2 }), 'dia', 8, 'circle');
+      assert(S({ point: [0, 0] }, null, [5, 5]) === null, 'a point alone makes no dimension');
+      // the dimension line goes through the pointer
+      var h = S({ edge: TOP }, null, [50, 12]);
+      assert(h.at === 12 && h.side === 1, 'h at the pointer ' + h.at);
+      return out.join('; ');
+    });
+    test('rfS: an angle between two edges in the pointer\'s quadrant (45° / 135°), drawn with an arc, arrows and its text on the sheet; DXF has the arc', function () {
+      var c = rfSDoc('p.box(40, 20, 10); p.chamfer(2, [[20, 10, 20]]);'), R = c.view('Right');
+      var ch = R.proj.lines.visible.filter(function (l) { return Math.abs(Math.abs(l[2] - l[0]) - 2) < 1e-9 && Math.abs(Math.abs(l[3] - l[1]) - 2) < 1e-9; })[0];
+      var lead = R.proj.lines.visible.filter(function (l) { return Math.abs(l[1] - 10) < 1e-9 && Math.abs(l[3] - 10) < 1e-9; })[0];
+      assert(ch && lead, 'chamfer / lead-in edges');
+      var e1 = { edge: [[ch[0], ch[1]], [ch[2], ch[3]]] }, e2 = { edge: [[lead[0], lead[1]], [lead[2], lead[3]]] };
+      var d0 = DW.smartDim(e1, e2, null);
+      var V = d0.c, mids = [[(ch[0] + ch[2]) / 2, (ch[1] + ch[3]) / 2], [(lead[0] + lead[2]) / 2, (lead[1] + lead[3]) / 2]];
+      // the pointer between the two edges as drawn (inside the part's corner): 135°; between the chamfer line's
+      // extension past the vertex and the lead-in edge: the acute 45°
+      var inside = [(mids[0][0] + mids[1][0]) / 2, (mids[0][1] + mids[1][1]) / 2];
+      var other = DW.smartDim(e1, e2, inside), acute = DW.smartDim(e1, e2, [V[0] - (mids[0][0] - V[0]) + (mids[1][0] - V[0]) * 0.5, V[1] - (mids[0][1] - V[1]) + (mids[1][1] - V[1]) * 0.5]);
+      near(acute.value, 45, 1e-9, 'acute'); near(other.value, 135, 1e-9, 'obtuse');
+      var v = DW.findView(c.doc, R.view.id); v.dims = (v.dims || []).concat([acute]);
+      c.recompute();
+      var sd = rfSUser(c, R.view.id).filter(function (d) { return d.kind === 'angle'; })[0];
+      assert(sd && sd.text === '45°', 'sheet text ' + (sd && sd.text));
+      assert(sd.box && isFinite(sd.box.x0) && sd.arrows.length === 2, 'box and arrows');
+      var arcs = c.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'arc' && p.view === R.view.id; });
+      assert(arcs.length === 1 && Math.abs(((arcs[0].a1 - arcs[0].a0) % 360 + 360) % 360 - 45) < 1e-6, 'one 45° arc');
+      assert(c.sheet.prims.some(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && p.text === '45°'; }), 'text drawn');
+      var dxf = DW.toDXF(c.sheet, { version: 'R2000' });
+      assert(/\nARC\n/.test(dxf) && dxf.indexOf('45') >= 0, 'DXF has the arc');
+      // precision from the Dimension PM: 45.0°
+      v.dims[v.dims.length - 1].prec = 1; c.recompute();
+      sd = rfSUser(c, R.view.id).filter(function (d) { return d.kind === 'angle'; })[0];
+      assert(sd.text === '45.0°', 'precision ' + sd.text);
+      return sd.text + ' / ' + other.value;
+    });
+    test('rfS: two-pick dimensions stay attached: through a rebuild they measure again (hole centre to the right edge 10 -> 30 when the plate widens to 120); a removed reference dangles', function () {
+      var r = rfSDoc(), T = r.view('Top');
+      var d1 = DW.addSmartDim(r.doc, T.view.id, { center: C2 }, { edge: RIGHT }, [95, 10], { scale: T.scale });
+      var d2 = DW.addSmartDim(r.doc, T.view.id, { circle: C1 }, { circle: C2 }, [50, 12], { scale: T.scale });
+      near(d1.value, 10, 1e-9, 'before'); near(d2.value, 80, 1e-9, 'hole to hole');
+      r.recompute();
+      var u = rfSUser(r, T.view.id);
+      assert(u.length === 2 && u[0].text === '10' && u[1].text === '80' && !u[0].dangling, 'texts ' + u.map(function (d) { return d.text; }));
+      r.model.features.filter(function (f) { return f.type === 'sketch'; })[0].entities[0].w = 120;
+      var b = K.rebuild(r.model); r.mesh = K.meshFromBody(b.body); r.build = b; r.recompute();
+      u = rfSUser(r, T.view.id);
+      assert(u[0].text === '30' && !u[0].dangling, 'after the change ' + u[0].text);
+      assert(u[1].text === '80', 'hole to hole stays ' + u[1].text);
+      // the dimension line still goes through where it was placed (view model units)
+      var hz = r.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k === 'text' && p.text === '30'; })[0];
+      assert(hz, '30 drawn');
+      return u.map(function (d) { return d.text; }).join(', ');
+    });
+  })();
+  // --- end rfS ---
 
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.

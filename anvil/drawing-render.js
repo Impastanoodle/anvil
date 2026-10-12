@@ -28,13 +28,14 @@
   // and _.CTX the model and build a flat-pattern view is unfolded from (flatData).
   function compute(doc, mesh, model, ctx) {
     var prevStyle = _.DIMSTYLE, prevCtx = _.CTX;
-    _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null };
+    _.DIMSTYLE = D.dimStyle(doc); _.CTX = { model: model, build: ctx && ctx.build || null, mesh: mesh };
+    var prevGeo = _.DIMGEO; _.DIMGEO = D.dimGeometry(doc);
     try {
       if (!ctx || !ctx.lazy) return computeSheet(doc, mesh, model, ctx);
       var prev = _.LAZY;
       _.LAZY = { mesh: mesh, missing: [], keys: {} };
       try { var r = computeSheet(doc, mesh, model, ctx); r.pending = _.LAZY.missing; return r; } finally { _.LAZY = prev; }
-    } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; }
+    } finally { _.DIMSTYLE = prevStyle; _.CTX = prevCtx; _.DIMGEO = prevGeo; }
   }
   function computeSheet(doc, mesh, model, ctx) {
     ctx = ctx || {};
@@ -440,8 +441,9 @@
       function grow(q) { bx.x0 = Math.min(bx.x0, q[0]); bx.x1 = Math.max(bx.x1, q[0]); bx.y0 = Math.min(bx.y0, q[1]); bx.y1 = Math.max(bx.y1, q[1]); }
       // the arrow tips (clicked to flip the arrows) and the text's rectangle (edited in place), r4/drawings4
       d.arrows = []; d.tbox = null;
+      var dix = shown.length;
       p.forEach(function (x) {
-        x.view = d.view;
+        x.view = d.view; x.dimIx = dix;
         prims.push(x);
         if (x.k === 'fill') d.arrows.push(x.pts[0]);
         if (x.k === 'text') { var tr0 = textRect(x); d.tbox = d.tbox ? { x0: Math.min(d.tbox.x0, tr0.x0), y0: Math.min(d.tbox.y0, tr0.y0), x1: Math.max(d.tbox.x1, tr0.x1), y1: Math.max(d.tbox.y1, tr0.y1) } : tr0; }
@@ -491,7 +493,10 @@
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
       return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
     });
-    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions };
+    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
+      // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,
+      // arrow, arrowW (full width), gap, ext), prec the decimal places (null: the units' default)
+      dimStyle: { geo: _.DIMGEO, paper: _.DIMGEO ? { text: _.DIMGEO.text * k, arrow: _.DIMGEO.arrow * k, arrowW: _.DIMGEO.arrowW * k, gap: _.DIMGEO.gap * k, ext: _.DIMGEO.ext * k } : null, prec: _.DIMSTYLE && _.DIMSTYLE.prec } };
   }
   // ------------------------------------------------------------------ flat-pattern annotations and notes
   // flatItems(w, doc, units, k) -> [{ id, view, key, type: 'bendNote' | 'bendTag' | 'bendTable' | 'flatSize', text,
@@ -747,7 +752,9 @@
     return p;
   }
   function dimPrims(d, vw, k, placed) {
-    var out = [], L = 'DIMENSIONS', th = 3.5 * k, ar = 3 * k, aw = ARROW_W * k, units = k === 1 ? 'mm' : 'in';
+    // (rfT) text height, arrow and extension-line sizes from the drawing's dimension style (D.dimGeometry, paper mm)
+    var G = _.DIMGEO || { text: 3.5, arrow: 3, arrowW: 2 * ARROW_W, gap: 1.5, ext: 2 };
+    var out = [], L = 'DIMENSIONS', th = G.text * k, ar = G.arrow * k, aw = G.arrowW / 2 * k, units = k === 1 ? 'mm' : 'in';
     function line(a, b) { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin' }); }
     function arrow(tip, dir) {
       var n = [-dir[1], dir[0]];
@@ -799,6 +806,8 @@
       var rtip = [rc[0] + ru[0] * rr, rc[1] + ru[1] * rr], rel = d.lead ? [rc[0] + d.lead[0], rc[1] + d.lead[1]] : [rtip[0] + ru[0] * ralt[1] * k, rtip[1] + ru[1] * ralt[1] * k];
       leader(rtip, rel, labMain, [-ru[0], -ru[1]]);
       d.leadNow = [rel[0] - rc[0], rel[1] - rc[1]];
+      var rsg = rel[0] >= rtip[0] - 1e-9 ? 1 : -1;
+      d.dxf = { type: 'rad', p10: rc.slice(), p15: rtip.slice(), p11: [rel[0] + rsg * (SHOULDER + TEXT_GAP) * k + rsg * labWidth(labMain) / 2, rel[1]], lead: Math.hypot(rel[0] - rtip[0], rel[1] - rtip[1]) };
       return out;
     }
     if (d.kind === 'dia') {
@@ -840,6 +849,8 @@
       line(tip, elbow); line(elbow, [elbow[0] + sgd * SHOULDER * k, elbow[1]]); arrow(tip, [-u[0], -u[1]]);
       label([elbow[0] + sgd * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2], sgd > 0 ? 'start' : 'end', 0, labMain);
       d.leadNow = [elbow[0] - c[0], elbow[1] - c[1]];
+      // (rfT) DXF: the circle's two definition points (10 the far side, 15 the arrow's), the text at the shoulder
+      d.dxf = { type: 'dia', p10: [2 * c[0] - tip[0], 2 * c[1] - tip[1]], p15: tip.slice(), p11: [elbow[0] + sgd * (SHOULDER + TEXT_GAP) * k + sgd * labWidth(labMain) / 2, elbow[1]], lead: Math.hypot(elbow[0] - tip[0], elbow[1] - tip[1]) };
       return out;
     }
     if (d.kind === 'chamfer') {
@@ -849,7 +860,7 @@
       d.leadNow = lead.slice();
       return out;
     }
-    var gapE = 1.5 * k, ext = 2 * k;
+    var gapE = G.gap * k, ext = G.ext * k;
     // a linear dimension between sheet points a and b, horizontal (hz) or vertical, its dimension line at pos
     // ANSI (SolidWorks' default for the ANSI standard, r13/drawings13): the text is horizontal (vertical dimensions
     // too), centred on the dimension line in a break of it. When text and arrows do not fit between the extension
@@ -871,6 +882,9 @@
       else line(P(Math.min(l0, c + half), pos), P(l1, pos));
       if (out) { arrow(P(lo, pos), P(1, 0)); arrow(P(hi, pos), P(-1, 0)); } else { arrow(P(lo, pos), P(-1, 0)); arrow(P(hi, pos), P(1, 0)); }
       d.txNow = c - mid;
+      // (rfT) the DXF DIMENSION's definition points (toDXF R2000): the extension lines' origins, the dimension line
+      // at the second one, the text's middle
+      if (d.kind === 'h' || d.kind === 'v') d.dxf = { type: 'linear', ang: hz ? 0 : 90, p13: a.slice(), p14: b.slice(), p10: P(b[i0], pos), p11: P(c, pos) };
       if (hz) label([c, pos - th / 2], 'middle', 0, lab);
       else label([pos, c - th / 2], 'middle', 0, lab);
     }
@@ -952,6 +966,7 @@
       if (out2) { arrow(pa, t); arrow(pb, [-t[0], -t[1]]); } else { arrow(pa, [-t[0], -t[1]]); arrow(pb, t); }
       d.txNow = (sc - Ln / 2) * sd;
       var cpt = At(sc);
+      d.dxf = { type: 'aligned', p13: a.slice(), p14: b.slice(), p10: pb.slice(), p11: cpt.slice() };
       label([cpt[0] - up2[0] * th / 2, cpt[1] - up2[1] * th / 2], 'middle', ang2, labMain);
     }
     return out;
@@ -1105,10 +1120,22 @@
   // HEADER with $HANDSEED, CLASSES, the nine symbol tables, BLOCKS for model / paper space, ENTITIES with handles and
   // subclass markers, OBJECTS with the root dictionary; a true ELLIPSE, and each line's weight (370) from the sheet's
   // strokes). Both write true LINE / CIRCLE / ARC, SOLID arrowheads and TEXT (dimensions exploded, as on the sheet).
+  // a text as DXF writes it: %%c for Ø, %%p for ±, %%d for °, plain ASCII
+  function dxfText(t) { return plainText(t).replace(/\n/g, ' ').replace(/Ø/g, '%%c').replace(/±/g, '%%p').replace(/°/g, '%%d').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?'); }
   function dxfVersionOf(v) { return /^(r?2000|ac1015|1015)$/i.test(String(v || '').trim()) ? 'R2000' : 'R12'; }
   function toDXF(sheet, opts) {
     var r2000 = dxfVersionOf(opts && opts.version) === 'R2000';
     var L = [];
+    // (rfT) R2000: every linear / aligned / diameter / radius dimension is a true DIMENSION entity, its drawn lines,
+    // arrows and text in its own anonymous block *D1, *D2 … (what AutoCAD writes, so a reader without dimension
+    // support still shows them, and AutoCAD / Mastercam read the value and can restyle it); R12 keeps them exploded.
+    var dimGroups = [], dimOf = {};
+    if (r2000 && opts && opts.dimensions !== false) (sheet.dims || []).forEach(function (d, i) {
+      if (!d || !d.dxf || d.kind === 'angle' || !{ h: 1, v: 1, aligned: 1, dia: 1, rad: 1 }[d.kind]) return;   // angles etc. stay exploded
+      var g = { d: d, prims: [], name: '*D' + (dimGroups.length + 1) };
+      dimOf[i] = g; dimGroups.push(g);
+    });
+    sheet.prims.forEach(function (p) { if (p.dimIx != null && dimOf[p.dimIx]) dimOf[p.dimIx].prims.push(p); });
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
@@ -1174,10 +1201,19 @@
       table('VIEW', 0, function () { });
       table('UCS', 0, function () { });
       table('APPID', 1, function () { record('APPID', 'AcDbRegAppTableRecord', '12'); pr(2, 'ACAD'); pr(70, 0); });
-      table('DIMSTYLE', 1, function () { record('DIMSTYLE', 'AcDbDimStyleTableRecord'); pr(2, 'Standard'); pr(70, 0); });
-      table('BLOCK_RECORD', 2, function () {
+      // the dimension style (rfT): the sheet's text height, arrows, extension-line gap / overshoot, decimal places and
+      // zero suppression (ANSI inch: no leading zero; metric: no trailing zeros), text horizontal
+      table('DIMSTYLE', 1, function () {
+        record('DIMSTYLE', 'AcDbDimStyleTableRecord'); pr(2, 'Standard'); pr(70, 0);
+        var G = sheet.dimStyle && sheet.dimStyle.geo || { text: 3.5, arrow: 3, gap: 1.5, ext: 2 }, kk = inch ? 1 / MM : 1, pd = sheet.dimStyle && sheet.dimStyle.prec;
+        pr(40, 1); pr(41, num(G.arrow * kk)); pr(42, num(G.gap * kk)); pr(44, num(G.ext * kk)); pr(140, num(G.text * kk)); pr(147, num(TEXT_GAP * kk));
+        pr(73, 1); pr(74, 1); pr(77, 0); pr(78, inch ? 4 : 8); pr(271, pd != null ? pd : inch ? 3 : 2); pr(340, '11');
+      });
+      dimGroups.forEach(function (g) { g.br = H(); g.bh = H(); g.eh = H(); });
+      table('BLOCK_RECORD', 2 + dimGroups.length, function () {
         record('BLOCK_RECORD', 'AcDbBlockTableRecord', msBR); pr(2, '*Model_Space');
         record('BLOCK_RECORD', 'AcDbBlockTableRecord', psBR); pr(2, '*Paper_Space');
+        dimGroups.forEach(function (g) { record('BLOCK_RECORD', 'AcDbBlockTableRecord', g.br); pr(2, g.name); });
       });
     }
     pr(0, 'ENDSEC');
@@ -1188,15 +1224,35 @@
         pr(2, b[1]); pr(70, 0); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, b[1]); pr(1, '');
         pr(0, 'ENDBLK'); pr(5, b[4]); pr(330, b[0]); pr(100, 'AcDbEntity'); if (b[2]) pr(67, 1); pr(8, 0); pr(100, 'AcDbBlockEnd');
       });
+      dimGroups.forEach(function (g) {
+        pr(0, 'BLOCK'); pr(5, g.bh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockBegin');
+        pr(2, g.name); pr(70, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(3, g.name); pr(1, '');
+        g.prims.forEach(function (p) { entity(p, g.br); });
+        pr(0, 'ENDBLK'); pr(5, g.eh); pr(330, g.br); pr(100, 'AcDbEntity'); pr(8, 0); pr(100, 'AcDbBlockEnd');
+      });
       pr(0, 'ENDSEC');
     }
     pr(0, 'SECTION'); pr(2, 'ENTITIES');
-    sheet.prims.forEach(function (p) {
+    sheet.prims.forEach(function (p) { if (!(p.dimIx != null && dimOf[p.dimIx])) entity(p, msBR); });
+    dimGroups.forEach(function (g) {
+      var d = g.d, X = g.d.dxf, type = { linear: 0, aligned: 1, dia: 3, rad: 4 }[X.type];
+      function pt(c, q) { pr(c, num(q[0])); pr(c + 10, num(q[1])); pr(c + 20, 0); }
+      pr(0, 'DIMENSION'); pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); pr(8, 'DIMENSIONS');
+      if (d.dangling && DXF_COLORS.dangling) pr(62, DXF_COLORS.dangling);
+      pr(100, 'AcDbDimension'); pr(2, g.name); pt(10, X.p10); pt(11, X.p11); pr(70, type | 32 | 128); pr(71, 5);
+      if (isFinite(d.value)) pr(42, num(d.value));
+      pr(1, dxfText(d.text || '')); pr(3, 'Standard');
+      if (X.type === 'linear' || X.type === 'aligned') { pr(100, 'AcDbAlignedDimension'); pt(13, X.p13); pt(14, X.p14); }
+      if (X.type === 'linear') { pr(50, X.ang); pr(100, 'AcDbRotatedDimension'); }
+      if (X.type === 'dia') { pr(100, 'AcDbDiametricDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
+      if (X.type === 'rad') { pr(100, 'AcDbRadialDimension'); pt(15, X.p15); pr(40, num(X.lead || 0)); }
+    });
+    function entity(p, owner) {
       var ltn = p.style === 'hidden' || p.style === 'benddown' ? 'HIDDEN' : p.style === 'chain' || p.style === 'tanfont' ? 'PHANTOM' : p.style === 'center' ? 'CENTER' : null, dc = p.color && DXF_COLORS[p.color] || (THIN[p.style] && !colors[p.layer] ? 8 : 0);
       // an entity's head: type, (R2000: handle, owner, AcDbEntity,) layer, line type, colour, (R2000: weight, subclass)
       function head(type, sub, lw) {
         pr(0, type);
-        if (r2000) { pr(5, H()); pr(330, msBR); pr(100, 'AcDbEntity'); }
+        if (r2000) { pr(5, H()); pr(330, owner); pr(100, 'AcDbEntity'); }
         pr(8, p.layer);
         if (ltn) pr(6, ltn);
         if (dc) pr(62, dc);
@@ -1233,13 +1289,13 @@
         var q = [p.pts[0], p.pts[1], p.pts[2], p.pts[2]];
         q.forEach(function (pt, i) { pr(10 + i, num(pt[0])); pr(20 + i, num(pt[1])); pr(30 + i, 0); });
       } else if (p.k === 'text') {
-        head('TEXT', 'AcDbText'); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, plainText(p.text).replace(/Ø/g, '%%c').replace(/±/g, '%%p').replace(/°/g, '%%d').replace(/×/g, 'x').replace(/[^\x20-\x7e]/g, '?'));
+        head('TEXT', 'AcDbText'); pr(10, num(p.p[0])); pr(20, num(p.p[1])); pr(30, 0); pr(40, num(p.h)); pr(1, dxfText(p.text));
         if (p.rot) pr(50, num(p.rot));
         if (r2000) pr(7, styleName);
         if (p.anchor !== 'start') { pr(72, p.anchor === 'middle' ? 1 : 2); pr(11, num(p.p[0])); pr(21, num(p.p[1])); pr(31, 0); }
         if (r2000) pr(100, 'AcDbText');
       }
-    });
+    }
     pr(0, 'ENDSEC');
     if (r2000) {
       pr(0, 'SECTION'); pr(2, 'OBJECTS');
