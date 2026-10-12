@@ -1639,6 +1639,11 @@
   // ("Ignore multiple instances", the default), or one per component instance with ignoreMultiple false. The item
   // number is looked up in the BOM at every render, so balloons renumber with it; a balloon whose item has no visible
   // or hidden edge in the view is not drawn. Replaces the view's earlier balloons.
+  // (rfAG) opts.layout 'square' (the default) or 'top' / 'bottom' / 'left' / 'right' (SolidWorks' Balloon Layout: the
+  // balloons in a row on that side, 14 mm out); with a side and opts.magnetic (Insert magnetic line(s)) the row is a
+  // magnetic line the balloons sit on, else they keep to the side by themselves. A new Auto Balloon removes the
+  // magnetic lines an earlier one put in (the ones drawn by hand stay).
+  var BALLOON_SIDES = ['top', 'bottom', 'left', 'right'];
   function autoBalloon(doc, model, viewId, opts) {
     opts = opts || {};
     var v = findView(doc, viewId);
@@ -1650,8 +1655,118 @@
       if (opts.ignoreMultiple === false) r.components.forEach(function (id) { list.push({ key: r.key, component: id, instance: true }); });
       else list.push({ key: r.key, component: r.components[0] });
     });
+    if (v.magLines) { v.magLines = v.magLines.filter(function (m) { return !m.auto; }); if (!v.magLines.length) delete v.magLines; }
+    var side = BALLOON_SIDES.indexOf(opts.layout) >= 0 ? opts.layout : null;
+    if (side && opts.magnetic) {
+      var ml = { id: nextMagId(doc), side: side, auto: true };
+      (v.magLines || (v.magLines = [])).push(ml);
+      list.forEach(function (b) { b.mag = ml.id; });
+    } else if (side) list.forEach(function (b) { b.side = side; });
     v.balloons = list;
     return v.balloons;
+  }
+  // ------------------------------------------------------------------ (rfAG) magnetic lines
+  // SolidWorks' Insert > Annotations > Magnetic Line: a line on the sheet that balloons snap to and spread evenly
+  // along; dragging it takes its balloons; it is not printed. Stored on the view it belongs to (so it moves with the
+  // view) as view.magLines = [{ id ('ML1' ..., unique in the drawing), a, b (paper, from the view centre) }], or { id,
+  // side, auto } for the row an Auto Balloon put on a side of the view (it takes a and b once dragged). A balloon on a
+  // line has mag (the line's id) and magT (where it was dropped, 0..1, which orders it among the others; without one,
+  // where its leader's point projects onto the line).
+  function nextMagId(doc) {
+    var n = 0;
+    (doc.views || []).forEach(function (v) { (v.magLines || []).forEach(function (m) { var q = /^ML(\d+)$/.exec(m.id); if (q) n = Math.max(n, +q[1]); }); });
+    return 'ML' + (n + 1);
+  }
+  function findMagLine(doc, id) {
+    for (var i = 0; i < doc.views.length; i++) { var ls = doc.views[i].magLines || []; for (var j = 0; j < ls.length; j++) if (ls[j].id === id) return { view: doc.views[i], line: ls[j], index: j }; }
+    return null;
+  }
+  // addMagLine(doc, viewId, { a, b } (sheet points, paper) | { side }) -> the line
+  function addMagLine(doc, viewId, spec) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    spec = spec || {};
+    var ml = { id: nextMagId(doc) };
+    if (BALLOON_SIDES.indexOf(spec.side) >= 0) ml.side = spec.side;
+    else {
+      var a = spec.a, b = spec.b;
+      if (!a || !b || !isFinite(a[0] + a[1] + b[0] + b[1])) throw new Error('A magnetic line needs two points');
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) throw new Error('A magnetic line needs two different points');
+      ml.a = [a[0] - v.x, a[1] - v.y]; ml.b = [b[0] - v.x, b[1] - v.y];
+    }
+    (v.magLines || (v.magLines = [])).push(ml);
+    return ml;
+  }
+  // setMagLine(doc, id, { a, b } (sheet points) | { shift: [dx, dy] } | null, sheet?): moves a magnetic line (its
+  // balloons go with it) or deletes it; deleted, its balloons stay where the laid-out sheet (if given) shows them.
+  // A side line (Auto Balloon) needs the sheet to take its first a / b.
+  function setMagLine(doc, id, spec, sheet) {
+    var f = findMagLine(doc, id);
+    if (!f) throw new Error('No magnetic line ' + id);
+    var v = f.view, ml = f.line, shown = sheet && (sheet.magLines || []).filter(function (m) { return m.id === id; })[0];
+    if (spec == null) {
+      v.magLines.splice(f.index, 1);
+      if (!v.magLines.length) delete v.magLines;
+      (v.balloons || []).forEach(function (b, i) {
+        if (b.mag !== id) return;
+        var sb = sheet && (sheet.balloons || []).filter(function (q) { return q.view === v.id && q.index === i; })[0];
+        delete b.mag; delete b.magT;
+        if (sb) b.pos = [sb.c[0] - v.x, sb.c[1] - v.y];
+      });
+      return null;
+    }
+    if (!ml.a) {
+      if (!shown) throw new Error('Magnetic line ' + id + ' has not been laid out yet');
+      ml.a = [shown.a[0] - v.x, shown.a[1] - v.y]; ml.b = [shown.b[0] - v.x, shown.b[1] - v.y]; delete ml.side; delete ml.auto;   // (dragged: the user's line now)
+    }
+    if (spec.shift) { ml.a = [ml.a[0] + spec.shift[0], ml.a[1] + spec.shift[1]]; ml.b = [ml.b[0] + spec.shift[0], ml.b[1] + spec.shift[1]]; }
+    else if (spec.a && spec.b) {
+      if (Math.hypot(spec.b[0] - spec.a[0], spec.b[1] - spec.a[1]) < 1e-6) throw new Error('A magnetic line needs two different points');
+      ml.a = [spec.a[0] - v.x, spec.a[1] - v.y]; ml.b = [spec.b[0] - v.x, spec.b[1] - v.y];
+    }
+    return ml;
+  }
+  // balloonMag(doc, viewId, index, id | null, t?, pos?): puts balloon index of the view on magnetic line id (t, 0..1,
+  // orders it among the line's balloons), or (null) takes it off, to pos ([dx, dy] from the view centre) if given
+  function balloonMag(doc, viewId, index, id, t, pos) {
+    var v = findView(doc, viewId), b = v && v.balloons && v.balloons[index];
+    if (!b) throw new Error('No balloon ' + index + ' in view ' + viewId);
+    if (id != null) {
+      var f = findMagLine(doc, id);
+      if (!f || f.view !== v) throw new Error('Magnetic line ' + id + ' is not on this view');
+      b.mag = id; delete b.pos; delete b.side;
+      if (t != null && isFinite(t)) b.magT = Math.max(0, Math.min(1, +t)); else delete b.magT;
+    } else {
+      delete b.mag; delete b.magT;
+      if (pos) { b.pos = [+pos[0], +pos[1]]; delete b.side; }
+    }
+    return b;
+  }
+  // magLinesOf(w, k) -> [{ id, a, b (sheet, paper), side, auto }]: a laid-out view's magnetic lines
+  function sideLine(box, side, k) {
+    var o = BALLOON_OUT * k;
+    if (side === 'top') return [[box.x0, box.y1 + o], [box.x1, box.y1 + o]];
+    if (side === 'bottom') return [[box.x0, box.y0 - o], [box.x1, box.y0 - o]];
+    if (side === 'left') return [[box.x0 - o, box.y1], [box.x0 - o, box.y0]];
+    return [[box.x1 + o, box.y1], [box.x1 + o, box.y0]];
+  }
+  function magLinesOf(w, k) {
+    var v = w.view;
+    return (v.magLines || []).map(function (m) {
+      var ab = m.a && m.b ? [[v.x + m.a[0], v.y + m.a[1]], [v.x + m.b[0], v.y + m.b[1]]] : sideLine(w.box, m.side, k);
+      return { id: m.id, a: ab[0], b: ab[1], side: m.side || null, auto: !!m.auto };
+    });
+  }
+  // magLineAt(sheet, p, tol, viewId?) -> { view, id, t (0..1), d } of the nearest magnetic line within tol of sheet point p
+  function magLineAt(sheet, p, tol, viewId) {
+    var best = null;
+    ((sheet && sheet.magLines) || []).forEach(function (m) {
+      if (viewId != null && m.view !== viewId) return;
+      var dx = m.b[0] - m.a[0], dy = m.b[1] - m.a[1], L2 = dx * dx + dy * dy || 1e-18, t = Math.max(0, Math.min(1, ((p[0] - m.a[0]) * dx + (p[1] - m.a[1]) * dy) / L2));
+      var d = Math.hypot(m.a[0] + dx * t - p[0], m.a[1] + dy * t - p[1]);
+      if (d <= tol && (!best || d < best.d)) best = { view: m.view, id: m.id, t: t, d: d };
+    });
+    return best;
   }
   function deleteBalloons(doc, viewId) { var v = findView(doc, viewId); if (v) v.balloons = []; }
   // balloonSpots(w, rows, k) -> [{ item, key, component, attach (paper), c (paper), r, ok }]: attaches each balloon to
@@ -1708,14 +1823,36 @@
       p[0] = Math.max(R.x0, Math.min(R.x1, p[0])); p[1] = Math.max(R.y0, Math.min(R.y1, p[1]));
       b.t = tOf(p);
     });
+    // (rfAG) balloons on a magnetic line (or kept to a side by Auto Balloon) spread evenly along it, in the order they
+    // were dropped on it (magT), else in the order their leaders' points project onto it, so leaders do not cross
+    var mls = magLinesOf(w, k), mlById = {}, rowsOf = {}, rowKeys = [];
+    mls.forEach(function (m) { mlById[m.id] = m; });
+    out.forEach(function (b) {
+      var key = b.src.mag != null && mlById[b.src.mag] ? b.src.mag : !b.src.pos && BALLOON_SIDES.indexOf(b.src.side) >= 0 ? 'side:' + b.src.side : null;
+      if (key == null) return;
+      if (!rowsOf[key]) { rowsOf[key] = []; rowKeys.push(key); }
+      rowsOf[key].push(b); b.row = key;
+    });
+    rowKeys.forEach(function (key) {
+      var m = mlById[key], ab = m ? [m.a, m.b] : sideLine(box, key.slice(5), k), A = ab[0], dx = ab[1][0] - A[0], dy = ab[1][1] - A[1], L2 = dx * dx + dy * dy || 1e-18;
+      var list2 = rowsOf[key];
+      list2.forEach(function (b) { b.ord = b.src.magT != null ? b.src.magT : Math.max(0, Math.min(1, ((b.attach[0] - A[0]) * dx + (b.attach[1] - A[1]) * dy) / L2)); });
+      list2.sort(function (p, q) { return p.ord - q.ord || (q.src.magT != null) - (p.src.magT != null) || p.index - q.index; });
+      list2.forEach(function (b, i) {
+        var t = (i + 0.5) / list2.length;
+        b.c = [A[0] + dx * t, A[1] + dy * t];
+        if (m) { b.mag = key; b.magT = b.src.magT != null ? b.src.magT : null; } else b.side = key.slice(5);
+        delete b.ord;
+      });
+    });
     // spread balloons closer than 2.4 r apart along the perimeter (a few relaxation passes)
-    var gap = 2.4 * r, sorted = out.filter(function (b) { return !b.src.pos; }).sort(function (a, b) { return a.t - b.t; });
+    var gap = 2.4 * r, sorted = out.filter(function (b) { return !b.src.pos && !b.row; }).sort(function (a, b) { return a.t - b.t; });
     for (var pass = 0; pass < 8 && sorted.length > 1; pass++) {
       for (var i = 1; i < sorted.length; i++) if (sorted[i].t - sorted[i - 1].t < gap) { var m = (sorted[i].t + sorted[i - 1].t) / 2; sorted[i - 1].t = m - gap / 2; sorted[i].t = m + gap / 2; }
       if (sorted[sorted.length - 1].t - sorted[0].t > per - gap) { var m2 = (sorted[sorted.length - 1].t - per + sorted[0].t) / 2; sorted[0].t = m2 + gap / 2; sorted[sorted.length - 1].t = per + m2 - gap / 2; }
     }
     // a dragged (or placed) balloon sits where it was put, relative to the view centre
-    out.forEach(function (b) { b.c = b.src.pos ? [v.x + b.src.pos[0], v.y + b.src.pos[1]] : pOf(b.t); });
+    out.forEach(function (b) { if (b.row) { delete b.row; return; } b.c = b.src.pos ? [v.x + b.src.pos[0], v.y + b.src.pos[1]] : pOf(b.t); });
     return out;
   }
 
@@ -2166,6 +2303,7 @@
   D.arcSlotsIn = arcSlotsIn; D.sketchOrdinates = sketchOrdinates; D.sketchDistances = sketchDistances;
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
+  D.BALLOON_SIDES = BALLOON_SIDES; D.addMagLine = addMagLine; D.setMagLine = setMagLine; D.balloonMag = balloonMag; D.magLinesOf = magLinesOf; D.magLineAt = magLineAt; D.findMagLine = findMagLine;
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;
   _.viewContent = viewContent; _.autoDimKey = autoDimKey; _.partInfoCache = partInfoCache; _.hasMaterials = hasMaterials; _.bomCell = bomCell; _.BOM_TEXT = BOM_TEXT;
 })(Drawing, Drawing._);

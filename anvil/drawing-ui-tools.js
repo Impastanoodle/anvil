@@ -446,6 +446,7 @@
     }
     if (s.kind === 'annot') { edit(function (dc) { Drawing.deleteAnnotation(dc, s.id); }); D.sel = null; render(); return true; }
     if (s.kind === 'note') { edit(function (dc) { Drawing.deleteNote(dc, s.id); }); D.sel = null; render(); return true; }
+    if (s.kind === 'magline') return DW.deleteMagLine ? DW.deleteMagLine(s.id) : false;   // (rfAG)
     if (s.kind === 'balloon') {
       edit(function (dc) {
         var v = Drawing.findView(dc, s.view);
@@ -827,13 +828,16 @@
     if (!v0) { UI.toast('Add a drawing view first.'); return; }
     openDrawingPM({
       title: 'Auto Balloon', icon: 'autoBalloon', command: 'autoBalloon',
-      message: 'Balloons every component in the view with its Bill of Materials item number, on a square around the view.',
-      values: { view: v0.id, ignoreMultiple: true },
+      message: 'Balloons every component in the view with its Bill of Materials item number: on a square around the view, or in a row on one side (on a magnetic line you can drag).',
+      values: { view: v0.id, ignoreMultiple: true, layout: 'square', magnetic: true },
       groups: [
         { title: 'Drawing View', fields: [{ type: 'select', key: 'view', label: 'View', options: dc.views.map(function (v) { return [v.id, v.name + (v.kind ? '' : ' (' + v.orient + ')')]; }) }] },
-        { title: 'Balloon Layout', fields: [{ type: 'static', label: 'Layout', value: 'Square' }, { type: 'check', key: 'ignoreMultiple', label: 'Ignore multiple instances' }] }
+        { title: 'Balloon Layout', fields: [
+          { type: 'select', key: 'layout', label: 'Layout', rerender: true, options: [['square', 'Square'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right']] },   // (rfAG)
+          { type: 'check', key: 'magnetic', label: 'Insert magnetic line(s)', show: function (v) { return v.layout !== 'square'; } },
+          { type: 'check', key: 'ignoreMultiple', label: 'Ignore multiple instances' }] }
       ],
-      onOK: function (val) { autoBalloonView(+val.view, { ignoreMultiple: !!val.ignoreMultiple }); }
+      onOK: function (val) { autoBalloonView(+val.view, { ignoreMultiple: !!val.ignoreMultiple, layout: val.layout || 'square', magnetic: val.layout !== 'square' && !!val.magnetic }); }
     });
   }
   // Bill of Materials PropertyManager: Table Position (the corner of the sheet it is anchored to) or remove it
@@ -1772,14 +1776,15 @@
     var P = D.pending, sw = pxToPaper(2), dash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
     if (!P || !P.at) return;
     function poly(pts, cls, dashed) { var a = { class: cls || 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': sw }; if (dashed) a['stroke-dasharray'] = dash; return node('polyline', a, g); }
-    if (D.tool === 'crop' && P.mode === 'bo') {   // (rfAD) the broken-out profile as it is drawn
+    if (D.tool === 'magline') return;   // (rfAG) drawn by magOverlay
+    if (D.tool === 'bko') {   // (rfAD) the broken-out profile as it is drawn
       var bp = boPreview(P);
       if (bp && bp.circle) node('circle', { class: 'dw-cut dw-bo', cx: bp.circle.c[0], cy: H - bp.circle.c[1], r: bp.circle.r, fill: 'none', 'stroke-width': sw }, g);
       else if (bp && bp.pts.length > 1) poly(bp.pts, 'dw-cut dw-bo', P.stage === 'ref');
       D.preview = bp ? { kind: 'brokenOut', pts: bp.pts, circle: bp.circle || null, stage: P.stage || 'profile' } : null;
       return;
     }
-    if (D.tool === 'crop' && P.mode === 'ahatch') return;
+    if (D.tool === 'ahatch') return;
     if (D.tool === 'aux' && P.parent != null && P.edge) {
       var ag = auxPreview(P, P.at);
       if (!ag) return;
@@ -1806,15 +1811,15 @@
   // corners, a circle by centre and a point), then the depth: a number, or (Depth reference) an edge or circle picked in
   // another view, the cut going down to it. Area Hatch/Fill (Annotation tab; Insert ▸ Annotations; a hatched region's
   // right-click menu; or a click on the hatch of a view already selected): Material crosshatch, or the region's own
-  // Pattern, Scale and Angle. (Both run as modes of the Crop View tool, whose clicks and live preview drawing-ui.js
-  // already routes here.)
+  // Pattern, Scale and Angle. (rfAG: tools 'bko' and 'ahatch'; drawing-ui.js routes their clicks and live preview here
+  // by name.)
   var BO_PROFILES = [['spline', 'Spline (click points, then the first point again)'], ['poly', 'Polyline (click points, then the first point again)'], ['rect', 'Rectangle (two corners)'], ['circle', 'Circle (centre, then a point on it)']];
-  function boActive() { return D.tool === 'crop' && D.pending && D.pending.mode === 'bo'; }
+  function boActive() { return D.tool === 'bko' && !!D.pending; }
   function cmdBrokenOut() {
     if (boActive()) { endToolPM(); return; }
     if (!needPart()) return;
     var inch = units() === 'in', vals = { shape: 'spline', depth: inch ? 0.25 : 5, useRef: false };
-    startTool('crop', { mode: 'bo', shape: 'spline', view: null, pts: [], spts: [], pm: vals });
+    startTool('bko', { mode: 'bo', shape: 'spline', view: null, pts: [], spts: [], pm: vals });
     openDrawingPM({
       title: 'Broken-out Section', icon: 'brokenOut', command: 'brokenOut', noFocus: true, values: vals,
       message: 'Draw the closed profile in a model, projected or auxiliary view, then press OK (or click the first point again). The material inside it is removed down to the depth, in this view only.',
@@ -1933,9 +1938,9 @@
   }
   function hatchUnder(v) { var h = ctxAt && D.sheet ? regionAtSheet(ctxAt) : null; return h && h.w.view.id === v.id ? h : null; }
   function cmdAreaHatchTool() {
-    if (D.tool === 'crop' && D.pending && D.pending.mode === 'ahatch') { endTool(); return; }
+    if (D.tool === 'ahatch') { endTool(); return; }
     if (!needPart()) return;
-    startTool('crop', { mode: 'ahatch' });
+    startTool('ahatch', { mode: 'ahatch' });
     UI.setStatus('Area Hatch/Fill: click a hatched region of a section or broken-out section. Esc cancels.');
   }
   function hatchPickClick(p) {
@@ -1959,7 +1964,7 @@
     setTimeout(function () { if (D.active && !D.tool) cmdAreaHatch(h.view, h.g); }, 0);
   }, true);
   document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
-  var RF_TOOLS = { aux: auxClick, crop: function (p) { var P = D.pending; if (P && P.mode === 'bo') boClick(p); else if (P && P.mode === 'ahatch') hatchPickClick(p); else cropClick(p); }, brk: breakClick };
+  var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick };   // (rfAG) routed by tool name
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
     if (D.inline && D.inline.box.contains(e.target)) return;
@@ -1983,7 +1988,7 @@
       if (b.id === 'detailView') {
         out.push({ id: 'brokenOut', label: 'Broken-out\nSection', run: cmdBrokenOut, active: boActive });   // (rfAD, SolidWorks order)
         out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
-        out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop' && !(D.pending && D.pending.mode); } });
+        out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop'; } });
       }
       if (b.id === 'dxfExport') out.push({ id: 'dwgExport', label: 'Save as\nDWG', run: function () { exportAs('dwg'); } });   // (rfS)
     });
@@ -1996,7 +2001,8 @@
     var out = [];
     list.forEach(function (b) {
       out.push(b);
-      if (b.id === 'centerline') out.push({ id: 'areaHatch', label: 'Area\nHatch/Fill', run: cmdAreaHatchTool, active: function () { return D.tool === 'crop' && !!D.pending && D.pending.mode === 'ahatch'; } });
+      if (b.id === 'autoBalloon') out.push({ id: 'magLine', label: 'Magnetic\nLine', run: cmdMagLine, active: function () { return D.tool === 'magline'; } });   // (rfAG)
+      if (b.id === 'centerline') out.push({ id: 'areaHatch', label: 'Area\nHatch/Fill', run: cmdAreaHatchTool, active: function () { return D.tool === 'ahatch'; } });
     });
     Object.defineProperty(out, '_rfAD', { value: true });
     return out;
@@ -2020,6 +2026,7 @@
           if (it && it.label === 'Drawing View ▸ Projected') items.push({ label: 'Drawing View ▸ Auxiliary', action: cmdAuxiliaryView });
           if (it && it.label === 'Drawing View ▸ Detail') { items.push({ label: 'Drawing View ▸ Broken-out Section', action: cmdBrokenOut }); items.push({ label: 'Drawing View ▸ Break', action: cmdBreakView }); items.push({ label: 'Drawing View ▸ Crop', action: cmdCropView }); }
           if (it && it.label === 'Annotations ▸ Centerline') items.push({ label: 'Annotations ▸ Area Hatch/Fill', action: cmdAreaHatchTool });   // (rfAD)
+          if (it && it.label === 'Annotations \u25b8 Auto Balloon' && !menu.items.some(function (q) { return q && q.label === 'Annotations \u25b8 Magnetic Line'; })) items.push({ label: 'Annotations \u25b8 Magnetic Line', action: cmdMagLine });   // (rfAG)
         });
         menu.items = items;
       });
@@ -2084,10 +2091,141 @@
       if (typeof which === 'number') { var g = api.hatchRegions(viewId)[which]; if (!g) { UI.toast('No hatched region ' + which); return null; } p = g.p; }
       return tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props || null); }) ? api.summary() : null;
     };
+    // (rfAG) magnetic lines: magLines() -> [{ id, view, a, b (sheet, paper), side, balloons: [index] }]; magLine(viewId,
+    // { a, b } (sheet points) | { side }) adds one (-> its id); magLineEdit(id, { a, b } | { shift } | null) moves or
+    // deletes one (its balloons stay put); balloonMag(viewId, index, id | null, t?) puts a balloon on a line (or off it)
+    api.magLines = function () {
+      if (!doc()) return [];
+      settle(); if (!D.sheet) render();
+      return (D.sheet.magLines || []).map(function (m) { return { id: m.id, view: m.view, a: m.a.slice(), b: m.b.slice(), side: m.side, balloons: m.balloons.slice() }; });
+    };
+    api.magLine = function (viewId, spec) { var ml = null; return doc() && tryEdit(function (dc) { ml = Drawing.addMagLine(dc, viewId, spec || {}); }) ? ml.id : null; };
+    api.magLineEdit = function (id, spec) {
+      if (!doc()) return null;
+      if (spec == null) return deleteMagLine(id) ? api.summary() : null;
+      settle(); if (!D.sheet) render();
+      var sh = D.sheet;
+      return tryEdit(function (dc) { Drawing.setMagLine(dc, id, spec, sh); }) ? api.summary() : null;
+    };
+    api.balloonMag = function (viewId, index, id, t) { return doc() && tryEdit(function (dc) { Drawing.balloonMag(dc, viewId, index, id == null ? null : id, t); }) ? api.summary() : null; };
     Object.defineProperty(api, '_rfN', { value: true });
     return api;
   });
+  // ------------------------------------------------------------------ rfAG: magnetic lines for balloons
+  // SolidWorks' Insert ▸ Annotations ▸ Magnetic Line (Annotation tab, after Auto Balloon): click where the line starts and
+  // where it ends; it belongs to the view under (or nearest) its middle and moves with it. Balloons dragged near it
+  // snap onto it and spread evenly along it; drag the line to take its balloons along; click it and press Delete to
+  // remove it (its balloons stay where they are). Drawn on the overlay only: no output prints it.
+  function nearestView(p) {
+    var w = viewAt(p), best = null, bd = Infinity;
+    if (w) return w;
+    (D.sheet ? D.sheet.views : []).forEach(function (x) {
+      if (x.pending) return;
+      var dx = Math.max(x.box.x0 - p[0], 0, p[0] - x.box.x1), dy = Math.max(x.box.y0 - p[1], 0, p[1] - x.box.y1), d = Math.hypot(dx, dy);
+      if (d < bd) { bd = d; best = x; }
+    });
+    return best;
+  }
+  function cmdMagLine() {
+    if (D.tool === 'magline') { endTool(); return; }
+    if (!doc() || !D.sheet || !D.sheet.views.length) { UI.toast('Add a drawing view first.'); return; }
+    startTool('magline', { a: null, view: null });
+    UI.setStatus('Magnetic Line: click where the line starts (by the view whose balloons it holds). Esc cancels.');
+  }
+  function magLineClick(p) {
+    var P = D.pending;
+    if (!P.a) {
+      var w = nearestView(p);
+      if (!w) { UI.setStatus('Magnetic Line: add a drawing view first.'); return; }
+      P.a = p.slice(); P.view = w.view.id; P.at = p.slice();
+      UI.setStatus('Magnetic Line: click where it ends (Shift: any angle; it keeps horizontal or vertical when close).');
+      drawOverlay();
+      return;
+    }
+    var b = magEnd(P.a, p), ml = null;
+    if (Math.hypot(b[0] - P.a[0], b[1] - P.a[1]) < pxToPaper(4)) { UI.setStatus('Magnetic Line: click a point away from the first one.'); return; }
+    var a = P.a, wm = nearestView([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]), view = wm ? wm.view.id : P.view;   // (the view nearest its middle holds it)
+    endTool();
+    if (tryEdit(function (dc) { ml = Drawing.addMagLine(dc, view, { a: a, b: b }); })) {
+      D.sel = { kind: 'magline', id: ml.id, view: view }; drawOverlay();
+      UI.setStatus('Magnetic line ' + ml.id + ': drag balloons onto it, drag it to move them, Delete removes it.');
+    }
+    return ml;
+  }
+  // the second end, squared to horizontal / vertical within 5° (as SolidWorks' inferencing does)
+  function magEnd(a, p) {
+    var dx = p[0] - a[0], dy = p[1] - a[1], ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI) % 180;
+    if (ang < 5 || ang > 175) return [p[0], a[1]];
+    if (Math.abs(ang - 90) < 5) return [a[0], p[1]];
+    return p.slice();
+  }
+  RF_TOOLS.magline = magLineClick;
+  function magAt(p) { return D.sheet ? Drawing.magLineAt(D.sheet, p, pxToPaper(5)) : null; }
+  // a dragged balloon snaps to a magnetic line of its view within 10 px: { id, t } or null
+  function magSnap(viewId, c) { return D.sheet ? Drawing.magLineAt(D.sheet, c, Math.max(pxToPaper(10), 1.5 * paperK()), viewId) : null; }
+  // the magnetic lines (and the one being drawn) on the overlay: dashed, highlighted when selected or under the cursor
+  function magOverlay(g, H, node) {
+    var sw = pxToPaper(1.6), dash = pxToPaper(8) + ' ' + pxToPaper(4);
+    ((D.sheet && D.sheet.magLines) || []).forEach(function (m) {
+      var sel = D.sel && D.sel.kind === 'magline' && D.sel.id === m.id, hov = magHover === m.id;
+      node('line', { class: 'dw-mag' + (sel ? ' sel' : hov ? ' pre' : ''), x1: m.a[0], y1: H - m.a[1], x2: m.b[0], y2: H - m.b[1], 'stroke-width': sel || hov ? sw * 1.6 : sw, 'stroke-dasharray': dash }, g);
+    });
+    var P = D.pending;
+    if (D.tool === 'magline' && P && P.a && P.at) {
+      var e = magEnd(P.a, P.at);
+      node('line', { class: 'dw-mag pre', x1: P.a[0], y1: H - P.a[1], x2: e[0], y2: H - e[1], 'stroke-width': sw, 'stroke-dasharray': dash }, g);
+      D.preview = { kind: 'magline', a: P.a.slice(), b: e };
+    }
+  }
+  var magDrag = null, magHover = null;
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !D.active || !D.sheet || D.tool || !D.host || !D.host.contains(e.target) || (UI.hasPM && UI.hasPM())) return;
+    if (D.inline && D.inline.box.contains(e.target)) return;
+    var p = DW.toPaper(e), m = magAt(p);
+    if (!m || balloonAt(p)) return;
+    e.preventDefault(); e.stopPropagation();
+    settle();
+    D.sel = { kind: 'magline', id: m.id, view: m.view };
+    magDrag = { id: m.id, start: p, last: p, moved: false };
+    drawOverlay(); DW.renderTree();
+    UI.setStatus('Magnetic line ' + m.id + ' — drag it to move it with its balloons, Delete removes it.');
+  }, true);
+  document.addEventListener('mousemove', function (e) {
+    if (!magDrag) {
+      if (!D.active || !D.sheet || D.tool || D.drag || !D.host || !D.host.contains(e.target)) { if (magHover) { magHover = null; drawOverlay(); } return; }
+      var h = magAt(DW.toPaper(e)), id = h ? h.id : null;
+      if (id !== magHover) { magHover = id; drawOverlay(); }
+      return;
+    }
+    var p = DW.toPaper(e), md = magDrag;
+    e.stopPropagation();
+    if (!md.moved && Math.hypot(p[0] - md.start[0], p[1] - md.start[1]) < pxToPaper(3)) return;
+    if (!md.moved) { UI.pushUndo(); md.moved = true; D.host.classList.add('dw-dragging'); }
+    try { Drawing.setMagLine(doc(), md.id, { shift: [p[0] - md.last[0], p[1] - md.last[1]] }, D.sheet); } catch (err) { return; }
+    md.last = p;
+    queueRender(true);
+  }, true);
+  document.addEventListener('mouseup', function (e) {
+    var md = magDrag;
+    if (!md) return;
+    magDrag = null;
+    e.stopPropagation();
+    if (D.host) D.host.classList.remove('dw-dragging');
+    if (md.moved) { D.dirty = true; UI.autosave(); render(); }
+  }, true);
+  function deleteMagLine(id) {
+    var f = doc() && Drawing.findMagLine(doc(), id);
+    if (!f) return false;
+    settle(); if (!D.sheet) render();
+    var sh = D.sheet;
+    edit(function (dc) { Drawing.setMagLine(dc, id, null, sh); });
+    if (D.sel && D.sel.kind === 'magline') D.sel = null;
+    drawOverlay();
+    UI.setStatus('Magnetic line ' + id + ' deleted; its balloons stay where they were.');
+    return true;
+  }
   DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool;   // (rfAD)
+  DW.cmdMagLine = cmdMagLine; DW.magLineClick = magLineClick; DW.magOverlay = magOverlay; DW.magSnap = magSnap; DW.magAt = magAt; DW.deleteMagLine = deleteMagLine;   // (rfAG)
   DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;

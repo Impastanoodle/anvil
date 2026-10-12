@@ -2614,8 +2614,13 @@
     dwgState.pending = p.then(function () { dwgState.probed = true; dwgState.pending = null; return dwgState; });
     return dwgState.pending;
   }
-  // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer); rejects with the server's error message
+  // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer); rejects with the server's error message.
+  // (shop audit 2) An R12 DXF (AC1009, POLYLINE / VERTEX) is refused up front: LibreDWG's writer makes a DWG with no
+  // entities from one, silently (the flat read back empty), and the PM, the drawing's Save as DWG and the headless
+  // runner all convert from R2000 anyway.
+  var DXF_R12_NOTE = 'DWG is made from an R2000 DXF (AC1015); this DXF is R12. Export it as R2000 first.';
   function dxfToDwg(dxfText) {
+    if (/\$ACADVER\s*\r?\n\s*1\s*\r?\n\s*AC1009\b/.test(String(dxfText).slice(0, 4000))) return Promise.reject(new Error(DXF_R12_NOTE));
     return fetch('api/dxf2dwg', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: dxfText }).then(function (r) {
       if (r.status === 200) return r.arrayBuffer();
       return r.text().then(function (t) {

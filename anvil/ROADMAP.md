@@ -115,7 +115,7 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Drawings: centre marks (single, linear, circular, extension lines) and centrelines with Auto insert on view creation (Document Properties), hole callouts read from the solid (THRU / depth / counterbore / countersink, 4X), ordinate and baseline dimensions, chamfer dimensions, dimension dragging and the Dimension PropertyManager (tolerance bilateral / limit / symmetric, precision, text, flip arrows; a model item's value drives the part) (cloud-2026-09-25m)
 - [x] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text (cloud-2026-09-25m)
 - [x] Drawings: notes with leaders and property links, surface finish, datum and geometric tolerance symbols (2026-10-12c)
-- [ ] Drawings: magnetic lines for balloons
+- [x] Drawings: magnetic lines for balloons (2026-10-12i)
 - [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
 - [x] Drawings: indented BOM and Parts only across sub-assemblies (`Drawing.bomRows` calls `Assembly.bom(model, build, { type })`; BOM Type Top-level only / Indented / Parts only) (cloud-2026-09-26r)
 - [x] Drawings: revision table (2026-10-12c)

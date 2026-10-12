@@ -407,7 +407,21 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (he && he.t === 'point') return pe.hit;   // a sketch point entity is the point
     var pt = pickSketchPoint(mx, my);
     if (pt && (!pe.hit || pt.d <= 4 || pt.d <= pe.d + 1e-9)) return { kind: 'sketchPoint', ref: pt.ref };
+    if (!pe.hit && f) { var sv = pickStyleVertex(f, mx, my); if (sv != null) return { kind: 'entity', index: sv }; }   // rfAH
     return pe.hit;
+  }
+  // rfAH: a style spline's control vertices lie off its curve: a click within 9 px of one selects the style spline (its
+  // PropertyManager shows that vertex, as the Spline PM shows the point nearest the click)
+  function pickStyleVertex(f, mx, my) {
+    var pl = UI.activePlane(), best = null, bd = 9;
+    f.entities.forEach(function (e, i) {
+      if (!e || e.t !== 'spline' || !e.style || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      e.pts.forEach(function (p) {
+        var q = UI.worldToScreen(K.to3D(pl, p[0], p[1])), d = Math.hypot(q[0] - mx, q[1] - my);
+        if (d < bd) { bd = d; best = i; }
+      });
+    });
+    return best;
   }
   // The sketch refs of a selection (an entity: its curve, or the entity; a sketch point: its ref), in order. Smart
   // Dimension / Add Relations can take a preselection from here (UI.selectedSketchRefs()).

@@ -91,7 +91,113 @@
     for (i = 0; i < n; i++) x[i] -= fact * z[i];
     return x;
   }
+  // ---- rfAH: Style Spline { t: 'spline', style: true, pts: [CV0, …, CVn] }: SolidWorks' Style Spline, one Bézier span
+  // of degree n = pts.length − 1 (3, 5 or 7 from its PropertyManager) shaped by its control polygon. It passes through
+  // its first and last control vertex, tangent to the polygon there. closed / tans / local do not apply. Its exact
+  // curve is bzPoint(pts, t), t in [0, 1] (what Coincident, Trim, Extend, sketch DXF and the script use); splineGeom
+  // hands the other consumers (profiles, OpenCascade, drawings) cubic spans: exact for degree ≤ 3, C1 Hermite spans
+  // within about 1e-7 of its size for degree 5 / 7 (8·n spans).
+  function isStyle(e) { return !!e && e.t === 'spline' && !!e.style; }
+  // the blossom of P at ts (n values): bzBlossom(P, [t, …, t]) is the point at t; [a…a, b…b] gives the control
+  // points of the piece from a to b
+  function bzBlossom(P, ts) {
+    var Q = P.map(function (p) { return [+p[0], +p[1]]; }), n = Q.length - 1;
+    for (var k = 0; k < n; k++) { var t = ts[k], u = 1 - t; for (var i = 0; i < n - k; i++) Q[i] = [u * Q[i][0] + t * Q[i + 1][0], u * Q[i][1] + t * Q[i + 1][1]]; }
+    return Q[0];
+  }
+  // the point of the Bézier with control points P at t (de Casteljau; t outside [0, 1] carries the polynomial on)
+  function bzPoint(P, t) { var ts = []; for (var k = 1; k < P.length; k++) ts.push(t); return bzBlossom(P, ts); }
+  // dP/dt: n · the Bézier of the control polygon's legs
+  function bzDeriv(P, t) {
+    var n = P.length - 1;
+    if (n < 1) return [0, 0];
+    var D = [];
+    for (var i = 0; i < n; i++) D.push([n * (P[i + 1][0] - P[i][0]), n * (P[i + 1][1] - P[i][1])]);
+    return bzPoint(D, t);
+  }
+  // the control points of the piece of P from a to b (either may lie outside [0, 1]): the same curve exactly
+  function bzSub(P, a, b) {
+    var n = P.length - 1, out = [];
+    for (var i = 0; i <= n; i++) { var ts = []; for (var k = 0; k < n; k++) ts.push(k < n - i ? a : b); out.push(bzBlossom(P, ts)); }
+    return out;
+  }
+  // degree elevation by one (the same curve)
+  function bzElevate(P) {
+    var n = P.length - 1, out = [[+P[0][0], +P[0][1]]];
+    for (var i = 1; i <= n; i++) { var a = i / (n + 1); out.push([a * P[i - 1][0] + (1 - a) * P[i][0], a * P[i - 1][1] + (1 - a) * P[i][1]]); }
+    out.push([+P[n][0], +P[n][1]]);
+    return out;
+  }
+  // P as a Bézier of degree m: elevated exactly when m is higher; otherwise the least-squares fit of degree m that keeps
+  // both ends and (m ≥ 3) the end tangent directions, as SolidWorks changes a style spline's degree
+  function bzDegree(P, m) {
+    var n = P.length - 1, Q, i, j, k;
+    if (m === n) return P.map(function (p) { return [+p[0], +p[1]]; });
+    if (m > n) { Q = P; while (Q.length - 1 < m) Q = bzElevate(Q); return Q; }
+    if (m < 1) return null;
+    var A = P[0], B = P[n], S = 64, ts = [], tgt = [];
+    if (m === 1) return [[+A[0], +A[1]], [+B[0], +B[1]]];
+    for (k = 1; k < S; k++) { ts.push(k / S); tgt.push(bzPoint(P, k / S)); }
+    function bern(q, t) { var c = 1; for (var z = 0; z < q; z++) c = c * (m - z) / (z + 1); return c * Math.pow(t, q) * Math.pow(1 - t, m - q); }
+    function unit(v) { var L = Math.hypot(v[0], v[1]) || 1; return [v[0] / L, v[1] / L]; }
+    var tanFix = m >= 3, u0 = unit(bzDeriv(P, 0)), u1 = unit(bzDeriv(P, 1));
+    // unknowns: tanFix: [a (P1 = A + a·u0), b (P(m−1) = B − b·u1), x2, y2, …]; else [x1, y1, …]
+    var cols = tanFix ? 2 + 2 * (m - 3) : 2 * (m - 1), rows = [], rhs = [];
+    function col(q) { return tanFix ? 2 + 2 * (q - 2) : 2 * (q - 1); }
+    ts.forEach(function (t, s) {
+      var rx = [], ry = [], bx = tgt[s][0] - bern(0, t) * A[0] - bern(m, t) * B[0], by = tgt[s][1] - bern(0, t) * A[1] - bern(m, t) * B[1];
+      for (var c = 0; c < cols; c++) { rx.push(0); ry.push(0); }
+      for (var q = 1; q < m; q++) {
+        var w = bern(q, t);
+        if (tanFix && q === 1) { bx -= w * A[0]; by -= w * A[1]; rx[0] += w * u0[0]; ry[0] += w * u0[1]; }
+        else if (tanFix && q === m - 1) { bx -= w * B[0]; by -= w * B[1]; rx[1] -= w * u1[0]; ry[1] -= w * u1[1]; }
+        else { rx[col(q)] += w; ry[col(q) + 1] += w; }
+      }
+      rows.push(rx, ry); rhs.push(bx, by);
+    });
+    // the normal equations (small and dense): Gaussian elimination with partial pivoting
+    var N = [], r = [];
+    for (i = 0; i < cols; i++) { N.push([]); r.push(0); for (j = 0; j < cols; j++) N[i].push(0); }
+    rows.forEach(function (row, q) { for (var a = 0; a < cols; a++) { if (!row[a]) continue; r[a] += row[a] * rhs[q]; for (var b = 0; b < cols; b++) N[a][b] += row[a] * row[b]; } });
+    for (i = 0; i < cols; i++) {
+      var piv = i;
+      for (j = i + 1; j < cols; j++) if (Math.abs(N[j][i]) > Math.abs(N[piv][i])) piv = j;
+      var tmp = N[i]; N[i] = N[piv]; N[piv] = tmp; var tr = r[i]; r[i] = r[piv]; r[piv] = tr;
+      if (Math.abs(N[i][i]) < 1e-300) return null;
+      for (j = i + 1; j < cols; j++) { var f = N[j][i] / N[i][i]; if (!f) continue; for (k = i; k < cols; k++) N[j][k] -= f * N[i][k]; r[j] -= f * r[i]; }
+    }
+    var x = [];
+    for (i = cols - 1; i >= 0; i--) { var sum = r[i]; for (k = i + 1; k < cols; k++) sum -= N[i][k] * x[k]; x[i] = sum / N[i][i]; }
+    Q = [[+A[0], +A[1]]];
+    for (i = 1; i < m; i++) {
+      if (tanFix && i === 1) Q.push([A[0] + x[0] * u0[0], A[1] + x[0] * u0[1]]);
+      else if (tanFix && i === m - 1) Q.push([B[0] - x[1] * u1[0], B[1] - x[1] * u1[1]]);
+      else Q.push([x[col(i)], x[col(i) + 1]]);
+    }
+    Q.push([+B[0], +B[1]]);
+    return Q;
+  }
+  // splineGeom of a style spline: one exact cubic span (degree ≤ 3, lower degrees elevated) or 8·n C1 Hermite cubic
+  // spans; knots evenly spaced over about its length (the mean of its chord and its control polygon's length)
+  function styleGeom(e) {
+    var P = (e.pts || []).map(function (p) { return [+p[0], +p[1]]; }), n = P.length - 1, i;
+    if (n < 1) return null;
+    var poly = 0;
+    for (i = 0; i < n; i++) poly += Math.hypot(P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]);
+    var L = Math.max((poly + Math.hypot(P[n][0] - P[0][0], P[n][1] - P[0][1])) / 2, 1e-9), bez = [], knots = [];
+    if (n <= 3) { bez.push(bzDegree(P, 3)); knots = [0, L]; }
+    else {
+      var N = 8 * n;
+      for (i = 0; i <= N; i++) knots.push(L * i / N);
+      for (i = 0; i < N; i++) {
+        var a = i / N, b = (i + 1) / N, h = (b - a) / 3, p0 = bzPoint(P, a), p3 = bzPoint(P, b), d0 = bzDeriv(P, a), d3 = bzDeriv(P, b);
+        bez.push([p0, [p0[0] + h * d0[0], p0[1] + h * d0[1]], [p3[0] - h * d3[0], p3[1] - h * d3[1]], p3]);
+      }
+    }
+    return { bez: bez, knots: knots, closed: false, style: { cps: P, degree: n, L: L } };
+  }
   function splineGeom(e) {
+    if (isStyle(e)) return styleGeom(e);
     var P = (e.pts || []).map(function (p) { return [+p[0], +p[1]]; }), n = P.length;
     if (n < 2) return null;
     var closed = !!e.closed && n >= 3, m = closed ? n : n - 1, h = [], knots = [0], i;
@@ -744,6 +850,7 @@
         // the points mirror; a driving tangent's direction reflects as 2φ − angle
         out = { t: 'spline', pts: e.pts.map(function (q) { return m(q[0], q[1]); }) };
         if (e.closed) out.closed = true;
+        if (e.style) out.style = true;   // rfAH: a style spline's control polygon mirrors: the mirrored curve exactly
         if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0], tg[1]] : null; });
         break;
       }
@@ -1772,6 +1879,7 @@
     if (src.t === 'spline') {
       var g = { t: 'spline', pts: (src.pts || []).map(function (p) { return [+p[0], +p[1]]; }) };
       if (src.closed) g.closed = true;
+      if (src.style) g.style = true;   // rfAH
       if (src.tans) g.tans = src.tans.map(function (tg) { return tg ? [+tg[0], tg[1] == null ? 1 : +tg[1]] : null; });
       if (src.local) g.local = true;
       return g;
@@ -1849,6 +1957,7 @@
   K.mirrorAxis = mirrorAxis; K.mirrorEntity = mirrorEntity; K.translateEntity = translateEntity; K.entityPrimitives = entityPrimitives;
   K.trimEntity = trimEntity; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
+  K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
   K.splineGeom = splineGeom; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text

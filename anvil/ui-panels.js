@@ -99,9 +99,9 @@
         // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
         { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter Circle', tool: 'pcircle', help: 'Circle through three points on it' },
           { id: 'tangentCircle', label: 'Tangent Circle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
-        // ui-sketch-spline: Spline (SolidWorks' Style Spline and Equation Driven Curve greyed)
+        // ui-sketch-spline: Spline and Style Spline (rfAH); SolidWorks' Equation Driven Curve greyed
         { fly: 'spline', items: [{ id: 'spline', label: 'Spline', tool: 'spline' },
-          { id: 'styleSpline', label: 'Style Spline', help: 'A single Bézier curve shaped by its control polygon' },
+          { id: 'styleSpline', label: 'Style Spline', tool: 'styleSpline', help: 'A single Bézier curve shaped by its control polygon' },
           { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)' }] },
         // all five rectangle types (ui-sketch-lines.js: the rect3 / crect3 / parallelogram tools)
         { fly: 'rect', items: [{ id: 'rect', label: 'Corner Rectangle', tool: 'rect' }, { id: 'crect', label: 'Center Rectangle', tool: 'crect' },

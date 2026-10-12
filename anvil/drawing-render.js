@@ -158,18 +158,30 @@
       var clip = ct.clip ? { c: toSheet(ct.clip.c), r: ct.clip.r * s } : null;
       // cut faces first, so the outlines are drawn over the hatching
       var hatch = 0, hatches = [], rims = null;
-      (ct.caps || []).forEach(function (cap) {
-        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), hst = cap.style || hatchStyle(cap.body), n0 = hatch, pat = capPattern(cap);
-        // (hatch lines end on the drawn round edges, not on the facets' chords)
-        if (!rims) {
-          rims = [];
-          [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: toSheet(c.c), r: c.r * s }); }); });
+      // (rfAG) a region with its own Area Hatch/Fill (view.hatchRegions, marked cap.areaHatch) takes its pattern, scale
+      // and angle (added to 45°) straight from it: SOLID is one filled region (SVG / PDF fill, a DXF HATCH), NONE bare
+      (ct.caps || []).forEach(function (cap, ci) {
+        var loops = cap.loops.map(function (l) { return l.map(toSheet); }), ah = cap.areaHatch, n0 = hatch;
+        var hst = ah ? { angle: 45 + (+ah.angle || 0), spacing: +ah.scale || 1 } : cap.style || hatchStyle(cap.body), pat = ah ? ah.pattern : capPattern(cap);
+        var tag = ah ? { region: ci, areaHatch: pat } : null;
+        function put(q) { if (tag) { q.region = tag.region; q.areaHatch = tag.areaHatch; } prims.push(q); }
+        if (pat === 'SOLID') {
+          var rl = clip ? _.clipLoopsConvex(loops, _.circlePoly(clip.c, clip.r, 128)) : loops;
+          if (rl.length) { put({ k: 'region', loops: rl, layer: layer, style: 'hatch', body: cap.body, part: cap.part, fillAngle: hst.angle, fillGap: 0.12 * k }); hatch++; }
+        } else if (pat !== 'NONE') {
+          // (hatch lines end on the drawn round edges, not on the facets' chords)
+          if (!rims) {
+            rims = [];
+            [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: toSheet(c.c), r: c.r * s }); }); });
+          }
+          snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims).forEach(function (h) {
+            var q = clip ? clipSeg(h, clip.c, clip.r) : h;
+            if (q) { put({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body, part: cap.part }); hatch++; }
+          });
         }
-        snapHatch(patternLines(loops, hs * hst.spacing, hst.angle, pat), loops, rims).forEach(function (h) {
-          var q = clip ? clipSeg(h, clip.c, clip.r) : h;
-          if (q) { prims.push({ k: 'line', a: [q[0], q[1]], b: [q[2], q[3]], layer: layer, style: 'hatch', body: cap.body, part: cap.part }); hatch++; }
-        });
-        hatches.push({ body: cap.body, part: cap.part, angle: hst.angle, spacing: hs * hst.spacing, lines: hatch - n0, pattern: pat });
+        var he = { body: cap.body, part: cap.part, angle: hst.angle, spacing: pat === 'SOLID' ? 0 : hs * hst.spacing, lines: hatch - n0, pattern: pat };
+        if (ah) { he.region = ci; he.areaHatch = true; he.scale = hst.spacing; if (pat === 'SOLID') he.fill = true; }
+        hatches.push(he);
       });
       // straight pieces that run smoothly into each other (a curve drawn as chords) are one chain, written as one path
       // so a hidden curve's dashes run on along it instead of restarting at every chord (r4/drawings4)
@@ -315,6 +327,7 @@
           var isl = [bestP[0] - lw / 2 - pad, bestP[1] - lh2 / 2 - pad, bestP[0] + lw / 2 + pad, bestP[1] + lh2 / 2 + pad];
           for (var pi = prims.length - 1; pi >= 0; pi--) {
             var hp = prims[pi];
+            if (hp.k === 'region' && hp.layer === L) { Array.prototype.splice.apply(prims, [pi, 1].concat(_.regionOutsideRect(hp, isl))); continue; }   // (rfAG) a solid fill too
             if (hp.k !== 'line' || hp.style !== 'hatch' || hp.layer !== L) continue;
             var parts = segOutsideRect(hp.a, hp.b, isl);
             if (!parts) continue;
@@ -396,6 +409,9 @@
       var nb = 0; mesh.faces.forEach(function (f) { nb = Math.max(nb, (f.body || 0) + 1); });
       brows = [{ item: 1, key: 'part', srcKey: 'part', qty: 1, components: [], indices: Array.apply(null, Array(Math.max(1, nb))).map(function (x, i) { return i; }) }];
     }
+    // (rfAG) the magnetic lines (not printed: the app draws them on its overlay), and which balloons sit on each
+    var magLines = [];
+    views.forEach(function (w) { if (!w.pending) D.magLinesOf(w, k).forEach(function (m) { m.view = w.view.id; m.balloons = []; magLines.push(m); }); });
     views.forEach(function (w) {
       if (!(w.view.balloons || []).length || !brows.length || w.pending) return;
       var nb0 = prims.length;
@@ -421,6 +437,7 @@
           else text([qx, b.c[1] - 1.25 * k], 3.5 * k, qt, qp === 'left' ? 'end' : 'start', L);
         }
         b.view = w.view.id;
+        if (b.mag != null) magLines.forEach(function (m) { if (m.id === b.mag) m.balloons.push(b.index); });
         balloons.push(b);
       });
       for (var pi = nb0; pi < prims.length; pi++) prims[pi].view = w.view.id;   // a dragged view takes them along
@@ -588,7 +605,7 @@
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
       return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
     });
-    return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
+    return { size: S, units: units, prims: prims, views: views, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
       format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,
       // arrow, arrowW (full width), gap, ext), prec the decimal places (null: the units' default)
@@ -1200,6 +1217,7 @@
         } else if (p.k === 'line') out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
         else if (p.k === 'circle') out.push('<circle' + cls + ' cx="' + X(p.c) + '" cy="' + Y(p.c) + '" r="' + num(p.r) + '" stroke-width="' + sw + '"' + dsh + '/>');
         else if (p.k === 'fill') out.push('<path' + (col ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
+        else if (p.k === 'region') out.push('<path class="hatch-fill" d="' + p.loops.map(function (l) { return 'M' + l.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z'; }).join(' ') + '" fill="' + (col || '#000') + '" fill-rule="evenodd" stroke="none"/>');   // (rfAG) a solid area fill
         else if (p.k === 'text') {
           var tr = p.rot ? ' transform="rotate(' + num(-p.rot) + ' ' + X(p.p) + ' ' + Y(p.p) + ')"' : '';
           out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h / CAP_EM) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (col ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
@@ -1383,6 +1401,25 @@
         head('POLYLINE'); pr(66, 1); pr(10, 0); pr(20, 0); pr(30, 0); pr(70, p.full ? 1 : 0);
         for (var i = 0; i < (p.full ? n : n + 1); i++) { var ep = ellipseAt(p, p.t0 + sw * i / n).p; pr(0, 'VERTEX'); pr(8, p.layer); pr(10, num(ep[0])); pr(20, num(ep[1])); pr(30, 0); }
         pr(0, 'SEQEND'); pr(8, p.layer);
+      } else if (p.k === 'region' && r2000) {
+        // (rfAG) a solid area fill: a HATCH entity, SOLID pattern, one polyline boundary path per loop (odd parity)
+        var hl = p.loops.map(function (l) { return l.filter(function (q, i) { var n = l[(i + 1) % l.length]; return Math.hypot(n[0] - q[0], n[1] - q[1]) > 1e-9; }); }).filter(function (l) { return l.length >= 3; });
+        if (!hl.length) return;
+        head('HATCH', 'AcDbHatch');
+        pr(10, 0); pr(20, 0); pr(30, 0); pr(210, 0); pr(220, 0); pr(230, 1);
+        pr(2, 'SOLID'); pr(70, 1); pr(71, 0); pr(91, hl.length);
+        hl.forEach(function (l, li) {
+          pr(92, li ? 2 : 3); pr(72, 0); pr(73, 1); pr(93, l.length);
+          l.forEach(function (q) { pr(10, num(q[0])); pr(20, num(q[1])); });
+          pr(97, 0);
+        });
+        pr(75, 0); pr(76, 1); pr(98, 1);
+        var seed = D.interiorPoint ? D.interiorPoint(p.loops) : null;
+        seed = seed || p.loops[0][0];
+        pr(10, num(seed[0])); pr(20, num(seed[1]));
+      } else if (p.k === 'region') {
+        // R12 has no HATCH: the fill as close hatch lines (0.12 mm apart)
+        D.hatchLines(p.loops, p.fillGap || 0.12, p.fillAngle || 45, 0).forEach(function (h) { head('LINE'); pr(10, num(h[0])); pr(20, num(h[1])); pr(11, num(h[2])); pr(21, num(h[3])); });
       } else if (p.k === 'fill') {
         head('SOLID', 'AcDbTrace');
         var q = [p.pts[0], p.pts[1], p.pts[2], p.pts[2]];
@@ -1512,6 +1549,7 @@
           P(x - r) + ' ' + P(y - m) + ' ' + P(x - m) + ' ' + P(y - r) + ' ' + P(x) + ' ' + P(y - r) + ' c ' +
           P(x + m) + ' ' + P(y - r) + ' ' + P(x + r) + ' ' + P(y - m) + ' ' + P(x + r) + ' ' + P(y) + ' c S');
       } else if (p.k === 'fill') c.push(P(p.pts[0][0]) + ' ' + P(p.pts[0][1]) + ' m ' + P(p.pts[1][0]) + ' ' + P(p.pts[1][1]) + ' l ' + P(p.pts[2][0]) + ' ' + P(p.pts[2][1]) + ' l h f');
+      else if (p.k === 'region') c.push(p.loops.map(function (l) { return l.map(function (q, i) { return P(q[0]) + ' ' + P(q[1]) + (i ? ' l' : ' m'); }).join(' ') + ' h'; }).join(' ') + ' f*');   // (rfAG) even-odd fill
       else if (p.k === 'text') {
         var fs = p.h / 0.718 * ptPer, w = textWidth(plainText(p.text), p.h) * ptPer;   // h: the capitals' height (Helvetica's are 0.718 em), r13/drawings13
         var shift = p.anchor === 'middle' ? -w / 2 : p.anchor === 'end' ? -w : 0;

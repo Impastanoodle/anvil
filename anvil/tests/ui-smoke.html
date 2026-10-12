@@ -16107,7 +16107,7 @@
     await UI.drawing.ready();
     var F = dwView('Front'), T = dwView('Top'), box0 = JSON.stringify(rfADView(F.id).box);
     ribbonButton('Broken-out Section').click();
-    assert(UI.pmTitle() === 'Broken-out Section' && UI.drawing.state.tool === 'crop' && UI.drawing.state.pending.mode === 'bo', 'PM and tool');
+    assert(UI.pmTitle() === 'Broken-out Section' && UI.drawing.state.tool === 'bko' && UI.drawing.state.pending.mode === 'bo', 'PM and tool');
     assert(pmField('Profile') && pmField('Depth') && pmField('Depth reference'), 'PM fields');
     setInput(pmField('Depth'), '5');
     [[8, 12], [32, 10], [34, 38], [10, 40]].forEach(function (q) { rfADClick(rfADAt(F.id, q)); });
@@ -16176,11 +16176,11 @@
     assert(own.length > 0 && own.every(function (p) { return Math.min(p.a[0], p.b[0]) >= x0 - 1e-6 && Math.max(p.a[0], p.b[0]) <= x1 + 1e-6; }), 'middle region only ' + own.length);
     regs = anvil.drawing.hatchRegions(S.id);
     assert(regs.filter(function (g) { return g.areaHatch; }).length === 1 && regs.filter(function (g) { return !g.areaHatch && g.pattern === 'ANSI31'; }).length === 2, 'regions after ' + JSON.stringify(regs));
-    assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'SOLID' }) && UI.drawing.state.sheet.prims.filter(function (p) { return p.areaHatch === 'SOLID'; }).length > 10 * own.length, 'solid');
+    assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'SOLID' }) && UI.drawing.state.sheet.prims.filter(function (p) { return p.areaHatch === 'SOLID' && p.k === 'region'; }).length === 1, 'solid: one filled region');
     assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'NONE' }) && !UI.drawing.state.sheet.prims.some(function (p) { return p.areaHatch; }), 'none');
     // Insert ▸ Annotations ▸ Area Hatch/Fill: the tool, then a click on the region
     UI.drawingInternal.cmdAreaHatchTool();
-    assert(UI.drawing.state.tool === 'crop' && UI.drawing.state.pending.mode === 'ahatch', 'pick tool');
+    assert(UI.drawing.state.tool === 'ahatch', 'pick tool');
     rfADClick(pt); await idle(); await wait(40);
     assert(UI.hasPM() && UI.pmTitle() === 'Area Hatch/Fill' && !pmField('Material crosshatch').checked && UI.pmSpec().values.pattern === 'NONE', 'PM shows the region\'s own pattern');
     pmField('Material crosshatch').click(); await idle();
@@ -16213,6 +16213,344 @@
     return lin.length + ' pieces inside the zig-zag';
   });
   // --- end rfAD ---
+  // ---- rfAH (2026-10-12): Style Spline — one Bézier span of degree 3 / 5 / 7 shaped by its control polygon
+  function rfAHFly() { return Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb-fly'), function (w) { return w._fly && w._fly.fly === 'spline'; })[0]; }
+  function rfAHMenuRow(text) { var m = D.querySelector('.menu'); return m && Array.prototype.filter.call(m.querySelectorAll('.mi'), function (r) { return r.textContent.indexOf(text) >= 0; })[0]; }
+  function rfAHRadio(label) { var r = pmField(label); assert(r && r.type === 'radio', 'radio ' + label); r.checked = true; r.dispatchEvent(new W.Event('change', { bubbles: true })); }
+  step('rfAH: Style Spline — Spline ▸ Style Spline opens its PM (Spline Degree 3 / 5 / 7); four clicks make a degree-3 curve through its end vertices (the first on the origin), Degree 5 elevates it, six clicks end a degree-5 one; the control polygon is drawn', async function () {
+    var errs0 = errors.length;
+    UI.loadModel(K.newModel('StyleSplines')); await idle();
+    UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
+    UI.zoomView(1); UI.refreshRibbon();
+    var fl = rfAHFly();
+    assert(fl, 'Spline flyout');
+    var caret = fl.querySelector('.rb-caret');
+    caret.dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); caret.click();
+    var row = rfAHMenuRow('Style Spline');
+    assert(row && !row.classList.contains('disabled') && !row.hasAttribute('disabled'), 'Style Spline enabled in the flyout');
+    row.click(); await idle();
+    assert(UI.App.tool === 'styleSpline' && UI.pmTitle() === 'Style Spline', 'tool ' + UI.App.tool + ', PM ' + UI.pmTitle());
+    assert(pmField('Degree 3') && pmField('Degree 5') && pmField('Degree 7') && pmField('Degree 3').checked && pmField('Show curvature') && pmField('For construction'), 'Style Spline PM');
+    var f = activeSketch();
+    skClick(0, 0); skClick(10, 30); skClick(30, 30);
+    vpEvent('mousemove', skScreen(40, 0));
+    var te = UI.App.tempEntities;
+    assert(te.length === 2 && te[0].t === 'spline' && te[0].style && te[1].t === 'polyline' && te[1].construction, 'preview: the curve and its control polygon ' + JSON.stringify(te));
+    skClick(40, 0);
+    await wait(30);
+    var e = f.entities[0];
+    assert(f.entities.length === 1 && e.t === 'spline' && e.style && e.pts.length === 4, 'ends by itself at 4 vertices: ' + JSON.stringify(f.entities));
+    assert(JSON.stringify(e.pts) === '[[0,0],[10,30],[30,30],[40,0]]', 'vertices where clicked ' + JSON.stringify(e.pts));
+    assert(relList().indexOf('coincident 0.p1/O') >= 0, 'starts on the origin: ' + relList().join(', '));
+    assert(UI.App.tool === 'styleSpline' && UI.pmTitle() === 'Style Spline', 'the tool stays on');
+    var mid = K.bzPoint(e.pts, 0.5);
+    near(mid[0], 20, 1e-9, 'curve mid x'); near(mid[1], 22.5, 1e-9, 'curve mid y');
+    // Degree 5 in the tool's PM: the one just drawn is elevated (the same curve), the next one is of degree 5
+    rfAHRadio('Degree 5'); await wait(20);
+    e = f.entities[0];
+    assert(e.pts.length === 6, 'elevated to degree 5: ' + JSON.stringify(e.pts));
+    var m5 = K.bzPoint(e.pts, 0.5);
+    assert(Math.abs(m5[0] - 20) < 1e-6 && Math.abs(m5[1] - 22.5) < 1e-6, 'the same curve ' + m5);
+    [[0, -20], [10, -40], [20, -10], [30, -40], [40, -10]].forEach(function (q) { skClick(q[0], q[1]); });
+    assert(f.entities.length === 1, 'not yet: five vertices of six');
+    skClick(50, -30);
+    await wait(30);
+    var e2 = f.entities[1];
+    assert(f.entities.length === 2 && e2.style && e2.pts.length === 6, 'six clicks end a degree-5 style spline ' + JSON.stringify(e2));
+    await wait(260);
+    assert(UI.styleSplineOverlay() >= 1, 'control polygons drawn');
+    D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(260);
+    assert(UI.App.tool === 'select' && !UI.hasPM(), 'Esc puts the tool down');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return f.entities.map(function (x) { return 'degree ' + (x.pts.length - 1); }).join(', ');
+  });
+  step('rfAH: selecting a style spline opens the Style Spline PM on the vertex clicked: X / Y move it (the curve follows), Horizontal on a control polygon leg, Degree 7 / 3; Trim cuts it to a style spline of the same degree; the script round-trips; extruded and on a drawing', async function () {
+    var errs0 = errors.length, f = activeSketch();
+    UI.setTool('select');
+    skClick(10, -40);
+    assert(UI.pmTitle() === 'Style Spline', 'PM ' + UI.pmTitle());
+    assert(+pmField('Control vertex number').value === 2 && +pmField('X Coordinate').value === 10 && pmField('Degree 5').checked, 'vertex 2 picked: ' + pmField('Control vertex number').value);
+    setInput(pmField('Y Coordinate'), -45);
+    assert(f.entities[1].pts[1][1] === -45, 'moved: ' + JSON.stringify(f.entities[1].pts));
+    clickPmButton('Horizontal'); await wait(20);
+    assert(relList().indexOf('horizontal 1.v1/1.v2') >= 0, 'leg 2–3 horizontal: ' + relList().join(', '));
+    near(f.entities[1].pts[2][1], f.entities[1].pts[1][1], 1e-9, 'the leg is horizontal');
+    rfAHRadio('Degree 7'); await wait(20);
+    assert(f.entities[1].pts.length === 8 && UI.pmTitle() === 'Style Spline', 'degree 7: ' + f.entities[1].pts.length);
+    rfAHRadio('Degree 3'); await wait(20);
+    var e1 = f.entities[1];
+    assert(e1.pts.length === 4 && Math.abs(e1.pts[0][0]) < 1e-9 && Math.abs(e1.pts[3][0] - 50) < 1e-9, 'degree 3, the same ends: ' + JSON.stringify(e1.pts));
+    await UI.pmOK();
+    // Trim to closest against a line across the first one
+    UI.setTool('line'); skClick(20, -5); skClick(20, 40); UI.cancelTool();
+    var n0 = f.entities.length, r = W.SketchSolver.trimAt(f, 0, [36, 12], {});
+    UI.updateSketches();
+    var pc = f.entities.filter(function (x) { return x.style && x.pts.length === 6; });
+    assert(r.ok && f.entities.length === n0 && pc.length === 1 && Math.abs(pc[0].pts[5][0] - 20) < 1e-6, 'trimmed to a degree-5 piece ending on the line: ' + JSON.stringify([r, pc]));
+    // the script: generateScript → runScript gives the same sketch
+    var src = anvil.script();
+    assert(/\.styleSpline\(/.test(src) && /degree: 5 \}/.test(src) && /degree: 3 \}/.test(src), 'script ' + src);
+    await anvil.run(src); await idle();
+    var sk2 = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0];
+    assert(JSON.stringify(sk2.entities.filter(function (x) { return x.style; })) === JSON.stringify(f.entities.filter(function (x) { return x.style; })), 'the same style splines after the round trip');
+    // a closed profile: a degree-7 style spline closed by a line, extruded, on a drawing
+    await anvil.run('p.units("in");\np.sketch("Front").styleSpline([[0, 0], [0.5, 1], [1.5, 1.2], [2.5, 0.8], [3, 0]], { degree: 7 }).line(3, 0, 0, 0).extrude(0.25);'); await idle();
+    var v = anvil.mass().volume;
+    var P7 = UI.App.model.features[0].entities[0].pts, A7 = 0, N7 = 4000;
+    for (var q7 = 0; q7 < N7; q7++) { var a7 = K.bzPoint(P7, q7 / N7), b7 = K.bzPoint(P7, (q7 + 1) / N7); A7 += (a7[0] * b7[1] - b7[0] * a7[1]) / 2; }
+    assert(P7.length === 8 && Math.abs(v / (Math.abs(A7) * 0.25) - 1) < 1e-5, 'volume ' + v + ' vs the area of the curve x depth ' + Math.abs(A7) * 0.25);
+    anvil.drawing.make({ fresh: true }); await UI.drawing.ready();
+    var sm = anvil.drawing.summary();
+    assert(sm.views.length >= 3, 'drawing views ' + sm.views.length);
+    anvil.drawing.close(); await idle();
+    UI.ribbonFlyFace('spline', 0);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'volume ' + v.toFixed(4) + ' in³, ' + sm.views.length + ' views';
+  });
+  // --- end rfAH ---
+  // ---- rfAI (shop workflow audit 2, 2026-10-12): the 16 ga inch shop part — Hole Wizard clearance / tapped /
+  // countersink holes land in the flat pattern at their drill radii and get ANSI inch hole callouts on the drawing; the
+  // flat DXF Anvil wrote inserts back (R12 and R2000) and extrudes to the same blank; dxfToDwg refuses an R12 DXF
+  var rfAIT = 0.0598;
+  async function rfAISheet() {
+    await anvil.newPart(); await idle();
+    await anvil.run('p.units("in"); p.sheet(' + rfAIT + ', ' + rfAIT + ', 0.5);\np.sketch("Top").rect(0, -6, 10, 6).end().baseFlange(' + rfAIT + ');'); await idle();
+    assert(UI.App.model.units === 'in' && Object.keys(UI.App.build.errors || {}).length === 0, 'inch sheet');
+  }
+  function rfAIFlatHoles() {
+    var fl = anvil.flat();
+    return fl.loops.slice(1).map(function (l) { var xs = l.map(function (p) { return p[0]; }), ys = l.map(function (p) { return p[1]; }); return { c: [(Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2, (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2], r: (Math.max.apply(null, xs) - Math.min.apply(null, xs)) / 2 }; }).sort(function (a, b) { return a.c[0] - b.c[0]; });
+  }
+  step('rfAI: Hole Wizard on a 16 ga inch sheet — Ø.281 (1/4) Clearance, 1/4-20 UNC Tapped (#7 drill) and CSK for 1/4 Flat Head (its 82° cone goes through the sheet) build without errors and the flat pattern carries the three holes at r .1406 / .1005 / .2015', async function () {
+    var errs0 = errors.length;
+    await rfAISheet();
+    var top = faceWithNormal([0, 1, 0]);
+    function pmSel(key) { return D.querySelector('#pm select[data-key="' + key + '"]'); }
+    var specs = [{ holeType: 'hole', size: '1/4', fit: 'normal', pt: [2, rfAIT, 3] }, { holeType: 'tap', size: '1/4-20 UNC', pt: [5, rfAIT, 3] }, { holeType: 'csk', size: '1/4', fit: 'normal', pt: [8, rfAIT, 3] }];
+    for (var i = 0; i < specs.length; i++) {
+      UI.cmdHoleWizard();
+      assert(UI.App.command.onPick({ kind: 'face', index: top, point: specs[i].pt }) !== false, 'face pick');
+      clickPmButton('Type');
+      assert(pmSel('standard').value === 'ANSI Inch', 'ANSI Inch on an inch part: ' + pmSel('standard').value);
+      setInput(pmSel('holeType'), specs[i].holeType); await wait(10);
+      setInput(pmSel('size'), specs[i].size);
+      if (specs[i].fit) setInput(pmSel('fit'), specs[i].fit);
+      await pmAccept();
+    }
+    assert(Object.keys(UI.App.build.errors || {}).length === 0, 'build errors ' + JSON.stringify(UI.App.build.errors));
+    var nm = UI.App.model.features.filter(function (x) { return x.type === 'hole'; }).map(function (x) { return x.name; }).slice(-3);
+    assert(/Clearance Hole/.test(nm[0]) && /1\/4-20 UNC Tapped Hole/.test(nm[1]) && /CSK for 1\/4 Flat Head/.test(nm[2]), 'names ' + nm.join(' | '));
+    var holes = rfAIFlatHoles();
+    assert(holes.length === 3, 'three holes in the flat: ' + JSON.stringify(holes));
+    near(holes[0].c[0], 2, 1e-6, 'clearance x'); near(holes[0].r, 0.28125 / 2, 2e-4, 'clearance r (Ø.281)');
+    near(holes[1].c[0], 5, 1e-6, 'tap x'); near(holes[1].r, 0.201 / 2, 2e-4, 'tap drill r (#7, Ø.201)');
+    // CSK Ø.507 x 82° on a .0598 sheet: the cone is .130 deep, so the sheet's far face sees Ø.507 - 2 T tan 41° = Ø.403
+    near(holes[2].c[0], 8, 1e-6, 'csk x'); near(holes[2].r, (0.507 - 2 * rfAIT * Math.tan(41 * Math.PI / 180)) / 2, 2e-3, 'csk far-side r');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return holes.map(function (h) { return 'r' + h.r.toFixed(4) + '@' + h.c[0]; }).join(' ');
+  });
+  step('rfAI: hole callouts on the drawing\'s Top view of that sheet — the clearance hole reads "Ø.281 THRU ALL", the tapped hole "Ø.201 THRU ALL" + "1/4-20 UNC - 2B THRU ALL"; Model Items with Hole callouts inserts one per hole', async function () {
+    var errs0 = errors.length;
+    assert(anvil.drawing.make(), 'drawing');
+    var s = anvil.drawing.standard3View();
+    var top = s.views.filter(function (v) { return v.orient === 'Top'; })[0];
+    assert(top, 'Top view');
+    var s1 = anvil.drawing.holeCallout(top.id, { c: [2, -3], r: 0.1405 });
+    var s2 = anvil.drawing.holeCallout(top.id, { c: [5, -3], r: 0.1005 });
+    function texts(sm) { return sm.annotations.filter(function (a) { return a.type === 'holeCallout'; }).map(function (a) { return a.text; }); }
+    assert(s1 && s2, 'callouts placed: ' + statusText());
+    var t = texts(s2);
+    assert(/^Ø\.281 THRU( ALL)?$/.test(t[0]), 'clearance callout: ' + t[0]);
+    assert(/^Ø\.201 THRU( ALL)?\s+1\/4-20 UNC - 2B THRU( ALL)?$/.test(t[1]), 'tapped callout: ' + t[1]);
+    anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[0].id);
+    anvil.drawing.deleteAnnotation(s2.annotations.filter(function (a) { return a.type === 'holeCallout'; })[1].id);
+    // Model Items ▸ Hole callout today inserts one diameter dimension per distinct hole size (shop audit 2 finding 3:
+    // SolidWorks inserts the Hole Wizard callout, with the thread; the texts are not asserted here until that is done)
+    var sm = anvil.drawing.modelItems({ views: [top.id], holeCallouts: true, holeLocations: true, dedupe: true });
+    var n0 = s2.dims.length, n1 = sm.dims.length;
+    assert(n1 >= n0 + 3 && /Model Items inserted into 1 view/.test(statusText()), 'Model Items marks the three hole sizes on the Top view: ' + n0 + ' -> ' + n1 + ' dims, ' + statusText());
+    anvil.drawing.close(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return t.join(' | ') + '; Model Items dims ' + n0 + ' -> ' + n1;
+  });
+  step('rfAI: the flat DXF of a 10 x 6 blank with four Ø.281 holes and a 1.5 Edge Flange (11.5213 x 6) inserts back as R12 and as R2000 (4 outline lines, 4 circles, 1 bend line, 2 notes, inches) and a .0598 Boss-Extrude of it has the part\'s own volume', async function () {
+    var errs0 = errors.length;
+    await anvil.newPart(); await idle();
+    await anvil.run('p.units("in"); p.sheet(' + rfAIT + ', ' + rfAIT + ', 0.5);\np.sketch("Top").rect(0, -6, 10, 6).circle(1, -1, 0.1405).circle(9, -1, 0.1405).circle(1, -5, 0.1405).circle(9, -5, 0.1405).end().baseFlange(' + rfAIT + ');\np.flange(1.5, [[0, ' + rfAIT + ', 3]], { lengthRef: "outer" });'); await idle();
+    assert(Object.keys(UI.App.build.errors || {}).length === 0, 'build errors ' + JSON.stringify(UI.App.build.errors));
+    var fl = anvil.flat();
+    near(fl.size[0], 11.5213, 2e-4, 'flat length (10 + R + T + 1.5 - BD)'); near(fl.size[1], 6, 1e-9, 'flat width');
+    var vol = anvil.summary().volume, r12 = UI.dxfOutput({ export: 'sheet', version: 'R12' }), r2000 = UI.dxfOutput({ export: 'sheet', version: 'R2000' });
+    assert(/AC1009/.test(r12) && /AC1015/.test(r2000) && rfAIFlatHoles().length === 4, 'two flats, four holes');
+    var out = [];
+    for (var k = 0; k < 2; k++) {
+      await anvil.newPart(); await idle(); await anvil.run('p.units("in");'); await idle();
+      var v = await UI.importDXFText(k ? r2000 : r12, { name: 'flat_' + (k ? 'R2000' : 'R12') + '.dxf' }); await idle();
+      assert(v && UI.pmTitle() === 'DXF/DWG Import' && /OUTLINE\(4\)HOLES\(4\)BEND\(1\)NOTES\(2\)/.test($('pm').textContent.replace(/\s+/g, '')) && /inches/.test($('pm').textContent), 'import PM: ' + $('pm').textContent.replace(/\s+/g, ' ').slice(0, 200));
+      await pmAccept();
+      var f = UI.activeSketchFeature(), kinds = f.entities.map(function (e) { return e.t; }).sort().join(',');
+      assert(kinds === 'circle,circle,circle,circle,line,line,line,line,line,text,text', 'entities ' + kinds);
+      await UI.exitSketch(true); await idle();
+      UI.cmdExtrude(false); await idle(); setInput(pmNumber(0), rfAIT); await pmAccept();
+      assert(Object.keys(UI.App.build.errors || {}).length === 0, 'extrude errors ' + JSON.stringify(UI.App.build.errors));
+      near(anvil.summary().volume, vol, 1e-6 * vol, 'volume of the re-imported blank (' + (k ? 'R2000' : 'R12') + ')');
+      out.push((k ? 'R2000' : 'R12') + ' ' + anvil.summary().volume.toFixed(4));
+    }
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return out.join(', ') + ' in³';
+  });
+  step('rfAI: UI.dxfToDwg refuses an R12 DXF before any request (LibreDWG writes an empty DWG from one); the DXF/DWG Output PM, Save Drawing as DWG and the headless runner all convert from R2000', async function () {
+    var errs0 = errors.length, msg = null;
+    var real = W.fetch, calls = 0;
+    W.fetch = function () { calls++; return real.apply(W, arguments); };
+    try { await UI.dxfToDwg('0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nEOF\n'); } catch (e) { msg = e.message; } finally { W.fetch = real; }
+    assert(calls === 0 && /R2000 DXF \(AC1015\); this DXF is R12/.test(msg || ''), 'refused without a request: ' + calls + ' ' + msg);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return msg;
+  });
+  step('rfAI: Convert Entities on an Edge Flange wall face brings the whole boundary — two sides, the top and the tangent edge at the bend — as a closed, fully defined contour (shop audit 2 finding 1)', async function () {
+    var errs0 = errors.length;
+    await rfAISheet();
+    await anvil.append('p.flange(1.5, [[10, ' + rfAIT + ', 3]]);'); await idle();
+    assert(Object.keys(UI.App.build.errors || {}).length === 0, 'flange built');
+    var fi = UI.App.mesh.faces.findIndex(function (f) { return f.normal && f.normal[0] > 0.999 && Math.abs(f.area - 9) < 1e-6; });
+    assert(fi >= 0, 'the flange wall face (6 x 1.5, normal +X)');
+    UI.App.sel = { kind: 'face', index: fi, point: [10 + 2 * rfAIT, 0.8, 3] }; UI.cmdSketch(); await idle();
+    assert(UI.App.mode === 'sketch', 'sketch on the wall face');
+    fi = UI.App.mesh.faces.findIndex(function (f) { return f.normal && f.normal[0] > 0.999 && Math.abs(f.area - 9) < 1e-6; });
+    UI.cmdConvertEntities(); await wait(20);
+    UI.pmSpec().values.items = [{ kind: 'face', index: fi }]; UI.renderPM();
+    await UI.pmOK(); await idle();
+    var f = UI.activeSketchFeature(), lines = f.entities.filter(function (e) { return e.t === 'line'; });
+    assert(lines.length === 4, 'four lines: ' + f.entities.map(function (e) { return e.t; }).join());
+    var ends = {}; lines.forEach(function (l) { [[l.x1, l.y1], [l.x2, l.y2]].forEach(function (p) { var k = p[0].toFixed(4) + ',' + p[1].toFixed(4); ends[k] = (ends[k] || 0) + 1; }); });
+    assert(Object.keys(ends).every(function (k) { return ends[k] === 2; }), 'closed: ' + JSON.stringify(ends));
+    assert(UI.sketchStatus().status === 'full', 'fully defined (On Edge): ' + UI.sketchStatus().status);
+    await UI.exitSketch(true); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return '4 lines, closed';
+  });
+  // --- end rfAI ---
+  // ---- rfAG (2026-10-12): magnetic lines for balloons, Solid area fill as a real fill, Broken-out / Area Hatch tools by name
+  function rfAGBalloons() { return UI.drawing.state.sheet.balloons.slice(); }
+  function rfAGDrag(a, b) {
+    sheetMouse('mousemove', a); sheetMouse('mousedown', a);
+    for (var i = 1; i <= 4; i++) sheetMouse('mousemove', [a[0] + (b[0] - a[0]) * i / 4, a[1] + (b[1] - a[1]) * i / 4]);
+    sheetMouse('mouseup', b);
+  }
+  function rfAGNear(a, b, tol) { return Math.abs(a - b) <= (tol || 1e-6); }
+  step('rfAG: Magnetic Line — Annotation ▸ Magnetic Line draws a line by two clicks (not printed); balloons dragged near it snap on and spread evenly; dragging the line takes them; Delete leaves them in place; Auto Balloon Layout Top puts them on a magnetic line', async function () {
+    var errs0 = errors.length;
+    var ex = W.AnvilExamples.filter(function (e) { return e.name === 'Pinned plate assembly'; })[0];
+    var r = await UI.openExample(ex); await idle();
+    assert(!r.error && UI.isAssembly(), 'assembly open');
+    anvil.drawing.make({ fresh: true });
+    await UI.drawing.ready(); await idle();
+    var iso = dwView('Isometric');
+    assert(iso, 'isometric view');
+    anvil.drawing.autoBalloon(iso.id); await idle();
+    var B0 = rfAGBalloons();
+    assert(B0.length === 3, 'three balloons ' + B0.length);
+    // the ribbon (after Auto Balloon) and Insert ▸ Annotations ▸ Magnetic Line
+    var ann = UI.RIBBON['Annotation'].map(function (b) { return b.id; });
+    assert(ann.indexOf('magLine') === ann.indexOf('autoBalloon') + 1, 'Magnetic Line after Auto Balloon: ' + ann.join(','));
+    var mr = menuRows('Magnetic Line');
+    assert(mr.length === 1 && mr[0].menu === 'Insert', 'Insert menu entry ' + JSON.stringify(mr.map(function (x) { return [x.menu, x.row.textContent]; })));
+    if (UI.closeMenus) UI.closeMenus();
+    ribbonButton('Magnetic Line').click();
+    assert(UI.drawing.state.tool === 'magline', 'tool by name');
+    var w = rfADView(iso.id), y = w.box.y1 + 24, a = [w.box.x0 - 10, y], b = [w.box.x1 + 10, y + 1];   // (squared to horizontal)
+    rfADClick(a);
+    sheetMouse('mousemove', [b[0] - 20, b[1]]);
+    var pv = UI.drawing.state.preview;
+    assert(pv && pv.kind === 'magline' && rfAGNear(pv.b[1], pv.a[1]) && rfAGNear(pv.a[1], y, 1), 'live preview, horizontal ' + JSON.stringify(pv));
+    rfADClick(b); await idle(); await wait(40);
+    var ml = anvil.drawing.magLines();
+    assert(ml.length === 1 && ml[0].view === iso.id && rfAGNear(ml[0].a[1], y, 1) && rfAGNear(ml[0].b[1], ml[0].a[1]) && !UI.drawing.state.tool, 'line ' + JSON.stringify(ml));
+    y = ml[0].a[1];
+    assert(D.querySelector('#dw-overlay .dw-mag'), 'drawn on the overlay');
+    assert(anvil.drawing.svg().indexOf('dw-mag') < 0 && anvil.drawing.dxf({ version: 'R2000' }).indexOf('ML1') < 0, 'not printed');
+    // drag the three balloons near the line (2 mm off): each snaps on; they spread evenly, in leader order
+    var A = ml[0].a, Bp = ml[0].b, L = Bp[0] - A[0];
+    for (var i = 0; i < 3; i++) {
+      var bb = rfAGBalloons().filter(function (q) { return q.mag == null; })[0];
+      rfAGDrag(bb.c, [A[0] + L * (0.2 + 0.3 * i), y - 2]); await idle(); await wait(30);
+    }
+    var B1 = rfAGBalloons().sort(function (p, q) { return p.c[0] - q.c[0]; });
+    assert(B1.every(function (q) { return q.mag === 'ML1' && rfAGNear(q.c[1], y); }), 'on the line ' + JSON.stringify(B1.map(function (q) { return [q.mag, q.c]; })));
+    B1.forEach(function (q, j) { assert(rfAGNear(q.c[0], A[0] + L * (j + 0.5) / 3, 1e-6), 'even spacing ' + j + ' ' + q.c[0]); });
+    assert(anvil.drawing.magLines()[0].balloons.length === 3, 'listed on the line');
+    // drag the line (near its left end, clear of the balloons) 8 mm down: the balloons follow
+    var grab = [A[0] + L * 0.02, y];
+    rfAGDrag(grab, [grab[0], grab[1] - 8]); await idle(); await wait(40);
+    var B2 = rfAGBalloons().sort(function (p, q) { return p.c[0] - q.c[0]; });
+    var ml3 = anvil.drawing.magLines()[0], dy = ml3.a[1] - y, dx = ml3.a[0] - A[0];
+    assert(rfAGNear(dy, -8, 1) && rfAGNear(dx, 0, 1), 'line dragged ' + dx + ', ' + dy);
+    B2.forEach(function (q, j) { assert(rfAGNear(q.c[1], ml3.a[1], 1e-6) && rfAGNear(q.c[0], B1[j].c[0] + dx, 1e-6), 'moved with the line ' + q.c); });
+    y = ml3.a[1]; A = ml3.a;
+    assert(UI.drawing.state.sel && UI.drawing.state.sel.kind === 'magline', 'line selected');
+    // a balloon dragged well away comes off it
+    rfAGDrag(B2[0].c, [B2[0].c[0] - 30, B2[0].c[1] + 30]); await idle(); await wait(30);
+    assert(rfAGBalloons().filter(function (q) { return q.mag === 'ML1'; }).length === 2, 'one off the line');
+    // saved with the drawing
+    var dv = anvil.drawing.doc().views.filter(function (v) { return v.id === iso.id; })[0];
+    assert(dv.magLines.length === 1 && dv.balloons.filter(function (q) { return q.mag === 'ML1'; }).length === 2, 'in the document');
+    // Delete: the line goes, the balloons stay where they were
+    var at = rfAGBalloons().map(function (q) { return q.c.slice(); });
+    rfADClick([A[0] + L * 0.02, y]); await idle();
+    assert(UI.drawing.state.sel && UI.drawing.state.sel.kind === 'magline', 'line picked');
+    key('Delete'); await idle(); await wait(40);
+    assert(!anvil.drawing.magLines().length, 'deleted');
+    rfAGBalloons().forEach(function (q, j) { assert(rfAGNear(q.c[0], at[j][0], 1e-6) && rfAGNear(q.c[1], at[j][1], 1e-6), 'balloon ' + j + ' stays'); });
+    // Auto Balloon PM: Layout Top, Insert magnetic line(s)
+    UI.drawingInternal.cmdAutoBalloon(); await idle();
+    assert(UI.pmTitle() === 'Auto Balloon' && pmField('Layout'), 'Auto Balloon PM');
+    setInput(pmField('View'), String(iso.id)); setInput(pmField('Layout'), 'top'); await idle();
+    var mg = pmField('Insert magnetic line');
+    assert(mg && mg.checked, 'Insert magnetic line(s) ticked');
+    await UI.pmOK(); await idle(); await wait(60);
+    var ml2 = anvil.drawing.magLines(), w2 = rfADView(iso.id);
+    assert(ml2.length === 1 && ml2[0].side === 'top' && ml2[0].balloons.length === 3 && rfAGNear(ml2[0].a[1], w2.box.y1 + 14), 'Auto Balloon line on top ' + JSON.stringify(ml2));
+    assert(rfAGBalloons().every(function (q) { return rfAGNear(q.c[1], w2.box.y1 + 14); }), 'balloons on it');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    anvil.drawing.close(); await idle();
+    return '3 balloons on ML1, then on the Auto Balloon line';
+  });
+  step('rfAG: Solid area fill — a section region set to Solid is one filled path on the sheet (SVG fill, R2000 DXF HATCH that dxf-check reads, R12 lines); the Broken-out Section and Area Hatch tools run by their own names', async function () {
+    var errs0 = errors.length;
+    await anvil.run(RFAD_PLATE);
+    anvil.drawing.make({ fresh: true });
+    anvil.drawing.setSheet({ scale: '1:1' });
+    await UI.drawing.ready();
+    var F = dwView('Front');
+    anvil.drawing.sectionView(F.id, { axis: 'h', at: 25, sign: 1 }); await UI.drawing.ready(); await idle();
+    var S = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'section'; })[0];
+    assert(S, 'section view');
+    var mid = anvil.drawing.hatchRegions(S.id).filter(function (g) { return Math.abs(g.p[0] - 50) < 1e-6; })[0];
+    assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'SOLID' }), 'solid set');
+    await idle();
+    var fills = D.querySelectorAll('#drawing-sheet path.hatch-fill');
+    assert(fills.length === 1 && fills[0].getAttribute('fill-rule') === 'evenodd', 'one filled path on screen ' + fills.length);
+    var dxf = anvil.drawing.dxf({ version: 'R2000' }), ck = W.DxfCheck ? W.DxfCheck.check(dxf, { layers: [] }) : null;
+    assert(/\n0\nHATCH\n/.test(dxf) && /\nAcDbHatch\n/.test(dxf), 'HATCH entity');
+    if (ck) assert(ck.ok && ck.hatches.length === 1 && ck.hatches[0].solid, 'dxf-check ' + JSON.stringify(ck.errors.slice(0, 3)));
+    assert(anvil.drawing.dxf({ version: 'R12' }).indexOf('\nHATCH\n') < 0, 'R12 has no HATCH');
+    // the tools by name
+    ribbonButton('Broken-out Section').click();
+    assert(UI.drawing.state.tool === 'bko' && UI.pmTitle() === 'Broken-out Section', 'Broken-out tool');
+    UI.pmCancel(); await idle();
+    assert(!UI.drawing.state.tool, 'closed');
+    UI.drawingInternal.cmdAreaHatchTool();
+    assert(UI.drawing.state.tool === 'ahatch', 'Area Hatch tool');
+    rfADClick(rfADAt(S.id, mid.p)); await idle(); await wait(40);
+    assert(UI.hasPM() && UI.pmTitle() === 'Area Hatch/Fill' && UI.pmSpec().values.pattern === 'SOLID', 'region picked through the ahatch route');
+    UI.pmCancel(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    anvil.drawing.close(); await idle();
+    return fills.length + ' filled path';
+  });
+  // --- end rfAG ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

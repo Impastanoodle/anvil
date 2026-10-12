@@ -312,7 +312,9 @@ var Icons = (function () {
     breakView: rect(1, 5, 5, 6, '#bcd6f5', B, 1) + rect(10, 5, 5, 6, '#bcd6f5', B, 1) + ln('M7 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 M9 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5', S, 0.9),
     // (rfAD) Broken-out Section, Area Hatch/Fill
     brokenOut: rect(1.5, 2.5, 13, 11, '#bcd6f5', B, 1.1) + p('M5 5.5 C7.5 4 11.5 5 11 8 C10.5 11 6 11.5 4.5 9.5 C3.5 8 4 6.3 5 5.5 z', W, B, 0.9) + ln('M5.5 9.5 L8.5 6.5 M7 10.3 L10 7.3', S, 0.7),
-    areaHatch: p('M2 13.5 V5 L7 2 H14 V13.5 z', W, B, 1.1) + ln('M3 12.5 L12.5 3 M6 13 L13.5 5.5 M2.5 9 L8 3.5 M9.5 13 L13.5 9', S, 0.8)
+    areaHatch: p('M2 13.5 V5 L7 2 H14 V13.5 z', W, B, 1.1) + ln('M3 12.5 L12.5 3 M6 13 L13.5 5.5 M2.5 9 L8 3.5 M9.5 13 L13.5 9', S, 0.8),
+    // (rfAG) Magnetic Line: a dashed line with two balloons on it
+    magLine: ln('M0.5 8 H15.5', B, 1.1, DASH) + circ(4.5, 8, 2.8, W, S, 1) + circ(11.5, 8, 2.8, W, S, 1)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

@@ -636,7 +636,7 @@
     function add(e) { if (out.indexOf(e) < 0) out.push(e); }
     var pl = UI.activePlane();
     items.forEach(function (it) {
-      if (it.kind === 'face') { faceLoops(it.index).forEach(function (loop, k) { if (k === 0 || v.inner) loop.forEach(add); }); return; }
+      if (it.kind === 'face') { faceLoops(it.index, true).forEach(function (loop, k) { if (k === 0 || v.inner) loop.forEach(add); }); return; }
       if (!v.chain) { if (it.edge.curve != null && App.curves && App.curves[it.edge.curve]) App.curves[it.edge.curve].edges.forEach(add); else add(it.edge); return; }
       // the loop of the face most nearly in the sketch plane that holds the edge
       var best = null, bd = -1;
@@ -647,9 +647,11 @@
     });
     return out;
   }
-  // the boundary edges of face fi grouped into loops, the outer (largest) first
-  function faceLoops(fi) {
-    var edges = (App.edges || []).filter(function (e) { return !e.smooth && e.faces.indexOf(fi) >= 0; }), loops = [], used = [];
+  // the boundary edges of face fi grouped into loops, the outer (largest) first. whole: a face picked for Convert
+  // Entities keeps its tangent (smooth) edges too, e.g. the bend line of an Edge Flange's wall, so the contour closes
+  // (shop audit 2026-10-12 #1); a chain from an edge still skips them so it does not run round a bend
+  function faceLoops(fi, whole) {
+    var edges = (App.edges || []).filter(function (e) { return (whole || !e.smooth) && e.faces.indexOf(fi) >= 0; }), loops = [], used = [];
     edges.forEach(function (e0) {
       if (used.indexOf(e0) >= 0) return;
       var loop = [], stack = [e0];

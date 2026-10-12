@@ -34,12 +34,13 @@
 
   var HINTS = {
     spline: 'Click to place each spline point. Double-click, right-click or <b>Esc</b> ends the spline; click its first point to close it.',
+    styleSpline: 'Click to place each control vertex: the curve runs through the first and the last, tangent to the control polygon there. It ends at degree + 1 vertices; a double-click, right-click or <b>Esc</b> ends it sooner.',
     ellipse: 'Click the center, then the end of the major axis, then a point for the minor axis.',
     pellipse: 'Click the center, then the end of the major axis, then the start point (it sets the minor axis); move round the ellipse and click the end point.'
   };
-  var NAMES = { spline: 'Spline', ellipse: 'Ellipse', pellipse: 'Partial Ellipse' };
+  var NAMES = { spline: 'Spline', styleSpline: 'Style Spline', ellipse: 'Ellipse', pellipse: 'Partial Ellipse' };
   // the options the tool PropertyManagers keep for the next entity (per session)
-  var toolOpts = { spline: { construction: false, curv: false, cont: true }, ellipse: { construction: false }, pellipse: { construction: false } };
+  var toolOpts = { spline: { construction: false, curv: false, cont: true }, styleSpline: { construction: false, curv: false, degree: '3' }, ellipse: { construction: false }, pellipse: { construction: false } };
   var toolLast = { tool: null, index: null };   // the entity the open tool made last (its PM shows it)
 
   // ------------------------------------------------------------------ Spline tool
@@ -85,6 +86,58 @@
     readout: function (pts, p, n) {
       var q = pts[pts.length - 1];
       return 'Point ' + (pts.length + 1) + '   L ' + n(Math.hypot(p[0] - q[0], p[1] - q[1]), 2);
+    }
+  };
+
+  // ------------------------------------------------------------------ rfAH: Style Spline tool
+  // SolidWorks' Style Spline: one Bézier span of degree 3, 5 or 7 shaped by its control polygon. Click control vertex
+  // after vertex; it ends by itself at degree + 1 vertices, or sooner with a double-click / right-click / Esc (then it
+  // is elevated to the degree chosen: the same curve). Entity { t: 'spline', style: true, pts: control vertices }.
+  function styleDegree() { var d = +toolOpts.styleSpline.degree; return d === 5 || d === 7 ? d : 3; }
+  function styleEntity(pts, deg) {
+    var P = pts.map(copyPt);
+    if (deg != null && P.length - 1 !== deg) P = K.bzDegree(P, deg) || P;
+    var e = { t: 'spline', style: true, pts: P.map(function (q) { return [clean(q[0]), clean(q[1])]; }) };
+    if (toolOpts.styleSpline.curv) e.showCurvature = true;
+    return e;
+  }
+  function makeStyleSpline(pts) {
+    var f = UI.activeSketchFeature();
+    if (!f || pts.length < 2) return;
+    UI.addEntity(styleEntity(pts, styleDegree()));
+    App.tempEntities = []; UI.updateTemp();
+    madeEntity('styleSpline', f.entities.length - 1);
+    if (UI.afterSketchCommit) UI.afterSketchCommit(f, f.entities.length - 1, App.toolState);
+    UI.setStatus('Style Spline' + f.entities.length + ' added: degree ' + styleDegree() + '. Click to start another style spline, or press Esc.');
+  }
+  UI.sketchFreeHooks.styleSpline = {
+    steps: function () { return Infinity; },
+    // the curve of the vertices so far (and the cursor) with its control polygon
+    entities: function (all) {
+      var pts = all.map(copyPt);
+      if (pts.length < 2) return [];
+      var out = [{ t: 'polyline', pts: pts.map(copyPt), closed: false, construction: true }];
+      out.unshift(styleEntity(pts.slice(0, styleDegree() + 1), null));
+      return out;
+    },
+    click: function (p, st) {
+      if (st.pts.length + 1 < styleDegree() + 1) return false;   // placePoint adds the vertex
+      var pts = st.pts.concat([p]);
+      st.pts = [];
+      makeStyleSpline(pts);
+      UI.cancelTool(true);
+      return true;
+    },
+    finish: function (st) {
+      var pts = st.pts.slice();
+      st.pts = [];
+      while (pts.length >= 2 && pxDist(pts[pts.length - 1], pts[pts.length - 2]) < 6) pts.pop();
+      if (pts.length >= 2) makeStyleSpline(pts);
+      else UI.setStatus('A style spline needs at least two control vertices.');
+    },
+    readout: function (pts, p, n) {
+      var q = pts[pts.length - 1];
+      return 'Vertex ' + (pts.length + 1) + ' of ' + (styleDegree() + 1) + '   L ' + n(Math.hypot(p[0] - q[0], p[1] - q[1]), 2);
     }
   };
 
@@ -239,25 +292,38 @@
     var f = UI.activeSketchFeature();
     if (!f || toolLast.tool !== tool || toolLast.index == null) return null;
     var e = f.entities[toolLast.index];
-    return e && (e.t === tool || (tool !== 'spline' && /ellipse$/.test(e.t))) ? { f: f, e: e, index: toolLast.index } : null;
+    var ok = tool === 'styleSpline' ? e && e.t === 'spline' && e.style : e && (e.t === tool || (tool !== 'spline' && /ellipse$/.test(e.t)));   // rfAH
+    return ok ? { f: f, e: e, index: toolLast.index } : null;
   }
   function openToolPM(tool) {
     var o = toolOpts[tool], made = lastMade(tool), groups = [];
     App.drawConstruction = !!o.construction;
-    var values = { construction: !!o.construction, curv: !!o.curv, cont: o.cont !== false };
+    var values = { construction: !!o.construction, curv: !!o.curv, cont: o.cont !== false, degree: String(o.degree || '3') };
     var optFields = [{ type: 'check', label: 'For construction', key: 'construction' }];
+    if (tool === 'styleSpline') {   // rfAH: Spline Degree, then Options (as SolidWorks' Style Spline PropertyManager)
+      groups.push({ title: 'Spline Degree', fields: [{ type: 'radio', key: 'degree', options: [['3', 'Degree 3'], ['5', 'Degree 5'], ['7', 'Degree 7']] }] });
+      optFields.push({ type: 'check', label: 'Show curvature', key: 'curv' });
+    }
     if (tool === 'spline') optFields.push({ type: 'check', label: 'Show curvature', key: 'curv' }, { type: 'check', label: 'Maintain internal continuity', key: 'cont' });
     groups.push({ title: 'Options', fields: optFields });
-    if (made && tool === 'spline') groups.push({ title: 'Parameters', fields: [{ type: 'static', label: 'Number of points', value: made.e.pts.length + (made.e.closed ? ' (closed)' : '') }] });
+    if (made && tool === 'styleSpline') groups.push({ title: 'Parameters', fields: [{ type: 'static', label: 'Control vertices', value: made.e.pts.length + ' (degree ' + (made.e.pts.length - 1) + ')' }] });
+    else if (!made && tool === 'styleSpline') groups.push({ title: 'Parameters', fields: [{ type: 'static', label: '', value: 'Place the first control vertex.' }] });
+    else if (made && tool === 'spline') groups.push({ title: 'Parameters', fields: [{ type: 'static', label: 'Number of points', value: made.e.pts.length + (made.e.closed ? ' (closed)' : '') }] });
     else if (made) { var ef = ellipseFields(made.e); groups.push({ title: 'Parameters', fields: ef }); ellipseValues(made.e, values); }
     else groups.push({ title: 'Parameters', fields: [{ type: 'static', label: '', value: tool === 'spline' ? 'Place the first point.' : 'Click the center.' }] });
     UI.openPM({
       // sketchTool (rfA): the PM closes when the tool is put down (Esc), as Insert Line's does; it stayed open over the
       // Select tool
-      title: tool === 'spline' ? 'Spline' : 'Ellipse', icon: tool, values: values, _skTool: tool, sketchTool: tool, keepSelection: true, noFocus: true,
+      title: NAMES[tool] === 'Partial Ellipse' ? 'Ellipse' : NAMES[tool], icon: tool, values: values, _skTool: tool, sketchTool: tool, keepSelection: true, noFocus: true,
       message: HINTS[tool],
       groups: groups,
       onChange: function (v, key) {
+        if (key === 'degree') {   // rfAH: the next style spline's degree; the one just drawn changes with it
+          o.degree = String(v.degree);
+          var md = lastMade(tool);
+          if (md) { markDirty(); setStyleDegree(md.f, md.index, md.e, styleDegree()); refresh(); }
+          return;
+        }
         if (key === 'construction' || key === 'curv' || key === 'cont') {
           o[key] = !!v[key];
           if (key === 'construction') App.drawConstruction = !!v.construction;
@@ -280,7 +346,7 @@
     });
     setHint(tool);
   }
-  ['spline', 'ellipse', 'pellipse'].forEach(function (tool) {
+  ['spline', 'styleSpline', 'ellipse', 'pellipse'].forEach(function (tool) {
     UI.sketchToolPMs[tool] = function () {
       toolLast = { tool: tool, index: null };
       openToolPM(tool);
@@ -493,7 +559,114 @@
       onOK: function () { App.sel = null; UI.updateSketches(); }
     });
   }
-  UI.sketchEntityPMs.spline = openSplinePM;
+  // ------------------------------------------------------------------ rfAH: Style Spline PropertyManager
+  // Existing / Add Relations of the control vertex picked, Options (For construction, Show curvature), Spline Degree
+  // (3 / 5 / 7: raising it elevates the curve exactly, lowering it fits the nearest curve of that degree with the same
+  // ends and end tangent directions), Parameters (Control vertex number, its X / Y). The control polygon is drawn for
+  // every style spline of the active sketch; its vertices are sketch points (relations, dragging).
+  // the degree of style spline `index` becomes deg: its relations on inner vertices go when their count changes (the
+  // last vertex's follow it)
+  function setStyleDegree(f, index, e, deg) {
+    var n0 = e.pts.length - 1;
+    if (deg === n0) return;
+    var P = K.bzDegree(e.pts, deg);
+    if (!P) return;
+    e.pts = P.map(function (q) { return [clean(q[0]), clean(q[1])]; });
+    if (f.rels) {
+      var re = new RegExp('^' + index + '\\.v(\\d+)$');
+      f.rels = f.rels.filter(function (rel) { return !rel.refs.some(function (r) { var m = re.exec(r); return m && +m[1] > 0 && +m[1] < n0; }); });
+      f.rels.forEach(function (rel) { rel.refs = rel.refs.map(function (r) { var m = re.exec(r); return m && +m[1] === n0 ? index + '.v' + deg : r; }); });
+      if (!f.rels.length) delete f.rels;
+    }
+    splineSel.pt = Math.min(splineSel.pt, e.pts.length - 1);
+    solveAfterEdit(f, index);
+  }
+  UI.setStyleSplineDegree = function (index, deg) {   // script / test hook
+    var f = UI.activeSketchFeature(), e = f && f.entities[index];
+    if (!e || !e.style || [3, 5, 7].indexOf(+deg) < 0) return false;
+    markDirty(); setStyleDegree(f, index, e, +deg); refresh();
+    return true;
+  };
+  // Horizontal / Vertical on the control polygon leg after the picked vertex (a relation between its two vertices)
+  function styleLegRelation(f, index, e, type) {
+    var S = SS(), k = Math.max(0, Math.min(splineSel.pt, e.pts.length - 2));
+    if (!S) return false;
+    markDirty();
+    var r = S.addRelation(f, type, [index + '.v' + k, index + '.v' + (k + 1)]);
+    if (!r.ok) UI.toast(r.error || 'That relation cannot be added.');
+    refresh();
+    return r.ok;
+  }
+  UI.styleSplineLeg = function (index, k, type) {   // test hook: Horizontal / Vertical on leg k (vertices k, k + 1)
+    var f = UI.activeSketchFeature(), e = f && f.entities[index];
+    if (!e || !e.style) return false;
+    splineSel = { index: index, pt: k };
+    return styleLegRelation(f, index, e, type);
+  };
+  function styleValues(e, v) {
+    var i = Math.max(0, Math.min(e.pts.length - 1, splineSel.pt)), d = e.pts.length - 1;
+    v.construction = !!e.construction; v.curv = !!e.showCurvature;
+    v.degree = String(d === 5 || d === 7 ? d : 3); v.pt = i + 1; v.x = clean(e.pts[i][0]); v.y = clean(e.pts[i][1]);
+    return v;
+  }
+  function openStyleSplinePM(index, e, f) {
+    if (splineSel.index !== index) splineSel = { index: index, pt: 0 };
+    if (lastPress && performance.now() - lastPress.at < 1500) {
+      var best = -1, bd = 12;
+      e.pts.forEach(function (q, i) { var s = scr(q), d = Math.hypot(s[0] - lastPress.x, s[1] - lastPress.y); if (d < bd) { bd = d; best = i; } });
+      if (best >= 0) splineSel.pt = best;
+      lastPress = null;
+    }
+    splineSel.pt = Math.max(0, Math.min(e.pts.length - 1, splineSel.pt));
+    var v = styleValues(e, {}), u = 'u';
+    UI.openPM({
+      title: 'Style Spline', icon: 'styleSpline', values: v, noFocus: true, _skEntity: { index: index, t: 'spline', style: true },
+      groups: relationGroups(f, index, [index + '.v' + splineSel.pt]).concat([
+        { title: 'Options', fields: [
+          { type: 'check', label: 'For construction', key: 'construction' },
+          { type: 'check', label: 'Show curvature', key: 'curv' }
+        ] },
+        { title: 'Spline Degree', fields: [{ type: 'radio', key: 'degree', options: [['3', 'Degree 3'], ['5', 'Degree 5'], ['7', 'Degree 7']] }] },
+        { title: 'Parameters', fields: [
+          { type: 'static', label: 'Control vertices', value: function () { return String(e.pts.length); } },
+          { type: 'number', label: 'Control vertex number', key: 'pt', step: 1, min: 1 },
+          { type: 'number', label: 'X Coordinate', key: 'x', unit: u },
+          { type: 'number', label: 'Y Coordinate', key: 'y', unit: u }
+        ] },
+        // the control polygon leg from the picked vertex to the next (the last vertex: from the one before): Horizontal
+        // / Vertical on it, as SolidWorks offers on a selected control polygon line
+        { title: 'Control Polygon', fields: [
+          { type: 'static', label: 'Leg', value: function () { var k = Math.min(splineSel.pt, e.pts.length - 2); return (k + 1) + ' – ' + (k + 2); } },
+          { type: 'buttons', buttons: ['horizontal', 'vertical'].map(function (t) {
+            return { label: t === 'horizontal' ? 'Horizontal' : 'Vertical', onclick: function () { styleLegRelation(f, index, e, t); openStyleSplinePM(index, e, f); } };
+          }) }
+        ] }
+      ]),
+      onChange: function (vals, key) {
+        if (!key) return;
+        var i = splineSel.pt;
+        if (key === 'pt') {
+          var k = Math.round(+vals.pt) - 1;
+          if (!(k >= 0 && k < e.pts.length)) { vals.pt = i + 1; UI.renderPM(); return; }
+          splineSel.pt = k;
+          openStyleSplinePM(index, e, f);
+          return;
+        }
+        markDirty();
+        if (key === 'construction') { if (vals.construction) e.construction = true; else delete e.construction; }
+        else if (key === 'curv') { if (vals.curv) e.showCurvature = true; else delete e.showCurvature; }
+        else if (key === 'degree') { setStyleDegree(f, index, e, +vals.degree); refresh(); openStyleSplinePM(index, e, f); return; }
+        else if (key === 'x' || key === 'y') {
+          if (!isFinite(+vals[key])) return;
+          e.pts[i][key === 'x' ? 0 : 1] = +vals[key];
+          solveAfterEdit(f, index);
+        }
+        refresh();
+      },
+      onOK: function () { App.sel = null; UI.updateSketches(); }
+    });
+  }
+  UI.sketchEntityPMs.spline = function (index, e, f) { return e && e.style ? openStyleSplinePM(index, e, f) : openSplinePM(index, e, f); };
   // the press that selects a spline (or one of its points): openSplinePM shows the point nearest it
   if (UI.viewport) UI.viewport.addEventListener('mousedown', function (ev) {
     if (App.mode !== 'sketch' || ev.button !== 0) return;
@@ -518,7 +691,7 @@
       var a = document.activeElement, root = $('pm');
       if (!(a && root && root.contains(a) && /^(input|select|textarea)$/i.test(a.tagName))) {
         var v = spec.values || {};
-        if (e.t === 'spline' && spec._skEntity) splineValues(e, v);
+        if (e.t === 'spline' && spec._skEntity) { if (e.style) styleValues(e, v); else splineValues(e, v); }
         else if (/ellipse$/.test(e.t)) ellipseValues(e, v);
         if (UI.renderPM) UI.renderPM();
       }
@@ -530,7 +703,7 @@
   // A spline with Show curvature carries a comb in the active sketch, as SolidWorks draws it: teeth perpendicular to the
   // curve, their length proportional to the curvature, on the outside of the bend, joined by an envelope. The spline
   // point being edited in the Spline PropertyManager is marked with a square.
-  var combGroup = null, combSig = null, combMat = null, markMat = null;
+  var combGroup = null, combSig = null, combMat = null, markMat = null, polyMat = null;
   function combLines(e) {
     var g = K.splineGeom(e), segs = [], env = [];
     if (!g) return segs;
@@ -562,18 +735,19 @@
     if (typeof THREE === 'undefined' || !UI.scene) return;
     var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, spec = UI.pmSpec && UI.pmSpec();
     var mark = spec && spec._skEntity && spec._skEntity.t === 'spline' ? spec._skEntity.index : null;
-    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || i === mark) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];
+    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || e.style || i === mark) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];   // rfAH: style splines show their control polygon
     var sig = list.length ? JSON.stringify([f.id, App.activeSketch, list.map(function (i) { return f.entities[i]; }), mark, mark != null ? splineSel.pt : null, UI.cam ? UI.cam.scale : 0]) : '';
     if (sig === combSig) return;
     combSig = sig;
     if (!combGroup) { combGroup = new THREE.Group(); combGroup.renderOrder = 12; UI.scene.add(combGroup); }
     while (combGroup.children.length) { var c = combGroup.children.pop(); if (c.geometry) c.geometry.dispose(); }
     if (list.length) {
-      var pl = UI.activePlane(), pos = [], mpos = [];
+      var pl = UI.activePlane(), pos = [], mpos = [], cpos = [];
       var push = function (arr, a, b) { var A = K.to3D(pl, a[0], a[1]), B = K.to3D(pl, b[0], b[1]); arr.push(A[0], A[1], A[2], B[0], B[1], B[2]); };
       list.forEach(function (i) {
         var e = f.entities[i];
         if (e.showCurvature) combLines(e).forEach(function (s) { push(pos, s[0], s[1]); });
+        if (e.style) for (var cq = 0; cq + 1 < e.pts.length; cq++) push(cpos, e.pts[cq], e.pts[cq + 1]);   // rfAH: the control polygon
         if (i === mark && e.pts[splineSel.pt]) {   // the picked spline point: a small square, 4 px a side
           var q = e.pts[splineSel.pt], h = 4 * (UI.cam ? UI.cam.scale : 0.1);
           var sq = [[q[0] - h, q[1] - h], [q[0] + h, q[1] - h], [q[0] + h, q[1] + h], [q[0] - h, q[1] + h]];
@@ -581,7 +755,8 @@
         }
       });
       if (!combMat) { combMat = new THREE.LineBasicMaterial({ color: 0xb03ab8, depthTest: false, transparent: true, opacity: 0.85 }); markMat = new THREE.LineBasicMaterial({ color: 0xe8891c, depthTest: false }); }
-      [[pos, combMat], [mpos, markMat]].forEach(function (pm) {
+      if (!polyMat) polyMat = new THREE.LineBasicMaterial({ color: 0x7a8794, depthTest: false, transparent: true, opacity: 0.8 });
+      [[pos, combMat], [mpos, markMat], [cpos, polyMat]].forEach(function (pm) {
         if (!pm[0].length) return;
         var geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(pm[0], 3));
@@ -594,13 +769,14 @@
   }
   // a light poll keeps the comb and an open PM in step with drags, undo and relation edits whoever made them
   setInterval(function () { try { updateComb(); syncOpenPM(); } catch (err) { /* never break the app for an overlay */ } }, 200);
-  UI.splineComb = function (e) { return combLines(e); };   // test hook: the comb's segments [[p, q], …] of spline e
+  UI.splineComb = function (e) { return combLines(e); };
+  UI.styleSplineOverlay = function () { try { updateComb(); } catch (err) { /* */ } return combGroup ? combGroup.children.length : 0; };   // rfAH test hook: overlay objects shown   // test hook: the comb's segments [[p, q], …] of spline e
 
   // ------------------------------------------------------------------ command search (Search Commands box)
   document.addEventListener('keydown', function (ev) {
     var t = ev.target;
     if (ev.key !== 'Enter' || !t || t.id !== 'cmd-search') return;
-    var q = String(t.value || '').toLowerCase(), tool = /partial\s*ellipse|elliptical\s*arc/.test(q) ? 'pellipse' : /ellipse/.test(q) ? 'ellipse' : /spline/.test(q) ? 'spline' : null;
+    var q = String(t.value || '').toLowerCase(), tool = /partial\s*ellipse|elliptical\s*arc/.test(q) ? 'pellipse' : /ellipse/.test(q) ? 'ellipse' : /style\s*spline|b[eé]zier/.test(q) ? 'styleSpline' : /spline/.test(q) ? 'spline' : null;
     if (!tool) return;
     ev.preventDefault(); ev.stopImmediatePropagation();
     t.value = ''; t.blur();

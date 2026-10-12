@@ -2437,6 +2437,16 @@ var SketchSolver = (function () {
   function bzD1(B, s) { var u = 1 - s, d0 = 3 * u * u, d1 = 6 * u * s, d2 = 3 * s * s; return [d0 * (B[1][0] - B[0][0]) + d1 * (B[2][0] - B[1][0]) + d2 * (B[3][0] - B[2][0]), d0 * (B[1][1] - B[0][1]) + d1 * (B[2][1] - B[1][1]) + d2 * (B[3][1] - B[2][1])]; }
   function freeCurve(e) {
     if (!isFree(e)) return null;
+    if (e.t === 'spline' && e.style && K && K.bzPoint) {
+      // rfAH: a style spline: its one Bézier span exactly, t in [0, 1] (the polynomial carried on past its ends: Extend)
+      var SP = (e.pts || []).map(function (q) { return [+q[0], +q[1]]; });
+      if (SP.length < 2) return null;
+      var gs = K.splineGeom(e), Ls = gs && gs.style ? gs.style.L : 1;
+      return { e: e, g: gs, style: true, t0: 0, t1: 1, closed: false, per: 1, n: 16 * Math.max(4, SP.length), reach: 1,
+        pt: function (t) { return K.bzPoint(SP, t); },
+        d1: function (t) { return K.bzDeriv(SP, t); },
+        knotD1: function (t) { var d = K.bzDeriv(SP, t); return [d[0] / Ls, d[1] / Ls]; } };
+    }
     if (e.t === 'spline') {
       var g = K && K.splineGeom ? K.splineGeom(e) : null;
       if (!g || !g.bez.length) return null;
@@ -2602,7 +2612,11 @@ var SketchSolver = (function () {
   function freePiece(fc, ta, tb) {
     var e = fc.e, o;
     function r6(x) { return Math.round(x * 1e6) / 1e6; }
-    if (e.t !== 'spline') {
+    if (e.t === 'spline' && e.style) {
+      // rfAH: the piece of a style spline is a style spline of the same degree (the Bézier's own sub-span, exactly)
+      o = { t: 'spline', style: true, pts: K.bzSub(e.pts, ta, tb).map(function (q) { return [r6(q[0]), r6(q[1])]; }) };
+      if (e.showCurvature) o.showCurvature = true;
+    } else if (e.t !== 'spline') {
       o = { t: 'pellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, rot: +e.rot || 0, a0: ta / D2R, a1: tb / D2R };
       while (o.a0 >= 360) { o.a0 -= 360; o.a1 -= 360; }
       while (o.a0 < 0) { o.a0 += 360; o.a1 += 360; }
@@ -2774,7 +2788,7 @@ var SketchSolver = (function () {
       var sw = fc.t1 - fc.t0, rest = 2 * Math.PI - sw;
       if (rest < 1e-9) return null;
       ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + rest } : { t0: fc.t0 - rest, t1: fc.t0 };
-    } else ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + 3 } : { t0: fc.t0 - 3, t1: fc.t0 };
+    } else { var rch = fc.reach || 3; ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + rch } : { t0: fc.t0 - rch, t1: fc.t0 }; }
     var xc = { e: e, t0: ext.t0, t1: ext.t1, closed: false, per: fc.per, n: 96, pt: fc.pt, d1: fc.d1 }, sm = freeSamples(xc), best = null;
     E.forEach(function (o, j) {
       if (j === i || !o || o.t === 'point') return;
@@ -2798,6 +2812,7 @@ var SketchSolver = (function () {
     var saved = tSave(sketch), before = analyze(sketch);
     dropEndCoincidents(sketch, [endRef]);
     if (e.t === 'pellipse') { if (tg.end === 'p2') e.a1 = tg.a; else e.a0 = tg.a; normArc(e); }
+    else if (e.style) styleRegrow(sketch, i, tg.end === 'p2' ? 0 : tg.t, tg.end === 'p2' ? tg.t : 1, tg.end);   // rfAH
     else {
       // the old end stays as a spline point; its relations stay on it (renumbered when the new point goes first)
       var P = [Math.round(tg.to[0] * 1e6) / 1e6, Math.round(tg.to[1] * 1e6) / 1e6];
@@ -2832,7 +2847,7 @@ var SketchSolver = (function () {
   function freeOffset(e, d) {
     var fc = freeCurve(e);
     if (!fc) return null;
-    var ts = [], k, n = e.t === 'spline' ? fc.t1 * 4 : 24;
+    var ts = [], k, n = e.t === 'spline' ? (fc.style ? 4 * Math.max(4, e.pts.length) : fc.t1 * 4) : 24;   // rfAH: a style spline: 4 per control vertex
     for (k = 0; k <= n; k++) ts.push(fc.t0 + (fc.t1 - fc.t0) * k / n);
     if (fc.closed) ts.pop();
     var sm = freeSamples(fc), area = 0;
@@ -3290,7 +3305,7 @@ var SketchSolver = (function () {
   // keeps the side clicked, and the two ends are joined (Coincident).
   function cornerFree(E, i, j) { return !!((E[i] && E[i].t === 'spline') || (E[j] && E[j].t === 'spline')); }
   // the curve Corner follows along an open spline: the spline carried on three spans past each end
-  function cornerReach(fc) { return { e: fc.e, t0: fc.t0 - 3, t1: fc.t1 + 3, closed: false, per: fc.per, n: Math.ceil(24 * (fc.t1 - fc.t0 + 6)), pt: fc.pt, d1: fc.d1 }; }
+  function cornerReach(fc) { var r = fc.reach || 3; return { e: fc.e, t0: fc.t0 - r, t1: fc.t1 + r, closed: false, per: fc.per, n: fc.style ? 3 * fc.n : Math.ceil(24 * (fc.t1 - fc.t0 + 6)), pt: fc.pt, d1: fc.d1 }; }
   function freeCornerPlan(sketch, i, uvi, j, uvj) {
     var E = sketch.entities, a = E[i], b = E[j];
     function usable(e) { return !!e && (e.t === 'line' || e.t === 'arc' || (e.t === 'spline' && !e.closed)); }
@@ -3323,7 +3338,7 @@ var SketchSolver = (function () {
   function freeSideEntity(e, s) {
     if (s.same) return e;
     var fc = freeCurve(e);
-    if (s.cut) return freePiece(fc, s.end === 'p2' ? fc.t0 : s.t, s.end === 'p2' ? s.t : fc.t1);
+    if (s.cut || fc.style) return freePiece(fc, s.end === 'p2' ? fc.t0 : s.t, s.end === 'p2' ? s.t : fc.t1);   // rfAH: a style spline carried on is its own Bézier, longer
     var o = clone(e), P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
     if (s.end === 'p2') { o.pts.push(P); if (o.tans) o.tans.push(null); } else { o.pts.unshift(P); if (o.tans) o.tans.unshift(null); }
     return o;
@@ -3339,6 +3354,7 @@ var SketchSolver = (function () {
       freeAfterTrim(sketch, before, k, 1, an0, null);
       return;
     }
+    if (e.style) { styleRegrow(sketch, k, s.end === 'p2' ? 0 : s.t, s.end === 'p2' ? s.t : 1, s.end); return; }   // rfAH
     var P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
     if (s.end === 'p2') { e.pts.push(P); if (e.tans) e.tans.push(null); }
     else {
@@ -3347,6 +3363,18 @@ var SketchSolver = (function () {
     }
     var n = e.pts.length;
     (sketch.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { return r === k + '.' + s.end ? k + '.v' + (s.end === 'p2' ? n - 2 : 1) : r; }); });
+  }
+  // rfAH: a style spline carried on (Extend, Corner) to its Bézier from a to b (one of them past [0, 1]): its control
+  // vertices are redrawn, so the relations on its inner vertices and on the end that moved go (the other end, a point
+  // lying on the curve and its dimensions stay)
+  function styleRegrow(sketch, i, a, b, end) {
+    var e = sketch.entities[i];
+    e.pts = K.bzSub(e.pts, a, b).map(function (q) { return [Math.round(q[0] * 1e6) / 1e6, Math.round(q[1] * 1e6) / 1e6]; });
+    if (!sketch.rels) return;
+    sketch.rels = sketch.rels.filter(function (rel) {
+      return !rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === i && (p.s === 'v' || (p.s === 'p' && (end === 'p2' ? p.k === 2 : p.k === 1))); });
+    });
+    if (!sketch.rels.length) delete sketch.rels;
   }
   function freeCornerTrim(sketch, i, uvi, j, uvj) {
     var pl = freeCornerPlan(sketch, i, uvi, j, uvj);

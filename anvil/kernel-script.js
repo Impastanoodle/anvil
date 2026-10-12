@@ -333,9 +333,11 @@
   };
   // spline(layer, bez, knots): a cubic SPLINE (R2000 only) made of Bézier spans bez[i] = [B0, B1, B2, B3] running from
   // knot i to knot i + 1 (interior knots of multiplicity 3: each span is exact, the curve as continuous as the spans)
-  DXF.prototype.spline = function (layer, bez, knots) {
+  // rfAH: style (a style spline's { cps, degree, L }) writes its single Bézier span exactly instead: degree n, clamped
+  // knots [0 × (n + 1), L × (n + 1)], its control vertices
+  DXF.prototype.spline = function (layer, bez, knots, style) {
     var self = this;
-    this.ents.push({ k: 'SPLINE', layer: layer, bez: bez, knots: knots });
+    this.ents.push({ k: 'SPLINE', layer: layer, bez: bez, knots: knots, style: style && style.degree > 3 ? style : null });
     bez.forEach(function (B) { for (var i = 0; i <= 8; i++) { var p = K.bezPoint(B, i / 8); self._grow(p[0], p[1]); } });
   };
   // ellipse(layer, centre, major (vector from the centre to the major axis end), ratio (minor / major ≤ 1), start,
@@ -469,11 +471,16 @@
         P(50, fmtA(e.a0)); P(51, fmtA(e.a1));
       } else if (e.k === 'SPLINE') {
         // degree 3, planar (flag 8), clamped; one Bézier span per knot interval (interior knots × 3)
-        var kn = [e.knots[0], e.knots[0], e.knots[0], e.knots[0]], cps = [e.bez[0][0]];
+        var kn = [e.knots[0], e.knots[0], e.knots[0], e.knots[0]], cps = [e.bez[0][0]], deg = 3;
         e.bez.forEach(function (B, i) { cps.push(B[1], B[2], B[3]); var t = e.knots[i + 1]; kn.push(t, t, t); });
         kn.push(e.knots[e.bez.length]);
+        if (e.style) {   // rfAH: a style spline of degree 5 / 7: its one Bézier span, exactly
+          deg = e.style.degree; cps = e.style.cps; kn = [];
+          for (var sk = 0; sk <= deg; sk++) kn.push(0);
+          for (sk = 0; sk <= deg; sk++) kn.push(e.style.L);
+        }
         head('SPLINE', e.layer, 'AcDbSpline');
-        P(210, 0); P(220, 0); P(230, 1); P(70, 8); P(71, 3); P(72, kn.length); P(73, cps.length); P(74, 0);
+        P(210, 0); P(220, 0); P(230, 1); P(70, 8); P(71, deg); P(72, kn.length); P(73, cps.length); P(74, 0);
         P(42, '0.0000000001'); P(43, '0.0000000001');
         kn.forEach(function (t) { P(40, fmtA(t)); });
         cps.forEach(function (q) { P(10, fmtD(q[0])); P(20, fmtD(q[1])); P(30, 0); });
@@ -568,7 +575,12 @@
     if (e.t === 'spline') {
       var g = K.splineGeom(e);
       if (!g) return;
-      if (r2000) { d.spline(layer, g.bez, g.knots); return; }
+      if (r2000) { d.spline(layer, g.bez, g.knots, g.style); return; }
+      if (g.style && g.style.degree > 3) {   // rfAH: R12: arcs along the style spline's own Bézier
+        var SP = g.style.cps;
+        emitArcs(freeArcs(function (s) { return K.bzPoint(SP, s); }, 0, 1, tol, 1));
+        return;
+      }
       // a span of zero length (a closed spline whose last point repeats the first) writes nothing (rfL: it wrote an
       // ARC with r = 0 and NaN angles)
       g.bez.forEach(function (B) {
@@ -1091,6 +1103,16 @@
     if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]] : null; });
     return this._e(e);
   };
+  // rfAH: styleSpline(controlVertices, { degree: 3 | 5 | 7 }?): a Style Spline, one Bézier span shaped by its control
+  // polygon (Kernel.splineGeom). Without a degree it is the number of vertices less one; a different degree elevates
+  // (exact) or fits (Kernel.bzDegree) the vertices given.
+  SketchBuilder.prototype.styleSpline = function (pts, opts) {
+    var s = this, P = pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }), deg = opts && opts.degree != null ? +opts.degree : P.length - 1;
+    if (P.length < 2) throw new Error('A style spline needs at least two control vertices.');
+    if (!(deg >= 1 && deg <= 7 && deg === Math.round(deg))) throw new Error('A style spline is of degree 3, 5 or 7.');
+    if (deg !== P.length - 1) P = K.bzDegree(P, deg).map(function (q) { return [Math.round(q[0] * 1e9) / 1e9, Math.round(q[1] * 1e9) / 1e9]; });
+    return this._e({ t: 'spline', style: true, pts: P });
+  };
   SketchBuilder.prototype.ellipse = function (cx, cy, rx, ry, rot) { var s = this; return this._e({ t: 'ellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0) }); };
   SketchBuilder.prototype.partialEllipse = function (cx, cy, rx, ry, rot, a0, a1) { var s = this; return this._e({ t: 'pellipse', cx: s._v(cx), cy: s._v(cy), rx: s._v(rx), ry: s._v(ry), rot: s._v(rot || 0), a0: s._v(a0), a1: s._v(a1) }); };
   // sketch-text: text(x, y, str, opts?) — Sketch Text in Anvil's single-stroke font (Kernel.textLayout): opts { h (letter
@@ -1271,7 +1293,8 @@
               case 'aslot': s += '\n  .arcSlot(' + [e.cx, e.cy, e.r, e.a0, e.a1, e.w].join(', ') + ')'; break;
               case 'polyline': s += '\n  .polyline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + ')'; break;
               case 'point': s += '\n  .point(' + e.x + ', ' + e.y + ')'; break;
-              case 'spline': s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : '') + ')'; break;
+              case 'spline': if (e.style) { s += '\n  .styleSpline(' + JSON.stringify(e.pts) + ', { degree: ' + (e.pts.length - 1) + ' })'; break; }   // rfAH
+                s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : '') + ')'; break;
               case 'ellipse': s += '\n  .ellipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0].join(', ') + ')'; break;
               case 'pellipse': s += '\n  .partialEllipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0, e.a0, e.a1].join(', ') + ')'; break;
               case 'text': s += '\n  .text(' + [e.x, e.y, JSON.stringify(String(e.str == null ? '' : e.str))].join(', ') + ', ' + JSON.stringify(textOptsOut(e)) + ')'; break;   // sketch-text

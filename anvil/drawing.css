@@ -38,6 +38,10 @@
 .dw-props input[data-tb] { font-family: Consolas, "IBM Plex Mono", monospace; font-size: 12px; }
 /* Section View cutting line and Detail View circle previews */
 #dw-overlay .dw-cut { fill: none; stroke: var(--dw-hot); }
+/* (rfAG) magnetic lines for balloons: on screen only, never printed */
+#dw-overlay .dw-mag { fill: none; stroke: #b04fc8; opacity: 0.8; pointer-events: none; }
+#dw-overlay .dw-mag.pre { stroke: var(--dw-pre); opacity: 1; }
+#dw-overlay .dw-mag.sel { stroke: var(--dw-hot); opacity: 1; }
 /* Document Properties: checkbox rows span both columns */
 .dw-props .dw-opt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
 .dw-docprops input[type=number] { width: 80px; }

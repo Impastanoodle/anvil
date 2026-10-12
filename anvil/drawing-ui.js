@@ -719,7 +719,8 @@
       if (P.r != null && P.at) { var ds = Drawing.scaleValue(P.scale); ghost(P.at[0], P.at[1], 2 * P.r * ds, 2 * P.r * ds); }
     }
     D.preview = null;
-    if (/^(aux|crop|brk)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
+    if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
+    if (DW.magOverlay) DW.magOverlay(g, H, svgNode);   // (rfAG) magnetic lines (not printed)
     if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);   // (rfAE) sheet format items, General Tables, their tools
   }
   function dimMatches(ref, d) { return ref.view === d.view && (ref.key ? ref.key === d.key : ref.index === d.index && d.index != null); }
@@ -938,7 +939,14 @@
       if (dd.kind === 'dim') { dd.noSnap = !!e.altKey; DW.dragDim(pd); }   // Alt: no snapping (r4/drawings4)
       else if (dd.kind === 'balloon') {
         var vb = Drawing.findView(doc(), dd.view), bb = vb && vb.balloons && vb.balloons[dd.index];
-        if (bb) { bb.pos = [dd.c0[0] + pd[0] - dd.start[0] - vb.x, dd.c0[1] + pd[1] - dd.start[1] - vb.y]; queueRender(true); }
+        if (bb) {
+          // (rfAG) near a magnetic line of its view it snaps onto it (and spreads evenly with the others there)
+          var nc = [dd.c0[0] + pd[0] - dd.start[0], dd.c0[1] + pd[1] - dd.start[1]], ms = !e.altKey && DW.magSnap ? DW.magSnap(dd.view, nc) : null;
+          delete bb.side;
+          if (ms) { bb.mag = ms.id; bb.magT = ms.t; delete bb.pos; }
+          else { delete bb.mag; delete bb.magT; bb.pos = [nc[0] - vb.x, nc[1] - vb.y]; }
+          queueRender(true);
+        }
       } else {
         var fa = Drawing.findAnnotation(doc(), dd.id);
         if (fa) { fa.annotation.lead = [dd.lead0[0] + pd[0] - dd.start[0], dd.lead0[1] + pd[1] - dd.start[1]]; queueRender(true); }
@@ -957,7 +965,7 @@
       var q = toPaper(e), h = null;
       if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
       // (rfW) Auxiliary / Crop / Break follow the pointer; before its edge is picked, Auxiliary pre-highlights straight edges
-      if (/^(aux|crop|brk)$/.test(D.tool) && D.pending) {
+      if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && D.pending) {
         D.pending.at = q;
         if (D.tool === 'aux' && D.pending.parent == null) { var ea = entityAt(q); D.hover = ea && ea.la ? ea : null; } else D.hover = null;
         drawOverlay(); return;

@@ -192,7 +192,7 @@
   // so neighbouring lines' dashes stagger the same way everywhere
   function patternLines(loops, sp, ang, pattern) {
     var out = [];
-    if (!(sp > 0) || !isFinite(sp)) return out;   // (rfAD: a region with its own Area Hatch is drawn by regionHatch)
+    if (!(sp > 0) || !isFinite(sp)) return out;
     (HATCH_PATTERNS[pattern] || HATCH_PATTERNS.ANSI31).forEach(function (fam) {
       var a = ang + fam.da, d = [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
       fam.offs.forEach(function (o) {
@@ -230,6 +230,10 @@
       return !(x0 > R[2] || x0 + w < R[0] || p.p[1] > R[3] || p.p[1] + p.h < R[1]);
     }
     if (p.k === 'fill') { for (var i = 0; i < p.pts.length; i++) if (segHits(p.pts[i], p.pts[(i + 1) % p.pts.length])) return true; return false; }
+    if (p.k === 'region') {   // (rfAG) a solid fill: an edge crosses the box, or the box lies inside it
+      for (var li = 0; li < p.loops.length; li++) { var lp = p.loops[li]; for (var lj = 0; lj < lp.length; lj++) if (segHits(lp[lj], lp[(lj + 1) % lp.length])) return true; }
+      return inLoops([(R[0] + R[2]) / 2, (R[1] + R[3]) / 2], p.loops);
+    }
     if (p.k === 'circle' || p.k === 'arc') {
       var nx = Math.max(R[0], Math.min(p.c[0], R[2])), ny = Math.max(R[1], Math.min(p.c[1], R[3])), dmin = Math.hypot(nx - p.c[0], ny - p.c[1]);
       var dmax = Math.max(Math.hypot(R[0] - p.c[0], R[1] - p.c[1]), Math.hypot(R[2] - p.c[0], R[1] - p.c[1]), Math.hypot(R[0] - p.c[0], R[3] - p.c[1]), Math.hypot(R[2] - p.c[0], R[3] - p.c[1]));
@@ -257,6 +261,55 @@
     if (t1 < 1 - 1e-9) out.push([at(t1), b]);
     return out;
   }
+  // (rfAG) solid fills (k 'region': loops filled even-odd). clipLoopsConvex(loops, C): each loop clipped to the convex
+  // polygon C (Sutherland-Hodgman), so the even-odd interior of the result is the region's inside C; loops left with
+  // under three points are dropped
+  function clipLoopsConvex(loops, C) {
+    var n = C.length, area = 0;
+    for (var i = 0; i < n; i++) area += C[i][0] * C[(i + 1) % n][1] - C[(i + 1) % n][0] * C[i][1];
+    var sg = area < 0 ? -1 : 1, out = [];
+    loops.forEach(function (l) {
+      var P = l;
+      for (var e = 0; e < n && P.length; e++) {
+        var a = C[e], b = C[(e + 1) % n], Q = [];
+        var side = function (q) { return sg * ((b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])); };
+        for (var j = 0; j < P.length; j++) {
+          var p0 = P[j], p1 = P[(j + 1) % P.length], s0 = side(p0), s1 = side(p1);
+          if (s0 >= 0) Q.push(p0);
+          if ((s0 >= 0) !== (s1 >= 0)) { var t = s0 / (s0 - s1); Q.push([p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t]); }
+        }
+        P = Q;
+      }
+      if (P.length >= 3) out.push(P);
+    });
+    return out;
+  }
+  function circlePoly(c, r, n) { var P = []; n = n || 128; for (var i = 0; i < n; i++) { var t = i / n * 2 * Math.PI; P.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]); } return P; }
+  // the convex hull of points P (counter-clockwise)
+  function convexHull(P) {
+    var pts = P.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    if (pts.length < 3) return pts;
+    function cr(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+    var lo = [], up = [];
+    pts.forEach(function (p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); });
+    for (var i = pts.length - 1; i >= 0; i--) { var p = pts[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+    up.pop(); lo.pop();
+    return lo.concat(up);
+  }
+  // a region primitive with the loops replaced (null when nothing is left)
+  function withLoops(p, loops) {
+    if (!loops.length) return null;
+    var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); q.loops = loops;
+    return q;
+  }
+  // a region primitive less the rectangle R = [x0, y0, x1, y1] (a clear island round a letter): up to four pieces, the
+  // parts left of, right of, below and above R
+  function regionOutsideRect(p, R) {
+    var B = 1e7, cells = [[-B, -B, R[0], B], [R[2], -B, B, B], [R[0], -B, R[2], R[1]], [R[0], R[3], R[2], B]], out = [];
+    cells.forEach(function (c) { var q = withLoops(p, clipLoopsConvex(p.loops, [[c[0], c[1]], [c[2], c[1]], [c[2], c[3]], [c[0], c[3]]])); if (q) out.push(q); });
+    return out;
+  }
+
   // snapHatch(segs, loops, circles) (r11/hatch11): a cut face's outline is the facets' polygon, but its round edges are
   // drawn as exact circles / arcs, so hatch lines stopped on a chord fell short of a drawn rim (or ran past a drawn
   // hole) by up to the chord's sagitta: a scalloped gap along every round boundary, plain at a detail's 4:1. A hatch
@@ -1243,6 +1296,14 @@
         });
         return;
       }
+      if (p.k === 'region') {   // (rfAG) a solid fill: the piece in every kept cell, moved with it
+        var bounds = function (bands) { var iv = [], lo = -1e7; bands.forEach(function (b) { iv.push([lo, b.lo]); lo = b.hi; }); iv.push([lo, 1e7]); return iv; };
+        bounds(vb).forEach(function (ix) { bounds(hb).forEach(function (iy) {
+          var cl = clipLoopsConvex(p.loops, [[ix[0], iy[0]], [ix[1], iy[0]], [ix[1], iy[1]], [ix[0], iy[1]]]), r = withLoops(q, cl.map(function (l) { return l.map(M); }));
+          if (r) out.push(r);
+        }); });
+        return;
+      }
       if (p.k === 'ellipse') {
         var ext = Math.hypot(p.major[0], p.major[1]);
         if (xs.some(function (X) { return Math.abs(X - p.c[0]) < ext; }) || ys.some(function (Y) { return Math.abs(Y - p.c[1]) < ext; })) { if (cut(p.c)) return; }
@@ -1303,7 +1364,7 @@
       if (sv.kind === 'section' && sv.section && sv.section.type && sv.parent != null && byId[sv.parent]) sectionPathLine(sheet, w, byId[sv.parent], k);
     });
     // (rfAD) broken-out profiles and the regions with their own hatch, before the breaks so they move with the view
-    sheet.views.forEach(function (w) { brokenOutMarks(doc, sheet, w, byId, k); regionHatch(sheet, w, k); });
+    sheet.views.forEach(function (w) { brokenOutMarks(doc, sheet, w, byId, k); });
     sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
     sheet.views.forEach(function (w) {
       if (w.view.kind !== 'aux' || !w.view.aux) return;
@@ -1773,8 +1834,8 @@
     });
     return o;
   }
-  // marks the overridden caps (a fresh copy each): drawing-render.js draws none of their hatch (spacing Infinity:
-  // patternLines gives nothing) and regionHatch draws it with the region's own pattern once the sheet is laid out
+  // marks the overridden caps (a fresh copy each, cap.areaHatch): drawing-render.js draws them with the region's own
+  // pattern, scale and angle (rfAG; SOLID as a filled region, NONE bare)
   function applyRegions(doc, v, ct) {
     if (!ct.caps || !ct.caps.length) return;
     var par = v.kind === 'detail' && v.parent != null ? findV(doc, v.parent) : null;
@@ -1788,11 +1849,7 @@
         var c2 = {}; Object.keys(cap).forEach(function (q) { c2[q] = cap[q]; });
         c2.loops = sub;
         var o = regionOverride(doc, v, c2);
-        if (o) {
-          var st = cap.style || hatchStyle(cap.body);
-          c2.areaHatch = { pattern: o.pattern, scale: o.scale, angle: o.angle, p: o.p.slice() };
-          c2.style = { angle: st.angle, spacing: Infinity };
-        }
+        if (o) c2.areaHatch = { pattern: o.pattern, scale: o.scale, angle: o.angle, p: o.p.slice() };
         out.push(c2);
       });
     });
@@ -1890,7 +1947,8 @@
   function clipLayerToPoly(prims, L, P) {
     for (var i = prims.length - 1; i >= 0; i--) {
       var p = prims[i];
-      if (p.layer !== L || p.detailOutline != null || !/^(line|arc|circle|ellipse)$/.test(p.k)) continue;
+      if (p.layer !== L || p.detailOutline != null || !/^(line|arc|circle|ellipse|region)$/.test(p.k)) continue;
+      if (p.k === 'region') { var rq = withLoops(p, clipLoopsConvex(p.loops, convexHull(P))); Array.prototype.splice.apply(prims, rq ? [i, 1, rq] : [i, 1]); continue; }   // (rfAG)
       Array.prototype.splice.apply(prims, [i, 1].concat(primInPoly(p, P)));
     }
   }
@@ -1942,35 +2000,6 @@
       for (var i = 0; i < P.length; i++) clip({ k: 'line', a: P[i], b: P[(i + 1) % P.length], layer: w.layer, style: 'thin', brokenOut: c.id, view: v.id }).forEach(function (q) { sheet.prims.push(q); });
     });
   }
-  // the hatch of the regions with their own pattern (drawing-render.js drew none for them): pattern, scale and angle
-  // from the region; SOLID is a close fill of hatch lines (0.12 mm apart), NONE nothing
-  function regionHatch(sheet, w, k) {
-    var ct = w.content;
-    if (!ct || !ct.caps || w.pending) return;
-    var hs = (_.HATCH || 2.5) * k, rims = null, clip = null;
-    ct.caps.forEach(function (cap, i) {
-      var ah = cap.areaHatch;
-      if (!ah) return;
-      clip = clip || viewClipper(w, k);
-      var loops = cap.loops.map(function (l) { return l.map(w.toSheet); }), n = 0, ang = 45 + ah.angle, segs = [];
-      if (ah.pattern === 'SOLID') segs = hatchLines(loops, 0.12 * k, ang, 0);
-      else if (ah.pattern !== 'NONE') segs = patternLines(loops, hs * ah.scale, ang, ah.pattern);
-      if (segs.length && ah.pattern !== 'SOLID') {
-        if (!rims) {
-          rims = [];
-          var pr = w.proj;
-          [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: w.toSheet(c.c), r: c.r * w.scale }); }); });
-        }
-        segs = snapHatch(segs, loops, rims);
-      }
-      segs.forEach(function (h) {
-        clip({ k: 'line', a: [h[0], h[1]], b: [h[2], h[3]], layer: w.layer, style: 'hatch', body: cap.body, part: cap.part, region: i, areaHatch: ah.pattern }).forEach(function (q) { sheet.prims.push(q); n++; });
-      });
-      w.hatch = (w.hatch || 0) + n;
-      var he = { body: cap.body, part: cap.part, angle: ang, spacing: ah.pattern === 'SOLID' ? 0.12 * k : hs * ah.scale, lines: n, pattern: ah.pattern, region: i, areaHatch: true, scale: ah.scale };
-      if (w.hatches && w.hatches[i] && w.hatches[i].body === cap.body) w.hatches[i] = he; else (w.hatches || (w.hatches = [])).push(he);
-    });
-  }
   // hatchRegions(sheetView) -> [{ index, p (a point inside, model units of the view), pattern, scale, angle (added to
   // the pattern's 45°), areaHatch (its own pattern), body, part, loops, cap (index into the view's cut faces) }]: the
   // hatched regions of a laid-out view, a cut face in several pieces giving one region per piece
@@ -2016,5 +2045,5 @@
   _.auxCenter = function (doc, v, ct, pc) { auxCenter(doc, v, ct, pc); contentExtras(doc, v, ct, pc); };
   D.addBrokenOut = addBrokenOut; D.setBrokenOut = setBrokenOut; D.clearBrokenOut = clearBrokenOut; D.brokenOutPolygon = boPolygon; D.brokenOutOf = brokenOutOf;
   D.setAreaHatch = setAreaHatch; D.hatchRegions = hatchRegions; D.hatchRegionAt = regionAt; D.AREA_PATTERNS = AREA_PATTERNS; D.interiorPoint = interiorPoint;
-  _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops;
+  _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops; _.clipLoopsConvex = clipLoopsConvex; _.circlePoly = circlePoly; _.convexHull = convexHull; _.regionOutsideRect = regionOutsideRect;
 })(Drawing, Drawing._);

@@ -26,6 +26,27 @@
     return out;
   }
 
+  // (rfAG) a HATCH's own group codes: 91 the number of boundary paths, then per path 92 (type flags), 93 (vertices),
+  // 10 / 20 each vertex (polyline paths; edge paths, 72 edge types, are kept as their points too), 97; then 75, 76,
+  // 98 seed points with 10 / 20 each. Returns true when the pair was taken.
+  function hatchCode(cur, c, v) {
+    var h = cur.h || (cur.h = { n: null, paths: [], seeds: [], state: 'head' });
+    if (c === 91) { h.n = parseInt(v, 10); h.state = 'paths'; return true; }
+    if (c === 92 && h.state === 'paths') { h.paths.push({ flag: parseInt(v, 10), count: null, pts: [], sources: 0 }); return true; }
+    var P = h.paths[h.paths.length - 1];
+    if (h.state === 'paths' && P) {
+      if (c === 93) { P.count = parseInt(v, 10); return true; }
+      if (c === 10) { P.pts.push([num(v), 0]); return true; }
+      if (c === 20) { if (P.pts.length) P.pts[P.pts.length - 1][1] = num(v); return true; }
+      if (c === 97) { P.sources = parseInt(v, 10); return true; }
+      if (c === 72 || c === 73 || c === 42) { P['g' + c] = num(v); return true; }
+    }
+    if (c === 75) { h.state = 'style'; return false; }
+    if (c === 98) { h.state = 'seeds'; h.nSeeds = parseInt(v, 10); return true; }
+    if (h.state === 'seeds' && c === 10) { h.seeds.push([num(v), 0]); return true; }
+    if (h.state === 'seeds' && c === 20) { if (h.seeds.length) h.seeds[h.seeds.length - 1][1] = num(v); return true; }
+    return false;
+  }
   function parse(text) {
     var P = pairs(text), header = {}, entities = [], section = null, i, cur = null, poly = null, blocks = {}, block = null, dimstyles = [], table = null;
     function finish() {
@@ -57,6 +78,7 @@
       if (c === 0) { finish(); cur = { type: v.trim(), layer: '0', g: {}, s: {}, verts: [], bul: [], knots: [] }; continue; }
       if (!cur) continue;
       if (c === 8) cur.layer = v.trim();
+      else if (cur.type === 'HATCH' && hatchCode(cur, c, v)) continue;   // (rfAG) boundary paths and seed points
       else if (c === 2 || c === 3) cur.s[c] = v.trim();
       else if (cur.type === 'SPLINE' && c === 10) cur.verts.push([num(v), 0]);
       else if (cur.type === 'SPLINE' && c === 20) { if (cur.verts.length) cur.verts[cur.verts.length - 1][1] = num(v); }
@@ -85,6 +107,8 @@
       case 'LWPOLYLINE': return { type: 'LWPOLYLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), pts: e.verts, bulges: e.bul };
       case 'SPLINE': return { type: 'SPLINE', layer: e.layer, closed: !!((g[70] || 0) & 1), degree: g[71] != null ? g[71] : 3, knots: e.knots, cps: e.verts };
       // (the minor axis is n × major · ratio: an extrusion of -Z runs the parameter the other way round)
+      case 'HATCH': return { type: 'HATCH', layer: e.layer, pattern: e.s[2] || '', solid: !!((g[70] || 0) & 1), declared: e.h ? e.h.n : null,
+        paths: e.h ? e.h.paths : [], seeds: e.h ? e.h.seeds : [], nSeeds: e.h ? e.h.nSeeds : null };
       case 'ELLIPSE': return { type: 'ELLIPSE', layer: e.layer, c: [g[10] || 0, g[20] || 0], major: [g[11] || 0, g[21] || 0], ratio: g[40] || 0,
         t0: g[41] || 0, t1: g[42] != null ? g[42] : 2 * Math.PI, nz: g[230] != null && g[230] < 0 ? -1 : 1 };
     }
@@ -135,7 +159,7 @@
     if (insunits == null) errors.push('no $INSUNITS in the header');
     if (opts.units && insunits !== (opts.units === 'in' ? 1 : 4)) errors.push('$INSUNITS is ' + insunits + ', expected ' + (opts.units === 'in' ? '1 (inch)' : '4 (mm)'));
     if (opts.units && measurement != null && measurement !== (opts.units === 'in' ? 0 : 1)) errors.push('$MEASUREMENT is ' + measurement + ' for ' + opts.units);
-    var cut = [], seen = {}, dims = [], hasBlocks = Object.keys(d.blocks).length > 0;
+    var cut = [], seen = {}, dims = [], hatches = [], hasBlocks = Object.keys(d.blocks).length > 0;
     d.entities.forEach(function (e) {
       if (e.type !== 'DIMENSION') return;
       var be = d.blocks[e.block];
@@ -148,7 +172,25 @@
     d.entities.forEach(function (e) {
       var key = e.type + '@' + e.layer;
       counts[key] = (counts[key] || 0) + 1;
-      if ((e.type === 'LWPOLYLINE' || e.type === 'SPLINE' || e.type === 'ELLIPSE') && d.version === 'AC1009') errors.push(e.type + ' in an R12 (AC1009) file');
+      if ((e.type === 'LWPOLYLINE' || e.type === 'SPLINE' || e.type === 'ELLIPSE' || e.type === 'HATCH') && d.version === 'AC1009') errors.push(e.type + ' in an R12 (AC1009) file');
+      // (rfAG) HATCH (R2000): a pattern name, as many boundary paths as declared, each a closed polyline path with the
+      // vertex count it declares (three or more, no zero-length edge), the seed points it declares
+      if (e.type === 'HATCH') {
+        var hn = e.layer;
+        if (!e.pattern) errors.push('HATCH on ' + hn + ' without a pattern name');
+        if (e.solid && e.pattern !== 'SOLID') errors.push('HATCH on ' + hn + ' is a solid fill named ' + e.pattern);
+        if (e.declared == null || e.declared !== e.paths.length || !e.paths.length) errors.push('HATCH on ' + hn + ' declares ' + e.declared + ' boundary paths, has ' + e.paths.length);
+        e.paths.forEach(function (bp, bi) {
+          if (!(bp.flag & 2)) return;   // edge paths are not written by Anvil
+          if (bp.count !== bp.pts.length) errors.push('HATCH on ' + hn + ' path ' + bi + ' declares ' + bp.count + ' vertices, has ' + bp.pts.length);
+          if (bp.pts.length < 3) errors.push('HATCH on ' + hn + ' path ' + bi + ' has ' + bp.pts.length + ' vertices');
+          if (bp.g73 !== 1) errors.push('HATCH on ' + hn + ' path ' + bi + ' is not closed');
+          for (var hi = 0; hi < bp.pts.length; hi++) { var ha = bp.pts[hi], hb = bp.pts[(hi + 1) % bp.pts.length]; if (Math.hypot(hb[0] - ha[0], hb[1] - ha[1]) < 1e-12) { errors.push('HATCH on ' + hn + ' path ' + bi + ': zero-length edge at vertex ' + hi); break; } }
+        });
+        if (e.nSeeds != null && e.nSeeds !== e.seeds.length) errors.push('HATCH on ' + hn + ' declares ' + e.nSeeds + ' seed points, has ' + e.seeds.length);
+        hatches.push({ layer: hn, pattern: e.pattern, solid: e.solid, paths: e.paths.length, vertices: e.paths.reduce(function (a, bp) { return a + bp.pts.length; }, 0) });
+        return;
+      }
       // SPLINE / ELLIPSE (R2000): a sound shape on any layer; on a cut layer a full ellipse or a closed spline is a loop,
       // an open one's ends chain with the LINE / ARC entities
       if (e.type === 'SPLINE' || e.type === 'ELLIPSE') {
@@ -242,7 +284,7 @@
     var uniq = [];
     errors.forEach(function (e) { if (uniq.indexOf(e) < 0) uniq.push(e); });
     return { ok: !uniq.length, errors: uniq, version: d.version, insunits: insunits, measurement: measurement, counts: counts, circles: circles,
-      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims };
+      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims, hatches: hatches };
   }
 
   var api = { parse: parse, check: check };
