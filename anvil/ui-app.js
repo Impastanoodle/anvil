@@ -498,8 +498,8 @@
   // OBJ, 3MF — exchange.js), picked from disk or pasted. A neutral file opens as a new part whose one feature is
   // Imported1; Insert ▸ Features ▸ Imported… adds one to the open part instead.
   var OPEN_TYPES = [
-    ['all', 'All Anvil and CAD files (*.json;*.js;*.step;*.stp;*.igs;*.stl;*.obj;*.3mf;*.dxf;*.dwg)', '.json,.js,.step,.stp,.igs,.iges,.stl,.obj,.3mf,.dxf,.dwg'],
-    ['anvil', 'Anvil documents and scripts (*.anvil.json;*.anvil.js)', '.json,.js'],
+    ['all', 'All Anvil and CAD files (*.json;*.js;*.drawing;*.step;*.stp;*.igs;*.stl;*.obj;*.3mf;*.dxf;*.dwg)', '.json,.js,.drawing,.step,.stp,.igs,.iges,.stl,.obj,.3mf,.dxf,.dwg'],
+    ['anvil', 'Anvil documents, drawings and scripts (*.anvil.json;*.drawing;*.anvil.js)', '.json,.js,.drawing'],   // rfAE: + .drawing
     ['step', 'STEP AP203/AP214 (*.step;*.stp)', '.step,.stp'],
     ['iges', 'IGES (*.igs;*.iges), read by OpenCascade', '.igs,.iges'],
     ['stl', 'STL (*.stl)', '.stl'],
@@ -521,10 +521,13 @@
     if (/\.dxf$/i.test(String(name || '')) && UI.openDXFFile) return UI.openDXFFile(name, data);   // dxf-import: a new part, the DXF in Sketch1
     if (/\.dwg$/i.test(String(name || '')) && UI.openDWGFile) return UI.openDWGFile(name, data);   // dwg-import: the same after the local server's conversion
     if (neutralFile(name) || opts.format) return opts.into === 'current' ? importIntoCurrent(name, data, opts) : importIntoNew(name, data, opts);
+    // (rfAE) a drawing document (File ▸ Save Drawing As): it opens on its part (drawing-ui-panels.js openDrawingFile)
+    if (/\.drawing$/i.test(String(name || '')) && UI.openDrawingFile) return UI.openDrawingFile(name, data, opts);
     var txt = typeof data === 'string' ? data : new TextDecoder('utf-8').decode(new Uint8Array(data));
     txt = txt.trim();
     if (txt.charAt(0) === '{') {
       var jm = JSON.parse(txt);
+      if (jm && jm.kind === 'anvil-drawing' && UI.openDrawingFile) return UI.openDrawingFile(name, jm, opts);
       rememberPart(); App.hiddenBodies = {};
       return UI.loadModel(jm).then(function () { return window.anvil.summary(); });
     }

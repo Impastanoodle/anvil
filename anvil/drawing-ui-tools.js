@@ -784,6 +784,8 @@
       { sep: true },
       { label: 'Crop View ▸ Remove Crop', disabled: !v.crop, action: function () { removeCrop(v.id); } },
       { label: 'Un-Break View', disabled: !(v.breaks && v.breaks.length), action: function () { unBreak(v.id); } },
+      { label: 'Broken-out Section ▸ Remove', disabled: !(v.brokenOut && v.brokenOut.length), action: function () { removeBrokenOut(v.id); } },
+      { label: 'Area Hatch/Fill…', disabled: !hatchUnder(v), action: function () { var h = hatchUnder(v); if (h) cmdAreaHatch(v.id, h.g); } },
       { sep: true },
       { label: 'Delete', key: 'Del', action: function () { deleteView(v.id); } }
     ];
@@ -1770,6 +1772,14 @@
     var P = D.pending, sw = pxToPaper(2), dash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
     if (!P || !P.at) return;
     function poly(pts, cls, dashed) { var a = { class: cls || 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': sw }; if (dashed) a['stroke-dasharray'] = dash; return node('polyline', a, g); }
+    if (D.tool === 'crop' && P.mode === 'bo') {   // (rfAD) the broken-out profile as it is drawn
+      var bp = boPreview(P);
+      if (bp && bp.circle) node('circle', { class: 'dw-cut dw-bo', cx: bp.circle.c[0], cy: H - bp.circle.c[1], r: bp.circle.r, fill: 'none', 'stroke-width': sw }, g);
+      else if (bp && bp.pts.length > 1) poly(bp.pts, 'dw-cut dw-bo', P.stage === 'ref');
+      D.preview = bp ? { kind: 'brokenOut', pts: bp.pts, circle: bp.circle || null, stage: P.stage || 'profile' } : null;
+      return;
+    }
+    if (D.tool === 'crop' && P.mode === 'ahatch') return;
     if (D.tool === 'aux' && P.parent != null && P.edge) {
       var ag = auxPreview(P, P.at);
       if (!ag) return;
@@ -1790,7 +1800,166 @@
       D.preview = { kind: 'break', at: lines.slice() };
     }
   }
-  var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick };
+  // ------------------------------------------------------------------ rfAD: Broken-out Section, Area Hatch / Fill
+  // SolidWorks: Insert ▸ Drawing View ▸ Broken-out Section (View Layout tab, after Detail View): draw a closed profile
+  // in a view (a spline through clicked points, closed by clicking its first point again or OK; or a rectangle by two
+  // corners, a circle by centre and a point), then the depth: a number, or (Depth reference) an edge or circle picked in
+  // another view, the cut going down to it. Area Hatch/Fill (Annotation tab; Insert ▸ Annotations; a hatched region's
+  // right-click menu; or a click on the hatch of a view already selected): Material crosshatch, or the region's own
+  // Pattern, Scale and Angle. (Both run as modes of the Crop View tool, whose clicks and live preview drawing-ui.js
+  // already routes here.)
+  var BO_PROFILES = [['spline', 'Spline (click points, then the first point again)'], ['poly', 'Polyline (click points, then the first point again)'], ['rect', 'Rectangle (two corners)'], ['circle', 'Circle (centre, then a point on it)']];
+  function boActive() { return D.tool === 'crop' && D.pending && D.pending.mode === 'bo'; }
+  function cmdBrokenOut() {
+    if (boActive()) { endToolPM(); return; }
+    if (!needPart()) return;
+    var inch = units() === 'in', vals = { shape: 'spline', depth: inch ? 0.25 : 5, useRef: false };
+    startTool('crop', { mode: 'bo', shape: 'spline', view: null, pts: [], spts: [], pm: vals });
+    openDrawingPM({
+      title: 'Broken-out Section', icon: 'brokenOut', command: 'brokenOut', noFocus: true, values: vals,
+      message: 'Draw the closed profile in a model, projected or auxiliary view, then press OK (or click the first point again). The material inside it is removed down to the depth, in this view only.',
+      groups: [
+        { title: 'Profile', fields: [{ type: 'select', key: 'shape', label: 'Profile', options: BO_PROFILES }] },
+        { title: 'Depth', fields: [
+          { type: 'check', key: 'useRef', label: 'Depth reference (pick an edge or circle in another view)' },
+          { type: 'number', key: 'depth', label: 'Depth', unit: 'u', min: 0, show: function (v) { return !v.useRef; } }] }
+      ],
+      onChange: function (v) { var P = D.pending; if (boActive() && P.pm === vals && !P.pts.length) P.shape = v.shape; },
+      onOK: function (v) { var P = D.pending; if (boActive() && P.pm === vals) { P.closing = true; boFinishProfile(P); } },
+      onClose: function () { var P = D.pending; if (boActive() && P.pm === vals && !P.closing) endTool(); }
+    });
+    UI.setStatus('Broken-out Section: click in a view to start the profile. Esc cancels.');
+  }
+  // -> { pts (sheet polyline, closed when finished), circle } of the profile being drawn
+  function boPreview(P) {
+    if (!P.spts.length) return null;
+    var a = P.spts[0], at = P.stage === 'ref' ? null : P.at;
+    if (P.shape === 'circle') { var e = P.spts[1] || at; return e ? { pts: [], circle: { c: a, r: Math.hypot(e[0] - a[0], e[1] - a[1]) } } : null; }
+    if (P.shape === 'rect') { var b = P.spts[1] || at; return b ? { pts: [a, [b[0], a[1]], b, [a[0], b[1]], a] } : null; }
+    var w = sheetView(P.view), pts = P.spts.slice();
+    if (at) pts.push(at);
+    if (P.shape === 'spline' && pts.length >= 3 && w) {
+      var poly = Drawing.brokenOutPolygon({ shape: 'spline', pts: pts.map(function (q) { return w.fromSheet(q); }) }).map(function (q) { return w.toSheet(q); });
+      return { pts: poly.concat([poly[0]]) };
+    }
+    return { pts: P.stage === 'ref' ? pts.concat([pts[0]]) : pts };
+  }
+  function boClick(p) {
+    var P = D.pending;
+    if (P.stage === 'ref') { boRefClick(p); return; }
+    if (P.view == null) {
+      var w = parentAt(p);
+      if (!w || w.view.kind === 'section') { UI.setStatus('Broken-out Section: click inside a model, projected or auxiliary view.'); return; }
+      P.view = w.view.id; P.pts = [w.fromSheet(p)]; P.spts = [p];
+      D.sel = { kind: 'view', id: w.view.id };
+      UI.setStatus(P.shape === 'rect' ? 'Broken-out Section: click the opposite corner.' : P.shape === 'circle' ? 'Broken-out Section: click a point on the circle.' : 'Broken-out Section: click the next point; click the first point again (or OK) to close the profile.');
+      drawOverlay();
+      return;
+    }
+    var w2 = sheetView(P.view);
+    if (!w2) { endTool(); return; }
+    var first = P.spts[0];
+    if ((P.shape === 'spline' || P.shape === 'poly') && P.spts.length >= 3 && Math.hypot(p[0] - first[0], p[1] - first[1]) <= 2.5 * paperK()) { boFinishProfile(P); return; }
+    P.pts.push(w2.fromSheet(p)); P.spts.push(p);
+    if (P.shape === 'rect' || P.shape === 'circle') boFinishProfile(P);
+    else drawOverlay();
+  }
+  function boSpec(P) {
+    var w = sheetView(P.view), spec = { shape: P.shape };
+    if (P.shape === 'rect') { spec.a = P.pts[0]; spec.b = P.pts[1]; }
+    else if (P.shape === 'circle') { spec.c = P.pts[0]; spec.r = Math.hypot(P.spts[1][0] - P.spts[0][0], P.spts[1][1] - P.spts[0][1]) / (w ? w.scale : 1); }
+    else spec.pts = P.pts.slice();
+    return spec;
+  }
+  function boFinishProfile(P) {
+    var need = P.shape === 'rect' || P.shape === 'circle' ? 2 : 3;
+    if (P.view == null || P.pts.length < need) {
+      P.closing = false;
+      UI.setStatus('Broken-out Section: the profile needs ' + need + ' points first.');
+      if (UI.pmSpec && !(UI.pmSpec() && UI.pmSpec().values === P.pm)) endTool();
+      return;
+    }
+    var pm = P.pm || {};
+    if (pm.useRef) { P.stage = 'ref'; drawOverlay(); UI.setStatus('Broken-out Section: click an edge or a circle in another view; the cut goes down to it.'); return; }
+    boApply(P, Object.assign(boSpec(P), { depth: +pm.depth }));
+  }
+  function boRefClick(p) {
+    var P = D.pending, ent = entityAt(p, true), q = null;
+    if (ent && ent.view !== P.view) {
+      if (ent.mc) q = ent.mc.c; else if (ent.ma) q = ent.ma.c; else if (ent.la) q = [(ent.la[0] + ent.lb[0]) / 2, (ent.la[1] + ent.lb[1]) / 2];
+    }
+    if (!q) { UI.setStatus('Broken-out Section: click an edge or a circle in another view (square to this one) for the depth.'); return; }
+    boApply(P, Object.assign(boSpec(P), { depthRef: { view: ent.view, p: q } }));
+  }
+  function boApply(P, spec) {
+    var id = P.view, pm = P.pm;
+    endTool();
+    if (pm && UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === pm) UI.pmCancel();
+    if (tryEdit(function (dc) { Drawing.addBrokenOut(dc, id, spec); })) {
+      D.sel = { kind: 'view', id: id }; drawOverlay(); DW.renderTree();
+      UI.setStatus('Broken-out section added (right-click the view ▸ Broken-out Section ▸ Remove takes it off).');
+    }
+  }
+  function removeBrokenOut(id) { if (tryEdit(function (dc) { Drawing.clearBrokenOut(dc, id); })) UI.setStatus('Broken-out sections removed.'); }
+  // the Area Hatch/Fill PropertyManager for region g (an entry of Drawing.hatchRegions) of view viewId
+  function cmdAreaHatch(viewId, g) {
+    if (!g) return;
+    var vals = { material: !g.areaHatch, pattern: g.pattern === 'SOLID' || g.pattern === 'NONE' || Drawing.AREA_PATTERNS.indexOf(g.pattern) >= 0 ? g.pattern : 'ANSI31', scale: g.scale || 1, angle: g.angle || 0 };
+    var names = { ANSI31: 'ANSI31 (Iron BrickStone)', ANSI32: 'ANSI32 (Steel)', ANSI33: 'ANSI33 (Bronze Brass)', ANSI34: 'ANSI34 (Plastic Rubber)', ANSI37: 'ANSI37 (Lead Zinc Mg)', ANSI38: 'ANSI38 (Aluminum)', SOLID: 'Solid', NONE: 'None' };
+    D.sel = { kind: 'view', id: viewId };
+    openDrawingPM({
+      title: 'Area Hatch/Fill', icon: 'areaHatch', command: 'areaHatch', values: vals,
+      message: 'The hatch of the selected region. Material crosshatch uses the part\'s material pattern; untick it to give this region its own pattern, scale and angle.',
+      groups: [{ title: 'Properties', fields: [
+        { type: 'check', key: 'material', label: 'Material crosshatch', rerender: true },
+        { type: 'select', key: 'pattern', label: 'Pattern', options: Drawing.AREA_PATTERNS.map(function (k) { return [k, names[k] || k]; }), show: function (v) { return !v.material; } },
+        { type: 'number', key: 'scale', label: 'Scale', min: 0.01, show: function (v) { return !v.material && v.pattern !== 'SOLID' && v.pattern !== 'NONE'; } },
+        { type: 'number', key: 'angle', label: 'Angle (degrees)', show: function (v) { return !v.material && v.pattern !== 'SOLID' && v.pattern !== 'NONE'; } }] }],
+      onOK: function (v) { setAreaHatch(viewId, g.p, v.material ? null : { pattern: v.pattern, scale: +v.scale > 0 ? +v.scale : 1, angle: +v.angle || 0 }); }
+    });
+    UI.setStatus('Area Hatch/Fill: region ' + (g.index + 1) + ' of ' + ((sheetView(viewId) || { view: {} }).view.name || 'the view') + '.');
+  }
+  function setAreaHatch(viewId, p, props) {
+    if (tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props); })) UI.setStatus(props ? 'Area hatch: ' + props.pattern + (props.pattern === 'SOLID' || props.pattern === 'NONE' ? '' : ', scale ' + props.scale + ', angle ' + props.angle + '°') + '.' : 'Area hatch: material crosshatch.');
+  }
+  function regionAtSheet(p) { var w = viewAt(p), g = w ? Drawing.hatchRegionAt(w, p) : null; return g ? { w: w, g: g } : null; }
+  // an edge within 2.5 px of p (a click there picks the edge, not the hatch)
+  function nearEdge(p) {
+    var e = entityAt(p, true), t = pxToPaper(2.5);
+    if (!e) return false;
+    if (e.a) return segDist(p, e.a, e.b) <= t;
+    var c = e.circle || e.arc;
+    return c ? Math.abs(Math.hypot(p[0] - c.c[0], p[1] - c.c[1]) - c.r) <= t : true;
+  }
+  function hatchUnder(v) { var h = ctxAt && D.sheet ? regionAtSheet(ctxAt) : null; return h && h.w.view.id === v.id ? h : null; }
+  function cmdAreaHatchTool() {
+    if (D.tool === 'crop' && D.pending && D.pending.mode === 'ahatch') { endTool(); return; }
+    if (!needPart()) return;
+    startTool('crop', { mode: 'ahatch' });
+    UI.setStatus('Area Hatch/Fill: click a hatched region of a section or broken-out section. Esc cancels.');
+  }
+  function hatchPickClick(p) {
+    var h = regionAtSheet(p);
+    if (!h) { UI.setStatus('Area Hatch/Fill: click inside a hatched region.'); return; }
+    endTool();
+    cmdAreaHatch(h.w.view.id, h.g);
+  }
+  // a plain click on the hatch of a view that is already selected opens the Area Hatch/Fill PropertyManager (SolidWorks
+  // selects the hatch); the right-click menu of a hatched region offers it too
+  var hatchDown = null, ctxAt = null;
+  document.addEventListener('mousedown', function (e) {
+    hatchDown = null;
+    if (e.button !== 0 || e.defaultPrevented || !D.active || !D.sheet || D.tool || !D.host || !D.host.contains(e.target) || (UI.hasPM && UI.hasPM())) return;
+    var p = DW.toPaper(e), h = regionAtSheet(p);
+    if (h && D.sel && D.sel.kind === 'view' && D.sel.id === h.w.view.id && !nearEdge(p) && !(DW.dimAt && DW.dimAt(p))) hatchDown = { x: e.clientX, y: e.clientY, view: h.w.view.id, g: h.g };
+  }, true);
+  document.addEventListener('mouseup', function (e) {
+    var h = hatchDown; hatchDown = null;
+    if (!h || Math.hypot(e.clientX - h.x, e.clientY - h.y) > 3 || D.tool) return;
+    setTimeout(function () { if (D.active && !D.tool) cmdAreaHatch(h.view, h.g); }, 0);
+  }, true);
+  document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
+  var RF_TOOLS = { aux: auxClick, crop: function (p) { var P = D.pending; if (P && P.mode === 'bo') boClick(p); else if (P && P.mode === 'ahatch') hatchPickClick(p); else cropClick(p); }, brk: breakClick };
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
     if (D.inline && D.inline.box.contains(e.target)) return;
@@ -1812,12 +1981,24 @@
       out.push(b);
       if (b.id === 'projView') out.push({ id: 'auxView', label: 'Auxiliary\nView', run: cmdAuxiliaryView, active: function () { return D.tool === 'aux'; } });
       if (b.id === 'detailView') {
+        out.push({ id: 'brokenOut', label: 'Broken-out\nSection', run: cmdBrokenOut, active: boActive });   // (rfAD, SolidWorks order)
         out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
-        out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop'; } });
+        out.push({ id: 'cropView', label: 'Crop\nView', run: cmdCropView, active: function () { return D.tool === 'crop' && !(D.pending && D.pending.mode); } });
       }
       if (b.id === 'dxfExport') out.push({ id: 'dwgExport', label: 'Save as\nDWG', run: function () { exportAs('dwg'); } });   // (rfS)
     });
     Object.defineProperty(out, '_rfN', { value: true });
+    return out;
+  });
+  // (rfAD) Annotation tab: Area Hatch/Fill after Centerline
+  onAssign(UI.RIBBON, 'Annotation', function (list) {
+    if (!Array.isArray(list) || list._rfAD) return list;
+    var out = [];
+    list.forEach(function (b) {
+      out.push(b);
+      if (b.id === 'centerline') out.push({ id: 'areaHatch', label: 'Area\nHatch/Fill', run: cmdAreaHatchTool, active: function () { return D.tool === 'crop' && !!D.pending && D.pending.mode === 'ahatch'; } });
+    });
+    Object.defineProperty(out, '_rfAD', { value: true });
     return out;
   });
   // Insert ▸ Drawing View ▸ Auxiliary / Break / Crop
@@ -1837,7 +2018,8 @@
         menu.items.forEach(function (it) {
           items.push(it);
           if (it && it.label === 'Drawing View ▸ Projected') items.push({ label: 'Drawing View ▸ Auxiliary', action: cmdAuxiliaryView });
-          if (it && it.label === 'Drawing View ▸ Detail') { items.push({ label: 'Drawing View ▸ Break', action: cmdBreakView }); items.push({ label: 'Drawing View ▸ Crop', action: cmdCropView }); }
+          if (it && it.label === 'Drawing View ▸ Detail') { items.push({ label: 'Drawing View ▸ Broken-out Section', action: cmdBrokenOut }); items.push({ label: 'Drawing View ▸ Break', action: cmdBreakView }); items.push({ label: 'Drawing View ▸ Crop', action: cmdCropView }); }
+          if (it && it.label === 'Annotations ▸ Centerline') items.push({ label: 'Annotations ▸ Area Hatch/Fill', action: cmdAreaHatchTool });   // (rfAD)
         });
         menu.items = items;
       });
@@ -1885,9 +2067,27 @@
       return sd ? { kind: sd.kind, value: sd.value, text: sd.text, index: sd.index, view: viewId } : null;
     };
     api.dwg = function () { if (!doc()) return Promise.resolve(null); settle(); if (!D.sheet) render(); return saveDWG(D.sheet); };
+    // (rfAD) brokenOut(viewId, { shape, pts | a, b | c, r, depth | depthRef: { view, p } }) adds a broken-out section;
+    // brokenOutEdit(viewId, id, spec | null) changes or removes one; hatchRegions(viewId) -> [{ index, p, pattern, scale,
+    // angle, areaHatch }] of the laid-out view; areaHatch(viewId, index | [u, v], { pattern, scale, angle } | null) gives a
+    // region its own hatch (null: the material crosshatch). One undo step each; they return the summary (null: refused)
+    api.brokenOut = function (viewId, spec) { return doc() && tryEdit(function (dc) { Drawing.addBrokenOut(dc, viewId, spec || {}); }) ? api.summary() : null; };
+    api.brokenOutEdit = function (viewId, id, spec) { return doc() && tryEdit(function (dc) { Drawing.setBrokenOut(dc, viewId, id, spec == null ? null : spec); }) ? api.summary() : null; };
+    api.hatchRegions = function (viewId) {
+      if (!doc()) return [];
+      settle(); if (!D.sheet) render();
+      return Drawing.hatchRegions(sheetView(viewId)).map(function (g) { return { index: g.index, p: g.p, pattern: g.pattern, scale: g.scale, angle: g.angle, areaHatch: g.areaHatch, body: g.body }; });
+    };
+    api.areaHatch = function (viewId, which, props) {
+      if (!doc()) return null;
+      var p = which;
+      if (typeof which === 'number') { var g = api.hatchRegions(viewId)[which]; if (!g) { UI.toast('No hatched region ' + which); return null; } p = g.p; }
+      return tryEdit(function (dc) { Drawing.setAreaHatch(dc, viewId, p, props || null); }) ? api.summary() : null;
+    };
     Object.defineProperty(api, '_rfN', { value: true });
     return api;
   });
+  DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool;   // (rfAD)
   DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;
   DW.cmdNote = cmdNote; DW.noteClick = noteClick; DW.noteAt = noteAt; DW.openNoteEdit = openNoteEdit; DW.cmdFlatView = cmdFlatView; DW.setFlatViewProps = setFlatViewProps; DW.flatReady = flatReady; DW.sheetMetal = sheetMetal;
   DW.cmdStandard3View = cmdStandard3View; DW.cmdModelView = cmdModelView; DW.startPlacing = startPlacing; DW.placePending = placePending; DW.sheetView = sheetView;

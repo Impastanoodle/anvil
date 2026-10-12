@@ -53,14 +53,29 @@
     function line(a, b, layer, style) { prims.push({ k: 'line', a: a, b: b, layer: layer, style: style }); }
     // (h here is the font size the sheet was laid out with; the primitive keeps the capitals' height, r13/drawings13)
     function text(p, h, t, anchor, layer, rot) { prims.push({ k: 'text', p: p, h: h * CAP_EM, text: t, anchor: anchor || 'start', layer: layer, rot: rot || 0 }); }
-    // border and title block
+    // border and title block: the sheet format. (rfAE) Each built-in piece is an item of the editable format
+    // (fmtItem: deleted ones are left out, moved ones shifted, every primitive tagged with its item id); the format's
+    // added lines and notes follow; sheet.format lists the items with their paper geometry (Edit Sheet Format picks)
+    var fmtList = [];
+    function fmtItem(id, fn) {
+      if (D.formatHidden(doc, id)) return;
+      var n0 = prims.length, sh = D.formatShift(doc, id, units);
+      fn();
+      for (var fi = n0; fi < prims.length; fi++) {
+        var q = prims[fi];
+        q.fmt = id;
+        if (sh[0] || sh[1]) ['a', 'b', 'p'].forEach(function (key) { if (q[key]) q[key] = [q[key][0] + sh[0], q[key][1] + sh[1]]; });
+        if (q.k === 'line') fmtList.push({ id: id, kind: 'line', a: q.a, b: q.b });
+        else if (q.k === 'text') fmtList.push({ id: id, kind: 'text', text: q.text, box: { x0: q.p[0], x1: q.p[0] + Math.max(q.h, textWidth(q.text, q.h)), y0: q.p[1], y1: q.p[1] + q.h } });
+      }
+    }
     var b0 = BORDER * k * 0.5, b1 = BORDER * k;
-    rect([b1, b1], [S[0] - b1, S[1] - b1], 'SHEET', 'thick');
+    fmtItem('border', function () { rect([b1, b1], [S[0] - b1, S[1] - b1], 'SHEET', 'thick'); });
     void b0;
     var tw = TB_W * k, th = TB_H * k, tx0 = S[0] - b1 - tw, ty0 = b1, row = th / 3;
-    rect([tx0, ty0], [S[0] - b1, ty0 + th], 'SHEET', 'thick');
-    line([tx0, ty0 + row], [S[0] - b1, ty0 + row], 'SHEET', 'thin');
-    line([tx0, ty0 + 2 * row], [S[0] - b1, ty0 + 2 * row], 'SHEET', 'thin');
+    fmtItem('tb', function () { rect([tx0, ty0], [S[0] - b1, ty0 + th], 'SHEET', 'thick'); });
+    fmtItem('tb-row1', function () { line([tx0, ty0 + row], [S[0] - b1, ty0 + row], 'SHEET', 'thin'); });
+    fmtItem('tb-row2', function () { line([tx0, ty0 + 2 * row], [S[0] - b1, ty0 + 2 * row], 'SHEET', 'thin'); });
     var lab = 2.2 * k, val = 3.5 * k, pad = 1.5 * k;
     // title block fields: each a text with $PRPSHEET:"name" (the model's custom property) / $PRP:"name" (the
     // drawing's) links, evaluated now; doc.titleBlock overrides a field's text
@@ -70,24 +85,42 @@
     // (rfM) the sheet format's left blocks: COMPANY / DRAWN / CHECKED and the general tolerances, when they fit
     if (tbBoxes[1]) {
       var ex = tbBoxes[1];
-      rect([ex.x0, ex.y0], [ex.x1, ex.y1], 'SHEET', 'thick');
-      if (blocks.eng) { var ex0 = tx0 + D.TB_BLOCKS.eng * k; line([ex0, ty0 + row], [tx0, ty0 + row], 'SHEET', 'thin'); line([ex0, ty0 + 2 * row], [tx0, ty0 + 2 * row], 'SHEET', 'thin'); }
-      if (blocks.tol && blocks.eng) line([tx0 + D.TB_BLOCKS.eng * k, ty0], [tx0 + D.TB_BLOCKS.eng * k, ty0 + th], 'SHEET', 'thick');
+      fmtItem('blk', function () { rect([ex.x0, ex.y0], [ex.x1, ex.y1], 'SHEET', 'thick'); });
+      if (blocks.eng) {
+        var ex0 = tx0 + D.TB_BLOCKS.eng * k;
+        fmtItem('blk-row1', function () { line([ex0, ty0 + row], [tx0, ty0 + row], 'SHEET', 'thin'); });
+        fmtItem('blk-row2', function () { line([ex0, ty0 + 2 * row], [tx0, ty0 + 2 * row], 'SHEET', 'thin'); });
+      }
+      if (blocks.tol && blocks.eng) fmtItem('blk-sep', function () { line([tx0 + D.TB_BLOCKS.eng * k, ty0], [tx0 + D.TB_BLOCKS.eng * k, ty0 + th], 'SHEET', 'thick'); });
     }
     TB_FIELDS.forEach(function (f) {
       if (f.block && !blocks[f.block]) return;
       var x0 = tx0 + f.x0 * k, x1 = tx0 + f.x1 * k, yTop = ty0 + th - f.row * row;
-      if ((f.x0 > 0 || (f.block && f.x0 > D.TB_BLOCKS[f.block])) && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; line([x0, yTop - row * (f.rows || 1)], [x0, yTop], 'SHEET', 'thin'); }
-      var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
-      text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
-      if (f.multi && v) {
-        // a block of lines (the general tolerances), 2.2 mm text, 1.5 × apart
-        var ls = String(v).split(/\r?\n/), lh = 2.2 * k;
-        ls.forEach(function (s, i) { if (s) text([x0 + pad, yTop - pad - lab - 4 * k - i * lh * 1.5], lh / CAP_EM, s, 'start', 'SHEET'); });
-        return;
+      if ((f.x0 > 0 || (f.block && f.x0 > D.TB_BLOCKS[f.block])) && !colX[f.row + ':' + f.x0]) { colX[f.row + ':' + f.x0] = 1; fmtItem('col:' + f.row + ':' + f.x0, function () { line([x0, yTop - row * (f.rows || 1)], [x0, yTop], 'SHEET', 'thin'); }); }
+      fmtItem('field:' + f.key, function () {
+        var v = tb[f.key], h = f.big ? 5 * k : val, w = x1 - x0 - 2 * pad;
+        text([x0 + pad, yTop - pad - lab], lab, f.label, 'start', 'SHEET');
+        if (f.multi && v) {
+          // a block of lines (the general tolerances), 2.2 mm text, 1.5 × apart
+          var ls = String(v).split(/\r?\n/), lh = 2.2 * k;
+          ls.forEach(function (s, i) { if (s) text([x0 + pad, yTop - pad - lab - 4 * k - i * lh * 1.5], lh / CAP_EM, s, 'start', 'SHEET'); });
+          return;
+        }
+        if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
+        if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
+      });
+    });
+    // (rfAE) the format's own lines and notes (paper mm from the border's bottom-right corner); notes take $PRP links
+    ((doc.format && doc.format.items) || []).forEach(function (it) {
+      if (it.k === 'line') {
+        var A = D.fmtToPaper(S, units, it.a), B = D.fmtToPaper(S, units, it.b);
+        prims.push({ k: 'line', a: A, b: B, layer: 'SHEET', style: it.style === 'thick' ? 'thick' : 'thin', fmt: it.id });
+        fmtList.push({ id: it.id, kind: 'line', a: A, b: B, added: true });
+      } else if (it.k === 'note') {
+        var P = D.fmtToPaper(S, units, it.p), fh = (+it.h > 0 ? +it.h : 3.5) * k, ls2 = D.titleText(it.text, doc, model, ctx).split(/\r?\n|\\n/), wmax = 0;
+        ls2.forEach(function (s, i) { if (s) { prims.push({ k: 'text', p: [P[0], P[1] - i * fh * 1.5], h: fh * CAP_EM, text: s, anchor: 'start', layer: 'SHEET', rot: 0, fmt: it.id }); wmax = Math.max(wmax, textWidth(s, fh * CAP_EM)); } });
+        fmtList.push({ id: it.id, kind: 'text', text: it.text, added: true, box: { x0: P[0], x1: P[0] + Math.max(wmax, 2 * k), y0: P[1] - (ls2.length - 1) * fh * 1.5, y1: P[1] + fh * CAP_EM } });
       }
-      if (v && textWidth(v, h * CAP_EM) > w) h = Math.max(1.6 * k, w / (String(v).length * 0.78 * CAP_EM));
-      if (v) text([x0 + pad, yTop - pad - lab - (f.big ? 6.5 : 4.5) * k], h, v, 'start', 'SHEET');
     });
     function rect(a, b, layer, style) { line([a[0], a[1]], [b[0], a[1]], layer, style); line([b[0], a[1]], [b[0], b[1]], layer, style); line([b[0], b[1]], [a[0], b[1]], layer, style); line([a[0], b[1]], [a[0], a[1]], layer, style); }
 
@@ -335,6 +368,28 @@
       rrows.forEach(function (r, ri) { D.REV_COLS.forEach(function (c, ci) { rcell(ri + 2, ci, r[c[2]], c[2] === 'description' ? 'start' : 'middle'); }); });
       revisions = { box: revBx, rows: rrows.map(function (r) { return JSON.parse(JSON.stringify(r)); }), latest: D.latestRev(doc), anchor: revBx.anchor };
     }
+    // (rfAE) General Tables: thick frame, thin row and column lines, each cell's text (with its $PRP links) left in
+    // the cell, cut with '...' when longer than it; on the TABLES layer
+    var tables = (doc.tables || []).map(function (t) {
+      var tbx = D.tableBox(doc, units, t), TL = 'TABLES', tth = _.TABLE_TEXT * k, rowHk = t.rowH * k, shown = [];
+      rect([tbx.x0, tbx.y0], [tbx.x1, tbx.y1], TL, 'thick');
+      for (var tr = 1; tr < t.rows; tr++) line([tbx.x0, tbx.rowY[tr]], [tbx.x1, tbx.rowY[tr]], TL, 'thin');
+      for (var tc = 1; tc < t.cols; tc++) line([tbx.colX[tc], tbx.y0], [tbx.colX[tc], tbx.y1], TL, 'thin');
+      t.cells.forEach(function (rowCells, ri) {
+        var out = [];
+        rowCells.forEach(function (raw, ci) {
+          var s = D.titleText(raw, doc, model, ctx), x0c = tbx.colX[ci], x1c = tbx.colX[ci + 1];
+          out.push(s);
+          s = String(s).replace(/\r?\n/g, ' ');
+          if (!s) return;
+          var maxCh = Math.floor((x1c - x0c - 2.4 * k) / (tth * 0.78));
+          if (s.length > maxCh) s = s.slice(0, Math.max(1, maxCh - 3)) + '...';
+          prims.push({ k: 'text', p: [x0c + 1.2 * k, tbx.rowY[ri + 1] + (rowHk - tth) / 2], h: tth, text: s, anchor: 'start', layer: TL, rot: 0, table: t.id });
+        });
+        shown.push(out);
+      });
+      return { id: t.id, rows: t.rows, cols: t.cols, anchor: t.anchor || null, box: tbx, cells: shown };
+    });
     // a part drawing without a Bill of Materials still numbers its manual balloons: the part is item 1
     var brows = rows;
     if (!brows.length && model.type !== 'assembly' && views.some(function (w) { return (w.view.balloons || []).length; })) {
@@ -534,6 +589,7 @@
       return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
     });
     return { size: S, units: units, prims: prims, views: views, dims: dims, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
+      format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,
       // arrow, arrowW (full width), gap, ext), prec the decimal places (null: the units' default)
       dimStyle: { geo: _.DIMGEO, paper: _.DIMGEO ? { text: _.DIMGEO.text * k, arrow: _.DIMGEO.arrow * k, arrowW: _.DIMGEO.arrowW * k, gap: _.DIMGEO.gap * k, ext: _.DIMGEO.ext * k } : null, prec: _.DIMSTYLE && _.DIMSTYLE.prec } };
@@ -1180,7 +1236,7 @@
     function pr(c, v) { L.push(String(c), String(v)); }
     var layers = [];
     sheet.prims.forEach(function (p) { if (layers.indexOf(p.layer) < 0) layers.push(p.layer); });
-    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3, SYMBOLS: 7, REVISIONS: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
+    var colors = { SHEET: 7, DIMENSIONS: 3, BOM: 7, BALLOONS: 3, ANNOTATIONS: 3, BEND_UP: 3, BEND_DOWN: 1, BEND_NOTES: 3, NOTES: 7, ETCH: 3, SYMBOLS: 7, REVISIONS: 7, TABLES: 7 }, THIN = { hatch: 1, tangent: 1, tanfont: 1, center: 1 };
     var inch = sheet.units === 'in';
     // R2000 handles: the fixed ones AutoCAD's own drawings use (tables 1–A, root dictionary C, ACAD_GROUP D, layer 0
     // 10, Standard 11, ACAD 12, ByBlock / ByLayer / Continuous 14–16, paper space 1B–1D, model space 1F–21), every

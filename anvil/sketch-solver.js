@@ -1691,10 +1691,16 @@ var SketchSolver = (function () {
       var rel = d.k === 'w' ? { type: 'distance', refs: [L1, L2], v: e.w } : d.k === 'olen' ? { type: 'distance', refs: [A1, A2], ac: ['max', 'max'], v: len(sub(B, A)) + e.w } : null;
       if (rel && d.driven) rel.driven = true;
       if (rel && d.off != null) rel.off = d.off;
-      return rel;
+      return dimPropsTo(d, rel);
     }, own);
     sketch.entities[idx + 4].construction = true;
     return idx;
+  }
+  // rfAF: a slot dimension that becomes a distance relation (explodeSlot / explodeArcSlot) keeps what the Dimension
+  // PropertyManager set on it: tolerance, precision, the text before / after the value and its name
+  function dimPropsTo(d, rel) {
+    if (rel) ['tol', 'prec', 'prefix', 'suffix', 'name'].forEach(function (k) { if (d[k] != null && d[k] !== '') rel[k] = JSON.parse(JSON.stringify(d[k])); });
+    return rel;
   }
   // rfY: an Arc Slot becomes what SolidWorks draws: the outer arc, the end arc at the slot's end (a1), the inner arc, the
   // end arc at its start (a0) and the construction centre-line arc. The outer and inner arcs are centred on the
@@ -1739,7 +1745,7 @@ var SketchSolver = (function () {
       var rel = { type: 'distance', refs: [I, O], dir: 'r', v: e.w };
       if (d.driven) rel.driven = true;
       if (d.off != null) rel.off = d.off;
-      return rel;
+      return dimPropsTo(d, rel);
     }, own);
     sketch.entities[idx + 4].construction = true;
     return idx;
@@ -3036,6 +3042,14 @@ var SketchSolver = (function () {
       var bi = idx, bd = Infinity;
       for (var k = 0; k < 4; k++) { var l = sketch.entities[idx + k], d = segDistPt(uv, [l.x1, l.y1], [l.x2, l.y2]); if (d < bd) { bd = d; bi = idx + k; } }
       idx = bi;
+    }
+    // rfAF: a slot (straight or arc) a script made is first drawn as SolidWorks draws it (explodeSlot: sides / arcs,
+    // construction centerline, relations; its dimensions follow), then the side or end arc picked is trimmed
+    if ((e.t === 'slot' || e.t === 'aslot') && explodeSlot(sketch, idx) === idx) {
+      if (ctx) ctx.conflicts = null;
+      var si = idx, sd = Infinity;
+      for (var q = 0; q < 4; q++) { var pe = sketch.entities[idx + q], pd = tPrims(pe).reduce(function (m, p) { return Math.min(m, tPrimAt(p, uv).dist); }, Infinity); if (pd < sd) { sd = pd; si = idx + q; } }
+      idx = si;
     }
     if (isFree(sketch.entities[idx])) return freeTrim(sketch, idx, uv, ctx);   // sketch-refine
     if (infSides(sketch.entities[idx])) return infiniteTrim(sketch, idx, uv, ctx);   // sketch-refine

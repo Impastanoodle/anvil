@@ -378,7 +378,12 @@
     }
     allSheets.slice(0, act).forEach(otherSheet);
     t.appendChild(row({ icon: 'sheet', name: dc.sheet.name, depth: 1, twisty: true, cls: 'dw-sheet', data: { sheet: '1' }, sel: D.sel && D.sel.kind === 'sheet', badge: dc.sheet.format + '  ' + Drawing.scaleText(dc.sheet.scale), title: 'Double-click for Sheet Properties', click: function () { D.sel = { kind: 'sheet' }; drawOverlay(); renderTree(); }, dbl: cmdSheetProperties, menu: sheetMenu }));
-    t.appendChild(row({ icon: 'sheetFormat', name: 'Sheet Format1', depth: 2, title: 'Border and title block (File ▸ Properties… sets DRAWN / CHECKED / COMPANY / tolerances)', dbl: cmdDrawingProps }));
+    t.appendChild(row({ icon: 'sheetFormat', name: (dc.format && dc.format.name) || 'Sheet Format1', depth: 2, cls: 'dw-sheetformat', badge: D.formatEdit ? 'editing' : dc.template || (dc.format ? 'edited' : ''), title: 'Border and title block (File ▸ Properties… sets DRAWN / CHECKED / COMPANY / tolerances). Right-click for Edit Sheet Format.', dbl: cmdDrawingProps, menu: function () { return DW.fmtTreeMenu(); } }));
+    // (rfAE) the General Tables of the sheet
+    (dc.tables || []).forEach(function (gt) {
+      t.appendChild(row({ icon: 'generalTable', name: 'General Table' + gt.id, depth: 2, cls: 'dw-gtable', data: { gtable: String(gt.id) }, badge: gt.cols + ' × ' + gt.rows, sel: D.sel && D.sel.kind === 'gtable' && D.sel.id === gt.id,
+        click: function () { D.sel = { kind: 'gtable', id: gt.id }; drawOverlay(); renderTree(); }, menu: function () { return DW.tableTreeMenu(gt.id); } }));
+    });
     if (dc.revisions && dc.revisions.show !== false) {
       var nrv = dc.revisions.rows.length;
       t.appendChild(row({ icon: 'revTable', name: 'Revision Table1', depth: 2, cls: 'dw-revtable', sel: D.sel && D.sel.kind === 'revtable', badge: nrv ? 'REV ' + Drawing.latestRev(dc) : 'no revisions',
@@ -630,7 +635,12 @@
       dims: D.sheet.dims.map(function (d) { return d.text; }), dangling: D.sheet.dims.filter(function (d) { return d.dangling; }).length, autoDims: !!dc.autoDims,
       dimDetails: D.sheet.dims.map(function (d) { return { view: d.view, kind: d.kind, text: d.text, value: d.value != null ? +(+d.value).toFixed(6) : null, values: d.values ? d.values.map(function (x) { return +x.toFixed(6); }) : undefined, auto: !!d.auto, style: d.style || null, index: d.index != null ? d.index : null, tol: d.tol || null, prec: d.prec != null ? d.prec : null, flip: !!d.flip, dangling: !!d.dangling, box: d.box ? [d.box.x0, d.box.y0, d.box.x1, d.box.y1].map(function (x) { return +x.toFixed(3); }) : null }; }),
       annotations: (D.sheet.annotations || []).map(function (a) { return { id: a.id, view: a.view, type: a.type, style: a.style, text: a.text, auto: a.auto, dangling: a.dangling, box: [a.box.x0, a.box.y0, a.box.x1, a.box.y1].map(function (x) { return +x.toFixed(3); }), centers: a.info && a.info.centers ? a.info.centers.map(function (c) { return [+c[0].toFixed(3), +c[1].toFixed(3)]; }) : undefined }; }),
-      options: Drawing.docOptions(dc)
+      options: Drawing.docOptions(dc),
+      // (rfAE) the sheet format (edited: it differs from the built-in one; items: what Edit Sheet Format picks) and
+      // the General Tables (cells: the text shown, links worked out)
+      format: { name: dc.format && dc.format.name || 'Sheet Format1', edited: !!dc.format, editing: !!D.formatEdit, template: dc.template || null,
+        items: (D.sheet.format || []).map(function (it) { var r3 = function (x) { return +x.toFixed(3); }; return it.box ? { id: it.id, kind: it.kind, added: !!it.added, text: it.text, box: [it.box.x0, it.box.y0, it.box.x1, it.box.y1].map(r3) } : { id: it.id, kind: it.kind, added: !!it.added, a: it.a.map(r3), b: it.b.map(r3) }; }) },
+      tables: (D.sheet.tables || []).map(function (t) { var own = Drawing.findTable(dc, t.id) || {}; return { id: t.id, rows: t.rows, cols: t.cols, anchor: t.anchor, cells: t.cells, raw: JSON.parse(JSON.stringify(own.cells || [])), box: [t.box.x0, t.box.y0, t.box.x1, t.box.y1].map(function (x) { return +x.toFixed(3); }) }; })
     };
   }
   // a flat-pattern view in the summary: its bends (sheet points, direction, angle, radius, note text), the blank's size
@@ -788,6 +798,576 @@
   UI.makeDrawing = makeDrawing; UI.openDrawing = openDrawing; UI.closeDrawing = closeDrawing; UI.drawingActive = function () { return D.active; };
   UI.drawing = { state: D, render: render, ready: ready, settle: settle, note: function () { DW.cmdNote(); }, noteAt: function (p) { return DW.noteAt(p); }, flatView: function () { DW.cmdFlatView(); }, centerMark: cmdCenterMark, centerline: cmdCenterline, holeCallout: cmdHoleCallout, ordinate: function () { cmdChainDim('ordinate'); }, baseline: function () { cmdChainDim('baseline'); },
     chamferDim: cmdChamferDim, balloon: function () { cmdBalloon(false); }, stackedBalloon: function () { cmdBalloon(true); }, docProps: cmdDocProps, dimensionPM: cmdDimensionPM, annotAt: annotAt, dimAt: dimAt, edgeAt: edgeAt, autoBalloon: cmdAutoBalloon, bom: cmdBOM, balloonAt: balloonAt, bomAt: bomAt, fit: fitSheet, standard3View: cmdStandard3View, projectedView: cmdProjectedView, sectionView: cmdSectionView, detailView: cmdDetailView, modelView: cmdModelView, smartDimension: cmdSmartDimension, modelItems: cmdModelItems, sheetProperties: cmdSheetProperties, viewProperties: cmdViewProperties, deleteSelection: deleteSelection, addDimension: addDimension, entityAt: entityAt, exportAs: exportAs, toPaper: toPaper };
+  // ------------------------------------------------------------------ rfAE: Edit Sheet Format, drawing templates,
+  // General Table, the .drawing document
+  // Edit Sheet Format (SolidWorks: right-click the sheet ▸ Edit Sheet Format, or the Sheet Format tab): the views and
+  // annotations grey out and only the border and title block take clicks. A click picks a line or a text (a title
+  // block field's label and text move together), a drag moves it, Delete removes it (a built-in one is hidden; Reset
+  // Sheet Format brings everything back), Line and Note add to the format (a note takes $PRP:"…" links), a double-click
+  // edits a note's or a field's text, right-click ▸ Edit Sheet goes back. Every change is one undo step.
+  var pxToPaper = DW.pxToPaper;
+  function fmtSheetSize() { return D.sheet ? D.sheet.size : Drawing.sheetSize(doc(), units()); }
+  function fmtItemAt(p) { return D.sheet ? Drawing.formatItemAt(D.sheet, p, pxToPaper(4)) : null; }
+  function setFormatEdit(on) {
+    if (!doc()) return false;
+    settle();
+    DW.closeInlineEdit(false);
+    D.tool = null; D.pending = null; D.hover = null; D.sel = null;
+    D.formatEdit = !!on;
+    if (D.formatEdit) App.ribbonTab = 'Sheet Format';
+    UI.refreshRibbon(); UI.renderMenuBar(); drawOverlay(); renderTree();
+    UI.setStatus(D.formatEdit ? 'Edit Sheet Format: drag a border / title block line or text to move it, Delete removes it, Line and Note add to the format; right-click ▸ Edit Sheet goes back to the sheet.' : 'Editing ' + doc().sheet.name + '.');
+    return D.formatEdit;
+  }
+  function fmtTool(tool) {
+    if (!doc()) return;
+    if (!D.formatEdit) setFormatEdit(true);
+    D.tool = tool; D.pending = { a: null, at: null, style: 'thin' }; D.hover = null;
+    UI.refreshRibbon(); drawOverlay();
+    UI.setStatus(tool === 'fmtline' ? 'Sheet format Line: click its start, then its end (it snaps horizontal / vertical and to line ends). Esc ends.' : 'Sheet format Note: click where the note goes. $PRP:"CompanyName" links a property. Esc ends.');
+  }
+  // a line end snaps to a format line's end within 6 px, then the line to horizontal / vertical within 3°
+  function snapFmt(p, from) {
+    var t = pxToPaper(6), best = null, bd = t;
+    (D.sheet.format || []).forEach(function (it) { if (it.kind === 'line') [it.a, it.b].forEach(function (q) { var d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; best = q; } }); });
+    if (best) return best.slice();
+    if (from) {
+      var dx = p[0] - from[0], dy = p[1] - from[1], ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+      if (ang < 3 || ang > 177) return [p[0], from[1]];
+      if (Math.abs(ang - 90) < 3) return [from[0], p[1]];
+    }
+    return p.slice();
+  }
+  function fmtEditNote(id) {
+    var it = Drawing.findFormatItem(doc(), id);
+    if (!it || it.k !== 'note') return;
+    UI.promptDialog('Sheet Format Note', 'Text ($PRP:"name" links a drawing property, $PRPSHEET:"name" the part\'s; \\n starts a new line):', String(it.text).replace(/\n/g, '\\n'), function (txt) {
+      if (txt == null || String(txt) === String(it.text).replace(/\n/g, '\\n')) return;
+      edit(function (dc) { Drawing.editFormatItem(dc, id, { text: String(txt).replace(/\\n/g, '\n') }); });
+    });
+  }
+  function fmtDelete(id) {
+    if (!id) return false;
+    edit(function (dc) { Drawing.deleteFormatItem(dc, id); });
+    if (D.sel && D.sel.kind === 'fmt' && D.sel.id === id) D.sel = null;
+    drawOverlay();
+    return true;
+  }
+  function resetSheetFormat() { edit(function (dc) { Drawing.resetFormat(dc); }); D.sel = null; UI.setStatus('Sheet format reset to the built-in ' + doc().sheet.format + ' format.'); }
+  function fmtMenu(it) {
+    var items = [];
+    if (it) {
+      var own = Drawing.findFormatItem(doc(), it.id);
+      if (own && own.k === 'note') items.push({ label: 'Edit Text…', action: function () { fmtEditNote(it.id); } });
+      if (/^field:/.test(it.id)) items.push({ label: 'Edit Text…', action: function () { var f = Drawing.TB_FIELDS.filter(function (x) { return 'field:' + x.key === it.id; })[0]; var tf = f && { field: f, rect: Drawing.fieldRect(f, fmtSheetSize(), units()) }; if (tf) DW.openTitleEdit(tf); } });
+      if (own && own.k === 'line') items.push({ label: own.style === 'thick' ? 'Thin Line' : 'Thick Line', action: function () { edit(function (dc) { Drawing.editFormatItem(dc, it.id, { style: own.style === 'thick' ? 'thin' : 'thick' }); }); } });
+      items.push({ label: 'Delete', key: 'Del', action: function () { fmtDelete(it.id); } }, { sep: true });
+    }
+    items.push({ label: 'Line', action: function () { fmtTool('fmtline'); } }, { label: 'Note', action: function () { fmtTool('fmtnote'); } }, { sep: true },
+      { label: 'Edit Sheet', action: function () { setFormatEdit(false); } },
+      { label: 'Save Sheet Format…', action: function () { cmdSaveTemplate('format'); } },
+      { label: 'Save as Drawing Template…', action: function () { cmdSaveTemplate('template'); } },
+      { label: 'Reset Sheet Format', disabled: !doc().format, action: resetSheetFormat });
+    return items;
+  }
+
+  // Drawing templates and sheet formats, kept in this browser (localStorage 'anvil.drawingTemplates', a list of
+  // Drawing.drawingTemplate / sheetFormatData objects by name) and written / read as JSON files
+  var TPL_KEY = 'anvil.drawingTemplates';
+  function templates() { try { var l = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(l) ? l.filter(function (t) { return t && t.name && (t.kind === 'anvil-drawing-template' || t.kind === 'anvil-sheet-format'); }) : []; } catch (e) { return []; } }
+  function storeTemplates(l) { try { localStorage.setItem(TPL_KEY, JSON.stringify(l)); return true; } catch (e) { UI.toast('Could not keep the template: ' + e.message); return false; } }
+  function findTemplate(name) { var n = String(name || '').toLowerCase(); return templates().filter(function (t) { return t.name.toLowerCase() === n; })[0] || null; }
+  function keepTemplate(t) {
+    Drawing.checkTemplate(t);
+    var l = templates().filter(function (x) { return x.name.toLowerCase() !== String(t.name).toLowerCase(); });
+    l.push(t);
+    return storeTemplates(l) ? t : null;
+  }
+  function deleteTemplate(name) { var n = String(name || '').toLowerCase(), l = templates(), k = l.filter(function (t) { return t.name.toLowerCase() !== n; }); return k.length < l.length && storeTemplates(k); }
+  function makeTemplate(kind, name) {
+    var t = kind === 'format' ? Drawing.sheetFormatData(doc(), name) : Drawing.drawingTemplate(doc(), name);
+    t.name = String(name).trim();
+    return t;
+  }
+  function templateFileName(t) { return String(t.name).replace(/[^\w\-]+/g, '_') + (t.kind === 'anvil-sheet-format' ? '.slddrt.json' : '.drwdot.json'); }
+  function exportTemplate(t) { if (UI.download) UI.download(templateFileName(t), JSON.stringify(t, null, 1), 'application/json'); return t; }
+  function cmdSaveTemplate(kind) {
+    if (!doc()) return;
+    var own = doc().properties || {}, guess = doc().template || own.CompanyName || own.companyname || (kind === 'format' ? 'Shop Format' : 'Shop Drawing');
+    UI.promptDialog(kind === 'format' ? 'Save Sheet Format' : 'Save as Drawing Template', (kind === 'format' ? 'Sheet format' : 'Drawing template') + ' name (kept in this browser; Drawing Templates… exports it as a file):', guess, function (name) {
+      name = String(name || '').trim();
+      if (!name) return;
+      var t = keepTemplate(makeTemplate(kind, name));
+      if (t) { doc().template = name; UI.toast('Saved ' + (kind === 'format' ? 'sheet format' : 'drawing template') + ' "' + name + '"'); UI.setStatus('New Drawing and Make Drawing from Part offer "' + name + '".'); }
+    });
+  }
+  function importTemplateData(data) {
+    var t = typeof data === 'string' ? JSON.parse(data) : data;
+    Drawing.checkTemplate(t);
+    if (!t.name) t.name = 'Imported template';
+    return keepTemplate(t);
+  }
+  function pickJSON(onText) {
+    var inp = el('input', { type: 'file', accept: '.json,.drwdot,.slddrt', style: 'display:none' });
+    inp.addEventListener('change', function () {
+      var file = inp.files && inp.files[0];
+      inp.remove();
+      if (!file) return;
+      var r = new FileReader();
+      r.onload = function () { onText(String(r.result), file.name); };
+      r.readAsText(file);
+    });
+    document.body.appendChild(inp);
+    inp.click();
+  }
+  // Tools ▸ Drawing Templates…: the saved templates and sheet formats, with Export, Delete, Load Sheet Format (in a
+  // drawing: its format, title block texts and properties replace the sheet's) and Import
+  function cmdTemplates() {
+    var body = el('div', { class: 'dw-tpl-dialog' });
+    function fill() {
+      body.innerHTML = '';
+      var l = templates();
+      if (!l.length) body.appendChild(el('p', { text: 'No drawing templates yet. In a drawing, Sheet Format ▸ Save as Drawing Template keeps the sheet\'s format, title block and properties (your company name) under a name.' }));
+      l.forEach(function (t) {
+        var btns = [el('button', { class: 'dw-tpl-export', text: 'Export', onclick: function () { exportTemplate(t); } }),
+          el('button', { class: 'dw-tpl-delete', text: 'Delete', onclick: function () { deleteTemplate(t.name); fill(); } })];
+        if (D.active && doc()) btns.unshift(el('button', { class: 'dw-tpl-load', text: 'Load Sheet Format', onclick: function () { edit(function (dc) { Drawing.applySheetFormat(dc, t); }); UI.closeModal(); UI.setStatus('Sheet format "' + t.name + '" loaded.'); } }));
+        body.appendChild(el('div', { class: 'dw-tpl-row', 'data-name': t.name }, [el('span', { class: 'dw-tpl-name', text: t.name + (t.kind === 'anvil-sheet-format' ? ' (sheet format)' : t.sheet ? ' (' + t.sheet.format + ')' : '') })].concat(btns)));
+      });
+    }
+    fill();
+    UI.showModal({ title: 'Drawing Templates', body: body, buttons: [
+      { label: 'Import…', action: function () { pickJSON(function (txt, fname) { try { var t = importTemplateData(txt); UI.toast('Imported "' + t.name + '" from ' + fname); fill(); } catch (e) { UI.toast(e.message); } }); } },
+      { label: 'Close', primary: true, action: UI.closeModal }
+    ] });
+  }
+  // the template chooser of New Drawing / Make Drawing from Part: with no saved template it goes straight on (the
+  // built-in ANSI / ISO format); otherwise SolidWorks' New SOLIDWORKS Document list: the default, then the templates
+  function chooseTemplate(onChosen) {
+    var l = templates().filter(function (t) { return t.kind === 'anvil-drawing-template'; });
+    if (!l.length) { onChosen(null); return; }
+    var list = el('div', { class: 'dw-tpl-choose' }), def = (App.model.units === 'in' ? 'ANSI B' : 'A3');
+    function opt(value, label, checked) {
+      var r = el('input', { type: 'radio', name: 'dw-tpl', value: value });
+      r.checked = !!checked;
+      list.appendChild(el('label', { class: 'dlg-row' }, [r, el('span', { text: ' ' + label })]));
+    }
+    opt('', 'Default (built-in ' + def + ', ' + (App.model.units === 'in' ? 'ANSI' : 'ISO') + ' title block)', false);
+    l.forEach(function (t, i) { opt(t.name, t.name + ' (' + (t.sheet ? t.sheet.format : def) + ')', i === l.length - 1); });
+    UI.showModal({ title: 'New Drawing', body: el('div', {}, [el('p', { text: 'Drawing template:' }), list]), buttons: [
+      { label: 'OK', primary: true, action: function () {
+        var c = list.querySelector('input:checked'), t = c && c.value ? findTemplate(c.value) : null;
+        UI.closeModal(); onChosen(t);
+      } },
+      { label: 'Cancel', action: UI.closeModal }
+    ] });
+  }
+  // newDrawing(template): a new drawing of the open part / assembly from a template (name or object; null: built-in)
+  function newDrawing(template) {
+    var t = typeof template === 'string' ? findTemplate(template) : template || null;
+    if (typeof template === 'string' && !t) { UI.toast('No drawing template "' + template + '"'); return null; }
+    if (D.active) closeDrawing();
+    return makeDrawing(t ? { fresh: true, template: t } : { fresh: true });
+  }
+  function cmdNewDrawing() { chooseTemplate(function (t) { newDrawing(t); }); }
+  // Make Drawing from Part / Assembly: the part's drawing opens when it has one; else a new one from a chosen template
+  function cmdMakeDrawing() {
+    if ((App.model.drawings || []).length) { makeDrawing(); return; }
+    chooseTemplate(function (t) { makeDrawing(t ? { template: t } : {}); });
+  }
+
+  // General Table (Insert ▸ Tables ▸ General Table, Annotation tab): its PropertyManager asks for the columns and rows
+  // and an anchor; with no anchor the table follows the pointer until a click places it. A click picks it (drag moves
+  // it off its anchor), a double-click edits a cell in place (Enter applies, Tab goes on to the next cell, Esc
+  // cancels), right-click adds or deletes rows and columns, Delete removes it.
+  function tableAt(p) { var c = doc() ? Drawing.tableCellAt(doc(), units(), p) : null; return c; }
+  function cmdGeneralTable() {
+    if (!doc()) return;
+    if (D.formatEdit) setFormatEdit(false);
+    pmOpen({ title: 'General Table', icon: 'generalTable', command: 'generalTable',
+      message: 'Columns and rows; with an anchor the table goes to that corner of the sheet, else click where its top-left corner goes.',
+      values: { cols: 2, rows: 2, anchor: 'none' },
+      groups: [{ title: 'Table Size', fields: [{ type: 'number', key: 'cols', label: 'Columns', min: 1 }, { type: 'number', key: 'rows', label: 'Rows', min: 1 }] },
+        { title: 'Table Position', fields: [{ type: 'select', key: 'anchor', label: 'Attach to anchor point', options: [['none', 'None (click to place)'], ['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right']] }] }],
+      onOK: function (v) {
+        var spec = { cols: Math.max(1, Math.round(+v.cols) || 2), rows: Math.max(1, Math.round(+v.rows) || 2) };
+        if (v.anchor && v.anchor !== 'none') { spec.anchor = v.anchor; placeTable(spec); return; }
+        D.tool = 'gtable'; D.pending = { spec: spec, at: null }; UI.refreshRibbon(); drawOverlay();
+        UI.setStatus('General Table ' + spec.cols + ' × ' + spec.rows + ': click where its top-left corner goes (Esc cancels).');
+      } });
+  }
+  function placeTable(spec) {
+    var t = null;
+    edit(function (dc) { t = Drawing.addTable(dc, units(), spec); });
+    D.sel = { kind: 'gtable', id: t.id }; D.tool = null; D.pending = null;
+    UI.refreshRibbon(); drawOverlay(); renderTree();
+    UI.setStatus('General Table' + t.id + ' (' + t.cols + ' × ' + t.rows + '): double-click a cell to type in it, right-click to add or delete rows and columns.');
+    return t;
+  }
+  function tableEdit(fn) { try { fn(JSON.parse(JSON.stringify(doc()))); } catch (e) { UI.toast(e.message); UI.setStatus(e.message); return false; } edit(fn); return true; }
+  function tableMenu(c) {
+    var id = c.id, t = Drawing.findTable(doc(), id), anchor = function (a) { return function () { tableEdit(function (dc) { Drawing.setTableProps(dc, units(), id, { anchor: a }); }); }; };
+    return [
+      { label: 'Edit Cell…', action: function () { openCellEdit(c); } },
+      { sep: true },
+      { label: 'Insert ▸ Row Above', action: function () { tableEdit(function (dc) { Drawing.insertTableRow(dc, id, c.r); }); } },
+      { label: 'Insert ▸ Row Below', action: function () { tableEdit(function (dc) { Drawing.insertTableRow(dc, id, c.r + 1); }); } },
+      { label: 'Insert ▸ Column Left', action: function () { tableEdit(function (dc) { Drawing.insertTableCol(dc, id, c.c); }); } },
+      { label: 'Insert ▸ Column Right', action: function () { tableEdit(function (dc) { Drawing.insertTableCol(dc, id, c.c + 1); }); } },
+      { label: 'Delete ▸ Row', disabled: t.rows < 2, action: function () { tableEdit(function (dc) { Drawing.deleteTableRow(dc, id, c.r); }); } },
+      { label: 'Delete ▸ Column', disabled: t.cols < 2, action: function () { tableEdit(function (dc) { Drawing.deleteTableCol(dc, id, c.c); }); } },
+      { sep: true },
+      { label: 'Anchor ▸ Top Left', checked: t.anchor === 'top-left', action: anchor('top-left') },
+      { label: 'Anchor ▸ Top Right', checked: t.anchor === 'top-right', action: anchor('top-right') },
+      { label: 'Anchor ▸ Bottom Left', checked: t.anchor === 'bottom-left', action: anchor('bottom-left') },
+      { label: 'Anchor ▸ Bottom Right', checked: t.anchor === 'bottom-right', action: anchor('bottom-right') },
+      { sep: true },
+      { label: 'Delete Table', key: 'Del', action: function () { edit(function (dc) { Drawing.deleteTable(dc, id); }); D.sel = null; drawOverlay(); renderTree(); } }
+    ];
+  }
+  function openCellEdit(c) {
+    DW.closeInlineEdit(false);
+    var t = Drawing.findTable(doc(), c.id);
+    if (!t || !t.cells[c.r]) return;
+    var shown = t.cells[c.r][c.c] || '';
+    var inp = el('input', { type: 'text', spellcheck: 'false', 'aria-label': 'Cell ' + (c.r + 1) + ', ' + (c.c + 1) });
+    var ok = el('button', { class: 'dw-edit-btn ok', title: 'OK (Enter)', text: '✓' }), no = el('button', { class: 'dw-edit-btn', title: 'Cancel (Esc)', text: '✗' });
+    var box = el('div', { id: 'dw-edit', class: 'text tb cell' }, [inp, ok, no]);
+    inp.value = shown;
+    D.root.appendChild(box);
+    // (field.rect places the box over the cell; ref matches no dimension, so the shared close paths leave it alone)
+    D.inline = { box: box, inp: inp, field: { key: '__cell', rect: c.rect, shown: shown }, ref: { view: -1, index: -1 }, cell: { id: c.id, r: c.r, c: c.c, shown: shown } };
+    DW.positionInlineEdit();
+    inp.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); closeCell(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeCell(false); }
+      else if (ev.key === 'Tab') {
+        ev.preventDefault();
+        var I = D.inline && D.inline.cell, tt = I && Drawing.findTable(doc(), I.id);
+        if (!I || !tt) return;
+        var n = I.r * tt.cols + I.c + (ev.shiftKey ? -1 : 1);
+        closeCell(true);
+        if (n < 0 || n >= tt.rows * tt.cols) return;
+        var b = Drawing.tableBox(doc(), units(), Drawing.findTable(doc(), I.id)), r = Math.floor(n / tt.cols), cc = n % tt.cols;
+        openCellEdit({ id: I.id, r: r, c: cc, rect: { x0: b.colX[cc], x1: b.colX[cc + 1], y0: b.rowY[r + 1], y1: b.rowY[r] } });
+      }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeCell(false); }, 0); });
+    [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
+    ok.addEventListener('click', function () { closeCell(true); });
+    no.addEventListener('click', function () { closeCell(false); });
+    box.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    try { inp.focus({ preventScroll: true }); inp.select(); } catch (err) { }
+    UI.setStatus('Cell ' + (c.r + 1) + ', ' + (c.c + 1) + ': type its text ($PRP:"…" links a property); Enter applies, Tab goes to the next cell, Esc cancels.');
+  }
+  function closeCell(commit) {
+    var I = D.inline;
+    if (!I || !I.cell) return;
+    D.inline = null;
+    if (I.box.parentNode) I.box.parentNode.removeChild(I.box);
+    if (!commit || I.inp.value === I.cell.shown) return;
+    var v = I.inp.value;
+    edit(function (dc) { Drawing.editTableCell(dc, I.cell.id, I.cell.r, I.cell.c, v); });
+  }
+  var baseCloseInline = DW.closeInlineEdit;
+  DW.closeInlineEdit = function (commit) { if (D.inline && D.inline.cell) return closeCell(commit); return baseCloseInline.apply(this, arguments); };
+
+  // the sheet's mouse (drawing-ui.js calls these first): the format tools, General Table placement and picks
+  DW.aeDown = function (p, e) {
+    if (D.tool === 'fmtline' && D.pending) {
+      if (!D.pending.a) { D.pending.a = snapFmt(p); drawOverlay(); UI.setStatus('Sheet format Line: click its end.'); return true; }
+      var a = D.pending.a, b = snapFmt(p, a), st = D.pending.style;
+      D.pending.a = null;
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < pxToPaper(2)) return true;
+      var id = null;
+      edit(function (dc) { id = Drawing.addFormatLine(dc, fmtSheetSize(), units(), a, b, st); });
+      D.sel = { kind: 'fmt', id: id }; drawOverlay();
+      UI.setStatus('Line added to the sheet format. Click the next line\'s start, Esc ends.');
+      return true;
+    }
+    if (D.tool === 'fmtnote' && D.pending) {
+      var at = p.slice();
+      UI.promptDialog('Sheet Format Note', 'Text ($PRP:"CompanyName" links a drawing property; \\n starts a new line):', '', function (txt) {
+        if (!txt || !String(txt).trim()) return;
+        var nid = null;
+        edit(function (dc) { nid = Drawing.addFormatNote(dc, fmtSheetSize(), units(), at, String(txt).replace(/\\n/g, '\n'), 3.5); });
+        D.sel = { kind: 'fmt', id: nid }; drawOverlay();
+      });
+      return true;
+    }
+    if (D.tool === 'gtable' && D.pending) { placeTable(Object.assign({ x: p[0], y: p[1] }, D.pending.spec)); return true; }
+    if (D.formatEdit && !D.tool) {
+      var it = fmtItemAt(p);
+      if (it) {
+        D.sel = { kind: 'fmt', id: it.id };
+        D.drag = { kind: 'fmt', id: it.id, start: p, last: p, moved: false };
+        UI.setStatus('Sheet format ' + (it.kind === 'text' ? 'text' : 'line') + ' ' + it.id + ' — drag to move it, Delete removes it' + (it.kind === 'text' ? ', double-click to edit it' : '') + '.');
+      } else {
+        D.sel = null;
+        D.drag = { kind: 'pan', x: e.clientX, y: e.clientY, vb: JSON.parse(JSON.stringify(D.vb)) };
+      }
+      drawOverlay(); renderTree();
+      return true;
+    }
+    if (D.tool) return false;
+    var gt = tableAt(p);
+    if (gt) {
+      D.sel = { kind: 'gtable', id: gt.id };
+      D.drag = { kind: 'gtable', id: gt.id, start: p, x0: gt.box.x0, y0: gt.box.y1, moved: false };
+      drawOverlay(); renderTree();
+      UI.setStatus('General Table' + gt.id + ' — drag to move it, double-click a cell to edit it, right-click to add or delete rows and columns, Delete removes it.');
+      return true;
+    }
+    return false;
+  };
+  DW.aeDragMove = function (dg, p) {
+    if (dg.kind !== 'fmt' && dg.kind !== 'gtable') return false;
+    if (!dg.moved && Math.hypot(p[0] - dg.start[0], p[1] - dg.start[1]) < pxToPaper(3)) return true;
+    if (!dg.moved) { UI.pushUndo(); dg.moved = true; D.host.classList.add('dw-dragging'); }
+    if (dg.kind === 'fmt') { Drawing.moveFormatItem(doc(), dg.id, p[0] - dg.last[0], p[1] - dg.last[1], units()); dg.last = p; }
+    else Drawing.moveTable(doc(), dg.id, dg.x0 + p[0] - dg.start[0], dg.y0 + p[1] - dg.start[1]);
+    queueRender(true);
+    return true;
+  };
+  DW.aeHover = function (q) {
+    var h;
+    if ((D.tool === 'fmtline' || D.tool === 'gtable') && D.pending) { D.pending.at = D.tool === 'fmtline' ? snapFmt(q, D.pending.a) : q; drawOverlay(); return true; }
+    if (D.tool === 'fmtnote') return true;
+    if (D.formatEdit && !D.tool) { var it = fmtItemAt(q); h = it ? { kind: 'fmt', id: it.id } : null; }
+    else if (!D.tool) { var gt = tableAt(q); if (!gt) return false; h = { kind: 'gtable', id: gt.id }; }
+    else return false;
+    if (JSON.stringify(h) !== JSON.stringify(D.hover)) { D.hover = h; drawOverlay(); }
+    return true;
+  };
+  DW.aeDblClick = function (p) {
+    if (D.formatEdit) {
+      var it = fmtItemAt(p), own = it && Drawing.findFormatItem(doc(), it.id);
+      if (own && own.k === 'note') { fmtEditNote(it.id); return true; }
+      if (it && /^field:/.test(it.id)) { var tf = Drawing.titleFieldAt(fmtSheetSize(), units(), p, doc()); if (tf) DW.openTitleEdit(tf); }
+      return true;
+    }
+    var c = tableAt(p);
+    if (c) { D.sel = { kind: 'gtable', id: c.id }; openCellEdit(c); return true; }
+    return false;
+  };
+  DW.aeContext = function (p, e) {
+    if (D.formatEdit) {
+      var it = fmtItemAt(p);
+      D.sel = it ? { kind: 'fmt', id: it.id } : null; drawOverlay();
+      UI.showMenu(e.clientX, e.clientY, fmtMenu(it));
+      return true;
+    }
+    var c = tableAt(p);
+    if (c) { D.sel = { kind: 'gtable', id: c.id }; drawOverlay(); renderTree(); UI.showMenu(e.clientX, e.clientY, tableMenu(c)); return true; }
+    return false;
+  };
+  DW.aeOverlay = function (g, H, svgNode, sw, pad) {
+    if (D.host) D.host.classList.toggle('dw-fmt-edit', !!D.formatEdit);
+    var hot = function (it, sel) {
+      if (it.box) svgNode('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: it.box.x0 - pad / 2, y: H - it.box.y1 - pad / 2, width: it.box.x1 - it.box.x0 + pad, height: it.box.y1 - it.box.y0 + pad, 'stroke-width': sw }, g);
+      else svgNode('line', { class: 'dw-hot' + (sel ? '' : ' pre'), x1: it.a[0], y1: H - it.a[1], x2: it.b[0], y2: H - it.b[1], 'stroke-width': pxToPaper(sel ? 3 : 2.4) }, g);
+    };
+    if (D.formatEdit && D.sheet && D.sheet.format) D.sheet.format.forEach(function (it) {
+      var sel = D.sel && D.sel.kind === 'fmt' && D.sel.id === it.id, hov = D.hover && D.hover.kind === 'fmt' && D.hover.id === it.id;
+      if (sel || hov) hot(it, sel);
+    });
+    (D.sheet && D.sheet.tables || []).forEach(function (t) {
+      var sel = D.sel && D.sel.kind === 'gtable' && D.sel.id === t.id, hov = D.hover && D.hover.kind === 'gtable' && D.hover.id === t.id;
+      if (sel || hov) hot({ box: t.box }, sel);
+    });
+    var P = D.pending;
+    if (D.tool === 'fmtline' && P && P.a && P.at) svgNode('line', { class: 'dw-cut', x1: P.a[0], y1: H - P.a[1], x2: P.at[0], y2: H - P.at[1], 'stroke-width': pxToPaper(1.5) }, g);
+    if (D.tool === 'gtable' && P && P.at) {
+      var k = paperK(), w = P.spec.cols * 25 * k, h = P.spec.rows * 6 * k;
+      svgNode('rect', { class: 'dw-ghost', x: P.at[0], y: H - P.at[1], width: w, height: h, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
+    }
+  };
+  // Delete: a format item, a General Table
+  var baseDelete2 = deleteSelection;
+  deleteSelection = DW.deleteSelection = function () {
+    var s = D.sel;
+    if (s && s.kind === 'fmt') { fmtDelete(s.id); return true; }
+    if (s && s.kind === 'gtable') { edit(function (dc) { Drawing.deleteTable(dc, s.id); }); D.sel = null; drawOverlay(); renderTree(); return true; }
+    if (D.formatEdit) return false;
+    return baseDelete2.apply(this, arguments);
+  };
+  // the sheet's right-click menu: Edit Sheet Format after Properties (SolidWorks' place)
+  var baseSheetMenu = DW.sheetMenu;
+  sheetMenu = DW.sheetMenu = function () {
+    var items = baseSheetMenu.apply(this, arguments);
+    items.splice(1, 0, { label: 'Edit Sheet Format', action: function () { setFormatEdit(true); } });
+    return items;
+  };
+  DW.fmtTreeMenu = function () { return [{ label: D.formatEdit ? 'Edit Sheet' : 'Edit Sheet Format', action: function () { setFormatEdit(!D.formatEdit); } }, { label: 'Save Sheet Format…', action: function () { cmdSaveTemplate('format'); } }, { label: 'Reset Sheet Format', disabled: !doc().format, action: resetSheetFormat }]; };
+  DW.tableTreeMenu = function (id) { var t = Drawing.findTable(doc(), id), b = t && Drawing.tableBox(doc(), units(), t); return t ? tableMenu({ id: id, r: 0, c: 0, rect: { x0: b.colX[0], x1: b.colX[1], y0: b.rowY[1], y1: b.rowY[0] } }) : []; };
+  DW.setFormatEdit = setFormatEdit; DW.cmdGeneralTable = cmdGeneralTable;
+
+  // the Sheet Format tab (SolidWorks 2024's drawing CommandManager) and General Table on Annotation
+  UI.RIBBON['Sheet Format'] = [
+    { id: 'editSheetFormat', label: 'Edit Sheet\nFormat', run: function () { setFormatEdit(!D.formatEdit); }, active: function () { return !!D.formatEdit; } },
+    { sep: true },
+    { id: 'fmtLine', label: 'Line', run: function () { fmtTool('fmtline'); }, active: function () { return D.tool === 'fmtline'; } },
+    { id: 'fmtNote', label: 'Note', run: function () { fmtTool('fmtnote'); }, active: function () { return D.tool === 'fmtnote'; } },
+    { sep: true },
+    { id: 'saveSheetFormat', label: 'Save Sheet\nFormat', run: function () { cmdSaveTemplate('format'); } },
+    { id: 'saveTemplate', label: 'Save as\nTemplate', run: function () { cmdSaveTemplate('template'); } },
+    { id: 'drawingTemplates', icon: 'docProps', label: 'Drawing\nTemplates', run: cmdTemplates },
+    { id: 'resetFormat', label: 'Reset\nFormat', run: resetSheetFormat }
+  ];
+  if (UI.ASM_RIBBON) UI.ASM_RIBBON['Sheet Format'] = UI.RIBBON['Sheet Format'];
+  (function () {
+    var an = UI.RIBBON.Annotation, at = -1;
+    an.forEach(function (it, i) { if (it.id === 'revTable') at = i; });
+    an.splice(at >= 0 ? at + 1 : an.length, 0, { id: 'generalTable', label: 'General\nTable', run: cmdGeneralTable, active: function () { return D.tool === 'gtable'; } });
+  })();
+  var baseTabsFor = UI.ribbonTabsFor;
+  UI.ribbonTabsFor = function (names, extra) {
+    if (D.active) return [['View Layout', 'Annotation', 'Sheet Format'], ['Sketch', 'Markup']];
+    var r = baseTabsFor(names, extra);
+    return [r[0].filter(function (n) { return n !== 'Sheet Format'; }), r[1]];
+  };
+  // menus: File ▸ New Drawing / Save Drawing As (.drawing) / Drawing Templates, Insert ▸ Tables ▸ General Table, Edit
+  // Sheet Format; Make Drawing from Part offers the templates
+  var baseMenuHook = UI.menuHook;
+  UI.menuHook = function (menus) {
+    var out = baseMenuHook(menus);
+    var file = out.filter(function (m) { return m.label === 'File'; })[0];
+    if (!D.active) {
+      if (file) file.items.forEach(function (it, i) {
+        if (/^Make Drawing from /.test(it.label || '')) file.items.splice(i, 1, Object.assign({}, it, { action: cmdMakeDrawing }), { label: 'New Drawing…', action: cmdNewDrawing });
+      });
+      return out;
+    }
+    if (file) {
+      var ci = -1;
+      file.items.forEach(function (it, i) { if (it.label === 'Properties…' && ci < 0) ci = i; });
+      file.items.splice(ci >= 0 ? ci : file.items.length, 0, { label: 'New Drawing…', action: cmdNewDrawing }, { label: 'Save Drawing As…', action: function () { saveDrawingFile(); } }, { sep: true });
+    }
+    var ins = out.filter(function (m) { return m.label === 'Insert'; })[0];
+    if (ins) {
+      var ri = -1;
+      ins.items.forEach(function (it, i) { if (/^Tables ▸ Revision Table/.test(it.label || '')) ri = i; });
+      ins.items.splice(ri >= 0 ? ri + 1 : ins.items.length, 0, { label: 'Tables ▸ General Table…', action: cmdGeneralTable });
+    }
+    var tools = out.filter(function (m) { return m.label === 'Tools'; })[0];
+    if (tools) tools.items.push({ sep: true }, { label: D.formatEdit ? 'Edit Sheet' : 'Edit Sheet Format', action: function () { setFormatEdit(!D.formatEdit); } }, { label: 'Drawing Templates…', action: cmdTemplates });
+    return out;
+  };
+
+  // The .drawing document. File ▸ Save Drawing As writes the open drawing as <name>.drawing (JSON: the drawing and a
+  // reference to its part by name and file name); File ▸ Open of a .drawing opens it on that part: the open part when
+  // it is the one (the drawing is added to it, or replaces its drawing of the same name), else the part saved in this
+  // browser under that file name or model name, else it asks for the part file. model.drawings keeps working.
+  function saveDrawingFile() {
+    if (!doc()) return null;
+    settle();
+    var f = Drawing.drawingFile(doc(), App.model, App.fileName || null);
+    if (UI.download) UI.download(String(doc().name || 'Draw1').replace(/[^\w\-]+/g, '_') + '.drawing', JSON.stringify(f, null, 1), 'application/json');
+    DW.markDrawingClean();
+    UI.setStatus('Saved ' + doc().name + '.drawing (it refers to ' + (App.model.name || 'the part') + (App.fileName ? ', file "' + App.fileName + '"' : '') + ').');
+    return f;
+  }
+  function savedFiles() { try { return JSON.parse(localStorage.getItem('anvil.files') || '{}'); } catch (e) { return {}; } }
+  function partMatches(want) {
+    if (!want || !App.model) return false;
+    var asm = App.model.type === 'assembly';
+    if (want.type && (want.type === 'assembly') !== asm) return false;
+    return (want.file && App.fileName === want.file) || (want.name != null && App.model.name === want.name);
+  }
+  function attachDrawing(f, fname) {
+    if (D.active) closeDrawing();
+    UI.pushUndo();
+    var list = App.model.drawings = (App.model.drawings || []).slice(), dc = JSON.parse(JSON.stringify(f.drawing)), i = -1;
+    list.forEach(function (d, j) { if (d && d.name === dc.name) i = j; });
+    if (i >= 0) list[i] = dc; else { list.push(dc); i = list.length - 1; }
+    UI.autosave();
+    makeDrawing({ index: i });
+    UI.setStatus('Opened ' + (fname || dc.name + '.drawing') + ' on ' + (App.model.name || 'the part') + '.');
+    return window.anvil && window.anvil.drawing ? window.anvil.drawing.summary() : true;
+  }
+  // openDrawingFile(name, data, opts) -> Promise of the drawing summary (null when the part is not given).
+  // opts.part = { name, data }: the part file to open it on (as the dialog's Browse picks one)
+  function openDrawingFile(name, data, opts) {
+    opts = opts || {};
+    var f;
+    try {
+      var txt = typeof data === 'string' || (data && data.kind) ? data : new TextDecoder('utf-8').decode(new Uint8Array(data));
+      f = Drawing.readDrawingFile(txt);
+    } catch (e) { return Promise.reject(e); }
+    var want = f.part, label = want.name || want.file || 'its part';
+    if (partMatches(want)) return Promise.resolve(attachDrawing(f, name));
+    function onPart(pname, pdata) {
+      return UI.openFileData(pname, pdata).then(function () {
+        if (!partMatches(want) && want.name && App.model.name !== want.name) UI.toast(pname + ' is ' + (App.model.name || 'a part') + ', not ' + want.name + ': the drawing opens on it anyway.');
+        return attachDrawing(f, name);
+      });
+    }
+    if (opts.part) return onPart(opts.part.name, opts.part.data);
+    var files = savedFiles(), key = want.file && files[want.file] && files[want.file].model ? want.file : null;
+    if (!key) Object.keys(files).forEach(function (n) { if (!key && files[n] && files[n].model && files[n].model.name === want.name && (!want.type || (files[n].model.type === 'assembly') === (want.type === 'assembly'))) key = n; });
+    if (key) {
+      return UI.loadModel(files[key].model).then(function () { App.fileName = key; if (UI.markClean) UI.markClean(); return attachDrawing(f, name); });
+    }
+    return new Promise(function (resolve, reject) {
+      var inp = el('input', { type: 'file', id: 'dw-part-file', accept: '.json,.js', 'aria-label': 'Part file' });
+      inp.addEventListener('change', function () {
+        var file = inp.files && inp.files[0];
+        if (!file) return;
+        var r = new FileReader();
+        r.onload = function () { UI.closeModal(); onPart(file.name, String(r.result)).then(resolve, reject); };
+        r.readAsText(file);
+      });
+      UI.showModal({ title: 'Open Drawing', body: el('div', { class: 'dw-open-drawing' }, [
+        el('p', { text: (f.drawing.name || 'The drawing') + ' refers to ' + label + (want.file && want.file !== want.name ? ' (file "' + want.file + '")' : '') + ', which is not open or saved in this browser.' }),
+        el('p', { text: 'Choose the ' + (want.type === 'assembly' ? 'assembly' : 'part') + ' file (.anvil.json or .anvil.js) to open it on:' }), inp
+      ]), buttons: [{ label: 'Cancel', action: function () { UI.closeModal(); resolve(null); } }] });
+    });
+  }
+  UI.openDrawingFile = openDrawingFile;
+
+  if (window.anvil && window.anvil.drawing) {
+    var AD = window.anvil.drawing;
+    // (rfAE) Edit Sheet Format: editSheetFormat(on) -> whether it is on; formatItems() -> [{ id, kind, a, b | box,
+    // added }]; formatLine(a, b, style) / formatNote(p, text, h) -> the new item's id; formatMove(id, dx, dy),
+    // formatDelete(id), formatEdit(id, { text, h, style }), resetFormat(); each change one undo step
+    AD.editSheetFormat = function (on) { if (!doc()) return null; if (on !== undefined) setFormatEdit(on); return !!D.formatEdit; };
+    AD.formatItems = function () { var s = summary(); return s ? s.format.items : null; };
+    AD.formatLine = function (a, b, style) { if (!doc()) return null; var id; edit(function (dc) { id = Drawing.addFormatLine(dc, fmtSheetSize(), units(), a, b, style); }); return id; };
+    AD.formatNote = function (p, text, h) { if (!doc()) return null; var id; edit(function (dc) { id = Drawing.addFormatNote(dc, fmtSheetSize(), units(), p, text, h); }); return id; };
+    AD.formatMove = function (id, dx, dy) { if (!doc()) return null; edit(function (dc) { Drawing.moveFormatItem(dc, id, dx, dy, units()); }); return AD.formatItems(); };
+    AD.formatDelete = function (id) { if (!doc()) return null; fmtDelete(id); return AD.formatItems(); };
+    AD.formatEdit = function (id, props) { return tableEdit(function (dc) { Drawing.editFormatItem(dc, id, props || {}); }) ? AD.formatItems() : null; };
+    AD.resetFormat = function () { if (!doc()) return null; resetSheetFormat(); return AD.formatItems(); };
+    // templates: templates() -> [{ name, kind, format }]; saveTemplate(name, { kind: 'template' | 'format' }) keeps the
+    // open drawing's; template(name) -> it; deleteTemplate(name); exportTemplate(name) (downloads; -> the JSON text);
+    // importTemplate(text | object) -> its name; loadSheetFormat(name | object) applies one to the open drawing;
+    // newDrawing({ template: name | object | null }) -> the summary of a new drawing of the open part
+    AD.templates = function () { return templates().map(function (t) { return { name: t.name, kind: t.kind === 'anvil-sheet-format' ? 'format' : 'template', format: t.sheet ? t.sheet.format : null }; }); };
+    AD.saveTemplate = function (name, opts) { if (!doc() || !String(name || '').trim()) return null; var t = keepTemplate(makeTemplate(opts && opts.kind === 'format' ? 'format' : 'template', name)); if (t) doc().template = t.name; return t ? t.name : null; };
+    AD.template = function (name) { var t = findTemplate(name); return t ? JSON.parse(JSON.stringify(t)) : null; };
+    AD.deleteTemplate = function (name) { return !!deleteTemplate(name); };
+    AD.exportTemplate = function (name) { var t = findTemplate(name); if (!t) return null; exportTemplate(t); return JSON.stringify(t, null, 1); };
+    AD.importTemplate = function (data) { try { return importTemplateData(data).name; } catch (e) { UI.toast(e.message); return null; } };
+    AD.loadSheetFormat = function (t) { var o = typeof t === 'string' ? findTemplate(t) : t; if (!doc() || !o) return null; return tableEdit(function (dc) { Drawing.applySheetFormat(dc, o); }) ? summary() : null; };
+    AD.newDrawing = function (opts) { return newDrawing(opts && opts.template || null) ? summary() : null; };
+    // General Tables: table({ rows, cols, anchor | x, y, cells }) -> its id; tableCell(id, r, c, text); insertRow(id, at),
+    // insertColumn(id, at), deleteRow(id, r), deleteColumn(id, c), tableProps(id, { anchor, x, y, rowH, colW }),
+    // deleteTable(id); tables() -> summary().tables; each change one undo step
+    AD.table = function (spec) { if (!doc()) return null; var t = null; if (!tableEdit(function (dc) { t = Drawing.addTable(dc, units(), spec || {}); })) return null; return t.id; };
+    AD.tableCell = function (id, r, c, text) { return tableEdit(function (dc) { Drawing.editTableCell(dc, id, r, c, text); }) ? AD.tables() : null; };
+    AD.insertRow = function (id, at) { return tableEdit(function (dc) { Drawing.insertTableRow(dc, id, at); }) ? AD.tables() : null; };
+    AD.insertColumn = function (id, at) { return tableEdit(function (dc) { Drawing.insertTableCol(dc, id, at); }) ? AD.tables() : null; };
+    AD.deleteRow = function (id, r) { return tableEdit(function (dc) { Drawing.deleteTableRow(dc, id, r); }) ? AD.tables() : null; };
+    AD.deleteColumn = function (id, c) { return tableEdit(function (dc) { Drawing.deleteTableCol(dc, id, c); }) ? AD.tables() : null; };
+    AD.tableProps = function (id, props) { return tableEdit(function (dc) { Drawing.setTableProps(dc, units(), id, props || {}); }) ? AD.tables() : null; };
+    AD.deleteTable = function (id) { return tableEdit(function (dc) { if (!Drawing.deleteTable(dc, id)) throw new Error('No general table ' + id); }) ? AD.tables() : null; };
+    AD.tables = function () { var s = summary(); return s ? s.tables : null; };
+    // the .drawing document: saveFile() downloads it (-> the object); openFile(text | object, { part: { name, data } })
+    // -> Promise of the summary (as File ▸ Open of a .drawing)
+    AD.saveFile = function () { return saveDrawingFile(); };
+    AD.openFile = function (data, opts) { return openDrawingFile('Drawing.drawing', data, opts); };
+  }
   DW.renderTree = renderTree;
   // the File menu gets its drawing entry through UI.menuHook; redraw the menu bar now that the hook exists
   if (UI.renderMenuBar && $('menus').children.length) UI.renderMenuBar();

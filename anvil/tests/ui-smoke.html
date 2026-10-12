@@ -14647,7 +14647,7 @@
     anvil.drawing.setSheet({ scale: '1:1' });
     var labels = Array.prototype.map.call(D.querySelectorAll('#ribbon-buttons button'), function (b) { return b.getAttribute('aria-label') || ''; });
     var ip = labels.indexOf('Projected View'), ia = labels.indexOf('Auxiliary View'), idt = labels.indexOf('Detail View');
-    assert(ia === ip + 1 && labels[idt + 1] === 'Break' && labels[idt + 2] === 'Crop View', 'View Layout order: ' + labels.join(' | '));
+    assert(ia === ip + 1 && labels[idt + 1] === 'Broken-out Section' && labels[idt + 2] === 'Break' && labels[idt + 3] === 'Crop View', 'View Layout order: ' + labels.join(' | '));
     var F = dwView('Front'), n0 = anvil.drawing.summary().views.length;
     ribbonButton('Auxiliary View').click();
     assert(UI.drawing.state.tool === 'aux', 'Auxiliary View tool');
@@ -15846,6 +15846,373 @@
     return msg.slice(0, 120);
   });
   // --- end rfAC ---
+  // ---- rfAF (sketch / shop leftovers 2026-10-12g): a script's arc slot explodes on Sketch Fillet as a straight slot does;
+  // the over-defined sketch warning is the same whether the Web Worker or the page built the part
+  var rfAF_OVER = 'p.units("in");\np.sketch("Top").line(0, 0, 4, 0).line(4, 0, 4, -2).line(4, -2, 0, -2).line(0, -2, 0, 0).dim(0, "len", { value: 4 }).rel("distance", ["0.p1", "0.p2"], { value: 4 }).extrude(0.25);';
+  step('rfAF: Sketch Fillet between a script arc slot\'s outer arc and a line — the arc slot becomes its outer / end / inner / end arcs and construction centre arc (as SolidWorks draws it), the fillet R2 is Tangent + Coincident at both ends with its R dimension, nothing over defined', async function () {
+    var errs0 = errors.length;
+    var res = await rfAFillet([{ t: 'aslot', cx: 0, cy: 0, r: 10, a0: 30, a1: 150, w: 4 }, { t: 'line', x1: -20, y1: 15, x2: 20, y2: 15 }], null, 2, [[12 * Math.cos(Math.PI / 3), 12 * Math.sin(Math.PI / 3)], [5, 15]]);
+    var k = rfAFilletOk(res, 'arc slot outer arc and a line', 2), f = res.f;
+    assert(!f.entities.some(function (e) { return e.t === 'aslot'; }), 'no aslot left: ' + JSON.stringify(f.entities.map(function (e) { return e.t; })));
+    var con = f.entities.filter(function (e) { return e.t === 'arc' && e.construction; });
+    assert(con.length === 1 && Math.abs(con[0].r - 10) < 1e-6, 'construction centre arc R10: ' + JSON.stringify(con));
+    var a = f.entities[k];
+    near(Math.hypot(a.cx, a.cy), 14, 1e-6, 'fillet tangent to the outer arc (R12 + 2)'); near(a.cy, 13, 1e-6, 'fillet tangent to the line');
+    UI.exitSketch(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return f.entities.length + ' entities, ' + (f.rels || []).length + ' relations';
+  });
+  step('rfAF: a part built from an over-defined sketch carries the same over-defined warnings (sketch and Boss-Extrude) with the Web Worker on (the build really came from worker.js) as with it off', async function () {
+    var errs0 = errors.length, was = anvil.workerOn(), out = [];
+    try {
+      for (var pass = 0; pass < 2; pass++) {
+        var on = pass === 0;
+        anvil.workerOn(on);
+        await anvil.newPart(); await idle();
+        await anvil.run(rfAF_OVER); await idle();
+        var M = UI.App.model, sk = M.features.filter(function (x) { return x.type === 'sketch'; })[0], ex = M.features.filter(function (x) { return x.type === 'extrude'; })[0];
+        var Wn = UI.App.build.warnings || {};
+        assert(sk && ex && anvil.summary().volume > 0, (on ? 'worker' : 'page') + ': it builds');
+        if (on) assert(UI.App.workerOn && UI.App.mesh.workerSeq != null, 'the build came from the worker: ' + JSON.stringify([UI.App.workerOn, UI.App.mesh.workerSeq]));
+        else assert(!UI.App.workerOn && UI.App.mesh.workerSeq == null, 'the build ran on the page');
+        assert(/over defined/.test(Wn[sk.id] || '') && /over defined/.test(Wn[ex.id] || ''), (on ? 'worker' : 'page') + ' warnings: ' + JSON.stringify(Wn));
+        var rows = Array.prototype.filter.call(D.querySelectorAll('#tree .warn'), function (r) { return r.textContent.indexOf(ex.name) >= 0; });
+        assert(rows.length > 0, (on ? 'worker' : 'page') + ': the Boss-Extrude row is marked');
+        out.push((on ? 'worker: ' : 'page: ') + Wn[ex.id]);
+      }
+    } finally { anvil.workerOn(was); }
+    assert(out[0].replace(/^worker: /, '') === out[1].replace(/^page: /, ''), 'same warning both ways: ' + out.join(' / '));
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return out[0];
+  });
+  // --- end rfAF ---
+  // ---- rfAE: Edit Sheet Format, drawing templates, General Table, the .drawing document
+  var RFAE_PART = 'p.name("AEBracket").units("in");\np.sketch("Front").polyline([[0, 0], [4, 0], [4, 2], [0, 2]], true).end().extrude(0.25);';
+  async function rfAEDrawing() {
+    await anvil.newPart(); await idle();
+    await anvil.run(RFAE_PART); await idle();
+    anvil.drawing.make(); await idle(); await wait(40);
+    await UI.drawing.ready();
+    return anvil.drawing.summary();
+  }
+  function rfAEModalButton(text) { return Array.prototype.filter.call(D.querySelectorAll('#modal button'), function (b) { return b.textContent.trim() === text; })[0]; }
+  function rfAEPrompt(value) {
+    var inp = D.querySelector('#modal input[type="text"]');
+    assert(modalOpen() && inp, 'a text prompt is open');
+    inp.value = value;
+    rfAEModalButton('OK').click();
+  }
+  function rfAEItem(id) { return anvil.drawing.summary().format.items.filter(function (it) { return it.id === id; })[0]; }
+  function rfAEMid(it) { return it.box ? [(it.box[0] + it.box[2]) / 2, (it.box[1] + it.box[3]) / 2] : [(it.a[0] + it.b[0]) / 2, (it.a[1] + it.b[1]) / 2]; }
+  function rfAEDrag(a, b) {
+    sheetMouse('mousedown', a);
+    W.dispatchEvent(new W.MouseEvent('mousemove', Object.assign({ bubbles: true }, paperToClient([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]))));
+    W.dispatchEvent(new W.MouseEvent('mousemove', Object.assign({ bubbles: true }, paperToClient(b))));
+    W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true }));
+  }
+  function rfAEMenuItem(text) { return Array.prototype.filter.call(D.querySelectorAll('.menu .mi'), function (m) { return m.textContent.indexOf(text) >= 0; })[0]; }
+  function rfAEContext(p) { var c = paperToClient(p); D.querySelector('#drawing-sheet svg').dispatchEvent(new W.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: c.clientX, clientY: c.clientY })); }
+  function rfAEStubDownload() { var got = [], orig = UI.download; UI.download = function (name, text) { got.push({ name: name, text: text }); }; return { got: got, restore: function () { UI.download = orig; } }; }
+  step('rfAE: right-click the sheet ▸ Edit Sheet Format: the Sheet Format tab, the views greyed; drag the COMPANY field, Delete a title block line, Line and Note ($PRP link) add to the format, double-click edits the note; Edit Sheet goes back; undo steps', async function () {
+    var errs0 = errors.length, st = UI.drawing.state;
+    var s0 = await rfAEDrawing();
+    anvil.drawing.properties({ CompanyName: 'Acme Sheet Metal' });
+    rfAEContext([0.8, 10]); await wait(20);
+    var mi = rfAEMenuItem('Edit Sheet Format');
+    assert(mi, 'sheet menu has Edit Sheet Format');
+    mi.click(); UI.closeMenus(); await wait(20);
+    assert(st.formatEdit && UI.App.ribbonTab === 'Sheet Format' && D.querySelector('#drawing-sheet').classList.contains('dw-fmt-edit'), 'editing the sheet format');
+    assert(ribbonTabs().indexOf('Sheet Format') >= 0, 'Sheet Format tab: ' + ribbonTabs().join(','));
+    // drag COMPANY 30 mm left, 20 mm up (paper units: inch sheet)
+    var comp = rfAEItem('field:company'), at = rfAEMid(comp), u0 = UI.App.undo.length;
+    rfAEDrag(at, [at[0] - 1.2, at[1] + 0.8]); await wait(60);
+    var comp2 = rfAEItem('field:company');
+    assert(comp2 && Math.abs(comp2.box[0] - comp.box[0] + 1.2) < 0.05 && Math.abs(comp2.box[1] - comp.box[1] - 0.8) < 0.05, 'COMPANY moved: ' + JSON.stringify([comp.box, comp2.box]));
+    assert(UI.App.undo.length === u0 + 1, 'one undo step for the drag');
+    // a click on the title block's first row line, Delete
+    var row1 = rfAEItem('tb-row1');
+    sheetMouse('mousedown', [row1.a[0] + 0.3, row1.a[1]]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await wait(20);
+    assert(st.sel && st.sel.kind === 'fmt' && st.sel.id === 'tb-row1', 'row line picked: ' + JSON.stringify(st.sel));
+    key('Delete'); await wait(40);
+    assert(!rfAEItem('tb-row1') && anvil.drawing.doc().format.hide['tb-row1'], 'row line deleted');
+    // Line: two clicks; Note: a click and its text
+    dwTab('Sheet Format');
+    ribbonButton('Line').click(); await wait(10);
+    var S = anvil.drawing.summary().sheet.size, y = 0.4 + 1.6 + 0.6;
+    sheetMouse('mousedown', [S[0] - 4, y]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true }));
+    sheetMouse('mousedown', [S[0] - 0.4, y + 0.01]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await wait(30);
+    var ln = anvil.drawing.summary().format.items.filter(function (it) { return it.added && it.kind === 'line'; })[0];
+    assert(ln && Math.abs(ln.a[1] - ln.b[1]) < 1e-6, 'line added, snapped horizontal: ' + JSON.stringify(ln));
+    key('Escape'); await wait(10);
+    ribbonButton('Note').click(); await wait(10);
+    sheetMouse('mousedown', [S[0] - 3.9, y + 0.15]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await wait(20);
+    rfAEPrompt('MADE BY $PRP:"CompanyName"'); await wait(40);
+    key('Escape'); await wait(10);
+    var note = anvil.drawing.summary().format.items.filter(function (it) { return it.added && it.kind === 'text'; })[0];
+    assert(note && st.sheet.prims.some(function (p) { return p.fmt === note.id && p.text === 'MADE BY Acme Sheet Metal'; }), 'note with its link: ' + JSON.stringify(note));
+    sheetMouse('dblclick', rfAEMid(note)); await wait(20);
+    rfAEPrompt('ACME SHEET METAL'); await wait(40);
+    assert(st.sheet.prims.some(function (p) { return p.fmt === note.id && p.text === 'ACME SHEET METAL'; }), 'note edited by double-click');
+    // views take no clicks while the format is edited
+    var F = dwView('Front');
+    sheetMouse('mousedown', [(F.box[0] + F.box[2]) / 2, (F.box[1] + F.box[3]) / 2]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await wait(20);
+    assert(!st.sel || st.sel.kind !== 'view', 'a view is not picked in Edit Sheet Format');
+    rfAEContext([0.8, 10]); await wait(20);
+    rfAEMenuItem('Edit Sheet').click(); UI.closeMenus(); await wait(20);
+    assert(!st.formatEdit && !D.querySelector('#drawing-sheet').classList.contains('dw-fmt-edit'), 'back to the sheet');
+    var f = anvil.drawing.summary().format;
+    assert(f.edited && f.items.some(function (it) { return it.id === note.id; }), 'the format keeps its edits');
+    UI.undo(); await wait(40);
+    assert(st.sheet.prims.some(function (p) { return p.fmt === note.id && p.text === 'MADE BY Acme Sheet Metal'; }), 'undo: the note text before the edit');
+    anvil.drawing.close(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return f.items.length + ' items, ' + s0.views.length + ' views';
+  });
+  step('rfAE: Save as Drawing Template keeps the shop format (company note, properties) in this browser; Make Drawing from Part offers it and the new drawing uses it; export / import as a JSON file; Drawing Templates dialog deletes one', async function () {
+    var errs0 = errors.length, keep = null, dl = rfAEStubDownload();
+    try { keep = W.localStorage.getItem('anvil.drawingTemplates'); W.localStorage.removeItem('anvil.drawingTemplates'); } catch (e) { }
+    try {
+      await rfAEDrawing();
+      anvil.drawing.properties({ CompanyName: 'Acme Sheet Metal' });
+      var S = anvil.drawing.summary().sheet.size;
+      anvil.drawing.formatNote([S[0] - 3.5, 2.5], '$PRP:"CompanyName"', 5);
+      anvil.drawing.setSheet({ format: 'ANSI C' });
+      dwTab('Sheet Format');
+      ribbonButton('Save as Template').click(); await wait(10);
+      rfAEPrompt('AE Shop B'); await wait(20);
+      var l = anvil.drawing.templates();
+      assert(l.length === 1 && l[0].name === 'AE Shop B' && l[0].kind === 'template' && l[0].format === 'ANSI C', 'kept: ' + JSON.stringify(l));
+      var txt = anvil.drawing.exportTemplate('AE Shop B');
+      assert(dl.got.length === 1 && /AE_Shop_B\.drwdot\.json$/.test(dl.got[0].name) && JSON.parse(dl.got[0].text).kind === 'anvil-drawing-template', 'exported: ' + (dl.got[0] && dl.got[0].name));
+      anvil.drawing.close(); await idle();
+      // a new part: Make Drawing from Part offers the template
+      await anvil.newPart(); await idle();
+      await anvil.run(RFAE_PART.replace('AEBracket', 'AEOther')); await idle();
+      dwMenu('Make Drawing from Part'); await wait(20);
+      assert(modalOpen() && /New Drawing/.test(D.querySelector('#modal').textContent) && D.querySelectorAll('#modal input[name="dw-tpl"]').length === 2, 'template chooser');
+      var radio = D.querySelector('#modal input[name="dw-tpl"][value="AE Shop B"]');
+      assert(radio && radio.checked, 'the saved template is offered and chosen');
+      rfAEModalButton('OK').click(); await idle(); await wait(40);
+      await UI.drawing.ready();
+      var s = anvil.drawing.summary();
+      assert(UI.drawingActive() && s.sheet.format === 'ANSI C' && s.format.template === 'AE Shop B', 'drawing from the template: ' + s.sheet.format + ' ' + s.format.template);
+      assert(UI.drawing.state.sheet.prims.some(function (p) { return p.text === 'Acme Sheet Metal' && /^n/.test(p.fmt || ''); }), 'the company name note is on the new sheet');
+      anvil.drawing.close(); await idle();
+      // import a copy under another name, then the Drawing Templates dialog deletes it
+      var o = JSON.parse(txt); o.name = 'AE Imported';
+      assert(anvil.drawing.importTemplate(JSON.stringify(o)) === 'AE Imported' && anvil.drawing.templates().length === 2, 'imported');
+      assert(anvil.drawing.importTemplate('{"kind":"nope"}') === null && anvil.drawing.templates().length === 2, 'a bad file is refused');
+      UI.makeDrawing(); await idle(); await UI.drawing.ready();
+      dwMenu('Drawing Templates'); await wait(20);
+      var rowEl = D.querySelector('#modal .dw-tpl-row[data-name="AE Imported"]');
+      assert(rowEl && D.querySelectorAll('#modal .dw-tpl-row').length === 2, 'dialog lists both');
+      rowEl.querySelector('.dw-tpl-delete').click(); await wait(10);
+      assert(anvil.drawing.templates().map(function (t) { return t.name; }).join() === 'AE Shop B' && D.querySelectorAll('#modal .dw-tpl-row').length === 1, 'deleted from the dialog');
+      UI.closeModal();
+      anvil.drawing.close(); await idle();
+    } finally {
+      dl.restore();
+      try { if (keep != null) W.localStorage.setItem('anvil.drawingTemplates', keep); else W.localStorage.removeItem('anvil.drawingTemplates'); } catch (e) { }
+    }
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'AE Shop B';
+  });
+  step('rfAE: Insert ▸ Tables ▸ General Table: PM 3 x 2, click to place; double-click a cell, type, Enter (Tab to the next); right-click Insert Row Below / Delete Column; drag; SVG / DXF carry it; Delete removes it', async function () {
+    var errs0 = errors.length, st = UI.drawing.state;
+    await rfAEDrawing();
+    dwMenu('General Table'); await wait(20);
+    assert(UI.hasPM() && UI.pmTitle() === 'General Table', 'General Table PM');
+    var cols = D.querySelector('#pm input[data-key="cols"]'), rows = D.querySelector('#pm input[data-key="rows"]');
+    assert(cols && rows, 'Columns / Rows fields');
+    cols.value = '3'; cols.dispatchEvent(new W.Event('input', { bubbles: true })); cols.dispatchEvent(new W.Event('change', { bubbles: true }));
+    await UI.pmOK(); await wait(20);
+    assert(st.tool === 'gtable', 'placing the table');
+    var u0 = UI.App.undo.length;
+    sheetMouse('mousedown', [1, 9.5]); W.dispatchEvent(new W.MouseEvent('mouseup', { bubbles: true })); await wait(40);
+    var t = anvil.drawing.tables()[0];
+    assert(t && t.cols === 3 && t.rows === 2 && Math.abs(t.box[0] - 1) < 0.05 && Math.abs(t.box[3] - 9.5) < 0.05 && UI.App.undo.length === u0 + 1, 'placed: ' + JSON.stringify(t));
+    var k = 1 / 25.4, X0 = t.box[0], Y1 = t.box[3], c00 = [X0 + 5 * k, Y1 - 3 * k];
+    sheetMouse('dblclick', c00); await wait(20);
+    var inp = D.querySelector('#dw-edit.cell input');
+    assert(inp, 'cell editor open');
+    inp.value = 'FINISH';
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })); await wait(30);
+    inp = D.querySelector('#dw-edit.cell input');
+    assert(inp && inp.getAttribute('aria-label') === 'Cell 1, 2', 'Tab went to the next cell: ' + (inp && inp.getAttribute('aria-label')));
+    inp.value = '$PRP:"SW-Sheet Scale"';
+    inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await wait(30);
+    t = anvil.drawing.tables()[0];
+    assert(t.cells[0][0] === 'FINISH' && /^\d+:\d+$/.test(t.cells[0][1]) && t.raw[0][1] === '$PRP:"SW-Sheet Scale"', 'cells: ' + JSON.stringify(t.cells));
+    rfAEContext(c00); await wait(20);
+    rfAEMenuItem('Insert ▸ Row Below').click(); UI.closeMenus(); await wait(30);
+    assert(anvil.drawing.tables()[0].rows === 3 && anvil.drawing.tables()[0].cells[0][0] === 'FINISH', 'row inserted below');
+    rfAEContext([X0 + 40 * k, Y1 - 3 * k]); await wait(20);
+    rfAEMenuItem('Delete ▸ Column').click(); UI.closeMenus(); await wait(30);
+    t = anvil.drawing.tables()[0];
+    assert(t.cols === 2 && t.cells[0][0] === 'FINISH' && t.raw[0][1] === '', 'second column deleted: ' + JSON.stringify(t.raw));
+    rfAEDrag([X0 + 5 * k, Y1 - 9 * k], [X0 + 2 + 5 * k, Y1 - 1.5 - 9 * k]); await wait(60);
+    t = anvil.drawing.tables()[0];
+    assert(Math.abs(t.box[0] - X0 - 2) < 0.05 && Math.abs(t.box[3] - Y1 + 1.5) < 0.05, 'dragged: ' + t.box);
+    assert(/FINISH/.test(anvil.drawing.svg()) && /FINISH/.test(anvil.drawing.dxf()), 'SVG / DXF');
+    assert(D.querySelector('#drawing-tree .dw-gtable'), 'General Table1 in the FeatureManager');
+    st.sel = { kind: 'gtable', id: t.id }; key('Delete'); await wait(30);
+    assert(!anvil.drawing.tables().length, 'deleted');
+    anvil.drawing.close(); await idle();
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'ok';
+  });
+  step('rfAE: File ▸ Save Drawing As writes AEBracket\'s drawing as Draw1.drawing; File ▸ Open of it opens on the open part, asks for the part when another one is open, and opens on a part file given', async function () {
+    var errs0 = errors.length, dl = rfAEStubDownload();
+    try {
+      await rfAEDrawing();
+      anvil.drawing.table({ rows: 1, cols: 1, anchor: 'top-left', cells: [['AE']] });
+      var nv = anvil.drawing.summary().views.length, partJson = JSON.stringify(UI.App.model);
+      dwMenu('Save Drawing As'); await wait(20);
+      assert(dl.got.length === 1 && dl.got[0].name === 'Draw1.drawing', 'written: ' + (dl.got[0] && dl.got[0].name));
+      var file = JSON.parse(dl.got[0].text);
+      assert(file.kind === 'anvil-drawing' && file.part.name === 'AEBracket' && file.drawing.views.length === nv, 'part reference');
+      anvil.drawing.close(); await idle();
+      UI.App.model.drawings = [];
+      await UI.openFileData('Draw1.drawing', dl.got[0].text); await idle(); await UI.drawing.ready();
+      var s = anvil.drawing.summary();
+      assert(UI.drawingActive() && s.views.length === nv && s.tables.length === 1 && UI.App.model.drawings.length === 1, 'opened on the open part');
+      anvil.drawing.close(); await idle();
+      // another part is open: it asks for AEBracket's file (Cancel opens nothing)
+      await anvil.newPart(); await idle();
+      await anvil.run(RFAE_PART.replace('AEBracket', 'AEOther2')); await idle();
+      var pr = UI.openFileData('Draw1.drawing', dl.got[0].text); await wait(30);
+      assert(modalOpen() && D.querySelector('#dw-part-file') && /AEBracket/.test(D.querySelector('#modal').textContent), 'asks for the part');
+      rfAEModalButton('Cancel').click();
+      assert(await pr === null && !UI.drawingActive(), 'cancelled');
+      // given the part file it opens on it
+      var r = await anvil.drawing.openFile(dl.got[0].text, { part: { name: 'AEBracket.anvil.json', data: partJson } }); await idle(); await UI.drawing.ready();
+      assert(r && UI.App.model.name === 'AEBracket' && UI.drawingActive() && anvil.drawing.summary().views.length === nv, 'opened on the part file');
+      anvil.drawing.close(); await idle();
+    } finally { dl.restore(); }
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'Draw1.drawing';
+  });
+  // --- end rfAE ---
+  // ---- rfAD (2026-10-12): Broken-out Section, Area Hatch/Fill per region, Jagged detail outline as the clip
+  function rfADView(id) { return UI.drawing.state.sheet.views.filter(function (w) { return w.view.id === id; })[0]; }
+  function rfADClick(p) { sheetMouse('mousemove', p); sheetMouse('mousedown', p); sheetMouse('mouseup', p); }
+  function rfADAt(id, uv) { return rfADView(id).toSheet(uv); }
+  function rfADDoc(id) { return anvil.drawing.doc().views.filter(function (v) { return v.id === id; })[0]; }
+  var RFAD_PLATE = 'p.units("mm");\np.sketch("Front").rect(0, 0, 100, 50).circle(20, 25, 5).circle(80, 25, 5).extrude(10);';
+  step('rfAD: Broken-out Section — View Layout ▸ Broken-out Section opens its PM; a spline clicked round the left hole on Front (closed on its first point) cuts 5 mm deep: the floor is hatched, the profile is thin, the view keeps its place; a Rectangle with Depth reference picked on a Top edge cuts down to it; right-click ▸ Remove and undo work', async function () {
+    var errs0 = errors.length;
+    await anvil.run(RFAD_PLATE);
+    anvil.drawing.make({ fresh: true });
+    anvil.drawing.setSheet({ scale: '1:1' });
+    await UI.drawing.ready();
+    var F = dwView('Front'), T = dwView('Top'), box0 = JSON.stringify(rfADView(F.id).box);
+    ribbonButton('Broken-out Section').click();
+    assert(UI.pmTitle() === 'Broken-out Section' && UI.drawing.state.tool === 'crop' && UI.drawing.state.pending.mode === 'bo', 'PM and tool');
+    assert(pmField('Profile') && pmField('Depth') && pmField('Depth reference'), 'PM fields');
+    setInput(pmField('Depth'), '5');
+    [[8, 12], [32, 10], [34, 38], [10, 40]].forEach(function (q) { rfADClick(rfADAt(F.id, q)); });
+    var pv = UI.drawing.state.preview;
+    assert(pv && pv.kind === 'brokenOut' && pv.pts.length > 10, 'live spline preview ' + JSON.stringify(pv && pv.pts.length));
+    rfADClick(rfADAt(F.id, [8, 12])); await idle(); await wait(60);
+    var bo = rfADDoc(F.id).brokenOut;
+    assert(bo && bo.length === 1 && bo[0].shape === 'spline' && bo[0].pts.length === 4 && bo[0].depth === 5, 'stored ' + JSON.stringify(bo));
+    assert(!UI.hasPM() && !UI.drawing.state.tool, 'tool and PM closed');
+    var w = rfADView(F.id);
+    assert(w.content.caps.length === 1 && w.hatch > 10, 'floor hatched ' + w.hatch);
+    assert(UI.drawing.state.sheet.prims.filter(function (p) { return p.brokenOut === bo[0].id && p.style === 'thin'; }).length > 20, 'thin spline profile');
+    assert(JSON.stringify(w.box) === box0, 'view in place');
+    // a rectangle round the right hole, depth from an edge of Top (its back edge z = 0: through)
+    ribbonButton('Broken-out Section').click();
+    setInput(pmField('Profile'), 'rect');
+    pmField('Depth reference').click();
+    rfADClick(rfADAt(F.id, [70, 15])); rfADClick(rfADAt(F.id, [90, 35]));
+    assert(UI.drawing.state.pending && UI.drawing.state.pending.stage === 'ref', 'asks for the depth reference');
+    var tw = rfADView(T.id), edge = tw.proj.lines.visible.filter(function (l) { return Math.abs(l[1]) < 1e-6 && Math.abs(l[3]) < 1e-6; })[0];
+    rfADClick(rfADAt(T.id, [(edge[0] + edge[2]) / 2, edge[1]])); await idle(); await wait(60);
+    bo = rfADDoc(F.id).brokenOut;
+    assert(bo.length === 2 && bo[1].shape === 'rect' && bo[1].depthRef && bo[1].depthRef.view === T.id, 'depth reference ' + JSON.stringify(bo[1]));
+    w = rfADView(F.id);
+    var d2 = w.content.brokenOut.filter(function (c) { return c.id === bo[1].id; })[0];
+    assert(d2 && Math.abs(d2.depth - (10 + edge[1])) < 1e-6, 'depth to the edge ' + (d2 && d2.depth) + ' edge v ' + edge[1]);
+    assert(anvil.drawing.svg().indexOf('class="hatch"') > 0 && anvil.drawing.dxf({ version: 'R12' }).indexOf('LINE') > 0, 'exports');
+    // right-click ▸ Broken-out Section ▸ Remove, then undo
+    var sm0 = anvil.drawing.summary();
+    UI.drawing.state.sel = { kind: 'view', id: F.id };
+    var mi = UI.drawingInternal.viewMenu(rfADDoc(F.id)).filter(function (m) { return m.label === 'Broken-out Section ▸ Remove'; })[0];
+    assert(mi && !mi.disabled, 'menu entry'); mi.action(); await idle(); await wait(40);
+    assert(!rfADDoc(F.id).brokenOut, 'removed');
+    await UI.undo(); await idle(); await wait(40);
+    assert(rfADDoc(F.id).brokenOut && rfADDoc(F.id).brokenOut.length === 2, 'undo restores');
+    assert(typeof anvil.drawing.brokenOut === 'function' && anvil.drawing.brokenOut(F.id, { shape: 'circle', c: [50, 25], r: 6, depth: 2 }) && rfADDoc(F.id).brokenOut.length === 3, 'API');
+    assert(anvil.drawing.brokenOut(F.id, { shape: 'circle', c: [50, 25], r: 6 }) === null, 'API refuses a missing depth');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    anvil.drawing.close(); await idle();
+    return sm0.views.length + ' views, ' + w.hatch + ' hatch lines on Front';
+  });
+  step('rfAD: Area Hatch/Fill — a click on the hatch of a selected section opens the PM (Material crosshatch ticked); ANSI37 at scale 2, angle 30 on that region only; Solid and None; Material crosshatch back; Insert ▸ Annotations ▸ Area Hatch/Fill picks a region too; the API lists regions', async function () {
+    var errs0 = errors.length;
+    await anvil.run(RFAD_PLATE);
+    anvil.drawing.make({ fresh: true });
+    anvil.drawing.setSheet({ scale: '1:1' });
+    await UI.drawing.ready();
+    var F = dwView('Front');
+    anvil.drawing.sectionView(F.id, { axis: 'h', at: 25, sign: 1, fit: true }); await idle(); await wait(60);
+    var S = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'section'; })[0];
+    var regs = anvil.drawing.hatchRegions(S.id);
+    assert(regs.length === 3 && regs.every(function (g) { return g.pattern === 'ANSI31' && !g.areaHatch; }), 'three regions ' + JSON.stringify(regs));
+    var mid = regs.filter(function (g) { return Math.abs(g.p[0] - 50) < 1e-6; })[0], pt = rfADAt(S.id, mid.p);
+    UI.drawing.state.sel = { kind: 'view', id: S.id };
+    rfADClick(pt); await idle(); await wait(40);
+    assert(UI.hasPM() && UI.pmTitle() === 'Area Hatch/Fill', 'PM from a click on the hatch: ' + (UI.hasPM() && UI.pmTitle()));
+    var mx = pmField('Material crosshatch');
+    assert(mx && mx.checked, 'material crosshatch ticked');
+    mx.click(); await idle();
+    setInput(pmField('Pattern'), 'ANSI37'); setInput(pmField('Scale'), '2'); setInput(pmField('Angle'), '30');
+    await UI.pmOK(); await idle(); await wait(40);
+    var hr = rfADDoc(S.id).hatchRegions;
+    assert(hr && hr.length === 1 && hr[0].pattern === 'ANSI37' && hr[0].scale === 2 && hr[0].angle === 30, 'stored ' + JSON.stringify(hr));
+    var own = UI.drawing.state.sheet.prims.filter(function (p) { return p.areaHatch === 'ANSI37'; });
+    var x0 = rfADAt(S.id, [25, 0])[0], x1 = rfADAt(S.id, [75, 0])[0];
+    assert(own.length > 0 && own.every(function (p) { return Math.min(p.a[0], p.b[0]) >= x0 - 1e-6 && Math.max(p.a[0], p.b[0]) <= x1 + 1e-6; }), 'middle region only ' + own.length);
+    regs = anvil.drawing.hatchRegions(S.id);
+    assert(regs.filter(function (g) { return g.areaHatch; }).length === 1 && regs.filter(function (g) { return !g.areaHatch && g.pattern === 'ANSI31'; }).length === 2, 'regions after ' + JSON.stringify(regs));
+    assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'SOLID' }) && UI.drawing.state.sheet.prims.filter(function (p) { return p.areaHatch === 'SOLID'; }).length > 10 * own.length, 'solid');
+    assert(anvil.drawing.areaHatch(S.id, mid.p, { pattern: 'NONE' }) && !UI.drawing.state.sheet.prims.some(function (p) { return p.areaHatch; }), 'none');
+    // Insert ▸ Annotations ▸ Area Hatch/Fill: the tool, then a click on the region
+    UI.drawingInternal.cmdAreaHatchTool();
+    assert(UI.drawing.state.tool === 'crop' && UI.drawing.state.pending.mode === 'ahatch', 'pick tool');
+    rfADClick(pt); await idle(); await wait(40);
+    assert(UI.hasPM() && UI.pmTitle() === 'Area Hatch/Fill' && !pmField('Material crosshatch').checked && UI.pmSpec().values.pattern === 'NONE', 'PM shows the region\'s own pattern');
+    pmField('Material crosshatch').click(); await idle();
+    await UI.pmOK(); await idle(); await wait(40);
+    assert(!rfADDoc(S.id).hatchRegions, 'material crosshatch back');
+    var plain = UI.drawing.state.sheet.prims.filter(function (p) { return p.style === 'hatch' && p.layer === rfADView(S.id).layer; }).length;
+    assert(plain > 0 && rfADView(S.id).hatches.every(function (h) { return h.pattern === 'ANSI31' && !h.areaHatch; }), 'material hatch ' + plain);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    anvil.drawing.close(); await idle();
+    return own.length + ' ANSI37 lines, ' + plain + ' material lines';
+  });
+  step('rfAD: Jagged detail outline is the clip — a jagged detail of a section ends its lines and hatch on the zig-zag (past the circle, never past the zig-zag)', async function () {
+    var errs0 = errors.length;
+    await anvil.run(RFAD_PLATE);
+    anvil.drawing.make({ fresh: true });
+    anvil.drawing.setSheet({ scale: '1:1' });
+    await UI.drawing.ready();
+    var F = dwView('Front');
+    anvil.drawing.sectionView(F.id, { axis: 'h', at: 25, sign: 1, fit: true }); await idle(); await wait(60);
+    var S = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'section'; })[0];
+    anvil.drawing.detailView(S.id, { c: [15, -5], r: 8, outline: 'jagged', fit: true }); await idle(); await wait(60);
+    var dv = anvil.drawing.summary().views.filter(function (v) { return v.kind === 'detail'; })[0], w = rfADView(dv.id);
+    var J = W.Drawing._.jaggedPts(w, anvil.drawing.summary().units === 'in' ? 1 / 25.4 : 1), c = w.toSheet(rfADDoc(dv.id).detail.c), R = rfADDoc(dv.id).detail.r * w.scale;
+    var lin = UI.drawing.state.sheet.prims.filter(function (p) { return p.layer === w.layer && p.k === 'line' && p.detailOutline == null; }), maxR = 0, out = 0;
+    lin.forEach(function (p) { [p.a, p.b].forEach(function (q) { maxR = Math.max(maxR, Math.hypot(q[0] - c[0], q[1] - c[1])); }); if (!W.Drawing._.inLoops([(p.a[0] + p.b[0]) / 2, (p.a[1] + p.b[1]) / 2], [J])) out++; });
+    assert(lin.length > 5 && out === 0 && maxR > R + 0.05 && maxR <= R + 1.2 + 1e-6, 'clipped to the zig-zag: ' + out + ' out, reach ' + maxR.toFixed(3) + ' vs r ' + R.toFixed(3));
+    assert(lin.some(function (p) { return p.style === 'hatch'; }), 'hatch clipped too');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    anvil.drawing.close(); await idle();
+    return lin.length + ' pieces inside the zig-zag';
+  });
+  // --- end rfAD ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {
@@ -15899,6 +16266,8 @@
   // r12/chrome12: and the FeatureManager / Task Pane widths a user dragged (they change the graphics area's size)
   try { localStorage.removeItem('anvil.fmWidth'); localStorage.removeItem('anvil.tpWidth'); } catch (e) { }
   try { localStorage.setItem('anvil.units', 'mm'); } catch (e) { }
+  // (rfAE) saved drawing templates would make Make Drawing from Part ask which one to use
+  try { localStorage.removeItem('anvil.drawingTemplates'); } catch (e) { }
   // AutoRecover: a recovery copy left by an earlier run (or by the user) would open the Document Recovery dialog at boot
   try { localStorage.removeItem('anvil.recover'); localStorage.removeItem('anvil.autosave'); } catch (e) { }   // r15/inches15: the suite's geometry is metric; new documents default to inches otherwise
   frame.src = '../index.html';

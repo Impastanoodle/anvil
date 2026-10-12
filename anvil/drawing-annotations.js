@@ -875,44 +875,127 @@
   // slotDimProps(model, build, w, d) -> { slotProps: { w, len } (straight) | { R, w } (arc), name } or null: the
   // sketch slot a slot callout d shows (same size, its sketch square to the view; of several, the one whose Smart
   // Dimensions carry properties, nearest the callout's end arc / centre) and the props of its width ('w'), overall
-  // length ('olen', else the centre distance 'len') or centre-line radius ('r') dimensions
+  // length ('olen', else the centre distance 'len') or centre-line radius ('r') dimensions.
+  // rfAF: a slot the Slot tools drew (or Sketch Fillet / Trim exploded: SketchSolver.explodeSlot) is its sides / arcs
+  // and a construction centerline (centre-line arc). It is found from that construction entity, the arcs centred on its
+  // ends and the sides parallel to it (an arc slot: the outer / inner arcs concentric with it); its dimensions are the
+  // centerline's length (an end arc's diameter for the width), the distance relation between the sides (width) or
+  // across the end arcs (overall length), the construction arc's R and the radial distance between the inner and the
+  // outer arc (width), each with its own tolerance, precision and text.
+  function hasSlotDimProps(model) {
+    return hasSketchDimProps(model) || !!(model && model.features && model.features.some(function (f) {
+      return f.type === 'sketch' && (f.rels || []).some(function (x) { return DIM_RELS[x.type] && hasDimProps(x); });
+    }));
+  }
+  // the parts of the exploded straight slot whose construction centerline is entity c: { caps: [i, j], sides, h (half
+  // the width), L (centre distance) }, or null
+  function explodedSlotOf(E, c, tol) {
+    var e = E[c], A = [e.x1, e.y1], B = [e.x2, e.y2], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (!(L > tol)) return null;
+    var u = [(B[0] - A[0]) / L, (B[1] - A[1]) / L];
+    function capsAt(P) { var out = []; E.forEach(function (x, i) { if (x && x.t === 'arc' && !x.construction && Math.hypot(x.cx - P[0], x.cy - P[1]) <= tol) out.push(i); }); return out; }
+    var ca = capsAt(A), cb = capsAt(B), caps = null;
+    ca.forEach(function (i) { cb.forEach(function (j) { if (!caps && Math.abs(E[i].r - E[j].r) <= tol) caps = [i, j]; }); });
+    if (!caps) return null;
+    var h = E[caps[0]].r, sides = [];
+    E.forEach(function (x, i) {
+      if (!x || x.t !== 'line' || x.construction || i === c) return;
+      var dx = x.x2 - x.x1, dy = x.y2 - x.y1, l = Math.hypot(dx, dy);
+      if (!(l > tol) || Math.abs(dx * u[1] - dy * u[0]) > tol * (1 + l)) return;   // parallel to the centerline
+      var o1 = (x.x1 - A[0]) * -u[1] + (x.y1 - A[1]) * u[0], o2 = (x.x2 - A[0]) * -u[1] + (x.y2 - A[1]) * u[0];
+      var t1 = (x.x1 - A[0]) * u[0] + (x.y1 - A[1]) * u[1], t2 = (x.x2 - A[0]) * u[0] + (x.y2 - A[1]) * u[1];   // (alongside it: not a collinear slot's side)
+      if (Math.abs(Math.abs(o1) - h) <= tol && Math.abs(Math.abs(o2) - h) <= tol && Math.min(t1, t2) >= -tol && Math.max(t1, t2) <= L + tol) sides.push(i);
+    });
+    return sides.length >= 2 ? { caps: caps, sides: sides, h: h, L: L } : null;
+  }
+  // the parts of the exploded arc slot (half width hw) whose construction centre-line arc is entity c: { caps, outer,
+  // inner }, or null
+  function explodedArcSlotOf(E, c, hw, tol) {
+    var e = E[c], R2 = Math.PI / 180, P1 = [e.cx + e.r * Math.cos(e.a0 * R2), e.cy + e.r * Math.sin(e.a0 * R2)], P2 = [e.cx + e.r * Math.cos(e.a1 * R2), e.cy + e.r * Math.sin(e.a1 * R2)];
+    var g = { caps: [], outer: -1, inner: -1 };
+    E.forEach(function (x, i) {
+      if (!x || x.t !== 'arc' || x.construction || i === c) return;
+      if (Math.hypot(x.cx - e.cx, x.cy - e.cy) <= tol) {
+        if (g.outer < 0 && Math.abs(x.r - (e.r + hw)) <= tol) g.outer = i;
+        else if (g.inner < 0 && Math.abs(x.r - (e.r - hw)) <= tol) g.inner = i;
+      } else if (Math.abs(x.r - hw) <= tol && (Math.hypot(x.cx - P1[0], x.cy - P1[1]) <= tol || Math.hypot(x.cx - P2[0], x.cy - P2[1]) <= tol)) g.caps.push(i);
+    });
+    return g.outer >= 0 && g.inner >= 0 && g.caps.length >= 2 ? g : null;
+  }
+  // what the dimensions and dimension relations on an exploded slot's entities bring: [{ part, olen, p (props) }]
+  function explodedSlotItems(model, raw, arc, c, g) {
+    var items = [], all = [c].concat(g.caps, arc ? [g.outer, g.inner] : g.sides);
+    function inG(i) { return all.indexOf(i) >= 0; }
+    (raw.dims || []).forEach(function (x, i) {
+      if (!hasDimProps(x) || !inG(x.e)) return;
+      var part = x.e === c ? (arc ? (x.k === 'r' ? 'R' : null) : (x.k === 'len' ? 'len' : null)) : (g.caps.indexOf(x.e) >= 0 && x.k === 'dia' ? 'w' : null);
+      if (part) items.push({ part: part, olen: false, p: dimPropsOf(x, raw, i + 1) });
+    });
+    (raw.rels || []).forEach(function (rel, i) {
+      if (rel.type !== 'distance' || !hasDimProps(rel) || !rel.refs || rel.refs.length !== 2) return;
+      var P = rel.refs.map(function (r) { var m = /^(\d+)(?:\.([a-z]+)\d*)?$/.exec(String(r)); return m ? { e: +m[1], s: m[2] || null } : null; });
+      if (!P[0] || !P[1] || !inG(P[0].e) || !inG(P[1].e) || P[0].e === P[1].e) return;
+      var whole = !P[0].s && !P[1].s, part = null, olen = false;
+      function both(list) { return list.indexOf(P[0].e) >= 0 && list.indexOf(P[1].e) >= 0; }
+      if (arc) { if (whole && both([g.outer, g.inner])) part = 'w'; }
+      else if (whole && both(g.sides)) part = 'w';
+      else if (whole && both(g.caps)) { part = 'len'; olen = true; }
+      else if (P.every(function (p) { return (p.e === c && p.s === 'p') || (g.caps.indexOf(p.e) >= 0 && p.s === 'c'); })) part = 'len';
+      if (!part) return;
+      var p = relDimProps(model, { f: raw.id, i: i });
+      if (!p) return;
+      delete p.own;
+      items.push({ part: part, olen: olen, p: p });
+    });
+    return items;
+  }
   function slotDimProps(model, build, w, d) {
-    if (!hasSketchDimProps(model) || !w || !w.frame || w.flat || !isOrthoFrame(w.frame)) return null;
+    if (!hasSlotDimProps(model) || !w || !w.frame || w.flat || !isOrthoFrame(w.frame)) return null;
     var F = w.frame, planes = build && build.planes || {}, s = d.slot, tolV = 1e-6 * (1 + Math.abs(s.len || s.R || 0) + s.w);
     var rm; try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
     var best = null;
     rm.features.forEach(function (rf, fi) {
       var raw = model.features[fi];
-      if (rf.type !== 'sketch' || rf.suppressed || !raw || !raw.dims) return;
+      if (rf.type !== 'sketch' || rf.suppressed || !raw || (!raw.dims && !raw.rels)) return;
       var pl; try { pl = K.resolvePlane(rf.plane, rm, planes); } catch (e) { return; }
       if (Math.abs(Math.abs(V.dot(pl.n, F.e)) - 1) > 1e-9) return;
       function view2(x, y) { var p = K.to3D(pl, x, y); return [V.dot(p, F.u), V.dot(p, F.v)]; }
-      (rf.entities || []).forEach(function (e, ei) {
-        var dims = [];
-        raw.dims.forEach(function (x, i) { if (x.e === ei && hasDimProps(x)) dims.push({ x: x, i: i }); });
-        if (!dims.length || !e) return;
-        var score;
+      var E = rf.entities || [];
+      E.forEach(function (e, ei) {
+        if (!e) return;
+        var items = [], score, g = null, c1, c2, cc, sc;
         if (!s.arc && e.t === 'slot') {
           var L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
           if (Math.abs(e.w - s.w) > tolV || Math.abs(L + e.w - s.len) > tolV) return;
-          var c1 = view2(e.x1, e.y1), c2 = view2(e.x2, e.y2);
-          score = Math.min(Math.hypot(c1[0] - d.c[0], c1[1] - d.c[1]), Math.hypot(c2[0] - d.c[0], c2[1] - d.c[1]));
         } else if (s.arc && e.t === 'aslot') {
           if (Math.abs(e.r - s.R) > tolV || Math.abs(e.w - s.w) > tolV) return;
-          var c = view2(e.cx, e.cy), sc = s.center || d.c;
-          score = Math.hypot(c[0] - sc[0], c[1] - sc[1]);
+        } else if (!s.arc && e.t === 'line' && e.construction) {   // rfAF: an exploded straight slot
+          g = explodedSlotOf(E, ei, tolV);
+          if (!g || Math.abs(2 * g.h - s.w) > tolV || Math.abs(g.L + 2 * g.h - s.len) > tolV) return;
+          items = explodedSlotItems(model, raw, false, ei, g);
+        } else if (s.arc && e.t === 'arc' && e.construction) {     // rfAF: an exploded arc slot
+          if (Math.abs(e.r - s.R) > tolV) return;
+          g = explodedArcSlotOf(E, ei, s.w / 2, tolV);
+          if (!g) return;
+          items = explodedSlotItems(model, raw, true, ei, g);
         } else return;
-        if (!best || score < best.score) best = { score: score, f: raw, dims: dims };
+        if (!g) (raw.dims || []).forEach(function (x, i) {
+          if (x.e !== ei || !hasDimProps(x)) return;
+          var k = x.k, part = s.arc ? (k === 'r' ? 'R' : k === 'w' ? 'w' : null) : (k === 'w' ? 'w' : k === 'olen' || k === 'len' ? 'len' : null);
+          if (part) items.push({ part: part, olen: k === 'olen', p: dimPropsOf(x, raw, i + 1) });
+        });
+        if (!items.length) return;
+        if (s.arc) { cc = view2(e.cx, e.cy); sc = s.center || d.c; score = Math.hypot(cc[0] - sc[0], cc[1] - sc[1]); }
+        else { c1 = view2(e.x1, e.y1); c2 = view2(e.x2, e.y2); score = Math.min(Math.hypot(c1[0] - d.c[0], c1[1] - d.c[1]), Math.hypot(c2[0] - d.c[0], c2[1] - d.c[1])); }
+        if (!best || score < best.score) best = { score: score, items: items };
       });
     });
     if (!best) return null;
-    var props = {}, name = null, olen = false;
-    best.dims.forEach(function (o) {
-      var k = o.x.k, part = s.arc ? (k === 'r' ? 'R' : k === 'w' ? 'w' : null) : (k === 'w' ? 'w' : k === 'olen' || k === 'len' ? 'len' : null);
-      if (!part || (part === 'len' && k === 'len' && olen)) return;
-      if (k === 'olen') olen = true;
-      props[part] = dimPropsOf(o.x, best.f, o.i + 1);
-      name = name || props[part].name;
+    var props = {}, name = null, olen = {};
+    best.items.forEach(function (o) {
+      if (props[o.part] && (olen[o.part] || !o.olen)) return;   // the overall length wins over the centre distance
+      props[o.part] = o.p; olen[o.part] = o.olen;
+      name = name || o.p.name;
     });
     return Object.keys(props).length ? { slotProps: props, name: name } : null;
   }

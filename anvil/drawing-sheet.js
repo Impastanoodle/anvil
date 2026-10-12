@@ -49,6 +49,13 @@
   function newDrawing(model, opts) {
     opts = opts || {};
     var n = (model.drawings || []).length + 1, asm = model.type === 'assembly';
+    // (rfAE) opts.template: a drawing template (Save as Drawing Template) — its sheet format, title block, properties,
+    // sheet size, projection, scale and options; a format / scale / projection given here wins
+    if (opts.template) {
+      var tpl = opts.template, o2 = Object.assign({}, opts);
+      delete o2.template;
+      return applyTemplate(newDrawing(model, o2), tpl, { format: !!opts.format, scale: !!opts.scale, projection: !!opts.projection });
+    }
     return {
       bom: asm ? { show: opts.bom !== false, anchor: opts.bomAnchor || 'top-right' } : null, bomRows: asm ? bomRows(model).length : 0,
       name: opts.name || 'Draw' + n,
@@ -402,11 +409,14 @@
   }
   // titleFieldAt(sheetSize, units, p) -> { field (a TB_FIELDS entry), rect: { x0, y0, x1, y1 } } of the title block cell
   // under the paper point p, or null (r5/drawings5)
-  function titleFieldAt(S, units, p) {
+  // (rfAE) doc: a field deleted from the sheet format is not there, a moved one is where it went
+  function titleFieldAt(S, units, p, doc) {
     var hit = null, on = tbBlocks(S, units);
     TB_FIELDS.forEach(function (f) {
       if (f.block && !on[f.block]) return;
-      var r = fieldRect(f, S, units);
+      if (doc && formatHidden(doc, 'field:' + f.key)) return;
+      var r = fieldRect(f, S, units), sh = doc ? formatShift(doc, 'field:' + f.key, units) : [0, 0];
+      if (sh[0] || sh[1]) r = { x0: r.x0 + sh[0], x1: r.x1 + sh[0], y0: r.y0 + sh[1], y1: r.y1 + sh[1] };
       if (!hit && p[0] >= r.x0 && p[0] <= r.x1 && p[1] >= r.y0 && p[1] <= r.y1) hit = { field: f, rect: r };
     });
     return hit;
@@ -1795,7 +1805,7 @@
   // document's own) and the others as { sheet, views, notes, symbols, bom, bomRows, layout }; doc.activeSheet is its
   // index. A document without doc.sheets (saved before rfQ) is one sheet. View and annotation ids stay unique across
   // the sheets (doc.nextView, doc.nextAnnot); the revisions, title block texts, properties and options are the drawing's.
-  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout'];
+  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout', 'tables'];   // (rfAE: general tables per sheet)
   function sheetCount(doc) { return doc.sheets && doc.sheets.length ? doc.sheets.length : 1; }
   function sheetsOf(doc) {
     if (!doc.sheets || !doc.sheets.length) { doc.sheets = [null]; doc.activeSheet = 0; }
@@ -1864,7 +1874,7 @@
     var l = sheetsOf(doc), cur = doc.sheet || {}, sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
     l.push({ sheet: { name: nm, format: opts.format || cur.format || 'A3', scale: sc || (cur.scale || [1, 1]).slice(), autoScale: sc ? false : cur.autoScale !== false,
       projection: opts.projection === 'first' || opts.projection === 'third' ? opts.projection : cur.projection || 'third' },
-      views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto' });
+      views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto', tables: [] });
     var i = l.length - 1;
     if (opts.activate !== false) activateSheet(doc, i);
     return i;
@@ -1892,6 +1902,251 @@
     if (i === (doc.activeSheet | 0)) doc.sheet.name = nm; else doc.sheets[i].sheet.name = nm;
     return nm;
   }
+
+  // ------------------------------------------------------------------ rfAE: editable sheet format, drawing templates,
+  // general tables, the .drawing document. The sheet format (border, title block, its left blocks) is the drawing's:
+  // doc.format = { name, hide: { itemId: true } (built-in lines / fields deleted), move: { itemId: [dx, dy] } (built-in
+  // items moved, paper mm), items: [{ id, k: 'line', a, b, style } | { id, k: 'note', p, text, h }] (added lines and
+  // notes, paper mm from the border's bottom-right corner, so a format follows the title block onto any sheet size),
+  // next }. Built-in item ids: 'border', 'tb' (the title block's frame), 'tb-row1', 'tb-row2', 'blk' (the left blocks'
+  // frame), 'blk-row1', 'blk-row2', 'blk-sep', 'col:<row>:<x0>' (a field's left line) and 'field:<key>' (a field's
+  // label and text). Notes carry $PRP / $PRPSHEET links as title block fields do. Edit Sheet Format
+  // (drawing-ui-panels.js) edits it.
+  function fmtOrigin(S, units) { var k = paperK(units); return [S[0] - BORDER * k, BORDER * k]; }
+  function r6(x) { return Math.round(x * 1e6) / 1e6; }
+  function fmtToPaper(S, units, q) { var o = fmtOrigin(S, units), k = paperK(units); return [o[0] + q[0] * k, o[1] + q[1] * k]; }
+  function paperToFmt(S, units, p) { var o = fmtOrigin(S, units), k = paperK(units); return [r6((p[0] - o[0]) / k), r6((p[1] - o[1]) / k)]; }
+  function ensureFormat(doc) {
+    var f = doc.format || (doc.format = {});
+    if (!f.name) f.name = 'Sheet Format1';
+    f.hide = f.hide || {}; f.move = f.move || {}; f.items = f.items || []; f.next = f.next || 1;
+    return f;
+  }
+  function findFormatItem(doc, id) { var l = doc.format && doc.format.items || []; for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+  // formatHidden(doc, id) / formatShift(doc, id, units) -> whether a built-in item is deleted / its move in paper units
+  function formatHidden(doc, id) { return !!(doc && doc.format && doc.format.hide && doc.format.hide[id]); }
+  function formatShift(doc, id, units) { var m = doc && doc.format && doc.format.move && doc.format.move[id], k = paperK(units); return m ? [m[0] * k, m[1] * k] : [0, 0]; }
+  // addFormatLine(doc, S, units, a, b, style) / addFormatNote(doc, S, units, p, text, h) -> the new item's id (a, b, p:
+  // paper points of the sheet; h: text height in paper mm, default 3.5)
+  function addFormatLine(doc, S, units, a, b, style) {
+    var f = ensureFormat(doc), id = 'l' + f.next++;
+    f.items.push({ id: id, k: 'line', a: paperToFmt(S, units, a), b: paperToFmt(S, units, b), style: style === 'thick' ? 'thick' : 'thin' });
+    return id;
+  }
+  function addFormatNote(doc, S, units, p, text, h) {
+    var f = ensureFormat(doc), id = 'n' + f.next++;
+    f.items.push({ id: id, k: 'note', p: paperToFmt(S, units, p), text: String(text == null ? '' : text), h: +h > 0 ? +h : 3.5 });
+    return id;
+  }
+  // editFormatItem(doc, id, { text, h, style })
+  function editFormatItem(doc, id, props) {
+    var it = findFormatItem(doc, id);
+    if (!it) throw new Error('No sheet format item ' + id);
+    if (it.k === 'note' && props.text != null) it.text = String(props.text);
+    if (it.k === 'note' && +props.h > 0) it.h = +props.h;
+    if (it.k === 'line' && (props.style === 'thin' || props.style === 'thick')) it.style = props.style;
+    return it;
+  }
+  // moveFormatItem(doc, id, dx, dy, units): moves an item by a paper offset (an added one's points, a built-in one's
+  // stored move)
+  function moveFormatItem(doc, id, dx, dy, units) {
+    var f = ensureFormat(doc), k = paperK(units), it = findFormatItem(doc, id);
+    if (it) { (it.k === 'line' ? [it.a, it.b] : [it.p]).forEach(function (q) { q[0] = r6(q[0] + dx / k); q[1] = r6(q[1] + dy / k); }); return true; }
+    var m = f.move[id] || [0, 0];
+    f.move[id] = [r6(m[0] + dx / k), r6(m[1] + dy / k)];
+    if (!f.move[id][0] && !f.move[id][1]) delete f.move[id];
+    return true;
+  }
+  // deleteFormatItem(doc, id): an added item goes; a built-in one is hidden (resetFormat brings it back)
+  function deleteFormatItem(doc, id) {
+    var f = ensureFormat(doc), i = f.items.map(function (x) { return x.id; }).indexOf(id);
+    if (i >= 0) { f.items.splice(i, 1); return true; }
+    if (!id) return false;
+    f.hide[id] = true;
+    return true;
+  }
+  function resetFormat(doc) { var had = !!doc.format; delete doc.format; return had; }
+  // formatItemAt(sheet, p, tol) -> the sheet format item (sheet.format: [{ id, kind: 'line' | 'text', a, b | box,
+  // added }]) under paper point p: a text whose box holds p, else the nearest line within tol
+  function formatItemAt(sheet, p, tol) {
+    var best = null, bd = Infinity;
+    (sheet && sheet.format || []).forEach(function (it) {
+      var d;
+      // (inside a text's box: it wins; near its box: by distance, so a line right under the pointer is picked)
+      if (it.box) { var bx = Math.max(it.box.x0 - p[0], 0, p[0] - it.box.x1), by = Math.max(it.box.y0 - p[1], 0, p[1] - it.box.y1); d = bx || by ? Math.hypot(bx, by) + tol * 0.25 : -1; }
+      else d = segDist(p, it.a, it.b);
+      if (d <= tol && d < bd) { bd = d; best = it; }
+    });
+    return best;
+  }
+  function segDist(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy, t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  }
+  // Templates. sheetFormatData(doc, name) -> the sheet format to save (Save Sheet Format): the format edits, the title
+  // block texts and the drawing's properties (COMPANY, DRAWN …). drawingTemplate(doc, name) -> a drawing template (Save
+  // as Drawing Template): that plus the sheet size, projection, scale and the document options.
+  function clone(x) { return x == null ? x : JSON.parse(JSON.stringify(x)); }
+  function sheetFormatData(doc, name) {
+    return { kind: 'anvil-sheet-format', v: 1, name: String(name || doc.format && doc.format.name || 'Sheet Format1'), format: clone(doc.format || {}), titleBlock: clone(doc.titleBlock || {}), properties: clone(doc.properties || {}) };
+  }
+  function drawingTemplate(doc, name) {
+    var t = sheetFormatData(doc, name);
+    t.kind = 'anvil-drawing-template';
+    t.sheet = { format: doc.sheet.format, projection: doc.sheet.projection || 'third', scale: (doc.sheet.scale || [1, 1]).slice(), autoScale: doc.sheet.autoScale !== false };
+    t.units = doc.units || null;
+    t.options = clone(doc.options || {});
+    return t;
+  }
+  // checkTemplate(t) -> t when it is a sheet format or drawing template (throws otherwise)
+  function checkTemplate(t) {
+    if (!t || typeof t !== 'object' || (t.kind !== 'anvil-drawing-template' && t.kind !== 'anvil-sheet-format')) throw new Error('Not an Anvil drawing template or sheet format');
+    if (t.format && (typeof t.format !== 'object' || (t.format.items && !Array.isArray(t.format.items)))) throw new Error('The template\'s sheet format is not readable');
+    if (t.sheet && t.sheet.format && !FORMATS[t.sheet.format]) throw new Error('No sheet size ' + t.sheet.format);
+    return t;
+  }
+  // applySheetFormat(doc, t): the format, title block texts and properties of a sheet format (or template)
+  function applySheetFormat(doc, t) {
+    checkTemplate(t);
+    if (t.format && Object.keys(t.format).length) doc.format = clone(t.format); else delete doc.format;
+    if (t.titleBlock && Object.keys(t.titleBlock).length) doc.titleBlock = clone(t.titleBlock); else delete doc.titleBlock;
+    if (t.properties && Object.keys(t.properties).length) doc.properties = Object.assign(doc.properties || {}, clone(t.properties));
+    return doc;
+  }
+  // applyTemplate(doc, t, keep): a drawing template's sheet size, projection, scale and options too (keep: { format,
+  // scale, projection } the caller gave win)
+  function applyTemplate(doc, t, keep) {
+    keep = keep || {};
+    applySheetFormat(doc, t);
+    var s = t.sheet;
+    if (s) {
+      if (s.format && FORMATS[s.format] && !keep.format) doc.sheet.format = s.format;
+      if ((s.projection === 'first' || s.projection === 'third') && !keep.projection) doc.sheet.projection = s.projection;
+      if (Array.isArray(s.scale) && !keep.scale) { doc.sheet.scale = s.scale.slice(); doc.sheet.autoScale = s.autoScale !== false; }
+    }
+    if (t.options) doc.options = Object.assign(doc.options || {}, clone(t.options));
+    doc.template = String(t.name || '');
+    return doc;
+  }
+
+  // General Table (Insert ▸ Tables ▸ General Table): doc.tables (one list per sheet) of { id, rows, cols, cells: [[text]],
+  // x, y (its top-left corner, paper units) or anchor ('top-left' | 'top-right' | 'bottom-left' | 'bottom-right': the
+  // border's corner; bottom-right stands on the title block), colW: [paper mm], rowH (paper mm) }. Cells take $PRP links.
+  var TABLE_ROW = 6, TABLE_COL = 25, TABLE_TEXT = 2.5;
+  var TABLE_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+  function findTable(doc, id) { var l = doc.tables || []; for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+  function addTable(doc, units, spec) {
+    spec = spec || {};
+    var R = Math.max(1, Math.min(100, spec.rows | 0 || 2)), C = Math.max(1, Math.min(30, spec.cols | 0 || 2));
+    var t = { id: doc.nextTable = (doc.nextTable || 0) + 1, rows: R, cols: C, cells: [], colW: [], rowH: +spec.rowH > 0 ? +spec.rowH : TABLE_ROW };
+    for (var r = 0; r < R; r++) { var row = []; for (var c = 0; c < C; c++) row.push(spec.cells && spec.cells[r] && spec.cells[r][c] != null ? String(spec.cells[r][c]) : ''); t.cells.push(row); }
+    for (var c2 = 0; c2 < C; c2++) t.colW.push(spec.colW && +spec.colW[c2] > 0 ? +spec.colW[c2] : TABLE_COL);
+    if (TABLE_ANCHORS.indexOf(spec.anchor) >= 0) t.anchor = spec.anchor;
+    else {
+      var S = sheetSize(doc, units), k = paperK(units);
+      t.x = spec.x != null ? +spec.x : BORDER * k + 10 * k; t.y = spec.y != null ? +spec.y : S[1] - BORDER * k - 10 * k;
+    }
+    (doc.tables = doc.tables || []).push(t);
+    return t;
+  }
+  // tableBox(doc, units, t) -> { x0, y0, x1, y1, colX: [x of each column edge], rowY: [y of each row edge, top down] }
+  function tableBox(doc, units, t) {
+    var S = sheetSize(doc, units), k = paperK(units), b1 = BORDER * k;
+    var w = t.colW.reduce(function (s, x) { return s + x; }, 0) * k, h = t.rows * t.rowH * k, x0, y1;
+    if (t.anchor === 'top-left') { x0 = b1; y1 = S[1] - b1; }
+    else if (t.anchor === 'top-right') { x0 = S[0] - b1 - w; y1 = S[1] - b1; }
+    else if (t.anchor === 'bottom-left') { x0 = b1; y1 = b1 + h; }
+    else if (t.anchor === 'bottom-right') { x0 = S[0] - b1 - w; y1 = b1 + TB_H * k + h; }
+    else { x0 = +t.x || 0; y1 = +t.y || 0; }
+    var colX = [x0]; t.colW.forEach(function (cw) { colX.push(colX[colX.length - 1] + cw * k); });
+    var rowY = [y1]; for (var r = 0; r < t.rows; r++) rowY.push(y1 - (r + 1) * t.rowH * k);
+    return { x0: x0, y0: y1 - h, x1: x0 + w, y1: y1, colX: colX, rowY: rowY };
+  }
+  // tableCellAt(doc, units, p) -> { id, r, c, box, rect } of the general table cell under paper point p, or null
+  function tableCellAt(doc, units, p) {
+    var hit = null;
+    (doc.tables || []).forEach(function (t) {
+      var b = tableBox(doc, units, t);
+      if (p[0] < b.x0 || p[0] > b.x1 || p[1] < b.y0 || p[1] > b.y1) return;
+      var r = 0, c = 0;
+      while (r < t.rows - 1 && p[1] < b.rowY[r + 1]) r++;
+      while (c < t.cols - 1 && p[0] > b.colX[c + 1]) c++;
+      hit = { id: t.id, r: r, c: c, box: b, rect: { x0: b.colX[c], x1: b.colX[c + 1], y0: b.rowY[r + 1], y1: b.rowY[r] } };
+    });
+    return hit;
+  }
+  function needTable(doc, id) { var t = findTable(doc, id); if (!t) throw new Error('No general table ' + id); return t; }
+  function editTableCell(doc, id, r, c, text) {
+    var t = needTable(doc, id);
+    if (!(r >= 0 && r < t.rows && c >= 0 && c < t.cols)) throw new Error('No cell ' + r + ', ' + c);
+    t.cells[r][c] = String(text == null ? '' : text);
+    return t;
+  }
+  // insertTableRow(doc, id, at) / insertTableCol(doc, id, at) -> the new row's / column's index (at: before that one;
+  // default: at the end)
+  function insertTableRow(doc, id, at) {
+    var t = needTable(doc, id), i = at == null ? t.rows : Math.max(0, Math.min(t.rows, at | 0)), row = [];
+    for (var c = 0; c < t.cols; c++) row.push('');
+    t.cells.splice(i, 0, row); t.rows++;
+    return i;
+  }
+  function insertTableCol(doc, id, at) {
+    var t = needTable(doc, id), i = at == null ? t.cols : Math.max(0, Math.min(t.cols, at | 0));
+    t.cells.forEach(function (row) { row.splice(i, 0, ''); });
+    t.colW.splice(i, 0, t.colW[Math.min(i, t.cols - 1)] || TABLE_COL); t.cols++;
+    return i;
+  }
+  function deleteTableRow(doc, id, r) {
+    var t = needTable(doc, id);
+    if (t.rows < 2) throw new Error('A table keeps at least one row');
+    if (!(r >= 0 && r < t.rows)) throw new Error('No row ' + r);
+    t.cells.splice(r, 1); t.rows--;
+    return true;
+  }
+  function deleteTableCol(doc, id, c) {
+    var t = needTable(doc, id);
+    if (t.cols < 2) throw new Error('A table keeps at least one column');
+    if (!(c >= 0 && c < t.cols)) throw new Error('No column ' + c);
+    t.cells.forEach(function (row) { row.splice(c, 1); }); t.colW.splice(c, 1); t.cols--;
+    return true;
+  }
+  function deleteTable(doc, id) { var l = doc.tables || [], n = l.length; doc.tables = l.filter(function (t) { return t.id !== id; }); return doc.tables.length < n; }
+  // moveTable(doc, id, x, y): its top-left corner to paper (x, y); it leaves its anchor
+  function moveTable(doc, id, x, y) { var t = needTable(doc, id); delete t.anchor; t.x = r6(x); t.y = r6(y); return t; }
+  // setTableProps(doc, units, id, { anchor (null: free, where it is), x, y, rows, cols, rowH, colW })
+  function setTableProps(doc, units, id, props) {
+    var t = needTable(doc, id);
+    if (props.anchor !== undefined) {
+      if (TABLE_ANCHORS.indexOf(props.anchor) >= 0) t.anchor = props.anchor;
+      else { var b = tableBox(doc, units, t); delete t.anchor; t.x = props.x != null ? +props.x : b.x0; t.y = props.y != null ? +props.y : b.y1; }
+    }
+    if (+props.rowH > 0) t.rowH = +props.rowH;
+    if (Array.isArray(props.colW)) props.colW.forEach(function (w, i) { if (+w > 0 && i < t.cols) t.colW[i] = +w; });
+    if (props.rows != null) { while (t.rows < (props.rows | 0)) insertTableRow(doc, id); while (t.rows > Math.max(1, props.rows | 0)) deleteTableRow(doc, id, t.rows - 1); }
+    if (props.cols != null) { while (t.cols < (props.cols | 0)) insertTableCol(doc, id); while (t.cols > Math.max(1, props.cols | 0)) deleteTableCol(doc, id, t.cols - 1); }
+    return t;
+  }
+
+  // The .drawing document (File ▸ Save Drawing As): the drawing with a reference to its part (name, file name in this
+  // browser, part or assembly). drawingFile(doc, model, fileName) -> the object to write; readDrawingFile(text |
+  // object) -> it (throws when it is not one).
+  function drawingFile(doc, model, fileName) {
+    return { kind: 'anvil-drawing', v: 1, savedAt: new Date().toISOString(), part: { name: model && model.name || null, file: fileName || null, type: model && model.type === 'assembly' ? 'assembly' : 'part', units: model && model.units || null }, drawing: clone(doc) };
+  }
+  function readDrawingFile(x) {
+    var o = typeof x === 'string' ? JSON.parse(x) : x;
+    if (!o || o.kind !== 'anvil-drawing' || !o.drawing || !o.drawing.sheet || !Array.isArray(o.drawing.views)) throw new Error('Not an Anvil drawing (.drawing) file');
+    o.part = o.part || {};
+    return o;
+  }
+
+  // rfAE
+  D.fmtToPaper = fmtToPaper; D.paperToFmt = paperToFmt; D.ensureFormat = ensureFormat; D.findFormatItem = findFormatItem; D.formatHidden = formatHidden; D.formatShift = formatShift;
+  D.addFormatLine = addFormatLine; D.addFormatNote = addFormatNote; D.editFormatItem = editFormatItem; D.moveFormatItem = moveFormatItem; D.deleteFormatItem = deleteFormatItem; D.resetFormat = resetFormat; D.formatItemAt = formatItemAt;
+  D.sheetFormatData = sheetFormatData; D.drawingTemplate = drawingTemplate; D.checkTemplate = checkTemplate; D.applySheetFormat = applySheetFormat; D.applyTemplate = applyTemplate;
+  D.TABLE_ANCHORS = TABLE_ANCHORS; D.findTable = findTable; D.addTable = addTable; D.tableBox = tableBox; D.tableCellAt = tableCellAt; D.editTableCell = editTableCell; D.insertTableRow = insertTableRow; D.insertTableCol = insertTableCol;
+  D.deleteTableRow = deleteTableRow; D.deleteTableCol = deleteTableCol; D.deleteTable = deleteTable; D.moveTable = moveTable; D.setTableProps = setTableProps; D.drawingFile = drawingFile; D.readDrawingFile = readDrawingFile;
+  _.TABLE_TEXT = TABLE_TEXT;
 
   D.FORMATS = FORMATS; D.SCALES = SCALES; D.ANSI_SCALES = ANSI_SCALES; D.scalesFor = scalesFor; D.scaleValue = scaleValue; D.scaleText = scaleText; D.scaleLabel = scaleLabel; D.parseScale = parseScale; D.sheetSize = sheetSize;
   D.newDrawing = newDrawing; D.addView = addView; D.projectionKey = projectionKey; D.putProjection = putProjection; D.sectionJob = sectionJob; D.putSection = putSection;

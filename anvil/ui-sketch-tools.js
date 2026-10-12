@@ -100,11 +100,12 @@
     // sketch-fillet2: what each tool takes as it is (lines; a fillet: arcs, circles and open splines too) and what is made
     // into lines (and arcs) first, as SolidWorks draws it: a rectangle, a polygon, a straight slot
     function direct(e) { return !!e && (e.t === 'line' || (!chamfer && (e.t === 'arc' || e.t === 'circle' || (e.t === 'spline' && !e.closed && e.pts.length > 1)))); }
-    function explodable(e) { return !!e && (e.t === 'rect' || e.t === 'crect' || e.t === 'poly' || e.t === 'slot'); }
+    // (rfAF: an arc slot too, for a fillet: its outer / inner / end arcs, SketchSolver.explodeArcSlot through explodeSlot)
+    function explodable(e) { return !!e && (e.t === 'rect' || e.t === 'crect' || e.t === 'poly' || e.t === 'slot' || (e.t === 'aslot' && !chamfer)); }
     // entity i made into its lines (and arcs): the indices of the block it became (later indices shift)
     function explodeBlock(i) {
       var e = f.entities[i], n0 = f.entities.length;
-      if (e.t === 'rect' || e.t === 'crect') S.explodeRect(f, i); else if (e.t === 'poly') S.explodePoly(f, i); else if (e.t === 'slot') S.explodeSlot(f, i); else return null;
+      if (e.t === 'rect' || e.t === 'crect') S.explodeRect(f, i); else if (e.t === 'poly') S.explodePoly(f, i); else if (e.t === 'slot' || e.t === 'aslot') { if (S.explodeSlot(f, i) < 0) return null; } else return null;
       var shift = f.entities.length - n0, out = [];
       for (var k = i; k <= i + shift; k++) out.push(k);
       if (first != null && first > i) first += shift;
@@ -137,8 +138,8 @@
         var a0 = nearestIn(b0.list, spec.uvi), c0 = nearestIn(b0.list, spec.uvj, a0);
         return a0 != null && c0 != null ? { i: a0, uvi: spec.uvi, j: c0, uvj: spec.uvj } : null;
       }
-      if (explodable(f.entities[i])) { var bi = explodeBlock(i); if (j > i) j += bi.shift; i = nearestIn(bi.list, spec.uvi); if (i == null) return null; }
-      if (explodable(f.entities[j])) { var bj = explodeBlock(j); if (i > j) i += bj.shift; j = nearestIn(bj.list, spec.uvj); if (j == null) return null; }
+      if (explodable(f.entities[i])) { var bi = explodeBlock(i); if (!bi) return null; if (j > i) j += bi.shift; i = nearestIn(bi.list, spec.uvi); if (i == null) return null; }
+      if (explodable(f.entities[j])) { var bj = explodeBlock(j); if (!bj) return null; if (i > j) i += bj.shift; j = nearestIn(bj.list, spec.uvj); if (j == null) return null; }
       return { i: i, uvi: spec.uvi, j: j, uvj: spec.uvj };
     }
     function make(spec) {
@@ -422,12 +423,13 @@
       var spans = S.betweenSpans(f, hit.index, uv, ix, m === 'outside');
       if (spans) UI.sketchPreview(spans, TRIM_SPAN, 'sk-trim-span');
     }
-    // a rectangle is four lines in SolidWorks: the edge picked becomes a line of its own (relations kept)
+    // a rectangle is four lines in SolidWorks: the edge picked becomes a line of its own (relations kept); rfAF: a
+    // script's slot / arc slot its sides and end arcs (SketchSolver.explodeSlot)
     function explodeAt(hit, mx, my) {
       var e = f.entities[hit.index];
-      if (!e || (e.t !== 'rect' && e.t !== 'crect')) return hit;
+      if (!e || (e.t !== 'rect' && e.t !== 'crect' && e.t !== 'slot' && e.t !== 'aslot')) return hit;
       if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; }
-      S.explodeRect(f, hit.index);
+      if (e.t === 'slot' || e.t === 'aslot') S.explodeSlot(f, hit.index); else S.explodeRect(f, hit.index);
       return UI.pickEntity(mx, my) || hit;
     }
     function click(uv, mx, my) {

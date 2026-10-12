@@ -51,6 +51,14 @@
     bendNote: '<path d="M5 2 v12" stroke="#2f7fd6" stroke-width="1"/><text x="10.5" y="10" font-size="5.2" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">UP</text>',
     docProps: '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><circle cx="8" cy="9" r="2.6" fill="none" stroke="#2f7fd6" stroke-width="1.3" stroke-dasharray="1.4 0.9"/><circle cx="8" cy="9" r="0.9" fill="#2f7fd6"/>'
   };
+  // (rfAE) Sheet Format tab and General Table
+  DI.editSheetFormat = '<path d="M2 3 h12 v10 H2 z" fill="#f2f4f7" stroke="currentColor" stroke-width="1.1"/><path d="M8 9.5 h6 M8 9.5 v3.5" stroke="currentColor" stroke-width="0.8" fill="none"/><path d="M4 11 l5.5 -5.5 1.5 1.5 -5.5 5.5 h-1.5 z" fill="#2f7fd6"/>';
+  DI.fmtLine = '<path d="M2.5 13.5 L13.5 2.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="13.5" r="1.4" fill="#2f7fd6"/><circle cx="13.5" cy="2.5" r="1.4" fill="#2f7fd6"/>';
+  DI.fmtNote = '<path d="M2.5 2.5 h11 v8 l-3 3 h-8 z" fill="#f2f4f7" stroke="currentColor" stroke-width="1"/><text x="7.5" y="9" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">A</text>';
+  DI.saveSheetFormat = '<path d="M2 3 h12 v10 H2 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M8 9.5 h6 M8 9.5 v3.5" stroke="currentColor" stroke-width="0.8" fill="none"/><path d="M5 2 v5 M3 5 l2 2 2 -2" stroke="#3ba776" stroke-width="1.2" fill="none"/>';
+  DI.saveTemplate = '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M5 11 h6 M5 11 v2.5 M8 11 v2.5" stroke="currentColor" stroke-width="0.8"/><text x="8" y="8.5" font-size="4.4" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">DRW</text>';
+  DI.resetFormat = '<path d="M2 3 h12 v10 H2 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5 8 a3 3 0 1 0 1 -2.3 M5 4.5 v1.5 h1.5" stroke="#e0553c" stroke-width="1.1" fill="none"/>';
+  DI.generalTable = '<rect x="1.5" y="2.5" width="13" height="11" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M1.5 6 h13 M1.5 9.5 h13 M6 2.5 v11 M10.5 2.5 v11" stroke="#2f7fd6" stroke-width="0.8"/>';
   var baseIcons = Icons;
   var wrapped = function (name, size, cls) {
     if (!DI[name]) return baseIcons(name, size, cls);
@@ -302,7 +310,7 @@
     ensureDom();
     if (!doc()) return;
     var t0 = performance.now();
-    D.active = true; D.sel = null; D.hover = null; D.tool = null; D.pending = null; D.vb = null;
+    D.active = true; D.sel = null; D.hover = null; D.tool = null; D.pending = null; D.vb = null; D.formatEdit = false;
     D.prog = { doc: doc(), insert: !!(o && o.insert), t0: t0 };
     markDrawingClean();
     $('app').classList.add('drawing-mode');
@@ -712,6 +720,7 @@
     }
     D.preview = null;
     if (/^(aux|crop|brk)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
+    if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);   // (rfAE) sheet format items, General Tables, their tools
   }
   function dimMatches(ref, d) { return ref.view === d.view && (ref.key ? ref.key === d.key : ref.index === d.index && d.index != null); }
 
@@ -791,6 +800,8 @@
     if (D.tool === 'balloon' || D.tool === 'stackballoon') { DW.balloonClick(p); return; }
     if (D.tool === 'note') { DW.noteClick(p); return; }
     if (D.tool === 'symbol') { DW.symbolClick(p); return; }
+    // (rfAE) the sheet format's Line / Note tools, General Table placement; in Edit Sheet Format only the format picks
+    if (DW.aeDown && DW.aeDown(p, e)) return;
     // a click anywhere but on a dimension closes the Dimension PM a single click opened (with its edits, as SolidWorks)
     if (DW.clickPM() && !dimAt(p) && !DW.arrowAt(p)) DW.closeClickPM(true);
     // a leader's arrow tip (a note's or a symbol's): drag it to another point
@@ -884,6 +895,8 @@
       D.host.classList.add('dw-panning');
       return;
     }
+    if (D.drag && DW.aeDragMove && DW.aeDragMove(D.drag, toPaper(e))) return;   // (rfAE) a format item, a General Table
+    if (!D.drag && DW.aeHover && e.target && e.target.nodeType && D.host.contains(e.target) && DW.aeHover(toPaper(e))) return;
     if (D.drag && D.drag.kind === 'bom') {
       var pb = toPaper(e), db = D.drag;
       if (!db.moved && Math.hypot(pb[0] - db.start[0], pb[1] - db.start[1]) < pxToPaper(3)) return;
@@ -986,6 +999,7 @@
     // (SolidWorks) a click on a dimension, without a drag, opens its Dimension PropertyManager; the keyboard stays on
     // the sheet (Delete deletes it, D starts Smart Dimension)
     if (dg.kind === 'dim' && dg.clickPM && !dg.moved && D.active) DW.openClickDimPM(dg.ref);
+    if ((dg.kind === 'fmt' || dg.kind === 'gtable') && dg.moved) { D.dirty = true; UI.autosave(); render(); return; }   // (rfAE)
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
@@ -1053,6 +1067,7 @@
     if (!D.active || D.tool) return;
     var pp = toPaper(e);
     D.drag = null;
+    if (DW.aeDblClick && DW.aeDblClick(pp)) return;   // (rfAE) a format note / field, a General Table cell
     var bq = DW.balloonAt(pp);
     if (bq) { DW.cmdBalloonProps(bq); return; }
     var sq = symbolAt(pp);
@@ -1066,7 +1081,7 @@
     var dq = dimAt(pp);
     if (dq) { DW.cmdDimensionPM(DW.dimRef(dq)); DW.openInlineEdit(dq); return; }
     if (DW.bomAt(toPaper(e))) { DW.cmdBOM(); return; }
-    var tf = D.sheet && Drawing.titleFieldAt(D.sheet.size, units(), pp);
+    var tf = D.sheet && Drawing.titleFieldAt(D.sheet.size, units(), pp, doc());
     if (tf) { DW.openTitleEdit(tf); return; }
     var w = viewAt(toPaper(e));
     if (w) DW.cmdViewProperties(w.view.id); else DW.cmdSheetProperties();
@@ -1076,6 +1091,7 @@
     e.preventDefault(); e.stopPropagation();
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
+    if (DW.aeContext && DW.aeContext(p, e)) return;   // (rfAE) Edit Sheet Format's menu, a General Table's menu
     if (revTableAt(p)) { D.sel = { kind: 'revtable' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.revTableMenu(Drawing.revRowAt(doc(), units(), p))); return; }
     var nm = DW.noteAt(p);
     if (nm) { D.sel = { kind: 'note', id: nm.id }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, noteMenu(nm.id)); return; }

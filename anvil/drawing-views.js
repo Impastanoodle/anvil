@@ -192,6 +192,7 @@
   // so neighbouring lines' dashes stagger the same way everywhere
   function patternLines(loops, sp, ang, pattern) {
     var out = [];
+    if (!(sp > 0) || !isFinite(sp)) return out;   // (rfAD: a region with its own Area Hatch is drawn by regionHatch)
     (HATCH_PATTERNS[pattern] || HATCH_PATTERNS.ANSI31).forEach(function (fam) {
       var a = ang + fam.da, d = [Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)];
       fam.offs.forEach(function (o) {
@@ -510,12 +511,10 @@
         }
       }
       // start at the sharpest corner, so no arc is split by the loop's seam
-      var s0 = 0, best = -1;
-      for (var k = 0; k < n; k++) { var tk = Math.abs(turn(p[(k + n - 1) % n], p[k], p[(k + 1) % n])); if (tk > best) { best = tk; s0 = k; } }
-      var q = [];
-      for (var j = 0; j <= n; j++) q.push(p[(s0 + j) % n]);
+      var s0 = 0, best = -1, tns = [];
+      for (var k = 0; k < n; k++) { var tk = turn(p[(k + n - 1) % n], p[k], p[(k + 1) % n]); tns.push(tk); if (Math.abs(tk) > best) { best = Math.abs(tk); s0 = k; } }
       // q[i..j] is one arc: on the circle through its ends and middle, turning one way by 0.1–30° per chord
-      function arcOf(i, j) {
+      function arcOf(q, i, j) {
         var C = circ3(q[i], q[Math.floor((i + j) / 2)], q[j]);
         if (!C || C.r > diag * 4) return null;
         var tolA = C.r * 2e-4 + eps, sg = 0;
@@ -527,23 +526,38 @@
         }
         return C;
       }
-      var i0 = 0, seq = [];
-      while (i0 < n) {
-        var j0 = -1, Cb = null;
-        for (var jj = i0 + 3; jj <= n; jj++) { var Cj = arcOf(i0, jj); if (Cj) { j0 = jj; Cb = Cj; } else if (j0 >= 0) break; }
-        if (j0 < 0) { seq.push({ line: [q[i0][0], q[i0][1], q[i0 + 1][0], q[i0 + 1][1], 0] }); i0++; continue; }
-        var sw = 0;
-        for (var m3 = i0; m3 < j0; m3++) {
-          var u0 = [q[m3][0] - Cb.c[0], q[m3][1] - Cb.c[1]], w0 = [q[m3 + 1][0] - Cb.c[0], q[m3 + 1][1] - Cb.c[1]];
-          sw += Math.atan2(u0[0] * w0[1] - u0[1] * w0[0], u0[0] * w0[0] + u0[1] * w0[1]);
+      function fitFrom(st) {
+        var q = [];
+        for (var j = 0; j <= n; j++) q.push(p[(st + j) % n]);
+        var i0 = 0, seq = [];
+        while (i0 < n) {
+          var j0 = -1, Cb = null;
+          for (var jj = i0 + 3; jj <= n; jj++) { var Cj = arcOf(q, i0, jj); if (Cj) { j0 = jj; Cb = Cj; } else if (j0 >= 0) break; }
+          if (j0 < 0) { seq.push({ line: [q[i0][0], q[i0][1], q[i0 + 1][0], q[i0 + 1][1], 0] }); i0++; continue; }
+          var sw = 0;
+          for (var m3 = i0; m3 < j0; m3++) {
+            var u0 = [q[m3][0] - Cb.c[0], q[m3][1] - Cb.c[1]], w0 = [q[m3 + 1][0] - Cb.c[0], q[m3 + 1][1] - Cb.c[1]];
+            sw += Math.atan2(u0[0] * w0[1] - u0[1] * w0[0], u0[0] * w0[0] + u0[1] * w0[1]);
+          }
+          seq.push({ c: Cb.c, r: Cb.r, t0: Math.atan2(q[i0][1] - Cb.c[1], q[i0][0] - Cb.c[0]) * 180 / Math.PI, sw: sw * 180 / Math.PI });
+          i0 = j0;
         }
-        seq.push({ c: Cb.c, r: Cb.r, t0: Math.atan2(q[i0][1] - Cb.c[1], q[i0][0] - Cb.c[0]) * 180 / Math.PI, sw: sw * 180 / Math.PI });
-        i0 = j0;
+        // an arc the loop's seam split in two (a loop with no sharp corner, such as a slot) is one arc
+        var fA = seq[0], lA = seq[seq.length - 1];
+        if (seq.length > 1 && !fA.line && !lA.line && Math.hypot(fA.c[0] - lA.c[0], fA.c[1] - lA.c[1]) <= fA.r * 1e-4 + eps && Math.abs(fA.r - lA.r) <= fA.r * 1e-4 + eps && fA.sw * lA.sw > 0) {
+          lA.sw += fA.sw; seq.shift();
+        }
+        return seq;
       }
-      // an arc the loop's seam split in two (a loop with no sharp corner, such as a slot) is one arc
-      var fA = seq[0], lA = seq[seq.length - 1];
-      if (seq.length > 1 && !fA.line && !lA.line && Math.hypot(fA.c[0] - lA.c[0], fA.c[1] - lA.c[1]) <= fA.r * 1e-4 + eps && Math.abs(fA.r - lA.r) <= fA.r * 1e-4 + eps && fA.sw * lA.sw > 0) {
-        lA.sw += fA.sw; seq.shift();
+      function score(sq) { var L = 0; sq.forEach(function (s) { if (s.line) L++; }); return L * 1000 + sq.length; }
+      var seq = fitFrom(s0);
+      // (rfAD) with no corner over 30° (an arc slot: four arcs meeting tangentially) the sharpest vertex can lie inside
+      // an end arc, leaving a one-chord line and a short arc; then also try starting where two arcs meet (the largest
+      // change of turn between a vertex's neighbours) and keep that fit when it is all arcs
+      if (best <= Math.PI / 6 && n > 4) {
+        var s1 = s0, bj = -1;
+        for (var k4 = 0; k4 < n; k4++) { var dj = Math.abs(tns[(k4 + 1) % n] - tns[(k4 + n - 1) % n]); if (dj > bj) { bj = dj; s1 = k4; } }
+        if (s1 !== s0 && score(seq) >= 1000) { var seq1 = fitFrom(s1); if (score(seq1) < 1000) seq = seq1; }
       }
       seq.forEach(function (s) {
         if (s.line) out.lines.push(s.line);
@@ -1288,6 +1302,8 @@
       var sv = w.view;
       if (sv.kind === 'section' && sv.section && sv.section.type && sv.parent != null && byId[sv.parent]) sectionPathLine(sheet, w, byId[sv.parent], k);
     });
+    // (rfAD) broken-out profiles and the regions with their own hatch, before the breaks so they move with the view
+    sheet.views.forEach(function (w) { brokenOutMarks(doc, sheet, w, byId, k); regionHatch(sheet, w, k); });
     sheet.views.forEach(function (w) { if (w.view.breaks && w.view.breaks.length && !w.pending) applyBreaks(sheet, w, k); });
     sheet.views.forEach(function (w) {
       if (w.view.kind !== 'aux' || !w.view.aux) return;
@@ -1375,18 +1391,10 @@
       else for (var i = 0; i < 4; i++) seg(Q[i], Q[(i + 1) % 4]);
       return;
     }
-    // jagged: points round the boundary, every other one a little outside it (about 2 mm apart)
-    var amp = 1.2 * k, step = 2 * k, pts = [];
-    if (!prof) {
-      var n = Math.max(12, 2 * Math.round(Math.PI * hw / step));
-      for (var j = 0; j < n; j++) { var t = j / n * 2 * Math.PI, rr = hw + (j % 2 ? amp : 0); pts.push([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t)]); }
-    } else {
-      var nrm = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-      for (var e = 0; e < 4; e++) {
-        var A = Q[e], B = Q[(e + 1) % 4], len = Math.hypot(B[0] - A[0], B[1] - A[1]), m = Math.max(2, 2 * Math.round(len / step / 2));
-        for (var q2 = 0; q2 < m; q2++) { var f = q2 / m, o = q2 % 2 ? amp : 0; pts.push([A[0] + (B[0] - A[0]) * f + nrm[e][0] * o, A[1] + (B[1] - A[1]) * f + nrm[e][1] * o]); }
-      }
-    }
+    // jagged: points round the boundary, every other one a little outside it (about 2 mm apart); (rfAD) the view's
+    // linework (worked out to just past the zig-zag, contentExtras) is clipped to it, so lines end on the zig-zag
+    var pts = jaggedPts(w, k);
+    clipLayerToPoly(prims, L, pts);
     for (var z = 0; z < pts.length; z++) seg(pts[z], pts[(z + 1) % pts.length]);
   }
   // the parent extents a section line is measured against when it scales with the model: [lo, hi] across the line
@@ -1506,6 +1514,487 @@
     if (t === 'true') { if (v.kind) throw new Error('True dimensions are a model view\'s option'); v.dimType = 'true'; } else delete v.dimType;
     return v;
   }
+  // ------------------------------------------------------------------ rfAD: Broken-out Section, Area Hatch / Fill per
+  // region, the Jagged detail outline as the clip (SolidWorks: Insert ▸ Drawing View ▸ Broken-out Section; select a
+  // hatched region ▸ Area Hatch/Fill PropertyManager; Detail View ▸ Jagged outline)
+  //   * view.brokenOut = [{ id, shape: 'spline' | 'poly' | 'rect' | 'circle', pts (spline / poly) | a, b (rect) | c, r
+  //     (circle) — model units of the view's frame —, depth (model units, from the front of the part in this view) |
+  //     depthRef: { view, p: [u, v] } (a point in another view square to this one: the cut goes down to it) }]: the
+  //     material inside the closed profile, from the front of the part down to the depth, is taken away in this view
+  //     only; the cut floor is hatched (the part's material pattern) and the profile is drawn as a thin line;
+  //   * view.hatchRegions = [{ p: [u, v] (a point inside the region, model units of the view), pattern ('ANSI31' …
+  //     'ANSI38', 'SOLID', 'NONE'), scale (× the standard spacing), angle (degrees added to the pattern's own) }]: one
+  //     hatched region of a section or broken-out drawn with its own pattern (the Material crosshatch unticked); a
+  //     detail view follows its parent's regions and may have its own;
+  //   * a detail with a Jagged outline shows its linework out to the zig-zag, clipped to it (not to the circle).
+  var BO_SHAPES = ['spline', 'poly', 'rect', 'circle'], AREA_PATTERNS = ['ANSI31', 'ANSI32', 'ANSI33', 'ANSI34', 'ANSI37', 'ANSI38', 'SOLID', 'NONE'];
+  function polyArea(P) { var a = 0; for (var i = 0, j = P.length - 1; i < P.length; j = i++) a += (P[j][0] + P[i][0]) * (P[j][1] - P[i][1]); return -a / 2; }
+  function inPoly(p, P) {
+    var n = false;
+    for (var i = 0, j = P.length - 1; i < P.length; j = i++) if ((P[i][1] > p[1]) !== (P[j][1] > p[1]) && p[0] < (P[j][0] - P[i][0]) * (p[1] - P[i][1]) / (P[j][1] - P[i][1]) + P[i][0]) n = !n;
+    return n;
+  }
+  function inLoops(p, loops) { var n = 0; loops.forEach(function (l) { if (inPoly(p, l)) n++; }); return n % 2 === 1; }
+  // boPolygon(entry) -> the closed profile as a counter-clockwise polygon (model units of the view): a spline runs
+  // through its points (closed Catmull-Rom, 10 steps a span), a circle is a 96-gon
+  function boPolygon(b) {
+    var P = [];
+    if (b.shape === 'rect') P = [[b.a[0], b.a[1]], [b.b[0], b.a[1]], [b.b[0], b.b[1]], [b.a[0], b.b[1]]];
+    else if (b.shape === 'circle') for (var i = 0; i < 96; i++) { var t = i / 96 * TWO_PI; P.push([b.c[0] + b.r * Math.cos(t), b.c[1] + b.r * Math.sin(t)]); }
+    else if (b.shape === 'spline' && b.pts.length >= 3) {
+      var Q = b.pts, n = Q.length;
+      for (var s = 0; s < n; s++) {
+        var p0 = Q[(s + n - 1) % n], p1 = Q[s], p2 = Q[(s + 1) % n], p3 = Q[(s + 2) % n];
+        for (var q = 0; q < 10; q++) {
+          var u = q / 10, u2 = u * u, u3 = u2 * u;
+          P.push([0, 1].map(function (k) { return 0.5 * (2 * p1[k] + (-p0[k] + p2[k]) * u + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u2 + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * u3); }));
+        }
+      }
+    } else P = (b.pts || []).map(function (p) { return [p[0], p[1]]; });
+    if (polyArea(P) < 0) P.reverse();
+    return P;
+  }
+  function boEntry(spec) {
+    var shape = spec.shape || (spec.c && spec.r != null ? 'circle' : spec.a && spec.b ? 'rect' : 'spline'), e = { shape: shape };
+    if (BO_SHAPES.indexOf(shape) < 0) throw new Error('A broken-out profile is a spline, poly, rect or circle');
+    if (shape === 'rect') {
+      if (!spec.a || !spec.b || Math.abs(spec.a[0] - spec.b[0]) < 1e-9 || Math.abs(spec.a[1] - spec.b[1]) < 1e-9) throw new Error('A broken-out rectangle needs two opposite corners: { a: [u, v], b: [u, v] }');
+      e.a = [Math.min(+spec.a[0], +spec.b[0]), Math.min(+spec.a[1], +spec.b[1])]; e.b = [Math.max(+spec.a[0], +spec.b[0]), Math.max(+spec.a[1], +spec.b[1])];
+    } else if (shape === 'circle') {
+      if (!spec.c || !(+spec.r > 0)) throw new Error('A broken-out circle needs a centre and a radius');
+      e.c = [+spec.c[0], +spec.c[1]]; e.r = +spec.r;
+    } else {
+      var pts = (spec.pts || []).map(function (p) { return [+p[0], +p[1]]; }).filter(function (p) { return isFinite(p[0]) && isFinite(p[1]); });
+      if (pts.length > 3 && Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 1e-9) pts.pop();
+      if (pts.length < 3) throw new Error('A broken-out profile needs at least three points');
+      e.pts = pts;
+    }
+    if (Math.abs(polyArea(boPolygon(e))) < 1e-9) throw new Error('The broken-out profile encloses no area');
+    if (spec.depthRef) {
+      var dr = spec.depthRef;
+      if (dr.view == null || !dr.p || !isFinite(+dr.p[0]) || !isFinite(+dr.p[1])) throw new Error('A depth reference is { view, p: [u, v] }');
+      e.depthRef = { view: dr.view, p: [+dr.p[0], +dr.p[1]] };
+    } else {
+      if (!(+spec.depth > 0)) throw new Error('A broken-out section needs a depth greater than zero (or a depth reference)');
+      e.depth = +spec.depth;
+    }
+    return e;
+  }
+  function boView(doc, viewId) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (v.kind === 'section' || v.kind === 'detail' || v.kind === 'flat') throw new Error('A broken-out section goes on a model, projected or auxiliary view');
+    return v;
+  }
+  // addBrokenOut(doc, viewId, spec) -> the entry (with its id); setBrokenOut(doc, viewId, id, spec | null) changes the
+  // depth / profile of one or (null) removes it; clearBrokenOut(doc, viewId) removes them all
+  function addBrokenOut(doc, viewId, spec) {
+    var v = boView(doc, viewId), e = boEntry(spec || {});
+    if (e.depthRef) boRefFrame(doc, v, e.depthRef);
+    var list = v.brokenOut || [];
+    e.id = list.reduce(function (m, b) { return Math.max(m, b.id | 0); }, 0) + 1;
+    v.brokenOut = list.concat([e]);
+    return e;
+  }
+  function setBrokenOut(doc, viewId, id, spec) {
+    var v = boView(doc, viewId), list = v.brokenOut || [], i = -1;
+    list.forEach(function (b, j) { if (b.id === id) i = j; });
+    if (i < 0) throw new Error('No broken-out section ' + id + ' in ' + (v.name || 'view ' + viewId));
+    if (spec == null) { list.splice(i, 1); if (!list.length) delete v.brokenOut; return null; }
+    var old = list[i], m = {};
+    Object.keys(old).forEach(function (q) { m[q] = old[q]; });
+    if (spec.depth != null || spec.depthRef) { delete m.depth; delete m.depthRef; }
+    if (spec.shape && spec.shape !== old.shape) ['pts', 'a', 'b', 'c', 'r'].forEach(function (q) { delete m[q]; });
+    Object.keys(spec).forEach(function (q) { if (spec[q] !== undefined) m[q] = spec[q]; });
+    var e = boEntry(m);
+    if (e.depthRef) boRefFrame(doc, v, e.depthRef);
+    e.id = old.id; list[i] = e;
+    return e;
+  }
+  function clearBrokenOut(doc, viewId) { var v = findV(doc, viewId); if (v) delete v.brokenOut; return v; }
+  // the other view of a depth reference, checked square to v
+  function boRefFrame(doc, v, dr) {
+    var o = findV(doc, dr.view);
+    if (!o || o === v) throw new Error('The depth reference must be in another view');
+    var F = D.viewFrame(doc, v), G = D.viewFrame(doc, o);
+    if (Math.abs(V.dot(F.e, G.e)) > 1e-6) throw new Error('The depth reference must be in a view at right angles to ' + (v.name || 'this view'));
+    return G;
+  }
+  // the depth of an entry in frame F of view v, for a part whose front (the highest p·e) is `front`
+  function boDepth(doc, v, F, b, front) {
+    if (!b.depthRef) return b.depth;
+    var G = boRefFrame(doc, v, b.depthRef), q = b.depthRef.p[0] * V.dot(G.u, F.e) + b.depthRef.p[1] * V.dot(G.v, F.e);
+    return front - q;
+  }
+  // a prism along F.e over the polygon P (frame coordinates), from w0 to w1 along e, as CSG
+  function prismSolid(F, P, w0, w1) {
+    function pt(q, w) { return new CSG.Vector(F.u[0] * q[0] + F.v[0] * q[1] + F.e[0] * w, F.u[1] * q[0] + F.v[1] * q[1] + F.e[1] * w, F.u[2] * q[0] + F.v[2] * q[1] + F.e[2] * w); }
+    function face(vs, out) {
+      var pg = new CSG.Polygon(vs.map(function (x) { return new CSG.Vertex(x); }));
+      if (pg.plane.normal.x * out[0] + pg.plane.normal.y * out[1] + pg.plane.normal.z * out[2] < 0) pg = new CSG.Polygon(vs.slice().reverse().map(function (x) { return new CSG.Vertex(x); }));
+      return pg;
+    }
+    var polys = [], tris = K._.triangulate(P);
+    tris.forEach(function (t) {
+      var a = P[t[0]], b = P[t[1]], c = P[t[2]];
+      if (Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) < 1e-14) return;
+      polys.push(face([pt(a, w1), pt(b, w1), pt(c, w1)], F.e));
+      polys.push(face([pt(a, w0), pt(b, w0), pt(c, w0)], V.scale(F.e, -1)));
+    });
+    for (var i = 0; i < P.length; i++) {
+      var A = P[i], B = P[(i + 1) % P.length], d = [B[0] - A[0], B[1] - A[1]];
+      if (Math.hypot(d[0], d[1]) < 1e-12) continue;
+      polys.push(face([pt(A, w0), pt(B, w0), pt(B, w1), pt(A, w1)], V.add(V.scale(F.u, d[1]), V.scale(F.v, -d[0]))));
+    }
+    return CSG.fromPolygons(polys);
+  }
+  // brokenOutOf(mesh, F, cuts: [{ poly, w }]) -> { mesh, caps, area, e, ws }: the part with each profile's prism, from
+  // the plane p·e = w out past the front, taken away (per body / part, as a section); the caps are the cut floors
+  function brokenOutOf(mesh, F, cuts) {
+    var cache = mesh._drawingSections || (mesh._drawingSections = {}), r9 = function (x) { return Math.round(x * 1e9); };
+    var key = 'BO|' + frameKey(F) + '|' + cuts.map(function (c) { return r9(c.w) + ':' + c.poly.map(function (p) { return r9(p[0]) + ',' + r9(p[1]); }).join(';'); }).join('|');
+    if (cache[key]) return cache[key];
+    var Pp = mesh.positions64 || mesh.positions, diag = meshDiag(mesh), hi = -Infinity, m = diag * 0.25 + 1;
+    for (var i = 0; i < Pp.length; i += 3) { var x = Pp[i] * F.e[0] + Pp[i + 1] * F.e[1] + Pp[i + 2] * F.e[2]; if (x > hi) hi = x; }
+    var tool = null;
+    cuts.forEach(function (c) { var s = prismSolid(F, c.poly, c.w, hi + m); tool = tool ? tool.union(s) : s; });
+    var byBody = {}, order = [];
+    mesh.faces.forEach(function (f) {
+      (f.polys || []).forEach(function (pg) {
+        var b = pg.body || 0, pt = pg.part != null ? pg.part : f.part, k = b + '|' + (pt != null ? pt : '');
+        if (!byBody[k]) { byBody[k] = []; order.push({ k: k, b: b, part: pt }); }
+        var c = pg.clone(); if (pt != null) c.part = pt; byBody[k].push(c);
+      });
+    });
+    var polys = [];
+    order.forEach(function (g) {
+      CSG.fromPolygons(byBody[g.k]).subtract(tool).polygons.forEach(function (pg) { pg.body = g.b; if (g.part != null) pg.part = g.part; polys.push(pg); });
+    });
+    var sm = K.meshFromBody(polys.length ? CSG.fromPolygons(polys) : null), caps = [], area = 0, tol = diag * 1e-7 + 1e-9;
+    sm.faces.forEach(function (f, fi) {
+      if (!(V.dot(f.normal, F.e) > 1 - 1e-9 && cuts.some(function (c) { return Math.abs(f.w - c.w) <= tol; }))) return;
+      // (a floor lies inside its profile: a face of the part that happens to lie on the same plane is left alone)
+      var o = K.faceOutline(sm, fi), inside = true;
+      if (o && o.loops.length) {
+        var q = o.loops.map(function (l) { return l.map(function (p2) { var p = K.to3D(o.plane, p2[0], p2[1]); return [V.dot(p, F.u), V.dot(p, F.v)]; }); });
+        var ip = interiorPoint(q);
+        if (ip) inside = cuts.some(function (c) { return Math.abs(f.w - c.w) <= tol && inPoly(ip, c.poly); });
+      }
+      if (inside) { caps.push(fi); area += f.area; }
+    });
+    var out = { mesh: sm, caps: caps, area: area, e: F.e.slice(), ws: cuts.map(function (c) { return c.w; }), front: hi, brokenOut: true };
+    cache[key] = out;
+    return out;
+  }
+  // a point inside a region bounded by loops (even-odd), on the scan line of the widest interval found
+  function interiorPoint(loops) {
+    var lo = Infinity, hi = -Infinity, best = null, bw = 0;
+    loops.forEach(function (l) { l.forEach(function (p) { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; }); });
+    if (!(hi > lo)) return null;
+    [0.5, 0.37, 0.63, 0.21, 0.79, 0.09, 0.91].forEach(function (f) {
+      var y = lo + (hi - lo) * f, xs = [];
+      loops.forEach(function (l) {
+        for (var i = 0, j = l.length - 1; i < l.length; j = i++) {
+          var a = l[j], b = l[i];
+          if ((a[1] > y) !== (b[1] > y)) xs.push(a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]));
+        }
+      });
+      xs.sort(function (x, z) { return x - z; });
+      for (var k = 0; k + 1 < xs.length; k += 2) if (xs[k + 1] - xs[k] > bw * 1.5) { bw = xs[k + 1] - xs[k]; best = [(xs[k] + xs[k + 1]) / 2, y]; }
+    });
+    return best;
+  }
+  // the projection without the edges the profile's walls leave along it (the thin profile line goes there instead)
+  function dropOnProfile(pr, polys, tol) {
+    function dSeg(p, a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
+    function on(p) { return polys.some(function (P) { for (var i = 0; i < P.length; i++) if (dSeg(p, P[i], P[(i + 1) % P.length]) <= tol) return true; return false; }); }
+    function lineOn(l) { return on([l[0], l[1]]) && on([l[2], l[3]]) && on([(l[0] + l[2]) / 2, (l[1] + l[3]) / 2]); }
+    function arcOn(a) { return [a.a0, (a.a0 + a.a1) / 2, a.a1].every(function (d) { var t = d * Math.PI / 180; return on([a.c[0] + a.r * Math.cos(t), a.c[1] + a.r * Math.sin(t)]); }); }
+    function circOn(c) { return [0, 90, 180, 270].every(function (d) { var t = d * Math.PI / 180; return on([c.c[0] + c.r * Math.cos(t), c.c[1] + c.r * Math.sin(t)]); }); }
+    var out = copyOf(pr);
+    out.lines = {}; Object.keys(pr.lines).forEach(function (q) { out.lines[q] = (pr.lines[q] || []).filter(function (l) { return !lineOn(l); }); });
+    out.arcs = {}; Object.keys(pr.arcs || {}).forEach(function (q) { out.arcs[q] = (pr.arcs[q] || []).filter(function (a) { return !arcOn(a); }); });
+    out.circles = {}; Object.keys(pr.circles).forEach(function (q) { out.circles[q] = (pr.circles[q] || []).filter(function (c) { return !circOn(c); }); });
+    if (pr.stats) { out.stats = copyOf(pr.stats); out.stats.visibleLines = out.lines.visible.length; out.stats.hiddenLines = (out.lines.hidden || []).length; out.stats.visibleCircles = out.circles.visible.length; out.stats.hiddenCircles = (out.circles.hidden || []).length; }
+    return out;
+  }
+  function hasBrokenOut(v) { return !!(v && v.brokenOut && v.brokenOut.length && v.kind !== 'section' && v.kind !== 'detail' && v.kind !== 'flat'); }
+  // the content of a view with broken-out sections: the part cut by every profile, projected in the view's frame,
+  // centred where the uncut view is (so the view does not move); ct.brokenOut lists each profile's polygon and depth.
+  // (Worked out on the main thread, a few CSG booleans, like a half / offset / aligned section.)
+  function brokenOutContent(doc, v, mesh) {
+    var F = D.viewFrame(doc, v), full = D.extentsOf(mesh, F), Pp = mesh.positions64 || mesh.positions, front = -Infinity;
+    for (var i = 0; i < Pp.length; i += 3) { var x = Pp[i] * F.e[0] + Pp[i + 1] * F.e[1] + Pp[i + 2] * F.e[2]; if (x > front) front = x; }
+    var info = [];
+    v.brokenOut.forEach(function (b) {
+      var d = null;
+      try { d = boDepth(doc, v, F, b, front); } catch (e) { d = null; }   // (a reference view since deleted: that cut is skipped)
+      var poly = boPolygon(b);
+      if (d > 0 && isFinite(d) && poly.length >= 3) info.push({ id: b.id, poly: poly, depth: d, w: front - d });
+    });
+    var s = _.viewScale(doc, v);
+    if (!info.length || !Pp.length) return { frame: F, proj: _.cachedProjection(mesh, F, v.display, v.tangent), center: [full.cu, full.cv], caps: [], scale: s, brokenOut: info };
+    var S = brokenOutOf(mesh, F, info), pr;
+    if (!S.mesh.faces.length) pr = { orient: F.name, u: F.u, v: F.v, e: F.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
+      bounds: { umin: full.umin, umax: full.umax, vmin: full.vmin, vmax: full.vmax }, stats: { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 } };
+    else pr = _.cachedProjection(S.mesh, F, v.display, v.tangent);
+    pr = dropOnProfile(pr, info.map(function (c) { return c.poly; }), meshDiag(mesh) * 1e-6 + 1e-9);
+    // (the view keeps the whole part's box, so its place and label stay put)
+    pr.bounds = { umin: Math.min(pr.bounds.umin, full.umin), umax: Math.max(pr.bounds.umax, full.umax), vmin: Math.min(pr.bounds.vmin, full.vmin), vmax: Math.max(pr.bounds.vmax, full.vmax) };
+    return { frame: F, proj: pr, center: [full.cu, full.cv], caps: capLoops(S, F), scale: s, brokenOut: info, brokenOutArea: S.area };
+  }
+
+  // ---- Area Hatch / Fill per region
+  // setAreaHatch(doc, viewId, p, props | null) -> the view: the hatched region of the view at p (model units of the
+  // view) drawn with props { pattern, scale, angle } (null: back to the material crosshatch)
+  function setAreaHatch(doc, viewId, p, props) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (!p || !isFinite(+p[0]) || !isFinite(+p[1])) throw new Error('Area Hatch needs a point in the region: [u, v]');
+    p = [+p[0], +p[1]];
+    var list = (v.hatchRegions || []).filter(function (h) { return Math.hypot(h.p[0] - p[0], h.p[1] - p[1]) > 1e-9; });
+    if (props) {
+      var pat = String(props.pattern || 'ANSI31').toUpperCase();
+      if (AREA_PATTERNS.indexOf(pat) < 0) throw new Error('Hatch pattern must be one of ' + AREA_PATTERNS.join(', '));
+      var sc = props.scale == null ? 1 : +props.scale, an = props.angle == null ? 0 : +props.angle;
+      if (!(sc > 0) || !isFinite(sc)) throw new Error('Hatch scale must be greater than zero');
+      if (!isFinite(an)) throw new Error('Hatch angle must be a number');
+      list.push({ p: p, pattern: pat, scale: sc, angle: an });
+    }
+    if (list.length) v.hatchRegions = list; else delete v.hatchRegions;
+    return v;
+  }
+  // the region override for a cap: the view's own first, then its parent's (a detail follows its parent)
+  function regionOverride(doc, v, cap) {
+    var chain = [v], o = null;
+    if (v.kind === 'detail' && v.parent != null) { var par = findV(doc, v.parent); if (par) chain.push(par); }
+    chain.some(function (x) {
+      return (x.hatchRegions || []).some(function (h) { if (inLoops(h.p, cap.loops)) { o = h; return true; } return false; });
+    });
+    return o;
+  }
+  // marks the overridden caps (a fresh copy each): drawing-render.js draws none of their hatch (spacing Infinity:
+  // patternLines gives nothing) and regionHatch draws it with the region's own pattern once the sheet is laid out
+  function applyRegions(doc, v, ct) {
+    if (!ct.caps || !ct.caps.length) return;
+    var par = v.kind === 'detail' && v.parent != null ? findV(doc, v.parent) : null;
+    if (!(v.hatchRegions && v.hatchRegions.length) && !(par && par.hatchRegions && par.hatchRegions.length)) return;
+    var out = [];
+    ct.caps.forEach(function (cap) {
+      if (!regionOverride(doc, v, cap)) { out.push(cap); return; }
+      // (a cut face in several pieces — the plate either side of a hole — is one region per piece, as SolidWorks
+      // selects them: only the piece picked takes the pattern)
+      splitRegions(cap.loops).forEach(function (sub) {
+        var c2 = {}; Object.keys(cap).forEach(function (q) { c2[q] = cap[q]; });
+        c2.loops = sub;
+        var o = regionOverride(doc, v, c2);
+        if (o) {
+          var st = cap.style || hatchStyle(cap.body);
+          c2.areaHatch = { pattern: o.pattern, scale: o.scale, angle: o.angle, p: o.p.slice() };
+          c2.style = { angle: st.angle, spacing: Infinity };
+        }
+        out.push(c2);
+      });
+    });
+    ct.caps = out;
+  }
+  // splitRegions(loops) -> [[loop…]…]: each outer loop with the holes directly inside it
+  function splitRegions(loops) {
+    if (loops.length < 2) return [loops];
+    var depth = loops.map(function (l, i) { return loops.filter(function (o, j) { return j !== i && inPoly(l[0], o); }).length; });
+    var outer = [], subs = [];
+    loops.forEach(function (l, i) { if (depth[i] % 2 === 0) { outer.push(i); subs.push([l]); } });
+    loops.forEach(function (l, i) {
+      if (depth[i] % 2 === 0) return;
+      var best = -1;
+      outer.forEach(function (oi, k) { if (depth[oi] === depth[i] - 1 && inPoly(l[0], loops[oi])) best = k; });
+      if (best >= 0) subs[best].push(l);
+    });
+    return subs.length ? subs : [loops];
+  }
+  // the jagged outline of a detail view (sheet units): closed points round its boundary, every other one 1.2 mm out
+  function jaggedPts(w, k) {
+    var dt = w.view.detail, c = w.toSheet(dt.c), hf = detailHalf(dt), s = w.scale, prof = dt.shape === 'profile', hw = hf[0] * s, hh = hf[1] * s;
+    var amp = 1.2 * k, step = 2 * k, pts = [];
+    if (!prof) {
+      var n = Math.max(12, 2 * Math.round(Math.PI * hw / step));
+      for (var j = 0; j < n; j++) { var t = j / n * 2 * Math.PI, rr = hw + (j % 2 ? amp : 0); pts.push([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t)]); }
+    } else {
+      var Q = [[c[0] - hw, c[1] - hh], [c[0] + hw, c[1] - hh], [c[0] + hw, c[1] + hh], [c[0] - hw, c[1] + hh]], nrm = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+      for (var e = 0; e < 4; e++) {
+        var A = Q[e], B = Q[(e + 1) % 4], len = Math.hypot(B[0] - A[0], B[1] - A[1]), m = Math.max(2, 2 * Math.round(len / step / 2));
+        for (var q2 = 0; q2 < m; q2++) { var f = q2 / m, o = q2 % 2 ? amp : 0; pts.push([A[0] + (B[0] - A[0]) * f + nrm[e][0] * o, A[1] + (B[1] - A[1]) * f + nrm[e][1] * o]); }
+      }
+    }
+    return pts;
+  }
+  function withAB(p, a, b) { var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); q.a = a; q.b = b; return q; }
+  // the pieces of a sheet primitive inside polygon P: lines split where they cross it, arcs / circles into arcs; []
+  // when outside; other kinds kept when their centre is inside
+  function primInPoly(p, P) {
+    if (p.k === 'line') {
+      var a = p.a, b = p.b, ts = [0, 1];
+      for (var i = 0; i < P.length; i++) {
+        var c = P[i], d = P[(i + 1) % P.length], r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]], den = r[0] * s[1] - r[1] * s[0];
+        if (Math.abs(den) < 1e-18) continue;
+        var t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den, u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+        if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+      }
+      ts.sort(function (x, y) { return x - y; });
+      var out = [];
+      for (var j = 0; j + 1 < ts.length; j++) {
+        if (ts[j + 1] - ts[j] < 1e-12) continue;
+        var tm = (ts[j] + ts[j + 1]) / 2;
+        if (!inPoly([a[0] + (b[0] - a[0]) * tm, a[1] + (b[1] - a[1]) * tm], P)) continue;
+        var last = out[out.length - 1], A = [a[0] + (b[0] - a[0]) * ts[j], a[1] + (b[1] - a[1]) * ts[j]], B = [a[0] + (b[0] - a[0]) * ts[j + 1], a[1] + (b[1] - a[1]) * ts[j + 1]];
+        if (last && Math.hypot(last.b[0] - A[0], last.b[1] - A[1]) < 1e-12) last.b = B; else out.push(withAB(p, A, B));
+      }
+      return out;
+    }
+    if (p.k === 'arc' || p.k === 'circle') {
+      var a0 = p.k === 'arc' ? p.a0 : 0, a1 = p.k === 'arc' ? p.a1 : 360, angs = [a0, a1];
+      for (var e = 0; e < P.length; e++) {
+        var C = P[e], D2 = P[(e + 1) % P.length], dx = D2[0] - C[0], dy = D2[1] - C[1], fx = C[0] - p.c[0], fy = C[1] - p.c[1];
+        var qa = dx * dx + dy * dy, qb = 2 * (fx * dx + fy * dy), qc = fx * fx + fy * fy - p.r * p.r, disc = qb * qb - 4 * qa * qc;
+        if (qa < 1e-24 || disc < 0) continue;
+        [(-qb - Math.sqrt(disc)) / (2 * qa), (-qb + Math.sqrt(disc)) / (2 * qa)].forEach(function (t) {
+          if (t < 0 || t > 1) return;
+          var deg = Math.atan2(C[1] + dy * t - p.c[1], C[0] + dx * t - p.c[0]) * 180 / Math.PI;
+          while (deg < a0) deg += 360;
+          while (deg > a0 + 360) deg -= 360;
+          if (deg > a0 && deg < a1) angs.push(deg);
+        });
+      }
+      angs.sort(function (x, y) { return x - y; });
+      if (angs.length === 2) {
+        var tm0 = (a0 + a1) / 2 * Math.PI / 180;
+        return inPoly([p.c[0] + p.r * Math.cos(tm0), p.c[1] + p.r * Math.sin(tm0)], P) ? [p] : [];
+      }
+      var res = [];
+      for (var k2 = 0; k2 + 1 < angs.length; k2++) {
+        if (angs[k2 + 1] - angs[k2] < 1e-9) continue;
+        var mid = (angs[k2] + angs[k2 + 1]) / 2 * Math.PI / 180;
+        if (!inPoly([p.c[0] + p.r * Math.cos(mid), p.c[1] + p.r * Math.sin(mid)], P)) continue;
+        var prev = res[res.length - 1];
+        if (prev && Math.abs(prev.a1 - angs[k2]) < 1e-9) prev.a1 = angs[k2 + 1];
+        else { var q = {}; Object.keys(p).forEach(function (kk) { q[kk] = p[kk]; }); q.k = 'arc'; q.a0 = angs[k2]; q.a1 = angs[k2 + 1]; res.push(q); }
+      }
+      // (a circle cut open at its seam joins back up)
+      if (p.k === 'circle' && res.length > 1 && Math.abs(res[0].a0 - a0) < 1e-9 && Math.abs(res[res.length - 1].a1 - a1) < 1e-9) { var lastA = res.pop(); res[0].a0 = lastA.a0 - 360; }
+      return res;
+    }
+    var cc = p.c || (p.a && p.b ? [(p.a[0] + p.b[0]) / 2, (p.a[1] + p.b[1]) / 2] : null);
+    return !cc || inPoly(cc, P) ? [p] : [];
+  }
+  // a detail view's linework (its layer's lines, arcs, circles, ellipses; not its label or outline) clipped to P
+  function clipLayerToPoly(prims, L, P) {
+    for (var i = prims.length - 1; i >= 0; i--) {
+      var p = prims[i];
+      if (p.layer !== L || p.detailOutline != null || !/^(line|arc|circle|ellipse)$/.test(p.k)) continue;
+      Array.prototype.splice.apply(prims, [i, 1].concat(primInPoly(p, P)));
+    }
+  }
+  // (rfAD) the content of a view once drawing-sheet.js has worked it out (called through _.auxCenter): a detail with a
+  // Jagged outline takes its parent's linework out past the zig-zag (clipped to it in detailOutline), and the hatched
+  // regions with their own pattern are marked
+  function contentExtras(doc, v, ct, parentContent) {
+    if (!ct || !ct.proj) return;
+    if (v.kind === 'detail' && v.detail && v.detail.outline === 'jagged' && parentContent && v.parent != null) {
+      var par = findV(doc, v.parent), pc = par ? parentContent(par) : null, dt = v.detail;
+      if (pc && pc.proj) {
+        var amp = 1.25 * _.paperK(doc.units === 'in' ? 'in' : 'mm') / (ct.scale || _.viewScale(doc, v)), b0 = ct.proj.bounds;
+        if (dt.shape === 'profile' && dt.a && dt.b) {
+          var R = [Math.min(dt.a[0], dt.b[0]) - amp, Math.min(dt.a[1], dt.b[1]) - amp, Math.max(dt.a[0], dt.b[0]) + amp, Math.max(dt.a[1], dt.b[1]) + amp];
+          var o = cropContent({ frame: pc.frame, proj: pc.proj, caps: pc.caps, center: ct.center }, { type: 'rect', a: [R[0], R[1]], b: [R[2], R[3]] });
+          ct.proj = o.proj; ct.caps = o.caps;
+        } else {
+          ct.proj = clipProjection(pc.proj, dt.c, dt.r + amp);
+          if (pc.proj.pending) ct.proj.pending = true;
+          ct.clip = { c: dt.c.slice(), r: dt.r + amp };
+        }
+        ct.proj.bounds = b0;   // (the view's box stays the detail's circle / rectangle)
+        ct.jagged = true;
+      }
+    }
+    applyRegions(doc, v, ct);
+  }
+  // a clipper for sheet primitives added to view w after it was drawn: a jagged outline, a detail rectangle, a
+  // rectangular crop, a detail / crop circle
+  function viewClipper(w, k) {
+    var v = w.view, ct = w.content || {};
+    if (v.kind === 'detail' && v.detail && v.detail.outline === 'jagged') { var J = jaggedPts(w, k); return function (p) { return primInPoly(p, J); }; }
+    var R = ct.profile || (ct.crop && ct.crop.type === 'rect' ? [ct.crop.a[0], ct.crop.a[1], ct.crop.b[0], ct.crop.b[1]] : null);
+    if (R) { var a = w.toSheet([R[0], R[1]]), b = w.toSheet([R[2], R[3]]), Q = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]; return function (p) { return primInPoly(p, Q); }; }
+    if (w.clip) return function (p) { var q = clipSeg([p.a[0], p.a[1], p.b[0], p.b[1]], w.clip.c, w.clip.r); return q ? [withAB(p, [q[0], q[1]], [q[2], q[3]])] : []; };
+    return function (p) { return [p]; };
+  }
+  // sheet-time marks (from viewKindMarks, before breaks): each broken-out profile as a thin line, in its view and in a
+  // detail of it
+  function brokenOutMarks(doc, sheet, w, byId, k) {
+    var v = w.view, src = null;
+    if (w.pending) return;
+    if (w.content && w.content.brokenOut && w.content.brokenOut.length) src = w.content.brokenOut;
+    else if (v.kind === 'detail' && v.parent != null && byId[v.parent] && byId[v.parent].content && byId[v.parent].content.brokenOut) src = byId[v.parent].content.brokenOut;
+    if (!src || !src.length) return;
+    var clip = viewClipper(w, k);
+    src.forEach(function (c) {
+      var P = c.poly.map(w.toSheet);
+      for (var i = 0; i < P.length; i++) clip({ k: 'line', a: P[i], b: P[(i + 1) % P.length], layer: w.layer, style: 'thin', brokenOut: c.id, view: v.id }).forEach(function (q) { sheet.prims.push(q); });
+    });
+  }
+  // the hatch of the regions with their own pattern (drawing-render.js drew none for them): pattern, scale and angle
+  // from the region; SOLID is a close fill of hatch lines (0.12 mm apart), NONE nothing
+  function regionHatch(sheet, w, k) {
+    var ct = w.content;
+    if (!ct || !ct.caps || w.pending) return;
+    var hs = (_.HATCH || 2.5) * k, rims = null, clip = null;
+    ct.caps.forEach(function (cap, i) {
+      var ah = cap.areaHatch;
+      if (!ah) return;
+      clip = clip || viewClipper(w, k);
+      var loops = cap.loops.map(function (l) { return l.map(w.toSheet); }), n = 0, ang = 45 + ah.angle, segs = [];
+      if (ah.pattern === 'SOLID') segs = hatchLines(loops, 0.12 * k, ang, 0);
+      else if (ah.pattern !== 'NONE') segs = patternLines(loops, hs * ah.scale, ang, ah.pattern);
+      if (segs.length && ah.pattern !== 'SOLID') {
+        if (!rims) {
+          rims = [];
+          var pr = w.proj;
+          [pr.circles.visible, pr.circles.hidden, pr.arcs && pr.arcs.visible, pr.arcs && pr.arcs.hidden].forEach(function (list) { (list || []).forEach(function (c) { rims.push({ c: w.toSheet(c.c), r: c.r * w.scale }); }); });
+        }
+        segs = snapHatch(segs, loops, rims);
+      }
+      segs.forEach(function (h) {
+        clip({ k: 'line', a: [h[0], h[1]], b: [h[2], h[3]], layer: w.layer, style: 'hatch', body: cap.body, part: cap.part, region: i, areaHatch: ah.pattern }).forEach(function (q) { sheet.prims.push(q); n++; });
+      });
+      w.hatch = (w.hatch || 0) + n;
+      var he = { body: cap.body, part: cap.part, angle: ang, spacing: ah.pattern === 'SOLID' ? 0.12 * k : hs * ah.scale, lines: n, pattern: ah.pattern, region: i, areaHatch: true, scale: ah.scale };
+      if (w.hatches && w.hatches[i] && w.hatches[i].body === cap.body) w.hatches[i] = he; else (w.hatches || (w.hatches = [])).push(he);
+    });
+  }
+  // hatchRegions(sheetView) -> [{ index, p (a point inside, model units of the view), pattern, scale, angle (added to
+  // the pattern's 45°), areaHatch (its own pattern), body, part, loops, cap (index into the view's cut faces) }]: the
+  // hatched regions of a laid-out view, a cut face in several pieces giving one region per piece
+  function hatchRegions(w) {
+    var ct = w && w.content, out = [];
+    if (!ct || !ct.caps) return out;
+    ct.caps.forEach(function (cap, i) {
+      var he = (w.hatches || [])[i] || {}, ah = cap.areaHatch, st = cap.style || hatchStyle(cap.body);
+      splitRegions(cap.loops).forEach(function (sub) {
+        var p = interiorPoint(sub);
+        if (!p) return;
+        out.push({ index: out.length, cap: i, p: p, body: cap.body, part: cap.part, loops: sub,
+          pattern: ah ? ah.pattern : he.pattern || 'ANSI31', scale: ah ? ah.scale : 1, angle: ah ? ah.angle : (isFinite(st.angle) ? st.angle : 45) - 45, areaHatch: !!ah });
+      });
+    });
+    return out;
+  }
+  // regionAt(sheetView, p) -> the hatched region (an entry of hatchRegions) of view w under the sheet point p, or null
+  function regionAt(w, p) {
+    if (!w || !w.content || !w.content.caps || !w.fromSheet) return null;
+    if (w.clip && Math.hypot(p[0] - w.clip.c[0], p[1] - w.clip.c[1]) > w.clip.r) return null;
+    var q = w.fromSheet(p);
+    return hatchRegions(w).filter(function (g) { return inLoops(q, g.loops); })[0] || null;
+  }
   _.detailHalf = detailHalf; _.detailProfileContent = detailProfileContent; _.detailOpts = detailOpts; _.detailProfile = detailProfile; _.detailOutline = detailOutline;
   _.resolveSectionScale = resolveSectionScale; _.sectionRel = sectionRel; _.partialContent = partialContent; _.isTrueView = isTrueView;
   D.DETAIL_STYLES = DETAIL_STYLES; D.setSectionOptions = setSectionOptions; D.trueLength = trueLength; D.setDimType = setDimType; D.resolveSectionScale = resolveSectionScale;
@@ -1519,4 +2008,13 @@
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;
+  // (rfAD) drawing-sheet.js viewContent asks _.typedSection whether a view is cut along a path and then calls
+  // _.pathContent for it: a view with broken-out sections is worked out here the same way; _.auxCenter runs on every
+  // view's content, and goes on to contentExtras (jagged detail, Area Hatch regions)
+  _.typedSection = function (doc, v, pc) { return typedSection(doc, v, pc) || hasBrokenOut(v); };
+  _.pathContent = function (doc, v, mesh, pc) { return hasBrokenOut(v) ? brokenOutContent(doc, v, mesh) : pathContent(doc, v, mesh, pc); };
+  _.auxCenter = function (doc, v, ct, pc) { auxCenter(doc, v, ct, pc); contentExtras(doc, v, ct, pc); };
+  D.addBrokenOut = addBrokenOut; D.setBrokenOut = setBrokenOut; D.clearBrokenOut = clearBrokenOut; D.brokenOutPolygon = boPolygon; D.brokenOutOf = brokenOutOf;
+  D.setAreaHatch = setAreaHatch; D.hatchRegions = hatchRegions; D.hatchRegionAt = regionAt; D.AREA_PATTERNS = AREA_PATTERNS; D.interiorPoint = interiorPoint;
+  _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops;
 })(Drawing, Drawing._);

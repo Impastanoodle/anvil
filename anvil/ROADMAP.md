@@ -111,7 +111,7 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Exploded View: explode steps (pick or drag along an axis), explode lines, ExplView in the ConfigurationManager, Explode / Collapse and animation (cloud-2026-09-25l)
 - [ ] Exploded views in drawings: a per-view "Show in exploded state" option in drawing.js using the `Assembly.explodedBodies` hook; exploded views per configuration; rotation in explode steps
 - [x] Drawings: auxiliary views, half / aligned / offset sections, broken views, crop views, detail profile / outline styles, partial sections, True dimensions (2026-10-12c–g)
-- [ ] Drawings: broken-out section
+- [x] Drawings: broken-out section (2026-10-12h)
 - [x] Drawings: centre marks (single, linear, circular, extension lines) and centrelines with Auto insert on view creation (Document Properties), hole callouts read from the solid (THRU / depth / counterbore / countersink, 4X), ordinate and baseline dimensions, chamfer dimensions, dimension dragging and the Dimension PropertyManager (tolerance bilateral / limit / symmetric, precision, text, flip arrows; a model item's value drives the part) (cloud-2026-09-25m)
 - [x] Drawings: manual Balloon and balloon dragging, stacked balloons, balloon QTY text (cloud-2026-09-25m)
 - [x] Drawings: notes with leaders and property links, surface finish, datum and geometric tolerance symbols (2026-10-12c)
@@ -119,10 +119,10 @@ Noticed while reading the code in cloud-2026-09-25h; one line each, roughly in o
 - [x] Drawings: editable BOM — columns bound to custom properties from each part (Material, Mass, Vendor, any property; add / hide / retitle), Top-level only vs Parts only (multi-body parts listed by body with their own material and mass), BOM on part drawings too, title block fields linked to properties ($PRPSHEET / $PRP) (cloud-2026-09-25j)
 - [x] Drawings: indented BOM and Parts only across sub-assemblies (`Drawing.bomRows` calls `Assembly.bom(model, build, { type })`; BOM Type Top-level only / Indented / Parts only) (cloud-2026-09-26r)
 - [x] Drawings: revision table (2026-10-12c)
-- [ ] Drawings: general tables
+- [x] Drawings: general tables (2026-10-12h)
 - [ ] Drawings: section views that exclude selected components (pins, fasteners — SolidWorks "Excluded components"), hatch pattern editing per region
 - [x] Drawings: multiple sheets, title-block custom properties (2026-10-12c–d)
-- [ ] Drawings: editable sheet formats, drawing templates, a separate `.drawing` document that references the part file
+- [x] Drawings: editable sheet formats, drawing templates, a separate `.drawing` document that references the part file (2026-10-12h)
 - [x] Custom properties and materials: material library in classes (`materials.js`: density, E, Poisson, tensile / yield, appearance), Edit Material dialog, Material row in the FeatureManager, per-body materials, viewport colour follows the material, Mass Properties with material densities; File ▸ Properties (Summary, Custom, Configuration Specific, "SW-Material" / "SW-Mass" links) on parts and assemblies, round-tripped through the script; drawings and BOMs read them (cloud-2026-09-25j)
 - [ ] Surfaces (extruded / revolved / lofted surfaces, knit, thicken), Weldments, Mold Tools, Direct Editing (move face) — the greyed tabs. Surfaces, Mold Tools and Direct Editing are unblocked by the OpenCascade kernel (open shells, sewing, thicken, face moves)
 - [x] Evaluate: Check (open / non-manifold edges, zero-area faces, self-intersections, click-to-highlight), Zebra Stripes (shader overlay, stripe count / direction / sharpness), Section Properties (area, centroid, Ixx / Iyy / Ixy, principal axes of a face or sketch), Draft Analysis (positive / negative / requires draft / straddle), Clearance Verification (minimum distance and closest points) and Interference Detection limited to selected components (`evaluate.js`, `ui-evaluate.js`) (cloud-2026-09-25n)
