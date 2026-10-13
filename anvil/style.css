@@ -992,3 +992,11 @@ body.splitting #viewport { pointer-events: none; }
 .lvl-pop-row.off { color: var(--muted); }
 .lvl-pop-num { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--line-2); }
 .lvl-pop-num input { width: 70px; font: inherit; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); }
+
+/* rfAR: SketchXpert results and Manual Repair rows, Scan Equal sets */
+#pm .xp-sol .xp-count { font-size: 12px; margin: 2px 0 4px; color: var(--muted, #666); }
+#pm #xp-manual .rel-row { display: flex; align-items: center; gap: 6px; }
+#pm #xp-manual .rel-row span { flex: 1; }
+#pm #xp-manual .xp-del { font-size: 11px; padding: 1px 6px; }
+#pm #scan-equal .rel-row { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+#pm #scan-equal .rel-row em { margin-left: auto; font-size: 11px; }

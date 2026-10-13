@@ -1594,4 +1594,128 @@
   UI.cmdMoveEntities = function () { transformTool('move'); }; UI.cmdCopyEntities = function () { transformTool('copy'); };
   UI.cmdRotateEntities = function () { transformTool('rotate'); }; UI.cmdScaleEntities = function () { transformTool('scale'); };
   UI.cmdStretchEntities = function () { transformTool('stretch'); };
+
+  // ------------------------------------------------------------------ rfAT: Jog Line (Tools ▸ Sketch Tools ▸ Jog Line)
+  // As SolidWorks: click a line where the jog starts, move the mouse along the line and off it (the jog's width and
+  // depth follow), click to place. Or type Width / Depth in the PM and press ✓. The line becomes five connected
+  // lines: the two outer pieces Collinear, the jog's top Parallel to them and its sides Perpendicular, all joined by
+  // Coincident; the line's relations stay on its pieces (its end relations on the matching end), its length
+  // dimension goes. UI.jogLine(i, t1, t2, depth) is the same without the mouse (t along the line from its start).
+  function jogGeom(e, t1, t2, depth) {
+    var A = [e.x1, e.y1], B = [e.x2, e.y2], L = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (!(L > 1e-12)) return null;
+    var u = [(B[0] - A[0]) / L, (B[1] - A[1]) / L], n = [-u[1], u[0]];
+    var a = Math.min(t1, t2), b = Math.max(t1, t2);
+    if (!(a > 1e-9 && b < L - 1e-9 && b - a > 1e-9) || !(Math.abs(depth) > 1e-9)) return null;
+    function at(t, h) { return [+(A[0] + u[0] * t + n[0] * h).toPrecision(12), +(A[1] + u[1] * t + n[1] * h).toPrecision(12)]; }
+    return { A: A, B: B, J1: at(a, 0), H1: at(a, depth), H2: at(b, depth), J2: at(b, 0), L: L, u: u, n: n };
+  }
+  function jogRound(x, h) {
+    if (!(h > 0) || !isFinite(x)) return x;
+    for (var k = Math.ceil(Math.log10(2 * h)); k > -12; k--) {
+      var s1 = Math.pow(10, k), q = Math.round(x / s1) * s1;
+      if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, -k));
+      var s2 = s1 / 2;
+      q = Math.round(x / s2) * s2;
+      if (Math.abs(q - x) <= h) return +q.toFixed(Math.max(0, 1 - k));
+    }
+    return x;
+  }
+  UI.sketchNiceRound = UI.sketchNiceRound || jogRound;
+  function jogEntities(e, g) {
+    function line(p, q) { var l = { t: 'line', x1: p[0], y1: p[1], x2: q[0], y2: q[1] }; if (e.construction) l.construction = true; if (e.layer != null) l.layer = e.layer; return l; }
+    return [line(g.A, g.J1), line(g.J1, g.H1), line(g.H1, g.H2), line(g.H2, g.J2), line(g.J2, g.B)];
+  }
+  function jogApply(f, i, t1, t2, depth) {
+    var e = f.entities[i];
+    if (!e || e.t !== 'line' || e.infinite || e.blk != null) return { ok: false, error: 'Jog Line needs a sketch line.' };
+    var g = jogGeom(e, t1, t2, depth);
+    if (!g) return { ok: false, error: 'The jog must lie inside the line and have a width and a depth.' };
+    var ls = jogEntities(e, g), n0 = f.entities.length;
+    // the line keeps its first piece; its second end's relations go to the last piece
+    e.x2 = g.J1[0]; e.y2 = g.J1[1];
+    ls.slice(1).forEach(function (l) { f.entities.push(l); });
+    var s1 = n0, top = n0 + 1, s2 = n0 + 2, last = n0 + 3;
+    if (f.rels) f.rels = f.rels.filter(function (rel) { return rel.refs.indexOf(i + '.mid') < 0; });
+    (f.rels || []).forEach(function (rel) { rel.refs = rel.refs.map(function (r) { return String(r) === i + '.p2' ? last + '.p2' : r; }); });
+    if (f.dims) { f.dims = f.dims.filter(function (d) { return d.e !== i; }); if (!f.dims.length) delete f.dims; }
+    var made = [['coincident', [i + '.p2', s1 + '.p1']], ['coincident', [s1 + '.p2', top + '.p1']], ['coincident', [top + '.p2', s2 + '.p1']], ['coincident', [s2 + '.p2', last + '.p1']],
+      ['collinear', [String(i), String(last)]], ['parallel', [String(top), String(i)]], ['perpendicular', [String(s1), String(i)]], ['perpendicular', [String(s2), String(i)]]];
+    var n = 0;
+    made.forEach(function (m) { var r = S.addRelation(f, m[0], m[1], { rejectOver: true }); if (r && r.ok) n++; });
+    S.solve(f);
+    return { ok: true, lines: [i, s1, top, s2, last], relations: n };
+  }
+  UI.jogLine = function (i, t1, t2, depth) {
+    var f = UI.activeSketchFeature();
+    if (!f) return { ok: false, error: 'Open a sketch first.' };
+    var r = step(function () { return jogApply(f, i, t1, t2, depth); }, true);
+    if (r.ok) changed();
+    return r;
+  };
+  function cmdJogLine() {
+    var f = sketch();
+    if (!f) return;
+    var v = { w: 0, d: 0 }, st = { i: -1, t1: 0 };
+    function lineAt(mx, my) {
+      var px = pxWorld(mx, my), uv = toUV(mx, my), best = -1, bd = 8 * px;
+      if (!uv) return null;
+      f.entities.forEach(function (e, i) {
+        if (!e || e.t !== 'line' || e.infinite || e.blk != null) return;
+        var A = [e.x1, e.y1], B = [e.x2, e.y2], L2 = (B[0] - A[0]) * (B[0] - A[0]) + (B[1] - A[1]) * (B[1] - A[1]);
+        if (!(L2 > 0)) return;
+        var t = Math.max(0, Math.min(1, ((uv[0] - A[0]) * (B[0] - A[0]) + (uv[1] - A[1]) * (B[1] - A[1])) / L2));
+        var d = Math.hypot(A[0] + (B[0] - A[0]) * t - uv[0], A[1] + (B[1] - A[1]) * t - uv[1]);
+        if (d < bd) { bd = d; best = i; }
+      });
+      return best >= 0 ? { i: best, uv: uv } : null;
+    }
+    // where uv is along line e (t from its start) and off it (h, to its left), each rounded to the roundest value
+    // inside the pixel (as the sketcher rounds a free point: 10 rather than 10.0371)
+    function along(e, uv, mx, my) {
+      var L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1), u = [(e.x2 - e.x1) / L, (e.y2 - e.y1) / L], h = mx != null ? 0.5 * pxWorld(mx, my) * 1.05 : 0;
+      return { t: jogRound((uv[0] - e.x1) * u[0] + (uv[1] - e.y1) * u[1], h), h: jogRound(-(uv[0] - e.x1) * u[1] + (uv[1] - e.y1) * u[0], h) };
+    }
+    function hint() { UI.setStatus(st.i < 0 ? 'Jog Line: click a line where the jog starts.' : 'Jog Line: move along the line and off it, then click to place the jog (or type Width and Depth and press ✓).'); }
+    function preview(uv, mx, my) {
+      var e = st.i >= 0 ? f.entities[st.i] : null;
+      if (!e) { App.tempEntities = []; UI.updateTemp(); return; }
+      var t2 = st.t1 + (+v.w || 0), h = +v.d || 0;
+      if (uv) { var q = along(e, uv, mx, my); t2 = q.t; h = q.h; v.w = Math.round((t2 - st.t1) * 1e6) / 1e6; v.d = Math.round(h * 1e6) / 1e6; UI.renderPM(); }
+      var g = jogGeom(e, st.t1, t2, h);
+      App.tempEntities = g ? jogEntities(e, g) : [];
+      UI.updateTemp();
+    }
+    function place(t2, h) {
+      var r = step(function () { return jogApply(f, st.i, st.t1, t2, h); }, true);
+      if (!r.ok) { UI.toast(r.error); return false; }
+      st.i = -1; clearPreview(); changed();
+      UI.setStatus('Jog placed (' + r.relations + ' relations). Click another line, or ✓ to finish.');
+      return true;
+    }
+    UI.openPM({
+      title: 'Jog Line', icon: 'jogLine', values: v, noFocus: true,
+      message: 'Click a line where the jog starts, then move along and off the line and click to place it.',
+      command: {
+        onSketchMove: function (uv, mx, my) { if (st.i >= 0) preview(uv || toUV(mx, my), mx, my); },
+        onSketchPoint: function (uv, mx, my) {
+          if (st.i < 0) {
+            var hit = lineAt(mx, my);
+            if (!hit) { UI.setStatus('Jog Line: click on a sketch line.'); return; }
+            st.i = hit.i; st.t1 = along(f.entities[hit.i], uv || hit.uv, mx, my).t;
+            hint();
+            return;
+          }
+          var q = along(f.entities[st.i], uv || toUV(mx, my), mx, my);
+          place(q.t, q.h);
+        }
+      },
+      groups: [{ title: 'Jog', fields: [{ type: 'number', key: 'w', label: 'Width', unit: 'u' }, { type: 'number', key: 'd', label: 'Depth', unit: 'u' }] }],
+      onChange: function () { preview(null); },
+      onOK: function () { if (st.i >= 0 && !place(st.t1 + (+v.w || 0), +v.d || 0)) return false; },
+      onClose: clearPreview
+    });
+    hint();
+  }
+  UI.cmdJogLine = cmdJogLine;
 })();

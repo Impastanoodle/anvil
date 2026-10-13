@@ -123,7 +123,7 @@
     var index = kind === 'rel' ? f.rels.indexOf(d) : f.dims.indexOf(d), kt, value;
     if (kind === 'rel') {
       if (!S.TYPES[d.type] || !S.TYPES[d.type].dim) return null;
-      kt = d.type === 'angle' ? 'angle' : d.type === 'arclength' ? 'arclen' : 'len';
+      kt = d.type === 'angle' || d.type === 'runangle' ? 'angle' : d.type === 'arclength' ? 'arclen' : 'len';   // rfAQ: an angular running value is an angle
       value = d.driven || d.v == null ? S.measure(f, d.type, d.refs, d.dir, d.sup, d.ac) : d.v;
     } else {
       var e = f.entities[d.e], g = e && K.dimGeometry(e, d);
@@ -778,22 +778,28 @@
   // dimension scheme (Baseline / Chain / Ordinate: SketchSolver's ordinate block) and datum of each direction (the origin unless a point is picked: click the
   // datum box, then a point), where the dimensions go (below / above, left / right), all entities or the selected
   // ones. Calculate applies it (one undo step) and reports; Cancel puts the sketch back as it was.
-  function cmdFullyDefineSketch() {
+  // rfAQ: mode 'autodim' is Tools ▸ Dimensions ▸ Autodimension: the same engine with dimensions only (no relations
+  // group), SolidWorks' Entities to Dimension / Horizontal Dimensions / Vertical Dimensions groups. A datum is a point,
+  // the origin or a line square to its direction (a vertical line for the horizontal dimensions).
+  function cmdFullyDefineSketch(mode) {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return null; }
     UI.setTool('select');
+    var auto = mode === 'autodim';
     var sel0 = selectedEntities();
-    var v = { scope: sel0.length ? 'selected' : 'all', relations: true, horizontal: true, vertical: true, dims: true, hScheme: 'baseline', vScheme: 'baseline', hPlace: 'below', vPlace: 'left' };
+    var v = { scope: sel0.length ? 'selected' : 'all', relations: !auto, horizontal: true, vertical: true, dims: true, hScheme: 'baseline', vScheme: 'baseline', hPlace: 'below', vPlace: 'left' };
+    if (auto) { v.horizontalDims = true; v.verticalDims = true; }
     var datum = { h: 'O', v: 'O' }, active = null, snap = null, applied = null;
     function snapshot() { return { entities: clone(f.entities), rels: f.rels ? clone(f.rels) : null, dims: f.dims ? clone(f.dims) : null }; }
     function restore(s) { f.entities = clone(s.entities); if (s.rels) f.rels = clone(s.rels); else delete f.rels; if (s.dims) f.dims = clone(s.dims); else delete f.dims; }
     function datumName(r) { return r === 'O' ? 'Origin' : S.refName(f, r); }
     var spec = {
-      title: 'Fully Define Sketch', icon: 'fullyDefine', values: v,
+      title: auto ? 'Autodimension' : 'Fully Define Sketch', icon: auto ? 'autodim' : 'fullyDefine', values: v,
       command: { onSketchPoint: function (uv, mx, my) {
         if (!active) { UI.setStatus('Click the Horizontal or Vertical datum box first, then a point (or the origin).'); return; }
         var r = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
-        if (!r || (r !== 'O' && S.refKind(f, r) !== 'point')) { UI.setStatus('Pick a point (an end point, a centre) or the origin as the datum.'); return; }
+        var lineOk = r && S.ordKind(f, r, active === 'h' ? 'x' : 'y') === 'line';   // rfAQ: a datum line square to the direction
+        if (!r || (r !== 'O' && S.refKind(f, r) !== 'point' && !lineOk)) { UI.setStatus('Pick a point (an end point, a centre), a ' + (active === 'h' ? 'vertical' : 'horizontal') + ' line or the origin as the datum.'); return; }
         datum[active] = r; active = null;
         render();
       } },
@@ -804,9 +810,10 @@
     };
     function opts() {
       return {
-        relations: v.relations && (v.horizontal || v.vertical) ? { horizontal: !!v.horizontal, vertical: !!v.vertical } : false,
+        relations: !auto && v.relations && (v.horizontal || v.vertical) ? { horizontal: !!v.horizontal, vertical: !!v.vertical } : false,
         dims: !!v.dims, hScheme: v.hScheme, vScheme: v.vScheme, hDatum: datum.h, vDatum: datum.v, hPlace: v.hPlace, vPlace: v.vPlace,
         entities: v.scope === 'selected' && sel0.length ? sel0 : null,
+        skipH: auto && !v.horizontalDims, skipV: auto && !v.verticalDims,
         minGap: 34 * (UI.cam.scale || 0)   // stacked dimension lines at least 34 px apart at the current zoom: their labels clear of each other
       };
     }
@@ -827,6 +834,29 @@
     function render() {
       var an = analysis(f);
       if (!applied) { spec.message = S.STATUS_TEXT[an.status] + ' (' + an.dof + ' degree' + (an.dof === 1 ? '' : 's') + ' of freedom). Set the options, then Calculate.'; spec.messageOk = an.status === 'full'; }
+      if (auto) {
+        var SCH = [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']];
+        spec.groups = [
+          { title: 'Entities to Dimension', fields: [
+            { type: 'radio', key: 'scope', options: [['all', 'All entities in sketch'], ['selected', 'Selected entities']], disabledOption: function (o) { return o === 'selected' && !sel0.length ? 'Select entities before opening Autodimension.' : null; } },
+            { type: 'buttons', buttons: [{ label: 'Apply', onclick: function () { calculate(); } }] }
+          ] },
+          { title: 'Horizontal Dimensions', fields: [
+            { type: 'check', key: 'horizontalDims', label: 'Horizontal dimensions' },
+            { type: 'select', key: 'hScheme', label: 'Scheme', options: SCH },
+            { type: 'pick', label: 'Origin (datum)', icon: 'origin', value: function () { return datumName(datum.h); }, active: function () { return active === 'h'; }, onActivate: function () { active = active === 'h' ? null : 'h'; render(); } },
+            { type: 'radio', key: 'hPlace', label: 'Dimension placement', options: [['above', 'Above sketch'], ['below', 'Below sketch']] }
+          ] },
+          { title: 'Vertical Dimensions', fields: [
+            { type: 'check', key: 'verticalDims', label: 'Vertical dimensions' },
+            { type: 'select', key: 'vScheme', label: 'Scheme', options: SCH },
+            { type: 'pick', label: 'Origin (datum)', icon: 'origin', value: function () { return datumName(datum.v); }, active: function () { return active === 'v'; }, onActivate: function () { active = active === 'v' ? null : 'v'; render(); } },
+            { type: 'radio', key: 'vPlace', label: 'Dimension placement', options: [['left', 'Left of sketch'], ['right', 'Right of sketch']] }
+          ] }
+        ];
+        UI.openPM(spec);
+        return;
+      }
       spec.groups = [
         { title: 'Entities to Fully Define', fields: [
           { type: 'radio', key: 'scope', options: [['all', 'All entities in sketch'], ['selected', 'Selected entities']], disabledOption: function (o) { return o === 'selected' && !sel0.length ? 'Select entities before opening Fully Define Sketch.' : null; } },
@@ -852,7 +882,8 @@
     render();
     return spec;
   }
-  UI.cmdFullyDefineSketch = cmdFullyDefineSketch;
+  UI.cmdFullyDefineSketch = function () { return cmdFullyDefineSketch(); };
+  UI.cmdAutodimension = function () { return cmdFullyDefineSketch('autodim'); };
 
   // ------------------------------------------------------------------ ordinate dimensions (sketch-ordinate)
   // Smart Dimension flyout ▸ Horizontal / Vertical Ordinate Dimension. Click the zero (a point, the origin, a circle's
@@ -1049,9 +1080,18 @@
   function cmdOrdinateDim(axis) {
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return null; }
+    // rfAQ: axis 'auto' is SolidWorks' Ordinate Dimension: the direction follows where the values go (above / below the
+    // zero: horizontal; beside it: vertical)
+    var autoAxis = axis === 'auto';
     axis = axis === 'y' ? 'y' : 'x';
     UI.setTool('select');
-    var name = axis === 'x' ? 'Horizontal Ordinate Dimension' : 'Vertical Ordinate Dimension', square = axis === 'x' ? 'vertical' : 'horizontal';
+    var name = autoAxis ? 'Ordinate Dimension' : axis === 'x' ? 'Horizontal Ordinate Dimension' : 'Vertical Ordinate Dimension', square = axis === 'x' ? 'vertical' : 'horizontal';
+    function pickAxis(uv) {
+      if (!autoAxis || !st.zero || !uv) return;
+      var okX = !!S.ordKind(f, st.zero, 'x'), okY = !!S.ordKind(f, st.zero, 'y'), z = S.ordAnchor(f, st.zero, 'x', null) || [0, 0];
+      axis = okX && okY ? (Math.abs(uv[1] - z[1]) >= Math.abs(uv[0] - z[0]) ? 'x' : 'y') : okX ? 'x' : 'y';
+      square = axis === 'x' ? 'vertical' : 'horizontal';
+    }
     var st = { zero: null, at: null, ord: null, n: 0 };
     function msg() {
       return !st.zero ? 'Click the zero: a point, a circle\'s centre, the origin or a ' + square + ' line.'
@@ -1060,10 +1100,10 @@
     }
     function end() { App.tempOrd = null; App.dimsStale = true; if (UI.requestRender) UI.requestRender(); }
     var spec = {
-      title: name, icon: axis === 'x' ? 'ordinateH' : 'ordinateV', values: {}, keepSelection: true,
+      title: name, icon: autoAxis ? 'ordinateDim' : axis === 'x' ? 'ordinateH' : 'ordinateV', values: {}, keepSelection: true,
       command: {
         onSketchPoint: function (uv, mx, my) { click(uv, UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null); },
-        onSketchMove: function (uv) { if (st.zero && st.at == null && App.tempOrd) { App.tempOrd.at = uv[axis === 'x' ? 1 : 0]; App.dimsStale = true; } }
+        onSketchMove: function (uv) { if (st.zero && st.at == null && App.tempOrd) { pickAxis(uv); App.tempOrd.axis = axis; App.tempOrd.at = uv[axis === 'x' ? 1 : 0]; App.dimsStale = true; } }
       },
       groups: [],
       onOK: end, onCancel: end
@@ -1082,10 +1122,12 @@
     function click(uv, ref) {
       if (!st.zero) {
         if (!ref) { UI.setStatus('Nothing there: ' + msg()); return; }
+        if (autoAxis && !S.ordKind(f, ref, 'x') && S.ordKind(f, ref, 'y')) axis = 'y';
         if (!S.ordKind(f, ref, axis)) { UI.toast('The zero of a ' + (axis === 'x' ? 'horizontal' : 'vertical') + ' ordinate set is a point, a circle\'s centre or a ' + square + ' line.'); return; }
         st.zero = ref;
         App.tempOrd = { zero: ref, axis: axis, at: uv ? uv[axis === 'x' ? 1 : 0] : null };
       } else if (st.at == null) {
+        pickAxis(uv);
         st.at = niceRound(uv[axis === 'x' ? 1 : 0], 0.5 * ((UI.cam && UI.cam.scale) || 0.01));
         st.ord = S.newOrdinateId(f);
         App.tempOrd = { zero: st.zero, axis: axis, at: st.at, ord: st.ord };
@@ -1201,5 +1243,447 @@
       var it = dimInfo({ d: d });
       return { name: fullName(info.f, d), value: it.value, shown: it.shown, label: dimLabelText(d, it.value, it.kindText), tol: d.tol || null, prec: d.prec != null ? d.prec : null, prefix: d.prefix || '', suffix: d.suffix || '', show: d.show || null, ac: d.ac || null, driven: !!d.driven };
     };
+  }
+
+  // ------------------------------------------------------------------ rfAQ: Chamfer, Path Length, Angular Running dimensions
+  // SolidWorks' Smart Dimension flyout ▸ Chamfer Dimension (the chamfer line, the line next to it, then where the label
+  // goes: "0.100 X 45°", both values drive: the Modify box takes the distance, the Dimension PM the angle too), Path
+  // Length Dimension (pick the lines and arcs of a path or one and Select Chain, ✓, then the label; the total length
+  // drives the chain) and Angular Running Dimension (the 0° line near its vertex end, where the arcs go, then every line or
+  // point: each angle counter-clockwise from the datum, one set; the "0°" selects the set, Delete deletes it). The
+  // solver side is SketchSolver.addChamferDim / addPathLength / addRunningAngle (sketch-solver.js, rfAQ).
+  var RFAQ = { chamfer: 1, pathlength: 1, runangle: 1 };
+  function lineMid(L) { return [(L.a[0] + L.b[0]) / 2, (L.a[1] + L.b[1]) / 2]; }
+  function uvOf(f, ref) { return S.refPoint(f, ref) || (S.refCurve(f, ref) || {}).c || null; }
+  // where a chamfer / path-length leader starts: the chamfer line's middle, the first path entity's middle
+  function rfaqAnchor(f, rel) {
+    var r0 = rel.refs[0], c = S.refCurve(f, r0);
+    if (!c) return null;
+    if (c.kind === 'line') return lineMid(c);
+    var p = S.parseRef(r0), e = p && !p.o && f.entities[p.e], a = e && e.t === 'arc' ? (e.a0 + e.a1) / 2 * Math.PI / 180 : Math.PI / 4;
+    return [c.c[0] + c.r * Math.cos(a), c.c[1] + c.r * Math.sin(a)];
+  }
+  // the default label place: 28 px off the anchor, square to the chamfer line, away from the line next to it
+  function rfaqDefaultLo(f, rel) {
+    var A = rfaqAnchor(f, rel), c = S.refCurve(f, rel.refs[0]), s = (UI.cam && UI.cam.scale) || 0.1;
+    if (!A || !c) return [0, 0];
+    var n = [0, 1];
+    if (c.kind === 'line') {
+      var dx = c.b[0] - c.a[0], dy = c.b[1] - c.a[1], L = Math.hypot(dx, dy) || 1;
+      n = [-dy / L, dx / L];
+      var o = rel.refs[1] ? S.refCurve(f, rel.refs[1]) : null;
+      if (o && o.kind === 'line') { var m = lineMid(o); if ((m[0] - A[0]) * n[0] + (m[1] - A[1]) * n[1] > 0) n = [-n[0], -n[1]]; }
+    } else n = [Math.SQRT1_2, Math.SQRT1_2];
+    return [n[0] * 28 * s, n[1] * 28 * s];
+  }
+  function rfaqLabel(f, rel) {
+    var value = rel.driven || rel.v == null ? S.measure(f, rel.type, rel.refs) : rel.v, lab;
+    if (rel.type === 'runangle') lab = dimLabelText(rel, value, 'angle');
+    else if (rel.type === 'chamfer') {
+      // SolidWorks' "0.100 X 45°": the distance (with its tolerance), X, the angle; text before / after round the pair
+      var ang = S.chamferShownAngle(f, rel), core = dimLabelText(Object.assign({}, rel, { prefix: '', suffix: '' }), value, 'len');
+      var pre = rel.prefix ? String(rel.prefix).replace(/\s*$/, ' ') : '', suf = rel.suffix ? String(rel.suffix).replace(/^\s*/, ' ') : '';
+      lab = pre + core + (ang != null ? ' X ' + fmtVal(ang, rel.prec, true) + '°' : '') + suf;
+    } else lab = dimLabelText(rel, value, 'len');
+    return rel.driven ? '(' + lab + ')' : lab;
+  }
+  function unit2(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; }
+  // a leader from the anchor (arrow on the geometry) to the label, with a short shoulder; the text beside it
+  function leaderScreen(f, pl, rel) {
+    var A = rfaqAnchor(f, rel);
+    if (!A) return null;
+    var lo = Array.isArray(rel.lo) ? rel.lo : rfaqDefaultLo(f, rel), T = [A[0] + lo[0], A[1] + lo[1]];
+    var sA = scr(pl, A), sT = scr(pl, T), right = sT[0] >= sA[0], sh = [sT[0] + (right ? 10 : -10), sT[1]];
+    var out = { lines: [[sA, sT], [sT, sh]], arrows: [{ tip: sA, dir: unit2(sT, sA) }], label: rfaqLabel(f, rel) };
+    out.text = { x: sh[0] + (right ? 3 : -3), y: sh[1] + (UI.DIM_CAP || 9.4) / 2, anchor: right ? 'start' : 'end' };
+    out.laid = true;
+    return out;
+  }
+  // an angular running member: the arc from the datum round to it at radius off, an arrow at its end, an extension line
+  // out along it, the value past the arc's end
+  function runScreen(f, pl, rel) {
+    var V = uvOf(f, rel.refs[0]), Dp = uvOf(f, rel.refs[1]), T = uvOf(f, rel.refs[2]);
+    if (!V || !Dp || !T) return null;
+    var s = (UI.cam && UI.cam.scale) || 0.1, R = rel.off != null && rel.off > 1e-9 ? rel.off : 40 * s;
+    var a0 = Math.atan2(Dp[1] - V[1], Dp[0] - V[0]), value = rel.driven || rel.v == null ? S.measure(f, 'runangle', rel.refs) : rel.v;
+    var sw = (S.measure(f, 'runangle', rel.refs) || 0) * Math.PI / 180, aT = a0 + sw;
+    function at(a, r) { return scr(pl, [V[0] + r * Math.cos(a), V[1] + r * Math.sin(a)]); }
+    var n = Math.max(2, Math.ceil(sw / (Math.PI / 36))), pts = [], out = { lines: [], arrows: [] };
+    for (var i = 0; i <= n; i++) pts.push(at(a0 + sw * i / n, R));
+    for (var j = 0; j < n; j++) out.lines.push([pts[j], pts[j + 1]]);
+    out.arrows.push({ tip: pts[n], dir: unit2(pts[n - 1], pts[n]) });
+    var dT = Math.hypot(T[0] - V[0], T[1] - V[1]), gap = 2 * s, ext = 4 * s;
+    if (R > dT + gap) out.lines.push([at(aT, dT + gap), at(aT, R + ext)]);
+    else if (R < dT - gap) out.lines.push([at(aT, R - ext), at(aT, dT - gap)]);
+    var tp = at(aT, R + 14 * s);
+    out.label = dimLabelText(rel, value, 'angle');
+    if (rel.driven) out.label = '(' + out.label + ')';
+    out.text = { x: tp[0], y: tp[1] + (UI.DIM_CAP || 9.4) / 2, anchor: 'middle' };
+    out.laid = true;
+    return out;
+  }
+  var baseScreenAQ = UI.relDimScreenExt, basePlaceAQ = UI.relDimPlacementExt;
+  UI.relDimScreenExt = function (f, pl, rel) {
+    if (rel && RFAQ[rel.type]) return rel.type === 'runangle' ? runScreen(f, pl, rel) : leaderScreen(f, pl, rel);
+    return baseScreenAQ ? baseScreenAQ.apply(this, arguments) : null;
+  };
+  // a label dragged: a chamfer / path length's label goes where it is dropped; a running set's arcs follow the cursor's
+  // distance from the vertex (all the set's members)
+  UI.relDimPlacementExt = function (f, rel, uv) {
+    if (rel && RFAQ[rel.type]) {
+      if (!uv) return {};
+      var s = (UI.cam && UI.cam.scale) || 0.01;
+      if (rel.type === 'runangle') {
+        var V = uvOf(f, rel.refs[0]);
+        if (!V) return {};
+        var off = niceRound(Math.hypot(uv[0] - V[0], uv[1] - V[1]), 0.5 * s);
+        if (rel.run != null) (f.rels || []).forEach(function (r) { if (r.type === 'runangle' && r.run === rel.run) r.off = off; });
+        rel.off = off;
+        return { off: off };
+      }
+      var A = rfaqAnchor(f, rel);
+      if (!A) return {};
+      rel.lo = [niceRound(uv[0] - A[0], 0.5 * s), niceRound(uv[1] - A[1], 0.5 * s)];
+      return {};
+    }
+    return basePlaceAQ ? basePlaceAQ.apply(this, arguments) : null;
+  };
+  // the "0°" of each running set, in the ordinate zeros' layer (a click selects the set, Delete deletes it)
+  function drawRunZeros() {
+    var layer = ordLayerEl(), f = UI.activeSketchFeature();
+    if (!layer || !f || App.mode !== 'sketch' || !S.runningSets) return;
+    var pl = UI.activePlane(), sets = S.runningSets(f), s = (UI.cam && UI.cam.scale) || 0.1;
+    var tmp = runPM && UI.pmSpec && UI.pmSpec() === runPM && App.tempRun ? App.tempRun : null, list = [];
+    Object.keys(sets).forEach(function (id) { list.push(sets[id]); });
+    if (tmp && tmp.vertex && tmp.datum && (!tmp.run || !sets[tmp.run])) list.push({ id: '', vertex: tmp.vertex, datum: tmp.datum, off: tmp.off, members: [], temp: true });
+    list.forEach(function (set) {
+      var V = uvOf(f, set.vertex), Dp = uvOf(f, set.datum);
+      if (!V || !Dp) return;
+      var R = set.off != null && set.off > 1e-9 ? set.off : 40 * s, a = Math.atan2(Dp[1] - V[1], Dp[0] - V[0]);
+      var p = scr(pl, [V[0] + (R + 14 * s) * Math.cos(a), V[1] + (R + 14 * s) * Math.sin(a)]);
+      var t = document.createElementNS(SVGNS, 'text'), sel = !set.temp && App.sel && App.sel.kind === 'rel' && App.sel.runZero === set.id;
+      t.setAttribute('x', p[0].toFixed(1)); t.setAttribute('y', (p[1] + (UI.DIM_CAP || 9.4) / 2).toFixed(1)); t.setAttribute('text-anchor', 'middle');
+      t.setAttribute('class', 'run-zero' + (set.temp ? ' temp' : '') + (sel ? ' sel' : ''));
+      t.setAttribute('data-run', set.id);
+      t.textContent = '0°';
+      if (!set.temp) {
+        t.setAttribute('role', 'button'); t.setAttribute('tabindex', '0');
+        t.setAttribute('aria-label', 'Angular running datum of ' + set.members.length + ' dimension' + (set.members.length === 1 ? '' : 's') + ': click to select the set, Delete deletes it');
+        t.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); selectRunZero(set.id); });
+        t.addEventListener('click', function (ev) { ev.stopPropagation(); });
+        t.addEventListener('keydown', function (ev) { if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); ev.stopPropagation(); deleteRunningSet(set.id); } });
+      }
+      layer.appendChild(t);
+    });
+  }
+  if (UI.drawDims) {
+    var baseDrawDimsRun = UI.drawDims;
+    UI.drawDims = function () { var r = baseDrawDimsRun.apply(this, arguments); try { drawRunZeros(); } catch (e) { /* an overlay: never break the dimensions */ } return r; };
+  }
+  function selectRunZero(id) {
+    var f = UI.activeSketchFeature(), set = f && S.runningSets(f)[id];
+    if (!set) return false;
+    App.sel = { kind: 'rel', index: set.members[0], runZero: id };
+    App.dimsStale = true;
+    if (UI.requestRender) UI.requestRender();
+    UI.setStatus('Angular running set from ' + S.refName(f, set.datum) + ' (' + set.members.length + ' dimension' + (set.members.length === 1 ? '' : 's') + ') selected. Delete deletes the whole set.');
+    return true;
+  }
+  function deleteRunningSet(id) {
+    var f = UI.activeSketchFeature();
+    if (!f || !S.runningSets(f)[id]) return 0;
+    markDirty();
+    var n = S.deleteRunningSet(f, id);
+    App.sel = null; App.relHover = null;
+    refresh();
+    closeDimPMIfGone();
+    UI.setStatus('Angular running set deleted (' + n + ' dimension' + (n === 1 ? '' : 's') + ').');
+    return n;
+  }
+  var baseDeleteRelRun = UI.deleteRelation;
+  if (baseDeleteRelRun) UI.deleteRelation = function (i) {
+    var s = App.sel;
+    if (s && s.kind === 'rel' && s.runZero != null && s.index === i) return deleteRunningSet(s.runZero) > 0;
+    return baseDeleteRelRun.apply(this, arguments);
+  };
+  UI.selectRunningZero = selectRunZero;
+  UI.deleteRunningSet = deleteRunningSet;
+  // the Modify box: an angular running value is in degrees (ui-sketch.js reads 'angle' from the type only)
+  (function () {
+    var box = $('dim-edit');
+    if (!box || typeof MutationObserver === 'undefined') return;
+    new MutationObserver(function () {
+      if (box.hidden) return;
+      var f = UI.activeSketchFeature(), s = App.sel, rel = f && s && s.kind === 'rel' ? (f.rels || [])[s.index] : null;
+      if (!rel || rel.type !== 'runangle') return;
+      var u = box.querySelector('input + span') || Array.prototype.filter.call(box.querySelectorAll('span'), function (x) { return /^(in|mm|cm|m|ft)$/.test(x.textContent); })[0];
+      if (u && u.textContent !== '°') u.textContent = '°';
+    }).observe(box, { attributes: true, attributeFilter: ['hidden'] });
+  })();
+
+  // one dimension placed by a command: selected, then the Modify box (or the driven note)
+  function placed(f, r, what) {
+    if (!r.ok) { UI.toast(r.error); return false; }
+    App.sel = { kind: 'rel', index: r.index };
+    refresh();
+    App.dimsStale = false;
+    if (UI.drawDims) UI.drawDims();
+    var rel = f.rels[r.index];
+    if (r.driven) UI.setStatus(what + ' ' + rfaqLabel(f, rel) + ' added as driven: it would over-define the sketch.');
+    else {
+      UI.setStatus(what + ' ' + rfaqLabel(f, rel) + ' placed. Type a value and press Enter to drive the sketch.');
+      if (UI.openRelDimEdit) UI.openRelDimEdit(r.index);
+    }
+    return true;
+  }
+  function hintPM(spec, text) { spec.message = text; UI.openPM(spec); var h = $('sketch-hint'); if (h) h.textContent = text; }
+
+  // Chamfer Dimension: the chamfer line, the line next to it, then where the label goes
+  function cmdChamferDim() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    UI.setTool('select');
+    var st = { c: null, a: null }, rd = null;
+    function hint() { return !st.c ? 'Click the chamfer line.' : !st.a ? 'Click the line next to it, the one the distance is measured along.' : 'Click where the chamfer dimension goes.'; }
+    function end() { App.tempRelDim = null; App.dimsStale = true; }
+    var spec = {
+      title: 'Chamfer Dimension', icon: 'chamferDim', values: {}, keepSelection: true, groups: [], onOK: end, onCancel: end,
+      command: {
+        onSketchPoint: function (uv, mx, my) {
+          var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+          if (!st.c) {
+            if (!ref || S.refKind(f, ref) !== 'line') { UI.setStatus(hint()); return; }
+            st.c = ref;
+          } else if (!st.a) {
+            if (!ref || ref === st.c || S.refKind(f, ref) !== 'line') { UI.setStatus(hint()); return; }
+            var ang = S.chamferAngle(f, [st.c, ref]);
+            if (!(ang > 1e-6 && ang < 90 - 1e-6)) { UI.toast('A chamfer meets the line next to it at an angle between 0° and 90°.'); return; }
+            st.a = ref;
+            rd = { type: 'chamfer', refs: [st.c, st.a], cang: ang };
+            rd.v = S.measure(f, 'chamfer', rd.refs);
+            App.tempRelDim = Object.assign({}, rd, { lo: loAt(rd, uv) });
+          } else {
+            markDirty();
+            var r = S.addChamferDim(f, st.c, st.a, { lo: loAt(rd, uv) });
+            st.c = st.a = null; rd = null; App.tempRelDim = null;
+            placed(f, r, 'Chamfer dimension');
+          }
+          App.dimsStale = true;
+          hintPM(spec, hint());
+        },
+        onSketchMove: function (uv) { if (rd) { App.tempRelDim = Object.assign({}, rd, { lo: loAt(rd, uv) }); App.dimsStale = true; } }
+      }
+    };
+    function loAt(rel, uv) { var A = rfaqAnchor(f, rel), s = (UI.cam && UI.cam.scale) || 0.01; return A && uv ? [niceRound(uv[0] - A[0], 0.5 * s), niceRound(uv[1] - A[1], 0.5 * s)] : null; }
+    hintPM(spec, hint());
+    return spec;
+  }
+  UI.cmdChamferDim = cmdChamferDim;
+
+  // Path Length Dimension: pick the lines and arcs (Select Chain grows the pick along joined ends), ✓, then the label
+  function chainFrom(f, refs) {
+    var ents = f.entities, have = {}, out = refs.slice();
+    refs.forEach(function (r) { have[r] = true; });
+    function ends(i) { return S.pointRefs(f, i).filter(function (pr) { return /\.p[12]$/.test(pr.ref); }).map(function (pr) { return pr.pt; }); }
+    var tol = 1e-6 * Math.max(1, (UI.cam && UI.cam.scale) || 1);
+    for (var grew = true, guard = 0; grew && guard < 500; guard++) {
+      grew = false;
+      ents.forEach(function (e, i) {
+        if (have[String(i)] || e.construction || !/^(line|arc)$/.test(e.t)) return;
+        var mine = ends(i);
+        var touches = out.some(function (r) { var p = S.parseRef(r); return p && !p.o && ends(p.e).some(function (q) { return mine.some(function (m) { return Math.hypot(m[0] - q[0], m[1] - q[1]) <= tol; }); }); });
+        if (touches) { have[String(i)] = true; out.push(String(i)); grew = true; }
+      });
+    }
+    return out;
+  }
+  function cmdPathLengthDim() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    var refs = selectedEntities().map(String).filter(function (r) { return S.measure(f, 'pathlength', [r]) != null; });
+    UI.setTool('select');
+    var stage = 'pick', made = null;
+    function hint() { return stage === 'pick' ? 'Click the lines and arcs of the path (or one, then Select Chain), then ✓.' : 'Click where the path length dimension goes.'; }
+    function end() { App.tempRelDim = null; App.dimsStale = true; }
+    var spec = {
+      title: 'Path Length', icon: 'pathLengthDim', values: {}, keepSelection: true, groups: [],
+      command: {
+        onSketchPoint: function (uv, mx, my) {
+          if (stage === 'place') {
+            var rd = { type: 'pathlength', refs: refs };
+            markDirty();
+            var r = S.addPathLength(f, refs, { lo: loAt(rd, uv) });
+            App.tempRelDim = null; stage = 'done'; made = r;
+            placed(f, r, 'Path length');
+            if (UI.closePM) UI.closePM();
+            return;
+          }
+          var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, p = ref && S.parseRef(ref);
+          if (!p || p.o) { UI.setStatus(hint()); return; }
+          var whole = p.s === null ? ref : S.refKind(f, ref) === 'line' ? ref : String(p.e);
+          if (S.measure(f, 'pathlength', [whole]) == null) { UI.setStatus('A path runs along lines, arcs and circles.'); return; }
+          var k = refs.indexOf(whole);
+          if (k >= 0) refs.splice(k, 1); else refs.push(whole);
+          render();
+        },
+        onSketchMove: function (uv) { if (stage === 'place') { var rd = { type: 'pathlength', refs: refs, v: S.measure(f, 'pathlength', refs) }; rd.lo = loAt(rd, uv); App.tempRelDim = rd; App.dimsStale = true; } }
+      },
+      // ✓: the path is picked; the next click places the dimension (✓ again places it at the default spot)
+      onOK: function () {
+        if (stage === 'place') { markDirty(); var r = S.addPathLength(f, refs, {}); stage = 'done'; made = r; end(); placed(f, r, 'Path length'); return; }
+        if (stage !== 'pick') { end(); return; }
+        if (!refs.length) { UI.toast('Pick the lines and arcs of the path first.'); return false; }
+        stage = 'place';
+        render();
+        return false;
+      },
+      onCancel: end
+    };
+    function loAt(rel, uv) { var A = rfaqAnchor(f, rel), s = (UI.cam && UI.cam.scale) || 0.01; return A && uv ? [niceRound(uv[0] - A[0], 0.5 * s), niceRound(uv[1] - A[1], 0.5 * s)] : null; }
+    function render() {
+      var total = refs.length ? S.measure(f, 'pathlength', refs) : 0;
+      spec.groups = [{ title: 'Path Definition', fields: [
+        { type: 'static', label: 'Entities', value: refs.length ? refs.map(function (r) { return S.refName(f, r); }).join(', ') : '—' },
+        { type: 'static', label: 'Total length', value: total != null ? fmtVal(total, null, false) + ' ' + UI.unitLabel() : '—' },
+        { type: 'buttons', buttons: [{ label: 'Select Chain', onclick: function () { if (!refs.length) { UI.toast('Pick one line or arc of the chain first.'); return; } refs = chainFrom(f, refs); render(); } }, { label: 'Clear', onclick: function () { refs = []; render(); } }] }
+      ] }];
+      App.sel = null;
+      if (UI.selectSketchEntities) UI.selectSketchEntities(refs.map(function (r) { return S.parseRef(r).e; }));
+      hintPM(spec, hint());
+    }
+    spec.result = function () { return made; };
+    render();
+    return spec;
+  }
+  UI.cmdPathLengthDim = cmdPathLengthDim;
+
+  // Angular Running Dimension: the 0° line (clicked near the vertex end), where the arcs go, then lines and points
+  var runPM = null;
+  function cmdAngularRunningDim() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    UI.setTool('select');
+    var st = { line: null, vertex: null, datum: null, off: null, run: null, n: 0 };
+    function hint() {
+      return !st.datum ? 'Click the 0° line, near the end the angles are measured at.' : st.off == null ? 'Click where the angle arcs go.'
+        : 'Click the lines and points to dimension from ' + S.refName(f, st.line || st.datum) + (st.n ? ' (' + st.n + ' so far)' : '') + '. ✓ or Esc when done.';
+    }
+    function end() { App.tempRun = null; App.dimsStale = true; }
+    function lineEnds(ref) {
+      var p = S.parseRef(ref), e = p && !p.o && f.entities[p.e];
+      if (e && e.t === 'line' && p.s === null) return [ref + '.p1', ref + '.p2'];
+      var L = S.refCurve(f, ref), out = [];
+      // an edge of a rectangle / polygon: its corner refs
+      S.pointRefs(f, p.e).forEach(function (pr) { if (L && (Math.hypot(pr.pt[0] - L.a[0], pr.pt[1] - L.a[1]) < 1e-9 || Math.hypot(pr.pt[0] - L.b[0], pr.pt[1] - L.b[1]) < 1e-9) && out.length < 2 && !/\.mid$/.test(pr.ref)) out.push(pr.ref); });
+      return out.length === 2 ? out : null;
+    }
+    function near(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-7 * Math.max(1, Math.abs(a[0]), Math.abs(a[1])); }
+    var spec = {
+      title: 'Angular Running Dimension', icon: 'angRunDim', values: {}, keepSelection: true, groups: [], onOK: end, onCancel: end,
+      command: {
+        onSketchPoint: function (uv, mx, my) {
+          var ref = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null;
+          if (!st.datum) {
+            if (!ref || S.refKind(f, ref) !== 'line') { UI.setStatus(hint()); return; }
+            var ends = lineEnds(ref);
+            if (!ends) { UI.setStatus('Pick a line as the 0° datum.'); return; }
+            var pa = uvOf(f, ends[0]), pb = uvOf(f, ends[1]), first = Math.hypot(uv[0] - pa[0], uv[1] - pa[1]) <= Math.hypot(uv[0] - pb[0], uv[1] - pb[1]);
+            st.line = ref; st.vertex = first ? ends[0] : ends[1]; st.datum = first ? ends[1] : ends[0];
+            App.tempRun = { vertex: st.vertex, datum: st.datum, off: null };
+          } else if (st.off == null) {
+            var V = uvOf(f, st.vertex), s = (UI.cam && UI.cam.scale) || 0.01;
+            st.off = niceRound(Math.hypot(uv[0] - V[0], uv[1] - V[1]), 0.5 * s);
+            App.tempRun = { vertex: st.vertex, datum: st.datum, off: st.off };
+          } else {
+            if (!ref) { UI.setStatus('Nothing there: ' + hint()); return; }
+            var target = null, k = S.refKind(f, ref);
+            if (k === 'line') {
+              var me = lineEnds(ref), Vt = uvOf(f, st.vertex);
+              if (!me) { UI.setStatus('Pick a line or a point.'); return; }
+              var p1 = uvOf(f, me[0]), p2 = uvOf(f, me[1]);
+              // the first line: when it meets the datum line at the datum's far end, that end is the vertex
+              if (!st.n && !near(p1, Vt) && !near(p2, Vt)) {
+                var Dd = uvOf(f, st.datum);
+                if (near(p1, Dd) || near(p2, Dd)) { var sw = st.vertex; st.vertex = st.datum; st.datum = sw; Vt = Dd; }
+              }
+              target = Math.hypot(p1[0] - Vt[0], p1[1] - Vt[1]) >= Math.hypot(p2[0] - Vt[0], p2[1] - Vt[1]) ? me[0] : me[1];
+            } else if (k === 'point' || k === 'circle') target = ref;
+            if (!target) { UI.setStatus('Pick a line or a point.'); return; }
+            markDirty();
+            var r = S.addRunningAngle(f, st.run ? { run: st.run, target: target } : { vertex: st.vertex, datum: st.datum, target: target, off: st.off });
+            if (!r.ok) { UI.toast(r.error); return; }
+            st.run = r.run; st.n++;
+            App.tempRun = { vertex: st.vertex, datum: st.datum, off: st.off, run: st.run };
+            refresh();
+            UI.setStatus('Angular running dimension ' + rfaqLabel(f, f.rels[r.index]) + (r.driven ? ' added as driven (it would over-define the sketch).' : ' added.'));
+          }
+          App.dimsStale = true;
+          render();
+        },
+        onSketchMove: function (uv) {
+          if (st.datum && st.off == null && App.tempRun) { var V = uvOf(f, st.vertex); App.tempRun.off = Math.hypot(uv[0] - V[0], uv[1] - V[1]); App.dimsStale = true; }
+        }
+      }
+    };
+    function render() {
+      spec.groups = [{ title: 'Angular Running', fields: [
+        { type: 'static', label: '0° datum', value: st.line ? S.refName(f, st.line) : '—' },
+        { type: 'static', label: 'Vertex', value: st.vertex ? S.refName(f, st.vertex) : '—' },
+        { type: 'static', label: 'Dimensions', value: String(st.n) }
+      ] }];
+      hintPM(spec, hint());
+    }
+    runPM = spec;
+    App.tempRun = null;
+    render();
+    return spec;
+  }
+  UI.cmdAngularRunningDim = cmdAngularRunningDim;
+  UI.cmdOrdinateFree = function () { return cmdOrdinateDim('auto'); };
+
+  // the Dimension PM of a chamfer dimension: its angle under the distance
+  var baseOpenDimPMAQ = openDimensionPM;
+  UI.openDimensionPM = function (sel) {
+    var ok = baseOpenDimPMAQ(sel);
+    var info = ok && dimInfo(sel), d = info && info.d;
+    if (!d || d.type !== 'chamfer' || !dimPM || !dimPM.spec) return ok;
+    var spec = dimPM.spec, f = info.f, grp = spec.groups.filter(function (g) { return g.title === 'Primary Value'; })[0];
+    if (!grp || grp.fields.some(function (x) { return x.key === 'cang'; })) return ok;
+    spec.values.cang = +(+S.chamferShownAngle(f, d)).toFixed(2);
+    grp.fields.splice(2, 0, { type: 'number', key: 'cang', label: 'Angle', unit: '°' });
+    var baseChange = spec.onChange;
+    spec.onChange = function (x, key) {
+      if (key !== 'cang') return baseChange.apply(this, arguments);
+      var it = dimInfo({ d: d });
+      if (!it) return;
+      if (d.driven) { UI.setStatus('A driven dimension follows the geometry: clear Driven to change its angle.'); return; }
+      markDirty();
+      var r = S.setChamferAngle(it.f, it.index, +spec.values.cang);
+      refresh();
+      if (!r.ok) UI.setStatus('Dimension not changed: ' + r.error);
+      else UI.setStatus('Chamfer angle set to ' + fmtVal(+spec.values.cang, null, true) + '°.');
+    };
+    UI.openPM(spec);
+    return ok;
+  };
+
+  if (window.anvil) {
+    // anvil.chamferDim(chamferRef, adjacentRef, opts?), anvil.pathLength([refs], opts?), anvil.runningAngle(spec),
+    // anvil.runningSets(): the rfAQ dimensions on the active sketch, as their commands make them
+    var withSketch = function (fn) {
+      return function () {
+        var f = UI.activeSketchFeature();
+        if (!f) throw new Error('No active sketch.');
+        markDirty();
+        var r = fn.apply(null, [f].concat(Array.prototype.slice.call(arguments)));
+        refresh();
+        if (r && r.ok === false) throw new Error(r.error);
+        return r;
+      };
+    };
+    window.anvil.chamferDim = withSketch(function (f, c, a, o) { return S.addChamferDim(f, c, a, o); });
+    window.anvil.pathLength = withSketch(function (f, refs, o) { return S.addPathLength(f, refs, o); });
+    window.anvil.runningAngle = withSketch(function (f, spec) { return S.addRunningAngle(f, spec); });
+    window.anvil.runningSets = function () { var f = UI.activeSketchFeature(); return f ? JSON.parse(JSON.stringify(S.runningSets(f))) : {}; };
   }
 })();

@@ -17241,6 +17241,63 @@
     });
   })();
   // --- end rfAP ---
+
+  // ------------------------------------------------------------------ rfAR: SketchXpert diagnosis, Scan Equal
+  (function () {
+    var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
+    if (!S || !S.diagnose) return;
+    group('rfAR: SketchXpert diagnosis, Scan Equal');
+    function rfARKey(sol) { return sol.remove.map(function (x) { return x.src + x.index; }).join(','); }
+    test('rfAR: diagnose — a line both Horizontal and Vertical: two solutions (delete either), each leaves the sketch solvable; the sketch itself is untouched', function () {
+      var sk = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }], rels: [{ type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['0'] }] };
+      var before = JSON.stringify(sk), d = S.diagnose(sk);
+      assert(d.over && d.status === 'over', 'over defined: ' + d.status);
+      assert(JSON.stringify(sk) === before, 'untouched');
+      var keys = d.solutions.map(rfARKey).sort();
+      assert(keys.join('|') === 'rel0|rel1', 'solutions ' + keys.join('|'));
+      assert(d.candidates.length === 2 && d.solutions.every(function (s) { return s.names.length === 1 && s.status !== 'over'; }), 'names');
+      var r = S.diagnoseApply(sk, d.solutions.filter(function (s) { return rfARKey(s) === 'rel0'; })[0].remove);
+      assert(r.ok && r.removed === 1 && r.analysis.status !== 'over', 'applied: ' + r.analysis.status);
+      near(sk.entities[0].x2 - sk.entities[0].x1, 0, 1e-9, 'now vertical');
+      return keys.join(' | ');
+    });
+    test('rfAR: diagnose — Equal between lines dimensioned 10 and 20: delete the Equal or either dimension (three solutions); a sketch that is not over defined has none', function () {
+      var sk = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 5, x2: 20, y2: 5 }], dims: [{ e: 0, k: 'len', off: 1 }, { e: 1, k: 'len', off: 1 }] };
+      sk.rels = [{ type: 'equal', refs: ['0', '1'] }];
+      var d = S.diagnose(sk), keys = d.solutions.map(rfARKey).sort();
+      assert(d.over, 'over: ' + d.status);
+      assert(keys.join('|') === 'dim0|dim1|rel0', 'solutions ' + keys.join('|'));
+      var r = S.diagnoseApply(sk, [{ src: 'dim', index: 1 }]);
+      assert(r.ok && r.analysis.status !== 'over' && sk.dims.length === 1, 'dim removed');
+      near(Math.hypot(sk.entities[1].x2 - sk.entities[1].x1, sk.entities[1].y2 - sk.entities[1].y1), 10, 1e-6, 'equal now holds at 10');
+      var ok = S.diagnose({ entities: [{ t: 'line', x1: 0, y1: 0, x2: 4, y2: 0 }], rels: [{ type: 'horizontal', refs: ['0'] }] });
+      assert(!ok.over && !ok.solutions.length, 'nothing to repair');
+      return keys.join(' | ');
+    });
+    test('rfAR: diagnose — three Horizontal relations on one line: no single deletion repairs it, so pairs are tried (three solutions of two)', function () {
+      var sk = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }], rels: [{ type: 'horizontal', refs: ['0'] }, { type: 'horizontal', refs: ['0'] }, { type: 'horizontal', refs: ['0'] }] };
+      var d = S.diagnose(sk);
+      assert(d.over, 'three Horizontals over define');
+      assert(!d.solutions.some(function (s) { return s.remove.length === 1; }), 'no single deletion fixes three');
+      assert(d.solutions.length === 3 && d.solutions.every(function (s) { return s.remove.length === 2; }), 'pairs: ' + d.solutions.map(rfARKey).join('|'));
+      return d.solutions.map(rfARKey).join(' | ');
+    });
+    test('rfAR: scanEqual — lines 3, 3.004 and 5, circles / arcs R1, R1 and R2: groups at a 0.01 tolerance; applyEqual ties them, a second pass adds nothing', function () {
+      var sk = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 3, y2: 0 }, { t: 'line', x1: 0, y1: 2, x2: 3.004, y2: 2 }, { t: 'line', x1: 0, y1: 4, x2: 5, y2: 4 },
+        { t: 'circle', cx: 10, cy: 0, r: 1 }, { t: 'arc', cx: 14, cy: 0, r: 1, a0: 0, a1: 90 }, { t: 'circle', cx: 20, cy: 0, r: 2 }] };
+      var g = S.scanEqual(sk, { tol: 0.01 }).groups;
+      assert(g.length === 2, 'groups ' + JSON.stringify(g));
+      assert(g[0].kind === 'line' && g[0].members.join() === '0,1' && g[1].kind === 'radius' && g[1].members.join() === '3,4', JSON.stringify(g));
+      assert(S.scanEqual(sk).groups.length === 1, 'exact: only the radii');
+      var r = S.applyEqual(sk, g[0].members);
+      assert(r.added.length === 1 && sk.rels[0].type === 'equal', 'equal added');
+      near(Math.hypot(sk.entities[1].x2 - sk.entities[1].x1, sk.entities[1].y2 - sk.entities[1].y1), Math.hypot(sk.entities[0].x2 - sk.entities[0].x1, sk.entities[0].y2 - sk.entities[0].y1), 1e-7, 'equal now');
+      var r2 = S.applyEqual(sk, g[0].members);
+      assert(r2.added.length === 0 && r2.skipped === 1, 'second pass skipped');
+      return 'ok';
+    });
+  })();
+  // --- end rfAR ---
   // ------------------------------------------------------------------ rfAO: drawing sketch, Line Format, Hide / Show Edges, Relative View
   (function () {
     group('rfAO: sketch entities on the sheet and in views (relations, driving dimensions), Line Format, Hide / Show Edges, Relative View');
@@ -17411,6 +17468,235 @@
     });
   })();
   // --- end rfAO ---
+  // ------------------------------------------------------------------ rfAQ: sketch Chamfer Dimension, Path Length, Angular Running, Autodimension
+  (function () {
+    var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
+    if (!S || !S.addChamferDim) return;
+    group('rfAQ: sketch Chamfer Dimension, Path Length Dimension, Angular Running Dimension');
+    function rfAQPlate() {
+      return { id: 1, type: 'sketch', name: 'Sketch1', plane: { ref: 'Front', offset: 0 }, entities: [
+        { t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 10, y1: 0, x2: 10, y2: 4 }, { t: 'line', x1: 10, y1: 4, x2: 8, y2: 6 },
+        { t: 'line', x1: 8, y1: 6, x2: 0, y2: 6 }, { t: 'arc', cx: 0, cy: 3, r: 3, a0: 90, a1: 270 }],
+        rels: [{ type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }, { type: 'coincident', refs: ['2.p2', '3.p1'] }] };
+    }
+    function rfAQRound(f) {
+      var m = K.newModel('rt');
+      m.features.push(f);
+      var src = K.generateScript(m), m2 = K.newModel('x');
+      K.runScript(m2, src);
+      return { src: src, f: m2.features.filter(function (x) { return x.type === 'sketch'; })[0] };
+    }
+    test('rfAQ: Chamfer Dimension — 2 X 45° read off a chamfer line and the line next to it; the distance and the angle both drive (3 X 30°); it survives the script round trip', function () {
+      var f = rfAQPlate(), r = S.addChamferDim(f, '2', '3', { lo: [1, 1] });
+      assert(r.ok && !r.driven, JSON.stringify(r));
+      var rel = f.rels[r.index];
+      near(rel.v, 2, 1e-9, 'distance'); near(rel.cang, 45, 1e-9, 'angle');
+      assert(S.setRelValue(f, r.index, 3).ok, 'distance 3');
+      assert(S.setChamferAngle(f, r.index, 30).ok, 'angle 30');
+      near(S.measure(f, 'chamfer', ['2', '3']), 3, 1e-6, 'measured distance'); near(S.chamferAngle(f, ['2', '3']), 30, 1e-6, 'measured angle');
+      assert(!S.setChamferAngle(f, r.index, 95).ok, '95° refused');
+      assert(!S.addChamferDim(f, '0.p1', '3').ok && !S.addChamferDim(f, '3', '3').ok, 'a point or the same line refused');
+      var rt = rfAQRound(f), g = rt.f, rr = g.rels.filter(function (x) { return x.type === 'chamfer'; })[0];
+      assert(/\.rfaq\(/.test(rt.src), 'script has .rfaq');
+      near(rr.v, 3, 1e-6, 'round trip distance'); near(rr.cang, 30, 1e-6, 'round trip angle');
+      assert(rr.lo && rr.lo[0] === 1, 'label place kept');
+      near(S.chamferAngle(g, ['2', '3']), 30, 1e-5, 'round trip geometry');
+      return '3 X 30°';
+    });
+    test('rfAQ: Path Length — two lines and a half circle R3 add up (10 + 4 + 3π); driving it to 30 re-solves the chain; driven when it would over-define', function () {
+      var f = rfAQPlate();
+      var p = S.addPathLength(f, ['0', '1', '4']);
+      assert(p.ok && !p.driven, JSON.stringify(p));
+      near(f.rels[p.index].v, 10 + 4 + 3 * Math.PI, 1e-9, 'length');
+      assert(S.setRelValue(f, p.index, 30).ok, 'drive 30');
+      near(S.measure(f, 'pathlength', ['0', '1', '4']), 30, 1e-6, 'measured');
+      assert(!S.addPathLength(f, ['0.p1']).ok, 'a point is not a path');
+      // lengths all fixed by dimensions: the path length comes in driven
+      var g = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 5, y2: 0 }], dims: [{ e: 0, k: 'len' }] };
+      var q = S.addPathLength(g, ['0']);
+      assert(q.ok && q.driven && g.rels[q.index].driven, 'driven ' + JSON.stringify(q));
+      var rt = rfAQRound(f), rr = rt.f.rels.filter(function (x) { return x.type === 'pathlength'; })[0];
+      near(rr.v, 30, 1e-6, 'round trip');
+      return 'ok';
+    });
+    test('rfAQ: Angular Running — 0° datum along +X, members at 90°, 225° and a hole at 45° (one set); 225° driven to 200° turns its line; Delete the set; round trip keeps the set', function () {
+      var g = { id: 2, type: 'sketch', name: 'Sketch2', plane: { ref: 'Front', offset: 0 }, entities: [
+        { t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 10 }, { t: 'line', x1: 0, y1: 0, x2: -5, y2: -5 }, { t: 'circle', cx: 3, cy: 3, r: 0.5 }],
+        rels: [{ type: 'coincident', refs: ['0.p1', '1.p1'] }, { type: 'coincident', refs: ['0.p1', '2.p1'] }, { type: 'fix', refs: ['0'] }] };
+      var a = S.addRunningAngle(g, { vertex: '0.p1', datum: '0.p2', target: '1.p2', off: 4 });
+      var b = S.addRunningAngle(g, { run: a.run, target: '2.p2' }), c = S.addRunningAngle(g, { run: a.run, target: '3.c' });
+      assert(a.ok && b.ok && c.ok && a.run === b.run && b.run === c.run, JSON.stringify([a, b, c]));
+      near(g.rels[a.index].v, 90, 1e-9, '90'); near(g.rels[b.index].v, 225, 1e-9, '225'); near(g.rels[c.index].v, 45, 1e-9, '45');
+      assert(!S.addRunningAngle(g, { run: a.run, target: '3.c' }).ok, 'twice refused');
+      assert(S.setRelValue(g, b.index, 200).ok, 'drive 200');
+      var e = g.entities[2];
+      near(Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180 / Math.PI + 360, 200, 1e-6, 'line at 200°');
+      var sets = S.runningSets(g);
+      assert(sets[a.run] && sets[a.run].members.length === 3 && sets[a.run].off === 4, JSON.stringify(sets));
+      var rt = rfAQRound(g), s2 = S.runningSets(rt.f);
+      assert(s2[a.run] && s2[a.run].members.length === 3, 'round trip set ' + JSON.stringify(s2));
+      near(rt.f.rels[s2[a.run].members[1]].v, 200, 1e-6, 'round trip value');
+      assert(S.deleteRunningSet(g, a.run) === 3 && !Object.keys(S.runningSets(g)).length, 'set deleted');
+      return 'ok';
+    });
+    test('rfAQ: Autodimension engine — a line datum (the left edge): every X measured from it, only the edge itself left free; chain from the origin: Fully Defined', function () {
+      var mk = function () { return { entities: [{ t: 'rect', x: 0, y: 0, w: 8, h: 5 }, { t: 'circle', cx: 2, cy: 3, r: 0.5 }, { t: 'circle', cx: 6, cy: 3, r: 0.5 }] }; };
+      var f = mk(), r = S.fullyDefine(f, { hDatum: '0.e3', vDatum: 'O', hScheme: 'baseline', vScheme: 'chain' });
+      assert(r.dof === 1, 'baseline from a line ' + r.status + ' ' + r.dof);
+      assert(f.rels.some(function (x) { return x.type === 'distance' && x.refs[0] === '0.e3'; }), 'measured from the line');
+      var g = mk(), r2 = S.fullyDefine(g, { hScheme: 'chain', vScheme: 'chain' });
+      assert(r2.status === 'full', 'chain ' + r2.status);
+      return 'ok';
+    });
+  })();
+  // --- end rfAQ ---
+  // ------------------------------------------------------------------ rfAT: sketch Blocks (kernel-sketch.js)
+  (function () {
+    var S = typeof SketchSolver !== 'undefined' ? SketchSolver : null;
+    if (!Kernel.makeBlock) return;
+    group('rfAT: sketch Blocks');
+    function rfATBlank() {   // a 10 x 6 blank and a punch symbol (Ø.5 hole with a cross line) at (2, 1)
+      return { entities: [{ t: 'rect', x: 0, y: 0, w: 10, h: 6 }, { t: 'circle', cx: 2, cy: 1, r: 0.25 }, { t: 'line', x1: 1.5, y1: 1, x2: 2.5, y2: 1, construction: true }] };
+    }
+    test('rfAT: Make Block — the selection becomes a definition in block coordinates and its first instance in place; Insert Block turns and scales a copy', function () {
+      var f = rfATBlank(), r = Kernel.makeBlock(f, [1, 2], 'Punch', [2, 1]);
+      assert(r.ok && r.name === 'Punch' && f.entities[r.ins].blkDef === 'Punch', 'made: ' + JSON.stringify(r));
+      assert(JSON.stringify(f.blocks.Punch.ents) === JSON.stringify([{ t: 'circle', cx: 0, cy: 0, r: 0.25 }, { t: 'line', x1: -0.5, y1: 0, x2: 0.5, y2: 0, construction: true }]), 'definition ' + JSON.stringify(f.blocks));
+      var q = Kernel.insertBlock(f, 'Punch', 5, 3, 90, 2), inst = Kernel.blockInstances(f);
+      assert(q.ok && inst.length === 2 && inst[1].ents.length === 2, 'two instances');
+      var c = f.entities[inst[1].ents[0]], l = f.entities[inst[1].ents[1]];
+      near(c.r, 0.5, 1e-12, 'scaled radius'); near(c.cx, 5, 1e-12, 'cx'); near(l.x1, 5, 1e-12, 'turned line x'); near(l.y1, 2, 1e-12, 'turned line y1'); near(l.y2, 4, 1e-12, 'turned line y2');
+      assert(l.construction && l.blk === inst[1].id, 'construction flag and tag carried');
+      assert(!Kernel.insertBlock(f, 'Nope', 0, 0).ok && !Kernel.insertBlock(f, 'Punch', 0, 0, 0, 0).ok, 'bad block / scale refused');
+      assert(!Kernel.makeBlock(f, [inst[0].ents[0]], 'X').ok, 'an entity in a block is not taken again');
+      return inst.map(function (x) { return x.id; }).join(', ');
+    });
+    test('rfAT: an instance is rigid — moving its insertion point moves it, dragging one of its lines moves the whole instance, a profile and the DXF see the exploded geometry', function () {
+      var f = rfATBlank();
+      Kernel.makeBlock(f, [1, 2], 'Punch', [2, 1]);
+      var r = Kernel.blockInstances(f)[0], P = f.entities[r.ins];
+      P.x = 4; P.y = 2;
+      assert(Kernel.syncBlocks(f) === 1, 'synced');
+      near(f.entities[r.ents[0]].cx, 4, 1e-12, 'circle followed x'); near(f.entities[r.ents[1]].y1, 2, 1e-12, 'line followed');
+      // one of its lines dragged 1 to the right: the insertion point and the circle follow
+      var L = f.entities[r.ents[1]]; L.x1 += 1; L.x2 += 1;
+      Kernel.syncBlocks(f);
+      near(P.x, 5, 1e-12, 'insertion point followed the drag'); near(f.entities[r.ents[0]].cx, 5, 1e-12, 'circle followed the drag');
+      assert(Kernel.syncBlocks(f) === 0, 'nothing more to do');
+      var loops = Kernel.sketchProfile(f).loops;
+      assert(loops.length === 2, 'blank and hole: ' + loops.length);
+      var dxf = Kernel.exportDXFSketch(f, 'in');
+      assert(/\nCIRCLE\r?\n/.test(dxf) && !/\nINSERT\r?\n/.test(dxf), 'DXF: exploded CIRCLE, no INSERT');
+      // Block properties: angle 90
+      assert(Kernel.setBlockInstance(f, r.id, { ang: 90 }).ok, 'turned');
+      near(f.entities[r.ents[1]].x1, 5, 1e-12, 'line upright x'); near(Math.abs(f.entities[r.ents[1]].y2 - f.entities[r.ents[1]].y1), 1, 1e-12, 'line upright length');
+      return 'P ' + P.x + ', ' + P.y;
+    });
+    test('rfAT: a dimension on the insertion point places the instance (the solver moves the point, the instance follows); Explode and Edit Block', function () {
+      var f = rfATBlank();
+      Kernel.makeBlock(f, [1, 2], 'Punch', [2, 1]);
+      Kernel.insertBlock(f, 'Punch', 7, 4);
+      var r = Kernel.blockInstances(f)[0];
+      if (S) {
+        var d = S.addRelation(f, 'distance', ['O', String(r.ins)], { value: 3, dir: 'h' });
+        assert(d.ok, 'dimension added');
+        S.solve(f); Kernel.syncBlocks(f);
+        near(f.entities[r.ins].x, 3, 1e-9, 'insertion point at x 3'); near(f.entities[r.ents[0]].cx, 3, 1e-9, 'instance followed');
+      }
+      // Edit Block: the second instance's circle made bigger becomes the definition; the first follows
+      var r2 = Kernel.blockInstances(f)[1];
+      f.entities[r2.ents[0]].r = 0.4;
+      assert(Kernel.redefineBlock(f, r2.id).ok, 'redefined');
+      near(f.blocks.Punch.ents[0].r, 0.4, 1e-12, 'definition radius');
+      var all = Kernel.blockInstances(f);
+      assert(all.length === 2 && all.every(function (q) { return f.entities[q.ents.filter(function (i) { return f.entities[i].t === 'circle'; })[0]].r === 0.4; }), 'every instance follows');
+      var n0 = f.entities.length;
+      assert(Kernel.explodeBlock(f, all[0].id).ok, 'exploded');
+      assert(f.entities.length === n0 - 1 && Kernel.blockInstances(f).length === 1 && f.blocks.Punch, 'insertion point gone, definition kept for the other');
+      assert(Kernel.explodeBlock(f, Kernel.blockInstances(f)[0].id).ok && !f.blocks && !f.entities.some(function (e) { return e.blk != null; }), 'last instance exploded: no blocks left');
+      return 'ok';
+    });
+    test('rfAT: blocks survive the script round trip (.blocks line) and a saved .sldblk loads into another sketch', function () {
+      var f = rfATBlank();
+      Kernel.makeBlock(f, [1, 2], 'Punch', [2, 1]);
+      Kernel.insertBlock(f, 'Punch', 6, 3, 30, 1.5);
+      var m = Kernel.newModel('blk');
+      m.features.push(Object.assign({ id: 1, type: 'sketch', name: 'Sketch1', plane: { ref: 'Front', offset: 0 } }, JSON.parse(JSON.stringify(f))));
+      var src = Kernel.generateScript(m);
+      assert(/\.blocks\(/.test(src), 'script writes .blocks');
+      var m2 = Kernel.newModel('blk'); Kernel.runScript(m2, src);
+      var f2 = m2.features.filter(function (x) { return x.type === 'sketch'; })[0];
+      assert(JSON.stringify(f2.blocks) === JSON.stringify(f.blocks), 'definitions');
+      assert(JSON.stringify(Kernel.blockInstances(f2)) === JSON.stringify(Kernel.blockInstances(f)), 'instances');
+      var g = { entities: [] }, txt = Kernel.blockFile(f, 'Punch'), a = Kernel.addBlockDef(g, JSON.parse(txt));
+      assert(a.ok && a.name === 'Punch' && Kernel.insertBlock(g, 'Punch', 1, 1).ok && g.entities.length === 3, 'loaded and placed');
+      assert(Kernel.addBlockDef(g, JSON.parse(txt)).name === 'Punch-2', 'a second load gets its own name');
+      return src.split('\n').filter(function (l) { return /\.blocks/.test(l); })[0].length + ' chars';
+    });
+  })();
+  // --- end rfAT ---
+  // ---- rfAS (2026-10-13): Parabola and Conic (rational quadratic splines), their regions, DXF and script
+  (function () {
+    group('rfAS: Parabola / Conic regions, DXF, script round trip; the conic geometry');
+    function rfASConicArea(e) {   // the area between the exact conic and its chord (fine polygon of K.conicPoint)
+      var c = K.conicData(e), A = 0, N = 40000;
+      for (var k = 0; k < N; k++) { var a = K.conicPoint(c, k / N), b = K.conicPoint(c, (k + 1) / N); A += (a[0] * b[1] - b[0] * a[1]) / 2; }
+      return Math.abs(A + (c.P2[0] * c.P0[1] - c.P0[0] * c.P2[1]) / 2);
+    }
+    test('rfAS: a parabola region (top vertex (5, 10), ends (0, 0) and (10, 0)) extruded 2 is 2/3 of base x height x depth', function () {
+      var r = build('p.sketch("Front").parabola([0, 0], [5, 10], [10, 0]).line(10, 0, 0, 0).end().extrude(2);');
+      assert(!(r.errors && r.errors.length), 'no errors: ' + JSON.stringify(r.errors));
+      nearRel(r.mp.volume, 2 / 3 * 10 * 5 * 2, 1e-6, 'parabola region volume');
+      var e = r.model.features[0].entities[0];
+      assert(e.t === 'spline' && e.conic === 0.5 && e.parabola, 'a parabola entity');
+      return fmt(r.mp.volume);
+    });
+    test('rfAS: a conic with rho = 0.4142 (w = cos 45°) through (10, 0), top vertex (10, 10), (0, 10) is a quarter circle: the quarter disk is 25π', function () {
+      var rho = Math.SQRT1_2 / (1 + Math.SQRT1_2);
+      var r = build('p.sketch("Front").conic([10, 0], [10, 10], [0, 10], ' + rho + ').line(0, 10, 0, 0).line(0, 0, 10, 0).end().extrude(1);');
+      assert(!(r.errors && r.errors.length), 'no errors: ' + JSON.stringify(r.errors));
+      nearRel(r.mp.volume, 25 * Math.PI, 1e-6, 'quarter disk');
+      var c = K.conicData(r.model.features[0].entities[0]);
+      for (var k = 0; k <= 8; k++) { var p = K.conicPoint(c, k / 8); near(Math.hypot(p[0], p[1]), 10, 1e-9, 'on the circle ' + k); }
+      return fmt(r.mp.volume);
+    });
+    test('rfAS: conic regions for rho 0.3 / 0.6 / 0.8 extrude to the exact conic area (within 1e-6), the curve within 1e-6 of its size of the rational conic', function () {
+      var out = [];
+      [0.3, 0.6, 0.8].forEach(function (rho) {
+        var r = build('p.sketch("Front").conic([0, 0], [5, 10], [10, 0], ' + rho + ').line(10, 0, 0, 0).end().extrude(1);');
+        var e = r.model.features[0].entities[0], want = rfASConicArea(e);
+        nearRel(r.mp.volume, want, 1e-6, 'rho ' + rho);
+        var c = K.conicData(e), g = K.splineGeom(e), fc = SketchSolver.freeCurve(e), m = 0;
+        for (var k = 0; k <= 64; k++) m = Math.max(m, SketchSolver.freeClosest(fc, K.conicPoint(c, k / 64)).d);
+        assert(m < 1e-5, 'rho ' + rho + ' deviation ' + m);
+        assert(g.bez.length === 16 && Math.abs(g.bez[0][0][0]) < 1e-12 && Math.abs(g.bez[15][3][0] - 10) < 1e-12, 'spans run end to end');
+        out.push(fmt(r.mp.volume));
+      });
+      return out.join(' ');
+    });
+    test('rfAS: moving a conic\'s points keeps it a conic of the same rho (the top vertex follows the shoulder point)', function () {
+      var e = { t: 'spline', pts: [[0, 0], [5, 3], [10, 0]], conic: 0.6 }, c = K.conicData(e);
+      near(c.T[1], 5, 1e-12, 'top vertex from the shoulder'); near(c.w, 1.5, 1e-12, 'weight');
+      e.pts[2] = [12, 4];
+      var c2 = K.conicData(e), p = K.conicPoint(c2, 0.5);
+      near(p[0], 5, 1e-12, 'shoulder x'); near(p[1], 3, 1e-12, 'shoulder y');
+      return c2.T.map(fmt).join(', ');
+    });
+    test('rfAS: sketch DXF writes a conic / parabola as SPLINE (R2000) and as ARCs (R12); the script round-trips them', function () {
+      var r = build('p.sketch("Front").conic([0, 0], [5, 10], [10, 0], 0.7).parabola([0, 20], [5, 30], [10, 20]).end();');
+      var s = r.model.features[0];
+      var ents = sketchDxfEnts(K.exportDXFSketch(s, 'mm', { version: 'R2000' }));
+      assert(ents.filter(function (x) { return x.t === 'SPLINE'; }).length === 2, 'two SPLINEs: ' + ents.map(function (x) { return x.t; }).join(' '));
+      var r12 = sketchDxfEnts(K.exportDXFSketch(s, 'mm', { version: 'R12' }));
+      assert(r12.length >= 2, 'R12 entities written');
+      var code = K.generateScript(r.model);
+      assert(/conic: 0\.7/.test(code) && /parabola: true/.test(code), 'script keeps conic / parabola: ' + code);
+      var m2 = K.newModel('RT'); K.runScript(m2, code);
+      assert(JSON.stringify(m2.features[0].entities) === JSON.stringify(s.entities), 'same entities after the round trip');
+      return ents.length + ' / ' + r12.length;
+    });
+  })();
+  // --- end rfAS ---
   // ------------------------------------------------------------------ summary
   // Every synchronous test has run by now; async tests (pack & worker) settle later and call maybeSummarize themselves.
   allDeclared = true;

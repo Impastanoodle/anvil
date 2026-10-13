@@ -191,7 +191,14 @@ var SketchSolver = (function () {
     distance: { name: 'Distance', glyph: '↔', dim: true },
     angle: { name: 'Angle', glyph: '∠', dim: true },
     // sketchdims: the length along an arc (Smart Dimension: the arc, then its two end points), refs [arc]
-    arclength: { name: 'Arc Length', glyph: '⌒', dim: true }
+    arclength: { name: 'Arc Length', glyph: '⌒', dim: true },
+    // rfAQ: Chamfer Dimension (refs [chamfer line, adjacent line]: v = the chamfer's length along the adjacent line,
+    // cang = its angle to that line, degrees), Path Length (refs: the lines / arcs / circles of a chain, v = their total
+    // length) and Angular Running (refs [vertex, datum point, point]: v = the angle at the vertex from the datum to the
+    // point, counter-clockwise, 0 to 360; rel.run names the set). Made by their commands, never offered in Add Relations.
+    chamfer: { name: 'Chamfer Dimension', glyph: '⌔', dim: true },
+    pathlength: { name: 'Path Length', glyph: '⤳', dim: true },
+    runangle: { name: 'Angular Running', glyph: '∠', dim: true }
   };
   var ADD_ORDER = ['horizontal', 'vertical', 'coincident', 'midpoint', 'intersection', 'collinear', 'parallel', 'perpendicular', 'tangent', 'concentric', 'coradial', 'equal', 'symmetric', 'fix'];
 
@@ -241,6 +248,10 @@ var SketchSolver = (function () {
         if (n !== 2) return null;
         return perm('point', 'point') || perm('point', 'line') || perm('line', 'line') || perm('circle', 'circle') || perm('point', 'circle') || perm('circle', 'line');
       case 'angle': return n === 2 ? perm('line', 'line') : null;
+      // rfAQ: the chamfer line, then the line it is measured along; a chain of lines / arcs / circles; vertex, datum, point
+      case 'chamfer': return n === 2 && kinds[0] === 'line' && kinds[1] === 'line' ? [0, 1] : null;
+      case 'pathlength': return n >= 1 && kinds.every(function (k) { return k === 'line' || k === 'circle'; }) ? kinds.map(function (k, i) { return i; }) : null;
+      case 'runangle': return n === 3 && kinds.every(function (k) { return k === 'point' || k === 'circle'; }) ? [0, 1, 2] : null;
     }
     return null;
   }
@@ -539,8 +550,56 @@ var SketchSolver = (function () {
         f = function (E) { return [s2 * ang(E) - v]; };
         break;
       }
+      case 'chamfer': case 'pathlength': case 'runangle': {
+        var xq = rfaqEquation(ents, rel, R, kinds, v);
+        if (!xq) return null;
+        n = xq.n; f = xq.f;
+        break;
+      }
     }
     return f ? { n: n, f: f, ents: eidx } : null;
+  }
+
+  // rfAQ: what a Chamfer Dimension, a Path Length and an Angular Running dimension measure, and their equations
+  function rfaqPathLen(ents, R, kinds) {
+    for (var i = 0; i < R.length; i++) if (kinds[i] === 'circle' && (R[i].o || R[i].s !== null || !ents[R[i].e] || !/^(arc|circle)$/.test(ents[R[i].e].t))) return null;
+    return function (E) {
+      var t = 0;
+      R.forEach(function (r, i) {
+        if (kinds[i] === 'line') { var l = refCurve(E, r); t += len(sub(l.b, l.a)); }
+        else { var e = E[r.e]; t += e.t === 'circle' ? 2 * Math.PI * Math.abs(e.r) : Math.abs(e.r * (e.a1 - e.a0) * D2R); }
+      });
+      return t;
+    };
+  }
+  function rfaqPt(E, r, k) { return k === 'circle' ? refCurve(E, r).c : refPoint(E, r); }
+  function rfaqRunAngle(E, R, kinds, cw) {
+    var o = rfaqPt(E, R[0], kinds[0]), d = sub(rfaqPt(E, R[1], kinds[1]), o), m = sub(rfaqPt(E, R[2], kinds[2]), o);
+    var a = (cw ? -1 : 1) * Math.atan2(crs(d, m), dot(d, m)) / D2R;
+    return a < 0 ? a + 360 : a;
+  }
+  function rfaqChamfer(E, R) { var l1 = refCurve(E, R[0]), l2 = refCurve(E, R[1]); return dot(sub(l1.b, l1.a), unit(sub(l2.b, l2.a))); }
+  function rfaqMeasure(sketch, type, R, kinds, cw) {
+    var ents = sketch.entities;
+    if (type === 'chamfer') return Math.abs(rfaqChamfer(ents, R));
+    if (type === 'runangle') return rfaqRunAngle(ents, R, kinds, cw);
+    var pl = rfaqPathLen(ents, R, kinds);
+    return pl ? pl(ents) : null;
+  }
+  function rfaqEquation(ents, rel, R, kinds, v) {
+    if (!(v >= 0)) return null;
+    if (rel.type === 'pathlength') { var pl = rfaqPathLen(ents, R, kinds); return pl ? { n: 1, f: function (E) { return [pl(E) - v]; } } : null; }
+    if (rel.type === 'runangle') {
+      var cw = rel.dir === 'cw';
+      // the difference wrapped to ±180: smooth through 0 / 360
+      return { n: 1, f: function (E) { var r = rfaqRunAngle(E, R, kinds, cw) - v; return [((r % 360) + 540) % 360 - 180]; } };
+    }
+    // chamfer: the chamfer's length along the adjacent line (signed as it started) and, when rel.cang is set, the angle
+    // between the two lines folded to 0..90 (signed as it started)
+    var sd = sgn(rfaqChamfer(ents, R)), a0 = angleDeg(refCurve(ents, R[0]), refCurve(ents, R[1])), sa = sgn(a0), supA = Math.abs(a0) > 90;
+    var hasAng = rel.cang != null && isFinite(+rel.cang), ca = +rel.cang;
+    function angF(E) { var a = angleDeg(refCurve(E, R[0]), refCurve(E, R[1])); return supA ? (a >= 0 ? 180 - a : -180 - a) : a; }
+    return { n: hasAng ? 2 : 1, f: function (E) { var out = [sd * rfaqChamfer(E, R) - v]; if (hasAng) out.push(sa * angF(E) - ca); return out; } };
   }
 
   // Equation of a Smart Dimension (Kernel.dimGeometry kinds) holding value `target`.
@@ -904,6 +963,110 @@ var SketchSolver = (function () {
     return { ok: true, state: over && st === 'ok' ? 'redundant' : st, analysis: an };
   }
 
+  // ------------------------------------------------------------------ SketchXpert (rfAR)
+  // SolidWorks' SketchXpert: Diagnose finds the sets of relations / dimensions whose removal leaves an over-defined
+  // sketch solvable and no longer over defined; Manual Repair lists the items involved, to delete one by one. Pure:
+  // the sketch is never changed (each trial runs on a copy where the items are suppressed / made driven).
+  // diagnose(sketch, opts) -> { status, over, candidates: [{ src: 'rel' | 'dim', index, name, state }],
+  //   solutions: [{ remove: [{ src, index }], names: [text], status, dof }] }. opts: { max: 12 solutions,
+  //   maxCandidates: 40, pairs: true (try pairs when no single item fixes it) }
+  function diagItemName(sketch, it) { return it.src === 'dim' ? dimName(sketch, sketch.dims[it.index]) : describe(sketch, sketch.rels[it.index]); }
+  function diagWithout(sketch, list) {
+    var c = { entities: clone(sketch.entities || []) };
+    if (sketch.rels) c.rels = clone(sketch.rels);
+    if (sketch.dims) c.dims = clone(sketch.dims);
+    list.forEach(function (it) { if (it.src === 'rel') c.rels[it.index].suppressed = true; else c.dims[it.index].driven = true; });
+    return c;
+  }
+  function diagTrial(sketch, list) {
+    var c = diagWithout(sketch, list), a;
+    try {
+      a = analyze(c);
+      if (a.conflicts) { if (!solve(c).ok) return null; a = analyze(c); }
+    } catch (err) { return null; }
+    return a.conflicts || a.redundant ? null : { sketch: c, analysis: a };
+  }
+  function diagnose(sketch, opts) {
+    opts = opts || {};
+    var max = opts.max || 12, a0 = analyze(sketch), out = { status: a0.status, over: a0.status === 'over', candidates: [], solutions: [] };
+    if (!out.over) return out;
+    var sys = buildSystem(sketch), overEnts = {}, flagged = [], tied = [];
+    a0.entities.forEach(function (st, i) { if (st === 'over' || st === 'conflict') overEnts[i] = true; });
+    sys.cons.forEach(function (c) {
+      if (c.src === 'extra' || !c.n || c.driven || c.suppressed) return;
+      var st = (c.src === 'rel' ? a0.rels : a0.dims)[c.index], it = { src: c.src, index: c.index, state: st };
+      if (st === 'conflict' || st === 'redundant') flagged.push(it);
+      else if (c.ents.some(function (e) { return overEnts[e]; })) tied.push(it);
+    });
+    var cands = flagged.concat(tied).slice(0, opts.maxCandidates || 40);
+    cands.forEach(function (it) { it.name = diagItemName(sketch, it); });
+    out.candidates = cands;
+    function add(list, tr) {
+      out.solutions.push({ remove: list.map(function (it) { return { src: it.src, index: it.index }; }), names: list.map(function (it) { return it.name; }), status: tr.analysis.status, dof: tr.analysis.dof });
+    }
+    cands.forEach(function (it) { if (out.solutions.length < max) { var tr = diagTrial(sketch, [it]); if (tr) add([it], tr); } });
+    if (!out.solutions.length && opts.pairs !== false) {
+      var tries = 0;
+      for (var i = 0; i < cands.length && out.solutions.length < max && tries < 400; i++) {
+        for (var j = i + 1; j < cands.length && out.solutions.length < max && tries < 400; j++) {
+          tries++;
+          var tr = diagTrial(sketch, [cands[i], cands[j]]);
+          if (tr) add([cands[i], cands[j]], tr);
+        }
+      }
+    }
+    return out;
+  }
+  // Delete the relations / dimensions of a SketchXpert solution (diagnose().solutions[k].remove, or any list of
+  // { src, index }) and re-solve. Returns { ok, removed, analysis }.
+  function diagnoseApply(sketch, remove) {
+    var rels = remove.filter(function (it) { return it.src === 'rel'; }).map(function (it) { return it.index; }).sort(function (a, b) { return b - a; });
+    var dims = remove.filter(function (it) { return it.src === 'dim'; }).map(function (it) { return it.index; }).sort(function (a, b) { return b - a; });
+    rels.forEach(function (i) { deleteRelation(sketch, i); });
+    dims.forEach(function (i) { if (sketch.dims && sketch.dims[i]) sketch.dims.splice(i, 1); });
+    if (sketch.dims && !sketch.dims.length) delete sketch.dims;
+    var r = solve(sketch);
+    return { ok: r.ok, removed: rels.length + dims.length, analysis: analyze(sketch) };
+  }
+
+  // ------------------------------------------------------------------ Scan Equal (rfAR)
+  // Tools > Relations > Scan Equal: lines of equal length and arcs / circles of equal radius, within opts.tol (an
+  // absolute length; default 1e-6 of the sketch's size). Construction geometry counts unless opts.noConstruction;
+  // opts.entities limits the scan to those indices. Returns { groups: [{ kind: 'line' | 'radius', value,
+  // members: [entity index] }], tol } (two members or more each).
+  function scanEqual(sketch, opts) {
+    opts = opts || {};
+    var ents = sketch.entities || [], items = [], size = 0;
+    ents.forEach(function (e, i) {
+      if (!e || (opts.noConstruction && e.construction)) return;
+      if (opts.entities && opts.entities.indexOf(i) < 0) return;
+      if (e.t === 'line' && !e.infinite) items.push({ i: i, kind: 'line', v: Math.hypot(e.x2 - e.x1, e.y2 - e.y1) });
+      else if ((e.t === 'arc' || e.t === 'circle') && e.r > 0) items.push({ i: i, kind: 'radius', v: +e.r });
+    });
+    items.forEach(function (it) { size = Math.max(size, it.v); });
+    var tol = opts.tol != null ? +opts.tol : 1e-6 * Math.max(1, size), groups = [];
+    ['line', 'radius'].forEach(function (kind) {
+      var list = items.filter(function (it) { return it.kind === kind; }).sort(function (a, b) { return a.v - b.v || a.i - b.i; }), g = null;
+      list.forEach(function (it) {
+        if (g && it.v - g.first <= tol) g.members.push(it.i);
+        else { if (g && g.members.length > 1) groups.push(g); g = { kind: kind, value: it.v, first: it.v, members: [it.i] }; }
+      });
+      if (g && g.members.length > 1) groups.push(g);
+    });
+    groups.forEach(function (g) { delete g.first; g.members.sort(function (a, b) { return a - b; }); });
+    return { groups: groups, tol: tol };
+  }
+  // Equal between the first member of a scanEqual group and each other one; an Equal that would over-define the
+  // sketch (already equal through other relations) is skipped. Returns { ok, added: [rel index], skipped }.
+  function applyEqual(sketch, members) {
+    var added = [], skipped = 0;
+    for (var k = 1; k < members.length; k++) {
+      var r = addRelation(sketch, 'equal', [String(members[0]), String(members[k])], { rejectOver: true });
+      if (r.ok) added = added.concat(r.rels); else skipped++;
+    }
+    return { ok: true, added: added, skipped: skipped };
+  }
+
   // ------------------------------------------------------------------ Fully Define Sketch (sketchdims)
   // SolidWorks' Tools > Dimensions > Fully Define Sketch: relations first (Horizontal / Vertical on lines within
   // opts.tolDeg of an axis), then dimensions: sizes (circle diameters, arc and polygon radii, slot widths), then the
@@ -1020,8 +1183,8 @@ var SketchSolver = (function () {
           if (ok) { placed.push(pr); prev = pr.ref; }
         });
       }
-      axisCands(0, hD);
-      axisCands(1, vD);
+      if (!opts.skipH) axisCands(0, hD);   // rfAQ: Autodimension with one direction off
+      if (!opts.skipV) axisCands(1, vD);
     }
     // placement: horizontal dimensions stacked below the sketch, vertical ones to its left (baseline: nearest first;
     // chain: one row)
@@ -1188,6 +1351,7 @@ var SketchSolver = (function () {
     var p = match(type, kinds);
     if (!p) return null;
     if (type === 'arclength') { var ea = !R[0].o && R[0].s === null && ents[R[0].e]; return ea && ea.t === 'arc' ? ea.r * (ea.a1 - ea.a0) * D2R : null; }
+    if (type === 'chamfer' || type === 'pathlength' || type === 'runangle') return rfaqMeasure(sketch, type, R, kinds, dir === 'cw');   // rfAQ (dir 'cw': a clockwise running angle)
     var base = measureBase(sketch, type, R, kinds, p, dir, sup);
     if (base == null || type !== 'distance' || dir === 'r' || !Array.isArray(ac)) return base;
     R.forEach(function (r, i) { if (kinds[i] === 'circle' && (ac[i] === 'min' || ac[i] === 'max')) base += (ac[i] === 'min' ? -1 : 1) * refCurve(ents, r).r; });
@@ -1251,7 +1415,7 @@ var SketchSolver = (function () {
     } else if (type === 'symmetric') groups = [symOrder(sketch, refs)];
     else if (type === 'intersection') { var mi = match('intersection', refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); })); groups = [mi ? mi.map(function (i) { return refs[i]; }) : refs]; }
     else if (type === 'midpoint' && refs.length === 3 && match('midpoint', refs.map(function (r) { return refKind(sketch.entities, parseRef(r)); }))) groups = [refs];
-    else groups = type === 'distance' || type === 'angle' ? [refs] : expand(type, refs);
+    else groups = type === 'distance' || type === 'angle' || type === 'chamfer' || type === 'pathlength' || type === 'runangle' ? [refs] : expand(type, refs);   // rfAQ: one dimension on all its refs
     var added = [], saved = clone(sketch.entities), savedRels = clone(sketch.rels || []), before = analyze(sketch);
     sketch.rels = sketch.rels || [];
     for (var g = 0; g < groups.length; g++) {
@@ -2635,6 +2799,10 @@ var SketchSolver = (function () {
   function freePiece(fc, ta, tb) {
     var e = fc.e, o;
     function r6(x) { return Math.round(x * 1e6) / 1e6; }
+    if (e.t === 'spline' && e.conic != null && K.conicPieceAt) {
+      // rfAS: the piece of a conic / parabola is a conic of its own through the same curve (ui-sketch-spline.js)
+      return K.conicPieceAt(e, fc.pt(ta), fc.pt(tb));
+    }
     if (e.t === 'spline' && e.style) {
       // rfAH: the piece of a style spline is a style spline of the same degree (the Bézier's own sub-span, exactly)
       o = { t: 'spline', style: true, pts: K.bzSub(e.pts, ta, tb).map(function (q) { return [r6(q[0]), r6(q[1])]; }) };
@@ -5013,6 +5181,7 @@ var SketchSolver = (function () {
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, relArgs: relArgs,
     removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
+    diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install,
     chainCorners: chainCorners, filletChain: filletChain,   // sketch-tools2: Fillet all corners of the chain
@@ -5545,4 +5714,169 @@ var SketchSolver = (function () {
   S.constrainAll = constrainAll;
   S.constrainCandidates = function (sk, opts) { return constrainCandidates(sk, candOpts(sk, opts || {})); };
   S.modifySketch = modifySketch; S.sketchBox = sketchBox; S.segmentEntity = segmentEntity; S.equationPoints = equationPoints;
+})(typeof SketchSolver !== 'undefined' ? SketchSolver : null);
+
+// ------------------------------------------------------------------ rfAQ: Chamfer Dimension, Path Length, Angular Running
+// SolidWorks' sketch dimension tools beside Smart Dimension. Each is a dimension relation the solver drives like a
+// distance (types chamfer / pathlength / runangle in the main block):
+//   chamfer     refs [chamfer line, adjacent line], v = the chamfer's length along the adjacent line, cang = the angle
+//               between them (degrees, 0..90); both drive. Shown "0.100 X 45°".
+//   pathlength  refs = the lines / arcs / circles of a chain, v = their total length. Shown with a leader to the chain.
+//   runangle    refs [vertex, datum point, point], v = the angle at the vertex from the datum's direction to the point's,
+//               counter-clockwise (0 to 360); the members of one set share run ('a1', 'a2' …), vertex, datum and off
+//               (the radius their arcs are drawn at). The datum shows "0°".
+// lo ([du, dv] from the dimension's anchor: the chamfer line's middle, the first path entity's middle) is where a chamfer
+// or path-length label sits. Scripts keep cang / run / lo with `.rfaq([[relIndex, { cang, run, lo }], …])` after the
+// `.rel(…)` lines.
+(function (S) {
+  'use strict';
+  if (!S) return;
+  var K = typeof Kernel !== 'undefined' ? Kernel : null;
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function save(sk) { return { e: clone(sk.entities), r: sk.rels ? clone(sk.rels) : null }; }
+  function restore(sk, s) { sk.entities = s.e; if (s.r) sk.rels = s.r; else delete sk.rels; }
+  function r4(x) { return Math.round(x * 1e4) / 1e4; }
+  // the acute angle between a chamfer's two lines (degrees)
+  function chamferAngle(sketch, refs) {
+    var a = S.refCurve(sketch, refs[0]), b = S.refCurve(sketch, refs[1]);
+    if (!a || !b || a.kind !== 'line' || b.kind !== 'line') return null;
+    var d1 = [a.b[0] - a.a[0], a.b[1] - a.a[1]], d2 = [b.b[0] - b.a[0], b.b[1] - b.a[1]];
+    var c = Math.abs(d1[0] * d2[0] + d1[1] * d2[1]) / ((Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1])) || 1);
+    return Math.acos(Math.min(1, c)) * 180 / Math.PI;
+  }
+  // a dimension added, made driven (reference) when it would over-define the sketch, as SolidWorks offers
+  function finish(sketch, r, extra) {
+    if (!r.ok) return { ok: false, error: r.error };
+    var idx = r.rels[0], rel = sketch.rels[idx], driven = false;
+    if (extra) Object.keys(extra).forEach(function (k) { if (extra[k] != null) rel[k] = clone(extra[k]); });
+    if (rel.cang != null && !rel.driven && r.status === 'ok') {
+      var an0 = S.analyze(sketch), res = S.solve(sketch), an = S.analyze(sketch);
+      if (!res.ok || an.rels[idx] === 'conflict' || an.rels[idx] === 'redundant' || an.redundant > an0.redundant || an.conflicts > an0.conflicts) r.status = 'redundant';
+      // the angle alone over-defines: keep the length driving, the angle follows the geometry
+      if (r.status !== 'ok') { delete rel.cang; S.solve(sketch); var an2 = S.analyze(sketch); r.status = an2.rels[idx] === 'ok' ? 'ok' : 'redundant'; if (r.status === 'ok') rel.cangDriven = true; }
+    }
+    if (r.status !== 'ok' && !rel.driven) { S.setDriven(sketch, 'rel', idx, true); driven = true; }
+    return { ok: true, index: idx, driven: driven, status: r.status };
+  }
+  // addChamferDim(sketch, chamferRef, adjacentRef, { lo, driven }) -> { ok, index, driven } | { ok: false, error }
+  function addChamferDim(sketch, cRef, aRef, opts) {
+    opts = opts || {};
+    cRef = String(cRef); aRef = String(aRef);
+    if (S.refKind(sketch, cRef) !== 'line' || S.refKind(sketch, aRef) !== 'line') return { ok: false, error: 'A chamfer dimension takes the chamfer line, then the line it is measured along.' };
+    if (cRef === aRef) return { ok: false, error: 'Pick the line next to the chamfer.' };
+    var ang = chamferAngle(sketch, [cRef, aRef]);
+    if (!(ang > 1e-6) || !(ang < 90 - 1e-6)) return { ok: false, error: 'A chamfer meets the line next to it at an angle between 0° and 90°.' };
+    var before = save(sketch);
+    var r = S.addRelation(sketch, 'chamfer', [cRef, aRef], { driven: !!opts.driven });
+    var out = finish(sketch, r, { cang: Math.round(ang * 1e6) / 1e6, lo: opts.lo });
+    if (!out.ok) restore(sketch, before);
+    return out;
+  }
+  // the angle a chamfer dimension shows: what it holds, or what the geometry has (driven, or its angle not driving)
+  function chamferShownAngle(sketch, rel) { return rel.cang != null && !rel.driven ? rel.cang : chamferAngle(sketch, rel.refs); }
+  // setChamferAngle(sketch, index, deg): drive a chamfer dimension's angle
+  function setChamferAngle(sketch, index, deg) {
+    var rel = (sketch.rels || [])[index];
+    if (!rel || rel.type !== 'chamfer') return { ok: false, error: 'Not a chamfer dimension.' };
+    if (rel.driven) return { ok: false, error: 'This is a driven dimension: its value follows the geometry. Make it driving to change it.' };
+    deg = +deg;
+    if (!(deg > 0 && deg < 90)) return { ok: false, error: 'A chamfer angle is between 0° and 90°.' };
+    var before = save(sketch);
+    rel.cang = deg; delete rel.cangDriven;
+    var res = S.solve(sketch), an = S.analyze(sketch);
+    if (!res.ok || an.rels[index] === 'conflict') {
+      restore(sketch, before);
+      return { ok: false, error: 'That angle conflicts with the sketch\'s other relations or dimensions.' };
+    }
+    return { ok: true };
+  }
+  // addPathLength(sketch, refs, { lo, driven }) -> { ok, index, driven }
+  function addPathLength(sketch, refs, opts) {
+    opts = opts || {};
+    refs = (refs || []).map(String).filter(function (r, i, a) { return a.indexOf(r) === i; });
+    if (!refs.length) return { ok: false, error: 'Pick the lines and arcs of the path.' };
+    if (S.measure(sketch, 'pathlength', refs) == null) return { ok: false, error: 'A path length runs along lines, arcs and circles.' };
+    var before = save(sketch);
+    var out = finish(sketch, S.addRelation(sketch, 'pathlength', refs, { driven: !!opts.driven }), { lo: opts.lo });
+    if (!out.ok) restore(sketch, before);
+    return out;
+  }
+  // every Angular Running set: { id: { id, vertex, datum, off, members: [rel index, …] } }
+  function runningSets(sketch) {
+    var out = {};
+    (sketch.rels || []).forEach(function (rel, i) {
+      if (!rel || rel.type !== 'runangle' || rel.run == null) return;
+      var s = out[rel.run] || (out[rel.run] = { id: String(rel.run), vertex: rel.refs[0], datum: rel.refs[1], off: rel.off, members: [] });
+      s.members.push(i);
+    });
+    return out;
+  }
+  function newRunId(sketch) {
+    var n = 0;
+    (sketch.rels || []).forEach(function (r) { var m = /^a(\d+)$/.exec(String(r.run == null ? '' : r.run)); if (m) n = Math.max(n, +m[1]); });
+    return 'a' + (n + 1);
+  }
+  function isPt(sketch, ref) { var k = S.refKind(sketch, ref); return k === 'point' || k === 'circle'; }
+  function ptOf(sketch, ref) { return S.refPoint(sketch, ref) || (S.refCurve(sketch, ref) || {}).c || null; }
+  // addRunningAngle(sketch, { vertex, datum, target, run?, off? }) -> { ok, index, run, driven }: one more member of set
+  // `run` (a new set when not given): the counter-clockwise angle at vertex from datum to target (point refs)
+  function addRunningAngle(sketch, spec) {
+    spec = spec || {};
+    var set = spec.run != null ? runningSets(sketch)[spec.run] : null;
+    var vertex = String(set ? set.vertex : spec.vertex), datum = String(set ? set.datum : spec.datum), target = String(spec.target);
+    if (!isPt(sketch, vertex) || !isPt(sketch, datum) || !isPt(sketch, target)) return { ok: false, error: 'An angular running dimension measures at a vertex, from the datum line to other lines or points.' };
+    var pv = ptOf(sketch, vertex), pd = ptOf(sketch, datum), pt = ptOf(sketch, target);
+    var tol = 1e-9 * Math.max(1, Math.abs(pv[0]), Math.abs(pv[1]));
+    if (Math.hypot(pd[0] - pv[0], pd[1] - pv[1]) <= tol || Math.hypot(pt[0] - pv[0], pt[1] - pv[1]) <= tol) return { ok: false, error: 'That is the vertex of the angles.' };
+    if (target === datum) return { ok: false, error: 'That is the 0° datum.' };
+    if (set && set.members.some(function (i) { return sketch.rels[i].refs[2] === target; })) return { ok: false, error: S.refName(sketch, target) + ' is dimensioned in this set already.' };
+    var run = set ? set.id : spec.run != null ? String(spec.run) : newRunId(sketch);
+    var off = spec.off != null ? +spec.off : set && set.off != null ? set.off : null;
+    var before = save(sketch);
+    var r = S.addRelation(sketch, 'runangle', [vertex, datum, target], { driven: !!spec.driven, off: off });
+    var out = finish(sketch, r, { run: run });
+    if (!out.ok) { restore(sketch, before); return out; }
+    out.run = run;
+    return out;
+  }
+  function deleteRunningSet(sketch, run) {
+    var n0 = (sketch.rels || []).length;
+    sketch.rels = (sketch.rels || []).filter(function (r) { return r.type !== 'runangle' || String(r.run) !== String(run); });
+    if (!sketch.rels.length) delete sketch.rels;
+    S.solve(sketch);
+    return n0 - (sketch.rels || []).length;
+  }
+  S.chamferAngle = chamferAngle; S.chamferShownAngle = chamferShownAngle; S.addChamferDim = addChamferDim; S.setChamferAngle = setChamferAngle; S.addPathLength = addPathLength;
+  S.runningSets = runningSets; S.newRunId = newRunId; S.addRunningAngle = addRunningAngle; S.deleteRunningSet = deleteRunningSet;
+  // script round trip: the fields the `.rel(…)` lines do not carry (written after them)
+  if (K && K.Builder && K.registerSketchScript && K.newModel && !K.__sketchRfaq) {
+    K.__sketchRfaq = true;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    // .rfaq([[i, { cang, run, lo }], …]): a chamfer dimension's angle, an angular running set, a label's place
+    SBP.rfaq = function (list) {
+      var self = this, solveAgain = false;
+      (list || []).forEach(function (p) {
+        var rel = (self.f.rels || [])[p[0]], o = p[1] || {};
+        if (!rel || !/^(chamfer|pathlength|runangle)$/.test(rel.type)) throw new Error('No chamfer, path length or angular running dimension ' + p[0] + '.');
+        if (o.cang != null) { rel.cang = +o.cang; solveAgain = true; }
+        if (o.cangDriven) rel.cangDriven = true;
+        if (o.run != null) rel.run = String(o.run);
+        if (Array.isArray(o.lo)) rel.lo = [+o.lo[0], +o.lo[1]];
+      });
+      if (solveAgain) S.solve(this.f);
+      return this;
+    };
+    K.registerSketchScript(function (f) {
+      var list = (f.rels || []).map(function (r, i) {
+        if (!r || !/^(chamfer|pathlength|runangle)$/.test(r.type)) return null;
+        var o = {};
+        if (r.cang != null) o.cang = Math.round(r.cang * 1e6) / 1e6;
+        if (r.cangDriven) o.cangDriven = true;
+        if (r.run != null) o.run = r.run;
+        if (Array.isArray(r.lo)) o.lo = [r4(r.lo[0]), r4(r.lo[1])];
+        return Object.keys(o).length ? [i, o] : null;
+      }).filter(function (x) { return x; });
+      return list.length ? '\n  .rfaq(' + JSON.stringify(list) + ')' : '';
+    });
+  }
 })(typeof SketchSolver !== 'undefined' ? SketchSolver : null);

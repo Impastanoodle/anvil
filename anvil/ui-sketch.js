@@ -173,6 +173,7 @@
     if (App.toolState && App.toolState.modelRefs && UI.dropUnusedModelRefs) UI.dropUnusedModelRefs(App.toolState.modelRefs);
     if (App.toolState && (App.toolState.arcMode || App.toolState.tanFrom) && App.mode === 'sketch') $('sketch-hint').innerHTML = TOOL_HINTS[App.tool] || '';
     App.toolState = { pts: [] };
+    if (!keep) App.quickSnap = null;   // rfAR: putting the tool down drops a Quick Snap
     closeNumBox();
     if (App.inferPreview && App.inferPreview.length) { App.inferPreview = []; App.dimsStale = true; }
     App.tempEntities = [];
@@ -630,6 +631,14 @@
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     // sketch-refine: Ctrl held while moving suppresses every snap (the point stays under the cursor, rounded)
     if (UI.sketchCtrlHeld && UI.sketchCtrlHeld()) { var hC = 0.5 * px * 1.05; out.p = [niceRound(raw[0], hC), niceRound(raw[1], hC)]; return out; }
+    // rfAR: a Quick Snap takes the next point alone (nothing of its kind in reach: the point stays free); Sketch
+    // Settings ▸ Enable Snapping off: no snaps at all (the sketch grid still rounds when it is shown)
+    if (App.quickSnap || !skSetting('snapping')) {
+      if (App.quickSnap && quickSnapPoint(App.quickSnap, f, pl, raw, mx, my, px, st, prev, out)) return out;
+      var hS = 0.5 * px * 1.05, gS = App.view.showGrid ? UI.snapStep() : 0;
+      out.p = [gS ? +(Math.round(raw[0] / gS) * gS).toPrecision(12) : niceRound(raw[0], hS), gS ? +(Math.round(raw[1] / gS) * gS).toPrecision(12) : niceRound(raw[1], hS)];
+      return out;
+    }
     // 1. an existing point
     var cands = sketchPoints(f).slice(), mc = modelSnapOn() ? modelSnaps(pl) : null;
     // r15/snapaudit15: a woken point whose entity is gone (Undo, Delete, a drag moved it) is forgotten, so nothing lines
@@ -1178,6 +1187,23 @@
     // automatic relations, as SolidWorks infers them while sketching (coincident / horizontal / vertical …), for the
     // points the tool placed (rfH)
     if (window.SketchSolver) SketchSolver.infer(f, f.entities.length - 1, inferOpts(App.toolState && App.toolState.pts, e, closing === true));
+    // rfAR: Automatic Relations off still keeps a Line chain in one piece (SolidWorks: the segments share their ends)
+    var stC = App.toolState;
+    if (window.SketchSolver && !skSetting('autoRelations') && App.tool === 'line' && f.entities.length > 1 && stC && stC.chainStart) {
+      var SSc = window.SketchSolver, iN = f.entities.length - 1, endsOf = function (i) { return SSc.pointRefs(f, i).filter(function (pr) { return /\.p\d$/.test(pr.ref); }); };
+      var tie = function (j, at) {
+        return endsOf(iN).some(function (a) {
+          if (at && (Math.abs(a.pt[0] - at[0]) > 1e-9 || Math.abs(a.pt[1] - at[1]) > 1e-9)) return false;
+          return endsOf(j).some(function (b) {
+            if (Math.abs(a.pt[0] - b.pt[0]) > 1e-9 || Math.abs(a.pt[1] - b.pt[1]) > 1e-9) return false;
+            (f.rels = f.rels || []).push({ type: 'coincident', refs: [b.ref, a.ref] });
+            return true;
+          });
+        });
+      };
+      tie(iN - 1, stC.pts[0]);
+      if (closing === true) { for (var jC = iN - 2; jC >= 0; jC--) if (tie(jC, stC.chainStart)) break; }   // the loop closes on the chain's first segment
+    }
     App.gridStale = true;
     UI.updateSketches();
     UI.refreshTree();
@@ -1196,6 +1222,7 @@
     if (App.tool === 'dimension') { dimToolClick(raw, mx, my); return; }
     var info0 = inferPoint(raw, mx, my), p = info0.p, typed = null;
     App.toolState.lastSnap = info0.snap || null;   // r15/tanslide15: what the point landed on (a curve's index for the tangent slide)
+    if (App.quickSnap) { App.quickSnap = null; qsParallel = null; if (UI.refreshRibbon) UI.refreshRibbon(); }   // rfAR: a Quick Snap is for one pick
     // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
     if (numBox) { typed = numValues(); if (Object.keys(typed).length) p = typedPoint(p, typed); else typed = null; closeNumBox(); }
     placePoint(p, typed);
@@ -1303,6 +1330,169 @@
     try { window.localStorage.setItem('anvil.sketchNumericInput', numInputOn ? '1' : '0'); } catch (e) { /* storage blocked */ }
     return numInputOn;
   };
+  // rfAR: Tools ▸ Sketch Settings, as SolidWorks 2024 has them (kept per browser, 'anvil.sketchSettings'):
+  //   autoRelations  Automatic Relations — the relations a tool infers where its points land (off: none; a Line
+  //                  chain's segments still share their ends)
+  //   autoSolve      Automatic Solve — off: a drag moves the geometry without solving (as No Solve Move)
+  //   snapping       Enable Snapping — off: no point / curve snaps, inference lines or alignments (as Ctrl held)
+  //   noSolveMove    No Solve Move — a drag moves the entity alone; its relations and dimensions are not solved
+  //   detachOnDrag   Detach Segment on Drag — dragging a line or arc breaks its shared ends (Coincident, Tangent there)
+  //   overrideDims   Override Dims on Drag/Move — a dimensioned entity can be dragged; its dimensions take the new values
+  var SK_SET_DEF = { autoRelations: true, autoSolve: true, snapping: true, noSolveMove: false, detachOnDrag: false, overrideDims: false };
+  var SK_SET_NAMES = { autoRelations: 'Automatic Relations', autoSolve: 'Automatic Solve', snapping: 'Enable Snapping', noSolveMove: 'No Solve Move', detachOnDrag: 'Detach Segment on Drag', overrideDims: 'Override Dims on Drag/Move' };
+  var skSet = null;
+  function skSettings() {
+    if (skSet) return skSet;
+    skSet = {};
+    Object.keys(SK_SET_DEF).forEach(function (k) { skSet[k] = SK_SET_DEF[k]; });
+    try { var o = JSON.parse(window.localStorage.getItem('anvil.sketchSettings') || '{}'); Object.keys(SK_SET_DEF).forEach(function (k) { if (typeof o[k] === 'boolean') skSet[k] = o[k]; }); } catch (e) { /* storage blocked */ }
+    return skSet;
+  }
+  function skSetting(k) { return !!skSettings()[k]; }
+  UI.sketchSettings = {
+    NAMES: SK_SET_NAMES, DEFAULTS: SK_SET_DEF,
+    get: function (k) { return skSetting(k); },
+    all: function () { var s = skSettings(), o = {}; Object.keys(s).forEach(function (k) { o[k] = s[k]; }); return o; },
+    set: function (k, v) {
+      if (!(k in SK_SET_DEF)) throw new Error('Unknown sketch setting ' + k);
+      skSettings()[k] = !!v;
+      try { window.localStorage.setItem('anvil.sketchSettings', JSON.stringify(skSet)); } catch (e) { /* storage blocked */ }
+      if (k === 'snapping' || k === 'autoRelations') { App.inferPreview = []; clearFeedback(); }
+      return !!v;
+    },
+    toggle: function (k) { return UI.sketchSettings.set(k, !skSetting(k)); },
+    reset: function () { Object.keys(SK_SET_DEF).forEach(function (k) { UI.sketchSettings.set(k, SK_SET_DEF[k]); }); }
+  };
+  // Automatic Relations off: SketchSolver.infer (every drawing tool calls it for the points it placed) adds nothing.
+  // Commands that add their relations themselves (a rectangle's sides, Mirror, Offset …) are not affected.
+  if (window.SketchSolver && !SketchSolver.infer.rfAR) {
+    (function (SS0) {
+      var inf0 = SS0.infer;
+      SS0.infer = function () { return skSetting('autoRelations') ? inf0.apply(SS0, arguments) : []; };
+      SS0.infer.rfAR = true;
+    })(window.SketchSolver);
+  }
+
+  // ---- rfAR: Quick Snaps (SolidWorks: Sketch tab ▸ Quick Snaps, or right-click while sketching): the next point snaps
+  // to that one kind of geometry only (within a wider reach), then the usual inference comes back
+  var QUICK_SNAPS = [
+    ['point', 'Point'], ['center', 'Center Point'], ['midpoint', 'Midpoint'], ['quadrant', 'Quadrant'], ['intersection', 'Intersection'],
+    ['nearest', 'Nearest'], ['tangent', 'Tangent'], ['perpendicular', 'Perpendicular'], ['parallel', 'Parallel'],
+    ['hvLines', 'Horizontal/Vertical'], ['hvPoints', 'Horizontal/Vertical to Points'], ['length', 'Length'], ['grid', 'Grid'], ['angle', 'Angle']
+  ];
+  var QS_PX = 20, qsParallel = null;
+  UI.QUICK_SNAPS = QUICK_SNAPS;
+  UI.quickSnap = function (kind) {
+    if (kind === undefined) return App.quickSnap || null;
+    if (kind && !QUICK_SNAPS.some(function (q) { return q[0] === kind; })) throw new Error('Unknown quick snap ' + kind);
+    if (kind && App.mode !== 'sketch') { UI.toast('Open a sketch and pick a drawing tool first.'); return null; }
+    if (kind && (App.tool === 'select' || App.tool === 'dimension')) setTool('line');   // (SolidWorks starts the Line tool)
+    App.quickSnap = kind || null;
+    qsParallel = null;
+    if (kind) {
+      var name = QUICK_SNAPS.filter(function (q) { return q[0] === kind; })[0][1];
+      UI.setStatus('Quick Snap ' + name + ': the next point snaps to ' + name.toLowerCase() + ' only; then snapping goes back to normal.');
+    }
+    clearFeedback();
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    return App.quickSnap;
+  };
+  // Where the point goes under quick snap qs, or null (nothing of that kind within reach: the point stays free)
+  function quickSnapPoint(qs, f, pl, raw, mx, my, px, st, prev, out) {
+    function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
+    function dpx(p) { var s = scr(p); return Math.hypot(s[0] - mx, s[1] - my); }
+    function nearestOf(list) { var b = null, bd = QS_PX; list.forEach(function (c) { var d = dpx(c.pt); if (d < bd) { bd = d; b = c; } }); return b; }
+    function take(pt, kind) { out.p = [pt[0], pt[1]]; out.snap = { kind: kind, pt: out.p }; return out; }
+    var pts = sketchPoints(f), on = curveSnap(f, pl, [mx, my], QS_PX), eOn = on ? f.entities[on.e] : null, c;
+    var h = 0.5 * px * 1.05;
+    switch (qs) {
+      case 'point':
+        c = nearestOf(pts.filter(function (x) { return x.kind === 'end'; }).concat([{ pt: [0, 0], kind: 'origin' }]));
+        return c ? take(c.pt, c.kind) : null;
+      case 'center': case 'midpoint': case 'quadrant': {
+        var kind = qs, own = pts.filter(function (x) { return x.kind === kind; });
+        c = nearestOf(own);
+        if (c) return take(c.pt, kind);
+        if (!eOn) return null;
+        // hovering the curve itself: its centre / midpoint / nearest quadrant
+        if (kind === 'center' && (eOn.t === 'circle' || eOn.t === 'arc')) return take([+eOn.cx || 0, +eOn.cy || 0], 'center');
+        if (kind === 'midpoint' && eOn.t === 'line') return take([(eOn.x1 + eOn.x2) / 2, (eOn.y1 + eOn.y2) / 2], 'midpoint');
+        if (kind === 'quadrant' && (eOn.t === 'circle' || eOn.t === 'arc')) {
+          var bq = null;
+          [[1, 0], [0, 1], [-1, 0], [0, -1]].forEach(function (d) { var q = [eOn.cx + d[0] * eOn.r, eOn.cy + d[1] * eOn.r]; if (!bq || Math.hypot(q[0] - on[0], q[1] - on[1]) < Math.hypot(bq[0] - on[0], bq[1] - on[1])) bq = q; });
+          return take(bq, 'quadrant');
+        }
+        return null;
+      }
+      case 'intersection':
+        c = nearestOf(pts.filter(function (x) { return x.kind === 'intersection'; }));
+        return c ? take(c.pt, 'intersection') : null;
+      case 'nearest':
+        if (!on) return null;
+        out.p = on.slice(); out.snap = { kind: 'on', pt: out.p, e: on.e }; return out;
+      case 'tangent': {
+        if (!prev || !eOn || !(eOn.t === 'circle' || eOn.t === 'arc')) return null;
+        var cx = +eOn.cx || 0, cy = +eOn.cy || 0, dx = prev[0] - cx, dy = prev[1] - cy, D = Math.hypot(dx, dy);
+        if (!(D > eOn.r + 1e-12)) return null;
+        var base = Math.atan2(dy, dx), al = Math.acos(eOn.r / D), best = null;
+        [base + al, base - al].forEach(function (a) { var q = [cx + eOn.r * Math.cos(a), cy + eOn.r * Math.sin(a)]; if (!best || Math.hypot(q[0] - raw[0], q[1] - raw[1]) < Math.hypot(best[0] - raw[0], best[1] - raw[1])) best = q; });
+        out.p = best; out.snap = { kind: 'on', pt: best, e: on.e }; return out;
+      }
+      case 'perpendicular': {
+        if (!prev || !eOn || eOn.t !== 'line') return null;
+        var ux = eOn.x2 - eOn.x1, uy = eOn.y2 - eOn.y1, L2 = ux * ux + uy * uy;
+        if (!(L2 > 0)) return null;
+        var t = ((prev[0] - eOn.x1) * ux + (prev[1] - eOn.y1) * uy) / L2, ft = [eOn.x1 + t * ux, eOn.y1 + t * uy];
+        out.p = ft; out.snap = { kind: 'on', pt: ft, e: on.e }; return out;
+      }
+      case 'parallel': {
+        // hover a line to take its direction, then the new line runs parallel to it from the last point
+        if (eOn && eOn.t === 'line') { var lx = eOn.x2 - eOn.x1, ly = eOn.y2 - eOn.y1, ll = Math.hypot(lx, ly); if (ll > 0) qsParallel = [lx / ll, ly / ll]; }
+        if (!prev || !qsParallel) return null;
+        var u = qsParallel, s = (raw[0] - prev[0]) * u[0] + (raw[1] - prev[1]) * u[1];
+        s = niceRound(s, h);
+        out.p = [prev[0] + u[0] * s, prev[1] + u[1] * s]; out.dir = { type: 'parallel', from: prev, u: s < 0 ? [-u[0], -u[1]] : u }; return out;
+      }
+      case 'hvLines': case 'hvPoints': {
+        var targets = qs === 'hvLines' ? (prev ? [prev] : []) : pts.map(function (x) { return x.pt; }).concat([[0, 0]]).filter(function (p) { return !prev || p[0] !== prev[0] || p[1] !== prev[1]; });
+        var tol = QS_PX * px, ax = null, ay = null;
+        targets.forEach(function (p) {
+          var ddx = Math.abs(raw[0] - p[0]), ddy = Math.abs(raw[1] - p[1]);
+          if (ddx < tol && (!ax || ddx < ax.d)) ax = { d: ddx, p: p };
+          if (ddy < tol && (!ay || ddy < ay.d)) ay = { d: ddy, p: p };
+        });
+        if (ax && ay) { if (ax.d <= ay.d) ay = null; else ax = null; }
+        if (!ax && !ay) return null;
+        out.p = [ax ? ax.p[0] : niceRound(raw[0], h), ay ? ay.p[1] : niceRound(raw[1], h)];
+        out.align.push(ax ? { from: ax.p, axis: 'x', prev: qs === 'hvLines' } : { from: ay.p, axis: 'y', prev: qs === 'hvLines' });
+        return out;
+      }
+      case 'length': {
+        if (!prev) return null;
+        var vx = raw[0] - prev[0], vy = raw[1] - prev[1], r = Math.hypot(vx, vy), step = UI.snapStep ? UI.snapStep() : 1;
+        if (!(r > 1e-12) || !(step > 0)) return null;
+        var rr = Math.max(step, Math.round(r / step) * step);
+        out.p = [prev[0] + vx / r * rr, prev[1] + vy / r * rr]; return out;
+      }
+      case 'grid': {
+        var g = UI.snapStep ? UI.snapStep() : 1;
+        out.p = [+(Math.round(raw[0] / g) * g).toPrecision(12), +(Math.round(raw[1] / g) * g).toPrecision(12)];
+        if (window.SketchSolver.onCurveRef && window.SketchSolver.onCurveRef(f, -1, out.p, 1e-7)) out.snap = { kind: 'on', pt: out.p.slice() };
+        return out;
+      }
+      case 'angle': {
+        if (!prev) return null;
+        var ax2 = raw[0] - prev[0], ay2 = raw[1] - prev[1], R = Math.hypot(ax2, ay2);
+        if (!(R > 1e-12)) return null;
+        var A = Math.round(Math.atan2(ay2, ax2) * 180 / Math.PI / 15) * 15 * Math.PI / 180, Rr = niceRound(R, h);
+        out.p = [prev[0] + Math.cos(A) * Rr, prev[1] + Math.sin(A) * Rr];
+        if (Math.abs(out.p[0] - prev[0]) < 1e-12) out.p[0] = prev[0];
+        if (Math.abs(out.p[1] - prev[1]) < 1e-12) out.p[1] = prev[1];
+        out.dir = { type: 'angle', from: prev, u: [Math.cos(A), Math.sin(A)] }; return out;
+      }
+    }
+    return null;
+  }
   function typedDims(f, idx, typed) {
     var e = f.entities[idx], s = UI.cam.scale || 0.1, off = Math.round(14 * s * 1e4) / 1e4, list = [];
     if (!e) return;
@@ -1702,7 +1892,7 @@
       if (hkM && hkM.live) hkM.live(App.toolState.pts, p, App.tempEntities);   // p9-sketchtab: the tool PM's live values
       // yellow inference icons: the relations the entity being drawn would get
       var f = UI.activeSketchFeature();
-      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 ? SketchSolver.inferPreview(f, App.tempEntities[0], previewInferOpts(p, App.tempEntities[0])) : [];
+      App.inferPreview = f && window.SketchSolver && App.tempEntities.length === 1 && skSetting('autoRelations') ? SketchSolver.inferPreview(f, App.tempEntities[0], previewInferOpts(p, App.tempEntities[0])) : [];
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
     if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
@@ -1892,14 +2082,14 @@
     }
     // relation glyphs by the cursor: what the click will infer
     var types = [];
-    if (info.snap && SNAP_GLYPH[info.snap.kind]) {
+    if (info.snap && SNAP_GLYPH[info.snap.kind] && skSetting('autoRelations')) {   // (rfAR: no glyph when no relation will be added)
       var sg = SNAP_GLYPH[info.snap.kind], stp = App.toolState || { pts: [] };
       // r15/snapaudit15: a centre snap is Concentric only when the point being placed is itself a centre (the first point
       // of a circle, Centerpoint Arc, polygon or Center Rectangle); a line end on a centre gets Coincident
       if (info.snap.kind === 'center' && !(/^(circle|arc|polygon|crect)$/.test(App.tool) && !stp.pts.length)) sg = 'coincident';
       types.push(sg);
     }
-    if ((info.dir && info.dir.glyph) || info.tan || info.tanSlide) types.push('tangent');   // the arc tools' tangent guidance, the Line tool's tangent slide
+    if (((info.dir && info.dir.glyph) || info.tan || info.tanSlide) && skSetting('autoRelations')) types.push('tangent');   // the arc tools' tangent guidance, the Line tool's tangent slide
     (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
     types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
     // p9-modelsnap: a model snap adds no relation (no glyph); a small label by the cursor names it instead
@@ -3152,11 +3342,20 @@
       { label: 'End Chain (double-click)', icon: 'line', action: function () { if (App.mode === 'sketch' && App.tool === 'line') finishChain(); } },
       { label: 'Select', action: function () { if (App.mode === 'sketch') cancelTool(); } },
       { label: 'Smart Dimension', key: 'D', icon: 'dim', action: function () { if (App.mode === 'sketch') setTool('dimension'); } },
+      { sep: true }
+    ].concat(quickSnapMenuItems(), [
       { sep: true },
       { label: 'Exit Sketch', icon: 'exitSketch', action: function () { if (App.mode === 'sketch') exitSketch(); } }
-    ];
+    ]);
     UI.showMenu(ev.clientX, ev.clientY, items);
   }
+  // rfAR: the Quick Snaps rows of the right-click menu (and of Tools ▸ Sketch Tools ▸ Quick Snaps)
+  function quickSnapMenuItems() {
+    return QUICK_SNAPS.map(function (q) {
+      return { label: 'Quick Snaps ▸ ' + q[1], icon: 'quickSnaps', checked: App.quickSnap === q[0], action: function () { if (App.mode === 'sketch') UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); } };
+    });
+  }
+  UI.quickSnapMenuItems = quickSnapMenuItems;
   UI.chainMenu = function (mx, my) { var r = viewport.getBoundingClientRect(); if (!chainMenuWanted(null)) return false; chainMenu({ clientX: r.left + mx, clientY: r.top + my }); return true; };
 
   // Double-click or right-click: as in SolidWorks, a chain (or a half-drawn entity) ends and the tool stays active

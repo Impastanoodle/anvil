@@ -83,8 +83,15 @@
       { fly: 'dim', items: [{ id: 'dim', label: 'Smart\nDimension', tool: 'dimension' },
         { id: 'horizDim', label: 'Horizontal\nDimension', help: 'Dimension the horizontal distance between two points or vertical lines', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdHorizontalDim(); } },
         { id: 'vertDim', label: 'Vertical\nDimension', help: 'Dimension the vertical distance between two points or horizontal lines', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdVerticalDim(); } },
+        // rfAQ: Ordinate Dimension (the direction follows where the values go), SolidWorks' flyout order
+        { id: 'ordinateDim', label: 'Ordinate\nDimension', help: 'Dimension points, holes and edges from one zero; placing the values above / below or beside it picks the direction', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateFree(); } },
         { id: 'ordinateH', label: 'Horizontal Ordinate\nDimension', help: 'Dimension points, holes and edges horizontally from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('x'); } },
-        { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', help: 'Dimension points, holes and edges vertically from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('y'); } }] },
+        { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', help: 'Dimension points, holes and edges vertically from one zero, the values on one line', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdOrdinateDim('y'); } },
+        // rfAQ: Chamfer, Angular Running and Path Length Dimension, and Autodimension (ui-sketch-dims.js)
+        { id: 'chamferDim', label: 'Chamfer\nDimension', help: 'Dimension a chamfer line: its distance along the line next to it and its angle (0.100 X 45°)', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdChamferDim(); } },
+        { id: 'angRunDim', label: 'Angular Running\nDimension', help: 'Angles from one 0° line round a vertex to other lines and points, counter-clockwise', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAngularRunningDim(); } },
+        { id: 'pathLengthDim', label: 'Path Length\nDimension', help: 'The total length of a chain of lines and arcs, driving it', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdPathLengthDim(); } },
+        { id: 'autodim', label: 'Autodimension', help: 'Dimension the sketch from a datum: baseline, chain or ordinate, horizontal and vertical', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAutodimension(); } }] },
       { sep: true },
       { grid: true, stack: [
         // p9-sketchtab: the Line flyout (Line, Centerline, Midpoint Line, Parallel Line; ui-sketch-lines.js) with the
@@ -110,9 +117,9 @@
           { id: 'parallelogram', label: 'Parallelogram', tool: 'parallelogram', help: 'Parallelogram from three corners' }] },
         // the Arc flyout: Centerpoint Arc, Tangent Arc, 3 Point Arc (ui-sketch-curves.js)
         { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint Arc', tool: 'arc' }, { id: 'tarc', label: 'Tangent Arc', tool: 'tarc', help: 'Arc tangent to the end of a line or arc' }, { id: 'arc3', label: '3 Point Arc', tool: 'arc3' }] },
-        // the Ellipse flyout: Ellipse, Partial Ellipse (ui-sketch-spline.js); Parabola and Conic greyed
+        // the Ellipse flyout: Ellipse, Partial Ellipse, Parabola, Conic (ui-sketch-spline.js)
         { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' },
-          { id: 'parabola', label: 'Parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
+          { id: 'parabola', label: 'Parabola', tool: 'parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', tool: 'conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
         // the Slot flyout: the four slot types (ui-sketch-curves.js)
         { fly: 'slot', items: [{ id: 'slot', label: 'Straight Slot', tool: 'slot' }, { id: 'cslot', label: 'Centerpoint Straight Slot', tool: 'cslot', help: 'Slot from its center, one end and a width' },
           { id: 'aslot3', label: '3 Point Arc Slot', tool: 'aslot3', help: 'Curved slot from three points on its centerline and a width' },
@@ -142,7 +149,12 @@
         { id: 'fullyDefine', label: 'Fully Define\nSketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },
       // dxf-import: Repair Sketch (ui-sketch-import.js); Quick Snaps and Rapid Sketch are SolidWorks' and greyed
       { stack: [{ id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } },
-        { id: 'quickSnaps', label: 'Quick Snaps', help: 'Snap the next point to one kind of geometry only (a midpoint, a center, an intersection…)' },
+        // rfAR: Quick Snaps (ui-sketch.js UI.quickSnap): the next point snaps to that one kind of geometry only
+        { fly: 'quickSnaps', items: (UI.QUICK_SNAPS || []).map(function (q) {
+          return { id: 'qs-' + q[0], icon: 'quickSnaps', label: q[1] + ' Snap', help: 'Quick Snaps: snap the next point to ' + q[1].toLowerCase() + ' only, then snap as usual',
+            run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); },
+            active: function () { return App.quickSnap === q[0]; } };
+        }) },
         { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any face without starting a sketch on it first' }] },
       // Construction Geometry (ui-relations.js); Shaded Sketch Contours is View ▸ Sketch Regions (ui-sketch-layers.js)
       { stack: [{ id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
@@ -1047,6 +1059,7 @@
       items.push({ label: 'Offset Entities…', icon: 'offset', action: function () { UI.cmdOffsetEntities(); } });
       items.push({ label: 'Mirror Entities…', icon: 'mirrorEnt', action: function () { UI.cmdMirrorEntities(); } });
       items.push({ sep: true });
+      if (sel.length === 1 && UI.splineMenuItems) items = items.concat(UI.splineMenuItems(f, sel[0]));   // rfAS: Spline Tools on a spline
       if (sel.length === 1 && UI.openEntityPM) items.push({ label: 'Properties…', icon: 'props', action: function () { UI.openEntityPM(sel[0]); } });
       items.push({ label: 'Delete', key: 'Del', icon: 'cancel', action: act('Delete', function () { UI.deleteSelection(); }) });
     } else {
@@ -1290,18 +1303,39 @@
       ].concat(sketchMenuRows('Sketch Entities', ['line', 'rect', 'crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon', 'circle', 'pcircle', 'arc', 'tarc', 'arc3', 'ellipse', 'pellipse', 'parabola', 'conic', 'spline', 'styleSpline', 'eqnCurve', 'point', 'centerline', 'midline', 'parallelLine', 'tangentLine', 'perpLine', 'bisectorLine', 'tangentCircle', 'text', 'plane', 'fillet:skFillet', 'skChamfer']),
         sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve', 'offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'construction', 'mirrorEnt', 'dynMirror', 'moveEnt', 'copyEnt', 'rotateEnt', 'scaleEnt', 'stretchEnt', 'sketchPattern', 'cSketchPattern']), [
         { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment },
+        // rfAS: Tools ▸ Spline Tools (ui-sketch-spline.js)
+        { label: 'Spline Tools ▸ Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertSplinePoint },
+        { label: 'Spline Tools ▸ Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdSimplifySpline },
+        { label: 'Spline Tools ▸ Fit Spline…', icon: 'spline', action: function () { UI.cmdFitSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdFitSpline },
+        { label: 'Spline Tools ▸ Show Spline Handles', icon: 'spline', checked: !!(UI.splineView && UI.splineView.handles), action: function () { UI.cmdShowSplineHandles(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowSplineHandles },
+        { label: 'Spline Tools ▸ Show Curvature', icon: 'spline', action: function () { UI.cmdShowCurvature(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowCurvature },
+        { label: 'Spline Tools ▸ Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdRelaxSpline },
         { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
+        // rfAT: Jog Line (ui-sketch-tools.js) and Tools ▸ Blocks (ui-sketch-blocks.js)
+        { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine },
+        { label: 'Blocks ▸ Make…', icon: 'block', action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
+        { label: 'Blocks ▸ Edit Block', icon: 'block', checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },
+        { label: 'Blocks ▸ Insert…', icon: 'block', action: function () { UI.cmdInsertBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertBlock },
+        { label: 'Blocks ▸ Explode', icon: 'block', action: function () { UI.cmdExplodeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdExplodeBlock },
+        { label: 'Blocks ▸ Save…', icon: 'block', action: function () { UI.cmdSaveBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdSaveBlock },
         // dxf-import: Tools ▸ Sketch Tools, as SolidWorks has them (ui-sketch-import.js)
         { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },
         { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
         { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
         { label: 'Relations ▸ Add…', icon: 'addRelation', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Display/Delete…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
-        { label: 'Relations ▸ Constrain All', icon: 'fullyDefine', action: function () { UI.cmdConstrainAll(); }, disabled: App.mode !== 'sketch' || !UI.cmdConstrainAll }
-      ], sketchMenuRows('Dimensions', ['dim', 'horizDim', 'vertDim', 'ordinateH', 'ordinateV']), [
+        { label: 'Relations ▸ Constrain All', icon: 'fullyDefine', action: function () { UI.cmdConstrainAll(); }, disabled: App.mode !== 'sketch' || !UI.cmdConstrainAll },
+        // rfAR: Scan Equal and SketchXpert (ui-relations.js)
+        { label: 'Relations ▸ Scan Equal…', icon: 'relations', action: function () { UI.cmdScanEqual(); }, disabled: App.mode !== 'sketch' || !UI.cmdScanEqual },
+        { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert }
+      ], sketchMenuRows('Dimensions', ['dim', 'horizDim', 'vertDim', 'ordinateDim', 'ordinateH', 'ordinateV', 'chamferDim', 'pathLengthDim', 'angRunDim', 'autodim']), [   // rfAQ
         { label: 'Dimensions ▸ Fully Define Sketch…', icon: 'fullyDefine', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
         { sep: true },
-        { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } },
+        { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } }
+      ].concat(['autoRelations', 'autoSolve', 'noSolveMove', 'snapping', 'detachOnDrag', 'overrideDims'].map(function (k) {   // rfAR (ui-sketch.js UI.sketchSettings)
+        var SSet = UI.sketchSettings, name = SSet ? SSet.NAMES[k] : k;
+        return { label: 'Sketch Settings ▸ ' + name, checked: !!(SSet && SSet.get(k)), disabled: !SSet, action: function () { var on = SSet.toggle(k); toast(name + (on ? ' on' : ' off')); } };
+      }), [
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },
         { label: 'Units: millimeters (MMGS)', checked: App.model.units !== 'in', action: function () { App.model.units = 'mm'; UI.rebuild(); } },
@@ -1311,7 +1345,7 @@
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
         { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
         { sep: true }
-      ].concat(UI.occtMenuItems ? UI.occtMenuItems() : [])) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
+      ].concat(UI.occtMenuItems ? UI.occtMenuItems() : []))) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } }
       ] },

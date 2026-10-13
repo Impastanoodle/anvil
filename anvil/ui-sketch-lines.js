@@ -191,8 +191,29 @@
     else if (e.infinite === 'p1') { t1 = L; t0 = Math.min(t0, 0); }
     return [[a[0] + u[0] * t0, a[1] + u[1] * t0], [a[0] + u[0] * t1, a[1] + u[1] * t1]];
   };
+  // rfAT: the Line tool's tangent arc (autotransition: back over the end point and out, or A) uses SolidWorks' intent
+  // zones, as the Tangent Arc tool does: the way the cursor leaves the end point (more than 10 px away) picks the arc —
+  // along the line / arc: tangent; back over it: reverse tangent; square to it: normal; back within 10 px chooses
+  // again. The zone's direction is st.arcDir (ui-sketch.js draws and places the arc leaving that way); the end's own
+  // tangent is kept in st.azBase for the point the chain is at.
+  function lineArcZone(st, P, Q) {
+    var key = P[0] + ',' + P[1];
+    if (st.azFor !== key) { st.azFor = key; st.azBase = st.arcDir.slice(); st.azZone = null; }
+    var pl = UI.activePlane(), sP = UI.worldToScreen(UI.K.to3D(pl, P[0], P[1])), sQ = UI.worldToScreen(UI.K.to3D(pl, Q[0], Q[1]));
+    if (Math.hypot(sQ[0] - sP[0], sQ[1] - sP[1]) < 10) { st.azZone = null; st.arcDir = st.azBase.slice(); return; }
+    if (!st.azZone) {
+      var t = st.azBase, v = [Q[0] - P[0], Q[1] - P[1]], L = Math.hypot(v[0], v[1]);
+      if (!(L > 0)) return;
+      var c = (v[0] * t[0] + v[1] * t[1]) / L, left = t[0] * v[1] - t[1] * v[0] >= 0;
+      st.azZone = c > 0.5 ? { kind: 'tangent', u: t.slice() } : c < -0.5 ? { kind: 'reverse', u: [-t[0], -t[1]] } : { kind: 'normal', u: left ? [-t[1], t[0]] : [t[1], -t[0]] };
+    }
+    st.arcDir = st.azZone.u.slice();
+  }
+  UI.lineArcZone = function () { var st = App.toolState; return st && st.arcMode && st.azZone ? st.azZone.kind : null; };
   UI.sketchToolHooks.line = {
     entities: function (pts, cur, all) {
+      var st0 = App.toolState;
+      if (st0 && st0.arcMode && st0.arcDir && cur && all.length >= 2 && !lineSingle()) lineArcZone(st0, all[0], all[all.length - 1]);
       if (!lineSingle() || all.length < 2) return null;
       var e = specialLine(all[0], all[1]);
       if (LM.infinite) e.infinite = true;

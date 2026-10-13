@@ -198,8 +198,55 @@
     }
     return { bez: bez, knots: knots, closed: false, style: { cps: P, degree: n, L: L } };
   }
+  // ---- rfAS: Conic / Parabola { t: 'spline', pts: [P0, S, P2], conic: rho, parabola? }: SolidWorks' Conic (and its
+  // Parabola, rho = 0.5) as the rational quadratic Bezier P0, T, P2 with middle weight w = rho / (1 - rho), where the
+  // top vertex T (where the end tangents meet) is M + (S - M) / rho, M the midpoint of P0 P2 and S the shoulder point
+  // (the curve's point at t = 1/2). Any drag of the three points keeps a conic of the same rho.
+  // conicData(e) -> { P0, T, P2, S, rho, w } or null; conicPoint(c, t) the exact point.
+  function conicData(e) {
+    if (!e || e.t !== 'spline' || e.conic == null || !e.pts || e.pts.length !== 3) return null;
+    var rho = +e.conic;
+    if (!(rho > 0 && rho < 1)) return null;
+    var P0 = [+e.pts[0][0], +e.pts[0][1]], S = [+e.pts[1][0], +e.pts[1][1]], P2 = [+e.pts[2][0], +e.pts[2][1]];
+    var M = [(P0[0] + P2[0]) / 2, (P0[1] + P2[1]) / 2], T = [M[0] + (S[0] - M[0]) / rho, M[1] + (S[1] - M[1]) / rho];
+    return { P0: P0, T: T, P2: P2, S: S, rho: rho, w: rho / (1 - rho) };
+  }
+  function conicPoint(c, t) {
+    var u = 1 - t, a = u * u, b = 2 * c.w * u * t, d = t * t, W = a + b + d;
+    return [(a * c.P0[0] + b * c.T[0] + d * c.P2[0]) / W, (a * c.P0[1] + b * c.T[1] + d * c.P2[1]) / W];
+  }
+  function conicDeriv(c, t) {   // dC/dt of the rational quadratic (quotient rule)
+    var u = 1 - t, a = u * u, b = 2 * c.w * u * t, d = t * t, W = a + b + d, da = -2 * u, db = 2 * c.w * (1 - 2 * t), dd = 2 * t, dW = da + db + dd;
+    var N = [a * c.P0[0] + b * c.T[0] + d * c.P2[0], a * c.P0[1] + b * c.T[1] + d * c.P2[1]], dN = [da * c.P0[0] + db * c.T[0] + dd * c.P2[0], da * c.P0[1] + db * c.T[1] + dd * c.P2[1]];
+    return [(dN[0] * W - N[0] * dW) / (W * W), (dN[1] * W - N[1] * dW) / (W * W)];
+  }
+  // the conic as cubic spans (CONIC_SPANS of them, evenly in t; a parabola, being polynomial, as two exact ones): each
+  // keeps its ends and end tangent directions and passes through the conic's point halfway along it, so the curve is
+  // G1 and within about 1e-7 of its size of the true conic
+  var CONIC_SPANS = 16;
+  function conicGeom(e) {
+    var c = conicData(e);
+    if (!c) return null;
+    var bez = [], knots = [0], N = Math.abs(c.rho - 0.5) < 1e-12 ? 2 : CONIC_SPANS, rs = [];
+    for (var q = 0; q < N; q++) rs.push([q / N, (q + 1) / N]);
+    rs.forEach(function (r) {
+      var A = conicPoint(c, r[0]), B = conicPoint(c, r[1]), X = conicPoint(c, (r[0] + r[1]) / 2), u = conicDeriv(c, r[0]), v = conicDeriv(c, r[1]);
+      if (r[0] === 0) A = c.P0; else if (r[0] === 0.5) A = c.S;
+      if (r[1] === 1) B = c.P2; else if (r[1] === 0.5) B = c.S;
+      var lu = Math.hypot(u[0], u[1]) || 1, lv = Math.hypot(v[0], v[1]) || 1;
+      u = [u[0] / lu, u[1] / lu]; v = [v[0] / lv, v[1] / lv];
+      // B(1/2) = (A + B) / 2 + 3/8 (a u - b v) = X
+      var rx = (X[0] - (A[0] + B[0]) / 2) * 8 / 3, ry = (X[1] - (A[1] + B[1]) / 2) * 8 / 3, det = -u[0] * v[1] + u[1] * v[0], a, b;
+      if (Math.abs(det) > 1e-12) { a = (-rx * v[1] + ry * v[0]) / det; b = (u[0] * ry - u[1] * rx) / det; }
+      if (!(a > 0) || !(b > 0)) { a = b = Math.hypot(B[0] - A[0], B[1] - A[1]) / 3; }
+      bez.push([A, [A[0] + a * u[0], A[1] + a * u[1]], [B[0] - b * v[0], B[1] - b * v[1]], B]);
+      knots.push(knots[knots.length - 1] + Math.max(Math.hypot(B[0] - A[0], B[1] - A[1]), 1e-9));
+    });
+    return { bez: bez, knots: knots, closed: false, conic: c };
+  }
   function splineGeom(e) {
     if (isStyle(e)) return styleGeom(e);
+    if (e && e.conic != null) { var cg = conicGeom(e); if (cg) return cg; }   // rfAS
     var P = (e.pts || []).map(function (p) { return [+p[0], +p[1]]; }), n = P.length;
     if (n < 2) return null;
     var closed = !!e.closed && n >= 3, m = closed ? n : n - 1, h = [], knots = [0], i;
@@ -1966,7 +2013,7 @@
   K.trimEntity = trimEntity; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
-  K.splineGeom = splineGeom; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
+  K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
   K.syncTextPaths = syncTextPaths; K.textEntityRemoved = textEntityRemoved; K.remapTextPaths = remapTextPaths; K.transformText = transformText;
@@ -1977,4 +2024,291 @@
   _.setDimValue = setDimValue; _.setTessellation = setTessellation; _.signedArea = signedArea; _.sketchProfile = sketchProfile; _.tessKey = tessKey;
   _.translateEntity = translateEntity; _.trimEntity = trimEntity; _.splineGeom = splineGeom; _.ellipsePoint = ellipsePoint; _.freeSamples = freeSamples;
   _.syncTextPaths = syncTextPaths; _.textDxf = textDxf;
+
+  // ------------------------------------------------------------------ rfAT: Blocks (Tools ▸ Blocks)
+  // SolidWorks' sketch blocks: a named group of entities placed as rigid instances (punch / louver symbols repeated on
+  // a flat blank). Definitions live on the sketch: sketch.blocks = { Name: { ents: [entities in block coordinates,
+  // the insertion point at 0, 0] } }. An instance is ordinary sketch geometry tagged with the instance id `blk` (so
+  // profiles, display, the sketch DXF writer and drawings take it as it is: DXF gets the exploded geometry) plus its
+  // insertion point, a point { t: 'point', x, y, blk: id, blkDef: name, blkAng: degrees, blkS: scale }. The insertion
+  // point is a solver point (dimension it, relate it, drag it); syncBlocks re-places each instance's geometry from its
+  // insertion point, angle and scale, and an instance part of which was moved (a drag of one of its lines, a relation
+  // to one of its points) moves its insertion point by that move first, so the whole instance follows.
+  function blockXf(ins, ang, sc) {
+    var a = (+ang || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), k = sc != null && +sc > 0 ? +sc : 1;
+    if (Math.abs(c) < 1e-15) c = 0;
+    if (Math.abs(s) < 1e-15) s = 0;
+    return { c: c, s: s, k: k, ang: +ang || 0, tx: +ins[0] || 0, ty: +ins[1] || 0 };
+  }
+  function blkClean(v) { return Math.abs(v) < 1e-13 ? 0 : +(+v).toPrecision(13); }
+  function blkPt(m, x, y) { return [blkClean(m.tx + m.k * (m.c * x - m.s * y)), blkClean(m.ty + m.k * (m.s * x + m.c * y))]; }
+  // entity e (block coordinates) placed by m (blockXf); null for a type a block cannot carry
+  function blockEntity(e, m) {
+    var o = JSON.parse(JSON.stringify(e)), p, q;
+    switch (e.t) {
+      case 'point': p = blkPt(m, e.x, e.y); o.x = p[0]; o.y = p[1]; break;
+      case 'line': case 'slot': p = blkPt(m, e.x1, e.y1); q = blkPt(m, e.x2, e.y2); o.x1 = p[0]; o.y1 = p[1]; o.x2 = q[0]; o.y2 = q[1]; if (e.t === 'slot') o.w = blkClean(e.w * m.k); break;
+      case 'circle': p = blkPt(m, e.cx, e.cy); o.cx = p[0]; o.cy = p[1]; o.r = blkClean(e.r * m.k); break;
+      case 'arc': case 'aslot': p = blkPt(m, e.cx, e.cy); o.cx = p[0]; o.cy = p[1]; o.r = blkClean(e.r * m.k); o.a0 = blkClean(normDeg(e.a0 + m.ang)); o.a1 = blkClean(o.a0 + (e.a1 - e.a0)); if (e.t === 'aslot') o.w = blkClean(e.w * m.k); break;
+      case 'poly': p = blkPt(m, e.cx, e.cy); o.cx = p[0]; o.cy = p[1]; o.r = blkClean(e.r * m.k); o.rot = blkClean(normDeg((+e.rot || 0) + m.ang)); break;
+      case 'ellipse': case 'pellipse': p = blkPt(m, e.cx, e.cy); o.cx = p[0]; o.cy = p[1]; o.rx = blkClean(e.rx * m.k); o.ry = blkClean(e.ry * m.k); o.rot = blkClean(normDeg((+e.rot || 0) + m.ang)); break;
+      case 'polyline': case 'spline':
+        o.pts = e.pts.map(function (r) { return blkPt(m, r[0], r[1]); });
+        if (e.tans) o.tans = e.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + m.ang)].concat(tg.slice(1)) : null; });
+        break;
+      case 'text': {
+        var t1 = m.k !== 1 ? transformText(e, { s: m.k, cx: 0, cy: 0 }) : e, t2 = m.ang ? transformText(t1, { rot: m.ang, cx: 0, cy: 0 }) : t1;
+        o = transformText(t2, { dx: m.tx, dy: m.ty });
+        break;
+      }
+      default: return null;
+    }
+    return o;
+  }
+  // block-coordinate copies of sketch entity e for a definition whose insertion point is ins (a rectangle becomes its
+  // four lines: a turned instance keeps them square); [] when a block cannot hold it
+  function blockLocal(e, ins, inv) {
+    if (!e) return [];
+    if (e.t === 'rect' || e.t === 'crect') {
+      var x0 = e.t === 'rect' ? e.x : e.cx - e.w / 2, y0 = e.t === 'rect' ? e.y : e.cy - e.h / 2, c = [[x0, y0], [x0 + e.w, y0], [x0 + e.w, y0 + e.h], [x0, y0 + e.h]];
+      var out = [];
+      c.forEach(function (a, i) {
+        var b = c[(i + 1) % 4], l = { t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] };
+        if (e.construction) l.construction = true;
+        if (e.layer != null) l.layer = e.layer;
+        out = out.concat(blockLocal(l, ins, inv));
+      });
+      return out;
+    }
+    var o = blockEntity(e, blockXf([-ins[0], -ins[1]], 0, 1));
+    if (o && inv) o = blockEntity(o, inv);
+    if (!o) return [];
+    ['blk', 'blkDef', 'blkAng', 'blkS', 'sharp'].forEach(function (k) { delete o[k]; });
+    return [o];
+  }
+  // every instance in the sketch: [{ id, def, ins (index of its insertion point), x, y, ang, s, ents: [indices] }]
+  function blockInstances(sketch) {
+    var E = (sketch && sketch.entities) || [], by = {}, order = [];
+    E.forEach(function (e, i) {
+      if (!e || e.blk == null) return;
+      var id = String(e.blk), r = by[id];
+      if (!r) { r = by[id] = { id: id, ins: -1, ents: [] }; order.push(id); }
+      if (e.t === 'point' && e.blkDef != null && r.ins < 0) { r.ins = i; r.def = String(e.blkDef); r.x = +e.x || 0; r.y = +e.y || 0; r.ang = +e.blkAng || 0; r.s = e.blkS != null ? +e.blkS : 1; }
+      else r.ents.push(i);
+    });
+    return order.map(function (id) { return by[id]; }).filter(function (r) { return r.ins >= 0; });
+  }
+  function newBlockId(sketch) {
+    var used = {}, n = 1;
+    ((sketch && sketch.entities) || []).forEach(function (e) { if (e && e.blk != null) used[String(e.blk)] = true; });
+    while (used['b' + n]) n++;
+    return 'b' + n;
+  }
+  // the geometry instance r should have (its definition placed by its insertion point, angle and scale), or null
+  function blockPlaced(sketch, r) {
+    var d = sketch.blocks && sketch.blocks[r.def];
+    if (!d) return null;
+    var m = blockXf([r.x, r.y], r.ang, r.s);
+    return d.ents.map(function (e) { return blockEntity(e, m); });
+  }
+  // the point that says where an entity is (its first parameter point)
+  function blkAnchor(e) {
+    if (!e) return null;
+    if (e.t === 'point' || e.t === 'text') return [+e.x || 0, +e.y || 0];
+    if (e.x1 != null) return [e.x1, e.y1];
+    if (e.cx != null) return [e.cx, e.cy];
+    if (e.pts && e.pts.length) return [e.pts[0][0], e.pts[0][1]];
+    return null;
+  }
+  function blkStrip(e) {
+    var o = {};
+    Object.keys(e || {}).sort().forEach(function (k) { if (k !== 'blk' && k !== 'layer' && k !== 'construction') o[k] = typeof e[k] === 'number' ? Math.round(e[k] * 1e7) / 1e7 : e[k]; });
+    return JSON.stringify(o);
+  }
+  // Re-place every instance from its insertion point (skip: an instance id left alone, the one in Edit Block). An
+  // instance part of which moved while its insertion point did not moves its insertion point by that move first.
+  // Returns the number of instances changed.
+  function syncBlocks(sketch, skip) {
+    if (!sketch || !sketch.blocks) return 0;
+    var E = sketch.entities, changed = 0;
+    blockInstances(sketch).forEach(function (r) {
+      if (skip != null && String(skip) === r.id) return;
+      var want = blockPlaced(sketch, r);
+      if (!want || want.length !== r.ents.length) return;
+      var tol = 1e-9 * (1 + Math.abs(r.x) + Math.abs(r.y)), moved = null, still = false;
+      r.ents.forEach(function (i, k) {
+        var a = blkAnchor(E[i]), b = blkAnchor(want[k]);
+        if (!a || !b) return;
+        var d = [a[0] - b[0], a[1] - b[1]];
+        if (Math.hypot(d[0], d[1]) > tol) { if (!moved) moved = d; } else still = true;
+      });
+      if (!moved && !r.ents.some(function (i, k) { return blkStrip(E[i]) !== blkStrip(want[k]); })) return;
+      if (moved && (still || r.ents.length === 1) && !blkSameMove(E, r, want, moved, tol)) {
+        // part of the instance moved (a drag of one of its lines): the whole instance follows
+        var P = E[r.ins];
+        P.x = blkClean(P.x + moved[0]); P.y = blkClean(P.y + moved[1]); r.x = P.x; r.y = P.y;
+        want = blockPlaced(sketch, r);
+      }
+      r.ents.forEach(function (i, k) {
+        var keep = E[i], w = want[k];
+        w.blk = keep.blk;
+        if (keep.construction) w.construction = true;
+        if (keep.layer != null) w.layer = keep.layer;
+        Object.keys(keep).forEach(function (key) { delete keep[key]; });
+        Object.keys(w).forEach(function (key) { keep[key] = w[key]; });
+      });
+      changed++;
+    });
+    return changed;
+  }
+  // true when every entity of the instance is off by the same move (its insertion point moved: the geometry follows it)
+  function blkSameMove(E, r, want, d, tol) {
+    return r.ents.length > 1 && r.ents.every(function (i, k) { var a = blkAnchor(E[i]), b = blkAnchor(want[k]); return !a || !b || Math.hypot(a[0] - b[0] - d[0], a[1] - b[1] - d[1]) <= tol; });
+  }
+  // relations and dimensions after the entity list changed from `before`: those on an entity in `gone` go (those
+  // among `keepIn` only, when all their entities are there, stay), and indices follow the entities
+  function blkRemap(sketch, before, gone) {
+    var E = sketch.entities, map = before.map(function (e) { return E.indexOf(e); });
+    function ent(r) { var m = /^(\d+)/.exec(String(r)); return m ? +m[1] : null; }
+    if (sketch.rels) {
+      sketch.rels = sketch.rels.filter(function (rel) { return rel.refs.every(function (r) { var e = ent(r); return e == null || (gone.indexOf(e) < 0 && map[e] >= 0); }); })
+        .map(function (rel) { rel.refs = rel.refs.map(function (r) { var m = /^(\d+)(.*)$/.exec(String(r)); return m ? map[+m[1]] + m[2] : r; }); return rel; });
+      if (!sketch.rels.length) delete sketch.rels;
+    }
+    if (sketch.dims) {
+      sketch.dims = sketch.dims.filter(function (d) { return gone.indexOf(d.e) < 0 && map[d.e] >= 0; });
+      sketch.dims.forEach(function (d) { d.e = map[d.e]; });
+      if (!sketch.dims.length) delete sketch.dims;
+    }
+  }
+  // Make Block: entities idx become the definition `name` (block coordinates from ins, [x, y]) and, where they were,
+  // its first instance. Their relations and dimensions go (a block's geometry is held by the block, as in SolidWorks).
+  // Returns { ok, id, name, ins (index of the insertion point), error }.
+  function makeBlock(sketch, idx, name, ins) {
+    var E = sketch.entities;
+    idx = (idx || []).filter(function (i, k, a) { return E[i] && a.indexOf(i) === k; }).sort(function (a, b) { return a - b; });
+    if (!idx.length) return { ok: false, error: 'Select the sketch entities for the block first.' };
+    if (idx.some(function (i) { return E[i].blk != null; })) return { ok: false, error: 'An entity is in a block already: explode that block first.' };
+    name = String(name == null ? '' : name).trim();
+    sketch.blocks = sketch.blocks || {};
+    if (!name) { var n = 1; while (sketch.blocks['Block' + n]) n++; name = 'Block' + n; }
+    if (sketch.blocks[name]) return { ok: false, error: 'A block named ' + name + ' exists: give the new one another name.' };
+    ins = ins || [0, 0];
+    var ents = [];
+    idx.forEach(function (i) { ents = ents.concat(blockLocal(E[i], ins)); });
+    if (!ents.length) { if (!Object.keys(sketch.blocks).length) delete sketch.blocks; return { ok: false, error: 'Nothing selected can go into a block.' }; }
+    sketch.blocks[name] = { ents: ents };
+    var id = newBlockId(sketch), before = E.slice();
+    sketch.entities = E.filter(function (e, i) { return idx.indexOf(i) < 0; });
+    blkRemap(sketch, before, idx);
+    blockPlaced(sketch, { def: name, x: +ins[0] || 0, y: +ins[1] || 0, ang: 0, s: 1 }).forEach(function (w) { w.blk = id; sketch.entities.push(w); });
+    sketch.entities.push({ t: 'point', x: blkClean(+ins[0] || 0), y: blkClean(+ins[1] || 0), blk: id, blkDef: name, blkAng: 0, blkS: 1 });
+    return { ok: true, id: id, name: name, ins: sketch.entities.length - 1 };
+  }
+  // Insert Block: one more instance of `name` at (x, y), turned ang degrees, scaled s. Returns { ok, id, ins, error }.
+  function insertBlock(sketch, name, x, y, ang, s) {
+    if (!sketch.blocks || !sketch.blocks[name]) return { ok: false, error: 'No block named ' + name + ' in this sketch.' };
+    if (s != null && !(+s > 0)) return { ok: false, error: 'The scale must be more than 0.' };
+    var id = newBlockId(sketch), r = { def: name, x: +x || 0, y: +y || 0, ang: +ang || 0, s: s != null ? +s : 1 };
+    blockPlaced(sketch, r).forEach(function (w) { w.blk = id; sketch.entities.push(w); });
+    sketch.entities.push({ t: 'point', x: blkClean(r.x), y: blkClean(r.y), blk: id, blkDef: name, blkAng: r.ang, blkS: r.s });
+    return { ok: true, id: id, ins: sketch.entities.length - 1 };
+  }
+  // Add a definition from a saved block ({ name, ents } as blockFile writes). Returns { ok, name, error }.
+  function addBlockDef(sketch, o, name) {
+    if (!o || !Array.isArray(o.ents) || !o.ents.length) return { ok: false, error: 'That is not a block file.' };
+    name = String(name || o.name || 'Block').trim();
+    sketch.blocks = sketch.blocks || {};
+    var base = name, n = 2;
+    while (sketch.blocks[name]) name = base + '-' + n++;
+    sketch.blocks[name] = { ents: JSON.parse(JSON.stringify(o.ents)) };
+    return { ok: true, name: name };
+  }
+  function blockFile(sketch, name) {
+    var d = sketch.blocks && sketch.blocks[name];
+    return d ? JSON.stringify({ anvilBlock: 1, name: name, ents: d.ents }, null, 1) : null;
+  }
+  // Block properties of instance id: { x, y, ang, s } (any of them): its insertion point and geometry move
+  function setBlockInstance(sketch, id, o) {
+    var r = blockInstances(sketch).filter(function (q) { return q.id === String(id); })[0];
+    if (!r) return { ok: false, error: 'No block instance ' + id + '.' };
+    if (o.s != null && !(+o.s > 0)) return { ok: false, error: 'The scale must be more than 0.' };
+    var P = sketch.entities[r.ins];
+    if (o.x != null) P.x = +o.x;
+    if (o.y != null) P.y = +o.y;
+    if (o.ang != null) P.blkAng = +o.ang;
+    if (o.s != null) P.blkS = +o.s;
+    // the geometry follows the insertion point (not the other way round): place it before syncing
+    var want = blockPlaced(sketch, { def: r.def, x: P.x, y: P.y, ang: P.blkAng, s: P.blkS });
+    if (want && want.length === r.ents.length) r.ents.forEach(function (i, k) { var w = want[k], keep = sketch.entities[i]; w.blk = keep.blk; if (keep.construction) w.construction = true; if (keep.layer != null) w.layer = keep.layer; sketch.entities[i] = w; });
+    return { ok: true };
+  }
+  // Explode Block: instance id's geometry becomes ordinary sketch geometry and its insertion point goes (a definition
+  // no instance uses any more goes too). Returns { ok, error }.
+  function explodeBlock(sketch, id) {
+    var r = blockInstances(sketch).filter(function (q) { return q.id === String(id); })[0];
+    if (!r) return { ok: false, error: 'No block instance ' + id + '.' };
+    var before = sketch.entities.slice();
+    r.ents.forEach(function (i) { delete sketch.entities[i].blk; });
+    sketch.entities = sketch.entities.filter(function (e, i) { return i !== r.ins; });
+    blkRemap(sketch, before, [r.ins]);
+    if (!blockInstances(sketch).some(function (q) { return q.def === r.def; }) && sketch.blocks) { delete sketch.blocks[r.def]; if (!Object.keys(sketch.blocks).length) delete sketch.blocks; }
+    return { ok: true };
+  }
+  // Edit Block: the definition of instance id's block becomes that instance's geometry now (plus `extra`, entity
+  // indices drawn while editing), in its block coordinates, and every instance of it is placed again. Relations and
+  // dimensions on the edited geometry go. Returns { ok, error }.
+  function redefineBlock(sketch, id, extra) {
+    var r = blockInstances(sketch).filter(function (q) { return q.id === String(id); })[0];
+    if (!r) return { ok: false, error: 'No block instance ' + id + '.' };
+    var E = sketch.entities, idx = r.ents.concat((extra || []).filter(function (i) { return E[i] && E[i].blk == null && r.ents.indexOf(i) < 0; }));
+    if (!idx.length) return { ok: false, error: 'The block has no geometry left.' };
+    var inv = { c: Math.cos(-r.ang * Math.PI / 180), s: Math.sin(-r.ang * Math.PI / 180), k: 1 / r.s, ang: -r.ang, tx: 0, ty: 0 }, ents = [];
+    idx.forEach(function (i) { ents = ents.concat(blockLocal(E[i], [r.x, r.y], inv)); });
+    sketch.blocks[r.def] = { ents: ents };
+    var before = E.slice();
+    sketch.entities = E.filter(function (e, i) { return idx.indexOf(i) < 0; });
+    blkRemap(sketch, before, idx);
+    // every instance of the block is placed again (their old geometry goes, the new follows the insertion point)
+    var gone = [];
+    blockInstances(sketch).forEach(function (q) { if (q.def === r.def) gone = gone.concat(q.ents); });
+    if (gone.length) { var b2 = sketch.entities.slice(); sketch.entities = sketch.entities.filter(function (e, i) { return gone.indexOf(i) < 0; }); blkRemap(sketch, b2, gone); }
+    blockInstances(sketch).filter(function (q) { return q.def === r.def; }).forEach(function (q) {
+      blockPlaced(sketch, q).forEach(function (w) { w.blk = q.id; sketch.entities.push(w); });
+    });
+    return { ok: true };
+  }
+  // script round trip: .blocks({ defs, tags: [[entity, id], [insertion point, id, name, angle, scale], …] })
+  function blockScriptLine(f) {
+    if (!f.blocks || !Object.keys(f.blocks).length) return '';
+    var tags = [];
+    (f.entities || []).forEach(function (e, i) {
+      if (!e || e.blk == null) return;
+      tags.push(e.blkDef != null ? [i, String(e.blk), String(e.blkDef), +e.blkAng || 0, e.blkS != null ? +e.blkS : 1] : [i, String(e.blk)]);
+    });
+    return '\n  .blocks(' + JSON.stringify({ defs: f.blocks, tags: tags }) + ')';
+  }
+  function applyBlockScript(f, o) {
+    o = o || {};
+    f.blocks = JSON.parse(JSON.stringify(o.defs || {}));
+    (o.tags || []).forEach(function (t) {
+      var e = f.entities[t[0]];
+      if (!e) throw new Error('No sketch entity ' + t[0] + ' for a block.');
+      e.blk = String(t[1]);
+      if (t.length > 2) { e.blkDef = String(t[2]); e.blkAng = +t[3] || 0; e.blkS = t[4] != null ? +t[4] : 1; }
+    });
+    if (!Object.keys(f.blocks).length) delete f.blocks;
+  }
+  // the builder method and the script writer: kernel-script.js calls Kernel.installBlockScript once it has made the Builder
+  function installBlockScript() {
+    if (K.__sketchBlocks || !K.registerSketchScript || !K.newModel || !K.Builder) return;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    SBP.blocks = function (o) { applyBlockScript(this.f, o); return this; };
+    K.registerSketchScript(blockScriptLine);
+    K.__sketchBlocks = true;
+  }
+  K.installBlockScript = installBlockScript;
+  K.blockInstances = blockInstances; K.makeBlock = makeBlock; K.insertBlock = insertBlock; K.explodeBlock = explodeBlock; K.syncBlocks = syncBlocks;
+  K.setBlockInstance = setBlockInstance; K.redefineBlock = redefineBlock; K.blockEntity = blockEntity; K.blockXf = blockXf;
+  K.addBlockDef = addBlockDef; K.blockFile = blockFile; K.blockScriptLine = blockScriptLine; K.applyBlockScript = applyBlockScript;
 })(Kernel, Kernel._);

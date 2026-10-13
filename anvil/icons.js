@@ -320,7 +320,17 @@ var Icons = (function () {
     holeTable: rect(1.5, 1.5, 9, 8, W, S, 1) + ln('M1.5 4 h9 M5 1.5 v8', S, 0.8) + circ(12, 12, 2.5, W, B, 1.1) + ln('M12 10.5 v3 M10.5 12 h3', B, 0.7),
     weldSymbol: ln('M1.5 13.5 L6 8 H15', S, 1.1) + p('M1.5 13.5 l0.6 -2.2 1.6 1.6 z', S, S, 0.6) + p('M9 8 v4 l4 -4 z', W, B, 1.1),
     revisionSymbol: p('M8 1.8 L14.5 13.5 H1.5 z', W, S, 1.1) + txt(8, 12, 6.5, 'A', B, 'Arial', 700),
-    revisionCloud: ln('M3 5 a2 2 0 0 1 3.5 -1.5 a2 2 0 0 1 3.5 0 a2 2 0 0 1 3 2 a2 2 0 0 1 0.5 3.5 a2 2 0 0 1 -2 3.5 a2 2 0 0 1 -3.5 0.5 a2 2 0 0 1 -3.5 -0.5 a2 2 0 0 1 -1.5 -3.5 a2 2 0 0 1 1.5 -3.5', B, 1.1)
+    revisionCloud: ln('M3 5 a2 2 0 0 1 3.5 -1.5 a2 2 0 0 1 3.5 0 a2 2 0 0 1 3 2 a2 2 0 0 1 0.5 3.5 a2 2 0 0 1 -2 3.5 a2 2 0 0 1 -3.5 0.5 a2 2 0 0 1 -3.5 -0.5 a2 2 0 0 1 -1.5 -3.5 a2 2 0 0 1 1.5 -3.5', B, 1.1),
+    // (rfAQ) sketch Ordinate Dimension (values both ways), Chamfer Dimension (a chamfered corner, a leader), Angular Running
+    // (rays from a vertex, an arc), Path Length (a chain with a dimension along it), Autodimension (a part with baseline dims)
+    ordinateDim: ln('M2 14 h12 M2 14 V2', S, 1.1) + ln('M5 13.5 V9 M9 13.5 V9 M2.5 6 H6', B, 1) + txt(5, 8, 3.4, '0') + txt(9, 8, 3.4, '4') + txt(8.5, 7.2, 3.4, '3'),
+    chamferDim: ln('M2 14 V7 l4 -4 H14', S, 1.3) + ln('M4 5 L9.5 9.5 H14', B, 1) + p('M4 5 l2.2 0.6 -1.6 1.6 z', B, B, 0.5) + ln('M2 7 l4 -4', G, 1.8),
+    angRunDim: ln('M3 13 H14 M3 13 L12 5 M3 13 L5 3', S, 1.1) + ln('M10 13 A7 7 0 0 0 4.6 6.2', B, 1) + txt(13, 11.5, 3.4, '0'),
+    pathLengthDim: ln('M2 12 L6 12 A3 3 0 0 0 9 9 L9 4 L14 4', S, 1.3) + ln('M3 15 h3 M2 14.2 l1 0.8 -1 0.8', B, 1) + txt(11, 15, 4, 'L'),
+    autodim: rect(3, 4, 10, 7, 'none', S, 1.2) + ln('M3 1.5 h10 M3 2.5 v-2 M13 2.5 v-2 M1.5 4 v7 M0.5 4 h2 M0.5 11 h2', B, 1) + circ(8, 7.5, 1.4, 'none', B, 1),
+    // (rfAT) Block (a dashed frame round a punch symbol with its insertion point), Jog Line (a line with a square jog)
+    block: rect(1.5, 1.5, 13, 13, W, S, 0.9) + circ(8, 8, 3.2, W, B, 1.1) + ln('M3.5 8 h9 M8 3.5 v9', B, 0.7) + circ(8, 8, 1, S, S, 0.5),
+    jogLine: ln('M0.5 11 H5 V5 H11 V11 H15.5', B, 1.3)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

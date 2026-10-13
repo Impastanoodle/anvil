@@ -1104,8 +1104,19 @@
     if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]].concat(t[2] != null ? [+t[2]] : []) : null; });   // rfAK: [angle, weight, weightIn]
     if (opts && opts.local) e.local = true;   // rfAK: Maintain internal continuity off
     if (opts && opts.eq) e.eq = JSON.parse(JSON.stringify(opts.eq));   // rfAP: an Equation Driven Curve's equation (SketchSolver.equationPoints)
+    if (opts && opts.conic != null) { e.conic = +opts.conic; if (opts.parabola) e.parabola = true; }   // rfAS: a Conic / Parabola (pts: start, shoulder, end)
     return this._e(e);
   };
+  // rfAS: conic(start, topVertex, end, rho): SolidWorks' Conic, the rational quadratic from start to end whose end tangents
+  // meet at the top vertex; rho in (0, 1) (0.5 a parabola, less an ellipse, more a hyperbola). parabola(start, topVertex,
+  // end): the parabola so. Both are splines { pts: [start, shoulder, end], conic: rho } (Kernel.splineGeom).
+  SketchBuilder.prototype.conic = function (p0, top, p2, rho) {
+    var s = this, A = [s._v(p0[0]), s._v(p0[1])], T = [s._v(top[0]), s._v(top[1])], B = [s._v(p2[0]), s._v(p2[1])], r = rho == null ? 0.5 : +rho;
+    if (!(r > 0 && r < 1)) throw new Error('A conic\'s rho is between 0 and 1.');
+    var M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], S = [M[0] + r * (T[0] - M[0]), M[1] + r * (T[1] - M[1])];
+    return this.spline([A, [Math.round(S[0] * 1e9) / 1e9, Math.round(S[1] * 1e9) / 1e9], B], false, null, { conic: r, parabola: rho == null || this._parabola });
+  };
+  SketchBuilder.prototype.parabola = function (p0, top, p2) { this._parabola = true; try { return this.conic(p0, top, p2, 0.5); } finally { this._parabola = false; } };
   // rfAH: styleSpline(controlVertices, { degree: 3 | 5 | 7 }?): a Style Spline, one Bézier span shaped by its control
   // polygon (Kernel.splineGeom). Without a degree it is the number of vertices less one; a different degree elevates
   // (exact) or fits (Kernel.bzDegree) the vertices given.
@@ -1298,6 +1309,7 @@
               case 'point': s += '\n  .point(' + e.x + ', ' + e.y + ')'; break;
               case 'spline': if (e.style) { s += '\n  .styleSpline(' + JSON.stringify(e.pts) + ', { degree: ' + (e.pts.length - 1) + ' })'; break; }   // rfAH
                 var spo = (e.local ? ['local: true'] : []).concat(e.eq ? ['eq: ' + JSON.stringify(e.eq)] : []);   // rfAP: an Equation Driven Curve keeps its equation
+                if (e.conic != null) spo.push('conic: ' + e.conic + (e.parabola ? ', parabola: true' : ''));   // rfAS: a Conic / Parabola
                 s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : spo.length ? ', null' : '') + (spo.length ? ', { ' + spo.join(', ') + ' }' : '') + ')'; break;
               case 'ellipse': s += '\n  .ellipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0].join(', ') + ')'; break;
               case 'pellipse': s += '\n  .partialEllipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0, e.a0, e.a1].join(', ') + ')'; break;
@@ -1459,6 +1471,7 @@
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.exportSTL = exportSTL; K.exportDXFSketch = exportDXFSketch; K.exportDXFFace = exportDXFFace; K.exportDXFFlat = exportDXFFlat;
   K.Builder = Builder; K.runScript = runScript; K.generateScript = generateScript;
+  if (K.installBlockScript) K.installBlockScript();   // sketch Blocks (kernel-sketch.js) add .blocks() to the SketchBuilder
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.fmt = fmt;
   _.fmtD = fmtD;

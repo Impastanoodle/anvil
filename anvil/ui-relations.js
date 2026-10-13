@@ -331,7 +331,9 @@
         // p9-sketchfix: the answer belongs to the placement (one undo step takes the whole dimension away, not first
         // back to the over-defining driving one): no undo point of its own
         { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); var g = item(); if (g) { App.sketchDirty = true; setDriven(g, kind, index, true); } } },
-        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } }
+        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } },
+        // rfAR: or keep it driving and let SketchXpert find what to delete
+        { id: 'drv-xpert', label: 'SketchXpert…', action: function () { UI.closeModal(); App.drivenPrompt = null; App.dimsStale = true; cmdSketchXpert(); } }
       ]
     });
     App.drivenPrompt = { kind: kind, index: index };
@@ -837,6 +839,42 @@
   window.addEventListener('mousemove', function (ev) { ctrlHeld = !!ev.ctrlKey; }, true);
   window.addEventListener('blur', function () { ctrlHeld = false; });
   UI.sketchCtrlHeld = function () { return ctrlHeld; };   // for the drawing tools' inference too (ui-sketch.js inferPoint)
+  // ---- rfAR: Sketch Settings that change a drag (ui-sketch.js UI.sketchSettings)
+  function skOn(k) { return UI.sketchSettings ? UI.sketchSettings.get(k) : k !== 'noSolveMove' && k !== 'detachOnDrag' && k !== 'overrideDims'; }
+  // Detach Segment on Drag: the relations that tie line / arc i's ends to other entities go (Coincident and Midpoint
+  // on its end points, Tangent with an entity that shared an end with it). Returns how many went.
+  function detachSegment(f, i) {
+    var e = f.entities[i];
+    if (!e || !(e.t === 'line' || e.t === 'arc') || !f.rels) return 0;
+    var ends = S.pointRefs(f, i).filter(function (pr) { return /\.p\d$/.test(pr.ref); }), endRe = new RegExp('^' + i + '\\.p\\d$');
+    function sharesEnd(j) {
+      return S.pointRefs(f, j).some(function (pr) { return /\.p\d$/.test(pr.ref) && ends.some(function (a) { return Math.abs(a.pt[0] - pr.pt[0]) < 1e-9 && Math.abs(a.pt[1] - pr.pt[1]) < 1e-9; }); });
+    }
+    var n = 0;
+    for (var k = f.rels.length - 1; k >= 0; k--) {
+      var rel = f.rels[k], refs = rel.refs || [];
+      var onEnd = (rel.type === 'coincident' || rel.type === 'midpoint') && refs.some(function (r) { return endRe.test(r); }) && refs.some(function (r) { return refEntity(r) !== i; });
+      var tan = rel.type === 'tangent' && refs.indexOf(String(i)) >= 0 && refs.some(function (r) { var j = refEntity(r); return j >= 0 && j !== i && sharesEnd(j); });
+      if (onEnd || tan) { f.rels.splice(k, 1); n++; }
+    }
+    if (!f.rels.length) delete f.rels;
+    return n;
+  }
+  // Override Dims on Drag/Move: the driving dimensions on entity i (its own Smart Dimensions and the distance / angle
+  // dimensions to it) are made driven for the drag. Returns them, for restoreDims.
+  function releaseDims(f, i) {
+    var list = [];
+    (f.dims || []).forEach(function (d, k) { if (d.e === i && !d.driven) { d.driven = true; list.push({ kind: 'dim', index: k }); } });
+    (f.rels || []).forEach(function (rel, k) {
+      if (rel.driven || !(S.TYPES[rel.type] && S.TYPES[rel.type].dim)) return;
+      if (rel.refs.some(function (r) { return refEntity(r) === i; })) { rel.driven = true; list.push({ kind: 'rel', index: k }); }
+    });
+    return list.length ? list : null;
+  }
+  function restoreDims(f, list) {
+    list.forEach(function (it) { S.setDriven(f, it.kind, it.index, false); });   // driving again, holding the value it reads now
+    App.dimsStale = true;
+  }
   function sketchDragHook(p, ev, own) {   // own: the ref to drag (a Sketch Text pressed on its letters), else the one under p
     if (App.mode !== 'sketch' || App.tool !== 'select' || App.command) return null;
     var f = UI.activeSketchFeature(), ref = own || pickSketchRef(p[0], p[1]);
@@ -858,6 +896,7 @@
     // in the same frame only replace the pending target, solved when the frame comes (or at once on release). While
     // dragging, the sketch is redrawn without re-analysing it (its degrees of freedom cannot change mid-drag).
     var pending = null, frame = 0, drop = null;
+    var noSolve = false, detached = 0, overridden = null;   // rfAR: Sketch Settings for this drag
     // A dragged end point dropped on another sketch point (within 9 px) or on a line / circle / arc (within 7 px) snaps
     // there and gets a Coincident on release, as in SolidWorks. Points that sat with it when the drag began (already
     // coincident) move with it and are no targets.
@@ -975,10 +1014,12 @@
       var uv = UI.screenToPlane(q[0], q[1], pl);
       if (!uv || !uv0) return;
       if (textGrab) { uv = [uv[0] + textGrab[0], uv[1] + textGrab[1]]; q = scr(pl, uv); }   // where the insertion point goes
-      drop = !ctrlHeld && point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
+      drop = !ctrlHeld && skOn('snapping') && point && (/\.(p\d|v\d+)$|^\d+$/.test(ref) || (/\.c$/.test(ref) && ent && /^(circle|arc)$/.test(ent.t))) ? dropTarget(q) : null;
       if (drop) uv = drop.pt.slice();
       var to = point || radius ? uv : [uv[0] - uv0[0], uv[1] - uv0[1]];
-      if (S.drag(f, ref, to, start, { radius: radius, cap: cap, hold: hold }).ok) { moved = true; UI.updateSketches(); }
+      // rfAR: Sketch Settings ▸ No Solve Move (or Automatic Solve off): the geometry moves alone, nothing is solved
+      var target = noSolve ? { entities: f.entities } : f;
+      if (S.drag(target, ref, to, start, { radius: radius, cap: cap, hold: noSolve ? null : hold }).ok) { moved = true; UI.updateSketches(); }
       if (drop && drop.model) {
         // sketch-refine: a model snap shows the drawing tools' magenta ring (no relation glyph: none is added)
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
@@ -992,7 +1033,14 @@
     function tick() { unschedule(); if (pending) { var q = pending; pending = null; solveTo(q); schedule(); } }
     return {
       start: function () {
-        markDirty(); start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); App.sketchDragging = true;
+        markDirty();
+        noSolve = skOn('noSolveMove') || !skOn('autoSolve');
+        // rfAR: Detach Segment on Drag: a line / arc dragged whole leaves the entities it shared its ends with
+        if (!point && skOn('detachOnDrag')) detached = detachSegment(f, refEntity(ref));
+        // rfAR: Override Dims on Drag/Move: the dimensions on the dragged entity let go while it moves (driven), and
+        // hold the new values when it is dropped
+        if (skOn('overrideDims') && !noSolve) overridden = releaseDims(f, refEntity(ref));
+        start = clone(f.entities); uv0 = UI.screenToPlane(p[0], p[1], pl); App.sketchDragging = true;
         var P0 = ent && ent.t === 'text' && uv0 ? S.refPoint(f, ref) : null;
         if (P0) textGrab = [P0[0] - uv0[0], P0[1] - uv0[1]];
       },
@@ -1006,6 +1054,7 @@
         if (pending) { var q = pending; pending = null; solveTo(q); }
         App.sketchDragging = false;
         if (UI.sketchSnapMark) UI.sketchSnapMark(null);
+        if (overridden) { restoreDims(f, overridden); overridden = null; }   // rfAR: the dimensions drive again, at their new values
         var merged = null;
         if (drop && drop.model && moved) merged = 'Snapped to the model (' + (drop.label || 'model') + '): no relation added. ';
         else if (drop && moved) {
@@ -1054,6 +1103,130 @@
     return r;
   }
   UI.cmdConstrainAll = function (opts) { return constrainAll(opts); };
+
+  // ------------------------------------------------------------------ SketchXpert (rfAR)
+  // Tools ▸ Sketch Tools ▸ SketchXpert, and the Make Dimension Driven? question's third answer. Diagnose
+  // (SketchSolver.diagnose) lists the solutions, each a set of relations / dimensions whose deletion leaves the sketch
+  // solvable; < > step through them, what would be deleted lights up, Accept deletes it. Manual Repair lists every
+  // relation / dimension involved, each with its own Delete.
+  var xp = null;   // { mode: 'diagnose' | 'manual', d: diagnosis, k: solution shown }
+  function itemLabel(f, it) { return it.src === 'dim' ? 'Dimension ' + (S.refName(f, String(f.dims[it.index].e)) || '') : S.describe(f, f.rels[it.index]); }
+  function xpertShow(f, list) {
+    var rel = null, dim = null;
+    (list || []).forEach(function (it) { if (it.src === 'rel' && rel == null) rel = it.index; if (it.src === 'dim' && dim == null) dim = it.index; });
+    App.relHover = rel;
+    App.sel = dim != null ? { kind: 'dim', index: dim } : rel != null ? { kind: 'rel', index: rel } : null;
+    App.dimsStale = true;
+    UI.updateSketches();
+  }
+  function cmdSketchXpert() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first: SketchXpert repairs the active sketch.'); return null; }
+    xp = { mode: null, d: null, k: 0 };
+    function done() { xp = null; App.relHover = null; App.sel = null; App.dimsStale = true; UI.updateSketches(); }
+    var spec = { title: 'SketchXpert', icon: 'relations', values: {}, groups: [], keepSelection: true, onOK: done, onCancel: done };
+    function diagnose() { xp.d = S.diagnose(f); xp.k = 0; xp.mode = 'diagnose'; render(); }
+    function manual() { xp.d = S.diagnose(f, { pairs: false, max: 1 }); xp.mode = 'manual'; render(); }
+    function accept() {
+      var sol = xp.d && xp.d.solutions[xp.k];
+      if (!sol) return;
+      markDirty();
+      var r = S.diagnoseApply(f, sol.remove);
+      App.relHover = null; App.sel = null;
+      refresh();
+      UI.setStatus('SketchXpert: deleted ' + sol.names.join('; ') + '. ' + S.STATUS_TEXT[r.analysis.status] + '.');
+      xp.d = null; xp.mode = null;
+      render();
+    }
+    function delOne(it) {
+      markDirty();
+      S.diagnoseApply(f, [it]);
+      App.relHover = null; App.sel = null;
+      refresh();
+      manual();
+    }
+    function render() {
+      var an = S.analyze(f), over = an.status === 'over';
+      spec.message = over ? 'The sketch is over defined or cannot be solved. Diagnose finds the relations and dimensions to delete; Manual Repair lists what conflicts.' : 'The sketch is ' + S.STATUS_TEXT[an.status] + ': nothing to repair.';
+      spec.messageOk = !over;
+      var groups = [{ title: 'Options', fields: [{ type: 'buttons', buttons: [{ label: 'Diagnose', onclick: diagnose, disabled: !over }, { label: 'Manual Repair', onclick: manual, disabled: !over }] }] }];
+      var d = xp.d;
+      if (xp.mode === 'diagnose' && d) {
+        var sol = d.solutions[xp.k];
+        groups.push({ title: 'Results', fields: sol ? [
+          { type: 'html', html: '<div class="xp-sol" id="xp-sol"><div class="xp-count">Solution ' + (xp.k + 1) + ' of ' + d.solutions.length + ': delete</div>' + sol.names.map(function (n) { return '<div class="rel-row conflict"><span>' + n + '</span></div>'; }).join('') + '</div>' },
+          { type: 'buttons', buttons: [
+            { label: '◀', onclick: function () { xp.k = (xp.k + d.solutions.length - 1) % d.solutions.length; render(); } },
+            { label: '▶', onclick: function () { xp.k = (xp.k + 1) % d.solutions.length; render(); } },
+            { label: 'Accept', onclick: accept }
+          ] }
+        ] : [{ type: 'static', label: '', value: 'No set of up to two relations or dimensions repairs this sketch: use Manual Repair.' }] });
+        xpertShow(f, sol ? sol.remove : null);
+      } else if (xp.mode === 'manual' && d) {
+        groups.push({ title: 'Conflicting relations and dimensions', fields: [
+          { type: 'html', html: '<div class="rel-list" id="xp-manual">' + (d.candidates.length ? d.candidates.map(function (c, k) { return '<div class="rel-row ' + (c.state || 'ok') + '" data-k="' + k + '" tabindex="0"><span>' + c.name + '</span><button type="button" class="xp-del" data-k="' + k + '">Delete</button></div>'; }).join('') : '<div class="rel-empty">Nothing conflicts</div>') + '</div>' }
+        ] });
+        xpertShow(f, null);
+      }
+      spec.groups = groups;
+      UI.openPM(spec);
+      var box = document.getElementById('xp-manual');
+      if (box && d) Array.prototype.forEach.call(box.querySelectorAll('.rel-row'), function (row) {
+        var c = d.candidates[+row.getAttribute('data-k')];
+        row.addEventListener('mouseenter', function () { xpertShow(f, [c]); });
+        row.querySelector('.xp-del').addEventListener('click', function () { delOne({ src: c.src, index: c.index }); });
+      });
+    }
+    render();
+    if (S.analyze(f).status === 'over') diagnose();
+    return spec;
+  }
+  UI.cmdSketchXpert = cmdSketchXpert;
+  UI.sketchXpertState = function () { return xp ? { mode: xp.mode, solution: xp.k, solutions: xp.d ? xp.d.solutions.length : 0, candidates: xp.d ? xp.d.candidates.length : 0, names: xp.d && xp.d.solutions[xp.k] ? xp.d.solutions[xp.k].names.slice() : [] } : null; };
+
+  // ------------------------------------------------------------------ Scan Equal (rfAR)
+  // Tools ▸ Relations ▸ Scan Equal: lines of equal length and arcs / circles of equal radius within a tolerance
+  // (SketchSolver.scanEqual), each set with a check box; Set Equal (or ✓) adds Equal to the checked ones.
+  function cmdScanEqual() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    var inch = App.model && App.model.units === 'in';
+    var v = { tol: inch ? 0.001 : 0.01 }, found = [], checked = {};
+    function scan() { found = S.scanEqual(f, { tol: +v.tol >= 0 ? +v.tol : 0 }).groups; checked = {}; found.forEach(function (g, k) { checked[k] = true; }); }
+    function fmt(x) { return UI.fmtDim ? UI.fmtDim(x) : String(Math.round(x * 1e4) / 1e4); }
+    function apply() {
+      var keys = Object.keys(checked).filter(function (k) { return checked[k] && found[k]; });
+      if (!keys.length) { UI.setStatus('Scan Equal: nothing checked.'); return 0; }
+      markDirty();
+      var n = 0, skipped = 0;
+      keys.forEach(function (k) { var r = S.applyEqual(f, found[k].members); n += r.added.length; skipped += r.skipped; });
+      refresh();
+      UI.setStatus('Scan Equal: ' + n + ' Equal relation' + (n === 1 ? '' : 's') + ' added' + (skipped ? ', ' + skipped + ' already equal' : '') + '. ' + S.STATUS_TEXT[S.analyze(f).status] + '.');
+      return n;
+    }
+    var spec = { title: 'Scan Equal', icon: 'relations', values: v, groups: [], keepSelection: true,
+      onOK: function () { apply(); App.dimsStale = true; }, onCancel: function () { App.dimsStale = true; } };
+    function render() {
+      spec.message = found.length ? 'Check the sets to make Equal, then click Set Equal or ✓.' : 'No lines of equal length or arcs of equal radius within the tolerance.';
+      spec.groups = [
+        { title: 'Search', fields: [{ type: 'number', label: 'Tolerance', key: 'tol', min: 0, step: inch ? 0.001 : 0.01 }, { type: 'buttons', buttons: [{ label: 'Find', onclick: function () { scan(); render(); } }] }] },
+        { title: 'Results', fields: [
+          { type: 'html', html: '<div class="rel-list" id="scan-equal">' + (found.length ? found.map(function (g, k) {
+            return '<label class="rel-row"><input type="checkbox" data-k="' + k + '"' + (checked[k] ? ' checked' : '') + '><span>' + g.members.length + ' ' + (g.kind === 'line' ? 'lines, length ' : 'arcs / circles, radius ') + fmt(g.value) + '</span><em>' + g.members.map(function (i) { return S.refName(f, String(i)); }).join(', ') + '</em></label>';
+          }).join('') : '<div class="rel-empty">None found</div>') + '</div>' },
+          { type: 'buttons', buttons: [{ label: 'Set Equal', onclick: function () { apply(); scan(); render(); } }] }
+        ] }
+      ];
+      UI.openPM(spec);
+      var box = document.getElementById('scan-equal');
+      if (box) Array.prototype.forEach.call(box.querySelectorAll('input[type=checkbox]'), function (cb) { cb.addEventListener('change', function () { checked[cb.getAttribute('data-k')] = cb.checked; }); });
+    }
+    scan();
+    render();
+    return spec;
+  }
+  UI.cmdScanEqual = cmdScanEqual;
+  UI.scanEqualFound = function () { var b = document.getElementById('scan-equal'); return b ? b.querySelectorAll('input[type=checkbox]').length : 0; };
   if (window.anvil) window.anvil.constrainAll = function (opts) { var r = constrainAll(opts); return r && { ok: r.ok, added: r.added, relations: r.relations, dims: r.dims, status: r.status, dof: r.dof, error: r.error }; };
 
   UI.pickSketchRef = pickSketchRef;
