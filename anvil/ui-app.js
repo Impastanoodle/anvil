@@ -1066,7 +1066,14 @@
   function cmdSearchIndex() {
     var out = [], seen = {};
     function flat(s) { return String(s || '').replace(/\s*\n\s*/g, ' ').replace(/…$/, '').trim(); }
-    function add(e) { var k = e.name.toLowerCase(); if (seen[k] && (seen[k].enabled || !e.enabled)) return; if (seen[k]) out.splice(out.indexOf(seen[k]), 1); seen[k] = e; out.push(e); }
+    function add(e) {
+      var k = e.name.toLowerCase();
+      // the same name on two ribbon tabs (Features ▸ Mirror, Transform ▸ Mirror): both listed, the later one named with its tab
+      if (seen[k] && e.tab && seen[k].tab && e.tab !== seen[k].tab) { e.name += ' (' + e.tab + ')'; k = e.name.toLowerCase(); }
+      if (seen[k] && (seen[k].enabled || !e.enabled)) return;
+      if (seen[k]) out.splice(out.indexOf(seen[k]), 1);
+      seen[k] = e; out.push(e);
+    }
     var set = isAsm() ? (UI.ASM_RIBBON || UI.RIBBON) : UI.RIBBON, names = Object.keys(set || {}), shown = names;
     if (UI.ribbonTabsFor) { try { shown = UI.ribbonTabsFor(names.slice(), [])[0]; } catch (err) { shown = names; } }
     var drawing = !!(UI.drawingActive && UI.drawingActive());

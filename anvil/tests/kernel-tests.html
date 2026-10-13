@@ -39,6 +39,7 @@
 <script src="../kernel-sheetmetal.js"></script>
 <script src="../kernel-script.js"></script>
 <script src="../dxf-import.js"></script>
+<script src="../nest.js"></script>
 <script src="../holewizard.js"></script>
 <script src="../sketch-solver.js"></script>
 <script src="../exchange.js"></script>
@@ -389,6 +390,8 @@
     'kernel/rfBC.js',
     'kernel/rfAY.js',
     'kernel/rfAZ.js',   // keep a comma after every entry: lanes append lines here without touching the one above
+    'kernel/rfBL.js',
+    'kernel/rfBM.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

@@ -1289,3 +1289,12 @@ body.splitting #viewport { pointer-events: none; }
 
 /* toasts: a small dark note with a soft shadow above the status bar */
 .toast { background: var(--sw-toast); color: var(--sw-toast-text); padding: 7px 16px; border-radius: 4px; box-shadow: 0 4px 14px var(--menu-shadow); }
+
+/* lane BJ: the Transform tab (ui-transform.js): Mastercam's group captions under the buttons, the Dynamic gnomon and
+   its value box */
+#ribbon.rb-has-captions { position: relative; }
+#ribbon.rb-has-captions #ribbon-buttons { padding-bottom: 16px; }
+#ribbon .rb-captions { position: absolute; left: 0; right: 0; height: 14px; pointer-events: none; }
+#ribbon .rb-caption { position: absolute; top: 0; height: 14px; line-height: 14px; font-size: 11px; text-align: center; color: var(--cm-text, var(--muted)); opacity: 0.8; white-space: nowrap; overflow: hidden; border-top: 1px solid var(--cm-line, var(--line)); }
+.tf-gnomon { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
+.tf-dyn-val { position: absolute; z-index: 3; width: 76px; font: 12px/1.2 'Segoe UI', Arial, sans-serif; padding: 2px 4px; border: 1px solid var(--blue, #1f6fd0); border-radius: 2px; background: var(--panel, #fff); color: var(--text, #222); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }

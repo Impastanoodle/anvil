@@ -360,7 +360,25 @@ var Icons = (function () {
     autodim: rect(3, 4, 10, 7, 'none', S, 1.2) + ln('M3 1.5 h10 M3 2.5 v-2 M13 2.5 v-2 M1.5 4 v7 M0.5 4 h2 M0.5 11 h2', B, 1) + circ(8, 7.5, 1.4, 'none', B, 1),
     // (rfAT) Block (a dashed frame round a punch symbol with its insertion point), Jog Line (a line with a square jog)
     block: rect(1.5, 1.5, 13, 13, W, S, 0.9) + circ(8, 8, 3.2, W, B, 1.1) + ln('M3.5 8 h9 M8 3.5 v9', B, 0.7) + circ(8, 8, 1, S, S, 0.5),
-    jogLine: ln('M0.5 11 H5 V5 H11 V11 H15.5', S, 1.3)
+    jogLine: ln('M0.5 11 H5 V5 H11 V11 H15.5', S, 1.3),
+    // lane BJ: Mastercam's Transform tab (ui-transform.js): the original dashed, the result solid on a yellow face, the
+    // motion in green; ✓+ (OK and keep open)
+    tDynamic: p('M10 12.5 A6 6 0 0 0 4 6.5', 'none', B, 1.1, DASH) + ln('M4 12.5 H13', R, 1.4) + p('M14.8 12.5 l-3 -1.7 v3.4 z', R, R, 0.6) + ln('M4 12.5 V3.5', G, 1.4) + p('M4 1.7 l-1.7 3 h3.4 z', G, G, 0.6) + circ(4, 12.5, 1.4, W, B, 1),
+    tTranslate: rect(1.5, 8.5, 6, 5, 'none', S, 1, DASH) + rect(8.5, 2.5, 6, 5, FYL, S, 1.2) + ln('M5.5 8 L10 5', G, 1.2) + p('M11.4 4 l-3.1 0.3 1.3 2.2 z', G, G, 0.6),
+    tTranslatePlane: p('M1 12 l3 -3 h6 l-3 3 z', PL, P, 1) + p('M6 6 l3 -3 h6 l-3 3 z', PL, P, 1) + circ(5.5, 10.5, 1.1, FY, S, 0.9) + circ(10.5, 4.5, 1.1, FY, S, 0.9) + ln('M6.3 9.6 L9.3 5.8', G, 1.1) + p('M10 4.9 l-2.4 0.9 1.6 1.3 z', G, G, 0.5),
+    tRotate: rect(7, 9, 7, 4, 'none', S, 1, DASH) + p('M3.2 9.4 L6.7 3.3 L10.2 5.3 L6.7 11.4 z', FYL, S, 1.2) + circ(3.2, 13, 1.3, W, B, 1) + p('M13.5 8 A8 8 0 0 0 9.8 2.4', 'none', G, 1.1) + p('M8.4 1.6 l2.9 -0.4 -0.6 2.6 z', G, G, 0.5),
+    tProject: p('M5 3 h7 l-2 3 h-7 z', FYL, S, 1.2) + ln('M3 6 V11 M10 6 V11 M12 3 V8', M, 0.9, DASH) + p('M1 13.5 l2.5 -3 h12 l-2.5 3 z', PL, P, 1) + ln('M3 11 h7 l1.5 -1.5', S, 1.2),
+    tMoveOrigin: ln('M2 14 H8 M2 14 V8', M, 1, DASH) + circ(2, 14, 1.4, W, B, 1) + rect(8.5, 2.5, 6, 5, FYL, S, 1.2) + pt(8.5, 7.5) + ln('M7.5 8.5 L4 12', G, 1.2) + p('M3 13 l0.6 -3 2.3 1.9 z', G, G, 0.5),
+    tMirror: ln('M8 1.5 v13', M, 0.9, DASH) + p('M6 4 L2 12 h4 z', 'none', S, 1.2, 'stroke-dasharray="1.6 1.2"') + p('M10 4 L14 12 h-4 z', FYL, S, 1.3) + ln('M4.5 2.5 h7 M10 1 l1.5 1.5 -1.5 1.5', G, 1),
+    tRoll: ell(4, 8, 2, 6, PL, P, 1) + p('M4 2 H12 M4 14 H12', 'none', P, 1) + p('M12 2 A2 6 0 0 1 12 14', 'none', P, 1) + p('M2.3 5 Q8 7 13.6 5.5', 'none', S, 1.3) + p('M2.3 10 Q8 12 13.6 10.5', 'none', S, 1.3, DASH),
+    tOffsetEntity: ln('M2 12.5 L12 3', S, 1.4) + ln('M5 14 L15 4.5', S, 1.2, DASH) + ln('M6.5 8.2 l2.4 2.4', G, 1.1) + p('M9.6 11.3 l-0.6 -2.3 -1.7 1.7 z', G, G, 0.5),
+    tOffsetChains: p('M2 14 V5 a3 3 0 0 1 3 -3 H14', 'none', S, 1.4) + p('M5 14 V6.5 a1.5 1.5 0 0 1 1.5 -1.5 H14', 'none', S, 1.2, DASH) + pt(2, 14) + pt(14, 2),
+    tNesting: rect(1, 1.5, 14, 13, W, P, 1) + rect(2.5, 3, 5, 4, FYL, S, 0.9) + rect(8.5, 3, 5, 4, FYL, S, 0.9) + p('M2.5 9 h5 v4 h-2 a1.5 1.5 0 0 1 -3 0 z', FYL, S, 0.9) + circ(11, 11, 2, FYL, S, 0.9),
+    tRectArray: rect(1.5, 2, 3.5, 3.5, FYL, S, 1) + rect(6.25, 2, 3.5, 3.5, 'none', S, 1) + rect(11, 2, 3.5, 3.5, 'none', S, 1) + rect(1.5, 10, 3.5, 3.5, 'none', S, 1) + rect(6.25, 10, 3.5, 3.5, 'none', S, 1) + rect(11, 10, 3.5, 3.5, 'none', S, 1) + ln('M3.25 7 v1.6 M8 7 v1.6 M12.75 7 v1.6', G, 1),
+    tDistribute: circ(2.8, 6, 1.8, FYL, S, 1) + circ(8, 6, 1.8, 'none', S, 1) + circ(13.2, 6, 1.8, 'none', S, 1) + ln('M2.8 10 v3.5 M8 10 v3.5 M13.2 10 v3.5 M2.8 12 H13.2', G, 1),
+    tStretch: p('M2 13 H8 L9.5 6 H13', 'none', S, 1.4) + rect(7.5, 3.5, 7, 6, 'none', B, 0.9, DASH) + ln('M11 12 h3.5 M12.8 10.5 l1.7 1.5 -1.7 1.5', G, 1.1),
+    tScale: rect(1.5, 9, 5, 5, 'none', S, 1, DASH) + rect(1.5, 2, 12, 12, 'none', S, 1.3) + circ(1.5, 14, 1.2, W, B, 1) + ln('M6 9.5 L12 3.5', G, 1.2) + p('M13 2.5 l-3 0.6 2.4 2.4 z', G, G, 0.5),
+    okPlus: ln('M1.5 8.5 l3 3 L11 4.5', G, 2.4) + ln('M12.5 9 v6 M9.5 12 h6', G, 1.8)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

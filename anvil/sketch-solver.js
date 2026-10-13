@@ -6227,3 +6227,182 @@ var SketchSolver = (function () {
     });
   }
 })(typeof SketchSolver !== 'undefined' ? SketchSolver : null);
+
+// ---- rfBL (lane BL, 2026-10-13): Mastercam's Offset Contour (Transform â–¸ Offset â–¸ Chains), exact
+// contourOffset(E, items, closed, d, opts): the chain items [{ i, dir }] (lines / arcs of E joined end to end, dir 1:
+// travelled p1 -> p2; closed: the last joins the first) offset by the signed distance d to the LEFT of the travel
+// (d < 0: right). Lines stay lines and arcs arcs (an arc's copy is concentric). opts.corners: 'none' (sharp: the
+// offset curves are extended to meet at every outside corner), 'sharp' (an arc of radius |d| round the base corner on
+// the outside corners sharper than opts.maxAngle, the included angle, default 135Â°; the others sharp), 'all' (an arc
+// on every outside corner). Inside corners are trimmed to where the copies cross; an arc that shrinks to nothing goes
+// and its neighbours meet; then the copy is cut wherever it crosses itself and every piece nearer the base chain than
+// |d| (a loop) goes, as Mastercam trims a closed contour's offset. Returns { ok, entities, error }; an arc added at a
+// corner carries corner: true.
+(function (S) {
+  'use strict';
+  if (!S) return;
+  var TAU = 2 * Math.PI, D2R = Math.PI / 180;
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
+  function crs(a, b) { return a[0] * b[1] - a[1] * b[0]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1]; }
+  function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
+  function unit(v) { var l = Math.hypot(v[0], v[1]); return l > 0 ? [v[0] / l, v[1] / l] : [0, 0]; }
+  function normRad(a) { a = a % TAU; return a < 0 ? a + TAU : a; }
+  function angDiffRad(a, b) { var x = normRad(a - b); return x > Math.PI ? x - TAU : x; }
+  // a piece as travelled: line { k: 'L', a, b } | arc { k: 'A', c, r, s (start angle, rad), sw (signed sweep, rad) }
+  function segOf(e, dir) {
+    if (!e) return null;
+    if (e.t === 'line') return dir === -1 ? { k: 'L', a: [e.x2, e.y2], b: [e.x1, e.y1] } : { k: 'L', a: [e.x1, e.y1], b: [e.x2, e.y2] };
+    if (e.t === 'arc') {
+      var a0 = e.a0 * D2R, sw = (e.a1 - e.a0) * D2R;
+      return dir === -1 ? { k: 'A', c: [e.cx, e.cy], r: e.r, s: a0 + sw, sw: -sw } : { k: 'A', c: [e.cx, e.cy], r: e.r, s: a0, sw: sw };
+    }
+    return null;
+  }
+  function at(g, t) {
+    if (g.k === 'L') return t === 0 ? g.a.slice() : t === 1 ? g.b.slice() : [g.a[0] + (g.b[0] - g.a[0]) * t, g.a[1] + (g.b[1] - g.a[1]) * t];
+    var a = g.s + g.sw * t;
+    return [g.c[0] + g.r * Math.cos(a), g.c[1] + g.r * Math.sin(a)];
+  }
+  function tanAt(g, t) {
+    if (g.k === 'L') return unit(sub(g.b, g.a));
+    var a = g.s + g.sw * t, sg = g.sw >= 0 ? 1 : -1;
+    return [-Math.sin(a) * sg, Math.cos(a) * sg];
+  }
+  function segLen(g) { return g.k === 'L' ? dist(g.a, g.b) : Math.abs(g.sw) * g.r; }
+  function offSeg(g, d, tol) {
+    if (g.k === 'L') { var t = tanAt(g, 0), n = [-t[1] * d, t[0] * d]; return { k: 'L', a: [g.a[0] + n[0], g.a[1] + n[1]], b: [g.b[0] + n[0], g.b[1] + n[1]] }; }
+    var r = g.r - (g.sw >= 0 ? 1 : -1) * d;
+    return r > tol ? { k: 'A', c: g.c, r: r, s: g.s, sw: g.sw } : null;
+  }
+  // the parameter (0..1) of the angle of p along arc g, or null outside its sweep (eps: angle tolerance, rad)
+  function arcParam(g, p, eps) {
+    var a = Math.atan2(p[1] - g.c[1], p[0] - g.c[0]), w = Math.abs(g.sw), delta = g.sw >= 0 ? normRad(a - g.s) : normRad(g.s - a);
+    if (delta <= w + eps) return w > 0 ? Math.min(1, delta / w) : 0;
+    if (TAU - delta <= eps) return 0;
+    return null;
+  }
+  function lineParam(g, p) { var d = sub(g.b, g.a), L2 = dot(d, d); return L2 > 0 ? dot(sub(p, g.a), d) / L2 : 0; }
+  function distTo(g, p) {
+    if (g.k === 'L') { var t = Math.max(0, Math.min(1, lineParam(g, p))); return dist(p, at(g, t)); }
+    if (arcParam(g, p, 0) != null) return Math.abs(dist(p, g.c) - g.r);
+    return Math.min(dist(p, at(g, 0)), dist(p, at(g, 1)));
+  }
+  // where the carriers of two pieces (an endless line, a whole circle) meet
+  function circleCircle(c1, r1, c2, r2) {
+    var dx = c2[0] - c1[0], dy = c2[1] - c1[1], D = Math.hypot(dx, dy), e = 1e-12 * (r1 + r2);
+    if (D < 1e-12 * Math.max(1, r1) || D > r1 + r2 + e || D < Math.abs(r1 - r2) - e) return [];
+    var a = (r1 * r1 - r2 * r2 + D * D) / (2 * D), h2 = r1 * r1 - a * a, h = h2 > 0 ? Math.sqrt(h2) : 0, mx = c1[0] + a * dx / D, my = c1[1] + a * dy / D;
+    if (h <= 1e-12 * r1) return [[mx, my]];
+    return [[mx - h * dy / D, my + h * dx / D], [mx + h * dy / D, my - h * dx / D]];
+  }
+  function lineCircle(a, b, c, r) {
+    var d = sub(b, a), f = sub(a, c), A = dot(d, d), B = 2 * dot(f, d), C = dot(f, f) - r * r, disc = B * B - 4 * A * C;
+    if (!(A > 0) || disc < -1e-12 * Math.max(B * B, A * r * r)) return [];
+    if (disc <= 0) { var t0 = -B / (2 * A); return [[a[0] + d[0] * t0, a[1] + d[1] * t0]]; }
+    var sq = Math.sqrt(disc), out = [];
+    [(-B - sq) / (2 * A), (-B + sq) / (2 * A)].forEach(function (t) { out.push([a[0] + d[0] * t, a[1] + d[1] * t]); });
+    return out;
+  }
+  function carrierHits(A, B) {
+    if (A.k === 'L' && B.k === 'L') {
+      var d1 = sub(A.b, A.a), d2 = sub(B.b, B.a), den = crs(d1, d2);
+      if (Math.abs(den) <= 1e-12 * Math.sqrt(dot(d1, d1) * dot(d2, d2))) return [];
+      var t = crs(sub(B.a, A.a), d2) / den;
+      return [[A.a[0] + d1[0] * t, A.a[1] + d1[1] * t]];
+    }
+    if (A.k === 'L') return lineCircle(A.a, A.b, B.c, B.r);
+    if (B.k === 'L') return lineCircle(B.a, B.b, A.c, A.r);
+    return circleCircle(A.c, A.r, B.c, B.r);
+  }
+  // the parameters [tA, tB] where pieces A and B cross (within their extents)
+  function pieceHits(A, B) {
+    var out = [], eps = 1e-9;
+    carrierHits(A, B).forEach(function (p) {
+      var ta = A.k === 'L' ? lineParam(A, p) : arcParam(A, p, eps), tb = B.k === 'L' ? lineParam(B, p) : arcParam(B, p, eps);
+      if (ta == null || tb == null || ta < -eps || ta > 1 + eps || tb < -eps || tb > 1 + eps) return;
+      out.push([Math.max(0, Math.min(1, ta)), Math.max(0, Math.min(1, tb))]);
+    });
+    return out;
+  }
+  function subPiece(g, t0, t1) {
+    if (g.k === 'L') return { k: 'L', a: at(g, t0), b: at(g, t1) };
+    return { k: 'A', c: g.c, r: g.r, s: g.s + g.sw * t0, sw: g.sw * (t1 - t0) };
+  }
+  function toEntity(g) {
+    if (g.k === 'L') return { t: 'line', x1: g.a[0], y1: g.a[1], x2: g.b[0], y2: g.b[1] };
+    var a0 = (g.sw >= 0 ? g.s : g.s + g.sw) / D2R, a1 = a0 + Math.abs(g.sw) / D2R;
+    while (a0 >= 360) { a0 -= 360; a1 -= 360; }
+    while (a0 < 0) { a0 += 360; a1 += 360; }
+    // the round-off of a whole number of degrees goes (90.00000000000001 -> 90)
+    var r0 = Math.round(a0), r1 = Math.round(a1);
+    if (Math.abs(a0 - r0) < 1e-9) a0 = r0;
+    if (Math.abs(a1 - r1) < 1e-9) a1 = r1;
+    return { t: 'arc', cx: g.c[0], cy: g.c[1], r: g.r, a0: a0, a1: a1 };
+  }
+  function contourOffset(E, items, closed, d, opts) {
+    opts = opts || {};
+    d = +d;
+    var mode = opts.corners || 'none', maxAng = opts.maxAngle == null ? 135 : +opts.maxAngle, ad = Math.abs(d);
+    if (!(ad > 0) || !isFinite(ad)) return { ok: false, error: 'The offset distance must be a positive number.' };
+    var segs = (items || []).map(function (it) { return segOf(E[it.i], it.dir); });
+    if (!segs.length || segs.some(function (g) { return !g; })) return { ok: false, error: 'Offset Chains works on chains of lines and arcs.' };
+    var scale = ad;
+    segs.forEach(function (g) { [at(g, 0), at(g, 1)].forEach(function (p) { scale = Math.max(scale, Math.abs(p[0]), Math.abs(p[1])); }); });
+    var tol = 1e-9 * Math.max(1, scale), n = segs.length, path = [];
+    function push(p) { if (segLen(p) > tol) path.push(p); }
+    function bridge(P, V, Q) { push({ k: 'L', a: P, b: V, junk: true }); push({ k: 'L', a: V, b: Q, junk: true }); }
+    // extend / cut back prev's end and next's start to where their carriers meet (a sharp corner); false: they cannot
+    function extendTo(prev, next, P, Q) {
+      var M = [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2], X = null;
+      carrierHits(prev, next).forEach(function (h) { if (!X || dist(h, M) < dist(X, M)) X = h; });
+      if (!X) return false;
+      var ok = true, pe = null, ns = null;
+      if (prev.k === 'L') ok = dot(sub(X, prev.a), sub(prev.b, prev.a)) > 0;
+      else { var dp = angDiffRad(Math.atan2(X[1] - prev.c[1], X[0] - prev.c[0]), prev.s + prev.sw), swp = prev.sw + dp; ok = swp * prev.sw > 0 && Math.abs(swp) < TAU; pe = swp; }
+      if (ok && next.k === 'L') ok = dot(sub(next.b, X), sub(next.b, next.a)) > 0;
+      else if (ok) { var dn = angDiffRad(Math.atan2(X[1] - next.c[1], X[0] - next.c[0]), next.s), swn = next.sw - dn; ok = swn * next.sw > 0 && Math.abs(swn) < TAU; ns = [next.s + dn, swn]; }
+      if (!ok) return false;
+      if (prev.k === 'L') prev.b = X.slice(); else prev.sw = pe;
+      if (next.k === 'L') next.a = X.slice(); else { next.s = ns[0]; next.sw = ns[1]; }
+      return true;
+    }
+    function join(prev, next, V, tA, tB) {
+      var P = at(prev, 1), Q = at(next, 0);
+      if (dist(P, Q) <= tol) return;
+      var th = Math.atan2(crs(tA, tB), dot(tA, tB));
+      if (prev.junk || next.junk || th * d >= 0) { bridge(P, V, Q); return; }   // inside: the overlap is trimmed below
+      var incl = 180 - Math.abs(th) / D2R, round = mode === 'all' || (mode === 'sharp' && incl < maxAng - 1e-7);
+      if (!round && extendTo(prev, next, P, Q)) return;
+      push({ k: 'A', c: V.slice(), r: ad, s: Math.atan2(P[1] - V[1], P[0] - V[0]), sw: th, corner: true });
+    }
+    var first = null, prev = null, k;
+    for (k = 0; k < n; k++) {
+      var g = segs[k], o = offSeg(g, d, tol), pcs = o ? [o] : [{ k: 'L', a: at(g, 0), b: g.c.slice(), junk: true }, { k: 'L', a: g.c.slice(), b: at(g, 1), junk: true }];
+      if (prev) join(prev, pcs[0], at(g, 0), tanAt(segs[k - 1], 1), tanAt(g, 0));
+      pcs.forEach(push);
+      prev = pcs[pcs.length - 1];
+      if (!first) first = pcs[0];
+    }
+    if (closed && n > 0) join(prev, first, at(segs[0], 0), tanAt(segs[n - 1], 1), tanAt(segs[0], 0));
+    // cut the copy where it crosses itself; keep the pieces |d| from the base
+    var m = path.length, cuts = path.map(function () { return [0, 1]; }), i, j;
+    for (i = 0; i < m; i++) for (j = i + 1; j < m; j++) pieceHits(path[i], path[j]).forEach(function (h) { cuts[i].push(h[0]); cuts[j].push(h[1]); });
+    function nearest(p) { var b = Infinity; segs.forEach(function (g) { b = Math.min(b, distTo(g, p)); }); return b; }
+    var keepTol = 1e-9 * Math.max(1, scale), out = [];
+    path.forEach(function (p, pi) {
+      var ts = cuts[pi].sort(function (a, b) { return a - b; }), L = segLen(p), cur = null;
+      for (var q = 0; q + 1 < ts.length; q++) {
+        var t0 = ts[q], t1 = ts[q + 1];
+        if ((t1 - t0) * L <= 10 * tol) continue;
+        var keep = !p.junk && nearest(at(p, (t0 + t1) / 2)) >= ad - keepTol;
+        if (!keep) { cur = null; continue; }
+        if (cur && (t0 - cur[1]) * L <= 10 * tol) cur[1] = t1;
+        else { cur = [t0, t1]; out.push({ g: p, run: cur }); }
+      }
+    });
+    if (!out.length) return { ok: false, error: 'The offset distance is too large for the chain: nothing is left of it.' };
+    return { ok: true, entities: out.map(function (x) { var e = toEntity(subPiece(x.g, x.run[0], x.run[1])); if (x.g.corner) e.corner = true; return e; }) };
+  }
+  S.contourOffset = contourOffset;
+})(typeof SketchSolver !== 'undefined' ? SketchSolver : null);

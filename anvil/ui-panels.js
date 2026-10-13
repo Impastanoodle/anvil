@@ -202,7 +202,36 @@
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
       { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'generic', icon: 'unfold', label: 'Unfold' }, { id: 'generic', icon: 'fold', label: 'Fold' }, { id: 'generic', icon: 'rip', label: 'Rip' }
-    ]
+    ],
+    // lane BJ: Mastercam 2024's Transform tab, groups Position | Offset | Layout | Size with their captions under the
+    // buttons (ui-transform.js lays them out from `group`). Each button runs UI['cmdT' + name] (ui-transform.js,
+    // ui-transform-3d.js, ui-transform-layout.js, ui-nesting.js) and toasts when that command is not loaded.
+    Transform: (function () {
+      function t(name, id, label, group, help) {
+        var flat = label.replace(/\n/g, ' ');
+        return { id: id, label: label, group: group, help: help, run: function () { var fn = UI['cmdT' + name]; if (typeof fn === 'function') fn(); else UI.toast(flat + ' is not available yet.'); } };
+      }
+      return [
+        t('Dynamic', 'tDynamic', 'Dynamic', 'Position', 'Move or rotate sketch geometry by dragging the arrows and ring of an on-screen gnomon, or typing values'),
+        t('Translate', 'tTranslate', 'Translate', 'Position', 'Move or copy sketch geometry by Delta X / Y, a length at an angle, or from one point to another'),
+        t('TranslateToPlane', 'tTranslatePlane', 'Translate\nto Plane', 'Position', 'Move or copy sketch geometry from one plane to another'),
+        t('Rotate', 'tRotate', 'Rotate', 'Position', 'Rotate or copy sketch geometry round a point by an angle, as many copies as you like'),
+        t('Project', 'tProject', 'Project', 'Position', 'Project sketch geometry onto a plane, a depth or a surface'),
+        t('MoveToOrigin', 'tMoveOrigin', 'Move to\nOrigin', 'Position', 'Move the sketch (or the selection) so the point you pick lands on the origin'),
+        t('Mirror', 'tMirror', 'Mirror', 'Position', 'Mirror sketch geometry about the X or Y axis, a line at an angle, a picked line or two points'),
+        t('Roll', 'tRoll', 'Roll', 'Position', 'Roll (wrap) sketch geometry round a cylinder, or unroll it flat'),
+        { sep: true },
+        t('OffsetEntity', 'tOffsetEntity', 'Offset\nEntity', 'Offset', 'Offset one sketch entity by a distance, to one side or both'),
+        t('OffsetChains', 'tOffsetChains', 'Offset\nChains', 'Offset', 'Offset chains of sketch entities, with sharp, round or no corners'),
+        { sep: true },
+        t('Nesting', 'tNesting', 'Geometry\nNesting', 'Layout', 'Nest flat parts on sheets to use the least material'),
+        { group: 'Layout', stack: [t('RectArray', 'tRectArray', 'Rectangular Array', 'Layout', 'Copy sketch geometry in rows and columns'),
+          t('Distribute', 'tDistribute', 'Distribute', 'Layout', 'Space sketch geometry evenly between two points or along a direction')] },
+        { sep: true },
+        t('Stretch', 'tStretch', 'Stretch', 'Size', 'Move the sketch geometry inside a window, stretching what crosses it'),
+        t('Scale', 'tScale', 'Scale', 'Size', 'Scale sketch geometry about a point, evenly or by X / Y factors')
+      ];
+    })()
   };
 
   // Assembly documents get their own CommandManager: the Assembly tab plus Evaluate (the part-only tabs are hidden).
