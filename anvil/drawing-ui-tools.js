@@ -1319,10 +1319,17 @@
         // (the PM's opening call has no key; nothing changed yet: no undo step)
         if (key == null || key === 'value' || !doc()) return;
         if (!live.on && JSON.stringify(dimPropsFromPM(v)) === JSON.stringify(dimPropsFromPM(values0))) return;
-        if (!live.on) { settle(); UI.pushUndo(); D.dirty = true; live.on = true; }
+        if (!live.on) { settle(); UI.pushUndo(); D.dirty = true; live.on = true; live.undo = App.undo.length; live.top = App.undo[App.undo.length - 1]; }
         liveApply(v);
       },
-      onCancel: function () { if (live.on && doc()) { liveApply(values0); live.on = false; } },
+      // (lane CA) ✗ (or Ctrl+Z) puts the dimension back and takes back the undo step its live edits made, so the next
+      // Ctrl+Z undoes the step before the PM, not a step that changes nothing
+      onCancel: function () {
+        if (live.on && doc()) {
+          liveApply(values0); live.on = false;
+          if (App.undo.length === live.undo && App.undo[App.undo.length - 1] === live.top) App.undo.pop();
+        }
+      },
       onOK: function (v) { return applyDimensionPM(d, src, v, live.on); }, onClose: onClose
     });
   }
@@ -1612,7 +1619,8 @@
       var vc = w.toSheet(d.c), um = [dg.start[0] - vc[0], dg.start[1] - vc[1]], ul = Math.hypot(um[0], um[1]) || 1;
       props.rad = Math.max(1e-9, ((d.radNow || d.rad || 0) * w.scale + (dx * um[0] + dy * um[1]) / ul) / w.scale);
     }
-    if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) props.tx = null; }
+    // (lane CA) text dragged back to the middle: centred between the extension lines when it fits there (tside 0)
+    if (Math.abs(props.tx || 0) < pxToPaper(4)) { if ('tx' in props) { props.tx = null; props.tside = 0; } }
     var hadGuide = !!D.snapGuide;
     if (!dg.noSnap) snapDim(d, w, props); else D.snapGuide = null;
     if (hadGuide || D.snapGuide) drawOverlay();

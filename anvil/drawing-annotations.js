@@ -609,14 +609,20 @@
     return placeLinear(d, at, sc);
   }
   // where a linear dimension's line goes: through the pointer (h: d.at is its v, v: its u; aligned: d.off, paper)
+  // (lane CA) and which side of the extension lines the click was on, along the dimension: d.tside 0 between them (the
+  // text stays between them when it fits there, the arrows going outside when they do not: SolidWorks), -1 / 1 before
+  // the low end / past the high end (h: u, v: v, aligned: from a to b; the text goes outside on that side)
   function placeLinear(d, at, sc) {
     if (!at) return d;
-    if (d.kind === 'h') { d.at = at[1]; d.side = at[1] >= (d.a[1] + d.b[1]) / 2 ? 1 : -1; }
-    else if (d.kind === 'v') { d.at = at[0]; d.side = at[0] >= (d.a[0] + d.b[0]) / 2 ? 1 : -1; }
+    var al = null, lo = 0, hi = 0;
+    if (d.kind === 'h') { d.at = at[1]; d.side = at[1] >= (d.a[1] + d.b[1]) / 2 ? 1 : -1; al = at[0]; lo = Math.min(d.a[0], d.b[0]); hi = Math.max(d.a[0], d.b[0]); }
+    else if (d.kind === 'v') { d.at = at[0]; d.side = at[0] >= (d.a[0] + d.b[0]) / 2 ? 1 : -1; al = at[1]; lo = Math.min(d.a[1], d.b[1]); hi = Math.max(d.a[1], d.b[1]); }
     else if (d.kind === 'aligned') {
       var t = unit([d.b[0] - d.a[0], d.b[1] - d.a[1]]), n = [-t[1], t[0]], o = ((at[0] - d.a[0]) * n[0] + (at[1] - d.a[1]) * n[1]) * sc;
       if (Math.abs(o) > 1e-9) d.off = o;
+      al = (at[0] - d.a[0]) * t[0] + (at[1] - d.a[1]) * t[1]; hi = Math.hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]);
     }
+    if (al != null) d.tside = al < lo - 1e-9 ? -1 : al > hi + 1e-9 ? 1 : 0;
     return d;
   }
   // addSmartDim(doc, viewId, p1, p2, at, opts) -> the dimension added to the view (null: the picks make none)
@@ -740,7 +746,7 @@
   }
   // the dimension properties the Dimension PropertyManager edits; a model item keeps them in doc.dimProps under
   // styleKey (view:kind:n, stable when the part changes size), a Smart Dimension on itself
-  var DIM_PROPS = ['at', 'tx', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad'];   // (rad: an angle's arc radius, rfS)
+  var DIM_PROPS = ['at', 'tx', 'tside', 'lead', 'off', 'flip', 'tol', 'prec', 'label', 'rad'];   // (rad: an angle's arc radius, rfS; tside: placeLinear)
   function styleKey(d, n) { return d.view + ':' + d.kind + ':' + n; }
   function setDimProps(target, props) {
     DIM_PROPS.forEach(function (k) {

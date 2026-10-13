@@ -58,10 +58,11 @@
     assert(types.join() === 'Closed,Open,Tear Drop,Rolled', 'hem types: ' + types.join());
     var posns = Array.prototype.map.call(D.querySelectorAll('#pm button[data-key^="hemPosition:"]'), function (b) { return b.title; });
     assert(posns.join() === 'Material Inside,Bend Outside', 'hem positions: ' + posns.join());
-    assert(pmIconBtn('hemType', 'open').classList.contains('on') && pmIconBtn('hemPosition', 'inside').classList.contains('on'), 'a new hem defaults to Open, Material Inside');
-    assert(pmField('Hem length') && pmField('Gap distance') && !pmField('Radius') && !pmField('Angle'), 'Open: length and gap');
-    pmIconBtn('hemType', 'closed').click();
+    // SolidWorks' Hem PropertyManager starts on Closed, Material Inside
+    assert(pmIconBtn('hemType', 'closed').classList.contains('on') && pmIconBtn('hemPosition', 'inside').classList.contains('on'), 'a new hem defaults to Closed, Material Inside');
     assert(pmField('Hem length') && !pmField('Gap distance') && !pmField('Radius'), 'Closed: length only');
+    pmIconBtn('hemType', 'open').click();
+    assert(pmField('Hem length') && pmField('Gap distance') && !pmField('Radius') && !pmField('Angle'), 'Open: length and gap');
     pmIconBtn('hemType', 'teardrop').click();
     assert(pmField('Angle') && pmField('Radius') && !pmField('Hem length') && +pmField('Angle').value === 200, 'Tear Drop: angle 200° and radius');
     pmIconBtn('hemType', 'rolled').click();

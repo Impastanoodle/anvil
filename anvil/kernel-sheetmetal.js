@@ -305,7 +305,7 @@
     if (position === 'virtualSharp' && !(A < Math.PI - 0.01)) throw new Error('Bend from Virtual Sharp needs a flange angle below 180°.');
     var shift = position === 'inside' ? R + T : (position === 'outside' ? R : (position === 'virtualSharp' ? (R + T) * Math.tan(A / 2) : 0));
     var ov = Math.min(T, 0.5); // overlap into the sheet so the union is watertight
-    var tools = [], cuts = [], info = [], eds = [];
+    var tools = [], cuts = [], info = [], eds = [], trimTest = null;
     selected.forEach(function (e) {
       var fa = mesh.faces[e.faces[0]], fb = mesh.faces[e.faces[1]];
       if (Math.abs(dot(fa.normal, fb.normal)) > 0.05) throw new Error('Flange edges must be square edges of a flat face.');
@@ -319,7 +319,18 @@
       if (shift) {
         var cutPlane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
         var tca = dot(sub(e.a, e.mid), cutPlane.n), tcb = dot(sub(e.b, e.mid), cutPlane.n);
-        cuts.push({ loop: [[-shift, 0.01], [-shift, -T - 0.01], [0.5, -T - 0.01], [0.5, 0.01]].reverse(), plane: cutPlane, a: Math.min(tca, tcb) - 0.01, b: Math.max(tca, tcb) + 0.01 });
+        // rfBZ: the trim runs 0.01 past an end of the edge only where the sheet stops there; where it continues (the
+        // bend of an earlier flange on the neighbouring edge starts at this end) the trim stops exactly at the end, so
+        // it no longer takes a 0.01 nick out of that bend
+        if (!trimTest) trimTest = ctx.body.pointTester();
+        var dAB = norm(sub(e.b, e.a));
+        var cont = [[e.a, -1], [e.b, 1]].map(function (q) {
+          var P = add(sub(q[0], scale(nF, T / 2)), scale(dAB, q[1] * Math.min(0.005, T / 4)));
+          return trimTest(sub(P, scale(o, shift / 2))) || trimTest(sub(P, scale(o, Math.min(shift / 8, T / 4))));
+        });
+        var oa = cont[0] ? 0 : 0.01, ob = cont[1] ? 0 : 0.01;
+        var ca = tca <= tcb ? tca - oa : tcb - ob, cb = tca <= tcb ? tcb + ob : tca + oa;
+        cuts.push({ loop: [[-shift, 0.01], [-shift, -T - 0.01], [0.5, -T - 0.01], [0.5, 0.01]].reverse(), plane: cutPlane, a: ca, b: cb });
         origin = sub(origin, scale(o, shift));
       }
       var plane = { origin: origin, x: o, y: u, n: norm(cross(o, u)) };
@@ -404,7 +415,60 @@
       if (ed.cutouts && ed.cutouts.length) rec.cutouts = ed.cutouts;
       info.push(rec);
     });
+    if (f.hem) hemCrossing(f, model, ctx, eds, cuts, flangeProfile(A, R, T, L, ov), ov, T);
     return { parts: tools, cuts: cuts, info: info, section: { A: A, R: R, T: T, L: L, ov: ov } };
+  }
+  // rfBZ: hemCrossing(f, model, ctx, eds, cuts, loop, ov, T) throws when a hem would run into metal that is already
+  // there: the return of a hem on the neighbouring edge folded over the same corner (a closed hem and a tear drop on
+  // adjacent edges), or another edge of the same hem feature. The CSG union would merge the two into a
+  // self-intersecting part and a wrong flat; SolidWorks refuses the second hem. Each edge's hem without its overlap
+  // strip is tested against the sheet as trimmed for this feature and against the hem's other edges; anything over
+  // 1 % of T³ in common is a crossing.
+  function hemCrossing(f, model, ctx, eds, cuts, loop, ov, T) {
+    var bare = loop.filter(function (p) { return p[0] !== -ov; });   // the section from the bend line on
+    var lim = 0.01 * T * T * T;
+    var solids = eds.map(function (ed) {
+      return prism(bare, ed.plane, Math.min(ed.ends[0].t, ed.ends[1].t), Math.max(ed.ends[0].t, ed.ends[1].t));
+    });
+    var rest = cuts.length ? ctx.body.subtract(unionAll(cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b); }))) : ctx.body;
+    function pt(p) { return '(' + p.map(function (x) { return fmtN(Math.round(x * 1e4) / 1e4); }).join(', ') + ')'; }
+    function centroid(s) {
+      var c = [0, 0, 0], n = 0;
+      s.polygons.forEach(function (pg) { pg.vertices.forEach(function (v) { c[0] += v.pos.x; c[1] += v.pos.y; c[2] += v.pos.z; n++; }); });
+      return n ? scale(c, 1 / n) : c;
+    }
+    // the point picked on a feature's i-th edge (its records follow its edge list when there is one per edge)
+    function picked(g, i, n) {
+      var e = g.edges && g.edges.length === n ? g.edges[i] : null, at = e && e.at;
+      return at && at.length === 3 && at.every(function (v) { return isFinite(+v); }) ? at.map(Number) : null;
+    }
+    function segDist(p, a, b) {
+      var ab = sub(b, a), l2 = dot(ab, ab), t = l2 > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2)) : 0;
+      return len(sub(p, add(a, scale(ab, t))));
+    }
+    function refuse(k, other, otherIsHem) {
+      var mine = pt(picked(f, k, eds.length) || eds[k].e.mid);
+      if (!other) throw new Error('The hem on edge ' + mine + ' would run into metal already there: shorten it or add a relief.');
+      throw new Error(otherIsHem ? 'The hems on edges ' + mine + ' and ' + pt(other) + ' would cross: shorten one or add a relief.' :
+        'The hem on edge ' + mine + ' would run into the flange on edge ' + pt(other) + ': shorten the hem or add a relief.');
+    }
+    solids.forEach(function (s, k) {
+      for (var j = k + 1; j < solids.length; j++) if (s.intersect(solids[j]).volume() > lim) refuse(k, picked(f, j, eds.length) || eds[j].e.mid, true);
+      var x = rest.intersect(s);
+      if (!(x.volume() > lim)) return;
+      // the flange record nearest the metal in common names the other edge
+      var c = centroid(x), best = null;
+      Object.keys(ctx.flanges || {}).forEach(function (id) {
+        if (String(id) === String(f.id)) return;
+        (ctx.flanges[id] || []).forEach(function (rec, ri) {
+          if (!rec || !rec.a || !rec.b) return;
+          var d = segDist(c, rec.a, rec.b);
+          if (!best || d < best.d) best = { d: d, rec: rec, id: id, ri: ri, n: ctx.flanges[id].length };
+        });
+      });
+      var of = best ? (model.features || []).filter(function (g) { return String(g.id) === String(best.id); })[0] : null;
+      refuse(k, best ? (of && picked(of, best.ri, best.n)) || best.rec.mid : null, !!(of && of.hem));
+    });
   }
   // Flange length references and hem types (see flangeLayout). A closed hem cannot have a zero inner radius in a
   // solid: it folds at CLOSED_HEM_R·T (gap 2·0.02·T = 0.04·T, 0.0024 in on 16 ga), and its flat uses that radius
@@ -736,40 +800,148 @@
     if (!(R.volume() > 1e-9)) return tool;
     var T = +sheetParams(model).thickness, eps = 1e-3 * T;
     var inside = body.pointTester();
-    var meshR = meshFromBody(R), p = meshR.positions64;
-    var caps = [], entry = [];
-    meshR.faces.forEach(function (face, i) {
-      // one probe per triangle (its centroid), votes weighted by area: a sliver triangle at the rim of a bend facet
-      // can probe into the neighbouring facet's metal and must not outvote the bulk of the face
-      var n = face.normal, yes = 0, no = 0;
-      for (var t = face.start; t < face.start + face.count; t++) {
-        var k = t * 9;
-        var a = [p[k], p[k + 1], p[k + 2]], b = [p[k + 3], p[k + 4], p[k + 5]], d = [p[k + 6], p[k + 7], p[k + 8]];
-        var c = scale(add(add(a, b), d), 1 / 3), w = len(cross(sub(b, a), sub(d, a)));
-        var onSheet = !inside(add(c, scale(n, eps))) && inside(sub(c, scale(n, T / 2))) && !inside(sub(c, scale(n, T + eps)));
-        if (onSheet) yes += w; else no += w;
-      }
-      if (!(yes > no)) return;
-      caps.push(i);
-      if (dir && dot(n, dir) < -1e-6) entry.push(i);
-    });
-    var chosen = entry.length ? entry : caps;
+    // sheetFaces(mesh) -> { caps, entry }: the faces of `mesh` (a piece of the body) that lie on a sheet surface, and
+    // of those the ones a cut along `dir` enters through
+    function sheetFaces(mesh) {
+      var p = mesh.positions64, caps = [], entry = [];
+      mesh.faces.forEach(function (face, i) {
+        // one probe per triangle (its centroid), votes weighted by area: a sliver triangle at the rim of a bend facet
+        // can probe into the neighbouring facet's metal and must not outvote the bulk of the face
+        var n = face.normal, yes = 0, no = 0;
+        for (var t = face.start; t < face.start + face.count; t++) {
+          var k = t * 9;
+          var a = [p[k], p[k + 1], p[k + 2]], b = [p[k + 3], p[k + 4], p[k + 5]], d = [p[k + 6], p[k + 7], p[k + 8]];
+          var c = scale(add(add(a, b), d), 1 / 3), w = len(cross(sub(b, a), sub(d, a)));
+          var onSheet = !inside(add(c, scale(n, eps))) && inside(sub(c, scale(n, T / 2))) && !inside(sub(c, scale(n, T + eps)));
+          if (onSheet) yes += w; else no += w;
+        }
+        if (!(yes > no)) return;
+        caps.push(i);
+        if (dir && dot(n, dir) < -1e-6) entry.push(i);
+      });
+      return { caps: caps, entry: entry };
+    }
+    var meshR = meshFromBody(R), sf = sheetFaces(meshR);
+    var chosen = (sf.entry.length ? sf.entry : sf.caps).map(function (i) { return { mesh: meshR, i: i }; });
     if (!chosen.length) return tool;
     var tag = tool.polygons.length ? tool.polygons[0].shared : undefined;
-    var prisms = [];
-    chosen.forEach(function (i) {
-      var o = faceOutline(meshR, i);
+    // rfBZ: a cut sketched on a face next to a bend (a hole straddling the bend line, cut from the top face) only
+    // reaches the part of the bend below its sketch plane, while the bend's inside surface rises above it. As
+    // SolidWorks' Normal Cut, the hole's footprint follows the sheet surface it enters through across the bend: the
+    // tool's start cap is swept backward (against `dir`), and the sheet-surface faces it meets there that face the cut
+    // and continue an entry face (sharing a vertex with one, bend facet after bend facet) join the entry faces.
+    var others = [{ mesh: meshR, caps: sf.caps }];   // sheet faces of the pieces, for the joint wedges below
+    if (dir && sf.entry.length) {
+      var back = backwardShadow(tool, body, dir, tag);
+      var R2 = back ? body.intersect(back) : null;
+      if (R2 && R2.volume() > 1e-12) {
+        var meshR2 = meshFromBody(R2), tol = 1e-6 * Math.max(1, 100 * T), sf2 = sheetFaces(meshR2);
+        others.push({ mesh: meshR2, caps: sf2.caps });
+        var cand = sf2.entry.map(function (i) { return { mesh: meshR2, i: i, pts: faceVerts(meshR2, i) }; });
+        var seen = chosen.map(function (c) { return faceVerts(c.mesh, c.i); });
+        var touches = function (c) {
+          return seen.some(function (pts) { return pts.some(function (q) { return c.pts.some(function (s) { return Math.abs(s[0] - q[0]) < tol && Math.abs(s[1] - q[1]) < tol && Math.abs(s[2] - q[2]) < tol; }); }); });
+        };
+        for (var grew = true; grew && cand.length;) {
+          grew = false;
+          cand = cand.filter(function (c) {
+            if (!touches(c)) return true;
+            chosen.push({ mesh: c.mesh, i: c.i }); seen.push(c.pts); grew = true;
+            return false;
+          });
+        }
+      }
+    }
+    var prisms = [], outl = [];
+    chosen.forEach(function (c) {
+      var o = faceOutline(c.mesh, c.i);
       if (!o) return;
       var cl = faceLoopsClassified(o);
-      // through the thickness along −n: from just in front of the face to just past the far surface
-      var outers = cl.outers.map(function (l) { return prism(l, o.plane, -(T + eps), eps, tag); });
-      if (!outers.length) return;
-      var solid = unionAll(outers);
-      if (cl.holes.length) solid = solid.subtract(unionAll(cl.holes.map(function (l) { return prism(l, o.plane, -(T + 2 * eps), 2 * eps, tag); })));
+      if (!cl.outers.length) return;
+      var f = c.mesh.faces[c.i];
+      outl.push({ n: f.normal, w: f.w, o: o, cl: cl, pts: o.loops.reduce(function (s, l) { return s.concat(l.map(function (q) { return to3D(o.plane, q[0], q[1]); })); }, []) });
+    });
+    // rfBZ: two faces meeting at a concave joint (bend facets on the inside of a bend; the flat face and the first
+    // facet) are pushed through by their own normals, which part behind the joint and leave a sliver of metal
+    // between their prisms: a wedge along the shared edge fills it. Where the cut stops at such a joint (the last bend
+    // facet against the wall's inside face) the wedge runs from its prism to the neighbour's normal, the bend's end line.
+    for (var ia = 0; ia < outl.length; ia++) for (var ib = ia + 1; ib < outl.length; ib++) {
+      var wdg = jointWedge(outl[ia], outl[ib], T + eps, tag);
+      if (wdg) { prisms.push(wdg); outl[ia].concave = outl[ib].concave = true; }
+    }
+    others.forEach(function (oc) {
+      oc.caps.forEach(function (i) {
+        if (chosen.some(function (c) { return c.mesh === oc.mesh && c.i === i; })) return;
+        var nf = oc.mesh.faces[i], nb = { n: nf.normal, w: nf.w, pts: faceVerts(oc.mesh, i) };
+        outl.forEach(function (fa) { var w = jointWedge(fa, nb, T + eps, tag, true); if (w) { prisms.push(w); fa.concave = true; } });
+      });
+    });
+    outl.forEach(function (fo) {
+      // through the thickness along −n: from just in front of the face to just past the far surface. In front of a
+      // face at a concave joint the neighbour rises: the prism's front plane cuts the neighbour's surface a little
+      // way from the joint (all through the part, as a BSP splits), so it stands well clear (0.05·T), or that strip
+      // would be thin enough for the meshing's 1e-4 weld to fold and the flat to read a slit across the bend.
+      var front = fo.concave ? 0.05 * T : eps;
+      var solid = unionAll(fo.cl.outers.map(function (l) { return prism(l, fo.o.plane, -(T + eps), front, tag); }));
+      if (fo.cl.holes.length) solid = solid.subtract(unionAll(fo.cl.holes.map(function (l) { return prism(l, fo.o.plane, -(T + 2 * eps), front + eps, tag); })));
       prisms.push(solid);
     });
     if (!prisms.length) return tool;
     return unionTree(prisms);
+  }
+  // the 3D corners of a mesh face's triangles
+  function faceVerts(mesh, i) {
+    var f = mesh.faces[i], p = mesh.positions64, out = [];
+    for (var k = f.start * 9; k < (f.start + f.count) * 9; k += 3) out.push([p[k], p[k + 1], p[k + 2]]);
+    return out;
+  }
+  // backwardShadow(tool, body, dir, tag) -> the tool's start cap (its backmost faces facing −dir) swept against dir
+  // past the far side of the body, or null
+  function backwardShadow(tool, body, dir, tag) {
+    var mt = meshFromBody(tool), caps = [], wMin = Infinity;
+    mt.faces.forEach(function (f, i) { if (dot(f.normal, dir) < -1 + 1e-9) { caps.push(i); wMin = Math.min(wMin, f.w); } });
+    caps = caps.filter(function (i) { return Math.abs(mt.faces[i].w - wMin) < 1e-9; });
+    if (!caps.length) return null;
+    var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    body.polygons.forEach(function (pg) {
+      pg.vertices.forEach(function (v) {
+        var q = v.pos;
+        lo = [Math.min(lo[0], q.x), Math.min(lo[1], q.y), Math.min(lo[2], q.z)]; hi = [Math.max(hi[0], q.x), Math.max(hi[1], q.y), Math.max(hi[2], q.z)];
+      });
+    });
+    var H = len(sub(hi, lo)) + 1, solids = [];
+    caps.forEach(function (i) {
+      var o = faceOutline(mt, i);
+      if (!o) return;
+      var cl = faceLoopsClassified(o);
+      if (!cl.outers.length) return;
+      var s = unionAll(cl.outers.map(function (l) { return prism(l, o.plane, 0, H, tag); }));
+      if (cl.holes.length) s = s.subtract(unionAll(cl.holes.map(function (l) { return prism(l, o.plane, -1, H + 1, tag); })));
+      solids.push(s);
+    });
+    return solids.length ? unionAll(solids) : null;
+  }
+  // jointWedge(fa, fb, D, tag, onlyA?) -> a triangular prism along the edge two faces ({ n, w, pts }) share at a concave
+  // joint (each face rises in front of the other's plane), reaching D behind it between their normals; null when
+  // they share no edge or the joint is flat or convex
+  function jointWedge(fa, fb, D, tag, onlyA) {
+    var c = dot(fa.n, fb.n);
+    if (c > 1 - 1e-6 || c < 0.5) return null;
+    var tol = 1e-6 * Math.max(1, D * 100);
+    var onBoth = function (q) { return Math.abs(dot(fa.n, q) - fa.w) < tol && Math.abs(dot(fb.n, q) - fb.w) < tol; };
+    var on = fa.pts.filter(onBoth);
+    if (onlyA) { if (!fb.pts.some(onBoth)) return null; } else on = on.concat(fb.pts.filter(onBoth));
+    if (on.length < 2) return null;
+    var front = function (f, g) { return f.pts.some(function (q) { return dot(g.n, q) - g.w > tol; }); };
+    if (!front(fa, fb) || !front(fb, fa)) return null;
+    var d = norm(cross(fa.n, fb.n)), t0 = Infinity, t1 = -Infinity, P = null;
+    on.forEach(function (q) { var t = dot(q, d); if (t < t0) { t0 = t; P = q; } t1 = Math.max(t1, t); });
+    if (!(t1 - t0 > tol)) return null;
+    var x = scale(fa.n, -1), y = cross(d, x), pl = { origin: P, x: x, y: y, n: d };
+    var nb = scale(fb.n, -1);
+    var loop = [[0, 0], [D, 0], [dot(nb, x) * D, dot(nb, y) * D]];   // apex on the joint: its sides are the prisms' own
+    if (signedArea(loop) < 0) loop.reverse();
+    return prism(loop, pl, 0, t1 - t0, tag);
   }
 
   // bendNoteText(bend, units, opts?) -> the shop bend note: direction, angle and inside radius as the drawing

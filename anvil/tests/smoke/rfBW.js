@@ -50,6 +50,8 @@
     UI.cmdHem(); await wait(30);
     assert(UI.pmTitle() === 'Hem', 'Hem PM: ' + UI.pmTitle());
     assert(UI.App.command.onPick({ kind: 'edge', edge: edgeNear([4, 0.0598, 1.5]) }) !== false, 'edge pick rejected');
+    var openBtn = D.querySelector('#pm button[data-key="hemType:open"]');   // a new hem starts on Closed (SolidWorks)
+    if (openBtn && !openBtn.classList.contains('on')) { openBtn.click(); await wait(10); }
     var hl = pmField('Hem length');
     assert(hl, 'Hem length box');
     setInput(hl, 0.5);

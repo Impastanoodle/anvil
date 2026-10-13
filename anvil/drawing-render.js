@@ -723,6 +723,25 @@
     });
     return r;
   }
+  // (lane CA, user 2026-10-13) a bend note is as long as it reads ('DOWN 90° R .060' is 1.3 in at .125): one longer
+  // than its bend line (less a gap at each end) ran past the flat blank, over the outline and where another note can
+  // be. It goes on two lines then ('DOWN 90°' over 'R .060', split where the longer line is shortest), beside the line
+  // as before; when even that does not fit (a narrow tab), it runs on from the bend line's end, outside the blank,
+  // centred on the line. M: the line's middle, t / n: along / beside it (text upright), L: its length (paper).
+  function bendNotePrims(txt, M, t, n, L, g, h, rot, e) {
+    function tp(along, across, s, anchor) { return { k: 'text', p: [M[0] + t[0] * along + n[0] * across, M[1] + t[1] * along + n[1] * across], h: h, text: s, anchor: anchor || 'middle', layer: 'BEND_NOTES', rot: rot }; }
+    var room = L - 2 * g;
+    if (textWidth(txt, h) <= room) return [tp(0, g, txt)];
+    var best = null, i = -1;
+    while ((i = txt.indexOf(' ', i + 1)) >= 0) {
+      var l1 = txt.slice(0, i).trim(), l2 = txt.slice(i + 1).trim();
+      if (!l1 || !l2) continue;
+      var wd = Math.max(textWidth(l1, h), textWidth(l2, h));
+      if (!best || wd < best.w) best = { w: wd, lines: [l1, l2] };
+    }
+    if (best && best.w <= room) return [tp(0, g + 1.6 * h, best.lines[0]), tp(0, g, best.lines[1])];
+    return [tp(L / 2 + e + g, -h / 2, txt, 'start')];
+  }
   function flatItems(w, doc, units, k, ctx) {
     var v = w.view, fd = w.flat, o = D.docOptions(doc), mode = v.bendNotes || o.bendNotes, own = v.flatAnn || {}, out = [], box = w.box;
     ctx = ctx || { views: [w], tb: { x0: Infinity, y0: Infinity, x1: Infinity, y1: Infinity }, bom: null, sheet: { x0: -Infinity, y0: -Infinity, x1: Infinity, y1: Infinity }, taken: [] };
@@ -749,7 +768,7 @@
       var txt = mode === 'table' ? D.bendTag(i) : D.bendNoteText(b, units, { prec: v.bendPrec });
       var bk = bkeys[i] || 'b' + i;
       if (!own[bk] && own['b' + i]) own = Object.assign({}, own, (function () { var o2 = {}; o2[bk] = own['b' + i]; return o2; })());
-      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: noteH() * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
+      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, bendNotePrims(txt, M, t, n, L, g, noteH() * k, rot, BEND_EXT * k),
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
     });
     var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
@@ -1057,7 +1076,13 @@
       var half = (hz ? labWidth(lab) / 2 : (lab.upper != null ? 0.75 : 0.5) * th) + g, mid = (lo + hi) / 2;
       var fits = hi - lo >= 2 * half + 2 * ar + g, out = !!d.flip || !fits;
       var c = mid + (tx || 0);
-      if (tx == null && !fits) c = hi + xo + half;   // beyond the far arrow
+      // (lane CA) placed by a click (d.tside, Drawing.smartDim): between the extension lines the text stays there when it
+      // fits between them, the arrows going outside if they do not (SolidWorks); a click outside puts it outside on
+      // that side; with no click (model items) or no room, beyond the far arrow
+      if (tx == null) {
+        if (d.tside === -1) c = lo - xo - half;
+        else if (d.tside === 1 || (!fits && !(d.tside === 0 && hi - lo >= 2 * half - 1e-9))) c = hi + xo + half;
+      }
       var inside = c - half >= lo - 1e-9 && c + half <= hi + 1e-9;
       var l0 = out ? lo - xo : lo, l1 = out ? hi + xo : hi;
       if (inside) { if (c - half > l0) line(P(l0, pos), P(c - half, pos)); if (c + half < l1) line(P(c + half, pos), P(l1, pos)); }
@@ -1141,7 +1166,10 @@
       var ta = ang2 * Math.PI / 180, tt2 = [Math.cos(ta), Math.sin(ta)], up2 = [-tt2[1], tt2[0]], sd = tt2[0] * t[0] + tt2[1] * t[1];
       var half2 = labWidth(labMain) / 2 + g2, fits2 = Ln >= 2 * half2 + 2 * ar + g2, out2 = !!d.flip || !fits2;
       var sc = Ln / 2 + (d.tx || 0) * sd;
-      if (d.tx == null && !fits2) sc = Ln + xo2 + half2;
+      if (d.tx == null) {   // (lane CA) where the click was, as linear()
+        if (d.tside === -1) sc = -xo2 - half2;
+        else if (d.tside === 1 || (!fits2 && !(d.tside === 0 && Ln >= 2 * half2 - 1e-9))) sc = Ln + xo2 + half2;
+      }
       var s0a = out2 ? -xo2 : 0, s1a = out2 ? Ln + xo2 : Ln, At = function (s) { return [pa[0] + t[0] * s, pa[1] + t[1] * s]; };
       if (sc - half2 >= -1e-9 && sc + half2 <= Ln + 1e-9) { if (sc - half2 > s0a) line(At(s0a), At(sc - half2)); if (sc + half2 < s1a) line(At(sc + half2), At(s1a)); }
       else if (sc > Ln / 2) line(At(s0a), At(Math.max(s1a, sc - half2)));
@@ -1223,6 +1251,16 @@
   // so the app can patch only the layers that changed (r3/drawings3). With live, a layer that is not a view's
   // (dimensions, annotations, balloons) is split into runs per view (<g data-of="id">), so a dragged view can take
   // its dimensions along with a transform until the sheet is worked out again.
+  // (lane CA, user 2026-10-13) a hidden line (or a DOWN bend line) shorter than one dash and its gap drew as a solid
+  // tick from its start: the hole walls through 16 ga at 1:2 read as visible edges. shortDash(len, dash, gap) -> null
+  // (long enough: the pattern runs as it is) or [dash, gap, phase] (sheet units): one dash centred on the segment,
+  // with a clear gap at both ends (a quarter of it, at most half a gap), so it reads as hidden and stands apart from the
+  // outlines it meets. SVG and PDF draw it so (butt ends); DXF keeps the true line on its HIDDEN linetype.
+  function shortDash(len, dash, gap) {
+    if (!(len > 0) || len >= dash + gap - 1e-12) return null;
+    var e = Math.min(gap / 2, len / 4);
+    return [len - 2 * e, 2 * e, len - e];
+  }
   function svgParts(sheet, opts) {
     opts = opts || {};
     var S = sheet.size, k = sheet.units === 'in' ? 1 / MM : 1, H = S[1];
@@ -1244,6 +1282,12 @@
           var pts = [X(p.a) + ' ' + Y(p.a), X(p.b) + ' ' + Y(p.b)];
           for (var pj = pi + 1; lst[pj] && lst[pj].chain === p.chain; pj++) pts.push(X(lst[pj].b) + ' ' + Y(lst[pj].b));
           var dshc = p.style === 'hidden' ? ' stroke-dasharray="' + dash + '"' : p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : '';
+          if (p.style === 'hidden') {
+            var clen = Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]);
+            for (var pk = pi + 1; lst[pk] && lst[pk].chain === p.chain; pk++) clen += Math.hypot(lst[pk].b[0] - lst[pk].a[0], lst[pk].b[1] - lst[pk].a[1]);
+            var sdc = shortDash(clen, 3 * k, 1.5 * k);
+            if (sdc) dshc = ' stroke-dasharray="' + num(sdc[0]) + ' ' + num(sdc[1]) + '" stroke-dashoffset="' + num(sdc[2]) + '" stroke-linecap="butt"';
+          }
           out.push('<path class="' + p.style + '" d="M' + pts.join(' L') + '" stroke-width="' + num((STROKE[p.style] || 0.25) * k) + '" stroke-linejoin="round"' + dshc + '/>');
           return;
         }
@@ -1290,7 +1334,11 @@
             var e0 = ellipseAt(p, p.t0).p, em = ellipseAt(p, (p.t0 + p.t1) / 2).p, e1 = ellipseAt(p, p.t1).p, ea = ' A' + num(rx) + ' ' + num(ry) + ' ' + num(rot) + ' 0 0 ';
             out.push('<path' + cls + ' d="M' + X(e0) + ' ' + Y(e0) + ea + X(em) + ' ' + Y(em) + ea + X(e1) + ' ' + Y(e1) + '" stroke-width="' + sw + '"' + dsh + '/>');
           }
-        } else if (p.k === 'line') out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
+        } else if (p.k === 'line') {
+          var sdl = (p.style === 'hidden' || p.style === 'benddown') && shortDash(Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]), 3 * k, 1.5 * k);
+          if (sdl) dsh = dsh.replace(/ stroke-dasharray="[^"]*"/, ' stroke-dasharray="' + num(sdl[0]) + ' ' + num(sdl[1]) + '" stroke-dashoffset="' + num(sdl[2]) + '" stroke-linecap="butt"');
+          out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
+        }
         else if (p.k === 'circle') out.push('<circle' + cls + ' cx="' + X(p.c) + '" cy="' + Y(p.c) + '" r="' + num(p.r) + '" stroke-width="' + sw + '"' + dsh + '/>');
         else if (p.k === 'fill') out.push('<path' + (p.color && COLORS[p.color] ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
         else if (p.k === 'region') out.push('<path class="hatch-fill" d="' + p.loops.map(function (l) { return 'M' + l.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z'; }).join(' ') + '" fill="' + (col || '#000') + '" fill-rule="evenodd" stroke="none"/>');   // (rfAG) a solid area fill
@@ -1618,7 +1666,14 @@
       }
       if (p.k === 'arc') { style(p.style, p.lw); c.push(arcPath(p)); }
       else if (p.k === 'ellipse') { style(p.style, p.lw); c.push(ellipsePath(p)); }
-      else if (p.k === 'line') { style(p.style, p.lw); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
+      else if (p.k === 'line') {
+        style(p.style, p.lw);
+        // (lane CA) a short hidden line: one centred dash, butt ends (shortDash); the next line sets its style again
+        var sdp = (p.style === 'hidden' || p.style === 'benddown') && shortDash(Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]), 3 * k, 1.5 * k);
+        if (sdp) { c.push('0 J [' + num(sdp[0] * ptPer) + ' ' + num(sdp[1] * ptPer) + '] ' + num(sdp[2] * ptPer) + ' d'); cur = null; }
+        c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S');
+        if (sdp) c.push('1 J');
+      }
       else if (p.k === 'circle') {
         style(p.style, p.lw);
         var x = p.c[0], y = p.c[1], r = p.r, m = 0.5522847498 * r;

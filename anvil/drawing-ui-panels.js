@@ -550,6 +550,43 @@
       help || { label: 'Help', items: [] }
     ];
   };
+  // lane CA (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo buttons with a drawing
+  // PropertyManager open cancel it first (its ✗: what it applied live goes back, "Dimension cancelled."), as on the
+  // part side (ui-app.js undoCommand); the next Ctrl+Z undoes. Smart Dimension's PM ends the tool, as Esc does. In the
+  // PM's value box Ctrl+Z takes back what was typed there first; another text box (a note being typed on the sheet, a
+  // tab being renamed, a PM's text area) keeps its own Ctrl+Z. A modal dialog keeps the keys.
+  function undoCancelsDrawingPM(target) {
+    if (!D.active || !(UI.hasPM && UI.hasPM()) || !$('modal').hidden) return false;
+    if (target && target !== document.body && target.tagName) {
+      var tag = target.tagName.toLowerCase(), root = $('pm');
+      if (tag === 'textarea' || target.isContentEditable) return false;
+      if (tag === 'select' || (tag === 'input' && !/^(checkbox|radio|button|submit|reset|range|color|file|image)$/i.test(target.type || ''))) {
+        if (!root || !root.contains(target)) return false;
+        if (UI.pmPending && UI.pmPending(target)) return false;
+      }
+    }
+    return true;
+  }
+  function cancelDrawingPM() {
+    var title = UI.pmTitle ? UI.pmTitle() : '', dimTool = D.tool === 'dim' && D.sdPM;
+    UI.pmCancel();
+    if (dimTool && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); }
+    if (title) UI.setStatus(title + ' cancelled.');
+    if (D.active) { drawOverlay(); renderTree(); }
+    return UI.whenIdle();
+  }
+  ['undoCommand', 'redoCommand'].forEach(function (name) {
+    var base = UI[name];
+    if (typeof base !== 'function') return;
+    UI[name] = function () { return undoCancelsDrawingPM(document.activeElement) ? cancelDrawingPM() : base.apply(this, arguments); };
+  });
+  var baseUndoCancels = UI.undoCancelsPM;
+  UI.undoCancelsPM = function (target) { return undoCancelsDrawingPM(target === undefined ? document.activeElement : target) || !!(baseUndoCancels && baseUndoCancels.apply(this, arguments)); };
+  window.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || !/^[zZyY]$/.test(e.key) || !undoCancelsDrawingPM(e.target)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    cancelDrawingPM();
+  }, true);
   // keys in a drawing: Esc ends a tool, Delete removes the selection, F fits the sheet, D toggles Smart Dimension;
   // other part shortcuts are swallowed (Ctrl+Z / Y / S / O / N still reach the app).
   window.addEventListener('keydown', function (e) {

@@ -2108,7 +2108,7 @@
     var isHem = kind === 'hem', isJog = kind === 'jog', isMiter = kind === 'miter', isFlange = !isHem && !isJog;
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
       isJog ? { type: 'jog', edges: [], height: UI.lenDefault(10), length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
-      isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside', hemType: 'open', hemPosition: 'inside' } :
+      isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside', hemType: 'closed', hemPosition: 'inside' } :
       { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', lengthRef: 'outer', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
