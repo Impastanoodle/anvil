@@ -414,7 +414,7 @@
   var ribbonBuilt = null;
   function ribbonShape() {
     var set = ribbonSet();
-    var tabNames = Object.keys(set), extraTabs = isAsm() ? ['Layout', 'Sketch', 'Markup', 'SOLIDWORKS Add-Ins'] : ['Surfaces', 'Weldments', 'Mold Tools', 'Direct Editing', 'MBD Dimensions'];
+    var tabNames = Object.keys(set), extraTabs = isAsm() ? ['Layout', 'Sketch', 'Markup', 'SOLIDWORKS Add-Ins'] : [];   // the part's greyed SolidWorks tabs (Surfaces, Weldments, Mold Tools, Direct Editing, MBD Dimensions) removed at the user's request (2026-10-13)
     // another document type (drawing.js) may swap the tab set: UI.ribbonTabsFor(names, extra) -> [names, extra]
     if (UI.ribbonTabsFor) { var tf = UI.ribbonTabsFor(tabNames, extraTabs); tabNames = tf[0]; extraTabs = tf[1]; }
     var items = (set[App.ribbonTab] || []).slice();
