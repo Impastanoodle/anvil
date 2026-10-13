@@ -1427,7 +1427,7 @@
     row.title = tip;
     var nm = row.querySelector('.nm'); if (nm) nm.title = tip;
   }
-  var FLEX_SVG = '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><circle cx="4.5" cy="4.5" r="4.2" fill="#fff" stroke="#1f6fc5" stroke-width=".9"/><path d="M2 5.6c.8-2.4 1.8-2.4 2.5-1.1s1.7 1.3 2.5-1.1" fill="none" stroke="#1f6fc5" stroke-width="1.1" stroke-linecap="round"/></svg>';
+  var FLEX_SVG = '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><circle cx="4.5" cy="4.5" r="4.2" fill="#fff" stroke="#3a3a3a" stroke-width=".9"/><path d="M2 5.6c.8-2.4 1.8-2.4 2.5-1.1s1.7 1.3 2.5-1.1" fill="none" stroke="#3a3a3a" stroke-width="1.1" stroke-linecap="round"/></svg>';
   UI.asmTreeMarks = function (tree, root) {
     if (!isAsm() || !tree) return;
     var m = App.model;
@@ -1766,7 +1766,7 @@
     document.head.appendChild(st);
   }
   var FLIP_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v10M2.5 9.5 5 12l2.5-2.5M11 14V4M8.5 6.5 11 4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  var ISOLATE_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h4v4h-4zM10.5 7.5h4v4h-4z" fill="none" stroke="#9aa3ad" stroke-width=".9" stroke-dasharray="1.6 1.2"/><path d="M5.5 6.5 8 5l2.5 1.5v3L8 11 5.5 9.5z" fill="#f0c987" stroke="#4a5058" stroke-width="1" stroke-linejoin="round"/><path d="M5.5 6.5 8 8l2.5-1.5M8 8v3" fill="none" stroke="#4a5058" stroke-width=".8"/></svg>';   // r13/asmui13
+  var ISOLATE_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h4v4h-4zM10.5 7.5h4v4h-4z" fill="none" stroke="#a0a0a0" stroke-width=".9" stroke-dasharray="1.6 1.2"/><path d="M5.5 6.5 8 5l2.5 1.5v3L8 11 5.5 9.5z" fill="#f0c987" stroke="#4d4d4d" stroke-width="1" stroke-linejoin="round"/><path d="M5.5 6.5 8 8l2.5-1.5M8 8v3" fill="none" stroke="#4d4d4d" stroke-width=".8"/></svg>';   // r13/asmui13
   function iconHtml(name) { return typeof Icons === 'function' ? Icons(name, 16) : ''; }
   // the last press / release in the graphics area (client coordinates): where a pop-up goes
   var lastUp = null;
@@ -2036,7 +2036,7 @@
   // ---- Change Transparency: a transparent component is drawn see-through (and clicks go through it to what is behind,
   // as in SolidWorks); kept on the component (r7/asm7). ui-core.js draws the opaque mesh without it
   // (UI.bodyGhost); the see-through copy shares the drawn positions, so a drag pose moves it too.
-  var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#7d98bd" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d5e0ef" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
+  var GHOST_SVG = '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1" fill="#8c8c8c" fill-opacity=".9"/><rect x="6" y="2" width="8" height="8" rx="1" fill="#d6d6d6" fill-opacity=".55" stroke="currentColor" stroke-width="1"/></svg>';
   // r7/asm7: kept in the model (component.transparent: saved, undone with it, written by toScript); a toggle is one undo
   // step that only redraws (no rebuild).
   var ghostMesh = null, ghostMat = null, ghostFront = null;
@@ -2076,7 +2076,7 @@
     g.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
     var pm = bm.material;
     ghostMat = ghostMat || new THREE.MeshPhongMaterial({ transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
-    ghostMat.color.copy(pm.color || new THREE.Color('#a8adb6'));
+    ghostMat.color.copy(pm.color || new THREE.Color(UI.partColor ? UI.partColor(null) : '#8c8c8c'));
     ghostMat.vertexColors = !!pm.vertexColors;
     ghostMat.clippingPlanes = pm.clippingPlanes || null;
     ghostMat.needsUpdate = true;
@@ -2109,7 +2109,7 @@
     if (lp.length) {
       var lg = new THREE.BufferGeometry();
       lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
-      ghostEdgeMat = ghostEdgeMat || new THREE.LineBasicMaterial({ color: 0x24292f, transparent: true, opacity: 0.3, depthWrite: false });
+      ghostEdgeMat = ghostEdgeMat || new THREE.LineBasicMaterial({ color: 0x262626, transparent: true, opacity: 0.3, depthWrite: false });
       ghostEdgeMat.userData.lineWidth = 1.25;   // r14/fixes14: drawn as smooth thick lines like the opaque edges, a shade thinner
       // and in the edges' own colour object, so they follow the viewport theme (near-black edges vanished on the dark one)
       if (UI.mats && UI.mats.edge) ghostEdgeMat.color = UI.mats.edge.color;
@@ -2154,7 +2154,7 @@
     var m = K.meshFromBody(b.body), g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
-    var mat = new THREE.MeshPhongMaterial({ color: 0x8fb4de, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+    var mat = new THREE.MeshPhongMaterial({ color: 0xb4b4b4, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
     var obj = new THREE.Mesh(g, mat);
     obj.renderOrder = 8;
     obj.frustumCulled = false;

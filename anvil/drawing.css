@@ -2,9 +2,10 @@
    Colours come from style.css variables so both themes work; the sheet itself stays paper-white. */
 /* (rfBI) SolidWorks 2024 look: a neutral grey desk round a white sheet with a shadow down and to the right; the
    on-screen colours are SolidWorks' defaults and do not change with the theme, since they sit on the white paper:
-   selection blue, pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
+   selection a dark amber (rfBU: the 3D graphics area's selection yellow, deep enough to read on white paper; was
+   blue), pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
    on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
-:root { --dw-desk: #bdbdbd; --dw-hot: #0f6fd8; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
+:root { --dw-desk: #bdbdbd; --dw-hot: #cf9500; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
   --dw-tabbar: #d9d9d9; --dw-tab: #e6e6e6; --dw-tab-on: #ffffff; --dw-tab-line: #b2b2b2; --dw-tab-text: #1f1f1f; }
 :root[data-theme="dark"] { --dw-desk: #383838;
   --dw-tabbar: #2d2d2d; --dw-tab: #373737; --dw-tab-on: #4b4b4b; --dw-tab-line: #555555; --dw-tab-text: #e9e9e9; }
@@ -88,7 +89,7 @@
 #dw-overlay .dw-guide { stroke: var(--dw-hot); fill: none; }
 /* (rfAE) Edit Sheet Format: everything but the border and title block greys out and takes no clicks */
 .dw-fmt-edit svg g[data-layer]:not([data-layer="SHEET"]) { opacity: 0.28; }
-.dw-fmt-edit svg g[data-layer="SHEET"] { stroke: #1f4f8f; }
+.dw-fmt-edit svg g[data-layer="SHEET"] { stroke: #1a1a1a; }   /* rfBU: near-black (was blue); the dimmed layers set it apart */
 .dw-tpl-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border, #ddd); }
 .dw-tpl-row .dw-tpl-name { flex: 1; }
 .dw-tpl-choose .dlg-row { display: flex; align-items: center; gap: 4px; padding: 2px 0; }

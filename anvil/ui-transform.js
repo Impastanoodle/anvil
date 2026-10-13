@@ -395,11 +395,20 @@
   function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
   function scr(q) { return UI.worldToScreen(K.to3D(UI.activePlane(), q[0], q[1])); }
   function pxWorld(mx, my) { var a = toUV(mx, my), b = toUV(mx + 1, my); return a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) : 1; }
+  // lane BY: a click right on a line's end, a corner or a centre selects that sketch point (the Select tool's SolidWorks
+  // point pick), which the command ignored (0 entities); a Transform command acts on entities, so a selected point
+  // counts as its entity, and the selection becomes that entity
   function selIdx(f) {
-    var out = [];
-    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
-    if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
-    return out.filter(function (i) { return f.entities[i]; }).sort(function (a, b) { return a - b; });
+    var out = [], pts = false;
+    function add(i) { if (f.entities[i] && out.indexOf(i) < 0) out.push(i); }
+    (UI.selection ? UI.selection() : []).forEach(function (s) {
+      if (s.kind === 'entity') add(s.index);
+      else if (s.kind === 'sketchPoint' && s.ref != null) { add(parseInt(s.ref, 10)); pts = true; }
+    });
+    if (App.sel && App.sel.kind === 'entity') add(App.sel.index);
+    out.sort(function (a, b) { return a - b; });
+    if (pts && UI.setSelection) UI.setSelection(out.map(function (i) { return { kind: 'entity', index: i }; }), { quiet: true });
+    return out;
   }
   // the sketch point the drawing tools would infer under the cursor (an end, a centre, the origin), else the point
   function snapPoint(f, uv, mx, my) {
@@ -672,6 +681,8 @@
     transformPM({
       name: 'mirror', title: 'Mirror', icon: 'tMirror', ops: OPS2, count: false,
       message: 'Select the sketch entities, then the mirror line: the X or Y axis, a line at an angle through a point, a sketch line or two points.',
+      // lane BY: with the entities preselected the status said to click entities; it says what is left to do
+      ready: 'Mirror: pick the mirror line (X / Y axis, an angle through a point, a sketch line or two points); Enter (✓) mirrors, Copy by default.',
       values: { axis: 'y', yv: 0, xv: 0, mang: 45, mpt: [0, 0], line: -1, p1: null, p2: null, mirrorText: false, op: 'copy' }, forget: ['line'],
       points: { mpt: { key: 'mpt', prompt: 'Click the point the mirror line goes through.' }, p1: { key: 'p1', prompt: 'Click the first point of the mirror line.', next: 'p2' }, p2: { key: 'p2', prompt: 'Click the second point of the mirror line.' } },
       excluded: function (v) { return v.axis === 'line' && v.line >= 0 ? [v.line] : []; },
@@ -1076,7 +1087,9 @@
           var typing = live && live.typing;
           live = null; shown = '';
           if (kind === 'ball' || inert(kind) || kind.charAt(0) === 'l') { hideBox(); return; }
-          if (typing) { UI.setStatus('Finish the value and press Enter (Tab moves on).'); return; }
+          // lane BY: a value typed during the drag and already entered (Enter) keeps its "press Enter again" status; the
+          // release said to finish a value that was finished
+          if (typing) { if (!(box && !box.hidden && box.value === box._armed)) UI.setStatus('Finish the value and press Enter (Tab moves on).'); return; }
           last = { kind: kind, base: base, val: val };
           showBox(val, kind, p);
           try { box.focus({ preventScroll: true }); box.select(); } catch (er) { }

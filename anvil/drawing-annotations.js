@@ -1374,7 +1374,8 @@
       var sz = hw ? null : holeNameFor(holeNames, h ? h.dia : 2 * an.r);
       if (sz && lines.join(' ').indexOf(sz) < 0) { lines.push(sz); info = info || {}; info.size = sz; }
       if (an.text) lines = String(an.text).split('\n').map(function (s) { return s.split('<HOLE>').join(lines.join(' ')); });
-      var c = w.toSheet(an.c), rr2 = an.r * w.scale, box = w.box, th = 3.5 * k, mid = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
+      // (lane BX) the callout text and arrow are the dimension style's (.125 in on an inch drawing, as the dimensions)
+      var c = w.toSheet(an.c), rr2 = an.r * w.scale, box = w.box, th = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * k, mid = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
       var lead = an.lead;
       if (!lead) {
         // out from the view centre, turned 35° upward so it clears the model items' diameter leaders (straight out)
@@ -1390,7 +1391,7 @@
       // (ANSI, r13/drawings13: a short shoulder, the lines of text after it, centred on it)
       var sg = lead[0] >= 0 ? 1 : -1;
       line(tip, elbow); line(elbow, [elbow[0] + sg * _.SHOULDER * k, elbow[1]]);
-      var ar = 3 * k, aw = _.ARROW_W * k, dv = [-uu[0], -uu[1]], nn = [-dv[1], dv[0]];
+      var ar = (_.DIMGEO && +_.DIMGEO.arrow > 0 ? +_.DIMGEO.arrow : 3) * k, aw = _.ARROW_W * k, dv = [-uu[0], -uu[1]], nn = [-dv[1], dv[0]];
       out.push({ k: 'fill', pts: [tip, [tip[0] - dv[0] * ar + nn[0] * aw, tip[1] - dv[1] * ar + nn[1] * aw], [tip[0] - dv[0] * ar - nn[0] * aw, tip[1] - dv[1] * ar - nn[1] * aw]], layer: L });
       lines.forEach(function (s, i) { out.push({ k: 'text', p: [elbow[0] + sg * (_.SHOULDER + _.TEXT_GAP) * k, elbow[1] - th / 2 + ((lines.length - 1) / 2 - i) * th * 1.6], h: th, text: s, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 }); });
       an.leadNow = lead.slice();

@@ -182,17 +182,18 @@ if (typeof UI !== 'undefined') (function (UI) {
     return true;
   }
 
-  // Icons for the filter toolbar (inline, same 24-unit stroke style as icons.js).
+  // Icons for the filter toolbar (inline, same 24-unit stroke style as icons.js). rfBU: no blue: grey solids with the
+  // filtered item in the selection yellow (icons.js' feature-face yellow), sketch entities in the mid-grey ink.
   var FICON = {
-    face: '<path d="M4 8l8-4 8 4-8 4z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#6b7380"/>',
-    edge: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#9aa4b0"/><path d="M12 12v8" stroke="#1f5fd0" stroke-width="2.4"/>',
-    vertex: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#9aa4b0"/><circle cx="12" cy="12" r="2.6" fill="#1f5fd0"/>',
-    body: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M4 8l8 4 8-4M12 12v8" fill="none" stroke="#1f5fd0"/>',
-    component: '<path d="M3 9l6-3 6 3-6 3zM3 9v6l6 3v-6M15 9v6l-6 3" fill="#c9dcf2" stroke="#1f5fd0"/><path d="M13 13l4-2 4 2-4 2zM13 13v5l4 2v-5M21 13v5l-4 2" fill="#f2d98a" stroke="#a07800"/>',
-    sketch: '<path d="M4 18L10 6l6 9 4-5" fill="none" stroke="#1f5fd0" stroke-width="1.8"/><circle cx="4" cy="18" r="1.6" fill="#1f5fd0"/><circle cx="20" cy="10" r="1.6" fill="#1f5fd0"/>',
+    face: '<path d="M4 8l8-4 8 4-8 4z" fill="#ffe57a" stroke="#c08f00"/><path d="M4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#6d6d6d"/>',
+    edge: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#a2a2a2"/><path d="M12 12v8" stroke="#c08f00" stroke-width="2.4"/>',
+    vertex: '<path d="M4 8l8-4 8 4-8 4zM4 8v8l8 4V12M20 8v8l-8 4" fill="none" stroke="#a2a2a2"/><circle cx="12" cy="12" r="2.6" fill="#c08f00"/>',
+    body: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z" fill="#ffe57a" stroke="#c08f00"/><path d="M4 8l8 4 8-4M12 12v8" fill="none" stroke="#c08f00"/>',
+    component: '<path d="M3 9l6-3 6 3-6 3zM3 9v6l6 3v-6M15 9v6l-6 3" fill="#d6d6d6" stroke="#6d6d6d"/><path d="M13 13l4-2 4 2-4 2zM13 13v5l4 2v-5M21 13v5l-4 2" fill="#f2d98a" stroke="#a07800"/>',
+    sketch: '<path d="M4 18L10 6l6 9 4-5" fill="none" stroke="#6d6d6d" stroke-width="1.8"/><circle cx="4" cy="18" r="1.6" fill="#6d6d6d"/><circle cx="20" cy="10" r="1.6" fill="#6d6d6d"/>',
     toggle: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="#f2cf5b" stroke="#6b5200"/>',
-    clear: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="none" stroke="#6b7380"/><path d="M15 14l5 5M20 14l-5 5" stroke="#d9453b" stroke-width="1.8"/>',
-    all: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="#7fb8ef" stroke="#1f5fd0"/><path d="M14 17l2 2 4-5" fill="none" stroke="#1fa653" stroke-width="1.8"/>'
+    clear: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="none" stroke="#6d6d6d"/><path d="M15 14l5 5M20 14l-5 5" stroke="#d9453b" stroke-width="1.8"/>',
+    all: '<path d="M4 5h16l-6 7v6l-4 2v-8z" fill="#d6d6d6" stroke="#6d6d6d"/><path d="M14 17l2 2 4-5" fill="none" stroke="#1fa653" stroke-width="1.8"/>'
   };
   function ficon(name) { return '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">' + FICON[name] + '</svg>'; }
   var bar = el('div', { id: 'sel-filter', class: 'sel-filter', role: 'toolbar', 'aria-label': 'Selection Filter' });
@@ -797,7 +798,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     var css = [
       '#i3d-layer .i3d-callout { pointer-events: all; cursor: text; }',
       '#i3d-layer .i3d-callout rect { fill: #fffbe6; stroke: #c9a227; stroke-width: 1; }',
-      '#i3d-layer .i3d-callout text { font: 600 11.5px "Segoe UI", sans-serif; fill: #1b2430; }',
+      '#i3d-layer .i3d-callout text { font: 600 11.5px "Segoe UI", sans-serif; fill: #1e1e1e; }',
       '#i3d-layer .i3d-callout:hover rect { stroke: #ff8c1a; }',
       '#i3d-layer .i3d-leader { stroke: #c9a227; stroke-width: 1; }',
       '#i3d-layer .i3d-anchor { fill: #c9a227; }',
@@ -811,7 +812,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       '.pm-list { margin-top: 3px; border: 1px solid var(--blue-line); background: var(--input-bg, #fff); max-height: 132px; overflow-y: auto; }',
       '.pm-item { display: flex; align-items: center; gap: 5px; padding: 2px 6px; cursor: default; outline: none; white-space: nowrap; }',
       '.pm-item:hover { background: var(--pick-bg); }',
-      '.pm-item.sel { background: var(--blue, #1f6fc5); color: #fff; }',
+      '.pm-item.sel { background: var(--blue, #3a3a3a); color: #fff; }',
       // r9/polish9: a long name (Face@Arm<1>@Hinge<2>@Hinged Cover<1>) ends in … instead of widening the PropertyManager
       '.pm-pickwrap { min-width: 0; max-width: 100%; } .pm-list { overflow-x: hidden; } .pm-item > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
       'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }',

@@ -182,7 +182,8 @@
     await rskNew();
     UI.refreshStatus();
     var st = D.querySelector('#status-right .sk-state');
-    assert(st && st.classList.contains('under') && W.getComputedStyle(st).color === 'rgb(31, 95, 208)' && W.getComputedStyle(st, '::before').content !== 'none', 'Under Defined in blue: ' + (st && W.getComputedStyle(st).color));
+    var stc = st ? /^rgb\((\d+), (\d+), (\d+)\)$/.exec(W.getComputedStyle(st).color) : null;   // rfBU: grey, no longer blue
+    assert(st && st.classList.contains('under') && stc && stc[1] === stc[2] && stc[2] === stc[3] && W.getComputedStyle(st, '::before').content !== 'none', 'Under Defined in grey: ' + (st && W.getComputedStyle(st).color));
     var co = $('status-coords'), right = $('status-right');
     co.textContent = 'X: 1'; var w1 = co.offsetWidth, r1 = right.getBoundingClientRect().left;
     co.textContent = 'X:   12345.67   Y:   -9876.54  mm   L 1234.56   A 179.9°'; var w2 = co.offsetWidth, r2 = right.getBoundingClientRect().left;

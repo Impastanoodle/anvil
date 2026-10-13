@@ -523,7 +523,7 @@
     if (!cueEl) {
       var css = document.createElement('style');
       css.textContent = '.occt-cue{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:11px;' +
-        'background:rgba(40,44,52,.62);color:#fff;font:12px/16px system-ui,sans-serif;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}' +
+        'background:rgba(40,40,40,.62);color:#fff;font:12px/16px system-ui,sans-serif;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}' +
         '.occt-cue.on{opacity:1;transition-delay:.15s}.occt-cue i{width:9px;height:9px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:occt-cue-spin .8s linear infinite}' +
         '@keyframes occt-cue-spin{to{transform:rotate(360deg)}}';
       document.head.appendChild(css);

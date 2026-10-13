@@ -513,7 +513,7 @@
     // hidden edges, grey, while Hide/Show Edges runs
     if (D.tool === 'sk:hideedges') ((D.sheet && D.sheet.hiddenEdges) || []).forEach(function (h) {
       var q = h.prim, on = D.hover && D.hover.kind === 'skhidden' && D.hover.key === h.key && D.hover.view === h.view;
-      var a = { class: 'dw-ghost dw-sk-hidden', fill: 'none', 'stroke-width': px(on ? 2.6 : 1.4), 'stroke-dasharray': px(4) + ' ' + px(2), stroke: on ? '#2f7fd6' : '#9aa5b1' };
+      var a = { class: 'dw-ghost dw-sk-hidden', fill: 'none', 'stroke-width': px(on ? 2.6 : 1.4), 'stroke-dasharray': px(4) + ' ' + px(2), stroke: on ? '#1e1e1e' : '#a0a0a0' };   // rfBU: near-black / grey (was blue)
       if (q.k === 'line') svgNode('line', Object.assign(a, { x1: q.a[0], y1: H - q.a[1], x2: q.b[0], y2: H - q.b[1] }), g);
       else if (q.k === 'circle' || q.k === 'arc') svgNode('circle', Object.assign(a, { cx: q.c[0], cy: H - q.c[1], r: q.r }), g);
     });
@@ -525,7 +525,7 @@
     if (at && P.atRef) svgNode('circle', { class: 'dw-hot', cx: at[0], cy: H - at[1], r: px(5), fill: 'none', 'stroke-width': px(1.5) }, g);
     if ((T === 'sk:line' || T === 'sk:centerline') && P.last && at) {
       rub(P.last, at);
-      if (P.atRel) svgNode('text', { x: at[0] + px(8), y: H - at[1] - px(8), 'font-size': px(11), fill: '#2f7fd6', class: 'dw-sk-infer' }, g).textContent = P.atRel === 'H' ? '—' : '|';
+      if (P.atRel) svgNode('text', { x: at[0] + px(8), y: H - at[1] - px(8), 'font-size': px(11), fill: '#2a2a2a', class: 'dw-sk-infer' }, g).textContent = P.atRel === 'H' ? '—' : '|';
     }
     if (T === 'sk:rect' && P.a && at) { rub(P.a, [at[0], P.a[1]]); rub([at[0], P.a[1]], at); rub(at, [P.a[0], at[1]]); rub([P.a[0], at[1]], P.a); }
     if (T === 'sk:circle' && P.c && at) svgNode('circle', { class: 'dw-cut', cx: P.c[0], cy: H - P.c[1], r: Math.hypot(at[0] - P.c[0], at[1] - P.c[1]), fill: 'none', 'stroke-width': gw }, g);
@@ -534,7 +534,7 @@
       else geo({ t: 'arc', c: P.c, r: Math.hypot(P.s[0] - P.c[0], P.s[1] - P.c[1]), a0: Math.atan2(P.s[1] - P.c[1], P.s[0] - P.c[0]) * 180 / Math.PI, a1: (function () { var a0 = Math.atan2(P.s[1] - P.c[1], P.s[0] - P.c[0]) * 180 / Math.PI, a1 = Math.atan2(at[1] - P.c[1], at[0] - P.c[0]) * 180 / Math.PI; while (a1 <= a0) a1 += 360; return a1; })() }, 'dw-cut', gw);
     }
     if (T === 'sk:spline' && P.pts && P.pts.length) { var sp = P.pts.concat(at ? [at] : []); if (sp.length >= 2) geo({ t: 'spline', pts: sp }, 'dw-cut', gw); }
-    if (T === 'sk:relpick' && REL) REL.pts.forEach(function (q, i) { svgNode('circle', { class: 'dw-hot dw-rel-pick', cx: q[0], cy: H - q[1], r: px(5), fill: i ? '#3ba776' : '#2f7fd6', 'stroke-width': px(1) }, g); });
+    if (T === 'sk:relpick' && REL) REL.pts.forEach(function (q, i) { svgNode('circle', { class: 'dw-hot dw-rel-pick', cx: q[0], cy: H - q[1], r: px(5), fill: i ? '#3ba776' : '#2a2a2a', 'stroke-width': px(1) }, g); });
     if (T === 'sk:relplace' && P.at && P.w) svgNode('rect', { class: 'dw-ghost', x: P.at[0] - P.w / 2, y: H - P.at[1] - P.h / 2, width: P.w, height: P.h, 'stroke-width': sw, 'stroke-dasharray': px(5) + ' ' + px(3) }, g);
   };
 

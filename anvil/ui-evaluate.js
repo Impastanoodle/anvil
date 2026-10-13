@@ -445,7 +445,7 @@
     var L = Math.sqrt(Math.abs(r.area)) * 0.6, c = r.centroid;
     addPoint(UI.groups.preview, c, 0xd9302c, modelSize() * 0.006);
     addLines(UI.groups.preview, [[V3sub(c, r.axis1World, L), V3add(c, r.axis1World, L)]], 0xd9302c);
-    addLines(UI.groups.preview, [[V3sub(c, r.axis2World, L * 0.7), V3add(c, r.axis2World, L * 0.7)]], 0x2d7dd2);
+    addLines(UI.groups.preview, [[V3sub(c, r.axis2World, L * 0.7), V3add(c, r.axis2World, L * 0.7)]], 0x3fa34d);   // rfBU: principal axes red / green (was blue)
     UI.render();
   }
   function V3add(c, d, s) { return [c[0] + d[0] * s, c[1] + d[1] * s, c[2] + d[2] * s]; }
@@ -512,7 +512,7 @@
     clr.res.results.forEach(function (x, i) {
       if (clr.active >= 0 && i !== clr.active) return;
       if (!x.pa) return;
-      var c = x.ok ? 0x2d7dd2 : 0xd9302c, pa = shifted(x.pa, explodeOffset(x.a)), pb = shifted(x.pb, explodeOffset(x.b));
+      var c = x.ok ? 0x3fa34d : 0xd9302c, pa = shifted(x.pa, explodeOffset(x.a)), pb = shifted(x.pb, explodeOffset(x.b));
       addPoint(UI.groups.preview, pa, c, r); addPoint(UI.groups.preview, pb, c, r);
       addLines(UI.groups.preview, [[pa, pb]], c);
     });

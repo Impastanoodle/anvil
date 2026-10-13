@@ -34,15 +34,15 @@
     assert(anvil.drawing.summary().sheet.index === 0 && D.querySelector('#drawing-tabs .dw-sheet-tab.active').textContent === 'Sheet1', 'First sheet arrow goes to Sheet1');
     anvil.drawing.deleteSheet(1); await idle(); await UI.drawing.ready(); await wait(30);
     assert(D.querySelectorAll('#drawing-tabs .dw-sheet-tab').length === 1, 'back to one sheet');
-    // a view's frame: orange (pre-selection) under the pointer, blue once selected
+    // a view's frame: orange (pre-selection) under the pointer, dark amber once selected (rfBU: was blue)
     var S = UI.drawing.state.sheet, w = S.views[0], c = [(w.box.x0 + w.box.x1) / 2, (w.box.y0 + w.box.y1) / 2];
     rfBIMouse('mousemove', c); await wait(30);
     var pre = D.querySelector('#dw-overlay .dw-vbox.pre');
     assert(pre && rfBIStroke(pre) === 'rgb(255, 127, 0)', 'hover frame orange: ' + (pre && rfBIStroke(pre)));
     rfBIMouse('mousedown', c); rfBIMouse('mouseup', c); await idle(); await wait(30);
     var sel = D.querySelector('#dw-overlay .dw-vbox.sel');
-    assert(sel && rfBIStroke(sel) === 'rgb(15, 111, 216)', 'selected frame blue: ' + (sel && rfBIStroke(sel)));
-    // a dimension: selected, it turns blue itself (its text and lines), no frame; the others stay black
+    assert(sel && rfBIStroke(sel) === 'rgb(207, 149, 0)', 'selected frame amber: ' + (sel && rfBIStroke(sel)));
+    // a dimension: selected, it turns amber itself (its text and lines), no frame; the others stay black
     S = UI.drawing.state.sheet;
     var d = S.dims.filter(function (x) { return x.box && isFinite(x.box.x0); })[0];
     assert(d, 'a dimension on the sheet');
@@ -51,7 +51,7 @@
     assert(UI.drawing.state.sel && UI.drawing.state.sel.kind === 'dim', 'dimension selected: ' + JSON.stringify(UI.drawing.state.sel));
     var tinted = D.querySelectorAll('#drawing-sheet g[data-layer="DIMENSIONS"] [data-tint="sel"]');
     var txt = Array.prototype.filter.call(tinted, function (n) { return n.tagName === 'text'; })[0];
-    assert(tinted.length >= 3 && txt && W.getComputedStyle(txt).fill === 'rgb(15, 111, 216)', 'dimension blue in place: ' + tinted.length);
+    assert(tinted.length >= 3 && txt && W.getComputedStyle(txt).fill === 'rgb(207, 149, 0)', 'dimension amber in place: ' + tinted.length);
     assert(!D.querySelector('#dw-overlay .dw-dbox'), 'no frame round a dimension coloured in place');
     var black = Array.prototype.filter.call(D.querySelectorAll('#drawing-sheet g[data-layer="DIMENSIONS"] text'), function (n) { return !n.hasAttribute('data-tint'); });
     assert(black.length && black.every(function (n) { return W.getComputedStyle(n).fill === 'rgb(0, 0, 0)'; }), 'the other dimensions stay black');

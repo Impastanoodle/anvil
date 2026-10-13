@@ -1808,6 +1808,11 @@
     var f = UI.activeSketchFeature();
     if (!f) return null;
     if (hover && hover.ball && Math.hypot(m[0] - hover.ball[0], m[1] - hover.ball[1]) <= 11) { var still = itemByKey(hover.key); if (still) return still; }
+    // lane BV (shop-user audit): a diameter's or radius's arrow sits on the circle itself, and a .266 hole at a working
+    // zoom is 9 px across: hovering its edge grabbed the Instant2D ball, and the click meant to select the hole only
+    // said "dimension unchanged". The arrow counts when nothing of the sketch is under the pointer (the value and the
+    // dimension's own lines keep the hover, as in SolidWorks)
+    var onEntity = UI.pickEntity ? !!UI.pickEntity(m[0], m[1]) : false;
     for (var i = items.length - 1; i >= 0; i--) {
       var it = items[i];
       if (!eligible(it, f)) continue;
@@ -1815,6 +1820,7 @@
       if (b && m[0] >= b[0] - 3 && m[0] <= b[2] + 3 && m[1] >= b[1] - 3 && m[1] <= b[3] + 3) return it;
       var ls = it.sc.lines || [];
       for (var k = 0; k < ls.length; k++) if (segDist(m, ls[k][0], ls[k][1]) <= 4) return it;
+      if (onEntity) continue;
       var ar = it.sc.arrows || [];
       for (var j = 0; j < ar.length; j++) if (Math.hypot(m[0] - ar[j].tip[0], m[1] - ar[j].tip[1]) <= 8) return it;
     }

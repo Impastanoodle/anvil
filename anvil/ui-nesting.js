@@ -143,11 +143,11 @@
       var d = Nest.placedLoops(r, pl).map(function (L) {
         return 'M' + Nest.loopPoly(L, tol).map(function (p) { return r6(p[0]) + ' ' + r6(H - p[1]); }).join('L') + 'Z';
       }).join('');
-      body += '<path d="' + d + '" fill="#7fa9d9" fill-rule="evenodd" stroke="#1f4e85" stroke-width="1" vector-effect="non-scaling-stroke"><title>' + esc(pl.name + ' #' + (pl.copy + 1) + (pl.angle ? ', ' + r6(pl.angle) + '°' : '') + (pl.mirror ? ', mirrored' : '')) + '</title></path>';
+      body += '<path d="' + d + '" fill="#b4b4b4" fill-rule="evenodd" stroke="#2a2a2a" stroke-width="1" vector-effect="non-scaling-stroke"><title>' + esc(pl.name + ' #' + (pl.copy + 1) + (pl.angle ? ', ' + r6(pl.angle) + '°' : '') + (pl.mirror ? ', mirrored' : '')) + '</title></path>';
     });
-    var m = r ? r.opts.margin : +v.margin || 0, marg = m > 0 ? '<rect x="' + m + '" y="' + m + '" width="' + r6(W - 2 * m) + '" height="' + r6(H - 2 * m) + '" fill="none" stroke="#9aa3ad" stroke-dasharray="4 3" stroke-width="1" vector-effect="non-scaling-stroke"/>' : '';
-    return '<svg class="nest-preview" data-role="' + role + '" viewBox="' + r6(-pad) + ' ' + r6(-pad) + ' ' + r6(W + 2 * pad) + ' ' + r6(H + 2 * pad) + '" width="100%"' + (fill ? ' height="100%"' : '') + ' style="display:block;' + (fill ? '' : 'max-height:300px;') + 'background:#fff;border:1px solid #c8ccd2" preserveAspectRatio="xMidYMid meet">' +
-      '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#eef1f4" stroke="#55606c" stroke-width="1.2" vector-effect="non-scaling-stroke"/>' + marg + body + '</svg>';
+    var m = r ? r.opts.margin : +v.margin || 0, marg = m > 0 ? '<rect x="' + m + '" y="' + m + '" width="' + r6(W - 2 * m) + '" height="' + r6(H - 2 * m) + '" fill="none" stroke="#a0a0a0" stroke-dasharray="4 3" stroke-width="1" vector-effect="non-scaling-stroke"/>' : '';
+    return '<svg class="nest-preview" data-role="' + role + '" viewBox="' + r6(-pad) + ' ' + r6(-pad) + ' ' + r6(W + 2 * pad) + ' ' + r6(H + 2 * pad) + '" width="100%"' + (fill ? ' height="100%"' : '') + ' style="display:block;' + (fill ? '' : 'max-height:300px;') + 'background:#fff;border:1px solid #c8c8c8" preserveAspectRatio="xMidYMid meet">' +
+      '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#f0f0f0" stroke="#555555" stroke-width="1.2" vector-effect="non-scaling-stroke"/>' + marg + body + '</svg>';
   }
   // the graphics-area preview (Mastercam shows the nest there): one tab per sheet with its utilisation, the sheet below
   function updateOverlay() {

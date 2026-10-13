@@ -66,7 +66,7 @@
         out.push(name + ' ' + fmt(r.mp.volume));
       });
       var mtl = X.exportMTL(buildExample(exampleByName('Bushing')).model);
-      assert(/^newmtl Bushing$/m.test(mtl) && /^Kd 0\.658824 0\.678431 0\.713725$/m.test(mtl), 'mtl colour of #a8adb6: ' + mtl);
+      assert(/^newmtl Bushing$/m.test(mtl) && /^Kd 0\.54902 0\.54902 0\.54902$/m.test(mtl), 'mtl colour of the default #8c8c8c (rfBU): ' + mtl);
       return out.join(', ');
     });
 
@@ -83,7 +83,7 @@
         assert(/Target="\/3D\/3dmodel\.model"/.test(X.fromUtf8(files['_rels/.rels'])), 'rels target');
         var nb = (r.build.bodies || [r.body]).length;
         assert(count(/<object /g, xml) === nb && count(/<item /g, xml) === nb, name + ': objects ' + count(/<object /g, xml) + ' items ' + count(/<item /g, xml) + ' bodies ' + nb);
-        assert(/<base name="[^"]+" displaycolor="#A8ADB6FF"\/>/.test(xml), 'basematerials colour');
+        assert(/<base name="[^"]+" displaycolor="#8C8C8CFF"\/>/.test(xml), 'basematerials colour (rfBU: the neutral grey default)');
         var res = X.importFile(name + '.3mf', bytes);
         // 3MF is a mesh format: it carries the facets, whose volume is the polygonal one
         nearRel(importedVolume(res), polyVol(r.mp), 1e-6, name + ' volume');

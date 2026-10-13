@@ -106,6 +106,8 @@ var Exchange = (function () {
     if (!model) return null;
     var lib = hasMaterials() && model.material ? Materials.find(model.material) : null;
     var c = model.color || (lib && lib.color);
+    // (BW) an old part's default grey (or no colour) exports as the current neutral default (Materials.displayColor)
+    if (typeof Materials !== 'undefined' && Materials && Materials.displayColor) c = Materials.displayColor(c);
     return parseColor(c) ? c : null;
   }
   // bodyMat(model, build, i) -> { name, color } of body i: its own material (model.bodyMaterials, by the feature that

@@ -644,6 +644,9 @@
   // SIZE). ctx (computeSheet): { views, tb, bom, sheet, taken: [boxes] } — what a table keeps clear of; every item
   // placed here is added to taken, so a second flat view's table keeps clear of the first.
   var BEND_EXT = 1.5, BEND_GAP = 1.2, NOTE_H = 3.5, TABLE_H = 2.5, TABLE_ROW = 6;
+  // (lane BX) notes, bend notes and the FLAT SIZE note are as tall as the dimension text (Document Properties ▸
+  // Dimensions, paper mm): .125 in on an inch drawing, as ANSI, not 3.5 mm (.138), which stood taller than the dims
+  function noteH() { return _.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : NOTE_H; }
   // the Bend Table's columns: [key, min width (paper mm), header]; view.bendCols lists the optional ones shown
   // ('bd' bend deduction, 'ba' bend allowance, 'k' K-factor, in that order; default ['bd']), as SolidWorks' bend table
   // template takes extra columns
@@ -746,14 +749,14 @@
       var txt = mode === 'table' ? D.bendTag(i) : D.bendNoteText(b, units, { prec: v.bendPrec });
       var bk = bkeys[i] || 'b' + i;
       if (!own[bk] && own['b' + i]) own = Object.assign({}, own, (function () { var o2 = {}; o2[bk] = own['b' + i]; return o2; })());
-      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: NOTE_H * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
+      item(bk, mode === 'table' ? 'bendTag' : 'bendNote', txt, [{ k: 'text', p: [M[0] + n[0] * g, M[1] + n[1] * g], h: noteH() * k, text: txt, anchor: 'middle', layer: 'BEND_NOTES', rot: rot }],
         { bend: i, bendKey: bk, up: b.up, angle: b.angle, R: b.R, a: A, b: B });
     });
     var yTop = box.y0 - (o.flatDims ? 20 : 8) * k, cx = (box.x0 + box.x1) / 2;
     if (v.flatSize != null ? !!v.flatSize : o.flatSizeNote) {
       var W = fd.bbox.umax - fd.bbox.umin, H = fd.bbox.vmax - fd.bbox.vmin, ts = 'FLAT SIZE ' + D.numText(W, units, null) + ' × ' + D.numText(H, units, null);
-      item('size', 'flatSize', ts, [{ k: 'text', p: [cx, yTop - NOTE_H * k], h: NOTE_H * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H });
-      yTop -= (NOTE_H + 5) * k;
+      item('size', 'flatSize', ts, [{ k: 'text', p: [cx, yTop - noteH() * k], h: noteH() * k, text: ts, anchor: 'middle', layer: 'NOTES', rot: 0 }], { w: W, h: H });
+      yTop -= (noteH() + 5) * k;
     }
     if (mode === 'table' && fd.bends.length) {
       var spec = bendTableCols(v), rh = TABLE_ROW * k, th = TABLE_H * k, T = fd.sheet && +fd.sheet.thickness || 0;
@@ -788,7 +791,7 @@
   // nt.leader: a leader from the nearer side of the first line (a 4 mm shoulder) to an arrow at that paper point
   function noteItem(nt, k, evalText) {
     var raw = String(nt.text == null ? '' : nt.text), shown = evalText ? evalText(raw) : raw;
-    var h = (+nt.h > 0 ? +nt.h : NOTE_H) * k, lines = shown.split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    var h = (+nt.h > 0 ? +nt.h : noteH()) * k, lines = shown.split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     lines.forEach(function (s, i) {
       var p = [nt.p[0], nt.p[1] - i * h * 1.6];
       if (s.length) prims.push({ k: 'text', p: p, h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
@@ -818,7 +821,11 @@
   // radius [fraction along the arc, leader length mm]; diameter [turn of the leader degrees, leader length mm, 1]: a
   // short leader with the text beside the circle (on empty paper, inside the view if need be), then [turn, extra run
   // mm]: the leader runs out past the view outline
-  var ALT_RAD = [[0.5, 8], [0.5, 16], [0.25, 8], [0.75, 8], [0.25, 16], [0.75, 16], [0.1, 12], [0.9, 12], [0.5, 26], [0.25, 26], [0.75, 26]];
+  // (lane BX) a radius entry with a third element 1 sits on the concave side: the leader runs from the arc through the
+  // centre into the empty corner (a sheet-metal bend's inside radius in a front view, whose outside is where the
+  // overall height dimension stands), arrow pointing out onto the arc, as ASME Y14.5 allows
+  var ALT_RAD = [[0.5, 8], [0.5, 16], [0.25, 8], [0.75, 8], [0.25, 16], [0.75, 16], [0.1, 12], [0.9, 12], [0.5, 26], [0.25, 26], [0.75, 26],
+    [0.5, 8, 1], [0.5, 14, 1], [0.25, 10, 1], [0.75, 10, 1], [0.5, 22, 1]];
   var ALT_DIA = [[0, 5, 1], [0, 10, 1], [30, 5, 1], [-30, 5, 1], [60, 6, 1], [-60, 6, 1], [90, 6, 1], [-90, 6, 1], [180, 6, 1], [135, 6, 1], [-135, 6, 1],
     [0, 0], [0, 8], [20, 0], [-20, 0], [20, 8], [-20, 8], [40, 0], [-40, 0], [0, 16], [40, 10], [-40, 10]];
   // the paper rectangle a text primitive covers
@@ -850,11 +857,13 @@
   // how badly a dimension's geometry g collides with what is on the sheet already (obs: { texts, segs, geo: { segs,
   // circles } (the views' drawn geometry), boxes: [{ box, view }], sheet }); own: the dimension's view, whose empty
   // paper its text may use
-  function clashCost(g, obs, k, own) {
-    var c = 0, m = 0.8 * k;
+  function clashCost(g, obs, k, own, lines) {
+    // (lane BX) a radius keeps a text height clear of other texts: '2X R.060' stacked tight on the overall height's
+    // '3.680' reads as one note
+    var c = 0, m = 0.8 * k, mt = lines ? 2.5 * k : m;
     g.texts.forEach(function (t) {
       var tm = { x0: t.x0 - m / 2, y0: t.y0 - m / 2, x1: t.x1 + m / 2, y1: t.y1 + m / 2 };
-      obs.texts.forEach(function (o) { if (rectsMeet(t, o, m)) c += 10; });
+      obs.texts.forEach(function (o) { if (rectsMeet(t, o, mt)) c += 10; });
       obs.segs.forEach(function (s) { if (segHitsRect(s[0], s[1], tm)) c += 3; });
       obs.boxes.forEach(function (b) { if ((b.view == null || b.view !== own) && rectsMeet(t, b.box, 0)) c += 6; });
       if (obs.geo) {
@@ -869,7 +878,19 @@
       if (obs.sheet && (t.x0 < obs.sheet.x0 || t.y0 < obs.sheet.y0 || t.x1 > obs.sheet.x1 || t.y1 > obs.sheet.y1)) c += 20;
     });
     g.segs.forEach(function (s) { obs.texts.forEach(function (o) { if (segHitsRect(s[0], s[1], o)) c += 3; }); });
+    // (lane BX) a radius leader that crosses another dimension's lines, or the part's outline on its way out (a bend's
+    // inside radius led out through the sheet), costs too: the clear way is the empty side of the arc
+    if (lines) g.segs.forEach(function (s) {
+      obs.segs.forEach(function (o) { if (segsCross(s[0], s[1], o[0], o[1])) c += 2; });
+      if (obs.geo) obs.geo.segs.forEach(function (o) { if (segsCross(s[0], s[1], o[0], o[1])) c += 1; });
+    });
     return c;
+  }
+  // do segments ab and cd cross (each passing strictly between the other's ends)?
+  function segsCross(a, b, p, q) {
+    function side(o, e, x) { return (e[0] - o[0]) * (x[1] - o[1]) - (e[1] - o[1]) * (x[0] - o[0]); }
+    var d1 = side(p, q, a), d2 = side(p, q, b), d3 = side(a, b, p), d4 = side(a, b, q), eps = 1e-12;
+    return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
   }
   // dimPrims for a dimension, an unplaced radius / diameter (no dragged leader) trying ALT_* until it is clear
   function placeDim(d, vw, k, placed, obs) {
@@ -877,7 +898,7 @@
     var alts = d.kind === 'rad' ? ALT_RAD : ALT_DIA, best = 0, bestCost = Infinity;
     for (var i = 0; i < alts.length; i++) {
       d._alt = i;
-      var c = clashCost(primGeo(dimPrims(d, vw, k, placed)), obs, k, d.view);
+      var c = clashCost(primGeo(dimPrims(d, vw, k, placed)), obs, k, d.view, d.kind === 'rad');
       if (c < bestCost) { best = i; bestCost = c; }
       if (c === 0) break;
     }
@@ -943,17 +964,30 @@
       // a radius: the leader leaves the arc at its middle, straight out from the centre; arrow on the arc
       // (an unplaced one tries other points along the arc and longer leaders until it is clear of the others: d._alt)
       var ralt = ALT_RAD[d._alt || 0] || ALT_RAD[0], ra0 = d.a0 || 0, ra1 = d.a1 != null ? d.a1 : 360;
-      var rc = vw.toSheet(d.c), rr = d.r * vw.scale, am = (ra0 + (ra1 - ra0) * ralt[0]) * Math.PI / 180, ru;
-      if (d.lead) { var rl = Math.hypot(d.lead[0], d.lead[1]) || 1; ru = [d.lead[0] / rl, d.lead[1] / rl]; }
+      var rc = vw.toSheet(d.c), rr = d.r * vw.scale, am = (ra0 + (ra1 - ra0) * ralt[0]) * Math.PI / 180, ru, rin = false;
+      // (lane BX) is direction u (sheet) on the arc a0 → a1 (degrees, counter-clockwise)?
+      var onArc = function (u) {
+        var span = ra1 - ra0;
+        if (span >= 360 - 1e-9) return true;
+        span = (span % 360 + 360) % 360;
+        var s = ((Math.atan2(u[1], u[0]) * 180 / Math.PI - ra0) % 360 + 360) % 360;
+        return s <= span + 1e-6 || s >= 360 - 1e-6;
+      };
+      if (d.lead) {
+        var rl = Math.hypot(d.lead[0], d.lead[1]) || 1; ru = [d.lead[0] / rl, d.lead[1] / rl];
+        // a leader dragged to the arc's concave side: the arrow meets the arc from inside, through the centre
+        if (!sEll && !onArc(ru) && onArc([-ru[0], -ru[1]])) { ru = [-ru[0], -ru[1]]; rin = true; }
+      }
       else if (sEll) {
         // along an elliptical arc: the point at the same fraction of its parameter range
         var et0 = d.ell.t0 != null ? d.ell.t0 : 0, et1 = d.ell.t1 != null ? d.ell.t1 : 2 * Math.PI, et = et0 + (et1 - et0) * ralt[0];
         var ew = [sEll.ax[0] * Math.cos(et) + sEll.ay[0] * Math.sin(et), sEll.ax[1] * Math.cos(et) + sEll.ay[1] * Math.sin(et)], ewl = Math.hypot(ew[0], ew[1]) || 1;
         ru = [ew[0] / ewl, ew[1] / ewl];
-      } else ru = [Math.cos(am), Math.sin(am)];
+      } else { ru = [Math.cos(am), Math.sin(am)]; rin = !!ralt[2] && ra1 - ra0 < 360 - 1e-9; }
       rr = reach(ru, rr);
-      var rtip = [rc[0] + ru[0] * rr, rc[1] + ru[1] * rr], rel = d.lead ? [rc[0] + d.lead[0], rc[1] + d.lead[1]] : [rtip[0] + ru[0] * ralt[1] * k, rtip[1] + ru[1] * ralt[1] * k];
-      leader(rtip, rel, labMain, [-ru[0], -ru[1]]);
+      var rtip = [rc[0] + ru[0] * rr, rc[1] + ru[1] * rr];
+      var rel = d.lead ? [rc[0] + d.lead[0], rc[1] + d.lead[1]] : rin ? [rc[0] - ru[0] * ralt[1] * k, rc[1] - ru[1] * ralt[1] * k] : [rtip[0] + ru[0] * ralt[1] * k, rtip[1] + ru[1] * ralt[1] * k];
+      leader(rtip, rel, labMain, rin ? [ru[0], ru[1]] : [-ru[0], -ru[1]]);
       d.leadNow = [rel[0] - rc[0], rel[1] - rc[1]];
       var rsg = rel[0] >= rtip[0] - 1e-9 ? 1 : -1;
       d.dxf = { type: 'rad', p10: rc.slice(), p15: rtip.slice(), p11: [rel[0] + rsg * (SHOULDER + TEXT_GAP) * k + rsg * labWidth(labMain) / 2, rel[1]], lead: Math.hypot(rel[0] - rtip[0], rel[1] - rtip[1]) };

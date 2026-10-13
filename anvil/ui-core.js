@@ -74,7 +74,7 @@ var UI = (function () {
   // rfBH: with the lights aimed (below), more sky and fill keep the side faces from going dark; no light sits on the
   // view axis (its Blinn-Phong highlight whitens a face square to the view); intensities set so an
   // isometric box reads top ~0.85, sides ~0.5-0.6 and a face square to the view ~0.76 of the part colour
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x8d96a1, 0.7));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x939393, 0.7));   // rfBU: neutral ground light (was bluish 0x8d96a1)
   var key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-0.45, 0.85, 0.9); camera.add(key);
   var fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(1, -0.35, 0.7); camera.add(fill);
   var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0.2, 0.5, -1); camera.add(rim);
@@ -92,7 +92,7 @@ var UI = (function () {
   Object.keys(groups).forEach(function (k) { scene.add(groups[k]); });
 
   var mats = {
-    part: new THREE.MeshPhongMaterial({ color: 0xa8adb6, specular: 0x50565e, shininess: 64, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),   // r14/viewui14: glossier (was specular 0x2a2f36, shininess 38)
+    part: new THREE.MeshPhongMaterial({ color: 0x8c8c8c, specular: 0x555555, shininess: 64, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),   // r14/viewui14: glossier (was specular 0x2a2f36, shininess 38)
     // r14/viewui14: the HLR / HLV occluder writes depth only, so the background (gradient, plain or dark) shows through it
     // as in SolidWorks; the edges are drawn after it (renderOrder 0.5), so hidden ones are still hidden
     hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
@@ -1182,12 +1182,14 @@ var UI = (function () {
     return App.sel;
   }
 
+  // rfBU: the colour a part is shown in (Materials.displayColor: none or the old bluish default -> the neutral grey)
+  function partColor(c) { return window.Materials && Materials.displayColor ? Materials.displayColor(c) : (c || '#8c8c8c'); }
   function applyDisplayStyle() {
     var s = App.view.style;
     if (bodyMesh) { bodyMesh.visible = s !== 'wireframe'; bodyMesh.material = s === 'hlr' || s === 'hlv' ? mats.hlr : mats.part; }   // r13/lines13: hlv = Hidden Lines Visible
     if (edgeLines) edgeLines.visible = s !== 'shaded';
     if (silLines) silLines.visible = s !== 'shaded';
-    mats.part.color.set(App.model.color || '#a8adb6');
+    mats.part.color.set(partColor(App.model.color));
     applyBodyColors();
     applyLinePalette();   // r14/viewui14: edges dark on a painted body, light on a dark background otherwise
     var planes = App.view.section ? [App.view.section.plane] : [];
@@ -1211,7 +1213,7 @@ var UI = (function () {
     if (!(g.getAttribute('color') && g.__colorKey === key)) {
       var arr = new Float32Array(m.triCount * 9), c = new THREE.Color();
       m.faces.forEach(function (f) {
-        c.set(cols[f.body || 0] || App.model.color || '#a8adb6');
+        c.set(cols[f.body || 0] || partColor(App.model.color));
         for (var o = f.start * 9; o < (f.start + f.count) * 9; o += 3) { arr[o] = c.r; arr[o + 1] = c.g; arr[o + 2] = c.b; }
       });
       g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
@@ -2859,12 +2861,14 @@ var UI = (function () {
     if (!App.undo.length) return whenIdle();
     App.redo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.undo.pop());
+    if (UI.setStatus) UI.setStatus(App.undo.length ? 'Last step undone.' : 'Last step undone (nothing more to undo).');   // not the undone command's result
     return afterModelSwap();
   }
   function redo() {
     if (!App.redo.length) return whenIdle();
     App.undo.push(JSON.stringify(App.model));
     App.model = JSON.parse(App.redo.pop());
+    if (UI.setStatus) UI.setStatus('Step redone.');
     return afterModelSwap();
   }
   function afterModelSwap() {
@@ -2933,7 +2937,7 @@ var UI = (function () {
     renderer: renderer, scene: scene, camera: camera, cam: cam, size: size, groups: groups, mats: mats, viewport: viewport,
     applyCamera: applyCamera, resize: resize, rotateView: rotateView, panView: panView, zoomView: zoomView, zoomToFit: zoomToFit,
     setView: setView, viewNormalTo: viewNormalTo, previousView: previousView, pushViewHistory: pushViewHistory, VIEWS: VIEWS, modelBounds: modelBounds,
-    updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
+    updateBodyMesh: updateBodyMesh, applyDisplayStyle: applyDisplayStyle, partColor: partColor, updateHighlights: updateHighlights, updatePlanes: updatePlanes,
     updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,

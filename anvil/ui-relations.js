@@ -322,22 +322,48 @@
   // A new dimension that would over-define the sketch: ask, as SolidWorks does, whether to make it driven. The answer
   // is a page modal (#drv-driven / #drv-driving), never a browser dialog.
   function askDriven(f, kind, index) {
-    var sketchId = f.id;
+    var sketchId = f.id, answered = false;
     function item() { var g = UI.activeSketchFeature(); return g && g.id === sketchId ? g : null; }
+    function done() { answered = true; App.drivenPrompt = null; }
+    // lane BV (shop-user audit): Esc or the ✕ closed the question and left the new dimension driving, red, with the
+    // sketch Over Defined. SolidWorks' Cancel does not add the dimension: Cancel, Esc and ✕ take it away again.
+    function cancel() {
+      if (answered) return;
+      done();
+      var g = item();
+      if (!g) return;
+      var list = kind === 'rel' ? g.rels : g.dims;
+      if (list && list[index]) list.splice(index, 1);
+      if (kind === 'dim' && g.dims && !g.dims.length) delete g.dims;
+      if (App.sel && App.sel.kind === kind && App.sel.index === index) App.sel = null;
+      App.dimsStale = true;
+      refresh();
+      UI.setStatus('Dimension not added (it would have over-defined the sketch).');
+    }
     UI.showModal({
       title: 'Make Dimension Driven?',
       body: '<p>Adding this dimension will make the sketch over defined or unable to solve.</p><p>Do you want to add this dimension as a driven (reference) dimension instead? A driven dimension shows the value the geometry has, in grey and in parentheses, and does not drive anything.</p>',
       buttons: [
         // p9-sketchfix: the answer belongs to the placement (one undo step takes the whole dimension away, not first
         // back to the over-defining driving one): no undo point of its own
-        { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); var g = item(); if (g) { App.sketchDirty = true; setDriven(g, kind, index, true); } } },
-        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } },
+        { id: 'drv-driven', label: 'Make this dimension driven', primary: true, action: function () { UI.closeModal(); done(); var g = item(); if (g) { App.sketchDirty = true; setDriven(g, kind, index, true); } } },
+        { id: 'drv-driving', label: 'Leave this dimension driving', action: function () { UI.closeModal(); done(); UI.setStatus('The dimension is driving and over-defines the sketch (shown yellow). Delete it, or make it driven.'); App.dimsStale = true; } },
         // rfAR: or keep it driving and let SketchXpert find what to delete
-        { id: 'drv-xpert', label: 'SketchXpert…', action: function () { UI.closeModal(); App.drivenPrompt = null; App.dimsStale = true; cmdSketchXpert(); } }
+        { id: 'drv-xpert', label: 'SketchXpert…', action: function () { UI.closeModal(); done(); App.dimsStale = true; cmdSketchXpert(); } },
+        { id: 'drv-cancel', label: 'Cancel', action: function () { UI.closeModal(); cancel(); } }
       ]
     });
-    App.drivenPrompt = { kind: kind, index: index };
+    App.drivenPrompt = { kind: kind, index: index, cancel: cancel };
+    var x = document.querySelector('#modal-title button');
+    if (x) x.addEventListener('click', cancel);
   }
+  // Esc on the question is its Cancel (ui-app.js closes the modal on the same key)
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !App.drivenPrompt || !App.drivenPrompt.cancel) return;
+    var modal = document.getElementById('modal');
+    if (!modal || modal.hidden) return;
+    App.drivenPrompt.cancel();
+  }, true);
   // Placed dimension check (ui-sketch.js calls this after a single-entity Smart Dimension is placed): true when the
   // question was asked (the caller then does not open the Modify box).
   function askDrivenIfOver(f, kind, index) {

@@ -1272,8 +1272,9 @@
         { label: 'Properties…', action: function () { if (UI.fileProperties) UI.fileProperties(); else UI.openTaskPane('props'); } }
       ] },
       { label: 'Edit', items: [
-        { label: 'Undo', key: 'Ctrl+Z', action: UI.undo, disabled: !App.undo.length },
-        { label: 'Redo', key: 'Ctrl+Y', action: UI.redo, disabled: !App.redo.length },
+        // lane BY: with a command's PropertyManager open, Undo / Redo cancel the command first (ui-app.js undoCommand)
+        { label: 'Undo', key: 'Ctrl+Z', action: function () { (UI.undoCommand || UI.undo)(); }, disabled: !App.undo.length && !(UI.undoCancelsPM && UI.undoCancelsPM()) },
+        { label: 'Redo', key: 'Ctrl+Y', action: function () { (UI.redoCommand || UI.redo)(); }, disabled: !App.redo.length && !(UI.undoCancelsPM && UI.undoCancelsPM()) },
         { sep: true }
       ].concat(App.mode === 'sketch' && UI.sketchCopy ? [   // sketch-layers: copy / paste sketch entities (ui-sketch-layers.js)
         { label: 'Copy', key: 'Ctrl+C', action: function () { UI.sketchCopy(); } },
@@ -1459,8 +1460,8 @@
     if (!u || !r || stdBuilt) return;
     stdBuilt = true;
     u.innerHTML = Icons('undo', 16); r.innerHTML = Icons('redo', 16);
-    u.addEventListener('click', function () { if (App.undo.length) UI.undo(); });
-    r.addEventListener('click', function () { if (App.redo.length) UI.redo(); });
+    u.addEventListener('click', function () { (UI.undoCommand || UI.undo)(); });   // lane BY: cancels an open command first
+    r.addEventListener('click', function () { (UI.redoCommand || UI.redo)(); });
     STD_BUTTONS.forEach(function (d) {
       var b = $(d[0]);
       if (!b) return;
@@ -1473,7 +1474,7 @@
   function syncStdToolbar() {
     var u = $('std-undo'), r = $('std-redo');
     if (!u || !r) return;
-    var cu = App.undo.length > 0, cr = App.redo.length > 0;
+    var cmd = !!(UI.undoCancelsPM && UI.undoCancelsPM()), cu = App.undo.length > 0 || cmd, cr = App.redo.length > 0 || cmd;   // lane BY
     if (u.disabled === cu) u.disabled = !cu;
     if (r.disabled === cr) r.disabled = !cr;
     setTip(u, { name: 'Undo', key: 'Ctrl+Z', desc: 'Reverse the last change', note: cu ? '' : 'Nothing to undo' });

@@ -79,7 +79,14 @@ var Materials = (function () {
     'nylon': 'Nylon 6/6', 'pa66': 'Nylon 6/6', 'acetal': 'Acetal (POM)', 'pom': 'Acetal (POM)', 'delrin': 'Acetal (POM)',
     'pc': 'Polycarbonate', 'pmma': 'Acrylic (PMMA)', 'acrylic': 'Acrylic (PMMA)'
   };
-  var DEFAULT_DENSITY = 7850, DEFAULT_COLOR = '#a8adb6', NONE = 'Material <not specified>';
+  // rfBU: the new-part colour is a neutral mid grey (was the bluish '#a8adb6'), so the white sketch wireframe and the
+  // yellow selection read on it in the grey-black graphics area. displayColor(c) is the one place a stored part colour
+  // is read for display: none, or the old default a part was saved with, shows as the current default.
+  var DEFAULT_DENSITY = 7850, DEFAULT_COLOR = '#8c8c8c', LEGACY_DEFAULT_COLORS = ['#a8adb6'], NONE = 'Material <not specified>';
+  function displayColor(c) {
+    if (!c) return DEFAULT_COLOR;
+    return LEGACY_DEFAULT_COLORS.indexOf(String(c).toLowerCase()) >= 0 ? DEFAULT_COLOR : String(c);
+  }
 
   function list() { return ALL.slice(); }
   function classes() { return CLASSES.map(function (c) { return { name: c.name, materials: c.materials.slice() }; }); }
@@ -135,13 +142,13 @@ var Materials = (function () {
     var nm = fid != null && model.bodyMaterials ? model.bodyMaterials[String(fid)] : null, m = nm ? find(nm) : null;
     if (m) return { name: m.name, density: m.density, color: m.color, own: true, featureId: fid };
     var pm = of(model);
-    return { name: pm ? pm.name : null, density: model.density > 0 ? model.density : DEFAULT_DENSITY, color: model.color || DEFAULT_COLOR, own: false, featureId: fid };
+    return { name: pm ? pm.name : null, density: model.density > 0 ? model.density : DEFAULT_DENSITY, color: displayColor(model.color), own: false, featureId: fid };
   }
   // bodyColors(model, build) -> [css colour per body], or null when every body has the part's colour
   function bodyColors(model, build) {
     if (!hasBodyMaterials(model)) return null;
     var n = bodyList(build).length, out = [], any = false;
-    for (var i = 0; i < n; i++) { var bm = bodyMaterial(model, build, i); out.push(bm.color); if (bm.own && bm.color !== (model.color || DEFAULT_COLOR)) any = true; }
+    for (var i = 0; i < n; i++) { var bm = bodyMaterial(model, build, i); out.push(bm.color); if (bm.own && bm.color !== displayColor(model.color)) any = true; }
     return any ? out : null;
   }
 
@@ -370,7 +377,7 @@ var Materials = (function () {
       if (model.color && model.color.toLowerCase() !== m.color.toLowerCase()) out.push('p.color(' + JSON.stringify(model.color) + ');');
     } else {
       if (model.density != null && Math.abs(model.density - DEFAULT_DENSITY) > 1e-9) out.push('p.density(' + (+model.density) + ');');
-      if (model.color && model.color.toLowerCase() !== DEFAULT_COLOR) out.push('p.color(' + JSON.stringify(model.color) + ');');
+      if (model.color && displayColor(model.color).toLowerCase() !== DEFAULT_COLOR) out.push('p.color(' + JSON.stringify(model.color) + ');');
     }
     return out.concat(propertyLines(model, 'p'));
   }
@@ -422,7 +429,7 @@ var Materials = (function () {
   install(K, typeof Assembly !== 'undefined' ? Assembly : null);
 
   return {
-    CLASSES: CLASSES, NONE: NONE, DEFAULT_DENSITY: DEFAULT_DENSITY, DEFAULT_COLOR: DEFAULT_COLOR, TYPES: TYPES, PRESETS: PRESETS, LINKS: LINKS,
+    CLASSES: CLASSES, NONE: NONE, DEFAULT_DENSITY: DEFAULT_DENSITY, DEFAULT_COLOR: DEFAULT_COLOR, displayColor: displayColor, TYPES: TYPES, PRESETS: PRESETS, LINKS: LINKS,
     list: list, classes: classes, find: find, favorites: favorites,
     of: of, materialName: materialName, apply: apply, applyToBody: applyToBody, hasBodyMaterials: hasBodyMaterials,
     bodyMaterial: bodyMaterial, bodyColors: bodyColors, massProps: massProps, assemblyMass: assemblyMass, bodyIntegrals: bodyIntegrals,

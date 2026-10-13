@@ -44,7 +44,10 @@
     if (t === 'deduction') s.bendDeduction = o.bendDeduction;
     if (o.bendTable && o.bendTable.rows && o.bendTable.rows.length) s.bendTable = normBendTable(o.bendTable);
     else if (t === 'table') throw new Error('The bend table has no rows.');
-    if (o.gaugeTable != null && o.gauge != null && o.gauge !== '') { s.gaugeTable = o.gaugeTable; s.gauge = String(o.gauge); }
+    if (o.gaugeTable != null && o.gauge != null && o.gauge !== '') {
+      var gt = typeof o.gaugeTable === 'object' ? null : gaugeTable(o.gaugeTable);   // a short name becomes the full one
+      s.gaugeTable = gt && gt.name ? gt.name : o.gaugeTable; s.gauge = String(o.gauge);
+    }
     return s;
   }
   // bendTable = { kind: 'BA' | 'BD', name?, tolerance? (absolute, model units), rows: [{ thickness, radius, angle (°), value }] }
@@ -162,7 +165,13 @@
   // thickness, radius, kFactor? | bendDeduction? }] })
   function gaugeTable(ref) {
     if (ref && typeof ref === 'object') return ref;
-    return GAUGE_TABLES[ref == null ? DEFAULT_GAUGE_TABLE : ref] || null;
+    if (ref == null || ref === '') return GAUGE_TABLES[DEFAULT_GAUGE_TABLE];
+    if (GAUGE_TABLES[ref]) return GAUGE_TABLES[ref];
+    // (BW) a script names a built-in table the short way: "steel", "aluminum" / "aluminium", "stainless", any case,
+    // or the start of the full name; the sheet stores the full name (makeSheet) so the PropertyManager finds it
+    var want = String(ref).toLowerCase().replace(/aluminium/, 'aluminum').trim(), names = Object.keys(GAUGE_TABLES);
+    var hit = names.filter(function (n) { var k = n.toLowerCase(); return k.split(' ')[0] === want || k.indexOf(want) === 0; });
+    return hit.length === 1 ? GAUGE_TABLES[hit[0]] : null;
   }
   // gaugeRow(tableRef, gauge, units) -> { gauge, thickness, radius, kFactor? , bendDeduction? } in the model's units, or null
   function gaugeRow(ref, gauge, units) {
@@ -384,7 +393,7 @@
       var sh = scale(ed.o, -shift), e = ed.e;
       // miterPlanes: per end, the clip plane { n, w } (tool kept where n·p >= w) or null; the flat pattern uses it to
       // run the bend strip out to the mitre line. Plain arrays and numbers only: the record must survive a structured clone.
-      var rec = { a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: ed.plane.origin, o: ed.o, u: ed.u, len: e.len, angle: A, R: R, L: L, T: T,
+      var rec = { kind: 'edge', a: add(e.a, sh), b: add(e.b, sh), mid: add(e.mid, sh), origin: ed.plane.origin, o: ed.o, u: ed.u, len: e.len, angle: A, R: R, L: L, T: T,
         ba: customBA(f), mitred: [!!ed.ends[0].miter, !!ed.ends[1].miter],
         miterPlanes: ed.ends.map(function (en) { return en.miter ? { n: en.miter.n.slice(), w: en.miter.w } : null; }) };
       // reliefs: per end (a, b), the bend relief cut there ({ w, d0, d1, obround }) or null; flatPattern cuts it from the
@@ -1068,9 +1077,11 @@
     mesh.faces.forEach(function (face, i) {
       var d = dot(face.normal, plane.n);
       if (Math.abs(d) < 0.999) return;
-      // the face on the sketch's side wins a tie (to 1e-6: an OpenCascade mesh gives the two faces of one plate areas a
-      // few 1e-8 apart, and the unfold must not change sides on that)
-      var score = face.area * (d > 0 ? 1 + 1e-6 : 1);
+      // the face on the sketch's side wins unless the other side is a tenth larger (BW: was a tie-break of 1e-6, so a
+      // hole or slot cut into one face from the wall side flipped the whole flat over: the blank came out mirrored
+      // and every UP bend read DOWN; an OpenCascade mesh gives the two faces of one plate areas a few 1e-8 apart, and
+      // the unfold must not change sides on that either). The flat is drawn looking at the base sketch's face.
+      var score = face.area * (d > 0 ? 1.1 : 1);
       if (!best || score > best.score) best = { face: face, i: i, score: score };
     });
     if (!best) throw new Error('Could not find the flat sheet face.');
@@ -1089,7 +1100,7 @@
         var off = Math.abs(dot(face.normal, pt) - face.w);   // either face of the sheet there
         if (Math.abs(d) < 0.999 || (off > 1e-4 && Math.abs(off - T) > 1e-4)) return;
         var score = face.area * (d > 0 ? 1 + 1e-6 : 1);
-        if (!ab || score > ab.score) ab = { face: face, i: i, score: score };
+        if (!ab || score > ab.score) ab = { face: face, i: i, score: score, anchor: pt };
       });
       if (ab) best = ab;
       return !!ab;
@@ -1114,14 +1125,150 @@
       var tol = 1e-6 * (1 + s);
       return [P, add(P, scale(d, s)), add(P, scale(t, s))].every(function (Q) { var a = m1(Q), b = m2(Q); return Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol; });
     }
-    function unfold(faceIdx, map, nTracked, depth) {
-      if (usedFaces[faceIdx] || depth > 16) return;
-      usedFaces[faceIdx] = true;
-      faceMaps[faceIdx] = map;
-      var face = mesh.faces[faceIdx], o = faceOutline(mesh, faceIdx);
-      if (!o) return;
-      var loops2 = o.loops.map(function (l) { return l.map(function (p) { return map(to3D(o.plane, p[0], p[1])); }); });
+    // (BW) A mesh face is every coplanar polygon of the body (meshFromBody and planeFaces group by plane, not by
+    // connection), so one face can hold several separate pieces: the returns of two hems folded the same way on
+    // opposite edges, the two lips of a pan, the halves of a wall slotted through. The unfold works on one connected
+    // piece at a time (faceComponents: an outer loop with the holes inside it), and a flange takes only the pieces
+    // its wall starts on; the rest of the face stays for the flange it belongs to. Before this the first hem laid the
+    // second hem's return down with its own map: an island of scrap in the DXF and a blank twice as tall.
+    var compCache = {};
+    function faceComponents(faceIdx) {
+      if (compCache[faceIdx]) return compCache[faceIdx];
+      var o = faceOutline(mesh, faceIdx), comps = [];
+      if (o) {
+        var outers = [], holes = [];
+        o.loops.forEach(function (l) { (signedArea(l) > 0 ? outers : holes).push(l); });
+        outers.forEach(function (l) { comps.push({ loops: [l], area: signedArea(l), plane: o.plane }); });
+        holes.forEach(function (h) {
+          var p = loopInteriorPoint(h) || h[0], best = null;
+          comps.forEach(function (c) { if (pointInPoly(p, c.loops[0]) && (!best || c.area < best.area)) best = c; });
+          if (best) best.loops.push(h); else if (comps.length) comps[0].loops.push(h);
+        });
+        comps.sort(function (a, b) { return b.area - a.area; });
+      }
+      return (compCache[faceIdx] = comps);
+    }
+    // (BW) bendSurfaceNotches(fi, Rt, BA, eps) -> the holes of an edge flange's bend as loops of [s, τ] (s across the
+    // flat strip from the edge line, τ along the edge from end a), for cuts made after the bend. The bend's tracked
+    // surface (radius Rt about the axis through origin + u·R, θ from 0 at the sheet to the flange angle A) is made of
+    // planar facets, each between two exact angles of flangeProfile's polygon; a cut keeps a facet's plane and takes
+    // part of it. Every facet piece is unrolled on the neutral axis (s = BA·θ/A, as the cutouts of a cut made before
+    // the bend are) and what the strip band [0, BA] × [0, len] has that the pieces do not is a notch; a hole inside
+    // one piece is a notch of its own. A notch reaching the band's edges is pushed eps past them so it meets the hole
+    // in the base or the wall without a hair of a web (the strip overlaps both by eps). Nothing comes back when the
+    // mesh has no facet on that surface (a curved OpenCascade face), so the strip stays what it was.
+    function bendSurfaceNotches(fi, Rt, BA, eps) {
+      var A = fi.angle, ax = norm(cross(fi.o, fi.u)), C = add(fi.origin, scale(fi.u, fi.R));
+      var dir = sub(fi.b, fi.a), len = Math.hypot(dir[0], dir[1], dir[2]);
+      if (!(len > 1e-9) || !(A > 1e-6) || !(BA > 1e-9) || !(Rt > 0)) return [];
+      dir = scale(dir, 1 / len);
+      var rtol = 1e-4 * (1 + Rt), rmin = 0.97 * Rt - rtol, rmax = Rt + rtol, atol = 1e-3;
+      function polar(Q) { var d = sub(Q, C), po = dot(d, fi.o), pu = dot(d, fi.u); return { r: Math.hypot(po, pu), th: Math.atan2(po, -pu), tau: dot(sub(Q, fi.a), dir) }; }
+      var pieces = [];
+      mesh.faces.forEach(function (fc) {
+        if (!fc.polys || Math.abs(dot(fc.normal, ax)) > 1e-4) return;
+        var dAxis = Math.abs(dot(fc.normal, C) - fc.w);
+        if (dAxis < rmin || dAxis > rmax) return;
+        var sel = fc.polys.filter(function (p) {
+          var lo = Infinity, hi = -Infinity;
+          var on = p.vertices.every(function (v) {
+            var q = polar([v.pos.x, v.pos.y, v.pos.z]);
+            lo = Math.min(lo, q.th); hi = Math.max(hi, q.th);
+            return q.r >= rmin && q.r <= rmax && q.th >= -atol && q.th <= A + atol;
+          });
+          return on && hi - lo > 1e-4;   // (a sliver of the sheet along the edge line is no facet)
+        });
+        if (sel.length) pieces.push({ polys: sel, normal: fc.normal, w: fc.w });
+      });
+      if (!pieces.length) return [];
+      var covered = [], inner = [];
+      pieces.forEach(function (pc) {
+        var o = faceOutline({ faces: [pc] }, 0);
+        if (!o) return;
+        o.loops.forEach(function (l) {
+          var m = l.map(function (p) { var q = polar(to3D(o.plane, p[0], p[1])); return [BA * q.th / A, q.tau]; });
+          (signedArea(l) > 0 ? covered : inner).push(m);
+        });
+      });
+      if (!covered.length) return [];
+      var band = [[0, 0], [BA, 0], [BA, len], [0, len]];
+      var gaps = mergeFlatRegions([[band]], covered, FLAT_WELD) || [], cutouts = fi.cutouts || [], tC = dot(sub(C, fi.a), dir);
+      // a gap is a hole only where the part has air at mid-thickness: not the stretch of a bend another flange's bend
+      // runs into at a corner (metal there, the surface merely covered), and not a hole cut before the bend, whose
+      // cutout above is exact already. A gap at either end of the bend is a corner, not a hole: the trim or relief
+      // of the flange meeting this one there (the reliefs above draw those), so the strip keeps its full length.
+      function keep(l) {
+        var q = loopInteriorPoint(l);
+        if (!q || cutouts.some(function (cl) { return pointInPoly(q, cl); })) return false;
+        if (l.some(function (p) { return p[1] < 1e-6 || p[1] > len - 1e-6; })) return false;
+        var th = A * q[0] / BA, rm = fi.R + fi.T / 2;
+        return !inBody(add(add(add(C, scale(fi.o, rm * Math.sin(th))), scale(fi.u, -rm * Math.cos(th))), scale(dir, q[1] - tC)));
+      }
+      var loops = gaps.filter(keep).concat(inner.filter(keep)), out = loops.slice();
+      // a notch along the band's edge s = at is bridged `push` past it (to −eps / BA + eps) so it meets the hole in the
+      // base or the wall; the bridge's far corners continue the hole's own rims, so the rim points stay exact
+      function bridge(l, at, push) {
+        var n = l.length, on = l.map(function (p) { return Math.abs(p[0] - at) < 1e-6; });
+        if (!on.some(Boolean) || on.every(Boolean)) return;
+        function ext(p, q) { var ds = at - q[0]; return p[1] + (Math.abs(ds) > 1e-7 ? (p[1] - q[1]) * (push / ds) : 0); }
+        for (var i = 0; i < n; i++) {
+          if (!on[i] || on[(i + n - 1) % n]) continue;   // the start of a run of vertices on the edge
+          var j = i;
+          while (on[(j + 1) % n] && (j + 1) % n !== i) j = (j + 1) % n;
+          var pi = l[i], pj = l[j];
+          if (i === j || Math.abs(pi[1] - pj[1]) < 1e-9) continue;
+          out.push([[at, pi[1]], [at, pj[1]], [at + push, ext(pj, l[(j + 1) % n])], [at + push, ext(pi, l[(i + n - 1) % n])]]);
+        }
+      }
+      loops.forEach(function (l) { bridge(l, 0, -eps); bridge(l, BA, eps); });
+      return out;
+    }
+    // (BW) a point-in-solid test of the part as built, made once per flat pattern (bendSurfaceNotches)
+    var bodyTester = null;
+    function inBody(P) {
+      if (!bodyTester) bodyTester = build.body && build.body.pointTester ? build.body.pointTester() : function () { return false; };
+      return bodyTester(P);
+    }
+    // the component of a face that holds the 3D point P (on the face's plane), else -1
+    function componentAt(faceIdx, P) {
+      var comps = faceComponents(faceIdx);
+      for (var i = 0; i < comps.length; i++) { var q = to2D(comps[i].plane, P); if (pointInPoly(q, comps[i].loops[0])) return i; }
+      return -1;
+    }
+    function unfold(faceIdx, ci, map, nTracked, depth) {
+      var key = faceIdx + '/' + ci;
+      if (usedFaces[key] || depth > 16) return;
+      usedFaces[key] = true;
+      faceMaps[key] = map;
+      var face = mesh.faces[faceIdx], comp = faceComponents(faceIdx)[ci];
+      if (!comp) return;
+      var o = comp;
+      var loops2 = comp.loops.map(function (l) { return l.map(function (p) { return map(to3D(o.plane, p[0], p[1])); }); });
       regions.push(loops2);
+      // (BW) a hole is a hole of the blank only where it goes through: the face on the other side of the sheet fills
+      // what it still has there, so a countersink, counterbore or pocket cut from this side leaves the laser the
+      // through hole (the far side's), not the cone, and a blind pocket leaves nothing, whichever side the flat is
+      // drawn from. The outline is untouched: only this piece's holes are filled. (Before, the countersunk side's
+      // cone circle reached the DXF whenever that face happened to be the one the flat was drawn from.)
+      if (comp.loops.length > 1) {
+        var opp = -1, ow = T - face.w;
+        mesh.faces.forEach(function (fc, i) { if (opp < 0 && dot(fc.normal, face.normal) < -0.999 && Math.abs(fc.w - ow) < 1e-3) opp = i; });
+        if (opp >= 0) comp.loops.slice(1).forEach(function (h) {
+          var q = loopInteriorPoint(h);
+          if (!q) return;
+          var oc = componentAt(opp, sub(to3D(o.plane, q[0], q[1]), scale(face.normal, T)));
+          if (oc < 0) return;
+          // the far side's holes under this one: a smaller one is the through hole (fill the rest), one as large or
+          // larger (a plain through hole, a countersink from the far side) leaves this hole as it is
+          var oc2 = faceComponents(opp)[oc], fill = [h], ha = Math.abs(signedArea(h)), through = false;
+          oc2.loops.slice(1).forEach(function (hh) {
+            var hh2 = hh.map(function (p) { return to2D(o.plane, to3D(oc2.plane, p[0], p[1])); }), qq = loopInteriorPoint(hh2);
+            if (!pointInPoly(q, hh2) && !(qq && pointInPoly(qq, h))) return;
+            if (Math.abs(signedArea(hh2)) >= ha * (1 - 1e-6)) through = true; else fill.push(hh2);
+          });
+          if (!through) regions.push(fill.map(function (l) { return l.map(function (p) { return map(to3D(o.plane, p[0], p[1])); }); }));
+        });
+      }
       faceRecs.push({ map: map, normal: face.normal, w: face.w, loops: loops2 });
       flanges.forEach(function (fi, k) {
         if (usedFlanges[k] || Math.abs(dot(fi.u, face.normal)) < 0.999) return;
@@ -1200,6 +1347,13 @@
           var nt = cl.map(function (p) { return corner(eA, p[0], -p[1]); });
           notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
         });
+        // (BW) a hole cut AFTER the bend (a Normal Cut from a sheet face, a cut through a wall and its bend) left the
+        // strip above a full rectangle: the flat kept metal the part does not have. What the bend's own surface lacks
+        // is cut from the blank too (bendSurfaceNotches).
+        if (fi.kind === 'edge' && !eA.mitred && !eB.mitred && fi.L > 1e-9) bendSurfaceNotches(fi, Rt, BA, eps).forEach(function (nt) {
+          var m = nt.map(function (p) { return corner(eA, p[0], -p[1]); });
+          notches.push(signedArea(m) < 0 ? m.reverse() : m);
+        });
         // bend line: mid-strip, reaching the mitre line at a mitred end
         var bend = { a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
         bend.label = bendNoteText(bend, model.units);
@@ -1215,17 +1369,50 @@
         var wIdx = -1;
         // (a rolled hem is all bend: no wall after it)
         if (fi.L > 1e-9) mesh.faces.forEach(function (fc, i) { if (wIdx < 0 && dot(fc.normal, wn) > 0.999 && Math.abs(dot(fc.normal, Pmid) - fc.w) < 1e-3) wIdx = i; });
-        if (wIdx >= 0 && !usedFaces[wIdx]) unfold(wIdx, wallMap, wn, depth + 1);
-        // Coplanar walls are one mesh face (two flanges on one edge line either side of a tab: the Tray's back walls),
-        // so the first flange's unfold already laid this wall down, holes and all. When that unfold put it where this
-        // flange would, there is nothing more to add: the stand-in rectangle below would cover the wall's holes and,
-        // starting at BA − eps with a mitre corner of its own, leave a stray vertex in the blank's outline.
-        else if (wIdx >= 0 && faceMaps[wIdx] && sameMap(faceMaps[wIdx], wallMap, Pmid, dir3, tw, Math.max(fi.len || 0, fi.L, T))) return;
-        else if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
+        if (wIdx < 0) {
+          if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
+            corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
+          return;
+        }
+        // the pieces of the wall's plane this flange made: those whose outline runs along the wall's start line (the
+        // line where the bend ends, from end a to end b on the tracked side); a wall slotted through is two of them.
+        // A plane of one piece whose outline misses the line (a corner of it only, numerically) is taken whole, as before.
+        var comps = faceComponents(wIdx), Wa = add(Pmid, sub(fi.a, fi.mid)), Wb = add(Pmid, sub(fi.b, fi.mid)), mine = [];
+        var hw = Math.min(T, fi.L) / 4, Wh = add(Wa, scale(tw, hw));   // a hair up the wall from end a
+        comps.forEach(function (c, ci) {
+          var wa = to2D(c.plane, Wa), wb = to2D(c.plane, Wb), wh = to2D(c.plane, Wh), l = c.loops[0];
+          var ex = [wb[0] - wa[0], wb[1] - wa[1]], el = Math.hypot(ex[0], ex[1]), up = [wh[0] - wa[0], wh[1] - wa[1]];
+          if (el < 1e-9) return;
+          ex = [ex[0] / el, ex[1] / el];
+          // a piece is this flange's when its outline runs along the start line and the piece lies up the wall from
+          // that stretch (not a piece that merely touches the line end-on: the end face of a hem's tail beside it)
+          var hit = l.some(function (p, i) {
+            var q = l[(i + 1) % l.length];
+            if (!(overlapOnSegment(wa, wb, p, q) > Math.max(1e-3, 0.5 * T))) return false;
+            var tp = (p[0] - wa[0]) * ex[0] + (p[1] - wa[1]) * ex[1], tq = (q[0] - wa[0]) * ex[0] + (q[1] - wa[1]) * ex[1];
+            var tm = (Math.max(0, Math.min(tp, tq)) + Math.min(el, Math.max(tp, tq))) / 2;
+            return pointInPoly([wa[0] + ex[0] * tm + up[0], wa[1] + ex[1] * tm + up[1]], l);
+          });
+          if (hit) mine.push(ci);
+        });
+        if (!mine.length && comps.length === 1) mine.push(0);
+        var laid = false, same = false;
+        mine.forEach(function (ci) {
+          var key = wIdx + '/' + ci;
+          if (!usedFaces[key]) { unfold(wIdx, ci, wallMap, wn, depth + 1); laid = true; }
+          // Coplanar walls are one mesh face (two flanges on one edge line either side of a tab: the Tray's back walls),
+          // so the first flange's unfold already laid this wall down, holes and all. When that unfold put it where this
+          // flange would, there is nothing more to add: the stand-in rectangle below would cover the wall's holes and,
+          // starting at BA − eps with a mitre corner of its own, leave a stray vertex in the blank's outline.
+          else if (faceMaps[key] && sameMap(faceMaps[key], wallMap, Pmid, dir3, tw, Math.max(fi.len || 0, fi.L, T))) same = true;
+        });
+        if (laid || same) return;
+        if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
           corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
       });
     }
-    unfold(best.i, function (Q) { return to2D(plane, Q); }, best.face.normal, 0);
+    var baseComp = best.anchor != null ? componentAt(best.i, best.anchor) : -1;
+    unfold(best.i, baseComp >= 0 ? baseComp : 0, function (Q) { return to2D(plane, Q); }, best.face.normal, 0);
     // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
     var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
     if (!loops) loops = csgMerge(regions, notches);

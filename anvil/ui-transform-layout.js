@@ -25,11 +25,20 @@
     if (!f) UI.toast(NO_SKETCH);
     return f;
   }
+  // lane BY: a click right on a line's end, a corner or a centre selects that sketch point (the Select tool's SolidWorks
+  // point pick), which the command ignored (0 entities); a Transform command acts on entities, so a selected point
+  // counts as its entity, and the selection becomes that entity
   function selIdx(f) {
-    var out = [];
-    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
-    if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
-    return out.filter(function (i) { return f.entities[i]; }).sort(function (a, b) { return a - b; });
+    var out = [], pts = false;
+    function add(i) { if (f.entities[i] && out.indexOf(i) < 0) out.push(i); }
+    (UI.selection ? UI.selection() : []).forEach(function (s) {
+      if (s.kind === 'entity') add(s.index);
+      else if (s.kind === 'sketchPoint' && s.ref != null) { add(parseInt(s.ref, 10)); pts = true; }
+    });
+    if (App.sel && App.sel.kind === 'entity') add(App.sel.index);
+    out.sort(function (a, b) { return a - b; });
+    if (pts && UI.setSelection) UI.setSelection(out.map(function (i) { return { kind: 'entity', index: i }; }), { quiet: true });
+    return out;
   }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function snapshot(f) { return { entities: clone(f.entities), rels: f.rels ? clone(f.rels) : null, dims: f.dims ? clone(f.dims) : null }; }
@@ -231,7 +240,13 @@
     var v = recall('offsetChains', { chains: [], d: UI.lenDefault(5), side: 'left', count: 1, corners: 'none', maxAngle: 135, mode: 'copy', depth: 0, reversed: false }, CH);
     var syncing = false;
     function allEnts() { var out = []; v.chains.forEach(function (c) { out = out.concat(chainEnts(c)); }); return out.sort(function (a, b) { return a - b; }); }
-    function showSel() { syncing = true; try { selectEntities(allEnts()); } finally { syncing = false; } }
+    // lane BY: the chains' selection said "5 sketch entities selected." in the status bar; it says what was taken and what
+    // is next
+    function showSel() {
+      syncing = true; try { selectEntities(allEnts()); } finally { syncing = false; }
+      var n = allEnts().length;
+      if (v.chains.length) UI.setStatus('Offset Chains: ' + plural(v.chains.length, 'chain', 'chains') + ' (' + plural(n, 'entity', 'entities') + '); type the Distance, pick Left / Right, Enter (✓) offsets.');
+    }
     function take(list) { v.chains = list; if (v.reversed) v.chains.forEach(reverseChain); }
     var bad = selIdx(f).filter(function (i) { var t = f.entities[i].t; return t !== 'line' && t !== 'arc' && t !== 'circle'; });
     take(chainsOf(f, selIdx(f), false));

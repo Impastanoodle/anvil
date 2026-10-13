@@ -14,7 +14,7 @@
 
   // ------------------------------------------------------------------ rebuild
   function newModel(name) {
-    return { name: name || 'Part1', units: 'mm', density: 7850, color: '#a8adb6', features: [], nextId: 1 };
+    return { name: name || 'Part1', units: 'mm', density: 7850, color: '#8c8c8c', features: [], nextId: 1 };   // rfBU: neutral grey (was '#a8adb6'; Materials.DEFAULT_COLOR)
   }
 
   var NAME_BASE = {

@@ -14,11 +14,20 @@
 
   // ------------------------------------------------------------------ shared helpers
   function needSketch() { var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null; if (!f) UI.toast(MSG); return f; }
+  // lane BY: a click right on a line's end, a corner or a centre selects that sketch point (the Select tool's SolidWorks
+  // point pick), which the command ignored (0 entities); a Transform command acts on entities, so a selected point
+  // counts as its entity, and the selection becomes that entity
   function selIdx(f) {
-    var out = [];
-    if (UI.selection) UI.selection().forEach(function (s) { if (s.kind === 'entity' && out.indexOf(s.index) < 0) out.push(s.index); });
-    if (App.sel && App.sel.kind === 'entity' && out.indexOf(App.sel.index) < 0) out.push(App.sel.index);
-    return out.filter(function (i) { return f.entities[i]; }).sort(function (a, b) { return a - b; });
+    var out = [], pts = false;
+    function add(i) { if (f.entities[i] && out.indexOf(i) < 0) out.push(i); }
+    (UI.selection ? UI.selection() : []).forEach(function (s) {
+      if (s.kind === 'entity') add(s.index);
+      else if (s.kind === 'sketchPoint' && s.ref != null) { add(parseInt(s.ref, 10)); pts = true; }
+    });
+    if (App.sel && App.sel.kind === 'entity') add(App.sel.index);
+    out.sort(function (a, b) { return a - b; });
+    if (pts && UI.setSelection) UI.setSelection(out.map(function (i) { return { kind: 'entity', index: i }; }), { quiet: true });
+    return out;
   }
   function setSel(idx) { if (UI.setSelection) UI.setSelection(idx.map(function (i) { return { kind: 'entity', index: i }; })); }
   function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }

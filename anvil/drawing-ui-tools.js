@@ -631,7 +631,7 @@
   }
   // drawOverlay's part: the picked items, the point under the pointer, and the dimension as it would be placed
   function smartDimOverlay(g, H, svgNode) {
-    var P = D.pending, col = { stroke: '#1a73e8', fill: 'none' }, sw = pxToPaper(1.4);
+    var P = D.pending, col = { stroke: '#2a2a2a', fill: 'none' }, sw = pxToPaper(1.4);   // rfBU: near-black preview (was blue)
     function dot(q, r) { svgNode('circle', { class: 'dw-hot', cx: q[0], cy: H - q[1], r: r || pxToPaper(4), 'stroke-width': pxToPaper(2) }, g); }
     if (D.hover && D.hover.kind === 'dimpt') dot(D.hover.pt, pxToPaper(5));
     if (!P || !P.first) return;
@@ -1171,7 +1171,19 @@
       P.dim = { view: P.view, index: Drawing.findView(doc(), P.view).dims.length - 1 };
     } else {
       var v = Drawing.findView(doc(), P.dim.view), dd = v && v.dims[P.dim.index];
-      if (dd) { dd.refs.push(Drawing.refFrom(ref)); UI.autosave(); render(); }
+      if (dd) {
+        // (lane BX) a feature in line with one already in the chain (the second hole of a column) would repeat its
+        // value, a duplicate dimension a checker red-lines: it is not added
+        var had = [0].concat((dd.values || []).slice(0, dd.refs.length));
+        dd.refs.push(Drawing.refFrom(ref)); render();
+        var dn = Drawing.findView(doc(), P.dim.view).dims[P.dim.index], nv = dn && dn.values ? dn.values[dn.refs.length - 1] : null;
+        if (nv != null && had.some(function (x) { return Math.abs(Math.abs(x) - Math.abs(nv)) <= 1e-6 * (1 + Math.abs(nv)); })) {
+          dn.refs.pop(); render();
+          UI.setStatus(name + ': ' + Drawing.numText(Math.abs(nv), units()) + ' is dimensioned already (that feature lines up with one picked before) — click another, ✓ ends.');
+          return;
+        }
+        UI.autosave();
+      }
     }
     var sd = D.sheet.dims.filter(function (x) { return x.view === P.dim.view && x.index === P.dim.index; })[0];
     UI.setStatus(name + ' dimensions: ' + (sd ? sd.text : '') + ' — click more, ✓ ends.');
@@ -1278,6 +1290,16 @@
     var single = d.kind !== 'ordinate' && d.kind !== 'baseline';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
+    // (lane BX) the two-Enter rule: text, tolerance, precision and arrows show on the sheet as they are typed or picked,
+    // so the first Enter in a box commits what it holds and the dimension follows; the second Enter (✓) closes. The
+    // whole PM is one undo step; ✗ puts the dimension back. (A model item's Value drives the part on ✓ only.)
+    var live = { on: false }, values0 = JSON.parse(JSON.stringify(values));
+    function liveApply(v) {
+      var t = dimTarget(doc(), d);
+      if (!t) return;
+      Drawing.setDimProps(t, dimPropsFromPM(v)); cleanDimProps(doc());
+      render();
+    }
     openDrawingPM({
       title: 'Dimension', icon: 'dim', command: 'dimension', noFocus: !!noFocus, clickDim: !!noFocus, dimRef: dimRef(d),
       message: src ? 'A model item: a new value changes ' + src.featureName + ' and rebuilds the part.' : d.auto ? 'A model item. Its text, tolerance and arrows can be edited here.' : 'A reference dimension: it follows the model; text, tolerance and arrows can be edited here.',
@@ -1293,7 +1315,15 @@
         { title: 'Dimension Text', fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
         { title: 'Leaders', fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
       ],
-      onOK: function (v) { return applyDimensionPM(d, src, v); }, onClose: onClose
+      onChange: function (v, key) {
+        // (the PM's opening call has no key; nothing changed yet: no undo step)
+        if (key == null || key === 'value' || !doc()) return;
+        if (!live.on && JSON.stringify(dimPropsFromPM(v)) === JSON.stringify(dimPropsFromPM(values0))) return;
+        if (!live.on) { settle(); UI.pushUndo(); D.dirty = true; live.on = true; }
+        liveApply(v);
+      },
+      onCancel: function () { if (live.on && doc()) { liveApply(values0); live.on = false; } },
+      onOK: function (v) { return applyDimensionPM(d, src, v, live.on); }, onClose: onClose
     });
   }
   // The Dimension PM a single click opened (spec.clickDim), or null. It shows the dimension as it was when clicked, so a
@@ -1322,12 +1352,12 @@
     return { tol: v.tolType && v.tolType !== 'none' ? { type: v.tolType, plus: Math.abs(+v.plus || 0), minus: v.tolType === 'symmetric' ? Math.abs(+v.plus || 0) : Math.abs(+v.minus || 0) } : null,
       prec: v.prec === 'auto' || v.prec == null ? null : +v.prec, label: label.trim() === '' || label === '<DIM>' ? null : label, flip: !!v.flip };
   }
-  function applyDimensionPM(d, src, v) {
+  function applyDimensionPM(d, src, v, live) {   // live: the PM already applied its props (one undo step taken)
     var props = dimPropsFromPM(v), val = +v.value;
     if (src && isFinite(val) && Math.abs(val - d.value) > 1e-9) {
       // drive the part: try it on a copy first, so a refused value leaves no undo step
       try { Drawing.driveDim(JSON.parse(JSON.stringify(App.model)), src, val); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return false; }
-      UI.pushUndo();
+      if (!live) UI.pushUndo();
       D.dirty = true;
       var t = dimTarget(doc(), d);
       if (t) Drawing.setDimProps(t, props);
@@ -1336,7 +1366,7 @@
       UI.setStatus('Dimension ' + Drawing.numText(d.value, units()) + ' → ' + Drawing.numText(val, units()) + ': ' + src.featureName + ' ' + src.what + ' changed, rebuilding.');
       return UI.rebuild().then(function () { if (D.active) render(); });
     }
-    setDimProps(d, props);
+    if (live) { var t2 = dimTarget(doc(), d); if (t2) Drawing.setDimProps(t2, props); cleanDimProps(doc()); UI.autosave(); render(); } else setDimProps(d, props);
     var nd = sheetDim(dimRef(d));
     UI.setStatus('Dimension ' + (nd ? nd.text : '') + '.');
   }

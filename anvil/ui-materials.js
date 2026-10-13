@@ -59,9 +59,9 @@
   function bodyColors() {
     if (!App.build) return null;
     if (isAsm()) {
-      var cs = App.model.components || [], cache = App.build.cache || {}, base = (App.model.color || MT.DEFAULT_COLOR).toLowerCase(), any = false;
+      var cs = App.model.components || [], cache = App.build.cache || {}, base = MT.displayColor(App.model.color).toLowerCase(), any = false;
       var out = cs.map(function (c) {
-        var e = cache[JSON.stringify(c.source)], col = e && e.model && e.model.color ? e.model.color : MT.DEFAULT_COLOR;
+        var e = cache[JSON.stringify(c.source)], col = MT.displayColor(e && e.model ? e.model.color : null);
         if (col.toLowerCase() !== base) any = true;
         return col;
       });

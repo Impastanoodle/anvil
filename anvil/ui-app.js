@@ -174,11 +174,11 @@
   function tpAppearance(body) {
     body.appendChild(el('h3', { text: 'Part color' }));
     var sw = el('div', { class: 'swatches' });
-    ['#a8adb6', '#8d9299', '#c9ccd1', '#5b6b7c', '#b8860b', '#c8442e', '#2f6db5', '#3f8f4e', '#d9b38c', '#e0e0e0', '#3a3f47', '#f0c419', '#7e57c2', '#00897b', '#ef6c00', '#795548'].forEach(function (c) {
+    ['#8c8c8c', '#6e6e6e', '#c8c8c8', '#505050', '#b8860b', '#c8442e', '#2f6db5', '#3f8f4e', '#d9b38c', '#e0e0e0', '#3a3a3a', '#f0c419', '#7e57c2', '#00897b', '#ef6c00', '#795548'].forEach(function (c) {
       sw.appendChild(el('button', { style: 'background:' + c, title: c, onclick: function () { App.model.color = c; UI.applyDisplayStyle(); UI.autosave(); } }));
     });
     body.appendChild(sw);
-    var inp = el('input', { type: 'color', value: App.model.color || '#a8adb6' });
+    var inp = el('input', { type: 'color', value: UI.partColor(App.model.color) });
     inp.addEventListener('input', function () { App.model.color = inp.value; UI.applyDisplayStyle(); UI.autosave(); });
     body.appendChild(el('div', { class: 'row' }, [el('span', { text: 'Custom: ' }), inp]));
     body.appendChild(el('h3', { text: 'Scene' }));
@@ -829,6 +829,53 @@
       (tag === 'input' && !/^(checkbox|radio|button|submit|reset|range|color|file|image)$/i.test(t.type || ''));
     return !!text && t.isConnected && !!(t.offsetWidth || t.offsetHeight || t.getClientRects().length);
   }
+  // lane BY (user, 2026-10-13): Ctrl+Z / Ctrl+Y, Edit ▸ Undo / Redo and the Undo / Redo buttons with a command's
+  // PropertyManager open cancel the command first (its preview and whatever it had not applied go: "Translate
+  // cancelled."); the next Ctrl+Z undoes. Before, the undo ran under the open command: the step before it was undone
+  // and the command closed without its ✗. Not a command: a PM that only shows the selection (Line / Point / Properties,
+  // a sketch dimension) and a sketch tool's own PM (Insert Line …), where Ctrl+Z undoes at once (the last line drawn)
+  // and the tool keeps its PM, as in SolidWorks; a drawing's PMs keep the drawing's own undo. In the command's value box
+  // Ctrl+Z takes back what was typed there first (the browser's own text undo); with nothing typed it cancels.
+  function pmIsCommand(spec) {
+    return !!(spec && !spec.sketchTool && !spec.selectionPM && spec.entityIndex == null && !spec._skEntity && !spec._txtEntity &&
+      !(spec._curves && spec._curves.kind === 'entity') && !(UI.dimensionPMOpen && UI.dimensionPMOpen()));
+  }
+  function undoCancelsPM(target) {
+    var spec = UI.pmSpec && UI.pmSpec();
+    if (!pmIsCommand(spec) || (UI.drawingActive && UI.drawingActive())) return false;
+    if (target && typingIn(target)) {
+      var root = $('pm');
+      if (!root || !root.contains(target)) return false;   // the script console, a dimension's value box: their own Ctrl+Z
+      if (UI.pmPending && UI.pmPending(target)) return false;   // typed text in the command's box: undo the typing first
+    }
+    return true;
+  }
+  function undoCommand(redo) {
+    if (undoCancelsPM(document.activeElement)) {
+      var title = UI.pmTitle ? UI.pmTitle() : '';
+      UI.pmCancel();
+      var sm = $('status-msg');
+      if (title && sm && !/cancelled/.test(sm.textContent)) UI.setStatus(title + ' cancelled.');
+      return UI.whenIdle();
+    }
+    var spec = UI.pmSpec && UI.pmSpec(), tool = spec && spec.sketchTool && App.mode === 'sketch' ? App.tool : null;
+    if (redo ? !App.redo.length : !App.undo.length) return UI.whenIdle();
+    var p = redo ? UI.redo() : UI.undo();
+    // the undo closed every PropertyManager (ui-core.js afterModelSwap): a sketch tool still in hand gets its own back
+    if (tool && tool !== 'select' && App.mode === 'sketch' && App.tool === tool && !UI.hasPM() && UI.setTool) UI.setTool(tool);
+    return p;
+  }
+  // lane BY: the two-Enter rule (ui-commands.js pmEnter) counts what was typed, not only a changed text: "3" typed over a
+  // selected 3 (Rectangular Array's instances) and Enter was ✓ and closed the command with the distance still to set.
+  // A PropertyManager box typed in holds an entry until Enter commits it, whatever its text.
+  document.addEventListener('input', function (e) {
+    var t = e.target, root = $('pm');
+    if (!t || t.tagName !== 'INPUT' || t._armed == null || t.value !== t._armed || !root || !root.contains(t)) return;
+    t._armed = '\u0000' + t._armed;   // the same text, but typed: pending (pmPending compares the two)
+  }, true);
+  UI.undoCommand = function () { return undoCommand(false); };
+  UI.redoCommand = function () { return undoCommand(true); };
+  UI.undoCancelsPM = undoCancelsPM;
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
     var typing = typingIn(e.target);
@@ -850,14 +897,15 @@
       App.sel = null; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
       return;
     }
-    if (typing) return;
+    // lane BY: Ctrl+Z / Ctrl+Y in a command's value box with nothing typed cancels the command (undoCommand)
+    if (typing && !((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && /^[zZyY]$/.test(e.key) && undoCancelsPM(e.target))) return;
     // a focused check box or option keeps Space, Enter and Delete for itself
     if (tag === 'input' && e.target.isConnected && (e.key === ' ' || e.key === 'Enter' || e.key === 'Delete' || e.key === 'Backspace')) return;
     var k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && !e.shiftKey && k >= '1' && k <= '7') { e.preventDefault(); UI.setView(['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Isometric'][+k - 1]); return; }
     if (ctrl && k === '8') { e.preventDefault(); UI.normalToSelection(); return; }
-    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else UI.undo(); return; }
-    if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); UI.redo(); return; }
+    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else undoCommand(false); return; }
+    if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); undoCommand(true); return; }
     if (ctrl && (k === 's' || k === 'S')) { e.preventDefault(); fileSave(); return; }
     if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); return; }
     if (ctrl && (k === 'n' || k === 'N')) { e.preventDefault(); fileNew(); return; }

@@ -213,7 +213,7 @@
       spec.groups = [
         { title: 'Layers', fields: [
           { type: 'html', html: '<div class="rel-list" id="lyr-list" role="listbox" aria-label="Layers">' + list.map(function (l) {
-            var sw = l.name === '0' ? '<i class="lyr-swatch" style="display:inline-block;flex:none;width:18px;height:14px;border:1px dashed #9aa3ad;box-sizing:border-box" title="Entities keep their usual colour"></i>'
+            var sw = l.name === '0' ? '<i class="lyr-swatch" style="display:inline-block;flex:none;width:18px;height:14px;border:1px dashed #a0a0a0;box-sizing:border-box" title="Entities keep their usual colour"></i>'
               : '<input type="color" class="lyr-color" value="' + esc(l.color || '#ffffff') + '" title="Layer colour" style="flex:none;width:20px;height:18px;padding:0;border:0;background:none">';
             var eye = l.name === '0' ? '<i style="display:inline-block;flex:none;width:18px"></i>' : '<button type="button" class="lyr-eye" title="' + (l.hidden ? 'Hidden: click to show' : 'Visible: click to hide') + '" aria-pressed="' + (!l.hidden) + '" style="flex:none;width:18px;padding:0;border:0;background:none;cursor:pointer;opacity:' + (l.hidden ? 0.35 : 1) + '">' + (l.hidden ? '&#9711;' : '&#9673;') + '</button>';
             return '<div class="rel-row' + (l.name === v.pick ? ' sel' : '') + '" role="option" tabindex="0" data-layer="' + esc(l.name) + '" style="display:flex;align-items:center;gap:6px">' +

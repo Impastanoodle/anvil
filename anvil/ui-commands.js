@@ -1206,7 +1206,9 @@
         }
         App.tempEntities = []; UI.updateTemp(); App.sel = null; App.gridStale = true;
         UI.updateSketches(); UI.refreshTree();
-        UI.setStatus('Mirrored ' + c.length + ' entit' + (c.length === 1 ? 'y' : 'ies') + (nSym ? ', ' + nSym + ' held Symmetric about Line' + (specN + 1) : '') + '.');
+        var mirroredMsg = 'Mirrored ' + c.length + ' entit' + (c.length === 1 ? 'y' : 'ies') + (nSym ? ', ' + nSym + ' held Symmetric about Line' + (specN + 1) : '') + '.';
+        UI.setStatus(mirroredMsg);
+        setTimeout(function () { UI.setStatus(mirroredMsg); }, 0);   // lane BV: the PM closing said "Selection cleared." over it
       },
       onCancel: function () { App.tempEntities = []; UI.updateTemp(); }
     });

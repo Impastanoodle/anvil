@@ -1779,14 +1779,20 @@
     dimEdit.parentNode.appendChild(el);
     numBox = box;
     positionNumBox();
-    var first = box.inputs[0].input;
+    // lane BV (shop-user audit): the Circle box opens on the field the last circle was typed in (Ø for a shop that
+    // types hole sizes, R by default, as Mastercam remembers its Radius / Diameter choice); a typed first digit
+    // always goes to the first field
+    var firstIdx = 0;
+    if (!firstChar && UNIT_BOX_TOOLS[App.tool] && circleBoxField) box.inputs.forEach(function (x, i) { if (x.key === circleBoxField) firstIdx = i; });
+    var first = box.inputs[firstIdx].input;
     first.value = firstChar || '';
-    box.inputs[0].typed = !!firstChar;
+    box.inputs[firstIdx].typed = !!firstChar;
     first.focus();
     first.setSelectionRange(first.value.length, first.value.length);
     numPreview();
     return true;
   }
+  var circleBoxField = null;   // 'r' | 'd': the Circle box field last committed with Enter (lane BV)
   // r9/sketch9: the live values of the entity being drawn for the cursor point p, by box field key
   function liveValues(p) {
     var st = App.toolState || { pts: [] }, pts = st.pts, a = pts[0], out = {};
@@ -1998,6 +2004,7 @@
         // the unit request box (Circle, Parallel Line): the first Enter commits what the box shows, the second makes
         // the entity and closes the tool / command; a value typed after a commit is committed first
         var fk = numBox.inputs[k >= 0 ? k : 0];
+        if (!unitOwner && (fk.key === 'r' || fk.key === 'd') && fk.typed) circleBoxField = fk.key;   // lane BV: remembered for the next circle
         if (!numBox.committed || numBox.inputs.some(function (x) { return x.input.value !== x.input._armed; })) {
           numBox.inputs.forEach(function (x) { x.input._armed = x.input.value; });
           numBox.committed = true;
