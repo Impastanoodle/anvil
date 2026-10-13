@@ -1,4 +1,4 @@
-// node head/resolve-both.js <file> [both|head|theirs]
+// node head-tools/resolve-both.js <file> [both|head|theirs]
 // Resolves every git conflict block in <file>: "both" (default) keeps HEAD's side then the incoming side (right for two
 // lanes that each appended a block or a manifest line at the same spot), "head" / "theirs" keep one side. Prints the
 // number of blocks resolved. Read the result: "both" is wrong when the two sides edited the same lines.

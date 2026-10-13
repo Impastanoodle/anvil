@@ -164,7 +164,18 @@
     var tabs = $('drawing-tabs'), dc = doc();
     if (D.renaming != null) return;   // (a tab being renamed keeps its box until Enter / Esc)
     tabs.innerHTML = '';
-    (dc ? Drawing.sheets(dc) : [{ index: 0, name: 'Sheet1', active: true }]).forEach(function (s) {
+    // (rfBI) SolidWorks' four sheet scroll arrows before the tabs: first / previous / next / last sheet
+    var list = dc ? Drawing.sheets(dc) : [{ index: 0, name: 'Sheet1', active: true }], cur = dc ? dc.activeSheet | 0 : 0, last = list.length - 1;
+    var nav = el('span', { class: 'dw-tab-nav' });
+    [['first', 0, 'M10.5 4 L6 8 l4.5 4 M5 4 v8'], ['prev', cur - 1, 'M10 4 L5.5 8 l4.5 4'], ['next', cur + 1, 'M6 4 l4.5 4 L6 12'], ['last', last, 'M5.5 4 L10 8 l-4.5 4 M11 4 v8']].forEach(function (n) {
+      var to = Math.max(0, Math.min(last, n[1]));
+      var bt = nav.appendChild(el('button', { class: 'dw-nav dw-nav-' + n[0], title: { first: 'First sheet', prev: 'Previous sheet', next: 'Next sheet', last: 'Last sheet' }[n[0]], 'aria-label': n[0] + ' sheet',
+        html: '<svg width="12" height="12" viewBox="0 0 16 16"><path d="' + n[2] + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+        onclick: function () { activateSheet(to); } }));
+      bt.disabled = to === cur;
+    });
+    tabs.appendChild(nav);
+    list.forEach(function (s) {
       tabs.appendChild(el('button', { class: 'dw-tab dw-sheet-tab' + (s.active ? ' active' : ''), text: s.name, 'data-sheet': String(s.index),
         title: s.name + (s.format ? ' (' + s.format + ', ' + s.scale + ')' : '') + (s.active ? '' : ': click to activate') + '. Right-click for Add Sheet, Delete, Rename, Properties.',
         onclick: function () { activateSheet(s.index); },
@@ -175,6 +186,23 @@
     tabs.appendChild(el('span', { class: 'dw-sp' }));
     tabs.appendChild(el('button', { class: 'dw-tab', html: Icons(isAsm() ? 'assembly' : 'part', 14) + '<span>' + (App.model.name || 'Part') + '</span>', title: 'Switch to the ' + (isAsm() ? 'assembly' : 'part') + ' document (Window menu)', onclick: function () { requestClose(); } }));
   }
+  // (rfBI) the status bar's right end while a drawing is open, as SolidWorks: Editing Sheet1 (Editing Sheet Format while
+  // the format is edited), the sheet scale and the drawing's unit system; the part's items (rebuild, levels, Editing
+  // Part) are hidden under it (drawing.css, #app.drawing-mode) and come back as the drawing closes
+  function renderStatus() {
+    var bar = $('statusbar'), dc = doc();
+    if (!bar || !dc || !D.sheet) return;
+    var st = $('dw-status');
+    if (!st) { st = el('span', { id: 'dw-status' }); bar.insertBefore(st, $('status-right')); }
+    var sh = Drawing.sheets(dc).filter(function (x) { return x.active; })[0] || {};
+    var sc = String(sh.scale || '1:1').split(':').map(function (x) { return x.trim(); }).join(' : ');
+    var items = [['dw-st-mode', D.formatEdit ? 'Editing Sheet Format' : 'Editing ' + dc.sheet.name, ''], ['dw-st-scale', sc, 'Sheet scale'], ['dw-st-units', D.sheet.units === 'in' ? 'IPS' : 'MMGS', 'Unit system']];
+    var key = JSON.stringify(items);
+    if (st._key === key) return;
+    st._key = key; st.innerHTML = '';
+    items.forEach(function (it) { st.appendChild(el('span', it[2] ? { class: it[0], text: it[1], title: it[2] } : { class: it[0], text: it[1] })); });
+  }
+  DW.renderStatus = renderStatus;
 
   // ------------------------------------------------------------------ sheets (rfQ)
   // activateSheet(i | name): the sheet comes up as a drawing opens (its views drop in from drawing-worker.js) and is
@@ -399,6 +427,7 @@
     applyViewBox();
     drawOverlay();
     if (light !== true) { DW.renderTree(); renderTabs(); }
+    renderStatus();
     $('doc-title').textContent = dc.name + ' - ' + dc.sheet.name;
     D.lastRenderMs = performance.now() - t0;
   }
@@ -596,6 +625,10 @@
       var paper = (Drawing.STROKE[c] || 0.25) * k, need = MIN_PX[c] * px;
       if (need > paper) css += '#drawing-sheet svg .' + c + '{stroke-width:' + +need.toPrecision(4) + 'px}';
     });
+    // (rfBI) the sheet's shadow, down and to the right as SolidWorks draws it, the same few screen pixels at any zoom
+    // and in either paper unit (a filter's lengths on an SVG element are in the sheet's units)
+    var sp = function (n) { return +(n * px).toPrecision(3) + 'px'; };
+    css += '#drawing-sheet .sheet-bg{filter:drop-shadow(' + sp(3) + ' ' + sp(3) + ' ' + sp(2.5) + ' rgba(0,0,0,0.38))}';
     if (st.textContent !== css) st.textContent = css;
   }
   function fitBox() {
@@ -632,22 +665,47 @@
     D.host.classList.toggle('dw-cur-tool', !!D.tool);
     D.host.classList.toggle('dw-cur-move', mv);
   }
+  // (rfBI) SolidWorks colours a dimension itself on the screen: selected blue, pre-selected (under the pointer) orange,
+  // a reference dimension added on the sheet (not a model item) grey; paper and every export (SVG / PDF / DXF) stay
+  // black, since this only sets data-tint on the live sheet's elements (drawing.css). Drawing.svgParts writes the
+  // DIMENSIONS layer one element per primitive, in order, so element i is the layer's primitive i (a dimension's
+  // primitives carry dimIx, its index in sheet.dims). -> false when the counts disagree (nothing tinted)
+  function tintDims() {
+    var s = svgEl(), g = s && D.sheet && s.querySelector(':scope > g[data-layer="DIMENSIONS"]');
+    if (!g) return false;
+    var els = g.querySelectorAll(':scope > :not(g), :scope > g[data-of] > *');
+    var ps = D.sheet.prims.filter(function (p) { return p.layer === 'DIMENSIONS' && p.k !== 'pending'; });
+    if (els.length !== ps.length) return false;
+    var sel = -1, hov = -1;
+    D.sheet.dims.forEach(function (d, i) {
+      if (D.sel && D.sel.kind === 'dim' && dimMatches(D.sel, d)) sel = i;
+      else if (D.hover && D.hover.kind === 'dim' && dimMatches(D.hover, d)) hov = i;
+    });
+    for (var i = 0; i < els.length; i++) {
+      var ix = ps[i].dimIx, d = ix != null ? D.sheet.dims[ix] : null;
+      var t = !d ? '' : ix === sel ? 'sel' : ix === hov ? 'pre' : !d.auto && !d.dangling ? 'ref' : '';
+      if ((els[i].getAttribute('data-tint') || '') !== t) { if (t) els[i].setAttribute('data-tint', t); else els[i].removeAttribute('data-tint'); }
+    }
+    return true;
+  }
   function drawOverlay() {
     updateCursor();
     var s = svgEl(), g = s && s.querySelector('#dw-overlay');
     if (!g) return;
     g.innerHTML = '';
+    var tinted = tintDims();
     var H = D.sheet.size[1], pad = 2 * paperK(), vpad = 3 * paperK(), sw = pxToPaper(1.2);   // (a view's frame is where a click takes the view: viewAt's margin)
     D.sheet.views.forEach(function (w) {
       var sel = D.sel && D.sel.kind === 'view' && D.sel.id === w.view.id, hov = D.hover && (D.hover.kind === 'view' && D.hover.id === w.view.id || D.hover.pre && D.hover.view === w.view.id);
       if (!sel && !hov) return;
       var o = liveOffset(w.view.id);
-      svgNode('rect', { class: 'dw-vbox' + (sel ? ' sel' : ''), x: w.box.x0 + o[0] - vpad, y: H - w.box.y1 - o[1] - vpad, width: w.box.x1 - w.box.x0 + 2 * vpad, height: w.box.y1 - w.box.y0 + 2 * vpad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
+      svgNode('rect', { class: 'dw-vbox' + (sel ? ' sel' : ' pre'), x: w.box.x0 + o[0] - vpad, y: H - w.box.y1 - o[1] - vpad, width: w.box.x1 - w.box.x0 + 2 * vpad, height: w.box.y1 - w.box.y0 + 2 * vpad, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g);
     });
     D.sheet.dims.forEach(function (d) {
       var sel = D.sel && D.sel.kind === 'dim' && dimMatches(D.sel, d), hov = D.hover && D.hover.kind === 'dim' && dimMatches(D.hover, d);
       if (!sel && !hov || !d.box) return;
-      svgNode('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: d.box.x0 - pad / 2, y: H - d.box.y1 - pad / 2, width: d.box.x1 - d.box.x0 + pad, height: d.box.y1 - d.box.y0 + pad, 'stroke-width': sw }, g);
+      // (rfBI) the dimension itself turns blue / orange (tintDims); the frame only when that could not be done
+      if (!tinted) svgNode('rect', { class: 'dw-dbox' + (sel ? ' sel' : ' pre'), x: d.box.x0 - pad / 2, y: H - d.box.y1 - pad / 2, width: d.box.x1 - d.box.x0 + pad, height: d.box.y1 - d.box.y0 + pad, 'stroke-width': sw }, g);
       // the selected dimension's arrow handles: click one to flip the arrows (r4/drawings4)
       if (sel && DW.FLIP_KINDS[d.kind] && d.arrows && !(D.drag && D.drag.moved)) d.arrows.forEach(function (a) { svgNode('circle', { class: 'dw-handle', cx: a[0], cy: H - a[1], r: pxToPaper(3.2), 'stroke-width': sw }, g); });
     });
@@ -661,22 +719,22 @@
     (D.sheet.notes || []).forEach(function (n) {
       var nsel = D.sel && D.sel.kind === 'note' && D.sel.id === n.id, nhov = D.hover && D.hover.kind === 'note' && D.hover.id === n.id;
       if (!(nsel || nhov) || !isFinite(n.box.x0)) return;
-      svgNode('rect', { class: 'dw-dbox' + (nsel ? ' sel' : ''), x: n.box.x0 - pad / 2, y: H - n.box.y1 - pad / 2, width: n.box.x1 - n.box.x0 + pad, height: n.box.y1 - n.box.y0 + pad, 'stroke-width': sw }, g);
+      svgNode('rect', { class: 'dw-dbox' + (nsel ? ' sel' : ' pre'), x: n.box.x0 - pad / 2, y: H - n.box.y1 - pad / 2, width: n.box.x1 - n.box.x0 + pad, height: n.box.y1 - n.box.y0 + pad, 'stroke-width': sw }, g);
     });
     // (rfM) shop symbols and the Revision Table
     (D.sheet.symbols || []).forEach(function (y) {
       var ysel = D.sel && D.sel.kind === 'symbol' && D.sel.id === y.id, yhov = D.hover && D.hover.kind === 'symbol' && D.hover.id === y.id;
       if (!(ysel || yhov) || !isFinite(y.box.x0)) return;
-      svgNode('rect', { class: 'dw-dbox' + (ysel ? ' sel' : ''), x: y.box.x0 - pad / 2, y: H - y.box.y1 - pad / 2, width: y.box.x1 - y.box.x0 + pad, height: y.box.y1 - y.box.y0 + pad, 'stroke-width': sw }, g);
+      svgNode('rect', { class: 'dw-dbox' + (ysel ? ' sel' : ' pre'), x: y.box.x0 - pad / 2, y: H - y.box.y1 - pad / 2, width: y.box.x1 - y.box.x0 + pad, height: y.box.y1 - y.box.y0 + pad, 'stroke-width': sw }, g);
     });
     if (D.sheet.revisions && ((D.sel && D.sel.kind === 'revtable') || (D.hover && D.hover.kind === 'revtable'))) {
       var rb = D.sheet.revisions.box, rsel = D.sel && D.sel.kind === 'revtable';
-      svgNode('rect', { class: 'dw-dbox' + (rsel ? ' sel' : ''), x: rb.x0 - pad / 2, y: H - rb.y1 - pad / 2, width: rb.x1 - rb.x0 + pad, height: rb.y1 - rb.y0 + pad, 'stroke-width': sw }, g);
+      svgNode('rect', { class: 'dw-dbox' + (rsel ? ' sel' : ' pre'), x: rb.x0 - pad / 2, y: H - rb.y1 - pad / 2, width: rb.x1 - rb.x0 + pad, height: rb.y1 - rb.y0 + pad, 'stroke-width': sw }, g);
     }
     (D.sheet.annotations || []).forEach(function (a) {
       var asel = D.sel && D.sel.kind === 'annot' && D.sel.id === a.id, ahov = D.hover && D.hover.kind === 'annot' && D.hover.id === a.id;
       if (!(asel || ahov) || a.hidden || !isFinite(a.box.x0)) return;
-      svgNode('rect', { class: 'dw-dbox' + (asel ? ' sel' : ''), x: a.box.x0 - pad / 2, y: H - a.box.y1 - pad / 2, width: a.box.x1 - a.box.x0 + pad, height: a.box.y1 - a.box.y0 + pad, 'stroke-width': sw }, g);
+      svgNode('rect', { class: 'dw-dbox' + (asel ? ' sel' : ' pre'), x: a.box.x0 - pad / 2, y: H - a.box.y1 - pad / 2, width: a.box.x1 - a.box.x0 + pad, height: a.box.y1 - a.box.y0 + pad, 'stroke-width': sw }, g);
     });
     if (D.tool === 'centermark' && D.pending && D.pending.view != null) {
       var cw = DW.sheetView(D.pending.view);

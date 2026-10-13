@@ -79,6 +79,7 @@
     return 'r ' + fmt(Dv.extents[0] / 2) + ' at ' + Dv.scale;
   });
   step('drawing views: Smart Dimensions follow a part change (thicker plate) and dangle in olive when their holes are deleted; Undo reattaches them', async function () {
+    async function dvUntil(ok) { var t0 = Date.now(); while (!ok() && Date.now() - t0 < 4000) await wait(40); }
     ribbonButton('Smart Dimension').click();
     var F = dwView('Front'), T = dwView('Top');
     sheetMouse('mousedown', [F.box[0] + (F.box[2] - F.box[0]) * 0.6, F.box[3]]);          // top edge of the Front view
@@ -91,15 +92,15 @@
     assert(user() === '100 | \u00d88', 'placed ' + JSON.stringify(user()));
     var f = UI.App.model.features.filter(function (x) { return x.type === 'extrude' && !x.cut; })[0];
     UI.pushUndo(); f.depth = 12;
-    await UI.rebuild(); await idle(); await wait(80);
+    await UI.rebuild(); await idle(); await dvUntil(function () { var d = anvil.drawing.doc().views[0].dims[0]; return d && Math.abs(d.a[1] - 12) < 1e-9; });   // the drawing redraws after the rebuild settles: wait for it, not a fixed 80 ms
     assert(user() === '100 | \u00d88' && anvil.drawing.summary().dangling === 0, 'after 8 -> 12: ' + user());
     near(anvil.drawing.doc().views[0].dims[0].a[1], 12, 1e-9, 'the dimension moved to the new top edge');
     near(dwKind('section')[0].sectionArea, 100 * 12 - 2 * 8 * 8, 1e-9, 'the section follows (the holes stay 8 deep)');
     UI.pushUndo(); UI.App.model.features = UI.App.model.features.filter(function (x) { return x.id < 3; });
-    await UI.rebuild(); await idle(); await wait(80);
+    await UI.rebuild(); await idle(); await dvUntil(function () { return user() === '100 | \u00d88?' && D.querySelectorAll('#drawing-sheet [data-color="dangling"]').length >= 3; });   // the drawing redraws after the rebuild settles: wait for it, not a fixed 80 ms
     assert(user() === '100 | \u00d88?' && anvil.drawing.summary().dangling === 1, 'holes deleted: ' + user());
     assert(D.querySelectorAll('#drawing-sheet [data-color="dangling"]').length >= 3, 'dangling colour');
-    await UI.undo(); await idle(); await wait(80);
+    await UI.undo(); await idle(); await dvUntil(function () { return user() === '100 | \u00d88' && !D.querySelector('#drawing-sheet [data-color="dangling"]'); });   // the drawing redraws after the rebuild settles: wait for it, not a fixed 80 ms
     assert(user() === '100 | \u00d88' && !D.querySelector('#drawing-sheet [data-color="dangling"]'), 'undo reattaches: ' + user());
     await UI.undo(); await idle(); await wait(80);
     assert(JSON.stringify(dwView('Front').extents) === '[100,8]', 'back to 8 thick');

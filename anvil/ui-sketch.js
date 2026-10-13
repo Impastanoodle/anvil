@@ -2257,17 +2257,19 @@
     if (!info) return;
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     var sp = scr(info.p);
-    // dotted blue inference lines from the points the cursor lines up with
+    // dotted blue inference lines from the points the cursor lines up with (rfBH: as SolidWorks, blue is a guide that
+    // adds no relation, orange one whose relation the click adds; colours --sk-infer / --sk-infer-rel in style.css)
     info.align.forEach(function (al) {
       if (al.prev && App.tool === 'line') return;   // the rubber band itself shows that one
       var a = scr(al.from);
-      svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
+      svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], 'class': 'sk-infer', style: 'stroke:var(--sk-infer, var(--blue));stroke-width:1;stroke-dasharray:2 3' }, layer);
     });
     // the point taken: an orange ring on an existing point, a small dot on a curve
     // a tangent / perpendicular direction taken: a dotted inference line along it from the end point, past the cursor
     if (info.dir) {
       var a0 = scr(info.dir.from), vx = sp[0] - a0[0], vy = sp[1] - a0[1], vl = Math.hypot(vx, vy) || 1;
-      svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, style: 'stroke:var(--blue);stroke-width:1;stroke-dasharray:2 3' }, layer);
+      var relLine = !!info.dir.glyph && skSetting('autoRelations');
+      svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, 'class': relLine ? 'sk-infer sk-infer-rel' : 'sk-infer', style: 'stroke:' + (relLine ? 'var(--sk-infer-rel, #e8891c)' : 'var(--sk-infer, var(--blue))') + ';stroke-width:1;stroke-dasharray:2 3' }, layer);
     }
     // (p9-modelsnap: a point on the model in its own colour, MODEL_COLOR)
     if (info.snap) {

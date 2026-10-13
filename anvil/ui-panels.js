@@ -188,20 +188,20 @@
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
       { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } },
       { id: 'clearance', label: 'Clearance\nVerification', run: function () { UI.cmdClearance(); } },
-      { stack: [{ id: 'generic', label: 'Undercut Analysis' }, { id: 'generic', label: 'Thickness Analysis' }] },
+      { stack: [{ id: 'generic', icon: 'undercut', label: 'Undercut Analysis' }, { id: 'generic', icon: 'thickness', label: 'Thickness Analysis' }] },
       { sep: true },
-      { id: 'generic', label: 'Compare\nDocuments' }, { id: 'generic', label: 'Performance\nEvaluation' }, { id: 'generic', label: 'Costing' }
+      { id: 'generic', icon: 'compareDocs', label: 'Compare\nDocuments' }, { id: 'generic', icon: 'perfEval', label: 'Performance\nEvaluation' }, { id: 'generic', icon: 'costing', label: 'Costing' }
     ],
     'Sheet Metal': [
       { id: 'flange', label: 'Base\nFlange/Tab', run: function () { UI.cmdBaseFlange(); } },
-      { id: 'generic', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
+      { id: 'generic', icon: 'convertSM', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
-      { stack: [{ id: 'generic', label: 'Cross-Break' }, { id: 'generic', label: 'Corners' }, { id: 'generic', label: 'Forming Tool' }] },
+      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { id: 'generic', icon: 'corners', label: 'Corners' }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
       { sep: true },
-      { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', label: 'Vent' },
+      { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
-      { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'generic', label: 'Unfold' }, { id: 'generic', label: 'Fold' }, { id: 'generic', label: 'Rip' }
+      { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'generic', icon: 'unfold', label: 'Unfold' }, { id: 'generic', icon: 'fold', label: 'Fold' }, { id: 'generic', icon: 'rip', label: 'Rip' }
     ]
   };
 
@@ -219,8 +219,8 @@
       { id: 'lpattern', label: 'Linear Component\nPattern' },
       { id: 'moveComponent', label: 'Move\nComponent', run: function () { UI.cmdMoveComponent(); } },
       { id: 'rotateComponent', label: 'Rotate\nComponent', run: function () { UI.cmdRotateComponent(); } },
-      { id: 'generic', label: 'Exploded\nView' },
-      { stack: [{ id: 'generic', label: 'Smart Fasteners' }, { id: 'generic', label: 'Bill of Materials' }, { id: 'generic', label: 'Instant3D' }] }
+      { id: 'generic', icon: 'explode', label: 'Exploded\nView' },
+      { stack: [{ id: 'generic', label: 'Smart Fasteners' }, { id: 'generic', label: 'Bill of Materials' }, { id: 'generic', icon: 'instant', label: 'Instant3D' }] }
     ],
     Evaluate: [
       { id: 'measure', label: 'Measure', run: function () { UI.cmdMeasure(); } },
@@ -700,7 +700,15 @@
     var ic = el('span');
     ic.appendChild(Icons.node ? Icons.node(opts.icon, 16) : el('span', { html: Icons(opts.icon, 16) }));
     row.appendChild(ic);
-    row.appendChild(el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name }));
+    var nm = el('span', { class: 'nm', text: opts.name, title: opts.title || opts.name });
+    // rfBG: a sketch's definition prefix ("(-) ", "(+) ", "(?) ") in its own span, coloured by the stylesheet; the
+    // name's text is unchanged
+    var pf = /^\((-|\+|\?)\) /.exec(opts.name);
+    if (pf && opts.prefix) {
+      nm.textContent = opts.name.slice(pf[0].length);
+      nm.insertBefore(el('span', { class: 'ti-pfx ' + ({ '-': 'under', '+': 'over', '?': 'conflict' }[pf[1]]), text: pf[0] }), nm.firstChild);
+    }
+    row.appendChild(nm);
     if (opts.badge) row.appendChild(el('span', { class: 'badge', text: opts.badge }));
     if (opts.children) tw.addEventListener('click', function (e) { e.stopPropagation(); opts.toggle(); });
     return row;
@@ -754,6 +762,11 @@
         tree.appendChild(box);
       }
     });
+    // rfBG: SolidWorks' rollback bar, under the last feature, or above the first rolled-back one during an edit
+    // (drawn only: dragging it is not supported)
+    var bar = el('div', { class: 'rollbar', title: 'Rollback bar', 'aria-hidden': 'true' });
+    var firstRolled = tree.querySelector('.ti.rolled');
+    if (!filter) tree.insertBefore(bar, firstRolled && firstRolled.parentNode === tree ? firstRolled : null);
     if (App.sel && (App.sel.kind === 'feature' || App.sel.kind === 'body')) {
       // a row selected elsewhere (the viewport) scrolls into view by the least amount, as in SolidWorks; a visible
       // row leaves the list where it is
@@ -946,7 +959,7 @@
     var active = App.activeSketch === f.id;
     // r10/editpreview10: features after the rollback point of an Edit Sketch / Edit Feature are greyed (SolidWorks)
     var rolled = App.rollback != null && !active && App.model.features.indexOf(f) >= App.rollback;
-    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '' });
+    var row = treeItem({ icon: err ? 'error' : (warn ? 'warn' : featureIcon(f)), name: (f.type === 'sketch' && UI.sketchTreePrefix ? UI.sketchTreePrefix(f) : '') + f.name + (active ? '  (editing)' : ''), depth: depth, children: !!kids, open: kids && kids.open, toggle: kids && kids.toggle, cls: (selected ? 'selected' : '') + (err ? ' err' : '') + (warn ? ' warn' : '') + (rolled ? ' rolled' : ''), title: (err || warn || featureTitle(f)) + (rolled ? ' (rolled back)' : ''), badge: f.type === 'sketch' && f.entities ? f.entities.length + ' ent.' : '', prefix: f.type === 'sketch' });
     row.setAttribute('data-fid', String(f.id));   // selection sync (ui-select.js)
     if (UI.rebuildMarkRow) UI.rebuildMarkRow(row, f, err, warn, featureIcon(f));   // r12/occtui12: own icon + error / warning badge, tooltip
     row.addEventListener('click', function (e) {
@@ -1387,7 +1400,29 @@
   // SolidWorks keeps Undo and Redo on the Standard toolbar at the top left; here they sit right after the menus
   // (#std-toolbar in index.html). Built once by renderMenuBar; syncStdToolbar greys each button when its stack is
   // empty and is called from refreshTree, which every rebuild, undo, redo and rename reaches.
+  // rfBF: the whole quick-access toolbar of SolidWorks 2024 (New, Open, Save, Print | Undo, Redo | Select | Rebuild,
+  // File Properties, Options). Each button runs the menu command of the same name (looked up in MENUS() when clicked,
+  // so a drawing's own File menu is used in a drawing); Print opens the browser's print dialog.
   var stdBuilt = false;
+  function menuCommand(label) {
+    var menus = MENUS();
+    for (var i = 0; i < menus.length; i++) {
+      var items = menus[i].items || [];
+      for (var j = 0; j < items.length; j++) if (items[j] && items[j].label === label && items[j].action) return items[j];
+    }
+    return null;
+  }
+  function runMenuCommand(label) { var it = menuCommand(label); if (it && !it.disabled) it.action(); }
+  var STD_BUTTONS = [
+    ['std-new', 'newDoc', 'New', 'Ctrl+N', 'Create a new part or assembly', function () { runMenuCommand('New…'); }],
+    ['std-open', 'openDoc', 'Open', 'Ctrl+O', 'Open an existing document', function () { runMenuCommand('Open…'); }],
+    ['std-save', 'saveDoc', 'Save', 'Ctrl+S', 'Save the active document', function () { runMenuCommand('Save'); }],
+    ['std-print', 'printDoc', 'Print', '', 'Print the active document', function () { window.print(); }],
+    ['std-select', 'select', 'Select', '', 'Select sketch entities, edges, faces and features', function () { if (App.mode === 'sketch' && UI.setTool) UI.setTool('select'); }],
+    ['std-rebuild', 'rebuild', 'Rebuild', 'Ctrl+B', 'Rebuild the part', function () { runMenuCommand('Rebuild'); }],
+    ['std-fileprops', 'fileProps', 'File Properties', '', 'Summary information and custom properties of the document', function () { runMenuCommand('Properties…'); }],
+    ['std-options', 'options', 'Options', '', 'Change settings for Anvil', function () { runMenuCommand('Options…'); }]
+  ];
   function renderStdToolbar() {
     var u = $('std-undo'), r = $('std-redo');
     if (!u || !r || stdBuilt) return;
@@ -1395,6 +1430,13 @@
     u.innerHTML = Icons('undo', 16); r.innerHTML = Icons('redo', 16);
     u.addEventListener('click', function () { if (App.undo.length) UI.undo(); });
     r.addEventListener('click', function () { if (App.redo.length) UI.redo(); });
+    STD_BUTTONS.forEach(function (d) {
+      var b = $(d[0]);
+      if (!b) return;
+      b.innerHTML = Icons(d[1], 16); b.dataset.icon = d[1];
+      setTip(b, { name: d[2], key: d[3], desc: d[4] });
+      b.addEventListener('click', d[5]);
+    });
     syncStdToolbar();
   }
   function syncStdToolbar() {
@@ -1457,18 +1499,25 @@
     if (hudActive && hud.children.length) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
     hud.innerHTML = '';
     hudActive = [];
+    // rfBH: SolidWorks 2024's Heads-up View toolbar: Zoom to Fit, Zoom to Area, Previous View, Section View, Dynamic
+    // Annotation Views, then six drop-downs (View Orientation, Display Style, Hide/Show Items, Edit Appearance, Apply
+    // Scene, View Settings), each a small icon with its caret beside it; no separators, on a transparent bar.
+    // children[5] stays View Orientation (showOrientationMenu clicks it); data-hud names each button (UI.HUD_ORDER).
     function btn(icon, title, action, active, caret) {
-      var b = el('button', { html: Icons(icon, 22) + (caret ? '<span class="caret">▾</span>' : ''), title: title, onclick: action });
+      var b = el('button', { class: caret ? 'hud-dd' : '', html: Icons(icon, 20) + (caret ? '<span class="caret">▾</span>' : ''), title: title, onclick: action });
+      b.setAttribute('data-hud', title.replace(/ \(.*$/, '').replace(/ — [\s\S]*$/, ''));
       if (active) { hudActive.push([b, active]); if (active()) b.classList.add('active'); }
       hud.appendChild(b);
       return b;
     }
-    function dd(icon, title, items) { var b = btn(icon, title, function () { var r = b.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items()); }, null, true); }
+    function dd(icon, title, items) { var b = btn(icon, title, function () { var r = b.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items()); }, null, true); return b; }
     btn('fit', 'Zoom to Fit (F)', UI.zoomToFit);
     btn('zoomArea', 'Zoom to Area', function () { App.zoomAreaMode = !App.zoomAreaMode; refreshHud(); }, function () { return App.zoomAreaMode; });
     btn('prevView', 'Previous View', UI.previousView);
     btn('section', 'Section View', UI.cmdSection, function () { return !!App.view.section; });
-    hud.appendChild(el('span', { class: 'sep' }));
+    // Anvil has no 3D annotation views yet: greyed, as SolidWorks shows a command that cannot run (a click says why)
+    var da = btn('annotations', 'Dynamic Annotation Views — Show annotations only in the view they belong to. Not available in this build yet', function () { toast('Dynamic Annotation Views is not available in this build yet.'); });
+    da.classList.add('off'); da.setAttribute('aria-disabled', 'true');
     var ob = btn('orient', 'View Orientation (Space)', function () { var r = ob.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, orientItems()); if (UI.showViewSelector) UI.showViewSelector(); }, null, true);   // r14/viewui14: with the View Selector
     dd('display', 'Display Style', function () { return [['shadedEdges', 'Shaded With Edges'], ['shaded', 'Shaded'], ['hlr', 'Hidden Lines Removed'], ['hlv', 'Hidden Lines Visible'], ['wireframe', 'Wireframe']].map(function (s) { return { label: s[1], checked: App.view.style === s[0], action: function () { setStyle(s[0]); } }; }); });
     dd('hideshow', 'Hide/Show Items', function () { return [
@@ -1478,11 +1527,16 @@
       { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } },
       { label: 'Snap to model', checked: App.view.snapModel !== false, action: function () { App.view.snapModel = App.view.snapModel === false; } }   // p9-modelsnap
     ]; });
-    hud.appendChild(el('span', { class: 'sep' }));
-    btn('appearance', 'Edit Appearance', function () { UI.openTaskPane('appearance'); });
+    dd('appearance', 'Edit Appearance', function () { return [{ label: 'Edit Appearance…', action: function () { UI.openTaskPane('appearance'); } }]; });
     dd('scene', 'Apply Scene', function () { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
-    btn('settings', 'View Settings', function () { UI.openTaskPane('props'); });
+    dd('settings', 'View Settings', function () { return [
+      { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
+      { sep: true },
+      { label: 'Light Theme', checked: !!UI.theme && UI.theme() === 'light', action: function () { UI.setTheme('light'); } },
+      { label: 'Dark Theme', checked: !!UI.theme && UI.theme() === 'dark', action: function () { UI.setTheme('dark'); } }
+    ]; });
   }
+  UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'View Settings'];
   // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
   // the heads-up button
   var lastPointer = null;

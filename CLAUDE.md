@@ -132,7 +132,7 @@ Anvil Foreman, https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav, is the user's 
 
 ## Interactive head rounds (cost rules, user 2026-10-13)
 
-When the user drives rounds from a chat ("continue, 4 agents on sketch"), follow `head/ROUND.md` and brief agents from `head/brief-template.md`; the merge / heartbeat helpers are in `head/`. Cache reads are most of the cost, and they scale with context size × steps, so: start every round from a fresh or compacted head session (ask the user to `/compact` after a round is pushed), keep briefs to the exact functions and files, have agents grep and read ranges instead of whole files, and keep each lane's tests in its own group file under `anvil/tests/smoke/` and `anvil/tests/kernel/` so nobody opens the full test pages.
+When the user drives rounds from a chat ("continue, 4 agents on sketch"), follow `head-tools/ROUND.md` and brief agents from `head-tools/brief-template.md`; the merge / heartbeat helpers are in `head-tools/`. Cache reads are most of the cost, and they scale with context size × steps, so: start every round from a fresh or compacted head session (ask the user to `/compact` after a round is pushed), keep briefs to the exact functions and files, have agents grep and read ranges instead of whole files, and keep each lane's tests in its own group file under `anvil/tests/smoke/` and `anvil/tests/kernel/` so nobody opens the full test pages.
 
 ## Coordinating with other sessions
 

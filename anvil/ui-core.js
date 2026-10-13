@@ -71,10 +71,19 @@ var UI = (function () {
   // r14/viewui14: SolidWorks-like studio lighting, all riding on the camera so the model reads the same from every
   // side: a sky / ground ambient, a key light from the upper left front, a softer fill from the lower right, and a rim
   // light from behind that brightens faces turning away from the viewer (silhouettes stand off the background).
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x8d96a1, 0.42));
-  var key = new THREE.DirectionalLight(0xffffff, 0.72); key.position.set(-0.45, 0.85, 1.3); camera.add(key);
-  var fill = new THREE.DirectionalLight(0xf2f6ff, 0.26); fill.position.set(1, -0.35, 0.7); camera.add(fill);
+  // rfBH: with the lights aimed (below), more sky and fill keep the side faces from going dark; no light sits on the
+  // view axis (its Blinn-Phong highlight whitens a face square to the view); intensities set so an
+  // isometric box reads top ~0.85, sides ~0.5-0.6 and a face square to the view ~0.76 of the part colour
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8d96a1, 0.7));
+  var key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-0.45, 0.85, 0.9); camera.add(key);
+  var fill = new THREE.DirectionalLight(0xf2f6ff, 0.35); fill.position.set(1, -0.35, 0.7); camera.add(fill);
   var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0.2, 0.5, -1); camera.add(rim);
+  // rfBH: the lights' targets ride on the camera too. A DirectionalLight aims at its target, which defaults to the world
+  // origin: with the light 10000 units out on the camera that made all three a headlight, so a face square to the view
+  // took key + fill + rim at once and washed out to white (a sketch plane's face seen Normal To). Aimed at the camera's
+  // own origin, the offsets above are the true directions in view space: a face square to the view reads light grey,
+  // the top of an isometric view lighter than its sides, as SolidWorks shades.
+  [key, fill, rim].forEach(function (l) { camera.add(l.target); l.target.position.set(0, 0, 0); });
 
   var groups = {
     body: new THREE.Group(), edges: new THREE.Group(), sketches: new THREE.Group(), temp: new THREE.Group(),
@@ -98,7 +107,7 @@ var UI = (function () {
     // the sketch being edited is drawn on top of the body so it stays visible on hidden planes
     sketch: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
     sketchDim: new THREE.LineBasicMaterial({ color: 0x8a94a3 }),
-    sketchSel: new THREE.LineBasicMaterial({ color: 0x1fa653, depthTest: false }),
+    sketchSel: new THREE.LineBasicMaterial({ color: 0x1e9cf0, depthTest: false }),   // rfBH: selected sketch entities light blue, as SolidWorks 2024 (was green 0x1fa653)
     // active-sketch entities by definition state (sketch-solver.js): under = mats.sketch (blue), fully defined, over
     // defined (redundant, yellow), conflict (red)
     sketchFull: new THREE.LineBasicMaterial({ color: 0x15181d, depthTest: false }),
@@ -122,8 +131,8 @@ var UI = (function () {
   // dark theme swaps them here. `light` is exactly the set of colours the materials are created with.
   // The HLR body colour follows the theme too: it exists to occlude hidden lines, so it must read as "background".
   var THEME_COLORS = {
-    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d, sketch: 0x1f5fd0, temp: 0x1f5fd0, sketchSel: 0x1fa653 },
-    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5, sketch: 0x6fa8ea, temp: 0x6fa8ea, sketchSel: 0x5cc46a }   // rfC: under-defined blue and the selection green readable on dark grounds
+    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d, sketch: 0x1f5fd0, temp: 0x1f5fd0, sketchSel: 0x1e9cf0 },
+    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5, sketch: 0x6fa8ea, temp: 0x6fa8ea, sketchSel: 0x7cc8ff }   // rfC: under-defined blue and the selection green readable on dark grounds
   };
   var viewportTheme = 'light';
   // r14/viewui14: the line palette follows what the lines are drawn over. The dark palette applies with the dark theme or

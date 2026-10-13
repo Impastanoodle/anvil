@@ -818,6 +818,7 @@
     D.formatEdit = !!on;
     if (D.formatEdit) App.ribbonTab = 'Sheet Format';
     UI.refreshRibbon(); UI.renderMenuBar(); drawOverlay(); renderTree();
+    if (DW.renderStatus) DW.renderStatus();
     UI.setStatus(D.formatEdit ? 'Edit Sheet Format: drag a border / title block line or text to move it, Delete removes it, Line and Note add to the format; right-click ▸ Edit Sheet goes back to the sheet.' : 'Editing ' + doc().sheet.name + '.');
     return D.formatEdit;
   }

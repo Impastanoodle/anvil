@@ -195,11 +195,17 @@
       try { focus.s = a.selectionStart; focus.e = a.selectionEnd; } catch (er) { }
     }
     root.innerHTML = '';
-    root.appendChild(el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' }));
+    // rfBG: SolidWorks 2024's title row: the command's icon and name, the round Help (?) button at its right (the "?"
+    // is drawn by the stylesheet, so the head's text stays the title alone)
+    var head = el('div', { class: 'pm-head', html: Icons(spec.icon || 'generic', 20) + '<span>' + spec.title + '</span>' });
+    head.appendChild(el('button', { class: 'pm-help', title: 'Help', 'aria-label': 'Help', onclick: function () { var sm = document.getElementById('status-msg'); UI.toast(spec.help || (spec.title + ': ' + (sm && sm.textContent && sm.textContent !== 'Ready' ? sm.textContent : 'fill the boxes below, then ✓ (Enter) to accept or ✗ (Esc) to cancel.'))); } }));
+    root.appendChild(head);
     var actions = el('div', { class: 'pm-actions' });
     actions.appendChild(el('button', { title: 'OK (Enter)', class: 'pm-ok', html: Icons('ok', 20), onclick: pmOK }));
     actions.appendChild(el('button', { title: 'Cancel (Esc)', class: 'pm-cancel', html: Icons('cancel', 18), onclick: pmCancel }));
     if (spec.extraActions) spec.extraActions.forEach(function (a) { actions.appendChild(el('button', { title: a.title, html: Icons(a.icon, 20), onclick: a.onclick })); });
+    // rfBG: a PropertyManager that stays open after ✓ (Mate, Insert Component) shows SolidWorks' pressed Keep Visible pin
+    if (spec.keepVisible) actions.appendChild(el('button', { class: 'pm-pin on', title: 'Keep Visible: this PropertyManager stays open after ✓ for the next one; ✗ (Esc) closes it', 'aria-pressed': 'true', html: Icons('fix', 16) }));
     root.appendChild(actions);
     // rfC: the Message box (SolidWorks' yellow Message group; its title is drawn by the stylesheet, so the text read
     // from .pm-msg is the message alone)
@@ -3329,7 +3335,7 @@
       });
     }
     openPM({
-      title: existing ? existing.name : 'Mate', icon: 'mate', values: v,
+      title: existing ? existing.name : 'Mate', icon: 'mate', values: v, keepVisible: !existing,   // rfBG: the pin (a new mate's PM stays open)
       // r9/polish9: a new mate starts with picks, not with the cursor in the Offset box (typed digits went there);
       // Enter still accepts (ui-app.js)
       noFocus: !existing,

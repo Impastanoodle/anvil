@@ -388,7 +388,7 @@
     'kernel/rfBA.js',
     'kernel/rfBC.js',
     'kernel/rfAY.js',
-    'kernel/rfAZ.js'
+    'kernel/rfAZ.js',   // keep a comma after every entry: lanes append lines here without touching the one above
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

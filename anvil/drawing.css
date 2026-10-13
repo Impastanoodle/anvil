@@ -1,26 +1,59 @@
 /* drawing.css — the drawing document (drawing.js): sheet area over the viewport, sheet tabs, drawing FeatureManager.
    Colours come from style.css variables so both themes work; the sheet itself stays paper-white. */
-:root { --dw-desk: #8f99a5; --dw-hot: #1f6fc5; --dw-ghost: #3fa34d; }
-:root[data-theme="dark"] { --dw-desk: #3a414b; --dw-hot: #6fa8ea; --dw-ghost: #62c173; }
+/* (rfBI) SolidWorks 2024 look: a neutral grey desk round a white sheet with a shadow down and to the right; the
+   on-screen colours are SolidWorks' defaults and do not change with the theme, since they sit on the white paper:
+   selection blue, pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
+   on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
+:root { --dw-desk: #b9bec5; --dw-hot: #0f6fd8; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
+  --dw-tabbar: #d6d9de; --dw-tab: #e4e6ea; --dw-tab-on: #ffffff; --dw-tab-line: #aeb3ba; --dw-tab-text: #1f1f1f; }
+:root[data-theme="dark"] { --dw-desk: #34383e;
+  --dw-tabbar: #2a2d32; --dw-tab: #33373d; --dw-tab-on: #464b53; --dw-tab-line: #50565f; --dw-tab-text: #e6e9ee; }
 
 #drawing-doc { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--dw-desk); }
 #drawing-doc[hidden] { display: none; }
 #drawing-sheet { flex: 1; min-height: 0; overflow: hidden; cursor: default; user-select: none; }
 #drawing-sheet svg { display: block; }
-#drawing-sheet .sheet-bg { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35)); }
-#drawing-tabs { flex: none; display: flex; align-items: stretch; gap: 2px; height: 24px; padding: 0 6px; background: var(--panel); border-top: 1px solid var(--line); }
-#drawing-tabs .dw-tab { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-top: none; background: var(--btn-face); color: var(--text); font: inherit; font-size: 12px; padding: 0 10px; cursor: pointer; }
-#drawing-tabs .dw-tab.active { background: var(--panel); font-weight: 600; }
+/* (the shadow's size follows the zoom: drawing-ui.js strokeFloor writes it in the sheet's units) */
+#drawing-sheet .sheet-bg { filter: none; }
+/* the sheet tabs along the bottom, as SolidWorks draws them: the four scroll arrows, flat tabs on the chrome grey with a
+   hairline between them, the active sheet white and open to the sheet area above, the Add Sheet tab after the last */
+#drawing-tabs { flex: none; display: flex; align-items: stretch; gap: 0; height: 24px; padding: 0 4px 0 2px; background: var(--dw-tabbar); border-top: 1px solid var(--dw-tab-line); font-family: "Segoe UI", system-ui, sans-serif; }
+#drawing-tabs .dw-tab { display: flex; align-items: center; gap: 4px; margin-top: -1px; border: 1px solid var(--dw-tab-line); border-left: none; background: var(--dw-tab); color: var(--dw-tab-text); font: inherit; font-size: 12px; padding: 0 12px; cursor: pointer; border-radius: 0; }
+#drawing-tabs .dw-tab-nav + .dw-tab, #drawing-tabs .dw-sp + .dw-tab { border-left: 1px solid var(--dw-tab-line); }
+#drawing-tabs .dw-tab:hover { background: var(--dw-tab-on); }
+#drawing-tabs .dw-tab.active { background: var(--dw-tab-on); border-top-color: var(--dw-tab-on); font-weight: 400; }
+#drawing-tabs .dw-tab:focus-visible, #drawing-tabs .dw-nav:focus-visible { outline: 1px dotted var(--dw-tab-text); outline-offset: -3px; }
 #drawing-tabs .dw-sp { flex: 1; }
+#drawing-tabs .dw-tab-nav { display: flex; align-items: center; margin-right: 4px; }
+#drawing-tabs .dw-nav { width: 16px; height: 18px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--dw-tab-text); cursor: pointer; border-radius: 2px; }
+#drawing-tabs .dw-nav:hover:not(:disabled) { background: var(--dw-tab-on); }
+#drawing-tabs .dw-nav:disabled { opacity: 0.35; cursor: default; }
+/* the status bar while a drawing is open: Editing Sheet1 | 1 : 2 | MMGS (drawing-ui.js renderStatus) in place of the
+   part's items, which come back as the drawing closes */
+#dw-status { display: none; }
+#app.drawing-mode #dw-status { display: flex; flex: none; gap: 14px; }
+#app.drawing-mode #dw-status span { padding-left: 14px; border-left: 1px solid var(--line); }
+#app.drawing-mode #status-right { display: none; }
 
 /* overlay drawn into the sheet SVG: view frames, dimension frames, the entity under the Smart Dimension cursor */
 /* hit testing is geometric (drawing.js): the overlay, redrawn on every mousedown, must not take the pointer, or the
    second click of a double-click lands on a node that is already gone and no dblclick fires */
 #dw-overlay { pointer-events: none; }
-#dw-overlay .dw-vbox { fill: none; stroke: var(--dw-hot); opacity: 0.55; }
-#dw-overlay .dw-vbox.sel { opacity: 1; }
-#dw-overlay .dw-dbox { fill: var(--dw-hot); fill-opacity: 0.08; stroke: var(--dw-hot); opacity: 0.6; }
-#dw-overlay .dw-dbox.sel { opacity: 1; fill-opacity: 0.16; }
+/* (rfBI) a view's frame: dashed, orange under the pointer, blue when selected (SolidWorks); a note's, a symbol's or an
+   annotation's frame the same colours, thin, nearly clear */
+#dw-overlay .dw-vbox { fill: none; stroke: var(--dw-hot); }
+#dw-overlay .dw-vbox.pre { stroke: var(--dw-pre); }
+#dw-overlay .dw-dbox { fill: var(--dw-hot); fill-opacity: 0.05; stroke: var(--dw-hot); opacity: 0.9; }
+#dw-overlay .dw-dbox.pre { fill: var(--dw-pre); stroke: var(--dw-pre); }
+#dw-overlay .dw-dbox.sel { opacity: 1; fill-opacity: 0.08; }
+/* (rfBI) a dimension coloured in place (drawing-ui.js tintDims): lines and arcs by their stroke, arrowheads and text
+   (stroke="none") by their fill */
+#drawing-sheet svg [data-tint="ref"]:not([stroke="none"]) { stroke: var(--dw-ref); }
+#drawing-sheet svg [data-tint="ref"][stroke="none"] { fill: var(--dw-ref); }
+#drawing-sheet svg [data-tint="pre"]:not([stroke="none"]) { stroke: var(--dw-pre); }
+#drawing-sheet svg [data-tint="pre"][stroke="none"] { fill: var(--dw-pre); }
+#drawing-sheet svg [data-tint="sel"]:not([stroke="none"]) { stroke: var(--dw-hot); }
+#drawing-sheet svg [data-tint="sel"][stroke="none"] { fill: var(--dw-hot); }
 #dw-overlay .dw-hot { fill: none; stroke: var(--dw-hot); stroke-linecap: round; }
 #dw-overlay .dw-ghost { fill: var(--dw-ghost); fill-opacity: 0.08; stroke: var(--dw-ghost); }
 
@@ -46,7 +79,6 @@
 .dw-props .dw-opt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
 .dw-docprops input[type=number] { width: 80px; }
 /* r3/drawings3: pre-highlight under the cursor with no tool running (SolidWorks orange), a dragged item's cursor */
-:root { --dw-pre: #f08a24; }
 #dw-overlay .dw-hot.pre { stroke: var(--dw-pre); }
 #drawing-sheet.dw-dragging { cursor: move; }
 #drawing-sheet.dw-panning { cursor: grabbing; }

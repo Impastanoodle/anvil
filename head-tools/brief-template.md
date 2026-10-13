@@ -26,7 +26,8 @@ anything or use git / GitHub credentials. Use headless Chrome for checks (the br
   and the runner; read the helpers you use and your own group files, nothing else in tests/.
 - Chain shell commands into one Bash call where you can; do not re-run a full suite to check a one-line change
   (use `?only=<rfXX>` and the kernel tests).
-- Stop at the time box and report what is left.
+- The time box is a guide, not a stop: finish every task in the brief before reporting (the user, 2026-10-13); stop early
+  only when truly blocked, and say what blocks you.
 
 ## Tests
 - Group `<rfXX>` (self-contained; helpers prefixed `<rfXX>`; escape apostrophes in step titles; reset any setting you

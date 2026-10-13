@@ -189,6 +189,68 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 .rtab:hover { color: var(--text); }
 .rtab.active { background: var(--panel); border-color: var(--line); color: var(--text); font-weight: 600; margin-bottom: -1px; }
 
+/* ---- rfBF: menu bar, quick-access toolbar and CommandManager in the SolidWorks 2024 look -------------------------
+   Light-grey chrome: the menu bar and the CommandManager share one grey, the tab strip under the buttons is a shade
+   darker and the active tab is raised white, joined to the buttons above it. Hover is a light blue frame, a toggled
+   command (Exit Sketch, Instant2D, a running sketch tool) is pressed in grey. Selectors carry #menubar / #ribbon so
+   they win over the older ribbon rules further down without moving them; sizes are unchanged (ribbon height, button
+   widths), only colours, borders and shadows. */
+:root {
+  --cm-bg: #f0f0f0; --cm-bar: #f0f0f0; --cm-strip: #dadada; --cm-tab: #fbfbfb; --cm-line: #c3c3c3; --cm-line-2: #d4d4d4;
+  --cm-text: #1e1e1e; --cm-muted: #5f6368; --cm-ink: #3a3f45;
+  --cm-hover: #e2ecf7; --cm-hover-line: #9fbfe2; --cm-press: #c9ced5; --cm-press-line: #8e97a3; --cm-down: #d3dfed;
+}
+:root[data-theme="dark"] {
+  --cm-bg: #2e3239; --cm-bar: #2a2e34; --cm-strip: #23262c; --cm-tab: #3a3f48; --cm-line: #474d57; --cm-line-2: #3d434c;
+  --cm-text: #e6e9ee; --cm-muted: #a3acb7; --cm-ink: #d0d7df;
+  --cm-hover: #34404f; --cm-hover-line: #557aa5; --cm-press: #4a525d; --cm-press-line: #79838f; --cm-down: #3d4a5c;
+}
+#menubar { background: var(--cm-bar); border-bottom-color: var(--cm-line-2); color: var(--cm-text); }
+#menubar #brand { color: var(--logo); font-weight: 700; font-style: italic; letter-spacing: 0.02em; }
+#menubar #menus > li { color: var(--cm-text); }
+#menubar #menus > li:hover, #menubar #menus > li.open { background: var(--cm-hover); box-shadow: inset 0 0 0 1px var(--cm-hover-line); }
+#menubar #doc-title { text-align: right; padding: 0 14px 0 8px; color: var(--cm-text); }
+#menubar #search { border-color: var(--cm-line); border-radius: 2px; }
+/* the quick-access toolbar: 20 px icons on flat buttons, thin separators between the groups */
+#menubar #std-toolbar { gap: 0; margin-left: 6px; padding: 0 4px; border-left: 1px solid var(--cm-line-2); border-right: 1px solid var(--cm-line-2); }
+#menubar .std-btn { width: 26px; height: 24px; border-radius: 2px; color: var(--cm-ink); }
+#menubar .std-btn .ico { width: 20px; height: 20px; color: var(--cm-ink); }
+#menubar .std-btn:hover:not(:disabled) { background: var(--cm-hover); border-color: var(--cm-hover-line); }
+#menubar .std-btn:active:not(:disabled) { background: var(--cm-down); }
+#menubar .std-btn:disabled { opacity: 0.4; }
+#menubar .std-sep { width: 1px; height: 16px; margin: 0 3px; background: var(--cm-line); flex: none; }
+/* a narrow window keeps only Undo / Redo of the quick-access toolbar (below 560 px the whole toolbar goes, further down) */
+@media (max-width: 960px) { #menubar #std-toolbar .std-btn:not(#std-undo):not(#std-redo), #menubar #std-toolbar .std-sep { display: none; } }
+/* CommandManager */
+#ribbon { background: var(--cm-bg); border-bottom-color: var(--cm-line); }
+#ribbon .ico { color: var(--cm-ink); }
+#ribbon .rb span { color: var(--cm-text); }
+#ribbon .rb { border-radius: 2px; }
+#ribbon .rb:hover:not(:disabled) { background: var(--cm-hover); border-color: var(--cm-hover-line); }
+#ribbon .rb:active:not(:disabled) { background: var(--cm-down); }
+#ribbon .rb.active, #ribbon .rb.active:hover { background: var(--cm-press); border-color: var(--cm-press-line); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16); }
+#ribbon .rb:disabled { opacity: 0.4; }
+#ribbon .rb:disabled:hover { background: none; border-color: transparent; }
+#ribbon .rb-sep { background: var(--cm-line); margin: 3px 3px 5px; }
+#ribbon .rb-fly { border-radius: 2px; }
+#ribbon .rb-fly:hover, #ribbon .rb-fly.open { border-color: var(--cm-hover-line); background: var(--cm-hover); }
+#ribbon .rb-fly > .rb:hover:not(:disabled) { border-color: transparent; }
+#ribbon .rb-fly:has(> .rb.active) { border-color: var(--cm-press-line); }
+#ribbon .rb-fly > .rb.active { box-shadow: none; }
+#ribbon .rb-caret { color: var(--cm-ink); }
+#ribbon .rb-caret:hover:not(:disabled) { background: var(--cm-down); color: var(--cm-text); box-shadow: inset 1px 0 0 var(--cm-hover-line); }
+#ribbon .rb-fly.open .rb-caret { background: var(--cm-press); }
+#ribbon .rb-more { color: var(--cm-ink); }
+#ribbon .rb-more:hover, #ribbon .rb-more.open { background: var(--cm-hover); border-color: var(--cm-hover-line); }
+/* the tab strip under the buttons: grey tabs split by thin lines, the active one raised white and joined to the
+   CommandManager (the strip's top line is a shadow, which the active tab paints over) */
+#ribbon #ribbon-tabs { background: var(--cm-strip); border-top: 0; box-shadow: inset 0 1px 0 var(--cm-line); padding: 0 6px 0 2px; align-items: stretch; }
+#ribbon .rtab { height: 22px; padding: 2px 9px 0; border: 0; border-right: 1px solid var(--cm-line); border-radius: 0; color: var(--cm-text); font-size: 12px; font-weight: 400; background: transparent; margin: 0; }
+#ribbon .rtab:first-child { border-left: 1px solid var(--cm-line); }
+#ribbon .rtab:not(.active):not(.off):hover { background: var(--cm-hover); }
+#ribbon .rtab.active { background: var(--cm-tab); color: var(--cm-text); font-weight: 600; border-top: 0; padding-top: 2px; box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.22); position: relative; z-index: 1; }
+#ribbon .rtab.off { color: var(--cm-muted); }
+
 /* ---------------------------------------------------------------- main layout */
 #main { display: grid; grid-template-columns: var(--fm-w, 296px) minmax(0, 1fr) auto; min-height: 0; }
 #left { position: relative; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
@@ -301,22 +363,34 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--viewport); cursor: default; }
 #viewport.bg-white, #viewport.bg-plain { background: var(--viewport-white); }
 #viewport.bg-dark { background: var(--viewport-dark); }
+/* rfBH: SolidWorks 2024's default scene — a soft light blue at the top fading to white by the lower third (UI.SCENE_GRADIENT) */
+#viewport { --viewport: linear-gradient(180deg, #c3d3e8 0%, #dce6f2 32%, #f4f7fb 62%, #ffffff 100%); }
+html[data-theme="dark"] #viewport { --viewport: linear-gradient(180deg, #3a4250 0%, #282d35 45%, #1d2026 100%); }
 #viewport canvas.gl { display: block; position: absolute; inset: 0; }
+/* rfBH: SolidWorks 2024's Heads-up View toolbar — a transparent strip centred along the top of the graphics area, small
+   icons, a drop-down's caret beside its icon, no separators; a button shows a frame only under the mouse or when on */
 #hud {
-  position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 2px; padding: 2px 4px;
-  background: var(--overlay); border: 1px solid var(--line); border-radius: 3px; backdrop-filter: blur(4px);
+  position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 1px; padding: 1px 2px;
+  background: transparent; border: 1px solid transparent; border-radius: 3px;
   z-index: 3;
 }
-#hud button { width: 30px; height: 28px; display: grid; place-items: center; border-radius: 3px; border: 1px solid transparent; }
-#hud button:hover { background: var(--hover); border-color: var(--blue-line); }
-#hud button.active { background: var(--sel); border-color: var(--blue); }
-#hud .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
+#hud button { height: 26px; min-width: 26px; padding: 0 2px; display: inline-flex; align-items: center; justify-content: center; gap: 0; border-radius: 2px; border: 1px solid transparent; background: transparent; color: var(--text); }
+#hud button.hud-dd { padding: 0 1px 0 3px; }
+#hud button svg { width: 20px; height: 20px; flex: none; }
+#hud button:hover { background: var(--hud-hover); border-color: var(--hud-hover-line); }
+#hud button.active { background: var(--hud-on); border-color: var(--hud-on-line); }
+#hud button.off { opacity: 0.45; }
+#hud button.off:hover { background: transparent; border-color: transparent; }
+#hud .sep { width: 1px; height: 18px; background: var(--line); margin: 0 3px; }
 #hud .dd { position: relative; }
-#hud .caret { font-size: 8px; color: var(--muted); margin-left: -3px; }
+#hud .caret { font-size: 9px; line-height: 1; color: var(--muted); margin-left: 1px; width: 7px; text-align: center; }
+#viewport { --hud-hover: rgba(255,255,255,0.75); --hud-hover-line: #9cc2ea; --hud-on: rgba(196,222,248,0.85); --hud-on-line: #3d8bdb; }
+#viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.12); --hud-hover-line: #4b6b8f; --hud-on: rgba(61,139,219,0.3); --hud-on-line: #5a9be6; }
+#viewport.bg-dark #hud button { color: #e6e8eb; }
 #triad { position: absolute; left: 6px; bottom: 6px; width: 96px; height: 96px; z-index: 2; }
 /* r15/scalebar15: the scale bar at the bottom right: a 100 px bar labelled with its length in model units at the current zoom */
-#scale-bar { position: absolute; right: 12px; bottom: 10px; width: 100px; z-index: 2; pointer-events: none; color: var(--text); font: 600 11px/1.2 "Segoe UI", system-ui, sans-serif; text-align: center; letter-spacing: 0.01em; }
+#scale-bar { position: absolute; right: 12px; bottom: 10px; width: 100px; z-index: 2; pointer-events: none; color: var(--text); font: 400 11px/1.2 "Segoe UI", system-ui, sans-serif; text-align: center; letter-spacing: 0.01em; }
 #scale-bar-label { display: block; margin-bottom: 1px; white-space: nowrap; }
 #scale-bar-line { position: relative; height: 9px; border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor; }
 #scale-bar-line::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid currentColor; }
@@ -331,11 +405,11 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #dim-layer line, #dim-layer polyline, #dim-layer path.dl { stroke: var(--dim-ink); stroke-width: 1; fill: none; }
 #dim-layer polygon, #dim-layer path.da { fill: var(--dim-ink); stroke: none; }
 /* r14/sketchui14: SolidWorks ANSI dimension text (Century Gothic, as on drawing sheets), black when driving, grey when driven */
-#dim-layer text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: var(--dim-text); paint-order: stroke; stroke: var(--dim-halo); stroke-width: 2.5px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }
+#dim-layer text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: var(--dim-text); paint-order: stroke; stroke: var(--dim-halo); stroke-width: var(--dim-halo-w, 2.5px); stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }
 #dim-layer text:hover { fill: var(--blue); }
-#dim-layer .sel line, #dim-layer .sel polyline, #dim-layer .sel .dl { stroke: var(--green); stroke-width: 1.4; }
-#dim-layer .sel polygon, #dim-layer .sel .da { fill: var(--green); }
-#dim-layer .sel text { fill: var(--green); }
+#dim-layer .sel line, #dim-layer .sel polyline, #dim-layer .sel .dl { stroke: var(--sk-sel, var(--green)); stroke-width: 1.4; }
+#dim-layer .sel polygon, #dim-layer .sel .da { fill: var(--sk-sel, var(--green)); }
+#dim-layer .sel text { fill: var(--sk-sel, var(--green)); }
 #dim-layer .temp line, #dim-layer .temp polyline, #dim-layer .temp .dl { stroke: var(--blue); stroke-dasharray: 4 3; }
 #dim-layer .temp polygon, #dim-layer .temp .da { fill: var(--blue); }
 #dim-layer .temp text { fill: var(--blue); pointer-events: none; }
@@ -408,6 +482,15 @@ html[data-theme="dark"] #dim-layer .rel-badge.conflict { color: #ff8a84; } html[
 html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #33465c; } html[data-theme="dark"] #dim-edit .dm-btns button:hover { border-color: #4b6b8f; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
+/* rfBH: the sketch hint as SolidWorks' status prompts read: plain small text on a faint ground, no frame */
+#sketch-hint { background: rgba(255,255,255,0.62); border-color: transparent; border-radius: 2px; padding: 3px 7px; font-size: 12px; color: #4a525c; box-shadow: none; }
+html[data-theme="dark"] #sketch-hint, #viewport.bg-dark #sketch-hint { background: rgba(30,34,40,0.62); color: #b4bcc6; }
+html[data-theme="dark"] #sketch-hint b, #viewport.bg-dark #sketch-hint b { color: #e6e9ee; }
+/* rfBH: sketch colours in the graphics area, as SolidWorks 2024: selection light blue (entities: mats.sketchSel in
+   ui-core.js), dimension text black with no halo (driven grey, above), inference lines dotted blue (a guide) or orange
+   (the click adds the relation) */
+#viewport { --sk-sel: #1e9cf0; --sk-infer: #2f7fd6; --sk-infer-rel: #e8891c; --dim-halo-w: 0px; }
+html[data-theme="dark"] #viewport, #viewport.bg-dark { --sk-sel: #7cc8ff; --sk-infer: #6fa8ea; --sk-infer-rel: #ffa94d; --dim-halo-w: 2.5px; }
 #exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: row; gap: 2px; padding: 2px; border-radius: 4px; background: var(--overlay-2); border: 1px solid var(--line); box-shadow: 0 1px 4px var(--shadow); }   /* r5/sketch5: the confirmation corner, side by side */
 #statusbar { white-space: nowrap; overflow: hidden; }
 #exit-sketch button { width: 36px; height: 36px; border-radius: 3px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; cursor: pointer; }
@@ -1018,3 +1101,191 @@ body.splitting #viewport { pointer-events: none; }
 #i2d-layer .i2d-tick.hit { stroke: #ff8c1a; stroke-width: 2.5; }
 #i2d-layer text { font: 10.5px "Segoe UI", Arial, sans-serif; fill: var(--blue, #1f6fc5); paint-order: stroke; stroke: var(--dim-halo, #fff); stroke-width: 2.5px; stroke-linejoin: round; user-select: none; }
 .rb.rb-wide { width: 84px; }   /* a large button whose label needs two longer lines (Shaded Sketch Contours) */
+
+/* ---- rfBG: FeatureManager, PropertyManager, Task Pane, status bar, menus, dialogs and toasts in the SolidWorks 2024
+   look. Neutral grey chrome around white panels, Windows 11 selection blue, Segoe UI 9 pt, an 8 px rhythm. Only the
+   lane's own colour variables are added here (--sw-*), so the ribbon and viewport passes keep theirs. */
+:root {
+  --sw-chrome: #e9ebee;          /* tab strips, the Task Pane strip, the status bar */
+  --sw-chrome-line: #c9ced5;
+  --sw-panel: #fbfbfc;           /* the FeatureManager / PropertyManager ground */
+  --sw-row-hover: #e5f1fb;
+  --sw-row-sel: #cce4f7;
+  --sw-row-sel-line: #99c9ef;
+  --sw-twisty: #7b8189;
+  --sw-group-head: linear-gradient(#f7f8fa, #e7eaee);
+  --sw-group-line: #c4cad2;
+  --sw-group-text: #1f2329;
+  --sw-group-body: #ffffff;
+  --sw-pick: #dde9f7;
+  --sw-pick-line: #9fbfe3;
+  --sw-pick-active: #fcd6ea;
+  --sw-pick-active-line: #d6489a;
+  --sw-msg-bg: #fffbe0;
+  --sw-msg-head: #f8eeb0;
+  --sw-msg-line: #e0cd78;
+  --sw-help: #1f6fc5;
+  --sw-rollbar: linear-gradient(#5c97d6, #2f6db3);
+  --sw-dlg-bg: #f3f3f3;
+  --sw-btn: #fdfdfd;
+  --sw-btn-line: #c8c8c8;
+  --sw-btn-hover: #f5f9fd;
+  --sw-default: #005fb8;
+  --sw-default-hover: #1a6fc0;
+  --sw-toast: #2f333a;
+  --sw-toast-text: #ffffff;
+  --sw-menu-gutter: #f3f4f6;
+}
+:root[data-theme="dark"] {
+  --sw-chrome: #23272d;
+  --sw-chrome-line: #3a404a;
+  --sw-panel: #2b2f36;
+  --sw-row-hover: #363c47;
+  --sw-row-sel: #2f4a6b;
+  --sw-row-sel-line: #4a6b95;
+  --sw-twisty: #9aa4b0;
+  --sw-group-head: linear-gradient(#383e48, #30353e);
+  --sw-group-line: #4a515c;
+  --sw-group-text: #e6e9ee;
+  --sw-group-body: #2f343b;
+  --sw-pick: #2a3542;
+  --sw-pick-line: #4a6b95;
+  --sw-pick-active: #4a2a3d;
+  --sw-pick-active-line: #e06aae;
+  --sw-msg-bg: #3b3520;
+  --sw-msg-head: #4d4322;
+  --sw-msg-line: #6b5a1e;
+  --sw-help: #79b0ea;
+  --sw-rollbar: linear-gradient(#6fa8ea, #3f78bb);
+  --sw-dlg-bg: #262a30;
+  --sw-btn: #353a42;
+  --sw-btn-line: #4f5662;
+  --sw-btn-hover: #3d4450;
+  --sw-default: #3d8be0;
+  --sw-default-hover: #5b9be0;
+  --sw-toast: #e6e9ee;
+  --sw-toast-text: #23272d;
+  --sw-menu-gutter: #30353d;
+}
+
+/* FeatureManager: folder tabs on a grey strip, the active tab joined to the panel below it */
+#left { background: var(--sw-panel); border-right-color: var(--sw-chrome-line); }
+#fm-tabs { height: 28px; align-items: flex-end; gap: 1px; padding: 0 4px; background: var(--sw-chrome); border-bottom: 1px solid var(--sw-chrome-line); }
+#fm-tabs button { width: 30px; height: 24px; padding: 0; display: grid; place-items: center; border: 1px solid transparent; border-bottom: 0; border-radius: 3px 3px 0 0; margin-bottom: -1px; }
+#fm-tabs button:hover { background: var(--sw-row-hover); border-color: var(--sw-row-sel-line); }
+#fm-tabs button.active { height: 25px; background: var(--sw-panel); border-color: var(--sw-chrome-line); border-bottom: 1px solid var(--sw-panel); }
+#fm-tabs button:not(.active) .ico { opacity: 0.8; }
+/* the filter box at the top of the tree: a funnel and a plain field */
+#tree-filter { gap: 6px; height: 30px; padding: 4px 8px; border-bottom: 1px solid var(--line-2); background: var(--sw-panel); }
+#tree-filter #filter-ico { display: inline-flex; color: var(--muted); }
+#tree-filter input { height: 21px; border-color: var(--sw-chrome-line); border-radius: 3px; padding: 0 6px; }
+#tree-filter input:hover { border-color: var(--sw-row-sel-line); }
+#tree-filter input:focus { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue-soft); outline: none; }
+#tree { background: var(--sw-panel); padding: 4px 0 24px; }
+/* tree rows: 21 px, a small grey twisty, Windows 11 hover / selection (fill and a hairline frame) */
+#tree .ti { gap: 4px; border-radius: 2px; margin: 0 4px 0 2px; }
+#tree .ti:hover { background: var(--sw-row-hover); }
+#tree .ti.selected, #tree .ti.selected.hover-sync { background: var(--sw-row-sel); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line); }
+#tree .ti.hover-sync { background: var(--sw-row-hover); }
+.ti .tw { width: 12px; font-size: 10px; line-height: 1; color: var(--sw-twisty); }
+.ti .tw:not(.leaf):hover { color: var(--blue); }
+.ti .nm { padding: 1px 2px; }
+/* states: suppressed (grey icon and name), rolled back (faded), error (red name), warning (amber name) */
+#tree .ti.suppressed .nm, #tree .ti.rolled .nm { color: var(--muted); }
+#tree .ti.suppressed .ico { filter: grayscale(1); opacity: 0.5; }
+#tree .ti.err .nm { color: var(--red); }
+#tree .ti.warn .nm { color: var(--warn-text); }
+#tree .ti .badge { font-size: 10.5px; padding-left: 8px; }
+/* a sketch's definition prefix: (-) in the text colour as SolidWorks shows it, (+) over defined red, (?) amber */
+.ti .ti-pfx.under { color: inherit; }
+.ti .ti-pfx.over { color: var(--red); font-weight: 600; }
+.ti .ti-pfx.conflict { color: var(--warn-text); font-weight: 600; }
+/* the rollback bar: a short blue bar under the last feature (above the first rolled-back one while editing) */
+#tree .rollbar { position: relative; height: 9px; margin: 1px 8px 0 22px; }
+#tree .rollbar::before { content: ''; position: absolute; left: 0; right: 0; top: 3px; height: 3px; border-radius: 2px; background: var(--sw-rollbar); box-shadow: 0 1px 0 rgba(0,0,0,0.12); }
+
+/* PropertyManager: title row with Help, the ✓ ✗ (pin) row, grey-banded group boxes on a light ground */
+#pm { background: var(--sw-panel); }
+.pm-head { gap: 8px; height: 32px; padding: 0 6px 0 8px; font-size: 13px; font-weight: 600; background: var(--sw-panel); }
+.pm-head > span { flex: 1; }
+.pm-head .pm-help { flex: none; position: relative; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--sw-help); color: var(--sw-help); background: transparent; font-size: 0; }
+.pm-head .pm-help::before { content: '?'; position: absolute; inset: 0; display: grid; place-items: center; font: 700 12px/1 var(--font); }
+.pm-head .pm-help:hover { background: var(--sw-help); color: var(--sw-panel); }
+.pm-actions { gap: 2px; padding: 0 6px 6px; align-items: center; border-bottom: 1px solid var(--line-2); }
+.pm-actions button { width: 32px; height: 28px; border: 1px solid transparent; border-radius: 3px; background: transparent; }
+.pm-actions button:hover { background: var(--sw-row-hover); border-color: var(--sw-row-sel-line); }
+.pm-actions button:active { background: var(--sw-row-sel); }
+.pm-actions .pm-pin { margin-left: auto; width: 26px; height: 24px; cursor: default; }
+.pm-actions .pm-pin.on { background: var(--sw-row-sel); border-color: var(--sw-row-sel-line); }
+/* the yellow Message box */
+.pm-msg { margin: 8px 6px 0; padding: 0 8px 6px; background: var(--sw-msg-bg); border: 1px solid var(--sw-msg-line); border-radius: 3px; color: var(--msg-text); }
+.pm-msg::before { height: 24px; line-height: 24px; background: var(--sw-msg-head); border-bottom-color: var(--sw-msg-line); }
+/* group boxes: 8 px apart, a light frame, a grey title band with the round chevron at its right */
+.pm-group { margin: 8px 6px 0; border: 1px solid var(--sw-group-line); border-radius: 3px; background: var(--sw-group-body); }
+.pm-group > h4 { height: 24px; padding: 0 5px 0 8px; background: var(--sw-group-head); border-bottom: 1px solid var(--sw-group-line); color: var(--sw-group-text); font-size: 12px; font-weight: 600; }
+.pm-group > h4:hover { filter: none; }
+.pm-group > h4:hover .pm-gt { color: var(--blue); }
+.pm-group > h4 .tw { border-color: var(--sw-group-line); background: var(--sw-group-body); }
+.pm-group > h4:hover .tw { border-color: var(--blue); color: var(--blue); }
+.pm-group.collapsed > h4 { border-bottom: 0; }
+.pm-group.pm-group-msg { border-color: var(--sw-msg-line); }
+.pm-group.pm-group-msg > h4 { background: var(--sw-msg-head); border-bottom-color: var(--sw-msg-line); color: var(--text); }
+.pm-group.pm-group-msg .pm-fields { background: var(--sw-msg-bg); }
+.pm-fields { padding: 8px; gap: 6px; }
+/* selection boxes: pale blue list boxes, the active one (where graphics-area picks go) pink with a magenta frame */
+.pm-pick { background: var(--sw-pick); border-color: var(--sw-pick-line); border-radius: 2px; }
+.pm-pick.filled { background: var(--sw-pick); color: var(--text); }
+.pm-pick.active { background: var(--sw-pick-active); border-color: var(--sw-pick-active-line); box-shadow: inset 0 0 0 1px var(--sw-pick-active-line); }
+#pm .pm-pickwrap.has-list > .pm-list { border-color: var(--sw-pick-line); background: var(--input-bg); }
+#pm .pm-pickwrap.has-list > .pm-pick.active + .pm-list { border-color: var(--sw-pick-active-line); }
+#pm .pm-item:hover { background: var(--sw-row-hover); }
+#pm .pm-item.sel { background: var(--sw-row-sel); color: var(--text); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line); }
+/* value boxes, combo boxes, check boxes and option buttons */
+.pm-num-wrap { border-color: var(--sw-chrome-line); border-radius: 3px; }
+.pm-num-wrap:hover { border-color: var(--sw-row-sel-line); }
+.pm-row select, .pm-row input[type=text] { border-color: var(--sw-chrome-line); border-radius: 3px; }
+.pm-row select:hover, .pm-row input[type=text]:hover { border-color: var(--sw-row-sel-line); }
+.pm-row.check input, .pm-radio input { accent-color: var(--sw-default); }
+.pm-btns button { background: var(--sw-btn); border-color: var(--sw-btn-line); border-radius: 3px; }
+.pm-btns button:hover { background: var(--sw-btn-hover); border-color: var(--sw-row-sel-line); }
+.pm-btns button.on { background: var(--sw-row-sel); border-color: var(--sw-row-sel-line); }
+
+/* ConfigurationManager rows match the tree */
+.cfg-head, #cfg-list { background: var(--sw-panel); }
+.cfg-row:hover { background: var(--sw-row-hover); }
+.cfg-row.selected { background: var(--sw-row-sel); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line); }
+
+/* Task Pane: the grey tab strip at the right edge, the open tab joined to its panel */
+#taskpane { border-left-color: var(--sw-chrome-line); background: var(--sw-panel); }
+#tp-strip { gap: 2px; padding: 6px 0; background: var(--sw-chrome); border-left: 1px solid var(--sw-chrome-line); }
+#tp-strip button { width: 33px; height: 30px; margin-left: -1px; border: 1px solid transparent; border-left: 0; border-radius: 0 3px 3px 0; }
+#tp-strip button:hover { background: var(--sw-row-hover); border-color: var(--sw-row-sel-line); }
+#tp-strip button.active { background: var(--sw-panel); border-color: var(--sw-chrome-line); }
+#tp-title { min-height: 30px; padding: 0 6px 0 10px; background: var(--sw-chrome); border-bottom: 1px solid var(--sw-chrome-line); }
+#tp-panel { background: var(--sw-panel); }
+
+/* status bar: the grey bar of SolidWorks, the message in the text colour, hairline separators */
+#statusbar { background: var(--sw-chrome); border-top: 1px solid var(--sw-chrome-line); color: var(--text); font-size: 12px; }
+#status-coords, #status-right > span { border-left-color: var(--sw-chrome-line); }
+
+/* menus and context menus: Windows 11 rows with an icon / check gutter, a soft frame and shadow */
+.menu { border-color: var(--sw-chrome-line); border-radius: 4px; padding: 4px; box-shadow: 0 4px 14px var(--menu-shadow); background: linear-gradient(90deg, var(--sw-menu-gutter) 0 30px, var(--menu-bg) 30px); }
+.menu .mi { min-height: 24px; padding: 2px 20px 2px 6px; border-radius: 3px; }
+.menu .mi:hover:not(.disabled) { background: var(--sw-row-hover); box-shadow: inset 0 0 0 1px var(--sw-row-sel-line); }
+.menu .mi .chk { width: 18px; }
+.menu .sep { margin: 4px 4px 4px 32px; background: var(--sw-chrome-line); }
+
+/* dialogs: a Windows 11 dialog, a light title row, a grey button row, the default button in blue */
+#modal-card { border: 1px solid var(--sw-chrome-line); border-radius: 6px; overflow: hidden; box-shadow: 0 16px 48px var(--modal-shadow); }
+#modal-title { min-height: 36px; padding: 0 6px 0 14px; font-weight: 600; background: var(--sw-panel); border-bottom: 1px solid var(--sw-chrome-line); }
+#modal-title button { width: 30px; height: 26px; border-radius: 3px; }
+#modal-title button:hover { background: #c42b1c; color: #fff; }
+#modal-body { background: var(--sw-panel); padding: 14px 16px; }
+#modal-buttons { gap: 8px; padding: 12px 16px; background: var(--sw-dlg-bg); border-top: 1px solid var(--sw-chrome-line); }
+#modal-buttons .btn { min-width: 80px; height: 26px; padding: 0 14px; background: var(--sw-btn); border: 1px solid var(--sw-btn-line); border-radius: 4px; }
+#modal-buttons .btn:hover { background: var(--sw-btn-hover); border-color: var(--sw-row-sel-line); }
+#modal-buttons .btn.primary { background: var(--sw-default); border-color: var(--sw-default); color: #fff; }
+#modal-buttons .btn.primary:hover { background: var(--sw-default-hover); border-color: var(--sw-default-hover); }
+
+/* toasts: a small dark note with a soft shadow above the status bar */
+.toast { background: var(--sw-toast); color: var(--sw-toast-text); padding: 7px 16px; border-radius: 4px; box-shadow: 0 4px 14px var(--menu-shadow); }
