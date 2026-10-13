@@ -8,7 +8,7 @@
   function activeSketch() { return K.findFeature(UI.App.model, UI.App.activeSketch); }
   function relList() { return (activeSketch().rels || []).map(function (r) { return r.type + ' ' + r.refs.join('/'); }); }
   function statusRight() { return $('status-right').textContent; }
-  step('sketch relations: a rectangle drawn with the Line tool infers Horizontal / Vertical / Coincident (yellow icons while drawing); Under Defined, blue, DOF 2', async function () {
+  step('sketch relations: a rectangle drawn with the Line tool infers Horizontal / Vertical / Coincident (rfBR: no icons while drawing); Under Defined, white, DOF 2', async function () {
     assert(W.SketchSolver, 'SketchSolver missing'); need(UI, 'cmdAddRelations'); need(UI, 'cmdDisplayRelations'); need(UI, 'sketchStatus');
     UI.loadModel(K.newModel('Relations')); await idle();
     UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
@@ -17,7 +17,7 @@
     vpEvent('mousemove', skScreen(40, 0));
     assert((UI.App.inferPreview || []).some(function (x) { return x.type === 'horizontal'; }), 'no Horizontal inference while drawing: ' + JSON.stringify(UI.App.inferPreview));
     UI.drawDims();
-    assert(D.querySelectorAll('#dim-layer .rel-badge.infer').length >= 1, 'no yellow inference icon drawn');
+    assert(D.querySelectorAll('#dim-layer .rel-badge').length === 0, 'rfBR: no inference icon by the cursor');
     skClick(40, 0); skClick(40, 20); skClick(0, 20); skClick(0, 0);
     var f = activeSketch();
     assert(f.entities.length === 4 && f.entities.every(function (e) { return e.t === 'line'; }), 'entities ' + JSON.stringify(f.entities));
@@ -29,9 +29,9 @@
     assert(/Under Defined/.test(statusRight()), 'status bar: ' + statusRight());
     UI.drawDims();
     // r5/sketch5: the three Coincidents that only join chain end points are merged points (no icon, as in SolidWorks)
-    assert(D.querySelectorAll('#dim-layer .rel-badge[data-rel]').length === 6, 'relation icons drawn (one per relation, merged chain ends without): ' + D.querySelectorAll('#dim-layer .rel-badge[data-rel]').length);
-    var blue = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0x1f5fd0; });
-    assert(blue, 'under-defined entities are blue');
+    assert(D.querySelectorAll('#dim-layer .rel-badge').length === 0, 'rfBR: no relation icons next to the entities: ' + D.querySelectorAll('#dim-layer .rel-badge').length);
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
+    assert(white, 'rfBR: under-defined entities are white');
     return relList().length + ' inferred relations, DOF ' + st.dof;
   });
   step('sketch relations: Smart Dimensions 50 and 30 make it Fully Defined (black); editing 50 -> 65 re-solves the whole rectangle', async function () {
@@ -49,8 +49,8 @@
     var st = UI.sketchStatus();
     assert(st.status === 'full' && st.dof === 0 && st.entities.every(function (x) { return x === 'full'; }), JSON.stringify(st));
     assert(/Fully Defined/.test(statusRight()), 'status bar: ' + statusRight());
-    var black = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0x15181d; });
-    assert(black, 'fully defined entities are black');
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
+    assert(white, 'rfBR: fully defined entities are white too (the status bar names the state)');
     var r3 = UI.editDim(0, '65');
     assert(r3.ok && Math.abs(r3.value - 65) < 1e-9, JSON.stringify(r3));
     var want = [[0, 0, 65, 0], [65, 0, 65, 30], [65, 30, 0, 30], [0, 30, 0, 0]];
@@ -80,7 +80,7 @@
     var yellow = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id && o.userData.index === 0; })[0];
     assert(yellow && yellow.material.color.getHex() === 0xd9302c, 'line 1 drawn red (over defined, as SolidWorks)');   // sketchdims: was yellow 0xd4a300
     UI.drawDims();
-    assert(D.querySelectorAll('#dim-layer .rel-badge.redundant').length === 2, 'two yellow relation icons');
+    assert(D.querySelectorAll('#dim-layer .rel-badge').length === 0, 'rfBR: no relation icons, over defining or not');
     await UI.pmOK();
     UI.cmdDisplayRelations();
     assert(D.querySelectorAll('#rel-display .rel-row').length === n0 + 1, 'all relations listed');
@@ -93,11 +93,10 @@
     clickPmButton('Delete');
     assert(f.rels.length === n0 && UI.sketchStatus().status === 'full', 'deleted, Fully Defined again');
     await UI.pmOK();
-    // a relation icon clicked in the graphics area selects it; Delete removes it; anvil.addRelation puts it back
-    UI.drawDims();
-    var badge = D.querySelector('#dim-layer .rel-badge[data-rel="0"]');
-    badge.dispatchEvent(new W.MouseEvent('click', { bubbles: true }));
-    assert(UI.App.sel && UI.App.sel.kind === 'rel' && UI.App.sel.index === 0, 'badge click selects');
+    // rfBR: a relation selected (as a Display/Delete Relations row selects it) lights up its entities in the graphics
+    // area; Delete removes it; anvil.addRelation puts it back
+    UI.App.sel = { kind: 'rel', index: 0 }; UI.App.dimsStale = false; UI.drawDims();
+    assert(D.querySelector('#dim-layer .rel-hot') && !D.querySelector('#dim-layer .rel-badge'), 'the selected relation lights up its entities, no icon');
     UI.deleteSelection();
     assert(f.rels.length === n0 - 1 && UI.sketchStatus().status === 'under', 'deleted Horizontal: under defined');
     var back = anvil.addRelation('horizontal', ['0']);
@@ -160,7 +159,7 @@
     assert(JSON.stringify([g0.entities, g0.dims, g0.rels]) === JSON.stringify([o0.entities, o0.dims, o0.rels]), 'old sketch unchanged: ' + JSON.stringify(g0));
     return 'script ' + script.split('\n').length + ' lines';
   });
-  step('sketch relations: ribbon Add Relation / Display/Delete Relations, Tools ▸ Relations and View ▸ Sketch Relations', async function () {
+  step('sketch relations: ribbon Add Relation / Display/Delete Relations, Tools ▸ Relations; no View ▸ Sketch Relations (rfBR: no relation icons)', async function () {
     UI.loadModel(K.newModel('Ribbon')); await idle();
     UI.cmdSketch(); clickPmButton('Front Plane'); await idle();
     var f = activeSketch();
@@ -186,15 +185,13 @@
     assert(tools.length === 1 && /Tools/.test(tools[0].menu) && /Relations/.test(tools[0].text), 'Tools menu ' + tools.map(function (x) { return x.menu + ': ' + x.text; }).join('|'));
     UI.closeMenus();
     W.SketchSolver.infer(f, 0); UI.drawDims();
-    var n = D.querySelectorAll('#dim-layer .rel-badge[data-rel]').length;
+    var n = (f.rels || []).length;
     var view = menuRows('Sketch Relations');
-    assert(view.length === 1, 'View menu row');
-    view[0].row.click();
-    UI.drawDims();
-    assert(n > 0 && D.querySelectorAll('#dim-layer .rel-badge[data-rel]').length === 0, 'icons hidden (' + n + ' before)');
-    UI.App.view.showRelations = true;
+    UI.closeMenus();
+    assert(view.length === 0, 'rfBR: no View ▸ Sketch Relations row: ' + view.map(function (x) { return x.menu + ': ' + x.text; }).join('|'));
+    assert(n > 0 && D.querySelectorAll('#dim-layer .rel-badge').length === 0, 'relations held (' + n + '), no icons drawn');
     await UI.exitSketch(); await idle();
-    return n + ' icons, hidden and shown';
+    return n + ' relations, no icons';
   });
   step('sketch: Centerline (dashed, construction), a level line across it infers Horizontal only (Symmetric added with Add Relations); a second dimension on it asks "Make this dimension driven?" in a page modal, the driven one is grey in parentheses and follows a 16 -> 30 edit; Construction Geometry toggles the line', async function () {
     need(UI, 'toggleConstruction'); need(UI, 'cmdCenterline'); need(UI, 'askDrivenIfOver');

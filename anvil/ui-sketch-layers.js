@@ -214,7 +214,7 @@
         { title: 'Layers', fields: [
           { type: 'html', html: '<div class="rel-list" id="lyr-list" role="listbox" aria-label="Layers">' + list.map(function (l) {
             var sw = l.name === '0' ? '<i class="lyr-swatch" style="display:inline-block;flex:none;width:18px;height:14px;border:1px dashed #9aa3ad;box-sizing:border-box" title="Entities keep their usual colour"></i>'
-              : '<input type="color" class="lyr-color" value="' + esc(l.color || '#1f5fd0') + '" title="Layer colour" style="flex:none;width:20px;height:18px;padding:0;border:0;background:none">';
+              : '<input type="color" class="lyr-color" value="' + esc(l.color || '#ffffff') + '" title="Layer colour" style="flex:none;width:20px;height:18px;padding:0;border:0;background:none">';
             var eye = l.name === '0' ? '<i style="display:inline-block;flex:none;width:18px"></i>' : '<button type="button" class="lyr-eye" title="' + (l.hidden ? 'Hidden: click to show' : 'Visible: click to hide') + '" aria-pressed="' + (!l.hidden) + '" style="flex:none;width:18px;padding:0;border:0;background:none;cursor:pointer;opacity:' + (l.hidden ? 0.35 : 1) + '">' + (l.hidden ? '&#9711;' : '&#9673;') + '</button>';
             return '<div class="rel-row' + (l.name === v.pick ? ' sel' : '') + '" role="option" tabindex="0" data-layer="' + esc(l.name) + '" style="display:flex;align-items:center;gap:6px">' +
               '<input type="radio" name="lyr-current" class="lyr-cur" title="Current layer"' + (l.current ? ' checked' : '') + '>' + sw + eye +
@@ -300,11 +300,11 @@
     rgCache = { key: key, regions: regions, ends: ends };
     return rgCache;
   }
-  function darkView() { return document.documentElement.dataset.theme === 'dark' || App.view.bg === 'dark'; }
+  function darkView() { return true; }   // rfBR: the graphics area is grey-black in every theme and background
   function regionMats() {
     var dark = darkView();
     if (!rgMats || rgMats.dark !== dark) {
-      var col = dark ? 0x6fa8ea : 0x3d7fd6;
+      var col = 0xb4b4b4;   // rfBR: a light grey wash (was blue)
       function mk(op) { return new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, depthWrite: false, depthTest: false, side: THREE.DoubleSide }); }
       rgMats = { dark: dark, base: mk(dark ? 0.16 : 0.11), hover: mk(dark ? 0.3 : 0.22),
         ends: new THREE.PointsMaterial({ color: 0xe0262a, size: 7, sizeAttenuation: false, depthTest: false }) };

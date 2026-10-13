@@ -517,10 +517,11 @@
     panel._sig = s;
     var main = mainLevel(m), rows = list.filter(shown);
     var h = head() +
-      '<div class="lvl-tools">' +
-        '<button type="button" data-act="new" title="Add a new level (the lowest free number)">New</button>' +
-        '<button type="button" data-act="allOn" title="Make every level visible">All on</button>' +
-        '<button type="button" data-act="allOff" title="Hide every level but the main level">All off</button>' +
+      '<div class="lvl-tools" role="toolbar" aria-label="Levels">' +
+        toolButton('new', 'New level: add a level with the lowest free number') +
+        toolButton('allOn', 'All on: make every level visible') +
+        toolButton('allOff', 'All off: hide every level but the main level') +
+        '<span class="lvl-sep"></span>' +
         '<select id="lvl-sets" title="Level sets: show or hide all the levels of a set at once"' + (sets.length ? '' : ' disabled') + '>' +
           '<option value="">Level sets…</option>' + sets.map(function (st) {
             return '<option value="' + esc(st.name) + '">' + esc(st.name) + ' (' + st.levels.join(', ') + ') ' + (st.on === st.levels.length ? '— on' : st.on ? '— partly on' : '— off') + '</option>';
@@ -528,10 +529,12 @@
         '</select>' +
       '</div>' +
       '<div id="lvl-grid" role="grid" aria-label="Levels">' +
-        '<div class="lvl-row lvl-hdr" role="row"><span>Number</span><span>Visible</span><span></span><span>Name</span><span>Entities</span><span>Level Set</span></div>' +
+        '<div class="lvl-row lvl-hdr" role="row">' + [['num', 'Number'], ['vis', 'Visible'], ['sw', ''], ['name', 'Name'], ['count', 'Entities'], ['set', 'Level Set']].map(function (c) {
+          return '<span class="lvl-h-' + c[0] + '" role="columnheader">' + c[1] + '</span>';
+        }).join('') + '</div>' +
         rows.map(function (l) {
-          var sw = l.number === 1 ? '<i class="lvl-nocolor" title="Level 1 entities keep their own colour"></i>'
-            : '<input type="color" class="lvl-color" value="' + esc(l.color || '#1f5fd0') + '" title="Level colour' + (l.color ? '' : ' (none: the entities keep their own colour)') + '"' + (l.color ? '' : ' data-none="1"') + '>';
+          var sw = '<span class="lvl-sw">' + (l.number === 1 ? '<i class="lvl-nocolor" title="Level 1 entities keep their own colour"></i>'
+            : '<input type="color" class="lvl-color" value="' + esc(l.color || '#1f5fd0') + '" title="Level colour' + (l.color ? '' : ' (none: the entities keep their own colour)') + '"' + (l.color ? '' : ' data-none="1"') + '>') + '</span>';
           // compact marks after the name: ⊘ excluded from profiles (makes no solid), ┄ dashed line type
           var tags = (l.noProfile ? ' <em title="Excluded from profiles: makes no solid">⊘</em>' : '') + (l.lineType === 'dashed' ? ' <em title="Dashed line type">┄</em>' : '');
           return '<div class="lvl-row' + (l.main ? ' main' : '') + (l.hidden ? ' off' : '') + '" role="row" data-level="' + l.number + '">' +
@@ -554,6 +557,19 @@
     panel.innerHTML = h;
   }
   function head() { return '<div class="lvl-head"><span>' + Icons('levels', 16) + '</span><span>Levels Manager</span></div>'; }
+  // the toolbar's icon buttons (Mastercam's Levels Manager toolbar): a new level (a level row with a green plus), all
+  // levels on (an eye), all levels off (the eye struck through); the ink is currentColor, the pane's icon ink
+  var EYE = '<path d="M1.5 8 c3 -5 10 -5 13 0 c-3 5 -10 5 -13 0 z" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="8" cy="8" r="2.2" fill="#1f6fd0"/>';
+  var TOOL_ICONS = {
+    'new': '<rect x="1.5" y="2" width="4.5" height="3.5" fill="#ffd84d" stroke="#b38f00" stroke-width=".9"/><path d="M8 3.75 h6.5" stroke="currentColor" stroke-width="1.3"/>' +
+      '<rect x="1.5" y="7.5" width="4.5" height="3.5" fill="#fff" stroke="currentColor" stroke-width=".9"/><path d="M12 8.5 v6 M9 11.5 h6" stroke="#2e9e48" stroke-width="1.8"/>',
+    allOn: EYE,
+    allOff: EYE + '<path d="M2.5 13.5 L13.5 2.5" stroke="#fff" stroke-width="3"/><path d="M2.5 13.5 L13.5 2.5" stroke="#d0342c" stroke-width="1.5"/>'
+  };
+  function toolButton(act, title) {
+    return '<button type="button" class="lvl-tb" data-act="' + act + '" title="' + title + '" aria-label="' + title.split(':')[0] + '">' +
+      '<svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' + TOOL_ICONS[act] + '</svg></button>';
+  }
   UI.refreshLevelsPanel = function () { renderPane(true); };
 
   // ------------------------------------------------------------------ pane events (delegated: the pane redraws often)

@@ -14,7 +14,7 @@
     var r = $('viewport').getBoundingClientRect(), mx = Math.round(r.left + tgt[0]) - r.left, my = Math.round(r.top + tgt[1]) - r.top;
     var info = UI.sketchInferPoint(UI.screenToPlane(mx, my, UI.activePlane()), mx, my);
     assert(info.tan && Math.hypot(info.p[0] - T[0], info.p[1] - T[1]) < 1e-9, 'tangent lock ' + JSON.stringify(info));
-    assert(r3sLayer().querySelector('use[href="#sk-ico-relTangent"]'), 'no Tangent glyph by the cursor');
+    assert(!r3sLayer().querySelector('.rel-badge'), 'rfBR: no Tangent glyph by the cursor (the lock is info.tan, above)');
     selClick(tgt);
     var l = rskEnts()[1];
     assert(l && l.t === 'line', 'line ' + JSON.stringify(l));
@@ -31,7 +31,7 @@
     var aq = Math.atan2(Q[1] - c.cy, Q[0] - c.cx), u = [Math.sin(aq), -Math.cos(aq)], px = info.px;
     var tq = [Q[0] + u[0] * 15 + Math.cos(aq) * 1.5 * px, Q[1] + u[1] * 15 + Math.sin(aq) * 1.5 * px];
     selEv('mousemove', rskScr(tq));
-    assert(D.querySelector('#dim-layer .sk-feedback use[href="#sk-ico-relTangent"]'), 'no Tangent glyph leaving the circle');
+    assert(!D.querySelector('#dim-layer .sk-feedback .rel-badge'), 'rfBR: no Tangent glyph leaving the circle (Tangent is checked after the click)');
     rskClick(tq);
     var l2 = rskEnts()[2];
     // r15/tanslide15: the start slides to the exact tangent point for the cursor, so it stays on the circle (not necessarily at Q)

@@ -77,6 +77,8 @@ function namesOf(toks, d0) {
     const t = toks[k], p = toks[k - 1];
     if (t.t !== 'id') continue;
     if (p && p.t === 'punct' && p.v === '.') continue;
+    const n = toks[k + 1];   // an object literal's key ({ key: 'Enter' }) is not a use of that name
+    if (n && n.t === 'punct' && n.v === ':' && p && p.t === 'punct' && (p.v === '{' || p.v === ',')) continue;
     used.add(t.v);
     if (t.depth !== d0) continue;
     const stmtStart = !p || (p.t === 'punct' && /^[;{}]$/.test(p.v)) || (p.t === 'id' && p.v === 'async');

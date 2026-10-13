@@ -12,7 +12,7 @@
   if (!S || !UI.openPM) return;
 
   // ------------------------------------------------------------------ shared helpers
-  var PICK_STYLE = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
+  var PICK_STYLE = 'stroke:#ffd400;stroke-dasharray:6 4;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
   var HOT_STYLE = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function sketch() { var f = UI.activeSketchFeature(); if (!f) UI.toast('Open a sketch first.'); return f; }
   function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
@@ -1816,4 +1816,121 @@
     hint();
   }
   UI.cmdJogLine = cmdJogLine;
+
+  // ------------------------------------------------------------------ Close Arc (lane BS)
+  // Mastercam: Wireframe ▸ Modify ▸ Close Arc. Each arc in Arcs to Close (the selection when the command starts plus
+  // what is clicked while it is open; anything else is ignored) becomes the full circle it lies on: same centre and
+  // radius, its construction flag, layer and level kept. Its radius dimension stays (on the circle, still read as R),
+  // and so do its Concentric / Coradial / Tangent / Equal relations and those of its centre; relations and dimensions
+  // on its end points go (a circle has none). A partial ellipse closes to its ellipse the same way. ✓: one undo step.
+  function closable(e) { return !!e && (e.t === 'arc' || e.t === 'pellipse') && e.blk == null; }
+  // the refs a closed arc keeps: the whole curve and its centre (an ellipse also its axis ends)
+  function keepsRef(e, p) { return p.s === null || p.s === 'c' || (e.t === 'ellipse' && p.s === 'v'); }
+  var ARC_ONLY = { arclength: 1, pathlength: 1, runangle: 1 };   // dimensions of an arc's sweep or a chain's length
+  function closeArcs(f, list) {
+    var idx = (list || []).filter(function (i, k, a) { return closable(f.entities[i]) && a.indexOf(i) === k; });
+    if (!idx.length) return { ok: false, error: 'Select an arc to close.' };
+    var set = {}, rels = 0, dims = 0;
+    idx.forEach(function (i) {
+      var e = f.entities[i], c = JSON.parse(JSON.stringify(e));
+      c.t = e.t === 'arc' ? 'circle' : 'ellipse';
+      delete c.a0; delete c.a1;
+      f.entities[i] = c; set[i] = true;
+    });
+    if (f.rels) {
+      var n0 = f.rels.length;
+      f.rels = f.rels.filter(function (rel) {
+        return !(rel.refs || []).some(function (r) {
+          var p = S.parseRef(r);
+          return !!p && !p.o && set[p.e] && (!keepsRef(f.entities[p.e], p) || !!ARC_ONLY[rel.type]);
+        });
+      });
+      rels = n0 - f.rels.length;
+      if (!f.rels.length) delete f.rels;
+      rels += S.clean(f) || 0;   // and whatever no longer holds on a full circle
+    }
+    if (f.dims) {
+      var d0 = f.dims.length;
+      f.dims = f.dims.filter(function (d) {
+        if (!set[d.e]) return true;
+        var c = f.entities[d.e];
+        if (c.t === 'ellipse') return d.k === 'rx' || d.k === 'ry';
+        if (d.k !== 'r') return false;
+        d.k = 'dia';   // a circle's size is its diameter: shown as the radius it was (or as a diameter if it was shown so)
+        if (d.show === 'dia') delete d.show; else d.show = 'r';
+        return true;
+      });
+      dims = d0 - f.dims.length;
+      if (!f.dims.length) delete f.dims;
+    }
+    return { ok: true, closed: idx, relations: rels, dimensions: dims };
+  }
+  function closeArcMessage(r) {
+    var n = r.closed.length, gone = [];
+    if (r.relations) gone.push(r.relations + ' end-point relation' + (r.relations === 1 ? '' : 's'));
+    if (r.dimensions) gone.push(r.dimensions + ' dimension' + (r.dimensions === 1 ? '' : 's'));
+    return 'Closed ' + n + ' arc' + (n === 1 ? '' : 's') + (gone.length ? ' (' + gone.join(' and ') + ' removed)' : '') + '.';
+  }
+  // the piece a closed arc gains, for the preview
+  function closingPiece(e) {
+    var sw = ((e.a1 - e.a0) % 360 + 360) % 360, o = JSON.parse(JSON.stringify(e));
+    if (sw < 1e-9) return null;
+    o.a0 = e.a0 + sw; o.a1 = e.a0 + 360;
+    delete o.construction;
+    return o;
+  }
+  function cmdCloseArc() {
+    var f = sketch();
+    if (!f) return;
+    var v = { entities: [] }, spec = null, HELP = 'Select the arcs to close; ✓ turns each into the full circle it lies on (same centre and radius).';
+    // the arcs of the selection; what else is selected is ignored, and the PropertyManager and the status bar say so
+    // (the status after the selection's own "n entities selected")
+    function pick() {
+      var s = selIdx(f), arcs = s.filter(function (i) { return closable(f.entities[i]); }), other = s.length - arcs.length;
+      v.entities = arcs;
+      var msg = other ? other + ' selected entit' + (other === 1 ? 'y is' : 'ies are') + ' not an arc and ' + (other === 1 ? 'is' : 'are') + ' ignored.' : '';
+      if (spec) spec.message = msg ? HELP + '<br>' + msg : HELP;
+      var st = 'Close Arc: ' + (msg || (arcs.length ? '✓ closes ' + arcs.length + ' arc' + (arcs.length === 1 ? '' : 's') + ' to full circles.' : 'select the arcs to close.'));
+      UI.setStatus(st);
+      setTimeout(function () { if (UI.pmSpec && UI.pmSpec() === spec) UI.setStatus(st); }, 0);
+    }
+    function preview() {
+      App.tempEntities = v.entities.map(function (i) { return f.entities[i] && closingPiece(f.entities[i]); }).filter(Boolean);
+      UI.updateTemp();
+    }
+    spec = {
+      title: 'Close Arc', icon: 'closeArc', values: v, message: HELP,
+      onSelection: function () {
+        var before = v.entities.join() + '|' + spec.message;
+        pick();
+        if (v.entities.join() + '|' + spec.message !== before) UI.renderPM();
+        preview();
+      },
+      groups: [{ title: 'Arcs to Close', fields: [entityBox(f, v, 'arc', preview, { placeholder: 'Select arcs…' })] }],
+      okBlocked: function () { return v.entities.length ? '' : 'Select an arc to close.'; },
+      onOK: function () {
+        var list = v.entities.slice(), r = step(function () { return closeArcs(f, list); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus(closeArcMessage(r));
+        return true;
+      },
+      onCancel: clearPreview,
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); }
+    };
+    pick();
+    UI.openPM(spec);
+    preview();
+    return spec;
+  }
+  UI.cmdCloseArc = cmdCloseArc;
+  // UI.closeArcs([entity indices]) closes those arcs of the open sketch at once (one undo step): { ok, closed,
+  // relations, dimensions } (the counts removed), as the PropertyManager's ✓ does
+  UI.closeArcs = function (list) {
+    var f = sketch();
+    if (!f) return { ok: false, error: 'Open a sketch first.' };
+    var r = step(function () { return closeArcs(f, list); }, true);
+    if (r.ok) { changed(); UI.setStatus(closeArcMessage(r)); }
+    return r;
+  };
 })();

@@ -53,12 +53,12 @@
     UI.exitSketch(); await idle();
     return 'band ' + cs.backgroundImage.slice(0, 40) + '…';
   });
-  step('rfBG: selection boxes — Mirror Entities\' active box (where picks go) is pink with a magenta frame, the other pale blue; clicking the other box moves the highlight', async function () {
+  step('rfBG: selection boxes — Mirror Entities\' active box (where picks go) is pink with a magenta frame, the other pale grey (lane BQ: no blue); clicking the other box moves the highlight', async function () {
     await rfBGSketch();
     UI.cmdMirrorEntities(); await idle();
     function boxes() { return Array.prototype.slice.call(D.querySelectorAll('#pm .pm-pick')); }
     function pinkish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && c[0] > c[2] && c[0] > c[1] + 20; }
-    function blueish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && c[2] > c[0] + 10; }
+    function greyish(e) { var c = rfBGRgb(W.getComputedStyle(e).backgroundColor); return c && Math.abs(c[0] - c[2]) < 8 && Math.abs(c[1] - c[2]) < 8 && c[0] < 250; }
     var bs = boxes();
     assert(bs.length === 2, 'two selection boxes: ' + bs.length);
     var act = bs.filter(function (e) { return e.classList.contains('active'); });
@@ -66,16 +66,16 @@
     var fr = rfBGRgb(W.getComputedStyle(act[0]).borderTopColor);
     assert(fr && fr[0] > 180 && fr[1] < 120, 'magenta frame ' + fr);
     var other = bs.filter(function (e) { return !e.classList.contains('active'); })[0];
-    assert(blueish(other), 'the other box pale blue: ' + W.getComputedStyle(other).backgroundColor);
+    assert(greyish(other), 'the other box pale grey: ' + W.getComputedStyle(other).backgroundColor);
     var idx = bs.indexOf(other);
     other.click(); await idle();
     bs = boxes();
-    assert(bs[idx].classList.contains('active') && pinkish(bs[idx]) && blueish(bs[1 - idx]), 'the highlight moved');
+    assert(bs[idx].classList.contains('active') && pinkish(bs[idx]) && greyish(bs[1 - idx]), 'the highlight moved');
     D.querySelector('#pm .pm-cancel').click(); await idle();
     UI.exitSketch(); await idle();
     return 'active ' + W.getComputedStyle(act[0]).backgroundColor;
   });
-  step('rfBG: FeatureManager — the rollback bar sits under the last feature, the sketch\'s (-) prefix is its own span with the name text unchanged, the selected row has the blue fill and frame', async function () {
+  step('rfBG: FeatureManager — the rollback bar sits under the last feature, the sketch\'s (-) prefix is its own span with the name text unchanged, the selected row has the grey fill and frame', async function () {
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Front").line(0, 0, 40, 0).line(40, 0, 40, 30);\np.sketch("Top").rect(0, 0, 40, 30).extrude(10);'); await idle();
     var tree = $('tree'), bar = tree.querySelector('.rollbar');
@@ -88,7 +88,7 @@
     assert(pf && pf.textContent === '(-) ' && pf.classList.contains('under') && sk.querySelector('.nm').textContent === '(-) Sketch1', 'prefix span: ' + (sk && sk.querySelector('.nm').textContent));
     sk.click(); await idle();
     var sel = tree.querySelector('.ti.selected'), c = sel && rfBGRgb(W.getComputedStyle(sel).backgroundColor);
-    assert(sel && c && c[2] > c[0] + 20 && /inset/.test(W.getComputedStyle(sel).boxShadow), 'selected row ' + (sel && W.getComputedStyle(sel).backgroundColor));
+    assert(sel && c && Math.abs(c[0] - c[2]) < 8 && c[0] < 235 && /inset/.test(W.getComputedStyle(sel).boxShadow), 'selected row ' + (sel && W.getComputedStyle(sel).backgroundColor));
     $('tree-filter-input').value = 'Sketch'; $('tree-filter-input').dispatchEvent(new Event('input', { bubbles: true })); await idle();
     var hidden = !tree.querySelector('.rollbar');
     $('tree-filter-input').value = ''; $('tree-filter-input').dispatchEvent(new Event('input', { bubbles: true })); await idle();

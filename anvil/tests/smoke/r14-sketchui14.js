@@ -58,7 +58,7 @@
     assert(sd && (tx > Math.max(p0[0], p1[0]) + 8 || tx < Math.min(p0[0], p1[0]) - 8), 'short dimension: text outside ' + tx + ' vs ' + [p0[0], p1[0]]);
     return 'cap ' + cap + ' px';
   });
-  step('r14/sketchui14: radius / diameter dimensions end in a horizontal shoulder with the text after it (Ø as SolidWorks shows it); driving dimensions black, driven ones grey in brackets; feature dimensions in the part use the same layout', async function () {
+  step('r14/sketchui14: radius / diameter dimensions end in a horizontal shoulder with the text after it (Ø as SolidWorks shows it); driving dimensions light on the grey-black ground (rfBR), driven ones grey in brackets; feature dimensions in the part use the same layout', async function () {
     await r14Sketch([{ t: 'circle', cx: 0, cy: 0, r: 10 }, { t: 'arc', cx: 40, cy: 0, r: 6, a0: 0, a1: 180 }, { t: 'line', x1: -20, y1: -20, x2: 20, y2: -20 }],
       null, [{ e: 0, k: 'dia', ang: 45 }, { e: 1, k: 'r', ang: 135 }, { e: 2, k: 'len', off: -6, driven: true }]);
     var dia = r14Dim('Ø20'), rad = r14Dim('R6'), drv = r14Dim('(40)');
@@ -74,7 +74,7 @@
     });
     function lum(c) { var m = c.match(/\d+(\.\d+)?/g).map(Number); return (m[0] + m[1] + m[2]) / 3; }
     var cDrv = W.getComputedStyle(drv.t).fill, cDia = W.getComputedStyle(dia.t).fill, cLine = W.getComputedStyle(drv.dl).stroke;
-    assert(lum(cDia) < 40, 'driving dimension black: ' + cDia);
+    assert(lum(cDia) > 200, 'driving dimension light (rfBR): ' + cDia);
     assert(lum(cDrv) > 100 && lum(cDrv) < 180 && lum(cLine) > 120, 'driven dimension grey: text ' + cDrv + ', line ' + cLine);
     // the same layout for a feature's sketch dimensions shown in the part (Instant3D)
     await anvil.newPart(); await idle();
@@ -92,7 +92,7 @@
     UI.setSelection([]);
     return labs.map(function (t) { return t.textContent; }).join(' ');
   });
-  step('r14/sketchui14: relation glyphs — green-bordered squares with the symbol in dark green, drawn from snapped rectangles so they stay crisp at 100 / 125 / 150 / 200 % display scaling', async function () {
+  step('r14/sketchui14 (rfBR): no relation glyphs at 100 / 125 / 150 / 200 % display scaling — relations held, none drawn in the graphics area', async function () {
     var ents = [{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 30, y1: 0, x2: 30, y2: 20 }, { t: 'line', x1: 0, y1: 10, x2: 20, y2: 10 }];
     var rels = [{ type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }, { type: 'parallel', refs: ['0', '2'] }];
     var dpr0 = Object.getOwnPropertyDescriptor(W, 'devicePixelRatio'), list = [1, 1.25, 1.5, 2];
@@ -101,21 +101,8 @@
         var dpr = list[k];
         Object.defineProperty(W, 'devicePixelRatio', { configurable: true, get: function () { return dpr; } });
         if (k === 0) await r14Sketch(ents, rels); else r4Dims();
-        var badges = Array.prototype.slice.call(D.querySelectorAll('#dim-layer .rel-badge[data-rel]'));
-        assert(badges.length >= 3, dpr + ': glyphs drawn, ' + badges.length);
-        badges.forEach(function (b) {
-          var m = /translate\(([-\d.e]+),([-\d.e]+)\)/.exec(b.getAttribute('transform'));
-          assert(m && Math.abs(m[1] * dpr - Math.round(m[1] * dpr)) < 1e-6 && Math.abs(m[2] * dpr - Math.round(m[2] * dpr)) < 1e-6, dpr + ': glyph on the device-pixel grid ' + b.getAttribute('transform'));
-          var r = b.querySelector('rect'), st = W.getComputedStyle(r), bw = parseFloat(st.strokeWidth);
-          near(bw * dpr, Math.max(1, Math.round(dpr)), 1e-3, dpr + ': border in whole device pixels');
-          near(+r.getAttribute('x') + +r.getAttribute('width') + bw / 2, 16, 1e-3, dpr + ': 16 px box');
-          var g = st.stroke.match(/\d+/g).map(Number);
-          assert(g[1] > g[0] + 40 && g[1] > g[2] + 40 && W.getComputedStyle(b).color !== st.stroke, dpr + ': green border ' + st.stroke + ', symbol ' + W.getComputedStyle(b).color);
-        });
-        var hz = D.querySelector('#sk-ico-relHorizontal rect');
-        assert(hz, dpr + ': the Horizontal symbol is a filled bar');
-        ['x', 'y', 'width', 'height'].forEach(function (a) { var v = +hz.getAttribute(a) * dpr; assert(Math.abs(v - Math.round(v)) < 1e-6, dpr + ': bar ' + a + ' on device pixels: ' + hz.getAttribute(a)); });
-        var th = +hz.getAttribute('height') * dpr; assert(Math.abs(th - Math.round(th)) < 1e-6 && Math.abs(th - 2 * dpr) <= 0.5 + 1e-9, dpr + ': 2 px stroke in whole device pixels: ' + th);
+        assert(UI.activeSketchFeature().rels.length === 3, dpr + ': relations held');
+        assert(!D.querySelector('#dim-layer .rel-badge') && !D.querySelector('#dim-layer [id^="sk-ico-"]'), dpr + ': no relation glyph drawn');
       }
     } finally {
       if (dpr0) Object.defineProperty(W, 'devicePixelRatio', dpr0); else delete W.devicePixelRatio;

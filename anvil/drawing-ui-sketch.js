@@ -33,10 +33,10 @@
 
   // ------------------------------------------------------------------ icons (rfAO)
   var SI = {
-    relVertical: '<path d="M8 2 v12" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="2.5" r="1.4" fill="#2f7fd6"/><circle cx="8" cy="13.5" r="1.4" fill="#2f7fd6"/><text x="12.5" y="10" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#2f7fd6">|</text>',
-    lineFormat: '<path d="M2 3.5 h12" stroke="currentColor" stroke-width="0.8"/><path d="M2 7.5 h12" stroke="currentColor" stroke-width="1.6"/><path d="M2 11.5 h12" stroke="#2f7fd6" stroke-width="1.1" stroke-dasharray="2.4 1.2"/><path d="M2 14.5 h12" stroke="#e0553c" stroke-width="1" stroke-dasharray="4 1 1 1"/>',
-    hideShowEdges: '<path d="M2.5 12.5 h11 M2.5 12.5 v-9 h11 v9" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5 9.5 h6" stroke="#9aa5b1" stroke-width="1" stroke-dasharray="1.6 1"/><path d="M3 2 l10 12" stroke="#e0553c" stroke-width="1.2"/>',
-    relativeView: '<path d="M2 2.5 h12 v11 H2 z" fill="none" stroke="#2f7fd6" stroke-width="1" stroke-dasharray="2 1.2"/><path d="M4.5 9 l4 -3 4 2 -4 3 z" fill="#bfcfe0" stroke="currentColor" stroke-width="0.9"/><path d="M8.5 11 v-2.5" stroke="#e0553c" stroke-width="1.2"/><circle cx="8.5" cy="8" r="0.9" fill="#e0553c"/>'
+    relVertical: '<path d="M8 2 v12" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="2.5" r="1.4" fill="#6d6d6d"/><circle cx="8" cy="13.5" r="1.4" fill="#6d6d6d"/><text x="12.5" y="10" font-size="6" font-weight="700" font-family="Arial" text-anchor="middle" fill="#6d6d6d">|</text>',
+    lineFormat: '<path d="M2 3.5 h12" stroke="currentColor" stroke-width="0.8"/><path d="M2 7.5 h12" stroke="currentColor" stroke-width="1.6"/><path d="M2 11.5 h12" stroke="#6d6d6d" stroke-width="1.1" stroke-dasharray="2.4 1.2"/><path d="M2 14.5 h12" stroke="#e0553c" stroke-width="1" stroke-dasharray="4 1 1 1"/>',
+    hideShowEdges: '<path d="M2.5 12.5 h11 M2.5 12.5 v-9 h11 v9" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5 9.5 h6" stroke="#a4a4a4" stroke-width="1" stroke-dasharray="1.6 1"/><path d="M3 2 l10 12" stroke="#e0553c" stroke-width="1.2"/>',
+    relativeView: '<path d="M2 2.5 h12 v11 H2 z" fill="none" stroke="#6d6d6d" stroke-width="1" stroke-dasharray="2 1.2"/><path d="M4.5 9 l4 -3 4 2 -4 3 z" fill="#c4c4c4" stroke="currentColor" stroke-width="0.9"/><path d="M8.5 11 v-2.5" stroke="#e0553c" stroke-width="1.2"/><circle cx="8.5" cy="8" r="0.9" fill="#e0553c"/>'
   };
   var baseIcons = Icons;
   var wrappedIcons = function (name, size, cls) {

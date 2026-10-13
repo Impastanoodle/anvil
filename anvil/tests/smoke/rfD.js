@@ -15,7 +15,7 @@
     var box = UI.sketchNumBox(), last = null;
     assert(box && box.length >= vals.length, 'the on-screen box opened');
     vals.forEach(function (v, i) { r3sType(box[i], v == null ? '' : v); if (v != null) last = box[i]; });
-    r3sKey(last, 'Enter');
+    if (/^p?circle$/.test(UI.App.tool)) enterTwice(last); else r3sKey(last, 'Enter');   // lane BP: a circle's box commits first, the second Enter makes it
   }
   function rfdSame(a, b, path, out) {   // deep equality, numbers to 1e-12, key order free
     if (typeof a === 'number' && typeof b === 'number') { if (Math.abs(a - b) > 1e-12 * Math.max(1, Math.abs(a))) out.push(path + ' ' + a + ' / ' + b); return out; }
@@ -32,8 +32,7 @@
     // lane C, fidelity #13: four lines from the origin, W 6 and H 4 the bottom and left lines' driving lengths
     var rl4 = f.entities.map(function (e) { return [e.t, e.x1, e.y1, e.x2, e.y2].join(); }).join(' ');
     assert(rl4 === 'line,0,0,6,0 line,6,0,6,4 line,6,4,0,4 line,0,4,0,0' && f.dims.length === 2 && f.dims.map(function (d) { return d.e + ':' + d.k; }).join() === '0:len,3:len', 'rectangle ' + rl4 + ' ' + JSON.stringify(f.dims));
-    UI.setTool('circle');
-    [[0.5, 0.5], [5.5, 0.5], [0.5, 3.5], [5.5, 3.5]].forEach(function (c) { rskClick(c); rfdType([c[0] + 0.3, c[1] + 0.1], [null, '.281']); });
+    [[0.5, 0.5], [5.5, 0.5], [0.5, 3.5], [5.5, 3.5]].forEach(function (c) { UI.setTool('circle'); rskClick(c); rfdType([c[0] + 0.3, c[1] + 0.1], [null, '.281']); });   // lane BP: each typed circle closes the tool
     UI.setTool('slot'); rskClick([2.5, 2]); rskClick([3.5, 2]); rfdType([3.5, 2.3], ['.375']); UI.setTool('select');
     var holes = f.entities.filter(function (e) { return e.t === 'circle'; }), slot = f.entities[f.entities.length - 1];
     assert(holes.length === 4 && holes.every(function (h) { return Math.abs(h.r - 0.1405) < 1e-12; }) && f.dims.filter(function (d) { return d.k === 'dia'; }).length === 4, 'holes ' + JSON.stringify(holes));

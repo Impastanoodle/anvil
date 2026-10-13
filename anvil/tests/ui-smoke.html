@@ -109,6 +109,10 @@
   }
   // accept the PropertyManager and wait for the rebuild it triggers
   async function pmAccept() { await UI.pmOK(); await idle(); }
+  // lane BP: Enter commits a typed value and keeps the command open; the second Enter is ✓ (and for a one-shot tool,
+  // Circle or Parallel Line, makes the entity and closes it). pressEnter(el) is one key; enterTwice(el) the pair.
+  function pressEnter(el) { var ev = new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }); el.dispatchEvent(ev); return ev; }
+  function enterTwice(el) { pressEnter(el); pressEnter(el); }
   function modalOpen() { return !$('modal').hidden; }
   function clickModalButton(text) {
     var b = Array.prototype.filter.call(D.querySelectorAll('#modal-buttons button'), function (x) { return x.textContent.trim() === text; })[0];
@@ -306,6 +310,11 @@
     'smoke/rfBM.js',
     'smoke/rfBN.js',
     'smoke/rfBO.js',
+    'smoke/rfBT.js',
+    'smoke/rfBQ.js',
+    'smoke/rfBS.js',
+    'smoke/rfBR.js',
+    'smoke/rfBP.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'ui-smoke.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }

@@ -15,7 +15,7 @@
   function selKinds() { return anvil.selection().map(function (s) { return s.kind; }).join(','); }
   function selKey(k) { D.dispatchEvent(new W.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }
   var BLOCK = 'p.sketch("Top").rect(-20, -10, 40, 20).extrude(10);';     // 40 × 20 × 10, x -20..20, y 0..10, z -10..10
-  step('box selection: on a 40 × 20 × 10 block (Front view) a left-to-right window over the left half selects the 4 edges fully inside, right-to-left crossing 8; blue solid / green dashed box; Ctrl adds, Shift toggles', async function () {
+  step('box selection: on a 40 × 20 × 10 block (Front view) a left-to-right window over the left half selects the 4 edges fully inside, right-to-left crossing 8; grey solid (rfBR) / green dashed box; Ctrl adds, Shift toggles', async function () {
     need(UI, 'boxSelectHook'); need(anvil, 'boxSelect'); assert(W.BoxSelect, 'BoxSelect missing');
     await anvil.newPart(); await idle();
     await anvil.run(BLOCK); await idle();
@@ -25,7 +25,7 @@
     var A = [tl[0] - 12, tl[1] - 12], B = [mid[0], br[1] + 12];
     var boxCls = null, boxStyle = null;
     await selDrag(A, B, null, null, function () { var b = $('sel-box'); boxCls = !b.hidden && b.className; boxStyle = W.getComputedStyle(b).borderTopStyle + ' ' + W.getComputedStyle(b).borderTopColor; });
-    assert(boxCls === 'window' && /solid rgb\(31, 111, 197\)/.test(boxStyle), 'window box drawn blue solid: ' + boxCls + ' ' + boxStyle);
+    assert(boxCls === 'window' && /solid rgb\(208, 208, 208\)/.test(boxStyle), 'window box drawn grey solid (rfBR: no blue in the graphics area): ' + boxCls + ' ' + boxStyle);
     var win = anvil.selection();
     assert(win.length === 4 && win.every(function (s) { return s.kind === 'edge' && Math.abs(s.mid[0] + 20) < 1e-9; }), 'window: the 4 edges at x = -20 ' + JSON.stringify(win));
     assert($('sel-box').hidden, 'box hidden after release');

@@ -74,7 +74,7 @@
     UI.setTool('circle'); rskClick([3, 1]); selEv('mousemove', rskScr([3.2, 1.1]));
     selKey('.'); box = UI.sketchNumBox();
     assert(box && box.length === 2 && box[1].getAttribute('aria-label') === 'Diameter', 'R / Ø box');
-    r3sType(box[1], '.281'); r3sKey(box[1], 'Enter');
+    r3sType(box[1], '.281'); enterTwice(box[1]);   // lane BP: the Circle box commits on the first Enter, makes the circle on the second
     selKey('Escape');
     var c = f.entities[f.entities.length - 1];
     assert(c.t === 'circle' && c.r === 0.1405, 'hole Ø.281: r ' + c.r);
@@ -97,10 +97,10 @@
     // a pick on the circle well away from the start: the circle
     var b = 250 * Math.PI / 180, onC = saInfer(rskScr([10 * Math.cos(b), 10 * Math.sin(b)]));
     assert(onC.snap && onC.snap.kind === 'on' && onC.snap.e === 0, 'a pick on the circle away from the start: ' + JSON.stringify(onC.snap));
-    // along the tangent, 1.5 px off it: locked, Tangent glyph; the click adds Tangent with the circle
+    // along the tangent, 1.5 px off it: locked (rfBR: no glyph); the click adds Tangent with the circle
     var tq = [Q[0] + u[0] * 15 + Math.cos(a) * 1.5 * px, Q[1] + u[1] * 15 + Math.sin(a) * 1.5 * px];
     selEv('mousemove', rskScr(tq));
-    assert(D.querySelector('#dim-layer .sk-feedback use[href="#sk-ico-relTangent"]'), 'Tangent glyph on the chained line');
+    assert(!D.querySelector('#dim-layer .sk-feedback .rel-badge'), 'rfBR: no Tangent glyph on the chained line (Tangent is checked after the click)');
     rskClick(tq); selKey('Escape');
     var rl = sfRels(), l2 = rskEnts()[2];
     near(((l2.x2 - l2.x1) * Math.cos(a) + (l2.y2 - l2.y1) * Math.sin(a)) / Math.hypot(l2.x2 - l2.x1, l2.y2 - l2.y1), 0, 1e-9, 'square to the radius');
@@ -164,10 +164,10 @@
     await pmAccept();
     assert(rskEnts().filter(function (e) { return e.t === 'arc' && e.r === 0.25; }).length === 4, 'four R.25 fillets');
     var holes = [[0.5, 0.5], [5.5, 0.5], [5.5, 3.5], [0.5, 3.5]];
-    UI.setTool('circle');
     holes.forEach(function (h) {
+      UI.setTool('circle');   // lane BP: the second Enter closes the Circle tool after each hole
       rskClick(h); selEv('mousemove', rskScr([h[0] + 0.12, h[1] + 0.05])); selKey('.');
-      var b = UI.sketchNumBox(); r3sType(b[0], '.'); r3sType(b[1], '.281'); r3sKey(b[1], 'Enter');
+      var b = UI.sketchNumBox(); r3sType(b[0], '.'); r3sType(b[1], '.281'); enterTwice(b[1]);
     });
     UI.setTool('slot');
     rskClick([2.5, 2]); selEv('mousemove', rskScr([3.4, 2])); selKey('1');

@@ -62,7 +62,7 @@
     assert(r3sRels().indexOf('vertical:1') >= 0 && f.dims.length === 2, 'relations ' + r3sRels().join(' ') + ' dims ' + JSON.stringify(f.dims));
     selKey('Escape');
     UI.setTool('circle'); rskClick([-40, 0]); selEv('mousemove', rskScr([-35, 2]));
-    selKey('7'); r3sType(UI.sketchNumBox()[0], '7.5'); r3sKey(UI.sketchNumBox()[0], 'Enter');
+    selKey('7'); r3sType(UI.sketchNumBox()[0], '7.5'); enterTwice(UI.sketchNumBox()[0]);   // lane BP: Enter commits the size, Enter makes the circle
     var c = rskEnts()[2];
     assert(c && c.t === 'circle' && Math.abs(c.r - 7.5) < 1e-9, 'circle ' + JSON.stringify(c));
     var dd = f.dims[f.dims.length - 1];
@@ -78,8 +78,9 @@
     var f = UI.activeSketchFeature();
     f.entities.push({ t: 'circle', cx: 0, cy: 10, r: 10 }, { t: 'circle', cx: 30, cy: 15, r: 4 }, { t: 'line', x1: -20, y1: -20, x2: 10, y2: -20 }, { t: 'arc', cx: 30, cy: -20, r: 5, a0: 0, a1: 90 });
     UI.updateSketches(); UI.setTool('select');
-    var glyph = null;
-    await selDrag(rskScr([30, 15]), rskScr([0.4, 10.3]), null, null, function () { var g = r3sLayer().querySelector('.rel-badge'); glyph = g && g.innerHTML; });
+    var ring = false, glyph = false;
+    await selDrag(rskScr([30, 15]), rskScr([0.4, 10.3]), null, null, function () { ring = ring || !!r3sLayer().querySelector('circle'); glyph = glyph || !!r3sLayer().querySelector('.rel-badge'); });
+    assert(ring && !glyph, 'rfBR: the snap ring while over the centre, no Concentric glyph: ' + ring + ' / ' + glyph);
     var c = rskEnts()[1];
     assert(c.cx === 0 && c.cy === 10, 'centre merged ' + JSON.stringify(c));
     assert(r3sRels().indexOf('concentric:1,0') >= 0, 'relations ' + r3sRels().join(' '));

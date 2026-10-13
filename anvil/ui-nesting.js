@@ -342,15 +342,21 @@
     if (!ns || !t || !t.classList || !t.classList.contains('nest-qty')) return;
     if (qtyRead(t)) qtyFlush(); else t.value = String((ns.parts[+t.getAttribute('data-i')] || {}).qty || 1);
   });
-  // Enter anywhere in the Geometry Nesting panel's boxes nests (the values apply); only the ✓ button makes the Nest
-  // document, since ✓ leaves the part for a new document and asks about saving it
+  // Enter in a Geometry Nesting box with a new entry nests (the value is in) and keeps the panel; Enter with nothing
+  // new typed is ✓, which makes the Nest document (lane BP: the one Enter rule of ui-commands.js pmEnter)
   document.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter' || !ns || !ns.spec || !UI.pmSpec || UI.pmSpec() !== ns.spec) return;
     var t = ev.target, tag = t && t.tagName ? t.tagName.toLowerCase() : '', pm = document.getElementById('pm');
     if (!pm || !pm.contains(t) || tag === 'button' || tag === 'textarea') return;
     ev.preventDefault(); ev.stopPropagation();
-    if (t.classList && t.classList.contains('nest-qty')) { qtyRead(t); if (qtyTimer) { clearTimeout(qtyTimer); qtyTimer = null; } }
-    doNest();
+    UI.pmEnter(t, function () {
+      if (t.classList && t.classList.contains('nest-qty')) {
+        if (!qtyRead(t)) { UI.setStatus('Quantity: type a whole number of 1 or more.'); return false; }
+        if (qtyTimer) { clearTimeout(qtyTimer); qtyTimer = null; }
+      }
+      doNest();
+      UI.setStatus('Nested with the new value — press Enter again to make the Nest document, or keep changing the settings.');
+    });
   }, true);
   document.addEventListener('click', function (ev) {
     var tab = ev.target && ev.target.closest ? ev.target.closest('.nest-tab') : null;

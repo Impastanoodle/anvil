@@ -79,7 +79,7 @@
     assert(res.ok && Math.abs(so.w - f.entities[si].w - 6) < 1e-6, 'slot offset 3: ' + JSON.stringify(so));
     return labels.join(' ');
   });
-  step('r9/sketch9: relation icons keep their places while zooming (each keeps its offset from its entity while it stays free)', async function () {
+  step('r9/sketch9 (rfBR): no relation icons while zooming — the relations are held, none is drawn', async function () {
     await rskNew();
     UI.App.view.showGrid = false;   // (a failed earlier step may have left the sketch grid on)
     var f = UI.activeSketchFeature();
@@ -90,13 +90,11 @@
     anvil.addRelation('equal', ['4', '5']); anvil.addRelation('horizontal', ['4.c', '5.c']);
     f.dims = [{ e: 0, k: 'len', off: -6 }, { e: 1, k: 'len', off: -6 }, { e: 4, k: 'dia', ang: 45, off: 9 }];
     UI.updateSketches(); UI.zoomToFit(); await wait(400);
-    function spots() { UI.App.dimsStale = false; UI.drawDims(); return JSON.stringify(UI.relBadgeSpots()); }
-    var prev = spots(), n = D.querySelectorAll('#dim-layer g.rel-badge').length, hops = 0, c = [UI.size.w / 2 + 30, UI.size.h / 2 - 20];
-    assert(n >= 4, n + ' icons');
-    var seq = [1 / 1.12, 1 / 1.12, 1 / 1.12, 1 / 1.12, 1.12, 1.12, 1.12, 1.12, 1.12, 1.12, 1 / 1.12, 1 / 1.12];
-    for (var k = 0; k < seq.length; k++) { UI.zoomView(seq[k], c[0], c[1]); var cur = spots(); if (cur !== prev) hops++; prev = cur; }
-    assert(hops === 0, hops + ' zoom steps moved an icon off its place');
-    return n + ' icons, ' + seq.length + ' zoom steps, ' + hops + ' moves';
+    var c = [UI.size.w / 2 + 30, UI.size.h / 2 - 20], seq = [1 / 1.12, 1 / 1.12, 1.12, 1.12, 1.12, 1 / 1.12], shown = 0;
+    for (var k = 0; k < seq.length; k++) { UI.zoomView(seq[k], c[0], c[1]); UI.App.dimsStale = false; UI.drawDims(); shown += D.querySelectorAll('#dim-layer .rel-badge').length; }
+    assert(f.rels.length >= 6 && shown === 0, 'relations held (' + f.rels.length + '), icons drawn: ' + shown);
+    assert(D.querySelectorAll('#dim-layer g.dim text').length >= 3, 'the dimension labels still drawn');
+    return f.rels.length + ' relations, ' + seq.length + ' zoom steps, no icons';
   });
   step('r9/sketch9: typing only a line\'s length (numeric input off: a digit opens the box) and pressing Enter places it — the untouched angle field no longer blocks Enter', async function () {
     await rskNew();

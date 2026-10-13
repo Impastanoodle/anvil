@@ -111,7 +111,7 @@
     return 'exact, status kept, ✓+ icons';
   });
 
-  step('rfBO: Geometry Nesting nests as soon as a part is added; a quantity typed as "12" reads 12 (the box keeps the caret) and re-nests after a pause; Enter in the quantity or a value box nests and never makes the Nest document; a new document starts with an empty parts list; an mm document names the sheet presets in mm', async function () {
+  step('rfBO: Geometry Nesting nests as soon as a part is added; a quantity typed as "12" reads 12 (the box keeps the caret) and re-nests after a pause; Enter on a new entry in the quantity or a value box nests and keeps the panel (lane BP: the next Enter is ✓); a new document starts with an empty parts list; an mm document names the sheet presets in mm', async function () {
     var errs0 = errors.length;
     var f = await rfBJNew(rfBJSquare(0, 0, 10).concat([{ t: 'circle', cx: 5, cy: 5, r: 2 }]));
     UI.App.model.units = 'in';   // a 10 × 10 in blank with a hole on a 48 × 96 sheet
@@ -136,11 +136,9 @@
     assert(UI.pmTitle() === 'Geometry Nesting' && UI.App.model.name !== 'Nest' && UI.App.mode === 'sketch' && st.parts[0].qty === 6 && st.result.placements.length === 6, 'Enter in the quantity nests (6) and keeps the PM: ' + UI.pmTitle() + ' ' + st.result.placements.length);
     var sp = D.querySelector('#pm input[data-key="spacing"]');
     sp.focus(); sp.value = '1'; sp.dispatchEvent(new W.Event('input', { bubbles: true }));
-    await wait(30);
-    sp = D.querySelector('#pm input[data-key="spacing"]');   // the live re-nest re-rendered the panel
-    sp.focus();
-    await rfBOKey(sp, 'Enter');
-    assert(UI.pmTitle() === 'Geometry Nesting' && UI.App.mode === 'sketch' && UI.nestState().values.spacing === 1, 'Enter in Part spacing nests and keeps the PM');
+    sp = D.querySelector('#pm input[data-key="spacing"]');   // the live re-nest may have re-rendered the panel; the entry stays pending
+    await rfBOKey(sp, 'Enter');   // lane BP: Enter on a new entry nests and keeps the panel; the next Enter would be ✓ (the Nest document)
+    assert(UI.pmTitle() === 'Geometry Nesting' && UI.App.mode === 'sketch' && UI.nestState().values.spacing === 1 && /press Enter again/.test(statusText()), 'Enter in Part spacing nests and keeps the PM: ' + statusText());
     assert($('modal').hidden, 'no Save-changes dialog');
     UI.pmCancel(); await idle();
     await rfBJNew([{ t: 'circle', cx: 5, cy: 5, r: 2 }]);

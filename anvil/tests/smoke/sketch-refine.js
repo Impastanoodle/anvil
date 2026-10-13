@@ -217,23 +217,16 @@
     assert(g.entities[0].infinite === 'p1' && g.entities[1].infinite === 'p2', 'read back: ' + JSON.stringify(g.entities.slice(0, 2)));
     return 'rays ' + JSON.stringify([a.infinite, b.infinite]);
   });
-  step('sketch-refine: relation icons on small entities — a small related sketch zoomed out to a third of its size: no icon sits on the sketch\'s curves (icons keeping a place chosen at the larger zoom moved off the geometry)', async function () {
+  step('sketch-refine (rfBR): a small related sketch zoomed out to a third of its size draws no relation icons at all (none can sit on the curves)', async function () {
     await rskNew();
     var f = fxSk([{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 10, y1: 0, x2: 10, y2: 6 }, { t: 'line', x1: 10, y1: 6, x2: 0, y2: 6 }, { t: 'line', x1: 0, y1: 6, x2: 0, y2: 0 }, { t: 'circle', cx: 5, cy: 3, r: 1.5 }],
       [{ type: 'horizontal', refs: ['0'] }, { type: 'vertical', refs: ['1'] }, { type: 'horizontal', refs: ['2'] }, { type: 'vertical', refs: ['3'] }, { type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }, { type: 'coincident', refs: ['2.p2', '3.p1'] }, { type: 'coincident', refs: ['3.p2', '0.p1'] },
         { type: 'coincident', refs: ['0.p1', 'O'] }, { type: 'horizontal', refs: ['4.c', '3.mid'] }, { type: 'vertical', refs: ['4.c', '0.mid'] }]);
     UI.zoomView(0.08 / UI.cam.scale); UI.App.dimsStale = false; UI.drawDims(); await wait(50);
     UI.zoomView(3); UI.App.dimsStale = false; UI.drawDims(); await wait(50);
-    var pl = UI.activePlane(), segs = [];
-    f.entities.forEach(function (e) { K.entityPolylines(e).forEach(function (l) { var s = l.pts.map(function (q) { return UI.worldToScreen(K.to3D(pl, q[0], q[1])); }); for (var k = 0; k + 1 < s.length + (l.closed ? 1 : 0); k++) segs.push([s[k], s[(k + 1) % s.length]]); }); });
-    var vr = $('viewport').getBoundingClientRect(), on = 0, n = 0;
-    Array.prototype.forEach.call(D.querySelectorAll('#dim-layer g.rel-badge'), function (g) {
-      var b = g.getBoundingClientRect(), x0 = b.left - vr.left + 2, y0 = b.top - vr.top + 2, x1 = b.right - vr.left - 2, y1 = b.bottom - vr.top - 2;
-      n++;
-      if (segs.some(function (sg) { for (var t = 0; t <= 20; t++) { var x = sg[0][0] + (sg[1][0] - sg[0][0]) * t / 20, y = sg[0][1] + (sg[1][1] - sg[0][1]) * t / 20; if (x > x0 && x < x1 && y > y0 && y < y1) return true; } return false; })) on++;
-    });
-    assert(n > 0 && on === 0, on + ' of ' + n + ' icons on the geometry');
-    return n + ' icons, none on the curves';
+    var n = D.querySelectorAll('#dim-layer g.rel-badge').length;
+    assert(f.rels.length === 11 && n === 0, 'relations held (' + f.rels.length + '), icons drawn: ' + n);
+    return f.rels.length + ' relations, no icons';
   });
   step('sketch-refine: no uncaught errors or console.error calls in any step', async function () {
     await idle();

@@ -75,7 +75,7 @@
     UI.setTool('select');
     return 'arc R' + arc.r;
   });
-  step('r5/sketch5: relation icons keep clear of each other and of the dimension labels; merged corners show none; hovering an icon or a Display/Delete Relations row lights up its entities; the list puts over-defining items first, deletes from the keyboard, and a click on an entity filters it', async function () {
+  step('r5/sketch5: no relation icons (rfBR), the dimension labels drawn; a hovered relation or a Display/Delete Relations row lights up its entities; the list puts over-defining items first, deletes from the keyboard, and a click on an entity filters it', async function () {
     await rskNew();
     var f = UI.activeSketchFeature();
     f.entities.push({ t: 'rect', x: 0, y: 0, w: 40, h: 25 });
@@ -89,18 +89,13 @@
     var t0 = performance.now();
     for (var k = 0; k < 5; k++) r4Dims();
     var ms = (performance.now() - t0) / 5;
-    var icons = r5Boxes('#dim-layer .rel-badge[data-rel] rect'), labels = r5Boxes('#dim-layer g.dim text');
+    var icons = r5Boxes('#dim-layer .rel-badge'), labels = r5Boxes('#dim-layer g.dim text');
     UI.App.view.showDims = showDims;
-    assert(icons.length === 9, 'icons (corner Coincidents merged): ' + icons.length);
-    icons.forEach(function (a, i) {
-      icons.forEach(function (b, j) { if (j > i) assert(!r5Overlap(a, b), 'icons ' + i + ' / ' + j + ' overlap'); });
-      labels.forEach(function (b, j) { assert(!r5Overlap(a, b), 'icon ' + i + ' overlaps label ' + j + ' ' + a + ' / ' + b); });
-    });
-    // hover an icon: its entities light up
-    var eq = D.querySelector('#dim-layer .rel-badge[data-rel="' + f.rels.map(function (r) { return r.type; }).indexOf('equal') + '"]');
-    eq.dispatchEvent(new W.MouseEvent('mouseenter'));
+    assert(icons.length === 0 && labels.length >= 2, 'rfBR: no relation icons, the labels drawn: ' + icons.length + ' / ' + labels.length);
+    // a hovered relation (UI.App.relHover, as a Display/Delete Relations row sets it): its entities light up
+    UI.App.relHover = f.rels.map(function (r) { return r.type; }).indexOf('equal'); UI.App.dimsStale = false; UI.drawDims();
     assert(D.querySelectorAll('#dim-layer .rel-hot').length === 2, 'two circles lit: ' + D.querySelectorAll('#dim-layer .rel-hot').length);
-    D.querySelector('#dim-layer .rel-badge.hot').dispatchEvent(new W.MouseEvent('mouseleave'));
+    UI.App.relHover = null; UI.drawDims();
     assert(!D.querySelector('#dim-layer .rel-hot'), 'unlit');
     // over-define: Parallel on the top and bottom lines
     W.SketchSolver.addRelation(f, 'parallel', ['0', '2']);
@@ -168,8 +163,8 @@
     UI.setTool('dimension');
     rskClick([15, 0]); rskClick([15, -8]);
     assert(st() === 'Fully Defined' && UI.App.sketchState.status === 'full', 'placed: ' + st());
-    var black = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0x15181d; });
-    assert(black, 'drawn black at once');
+    var white = UI.groups.sketches.children.filter(function (o) { return o.userData && o.userData.sketch === f.id; }).every(function (o) { return o.material.color.getHex() === 0xffffff; });
+    assert(white, 'rfBR: drawn white (fully defined as under defined; the status bar names it)');
     var inp = $('dim-edit').querySelector('input');
     inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     UI.setTool('select');

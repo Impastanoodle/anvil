@@ -20,27 +20,52 @@
     assert(stField('d') && stField('flip') && stField('both'), 'Distance fields: ' + stLabels().join('|'));
     UI.pmSetField('d', '10'); await wait(20);
     var undo0 = UI.App.undo.length;
+    // lane BP: the click places the preview on that side and pops up the distance box by the cursor; Enter makes
+    // the line and closes the command (the user's rule: Enter completes a unit insertion, the next Enter closes)
     rskClick([20, 4]); await wait(20);
+    assert(f.entities.length === 1 && UI.App.tempEntities.length === 1 && Math.abs(UI.App.tempEntities[0].y1 - 10) < 1e-9, 'the click placed the preview at 10 and made nothing: ' + JSON.stringify(UI.App.tempEntities));
+    var ub = UI.sketchNumBox();
+    assert(ub && ub.length === 1 && ub[0].getAttribute('aria-label') === 'Distance' && +ub[0].value === 10 && D.activeElement === ub[0], 'the distance box by the cursor, focused: ' + (ub && ub[0].value));
+    assert(/Type the distance and press Enter/.test(statusText()), 'prompt: ' + statusText());
+    pressEnter(ub[0]); await wait(20);   // the first Enter commits the distance shown (the box stays), the second makes the line
+    assert(f.entities.length === 1 && UI.sketchNumBox() && /Distance 10.*press Enter again/.test(statusText()), 'the first Enter committed 10: ' + statusText());
+    pressEnter(UI.sketchNumBox()[0]); await wait(20);
     stLine(f.entities[1], 0, 10, 40, 10, 'distance 10');
     assert(stRels().indexOf('parallel 0/1') >= 0, 'Parallel: ' + stRels().join(', '));
     var dim = (f.rels || []).filter(function (r) { return r.type === 'distance' && r.refs.join() === '0,1'; })[0];
     assert(dim && Math.abs(dim.v - 10) < 1e-9, 'distance dimension 10: ' + JSON.stringify(f.rels));
     assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
-    assert(stTitle() === 'Parallel Line' && D.querySelector('#pm .pm-pick').classList.contains('filled'), 'the reference stays picked');
+    assert(!UI.hasPM() && !UI.parallelLineActive() && !UI.sketchNumBox(), 'Enter made the line and closed the command');
+    // Both sides: the reference preselected, Distance 10 remembered
+    UI.App.sel = { kind: 'entity', index: 0 }; UI.cmdParallelLine(); await wait(20);
+    assert(stTitle() === 'Parallel Line' && D.querySelector('#pm .pm-pick').classList.contains('filled') && +stField('d').value === 10, 'reopened with the preselected reference and Distance 10');
     stCheck('both');
     rskClick([20, 3]); await wait(20);
-    assert(f.entities.length === 4, 'Both sides adds two: ' + f.entities.length);
+    assert(f.entities.length === 2 && UI.App.tempEntities.length === 2, 'both sides previewed, nothing made yet: ' + UI.App.tempEntities.length);
+    enterTwice(UI.sketchNumBox()[0]); await wait(20);
+    assert(f.entities.length === 4 && !UI.hasPM(), 'Both sides adds two and closes: ' + f.entities.length);
     stLine(f.entities[2], 0, 10, 40, 10, 'both +'); stLine(f.entities[3], 0, -10, 40, -10, 'both -');
-    stCheck('both');
+    // Tangent to arc: no distance to ask for; Enter in the graphics area makes it
     f.entities.push({ t: 'circle', cx: 20, cy: 30, r: 5 }); UI.updateSketches();
+    UI.App.sel = { kind: 'entity', index: 0 }; UI.cmdParallelLine(); await wait(20);
+    stCheck('both');
     stRadio('place', 'tangent');
     rskClick([20, 25]); await wait(20);
+    assert(f.entities.length === 5 && !UI.sketchNumBox() && UI.App.tempEntities.length === 1, 'tangent previewed, no distance box');
+    selKey('Enter'); await wait(20);
     stLine(f.entities[5], 0, 25, 40, 25, 'tangent');
     assert(stRels().indexOf('tangent 5/4') >= 0 && stRels().indexOf('parallel 0/5') >= 0, 'Tangent + Parallel: ' + stRels().join(', '));
+    // Through point: the box and the PM's Distance show the clicked distance
+    UI.App.sel = { kind: 'entity', index: 0 }; UI.cmdParallelLine(); await wait(20);
     stRadio('place', 'point');
     rskClick([7, -17]); await wait(20);
+    ub = UI.sketchNumBox();
+    assert(ub && +ub[0].value === 17 && +stField('d').value === 17 && f.entities.length === 6, 'Through point: the clicked distance 17 in the box and the PM: ' + (ub && ub[0].value) + ' / ' + stField('d').value);
+    enterTwice(ub[0]); await wait(20);
     stLine(f.entities[6], 0, -17, 40, -17, 'through point');
+    assert(!UI.hasPM(), 'closed after the line');
     stNoRedundant('parallel lines');
+    UI.App.sel = { kind: 'entity', index: 0 }; UI.cmdParallelLine(); await wait(20);
     selKey('Escape');
     assert(!UI.hasPM() && !UI.parallelLineActive() && f.entities.length === 7, 'Esc closed it, lines kept: ' + f.entities.length);
     UI.ribbonFlyFace('line', 0);
@@ -60,10 +85,15 @@
     rskClick(K.to2D(pl, [20, 20, 10])); await wait(20);
     assert(D.querySelector('#pm .pm-pick').classList.contains('filled'), 'model edge picked');
     rskClick(K.to2D(pl, [20, 20, 6])); await wait(20);
-    assert(f.entities.length === 1, 'one line: ' + JSON.stringify(f.entities));
+    assert(f.entities.length === 0 && UI.sketchNumBox(), 'the click placed the preview and asked for the distance');   // lane BP
+    enterTwice(UI.sketchNumBox()[0]); await wait(20);
+    assert(f.entities.length === 1 && !UI.hasPM(), 'one line: ' + JSON.stringify(f.entities));
     var p = plEnds3(f.entities[0]).sort(function (a, b) { return a[0] - b[0]; });
     assert(Math.abs(p[0][0]) < 1e-6 && Math.abs(p[0][1] - 20) < 1e-6 && Math.abs(p[0][2] - 5) < 1e-6 && Math.abs(p[1][0] - 40) < 1e-6 && Math.abs(p[1][1] - 20) < 1e-6 && Math.abs(p[1][2] - 5) < 1e-6, 'line (0,20,5)-(40,20,5): ' + JSON.stringify(p));
     assert(!(f.rels || []).length && !(f.dims || []).length, 'no relation or dimension to the model edge: ' + JSON.stringify(f.rels));
+    UI.cmdParallelLine(); await wait(20);
+    rskClick(K.to2D(pl, [20, 20, 10])); await wait(20);
+    assert(D.querySelector('#pm .pm-pick').classList.contains('filled'), 'model edge picked again');
     stRadio('lenMode', 'length');
     assert(stField('len') && +stField('len').value === 40, 'Length starts at the edge\'s length: ' + (stField('len') && stField('len').value));
     UI.pmSetField('len', '20'); await wait(20);

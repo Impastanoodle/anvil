@@ -849,7 +849,8 @@
       ['mousedown', 'mouseup', 'click', 'wheel'].forEach(function (t) { box.addEventListener(t, function (ev) { ev.stopPropagation(); }); });
       box.addEventListener('keydown', function (ev) {
         ev.stopPropagation();
-        if (ev.key === 'Enter') { ev.preventDefault(); typed(box.value); }
+        // lane BP: Enter applies a new entry and keeps the box; Enter with nothing new typed is ✓ (ui-commands.js pmEnter)
+        if (ev.key === 'Enter') { ev.preventDefault(); if (box.value === box._armed) UI.pmEnter(null); else typed(box.value); }
         else if (ev.key === 'Tab') { ev.preventDefault(); if (typed(box.value) && UI.pmFocusField) UI.pmFocusField(last && last.kind === 'rz' ? 'ang' : 'dx'); }
         else if (ev.key === 'Escape') { ev.preventDefault(); hideBox(); }
       });
@@ -982,7 +983,7 @@
       if (!box) return;
       box.hidden = false;
       if (p) { box.style.left = Math.round(p[0] + 16) + 'px'; box.style.top = Math.round(p[1] - 12) + 'px'; }
-      box.value = fmtVal(kind, val);
+      box.value = fmtVal(kind, val); box._armed = box.value;
       box.title = ARCS[kind] ? 'Angle (°): type a value and press Enter' : 'Distance along ' + kind.toUpperCase() + ': type a value and press Enter';
     }
     function setPose(base, kind, val) {
@@ -997,10 +998,10 @@
       setPose(last.base, last.kind, +r.value);
       last.val = +r.value;
       if (live) live.val = +r.value;
-      if (box) box.value = fmtVal(last.kind, r.value);
+      if (box) { box.value = fmtVal(last.kind, r.value); box._armed = box.value; }
       shown = '';
       UI.renderPM(); ctx.preview();
-      UI.setStatus((ang ? 'Rotated ' + UI.fmtNum(r.value, 4) + '°' : 'Moved ' + UI.fmtDim(r.value) + ' along ' + last.kind.toUpperCase()) + '. ✓ applies.');
+      UI.setStatus((ang ? 'Rotated ' + UI.fmtNum(r.value, 4) + '°' : 'Moved ' + UI.fmtDim(r.value) + ' along ' + last.kind.toUpperCase()) + ' — press Enter again (or ✓) to apply and finish.');
       return true;
     }
     ctx.typed = typed;

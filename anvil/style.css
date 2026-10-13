@@ -1,50 +1,50 @@
 /* Anvil — SolidWorks-style workspace chrome */
 /* Every colour is a variable on :root; the dark theme (html[data-theme="dark"]) only redefines the variables. */
 :root {
-  --bg: #f0f2f5;
+  --bg: #f2f2f2;
   --panel: #ffffff;
-  --panel-2: #f7f8fa;
-  --line: #d3d8de;
-  --line-2: #e4e8ec;
-  --text: #24292f;
-  --muted: #6b7480;
-  --blue: #1f6fc5;
-  --blue-hover: #185da8;
-  --blue-soft: #d7e8fa;
-  --blue-line: #9dc2ea;
-  --sel: #cfe6ff;
-  --hover: #e9f2fb;
+  --panel-2: #f8f8f8;
+  --line: #d7d7d7;
+  --line-2: #e7e7e7;
+  --text: #282828;
+  --muted: #737373;
+  --blue: #3a3a3a;
+  --blue-hover: #1f1f1f;
+  --blue-soft: #e2e2e2;
+  --blue-line: #a8a8a8;
+  --sel: #d4d4d4;
+  --hover: #ececec;
   --green: #3fa34d;
   --red: #d9453b;
   --amber: #e8a23a;
   --warn-text: #9a6a00;
-  --group: linear-gradient(#e4edf8, #d3e2f3);
+  --group: linear-gradient(#efefef, #e0e0e0);
   --input-bg: #fff;
-  --input-line: #b9c1ca;
-  --btn-face: linear-gradient(#fff, #eef1f4);
-  --icon-ink: #4d5561;
+  --input-line: #c0c0c0;
+  --btn-face: linear-gradient(#fff, #f1f1f1);
+  --icon-ink: #545454;
   --logo: #c8442e;
   --msg-bg: #fff8dc;
   --msg-line: #e6d28a;
   --msg-text: #5a4a00;
   --msg-head: #fbeaa6;
   --pick-active: #fdf0f7;
-  --group-text: #1d3a5c;
+  --group-text: #262626;
   --ok-bg: #e8f6ea;
   --ok-line: #a9d8b1;
   --ok-text: #1f5f2a;
-  --pick-bg: #eef5fc;
-  --pick-filled: #e3f0fb;
-  --code-bg: #f2f4f7;
-  --pre-bg: #f5f7fa;
+  --pick-bg: #f3f3f3;
+  --pick-filled: #e8e8e8;
+  --code-bg: #f4f4f4;
+  --pre-bg: #f7f7f7;
   --menu-bg: #fff;
-  --menu-line: #b9c1ca;
-  --menu-disabled: #a8b0b9;
+  --menu-line: #c0c0c0;
+  --menu-disabled: #afafaf;
   --menu-shadow: rgba(0,0,0,0.14);
-  --modal-backdrop: rgba(20,24,30,0.35);
-  --modal-line: #9aa3ad;
+  --modal-backdrop: rgba(24,24,24,0.35);
+  --modal-line: #a2a2a2;
   --modal-shadow: rgba(0,0,0,0.25);
-  --toast-bg: #24292f;
+  --toast-bg: #282828;
   --toast-text: #fff;
   --overlay: rgba(255,255,255,0.85);
   --overlay-2: rgba(255,255,255,0.9);
@@ -64,53 +64,53 @@
   --mono: "Cascadia Mono", Consolas, "Segoe UI Mono", monospace;
 }
 :root[data-theme="dark"] {
-  --bg: #1e2126;
-  --panel: #2b2f36;
-  --panel-2: #23272d;
-  --line: #3a404a;
-  --line-2: #343a44;
-  --text: #e6e9ee;
-  --muted: #9aa4b0;
-  --blue: #5b9be0;
-  --blue-hover: #79b0ea;
-  --blue-soft: #2a3d55;
-  --blue-line: #4a6b95;
-  --sel: #2f4a6b;
-  --hover: #363c47;
+  --bg: #212121;
+  --panel: #2f2f2f;
+  --panel-2: #272727;
+  --line: #404040;
+  --line-2: #3a3a3a;
+  --text: #e9e9e9;
+  --muted: #a3a3a3;
+  --blue: #8c8c8c;
+  --blue-hover: #a8a8a8;
+  --blue-soft: #3a3a3a;
+  --blue-line: #707070;
+  --sel: #4a4a4a;
+  --hover: #3c3c3c;
   --green: #5cc46a;
   --red: #ea6d63;
   --amber: #f0b350;
   --warn-text: #e0b45a;
-  --group: linear-gradient(#3b4351, #2f3641);
-  --input-bg: #1e2126;
-  --input-line: #4a515c;
-  --btn-face: linear-gradient(#3b414b, #30363e);
-  --icon-ink: #c9d1da;
+  --group: linear-gradient(#434343, #363636);
+  --input-bg: #212121;
+  --input-line: #505050;
+  --btn-face: linear-gradient(#414141, #353535);
+  --icon-ink: #d0d0d0;
   --logo: #c8442e;
   --msg-bg: #3b3520;
   --msg-line: #6b5a1e;
   --msg-text: #f0d27a;
   --msg-head: #4d4322;
   --pick-active: #3a2633;
-  --group-text: #dce6f2;
+  --group-text: #e2e2e2;
   --ok-bg: #1f3a26;
   --ok-line: #2f6b3c;
   --ok-text: #9fe0ab;
-  --pick-bg: #2a3542;
-  --pick-filled: #2f3d4e;
-  --code-bg: #1e2126;
-  --pre-bg: #1e2126;
-  --menu-bg: #2b2f36;
-  --menu-line: #4a515c;
-  --menu-disabled: #6b7480;
+  --pick-bg: #333333;
+  --pick-filled: #3a3a3a;
+  --code-bg: #212121;
+  --pre-bg: #212121;
+  --menu-bg: #2f2f2f;
+  --menu-line: #505050;
+  --menu-disabled: #737373;
   --menu-shadow: rgba(0,0,0,0.5);
   --modal-backdrop: rgba(0,0,0,0.55);
-  --modal-line: #4a515c;
+  --modal-line: #505050;
   --modal-shadow: rgba(0,0,0,0.6);
-  --toast-bg: #e6e9ee;
-  --toast-text: #23272d;
-  --overlay: rgba(43,47,54,0.85);
-  --overlay-2: rgba(43,47,54,0.9);
+  --toast-bg: #e9e9e9;
+  --toast-text: #272727;
+  --overlay: rgba(47,47,47,0.85);
+  --overlay-2: rgba(47,47,47,0.9);
   --shadow: rgba(0,0,0,0.5);
   --viewport: linear-gradient(#3a4250, #282d35 45%, #1d2026);
   --viewport-white: #24282e;   /* r14/viewui14: "Plain" in the dark theme is the theme's plain colour */
@@ -136,6 +136,12 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+/* lane BQ: none of the browser's own blue — checkboxes, radios and sliders, and selected text, take the chrome's greys */
+:root { accent-color: var(--blue); }
+::selection { background: #c4c4c4; }
+input::selection, textarea::selection { background: #4a4a4a; color: #fff; }
+:root[data-theme="dark"] ::selection { background: #5c5c5c; }
+:root[data-theme="dark"] input::selection, :root[data-theme="dark"] textarea::selection { background: #7a7a7a; color: #fff; }
 input[type=number], input[type=text], select, textarea {
   background: var(--input-bg); border: 1px solid var(--input-line); border-radius: 2px; padding: 2px 5px; height: 22px;
 }
@@ -191,19 +197,19 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 
 /* ---- rfBF: menu bar, quick-access toolbar and CommandManager in the SolidWorks 2024 look -------------------------
    Light-grey chrome: the menu bar and the CommandManager share one grey, the tab strip under the buttons is a shade
-   darker and the active tab is raised white, joined to the buttons above it. Hover is a light blue frame, a toggled
+   darker and the active tab is raised white, joined to the buttons above it. Hover is a light grey frame, a toggled
    command (Exit Sketch, Instant2D, a running sketch tool) is pressed in grey. Selectors carry #menubar / #ribbon so
    they win over the older ribbon rules further down without moving them; sizes are unchanged (ribbon height, button
    widths), only colours, borders and shadows. */
 :root {
   --cm-bg: #f0f0f0; --cm-bar: #f0f0f0; --cm-strip: #dadada; --cm-tab: #fbfbfb; --cm-line: #c3c3c3; --cm-line-2: #d4d4d4;
-  --cm-text: #1e1e1e; --cm-muted: #5f6368; --cm-ink: #3a3f45;
-  --cm-hover: #e2ecf7; --cm-hover-line: #9fbfe2; --cm-press: #c9ced5; --cm-press-line: #8e97a3; --cm-down: #d3dfed;
+  --cm-text: #1e1e1e; --cm-muted: #636363; --cm-ink: #3e3e3e;
+  --cm-hover: #e5e5e5; --cm-hover-line: #a6a6a6; --cm-press: #cdcdcd; --cm-press-line: #969696; --cm-down: #d9d9d9;
 }
 :root[data-theme="dark"] {
-  --cm-bg: #2e3239; --cm-bar: #2a2e34; --cm-strip: #23262c; --cm-tab: #3a3f48; --cm-line: #474d57; --cm-line-2: #3d434c;
-  --cm-text: #e6e9ee; --cm-muted: #a3acb7; --cm-ink: #d0d7df;
-  --cm-hover: #34404f; --cm-hover-line: #557aa5; --cm-press: #4a525d; --cm-press-line: #79838f; --cm-down: #3d4a5c;
+  --cm-bg: #323232; --cm-bar: #2e2e2e; --cm-strip: #262626; --cm-tab: #3f3f3f; --cm-line: #4d4d4d; --cm-line-2: #424242;
+  --cm-text: #e9e9e9; --cm-muted: #ababab; --cm-ink: #d6d6d6;
+  --cm-hover: #3c3c3c; --cm-hover-line: #707070; --cm-press: #515151; --cm-press-line: #828282; --cm-down: #464646;
 }
 #menubar { background: var(--cm-bar); border-bottom-color: var(--cm-line-2); color: var(--cm-text); }
 #menubar #brand { color: var(--logo); font-weight: 700; font-style: italic; letter-spacing: 0.02em; }
@@ -363,9 +369,9 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--viewport); cursor: default; }
 #viewport.bg-white, #viewport.bg-plain { background: var(--viewport-white); }
 #viewport.bg-dark { background: var(--viewport-dark); }
-/* rfBH: SolidWorks 2024's default scene — a soft light blue at the top fading to white by the lower third (UI.SCENE_GRADIENT) */
-#viewport { --viewport: linear-gradient(180deg, #c3d3e8 0%, #dce6f2 32%, #f4f7fb 62%, #ffffff 100%); }
-html[data-theme="dark"] #viewport { --viewport: linear-gradient(180deg, #3a4250 0%, #282d35 45%, #1d2026 100%); }
+/* rfBR: Mastercam's graphics area in both UI themes, no blue — Gradient grey at the top to near black at the bottom,
+   Plain a flat grey-black, Dark darker still (ui-core.js draws the wireframe white over it) */
+#viewport, html[data-theme="dark"] #viewport { --viewport: linear-gradient(180deg, #3c3c3c 0%, #262626 45%, #0e0e0e 100%); --viewport-white: #1e1e1e; --viewport-dark: linear-gradient(180deg, #141414 0%, #050505 100%); }
 #viewport canvas.gl { display: block; position: absolute; inset: 0; }
 /* rfBH: SolidWorks 2024's Heads-up View toolbar — a transparent strip centred along the top of the graphics area, small
    icons, a drop-down's caret beside its icon, no separators; a button shows a frame only under the mouse or when on */
@@ -385,21 +391,21 @@ html[data-theme="dark"] #viewport { --viewport: linear-gradient(180deg, #3a4250 
 #hud .sep { width: 1px; height: 18px; background: var(--line); margin: 0 3px; }
 #hud .dd { position: relative; }
 #hud .caret { font-size: 9px; line-height: 1; color: var(--muted); margin-left: 1px; width: 7px; text-align: center; }
-#viewport { --hud-hover: rgba(255,255,255,0.75); --hud-hover-line: #9cc2ea; --hud-on: rgba(196,222,248,0.85); --hud-on-line: #3d8bdb; }
-#viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.12); --hud-hover-line: #4b6b8f; --hud-on: rgba(61,139,219,0.3); --hud-on-line: #5a9be6; }
-#viewport.bg-dark #hud button { color: #e6e8eb; }
+/* rfBR: the Heads-up toolbar over the grey-black graphics area: light glyphs, neutral grey frames */
+#viewport, #viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.12); --hud-hover-line: #6e6e6e; --hud-on: rgba(255,255,255,0.2); --hud-on-line: #a0a0a0; }
+#viewport #hud button { color: #e6e6e6; }
 #triad { position: absolute; left: 6px; bottom: 6px; width: 96px; height: 96px; z-index: 2; }
 /* r15/scalebar15: the scale bar at the bottom right: a 100 px bar labelled with its length in model units at the current zoom */
 #scale-bar { position: absolute; right: 12px; bottom: 10px; width: 100px; z-index: 2; pointer-events: none; color: var(--text); font: 400 11px/1.2 "Segoe UI", system-ui, sans-serif; text-align: center; letter-spacing: 0.01em; }
 #scale-bar-label { display: block; margin-bottom: 1px; white-space: nowrap; }
 #scale-bar-line { position: relative; height: 9px; border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor; }
 #scale-bar-line::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid currentColor; }
-#viewport.bg-dark #scale-bar { color: #e6e8eb; }
+#viewport #scale-bar { color: #e6e6e6; }   /* rfBR: on the grey-black ground in every background */
 #app.drawing-mode #scale-bar { display: none; }   /* a drawing document has its own sheet scale */   /* r14/viewui14: its axes take the mouse (click to orient) */
 /* r14/viewui14: the View Selector cube (Space), centred in the graphics area */
 #view-selector { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.18)); }
 #view-selector[hidden] { display: none; }
-#zoom-box { position: absolute; border: 1px dashed var(--blue); background: rgba(31,111,197,0.08); pointer-events: none; z-index: 2; }
+#zoom-box { position: absolute; border: 1px dashed #d0d0d0; background: rgba(255,255,255,0.06); pointer-events: none; z-index: 2; }
 /* sketch dimensions: an SVG overlay; only the value labels take the mouse */
 #dim-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }
 #dim-layer line, #dim-layer polyline, #dim-layer path.dl { stroke: var(--dim-ink); stroke-width: 1; fill: none; }
@@ -464,13 +470,13 @@ html[data-theme="dark"] #dim-layer .rel-badge.conflict { color: #ff8a84; } html[
 #status-right .sk-state { min-width: 96px; transition: color 120ms ease-out; }   /* r5/sketch5: Under / Fully / Over Defined keep their place */
 #status-right .occt.ok { color: #2f9e5b; font-weight: 600; } #status-right .occt.bad { color: #d9302c; font-weight: 600; }
 /* r14/sketchui14: the Modify box as in SolidWorks: "Modify" title, ✓ ✗ Rebuild buttons, then the value, its unit and the spin arrows */
-#dim-edit { position: absolute; z-index: 4; display: flex; flex-direction: column; width: 152px; background: var(--panel-2); border: 1px solid #8c96a3; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); overflow: hidden; font: 12px var(--font); color: var(--text); }
+#dim-edit { position: absolute; z-index: 4; display: flex; flex-direction: column; width: 152px; background: var(--panel-2); border: 1px solid #959595; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); overflow: hidden; font: 12px var(--font); color: var(--text); }
 #dim-edit[hidden] { display: none; }
 #dim-edit .dm-head { padding: 3px 8px; background: var(--panel); border-bottom: 1px solid var(--line); font-weight: 600; font-size: 11.5px; letter-spacing: 0.1px; cursor: default; user-select: none; }
 #dim-edit .dm-btns { display: flex; gap: 2px; padding: 4px 6px 3px; }
 #dim-edit .dm-btns button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; cursor: pointer; }
-#dim-edit .dm-btns button:hover { background: var(--hover); border-color: #9cc3ea; }
-#dim-edit .dm-btns button:active { background: #d4e6f8; }
+#dim-edit .dm-btns button:hover { background: var(--hover); border-color: #a8a8a8; }
+#dim-edit .dm-btns button:active { background: #dcdcdc; }
 #dim-edit .dm-row { display: flex; align-items: stretch; margin: 2px 6px 7px; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 2px; }
 #dim-edit input { flex: 1; min-width: 0; width: 60px; border: 0; outline: 0; font: 13px var(--font); padding: 3px 2px 3px 6px; background: transparent; color: inherit; }
 #dim-edit .dm-unit { align-self: center; padding: 0 4px 0 1px; color: var(--muted); font-size: 12px; user-select: none; }
@@ -479,18 +485,17 @@ html[data-theme="dark"] #dim-layer .rel-badge.conflict { color: #ff8a84; } html[
 #dim-edit .dm-spin button svg { width: 12px; height: 12px; }
 #dim-edit .dm-spin button:hover { background: var(--hover); color: var(--blue); }
 #dim-edit[data-error]:not([data-error=""]) .dm-row { border-color: #d33; }
-html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #33465c; } html[data-theme="dark"] #dim-edit .dm-btns button:hover { border-color: #4b6b8f; }
+html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #474747; } html[data-theme="dark"] #dim-edit .dm-btns button:hover { border-color: #6e6e6e; }
 #sketch-hint { position: absolute; left: 10px; top: 48px; background: var(--overlay-2); border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; color: var(--muted); z-index: 2; max-width: 360px; }
 #sketch-hint b { color: var(--text); }
 /* rfBH: the sketch hint as SolidWorks' status prompts read: plain small text on a faint ground, no frame */
 #sketch-hint { background: rgba(255,255,255,0.62); border-color: transparent; border-radius: 2px; padding: 3px 7px; font-size: 12px; color: #4a525c; box-shadow: none; }
-html[data-theme="dark"] #sketch-hint, #viewport.bg-dark #sketch-hint { background: rgba(30,34,40,0.62); color: #b4bcc6; }
-html[data-theme="dark"] #sketch-hint b, #viewport.bg-dark #sketch-hint b { color: #e6e9ee; }
-/* rfBH: sketch colours in the graphics area, as SolidWorks 2024: selection light blue (entities: mats.sketchSel in
-   ui-core.js), dimension text black with no halo (driven grey, above), inference lines dotted blue (a guide) or orange
-   (the click adds the relation) */
-#viewport { --sk-sel: #1e9cf0; --sk-infer: #2f7fd6; --sk-infer-rel: #e8891c; --dim-halo-w: 0px; }
-html[data-theme="dark"] #viewport, #viewport.bg-dark { --sk-sel: #7cc8ff; --sk-infer: #6fa8ea; --sk-infer-rel: #ffa94d; --dim-halo-w: 2.5px; }
+html[data-theme="dark"] #sketch-hint, #viewport #sketch-hint { background: rgba(30,30,30,0.62); color: #bcbcbc; }
+html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ececec; }
+/* rfBR: sketch colours on the grey-black graphics area, as Mastercam: selection yellow (entities: mats.sketchSel in
+   ui-core.js, yellow dashed), dimension text light with a dark halo (it reads over a shaded face too), inference lines
+   dotted grey (a guide) or lighter grey (the click adds the relation) */
+#viewport, html[data-theme="dark"] #viewport, #viewport.bg-dark { --sk-sel: #ffd400; --sk-infer: #8c8c8c; --sk-infer-rel: #c8c8c8; --dim-halo-w: 2.5px; }
 #exit-sketch { position: absolute; right: 10px; top: 48px; z-index: 3; display: flex; flex-direction: row; gap: 2px; padding: 2px; border-radius: 4px; background: var(--overlay-2); border: 1px solid var(--line); box-shadow: 0 1px 4px var(--shadow); }   /* r5/sketch5: the confirmation corner, side by side */
 #statusbar { white-space: nowrap; overflow: hidden; }
 #exit-sketch button { width: 36px; height: 36px; border-radius: 3px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; cursor: pointer; }
@@ -692,43 +697,43 @@ html[data-theme="dark"] #viewport, #viewport.bg-dark { --sk-sel: #7cc8ff; --sk-i
 .bom-table th, .bom-table td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
 .bom-table td:last-child, .bom-table td:first-child { text-align: center; }
 /* ---- selection (ui-select.js): Selection Filter toolbar (F5), box selection, Instant3D handles */
-#sel-filter { position: absolute; left: 10px; top: 46px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--line, #c9d0d8); border-radius: 4px; box-shadow: 0 2px 8px var(--shadow); font: 11px "Segoe UI", sans-serif; }
+#sel-filter { position: absolute; left: 10px; top: 46px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--line, #cfcfcf); border-radius: 4px; box-shadow: 0 2px 8px var(--shadow); font: 11px "Segoe UI", sans-serif; }
 #sel-filter[hidden] { display: none; }
-#sel-filter .sf-title { color: #6b7380; margin: 0 6px 0 2px; white-space: nowrap; }
-#sel-filter .sf-sep { width: 1px; height: 20px; background: #c9d0d8; margin: 0 3px; }
+#sel-filter .sf-title { color: #727272; margin: 0 6px 0 2px; white-space: nowrap; }
+#sel-filter .sf-sep { width: 1px; height: 20px; background: #cfcfcf; margin: 0 3px; }
 #sel-filter .sf-btn { width: 28px; height: 28px; padding: 3px; border: 1px solid transparent; border-radius: 3px; background: transparent; cursor: pointer; }
 #sel-filter .sf-btn:hover { border-color: var(--blue); }
-#sel-filter .sf-btn.on { background: rgba(31,111,197,0.16); border-color: var(--blue); }
+#sel-filter .sf-btn.on { background: rgba(58,58,58,0.16); border-color: var(--blue); }
 #sel-filter.suspended .sf-btn.on { opacity: 0.5; }
-/* window (left to right): solid blue; crossing (right to left): dashed green, as SolidWorks draws them */
+/* window (left to right): solid dark grey; crossing (right to left): dashed green, as SolidWorks draws them */
 #sel-box { position: absolute; pointer-events: none; z-index: 3; }
 #sel-box[hidden] { display: none; }
-#sel-box.window { border: 1px solid #1f6fc5; background: rgba(31,111,197,0.12); }
+#sel-box.window { border: 1px solid #d0d0d0; background: rgba(255,255,255,0.08); }   /* rfBR: grey, no blue in the graphics area */
 #sel-box.crossing { border: 1px dashed #1fa653; background: rgba(31,166,83,0.12); }
-#tree .ti.sel-owner { background: rgba(31,111,197,0.07); box-shadow: inset 2px 0 0 #7fb8ef; }
+#tree .ti.sel-owner { background: rgba(58,58,58,0.07); box-shadow: inset 2px 0 0 #8a8a8a; }
 #i3d-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
 #i3d-layer .i3d-handle { pointer-events: all; cursor: grab; }
 #i3d-layer .i3d-grip { stroke: transparent; stroke-width: 14; fill: transparent; }
-#i3d-layer .i3d-shaft { stroke: #1f6fc5; stroke-width: 2.5; }
-#i3d-layer .i3d-head { fill: #1f6fc5; }
-#i3d-layer .i3d-base { fill: #fff; stroke: #1f6fc5; stroke-width: 1.5; }
-#i3d-layer .i3d-dot { fill: #1f6fc5; stroke: #fff; stroke-width: 1.5; }
+#i3d-layer .i3d-shaft { stroke: #3a3a3a; stroke-width: 2.5; }
+#i3d-layer .i3d-head { fill: #3a3a3a; }
+#i3d-layer .i3d-base { fill: #fff; stroke: #3a3a3a; stroke-width: 1.5; }
+#i3d-layer .i3d-dot { fill: #3a3a3a; stroke: #fff; stroke-width: 1.5; }
 /* r12/sketchui12: in an open sketch the dimension dots stay hidden until the pointer is over one (SolidWorks draws no dots on sketch dimensions) */
 #i3d-layer .i3d-handle:hover .i3d-shaft { stroke: #ff8c1a; }
 #i3d-layer .i3d-handle:hover .i3d-head, #i3d-layer .i3d-handle:hover .i3d-dot { fill: #ff8c1a; }
-#i3d-layer .i3d-ruler { fill: none; stroke: #23272d; stroke-width: 1; }
-#i3d-layer .i3d-tick { stroke: #23272d; stroke-width: 1; }
+#i3d-layer .i3d-ruler { fill: none; stroke: #272727; stroke-width: 1; }
+#i3d-layer .i3d-tick { stroke: #272727; stroke-width: 1; }
 #i3d-layer .i3d-tick.major { stroke-width: 1.5; }
-#i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: #23272d; }
-#i3d-layer .i3d-value { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #1f6fc5; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: #272727; }
+#i3d-layer .i3d-value { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #3a3a3a; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
 #i3d-layer .i3d-dim line, #i3d-layer .i3d-dim .i3d-dim-line { stroke: #1f5fd0; stroke-width: 1; fill: none; }   /* r14/sketchui14: feature dimensions in the part laid out as the sketch's (ANSI), driving blue */
 #i3d-layer .i3d-dim polygon, #i3d-layer .i3d-dim .i3d-dim-arrow { fill: #1f5fd0; stroke: none; }
 #i3d-layer .i3d-dim-text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #1f5fd0; pointer-events: all; cursor: text; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
 #i3d-edit { position: absolute; z-index: 4; background: var(--input-bg); border: 1px solid var(--blue); border-radius: 3px; padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 #i3d-edit[hidden] { display: none; }
 #i3d-edit input { width: 84px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: inherit; }
-html[data-theme="dark"] #i3d-layer .i3d-ruler, html[data-theme="dark"] #i3d-layer .i3d-tick { stroke: #d8dde3; }
-html[data-theme="dark"] #i3d-layer .i3d-tick-label { fill: #d8dde3; }
+html[data-theme="dark"] #i3d-layer .i3d-ruler, html[data-theme="dark"] #i3d-layer .i3d-tick { stroke: #dcdcdc; }
+html[data-theme="dark"] #i3d-layer .i3d-tick-label { fill: #dcdcdc; }
 html[data-theme="dark"] #i3d-layer .i3d-value, html[data-theme="dark"] #i3d-layer .i3d-dim-text { stroke: #1e232b; }
 
 /* ---- smooth/chrome: calm, flicker-free workspace chrome (SolidWorks feel) */
@@ -992,11 +997,15 @@ body.splitting #viewport { pointer-events: none; }
    sketch on a dark ground; the SVG overlays drawn there (dimensions and their arrows, relation glyphs, the inference
    lines and the pointer readout, the model-snap label, ordinate sets, Instant3D handles) take the dark-ground colours.
    The three.js lines follow the same rule in ui-core.js (darkViewport). */
-#viewport.bg-dark #dim-layer, #viewport.bg-dark #ord-layer, #viewport.bg-dark #i3d-layer {
-  --dim: #a7b0bb; --sketch: #6fa8ea; --dim-ink: #9eabbc; --dim-text: #f2f4f7; --dim-halo: rgba(30,33,38,0.9);
-  --blue: #6fa8ea; --green: #5cc46a; --text: #e6e9ee; --menu-bg: #2b2f36;
+/* rfBR: the graphics area is grey-black in every background and theme, so these always apply, in neutral greys */
+#viewport #dim-layer, #viewport #ord-layer, #viewport #i3d-layer {
+  --dim: #b4b4b4; --sketch: #ffffff; --dim-ink: #b4b4b4; --dim-text: #f2f2f2; --dim-halo: rgba(30,30,30,0.9);
+  --blue: #e0e0e0; --green: #5cc46a; --text: #e6e6e6; --menu-bg: #2b2b2b;
 }
 :root[data-theme="dark"] #dim-layer, :root[data-theme="dark"] #ord-layer { --blue: #6fa8ea; }
+/* lane BQ: the chrome's --blue is grey now; the sketch overlays keep their sketch blue (graphics-area colours, lane BR) */
+#dim-layer, #ord-layer, #i2d-layer { --blue: #1f6fc5; }
+:root[data-theme="dark"] #i2d-layer { --blue: #5b9be0; }
 #viewport.bg-dark #dim-layer .rel-badge { color: #8fe083; } #viewport.bg-dark #dim-layer .rel-badge rect { fill: #1f2a1d; stroke: #5fb455; }
 #viewport.bg-dark #dim-layer .rel-badge:hover rect, #viewport.bg-dark #dim-layer .rel-badge.sel rect { fill: #2b4527; stroke: #8fe083; }
 #viewport.bg-dark #dim-layer .rel-badge.infer { color: #ffd75a; } #viewport.bg-dark #dim-layer .rel-badge.infer rect { fill: #3a3218; stroke: #d4a300; }
@@ -1009,8 +1018,8 @@ body.splitting #viewport { pointer-events: none; }
 #viewport.bg-dark #dim-layer .dim.driven text, :root[data-theme="dark"] #dim-layer .dim.driven text { fill: #a7b0bb; }
 #viewport.bg-dark #dim-layer .dim.redundant text, #viewport.bg-dark #dim-layer .dim.conflict text,
 :root[data-theme="dark"] #dim-layer .dim.redundant text, :root[data-theme="dark"] #dim-layer .dim.conflict text { fill: #ff7a72; }
-#viewport.bg-dark #i3d-layer .i3d-ruler, #viewport.bg-dark #i3d-layer .i3d-tick { stroke: #d8dde3; }
-#viewport.bg-dark #i3d-layer .i3d-tick-label { fill: #d8dde3; }
+#viewport.bg-dark #i3d-layer .i3d-ruler, #viewport.bg-dark #i3d-layer .i3d-tick { stroke: #dcdcdc; }
+#viewport.bg-dark #i3d-layer .i3d-tick-label { fill: #dcdcdc; }
 #viewport.bg-dark #i3d-layer .i3d-value, #viewport.bg-dark #i3d-layer .i3d-dim-text { stroke: #1e232b; }
 #viewport.bg-dark #i3d-layer .i3d-dim line, #viewport.bg-dark #i3d-layer .i3d-dim .i3d-dim-line,
 :root[data-theme="dark"] #i3d-layer .i3d-dim line, :root[data-theme="dark"] #i3d-layer .i3d-dim .i3d-dim-line { stroke: #6fa8ea; }
@@ -1019,60 +1028,86 @@ body.splitting #viewport { pointer-events: none; }
 #viewport.bg-dark #i3d-layer .i3d-dim-text, #viewport.bg-dark #i3d-layer .i3d-value,
 :root[data-theme="dark"] #i3d-layer .i3d-dim-text, :root[data-theme="dark"] #i3d-layer .i3d-value { fill: #79b0ea; }
 /* the hint and the confirmation corner float over a dark ground in the light theme too */
-#viewport.bg-dark #sketch-hint { background: rgba(43,47,54,0.9); border-color: #4a515c; color: #b8c0ca; }
-#viewport.bg-dark #sketch-hint b { color: #e6e9ee; }
+#viewport.bg-dark #sketch-hint { background: rgba(47,47,47,0.9); border-color: #505050; color: #bfbfbf; }
+#viewport.bg-dark #sketch-hint b { color: #e9e9e9; }
 #viewport.bg-dark #exit-sketch button:hover { background: rgba(255,255,255,0.08); }
 
 /* ---- rfC: the Levels Manager pane and the status bar's Level chip (ui-levels.js; moved here from the style element the
-   script injected) */
-#levels-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; font-size: 12px; }
+   script injected). rfBT: one white table in both themes (Mastercam's Levels Manager): the FeatureManager feature-name
+   font (the body font, inherited as the tree's names inherit it) in the light theme's ink, light grey grid lines,
+   20 px rows, the light theme's yellow on the main level. The theme tokens are set to their light values inside the
+   pane and the main-level popup, so their inputs, selects and icons stay light in the dark theme too. */
+#levels-panel, .lvl-pop {
+  --lv-bg: #fff; --lv-ink: #24292f; --lv-muted: #6b7480; --lv-grid: #e3e6ea; --lv-grid-2: #cdd2d8; --lv-hover: #e5f1fb;
+  --lvl-main: #ffe680; --lvl-main-text: #3d3000;
+  --text: var(--lv-ink); --muted: var(--lv-muted); --line: var(--lv-grid-2); --line-2: var(--lv-grid); --hover: var(--lv-hover);
+  --input-bg: #fff; --input-line: #b9c1ca; --icon-ink: #4d5561; --blue: #1f6fc5; --blue-soft: #d7e8fa; --blue-line: #99c9ef;
+  color-scheme: light; background: var(--lv-bg); color: var(--lv-ink);
+}
+#levels-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 #levels-panel[hidden], #app.drawing-mode #levels-panel { display: none !important; }
-#levels-panel, :root { --lvl-main: #ffe680; --lvl-main-text: #3d3000; }
-:root[data-theme="dark"] #levels-panel, :root[data-theme="dark"] { --lvl-main: #6b5a17; --lvl-main-text: #fff4c2; }
-.lvl-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); background: var(--panel-2); white-space: nowrap; }
+.lvl-head { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; box-sizing: border-box; font-weight: 600; border-bottom: 1px solid var(--lv-grid-2); white-space: nowrap; }
 .lvl-head svg { display: block; }
-.lvl-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line-2); }
-.lvl-tools button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--input-bg); color: var(--text); }
-.lvl-tools button:hover { background: var(--hover); border-color: var(--blue-line); }
-.lvl-tools select { flex: 1; min-width: 0; max-width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); border-radius: 3px; }
-#lvl-grid { overflow: auto; flex: 1; min-height: 60px; padding-bottom: 12px; scrollbar-gutter: stable; }
-.lvl-row { display: grid; grid-template-columns: 40px 38px 18px minmax(40px, 1fr) 44px minmax(50px, .9fr); align-items: center; min-height: 21px; column-gap: 3px; padding: 0 4px; white-space: nowrap; cursor: default; }
-.lvl-row:not(.lvl-hdr):hover { background: var(--hover); }
-.lvl-hdr { position: sticky; top: 0; z-index: 1; background: var(--panel-2); border-bottom: 1px solid var(--line-2); color: var(--muted); font-size: 11px; }
-.lvl-row.main { background: var(--lvl-main); color: var(--lvl-main-text); font-weight: 700; }
+/* the toolbar: New, All on, All off as 24 × 22 icon buttons, then the Level sets list */
+.lvl-tools { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px; box-sizing: border-box; border-bottom: 1px solid var(--lv-grid-2); }
+.lvl-tools .lvl-tb { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 22px; border: 1px solid transparent; border-radius: 3px; color: var(--icon-ink); }
+.lvl-tools .lvl-tb:hover { background: var(--lv-hover); border-color: var(--blue-line); }
+.lvl-tools .lvl-sep { flex: none; width: 1px; height: 16px; margin: 0 4px; background: var(--lv-grid-2); }
+.lvl-tools select { flex: 1; min-width: 0; height: 22px; padding: 0 4px; }
+/* the table: one grid whose rows (the header too) are subgrids, so every column is as wide as its widest cell and the
+   header and the rows line up; each cell is one 19 px line with a light grey rule under the row and between the
+   columns. Number, Visible and Entities fit their header; Name and Level Set share the rest */
+#lvl-grid { overflow: auto; flex: 1; min-height: 60px; background: var(--lv-bg); display: grid; grid-template-columns: max-content max-content 22px minmax(48px, 1fr) max-content minmax(48px, 1fr); grid-auto-rows: 20px; align-content: start; }
+.lvl-row { display: grid; grid-column: 1 / -1; grid-template-columns: 54px 50px 22px minmax(40px, 1fr) 56px minmax(40px, 1fr); grid-template-columns: subgrid; height: 20px; box-sizing: border-box; line-height: 19px; border-bottom: 1px solid var(--lv-grid); white-space: nowrap; cursor: default; }
+.lvl-row > span { min-width: 0; padding: 0 5px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--lv-grid); }
+.lvl-row > span:last-child { border-right: 0; }
+.lvl-row:not(.lvl-hdr):hover { background: var(--lv-hover); }
+.lvl-hdr { position: sticky; top: 0; z-index: 1; background: var(--lv-bg); font-weight: 600; border-bottom-color: var(--lv-grid-2); }
+.lvl-hdr > span { border-right-color: var(--lv-grid-2); }
+.lvl-h-num, .lvl-h-count { text-align: right; }
+.lvl-h-vis { text-align: center; }
+.lvl-row.main { background: var(--lvl-main); color: var(--lvl-main-text); }
 .lvl-row.main:hover { background: var(--lvl-main); }
-.lvl-row.off:not(.main) .lvl-name, .lvl-row.off:not(.main) .lvl-num { color: var(--muted); }
-.lvl-num { text-align: right; padding-right: 6px; cursor: pointer; }
+.lvl-row.off:not(.main) .lvl-name, .lvl-row.off:not(.main) .lvl-num, .lvl-row.off:not(.main) .lvl-set { color: var(--lv-muted); }
+.lvl-num, .lvl-count { text-align: right; font-variant-numeric: tabular-nums; }
+.lvl-num { cursor: pointer; }
 .lvl-num:hover { text-decoration: underline; }
-.lvl-vis { text-align: center; font-weight: 700; cursor: pointer; border: 1px solid var(--line-2); border-radius: 2px; height: 15px; line-height: 15px; margin: 0 8px; }
+.lvl-vis { text-align: center; font-weight: 600; cursor: pointer; }
+.lvl-row:not(.main) .lvl-vis:hover { background: rgba(31,111,197,0.12); }
 .lvl-row.main .lvl-vis { cursor: not-allowed; }
-.lvl-color { width: 16px; height: 15px; padding: 0; border: 0; background: none; cursor: pointer; }
+.lvl-row > .lvl-sw { display: flex; align-items: center; justify-content: center; padding: 0; }
+.lvl-color { width: 14px; height: 12px; padding: 0; border: 0; background: none; cursor: pointer; vertical-align: middle; -webkit-appearance: none; appearance: none; }
+.lvl-color::-webkit-color-swatch-wrapper { padding: 0; }
+.lvl-color::-webkit-color-swatch { border: 1px solid #7d8590; border-radius: 1px; }
+.lvl-color::-moz-color-swatch { border: 1px solid #7d8590; border-radius: 1px; }
 .lvl-color[data-none] { opacity: .35; }
-.lvl-nocolor { display: inline-block; width: 14px; height: 12px; border: 1px dashed var(--modal-line); box-sizing: border-box; }
-.lvl-name, .lvl-set { overflow: hidden; text-overflow: ellipsis; cursor: text; min-height: 15px; }
-.lvl-name em { font-style: normal; font-weight: 400; font-size: 10px; color: var(--muted); }
+.lvl-nocolor { display: inline-block; width: 14px; height: 12px; border: 1px dashed #9aa2ad; box-sizing: border-box; vertical-align: middle; }
+.lvl-name, .lvl-set { cursor: text; }
+.lvl-name em { font-style: normal; color: var(--lv-muted); }
 .lvl-row.main .lvl-name em { color: inherit; opacity: .75; }
-.lvl-count { text-align: right; padding-right: 6px; font-variant-numeric: tabular-nums; }
-.lvl-edit { width: 100%; box-sizing: border-box; font: inherit; font-weight: 400; padding: 0 2px; border: 1px solid var(--blue); background: var(--input-bg); color: var(--text); }
-.lvl-main { border-top: 1px solid var(--line); padding: 6px 8px 8px; display: grid; grid-template-columns: 1fr; gap: 4px; background: var(--panel-2); }
+.lvl-row > span:has(> .lvl-edit) { padding: 0 1px; }
+.lvl-edit { width: 100%; height: 18px; box-sizing: border-box; vertical-align: top; margin-top: 0; font: inherit; padding: 0 3px; border: 1px solid var(--blue); border-radius: 0; background: #fff; color: var(--lv-ink); }
+/* the main level: Number, Name, Level Set and Display, label and box on one 22 px line each */
+.lvl-main { border-top: 1px solid var(--lv-grid-2); padding: 6px 8px 8px; display: grid; grid-template-columns: 1fr; gap: 4px; background: var(--lv-bg); }
 .lvl-sec { font-weight: 600; }
-.lvl-main label { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 4px; }
-.lvl-main input, .lvl-main select { min-width: 0; font: inherit; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); border-radius: 3px; padding: 1px 3px; }
-.lvl-foot { color: var(--muted); font-size: 11px; line-height: 1.35; white-space: normal; }
-.lvl-empty { margin: 8px; color: var(--muted); line-height: 1.4; }
+.lvl-main label { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 6px; }
+.lvl-main input, .lvl-main select { min-width: 0; width: auto; height: 22px; box-sizing: border-box; font: inherit; padding: 0 4px; border-radius: 2px; }
+.lvl-foot { color: var(--lv-muted); line-height: 1.35; white-space: normal; }
+.lvl-empty { margin: 8px; color: var(--lv-muted); line-height: 1.35; }
 #status-right .lvl-chip { cursor: pointer; }
 #status-right .lvl-chip:hover { text-decoration: underline; }
-.lvl-pop { position: fixed; z-index: 60; min-width: 170px; max-width: 280px; background: var(--menu-bg); border: 1px solid var(--menu-line); box-shadow: 0 3px 10px var(--menu-shadow); font-size: 12px; color: var(--text); }
-.lvl-pop-title { padding: 4px 8px; font-weight: 600; border-bottom: 1px solid var(--line-2); }
+/* the status bar chip's popup: the same white table, rows 20 px */
+.lvl-pop { position: fixed; z-index: 60; min-width: 170px; max-width: 280px; border: 1px solid var(--lv-grid-2); box-shadow: 0 3px 10px rgba(0,0,0,0.25); }
+.lvl-pop-title { height: 24px; line-height: 23px; box-sizing: border-box; padding: 0 8px; font-weight: 600; border-bottom: 1px solid var(--lv-grid-2); }
 .lvl-pop-list { max-height: 240px; overflow: auto; }
-.lvl-pop-row { display: flex; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
-.lvl-pop-row b { min-width: 28px; text-align: right; }
-.lvl-pop-row em { margin-left: auto; padding-left: 10px; font-style: normal; color: var(--muted); }
-.lvl-pop-row:hover { background: var(--hover); }
-.lvl-pop-row.main { background: var(--lvl-main, #ffe680); color: var(--lvl-main-text, #3d3000); font-weight: 700; }
-.lvl-pop-row.off { color: var(--muted); }
-.lvl-pop-num { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--line-2); }
-.lvl-pop-num input { width: 70px; font: inherit; background: var(--input-bg); color: var(--text); border: 1px solid var(--input-line); }
+.lvl-pop-row { display: flex; gap: 6px; height: 20px; line-height: 19px; box-sizing: border-box; padding: 0 8px; border-bottom: 1px solid var(--lv-grid); cursor: pointer; white-space: nowrap; }
+.lvl-pop-row b { min-width: 28px; text-align: right; font-weight: 400; font-variant-numeric: tabular-nums; }
+.lvl-pop-row em { margin-left: auto; padding-left: 10px; font-style: normal; color: var(--lv-muted); font-variant-numeric: tabular-nums; }
+.lvl-pop-row:hover { background: var(--lv-hover); }
+.lvl-pop-row.main { background: var(--lvl-main); color: var(--lvl-main-text); }
+.lvl-pop-row.off { color: var(--lv-muted); }
+.lvl-pop-num { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
+.lvl-pop-num input { width: 70px; height: 22px; box-sizing: border-box; padding: 0 4px; }
 
 /* rfAR: SketchXpert results and Manual Repair rows, Scan Equal sets */
 #pm .xp-sol .xp-count { font-size: 12px; margin: 2px 0 4px; color: var(--muted, #666); }
@@ -1082,7 +1117,7 @@ body.splitting #viewport { pointer-events: none; }
 #pm #scan-equal .rel-row { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 #pm #scan-equal .rel-row em { margin-left: auto; font-size: 11px; }
 /* rfAW: Sketch Picture scale tool distance box (ui-sketch-picture.js) */
-.sk-pic-scale { position: fixed; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--panel-2); border: 1px solid #8c96a3; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); font: 12px var(--font); color: var(--text); }
+.sk-pic-scale { position: fixed; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--panel-2); border: 1px solid #959595; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); font: 12px var(--font); color: var(--text); }
 .sk-pic-scale input { width: 80px; font: inherit; }
 .sk-pic-scale input.err { outline: 1px solid #d0302a; }
 .sk-pic-scale button { font: inherit; padding: 1px 6px; }
@@ -1103,69 +1138,69 @@ body.splitting #viewport { pointer-events: none; }
 .rb.rb-wide { width: 84px; }   /* a large button whose label needs two longer lines (Shaded Sketch Contours) */
 
 /* ---- rfBG: FeatureManager, PropertyManager, Task Pane, status bar, menus, dialogs and toasts in the SolidWorks 2024
-   look. Neutral grey chrome around white panels, Windows 11 selection blue, Segoe UI 9 pt, an 8 px rhythm. Only the
+   look. Neutral grey chrome around white panels, grey selection (lane BQ: no blue in the chrome), Segoe UI 9 pt, an 8 px rhythm. Only the
    lane's own colour variables are added here (--sw-*), so the ribbon and viewport passes keep theirs. */
 :root {
-  --sw-chrome: #e9ebee;          /* tab strips, the Task Pane strip, the status bar */
-  --sw-chrome-line: #c9ced5;
-  --sw-panel: #fbfbfc;           /* the FeatureManager / PropertyManager ground */
-  --sw-row-hover: #e5f1fb;
-  --sw-row-sel: #cce4f7;
-  --sw-row-sel-line: #99c9ef;
-  --sw-twisty: #7b8189;
-  --sw-group-head: linear-gradient(#f7f8fa, #e7eaee);
-  --sw-group-line: #c4cad2;
-  --sw-group-text: #1f2329;
+  --sw-chrome: #ebebeb;          /* tab strips, the Task Pane strip, the status bar */
+  --sw-chrome-line: #cdcdcd;
+  --sw-panel: #fbfbfb;           /* the FeatureManager / PropertyManager ground */
+  --sw-row-hover: #ececec;
+  --sw-row-sel: #d6d6d6;
+  --sw-row-sel-line: #8c8c8c;
+  --sw-twisty: #808080;
+  --sw-group-head: linear-gradient(#f8f8f8, #eaeaea);
+  --sw-group-line: #c9c9c9;
+  --sw-group-text: #232323;
   --sw-group-body: #ffffff;
-  --sw-pick: #dde9f7;
-  --sw-pick-line: #9fbfe3;
+  --sw-pick: #e6e6e6;
+  --sw-pick-line: #a6a6a6;
   --sw-pick-active: #fcd6ea;
   --sw-pick-active-line: #d6489a;
   --sw-msg-bg: #fffbe0;
   --sw-msg-head: #f8eeb0;
   --sw-msg-line: #e0cd78;
-  --sw-help: #1f6fc5;
-  --sw-rollbar: linear-gradient(#5c97d6, #2f6db3);
+  --sw-help: #3a3a3a;
+  --sw-rollbar: linear-gradient(#7a7a7a, #4a4a4a);
   --sw-dlg-bg: #f3f3f3;
   --sw-btn: #fdfdfd;
   --sw-btn-line: #c8c8c8;
-  --sw-btn-hover: #f5f9fd;
-  --sw-default: #005fb8;
-  --sw-default-hover: #1a6fc0;
-  --sw-toast: #2f333a;
+  --sw-btn-hover: #f2f2f2;
+  --sw-default: #2b2b2b;
+  --sw-default-hover: #454545;
+  --sw-toast: #333333;
   --sw-toast-text: #ffffff;
-  --sw-menu-gutter: #f3f4f6;
+  --sw-menu-gutter: #f4f4f4;
 }
 :root[data-theme="dark"] {
-  --sw-chrome: #23272d;
-  --sw-chrome-line: #3a404a;
-  --sw-panel: #2b2f36;
-  --sw-row-hover: #363c47;
-  --sw-row-sel: #2f4a6b;
-  --sw-row-sel-line: #4a6b95;
-  --sw-twisty: #9aa4b0;
-  --sw-group-head: linear-gradient(#383e48, #30353e);
-  --sw-group-line: #4a515c;
-  --sw-group-text: #e6e9ee;
-  --sw-group-body: #2f343b;
-  --sw-pick: #2a3542;
-  --sw-pick-line: #4a6b95;
+  --sw-chrome: #272727;
+  --sw-chrome-line: #404040;
+  --sw-panel: #2f2f2f;
+  --sw-row-hover: #3c3c3c;
+  --sw-row-sel: #4a4a4a;
+  --sw-row-sel-line: #707070;
+  --sw-twisty: #a3a3a3;
+  --sw-group-head: linear-gradient(#3e3e3e, #353535);
+  --sw-group-line: #505050;
+  --sw-group-text: #e9e9e9;
+  --sw-group-body: #343434;
+  --sw-pick: #333333;
+  --sw-pick-line: #707070;
   --sw-pick-active: #4a2a3d;
   --sw-pick-active-line: #e06aae;
   --sw-msg-bg: #3b3520;
   --sw-msg-head: #4d4322;
   --sw-msg-line: #6b5a1e;
-  --sw-help: #79b0ea;
-  --sw-rollbar: linear-gradient(#6fa8ea, #3f78bb);
-  --sw-dlg-bg: #262a30;
-  --sw-btn: #353a42;
-  --sw-btn-line: #4f5662;
-  --sw-btn-hover: #3d4450;
-  --sw-default: #3d8be0;
-  --sw-default-hover: #5b9be0;
-  --sw-toast: #e6e9ee;
-  --sw-toast-text: #23272d;
-  --sw-menu-gutter: #30353d;
+  --sw-help: #a8a8a8;
+  --sw-rollbar: linear-gradient(#a8a8a8, #6e6e6e);
+  --sw-dlg-bg: #2a2a2a;
+  --sw-btn: #3a3a3a;
+  --sw-btn-line: #565656;
+  --sw-btn-hover: #444444;
+  --sw-default: #5e5e5e;
+  --sw-default-hover: #6e6e6e;
+  --sw-toast: #e9e9e9;
+  --sw-toast-text: #272727;
+  --sw-menu-gutter: #353535;
 }
 
 /* FeatureManager: folder tabs on a grey strip, the active tab joined to the panel below it */
@@ -1297,12 +1332,12 @@ body.splitting #viewport { pointer-events: none; }
 #ribbon .rb-captions { position: absolute; left: 0; right: 0; height: 14px; pointer-events: none; }
 #ribbon .rb-caption { position: absolute; top: 0; height: 14px; line-height: 14px; font-size: 11px; text-align: center; color: var(--cm-text, var(--muted)); opacity: 0.8; white-space: nowrap; overflow: hidden; border-top: 1px solid var(--cm-line, var(--line)); }
 .tf-gnomon { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
-.tf-dyn-val { position: absolute; z-index: 3; width: 76px; font: 12px/1.2 'Segoe UI', Arial, sans-serif; padding: 2px 4px; border: 1px solid var(--blue, #1f6fd0); border-radius: 2px; background: var(--panel, #fff); color: var(--text, #222); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }
+.tf-dyn-val { position: absolute; z-index: 3; width: 76px; font: 12px/1.2 'Segoe UI', Arial, sans-serif; padding: 2px 4px; border: 1px solid var(--blue, #3a3a3a); border-radius: 2px; background: var(--panel, #fff); color: var(--text, #222); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }
 
-/* lane BN: Mastercam's dynamic gnomon (Transform ▸ Dynamic): the value box next to the cursor (light blue, black text,
+/* lane BN: Mastercam's dynamic gnomon (Transform ▸ Dynamic): the value box next to the cursor (light grey, black text,
    as Mastercam shows it) and the tooltip on an inert out-of-plane handle */
-.tf-dyn-val { width: 72px; text-align: center; font-weight: 600; background: #cfe6ff; color: #000; border: 1px solid #5b8fd6; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
-.tf-dyn-val:focus { outline: 2px solid #2f6fe0; outline-offset: 0; }
+.tf-dyn-val { width: 72px; text-align: center; font-weight: 600; background: #d4d4d4; color: #000; border: 1px solid #6d6d6d; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+.tf-dyn-val:focus { outline: 2px solid #3a3a3a; outline-offset: 0; }
 .tf-dyn-tip { position: absolute; z-index: 3; pointer-events: none; font: 11px/1.3 'Segoe UI', Arial, sans-serif; padding: 2px 6px; border: 1px solid #888; border-radius: 2px; background: #ffffe1; color: #222; white-space: nowrap; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
 .tf-gnomon text { user-select: none; font-family: 'Segoe UI', Arial, sans-serif; }
 

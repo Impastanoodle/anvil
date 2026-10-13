@@ -149,32 +149,19 @@
     near(Math.hypot(e.x2 - e.x1, e.y2 - e.y1), L0, 1e-6, 'same length ' + JSON.stringify(e));
     return 'length ' + L0;
   });
-  step('rfAV: relation icons round a 0.1 in notch line with four relations (Horizontal, Equal, Perpendicular, Parallel) never overlap each other or sit on a line, zoomed from 24 to 120 px and back', async function () {
+  step('rfAV (rfBR): no relation icons round a 0.1 in notch line with four relations (Horizontal, Equal, Perpendicular, Parallel), zoomed from 24 to 120 px and back', async function () {
     var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 0.1, y2: 0 }, { t: 'line', x1: 0.1, y1: 0, x2: 0.1, y2: 0.1 }, { t: 'line', x1: 0.1, y1: 0.1, x2: 1, y2: 0.1 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: -1 }],
       [['coincident', ['0.p2', '1.p1']], ['coincident', ['1.p2', '2.p1']], ['coincident', ['0.p1', '3.p1']], ['horizontal', ['0']], ['equal', ['0', '1']], ['perpendicular', ['0', '1']], ['parallel', ['0', '2']]]);
-    var pl = UI.activePlane(), vr = $('viewport').getBoundingClientRect(), out = [];
-    function segHit(p, q, b) {
-      var dx = q[0] - p[0], dy = q[1] - p[1], t0 = 0, t1 = 1, P4 = [-dx, dx, -dy, dy], Q4 = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
-      for (var k = 0; k < 4; k++) { if (Math.abs(P4[k]) < 1e-12) { if (Q4[k] < 0) return false; continue; } var r = Q4[k] / P4[k]; if (P4[k] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; } }
-      return t1 - t0 > 1e-9;
-    }
+    var pl = UI.activePlane(), out = [];
     var zooms = [24, 30, 45, 70, 120, 45, 24];
     for (var z = 0; z < zooms.length; z++) {
       UI.zoomView((0.1 / zooms[z]) / UI.cam.scale);
       var m = UI.worldToScreen(K.to3D(pl, 0.05, 0));
       UI.panView(UI.size.w / 2 - m[0], UI.size.h / 2 - m[1]);
-      await wait(200);
       UI.App.dimsStale = false; UI.drawDims(true);
-      var rects = Array.prototype.map.call(D.querySelectorAll('#dim-layer .rel-badge'), function (gg) { var b = gg.getBoundingClientRect(); return { b: [b.left - vr.left, b.top - vr.top, b.right - vr.left, b.bottom - vr.top], rel: gg.getAttribute('data-rel') }; });
-      var segs = f.entities.map(function (e) { return [UI.worldToScreen(K.to3D(pl, e.x1, e.y1)), UI.worldToScreen(K.to3D(pl, e.x2, e.y2))]; });
-      var onA = rects.filter(function (r) { return +r.rel >= 3; }).length;
-      assert(onA >= 4, zooms[z] + ' px: the four relations shown (' + onA + ' icons)');
-      rects.forEach(function (r, i) {
-        var b = [r.b[0] + 1, r.b[1] + 1, r.b[2] - 1, r.b[3] - 1];
-        segs.forEach(function (s, k) { assert(!segHit(s[0], s[1], b), zooms[z] + ' px: icon of relation ' + r.rel + ' on line ' + k + ' ' + JSON.stringify(r.b)); });
-        rects.forEach(function (o, j) { if (j > i) assert(!(r.b[0] < o.b[2] - 1 && r.b[2] > o.b[0] + 1 && r.b[1] < o.b[3] - 1 && r.b[3] > o.b[1] + 1), zooms[z] + ' px: icons ' + r.rel + ' and ' + o.rel + ' overlap'); });
-      });
-      out.push(zooms[z] + ':' + rects.length);
+      var n = D.querySelectorAll('#dim-layer .rel-badge').length;
+      assert(n === 0 && f.rels.length >= 7, zooms[z] + ' px: relations held (' + f.rels.length + '), icons drawn: ' + n);
+      out.push(zooms[z] + ':' + n);
     }
     UI.zoomView(0.25 / UI.cam.scale);
     return out.join(' ');

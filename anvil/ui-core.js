@@ -76,7 +76,7 @@ var UI = (function () {
   // isometric box reads top ~0.85, sides ~0.5-0.6 and a face square to the view ~0.76 of the part colour
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8d96a1, 0.7));
   var key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-0.45, 0.85, 0.9); camera.add(key);
-  var fill = new THREE.DirectionalLight(0xf2f6ff, 0.35); fill.position.set(1, -0.35, 0.7); camera.add(fill);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(1, -0.35, 0.7); camera.add(fill);
   var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0.2, 0.5, -1); camera.add(rim);
   // rfBH: the lights' targets ride on the camera too. A DirectionalLight aims at its target, which defaults to the world
   // origin: with the light 10000 units out on the camera that made all three a headlight, so a face square to the view
@@ -96,55 +96,57 @@ var UI = (function () {
     // r14/viewui14: the HLR / HLV occluder writes depth only, so the background (gradient, plain or dark) shows through it
     // as in SolidWorks; the edges are drawn after it (renderOrder 0.5), so hidden ones are still hidden
     hlr: new THREE.MeshBasicMaterial({ color: 0xffffff, colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
-    edge: new THREE.LineBasicMaterial({ color: 0x23272d }),
-    // r14/viewui14: SolidWorks' face highlights are a tint over the shaded face, not a repaint: blue for selected, orange
-    // for the pre-highlight, light enough that the face's shading (and its edges) still read through
+    // rfBR: the graphics area is Mastercam's grey-black, so the wireframe is white: model edges in Wireframe / HLR / HLV
+    // (dark on a shaded body: applyLinePalette), every sketch entity whatever its definition state; a selection is yellow
+    // (the sketch entity / model edge drawn dashed); no blue anywhere in the graphics area
+    edge: new THREE.LineBasicMaterial({ color: 0xffffff }),
+    // r14/viewui14: face highlights are a tint over the shaded face, not a repaint (rfBR: yellow for selected, orange for
+    // the pre-highlight), light enough that the face's shading (and its edges) still read through
     hover: new THREE.MeshBasicMaterial({ color: 0xff9a2e, transparent: true, opacity: 0.38,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
-    sel: new THREE.MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.42, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // r14/viewui14: blue (was green 0x69d98a at 0.6)
+    sel: new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.42, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // rfBR: yellow (was blue 0x3d8bff)
     preview: new THREE.MeshPhongMaterial({ color: 0xf2cf5b, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
     previewCut: new THREE.MeshPhongMaterial({ color: 0xe8746a, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
     // the sketch being edited is drawn on top of the body so it stays visible on hidden planes
-    sketch: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
-    sketchDim: new THREE.LineBasicMaterial({ color: 0x8a94a3 }),
-    sketchSel: new THREE.LineBasicMaterial({ color: 0x1e9cf0, depthTest: false }),   // rfBH: selected sketch entities light blue, as SolidWorks 2024 (was green 0x1fa653)
-    // active-sketch entities by definition state (sketch-solver.js): under = mats.sketch (blue), fully defined, over
-    // defined (redundant, yellow), conflict (red)
-    sketchFull: new THREE.LineBasicMaterial({ color: 0x15181d, depthTest: false }),
+    sketch: new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }),
+    sketchDim: new THREE.LineBasicMaterial({ color: 0xc8c8c8 }),   // sketches not being edited: a slightly dimmer white
+    // rfBR: selected sketch entities yellow and dashed (Mastercam's selection): the dash is in screen pixels (dashPx /
+    // gapPx, read by the thick-line shader; dashSize / gapSize follow the zoom for the 1-pixel fallback)
+    sketchSel: new THREE.LineDashedMaterial({ color: 0xffd400, depthTest: false, dashSize: 1, gapSize: 0.6 }),
+    // active-sketch entities by definition state (sketch-solver.js): under = mats.sketch, fully defined (rfBR: both white,
+    // the status bar names the state), over defined (redundant) and conflict red
+    sketchFull: new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }),
     sketchOver: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),   // sketchdims: over defined is red, as SolidWorks draws it
     sketchConflict: new THREE.LineBasicMaterial({ color: 0xd9302c, depthTest: false }),
-    temp: new THREE.LineBasicMaterial({ color: 0x1f5fd0, depthTest: false }),
-    planeFace: new THREE.MeshBasicMaterial({ color: 0x5a9be6, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
-    planeFaceHi: new THREE.MeshBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+    sketchConstr: new THREE.LineBasicMaterial({ color: 0xa8a8a8, depthTest: false }),   // rfBR: construction geometry light grey (dashed)
+    temp: new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }),
+    planeFace: new THREE.MeshBasicMaterial({ color: 0x8c8c8c, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+    planeFaceHi: new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }),
     planeFaceHover: new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }),   // r5/select5
-    planeLine: new THREE.LineBasicMaterial({ color: 0x5a9be6 }),
-    grid: new THREE.LineBasicMaterial({ color: 0xb8c0ca, transparent: true, opacity: 0.55 }),
-    gridMajor: new THREE.LineBasicMaterial({ color: 0x9aa4b0, transparent: true, opacity: 0.7 })
+    planeLine: new THREE.LineBasicMaterial({ color: 0x8c8c8c }),
+    grid: new THREE.LineBasicMaterial({ color: 0x4a4a4a, transparent: true, opacity: 0.55 }),
+    gridMajor: new THREE.LineBasicMaterial({ color: 0x626262, transparent: true, opacity: 0.7 })
   };
+  mats.sketchSel.userData.dashPx = 6; mats.sketchSel.userData.gapPx = 4;
   mats.sketchDangling = new THREE.LineBasicMaterial({ color: 0xa88300 });   // r12/occtui12: a Dangling sketch (its face is gone), SolidWorks' olive
 
   var bodyMesh = null, edgeLines = null;
 
   // ------------------------------------------------------------------ viewport theme
-  // The viewport background is CSS (the renderer clears to transparent) and is themed by the stylesheet through
-  // document.documentElement.dataset.theme; the line materials above are tuned for the light background, so the
-  // dark theme swaps them here. `light` is exactly the set of colours the materials are created with.
-  // The HLR body colour follows the theme too: it exists to occlude hidden lines, so it must read as "background".
-  var THEME_COLORS = {
-    light: { edge: 0x23272d, grid: 0xb8c0ca, gridMajor: 0x9aa4b0, sketchDim: 0x8a94a3, planeLine: 0x5a9be6, hlr: 0xffffff, sketchFull: 0x15181d, sketch: 0x1f5fd0, temp: 0x1f5fd0, sketchSel: 0x1e9cf0 },
-    dark: { edge: 0xd8dde3, grid: 0x3a424c, gridMajor: 0x4e5763, sketchDim: 0xa7b0bb, planeLine: 0x6fa8ea, hlr: 0x1e232b, sketchFull: 0xeef1f5, sketch: 0x6fa8ea, temp: 0x6fa8ea, sketchSel: 0x7cc8ff }   // rfC: under-defined blue and the selection green readable on dark grounds
-  };
+  // The viewport background is CSS (the renderer clears to transparent). rfBR: it is grey-black with every background
+  // and either UI theme (Mastercam's graphics area), so the line palette no longer follows the theme: one set of
+  // colours, exactly the ones the materials are created with. The HLR body colour only occludes (colorWrite off).
+  var LINE_PALETTE = { edge: 0xffffff, grid: 0x4a4a4a, gridMajor: 0x626262, sketchDim: 0xc8c8c8, planeLine: 0x8c8c8c, hlr: 0x1e1e1e, sketchFull: 0xffffff, sketch: 0xffffff, temp: 0xffffff, sketchSel: 0xffd400, sketchConstr: 0xa8a8a8 };
   var viewportTheme = 'light';
-  // r14/viewui14: the line palette follows what the lines are drawn over. The dark palette applies with the dark theme or
-  // the Dark background; model edges on a shaded body stay dark as in SolidWorks (light edges on a light grey body read
-  // as a washed-out outline) and turn light only where the body is not painted (HLR / HLV / wireframe on dark).
-  var EDGE_ON_BODY_DARK = 0x16191d;
-  function darkViewport() { return viewportTheme === 'dark' || App.view.bg === 'dark'; }
+  // r14/viewui14: model edges on a shaded body stay dark as in SolidWorks (light edges on a light grey body read as a
+  // washed-out outline) and are white only where the body is not painted (HLR / HLV / wireframe).
+  var EDGE_ON_BODY_DARK = 0x161616;
+  function darkViewport() { return true; }   // rfBR: the graphics area is always a dark ground
   function applyLinePalette() {
-    var c = THEME_COLORS[darkViewport() ? 'dark' : 'light'];
+    var c = LINE_PALETTE;
     Object.keys(c).forEach(function (k) { if (mats[k].color.getHex() !== c[k]) { mats[k].color.setHex(c[k]); mats[k].needsUpdate = true; } });
     var s = App.view.style, painted = s !== 'hlr' && s !== 'hlv' && s !== 'wireframe';
-    if (darkViewport() && painted && mats.edge.color.getHex() !== EDGE_ON_BODY_DARK) { mats.edge.color.setHex(EDGE_ON_BODY_DARK); mats.edge.needsUpdate = true; }
+    if (painted && mats.edge.color.getHex() !== EDGE_ON_BODY_DARK) { mats.edge.color.setHex(EDGE_ON_BODY_DARK); mats.edge.needsUpdate = true; }
     needsRender = true;
   }
   // setViewportTheme('dark' | 'light'): idempotent; UI.setTheme (ui-app.js) calls it after switching the stylesheet.
@@ -158,8 +160,8 @@ var UI = (function () {
     return name;
   }
 
-  // r14/viewui14: View ▸ Background — 'gradient' (SolidWorks' default: light blue-grey at the top fading to white),
-  // 'plain' (the theme's plain colour) or 'dark'; remembered per browser in localStorage 'anvil.bg'. The background is
+  // r14/viewui14: View ▸ Background — 'gradient' (rfBR: grey #3c3c3c at the top to near black, Mastercam's), 'plain'
+  // (a flat grey-black) or 'dark' (the darkest); remembered per browser in localStorage 'anvil.bg'. The background is
   // CSS behind the transparent canvas, so a change costs no WebGL work. ('white' is the older name of 'plain'.)
   var BACKGROUNDS = ['gradient', 'plain', 'dark'];
   function setBackground(b, noSave) {
@@ -783,7 +785,7 @@ var UI = (function () {
     if (kind === 'hid' || kind === 'silhid') { m.depthFunc = THREE.GreaterDepth; m.depthWrite = false; m.uniforms.dashPx.value = 5; m.uniforms.gapPx.value = 3; }
     return m;
   }
-  function hiddenLineColor() { return viewportTheme === 'dark' ? 0x7d8792 : 0x8a919a; }
+  function hiddenLineColor() { return 0x8c8c8c; }   // rfBR: hidden lines mid grey on the grey-black ground
   // copies what the source material says onto its thick twin (cheap; runs per object per frame)
   function syncFatMat(fm, src, w, hidden) {
     var srcColor = src.uniforms && src.uniforms.color ? src.uniforms.color.value : src.color;
@@ -925,7 +927,7 @@ var UI = (function () {
   function lineMat(mat, w, extra) { mat.userData.lineWidth = w; if (extra) Object.keys(extra).forEach(function (k) { mat.userData[k] = extra[k]; }); return mat; }
   lineMat(mats.edge, LINE_W.edge, { hlv: true });
   lineMat(silMat, LINE_W.edge, { hlv: true, fatSil: true });
-  ['sketch', 'sketchFull', 'sketchOver', 'sketchConflict'].forEach(function (k) { lineMat(mats[k], LINE_W.sketch); });
+  ['sketch', 'sketchFull', 'sketchOver', 'sketchConflict', 'sketchConstr'].forEach(function (k) { lineMat(mats[k], LINE_W.sketch); });
   lineMat(mats.sketchSel, LINE_W.sketchSel);
   lineMat(mats.temp, LINE_W.temp);
   lineMat(mats.sketchDim, LINE_W.sketchInactive);
@@ -1359,7 +1361,10 @@ var UI = (function () {
   function featureFamily(id) { return [id]; }
 
   var edgeHoverMat = lineMat(new THREE.LineBasicMaterial({ color: 0xff8c1a, depthTest: false }), LINE_W.edgeHover);   // r13/lines13: thick
-  var edgeSelMat = lineMat(new THREE.LineBasicMaterial({ color: 0x1f6fe8, depthTest: false }), LINE_W.edgeSel);   // r14/viewui14: blue (was green)
+  // rfBR: a selected model edge yellow and dashed (screen-pixel dashes in the thick-line shader), as the sketch selection
+  var edgeSelMat = lineMat(new THREE.LineDashedMaterial({ color: 0xffd400, depthTest: false, dashSize: 1, gapSize: 0.6 }), LINE_W.edgeSel, { dashPx: 7, gapPx: 4 });
+  // under the dashes a near-black line as wide, so the gaps read as gaps over the white wireframe edge beneath
+  edgeSelMat.userData.under = lineMat(new THREE.LineBasicMaterial({ color: 0x1a1a1a, depthTest: false }), LINE_W.edgeSel);
   function pushPolyline(arr, pts) {
     for (var i = 0; i + 1 < pts.length; i++) arr.push(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
   }
@@ -1376,6 +1381,15 @@ var UI = (function () {
     var g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     var o = new THREE.LineSegments(g, mat);
+    if (mat.isLineDashedMaterial) { mat.dashSize = cam.scale * 7; mat.gapSize = cam.scale * 4; o.computeLineDistances(); }   // rfBR
+    if (mat.userData.under) {
+      var ug = new THREE.BufferGeometry();
+      ug.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+      var under = new THREE.LineSegments(ug, mat.userData.under);
+      under.renderOrder = 11.9; under.raycast = noRaycast;
+      g.addEventListener('dispose', function () { ug.dispose(); });   // disposeGroup disposes the parent's geometry
+      o.add(under);
+    }
     o.renderOrder = 12;
     return o;
   }
@@ -1523,6 +1537,7 @@ var UI = (function () {
     S.pointRefs(f, i).forEach(function (pr) {
       if (/\.mid$/.test(pr.ref) || (e.t === 'rect' && /\.c$/.test(pr.ref))) return;
       if (inf && inf[pr.ref.split('.')[1]]) return;
+      if (App.view.showEndpoints === false && !/\.c$/.test(pr.ref)) return;   // View ▸ Display ▸ Show Endpoints off: centres only (ui-panels.js)
       var key = Math.round(pr.pt[0] / cam.scale / 2) + ',' + Math.round(pr.pt[1] / cam.scale / 2);
       var b = ptsBy[mat.uuid] || (ptsBy[mat.uuid] = { mat: mat, pts: [] });
       if (ptsBy._seen && ptsBy._seen[key]) return;
@@ -1562,6 +1577,7 @@ var UI = (function () {
     sketchSegsScale = cam.scale;
     sceneVer++;
     disposeGroup(groups.sketches);
+    mats.sketchSel.dashSize = cam.scale * 6; mats.sketchSel.gapSize = cam.scale * 4;   // rfBR: the 1-pixel fallback's dashes at this zoom
     App.model.features.forEach(function (f) {
       if (f.type !== 'sketch' || !sketchVisible(f)) return;
       var pl; try { pl = K.resolvePlane(f.plane, App.model, App.build && App.build.planes); } catch (e) { return; }
@@ -1580,18 +1596,21 @@ var UI = (function () {
         var mat = selected ? mats.sketchSel : (active ? (state && stateMat[state.entities[i]]) || mats.sketch : mats.sketchDim);
         if (ly && ly.mat && !selected && !e.construction && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = ly.mat;   // over defined stays red
         if (!active && !selected && App.build && App.build.warnings && /^Dangling\b/.test(App.build.warnings[f.id] || '')) mat = mats.sketchDangling;   // r12/occtui12
+        if (active && e.construction && !selected && mat !== mats.sketchOver && mat !== mats.sketchConflict) mat = mats.sketchConstr;   // rfBR: light grey
         if (e.t === 'point') {
           var p = K.to3D(pl, e.x, e.y), s = cam.scale * 3;
           var g = new THREE.BufferGeometry();
           g.setAttribute('position', new THREE.Float32BufferAttribute([].concat(V.add(p, V.scale(pl.x, -s)), V.add(p, V.scale(pl.x, s)), V.add(p, V.scale(pl.y, -s)), V.add(p, V.scale(pl.y, s))), 3));
-          groups.sketches.add(new THREE.LineSegments(g, mat));
+          var pc = new THREE.LineSegments(g, mat);
+          if (mat.isLineDashedMaterial) pc.computeLineDistances();
+          groups.sketches.add(pc);
           return;
         }
         if (!pls.length) return;
         var baseMat = mat, dashed = e.construction || !!(ly && ly.dashed);
-        if (dashed) mat = dashedMat(mat);   // construction geometry / centerlines (and BEND-type layers): dashed
+        if (dashed && !mat.isLineDashedMaterial) mat = dashedMat(mat);   // construction geometry / centerlines (and BEND-type layers): dashed
         var ls = new THREE.LineSegments(lineGeometryFromPolylines(pl, pls), mat);
-        if (dashed) ls.computeLineDistances();
+        if (mat.isLineDashedMaterial) ls.computeLineDistances();   // rfBR: a selected entity is dashed too
         ls.userData = { sketch: f.id, index: i };
         if (active) ls.renderOrder = 10;
         groups.sketches.add(ls);
@@ -1843,7 +1862,7 @@ var UI = (function () {
     var dark = darkViewport();
     tctx.lineCap = 'round'; tctx.lineJoin = 'round'; tctx.font = '600 22px Segoe UI, sans-serif'; tctx.textAlign = 'center'; tctx.textBaseline = 'middle';
     // a small ball at the origin, like SolidWorks' triad
-    tctx.fillStyle = dark ? '#9aa3ad' : '#6b7480'; tctx.beginPath(); tctx.arc(c[0], c[1], 4, 0, Math.PI * 2); tctx.fill();
+    tctx.fillStyle = dark ? '#a0a0a0' : '#6e6e6e'; tctx.beginPath(); tctx.arc(c[0], c[1], 4, 0, Math.PI * 2); tctx.fill();
     triadState.items = [];
     items.forEach(function (it) {
       var hot = it.axis === triadState.hover;
@@ -1980,9 +1999,9 @@ var UI = (function () {
         var q = c.quad.map(P);
         g.beginPath(); g.moveTo(q[0][0], q[0][1]); for (var i = 1; i < 4; i++) g.lineTo(q[i][0], q[i][1]); g.closePath();
         var hot = front && vs.hover === c.id;
-        g.fillStyle = hot ? 'rgba(255,154,46,0.85)' : !front ? (dark ? 'rgba(90,100,115,0.10)' : 'rgba(120,140,165,0.08)') : (dark ? 'rgba(70,80,95,0.62)' : 'rgba(236,241,247,0.68)');
+        g.fillStyle = hot ? 'rgba(255,154,46,0.85)' : !front ? (dark ? 'rgba(100,100,100,0.10)' : 'rgba(140,140,140,0.08)') : (dark ? 'rgba(78,78,78,0.62)' : 'rgba(240,240,240,0.68)');   // rfBR: neutral greys
         g.fill();
-        g.strokeStyle = front ? (dark ? 'rgba(200,210,222,0.55)' : 'rgba(70,88,110,0.45)') : (dark ? 'rgba(200,210,222,0.18)' : 'rgba(70,88,110,0.16)');
+        g.strokeStyle = front ? (dark ? 'rgba(210,210,210,0.55)' : 'rgba(80,80,80,0.45)') : (dark ? 'rgba(210,210,210,0.18)' : 'rgba(80,80,80,0.16)');
         g.lineWidth = 1; g.stroke();
         if (front) vs.cells.push({ id: c.id, dir: c.dir, q: q, z: fz.z });
       });
@@ -1993,7 +2012,7 @@ var UI = (function () {
         g.save();
         g.setTransform(dpr * ax, dpr * ay, -dpr * bx, -dpr * by, dpr * o[0], dpr * o[1]);
         g.globalAlpha = Math.min(1, (fz.z - 0.25) / 0.35);
-        g.fillStyle = vs.hover === f.id ? '#3b2200' : dark ? '#e6ebf1' : '#33404f';
+        g.fillStyle = vs.hover === f.id ? '#3b2200' : dark ? '#ebebeb' : '#3a3a3a';
         g.font = '600 34px Segoe UI, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
         g.fillText(VS_FACE_NAMES[f.id], 0, 0);
         g.restore();

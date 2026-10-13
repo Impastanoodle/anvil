@@ -1,5 +1,5 @@
   // --- r12/sketchui12 ---
-  step('r12/sketchui12: sketch dimensions and relation icons are redrawn in place (same SVG nodes from frame to frame); a reused label still opens the Modify box and a reused icon still selects its relation', async function () {
+  step('r12/sketchui12: sketch dimensions are redrawn in place (same SVG nodes from frame to frame); a reused label still opens the Modify box (rfBR: no relation icons)', async function () {
     await rskNew();
     var showDims = UI.App.view.showDims;
     UI.App.view.showDims = true;
@@ -8,8 +8,8 @@
       UI.setTool('select');
       UI.App.dimsStale = false; UI.drawDims();
       var nodes = Array.prototype.slice.call(D.querySelectorAll('#dim-layer *')), n0 = nodes.length;
-      var badge = D.querySelector('#dim-layer .rel-badge[data-rel]'), label = D.querySelector('#dim-layer g.dim text');
-      assert(badge && label && n0 > 10, 'drawn: ' + n0 + ' nodes');
+      var label = D.querySelector('#dim-layer g.dim text');
+      assert(!D.querySelector('#dim-layer .rel-badge') && label && n0 > 10, 'drawn: ' + n0 + ' nodes, no relation icon');
       UI.drawDims(); UI.drawDims();
       var after = Array.prototype.slice.call(D.querySelectorAll('#dim-layer *'));
       assert(after.length === n0 && after.every(function (x, i) { return x === nodes[i]; }), 'same nodes after a redraw: ' + n0 + ' → ' + after.length);
@@ -25,12 +25,6 @@
       selEv('mousedown', p, label); selEv('mouseup', p); selEv('mousedown', p, label); selEv('mouseup', p);
       assert(UI.dimEditValue() != null, 'Modify box opened from a reused label');
       D.querySelector('#dim-edit input').dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-      // the reused relation icon selects its relation
-      UI.App.dimsStale = false; UI.drawDims();
-      badge = D.querySelector('#dim-layer .rel-badge[data-rel]');
-      var ri = +badge.getAttribute('data-rel');
-      badge.dispatchEvent(new W.MouseEvent('click', { bubbles: true, cancelable: true }));
-      assert(UI.App.sel && UI.App.sel.kind === 'rel' && UI.App.sel.index === ri, 'icon selects relation ' + ri + ': ' + JSON.stringify(UI.App.sel));
       return n0 + ' nodes reused';
     } finally { UI.App.view.showDims = showDims; UI.App.dimsStale = true; }
   });
@@ -64,7 +58,7 @@
     var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints && !(o.userData && o.userData.sketchOpenEnds); });   // sketch-layers: not the open-end markers
     var n = pts.reduce(function (s, o) { return s + o.geometry.getAttribute('position').count; }, 0);
     assert(n === 3, 'three end points (the shared corner once): ' + n);
-    assert(pts.every(function (o) { return o.material.color.getHex() === UI.mats.sketch.color.getHex(); }), 'blue like the under-defined lines');
+    assert(pts.every(function (o) { return o.material.color.getHex() === UI.mats.sketch.color.getHex(); }), 'white like the under-defined lines (rfBR)');
     return n + ' points';
   });
   // --- end r12/sketchui12 ---

@@ -73,6 +73,7 @@
     rskClick([35, -26]); await wait(10);
     assert(/passes through/.test($('status-msg').textContent), 'reference picked: ' + $('status-msg').textContent + ' ents ' + JSON.stringify(rfAEnts().slice(-3)));
     selEv('mousemove', rskScr([32, -22])); rskClick([32, -22]); await wait(10);
+    enterTwice(UI.sketchNumBox()[0]); await wait(10);   // lane BP: the click places the preview and asks for the distance; Enter commits, Enter makes the line
     var pe = rfAEnts();
     assert(pe.length === n0 + 2 && pe[n0].t === 'line' && Math.abs(pe[n0].y1 + 22) < 1e-9 && pe[n0 + 1].t === 'line' && Math.abs(pe[n0 + 1].x1 + pe[n0].x1) < 1e-9 && rfASym(n0, n0 + 1, 0) && UI.App.undo.length === u0 + 1, 'Parallel Line mirrored: ' + JSON.stringify(pe.slice(n0)) + ' ' + rfARels().slice(-3).join(' '));
     done.push('Parallel Line');

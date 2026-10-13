@@ -4,10 +4,10 @@
    on-screen colours are SolidWorks' defaults and do not change with the theme, since they sit on the white paper:
    selection blue, pre-selection (dynamic highlight) orange, a reference dimension added on the sheet grey. They are
    on the screen only: the SVG / PDF / DXF written from the sheet keep their own (black) colours. */
-:root { --dw-desk: #b9bec5; --dw-hot: #0f6fd8; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
-  --dw-tabbar: #d6d9de; --dw-tab: #e4e6ea; --dw-tab-on: #ffffff; --dw-tab-line: #aeb3ba; --dw-tab-text: #1f1f1f; }
-:root[data-theme="dark"] { --dw-desk: #34383e;
-  --dw-tabbar: #2a2d32; --dw-tab: #33373d; --dw-tab-on: #464b53; --dw-tab-line: #50565f; --dw-tab-text: #e6e9ee; }
+:root { --dw-desk: #bdbdbd; --dw-hot: #0f6fd8; --dw-pre: #ff7f00; --dw-ref: #7a7a7a; --dw-ghost: #3fa34d;
+  --dw-tabbar: #d9d9d9; --dw-tab: #e6e6e6; --dw-tab-on: #ffffff; --dw-tab-line: #b2b2b2; --dw-tab-text: #1f1f1f; }
+:root[data-theme="dark"] { --dw-desk: #383838;
+  --dw-tabbar: #2d2d2d; --dw-tab: #373737; --dw-tab-on: #4b4b4b; --dw-tab-line: #555555; --dw-tab-text: #e9e9e9; }
 
 #drawing-doc { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--dw-desk); }
 #drawing-doc[hidden] { display: none; }
@@ -67,7 +67,7 @@
 
 .dw-props { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; min-width: 360px; }
 .dw-props label { color: var(--muted); }
-.dw-props .dw-tb-head { grid-column: 1 / -1; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line, #d8dde4); color: var(--muted); font-size: 12px; }
+.dw-props .dw-tb-head { grid-column: 1 / -1; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line, #dcdcdc); color: var(--muted); font-size: 12px; }
 .dw-props input[data-tb] { font-family: Consolas, "IBM Plex Mono", monospace; font-size: 12px; }
 /* Section View cutting line and Detail View circle previews */
 #dw-overlay .dw-cut { fill: none; stroke: var(--dw-hot); }
@@ -92,7 +92,7 @@
 .dw-tpl-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border, #ddd); }
 .dw-tpl-row .dw-tpl-name { flex: 1; }
 .dw-tpl-choose .dlg-row { display: flex; align-items: center; gap: 4px; padding: 2px 0; }
-#dw-edit { position: absolute; z-index: 5; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 1px; background: var(--input-bg, #fff); border: 1px solid var(--blue, #1f6fc5); border-radius: 3px; padding: 1px; box-shadow: 0 2px 8px var(--shadow, rgba(0, 0, 0, 0.3)); }
+#dw-edit { position: absolute; z-index: 5; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 1px; background: var(--input-bg, #fff); border: 1px solid var(--blue, #3a3a3a); border-radius: 3px; padding: 1px; box-shadow: 0 2px 8px var(--shadow, rgba(0, 0, 0, 0.3)); }
 #dw-edit input { width: 86px; border: 0; outline: 0; font: 12px "Segoe UI", sans-serif; padding: 2px 4px; background: transparent; color: var(--text, #000); }
 #dw-edit.text input { width: 120px; }
 #dw-edit .dw-edit-btn { border: 0; background: transparent; color: var(--muted, #555); font-size: 12px; line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 2px; }
@@ -109,11 +109,11 @@
 #dw-edit.tb.multi textarea { width: 200px; min-height: 60px; border: 0; outline: 0; resize: both; font: 12px "Segoe UI", sans-serif; line-height: 1.35; padding: 3px 5px; background: transparent; color: var(--text, #000); }
 /* rfQ: sheet tabs (one per sheet), the Add Sheet tab, a tab being renamed */
 #drawing-tabs .dw-tab.dw-add-sheet { padding: 0 6px; }
-#drawing-tabs .dw-tab-rename { width: 90px; font: inherit; font-size: 12px; padding: 0 3px; border: 1px solid var(--blue, #1f6fc5); outline: 0; background: var(--input-bg, #fff); color: var(--text, #000); }
+#drawing-tabs .dw-tab-rename { width: 90px; font: inherit; font-size: 12px; padding: 0 3px; border: 1px solid var(--blue, #3a3a3a); outline: 0; background: var(--input-bg, #fff); color: var(--text, #000); }
 .dw-muted { color: var(--muted, #666); font-size: 11px; }
 /* r12/drawui12: a view still being worked out when the drawing opens (drawing-worker.js): a soft panel over the paper
    it will take, gently pulsing until its linework drops in */
-#drawing-sheet .dw-pending { fill: #e9edf2; animation: dw-pulse 0.9s ease-in-out infinite alternate; }
+#drawing-sheet .dw-pending { fill: #ededed; animation: dw-pulse 0.9s ease-in-out infinite alternate; }
 @keyframes dw-pulse { from { fill-opacity: 0.35; } to { fill-opacity: 0.9; } }
 @media (prefers-reduced-motion: reduce) { #drawing-sheet .dw-pending { animation: none; fill-opacity: 0.6; } }
 /* r12/drawui12: what a click does — a crosshair while a tool waits for a pick or a placement, the move cursor over

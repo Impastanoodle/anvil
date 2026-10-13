@@ -93,7 +93,7 @@
     var q = [25 * Math.cos(-60 * Math.PI / 180), 35 + 25 * Math.sin(-60 * Math.PI / 180)];
     selEv('mousemove', rskScr([q[0] + 0.6, q[1] + 0.4]));
     assert(UI.App.toolState.tanArc, 'locked tangent near the tangent arc');
-    assert(r3sLayer().querySelector('.rel-badge'), 'tangent glyph');
+    assert(!r3sLayer().querySelector('.rel-badge'), 'rfBR: no tangent glyph (the lock is toolState.tanArc, above)');
     rskClick([q[0] + 0.6, q[1] + 0.4]);
     var a = rskEnts()[1];
     assert(a && a.t === 'arc' && Math.abs(a.r - 25) < 1e-6 && Math.abs(a.cx) < 1e-9 && Math.abs(a.cy - 35) < 1e-9, 'tangent arc ' + JSON.stringify(a));
@@ -109,7 +109,7 @@
     UI.setTool('arc');
     selEv('mousemove', rskScr([35.1, -19.9]));   // wakes the end
     selEv('mousemove', rskScr([35.3, -8.2]));
-    assert(r3sLayer().querySelector('.rel-badge'), 'tangent glyph at the centre');
+    assert(r3sLayer().querySelector('.sk-infer-rel') && !r3sLayer().querySelector('.rel-badge'), 'rfBR: the tangent guide line at the centre, no glyph');
     rskClick([35.3, -8.2]);
     var c = UI.App.toolState.pts[0];
     assert(c && c[0] === 35, 'centre locked square to the end: ' + JSON.stringify(c));

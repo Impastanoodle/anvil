@@ -6,7 +6,8 @@
     cv.width = c.width; cv.height = c.height;
     var g = cv.getContext('2d'); g.drawImage(c, 0, 0);
     var px = g.getImageData(0, 0, cv.width, cv.height).data, n = 0;
-    for (var i = 0; i < px.length; i += 4) { var s = px[i] + px[i + 1] + px[i + 2]; if (px[i + 3] > 200 && s < (th || 400)) n += 765 - s; }
+    // rfBR: the HLR edges are white over the grey-black ground (the HLR body writes no colour), so line ink is light
+    for (var i = 0; i < px.length; i += 4) { var s = px[i] + px[i + 1] + px[i + 2]; if (px[i + 3] > 200 && s > 765 - (th || 400)) n += s; }
     return n;
   }
   function r13fatChildren(group) {
@@ -18,7 +19,7 @@
     await anvil.run('p.box(40, 20, 30);\np.hole("Top", 20, -15, 10, { offset: 20 });');
     await idle();
     UI.App.hover = null; UI.App.sel = null; UI.App.sel2 = null; UI.updateHighlights();
-    UI.setStyle('hlr'); UI.setView('Isometric'); await wait(700); UI.tick();   // white body, nothing highlighted: every dark pixel is line ink
+    UI.setStyle('hlr'); UI.setView('Isometric'); await wait(700); UI.tick();   // the body writes no colour, nothing highlighted: every light opaque pixel is line ink
     assert(UI.thickLines(), 'thick lines on (WebGL instancing available)');
     var fats = r13fatChildren(UI.groups.edges);
     assert(fats.length >= 1, 'the edge line set has a thick twin');

@@ -1,11 +1,11 @@
-// ui-relations.js — sketch relations in the UI: relation icons next to entities, yellow inference icons while
-// sketching, distance / angle Smart Dimensions between two entities, the Add Relations and Display/Delete Relations
-// PropertyManagers, and dragging an under-defined sketch (every relation holds). The maths is in sketch-solver.js.
+// ui-relations.js — sketch relations in the UI: distance / angle Smart Dimensions between two entities, the entities of
+// a hovered / selected relation lit up, the Add Relations and Display/Delete Relations PropertyManagers, and dragging an
+// under-defined sketch (every relation holds). rfBR: no relation icons are drawn in the graphics area (Mastercam's);
+// the relations are listed, by name, in Display/Delete Relations. The maths is in sketch-solver.js.
 (function (UI) {
   'use strict';
   var App = UI.App, K = UI.K, $ = UI.$, el = UI.el, S = window.SketchSolver;
   if (!S) return;
-  if (App.view.showRelations == null) App.view.showRelations = true;
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function scr(pl, uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
@@ -399,125 +399,10 @@
     UI.refreshRibbon();
   }
 
-  // ------------------------------------------------------------------ relation icons in the #dim-layer
-  function anchorOf(f, pl, ref) {
-    var p = S.refPoint(f, ref);
-    if (p) return scr(pl, p);
-    var c = S.refCurve(f, ref);
-    if (!c) return null;
-    if (c.kind === 'line') return scr(pl, [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]);
-    return scr(pl, [c.c[0] + c.r * Math.SQRT1_2, c.c[1] + c.r * Math.SQRT1_2]);
-  }
-  function badge(layer, h, x, y, type, cls, title, relIndex) {
-    // r14/sketchui14: on the device-pixel grid, the frame crisp at any display scaling (ui-sketch.js relGlyph)
-    var ga = { 'class': 'rel-badge ' + (cls || ''), transform: UI.relBadgeAt ? UI.relBadgeAt(x, y) : 'translate(' + Math.round(x) + ',' + Math.round(y) + ')' };
-    if (relIndex != null) ga['data-rel'] = relIndex;
-    var g = h.svg('g', ga, layer);
-    h.svg('rect', UI.relBadgeFrame ? UI.relBadgeFrame() : { x: 0, y: 0, width: 16, height: 16, rx: 2 }, g);
-    if (h.icon) h.icon(g, iconName(type));
-    else { var inner = h.svg('g', { transform: 'translate(1,1) scale(0.875)' }, g); inner.innerHTML = Icons(iconName(type), 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, ''); }
-    if (title) { var t = h.svg('title', {}, g); if (h.text) h.text(t, title); else t.textContent = title; }
-    return g;
-  }
-  // r5/sketch5: where a relation icon goes. Each icon takes a 16 px box clear of the dimension labels and of the icons
-  // already placed: beside a point (right / below first, then round it), along a line on either side, outside a
-  // circle; a second icon on the same anchor goes next to the first, in a row, as SolidWorks lines them up.
-  // r9/sketch9: an icon keeps the place it took (its pixel offset from its anchor, remembered per relation and ref) as
-  // long as that place stays free, so zooming or panning no longer makes icons jump from one side to another when a
-  // dimension label passes by; while the view is zooming it keeps it regardless (the labels settle after the zoom).
-  var spotMemo = {}, spotMemoN = 0, spotSketch = null;
-  // The remembered place of an icon: { q, ok } (ok: still free; a few pixels of overlap are tolerated, so a label
-  // edge passing by does not move it), or null when it has none (new, or its line turned).
-  function memoSpot(h, a, kind, dir, memoKey) {
-    var m = memoKey && spotMemo[memoKey];
-    if (!m || m.kind !== kind || (dir && m.dir && dir[0] * m.dir[0] + dir[1] * m.dir[1] < 0.999)) return null;
-    var q = [a[0] + m.off[0], a[1] + m.off[1]];
-    // (p9-sketchfix: a remembered place only has to stay clear of the labels and icons: freeKeep; a new one keeps off
-    // the curves too)
-    // sketch-refine: zoomed out to two thirds of the size it had when the place was chosen (or less), it has to keep
-    // off the curves again: the geometry shrinks under icons that keep their pixel offsets, and they piled up over
-    // small entities (inside a small rectangle, over a hole)
-    var sc = UI.cam && UI.cam.scale, rezoom = !!(sc && m.scale && sc > 1.5 * m.scale);
-    var free = rezoom ? h.free : h.freeKeep || h.free;
-    return { q: q, ok: !free || free([q[0] + 3, q[1] + 3, q[0] + 13, q[1] + 13]) || !!(UI.sketchZooming && UI.sketchZooming()) };
-  }
-  // must: the icon is drawn even with no free place (selected, hovered, or over defining / not solved); otherwise
-  // (p9-sketchfix) an icon with nowhere free to go, clear of the labels, the other icons and the sketch's curves, is
-  // left out (null): zoomed out, the icons no longer pile up over the sketch, as SolidWorks' fixed-size ones thin out
-  function badgeSpot(h, a, kind, dir, prev, memoKey, must) {
-    var ms = memoSpot(h, a, kind, dir, memoKey), q = ms && ms.q, qb = q && [q[0] - 1, q[1] - 1, q[0] + 17, q[1] + 17];
-    if (ms && ms.ok) { if (h.take) h.take(qb); return q; }
-    var p0 = badgeSpotNew(h, a, kind, dir, prev, !!q || !must);
-    if (!p0 && !must) return null;
-    if (!p0) { if (h.take) h.take(qb); return q; }   // nowhere free (zoomed far out): it stays where it was
-    if (memoKey) {
-      if (!spotMemo[memoKey] && ++spotMemoN > 4000) { spotMemo = {}; spotMemoN = 0; }
-      spotMemo[memoKey] = { off: [p0[0] - a[0], p0[1] - a[1]], kind: kind, dir: dir, scale: UI.cam && UI.cam.scale };
-    }
-    return p0;
-  }
-  UI.relBadgeSpots = function () { return spotMemo; };
-  function badgeSpotNew(h, a, kind, dir, prev, orNull) {
-    var cands = [];
-    if (prev) cands.push([prev[0] + 18, prev[1]], [prev[0] - 18, prev[1]], [prev[0], prev[1] + 18], [prev[0], prev[1] - 18]);
-    if (kind === 'line') {
-      var n = [-dir[1], dir[0]];
-      if (n[1] < 0 || (n[1] === 0 && n[0] < 0)) n = [-n[0], -n[1]];
-      [0, 20, -20, 40, -40, 60, -60].forEach(function (t) {
-        [1, -1].forEach(function (sd) { cands.push([a[0] + dir[0] * t + n[0] * sd * 14 - 8, a[1] + dir[1] * t + n[1] * sd * 14 - 8]); });
-      });
-    } else if (kind === 'curve') {
-      [0, 0.6, -0.6, 1.2, -1.2].forEach(function (k) {
-        var c = Math.cos(k), s = Math.sin(k), u = [dir[0] * c - dir[1] * s, dir[0] * s + dir[1] * c];
-        cands.push([a[0] + u[0] * 14 - 8, a[1] + u[1] * 14 - 8]);
-      });
-    }
-    [1, 1.8, 2.6].forEach(function (m) {
-      [[8, 6], [8, -22], [-24, 6], [-24, -22], [-8, 12], [-8, -28], [14, -8], [-30, -8]].forEach(function (o) { cands.push([a[0] + (o[0] + 8) * m - 8, a[1] + (o[1] + 8) * m - 8]); });
-    });
-    // r9/sketch9: an icon of an entity in view is not put past the edge of the graphics area (it was cut off there)
-    var W = UI.size && UI.size.w, H = UI.size && UI.size.h, inView = W > 40 && H > 40 && a[0] >= 0 && a[1] >= 0 && a[0] <= W && a[1] <= H;
-    for (var i = 0; i < cands.length; i++) {
-      var b = [cands[i][0] - 1, cands[i][1] - 1, cands[i][0] + 17, cands[i][1] + 17];
-      if (inView && (b[0] < 0 || b[1] < 0 || b[2] > W || b[3] > H)) continue;
-      if (!h.free || h.free(b)) { if (h.take) h.take(b); return cands[i]; }
-    }
-    if (orNull) return null;
-    var p = prev ? [prev[0] + 18, prev[1]] : [a[0] + 8, a[1] + 6];
-    if (h.take) h.take([p[0] - 1, p[1] - 1, p[0] + 17, p[1] + 17]);
-    return p;
-  }
-  // A Coincident that only joins two end points (a line chain, a rectangle's corners): SolidWorks merges such points
-  // and shows no icon. Shown when selected or when it over-defines.
-  function mergedEnds(f, rel) {
-    return rel.type === 'coincident' && rel.refs.length === 2 && rel.refs.every(function (r) { return /^\d+\.p[12]$/.test(String(r)) && f.entities[refEntity(r)] && !f.entities[refEntity(r)].sharp; });
-  }
-  // the size of entity i on screen (pixels across its larger side; a point: 0)
-  function screenSpan(f, i) {
-    var e = f.entities[i], s = UI.cam.scale || 1;
-    if (!e || e.t === 'point') return 0;
-    var pls;
-    try { pls = K.entityPolylines(e); } catch (err) { return Infinity; }
-    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    pls.forEach(function (l) { l.pts.forEach(function (q) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }); });
-    return Math.max(x1 - x0, y1 - y0) / s;
-  }
-  function tinyOnScreen(f, rel) {
-    var any = false;
-    for (var k = 0; k < rel.refs.length; k++) {
-      var p = S.parseRef(rel.refs[k]);
-      if (!p || p.o) continue;
-      var e = f.entities[p.e];
-      if (!e || e.t === 'point' || (e.construction && e.t === 'line')) continue;   // a point, a centerline: no size of its own
-      any = true;
-      if (!(screenSpan(f, p.e) < 20)) return false;
-    }
-    return any;
-  }
+  // ------------------------------------------------------------------ relations in the #dim-layer
   function drawRelations(f, pl, layer, h) {
-    var an = App.sketchState, slots = {}, jobs = [];
-    if (spotSketch !== f.id) { spotSketch = f.id; spotMemo = {}; spotMemoN = 0; }
-    // the distance / angle dimensions first, so the icons keep clear of their labels
+    var an = App.sketchState;
+    // the distance / angle dimensions
     if (f.rels) f.rels.forEach(function (rel, i) {
       var t = S.TYPES[rel.type];
       if (!t || !t.dim) return;
@@ -525,63 +410,20 @@
       var sc = relDimScreenData(f, pl, rel);
       if (sc) { var it = { d: rel, rel: i, state: rel.driven ? 'driven' : state }; h.drawOne(sc, it); h.list.push(it); }
     });
-    if (f.rels) f.rels.forEach(function (rel, i) {
-      var t = S.TYPES[rel.type];
-      if (!t || t.dim) return;
-      var state = an && an.rels ? an.rels[i] : 'ok';
-      // a virtual sharp (SketchSolver.filletCorner) on the lines it joins: thin extension lines to their ends, no icons
+    // a virtual sharp (SketchSolver.filletCorner) on the lines it joins: thin extension lines to their ends
+    if (f.rels) f.rels.forEach(function (rel) {
       var sh = rel.type === 'coincident' && rel.refs.length === 2 ? rel.refs.map(function (r) { var e = f.entities[refEntity(r)]; return e && e.sharp && String(r) === String(refEntity(r)); }) : null;
-      if (sh && (sh[0] || sh[1])) {
-        var P = S.refPoint(f, rel.refs[sh[0] ? 0 : 1]), L = S.refCurve(f, rel.refs[sh[0] ? 1 : 0]);
-        if (P && L && L.kind === 'line') {
-          var end = Math.hypot(L.a[0] - P[0], L.a[1] - P[1]) < Math.hypot(L.b[0] - P[0], L.b[1] - P[1]) ? L.a : L.b, s1 = scr(pl, P), s2 = scr(pl, end);
-          h.svg('line', { 'class': 'sk-sharp', x1: s1[0], y1: s1[1], x2: s2[0], y2: s2[1], style: 'stroke:var(--muted);stroke-width:1;stroke-dasharray:3 2;pointer-events:none' }, layer);
-          return;
-        }
-      }
-      var selected = App.sel && App.sel.kind === 'rel' && App.sel.index === i, hot = App.relHover === i;
-      if (App.view.showRelations === false && !selected && !hot) return;
-      if (mergedEnds(f, rel) && state === 'ok' && !selected && !hot) return;
-      // p9-sketchfix: zoomed out until every entity of the relation is a speck (under 20 px across), its icons are left
-      // out: fixed-size icons on tiny geometry only bury the sketch
-      if (state === 'ok' && !selected && !hot && tinyOnScreen(f, rel)) return;
-      var drawn = [];
-      rel.refs.forEach(function (ref, rk) {
-        if (ref === 'O') return;
-        if (rel.type === 'polygon' && rk > 0 && !selected && !hot) return;   // rfH: one Polygon icon, on its circle
-        var a = anchorOf(f, pl, ref);
-        // one icon where both ends of the relation meet (a Coincident between two end points)
-        if (!a || drawn.some(function (q) { return Math.hypot(q[0] - a[0], q[1] - a[1]) < 4; })) return;
-        drawn.push(a);
-        var key = Math.round(a[0] / 6) + ',' + Math.round(a[1] / 6), c = !S.refPoint(f, ref) && S.refCurve(f, ref), kind = 'point', dir = null;
-        if (c && c.kind === 'line') { var sa = scr(pl, c.a), sb = scr(pl, c.b), L = Math.hypot(sb[0] - sa[0], sb[1] - sa[1]); if (L > 1e-9) { kind = 'line'; dir = [(sb[0] - sa[0]) / L, (sb[1] - sa[1]) / L]; } }
-        else if (c) { var sc0 = scr(pl, c.c), Lc = Math.hypot(a[0] - sc0[0], a[1] - sc0[1]); if (Lc > 1e-9) { kind = 'curve'; dir = [(a[0] - sc0[0]) / Lc, (a[1] - sc0[1]) / Lc]; } }
-        jobs.push({ i: i, rel: rel, state: state, selected: selected, hot: hot, a: a, key: key, kind: kind, dir: dir, mk: rel.type + ':' + rel.refs.join(',') + '@' + ref });
-      });
-    });
-    // r9/sketch9: icons that can stay where they were are placed first, so one that has to move never takes another's
-    // place (which would make that one move too, a chain of jumps while zooming)
-    jobs.forEach(function (jb) {
-      var ms = memoSpot(h, jb.a, jb.kind, jb.dir, jb.mk);
-      if (ms && ms.ok) { jb.p = slots[jb.key] = ms.q; if (h.take) h.take([ms.q[0] - 1, ms.q[1] - 1, ms.q[0] + 17, ms.q[1] + 17]); }
-    });
-    jobs.forEach(function (jb) {
-      if (jb.p) return;
-      jb.p = badgeSpot(h, jb.a, jb.kind, jb.dir, slots[jb.key], jb.mk, jb.selected || jb.hot || jb.state !== 'ok');
-      if (jb.p) slots[jb.key] = jb.p;
-    });
-    jobs.forEach(function (jb) {
-      var i = jb.i, rel = jb.rel, state = jb.state, selected = jb.selected, hot = jb.hot, p = jb.p;
-      if (!p) return;   // p9-sketchfix: no room for it (zoomed out): left out
-      {
-        var g = badge(layer, h, p[0], p[1], rel.type, (state !== 'ok' ? state : '') + (selected ? ' sel' : '') + (hot ? ' hot' : ''), S.describe(f, rel) + (state !== 'ok' ? ' (' + stateText(state) + ')' : ''), i);
-        // r12/sketchui12: the icon's node is reused from frame to frame (ui-sketch.js svg()): its listeners are attached
-        // once and act on the relation drawn there now (g._d)
-        g._d = { i: i, rel: rel, state: state, f: f };
-        if (!g._relLis) { g._relLis = true; badgeListeners(g); }
+      if (!sh || !(sh[0] || sh[1])) return;
+      var P = S.refPoint(f, rel.refs[sh[0] ? 0 : 1]), L = S.refCurve(f, rel.refs[sh[0] ? 1 : 0]);
+      if (P && L && L.kind === 'line') {
+        var end = Math.hypot(L.a[0] - P[0], L.a[1] - P[1]) < Math.hypot(L.b[0] - P[0], L.b[1] - P[1]) ? L.a : L.b, s1 = scr(pl, P), s2 = scr(pl, end);
+        h.svg('line', { 'class': 'sk-sharp', x1: s1[0], y1: s1[1], x2: s2[0], y2: s2[1], style: 'stroke:var(--muted);stroke-width:1;stroke-dasharray:3 2;pointer-events:none' }, layer);
       }
     });
-    // the entities of the relation hovered (an icon here, or a row of Display/Delete Relations): orange, as pre-highlight
+    // rfBR: a relation selected in Display/Delete Relations (or SketchXpert) lights up its entities in the selection yellow
+    var selRel = App.sel && App.sel.kind === 'rel' ? App.sel.index : null;
+    if (selRel != null && selRel !== App.relHover && f.rels && f.rels[selRel]) relHighlight(f, pl, layer, h, f.rels[selRel], true);
+    // the entities of the relation hovered (a row of Display/Delete Relations): orange, as pre-highlight
     if (App.relHover != null && f.rels && f.rels[App.relHover]) relHighlight(f, pl, layer, h, f.rels[App.relHover]);
     if (App.tempRelDim) { var tsc = relDimScreenData(f, pl, App.tempRelDim); if (tsc) h.drawOne(tsc, { d: App.tempRelDim, temp: true }); }
     // (the yellow inference icons of what is being drawn sit by the cursor: ui-sketch.js drawFeedback)
@@ -596,52 +438,29 @@
         h.svg('polyline', { 'class': 'rel-pick', points: pts.join(' ') }, layer);
       }
     });
-    // rfF: sketch points selected with the Select tool (an end point, a centre: ui-select.js): a dot in the selection blue
+    // rfF: sketch points selected with the Select tool (an end point, a centre: ui-select.js): a dot in the selection colour (rfBR: yellow)
     if (UI.selection) UI.selection().forEach(function (s) {
-      if (s.kind === 'sketchRef') {   // rfAK: a style spline's control polygon leg, selected: a blue line over it
+      if (s.kind === 'sketchRef') {   // rfAK: a style spline's control polygon leg, selected: a yellow dashed line over it (rfBR)
         var cl = S.refCurve(f, s.ref);
-        if (cl && cl.kind === 'line') { var la = scr(pl, cl.a), lb = scr(pl, cl.b); h.svg('line', { 'class': 'sk-selleg', x1: la[0], y1: la[1], x2: lb[0], y2: lb[1], style: 'stroke:#1f6fe8;stroke-width:3;pointer-events:none' }, layer); }
+        if (cl && cl.kind === 'line') { var la = scr(pl, cl.a), lb = scr(pl, cl.b); h.svg('line', { 'class': 'sk-selleg', x1: la[0], y1: la[1], x2: lb[0], y2: lb[1], style: 'stroke:#ffd400;stroke-width:3;stroke-dasharray:6 4;pointer-events:none' }, layer); }
         return;
       }
       var p = s.kind === 'sketchPoint' ? S.refPoint(f, s.ref) : null;
       if (!p) return;
       var q = scr(pl, p);
-      h.svg('circle', { 'class': 'sk-selpt', cx: q[0], cy: q[1], r: 4.5, style: 'fill:#1f6fe8;stroke:#fff;stroke-width:1.2;pointer-events:none' }, layer);
+      h.svg('circle', { 'class': 'sk-selpt', cx: q[0], cy: q[1], r: 4.5, style: 'fill:#ffd400;stroke:#1e1e1e;stroke-width:1.2;pointer-events:none' }, layer);
     });
   }
-  function badgeListeners(g) {
-    // p9-sketchfix: while a PropertyManager or a tool wants an entity, a press on an icon lying on geometry picks the
-    // geometry (ui-sketch.js UI.labelPassThrough), not the relation
-    g.addEventListener('mousedown', function (ev) { g._passed = !!(UI.labelPassThrough && UI.labelPassThrough(ev)); });
-    g.addEventListener('click', function (ev) {
-      var d = g._d;
-      if (g._passed) { g._passed = false; ev.stopPropagation(); return; }
-      if (!d) return;
-      ev.stopPropagation(); App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true; UI.updateSketches(); UI.setStatus(S.describe(d.f, d.rel) + ' — ' + stateText(d.state) + '. Delete removes it.');
-    });
-    // hovering an icon lights up the entities it relates (r5/sketch5); leaving unlights the one lit on entering
-    g.addEventListener('mouseenter', function () { if (g._d) { g._hov = g._d.i; hoverRelation(g._d.i, true); } });
-    g.addEventListener('mouseleave', function () { var i = g._hov != null ? g._hov : g._d && g._d.i; g._hov = null; if (i != null) hoverRelation(i, false); });
-    g.addEventListener('contextmenu', function (ev) {
-      var d = g._d;
-      if (!d) return;
-      ev.preventDefault(); ev.stopPropagation();
-      App.sel = { kind: 'rel', index: d.i }; App.dimsStale = true;
-      UI.showMenu(ev.clientX, ev.clientY, [
-        { label: 'Delete ' + S.TYPES[d.rel.type].name, key: 'Del', action: function () { deleteRelation(d.i); } },
-        { label: 'Display/Delete Relations…', action: function () { UI.cmdDisplayRelations(); } }
-      ]);
-    });
-  }
-  function stateText(s) { return { ok: 'Satisfied', redundant: 'Over Defining (redundant)', conflict: 'Not Solved (conflict)', invalid: 'Dangling' }[s] || s; }
-  // r5/sketch5: the relation under the mouse (an icon in the graphics area, a row of Display/Delete Relations) lights up
-  // the entities / points it holds, without redrawing the sketch itself
-  var HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none';
-  function relHighlight(f, pl, layer, h, rel) {
+  // r5/sketch5: the relation under the mouse (a row of Display/Delete Relations) lights up the entities / points it
+  // holds, without redrawing the sketch itself (rfBR: a selected one yellow and dashed, as every selection)
+  var HOT_PRE = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none';
+  var HOT_SEL = 'stroke:#ffd400;stroke-width:2.5;stroke-dasharray:6 4;fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none';
+  function relHighlight(f, pl, layer, h, rel, sel) {
+    var HOT = sel ? HOT_SEL : HOT_PRE, dot = sel ? '#ffd400' : '#e8891c';
     rel.refs.forEach(function (ref) {
       if (ref === 'O') { var o = scr(pl, [0, 0]); h.svg('circle', { 'class': 'rel-hot', cx: o[0], cy: o[1], r: 5, style: HOT }, layer); return; }
       var p = S.refPoint(f, ref);
-      if (p) { var s = scr(pl, p); h.svg('circle', { 'class': 'rel-hot', cx: s[0], cy: s[1], r: 4.5, style: HOT + ';fill:#e8891c;fill-opacity:0.35' }, layer); return; }
+      if (p) { var s = scr(pl, p); h.svg('circle', { 'class': 'rel-hot', cx: s[0], cy: s[1], r: 4.5, style: HOT + ';fill:' + dot + ';fill-opacity:0.35' }, layer); return; }
       var c = S.refCurve(f, ref), e = f.entities[refEntity(ref)], pls;
       if (!c || !e) return;
       if (c.kind === 'line') pls = [{ pts: [c.a, c.b] }];

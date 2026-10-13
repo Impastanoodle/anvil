@@ -863,7 +863,7 @@
     if (ctrl && (k === 'n' || k === 'N')) { e.preventDefault(); fileNew(); return; }
     if (ctrl && (k === 'o' || k === 'O')) { e.preventDefault(); fileOpen(); return; }
     if (ctrl) return;
-    if (k === 'Enter' && UI.hasPM()) { e.preventDefault(); UI.pmOK(); return; }
+    if (k === 'Enter' && UI.hasPM()) { e.preventDefault(); UI.pmEnter(e.target); return; }   // lane BP: nothing typed here, so ✓ (ui-commands.js pmEnter)
     if (k === 'Delete' || k === 'Backspace') { UI.deleteSelection(); return; }
     if (k === 'F2' && App.sel && App.sel.kind === 'feature') { e.preventDefault(); UI.startRename(K.findFeature(App.model, App.sel.id)); return; }
     if (k === 'f' || k === 'F') { UI.zoomToFit(); return; }
@@ -1061,7 +1061,8 @@
     'Corner Rectangle': 'rectangle box square', 'Straight Slot': 'slot obround', 'Base Flange/Tab': 'sheet metal base flange tab',
     'Edge Flange': 'flange bend', 'Sketched Bend': 'bend line brake', 'Flatten': 'flat pattern unfold flat blank', 'Flat to DXF': 'flat pattern dxf export laser',
     'Hole Table': 'hole table hole chart', 'Note': 'note text annotation', 'Mass Properties': 'mass weight', 'Measure': 'measure distance',
-    'Sketch Fillet': 'fillet round corner', 'Sketch Chamfer': 'chamfer bevel'
+    'Sketch Fillet': 'fillet round corner', 'Sketch Chamfer': 'chamfer bevel',
+    'Close Arc': 'close arc full circle complete arc', 'Show Endpoints': 'display endpoints end points dots'   // lane BS
   };
   function cmdSearchIndex() {
     var out = [], seen = {};

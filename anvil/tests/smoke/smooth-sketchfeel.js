@@ -17,7 +17,7 @@
     selEv('mousemove', rskScr([23.4, -10.6]));
     var t = sfLayer() && sfLayer().querySelector('text');
     assert(t && /^L 23(\.\d+)? +A (0|360)°$/.test(t.textContent), 'readout: ' + (t && t.textContent));
-    assert(sfLayer().querySelectorAll('.rel-badge.infer').length >= 1 && (UI.App.inferPreview || []).some(function (c) { return c.type === 'horizontal'; }), 'Horizontal glyph by the cursor');
+    assert(sfLayer().querySelectorAll('.rel-badge').length === 0 && (UI.App.inferPreview || []).some(function (c) { return c.type === 'horizontal'; }), 'Horizontal inferred, no glyph by the cursor (rfBR)');
     rskClick([23.4, -10.6]);
     var l = rskEnts()[1];
     assert(l.y1 === -10 && l.y2 === -10 && Math.abs(l.x2 - 23.4) <= px, 'line ' + JSON.stringify(l));

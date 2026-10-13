@@ -459,7 +459,7 @@
   };
 
   // ------------------------------------------------------------------ the commands: shared
-  var PICK = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
+  var PICK = 'stroke:#ffd400;stroke-dasharray:6 4;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
   var HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
   function scr(q) { return UI.worldToScreen(K.to3D(UI.activePlane(), q[0], q[1])); }

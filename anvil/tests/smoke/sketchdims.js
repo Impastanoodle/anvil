@@ -260,7 +260,7 @@
     assert(f.rels[hi].suppressed === true && UI.sketchStatus().rels[hi] === 'suppressed', 'suppressed');
     assert(Array.prototype.some.call(D.querySelectorAll('#rel-display .rel-row.suppressed'), function (r) { return /Line2/.test(r.textContent); }), 'row greyed');
     UI.drawDims();
-    assert(D.querySelector('#dim-layer .rel-badge.suppressed'), 'icon greyed');
+    assert(!D.querySelector('#dim-layer .rel-badge'), 'rfBR: no relation icon drawn (suppressed or not)');
     f.entities[1].y2 = 13; UI.updateSketches();
     UI.cmdDisplayRelations();
     Array.prototype.filter.call(D.querySelectorAll('#rel-display .rel-row'), function (r) { return /Horizontal: Line2/.test(r.textContent); })[0].click();
@@ -273,7 +273,7 @@
     await UI.pmOK();
     return f.rels.length + ' relations left';
   });
-  step('sketchdims: status colours and text — blue Under Defined, black Fully Defined, red Over Defined (entities, status bar, (-) / (+) in the FeatureManager); construction dashed; a deleted entity takes its relations and dimensions with it in one undo step', async function () {
+  step('sketchdims: status colours and text — white Under / Fully Defined (rfBR), red Over Defined (entities, status bar, (-) / (+) in the FeatureManager); construction dashed; a deleted entity takes its relations and dimensions with it in one undo step', async function () {
     await rskNew();
     var f = UI.activeSketchFeature(), S = W.SketchSolver;
     f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 10, x2: 30, y2: 10, construction: true });
@@ -281,12 +281,12 @@
     function hex(i) { var o = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.sketch === f.id && x.userData.index === i; })[0]; return o && o.material.color.getHex(); }
     function row() { return Array.prototype.filter.call(D.querySelectorAll('#tree .ti .nm'), function (n) { return /Sketch\d/.test(n.textContent); }).pop().textContent; }
     function bar() { var s = D.querySelector('#status-right .sk-state'); return s ? s.textContent : ''; }
-    assert(hex(0) === 0x1f5fd0 && bar() === 'Under Defined' && /^\(-\) /.test(row()), 'under: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    assert(hex(0) === 0xffffff && bar() === 'Under Defined' && /^\(-\) /.test(row()), 'under: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
     var dashed = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.index === 1; })[0];
     assert(dashed && dashed.material.type === 'LineDashedMaterial', 'construction dashed');
     S.addRelation(f, 'fix', ['0']); S.addRelation(f, 'fix', ['1']);
     UI.updateSketches(); UI.refreshTree();
-    assert(hex(0) === 0x15181d && bar() === 'Fully Defined' && !/^\(/.test(row()), 'full: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
+    assert(hex(0) === 0xffffff && bar() === 'Fully Defined' && !/^\(/.test(row()), 'full: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());
     S.addRelation(f, 'horizontal', ['0']);
     UI.updateSketches(); UI.refreshTree();
     assert(hex(0) === 0xd9302c && bar() === 'Over Defined' && /^\(\+\) /.test(row()), 'over: ' + hex(0).toString(16) + ' ' + bar() + ' ' + row());

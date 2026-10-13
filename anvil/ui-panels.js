@@ -142,6 +142,8 @@
       { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
+      // lane BS: Mastercam's Close Arc (ui-sketch-tools.js), an Anvil extra beside the modify tools
+      { extra: true, id: 'closeArc', label: 'Close\nArc', help: 'Close the selected arcs into full circles (same centre and radius); relations on their end points are removed', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdCloseArc(); } },
       { sep: true },
       // the Display/Delete Relations flyout (SolidWorks): Display/Delete Relations, Add Relation, Fully Define Sketch
       // (ui-relations.js, ui-sketch-dims.js)
@@ -1310,7 +1312,7 @@
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
         { label: 'Snap to Model', checked: v.snapModel !== false, action: function () { v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); } },   // p9-modelsnap
-        { label: 'Sketch Relations', checked: v.showRelations !== false, action: function () { v.showRelations = v.showRelations === false; App.dimsStale = true; UI.setStatus(v.showRelations ? 'Relation icons shown next to sketch entities.' : 'Relation icons hidden.'); } },
+        { label: 'Display ▸ Show Endpoints', icon: 'showEndpoints', checked: v.showEndpoints !== false, action: function () { toggleShowEndpoints(); } },   // lane BS
         { label: 'Sketch Dimensions', checked: v.showDims, action: function () { v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); } },
         { label: 'Section View', checked: !!v.section, action: UI.cmdSection },
         { sep: true },
@@ -1365,7 +1367,7 @@
         // rfAP: Tools ▸ Sketch Entities / Sketch Tools / Relations / Dimensions with every sketch command, in
         // SolidWorks 2024's order (the rows run the Sketch tab's own items: sketchMenuRows)
       ].concat(sketchMenuRows('Sketch Entities', ['line', 'rect', 'crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon', 'circle', 'pcircle', 'arc', 'tarc', 'arc3', 'ellipse', 'pellipse', 'parabola', 'conic', 'spline', 'styleSpline', 'eqnCurve', 'point', 'centerline', 'midline', 'parallelLine', 'tangentLine', 'perpLine', 'bisectorLine', 'tangentCircle', 'text', 'plane', 'fillet:skFillet', 'skChamfer']),
-        sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve', 'offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'construction', 'mirrorEnt', 'dynMirror', 'moveEnt', 'copyEnt', 'rotateEnt', 'scaleEnt', 'stretchEnt', 'sketchPattern', 'cSketchPattern']), [
+        sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve', 'offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'closeArc', 'construction', 'mirrorEnt', 'dynMirror', 'moveEnt', 'copyEnt', 'rotateEnt', 'scaleEnt', 'stretchEnt', 'sketchPattern', 'cSketchPattern']), [
         { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment },
         // rfAS: Tools ▸ Spline Tools (ui-sketch-spline.js)
         { label: 'Spline Tools ▸ Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertSplinePoint },
@@ -1500,6 +1502,18 @@
     UI.updateSketches(); refreshRibbon();
     UI.setStatus(v.sketchRegions ? 'Closed regions of the sketch are shaded and open ends marked.' : 'Sketch regions and open ends not shown.');
   }
+  // lane BS: Show Endpoints (Mastercam's Display Endpoints; the Heads-up toolbar and View ▸ Display): the end-point
+  // dots of the sketch being edited shown or hidden (ui-sketch.js takes them off; centres, sketch points, the origin and
+  // snaps stay, and an end still selects and snaps). App.view.showEndpoints, remembered per browser, on by default.
+  UI.showEndpointsPref = function () { try { return window.localStorage.getItem('anvil.showEndpoints') !== '0'; } catch (e) { return true; } };
+  App.view.showEndpoints = UI.showEndpointsPref();   // (read once at start, as a reload does)
+  function toggleShowEndpoints(on) {
+    App.view.showEndpoints = on == null ? App.view.showEndpoints === false : !!on;
+    try { window.localStorage.setItem('anvil.showEndpoints', App.view.showEndpoints ? '1' : '0'); } catch (e) { /* storage blocked */ }
+    UI.updateSketches(); refreshHud();
+    UI.setStatus(App.view.showEndpoints ? 'Sketch end points shown.' : 'Sketch end points hidden: they still select and snap.');
+  }
+  UI.toggleShowEndpoints = toggleShowEndpoints;
   function setStyle(s) { App.view.style = s; UI.applyDisplayStyle(); refreshHud(); }
   function setBg(b) { return UI.setBackground(b); }   // r14/viewui14: keeps the viewport's other classes (was className =), remembered
   function normalToSelection() {
@@ -1558,6 +1572,7 @@
     ]; });
     dd('appearance', 'Edit Appearance', function () { return [{ label: 'Edit Appearance…', action: function () { UI.openTaskPane('appearance'); } }]; });
     dd('scene', 'Apply Scene', function () { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); });
+    btn('showEndpoints', 'Show Endpoints — Show or hide the end-point dots of sketch entities', function () { toggleShowEndpoints(); }, function () { return App.view.showEndpoints !== false; });   // lane BS
     dd('settings', 'View Settings', function () { return [
       { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
       { sep: true },
@@ -1565,7 +1580,7 @@
       { label: 'Dark Theme', checked: !!UI.theme && UI.theme() === 'dark', action: function () { UI.setTheme('dark'); } }
     ]; });
   }
-  UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'View Settings'];
+  UI.HUD_ORDER = ['Zoom to Fit', 'Zoom to Area', 'Previous View', 'Section View', 'Dynamic Annotation Views', 'View Orientation', 'Display Style', 'Hide/Show Items', 'Edit Appearance', 'Apply Scene', 'Show Endpoints', 'View Settings'];
   // Space (ui-app.js): the View Orientation menu at the mouse pointer when it is over the graphics area, else under
   // the heads-up button
   var lastPointer = null;

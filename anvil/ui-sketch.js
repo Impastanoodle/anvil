@@ -132,8 +132,8 @@
     rect: 'Click the first corner, then the opposite corner.',
     crect: 'Click the center, then a corner.',
     circle: 'Click the center, then a point on the circle.',
-    arc: 'Click the center, the start point, then the end point; the arc runs the way you move. From a line or arc end, move the center out square to it (Tangent glyph) for a tangent arc.',
-    arc3: 'Click the start point, then the end point, then a point the arc passes through. From a line or arc end the arc locks tangent to it as it comes near (Tangent glyph).',
+    arc: 'Click the center, the start point, then the end point; the arc runs the way you move. From a line or arc end, move the center out square to it (a tangent guide line) for a tangent arc.',
+    arc3: 'Click the start point, then the end point, then a point the arc passes through. From a line or arc end the arc locks tangent to it as it comes near (a tangent guide line).',
     polygon: 'Click the center, then a vertex. Set the number of sides in the PropertyManager.',
     slot: 'Click the two slot centers, then a point to set the width.',
     point: 'Click to place a point.',
@@ -1324,6 +1324,11 @@
   // r6/sketch6: Tools ▸ Sketch Settings ▸ Enable on-screen numeric input on entity creation (off by default; kept per
   // browser): every entity drawn gets its dimensions
   var ALL_TYPED = { len: 1, w: 1, h: 1, r: 1 }, numInputOn = null;
+  // lane BP: the unit request box. For these tools the on-screen box opens by itself after the first click whatever
+  // the numeric-input setting, and Enter is one-shot: the first Enter commits what the box shows (typed, or the live
+  // value, which then holds), the second makes the entity and closes the tool. A command (Parallel Line) opens the
+  // same box with UI.sketchUnitBox.open(spec, values) and gets onChange / onCommit / onFinish; unitOwner is its spec.
+  var UNIT_BOX_TOOLS = { circle: 1, pcircle: 1 }, unitOwner = null;
   function numericInputOn() {
     if (numInputOn == null) { numInputOn = false; try { numInputOn = window.localStorage.getItem('anvil.sketchNumericInput') === '1'; } catch (e) { /* storage blocked */ } }
     return numInputOn;
@@ -1415,7 +1420,7 @@
     });
     if (!pls.length) return [];
     if (!skGhostMat) skGhostMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, depthTest: false, depthWrite: false });
-    skGhostMat.color.copy(UI.mats && UI.mats.sketch ? UI.mats.sketch.color : new THREE.Color(0x1f5fd0));
+    skGhostMat.color.copy(UI.mats && UI.mats.sketch ? UI.mats.sketch.color : new THREE.Color(0xffffff));
     var ls = new THREE.LineSegments(UI.lineGeometryFromPolylines(pl, pls), skGhostMat);
     ls.renderOrder = 9;
     ls.userData = { sketchGhost: true, count: n };
@@ -1719,6 +1724,7 @@
   var lastMove = null; // the last cursor position in the viewport [mx, my]
   function numFields() {
     var st = App.toolState || { pts: [] }, n = st.pts.length;
+    if (unitOwner) return unitOwner.fields;   // lane BP: a command's unit request box (Parallel Line)
     if (!n || App.mode !== 'sketch' || (App.command && App.command.onSketchPoint)) return null;
     var hk = toolHook(), hf = hk && hk.numFields ? hk.numFields(n) : null;
     if (hf) return hf;
@@ -1753,7 +1759,7 @@
       lab.style.cssText = 'color:var(--blue);font-weight:600';
       var inp = document.createElement('input');
       inp.type = 'text'; inp.setAttribute('inputmode', 'decimal'); inp.spellcheck = false; inp.autocomplete = 'off';
-      inp.setAttribute('aria-label', fd[0] === 'A' ? 'Angle' : fd[0] === 'L' ? 'Length' : fd[0] === 'R' ? 'Radius' : fd[0] === 'W' ? 'Width' : fd[0] === 'Ø' ? 'Diameter' : 'Height');
+      inp.setAttribute('aria-label', fd[0] === 'A' ? 'Angle' : fd[0] === 'L' ? 'Length' : fd[0] === 'R' ? 'Radius' : fd[0] === 'W' ? 'Width' : fd[0] === 'Ø' ? 'Diameter' : fd[0] === 'D' ? 'Distance' : 'Height');
       inp.style.cssText = 'width:58px;border:0;outline:0;background:transparent;font:inherit;color:inherit;padding:1px 2px;border-bottom:1px solid var(--line)';
       inp.addEventListener('keydown', numKey);
       var item = { key: fd[1], input: inp, typed: false };
@@ -1762,6 +1768,7 @@
         // p9-sketch: R and Ø are the same size: typing one lets go of the other (a "." typed into R before Tab to Ø)
         var twin = item.key === 'r' ? 'd' : item.key === 'd' ? 'r' : null;
         if (twin && item.typed && numBox) numBox.inputs.forEach(function (x) { if (x.key === twin && x.typed) { x.typed = false; x.bad = false; x.input.value = ''; x.input.style.outline = '0'; } });
+        if (unitOwner && unitOwner.onChange) unitOwner.onChange(numValues(true));   // lane BP: the command's preview follows the typing
         numPreview();
       });
       lab.appendChild(inp);
@@ -1826,7 +1833,7 @@
   }
   // after a click of a drawing tool (Sketch Settings ▸ numeric input on): open the box for the next value
   function autoNumBox() {
-    if (numBox || !numericInputOn() || !numFields()) return false;
+    if (numBox || !(numericInputOn() || UNIT_BOX_TOOLS[App.tool]) || !numFields()) return false;   // lane BP: the Circle tools always ask
     openNumBox('', true);
     if (lastMove) {
       var pl = UI.activePlane(), raw = UI.screenToPlane(lastMove[0], lastMove[1], pl);
@@ -1844,9 +1851,27 @@
   }
   function closeNumBox() {
     if (!numBox) return;
-    var b = numBox; numBox = null;
+    var b = numBox; numBox = null; unitOwner = null;
     if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
   }
+  // lane BP: the unit request box for a command (see UNIT_BOX_TOOLS): spec { fields: [[label, key], …], onChange(values),
+  // onCommit(values), onFinish(values) }, values the prefilled text per key (shown selected: typing replaces it)
+  UI.sketchUnitBox = {
+    open: function (spec, values) {
+      closeNumBox();
+      unitOwner = spec;
+      if (!openNumBox('', false)) { unitOwner = null; return false; }
+      numBox.inputs.forEach(function (x) {
+        var s = values && values[x.key] != null ? String(values[x.key]) : '';
+        x.input.value = s; x.typed = !!s; x.input._armed = s;
+      });
+      var take = function () { if (numBox && unitOwner === spec) { try { numBox.inputs[0].input.focus(); numBox.inputs[0].input.select(); } catch (e) { } } };
+      take(); setTimeout(take, 0);   // again after the click's own focus change, when opened from a mouse event
+      return true;
+    },
+    close: function () { if (unitOwner) closeNumBox(); },
+    isOpen: function () { return !!(numBox && unitOwner); }
+  };
   // the typed values: { len, ang, w, h, r, sweep } (only those entered); a bad entry is marked and left out.
   // p9-sketch: quiet (the live preview while typing) leaves a half-typed entry ("3/", "1-1/") unmarked: only Enter or a
   // click marks it red with the parser's message
@@ -1954,11 +1979,45 @@
       numBox.inputs[k].typed = true;
     } else if (ev.key === 'Enter') {
       ev.preventDefault();
+      // lane BP: Enter places what was typed; in a chain tool Enter with nothing typed (the box opened by itself, or
+      // emptied) ends the tool, the same second-Enter rule as a PropertyManager's (ui-commands.js pmEnter)
+      var oneShot = !!(unitOwner || UNIT_BOX_TOOLS[App.tool]);
+      if (!anyTyped && !oneShot) {
+        closeNumBox();
+        cancelTool();
+        UI.setStatus('Tool ended: Enter with nothing typed closes it (type a value and press Enter to place it, Enter again to finish).');
+        return;
+      }
+      if (oneShot && !anyTyped) { var fx = numBox.inputs[k >= 0 ? k : 0]; fx.typed = !!fx.input.value.trim(); }   // the live value holds
       var v = numValues();
       var badX = numBox.inputs.filter(function (x) { return x.bad; })[0];
       if (badX) {   // r9/sketch9: x.bad, not the outline (0px on every untouched field)
         // p9-sketch: the parser's own message (Unknown unit "xx", Division by zero, ...) when it has one
         UI.setStatus('Not a valid value' + (badX.error ? ' (' + badX.error + ')' : '') + ': type a positive length (.375, 3/8, 1-1/2, 25mm), or an angle in degrees.'); return; }
+      if (oneShot) {
+        // the unit request box (Circle, Parallel Line): the first Enter commits what the box shows, the second makes
+        // the entity and closes the tool / command; a value typed after a commit is committed first
+        var fk = numBox.inputs[k >= 0 ? k : 0];
+        if (!numBox.committed || numBox.inputs.some(function (x) { return x.input.value !== x.input._armed; })) {
+          numBox.inputs.forEach(function (x) { x.input._armed = x.input.value; });
+          numBox.committed = true;
+          if (unitOwner) { if (unitOwner.onCommit) unitOwner.onCommit(v); } else numPreview();
+          var fv = v[fk.key];
+          if (UI.pmEntryStatus) UI.pmEntryStatus(fk.input.getAttribute('aria-label') || '', fv == null ? fk.input.value : fk.key === 'ang' || fk.key === 'sweep' ? UI.fmtNum(fv, 2) + '°' : UI.fmtDim(fv) + ' ' + UI.unitLabel());
+          try { fk.input.focus(); fk.input.select(); } catch (e) { }
+          return;
+        }
+        if (unitOwner) { var own = unitOwner; closeNumBox(); if (own.onFinish) own.onFinish(v); return; }
+        var plO = UI.activePlane(), mO = lastMove, rawO = mO ? UI.screenToPlane(mO[0], mO[1], plO) : null;
+        var curO = rawO ? inferPoint(rawO, mO[0], mO[1]).p : (App.toolState.pts[App.toolState.pts.length - 1] || [0, 0]);
+        var pO = typedPoint(curO, v);
+        closeNumBox();
+        App.sketchDirty = false;
+        placePoint(pO, v);
+        cancelTool();
+        UI.setStatus('Placed at the typed size; the tool is closed (Enter twice). Pick a tool to draw more.');
+        return;
+      }
       var pl = UI.activePlane(), m = lastMove, raw = m ? UI.screenToPlane(m[0], m[1], pl) : null;
       var cur = raw ? inferPoint(raw, m[0], m[1]).p : (App.toolState.pts[App.toolState.pts.length - 1] || [0, 0]);
       var p = typedPoint(cur, v);
@@ -2090,14 +2149,14 @@
     } else if (App.inferPreview && App.inferPreview.length) App.inferPreview = [];
     if (drawing) drawFeedback(pl, info, mx, my, numBox ? '' : readout);   // the box shows the values itself
   }
-  // while dragging an end point: the point / curve it would merge with (ui-relations.js), or null
-  UI.sketchSnapMark = function (uv, q, onCurve, type) {
+  // while dragging an end point: the point / curve it would merge with (ui-relations.js), or null (rfBR: the marker
+  // only, no relation glyph by the cursor)
+  UI.sketchSnapMark = function (uv, q, onCurve) {
     var layer = feedbackLayer();
     clearFeedback();
     if (!uv) return;
     var s = UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1]));
     svg('circle', { cx: s[0], cy: s[1], r: onCurve ? 3 : 5, style: 'fill:' + (onCurve ? '#e8891c' : 'none') + ';stroke:#e8891c;stroke-width:1.5' }, layer);
-    glyph(layer, q[0] + 14, q[1] + 12, type || 'coincident');
   };
   // orange dashed polylines (sketch coordinates) added to the cursor feedback: a command's preview
   // (r13/trim13: style replaces the dashed orange one, cls the class; the Trim hover and the Power trim trail)
@@ -2170,134 +2229,52 @@
     return '';
   }
 
-  // ---- cursor feedback: inference lines, the snapped point, relation glyphs and the live value, in a group of the
-  // #dim-layer SVG that drawDims keeps (redrawn on every mouse move without redrawing the dimensions)
+  // ---- cursor feedback: inference lines, the snapped point and the live value, in a group of the #dim-layer SVG that
+  // drawDims keeps (redrawn on every mouse move without redrawing the dimensions). rfBR: no relation glyphs by the
+  // cursor and none next to the entities (Mastercam's graphics area); relations still exist and Display/Delete
+  // Relations lists them.
   var fbLayer = null;
-  var SNAP_GLYPH = { end: 'coincident', origin: 'coincident', on: 'coincident', quadrant: 'coincident', intersection: 'coincident', midpoint: 'midpoint', center: 'concentric' };
   function feedbackLayer() {
     if (!fbLayer) fbLayer = svg('g', { 'class': 'sk-feedback', 'pointer-events': 'none' });
     if (fbLayer.parentNode !== dimLayer) dimLayer.appendChild(fbLayer);
     return fbLayer;
   }
   function clearFeedback() { if (fbLayer) while (fbLayer.firstChild) fbLayer.removeChild(fbLayer.firstChild); }
-  function glyph(layer, x, y, type) {
-    var g = svg('g', { 'class': 'rel-badge infer', transform: badgeAt(x, y) }, layer);
-    svg('rect', badgeFrame(), g);
-    iconUse(g, 'rel' + type.charAt(0).toUpperCase() + type.slice(1));
-    return g;
-  }
-  // r5/sketch5: relation icons are drawn as <use> of one shared copy per icon (kept in a <defs> of the #dim-layer):
-  // parsing an icon's markup for every badge on every redraw cost ~4 ms per frame on a 56-entity sketch
-  var iconDefs = null, iconIds = {}, iconDpr = 0;
-  function iconUse(parent, name) {
-    var dpr = devPx();
-    if (!iconDefs || iconDefs.parentNode !== dimLayer || dpr !== iconDpr) {
-      if (iconDefs && iconDefs.parentNode === dimLayer) dimLayer.removeChild(iconDefs);
-      iconDefs = svg('defs', {}); dimLayer.insertBefore(iconDefs, dimLayer.firstChild); iconIds = {}; iconDpr = dpr;
-      dimLayer.style.setProperty('--rg-bw', (Math.max(1, Math.round(dpr)) / dpr) + 'px');
-    }
-    if (!iconIds[name]) {
-      var g = svg('g', { id: 'sk-ico-' + name }, iconDefs), gm = relGlyph(name, dpr);
-      g.innerHTML = gm != null ? gm : Icons(name, 16).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
-      if (gm == null) g.setAttribute('transform', 'translate(1,1) scale(0.875)');
-      iconIds[name] = '#sk-ico-' + name;
-    }
-    return svg('use', { href: iconIds[name] }, parent);
-  }
-  // ---- r14/sketchui14: relation glyphs drawn as SolidWorks draws them: a small square with a green border and the
-  // relation's symbol in dark green, the same size and weight at 100 / 125 / 150 / 200 % display scaling. The box is
-  // 16 CSS px (a whole number of device pixels at each of those), placed on the device-pixel grid, its border one or
-  // two device pixels; the symbols' straight strokes are filled rectangles snapped to device pixels, 2 CSS px thick
-  // (2 / 3 / 4 device px): never blurred across two pixel rows. Built once per glyph and scale, shared by <use>.
-  function devPx() { var d = window.devicePixelRatio || 1; return d > 0 && d < 8 ? Math.round(d * 100) / 100 : 1; }
-  function badgeAt(x, y) { var d = devPx(); return 'translate(' + Math.round(x * d) / d + ',' + Math.round(y * d) / d + ')'; }
-  function badgeFrame() {
-    var d = devPx(), bw = Math.max(1, Math.round(d)) / d;
-    return { x: bw / 2, y: bw / 2, width: 16 - bw, height: 16 - bw, rx: 2.5 };
-  }
-  UI.relBadgeAt = badgeAt;
-  UI.relBadgeFrame = badgeFrame;
-  function relGlyph(name, d) {
-    function sn(v) { return Math.round(v * d) / d; }
-    // a bar from (x0, y0) to (x1, y1), its ends snapped to device pixels; its 2 px thickness a whole number of device
-    // pixels (2 / 2 / 3 / 4 at 100 / 125 / 150 / 200 %), the same for every bar
-    var T = Math.max(1, Math.round(2 * d - 0.01)) / d;
-    function R(x0, y0, x1, y1) {
-      var a = sn(x0), b = sn(y0), w = sn(x1) - a, h = sn(y1) - b;
-      if (Math.abs(y1 - y0 - 2) < 1e-9) { b = sn((y0 + y1) / 2 - T / 2); h = T; }
-      else if (Math.abs(x1 - x0 - 2) < 1e-9) { a = sn((x0 + x1) / 2 - T / 2); w = T; }
-      return '<rect x="' + a + '" y="' + b + '" width="' + w + '" height="' + h + '"/>';
-    }
-    function C(cx, cy, r, w) { return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="currentColor" stroke-width="' + w + '"/>'; }
-    function D(cx, cy, r) { return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '"/>'; }
-    function P(dd, w, extra) { return '<path d="' + dd + '" fill="none" stroke="currentColor" stroke-width="' + w + '" stroke-linecap="round"' + (extra || '') + '/>'; }
-    var body;
-    switch (name) {
-      case 'relHorizontal': body = R(4, 7, 12, 9); break;
-      case 'relVertical': body = R(7, 4, 9, 12); break;
-      case 'relEqual': body = R(4, 5, 12, 7) + R(4, 9, 12, 11); break;
-      case 'relPerpendicular': body = R(4, 11, 12, 13) + R(7, 3, 9, 11); break;
-      case 'relParallel': body = P('M4.8 12.2 L8 3.8 M8.4 12.2 L11.6 3.8', 1.7); break;
-      case 'relCollinear': body = R(2.5, 7, 6.5, 9) + R(9.5, 7, 13.5, 9); break;
-      case 'relCoincident': body = D(8, 8, 2.4) + C(8, 8, 5, 1.3); break;
-      case 'relConcentric': body = C(8, 8, 2.2, 1.3) + C(8, 8, 5.2, 1.3); break;
-      case 'relTangent': body = C(8, 6.6, 3.6, 1.4) + R(3, 11, 13, 13); break;
-      case 'relMidpoint': body = R(2.5, 9, 13.5, 11) + '<path d="M8 4.2 L10.6 6.8 L8 9.4 L5.4 6.8 Z"/>'; break;
-      case 'relSymmetric': body = P('M8 2.5 V13.5', 1, ' stroke-dasharray="2 1.6" stroke-linecap="butt"') + R(3, 5, 5, 11) + R(11, 5, 13, 11); break;
-      case 'relPolygon': body = P('M8 2.6 L12.7 5.3 L12.7 10.7 L8 13.4 L3.3 10.7 L3.3 5.3 Z', 1.5, ' stroke-linejoin="round"'); break;   // rfH
-      case 'relFix': body = P('M8 3 V10.5 M4.6 7.5 A3.6 3.6 0 0 0 11.4 7.5', 1.5) + R(5.5, 3, 10.5, 5); break;
-      case 'offset': body = '<rect x="2.9" y="2.9" width="10.2" height="10.2" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="1.6 1.2"/>' + '<rect x="5.6" y="5.6" width="4.8" height="4.8" fill="none" stroke="currentColor" stroke-width="1.6"/>'; break;
-      default: return null;
-    }
-    return '<g class="rg" fill="currentColor">' + body + '</g>';
-  }
   function drawFeedback(pl, info, mx, my, readout) {
     var layer = feedbackLayer();
     clearFeedback();
     if (!info) return;
     function scr(p) { return UI.worldToScreen(K.to3D(pl, p[0], p[1])); }
     var sp = scr(info.p);
-    // dotted blue inference lines from the points the cursor lines up with (rfBH: as SolidWorks, blue is a guide that
-    // adds no relation, orange one whose relation the click adds; colours --sk-infer / --sk-infer-rel in style.css)
+    // dotted grey inference lines from the points the cursor lines up with (rfBR: a darker grey is a guide that adds no
+    // relation, a lighter one whose relation the click adds; colours --sk-infer / --sk-infer-rel in style.css)
     info.align.forEach(function (al) {
       if (al.prev && App.tool === 'line') return;   // the rubber band itself shows that one
       var a = scr(al.from);
-      svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], 'class': 'sk-infer', style: 'stroke:var(--sk-infer, var(--blue));stroke-width:1;stroke-dasharray:2 3' }, layer);
+      svg('line', { x1: a[0], y1: a[1], x2: sp[0], y2: sp[1], 'class': 'sk-infer', style: 'stroke:var(--sk-infer, #8c8c8c);stroke-width:1;stroke-dasharray:2 3' }, layer);
     });
     // the point taken: an orange ring on an existing point, a small dot on a curve
     // a tangent / perpendicular direction taken: a dotted inference line along it from the end point, past the cursor
     if (info.dir) {
       var a0 = scr(info.dir.from), vx = sp[0] - a0[0], vy = sp[1] - a0[1], vl = Math.hypot(vx, vy) || 1;
       var relLine = !!info.dir.glyph && skSetting('autoRelations');
-      svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, 'class': relLine ? 'sk-infer sk-infer-rel' : 'sk-infer', style: 'stroke:' + (relLine ? 'var(--sk-infer-rel, #e8891c)' : 'var(--sk-infer, var(--blue))') + ';stroke-width:1;stroke-dasharray:2 3' }, layer);
+      svg('line', { x1: a0[0], y1: a0[1], x2: sp[0] + vx / vl * 40, y2: sp[1] + vy / vl * 40, 'class': relLine ? 'sk-infer sk-infer-rel' : 'sk-infer', style: 'stroke:' + (relLine ? 'var(--sk-infer-rel, #c8c8c8)' : 'var(--sk-infer, #8c8c8c)') + ';stroke-width:1;stroke-dasharray:2 3' }, layer);
     }
     // (p9-modelsnap: a point on the model in its own colour, MODEL_COLOR)
     if (info.snap) {
       var sCol = info.snap.model ? MODEL_COLOR : '#e8891c', sDot = info.snap.kind === 'on' || info.snap.kind === 'medge';
       svg('circle', { cx: sp[0], cy: sp[1], r: sDot ? 3 : 5, 'class': info.snap.model ? 'sk-model-snap' : 'sk-snap', style: 'fill:' + (sDot ? sCol : 'none') + ';stroke:' + sCol + ';stroke-width:1.5' }, layer);
     }
-    // relation glyphs by the cursor: what the click will infer
-    var types = [];
-    if (info.snap && SNAP_GLYPH[info.snap.kind] && skSetting('autoRelations')) {   // (rfAR: no glyph when no relation will be added)
-      var sg = SNAP_GLYPH[info.snap.kind], stp = App.toolState || { pts: [] };
-      // r15/snapaudit15: a centre snap is Concentric only when the point being placed is itself a centre (the first point
-      // of a circle, Centerpoint Arc, polygon or Center Rectangle); a line end on a centre gets Coincident
-      if (info.snap.kind === 'center' && !(/^(circle|arc|polygon|crect)$/.test(App.tool) && !stp.pts.length)) sg = 'coincident';
-      types.push(sg);
-    }
-    if (((info.dir && info.dir.glyph) || info.tan || info.tanSlide) && skSetting('autoRelations')) types.push('tangent');   // the arc tools' tangent guidance, the Line tool's tangent slide
-    (App.inferPreview || []).forEach(function (c) { if (types.indexOf(c.type) < 0) types.push(c.type); });
-    types.forEach(function (t, k) { glyph(layer, mx + 14 + k * 18, my + 12, t); });
-    // p9-modelsnap: a model snap adds no relation (no glyph); a small label by the cursor names it instead
+    // p9-modelsnap: a model snap adds no relation; a small label by the cursor names it
     if (info.snap && info.snap.model && info.snap.label) {
-      var ly = my + 12 + (types.length ? 20 : 0), lw = Math.round(info.snap.label.length * 6.2 + 10);
+      var ly = my + 12, lw = Math.round(info.snap.label.length * 6.2 + 10);
       var lg = svg('g', { 'class': 'sk-snap-label' }, layer);
       svg('rect', { x: mx + 14, y: ly, width: lw, height: 16, rx: 3, style: 'fill:var(--menu-bg);stroke:' + MODEL_COLOR + ';stroke-width:1' }, lg);
       var lt = svg('text', { x: mx + 19, y: ly + 12, style: 'fill:var(--text);font-size:11px' }, lg);
       lt.textContent = info.snap.label;
     }
     if (readout) {
-      var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:var(--blue);font-size:11px;pointer-events:none' }, layer);
+      var t = svg('text', { x: mx + 14, y: my - 10, style: 'fill:#e8e8e8;font-size:11px;pointer-events:none' }, layer);   // rfBR: light grey on the dark ground
       t.textContent = readout;
     }
   }
@@ -2355,7 +2332,7 @@
     rcParents = null;
     for (var i = 0; i < list.length; i++) {
       var p = list[i];
-      for (var c = p._rcNext; c; ) { var nx = c.nextSibling; if (c !== fbLayer && c !== iconDefs) p.removeChild(c); c = nx; }
+      for (var c = p._rcNext; c; ) { var nx = c.nextSibling; if (c !== fbLayer) p.removeChild(c); c = nx; }
       p._rcOn = false; p._rcNext = null;
     }
   }
@@ -2836,7 +2813,7 @@
       radialTurnOn = turn; radialTurned = false; dimSegs = null; prevLabels = null;
       for (var pass = 0; pass < (busy ? 1 : 3); pass++) {
         labelBoxes = []; drawnLabels = []; dimSegsNow = [];
-        rcBegin(dimLayer, iconDefs && iconDefs.parentNode === dimLayer ? iconDefs.nextSibling : dimLayer.firstChild);
+        rcBegin(dimLayer, dimLayer.firstChild);
         try { out = drawDimsIn(f); } finally { rcEnd(); }
         if (pass === 2 || !drawnLabels.some(function (x) { return onOtherLines(x.box, x.owner, dimSegsNow); })) break;
         dimSegs = dimSegs ? dimSegs.concat(dimSegsNow) : dimSegsNow;
@@ -2895,8 +2872,8 @@
       if (it.d.driven) sc.label = '(' + sc.label + ')';   // driven (reference) dimension
       drawOne(sc, it);
     });
-    // relation icons, inference icons and the two-entity (distance / angle) dimensions: ui-relations.js
-    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, icon: iconUse, free: function (b) { return boxFree(b, null, true); }, freeKeep: function (b) { return boxFree(b, null, false); }, take: function (b) { labelBoxes.push(b); } });
+    // the two-entity (distance / angle) dimensions and the relation highlights: ui-relations.js
+    if (UI.drawRelations) UI.drawRelations(f, pl, dimLayer, { svg: svg, text: svgText, drawOne: drawOne, list: list, free: function (b) { return boxFree(b, null, true); }, freeKeep: function (b) { return boxFree(b, null, false); }, take: function (b) { labelBoxes.push(b); } });
     // placed dimensions whose entity vanished or changed type (delete, trim, mirror in place) are dropped
     if (stale.length) {
       f.dims = placed.filter(function (d, i) { return stale.indexOf(i) < 0; });

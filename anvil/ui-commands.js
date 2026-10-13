@@ -96,14 +96,17 @@
     if (!inp || pm.root.contains(a) && a !== pm.root) return;
     try { inp.focus({ preventScroll: true }); inp.select(); } catch (e) { }
   }
-  // Enter anywhere in the PropertyManager (a value box, a list, a check box) is ✓, Esc is ✗, as in SolidWorks.
-  // A focused button keeps Enter for itself; equation-field and other handlers that already took the key win.
+  // Enter anywhere in the PropertyManager goes through pmEnter (below): a value box with a new entry commits it and
+  // stays, anything else is ✓. Esc is ✗, as in SolidWorks. A focused button keeps Enter for itself; equation-field
+  // and other handlers that already took the key win.
   pm.root.addEventListener('keydown', function (e) {
     if (!pm.spec || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     var tag = (e.target.tagName || '').toLowerCase();
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmCancel(); return; }
-    if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmOK(); }
+    if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmEnter(e.target); }
   });
+  // a box that takes the focus starts clean: what is typed from here on is the entry Enter commits (pmEnter)
+  pm.root.addEventListener('focusin', function (e) { if (e.target && e.target.tagName === 'INPUT') pmArm(e.target); });
   // rfC: a sketch tool's PropertyManager (spec.noFocus: Insert Line, Rectangle, Circle, Sketch Text …) never takes the
   // keyboard from the graphics area: a click on its buttons, check boxes and option buttons acts without focusing them
   // (typed lengths, L / C / A and Enter keep going to the sketch), and a list closes back to the graphics area. Value
@@ -143,7 +146,8 @@
     UI.refreshRibbon();
   }
   // Returns the commit's Promise when the command's onOK returns one (commitFeature does), else UI.whenIdle().
-  function pmOK() {
+  // opts.close (pmEnter): a command that otherwise keeps its PropertyManager open after ✓ (Mate, the DWG save) closes.
+  function pmOK(opts) {
     if (!pm.spec) return UI.whenIdle();
     var spec = pm.spec, r;
     var bad = Object.keys(pm.exprErrors || {});
@@ -155,7 +159,10 @@
     var why = okBlockedWhy();
     if (why) { UI.setStatus(why); UI.toast(why); return UI.whenIdle(); }
     if (spec.onOK) { r = spec.onOK(pm.values); if (r === false) return UI.whenIdle(); }
-    if (r && r.keepOpen) return r.promise || UI.whenIdle();   // r3/assembly3: the Mate PM stays open for the next mate
+    if (r && r.keepOpen) {
+      if (!(opts && opts.close) || pm.spec !== spec) return r.promise || UI.whenIdle();   // r3/assembly3: the Mate PM stays open for the next mate
+      r = r.promise || null;   // lane BP: the second Enter closes the whole command, it does not start another round
+    }
     var pending = r && typeof r.then === 'function';
     // smooth/responsive: the preview stays on screen until the committed build is applied (no frame of the old part)
     closePM(pending);
@@ -171,6 +178,43 @@
     if (spec.onCancel) spec.onCancel();
     closePM();
   }
+
+  // Enter, the same in every command (user, 2026-10-13: "the Enter key completes a unit insertion only; the second
+  // hit closes the whole function"). pmEnter(inp, commit) is the one place that decides, for every PropertyManager,
+  // sketch tool PM, Transform command, Geometry Nesting and Parallel Line (ui-app.js routes the graphics area's Enter
+  // here too): Enter in a value box whose text changed since it took the focus (or since the last Enter) COMMITS the
+  // entry and keeps the command open: the box is reformatted, its text selected, the status says "… press Enter again
+  // to finish". Enter with nothing pending (the box unchanged, a list, a check box, the graphics area) is ✓ and closes
+  // the whole command, also one that otherwise keeps going (✓+, a Mate). `commit(inp)` is the box's own commit (a
+  // number box reads shop input and reformats itself, Nesting re-nests); returning false refuses: a bad entry or
+  // equation shows its error on the first Enter and stays. Boxes are armed (their clean text noted) when rendered and
+  // when they take the focus; a re-render while an entry is pending keeps it pending (renderPM).
+  function pmArm(inp) { if (inp && inp.tagName === 'INPUT') inp._armed = inp.value; }
+  function pmPending(inp) {
+    return !!(inp && inp.tagName === 'INPUT' && /^(text|number|search)$/i.test(inp.type || 'text') && inp._armed != null && inp.value !== inp._armed);
+  }
+  function pmEnter(inp, commit) {
+    if (!pm.spec) return false;
+    if (pmPending(inp)) {
+      var was = inp._armed, key = inp.getAttribute('data-key');
+      inp._armed = inp.value;   // a re-render inside the commit starts the new box clean
+      if (commit && commit(inp) === false) { inp._armed = was; return true; }   // refused: the entry stays pending
+      if (!commit) {   // a plain text box: the entry was applied as it was typed; say so
+        var row = inp.closest ? inp.closest('.pm-row') : null, lab = row && row.querySelector('label');
+        pmEntryStatus(lab ? lab.textContent.trim() : '', '"' + inp.value + '"');
+      }
+      var cur = inp.isConnected ? inp : key ? pm.root.querySelector('input[data-key="' + key + '"]') : null;
+      if (cur) {
+        pmArm(cur);   // the reformatted text is the clean one now
+        try { cur.focus({ preventScroll: true }); cur.select(); } catch (e) { }
+      }
+      return true;
+    }
+    pmOK({ close: true });
+    return false;
+  }
+  // the status line of a committed entry: "Depth .500 in — press Enter again to finish."
+  function pmEntryStatus(label, text) { UI.setStatus((label ? label + ' ' : '') + text + ' — press Enter again to finish.'); }
 
   // The ✓ button looks disabled (and pmOK refuses) while a number field holds an equation that does not evaluate, or
   // while the command's spec.okBlocked(values) names something still missing (SolidWorks greys ✓ until the required
@@ -191,7 +235,7 @@
     // folded and the value box being typed in
     var scroll = root.scrollTop, focus = null, a = document.activeElement;
     if (a && a !== root && root.contains(a) && a.getAttribute('data-key')) {
-      focus = { key: a.getAttribute('data-key'), tag: a.tagName };
+      focus = { key: a.getAttribute('data-key'), tag: a.tagName, pending: pmPending(a) ? a._armed : null };
       try { focus.s = a.selectionStart; focus.e = a.selectionEnd; } catch (er) { }
     }
     root.innerHTML = '';
@@ -235,10 +279,13 @@
     });
     if (spec.okBlocked) updateOkState();
     if (scroll && root.scrollTop !== scroll) root.scrollTop = scroll;
+    // lane BP: every box starts clean (pmEnter); the box being typed in keeps its pending entry across the re-render
+    Array.prototype.forEach.call(root.querySelectorAll('input'), function (i) { if (i._armed == null) pmArm(i); });
     if (focus) {
       var again = root.querySelector(focus.tag.toLowerCase() + '[data-key="' + focus.key + '"]');
       if (again) {
         try { again.focus({ preventScroll: true }); if (focus.s != null) again.setSelectionRange(focus.s, focus.e); } catch (er) { }
+        if (focus.pending != null) again._armed = focus.pending;
       }
     }
   }
@@ -313,11 +360,29 @@
           var n = parseFloat(s); if (!isNaN(n)) changed(n);
         });
         inp.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' && shopText()) {
-            var re = shopRead(inp.value);
-            if (re.error != null) { e.preventDefault(); shopHint(re); UI.setStatus('Not a value: ' + re.error); return; }
+          if (e.key === 'Enter') {
+            // lane BP: a new entry is committed and the box stays (shop input reads and reformats, 3/8 -> 0.375; an
+            // equation keeps its text); a bad entry shows its error and stays; the next Enter is ✓ (pmEnter)
+            e.preventDefault();
+            pmEnter(inp, function () {
+              if (shopText()) {
+                var re = shopRead(inp.value);
+                if (re.error != null) { shopHint(re); UI.setStatus('Not a value: ' + re.error); return false; }
+                var val = +re.value.toPrecision(12);
+                inp.type = 'number'; inp.value = val; shopHint(null);
+                if (val !== v[key]) changed(val);
+              } else if (pm.exprs[key] != null) {
+                if (pm.exprErrors[key]) { var em = 'Fix the equation in ' + key + ': ' + pm.exprErrors[key]; UI.setStatus(em); UI.toast(em); return false; }
+              } else {
+                var n = parseFloat(inp.value);
+                if (isNaN(n)) { UI.setStatus('Type a value for ' + (f.label || key) + '.'); return false; }
+                if (n !== v[key]) changed(n);
+              }
+              var shown = f.unit === 'u' ? UI.fmtDim(v[key]) + ' ' + UI.unitLabel() : UI.fmtNum(v[key], 4) + (f.unit ? (f.unit === 'deg' ? '°' : f.unit) : '');
+              pmEntryStatus(f.label || '', shown);
+            });
+            return;
           }
-          if (e.key === 'Enter') { e.preventDefault(); pmOK(); return; }
           // r4/features4: arrow keys spin by the field's increment (Shift ×10), the same for every PropertyManager
           if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && pm.exprs[key] == null) { e.preventDefault(); spinField(f, inp, e.key === 'ArrowUp' ? 1 : -1, e.shiftKey ? 10 : 1, changed); return; }
           // a number box cannot hold "=": switch to a text box and start the equation
@@ -2387,8 +2452,8 @@
     var vb = [b.min[0] - pad, -(b.max[1] + pad), w + 2 * pad, h + 2 * pad];
     var sw = Math.max(w, h) / 300;
     function pt(p) { return UI.fmtNum(p[0], 3) + ',' + UI.fmtNum(-p[1], 3); }
-    var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb.join(' ') + '" width="' + width + '" style="max-width:100%;background:#fff;border:1px solid #d3d8de">';
-    flat.loops.forEach(function (l, i) { s += '<polygon points="' + l.map(pt).join(' ') + '" fill="' + (i === 0 ? '#eef3f8' : '#fff') + '" stroke="' + (i === 0 ? '#24292f' : '#d9453b') + '" stroke-width="' + sw + '"/>'; });
+    var s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb.join(' ') + '" width="' + width + '" style="max-width:100%;background:#fff;border:1px solid #d7d7d7">';
+    flat.loops.forEach(function (l, i) { s += '<polygon points="' + l.map(pt).join(' ') + '" fill="' + (i === 0 ? '#f0f0f0' : '#fff') + '" stroke="' + (i === 0 ? '#282828' : '#d9453b') + '" stroke-width="' + sw + '"/>'; });
     var cx = (b.min[0] + b.max[0]) / 2, cy = -(b.min[1] + b.max[1]) / 2, fs = sw * 12;
     flat.bends.forEach(function (bd) {
       s += '<line x1="' + UI.fmtNum(bd.a[0], 3) + '" y1="' + UI.fmtNum(-bd.a[1], 3) + '" x2="' + UI.fmtNum(bd.b[0], 3) + '" y2="' + UI.fmtNum(-bd.b[1], 3) + '" stroke="#3fa34d" stroke-width="' + sw + '" stroke-dasharray="' + (sw * 6) + ' ' + (sw * 3) + '"/>';
@@ -2402,10 +2467,10 @@
       var side = (cx - mx) * ux + (cy - my) * uy >= 0 ? 1 : -1;
       var off = side > 0 ? sw * 4 : -(sw * 4 + fs * 0.8);   // baseline above the line, or the text's top below it
       var tx = mx + ux * off, ty = my + uy * off;
-      s += '<text x="' + UI.fmtNum(tx, 3) + '" y="' + UI.fmtNum(ty, 3) + '" font-size="' + fs + '" font-family="Segoe UI, sans-serif" fill="#1f6fc5" text-anchor="middle" data-role="bend-note"' +
+      s += '<text x="' + UI.fmtNum(tx, 3) + '" y="' + UI.fmtNum(ty, 3) + '" font-size="' + fs + '" font-family="Segoe UI, sans-serif" fill="#3a3a3a" text-anchor="middle" data-role="bend-note"' +
         (Math.abs(ang) > 1e-9 ? ' transform="rotate(' + UI.fmtNum(ang, 3) + ' ' + UI.fmtNum(tx, 3) + ' ' + UI.fmtNum(ty, 3) + ')"' : '') + '>' + smEsc(label) + '</text>';
     });
-    s += '<text x="' + UI.fmtNum(b.min[0], 3) + '" y="' + UI.fmtNum(-b.min[1] + sw * 16, 3) + '" font-size="' + (sw * 11) + '" font-family="Segoe UI, sans-serif" fill="#6b7480">' + 'Flat size ' + UI.fmtNum(w, 4) + ' × ' + UI.fmtNum(h, 4) + ' ' + UI.unitLabel() + ' · ' + smEsc(flat.note || ('T=' + flat.sheet.thickness + ' R=' + flat.sheet.bendRadius + ' K=' + flat.sheet.kFactor)) + '</text>';
+    s += '<text x="' + UI.fmtNum(b.min[0], 3) + '" y="' + UI.fmtNum(-b.min[1] + sw * 16, 3) + '" font-size="' + (sw * 11) + '" font-family="Segoe UI, sans-serif" fill="#737373">' + 'Flat size ' + UI.fmtNum(w, 4) + ' × ' + UI.fmtNum(h, 4) + ' ' + UI.unitLabel() + ' · ' + smEsc(flat.note || ('T=' + flat.sheet.thickness + ' R=' + flat.sheet.bendRadius + ' K=' + flat.sheet.kFactor)) + '</text>';
     return s + '</svg>';
   }
 
@@ -3766,6 +3831,7 @@
   }
 
   UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  UI.pmEnter = pmEnter; UI.pmPending = pmPending; UI.pmArm = pmArm; UI.pmEntryStatus = pmEntryStatus;
   // for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open PropertyManager's message and results
   UI.renderPM = function () { if (pm.spec) renderPM(); }; UI.pmSpec = function () { return pm.spec; }; UI.pmTitle = function () { return pm.spec ? pm.spec.title : null; };
   // equations in PropertyManager number fields: the open PM's equation texts and errors (copies), and a field setter for scripts/tests

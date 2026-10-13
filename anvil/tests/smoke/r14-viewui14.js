@@ -28,14 +28,14 @@
     UI.setBackground('gradient');
     vp.classList.remove('r14-probe');
     assert(!/bg-/.test(vp.className) && W.localStorage.getItem('anvil.bg') === 'gradient', 'back to the gradient: ' + vp.className);
-    assert(UI.mats.edge.color.getHex() === 0x23272d, 'light palette edges again');
+    assert(UI.mats.edge.color.getHex() === 0x161616, 'edges dark on the shaded body over the gradient too (rfBR: grey-black)');
     var bgImg = W.getComputedStyle(vp).backgroundImage;
     assert(/gradient/.test(bgImg), 'the gradient background: ' + bgImg);
     return bgImg.slice(0, 80);
   });
-  step('r14 view: face selection blue and pre-highlight orange, both translucent tints over the shaded face', async function () {
+  step('r14 view: face selection yellow (rfBR) and pre-highlight orange, both translucent tints over the shaded face', async function () {
     var s = UI.mats.sel, h = UI.mats.hover;
-    assert(s.color.b > s.color.r + 0.4 && s.transparent && s.opacity < 0.5, 'selection blue tint: #' + s.color.getHexString() + ' @' + s.opacity);
+    assert(s.color.r > 0.9 && s.color.g > 0.75 && s.color.b < 0.2 && s.transparent && s.opacity < 0.5, 'selection yellow tint: #' + s.color.getHexString() + ' @' + s.opacity);
     assert(h.color.r > 0.9 && h.color.b < 0.3 && h.transparent && h.opacity < 0.5, 'pre-highlight orange tint: #' + h.color.getHexString() + ' @' + h.opacity);
     anvil.select(0); UI.tick();
     var sm = UI.groups.highlight.children.filter(function (o) { return o.material === UI.mats.sel; });

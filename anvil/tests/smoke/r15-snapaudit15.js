@@ -188,7 +188,7 @@
     } finally { UI.App.view.showGrid = false; UI.App.gridStale = true; }
     return 'snap shown, Coincident added';
   });
-  step('r15/snapaudit15: centre snaps add what they promise — a line end on a Polygon centre gets Coincident (a sketch point), a Corner Rectangle centre is no snap and gets nothing, and on a circle centre the glyph says Coincident', async function () {
+  step('r15/snapaudit15: centre snaps add what they promise — a line end on a Polygon centre gets Coincident (a sketch point), a Corner Rectangle centre is no snap and gets nothing, and a line end on a circle centre gets Coincident (rfBR: no glyph by the cursor)', async function () {
     await rskNew();
     saAdd([{ t: 'poly', cx: 20, cy: 20, r: 8, n: 6, rot: 0 }, { t: 'circle', cx: -20, cy: 20, r: 6 }, { t: 'rect', x: -40, y: -30, w: 20, h: 10 }]);
     UI.setTool('line'); rskClick([0, 0]);
@@ -201,7 +201,7 @@
     var rl = sfRels();
     assert(rl.some(function (r) { return /^coincident/.test(r) && /(^|,)0\.c\b/.test(r.split(':')[1]); }), 'polygon centre Coincident: ' + rl.join(' '));
     assert(!rl.some(function (r) { return /(^|,)2\.c\b/.test(r.split(':')[1]); }) && ((saInfer(rskScr([-30, -25])).snap || {}).kind || '') !== 'center', 'rectangle centre: no relation, not a centre snap (the drawn line\'s end is there now): ' + rl.join(' '));
-    assert(/relCoincident/.test(glyphs) && !/relConcentric/.test(glyphs) && rl.indexOf('coincident:4.p2,1.c') >= 0 && !rl.some(function (r) { return /^concentric/.test(r); }), 'circle centre glyphs ' + glyphs + ' / ' + rl.join(' '));
+    assert(!/sk-ico-/.test(glyphs) && rl.indexOf('coincident:4.p2,1.c') >= 0 && !rl.some(function (r) { return /^concentric/.test(r); }), 'circle centre: Coincident, no glyph ' + glyphs + ' / ' + rl.join(' '));
     return rl.join(' ');
   });
   step('r15/tanslide15: a Line started on a circle (not at one of its points) slides tangent to it like Mastercam\'s Line Endpoints with Tangent — the start follows the cursor round the circle, the click leaves a line Tangent and Coincident; T draws from the clicked point instead', async function () {

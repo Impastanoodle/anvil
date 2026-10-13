@@ -856,7 +856,7 @@
   // centred on the reference's midpoint. To a sketch line the new line is held Parallel, with a distance dimension
   // (Add dimensions); a model edge gets neither (sketches hold no external references). The reference stays picked
   // after each line so the next click places another; ✓ / Esc ends. Each placement is one undo step.
-  var PL_PICK = 'stroke:#2d7dd2;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
+  var PL_PICK = 'stroke:#ffd400;stroke-dasharray:6 4;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
   var PL_HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   // the settings, remembered for the session as SolidWorks remembers a PropertyManager's
   var PLS = { place: 'point', d: null, flip: false, both: false, lenMode: 'same', len: null, construction: false, dims: true };
@@ -864,7 +864,9 @@
     ref: 'Select a line or edge to be parallel to.',
     point: 'Click where the line passes through.',
     distance: 'Click on the side the line goes, or press ✓ to place it on the side shown.',
-    tangent: 'Select a circle or arc to be tangent to.'
+    tangent: 'Select a circle or arc to be tangent to.',
+    // lane BP: a click places the preview and hands the Distance box the keyboard; the line is made by Enter / ✓
+    placed: 'Type the distance and press Enter. Enter again (or ✓) makes the line; another click places it again.'
   };
   UI.parallelLineActive = function () { var s = UI.pmSpec && UI.pmSpec(); return !!(s && s.parallelLine); };
   UI.cmdParallelLine = function () {
@@ -947,7 +949,9 @@
     if (!f0) return;
     if (PLS.d == null) PLS.d = UI.lenDefault(10);
     var v = { place: PLS.place, d: PLS.d, flip: PLS.flip, both: PLS.both, lenMode: PLS.lenMode, len: PLS.len, construction: PLS.construction, dims: PLS.dims, box: 'ref' };
-    var ref = null, last = null, fresh = true, count = 0;
+    // placed: the preview put down by a click (an offsets() result with its raw click side, the clicked distance d0 and
+    // through point P0); Enter / ✓ make it into the line, a typed Distance, Flip side or Both sides move it (retarget)
+    var ref = null, last = null, placed = null;
     // a sketch line selected when the command starts is the reference (as SolidWorks takes a preselection)
     var pre = (UI.selection ? UI.selection() : []).filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; });
     if (App.sel && App.sel.kind === 'entity' && pre.indexOf(App.sel.index) < 0) pre.push(App.sel.index);
@@ -958,7 +962,7 @@
     }
     function picking() { return !ref || v.box === 'ref'; }
     function hintNow() { var t = PL_HINT[picking() ? 'ref' : v.place]; hint('<b>Parallel Line:</b> ' + t); UI.setStatus(t); }
-    function clearRef() { ref = null; v.box = 'ref'; fresh = true; UI.renderPM(); hintNow(); draw(); }
+    function clearRef() { ref = null; v.box = 'ref'; placed = null; closeUnitBox(); UI.renderPM(); hintNow(); draw(); }
     // the line through offset s (signed, along the reference's left normal)
     function lineAt(fr, s) {
       var a, b;
@@ -977,9 +981,8 @@
       if (v.place === 'distance') {
         var d = +v.d;
         if (!(d > 0)) return { error: 'Set a distance greater than 0.' };
-        var side = uv && plSide(fr, uv) < 0 ? -1 : 1;
-        if (v.flip) side = -side;
-        o = { s: v.both ? [side * d, -side * d] : [side * d] };
+        var side0 = uv && plSide(fr, uv) < 0 ? -1 : 1, side = v.flip ? -side0 : side0;
+        o = { s: v.both ? [side * d, -side * d] : [side * d], side: side0 };
       } else if (v.place === 'tangent') {
         var hit = mx != null ? UI.pickEntity(mx, my) : null, c = hit && f.entities[hit.index];
         if (!c || (c.t !== 'circle' && c.t !== 'arc')) return { error: PL_HINT.tangent };
@@ -987,8 +990,8 @@
         o = { s: [Math.abs(sq - (sc - c.r)) <= Math.abs(sq - (sc + c.r)) ? sc - c.r : sc + c.r], tan: hit.index };
       } else {
         if (!uv) return { error: PL_HINT.point };
-        var info = UI.sketchInferPoint ? UI.sketchInferPoint(uv, mx, my) : { p: uv };
-        o = { s: [plSide(fr, info.p)], P: info.p, info: info };
+        var info = UI.sketchInferPoint ? UI.sketchInferPoint(uv, mx, my) : { p: uv }, sp = plSide(fr, info.p);
+        o = { s: [sp], P: info.p, info: info, side: sp < 0 ? -1 : 1, d0: clean(Math.abs(sp)) };
       }
       o.s = o.s.map(function (s) { return clean(s); });
       if (o.s.some(function (s) { return Math.abs(s) < 1e-9; })) { o.error = 'The line would lie on the reference: place it off the reference.'; o.s = o.s.filter(function (s) { return Math.abs(s) >= 1e-9; }); }
@@ -1008,8 +1011,8 @@
         UI.updateTemp();
         return;
       }
-      var o = v.place === 'distance' || last ? offsets(f, fr, last && last.uv, last && last.mx, last && last.my) : null;
-      if (o && o.info && o.info.snap && last) UI.sketchSnapMark(o.info.p, [last.mx, last.my], o.info.snap.kind === 'on');
+      var o = placed || (v.place === 'distance' || last ? offsets(f, fr, last && last.uv, last && last.mx, last && last.my) : null);
+      if (!placed && o && o.info && o.info.snap && last) UI.sketchSnapMark(o.info.p, [last.mx, last.my], o.info.snap.kind === 'on');
       UI.sketchPreview([[fr.a, fr.b]], PL_PICK, 'sk-trim-pick');
       if (o && o.tan != null && f.entities[o.tan]) UI.sketchPreview(UI.K.entityPolylines(f.entities[o.tan]).map(function (l) { return l.closed && l.pts.length ? l.pts.concat([l.pts[0]]) : l.pts; }), PL_HOT, 'sk-trim-span');
       if (o && o.s) App.tempEntities = o.s.map(function (s) { return lineAt(fr, s); });
@@ -1046,13 +1049,45 @@
         UI.toast(fail); refresh();
         return false;
       }
-      count += o.s.length; fresh = false;
+      placed = null;
       App.tempEntities = []; UI.updateTemp();
       if (UI.afterSketchCommit) UI.afterSketchCommit(f, n0);   // sketch-hooks: Dynamic Mirror mirrors the line(s) in this step
       refresh();
-      UI.setStatus('Parallel Line placed' + (o.s.length > 1 ? ' on both sides' : '') + (skipped ? ' (distance dimension left out: it would over-define the sketch)' : '') + ' (' + count + ' so far). Place another, or press ✓ / Esc to finish.');
+      UI.setStatus('Parallel Line placed' + (o.s.length > 1 ? ' on both sides' : '') + (skipped ? ' (distance dimension left out: it would over-define the sketch)' : '') + '.');
       return true;
     }
+    // the placed preview follows the Distance box, Flip side and Both sides: a typed distance replaces the clicked one
+    // (the line is through the clicked point again only at the clicked distance)
+    function retarget() {
+      if (!placed || placed.tan != null) return;
+      var d = +v.d;
+      if (!(d > 0)) return;
+      var side = placed.side * (v.place === 'distance' && v.flip ? -1 : 1);
+      placed.s = (v.place === 'distance' && v.both ? [side * d, -side * d] : [side * d]).map(function (s) { return clean(s); });
+      var through = placed.d0 != null && Math.abs(d - placed.d0) <= 1e-9;
+      placed.P = through ? placed.P0 : null;
+      placed.error = null;
+    }
+    // the unit request box by the cursor (ui-sketch.js UI.sketchUnitBox, the same box the Circle tool opens): the placed
+    // distance, selected; typing moves the preview (the PM's Distance box follows), Enter commits it, Enter again
+    // (or ✓) makes the line
+    function setDistance(val) {
+      if (val == null || !(val > 0)) return;
+      v.d = clean(val); PLS.d = v.d;
+      retarget(); draw();
+      var pi = document.querySelector('#pm input.pm-num[data-key="d"]');
+      if (pi && document.activeElement !== pi) { pi.value = v.d; pi._armed = pi.value; }
+    }
+    function openUnitBox() {
+      if (!UI.sketchUnitBox) return;
+      UI.sketchUnitBox.open({
+        fields: [['D', 'd']],
+        onChange: function (val) { setDistance(val.d); },
+        onCommit: function (val) { setDistance(val.d); UI.renderPM(); draw(); },
+        onFinish: function () { UI.pmOK(); }
+      }, { d: v.d });
+    }
+    function closeUnitBox() { if (UI.sketchUnitBox) UI.sketchUnitBox.close(); }
     function pmChange(x, key) {
       if (!key) return;
       if (key === 'lenMode' && x.lenMode === 'length' && !(+x.len > 0)) {
@@ -1061,8 +1096,8 @@
         UI.renderPM();
       }
       Object.keys(PLS).forEach(function (k) { PLS[k] = x[k]; });
-      fresh = true;
-      if (key === 'place') hintNow();
+      if (key === 'place') { placed = null; closeUnitBox(); hintNow(); }
+      else if (key === 'd' || key === 'flip' || key === 'both') { if (key === 'd') closeUnitBox(); retarget(); }   // typed in the PM's own box: that box has the keyboard now
       draw();
     }
     UI.openPM({
@@ -1080,7 +1115,7 @@
             var c = plCandidate(f, mx, my);
             if (!c) { UI.setStatus(PL_HINT.ref); return; }
             if (c.bad) { UI.setStatus(c.bad); return; }
-            ref = c; v.box = null; fresh = true;
+            ref = c; v.box = null; placed = null; closeUnitBox();
             UI.renderPM(); hintNow(); draw();
             return;
           }
@@ -1088,8 +1123,15 @@
           if (!fr) { clearRef(); return; }
           var o = offsets(f, fr, uv, mx, my);
           if (o.error && (!o.s || !o.s.length)) { UI.setStatus(o.error); return; }
-          place(o);
-          draw();
+          // lane BP: the click places the preview, it does not make the line (Mastercam): Through point fills Distance
+          // with the clicked distance, Distance takes the side; the box takes the keyboard with its text selected, so
+          // typing replaces it; Enter commits a typed distance (the preview moves), Enter again or ✓ makes the line.
+          // Another click places the preview again.
+          placed = o; placed.P0 = o.P || null;
+          if (v.place === 'point') { v.d = o.d0; PLS.d = o.d0; }
+          UI.renderPM(); draw();
+          if (placed.tan == null) openUnitBox(); else closeUnitBox();
+          hint('<b>Parallel Line:</b> ' + PL_HINT.placed); UI.setStatus(PL_HINT.placed);
         }
       },
       groups: [
@@ -1098,7 +1140,7 @@
           onActivate: function () { v.box = 'ref'; UI.renderPM(); hintNow(); draw(); } }] },
         { title: 'Placement', fields: [
           { type: 'radio', key: 'place', rerender: true, options: [['point', 'Through point'], ['distance', 'Distance'], ['tangent', 'Tangent to arc']] },
-          { type: 'number', key: 'd', label: 'Distance', unit: 'u', min: 0, show: function (x) { return x.place === 'distance'; } },
+          { type: 'number', key: 'd', label: 'Distance', unit: 'u', min: 0, show: function (x) { return x.place !== 'tangent'; } },
           { type: 'check', key: 'flip', label: 'Flip side', show: function (x) { return x.place === 'distance'; } },
           { type: 'check', key: 'both', label: 'Both sides', show: function (x) { return x.place === 'distance'; } }] },
         { title: 'Length', fields: [
@@ -1107,16 +1149,21 @@
         { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'For construction' }, { type: 'check', key: 'dims', label: 'Add dimensions' }] }
       ],
       onChange: pmChange,
-      // ✓ places the line shown in Distance (once per setting: a line already placed with these settings is not doubled)
+      // ✓ (or the second Enter) makes the placed line and closes; with no click yet, Distance makes the line on the
+      // side shown (the cursor's side, else the left); with nothing to make, ✓ just closes
       onOK: function () {
-        if (v.place !== 'distance' || !ref || v.box === 'ref' || !fresh) return;
+        if (!ref || v.box === 'ref') return;
         var f = UI.activeSketchFeature(), fr = f && plFrame(f, ref);
         if (!fr) return;
-        var o = offsets(f, fr, last && last.uv, null, null);
+        var o = placed;
+        if (!o) {
+          if (v.place !== 'distance') return;
+          o = offsets(f, fr, last && last.uv, null, null);
+        }
         if (o.error && (!o.s || !o.s.length)) { UI.toast(o.error); return false; }
         if (!place(o)) return false;
       },
-      onClose: function () { App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
+      onClose: function () { closeUnitBox(); App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); }
     });
     UI.refreshRibbon();
     hintNow();

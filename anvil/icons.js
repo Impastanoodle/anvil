@@ -1,21 +1,21 @@
 // icons.js — inline SVG icon set for Anvil's ribbon, tree and panels.
-// rfBF: drawn on a 16×16 grid in a SolidWorks-2024-like visual language (original artwork): parts are blue-grey shaded
+// rfBF: drawn on a 16×16 grid in a SolidWorks-2024-like visual language (original artwork): parts are grey shaded
 // solids with the feature's own faces in yellow (boss and cut alike, a cut shows as a yellow pocket); sketch entities
-// are dark strokes with blue square points; reference lines and construction are a lighter grey; green and red are
+// are dark strokes with mid-grey square points; reference lines and construction are a lighter grey; green and red are
 // kept for OK / cancel, the rebuild light, relations and errors. The dark ink is currentColor so the stylesheet picks
 // it per theme (.ico { color: var(--icon-ink) }); every other colour reads on both the light and the dark panel.
 var Icons = (function () {
   'use strict';
   var S = 'currentColor';                                   // ink: sketch entities and outlines
-  var M = '#8b949e';                                        // reference / construction grey
-  var B = '#1f6fd0';                                        // sketch points, selection blue
+  var M = '#939393';                                        // reference / construction grey
+  var B = '#6d6d6d';                                        // sketch points and entities, selection (lane BQ: grey, no blue)
   var G = '#2e9e48', GL = '#a6dcb3', GD = '#1f7a35';        // OK, relations, add
   var R = '#d9453b', RL = '#f4a795', RD = '#a8322a';        // cancel, errors, removed pieces
   var FY = '#f5c400', FYL = '#ffe57a', FYD = '#c08f00';     // feature faces (yellow highlight)
   var Y = '#f2c230', YD = '#c9961a';                        // pencil, sketch accents
-  var P = '#7d98bd', PL = '#d5e0ef';                        // reference geometry
-  var F1 = '#e6ecf3', F2 = '#b9c7d7', F3 = '#8fa2b9';       // base solid: top, front, side faces
-  var L = '#9aa3ad', W = '#ffffff';
+  var P = '#8a8a8a', PL = '#dedede';                        // reference geometry
+  var F1 = '#e8e8e8', F2 = '#b8b8b8', F3 = '#8e8e8e';       // base solid: top, front, side faces
+  var L = '#a2a2a2', W = '#ffffff';
   var DASH = 'stroke-dasharray="2 1.4"';
 
   // one stroke attribute per element (color defaults to the ink, width to 1.25)
@@ -54,7 +54,7 @@ var Icons = (function () {
     fillet: p('M2 14 V7.5 a4.5 4.5 0 0 1 4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 a4.5 4.5 0 0 1 4.5 -4.5', FY, 2.2),
     chamfer: p('M2 14 V7.5 l4.5 -4.5 H14 V14 z', F2, S) + ln('M2 7.5 l4.5 -4.5', FY, 2.2),
     imported: blk(5.5, 5.5, 8, 7, 3) + ln('M0.8 4.2 H6.2', FY, 1.5) + ln('M4.2 2 L6.4 4.2 L4.2 6.4', FY, 1.5),
-    shell: blk(1.5, 4.5, 9, 7, 3.5) + p('M3.4 7.1 L5.5 5 H11.6 L9.5 7.1 z', '#5f7189', S, 1),
+    shell: blk(1.5, 4.5, 9, 7, 3.5) + p('M3.4 7.1 L5.5 5 H11.6 L9.5 7.1 z', '#6d6d6d', S, 1),
     draft: p('M3 14 L5.5 2.5 h5 L13 14 z', F2, S) + ln('M5.5 2.5 L3 14', FY, 1.6),
     rib: blk(1.5, 4.5, 9, 7, 3.5) + p('M4 13 l5 -5.5 v5.5 z', FY, S, 1),
     wrap: p('M3 4 a5 2 0 0 1 10 0 v8 a5 2 0 0 1 -10 0 z', F2, S) + ell(8, 4, 5, 2, F1, S) + ln('M4 9 c1.5 1.2 6.5 1.2 8 0', FY, 1.6),
@@ -190,14 +190,14 @@ var Icons = (function () {
     crossBreak: p('M1.5 4 h13 v8 h-13 z', F2, S, 1.1) + ln('M1.5 4 L14.5 12 M14.5 4 L1.5 12', FYD, 1.3),
     corners: p('M2 2 h3 v9 h-3 z', F2, S, 1) + p('M5 11 h9 v3 H5 z', F2, S, 1) + circ(5, 11, 1.8, FY, FYD, 1),
     formingTool: p('M1 12.5 l3 -5 h11 l-3 5 z', F2, S, 1) + p('M5.5 10.3 a2.5 2.5 0 0 1 5 0 z', FY, FYD, 1),
-    vent: rect(1.5, 2.5, 13, 11, F2, S, 1.1, 'rx="1"') + ln('M4 5.5 h8 M4 8 h8 M4 10.5 h8', '#3c434d', 1.4),
+    vent: rect(1.5, 2.5, 13, 11, F2, S, 1.1, 'rx="1"') + ln('M4 5.5 h8 M4 8 h8 M4 10.5 h8', '#424242', 1.4),
     unfold: p(FLANGE_L, F2, S, 1) + ln('M3 7 C3 4 5 2.5 8.5 2.5', B, 1.2) + ln('M3 7.2 l-1.5 -1.6 M3 7.2 l1.6 -1.4', B, 1.2),
     fold: p('M1.5 11 h8 v3 h-8 z', F2, S, 1) + p('M9.5 11 h5 v3 h-5 z', FY, S, 1) + ln('M12 9 C12 5.5 10 3.5 6.5 3.5', B, 1.2) + ln('M12 9.2 l-1.5 -1.6 M12 9.2 l1.5 -1.6', B, 1.2),
     rip: blk(1.5, 5, 9, 7, 3.5) + ln('M10.5 9 v6.5', R, 1.8) + ln('M10.5 8.5 l3.5 -3.5', R, 1.8),
     // ---- evaluate
     measure: p('M2 12 L12 2 l2 2 L4 14 z', Y, S) + ln('M4.5 9.5 l1 1 M6.5 7.5 l1 1 M8.5 5.5 l1 1 M10.5 3.5 l1 1', S, 1),
     mass: p('M4.5 6 h7 l2.5 8 h-12 z', F2, S) + circ(8, 3.9, 1.8, 'none', S, 1.2) + circ(8, 10.3, 2.3, W, S, 0.9) + p('M8 10.3 V8 A2.3 2.3 0 0 1 10.3 10.3 z M8 10.3 V12.6 A2.3 2.3 0 0 1 5.7 10.3 z', S, 'none'),   // r12/chrome12: a weight with the centre-of-mass mark
-    section: blk(1.5, 3, 5.5, 8, 3.5, F2, F1, RL) + ln('M7 9.6 l3.5 -3.5 M7 12.6 l3.5 -3.5', RD, 0.9) + p('M5.8 15.3 V5.3 l5.9 -4.6 v10 z', 'rgba(47,127,214,0.16)', B, 1),   // r12/chrome12: half a block, the cut face hatched, the blue section plane
+    section: blk(1.5, 3, 5.5, 8, 3.5, F2, F1, RL) + ln('M7 9.6 l3.5 -3.5 M7 12.6 l3.5 -3.5', RD, 0.9) + p('M5.8 15.3 V5.3 l5.9 -4.6 v10 z', 'rgba(109,109,109,0.16)', B, 1),   // r12/chrome12: half a block, the cut face hatched, the blue section plane
     sensor: circ(8, 8, 5, 'none', S) + ln('M8 8 l3 -3', R, 1.5) + circ(8, 8, 0.9, S, 'none'),
     check: ln('M2.5 8.5 l3.5 3.5 L13.5 4.5', G, 2.2),
     // Section Properties: a hatched I-section with the centroid axes
@@ -221,7 +221,7 @@ var Icons = (function () {
     zoomArea: circ(7, 7, 4, 'none', S) + ln('M10 10 l3.5 3.5', S, 2) + rect(5, 5, 4, 4, 'none', B, 1, 'stroke-dasharray="1.2 1.2"'),
     prevView: ln('M10 3 L5 8 l5 5', S, 1.8),
     orient: blk(2, 3.5, 6, 5, 2.5) + circ(11.5, 11.5, 3, W, B, 1.1) + ln('M11.5 9.8 v1.7 l1.2 0.7', B, 1.1),
-    display: blk(1.5, 4.5, 9, 7, 3.5, '#b3bfcc', '#dbe2ea', '#8d9bac'),
+    display: blk(1.5, 4.5, 9, 7, 3.5, '#bdbdbd', '#e1e1e1', '#979797'),
     hideshow: ln('M1.5 8 c3 -5 10 -5 13 0 c-3 5 -10 5 -13 0 z', S, 1.25) + circ(8, 8, 2.2, B, 'none'),
     appearance: circ(8, 8, 6, F2, S) + circ(6, 6.3, 1.2, R, 'none') + circ(9.6, 5.4, 1.2, B, 'none') + circ(10.2, 9.2, 1.2, G, 'none') + circ(6.4, 10.3, 1.2, Y, 'none'),
     scene: rect(2, 3, 12, 10, W, S, 1.1, 'rx="0.6"') + ln('M2 11 l4 -3.5 3 2.5 2 -1.5 3 2.5', B, 1.2) + circ(11, 5.5, 1.1, Y, 'none'),
@@ -229,10 +229,10 @@ var Icons = (function () {
     // rfBF: the quick-access toolbar (New, Open, Save, Print, Select, Rebuild, File Properties) in the menu bar
     newDoc: p('M3.5 1.5 h6 l3 3 v10 h-9 z', W, S, 1.1) + p('M9.5 1.5 v3 h3', F1, S, 1) + ln('M5.5 8 h5 M5.5 10.5 h5', M, 0.9),
     openDoc: p('M1.5 4 h4.5 l1.5 1.5 h5.5 v2', '#f6d77a', '#b48a1c', 1) + p('M1.5 4 V13.5 h10.5 l2.5 -6 H4 l-2.5 6', '#f9e3a0', '#b48a1c', 1) + ln('M11 1 l2.2 2.2 -2.2 2.2 M13.2 3.2 H8.5', G, 1.3),
-    saveDoc: p('M2 2 h10 l2 2 v10 H2 z', '#3f78c4', '#244f8a', 1) + rect(4.5, 2.5, 6, 4, W, '#244f8a', 0.8) + rect(8.2, 3.2, 1.4, 2.5, '#244f8a', 'none') + rect(4, 9, 8, 5, '#dfe7f1', '#244f8a', 0.8),
+    saveDoc: p('M2 2 h10 l2 2 v10 H2 z', '#6d6d6d', '#3a3a3a', 1) + rect(4.5, 2.5, 6, 4, W, '#3a3a3a', 0.8) + rect(8.2, 3.2, 1.4, 2.5, '#3a3a3a', 'none') + rect(4, 9, 8, 5, '#e4e4e4', '#3a3a3a', 0.8),
     printDoc: rect(4.5, 1.5, 7, 4, W, S, 1) + p('M1.5 5.5 h13 v6 h-13 z', F2, S, 1) + rect(4.5, 9.5, 7, 5, W, S, 1) + ln('M6 11.5 h4 M6 13 h4', M, 0.8) + circ(12.5, 7.3, 0.7, G, 'none'),
     select: p('M4 1.5 V13 l3 -2.8 2 4.3 2 -0.9 -2 -4.3 4 -0.3 z', W, S, 1.1),
-    rebuild: rect(5, 1, 6, 14, '#3a3f45', '#23272b', 0.8, 'rx="1.6"') + circ(8, 3.6, 1.6, '#e2463b', 'none') + circ(8, 8, 1.6, '#f5c400', 'none') + circ(8, 12.4, 1.6, '#3ec25a', 'none'),
+    rebuild: rect(5, 1, 6, 14, '#3e3e3e', '#262626', 0.8, 'rx="1.6"') + circ(8, 3.6, 1.6, '#e2463b', 'none') + circ(8, 8, 1.6, '#f5c400', 'none') + circ(8, 12.4, 1.6, '#3ec25a', 'none'),
     fileProps: rect(2.5, 1.5, 11, 13, W, S, 1.1, 'rx="0.6"') + ln('M4.5 4.5 h7 M4.5 7 h7 M4.5 9.5 h7 M4.5 12 h4', M, 1) + rect(2.5, 1.5, 11, 1.8, B, 'none'),
     options: circ(8, 8, 4.4, F2, S, 1.1) + ln('M8 1.2 v2.4 M8 12.4 v2.4 M1.2 8 h2.4 M12.4 8 h2.4 M3.2 3.2 l1.7 1.7 M11.1 11.1 l1.7 1.7 M3.2 12.8 l1.7 -1.7 M11.1 4.9 l1.7 -1.7', S, 2.2) + circ(8, 8, 1.7, W, S, 1),
     // ---- FeatureManager tabs, task pane, misc
@@ -246,7 +246,7 @@ var Icons = (function () {
     explorer: p('M2 4.5 h4.5 l1.5 1.5 h6 v7 h-12 z', Y, S, 1),
     palette: rect(2.5, 2.5, 4.5, 4.5, F2, S, 1) + rect(9, 2.5, 4.5, 4.5, F2, S, 1) + rect(2.5, 9, 4.5, 4.5, F2, S, 1) + rect(9, 9, 4.5, 4.5, PL, B, 1),
     props: rect(3, 2.5, 10, 11, W, S, 1.1, 'rx="0.6"') + ln('M5 5.5 h6 M5 8 h6 M5 10.5 h3.5', S, 1) + ln('M10 10 l1 1 2 -2', G, 1.2),
-    macro: '<rect x="2" y="3" width="12" height="10" rx="1" fill="#2b3340" stroke="none"/>' + ln('M4 6 l2 2 -2 2', '#7ee787', 1.3) + ln('M7.5 10 h4', '#dfe6ee', 1.3),
+    macro: '<rect x="2" y="3" width="12" height="10" rx="1" fill="#2e2e2e" stroke="none"/>' + ln('M4 6 l2 2 -2 2', '#7ee787', 1.3) + ln('M7.5 10 h4', '#e4e4e4', 1.3),
     warn: p('M8 2 L14.5 13.5 H1.5 z', '#e8a23a', S) + ln('M8 6 v4 M8 11.5 v0.5', S, 1.6),
     error: circ(8, 8, 5.5, R, S) + ln('M5.5 5.5 l5 5 M10.5 5.5 l-5 5', W, 1.6),
     ok: ln('M2.5 8.5 l3.5 3.5 L13.5 4', G, 2.6),
@@ -255,7 +255,7 @@ var Icons = (function () {
     search: circ(7, 7, 3.5, 'none', S) + ln('M9.5 9.5 l3.5 3.5', S, 1.6),
     filter: p('M2 3 h12 l-4.5 5 v4.5 l-3 1.5 v-6 z', F2, S),
     part: blk(2, 3, 7, 8, 4, F2, F1, F3, S, 1),
-    body: blk(2, 3, 7, 8, 4, '#a9c6ea', '#d3e3f7', '#7fa2cc', S, 1),
+    body: blk(2, 3, 7, 8, 4, '#b8b8b8', '#e0e0e0', '#8e8e8e', S, 1),
     material: rect(1.5, 3, 13, 10, '#e7b98f', S, 1, 'rx="0.8"') + ln('M1.5 6.3 h13 M1.5 9.7 h13 M6 3 v3.3 M11 3 v3.3 M3.6 6.3 v3.4 M8.5 6.3 v3.4 M13 6.3 v3.4 M6 9.7 v3.3 M11 9.7 v3.3', '#a8673a', 0.9),   // r12/chrome12: bricks
     folder: p('M2 4 h4 l1.5 1.5 H14 v8 H2 z', '#f3cf6b', S, 1),
     // Equations (global variables): a sigma on a sheet
@@ -313,7 +313,7 @@ var Icons = (function () {
     // Float: a block with four arrows around it
     float: rect(5.5, 5.5, 5, 5, F2, S, 1) + ln('M8 1.5 v2.5 M6.8 2.7 l1.2 -1.2 1.2 1.2 M8 14.5 V12 M6.8 13.3 l1.2 1.2 1.2 -1.2 M1.5 8 H4 M2.7 6.8 l-1.2 1.2 1.2 1.2 M14.5 8 H12 M13.3 6.8 l1.2 1.2 -1.2 1.2', B, 1),
     // sketch-layers: Layers (three stacked sheets: cut, etch, bend), Paste sketch entities (a clipboard with a sketch on it)
-    layers: p('M8 9.5 L14.5 12 L8 14.5 L1.5 12 z', RL, RD, 1) + p('M8 6 L14.5 8.5 L8 11 L1.5 8.5 z', GL, GD, 1) + p('M8 2.5 L14.5 5 L8 7.5 L1.5 5 z', '#bcd6f5', B, 1),
+    layers: p('M8 9.5 L14.5 12 L8 14.5 L1.5 12 z', RL, RD, 1) + p('M8 6 L14.5 8.5 L8 11 L1.5 8.5 z', GL, GD, 1) + p('M8 2.5 L14.5 5 L8 7.5 L1.5 5 z', '#d0d0d0', B, 1),
     pasteSketch: rect(2.5, 2.5, 9, 12, '#e8d3a8', YD, 1) + rect(4.5, 1.5, 5, 2.5, F2, S, 0.9) + rect(6.5, 6, 8, 8.5, W, B, 1) + ln('M8.5 9 h4 M8.5 11.5 h2.5', B, 0.9),
     // levels (ui-levels.js): Levels Manager, a table of numbered levels with the main level's row in yellow
     levels: rect(1.5, 1.5, 4.5, 3.5, Y, YD, 0.9) + ln('M8 3.25 h6.5', S, 1.3) + rect(1.5, 6.25, 4.5, 3.5, F1, S, 0.9) + ln('M8 8 h6.5', S, 1.3) + rect(1.5, 11, 4.5, 3.5, F1, S, 0.9) + ln('M8 12.75 h6.5', S, 1.3),
@@ -330,18 +330,18 @@ var Icons = (function () {
     conic: ln('M2 13 L4.5 3 L14 3.5', M, 0.9, DASH) + ln('M2 13 Q4.5 3 14 3.5', S, 1.5) + pt(2, 13) + pt(14, 3.5),
     quickSnaps: circ(8, 8, 4.5, 'none', S, 1.1) + ln('M8 1.5 v3 M8 11.5 v3 M1.5 8 h3 M11.5 8 h3', S, 1.1) + circ(8, 8, 1.7, Y, YD, 0.9),
     rapidSketch: blk(1.5, 6.5, 8, 6, 3) + ln('M3 13.5 L6 10.5', B, 1.4) + PENCIL,
-    shadedContours: p('M2.5 13 V3.5 h6 l5 4.5 V13 z', '#bcd6f5', B, 1.5) + rect(5, 6, 3, 3, W, B, 1.1),
+    shadedContours: p('M2.5 13 V3.5 h6 l5 4.5 V13 z', '#d0d0d0', B, 1.5) + rect(5, 6, 3, 3, W, B, 1.1),
     sketchPicture: rect(1.5, 2.5, 13, 11, W, S, 1.1, 'rx="0.6"') + p('M2.2 12.8 l3.8 -4.8 3 3 2 -2 3.3 3.8 z', GL, GD, 0.9) + circ(11, 5.5, 1.3, Y, 'none') + ln('M3.5 5 h4', B, 1.3),
     // selection lists (ui-commands.js pickList): the kind of each listed item, as SolidWorks' selection boxes show it
     edgeSel: blk(2, 4.5, 9, 7, 3.5) + ln('M2 8 h9', B, 2),
-    faceSel: blk(2, 4.5, 9, 7, 3.5, '#9ec5f0'),
+    faceSel: blk(2, 4.5, 9, 7, 3.5, '#a6a6a6'),
     vertexSel: blk(2, 4.5, 9, 7, 3.5) + circ(11, 8, 1.8, B, W, 0.9),
     // drawing views (rfN): Auxiliary View, Crop View, Break
-    auxView: rect(1.5, 8.5, 6.5, 6, W, S, 1.1) + p('M9.5 1.5 l5 3 -2.2 3.7 -5 -3 z', '#bcd6f5', B, 1.1) + ln('M6.5 8.5 L9.2 4.6', B, 1.2) + p('M9.9 3.6 l-0.2 2.1 -1.7 -1.2 z', B, B, 0.6),
-    cropView: rect(4, 4, 8, 8, '#bcd6f5', 'none', 0) + ln('M4 1 V12 H15 M1 4 H12 V15', B, 1.4),
-    breakView: rect(1, 5, 5, 6, '#bcd6f5', B, 1) + rect(10, 5, 5, 6, '#bcd6f5', B, 1) + ln('M7 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 M9 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5', S, 0.9),
+    auxView: rect(1.5, 8.5, 6.5, 6, W, S, 1.1) + p('M9.5 1.5 l5 3 -2.2 3.7 -5 -3 z', '#d0d0d0', B, 1.1) + ln('M6.5 8.5 L9.2 4.6', B, 1.2) + p('M9.9 3.6 l-0.2 2.1 -1.7 -1.2 z', B, B, 0.6),
+    cropView: rect(4, 4, 8, 8, '#d0d0d0', 'none', 0) + ln('M4 1 V12 H15 M1 4 H12 V15', B, 1.4),
+    breakView: rect(1, 5, 5, 6, '#d0d0d0', B, 1) + rect(10, 5, 5, 6, '#d0d0d0', B, 1) + ln('M7 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 M9 2.5 l1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5 1 1.5 -1 1.5', S, 0.9),
     // (rfAD) Broken-out Section, Area Hatch/Fill
-    brokenOut: rect(1.5, 2.5, 13, 11, '#bcd6f5', B, 1.1) + p('M5 5.5 C7.5 4 11.5 5 11 8 C10.5 11 6 11.5 4.5 9.5 C3.5 8 4 6.3 5 5.5 z', W, B, 0.9) + ln('M5.5 9.5 L8.5 6.5 M7 10.3 L10 7.3', S, 0.7),
+    brokenOut: rect(1.5, 2.5, 13, 11, '#d0d0d0', B, 1.1) + p('M5 5.5 C7.5 4 11.5 5 11 8 C10.5 11 6 11.5 4.5 9.5 C3.5 8 4 6.3 5 5.5 z', W, B, 0.9) + ln('M5.5 9.5 L8.5 6.5 M7 10.3 L10 7.3', S, 0.7),
     areaHatch: p('M2 13.5 V5 L7 2 H14 V13.5 z', W, B, 1.1) + ln('M3 12.5 L12.5 3 M6 13 L13.5 5.5 M2.5 9 L8 3.5 M9.5 13 L13.5 9', S, 0.8),
     // (rfAG) Magnetic Line: a dashed line with two balloons on it
     magLine: ln('M0.5 8 H15.5', B, 1.1, DASH) + circ(4.5, 8, 2.8, W, S, 1) + circ(11.5, 8, 2.8, W, S, 1),
@@ -380,6 +380,10 @@ var Icons = (function () {
     tScale: rect(1.5, 9, 5, 5, 'none', S, 1, DASH) + rect(1.5, 2, 12, 12, 'none', S, 1.3) + circ(1.5, 14, 1.2, W, B, 1) + ln('M6 9.5 L12 3.5', G, 1.2) + p('M13 2.5 l-3 0.6 2.4 2.4 z', G, G, 0.5),
     okPlus: ln('M1.5 8.5 l3 3 L11 4.5', G, 2.4) + ln('M12.5 9 v6 M9.5 12 h6', G, 1.8)
   };
+  // lane BS: Close Arc (Mastercam's: an arc, its blue end points, the closing piece dotted green) and Show Endpoints
+  // (the heads-up toggle: a line with its two end dots)
+  I.closeArc = ln('M8 13.5 A5.5 5.5 0 1 1 13.5 8', S, 1.5) + ln('M13.5 8 A5.5 5.5 0 0 1 8 13.5', G, 1.4, 'stroke-dasharray="1.3 1.3"') + pt(8, 13.5) + pt(13.5, 8) + ln('M7 8 h2 M8 7 v2', M, 0.9);
+  I.showEndpoints = ln('M3.5 12.5 L12.5 3.5', S, 1.4) + circ(3.5, 12.5, 2, B, 'none') + circ(12.5, 3.5, 2, B, 'none');
   function icon(name, size, cls) {
     var body = I[name] || I.generic;
     size = size || 32;

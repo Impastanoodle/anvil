@@ -7,12 +7,12 @@
     var hud = $('hud'), kids = Array.prototype.slice.call(hud.children);
     var names = kids.map(function (b) { return b.getAttribute('data-hud'); });
     assert(names.join('|') === UI.HUD_ORDER.join('|'), 'order: ' + names.join(', '));
-    assert(UI.HUD_ORDER.join('|') === 'Zoom to Fit|Zoom to Area|Previous View|Section View|Dynamic Annotation Views|View Orientation|Display Style|Hide/Show Items|Edit Appearance|Apply Scene|View Settings', 'UI.HUD_ORDER ' + UI.HUD_ORDER.join(', '));
+    assert(UI.HUD_ORDER.join('|') === 'Zoom to Fit|Zoom to Area|Previous View|Section View|Dynamic Annotation Views|View Orientation|Display Style|Hide/Show Items|Edit Appearance|Apply Scene|Show Endpoints|View Settings', 'UI.HUD_ORDER ' + UI.HUD_ORDER.join(', '));
     assert(!hud.querySelector('.sep'), 'no separators');
     assert(kids[5].getAttribute('data-hud') === 'View Orientation', 'children[5] is View Orientation (Space clicks it)');
     var withCaret = kids.filter(function (b) { return !!b.querySelector('.caret'); }).map(function (b) { return b.getAttribute('data-hud'); });
-    assert(withCaret.join('|') === UI.HUD_ORDER.slice(5).join('|'), 'drop-downs: ' + withCaret.join(', '));
-    kids.slice(5).forEach(function (b) {
+    assert(withCaret.join('|') === UI.HUD_ORDER.slice(5).filter(function (n) { return n !== 'Show Endpoints'; }).join('|'), 'drop-downs: ' + withCaret.join(', '));
+    kids.slice(5).filter(function (b) { return b.getAttribute('data-hud') !== 'Show Endpoints'; }).forEach(function (b) {   // lane BS: Show Endpoints is a toggle (no caret)
       var ic = b.querySelector('svg').getBoundingClientRect(), ca = b.querySelector('.caret').getBoundingClientRect();
       assert(ca.left >= ic.right - 1 && ca.top < ic.bottom && ca.bottom > ic.top, b.getAttribute('data-hud') + ': caret beside the icon (' + [ic.right, ic.top, ic.bottom] + ' / ' + [ca.left, ca.top, ca.bottom] + ')');
     });
@@ -26,7 +26,7 @@
     var m = D.querySelector('.menu');
     assert(m && /Edit Appearance/.test(m.textContent), 'Edit Appearance ▾ list');
     UI.closeMenus();
-    kids[10].click();
+    kids[UI.HUD_ORDER.indexOf('View Settings')].click();
     m = D.querySelector('.menu');
     assert(m && /Options/.test(m.textContent) && /Dark Theme/.test(m.textContent), 'View Settings ▾ list: ' + (m && m.textContent));
     UI.closeMenus();
@@ -38,24 +38,24 @@
     assert(!za.classList.contains('active'), 'Zoom to Area off');
     return names.length + ' buttons';
   });
-  step('rfBH: the default scene is SolidWorks\' gradient (soft light blue at the top to white); the dark theme keeps its own; Plain and Dark still apply', async function () {
+  step('rfBH / rfBR: the default scene is Mastercam\'s grey-black gradient (#3c3c3c at the top to #0e0e0e) in both themes; Plain is a flat #1e1e1e; Dark is darker still', async function () {
     var vp = $('viewport'), theme0 = UI.theme();
     UI.setTheme('light'); UI.setBackground('gradient');
     var bg = W.getComputedStyle(vp).backgroundImage;
-    assert(/linear-gradient/.test(bg) && /rgb\(195, 211, 232\)/.test(bg) && /rgb\(255, 255, 255\)\)?\s*$/.test(bg.replace(/ 100%/, '')), 'light gradient: ' + bg);
+    assert(/linear-gradient/.test(bg) && /rgb\(60, 60, 60\)/.test(bg) && /rgb\(14, 14, 14\)/.test(bg), 'light theme gradient: ' + bg);
     UI.setTheme('dark');
     bg = W.getComputedStyle(vp).backgroundImage;
-    assert(/rgb\(58, 66, 80\)/.test(bg), 'dark theme gradient: ' + bg);
+    assert(/rgb\(60, 60, 60\)/.test(bg), 'dark theme gradient: ' + bg);
     UI.setTheme('light');
     UI.setBackground('plain');
-    assert(W.getComputedStyle(vp).backgroundImage === 'none', 'Plain: no gradient');
+    assert(W.getComputedStyle(vp).backgroundImage === 'none' && W.getComputedStyle(vp).backgroundColor === 'rgb(30, 30, 30)', 'Plain: flat grey-black ' + W.getComputedStyle(vp).backgroundColor);
     UI.setBackground('dark');
-    assert(/linear-gradient/.test(W.getComputedStyle(vp).backgroundImage) && !/195, 211, 232/.test(W.getComputedStyle(vp).backgroundImage), 'Dark scene');
+    assert(/linear-gradient/.test(W.getComputedStyle(vp).backgroundImage) && !/60, 60, 60/.test(W.getComputedStyle(vp).backgroundImage), 'Dark scene');
     UI.setBackground('gradient');
     UI.setTheme(theme0);
     return 'ok';
   });
-  step('rfBH: sketch colours as SolidWorks — under defined blue, fully defined black, over defined red, selected light blue; dimension text black with no halo, driven grey', async function () {
+  step('rfBH / rfBR: sketch colours as Mastercam — under and fully defined white, over defined red, selected yellow dashed; dimension text light with a dark halo, driven grey', async function () {
     await anvil.newPart(); await idle();
     UI.setTheme('light'); UI.setBackground('gradient');
     await UI.newSketchOnPlane('Front'); await idle();
@@ -63,22 +63,22 @@
     f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 });
     UI.updateSketches();
     function hex() { var o = UI.groups.sketches.children.filter(function (x) { return x.userData && x.userData.sketch === f.id && x.userData.index === 0; })[0]; return o && o.material.color.getHex(); }
-    assert(hex() === 0x1f5fd0, 'under defined blue: ' + (hex() || 0).toString(16));
+    assert(hex() === 0xffffff, 'under defined white: ' + (hex() || 0).toString(16));
     S.addRelation(f, 'fix', ['0']); UI.updateSketches();
-    assert(hex() === 0x15181d, 'fully defined black: ' + (hex() || 0).toString(16));
+    assert(hex() === 0xffffff, 'fully defined white: ' + (hex() || 0).toString(16));
     S.addRelation(f, 'horizontal', ['0']); UI.updateSketches();
     assert(hex() === 0xd9302c, 'over defined red: ' + (hex() || 0).toString(16));
-    assert(UI.mats.sketchSel.color.getHex() === 0x1e9cf0, 'selected sketch entities light blue: ' + UI.mats.sketchSel.color.getHexString());
+    assert(UI.mats.sketchSel.color.getHex() === 0xffd400 && UI.mats.sketchSel.isLineDashedMaterial, 'selected sketch entities yellow dashed: ' + UI.mats.sketchSel.color.getHexString());
     var vs = W.getComputedStyle($('viewport'));
-    assert(vs.getPropertyValue('--sk-sel').trim() === '#1e9cf0' && vs.getPropertyValue('--sk-infer-rel').trim() === '#e8891c', 'selection / inference colours: ' + vs.getPropertyValue('--sk-sel') + ' ' + vs.getPropertyValue('--sk-infer-rel'));
-    // a placed dimension: black text, no halo
+    assert(vs.getPropertyValue('--sk-sel').trim() === '#ffd400' && vs.getPropertyValue('--sk-infer-rel').trim() === '#c8c8c8', 'selection / inference colours: ' + vs.getPropertyValue('--sk-sel') + ' ' + vs.getPropertyValue('--sk-infer-rel'));
+    // a placed dimension: light text with a dark halo (it reads on the grey-black ground and over a shaded face)
     f.rels = []; f.dims = [{ e: 0, k: 'len' }];
     UI.updateSketches(); UI.App.dimsStale = true; if (UI.render) UI.render();
     var t0 = performance.now(), t = null; while (!(t = D.querySelector("#dim-layer .dim text")) && performance.now() - t0 < 5000) await wait(15);
     assert(t, 'a dimension label');
     var ts = W.getComputedStyle(t);
     var lum = ts.fill.match(/\d+/g).slice(0, 3).reduce(function (a, b) { return a + Number(b); }, 0) / 3;
-    assert(lum < 40 && parseFloat(ts.strokeWidth) === 0, 'dimension text black with no halo: ' + ts.fill + ' / ' + ts.strokeWidth);
+    assert(lum > 200 && parseFloat(ts.strokeWidth) > 0, 'dimension text light with a halo: ' + ts.fill + ' / ' + ts.strokeWidth);
     UI.setTheme('dark');
     assert(parseFloat(W.getComputedStyle(t).strokeWidth) > 0, 'dark theme keeps a halo');
     UI.setTheme('light');

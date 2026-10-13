@@ -21,7 +21,7 @@
       UI.setTool('circle'); rskClick(c);
       D.dispatchEvent(new W.KeyboardEvent('keydown', { key: '1', bubbles: true, cancelable: true }));
       var b = UI.sketchNumBox(); b[0].value = '1.124'; b[0].dispatchEvent(new W.Event('input', { bubbles: true }));
-      b[0].dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      enterTwice(b[0]);   // lane BP: the Circle box commits on the first Enter, makes the circle on the second
       selKey('Escape');
     });
     UI.setTool('line'); rskClick([40, 20]); rskClick([36, 20]); rskClick([36, 24]); selKey('Escape'); selKey('Escape');

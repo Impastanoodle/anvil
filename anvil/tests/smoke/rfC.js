@@ -20,7 +20,7 @@
     UI.setRibbonTab('Sketch');
     assert($('ribbon').offsetHeight === h0, 'the Sketch tab changes the ribbon height: ' + $('ribbon').offsetHeight + ' vs ' + h0);
     var top = rfcTop();
-    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,Offset On Surface,stack,|,relations,Repair Sketch,|,quickSnaps,|,Rapid Sketch,Instant2D,Shaded Sketch Contours,|,stack,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);   // as the user's SolidWorks 2024 screenshot (2026-10-13)
+    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,Offset On Surface,stack,Close Arc,|,relations,Repair Sketch,|,quickSnaps,|,Rapid Sketch,Instant2D,Shaded Sketch Contours,|,stack,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);   // as the user's SolidWorks 2024 screenshot (2026-10-13); lane BS: Mastercam's Close Arc, an Anvil extra beside the modify tools
     var grid = D.querySelector('#ribbon-buttons .rb-grid');
     var cells = Array.prototype.map.call(grid.children, function (c) { return c._fly ? c._fly.fly : c.getAttribute('aria-label'); }).join(',');
     assert(cells === 'line,rect,slot,circle,arc,Polygon,spline,ellipse,skFillet,Plane,Text,Point', 'entity grid ' + cells);
@@ -201,7 +201,8 @@
     UI.setBackground('gradient'); UI.setTheme('dark');
     var theme = [v('--dim-text'), v('--blue')];
     UI.setTheme('light'); UI.setBackground('gradient');
-    assert(light[0] === '#000' && dark[0] === '#f2f4f7' && theme[0] === '#f2f4f7' && dark[1] === '#6fa8ea' && theme[1] === '#6fa8ea', 'light ' + light + ' / dark bg ' + dark + ' / dark theme ' + theme);
+    // rfBR: the graphics area is grey-black with every background and theme: the dark-ground colours always, no blue
+    assert([light, dark, theme].every(function (x) { return x[0] === '#f2f2f2' && x[1] === '#e0e0e0'; }), 'light ' + light + ' / dark bg ' + dark + ' / dark theme ' + theme);
     var css = Array.prototype.filter.call(D.styleSheets, function (s) { return /style\.css$/.test(s.href || ''); })[0];
     assert(css && Array.prototype.some.call(css.cssRules, function (r) { return r.selectorText === '.lvl-row.main'; }), 'the Levels rules are not in style.css');
     return 'ok';

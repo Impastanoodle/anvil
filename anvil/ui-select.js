@@ -694,7 +694,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
 
   // ================================================================== highlights of the extra items
-  var vtxMat = new THREE.PointsMaterial({ color: 0x1f6fe8, size: 9, sizeAttenuation: false, depthTest: false });
+  var vtxMat = new THREE.PointsMaterial({ color: 0xffd400, size: 9, sizeAttenuation: false, depthTest: false });
   var vtxHoverMat = new THREE.PointsMaterial({ color: 0xff8c1a, size: 9, sizeAttenuation: false, depthTest: false });
   var throughMat = new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.45, depthTest: false, depthWrite: false, side: THREE.DoubleSide });   // r5/select5
   function pointsObject(pts, mat) {
@@ -803,8 +803,8 @@ if (typeof UI !== 'undefined') (function (UI) {
       '#i3d-layer .i3d-anchor { fill: #c9a227; }',
       '#i3d-layer .i3d-flip { pointer-events: all; cursor: pointer; opacity: 0.55; }',
       '#i3d-layer .i3d-flip:hover { opacity: 1; }',
-      '#i3d-layer .i3d-flip-shaft { stroke: #1f6fc5; stroke-width: 2; stroke-dasharray: 3 2; }',
-      '#i3d-layer .i3d-flip-head { fill: #1f6fc5; }',
+      '#i3d-layer .i3d-flip-shaft { stroke: #d8d8d8; stroke-width: 2; stroke-dasharray: 3 2; }',
+      '#i3d-layer .i3d-flip-head { fill: #d8d8d8; }',
       '#i3d-layer .i3d-flip:hover .i3d-flip-shaft { stroke: #ff8c1a; } #i3d-layer .i3d-flip:hover .i3d-flip-head { fill: #ff8c1a; }',
       '#i3d-layer .i3d-hover-item polyline { fill: none; stroke: #ff8c1a; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }',
       '#i3d-layer .i3d-hover-item circle { fill: none; stroke: #ff8c1a; stroke-width: 2.5; }',
@@ -816,7 +816,7 @@ if (typeof UI !== 'undefined') (function (UI) {
       '.pm-pickwrap { min-width: 0; max-width: 100%; } .pm-list { overflow-x: hidden; } .pm-item > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
       'html[data-theme="dark"] #i3d-layer .i3d-callout rect { fill: #2b2a1f; } html[data-theme="dark"] #i3d-layer .i3d-callout text { fill: #f1e9c8; }',
       // r5/select5: the ruler while the pointer snaps to it, and the tick it snapped to
-      'html #i3d-layer .i3d-ruler.snapping { stroke: #1f6fc5; stroke-width: 1.5; }',
+      'html #i3d-layer .i3d-ruler.snapping { stroke: #ffffff; stroke-width: 1.5; }',
       'html #i3d-layer .i3d-tick.hit { stroke: #ff8c1a; stroke-width: 3; }'
     ].join('\n');
     var st = document.createElement('style');
