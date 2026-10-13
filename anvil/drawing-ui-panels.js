@@ -51,6 +51,8 @@
     edit(function (dc) {
       dc.modelItems = mi; dc.autoDims = true; dc.suppressed = [];
       if (mi.annotations && autoInsertViews) { try { autoInsertViews(dc, dest.length ? dest : null); } catch (e) { } }
+      // (rfAJ) Hole callouts: one hole callout per Hole Wizard hole, with the feature's text (its circles get no Ø dimension)
+      if (Drawing.insertWizardCallouts) { try { Drawing.insertWizardCallouts(dc, App.model, dest.length ? dest : null, { on: mi.holeCallouts, dedupe: mi.dedupe, feature: mi.source === 'feature' ? mi.feature : null }); } catch (e) { } }
     });
     UI.setStatus('Model Items inserted' + (mi.source === 'feature' ? ' from the selected feature' : '') + (dest.length ? ' into ' + dest.length + ' view' + (dest.length > 1 ? 's' : '') : ' into all views') + '.');
   }

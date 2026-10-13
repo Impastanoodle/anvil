@@ -367,6 +367,6 @@ var HoleWizard = (function () {
     STANDARDS: STANDARDS, TYPES: TYPES, FITS: FITS, SIZE_TYPES: SIZE_TYPES, CSK_ANGLE: CSK_ANGLE, ANSI_CSK_ANGLE: ANSI_CSK_ANGLE,
     sizeRow: sizeRow, screwRow: screwRow, threadRow: threadRow, drill: drill, standardOf: standardOf, standardName: standardName,
     sizeOptions: sizeOptions, defaultSize: defaultSize, validSize: validSize, spec: spec, callout: callout, section: section,
-    threads: threads, holeName: holeName, newFeature: newFeature, build: build };
+    threads: threads, positions: positions, holeName: holeName, newFeature: newFeature, build: build };
 })();
 if (typeof module !== 'undefined') module.exports = HoleWizard;

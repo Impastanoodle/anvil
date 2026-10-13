@@ -789,9 +789,14 @@
       var pr = projections[v.id];
       if (!pr) return;
       var groups = {}, gk = [];
+      // (rfAJ) a Hole Wizard hole that Model Items gave a hole callout (an.mi, Drawing.insertWizardCallouts) gets no Ø
+      // dimension: the callout carries its size (SolidWorks)
+      var miC = flat ? [] : (v.annotations || []).filter(function (a) { return a.type === 'holeCallout' && a.mi && a.c; }).map(function (a) { return a.c; });
+      var miTol = 1e-5 * (1 + pr.bounds.umax - pr.bounds.umin + pr.bounds.vmax - pr.bounds.vmin);
       pr.circles.visible.forEach(function (c) {
         var key = fmtDim(2 * c.r, units);
         if (done[key] || c.sil) return;   // a sphere's or torus's outline is no edge to dimension
+        if (miC.some(function (q) { return Math.hypot(q[0] - c.c[0], q[1] - c.c[1]) <= miTol; })) return;
         if (!groups[key]) { groups[key] = []; gk.push(key); }
         groups[key].push(c);
       });

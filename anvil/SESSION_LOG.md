@@ -1423,3 +1423,8 @@ Tests: kernel 1059/1059, examples 29/29 (both kernels), ui-smoke 540/540, occt-t
 - shop audit 2 (lane AI, Fable): test-reports/2026-10-12-shop-workflow-2.md — normal cut on a flange face, circular patterns of polygon / slot, Hole Wizard on 16 ga, Insert DXF of Anvil's flat (R12 / R2000) and the DWG round trip all right; fixed: `dxfToDwg` refuses R12; open: CSK callout reads the far-side circle, Model Items Hole callout inserts Ø dimensions.
 - head: Convert Entities of a face keeps its tangent (smooth) edges, so an Edge Flange wall converts as a closed contour (`faceLoops(fi, whole)` in ui-sketch-tools.js, smoke step rfAI); ROADMAP magnetic lines ticked.
 Tests: kernel 1068/1068, examples 29/29 (both kernels), ui-smoke 549/549, occt-tests 87/87.
+
+## 2026-10-12j (interactive head, 1 Opus 5.5 subagent): Hole Wizard callouts on drawings
+
+- drawing (lane AJ): a hole callout first looks for a Hole Wizard position under the circle centre (.003 in / .08 mm, axis along the view) and uses `HoleWizard.callout` (THRU → THRU ALL, `nX` for several positions), falling back to the geometric analysis; Model Items ▸ Hole callouts inserts one callout per Hole Wizard feature and leaves the Ø dimension to other circles, re-running replaces its earlier callouts; `HoleWizard.positions` exported. The rfAI part now sets Through All (a Blind default reads `Ø.281 ↧ .750`).
+Tests: kernel 1068/1068, examples 29/29 (both kernels), ui-smoke 551/551, occt-tests 87/87.

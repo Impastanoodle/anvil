@@ -1149,7 +1149,81 @@
         if (e && e.t === 'circle' && !e.construction && +e.r > 0) out.push({ dia: 2 * +e.r, thruAll: thru });
       });
     });
+    // (rfAJ) the part's Hole Wizard holes ride along, so a hole callout reads the feature's text (wizardAt)
+    out.wizard = wizardHoles(model);
     return out;
+  }
+  // (rfAJ, shop audit 2 #2 / #3) wizardHoles(model) -> [{ feature, units, n (axis), pts (centres on the face), ra
+  // (the largest drilled radius: a callout's anchor circle), rmax (with the thread) }] of the part's Hole Wizard holes.
+  // SolidWorks reads a Hole Wizard hole's callout from the feature, not from the faces: a CSK whose cone goes through a
+  // thin sheet has no drill cylinder at all, yet its callout reads 'Ø.281 THRU ALL' / '⌵ Ø.507 X 82°'.
+  function wizardHoles(model) {
+    var out = [];
+    if (!model || model.type === 'assembly' || typeof HoleWizard === 'undefined' || !HoleWizard.positions || !HoleWizard.callout) return out;
+    var mu = model.units === 'in' ? 'in' : 'mm';
+    (model.features || []).forEach(function (f) {
+      if (!f || f.type !== 'hole' || f.suppressed) return;
+      try {
+        var pos = HoleWizard.positions(f, model, null), s = HoleWizard.spec(f, mu);
+        var ra = Math.max(+s.dia || 0, s.cbore ? +s.cbore.dia : 0, s.csk ? +s.csk.dia : 0) / 2;
+        out.push({ feature: f, units: mu, n: pos.plane.n, pts: pos.pts.map(function (q) { return q.p; }), ra: ra, rmax: Math.max(ra, s.thread ? +s.thread.major / 2 : 0) });
+      } catch (e) { }
+    });
+    return out;
+  }
+  // wizardAt(list, F, c, r) -> { hole, c } the Hole Wizard hole of the view frame F (its axis along the view) with a
+  // centre under view point c (a few mils / .08 mm), the circle no bigger than the hole; null when none
+  function wizardAt(list, F, c, r) {
+    for (var i = 0; i < (list || []).length; i++) {
+      var h = list[i], tol = h.units === 'in' ? 0.003 : 0.08;
+      if (Math.abs(Math.abs(V.dot(h.n, F.e)) - 1) > 1e-6 || (r != null && r > h.rmax + tol)) continue;
+      for (var j = 0; j < h.pts.length; j++) {
+        var q = [V.dot(h.pts[j], F.u), V.dot(h.pts[j], F.v)];
+        if (Math.hypot(q[0] - c[0], q[1] - c[1]) <= tol) return { hole: h, c: q };
+      }
+    }
+    return null;
+  }
+  // wizardLines(hole, units, count) -> HoleWizard.callout in the drawing's words: a Through All end reads THRU ALL,
+  // several positions 'nX' on the first line
+  function wizardLines(h, units, count) {
+    var u = units === 'in' || units === 'mm' ? units : h.units;
+    var lines = HoleWizard.callout(h.feature, u).map(function (s) { return s.replace(/ THRU$/, ' THRU ALL'); });
+    if (count > 1) lines[0] = count + 'X ' + lines[0];
+    return lines;
+  }
+  // insertWizardCallouts(doc, model, ids, opts) -> the number inserted: Model Items ▸ Hole callouts. Its earlier
+  // callouts (an.mi) in the views (ids, null: all) go; with opts.on, one hole callout per Hole Wizard feature goes on
+  // the first projected view that looks along the hole (every such view without opts.dedupe), on the position farthest
+  // from the feature's centre. A view that already has a callout on one of the feature's holes counts as done.
+  function insertWizardCallouts(doc, model, ids, opts) {
+    opts = opts || {};
+    var n = 0, inIds = function (v) { return !ids || ids.indexOf(v.id) >= 0; };
+    doc.views.forEach(function (v) {
+      if (inIds(v) && v.annotations) v.annotations = v.annotations.filter(function (a) { return !(a.type === 'holeCallout' && a.mi); });
+    });
+    if (!opts.on) return 0;
+    var roleOrder = { front: 0, top: 1, right: 2 };
+    var views = doc.views.filter(function (v) { return inIds(v) && (!v.kind || v.kind === 'projected'); })
+      .sort(function (a, b) { return (roleOrder[a.role] != null ? roleOrder[a.role] : 5) - (roleOrder[b.role] != null ? roleOrder[b.role] : 5) || a.id - b.id; });
+    wizardHoles(model).forEach(function (h) {
+      if (opts.feature != null && String(opts.feature) !== String(h.feature.id)) return;
+      views.some(function (v) {
+        var F = D.viewFrame(doc, v);
+        if (Math.abs(Math.abs(V.dot(h.n, F.e)) - 1) > 1e-6) return false;
+        var tol = h.units === 'in' ? 0.003 : 0.08, cs = h.pts.map(function (p) { return [V.dot(p, F.u), V.dot(p, F.v)]; });
+        var had = (v.annotations || []).some(function (a) { return a.type === 'holeCallout' && cs.some(function (q) { return Math.hypot(q[0] - a.c[0], q[1] - a.c[1]) <= tol; }); });
+        if (!had) {
+          var m = [0, 0];
+          cs.forEach(function (q) { m[0] += q[0] / cs.length; m[1] += q[1] / cs.length; });
+          var pick = cs.slice().sort(function (p, q) { return Math.hypot(q[0] - m[0], q[1] - m[1]) - Math.hypot(p[0] - m[0], p[1] - m[1]) || (q[0] + q[1]) - (p[0] + p[1]); })[0];
+          addHoleCallout(doc, v.id, { c: pick, r: h.ra }).mi = true;
+          n++;
+        }
+        return opts.dedupe !== false;
+      });
+    });
+    return n;
   }
   function thruAllFor(ends, dia) {
     var hit = (ends || []).filter(function (x) { return Math.abs(x.dia - dia) <= Math.max(1e-6, dia * 1e-5); });
@@ -1229,11 +1303,17 @@
       var ref2 = { kind: 'dia', c: an.c, r: an.r };
       if (reattachDim(ref2, pr)) { an.c = ref2.c; an.r = ref2.r; } else dangling = true;
       // (a flat pattern's holes all go through the blank: the callout reads the circle, counted over the flat)
-      var h = w.flat ? { c: an.c.slice(), dia: 2 * an.r, thru: true } : w.ortho ? holeInfo(mesh, w.frame, an.c, an.r) : null, lines;
+      // (rfAJ) a Hole Wizard hole under the callout: the feature's own text (SolidWorks), not the faces' analysis
+      var hw = !w.flat && w.ortho && ends && ends.wizard ? wizardAt(ends.wizard, w.frame, an.c, an.r) : null;
+      var h = hw ? null : w.flat ? { c: an.c.slice(), dia: 2 * an.r, thru: true } : w.ortho ? holeInfo(mesh, w.frame, an.c, an.r) : null, lines;
       // (rfV) THRU ALL when the cut that makes this drill size ends Through All
       var allOf = function (q) { if (q && q.thru && thruAllFor(ends, q.dia)) q.thruAll = true; return q; };
       allOf(h);
-      if (h && w.flat) {
+      if (hw) {
+        var hwn = hw.hole.pts.length;
+        lines = wizardLines(hw.hole, units, hwn);
+        info = { hole: { c: an.c.slice(), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia, thru: hw.hole.feature.end === 'through' }, count: hwn, feature: hw.hole.feature.id };
+      } else if (h && w.flat) {
         var nf = 0;
         pr.circles.visible.forEach(function (c) { if (Math.abs(2 * c.r - h.dia) <= Math.max(1e-6, h.dia * 1e-6)) nf++; });
         lines = holeText(h, units, Math.max(1, nf), an.prec);
@@ -1253,7 +1333,7 @@
         if (tap) { lines.push(tap.label + (tap.depth == null || h.thru ? (h.thruAll ? ' THRU ALL' : ' THRU') : ' ↧ ' + numText(tap.depth, units, an.prec))); info.thread = tap.label; }
       } else lines = ['Ø' + numText(2 * an.r, units, an.prec)];
       // the standard size the hole feature names (1/4-20 UNC, M6), when it is not in the callout already
-      var sz = holeNameFor(holeNames, h ? h.dia : 2 * an.r);
+      var sz = hw ? null : holeNameFor(holeNames, h ? h.dia : 2 * an.r);
       if (sz && lines.join(' ').indexOf(sz) < 0) { lines.push(sz); info = info || {}; info.size = sz; }
       if (an.text) lines = String(an.text).split('\n').map(function (s) { return s.split('<HOLE>').join(lines.join(' ')); });
       var c = w.toSheet(an.c), rr2 = an.r * w.scale, box = w.box, th = 3.5 * k, mid = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
@@ -1286,7 +1366,7 @@
 
   D.circlesAlong = circlesAlong; D.holeInfo = holeInfo; D.holeText = holeText; D.cylAxes = cylAxes; D.fitCircle = fitCircle; D.lineIntervals = lineIntervals;
   D.addCenterMark = addCenterMark; D.autoCenterMarks = autoCenterMarks; D.addCenterline = addCenterline; D.autoCenterlines = autoCenterlines; D.autoInsert = autoInsert;
-  D.addHoleCallout = addHoleCallout; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;
+  D.addHoleCallout = addHoleCallout; D.insertWizardCallouts = insertWizardCallouts; D.wizardHoles = wizardHoles; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
