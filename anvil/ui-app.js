@@ -1045,6 +1045,115 @@
     window.anvil.configurations[op] = function () { return UI.configurations[op].apply(null, arguments).then(function () { return window.anvil.summary(); }); };
   });
 
+  // ------------------------------------------------------------------ Search Commands (rfAP)
+  // The menu-bar box searches every CommandManager command (flyouts and stacks opened up, every tab of the document)
+  // and every menu row by name and by SolidWorks' other words for it ("stretch entities", "constrain all", "hole
+  // table", "flat pattern"); the matches are listed under the box with their icons and where they live, best first;
+  // Enter (or a click) runs the first one that can run now, Esc closes the list.
+  var SEARCH_ALIASES = {
+    'Extruded Boss/Base': 'extrude boss base pad', 'Extruded Cut': 'cut extrude pocket', 'Revolved Boss/Base': 'revolve', 'Hole Wizard': 'hole tapped drill counterbore countersink',
+    'Linear Pattern': 'pattern array', 'Circular Pattern': 'circular polar pattern', 'Smart Dimension': 'dimension dim measure sketch',
+    'Add Relation': 'relation constraint constrain', 'Fully Define Sketch': 'fully define autodimension auto dimension', 'Constrain All': 'constrain all lock fully constrain dxf relations',
+    'Modify': 'modify sketch move sketch rotate sketch flip sketch translate scale sketch position dxf', 'Segment': 'segment divide equal points',
+    'Equation Driven Curve': 'equation curve function parametric', 'Stretch Entities': 'stretch', 'Trim Entities': 'trim cut lines', 'Offset Entities': 'offset',
+    'Convert Entities': 'convert project edges use edge', 'Mirror Entities': 'mirror sketch', 'Insert DXF / DWG': 'import dxf dwg open dxf blank',
+    'Repair Sketch': 'repair fix gaps', 'Check Sketch for Feature': 'check sketch open contour', 'Centerline': 'centreline construction line',
+    'Corner Rectangle': 'rectangle box square', 'Straight Slot': 'slot obround', 'Base Flange/Tab': 'sheet metal base flange tab',
+    'Edge Flange': 'flange bend', 'Sketched Bend': 'bend line brake', 'Flatten': 'flat pattern unfold flat blank', 'Flat to DXF': 'flat pattern dxf export laser',
+    'Hole Table': 'hole table hole chart', 'Note': 'note text annotation', 'Mass Properties': 'mass weight', 'Measure': 'measure distance',
+    'Sketch Fillet': 'fillet round corner', 'Sketch Chamfer': 'chamfer bevel'
+  };
+  function cmdSearchIndex() {
+    var out = [], seen = {};
+    function flat(s) { return String(s || '').replace(/\s*\n\s*/g, ' ').replace(/…$/, '').trim(); }
+    function add(e) { var k = e.name.toLowerCase(); if (seen[k] && (seen[k].enabled || !e.enabled)) return; if (seen[k]) out.splice(out.indexOf(seen[k]), 1); seen[k] = e; out.push(e); }
+    var set = isAsm() ? (UI.ASM_RIBBON || UI.RIBBON) : UI.RIBBON, names = Object.keys(set || {}), shown = names;
+    if (UI.ribbonTabsFor) { try { shown = UI.ribbonTabsFor(names.slice(), [])[0]; } catch (err) { shown = names; } }
+    var drawing = !!(UI.drawingActive && UI.drawingActive());
+    // the tabs on screen first, then the others (a drawing's tabs from a part, the part's from a drawing)
+    names.slice().sort(function (a, b) { return (shown.indexOf(a) < 0) - (shown.indexOf(b) < 0); }).forEach(function (tab) {
+      var here = shown.indexOf(tab) >= 0;
+      (UI.ribbonLeaves ? UI.ribbonLeaves(set[tab]) : []).forEach(function (it) {
+        var name = flat(it.label), can = !!(it.run || it.tool);
+        add({ name: name, icon: it.icon || it.id, where: tab + (here ? '' : drawingTab(tab) ? ' (drawing)' : ''), enabled: can, here: here, sketchTool: !!it.tool, tab: tab,
+          run: function () {
+            if (!here) { UI.toast(drawingTab(tab) && !drawing ? 'Open a drawing first: ' + name + ' is on its ' + tab + ' tab.' : name + ' is not on this document\'s CommandManager.'); return; }
+            if (it.tool && !it.run) { if (App.mode !== 'sketch') { UI.toast('Open a sketch first: ' + name + ' is a sketch tool.'); return; } UI.setTool(it.tool); }
+            else it.run();
+            UI.refreshRibbon();
+          } });
+      });
+    });
+    var menus = [];
+    try { menus = UI.menuModel ? UI.menuModel() : []; } catch (err) { menus = []; }
+    menus.forEach(function (m) {
+      (m.items || []).forEach(function (it) {
+        if (it.sep || !it.label || !it.action) return;
+        var parts = it.label.split(' ▸ '), name = flat(parts[parts.length - 1]);
+        if (/^Units:|^Default units/.test(it.label)) name = flat(it.label);
+        add({ name: name, icon: it.icon || null, where: [m.label].concat(parts.slice(0, -1)).join(' ▸ '), enabled: !it.disabled, here: true, run: function () { it.action(); } });
+      });
+    });
+    // the Anvil words the box always knew
+    [{ name: 'Export STL', alias: 'stl', run: exportSTL }, { name: 'Script', alias: 'script macro code', run: function () { openTaskPane('macro'); } },
+      { name: 'New Assembly', alias: 'assembly', run: function () { newAssembly(); } }, { name: 'DXF / DWG Output', alias: 'dxf dwg export output', run: function () { UI.cmdDxfOutput(); } },
+      { name: 'DWG Output', alias: 'dwg', run: function () { UI.cmdDxfOutput({ format: 'dwg' }); } }].forEach(function (x) { add({ name: x.name, alias: x.alias, icon: null, where: 'Anvil', enabled: true, here: true, run: x.run }); });
+    return out;
+  }
+  function drawingTab(t) { return t === 'View Layout' || t === 'Annotation' || t === 'Sheet Format'; }
+  // the matches for q, best first: { name, icon, where, enabled, run }
+  function searchCommands(q) {
+    q = String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!q) return [];
+    var words = q.split(' '), sketch = App.mode === 'sketch';
+    var hits = cmdSearchIndex().map(function (e) {
+      var n = e.name.toLowerCase(), al = ((SEARCH_ALIASES[e.name] || '') + ' ' + (e.alias || '')).toLowerCase(), nw = n.split(/[\s/()-]+/), s = 0;
+      if (n === q) s = 100;
+      else if (n.indexOf(q) === 0) s = 80;
+      else if (words.every(function (w) { return nw.some(function (x) { return x.indexOf(w) === 0; }); })) s = 65;
+      else if (n.indexOf(q) >= 0) s = 55;
+      else if (al && (' ' + al + ' ').indexOf(' ' + q) >= 0) s = 45;
+      else if (words.every(function (w) { return (n + ' ' + al).indexOf(w) >= 0; })) s = 30;
+      if (!s) return null;
+      if (!e.enabled) s -= 25;
+      if (!e.here) s -= 15;
+      if (sketch && (e.sketchTool || e.tab === 'Sketch')) s += 6;
+      if (!sketch && e.tab === 'Features') s += 4;
+      return { e: e, s: s };
+    }).filter(Boolean);
+    hits.sort(function (a, b) { return b.s - a.s || a.e.name.length - b.e.name.length; });
+    return hits.slice(0, 14).map(function (h) { return h.e; });
+  }
+  function initCommandSearch() {
+    var box = $('cmd-search'), shown = false;
+    function close() { if (shown && UI.closeMenus) UI.closeMenus(); shown = false; }
+    function runHit(h) {
+      box.value = ''; close(); box.blur();
+      if (!h.enabled) { UI.toast(h.name + ' is not available' + (App.mode !== 'sketch' && h.sketchTool ? ': open a sketch first.' : ' here.')); return; }
+      h.run();
+    }
+    function list() {
+      var hits = searchCommands(box.value);
+      if (!hits.length) { close(); return; }
+      var r = box.getBoundingClientRect();
+      UI.showMenu(r.left, r.bottom, hits.map(function (h) { return { label: h.name, icon: h.icon || 'search', key: h.where, disabled: !h.enabled, action: function () { runHit(h); } }; }));
+      var m = document.querySelector('body > .menu:last-of-type');
+      if (m) { m.classList.add('cmd-search-list'); m.setAttribute('role', 'listbox'); }
+      shown = true;
+    }
+    box.addEventListener('input', list);
+    box.addEventListener('focus', function () { if (box.value) list(); });
+    box.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== box) close(); }, 200); });
+    box.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { box.value = ''; close(); box.blur(); return; }
+      if (e.key !== 'Enter') return;
+      var q = box.value, hits = searchCommands(q), first = hits.filter(function (h) { return h.enabled; })[0] || hits[0];
+      if (first) runHit(first);
+      else { close(); UI.toast('No command matches "' + q + '"'); }
+    });
+  }
+  UI.searchCommands = function (q) { return searchCommands(q).map(function (h) { return { name: h.name, where: h.where, icon: h.icon, enabled: h.enabled }; }); };
+
   // ------------------------------------------------------------------ boot
   function boot() {
     // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
@@ -1079,13 +1188,7 @@
     })();
     if (window.ResizeObserver) new ResizeObserver(function () { UI.resize(); }).observe(UI.viewport);
     UI.setStatus('Ready. Sketch tab → Sketch to start drawing, or open Automation / Script on the right to model in code.');
-    $('cmd-search').addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter') return;
-      var q = $('cmd-search').value.toLowerCase();
-      var cmds = { extrude: function () { UI.cmdExtrude(false); }, cut: function () { UI.cmdExtrude(true); }, revolve: function () { UI.cmdRevolve(false); }, sketch: UI.cmdSketch, hole: UI.cmdHole, pattern: function () { UI.cmdLinearPattern(); }, circular: function () { UI.cmdCircularPattern(); }, mirror: function () { UI.cmdMirror(); }, plane: function () { UI.cmdPlane(); }, measure: UI.cmdMeasure, mass: showMassProperties, section: UI.cmdSection, dxf: function () { UI.cmdDxfOutput(); }, dwg: function () { UI.cmdDxfOutput({ format: 'dwg' }); }, stl: exportSTL, script: function () { openTaskPane('macro'); }, macro: function () { openTaskPane('macro'); }, mate: function () { UI.cmdMate(); }, insert: function () { UI.cmdInsertComponent(); }, component: function () { UI.cmdInsertComponent(); }, assembly: function () { newAssembly(); } };
-      var hit = Object.keys(cmds).filter(function (c) { return q.indexOf(c) >= 0; })[0];
-      if (hit) { cmds[hit](); $('cmd-search').value = ''; $('cmd-search').blur(); } else UI.toast('No command matches "' + q + '"');
-    });
+    initCommandSearch();
     offerRecovery();
   }
 

@@ -212,14 +212,26 @@
     if (e.t === 'circle') return ((a % 360) + 360) % 360;
     return (((a - e.a0) % 360) + 360) % 360;
   }
+  // rfAK: a spline (a style spline too) as SketchSolver's free curve: { fc } of its true curve
+  function isSpl(e) { return !!e && e.t === 'spline' && !!e.pts && e.pts.length >= 2; }
+  function splFc(e) { return isSpl(e) && SS() ? SS().freeCurve(e) : null; }
+  function splScale(e) { var m = 1; (e.pts || []).forEach(function (q) { m = Math.max(m, Math.abs(q[0]), Math.abs(q[1])); }); return m; }
+  // the carriers of entity o as SketchSolver.freeHits takes them (its exact segments and arcs, or its own free curve)
+  function hitCarriers(o) {
+    if (!o || o.t === 'point') return [];
+    if (SS().isFree(o)) { var fo = SS().freeCurve(o); return fo ? [{ fc: fo }] : []; }
+    return prims(o).map(function (q) { return q.kind === 'seg' ? { kind: 'seg', a: q.a, b: q.b } : q.full ? { kind: 'circle', c: q.c, r: q.r } : { kind: 'arc', c: q.c, r: q.r, a0: q.a0, a1: q.a1, full: false }; });
+  }
   // is P strictly inside entity e (not at an end, within its extent)?
   function interior(e, P) {
+    if (isSpl(e)) { var fc = splFc(e), c = fc && SS().freeClosest(fc, P); return !!c && (fc.closed || (c.t > fc.t0 + 1e-6 * (fc.t1 - fc.t0) && c.t < fc.t1 - 1e-6 * (fc.t1 - fc.t0))); }
     var tol = 1e-6 * scaleOf(e);
     if (e.t === 'line') { var L = Math.hypot(e.x2 - e.x1, e.y2 - e.y1), t = paramOf(e, P); return t * L > tol && (1 - t) * L > tol; }
     if (e.t === 'arc') { var s = paramOf(e, P), sw = e.a1 - e.a0; return s * D2R * e.r > tol && (sw - s) * D2R * e.r > tol; }
     return e.t === 'circle';
   }
   function pointOn(e, P) {
+    if (isSpl(e)) { var fc = splFc(e); return fc ? SS().freeClosest(fc, P).p : P.slice(); }
     if (e.t === 'line') return foot({ a: [e.x1, e.y1], b: [e.x2, e.y2] }, P);
     var v = sub(P, [e.cx, e.cy]), l = len(v);
     return l < 1e-12 ? [e.cx + e.r, e.cy] : add([e.cx, e.cy], mul(v, e.r / l));
@@ -292,7 +304,8 @@
   // Returns { ok, pieces: [indices], error }. On a failure the sketch is exactly as it was.
   function splitEntity(f, i, pts) {
     var S = SS(), e = f.entities[i];
-    if (!e || (e.t !== 'line' && e.t !== 'arc' && e.t !== 'circle')) return { ok: false, error: 'Split Entities splits lines, arcs and circles.' };
+    if (isSpl(e)) return S.freeSplit(f, i, pts);   // rfAK: a spline or a style spline: the pieces are exactly its curve
+    if (!e || (e.t !== 'line' && e.t !== 'arc' && e.t !== 'circle')) return { ok: false, error: 'Split Entities splits lines, arcs, circles and splines.' };
     var tol = 1e-6 * scaleOf(e), P = [];
     (pts || []).forEach(function (q) {
       var p = pointOn(e, q);
@@ -316,12 +329,16 @@
   }
   // Where entity i meets the other entities (or only those in `among`): the points inside it.
   function crossings(f, i, among) {
-    var E = f.entities, e = E[i], out = [], tol = 1e-6 * scaleOf(e);
+    var E = f.entities, e = E[i], out = [];
     if (!e) return out;
-    var mine = prims(e);
+    var tol = 1e-6 * (isSpl(e) ? splScale(e) : scaleOf(e)), mine = isSpl(e) ? null : prims(e), fe = isSpl(e) ? splFc(e) : null;
+    function push(P) { if (interior(e, P) && !out.some(function (x) { return dist(x, P) < tol; })) out.push(P); }
     E.forEach(function (o, j) {
       if (j === i || !o || o.t === 'point' || (among && among.indexOf(j) < 0)) return;
-      prims(o).forEach(function (q) { mine.forEach(function (p) { primMeet(p, q).forEach(function (P) { if (interior(e, P) && !out.some(function (x) { return dist(x, P) < tol; })) out.push(P); }); }); });
+      // rfAK: where a spline is involved, on its true curve (SketchSolver.freeHits), not on the chords it is drawn with
+      if (fe) { hitCarriers(o).forEach(function (q) { SS().freeHits(fe, q).forEach(function (t) { push(fe.pt(t)); }); }); return; }
+      if (SS().isFree(o)) { var fo = SS().freeCurve(o); if (fo) hitCarriers(e).forEach(function (q) { SS().freeHits(fo, q).forEach(function (t) { push(fo.pt(t)); }); }); return; }
+      prims(o).forEach(function (q) { mine.forEach(function (p) { primMeet(p, q).forEach(push); }); });
     });
     return out;
   }
@@ -329,8 +346,8 @@
   // where any other entity crosses it. Returns { ok, split: entities split, pieces: entities made, error }.
   function splitAll(f, idx) {
     var E = f.entities;
-    var targets = (idx && idx.length ? idx : E.map(function (e, i) { return i; })).filter(function (i) { var e = E[i]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle'); });
-    var plan = targets.map(function (i) { return { i: i, pts: crossings(f, i) }; }).filter(function (p) { return f.entities[p.i].t === 'circle' ? p.pts.length >= 2 : p.pts.length; });
+    var targets = (idx && idx.length ? idx : E.map(function (e, i) { return i; })).filter(function (i) { var e = E[i]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle' || isSpl(e)); });
+    var plan = targets.map(function (i) { return { i: i, pts: crossings(f, i) }; }).filter(function (p) { var e = f.entities[p.i]; return e.t === 'circle' || (isSpl(e) && e.closed) ? p.pts.length >= 2 : p.pts.length; });
     if (!plan.length) return { ok: false, error: idx && idx.length ? 'Nothing crosses the selected entities: nothing to split.' : 'Nothing in the sketch crosses anything else: nothing to split.' };
     plan.sort(function (a, b) { return b.i - a.i; });   // from the last: a split shifts only the entities after it
     var saved = snapState(f), made = 0;
@@ -449,6 +466,7 @@
   function pxWorld(mx, my) { var a = toUV(mx, my), b = toUV(mx + 1, my); return a && b ? dist(a, b) : 1; }
   function ring(p, px) { var s = scr(p), out = []; for (var k = 0; k <= 16; k++) { var a = k * Math.PI / 8, q = toUV(s[0] + px * Math.cos(a), s[1] + px * Math.sin(a)); if (q) out.push(q); } return out; }
   function curvePts(c, e) {
+    if (!c && isSpl(e)) { var fc = splFc(e); return fc ? SS().freePts(fc, fc.t0, fc.t1) : e.pts; }   // rfAK
     if (c.kind === 'line') return [c.a, c.b];
     var a0 = 0, a1 = 360, out = [];
     if (e && e.t === 'arc') { a0 = e.a0; a1 = e.a1; }
@@ -983,11 +1001,12 @@
   // line, arc and circle when nothing is selected, wherever anything crosses them. The pieces keep the relations and
   // dimensions that still hold (as Trim keeps them) and meet at the split points (Coincident). One undo step each.
   function splitSnap(f, i, uv, mx, my) {
-    var e = f.entities[i], P = pointOn(e, uv), px = pxWorld(mx, my), best = null, bd = 9 * px, S = SS();
+    var e = f.entities[i], P = pointOn(e, uv), px = pxWorld(mx, my), best = null, bd = 9 * px, S = SS(), sc = isSpl(e) ? splScale(e) : scaleOf(e);
     var cands = crossings(f, i);
     if (e.t === 'line') cands.push([(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2]);
     if (e.t === 'arc') cands.push(arcAt(e, (e.a0 + e.a1) / 2));
-    f.entities.forEach(function (o, j) { if (j !== i && o) S.pointRefs(f, j).forEach(function (pr) { if (dist(pointOn(e, pr.pt), pr.pt) < 1e-9 * scaleOf(e)) cands.push(pr.pt); }); });
+    if (isSpl(e) && !e.style) e.pts.forEach(function (q) { cands.push([q[0], q[1]]); });   // rfAK: a spline's own points
+    f.entities.forEach(function (o, j) { if (j !== i && o) S.pointRefs(f, j).forEach(function (pr) { if (dist(pointOn(e, pr.pt), pr.pt) < 1e-9 * sc) cands.push(pr.pt); }); });
     cands.forEach(function (q) { var d = dist(q, P); if (d < bd && (e.t === 'circle' || interior(e, q))) { bd = d; best = q; } });
     if (!best && UI.sketchInferPoint) { var inf = UI.sketchInferPoint(uv, mx, my); if (inf && inf.p) P = pointOn(e, inf.p); }
     return { p: best ? best.slice() : P, snapped: !!best };
@@ -995,8 +1014,9 @@
   function cmdSplitEntities() {
     var v = {}, pending = null, last = null, count = 0;
     var f0 = sketch(), pre = f0 ? selIdx(f0) : [];
-    function hintNow(quiet) { var t = pending ? 'Click the second split point on the circle.' : 'Click a line, arc or circle where it should be split (a circle needs two points).'; hint('<b>Split Entities:</b> ' + t); if (!quiet) UI.setStatus(t); }
-    function target(f, mx, my) { var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle') ? hit.index : e ? -1 : null; }
+    function closedEnt(e) { return !!e && (e.t === 'circle' || (isSpl(e) && !!e.closed)); }
+    function hintNow(quiet) { var t = pending ? 'Click the second split point on the ' + (pending.spl ? 'closed spline.' : 'circle.') : 'Click a line, arc, circle or spline where it should be split (a circle or a closed spline needs two points).'; hint('<b>Split Entities:</b> ' + t); if (!quiet) UI.setStatus(t); }
+    function target(f, mx, my) { var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle' || isSpl(e)) ? hit.index : e ? -1 : null; }
     function draw() {
       var f = sketch();
       if (!f) return;
@@ -1026,7 +1046,7 @@
     }
     openCommand({
       id: 'splitEnt', title: 'Split Entities', icon: 'splitEnt', values: v,
-      message: 'Click where to split a line, arc or circle (two points on a circle). Split all at intersections breaks the selected entities, or the whole sketch, wherever they cross.',
+      message: 'Click where to split a line, arc, circle or spline (two points on a circle or a closed spline). Split all at intersections breaks the selected entities, or the whole sketch, wherever they cross.',
       hint: hintNow,
       onMove: function (uv, mx, my) { last = { uv: uv, mx: mx, my: my }; draw(); },
       onPoint: function (uv, mx, my) {
@@ -1034,12 +1054,12 @@
         if (!f) return;
         last = { uv: uv, mx: mx, my: my };
         var i = target(f, mx, my);
-        if (i == null) { UI.setStatus('Click on a line, arc or circle.'); return; }
-        if (i < 0) { UI.setStatus('Split Entities splits lines, arcs and circles.'); return; }
-        var sp = splitSnap(f, i, uv, mx, my);
-        if (f.entities[i].t === 'circle') {
-          if (!pending || pending.i !== i) { pending = { i: i, p: sp.p }; hintNow(); draw(); return; }
-          if (dist(pending.p, sp.p) < 1e-6 * scaleOf(f.entities[i])) { UI.setStatus('Click a second, different point on the circle.'); return; }
+        if (i == null) { UI.setStatus('Click on a line, arc, circle or spline.'); return; }
+        if (i < 0) { UI.setStatus('Split Entities splits lines, arcs, circles and splines.'); return; }
+        var sp = splitSnap(f, i, uv, mx, my), ce = f.entities[i];
+        if (closedEnt(ce)) {
+          if (!pending || pending.i !== i) { pending = { i: i, p: sp.p, spl: isSpl(ce) }; hintNow(); draw(); return; }
+          if (dist(pending.p, sp.p) < 1e-6 * (isSpl(ce) ? splScale(ce) : scaleOf(ce))) { UI.setStatus('Click a second, different point on the ' + (isSpl(ce) ? 'spline.' : 'circle.')); return; }
           var p1 = pending.p; pending = null;
           doSplit(i, [p1, sp.p]);
         } else { pending = null; doSplit(i, [sp.p]); }
@@ -1049,7 +1069,7 @@
         { title: 'Split Points', fields: [{ type: 'static', label: '', value: function () { return count ? count + ' split' + (count === 1 ? '' : 's') + ' made' : 'Click on the entity to split'; } }] },
         { title: 'Options', fields: [
           { type: 'buttons', buttons: [{ label: 'Split all at intersections', onclick: function () { splitAllNow(); } }] },
-          { type: 'static', label: '', value: function () { return pre.length ? 'Splits the ' + pre.length + ' selected entit' + (pre.length === 1 ? 'y' : 'ies') + '.' : 'Splits every line, arc and circle of the sketch.'; } }] }
+          { type: 'static', label: '', value: function () { return pre.length ? 'Splits the ' + pre.length + ' selected entit' + (pre.length === 1 ? 'y' : 'ies') + '.' : 'Splits every line, arc, circle and spline of the sketch.'; } }] }
       ]
     });
     draw();

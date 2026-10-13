@@ -1378,6 +1378,215 @@
     UI.setStatus('Dynamic Mirror: click a centerline or a line to mirror about.');
   }
 
+  // ------------------------------------------------------------------ Modify Sketch (rfAP)
+  // SolidWorks: Tools ▸ Sketch Tools ▸ Modify. The whole sketch moves, turns, scales or flips with its relations and
+  // dimensions (SketchSolver.modifySketch), the way an imported DXF blank is put in place: Translate (by ΔX / ΔY, or a
+  // corner / the centre of the sketch's box onto the origin), Rotate and Scale about the sketch origin or a point, Flip
+  // left-right / upside down. Each Apply is done at once (one undo step); in the graphics area a drag moves the sketch
+  // and a Shift+drag turns it about the rotation centre. ✓ keeps what was done; ✗ puts the sketch back as it was.
+  function cmdModifySketch() {
+    var f = sketch();
+    if (!f) return;
+    if (!f.entities.length) { UI.toast('The sketch is empty: there is nothing to modify.'); return; }
+    var start = JSON.stringify({ e: f.entities, r: f.rels || null, d: f.dims || null }), applied = 0, undo0 = App.undo.length;
+    var v = { dx: 0, dy: 0, angle: 90, factor: 1, about: 'origin', cx: 0, cy: 0 };
+    function centre() { return v.about === 'point' ? [+v.cx || 0, +v.cy || 0] : [0, 0]; }
+    function run(op, what) {
+      var r = step(function () { return S.modifySketch(f, op); }, true);
+      if (!r.ok) { UI.toast(r.error); return false; }
+      applied++;
+      clearPreview(); changed();
+      var msg = what + (r.dropped ? ' (' + r.dropped + ' relation' + (r.dropped === 1 ? '' : 's') + ' to the origin or Fixed deleted: they would hold it where it was)' : '') + '.';
+      UI.setStatus(msg); spec.message = msg; UI.renderPM();
+      return true;
+    }
+    function box() { return S.sketchBox(f) || { x0: 0, y0: 0, x1: 0, y1: 0 }; }
+    var spec = {
+      title: 'Modify Sketch', icon: 'moveEnt', values: v,
+      message: 'Moves, turns, scales or flips the whole sketch with its relations. Drag in the graphics area to move it; Shift+drag turns it about the rotation centre.',
+      command: { onSketchDrag: dragHook },
+      groups: [
+        { title: 'Translate', fields: [
+          { type: 'number', label: 'ΔX', key: 'dx', unit: 'u' }, { type: 'number', label: 'ΔY', key: 'dy', unit: 'u' },
+          { type: 'buttons', buttons: [{ label: 'Apply', onclick: function () { run({ dx: +v.dx || 0, dy: +v.dy || 0 }, 'Moved the sketch by (' + UI.fmtDim(+v.dx || 0) + ', ' + UI.fmtDim(+v.dy || 0) + ')'); } }] },
+          { type: 'buttons', buttons: [
+            { label: 'Lower-left to origin', onclick: function () { var b = box(); run({ dx: -b.x0, dy: -b.y0 }, 'The lower-left corner of the sketch is on the origin'); } },
+            { label: 'Center on origin', onclick: function () { var b = box(); run({ dx: -(b.x0 + b.x1) / 2, dy: -(b.y0 + b.y1) / 2 }, 'The sketch is centred on the origin'); } }] }
+        ] },
+        { title: 'Rotate / Scale About', fields: [
+          { type: 'radio', key: 'about', options: [['origin', 'Sketch origin'], ['point', 'Point (X, Y)']], rerender: true },
+          { type: 'number', label: 'X', key: 'cx', unit: 'u', show: function (x) { return x.about === 'point'; } },
+          { type: 'number', label: 'Y', key: 'cy', unit: 'u', show: function (x) { return x.about === 'point'; } }
+        ] },
+        { title: 'Rotate', fields: [
+          { type: 'number', label: 'Angle', key: 'angle', unit: '°' },
+          { type: 'buttons', buttons: [{ label: 'Apply', onclick: function () { var c = centre(); run({ rot: +v.angle || 0, cx: c[0], cy: c[1] }, 'Rotated the sketch ' + (+v.angle || 0) + '°'); } }] }
+        ] },
+        { title: 'Scale', fields: [
+          { type: 'number', label: 'Factor', key: 'factor', min: 0, spin: 0.1 },
+          { type: 'buttons', buttons: [{ label: 'Apply', onclick: function () { var c = centre(); run({ s: +v.factor, cx: c[0], cy: c[1] }, 'Scaled the sketch × ' + (+v.factor)); } }] }
+        ] },
+        { title: 'Flip', fields: [
+          { type: 'buttons', buttons: [
+            { label: 'Flip Horizontal', onclick: function () { var c = centre(); run({ flip: 'h', cx: c[0], cy: c[1] }, 'Flipped the sketch left to right'); } },
+            { label: 'Flip Vertical', onclick: function () { var c = centre(); run({ flip: 'v', cx: c[0], cy: c[1] }, 'Flipped the sketch upside down'); } }] }
+        ] }
+      ],
+      onOK: function () { clearPreview(); return true; },
+      onCancel: function () {
+        clearPreview();
+        if (!applied) return;
+        var s = JSON.parse(start);
+        f.entities = s.e; if (s.r) f.rels = s.r; else delete f.rels; if (s.d) f.dims = s.d; else delete f.dims;
+        App.undo.length = Math.min(App.undo.length, undo0);
+        changed();
+        UI.setStatus('Modify Sketch cancelled: the sketch is where it was.');
+      },
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); }
+    };
+    // a drag in the graphics area: the sketch follows the mouse (Shift: turns about the rotation centre), done on release
+    function dragHook(p, ev) {
+      var uv0 = toUV(p[0], p[1]), rotate = !!(ev && ev.shiftKey), op = null;
+      if (!uv0) return null;
+      function opAt(q) {
+        var uv = toUV(q[0], q[1]);
+        if (!uv) return null;
+        if (!rotate) return { dx: uv[0] - uv0[0], dy: uv[1] - uv0[1] };
+        var c = centre(), a0 = Math.atan2(uv0[1] - c[1], uv0[0] - c[0]), a1 = Math.atan2(uv[1] - c[1], uv[0] - c[0]);
+        return { rot: Math.round((a1 - a0) * 180 / Math.PI), cx: c[0], cy: c[1] };
+      }
+      return {
+        start: function () { },
+        move: function (q) {
+          op = opAt(q);
+          if (!op) return;
+          var xf = op.rot != null ? { rot: op.rot, cx: op.cx, cy: op.cy } : op, out = [];
+          f.entities.forEach(function (e) { var o = S.xfEntity(e, xf); if (o) out.push(o); });
+          App.tempEntities = out; UI.updateTemp();
+          UI.setStatus(op.rot != null ? 'Rotate ' + op.rot + '°' : 'Move (' + UI.fmtDim(op.dx) + ', ' + UI.fmtDim(op.dy) + ')');
+        },
+        end: function () {
+          clearPreview();
+          if (!op || (op.rot != null ? !op.rot : Math.hypot(op.dx, op.dy) < 1e-12)) return;
+          run(op, op.rot != null ? 'Rotated the sketch ' + op.rot + '°' : 'Moved the sketch by (' + UI.fmtDim(op.dx) + ', ' + UI.fmtDim(op.dy) + ')');
+        }
+      };
+    }
+    UI.openPM(spec);
+    UI.setStatus('Modify Sketch: set a value and Apply, or drag the sketch.');
+    return spec;
+  }
+
+  // ------------------------------------------------------------------ Segment (rfAP)
+  // SolidWorks: Tools ▸ Sketch Tools ▸ Segment. Pick a line, arc or circle; Number of instances divides it into that
+  // many equal segments with sketch points (Coincident with it), or, with Sketch segments, splits it into equal pieces.
+  function cmdSegment() {
+    var f = sketch();
+    if (!f) return;
+    var sel = selIdx(f).filter(function (i) { return /^(line|arc|circle)$/.test(f.entities[i].t); });
+    var v = { entities: sel.slice(0, 1), n: 4, kind: 'points' };
+    function preview() {
+      var e = f.entities[v.entities[0]], out = [];
+      if (e) {
+        var copy = { entities: [JSON.parse(JSON.stringify(e))] }, r = S.segmentEntity(copy, 0, v.n | 0, {});
+        if (r.ok) r.points.forEach(function (p) { out.push({ t: 'point', x: p[0], y: p[1] }); });
+      }
+      App.tempEntities = out; UI.updateTemp();
+    }
+    UI.openPM({
+      title: 'Segment', icon: 'point', values: v,
+      message: 'Select a line, arc or circle, set the number of segments, then ✓.',
+      onSelection: function () {
+        var s = selIdx(f).filter(function (i) { return /^(line|arc|circle)$/.test(f.entities[i].t); });
+        var last = s.filter(function (i) { return v.entities.indexOf(i) < 0; })[0];
+        if (last == null) last = s[0];
+        v.entities = last == null ? [] : [last];
+        UI.renderPM(); preview();
+      },
+      groups: [
+        { title: 'Segment Entity', fields: [entityBox(f, v, 'line', preview, { placeholder: 'Line, arc or circle' })] },
+        { title: 'Segment Parameters', fields: [
+          { type: 'radio', key: 'kind', options: [['points', 'Sketch points'], ['segments', 'Sketch segments']] },
+          { type: 'number', label: 'Number of instances', key: 'n', step: 1, min: 2 }] }
+      ],
+      onChange: preview,
+      okBlocked: function () { return !v.entities.length ? 'Select a line, arc or circle.' : !((v.n | 0) >= 2) ? 'Set 2 segments or more.' : ''; },
+      onOK: function () {
+        var i = v.entities[0], r = step(function () { return S.segmentEntity(f, i, v.n | 0, { split: v.kind === 'segments' }); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus('Divided into ' + (v.n | 0) + ' equal segments' + (v.kind === 'segments' ? '.' : ' with ' + r.added.length + ' sketch points.'));
+        return true;
+      },
+      onCancel: clearPreview,
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); }
+    });
+    preview();
+  }
+
+  // ------------------------------------------------------------------ Equation Driven Curve (rfAP)
+  // SolidWorks: Sketch tab ▸ Spline ▾ ▸ Equation Driven Curve. Explicit y = f(x) between x1 and x2, or Parametric
+  // x(t), y(t) between t1 and t2; the curve is a spline through points sampled along it, the equation stored on the
+  // spline (e.eq) so editing it (Properties… / this command with the curve selected) re-makes the points.
+  function cmdEquationCurve(editIndex) {
+    var f = sketch();
+    if (!f) return;
+    if (editIndex == null) { var s0 = selIdx(f).filter(function (i) { return f.entities[i].eq; }); if (s0.length) editIndex = s0[0]; }
+    var old = editIndex != null && f.entities[editIndex] && f.entities[editIndex].eq;
+    var v = old ? { kind: old.kind || 'explicit', y: old.y || '', x: old.x || '', x0: old.x0, x1: old.x1, t0: old.t0, t1: old.t1, n: old.n || 24 }
+      : { kind: 'explicit', y: '', x: '', x0: '0', x1: '1', t0: '0', t1: '1', n: 24 };
+    function eqOf() {
+      var e = { kind: v.kind, n: Math.max(2, v.n | 0) };
+      if (v.kind === 'parametric') { e.x = v.x; e.y = v.y; e.t0 = v.t0; e.t1 = v.t1; } else { e.y = v.y; e.x0 = v.x0; e.x1 = v.x1; }
+      return e;
+    }
+    function preview() {
+      var r = S.equationPoints(eqOf());
+      App.tempEntities = r.ok ? [{ t: 'spline', pts: r.pts }] : []; UI.updateTemp();
+      spec.message = r.ok ? (old ? 'Editing the curve\'s equation.' : 'The curve is a spline through ' + r.pts.length + ' points of the equation.') : r.error;
+      spec.messageOk = r.ok;
+      var m = document.querySelector('.pm-msg');
+      if (m) { m.textContent = spec.message; m.classList.toggle('ok', r.ok); }
+    }
+    var spec = {
+      title: 'Equation Driven Curve', icon: 'spline', values: v,
+      message: 'Type the equation and its range.',
+      groups: [
+        { title: 'Equation Type', fields: [{ type: 'radio', key: 'kind', options: [['explicit', 'Explicit'], ['parametric', 'Parametric']], rerender: true }] },
+        { title: 'Parameters', fields: [
+          { type: 'text', label: 'yx =', key: 'y', show: function (x) { return x.kind === 'explicit'; } },
+          { type: 'text', label: 'x1', key: 'x0', show: function (x) { return x.kind === 'explicit'; } },
+          { type: 'text', label: 'x2', key: 'x1', show: function (x) { return x.kind === 'explicit'; } },
+          { type: 'text', label: 'xt =', key: 'x', show: function (x) { return x.kind === 'parametric'; } },
+          { type: 'text', label: 'yt =', key: 'y', show: function (x) { return x.kind === 'parametric'; } },
+          { type: 'text', label: 't1', key: 't0', show: function (x) { return x.kind === 'parametric'; } },
+          { type: 'text', label: 't2', key: 't1', show: function (x) { return x.kind === 'parametric'; } },
+          { type: 'number', label: 'Points (segments)', key: 'n', step: 1, min: 2 }] }
+      ],
+      onChange: preview,
+      okBlocked: function () { var r = S.equationPoints(eqOf()); return r.ok ? '' : r.error; },
+      onOK: function () {
+        var eq = eqOf(), r = S.equationPoints(eq);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        var res = step(function () {
+          if (old) { var e = f.entities[editIndex]; e.pts = r.pts; e.eq = eq; delete e.tans; S.solve(f); return { ok: true }; }
+          f.entities.push({ t: 'spline', pts: r.pts, eq: eq });
+          return { ok: true };
+        }, true);
+        if (!res.ok) { UI.toast(res.error); return false; }
+        clearPreview(); changed();
+        UI.setStatus(old ? 'Equation Driven Curve updated.' : 'Equation Driven Curve made: a spline through ' + r.pts.length + ' points.');
+        return true;
+      },
+      onCancel: clearPreview,
+      onClose: function () { App.tempEntities = []; UI.updateTemp(); }
+    };
+    UI.openPM(spec);
+    preview();
+    return spec;
+  }
+  UI.cmdModifySketch = cmdModifySketch; UI.cmdSegment = cmdSegment; UI.cmdEquationCurve = cmdEquationCurve;
+
   UI.cmdSketchFillet = cmdSketchFillet; UI.cmdSketchChamfer = cmdSketchChamfer;
   UI.cmdOffsetEntities = cmdOffsetEntities; UI.cmdTrimEntities = cmdTrimEntities; UI.cmdExtendEntities = cmdExtendEntities;
   UI.cmdConvertEntities = cmdConvertEntities; UI.cmdIntersectionCurve = cmdIntersectionCurve; UI.cmdDynamicMirror = cmdDynamicMirror;

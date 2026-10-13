@@ -437,6 +437,25 @@
   function reattachDim(d, pr) {
     var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6, reach = size * 0.25;
     var best = null, bs = Infinity;
+    // (rfAL) a diameter / radius of an ellipse (a circle seen obliquely): the ellipse with the same centre and true
+    // radius (else the nearest with the same radius, as for circles); full for a diameter, a part arc for a radius
+    if (d.ell && (d.kind === 'dia' || d.kind === 'rad')) {
+      var els = pr.ellipses ? (pr.ellipses.visible || []).concat(pr.ellipses.hidden || []) : [];
+      els.forEach(function (c) {
+        if (d.kind === 'dia' && !(c.full || c.whole)) return;
+        var R = D.ellipseRadius(c.ax, c.ay), dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(R - d.r);
+        var da = Math.min(Math.hypot(c.ax[0] - d.ell.ax[0], c.ax[1] - d.ell.ax[1]) + Math.hypot(c.ay[0] - d.ell.ay[0], c.ay[1] - d.ell.ay[1]),
+          Math.hypot(c.ax[0] + d.ell.ax[0], c.ax[1] + d.ell.ax[1]) + Math.hypot(c.ay[0] + d.ell.ay[0], c.ay[1] + d.ell.ay[1])) / size;
+        var s = dc <= tol ? (dr <= tol ? da : 1 + Math.min(dr / size, 0.9)) : (dr <= tol && dc <= reach ? 2 + dc / reach : Infinity);
+        if (s < bs) { bs = s; best = c; }
+      });
+      if (!best) { d.dangling = true; return false; }
+      d.c = best.c.slice(); d.r = D.ellipseRadius(best.ax, best.ay); d.value = (d.kind === 'dia' ? 2 : 1) * d.r;
+      d.ell = { ax: best.ax.slice(), ay: best.ay.slice() };
+      if (d.kind === 'rad' && !best.full) { d.ell.t0 = best.t0; d.ell.t1 = best.t1; }
+      delete d.dangling;
+      return true;
+    }
     if (d.kind === 'dia') {
       (pr.circlesAll || []).forEach(function (c) {
         var dc = Math.hypot(c.c[0] - d.c[0], c.c[1] - d.c[1]), dr = Math.abs(c.r - d.r);
@@ -2046,4 +2065,548 @@
   D.addBrokenOut = addBrokenOut; D.setBrokenOut = setBrokenOut; D.clearBrokenOut = clearBrokenOut; D.brokenOutPolygon = boPolygon; D.brokenOutOf = brokenOutOf;
   D.setAreaHatch = setAreaHatch; D.hatchRegions = hatchRegions; D.hatchRegionAt = regionAt; D.AREA_PATTERNS = AREA_PATTERNS; D.interiorPoint = interiorPoint;
   _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops; _.clipLoopsConvex = clipLoopsConvex; _.circlePoly = circlePoly; _.convexHull = convexHull; _.regionOutsideRect = regionOutsideRect;
+})(Drawing, Drawing._);
+
+// ------------------------------------------------------------------ (rfAO) drawing sketch, Line Format, Relative View
+// Sketch entities on the sheet or in a view (SolidWorks: the drawing's Sketch tab): Line, Centerline, Rectangle (four
+// lines held by Coincident / Horizontal / Vertical), Circle, centre-point Arc, Spline, Point and Text, in paper units.
+// Sheet entities live on doc.sheet.sketch (so they go with their sheet), a view's on view.sketch relative to the
+// view's anchor (view.x, view.y), so they move with the view. The same lists hold the relations ({ t: 'rel', kind:
+// 'coincident' | 'H' | 'V', refs | of }) and the driving Smart Dimensions ({ t: 'dim', of, kind: 'length' | 'dia' |
+// 'rad', val, off }); solveList keeps them true after every edit (a few dozen relaxation passes: this is 2D on paper).
+// Entities carry their Line Format ({ style: solid | hidden | center | phantom, weight: thin | normal | thick | mm,
+// color: '#rrggbb' }); every output draws them on the SKETCH layer (SVG / PDF / DXF), styled through the sheet's own
+// line styles (thin / visible / thick, hidden, center, phantom), with p.lw (mm) and p.rgb kept for writers that honour
+// them. View edges take Line Format too: view.edgeFormats[key] = { hide } | { style, weight, color } (Hide / Show Edges).
+(function (D, _) {
+  'use strict';
+  var V = Kernel.vec;
+  var STYLES = ['solid', 'hidden', 'center', 'phantom'], WEIGHT_MM = { thin: 0.25, normal: 0.5, thick: 0.7 };
+  var KINDS = { line: 1, circle: 1, arc: 1, spline: 1, point: 1, text: 1 };
+  function paperK(doc) { return doc && doc.units === 'in' ? 1 / 25.4 : 1; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function shiftPts(e, dx, dy) {
+    var o = clone(e);
+    ['a', 'b', 'c', 'p'].forEach(function (k) { if (o[k]) o[k] = [o[k][0] + dx, o[k][1] + dy]; });
+    if (o.pts) o.pts = o.pts.map(function (q) { return [q[0] + dx, q[1] + dy]; });
+    return o;
+  }
+  function findV(doc, id) { for (var i = 0; i < (doc.views || []).length; i++) if (doc.views[i].id === id) return doc.views[i]; return null; }
+  // owner(doc, viewId?) -> { list, view, off }: the list a new entity goes in (made on demand)
+  function owner(doc, viewId) {
+    if (viewId == null) { if (!doc.sheet.sketch) doc.sheet.sketch = []; return { list: doc.sheet.sketch, view: null, off: [0, 0] }; }
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No view ' + viewId);
+    if (!v.sketch) v.sketch = [];
+    return { list: v.sketch, view: v, off: [v.x, v.y] };
+  }
+  function owners(doc) {
+    var out = [];
+    if (doc.sheet && doc.sheet.sketch && doc.sheet.sketch.length) out.push({ list: doc.sheet.sketch, view: null, off: [0, 0] });
+    (doc.views || []).forEach(function (v) { if (v.sketch && v.sketch.length) out.push({ list: v.sketch, view: v, off: [v.x, v.y] }); });
+    return out;
+  }
+  function locate(doc, id) {
+    var os = owners(doc);
+    for (var i = 0; i < os.length; i++) for (var j = 0; j < os[i].list.length; j++) if (os[i].list[j].id === id) return { ent: os[i].list[j], owner: os[i] };
+    return null;
+  }
+  function nextId(doc) { if (!(doc.nextSketch > 0)) doc.nextSketch = 1; return doc.nextSketch++; }
+  function fmtOf(e) { return { style: e.style || (e.cons ? 'center' : 'solid'), weight: e.weight || (e.cons ? 'thin' : 'normal'), color: e.color || null }; }
+  // lineStyle({ style, weight }) -> { style (the sheet line style a primitive is drawn with), lw (its weight, mm) }
+  function lineStyle(f) {
+    var st = f.style || 'solid', w = f.weight || 'normal', lw = typeof w === 'number' ? w : WEIGHT_MM[w] || +w || 0.5;
+    var s = st === 'hidden' ? 'hidden' : st === 'center' ? 'center' : st === 'phantom' ? (lw >= 0.6 ? 'chain' : 'tanfont') : lw <= 0.3 ? 'thin' : lw >= 0.6 ? 'thick' : 'visible';
+    return { style: s, lw: lw };
+  }
+  function checkFmt(f) {
+    if (f.style != null && STYLES.indexOf(f.style) < 0) throw new Error('Line style must be one of ' + STYLES.join(', '));
+    if (f.weight != null && !WEIGHT_MM[f.weight] && !(+f.weight > 0)) throw new Error('Line thickness must be thin, normal, thick or a width in mm');
+    if (f.color != null && f.color !== '' && !/^#[0-9a-f]{6}$/i.test(f.color)) throw new Error('Line colour must be #rrggbb');
+  }
+
+  // ---- points of an entity (its own list's coordinates); ends: line a / b, circle / arc c, arc start / end, point / text p
+  function arcPt(e, ang) { var t = ang * Math.PI / 180; return [e.c[0] + e.r * Math.cos(t), e.c[1] + e.r * Math.sin(t)]; }
+  function getPt(e, end) {
+    if (e.t === 'line') return end === 'b' ? e.b : e.a;
+    if (e.t === 'arc') return end === 'start' ? arcPt(e, e.a0) : end === 'end' ? arcPt(e, e.a1) : e.c;
+    if (e.t === 'circle') return e.c;
+    if (e.t === 'spline') return end === 'end' ? e.pts[e.pts.length - 1] : e.pts[0];
+    return e.p;
+  }
+  function setPt(e, end, q) {
+    q = [q[0], q[1]];
+    if (e.t === 'line') { if (end === 'b') e.b = q; else e.a = q; }
+    else if (e.t === 'arc' && (end === 'start' || end === 'end')) {
+      var ang = Math.atan2(q[1] - e.c[1], q[0] - e.c[0]) * 180 / Math.PI;
+      if (end === 'start') e.a0 = ang; else e.a1 = ang;
+      while (e.a1 <= e.a0) e.a1 += 360;
+      while (e.a1 - e.a0 > 360) e.a1 -= 360;
+    } else if (e.t === 'arc' || e.t === 'circle') e.c = q;
+    else if (e.t === 'spline') { if (end === 'end') e.pts[e.pts.length - 1] = q; else e.pts[0] = q; }
+    else e.p = q;
+  }
+  function endsOf(e) {
+    return e.t === 'line' ? ['a', 'b'] : e.t === 'arc' ? ['c', 'start', 'end'] : e.t === 'circle' ? ['c'] : e.t === 'spline' ? ['start', 'end'] : e.t === 'point' || e.t === 'text' ? ['p'] : [];
+  }
+  // solveList(list, scale, fixed): the relations and driving dimensions of one list made true; fixed { 'id:end': 1 }
+  // ('id:*' the whole entity, 'id:r' its radius) stay put (what the mouse holds). Coincident points move together,
+  // H / V level a line, a length moves the free end, a diameter / radius sets the circle.
+  function solveList(list, scale, fixed) {
+    fixed = fixed || {};
+    var by = {};
+    list.forEach(function (e) { by[e.id] = e; });
+    function fx(id, end) { return !!(fixed[id + ':' + end] || fixed[id + ':*']); }
+    for (var it = 0; it < 80; it++) {
+      var err = 0;
+      list.forEach(function (r) {
+        if (r.t === 'rel' && r.kind === 'coincident') {
+          var A = r.refs[0], B = r.refs[1], ea = by[A.id], eb = by[B.id];
+          if (!ea || !eb) return;
+          var pa = getPt(ea, A.end), pb = getPt(eb, B.end), d = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]);
+          if (d < 1e-12) return;
+          var fa = fx(A.id, A.end) || ea.t === 'arc' && A.end !== 'c', fb = fx(B.id, B.end) || eb.t === 'arc' && B.end !== 'c';
+          if (fa && fb) {
+            // an arc's end is where its angle puts it: it turns to meet a point that is held
+            if (ea.t === 'arc' && A.end !== 'c' && !fx(A.id, A.end)) setPt(ea, A.end, pb);
+            else if (eb.t === 'arc' && B.end !== 'c' && !fx(B.id, B.end)) setPt(eb, B.end, pa);
+            return;
+          }
+          var m = fa ? pa : fb ? pb : [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+          if (!fa) setPt(ea, A.end, m);
+          if (!fb) setPt(eb, B.end, m);
+          err = Math.max(err, d);
+        } else if (r.t === 'rel' && (r.kind === 'H' || r.kind === 'V')) {
+          var e = by[r.of];
+          if (!e || e.t !== 'line') return;
+          var ax = r.kind === 'H' ? 1 : 0, dd = Math.abs(e.a[ax] - e.b[ax]);
+          if (dd < 1e-12) return;
+          var fA = fx(e.id, 'a'), fB = fx(e.id, 'b');
+          if (fA && fB) return;
+          var val = fA ? e.a[ax] : fB ? e.b[ax] : (e.a[ax] + e.b[ax]) / 2;
+          e.a = e.a.slice(); e.b = e.b.slice(); e.a[ax] = val; e.b[ax] = val;
+          err = Math.max(err, dd);
+        } else if (r.t === 'dim' && r.val > 0) {
+          var g = by[r.of], L = r.val * scale;
+          if (!g) return;
+          if (r.kind === 'length' && g.t === 'line') {
+            var dx = g.b[0] - g.a[0], dy = g.b[1] - g.a[1], cur = Math.hypot(dx, dy);
+            if (cur < 1e-12 || Math.abs(cur - L) < 1e-12) return;
+            var ux = dx / cur, uy = dy / cur;
+            if (!fx(g.id, 'b')) g.b = [g.a[0] + ux * L, g.a[1] + uy * L];
+            else if (!fx(g.id, 'a')) g.a = [g.b[0] - ux * L, g.b[1] - uy * L];
+            else return;
+            err = Math.max(err, Math.abs(cur - L));
+          } else if ((g.t === 'circle' || g.t === 'arc') && !fx(g.id, 'r')) {
+            var R = r.kind === 'dia' ? L / 2 : L;
+            if (Math.abs(g.r - R) > 1e-12) { err = Math.max(err, Math.abs(g.r - R)); g.r = R; }
+          }
+        }
+      });
+      if (err < 1e-10) break;
+    }
+  }
+  function ownerScale(doc, o) { return o.view ? _.viewScale(doc, o.view) : 1; }
+  function solveSketch(doc, fixed) { owners(doc).forEach(function (o) { solveList(o.list, ownerScale(doc, o), fixed); }); }
+
+  // ---- API (sheet coordinates in and out)
+  // addSketchEntity(doc, { t, a, b | c, r, a0, a1 | pts | p, text, h, cons, style, weight, color, rel }, viewId?) -> entity
+  function addSketchEntity(doc, spec, viewId) {
+    if (!spec || !KINDS[spec.t]) throw new Error('Sketch entity type must be one of ' + Object.keys(KINDS).join(', '));
+    checkFmt(spec);
+    var o = owner(doc, viewId), e = shiftPts(spec, -o.off[0], -o.off[1]);
+    delete e.view; delete e.rel;
+    if (e.t === 'line' && (!e.a || !e.b)) throw new Error('A line needs a and b');
+    if ((e.t === 'circle' || e.t === 'arc') && !(+e.r > 0)) throw new Error('A circle or arc needs a radius above 0');
+    if (e.t === 'spline' && !(e.pts && e.pts.length >= 2)) throw new Error('A spline needs at least two points');
+    if ((e.t === 'point' || e.t === 'text') && !e.p) throw new Error('A point or text needs p');
+    if (e.t === 'text') { e.text = String(e.text == null ? '' : e.text); if (!(+e.h > 0)) e.h = 3.5 * paperK(doc); }
+    if (e.t === 'arc') { e.a0 = +e.a0 || 0; e.a1 = +e.a1 || 0; while (e.a1 <= e.a0) e.a1 += 360; }
+    e.id = nextId(doc);
+    o.list.push(e);
+    if (e.t === 'line' && (spec.rel === 'H' || spec.rel === 'V')) addSketchRelation(doc, spec.rel, e.id);
+    return sketchEntity(doc, e.id);
+  }
+  // addSketchRect(doc, a, b, viewId?, fmt?) -> [line ids]: four lines, corners Coincident, two Horizontal, two Vertical
+  function addSketchRect(doc, a, b, viewId, fmt) {
+    var c = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]], ids = [];
+    for (var i = 0; i < 4; i++) ids.push(addSketchEntity(doc, Object.assign({ t: 'line', a: c[i], b: c[(i + 1) % 4] }, fmt || {}), viewId).id);
+    for (var j = 0; j < 4; j++) addSketchRelation(doc, 'coincident', [{ id: ids[j], end: 'b' }, { id: ids[(j + 1) % 4], end: 'a' }]);
+    addSketchRelation(doc, 'H', ids[0]); addSketchRelation(doc, 'V', ids[1]); addSketchRelation(doc, 'H', ids[2]); addSketchRelation(doc, 'V', ids[3]);
+    return ids;
+  }
+  // sketchEntity(doc, id) -> a copy in sheet coordinates with .view (the owning view id or null)
+  function sketchEntity(doc, id) {
+    var f = locate(doc, id);
+    if (!f) return null;
+    var e = shiftPts(f.ent, f.owner.off[0], f.owner.off[1]);
+    e.view = f.owner.view ? f.owner.view.id : null;
+    return e;
+  }
+  // sketchEntities(doc, viewId?) -> every entity / relation / dimension of the active sheet (sheet coordinates);
+  // viewId null: the sheet's own, a number: that view's
+  function sketchEntities(doc, viewId) {
+    var out = [];
+    owners(doc).forEach(function (o) {
+      if (viewId !== undefined && (o.view ? o.view.id : null) !== viewId) return;
+      o.list.forEach(function (e) { var c = shiftPts(e, o.off[0], o.off[1]); c.view = o.view ? o.view.id : null; out.push(c); });
+    });
+    return out;
+  }
+  // editSketchEntity(doc, id, patch (sheet coordinates), fixed?) -> entity: points / radius / text / format changed,
+  // then the relations; the patched points stay where they are put
+  function editSketchEntity(doc, id, patch, fixed) {
+    var f = locate(doc, id);
+    if (!f) throw new Error('No sketch entity ' + id);
+    checkFmt(patch);
+    var e = f.ent, p = shiftPts(patch, -f.owner.off[0], -f.owner.off[1]), fix = Object.assign({}, fixed || {});
+    Object.keys(p).forEach(function (k) {
+      if (k === 'id' || k === 't' || k === 'view') return;
+      if (p[k] === null) delete e[k]; else e[k] = p[k];
+      if (k === 'a' || k === 'b' || k === 'p' || k === 'c' || k === 'r') fix[id + ':' + k] = 1;
+      if (k === 'pts') fix[id + ':*'] = 1;
+    });
+    if (e.t === 'arc') while (e.a1 <= e.a0) e.a1 += 360;
+    // a dimension that drives a changed size takes the new value
+    f.owner.list.forEach(function (d) {
+      if (d.t !== 'dim' || d.of !== id) return;
+      if (patch.r != null && d.kind !== 'length') d.val = (d.kind === 'dia' ? 2 : 1) * e.r / ownerScale(doc, f.owner);
+      if ((patch.a || patch.b) && d.kind === 'length') d.val = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) / ownerScale(doc, f.owner);
+    });
+    solveList(f.owner.list, ownerScale(doc, f.owner), fix);
+    return sketchEntity(doc, id);
+  }
+  // moveSketchEntity(doc, id, dx, dy, end?) -> entity: the whole entity (or one end of it, or a dimension's text) moved;
+  // what is Coincident with it follows, H / V hold
+  function moveSketchEntity(doc, id, dx, dy, end) {
+    var f = locate(doc, id);
+    if (!f) throw new Error('No sketch entity ' + id);
+    var e = f.ent, fix = {};
+    if (e.t === 'dim') { e.off = [(e.off || [0, 0])[0] + dx, (e.off || [0, 0])[1] + dy]; return sketchEntity(doc, id); }
+    if (e.t === 'rel') return sketchEntity(doc, id);
+    if (end) { var q = getPt(e, end); setPt(e, end, [q[0] + dx, q[1] + dy]); fix[id + ':' + end] = 1; }
+    else {
+      var m = shiftPts(e, dx, dy);
+      ['a', 'b', 'c', 'p', 'pts'].forEach(function (k) { if (m[k]) e[k] = m[k]; });
+      fix[id + ':*'] = 1;
+    }
+    solveList(f.owner.list, ownerScale(doc, f.owner), fix);
+    return sketchEntity(doc, id);
+  }
+  // deleteSketchEntity(doc, id): the entity (or relation / dimension), and the relations and dimensions that name it
+  function deleteSketchEntity(doc, id) {
+    var f = locate(doc, id);
+    if (!f) throw new Error('No sketch entity ' + id);
+    var l = f.owner.list, gone = {}; gone[id] = 1;
+    for (var i = l.length - 1; i >= 0; i--) {
+      var e = l[i];
+      if (gone[e.id] || e.t === 'dim' && gone[e.of] || e.t === 'rel' && (gone[e.of] || (e.refs || []).some(function (r) { return gone[r.id]; }))) l.splice(i, 1);
+    }
+  }
+  // addSketchRelation(doc, 'H' | 'V', lineId) | (doc, 'coincident', [{ id, end }, { id, end }]) -> relation
+  function addSketchRelation(doc, kind, refs) {
+    var r;
+    if (kind === 'H' || kind === 'V') {
+      var f = locate(doc, refs);
+      if (!f || f.ent.t !== 'line') throw new Error((kind === 'H' ? 'Horizontal' : 'Vertical') + ' needs a sketch line');
+      for (var i = f.owner.list.length - 1; i >= 0; i--) { var x = f.owner.list[i]; if (x.t === 'rel' && (x.kind === 'H' || x.kind === 'V') && x.of === refs) f.owner.list.splice(i, 1); }
+      r = { id: nextId(doc), t: 'rel', kind: kind, of: refs };
+      f.owner.list.push(r);
+      solveList(f.owner.list, ownerScale(doc, f.owner), {});
+      return clone(r);
+    }
+    if (kind === 'coincident') {
+      if (!refs || refs.length !== 2) throw new Error('Coincident needs two points');
+      var A = locate(doc, refs[0].id), B = locate(doc, refs[1].id);
+      if (!A || !B) throw new Error('Coincident: no such sketch entity');
+      if (A.owner.list !== B.owner.list) throw new Error('Coincident: both points must be in the same sketch (the sheet or one view)');
+      if (endsOf(A.ent).indexOf(refs[0].end) < 0 || endsOf(B.ent).indexOf(refs[1].end) < 0) throw new Error('Coincident: no such point on the entity');
+      r = { id: nextId(doc), t: 'rel', kind: 'coincident', refs: [{ id: refs[0].id, end: refs[0].end }, { id: refs[1].id, end: refs[1].end }] };
+      A.owner.list.push(r);
+      var fx = {}; fx[refs[0].id + ':' + refs[0].end] = 1;
+      solveList(A.owner.list, ownerScale(doc, A.owner), fx);
+      return clone(r);
+    }
+    throw new Error('Relation must be H, V or coincident');
+  }
+  // sketchRelations(doc, id) -> the relations naming entity id
+  function relationsOf(doc, id) {
+    var f = locate(doc, id);
+    if (!f) return [];
+    return f.owner.list.filter(function (r) { return r.t === 'rel' && (r.of === id || (r.refs || []).some(function (q) { return q.id === id; })); }).map(clone);
+  }
+  // addSketchDim(doc, entityId, { off?, val? }) -> dimension: the length of a line, a circle's diameter, an arc's
+  // radius; driving (setSketchDim changes the entity). In a view the value reads in model units (paper ÷ view scale).
+  function addSketchDim(doc, id, opts) {
+    opts = opts || {};
+    var f = locate(doc, id);
+    if (!f) throw new Error('No sketch entity ' + id);
+    var e = f.ent, kind = e.t === 'line' ? 'length' : e.t === 'circle' ? 'dia' : e.t === 'arc' ? 'rad' : null;
+    if (!kind) throw new Error('Smart Dimension on a sketch takes a line, a circle or an arc');
+    var s = ownerScale(doc, f.owner), k = paperK(doc), cur = kind === 'length' ? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) : kind === 'dia' ? 2 * e.r : e.r;
+    var off = opts.off;
+    if (!off) {
+      if (kind === 'length') {
+        var L = cur || 1, nx = -(e.b[1] - e.a[1]) / L, ny = (e.b[0] - e.a[0]) / L;
+        if (ny < -1e-9 || (Math.abs(ny) < 1e-9 && nx > 0)) { nx = -nx; ny = -ny; }
+        off = [nx * 10 * k, ny * 10 * k];
+      } else off = [e.r * 0.8 + 8 * k, e.r * 0.8 + 8 * k];
+    }
+    var d = { id: nextId(doc), t: 'dim', of: id, kind: kind, val: opts.val > 0 ? +opts.val : cur / s, off: [off[0], off[1]] };
+    f.owner.list.push(d);
+    var fx = {}; fx[id + (kind === 'length' ? ':a' : ':c')] = 1;
+    solveList(f.owner.list, s, fx);
+    return clone(d);
+  }
+  function setSketchDim(doc, dimId, val) {
+    var f = locate(doc, dimId);
+    if (!f || f.ent.t !== 'dim') throw new Error('No sketch dimension ' + dimId);
+    if (!(+val > 0)) throw new Error('A dimension must be above 0');
+    f.ent.val = +val;
+    var fx = {};
+    fx[f.ent.of + (f.ent.kind === 'length' ? ':a' : ':c')] = 1;
+    solveList(f.owner.list, ownerScale(doc, f.owner), fx);
+    return clone(f.ent);
+  }
+  // setLineFormat(doc, ids, { style, weight, color }) -> how many took it: Line Format for sketch entities (null clears)
+  function setLineFormat(doc, ids, fmt) {
+    checkFmt(fmt);
+    var n = 0;
+    (Array.isArray(ids) ? ids : [ids]).forEach(function (id) {
+      var f = locate(doc, id);
+      if (!f || f.ent.t === 'rel' || f.ent.t === 'dim') return;
+      ['style', 'weight', 'color'].forEach(function (q) { if (fmt[q] === null || fmt[q] === '') delete f.ent[q]; else if (fmt[q] !== undefined) f.ent[q] = fmt[q]; });
+      n++;
+    });
+    return n;
+  }
+
+  // ---- what the sheet draws, in sheet coordinates
+  function splinePts(pts) {
+    if (pts.length < 3) return pts.slice();
+    var out = [pts[0]], n = 12;
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      for (var j = 1; j <= n; j++) {
+        var t = j / n, t2 = t * t, t3 = t2 * t, q = [];
+        for (var c = 0; c < 2; c++) q.push(0.5 * (2 * p1[c] + (-p0[c] + p2[c]) * t + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * t3));
+        out.push(q);
+      }
+    }
+    return out;
+  }
+  // dimGeom(doc, d, e (sheet coordinates), scale) -> { text, tp (text point), lines, arrows: [[tip, dir]], box }
+  function dimGeom(doc, d, e) {
+    var k = paperK(doc), G = D.dimGeometry ? D.dimGeometry(doc) : { text: 3.5, arrow: 3, arrowW: 1, gap: 1.5, ext: 3 };
+    var th = G.text * k, gap = G.gap * k, ext = G.ext * k, prev = _.DIMSTYLE, txt, CAP = _.CAP_EM || 0.72;
+    _.DIMSTYLE = D.dimStyle ? D.dimStyle(doc) : prev;
+    try { txt = D.fmtDim ? D.fmtDim(d.val, doc.units === 'in' ? 'in' : 'mm') : String(Math.round(d.val * 1000) / 1000); } finally { _.DIMSTYLE = prev; }
+    var lines = [], arrows = [], tp;
+    if (d.kind === 'length' && e.t === 'line') {
+      var dx = e.b[0] - e.a[0], dy = e.b[1] - e.a[1], L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, nx = -uy, ny = ux;
+      var mid = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2], o = d.off[0] * nx + d.off[1] * ny, sg = o < 0 ? -1 : 1;
+      var A = [e.a[0] + nx * o, e.a[1] + ny * o], B = [e.b[0] + nx * o, e.b[1] + ny * o];
+      lines.push([[e.a[0] + nx * gap * sg, e.a[1] + ny * gap * sg], [A[0] + nx * ext * sg, A[1] + ny * ext * sg]]);
+      lines.push([[e.b[0] + nx * gap * sg, e.b[1] + ny * gap * sg], [B[0] + nx * ext * sg, B[1] + ny * ext * sg]]);
+      lines.push([A, B]);
+      arrows.push([A, [-ux, -uy]], [B, [ux, uy]]);
+      var along = d.off[0] * ux + d.off[1] * uy;
+      tp = [mid[0] + nx * o + ux * along, mid[1] + ny * o + uy * along];
+    } else {
+      var c = e.c, r = e.r, dl = Math.hypot(d.off[0], d.off[1]) || 1, wx = d.off[0] / dl, wy = d.off[1] / dl;
+      var tip = [c[0] + wx * r, c[1] + wy * r];
+      tp = [c[0] + d.off[0], c[1] + d.off[1]];
+      lines.push([tip, tp]);
+      arrows.push([tip, [-wx, -wy]]);
+      if (d.kind === 'dia') { var far = [c[0] - wx * r, c[1] - wy * r]; lines.push([far, tip]); arrows.push([far, [wx, wy]]); }
+      txt = (d.kind === 'dia' ? 'Ø' : 'R') + txt;
+    }
+    var hcap = th * CAP, tw = String(txt).length * hcap * 0.78;
+    var box = { x0: tp[0] - tw / 2 - gap, x1: tp[0] + tw / 2 + gap, y0: tp[1], y1: tp[1] + hcap + 1.5 * gap };
+    return { text: txt, tp: tp, th: th, lines: lines, arrows: arrows, box: box, arrowLen: G.arrow * k, arrowW: G.arrowW * k, gap: gap };
+  }
+  // sketchItems(doc) -> [{ id, t, view, e (sheet coordinates), of?, dim? }]: what the sheet draws and the app picks
+  function sketchItems(doc) {
+    var out = [];
+    owners(doc).forEach(function (o) {
+      var byId = {};
+      o.list.forEach(function (e) { byId[e.id] = e; });
+      o.list.forEach(function (e) {
+        if (e.t === 'rel') return;
+        var c = shiftPts(e, o.off[0], o.off[1]), it = { id: e.id, t: e.t, view: o.view ? o.view.id : null, e: c };
+        if (e.t === 'dim') { var g = byId[e.of]; if (!g) return; it.of = shiftPts(g, o.off[0], o.off[1]); it.dim = dimGeom(doc, e, it.of); }
+        out.push(it);
+      });
+    });
+    return out;
+  }
+  // sketchPrims(doc, sheet): the sketch on the sheet's SKETCH layer (after the views and annotations); sheet.sketch
+  // lists [{ id, t, view, from, to }] (the primitives each entity drew)
+  function sketchPrims(doc, sheet) {
+    if (!sheet || !sheet.prims || !doc.sheet) return sheet;
+    var k = paperK(doc), CAP = _.CAP_EM || 0.72, items = sketchItems(doc);
+    sheet.sketch = [];
+    items.forEach(function (it) {
+      var e = it.e, ls = lineStyle(fmtOf(e)), n0 = sheet.prims.length;
+      function P(q) { q.layer = 'SKETCH'; if (!q.style) { q.style = ls.style; q.lw = ls.lw; if (e.color) q.rgb = e.color; } q.sk = it.id; if (it.view != null) q.view = it.view; sheet.prims.push(q); }
+      if (e.t === 'line') P({ k: 'line', a: e.a, b: e.b });
+      else if (e.t === 'circle') P({ k: 'circle', c: e.c, r: e.r });
+      else if (e.t === 'arc') P({ k: 'arc', c: e.c, r: e.r, a0: e.a0, a1: e.a1 });
+      else if (e.t === 'spline') { var sp = splinePts(e.pts), cid = 'sk' + it.id; for (var i = 1; i < sp.length; i++) P({ k: 'line', a: sp[i - 1], b: sp[i], chain: cid }); }
+      else if (e.t === 'point') { var pr = 0.6 * k, pts = []; for (var j = 0; j < 12; j++) pts.push([e.p[0] + pr * Math.cos(j * Math.PI / 6), e.p[1] + pr * Math.sin(j * Math.PI / 6)]); P({ k: 'fill', pts: pts, style: 'thin' }); }
+      else if (e.t === 'text') String(e.text).split(/\r?\n/).forEach(function (s, li) { if (s) P({ k: 'text', p: [e.p[0], e.p[1] - li * e.h * 1.5], h: e.h * CAP, text: s, anchor: 'start', rot: e.rot || 0, style: 'thin' }); });
+      else if (e.t === 'dim') {
+        var g = it.dim;
+        g.lines.forEach(function (l) { P({ k: 'line', a: l[0], b: l[1], style: 'thin' }); });
+        g.arrows.forEach(function (a) {
+          var t = a[0], dx = a[1][0], dy = a[1][1], bx = t[0] - dx * g.arrowLen, by = t[1] - dy * g.arrowLen, w = g.arrowW / 2;
+          P({ k: 'fill', pts: [t, [bx - dy * w, by + dx * w], [bx + dy * w, by - dx * w]], style: 'thin' });
+        });
+        P({ k: 'text', p: [g.tp[0], g.tp[1] + g.gap], h: g.th * CAP, text: g.text, anchor: 'middle', rot: 0, style: 'thin' });
+      }
+      if (sheet.prims.length > n0) sheet.sketch.push({ id: it.id, t: it.t, view: it.view, from: n0, to: sheet.prims.length });
+    });
+    if (!sheet.sketch.length) delete sheet.sketch;
+    return sheet;
+  }
+
+  // ---- Line Format and Hide / Show Edges on view edges. An edge's key is its geometry in the view's own (model)
+  // frame, so it holds across rebuilds that leave that edge where it is.
+  function r4(x) { return Math.round(x * 1e4) / 1e4; }
+  // edgeKey(entity) -> 'L…' | 'C…' | 'A…' for an edge the drawing picks (a line { la, lb }, a circle { mc }, an arc { ma })
+  function edgeKey(ent) {
+    if (ent.la && ent.lb) {
+      var p = [r4(ent.la[0]), r4(ent.la[1])], q = [r4(ent.lb[0]), r4(ent.lb[1])];
+      if (p[0] > q[0] || p[0] === q[0] && p[1] > q[1]) { var t = p; p = q; q = t; }
+      return 'L' + p.join(',') + ',' + q.join(',');
+    }
+    if (ent.mc) return 'C' + [r4(ent.mc.c[0]), r4(ent.mc.c[1]), r4(ent.mc.r)].join(',');
+    if (ent.ma) return 'A' + [r4(ent.ma.c[0]), r4(ent.ma.c[1]), r4(ent.ma.r)].join(',');
+    throw new Error('Edge keys take a line, a circle or an arc of a view');
+  }
+  function parseKey(key) {
+    var kd = String(key).charAt(0), n = String(key).slice(1).split(',').map(Number);
+    if (!/^[LCA]$/.test(kd) || n.some(function (x) { return !isFinite(x); }) || n.length !== (kd === 'L' ? 4 : 3)) throw new Error('Bad edge key ' + key);
+    return { kind: kd, n: n };
+  }
+  // setEdgeFormat(doc, viewId, key, { hide, style, weight, color } | null) -> the view's edge formats (null clears the edge)
+  function setEdgeFormat(doc, viewId, key, fmt) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No view ' + viewId);
+    parseKey(key);
+    if (fmt) checkFmt(fmt);
+    if (!v.edgeFormats) v.edgeFormats = {};
+    if (!fmt) delete v.edgeFormats[key];
+    else {
+      var cur = Object.assign({}, v.edgeFormats[key] || {});
+      Object.keys(fmt).forEach(function (q) { if (fmt[q] == null || fmt[q] === '' || fmt[q] === false) delete cur[q]; else cur[q] = fmt[q]; });
+      if (Object.keys(cur).length) v.edgeFormats[key] = cur; else delete v.edgeFormats[key];
+    }
+    if (!Object.keys(v.edgeFormats).length) delete v.edgeFormats;
+    return v.edgeFormats ? clone(v.edgeFormats) : {};
+  }
+  function hideEdge(doc, viewId, key, hide) { return setEdgeFormat(doc, viewId, key, { hide: hide !== false }); }
+  // showEdges(doc, viewId): every hidden edge of the view shows again (other Line Format overrides stay)
+  function showEdges(doc, viewId) {
+    var v = findV(doc, viewId);
+    if (!v) throw new Error('No view ' + viewId);
+    Object.keys(v.edgeFormats || {}).forEach(function (q) { setEdgeFormat(doc, viewId, q, { hide: null }); });
+  }
+  function hiddenEdges(doc, viewId) { var v = findV(doc, viewId), out = []; Object.keys(v && v.edgeFormats || {}).forEach(function (q) { if (v.edgeFormats[q].hide) out.push(q); }); return out; }
+  function onSeg(p, a, b, tol) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy, t = L ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L : 0;
+    if (t < -1e-6 || t > 1 + 1e-6) return false;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy) <= tol;
+  }
+  // (a hidden edge leaves the sheet; a styled one is drawn in its Line Format; sheet.hiddenEdges lists what was hidden
+  // so Hide / Show Edges can show it greyed)
+  function applyEdgeFormats(doc, sheet) {
+    if (!sheet || !sheet.prims || !sheet.views) return;
+    sheet.views.forEach(function (w) {
+      var F = w.view.edgeFormats;
+      if (!F || !w.toSheet || w.pending) return;
+      var drop = {}, tol = 2e-4 * Math.max(1, w.scale || 1) + 1e-6;
+      Object.keys(F).forEach(function (key) {
+        var f = F[key], K, match;
+        try { K = parseKey(key); } catch (err) { return; }
+        if (K.kind === 'L') { var a = w.toSheet([K.n[0], K.n[1]]), b = w.toSheet([K.n[2], K.n[3]]); match = function (p) { return p.k === 'line' && onSeg(p.a, a, b, tol) && onSeg(p.b, a, b, tol); }; }
+        else { var c = w.toSheet([K.n[0], K.n[1]]), r = K.n[2] * w.scale, tk = K.kind === 'C' ? 'circle' : 'arc'; match = function (p) { return p.k === tk && Math.hypot(p.c[0] - c[0], p.c[1] - c[1]) <= tol + 1e-4 * r && Math.abs(p.r - r) <= tol + 1e-4 * r; }; }
+        sheet.prims.forEach(function (p, i) {
+          if (p.layer !== w.layer || p.style === 'hatch' || !match(p)) return;
+          if (f.hide) { drop[i] = 1; (sheet.hiddenEdges || (sheet.hiddenEdges = [])).push({ view: w.view.id, key: key, prim: p }); return; }
+          if (f.style || f.weight) { var ls = lineStyle({ style: f.style || (p.style === 'hidden' ? 'hidden' : 'solid'), weight: f.weight || 'normal' }); p.style = ls.style; p.lw = ls.lw; delete p.chain; }
+          if (f.color) p.rgb = f.color;
+          p.edgeKey = key;
+        });
+      });
+      if (Object.keys(drop).length) sheet.prims = sheet.prims.filter(function (p, i) { return !drop[i]; });
+    });
+  }
+  var baseMarks = _.viewKindMarks;
+  _.viewKindMarks = function (doc, sheet) {
+    applyEdgeFormats(doc, sheet);
+    var r = baseMarks.apply(this, arguments);
+    sketchPrims(doc, sheet);
+    return r;
+  };
+
+  // ---- Relative View: the first face looks at the viewer (Front), the second face points to the sheet's Right (or
+  // Left / Top / Bottom), as SolidWorks' Relative View PropertyManager
+  var SECOND = { Right: 1, Left: 1, Top: 1, Bottom: 1 };
+  function relativeFrame(n1, n2, second) {
+    second = second || 'Right';
+    if (!SECOND[second]) throw new Error('Relative View: the second face is Right, Left, Top or Bottom');
+    var e = V.norm(n1), t = V.sub(n2, V.scale(e, V.dot(n2, e)));
+    if (V.len(t) < 1e-6) throw new Error('Relative View: the two faces are parallel; pick a second face at an angle to the first');
+    t = V.norm(t);
+    var u, v;
+    if (second === 'Right' || second === 'Left') { u = second === 'Left' ? V.scale(t, -1) : t; v = V.cross(e, u); }
+    else { v = second === 'Bottom' ? V.scale(t, -1) : t; u = V.cross(v, e); }
+    var F = { e: e, u: u, v: v };
+    F.name = D.frameOf(F).name;
+    if (F.name === 'Projected') F.name = 'Relative';
+    return F;
+  }
+  // faceAt(mesh, F, [u, v]) -> the index (mesh.faces) of the face nearest the viewer under (u, v) of frame F, or -1
+  function faceAt(mesh, F, uv) {
+    var P = mesh.positions64 || mesh.positions, best = -1, bd = -Infinity;
+    (mesh.faces || []).forEach(function (f, fi) {
+      if (V.dot(f.normal, F.e) <= 1e-9) return;
+      for (var t = f.start; t < f.start + f.count; t++) {
+        var q = [], i = t * 9;
+        for (var j = 0; j < 3; j++) { var p = [P[i + 3 * j], P[i + 3 * j + 1], P[i + 3 * j + 2]]; q.push([V.dot(p, F.u), V.dot(p, F.v), V.dot(p, F.e)]); }
+        var d0 = (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[2][0] - q[0][0]) * (q[1][1] - q[0][1]);
+        if (Math.abs(d0) < 1e-18) continue;
+        var l1 = ((q[1][0] - uv[0]) * (q[2][1] - uv[1]) - (q[2][0] - uv[0]) * (q[1][1] - uv[1])) / d0;
+        var l2 = ((q[2][0] - uv[0]) * (q[0][1] - uv[1]) - (q[0][0] - uv[0]) * (q[2][1] - uv[1])) / d0, l3 = 1 - l1 - l2;
+        if (l1 < -1e-9 || l2 < -1e-9 || l3 < -1e-9) continue;
+        var depth = l1 * q[0][2] + l2 * q[1][2] + l3 * q[2][2];
+        if (depth > bd) { bd = depth; best = fi; }
+      }
+    });
+    return best;
+  }
+  // addRelativeView(doc, mesh, { face1, face2 (mesh face indices) | n1, n2 (normals), second, x, y, scale, display }) -> view
+  function addRelativeView(doc, mesh, o) {
+    o = o || {};
+    var f1 = o.face1 != null ? mesh.faces[o.face1] : null, f2 = o.face2 != null ? mesh.faces[o.face2] : null;
+    var n1 = o.n1 || f1 && f1.normal, n2 = o.n2 || f2 && f2.normal;
+    if (!n1 || !n2) throw new Error('Relative View needs two faces (first: Front, second: ' + (o.second || 'Right') + ')');
+    var F = relativeFrame(n1, n2, o.second), ortho = D.isOrthoFrame(F);
+    var v = D.addView(doc, F.name, { frame: { e: F.e, u: F.u, v: F.v }, display: o.display || (ortho ? 'hlv' : 'hlr'), scale: o.scale || null, x: +o.x || 0, y: +o.y || 0,
+      relative: { second: o.second || 'Right', faces: [o.face1 != null ? o.face1 : null, o.face2 != null ? o.face2 : null], n1: V.norm(n1), n2: V.norm(n2) } });
+    if (!ortho) v.dimType = 'true';
+    doc.layout = 'manual';
+    return v;
+  }
+
+  D.SKETCH_STYLES = STYLES; D.SKETCH_WEIGHTS = Object.keys(WEIGHT_MM);
+  D.addSketchEntity = addSketchEntity; D.addSketchRect = addSketchRect; D.sketchEntity = sketchEntity; D.sketchEntities = sketchEntities;
+  D.editSketchEntity = editSketchEntity; D.moveSketchEntity = moveSketchEntity; D.deleteSketchEntity = deleteSketchEntity; D.solveSketch = solveSketch;
+  D.addSketchRelation = addSketchRelation; D.sketchRelations = relationsOf;
+  D.addSketchDim = addSketchDim; D.setSketchDim = setSketchDim; D.setLineFormat = setLineFormat; D.lineStyle = lineStyle; D.sketchItems = sketchItems;
+  D.sketchEnds = endsOf; D.sketchPoint = function (e, end) { return getPt(e, end).slice(); };
+  D.edgeKey = edgeKey; D.setEdgeFormat = setEdgeFormat; D.hideEdge = hideEdge; D.showEdges = showEdges; D.hiddenEdges = hiddenEdges;
+  D.relativeFrame = relativeFrame; D.faceAt = faceAt; D.addRelativeView = addRelativeView;
+  D.sketchSpline = splinePts; _.sketchPrims = sketchPrims;
 })(Drawing, Drawing._);

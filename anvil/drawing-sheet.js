@@ -119,10 +119,12 @@
     }
     return v.frame ? frameOf({ e: v.frame.e, u: v.frame.u, v: v.frame.v, name: v.orient }) : orientation(v.orient);
   }
-  // A–Z without I, O and Q (ASME Y14.3), the first letter no section or detail view of the drawing uses yet
+  // A–Z without I, O and Q (ASME Y14.3), the first letter no section or detail view of the drawing uses yet (on any
+  // of its sheets, rfAL: SolidWorks never writes SECTION A-A twice in one drawing)
   function nextLabel(doc) {
     var used = {};
     doc.views.forEach(function (v) { if (v.label) used[v.label] = 1; });
+    (doc.sheets || []).forEach(function (sr) { ((sr && sr.views) || []).forEach(function (v) { if (v.label) used[v.label] = 1; }); });
     var abc = 'ABCDEFGHJKLMNPRSTUVWXYZ';
     for (var i = 0; i < abc.length; i++) if (!used[abc[i]]) return abc[i];
     for (var n = 2; ; n++) for (var j = 0; j < abc.length; j++) if (!used[abc[j] + n]) return abc[j] + n;
@@ -1679,7 +1681,9 @@
   // where its leader's point projects onto the line).
   function nextMagId(doc) {
     var n = 0;
-    (doc.views || []).forEach(function (v) { (v.magLines || []).forEach(function (m) { var q = /^ML(\d+)$/.exec(m.id); if (q) n = Math.max(n, +q[1]); }); });
+    var all = (doc.views || []).slice();
+    (doc.sheets || []).forEach(function (sr) { if (sr && sr.views) all = all.concat(sr.views); });   // (rfAL: every sheet)
+    all.forEach(function (v) { (v.magLines || []).forEach(function (m) { var q = /^ML(\d+)$/.exec(m.id); if (q) n = Math.max(n, +q[1]); }); });
     return 'ML' + (n + 1);
   }
   function findMagLine(doc, id) {
@@ -1907,8 +1911,24 @@
     var t = doc.revisions && doc.revisions.show !== false ? doc.revisions : insertRevisionTable(doc, {});
     var prev = t.rows.length ? t.rows[t.rows.length - 1].rev : null;
     var row = { zone: String(spec.zone || ''), rev: spec.rev ? String(spec.rev).toUpperCase() : nextRev(prev), description: String(spec.description == null ? '' : spec.description), date: spec.date != null ? String(spec.date) : todayISO(), approved: String(spec.approved || '') };
+    // (rfAN) a stable row id: a Revision Symbol placed for this row keeps its letter when the row's REV is edited
+    row.id = revRowId(t);
     t.rows.push(row);
     return row;
+  }
+  // (rfAN) revRowId(t) -> the next row id of a Revision Table (rows saved before rfAN have none: revRow finds them by letter)
+  function revRowId(t) {
+    var n = 0;
+    t.rows.forEach(function (r) { if (+r.id > n) n = +r.id; });
+    t.nextRow = Math.max(t.nextRow || 0, n) + 1;
+    return t.nextRow;
+  }
+  // revRow(doc, { row, rev }) -> the row a Revision Symbol names: by its row id, else by its letter; null when none
+  function revRow(doc, s) {
+    var l = doc && doc.revisions && doc.revisions.show !== false && doc.revisions.rows || [], i;
+    if (s && s.row != null) for (i = 0; i < l.length; i++) if (l[i].id === s.row) return l[i];
+    if (s && s.rev) for (i = 0; i < l.length; i++) if (String(l[i].rev).toUpperCase() === String(s.rev).toUpperCase()) return l[i];
+    return null;
   }
   // editRevision(doc, i, props) / deleteRevision(doc, i) / deleteRevisionTable(doc)
   function editRevision(doc, i, props) {
@@ -1947,7 +1967,7 @@
   // document's own) and the others as { sheet, views, notes, symbols, bom, bomRows, layout }; doc.activeSheet is its
   // index. A document without doc.sheets (saved before rfQ) is one sheet. View and annotation ids stay unique across
   // the sheets (doc.nextView, doc.nextAnnot); the revisions, title block texts, properties and options are the drawing's.
-  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout', 'tables'];   // (rfAE: general tables per sheet)
+  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout', 'tables', 'holeTables'];   // (rfAE: general tables per sheet; rfAN: hole tables)
   function sheetCount(doc) { return doc.sheets && doc.sheets.length ? doc.sheets.length : 1; }
   function sheetsOf(doc) {
     if (!doc.sheets || !doc.sheets.length) { doc.sheets = [null]; doc.activeSheet = 0; }
@@ -2016,7 +2036,7 @@
     var l = sheetsOf(doc), cur = doc.sheet || {}, sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
     l.push({ sheet: { name: nm, format: opts.format || cur.format || 'A3', scale: sc || (cur.scale || [1, 1]).slice(), autoScale: sc ? false : cur.autoScale !== false,
       projection: opts.projection === 'first' || opts.projection === 'third' ? opts.projection : cur.projection || 'third' },
-      views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto', tables: [] });
+      views: [], notes: [], symbols: [], bom: null, bomRows: 0, layout: 'auto', tables: [], holeTables: [] });
     var i = l.length - 1;
     if (opts.activate !== false) activateSheet(doc, i);
     return i;
@@ -2298,7 +2318,7 @@
   D.viewFrame = viewFrame; D.nextLabel = nextLabel; D.addProjectedView = addProjectedView; D.addSectionView = addSectionView; D.detailScale = detailScale; D.addDetailView = addDetailView;
   D.TB_BLOCKS = TB_BLOCKS; D.tbBlocks = tbBlocks; D.tbRects = tbRects; D.fieldRect = fieldRect; D.generalTolerances = generalTolerances;
   D.todayISO = todayISO; D.REV_COLS = REV_COLS; D.revLetter = revLetter; D.nextRev = nextRev; D.latestRev = latestRev; D.insertRevisionTable = insertRevisionTable; D.addRevision = addRevision;
-  D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;
+  D.revRow = revRow; D.editRevision = editRevision; D.deleteRevision = deleteRevision; D.deleteRevisionTable = deleteRevisionTable; D.revBox = revBox; D.revRowAt = revRowAt;
   _.REV_TEXT = REV_TEXT;
   D.SHEET_KEYS = SHEET_KEYS; D.sheetCount = sheetCount; D.sheets = sheets; D.sheetIndex = sheetIndex; D.sheetDoc = sheetDoc; D.activateSheet = activateSheet;
   D.addSheet = addSheet; D.deleteSheet = deleteSheet; D.renameSheet = renameSheet;

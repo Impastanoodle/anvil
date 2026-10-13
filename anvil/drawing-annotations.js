@@ -439,13 +439,13 @@
     if (r.kind === 'pt') {
       var b = pr.bounds, tol = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)) * 1e-3, best = null, bd = tol;
       (pr.all || []).forEach(function (m) { [[m[0], m[1]], [m[2], m[3]]].forEach(function (q) { var dd = Math.hypot(q[0] - r.p[0], q[1] - r.p[1]); if (dd <= bd) { bd = dd; best = q; } }); });
-      (pr.circlesAll || []).concat(pr.arcsAll || []).forEach(function (c) { var dd = Math.hypot(c.c[0] - r.p[0], c.c[1] - r.p[1]); if (dd <= bd) { bd = dd; best = c.c.slice(); } });
+      (pr.circlesAll || []).concat(pr.arcsAll || [], pr.ellipses ? (pr.ellipses.visible || []).concat(pr.ellipses.hidden || []) : []).forEach(function (c) { var dd = Math.hypot(c.c[0] - r.p[0], c.c[1] - r.p[1]); if (dd <= bd) { bd = dd; best = c.c.slice(); } });
       if (!best) return false;
       r.p = best.slice();
       return true;
     }
-    if (r.kind === 'arc') { var ra = { kind: 'rad', c: r.c, r: r.r, a0: r.a0, a1: r.a1 }, ok = reattachDim(ra, pr); if (ok) { r.c = ra.c; r.r = ra.r; } return ok; }
-    if (r.kind === 'dia') { var rc = { kind: 'dia', c: r.c, r: r.r }, ok2 = reattachDim(rc, pr); if (ok2) { r.c = rc.c; r.r = rc.r; } return ok2; }
+    if (r.kind === 'arc') { var ra = { kind: 'rad', c: r.c, r: r.r, a0: r.a0, a1: r.a1, ell: r.ell }, ok = reattachDim(ra, pr); if (ok) { r.c = ra.c; r.r = ra.r; if (r.ell) r.ell = ra.ell; } return ok; }
+    if (r.kind === 'dia') { var rc = { kind: 'dia', c: r.c, r: r.r, ell: r.ell }, ok2 = reattachDim(rc, pr); if (ok2) { r.c = rc.c; r.r = rc.r; if (r.ell) r.ell = rc.ell; } return ok2; }
     var re = { kind: r.kind, a: r.a, b: r.b, value: r.value }, ok3 = reattachDim(re, pr);
     if (ok3) { r.a = re.a; r.b = re.b; r.value = re.value; }
     return ok3;
@@ -465,14 +465,36 @@
   // distance), two parallel edges (their distance), two edges at an angle (the angle in the pointer's quadrant).
   // A two-pick dimension keeps its references (d.refs: { kind: 'pt', p } | { kind: 'dia' | 'arc', c, r } | an edge
   // { kind: 'h' | 'v' | 'aligned', a, b }) and is measured again from them when the part changes (measurePair).
+  // (rfAL) a circle seen obliquely is an ellipse c + cos t ax + sin t ay (ax, ay: the projections of the circle's two
+  // radii, conjugate semi-diameters); its semi-major axis is the circle's true radius (an orthographic projection keeps
+  // the diameter that lies square to the view direction): sqrt((s + sqrt(s² - 4 p²)) / 2), s = |ax|² + |ay|², p = |ax × ay|
+  function ellipseRadius(ax, ay) {
+    var s = ax[0] * ax[0] + ax[1] * ax[1] + ay[0] * ay[0] + ay[1] * ay[1], p = Math.abs(ax[0] * ay[1] - ax[1] * ay[0]);
+    return Math.sqrt((s + Math.sqrt(Math.max(0, s * s - 4 * p * p))) / 2);
+  }
+  D.ellipseRadius = ellipseRadius;
   function pickRef(pk) {
     if (pk.edge) return refFrom({ a: pk.edge[0], b: pk.edge[1] });
+    // (rfAL) an ellipse (a hole seen in a True / pictorial view): its true diameter, or radius when it is a part arc
+    if (pk.ellipse) {
+      var el = pk.ellipse, ell = { ax: [+el.ax[0], +el.ax[1]], ay: [+el.ay[0], +el.ay[1]] };
+      if (!el.full) { ell.t0 = +el.t0; ell.t1 = +el.t1; }
+      return { kind: el.full ? 'dia' : 'arc', c: [+el.c[0], +el.c[1]], r: ellipseRadius(ell.ax, ell.ay), ell: ell };
+    }
     if (pk.circle) return { kind: 'dia', c: [+pk.circle.c[0], +pk.circle.c[1]], r: +pk.circle.r };
     if (pk.arc) return { kind: 'arc', c: [+pk.arc.c[0], +pk.arc.c[1]], r: +pk.arc.r, a0: pk.arc.a0, a1: pk.arc.a1 };
     if (pk.center) return { kind: 'pt', p: [+pk.center.c[0], +pk.center.c[1]], center: true };
     if (pk.point) return { kind: 'pt', p: [+pk.point[0], +pk.point[1]] };
     return null;
   }
+  // (rfAL) how far from an ellipse's centre its outline is along direction w (any length): 1 / |M⁻¹ ŵ|, M = [ax ay]
+  function ellipseReach(ell, w) {
+    var L = Math.hypot(w[0], w[1]) || 1, u = [w[0] / L, w[1] / L], ax = ell.ax, ay = ell.ay, det = ax[0] * ay[1] - ax[1] * ay[0];
+    if (Math.abs(det) < 1e-300) return Math.hypot(ax[0], ax[1]) + Math.hypot(ay[0], ay[1]);
+    var x = (u[0] * ay[1] - u[1] * ay[0]) / det, y = (ax[0] * u[1] - ax[1] * u[0]) / det;
+    return 1 / Math.hypot(x, y);
+  }
+  D.ellipseReach = ellipseReach;
   function isEdgeRef(r) { return r.kind === 'h' || r.kind === 'v' || r.kind === 'aligned'; }
   function refPt(r) { return r.kind === 'pt' ? r.p : r.c; }
   // the kind of a linear dimension between points a and b with the pointer at `at`: horizontal when it is above or
@@ -546,7 +568,8 @@
     if (!r2) {
       if (r1.kind === 'dia' || r1.kind === 'arc') {
         d = r1.kind === 'dia' ? { kind: 'dia', c: r1.c.slice(), r: r1.r, count: 1, value: 2 * r1.r } : { kind: 'rad', c: r1.c.slice(), r: r1.r, a0: r1.a0, a1: r1.a1, count: 1, value: r1.r };
-        if (at && Math.hypot(at[0] - r1.c[0], at[1] - r1.c[1]) > r1.r * 1.05) d.lead = [(at[0] - r1.c[0]) * sc, (at[1] - r1.c[1]) * sc];
+        if (r1.ell) { d.ell = JSON.parse(JSON.stringify(r1.ell)); if (d.kind === 'rad') { delete d.a0; delete d.a1; } }   // (rfAL) true size of an ellipse
+        if (at && Math.hypot(at[0] - r1.c[0], at[1] - r1.c[1]) > (r1.ell ? ellipseReach(r1.ell, [at[0] - r1.c[0], at[1] - r1.c[1]]) : r1.r) * 1.05) d.lead = [(at[0] - r1.c[0]) * sc, (at[1] - r1.c[1]) * sc];
         return d;
       }
       if (!isEdgeRef(r1)) return null;   // a point alone measures nothing
@@ -1477,7 +1500,7 @@
     ['profileLine', 'Profile of a Line'], ['profileSurface', 'Profile of a Surface'], ['perpendicularity', 'Perpendicularity'], ['parallelism', 'Parallelism'], ['angularity', 'Angularity'],
     ['concentricity', 'Concentricity'], ['symmetry', 'Symmetry'], ['circularRunout', 'Circular Runout'], ['totalRunout', 'Total Runout']];
   var SF_SYMBOLS = [['basic', 'Basic'], ['machined', 'Machining Required'], ['prohibited', 'Machining Prohibited']];
-  var SYMBOL_TYPES = { surfaceFinish: 1, datum: 1, gtol: 1 };
+  var SYMBOL_TYPES = { surfaceFinish: 1, datum: 1, gtol: 1, revision: 1, revCloud: 1, weld: 1 };   // (rfAN: Revision Symbol, Revision Cloud, Weld Symbol)
   // the next datum letter: A, B, C … skipping I, O, Q (ASME Y14.5), past the ones the drawing uses
   function nextDatum(doc) {
     var used = {}; (doc.symbols || []).forEach(function (s) { if (s.type === 'datum') used[String(s.label).toUpperCase()] = 1; });
@@ -1496,6 +1519,14 @@
     } else if (s.type === 'datum') {
       if (spec.label != null) s.label = String(spec.label).trim().toUpperCase();
       if (!s.label) throw new Error('A datum feature needs a letter');
+    } else if (s.type === 'revision') {
+      if (spec.rev != null) { var rv = String(spec.rev).trim().toUpperCase(); if (rv) s.rev = rv; }
+      if (spec.row !== undefined) { if (spec.row == null || spec.row === '') delete s.row; else s.row = +spec.row; }
+      if (!s.rev) throw new Error('A revision symbol needs a revision letter');
+    } else if (s.type === 'revCloud') {
+      cleanCloud(s, spec);
+    } else if (s.type === 'weld') {
+      cleanWeld(s, spec);
     } else {
       if (spec.char != null) { if (!GTOL_CHARS.some(function (c) { return c[0] === spec.char; })) throw new Error('No geometric characteristic ' + spec.char); s.char = spec.char; }
       if (spec.dia != null) { if (spec.dia) s.dia = true; else delete s.dia; }
@@ -1511,9 +1542,16 @@
   function addSymbol(doc, spec) {
     spec = spec || {};
     if (!SYMBOL_TYPES[spec.type]) throw new Error('Unknown symbol type ' + spec.type);
+    if (spec.type === 'revCloud' && !spec.p && (spec.a || spec.points)) spec = Object.assign({ p: spec.a || spec.points[0] }, spec);   // (rfAN: cleanCloud centres it)
     if (!spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A symbol needs a position on the sheet');
     var s = { id: nextAnnotId(doc), type: spec.type };
     if (spec.type === 'datum' && spec.label == null) spec = Object.assign({}, spec, { label: nextDatum(doc) });
+    // (rfAN) a Revision Symbol names the latest revision of the Revision Table (A when there is none) and its row
+    if (spec.type === 'revision') {
+      var rows = doc.revisions && doc.revisions.show !== false && doc.revisions.rows || [], rr = spec.rev != null ? D.revRow(doc, { rev: spec.rev }) : rows[rows.length - 1];
+      spec = Object.assign({}, spec, { rev: spec.rev != null ? spec.rev : rr ? rr.rev : 'A' });
+      if (spec.row === undefined && rr && rr.id != null) spec.row = rr.id;
+    }
     cleanSymbol(s, spec);
     (doc.symbols || (doc.symbols = [])).push(s);
     return s;
@@ -1535,15 +1573,18 @@
   // parse 'B(M)' -> { ref: 'B', mod: 'M' }
   function datumRef(x) { var m = /^([A-Z]+(?:-[A-Z]+)?)\s*\(?([ML])?\)?$/.exec(String(x).toUpperCase().replace(/\s+/g, '')); return m ? { ref: m[1], mod: m[2] || null } : { ref: String(x), mod: null }; }
   // symbolText(s) -> one line for lists and the summary: 'POSITION Ø.010(M) | A | B | C', 'DATUM A', 'SURFACE FINISH 63'
-  function symbolText(s) {
+  function symbolText(s, doc) {
     if (s.type === 'datum') return 'DATUM ' + s.label;
+    if (s.type === 'revision') return 'REVISION ' + revOf(s, doc);
+    if (s.type === 'revCloud') return 'REVISION CLOUD (' + (CLOUD_SHAPES.filter(function (c) { return c[0] === s.shape; })[0] || ['', 'Rectangle'])[1].toUpperCase() + ')';
+    if (s.type === 'weld') return weldText(s);
     if (s.type === 'surfaceFinish') return 'SURFACE FINISH' + (s.ra ? ' ' + s.ra : '') + (s.method ? ' ' + s.method : '') + (s.symbol === 'machined' ? ' (MACHINED)' : s.symbol === 'prohibited' ? ' (NO MACHINING)' : '');
     var nm = (GTOL_CHARS.filter(function (c) { return c[0] === s.char; })[0] || ['', ''])[1].toUpperCase();
     return [nm + ' ' + (s.dia ? 'Ø' : '') + s.tol + (s.mod ? '(' + s.mod + ')' : '')].concat(s.datums || []).join(' | ');
   }
   // symbolPrims(s, k, textWidth) -> { prims, box, text }: the symbol as sheet primitives on the SYMBOLS layer
   // (k: paper mm -> paper units; textWidth from drawing-render.js)
-  function symbolPrims(s, k, textWidth, arrowW) {
+  function symbolPrims(s, k, textWidth, arrowW, doc) {
     var L = 'SYMBOLS', out = [], h = 3.5 * k, p = s.p;
     function ln(a, b, st) { out.push({ k: 'line', a: a, b: b, layer: L, style: st || 'thin', symbol: s.id }); }
     function tx(q, t, anchor, hh) { out.push({ k: 'text', p: q, h: hh || h, text: t, anchor: anchor || 'start', layer: L, rot: 0, symbol: s.id }); }
@@ -1575,7 +1616,7 @@
       fill([[base[0] + u[1] * 1.5 * k, base[1] - u[0] * 1.5 * k], [base[0] - u[1] * 1.5 * k, base[1] + u[0] * 1.5 * k], tip]);
       // (the triangle's base lies on the surface: its apex points back up the leader, as ASME draws it)
       out[out.length - 1].pts = [[tip[0] + u[1] * 1.5 * k, tip[1] - u[0] * 1.5 * k], [tip[0] - u[1] * 1.5 * k, tip[1] + u[0] * 1.5 * k], base];
-    } else {
+    } else if (s.type === 'gtol') {
       var fh = 7 * k, cw = 8 * k, y0 = p[1] - fh / 2, y1 = p[1] + fh / 2, x = p[0], mr = 1.7 * k, gap = 0.8 * k;
       var cells = [x];
       // characteristic cell
@@ -1603,17 +1644,39 @@
         var left = s.leader[0] < (cells[0] + x) / 2, at = left ? [cells[0], p[1]] : [x, p[1]], sh = [at[0] + (left ? -3 : 3) * k, p[1]];
         ln(at, sh); ln(sh, s.leader); arrow(s.leader, sh);
       }
+    } else if (s.type === 'revision') {
+      // (rfAN) ASME Y14.35: the revision letter in an equilateral triangle (point up), a leader to the change
+      var rl = revOf(s, doc), th3 = 3 * k, side = Math.max(8 * k, textWidth(rl, th3) * 1.9 + 3 * k), hgt = side * Math.sqrt(3) / 2;
+      var T = [p[0], p[1] + hgt * 2 / 3], BL = [p[0] - side / 2, p[1] - hgt / 3], BR = [p[0] + side / 2, p[1] - hgt / 3];
+      ln(T, BL); ln(BL, BR); ln(BR, T);
+      tx([p[0], p[1] - hgt * 0.06 - th3 / 2], rl, 'middle', th3);
+      if (s.leader) {
+        // (the leader leaves the triangle where the line from its centre to the tip crosses its outline)
+        var lu = [s.leader[0] - p[0], s.leader[1] - p[1]], ll = Math.hypot(lu[0], lu[1]) || 1, ud = [lu[0] / ll, lu[1] / ll], tHit = hgt / 3;
+        [[T, BL], [BL, BR], [BR, T]].forEach(function (e) {
+          var ex = e[1][0] - e[0][0], ey = e[1][1] - e[0][1], den = ud[0] * ey - ud[1] * ex;
+          if (Math.abs(den) < 1e-12) return;
+          var qx = e[0][0] - p[0], qy = e[0][1] - p[1], tt = (qx * ey - qy * ex) / den, ss = (qx * ud[1] - qy * ud[0]) / den;
+          if (tt > 0 && ss >= -1e-9 && ss <= 1 + 1e-9) tHit = tt;
+        });
+        var from2 = [p[0] + ud[0] * tHit, p[1] + ud[1] * tHit];
+        if (ll > tHit + 0.5 * k) { ln(from2, s.leader); arrow(s.leader, from2); }
+      }
+    } else if (s.type === 'revCloud') {
+      cloudArcs(s, k).forEach(function (a) { out.push({ k: 'arc', c: a.c, r: a.r, a0: a.a0, a1: a.a1, layer: L, style: 'thin', symbol: s.id }); });
+    } else if (s.type === 'weld') {
+      weldPrims(s, k, textWidth, ln, tx, circ, fill, arrow);
     }
     var r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     function grow(q) { r.x0 = Math.min(r.x0, q[0]); r.x1 = Math.max(r.x1, q[0]); r.y0 = Math.min(r.y0, q[1]); r.y1 = Math.max(r.y1, q[1]); }
     out.forEach(function (x2) {
       if (x2.a) { grow(x2.a); grow(x2.b); }
       if (x2.k === 'circle') { grow([x2.c[0] - x2.r, x2.c[1] - x2.r]); grow([x2.c[0] + x2.r, x2.c[1] + x2.r]); }
-      if (x2.k === 'arc') { grow([x2.c[0] - x2.r, x2.c[1] - x2.r]); grow([x2.c[0] + x2.r, x2.c[1] + x2.r]); }
+      if (x2.k === 'arc') { for (var ai = 0; ai <= 8; ai++) { var aa = (x2.a0 + (((x2.a1 - x2.a0) % 360 + 360) % 360 || 360) * ai / 8) * Math.PI / 180; grow([x2.c[0] + x2.r * Math.cos(aa), x2.c[1] + x2.r * Math.sin(aa)]); } }
       if (x2.k === 'fill') x2.pts.forEach(grow);
       if (x2.k === 'text') { var w2 = textWidth(x2.text, x2.h), s0 = x2.anchor === 'middle' ? -w2 / 2 : x2.anchor === 'end' ? -w2 : 0; grow([x2.p[0] + s0, x2.p[1]]); grow([x2.p[0] + s0 + w2, x2.p[1] + x2.h]); }
     });
-    return { prims: out, box: r, text: symbolText(s) };
+    return { prims: out, box: r, text: symbolText(s, doc) };
   }
   // the geometric characteristic symbols (ASME Y14.5) drawn about c, half-size q
   function gtolGlyph(ch, c, q, ln, circ, fill, out, L, id) {
@@ -1637,6 +1700,380 @@
       default: circ(c, 0.6 * q); ln(P(-1, 0), P(1, 0)); ln(P(0, -1), P(0, 1));   // position
     }
   }
+  // ------------------------------------------------------------------ rfAN: Revision Symbol, Revision Cloud, Weld Symbol
+  // revision: { rev: 'B', row: (the Revision Table row id it was placed for) }, p the triangle's centre; the letter
+  //   follows its row when the row's REV is edited (D.revRow), else it keeps its own
+  // revCloud: { shape: 'rect' | 'ellipse' | 'polygon' | 'freehand', w, h (rect / ellipse: the full size, paper), pts
+  //   ([[dx, dy]] from p, paper: polygon / freehand), arc (the largest arc radius, paper mm, default 3) }, p its centre
+  //   (rect / ellipse) or reference point; drawn as a ring of outward arcs (SolidWorks' Revision Cloud)
+  // weld: { arrow: { type, size, length }, other: { type, size, length }, allAround, field, tail }, p the junction of
+  //   the arrow and the reference line, leader the arrow tip (AWS A2.4: arrow-side symbol below the reference line,
+  //   other side above, the fillet's upright leg to the left, size left of the symbol, length-pitch right of it, the
+  //   all-around circle and the field-weld flag at the junction, the tail at the far end)
+  function revOf(s, doc) { var r = doc ? D.revRow(doc, s) : null; return r && r.rev ? String(r.rev) : s.rev || '?'; }
+  var CLOUD_SHAPES = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['polygon', 'Irregular Polygon'], ['freehand', 'Freehand']];
+  var CLOUD_ARC = 3;
+  function cleanCloud(s, spec) {
+    if (spec.shape != null) { if (!CLOUD_SHAPES.some(function (c) { return c[0] === spec.shape; })) throw new Error('No revision cloud shape ' + spec.shape); s.shape = spec.shape; }
+    if (!s.shape) s.shape = 'rect';
+    // a / b: two opposite corners of a rectangle / ellipse (paper); points: a polygon's corners (paper)
+    if (spec.a && spec.b) { s.p = [(+spec.a[0] + +spec.b[0]) / 2, (+spec.a[1] + +spec.b[1]) / 2]; s.w = Math.abs(spec.b[0] - spec.a[0]); s.h = Math.abs(spec.b[1] - spec.a[1]); }
+    if (spec.points) {
+      var P = spec.points.map(function (q) { return [+q[0], +q[1]]; }), bx = [Infinity, Infinity, -Infinity, -Infinity];
+      P.forEach(function (q) { bx[0] = Math.min(bx[0], q[0]); bx[1] = Math.min(bx[1], q[1]); bx[2] = Math.max(bx[2], q[0]); bx[3] = Math.max(bx[3], q[1]); });
+      s.p = [(bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2];
+      s.pts = P.map(function (q) { return [q[0] - s.p[0], q[1] - s.p[1]]; });
+    }
+    ['w', 'h'].forEach(function (q) { if (spec[q] != null) s[q] = Math.abs(+spec[q]); });
+    if (spec.pts) s.pts = spec.pts.map(function (q) { return [+q[0], +q[1]]; });
+    if (spec.arc !== undefined) { if (+spec.arc > 0) s.arc = +spec.arc; else delete s.arc; }
+    if (s.shape === 'rect' || s.shape === 'ellipse') {
+      delete s.pts;
+      if (!(s.w > 0 && s.h > 0)) throw new Error('A revision cloud needs a width and a height');
+    } else {
+      delete s.w; delete s.h;
+      if (!s.pts || s.pts.length < 3) throw new Error('A revision cloud needs at least three points');
+    }
+    delete s.leader;
+  }
+  // the cloud's outline (paper, counter-clockwise)
+  function cloudOutline(s) {
+    var P, p = s.p;
+    if (s.shape === 'rect') P = [[-s.w / 2, -s.h / 2], [s.w / 2, -s.h / 2], [s.w / 2, s.h / 2], [-s.w / 2, s.h / 2]];
+    else if (s.shape === 'ellipse') { P = []; for (var i = 0; i < 96; i++) { var t = i / 96 * 2 * Math.PI; P.push([s.w / 2 * Math.cos(t), s.h / 2 * Math.sin(t)]); } }
+    else P = s.pts.slice();
+    var A = 0;
+    for (var j = 0; j < P.length; j++) { var q = P[j], r = P[(j + 1) % P.length]; A += q[0] * r[1] - r[0] * q[1]; }
+    if (A < 0) P = P.slice().reverse();
+    return P.map(function (q) { return [p[0] + q[0], p[1] + q[1]]; });
+  }
+  // cloudArcs(s, k) -> [{ c, r, a0, a1 }]: scallops of 150° along the outline, each chord about 1.93 × the arc radius,
+  // bulging outward; a rectangle / polygon keeps a scallop end on every corner
+  function cloudArcs(s, k) {
+    var P = cloudOutline(s), R = (s.arc || CLOUD_ARC) * k, chord = 2 * R * Math.sin(75 * Math.PI / 180), pts = [];
+    var n = P.length, keep = s.shape === 'rect' || s.shape === 'polygon', i;
+    if (keep) {
+      for (i = 0; i < n; i++) {
+        var a = P[i], b = P[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]), m = Math.max(1, Math.round(L / chord));
+        for (var j = 0; j < m; j++) pts.push([a[0] + (b[0] - a[0]) * j / m, a[1] + (b[1] - a[1]) * j / m]);
+      }
+    } else {
+      var per = 0, seg = [];
+      for (i = 0; i < n; i++) { var L2 = Math.hypot(P[(i + 1) % n][0] - P[i][0], P[(i + 1) % n][1] - P[i][1]); seg.push(L2); per += L2; }
+      var m2 = Math.max(6, Math.round(per / chord)), si = 0, acc = 0;
+      for (var q = 0; q < m2; q++) {
+        var at = per * q / m2;
+        while (si < n - 1 && acc + seg[si] < at) { acc += seg[si]; si++; }
+        var f = seg[si] ? (at - acc) / seg[si] : 0, A0 = P[si], B0 = P[(si + 1) % n];
+        pts.push([A0[0] + (B0[0] - A0[0]) * f, A0[1] + (B0[1] - A0[1]) * f]);
+      }
+    }
+    var out = [], c75 = Math.cos(75 * Math.PI / 180), s75 = Math.sin(75 * Math.PI / 180);
+    for (var e = 0; e < pts.length; e++) {
+      var u = pts[e], v = pts[(e + 1) % pts.length], dx = v[0] - u[0], dy = v[1] - u[1], Lc = Math.hypot(dx, dy);
+      if (Lc < 1e-9) continue;
+      var rr = Lc / (2 * s75), th = Math.atan2(dy, dx) * 180 / Math.PI, mid = [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2], nl = [-dy / Lc, dx / Lc];
+      out.push({ c: [mid[0] + nl[0] * rr * c75, mid[1] + nl[1] * rr * c75], r: rr, a0: th + 195, a1: th + 345 });
+    }
+    return out;
+  }
+  var WELD_TYPES = [['none', 'None'], ['fillet', 'Fillet'], ['square', 'Square groove'], ['v', 'V groove'], ['bevel', 'Bevel groove'], ['plug', 'Plug / slot']];
+  var WELD_NAMES = { fillet: 'FILLET', square: 'SQUARE GROOVE', v: 'V GROOVE', bevel: 'BEVEL GROOVE', plug: 'PLUG' };
+  function cleanWeld(s, spec) {
+    ['arrow', 'other'].forEach(function (side) {
+      var o = spec[side];
+      if (o === undefined) return;
+      if (!o || o.type === 'none') { delete s[side]; return; }
+      var c = Object.assign({}, s[side] || {});
+      if (o.type != null) { if (!WELD_NAMES[o.type]) throw new Error('No weld symbol ' + o.type); c.type = o.type; }
+      ['size', 'length'].forEach(function (q) { if (o[q] != null) { var t = String(o[q]).trim(); if (t) c[q] = t; else delete c[q]; } });
+      if (!c.type) c.type = 'fillet';
+      s[side] = c;
+    });
+    ['allAround', 'field'].forEach(function (q) { if (spec[q] != null) { if (spec[q]) s[q] = true; else delete s[q]; } });
+    if (spec.tail != null) { var tl = String(spec.tail).trim(); if (tl) s.tail = tl; else delete s.tail; }
+    if (!s.arrow && !s.other) s.arrow = { type: 'fillet' };
+  }
+  function weldText(s) {
+    var part = function (nm, o) { return o ? nm + ' ' + [WELD_NAMES[o.type], o.size, o.length].filter(Boolean).join(' ') : null; };
+    return ['WELD'].concat([part('ARROW SIDE', s.arrow), part('OTHER SIDE', s.other), s.allAround ? 'ALL AROUND' : null, s.field ? 'FIELD WELD' : null, s.tail ? 'TAIL ' + s.tail : null].filter(Boolean)).join(' | ');
+  }
+  // weldGeom(s, k, textWidth) -> { dir, end, x0, xs }: the reference line (from the junction p away from the arrow)
+  function weldPrims(s, k, textWidth, ln, tx, circ, fill, arrow) {
+    var p = s.p, tip = s.leader || [p[0] - 8 * k, p[1] - 6 * k], dir = tip[0] <= p[0] ? 1 : -1, H = 4 * k, th = 3 * k, y = p[1];
+    var symW = { fillet: H, square: 1.6 * k, v: 1.16 * H, bevel: 0.6 * H, plug: 1.2 * H };
+    var sides = [['arrow', -1], ['other', 1]].filter(function (q) { return s[q[0]]; });
+    var szW = 0, smW = 0, lnW = 0;
+    sides.forEach(function (q) { var o = s[q[0]]; szW = Math.max(szW, o.size ? textWidth(o.size, th) + k : 0); smW = Math.max(smW, symW[o.type] || H); lnW = Math.max(lnW, o.length ? textWidth(o.length, th) + k : 0); });
+    var W = szW + smW + lnW, Lr = Math.max(20 * k, W + 12 * k), end = [p[0] + dir * Lr, y];
+    ln(p, end);
+    // the arrow: from the junction to the joint
+    ln(p, tip); arrow(tip, p);
+    var x0 = dir > 0 ? p[0] + 6 * k : end[0] + 6 * k, xs = x0 + szW;
+    sides.forEach(function (q) {
+      var o = s[q[0]], sg = q[1], w = symW[o.type] || H, xc = xs + w / 2, Y = function (f) { return y + sg * f; };
+      if (o.type === 'fillet') { ln([xs, y], [xs, Y(H)]); ln([xs, Y(H)], [xs + H, y]); }
+      else if (o.type === 'square') { ln([xs, y], [xs, Y(H)]); ln([xs + w, y], [xs + w, Y(H)]); }
+      else if (o.type === 'v') { ln([xc, y], [xs, Y(H)]); ln([xc, y], [xs + w, Y(H)]); }
+      else if (o.type === 'bevel') { ln([xs, y], [xs, Y(H)]); ln([xs, y], [xs + w, Y(H)]); }
+      else if (o.type === 'plug') { ln([xs, y], [xs, Y(0.6 * H)]); ln([xs, Y(0.6 * H)], [xs + w, Y(0.6 * H)]); ln([xs + w, Y(0.6 * H)], [xs + w, y]); }
+      var base = sg > 0 ? y + H / 2 - th / 2 : y - H / 2 - th / 2;
+      if (o.size) tx([xs - k, base], o.size, 'end', th);
+      if (o.length) tx([xs + w + k, base], o.length, 'start', th);
+    });
+    if (s.allAround) circ(p, 1.6 * k);
+    if (s.field) {
+      var top = [p[0], y + 6 * k];
+      ln(p, top);
+      fill([top, [p[0], y + 3.4 * k], [p[0] + dir * 3.6 * k, y + 4.7 * k]]);
+    }
+    if (s.tail) {
+      ln(end, [end[0] + dir * 3 * k, y + 3 * k]); ln(end, [end[0] + dir * 3 * k, y - 3 * k]);
+      tx([end[0] + dir * 4 * k, y - th / 2], s.tail, dir > 0 ? 'start' : 'end', th);
+    }
+  }
+
+  // ------------------------------------------------------------------ rfAN: Hole Table (Annotation ▸ Tables ▸ Hole Table)
+  // doc.holeTables (one list per sheet, a SHEET_KEYS entry) = [{ id, view, origin: { kind: 'pt', p: [u, v] } (a
+  // vertex) | { x: edge, y: edge } (the X-axis and Y-axis edges, { kind, a, b }: the origin is where they meet), holes:
+  // [{ c, r }] (picked holes, view model units), sizes: [dia] (Select all holes of the same size: every hole of the view
+  // with that diameter, so holes of that size added later join), all (every hole of the view), tagStyle: 'alpha' (A1,
+  // A2 … B1: a letter per size) | 'numeric' (1, 2, 3 …), combineTags (one tag per size, its TAG cell merged),
+  // combineSizes (the SIZE cell of a size merged over its rows), prec (decimal places of X / Y LOC; null: the
+  // document's), x, y (the table's top-left corner, paper; unset: right of the view) }]. Every compute reattaches the
+  // origin and the picked holes to the view's current geometry (a moved hole moves its row), works out the sizes
+  // (a Hole Wizard hole: its callout text; else the hole read from the solid; a flat-pattern hole: Ø THRU ALL) and
+  // tags; a flat-pattern view gives flat coordinates (the laser / punch locations). The table (TAG / X LOC / Y LOC /
+  // SIZE) is drawn on the TABLES layer, the tags beside the holes and the X / Y datum arrows on ANNOTATIONS.
+  var HT_ROW = 6, HT_TEXT = 2.5, HT_COLS = [['TAG', 12], ['X LOC', 18], ['Y LOC', 18], ['SIZE', 30]];
+  function findHoleTable(doc, id) { var l = doc.holeTables || []; for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+  function edgeOf(e) {
+    if (!e || !e.a || !e.b) throw new Error('A hole table axis needs an edge (two points)');
+    var a = [+e.a[0], +e.a[1]], b = [+e.b[0], +e.b[1]], dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]);
+    return { kind: dy <= dx * 1e-9 ? 'h' : dx <= dy * 1e-9 ? 'v' : 'aligned', a: a, b: b, value: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  }
+  function cleanHoleTable(t, spec) {
+    if (spec.origin !== undefined) {
+      var o = spec.origin;
+      if (o && o.x && o.y) t.origin = { x: edgeOf(o.x), y: edgeOf(o.y) };
+      else if (o && (o.p || (Array.isArray(o) && o.length === 2 && isFinite(+o[0])))) { var q = o.p || o; t.origin = { kind: 'pt', p: [+q[0], +q[1]] }; }
+      else throw new Error('A hole table needs an origin: a vertex, or an X-axis and a Y-axis edge');
+    }
+    if (spec.holes !== undefined) t.holes = (spec.holes || []).filter(function (h) { return h && h.c && +h.r > 0; }).map(function (h) { return { c: [+h.c[0], +h.c[1]], r: +h.r }; });
+    if (spec.sizes !== undefined) t.sizes = (spec.sizes || []).map(Number).filter(function (d) { return d > 0; });
+    ['all', 'combineTags', 'combineSizes'].forEach(function (q) { if (spec[q] != null) { if (spec[q]) t[q] = true; else delete t[q]; } });
+    if (spec.tagStyle != null) { if (spec.tagStyle === 'numeric') t.tagStyle = 'numeric'; else delete t.tagStyle; }
+    if (spec.prec !== undefined) { if (spec.prec == null || spec.prec === '' || !(+spec.prec >= 0)) delete t.prec; else t.prec = Math.min(6, Math.round(+spec.prec)); }
+    if (spec.x != null && spec.y != null) { t.x = +spec.x; t.y = +spec.y; }
+    if (spec.x === null) { delete t.x; delete t.y; }
+    if (!t.origin) throw new Error('A hole table needs an origin: a vertex, or an X-axis and a Y-axis edge');
+    if (!t.all && !(t.holes && t.holes.length) && !(t.sizes && t.sizes.length)) throw new Error('A hole table needs holes: pick hole edges, or Select all holes of the same size');
+    return t;
+  }
+  // addHoleTable(doc, viewId, { origin, holes, sizes, all, tagStyle, combineTags, combineSizes, prec, x, y }) -> the table
+  function addHoleTable(doc, viewId, spec) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    var t = cleanHoleTable({ id: nextAnnotId(doc), view: v.id, holes: [], sizes: [] }, spec || {});
+    (doc.holeTables || (doc.holeTables = [])).push(t);
+    return t;
+  }
+  function editHoleTable(doc, id, props) {
+    var t = findHoleTable(doc, id);
+    if (!t) throw new Error('No hole table ' + id);
+    var c = cleanHoleTable(JSON.parse(JSON.stringify(t)), props || {});
+    Object.keys(t).forEach(function (q) { delete t[q]; }); Object.assign(t, c);
+    return t;
+  }
+  function deleteHoleTable(doc, id) { var l = doc.holeTables || [], n = l.length; doc.holeTables = l.filter(function (t) { return t.id !== id; }); return doc.holeTables.length < n; }
+  function moveHoleTable(doc, id, x, y) { var t = findHoleTable(doc, id); if (!t) throw new Error('No hole table ' + id); t.x = +x; t.y = +y; return t; }
+  // viewHoles(w, mesh) -> [{ c, r }] the holes seen along their axis in view record w (one per centre, its smallest
+  // circle: the drill of a counterbore / countersink); a flat-pattern view: every circle but a round blank's outline
+  function viewHoles(w, mesh) {
+    var pr = w.proj, out = [], b = pr.bounds, sz = Math.hypot(b.umax - b.umin, b.vmax - b.vmin), tol = sz * 1e-7 + 1e-9;
+    if (!w.ortho && !w.flat) return out;
+    (pr.circles.visible || []).forEach(function (c) {
+      for (var i = 0; i < out.length; i++) if (Math.hypot(out[i].c[0] - c.c[0], out[i].c[1] - c.c[1]) <= tol * 10) { if (c.r < out[i].r) out[i].r = c.r; return; }
+      out.push({ c: c.c.slice(), r: c.r });
+    });
+    if (w.flat) return out.filter(function (h) { return !(Math.abs(h.c[0] - h.r - b.umin) <= tol * 10 && Math.abs(h.c[0] + h.r - b.umax) <= tol * 10); });
+    var m = w.section ? w.section.mesh : mesh;
+    return out.filter(function (h) { return !!holeInfo(m, w.frame, h.c, h.r); });
+  }
+  function holeTag(i) { var A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'; return i < 26 ? A[i] : A[(Math.floor(i / 26) - 1) % 26] + A[i % 26]; }
+  function lineMeet(e1, e2) {
+    var d1 = [e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]], d2 = [e2.b[0] - e2.a[0], e2.b[1] - e2.a[1]], cr = d1[0] * d2[1] - d1[1] * d2[0];
+    if (Math.abs(cr) < 1e-12 * (Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1]) || 1)) return [e2.a[0], e1.a[1]];
+    var t = ((e2.a[0] - e1.a[0]) * d2[1] - (e2.a[1] - e1.a[1]) * d2[0]) / cr;
+    return [e1.a[0] + d1[0] * t, e1.a[1] + d1[1] * t];
+  }
+  // holeTableRows(t, w, mesh, units, ends, holeNames) -> { origin: [u, v], rows: [{ tag, c, r, x, y, xText, yText,
+  // size: [lines], group, dangling }], dangling }
+  function holeTableRows(t, w, mesh, units, ends, holeNames) {
+    var pr = w.proj, dangling = false, O;
+    if (t.origin.kind === 'pt') {
+      var po = { kind: 'pt', p: t.origin.p.slice() };
+      if (reattachRef(po, pr)) t.origin.p = po.p.slice(); else dangling = true;
+      O = t.origin.p;
+    } else {
+      var ex = JSON.parse(JSON.stringify(t.origin.x)), ey = JSON.parse(JSON.stringify(t.origin.y));
+      if (reattachRef(ex, pr)) t.origin.x = ex; else dangling = true;
+      if (reattachRef(ey, pr)) t.origin.y = ey; else dangling = true;
+      O = lineMeet(t.origin.x, t.origin.y);
+    }
+    var b = pr.bounds, sz = Math.hypot(b.umax - b.umin, b.vmax - b.vmin), tol = sz * 1e-7 + 1e-9, list = [];
+    function add(h) { if (!list.some(function (q) { return Math.hypot(q.c[0] - h.c[0], q.c[1] - h.c[1]) <= tol * 10; })) list.push(h); }
+    var vh = (t.all || (t.sizes && t.sizes.length)) ? viewHoles(w, mesh) : [];
+    (t.holes || []).forEach(function (h) {
+      var ref = { kind: 'dia', c: h.c, r: h.r };
+      if (reattachDim(ref, pr)) { h.c = ref.c.slice(); h.r = ref.r; add({ c: h.c.slice(), r: h.r }); }
+      else { dangling = true; add({ c: h.c.slice(), r: h.r, dangling: true }); }
+    });
+    // (a same-size pick names the drilled diameter: the view's smallest circle at the hole)
+    if (t.sizes && t.sizes.length) vh.forEach(function (h) { if (t.sizes.some(function (d) { return Math.abs(2 * h.r - d) <= Math.max(1e-6, d * 1e-6); })) add(h); });
+    if (t.all) vh.forEach(add);
+    var m = w.section ? w.section.mesh : mesh, wiz = ends && ends.wizard || [];
+    function sizeOf(h) {
+      var lines = null, dia = 2 * h.r;
+      if (!w.flat && w.ortho) {
+        var hw = wizardAt(wiz, w.frame, h.c, h.r);
+        if (hw) return { lines: wizardLines(hw.hole, units, 1), dia: +HoleWizard.spec(hw.hole.feature, hw.hole.units).dia };
+        var hi = holeInfo(m, w.frame, h.c, h.r);
+        if (hi) {
+          if (hi.thru && thruAllFor(ends, hi.dia)) hi.thruAll = true;
+          lines = holeText(hi, units, 1, t.prec);
+          var nm = holeNameFor(holeNames, hi.dia);
+          if (nm && lines.join(' ').indexOf(nm) < 0) lines.push(nm);
+          return { lines: lines, dia: hi.dia };
+        }
+      }
+      if (w.flat && wiz.length) {
+        // a flat pattern's hole of a Hole Wizard feature (those of that drilled or largest diameter all read alike): its callout
+        var mu = units === 'in' ? 0.0005 : 0.01, fw = wiz.filter(function (q) { var sp = HoleWizard.spec(q.feature, q.units); return Math.abs(+sp.dia - dia) <= mu || Math.abs(2 * q.ra - dia) <= mu; });
+        if (fw.length && fw.every(function (q) { return JSON.stringify(wizardLines(q, units, 1)) === JSON.stringify(wizardLines(fw[0], units, 1)); })) return { lines: wizardLines(fw[0], units, 1), dia: dia };
+      }
+      return { lines: ['Ø' + numText(dia, units, t.prec) + ' THRU ALL'], dia: dia };
+    }
+    var groups = {}, order = [];
+    list.forEach(function (h) {
+      var s = sizeOf(h), key = s.lines.join('\n');
+      if (!groups[key]) { groups[key] = { key: key, lines: s.lines, dia: s.dia, holes: [] }; order.push(groups[key]); }
+      groups[key].holes.push(h);
+    });
+    var q6 = function (x) { return Math.round(x / (tol * 100)); };
+    order.sort(function (g1, g2) { return g1.dia - g2.dia || (g1.key < g2.key ? -1 : g1.key > g2.key ? 1 : 0); });
+    var rows = [], n = 0;
+    order.forEach(function (g, gi) {
+      g.holes.sort(function (h1, h2) { return q6(h1.c[0]) - q6(h2.c[0]) || q6(h1.c[1]) - q6(h2.c[1]); });
+      g.holes.forEach(function (h, j) {
+        var x = h.c[0] - O[0], y = h.c[1] - O[1];
+        if (Math.abs(x) < tol) x = 0;
+        if (Math.abs(y) < tol) y = 0;
+        n++;
+        var tag = t.tagStyle === 'numeric' ? String(n) : holeTag(gi) + (t.combineTags ? '' : String(j + 1));
+        rows.push({ tag: tag, c: h.c.slice(), r: h.r, x: x, y: y, xText: numText(x, units, t.prec), yText: numText(y, units, t.prec), size: g.lines.slice(), group: gi, dangling: !!h.dangling });
+      });
+    });
+    return { origin: O.slice(), rows: rows, dangling: dangling };
+  }
+  // holeTablePrims(t, w, k, mesh, doc, units, ends, holeNames, textWidth, sheetBox) -> { prims, box (the table), tagBoxes,
+  // rows, origin (paper), dangling, text }
+  function holeTablePrims(t, w, k, mesh, doc, units, ends, holeNames, textWidth, sheetBox) {
+    var R = holeTableRows(t, w, mesh, units, ends, holeNames), out = [], TL = 'TABLES', AL = 'ANNOTATIONS', th = HT_TEXT * k, rh = HT_ROW * k, id = t.id;
+    function ln(a, b2, layer, st) { out.push({ k: 'line', a: a, b: b2, layer: layer, style: st || 'thin', holeTable: id }); }
+    function tx(p, s, anchor, layer) { out.push({ k: 'text', p: p, h: th, text: s, anchor: anchor || 'start', layer: layer, rot: 0, holeTable: id }); }
+    function arrowAt(tip, d) { var aw = (_.ARROW_W || 0.5) * k, al = 3 * k; out.push({ k: 'fill', pts: [tip, [tip[0] - d[0] * al + d[1] * aw, tip[1] - d[1] * al - d[0] * aw], [tip[0] - d[0] * al - d[1] * aw, tip[1] - d[1] * al + d[0] * aw]], layer: AL, holeTable: id }); }
+    // tags beside the holes, up and right of each (paper), and the X / Y datum arrows at the origin
+    var tagBoxes = [];
+    R.rows.forEach(function (row) {
+      var c = w.toSheet(row.c), o = row.r * w.scale * 0.72 + 0.8 * k, p = [c[0] + o, c[1] + o];
+      tx(p, row.tag, 'start', AL);
+      out[out.length - 1].holeTag = row.tag;
+      if (row.dangling) out[out.length - 1].color = 'dangling';
+      tagBoxes.push({ x0: p[0], y0: p[1], x1: p[0] + textWidth(row.tag, th), y1: p[1] + th });
+    });
+    var Os = w.toSheet(R.origin), L = 10 * k, n0 = out.length;
+    ln(Os, [Os[0] + L, Os[1]], AL); arrowAt([Os[0] + L, Os[1]], [1, 0]); tx([Os[0] + L + 1.2 * k, Os[1] - th / 2], 'X', 'start', AL);
+    ln(Os, [Os[0], Os[1] + L], AL); arrowAt([Os[0], Os[1] + L], [0, 1]); tx([Os[0], Os[1] + L + 1.2 * k], 'Y', 'middle', AL);
+    if (R.dangling) for (var di = n0; di < out.length; di++) out[di].color = 'dangling';
+    var nTags = out.length;
+    // the table: TAG / X LOC / Y LOC / SIZE, a row per hole (a size of several lines: a taller row), merged cells
+    var colW = HT_COLS.map(function (c) { return c[1] * k; });
+    R.rows.forEach(function (row) {
+      row.size.forEach(function (s) { colW[3] = Math.max(colW[3], textWidth(s, th) + 3 * k); });
+      colW[0] = Math.max(colW[0], textWidth(row.tag, th) + 3 * k);
+      colW[1] = Math.max(colW[1], textWidth(row.xText, th) + 3 * k);
+      colW[2] = Math.max(colW[2], textWidth(row.yText, th) + 3 * k);
+    });
+    var heights = R.rows.map(function (row) { return t.combineSizes ? rh : rh * Math.max(1, row.size.length); });
+    if (t.combineSizes) {
+      // a merged SIZE cell is as tall as its rows, or as its lines when they need more: the last row of the size grows
+      var gi0 = 0;
+      for (var gi = 1; gi <= R.rows.length; gi++) {
+        if (gi < R.rows.length && R.rows[gi].group === R.rows[gi0].group) continue;
+        var need = rh * Math.max(1, R.rows[gi0].size.length), have = rh * (gi - gi0);
+        if (need > have) heights[gi - 1] += need - have;
+        gi0 = gi;
+      }
+    }
+    var W = colW.reduce(function (s, x) { return s + x; }, 0), Ht = rh + heights.reduce(function (s, x) { return s + x; }, 0), x0, y1;
+    if (t.x != null && t.y != null) { x0 = t.x; y1 = t.y; }
+    else {
+      // beside the view: right of it, under it, left of it, over it — the first spot on the sheet clear of the other
+      // views, the title block and the tables (sheetBox.avoid), else right of it
+      var wb = w.box, g12 = 12 * k, spots = [[wb.x1 + g12, wb.y1], [wb.x0, wb.y0 - g12], [wb.x0 - g12 - W, wb.y1], [wb.x0, wb.y1 + g12 + Ht]];
+      var clear = function (sp) {
+        var bb = { x0: sp[0], x1: sp[0] + W, y0: sp[1] - Ht, y1: sp[1] };
+        if (sheetBox && (bb.x0 < sheetBox.x0 || bb.x1 > sheetBox.x1 || bb.y0 < sheetBox.y0 || bb.y1 > sheetBox.y1)) return false;
+        return !((sheetBox && sheetBox.avoid) || []).some(function (o) { return o.x0 < bb.x1 && bb.x0 < o.x1 && o.y0 < bb.y1 && bb.y0 < o.y1; });
+      };
+      var pick = spots.filter(clear)[0] || spots[0];
+      x0 = pick[0]; y1 = pick[1];
+    }
+    var colX = [x0]; colW.forEach(function (cw) { colX.push(colX[colX.length - 1] + cw); });
+    var rowY = [y1, y1 - rh]; heights.forEach(function (h) { rowY.push(rowY[rowY.length - 1] - h); });
+    var y0 = y1 - Ht;
+    ln([x0, y0], [x0 + W, y0], TL, 'thick'); ln([x0 + W, y0], [x0 + W, y1], TL, 'thick'); ln([x0 + W, y1], [x0, y1], TL, 'thick'); ln([x0, y1], [x0, y0], TL, 'thick');
+    for (var ci = 1; ci < 4; ci++) ln([colX[ci], y0], [colX[ci], y1], TL);
+    ln([x0, rowY[1]], [x0 + W, rowY[1]], TL);
+    for (var ri = 1; ri < R.rows.length; ri++) {
+      var same = R.rows[ri].group === R.rows[ri - 1].group, yy = rowY[ri + 1];
+      for (var cj = 0; cj < 4; cj++) {
+        if (same && ((cj === 0 && t.combineTags) || (cj === 3 && t.combineSizes))) continue;
+        ln([colX[cj], yy], [colX[cj + 1], yy], TL);
+      }
+    }
+    HT_COLS.forEach(function (c, i) { tx([(colX[i] + colX[i + 1]) / 2, rowY[1] + (rh - th) / 2], c[0], 'middle', TL); });
+    // the middle of the cells of rows i0 … i1
+    function cellMid(i0, i1) { return (rowY[i0 + 1] + rowY[i1 + 2]) / 2; }
+    function sizeLines(lines, mid) { lines.forEach(function (s, j) { tx([colX[3] + 1.5 * k, mid - th / 2 + ((lines.length - 1) / 2 - j) * rh], s, 'start', TL); }); }
+    var r0 = 0;
+    R.rows.forEach(function (row, i) {
+      var mid = cellMid(i, i), last = i === R.rows.length - 1 || R.rows[i + 1].group !== row.group;
+      if (!t.combineTags) tx([(colX[0] + colX[1]) / 2, mid - th / 2], row.tag, 'middle', TL);
+      tx([(colX[1] + colX[2]) / 2, mid - th / 2], row.xText, 'middle', TL);
+      tx([(colX[2] + colX[3]) / 2, mid - th / 2], row.yText, 'middle', TL);
+      if (!t.combineSizes) sizeLines(row.size, mid);
+      if (last) {
+        var gm = cellMid(r0, i);
+        if (t.combineTags) tx([(colX[0] + colX[1]) / 2, gm - th / 2], row.tag, 'middle', TL);
+        if (t.combineSizes) sizeLines(row.size, gm);
+        r0 = i + 1;
+      }
+    });
+    if (R.dangling || R.rows.some(function (row) { return row.dangling; })) for (var dj = nTags; dj < out.length; dj++) out[dj].color = 'dangling';
+    return { prims: out, box: { x0: x0, y0: y0, x1: x0 + W, y1: y1 }, tagBoxes: tagBoxes, rows: R.rows, origin: Os, originView: R.origin, dangling: R.dangling, colX: colX, rowY: rowY,
+      text: 'Hole Table (' + R.rows.length + ' hole' + (R.rows.length === 1 ? '' : 's') + ')' };
+  }
+  // holeTableAt(sheet, p) -> the sheet's hole table whose box holds paper point p, or null
+  function holeTableAt(sheet, p) {
+    var hit = null;
+    (sheet && sheet.holeTables || []).forEach(function (t) { var b = t.box; if (b && p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) hit = t; });
+    return hit;
+  }
+  D.CLOUD_SHAPES = CLOUD_SHAPES; D.WELD_TYPES = WELD_TYPES; D.cloudArcs = cloudArcs; D.weldText = weldText;
+  D.findHoleTable = findHoleTable; D.addHoleTable = addHoleTable; D.editHoleTable = editHoleTable; D.deleteHoleTable = deleteHoleTable; D.moveHoleTable = moveHoleTable;
+  D.viewHoles = viewHoles; D.holeTableRows = holeTableRows; D.holeTablePrims = holeTablePrims; D.holeTableAt = holeTableAt;
   D.GTOL_CHARS = GTOL_CHARS; D.SF_SYMBOLS = SF_SYMBOLS; D.nextDatum = nextDatum; D.addSymbol = addSymbol; D.findSymbol = findSymbol; D.editSymbol = editSymbol; D.deleteSymbol = deleteSymbol;
   D.symbolText = symbolText; D.symbolPrims = symbolPrims; D.datumRef = datumRef;
 

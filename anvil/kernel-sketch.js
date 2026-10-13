@@ -69,6 +69,8 @@
   // spline (closed: true, at least 3 points) is periodic, curvature-continuous through its first point too.
   // tans[i] = [angleDeg, weight] makes point i tangent-driving (SolidWorks' Tangent Driving: the curve leaves the point
   // at that angle, its speed scaled by the weight; 1 is the natural chord-length speed); the curve stays C1 there.
+  // rfAK: tans[i] = [angleDeg, weight, weightIn] gives the span arriving at point i its own speed (SolidWorks' asymmetric
+  // tangent weighting): what keeps a spline cut in two by Split Entities / Trim exactly the curve it was.
   // splineGeom(e) -> { bez: [[B0, B1, B2, B3], …] (one cubic Bézier per span), knots: [t0, …], closed } or null.
   // The same Béziers are what DXF SPLINE (R2000) and OpenCascade get, so every consumer draws the same curve.
   function triSolve(a, b, c, r) {   // Thomas: a sub-, b main, c super-diagonal (a[0], c[n-1] unused)
@@ -204,13 +206,14 @@
     for (i = 0; i < m; i++) { var q = P[(i + 1) % n]; h.push(Math.max(Math.hypot(q[0] - P[i][0], q[1] - P[i][1]), 1e-9)); knots.push(knots[i] + h[i]); }
     // the first derivatives M_i at the points: C2 rows h_i·M_{i−1} + 2(h_{i−1} + h_i)·M_i + h_{i−1}·M_{i+1} = 3(h_i·Δ_{i−1}/h_{i−1} + h_{i−1}·Δ_i/h_i),
     // natural ends 2·M_0 + M_1 = 3·Δ_0/h_0, a tangent-driving point M_i = weight·(cos, sin)
-    var a = [], b = [], c = [], rx = [], ry = [], tans = e.tans || [];
+    var a = [], b = [], c = [], rx = [], ry = [], tans = e.tans || [], rho = [];
     for (i = 0; i < n; i++) {
       var tg = tans[i];
-      a.push(0); b.push(0); c.push(0);
+      a.push(0); b.push(0); c.push(0); rho.push(1);
       if (tg && isFinite(+tg[0])) {
         var w = tg[1] == null || !isFinite(+tg[1]) ? 1 : +tg[1], an = +tg[0] * Math.PI / 180;
         b[i] = 1; rx.push(w * Math.cos(an)); ry.push(w * Math.sin(an));
+        if (tg[2] != null && isFinite(+tg[2]) && w !== 0) rho[i] = +tg[2] / w;   // rfAK: the arriving span's speed over the leaving one's
         continue;
       }
       if (!closed && (i === 0 || i === n - 1)) {
@@ -240,12 +243,17 @@
         var k = q[0], o = q[1], s = q[2], d = 3 / h[s];
         if (Mx[k] != null) return;
         var dx = (P[s + 1][0] - P[s][0]) * d, dy = (P[s + 1][1] - P[s][1]) * d;
-        Mx[k] = n === 2 ? dx / 3 : (dx - Mx[o]) / 2; My[k] = n === 2 ? dy / 3 : (dy - My[o]) / 2;
+        var ro = k === 0 ? rho[o] : 1;   // rfAK: the first span arrives at point 1 at its own speed
+        Mx[k] = n === 2 ? dx / 3 : (dx - ro * Mx[o]) / 2; My[k] = n === 2 ? dy / 3 : (dy - ro * My[o]) / 2;
       });
-    } else { Mx = closed ? cyclicSolve(a, b, c, rx) : triSolve(a, b, c, rx); My = closed ? cyclicSolve(a, b, c, ry) : triSolve(a, b, c, ry); }
+    } else {
+      // rfAK: row r's c[r] multiplies M_{r+1} as the end of span r: its arriving speed
+      for (i = 0; i < n; i++) if (rho[i] !== 1 && (closed || i > 0)) c[(i + n - 1) % n] *= rho[i];
+      Mx = closed ? cyclicSolve(a, b, c, rx) : triSolve(a, b, c, rx); My = closed ? cyclicSolve(a, b, c, ry) : triSolve(a, b, c, ry);
+    }
     for (i = 0; i < m; i++) {
-      var p0 = P[i], p3 = P[(i + 1) % n], k = h[i] / 3, j = (i + 1) % n;
-      bez.push([p0, [p0[0] + k * Mx[i], p0[1] + k * My[i]], [p3[0] - k * Mx[j], p3[1] - k * My[j]], p3]);
+      var p0 = P[i], p3 = P[(i + 1) % n], k = h[i] / 3, j = (i + 1) % n, kj = k * rho[j];
+      bez.push([p0, [p0[0] + k * Mx[i], p0[1] + k * My[i]], [p3[0] - kj * Mx[j], p3[1] - kj * My[j]], p3]);
     }
     return { bez: bez, knots: knots, closed: closed };
   }
@@ -851,7 +859,7 @@
         out = { t: 'spline', pts: e.pts.map(function (q) { return m(q[0], q[1]); }) };
         if (e.closed) out.closed = true;
         if (e.style) out.style = true;   // rfAH: a style spline's control polygon mirrors: the mirrored curve exactly
-        if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0], tg[1]] : null; });
+        if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0]].concat(tg.slice(1)) : null; });
         break;
       }
       case 'ellipse': case 'pellipse': {
@@ -1880,7 +1888,7 @@
       var g = { t: 'spline', pts: (src.pts || []).map(function (p) { return [+p[0], +p[1]]; }) };
       if (src.closed) g.closed = true;
       if (src.style) g.style = true;   // rfAH
-      if (src.tans) g.tans = src.tans.map(function (tg) { return tg ? [+tg[0], tg[1] == null ? 1 : +tg[1]] : null; });
+      if (src.tans) g.tans = src.tans.map(function (tg) { return tg ? [+tg[0], tg[1] == null ? 1 : +tg[1]].concat(tg[2] != null ? [+tg[2]] : []) : null; });
       if (src.local) g.local = true;
       return g;
     }
@@ -1941,7 +1949,7 @@
       else if (g && g.t === 'arc') { var c = P(g.cx, g.cy), a0 = normDeg(g.a0 + rot); o.path.g = { t: 'arc', cx: c[0], cy: c[1], r: g.r * k, a0: a0, a1: a0 + (g.a1 - g.a0) }; }
       else if (g && g.t === 'spline') {   // sketch-text2: a driving tangent turns with it (its weight is per unit of chord length)
         o.path.g.pts = g.pts.map(function (q) { return P(q[0], q[1]); });
-        if (g.tans) o.path.g.tans = g.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + rot), tg[1]] : null; });
+        if (g.tans) o.path.g.tans = g.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + rot)].concat(tg.slice(1)) : null; });
       } else if (g && (g.t === 'ellipse' || g.t === 'pellipse')) {
         var ce = P(g.cx, g.cy);
         o.path.g.cx = ce[0]; o.path.g.cy = ce[1]; o.path.g.rx = g.rx * k; o.path.g.ry = g.ry * k; o.path.g.rot = normDeg((+g.rot || 0) + rot);

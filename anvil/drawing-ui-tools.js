@@ -447,6 +447,7 @@
     if (s.kind === 'annot') { edit(function (dc) { Drawing.deleteAnnotation(dc, s.id); }); D.sel = null; render(); return true; }
     if (s.kind === 'note') { edit(function (dc) { Drawing.deleteNote(dc, s.id); }); D.sel = null; render(); return true; }
     if (s.kind === 'magline') return DW.deleteMagLine ? DW.deleteMagLine(s.id) : false;   // (rfAG)
+    if (s.kind === 'holetable') return deleteHoleTable(s.id);   // (rfAN)
     if (s.kind === 'balloon') {
       edit(function (dc) {
         var v = Drawing.findView(dc, s.view);
@@ -508,6 +509,11 @@
         var q = w.toSheet(c.c), dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
         if (dd < bd) { bd = dd; best = { view: w.view.id, w: w, pick: { center: { c: c.c.slice(), r: c.r } }, hl: { pt: q } }; }
       });
+      // (rfAL) an ellipse's centre (a circle seen obliquely: a hole in a True view)
+      (w.proj.ellipses ? w.proj.ellipses.visible : []).forEach(function (el) {
+        var q = w.toSheet(el.c), dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
+        if (dd < bd) { bd = dd; best = { view: w.view.id, w: w, pick: { center: { c: el.c.slice(), r: Drawing.ellipseRadius(el.ax, el.ay) } }, hl: { pt: q } }; }
+      });
       w.proj.lines.visible.forEach(function (l) {
         [[l[0], l[1]], [l[2], l[3]]].forEach(function (m) {
           var q = w.toSheet(m), dd = Math.hypot(p[0] - q[0], p[1] - q[1]);
@@ -515,7 +521,7 @@
         });
       });
     });
-    var ent = entityAt(p);
+    var ent = entityAt(p, false, true);
     if (ent && viewId != null && ent.view !== viewId) ent = null;
     if (best) {
       // a point wins when the pointer is on it (within 4 px) and not clearly nearer the edge or circle itself: a small
@@ -523,6 +529,7 @@
       var de = Infinity;
       if (ent && ent.circle) de = Math.abs(Math.hypot(p[0] - ent.circle.c[0], p[1] - ent.circle.c[1]) - ent.circle.r);
       else if (ent && ent.arc) de = Math.abs(Math.hypot(p[0] - ent.arc.c[0], p[1] - ent.arc.c[1]) - ent.arc.r);
+      else if (ent && ent.ellipse) de = ent.ellipse.pts.reduce(function (m, q, i, A) { return i ? Math.min(m, segDist(p, A[i - 1], q)) : m; }, Infinity);
       else if (ent) de = segDist(p, ent.a, ent.b);
       if (!ent || (bd <= pxToPaper(4) && bd < de + pxToPaper(2))) { best.at = p; return best; }
     }
@@ -530,6 +537,7 @@
     var w0 = sheetView(ent.view), pk;
     if (ent.circle) pk = { circle: { c: ent.mc.c.slice(), r: ent.mc.r } };
     else if (ent.arc) pk = { arc: { c: ent.ma.c.slice(), r: ent.ma.r, a0: ent.ma.a0, a1: ent.ma.a1 } };
+    else if (ent.ellipse) { var me = ent.me; pk = { ellipse: { c: me.c.slice(), ax: me.ax.slice(), ay: me.ay.slice(), t0: me.t0, t1: me.t1, full: !!(me.full || me.whole) } }; }   // (rfAL)
     else pk = { edge: [ent.la.slice(), ent.lb.slice()] };
     return { view: ent.view, w: w0, pick: pk, at: p, hl: ent };
   }
@@ -539,7 +547,7 @@
     var cp = [P.first, P.second].filter(function (x) { return x && x.shift && (x.pick.circle || x.pick.arc); })[0];
     if (!cp || !P.second) return null;
     var other = cp === P.first ? P.second : P.first, w = cp.w, c = (cp.pick.circle || cp.pick.arc).c, clk = w.fromSheet(cp.at);
-    var op = other.pick.edge ? null : other.pick.point || (other.pick.center || other.pick.circle || other.pick.arc).c;
+    var op = other.pick.edge ? null : other.pick.point || (other.pick.center || other.pick.circle || other.pick.arc || other.pick.ellipse).c;
     function dist(q) {
       if (op) return Math.hypot(q[0] - op[0], q[1] - op[1]);
       var e = other.pick.edge, t = [e[1][0] - e[0][0], e[1][1] - e[0][1]], L = Math.hypot(t[0], t[1]) || 1;
@@ -633,6 +641,7 @@
       if (h.pt) dot(h.pt);
       else if (h.circle) svgNode('circle', { class: 'dw-hot', cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': pxToPaper(3) }, g);
       else if (h.arc) svgNode('circle', { class: 'dw-hot', cx: h.arc.c[0], cy: H - h.arc.c[1], r: h.arc.r, 'stroke-width': pxToPaper(2) }, g);
+      else if (h.ellipse) svgNode('path', { class: 'dw-hot', d: DW.ellipsePath(h.ellipse.pts, H), fill: 'none', 'stroke-width': pxToPaper(3) }, g);
       else if (h.a) svgNode('line', { class: 'dw-hot', x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': pxToPaper(3) }, g);
     });
     if (!P.at) return;
@@ -2003,6 +2012,13 @@
       out.push(b);
       if (b.id === 'autoBalloon') out.push({ id: 'magLine', label: 'Magnetic\nLine', run: cmdMagLine, active: function () { return D.tool === 'magline'; } });   // (rfAG)
       if (b.id === 'centerline') out.push({ id: 'areaHatch', label: 'Area\nHatch/Fill', run: cmdAreaHatchTool, active: function () { return D.tool === 'ahatch'; } });
+      // (rfAN) Weld Symbol, Revision Symbol, Revision Cloud after the shop symbols; Hole Table after Revision Table
+      if (b.stack && b.stack.some(function (q) { return q.id === 'gtol'; })) out.push({ stack: [
+        { id: 'weldSymbol', label: 'Weld Symbol', run: function () { cmdSymbolAN('weld'); }, active: function () { return D.tool === 'rfansym' && D.pending && D.pending.type === 'weld'; } },
+        { id: 'revisionSymbol', label: 'Revision Symbol', run: function () { cmdSymbolAN('revision'); }, active: function () { return D.tool === 'rfansym' && D.pending && D.pending.type === 'revision'; } },
+        { id: 'revisionCloud', label: 'Revision Cloud', run: cmdCloud, active: function () { return D.tool === 'rfancloud'; } }
+      ] });
+      if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } });
     });
     Object.defineProperty(out, '_rfAD', { value: true });
     return out;
@@ -2014,20 +2030,26 @@
       var m = f(menus);
       (m || []).forEach(function (menu) {
         // (rfS) File ▸ Save Drawing as DWG… after the DXF entry (a drawing document's File menu only)
+        // (rfAL) idempotent: drawing-ui-panels.js wraps UI.menuHook a second time, which comes through here again;
+        // an entry already in the menu is not added twice
         if (menu && menu.label === 'File' && Array.isArray(menu.items) && D.active) {
-          var fi = [];
-          menu.items.forEach(function (it) { fi.push(it); if (it && it.label === 'Save Drawing as DXF…') fi.push({ label: 'Save Drawing as DWG…', action: function () { DW.exportAs('dwg'); } }); });
+          var fi = [], hasF = function (l) { return menu.items.some(function (q) { return q && q.label === l; }); };
+          menu.items.forEach(function (it) { fi.push(it); if (it && it.label === 'Save Drawing as DXF…' && !hasF('Save Drawing as DWG…')) fi.push({ label: 'Save Drawing as DWG…', action: function () { DW.exportAs('dwg'); } }); });
           menu.items = fi;
         }
         if (!menu || menu.label !== 'Insert' || !Array.isArray(menu.items)) return;
-        var items = [];
+        var items = [], has = function (l) { return menu.items.some(function (q) { return q && q.label === l; }); };
+        var add = function (l, f) { if (!has(l)) items.push({ label: l, action: f }); };
         menu.items.forEach(function (it) {
           items.push(it);
-          if (it && it.label === 'Drawing View ▸ Projected') items.push({ label: 'Drawing View ▸ Auxiliary', action: cmdAuxiliaryView });
-          if (it && it.label === 'Drawing View ▸ Detail') { items.push({ label: 'Drawing View ▸ Broken-out Section', action: cmdBrokenOut }); items.push({ label: 'Drawing View ▸ Break', action: cmdBreakView }); items.push({ label: 'Drawing View ▸ Crop', action: cmdCropView }); }
-          if (it && it.label === 'Annotations ▸ Centerline') items.push({ label: 'Annotations ▸ Area Hatch/Fill', action: cmdAreaHatchTool });   // (rfAD)
-          if (it && it.label === 'Annotations \u25b8 Auto Balloon' && !menu.items.some(function (q) { return q && q.label === 'Annotations \u25b8 Magnetic Line'; })) items.push({ label: 'Annotations \u25b8 Magnetic Line', action: cmdMagLine });   // (rfAG)
+          if (it && it.label === 'Drawing View ▸ Projected') add('Drawing View ▸ Auxiliary', cmdAuxiliaryView);
+          if (it && it.label === 'Drawing View ▸ Detail') { add('Drawing View ▸ Broken-out Section', cmdBrokenOut); add('Drawing View ▸ Break', cmdBreakView); add('Drawing View ▸ Crop', cmdCropView); }
+          if (it && it.label === 'Annotations ▸ Centerline') add('Annotations ▸ Area Hatch/Fill', cmdAreaHatchTool);   // (rfAD)
+          if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
+          if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); }   // (rfAN)
+          if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) add('Tables ▸ Hole Table…', cmdHoleTable);
         });
+        if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Hole Table…'; })) items.push({ label: 'Tables ▸ Hole Table…', action: cmdHoleTable });
         menu.items = items;
       });
       return m;
@@ -2108,6 +2130,21 @@
       return tryEdit(function (dc) { Drawing.setMagLine(dc, id, spec, sh); }) ? api.summary() : null;
     };
     api.balloonMag = function (viewId, index, id, t) { return doc() && tryEdit(function (dc) { Drawing.balloonMag(dc, viewId, index, id == null ? null : id, t); }) ? api.summary() : null; };
+    // (rfAN) holeTable(viewId, { origin: { p } | { x: { a, b }, y: { a, b } }, holes, sizes, all, tagStyle, combineTags,
+    // combineSizes, prec, x, y }) -> its id; holeTableEdit(id, props | null) changes or deletes one; holeTables() -> [{ id,
+    // view, box, origin, rows: [{ tag, x, y, xText, yText, size, lines, c, r }] }] of the active sheet. Weld Symbol,
+    // Revision Symbol and Revision Cloud go through symbol({ type: 'weld' | 'revision' | 'revCloud', … }).
+    api.holeTable = function (viewId, spec) { var t = null; return doc() && tryEdit(function (dc) { t = Drawing.addHoleTable(dc, viewId, spec || {}); }) ? t.id : null; };
+    api.holeTableEdit = function (id, props) {
+      if (!doc()) return null;
+      if (props == null) return Drawing.findHoleTable(doc(), id) ? (deleteHoleTable(id), api.holeTables()) : null;
+      return tryEdit(function (dc) { Drawing.editHoleTable(dc, id, props); }) ? api.holeTables() : null;
+    };
+    api.holeTables = function () {
+      if (!doc()) return [];
+      settle(); if (!D.sheet) render();
+      return JSON.parse(JSON.stringify(D.sheet.holeTables || []));
+    };
     Object.defineProperty(api, '_rfN', { value: true });
     return api;
   });
@@ -2168,7 +2205,9 @@
     var sw = pxToPaper(1.6), dash = pxToPaper(8) + ' ' + pxToPaper(4);
     ((D.sheet && D.sheet.magLines) || []).forEach(function (m) {
       var sel = D.sel && D.sel.kind === 'magline' && D.sel.id === m.id, hov = magHover === m.id;
-      node('line', { class: 'dw-mag' + (sel ? ' sel' : hov ? ' pre' : ''), x1: m.a[0], y1: H - m.a[1], x2: m.b[0], y2: H - m.b[1], 'stroke-width': sel || hov ? sw * 1.6 : sw, 'stroke-dasharray': dash }, g);
+      // (rfAL) a view being dragged carries its magnetic lines with it (its linework moves by liveShift until release)
+      var o = DW.liveOffset ? DW.liveOffset(m.view) : [0, 0];
+      node('line', { class: 'dw-mag' + (sel ? ' sel' : hov ? ' pre' : ''), x1: m.a[0] + o[0], y1: H - m.a[1] - o[1], x2: m.b[0] + o[0], y2: H - m.b[1] - o[1], 'stroke-width': sel || hov ? sw * 1.6 : sw, 'stroke-dasharray': dash, 'data-mag': m.id }, g);
     });
     var P = D.pending;
     if (D.tool === 'magline' && P && P.a && P.at) {
@@ -2176,6 +2215,7 @@
       node('line', { class: 'dw-mag pre', x1: P.a[0], y1: H - P.a[1], x2: e[0], y2: H - e[1], 'stroke-width': sw, 'stroke-dasharray': dash }, g);
       D.preview = { kind: 'magline', a: P.a.slice(), b: e };
     }
+    rfANOverlay(g, H, node);   // (rfAN) hole tables, the Hole Table / Revision Cloud tools
   }
   var magDrag = null, magHover = null;
   document.addEventListener('mousedown', function (e) {
@@ -2224,6 +2264,322 @@
     UI.setStatus('Magnetic line ' + id + ' deleted; its balloons stay where they were.');
     return true;
   }
+  // ------------------------------------------------------------------ rfAN: Hole Table, Revision Symbol / Cloud, Weld Symbol
+  // Hole Table (Annotation ▸ Hole Table, Insert ▸ Tables ▸ Hole Table): the PropertyManager's Datum (click a vertex for
+  // the origin, or an X-axis edge then a Y-axis edge), Holes (click hole edges; Select all holes of the same size adds
+  // every hole of that diameter; All holes in the view) and the tag / combine options; ✓ makes the table beside the
+  // view (drag it anywhere; double-click for its properties; Delete removes it). Works on flat-pattern views too.
+  var HT_PREC = [['', 'Document'], ['0', '0'], ['1', '.1'], ['2', '.12'], ['3', '.123'], ['4', '.1234']];
+  function htGroups(editing) {
+    var g = [
+      { title: 'Tag', fields: [{ type: 'select', key: 'tagStyle', label: 'Tags', options: [['alpha', 'A1, A2 … B1 (a letter per size)'], ['numeric', '1, 2, 3 …']] },
+        { type: 'check', key: 'combineTags', label: 'Combine same tags' }, { type: 'check', key: 'combineSizes', label: 'Combine same sizes' }] },
+      { title: 'Hole Location Precision', fields: [{ type: 'select', key: 'prec', label: 'X / Y LOC', options: HT_PREC }] }
+    ];
+    if (!editing) g.unshift({ title: 'Holes', fields: [{ type: 'check', key: 'sameSize', label: 'Select all holes of the same size' }, { type: 'check', key: 'all', label: 'All holes in the view' }] });
+    return g;
+  }
+  function htProps(v) { return { tagStyle: v.tagStyle, combineTags: !!v.combineTags, combineSizes: !!v.combineSizes, prec: v.prec === '' ? null : +v.prec }; }
+  function cmdHoleTable() {
+    if (D.tool === 'holetable') { endToolPM(); return; }
+    if (!doc() || !D.sheet || !D.sheet.views.length) { UI.toast('Add a drawing view first.'); return; }
+    var vals = { sameSize: true, all: false, tagStyle: 'alpha', combineTags: false, combineSizes: false, prec: '' };
+    toolPM({ title: 'Hole Table', icon: 'holeTable', command: 'holeTable',
+      message: 'Datum: click a vertex of a view for the origin, or an edge for the X axis and then one for the Y axis. Holes: click hole edges (circles) in the same view. ✓ places the table beside the view.',
+      values: vals, groups: htGroups(false),
+      onChange: function (v) { if (D.pending) D.pending.values = v; },
+      onOK: function (v) {
+        var P = D.pending;
+        if (!P || !P.origin) { UI.toast('Hole Table: pick the origin first (a vertex, or an X-axis and a Y-axis edge).'); return false; }
+        if (!v.all && !P.holes.length && !P.sizes.length) { UI.toast('Hole Table: pick the holes (or tick All holes in the view).'); return false; }
+        var spec = Object.assign({ origin: P.origin, holes: P.holes, sizes: P.sizes, all: !!v.all }, htProps(v)), made = null;
+        if (!tryEdit(function (dc) { made = Drawing.addHoleTable(dc, P.view, spec); })) return false;
+        D.sel = { kind: 'holetable', id: made.id };
+        var st = D.sheet && (D.sheet.holeTables || []).filter(function (t) { return t.id === made.id; })[0];
+        UI.setStatus('Hole Table: ' + (st ? st.rows.length : 0) + ' holes. Drag the table to move it, double-click it for its properties.');
+      } }, 'holetable', { view: null, origin: null, xEdge: null, holes: [], sizes: [], values: vals });
+    UI.setStatus('Hole Table: click a vertex (origin) or the X-axis edge of a view.');
+  }
+  function holeTableClick(p) {
+    var P = D.pending, ent = entityAt(p);
+    if (!ent || ent.arc || ent.ellipse) { UI.setStatus('Hole Table: click a vertex, an edge or a hole edge of a view.'); return; }
+    if (P.view != null && ent.view !== P.view) { UI.setStatus('Hole Table: the origin and the holes must be in the same view.'); return; }
+    var w = sheetView(ent.view);
+    if (!w) return;
+    P.view = ent.view;
+    if (ent.circle) {
+      var hole = Drawing.viewHoles(w, mesh()).filter(function (h) { return Math.hypot(h.c[0] - ent.mc.c[0], h.c[1] - ent.mc.c[1]) <= 1e-6 * (1 + Math.abs(h.c[0]) + Math.abs(h.c[1])); })[0];
+      if (!hole) { UI.setStatus('Hole Table: that circle is not a hole.'); return; }
+      if (P.values.sameSize) { var d = 2 * hole.r; if (!P.sizes.some(function (x) { return Math.abs(x - d) <= d * 1e-6; })) P.sizes.push(d); }
+      else if (!P.holes.some(function (h) { return Math.hypot(h.c[0] - hole.c[0], h.c[1] - hole.c[1]) < 1e-9; })) P.holes.push({ c: hole.c.slice(), r: hole.r });
+      drawOverlay();
+      UI.setStatus('Hole Table: ' + htPickCount(P, w) + ' hole(s) picked' + (P.origin ? '' : '; now the origin (a vertex or the X-axis edge)') + '. ✓ places the table.');
+      return;
+    }
+    // a vertex: an end of the edge within 8 px; else the edge is an axis
+    var tol = pxToPaper(8), da = Math.hypot(p[0] - ent.a[0], p[1] - ent.a[1]), db = Math.hypot(p[0] - ent.b[0], p[1] - ent.b[1]);
+    if (!P.xEdge && Math.min(da, db) <= tol) { P.origin = { p: (da <= db ? ent.la : ent.lb).slice() }; }
+    else if (!P.xEdge) { P.xEdge = { a: ent.la.slice(), b: ent.lb.slice() }; P.origin = null; drawOverlay(); UI.setStatus('Hole Table: X axis picked; now click the Y-axis edge.'); return; }
+    else {
+      var e1 = P.xEdge, t1 = [e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]], t2 = [ent.lb[0] - ent.la[0], ent.lb[1] - ent.la[1]];
+      if (Math.abs(t1[0] * t2[1] - t1[1] * t2[0]) <= 1e-9 * Math.hypot(t1[0], t1[1]) * Math.hypot(t2[0], t2[1])) { UI.setStatus('Hole Table: the Y axis cannot be parallel to the X axis; click another edge.'); return; }
+      P.origin = { x: e1, y: { a: ent.la.slice(), b: ent.lb.slice() } }; P.xEdge = null;
+    }
+    drawOverlay();
+    UI.setStatus('Hole Table: origin set. Click the holes (or tick All holes in the view), then ✓.');
+  }
+  function htPickCount(P, w) {
+    var n = P.holes.length;
+    if (P.sizes.length && w) n += Drawing.viewHoles(w, mesh()).filter(function (h) { return P.sizes.some(function (d) { return Math.abs(2 * h.r - d) <= d * 1e-6; }) && !P.holes.some(function (q) { return Math.hypot(q.c[0] - h.c[0], q.c[1] - h.c[1]) < 1e-9; }); }).length;
+    return n;
+  }
+  RF_TOOLS.holetable = holeTableClick;
+  function holeTableAt(p) { return D.sheet ? Drawing.holeTableAt(D.sheet, p) : null; }
+  function cmdHoleTableProps(id) {
+    var t = Drawing.findHoleTable(doc(), id);
+    if (!t) return;
+    D.sel = { kind: 'holetable', id: id };
+    openDrawingPM({ title: 'Hole Table', icon: 'holeTable', command: 'holeTable',
+      message: 'Hole Table' + id + ': its tags, merged cells and the X / Y LOC precision. OK applies (one undo step).',
+      values: { tagStyle: t.tagStyle || 'alpha', combineTags: !!t.combineTags, combineSizes: !!t.combineSizes, prec: t.prec != null ? String(t.prec) : '' }, groups: htGroups(true),
+      onOK: function (v) { if (tryEdit(function (dc) { Drawing.editHoleTable(dc, id, htProps(v)); })) UI.setStatus('Hole Table changed.'); } });
+  }
+  function holeTableMenu(id) {
+    var t = Drawing.findHoleTable(doc(), id);
+    return [
+      { label: 'Properties…', action: function () { cmdHoleTableProps(id); } },
+      { label: 'Follow the view (move beside it)', disabled: !t || t.x == null, action: function () { tryEdit(function (dc) { Drawing.editHoleTable(dc, id, { x: null }); }); } },
+      { label: 'Delete', key: 'Del', action: function () { deleteHoleTable(id); } }
+    ];
+  }
+  function deleteHoleTable(id) {
+    edit(function (dc) { Drawing.deleteHoleTable(dc, id); });
+    if (D.sel && D.sel.kind === 'holetable') D.sel = null;
+    drawOverlay(); UI.setStatus('Hole Table deleted.');
+    return true;
+  }
+  // the hole table's mouse: select / drag it (no tool running), double-click for its properties, right-click menu
+  var htDrag = null, htHover = null;
+  function htEvent(e) { return D.active && D.sheet && D.host && D.host.contains(e.target) && !(D.inline && D.inline.box.contains(e.target)); }
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !htEvent(e) || D.tool || D.formatEdit || (UI.hasPM && UI.hasPM())) return;
+    var p = DW.toPaper(e), t = holeTableAt(p);
+    if (!t) return;
+    e.preventDefault(); e.stopPropagation();
+    settle();
+    D.sel = { kind: 'holetable', id: t.id };
+    htDrag = { id: t.id, start: p, x0: t.box.x0, y0: t.box.y1, moved: false };
+    drawOverlay(); DW.renderTree();
+    UI.setStatus('Hole Table' + t.id + ' (' + t.rows.length + ' holes) — drag to move it, double-click for its properties, Delete removes it.');
+  }, true);
+  document.addEventListener('mousemove', function (e) {
+    if (!htDrag) {
+      if (!htEvent(e) || D.tool || D.drag) { if (htHover) { htHover = null; drawOverlay(); } return; }
+      var h = holeTableAt(DW.toPaper(e)), id = h ? h.id : null;
+      if (id !== htHover) { htHover = id; drawOverlay(); }
+      return;
+    }
+    var p = DW.toPaper(e), dg = htDrag;
+    e.stopPropagation();
+    if (!dg.moved && Math.hypot(p[0] - dg.start[0], p[1] - dg.start[1]) < pxToPaper(3)) return;
+    if (!dg.moved) { UI.pushUndo(); dg.moved = true; D.host.classList.add('dw-dragging'); }
+    Drawing.moveHoleTable(doc(), dg.id, dg.x0 + p[0] - dg.start[0], dg.y0 + p[1] - dg.start[1]);
+    queueRender(true);
+  }, true);
+  document.addEventListener('mouseup', function (e) {
+    var dg = htDrag;
+    if (!dg) return;
+    htDrag = null;
+    e.stopPropagation();
+    if (D.host) D.host.classList.remove('dw-dragging');
+    if (dg.moved) { D.dirty = true; UI.autosave(); render(); }
+  }, true);
+  document.addEventListener('dblclick', function (e) {
+    if (!htEvent(e) || D.tool) return;
+    var t = holeTableAt(DW.toPaper(e));
+    if (!t) return;
+    e.preventDefault(); e.stopPropagation();
+    cmdHoleTableProps(t.id);
+  }, true);
+  document.addEventListener('contextmenu', function (e) {
+    if (!htEvent(e) || D.formatEdit) return;
+    var t = holeTableAt(DW.toPaper(e));
+    if (!t) return;
+    e.preventDefault(); e.stopPropagation();
+    D.sel = { kind: 'holetable', id: t.id }; drawOverlay(); DW.renderTree();
+    UI.showMenu(e.clientX, e.clientY, holeTableMenu(t.id));
+  }, true);
+  // the overlay: the hole table under the cursor / selected, the Hole Table tool's picks, the Revision Cloud being drawn
+  function rfANOverlay(g, H, node) {
+    var sw = pxToPaper(1.2), pad = 2 * paperK();
+    ((D.sheet && D.sheet.holeTables) || []).forEach(function (t) {
+      var sel = D.sel && D.sel.kind === 'holetable' && D.sel.id === t.id, hov = htHover === t.id;
+      if (!t.box || !(sel || hov)) return;
+      node('rect', { class: 'dw-dbox' + (sel ? ' sel' : ''), x: t.box.x0 - pad / 2, y: H - t.box.y1 - pad / 2, width: t.box.x1 - t.box.x0 + pad, height: t.box.y1 - t.box.y0 + pad, 'stroke-width': sw }, g);
+    });
+    var P = D.pending;
+    if (D.tool === 'holetable' && P && P.view != null) {
+      var w = sheetView(P.view);
+      if (w) {
+        var picked = P.holes.slice();
+        if (P.sizes.length) Drawing.viewHoles(w, mesh()).forEach(function (h) { if (P.sizes.some(function (d) { return Math.abs(2 * h.r - d) <= d * 1e-6; })) picked.push(h); });
+        picked.forEach(function (h) { var q = w.toSheet(h.c); node('circle', { class: 'dw-hot', cx: q[0], cy: H - q[1], r: h.r * w.scale, 'stroke-width': pxToPaper(3) }, g); });
+        var ax = P.xEdge || (P.origin && P.origin.x);
+        [ax, P.origin && P.origin.y].forEach(function (e) { if (e) { var a = w.toSheet(e.a), b = w.toSheet(e.b); node('line', { class: 'dw-hot', x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], 'stroke-width': pxToPaper(3) }, g); } });
+        if (P.origin && P.origin.p) { var o = w.toSheet(P.origin.p); node('circle', { class: 'dw-hot', cx: o[0], cy: H - o[1], r: pxToPaper(5), 'stroke-width': pxToPaper(2.5) }, g); }
+      }
+    }
+    if (D.tool === 'rfancloud' && P && P.pts && P.pts.length) {
+      var pts = P.pts.concat(P.at ? [P.at] : []), shp = P.values.shape;
+      if ((shp === 'rect' || shp === 'ellipse') && pts.length >= 2) {
+        var a0 = pts[0], b0 = pts[pts.length - 1];
+        if (shp === 'rect') node('rect', { class: 'dw-cut', x: Math.min(a0[0], b0[0]), y: H - Math.max(a0[1], b0[1]), width: Math.abs(b0[0] - a0[0]), height: Math.abs(b0[1] - a0[1]), fill: 'none', 'stroke-width': pxToPaper(1.5) }, g);
+        else node('ellipse', { class: 'dw-cut', cx: (a0[0] + b0[0]) / 2, cy: H - (a0[1] + b0[1]) / 2, rx: Math.abs(b0[0] - a0[0]) / 2, ry: Math.abs(b0[1] - a0[1]) / 2, fill: 'none', 'stroke-width': pxToPaper(1.5) }, g);
+      } else node('polyline', { class: 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': pxToPaper(1.5) }, g);
+    }
+    if (D.tool === 'rfansym' && P && P.tip && P.at) node('line', { class: 'dw-cut', x1: P.tip[0], y1: H - P.tip[1], x2: P.at[0], y2: H - P.at[1], 'stroke-width': pxToPaper(1.5) }, g);
+  }
+  // pointer position for the previews of the rfAN tools
+  document.addEventListener('mousemove', function (e) {
+    if (!D.active || !D.pending || !(D.tool === 'rfancloud' || D.tool === 'rfansym') || !D.host || !D.host.contains(e.target)) return;
+    var p = DW.toPaper(e), P = D.pending;
+    P.at = p;
+    if (D.tool === 'rfancloud' && P.drawing) { var l = P.pts[P.pts.length - 1]; if (!l || Math.hypot(p[0] - l[0], p[1] - l[1]) > pxToPaper(4)) P.pts.push(p); }
+    drawOverlay();
+  }, true);
+
+  // Revision Symbol / Weld Symbol: PropertyManager, then (with a leader) the arrow point and the place; ✓ / Esc ends.
+  // Revision Cloud: Rectangle / Ellipse (two corners), Irregular Polygon (click the corners, click the first one or ✓
+  // to close it), Freehand (press, draw, release).
+  var RF_SYM = {
+    revision: { title: 'Revision Symbol', icon: 'revisionSymbol' },
+    weld: { title: 'Weld Symbol', icon: 'weldSymbol' },
+    revCloud: { title: 'Revision Cloud', icon: 'revisionCloud' }
+  };
+  function revOptions() {
+    var rows = (doc().revisions && doc().revisions.rows) || [];
+    return rows.length ? rows.map(function (r) { return [String(r.rev), String(r.rev) + (r.description ? ' — ' + r.description : '')]; }) : [['A', 'A (no Revision Table yet)']];
+  }
+  function weldValues(s) {
+    s = s || {}; var a = s.arrow || {}, o = s.other || {};
+    return { aType: s.id ? a.type || 'none' : 'fillet', aSize: a.size || '', aLen: a.length || '', oType: o.type || 'none', oSize: o.size || '', oLen: o.length || '', allAround: !!s.allAround, field: !!s.field, tail: s.tail || '' };
+  }
+  function weldSpec(v) {
+    return { arrow: v.aType === 'none' ? null : { type: v.aType, size: v.aSize, length: v.aLen }, other: v.oType === 'none' ? null : { type: v.oType, size: v.oSize, length: v.oLen },
+      allAround: !!v.allAround, field: !!v.field, tail: v.tail };
+  }
+  function symGroupsAN(type, editing) {
+    if (type === 'revision') return [{ title: 'Revision', fields: [{ type: 'select', key: 'rev', label: 'Revision (Revision Table row)', options: revOptions() }] },
+      { title: 'Leader', fields: [{ type: 'check', key: 'leader', label: editing ? 'Leader (drag its arrow on the sheet)' : 'Leader: first click the arrow point, then the symbol' }] }];
+    if (type === 'revCloud') return [{ title: 'Cloud Shape', fields: [{ type: 'select', key: 'shape', label: 'Shape', options: Drawing.CLOUD_SHAPES }, { type: 'number', key: 'arc', label: 'Maximum arc radius (mm on paper)', min: 0.5 }] }];
+    return [
+      { title: 'Arrow Side (below the line)', fields: [{ type: 'select', key: 'aType', label: 'Symbol', options: Drawing.WELD_TYPES }, { type: 'text', key: 'aSize', label: 'Size (left)' }, { type: 'text', key: 'aLen', label: 'Length-pitch (right)' }] },
+      { title: 'Other Side (above the line)', fields: [{ type: 'select', key: 'oType', label: 'Symbol', options: Drawing.WELD_TYPES }, { type: 'text', key: 'oSize', label: 'Size (left)' }, { type: 'text', key: 'oLen', label: 'Length-pitch (right)' }] },
+      { title: 'Options', fields: [{ type: 'check', key: 'allAround', label: 'Weld all around' }, { type: 'check', key: 'field', label: 'Field weld (flag)' }, { type: 'text', key: 'tail', label: 'Tail (process / spec)' }] }
+    ];
+  }
+  function symSpecAN(type, v) {
+    if (type === 'revision') { var rr = Drawing.revRow(doc(), { rev: v.rev }); return { rev: v.rev, row: rr && rr.id != null ? rr.id : null }; }
+    if (type === 'revCloud') return { arc: +v.arc > 0 ? +v.arc : null };
+    return weldSpec(v);
+  }
+  function cmdSymbolAN(type, id) {
+    var M = RF_SYM[type];
+    if (id != null) {
+      var s = Drawing.findSymbol(doc(), id);
+      if (!s) return;
+      var vals = type === 'weld' ? weldValues(s) : type === 'revision' ? { rev: s.rev, leader: !!s.leader } : { shape: s.shape, arc: s.arc || 3 };
+      openDrawingPM({ title: M.title, icon: M.icon, command: type, message: Drawing.symbolText(s, doc()), values: vals, groups: symGroupsAN(type, true),
+        onOK: function (v) {
+          var spec = symSpecAN(type, v);
+          if (type === 'revCloud' && v.shape !== s.shape) UI.toast('A cloud keeps its shape; draw a new one for another shape.');
+          if (type === 'revision') { if (!v.leader) spec.leader = null; else if (!s.leader) spec.leader = [s.p[0] - 12 * paperK(), s.p[1] - 8 * paperK()]; }
+          if (tryEdit(function (dc) { Drawing.editSymbol(dc, id, spec); })) UI.setStatus(M.title + ' changed.');
+        } });
+      return;
+    }
+    if (type === 'revCloud') { cmdCloud(); return; }
+    var tool = 'rfansym';
+    if (D.tool === tool && D.pending && D.pending.type === type) { endToolPM(); return; }
+    var v0 = type === 'weld' ? weldValues(null) : { rev: Drawing.latestRev(doc()) || 'A', leader: true };
+    toolPM({ title: M.title, icon: M.icon, command: type, values: v0, groups: symGroupsAN(type, false),
+      message: type === 'weld' ? 'Set the weld, then click the joint (the arrow point) and where the reference line starts. Esc or ✓ ends.' : 'Pick the revision, then click the point the leader touches and where the triangle goes. Esc or ✓ ends.',
+      onChange: function (v) { if (D.pending) { D.pending.values = v; if (type === 'revision' && !v.leader) D.pending.tip = null; } } }, tool, { type: type, values: v0, tip: null });
+    UI.setStatus(M.title + ': click the point the arrow touches.');
+  }
+  function symClickAN(p) {
+    var P = D.pending, v = P.values, M = RF_SYM[P.type];
+    var lead = P.type === 'weld' || v.leader;
+    if (lead && !P.tip) { P.tip = p; UI.setStatus(M.title + ': now click where the ' + (P.type === 'weld' ? 'reference line starts' : 'symbol goes') + '.'); return; }
+    var spec = Object.assign({ type: P.type, p: p }, symSpecAN(P.type, v)), made = null;
+    if (P.tip) spec.leader = P.tip;
+    P.tip = null; P.at = null;
+    if (!tryEdit(function (dc) { made = Drawing.addSymbol(dc, spec); })) return;
+    D.sel = { kind: 'symbol', id: made.id };
+    UI.setStatus(Drawing.symbolText(made, doc()) + ' placed — click for the next one, Esc ends.');
+    drawOverlay();
+  }
+  RF_TOOLS.rfansym = symClickAN;
+  function cmdCloud() {
+    if (D.tool === 'rfancloud') { endToolPM(); return; }
+    var v0 = { shape: 'rect', arc: 3 };
+    toolPM({ title: 'Revision Cloud', icon: 'revisionCloud', command: 'revCloud', values: v0, groups: symGroupsAN('revCloud', false),
+      message: 'Rectangle / Ellipse: click two opposite corners. Irregular Polygon: click the corners, then the first one again (or ✓). Freehand: press, draw, release.',
+      onChange: function (v) { if (D.pending) { D.pending.values = v; D.pending.pts = []; } },
+      onOK: function () { var P = D.pending; if (P && P.values.shape === 'polygon' && P.pts.length >= 3) cloudMake(P.pts.slice()); } }, 'rfancloud', { values: v0, pts: [], at: null });
+    UI.setStatus('Revision Cloud: click the first corner.');
+  }
+  function cloudMake(pts) {
+    var P = D.pending, v = P.values, spec = { type: 'revCloud', shape: v.shape, arc: +v.arc > 0 ? +v.arc : null }, made = null;
+    if (v.shape === 'rect' || v.shape === 'ellipse') { spec.a = pts[0]; spec.b = pts[pts.length - 1]; } else spec.points = pts;
+    P.pts = []; P.drawing = false;
+    if (!tryEdit(function (dc) { made = Drawing.addSymbol(dc, spec); })) return;
+    D.sel = { kind: 'symbol', id: made.id };
+    drawOverlay();
+    UI.setStatus('Revision Cloud placed — draw the next one, Esc ends.');
+  }
+  function cloudClick(p) {
+    var P = D.pending, shp = P.values.shape;
+    if (shp === 'freehand') { P.pts = [p]; P.drawing = true; return; }
+    if (shp === 'rect' || shp === 'ellipse') {
+      if (!P.pts.length) { P.pts = [p]; UI.setStatus('Revision Cloud: click the opposite corner.'); return; }
+      if (Math.abs(p[0] - P.pts[0][0]) < pxToPaper(4) || Math.abs(p[1] - P.pts[0][1]) < pxToPaper(4)) { UI.setStatus('Revision Cloud: click a corner away from the first one.'); return; }
+      cloudMake([P.pts[0], p]);
+      return;
+    }
+    if (P.pts.length >= 3 && Math.hypot(p[0] - P.pts[0][0], p[1] - P.pts[0][1]) <= pxToPaper(8)) { cloudMake(P.pts.slice()); return; }
+    P.pts.push(p);
+    UI.setStatus('Revision Cloud: ' + P.pts.length + ' corner(s); click the first one (or ✓) to close it.');
+    drawOverlay();
+  }
+  RF_TOOLS.rfancloud = cloudClick;
+  document.addEventListener('mouseup', function (e) {
+    var P = D.pending;
+    if (D.tool !== 'rfancloud' || !P || !P.drawing) return;
+    P.drawing = false;
+    if (P.pts.length >= 3) cloudMake(P.pts.slice()); else { P.pts = []; UI.setStatus('Revision Cloud: press and draw round the change.'); }
+  }, true);
+  // the shop symbols' PropertyManager and right-click menu (drawing-ui-panels.js) hand these types to cmdSymbolAN
+  onAssign(DW, 'cmdSymbol', function (f) {
+    if (typeof f !== 'function' || f._rfAN) return f;
+    var g = function (type, id) { return RF_SYM[type] ? cmdSymbolAN(type, id) : f.apply(this, arguments); };
+    g._rfAN = true;
+    return g;
+  });
+  onAssign(DW, 'symbolMenu', function (f) {
+    if (typeof f !== 'function' || f._rfAN) return f;
+    var g = function (id) {
+      var items = f.apply(this, arguments), s = Drawing.findSymbol(doc(), id);
+      if (s && RF_SYM[s.type]) {
+        items[0] = { label: 'Properties…', action: function () { cmdSymbolAN(s.type, id); } };
+        if (s.type !== 'revision') items = items.filter(function (it) { return !/Leader/.test(it.label || ''); });
+      }
+      return items;
+    };
+    g._rfAN = true;
+    return g;
+  });
+  DW.cmdHoleTable = cmdHoleTable; DW.cmdHoleTableProps = cmdHoleTableProps; DW.holeTableAt = holeTableAt; DW.cmdSymbolAN = cmdSymbolAN; DW.cmdCloud = cmdCloud;   // (rfAN)
   DW.cmdBrokenOut = cmdBrokenOut; DW.cmdAreaHatch = cmdAreaHatch; DW.cmdAreaHatchTool = cmdAreaHatchTool;   // (rfAD)
   DW.cmdMagLine = cmdMagLine; DW.magLineClick = magLineClick; DW.magOverlay = magOverlay; DW.magSnap = magSnap; DW.magAt = magAt; DW.deleteMagLine = deleteMagLine;   // (rfAG)
   DW.smartDimClick = smartDimClick; DW.smartDimMove = smartDimMove; DW.smartDimOverlay = smartDimOverlay; DW.pickAt = pickAt; DW.saveDWG = saveDWG;

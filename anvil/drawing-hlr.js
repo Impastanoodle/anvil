@@ -842,7 +842,8 @@
           [[sv, 'visible'], [sh, 'hidden']].forEach(function (pair) {
             joinRuns(pair[0], pair[0] === sv ? gapC : GAPA).forEach(function (iv) {
               var full = isFull(pair[0]);
-              exact.ellipses[pair[1]].push({ c: c2, ax: x2, ay: y2, t0: full ? 0 : iv[0], t1: full ? TWO_PI : iv[1], full: full, body: G.body });
+              // whole (rfAL): the model edge is a whole circle (a hole's rim), though this piece may be only part of it
+              exact.ellipses[pair[1]].push({ c: c2, ax: x2, ay: y2, t0: full ? 0 : iv[0], t1: full ? TWO_PI : iv[1], full: full, whole: !G.arc, body: G.body });
               extra.push([c2, x2, y2, iv[0], iv[1]]);
             });
           });

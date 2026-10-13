@@ -99,10 +99,10 @@
         // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
         { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter Circle', tool: 'pcircle', help: 'Circle through three points on it' },
           { id: 'tangentCircle', label: 'Tangent Circle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
-        // ui-sketch-spline: Spline and Style Spline (rfAH); SolidWorks' Equation Driven Curve greyed
+        // ui-sketch-spline: Spline and Style Spline (rfAH); Equation Driven Curve (rfAP, ui-sketch-tools.js)
         { fly: 'spline', items: [{ id: 'spline', label: 'Spline', tool: 'spline' },
           { id: 'styleSpline', label: 'Style Spline', tool: 'styleSpline', help: 'A single Bézier curve shaped by its control polygon' },
-          { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)' }] },
+          { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdEquationCurve(); } }] },   // rfAP
         // all five rectangle types (ui-sketch-lines.js: the rect3 / crect3 / parallelogram tools)
         { fly: 'rect', items: [{ id: 'rect', label: 'Corner Rectangle', tool: 'rect' }, { id: 'crect', label: 'Center Rectangle', tool: 'crect' },
           { id: 'rect3', label: '3 Point Corner Rectangle', tool: 'rect3', help: 'Rectangle at any angle from two corners and its height' },
@@ -1061,6 +1061,8 @@
       items.push({ label: 'Add Relation…', icon: 'addRelation', action: inSketch(function () { UI.cmdAddRelations(); }) });
       items.push({ label: 'Display/Delete Relations…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); } });
       items.push({ label: 'Fully Define Sketch…', icon: 'fullyDefine', action: inSketch(function () { UI.cmdFullyDefineSketch(); }) });
+      if (UI.cmdConstrainAll) items.push({ label: 'Constrain All', icon: 'fullyDefine', action: inSketch(function () { UI.cmdConstrainAll(); }) });   // rfAP
+      if (UI.cmdModifySketch) items.push({ label: 'Modify Sketch…', icon: 'moveEnt', action: inSketch(function () { UI.cmdModifySketch(); }) });   // rfAP
       items.push({ sep: true });
       items.push({ label: 'Zoom to Fit', key: 'F', icon: 'fit', action: function () { UI.zoomToFit(); } });
     }
@@ -1140,6 +1142,30 @@
 
   // UI.menuHook(menus) -> menus lets another document type (drawing.js) add or replace menu items
   function MENUS() { var m = partMenus(); return UI.menuHook ? UI.menuHook(m) : m; }
+  // every ribbon item of a list (flyouts, stacks and the entity grid opened up), in order
+  function ribbonLeaves(list) {
+    var out = [];
+    (list || []).forEach(function walk(it) {
+      if (!it || it.sep) return;
+      if (it.stack) it.stack.forEach(walk);
+      else if (it.items) it.items.forEach(walk);
+      else if (it.label) out.push(it);
+    });
+    return out;
+  }
+  // rfAP: Tools-menu rows for Sketch tab items, by id ('fillet:skFillet' = id fillet with icon skFillet): the row runs
+  // the item as its ribbon button does; greyed outside a sketch, and for SolidWorks' commands Anvil does not have
+  function sketchMenuRows(group, ids) {
+    var leaves = ribbonLeaves(RIBBON.Sketch);
+    return ids.map(function (spec) {
+      var id = spec.split(':')[0], icon = spec.split(':')[1];
+      var it = leaves.filter(function (x) { return x.id === id && (!icon || x.icon === icon); })[0];
+      if (!it) return null;
+      var has = !!(it.run || it.tool), flat = it.label.replace(/\s*\n\s*/g, ' ');
+      var needs = id !== 'plane' && id !== 'sketch';
+      return { label: group + ' ▸ ' + flat, icon: it.icon || it.id, disabled: !has || (needs && App.mode !== 'sketch'), action: function () { if (it.tool && !it.run) UI.setTool(it.tool); else it.run(); refreshRibbon(); } };
+    }).filter(Boolean);
+  }
   function partMenus() {
     var v = App.view;
     return [
@@ -1258,13 +1284,23 @@
         { label: 'Evaluate ▸ Draft Analysis', action: function () { UI.cmdDraftAnalysis(); } },
         { label: 'Evaluate ▸ Clearance Verification', action: function () { UI.cmdClearance(); } },
         { label: 'Evaluate ▸ Interference Detection', action: function () { UI.cmdInterference(); }, disabled: !isAsm() },
-        { label: 'Relations ▸ Add…', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
-        { label: 'Relations ▸ Display/Delete…', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
-        { label: 'Dimensions ▸ Fully Define Sketch…', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
+        { sep: true },
+        // rfAP: Tools ▸ Sketch Entities / Sketch Tools / Relations / Dimensions with every sketch command, in
+        // SolidWorks 2024's order (the rows run the Sketch tab's own items: sketchMenuRows)
+      ].concat(sketchMenuRows('Sketch Entities', ['line', 'rect', 'crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon', 'circle', 'pcircle', 'arc', 'tarc', 'arc3', 'ellipse', 'pellipse', 'parabola', 'conic', 'spline', 'styleSpline', 'eqnCurve', 'point', 'centerline', 'midline', 'parallelLine', 'tangentLine', 'perpLine', 'bisectorLine', 'tangentCircle', 'text', 'plane', 'fillet:skFillet', 'skChamfer']),
+        sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve', 'offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'construction', 'mirrorEnt', 'dynMirror', 'moveEnt', 'copyEnt', 'rotateEnt', 'scaleEnt', 'stretchEnt', 'sketchPattern', 'cSketchPattern']), [
+        { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment },
+        { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
         // dxf-import: Tools ▸ Sketch Tools, as SolidWorks has them (ui-sketch-import.js)
         { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },
         { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
         { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
+        { label: 'Relations ▸ Add…', icon: 'addRelation', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
+        { label: 'Relations ▸ Display/Delete…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
+        { label: 'Relations ▸ Constrain All', icon: 'fullyDefine', action: function () { UI.cmdConstrainAll(); }, disabled: App.mode !== 'sketch' || !UI.cmdConstrainAll }
+      ], sketchMenuRows('Dimensions', ['dim', 'horizDim', 'vertDim', 'ordinateH', 'ordinateV']), [
+        { label: 'Dimensions ▸ Fully Define Sketch…', icon: 'fullyDefine', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
+        { sep: true },
         { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } },
         { label: 'Equations…', action: function () { if (isAsm()) toast('Equations belong to parts: open the part to edit them.'); else showEquations(); }, disabled: isAsm() },
         { sep: true },
@@ -1275,7 +1311,7 @@
         { label: 'Options…', action: function () { UI.openTaskPane('props'); } },
         { label: 'Options ▸ Image Quality…', action: function () { UI.openTaskPane('props'); var q = document.querySelector('[data-role="image-quality"]'); if (q) q.focus(); } },
         { sep: true }
-      ].concat(UI.occtMenuItems ? UI.occtMenuItems() : []) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
+      ].concat(UI.occtMenuItems ? UI.occtMenuItems() : [])) },   // r12/occtui12: Tools ▸ OpenCascade kernel ▸ … (ui-occt.js)
       { label: 'Window', items: [
         { label: 'Task Pane', checked: !$('tp-panel').hidden, action: function () { if ($('tp-panel').hidden) UI.openTaskPane('home'); else UI.closeTaskPane(); } }
       ] },
@@ -1980,6 +2016,7 @@
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
   UI.fitWorkspace = fitWorkspace;   // r12/chrome12: panel widths and the CommandManager fitted to the window now
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
+  UI.menuModel = MENUS; UI.ribbonLeaves = ribbonLeaves; UI.ribbonItemState = itemState;   // rfAP: Search Commands (ui-app.js)
   UI.refreshTree = refreshTree; UI.startRename = startRename; UI.renderMenuBar = renderMenuBar; UI.syncStdToolbar = syncStdToolbar; UI.closeMenus = closeMenus; UI.showMenu = showMenu; UI.menuOpen = menuOpen;
   UI.refreshHud = refreshHud; UI.showOrientationMenu = showOrientationMenu; UI.showModal = showModal; UI.closeModal = closeModal; UI.modalDefault = modalDefault; UI.confirmDialog = confirmDialog; UI.promptDialog = promptDialog; UI.setStyle = setStyle; UI.setBg = setBg; UI.normalToSelection = normalToSelection;
   UI.showEquations = showEquations; UI.setEquations = setEquations; UI.normalizeEquations = normalizeEquations;

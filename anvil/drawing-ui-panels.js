@@ -366,9 +366,9 @@
         menu: function () { return [{ label: 'Delete', action: function () { edit(function (dc2) { Drawing.deleteNote(dc2, n.id); }); } }]; } }));
     });
     (dc.symbols || []).forEach(function (sy) {
-      var nm = { surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance' }[sy.type] + sy.id;
-      t.appendChild(row({ icon: sy.type === 'gtol' ? 'gtol' : sy.type === 'datum' ? 'datumFeature' : 'surfaceFinish', name: nm, depth: 2, cls: 'dw-symbol', data: { symbol: String(sy.id) }, sel: D.sel && D.sel.kind === 'symbol' && D.sel.id === sy.id,
-        badge: sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.ra || '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
+      var nm = ({ surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance', weld: 'Weld Symbol', revision: 'Revision Symbol', revCloud: 'Revision Cloud' }[sy.type] || 'Symbol') + sy.id;
+      t.appendChild(row({ icon: ({ gtol: 'gtol', datum: 'datumFeature', weld: 'weldSymbol', revision: 'revisionSymbol', revCloud: 'revisionCloud' })[sy.type] || 'surfaceFinish', name: nm, depth: 2, cls: 'dw-symbol', data: { symbol: String(sy.id) }, sel: D.sel && D.sel.kind === 'symbol' && D.sel.id === sy.id,
+        badge: sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.type === 'revision' ? sy.rev || '' : sy.type === 'surfaceFinish' ? sy.ra || '' : '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
         click: function () { D.sel = { kind: 'symbol', id: sy.id }; drawOverlay(); renderTree(); }, dbl: function () { cmdSymbol(sy.type, sy.id); }, menu: function () { return symbolMenu(sy.id); } }));
     });
     // (rfQ) the other sheets: one row each, in sheet order around the active one (whose views are listed under it);
@@ -1194,6 +1194,12 @@
     if (D.formatEdit) return false;
     return baseDelete2.apply(this, arguments);
   };
+  // (rfAO) Delete: sketch entities (drawing-ui-sketch.js)
+  var baseDelete3 = deleteSelection;
+  deleteSelection = DW.deleteSelection = function () {
+    if (DW.skDelete && DW.skDelete()) return true;
+    return baseDelete3.apply(this, arguments);
+  };
   // the sheet's right-click menu: Edit Sheet Format after Properties (SolidWorks' place)
   var baseSheetMenu = DW.sheetMenu;
   sheetMenu = DW.sheetMenu = function () {
@@ -1225,7 +1231,7 @@
   })();
   var baseTabsFor = UI.ribbonTabsFor;
   UI.ribbonTabsFor = function (names, extra) {
-    if (D.active) return [['View Layout', 'Annotation', 'Sheet Format'], ['Sketch', 'Markup']];
+    if (D.active) return [['View Layout', 'Annotation', 'Sketch', 'Sheet Format'], ['Markup']];   // (rfAO) the Sketch tab is drawing-ui-sketch.js
     var r = baseTabsFor(names, extra);
     return [r[0].filter(function (n) { return n !== 'Sheet Format'; }), r[1]];
   };

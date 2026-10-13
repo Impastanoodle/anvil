@@ -64,14 +64,36 @@
     if (!f || App.mode !== 'sketch' || !App.edges || !App.edges.length) return null;
     var pl = UI.activePlane(), v = UI.pickVertex ? UI.pickVertex(mx, my) : null, ent = null;
     function r4(x) { return Math.round(x * 1e6) / 1e6; }
+    // rfAK: a facet of a true circle / arc (a hole's rim) lying square to the sketch comes in as that circle / arc, as
+    // SolidWorks dimensions to the edge itself (Ø, R, centre distances), not as the one chord under the cursor; the
+    // facet corners along it are no vertices (only an arc's ends are)
+    var V = K.vec, ed0 = UI.pickEdge ? UI.pickEdge(mx, my) : null, cv0 = ed0 && ed0.edge && ed0.edge.curve != null && App.curves ? App.curves[ed0.edge.curve] : null, C0 = cv0 && cv0.curve;
+    var onTrue = !!(C0 && C0.normal && Math.abs(Math.abs(V.dot(C0.normal, pl.n)) - 1) < 1e-6);
+    if (v && v.point && onTrue) {
+      var arcEnd = C0.a1 - C0.a0 < 2 * Math.PI - 1e-6 && [C0.a0, C0.a1].some(function (u) { var yd0 = V.cross(C0.normal, C0.xdir), P = V.add(C0.center, V.add(V.scale(C0.xdir, Math.cos(u) * C0.radius), V.scale(yd0, Math.sin(u) * C0.radius))); return V.len(V.sub(P, v.point)) < 1e-6 * Math.max(1, C0.radius); });
+      if (!arcEnd) v = null;
+    }
     if (v && v.point) { var q = K.to2D(pl, v.point); ent = { t: 'point', x: r4(q[0]), y: r4(q[1]) }; }
     else {
-      var ed = UI.pickEdge ? UI.pickEdge(mx, my) : null;
+      var ed = ed0;
       if (!ed || !ed.edge || !ed.edge.a || !ed.edge.b) return null;
-      var a = K.to2D(pl, ed.edge.a), b = K.to2D(pl, ed.edge.b);
-      // an edge square to the sketch plane projects to a point
-      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]))) ent = { t: 'point', x: r4(a[0]), y: r4(a[1]) };
-      else ent = { t: 'line', x1: r4(a[0]), y1: r4(a[1]), x2: r4(b[0]), y2: r4(b[1]) };
+      var C = C0;
+      if (onTrue) {
+        var cen = K.to2D(pl, C.center), sweep = C.a1 - C.a0;
+        if (!(sweep < 2 * Math.PI - 1e-6)) ent = { t: 'circle', cx: r4(cen[0]), cy: r4(cen[1]), r: r4(C.radius) };
+        else {
+          var yd = V.cross(C.normal, C.xdir), at = function (u) { var q = K.to2D(pl, V.add(C.center, V.add(V.scale(C.xdir, Math.cos(u) * C.radius), V.scale(yd, Math.sin(u) * C.radius)))); return Math.atan2(q[1] - cen[1], q[0] - cen[0]) * 180 / Math.PI; };
+          var a0 = V.dot(C.normal, pl.n) > 0 ? at(C.a0) : at(C.a1);
+          while (a0 < 0) a0 += 360;
+          while (a0 >= 360) a0 -= 360;
+          ent = { t: 'arc', cx: r4(cen[0]), cy: r4(cen[1]), r: r4(C.radius), a0: r4(a0), a1: r4(a0 + sweep * 180 / Math.PI) };
+        }
+      } else {
+        var a = K.to2D(pl, ed.edge.a), b = K.to2D(pl, ed.edge.b);
+        // an edge square to the sketch plane projects to a point
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]))) ent = { t: 'point', x: r4(a[0]), y: r4(a[1]) };
+        else ent = { t: 'line', x1: r4(a[0]), y1: r4(a[1]), x2: r4(b[0]), y2: r4(b[1]) };
+      }
     }
     ent.construction = true;
     var keys = S.paramNames(ent), tol = 1e-6;
@@ -574,6 +596,11 @@
     });
     // rfF: sketch points selected with the Select tool (an end point, a centre: ui-select.js): a dot in the selection blue
     if (UI.selection) UI.selection().forEach(function (s) {
+      if (s.kind === 'sketchRef') {   // rfAK: a style spline's control polygon leg, selected: a blue line over it
+        var cl = S.refCurve(f, s.ref);
+        if (cl && cl.kind === 'line') { var la = scr(pl, cl.a), lb = scr(pl, cl.b); h.svg('line', { 'class': 'sk-selleg', x1: la[0], y1: la[1], x2: lb[0], y2: lb[1], style: 'stroke:#1f6fe8;stroke-width:3;pointer-events:none' }, layer); }
+        return;
+      }
       var p = s.kind === 'sketchPoint' ? S.refPoint(f, s.ref) : null;
       if (!p) return;
       var q = scr(pl, p);
@@ -1003,6 +1030,32 @@
 
   // ------------------------------------------------------------------ script / test hooks
   function activeOrThrow() { var f = UI.activeSketchFeature(); if (!f) throw new Error('No active sketch.'); return f; }
+  // ------------------------------------------------------------------ Constrain All (rfAP)
+  // SolidWorks: right-click in a sketch ▸ Constrain All, and the DXF import option of that name. The relations the
+  // geometry already obeys (Coincident ends, Concentric centres, the origin, Horizontal / Vertical lines, Tangent arcs;
+  // SketchSolver.constrainAll), then Fully Define Sketch's dimensions, in one undo step: an imported blank turns black.
+  function constrainAll(opts) {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    if (!f.entities.length) { UI.toast('The sketch is empty: there is nothing to constrain.'); return null; }
+    var pushed = !App.sketchDirty;
+    markDirty();
+    var o = {};
+    Object.keys(opts || {}).forEach(function (k) { o[k] = opts[k]; });
+    if (o.minGap == null && UI.cam) o.minGap = 34 * (UI.cam.scale || 0);
+    var r = S.constrainAll(f, o);
+    if (!r.ok) { if (pushed) { App.undo.pop(); App.sketchDirty = false; } UI.toast(r.error); return r; }
+    App.sel = null; App.dimsStale = true; refresh();
+    var a = r.added, parts = [];
+    ['coincident', 'concentric', 'horizontal', 'vertical', 'tangent'].forEach(function (k) { if (a[k]) parts.push(a[k] + ' ' + S.TYPES[k].name); });
+    var msg = 'Constrain All: ' + (parts.length ? parts.join(', ') : 'no new relations') + (r.dims ? '; ' + r.dims + ' dimension' + (r.dims === 1 ? '' : 's') : '') + '. ' + S.STATUS_TEXT[r.status] + (r.dof ? ' (' + r.dof + ' degrees of freedom left).' : '.');
+    UI.setStatus(msg);
+    if (UI.toast) UI.toast(msg);
+    return r;
+  }
+  UI.cmdConstrainAll = function (opts) { return constrainAll(opts); };
+  if (window.anvil) window.anvil.constrainAll = function (opts) { var r = constrainAll(opts); return r && { ok: r.ok, added: r.added, relations: r.relations, dims: r.dims, status: r.status, dof: r.dof, error: r.error }; };
+
   UI.pickSketchRef = pickSketchRef;
   UI.sketchPointDragHook = sketchDragHook;   // the solver drag itself (ui-sketch.js takes it for a free Sketch Text)
   UI.pickModelRef = pickModelRef;

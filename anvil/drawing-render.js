@@ -491,9 +491,24 @@
     // (rfQ) notes and symbols placed on a view move with it
     D.followViews(doc, views, k);
     var notePre = (doc.notes || []).map(function (nt) { return noteItem(nt, k, noteText); });
-    var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W); r.id = sy.id; r.type = sy.type; return r; });
+    var symPre = (doc.symbols || []).map(function (sy) { var r = D.symbolPrims(sy, k, textWidth, ARROW_W, doc); r.id = sy.id; r.type = sy.type; return r; });
+    // (rfAN) Hole Tables: each one's rows worked out from its view (reattached origin and holes, sizes, tags), the table
+    // on the TABLES layer and the tags and datum arrows on ANNOTATIONS (moving with the view)
+    var htTaken = [tbRect].concat(revBx ? [revBx] : [], bom ? [bom.box] : [], tables.map(function (t) { return t.box; }), tbBoxes.slice(1));
+    var htPre = (doc.holeTables || []).map(function (t) {
+      var w = views.filter(function (x) { return x.view.id === t.view; })[0];
+      if (!w || w.pending) return { id: t.id, view: t.view, prims: [], box: null, rows: [], missing: !w, pending: !!w, text: 'Hole Table' };
+      // (a table not placed yet goes beside its view, clear of the other views and tables)
+      var sheetBox = { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1, avoid: htTaken.concat(views.filter(function (x) { return x !== w; }).map(function (x) { return x.box; })) };
+      var r = D.holeTablePrims(t, w, k, mesh, doc, units, holeEnds, holeNames, textWidth, sheetBox);
+      if (r.box) htTaken.push(r.box);
+      r.id = t.id; r.view = t.view;
+      r.prims.forEach(function (x) { if (x.layer !== 'TABLES') x.view = t.view; });
+      return r;
+    });
     // what dimensions and Bend Tables keep clear of besides: the Revision Table, the sheet format's left blocks, symbols
     var keepOut = (revBx ? [revBx] : []).concat(tbBoxes.slice(1), symPre.map(function (it) { return it.box; }));
+    htPre.forEach(function (it) { if (it.box) keepOut.push(it.box); (it.tagBoxes || []).forEach(function (b) { keepOut.push(b); }); });
     // flat-pattern views: bend notes (or Bend Table tags and the table) and the FLAT SIZE note, worked out before the
     // dimensions so those keep clear of them; a Bend Table goes on free paper (flatCtx: what it must keep clear of)
     var flatPre = [], flatCtx = { views: views, tb: tbRect, bom: bom, sheet: { x0: b1, y0: b1, x1: S[0] - b1, y1: S[1] - b1 }, taken: [] };
@@ -605,8 +620,14 @@
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
       return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
     });
+    var holeTables = htPre.map(function (it) {
+      it.prims.forEach(function (x) { prims.push(x); });
+      return { id: it.id, view: it.view, box: it.box, text: it.text, dangling: !!it.dangling, missing: !!it.missing, origin: it.origin || null, colX: it.colX || null, rowY: it.rowY || null,
+        rows: (it.rows || []).map(function (r) { return { tag: r.tag, x: r.x, y: r.y, xText: r.xText, yText: r.yText, size: r.size.join(' '), lines: r.size.slice(), c: r.c.slice(), r: r.r, dangling: r.dangling }; }) };
+    });
     return { size: S, units: units, prims: prims, views: views, dims: dims, magLines: magLines, projections: projections, scale: scale, bom: bom, balloons: balloons, annotations: annotations, notes: notes, symbols: symbols, revisions: revisions,
       format: fmtList, tables: tables,   // (rfAE) the sheet format's items, the General Tables
+      holeTables: holeTables,   // (rfAN) [{ id, view, box, rows: [{ tag, x, y, xText, yText, size, lines, c, r }], origin (paper) }]
       // (rfT) the dimension style: geo in paper mm (D.dimGeometry), paper in the sheet's units (what prims use: text,
       // arrow, arrowW (full width), gap, ext), prec the decimal places (null: the units' default)
       dimStyle: { geo: _.DIMGEO, paper: _.DIMGEO ? { text: _.DIMGEO.text * k, arrow: _.DIMGEO.arrow * k, arrowW: _.DIMGEO.arrowW * k, gap: _.DIMGEO.gap * k, ext: _.DIMGEO.ext * k } : null, prec: _.DIMSTYLE && _.DIMSTYLE.prec } };
@@ -910,13 +931,27 @@
       var th2 = lab.main == null ? th * 0.8 : th * 0.7;
       return (lab.main == null ? 0 : textWidth(lab.main, th) + th * 0.4) + Math.max(textWidth(lab.upper, th2), textWidth(lab.lower, th2));
     }
+    // (rfAL) a diameter / radius of an ellipse (a circle seen obliquely, d.ell: its conjugate radii in view units):
+    // the arrow lands on the ellipse, reach(u) from the centre along u; the value is the circle's true size
+    var sEll = null;
+    if (d.ell && (d.kind === 'rad' || d.kind === 'dia')) {
+      var ec = vw.toSheet(d.c), ex = vw.toSheet([d.c[0] + d.ell.ax[0], d.c[1] + d.ell.ax[1]]), ey = vw.toSheet([d.c[0] + d.ell.ay[0], d.c[1] + d.ell.ay[1]]);
+      sEll = { ax: [ex[0] - ec[0], ex[1] - ec[1]], ay: [ey[0] - ec[0], ey[1] - ec[1]] };
+    }
+    function reach(u, r0) { return sEll ? D.ellipseReach(sEll, u) : r0; }
     if (d.kind === 'rad') {
       // a radius: the leader leaves the arc at its middle, straight out from the centre; arrow on the arc
       // (an unplaced one tries other points along the arc and longer leaders until it is clear of the others: d._alt)
       var ralt = ALT_RAD[d._alt || 0] || ALT_RAD[0], ra0 = d.a0 || 0, ra1 = d.a1 != null ? d.a1 : 360;
       var rc = vw.toSheet(d.c), rr = d.r * vw.scale, am = (ra0 + (ra1 - ra0) * ralt[0]) * Math.PI / 180, ru;
       if (d.lead) { var rl = Math.hypot(d.lead[0], d.lead[1]) || 1; ru = [d.lead[0] / rl, d.lead[1] / rl]; }
-      else ru = [Math.cos(am), Math.sin(am)];
+      else if (sEll) {
+        // along an elliptical arc: the point at the same fraction of its parameter range
+        var et0 = d.ell.t0 != null ? d.ell.t0 : 0, et1 = d.ell.t1 != null ? d.ell.t1 : 2 * Math.PI, et = et0 + (et1 - et0) * ralt[0];
+        var ew = [sEll.ax[0] * Math.cos(et) + sEll.ay[0] * Math.sin(et), sEll.ax[1] * Math.cos(et) + sEll.ay[1] * Math.sin(et)], ewl = Math.hypot(ew[0], ew[1]) || 1;
+        ru = [ew[0] / ewl, ew[1] / ewl];
+      } else ru = [Math.cos(am), Math.sin(am)];
+      rr = reach(ru, rr);
       var rtip = [rc[0] + ru[0] * rr, rc[1] + ru[1] * rr], rel = d.lead ? [rc[0] + d.lead[0], rc[1] + d.lead[1]] : [rtip[0] + ru[0] * ralt[1] * k, rtip[1] + ru[1] * ralt[1] * k];
       leader(rtip, rel, labMain, [-ru[0], -ru[1]]);
       d.leadNow = [rel[0] - rc[0], rel[1] - rc[1]];
@@ -945,7 +980,7 @@
         // an unplaced one that would cover another dimension turns and / or runs further (d._alt)
         var dalt = ALT_DIA[d._alt || 0] || ALT_DIA[0];
         if (dalt[0]) { var ra = dalt[0] * Math.PI / 180; u = [u[0] * Math.cos(ra) - u[1] * Math.sin(ra), u[0] * Math.sin(ra) + u[1] * Math.cos(ra)]; }
-        var tip0 = [c[0] + u[0] * r, c[1] + u[1] * r];
+        var tip0 = [c[0] + u[0] * reach(u, r), c[1] + u[1] * reach(u, r)];
         if (dalt[2]) elbow = [tip0[0] + u[0] * dalt[1] * k, tip0[1] + u[1] * dalt[1] * k];   // short, beside the circle
         else {
           // run from the tip past the view outline (6 mm), and past the overall-dimension lanes on the left and below
@@ -958,7 +993,7 @@
         }
       }
       // flipped: the leader crosses the circle and the arrow meets the far side from inside
-      var tip = d.flip ? [c[0] - u[0] * r, c[1] - u[1] * r] : [c[0] + u[0] * r, c[1] + u[1] * r];
+      var ru2 = reach(u, r), tip = d.flip ? [c[0] - u[0] * ru2, c[1] - u[1] * ru2] : [c[0] + u[0] * ru2, c[1] + u[1] * ru2];
       var sgd = (d.lead ? d.lead[0] : u[0]) >= 0 ? 1 : -1;
       line(tip, elbow); line(elbow, [elbow[0] + sgd * SHOULDER * k, elbow[1]]); arrow(tip, [-u[0], -u[1]]);
       label([elbow[0] + sgd * (SHOULDER + TEXT_GAP) * k, elbow[1] - th / 2], sgd > 0 ? 'start' : 'end', 0, labMain);
@@ -1112,6 +1147,11 @@
   }
   // SolidWorks draws dangling annotations (their model reference is gone) in olive brown; a flat pattern's etch marks
   // are green, as the sketches' ETCH layer (ACI 3)
+  // (rfAN) Line Format: rgbOf(p) -> the primitive's own colour '#rrggbb' (p.rgb), or null; DXF lineweights snap to
+  // the values AutoCAD accepts (1/100 mm)
+  function rgbOf(p) { return p && typeof p.rgb === 'string' && /^#[0-9a-f]{6}$/i.test(p.rgb) ? p.rgb.toLowerCase() : null; }
+  var DXF_LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
+  function dxfLw(mm) { var v = Math.round(mm * 100), best = DXF_LW[0]; DXF_LW.forEach(function (x) { if (Math.abs(x - v) < Math.abs(best - v)) best = x; }); return best; }
   var COLORS = { dangling: '#a07c00', etch: '#1e9e3c' }, DXF_COLORS = { dangling: 42, etch: 3 }, PDF_COLORS = { dangling: '0.627 0.486 0', etch: '0.118 0.62 0.235' };
   // a CCW arc (degrees) as start / end points
   function arcEnds(p) {
@@ -1197,10 +1237,12 @@
           if (opts.live) out.push('<rect class="dw-pending" x="' + num(p.box.x0) + '" y="' + num(H - p.box.y1) + '" width="' + num(p.box.x1 - p.box.x0) + '" height="' + num(p.box.y1 - p.box.y0) + '" rx="' + num(1.5 * k) + '" stroke="none"/>');
           return;
         }
-        var sw = num((STROKE[p.style] || 0.25) * k), cls = p.style ? ' class="' + p.style + '"' : '';
+        // (rfAN) Line Format: a primitive's own weight (p.lw, paper mm) and colour (p.rgb '#rrggbb') win over its style's
+        var sw = num((p.lw > 0 ? +p.lw : STROKE[p.style] || 0.25) * k), cls = p.style ? ' class="' + p.style + '"' : '';
         var dsh = p.style === 'hidden' || p.style === 'benddown' ? ' stroke-dasharray="' + dash + '"' : p.style === 'chain' || p.style === 'tanfont' ? ' stroke-dasharray="' + chain + '"' : p.style === 'center' ? ' stroke-dasharray="' + center + '"' : '';
         var col = p.color && COLORS[p.color];
         if (col) { dsh += p.k === 'fill' || p.k === 'text' ? '' : ' stroke="' + col + '"'; cls += ' data-color="' + p.color + '"'; }
+        else if (rgbOf(p)) { col = rgbOf(p); dsh += p.k === 'fill' || p.k === 'text' ? '' : ' stroke="' + col + '"'; }
         if (p.k === 'arc') {
           // two halves, so an arc of nearly 360° (its ends a rounding step apart) is not dropped by the viewer
           var span = ((p.a1 - p.a0) % 360 + 360) % 360;
@@ -1216,11 +1258,11 @@
           }
         } else if (p.k === 'line') out.push('<line' + cls + ' x1="' + X(p.a) + '" y1="' + Y(p.a) + '" x2="' + X(p.b) + '" y2="' + Y(p.b) + '" stroke-width="' + sw + '"' + dsh + '/>');
         else if (p.k === 'circle') out.push('<circle' + cls + ' cx="' + X(p.c) + '" cy="' + Y(p.c) + '" r="' + num(p.r) + '" stroke-width="' + sw + '"' + dsh + '/>');
-        else if (p.k === 'fill') out.push('<path' + (col ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
+        else if (p.k === 'fill') out.push('<path' + (p.color && COLORS[p.color] ? ' data-color="' + p.color + '"' : '') + ' d="M' + p.pts.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z" fill="' + (col || '#000') + '" stroke="none"/>');
         else if (p.k === 'region') out.push('<path class="hatch-fill" d="' + p.loops.map(function (l) { return 'M' + l.map(function (q) { return X(q) + ' ' + Y(q); }).join(' L') + ' Z'; }).join(' ') + '" fill="' + (col || '#000') + '" fill-rule="evenodd" stroke="none"/>');   // (rfAG) a solid area fill
         else if (p.k === 'text') {
           var tr = p.rot ? ' transform="rotate(' + num(-p.rot) + ' ' + X(p.p) + ' ' + Y(p.p) + ')"' : '';
-          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h / CAP_EM) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (col ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
+          out.push('<text x="' + X(p.p) + '" y="' + Y(p.p) + '" font-size="' + num(p.h / CAP_EM) + '" text-anchor="' + p.anchor + '" fill="' + (col || '#000') + '" stroke="none"' + tr + (p.color && COLORS[p.color] ? ' data-color="' + p.color + '"' : '') + '>' + esc(p.text) + '</text>');
         }
       });
       if (run != null) out.push('</g>');
@@ -1373,7 +1415,9 @@
         pr(8, p.layer);
         if (ltn) pr(6, ltn);
         if (dc) pr(62, dc);
-        if (r2000 && lw && STROKE[p.style]) pr(370, Math.round(STROKE[p.style] * 100));
+        if (r2000 && lw && p.lw > 0) pr(370, dxfLw(+p.lw));   // (rfAN) Line Format weight
+        else if (r2000 && lw && STROKE[p.style]) pr(370, Math.round(STROKE[p.style] * 100));
+        if (r2000 && !p.color && rgbOf(p)) pr(420, parseInt(rgbOf(p).slice(1), 16));   // (rfAN) true colour (R12: the layer's)
         if (r2000 && sub) pr(100, sub);
       }
       // hatch lines leave out z (30 / 31, default 0): a dashed hatch pattern is thousands of lines (r6/drawings6)
@@ -1481,12 +1525,13 @@
     var c = ['1 J 1 j'];
     var dash = [3 * k * ptPer, 1.5 * k * ptPer];
     var cur = null, curCol = '0 0 0', chain = [8, 1.5, 1.5, 1.5].map(function (x) { return num(x * k * ptPer); }).join(' '), center = CENTER_DASH.map(function (x) { return num(x * k * ptPer); }).join(' ');
-    function style(s) {
-      if (s === cur) return; cur = s;
-      c.push(num((STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' || s === 'benddown' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : s === 'chain' || s === 'tanfont' ? '[' + chain + '] 0 d' : s === 'center' ? '[' + center + '] 0 d' : '[] 0 d'));
+    function style(s, lw) {
+      var key = s + '|' + (lw > 0 ? +lw : '');
+      if (key === cur) return; cur = key;
+      c.push(num((lw > 0 ? +lw : STROKE[s] || 0.25) * k * ptPer) + ' w ' + (s === 'hidden' || s === 'benddown' ? '[' + num(dash[0]) + ' ' + num(dash[1]) + '] 0 d' : s === 'chain' || s === 'tanfont' ? '[' + chain + '] 0 d' : s === 'center' ? '[' + center + '] 0 d' : '[] 0 d'));
     }
     function color(p) {
-      var col = p.color && PDF_COLORS[p.color] || '0 0 0';
+      var rgb = !p.color && rgbOf(p), col = p.color && PDF_COLORS[p.color] || (rgb ? [1, 3, 5].map(function (i) { return num(parseInt(rgb.substr(i, 2), 16) / 255); }).join(' ') : '0 0 0');
       if (col === curCol) return; curCol = col;
       c.push(col + ' RG ' + col + ' rg');
     }
@@ -1532,16 +1577,16 @@
       // a chain of lines (chainLines) is one path, so its dashes run on along it
       var prv = sheet.prims[pi - 1], nxt = sheet.prims[pi + 1];
       if (p.k === 'line' && p.chain && (prv && prv.chain === p.chain || nxt && nxt.chain === p.chain)) {
-        style(p.style);
+        style(p.style, p.lw);
         var first = !(prv && prv.chain === p.chain), last = !(nxt && nxt.chain === p.chain);
         c.push((first ? P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' : '') + P(p.b[0]) + ' ' + P(p.b[1]) + ' l' + (last ? ' S' : ''));
         return;
       }
-      if (p.k === 'arc') { style(p.style); c.push(arcPath(p)); }
-      else if (p.k === 'ellipse') { style(p.style); c.push(ellipsePath(p)); }
-      else if (p.k === 'line') { style(p.style); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
+      if (p.k === 'arc') { style(p.style, p.lw); c.push(arcPath(p)); }
+      else if (p.k === 'ellipse') { style(p.style, p.lw); c.push(ellipsePath(p)); }
+      else if (p.k === 'line') { style(p.style, p.lw); c.push(P(p.a[0]) + ' ' + P(p.a[1]) + ' m ' + P(p.b[0]) + ' ' + P(p.b[1]) + ' l S'); }
       else if (p.k === 'circle') {
-        style(p.style);
+        style(p.style, p.lw);
         var x = p.c[0], y = p.c[1], r = p.r, m = 0.5522847498 * r;
         c.push(P(x + r) + ' ' + P(y) + ' m ' +
           P(x + r) + ' ' + P(y + m) + ' ' + P(x + m) + ' ' + P(y + r) + ' ' + P(x) + ' ' + P(y + r) + ' c ' +

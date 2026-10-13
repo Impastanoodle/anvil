@@ -314,7 +314,13 @@ var Icons = (function () {
     brokenOut: rect(1.5, 2.5, 13, 11, '#bcd6f5', B, 1.1) + p('M5 5.5 C7.5 4 11.5 5 11 8 C10.5 11 6 11.5 4.5 9.5 C3.5 8 4 6.3 5 5.5 z', W, B, 0.9) + ln('M5.5 9.5 L8.5 6.5 M7 10.3 L10 7.3', S, 0.7),
     areaHatch: p('M2 13.5 V5 L7 2 H14 V13.5 z', W, B, 1.1) + ln('M3 12.5 L12.5 3 M6 13 L13.5 5.5 M2.5 9 L8 3.5 M9.5 13 L13.5 9', S, 0.8),
     // (rfAG) Magnetic Line: a dashed line with two balloons on it
-    magLine: ln('M0.5 8 H15.5', B, 1.1, DASH) + circ(4.5, 8, 2.8, W, S, 1) + circ(11.5, 8, 2.8, W, S, 1)
+    magLine: ln('M0.5 8 H15.5', B, 1.1, DASH) + circ(4.5, 8, 2.8, W, S, 1) + circ(11.5, 8, 2.8, W, S, 1),
+    // (rfAN) Hole Table (a table and a tagged hole), Weld Symbol (arrow, reference line, fillet), Revision Symbol
+    // (the triangle), Revision Cloud (scallops)
+    holeTable: rect(1.5, 1.5, 9, 8, W, S, 1) + ln('M1.5 4 h9 M5 1.5 v8', S, 0.8) + circ(12, 12, 2.5, W, B, 1.1) + ln('M12 10.5 v3 M10.5 12 h3', B, 0.7),
+    weldSymbol: ln('M1.5 13.5 L6 8 H15', S, 1.1) + p('M1.5 13.5 l0.6 -2.2 1.6 1.6 z', S, S, 0.6) + p('M9 8 v4 l4 -4 z', W, B, 1.1),
+    revisionSymbol: p('M8 1.8 L14.5 13.5 H1.5 z', W, S, 1.1) + txt(8, 12, 6.5, 'A', B, 'Arial', 700),
+    revisionCloud: ln('M3 5 a2 2 0 0 1 3.5 -1.5 a2 2 0 0 1 3.5 0 a2 2 0 0 1 3 2 a2 2 0 0 1 0.5 3.5 a2 2 0 0 1 -2 3.5 a2 2 0 0 1 -3.5 0.5 a2 2 0 0 1 -3.5 -0.5 a2 2 0 0 1 -1.5 -3.5 a2 2 0 0 1 1.5 -3.5', B, 1.1)
   };
   function icon(name, size, cls) {
     var body = I[name] || I.generic;

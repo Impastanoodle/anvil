@@ -694,7 +694,8 @@
       else if (h.arc) {
         var ha = h.arc, h0 = ha.a0 * Math.PI / 180, h1 = ha.a1 * Math.PI / 180;
         svgNode('path', { class: hc, d: 'M' + (ha.c[0] + ha.r * Math.cos(h0)) + ' ' + (H - ha.c[1] - ha.r * Math.sin(h0)) + ' A' + ha.r + ' ' + ha.r + ' 0 ' + (ha.a1 - ha.a0 > 180 ? 1 : 0) + ' 0 ' + (ha.c[0] + ha.r * Math.cos(h1)) + ' ' + (H - ha.c[1] - ha.r * Math.sin(h1)), fill: 'none', 'stroke-width': hw }, g);
-      } else svgNode('line', { class: hc, x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': hw }, g);
+      } else if (h.ellipse) svgNode('path', { class: hc, d: ellipsePath(h.ellipse.pts, H), fill: 'none', 'stroke-width': hw }, g);
+      else svgNode('line', { class: hc, x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': hw }, g);
     }
     function ghost(cx, cy, gw, gh) { svgNode('rect', { class: 'dw-ghost', x: cx - gw / 2, y: H - cy - gh / 2, width: gw, height: gh, 'stroke-width': sw, 'stroke-dasharray': pxToPaper(5) + ' ' + pxToPaper(3) }, g); }
     var P = D.pending;
@@ -721,7 +722,8 @@
     D.preview = null;
     if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
     if (DW.magOverlay) DW.magOverlay(g, H, svgNode);   // (rfAG) magnetic lines (not printed)
-    if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);   // (rfAE) sheet format items, General Tables, their tools
+    if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);
+    if (DW.skOverlay) DW.skOverlay(g, H, svgNode, sw, pad);   // (rfAO) sketch selection, tool previews, hidden edges   // (rfAE) sheet format items, General Tables, their tools
   }
   function dimMatches(ref, d) { return ref.view === d.view && (ref.key ? ref.key === d.key : ref.index === d.index && d.index != null); }
 
@@ -737,7 +739,10 @@
     return hit;
   }
   // nearest visible line or circle of an orthographic view within 6 px: { view, a, b (paper), la, lb (model 2D) } or { view, circle, c, r }
-  function entityAt(p, any) {
+  // ell (rfAL): an ellipse (a true circle seen obliquely) can be picked too, in an orthographic or a True view; its
+  // entity carries { ellipse: { pts (sheet polyline) }, me (the view's record) } and no line ends (callers that take
+  // only lines, circles and arcs leave ell off)
+  function entityAt(p, any, ell) {
     var tol = pxToPaper(6), best = null, bd = tol;
     D.sheet.views.forEach(function (w) {
       if (!w.ortho && !w.trueDims && !any) return;   // lengths in a pictorial view are foreshortened (any: pre-highlight only; rfZ: a True view reads true lengths)
@@ -758,9 +763,24 @@
         for (var j = -2; j <= 2; j++) if (ang + 360 * j >= a.a0 && ang + 360 * j <= a.a1) inside = true;
         if (inside && d < bd) { bd = d; best = { kind: 'entity', view: w.view.id, arc: { c: cc, r: r, a0: a.a0, a1: a.a1 }, ma: a }; }
       });
+      if (ell && (w.ortho || w.trueDims)) (w.proj.ellipses ? w.proj.ellipses.visible : []).forEach(function (el) {
+        var pts = ellipsePts(w, el), d = Infinity;
+        for (var j = 1; j < pts.length; j++) d = Math.min(d, segDist(p, pts[j - 1], pts[j]));
+        if (d < bd) { bd = d; best = { kind: 'entity', view: w.view.id, ellipse: { pts: pts }, me: el }; }
+      });
     });
     return best;
   }
+  // an ellipse record of a view ({ c, ax, ay, t0, t1 }, view units) as a sheet polyline
+  function ellipsePts(w, el) {
+    var n = Math.max(12, Math.ceil(Math.abs(el.t1 - el.t0) / (2 * Math.PI) * 96)), out = [];
+    for (var i = 0; i <= n; i++) {
+      var t = el.t0 + (el.t1 - el.t0) * i / n, ct = Math.cos(t), st = Math.sin(t);
+      out.push(w.toSheet([el.c[0] + el.ax[0] * ct + el.ay[0] * st, el.c[1] + el.ax[1] * ct + el.ay[1] * st]));
+    }
+    return out;
+  }
+  function ellipsePath(pts, H) { return pts.map(function (q, i) { return (i ? 'L' : 'M') + q[0] + ' ' + (H - q[1]); }).join(' '); }
   function segDist(p, a, b) {
     var dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy, t = L ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L : 0;
     t = Math.max(0, Math.min(1, t));
@@ -788,6 +808,7 @@
       return;
     }
     if (e.button !== 0) return;
+    if (DW.skDown && DW.skDown(p, e)) return;   // (rfAO) the Sketch tab's tools, sketch entities, Smart Dimension on them
     if (D.tool === 'place' && D.pending) { DW.placePending(p); return; }
     if (D.tool === 'project' && D.pending) { DW.projectClick(p); return; }
     if (D.tool === 'section' && D.pending) { DW.sectionClick(p); return; }
@@ -896,7 +917,8 @@
       D.host.classList.add('dw-panning');
       return;
     }
-    if (D.drag && DW.aeDragMove && DW.aeDragMove(D.drag, toPaper(e))) return;   // (rfAE) a format item, a General Table
+    if (D.drag && DW.aeDragMove && DW.aeDragMove(D.drag, toPaper(e))) return;
+    if (D.drag && DW.skDragMove && DW.skDragMove(D.drag, toPaper(e), e)) return;   // (rfAO) a sketch entity or one of its ends   // (rfAE) a format item, a General Table
     if (!D.drag && DW.aeHover && e.target && e.target.nodeType && D.host.contains(e.target) && DW.aeHover(toPaper(e))) return;
     if (D.drag && D.drag.kind === 'bom') {
       var pb = toPaper(e), db = D.drag;
@@ -963,6 +985,7 @@
     }
     if (e.target && e.target.nodeType && D.host.contains(e.target)) {
       var q = toPaper(e), h = null;
+      if (DW.skHover && DW.skHover(q, e)) return;   // (rfAO)
       if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
       // (rfW) Auxiliary / Crop / Break follow the pointer; before its edge is picked, Auxiliary pre-highlights straight edges
       if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && D.pending) {
@@ -1007,7 +1030,7 @@
     // (SolidWorks) a click on a dimension, without a drag, opens its Dimension PropertyManager; the keyboard stays on
     // the sheet (Delete deletes it, D starts Smart Dimension)
     if (dg.kind === 'dim' && dg.clickPM && !dg.moved && D.active) DW.openClickDimPM(dg.ref);
-    if ((dg.kind === 'fmt' || dg.kind === 'gtable') && dg.moved) { D.dirty = true; UI.autosave(); render(); return; }   // (rfAE)
+    if ((dg.kind === 'fmt' || dg.kind === 'gtable' || dg.kind === 'sk') && dg.moved) { D.dirty = true; UI.autosave(); render(); return; }   // (rfAE)
     if ((dg.kind === 'view' || dg.kind === 'bom' || dg.kind === 'dim' || dg.kind === 'balloon' || dg.kind === 'annot' || dg.kind === 'note' || dg.kind === 'flatann' || dg.kind === 'symbol' || dg.kind === 'tip') && dg.moved) { D.dirty = true; UI.autosave(); render(); }
   }
   // Wheel zoom about the cursor, as in the 3D view (smooth/viewport): each notch (or trackpad scroll / pinch, in
@@ -1075,6 +1098,7 @@
     if (!D.active || D.tool) return;
     var pp = toPaper(e);
     D.drag = null;
+    if (DW.skDblClick && DW.skDblClick(pp)) return;   // (rfAO) a sketch entity's properties, a sketch dimension's value
     if (DW.aeDblClick && DW.aeDblClick(pp)) return;   // (rfAE) a format note / field, a General Table cell
     var bq = DW.balloonAt(pp);
     if (bq) { DW.cmdBalloonProps(bq); return; }
@@ -1099,6 +1123,7 @@
     e.preventDefault(); e.stopPropagation();
     if (!D.active) return;
     var p = toPaper(e), w = viewAt(p);
+    if (DW.skContext && DW.skContext(p, e)) return;   // (rfAO) a sketch entity's menu (also notes the point for a view edge's Hide Edge)
     if (DW.aeContext && DW.aeContext(p, e)) return;   // (rfAE) Edit Sheet Format's menu, a General Table's menu
     if (revTableAt(p)) { D.sel = { kind: 'revtable' }; drawOverlay(); DW.renderTree(); UI.showMenu(e.clientX, e.clientY, DW.revTableMenu(Drawing.revRowAt(doc(), units(), p))); return; }
     var nm = DW.noteAt(p);
@@ -1140,5 +1165,5 @@
   DW.requestClose = requestClose; DW.drawingDirty = drawingDirty; DW.markDrawingClean = markDrawingClean;
   DW.activateSheet = activateSheet; DW.addSheet = addSheet; DW.deleteSheet = deleteSheet; DW.renameSheet = renameSheet; DW.sheetTabMenu = sheetTabMenu; DW.renderTabs = renderTabs;
   DW.render = render; DW.settle = settle; DW.ready = ready; DW.queueRender = queueRender; DW.svgEl = svgEl; DW.fitBox = fitBox; DW.fitSheet = fitSheet; DW.glideTo = glideTo;
-  DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist;
+  DW.toPaper = toPaper; DW.pxToPaper = pxToPaper; DW.liveOffset = liveOffset; DW.drawOverlay = drawOverlay; DW.dimMatches = dimMatches; DW.viewAt = viewAt; DW.dimAt = dimAt; DW.entityAt = entityAt; DW.segDist = segDist; DW.ellipsePts = ellipsePts; DW.ellipsePath = ellipsePath;
 })();

@@ -1097,10 +1097,13 @@
   SketchBuilder.prototype.point = function (x, y) { var s = this; return this._e({ t: 'point', x: s._v(x), y: s._v(y) }); };
   // spline(points, closed = false, tans?): the curve through the points (see Kernel.splineGeom); tans[i] = [angle°,
   // weight] makes point i tangent-driving. ellipse(cx, cy, rx, ry, rot°); partialEllipse(cx, cy, rx, ry, rot°, a0°, a1°)
-  SketchBuilder.prototype.spline = function (pts, closed, tans) {
+  // opts { local: true }: Maintain internal continuity off (each point's tangent from its neighbours only)
+  SketchBuilder.prototype.spline = function (pts, closed, tans, opts) {
     var s = this, e = { t: 'spline', pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }) };
     if (closed) e.closed = true;
-    if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]] : null; });
+    if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]].concat(t[2] != null ? [+t[2]] : []) : null; });   // rfAK: [angle, weight, weightIn]
+    if (opts && opts.local) e.local = true;   // rfAK: Maintain internal continuity off
+    if (opts && opts.eq) e.eq = JSON.parse(JSON.stringify(opts.eq));   // rfAP: an Equation Driven Curve's equation (SketchSolver.equationPoints)
     return this._e(e);
   };
   // rfAH: styleSpline(controlVertices, { degree: 3 | 5 | 7 }?): a Style Spline, one Bézier span shaped by its control
@@ -1294,7 +1297,8 @@
               case 'polyline': s += '\n  .polyline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + ')'; break;
               case 'point': s += '\n  .point(' + e.x + ', ' + e.y + ')'; break;
               case 'spline': if (e.style) { s += '\n  .styleSpline(' + JSON.stringify(e.pts) + ', { degree: ' + (e.pts.length - 1) + ' })'; break; }   // rfAH
-                s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : '') + ')'; break;
+                var spo = (e.local ? ['local: true'] : []).concat(e.eq ? ['eq: ' + JSON.stringify(e.eq)] : []);   // rfAP: an Equation Driven Curve keeps its equation
+                s += '\n  .spline(' + JSON.stringify(e.pts) + ', ' + !!e.closed + (e.tans && e.tans.some(Boolean) ? ', ' + JSON.stringify(e.tans) : spo.length ? ', null' : '') + (spo.length ? ', { ' + spo.join(', ') + ' }' : '') + ')'; break;
               case 'ellipse': s += '\n  .ellipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0].join(', ') + ')'; break;
               case 'pellipse': s += '\n  .partialEllipse(' + [e.cx, e.cy, e.rx, e.ry, e.rot || 0, e.a0, e.a1].join(', ') + ')'; break;
               case 'text': s += '\n  .text(' + [e.x, e.y, JSON.stringify(String(e.str == null ? '' : e.str))].join(', ') + ', ' + JSON.stringify(textOptsOut(e)) + ')'; break;   // sketch-text

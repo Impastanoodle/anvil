@@ -112,13 +112,14 @@ if (typeof UI !== 'undefined') (function (UI) {
       case 'feature': return 'feature:' + s.id;
       case 'plane': return 'plane:' + s.ref;
       case 'sketchPoint': return 'sketchPoint:' + s.ref;   // rfF: an end point / centre picked with the Select tool
+      case 'sketchRef': return 'sketchRef:' + s.ref;   // rfAK: a style spline's control polygon leg
     }
     return s.kind + ':' + JSON.stringify(s);
   }
   // rfX (sketch fidelity 3, finding 1): a sketch selection (entities, points, dimensions, relations) does not depend on
   // the mesh, so a rebuild that finishes while the user is still Ctrl-clicking (the sketch's own feature, in the worker)
   // must not throw the list away: before, four preselected slot entities reached Linear Sketch Pattern as two.
-  function sketchOnly(list) { return list.every(function (s) { return s && (s.kind === 'entity' || s.kind === 'sketchPoint' || s.kind === 'dim' || s.kind === 'rel'); }); }
+  function sketchOnly(list) { return list.every(function (s) { return s && (s.kind === 'entity' || s.kind === 'sketchPoint' || s.kind === 'sketchRef' || s.kind === 'dim' || s.kind === 'rel'); }); }
   function selection() {
     if (App.multi.length && App.multi[0] === App.sel && (App.multiMesh === App.mesh || sketchOnly(App.multi)) && App.multiMode === App.mode) return App.multi.slice();
     App.multi = [];
@@ -354,7 +355,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   // rfF: otherwise a plain click selects what is under the cursor (an end point / centre within a few pixels: the
   // point, else the entity) and shows its PropertyManager; Ctrl / Shift toggle it in the selection, and two or more
   // selected items show the Properties PM (Selected Entities, Existing Relations, Add Relations), as in SolidWorks.
-  function isSketchItem(s) { return s.kind === 'entity' || s.kind === 'sketchPoint'; }
+  function isSketchItem(s) { return s.kind === 'entity' || s.kind === 'sketchPoint' || s.kind === 'sketchRef'; }
   function sketchSelectClick(mx, my, ev) {
     var collecting = !!(UI.pmCollectsSelection && UI.pmCollectsSelection());
     if (!allows('entity')) { if (collecting) return true; App.sel = null; App.sel2 = null; App.multi = []; UI.updateSketches(); UI.closePM(); return true; }
@@ -408,8 +409,26 @@ if (typeof UI !== 'undefined') (function (UI) {
     var pt = pickSketchPoint(mx, my);
     if (pt && (!pe.hit || pt.d <= 4 || pt.d <= pe.d + 1e-9)) return { kind: 'sketchPoint', ref: pt.ref };
     if (!pe.hit && f) { var sv = pickStyleVertex(f, mx, my); if (sv != null) return { kind: 'entity', index: sv }; }   // rfAH
+    // rfAK: a style spline's control polygon leg (SolidWorks selects a control polygon line on its own: Horizontal,
+    // Vertical, Tangent to a line or an arc, … in Add Relations): within 5 px of it, nearer than any curve
+    var lg = f ? pickStyleLeg(f, mx, my) : null;
+    if (lg && (!pe.hit || lg.d + 1e-9 < pe.d)) return { kind: 'sketchRef', ref: lg.ref };
     return pe.hit;
   }
+  function pickStyleLeg(f, mx, my) {
+    var pl = UI.activePlane(), best = null, bd = 5;
+    f.entities.forEach(function (e, i) {
+      if (!e || e.t !== 'spline' || !e.style || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;
+      for (var k = 0; k + 1 < e.pts.length; k++) {
+        var a = UI.worldToScreen(K.to3D(pl, e.pts[k][0], e.pts[k][1])), b = UI.worldToScreen(K.to3D(pl, e.pts[k + 1][0], e.pts[k + 1][1]));
+        var dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy, t = l2 > 0 ? Math.max(0, Math.min(1, ((mx - a[0]) * dx + (my - a[1]) * dy) / l2)) : 0;
+        var dd = Math.hypot(a[0] + dx * t - mx, a[1] + dy * t - my);
+        if (dd < bd) { bd = dd; best = { ref: i + '.e' + k, d: dd }; }
+      }
+    });
+    return best;
+  }
+  UI.pickStyleLeg = function (mx, my) { var f = UI.activeSketchFeature(); var r = f && pickStyleLeg(f, mx, my); return r ? r.ref : null; };   // rfAK test hook
   // rfAH: a style spline's control vertices lie off its curve: a click within 9 px of one selects the style spline (its
   // PropertyManager shows that vertex, as the Spline PM shows the point nearest the click)
   function pickStyleVertex(f, mx, my) {
@@ -430,7 +449,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!f || !SS) return out;
     (list || selection()).forEach(function (s) {
       var r = null;
-      if (s.kind === 'sketchPoint') r = s.ref;
+      if (s.kind === 'sketchPoint' || s.kind === 'sketchRef') r = s.ref;
       else if (s.kind === 'entity' && f.entities[s.index]) { var c = SS.curveRefs(f, s.index); r = c.length === 1 ? c[0] : String(s.index); }
       if (r && SS.refKind(f, r) && out.indexOf(r) < 0) out.push(r);
     });
