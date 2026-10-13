@@ -130,6 +130,10 @@ Anvil Foreman, https://claude.ai/artifact/NpXWnL5SbATgTfMLSuRRav, is the user's 
 | `tests/`, `examples/`, `README.md` | the `tests` lane; kernel bugs found here are reported to the head, not fixed in the kernel files from this lane |
 | `dashboard/index.html` | the Anvil Foreman board page |
 
+## Interactive head rounds (cost rules, user 2026-10-13)
+
+When the user drives rounds from a chat ("continue, 4 agents on sketch"), follow `head/ROUND.md` and brief agents from `head/brief-template.md`; the merge / heartbeat helpers are in `head/`. Cache reads are most of the cost, and they scale with context size × steps, so: start every round from a fresh or compacted head session (ask the user to `/compact` after a round is pushed), keep briefs to the exact functions and files, have agents grep and read ranges instead of whole files, and keep each lane's tests in its own group file under `anvil/tests/smoke/` and `anvil/tests/kernel/` so nobody opens the full test pages.
+
 ## Coordinating with other sessions
 
 Cross-session messaging is enabled for this project in `.claude/settings.json` (`crossSessionInbound: "accept"`, `SendMessage` and `ListAgents` allowed). Peer sessions only appear in `ListAgents` while they are running. If a peer is working on this folder, agree lanes with it by message before editing; if the list is empty, work solo. Never add `SendMessage` or `ListAgents` to a `permissions.deny` list — that also disables messaging to subagents.

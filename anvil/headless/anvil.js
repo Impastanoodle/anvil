@@ -384,7 +384,8 @@ async function cmdExampleAll(flags) {
 
 // ------------------------------------------------------------------ test (tests/kernel-tests.html under Node)
 // The page's inline script is run as is. It needs: document.createElement / getElementById for its result table (a
-// few plain objects here), window, a synchronous XMLHttpRequest for tests/fixtures (read from disk), and Worker
+// few plain objects here), window, a synchronous XMLHttpRequest for tests/fixtures and for the page's test group files
+// (tests/kernel/*.js in its GROUPS list, which the page joins and evals in its own scope; both read from disk), and Worker
 // (worker_threads with importScripts / postMessage / onmessage bridged, as worker.js expects). The harness sets
 // window.__anvilTests once every test, sync and async, has settled.
 const WORKER_BOOT = `
@@ -433,7 +434,7 @@ function domShim(pageDir) {
   g.XMLHttpRequest = class XMLHttpRequest {
     open(method, url) { this._url = url; this.status = 0; this.responseText = ''; }
     send() {
-      const f = path.resolve(pageDir, String(this._url).replace(/^\//, ''));
+      const f = path.resolve(pageDir, String(this._url).replace(/[?#].*$/, '').replace(/^\//, ''));
       if (fs.existsSync(f)) { this.status = 200; this.responseText = fs.readFileSync(f, 'utf8'); } else { this.status = 404; }
     }
   };

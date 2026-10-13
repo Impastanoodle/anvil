@@ -1,0 +1,153 @@
+  // --- sketchdims: SolidWorks' remaining 2D relations (Coradial, Intersection, Merge), arc conditions on distances to
+  // circles / arcs, the arc length dimension, Suppressed relations, Reverse the sense of a dimension (flip), Fully Define
+  // Sketch, and the Dimension PropertyManager's properties through scripts ---
+  (function () {
+    group('sketchdims: relations, arc conditions, arc length, suppressed, flip, Fully Define Sketch');
+    var SS = SketchSolver;
+    function relList(s) { return (s.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
+    test('sketchdims: Coradial puts an arc on a circle (one centre, one radius); Intersection puts a point where two lines cross, refs in any order; Merge joins two points', function () {
+      var s = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'arc', cx: 1, cy: 2, r: 4, a0: 0, a1: 90 }] };
+      assert(SS.applicable(s, ['0', '1']).indexOf('coradial') >= 0, 'offered: ' + SS.applicable(s, ['0', '1']));
+      var r = SS.addRelation(s, 'coradial', ['0', '1']);
+      assert(r.ok && r.status === 'ok', JSON.stringify(r.status));
+      var c = s.entities[0], a = s.entities[1];
+      near(c.cx, a.cx, 1e-9, 'cx'); near(c.cy, a.cy, 1e-9, 'cy'); near(c.r, a.r, 1e-9, 'r');
+      s.dims = [{ e: 0, k: 'dia' }];
+      assert(SS.setDim(s, 0, 20).ok, 'diameter drives');
+      near(s.entities[1].r, 10, 1e-9, 'the arc follows the circle');
+      var t = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 5, y1: -5, x2: 5, y2: 5 }, { t: 'point', x: 3, y: 2 }] };
+      assert(SS.applicable(t, ['0', '2', '1']).indexOf('intersection') >= 0 && SS.applicable(t, ['0', '1']).indexOf('intersection') < 0, 'offered for a point and two lines only');
+      r = SS.addRelation(t, 'intersection', ['1', '0', '2']);
+      assert(r.ok && t.rels[0].refs.join() === '2,1,0', 'stored point first: ' + relList(t));
+      var p = t.entities[2], L0 = t.entities[0], L1 = t.entities[1];
+      near((p.x - L0.x1) * (L0.y2 - L0.y1) - (p.y - L0.y1) * (L0.x2 - L0.x1), 0, 1e-7, 'on line 0');
+      near((p.x - L1.x1) * (L1.y2 - L1.y1) - (p.y - L1.y1) * (L1.x2 - L1.x1), 0, 1e-7, 'on line 1');
+      var m = { entities: [{ t: 'point', x: 0, y: 0 }, { t: 'point', x: 1, y: 1 }] };
+      r = SS.addRelation(m, 'merge', ['0', '1']);
+      assert(r.ok && relList(m).join() === 'coincident:0,1' && Math.hypot(m.entities[0].x - m.entities[1].x, m.entities[0].y - m.entities[1].y) < 1e-9, 'merged: ' + relList(m));
+      return relList(s).concat(relList(t)).join(' ');
+    });
+    test('sketchdims: arc conditions — a distance between two circles measured centre / min / max (ac per ref), to a line from a circle\'s near side; driving and driven values follow', function () {
+      var s = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 5 }, { t: 'circle', cx: 20, cy: 0, r: 3 }, { t: 'line', x1: -10, y1: -12, x2: 30, y2: -12 }] };
+      near(SS.measure(s, 'distance', ['0', '1']), 20, 1e-12, 'centres');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['min', 'min']), 12, 1e-12, 'min / min');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['max', 'max']), 28, 1e-12, 'max / max');
+      near(SS.measure(s, 'distance', ['0', '2'], null, null, ['min', 'c']), 7, 1e-12, 'circle near side to the line');
+      var r = SS.addRelation(s, 'distance', ['0', '1'], { ac: ['min', 'max'] });
+      assert(r.ok && s.rels[0].ac.join() === 'min,max', JSON.stringify(s.rels[0]));
+      near(s.rels[0].v, 18, 1e-12, 'value with conditions');
+      s.rels.push({ type: 'fix', refs: ['0'] });
+      s.dims = [{ e: 1, k: 'dia' }];
+      assert(SS.setRelValue(s, 0, 30).ok, 'drives');
+      near(SS.measure(s, 'distance', ['0', '1'], null, null, ['min', 'max']), 30, 1e-6, 'measures 30');
+      near(Math.hypot(s.entities[1].cx - s.entities[0].cx, s.entities[1].cy - s.entities[0].cy) - 5 + 3, 30, 1e-6, 'gap reads 30 with Min / Max');
+      var h = { entities: [{ t: 'circle', cx: 0, cy: 0, r: 2 }, { t: 'circle', cx: 10, cy: 7, r: 1 }] };
+      r = SS.addRelation(h, 'distance', ['0', '1'], { dir: 'h', ac: ['max', 'max'], driven: true });
+      near(h.rels[0].v, 13, 1e-12, 'horizontal, outside to outside');
+      h.entities[1].cx = 12; SS.updateDriven(h);
+      near(h.rels[0].v, 15, 1e-12, 'driven follows');
+      return 'min/max ' + fmt(s.rels[0].v);
+    });
+    test('sketchdims: arc length (an arc\'s r · sweep) drives the arc, reads driven, and round-trips through a script', function () {
+      var s = { entities: [{ t: 'arc', cx: 0, cy: 0, r: 10, a0: 0, a1: 90 }] };
+      assert(SS.applicable(s, ['0']).indexOf('arclength') < 0, 'a dimension, not an Add Relations relation');
+      var r = SS.addRelation(s, 'arclength', ['0']);
+      assert(r.ok, r.error);
+      near(s.rels[0].v, 5 * Math.PI, 1e-12, 'quarter circle of R10');
+      s.rels.push({ type: 'fix', refs: ['0.c'] });
+      s.dims = [{ e: 0, k: 'r' }];
+      assert(SS.setRelValue(s, 0, 20).ok, 'drives');
+      var e = s.entities[0];
+      near(e.r, 10, 1e-9, 'radius held'); near(e.r * (e.a1 - e.a0) * Math.PI / 180, 20, 1e-7, 'arc length 20');
+      assert(!SS.addRelation({ entities: [{ t: 'circle', cx: 0, cy: 0, r: 3 }] }, 'arclength', ['0']).ok, 'a full circle has no arc length dimension');
+      var m = K.newModel('al');
+      K.runScript(m, 'p.sketch("Front").arc(0, 0, 10, 0, 90).rel("arclength", ["0"], 20).extrude(1);');
+      var sk = m.features[0];
+      near(SS.measure(sk, 'arclength', ['0']), 20, 1e-7, 'script drives it');
+      assert(/\.rel\("arclength", \["0"\], 20\)/.test(K.generateScript(m)), 'written back');
+      return SS.describe(s, s.rels[0]);
+    });
+    test('sketchdims: a suppressed relation holds nothing (analyze: suppressed) and stays in the script; unsuppressed it solves again', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 1 }], rels: [{ type: 'horizontal', refs: ['0'], suppressed: true }] };
+      var an = SS.analyze(s);
+      assert(an.rels[0] === 'suppressed' && an.dof === 4, JSON.stringify(an.rels) + ' dof ' + an.dof);
+      assert(SS.solve(s).ok && s.entities[0].y2 === 1, 'not applied');
+      delete s.rels[0].suppressed;
+      assert(SS.solve(s).ok && Math.abs(s.entities[0].y2 - s.entities[0].y1) < 1e-9, 'applied once unsuppressed');
+      var m = K.newModel('sup');
+      K.runScript(m, 'p.sketch("Front").line(0, 0, 10, 1).rel("horizontal", ["0"], { suppressed: true }).extrude(1);');
+      assert(m.features[0].rels[0].suppressed === true && m.features[0].entities[0].y2 === 1, 'script keeps it suppressed, unsolved');
+      assert(/\.rel\("horizontal", \["0"\], \{"suppressed":true\}\)/.test(K.generateScript(m)), K.generateScript(m));
+      return 'ok';
+    });
+    test('sketchdims: Reverse the sense of a dimension (rel.flip for one solve): a point goes to the other side of the line it is dimensioned to; a fixed geometry refuses', function () {
+      var s = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'point', x: 3, y: 4 }], rels: [{ type: 'fix', refs: ['0'] }] };
+      SS.addRelation(s, 'distance', ['1', '0']);
+      var d = s.rels[1];
+      d.flip = true; var r = SS.solve(s); delete d.flip;
+      assert(r.ok, 'solved');
+      near(s.entities[1].y, -4, 1e-9, 'other side'); near(s.entities[1].x, 3, 1e-9, 'same x');
+      assert(SS.analyze(s).status === 'under' && SS.solve(s).ok && s.entities[1].y === -4, 'stays there');
+      s.rels.push({ type: 'fix', refs: ['1'] });
+      var before = JSON.stringify(s.entities);
+      d.flip = true; r = SS.solve(s); delete d.flip;
+      assert(!r.ok && JSON.stringify(s.entities) === before, 'a fixed point cannot reverse');
+      var a = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 8, y2: 6 }], rels: [{ type: 'fix', refs: ['0'] }, { type: 'coincident', refs: ['1.p1', '0.p1'] }] };
+      SS.addRelation(a, 'angle', ['0', '1']);
+      a.rels[2].flip = true; assert(SS.solve(a).ok, 'angle flip solves'); delete a.rels[2].flip;
+      var L = a.entities[1];
+      near(Math.atan2(L.y2 - L.y1, L.x2 - L.x1) * 180 / Math.PI, -Math.atan2(6, 8) * 180 / Math.PI, 1e-6, 'swung below');
+      return 'ok';
+    });
+    test('sketchdims: Fully Define Sketch — Horizontal / Vertical relations, then sizes, then baseline distances from the origin (Vertical / Horizontal with a level point): Fully Defined, DOF 0, nothing over defining; a second run adds nothing', function () {
+      var m = K.newModel('fd'), b = new K.Builder(m).sketch('Front');
+      b.line(0, 0, 60, 0.5).line(60, 0.5, 59, 30).line(59, 30, 0, 29).line(0, 29, 0, 0).circle(20, 15, 4).arc(40, 15, 5, 0, 180);
+      var f = b.f;
+      [0, 1, 2, 3].forEach(function (i) { SS.infer(f, i); });
+      var a0 = SS.analyze(f);
+      assert(a0.status === 'under' && a0.dof > 0, 'starts under defined');
+      var r = SS.fullyDefine(f, {});
+      assert(r.ok && r.status === 'full' && r.dof === 0, JSON.stringify({ status: r.status, dof: r.dof }));
+      var an = SS.analyze(f);
+      assert(!an.redundant && !an.conflicts, 'no over defining');
+      var types = r.rels.map(function (i) { return f.rels[i].type + (f.rels[i].dir ? '/' + f.rels[i].dir : ''); });
+      assert(types.indexOf('horizontal') >= 0 && types.indexOf('distance/h') >= 0 && types.indexOf('distance/v') >= 0, types.join(' '));
+      assert(r.dims.length === 2 && f.dims[r.dims[0]].k === 'dia' && f.dims[r.dims[1]].k === 'r', 'sizes: ' + JSON.stringify(r.dims.map(function (i) { return f.dims[i]; })));
+      assert(r.rels.every(function (i) { var x = f.rels[i]; return x.type !== 'distance' || x.refs[0] === 'O'; }), 'baseline: every distance from the origin');
+      // placed below / left of the sketch, nearest first
+      var hd = r.rels.map(function (i) { return f.rels[i]; }).filter(function (x) { return x.dir === 'h'; });
+      assert(hd.every(function (x) { return x.off < 0; }), 'below the sketch');
+      near(f.entities[0].y2, f.entities[0].y1, 1e-9, 'the bottom line is horizontal now');
+      var r2 = SS.fullyDefine(f, {});
+      assert(!r2.rels.length && !r2.dims.length, 'second run adds nothing');
+      var c = { entities: [{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'line', x1: 10, y1: 0, x2: 25, y2: 0 }, { t: 'line', x1: 25, y1: 0, x2: 45, y2: 0 }], rels: [{ type: 'coincident', refs: ['0.p1', 'O'] }, { type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }] };
+      var rc = SS.fullyDefine(c, { scheme: 'chain' });
+      var ch = rc.rels.map(function (i) { return c.rels[i]; }).filter(function (x) { return x.dir === 'h'; });
+      assert(rc.status === 'full' && ch.length === 3 && ch.map(function (x) { return fmt(x.v); }).join() === '10,15,20', 'chain: ' + ch.map(function (x) { return x.refs.join('>') + '=' + x.v; }).join(' '));
+      var sel = { entities: [{ t: 'circle', cx: 5, cy: 5, r: 1 }, { t: 'circle', cx: 15, cy: 5, r: 2 }] };
+      var rs = SS.fullyDefine(sel, { entities: [1], hDatum: 'O', vDatum: 'O' });
+      var st = SS.analyze(sel);
+      assert(st.entities[0] === 'under' && st.entities[1] === 'full' && rs.dims.length === 1, 'selected entities only: ' + st.entities.join());
+      return types.length + ' relations / distances, ' + r.dims.length + ' sizes';
+    });
+    test('sketchdims: the Dimension PropertyManager\'s properties (name, tolerance, precision, text, radius / diameter display, arc conditions) round-trip through scripts', function () {
+      var m = K.newModel('props'), p = new K.Builder(m);
+      var sk = p.sketch('Front').circle(0, 0, 5).circle(20, 0, 3);
+      sk.dim(0, 'dia');
+      sk.rel('distance', ['0', '1'], { value: 25, ac: ['max', 'c'], tol: { type: 'symmetric', plus: 0.1, minus: 0.1 }, name: 'Gap', prec: 3 });
+      sk.dimProps([[0, { prefix: '2X', suffix: 'TYP', show: 'r', tol: { type: 'bilateral', plus: 0.05, minus: 0.02 } }]]);
+      sk.extrude(2);
+      var f = m.features[0];
+      near(Math.hypot(f.entities[1].cx - f.entities[0].cx, f.entities[1].cy - f.entities[0].cy) + 5, 25, 1e-6, 'driven with its arc condition');
+      var code = K.generateScript(m);
+      assert(/\.dimProps\(\[\[0,\{"tol":\{"type":"bilateral","plus":0\.05,"minus":0\.02\},"prefix":"2X","suffix":"TYP","show":"r"\}\]\]\)/.test(code), code);
+      var m2 = K.newModel('again');
+      K.runScript(m2, code);
+      var g = m2.features[0];
+      assert(JSON.stringify(g.dims) === JSON.stringify(f.dims), 'dims ' + JSON.stringify(g.dims));
+      assert(JSON.stringify(g.rels) === JSON.stringify(f.rels), 'rels ' + JSON.stringify(g.rels));
+      assert(K.generateScript(m2) === code, 'same script');
+      return 'ok';
+    });
+  })();
+  // --- end sketchdims ---
