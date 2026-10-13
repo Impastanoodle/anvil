@@ -130,8 +130,13 @@
     Promise.resolve().then(function () { if (App.mode === 'sketch' && App.activeSketch === sk) show(); });
   }
   // Mastercam's ✓+ (apply, keep the function open for the next one), next to ✓ and ✗
-  function okPlus(apply) { return [{ title: 'Apply and keep open (✓+)', icon: 'ok', onclick: function () { if (apply(true) !== false) UI.renderPM(); } }]; }
+  function okPlus(apply, after) { return [{ title: 'OK and keep open (✓+): apply, then the next one', icon: 'okPlus', onclick: function () { if (apply(true) !== false) { if (after) after(); UI.renderPM(); } } }]; }
+  // lane BO: the last-used values of each command (Mastercam keeps them) — ui-transform.js loads after this file
+  function recall(name, v, keys) { if (UI.transformMemory) { var m = UI.transformMemory.get(name); if (m) keys.forEach(function (k) { if (m[k] !== undefined) v[k] = m[k]; }); } return v; }
+  function keep(name, v, keys) { if (UI.transformMemory) { var o = {}; keys.forEach(function (k) { o[k] = v[k]; }); UI.transformMemory.keep(name, o); } }
   function modeField(opts) { return { type: 'radio', key: 'mode', options: opts, rerender: true }; }
+  // ✗: the preview goes and the status bar says so, again after the close has cleared the selection (its own status line)
+  function cancelled(title) { clearPreview(); var msg = title + ' cancelled.'; UI.setStatus(msg); Promise.resolve().then(function () { UI.setStatus(msg); }); }
 
   // ------------------------------------------------------------------ 2D affine maps of sketch entities
   // A = { a, b, c, d, tx, ty }: (x, y) -> (a x + b y + tx, c x + d y + ty)
@@ -343,7 +348,8 @@
     var f = needSketch();
     if (!f) return;
     var Fs = frameOf(f);
-    var v = { entities: selIdx(f), mode: 'copy', tkey: '', target: null, map: 'origin', fx: 0, fy: 0, tx: 0, ty: 0, dest: 'auto', edit: true, box: 'entities' };
+    var TK = ['mode', 'map', 'dest', 'edit'];
+    var v = recall('translateToPlane', { entities: selIdx(f), mode: 'copy', tkey: '', target: null, map: 'origin', fx: 0, fy: 0, tx: 0, ty: 0, dest: 'auto', edit: true, box: 'entities' }, TK);
     var cmd = { pickPlane: true };
     v.setBox = function (b) {
       v.box = b;
@@ -403,11 +409,11 @@
       return true;
     }
     UI.openPM({
-      title: 'Translate to Plane', icon: 'plane', values: v, command: cmd,
+      title: 'Translate to Plane', icon: 'plane', values: v, command: cmd, transform: 'translateToPlane',
       message: 'Moves or copies the selected sketch geometry onto another plane, keeping its coordinates relative to the plane (source origin to target origin, or From point to To point).',
       onSelection: syncSelection(f, v, run),
       onEntityPick: function () { return v.box !== 'entities'; },
-      extraActions: okPlus(apply),
+      extraActions: okPlus(apply, function () { keep('translateToPlane', v, TK); }),
       groups: [
         { title: 'Entities to Translate', fields: [entityBox(f, v, run)] },
         { title: 'Method', fields: [modeField([['move', 'Move'], ['copy', 'Copy']])] },
@@ -433,8 +439,8 @@
         run();
       },
       okBlocked: function () { return !v.entities.length ? 'Select the entities to translate.' : !v.target ? 'Pick the target plane.' : ''; },
-      onOK: function () { return apply(false); },
-      onCancel: clearPreview,
+      onOK: function () { var ok = apply(false); if (ok !== false) keep('translateToPlane', v, TK); return ok; },
+      onCancel: function () { cancelled('Translate to Plane'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     v.setBox(v.entities.length ? 'target' : 'entities');
@@ -512,7 +518,8 @@
     var f = needSketch();
     if (!f) return;
     var Fa = frameOf(f);
-    var v = { items: [], mode: 'copy', to: 'plane', depth: UI.lenDefault ? UI.lenDefault(10) : 10, edit: false };
+    var PK = ['mode', 'to', 'depth', 'edit'];
+    var v = recall('project', { items: [], mode: 'copy', to: 'plane', depth: UI.lenDefault ? UI.lenDefault(10) : 10, edit: false }, PK);
     function label(it) { if (it.kind === 'sk') { var g = feature(it.sketch); return (g ? g.name : 'Sketch') + ' ▸ ' + ((g && g.entities[it.index] || {}).t || 'entity') + (it.index + 1); } return it.kind === 'face' ? 'Face<' + (it.index + 1) + '>' : 'Edge<' + (App.edges.indexOf(it.edge) + 1) + '>'; }
     function same(a, b) { return a.kind === b.kind && (a.kind === 'sk' ? a.sketch === b.sketch && a.index === b.index : a.kind === 'face' ? a.index === b.index : a.edge === b.edge); }
     function pick(mx, my) {
@@ -576,9 +583,9 @@
       return true;
     }
     UI.openPM({
-      title: 'Project', icon: 'convert', values: v, command: cmd,
+      title: 'Project', icon: 'convert', values: v, command: cmd, transform: 'project',
       message: 'Projects entities of other sketches and model edges or faces square onto this sketch\'s plane (To plane) or onto the parallel plane at a depth (To depth). Circles on a tilted plane become exact ellipses.',
-      extraActions: okPlus(apply),
+      extraActions: okPlus(apply, function () { keep('project', v, PK); }),
       groups: [
         { title: 'Entities to Project', fields: [{ type: 'pick', icon: 'convert', placeholder: 'Click sketch entities, edges or faces…', value: function (x) { return x.items.length ? plural(x.items.length, 'item', 'items') : ''; },
           items: function (x) { return x.items.map(function (it) { return { label: label(it) }; }); },
@@ -592,8 +599,8 @@
       ],
       onChange: run,
       okBlocked: function () { return v.items.length ? '' : 'Select the geometry to project.'; },
-      onOK: function () { return apply(false); },
-      onCancel: clearPreview,
+      onOK: function () { var ok = apply(false); if (ok !== false) keep('project', v, PK); return ok; },
+      onCancel: function () { cancelled('Project'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     UI.setStatus('Click entities of other sketches, model edges or faces to project them onto ' + f.name + '.');
@@ -781,8 +788,8 @@
   }
   function cmdTRoll() {
     var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
-    var v = { op: 'unroll', mode: 'copy', cyl: null, cylLabel: '', dia: 0, seam: 0, dir: 'ccw', axis: 'y', ox: 0, oy: 0, seamLines: true, plane: 'Front', edit: true,
-      entities: f ? selIdx(f) : [], rollAxis: 'y', ax: 0, ay: 0, box: 'cyl' };
+    var v = recall('roll', { op: 'unroll', mode: 'copy', cyl: null, cylLabel: '', dia: 0, seam: 0, dir: 'ccw', axis: 'y', ox: 0, oy: 0, seamLines: true, plane: 'Front', edit: true,
+      entities: f ? selIdx(f) : [], rollAxis: 'y', ax: 0, ay: 0, box: 'cyl' }, ['op', 'mode', 'dir', 'axis', 'seamLines', 'rollAxis', 'edit']);
     if (f && v.entities.length) v.op = 'roll';
     var cmd = {};
     function pickCyl(mx, my) {
@@ -865,19 +872,19 @@
       ] }
     ];
     UI.openPM({
-      title: 'Roll', icon: 'wrap', values: v, command: cmd,
+      title: 'Roll', icon: 'wrap', values: v, command: cmd, transform: 'roll',
       message: 'Unroll lays the edges of a cylindrical face flat (arc length R·θ along the circumference); Roll wraps flat sketch geometry round a cylinder.',
       onSelection: f ? syncSelection(f, v, run) : undefined,
       onEntityPick: f ? function () { return v.box !== 'entities'; } : undefined,
-      extraActions: okPlus(apply),
+      extraActions: okPlus(apply, function () { keep('roll', v, ['op', 'mode', 'dir', 'axis', 'seamLines', 'rollAxis', 'edit']); }),
       groups: groups,
       onChange: function (x, key) {
         if (key === 'op') { if (v.op === 'roll' && !f) { UI.toast(MSG); v.op = 'unroll'; UI.renderPM(); return; } if (v.op === 'roll' && !(+v.dia > 0)) v.dia = UI.lenDefault ? UI.lenDefault(50) : 50; v.setBox(v.op === 'unroll' ? 'cyl' : 'entities'); }
         run();
       },
       okBlocked: function () { return v.op === 'unroll' ? (v.cyl ? '' : 'Pick the cylindrical face to unroll.') : !v.entities.length ? 'Select the entities to roll.' : !(+v.dia > 0) ? 'Set the diameter.' : ''; },
-      onOK: function () { return apply(false); },
-      onCancel: clearPreview,
+      onOK: function () { var ok = apply(false); if (ok !== false) keep('roll', v, ['op', 'mode', 'dir', 'axis', 'seamLines', 'rollAxis', 'edit']); return ok; },
+      onCancel: function () { cancelled('Roll'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     if (v.op === 'roll' && !(+v.dia > 0)) v.dia = UI.lenDefault ? UI.lenDefault(50) : 50;
@@ -894,7 +901,7 @@
   function cmdTStretch() {
     var f = needSketch();
     if (!f) return;
-    var v = { entities: selIdx(f), mode: 'delta', dx: 0, dy: 0, from: null, to: null, box: 'entities' };
+    var v = recall('stretch', { entities: selIdx(f), mode: 'delta', dx: 0, dy: 0, from: null, to: null, box: 'entities' }, ['mode']);
     var cmd = {};
     function win() { var b = UI.lastSketchBox; return b && b.sketch === f.id && b.sel.join() === v.entities.join() ? b : null; }
     function xf(to) {
@@ -940,11 +947,11 @@
       return true;
     }
     UI.openPM({
-      title: 'Stretch', icon: 'stretchEnt', values: v, command: cmd,
+      title: 'Stretch', icon: 'stretchEnt', values: v, command: cmd, transform: 'stretch',
       message: 'Window the region to stretch (drag a box; right to left is a crossing window): what lies inside moves, what crosses the window stretches. Then translate by Delta X / Y or From / To.',
       onSelection: syncSelection(f, v, run),
       onEntityPick: function () { return v.box !== 'entities'; },
-      extraActions: okPlus(apply),
+      extraActions: okPlus(apply, function () { keep('stretch', v, ['mode']); }),
       groups: [
         { title: 'Window', fields: [entityBox(f, v, run, 'Drag a window over the geometry…'), { type: 'static', label: '', value: function () { var b = win(); return b ? (b.mode === 'crossing' ? 'Crossing' : 'Window') + ' region set: the points inside move.' : 'No window: the selection moves whole, joined geometry stretches.'; } }] },
         { title: 'Translate', fields: [
@@ -957,8 +964,8 @@
       ],
       onChange: function (x, key) { if (key === 'mode') { v.from = null; v.to = null; if (v.mode === 'points') v.setBox('from'); else v.setBox('entities'); } run(); },
       okBlocked: function () { return !v.entities.length ? 'Window the geometry to stretch.' : !xf() ? 'Click the From and To points, or use Delta X / Y.' : ''; },
-      onOK: function () { return apply(false); },
-      onCancel: clearPreview,
+      onOK: function () { var ok = apply(false); if (ok !== false) keep('stretch', v, ['mode']); return ok; },
+      onCancel: function () { cancelled('Stretch'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     v.setBox('entities');
@@ -985,7 +992,8 @@
   function cmdTScale() {
     var f = needSketch();
     if (!f) return;
-    var v = { entities: selIdx(f), mode: 'move', count: 1, kind: 'uniform', units: 'factor', s: 1, sx: 1, sy: 1, about: 'origin', px: 0, py: 0, box: 'entities' };
+    var SK = ['mode', 'count', 'kind', 'units', 's', 'sx', 'sy', 'about'];
+    var v = recall('scale', { entities: selIdx(f), mode: 'move', count: 1, kind: 'uniform', units: 'factor', s: 1, sx: 1, sy: 1, about: 'origin', px: 0, py: 0, box: 'entities' }, SK);
     var cmd = {};
     function factor(x) { return v.units === 'percent' ? (+x || 0) / 100 : +x || 0; }
     function centre() {
@@ -1080,11 +1088,11 @@
       return true;
     }
     UI.openPM({
-      title: 'Scale', icon: 'scaleEnt', values: v, command: cmd,
+      title: 'Scale', icon: 'scaleEnt', values: v, command: cmd, transform: 'scale',
       message: 'Scales the selection uniformly or by X / Y about the origin, a point or the selection centre. Copy scales each copy again from the one before; Join adds lines between the matching ends.',
       onSelection: syncSelection(f, v, run),
       onEntityPick: function () { return v.box !== 'entities'; },
-      extraActions: okPlus(apply),
+      extraActions: okPlus(apply, function () { keep('scale', v, SK); }),
       groups: [
         { title: 'Entities to Scale', fields: [entityBox(f, v, run)] },
         { title: 'Method', fields: [modeField([['move', 'Move'], ['copy', 'Copy'], ['join', 'Join']]), { type: 'number', label: 'Number of copies', key: 'count', step: 1, min: 1, show: function (x) { return x.mode !== 'move'; } }] },
@@ -1108,8 +1116,8 @@
         run();
       },
       okBlocked: function () { return !v.entities.length ? 'Select the entities to scale.' : !valid() ? 'The scale factors must be positive.' : ''; },
-      onOK: function () { return apply(false); },
-      onCancel: clearPreview,
+      onOK: function () { var ok = apply(false); if (ok !== false) keep('scale', v, SK); return ok; },
+      onCancel: function () { cancelled('Scale'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     v.setBox('entities');

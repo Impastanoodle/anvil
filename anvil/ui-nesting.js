@@ -26,6 +26,8 @@
   function fmt(x) { return UI.fmtNum ? UI.fmtNum(x, units() === 'in' ? 3 : 1) : String(r6(x)); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function icon() { return Icons && Icons.has && Icons.has('tNesting') ? 'tNesting' : 'lpattern'; }
+  // lane BO: a sheet preset is named in the document's units (an mm document: "1219 × 2438 mm (48 × 96 in)")
+  function presetLabel(p) { return !p[2] || units() === 'in' ? p[1] : Math.round(p[3] * 25.4) + ' × ' + Math.round(p[2] * 25.4) + ' mm (' + p[1] + ')'; }
 
   // ------------------------------------------------------------------ parts
   function addPart(p, qty, src) {
@@ -154,24 +156,23 @@
     if (!want) { if (ov) ov.remove(); return; }
     if (!ov) {
       ov = document.createElement('div');
-      ov.id = 'nest-overlay';
-      ov.setAttribute('style', 'position:absolute;left:16px;right:16px;top:44px;bottom:16px;z-index:5;display:flex;flex-direction:column;gap:6px;padding:8px;background:rgba(255,255,255,0.97);border:1px solid #b8bec6;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,0.18);font:12px Segoe UI, Arial, sans-serif;color:#222');
+      ov.id = 'nest-overlay';   // lane BO: styled by style.css (#nest-overlay) so it follows the light / dark theme
       vp.appendChild(ov);
     }
     var r = ns.result;
     var tabs = r.sheets.map(function (S, k) {
       var on = k === ns.sheet;
-      return '<button type="button" class="nest-tab" data-k="' + k + '" aria-pressed="' + on + '" style="padding:3px 10px;border:1px solid ' + (on ? '#1f4e85' : '#b8bec6') + ';background:' + (on ? '#dce8f6' : '#f6f7f8') + ';border-radius:3px;cursor:pointer">Sheet ' + (k + 1) + ' · ' + S.placements.length + ' · ' + S.utilization.toFixed(1) + ' %</button>';
+      return '<button type="button" class="nest-tab" data-k="' + k + '" aria-pressed="' + on + '">Sheet ' + (k + 1) + ' · ' + S.placements.length + ' · ' + S.utilization.toFixed(1) + ' %</button>';
     }).join('');
-    ov.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><b style="margin-right:8px">Geometry Nesting</b>' + tabs +
-      '<span style="margin-left:auto;color:#555">' + esc(summary()) + ' · ' + fmt(r.opts.width) + ' × ' + fmt(r.opts.height) + ' ' + units() + '</span></div>' +
+    ov.innerHTML = '<div class="nest-overlay-head"><b>Geometry Nesting</b>' + tabs +
+      '<span class="nest-overlay-sum">' + esc(summary()) + ' · ' + fmt(r.opts.width) + ' × ' + fmt(r.opts.height) + ' ' + units() + '</span></div>' +
       '<div style="flex:1;min-height:0">' + sheetSVG(ns.sheet, true, 'nest-overlay-sheet') + '</div>';
   }
   function partsHTML() {
     if (!ns.parts.length) return '<div class="pm-note" data-role="nest-parts">No parts yet.</div>';
     return '<div class="nest-parts" data-role="nest-parts">' + ns.parts.map(function (p, i) {
       return '<div class="pm-row nest-part" style="grid-template-columns:minmax(0,1fr) 58px 22px"><label title="' + esc(p.name) + '">' + esc(p.name) + ' <span class="static">' + fmt(p.part.size[0]) + ' × ' + fmt(p.part.size[1]) + '</span></label>' +
-        '<input type="number" min="0" step="1" class="pm-num nest-qty" data-key="nestqty' + i + '" data-i="' + i + '" value="' + p.qty + '" title="Quantity" style="width:58px;box-sizing:border-box">' +
+        '<input type="text" inputmode="numeric" pattern="[0-9]*" class="pm-num nest-qty" data-key="nestqty' + i + '" data-i="' + i + '" value="' + p.qty + '" title="Quantity (Enter nests)" style="width:58px;box-sizing:border-box">' +
         '<button type="button" class="nest-rm" data-i="' + i + '" style="padding:0 4px;min-width:0" title="Remove ' + esc(p.name) + '">✕</button></div>';
     }).join('') + '</div>';
   }
@@ -209,11 +210,17 @@
   function openNesting() {
     if (UI.hasPM && UI.hasPM()) UI.pmCancel();
     var k = inchK();
+    // lane BO: the parts list and the values stay for the next opening in the same document (Save DXF again, add a
+    // part); another document (New, Open) starts with an empty list. The document is told by a tag it gets here;
+    // a model made by New or Open has none (or another one)
+    var tag = App.model ? App.model.nestSession : null;
+    if (ns && (!tag || tag !== ns.session)) ns = null;
+    if (App.model && !tag) tag = App.model.nestSession = 'n' + Date.now().toString(36);
     var keep = ns && ns.vals ? ns.vals : null;
     var vals = keep || { preset: '48x96', width: r6(96 * k), height: r6(48 * k), material: '', thick: App.model && App.model.sheet ? +App.model.sheet.thickness || 0 : 0,
       spacing: r6(0.25 * k), margin: r6(0.5 * k), rotation: '90', rotStep: 15, mirror: false, holes: true, corner: 'bl', direction: 'x',
       maxSheets: 10, accuracy: 2000, dxfVersion: 'R12', overlay: true };
-    ns = { parts: ns && ns.parts ? ns.parts : [], result: null, sheet: 0, stale: false, ms: null, vals: vals };
+    ns = { parts: ns && ns.parts ? ns.parts : [], result: null, sheet: 0, stale: false, ms: null, vals: vals, session: tag };
     var spec = {
       title: 'Geometry Nesting', icon: icon(), values: vals, noFocus: true,
       help: 'Geometry Nesting: add parts (the flat pattern, a sketch\'s closed profiles or a DXF), set the quantity of each, the sheet and the spacing, then Nest. ✓ makes a Nest document with one sketch per sheet; Save DXF writes one file per sheet.',
@@ -226,7 +233,7 @@
             { label: 'Add DXF…', onclick: pickDXF }] },
           { type: 'html', html: function () { return partsHTML(); } }] },
         { title: 'Sheet', fields: [
-          { type: 'select', label: 'Size', key: 'preset', rerender: true, options: PRESETS.map(function (p) { return [p[0], p[1]]; }) },
+          { type: 'select', label: 'Size', key: 'preset', rerender: true, options: PRESETS.map(function (p) { return [p[0], presetLabel(p)]; }) },
           { type: 'number', label: 'Length (X)', key: 'width', unit: 'u', min: 0 },
           { type: 'number', label: 'Width (Y)', key: 'height', unit: 'u', min: 0 },
           { type: 'text', label: 'Material', key: 'material' },
@@ -290,7 +297,8 @@
     if (r.error) { UI.setStatus(r.error); UI.toast(r.error); }
     else UI.setStatus('Added ' + r.added + ' part' + (r.added === 1 ? '' : 's') + ' to the nest.');
     if (r.ok) ns.stale = !!ns.result;
-    if (r.ok && ns.result) changed(); else rerender();
+    // lane BO: the first part added is nested at once (the Nest button sits below the fold); later ones re-nest live
+    if (r.ok && ns.result) changed(); else if (r.ok) doNest(); else rerender();
     return r;
   }
   var fileInput = null;
@@ -310,16 +318,40 @@
     fileInput.click();
   }
   // the quantity boxes and remove buttons of the parts list (plain html rows)
+  // lane BO: a quantity is read as it is typed but the re-nest waits until typing pauses (re-rendering the panel on
+  // every keystroke put the caret at the start, so "12" came out "21"); leaving the box or Enter re-nests at once
+  var qtyTimer = null;
+  function qtyRead(t) {
+    var p = ns && ns.parts[+t.getAttribute('data-i')];
+    if (!p) return false;
+    var n = Math.round(+t.value);
+    if (!isFinite(n) || n < 0 || t.value.trim() === '') return false;
+    p.qty = n;
+    return true;
+  }
+  function qtyFlush() { if (qtyTimer) { clearTimeout(qtyTimer); qtyTimer = null; changed(); } }
   document.addEventListener('input', function (ev) {
     var t = ev.target;
     if (!ns || !t || !t.classList || !t.classList.contains('nest-qty')) return;
-    var p = ns.parts[+t.getAttribute('data-i')];
-    if (!p) return;
-    var n = Math.round(+t.value);
-    if (!isFinite(n) || n < 0) return;
-    p.qty = n;
-    changed();
+    if (!qtyRead(t)) return;
+    clearTimeout(qtyTimer);
+    qtyTimer = setTimeout(function () { qtyTimer = null; changed(); }, 350);
   });
+  document.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (!ns || !t || !t.classList || !t.classList.contains('nest-qty')) return;
+    if (qtyRead(t)) qtyFlush(); else t.value = String((ns.parts[+t.getAttribute('data-i')] || {}).qty || 1);
+  });
+  // Enter anywhere in the Geometry Nesting panel's boxes nests (the values apply); only the ✓ button makes the Nest
+  // document, since ✓ leaves the part for a new document and asks about saving it
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter' || !ns || !ns.spec || !UI.pmSpec || UI.pmSpec() !== ns.spec) return;
+    var t = ev.target, tag = t && t.tagName ? t.tagName.toLowerCase() : '', pm = document.getElementById('pm');
+    if (!pm || !pm.contains(t) || tag === 'button' || tag === 'textarea') return;
+    ev.preventDefault(); ev.stopPropagation();
+    if (t.classList && t.classList.contains('nest-qty')) { qtyRead(t); if (qtyTimer) { clearTimeout(qtyTimer); qtyTimer = null; } }
+    doNest();
+  }, true);
   document.addEventListener('click', function (ev) {
     var tab = ev.target && ev.target.closest ? ev.target.closest('.nest-tab') : null;
     if (ns && tab) { ns.sheet = +tab.getAttribute('data-k') || 0; rerender(); return; }

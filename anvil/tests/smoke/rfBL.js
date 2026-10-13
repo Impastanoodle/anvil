@@ -5,6 +5,7 @@
   function rfBLClick(uv, mods) { selClick(rfBLScr(uv), mods); }
   function rfBLSk() { return UI.activeSketchFeature(); }
   async function rfBLNew(ents) {
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: commands remember their last values; each step starts from the defaults
     await anvil.newPart(); await idle();
     await UI.newSketchOnPlane('Front'); await idle();
     assert(UI.App.mode === 'sketch', 'not in a sketch');
@@ -25,7 +26,7 @@
     r.click();
   }
   async function rfBLOK(plus) {
-    var b = plus ? D.querySelector('#pm .pm-actions button[title^="Apply"]') : D.querySelector('#pm .pm-ok');
+    var b = plus ? D.querySelector('#pm .pm-actions button[title*="keep open"]') : D.querySelector('#pm .pm-ok');   // lane BO: one ✓+ title everywhere
     assert(b, plus ? 'no ✓+ (Apply) button' : 'no ✓ button');
     b.click(); await idle(); await wait(20);
   }

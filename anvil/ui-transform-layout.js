@@ -14,6 +14,10 @@
   if (!S) return;
   var NO_SKETCH = 'Open a sketch: Transform acts on sketch geometry';
   var D2R = Math.PI / 180;
+  function normDeg(a) { a = a % 360; if (a < 0) a += 360; return Math.abs(a - 360) < 1e-12 ? 0 : a; }
+  function cosd(a) { var m = normDeg(+a); return m === 0 ? 1 : m === 90 || m === 270 ? 0 : m === 180 ? -1 : Math.cos(m * D2R); }
+  function sind(a) { var m = normDeg(+a); return m === 0 || m === 180 ? 0 : m === 90 ? 1 : m === 270 ? -1 : Math.sin(m * D2R); }
+  function tidy(v) { var r = +(+v).toPrecision(12); return Math.abs(r) < 1e-10 ? 0 : r; }
 
   // ------------------------------------------------------------------ shared helpers
   function sketch() {
@@ -82,7 +86,13 @@
     return best;
   }
   // ✓+ (Mastercam's Apply): do it, keep the PropertyManager open for the next selection
-  function applyAction(fn) { return [{ title: 'Apply (✓+): OK and keep the PropertyManager open for the next one', icon: 'ok', onclick: fn }]; }
+  function applyAction(fn) { return [{ title: 'OK and keep open (✓+): apply, then the next one', icon: 'okPlus', onclick: fn }]; }
+  // lane BO: the last-used values of each command (Mastercam keeps them) — ui-transform.js loads after this file
+  function recall(name, v, keys) { if (UI.transformMemory) { var m = UI.transformMemory.get(name); if (m) keys.forEach(function (k) { if (m[k] !== undefined) v[k] = m[k]; }); } return v; }
+  function keep(name, v, keys) { if (UI.transformMemory) { var o = {}; keys.forEach(function (k) { o[k] = v[k]; }); UI.transformMemory.keep(name, o); } }
+  // the result selected and the result message shown after ✓ (selecting writes its own status line: the message wins)
+  function done(added, msg) { selectEntities(added); UI.setStatus(msg); Promise.resolve().then(function () { if (App.mode === 'sketch') UI.setStatus(msg); }); }
+  function cancelled(title) { clearPreview(); UI.setStatus(title + ' cancelled.'); }
   function moveCopyField() { return { type: 'radio', key: 'mode', options: [['move', 'Move'], ['copy', 'Copy']] }; }
 
   // ------------------------------------------------------------------ Offset ▸ Entity
@@ -93,7 +103,7 @@
     var f = sketch();
     if (!f) return;
     var s0 = selIdx(f);
-    var v = { ent: s0.length ? s0[s0.length - 1] : null, side: 0, d: UI.lenDefault(5), count: 1, mode: 'copy', box: 'ent' };
+    var v = recall('offsetEntity', { ent: s0.length ? s0[s0.length - 1] : null, side: 0, d: UI.lenDefault(5), count: 1, mode: 'copy', box: 'ent' }, ['d', 'count', 'mode']);
     var cmd = {};
     function copies(side) {
       var e = f.entities[v.ent], out = [], cur = e, d = Math.abs(+v.d), n = Math.max(1, v.count | 0);
@@ -139,11 +149,13 @@
       });
       if (!r.ok) { UI.toast(r.error); return false; }
       clearPreview(); changed();
-      UI.setStatus((v.mode === 'move' ? 'Moved: ' : 'Offset: ') + plural(r.added.length, 'copy', 'copies') + ' at ' + UI.fmtLen(+v.d) + '.');
+      keep('offsetEntity', v, ['d', 'count', 'mode']);
+      r.msg = (v.mode === 'move' ? 'Moved: ' : 'Offset: ') + plural(r.added.length, 'copy', 'copies') + ' at ' + UI.fmtLen(+v.d) + '.';
+      UI.setStatus(r.msg);
       return r;
     }
     UI.openPM({
-      title: 'Offset Entity', icon: 'offset', values: v, command: cmd, keepSelection: true,
+      title: 'Offset Entity', icon: 'offset', values: v, command: cmd, keepSelection: true, transform: 'offsetEntity',
       message: 'Select an entity, then click the side to offset it to. Each copy is the one before offset again.',
       onSelection: function () {
         if (v.box === 'side') return;   // the click goes to the side; once it is set, a click on another entity starts again
@@ -166,9 +178,9 @@
       ],
       onChange: function () { preview(); },
       okBlocked: function () { return v.ent == null ? 'Select the entity to offset.' : !v.side ? 'Click the side to offset to.' : ''; },
-      onOK: function () { var r = apply(); if (!r) return false; selectEntities(r.added); },
+      onOK: function () { var r = apply(); if (!r) return false; done(r.added, r.msg); },
       extraActions: applyAction(function () { if (apply()) { v.ent = null; v.side = 0; if (UI.setSelection) UI.setSelection([]); setBox('ent'); } }),
-      onCancel: clearPreview,
+      onCancel: function () { cancelled('Offset Entity'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     if (v.ent != null && f.entities[v.ent]) setBox('side'); else { v.ent = null; setBox('ent'); }
@@ -215,7 +227,8 @@
   function cmdTOffsetChains() {
     var f = sketch();
     if (!f) return;
-    var v = { chains: [], d: UI.lenDefault(5), side: 'left', count: 1, corners: 'none', maxAngle: 135, mode: 'copy', depth: 0, reversed: false };
+    var CH = ['d', 'side', 'count', 'corners', 'maxAngle', 'mode', 'depth'];
+    var v = recall('offsetChains', { chains: [], d: UI.lenDefault(5), side: 'left', count: 1, corners: 'none', maxAngle: 135, mode: 'copy', depth: 0, reversed: false }, CH);
     var syncing = false;
     function allEnts() { var out = []; v.chains.forEach(function (c) { out = out.concat(chainEnts(c)); }); return out.sort(function (a, b) { return a - b; }); }
     function showSel() { syncing = true; try { selectEntities(allEnts()); } finally { syncing = false; } }
@@ -253,11 +266,13 @@
       });
       if (!r.ok) { UI.toast(r.error); return false; }
       clearPreview(); changed();
-      UI.setStatus('Offset Chains: ' + plural(v.chains.length, 'chain', 'chains') + ', ' + plural(r.added.length, 'entity', 'entities') + (v.mode === 'move' ? ' (moved)' : '') + '.' + (r.warning ? ' ' + r.warning : ''));
+      keep('offsetChains', v, CH);
+      r.msg = 'Offset Chains: ' + plural(v.chains.length, 'chain', 'chains') + ', ' + plural(r.added.length, 'entity', 'entities') + (v.mode === 'move' ? ' (moved)' : '') + '.' + (r.warning ? ' ' + r.warning : '');
+      UI.setStatus(r.msg);
       return r;
     }
     UI.openPM({
-      title: 'Offset Chains', icon: 'offset', values: v, keepSelection: true,
+      title: 'Offset Chains', icon: 'offset', values: v, keepSelection: true, transform: 'offsetChains',
       message: 'Click a line or an arc to take its chain (a click on a taken chain drops it), or drag a window. Left / Right are seen along the chain: a closed chain runs counter-clockwise.',
       onSelection: function () {
         if (syncing) return;
@@ -299,9 +314,9 @@
       ],
       onChange: function () { preview(); },
       okBlocked: function () { return v.chains.length ? '' : 'Select the chains to offset.'; },
-      onOK: function () { var r = apply(); if (!r) return false; selectEntities(r.added); },
+      onOK: function () { var r = apply(); if (!r) return false; done(r.added, r.msg); },
       extraActions: applyAction(function () { if (apply()) { v.chains = []; showSel(); UI.renderPM(); preview(); UI.setStatus('Select the next chains to offset.'); } }),
-      onCancel: clearPreview,
+      onCancel: function () { cancelled('Offset Chains'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     if (bad.length) UI.setStatus('Offset Chains takes lines, arcs and circles: ' + plural(bad.length, 'entity was', 'entities were') + ' left out.');
@@ -325,12 +340,13 @@
   }
   // the moves of the copies: [{ dx, dy, i, j }]
   function arrayOffsets(v) {
-    var a1 = (+v.a1 || 0) * D2R, a2 = a1 + (v.a2 == null ? 90 : +v.a2) * D2R, d1 = +v.d1 || 0, d2 = +v.d2 || 0;
-    var u1 = [Math.cos(a1), Math.sin(a1)], u2 = [Math.cos(a2), Math.sin(a2)], out = [];
+    var a1 = +v.a1 || 0, a2 = a1 + (v.a2 == null ? 90 : +v.a2), d1 = +v.d1 || 0, d2 = +v.d2 || 0;
+    // lane BO: exact at the right angles (cos 90° is 0, not 6e-17) so a 90° array lands on round coordinates
+    var u1 = [cosd(a1), sind(a1)], u2 = [cosd(a2), sind(a2)], out = [];
     arrayIndices(v.n1, v.dir1).forEach(function (i) {
       arrayIndices(v.n2, v.dir2).forEach(function (j) {
         if (!i && !j) return;
-        out.push({ i: i, j: j, dx: i * d1 * u1[0] + j * d2 * u2[0], dy: i * d1 * u1[1] + j * d2 * u2[1] });
+        out.push({ i: i, j: j, dx: tidy(i * d1 * u1[0] + j * d2 * u2[0]), dy: tidy(i * d1 * u1[1] + j * d2 * u2[1]) });
       });
     });
     return out;
@@ -338,7 +354,8 @@
   function cmdTRectArray() {
     var f = sketch();
     if (!f) return;
-    var v = { entities: selIdx(f), n1: 3, d1: UI.lenDefault(25), a1: 0, dir1: 'pos', n2: 1, d2: UI.lenDefault(25), a2: 90, dir2: 'pos' };
+    var RA = ['n1', 'd1', 'a1', 'dir1', 'n2', 'd2', 'a2', 'dir2'];
+    var v = recall('rectArray', { entities: selIdx(f), n1: 3, d1: UI.lenDefault(25), a1: 0, dir1: 'pos', n2: 1, d2: UI.lenDefault(25), a2: 90, dir2: 'pos' }, RA);
     function check() {
       var offs = arrayOffsets(v);
       if (!offs.length) return 'Set more than one instance.';
@@ -366,7 +383,9 @@
       });
       if (!r.ok) { UI.toast(r.error); return false; }
       clearPreview(); changed();
-      UI.setStatus('Rectangular Array: ' + plural(offs.length + 1, 'instance', 'instances') + ' (' + plural(r.added.length, 'entity', 'entities') + ' added).');
+      keep('rectArray', v, RA);
+      r.msg = 'Rectangular Array: ' + plural(offs.length + 1, 'instance', 'instances') + ' (' + plural(r.added.length, 'entity', 'entities') + ' added).';
+      UI.setStatus(r.msg);
       return r;
     }
     var dirFields = function (k) {
@@ -378,7 +397,7 @@
       ];
     };
     UI.openPM({
-      title: 'Rectangular Array', icon: 'sketchPattern', values: v, keepSelection: true,
+      title: 'Rectangular Array', icon: 'sketchPattern', values: v, keepSelection: true, transform: 'rectArray',
       message: 'Select the entities (click or window), then set the instances and distances. The original is instance 1, 1.',
       onSelection: function () { var s = selIdx(f); if (s.join() === v.entities.join()) return; v.entities = s; UI.renderPM(); preview(); },
       groups: [
@@ -391,9 +410,9 @@
       ],
       onChange: function () { preview(); },
       okBlocked: function () { return !v.entities.length ? 'Select the entities to array.' : check(); },
-      onOK: function () { var r = apply(); if (!r) return false; selectEntities(r.added); },
+      onOK: function () { var r = apply(); if (!r) return false; done(r.added, r.msg); },
       extraActions: applyAction(function () { if (apply()) { v.entities = []; selectEntities([]); UI.renderPM(); preview(); UI.setStatus('Select the next entities to array.'); } }),
-      onCancel: clearPreview,
+      onCancel: function () { cancelled('Rectangular Array'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     if (!v.entities.length) UI.setStatus('Select the entities to array in the graphics area.');
@@ -479,7 +498,8 @@
   function cmdTDistribute() {
     var f = sketch();
     if (!f) return;
-    var v = { entities: selIdx(f), dir: 'x', angle: 0, method: 'even', by: 'centers', spacing: UI.lenDefault(10), box: 'entities' };
+    var DI = ['dir', 'angle', 'method', 'by', 'spacing'];
+    var v = recall('distribute', { entities: selIdx(f), dir: 'x', angle: 0, method: 'even', by: 'centers', spacing: UI.lenDefault(10), box: 'entities' }, DI);
     function preview() {
       var out = [];
       if (v.entities.length) {
@@ -505,12 +525,14 @@
       });
       if (!r.ok) { UI.toast(r.error); return false; }
       clearPreview(); changed();
-      UI.setStatus('Distribute: ' + plural(m.groups, 'group', 'groups') + ' spaced ' + (v.method === 'fixed' ? 'at ' + UI.fmtLen(+v.spacing) : 'evenly') + ' by ' + (v.by === 'gaps' ? 'gaps' : 'centers') + '.');
+      keep('distribute', v, DI);
+      r.msg = 'Distribute: ' + plural(m.groups, 'group', 'groups') + ' spaced ' + (v.method === 'fixed' ? 'at ' + UI.fmtLen(+v.spacing) : 'evenly') + ' by ' + (v.by === 'gaps' ? 'gaps' : 'centers') + '.';
+      UI.setStatus(r.msg);
       return r;
     }
     function setBox(b) { v.box = b; UI.renderPM(); UI.setStatus(b === 'line' ? 'Click a line: its angle sets the direction.' : 'Select the entities to distribute.'); }
     UI.openPM({
-      title: 'Distribute', icon: 'lpattern', values: v, keepSelection: true,
+      title: 'Distribute', icon: 'lpattern', values: v, keepSelection: true, transform: 'distribute',
       message: 'Select the entities (click or window). Entities whose boxes touch are one group; the groups are spaced along the direction.',
       onSelection: function () { if (v.box !== 'entities') return; var s = selIdx(f); if (s.join() === v.entities.join()) return; v.entities = s; UI.renderPM(); preview(); },
       onEntityPick: function (hit) {
@@ -541,9 +563,9 @@
       ],
       onChange: function () { preview(); },
       okBlocked: function () { return v.entities.length ? '' : 'Select the entities to distribute.'; },
-      onOK: function () { var r = apply(); if (!r) return false; selectEntities(r.added); },
+      onOK: function () { var r = apply(); if (!r) return false; done(r.added, r.msg); },
       extraActions: applyAction(function () { if (apply()) { v.entities = []; selectEntities([]); UI.renderPM(); preview(); } }),
-      onCancel: clearPreview,
+      onCancel: function () { cancelled('Distribute'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); }
     });
     if (!v.entities.length) UI.setStatus('Select the entities to distribute in the graphics area.');

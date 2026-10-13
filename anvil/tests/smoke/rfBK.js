@@ -6,6 +6,7 @@
   // crossing window and ✓+, Scale XYZ 2 / 0.5 about a picked point with 2 copies, uniform percentage Move. The
   // commands are called as UI.cmdT…() (the ribbon buttons come from another lane); picks are real mouse clicks.
   async function rfBKSketch(ents, rels) {
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: each step starts from the commands' defaults
     await anvil.newPart(); await idle();
     await UI.newSketchOnPlane('Front'); await idle();
     assert(UI.App.mode === 'sketch', 'not in a sketch');
@@ -35,6 +36,7 @@
   }
 
   step('rfBK: Transform commands outside a sketch say "Open a sketch: Transform acts on sketch geometry" (Roll opens for Unroll)', async function () {
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: each step starts from the commands' defaults
     await anvil.newPart(); await idle();
     ['cmdTTranslateToPlane', 'cmdTProject', 'cmdTStretch', 'cmdTScale'].forEach(function (n) {
       assert(typeof UI[n] === 'function', n + ' missing');
@@ -111,6 +113,7 @@
 
   step('rfBK: Project — a circle and an arc on a plane tilted 60° about X, clicked in the graphics area, come into the Front sketch as an exact ellipse (rx 8, ry 4) and partial ellipse (rx 6, ry 3, 0°–90°); To depth 15 makes a Front + 15 sketch with the ellipse', async function () {
     var errs0 = errors.length;
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: each step starts from the commands' defaults
     await anvil.newPart(); await idle();
     var c60 = 0.5, s60 = Math.sqrt(3) / 2, tilt = { custom: true, origin: [0, 0, 0], x: [1, 0, 0], y: [0, c60, s60], n: [0, -s60, c60], offset: 0 };
     var M = UI.App.model, tid = M.nextId++;
@@ -146,6 +149,7 @@
 
   step('rfBK: Roll ▸ Unroll — a Ø40 tube 100 long with a window cut through its top (z 40–60) and its bottom (z 70–80), the outer face clicked: a new Front sketch holds the flat blank — ends 0 to 2πR, seam lines, each window side at R·acos(5/20) etc. to 1e-9', async function () {
     var errs0 = errors.length;
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: each step starts from the commands' defaults
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Front").circle(0, 0, 20).circle(0, 0, 18).extrude(100);\np.sketch("Top").rect(-5, -60, 10, 20).cut("through");\np.sketch("Top").rect(-5, -80, 10, 10).cut("through", { reverse: true });'); await idle();
     UI.setView('Isometric'); await idle();
@@ -255,6 +259,9 @@
     assert(r.ok, 'relation: ' + r.error);
     UI.setSelection([{ kind: 'entity', index: 0 }, { kind: 'entity', index: 1 }]);
     UI.cmdTScale(); await idle();
+    // lane BO: Scale remembers XYZ / Copy × 2 from the run above: back to Uniform and Move for this one
+    D.querySelector('#pm input[data-key="kind:uniform"]').click(); await idle();
+    D.querySelector('#pm input[data-key="mode:move"]').click(); await idle();
     D.querySelector('#pm input[data-key="units:percent"]').click(); await idle();
     setInput(D.querySelector('#pm input[data-key="s"]'), '50');
     D.querySelector('#pm input[data-key="about:centre"]').click(); await idle();
@@ -285,6 +292,7 @@
 
   step('rfBK: Project a model edge — the top circle of a Ø20 boss standing on the Top plane, clicked in a Front sketch, is seen edge-on: one line from x −10 to 10 at y 20', async function () {
     var errs0 = errors.length;
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: each step starts from the commands' defaults
     await anvil.newPart(); await idle();
     await anvil.run('p.sketch("Top").circle(0, 0, 10).extrude(20);'); await idle();
     await UI.newSketchOnPlane('Front'); await idle();

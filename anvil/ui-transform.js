@@ -418,6 +418,61 @@
   //   needs(v) -> why ✓ is refused, onEntityPick(hit, ctx), excluded(v) -> entity indices left out, allWhenEmpty (nothing
   //   selected: the whole sketch), afterPoint(box, ctx) -> true when the click finished the command, onOpen(ctx),
   //   onClose(ctx), apply hook names }
+  // lane BO: Mastercam keeps each function's last-used values (Move / Copy, copies, distances, angles, the mirror
+  // axis, the offset side …) for the next time it is run, in the session and in its config; Anvil keeps them per
+  // command for the session and in localStorage ('anvil.transform'). Points picked on screen, picked entities and
+  // the box in use are never kept (def.forget names more, e.g. Dynamic's accumulated moves).
+  var memory = null;
+  function memoryLoad() {
+    if (memory) return memory;
+    memory = {};
+    try { var s = localStorage.getItem('anvil.transform'); if (s) memory = JSON.parse(s) || {}; } catch (e) { memory = {}; }
+    return memory;
+  }
+  function memoryKeys(v, forget) {
+    return Object.keys(v).filter(function (k) {
+      if (k === 'entities' || k === 'box' || (forget && forget.indexOf(k) >= 0)) return false;
+      var x = v[k];
+      return x == null || typeof x === 'number' || typeof x === 'string' || typeof x === 'boolean';
+    });
+  }
+  function memRecall(name, v, forget) {
+    var m = memoryLoad()[name];
+    if (m) memoryKeys(v, forget).forEach(function (k) { if (m[k] !== undefined && (v[k] == null || typeof m[k] === typeof v[k])) v[k] = m[k]; });
+    return v;
+  }
+  function memKeep(name, v, forget) {
+    var m = memoryLoad()[name] = {};
+    memoryKeys(v, forget).forEach(function (k) { if (v[k] != null) m[k] = v[k]; });
+    try { localStorage.setItem('anvil.transform', JSON.stringify(memory)); } catch (e) { }
+    return m;
+  }
+  UI.transformMemory = { recall: memRecall, keep: memKeep, get: function (name) { return memoryLoad()[name] || null; },
+    reset: function () { memory = {}; try { localStorage.removeItem('anvil.transform'); } catch (e) { } } };
+
+  // lane BO: Mastercam draws a transform's result in its own colour (the "result" colour, distinct from the geometry and
+  // from the selected "group") so the preview can be told from what is there. The sketch tools' temp material is the
+  // sketch blue, so while a Transform PropertyManager is open the temp group's lines get this material instead.
+  var previewMats = {};
+  function previewMaterial() {
+    var dark = UI.theme && UI.theme() === 'dark', key = dark ? 'dark' : 'light';
+    if (!previewMats[key] && typeof THREE !== 'undefined') previewMats[key] = new THREE.LineBasicMaterial({ color: dark ? 0xe879dc : 0xb0279e, depthTest: false });
+    return previewMats[key] || null;
+  }
+  UI.transformPreviewColor = function () { var m = previewMaterial(); return m ? '#' + m.color.getHexString() : null; };
+  function tintPreview() {
+    var spec = UI.pmSpec && UI.pmSpec();
+    if (!spec || !spec.transform || !UI.groups || !UI.groups.temp) return;
+    var mat = previewMaterial();
+    if (!mat) return;
+    UI.groups.temp.children.forEach(function (ch) { if (ch.material && ch.material !== mat) ch.material = mat; });
+  }
+  if (UI.updateTemp && !UI.updateTemp.transformTint) {
+    var baseUpdateTemp = UI.updateTemp;
+    UI.updateTemp = function () { var r = baseUpdateTemp.apply(this, arguments); tintPreview(); return r; };
+    UI.updateTemp.transformTint = true;
+  }
+
   function transformPM(def) {
     var f = needSketch();
     if (!f) return null;
@@ -425,6 +480,7 @@
     if (v.op == null) v.op = (def.ops || [['move']])[0][0];
     if (v.count == null) v.count = 1;
     if (v.spacing == null) v.spacing = 'between';
+    memRecall(def.name, v, def.forget);
     v.entities = selIdx(f).filter(function (i) { return !excluded(i); });
     v.box = 'entities';
     var cmd = { ownHover: false }, ctx = { f: f, v: v, cmd: cmd };
@@ -459,7 +515,7 @@
       cmd.onSketchPoint = pt ? pointClick : null;
       cmd.onSketchMove = pt && pt.live ? function (uv, mx, my) { var keep = v[pt.key]; v[pt.key] = snapPoint(f, uv, mx, my); preview(); v[pt.key] = keep; } : null;
       UI.renderPM();
-      UI.setStatus(pt ? pt.prompt : b === 'axis' ? 'Click a sketch line to mirror about.' : 'Click sketch entities, or drag a box round them, to add them (click again to remove).');
+      UI.setStatus(pt ? pt.prompt : b === 'axis' ? 'Click a sketch line to mirror about.' : v.entities.length && def.ready ? def.ready : 'Click sketch entities, or drag a box round them, to add them (click again to remove).');
     }
     ctx.setBox = setBox;
     function pointClick(uv, mx, my) {
@@ -491,6 +547,7 @@
       if (!r.ok) { UI.toast(r.error); UI.setStatus(r.error); return false; }
       App.tempEntities = []; UI.updateTemp();
       ctx.last = r;
+      memKeep(def.name, v, def.forget);
       UI.setStatus(r.message);
       if (def.onApplied) def.onApplied(r, ctx);
       if (keep) {
@@ -527,14 +584,14 @@
       okBlocked: blocked,
       onOK: function () { return apply(false) ? undefined : false; },
       extraActions: [{ title: 'OK and keep open (✓+): apply, then transform the result again', icon: 'okPlus', onclick: function () { apply(true); } }],
-      onCancel: function () { App.tempEntities = []; UI.updateTemp(); },
+      onCancel: function () { App.tempEntities = []; UI.updateTemp(); UI.setStatus(def.title + ' cancelled.'); },
       onClose: function () { App.tempEntities = []; UI.updateTemp(); if (def.onClose) def.onClose(ctx); }
     };
     UI.openPM(spec);
     ctx.spec = spec;
     if (def.onOpen) def.onOpen(ctx);
     if (def.firstBox && (v.entities.length || def.allWhenEmpty)) setBox(def.firstBox(v, ctx));
-    else UI.setStatus(v.entities.length ? def.title + ': set the transform.' : 'Select the sketch entities (click them, or drag a box round them).');
+    else UI.setStatus(v.entities.length ? def.ready || def.title + ': set the transform, then Enter (✓).' : 'Select the sketch entities (click them, or drag a box round them).');
     preview();
     return ctx;
   }
@@ -555,6 +612,7 @@
     transformPM({
       name: 'translate', title: 'Translate', icon: 'tTranslate', ops: OPS3, spacing: ['Distance between', 'Total distance'],
       message: 'Select the sketch entities, then set the distance: Delta X / Y, Polar, or a From and a To point picked on screen.',
+      ready: 'Translate: type Delta X / Y (fractions like 1/2 work), or Polar, or pick From / To points; Enter (✓) moves, ✓+ keeps going.',
       values: { mode: 'xy', dx: 0, dy: 0, len: 0, ang: 0, from: null, to: null },
       points: { from: { key: 'from', prompt: 'Click the From point.', next: 'to' }, to: { key: 'to', prompt: 'Click the To point.', live: true } },
       firstBox: function (v) { return v.mode === 'fromto' ? 'from' : 'entities'; },
@@ -585,6 +643,7 @@
     var ctx = transformPM({
       name: 'rotate', title: 'Rotate', icon: 'tRotate', ops: OPS3, spacing: ['Angle between', 'Total sweep'],
       message: 'Select the sketch entities, then the centre of rotation (the origin unless you pick one) and the angle.',
+      ready: 'Rotate: type the angle; the centre is the origin unless you click the Center box and a point. Enter (✓) applies.',
       values: { center: [0, 0], angle: 90, method: 'rotate' },
       points: { center: { key: 'center', prompt: 'Click the centre of rotation.' } },
       groups: function () {
@@ -613,7 +672,7 @@
     transformPM({
       name: 'mirror', title: 'Mirror', icon: 'tMirror', ops: OPS2, count: false,
       message: 'Select the sketch entities, then the mirror line: the X or Y axis, a line at an angle through a point, a sketch line or two points.',
-      values: { axis: 'y', yv: 0, xv: 0, mang: 45, mpt: [0, 0], line: -1, p1: null, p2: null, mirrorText: false, op: 'copy' },
+      values: { axis: 'y', yv: 0, xv: 0, mang: 45, mpt: [0, 0], line: -1, p1: null, p2: null, mirrorText: false, op: 'copy' }, forget: ['line'],
       points: { mpt: { key: 'mpt', prompt: 'Click the point the mirror line goes through.' }, p1: { key: 'p1', prompt: 'Click the first point of the mirror line.', next: 'p2' }, p2: { key: 'p2', prompt: 'Click the second point of the mirror line.' } },
       excluded: function (v) { return v.axis === 'line' && v.line >= 0 ? [v.line] : []; },
       firstBox: function (v) { return v.axis === 'line' && v.line < 0 ? 'axis' : v.axis === 'pts' && !v.p2 ? 'p1' : 'entities'; },
@@ -695,7 +754,8 @@
     var ctx = transformPM({
       name: 'dynamic', title: 'Dynamic', icon: 'tDynamic', ops: OPS2, spacing: null,
       message: 'Select the sketch entities and place the gnomon (its Origin box, or drag the ball). Drag an arrow to move, an arc to rotate; type a value while dragging (Enter) for an exact one; click the X or Y letter, then a line, to align the axis.',
-      values: { origin: [0, 0], dx: 0, dy: 0, ang: 0, inc: 1, tilt: 0 },
+      ready: 'Dynamic: drag an arrow to move or an arc to turn (type a value while dragging for an exact one), or type Delta X / Y and Angle; ✓ applies.',
+      values: { origin: [0, 0], dx: 0, dy: 0, ang: 0, inc: 1, tilt: 0 }, forget: ['dx', 'dy', 'ang', 'tilt'],
       points: { origin: { key: 'origin', prompt: 'Click where the gnomon goes.' } },
       groups: function () {
         return [{ title: 'Gnomon', fields: [

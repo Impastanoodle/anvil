@@ -17,6 +17,7 @@
   }
   function rfBJScr(p) { return UI.worldToScreen(K.to3D(UI.activePlane(), p[0], p[1])); }
   async function rfBJNew(ents, rels) {
+    if (UI.transformMemory) UI.transformMemory.reset();   // lane BO: commands remember their last values; each step starts from the defaults
     await anvil.newPart(); await idle();
     await UI.newSketchOnPlane('Front'); await idle();
     assert(UI.App.mode === 'sketch', 'not in a sketch');
@@ -198,6 +199,7 @@
     // Mirror text on (Copy): the copy reads mirrored
     UI.setSelection([{ kind: 'entity', index: 4 }]); await wait(20);
     await rfBJRun('Mirror');
+    UI.pmSetValue('op', 'copy');   // lane BO: Mirror remembers the Move from the run above
     UI.pmSetValue('axis', 'x'); UI.pmSetValue('mirrorText', true); await wait(20);
     await rfBJOk();
     E = UI.activeSketchFeature().entities;
