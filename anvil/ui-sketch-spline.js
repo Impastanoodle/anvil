@@ -743,7 +743,7 @@
     if (typeof THREE === 'undefined' || !UI.scene) return;
     var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null, spec = UI.pmSpec && UI.pmSpec();
     var mark = spec && spec._skEntity && spec._skEntity.t === 'spline' ? spec._skEntity.index : null;
-    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || e.style || i === mark || (splineView.handles && !e.style)) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];   // rfAH: style splines show their control polygon
+    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && (e.showCurvature || e.showInflection || e.style || i === mark || (splineView.handles && !e.style)) ? i : -1; }).filter(function (i) { return i >= 0; }) : [];   // rfAH: style splines show their control polygon
     var sig = list.length ? JSON.stringify([splineView, f.id, App.activeSketch, list.map(function (i) { return f.entities[i]; }), mark, mark != null ? splineSel.pt : null, UI.cam ? UI.cam.scale : 0]) : '';
     if (sig === combSig) return;
     combSig = sig;
@@ -755,6 +755,10 @@
       list.forEach(function (i) {
         var e = f.entities[i];
         if (e.showCurvature) combLines(e).forEach(function (s) { push(pos, s[0], s[1]); });
+        if (e.showInflection && UI.splineInflections) UI.splineInflections(e).forEach(function (q) {   // rfAW: a small diamond at each inflection point, 5 px
+          var h5 = 5 * (UI.cam ? UI.cam.scale : 0.1), dm = [[q[0] - h5, q[1]], [q[0], q[1] - h5], [q[0] + h5, q[1]], [q[0], q[1] + h5]];
+          for (var k5 = 0; k5 < 4; k5++) push(mpos, dm[k5], dm[(k5 + 1) % 4]);
+        });
         if (splineView.handles && !e.style) handleLines(e).forEach(function (s) { push(cpos, s[0], s[1]); });   // rfAS: Show Spline Handles
         if (e.style) for (var cq = 0; cq + 1 < e.pts.length; cq++) push(cpos, e.pts[cq], e.pts[cq + 1]);   // rfAH: the control polygon
         if (i === mark && e.pts[splineSel.pt]) {   // the picked spline point: a small square, 4 px a side
@@ -961,62 +965,7 @@
     return { ok: true, pieces: pieces.map(function (p, j) { return idx + j; }) };
   }
   UI.splitEllipse = splitEllipse;   // test hook
-  // The Split Entities command (ui-sketch-construct.js) takes ellipses too: its PropertyManager's graphics-area clicks
-  // on an ellipse or a partial ellipse come here (a full ellipse takes two clicks), every other click goes on to it.
-  var HOT = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
-  function splitEllipseCommand(cmd) {
-    var pending = null, p0 = cmd.onSketchPoint, m0 = cmd.onSketchMove;
-    cmd.rfAS = true;
-    function ellAt(mx, my) {
-      var f = UI.activeSketchFeature(), hit = UI.pickEntity ? UI.pickEntity(mx, my) : null, e = hit && f && f.entities[hit.index];
-      return e && (e.t === 'ellipse' || e.t === 'pellipse' || (e.t === 'spline' && K.conicData(e))) ? { f: f, i: hit.index, e: e } : null;
-    }
-    function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
-    function snapOn(h, uv, mx, my) {
-      var S = SS(), fc = S.freeCurve(h.e), P = S.freeClosest(fc, uv).p, a = toUV(mx, my), b = toUV(mx + 1, my), px = a && b ? dist2(a, b) : 1, best = null, bd = 9 * px;
-      h.f.entities.forEach(function (o, j) {
-        if (j === h.i || !o) return;
-        S.pointRefs(h.f, j).forEach(function (pr) { var c = S.freeClosest(fc, pr.pt); if (c && c.d < tolOf(pr.pt) && dist2(pr.pt, P) < bd) { bd = dist2(pr.pt, P); best = pr.pt; } });
-      });
-      return best ? best.slice() : P;
-    }
-    function doSplit(i, pts) {
-      var r = undoStep(function (f) { return splitEllipse(f, i, pts); });
-      if (!r.ok) { UI.toast(r.error); UI.setStatus(r.error); return; }
-      UI.setStatus('Split into ' + r.pieces.length + ' pieces. Click another entity, or press ✓ / Esc to finish.');
-    }
-    cmd.onSketchPoint = function (uv, mx, my) {
-      var h = ellAt(mx, my);
-      if (!h) { pending = null; return p0.apply(this, arguments); }
-      if (!uv) uv = toUV(mx, my);
-      if (!uv) return;
-      var P = snapOn(h, uv, mx, my);
-      if (h.e.t === 'ellipse') {
-        if (!pending || pending.i !== h.i) { pending = { i: h.i, p: P }; UI.setStatus('Click the second split point on the ellipse.'); return; }
-        if (dist2(pending.p, P) < tolOf(P) * 10) { UI.setStatus('Click a second, different point on the ellipse.'); return; }
-        var two = [pending.p, P];
-        pending = null;
-        doSplit(h.i, two);
-      } else { pending = null; doSplit(h.i, [P]); }
-    };
-    cmd.onSketchMove = function (uv, mx, my) {
-      if (m0) m0.apply(this, arguments);
-      var h = ellAt(mx, my);
-      if (h && UI.sketchPreview) { var fc = SS().freeCurve(h.e); UI.sketchPreview([SS().freePts(fc, fc.t0, fc.t1)], HOT, 'sk-trim-span'); }
-    };
-  }
-  function hookSplit() {
-    var orig = UI.cmdSplitEntities;
-    if (!orig || orig.rfAS) return;
-    var wrapped = function () {
-      var r = orig.apply(this, arguments), spec = UI.pmSpec && UI.pmSpec();
-      if (spec && spec.construct === 'splitEnt' && spec.command && !spec.command.rfAS) splitEllipseCommand(spec.command);
-      return r;
-    };
-    wrapped.rfAS = true;
-    UI.cmdSplitEntities = wrapped;
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hookSplit); else setTimeout(hookSplit, 0);
+  // The Split Entities command (ui-sketch-construct.js) hands its clicks on ellipses, partial ellipses and conics here.
 
   // ------------------------------------------------------------------ Fit Spline (Tools ▸ Spline Tools)
   // SolidWorks' Fit Spline: the selected lines, arcs and polylines (one chain end to end, e.g. an imported DXF
@@ -1202,10 +1151,7 @@
     var fc = S.freeCurve(e), c = fc && S.freeClosest(fc, uv);
     if (!c) return { ok: false, error: 'Click on the spline.' };
     var tmp = { entities: [JSON.parse(JSON.stringify(e))] }, r;
-    if (e.closed) {
-      // a closed spline: not by click yet (its PropertyManager's Insert Point adds one mid-span)
-      return { ok: false, error: 'Insert Spline Point on a closed spline: use the Spline PropertyManager\'s Insert Point.' };
-    }
+    if (e.closed) return insertClosedPoint(f, i, e, fc, c);
     if (c.t <= fc.t0 + 1e-6 * (fc.t1 - fc.t0) || c.t >= fc.t1 - 1e-6 * (fc.t1 - fc.t0)) return { ok: false, error: 'Click inside the spline, away from its ends.' };
     // the point lands on an existing spline point: nothing to insert
     for (var k = 0; k < e.pts.length; k++) if (dist2(e.pts[k], c.p) < tolOf(c.p) * 10) return { ok: false, error: 'There is a spline point there already.' };
@@ -1227,6 +1173,48 @@
     S.solve(f);
     return { ok: true, at: nA - 1 };
   }
+  // rfAW: a closed spline takes a point as an open one does. It is split at the click and at the spline point half way
+  // round (two exact pieces, SketchSolver.freeSplit), the pieces are put back together as one closed spline starting at
+  // its old first point, and every point but the new one and its two neighbours gets its own tangent back (the far cut
+  // was at a spline point, so the curve there is the original's: only the span clicked changes its parameterisation).
+  function insertClosedPoint(f, i, e, fc, c) {
+    var S = SS(), n = e.pts.length, k, tol = tolOf(c.p);
+    for (k = 0; k < n; k++) if (dist2(e.pts[k], c.p) < tol * 10) return { ok: false, error: 'There is a spline point there already.' };
+    var span = Math.floor(((c.t % n) + n) % n + 1e-12) % n, far = (span + 1 + Math.floor(n / 2)) % n;
+    var tmp = { entities: [JSON.parse(JSON.stringify(e))] }, r = S.freeSplit(tmp, 0, [c.p, e.pts[far]]);
+    if (!r.ok) return r;
+    var A = tmp.entities[0], B = tmp.entities[1];
+    if (!A || !B || A.t !== 'spline' || B.t !== 'spline') return { ok: false, error: 'That spline could not take a point there.' };
+    var tA = A.tans || [], tB = B.tans || [];
+    function join(endT, startT) { if (!endT && !startT) return null; var t = startT || endT; return startT && endT && Math.abs(+endT[1] - +startT[1]) > 1e-12 ? [startT[0], startT[1], endT[2] != null ? endT[2] : endT[1]] : [t[0], t[1]].concat(t.length > 2 ? [t[2]] : []); }
+    // the loop A then B: A's first point (where B ends) and B's first point (where A ends) are each one point
+    var pts = A.pts.concat(B.pts.slice(1, -1)), tans = [];
+    tans.push(join(tB[B.pts.length - 1], tA[0]));
+    for (k = 1; k < A.pts.length - 1; k++) tans.push(tA[k] || null);
+    tans.push(join(tA[A.pts.length - 1], tB[0]));
+    for (k = 1; k < B.pts.length - 1; k++) tans.push(tB[k] || null);
+    if (pts.length !== n + 1) return { ok: false, error: 'That spline could not take a point there.' };
+    // start the loop at the old first point; the new point goes in after point `span`
+    var s0 = -1;
+    for (k = 0; k <= n; k++) if (dist2(pts[k], e.pts[0]) < tolOf(e.pts[0]) * 10) { s0 = k; break; }
+    if (s0 < 0) return { ok: false, error: 'That spline could not take a point there.' };
+    pts = pts.slice(s0).concat(pts.slice(0, s0)); tans = tans.slice(s0).concat(tans.slice(0, s0));
+    var at = span + 1;
+    if (dist2(pts[at], c.p) > tol * 10) return { ok: false, error: 'That spline could not take a point there.' };
+    for (k = 0; k < n; k++) {
+      if (k === span || k === (span + 1) % n) continue;
+      var j = k <= span ? k : k + 1;
+      if (dist2(pts[j], e.pts[k]) > tolOf(e.pts[k]) * 10) return { ok: false, error: 'That spline could not take a point there.' };
+      tans[j] = e.tans && e.tans[k] ? JSON.parse(JSON.stringify(e.tans[k])) : null;
+    }
+    var ne = JSON.parse(JSON.stringify(e));
+    ne.pts = pts.map(function (q) { return [q[0], q[1]]; });
+    if (tans.some(Boolean)) ne.tans = tans; else delete ne.tans;
+    f.entities[i] = ne;
+    remapSplineRefs(f, i, at, true);
+    S.solve(f);
+    return { ok: true, at: at };
+  }
   UI.insertSplinePointAt = insertSplinePointAt;   // test hook (f, i, uv)
   UI.cmdInsertSplinePoint = function () {
     var f = UI.activeSketchFeature();
@@ -1235,7 +1223,7 @@
     var count = 0;
     UI.openPM({
       title: 'Insert Spline Point', icon: 'spline', values: {}, noFocus: true,
-      message: 'Click on a spline where the new spline point goes. The curve keeps its shape.',
+      message: 'Click on a spline where the new spline point goes (open or closed). The curve keeps its shape.',
       command: { onSketchPoint: function (uv, mx, my) {
         var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
         if (!isPlainSpline(e)) { UI.setStatus('Click on a spline.'); return; }
@@ -1249,6 +1237,86 @@
       groups: [{ title: 'Points', fields: [{ type: 'static', label: '', value: function () { return count ? count + ' point' + (count === 1 ? '' : 's') + ' inserted' : 'Click on a spline'; } }] }],
       onOK: function () {}
     });
+  };
+  // rfAW: Add Tangency Control / Add Curvature Control (a spline's right-click menu, Tools ▸ Spline Tools), as
+  // SolidWorks: click on the spline; a spline point is inserted there with the curve's own shape and its tangent made
+  // driving (its handle shows), and the Spline PropertyManager opens on it so the handle can be turned and weighted.
+  // Add Curvature Control does the same and turns the curvature comb on for that spline: a curvature value that drives
+  // the spline at a point is not in Anvil's spline yet, so the comb is how its curvature is watched while the handle
+  // is changed.
+  function cmdSplineControl(kind) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
+    if (App.tool !== 'select') UI.setTool('select');
+    var title = kind === 'curv' ? 'Add Curvature Control' : 'Add Tangency Control';
+    UI.openPM({
+      title: title, icon: 'spline', values: {}, noFocus: true,
+      message: 'Click on a spline where the ' + (kind === 'curv' ? 'curvature' : 'tangency') + ' control goes.',
+      command: { onSketchPoint: function (uv, mx, my) {
+        var hit = UI.pickEntity(mx, my), g = UI.activeSketchFeature(), e = hit && g && g.entities[hit.index];
+        if (!isPlainSpline(e)) { UI.setStatus('Click on a spline.'); return; }
+        if (!uv) uv = UI.screenToPlane(mx, my, UI.activePlane());
+        var idx = hit.index;
+        var r = undoStep(function (h) {
+          var q = insertSplinePointAt(h, idx, uv);
+          if (!q.ok) return q;
+          var ne = h.entities[idx];
+          if (!ne.tans || !ne.tans[q.at]) {   // make sure the new point drives its tangent (the curve's own)
+            var fc = SS().freeCurve(ne), d = fc.knotD1(q.at);
+            ne.tans = ne.tans || ne.pts.map(function () { return null; });
+            ne.tans[q.at] = [clean(Math.atan2(d[1], d[0]) / D2R), 1];
+          }
+          if (kind === 'curv') ne.showCurvature = true;
+          return q;
+        });
+        if (!r.ok) { UI.toast(r.error); return; }
+        var g2 = UI.activeSketchFeature();
+        UI.closePM();
+        splineSel = { index: idx, pt: r.at };
+        openSplinePM(idx, g2.entities[idx], g2);
+        UI.setStatus(title.replace('Add ', '') + ' added at spline point ' + (r.at + 1) + ': turn or weight its handle in the PropertyManager.');
+      } },
+      groups: [{ title: 'Message', fields: [{ type: 'static', label: '', value: 'Click on a spline' }] }],
+      onOK: function () {}
+    });
+  }
+  UI.cmdAddTangencyControl = function () { cmdSplineControl('tan'); };
+  UI.cmdAddCurvatureControl = function () { cmdSplineControl('curv'); };
+  // Show Inflection Points: where the curve's bend changes side. Per cubic span B(s) the cross product of B' and B'' is
+  // a quadratic in s; its simple roots inside the span, and sign changes across a join, are the inflection points.
+  function inflections(e) {
+    var g = K.splineGeom(e), out = [];
+    if (!g) return out;
+    function cr(a, b) { return a[0] * b[1] - a[1] * b[0]; }
+    var prevSign = 0, prevEnd = null, firstSign = 0;
+    g.bez.forEach(function (P, j) {
+      var Bv = [3 * (P[1][0] - P[0][0]), 3 * (P[1][1] - P[0][1])], Cv = [3 * (P[2][0] - 2 * P[1][0] + P[0][0]), 3 * (P[2][1] - 2 * P[1][1] + P[0][1])];
+      var Dv = [P[3][0] - 3 * P[2][0] + 3 * P[1][0] - P[0][0], P[3][1] - 3 * P[2][1] + 3 * P[1][1] - P[0][1]];
+      var a = 6 * cr(Cv, Dv), b = 6 * cr(Bv, Dv), c = 2 * cr(Bv, Cv), sc = Math.max(Math.abs(a), Math.abs(b), Math.abs(c));
+      if (!(sc > 1e-14)) { prevEnd = null; return; }
+      var gs = function (s) { return (a * s + b) * s + c; }, roots = [];
+      if (Math.abs(a) < 1e-12 * sc) { if (Math.abs(b) > 1e-12 * sc) roots.push(-c / b); }
+      else { var D = b * b - 4 * a * c; if (D > 1e-18 * sc * sc) { var q = Math.sqrt(D); roots.push((-b - q) / (2 * a), (-b + q) / (2 * a)); } }
+      var s0 = gs(1e-9);
+      if (prevSign && s0 && Math.sign(s0) !== prevSign && prevEnd) out.push(prevEnd);   // the bend changes side at the join
+      roots.sort(function (x, y) { return x - y; }).forEach(function (s) { if (s > 1e-7 && s < 1 - 1e-7) out.push(K.bezPoint(P, s)); });
+      var s1 = gs(1 - 1e-9);
+      prevSign = s1 ? Math.sign(s1) : 0; prevEnd = P[3];
+      if (j === 0) firstSign = s0 ? Math.sign(s0) : 0;
+    });
+    if (e.closed && prevSign && firstSign && prevSign !== firstSign && g.bez.length) out.push(g.bez[0][0]);   // across the seam
+    return out;
+  }
+  UI.splineInflections = inflections;   // test hook: the inflection points of spline e
+  UI.cmdShowInflectionPoints = function (index) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
+    var sel = index != null ? [index] : selectedEntities(f).filter(function (i) { return f.entities[i].t === 'spline'; });
+    if (!sel.length) { UI.toast('Select a spline first, then Show Inflection Points.'); return; }
+    var on = !sel.every(function (i) { return f.entities[i].showInflection; }), n = 0;
+    undoStep(function (g) { sel.forEach(function (i) { if (on) g.entities[i].showInflection = true; else delete g.entities[i].showInflection; if (on) n += inflections(g.entities[i]).length; }); return { ok: true }; });
+    combSig = null;
+    UI.setStatus(on ? n + ' inflection point' + (n === 1 ? '' : 's') + ' shown.' : 'Inflection points hidden.');
   };
   // the most a spline e strays from the reference curve samples ref (points along the original)
   function devFrom(e, ref) {
@@ -1373,6 +1441,11 @@
       out.push({ label: 'Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(i); } });
       out.push({ label: 'Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(i); } });
     }
+    if (isPlainSpline(e)) {   // rfAW
+      out.push({ label: 'Add Tangency Control', icon: 'spline', action: function () { UI.cmdAddTangencyControl(); } });
+      out.push({ label: 'Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); } });
+    }
+    out.push({ label: 'Show Inflection Points', icon: 'spline', checked: !!e.showInflection, action: function () { UI.cmdShowInflectionPoints(i); } });
     out.push({ label: 'Show Spline Handles', icon: 'spline', checked: splineView.handles, action: function () { UI.cmdShowSplineHandles(); } });
     out.push({ label: 'Show Curvature', icon: 'spline', checked: !!e.showCurvature, action: function () { UI.cmdShowCurvature(i); } });
     return out;

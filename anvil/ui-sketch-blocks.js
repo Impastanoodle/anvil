@@ -1,9 +1,11 @@
 // ui-sketch-blocks.js — rfAT: sketch Blocks (Tools ▸ Blocks: Make, Edit, Insert, Explode, Save), as SolidWorks'
 // Blocks toolbar. The engine is kernel-sketch.js (Kernel.makeBlock / insertBlock / explodeBlock / redefineBlock /
 // syncBlocks, the `.blocks()` script line): an instance is ordinary sketch geometry tagged with its instance id plus an
-// insertion point (a sketch point: dimension it, relate it, drag it). Every sketch redraw re-places the instances from
-// their insertion points, so an instance moves and turns as one rigid piece; a drag of any of its lines moves the
-// whole instance. DXF export writes an instance as its exploded geometry (LINE / ARC / CIRCLE), never BLOCK / INSERT.
+// insertion point (a sketch point: dimension it, relate it, drag it). rfAU: the solver (sketch-solver.js) holds each
+// instance as one rigid body of 3 degrees of freedom (x, y, angle), so a relation or dimension to any of its points
+// places or turns the whole instance, one that would bend it is over-defining (reported like any other conflict), and a
+// drag of any of its lines moves the whole instance. DXF export writes each definition once as a BLOCK and each
+// instance as an INSERT (Kernel.exportDXFSketch opts.explode: the exploded LINE / ARC / CIRCLE instead).
 //   UI.cmdMakeBlock()        Make Block PM: the selected entities, Block name, Insertion point X / Y (a click in the
 //                            graphics area puts it there); ✓ makes the definition and its first instance (one undo step)
 //   UI.cmdInsertBlock(name?) Insert Block PM: Block (this sketch's blocks, or Browse… a saved .sldblk), X / Y, Angle,
@@ -54,16 +56,15 @@
     return ids;
   }
   function instance(f, id) { return K.blockInstances(f).filter(function (r) { return r.id === String(id); })[0] || null; }
-  function blockNames(f) { return Object.keys(f.blocks || {}); }
+  function blockNames(f) { if (K.adoptBlocks) K.adoptBlocks(f); return Object.keys(f.blocks || {}); }   // (rfAU: imported instances' definitions)
 
-  // Every redraw of the open sketch first re-places its instances from their insertion points (the one being edited
-  // is left alone): after a drag, a dimension edit, a relation, undo
-  var baseUpdate = UI.updateSketches;
-  UI.updateSketches = function () {
-    var f = App.mode === 'sketch' ? sketch() : null;
-    if (f && f.blocks) { try { K.syncBlocks(f, editing && editing.f === f ? editing.id : null); } catch (e) { /* drawn as it is */ } }
-    return baseUpdate.apply(this, arguments);
-  };
+  // rfAU: no redraw hook: the solver keeps instances rigid (the instance in Edit Block is marked on the sketch as
+  // _blkEdit, non-enumerable so undo snapshots and scripts never carry it, and is ordinary geometry until it is saved)
+  function markEdit(f, id) {
+    if (!f) return;
+    if (id == null) { delete f._blkEdit; return; }
+    Object.defineProperty(f, '_blkEdit', { value: String(id), configurable: true, writable: true, enumerable: false });
+  }
   UI.syncSketchBlocks = function () { var f = sketch(); return f ? K.syncBlocks(f, editing && editing.f === f ? editing.id : null) : 0; };
 
   // ------------------------------------------------------------------ Make Block
@@ -231,6 +232,7 @@
     if (!r) return;
     UI.pushUndo(); App.sketchDirty = true;
     editing = { f: f, id: String(id), n0: f.entities.length, name: r.def };
+    markEdit(f, id);
     changed();
     UI.setStatus('Editing block ' + r.def + ': change its geometry with the sketch tools; Tools ▸ Blocks ▸ Edit Block again (or exit the sketch) to finish.');
   }
@@ -238,6 +240,7 @@
     if (!editing) return null;
     var e = editing, f = e.f, extra = [];
     editing = null;
+    markEdit(f, null);
     for (var i = e.n0; i < f.entities.length; i++) if (f.entities[i] && f.entities[i].blk == null) extra.push(i);
     var r = K.redefineBlock(f, e.id, extra);
     if (!r.ok) UI.toast(r.error); else UI.setStatus('Block ' + e.name + ' updated: every instance follows.');
@@ -255,7 +258,7 @@
   }
   UI.blockEditing = function () { return editing ? { id: editing.id, name: editing.name } : null; };
   UI.sketchExitHooks = UI.sketchExitHooks || [];
-  UI.sketchExitHooks.push(function (f) { if (editing && editing.f === f) finishEdit(); else if (editing) editing = null; });
+  UI.sketchExitHooks.push(function (f) { if (editing && editing.f === f) finishEdit(); else if (editing) { markEdit(editing.f, null); editing = null; } });
 
   // ------------------------------------------------------------------ Explode, Save
   function explode(f, ids) {

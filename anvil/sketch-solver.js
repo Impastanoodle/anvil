@@ -37,6 +37,7 @@ var SketchSolver = (function () {
   function paramNames(e) {
     if (e.t === 'polyline' || e.t === 'spline') { var o = []; for (var i = 0; i < e.pts.length * 2; i++) o.push(i); return o; }
     if (e.t === 'text' && !textFree(e)) return [];   // its curve places it: no unknowns of its own
+    if (e.t === 'point' && e.blkDef != null && e.blk != null) return ['x', 'y', 'blkAng'];   // rfAU: a block instance's insertion point (x, y, angle)
     return PARAMS[e.t] || [];
   }
   function pget(e, n) { return typeof n === 'number' ? e.pts[n >> 1][n & 1] : (+e[n] || 0); }
@@ -611,6 +612,99 @@ var SketchSolver = (function () {
     return { n: 1, ents: [d.e], f: function (E) { var x = K.dimValue(E[d.e], d); return [x == null ? 0 : x - t]; } };
   }
 
+  // ------------------------------------------------------------------ rfAU: block instances as rigid groups
+  // A block instance (Kernel.makeBlock / insertBlock: entities tagged `blk` plus an insertion point { t: 'point', blkDef,
+  // blkAng, blkS }) is one rigid body: its insertion point carries three unknowns (x, y and blkAng, degrees; the scale
+  // blkS is a fixed value only Block properties changes) and every parameter of the instance's geometry is tied to them
+  // by one equation (the definition placed by x, y, angle, scale). So an instance has exactly 3 degrees of freedom, a
+  // dimension or relation to any of its points places / turns the whole instance, and one that would deform it adds no
+  // rank (redundant: over-defining) or cannot be met (a conflict), reported like any other. The rows come first in the
+  // system so the rank reduction blames the relation, not the block. The geometry of the definition comes from
+  // sketch.blocks; when the instance no longer matches it (an entity deleted, a target without definitions: a No Solve
+  // drag) the instance's present shape is the rigid shape. sketch._blkEdit (non-enumerable, set by Edit Block) is the
+  // instance being edited: it is ordinary geometry meanwhile (its angle is held by a gauge row so it adds no DOF).
+  var BLK_PAIR_X = { x: 'y', x1: 'y1', x2: 'y2', cx: 'cy' }, BLK_PAIR_Y = { y: 'x', y1: 'x1', y2: 'x2', cy: 'cx' };
+  var BLK_ANG_MOB = 1e-4;   // a degree of block rotation is dear next to a unit of travel: a drag translates the block
+  var BLK_W = 30;           // rigid rows weigh more than a relation: a least-squares compromise (conflict names) bends the relation
+  function blkAngled(t, nm) { return nm === 'rot' || ((nm === 'a0' || nm === 'a1') && t !== 'pellipse'); }
+  // the value parameter nm of block-coordinate entity loc takes when placed by m ({ c, s, k, ang, tx, ty })
+  function blkWant(loc, nm, m) {
+    var X, Y;
+    if (typeof nm === 'number') { var p = loc.pts[nm >> 1]; X = p[0]; Y = p[1]; return nm & 1 ? m.ty + m.k * (m.s * X + m.c * Y) : m.tx + m.k * (m.c * X - m.s * Y); }
+    if (BLK_PAIR_X[nm]) { X = +loc[nm] || 0; Y = +loc[BLK_PAIR_X[nm]] || 0; return m.tx + m.k * (m.c * X - m.s * Y); }
+    if (BLK_PAIR_Y[nm]) { X = +loc[BLK_PAIR_Y[nm]] || 0; Y = +loc[nm] || 0; return m.ty + m.k * (m.s * X + m.c * Y); }
+    if (nm === 'r' || nm === 'w' || nm === 'rx' || nm === 'ry') return m.k * (+loc[nm] || 0);
+    if (blkAngled(loc.t, nm)) return (+loc[nm] || 0) + m.ang;
+    return +loc[nm] || 0;
+  }
+  function blkM(x, y, ang, s) { var a = ang * D2R; return { c: Math.cos(a), s: Math.sin(a), k: s > 0 ? s : 1, ang: ang, tx: x, ty: y }; }
+  // the block-coordinate copy of placed entity e (the inverse of blkWant for its parameters)
+  function blkLocal(e, m) {
+    var o = clone(e), inv = { c: m.c, s: -m.s, k: 1 / m.k, ang: -m.ang, tx: 0, ty: 0 }, sh = clone(e);
+    paramNames(e).forEach(function (nm) {
+      if (typeof nm === 'number') { if (nm & 1) return; var p = e.pts[nm >> 1]; sh.pts[nm >> 1] = [p[0] - m.tx, p[1] - m.ty]; return; }
+      if (BLK_PAIR_X[nm]) sh[nm] = (+e[nm] || 0) - m.tx; else if (BLK_PAIR_Y[nm]) sh[nm] = (+e[nm] || 0) - m.ty;
+    });
+    paramNames(e).forEach(function (nm) { pset(o, nm, blkWant(sh, nm, inv)); });
+    return o;
+  }
+  function blkSameShape(a, b) {
+    if (!a || !b || a.t !== b.t) return false;
+    return !(a.pts || b.pts) || !!(a.pts && b.pts && a.pts.length === b.pts.length);
+  }
+  // the rigid groups of a sketch: [{ ins, ents: [indices], local: [block-coordinate entities], s, free }]
+  function blockGroups(sketch, ents) {
+    if (!K || !K.blockInstances) return [];
+    var list = K.blockInstances({ entities: ents });
+    if (!list.length) return [];
+    var defs = sketch.blocks || null, edit = sketch._blkEdit != null ? String(sketch._blkEdit) : null;
+    return list.map(function (r) {
+      var g = { ins: r.ins, ents: r.ents, s: r.s > 0 ? r.s : 1, free: edit === r.id, def: r.def };
+      if (g.free) return g;
+      var d = defs && defs[r.def], E = r.ents.map(function (i) { return ents[i]; });
+      if (d && d.ents && d.ents.length === E.length && d.ents.every(function (q, k) { return blkSameShape(q, E[k]); })) g.local = d.ents;
+      else { var m = blkM(r.x, r.y, r.ang, g.s); g.local = E.map(function (e) { return blkLocal(e, m); }); }
+      return g;
+    });
+  }
+  // the system rows: one per instance entity (all its parameters), and a gauge on an edited instance's angle
+  function blockRows(sketch, ents) {
+    var rows = [];
+    blockGroups(sketch, ents).forEach(function (g) {
+      var ins = g.ins, sc = g.s;
+      if (g.free) {
+        var a0 = +ents[ins].blkAng || 0;
+        rows.push({ src: 'extra', index: -1, n: 1, ents: [ins], gauge: true, rigid: true, f: function (E) { return [(+E[ins].blkAng || 0) - a0]; } });
+        return;
+      }
+      g.ents.forEach(function (i, k) {
+        var loc = g.local[k], names = paramNames(ents[i]);
+        if (!loc || !names.length) return;
+        var angled = names.map(function (nm) { return typeof nm !== 'number' && blkAngled(loc.t, nm); });
+        rows.push({ src: 'extra', index: -1, n: names.length, ents: [i, ins], rigid: true, blk: g.def, f: function (E) {
+          var P = E[ins], e = E[i], m = blkM(+P.x || 0, +P.y || 0, +P.blkAng || 0, sc);
+          return names.map(function (nm, j) { var d = pget(e, nm) - blkWant(loc, nm, m); return BLK_W * (angled[j] ? ((d % 360) + 540) % 360 - 180 : d); });
+        } });
+      });
+    });
+    return rows;
+  }
+  // a drag's mobilities when the sketch has block instances (their angle moves little: a drag translates the block)
+  function blockMob(sys) {
+    if (!sys.vars.some(function (v) { return v.n === 'blkAng'; })) return null;
+    return sys.vars.map(function (v) { return v.n === 'blkAng' ? BLK_ANG_MOB : 1; });
+  }
+  // before a solve: an instance moved as a whole by a direct edit (Move Entities, a typed coordinate) takes its insertion
+  // point along (Kernel.syncBlocks), so the rigid rows hold it where it was put rather than pulling it back
+  // (instances that came in from a DXF get their definitions first: Kernel.adoptBlocks)
+  function blockPresync(sketch) {
+    if (!sketch || !K || !K.syncBlocks) return;
+    try {
+      if (K.adoptBlocks) K.adoptBlocks(sketch);
+      if (sketch.blocks) K.syncBlocks(sketch, sketch._blkEdit != null ? sketch._blkEdit : null);
+    } catch (err) { /* solved as it is */ }
+  }
+
   // ------------------------------------------------------------------ the system
   // opts: { dimTargets: { index: value }, relTargets: { index: value }, extra: [{ n, f, ents }], skipRels: bool }
   function buildSystem(sketch, opts) {
@@ -619,7 +713,7 @@ var SketchSolver = (function () {
     var vars = [], owner = [];
     var only = opts.entities || null;   // { index: true }: unknowns of these entities only, and the equations that touch them
     ents.forEach(function (e, i) { if (only && !only[i]) return; paramNames(e).forEach(function (nm) { vars.push({ e: i, n: nm }); owner.push(i); }); });
-    var cons = [];
+    var cons = blockRows(sketch, ents);   // rfAU: block instances are rigid (first: the rank reduction blames relations)
     (sketch.rels || []).forEach(function (rel, i) {
       var r = rel;
       if (opts.relTargets && opts.relTargets[i] != null) { r = clone(rel); r.v = opts.relTargets[i]; }
@@ -650,7 +744,7 @@ var SketchSolver = (function () {
     var row = 0, byEnt = ents.map(function () { return []; });
     cons.forEach(function (c) { c.row = row; row += c.n; c.ents.forEach(function (e) { if (byEnt[e]) byEnt[e].push(c); }); });
     var scale = 1;
-    vars.forEach(function (v) { if (v.n !== 'a0' && v.n !== 'a1' && v.n !== 'rot') scale = Math.max(scale, Math.abs(pget(ents[v.e], v.n))); });
+    vars.forEach(function (v) { if (v.n !== 'a0' && v.n !== 'a1' && v.n !== 'rot' && v.n !== 'blkAng') scale = Math.max(scale, Math.abs(pget(ents[v.e], v.n))); });
     return { ents: ents, vars: vars, cons: cons, m: row, byEnt: byEnt, scale: scale };
   }
   // The entities tied to entity e through the system's equations: { set: { index: true }, count }. skip: an entity the
@@ -893,9 +987,9 @@ var SketchSolver = (function () {
   function mobility(sys, mobByEnt) {
     // ui-sketch-spline: an ellipse's radii move less than positions (a Coincident on an axis end moves the ellipse
     // rather than collapsing it)
-    var axes = sys.vars.some(function (v) { return v.n === 'rx' || v.n === 'ry'; });
+    var axes = sys.vars.some(function (v) { return v.n === 'rx' || v.n === 'ry' || v.n === 'blkAng'; });
     if (!mobByEnt && !axes) return null;
-    return sys.vars.map(function (v) { var mb = mobByEnt && mobByEnt[v.e] != null ? mobByEnt[v.e] : 1; return v.n === 'rx' || v.n === 'ry' ? mb * 0.3 : mb; });
+    return sys.vars.map(function (v) { var mb = mobByEnt && mobByEnt[v.e] != null ? mobByEnt[v.e] : 1; return v.n === 'rx' || v.n === 'ry' ? mb * 0.3 : v.n === 'blkAng' ? mb * BLK_ANG_MOB : mb; });
   }
   // ui-sketch-spline: dragging an ellipse's axis end turns / resizes it about its centre, a partial ellipse's end slides
   // along it (SolidWorks): the centre hardly moves, the end's parameter angle moves freely
@@ -911,8 +1005,49 @@ var SketchSolver = (function () {
     });
     return list;
   }
+  // rfAV: did the solve take a line of real length (a circle / arc of real radius) down to (almost) nothing?
+  // Returns the hold equations (each such entity kept at its size) for a second try, or null.
+  function collapsed(sketch, sys) {
+    var holds = null;
+    for (var i = 0; i < sys.ents.length; i++) {
+      var a = sketch.entities[i], b = sys.ents[i];
+      if (!a || !b || a.t !== b.t) continue;
+      var L0, L1;
+      if (a.t === 'line') { L0 = Math.hypot(a.x2 - a.x1, a.y2 - a.y1); L1 = Math.hypot(b.x2 - b.x1, b.y2 - b.y1); }
+      else if (a.t === 'circle' || a.t === 'arc') { L0 = Math.abs(a.r); L1 = Math.abs(b.r); }
+      else continue;
+      if (L0 > 1e-6 && L1 < Math.max(1e-9, L0 * 1e-6)) (holds = holds || []).push(sizeHold(i, a.t, L0));
+    }
+    return holds;
+  }
+  function sizeHold(i, t, L0) {
+    return { i: i, n: 1, ents: [i], f: t === 'line' ? function (E) { var e = E[i]; return [Math.hypot(e.x2 - e.x1, e.y2 - e.y1) - L0]; } : function (E) { return [E[i].r - L0]; } };
+  }
+  // The second try starts from a copy with each held line turned 2° about its middle: an exactly horizontal line asked
+  // to be vertical at constant length sits on a saddle (no first-order way to turn), the turn lets it go either way.
+  // The result is copied into the sketch's own entity objects (callers keep references to them).
+  function solveHolding(sketch, opts, holds) {
+    var c = Object.assign({}, sketch, { entities: clone(sketch.entities) }), tw = 2 * Math.PI / 180;
+    holds.forEach(function (h) {
+      var e = c.entities[h.i];
+      if (!e || e.t !== 'line') return;
+      var mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2, co = Math.cos(tw), si = Math.sin(tw);
+      [['x1', 'y1'], ['x2', 'y2']].forEach(function (k) { var dx = e[k[0]] - mx, dy = e[k[1]] - my; e[k[0]] = mx + dx * co - dy * si; e[k[1]] = my + dx * si + dy * co; });
+    });
+    var r = solve(c, Object.assign({}, opts, { extra: (opts.extra || []).concat(holds), noCollapse: true }));
+    if (!r.ok) { updateDriven(sketch); return { ok: false, it: r.it, res: r.res, moved: 0, collapsed: true }; }
+    var moved = 0;
+    c.entities.forEach(function (e, i) {
+      var o = sketch.entities[i];
+      if (!o || !e) return;
+      paramNames(e).forEach(function (nm) { var v = pget(e, nm), w = pget(o, nm); if (v === w) return; moved = Math.max(moved, Math.abs(v - w)); pset(o, nm, v); });
+    });
+    updateDriven(sketch);
+    return { ok: true, it: r.it, res: r.res, moved: moved };
+  }
   function solve(sketch, opts) {
     opts = opts || {};
+    blockPresync(sketch);   // rfAU
     var sys = buildSystem(sketch, opts);
     // opts.part = entity index: only the geometry tied to it can move (a dimension edit), so that part is solved alone
     // (as a drag is): smaller matrices in a sketch of separate pieces, and a conflict elsewhere does not block it
@@ -924,6 +1059,14 @@ var SketchSolver = (function () {
     var r = lm(sys, { mob: mobility(sys, opts.mob) });
     var moved = 0, x1 = getX(sys);
     for (var j = 0; j < x0.length; j++) moved = Math.max(moved, Math.abs(x1[j] - x0[j]));
+    // rfAV: a solution that shrinks a line (or a circle / arc) of real size to nothing is no solution, as in SolidWorks
+    // (Horizontal plus Vertical on one line is a conflict, not a zero-length line). Accepting it lost the line's length
+    // for good: deleting one of the two relations afterwards left the line a point.
+    // The second try holds those sizes: a line left with Vertical only (its Horizontal deleted) turns about its
+    // middle and keeps its length; Horizontal and Vertical together then fail, as the conflict they are.
+    var holds = r.ok && !opts.force && !opts.noCollapse ? collapsed(sketch, sys) : null;
+    if (holds) return solveHolding(sketch, opts, holds);
+    if (r.ok && opts.noCollapse && collapsed(sketch, sys)) r = { ok: false, it: r.it, res: r.res };
     if (r.ok || opts.force) writeBack(sketch, sys);
     updateDriven(sketch);
     return { ok: r.ok, it: r.it, res: r.res, moved: r.ok || opts.force ? moved : 0 };
@@ -1232,10 +1375,16 @@ var SketchSolver = (function () {
   }
   function conflictNames(sketch, opts, skip, max) {
     try {
-      var sys = buildSystem(sketch, opts), tol = 1e-6 * sys.scale, list = [];
+      var sys = buildSystem(sketch, opts), tol = 1e-6 * sys.scale, list = [], blkNamed = {};
       lm(sys, { leastSquares: true, maxIt: 60 });
       var r = residuals(sys);
       sys.cons.forEach(function (c) {
+        if (c.blk != null && c.n && !blkNamed[c.blk]) {   // rfAU: a block instance the relation would bend
+          var wb = 0;
+          for (var kb = 0; kb < c.n; kb++) wb = Math.max(wb, Math.abs(r[c.row + kb]));
+          if (wb > tol) { blkNamed[c.blk] = true; list.push({ w: wb, rank: 3, text: 'Block ' + c.blk + ' (a block is rigid)' }); }
+          return;
+        }
         if (!c.n || c.soft || c.src === 'extra' || (skip && c.src === skip.src && c.index === skip.index)) return;
         var worst = 0;
         for (var k = 0; k < c.n; k++) worst = Math.max(worst, Math.abs(r[c.row + k]));
@@ -2313,7 +2462,7 @@ var SketchSolver = (function () {
     // (much smaller matrices in a sketch of several separate pieces; a conflict elsewhere does not block the drag)
     var part = connected(sys, R.e);
     if (part.count < sys.ents.length) sys = buildSystem(sketch, { dimTargets: targets, extra: extra, entities: part.set });
-    var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : null;   // ui-sketch-spline
+    var eR0 = base.entities[R.e], dm = eR0 && (eR0.t === 'ellipse' || eR0.t === 'pellipse') ? dragMob(sys, R) : blockMob(sys);   // ui-sketch-spline; rfAU: blocks
     lm(sys, { leastSquares: true, maxIt: 60, mob: dm });
     var r = lm(sys, { only: function (c) { return !c.soft; }, mob: dm });
     if (!r.ok) return { ok: false };
@@ -2796,7 +2945,9 @@ var SketchSolver = (function () {
   // there), and so does the original point next to it, so every span past it is exactly the original's (the C2 system
   // beyond a point of known tangent is the original's) and only the span cut in two is redrawn through its new end;
   // points it keeps keep their own tangents.
-  function freePiece(fc, ta, tb) {
+  // rfAX: ext — an open spline's piece may run past its ends (ta < t0, tb > t1): the end span carried on (its own
+  // polynomial, as Extend Entities carries it), the old end becoming a spline point with its own tangent
+  function freePiece(fc, ta, tb, ext) {
     var e = fc.e, o;
     function r6(x) { return Math.round(x * 1e6) / 1e6; }
     if (e.t === 'spline' && e.conic != null && K.conicPieceAt) {
@@ -2816,9 +2967,9 @@ var SketchSolver = (function () {
       var n = e.pts.length, eps = 1e-6, pts = [], tans = [], any = false;
       var tanAt = function (t) { var d = fc.knotD1(t); return [r6(Math.atan2(d[1], d[0]) / D2R), r6(len(d))]; };
       var add = function (p, tg) { pts.push([r6(p[0]), r6(p[1])]); tans.push(tg || null); if (tg) any = true; };
-      var startOrig = !fc.closed && ta <= fc.t0 + eps, endOrig = !fc.closed && tb >= fc.t1 - eps, inner = [];
+      var startOrig = !fc.closed && ta <= fc.t0 + eps && !(ext && ta < fc.t0 - eps), endOrig = !fc.closed && tb >= fc.t1 - eps && !(ext && tb > fc.t1 + eps), inner = [];
       add(startOrig ? e.pts[0] : fc.pt(ta), startOrig ? (e.tans && e.tans[0]) : tanAt(ta));
-      for (var k = Math.floor(ta) + 1; k < tb - eps; k++) if (k > ta + eps) inner.push(k);
+      for (var k = Math.floor(ta) + 1; k < tb - eps; k++) if (k > ta + eps && (fc.closed || (k >= 0 && k <= n - 1))) inner.push(k);
       inner.forEach(function (k, q) {
         var kk = ((k % n) + n) % n, own = e.tans && e.tans[kk];
         add(e.pts[kk], (q === 0 && !startOrig) || (q === inner.length - 1 && !endOrig) ? (own ? own.slice() : tanAt(k)) : own);
@@ -2828,7 +2979,7 @@ var SketchSolver = (function () {
       // a cut end's speed: the original's over the part of its span kept, per the new chord (so the redrawn span leaves
       // the cut exactly as the original did)
       var m = fc.g.bez.length;
-      var hOf = function (t) { var j = Math.floor(((t % m) + m) % m + 1e-12); j = Math.min(m - 1, Math.max(0, j)); return fc.g.knots[j + 1] - fc.g.knots[j]; };
+      var hOf = function (t) { var j = Math.floor((fc.closed ? ((t % m) + m) % m : t) + 1e-12); j = Math.min(m - 1, Math.max(0, j)); return fc.g.knots[j + 1] - fc.g.knots[j]; };   // (rfAX: an open curve's carried-on ends use their end span)
       var scaleTan = function (i, tc, tn) { var L = len(sub(pts[i === 0 ? 1 : pts.length - 2], pts[i])); if (tans[i] && L > 1e-12) tans[i][1] = r6(tans[i][1] * Math.abs(tn - tc) * hOf(Math.min(tc, tn) + 1e-9) / L); };
       if (!startOrig && pts.length > 1) scaleTan(0, ta, inner.length ? inner[0] : tb);
       if (!endOrig && pts.length > 1) scaleTan(pts.length - 1, tb, inner.length ? inner[inner.length - 1] : ta);
@@ -3941,13 +4092,23 @@ var SketchSolver = (function () {
     var eA = spec.ei ? (swap ? spec.ej : spec.ei) : null, eB = spec.ei ? (swap ? spec.ei : spec.ej) : null;
     var uvA = swap ? spec.uvj : spec.uvi, tc = !eB && (swap ? spec.uvi : spec.uvj) ? freeClosest(fc, swap ? spec.uvi : spec.uvj).t : null;
     var N = Math.max(96, 2 * fc.n), span = fc.t1 - fc.t0;
-    [1, -1].forEach(function (side) {
+    // rfAX: spec.ext { lo, hi } — the spline is carried on past its free start / end (its end span's own polynomial, as
+    // Extend Entities carries it, fc.reach spans or 3) and a fillet may touch it there: SolidWorks fillets a line whose
+    // extension misses the spline by extending the spline too. Only the carried-on parts are searched then.
+    var rch = fc.reach || 3, ranges = [];
+    if (spec.ext) {
+      if (spec.ext.lo) ranges.push([fc.t0 - rch, fc.t0, 'lo']);
+      if (spec.ext.hi) ranges.push([fc.t1, fc.t1 + rch, 'hi']);
+    } else ranges.push([fc.t0, fc.t1, null]);
+    ranges.forEach(function (rg) { [1, -1].forEach(function (side) { scan(rg, side); }); });
+    function scan(rg, side) {
+      var r0 = rg[0], rs = rg[1] - rg[0], NN = rg[2] ? 192 : N;
       function centre(t) { var p = fc.pt(t), d = unit(fc.d1(t)); return [p[0] - d[1] * r * side, p[1] + d[0] * r * side]; }
       offsetCarriers(A, r).forEach(function (oa) {
         function g(t) { var C = centre(t); return oa.kind === 'line' ? lineDist(C, oa) : len(sub(C, oa.c)) - oa.r; }
-        var tp = fc.t0, gp = g(tp);
-        for (var k = 1; k <= N; k++) {
-          var t = fc.t0 + span * k / N, gt = g(t);
+        var tp = r0, gp = g(tp);
+        for (var k = 1; k <= NN; k++) {
+          var t = r0 + rs * k / NN, gt = g(t);
           if (gp === 0 || gp * gt < 0) {
             var lo = tp, hi = t, flo = gp;
             for (var it = 0; it < 80 && hi - lo > 1e-15 * Math.max(1, Math.abs(lo)); it++) { var m = (lo + hi) / 2, gm = g(m); if (flo * gm <= 0) hi = m; else { lo = m; flo = gm; } }
@@ -3956,17 +4117,17 @@ var SketchSolver = (function () {
           tp = t; gp = gt;
         }
         function take(t) {
-          var keepHi = eB ? eB === 'p1' : tc != null ? tc > t : true;
-          if (keepHi ? t >= fc.t1 - 1e-9 * span : t <= fc.t0 + 1e-9 * span) return;   // nothing of the spline would be left
+          var keepHi = rg[2] === 'lo' ? true : rg[2] === 'hi' ? false : eB ? eB === 'p1' : tc != null ? tc > t : true;
+          if (rg[2] ? (rg[2] === 'lo' ? t >= fc.t0 - 1e-9 * span : t <= fc.t1 + 1e-9 * span) : (keepHi ? t >= fc.t1 - 1e-9 * span : t <= fc.t0 + 1e-9 * span)) return;   // nothing of the spline would be left (rfAX: or nothing carried on)
           var C = centre(t), T2 = fc.pt(t), T1 = footOn(A, C);
           if (!T1 || Math.abs(len(sub(T1, C)) - r) > 1e-7 * Math.max(1, r)) return;
-          var d = unit(fc.d1(t)), sb = { move: keepHi ? 'p1' : 'p2', free: true, t: t, keepHi: keepHi, pt: T2, dir: keepHi ? [-d[0], -d[1]] : d };
+          var d = unit(fc.d1(t)), sb = { move: keepHi ? 'p1' : 'p2', free: true, t: t, keepHi: keepHi, pt: T2, dir: keepHi ? [-d[0], -d[1]] : d, ext: !!rg[2] };
           reshapeOpts(A, T1, eA ? otherEnd(eA) : null, uvA).forEach(function (sa) {
             if (swap) consider(C, T2, T1, sb, sa); else consider(C, T1, T2, sa, sb);
           });
         }
       });
-    });
+    }
   }
   // sketch-fillet2: entity idx of sketch made to meet the fillet as plan side s says: a line / arc reshaped, a circle
   // left whole, an open spline replaced by its piece from the tangent point (freePiece); its points' refs ('3.v4')
@@ -3977,12 +4138,15 @@ var SketchSolver = (function () {
     if (s.whole) return;
     if (!s.free) { applyReshape(e, s); return; }
     var fc = freeCurve(e), n = e.pts.length, base = Math.floor(s.t + 1e-9);
-    var piece = s.keepHi ? freePiece(fc, s.t, fc.t1) : freePiece(fc, fc.t0, s.t);
+    var piece = s.keepHi ? freePiece(fc, s.t, fc.t1, s.ext) : freePiece(fc, fc.t0, s.t, s.ext);   // (rfAX: s.ext: carried on past its end)
     function mapV(k) {   // original point k -> its index in the piece, or -1
+      if (s.ext) return s.keepHi ? k + 1 : k;   // rfAX: carried on past its end: every point stays, one new end point
       if (s.keepHi) return k > s.t + 1e-9 ? k - base : -1;
       return k < s.t - 1e-9 ? k : -1;
     }
     sketch.entities[idx] = piece;
+    // rfAX: the old end of a spline carried on is a spline point now, and keeps its relations as one
+    if (s.ext && !piece.style && sketch.rels) sketch.rels.forEach(function (rel) { rel.refs = rel.refs.map(function (x) { return x === idx + '.' + (s.keepHi ? 'p1' : 'p2') ? idx + '.v' + (s.keepHi ? 1 : n - 1) : x; }); });
     var tol = 1e-6 * Math.max(1, Math.abs(s.pt[0]), Math.abs(s.pt[1])), pfc = freeCurve(piece);
     if (sketch.rels) sketch.rels = sketch.rels.filter(function (rel) {
       var drop = false;
@@ -4022,6 +4186,14 @@ var SketchSolver = (function () {
       if (Math.abs(crs(di, dj)) < 1e-6) return { ok: false, error: A.t === 'line' && B.t === 'line' ? 'The lines are collinear: there is no corner to round.' : 'They already meet smoothly (tangent): there is no corner to round.' };
     }
     var pl = filletPlan(E, spec, r);
+    if (!pl && !corner && (splineOpen(A) || splineOpen(B))) {
+      // rfAX: SolidWorks extends the spline too when the line misses it (its extension does not reach the spline): the
+      // spline's free ends are carried on (its end span's own curve, a style spline's own polynomial) and the fillet
+      // may touch the carried-on part. (A line that reaches the spline with no room for the radius stays refused.)
+      var spx = splineOpen(A) ? A : B, spi = spx === A ? spec.i : spec.j, oth = spx === A ? B : A;
+      var ext = { lo: spx.conic == null && !endJoined(sketch, spi + '.p1'), hi: spx.conic == null && !endJoined(sketch, spi + '.p2') };
+      if (oth.t === 'line' && !lineMeetsFree(oth, spx) && (ext.lo || ext.hi)) pl = filletPlan(E, { i: spec.i, uvi: spec.uvi, j: spec.j, uvj: spec.uvj, ext: ext }, r);
+    }
     if (!pl) {
       if (corner && A.t === 'line' && B.t === 'line') {
         var la = len(sub(endOf(A, otherEnd(spec.ei)), spec.at)), lb = len(sub(endOf(B, otherEnd(spec.ej)), spec.at));
@@ -4031,7 +4203,7 @@ var SketchSolver = (function () {
       // (freeFilletPlan); what cannot be done is extending the spline, so say which it is
       if (!corner && (splineOpen(A) || splineOpen(B))) {
         var sp = splineOpen(A) ? A : B, other = sp === A ? B : A;
-        if (other.t === 'line' && !lineMeetsFree(other, sp)) return { ok: false, error: 'The line, even extended, does not reach the spline: a fillet would have to touch the spline beyond its end, and Sketch Fillet extends lines and arcs, not splines. Extend the spline (or move the line) first.' };
+        if (other.t === 'line' && !lineMeetsFree(other, sp)) return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the line and the spline, even with the line extended and the spline carried on past its free ends: try another radius, or move the line.' };
         return { ok: false, error: 'No fillet of R' + fmtL(r) + ' fits between the ' + other.t + ' and the spline' + (other.t === 'line' ? ' (the line is extended to it; the spline is not extended past its ends)' : '') + ': try a smaller radius.' };
       }
       return { ok: false, error: corner ? 'Radius too large: the fillet would be longer than the entities.' : 'No fillet of that radius fits between those entities.' };
@@ -4158,8 +4330,32 @@ var SketchSolver = (function () {
   // dimension (or opts.equalTo, an earlier fillet arc: Equal to it), the others Equal to the first (opts.dimEach: each
   // its own radius dimension); opts.keepCorner as filletPair's. Returns { ok, arcs, error }.
   function filletChain(sketch, c, r, opts) {
+    return filletCorners(sketch, chainCorners(sketch, c).map(function (k) { return k.at; }), r, opts);
+  }
+  // rfAX: the corners where the given entities meet one another (end to end, not smoothly): Sketch Fillet with several
+  // entities (a rectangle, a closed contour, a box selection) selected rounds every one of them, as SolidWorks does.
+  // Construction geometry is left out. -> [{ i, ei, j, ej, at }]
+  function selectionCorners(sketch, list) {
+    var E = sketch.entities || [], out = [], ids = (list || []).filter(function (i, k, a) { return a.indexOf(i) === k && cornerEnt(E[i]) && !E[i].construction; });
+    for (var a = 0; a < ids.length; a++) for (var b = a + 1; b < ids.length; b++) {
+      var i = ids[a], j = ids[b];
+      if (splineOpen(E[i]) && splineOpen(E[j])) continue;
+      for (var x = 1; x <= 2; x++) for (var y = 1; y <= 2; y++) {
+        var ei = 'p' + x, ej = 'p' + y, P = endOf(E[i], ei), Q = endOf(E[j], ej);
+        if (!nearPt(P, Q, joinTol(P))) continue;
+        var di = intoDir(E[i], ei), dj = intoDir(E[j], ej);
+        if (Math.abs(crs(di, dj)) < 1e-6 && dot(di, dj) < 0) continue;   // smooth: no corner
+        if (out.some(function (o) { return nearPt(o.at, P, joinTol(P)); })) continue;
+        out.push({ i: i, ei: ei, j: j, ej: ej, at: P.slice() });
+      }
+    }
+    return out;
+  }
+  // every corner at (a list of points) filleted with radius r, all or nothing (filletChain's rules); -> { ok, arcs, error }
+  function filletCorners(sketch, corners, r, opts) {
     opts = opts || {};
-    var corners = chainCorners(sketch, c).map(function (k) { return k.at; }), saved = tSave(sketch), arcs = [], first = opts.equalTo != null ? opts.equalTo : null;
+    corners = corners.map(function (c) { return Array.isArray(c) ? c : c.at; });   // points, or curveCorner records (an array has its own .at)
+    var saved = tSave(sketch), arcs = [], first = opts.equalTo != null ? opts.equalTo : null;
     for (var n = 0; n < corners.length; n++) {
       var at = corners[n], cc = curveCorner(sketch, at, 1e-5 * Math.max(1, Math.abs(at[0]), Math.abs(at[1])));
       if (!cc) { tRestore(sketch, saved); return { ok: false, error: 'The corner at (' + fmtL(at[0]) + ', ' + fmtL(at[1]) + ') is gone: an earlier fillet of the chain took it.' }; }
@@ -5184,7 +5380,7 @@ var SketchSolver = (function () {
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,
     mirrorRelations: mirrorRelations, install: install,
-    chainCorners: chainCorners, filletChain: filletChain,   // sketch-tools2: Fillet all corners of the chain
+    chainCorners: chainCorners, filletChain: filletChain, selectionCorners: selectionCorners, filletCorners: filletCorners,   // (rfAX: a selection's corners)   // sketch-tools2: Fillet all corners of the chain
     // sketch tools (ui-sketch-tools.js): Sketch Fillet / Chamfer, Offset Entities chains, Move / Copy / Rotate / Scale, the sketch patterns
     curveCorner: curveCorner, filletPair: filletPair, chamferPair: chamferPair, offsetChains: offsetChains, offsetSelection: offsetSelection,
     xfEntity: xfEntity, transformEntities: transformEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,

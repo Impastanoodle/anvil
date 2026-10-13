@@ -2278,6 +2278,27 @@
     });
     return { ok: true };
   }
+  // rfAU: the definitions a sketch's instances use: sketch.blocks, plus, for a name an instance carries but the sketch
+  // has no definition of (instances that came in from a DXF: DxfImport.parse with blocks), that instance's geometry in
+  // its block coordinates (the first such instance). Pure; adoptBlocks writes the missing ones into sketch.blocks and
+  // returns how many it added.
+  function blockDefs(sketch) {
+    var out = {}, have = (sketch && sketch.blocks) || {};
+    Object.keys(have).forEach(function (n) { out[n] = have[n]; });
+    blockInstances(sketch).forEach(function (r) {
+      if (out[r.def]) return;
+      var a = -r.ang * Math.PI / 180, inv = { c: Math.cos(a), s: Math.sin(a), k: 1 / (r.s > 0 ? r.s : 1), ang: -r.ang, tx: 0, ty: 0 }, ents = [];
+      r.ents.forEach(function (i) { ents = ents.concat(blockLocal(sketch.entities[i], [r.x, r.y], inv)); });
+      if (ents.length === r.ents.length) out[r.def] = { ents: ents };
+    });
+    return out;
+  }
+  function adoptBlocks(sketch) {
+    if (!sketch || !(sketch.entities || []).some(function (e) { return e && e.blkDef != null; })) return 0;
+    var defs = blockDefs(sketch), n = 0;
+    Object.keys(defs).forEach(function (k) { if (!sketch.blocks || !sketch.blocks[k]) { sketch.blocks = sketch.blocks || {}; sketch.blocks[k] = JSON.parse(JSON.stringify(defs[k])); n++; } });
+    return n;
+  }
   // script round trip: .blocks({ defs, tags: [[entity, id], [insertion point, id, name, angle, scale], …] })
   function blockScriptLine(f) {
     if (!f.blocks || !Object.keys(f.blocks).length) return '';
@@ -2310,5 +2331,36 @@
   K.installBlockScript = installBlockScript;
   K.blockInstances = blockInstances; K.makeBlock = makeBlock; K.insertBlock = insertBlock; K.explodeBlock = explodeBlock; K.syncBlocks = syncBlocks;
   K.setBlockInstance = setBlockInstance; K.redefineBlock = redefineBlock; K.blockEntity = blockEntity; K.blockXf = blockXf;
+  K.blockDefs = blockDefs; K.adoptBlocks = adoptBlocks;   // rfAU
   K.addBlockDef = addBlockDef; K.blockFile = blockFile; K.blockScriptLine = blockScriptLine; K.applyBlockScript = applyBlockScript;
 })(Kernel, Kernel._);
+
+// rfAW: Sketch Picture (ui-sketch-picture.js). A sketch's pictures live beside its entities, never in its profiles,
+// regions or DXF: sketch.pictures = [{ name, src: data URL, px: [w, h] pixels, x, y (lower-left corner), w, h, ang (°),
+// flipH, flipV, tmode: 'none' | 'file' | 'full' | 'user', alpha, key, keyTol, file, lock }]. They round-trip through
+// scripts as one `.picture({ … })` line each (written before the sketch's `.id()`).
+(function (K) {
+  'use strict';
+  var PIC_KEYS = ['name', 'file', 'src', 'px', 'x', 'y', 'w', 'h', 'ang', 'flipH', 'flipV', 'tmode', 'alpha', 'key', 'keyTol', 'lock'];
+  function pictureRecord(o) {
+    var p = {};
+    PIC_KEYS.forEach(function (k) { if (o && o[k] != null) p[k] = JSON.parse(JSON.stringify(o[k])); });
+    if (typeof p.src !== 'string' || !/^data:image\//i.test(p.src)) throw new Error('.picture() takes the picture as a data:image/… URL in src.');
+    ['x', 'y', 'w', 'h'].forEach(function (k) { p[k] = +p[k] || 0; });
+    if (!(p.w > 0) || !(p.h > 0)) throw new Error('.picture() needs a positive width w and height h.');
+    return p;
+  }
+  function pictureScriptLine(f) {
+    return (f.pictures || []).map(function (p) { return '\n  .picture(' + JSON.stringify(pictureRecord(p)) + ')'; }).join('');
+  }
+  function applyPictureScript(f, o) { (f.pictures = f.pictures || []).push(pictureRecord(o)); }
+  function installPictureScript() {
+    if (K.__sketchPictures || !K.registerSketchScript || !K.newModel || !K.Builder) return;
+    var SBP = Object.getPrototypeOf(new K.Builder(K.newModel('x')).sketch('Front'));
+    SBP.picture = function (o) { applyPictureScript(this.f, o); return this; };
+    K.registerSketchScript(pictureScriptLine);
+    K.__sketchPictures = true;
+  }
+  // kernel-script.js calls Kernel.installPictureScript once the Builder exists
+  K.installPictureScript = installPictureScript; K.pictureScriptLine = pictureScriptLine; K.sketchPictureRecord = pictureRecord;
+})(Kernel);

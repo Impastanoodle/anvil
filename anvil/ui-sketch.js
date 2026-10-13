@@ -2605,6 +2605,7 @@
     // sketchdims: a Basic dimension's value in a box
     if (it.d && it.d.tol && it.d.tol.type === 'basic' && sc.box) svg('rect', { 'class': 'dbox', x: r2(sc.box[0] + 1), y: r2(sc.box[1] + 1), width: r2(sc.box[2] - sc.box[0] - 2), height: r2(sc.box[3] - sc.box[1] - 2) }, gEl);
     it.label = sc.label;
+    it.sc = sc;   // rfAV: Instant2D finds the dimension's lines, arrows and label box here
     if (!it.temp) {
       t._d = it;
       // r12/sketchui12: listeners once per (reused) node; they act on the item drawn there now
@@ -2683,6 +2684,7 @@
   // list: which ("R.250 on r3")
   var lastClashes = [];
   UI.dimLabelClashes = function (list) { return list ? lastClashes.slice() : lastClashes.length; };
+  UI.dimKey = dimKey;   // rfAV: Instant2D (ui-sketch-dims.js)
   function drawDimsIn(f) {
     if (!f || App.mode !== 'sketch') { clearFeedback(); if (dimEditing) closeDimEdit(false); return []; }
     var pl = UI.activePlane(), placed = f.dims || [], list = [], stale = [];
@@ -2759,7 +2761,10 @@
     // sketchdims: scale = shown / stored (a circle's diameter shown as its radius: 0.5, UI.dimShowScale)
     var scale = it.rel == null && UI.dimShowScale ? UI.dimShowScale(it.d) : 1;
     var value = (it.rel != null ? f.rels[it.rel].v : K.dimValue(f.entities[it.d.e], it.d)) * scale;
-    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: it.rel != null && f.rels[it.rel].type === 'angle', scale: scale };
+    // rfAV: an angle (Smart Dimension between two lines) or an Angular Running value is in degrees: its own unit, a 1°
+    // spin step and its own range (angle: above 0 up to 180; running angle: 0 up to 360, the spin wraps round)
+    var rtype = it.rel != null ? f.rels[it.rel].type : null;
+    dimEditing = { d: it.d, auto: !!it.auto, index: it.index, rel: it.rel, sketchId: f.id, value: value, angle: rtype === 'angle' || rtype === 'runangle', range: dimAngleRange(rtype), scale: scale };
     dimEdit.hidden = false;
     dimUnit.textContent = dimEditing.angle ? '°' : (UI.unitLabel ? UI.unitLabel() : 'mm');
     dimInput.value = String(Math.round(dimEditing.value * 1e4) / 1e4);
@@ -2783,6 +2788,15 @@
     dimEdit.style.left = Math.round(x) + 'px';
     dimEdit.style.top = Math.round(Math.max(4, y)) + 'px';
   }
+  // rfAV: the range of an angle-valued dimension (null for a length): lo is excluded when loOpen, hi when hiOpen; wrap:
+  // the spin goes round (359° + 1° = 0°)
+  function dimAngleRange(type) {
+    if (type === 'angle') return { lo: 0, hi: 180, loOpen: true, msg: 'Angle must be between 0 and 180 degrees.' };
+    if (type === 'runangle') return { lo: 0, hi: 360, hiOpen: true, wrap: true, msg: 'An angular running value must be from 0 up to 360 degrees.' };
+    return null;
+  }
+  function inAngleRange(rg, v) { return !rg || ((rg.loOpen ? v > rg.lo : v >= rg.lo) && (rg.hiOpen ? v < rg.hi : v <= rg.hi)); }
+  UI.dimEditUnit = function () { return dimEditing ? dimUnit.textContent : null; };   // test hook
   // The spin step: 1 mm (0.1 in, 1°), ×10 with Ctrl, ÷10 with Alt.
   function spinStep(ev) {
     var base = dimEditing && dimEditing.angle ? 1 : /in/.test(UI.unitLabel ? UI.unitLabel() : '') ? 0.1 : 1;
@@ -2791,9 +2805,10 @@
   function spinDim(sgn, ev) {
     if (!dimEditing) return;
     var r = parseDimInput(dimInput.value), cur = r.error != null ? (dimEditing.preview != null ? dimEditing.preview : dimEditing.value) : r.value;
-    var step = spinStep(ev), v = +(cur + sgn * step).toPrecision(12);
-    if (!(v > 0)) v = +(cur / 2).toPrecision(6);
-    if (dimEditing.angle && v > 180) v = 180;
+    var step = spinStep(ev), v = +(cur + sgn * step).toPrecision(12), rg = dimEditing.range;
+    if (rg && rg.wrap) v = +(((v - rg.lo) % (rg.hi - rg.lo) + (rg.hi - rg.lo)) % (rg.hi - rg.lo) + rg.lo).toPrecision(12);
+    else if (!(v > 0)) v = +(cur / 2).toPrecision(6);
+    if (rg && !rg.wrap && v > rg.hi) v = rg.hi;
     dimInput.value = String(v);
     dimEditError('');
     previewDim(v);
@@ -2857,6 +2872,7 @@
     var r = null;
     if (commit) {
       r = parseDimInput(dimInput.value);
+      if (r.error == null && ed.range && !inAngleRange(ed.range, r.value)) r = { error: ed.range.msg };
       if (r.error != null && keepOnError) { dimEditError(r.error); dimInput.focus(); dimInput.select(); return; }
     }
     // a live preview is undone first: the undo step and the solve start from the sketch as it was
@@ -2886,7 +2902,7 @@
       } else K.setDimValue(e, ed.d, v);
       App.gridStale = true;
       UI.updateSketches(); UI.refreshTree();
-      UI.setStatus('Dimension set to ' + fmtDim(v) + ' ' + UI.unitLabel() + '.');
+      UI.setStatus('Dimension set to ' + (ed.angle ? (Math.round(v * 1e4) / 1e4) + '°' : fmtDim(v) + ' ' + UI.unitLabel()) + '.');
       if (UI.refreshDimensionPM) UI.refreshDimensionPM();   // rfE: an open Dimension PM shows the new value
     } catch (err) { lastDimError = err.message; UI.toast(err.message); UI.setStatus('Dimension not changed: ' + err.message); App.dimsStale = true; if (previewed) UI.updateSketches(); }
   }

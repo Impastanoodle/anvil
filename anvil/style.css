@@ -1000,3 +1000,23 @@ body.splitting #viewport { pointer-events: none; }
 #pm #xp-manual .xp-del { font-size: 11px; padding: 1px 6px; }
 #pm #scan-equal .rel-row { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 #pm #scan-equal .rel-row em { margin-left: auto; font-size: 11px; }
+/* rfAW: Sketch Picture scale tool distance box (ui-sketch-picture.js) */
+.sk-pic-scale { position: fixed; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--panel-2); border: 1px solid #8c96a3; border-radius: 4px; box-shadow: 0 4px 14px var(--shadow); font: 12px var(--font); color: var(--text); }
+.sk-pic-scale input { width: 80px; font: inherit; }
+.sk-pic-scale input.err { outline: 1px solid #d0302a; }
+.sk-pic-scale button { font: inherit; padding: 1px 6px; }
+#pm .sk-pic-alpha input[type=range] { flex: 1; min-width: 0; }
+
+/* rfAV: Instant2D (ui-sketch-dims.js): the ball on a hovered sketch dimension, and the ruler while it is dragged.
+   Instant3D's own dimension dots stay out of sketches (SolidWorks: Instant3D acts on the part, Instant2D in a sketch). */
+#i2d-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
+#i2d-layer .i2d-grip { fill: transparent; stroke: none; pointer-events: all; cursor: grab; }
+#i2d-layer .i2d-ball { fill: var(--blue, #1f6fc5); stroke: #fff; stroke-width: 1.5; pointer-events: none; }
+#i2d-layer .i2d-handle:hover .i2d-ball, #i2d-layer .i2d-handle.active .i2d-ball { fill: #ff8c1a; }
+#i2d-layer .i2d-ruler { fill: none; stroke: var(--blue, #1f6fc5); stroke-width: 1; opacity: 0.75; }
+#i2d-layer .i2d-ruler.snapping { stroke-width: 1.5; opacity: 1; }
+#i2d-layer .i2d-tick { stroke: var(--blue, #1f6fc5); stroke-width: 1; }
+#i2d-layer .i2d-tick.major { stroke-width: 1.4; }
+#i2d-layer .i2d-tick.hit { stroke: #ff8c1a; stroke-width: 2.5; }
+#i2d-layer text { font: 10.5px "Segoe UI", Arial, sans-serif; fill: var(--blue, #1f6fc5); paint-order: stroke; stroke: var(--dim-halo, #fff); stroke-width: 2.5px; stroke-linejoin: round; user-select: none; }
+#i3d-layer .i3d-handle.live { display: none; }

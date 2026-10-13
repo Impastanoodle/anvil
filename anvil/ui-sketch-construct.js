@@ -1000,6 +1000,19 @@
   // to points on it and to its midpoint (9 px). *Split all at intersections* splits the selected entities, or every
   // line, arc and circle when nothing is selected, wherever anything crosses them. The pieces keep the relations and
   // dimensions that still hold (as Trim keeps them) and meet at the split points (Coincident). One undo step each.
+  // rfAW: ellipses, partial ellipses and conics / parabolas split here too (a full ellipse takes two clicks): their
+  // pieces are the same curve, made by UI.splitEllipse (ui-sketch-spline.js). A click on one snaps to the closest point
+  // of the curve, or to a sketch point lying on it within 9 px.
+  function isEll(e) { return !!e && (e.t === 'ellipse' || e.t === 'pellipse' || (e.t === 'spline' && e.conic != null && !!(K.conicData && K.conicData(e)))); }
+  function ellSnap(f, i, uv, mx, my) {
+    var S = SS(), e = f.entities[i], fc = S.freeCurve(e), P = S.freeClosest(fc, uv).p, px = pxWorld(mx, my), best = null, bd = 9 * px;
+    f.entities.forEach(function (o, j) {
+      if (j === i || !o) return;
+      S.pointRefs(f, j).forEach(function (pr) { var c = S.freeClosest(fc, pr.pt); if (c && c.d < 1e-6 * Math.max(1, Math.abs(pr.pt[0]), Math.abs(pr.pt[1])) && dist(pr.pt, P) < bd) { bd = dist(pr.pt, P); best = pr.pt; } });
+    });
+    return { p: best ? best.slice() : P, snapped: !!best };
+  }
+  function ellPts(e) { var S = SS(), fc = S.freeCurve(e); return S.freePts(fc, fc.t0, fc.t1); }
   function splitSnap(f, i, uv, mx, my) {
     var e = f.entities[i], P = pointOn(e, uv), px = pxWorld(mx, my), best = null, bd = 9 * px, S = SS(), sc = isSpl(e) ? splScale(e) : scaleOf(e);
     var cands = crossings(f, i);
@@ -1014,23 +1027,26 @@
   function cmdSplitEntities() {
     var v = {}, pending = null, last = null, count = 0;
     var f0 = sketch(), pre = f0 ? selIdx(f0) : [];
-    function closedEnt(e) { return !!e && (e.t === 'circle' || (isSpl(e) && !!e.closed)); }
-    function hintNow(quiet) { var t = pending ? 'Click the second split point on the ' + (pending.spl ? 'closed spline.' : 'circle.') : 'Click a line, arc, circle or spline where it should be split (a circle or a closed spline needs two points).'; hint('<b>Split Entities:</b> ' + t); if (!quiet) UI.setStatus(t); }
-    function target(f, mx, my) { var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle' || isSpl(e)) ? hit.index : e ? -1 : null; }
+    function closedEnt(e) { return !!e && (e.t === 'circle' || e.t === 'ellipse' || (isSpl(e) && !!e.closed && !isEll(e))); }
+    function kindName(e) { return e.t === 'ellipse' ? 'ellipse.' : isSpl(e) ? 'closed spline.' : 'circle.'; }
+    function hintNow(quiet) { var t = pending ? 'Click the second split point on the ' + pending.kind : 'Click a line, arc, circle, ellipse or spline where it should be split (a circle, an ellipse or a closed spline needs two points).'; hint('<b>Split Entities:</b> ' + t); if (!quiet) UI.setStatus(t); }
+    function target(f, mx, my) { var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index]; return e && (e.t === 'line' || e.t === 'arc' || e.t === 'circle' || isSpl(e) || isEll(e)) ? hit.index : e ? -1 : null; }
+    function snapAt(f, i, uv, mx, my) { return isEll(f.entities[i]) ? ellSnap(f, i, uv, mx, my) : splitSnap(f, i, uv, mx, my); }
+    function curveOf(f, i) { var e = f.entities[i]; return isEll(e) ? ellPts(e) : curvePts(SS().refCurve(f, String(i)), e); }
     function draw() {
       var f = sketch();
       if (!f) return;
       feedback();
-      if (pending && f.entities[pending.i]) { UI.sketchPreview([curvePts(SS().refCurve(f, String(pending.i)), f.entities[pending.i])], PICK, 'sk-trim-pick'); UI.sketchPreview([ring(pending.p, 6)], PICK, 'sk-trim-end'); }
+      if (pending && f.entities[pending.i]) { UI.sketchPreview([curveOf(f, pending.i)], PICK, 'sk-trim-pick'); UI.sketchPreview([ring(pending.p, 6)], PICK, 'sk-trim-end'); }
       if (!last) return;
       var i = target(f, last.mx, last.my);
       if (i == null || i < 0) return;
-      var sp = splitSnap(f, i, last.uv, last.mx, last.my);
-      UI.sketchPreview([curvePts(SS().refCurve(f, String(i)), f.entities[i])], HOT, 'sk-trim-span');
+      var sp = snapAt(f, i, last.uv, last.mx, last.my);
+      UI.sketchPreview([curveOf(f, i)], HOT, 'sk-trim-span');
       UI.sketchPreview([ring(sp.p, sp.snapped ? 7 : 5)], HOT, 'sk-trim-end');
     }
     function doSplit(i, pts) {
-      var r = placeStep(function (f) { return splitEntity(f, i, pts); });
+      var r = placeStep(function (f) { return isEll(f.entities[i]) ? (UI.splitEllipse ? UI.splitEllipse(f, i, pts) : { ok: false, error: 'Splitting ellipses needs ui-sketch-spline.js.' }) : splitEntity(f, i, pts); });
       if (!r.ok) { UI.toast(r.error); UI.setStatus(r.error); return; }
       count++;
       UI.setStatus('Split into ' + r.pieces.length + ' pieces (' + count + ' split' + (count === 1 ? '' : 's') + ' so far). Click another, or press ✓ / Esc to finish.');
@@ -1046,7 +1062,7 @@
     }
     openCommand({
       id: 'splitEnt', title: 'Split Entities', icon: 'splitEnt', values: v,
-      message: 'Click where to split a line, arc, circle or spline (two points on a circle or a closed spline). Split all at intersections breaks the selected entities, or the whole sketch, wherever they cross.',
+      message: 'Click where to split a line, arc, circle, ellipse or spline (two points on a circle, an ellipse or a closed spline). Split all at intersections breaks the selected entities, or the whole sketch, wherever they cross.',
       hint: hintNow,
       onMove: function (uv, mx, my) { last = { uv: uv, mx: mx, my: my }; draw(); },
       onPoint: function (uv, mx, my) {
@@ -1054,12 +1070,12 @@
         if (!f) return;
         last = { uv: uv, mx: mx, my: my };
         var i = target(f, mx, my);
-        if (i == null) { UI.setStatus('Click on a line, arc, circle or spline.'); return; }
-        if (i < 0) { UI.setStatus('Split Entities splits lines, arcs, circles and splines.'); return; }
-        var sp = splitSnap(f, i, uv, mx, my), ce = f.entities[i];
+        if (i == null) { UI.setStatus('Click on a line, arc, circle, ellipse or spline.'); return; }
+        if (i < 0) { UI.setStatus('Split Entities splits lines, arcs, circles, ellipses and splines.'); return; }
+        var sp = snapAt(f, i, uv, mx, my), ce = f.entities[i];
         if (closedEnt(ce)) {
-          if (!pending || pending.i !== i) { pending = { i: i, p: sp.p, spl: isSpl(ce) }; hintNow(); draw(); return; }
-          if (dist(pending.p, sp.p) < 1e-6 * (isSpl(ce) ? splScale(ce) : scaleOf(ce))) { UI.setStatus('Click a second, different point on the ' + (isSpl(ce) ? 'spline.' : 'circle.')); return; }
+          if (!pending || pending.i !== i) { pending = { i: i, p: sp.p, kind: kindName(ce) }; hintNow(); draw(); return; }
+          if (dist(pending.p, sp.p) < 1e-6 * (isSpl(ce) ? splScale(ce) : ce.t === 'ellipse' ? Math.max(1, Math.abs(ce.cx), Math.abs(ce.cy), ce.rx, ce.ry) : scaleOf(ce))) { UI.setStatus('Click a second, different point on the ' + kindName(ce)); return; }
           var p1 = pending.p; pending = null;
           doSplit(i, [p1, sp.p]);
         } else { pending = null; doSplit(i, [sp.p]); }

@@ -667,6 +667,9 @@
     markDirty();
     var d = S.describe(f, f.rels[index]);
     S.deleteRelation(f, index);
+    // rfAV: the sketch is solved again, as SolidWorks does: a relation left in conflict by the one deleted (Vertical
+    // after its Horizontal) now holds (the line turns at its length); satisfied geometry does not move
+    S.solve(f);
     App.relHover = null;
     App.sel = null;
     refresh();

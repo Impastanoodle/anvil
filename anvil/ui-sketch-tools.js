@@ -258,6 +258,34 @@
       },
       onClose: function () { UI.sketchFeedbackClear(); }
     });
+    // rfAX: several entities selected when Sketch Fillet starts (a box over a contour, a rectangle, a polygon, a slot):
+    // every corner where they meet one another is rounded at once, one radius (Equal to the first), as SolidWorks
+    // fillets a selection's corners; one undo step
+    var all = selIdx(f).filter(function (i) { return f.entities[i]; });
+    if (!chamfer && all.length && (all.length > 2 || all.some(function (i) { return explodable(f.entities[i]); }))) {
+      var rs = step(function () {
+        var out = [];
+        all.slice().sort(function (a, b) { return b - a; }).forEach(function (i) {
+          if (!explodable(f.entities[i])) { out.push(i); return; }
+          var b = explodeBlock(i);
+          if (!b) return;
+          out = out.map(function (k) { return k > i ? k + b.shift : k; }).concat(b.list);
+        });
+        var cs = S.selectionCorners(f, out);
+        if (!cs.length) return { ok: false, error: 'The selected entities meet at no corner: select entities that share end points, or pick a vertex.' };
+        var rc = S.filletCorners(f, cs, +v.r, { keepCorner: v.keepCorner !== false, dimEach: !!v.dimEach });
+        if (rc.ok) { rc.arc = rc.arcs[0]; rc.count = rc.arcs.length; }
+        return rc;
+      });
+      if (rs.ok) done(rs, 'Selection');
+      else {   // nothing made: the selection is put back as it was (a rectangle made into lines first, too)
+        var s1 = JSON.parse(snap); f.entities = s1.entities;
+        if (s1.rels) f.rels = s1.rels; else delete f.rels;
+        if (s1.dims) f.dims = s1.dims; else delete f.dims;
+        UI.toast(rs.error); UI.updateSketches();
+      }
+      return;
+    }
     // two entities selected when the command starts: they are filleted (chamfered) at once
     var pre = selIdx(f).filter(function (i) { return direct(f.entities[i]); });
     if (pre.length === 2) {

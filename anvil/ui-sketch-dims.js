@@ -1408,18 +1408,7 @@
   };
   UI.selectRunningZero = selectRunZero;
   UI.deleteRunningSet = deleteRunningSet;
-  // the Modify box: an angular running value is in degrees (ui-sketch.js reads 'angle' from the type only)
-  (function () {
-    var box = $('dim-edit');
-    if (!box || typeof MutationObserver === 'undefined') return;
-    new MutationObserver(function () {
-      if (box.hidden) return;
-      var f = UI.activeSketchFeature(), s = App.sel, rel = f && s && s.kind === 'rel' ? (f.rels || [])[s.index] : null;
-      if (!rel || rel.type !== 'runangle') return;
-      var u = box.querySelector('input + span') || Array.prototype.filter.call(box.querySelectorAll('span'), function (x) { return /^(in|mm|cm|m|ft)$/.test(x.textContent); })[0];
-      if (u && u.textContent !== '°') u.textContent = '°';
-    }).observe(box, { attributes: true, attributeFilter: ['hidden'] });
-  })();
+  // (the Modify box knows an angular running value is in degrees: ui-sketch.js openDimEdit, rfAV)
 
   // one dimension placed by a command: selected, then the Modify box (or the driven note)
   function placed(f, r, what) {
@@ -1686,4 +1675,308 @@
     window.anvil.runningAngle = withSketch(function (f, spec) { return S.addRunningAngle(f, spec); });
     window.anvil.runningSets = function () { var f = UI.activeSketchFeature(); return f ? JSON.parse(JSON.stringify(S.runningSets(f))) : {}; };
   }
+})();
+
+// ------------------------------------------------------------------ rfAV: Instant2D (Sketch tab toggle, as SolidWorks)
+// With Instant2D on, hovering a sketch dimension (its value or its lines) shows a ball handle at its moving arrow end:
+// a linear dimension's second arrow, a radius / diameter's arrow on the curve, an angle's second arrow. Dragging the
+// ball shows a ruler along the dimension (an arc for an angle) and changes the value live; the value snaps to the
+// ruler's ticks, finer the nearer the pointer is to the ruler (never finer than the document's precision: .001 in,
+// 0.01 mm, 0.01°). Releasing makes one undo step; Esc during the drag puts the value back. A driven dimension (and the
+// grey driven values of View ▸ Sketch Dimensions) shows no handle. The live solve starts from the sketch as it was
+// when the drag began on every step (as the Modify box's preview does), so a refused value never leaves a trace.
+// Instant3D's dimension dots in a sketch are hidden (style.css): in SolidWorks Instant3D acts on the part only.
+(function () {
+  'use strict';
+  if (typeof UI === 'undefined' || !UI.App) return;
+  var App = UI.App, K = UI.K, S = window.SketchSolver, SVGNS = 'http://www.w3.org/2000/svg';
+  var viewport = UI.$ && UI.$('viewport');
+  if (!viewport || !S || !K) return;
+  var items = [], hover = null, drag = null, layer = null, lastUp = 0;
+  function on() { return App.view.instant2D !== false; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function scr(pl, uv) { return UI.worldToScreen(K.to3D(pl, uv[0], uv[1])); }
+  function unit(a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy); return L < 1e-9 ? null : [dx / L, dy / L]; }
+  function wrapPi(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
+  function inch() { return (UI.unitLabel ? UI.unitLabel() : 'mm') === 'in'; }
+  function keyOf(it) { return UI.dimKey ? UI.dimKey(it) : String(it.index); }
+  function el(tag, attrs, parent) {
+    var n = document.createElementNS(SVGNS, tag);
+    for (var k in attrs) if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function layerEl() {
+    if (layer && layer.parentNode) return layer;
+    layer = el('svg', { id: 'i2d-layer', 'aria-hidden': 'true' });
+    viewport.appendChild(layer);
+    return layer;
+  }
+  // may the handles show now? (the Select tool in an open sketch, no command, no PropertyManager collecting picks)
+  function idle() {
+    return on() && App.mode === 'sketch' && !App.sketchDragging && (!App.tool || App.tool === 'select') && !App.command &&
+      !(UI.pmCollectsSelection && UI.pmCollectsSelection()) && !(UI.isDimEditOpen && UI.isDimEditOpen()) && !!UI.activeSketchFeature();
+  }
+  // an item of the last dimension drawing that can take a handle
+  function eligible(it, f) {
+    if (!it || it.temp || it.auto || !it.sc || !it.d || it.d.driven || it.state === 'driven') return false;
+    if (it.rel != null) { var rel = f.rels && f.rels[it.rel]; return !!rel && (rel.type === 'distance' || rel.type === 'angle') && !rel.driven; }
+    return it.index != null;
+  }
+  // The handle of a drawn dimension: where the ball sits, its ruler, and how a pointer position reads as a value (in
+  // the units the dimension shows; scale = shown / stored, a diameter shown as its radius: 0.5).
+  function handleFor(it) {
+    var f = UI.activeSketchFeature(), pl = UI.activePlane();
+    if (!f || !pl || !eligible(it, f)) return null;
+    var sc = it.sc, h = { key: keyOf(it), it: it, sketchId: f.id, prec: inch() ? 0.001 : 0.01 };
+    if (it.rel != null && f.rels[it.rel].type === 'angle') {
+      var rel = f.rels[it.rel], A = S.refCurve(f, rel.refs[0]), B = S.refCurve(f, rel.refs[1]);
+      if (!A || !B || !A.a || !B.a || !sc.arrows || sc.arrows.length < 2) return null;
+      var d1 = [A.b[0] - A.a[0], A.b[1] - A.a[1]], d2 = [B.b[0] - B.a[0], B.b[1] - B.a[1]], den = d1[0] * d2[1] - d1[1] * d2[0];
+      if (Math.abs(den) < 1e-12) return null;
+      var t = ((B.a[0] - A.a[0]) * d2[1] - (B.a[1] - A.a[1]) * d2[0]) / den, X = scr(pl, [A.a[0] + d1[0] * t, A.a[1] + d1[1] * t]);
+      var t0 = sc.arrows[0].tip, t1 = sc.arrows[1].tip, R = Math.hypot(t1[0] - X[0], t1[1] - X[1]);
+      var th0 = Math.atan2(t0[1] - X[1], t0[0] - X[0]), sw = wrapPi(Math.atan2(t1[1] - X[1], t1[0] - X[0]) - th0), sg = sw < 0 ? -1 : 1;
+      if (!(R > 4)) return null;
+      h.kind = 'angle'; h.angle = true; h.prec = 0.01; h.value = rel.v; h.scale = 1; h.min = 0; h.max = 180;
+      h.ppu = R * Math.PI / 180;
+      h.at = function (v, off) { var a = th0 + sg * v * Math.PI / 180, r = R + (off || 0); return [X[0] + Math.cos(a) * r, X[1] + Math.sin(a) * r]; };
+      h.normal = function (v) { var a = th0 + sg * v * Math.PI / 180; return [Math.cos(a), Math.sin(a)]; };
+      h.raw = function (m) { var a = sg * wrapPi(Math.atan2(m[1] - X[1], m[0] - X[0]) - th0) * 180 / Math.PI; return a < -90 ? a + 360 : a; };
+      h.dist = function (m) { return Math.abs(Math.hypot(m[0] - X[0], m[1] - X[1]) - R); };
+      h.set = function (g, v) { return S.setRelValue(g, it.rel, v); };
+      h.ball = t1;
+      return h;
+    }
+    var O, u, nn, ppu, val, scale = 1;
+    if (it.rel == null) {
+      var e = f.entities[it.d.e], g = e && K.dimGeometry(e, it.d);
+      if (!g) return null;
+      scale = UI.dimShowScale ? UI.dimShowScale(it.d) || 1 : 1;
+      val = g.value * scale;
+      if (g.type === 'radial') {
+        var C = scr(pl, g.C), tip = sc.arrows && sc.arrows[0] && sc.arrows[0].tip, k = g.prefix === '⌀' ? 2 : 1;
+        if (!tip || !(g.r > 0)) return null;
+        u = unit(C, tip);
+        if (!u) return null;
+        O = C; ppu = Math.hypot(tip[0] - C[0], tip[1] - C[1]) / (g.r * k * scale); nn = [-u[1], u[0]];
+        h.kind = 'radial';
+      }
+    } else val = f.rels[it.rel].v;
+    if (!h.kind) {
+      var ln = sc.lin;
+      if (!ln || !(val > 0)) return null;
+      O = ln.a; u = ln.u; ppu = ln.L / val;
+      var ext = sc.lines && sc.lines[0] && unit(sc.lines[0][0], sc.lines[0][1]);
+      nn = ext && Math.abs(ext[0] * u[1] - ext[1] * u[0]) > 0.5 ? ext : [-u[1], u[0]];
+      h.kind = 'linear';
+    }
+    if (!(ppu > 0) || !isFinite(ppu)) return null;
+    h.value = val; h.scale = scale; h.ppu = ppu; h.min = 0; h.max = Infinity;
+    h.at = function (v, off) { return [O[0] + u[0] * v * ppu + nn[0] * (off || 0), O[1] + u[1] * v * ppu + nn[1] * (off || 0)]; };
+    h.normal = function () { return nn; };
+    h.raw = function (m) { return ((m[0] - O[0]) * u[0] + (m[1] - O[1]) * u[1]) / ppu; };
+    h.dist = function (m) { return Math.abs((m[0] - O[0]) * nn[0] + (m[1] - O[1]) * nn[1]); };
+    h.set = function (g2, v) { return it.rel != null ? S.setRelValue(g2, it.rel, v) : S.setDim(g2, it.index, v / scale); };
+    h.ball = h.at(val);
+    return h;
+  }
+  // the ruler step for a pointer distPx from the ruler: ticks about 5 px apart on it, 14 px near it, 40 px away
+  function stepFor(h, distPx) {
+    var minPx = distPx < 14 ? 5 : distPx < 45 ? 14 : 40;
+    var st = window.BoxSelect && BoxSelect.rulerStep ? BoxSelect.rulerStep(h.ppu, minPx) : 1;
+    if (h.angle && st > 5) st = st > 15 ? 45 : 15;   // whole turns of the protractor: 5°, 15°, 45°
+    return Math.max(st, h.prec);
+  }
+  function snapValue(h, raw, step) {
+    var v = +(Math.round(raw / step) * step).toPrecision(12);
+    if (!(v > h.min)) v = step;
+    if (v > h.max) v = h.max;
+    return v;
+  }
+  function fmt(h, v) { return h.angle ? (Math.round(v * 100) / 100) + '°' : (UI.fmtDim ? UI.fmtDim(v) : String(v)); }
+
+  // which dimension is under the pointer: its value, within 4 px of its lines, or 8 px of an arrow; the ball keeps
+  // the hover
+  function segDist(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+  }
+  function itemByKey(k) { for (var i = 0; i < items.length; i++) if (items[i].sc && !items[i].temp && keyOf(items[i]) === k) return items[i]; return null; }
+  function itemAt(m) {
+    var f = UI.activeSketchFeature();
+    if (!f) return null;
+    if (hover && hover.ball && Math.hypot(m[0] - hover.ball[0], m[1] - hover.ball[1]) <= 11) { var still = itemByKey(hover.key); if (still) return still; }
+    for (var i = items.length - 1; i >= 0; i--) {
+      var it = items[i];
+      if (!eligible(it, f)) continue;
+      var b = it.sc.box;
+      if (b && m[0] >= b[0] - 3 && m[0] <= b[2] + 3 && m[1] >= b[1] - 3 && m[1] <= b[3] + 3) return it;
+      var ls = it.sc.lines || [];
+      for (var k = 0; k < ls.length; k++) if (segDist(m, ls[k][0], ls[k][1]) <= 4) return it;
+      var ar = it.sc.arrows || [];
+      for (var j = 0; j < ar.length; j++) if (Math.hypot(m[0] - ar[j].tip[0], m[1] - ar[j].tip[1]) <= 8) return it;
+    }
+    return null;
+  }
+
+  // ---- drawing: the ball (hovered or dragged) and, while dragging, the ruler with its ticks
+  function draw() {
+    var L = layerEl();
+    while (L.firstChild) L.removeChild(L.firstChild);
+    if (drag) { drawRuler(L, drag.h, drag.v, drag.step, drag.onRuler); ball(L, drag.h.at(drag.v), drag.h, true); return; }
+    if (!hover || !idle()) { hover = null; return; }
+    var it = itemByKey(hover.key), h = it && handleFor(it);
+    if (!h) { hover = null; return; }
+    hover = h;
+    ball(L, h.ball, h, false);
+  }
+  function ball(L, p, h, active) {
+    var g = el('g', { 'class': 'i2d-handle' + (active ? ' active' : ''), 'data-key': h.key, 'data-kind': h.kind }, L);
+    el('circle', { 'class': 'i2d-grip', cx: p[0].toFixed(2), cy: p[1].toFixed(2), r: 10 }, g);
+    el('circle', { 'class': 'i2d-ball', cx: p[0].toFixed(2), cy: p[1].toFixed(2), r: 5 }, g);
+    var t = el('title', {}, g);
+    t.textContent = 'Instant2D: drag to change the dimension; onto the ruler for finer steps';
+    g.addEventListener('mousedown', function (ev) { if (ev.button === 0 && !drag) startDrag(h, ev); });
+    g.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    g.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+  }
+  function drawRuler(L, h, v, step, onRuler) {
+    var g = el('g', { 'class': 'i2d-rulerset' }, L);
+    var hi = h.angle ? Math.min(h.max, 180) : Math.max(v, h.value) * 1.4 + 10 * step, n = Math.floor(hi / step + 1e-9);
+    var kv = Math.round(v / step), k0 = Math.max(0, kv - 120), k1 = Math.min(n, kv + 120), pts = [];
+    for (var k = k0; k <= k1; k++) pts.push(h.at(k * step));
+    if (pts.length < 2) return;
+    el('polyline', { 'class': 'i2d-ruler' + (onRuler ? ' snapping' : ''), points: pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ') }, g);
+    var major = h.angle && step >= 5 ? (step === 5 ? 3 : 2) : 5;
+    for (var j = k0; j <= k1; j++) {
+      var p = h.at(j * step), nn = h.normal(j * step), isMajor = j % major === 0, len = isMajor ? 9 : 5, hit = j === kv;
+      el('line', { 'class': 'i2d-tick' + (isMajor ? ' major' : '') + (hit ? ' hit' : ''), x1: p[0].toFixed(1), y1: p[1].toFixed(1), x2: (p[0] + nn[0] * len).toFixed(1), y2: (p[1] + nn[1] * len).toFixed(1) }, g);
+      if (isMajor && j && Math.abs(j - kv) <= 3 * major) {
+        var tx = el('text', { x: (p[0] + nn[0] * 18).toFixed(1), y: (p[1] + nn[1] * 18 + 3.5).toFixed(1), 'text-anchor': 'middle' }, g);
+        tx.textContent = fmt(h, j * step);
+      }
+    }
+  }
+
+  // ---- the drag: one undo step, the sketch re-solved from its start state on every new value
+  function pos(ev) { var r = viewport.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+  function startDrag(h, ev) {
+    ev.stopPropagation(); ev.preventDefault();
+    var f = UI.activeSketchFeature();
+    if (!f || f.id !== h.sketchId) return;
+    drag = { h: h, f: f, v0: h.value, v: h.value, good: h.value, step: stepFor(h, 0), onRuler: true, pushed: false, frame: 0,
+      snap: clone(f.entities), relV: h.it.rel != null ? f.rels[h.it.rel].v : null };
+    hover = null;
+    viewport.classList.add('tool-grab');
+    UI.setStatus('Instant2D: drag the value; the nearer the ruler, the finer the steps. Esc puts it back.');
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
+    window.addEventListener('keydown', key, true);
+    draw();
+  }
+  function restore(d) {
+    d.f.entities = clone(d.snap);
+    if (d.h.it.rel != null && d.f.rels && d.f.rels[d.h.it.rel]) d.f.rels[d.h.it.rel].v = d.relV;
+    if (S.updateDriven) S.updateDriven(d.f);
+  }
+  function apply() {
+    var d = drag;
+    if (!d) return;
+    d.frame = 0;
+    if (UI.activeSketchFeature() !== d.f || Math.abs(d.v - d.good) < 1e-12) { draw(); return; }
+    if (!d.pushed) { d.pushed = true; if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; d.undo = true; } }
+    restore(d);
+    var r = Math.abs(d.v - d.v0) < 1e-12 ? { ok: true } : d.h.set(d.f, d.v);
+    if (r && r.ok) d.good = d.v;
+    else {
+      restore(d);
+      if (Math.abs(d.good - d.v0) > 1e-12) d.h.set(d.f, d.good);
+      UI.setStatus('Instant2D: ' + fmt(d.h, d.v) + ' cannot be reached' + (r && r.error ? ' (' + r.error + ')' : '') + '.');
+    }
+    App.gridStale = true;
+    UI.updateSketches();
+  }
+  function move(ev) {
+    var d = drag;
+    if (!d) return;
+    ev.stopPropagation();
+    var m = pos(ev), dist = d.h.dist(m), step = stepFor(d.h, dist), v = snapValue(d.h, d.h.raw(m), step);
+    var redraw = step !== d.step || (dist < 45) !== d.onRuler;
+    d.step = step; d.onRuler = dist < 45;
+    if (Math.abs(v - d.v) > 1e-12) {
+      d.v = v;
+      UI.setStatus('Instant2D: ' + fmt(d.h, v) + (d.h.angle ? '' : ' ' + UI.unitLabel()) + ' (step ' + fmt(d.h, step) + '; release to set it)');
+      if (!d.frame) d.frame = requestAnimationFrame(apply);
+    } else if (redraw) draw();
+  }
+  function finish(cancel) {
+    var d = drag;
+    if (!d) return;
+    window.removeEventListener('mousemove', move, true);
+    window.removeEventListener('mouseup', up, true);
+    window.removeEventListener('keydown', key, true);
+    viewport.classList.remove('tool-grab');
+    if (d.frame) { cancelAnimationFrame(d.frame); if (!cancel) apply(); d.frame = 0; }
+    drag = null;
+    var changed = Math.abs(d.good - d.v0) > 1e-12;
+    if (cancel || !changed) {
+      if (d.pushed) { restore(d); App.gridStale = true; UI.updateSketches(); }
+      if (d.undo) { App.undo.pop(); App.sketchDirty = false; }
+      UI.setStatus(cancel ? 'Instant2D: dimension put back.' : 'Instant2D: dimension unchanged.');
+    } else {
+      UI.updateSketches(); UI.refreshTree();
+      if (UI.refreshDimensionPM) UI.refreshDimensionPM();
+      UI.setStatus('Dimension set to ' + fmt(d.h, d.good) + (d.h.angle ? '' : ' ' + UI.unitLabel()) + ' (Instant2D).');
+    }
+    App.dimsStale = true;
+    lastUp = performance.now();
+    draw();
+  }
+  function up(ev) { ev.stopPropagation(); finish(false); }
+  function key(ev) { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(true); } }
+  // the click that ends a drag is not a click on the sketch (it would clear the selection)
+  viewport.addEventListener('click', function (ev) { if (performance.now() - lastUp < 250) ev.stopPropagation(); }, true);
+
+  viewport.addEventListener('mousemove', function (ev) {
+    if (drag) return;
+    if (!idle()) { if (hover) { hover = null; draw(); } return; }
+    var it = itemAt(pos(ev)), k = it ? keyOf(it) : null;
+    if ((hover ? hover.key : null) === k) return;
+    hover = k ? { key: k } : null;
+    draw();
+  });
+  viewport.addEventListener('mouseleave', function () { if (hover && !drag) { hover = null; draw(); } });
+
+  if (UI.drawDims) {
+    var baseDrawDimsI2D = UI.drawDims;
+    UI.drawDims = function () {
+      var r = baseDrawDimsI2D.apply(this, arguments);
+      items = Array.isArray(r) ? r : [];
+      try { if (hover || drag || (layer && layer.firstChild)) draw(); } catch (e) { /* an overlay: never break the dimensions */ }
+      return r;
+    };
+  }
+  function setOn(v) {
+    App.view.instant2D = v == null ? !on() : !!v;
+    hover = null;
+    if (layer) draw();
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    UI.setStatus('Instant2D ' + (on() ? 'on: hover a dimension and drag its ball to change it.' : 'off.'));
+    return on();
+  }
+  UI.instant2DOn = on;
+  UI.toggleInstant2D = setOn;
+  // test / script hooks: hover the dimension drawn with key (UI.dimKey: 'd0', 'r3') and read its handle; the screen
+  // point that reads value v with the pointer off px from the ruler; the drag's state; the step off px from the ruler
+  function summary(h) { return h ? { key: h.key, kind: h.kind, value: h.value, ball: [+h.ball[0].toFixed(2), +h.ball[1].toFixed(2)], ppu: h.ppu } : null; }
+  UI.instant2DHandle = function (k) {
+    if (k != null) { hover = { key: k }; draw(); }
+    return summary(hover && hover.ball ? hover : null);
+  };
+  UI.instant2DPoint = function (v, off) { var h = drag ? drag.h : hover && hover.ball ? hover : null; return h ? h.at(v, off) : null; };
+  UI.instant2DDrag = function () { return drag ? { value: drag.v, good: drag.good, step: drag.step, onRuler: drag.onRuler } : null; };
+  UI.instant2DStepAt = function (off) { var h = drag ? drag.h : hover && hover.ball ? hover : null; return h ? stepFor(h, off) : null; };
+  if (window.anvil) window.anvil.instant2D = function (v) { if (v != null) setOn(v); return on(); };
 })();

@@ -12798,7 +12798,7 @@
     UI.setRibbonTab('Sketch');
     assert($('ribbon').offsetHeight === h0, 'the Sketch tab changes the ribbon height: ' + $('ribbon').offsetHeight + ' vs ' + h0);
     var top = rfcTop();
-    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,stack,|,relations,stack,stack,|,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);
+    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,stack,|,relations,stack,stack,stack,|,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);   // rfAV: + the Instant2D column
     var grid = D.querySelector('#ribbon-buttons .rb-grid');
     var cells = Array.prototype.map.call(grid.children, function (c) { return c._fly ? c._fly.fly : c.getAttribute('aria-label'); }).join(',');
     assert(cells === 'line,circle,spline,rect,arc,ellipse,slot,Polygon,skFillet,Text,Plane,Point', 'entity grid ' + cells);
@@ -17785,8 +17785,10 @@
     await UI.exitSketch(); await idle();
     var sk = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0];
     assert(sk.blocks && K.blockInstances(sk).length === 3, 'kept after leaving the sketch');
-    var dxf = K.exportDXFSketch(sk, 'mm');
-    assert((dxf.match(/\nCIRCLE\r?\n/g) || []).length === 3 && !/\nINSERT\r?\n/.test(dxf), 'DXF: three exploded circles');
+    // (rfAU: the block once, three INSERTs; opts.explode writes the three circles)
+    var dxf = K.exportDXFSketch(sk, 'mm'), dxfX = K.exportDXFSketch(sk, 'mm', { explode: true });
+    assert((dxf.match(/\nCIRCLE\r?\n/g) || []).length === 1 && (dxf.match(/\nINSERT\r?\n/g) || []).length === 3, 'DXF: one block, three INSERTs');
+    assert((dxfX.match(/\nCIRCLE\r?\n/g) || []).length === 3 && !/\nINSERT\r?\n/.test(dxfX), 'DXF exploded: three circles');
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return inst.length + ' instances';
   });
@@ -17959,6 +17961,611 @@
     return 'deviation ' + dv.toExponential(1);
   });
   // --- end rfAS ---
+  // ---- rfAX (2026-10-13): sweep of the old sketch follow-ups — Sketch Fillet on a box-selected rectangle / contour
+  // (every corner at one R), a fillet whose line misses the spline (the spline is carried on, as SolidWorks)
+  function rfAXSel() { return anvil.selection().map(function (s) { return s.kind + ':' + s.index; }).join(' '); }
+  function rfAXArcs() { return UI.activeSketchFeature().entities.filter(function (e) { return e.t === 'arc'; }); }
+  async function rfAXNew() { await rskNew(); UI.App.view.showGrid = false; anvil.selectionFilter({ faces: false, edges: false, vertices: false, bodies: false, components: false, sketch: false, suspended: false }); }
+  step('rfAX: Sketch Fillet with a box-selected rectangle rounds all four corners at once (R 10, one R dimension, 3 Equal, one undo step, ✗ puts the rectangle back); a script rectangle selected and a box over a closed triangle of lines too; with nothing selected it waits for picks', async function () {
+    await rfAXNew();
+    UI.setTool('rect'); rskClick([0, 0]); rskClick([60, 40]); UI.setTool('select'); await wait(20);
+    var f = UI.activeSketchFeature(), lines0 = JSON.stringify(f.entities);
+    assert(rfAXSel() === '', 'nothing selected after drawing: ' + rfAXSel());
+    assert(f.entities.length === 4 && f.entities.every(function (e) { return e.t === 'line'; }), 'a rectangle of four lines: ' + lines0);
+    await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
+    assert(rfAXSel() === 'entity:0 entity:1 entity:2 entity:3', 'the window box selects the four lines: ' + rfAXSel());
+    var undo0 = UI.App.undo.length;
+    UI.cmdSketchFillet(); await wait(20);
+    var arcs = rfAXArcs();
+    f = UI.activeSketchFeature();
+    assert(UI.pmTitle() === 'Sketch Fillet' && arcs.length === 4 && arcs.every(function (a) { return Math.abs(a.r - 10) < 1e-9; }), 'four R10 fillets at once: ' + JSON.stringify(f.entities));
+    assert((f.dims || []).filter(function (d) { return d.k === 'r'; }).length === 1 && stToolRels().filter(function (r) { return /^equal:/.test(r); }).length === 3, 'one R dimension and 3 Equal: ' + stToolRels().join(' '));
+    stNoRedundant('rectangle fillets');
+    assert(UI.App.undo.length === undo0 + 1 && D.querySelectorAll('#pm .pm-list .pm-item').length === 4, 'one undo step, four listed: ' + (UI.App.undo.length - undo0));
+    UI.pmCancel(); await wait(20);
+    f = UI.activeSketchFeature();
+    assert(JSON.stringify(f.entities) === lines0 && !rfAXArcs().length, '✗ puts the rectangle back: ' + JSON.stringify(f.entities));
+    // a rectangle entity (a script's), selected by a click on its side: made into lines and every corner rounded
+    await rfAXNew();
+    fxSk([{ t: 'rect', x: 0, y: 0, w: 60, h: 40 }]);
+    UI.setTool('select');
+    rskClick([30, 0]); await wait(20);
+    assert(rfAXSel() === 'entity:0', 'the rectangle selected: ' + rfAXSel());
+    UI.cmdSketchFillet(); await wait(20);
+    assert(rfAXArcs().length === 4 && UI.activeSketchFeature().entities.filter(function (e) { return e.t === 'line'; }).length === 4, 'made into lines, four corners rounded: ' + JSON.stringify(UI.activeSketchFeature().entities));
+    UI.pmCancel(); await wait(20);
+    assert(UI.activeSketchFeature().entities.length === 1 && UI.activeSketchFeature().entities[0].t === 'rect', '✗: the rectangle entity again');
+    // a closed triangle of three lines (Coincident ends), boxed: three corners
+    await rfAXNew();
+    fxSk([{ t: 'line', x1: 0, y1: 0, x2: 60, y2: 0 }, { t: 'line', x1: 60, y1: 0, x2: 30, y2: 40 }, { t: 'line', x1: 30, y1: 40, x2: 0, y2: 0 }],
+      [{ type: 'coincident', refs: ['0.p2', '1.p1'] }, { type: 'coincident', refs: ['1.p2', '2.p1'] }, { type: 'coincident', refs: ['2.p2', '0.p1'] }]);
+    UI.setTool('select');
+    await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
+    assert(rfAXSel() === 'entity:0 entity:1 entity:2', 'the box takes the three lines: ' + rfAXSel());
+    UI.cmdSketchFillet(); await wait(20);
+    assert(rfAXArcs().length === 3, 'three corners rounded: ' + JSON.stringify(UI.activeSketchFeature().entities));
+    UI.pmOK(); await wait(20);
+    assert(!UI.hasPM() && rfAXArcs().length === 3, '✓ keeps them');
+    // nothing selected: the PM waits for a vertex or two picks
+    if (UI.setSelection) UI.setSelection([]);
+    UI.App.sel = null;
+    UI.cmdSketchFillet(); await wait(20);
+    assert(rfAXArcs().length === 3 && UI.pmTitle() === 'Sketch Fillet', 'nothing made with nothing selected');
+    UI.pmCancel();
+    return '4 + 3 corners';
+  });
+  step('rfAX: Sketch Fillet between a line and a spline the line\'s extension misses — two clicks with R 2 carry the spline back past its first point to the fillet and run the line to it (SolidWorks fillets it; it used to be refused)', async function () {
+    await rfAXNew();
+    fxSk([{ t: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }, { t: 'spline', pts: [[15, 3], [20, 6], [25, 12]] }]);
+    UI.setTool('select');
+    if (UI.setSelection) UI.setSelection([]);
+    UI.App.sel = null;
+    var onSp = W.SketchSolver.freeCurve(UI.activeSketchFeature().entities[1]).pt(1.5), undo0 = UI.App.undo.length;
+    UI.cmdSketchFillet(); await wait(20);
+    UI.pmSetField('r', '2');
+    rskClick([5, 0]); await wait(20);
+    rskClick(onSp); await wait(20);
+    var f = UI.activeSketchFeature(), arcs = rfAXArcs(), sp = f.entities[1], ln = f.entities[0];
+    assert(arcs.length === 1 && Math.abs(arcs[0].r - 2) < 1e-9, 'an R2 fillet: ' + JSON.stringify(f.entities) + ' ' + (UI.lastToast ? UI.lastToast() : ''));
+    assert(sp.t === 'spline' && sp.pts[0][0] < 15 && sp.pts[0][1] < 3 && Math.abs(Math.hypot(sp.pts[0][0] - arcs[0].cx, sp.pts[0][1] - arcs[0].cy) - 2) < 1e-4, 'the spline is carried back to the fillet: ' + JSON.stringify(sp.pts));
+    assert(Math.abs(ln.x2 - arcs[0].cx) < 1e-4 && ln.x2 > 5, 'the line runs to the fillet: ' + JSON.stringify(ln));
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step');
+    UI.pmOK(); await wait(20);
+    assert(!UI.hasPM() && rfAXArcs().length === 1, '✓ keeps it');
+    return 'spline from (' + sp.pts[0].map(function (v) { return v.toFixed(2); }).join(', ') + ')';
+  });
+  // --- end rfAX ---
+  // ---- rfAW (2026-10-13): Sketch Picture, spline leftovers, Split Entities folded into ui-sketch-construct.js
+  async function rfAWNew(ents) {
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    assert(UI.App.mode === 'sketch', 'not in a sketch');
+    UI.zoomView(0.25 / UI.cam.scale);   // 0.25 units per pixel
+    var f = UI.activeSketchFeature();
+    (ents || []).forEach(function (e) { f.entities.push(e); });
+    UI.App.gridStale = true; UI.updateSketches(); await wait(20);
+    return f;
+  }
+  function rfAWScr(uv) { return UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1])); }
+  function rfAWEv(type, uv, target, button) {
+    var r = $('viewport').getBoundingClientRect(), p = rfAWScr(uv), b = button || 0;
+    (target || W).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: b, buttons: type === 'mouseup' || type === 'mousemove' ? 0 : (b === 2 ? 2 : 1), clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }));
+  }
+  function rfAWClick(uv) { rfAWEv('mousemove', uv); rfAWEv('mousedown', uv, $('viewport')); rfAWEv('mouseup', uv); }
+  function rfAWRight(uv) { rfAWEv('mousemove', uv); rfAWEv('mousedown', uv, $('viewport'), 2); rfAWEv('mouseup', uv, W, 2); }
+  function rfAWMenu() { var ms = D.querySelectorAll('body > .menu'), m = ms[ms.length - 1]; return m ? Array.prototype.slice.call(m.querySelectorAll('.mi')) : []; }
+  function rfAWSet(key, val) { var i = D.querySelector('#pm [data-key="' + key + '"]'); assert(i, 'field ' + key); if (i.type === 'checkbox' || i.type === 'radio') { if (i.checked !== !!val) i.click(); return; } i.value = String(val); i.dispatchEvent(new W.Event('input', { bubbles: true })); i.dispatchEvent(new W.Event('change', { bubbles: true })); }
+  // a 200 x 100 px PNG drawn in the page: white, a black frame and a red bar 100 px long from (50, 50)
+  function rfAWPng() {
+    var cv = D.createElement('canvas'); cv.width = 200; cv.height = 100;
+    var g = cv.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, 200, 100);
+    g.strokeStyle = '#000000'; g.lineWidth = 2; g.strokeRect(1, 1, 198, 98);
+    g.fillStyle = '#ff0000'; g.fillRect(50, 48, 100, 4);
+    return cv.toDataURL('image/png');
+  }
+  async function rfAWUntil(fn, ms, what) { var t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > (ms || 3000)) fail('timed out waiting for ' + what); await wait(20); } }
+  step('rfAW: Sketch Picture — Tools ▸ Sketch Tools ▸ Sketch Picture… takes a PNG from the file box; it lies behind the sketch, its PropertyManager sizes it (Lock aspect ratio), flips it and makes it transparent; ✗ on a new one takes it out, one undo step', async function () {
+    var errs0 = errors.length, f = await rfAWNew([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }]);
+    var rows = menuRows('Sketch Tools ▸ Sketch Picture');
+    assert(rows.length === 1 && !rows[0].row.classList.contains('disabled'), 'menu row');
+    var u0 = UI.App.undo.length;
+    rows[0].row.click(); await idle();
+    var inp = $('sk-picture-file');
+    assert(inp && inp.type === 'file' && /png/.test(inp.accept) && /bmp/.test(inp.accept), 'file box: ' + (inp && inp.accept));
+    var src = rfAWPng(), bin = W.atob(src.split(',')[1]), bytes = new W.Uint8Array(bin.length);
+    for (var k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+    var dt = new W.DataTransfer(); dt.items.add(new W.File([bytes], 'print.png', { type: 'image/png' }));
+    inp.files = dt.files; inp.dispatchEvent(new W.Event('change', { bubbles: true }));
+    await rfAWUntil(function () { return UI.pmTitle() === 'Sketch Picture'; }, 4000, 'the Sketch Picture PM');
+    var p = f.pictures && f.pictures[0];
+    assert(p && /^data:image\/png/.test(p.src) && p.px[0] === 200 && p.px[1] === 100 && p.file === 'print.png', 'picture record: ' + (p && JSON.stringify({ px: p.px, file: p.file })));
+    near(p.h / p.w, 0.5, 1e-9, 'aspect'); near(p.x, 0, 0, 'lower-left at the origin');
+    await rfAWUntil(function () { return UI.sketchPictureObjects().length === 1; }, 3000, 'the picture in the scene');
+    var mesh = UI.sketchPictureObjects()[0];
+    assert(mesh.material.map && mesh.renderOrder < 0 && !mesh.material.depthWrite, 'textured, behind the sketch');
+    assert(f.entities.length === 1, 'not a sketch entity');
+    // on screen: the red bar across the picture's middle, white beside it
+    var shot = new W.Image(); shot.src = await anvil.png(); await new Promise(function (res) { shot.onload = res; });
+    var cv = D.createElement('canvas'); cv.width = shot.width; cv.height = shot.height; var gx = cv.getContext('2d'); gx.drawImage(shot, 0, 0);
+    function rfAWPx(u, v) { var s = rfAWScr([u, v]), k = shot.width / UI.size.w; return gx.getImageData(Math.round(s[0] * k), Math.round(s[1] * k), 1, 1).data; }
+    var red = rfAWPx(p.w * 0.6, p.h * 0.5), white = rfAWPx(p.w * 0.3, p.h * 0.8);
+    assert(red[0] > 200 && red[1] < 80 && red[2] < 80, 'red bar drawn: ' + Array.prototype.slice.call(red));
+    assert(white[0] > 230 && white[1] > 230 && white[2] > 230, 'white paper drawn: ' + Array.prototype.slice.call(white));
+    rfAWSet('w', 80); await wait(10);
+    near(p.w, 80, 1e-9, 'width'); near(p.h, 40, 1e-9, 'Lock aspect ratio: height follows');
+    rfAWSet('lock', false); rfAWSet('h', 30); await wait(10);
+    near(p.w, 80, 1e-9, 'unlocked: width stays'); near(p.h, 30, 1e-9, 'height');
+    rfAWSet('flipH', true); rfAWSet('ang', 10); await wait(10);
+    assert(p.flipH && p.ang === 10, 'flip / angle');
+    var uv = UI.sketchPictureObjects()[0].geometry.attributes.uv.array;
+    assert(uv[0] === 1 && uv[2] === 0, 'flipped texture: ' + Array.prototype.slice.call(uv, 0, 4));
+    rfAWSet('tmode:full', true); await wait(10);
+    var sl = $('sk-pic-alpha');
+    assert(sl && sl.type === 'range', 'transparency slider');
+    sl.value = '40'; sl.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(10);
+    near(p.alpha, 0.4, 1e-9, 'transparency');
+    near(UI.sketchPictureObjects()[0].material.opacity, 0.6, 1e-9, 'material opacity');
+    rfAWSet('tmode:user', true); await wait(10);
+    assert(p.tmode === 'user' && $('sk-pic-key') && D.querySelector('#pm [data-key="keyTol"]'), 'user-defined colour and tolerance');
+    assert(UI.App.undo.length === u0 + 1, 'one undo step so far: ' + (UI.App.undo.length - u0));
+    await UI.pmOK(); await idle();
+    assert(f.pictures.length === 1 && UI.pmTitle() == null, 'kept');
+    UI.undo(); await idle();
+    var g = UI.activeSketchFeature();
+    assert(UI.App.mode === 'sketch' && g && !(g.pictures && g.pictures.length), 'undo takes it out');
+    UI.redo(); await idle();
+    g = UI.activeSketchFeature();
+    assert(g.pictures && g.pictures.length === 1 && g.pictures[0].w === 80, 'redo puts it back');
+    // a second one, then ✗: it goes again with no undo step left behind
+    var u1 = UI.App.undo.length;
+    var i2 = await UI.insertSketchPicture(src, 'two.png');
+    assert(i2 === 1 && g.pictures.length === 2 && UI.pmTitle() === 'Sketch Picture', 'second picture');
+    UI.pmCancel(); await idle();
+    assert(g.pictures.length === 1 && UI.App.undo.length === u1, '✗ took it out: ' + g.pictures.length + ', undo ' + (UI.App.undo.length - u1));
+    assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+    await UI.exitSketch(); await idle();
+    return p.w + ' × ' + p.h;
+  });
+  step('rfAW: Sketch Picture scale tool — two clicks on the picture (on the ends of a line traced along its scale bar) and the real distance typed: the picture scales about the first click', async function () {
+    var f = await rfAWNew([{ t: 'line', x1: 0, y1: 0, x2: 20, y2: 0 }]);
+    var i = await UI.insertSketchPicture(rfAWPng(), 'print.png', { noPM: true });
+    var p = f.pictures[i];
+    // put it at 40 × 20 from (-10, -5): the red bar (px 50 … 150 at row 50) runs from (0, 0) to (20, 0)
+    p.x = -10; p.y = -5; p.w = 40; p.h = 20; UI.updateSketches();
+    UI.editSketchPicture(i); await idle();
+    assert(UI.pmTitle() === 'Sketch Picture', 'PM');
+    rfAWSet('scaleTool', true); await wait(10);
+    rfAWClick([0.5, 0.25]); await wait(10);
+    assert(!$('sk-pic-scale'), 'no distance box after one click');
+    rfAWClick([19.5, -0.25]); await wait(30);
+    var box = $('sk-pic-scale'), inp = box && box.querySelector('input');
+    assert(inp, 'distance box');
+    near(+inp.value, 20, 1e-6, 'measured distance shown');
+    inp.value = '50'; inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await wait(10);
+    near(p.w, 100, 1e-6, 'width ×2.5'); near(p.h, 50, 1e-6, 'height ×2.5');
+    near(p.x, -25, 1e-6, 'about the first click: x'); near(p.y, -12.5, 1e-6, 'y');
+    assert(!$('sk-pic-scale') && D.querySelector('#pm [data-key="scaleTool"]').checked === false, 'scale tool done');
+    assert(D.querySelector('#pm [data-key="w"]').value === '100', 'Width field shows it: ' + D.querySelector('#pm [data-key="w"]').value);
+    await UI.pmOK(); await idle();
+    // the script and a save / load keep it
+    var code = anvil.script();
+    assert(/\.picture\(/.test(code), 'script line');
+    await UI.exitSketch(); await idle();
+    var json = JSON.stringify(anvil.model());
+    await anvil.load(json); await idle();
+    var s = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0];
+    assert(s.pictures && s.pictures[0].w === 100 && s.pictures[0].src === p.src, 'saved and loaded');
+    await rfAWUntil(function () { return UI.sketchPictureObjects().length === 1; }, 3000, 'the picture shown with its sketch');
+    return 'w ' + s.pictures[0].w;
+  });
+  step('rfAW: Sketch Picture right-click — Edit Sketch Picture opens its PropertyManager, Delete takes it out (one undo step)', async function () {
+    var f = await rfAWNew();
+    await UI.insertSketchPicture(rfAWPng(), 'a.png', { noPM: true });
+    var p = f.pictures[0];
+    p.x = 0; p.y = 0; p.w = 40; p.h = 20; UI.updateSketches();
+    rfAWRight([5, 15]); await wait(20);
+    var rows = rfAWMenu(), labels = rows.map(function (r) { return r.textContent; });
+    var ed = rows.filter(function (r) { return /Edit Sketch Picture/.test(r.textContent); })[0];
+    assert(ed && rows.some(function (r) { return /^\s*Delete/.test(r.textContent.replace('✓', '')); }), 'menu: ' + labels.join(' | '));
+    ed.click(); await idle();
+    assert(UI.pmTitle() === 'Sketch Picture' && UI.sketchPictureEditing() === 0, 'PM open');
+    UI.pmCancel(); await idle();
+    rfAWRight([60, 15]); await wait(20);
+    assert(!rfAWMenu().some(function (r) { return /Edit Sketch Picture/.test(r.textContent); }), 'not off the picture');
+    if (UI.closeMenus) UI.closeMenus();
+    var u0 = UI.App.undo.length;
+    rfAWRight([5, 15]); await wait(20);
+    var del = rfAWMenu().filter(function (r) { return /Delete/.test(r.textContent) && !/Relations/.test(r.textContent); })[0];
+    del.click(); await idle();
+    assert(!f.pictures && UI.App.undo.length === u0 + 1, 'deleted, one step');
+    UI.undo(); await idle();
+    assert(UI.activeSketchFeature().pictures.length === 1, 'undo brings it back');
+    await UI.exitSketch(); await idle();
+    return labels.length + ' rows';
+  });
+  function rfAWDev(a, b) {   // how far curve b strays from curve a (samples of a, closest points on b)
+    var S = W.SketchSolver, fa = S.freeCurve(a), fb = S.freeCurve(b), m = 0;
+    S.freePts(fa, fa.t0, fa.t1).forEach(function (q) { m = Math.max(m, S.freeClosest(fb, q).d); });
+    return m;
+  }
+  step('rfAW: Insert Spline Point on a closed spline — Tools ▸ Spline Tools ▸ Insert Spline Point, a click on it: one more point after the span clicked, the curve the same, one undo step', async function () {
+    var errs0 = errors.length;
+    var sp = { t: 'spline', closed: true, pts: [[0, 0], [30, -5], [40, 20], [20, 35], [-5, 20]] };
+    var f = await rfAWNew([JSON.parse(JSON.stringify(sp))]);
+    W.SketchSolver.addRelation(f, 'fix', ['0.v2']);
+    var rows = menuRows('Spline Tools ▸ Insert Spline Point');
+    assert(rows.length === 1, 'menu row');
+    rows[0].row.click(); await idle();
+    assert(UI.pmTitle() === 'Insert Spline Point', 'PM ' + UI.pmTitle());
+    var fc = W.SketchSolver.freeCurve(f.entities[0]), P = fc.pt(2.4);   // in the span from point 3 to point 4
+    var u0 = UI.App.undo.length;
+    rfAWClick(P); await idle();
+    var e = UI.activeSketchFeature().entities[0];
+    assert(e.closed && e.pts.length === 6, 'six points: ' + JSON.stringify(e.pts));
+    assert(Math.hypot(e.pts[3][0] - P[0], e.pts[3][1] - P[1]) < 0.3, 'the new point is point 4: ' + e.pts[3] + ' vs ' + P);
+    assert(e.pts[0][0] === 0 && e.pts[4][0] === 20 && e.pts[5][0] === -5, 'the old points keep their order');
+    var dev = rfAWDev(sp, e), back = rfAWDev(e, sp);
+    assert(dev < 1e-6 && back < 1e-6, 'the same curve: ' + dev + ' / ' + back);
+    assert(UI.App.undo.length === u0 + 1, 'one undo step');
+    var rel = (UI.activeSketchFeature().rels || []).filter(function (r) { return r.type === 'fix'; })[0];
+    assert(rel && rel.refs[0] === '0.v2', 'a relation on an earlier point keeps its point: ' + JSON.stringify(rel));
+    UI.pmCancel(); await idle();
+    assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+    await UI.exitSketch(); await idle();
+    return 'deviation ' + dev.toExponential(1);
+  });
+  step('rfAW: Add Tangency Control (a click on the spline: a driving tangent there, the Spline PM on it), Add Curvature Control (the comb on), Show Inflection Points (an S curve shows one at its middle)', async function () {
+    var errs0 = errors.length;
+    var sp = { t: 'spline', pts: [[0, 0], [10, 10], [20, 0], [30, -10], [40, 0]] };
+    var f = await rfAWNew([JSON.parse(JSON.stringify(sp))]);
+    var inf = UI.splineInflections(f.entities[0]);
+    assert(inf.length === 1 && Math.abs(inf[0][0] - 20) < 1e-6 && Math.abs(inf[0][1]) < 1e-6, 'one inflection at (20, 0): ' + JSON.stringify(inf));
+    assert(UI.splineInflections({ t: 'spline', pts: [[0, 0], [10, 8], [20, 0]] }).length === 0, 'an arch has none');
+    var rows = menuRows('Spline Tools ▸ Show Inflection Points');
+    assert(rows.length === 1, 'menu row');
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    rows[0].row.click(); await idle();
+    assert(UI.activeSketchFeature().entities[0].showInflection, 'flag on');
+    assert(UI.styleSplineOverlay() > 0, 'markers drawn');
+    UI.setSelection([]);
+    rows = menuRows('Spline Tools ▸ Add Tangency Control');
+    rows[0].row.click(); await idle();
+    assert(UI.pmTitle() === 'Add Tangency Control', 'PM ' + UI.pmTitle());
+    var fc = W.SketchSolver.freeCurve(f.entities[0]), P = fc.pt(0.5), u0 = UI.App.undo.length;
+    rfAWClick(P); await idle();
+    var e = UI.activeSketchFeature().entities[0];
+    assert(e.pts.length === 6 && e.tans && e.tans[1] && e.tans[1].length >= 2, 'a driving tangent at point 2: ' + JSON.stringify(e.tans));
+    assert(UI.pmTitle() === 'Spline', 'the Spline PM on it: ' + UI.pmTitle());
+    assert(rfAWDev(sp, e) < 1e-6, 'the curve is the same');
+    assert(UI.App.undo.length === u0 + 1, 'one undo step');
+    UI.pmCancel(); await idle();
+    UI.cmdAddCurvatureControl(); await idle();
+    rfAWClick(W.SketchSolver.freeCurve(e).pt(4.5)); await idle();
+    e = UI.activeSketchFeature().entities[0];
+    assert(e.pts.length === 7 && e.showCurvature && e.tans[6 - 1], 'curvature control: a point, the comb: ' + JSON.stringify({ n: e.pts.length, c: e.showCurvature }));
+    UI.pmCancel(); await idle();
+    // right-click rows
+    UI.setSelection([{ kind: 'entity', index: 0 }]);
+    var items = UI.splineMenuItems(UI.activeSketchFeature(), 0).map(function (r) { return r.label; });
+    assert(items.indexOf('Add Tangency Control') >= 0 && items.indexOf('Add Curvature Control') >= 0 && items.indexOf('Show Inflection Points') >= 0, 'right-click rows: ' + items.join(', '));
+    UI.setSelection([]);
+    assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+    await UI.exitSketch(); await idle();
+    return inf.length + ' inflection';
+  });
+  // --- end rfAW ---
+  // ---- rfAU (2026-10-13): blocks as rigid groups in the solver; DXF BLOCK / INSERT out and back in
+  async function rfAUNew(ents) {
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    assert(UI.App.mode === 'sketch', 'not in a sketch');
+    UI.zoomView(0.25 / UI.cam.scale);   // 0.25 units per pixel
+    var f = UI.activeSketchFeature();
+    (ents || []).forEach(function (e) { f.entities.push(e); });
+    UI.App.gridStale = true; UI.updateSketches(); await wait(20);
+    return f;
+  }
+  function rfAUScr(uv) { return UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1])); }
+  function rfAUEv(type, uv, target) {
+    var r = $('viewport').getBoundingClientRect(), p = rfAUScr(uv);
+    (target || W).dispatchEvent(new W.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === 'mouseup' || type === 'mousemove' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) }));
+  }
+  function rfAUClick(uv) { rfAUEv('mousemove', uv); rfAUEv('mousedown', uv, $('viewport')); rfAUEv('mouseup', uv); }
+  function rfAUSet(key, val) { var i = D.querySelector('#pm [data-key="' + key + '"]'); assert(i, 'field ' + key); i.value = String(val); i.dispatchEvent(new W.Event('input', { bubbles: true })); i.dispatchEvent(new W.Event('change', { bubbles: true })); }
+  function rfAUStatus() { return $('status-right').textContent; }
+  // Add Relations on one entity picked in the graphics area at uv, then the relation's button
+  async function rfAURelate(uv, label) {
+    UI.App.sel = null; UI.setSelection([]);
+    UI.cmdAddRelations(); await wait(10);
+    var p = rfAUScr(uv);
+    UI.App.command.onSketchPoint(null, p[0], p[1]); await wait(10);
+    var offered = Array.prototype.map.call(D.querySelectorAll('#pm button'), function (x) { return x.textContent.trim(); });
+    assert(offered.indexOf(label) >= 0, label + ' offered for the pick ' + JSON.stringify(UI.App.relPick) + ': ' + offered.join(', '));
+    clickPmButton(label); await idle();
+    await UI.pmOK(); await idle();
+  }
+  // the instance's shape is its definition's: circle on the insertion point, the two lines across it, lengths kept
+  function rfAURigid(f, q, s) {
+    var C = f.entities[q.ents[0]], A = f.entities[q.ents[1]], B = f.entities[q.ents[2]];
+    near(C.cx, q.x, 1e-6, 'circle on the insertion point x'); near(C.cy, q.y, 1e-6, 'y'); near(C.r, 2 * s, 1e-9, 'radius');
+    near(Math.hypot(A.x2 - A.x1, A.y2 - A.y1), 24 * s, 1e-6, 'line A length'); near(Math.hypot(B.x2 - B.x1, B.y2 - B.y1), 24 * s, 1e-6, 'line B length');
+    near((A.x2 - A.x1) * (B.x2 - B.x1) + (A.y2 - A.y1) * (B.y2 - B.y1), 0, 1e-6, 'the lines square');
+    near((A.x1 + A.x2) / 2, q.x, 1e-6, 'line A across the centre');
+  }
+  step('rfAU: Blocks are rigid in the solver — two instances are 6 DOF (Under Defined); Horizontal on the turned one\'s line turns the whole instance; Horizontal on its upright line over-defines (conflict, Over Defined); a drag moves an instance as one piece; Edit Block frees it meanwhile', async function () {
+    var errs0 = errors.length;
+    var f = await rfAUNew([{ t: 'circle', cx: 10, cy: 10, r: 2 }, { t: 'line', x1: -2, y1: 10, x2: 22, y2: 10 }, { t: 'line', x1: 10, y1: -2, x2: 10, y2: 22 }]);
+    UI.setSelection([{ kind: 'entity', index: 0 }, { kind: 'entity', index: 1 }, { kind: 'entity', index: 2 }]);
+    UI.cmdMakeBlock(); await idle();
+    rfAUClick([10, 10]); rfAUSet('name', 'Cross');
+    await UI.pmOK(); await idle();
+    f = UI.activeSketchFeature();
+    UI.setSelection([]); UI.App.sel = null;
+    UI.cmdInsertBlock(); await idle();
+    assert(UI.pmTitle() === 'Insert Block', 'Insert Block PM');
+    rfAUSet('ang', 30);
+    rfAUClick([50, 30]);
+    await UI.pmOK(); await idle();
+    var I = K.blockInstances(f);
+    assert(I.length === 2 && I[1].ang === 30, 'two instances, the second turned 30°: ' + JSON.stringify(I));
+    var st = UI.sketchStatus();
+    assert(st.dof === 6 && st.status === 'under' && /Under Defined/.test(rfAUStatus()), 'two instances, 6 DOF: ' + JSON.stringify([st.dof, st.status, rfAUStatus()]));
+    // Horizontal on the turned instance's first line (picked at a point on it): the instance turns level as one piece
+    var L = f.entities[I[1].ents[1]], onL = [L.x1 * 0.2 + L.x2 * 0.8, L.y1 * 0.2 + L.y2 * 0.8];
+    await rfAURelate(onL, 'Horizontal');
+    I = K.blockInstances(f); L = f.entities[I[1].ents[1]];
+    near(L.y1, L.y2, 1e-6, 'line level'); rfAURigid(f, I[1], 1);
+    st = UI.sketchStatus();
+    assert(st.dof === 5 && st.status === 'under', 'one DOF less: ' + st.dof);
+    // Horizontal on its upright line would bend the block: a conflict, Over Defined
+    var V = f.entities[I[1].ents[2]], onV = [V.x1 * 0.2 + V.x2 * 0.8, V.y1 * 0.2 + V.y2 * 0.8], n0 = (f.rels || []).length;
+    await rfAURelate(onV, 'Horizontal');
+    st = UI.sketchStatus();
+    assert(f.rels.length === n0 + 1 && st.status === 'over' && st.rels[n0] === 'conflict' && /Over Defined/.test(rfAUStatus()), 'over-defining: ' + JSON.stringify([st.status, st.rels, rfAUStatus()]));
+    I = K.blockInstances(f); rfAURigid(f, I[1], 1);
+    W.SketchSolver.deleteRelation(f, n0); W.SketchSolver.solve(f); UI.updateSketches(); await idle();
+    assert(UI.sketchStatus().status === 'under', 'relation deleted: under defined again');
+    // drag the first instance by its upright line (away from the centre): the whole instance follows, square and whole
+    UI.setTool('select');
+    var q0 = I[0], from = [q0.x, q0.y + 7], to = [from[0] + 5, from[1] + 3];
+    rfAUEv('mousemove', from); rfAUEv('mousedown', from, $('viewport'));
+    for (var k = 1; k <= 6; k++) { rfAUEv('mousemove', [from[0] + 5 * k / 6, from[1] + 3 * k / 6]); await wait(15); }
+    rfAUEv('mouseup', to); await idle(); await wait(20);
+    I = K.blockInstances(f);
+    assert(Math.abs(I[0].x - q0.x - 5) < 0.5 && Math.abs(I[0].y - q0.y - 3) < 0.5 && Math.abs(I[0].ang) < 0.01, 'the instance moved with the drag: ' + JSON.stringify(I[0]));
+    rfAURigid(f, I[0], 1);
+    // Edit Block: the edited instance is ordinary geometry meanwhile (its 3 entities' own 11 DOF + its point's 2)
+    var dof0 = UI.sketchStatus().dof;
+    UI.setSelection([{ kind: 'entity', index: I[0].ents[0] }]);
+    UI.cmdEditBlock(); await idle();
+    assert(UI.blockEditing(), 'editing');
+    assert(UI.sketchStatus().dof === dof0 - 3 + 13, 'editing frees the instance: ' + UI.sketchStatus().dof + ' (was ' + dof0 + ')');
+    UI.cmdEditBlock(); await idle();
+    // (saving the edit places every instance of the block again: the Horizontal on the other instance goes with it)
+    assert(!UI.blockEditing() && UI.sketchStatus().dof === 6 && K.blockInstances(f).length === 2, 'rigid again: ' + UI.sketchStatus().dof);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'DOF ' + dof0;
+  });
+  step('rfAU: sketch DXF R12 and R2000 write the block once and each instance as an INSERT; read back with dxf-import\'s blocks option into a new sketch they are rigid instances again (6 DOF) and Insert Block lists the imported block', async function () {
+    var errs0 = errors.length;
+    var f = await rfAUNew([{ t: 'circle', cx: 10, cy: 10, r: 2 }, { t: 'line', x1: -2, y1: 10, x2: 22, y2: 10 }, { t: 'line', x1: 10, y1: -2, x2: 10, y2: 22 }]);
+    UI.setSelection([{ kind: 'entity', index: 0 }, { kind: 'entity', index: 1 }, { kind: 'entity', index: 2 }]);
+    UI.cmdMakeBlock(); await idle();
+    rfAUClick([10, 10]); rfAUSet('name', 'Cross');
+    await UI.pmOK(); await idle();
+    f = UI.activeSketchFeature();
+    UI.setSelection([]); UI.App.sel = null;
+    UI.cmdInsertBlock(); await idle();
+    rfAUSet('ang', 45); rfAUSet('s', 1.5);
+    rfAUClick([50, 30]);
+    await UI.pmOK(); await idle();
+    var A = K.blockInstances(f), out = {};
+    ['R12', 'R2000'].forEach(function (v) {
+      var dxf = K.exportDXFSketch(f, 'mm', { version: v });
+      assert((dxf.match(/\nINSERT\r?\n/g) || []).length === 2 && (dxf.match(/\nCIRCLE\r?\n/g) || []).length === 1 && /\nBLOCK\r?\n/.test(dxf), v + ': one block, two INSERTs');
+      var r = W.DxfImport.parse(dxf, { blocks: true }), B = K.blockInstances({ entities: r.entities });
+      assert(B.length === 2 && B.every(function (q, i) { return Math.abs(q.x - A[i].x) < 1e-9 && Math.abs(q.y - A[i].y) < 1e-9 && Math.abs(q.ang - A[i].ang) < 1e-9 && Math.abs(q.s - A[i].s) < 1e-12; }), v + ' read back: ' + JSON.stringify(B));
+      out[v] = r;
+    });
+    await UI.exitSketch(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    var g = UI.activeSketchFeature();
+    out.R2000.entities.forEach(function (e) { delete e.layer; g.entities.push(e); });
+    UI.App.gridStale = true; UI.updateSketches(); await idle();
+    var st = UI.sketchStatus();
+    assert(st.dof === 6 && st.status === 'under', 'imported instances are rigid: ' + JSON.stringify([st.dof, st.status]));
+    UI.setSelection([]); UI.App.sel = null;
+    UI.cmdInsertBlock(); await idle();
+    var opts = Array.prototype.map.call(D.querySelectorAll('#pm [data-key="block"] option'), function (o) { return o.value; });
+    assert(opts.indexOf('CROSS') >= 0 && g.blocks && g.blocks.CROSS && g.blocks.CROSS.ents.length === 3, 'the imported block is listed: ' + opts.join());
+    UI.pmCancel(); await idle();
+    rfAURigid(g, K.blockInstances(g)[1], 1.5);
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return '2 INSERTs each way';
+  });
+  // --- end rfAU ---
+  // --- rfAV ---
+  // Instant2D (ui-sketch-dims.js), angle values in the Modify box (ui-sketch.js), the solver keeping a line's length
+  // (sketch-solver.js), relation icons round a short line (ui-relations.js)
+  async function rfAVNew(ents, rels, dims) {
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    assert(UI.App.mode === 'sketch', 'not in a sketch');
+    UI.zoomView(0.25 / UI.cam.scale);
+    UI.App.view.showGrid = false; UI.App.gridStale = true;
+    var f = UI.activeSketchFeature();
+    ents.forEach(function (e) { f.entities.push(e); });
+    if (rels) rels.forEach(function (r) { var x = W.SketchSolver.addRelation(f, r[0], r[1], r[2]); assert(x.ok, 'relation ' + r[0] + ': ' + x.error); });
+    if (dims) f.dims = dims;
+    UI.updateSketches(); await wait(20);
+    UI.App.dimsStale = false; UI.drawDims(true);
+    return f;
+  }
+  function rfAVItem(key) { return UI.drawDims(true).filter(function (x) { return UI.dimKey(x) === key; })[0]; }
+  function rfAVBall() { return D.querySelector('#i2d-layer .i2d-handle'); }
+  // press the ball, move over the given points (each a [value, px off the ruler]), release
+  async function rfAVDrag(moves, during) {
+    var h = UI.instant2DHandle(), b = rfAVBall();
+    assert(h && b, 'a ball to drag');
+    selEv('mousedown', h.ball, b);
+    for (var k = 0; k < moves.length; k++) { selEv('mousemove', UI.instant2DPoint(moves[k][0], moves[k][1])); await wait(40); }
+    if (during) during();
+    selEv('mouseup', UI.instant2DPoint(moves[moves.length - 1][0], moves[moves.length - 1][1]));
+    await idle(); await wait(30);
+  }
+  step('rfAV: Instant2D — hovering a length dimension shows the ball at its arrow end; dragging it shows a ruler and snaps to its ticks, finer near the ruler (2 near, 5 beside, 10 away; never under the document precision), one undo step; Esc puts it back; the ribbon toggle turns it off', async function () {
+    var errs0 = errors.length;
+    var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }], [['fix', ['0.p1']], ['horizontal', ['0']]], [{ e: 0, k: 'len', off: 8 }]);
+    var btn = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (x) { return x.getAttribute('aria-label') === 'Instant2D'; })[0];
+    assert(btn, 'Instant2D on the Sketch tab');
+    UI.toggleInstant2D(true);   // (on by default; a ribbon walk earlier in the suite may have clicked it)
+    var it = rfAVItem('d0'), bx = it.sc.box;
+    selEv('mousemove', [(bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2], $('viewport')); await wait(20);
+    var ball = rfAVBall();
+    assert(ball && ball.getAttribute('data-key') === 'd0' && ball.getAttribute('data-kind') === 'linear', 'ball on hover');
+    var h = UI.instant2DHandle(), tip = it.sc.lin.b;
+    assert(Math.hypot(h.ball[0] - tip[0], h.ball[1] - tip[1]) < 0.5, 'at the arrow end ' + JSON.stringify([h.ball, tip]));
+    assert(!D.querySelector('#i3d-layer .i3d-handle.live') || W.getComputedStyle(D.querySelector('#i3d-layer .i3d-handle.live')).display === 'none', 'no Instant3D dot in the sketch');
+    var sN = UI.instant2DStepAt(2), sM = UI.instant2DStepAt(30), sF = UI.instant2DStepAt(90);
+    assert(sN === 2 && sM === 5 && sF === 10, 'steps near / beside / away: ' + [sN, sM, sF]);
+    var u0 = UI.App.undo.length, ticks = 0, mid = null;
+    await rfAVDrag([[33, 2], [37.3, 2]], function () { ticks = D.querySelectorAll('#i2d-layer .i2d-tick').length; mid = UI.instant2DDrag(); });
+    assert(ticks > 10 && mid && mid.value === 38 && mid.step === 2, 'ruler ' + ticks + ' ticks, ' + JSON.stringify(mid));
+    near(f.entities[0].x2, 38, 1e-9, 'length 38 (37.3 snapped to the 2 tick)');
+    assert(UI.App.undo.length === u0 + 1, 'one undo step: ' + (UI.App.undo.length - u0));
+    UI.instant2DHandle('d0');
+    await rfAVDrag([[44, 30], [37.3, 90]]);
+    near(UI.activeSketchFeature().entities[0].x2, 40, 1e-9, 'away from the ruler: 10 steps (40)');
+    await UI.undo(); await idle(); await UI.undo(); await idle();
+    near(UI.activeSketchFeature().entities[0].x2, 30, 1e-9, 'undo, undo -> 30');
+    // Esc during the drag: the value goes back, no undo step
+    UI.App.dimsStale = false; UI.drawDims(true); UI.instant2DHandle('d0');
+    u0 = UI.App.undo.length;
+    var hb = UI.instant2DHandle();
+    selEv('mousedown', hb.ball, rfAVBall()); selEv('mousemove', UI.instant2DPoint(50, 2)); await wait(40);
+    near(UI.activeSketchFeature().entities[0].x2, 50, 1e-9, 'live 50');
+    var p50 = UI.instant2DPoint(50, 2);
+    selKey('Escape'); selEv('mouseup', p50); await wait(30);
+    near(UI.activeSketchFeature().entities[0].x2, 30, 1e-9, 'Esc -> 30');
+    assert(UI.App.undo.length === u0 && !UI.instant2DDrag(), 'no undo step, drag over');
+    // the document precision: zoomed far in, the finest step is .001 in
+    UI.zoomView(0.00002 / UI.cam.scale); UI.App.dimsStale = false; UI.drawDims(true);
+    UI.instant2DHandle('d0');
+    var finest = UI.unitLabel() === 'in' ? 0.001 : 0.01;   // the document's precision: .001 in, 0.01 mm
+    assert(UI.instant2DStepAt(0) === finest, 'finest step ' + finest + ' ' + UI.unitLabel() + ': ' + UI.instant2DStepAt(0));
+    UI.zoomView(0.25 / UI.cam.scale); UI.App.dimsStale = false; UI.drawDims(true);
+    // the toggle
+    btn.click(); await wait(20);
+    assert(!UI.instant2DOn() && !UI.instant2DHandle('d0') && !rfAVBall(), 'off: no ball');
+    btn.click(); await wait(20);
+    assert(UI.instant2DOn() && UI.instant2DHandle('d0'), 'on again');
+    assert(errors.length === errs0, 'no page errors: ' + errors.slice(errs0).join(' | '));
+    return 'steps ' + [sN, sM, sF] + ', ' + ticks + ' ticks';
+  });
+  step('rfAV: Instant2D on a diameter (Ø16 → Ø20), an angle between two lines (45° → 60°, the line turns) and none on a driven dimension', async function () {
+    var a = 45 * Math.PI / 180;
+    var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'circle', cx: 50, cy: 20, r: 8 }, { t: 'line', x1: 0, y1: 0, x2: 20 * Math.cos(a), y2: 20 * Math.sin(a) }],
+      [['fix', ['0']], ['coincident', ['0.p1', '2.p1']], ['angle', ['0', '2'], { off: 15 }]], [{ e: 1, k: 'dia', ang: 30 }, { e: 0, k: 'len', off: 8, driven: true }]);
+    var ai = f.rels.length - 1;
+    UI.toggleInstant2D(true);
+    assert(f.rels[ai].type === 'angle' && Math.abs(f.rels[ai].v - 45) < 1e-6, 'angle 45 ' + JSON.stringify(f.rels[ai]));
+    assert(!UI.instant2DHandle('d1') && !rfAVBall(), 'no ball on a driven dimension');
+    // the diameter: the ball on the arrow at the circle
+    var hc = UI.instant2DHandle('d0'), itc = rfAVItem('d0'), tip = itc.sc.arrows[0].tip;
+    assert(hc && hc.kind === 'radial' && Math.hypot(hc.ball[0] - tip[0], hc.ball[1] - tip[1]) < 0.5, 'ball on the diameter arrow ' + JSON.stringify(hc));
+    var u0 = UI.App.undo.length;
+    await rfAVDrag([[18, 2], [19.6, 2]]);
+    var c = UI.activeSketchFeature().entities[1];
+    near(c.r, 10, 1e-9, 'Ø20');
+    assert(UI.App.undo.length === u0 + 1, 'one undo step');
+    // the angle: the ball on the second arrow, the ruler an arc
+    UI.App.dimsStale = false; UI.drawDims(true);
+    var ha = UI.instant2DHandle('r' + ai);
+    assert(ha && ha.kind === 'angle' && Math.abs(ha.value - 45) < 1e-6, 'angle handle ' + JSON.stringify(ha));
+    await rfAVDrag([[52, 2], [61.2, 2]]);
+    var g = UI.activeSketchFeature(), l2 = g.entities[2];
+    near(g.rels[ai].v, 60, 1e-9, 'angle 60 (61.2 snapped to the 5° tick)');
+    near(Math.atan2(l2.y2 - l2.y1, l2.x2 - l2.x1) * 180 / Math.PI, 60, 1e-6, 'the line turned to 60°');
+    near(g.entities[0].x2, 30, 1e-9, 'the fixed line stays');
+    UI.toggleInstant2D(true);
+    return 'Ø20, 60°';
+  });
+  step('rfAV: the Modify box knows angles — an angle reads °, spins 1° and stops at 180 (200 is refused); an Angular Running value reads °, spins round 359.5 → 0.5', async function () {
+    var a = 45 * Math.PI / 180;
+    var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'line', x1: 0, y1: 0, x2: 20 * Math.cos(a), y2: 20 * Math.sin(a) }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: 25 }],
+      [['fix', ['0']], ['coincident', ['0.p1', '1.p1']], ['coincident', ['0.p1', '2.p1']], ['angle', ['0', '1'], { off: 15 }]]);
+    var ai = f.rels.length - 1;
+    UI.openRelDimEdit(ai); await wait(20);
+    var input = D.querySelector('#dim-edit input');
+    assert(UI.isDimEditOpen() && UI.dimEditUnit() === '°', 'unit ° ' + UI.dimEditUnit());
+    assert(UI.spinDimEdit(1) === 46, 'spin 1°');
+    input.value = '175';
+    assert(UI.spinDimEdit(1, { ctrlKey: true }) === 180, 'stops at 180');
+    await wait(30);
+    if (!UI.isDimEditOpen()) { UI.openRelDimEdit(ai); await wait(20); input = D.querySelector('#dim-edit input'); }   // (at 180 the lines are collinear: the preview has no angle to draw)
+    input.value = '200';
+    input.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await wait(20);
+    assert(UI.isDimEditOpen() && /180/.test(D.querySelector('#dim-edit').getAttribute('data-error') || ''), '200 refused: ' + D.querySelector('#dim-edit').getAttribute('data-error'));
+    UI.cancelDimEdit(); await wait(20);
+    near(UI.activeSketchFeature().rels[ai].v, 45, 1e-9, 'still 45');
+    // Angular Running: a set from the 0° line round to the vertical one
+    var r = anvil.runningAngle({ vertex: '0.p1', datum: '0.p2', target: '2.p2', off: 10 });
+    var g = UI.activeSketchFeature(), ri = r.index;
+    assert(g.rels[ri] && g.rels[ri].type === 'runangle' && Math.abs(g.rels[ri].v - 90) < 1e-6, 'running 90 ' + JSON.stringify(g.rels[ri]));
+    UI.App.dimsStale = false; UI.drawDims(true);
+    UI.openRelDimEdit(ri); await wait(20);
+    assert(UI.dimEditUnit() === '°', 'running value in ° ' + UI.dimEditUnit());
+    input = D.querySelector('#dim-edit input');
+    input.value = '359.5';
+    assert(UI.spinDimEdit(1) === 0.5, 'wraps round: ' + UI.dimEditValue());
+    UI.cancelDimEdit(); await wait(20);
+    return 'angle ° 1° steps ≤ 180; running ° wraps';
+  });
+  step('rfAV: a line given Horizontal and Vertical keeps its length (the second is a conflict); deleting Horizontal turns it vertical at the same length', async function () {
+    var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 30, y2: 2 }]);
+    var h = W.SketchSolver.addRelation(f, 'horizontal', ['0']), L0 = Math.hypot(f.entities[0].x2 - f.entities[0].x1, f.entities[0].y2 - f.entities[0].y1);
+    var v = W.SketchSolver.addRelation(f, 'vertical', ['0']);
+    UI.updateSketches(); await wait(20);
+    assert(h.status === 'ok' && v.status === 'conflict', 'V conflicts: ' + v.status);
+    near(Math.hypot(f.entities[0].x2 - f.entities[0].x1, f.entities[0].y2 - f.entities[0].y1), L0, 1e-9, 'length kept');
+    UI.deleteRelation(0); await idle(); await wait(20);
+    var e = UI.activeSketchFeature().entities[0];
+    near(e.x2 - e.x1, 0, 1e-6, 'vertical now');
+    near(Math.hypot(e.x2 - e.x1, e.y2 - e.y1), L0, 1e-6, 'same length ' + JSON.stringify(e));
+    return 'length ' + L0;
+  });
+  step('rfAV: relation icons round a 0.1 in notch line with four relations (Horizontal, Equal, Perpendicular, Parallel) never overlap each other or sit on a line, zoomed from 24 to 120 px and back', async function () {
+    var f = await rfAVNew([{ t: 'line', x1: 0, y1: 0, x2: 0.1, y2: 0 }, { t: 'line', x1: 0.1, y1: 0, x2: 0.1, y2: 0.1 }, { t: 'line', x1: 0.1, y1: 0.1, x2: 1, y2: 0.1 }, { t: 'line', x1: 0, y1: 0, x2: 0, y2: -1 }],
+      [['coincident', ['0.p2', '1.p1']], ['coincident', ['1.p2', '2.p1']], ['coincident', ['0.p1', '3.p1']], ['horizontal', ['0']], ['equal', ['0', '1']], ['perpendicular', ['0', '1']], ['parallel', ['0', '2']]]);
+    var pl = UI.activePlane(), vr = $('viewport').getBoundingClientRect(), out = [];
+    function segHit(p, q, b) {
+      var dx = q[0] - p[0], dy = q[1] - p[1], t0 = 0, t1 = 1, P4 = [-dx, dx, -dy, dy], Q4 = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
+      for (var k = 0; k < 4; k++) { if (Math.abs(P4[k]) < 1e-12) { if (Q4[k] < 0) return false; continue; } var r = Q4[k] / P4[k]; if (P4[k] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; } }
+      return t1 - t0 > 1e-9;
+    }
+    var zooms = [24, 30, 45, 70, 120, 45, 24];
+    for (var z = 0; z < zooms.length; z++) {
+      UI.zoomView((0.1 / zooms[z]) / UI.cam.scale);
+      var m = UI.worldToScreen(K.to3D(pl, 0.05, 0));
+      UI.panView(UI.size.w / 2 - m[0], UI.size.h / 2 - m[1]);
+      await wait(200);
+      UI.App.dimsStale = false; UI.drawDims(true);
+      var rects = Array.prototype.map.call(D.querySelectorAll('#dim-layer .rel-badge'), function (gg) { var b = gg.getBoundingClientRect(); return { b: [b.left - vr.left, b.top - vr.top, b.right - vr.left, b.bottom - vr.top], rel: gg.getAttribute('data-rel') }; });
+      var segs = f.entities.map(function (e) { return [UI.worldToScreen(K.to3D(pl, e.x1, e.y1)), UI.worldToScreen(K.to3D(pl, e.x2, e.y2))]; });
+      var onA = rects.filter(function (r) { return +r.rel >= 3; }).length;
+      assert(onA >= 4, zooms[z] + ' px: the four relations shown (' + onA + ' icons)');
+      rects.forEach(function (r, i) {
+        var b = [r.b[0] + 1, r.b[1] + 1, r.b[2] - 1, r.b[3] - 1];
+        segs.forEach(function (s, k) { assert(!segHit(s[0], s[1], b), zooms[z] + ' px: icon of relation ' + r.rel + ' on line ' + k + ' ' + JSON.stringify(r.b)); });
+        rects.forEach(function (o, j) { if (j > i) assert(!(r.b[0] < o.b[2] - 1 && r.b[2] > o.b[0] + 1 && r.b[1] < o.b[3] - 1 && r.b[3] > o.b[1] + 1), zooms[z] + ' px: icons ' + r.rel + ' and ' + o.rel + ' overlap'); });
+      });
+      out.push(zooms[z] + ':' + rects.length);
+    }
+    UI.zoomView(0.25 / UI.cam.scale);
+    return out.join(' ');
+  });
+  // --- end rfAV ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

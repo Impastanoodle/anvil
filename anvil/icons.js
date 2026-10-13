@@ -70,6 +70,8 @@ var Icons = (function () {
     curves: ln('M2 12 C5 2 11 14 14 4', B, 1.5),
     // r12/chrome12: Instant3D, a block with the blue drag handle standing on its top face
     instant: blk(1.5, 6.5, 8, 5.5, 3) + ln('M7.25 8 V3', B, 1.5) + p('M5.1 3.9 L7.25 1 9.4 3.9 z', B, B, 0.8) + circ(7.25, 8, 1.3, W, B, 1.1),
+    // rfAV: Instant2D, a dimension with the ball handle at its arrow end
+    instant2D: ln('M1.5 4 v9 M1.5 8.5 H11', S, 1.1) + ln('M1.5 8.5 l2.5 -1.4 M1.5 8.5 l2.5 1.4', B, 1.2) + circ(12.5, 8.5, 2.3, B, W, 0.9),
     // ---- sketch (yellow pencil, blue entities)
     sketch: SHEET + PENCIL,
     exitSketch: SHEET + ln('M3.5 9 h6.5 M7.5 6.5 l2.5 2.5 -2.5 2.5', G, 1.7) + ln('M10.5 13 L14 9.5', S, 3.4) + ln('M10.5 13 L14 9.5', Y, 2.2),

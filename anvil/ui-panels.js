@@ -156,10 +156,12 @@
             active: function () { return App.quickSnap === q[0]; } };
         }) },
         { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any face without starting a sketch on it first' }] },
+      // rfAV: Instant2D (ui-sketch-dims.js): drag the ball at a sketch dimension's arrow to change the value on a ruler
+      { stack: [{ id: 'instant2D', label: 'Instant2D', help: 'Hover a sketch dimension and drag the ball at its arrow to change the value on a ruler', run: function () { if (UI.toggleInstant2D) UI.toggleInstant2D(); }, active: function () { return !!(UI.instant2DOn && UI.instant2DOn()); } }] },
       // Construction Geometry (ui-relations.js); Shaded Sketch Contours is View ▸ Sketch Regions (ui-sketch-layers.js)
       { stack: [{ id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
         { id: 'shadedContours', label: 'Shaded Sketch Contours', help: 'Shade the closed regions of the sketch and mark its open ends (View ▸ Sketch Regions)', run: function () { toggleSketchRegions(); }, active: function () { return App.view.sketchRegions !== false; } },
-        { id: 'sketchPicture', label: 'Sketch Picture', help: 'Place a picture in the sketch to trace over' }] },
+        { id: 'sketchPicture', label: 'Sketch Picture', help: 'Place a picture (PNG, JPG, BMP) on the sketch plane to trace over', run: function () { if (UI.cmdSketchPicture) UI.cmdSketchPicture(); } }] },   // rfAW: ui-sketch-picture.js
       { sep: true },
       // sketch-layers / levels: the Levels Manager tab (ui-levels.js, Mastercam's part-wide levels: CUT, ETCH and BEND
       // with their own colours, shown or hidden, written to the DXF on their names); the sketch's Layers PM without it
@@ -1063,6 +1065,7 @@
       if (sel.length === 1 && UI.openEntityPM) items.push({ label: 'Properties…', icon: 'props', action: function () { UI.openEntityPM(sel[0]); } });
       items.push({ label: 'Delete', key: 'Del', icon: 'cancel', action: act('Delete', function () { UI.deleteSelection(); }) });
     } else {
+      if (UI.sketchPictureMenuItems) items = items.concat(UI.sketchPictureMenuItems());   // rfAW: on a sketch picture: Edit Sketch Picture, Delete
       items.push({ label: 'Smart Dimension', key: 'D', icon: 'dim', action: tool('dimension') });
       items.push({ label: 'Line', key: 'L', icon: 'line', action: tool('line') });
       items.push({ label: 'Corner Rectangle', key: 'R', icon: 'rect', action: tool('rect') });
@@ -1310,8 +1313,13 @@
         { label: 'Spline Tools ▸ Show Spline Handles', icon: 'spline', checked: !!(UI.splineView && UI.splineView.handles), action: function () { UI.cmdShowSplineHandles(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowSplineHandles },
         { label: 'Spline Tools ▸ Show Curvature', icon: 'spline', action: function () { UI.cmdShowCurvature(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowCurvature },
         { label: 'Spline Tools ▸ Relax Spline', icon: 'spline', action: function () { UI.cmdRelaxSpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdRelaxSpline },
+        // rfAW: Add Tangency / Curvature Control, Show Inflection Points (ui-sketch-spline.js)
+        { label: 'Spline Tools ▸ Add Tangency Control', icon: 'spline', action: function () { UI.cmdAddTangencyControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddTangencyControl },
+        { label: 'Spline Tools ▸ Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddCurvatureControl },
+        { label: 'Spline Tools ▸ Show Inflection Points', icon: 'spline', action: function () { UI.cmdShowInflectionPoints(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowInflectionPoints },
         { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
         // rfAT: Jog Line (ui-sketch-tools.js) and Tools ▸ Blocks (ui-sketch-blocks.js)
+        { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
         { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine },
         { label: 'Blocks ▸ Make…', icon: 'block', action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
         { label: 'Blocks ▸ Edit Block', icon: 'block', checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },

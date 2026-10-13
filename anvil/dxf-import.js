@@ -16,6 +16,12 @@
 //   DxfImport.repair(entities, opts) -> { entities, report, map, changed } (Repair Sketch): removes tiny entities,
 //     merges duplicate / overlapping lines and co-radial arcs, closes gaps (ends snapped exactly together), joins
 //     collinear lines and co-radial arcs, splits at crossings. No point moves more than opts.tol.
+//   rfAU: parse(text, { blocks: true }) brings a model-space INSERT in as an Anvil block instance instead (Tools ▸
+//     Blocks: its entities tagged `blk` plus an insertion point { t: 'point', blk, blkDef: the block name, blkAng: the
+//     rotation, blkS: the scale }; Kernel.adoptBlocks / the solver take the definition from it), when the insertion is
+//     uniformly scaled, not mirrored, flat (extrusion 0,0,1) and its block holds something Anvil draws; a MINSERT array
+//     becomes one instance per cell; blocks nested in it are exploded into its definition. Otherwise it is exploded.
+//     opts.idPrefix: the instance ids' prefix (default unique per parse, so a second import never joins the first).
 // Sketch entities as kernel-sketch.js: line {x1,y1,x2,y2}, arc {cx,cy,r,a0,a1} (degrees, counterclockwise a0 -> a1),
 // circle {cx,cy,r}, spline {pts, closed?, tans?}, ellipse {cx,cy,rx,ry,rot}, pellipse {…, a0, a1}, point {x,y}.
 var DxfImport = (function () {
@@ -307,6 +313,7 @@ var DxfImport = (function () {
       if (blk) blk.ents.push(r);
     });
     var ctx = { out: [], skipped: {}, quiet: {}, text: 0, paper: 0, tilted: 0, splineLines: 0, splineFit: 0, missing: {}, deep: 0, badSpline: 0, mesh: 0,
+      blocks: !!opts.blocks && !!(Kern() && Kern().blockEntity), blkPrefix: opts.idPrefix != null ? String(opts.idPrefix) : 'x' + (++parseCount).toString(36) + Date.now().toString(36).slice(-5) + '_', nBlk: 0, blkDefs: {},
       curveTol: opts.curveTol || (units === 'in' ? 1e-4 : units === 'mm' ? 2.5e-3 : 0) };
     var top = records(sec.ENTITIES || []);
     top.forEach(function (r) {
@@ -477,6 +484,7 @@ var DxfImport = (function () {
         var b = blocks[str(r, 2, '').toUpperCase()];
         if (!b) { ctx.missing[str(r, 2, '?')] = 1; return; }
         if (depth >= 16) { ctx.deep++; return; }
+        if (ctx.blocks && depth === 0 && M === ID && blockInstance(r, b, layer, ctx, blocks)) return;   // rfAU
         var Mo2 = mul(M, ocs(r, num(r, 30, 0), ctx)), sx = num(r, 41, 1), sy = num(r, 42, 1), rot = num(r, 50, 0) * D2R;
         var cols = Math.max(1, num(r, 70, 1) | 0), rows = Math.max(1, num(r, 71, 1) | 0), csp = num(r, 44, 0), rsp = num(r, 45, 0);
         var cs = Math.cos(rot), sn = Math.sin(rot);
@@ -561,6 +569,50 @@ var DxfImport = (function () {
     }
   }
 
+  // ------------------------------------------------------------------ rfAU: INSERT as a block instance
+  var parseCount = 0;
+  var BLK_TYPES = { line: 1, arc: 1, circle: 1, spline: 1, ellipse: 1, pellipse: 1, point: 1, text: 1, polyline: 1 };
+  // the block's entities in block coordinates (base point at 0, 0), those on layer 0 marked (layer null: they take the
+  // INSERT's layer), or null when it holds nothing Anvil can place as a block
+  function blockDef(b, ctx, blocks) {
+    var key = b.name.toUpperCase();
+    if (ctx.blkDefs[key] !== undefined) return ctx.blkDefs[key];
+    var keep = ctx.out, mark = '\u0000blk0';
+    ctx.out = [];
+    b.ents.forEach(function (be) { if (num(be, 67, 0) !== 1) emit(be, [1, 0, 0, 1, -b.base[0], -b.base[1]], mark, 1, ctx, blocks); });
+    var ents = ctx.out;
+    ctx.out = keep;
+    ents.forEach(function (e) { if (e.layer === mark) e.layer = null; });
+    var ok = ents.length && ents.every(function (e) { return BLK_TYPES[e.t]; });
+    return (ctx.blkDefs[key] = ok ? ents : null);
+  }
+  // an INSERT (r, of block b, on layer) as block instances into ctx.out; false when it has to be exploded
+  function blockInstance(r, b, layer, ctx, blocks) {
+    var N = normalOf(r), sx = num(r, 41, 1), sy = num(r, 42, 1);
+    if (Math.abs(N[0]) > 1e-12 || Math.abs(N[1]) > 1e-12 || !(N[2] > 0)) return false;
+    if (!(sx > 0) || Math.abs(sx - sy) > 1e-12 * sx) return false;
+    var def = blockDef(b, ctx, blocks), K = Kern();
+    if (!def) return false;
+    var rotDeg = num(r, 50, 0), rot = rotDeg * D2R, cs = Math.cos(rot), sn = Math.sin(rot), ix = num(r, 10, 0), iy = num(r, 20, 0);
+    var cols = Math.max(1, num(r, 70, 1) | 0), rows = Math.max(1, num(r, 71, 1) | 0), csp = num(r, 44, 0), rsp = num(r, 45, 0);
+    var ang = normDeg(Math.round(rotDeg * 1e9) / 1e9);
+    for (var ci = 0; ci < cols; ci++) for (var ri = 0; ri < rows; ri++) {
+      var ox = ci * csp, oy = ri * rsp, P = [ix + cs * ox - sn * oy, iy + sn * ox + cs * oy];
+      var m = K.blockXf(P, ang, sx), id = ctx.blkPrefix + (++ctx.nBlk);
+      def.forEach(function (e) {
+        var w = K.blockEntity(e, m);
+        if (!w) return;
+        w.layer = e.layer == null ? layer : e.layer;
+        w.blk = id;
+        ctx.out.push(w);
+      });
+      ctx.out.push({ t: 'point', x: P[0], y: P[1], blk: id, blkDef: b.name, blkAng: ang, blkS: sx, layer: layer });
+    }
+    // its attributes (part numbers, revisions …) stand where the INSERT puts them already
+    (r.attribs || []).forEach(function (at) { if (!(num(at, 70, 0) & 1)) emit(at, ID, layer, 0, ctx, blocks); });
+    return true;
+  }
+
   // ------------------------------------------------------------------ transforms
   // transform(entities, { s, rot (degrees), dx, dy }) -> new entities: p' = R(rot)·(s·p) + (dx, dy) (uniform scale,
   // rotation, move). Splines keep their tangent weights (they are per unit of chord length).
@@ -571,7 +623,9 @@ var DxfImport = (function () {
       var e = clone(e0), q;
       switch (e.t) {
         case 'line': q = P(e.x1, e.y1); e.x1 = q[0]; e.y1 = q[1]; q = P(e.x2, e.y2); e.x2 = q[0]; e.y2 = q[1]; break;
-        case 'point': q = P(e.x, e.y); e.x = q[0]; e.y = q[1]; break;
+        case 'point': q = P(e.x, e.y); e.x = q[0]; e.y = q[1];
+          if (e.blkDef != null) { e.blkAng = normDeg((+e.blkAng || 0) + rot); e.blkS = (e.blkS != null ? +e.blkS : 1) * Math.abs(s); }   // rfAU: a block instance turns and scales with it
+          break;
         case 'circle': case 'arc': case 'ellipse': case 'pellipse':
           q = P(e.cx, e.cy); e.cx = q[0]; e.cy = q[1];
           if (e.r != null) e.r *= Math.abs(s);

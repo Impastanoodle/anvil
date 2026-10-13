@@ -308,8 +308,25 @@
     this.version = dxfVersion(opts && opts.version);
     this.ents = [];
     this.layerDefs = {};
+    this.blocks = [];   // rfAU: [{ name, ents }] block definitions (BLOCKS section), placed by INSERT entities
     this.min = [Infinity, Infinity]; this.max = [-Infinity, -Infinity];
   }
+  // rfAU: beginBlock(name) … endBlock(): the entities added in between make block `name` (block coordinates, base point
+  // 0, 0) instead of going to ENTITIES; they do not count toward the extents (the INSERTs' placed geometry does, through
+  // grow). insert(layer, name, p, rot°, scale): an INSERT of that block.
+  DXF.prototype.beginBlock = function (name) {
+    this._saved = { ents: this.ents, min: this.min.slice(), max: this.max.slice() };
+    this.ents = []; this.blocks.push({ name: name, ents: this.ents });
+  };
+  DXF.prototype.endBlock = function () {
+    if (!this._saved) return;
+    this.ents = this._saved.ents; this.min = this._saved.min; this.max = this._saved.max; this._saved = null;
+  };
+  DXF.prototype.insert = function (layer, name, p, rot, sc) {
+    this.ents.push({ k: 'INSERT', layer: layer, name: name, p: p, rot: +rot || 0, s: sc > 0 ? +sc : 1 });
+    this._grow(p[0], p[1]);
+  };
+  DXF.prototype.grow = function (x, y) { this._grow(x, y); };
   // layer(name, aci, { dashed, off }): the colour and line type of a layer (sketch-layers); a layer named here takes
   // that colour even when it is one of the standard ones, a dashed one gets the DASHED line type, an off one a
   // negative colour (AutoCAD's layer Off)
@@ -417,8 +434,10 @@
       });
     });
     // the standard layers, plus any other layer an entity is on (e.g. a sketch's CONSTRUCTION, colour 8)
-    var layers = DXF_LAYERS.slice(), names = layers.map(function (l) { return l[0]; });
-    this.ents.forEach(function (e) { if (names.indexOf(e.layer) < 0) { names.push(e.layer); layers.push([e.layer, 8]); } });
+    var layers = DXF_LAYERS.slice(), names = layers.map(function (l) { return l[0]; }), blocks = this.blocks;
+    var allEnts = this.ents.slice();
+    blocks.forEach(function (b) { allEnts = allEnts.concat(b.ents); });
+    allEnts.forEach(function (e) { if (names.indexOf(e.layer) < 0) { names.push(e.layer); layers.push([e.layer, 8]); } });
     Object.keys(defs).forEach(function (n) { if (names.indexOf(n) < 0) { names.push(n); layers.push([n, 7]); } });
     table('LAYER', layers.length, function () {
       layers.forEach(function (l, i) {
@@ -434,31 +453,54 @@
     table('UCS', 0, function () { });
     table('APPID', 1, function () { record('APPID', 'APPID', 'AcDbRegAppTableRecord', '12'); P(2, 'ACAD'); P(70, 0); });
     table('DIMSTYLE', 1, function () { record('DIMSTYLE', 'DIMSTYLE', 'AcDbDimStyleTableRecord'); P(2, r2000 ? 'Standard' : 'STANDARD'); P(70, 0); });
-    if (r2000) table('BLOCK_RECORD', 2, function () {
+    if (r2000) table('BLOCK_RECORD', 2 + blocks.length, function () {
       record('BLOCK_RECORD', 'BLOCK_RECORD', 'AcDbBlockTableRecord', msBR); P(2, '*Model_Space');
       record('BLOCK_RECORD', 'BLOCK_RECORD', 'AcDbBlockTableRecord', psBR); P(2, '*Paper_Space');
+      // rfAU: one record per block definition (its BLOCK / ENDBLK and entities name it as their owner)
+      blocks.forEach(function (b) { b.br = H(); record('BLOCK_RECORD', 'BLOCK_RECORD', 'AcDbBlockTableRecord', b.br); P(2, b.name); });
     });
     P(0, 'ENDSEC');
-    // ---- BLOCKS (R2000: the model and paper space blocks)
-    if (r2000) {
+    var owner = msBR;
+    function head(type, layer, sub) {
+      P(0, type);
+      if (r2000) { P(5, H()); P(330, owner); P(100, 'AcDbEntity'); }
+      P(8, layer);
+      if (r2000 && sub) P(100, sub);
+    }
+    // ---- BLOCKS (R2000: the model and paper space blocks; rfAU: then, R12 and R2000, each block definition)
+    if (r2000 || blocks.length) {
       P(0, 'SECTION'); P(2, 'BLOCKS');
-      [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
+      if (r2000) [[msBR, '*Model_Space', false, '20', '21'], [psBR, '*Paper_Space', true, '1C', '1D']].forEach(function (b) {
         P(0, 'BLOCK'); P(5, b[3]); P(330, b[0]); P(100, 'AcDbEntity'); if (b[2]) P(67, 1); P(8, 0); P(100, 'AcDbBlockBegin');
         P(2, b[1]); P(70, 0); P(10, 0); P(20, 0); P(30, 0); P(3, b[1]); P(1, '');
         P(0, 'ENDBLK'); P(5, b[4]); P(330, b[0]); P(100, 'AcDbEntity'); if (b[2]) P(67, 1); P(8, 0); P(100, 'AcDbBlockEnd');
+      });
+      blocks.forEach(function (b) {
+        P(0, 'BLOCK');
+        if (r2000) { P(5, H()); P(330, b.br); P(100, 'AcDbEntity'); }
+        P(8, 0);
+        if (r2000) P(100, 'AcDbBlockBegin');
+        P(2, b.name); P(70, 0); P(10, 0); P(20, 0); P(30, 0); P(3, b.name); if (r2000) P(1, '');
+        owner = b.br;
+        b.ents.forEach(entity);
+        owner = msBR;
+        P(0, 'ENDBLK');
+        if (r2000) { P(5, H()); P(330, b.br); P(100, 'AcDbEntity'); }
+        P(8, 0);
+        if (r2000) P(100, 'AcDbBlockEnd');
       });
       P(0, 'ENDSEC');
     }
     // ---- ENTITIES
     P(0, 'SECTION'); P(2, 'ENTITIES');
-    function head(type, layer, sub) {
-      P(0, type);
-      if (r2000) { P(5, H()); P(330, msBR); P(100, 'AcDbEntity'); }
-      P(8, layer);
-      if (r2000 && sub) P(100, sub);
-    }
-    this.ents.forEach(function (e) {
-      if (e.k === 'LINE') {
+    this.ents.forEach(entity);
+    function entity(e) {
+      if (e.k === 'INSERT') {   // rfAU: a block instance: its block, insertion point, scale and rotation
+        head('INSERT', e.layer, 'AcDbBlockReference');
+        P(2, e.name); P(10, fmtD(e.p[0])); P(20, fmtD(e.p[1])); P(30, 0);
+        if (e.s !== 1) { P(41, fmtA(e.s)); P(42, fmtA(e.s)); P(43, fmtA(e.s)); }
+        if (e.rot) P(50, fmtA(e.rot));
+      } else if (e.k === 'LINE') {
         head('LINE', e.layer, 'AcDbLine');
         P(10, fmtD(e.a[0])); P(20, fmtD(e.a[1])); P(30, 0); P(11, fmtD(e.b[0])); P(21, fmtD(e.b[1])); P(31, 0);
       } else if (e.k === 'CIRCLE') {
@@ -509,7 +551,7 @@
           P(0, 'SEQEND'); P(8, e.layer);
         }
       }
-    });
+    }
     P(0, 'ENDSEC');
     // ---- OBJECTS (R2000): the root dictionary with ACAD_GROUP
     if (r2000) {
@@ -614,7 +656,13 @@
   // as in the sketch (upper case, characters DXF does not allow as _), with its colour (the layer's aci, else the ACI
   // colour nearest its colour, else 7), DASHED for a dashed layer and a negative colour for a hidden one; entities on
   // the default layer keep OUTLINE / HOLES. Construction geometry stays on CONSTRUCTION whatever its layer.
-  // opts: { version: 'R12' (default) | 'R2000', construction }
+  // rfAU: block instances (Tools ▸ Blocks) go out as each definition once in the BLOCKS section (its entities in block
+  // coordinates, base point 0, 0; entities on the default layer on layer 0, so they take the INSERT's layer, construction
+  // on CONSTRUCTION, sketch layers kept) and each instance as an INSERT (insertion point, rotation, scale) on HOLES or
+  // OUTLINE as its first entity would be; block names as layer names (upper case, A-Z 0-9 $ - _). An instance that no
+  // longer matches its definition (an entity of it deleted) is written exploded. opts.explode writes every instance as
+  // its exploded geometry (LINE / ARC / CIRCLE …, no BLOCKS), as before blocks were written.
+  // opts: { version: 'R12' (default) | 'R2000', construction, explode }
   function exportDXFSketch(sketch, units, opts) {
     opts = opts || {};
     var d = new DXF(units, opts), R2D = 180 / Math.PI;
@@ -644,16 +692,39 @@
       }
       return hole;
     }
-    (sketch.entities || []).forEach(function (e) {
-      if (!e || e.t === 'point') return;
-      if (e.construction && !opts.construction) return;
-      if (e.t === 'line' && e.infinite) return;   // sketch-refine: an infinite line has no ends to cut to
-      var rec = e.construction ? null : K.sketchLayer(sketch, e), layer;
+    function written(e) { return !!e && e.t !== 'point' && !(e.construction && !opts.construction) && !(e.t === 'line' && e.infinite); }
+    // the layer of entity e: inBlock, a block definition's entity (the default layer is 0 there)
+    function layerOf(e, inBlock) {
+      var rec = e.construction ? null : K.sketchLayer(sketch, e);
       if (rec) {
-        layer = dxfLayerName(rec.name);
-        d.layer(layer, rec.aci > 0 ? rec.aci | 0 : rec.color ? nearestAci(rec.color) : 7, { dashed: rec.lineType === 'dashed', off: !!rec.hidden });
-      } else if (e.t === 'text' && !e.construction && e.mode !== 'outline') { layer = 'ETCH'; d.layer('ETCH', 3); }   // sketch-text: Etch text is marking, never a cut
-      else layer = e.construction ? 'CONSTRUCTION' : (isHole(e) ? 'HOLES' : 'OUTLINE');
+        var ln = dxfLayerName(rec.name);
+        d.layer(ln, rec.aci > 0 ? rec.aci | 0 : rec.color ? nearestAci(rec.color) : 7, { dashed: rec.lineType === 'dashed', off: !!rec.hidden });
+        return ln;
+      }
+      if (e.t === 'text' && !e.construction && e.mode !== 'outline') { d.layer('ETCH', 3); return 'ETCH'; }   // sketch-text: Etch text is marking, never a cut
+      return e.construction ? 'CONSTRUCTION' : inBlock ? '0' : (isHole(e) ? 'HOLES' : 'OUTLINE');
+    }
+    // rfAU: the instances written as INSERTs (each entity of one is skipped below) and their block names
+    var inBlock = {}, plan = opts.explode ? null : dxfBlockPlan(sketch, written);
+    if (plan) {
+      plan.defs.forEach(function (b) {
+        d.beginBlock(b.name);
+        b.ents.forEach(function (e) { writeEnt(e, layerOf(e, true)); });
+        d.endBlock();
+      });
+      plan.inserts.forEach(function (q) {
+        q.ents.forEach(function (i) { inBlock[i] = true; });
+        var E = sketch.entities, first = q.ents.map(function (i) { return E[i]; }).filter(function (e) { return written(e) && !e.construction; })[0];
+        d.insert(first ? (isHole(first) ? 'HOLES' : 'OUTLINE') : 'OUTLINE', q.name, [q.x, q.y], q.ang, q.s);
+        q.ents.forEach(function (i) { if (written(E[i])) K.entityPolylines(E[i]).forEach(function (pl) { pl.pts.forEach(function (p) { d.grow(p[0], p[1]); }); }); });
+      });
+    }
+    (sketch.entities || []).forEach(function (e, i) {
+      if (!written(e) || inBlock[i]) return;
+      writeEnt(e, layerOf(e, false));
+    });
+    return d.toString();
+    function writeEnt(e, layer) {
       if (e.t === 'text') { dxfSketchText(d, layer, e); return; }
       // a sketch arc runs counterclockwise from a0 to a1 in degrees as stored (entityPrimitives sorts the two, which
       // would flip an arc across 0°)
@@ -664,8 +735,33 @@
         else if (p.full) d.circle(layer, p.c, p.r);
         else d.arc(layer, p.c, p.r, p.a0 * R2D, p.a1 * R2D);
       });
+    }
+  }
+  // rfAU: which block instances of a sketch go out as INSERTs: { defs: [{ name, ents (block coordinates, the written
+  // ones) }], inserts: [{ name, x, y, ang, s, ents (sketch indices) }] }, or null when there are none. The definitions are
+  // the sketch's (Kernel.blockDefs: a definition an instance names but the sketch lacks, e.g. after a DXF import, is
+  // taken from that instance); an instance whose entities do not match its definition one for one is left out
+  // (written exploded), and so is a definition with nothing to write.
+  function dxfBlockPlan(sketch, written) {
+    if (!K.blockInstances || !K.blockDefs) return null;
+    var inst = K.blockInstances(sketch);
+    if (!inst.length) return null;
+    var defs = K.blockDefs(sketch), E = sketch.entities, names = {}, used = {}, out = { defs: [], inserts: [] };
+    inst.forEach(function (r) {
+      var d = defs[r.def];
+      if (!d || d.ents.length !== r.ents.length || d.ents.some(function (q, k) { return !E[r.ents[k]] || E[r.ents[k]].t !== q.t; })) return;
+      var keep = d.ents.filter(written);
+      if (!keep.length) return;
+      if (names[r.def] == null) {
+        var base = dxfLayerName(r.def), nm = base, n = 2;
+        if (nm === '0') nm = base = 'BLOCK';
+        while (used[nm]) nm = base + '_' + n++;
+        used[nm] = true; names[r.def] = nm;
+        out.defs.push({ name: nm, ents: keep });
+      }
+      out.inserts.push({ name: names[r.def], x: r.x, y: r.y, ang: ((r.ang % 360) + 360) % 360, s: r.s, ents: r.ents });
     });
-    return d.toString();
+    return out.inserts.length ? out : null;
   }
 
   // sketch-text: a text's geometry, never a TEXT entity (laser and punch software cut and etch geometry): Etch text as
@@ -1472,6 +1568,7 @@
   K.exportSTL = exportSTL; K.exportDXFSketch = exportDXFSketch; K.exportDXFFace = exportDXFFace; K.exportDXFFlat = exportDXFFlat;
   K.Builder = Builder; K.runScript = runScript; K.generateScript = generateScript;
   if (K.installBlockScript) K.installBlockScript();   // sketch Blocks (kernel-sketch.js) add .blocks() to the SketchBuilder
+  if (K.installPictureScript) K.installPictureScript();   // Sketch Picture (kernel-sketch.js) adds .picture()
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.fmt = fmt;
   _.fmtD = fmtD;
