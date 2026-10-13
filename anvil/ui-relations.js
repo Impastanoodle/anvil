@@ -1105,7 +1105,63 @@
     if (UI.toast) UI.toast(msg);
     return r;
   }
-  UI.cmdConstrainAll = function (opts) { return constrainAll(opts); };
+  // rfBC: from the menu (no options) Constrain All opens a PropertyManager like SolidWorks' DXF-import Constrain All
+  // step: Relations only (the default, so a later Autodimension / Fully Define picks the scheme) or Relations and
+  // dimensions (Fully Define's scheme and placement fields); the message previews what will be added (worked out on a
+  // copy of the sketch); ✓ applies it as one undo step, ✗ leaves the sketch untouched. From script, with an options
+  // object, it runs at once as before ({ fullyDefine: false } for relations only).
+  var CA_SCH = [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']];
+  var CA_KINDS = ['coincident', 'concentric', 'horizontal', 'vertical', 'tangent'];
+  function constrainAllOpts(v) {
+    return { fullyDefine: v.mode === 'dims', hScheme: v.hScheme, vScheme: v.vScheme, hPlace: v.hPlace, vPlace: v.vPlace };
+  }
+  function constrainAllPreview(f, v) {
+    var o = constrainAllOpts(v);
+    if (UI.cam) o.minGap = 34 * (UI.cam.scale || 0);
+    var r = S.constrainAll(clone(f), o);
+    if (!r.ok) return { ok: false, error: r.error, text: r.error };
+    var parts = [];
+    CA_KINDS.forEach(function (k) { if (r.added[k]) parts.push(r.added[k] + ' ' + S.TYPES[k].name); });
+    Object.keys(r.added).forEach(function (k) { if (r.added[k] && CA_KINDS.indexOf(k) < 0) parts.push(r.added[k] + ' ' + ((S.TYPES[k] || {}).name || k)); });
+    r.text = 'Will add ' + (parts.length ? parts.join(', ') : 'no new relations') + (o.fullyDefine ? '; ' + r.dims + ' dimension' + (r.dims === 1 ? '' : 's') : '') +
+      '. The sketch will be ' + S.STATUS_TEXT[r.status] + (r.dof ? ' (' + r.dof + ' degree' + (r.dof === 1 ? '' : 's') + ' of freedom left).' : '.');
+    return r;
+  }
+  function cmdConstrainAllPM() {
+    var f = UI.activeSketchFeature();
+    if (!f) { UI.toast('Open a sketch first.'); return null; }
+    if (!f.entities.length) { UI.toast('The sketch is empty: there is nothing to constrain.'); return null; }
+    if (UI.setTool) UI.setTool('select');
+    var v = { mode: 'rels', hScheme: 'baseline', vScheme: 'baseline', hPlace: 'below', vPlace: 'left' };
+    var spec = { title: 'Constrain All', icon: 'fullyDefine', values: v, groups: [],
+      onChange: function (x, key) { if (key) render(); },
+      onOK: function () { var r = constrainAll(constrainAllOpts(v)); spec.result = r; if (r && r.ok === false) return false; },
+      onCancel: function () { UI.setStatus('Constrain All cancelled: the sketch is as it was.'); } };
+    function render() {
+      var prev = constrainAllPreview(f, v);
+      spec.preview = prev;
+      spec.message = prev.text;
+      spec.messageOk = prev.ok !== false && prev.status === 'full';
+      var groups = [{ title: 'Options', fields: [
+        { type: 'radio', key: 'mode', options: [['rels', 'Relations only'], ['dims', 'Relations and dimensions']] }
+      ] }];
+      if (v.mode === 'dims') groups.push({ title: 'Dimensions', fields: [
+        { type: 'select', key: 'hScheme', label: 'Horizontal dimensions scheme', options: CA_SCH },
+        { type: 'select', key: 'vScheme', label: 'Vertical dimensions scheme', options: CA_SCH },
+        { type: 'select', key: 'hPlace', label: 'Horizontal dimensions', options: [['below', 'Below sketch'], ['above', 'Above sketch']] },
+        { type: 'select', key: 'vPlace', label: 'Vertical dimensions', options: [['left', 'Left of sketch'], ['right', 'Right of sketch']] }
+      ] });
+      spec.groups = groups;
+      UI.openPM(spec);
+    }
+    render();
+    return spec;
+  }
+  UI.cmdConstrainAll = function (opts) { return opts === undefined ? cmdConstrainAllPM() : constrainAll(opts); };
+  UI.constrainAllPreview = function () {
+    var s = UI.pmSpec && UI.pmSpec(), p = s && s.title === 'Constrain All' ? s.preview : null;
+    return p ? { ok: p.ok, added: p.added, relations: p.relations, dims: p.dims, status: p.status, text: p.text } : null;
+  };
 
   // ------------------------------------------------------------------ SketchXpert (rfAR)
   // Tools ▸ Sketch Tools ▸ SketchXpert, and the Make Dimension Driven? question's third answer. Diagnose

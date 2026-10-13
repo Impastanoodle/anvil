@@ -709,12 +709,16 @@
     var out = { main: base(d.value), upper: null, lower: null };
     if (tol) {
       var tp = tol.prec != null && tol.prec !== '' ? +tol.prec : prec, plus = Math.abs(+tol.plus || 0), minus = Math.abs(+tol.minus || 0);
-      var tn = function (x) { return numText(x, units, tp); };
+      // rfBC: an angle's tolerance is an angle (ASME Y14.5: degrees keep the leading zero, ±0.5°, in inch drawings too);
+      // only the lengths of an inch drawing drop it (.500)
+      var isAng = d.kind === 'angle';
+      var tn = isAng ? function (x) { return (tp != null && +tp >= 0 ? (+x).toFixed(+tp) : fmtAngle(x)) + '°'; } : function (x) { return numText(x, units, tp); };
       if (tol.type === 'symmetric') out.main += ' ±' + tn(plus);
       else if (tol.type === 'bilateral') {
         // (rfM) a zero limit is written at the other limit's precision: inch '-.000' / '+.000' (ASME Y14.5 unilateral,
         // SolidWorks), mm a single '0' with no sign
         var zero = function (other, sign) {
+          if (isAng) { var ma = /\.(\d+)/.exec(other); return sign + '0' + (ma ? '.' + new Array(ma[1].length + 1).join('0') : '') + '°'; }
           if (units !== 'in') return '0';
           var m = /\.(\d+)/.exec(other);
           return sign + (m ? '.' + new Array(m[1].length + 1).join('0') : '0');

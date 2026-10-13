@@ -646,6 +646,13 @@ if (typeof UI !== 'undefined') (function (UI) {
     var op = mods.shift ? 'toggle' : mods.ctrl ? 'add' : 'replace';
     var list = BoxSelect.combine(App.mode === 'sketch' ? selection().filter(isSketchItem) : selection(), items, op, selKey);
     setSelection(list, { quiet: true });
+    // rfBC: the box in sketch coordinates, with what it left selected, for Stretch Entities (the points inside it move)
+    if (App.mode === 'sketch') {
+      var bsk = UI.activeSketchFeature(), bpl = UI.activePlane && UI.activePlane();
+      var quad = bpl ? [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]].map(function (q) { return UI.screenToPlane(q[0], q[1], bpl); }) : [];
+      UI.lastSketchBox = bsk && quad.every(Boolean) ? { sketch: bsk.id, mode: r.mode, poly: quad,
+        sel: list.filter(function (s) { return s.kind === 'entity'; }).map(function (s) { return s.index; }).sort(function (a, b) { return a - b; }) } : null;
+    }
     // rfF: a box in a sketch shows the selection's PropertyManager (Properties for two or more) unless another PM is open
     if (App.mode === 'sketch' && !(UI.pmCollectsSelection && UI.pmCollectsSelection())) sketchSelectionPM(list, false);
     if (UI.setStatus) UI.setStatus((r.mode === 'window' ? 'Window' : 'Crossing') + ' selection: ' + (list.length ? describe(list) + ' selected.' : 'nothing selected.'));

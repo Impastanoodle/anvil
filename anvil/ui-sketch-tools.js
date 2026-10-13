@@ -893,6 +893,26 @@
     function rotPt(p, x) { var a = x.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), dx = p[0] - x.cx, dy = p[1] - x.cy; return [x.cx + c * dx - s * dy, x.cy + s * dx + c * dy]; }
     function power(x, n) { if (x.rot != null) return { rot: x.rot * n, cx: x.cx, cy: x.cy }; if (x.s != null) return { s: Math.pow(x.s, n), cx: x.cx, cy: x.cy }; return { dx: x.dx * n, dy: x.dy * n }; }
     function preview() { previewWith(xf()); }
+    // rfBC: Stretch after a window / crossing box (made before the command or while its box is active) moves the points
+    // inside the box and stretches what crosses it (SketchSolver.stretchEntities); entities picked one by one move whole
+    // and what is joined to them stretches, as before
+    function stretchBox() {
+      if (kind !== 'stretch') return null;
+      var b = UI.lastSketchBox;
+      return b && b.sketch === f.id && b.sel.join() === v.entities.join() ? b.poly : null;
+    }
+    if (kind === 'stretch') previewWith = (function (plain) {
+      return function (x) {
+        var poly = stretchBox();
+        if (!poly || !x || !v.entities.length) return plain(x);
+        var g = JSON.parse(JSON.stringify({ entities: f.entities, rels: f.rels, dims: f.dims, blocks: f.blocks }));
+        var r = S.stretchEntities(g, v.entities, poly, x);
+        if (!r.ok) return plain(x);
+        var same = g.entities.length === f.entities.length;
+        App.tempEntities = g.entities.filter(function (e, i) { return same ? JSON.stringify(e) !== JSON.stringify(f.entities[i]) : r.entities.indexOf(i) >= 0; });
+        UI.updateTemp();
+      };
+    })(previewWith);
     function setBox(b) {
       v.box = b;
       cmd.onSketchPoint = b === 'base' || b === 'to' ? pointClick : null;
@@ -917,9 +937,11 @@
       var o = { keepRelations: kind === 'stretch' ? true : !!v.keep };
       if (isCopy()) { o.copy = true; o.count = nCopies(); }
       else if (times() > 1) x = power(x, times());
-      var r = step(function () { return S.transformEntities(f, v.entities, x, o); }, true);
+      var poly = stretchBox();
+      var r = step(function () { return poly ? S.stretchEntities(f, v.entities, poly, x) : S.transformEntities(f, v.entities, x, o); }, true);
       if (!r.ok) { UI.toast(r.error); if (v.box === 'to') { v.to = null; } return false; }
       clearPreview(); changed();
+      if (poly) UI.lastSketchBox = null;
       UI.setStatus((isCopy() ? 'Copied: ' + r.added.length : K0.title.replace(/e$/, '') + 'ed ' + r.entities.length) + ' entit' + ((isCopy() ? r.added.length : r.entities.length) === 1 ? 'y' : 'ies') + '.');
       return true;
     }
@@ -937,7 +959,7 @@
     if (kind !== 'scale' && kind !== 'stretch') boxFields.push({ type: 'check', label: 'Keep relations', key: 'keep' });
     UI.openPM({
       title: K0.title, icon: K0.icon, values: v,
-      message: kind === 'stretch' ? 'Select the entities to stretch: they move, and what is joined to them stretches.' : 'Select the sketch entities, then set where they go.',
+      message: kind === 'stretch' ? 'Drag a box over the points to move (right to left: crossing), or select whole entities: what crosses the box, or is joined to them, stretches.' : 'Select the sketch entities, then set where they go.',
       command: cmd,
       onSelection: syncSelection(f, v, preview),
       onEntityPick: function () { return v.box !== 'entities'; },

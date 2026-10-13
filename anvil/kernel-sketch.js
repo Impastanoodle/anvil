@@ -2178,7 +2178,8 @@
       case 'ellipse': case 'pellipse': p = blkPt(m, e.cx, e.cy); o.cx = p[0]; o.cy = p[1]; o.rx = blkClean(e.rx * m.k); o.ry = blkClean(e.ry * m.k); o.rot = blkClean(normDeg((+e.rot || 0) + m.ang)); break;
       case 'polyline': case 'spline':
         o.pts = e.pts.map(function (r) { return blkPt(m, r[0], r[1]); });
-        if (e.tans) o.tans = e.tans.map(function (tg) { return tg ? [normDeg(+tg[0] + m.ang)].concat(tg.slice(1)) : null; });
+        // rfBC: a curvature control (tg[3], 1 / R) scales as 1 / the instance's scale
+        if (e.tans) o.tans = e.tans.map(function (tg) { if (!tg) return null; var t = [normDeg(+tg[0] + m.ang)].concat(tg.slice(1)); if (t[3] != null && isFinite(+t[3])) t[3] = blkClean(+t[3] / m.k); return t; });
         break;
       case 'text': {
         var t1 = m.k !== 1 ? transformText(e, { s: m.k, cx: 0, cy: 0 }) : e, t2 = m.ang ? transformText(t1, { rot: m.ang, cx: 0, cy: 0 }) : t1;

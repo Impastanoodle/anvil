@@ -2987,12 +2987,18 @@ var SketchSolver = (function () {
       // own (asymmetric weighting, [angle, weight, weightIn]): the chord of a cut span is not its share of the original
       // parameter, so one speed for both spans redrew the cut span (up to 0.6 % of its length off the original)
       var spanScale = function (i, j, tc, tn) { var L = len(sub(pts[j], pts[i])); return L > 1e-12 ? Math.abs(tn - tc) * hOf(Math.min(tc, tn) + 1e-9) / L : 1; };
+      // rfBC: a kept point's curvature control (tg[3], signed 1 / R) stays on the piece; a cut end gets none
+      var curvOf = function (tg) { return tg && tg[3] != null && isFinite(+tg[3]) ? [+tg[3]] : []; };
       if (inner.length) {
         var i1 = 1, iL = pts.length - 2, w0;
-        if (!startOrig && tans[i1]) { w0 = +(tans[i1][1] == null ? 1 : tans[i1][1]); var wi = tans[i1][2] != null ? +tans[i1][2] : w0; tans[i1] = [tans[i1][0], w0, r6(wi * spanScale(0, i1, ta, inner[0]))]; }
-        if (!endOrig && tans[iL]) { w0 = +(tans[iL][1] == null ? 1 : tans[iL][1]); var wiL = tans[iL][2] != null ? +tans[iL][2] : w0; tans[iL] = [tans[iL][0], r6(w0 * spanScale(iL, iL + 1, inner[inner.length - 1], tb)), wiL]; }
+        if (!startOrig && tans[i1]) { w0 = +(tans[i1][1] == null ? 1 : tans[i1][1]); var wi = tans[i1][2] != null ? +tans[i1][2] : w0; tans[i1] = [tans[i1][0], w0, r6(wi * spanScale(0, i1, ta, inner[0]))].concat(curvOf(tans[i1])); }
+        if (!endOrig && tans[iL]) { w0 = +(tans[iL][1] == null ? 1 : tans[iL][1]); var wiL = tans[iL][2] != null ? +tans[iL][2] : w0; tans[iL] = [tans[iL][0], r6(w0 * spanScale(iL, iL + 1, inner[inner.length - 1], tb)), wiL].concat(curvOf(tans[iL])); }
       }
-      tans = tans.map(function (tg) { return tg && tg.length > 2 && (tg[2] == null || +tg[2] === +tg[1]) ? tg.slice(0, 2) : tg; });
+      tans = tans.map(function (tg) {
+        if (!tg || tg.length <= 2) return tg;
+        var k = curvOf(tg), sym = tg[2] == null || +tg[2] === +tg[1];
+        return k.length ? [tg[0], tg[1], sym ? null : tg[2], k[0]] : sym ? tg.slice(0, 2) : tg.slice(0, 3);
+      });
       o = { t: 'spline', pts: pts };
       if (any) o.tans = tans;
       if (e.local) o.local = true;
@@ -4861,6 +4867,148 @@ var SketchSolver = (function () {
     }
   }
 
+  // ---- rfBC: Stretch Entities by a selection box (SolidWorks)
+  // stretchEntities(sketch, idx, region, { dx, dy }): region is the window / crossing box in sketch coordinates (a
+  // polygon [[x, y], …]). The points of the entities idx (and of any other entity with a point in the box) that lie in
+  // the box move by dx, dy; the others stay: an entity wholly inside moves, a line / slot / polyline / spline with some
+  // points inside stretches, an arc with one end inside keeps its other end and is solved round it (centre and radius
+  // free), a circle / polygon / ellipse moves when its centre is inside. A rectangle with two corners inside stays a
+  // rectangle when it can, else becomes four lines first. Geometry not taking part follows its relations. Distances /
+  // angles between entities that change are updated to the new geometry (single-entity dimensions read it). Without a
+  // region it is Move with Keep relations. Returns { ok, entities, moved (point count), analysis, error }.
+  function inPolygon(p, poly) {
+    var c = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var a = poly[i], b = poly[j];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c;
+    }
+    return c;
+  }
+  // the points that decide a stretch: [name, [x, y]]
+  function stretchPoints(e) {
+    switch (e.t) {
+      case 'line': case 'slot': return [['p1', [e.x1, e.y1]], ['p2', [e.x2, e.y2]]];
+      case 'point': return [['', [e.x, e.y]]];
+      case 'text': return textFree(e) ? [['', [e.x, e.y]]] : [];
+      case 'arc': case 'aslot': { var a = e.a0 * D2R, b = e.a1 * D2R; return [['c', [e.cx, e.cy]], ['p1', [e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]], ['p2', [e.cx + e.r * Math.cos(b), e.cy + e.r * Math.sin(b)]]]; }
+      case 'rect': case 'crect': return corners(e).map(function (p, k) { return ['v' + k, p]; });
+      case 'polyline': case 'spline': return e.pts.map(function (p, k) { return ['v' + k, [p[0], p[1]]]; });
+      default: return e.cx != null ? [['c', [e.cx, e.cy]]] : [];
+    }
+  }
+  function stretchEntities(sketch, idx, region, xf) {
+    var dx = +xf.dx || 0, dy = +xf.dy || 0;
+    if (!region || region.length < 3) return transformEntities(sketch, idx, { dx: dx, dy: dy }, { keepRelations: true });
+    var sel = uniqSorted(idx, sketch.entities);
+    if (!sel.length) return { ok: false, error: 'Select the sketch entities first.' };
+    var saved = tSave(sketch), before = analyze(sketch);
+    try { return run(); } catch (err) { tRestore(sketch, saved); return { ok: false, error: 'That could not be done: ' + err.message }; }
+    function inside(p) { return inPolygon(p, region); }
+    function flags(e) { return stretchPoints(e).map(function (q) { return inside(q[1]); }); }
+    function run() {
+      var E = sketch.entities, i, k;
+      // a rectangle whose moved corners would not leave it a rectangle becomes four lines first (last first: indices shift)
+      for (k = E.length - 1; k >= 0; k--) {
+        var ri = k, re = E[ri];
+        if (!re || (re.t !== 'rect' && re.t !== 'crect')) continue;
+        var fl = flags(re), nIn = fl.filter(Boolean).length;
+        if (!nIn || nIn === 4) continue;
+        // a vertical side moving sideways, or a horizontal side moving up / down: still a rectangle
+        var keep = nIn === 2 && ((fl[0] === fl[3] && fl[1] === fl[2] && !dy) || (fl[0] === fl[1] && fl[2] === fl[3] && !dx));
+        if (keep) continue;
+        var n0 = E.length;
+        explodeRect(sketch, ri);
+        E = sketch.entities;
+        var shift = E.length - n0;
+        var wasSel = sel.indexOf(ri) >= 0;
+        sel = sel.map(function (x) { return x > ri ? x + shift : x; });
+        if (wasSel) for (var z = 1; z <= shift; z++) sel.push(ri + z);
+      }
+      sel.sort(function (a, b) { return a - b; });
+      var part = {};
+      sel.forEach(function (j) { part[j] = true; });
+      E.forEach(function (e, j) { if (e && !part[j] && flags(e).some(Boolean)) part[j] = true; });
+      // hard: what goes where the box sends it (and whole moved entities); stay: what was outside the box, held where it
+      // was (exactly when the relations allow it, else softly: the relations win, as a drag); arcR: a stretched arc's
+      // radius, held in that second try so its free end slides rather than the arc swelling
+      var hard = [], stay = [], arcR = [], movedPts = 0, touched = [];
+      function holdNames(j, names) {
+        var at = names.map(function (nm) { return pget(E[j], nm); });
+        return { n: names.length, ents: [j], f: function (X) { return names.map(function (nm, q) { return pget(X[j], nm) - at[q]; }); } };
+      }
+      function holdPt(j, ref, t) { return { n: 2, ents: [j], f: function (X) { var p = refPoint(X, parseRef(j + '.' + ref)); return [p[0] - t[0], p[1] - t[1]]; } }; }
+      for (i = 0; i < E.length; i++) {
+        if (!part[i]) continue;
+        var e = E[i], pts = stretchPoints(e), f = pts.map(function (q) { return inside(q[1]); }), nin = f.filter(Boolean).length;
+        movedPts += nin;
+        if (nin) touched.push(i);
+        if (!nin || !pts.length) { stay = stay.concat(holdEqs(E, [i])); continue; }
+        if (nin === pts.length || ((e.t === 'circle' || e.t === 'poly' || e.t === 'ellipse' || e.t === 'pellipse') && f[0])) { E[i] = xfEntity(e, { dx: dx, dy: dy }) || e; hard = hard.concat(holdEqs(E, [i])); continue; }
+        var o = E[i] = clone(e), hn = [], sn = [];
+        switch (e.t) {
+          case 'line': case 'slot':
+            if (f[0]) { o.x1 += dx; o.y1 += dy; }
+            if (f[1]) { o.x2 += dx; o.y2 += dy; }
+            (f[0] ? hn : sn).push('x1', 'y1');
+            (f[1] ? hn : sn).push('x2', 'y2');
+            if (e.t === 'slot') hn.push('w');
+            break;
+          case 'polyline': case 'spline':
+            o.pts.forEach(function (p, q) { if (f[q]) { p[0] += dx; p[1] += dy; } (f[q] ? hn : sn).push(2 * q, 2 * q + 1); });
+            break;
+          case 'rect': case 'crect': {
+            var c = corners(e).map(function (p, q) { return f[q] ? [p[0] + dx, p[1] + dy] : p; });
+            var x0 = Math.min(c[0][0], c[1][0]), x1 = Math.max(c[0][0], c[1][0]), y0 = Math.min(c[0][1], c[3][1]), y1 = Math.max(c[0][1], c[3][1]);
+            if (e.t === 'rect') { o.x = x0; o.y = y0; o.w = x1 - x0; o.h = y1 - y0; }
+            else { o.cx = (x0 + x1) / 2; o.cy = (y0 + y1) / 2; o.w = x1 - x0; o.h = y1 - y0; }
+            hn = paramNames(o);
+            break;
+          }
+          case 'arc': case 'aslot': {
+            // its ends held where they go (the centre and radius solved round them); an arc slot keeps its width
+            if (f[0] && !f[1] && !f[2]) { E[i] = e; stay = stay.concat(holdEqs(E, [i])); continue; }   // only the centre inside: the arc stays
+            [1, 2].forEach(function (q) { var t = pts[q][1]; (f[q] ? hard : stay).push(holdPt(i, 'p' + q, f[q] ? [t[0] + dx, t[1] + dy] : t)); });
+            if (e.t === 'aslot') hn.push('w');
+            arcR.push(holdNames(i, ['r']));
+            break;
+          }
+          default: sn = paramNames(o);
+        }
+        if (hn.length) hard.push(holdNames(i, hn));
+        if (sn.length) stay.push(holdNames(i, sn));
+      }
+      if (!movedPts) { tRestore(sketch, saved); return { ok: false, error: 'No end point lies inside the box: nothing to stretch.' }; }
+      // dimensions between entities read the stretched geometry: driven while it solves, then driving at the new value
+      var freed = [];
+      (sketch.rels || []).forEach(function (rel) { if (TYPES[rel.type] && TYPES[rel.type].dim && !rel.driven) { rel.driven = true; freed.push(rel); } });
+      // a stretched arc's own dimensions (radius, arc length) follow it, as a stretched line's length does
+      var arcSet = {}, freedDims = [];
+      arcR.forEach(function (q) { arcSet[q.ents[0]] = true; });
+      (sketch.dims || []).forEach(function (d) { if (arcSet[d.e] && !d.driven) { d.driven = true; freedDims.push(d); } });
+      var r1 = solve(sketch, { extra: hard.concat(stay) }), an1 = r1.ok ? analyze(sketch) : null;
+      if (!r1.ok || an1.conflicts > before.conflicts) {
+        // second try: what stayed outside the box gives way to the relations, moving as little as they need (the
+        // least-norm projection onto the box's moves and the relations: what no relation ties to them keeps its place)
+        var sys = buildSystem(sketch, { extra: hard.concat(arcR) });
+        r1 = lm(sys, {});
+        if (r1.ok && !collapsed(sketch, sys)) writeBack(sketch, sys); else r1 = { ok: false };
+        updateDriven(sketch);
+      }
+      freedDims.forEach(function (d) { delete d.driven; });
+      freed.forEach(function (rel) {
+        delete rel.driven;
+        var v = measure(sketch, rel.type, rel.refs, rel.dir, rel.sup, rel.ac);
+        if (v != null && isFinite(v) && Math.abs(Math.abs(v) - Math.abs(rel.v)) > 1e-9 * Math.max(1, Math.abs(rel.v))) rel.v = rel.v < 0 && v > 0 ? -v : v;
+      });
+      an1 = analyze(sketch);
+      if (!r1.ok || an1.conflicts > before.conflicts) {
+        tRestore(sketch, saved);
+        return { ok: false, error: 'The relations do not let it stretch that way.' };
+      }
+      return { ok: true, entities: touched, moved: movedPts, analysis: an1 };
+    }
+  }
+
   // ---- Linear and Circular Sketch Pattern
   // The point a pattern holds an entity by (its anchor), and the two unknowns that are that point.
   var ANCHOR = { line: ['p1', ['x1', 'y1']], slot: ['p1', ['x1', 'y1']], circle: ['c', ['cx', 'cy']], arc: ['c', ['cx', 'cy']], poly: ['c', ['cx', 'cy']], crect: ['c', ['cx', 'cy']], rect: ['v0', ['x', 'y']], polyline: ['v0', [0, 1]], point: ['', ['x', 'y']],
@@ -5383,7 +5531,7 @@ var SketchSolver = (function () {
     chainCorners: chainCorners, filletChain: filletChain, selectionCorners: selectionCorners, filletCorners: filletCorners,   // (rfAX: a selection's corners)   // sketch-tools2: Fillet all corners of the chain
     // sketch tools (ui-sketch-tools.js): Sketch Fillet / Chamfer, Offset Entities chains, Move / Copy / Rotate / Scale, the sketch patterns
     curveCorner: curveCorner, filletPair: filletPair, chamferPair: chamferPair, offsetChains: offsetChains, offsetSelection: offsetSelection,
-    xfEntity: xfEntity, transformEntities: transformEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
+    xfEntity: xfEntity, transformEntities: transformEntities, stretchEntities: stretchEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
     // r13/trim13: Trim Entities modes
     trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
     cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined,
@@ -5671,7 +5819,8 @@ var SketchSolver = (function () {
   // constrainAll(sketch, opts) -> { ok, added: { coincident, concentric, horizontal, vertical, tangent, … }, relations,
   // dims, status, dof, error }. opts: tol (sketch units; default 1e-5 of the sketch's size), angle (degrees; 0.01),
   // coincident / hv / tangent (false leaves that kind out), fullyDefine (false: relations only), dims (false: Fully
-  // Define adds relations only), scheme ('baseline' | 'chain' | 'ordinate'), hDatum / vDatum, minGap.
+  // Define adds relations only), scheme ('baseline' | 'chain' | 'ordinate'; or hScheme / vScheme), hPlace / vPlace,
+  // hDatum / vDatum, minGap.
   function constrainAll(sk, opts) {
     opts = opts || {};
     if (!sk.entities || !sk.entities.length) return { ok: false, error: 'The sketch has no geometry to constrain.' };
@@ -5701,7 +5850,9 @@ var SketchSolver = (function () {
     (sk.rels || []).slice(n0).forEach(function (r) { added[r.type] = (added[r.type] || 0) + 1; });
     var out = { ok: true, added: added, relations: (sk.rels || []).length - n0, dims: 0 };
     if (opts.fullyDefine !== false) {
-      var fo = { relations: { horizontal: true, vertical: true }, dims: opts.dims !== false, hScheme: opts.scheme || 'baseline', vScheme: opts.scheme || 'baseline' };
+      var fo = { relations: { horizontal: true, vertical: true }, dims: opts.dims !== false, hScheme: opts.hScheme || opts.scheme || 'baseline', vScheme: opts.vScheme || opts.scheme || 'baseline' };
+      if (opts.hPlace) fo.hPlace = opts.hPlace;   // rfBC: the Constrain All PM's placement fields
+      if (opts.vPlace) fo.vPlace = opts.vPlace;
       if (opts.hDatum) fo.hDatum = opts.hDatum;
       if (opts.vDatum) fo.vDatum = opts.vDatum;
       if (opts.minGap) fo.minGap = opts.minGap;
