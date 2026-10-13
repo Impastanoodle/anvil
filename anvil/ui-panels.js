@@ -147,7 +147,7 @@
       { fly: 'relations', items: [{ id: 'relations', label: 'Display/Delete\nRelations', run: function () { UI.cmdDisplayRelations(); } },
         { id: 'addRelation', label: 'Add\nRelation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } },
         { id: 'fullyDefine', label: 'Fully Define\nSketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },
-      // dxf-import: Repair Sketch (ui-sketch-import.js); Quick Snaps and Rapid Sketch are SolidWorks' and greyed
+      // dxf-import: Repair Sketch (ui-sketch-import.js); Quick Snaps (rfAR), Rapid Sketch (rfAY)
       { stack: [{ id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } },
         // rfAR: Quick Snaps (ui-sketch.js UI.quickSnap): the next point snaps to that one kind of geometry only
         { fly: 'quickSnaps', items: (UI.QUICK_SNAPS || []).map(function (q) {
@@ -155,7 +155,8 @@
             run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); },
             active: function () { return App.quickSnap === q[0]; } };
         }) },
-        { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any face without starting a sketch on it first' }] },
+        // rfAY: Rapid Sketch (ui-sketch.js): a sketch tool picked with no sketch open sketches on the plane / face clicked
+        { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any plane or planar face without opening a sketch on it first: pick a sketch tool, then click the plane or face; click another one between entities to move there', run: function () { if (UI.toggleRapidSketch) UI.toggleRapidSketch(); }, active: function () { return !!(UI.rapidSketchOn && UI.rapidSketchOn()); } }] },
       // rfAV: Instant2D (ui-sketch-dims.js): drag the ball at a sketch dimension's arrow to change the value on a ruler
       { stack: [{ id: 'instant2D', label: 'Instant2D', help: 'Hover a sketch dimension and drag the ball at its arrow to change the value on a ruler', run: function () { if (UI.toggleInstant2D) UI.toggleInstant2D(); }, active: function () { return !!(UI.instant2DOn && UI.instant2DOn()); } }] },
       // Construction Geometry (ui-relations.js); Shaded Sketch Contours is View ▸ Sketch Regions (ui-sketch-layers.js)
@@ -306,12 +307,15 @@
   function itemState(item) {
     var d = item.dyn && item.dyn();
     var id = d ? d.id : item.id, label = d ? d.label : item.label, flat = label.replace(/\n/g, ' ');
-    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch', active = false;
-    if (item.tool) active = App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active());   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
+    // rfAY: with Rapid Sketch on, the sketch-entity tools work with no sketch open (armed until a plane / face is clicked)
+    var rapid = !!item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && !!(UI.rapidSketchOn && UI.rapidSketchOn());
+    var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid, active = false;
+    if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item);   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
     return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help) };
   }
   function runItem(item) {
+    if (item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && UI.rapidSketchOn && UI.rapidSketchOn()) { UI.rapidSketchArm(item); refreshRibbon(); return; }   // rfAY: Rapid Sketch
     if (item.tool && !item.run) UI.setTool(itemState(item).active ? 'select' : item.tool);
     else if (item.run) { item.run(); refreshRibbon(); }
   }
@@ -1340,7 +1344,7 @@
         { label: 'Dimensions ▸ Fully Define Sketch…', icon: 'fullyDefine', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
         { sep: true },
         { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } }
-      ].concat(['autoRelations', 'autoSolve', 'noSolveMove', 'snapping', 'detachOnDrag', 'overrideDims'].map(function (k) {   // rfAR (ui-sketch.js UI.sketchSettings)
+      ].concat(['autoRelations', 'autoSolve', 'noSolveMove', 'snapping', 'detachOnDrag', 'ghostOnDrag', 'overrideDims'].map(function (k) {   // rfAR (ui-sketch.js UI.sketchSettings); rfAY: Ghost image on drag
         var SSet = UI.sketchSettings, name = SSet ? SSet.NAMES[k] : k;
         return { label: 'Sketch Settings ▸ ' + name, checked: !!(SSet && SSet.get(k)), disabled: !SSet, action: function () { var on = SSet.toggle(k); toast(name + (on ? ' on' : ' off')); } };
       }), [

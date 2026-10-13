@@ -453,6 +453,10 @@
     v.construction = !!e.construction; v.curv = !!e.showCurvature; v.cont = !e.local; v.closed = !!e.closed;
     v.pt = i + 1; v.x = clean(e.pts[i][0]); v.y = clean(e.pts[i][1]);
     v.tan = !!tg; v.tw = clean(tg ? tg[1] : cur.w); v.ta = clean(tg ? tg[0] : cur.ang);
+    // rfAY: Curvature Control: tans[i][3] is the signed curvature (1 / radius, + bends left of the point order)
+    var kc = tg && tg[3] != null && isFinite(+tg[3]) ? +tg[3] : null, km = K.splineCurvatureAt ? K.splineCurvatureAt(e, i) : null;
+    var kv = kc != null ? kc : km && km.k != null ? km.k : 0;
+    v.cc = kc != null; v.ck = clean(kv); v.cr = Math.abs(kv) > 1e-12 ? clean(1 / Math.abs(kv)) : 0;
     return v;
   }
   // relations follow a spline point inserted at (or removed from) position k: 'i.vJ' refs shift, a removed point's go
@@ -497,6 +501,42 @@
     refresh();
     openSplinePM(index, e, f);
   }
+  // rfAY: a spline point's curvature control: how 'on' (the curvature it has now; the tangent made driving first),
+  // 'off', { r: radius } (keeps the side it bends to) or { k: signed curvature }; -> { ok } or { ok: false, error }
+  function setCurvatureControl(e, i, how) {
+    if (!e || e.t !== 'spline' || e.style || e.conic != null || !(i >= 0 && i < e.pts.length)) return { ok: false, error: 'Curvature Control is for a spline point.' };
+    var tg = e.tans && e.tans[i];
+    if (how === 'off') {
+      if (tg && tg.length > 3) { tg.length = 3; if (tg[2] == null) tg.length = 2; }
+      return { ok: true };
+    }
+    if (!tg) {   // the tangent the curve has there becomes driving
+      var cur = tangentAt(e, i);
+      if (!cur) return { ok: false, error: 'This spline has no tangent there.' };
+      if (!e.tans) e.tans = e.pts.map(function () { return null; });
+      while (e.tans.length < e.pts.length) e.tans.push(null);
+      tg = e.tans[i] = [cur.ang, cur.w];
+    }
+    var old = tg[3] != null && isFinite(+tg[3]) ? +tg[3] : null, k;
+    if (how === 'on') { var km = K.splineCurvatureAt(e, i); k = old != null ? old : km && km.k != null ? km.k : 0; }
+    else if (how.r != null) {
+      if (!(how.r > 0) || !isFinite(how.r)) return { ok: false, error: 'Radius of curvature must be greater than zero (set Curvature to 0 for a flat point).' };
+      var sg = old != null ? (old < 0 ? -1 : 1) : ((K.splineCurvatureAt(e, i) || {}).k < 0 ? -1 : 1);
+      k = sg / how.r;
+    } else {
+      if (!isFinite(how.k)) return { ok: false, error: 'Curvature must be a number.' };
+      k = how.k;
+    }
+    while (tg.length < 3) tg.push(null);
+    tg[3] = clean(k);
+    return { ok: true, k: tg[3] };
+  }
+  UI.splineCurvatureControl = function (index, pt, how) {
+    var f = UI.activeSketchFeature(), e = f && f.entities[index];
+    if (!e) return { ok: false, error: 'No entity ' + index };
+    var r = undoStep(function (g) { return setCurvatureControl(g.entities[index], pt, how); });
+    return r;
+  };
   function openSplinePM(index, e, f) {
     if (splineSel.index !== index) splineSel = { index: index, pt: 0 };
     // the point nearest the click that selected the spline (within 12 px) is the one shown
@@ -525,6 +565,11 @@
           { type: 'check', label: 'Tangent Driving', key: 'tan' },
           { type: 'number', label: 'Tangent Weighting', key: 'tw', min: 0, show: function (x) { return !!x.tan; } },
           { type: 'number', label: 'Tangent Radial Direction', key: 'ta', unit: '°', show: function (x) { return !!x.tan; } },
+          // rfAY: Curvature Control at this point (SolidWorks' curvature handle): the radius of curvature, or the signed
+          // curvature (+ bends left of the way the points run; 0 is flat), held on both sides of the point
+          { type: 'check', label: 'Curvature Control', key: 'cc' },
+          { type: 'number', label: 'Radius of curvature', key: 'cr', unit: u, min: 0, show: function (x) { return !!x.cc; } },
+          { type: 'number', label: 'Curvature', key: 'ck', step: 0.01, show: function (x) { return !!x.cc; } },
           { type: 'buttons', buttons: [{ label: 'Insert Point', onclick: function () { insertPoint(f, index, e); } }, { label: 'Delete Point', onclick: function () { deletePoint(f, index, e); } }] }
         ] }
       ]),
@@ -550,15 +595,22 @@
         } else if (key === 'tan' || key === 'tw' || key === 'ta') {
           if (key === 'tan' && !vals.tan) {
             if (e.tans) { e.tans[i] = null; if (!e.tans.some(Boolean)) delete e.tans; }
+            if (vals.cc) { vals.cc = false; setTimeout(function () { if (UI.renderPM) UI.renderPM(); }, 0); }   // rfAY: no curvature control without the tangent
           } else {
             // turning Tangent Driving on keeps the curve as it is: the tangent it has now becomes the driving one
             if (key === 'tan') { var cur = tangentAt(e, i); if (cur) { vals.ta = cur.ang; vals.tw = cur.w; } }
             if (!(+vals.tw > 0) || !isFinite(+vals.ta)) { UI.setStatus('Tangent Weighting must be greater than zero.'); return; }
             if (!e.tans) e.tans = e.pts.map(function () { return null; });
             while (e.tans.length < e.pts.length) e.tans.push(null);
-            e.tans[i] = [+vals.ta, +vals.tw];
+            e.tans[i] = [+vals.ta, +vals.tw].concat(e.tans[i] && e.tans[i].length > 2 ? e.tans[i].slice(2) : []);   // rfAY: keeps weightIn / curvature
             if (key === 'tan') setTimeout(function () { if (UI.renderPM) UI.renderPM(); }, 0);
           }
+        } else if (key === 'cc' || key === 'cr' || key === 'ck') {   // rfAY: Curvature Control
+          var r = setCurvatureControl(e, i, key === 'cc' ? (vals.cc ? 'on' : 'off') : key === 'cr' ? { r: +vals.cr } : { k: +vals.ck });
+          if (!r.ok) { UI.setStatus(r.error); UI.renderPM(); return; }
+          var nv = splineValues(e, {});
+          vals.tan = nv.tan; vals.ta = nv.ta; vals.tw = nv.tw; vals.cc = nv.cc; vals.cr = nv.cr; vals.ck = nv.ck;
+          setTimeout(function () { if (UI.renderPM) UI.renderPM(); }, 0);
         }
         refresh();
       },
@@ -1241,9 +1293,9 @@
   // rfAW: Add Tangency Control / Add Curvature Control (a spline's right-click menu, Tools ▸ Spline Tools), as
   // SolidWorks: click on the spline; a spline point is inserted there with the curve's own shape and its tangent made
   // driving (its handle shows), and the Spline PropertyManager opens on it so the handle can be turned and weighted.
-  // Add Curvature Control does the same and turns the curvature comb on for that spline: a curvature value that drives
-  // the spline at a point is not in Anvil's spline yet, so the comb is how its curvature is watched while the handle
-  // is changed.
+  // Add Curvature Control does the same, turns the curvature comb on for that spline and gives the point a driving
+  // curvature (rfAY: tans[i][3], Kernel.splineGeom's curvature fit), the one the curve had there: the PropertyManager's
+  // Radius of curvature / Curvature then change it, and the curve keeps that curvature on both sides of the point.
   function cmdSplineControl(kind) {
     var f = UI.activeSketchFeature();
     if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
@@ -1266,7 +1318,7 @@
             ne.tans = ne.tans || ne.pts.map(function () { return null; });
             ne.tans[q.at] = [clean(Math.atan2(d[1], d[0]) / D2R), 1];
           }
-          if (kind === 'curv') ne.showCurvature = true;
+          if (kind === 'curv') { ne.showCurvature = true; setCurvatureControl(ne, q.at, 'on'); }   // rfAY: and its curvature value
           return q;
         });
         if (!r.ok) { UI.toast(r.error); return; }
@@ -1274,7 +1326,7 @@
         UI.closePM();
         splineSel = { index: idx, pt: r.at };
         openSplinePM(idx, g2.entities[idx], g2);
-        UI.setStatus(title.replace('Add ', '') + ' added at spline point ' + (r.at + 1) + ': turn or weight its handle in the PropertyManager.');
+        UI.setStatus(title.replace('Add ', '') + ' added at spline point ' + (r.at + 1) + (kind === 'curv' ? ': set its Radius of curvature, turn or weight its handle in the PropertyManager.' : ': turn or weight its handle in the PropertyManager.'));
       } },
       groups: [{ title: 'Message', fields: [{ type: 'static', label: '', value: 'Click on a spline' }] }],
       onOK: function () {}

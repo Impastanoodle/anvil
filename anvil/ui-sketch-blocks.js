@@ -243,7 +243,9 @@
     markEdit(f, null);
     for (var i = e.n0; i < f.entities.length; i++) if (f.entities[i] && f.entities[i].blk == null) extra.push(i);
     var r = K.redefineBlock(f, e.id, extra);
-    if (!r.ok) UI.toast(r.error); else UI.setStatus('Block ' + e.name + ' updated: every instance follows.');
+    // AZ: the relations and dimensions on the other instances stay; those on a piece the edit took out are reported
+    if (!r.ok) UI.toast(r.error);
+    else UI.setStatus('Block ' + e.name + ' updated: every instance follows' + (r.dropped ? '; ' + r.dropped + ' relation' + (r.dropped === 1 ? '' : 's') + ' / dimension' + (r.dropped === 1 ? '' : 's') + ' on removed block geometry deleted.' : ', their relations kept.'));
     if (App.mode === 'sketch' && sketch() === f) changed();
     return r;
   }

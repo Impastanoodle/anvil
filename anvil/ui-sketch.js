@@ -5,7 +5,7 @@
   var viewport = UI.viewport;
 
   // ------------------------------------------------------------------ sketch mode
-  function enterSketch(id) {
+  function enterSketch(id, opts) {
     if (UI.isAssembly && UI.isAssembly()) { if (UI.setStatus) UI.setStatus('Sketches are not available in an assembly document'); return; }
     var f = K.findFeature(App.model, id);
     if (!f || f.type !== 'sketch') return;
@@ -16,8 +16,7 @@
     App.sketchDirty = false;
     woken = [];
     setTool('select');
-    UI.viewNormalTo(UI.activePlane());
-    UI.zoomToFit();
+    if (!(opts && opts.keepView)) { UI.viewNormalTo(UI.activePlane()); UI.zoomToFit(); }   // rfAY: Rapid Sketch keeps the view
     App.gridStale = true;
     UI.updateSketches(); UI.updatePlanes(); UI.updateHighlights();
     UI.setRibbonTab('Sketch');
@@ -69,6 +68,7 @@
       UI.setStatus('Exited ' + f.name + ' (' + f.entities.length + ' entit' + (f.entities.length === 1 ? 'y' : 'ies') + ').');
     }
     App.newSketchId = null;
+    if (rapidHoverKey) { rapidHoverKey = null; App.hover = null; }   // rfAY
     $('exit-sketch').hidden = true;
     $('sketch-hint').hidden = true;
     clearFeedback();
@@ -142,6 +142,9 @@
   function setTool(name) {
     // rfE: Smart Dimension with one or two sketch entities selected starts from them (SolidWorks: the dimension is on
     // the cursor, the next click places it); read before an entity's PropertyManager closes and drops the selection
+    // rfAY: Rapid Sketch on and no sketch open: a drawing tool is armed (a plane / face click opens the sketch)
+    if (App.mode !== 'sketch' && rapidOn() && name && name !== 'select' && name !== 'dimension') { rapidArm({ tool: name }); return; }
+    if (App.mode !== 'sketch' && (!name || name === 'select')) rapidDisarm();
     var presel = name === 'dimension' && App.mode === 'sketch' ? dimPreselection() : null;
     var statusBefore = $('status-msg') ? $('status-msg').textContent : null;
     cancelTool(true);
@@ -1213,6 +1216,7 @@
     var pl = UI.activePlane(), raw = UI.screenToPlane(mx, my, pl);
     if (!raw) return;
     if (App.command && App.command.onSketchPoint) { App.command.onSketchPoint(raw, mx, my); return; }
+    if (rapidSwitch(mx, my)) return;   // rfAY: Rapid Sketch: a click on another plane / face moves the sketch there
     if (App.tool === 'select') {
       // a click selects the point or entity under the cursor, Ctrl / Shift toggle, the Selection Filter (ui-select.js,
       // which takes every Select-tool click: rfH, the plain pick that followed it here could not run)
@@ -1338,8 +1342,11 @@
   //   noSolveMove    No Solve Move — a drag moves the entity alone; its relations and dimensions are not solved
   //   detachOnDrag   Detach Segment on Drag — dragging a line or arc breaks its shared ends (Coincident, Tangent there)
   //   overrideDims   Override Dims on Drag/Move — a dimensioned entity can be dragged; its dimensions take the new values
-  var SK_SET_DEF = { autoRelations: true, autoSolve: true, snapping: true, noSolveMove: false, detachOnDrag: false, overrideDims: false };
-  var SK_SET_NAMES = { autoRelations: 'Automatic Relations', autoSolve: 'Automatic Solve', snapping: 'Enable Snapping', noSolveMove: 'No Solve Move', detachOnDrag: 'Detach Segment on Drag', overrideDims: 'Override Dims on Drag/Move' };
+  //   ghostOnDrag    rfAY: Ghost image on drag — while sketch geometry is dragged its pre-drag shape stays drawn faded
+  //   rapidSketch    rfAY: Rapid Sketch (the Sketch tab toggle, not in the menu) — a sketch tool picked with no sketch open
+  //                  sketches on the plane / planar face clicked first, and moves to another one clicked between entities
+  var SK_SET_DEF = { autoRelations: true, autoSolve: true, snapping: true, noSolveMove: false, detachOnDrag: false, overrideDims: false, ghostOnDrag: true, rapidSketch: false };
+  var SK_SET_NAMES = { autoRelations: 'Automatic Relations', autoSolve: 'Automatic Solve', snapping: 'Enable Snapping', noSolveMove: 'No Solve Move', detachOnDrag: 'Detach Segment on Drag', overrideDims: 'Override Dims on Drag/Move', ghostOnDrag: 'Ghost image on drag', rapidSketch: 'Rapid Sketch' };
   var skSet = null;
   function skSettings() {
     if (skSet) return skSet;
@@ -1358,6 +1365,7 @@
       skSettings()[k] = !!v;
       try { window.localStorage.setItem('anvil.sketchSettings', JSON.stringify(skSet)); } catch (e) { /* storage blocked */ }
       if (k === 'snapping' || k === 'autoRelations') { App.inferPreview = []; clearFeedback(); }
+      if (k === 'rapidSketch' && !v) rapidDisarm();   // rfAY
       return !!v;
     },
     toggle: function (k) { return UI.sketchSettings.set(k, !skSetting(k)); },
@@ -1372,6 +1380,191 @@
       SS0.infer.rfAR = true;
     })(window.SketchSolver);
   }
+
+  // ---- rfAY: Ghost image on drag (Tools ▸ Sketch Settings): while sketch geometry is dragged (the Select tool's
+  // solver drag, a free Sketch Text), every entity that has moved is drawn faded where it was when the drag began,
+  // until the release. The pre-drag entities are kept as JSON; an entity equal to its copy draws no ghost.
+  var skGhost = null, skGhostMat = null;
+  function ghostWrap(hook) {
+    if (!hook || hook.rfAYGhost) return hook;
+    var s0 = hook.start, e0 = hook.end;
+    hook.rfAYGhost = true;
+    hook.start = function () {
+      var f = UI.activeSketchFeature();
+      skGhost = f && skSetting('ghostOnDrag') ? { id: f.id, before: f.entities.map(function (e) { return JSON.stringify(e); }), ents: {} } : null;
+      return s0.apply(this, arguments);
+    };
+    hook.end = function () {
+      try { return e0.apply(this, arguments); }
+      finally { if (skGhost) { skGhost = null; UI.updateSketches(); } }
+    };
+    return hook;
+  }
+  function ghostObjects(f, pl) {
+    if (!skGhost || !f || f.id !== skGhost.id) return [];
+    var pls = [], n = 0;
+    skGhost.before.forEach(function (js, i) {
+      var cur = f.entities[i];
+      if (cur && JSON.stringify(cur) === js) return;
+      var e = skGhost.ents[i] || (skGhost.ents[i] = JSON.parse(js));
+      if (e.t === 'point') {
+        var a = UI.screenToPlane(0, 0, pl), b = UI.screenToPlane(3, 0, pl), s = a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) : 0.1;
+        pls.push({ pts: [[e.x - s, e.y], [e.x + s, e.y]], closed: false }, { pts: [[e.x, e.y - s], [e.x, e.y + s]], closed: false });
+      } else { try { pls = pls.concat((UI.screenPolylines || K.entityPolylines)(e)); } catch (err) { return; } }
+      n++;
+    });
+    if (!pls.length) return [];
+    if (!skGhostMat) skGhostMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, depthTest: false, depthWrite: false });
+    skGhostMat.color.copy(UI.mats && UI.mats.sketch ? UI.mats.sketch.color : new THREE.Color(0x1f5fd0));
+    var ls = new THREE.LineSegments(UI.lineGeometryFromPolylines(pl, pls), skGhostMat);
+    ls.renderOrder = 9;
+    ls.userData = { sketchGhost: true, count: n };
+    return [ls];
+  }
+  if (UI.sketchOverlayHooks) UI.sketchOverlayHooks.push(ghostObjects);
+  UI.sketchGhostWrap = ghostWrap;
+  // the number of entities drawn as a ghost now (0 with no drag, or the setting off)
+  UI.sketchGhostCount = function () {
+    var f = UI.activeSketchFeature(), n = 0;
+    if (!f || !skGhost) return 0;
+    ghostObjects(f, UI.activePlane()).forEach(function (o) { n += o.userData.count; o.geometry.dispose(); });
+    return n;
+  };
+
+  // ---- rfAY: Rapid Sketch (SolidWorks: the Sketch tab toggle). With it on and no sketch open, a sketch-entity tool is
+  // armed instead of greyed: planes and planar faces highlight under the cursor, and the first click on one opens a
+  // sketch there (the view stays as it is) and places the entity's first point where the click was. While a drawing
+  // tool is on and no entity is in progress, moving onto another plane / face highlights it, and a click there closes
+  // this sketch (an empty one is discarded, as Exit Sketch does) and opens one on the new plane / face, the entity
+  // starting there. Esc, or the tool put down, ends it; turning Rapid Sketch off disarms a waiting tool.
+  // App.command { pickPlane, rapidSketch, rapidItem } is the armed state (the ribbon item, or { tool } from setTool).
+  var rapidItem = null;
+  function rapidOn() { return skSetting('rapidSketch'); }
+  function rapidArmed() { return !!(App.mode !== 'sketch' && App.command && App.command.rapidSketch); }
+  function rapidItemLabel(item) { return String(item.label || item.tool || 'entity').replace(/\s*\n\s*/g, ' '); }
+  function rapidArm(item) {
+    if (UI.isAssembly && UI.isAssembly()) { UI.toast('Sketches are not available in an assembly document'); return false; }
+    if (rapidArmed() && (App.command.rapidItem === item || (!item.id && App.command.rapidItem.tool === item.tool))) { rapidDisarm(); return false; }   // its button again: off
+    if (UI.hasPM && UI.hasPM()) UI.closePM();
+    App.sel = null; App.sel2 = null;
+    App.command = { pickPlane: true, rapidSketch: true, rapidItem: item, onPick: function (pk) { return rapidStart(pk, item) !== false; } };
+    viewport.classList.add('tool-cross');
+    viewport.setAttribute('data-sktool', item.tool || 'line');
+    UI.updatePlanes(); UI.updateHighlights();
+    UI.setStatus('Rapid Sketch: click a plane or a planar face to start the ' + rapidItemLabel(item) + ' there (Esc cancels).');
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    return true;
+  }
+  function rapidDisarm() {
+    if (!(App.command && App.command.rapidSketch)) return;
+    App.command = null;
+    App.hover = null;
+    if (App.mode !== 'sketch') { viewport.classList.remove('tool-cross'); viewport.removeAttribute('data-sktool'); }
+    UI.updatePlanes(); UI.updateHighlights();
+    if (UI.refreshRibbon) UI.refreshRibbon();
+  }
+  // the plane of a pick, for the "is it the sketch's own plane" test: { n, d } with n·x = d
+  function rapidPickPlane(pk) {
+    if (pk.kind === 'plane' && pk.plane) return { n: pk.plane.n, d: K.vec.dot(pk.plane.n, pk.plane.origin) };
+    var fc = pk.kind === 'face' && App.mesh && App.mesh.faces[pk.index];
+    return fc ? { n: fc.normal, d: isFinite(fc.w) ? fc.w : K.vec.dot(fc.normal, pk.point || fc.centroid) } : null;
+  }
+  function samePlane(a, pl) {
+    var c = K.vec.dot(a.n, pl.n), tol = 1e-6 * Math.max(1, Math.abs(a.d));
+    return Math.abs(Math.abs(c) - 1) < 1e-7 && Math.abs(a.d - c * K.vec.dot(pl.n, pl.origin)) < tol;
+  }
+  // a plane / planar face under the cursor that is not the open sketch's plane (none next to the sketch's own geometry)
+  function rapidOtherPick(mx, my) {
+    if (UI.pickEntity && UI.pickEntity(mx, my)) return null;
+    var pk = UI.pickFace(mx, my) || UI.pickPlane(mx, my);
+    var pp = pk && rapidPickPlane(pk);
+    return pp && !samePlane(pp, UI.activePlane()) ? pk : null;
+  }
+  // in a sketch: Rapid Sketch's switch applies with a drawing tool on and nothing in progress
+  function rapidCanSwitch() {
+    return rapidOn() && App.mode === 'sketch' && App.tool !== 'select' && App.tool !== 'dimension' && !App.command &&
+      !(App.toolState && App.toolState.pts && App.toolState.pts.length) && !(UI.isAssembly && UI.isAssembly());
+  }
+  function rapidNewSketch(pk) {
+    var plane, face = null;
+    if (pk.kind === 'plane') plane = typeof pk.ref === 'number' ? { featureId: pk.ref } : { ref: pk.ref, offset: 0 };
+    else { face = App.mesh.faces[pk.index]; if (!face) return null; plane = UI.facePlane(face, pk.point || face.centroid); }
+    UI.pushUndo();
+    var f = { id: App.model.nextId++, type: 'sketch', plane: plane, entities: [] };
+    f.name = K.featureName(App.model, 'sketch');
+    if (face) { try { var fo = K.faceOutline(App.mesh, pk.index); if (fo) f.faceLoops = fo.loops; } catch (e) { /* no outline */ } }
+    App.model.features.push(f);
+    App.sketchSnapshot = JSON.stringify({ entities: [] });
+    App.newSketchId = f.id;
+    return f;
+  }
+  function rapidRunItem(item) {
+    if (item.run) item.run();
+    else setTool(item.tool);
+    if (item.lineMode && UI.lineMode && UI.lineMode() !== item.lineMode) {   // Centerline / Midpoint Line carried across
+      if (item.lineMode === 'centerline' && UI.cmdCenterline) UI.cmdCenterline();
+      else if (item.lineMode === 'midline' && UI.cmdMidpointLine) UI.cmdMidpointLine();
+    }
+    if (UI.refreshRibbon) UI.refreshRibbon();
+  }
+  // open a sketch on the pick, with the tool, and place the entity's first point at the screen point s
+  function rapidStart(pk, item, s) {
+    var at = s || (pk.point ? UI.worldToScreen(pk.point) : null);
+    if (!at) return false;
+    if (App.command && App.command.rapidSketch) App.command = null;
+    App.hover = null; rapidHoverKey = null;
+    var f = rapidNewSketch(pk);
+    if (!f) return false;
+    rapidItem = item;
+    enterSketch(f.id, { keepView: true });
+    UI.rebuild();
+    rapidRunItem(item);
+    UI.setStatus('Rapid Sketch: sketching on ' + (pk.kind === 'plane' ? pk.name || 'the plane' : 'the face') + ' (' + f.name + '). Click another plane or face between entities to move there.');
+    sketchClick(at[0], at[1]);
+    return true;
+  }
+  // a click in a sketch: on another plane / face with Rapid Sketch's switch on, move there; true when it did
+  function rapidSwitch(mx, my) {
+    if (!rapidCanSwitch()) return false;
+    var pk = rapidOtherPick(mx, my);
+    if (!pk) return false;
+    var item = rapidItem && rapidItem.tool === App.tool ? rapidItem : { tool: App.tool };
+    if (App.tool === 'line' && UI.lineMode) item = { tool: 'line', label: item.label, lineMode: UI.lineMode() };
+    var s = pk.point ? UI.worldToScreen(pk.point) : [mx, my];
+    App.hover = null;
+    exitSketch(true);
+    rapidStart(pk, item, s);
+    return true;
+  }
+  // the hover while sketching: another plane / face lights up where a click would move the sketch
+  var rapidHoverKey = null;
+  function rapidHover(mx, my) {
+    var pk = rapidCanSwitch() ? rapidOtherPick(mx, my) : null;
+    var key = pk ? pk.kind + ':' + (pk.kind === 'plane' ? pk.ref : pk.index) : null;
+    if (key === rapidHoverKey) return;
+    rapidHoverKey = key;
+    App.hover = pk;
+    UI.updateHighlights();
+  }
+  UI.rapidSketchOn = rapidOn;
+  UI.toggleRapidSketch = function (on) {
+    var v = UI.sketchSettings.set('rapidSketch', on == null ? !rapidOn() : !!on);
+    UI.setStatus(v ? 'Rapid Sketch on: pick a sketch tool, then click a plane or planar face to sketch on it.' : 'Rapid Sketch off.');
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    return v;
+  };
+  UI.rapidSketchArm = rapidArm;
+  UI.rapidSketchArmed = function () { return rapidArmed() ? App.command.rapidItem : null; };
+  UI.rapidSketchHover = function () { return rapidHoverKey; };
+  // Esc with a tool armed and no sketch open disarms it (before ui-app.js's Esc only clears the selection)
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !rapidArmed()) return;
+    var tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    rapidDisarm();
+    UI.setStatus('Rapid Sketch tool cancelled.');
+    ev.preventDefault(); ev.stopPropagation();
+  }, true);
 
   // ---- rfAR: Quick Snaps (SolidWorks: Sketch tab ▸ Quick Snaps, or right-click while sketching): the next point snaps
   // to that one kind of geometry only (within a wider reach), then the usual inference comes back
@@ -1845,6 +2038,7 @@
     if (!raw) return;
     var drawing = App.tool !== 'select' && App.tool !== 'dimension' && !(App.command && App.command.onSketchPoint);
     lastMove = [mx, my];
+    if (rapidHoverKey || rapidOn()) rapidHover(mx, my);   // rfAY
     // Line tool: back over the chain's end point and out again switches between line and tangent arc (SolidWorks)
     if (drawing && App.tool === 'line' && App.toolState.pts.length && !numBox) {
       var st = App.toolState, e0 = st.pts[st.pts.length - 1], s0 = UI.worldToScreen(K.to3D(pl, e0[0], e0[1])), d0 = Math.hypot(s0[0] - mx, s0[1] - my);
@@ -3187,7 +3381,7 @@
     // assemblies: pressing on a floating component drags it (Move / Rotate Component) instead of rotating the view
     // (r13/trim13: a sketch command may take the drag itself, as Power trim does)
     var hook = ev.button !== 0 ? null : (App.mode === 'sketch' && App.command && App.command.onSketchDrag && !App.zoomAreaMode ? App.command.onSketchDrag(p, ev) : null) ||
-      freeTextDrag(p) || (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
+      ghostWrap(freeTextDrag(p) || (App.mode === 'sketch' && UI.sketchDragHook ? UI.sketchDragHook(p, ev) : null)) || sketchDrawHook(p) || (UI.componentDragHook ? UI.componentDragHook(p, ev) : null);
     // a press on empty space starts a box selection (ui-select.js); on the model it still rotates the view
     if (!hook && ev.button === 0 && UI.boxSelectHook) hook = UI.boxSelectHook(p, ev);
     if (hook) { drag = { kind: 'maybe-hook', hook: hook, last: p, moved: false }; ev.preventDefault(); return; }

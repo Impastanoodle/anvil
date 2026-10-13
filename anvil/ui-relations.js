@@ -1090,8 +1090,8 @@
     var f = UI.activeSketchFeature();
     if (!f) { UI.toast('Open a sketch first.'); return null; }
     if (!f.entities.length) { UI.toast('The sketch is empty: there is nothing to constrain.'); return null; }
-    var pushed = !App.sketchDirty;
-    markDirty();
+    var pushed = true;
+    UI.pushUndo(); App.sketchDirty = true;   // its own Ctrl+Z step, even right after an import or a script
     var o = {};
     Object.keys(opts || {}).forEach(function (k) { o[k] = opts[k]; });
     if (o.minGap == null && UI.cam) o.minGap = 34 * (UI.cam.scale || 0);

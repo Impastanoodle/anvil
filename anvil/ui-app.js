@@ -1091,6 +1091,7 @@
         if (it.sep || !it.label || !it.action) return;
         var parts = it.label.split(' ▸ '), name = flat(parts[parts.length - 1]);
         if (/^Units:|^Default units/.test(it.label)) name = flat(it.label);
+        if (parts[0] === 'Blocks' && parts.length > 1 && !/Block/.test(name)) name += ' Block';   // SolidWorks' search names: Make Block, Insert Block…
         add({ name: name, icon: it.icon || null, where: [m.label].concat(parts.slice(0, -1)).join(' ▸ '), enabled: !it.disabled, here: true, run: function () { it.action(); } });
       });
     });

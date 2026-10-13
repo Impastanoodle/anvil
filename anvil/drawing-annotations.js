@@ -840,6 +840,9 @@
     if (d.kind === 'ordinate' && d.sketchOrd) return sketchOrdinateProps(model, d);
     if (d.value == null) return null;
     if (d.slot) return slotDimProps(model, build, w, d);
+    // rfBA: a sketch's own Smart Dimension brought as a model item (d.sketchDim 'sketchId:dimIndex', also in a flat
+    // view) takes that dimension's properties directly, never those of another dimension of the same size
+    if (d.sketchDim && !d.relSrc) return sketchDimByKey(model, d.sketchDim);
     var rp = d.relSrc ? relDimProps(model, d.relSrc) : null;
     if (rp && rp.own) { delete rp.own; return rp; }
     var ep = entityDimProps(model, build, w, d);
@@ -862,13 +865,21 @@
     out.name = (sd.name ? String(sd.name) : 'D' + n) + '@' + (f.name || K.featureName(f));
     return out;
   }
+  // rfBA: 'sketchId:dimIndex' -> the props of that Smart Dimension (null when it sets none)
+  function sketchDimByKey(model, key) {
+    var s = String(key), cut = s.lastIndexOf(':'), fid = s.slice(0, cut), i = +s.slice(cut + 1);
+    var f = cut > 0 ? (model.features || []).filter(function (x) { return String(x.id) === fid; })[0] : null, x = f && f.dims && f.dims[i];
+    return x && hasDimProps(x) ? dimPropsOf(x, f, i + 1) : null;
+  }
   // relSrc { f (sketch id), i (relation index) } -> its props ({ …, own: the relation sets one of them }) or null
-  var DIM_RELS = { distance: 1, angle: 1, arclength: 1 };
+  // (rfBA: the Chamfer, Path Length and Angular Running dimensions count in the D1, D2 … order too)
+  var DIM_RELS = { distance: 1, angle: 1, arclength: 1, chamfer: 1, pathlength: 1, runangle: 1 };
   function relDimProps(model, src) {
     var f = K.findFeature(model, src.f), rel = f && f.rels && f.rels[src.i];
     if (!rel) return null;
     var n = (f.dims || []).length;
-    for (var i = 0; i <= src.i; i++) if (f.rels[i] && DIM_RELS[f.rels[i].type]) n++;
+    var ST = typeof SketchSolver !== 'undefined' && SketchSolver.TYPES;   // (the sketch's own D1, D2 … order: ui-sketch-dims.js dimList)
+    for (var i = 0; i <= src.i; i++) if (f.rels[i] && (ST && ST[f.rels[i].type] ? ST[f.rels[i].type].dim : DIM_RELS[f.rels[i].type])) n++;
     var out = dimPropsOf(rel, f, n);
     out.own = SK_PROPS.some(function (k) { return k !== 'name' && rel[k] != null && rel[k] !== '' && rel[k] !== false; }) || !!rel.name;
     return out;
@@ -1394,6 +1405,104 @@
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
   D.sketchDimProps = sketchDimProps; D.sketchOrdinateProps = sketchOrdinateProps; D.ordinateValueText = ordinateValueText; D.slotDimProps = slotDimProps;
+
+  // ------------------------------------------------------------------ rfBA: the sketches' angular dimensions as model items
+  // SolidWorks' Insert Model Items ▸ Marked for drawing brings every kind of sketch dimension with its tolerance,
+  // precision, text and name. Drawing.autoDims (drawing-sheet.js) brings the linear ones (entity Smart Dimensions,
+  // location distances — point to point, to the origin, to converted model edges —, ordinate sets, slot callouts);
+  // sketchAngularItems adds the others a drawing can show: an angle between two lines (angle relation: the arc between
+  // the two drawn lines, or its supplement as the sketch shows it), each value of an Angular Running set up to 180°
+  // (from the datum ray) and a Chamfer Dimension ("0.100 X 45°"), each marked for drawing (rel.mark: on unless false;
+  // a driven one only when set true), in the first orthographic view that looks square at its sketch, with relSrc so
+  // sketchDimProps gives it the relation's properties and name (sketchAng 'sketchId:relIndex'). A Path Length dimension
+  // has no drawing counterpart and stays in the sketch. Model Items ▸ Selected feature brings its sketch's only.
+  var ANG_RELS = { angle: 1, chamfer: 1, runangle: 1 };
+  function sketchAngularItems(doc, projections) {
+    var ctx = _.CTX, model = ctx && ctx.model, S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, out = [];
+    if (!doc || !projections || !model || model.type === 'assembly' || !model.features || !S || !S.refCurve || !D.modelItems || !D.viewFrame) return out;
+    var MI = D.modelItems(doc), only = null;
+    if (!MI.marked) return out;
+    if (MI.source === 'feature') {
+      var sf = K.findFeature(model, MI.feature);
+      only = sf ? (sf.type === 'sketch' ? sf.id : sf.sketch) : null;
+      if (only == null) return out;
+    }
+    var roleOrder = { front: 0, top: 1, right: 2 }, ORTHO = _.ORTHO || {};
+    var order = (doc.views || []).filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id] && !projections[v.id].error && (!MI.views || MI.views.indexOf(v.id) >= 0); });
+    order.sort(function (a, b) { return (roleOrder[a.role] != null ? roleOrder[a.role] : 5) - (roleOrder[b.role] != null ? roleOrder[b.role] : 5) || a.id - b.id; });
+    if (!order.length) return out;
+    var rm; try { rm = K.resolvedModel(model).model; } catch (e) { rm = model; }
+    var planes = ctx.build && ctx.build.planes || {};
+    function len2(p, q) { return Math.hypot(q[0] - p[0], q[1] - p[1]); }
+    (rm.features || []).forEach(function (f) {
+      if (f.type !== 'sketch' || f.suppressed || !f.rels || (only != null && f.id !== only)) return;
+      var list = [];
+      f.rels.forEach(function (rel, i) {
+        if (!rel || !ANG_RELS[rel.type] || rel.suppressed || !rel.refs || rel.mark === false || (rel.driven && rel.mark !== true)) return;
+        list.push(i);
+      });
+      if (!list.length) return;
+      var pl; try { pl = K.resolvePlane(f.plane, rm, planes); } catch (e) { return; }
+      var v = null, F = null;
+      for (var j = 0; j < order.length && !v; j++) { var Fj = D.viewFrame(doc, order[j]); if (Fj && Math.abs(Math.abs(V.dot(pl.n, Fj.e)) - 1) < 1e-9) { v = order[j]; F = Fj; } }
+      if (!v) return;
+      function at(p) { var q = K.to3D(pl, p[0], p[1]); return [V.dot(q, F.u), V.dot(q, F.v)]; }
+      function line(r) { var c = S.refCurve(f, r); return c && c.kind === 'line' && len2(c.a, c.b) > 1e-12 ? c : null; }
+      function pt(r) { var p = S.refPoint(f, r); if (p) return p; var c = S.refCurve(f, r); return c && c.kind === 'circle' ? c.c : null; }
+      list.forEach(function (i) {
+        var rel = f.rels[i], d = null, src = { f: f.id, i: i };
+        if (rel.type === 'chamfer') {
+          var C = line(rel.refs[0]), A = line(rel.refs[1]);
+          if (!C || !A) return;
+          d = { view: v.id, kind: 'chamfer', a: at(C.a), b: at(C.b), ref: refFrom({ a: at(A.a), b: at(A.b) }), auto: true, relSrc: src, sketchAng: f.id + ':' + i };
+          chamferValue(d);
+          if (!(d.angle > 1e-6 && d.angle < 90 - 1e-6) || !(d.value > 1e-12)) return;
+        } else {
+          var e1, e2, target;
+          if (rel.type === 'angle') {
+            var L1 = line(rel.refs[0]), L2 = line(rel.refs[1]);
+            if (!L1 || !L2) return;
+            e1 = [L1.a, L1.b]; e2 = [L2.a, L2.b];
+            target = S.measure(f, 'angle', rel.refs, null, rel.sup);
+          } else {   // an Angular Running value: from the vertex along the datum and to the member
+            var P0 = pt(rel.refs[0]), P1 = pt(rel.refs[1]), P2 = pt(rel.refs[2]);
+            if (!P0 || !P1 || !P2 || len2(P0, P1) < 1e-12 || len2(P0, P2) < 1e-12) return;
+            e1 = [P0, P1]; e2 = [P0, P2];
+            target = S.measure(f, 'runangle', rel.refs, rel.dir);
+            if (target != null && target > 180) target = 360 - target;   // (drawn the short way round, as the drawing's angle shows it)
+          }
+          if (target == null || !(target > 1e-6) || !(target < 180 - 1e-6)) return;
+          d = { view: v.id, kind: 'angle', refs: [refFrom({ a: at(e1[0]), b: at(e1[1]) }), refFrom({ a: at(e2[0]), b: at(e2[1]) })], auto: true, relSrc: src, sketchAng: f.id + ':' + i };
+          measurePair(d);
+          if (d.dangling || !d.c) return;
+          // each ray toward its line's far end from the vertex (the arc between the lines as drawn); the supplement when
+          // the sketch's value is that one (rel.sup, or two lines meeting the other way)
+          var far = d.refs.map(function (r) { return len2(r.a, d.c) >= len2(r.b, d.c) ? r.a : r.b; });
+          var t1 = [d.refs[0].b[0] - d.refs[0].a[0], d.refs[0].b[1] - d.refs[0].a[1]], t2 = [d.refs[1].b[0] - d.refs[1].a[0], d.refs[1].b[1] - d.refs[1].a[1]];
+          d.s = [(far[0][0] - d.c[0]) * t1[0] + (far[0][1] - d.c[1]) * t1[1] >= 0 ? 1 : -1, (far[1][0] - d.c[0]) * t2[0] + (far[1][1] - d.c[1]) * t2[1] >= 0 ? 1 : -1];
+          measurePair(d);
+          if (Math.abs(d.value - target) > 1e-6) { d.s[1] = -d.s[1]; measurePair(d); }
+          if (Math.abs(d.value - target) > 1e-6) return;
+          d.rad = 0.6 * Math.min(len2(d.c, far[0]), len2(d.c, far[1]));
+        }
+        out.push(d);
+      });
+    });
+    return out;
+  }
+  D.sketchAngularItems = sketchAngularItems;
+  // Model Items (Drawing.autoDims, read by drawing-render.js when it loads) with the sketches' angular dimensions after
+  // the linear ones, so the items before keep their style keys
+  if (D.autoDims && !D.autoDims.rfBA) {
+    var baseAutoDims = D.autoDims;
+    D.autoDims = function (doc, projections, units) {
+      var dims = baseAutoDims.apply(this, arguments), extra = [];
+      try { extra = sketchAngularItems(doc, projections); } catch (e) { extra = []; }   // (extra items: never break the others)
+      extra.forEach(function (d) { d.text = D.dimText(d, units); });
+      return extra.length ? dims.concat(extra) : dims;
+    };
+    D.autoDims.rfBA = true;
+  }
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.

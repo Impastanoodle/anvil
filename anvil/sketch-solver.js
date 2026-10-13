@@ -4756,7 +4756,7 @@ var SketchSolver = (function () {
         break;
       case 'spline':
         o.pts = e.pts.map(function (p) { return xfPt(p, xf); });
-        if (e.tans) o.tans = e.tans.map(function (tg) { return tg ? [+tg[0] + rot].concat(tg.slice(1)) : tg; });   // the weight is per chord length: scale-free
+        if (e.tans) o.tans = e.tans.map(function (tg) { return tg ? [+tg[0] + rot].concat(tg.slice(1, 3), tg[3] != null ? [tg[3] / k] : []) : tg; });   // the weight is per chord length: scale-free; rfAY: a curvature control scales as 1 / size
         break;
       case 'ellipse': case 'pellipse':
         q = xfPt([e.cx, e.cy], xf); o.cx = q[0]; o.cy = q[1]; o.rx = e.rx * k; o.ry = e.ry * k; o.rot = (+e.rot || 0) + rot;

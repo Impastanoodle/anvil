@@ -3717,7 +3717,7 @@
     assert(anvil.instant3D().on && D.querySelector('#i3d-layer .i3d-handle'), 'back on');
     return 'cut 4 → 6, revolve 90° → 135° → 180° → undo';
   });
-  step('Instant3D on sketch dimensions: in the part the feature\'s sketch width (40) drags to 50 (volume 50·20·10); in the sketch the dimension dot drags the rectangle height 20 → 25; each one undo step', async function () {
+  step('Instant3D on sketch dimensions: in the part the feature\'s sketch width (40) drags to 50 (volume 50·20·10); in the sketch there is no Instant3D dot (rfBA) and Instant2D drags the rectangle height 20 → 25; each one undo step', async function () {
     var r12dims = UI.App.view.showDims; UI.App.view.showDims = true;   // r12/sketchui12: the driven values (View ▸ Sketch Dimensions) are off by default now
     await anvil.newPart(); await idle();
     await anvil.run(BLOCK); await idle();
@@ -3739,15 +3739,17 @@
     selKey('Escape');
     await UI.undo(); await idle();
     assert(anvil.model().features[0].entities[0].w === 40, 'undo → 40');
-    // in the sketch: the dots sit on the dimension arrows
+    // in the sketch: no Instant3D dots (rfBA: Instant3D acts on the part only, as SolidWorks); the height dimension is
+    // dragged with Instant2D's ball instead
     UI.enterSketch(anvil.model().features[0].id); await idle();
-    var sh = anvil.instant3D().handles, j = -1;
-    sh.forEach(function (x, k) { if (x.kind === 'sdim' && x.value === 20) j = k; });
-    assert(j >= 0, 'sketch dot for the height ' + JSON.stringify(sh.map(function (x) { return x.value; })));
-    var pl = UI.activePlane(), p0 = UI.worldToScreen(K.to3D(pl, 0, 0)), p5 = UI.worldToScreen(K.to3D(pl, 0, 5));
+    assert(!anvil.instant3D().handles.length && !D.querySelector('#i3d-layer .i3d-handle'), 'no Instant3D dots in the sketch: ' + JSON.stringify(anvil.instant3D().handles.map(function (x) { return x.kind; })));
+    UI.activeSketchFeature().dims = [{ e: 0, k: 'h', off: 6 }];
+    UI.updateSketches(); UI.toggleInstant2D(true); UI.App.dimsStale = false; UI.drawDims(true);
+    var h2 = UI.instant2DHandle('d0'), ball2 = D.querySelector('#i2d-layer .i2d-handle');
+    assert(h2 && ball2 && Math.abs(h2.value - 20) < 1e-9, 'Instant2D ball on the height ' + JSON.stringify(h2));
     undoN = UI.App.undo.length;
-    var gj = sh[j].grab;
-    await selDrag(gj, UI.instant3DRulerPoint(UI.instant3DHandles()[j], 25), D.querySelector('#i3d-layer .i3d-handle[data-index="' + j + '"]'));   // r5/select5: the ruler's 25 tick
+    selEv('mousedown', h2.ball, ball2); selEv('mousemove', UI.instant2DPoint(25, 2)); await wait(40);
+    selEv('mouseup', UI.instant2DPoint(25, 2)); await idle(); await wait(30);
     var r2 = UI.activeSketchFeature().entities[0];
     assert(r2.h === 25, 'sketch height 25: ' + JSON.stringify(r2));
     assert(UI.App.undo.length === undoN + 1, 'one undo step in the sketch');
@@ -7489,19 +7491,21 @@
       return n0 + ' nodes reused';
     } finally { UI.App.view.showDims = showDims; UI.App.dimsStale = true; }
   });
-  step('r12/sketchui12: while sketch geometry is dragged the Instant3D dimension dots are hidden (not redrawn each frame) and come back on release', async function () {
+  step('r12/sketchui12: no Instant3D dimension dot in a sketch before, while or after its geometry is dragged (rfBA: not made at all; Instant2D gives the dimension its ball after the drag)', async function () {
     await rskNew();
     UI.setTool('line'); rskClick([0, 0]); rskDbl([30, 0]); selKey('Escape');
     UI.setTool('select');
     var f = UI.activeSketchFeature();
     f.dims = [{ e: 0, k: 'len', off: 6 }];
     UI.updateSketches(); UI.App.dimsStale = false; UI.drawDims();
-    assert(D.querySelector('#i3d-layer .i3d-handle[data-kind="sdim"]'), 'dimension dot shown before the drag');
+    assert(!D.querySelector('#i3d-layer .i3d-handle'), 'no Instant3D dot before the drag');
     var c = rskScr([15, 0]), during = -1;
     await selDrag(c, [c[0] + 20, c[1] + 30], null, null, function () { UI.App.dimsStale = false; UI.drawDims(); during = D.querySelectorAll('#i3d-layer .i3d-handle').length; });
     assert(during === 0, 'dots while dragging: ' + during);
-    UI.App.dimsStale = false; UI.drawDims();
-    assert(D.querySelector('#i3d-layer .i3d-handle[data-kind="sdim"]'), 'dimension dot back after the drag');
+    UI.App.dimsStale = false; UI.drawDims(true);
+    assert(!D.querySelector('#i3d-layer .i3d-handle'), 'no Instant3D dot after the drag');
+    UI.toggleInstant2D(true);
+    assert(UI.instant2DHandle('d0'), 'the Instant2D ball on the dimension after the drag');
     return 'hidden while dragging';
   });
   step('r12/sketchui12: a new sketch shows only placed dimensions (View ▸ Sketch Dimensions off by default); end points are drawn as dots in the entity colour; each sketch tool has its own cursor', async function () {
@@ -11648,7 +11652,7 @@
   function dxiGroups() { return Array.prototype.map.call(D.querySelectorAll('#pm .pm-group h4'), function (h) { return h.textContent.replace(/^[▾▸]/, '').trim(); }); }
   function dxiLabels() { return Array.prototype.map.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent.trim(); }); }
   function dxiRels(f) { return (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); }); }
-  step('dxf-import: UI.importDXFText on a new part opens DXF/DWG Import (Units, Layers, Position, Options) on a new Top Plane sketch with the repaired preview; ✓ adds 7 entities and the TEXT (as Sketch Text) as one undo step with Coincident relations, and Extruded Boss of the closed profile has the plate\'s exact volume', async function () {
+  step('dxf-import: UI.importDXFText on a new part opens DXF/DWG Import (Units, Layers, Position, Options) on a new Top Plane sketch with the repaired preview; ✓ adds 7 entities, the block instance\'s insertion point (rfAZ: blocks come in as blocks) and the TEXT (as Sketch Text) as one undo step with Coincident relations, and Extruded Boss of the closed profile has the plate\'s exact volume', async function () {
     need(UI, 'importDXFText'); need(UI, 'cmdInsertDXF'); need(UI, 'cmdCheckSketch'); need(UI, 'cmdRepairSketch');
     await anvil.newPart(); await idle();
     var s = UI.App.model.units === 'in' ? 1 : 25.4;
@@ -11656,22 +11660,23 @@
     assert(v && UI.pmTitle() === 'DXF/DWG Import' && UI.App.mode === 'sketch', 'PM ' + UI.pmTitle() + ' in ' + UI.App.mode);
     assert(dxiGroups().join() === 'Units,Layers,Position,Options', 'groups ' + dxiGroups());
     var labels = dxiLabels();
-    ['File units', 'Import as', 'CUT (9)', 'Lower-left corner at the origin', 'Center on the origin', 'X offset', 'Y offset', 'Rotation', 'Merge points closer than', 'Repair after import', 'Add Coincident relations'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
+    ['File units', 'Import as', 'CUT (10)', 'Lower-left corner at the origin', 'Center on the origin', 'X offset', 'Y offset', 'Rotation', 'Merge points closer than', 'Repair after import', 'Add Coincident relations', 'Import blocks as blocks'].forEach(function (t) { assert(labels.indexOf(t) >= 0, 'no "' + t + '" in ' + labels.join(' | ')); });
     var f = activeSketch();
     assert(f && f.plane && f.plane.ref === 'Top' && f.entities.length === 0, 'a new sketch on the Top Plane: ' + JSON.stringify(f && f.plane));
-    assert(UI.App.tempEntities.length === 8 && /1 gap closed, 1 duplicate merged/.test($('pm').textContent) && /1 text as Etch Sketch Text/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
+    assert(UI.App.tempEntities.length === 9 && /1 gap closed, 1 duplicate merged/.test($('pm').textContent) && /1 text as Etch Sketch Text/.test($('pm').textContent) && /1 block instance of 1 block/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
     // a layer turned off empties the preview and greys ✓
     D.querySelector('#pm input[data-key="L0"]').click();
     assert(UI.App.tempEntities.length === 0 && D.querySelector('#pm .pm-ok').classList.contains('disabled'), 'layer off');
     D.querySelector('#pm input[data-key="L0"]').click();   // the PropertyManager was drawn again
-    assert(UI.App.tempEntities.length === 8, 'layer back on');
+    assert(UI.App.tempEntities.length === 9, 'layer back on');
     var u0 = UI.App.undo.length;
     await pmAccept();
-    assert(!UI.hasPM() && f.entities.length === 8 && UI.App.undo.length === u0 + 1 && UI.App.tempEntities.length === 0, 'accepted: ' + f.entities.length + ' entities, ' + (UI.App.undo.length - u0) + ' undo steps');
+    assert(!UI.hasPM() && f.entities.length === 9 && UI.App.undo.length === u0 + 1 && UI.App.tempEntities.length === 0, 'accepted: ' + f.entities.length + ' entities, ' + (UI.App.undo.length - u0) + ' undo steps');
     assert(dxiRels(f).filter(function (r) { return /^coincident:/.test(r); }).length === 5, 'Coincident relations: ' + dxiRels(f).join(' '));
     var bc = f.entities.filter(function (e) { return e.t === 'circle' && Math.abs(e.r - 0.2 * s) < 1e-9; })[0];
-    assert(bc && Math.abs(bc.cx - 2.5 * s) < 1e-9 && Math.abs(bc.cy - 1.5 * s) < 1e-9, 'block circle ' + JSON.stringify(bc));
-    assert(/Imported 8 entities from plate\.dxf \(5 Coincident relations, 1 text\)\. Check Sketch: no problems found/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
+    assert(bc && Math.abs(bc.cx - 2.5 * s) < 1e-9 && Math.abs(bc.cy - 1.5 * s) < 1e-9 && bc.blk != null, 'block circle ' + JSON.stringify(bc));
+    assert(f.blocks && f.blocks.HOLE && K.blockInstances(f).length === 1, 'a HOLE block instance: ' + JSON.stringify(f.blocks));
+    assert(/Imported 9 entities from plate\.dxf \(5 Coincident relations, 1 text, 1 block instance\)\. Check Sketch: no problems found/.test($('status-msg').textContent), 'status: ' + $('status-msg').textContent);
     var sid = UI.App.activeSketch;
     await UI.exitSketch(); await idle();
     UI.App.sel = { kind: 'feature', id: sid };
@@ -11682,7 +11687,7 @@
   });
   step('dxf-import: Check Sketch for Feature lists the gap, the duplicate and the shared endpoint with markers (Next / Previous walk them); Repair Sketch shows each option\'s count, ✓ fixes both in one undo step keeping the other relations (one on the duplicate goes), and Check finds nothing; Undo brings the problems back', async function () {
     await anvil.newPart(); await idle();
-    UI.importDXFText(dxiPlateText(), { name: 'plate.dxf', repair: false, tol: 0, ok: true }); await idle();
+    UI.importDXFText(dxiPlateText(), { name: 'plate.dxf', repair: false, tol: 0, ok: true, blocks: false }); await idle();
     var f = activeSketch();
     assert(f.entities.length === 9 && f.entities[8].t === 'text', 'imported as drawn: ' + f.entities.length);
     f.rels = (f.rels || []).concat([{ type: 'horizontal', refs: ['3'] }, { type: 'horizontal', refs: ['6'] }]);
@@ -11718,7 +11723,7 @@
     var f = activeSketch();
     assert(UI.App.model.name === 'Bracket-101' && UI.pmTitle() === 'DXF/DWG Import' && f && f.name === 'Sketch1' && f.plane.ref === 'Top', 'opened: ' + UI.App.model.name + ' / ' + UI.pmTitle() + ' / ' + (f && f.name));
     await pmAccept();
-    assert(activeSketch().entities.length === 8, 'entities ' + activeSketch().entities.length);
+    assert(activeSketch().entities.length === 9, 'entities (the block\'s insertion point too) ' + activeSketch().entities.length);
     await UI.exitSketch(); await idle();
     UI.setRibbonTab('Sketch');
     var txt = $('ribbon-buttons').textContent.replace(/\s+/g, ' ');
@@ -11762,7 +11767,7 @@
   function dwgBytes() { var b = new Uint8Array(64); 'AC1015'.split('').forEach(function (c, i) { b[i] = c.charCodeAt(0); }); return b.buffer; }
   function dwgDxfResponse(text) { return Promise.resolve(new W.Response(new W.TextEncoder().encode(text), { status: 200, headers: { 'Content-Type': 'application/dxf', 'X-Anvil-Converter': 'libredwg' } })); }
   function dwgToast() { var t = D.querySelector('.toast'); return t ? t.textContent : ''; }
-  step('dwg-import: File ▸ Open of a .dwg (UI.openFileData) posts the file to api/dwg2dxf and opens the DXF that comes back as a new part with the DXF/DWG Import PropertyManager (7 entities and a text); Insert DXF / DWG of a .dwg into an open sketch does the same; the Open dialog lists DWG', async function () {
+  step('dwg-import: File ▸ Open of a .dwg (UI.openFileData) posts the file to api/dwg2dxf and opens the DXF that comes back as a new part with the DXF/DWG Import PropertyManager (7 entities, a text and, rfAZ, the block instance\'s insertion point); Insert DXF / DWG of a .dwg into an open sketch does the same; the Open dialog lists DWG', async function () {
     need(UI, 'openDWGFile'); need(UI, 'importDWGData'); need(UI, 'dwgToDxf');
     var m = dwgFetch(function () { return dwgDxfResponse(dxiPlateText()); });
     try {
@@ -11771,14 +11776,14 @@
       assert(m.calls.length === 1 && c.method === 'POST' && body && String.fromCharCode(body[0], body[1], body[2], body[3]) === 'AC10', 'POST of the DWG bytes ' + JSON.stringify(m.calls.map(function (x) { return x.method + ' ' + x.url; })));
       var f = activeSketch();
       assert(UI.App.model.name === 'Bracket-202' && UI.pmTitle() === 'DXF/DWG Import' && f && f.name === 'Sketch1' && f.plane.ref === 'Top', 'opened: ' + UI.App.model.name + ' / ' + UI.pmTitle());
-      assert(UI.App.tempEntities.length === 8 && /Bracket-202\.dwg/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
+      assert(UI.App.tempEntities.length === 9 && /Bracket-202\.dwg/.test($('pm').textContent), 'preview ' + UI.App.tempEntities.length + ': ' + D.querySelector('#pm .pm-msg').textContent);
       await pmAccept();
-      assert(activeSketch().entities.length === 8, 'entities ' + activeSketch().entities.length);
+      assert(activeSketch().entities.length === 9, 'entities ' + activeSketch().entities.length);
       // Insert DXF / DWG of a .dwg into the open sketch: the PM again, adding to it
       var v = await UI.importDWGData('Etch-3.dwg', dwgBytes(), { dx: 10 }); await idle();
       assert(v && UI.pmTitle() === 'DXF/DWG Import' && m.calls.length === 2, 'insert: ' + UI.pmTitle());
       await pmAccept();
-      assert(activeSketch().entities.length === 16, 'inserted: ' + activeSketch().entities.length);
+      assert(activeSketch().entities.length === 18 && K.blockInstances(activeSketch()).length === 2 && Object.keys(activeSketch().blocks).join() === 'HOLE', 'inserted (the same HOLE block shared): ' + activeSketch().entities.length + ' ' + JSON.stringify(Object.keys(activeSketch().blocks || {})));
       await UI.exitSketch(true); await idle();
     } finally { m.restore(); }
     UI.fileOpen(); dontSaveIfAsked();
@@ -11786,7 +11791,7 @@
     var opts = Array.prototype.map.call(sel.options, function (o) { return o.value; });
     assert(opts.indexOf('dwg') >= 0 && /\.dwg/.test(inp.accept), 'Open lists DWG: ' + opts.join() + ' / ' + inp.accept);
     clickModalButton('Cancel');
-    return 'Bracket-202.dwg -> 8 entities, + Etch-3.dwg -> 16';
+    return 'Bracket-202.dwg -> 9 entities, + Etch-3.dwg -> 18';
   });
   step('dwg-import: without the local server\'s API (404 page, network error) a .dwg says plainly that DWG needs the local Anvil server, in a toast; no converter (503) names get-libredwg.ps1; a converter error is passed on; a file that is not a DWG is refused before any request', async function () {
     var NO = 'DWG needs the local Anvil server; save the file as DXF or run Anvil from the desktop shortcut.';
@@ -17966,7 +17971,7 @@
   function rfAXSel() { return anvil.selection().map(function (s) { return s.kind + ':' + s.index; }).join(' '); }
   function rfAXArcs() { return UI.activeSketchFeature().entities.filter(function (e) { return e.t === 'arc'; }); }
   async function rfAXNew() { await rskNew(); UI.App.view.showGrid = false; anvil.selectionFilter({ faces: false, edges: false, vertices: false, bodies: false, components: false, sketch: false, suspended: false }); }
-  step('rfAX: Sketch Fillet with a box-selected rectangle rounds all four corners at once (R 10, one R dimension, 3 Equal, one undo step, ✗ puts the rectangle back); a script rectangle selected and a box over a closed triangle of lines too; with nothing selected it waits for picks', async function () {
+  step('rfAX: Sketch Fillet with a box-selected rectangle rounds all four corners (rfAZ: previewed, made on ✓: R 10, one R dimension, 3 Equal, one undo step); a script rectangle selected and ✗ leaves it as it was; a box over a closed triangle of lines too; with nothing selected it waits for picks', async function () {
     await rfAXNew();
     UI.setTool('rect'); rskClick([0, 0]); rskClick([60, 40]); UI.setTool('select'); await wait(20);
     var f = UI.activeSketchFeature(), lines0 = JSON.stringify(f.entities);
@@ -17976,25 +17981,29 @@
     assert(rfAXSel() === 'entity:0 entity:1 entity:2 entity:3', 'the window box selects the four lines: ' + rfAXSel());
     var undo0 = UI.App.undo.length;
     UI.cmdSketchFillet(); await wait(20);
+    f = UI.activeSketchFeature();
+    assert(UI.pmTitle() === 'Sketch Fillet' && !rfAXArcs().length && UI.App.tempEntities.filter(function (a) { return a.t === 'arc' && Math.abs(a.r - 10) < 1e-9; }).length === 4 && D.querySelectorAll('#pm .pm-list .pm-item').length === 4, 'four R10 fillets previewed, four corners listed: ' + JSON.stringify(UI.App.tempEntities));
+    await UI.pmOK(); await wait(20);
     var arcs = rfAXArcs();
     f = UI.activeSketchFeature();
-    assert(UI.pmTitle() === 'Sketch Fillet' && arcs.length === 4 && arcs.every(function (a) { return Math.abs(a.r - 10) < 1e-9; }), 'four R10 fillets at once: ' + JSON.stringify(f.entities));
+    assert(!UI.hasPM() && arcs.length === 4 && arcs.every(function (a) { return Math.abs(a.r - 10) < 1e-9; }), 'four R10 fillets on ✓: ' + JSON.stringify(f.entities));
     assert((f.dims || []).filter(function (d) { return d.k === 'r'; }).length === 1 && stToolRels().filter(function (r) { return /^equal:/.test(r); }).length === 3, 'one R dimension and 3 Equal: ' + stToolRels().join(' '));
     stNoRedundant('rectangle fillets');
-    assert(UI.App.undo.length === undo0 + 1 && D.querySelectorAll('#pm .pm-list .pm-item').length === 4, 'one undo step, four listed: ' + (UI.App.undo.length - undo0));
-    UI.pmCancel(); await wait(20);
+    assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
+    UI.undo(); await idle();
     f = UI.activeSketchFeature();
-    assert(JSON.stringify(f.entities) === lines0 && !rfAXArcs().length, '✗ puts the rectangle back: ' + JSON.stringify(f.entities));
+    assert(JSON.stringify(f.entities) === lines0 && !rfAXArcs().length, 'undo puts the rectangle back: ' + JSON.stringify(f.entities));
     // a rectangle entity (a script's), selected by a click on its side: made into lines and every corner rounded
     await rfAXNew();
     fxSk([{ t: 'rect', x: 0, y: 0, w: 60, h: 40 }]);
     UI.setTool('select');
     rskClick([30, 0]); await wait(20);
     assert(rfAXSel() === 'entity:0', 'the rectangle selected: ' + rfAXSel());
+    var rect0 = JSON.stringify(UI.activeSketchFeature().entities);
     UI.cmdSketchFillet(); await wait(20);
-    assert(rfAXArcs().length === 4 && UI.activeSketchFeature().entities.filter(function (e) { return e.t === 'line'; }).length === 4, 'made into lines, four corners rounded: ' + JSON.stringify(UI.activeSketchFeature().entities));
+    assert(UI.App.tempEntities.filter(function (a) { return a.t === 'arc'; }).length === 4 && UI.activeSketchFeature().entities.length === 1 && UI.activeSketchFeature().entities[0].t === 'rect', 'four corners previewed, the rectangle untouched: ' + JSON.stringify(UI.activeSketchFeature().entities));
     UI.pmCancel(); await wait(20);
-    assert(UI.activeSketchFeature().entities.length === 1 && UI.activeSketchFeature().entities[0].t === 'rect', '✗: the rectangle entity again');
+    assert(JSON.stringify(UI.activeSketchFeature().entities) === rect0 && !UI.App.tempEntities.length, '✗: the rectangle entity as it was');
     // a closed triangle of three lines (Coincident ends), boxed: three corners
     await rfAXNew();
     fxSk([{ t: 'line', x1: 0, y1: 0, x2: 60, y2: 0 }, { t: 'line', x1: 60, y1: 0, x2: 30, y2: 40 }, { t: 'line', x1: 30, y1: 40, x2: 0, y2: 0 }],
@@ -18003,7 +18012,7 @@
     await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
     assert(rfAXSel() === 'entity:0 entity:1 entity:2', 'the box takes the three lines: ' + rfAXSel());
     UI.cmdSketchFillet(); await wait(20);
-    assert(rfAXArcs().length === 3, 'three corners rounded: ' + JSON.stringify(UI.activeSketchFeature().entities));
+    assert(UI.App.tempEntities.length === 3 && !rfAXArcs().length, 'three corners previewed: ' + JSON.stringify(UI.App.tempEntities));
     UI.pmOK(); await wait(20);
     assert(!UI.hasPM() && rfAXArcs().length === 3, '✓ keeps them');
     // nothing selected: the PM waits for a vertex or two picks
@@ -18341,8 +18350,8 @@
     assert(UI.blockEditing(), 'editing');
     assert(UI.sketchStatus().dof === dof0 - 3 + 13, 'editing frees the instance: ' + UI.sketchStatus().dof + ' (was ' + dof0 + ')');
     UI.cmdEditBlock(); await idle();
-    // (saving the edit places every instance of the block again: the Horizontal on the other instance goes with it)
-    assert(!UI.blockEditing() && UI.sketchStatus().dof === 6 && K.blockInstances(f).length === 2, 'rigid again: ' + UI.sketchStatus().dof);
+    // (rfAZ: saving the edit places every instance of the block again and the Horizontal on the other instance stays)
+    assert(!UI.blockEditing() && UI.sketchStatus().dof === 5 && K.blockInstances(f).length === 2 && (f.rels || []).some(function (q) { return q.type === 'horizontal'; }), 'rigid again, the Horizontal kept: ' + UI.sketchStatus().dof + ' ' + JSON.stringify(f.rels));
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     return 'DOF ' + dof0;
   });
@@ -18425,7 +18434,7 @@
     assert(ball && ball.getAttribute('data-key') === 'd0' && ball.getAttribute('data-kind') === 'linear', 'ball on hover');
     var h = UI.instant2DHandle(), tip = it.sc.lin.b;
     assert(Math.hypot(h.ball[0] - tip[0], h.ball[1] - tip[1]) < 0.5, 'at the arrow end ' + JSON.stringify([h.ball, tip]));
-    assert(!D.querySelector('#i3d-layer .i3d-handle.live') || W.getComputedStyle(D.querySelector('#i3d-layer .i3d-handle.live')).display === 'none', 'no Instant3D dot in the sketch');
+    assert(!D.querySelector('#i3d-layer .i3d-handle'), 'no Instant3D dot in the sketch (rfBA: none made)');
     var sN = UI.instant2DStepAt(2), sM = UI.instant2DStepAt(30), sF = UI.instant2DStepAt(90);
     assert(sN === 2 && sM === 5 && sF === 10, 'steps near / beside / away: ' + [sN, sM, sF]);
     var u0 = UI.App.undo.length, ticks = 0, mid = null;
@@ -18566,6 +18575,527 @@
     return out.join(' ');
   });
   // --- end rfAV ---
+  // ---- rfBB (2026-10-13): sketch fidelity audit 4 — the golden shop workflow (customer DXF in, Constrain All,
+  // Autodimension ordinate from the lower-left corner, Fully Defined, two values changed, DXF R12 / R2000 out and read
+  // back within 1e-6), Quick Snap Midpoint, Jog Line (behaviour confirmed against SolidWorks 2024)
+  function rfBBDxf() {
+    var L = [];
+    function g(c, v) { L.push(String(c), String(v)); }
+    function line(a, b, lay) { g(0, 'LINE'); g(8, lay || 'OUTLINE'); g(10, a[0]); g(20, a[1]); g(30, 0); g(11, b[0]); g(21, b[1]); g(31, 0); }
+    function arc(c, r, a0, a1) { g(0, 'ARC'); g(8, 'HOLES'); g(10, c[0]); g(20, c[1]); g(30, 0); g(40, r); g(50, a0); g(51, a1); }
+    g(0, 'SECTION'); g(2, 'HEADER'); g(9, '$ACADVER'); g(1, 'AC1009'); g(9, '$INSUNITS'); g(70, 1); g(9, '$MEASUREMENT'); g(70, 0); g(0, 'ENDSEC');
+    g(0, 'SECTION'); g(2, 'BLOCKS'); g(0, 'BLOCK'); g(8, '0'); g(2, 'PUNCH'); g(70, 0); g(10, 0); g(20, 0); g(30, 0); g(3, 'PUNCH');
+    line([-0.25, -0.125], [0.25, -0.125], '0'); line([0.25, -0.125], [0.25, 0.125], '0'); line([0.25, 0.125], [-0.25, 0.125], '0'); line([-0.25, 0.125], [-0.25, -0.125], '0');
+    g(0, 'ENDBLK'); g(8, '0'); g(0, 'ENDSEC');
+    g(0, 'SECTION'); g(2, 'ENTITIES');
+    var P = [[0, 0], [11, 0], [11, 7.5], [6, 7.5], [6, 7], [5, 7], [5, 7.5], [0, 7.5]];
+    for (var i = 0; i < P.length; i++) line(P[i], P[(i + 1) % P.length]);
+    [[2, 2], [4, 2], [2, 4], [4, 4]].forEach(function (c) { g(0, 'CIRCLE'); g(8, 'HOLES'); g(10, c[0]); g(20, c[1]); g(30, 0); g(40, 0.1405); });
+    line([7.625, 1.875], [8.375, 1.875], 'HOLES'); line([8.375, 2.125], [7.625, 2.125], 'HOLES'); arc([8.375, 2], 0.125, 270, 90); arc([7.625, 2], 0.125, 90, 270);
+    line([8.125, 4.625], [8.125, 5.375], 'HOLES'); line([7.875, 5.375], [7.875, 4.625], 'HOLES'); arc([8, 5.375], 0.125, 0, 180); arc([8, 4.625], 0.125, 180, 360);
+    [[2, 6], [4, 6], [9.5, 6.5]].forEach(function (c) { g(0, 'INSERT'); g(8, 'HOLES'); g(2, 'PUNCH'); g(10, c[0]); g(20, c[1]); g(30, 0); });
+    g(0, 'ENDSEC'); g(0, 'EOF');
+    return L.join('\n') + '\n';
+  }
+  function rfBBKey(e) {
+    if (e.t === 'line') { var a = [e.x1, e.y1], b = [e.x2, e.y2]; if (a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])) { var t = a; a = b; b = t; } return ['L', a[0], a[1], b[0], b[1]]; }
+    if (e.t === 'circle') return ['C', e.cx, e.cy, e.r];
+    if (e.t === 'arc') return ['A', e.cx, e.cy, e.r];
+    return [e.t];
+  }
+  step('rfBB: golden shop workflow — a customer DXF (11 x 7.5 blank, notch, 4 x Ø.281, two .25 x 1.0 slots, a PUNCH block x3) in, Constrain All (relations), Autodimension with Ordinate both ways from the lower-left corner: Fully Defined; the 11.000 ordinate to 12 and a hole column 4 to 4.5; DXF R12 and R2000 read back within 1e-6', async function () {
+    await anvil.newPart(); await idle();
+    UI.importDXFText(rfBBDxf(), { name: 'customer.dxf', ok: true, blocks: false }); await idle();   // exploded here; the blocks path is the next step
+    var f = UI.activeSketchFeature(), S = W.SketchSolver;
+    assert(UI.App.mode === 'sketch' && f && f.entities.length === 32, 'the DXF came in (8 outline + 4 holes + 2 slots + 3 x 4 punch lines): ' + (f && f.entities.length));
+    var s = UI.App.model.units === 'in' ? 1 : 25.4;
+    var xs = []; f.entities.forEach(function (e) { if (e.t === 'line') xs.push(e.x1, e.x2); });
+    near(Math.max.apply(null, xs), 11 * s, 1e-9, 'blank width');
+    UI.cmdConstrainAll({ fullyDefine: false });
+    assert(S.analyze(f).status === 'under', 'relations only: still under defined');
+    UI.cmdAutodimension(); await wait(30);
+    assert(UI.pmTitle() === 'Autodimension', 'Autodimension PM: ' + UI.pmTitle());
+    Array.prototype.forEach.call(D.querySelectorAll('#pm select'), function (sel) {
+      if (Array.prototype.some.call(sel.options, function (o) { return o.value === 'ordinate'; })) { sel.value = 'ordinate'; sel.dispatchEvent(new W.Event('change', { bubbles: true })); }
+    });
+    await wait(30);
+    await UI.pmOK(); await idle();
+    f = UI.activeSketchFeature();
+    var an = S.analyze(f), sets = anvil.ordinateSets(), ax = Object.keys(sets).map(function (k) { return sets[k].axis + ':' + sets[k].zero; }).sort().join(' ');
+    assert(an.status === 'full' && an.dof === 0, 'Fully Defined: ' + an.status + ' ' + an.dof);
+    assert(ax === 'x:O y:O', 'one ordinate set per direction from the origin (the blank\'s lower-left corner): ' + ax);
+    function ordAt(v) { var hit = -1; (f.rels || []).forEach(function (x, i) { if (hit < 0 && x.ord && x.v != null && Math.abs(x.v - v * s) < 1e-9 && x.ordAxis === 'x') hit = i; }); return hit; }
+    var iW = ordAt(11), iH = ordAt(4);
+    assert(iW >= 0 && iH >= 0, 'ordinates 11 and 4 on the x set: ' + iW + ' ' + iH);
+    assert(S.setRelValue(f, iW, 12 * s).ok && S.setRelValue(f, iH, 4.5 * s).ok, 'both values drive');
+    UI.updateSketches();
+    xs = []; f.entities.forEach(function (e) { if (e.t === 'line') xs.push(e.x1, e.x2); });
+    near(Math.max.apply(null, xs), 12 * s, 1e-9, 'blank width after the change');
+    var cx = f.entities.filter(function (e) { return e.t === 'circle'; }).map(function (e) { return Math.round(e.cx / s * 1e6) / 1e6; }).sort().join(',');
+    assert(cx === '2,2,4.5,4.5' && S.analyze(f).status === 'full', 'the hole column moved, still Fully Defined: ' + cx);
+    var mine = f.entities.filter(function (e) { return !e.construction && e.t !== 'point'; }).map(rfBBKey), out = [];
+    ['R12', 'R2000'].forEach(function (v) {
+      var txt = anvil.dxfOutput({ export: 'sketch', version: v }), P = W.DxfImport.parse(txt), got = P.entities.map(rfBBKey), worst = 0;
+      assert(txt.indexOf(v === 'R12' ? 'AC1009' : 'AC1015') > 0, v + ' header');
+      mine.forEach(function (m) {
+        var best = Infinity;
+        got.forEach(function (g2) { if (g2[0] !== m[0] || g2.length !== m.length) return; var d = 0; for (var i = 1; i < m.length; i++) d = Math.max(d, Math.abs(g2[i] - m[i])); best = Math.min(best, d); });
+        worst = Math.max(worst, best);
+      });
+      assert(P.entities.length === mine.length && worst <= 1e-6, v + ': ' + P.entities.length + ' of ' + mine.length + ' entities, worst ' + worst);
+      out.push(v + ' ' + P.entities.length + ' ok');
+    });
+    return out.join('; ');
+  });
+  step('rfBB: Quick Snap Midpoint takes the next point to a line\'s midpoint (Midpoint relation) and then snapping is normal again; Jog Line on a line makes the SolidWorks five-segment jog in one undo step', async function () {
+    await rskNew();
+    fxSk([{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }]);
+    UI.setTool('line'); UI.quickSnap('midpoint');
+    assert(/Quick Snap Midpoint/.test($('status-msg').textContent), 'status bar names the quick snap: ' + $('status-msg').textContent);
+    rskClick([17, 3]); rskClick([20, 30]); selKey('Escape'); selKey('Escape');
+    var f = UI.activeSketchFeature(), l = f.entities[1];
+    assert(l && Math.abs(l.x1 - 20) < 1e-9 && Math.abs(l.y1) < 1e-9, 'start on the midpoint: ' + JSON.stringify(l));
+    assert(stToolRels().indexOf('midpoint:1.p1,0') >= 0 && !UI.quickSnap(), 'Midpoint relation, quick snap spent: ' + stToolRels().join(' '));
+    await rskNew();
+    fxSk([{ t: 'line', x1: 0, y1: 0, x2: 60, y2: 0 }]);
+    var u0 = UI.App.undo.length;
+    UI.cmdJogLine(); await wait(20);
+    assert(UI.pmTitle() === 'Jog Line', 'Jog Line PM');
+    rskClick([20, 0]); rskClick([30, 0]); rskClick([30, 10]); await wait(20);
+    f = UI.activeSketchFeature();
+    var segs = f.entities.map(function (e) { return [e.x1, e.y1, e.x2, e.y2].map(function (v) { return Math.round(v * 100) / 100; }).join(','); }).join(' | ');
+    assert(segs === '0,0,20,0 | 20,0,20,10 | 20,10,30,10 | 30,10,30,0 | 30,0,60,0', 'five segments: ' + segs);
+    assert(UI.App.undo.length === u0 + 1, 'one undo step: ' + (UI.App.undo.length - u0));
+    if (UI.hasPM()) UI.pmCancel();
+    return segs;
+  });
+  step('rfBB (head): Constrain All and Autodimension are their own Ctrl+Z steps even right after a scripted edit; Search Commands finds Make Block / Insert Block', async function () {
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    var f = UI.activeSketchFeature();
+    UI.pushUndo(); UI.App.sketchDirty = true;   // as Insert DXF leaves it
+    [[0, 0, 4, 0], [4, 0, 4, 2], [4, 2, 0, 2], [0, 2, 0, 0]].forEach(function (q) { f.entities.push({ t: 'line', x1: q[0], y1: q[1], x2: q[2], y2: q[3] }); });
+    UI.updateSketches(); await wait(20);
+    var u0 = UI.App.undo.length;
+    UI.cmdConstrainAll({ fullyDefine: false }); await wait(20);
+    var rels1 = (f.rels || []).length;
+    assert(UI.App.undo.length === u0 + 1 && rels1 > 0, 'Constrain All is one step: ' + [u0, UI.App.undo.length, rels1]);
+    UI.cmdAutodimension(); await wait(20);
+    await UI.pmOK(); await wait(30);
+    f = UI.activeSketchFeature();
+    assert(UI.App.undo.length === u0 + 2 && (f.rels || []).length > rels1, 'Autodimension is one more step: ' + [UI.App.undo.length, (f.rels || []).length]);
+    UI.undo(); await idle();
+    f = UI.activeSketchFeature();
+    assert(f && f.entities.length === 4 && (f.rels || []).length === rels1, 'one Ctrl+Z takes back only the dimensions: ' + [f && f.entities.length, f && (f.rels || []).length]);
+    UI.undo(); await idle();
+    f = UI.activeSketchFeature();
+    assert(f && f.entities.length === 4 && !(f.rels || []).length, 'the next takes back Constrain All, the lines stay: ' + [f && f.entities.length, f && (f.rels || []).length]);
+    var mk = UI.searchCommands('make block').map(function (h) { return h.name; }), ins = UI.searchCommands('insert block').map(function (h) { return h.name; });
+    assert(mk[0] === 'Make Block' && ins[0] === 'Insert Block', 'search: ' + mk.join(', ') + ' | ' + ins.join(', '));
+    return 'undo ' + u0 + ' → ' + (u0 + 2);
+  });
+  step('rfBB (head): the same customer DXF with its PUNCH block kept as a block (the Insert DXF default): 3 rigid instances, Constrain All + Ordinate Autodimension, R2000 writes one BLOCK and 3 INSERTs', async function () {
+    await anvil.newPart(); await idle();
+    UI.importDXFText(rfBBDxf(), { name: 'customer.dxf', ok: true }); await idle();
+    var f = UI.activeSketchFeature(), S = W.SketchSolver, inst = K.blockInstances(f);
+    assert(f && f.entities.length === 35 && inst.length === 3, 'outline, holes and slots loose, the punch as 3 instances: ' + (f && f.entities.length) + ' / ' + inst.length);
+    UI.cmdConstrainAll({ fullyDefine: false });
+    UI.cmdAutodimension(); await wait(30);
+    Array.prototype.forEach.call(D.querySelectorAll('#pm select'), function (sel) {
+      if (Array.prototype.some.call(sel.options, function (o) { return o.value === 'ordinate'; })) { sel.value = 'ordinate'; sel.dispatchEvent(new W.Event('change', { bubbles: true })); }
+    });
+    await wait(30);
+    await UI.pmOK(); await idle();
+    f = UI.activeSketchFeature();
+    var an = S.analyze(f);
+    var txt = anvil.dxfOutput({ export: 'sketch', version: 'R2000' });
+    var nIns = (txt.match(/\n\s*0\r?\nINSERT\r?\n/g) || []).length;
+    assert(nIns === 3, 'R2000: 3 INSERTs: ' + nIns);
+    assert(an.status === 'full' && an.dof === 0, 'Fully Defined with the blocks rigid: ' + an.status + ' ' + an.dof);
+    return an.status + ' ' + an.dof + ' DOF';
+  });
+  // --- end rfBB ---
+  // --- rfBA ---
+  // Instant3D makes no dimension dots in an open sketch (ui-select.js; style.css no longer hides them), box Stretch
+  // Entities (a window box picks the entities to stretch; what is joined to them stretches)
+  async function rfBANew(ents, rels) {
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    assert(UI.App.mode === 'sketch', 'not in a sketch');
+    UI.zoomView(0.25 / UI.cam.scale);
+    var f = UI.activeSketchFeature();
+    ents.forEach(function (e) { f.entities.push(e); });
+    (rels || []).forEach(function (r) { var x = W.SketchSolver.addRelation(f, r[0], r[1]); assert(x.ok, 'relation ' + r[0] + ': ' + x.error); });
+    UI.updateSketches(); await wait(20);
+    return f;
+  }
+  function rfBAScr(p) { return UI.worldToScreen(K.to3D(UI.activePlane(), p[0], p[1])); }
+  step('rfBA: Instant3D on — a selected feature in the part still shows its sketch\'s dimension dot; in the open sketch no Instant3D dot is made at all (not made and hidden by CSS), whatever the tool; Instant2D takes over', async function () {
+    var errs0 = errors.length;
+    await anvil.newPart(); await idle();
+    await anvil.run('p.sketch("Front").rect(0, 0, 40, 20).extrude(10);'); await idle();
+    anvil.instant3D(true);
+    var sk = UI.App.model.features[0];
+    sk.dims = [{ e: 0, k: 'w', off: -8 }];
+    UI.setView('Isometric');
+    var cap = anvil.faces().filter(function (fc) { return fc.normal[2] > 0.999; })[0];
+    UI.setSelection([{ kind: 'face', index: cap.index }]); await wait(20);
+    var hs = anvil.instant3D().handles;
+    assert(hs.some(function (h) { return h.kind === 'sdim'; }) && hs.some(function (h) { return h.kind === 'depth'; }), 'part: depth arrow and the sketch dot ' + JSON.stringify(hs.map(function (h) { return h.kind; })));
+    UI.enterSketch(sk.id); await idle();
+    UI.App.dimsStale = false; UI.drawDims(true);
+    assert(anvil.instant3D().on && !anvil.instant3D().handles.length && !D.querySelector('#i3d-layer .i3d-handle'), 'sketch: no Instant3D handle ' + JSON.stringify(anvil.instant3D().handles));
+    UI.setTool('line'); await wait(10);
+    assert(!anvil.instant3D().handles.length, 'none with a tool either');
+    UI.setTool('select'); UI.toggleInstant2D(true);
+    assert(UI.instant2DHandle('d0'), 'Instant2D ball on the width');
+    var css = Array.prototype.some.call(D.styleSheets, function (s) { try { return Array.prototype.some.call(s.cssRules, function (r) { return /i3d-handle\.live\s*\{[^}]*display:\s*none/.test(r.cssText); }); } catch (e) { return false; } });
+    assert(!css, 'the style.css rule hiding sketch dots is gone');
+    selKey('Escape'); await UI.exitSketch(); await idle();
+    assert(errors.length === errs0, 'no page errors: ' + errors.slice(errs0).join(' | '));
+    return 'part ' + hs.length + ' handles, sketch 0';
+  });
+  step('rfBA: Stretch Entities with a window box — on a 40 × 20 rectangle of four joined lines, a left-to-right box round the right side picks it alone; X/Y ΔX 10 moves it and stretches the top and bottom (50 wide), the left side stays; one undo step', async function () {
+    var errs0 = errors.length;
+    var f = await rfBANew([{ t: 'line', x1: 0, y1: 0, x2: 40, y2: 0 }, { t: 'line', x1: 40, y1: 0, x2: 40, y2: 20 }, { t: 'line', x1: 40, y1: 20, x2: 0, y2: 20 }, { t: 'line', x1: 0, y1: 20, x2: 0, y2: 0 }],
+      [['coincident', ['0.p2', '1.p1']], ['coincident', ['1.p2', '2.p1']], ['coincident', ['2.p2', '3.p1']], ['coincident', ['3.p2', '0.p1']]]);
+    UI.setSelection([]);
+    UI.cmdStretchEntities(); await wait(20);
+    assert(/^Stretch/.test(UI.pmTitle()), 'Stretch PM: ' + UI.pmTitle());
+    var a = rfBAScr([35, -5]), b = rfBAScr([45, 25]);
+    await selDrag([Math.min(a[0], b[0]), Math.min(a[1], b[1])], [Math.max(a[0], b[0]), Math.max(a[1], b[1])]);
+    var sel = anvil.selection().map(function (s) { return s.index; });
+    assert(sel.length === 1 && sel[0] === 1, 'window picks the right side only: ' + JSON.stringify(anvil.selection()));
+    var u0 = UI.App.undo.length;
+    UI.pmSetValue('mode', 'xy'); UI.renderPM(); UI.pmSetValue('dx', 10); UI.pmSetValue('dy', 0);
+    UI.pmOK(); await idle(); await wait(20);
+    var E = UI.activeSketchFeature().entities;
+    near(E[1].x1, 50, 1e-6, 'right side moved'); near(E[1].x2, 50, 1e-6, 'right side moved (top end)');
+    near(E[0].x2, 50, 1e-6, 'bottom stretched'); near(E[0].x1, 0, 1e-6, 'bottom keeps its left end');
+    near(E[2].x1, 50, 1e-6, 'top stretched'); near(E[2].x2, 0, 1e-6, 'top keeps its left end');
+    near(E[3].x1, 0, 1e-6, 'left side stays'); near(E[3].x2, 0, 1e-6, 'left side stays');
+    assert(UI.App.undo.length - u0 <= 1, 'one undo step: ' + (UI.App.undo.length - u0));
+    assert(errors.length === errs0, 'no page errors: ' + errors.slice(errs0).join(' | '));
+    return 'stretched to ' + (E[0].x2 - E[0].x1);
+  });
+  // --- end rfBA ---
+  // ---- rfAY (2026-10-13): Rapid Sketch, Ghost image on drag, Curvature Control with a driving value
+  function rfAYEv(type, p, target, button, extra) {
+    var r = $('viewport').getBoundingClientRect(), o = { bubbles: true, cancelable: true, button: button || 0, buttons: type === 'mouseup' ? 0 : 1, clientX: Math.round(r.left + p[0]), clientY: Math.round(r.top + p[1]) };
+    if (extra) Object.keys(extra).forEach(function (k) { o[k] = extra[k]; });
+    (target || W).dispatchEvent(new W.MouseEvent(type, o));
+  }
+  function rfAYClick(p) { rfAYEv('mousemove', p, W, 0, { buttons: 0 }); rfAYEv('mousedown', p, $('viewport')); rfAYEv('mouseup', p); }
+  function rfAYRb(label) { return Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (x) { return x.getAttribute('aria-label') === label; })[0]; }
+  async function rfAYSettle() { var t0 = Date.now(); while (UI.viewAnimating && UI.viewAnimating() && Date.now() - t0 < 3000) await wait(30); await idle(); }
+  // a visible planar face of the part: its index, normal and a screen point well inside it (where pickFace finds it)
+  function rfAYFace(skip) {
+    var faces = UI.App.mesh.faces, best = null;
+    faces.forEach(function (fc, i) {
+      if (skip && skip.indexOf(i) >= 0 || fc.area < 50) return;
+      var s = UI.worldToScreen(fc.centroid), hit = UI.pickFace(s[0], s[1]);
+      if (!hit || hit.index !== i) return;
+      if (!best || fc.area > best.area) best = { index: i, normal: fc.normal, scr: s, area: fc.area, w: fc.w };
+    });
+    return best;
+  }
+  function rfAYNear(a, b, tol) { return Math.abs(a - b) <= (tol || 1e-6) * Math.max(1, Math.abs(b)); }
+  step('rfAY: Rapid Sketch — the Sketch tab toggle (kept per browser) lets Circle start with no sketch open: a face lights up under the cursor, the first click opens a sketch on it (the view stays) and places the centre; between circles a click on another face closes that sketch and opens one there; Esc disarms', async function () {
+    var errs0 = errors.length;
+    try {
+      await anvil.newPart(); await idle();
+      await anvil.run('p.box(40, 40, 20, { centered: true });'); await idle();
+      UI.setView('Isometric'); await rfAYSettle(); UI.zoomToFit(); await rfAYSettle();
+      UI.setRibbonTab('Sketch'); await idle();
+      var rs = rfAYRb('Rapid Sketch');
+      assert(rs && !rs.disabled && !rs.classList.contains('active'), 'Rapid Sketch button enabled and off');
+      var circ0 = rfAYRb('Circle');
+      assert(!circ0 || circ0.disabled, 'Circle greyed with no sketch while Rapid Sketch is off');
+      rs.click(); await idle();
+      assert(UI.rapidSketchOn() && rfAYRb('Rapid Sketch').classList.contains('active'), 'on, the button pressed');
+      assert(JSON.parse(W.localStorage.getItem('anvil.sketchSettings') || '{}').rapidSketch === true, 'kept');
+      var circ = rfAYRb('Circle');
+      if (circ) { assert(!circ.disabled, 'Circle enabled with Rapid Sketch on'); circ.click(); } else UI.setTool('circle');
+      await idle();
+      assert(UI.rapidSketchArmed() && UI.rapidSketchArmed().tool === 'circle' && UI.App.mode !== 'sketch', 'armed: ' + JSON.stringify(UI.rapidSketchArmed()));
+      // Esc disarms, the Circle again re-arms
+      W.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await idle();
+      assert(!UI.rapidSketchArmed(), 'Esc disarms');
+      UI.setTool('circle'); await idle();
+      assert(UI.rapidSketchArmed(), 're-armed by the tool');
+      var A = rfAYFace();
+      assert(A, 'a visible face');
+      var q0 = UI.camera.quaternion.clone(), n0 = UI.App.model.features.length;
+      rfAYEv('mousemove', A.scr, W, 0, { buttons: 0 }); await idle();
+      assert(UI.App.hover && UI.App.hover.kind === 'face' && UI.App.hover.index === A.index, 'the face lights up: ' + JSON.stringify(UI.App.hover && { k: UI.App.hover.kind, i: UI.App.hover.index }));
+      rfAYClick(A.scr); await idle();
+      assert(UI.App.mode === 'sketch' && UI.App.tool === 'circle' && UI.App.toolState.pts.length === 1, 'a sketch with the circle started: ' + UI.App.mode + ' ' + UI.App.tool + ' ' + UI.App.toolState.pts.length);
+      assert(UI.camera.quaternion.angleTo(q0) < 1e-6, 'the view stays: ' + UI.camera.quaternion.angleTo(q0));
+      var pl = UI.activePlane(), f1 = UI.activeSketchFeature();
+      assert(Math.abs(K.vec.dot(pl.n, A.normal) - 1) < 1e-9 && Math.abs(K.vec.dot(pl.n, pl.origin) - A.w) < 1e-6, 'on the face: ' + JSON.stringify(pl.n));
+      var c0 = UI.screenToPlane(A.scr[0], A.scr[1], pl), edgeP = UI.worldToScreen(K.to3D(pl, c0[0] + 5, c0[1]));
+      rfAYClick(edgeP); await idle();
+      assert(f1.entities.length === 1 && f1.entities[0].t === 'circle' && rfAYNear(f1.entities[0].r, 5, 1e-3), 'circle 1: ' + JSON.stringify(f1.entities));
+      assert(UI.App.tool === 'circle' && !UI.App.toolState.pts.length, 'the tool stays on');
+      // another face: it lights up while the tool waits, a click moves the sketch there
+      var B = rfAYFace([A.index]);
+      assert(B && Math.abs(K.vec.dot(B.normal, A.normal)) < 0.5, 'a second face');
+      rfAYEv('mousemove', B.scr, W, 0, { buttons: 0 }); await idle();
+      assert(UI.rapidSketchHover() === 'face:' + B.index, 'hover in the sketch: ' + UI.rapidSketchHover());
+      rfAYClick(B.scr); await idle();
+      var f2 = UI.activeSketchFeature(), pl2 = UI.activePlane();
+      assert(f2 && f2.id !== f1.id && UI.App.mode === 'sketch' && UI.App.toolState.pts.length === 1, 'a new sketch with the next circle started');
+      assert(Math.abs(K.vec.dot(pl2.n, B.normal) - 1) < 1e-9, 'on the second face');
+      var c2 = UI.screenToPlane(B.scr[0], B.scr[1], pl2);
+      rfAYClick(UI.worldToScreen(K.to3D(pl2, c2[0], c2[1] + 4))); await idle();
+      assert(f2.entities.length === 1 && rfAYNear(f2.entities[0].r, 4, 1e-3), 'circle 2: ' + JSON.stringify(f2.entities));
+      assert(UI.camera.quaternion.angleTo(q0) < 1e-6, 'the view still stays');
+      // Esc puts the tool down: no more switching; the first sketch was kept with its circle
+      D.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await idle();
+      assert(UI.App.tool === 'select', 'tool down');
+      rfAYClick(A.scr); await idle();
+      assert(UI.activeSketchFeature() === f2, 'no switch with the Select tool');
+      await UI.exitSketch(); await idle();
+      var sks = UI.App.model.features.filter(function (g) { return g.type === 'sketch'; });
+      assert(UI.App.model.features.length === n0 + 2 && sks.length >= 3 && K.findFeature(UI.App.model, f1.id).entities.length === 1, 'two new sketches: ' + UI.App.model.features.map(function (g) { return g.name; }).join(', '));
+      UI.toggleRapidSketch(false); await idle();
+      UI.setRibbonTab('Sketch'); await idle();
+      var circ2 = rfAYRb('Circle');
+      assert(!circ2 || circ2.disabled, 'off: Circle greyed again');
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      return 'face ' + A.index + ' then face ' + B.index;
+    } finally { UI.sketchSettings.reset(); UI.setTool && UI.App.mode !== 'sketch' && UI.setTool('select'); }
+  });
+  step('rfAY: Ghost image on drag — Tools ▸ Sketch Settings lists it (on by default); dragging a line end leaves the old line drawn faded until the release; off, no ghost', async function () {
+    var errs0 = errors.length;
+    try {
+      await anvil.newPart(); await idle();
+      await UI.newSketchOnPlane('Front'); await idle();
+      var f = UI.activeSketchFeature();
+      f.entities.push({ t: 'line', x1: 0, y1: 0, x2: 30, y2: 0 }, { t: 'circle', cx: 60, cy: 0, r: 5 });
+      UI.updateSketches(); UI.zoomToFit(); await rfAYSettle();
+      var rows = menuRows('Sketch Settings ▸ Ghost image on drag');
+      assert(rows.length === 1 && rows[0].row.querySelector('.chk') && rows[0].row.querySelector('.chk').textContent === '✓', 'menu row, checked');
+      if (UI.closeMenus) UI.closeMenus();
+      function scr(u, v) { return UI.worldToScreen(K.to3D(UI.activePlane(), u, v)); }
+      async function drag(from, to, mid) {
+        var a = scr(from[0], from[1]), b = scr(to[0], to[1]), seen = 0;
+        rfAYEv('mousemove', a, W, 0, { buttons: 0 });
+        rfAYEv('mousedown', a, $('viewport'));
+        for (var k = 1; k <= 5; k++) { rfAYEv('mousemove', [a[0] + (b[0] - a[0]) * k / 5, a[1] + (b[1] - a[1]) * k / 5]); await wait(30); }
+        seen = UI.sketchGhostCount();
+        if (mid) mid();
+        rfAYEv('mouseup', b); await idle();
+        return seen;
+      }
+      var g1 = await drag([30, 0], [30, 15]);
+      var e0 = UI.activeSketchFeature().entities[0];
+      assert(Math.abs(e0.y2 - 15) < 0.2, 'the end moved: ' + JSON.stringify(e0));
+      assert(g1 === 1, 'one ghost while dragging: ' + g1);
+      assert(UI.sketchGhostCount() === 0, 'gone on release');
+      UI.sketchSettings.set('ghostOnDrag', false);
+      var g2 = await drag([30, 15], [30, 5]);
+      assert(g2 === 0, 'no ghost with the setting off: ' + g2);
+      assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+      await UI.exitSketch(); await idle();
+      return 'ghost ' + g1 + ' / ' + g2;
+    } finally { UI.sketchSettings.reset(); }
+  });
+  step('rfAY: Add Curvature Control gives the new spline point a driving curvature; the Spline PM\'s Radius of curvature and Curvature set it (both sides of the point hold it), it survives undo and a save / load, and Curvature Control off goes back', async function () {
+    var errs0 = errors.length;
+    await anvil.newPart(); await idle();
+    await UI.newSketchOnPlane('Front'); await idle();
+    UI.zoomView(0.25 / UI.cam.scale);
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'spline', pts: [[0, 0], [10, 10], [20, 0], [30, -10], [40, 0]] });
+    UI.updateSketches(); await wait(20);
+    UI.cmdAddCurvatureControl(); await idle();
+    var P = W.SketchSolver.freeCurve(f.entities[0]).pt(0.5), s = UI.worldToScreen(K.to3D(UI.activePlane(), P[0], P[1]));
+    rfAYClick(s); await idle();
+    var e = UI.activeSketchFeature().entities[0], at = 1;
+    assert(e.pts.length === 6 && e.tans && e.tans[at] && isFinite(e.tans[at][3]), 'a curvature value at point 2: ' + JSON.stringify(e.tans));
+    var k0 = K.splineCurvatureAt(e, at);
+    assert(rfAYNear(k0.out, e.tans[at][3], 1e-6) && rfAYNear(k0['in'], e.tans[at][3], 1e-6), 'held on both sides: ' + JSON.stringify(k0) + ' vs ' + e.tans[at][3]);
+    assert(UI.pmTitle() === 'Spline' && D.querySelector('#pm [data-key="cc"]').checked, 'Spline PM, Curvature Control on');
+    var u0 = UI.App.undo.length;
+    rfAWSet('cr', 8); await idle();
+    e = UI.activeSketchFeature().entities[0];
+    var k1 = K.splineCurvatureAt(e, at), sg = k0.out < 0 ? -1 : 1;
+    assert(rfAYNear(k1.out, sg / 8, 1e-9) && rfAYNear(k1['in'], sg / 8, 1e-9), 'radius 8 on both sides: ' + JSON.stringify(k1));
+    var g = K.splineGeom(e);
+    assert(g.bez.length === 5 && Math.hypot(g.bez[2][0][0] - e.pts[2][0], g.bez[2][0][1] - e.pts[2][1]) < 1e-12, 'still through its points');
+    rfAWSet('ck', 0); await idle();
+    var k2 = K.splineCurvatureAt(UI.activeSketchFeature().entities[0], at);
+    assert(Math.abs(k2.out) < 1e-9 && Math.abs(k2['in']) < 1e-9, 'Curvature 0: flat there: ' + JSON.stringify(k2));
+    rfAWSet('ck', -0.05); await idle(); await wait(30);   // the PM re-renders on a timer
+    e = UI.activeSketchFeature().entities[0];
+    assert(rfAYNear(K.splineCurvatureAt(e, at).out, -0.05, 1e-9) && rfAYNear(+D.querySelector('#pm [data-key="cr"]').value, 20, 1e-6), 'Curvature -0.05: radius 20 in the PM: ' + D.querySelector('#pm [data-key="cr"]').value + ' κ ' + K.splineCurvatureAt(e, at).out);
+    // a save / load keeps it
+    var json = JSON.stringify(UI.App.model);
+    UI.pmCancel(); await idle();
+    await UI.exitSketch(); await idle();
+    await anvil.load(JSON.parse(json)); await idle();
+    var sk = UI.App.model.features.filter(function (x) { return x.type === 'sketch'; })[0], e2 = sk.entities[0];
+    assert(e2.tans && rfAYNear(e2.tans[at][3], -0.05, 1e-12) && rfAYNear(K.splineCurvatureAt(e2, at).out, -0.05, 1e-9), 'loaded: ' + JSON.stringify(e2.tans));
+    // undo: back to before the radius (the value Add Curvature Control gave)
+    await UI.editSketch(sk.id); await idle();
+    UI.setSelection([{ kind: 'entity', index: 0 }]); await idle();
+    var r = UI.splineCurvatureControl(0, at, { r: 4 });
+    assert(r.ok && rfAYNear(Math.abs(K.splineCurvatureAt(UI.activeSketchFeature().entities[0], at).out), 0.25, 1e-9), 'radius 4 by the API');
+    UI.undo(); await idle();
+    assert(rfAYNear(K.splineCurvatureAt(UI.activeSketchFeature().entities[0], at).out, -0.05, 1e-9), 'undo: ' + JSON.stringify(UI.activeSketchFeature().entities[0].tans));
+    var off = UI.splineCurvatureControl(0, at, 'off'), e3 = UI.activeSketchFeature().entities[0];
+    assert(off.ok && e3.tans[at] && e3.tans[at][3] == null && e3.tans[at].length <= 3, 'off: the driving tangent stays, the curvature goes: ' + JSON.stringify(e3.tans[at]));
+    UI.setSelection([]);
+    assert(errors.length === errs0, 'errors: ' + errors.slice(errs0).join(' | '));
+    await UI.exitSketch(); await idle();
+    return 'κ ' + k0.out.toFixed(4) + ' → 1/8 → 0 → -0.05';
+  });
+  // --- end rfAY ---
+  // ---- rfAZ (2026-10-13): Insert DXF brings blocks in as blocks; Edit Block keeps the other instances' relations;
+  // Sketch Fillet on a selection previews and makes the fillets on ✓
+  // a 4 × 2 in plate (closed LWPOLYLINE on CUT) with three INSERTs of block PUNCH (a Ø r circle) at (1, 1), (2, 1), (3, 1);
+  // only: the INSERTs and a block of radius r at (x, y)
+  function rfAZPlate(r, only, at) {
+    var L = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '9', '$INSUNITS', '70', '1', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '8', '0', '2', 'PUNCH', '70', '0', '10', '0', '20', '0',
+      '0', 'CIRCLE', '8', '0', '10', '0', '20', '0', '40', String(r), '0', 'ENDBLK', '8', '0', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES'];
+    if (!only) L = L.concat(['0', 'LWPOLYLINE', '8', 'CUT', '90', '4', '70', '1', '10', '0', '20', '0', '10', '4', '20', '0', '10', '4', '20', '2', '10', '0', '20', '2']);
+    (at || [[1, 1], [2, 1], [3, 1]]).forEach(function (p) { L = L.concat(['0', 'INSERT', '8', 'CUT', '2', 'PUNCH', '10', String(p[0]), '20', String(p[1]), '30', '0']); });
+    return L.concat(['0', 'ENDSEC', '0', 'EOF']).join('\r\n') + '\r\n';
+  }
+  function rfAZLabels() { return Array.prototype.map.call(D.querySelectorAll('#pm label'), function (l) { return l.textContent.trim(); }); }
+  function rfAZMsg() { var m = D.querySelector('#pm .pm-msg'); return m ? m.textContent : ''; }
+  function rfAZOk() { var b = D.querySelector('#pm .pm-ok'); assert(b, 'no ✓ button'); b.click(); }
+  function rfAZCancel() { var b = D.querySelector('#pm .pm-cancel'); assert(b, 'no ✗ button'); b.click(); }
+  function rfAZArcs() { return UI.activeSketchFeature().entities.filter(function (e) { return e.t === 'arc'; }); }
+  step('rfAZ: Insert DXF brings the file\'s blocks in as blocks — "Import blocks as blocks" (on) previews 3 PUNCH instances with their insertion points, off explodes them (the layer count follows), ✓ makes rigid instances of one definition; a second DXF with another PUNCH comes in as PUNCH-2; Extruded Boss has the plate\'s exact volume', async function () {
+    var errs0 = errors.length;
+    await anvil.newPart(); await idle();
+    var s = UI.App.model.units === 'in' ? 1 : 25.4;
+    UI.importDXFText(rfAZPlate(0.125), { name: 'punched.dxf' }); await idle();
+    assert(UI.pmTitle() === 'DXF/DWG Import', 'PM ' + UI.pmTitle());
+    var labels = rfAZLabels(), box = D.querySelector('#pm input[data-key="blocks"]');
+    assert(labels.indexOf('Import blocks as blocks') >= 0 && box && box.checked && labels.indexOf('CUT (10)') >= 0, 'option on, CUT (10): ' + labels.join(' | '));
+    assert(UI.App.tempEntities.length === 10 && UI.App.tempEntities.filter(function (e) { return e.blkDef === 'PUNCH'; }).length === 3 && /3 block instances of 1 block/.test(rfAZMsg()), 'preview with blocks: ' + UI.App.tempEntities.length + ' ' + rfAZMsg());
+    box.click(); await wait(20);
+    labels = rfAZLabels();
+    assert(UI.App.tempEntities.length === 7 && !UI.App.tempEntities.some(function (e) { return e.blk != null; }) && labels.indexOf('CUT (7)') >= 0 && !/block instance/.test(rfAZMsg()), 'blocks off, exploded: ' + UI.App.tempEntities.length + ' ' + labels.join(' | '));
+    D.querySelector('#pm input[data-key="blocks"]').click(); await wait(20);
+    assert(UI.App.tempEntities.length === 10 && rfAZLabels().indexOf('CUT (10)') >= 0, 'blocks on again');
+    var u0 = UI.App.undo.length;
+    rfAZOk(); await idle();
+    var f = activeSketch(), I = K.blockInstances(f);
+    assert(!UI.hasPM() && UI.App.undo.length === u0 + 1 && f.blocks && f.blocks.PUNCH && I.length === 3 && I.every(function (q) { return q.def === 'PUNCH' && q.ents.length === 1; }), 'three PUNCH instances: ' + JSON.stringify(I));
+    near(f.entities[I[2].ents[0]].r, 0.125 * s, 1e-9, 'block radius'); near(I[2].x, 3 * s, 1e-9, 'third instance x');
+    assert(/Imported 10 entities from punched\.dxf \(4 Coincident relations, 3 block instances\)/.test(statusText()), 'status ' + statusText());
+    // rigid in the solver: an instance's circle dragged moves it whole (its centre stays on the insertion point)
+    var st = UI.sketchStatus();
+    assert(st && st.status !== 'over', 'not over defined: ' + JSON.stringify(st));
+    // a second DXF whose PUNCH is bigger, into the same sketch: its instance comes in as PUNCH-2
+    UI.importDXFText(rfAZPlate(0.2, true, [[3.5, 0.5]]), { name: 'more.dxf', ok: true }); await idle();
+    f = activeSketch(); I = K.blockInstances(f);
+    var p2 = I.filter(function (q) { return q.def === 'PUNCH-2'; })[0];
+    assert(f.blocks['PUNCH-2'] && p2 && Math.abs(f.entities[p2.ents[0]].r - 0.2 * s) < 1e-9 && f.blocks.PUNCH.ents[0].r !== f.blocks['PUNCH-2'].ents[0].r && I.length === 4, 'PUNCH-2: ' + JSON.stringify(Object.keys(f.blocks)) + ' ' + JSON.stringify(I));
+    var sid = UI.App.activeSketch;
+    await UI.exitSketch(); await idle();
+    UI.App.sel = { kind: 'feature', id: sid };
+    UI.cmdExtrude(false); setInput(pmNumber(0), 0.25 * s); await pmAccept();
+    var want = (8 - 3 * Math.PI * 0.125 * 0.125 - Math.PI * 0.04) * 0.25 * s * s * s;
+    near(anvil.summary().volume, want, 1e-4 * want, 'volume');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'volume ' + anvil.summary().volume.toFixed(4) + ' (' + want.toFixed(4) + ')';
+  });
+  step('rfAZ: Edit Block keeps the relations on the other instances — a Horizontal that levels the turned instance stays after the first instance gets a line drawn in Edit Block; the status says the relations were kept', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    var f = UI.activeSketchFeature();
+    f.entities.push({ t: 'circle', cx: 10, cy: 10, r: 2 }, { t: 'line', x1: -2, y1: 10, x2: 22, y2: 10 }, { t: 'line', x1: 10, y1: -2, x2: 10, y2: 22 });
+    K.makeBlock(f, [0, 1, 2], 'Cross', [10, 10]);
+    K.insertBlock(f, 'Cross', 50, 30, 30, 1);
+    UI.App.gridStale = true; UI.updateSketches(); await idle();
+    var I = K.blockInstances(f);
+    assert(W.SketchSolver.addRelation(f, 'horizontal', [String(I[1].ents[1])]).status === 'ok', 'Horizontal on the turned instance');
+    UI.updateSketches(); await idle();
+    I = K.blockInstances(f);
+    var L = f.entities[I[1].ents[1]];
+    near(L.y1, L.y2, 1e-6, 'levelled');
+    // Edit Block on the first instance (its line picked in the graphics area), a line drawn meanwhile, Edit Block again
+    UI.setTool('select');
+    rskClick([10, 18]); await wait(20);
+    UI.cmdEditBlock(); await idle();
+    assert(UI.blockEditing() && UI.blockEditing().name === 'Cross', 'editing: ' + JSON.stringify(UI.blockEditing()));
+    UI.setTool('line'); rskClick([4, 4]); rskClick([16, 4]);
+    selKey('Escape'); selKey('Escape'); await idle();
+    UI.setTool('select');
+    UI.cmdEditBlock(); await idle();
+    f = UI.activeSketchFeature(); I = K.blockInstances(f);
+    assert(!UI.blockEditing() && f.blocks.Cross.ents.length === 4 && I.every(function (q) { return q.ents.length === 4; }), 'every instance has the new line: ' + JSON.stringify(I.map(function (q) { return q.ents.length; })));
+    var hz = (f.rels || []).filter(function (q) { return q.type === 'horizontal'; });
+    assert(hz.length === 1 && +hz[0].refs[0] === I[1].ents[1], 'the Horizontal still on the second instance\'s line: ' + JSON.stringify(f.rels) + ' ' + JSON.stringify(I));
+    L = f.entities[I[1].ents[1]];
+    near(L.y1, L.y2, 1e-6, 'still level');
+    assert(/their relations kept/.test(statusText()), 'status ' + statusText());
+    assert(UI.sketchStatus().status !== 'over', 'not over defined: ' + JSON.stringify(UI.sketchStatus()));
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return statusText();
+  });
+  step('rfAZ: Sketch Fillet on a box-selected rectangle previews the four corners at the current radius (listed, sketch untouched); a new Radius redraws the preview; ✗ leaves the sketch as it was; ✓ makes them as one undo step; two selected lines preview their one fillet and ✓ makes it; a radius too big is refused on ✓ and the PropertyManager stays', async function () {
+    var errs0 = errors.length;
+    await rskNew();
+    UI.App.view.showGrid = false;
+    UI.setTool('rect'); rskClick([0, 0]); rskClick([60, 40]); UI.setTool('select'); await wait(20);
+    var f = UI.activeSketchFeature(), lines0 = JSON.stringify(f.entities), rels0 = JSON.stringify(f.rels || null);
+    await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
+    assert(anvil.selection().length === 4, 'the box takes the four lines: ' + anvil.selection().length);
+    var u0 = UI.App.undo.length;
+    UI.cmdSketchFillet(); await wait(20);
+    function prev() { return UI.App.tempEntities.filter(function (e) { return e.t === 'arc'; }); }
+    var items = Array.prototype.map.call(D.querySelectorAll('#pm .pm-list .pm-item'), function (x) { return x.textContent.trim(); });
+    assert(prev().length === 4 && prev().every(function (a) { return Math.abs(a.r - 10) < 1e-9; }) && items.length === 4 && items.every(function (t) { return /^Vertex \(/.test(t); }), 'four R10 previewed, four vertices listed: ' + items.join(' | '));
+    assert(JSON.stringify(UI.activeSketchFeature().entities) === lines0 && UI.App.undo.length === u0 && /Preview: 4 fillets/.test(statusText()), 'sketch untouched: ' + statusText());
+    setInput(pmField('Radius'), 5); await wait(20);
+    assert(prev().length === 4 && prev().every(function (a) { return Math.abs(a.r - 5) < 1e-9; }) && JSON.stringify(UI.activeSketchFeature().entities) === lines0, 'R5 previewed: ' + JSON.stringify(prev().map(function (a) { return a.r; })));
+    // the preview arcs sit in the corners: tangent to both sides (centre 5 in from each)
+    assert(prev().some(function (a) { return Math.abs(a.cx - 55) < 1e-6 && Math.abs(a.cy - 35) < 1e-6; }), 'top-right arc centre (55, 35): ' + JSON.stringify(prev()));
+    rfAZCancel(); await wait(20);
+    f = UI.activeSketchFeature();
+    assert(!UI.hasPM() && JSON.stringify(f.entities) === lines0 && JSON.stringify(f.rels || null) === rels0 && !UI.App.tempEntities.length && UI.App.undo.length === u0, '✗ leaves the sketch untouched');
+    // again, R 5, ✓
+    await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
+    UI.cmdSketchFillet(); await wait(20);
+    setInput(pmField('Radius'), 5); await wait(20);
+    rfAZOk(); await idle();
+    f = UI.activeSketchFeature();
+    assert(!UI.hasPM() && rfAZArcs().length === 4 && rfAZArcs().every(function (a) { return Math.abs(a.r - 5) < 1e-9; }) && UI.App.undo.length === u0 + 1 && !UI.App.tempEntities.length, '✓: four R5 fillets, one undo step: ' + (UI.App.undo.length - u0));
+    assert(UI.sketchStatus().status !== 'over', 'nothing over defined');
+    UI.undo(); await idle();
+    assert(JSON.stringify(UI.activeSketchFeature().entities) === lines0, 'undo: the sharp rectangle');
+    // two lines selected (the bottom one, then the right one with Ctrl): one fillet previewed, made on ✓
+    UI.setSelection([]); UI.App.sel = null;
+    rskClick([30, 0]); await wait(10);
+    selClick(rskScr([60, 20]), { ctrlKey: true }); await wait(10);
+    assert(anvil.selection().length === 2, 'two lines selected: ' + JSON.stringify(anvil.selection()));
+    UI.cmdSketchFillet(); await wait(20);
+    assert(prev().length === 1 && UI.activeSketchFeature().entities.length === 4 && D.querySelectorAll('#pm .pm-list .pm-item').length === 1, 'one fillet previewed: ' + prev().length);
+    setInput(pmField('Radius'), 8); await wait(20);
+    assert(prev().length === 1 && Math.abs(prev()[0].r - 8) < 1e-9, 'R8 previewed');
+    rfAZOk(); await idle();
+    assert(!UI.hasPM() && rfAZArcs().length === 1 && Math.abs(rfAZArcs()[0].r - 8) < 1e-9, '✓: the R8 fillet');
+    UI.undo(); await idle();
+    // a radius too big: no preview, ✓ refused, the PropertyManager stays open; ✗ leaves the sketch as it was
+    await selDrag(rskScr([-6, -6]), rskScr([66, 46]));
+    UI.cmdSketchFillet(); await wait(20);
+    setInput(pmField('Radius'), 30); await wait(20);
+    assert(!prev().length, 'R30 does not fit the 40 high sides: no preview');
+    rfAZOk(); await idle();
+    assert(UI.hasPM() && UI.pmTitle() === 'Sketch Fillet' && JSON.stringify(UI.activeSketchFeature().entities) === lines0, '✓ refused, the PM stays: ' + JSON.stringify(UI.activeSketchFeature().entities).slice(0, 200));
+    rfAZCancel(); await wait(20);
+    assert(JSON.stringify(UI.activeSketchFeature().entities) === lines0 && !UI.App.tempEntities.length, '✗ after the refusal: untouched');
+    assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
+    return 'preview R10 → R5, ✓, two-line R8';
+  });
+  // --- end rfAZ ---
   // ---- runner
   function withTimeout(p, ms, name) {
     return new Promise(function (resolve, reject) {

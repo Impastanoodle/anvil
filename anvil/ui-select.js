@@ -947,7 +947,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
 
   // Sketch dimensions of `sk` as handles (placed dimensions, plus the driven ones when View ▸ Sketch Dimensions is on).
-  function sketchDimHandles(sk, pl, liveSketch) {
+  function sketchDimHandles(sk, pl) {
     var out = [], placed = sk.dims || [], list = [];
     placed.forEach(function (d, i) { list.push({ d: d, index: i }); });
     if (App.view.showDims && UI.autoDims) sk.entities.forEach(function (e, i) { UI.autoDims(e, i, placed).forEach(function (d) { list.push({ d: d, auto: true }); }); });
@@ -965,7 +965,7 @@ if (typeof UI !== 'undefined') (function (UI) {
         var a = (it.d.ang != null ? it.d.ang : 45) * Math.PI / 180, u = [Math.cos(a), Math.sin(a)];
         h = linearHandle({ O: K.to3D(pl, g.C[0], g.C[1]), dir: to3Ddir(pl, u), k: g.prefix === '⌀' ? 2 : 1, g: g });
       }
-      h.kind = 'sdim'; h.sketch = sk.id; h.dim = it.d; h.dimIndex = it.index; h.auto = !!it.auto; h.value = g.value; h.live = !!liveSketch;
+      h.kind = 'sdim'; h.sketch = sk.id; h.dim = it.d; h.dimIndex = it.index; h.auto = !!it.auto; h.value = g.value;
       h.label = sk.name + ' ' + (g.prefix === '⌀' ? 'Ø' : g.prefix || '') + dimText(g.value); h.prefix = g.prefix || ''; h.min = 0;
       h.apply = function (v) {
         var skNow = K.findFeature(App.model, sk.id), ent = skNow && skNow.entities[it.d.e];
@@ -1048,17 +1048,13 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   function pmValueText(h, v) { return (h.tag || '') + fmtV(v, h); }
 
-  // The handles for the current state: a feature's (part mode, one selected face or feature), or the active sketch's
-  // dimension dots (sketch mode).
+  // The handles for the current state: a feature's (part mode, one selected face or feature). rfBA: none in an open
+  // sketch: in SolidWorks Instant3D acts on the part only and a sketch's dimensions are dragged with Instant2D
+  // (ui-sketch-dims.js), so no dimension dots are made there (they used to be made and then hidden by style.css).
   function computeHandles() {
     if (!App.model || !App.build || !App.mesh || drawingOn() || isAsm()) return [];
     if (App.mode === 'part' && UI.hasPM && UI.hasPM()) return pmHandleObjects();   // r4/features4: PropertyManager handles, Instant3D on or off
-    if (!i3d.on) return [];
-    if (App.mode === 'sketch') {
-      var ask = UI.activeSketchFeature(), apl = ask && UI.activePlane();
-      if (!ask || !apl || App.tool !== 'select' || App.command) return [];
-      return sketchDimHandles(ask, apl, true);
-    }
+    if (!i3d.on || App.mode === 'sketch') return [];
     if (App.mode !== 'part' || App.command || (UI.hasPM && UI.hasPM())) return [];
     var list = selection();
     if (list.length !== 1) return [];
@@ -1071,7 +1067,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!sk || !pl) return [];
     var out = [], h = f.type === 'extrude' ? extrudeHandle(f, sk, pl, face) : revolveHandle(f, sk, pl, face);
     if (h) out.push(h);
-    return out.concat(sketchDimHandles(sk, pl, false));
+    return out.concat(sketchDimHandles(sk, pl));
   }
 
   // ---- drawing
@@ -1184,9 +1180,9 @@ if (typeof UI !== 'undefined') (function (UI) {
         return;
       }
       if (d) drawRuler(g, h, v);
-      if (h.kind === 'sdim' && !h.live) drawSketchDim(g, h, d ? v : null);
+      if (h.kind === 'sdim') drawSketchDim(g, h, d ? v : null);
       var p = S(h.pos(v)), a = h.arrow(v), q = S(V.add(h.pos(v), a)), u = unit2(p, q);
-      var hg = svg('g', { 'class': 'i3d-handle' + (h.kind === 'sdim' && h.live ? ' live' : ''), 'data-kind': h.kind, 'data-index': String(idx) }, g);
+      var hg = svg('g', { 'class': 'i3d-handle', 'data-kind': h.kind, 'data-index': String(idx) }, g);
       if (h.kind === 'sdim') {
         svg('circle', { 'class': 'i3d-grip', cx: p[0], cy: p[1], r: 9 }, hg);
         svg('circle', { 'class': 'i3d-dot', cx: p[0], cy: p[1], r: 4.5 }, hg);
@@ -1210,11 +1206,8 @@ if (typeof UI !== 'undefined') (function (UI) {
         } else if (d) { var tx = svg('text', { 'class': 'i3d-value', x: tip[0] + (u ? u[0] * 10 : 0), y: tip[1] + (u ? u[1] * 10 : 0) - 6, 'text-anchor': 'middle' }, g); tx.textContent = fmtV(v, h); }
       }
       hg.setAttribute('aria-label', h.label + ' ' + fmtV(v, h) + ' — drag to change');
-      // p9-sketchfix: a sketch's grip left on screen after a tool or a PropertyManager took over (it is redrawn with the
-      // dimensions) lets the press through to the sketch: it swallowed Smart Dimension's click on a circle
       hg.addEventListener('mousedown', function (ev) {
         if (ev.button !== 0) return;
-        if (h.live && (App.mode !== 'sketch' || App.tool !== 'select' || App.command)) { App.dimsStale = true; return; }
         ev.stopPropagation(); ev.preventDefault(); startDrag(h, ev);
       });
       hg.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });

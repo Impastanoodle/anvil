@@ -142,8 +142,9 @@
       if (explodable(f.entities[j])) { var bj = explodeBlock(j); if (!bj) return null; if (i > j) i += bj.shift; j = nearestIn(bj.list, spec.uvj); if (j == null) return null; }
       return { i: i, uvi: spec.uvi, j: j, uvj: spec.uvj };
     }
-    function make(spec) {
-      return step(function () {
+    function make(spec) { return step(function () { return makeRaw(spec); }); }
+    function makeRaw(spec) {
+      {
         if (spec.rect != null) { explode(spec.rect); var c = S.curveCorner(f, spec.at, 1e-6 * Math.max(1, Math.abs(spec.at[0]), Math.abs(spec.at[1]))); if (!c) return { ok: false, error: 'No corner there.' }; spec = c; }
         if (spec.poly != null) { explodeBlock(spec.poly); var cp = S.curveCorner(f, spec.at, 1e-6 * Math.max(1, Math.abs(spec.at[0]), Math.abs(spec.at[1]))); if (!cp) return { ok: false, error: 'No corner there.' }; spec = cp; }
         if (spec.uvi && !spec.ei) { spec = resolvePicks(spec); if (!spec) return { ok: false, error: chamfer ? 'Pick two lines (or two sides of a rectangle or polygon).' : 'Pick two lines, arcs or circles (or a spline and a line or arc).' }; }
@@ -158,10 +159,12 @@
           return rc;
         }
         return S.filletPair(f, spec, +v.r, o);
-      });
+      }
     }
+    var made = false;   // AZ: something was made while the PropertyManager was open (✗ takes it back)
     function done(r, label) {
       if (!r.ok) { UI.toast(r.error); UI.updateSketches(); return; }
+      made = true;
       if (!chamfer && first == null) first = r.arc;
       var n = r.count || 1;
       for (var k = 0; k < n; k++) v.items.push(n > 1 ? label + ' — chain ' + (k + 1) + '/' + n : label);
@@ -186,6 +189,7 @@
       return best;
     }
     function click(uv, mx, my) {
+      if (pending) commitPending();   // AZ: the previewed selection is made first, then the pick
       fresh();
       var tol = cornerTol(mx, my), c = S.curveCorner(f, uv, tol), cd = c ? Math.hypot(c.at[0] - uv[0], c.at[1] - uv[1]) : Infinity, sc = shapeCorner(uv);
       if (chamfer && c && (f.entities[c.i].t !== 'line' || f.entities[c.j].t !== 'line')) { c = null; cd = Infinity; }
@@ -245,9 +249,11 @@
       message: chamfer ? 'Select a sketch vertex or two sketch lines to chamfer.' : 'Select a sketch vertex or two sketch entities to fillet.',
       command: { ownHover: true, sketchFillet: true, onSketchPoint: click, onSketchMove: hover },
       groups: groups,
-      onChange: function () { }, onOK: function () { },
+      onChange: function () { if (pending) previewPending(); },
+      onOK: function () { if (pending && !commitPending()) return false; },
       onCancel: function () {
-        if (!v.items.length) return;
+        pending = null; App.tempEntities = []; UI.updateTemp();
+        if (!made) return;   // AZ: a previewed selection never touched the sketch
         fresh();
         var s0 = JSON.parse(snap);
         f.entities = s0.entities;
@@ -256,47 +262,89 @@
         if (App.undo.length > undo0) App.undo.length = undo0;
         changed();
       },
-      onClose: function () { UI.sketchFeedbackClear(); }
+      onClose: function () { pending = null; App.tempEntities = []; UI.updateTemp(); UI.sketchFeedbackClear(); }
     });
-    // rfAX: several entities selected when Sketch Fillet starts (a box over a contour, a rectangle, a polygon, a slot):
-    // every corner where they meet one another is rounded at once, one radius (Equal to the first), as SolidWorks
-    // fillets a selection's corners; one undo step
-    var all = selIdx(f).filter(function (i) { return f.entities[i]; });
-    if (!chamfer && all.length && (all.length > 2 || all.some(function (i) { return explodable(f.entities[i]); }))) {
-      var rs = step(function () {
+    // AZ: a selection when the command starts is previewed, not made, as SolidWorks does: several entities (a box over
+    // a contour, a rectangle, a polygon, a slot; rfAX: every corner where they meet one another, one radius, Equal to
+    // the first) or two entities (filleted / chamfered where they meet). Its corners are listed in Entities to Fillet
+    // and the fillets drawn as a preview at the current radius; a change of a parameter redraws it, ✓ makes them (one
+    // undo step), ✗ leaves the sketch untouched. A pick in the graphics area makes the previewed ones first.
+    var pending = null;   // { all: [entity indices] } or { spec, label } (two entities)
+    // the pending fillets made on f as it is (no undo step): { ok, arcs (a chamfer: its line), corners, error }
+    function runPending() {
+      if (pending.all) {
         var out = [];
-        all.slice().sort(function (a, b) { return b - a; }).forEach(function (i) {
+        pending.all.slice().sort(function (a, b) { return b - a; }).forEach(function (i) {
           if (!explodable(f.entities[i])) { out.push(i); return; }
           var b = explodeBlock(i);
           if (!b) return;
           out = out.map(function (k) { return k > i ? k + b.shift : k; }).concat(b.list);
         });
         var cs = S.selectionCorners(f, out);
-        if (!cs.length) return { ok: false, error: 'The selected entities meet at no corner: select entities that share end points, or pick a vertex.' };
+        if (!cs.length) return { ok: false, corners: [], error: 'The selected entities meet at no corner: select entities that share end points, or pick a vertex.' };
         var rc = S.filletCorners(f, cs, +v.r, { keepCorner: v.keepCorner !== false, dimEach: !!v.dimEach });
         if (rc.ok) { rc.arc = rc.arcs[0]; rc.count = rc.arcs.length; }
+        rc.corners = cs.map(function (c) { return c.at.slice(); });
         return rc;
-      });
-      if (rs.ok) done(rs, 'Selection');
-      else {   // nothing made: the selection is put back as it was (a rectangle made into lines first, too)
-        var s1 = JSON.parse(snap); f.entities = s1.entities;
+      }
+      var r = makeRaw(JSON.parse(JSON.stringify(pending.spec)));
+      if (r && r.ok) r.arcs = [chamfer ? r.line : r.arc];
+      return r || { ok: false };
+    }
+    function pendingLabels(r) { return pending.all ? (r.corners || []).map(function (at) { return 'Vertex ' + fmtPt(at); }) : [pending.label]; }
+    function what(n) { return n + (chamfer ? ' chamfer' : ' fillet') + (n === 1 ? '' : 's') + (chamfer ? '' : ' R' + UI.fmtLen(+v.r)); }
+    // the preview: the pending fillets made on a copy of the sketch, their arcs (chamfer lines) drawn as temporary geometry
+    function previewPending() {
+      var real = f, first0 = first, g = {}, r;
+      Object.keys(real).forEach(function (k) { if (k !== 'pictures') g[k] = real[k]; });
+      g = JSON.parse(JSON.stringify(g));
+      f = g;
+      try { r = runPending(); } catch (e) { r = { ok: false, error: e.message }; }
+      f = real; first = first0;
+      v.items = pendingLabels(r);
+      App.tempEntities = r.ok ? (r.arcs || []).map(function (i) { return g.entities[i]; }).filter(Boolean) : [];
+      UI.updateTemp();
+      UI.renderPM();
+      UI.setStatus(r.ok ? 'Preview: ' + what(r.arcs.length) + '. ✓ makes ' + (r.arcs.length === 1 ? 'it' : 'them') + ', ✗ leaves the sketch as it is.' : (r.error || 'Nothing to ' + (chamfer ? 'chamfer' : 'fillet') + ' at this size.'));
+      return r;
+    }
+    // ✓ (or a pick): the pending fillets made, one undo step; false when they cannot be (the sketch is left as it was)
+    function commitPending() {
+      fresh();
+      var back = JSON.stringify({ entities: f.entities, rels: f.rels || null, dims: f.dims || null });
+      var r = step(function () { return runPending(); }, true);
+      App.tempEntities = []; UI.updateTemp();
+      if (!r.ok) {
+        var s1 = JSON.parse(back); f.entities = s1.entities;
         if (s1.rels) f.rels = s1.rels; else delete f.rels;
         if (s1.dims) f.dims = s1.dims; else delete f.dims;
-        UI.toast(rs.error); UI.updateSketches();
+        UI.toast(r.error || 'The ' + (chamfer ? 'chamfers' : 'fillets') + ' could not be made.'); UI.updateSketches();
+        return false;
       }
-      return;
+      var labels = pendingLabels(r);
+      pending = null;
+      made = true;
+      if (!chamfer && first == null) first = r.arc;
+      v.items = labels;
+      changed(); UI.renderPM();
+      UI.setStatus(what(r.arcs.length).replace(/^\d+ \w/, function (c) { return c.toUpperCase(); }) + ' made.');
+      return true;
     }
-    // two entities selected when the command starts: they are filleted (chamfered) at once
-    var pre = selIdx(f).filter(function (i) { return direct(f.entities[i]); });
-    if (pre.length === 2) {
+    var all = selIdx(f).filter(function (i) { return f.entities[i]; }), pre = all.filter(function (i) { return direct(f.entities[i]); });
+    if (!chamfer && all.length && (all.length > 2 || all.some(function (i) { return explodable(f.entities[i]); }))) pending = { all: all };
+    else if (pre.length === 2) {
       var mid = function (e) {
         if (e.t === 'line') return [(e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2];
         if (e.t === 'spline') return e.pts[Math.floor(e.pts.length / 2)].slice();
         var am = e.t === 'circle' ? 90 : (e.a0 + e.a1) / 2;
         return [e.cx + e.r * Math.cos(am * Math.PI / 180), e.cy + e.r * Math.sin(am * Math.PI / 180)];
       };
-      var spec0 = { i: pre[0], uvi: mid(f.entities[pre[0]]), j: pre[1], uvj: mid(f.entities[pre[1]]) }, lab = entityLabel(f.entities[pre[0]], pre[0]) + ', ' + entityLabel(f.entities[pre[1]], pre[1]);
-      done(make(spec0), lab);
+      pending = { spec: { i: pre[0], uvi: mid(f.entities[pre[0]]), j: pre[1], uvj: mid(f.entities[pre[1]]) }, label: entityLabel(f.entities[pre[0]], pre[0]) + ', ' + entityLabel(f.entities[pre[1]], pre[1]) };
+    }
+    if (pending) {
+      var r0 = previewPending();
+      // a selection that meets at no corner: nothing to preview, the PropertyManager waits for picks
+      if (!r0.ok && pending.all && !(r0.corners || []).length) { pending = null; v.items = []; UI.renderPM(); UI.toast(r0.error); }
     }
   }
   function cmdSketchFillet() { cornerTool('fillet'); }

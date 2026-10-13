@@ -298,11 +298,134 @@
       for (i = 0; i < n; i++) if (rho[i] !== 1 && (closed || i > 0)) c[(i + n - 1) % n] *= rho[i];
       Mx = closed ? cyclicSolve(a, b, c, rx) : triSolve(a, b, c, rx); My = closed ? cyclicSolve(a, b, c, ry) : triSolve(a, b, c, ry);
     }
+    if (tans.some(function (tg) { return tg && tg[3] != null && isFinite(+tg[3]); })) {   // rfAY: curvature controls
+      var cv = splineCurvatureFit(P, h, closed, Mx, My, rho, tans, !!e.local);
+      Mx = cv.Mx; My = cv.My;
+    }
     for (i = 0; i < m; i++) {
       var p0 = P[i], p3 = P[(i + 1) % n], k = h[i] / 3, j = (i + 1) % n, kj = k * rho[j];
       bez.push([p0, [p0[0] + k * Mx[i], p0[1] + k * My[i]], [p3[0] - kj * Mx[j], p3[1] - kj * My[j]], p3]);
     }
     return { bez: bez, knots: knots, closed: closed };
+  }
+  // ---- rfAY: Curvature Control (SolidWorks: a spline point's Curvature Control, set by its Radius of curvature).
+  // tans[i] = [angleDeg, weight, weightIn?, curvature]: point i is tangent-driving and the curve has the signed
+  // curvature κ there (1 / radius; positive bends to the left of the way the points run, 0 is flat), the same on both
+  // sides (G2 at that value). With the point's tangent T fixed, the curvature of the span leaving it depends only on
+  // the tangent at the next point: cross(T, M_{i+1}) = 3·cross(T, Δ)/h − κ|T|³h/2 (and alike arriving, from M_{i−1}),
+  // so each side is one linear condition on a neighbour's tangent. Maintain internal continuity on: the spline is the
+  // one of least bending energy ∫|P''|² (which is what the C2 rows above are) that meets every such condition — a KKT
+  // solve over the free point tangents; the curvature is exact and the curve stays C2 at every other point except in
+  // the one bend component at a controlled point's neighbours. Off (local): the neighbour's tangent is turned by just
+  // what the condition needs. A side whose neighbour is tangent-driving itself (or missing: a free end) is not held.
+  function splineCurvatureFit(P, h, closed, Mx0, My0, rho, tans, local) {
+    var n = P.length, m = h.length, i, j, Mx = Mx0.slice(), My = My0.slice();
+    var relaxed = {};
+    function drivingAt(k) { var tg = tans[k]; return !!(tg && isFinite(+tg[0])); }
+    function fixedAt(k) { return drivingAt(k) && !relaxed[k]; }
+    function controlled(k) { var tg = tans[k]; return !!(tg && tg[3] != null && isFinite(+tg[3]) && drivingAt(k)); }
+    function relax(k) { if (!controlled(k)) { relaxed[k] = true; rho[k] = 1; } }   // a neighbour's tangent lets go
+    function cr(ax, ay, bx, by) { return ax * by - ay * bx; }
+    // a side whose neighbour is tangent-driving too (Insert Spline Point / Add Curvature Control leave the neighbours
+    // driving so the curve keeps its shape) has no free tangent: that side's speed at the controlled point is what
+    // gives the curvature there instead (leaving: w² = (6·cross(d, Δ)/h² − 2·cross(d, M_next)/h) / κ; arriving alike,
+    // as rho, the arriving span's own speed). Where no speed does it (κ = 0, or the curve bends the other way there)
+    // the neighbour's tangent lets go (unless it is a curvature control itself) and the fit below sets it
+    for (i = 0; i < n; i++) {
+      if (!controlled(i)) continue;
+      var k0 = +tans[i][3], w0 = Math.hypot(Mx[i], My[i]);
+      if (!(w0 > 1e-12)) continue;
+      var dx0 = Mx[i] / w0, dy0 = My[i] / w0, wIn = rho[i] * w0;
+      if ((closed || i < n - 1) && fixedAt((i + 1) % n)) {
+        j = (i + 1) % n;
+        var hO = h[i], NO = 6 * cr(dx0, dy0, P[j][0] - P[i][0], P[j][1] - P[i][1]) / (hO * hO) - 2 * cr(dx0, dy0, rho[j] * Mx[j], rho[j] * My[j]) / hO;
+        if (k0 !== 0 && NO / k0 > 1e-18) { w0 = Math.sqrt(NO / k0); Mx[i] = w0 * dx0; My[i] = w0 * dy0; } else relax(j);
+      }
+      if ((closed || i > 0) && fixedAt((i + n - 1) % n)) {
+        j = (i + n - 1) % n;
+        var hI = h[(i + m - 1) % m], NI = 2 * cr(dx0, dy0, Mx[j], My[j]) / hI - 6 * cr(dx0, dy0, P[i][0] - P[j][0], P[i][1] - P[j][1]) / (hI * hI);
+        if (k0 !== 0 && NI / k0 > 1e-18) wIn = Math.sqrt(NI / k0); else relax(j);
+      }
+      rho[i] = wIn / w0;
+    }
+    var cons = [];   // { at: neighbour index, tx, ty (T at the controlled point, scaled by the side's speed), rhs }
+    for (i = 0; i < n; i++) {
+      var tg = tans[i];
+      if (!controlled(i)) continue;
+      var kap = +tg[3], Tx = Mx[i], Ty = My[i], w = Math.hypot(Tx, Ty);
+      if (!(w > 1e-12)) continue;
+      if (closed || i < n - 1) {   // leaving: span i, to point j
+        j = (i + 1) % n;
+        var hr = h[i], dx = P[j][0] - P[i][0], dy = P[j][1] - P[i][1];
+        if (!fixedAt(j)) cons.push({ at: j, s: rho[j], tx: Tx, ty: Ty, rhs: 3 * cr(Tx, Ty, dx, dy) / hr - kap * w * w * w * hr / 2 });
+      }
+      if (closed || i > 0) {   // arriving: span i − 1, from point j, at the speed rho[i]·T
+        j = (i + n - 1) % n;
+        var hl = h[(i + m - 1) % m], ex = P[i][0] - P[j][0], ey = P[i][1] - P[j][1], Ux = rho[i] * Tx, Uy = rho[i] * Ty, wu = rho[i] * w;
+        if (!fixedAt(j)) cons.push({ at: j, s: 1, tx: Ux, ty: Uy, rhs: 3 * cr(Ux, Uy, ex, ey) / hl + kap * wu * wu * wu * hl / 2 });
+      }
+    }
+    if (!cons.length) return { Mx: Mx, My: My };
+    if (local) {
+      cons.forEach(function (c) {   // turn the neighbour's tangent square to T by what the condition lacks
+        var cur = c.s * cr(c.tx, c.ty, Mx[c.at], My[c.at]), wt = Math.hypot(c.tx, c.ty), d = (c.rhs - cur) / (c.s * wt * wt);
+        Mx[c.at] += -c.ty * d; My[c.at] += c.tx * d;
+      });
+      return { Mx: Mx, My: My };
+    }
+    // the free tangents (the point tangents not driving) are the unknowns: index map, then the energy's Hessian and
+    // gradient per coordinate (the same for x and y), then the KKT system [H 0 Cxᵀ; 0 H Cyᵀ; Cx Cy 0]
+    var idx = [], F = 0;
+    for (i = 0; i < n; i++) idx.push(fixedAt(i) ? -1 : F++);
+    var C = cons.length, N = 2 * F + C, A = [], r;
+    for (r = 0; r < N; r++) { var row = new Float64Array(N + 1); A.push(row); }
+    for (var s = 0; s < m; s++) {
+      var a0 = s, b0 = (s + 1) % n, hs = h[s], ia = idx[a0], ib = idx[b0];
+      var D = [P[b0][0] - P[a0][0], P[b0][1] - P[a0][1]];
+      for (var q = 0; q < 2; q++) {
+        var M = q ? My : Mx, off = q * F;
+        var c0 = ia < 0 ? M[a0] : 0, c1 = ib < 0 ? rho[b0] * M[b0] : 0;   // a fixed end's derivative is a constant
+        if (ia >= 0) { A[off + ia][off + ia] += 8 / hs; A[off + ia][N] -= 4 / hs * (2 * c0 + c1) - 12 * D[q] / (hs * hs); }
+        if (ib >= 0) { A[off + ib][off + ib] += 8 / hs; A[off + ib][N] -= 4 / hs * (c0 + 2 * c1) - 12 * D[q] / (hs * hs); }
+        if (ia >= 0 && ib >= 0) { A[off + ia][off + ib] += 4 / hs; A[off + ib][off + ia] += 4 / hs; }
+      }
+    }
+    cons.forEach(function (c, k) {   // c.s·(tx·My − ty·Mx) at the neighbour = rhs
+      var v = idx[c.at], R = 2 * F + k;
+      A[R][v] = -c.s * c.ty; A[R][F + v] = c.s * c.tx; A[R][N] = c.rhs;
+      A[v][R] = -c.s * c.ty; A[F + v][R] = c.s * c.tx;
+    });
+    // Gaussian elimination with partial pivoting; a singular system (two conditions on one tangent that cannot both
+    // hold) keeps the C2 curve
+    for (var col = 0; col < N; col++) {
+      var piv = col, best = Math.abs(A[col][col]);
+      for (r = col + 1; r < N; r++) if (Math.abs(A[r][col]) > best) { best = Math.abs(A[r][col]); piv = r; }
+      if (!(best > 1e-14)) return { Mx: Mx0, My: My0 };
+      if (piv !== col) { var t = A[piv]; A[piv] = A[col]; A[col] = t; }
+      for (r = col + 1; r < N; r++) {
+        var fct = A[r][col] / A[col][col];
+        if (fct === 0) continue;
+        for (var k2 = col; k2 <= N; k2++) A[r][k2] -= fct * A[col][k2];
+      }
+    }
+    var x = new Float64Array(N);
+    for (r = N - 1; r >= 0; r--) { var sum = A[r][N]; for (var k3 = r + 1; k3 < N; k3++) sum -= A[r][k3] * x[k3]; x[r] = sum / A[r][r]; }
+    for (i = 0; i < n; i++) if (idx[i] >= 0) { Mx[i] = x[idx[i]]; My[i] = x[F + idx[i]]; }
+    return { Mx: Mx, My: My };
+  }
+  // the signed curvature of spline e at its point i: { out (the span leaving it), in (the span arriving), k (out, or in
+  // at an open spline's last point) }; null where there is no span
+  function splineCurvatureAt(e, i) {
+    var g = splineGeom(e);
+    if (!g) return null;
+    var m = g.bez.length, n = e.pts.length, res = { out: null, 'in': null };
+    function kap(d1, d2) { var L = Math.hypot(d1[0], d1[1]); return L > 1e-15 ? (d1[0] * d2[1] - d1[1] * d2[0]) / (L * L * L) : null; }
+    var B, hh;
+    if (i < m) { B = g.bez[i]; hh = g.knots[i + 1] - g.knots[i]; res.out = kap([3 * (B[1][0] - B[0][0]) / hh, 3 * (B[1][1] - B[0][1]) / hh], [6 * (B[0][0] - 2 * B[1][0] + B[2][0]) / (hh * hh), 6 * (B[0][1] - 2 * B[1][1] + B[2][1]) / (hh * hh)]); }
+    var ip = g.closed ? (i + m - 1) % m : i - 1;
+    if (ip >= 0 && ip < m && (g.closed || i <= n - 1)) { B = g.bez[ip]; hh = g.knots[ip + 1] - g.knots[ip]; res['in'] = kap([3 * (B[3][0] - B[2][0]) / hh, 3 * (B[3][1] - B[2][1]) / hh], [6 * (B[1][0] - 2 * B[2][0] + B[3][0]) / (hh * hh), 6 * (B[1][1] - 2 * B[2][1] + B[3][1]) / (hh * hh)]); }
+    res.k = res.out != null ? res.out : res['in'];
+    return res;
   }
   function bezPoint(B, s) {
     var u = 1 - s, b0 = u * u * u, b1 = 3 * u * u * s, b2 = 3 * u * s * s, b3 = s * s * s;
@@ -906,7 +1029,7 @@
         out = { t: 'spline', pts: e.pts.map(function (q) { return m(q[0], q[1]); }) };
         if (e.closed) out.closed = true;
         if (e.style) out.style = true;   // rfAH: a style spline's control polygon mirrors: the mirrored curve exactly
-        if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0]].concat(tg.slice(1)) : null; });
+        if (e.tans) out.tans = e.tans.map(function (tg) { return tg ? [2 * phi - tg[0]].concat(tg.slice(1, 3), tg[3] != null ? [-tg[3]] : []) : null; });   // rfAY: a curvature control bends the other way
         break;
       }
       case 'ellipse': case 'pellipse': {
@@ -2013,6 +2136,7 @@
   K.trimEntity = trimEntity; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
+  K.splineCurvatureAt = splineCurvatureAt;   // rfAY
   K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
   K.sketchLayer = sketchLayer; K.noProfileEntity = noProfileEntity; K.LAYER_PRESETS = LAYER_PRESETS;   // sketch-layers
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
@@ -2256,27 +2380,84 @@
     return { ok: true };
   }
   // Edit Block: the definition of instance id's block becomes that instance's geometry now (plus `extra`, entity
-  // indices drawn while editing), in its block coordinates, and every instance of it is placed again. Relations and
-  // dimensions on the edited geometry go. Returns { ok, error }.
+  // indices drawn while editing), in its block coordinates, and every instance of it is placed again. AZ: relations and
+  // dimensions are kept where their entities still are: each entity of the new definition that was one of the old
+  // (the same piece, matched by position in the definition when the edit kept the list of pieces, else the nearest
+  // piece of the same kind) carries the relations of that piece in every instance; the edited instance's relations
+  // among its own geometry are folded into the definition (a block is rigid), those to other geometry (and a Horizontal,
+  // Vertical or Fix on one of its pieces, which places the instance) stay. A relation
+  // on a piece the edit took out goes (counted in `dropped`; those to the insertion point always stay).
+  // Returns { ok, dropped: number of relations / dimensions that went, error }.
   function redefineBlock(sketch, id, extra) {
     var r = blockInstances(sketch).filter(function (q) { return q.id === String(id); })[0];
     if (!r) return { ok: false, error: 'No block instance ' + id + '.' };
     var E = sketch.entities, idx = r.ents.concat((extra || []).filter(function (i) { return E[i] && E[i].blk == null && r.ents.indexOf(i) < 0; }));
     if (!idx.length) return { ok: false, error: 'The block has no geometry left.' };
     var inv = { c: Math.cos(-r.ang * Math.PI / 180), s: Math.sin(-r.ang * Math.PI / 180), k: 1 / r.s, ang: -r.ang, tx: 0, ty: 0 }, ents = [];
-    idx.forEach(function (i) { ents = ents.concat(blockLocal(E[i], [r.x, r.y], inv)); });
-    sketch.blocks[r.def] = { ents: ents };
-    var before = E.slice();
-    sketch.entities = E.filter(function (e, i) { return idx.indexOf(i) < 0; });
-    blkRemap(sketch, before, idx);
-    // every instance of the block is placed again (their old geometry goes, the new follows the insertion point)
-    var gone = [];
-    blockInstances(sketch).forEach(function (q) { if (q.def === r.def) gone = gone.concat(q.ents); });
-    if (gone.length) { var b2 = sketch.entities.slice(); sketch.entities = sketch.entities.filter(function (e, i) { return gone.indexOf(i) < 0; }); blkRemap(sketch, b2, gone); }
-    blockInstances(sketch).filter(function (q) { return q.def === r.def; }).forEach(function (q) {
-      blockPlaced(sketch, q).forEach(function (w) { w.blk = q.id; sketch.entities.push(w); });
+    // the old definition piece each member of the edited instance still is (oldOf[sketch index] = definition index)
+    var oldPlaced = blockPlaced(sketch, r) || [], oldOf = {};
+    if (r.ents.length === oldPlaced.length && r.ents.every(function (i, k) { return E[i].t === oldPlaced[k].t; })) r.ents.forEach(function (i, k) { oldOf[i] = k; });
+    else {
+      var used = {};
+      r.ents.forEach(function (i) {
+        var best = -1, bd = Infinity, a = blkAnchor(E[i]);
+        oldPlaced.forEach(function (o, k) {
+          if (used[k] || !o || o.t !== E[i].t) return;
+          var b = blkAnchor(o), d = a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : 0;
+          if (d < bd) { bd = d; best = k; }
+        });
+        if (best >= 0) { used[best] = true; oldOf[i] = best; }
+      });
+    }
+    // the new definition; per piece: the sketch entity it came from when it is that entity alone (src), the old piece (from)
+    var src = [], from = [];
+    idx.forEach(function (i) {
+      var p = blockLocal(E[i], [r.x, r.y], inv);
+      p.forEach(function (o) { ents.push(o); src.push(p.length === 1 ? i : -1); from.push(p.length === 1 && oldOf[i] != null ? oldOf[i] : -1); });
     });
-    return { ok: true };
+    var insts = blockInstances(sketch).filter(function (q) { return q.def === r.def; });
+    sketch.blocks[r.def] = { ents: ents };
+    // map: old sketch index -> new; the instances' pieces go and come back placed again at the end, in definition order
+    var gone = {}, keep = [], map = [], n = 0, nOld = oldPlaced.length;
+    insts.forEach(function (q) { q.ents.forEach(function (i) { gone[i] = true; }); });
+    idx.forEach(function (i) { gone[i] = true; });
+    E.forEach(function (e, i) { if (gone[i]) map[i] = -1; else { map[i] = n++; keep.push(e); } });
+    insts.forEach(function (q) {
+      var placed = blockPlaced(sketch, q) || [], mine = q.id === r.id;
+      placed.forEach(function (w, j) {
+        w.blk = q.id;
+        var o = mine ? src[j] : (from[j] >= 0 && q.ents.length === nOld ? q.ents[from[j]] : -1);
+        if (o >= 0) map[o] = n;
+        keep.push(w); n++;
+      });
+    });
+    function ent(x) { var m = /^(\d+)/.exec(String(x)); return m ? +m[1] : null; }
+    var dropped = 0, own = {};   // own: the edited instance's entities (old indices); relations among them only go into the definition
+    idx.forEach(function (i) { own[i] = true; });
+    if (sketch.rels) {
+      sketch.rels = sketch.rels.filter(function (rel) {
+        var es = (rel.refs || []).map(ent);
+        // (one between two of its pieces, a dimension of one, or one on a piece drawn in the edit is its shape; a
+        // Horizontal / Fix on one of the pieces it had before places it)
+        var distinct = es.filter(function (e, k) { return es.indexOf(e) === k; });
+        if (es.length && es.every(function (e) { return e != null && (own[e] || e === r.ins); }) && es.some(function (e) { return e !== r.ins; }) && (distinct.length > 1 || rel.value != null || es.some(function (e) { return r.ents.indexOf(e) < 0 && e !== r.ins; }))) return false;
+        if (es.some(function (e) { return e != null && !(map[e] >= 0); })) { dropped++; return false; }
+        rel.refs = rel.refs.map(function (x) { var m = /^(\d+)(.*)$/.exec(String(x)); return m ? map[+m[1]] + m[2] : x; });
+        return true;
+      });
+      if (!sketch.rels.length) delete sketch.rels;
+    }
+    if (sketch.dims) {
+      sketch.dims = sketch.dims.filter(function (d) {
+        if (own[d.e]) return false;
+        if (!(map[d.e] >= 0)) { dropped++; return false; }
+        d.e = map[d.e];
+        return true;
+      });
+      if (!sketch.dims.length) delete sketch.dims;
+    }
+    sketch.entities = keep;
+    return { ok: true, dropped: dropped };
   }
   // rfAU: the definitions a sketch's instances use: sketch.blocks, plus, for a name an instance carries but the sketch
   // has no definition of (instances that came in from a DXF: DxfImport.parse with blocks), that instance's geometry in

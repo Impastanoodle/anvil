@@ -3,15 +3,18 @@
 // R12 (AC1009) file, no SPLINE / ELLIPSE in one either (R2000 has both: on a cut layer an open one's ends chain into
 // the loops like a LINE's, a closed spline or a full ellipse is a loop of its own). R2000 DIMENSION entities (rfT: a
 // drawing's dimensions) must name an anonymous block of the BLOCKS section that holds their drawn geometry, and a
-// dimension style of the DIMSTYLE table. Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
+// dimension style of the DIMSTYLE table. AZ: an INSERT must name a BLOCK of the BLOCKS section that holds something;
+// its block's geometry (base point, scale, rotation, a mirror; nested INSERTs too) is checked where the INSERT puts it,
+// as a CAM import explodes it (its LINE / ARC ends chain with the rest, its circles count as holes). Plain ES5, no DOM: tests/kernel-tests.html loads it with a <script> tag (DxfCheck), the Node runner
 // (headless/anvil.js) with require.
 //
 //   DxfCheck.parse(text)            -> { version, header: { $VAR: value }, entities: [{ type, layer, …geometry }],
-//                                        blocks: { name: [entities] }, dimstyles: [names] }
+//                                        blocks: { name: [entities] }, bases: { name: [x, y] }, dimstyles: [names] }
 //   DxfCheck.check(text, opts?)     -> { ok, errors: [..], version, insunits, measurement, counts: { 'TYPE@LAYER': n },
 //                                        circles: [{ layer, c, r }], loops: [{ layer, kind, closed, n }], extents,
 //                                        gap (largest end-point mismatch in a chained loop), dimensions: [{ layer,
-//                                        block, kind, text, value, entities (in its block) }] }
+//                                        block, kind, text, value, entities (in its block) }], inserts: [{ layer,
+//                                        block, at, scale, rotation }] }
 //   opts: { layers (the cut layers, default ['OUTLINE', 'HOLES']), tol (end-point match, default 1e-5 · (1 + size)),
 //           units ('in' | 'mm': $INSUNITS must say so) }
 (function (root) {
@@ -48,11 +51,11 @@
     return false;
   }
   function parse(text) {
-    var P = pairs(text), header = {}, entities = [], section = null, i, cur = null, poly = null, blocks = {}, block = null, dimstyles = [], table = null;
+    var P = pairs(text), header = {}, entities = [], section = null, i, cur = null, poly = null, blocks = {}, bases = {}, block = null, dimstyles = [], table = null;
     function finish() {
       if (!cur) return;
       var into = section === 'BLOCKS' ? (block ? blocks[block] : null) : entities;
-      if (cur.type === 'BLOCK') { block = cur.s[2] || ''; blocks[block] = blocks[block] || []; cur = null; return; }
+      if (cur.type === 'BLOCK') { block = cur.s[2] || ''; blocks[block] = blocks[block] || []; bases[block] = [cur.g[10] || 0, cur.g[20] || 0]; cur = null; return; }
       if (cur.type === 'ENDBLK') { block = null; cur = null; return; }
       if (!into) { cur = null; return; }
       if (cur.type === 'VERTEX' && poly) { poly.pts.push([cur.g[10] || 0, cur.g[20] || 0]); poly.bulges.push(cur.g[42] || 0); }
@@ -92,7 +95,7 @@
     }
     finish();
     var ver = header.$ACADVER;
-    return { version: typeof ver === 'string' ? ver : null, header: header, entities: entities, blocks: blocks, dimstyles: dimstyles };
+    return { version: typeof ver === 'string' ? ver : null, header: header, entities: entities, blocks: blocks, bases: bases, dimstyles: dimstyles };
   }
   function shape(e) {
     var g = e.g;
@@ -101,6 +104,7 @@
       case 'CIRCLE': return { type: 'CIRCLE', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0 };
       case 'ARC': return { type: 'ARC', layer: e.layer, c: [g[10] || 0, g[20] || 0], r: g[40] || 0, a0: g[50] || 0, a1: g[51] || 0 };
       case 'TEXT': return { type: 'TEXT', layer: e.layer, p: [g[10] || 0, g[20] || 0], h: g[40] || 0, text: g[1] || '' };
+      case 'INSERT': return { type: 'INSERT', layer: e.layer, block: e.s[2] || '', p: [g[10] || 0, g[20] || 0], sx: g[41] != null ? g[41] : 1, sy: g[42] != null ? g[42] : 1, rot: g[50] || 0 };
       // (rfT) 70 & 7: 0 rotated (horizontal / vertical), 1 aligned, 2 angular, 3 diameter, 4 radius, 6 ordinate
       case 'DIMENSION': return { type: 'DIMENSION', layer: e.layer, block: e.s[2] || '', style: e.s[3] || '', kind: ['linear', 'aligned', 'angular', 'diameter', 'radius', 'angular3', 'ordinate'][(g[70] || 0) & 7] || 'linear',
         text: g[1] || '', value: g[42] != null ? g[42] : null, p10: [g[10] || 0, g[20] || 0], p11: [g[11] || 0, g[21] || 0] };
@@ -146,6 +150,45 @@
   }
   function splineRange(e) { return [e.knots[e.degree], e.knots[e.cps.length]]; }
 
+  // AZ: entity e of a block placed by an INSERT (ins; the block's base point base): a copy where the INSERT puts it,
+  // on the INSERT's layer when it is on layer 0
+  function placeIn(e, ins, base) {
+    var a = ins.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), sx = ins.sx, sy = ins.sy, mir = sx * sy < 0, k = Math.abs(sx);
+    function P(q) { var x = (q[0] - base[0]) * sx, y = (q[1] - base[1]) * sy; return [ins.p[0] + c * x - s * y, ins.p[1] + s * x + c * y]; }
+    function ang(d) { if (sx < 0) d = 180 - d; if (sy < 0) d = -d; return d + ins.rot; }
+    var o = JSON.parse(JSON.stringify(e));
+    if (o.layer === '0') o.layer = ins.layer;
+    switch (o.type) {
+      case 'LINE': o.a = P(e.a); o.b = P(e.b); break;
+      case 'CIRCLE': o.c = P(e.c); o.r = e.r * k; break;
+      case 'ARC': o.c = P(e.c); o.r = e.r * k; o.a0 = mir ? ang(e.a1) : ang(e.a0); o.a1 = mir ? ang(e.a0) : ang(e.a1); break;
+      case 'TEXT': o.p = P(e.p); o.h = e.h * Math.abs(sy); break;
+      case 'LWPOLYLINE': case 'POLYLINE': o.pts = e.pts.map(P); if (mir) o.bulges = e.bulges.map(function (b) { return -b; }); break;
+      case 'SPLINE': o.cps = e.cps.map(P); break;
+      case 'ELLIPSE': { var M = [e.major[0] * sx, e.major[1] * sy]; o.c = P(e.c); o.major = [c * M[0] - s * M[1], s * M[0] + c * M[1]]; if (mir) o.nz = -e.nz; break; }
+      case 'INSERT': o.p = P(e.p); o.sx = e.sx * sx; o.sy = e.sy * sy; o.rot = ang(e.rot) - (mir ? 180 : 0); break;
+    }
+    return o;
+  }
+  // the model-space entities with every INSERT followed by its block's geometry placed (nested ones too); an INSERT of
+  // a block the BLOCKS section does not have, or of an empty one, is an error
+  function explodeInserts(d, errors, inserts) {
+    var out = [];
+    function add(e, depth) {
+      out.push(e);
+      if (e.type !== 'INSERT') return;
+      var be = d.blocks[e.block];
+      if (depth === 0) inserts.push({ layer: e.layer, block: e.block, at: e.p, scale: [e.sx, e.sy], rotation: e.rot });
+      if (!e.block || !be) { errors.push('INSERT on ' + e.layer + ' names block "' + e.block + '", which the BLOCKS section does not have'); return; }
+      if (!be.length) { errors.push('INSERT on ' + e.layer + ' of block ' + e.block + ', which is empty'); return; }
+      if (!(e.sx) || !(e.sy)) { errors.push('INSERT of block ' + e.block + ' on ' + e.layer + ' with a zero scale'); return; }
+      if (depth > 8) { errors.push('INSERT of block ' + e.block + ' nested more than 8 deep'); return; }
+      be.forEach(function (b) { add(placeIn(b, e, d.bases[e.block] || [0, 0]), depth + 1); });
+    }
+    d.entities.forEach(function (e) { add(e, 0); });
+    return out;
+  }
+
   function check(text, opts) {
     opts = opts || {};
     var layers = opts.layers || ['OUTLINE', 'HOLES'], d = parse(text), errors = [], counts = {}, circles = [], loops = [];
@@ -159,7 +202,8 @@
     if (insunits == null) errors.push('no $INSUNITS in the header');
     if (opts.units && insunits !== (opts.units === 'in' ? 1 : 4)) errors.push('$INSUNITS is ' + insunits + ', expected ' + (opts.units === 'in' ? '1 (inch)' : '4 (mm)'));
     if (opts.units && measurement != null && measurement !== (opts.units === 'in' ? 0 : 1)) errors.push('$MEASUREMENT is ' + measurement + ' for ' + opts.units);
-    var cut = [], seen = {}, dims = [], hatches = [], hasBlocks = Object.keys(d.blocks).length > 0;
+    var cut = [], seen = {}, dims = [], hatches = [], hasBlocks = Object.keys(d.blocks).length > 0, inserts = [];
+    var all = explodeInserts(d, errors, inserts);
     d.entities.forEach(function (e) {
       if (e.type !== 'DIMENSION') return;
       var be = d.blocks[e.block];
@@ -169,9 +213,10 @@
       if (e.style && d.dimstyles.length && d.dimstyles.indexOf(e.style) < 0) errors.push('DIMENSION on ' + e.layer + ' uses dimension style "' + e.style + '", not in the DIMSTYLE table');
       dims.push({ layer: e.layer, block: e.block, kind: e.kind, text: e.text, value: e.value, entities: be ? be.length : 0 });
     });
-    d.entities.forEach(function (e) {
+    all.forEach(function (e) {
       var key = e.type + '@' + e.layer;
       counts[key] = (counts[key] || 0) + 1;
+      if (e.type === 'INSERT') return;   // (AZ: its geometry follows it in the list)
       if ((e.type === 'LWPOLYLINE' || e.type === 'SPLINE' || e.type === 'ELLIPSE' || e.type === 'HATCH') && d.version === 'AC1009') errors.push(e.type + ' in an R12 (AC1009) file');
       // (rfAG) HATCH (R2000): a pattern name, as many boundary paths as declared, each a closed polyline path with the
       // vertex count it declares (three or more, no zero-length edge), the seed points it declares
@@ -215,7 +260,7 @@
         return;
       }
       if (layers.indexOf(e.layer) < 0) return;
-      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts]);
+      var sig = JSON.stringify([e.type, e.a, e.b, e.c, e.r, e.a0, e.a1, e.pts, e.p, e.text]);
       if (seen[sig]) errors.push('duplicate ' + e.type + ' on ' + e.layer); seen[sig] = true;
       if (e.type === 'LINE') {
         if (Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) < 1e-9) errors.push('zero-length LINE on ' + e.layer + ' at ' + e.a);
@@ -284,7 +329,7 @@
     var uniq = [];
     errors.forEach(function (e) { if (uniq.indexOf(e) < 0) uniq.push(e); });
     return { ok: !uniq.length, errors: uniq, version: d.version, insunits: insunits, measurement: measurement, counts: counts, circles: circles,
-      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims, hatches: hatches };
+      loops: loops, extents: isFinite(min[0]) ? { min: min, max: max } : null, gap: gap, entities: d.entities.length, dimensions: dims, hatches: hatches, inserts: inserts };
   }
 
   var api = { parse: parse, check: check };

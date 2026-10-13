@@ -819,7 +819,7 @@
     }
     function calculate() {
       if (snap && applied) restore(snap);
-      markDirty();
+      if (!snap) { UI.pushUndo(); App.sketchDirty = true; }   // its own Ctrl+Z step, even right after an import or a script
       snap = snap || snapshot();
       var r = S.fullyDefine(f, opts());
       applied = r;
@@ -833,7 +833,7 @@
     }
     function render() {
       var an = analysis(f);
-      if (!applied) { spec.message = S.STATUS_TEXT[an.status] + ' (' + an.dof + ' degree' + (an.dof === 1 ? '' : 's') + ' of freedom). Set the options, then Calculate.'; spec.messageOk = an.status === 'full'; }
+      if (!applied) { spec.message = S.STATUS_TEXT[an.status] + ' (' + an.dof + ' degree' + (an.dof === 1 ? '' : 's') + ' of freedom). Set the options, then ' + (auto ? 'Apply' : 'Calculate') + '.'; spec.messageOk = an.status === 'full'; }
       if (auto) {
         var SCH = [['baseline', 'Baseline'], ['chain', 'Chain'], ['ordinate', 'Ordinate']];
         spec.groups = [
@@ -1685,7 +1685,7 @@
 // 0.01 mm, 0.01°). Releasing makes one undo step; Esc during the drag puts the value back. A driven dimension (and the
 // grey driven values of View ▸ Sketch Dimensions) shows no handle. The live solve starts from the sketch as it was
 // when the drag began on every step (as the Modify box's preview does), so a refused value never leaves a trace.
-// Instant3D's dimension dots in a sketch are hidden (style.css): in SolidWorks Instant3D acts on the part only.
+// Instant3D makes no dimension dots in a sketch (ui-select.js): in SolidWorks Instant3D acts on the part only.
 (function () {
   'use strict';
   if (typeof UI === 'undefined' || !UI.App) return;

@@ -1197,7 +1197,7 @@
   SketchBuilder.prototype.spline = function (pts, closed, tans, opts) {
     var s = this, e = { t: 'spline', pts: pts.map(function (p) { return [s._v(p[0]), s._v(p[1])]; }) };
     if (closed) e.closed = true;
-    if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]].concat(t[2] != null ? [+t[2]] : []) : null; });   // rfAK: [angle, weight, weightIn]
+    if (tans && tans.some(Boolean)) e.tans = pts.map(function (p, i) { var t = tans[i]; return t ? [+t[0], t[1] == null ? 1 : +t[1]].concat(t[2] != null || t[3] != null ? [t[2] == null ? null : +t[2]] : [], t[3] != null ? [+t[3]] : []) : null; });   // rfAK: [angle, weight, weightIn], rfAY: curvature
     if (opts && opts.local) e.local = true;   // rfAK: Maintain internal continuity off
     if (opts && opts.eq) e.eq = JSON.parse(JSON.stringify(opts.eq));   // rfAP: an Equation Driven Curve's equation (SketchSolver.equationPoints)
     if (opts && opts.conic != null) { e.conic = +opts.conic; if (opts.parabola) e.parabola = true; }   // rfAS: a Conic / Parabola (pts: start, shoulder, end)

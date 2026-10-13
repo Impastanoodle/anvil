@@ -7,7 +7,10 @@
 //                                      by the local server first (UI.dwgToDxf, UI.importDWGData, UI.openDWGFile below)
 //   UI.importDXFText(text, opts?)      the same from DXF text (scripts, tests): opts { name, units: 'file' | 'in' | 'mm',
 //                                      origin: 'file' | 'lowerleft' | 'center', dx, dy, rot, tol, repair, relations,
-//                                      layers: { name: false }, ok: true (accept at once) } -> the PM values, or null
+//                                      layers: { name: false }, blocks (false: blocks exploded), ok: true (accept at
+//                                      once) } -> the PM values, or null. AZ: the file's INSERTs come in as sketch
+//                                      blocks (Tools > Blocks: rigid instances of one definition each, Kernel.adoptBlocks)
+//                                      when "Import blocks as blocks" is on (the default, as SolidWorks keeps them)
 //   UI.openDXFFile(name, data)         File ▸ Open of a .dxf: a new part named after the file, the DXF in Sketch1 on the
 //                                      Top Plane ("Import to a new part as 2D sketch")
 //   UI.cmdCheckSketch()                Check Sketch for Feature (read-only; markers, Previous / Next zoom to each problem)
@@ -128,13 +131,25 @@
   // meet. Above MAX_AUTO_RELS joints the relations start off: the solver's analysis of a sketch grows with its
   // relations (1200 Coincidents: about 1 s per sketch update), and the snapped ends make the profile on their own.
   var MAX_AUTO_RELS = 300;
-  function jointCount(ents) { return DxfImport.endJoints(ents).reduce(function (n, j) { return n + j.length - 1; }, 0); }
+  // the joints between ends of the entities, block instances' entities left out (a block is rigid: a Coincident inside
+  // one is redundant, and its ends are where its definition puts them)
+  function plainJoints(ents) {
+    return DxfImport.endJoints(ents).map(function (j) { return j.filter(function (r) { return ents[parseInt(r, 10)].blk == null; }); }).filter(function (j) { return j.length >= 2; });
+  }
+  function jointCount(ents) { return plainJoints(ents).reduce(function (n, j) { return n + j.length - 1; }, 0); }
+  function blockIds(ents) { var ids = {}; ents.forEach(function (e) { if (e.blk != null && e.blkDef != null) ids[e.blk] = e.blkDef; }); return ids; }
   function importDXFText(text, opts) {
     opts = opts || {};
     var name = String(opts.name || 'Drawing.dxf').replace(/^.*[\\\/]/, '');
     if (isAsm()) { UI.toast('DXF files are imported into a part sketch: open a part first.'); return null; }
-    var parsed;
-    try { parsed = DxfImport.parse(text); } catch (e) { UI.toast('Could not read ' + name + ': ' + e.message); return null; }
+    var parsed, parsedB = null, parsedX = null, hasBlocks = false;
+    try {
+      // AZ: INSERTs as block instances (DxfImport.parse blocks option); the exploded reading only when that is turned off
+      if (opts.blocks !== false && K.blockEntity) { parsedB = DxfImport.parse(text, { blocks: true }); hasBlocks = parsedB.entities.some(function (e) { return e.blkDef != null; }); }
+      if (!hasBlocks || opts.blocks === false) parsedX = DxfImport.parse(text);
+      if (opts.blocks === false && K.blockEntity) hasBlocks = DxfImport.parse(text, { blocks: true }).entities.some(function (e) { return e.blkDef != null; });
+    } catch (e) { UI.toast('Could not read ' + name + ': ' + e.message); return null; }
+    parsed = hasBlocks && opts.blocks !== false ? parsedB : parsedX;
     if (!parsed.entities.length) { UI.toast(name + ' has no sketch geometry in model space' + (parsed.warnings.length ? ' (' + parsed.warnings.join(' ') + ')' : '.')); return null; }
     if (App.mode === 'sketch' && UI.cancelTool) UI.cancelTool();
     if (App.mode !== 'sketch') UI.newSketchOnPlane('Top');
@@ -142,7 +157,7 @@
     if (!f) { UI.toast('Could not open a sketch for the DXF.'); return null; }
     var pu = partUnits();
     var v = { units: opts.units || 'file', origin: opts.origin || 'file', dx: +opts.dx || 0, dy: +opts.dy || 0, rot: +opts.rot || 0,
-      tol: opts.tol != null ? +opts.tol : mergeTol(), repair: opts.repair !== false, rels: true };
+      tol: opts.tol != null ? +opts.tol : mergeTol(), repair: opts.repair !== false, rels: true, blocks: opts.blocks !== false };
     parsed.layers.forEach(function (l, i) { v['L' + i] = !(opts.layers && opts.layers[l.name] === false); });
     var built = null;
     function srcUnits() { return v.units === 'in' || v.units === 'mm' ? v.units : (parsed.units || pu); }
@@ -165,10 +180,31 @@
         g.layers.push(L);
       });
     }
+    function layerFields() { return parsed.layers.map(function (l, i) { return { type: 'check', label: l.name + ' (' + l.count + ')', key: 'L' + i }; }); }
+    // the imported blocks' definitions into sketch g: a name g already uses for other geometry gets a suffix (-2, -3 ...)
+    // on the imported instances; one it uses for the same geometry is shared
+    function adoptImported(g, geo) {
+      if (!K.blockDefs) return;
+      var defs = K.blockDefs({ entities: geo }), have = g.blocks || {}, rename = {};
+      function key(d) { return JSON.stringify(d.ents, function (k, x) { return typeof x === 'number' ? Math.round(x * 1e6) / 1e6 : x; }); }
+      Object.keys(defs).forEach(function (n) {
+        if (!have[n] || key(have[n]) === key(defs[n])) return;
+        var k = 2;
+        while (have[n + '-' + k] || defs[n + '-' + k]) k++;
+        rename[n] = n + '-' + k;
+      });
+      geo.forEach(function (e) { if (e.blkDef != null && rename[e.blkDef]) e.blkDef = rename[e.blkDef]; });
+    }
     function build() {
       var on = {};
       parsed.layers.forEach(function (l, i) { if (v['L' + i]) on[l.name] = true; });
       var ents = parsed.entities.filter(function (e) { return on[e.layer]; });
+      // a block instance keeps its insertion point while any of its geometry is on, and goes with all of it
+      var live = {}, ins = {};
+      ents.forEach(function (e) { if (e.blk != null && e.blkDef == null) live[e.blk] = true; });
+      parsed.entities.forEach(function (e) { if (e.blkDef != null) ins[e.blk] = e; });
+      ents = ents.filter(function (e) { return e.blkDef == null || live[e.blk]; });
+      Object.keys(live).forEach(function (id) { if (ins[id] && ents.indexOf(ins[id]) < 0) ents.push(ins[id]); });
       var s = conv(srcUnits(), pu);
       ents = DxfImport.transform(ents, { s: s });
       var b = DxfImport.bounds(ents), o = [0, 0];
@@ -177,7 +213,10 @@
       ents = DxfImport.transform(ents, { dx: -o[0], dy: -o[1] });
       ents = DxfImport.transform(ents, { rot: +v.rot || 0, dx: +v.dx || 0, dy: +v.dy || 0 });
       var tol = Math.max(0, +v.tol || 0);
-      var rep = DxfImport.repair(ents, { tol: tol || 1e-9, closeGaps: tol > 0, merge: !!v.repair, removeTiny: !!v.repair, join: false, split: false });
+      // (block instances are not repaired: their geometry is their definition's)
+      var inBlk = ents.filter(function (e) { return e.blk != null; }), plain = ents.filter(function (e) { return e.blk == null; });
+      var rep = plain.length ? DxfImport.repair(plain, { tol: tol || 1e-9, closeGaps: tol > 0, merge: !!v.repair, removeTiny: !!v.repair, join: false, split: false }) : { entities: [], report: null };
+      rep.entities = rep.entities.concat(inBlk);
       // DXF layers become sketch layers (ui-sketch-layers.js); layer "0" is the sketch's default layer
       rep.entities.forEach(function (e) { if (e.layer == null || e.layer === '' || e.layer === '0') delete e.layer; });
       built = { entities: rep.entities, report: rep.report, scale: s };
@@ -189,8 +228,10 @@
       UI.updateTemp();
       var rep = built.report;
       if (spec) {
-        var nTxt = built.entities.filter(function (e) { return e.t === 'text'; }).length;
+        var nTxt = built.entities.filter(function (e) { return e.t === 'text' && e.blk == null; }).length, bi = blockIds(built.entities), nIns = Object.keys(bi).length;
+        var nDef = Object.keys(bi).map(function (k) { return bi[k]; }).filter(function (n, i, a) { return a.indexOf(n) === i; }).length;
         spec.message = '<b>' + esc(name) + '</b>: ' + plural(built.entities.length, 'entity', 'entities') + ' to import' + (nTxt ? ', ' + plural(nTxt, 'text') + ' as Etch Sketch Text' : '') +
+          (nIns ? ', ' + plural(nIns, 'block instance') + ' of ' + plural(nDef, 'block') : '') +
           (rep && (rep.gaps || rep.merged || rep.removed) ? ' (' + [rep.gaps ? plural(rep.gaps, 'gap') + ' closed' : '', rep.merged ? plural(rep.merged, 'duplicate') + ' merged' : '', rep.removed ? plural(rep.removed, 'tiny entity', 'tiny entities') + ' removed' : ''].filter(Boolean).join(', ') + ')' : '') + '.' +
           (parsed.skippedNote ? ' ' + esc(parsed.skippedNote.charAt(0).toUpperCase() + parsed.skippedNote.slice(1)) + '.' : '') +
           (parsed.warnings.length ? '<br>' + parsed.warnings.map(esc).join('<br>') : '');
@@ -211,7 +252,7 @@
           { type: 'select', label: 'Import as', key: 'units', rerender: true, options: [['file', 'As in file'], ['in', 'Inches'], ['mm', 'Millimeters']] },
           { type: 'static', label: 'Scale into the part', value: function () { return '× ' + UI.fmtNum(conv(srcUnits(), pu), 6) + ' (' + UNIT_TEXT[srcUnits()].toLowerCase() + ' → ' + UNIT_TEXT[pu].toLowerCase() + ')'; } }
         ] },
-        { title: 'Layers', fields: parsed.layers.map(function (l, i) { return { type: 'check', label: l.name + ' (' + l.count + ')', key: 'L' + i }; }) },
+        { title: 'Layers', fields: layerFields() },
         { title: 'Position', fields: [
           { type: 'radio', key: 'origin', options: [['file', 'As in file'], ['lowerleft', 'Lower-left corner at the origin'], ['center', 'Center on the origin']] },
           { type: 'number', label: 'X offset', key: 'dx', unit: 'u' },
@@ -222,21 +263,37 @@
           { type: 'number', label: 'Merge points closer than', key: 'tol', unit: 'u', min: 0 },
           { type: 'check', label: 'Repair after import', key: 'repair' },
           { type: 'check', label: 'Add Coincident relations', key: 'rels' },
+          { type: 'check', label: 'Import blocks as blocks', key: 'blocks', show: function () { return hasBlocks; } },
           { type: 'html', show: function () { return nJoints > MAX_AUTO_RELS; }, html: '<div class="pm-note">' + nJoints + ' joints: with that many relations the sketch solves slowly, so they start off. The ends are snapped together either way.</div>' }
         ] }
       ],
-      onChange: preview,
+      onChange: function (x, key) {
+        // AZ: blocks on / off reads the file the other way; the layers keep their on / off by name
+        if (key === 'blocks' && hasBlocks) {
+          var was = {};
+          parsed.layers.forEach(function (l, i) { was[l.name] = v['L' + i]; });
+          if (!v.blocks && !parsedX) parsedX = DxfImport.parse(text);
+          if (v.blocks && !parsedB) parsedB = DxfImport.parse(text, { blocks: true });
+          parsed = v.blocks ? parsedB : parsedX;
+          Object.keys(v).forEach(function (k) { if (/^L\d+$/.test(k)) delete v[k]; });
+          parsed.layers.forEach(function (l, i) { v['L' + i] = was[l.name] !== false; });
+          spec.groups[1].fields = layerFields();
+        }
+        preview();
+      },
       okBlocked: function () { return built && built.entities.length ? '' : 'Turn on a layer with geometry to import.'; },
       onOK: function () {
         var geo = build().entities;
         if (!geo.length) { UI.toast('Nothing to import: every layer is off.'); return false; }
-        var n0 = 0, nRel = 0;
+        var n0 = 0, nRel = 0, nIns = Object.keys(blockIds(geo)).length;
         var r = undoStep(function () {
           var g = UI.activeSketchFeature() || f;
           n0 = g.entities.length;
+          if (nIns) adoptImported(g, geo);
           geo.forEach(function (e) { g.entities.push(e); });
           addLayers(g, geo);
-          if (v.rels) nRel = addJoints(g, DxfImport.endJoints(geo), n0);
+          if (v.rels) nRel = addJoints(g, plainJoints(geo), n0);
+          if (nIns && K.adoptBlocks) K.adoptBlocks(g);
           if (S && S.clean) S.clean(g);
           return { ok: true };
         });
@@ -244,8 +301,8 @@
         clearPreview(); changed();
         frame(DxfImport.bounds(geo));
         var g2 = UI.activeSketchFeature() || f, chk = DxfImport.check(g2.entities.slice(n0), gapTol(), { unit: UI.unitLabel() });
-        var nTx = geo.filter(function (e) { return e.t === 'text'; }).length;
-        UI.setStatus('Imported ' + plural(geo.length, 'entity', 'entities') + ' from ' + name + ' (' + plural(nRel, 'Coincident relation') + (nTx ? ', ' + plural(nTx, 'text') : '') + '). ' +
+        var nTx = geo.filter(function (e) { return e.t === 'text' && e.blk == null; }).length;
+        UI.setStatus('Imported ' + plural(geo.length, 'entity', 'entities') + ' from ' + name + ' (' + plural(nRel, 'Coincident relation') + (nTx ? ', ' + plural(nTx, 'text') : '') + (nIns ? ', ' + plural(nIns, 'block instance') : '') + '). ' +
           (parsed.skippedNote ? parsed.skippedNote.charAt(0).toUpperCase() + parsed.skippedNote.slice(1) + '. ' : '') +
           (chk.summary === 'No problems found' ? 'Check Sketch: no problems found.' : 'Check Sketch: ' + chk.summary + '.'));
       },

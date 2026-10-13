@@ -631,8 +631,6 @@ html[data-theme="dark"] #dim-edit .dm-btns button:active { background: #33465c; 
 #i3d-layer .i3d-base { fill: #fff; stroke: #1f6fc5; stroke-width: 1.5; }
 #i3d-layer .i3d-dot { fill: #1f6fc5; stroke: #fff; stroke-width: 1.5; }
 /* r12/sketchui12: in an open sketch the dimension dots stay hidden until the pointer is over one (SolidWorks draws no dots on sketch dimensions) */
-#i3d-layer .i3d-handle.live .i3d-dot { opacity: 0; transition: opacity 0.1s; }
-#i3d-layer .i3d-handle.live:hover .i3d-dot { opacity: 1; }
 #i3d-layer .i3d-handle:hover .i3d-shaft { stroke: #ff8c1a; }
 #i3d-layer .i3d-handle:hover .i3d-head, #i3d-layer .i3d-handle:hover .i3d-dot { fill: #ff8c1a; }
 #i3d-layer .i3d-ruler { fill: none; stroke: #23272d; stroke-width: 1; }
@@ -1019,4 +1017,3 @@ body.splitting #viewport { pointer-events: none; }
 #i2d-layer .i2d-tick.major { stroke-width: 1.4; }
 #i2d-layer .i2d-tick.hit { stroke: #ff8c1a; stroke-width: 2.5; }
 #i2d-layer text { font: 10.5px "Segoe UI", Arial, sans-serif; fill: var(--blue, #1f6fc5); paint-order: stroke; stroke: var(--dim-halo, #fff); stroke-width: 2.5px; stroke-linejoin: round; user-select: none; }
-#i3d-layer .i3d-handle.live { display: none; }
