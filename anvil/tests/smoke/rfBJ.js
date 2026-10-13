@@ -238,7 +238,7 @@
     assert(v.origin[0] === 10 && v.origin[1] === 10, 'gnomon placed on the corner: ' + v.origin);
     await wait(40);
     var g = UI.pmSpec().transform === 'dynamic' && D.querySelector('.tf-gnomon');
-    assert(g && g.childNodes.length >= 4, 'the gnomon is drawn');
+    assert(g && g.querySelectorAll('*').length >= 4, 'the gnomon is drawn');
     var o = rfBJScr([10, 10]), from = [o[0] + 40, o[1]];
     var box = D.querySelector('.tf-dyn-val'), during = null;
     await rfBJDrag(from, [from[0] + 60, from[1]], function () { during = box.hidden ? null : box.value; });
@@ -263,7 +263,7 @@
     await wait(40);
     var gg = UI.pmSpec() && D.querySelector('.tf-gnomon'), c0 = rfBJScr([0, 0]);
     assert(gg, 'gnomon again');
-    var q = 44 / Math.SQRT2;   // a point on the ring at 45° (screen y runs down), dragged round to 135°
+    var q = UI.pmSpec().dynamic.geo().R / Math.SQRT2;   // a point on the Z arc at 45° (screen y runs down), dragged round to 135° (lane BN: the arc's radius)
     await rfBJDrag([c0[0] + q, c0[1] - q], [c0[0] - q, c0[1] - q]);
     v = UI.pmSpec().values;
     assert(v.ang !== 0 && v.dx === 0 && v.dy === 0, 'the ring turned it: ' + v.ang);

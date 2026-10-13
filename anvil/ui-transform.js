@@ -674,16 +674,28 @@
   }
 
   // ------------------------------------------------------------------ Dynamic
-  // Mastercam: Transform ▸ Dynamic. A gnomon (X and Y arrows and a rotation ring) placed at a point: drag an arrow to
-  // move along it, the ring to turn about the gnomon; a small box shows the value while dragging, and a number typed
-  // into it (Enter) sets that move exactly. The gnomon travels with the geometry; the moves add up until ✓.
-  var GN = { len: 70, ring: 44, hit: 7 };
+  // Mastercam: Transform ▸ Dynamic, with Mastercam's dynamic gnomon (lane BN). A 3D gnomon at the transform origin:
+  // X (red), Y (green) and Z (blue) arrows with cone heads and the axis letter at each tip, a grey ball at the centre,
+  // and three quarter-arc rotation handles between the axis pairs, each in the colour of the axis it turns about, with
+  // white ticks along it. Drag an arrow to move along it (a guide line runs along the axis), an arc to turn about its
+  // axis (a dotted yellow ring with direction arrows and the swept wedge); the value box next to the cursor shows the
+  // distance or the angle, and a number typed while dragging, or into the box after it, sets the move exactly (Enter;
+  // Tab moves on to the PropertyManager). Angles snap to 1° (15° with Shift, or the PM's Angle increment), distances to
+  // the document's precision and to a sketch point the gnomon lands on. The ball drags the gnomon itself without moving
+  // the geometry (it snaps to sketch points and the origin); a click on the X or Y letter, then on a line, aligns that
+  // axis with the line (Mastercam "align to geometry"). In a sketch only in-plane moves apply: the Z arrow and the two
+  // out-of-plane arcs are drawn faded and are inert ("Only in-plane moves apply in a sketch"). Drawn as an SVG overlay
+  // that projects 3D points every frame, so it keeps its size on screen at any zoom and follows the view's rotation.
+  // The moves add up until ✓; the gnomon travels with the geometry.
+  var GN = { len: 110, arc: 0.62, ring: 1.3, hit: 8, ball: 6.5, head: 15, headW: 5.5 };
+  var GCOL = { x: '#e5322d', y: '#2fae3d', z: '#2f66d6', ring: '#f2d21b', wedge: '#e0503c' };
+  var INERT_TIP = 'Only in-plane moves apply in a sketch';
   function cmdTDynamic() {
-    var overlay = null, box = null, raf = 0, last = null, live = null;
+    var overlay = null, layer = null, box = null, tip = null, raf = 0, last = null, live = null, hover = null, aligning = null, shift = false;
     var ctx = transformPM({
       name: 'dynamic', title: 'Dynamic', icon: 'tDynamic', ops: OPS2, spacing: null,
-      message: 'Select the sketch entities and place the gnomon (click its Origin box, then a point). Drag an arrow to move, the ring to rotate; type a value in the box and press Enter for an exact one.',
-      values: { origin: [0, 0], dx: 0, dy: 0, ang: 0 },
+      message: 'Select the sketch entities and place the gnomon (its Origin box, or drag the ball). Drag an arrow to move, an arc to rotate; type a value while dragging (Enter) for an exact one; click the X or Y letter, then a line, to align the axis.',
+      values: { origin: [0, 0], dx: 0, dy: 0, ang: 0, inc: 1, tilt: 0 },
       points: { origin: { key: 'origin', prompt: 'Click where the gnomon goes.' } },
       groups: function () {
         return [{ title: 'Gnomon', fields: [
@@ -691,28 +703,86 @@
           { type: 'number', label: 'Delta X', key: 'dx', unit: 'u' },
           { type: 'number', label: 'Delta Y', key: 'dy', unit: 'u' },
           { type: 'number', label: 'Angle', key: 'ang', unit: '°' },
+          { type: 'number', label: 'Angle increment', key: 'inc', unit: '°', step: 1, min: 0 },
+          { type: 'number', label: 'X axis angle', key: 'tilt', unit: '°' },
           { type: 'buttons', buttons: [{ label: 'Reset', onclick: function (x) { x.dx = 0; x.dy = 0; x.ang = 0; last = null; hideBox(); UI.renderPM(); ctx.preview(); } }] }
         ] }];
       },
       onChange: function (key) { if (key === 'origin') { last = null; hideBox(); } },
-      needs: function (v) { return (+v.dx || 0) || (+v.dy || 0) || (+v.ang || 0) ? '' : 'Drag an arrow or the ring of the gnomon (or type the values).'; },
+      needs: function (v) { return (+v.dx || 0) || (+v.dy || 0) || (+v.ang || 0) ? '' : 'Drag an arrow or an arc of the gnomon (or type the values).'; },
       step: function (v, t) { return A.power(pose(v), t); },
-      onApplied: function () { var v = ctx.v; v.origin = A.apply(pose(v), v.origin).map(tidy); v.dx = 0; v.dy = 0; v.ang = 0; last = null; hideBox(); },
+      onEntityPick: function (hit) { return alignPick(hit); },
+      onApplied: function () { var v = ctx.v; v.origin = A.apply(pose(v), v.origin).map(tidy); v.tilt = tidy(normDeg((+v.tilt || 0) + (+v.ang || 0))); v.dx = 0; v.dy = 0; v.ang = 0; last = null; hideBox(); },
       onOpen: function (c) { c.cmd.onSketchDrag = dragHook; startOverlay(); },
       onClose: function () { stopOverlay(); }
     });
     if (!ctx) return;
+    var cmd = ctx.cmd;
     // the pose: turned by ang about the origin, then moved by (dx, dy)
     function pose(v, extra) {
       var dx = +v.dx || 0, dy = +v.dy || 0, an = +v.ang || 0;
       if (extra) { dx += extra.dx || 0; dy += extra.dy || 0; an += extra.ang || 0; }
       return A.mul(A.translate(dx, dy), A.rotate(an, v.origin[0], v.origin[1]));
     }
-    function frame() { var v = ctx.v, o = [v.origin[0] + (+v.dx || 0), v.origin[1] + (+v.dy || 0)], a = +v.ang || 0; return { o: o, x: [cosd(a), sind(a)], y: [-sind(a), cosd(a)], a: a }; }
+    // the gnomon in the sketch: its centre and its in-plane axes (turned by the X axis angle plus the rotation so far)
+    function frame() { var v = ctx.v, o = [v.origin[0] + (+v.dx || 0), v.origin[1] + (+v.dy || 0)], a = (+v.ang || 0) + (+v.tilt || 0); return { o: o, x: [cosd(a), sind(a)], y: [-sind(a), cosd(a)], a: a }; }
+    // ---- the 3D frame and its projection
+    function frame3() {
+      var pl = UI.activePlane(), fr = frame(), o3 = K.to3D(pl, fr.o[0], fr.o[1]), so = UI.worldToScreen(o3), px = pxWorld(so[0], so[1]) || 1;
+      function dir(u) { return [pl.x[0] * u[0] + pl.y[0] * u[1], pl.x[1] * u[0] + pl.y[1] * u[1], pl.x[2] * u[0] + pl.y[2] * u[1]]; }
+      return { pl: pl, fr: fr, o3: o3, so: so, px: px, L: GN.len * px, ax: { x: dir(fr.x), y: dir(fr.y), z: [pl.n[0], pl.n[1], pl.n[2]] } };
+    }
+    function at3(F, a, b, c) { var o = F.o3, X = F.ax.x, Y = F.ax.y, Z = F.ax.z; return [o[0] + X[0] * a + Y[0] * b + Z[0] * c, o[1] + X[1] * a + Y[1] * b + Z[1] * c, o[2] + X[2] * a + Y[2] * b + Z[2] * c]; }
+    function depth(p) { var d = UI.cam && UI.cam.dir; return d ? p[0] * d.x + p[1] * d.y + p[2] * d.z : 0; }
+    var ARCS = { rz: ['x', 'y'], rx: ['y', 'z'], ry: ['z', 'x'] };   // each arc: the axes it runs between (about the third)
+    var INERT = { z: 1, rx: 1, ry: 1, lz: 1 };                        // in a sketch: out of the plane
+    function inert(k) { return !!INERT[k]; }
+    function unit(k) { return k === 'x' ? [1, 0, 0] : k === 'y' ? [0, 1, 0] : [0, 0, 1]; }
+    // a point of the arc / ring between axes a and b at angle deg (gnomon coordinates), radius r (world)
+    function onArc(F, a, b, deg, r) { var ua = unit(a), ub = unit(b), c = Math.cos(deg * D2R), s = Math.sin(deg * D2R); return at3(F, (ua[0] * c + ub[0] * s) * r, (ua[1] * c + ub[1] * s) * r, (ua[2] * c + ub[2] * s) * r); }
+    // the gnomon on screen: centre, arrow tips, letters, the arcs' points (pixels) and the frame
+    function geo() {
+      var F = frame3(), L = F.L, R = L * GN.arc, g = { o: F.so, F: F, R: GN.len * GN.arc, L: GN.len, uv: F.fr.o.slice(), tip: {}, letter: {}, arc: {}, arc3: {} };
+      ['x', 'y', 'z'].forEach(function (k) {
+        var u = unit(k), t3 = at3(F, u[0] * L, u[1] * L, u[2] * L), t = UI.worldToScreen(t3), d = [t[0] - F.so[0], t[1] - F.so[1]], n = Math.hypot(d[0], d[1]);
+        g.tip[k] = t; g.tip[k].d = depth(t3);
+        g.letter[k] = n > 1 ? [t[0] + d[0] / n * 14, t[1] + d[1] / n * 14] : [t[0] + 14, t[1] - 14];
+      });
+      Object.keys(ARCS).forEach(function (k) {
+        var pts = [], p3 = [];
+        for (var i = 0; i <= 18; i++) { var q = onArc(F, ARCS[k][0], ARCS[k][1], i * 5, R); p3.push(q); pts.push(UI.worldToScreen(q)); }
+        g.arc[k] = pts; g.arc3[k] = p3;
+      });
+      g.arcPoint = function (k, deg, scale) { return UI.worldToScreen(onArc(F, ARCS[k][0], ARCS[k][1], deg, R * (scale || 1))); };
+      return g;
+    }
+    ctx.gnomon = geo;
+    function segDist(p, a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
+    function polyDist(p, pts) { var d = 1e9; for (var i = 1; i < pts.length; i++) d = Math.min(d, segDist(p, pts[i - 1], pts[i])); return d; }
+    // what is under a screen point: 'ball', 'lx' / 'ly' / 'lz' (letters), 'x' / 'y' / 'z' (arrows), 'rz' / 'rx' / 'ry'
+    // (arcs), or null; a live handle wins over an inert one that happens to project onto it
+    function hitPart(p) {
+      var g = geo();
+      if (Math.hypot(p[0] - g.o[0], p[1] - g.o[1]) <= GN.ball + 3) return 'ball';
+      var k, best = null, bd = GN.hit, bestI = null, bdI = GN.hit;
+      for (k in g.letter) if (Math.hypot(p[0] - g.letter[k][0], p[1] - g.letter[k][1]) <= 9) return 'l' + k;
+      function cand(key, d) { if (inert(key)) { if (d < bdI) { bdI = d; bestI = key; } } else if (d < bd) { bd = d; best = key; } }
+      for (k in g.tip) cand(k, segDist(p, g.o, g.tip[k]));
+      for (k in g.arc) cand(k, polyDist(p, g.arc[k]));
+      return best || bestI;
+    }
+    ctx.hitPart = hitPart;
+    // ---- the overlay
     function startOverlay() {
       var host = $('dim-layer') ? $('dim-layer').parentNode : $('viewport');
       overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       overlay.setAttribute('class', 'tf-gnomon');
+      var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      defs.innerHTML = '<radialGradient id="tf-gn-ball" cx="35%" cy="30%" r="70%"><stop offset="0" stop-color="#f4f4f4"/><stop offset="0.6" stop-color="#9a9a9a"/><stop offset="1" stop-color="#4a4a4a"/></radialGradient>' +
+        '<radialGradient id="tf-gn-ball-hot" cx="35%" cy="30%" r="70%"><stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#d0d0d0"/><stop offset="1" stop-color="#7a7a7a"/></radialGradient>';
+      overlay.appendChild(defs);
+      layer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      overlay.appendChild(layer);
       host.appendChild(overlay);
       box = document.createElement('input');
       box.className = 'tf-dyn-val'; box.type = 'text'; box.hidden = true; box.setAttribute('aria-label', 'Dynamic value');
@@ -720,115 +790,241 @@
       box.addEventListener('keydown', function (ev) {
         ev.stopPropagation();
         if (ev.key === 'Enter') { ev.preventDefault(); typed(box.value); }
+        else if (ev.key === 'Tab') { ev.preventDefault(); if (typed(box.value) && UI.pmFocusField) UI.pmFocusField(last && last.kind === 'rz' ? 'ang' : 'dx'); }
         else if (ev.key === 'Escape') { ev.preventDefault(); hideBox(); }
       });
       host.appendChild(box);
+      tip = document.createElement('div');
+      tip.className = 'tf-dyn-tip'; tip.hidden = true; tip.textContent = INERT_TIP;
+      host.appendChild(tip);
+      window.addEventListener('mousemove', onMove, true);
+      window.addEventListener('mouseup', onUp, true);
+      window.addEventListener('keydown', onKey, true);
+      window.addEventListener('keyup', onKeyUp, true);
       var tick = function () { if (!overlay) return; draw(); raf = requestAnimationFrame(tick); };
       raf = requestAnimationFrame(tick);
     }
     function stopOverlay() {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
-      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-      if (box && box.parentNode) box.parentNode.removeChild(box);
-      overlay = null; box = null;
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      [overlay, box, tip].forEach(function (n) { if (n && n.parentNode) n.parentNode.removeChild(n); });
+      overlay = layer = box = tip = null;
+      setCursor('');
     }
     function hideBox() { if (box) { box.hidden = true; if (document.activeElement === box) box.blur(); } }
-    // the gnomon on screen: origin, arrow tips, ring radius (pixels)
-    function screenGeo() {
-      var fr = frame(), so = scr(fr.o), px = pxWorld(so[0], so[1]) || 1;
-      var tx = scr([fr.o[0] + fr.x[0] * GN.len * px, fr.o[1] + fr.x[1] * GN.len * px]), ty = scr([fr.o[0] + fr.y[0] * GN.len * px, fr.o[1] + fr.y[1] * GN.len * px]);
-      return { o: so, x: tx, y: ty, ring: GN.ring, px: px, fr: fr };
+    function setCursor(c) { var vp = $('viewport'); if (vp && vp.style.cursor !== c) vp.style.cursor = c; }
+    function vpPos(ev) { var vp = $('viewport'); if (!vp) return null; var r = vp.getBoundingClientRect(), p = [ev.clientX - r.left, ev.clientY - r.top]; return p[0] < 0 || p[1] < 0 || p[0] > r.width || p[1] > r.height ? null : p; }
+    // hover: the handle under the cursor brightens, the cursor says what a drag would do, an inert handle shows why not
+    function onMove(ev) {
+      shift = !!ev.shiftKey;
+      if (live || !overlay || App.mode !== 'sketch') return;
+      var p = vpPos(ev), h = p && !(ev.buttons & 1) ? hitPart(p) : null;
+      if (ev.target === box) h = null;
+      hover = h;
+      setCursor(!h ? '' : h === 'ball' ? 'move' : inert(h) ? 'not-allowed' : h.charAt(0) === 'l' ? 'pointer' : 'grab');
+      if (tip) {
+        if (h && inert(h) && p) { tip.hidden = false; tip.style.left = Math.round(p[0] + 14) + 'px'; tip.style.top = Math.round(p[1] + 18) + 'px'; }
+        else tip.hidden = true;
+      }
     }
-    ctx.gnomon = screenGeo;
-    function svgEl(tag, attrs) { var n = document.createElementNS('http://www.w3.org/2000/svg', tag); Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); }); overlay.appendChild(n); return n; }
+    function onUp() { setTimeout(function () { if (cmd.onSketchPoint && cmd.onSketchPoint.tfSwallow) cmd.onSketchPoint = cmd.onSketchPoint.tfPrev || null; }, 0); }
+    // a digit typed while dragging freezes the drag and edits the value exactly (Mastercam); Shift snaps angles to 15°
+    function onKey(ev) {
+      if (ev.key === 'Shift') shift = true;
+      if (aligning && ev.key === 'Escape') { aligning = null; UI.setStatus('Align cancelled.'); ev.stopPropagation(); ev.preventDefault(); return; }
+      if (!live || live.typing || live.kind === 'ball' || inert(live.kind)) return;
+      if (!/^[-+0-9.]$/.test(ev.key)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      live.typing = true;
+      last = { kind: live.kind, base: live.base, val: live.val };
+      if (box) { box.hidden = false; box.value = ev.key; try { box.focus({ preventScroll: true }); } catch (er) { } }
+    }
+    function onKeyUp(ev) { if (ev.key === 'Shift') shift = false; }
+    // ---- drawing
+    function el(tag, attrs) { var n = document.createElementNS('http://www.w3.org/2000/svg', tag); Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); }); return n; }
+    function pathOf(pts, close) { return pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join('') + (close ? 'Z' : ''); }
     var shown = '';
     function draw() {
       if (!overlay || App.mode !== 'sketch') return;
-      var g = screenGeo(), hot = live ? live.kind : '';
-      var key = [g.o, g.x, g.y].map(function (p) { return Math.round(p[0] * 10) + ',' + Math.round(p[1] * 10); }).join(' ') + hot;
+      var g = geo(), F = g.F, hot = live ? live.kind : hover;
+      var key = [g.o, g.tip.x, g.tip.y, g.tip.z].map(function (p) { return Math.round(p[0] * 10) + ',' + Math.round(p[1] * 10); }).join(' ') + '|' + hot + '|' + (live ? live.val + ',' + live.a0 + ',' + live.typing : '') + '|' + aligning;
       if (key === shown) return;
       shown = key;
-      while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
-      function arrow(tip, col, k) {
-        var dx = tip[0] - g.o[0], dy = tip[1] - g.o[1], L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, w = hot === k ? 3.5 : 2.5;
-        svgEl('line', { x1: g.o[0], y1: g.o[1], x2: tip[0] - ux * 9, y2: tip[1] - uy * 9, stroke: col, 'stroke-width': w });
-        svgEl('polygon', { points: [tip[0], tip[1], tip[0] - ux * 11 - uy * 5, tip[1] - uy * 11 + ux * 5, tip[0] - ux * 11 + uy * 5, tip[1] - uy * 11 - ux * 5].join(','), fill: col });
+      while (layer.firstChild) layer.removeChild(layer.firstChild);
+      var items = [];
+      function put(d, node) { items.push({ d: d, n: node }); }
+      // live feedback, behind the gnomon: the guide line along a dragged arrow, the ring and wedge of a dragged arc
+      if (live && (live.kind === 'x' || live.kind === 'y' || live.kind === 'z')) {
+        var t = g.tip[live.kind], d = [t[0] - g.o[0], t[1] - g.o[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n];
+        put(-1e9, el('line', { 'class': 'tf-gn-guide', x1: g.o[0] - u[0] * 4000, y1: g.o[1] - u[1] * 4000, x2: g.o[0] + u[0] * 4000, y2: g.o[1] + u[1] * 4000, stroke: GCOL[live.kind], 'stroke-width': 1, 'stroke-dasharray': '6 4', opacity: 0.8 }));
       }
-      svgEl('circle', { cx: g.o[0], cy: g.o[1], r: g.ring, fill: 'none', stroke: '#1f6fd0', 'stroke-width': hot === 'ring' ? 3.5 : 2.2, 'stroke-dasharray': '10 4' });
-      arrow(g.x, '#d9453b', 'x'); arrow(g.y, '#2e9e48', 'y');
-      svgEl('circle', { cx: g.o[0], cy: g.o[1], r: 4, fill: '#ffffff', stroke: '#1f6fd0', 'stroke-width': 2 });
+      if (live && ARCS[live.kind]) {
+        var ab = ARCS[live.kind], Rr = F.L * GN.ring, ring = [], i, sg = live.val < 0 ? -1 : 1;
+        for (i = 0; i <= 72; i++) ring.push(UI.worldToScreen(onArc(F, ab[0], ab[1], i * 5, Rr)));
+        put(-1e9, el('path', { 'class': 'tf-gn-ring', d: pathOf(ring, true), fill: 'none', stroke: GCOL.ring, 'stroke-width': 2.5, 'stroke-dasharray': '2 5', 'stroke-linecap': 'round' }));
+        [100, 280].forEach(function (off) {   // direction arrowheads on the ring
+          var a = live.a0 + sg * off, p = UI.worldToScreen(onArc(F, ab[0], ab[1], a, Rr)), q = UI.worldToScreen(onArc(F, ab[0], ab[1], a + sg * 4, Rr));
+          var dx = q[0] - p[0], dy = q[1] - p[1], m = Math.hypot(dx, dy) || 1; dx /= m; dy /= m;
+          put(-1e9, el('polygon', { 'class': 'tf-gn-ring-arrow', points: [q[0] + dx * 6, q[1] + dy * 6, p[0] - dy * 4.5, p[1] + dx * 4.5, p[0] + dy * 4.5, p[1] - dx * 4.5].join(','), fill: GCOL.ring }));
+        });
+        var start = UI.worldToScreen(onArc(F, ab[0], ab[1], live.a0, Rr));
+        put(-1e9, el('line', { 'class': 'tf-gn-start', x1: g.o[0], y1: g.o[1], x2: start[0], y2: start[1], stroke: GCOL.ring, 'stroke-width': 1, opacity: 0.8 }));
+        if (live.val) {
+          var wedge = [g.o], steps = Math.max(2, Math.ceil(Math.abs(live.val) / 3)), Rw = F.L * GN.arc;
+          for (i = 0; i <= steps; i++) wedge.push(UI.worldToScreen(onArc(F, ab[0], ab[1], live.a0 + live.val * i / steps, Rw)));
+          put(-1e8, el('path', { 'class': 'tf-gn-wedge', d: pathOf(wedge, true), fill: GCOL.wedge, opacity: 0.4, stroke: 'none' }));
+        }
+      }
+      // the rotation handles: quarter arcs with white ticks, coloured for the axis they turn about
+      Object.keys(ARCS).forEach(function (k) {
+        var pts = g.arc[k], col = GCOL[k.charAt(1)], off = inert(k), hotK = hot === k, mid = g.arc3[k][9];
+        var cls = 'tf-gn-arc tf-gn-arc-' + k + (off ? ' tf-gn-inert' : '') + (hotK ? ' hot' : '');
+        var grp = el('g', { 'class': cls, opacity: off ? 0.3 : 1 });
+        grp.appendChild(el('path', { d: pathOf(pts), fill: 'none', stroke: col, 'stroke-width': hotK ? 4.5 : 3, 'stroke-linecap': 'round' }));
+        if (hotK) grp.appendChild(el('path', { d: pathOf(pts), fill: 'none', stroke: '#ffffff', 'stroke-width': 1.2, opacity: 0.8 }));
+        for (var a = 15; a < 90; a += 15) {
+          var Ri = F.L * GN.arc, q1 = UI.worldToScreen(onArc(F, ARCS[k][0], ARCS[k][1], a, Ri - 2.6 * F.px)), q2 = UI.worldToScreen(onArc(F, ARCS[k][0], ARCS[k][1], a, Ri + 2.6 * F.px));
+          grp.appendChild(el('line', { x1: q1[0], y1: q1[1], x2: q2[0], y2: q2[1], stroke: '#ffffff', 'stroke-width': 1.5 }));
+        }
+        put(depth(mid), grp);
+      });
+      // the arrows: shaft, cone head, letter
+      ['x', 'y', 'z'].forEach(function (k) {
+        var t = g.tip[k], col = GCOL[k], off = inert(k), hotK = hot === k || hot === 'l' + k;
+        var dx = t[0] - g.o[0], dy = t[1] - g.o[1], n = Math.hypot(dx, dy), u = n > 1 ? [dx / n, dy / n] : [0, 0];
+        var grp = el('g', { 'class': 'tf-gn-arrow tf-gn-arrow-' + k + (off ? ' tf-gn-inert' : '') + (hotK ? ' hot' : ''), opacity: off ? 0.3 : 1 });
+        var hl = Math.min(GN.head, n), hw = GN.headW * (hotK ? 1.25 : 1), b = [t[0] - u[0] * hl, t[1] - u[1] * hl];
+        grp.appendChild(el('line', { x1: g.o[0], y1: g.o[1], x2: b[0], y2: b[1], stroke: col, 'stroke-width': hotK ? 4 : 2.8, 'stroke-linecap': 'round' }));
+        if (n > 1) {
+          grp.appendChild(el('ellipse', { cx: b[0], cy: b[1], rx: hw, ry: hw * 0.45, transform: 'rotate(' + (Math.atan2(u[1], u[0]) * R2D + 90).toFixed(1) + ' ' + b[0].toFixed(1) + ' ' + b[1].toFixed(1) + ')', fill: col, stroke: 'rgba(0,0,0,0.35)', 'stroke-width': 0.8 }));
+          grp.appendChild(el('polygon', { points: [t[0], t[1], b[0] - u[1] * hw, b[1] + u[0] * hw, b[0] + u[1] * hw, b[1] - u[0] * hw].join(','), fill: col, stroke: 'rgba(0,0,0,0.35)', 'stroke-width': 0.8, 'stroke-linejoin': 'round' }));
+        } else grp.appendChild(el('circle', { cx: t[0], cy: t[1], r: hw, fill: col, stroke: 'rgba(0,0,0,0.35)', 'stroke-width': 0.8 }));
+        var txt = el('text', { 'class': 'tf-gn-letter tf-gn-letter-' + k, x: g.letter[k][0], y: g.letter[k][1], fill: col, 'font-size': hotK ? 15 : 13, 'font-weight': 'bold', 'text-anchor': 'middle', 'dominant-baseline': 'central', 'paint-order': 'stroke', stroke: 'rgba(255,255,255,0.75)', 'stroke-width': 3 });
+        txt.textContent = k.toUpperCase() + (aligning === k ? ' ?' : '');
+        grp.appendChild(txt);
+        put(t.d, grp);
+      });
+      // the ball, drawn over the shafts that start under it
+      put(depth(F.o3) + 1e-9, el('circle', { 'class': 'tf-gn-ball' + (hot === 'ball' ? ' hot' : ''), cx: g.o[0], cy: g.o[1], r: hot === 'ball' ? GN.ball + 1.5 : GN.ball, fill: 'url(#tf-gn-ball' + (hot === 'ball' ? '-hot' : '') + ')', stroke: '#3a3a3a', 'stroke-width': 0.8 }));
+      items.sort(function (a, b) { return a.d - b.d; });
+      items.forEach(function (it) { layer.appendChild(it.n); });
     }
-    function segDist(p, a, b) { var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy, t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0; return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
-    function hitPart(p) {
-      var g = screenGeo(), dO = Math.hypot(p[0] - g.o[0], p[1] - g.o[1]);
-      if (dO < 6) return null;
-      var dx = segDist(p, g.o, g.x), dy = segDist(p, g.o, g.y), dr = Math.abs(dO - g.ring);
-      var best = Math.min(dx, dy, dr);
-      if (best > GN.hit) return null;
-      return best === dx ? 'x' : best === dy ? 'y' : 'ring';
-    }
-    ctx.hitPart = hitPart;
-    function round(v, px, deg) {
-      if (deg) return Math.round(v);
-      return UI.sketchNiceRound ? tidy(UI.sketchNiceRound(v, Math.max(px, 1e-9) * 1.5)) : tidy(v);
-    }
-    function motion(kind, val) { var fr = frame(); return kind === 'ring' ? { ang: val } : kind === 'x' ? { dx: fr.x[0] * val, dy: fr.x[1] * val } : { dx: fr.y[0] * val, dy: fr.y[1] * val }; }
-    function showBox(val, kind) {
+    // ---- values
+    function decimals() { return UI.unitLabel() === 'in' ? 3 : 2; }
+    function fmtVal(kind, val) { return ARCS[kind] ? (+val).toFixed(2) + '°' : UI.fmtDim(val); }
+    function roundDist(val, px) { var r = UI.sketchNiceRound ? UI.sketchNiceRound(val, Math.max(px, 1e-9) * 1.5) : val; return tidy(+(+r).toFixed(decimals())); }
+    function roundAng(d) { var inc = shift ? 15 : Math.max(+ctx.v.inc || 0, 0) || 1; return tidy(Math.round(d / inc) * inc); }
+    function showBox(val, kind, p) {
       if (!box) return;
-      var g = screenGeo(), at = kind === 'ring' ? [g.o[0] + g.ring + 8, g.o[1] - g.ring] : kind === 'x' ? g.x : g.y;
       box.hidden = false;
-      box.style.left = Math.round(at[0] + 10) + 'px'; box.style.top = Math.round(at[1] - 24) + 'px';
-      box.value = String(val);
-      box.title = kind === 'ring' ? 'Angle (°): type a value and press Enter' : 'Distance along ' + kind.toUpperCase() + ': type a value and press Enter';
+      if (p) { box.style.left = Math.round(p[0] + 16) + 'px'; box.style.top = Math.round(p[1] - 12) + 'px'; }
+      box.value = fmtVal(kind, val);
+      box.title = ARCS[kind] ? 'Angle (°): type a value and press Enter' : 'Distance along ' + kind.toUpperCase() + ': type a value and press Enter';
     }
     function setPose(base, kind, val) {
       var v = ctx.v, fr0 = base.fr;
-      if (kind === 'ring') { v.dx = base.dx; v.dy = base.dy; v.ang = tidy(normDeg(base.ang + val)); if (v.ang > 180) v.ang = tidy(v.ang - 360); }
+      if (ARCS[kind]) { v.dx = base.dx; v.dy = base.dy; v.ang = tidy(normDeg(base.ang + val)); if (v.ang > 180) v.ang = tidy(v.ang - 360); }
       else { var ax = kind === 'x' ? fr0.x : fr0.y; v.dx = tidy(base.dx + ax[0] * val); v.dy = tidy(base.dy + ax[1] * val); v.ang = base.ang; }
     }
     function typed(text) {
-      if (!last) return;
-      var r = UI.parseLength ? UI.parseLength(text, { kind: last.kind === 'ring' ? 'angle' : 'length' }) : { value: parseFloat(text) };
-      if (!r || r.error != null || !isFinite(r.value)) { UI.setStatus('Not a value: ' + text); return; }
+      if (!last) return false;
+      var ang = !!ARCS[last.kind], r = UI.parseLength ? UI.parseLength(String(text).replace(/°/g, ''), { kind: ang ? 'angle' : 'length' }) : { value: parseFloat(text) };
+      if (!r || r.error != null || !isFinite(r.value)) { UI.setStatus('Not a value: ' + text); return false; }
       setPose(last.base, last.kind, +r.value);
       last.val = +r.value;
-      hideBox(); shown = '';
+      if (live) live.val = +r.value;
+      if (box) box.value = fmtVal(last.kind, r.value);
+      shown = '';
       UI.renderPM(); ctx.preview();
-      UI.setStatus((last.kind === 'ring' ? 'Rotated ' + UI.fmtNum(r.value, 4) + '°' : 'Moved ' + UI.fmtDim(r.value) + ' along ' + last.kind.toUpperCase()) + '. ✓ applies.');
+      UI.setStatus((ang ? 'Rotated ' + UI.fmtNum(r.value, 4) + '°' : 'Moved ' + UI.fmtDim(r.value) + ' along ' + last.kind.toUpperCase()) + '. ✓ applies.');
+      return true;
     }
     ctx.typed = typed;
-    function dragHook(p0) {
+    // the sketch point the gnomon's centre lands on when moved val along the axis (9 px), else null
+    function pointOnAxis(o, ax, val, px) {
+      var f = ctx.f, best = null, bd = 9 * px;
+      if (!S) return null;
+      function test(pt) { var w = [pt[0] - o[0], pt[1] - o[1]], along = w[0] * ax[0] + w[1] * ax[1], across = Math.abs(-w[0] * ax[1] + w[1] * ax[0]); var d = Math.hypot(along - val, across); if (across <= bd && d < bd) { bd = d; best = along; } }
+      f.entities.forEach(function (e, i) { S.pointRefs(f, i).forEach(function (pr) { test(pr.pt); }); });
+      test([0, 0]);
+      return best == null ? null : tidy(best);
+    }
+    // the X or Y letter clicked, then a line: the gnomon's axis turns onto the line
+    function alignPick(hit) {
+      if (!aligning) return false;
+      var e = hit && hit.kind === 'entity' ? ctx.f.entities[hit.index] : null;
+      if (!e || e.t !== 'line') { UI.setStatus('Click a sketch line to align the ' + aligning.toUpperCase() + ' axis with.'); return true; }
+      var v = ctx.v, la = Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * R2D, t = la - (+v.ang || 0) - (aligning === 'y' ? 90 : 0);
+      t = tidy(normDeg(t)); if (t > 180) t = tidy(t - 360);
+      v.tilt = t;
+      UI.setStatus(aligning.toUpperCase() + ' axis aligned with Line' + (hit.index + 1) + ' (' + UI.fmtNum(la, 2) + '°).');
+      aligning = null; shown = '';
+      UI.renderPM(); ctx.preview();
+      return true;
+    }
+    function dragHook(p0, ev) {
       if (App.mode !== 'sketch') return null;
       var kind = hitPart(p0);
       if (!kind) return null;
-      var v = ctx.v, fr = frame(), base = { dx: +v.dx || 0, dy: +v.dy || 0, ang: +v.ang || 0, fr: fr }, uv0 = toUV(p0[0], p0[1]), val = 0;
+      if (ev && ev.shiftKey) shift = true;
+      // a press that is released where it was is a click on the handle, not a selection click: the letters start
+      // "align to geometry", everything else just keeps the selection
+      var prev = cmd.onSketchPoint;
+      var swallow = function () {
+        cmd.onSketchPoint = prev;
+        if (kind === 'lx' || kind === 'ly') { aligning = kind.charAt(1); shown = ''; UI.setStatus('Click a sketch line to align the ' + aligning.toUpperCase() + ' axis with (Esc cancels).'); }
+        else if (inert(kind)) UI.setStatus(INERT_TIP + '.');
+      };
+      swallow.tfSwallow = true; swallow.tfPrev = prev;
+      cmd.onSketchPoint = swallow;
+      var v = ctx.v, fr = frame(), base = { dx: +v.dx || 0, dy: +v.dy || 0, ang: +v.ang || 0, fr: fr, origin: v.origin.slice() }, uv0 = toUV(p0[0], p0[1]), val = 0;
+      var a0 = uv0 ? Math.atan2((uv0[1] - fr.o[1]) * fr.y[1] + (uv0[0] - fr.o[0]) * fr.y[0], (uv0[0] - fr.o[0]) * fr.x[0] + (uv0[1] - fr.o[1]) * fr.x[1]) * R2D : 0;
       return {
-        start: function () { live = { kind: kind }; shown = ''; },
+        start: function () { if (cmd.onSketchPoint === swallow) cmd.onSketchPoint = prev; hideBox(); live = { kind: kind, base: base, val: 0, a0: a0, typing: false }; hover = null; shown = ''; if (tip) tip.hidden = true; },
         move: function (p) {
+          if (live.typing || inert(kind) || kind.charAt(0) === 'l') return;
           var uv = toUV(p[0], p[1]);
           if (!uv || !uv0) return;
-          if (kind === 'ring') {
-            var a0 = Math.atan2(uv0[1] - fr.o[1], uv0[0] - fr.o[0]), a1 = Math.atan2(uv[1] - fr.o[1], uv[0] - fr.o[0]);
-            var d = (a1 - a0) * R2D; while (d > 180) d -= 360; while (d < -180) d += 360;
-            val = round(d, 0, true);
-          } else {
-            var ax = kind === 'x' ? fr.x : fr.y;
-            val = round((uv[0] - uv0[0]) * ax[0] + (uv[1] - uv0[1]) * ax[1], pxWorld(p[0], p[1]));
+          if (kind === 'ball') {
+            // the gnomon moves, the geometry stays: the same transform expressed about the new origin
+            var gp = snapPoint(ctx.f, uv, p[0], p[1]), a = base.ang, c = cosd(a), s = sind(a), o = base.origin, w = [gp[0] - base.dx - o[0], gp[1] - base.dy - o[1]];
+            var no = [tidy(o[0] + c * w[0] + s * w[1]), tidy(o[1] - s * w[0] + c * w[1])];
+            v.origin = no; v.dx = tidy(gp[0] - no[0]); v.dy = tidy(gp[1] - no[1]);
+            UI.renderPM(); shown = '';
+            UI.setStatus('Gnomon at ' + fmtPt(gp) + '.');
+            return;
           }
+          if (ARCS[kind]) {
+            var w0 = [uv0[0] - fr.o[0], uv0[1] - fr.o[1]], w1 = [uv[0] - fr.o[0], uv[1] - fr.o[1]];
+            var d = (Math.atan2(w1[1], w1[0]) - Math.atan2(w0[1], w0[0])) * R2D; while (d > 180) d -= 360; while (d < -180) d += 360;
+            val = roundAng(d);
+          } else {
+            var ax = kind === 'x' ? fr.x : fr.y, px = pxWorld(p[0], p[1]), raw = (uv[0] - uv0[0]) * ax[0] + (uv[1] - uv0[1]) * ax[1], snap = pointOnAxis(fr.o, ax, raw, px);
+            val = snap != null ? snap : roundDist(raw, px);
+          }
+          live.val = val;
           setPose(base, kind, val);
-          showBox(val, kind);
+          showBox(val, kind, p);
           UI.renderPM(); ctx.preview();
         },
-        end: function () {
+        end: function (p) {
+          var typing = live && live.typing;
           live = null; shown = '';
+          if (kind === 'ball' || inert(kind) || kind.charAt(0) === 'l') { hideBox(); return; }
+          if (typing) { UI.setStatus('Finish the value and press Enter (Tab moves on).'); return; }
           last = { kind: kind, base: base, val: val };
-          showBox(val, kind);
+          showBox(val, kind, p);
           try { box.focus({ preventScroll: true }); box.select(); } catch (er) { }
           UI.setStatus('Type an exact value in the box and press Enter, drag again, or ✓.');
         }
       };
     }
+    // for tests and scripts: the gnomon's screen geometry, what is under a point, the live state and the pose
+    ctx.spec.dynamic = { geo: geo, hitPart: hitPart, typed: typed, pose: function () { return pose(ctx.v); }, state: function () { return { hover: hover, live: live, aligning: aligning, shift: shift, last: last }; } };
   }
 
   // ------------------------------------------------------------------ the Transform tab: group captions, search

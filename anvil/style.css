@@ -1298,3 +1298,10 @@ body.splitting #viewport { pointer-events: none; }
 #ribbon .rb-caption { position: absolute; top: 0; height: 14px; line-height: 14px; font-size: 11px; text-align: center; color: var(--cm-text, var(--muted)); opacity: 0.8; white-space: nowrap; overflow: hidden; border-top: 1px solid var(--cm-line, var(--line)); }
 .tf-gnomon { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
 .tf-dyn-val { position: absolute; z-index: 3; width: 76px; font: 12px/1.2 'Segoe UI', Arial, sans-serif; padding: 2px 4px; border: 1px solid var(--blue, #1f6fd0); border-radius: 2px; background: var(--panel, #fff); color: var(--text, #222); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }
+
+/* lane BN: Mastercam's dynamic gnomon (Transform ▸ Dynamic): the value box next to the cursor (light blue, black text,
+   as Mastercam shows it) and the tooltip on an inert out-of-plane handle */
+.tf-dyn-val { width: 72px; text-align: center; font-weight: 600; background: #cfe6ff; color: #000; border: 1px solid #5b8fd6; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+.tf-dyn-val:focus { outline: 2px solid #2f6fe0; outline-offset: 0; }
+.tf-dyn-tip { position: absolute; z-index: 3; pointer-events: none; font: 11px/1.3 'Segoe UI', Arial, sans-serif; padding: 2px 6px; border: 1px solid #888; border-radius: 2px; background: #ffffe1; color: #222; white-space: nowrap; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
+.tf-gnomon text { user-select: none; font-family: 'Segoe UI', Arial, sans-serif; }
