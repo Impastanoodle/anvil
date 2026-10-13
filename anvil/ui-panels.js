@@ -66,8 +66,8 @@
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
     // rfC: the Sketch tab as SolidWorks 2024's CommandManager lays it out: Sketch ▾ (3D Sketch) and Smart Dimension ▾
-    // large; the sketch entities as a grid of small icon buttons, three rows filled column by column (Line ▾ / Circle ▾ /
-    // Spline ▾, Rectangle ▾ / Arc ▾ / Ellipse ▾, Slot ▾ / Polygon / Sketch Fillet ▾, Text / Plane / Point); Trim
+    // large; the sketch entities as a grid of small icon buttons, three rows filled column by column (Line ▾ / Rectangle ▾ /
+    // Slot ▾, Circle ▾ / Arc ▾ / Polygon, Spline ▾ / Ellipse ▾ / Sketch Fillet ▾, Plane / Text / Point); Trim
     // Entities ▾, Convert Entities ▾ and Offset Entities large; the Mirror Entities ▾ / Linear Sketch Pattern ▾ / Move
     // Entities ▾ column; Display/Delete Relations ▾ (Add Relation, Fully Define Sketch) large; the Repair Sketch / Quick
     // Snaps / Rapid Sketch column and Construction Geometry / Shaded Sketch Contours / Sketch Picture; then Anvil's own
@@ -102,33 +102,33 @@
           { id: 'parallelLine', label: 'Parallel Line', help: 'Draw a line parallel to a line or edge: through a point, at a distance or tangent to an arc', run: function () { if (UI.cmdParallelLine) UI.cmdParallelLine(); }, active: function () { return !!(UI.parallelLineActive && UI.parallelLineActive()); } },
           { id: 'tangentLine', label: 'Tangent Line', help: 'Draw a line tangent to two circles or arcs, or to one at an angle', run: function () { if (UI.cmdTangentLine) UI.cmdTangentLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentLine')); } },
           { id: 'perpLine', label: 'Perpendicular Line', help: 'Draw a line square to a line or edge through a point', run: function () { if (UI.cmdPerpendicularLine) UI.cmdPerpendicularLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('perpLine')); } },
-          { id: 'bisectorLine', label: 'Bisector', help: 'Draw the line bisecting the angle between two lines', run: function () { if (UI.cmdBisectorLine) UI.cmdBisectorLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('bisectorLine')); } }] },
-        // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
-        { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter Circle', tool: 'pcircle', help: 'Circle through three points on it' },
-          { id: 'tangentCircle', label: 'Tangent Circle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
-        // ui-sketch-spline: Spline and Style Spline (rfAH); Equation Driven Curve (rfAP, ui-sketch-tools.js)
-        { fly: 'spline', items: [{ id: 'spline', label: 'Spline', tool: 'spline' },
-          { id: 'styleSpline', label: 'Style Spline', tool: 'styleSpline', help: 'A single Bézier curve shaped by its control polygon' },
-          { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdEquationCurve(); } }] },   // rfAP
+          { id: 'bisectorLine', label: 'Bisector', help: 'Draw the line bisecting the angle between two lines', run: function () { if (UI.cmdBisectorLine) UI.cmdBisectorLine(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('bisectorLine')); } }] },   // rfAP
         // all five rectangle types (ui-sketch-lines.js: the rect3 / crect3 / parallelogram tools)
         { fly: 'rect', items: [{ id: 'rect', label: 'Corner Rectangle', tool: 'rect' }, { id: 'crect', label: 'Center Rectangle', tool: 'crect' },
           { id: 'rect3', label: '3 Point Corner Rectangle', tool: 'rect3', help: 'Rectangle at any angle from two corners and its height' },
           { id: 'crect3', label: '3 Point Center Rectangle', tool: 'crect3', help: 'Rectangle at any angle from its center, a side midpoint and its height' },
           { id: 'parallelogram', label: 'Parallelogram', tool: 'parallelogram', help: 'Parallelogram from three corners' }] },
-        // the Arc flyout: Centerpoint Arc, Tangent Arc, 3 Point Arc (ui-sketch-curves.js)
-        { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint Arc', tool: 'arc' }, { id: 'tarc', label: 'Tangent Arc', tool: 'tarc', help: 'Arc tangent to the end of a line or arc' }, { id: 'arc3', label: '3 Point Arc', tool: 'arc3' }] },
-        // the Ellipse flyout: Ellipse, Partial Ellipse, Parabola, Conic (ui-sketch-spline.js)
-        { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' },
-          { id: 'parabola', label: 'Parabola', tool: 'parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', tool: 'conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
         // the Slot flyout: the four slot types (ui-sketch-curves.js)
         { fly: 'slot', items: [{ id: 'slot', label: 'Straight Slot', tool: 'slot' }, { id: 'cslot', label: 'Centerpoint Straight Slot', tool: 'cslot', help: 'Slot from its center, one end and a width' },
           { id: 'aslot3', label: '3 Point Arc Slot', tool: 'aslot3', help: 'Curved slot from three points on its centerline and a width' },
           { id: 'aslot', label: 'Centerpoint Arc Slot', tool: 'aslot', help: 'Curved slot from an arc center, its start and end and a width' }] },
+        // the Circle flyout: Circle, Perimeter Circle (ui-sketch-curves.js) and Tangent Circle (ui-sketch-construct.js)
+        { fly: 'circle', items: [{ id: 'circle', label: 'Circle', tool: 'circle' }, { id: 'pcircle', label: 'Perimeter Circle', tool: 'pcircle', help: 'Circle through three points on it' },
+          { id: 'tangentCircle', label: 'Tangent Circle', help: 'Circle tangent to two entities with a radius, or to three', run: function () { if (UI.cmdTangentCircle) UI.cmdTangentCircle(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('tangentCircle')); } }] },
+        // the Arc flyout: Centerpoint Arc, Tangent Arc, 3 Point Arc (ui-sketch-curves.js)
+        { fly: 'arc', items: [{ id: 'arc', label: 'Centerpoint Arc', tool: 'arc' }, { id: 'tarc', label: 'Tangent Arc', tool: 'tarc', help: 'Arc tangent to the end of a line or arc' }, { id: 'arc3', label: '3 Point Arc', tool: 'arc3' }] },
         { id: 'polygon', label: 'Polygon', tool: 'polygon' },
+        // ui-sketch-spline: Spline and Style Spline (rfAH); Equation Driven Curve (rfAP, ui-sketch-tools.js)
+        { fly: 'spline', items: [{ id: 'spline', label: 'Spline', tool: 'spline' },
+          { id: 'styleSpline', label: 'Style Spline', tool: 'styleSpline', help: 'A single Bézier curve shaped by its control polygon' },
+          { id: 'eqnCurve', label: 'Equation Driven Curve', help: 'A curve from an equation y = f(x) or x(t), y(t)', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdEquationCurve(); } }] },
+        // the Ellipse flyout: Ellipse, Partial Ellipse, Parabola, Conic (ui-sketch-spline.js)
+        { fly: 'ellipse', items: [{ id: 'ellipse', label: 'Ellipse', tool: 'ellipse' }, { id: 'pellipse', label: 'Partial Ellipse', tool: 'pellipse' },
+          { id: 'parabola', label: 'Parabola', tool: 'parabola', help: 'A parabolic arc from its focus, apex and ends' }, { id: 'conic', label: 'Conic', tool: 'conic', help: 'A conic arc from its ends, the apex and a rho value' }] },
         // ui-sketch-tools.js: Sketch Fillet ▸ Sketch Chamfer
         { fly: 'skFillet', items: [{ id: 'fillet', icon: 'skFillet', label: 'Sketch Fillet', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchFillet(); } }, { id: 'skChamfer', label: 'Sketch Chamfer', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdSketchChamfer(); } }] },
-        { id: 'text', label: 'Text', tool: 'text' },
         { id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } },
+        { id: 'text', label: 'Text', tool: 'text' },
         { id: 'point', label: 'Point', tool: 'point' }] },
       { sep: true },
       // sketch tools (ui-sketch-tools.js, ui-sketch-construct.js), as SolidWorks 2024 groups them: Trim ▸ Extend / Split /
@@ -138,6 +138,7 @@
         { id: 'joinEnt', label: 'Join\nEntities', help: 'Join collinear lines, or arcs on one circle, into one', run: function () { if (UI.cmdJoinEntities) UI.cmdJoinEntities(); }, active: function () { return !!(UI.sketchConstructActive && UI.sketchConstructActive('joinEnt')); } }] },
       { fly: 'convert', items: [{ id: 'convert', label: 'Convert\nEntities', run: function () { UI.cmdConvertEntities(); } }, { id: 'intersectCurve', label: 'Intersection\nCurve', run: function () { if (UI.cmdIntersectionCurve) UI.cmdIntersectionCurve(); }, active: function () { return !!(UI.intersectionCurveOpen && UI.intersectionCurveOpen()); } }] },
       { id: 'offset', label: 'Offset\nEntities', run: function () { UI.cmdOffsetEntities(); } },
+      { id: 'offsetSurface', icon: 'offset', label: 'Offset\nOn Surface', help: 'Offset the edges of a face or surface along it (3D)' },
       { stack: [{ fly: 'mirrorEnt', items: [{ id: 'mirrorEnt', label: 'Mirror Entities', run: function () { UI.cmdMirrorEntities(); } }, { id: 'dynMirror', label: 'Dynamic Mirror', run: function () { if (UI.cmdDynamicMirror) UI.cmdDynamicMirror(); }, active: function () { return !!(UI.dynamicMirrorOn && UI.dynamicMirrorOn()); } }] },
         { fly: 'skPattern', items: [{ id: 'sketchPattern', label: 'Linear Sketch Pattern', run: function () { UI.cmdSketchPattern(); } }, { id: 'cSketchPattern', label: 'Circular Sketch Pattern', run: function () { UI.cmdCircularSketchPattern(); } }] },
         { fly: 'moveEnt', items: [{ id: 'moveEnt', label: 'Move Entities', run: function () { UI.cmdMoveEntities(); } }, { id: 'copyEnt', label: 'Copy Entities', run: function () { UI.cmdCopyEntities(); } }, { id: 'rotateEnt', label: 'Rotate Entities', run: function () { UI.cmdRotateEntities(); } }, { id: 'scaleEnt', label: 'Scale Entities', run: function () { UI.cmdScaleEntities(); } }, { id: 'stretchEnt', label: 'Stretch Entities', run: function () { UI.cmdStretchEntities(); } }] }] },
@@ -147,29 +148,33 @@
       { fly: 'relations', items: [{ id: 'relations', label: 'Display/Delete\nRelations', run: function () { UI.cmdDisplayRelations(); } },
         { id: 'addRelation', label: 'Add\nRelation', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdAddRelations(); } },
         { id: 'fullyDefine', label: 'Fully Define\nSketch', run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.cmdFullyDefineSketch(); } }] },
-      // dxf-import: Repair Sketch (ui-sketch-import.js); Quick Snaps (rfAR), Rapid Sketch (rfAY)
-      { stack: [{ id: 'repairSketch', label: 'Repair Sketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } },
-        // rfAR: Quick Snaps (ui-sketch.js UI.quickSnap): the next point snaps to that one kind of geometry only
-        { fly: 'quickSnaps', items: (UI.QUICK_SNAPS || []).map(function (q) {
+      // dxf-import: Repair Sketch (ui-sketch-import.js), large beside Display/Delete Relations as SolidWorks 2024 has it
+      { id: 'repairSketch', label: 'Repair\nSketch', help: 'Close small gaps, merge duplicate and overlapping entities, join collinear lines and remove tiny entities', run: function () { UI.cmdRepairSketch(); } },
+      { sep: true },
+      // rfAR: Quick Snaps (ui-sketch.js UI.quickSnap): the next point snaps to that one kind of geometry only
+      { fly: 'quickSnaps', label: 'Quick\nSnaps', items: (UI.QUICK_SNAPS || []).map(function (q) {
           return { id: 'qs-' + q[0], icon: 'quickSnaps', label: q[1] + ' Snap', help: 'Quick Snaps: snap the next point to ' + q[1].toLowerCase() + ' only, then snap as usual',
             run: function () { if (App.mode !== 'sketch') { UI.toast('Open a sketch first.'); return; } UI.quickSnap(App.quickSnap === q[0] ? null : q[0]); },
             active: function () { return App.quickSnap === q[0]; } };
         }) },
-        // rfAY: Rapid Sketch (ui-sketch.js): a sketch tool picked with no sketch open sketches on the plane / face clicked
-        { id: 'rapidSketch', label: 'Rapid Sketch', help: 'Sketch on any plane or planar face without opening a sketch on it first: pick a sketch tool, then click the plane or face; click another one between entities to move there', run: function () { if (UI.toggleRapidSketch) UI.toggleRapidSketch(); }, active: function () { return !!(UI.rapidSketchOn && UI.rapidSketchOn()); } }] },
-      // rfAV: Instant2D (ui-sketch-dims.js): drag the ball at a sketch dimension's arrow to change the value on a ruler
-      { stack: [{ id: 'instant2D', label: 'Instant2D', help: 'Hover a sketch dimension and drag the ball at its arrow to change the value on a ruler', run: function () { if (UI.toggleInstant2D) UI.toggleInstant2D(); }, active: function () { return !!(UI.instant2DOn && UI.instant2DOn()); } }] },
-      // Construction Geometry (ui-relations.js); Shaded Sketch Contours is View ▸ Sketch Regions (ui-sketch-layers.js)
-      { stack: [{ id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
-        { id: 'shadedContours', label: 'Shaded Sketch Contours', help: 'Shade the closed regions of the sketch and mark its open ends (View ▸ Sketch Regions)', run: function () { toggleSketchRegions(); }, active: function () { return App.view.sketchRegions !== false; } },
-        { id: 'sketchPicture', label: 'Sketch Picture', help: 'Place a picture (PNG, JPG, BMP) on the sketch plane to trace over', run: function () { if (UI.cmdSketchPicture) UI.cmdSketchPicture(); } }] },   // rfAW: ui-sketch-picture.js
       { sep: true },
+      // rfAY: Rapid Sketch (ui-sketch.js); rfAV: Instant2D (ui-sketch-dims.js); Shaded Sketch Contours is View ▸ Sketch
+      // Regions (ui-sketch-layers.js): three large toggles, as SolidWorks 2024
+      { id: 'rapidSketch', label: 'Rapid\nSketch', help: 'Sketch on any plane or planar face without opening a sketch on it first: pick a sketch tool, then click the plane or face; click another one between entities to move there', run: function () { if (UI.toggleRapidSketch) UI.toggleRapidSketch(); }, active: function () { return !!(UI.rapidSketchOn && UI.rapidSketchOn()); } },
+      { id: 'instant2D', label: 'Instant2D', help: 'Hover a sketch dimension and drag the ball at its arrow to change the value on a ruler', run: function () { if (UI.toggleInstant2D) UI.toggleInstant2D(); }, active: function () { return !!(UI.instant2DOn && UI.instant2DOn()); } },
+      { id: 'shadedContours', wide: true, label: 'Shaded Sketch\nContours', help: 'Shade the closed regions of the sketch and mark its open ends (View ▸ Sketch Regions)', run: function () { toggleSketchRegions(); }, active: function () { return App.view.sketchRegions !== false; } },
+      { sep: true, extra: true },
+      // Anvil's own: Construction Geometry (ui-relations.js) and Sketch Picture (rfAW: ui-sketch-picture.js), then the
+      // sheet-metal-shop commands; `extra`: these go to the » menu first when the ribbon is too narrow, so the SolidWorks
+      // buttons keep their labels
+      { extra: true, stack: [{ id: 'construction', label: 'Construction Geometry', run: function () { UI.toggleConstruction(); } },
+        { id: 'sketchPicture', label: 'Sketch Picture', help: 'Place a picture (PNG, JPG, BMP) on the sketch plane to trace over', run: function () { if (UI.cmdSketchPicture) UI.cmdSketchPicture(); } }] },
       // sketch-layers / levels: the Levels Manager tab (ui-levels.js, Mastercam's part-wide levels: CUT, ETCH and BEND
       // with their own colours, shown or hidden, written to the DXF on their names); the sketch's Layers PM without it
-      { id: 'levels', label: 'Levels', help: 'Levels Manager: numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, written to the DXF on their names', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },
-      { id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
+      { extra: true, id: 'levels', label: 'Levels', help: 'Levels Manager: numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, written to the DXF on their names', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else if (UI.cmdSketchLayers) UI.cmdSketchLayers(); } },
+      { extra: true, id: 'dxf', label: 'Sketch\nto DXF', run: function () { UI.exportSketchDXF(); } },
       // dxf-import: Insert DXF / DWG, Check Sketch for Feature (ui-sketch-import.js)
-      { stack: [{ id: 'importDxf', label: 'Insert DXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
+      { extra: true, stack: [{ id: 'importDxf', label: 'Insert DXF / DWG', help: 'Import a DXF or DWG file into the sketch (a new sketch on the Top Plane when none is open; DWG through the local Anvil server)', run: function () { UI.cmdInsertDXF(); } },
         { id: 'checkSketch', label: 'Check Sketch for Feature', help: 'Find open endpoints, gaps, duplicates and crossings that keep the sketch from making a feature', run: function () { UI.cmdCheckSketch(); } }] }
     ],
     Evaluate: [
@@ -323,7 +328,7 @@
   // refreshing the ribbon (after every command, tool change and PropertyManager close) does not replace the button
   // under the mouse: no hover flicker, and the tooltip stays up.
   function ribbonButton(item, small) {
-    var b = el('button', { class: 'rb' }), shown = null;
+    var b = el('button', { class: 'rb' + (item.wide && !small ? ' rb-wide' : '') }), shown = null;   // wide: a long two-line label (Shaded Sketch Contours)
     function sync() {
       var s = itemState(item);
       var face = s.id + '|' + s.label;
@@ -436,17 +441,18 @@
     ribbonBuilt = shape;
     var frag = document.createDocumentFragment();
     shape.items.forEach(function (item) {
-      if (item.sep) { frag.appendChild(el('div', { class: 'rb-sep' })); return; }
+      if (item.sep) { frag.appendChild(el('div', { class: 'rb-sep' + (item.extra ? ' rb-extra' : '') })); return; }
       if (item.stack) {
         // rfC: a grid stack (the sketch entities) shows icons only, three rows filled column by column, as SolidWorks
         // does; its labels stay in the buttons (hidden) for the accessible names, the » menu and lookups by label
-        var st = el('div', { class: 'rb-stack' + (item.grid ? ' rb-grid' : '') });
+        var st = el('div', { class: 'rb-stack' + (item.grid ? ' rb-grid' : '') + (item.extra ? ' rb-extra' : '') });
         item.stack.forEach(function (s) { st.appendChild(s.fly ? ribbonFlyout(s, true) : ribbonButton(s, true)); });   // a small flyout in a stack (Ellipse)
         frag.appendChild(st);
         return;
       }
-      if (item.fly) { frag.appendChild(ribbonFlyout(item)); return; }   // r14/commands14
-      frag.appendChild(ribbonButton(item));
+      var node = item.fly ? ribbonFlyout(item) : ribbonButton(item);   // r14/commands14: a flyout button
+      if (item.extra) node.classList.add('rb-extra');
+      frag.appendChild(node);
     });
     bar.innerHTML = '';
     bar.appendChild(frag);
@@ -510,6 +516,15 @@
     more.hidden = true;
     function fits() { return bar.scrollWidth <= bar.clientWidth + 1; }
     if (fits()) return 0;
+    // Anvil's own commands after SolidWorks' (`extra` items) go to the » menu before any SolidWorks button loses its label
+    var extras = kids.filter(function (c) { return c.classList.contains('rb-extra'); });
+    if (extras.length) {
+      extras.forEach(function (c) { c.classList.add('rb-over'); });
+      more.hidden = false;
+      if (fits()) return 0;
+      extras.forEach(function (c) { c.classList.remove('rb-over'); });
+      more.hidden = true;
+    }
     rib.classList.add('fit-1');
     if (fits()) return 1;
     // a few buttons in the » menu are better than no labels at all: keep the labels while at most 4 buttons overflow

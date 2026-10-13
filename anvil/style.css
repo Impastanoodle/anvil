@@ -1017,3 +1017,4 @@ body.splitting #viewport { pointer-events: none; }
 #i2d-layer .i2d-tick.major { stroke-width: 1.4; }
 #i2d-layer .i2d-tick.hit { stroke: #ff8c1a; stroke-width: 2.5; }
 #i2d-layer text { font: 10.5px "Segoe UI", Arial, sans-serif; fill: var(--blue, #1f6fc5); paint-order: stroke; stroke: var(--dim-halo, #fff); stroke-width: 2.5px; stroke-linejoin: round; user-select: none; }
+.rb.rb-wide { width: 84px; }   /* a large button whose label needs two longer lines (Shaded Sketch Contours) */

@@ -9,21 +9,21 @@
   function rfcSketchItems() {   // every item of the Sketch tab, flyout members and stack rows included: [{ it, fly }]
     var out = [];
     UI.RIBBON.Sketch.forEach(function (x) {
-      (x.stack || [x]).forEach(function (s) { if (s.fly) s.items.forEach(function (it, i) { out.push({ it: it, fly: s.fly, i: i }); }); else if (!s.sep) out.push({ it: s }); });
+      (x.stack || [x]).forEach(function (s) { if (s.fly) s.items.forEach(function (it, i) { out.push({ it: it, fly: s.fly, i: i, face: (s.label || it.label).replace(/\n/g, ' ') }); }); else if (!s.sep) out.push({ it: s, face: s.label.replace(/\n/g, ' ') }); });   // face: the button name (a flyout with a label of its own, Quick Snaps, keeps it)
     });
     return out;
   }
   function rfcMenu() { var m = D.querySelector('.menu'); return m ? Array.prototype.map.call(m.querySelectorAll('.mi'), function (r) { return r.textContent; }) : []; }
-  step('rfC: the Sketch tab in SolidWorks 2024 order — Sketch ▾, Smart Dimension ▾ | the entity grid (Line / Circle / Spline, Rectangle / Arc / Ellipse, Slot / Polygon / Sketch Fillet, Text / Plane / Point; icons only) | Trim ▾, Convert ▾, Offset, Mirror / Pattern / Move | Display/Delete Relations ▾ (Add Relation, Fully Define Sketch), Repair / Quick Snaps / Rapid Sketch … | the shop commands; every button has its own icon and a tooltip (name, help, key); greyed ones say so; the ribbon keeps its height', async function () {
+  step('rfC: the Sketch tab in SolidWorks 2024 order — Sketch ▾, Smart Dimension ▾ | the entity grid (Line / Rectangle / Slot, Circle / Arc / Polygon, Spline / Ellipse / Sketch Fillet, Plane / Text / Point; icons only) | Trim ▾, Convert ▾, Offset, Mirror / Pattern / Move | Display/Delete Relations ▾ (Add Relation, Fully Define Sketch), Repair / Quick Snaps / Rapid Sketch … | the shop commands; every button has its own icon and a tooltip (name, help, key); greyed ones say so; the ribbon keeps its height', async function () {
     await anvil.newPart(); await idle();
     UI.setRibbonTab('Features'); var h0 = $('ribbon').offsetHeight;
     UI.setRibbonTab('Sketch');
     assert($('ribbon').offsetHeight === h0, 'the Sketch tab changes the ribbon height: ' + $('ribbon').offsetHeight + ' vs ' + h0);
     var top = rfcTop();
-    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,stack,|,relations,stack,stack,stack,|,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);   // rfAV: + the Instant2D column
+    assert(top === 'sketch,dim,|,grid,|,trim,convert,Offset Entities,Offset On Surface,stack,|,relations,Repair Sketch,|,quickSnaps,|,Rapid Sketch,Instant2D,Shaded Sketch Contours,|,stack,Levels,Sketch to DXF,stack', 'Sketch tab order: ' + top);   // as the user's SolidWorks 2024 screenshot (2026-10-13)
     var grid = D.querySelector('#ribbon-buttons .rb-grid');
     var cells = Array.prototype.map.call(grid.children, function (c) { return c._fly ? c._fly.fly : c.getAttribute('aria-label'); }).join(',');
-    assert(cells === 'line,circle,spline,rect,arc,ellipse,slot,Polygon,skFillet,Text,Plane,Point', 'entity grid ' + cells);
+    assert(cells === 'line,rect,slot,circle,arc,Polygon,spline,ellipse,skFillet,Plane,Text,Point', 'entity grid ' + cells);
     var gs = W.getComputedStyle(grid);
     assert(gs.display === 'grid' && gs.gridAutoFlow === 'column' && W.getComputedStyle(grid.querySelector('.rb span')).display === 'none', 'grid: three rows of icons, column by column (' + gs.display + ' ' + gs.gridAutoFlow + ')');
     var rows = {}; Array.prototype.forEach.call(grid.children, function (c) { rows[Math.round(c.getBoundingClientRect().top)] = 1; });
@@ -38,7 +38,7 @@
       var icon = x.it.icon || x.it.id;
       if (!W.Icons.has(icon)) bad.push(x.it.label + ': no icon ' + icon);
       if (x.fly) UI.ribbonFlyFace(x.fly, x.i);
-      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.it.label.replace(/\n/g, ' '); })[0];
+      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.face; })[0];
       if (!b || !b._tip) { bad.push(x.it.label + ': no button / tooltip'); return; }
       var t = b._tip;
       if (!t.desc) bad.push(x.it.label + ': no help line');
@@ -225,7 +225,7 @@
       var x = list[k];
       if (UI.App.mode !== 'sketch') { await UI.newSketchOnPlane('Front'); await idle(); UI.setRibbonTab('Sketch'); }
       if (x.fly) UI.ribbonFlyFace(x.fly, x.i);
-      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.it.label.replace(/\n/g, ' '); })[0];
+      var b = Array.prototype.filter.call(D.querySelectorAll('#ribbon-buttons .rb'), function (e) { return (e.getAttribute('aria-label') || '') === x.face; })[0];
       assert(b && !b.disabled, x.it.label + ': no live button');
       b.click(); await wait(10);
       if (x.it.id === 'shadedContours') b.click();   // a view toggle: put it back
