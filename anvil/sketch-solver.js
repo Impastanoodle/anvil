@@ -3410,7 +3410,7 @@ var SketchSolver = (function () {
       if (rel.type !== 'coincident' || rel.refs.indexOf(me) < 0) return;
       rel.refs.forEach(function (r) {
         var p = parseRef(r);
-        if (!p || p.o || p.e === idx || p.s === null || /^(mid|c)$/.test(p.s) || !E[p.e] || (only && only.indexOf(p.e) < 0)) return;
+        if (!p || p.o || p.e === idx || p.s === null || /^(mid|c)$/.test(p.s) || !E[p.e] || isSlotCentre(E[p.e], p.s) || (only && only.indexOf(p.e) < 0)) return;
         var pt = refPoint(E, p);
         if (pt) cuts.push(pt);
       });
@@ -3419,6 +3419,10 @@ var SketchSolver = (function () {
     if (only) o.only = only;
     return o;
   }
+  // rfCK: a slot's (or arc slot's) 'p1' / 'p2' are its cap-arc centres (refPoint: the ends of its centreline), not
+  // points on its outline: no end of anything, so no T-junction on an entity through them (a slot has no ends at all).
+  // Before, a line through a slot centre (a centreline, or one a Coincident held there) was cut at the centre.
+  function isSlotCentre(e, s) { return !!e && (e.t === 'slot' || e.t === 'aslot') && s === 'p'; }
   // rfCH: the end (and corner) refs of other entities that lie on entity idx within tol, away from its own ends: the
   // true T-junctions on it (an end at its end is a corner, not a junction; a sketch point or a text is no end)
   function endsOn(sketch, idx, tol) {
@@ -3427,7 +3431,7 @@ var SketchSolver = (function () {
     E.forEach(function (o, j) {
       if (j === idx || !o || o.t === 'point' || o.t === 'text') return;
       pointRefs(sketch, j).forEach(function (pr) {
-        if (/\.(mid|c)$/.test(pr.ref) || (isFree(o) && /\.v\d+$/.test(pr.ref))) return;
+        if (/\.(mid|c)$/.test(pr.ref) || (isFree(o) && /\.v\d+$/.test(pr.ref)) || (isSlotCentre(o, 'p') && /\.p[12]$/.test(pr.ref))) return;
         if (own.some(function (q) { return len(sub(q, pr.pt)) <= tol; })) return;
         if (prims.some(function (p) { return tPrimAt(p, pr.pt).dist <= tol; })) out.push(pr.ref);
       });
@@ -3435,9 +3439,13 @@ var SketchSolver = (function () {
     return out;
   }
   // parameters on primitive k of entity idx where the other entities cut it (only those listed in `only`, if given):
-  // where they cross it and, rfCH, where an end of theirs lies on it (Kernel.trimCuts)
-  function tCuts(sketch, idx, k, prim, only) {
-    return K && K.trimCuts ? K.trimCuts(standIn(sketch.entities, idx), idx, k, prim, junctionOpts(sketch, idx, only)) : [];
+  // where they cross it and, rfCH, where an end of theirs lies on it (Kernel.trimCuts). rfCK: `ends` keeps a crossing at
+  // the entity's own end (Trim away inside / outside: a bound through the end is an L corner the entity does meet).
+  function tCuts(sketch, idx, k, prim, only, ends) {
+    if (!K || !K.trimCuts) return [];
+    var o = junctionOpts(sketch, idx, only);
+    if (ends) o.ends = true;
+    return K.trimCuts(standIn(sketch.entities, idx), idx, k, prim, o);
   }
   // The part of entity idx that Trim to closest removes at uv: { prim, lo, hi (parameters on the primitive), whole }.
   function spanOf(sketch, idx, uv) {
@@ -3882,7 +3890,8 @@ var SketchSolver = (function () {
     if (bounds.indexOf(idx) >= 0) return { error: 'That is one of the bounding entities.' };
     var prim = tPrims(e)[0], kt = tPrimAt(prim, uv).t, hits = [];
     for (var b = 0; b < bounds.length; b++) {
-      var ps = tCuts(sketch, idx, 0, prim, [bounds[b]]);
+      // rfCK: a bound through the entity's own end (an L corner) counts: the rest span there is empty (tiny, below)
+      var ps = tCuts(sketch, idx, 0, prim, [bounds[b]], true);
       if (!ps.length) return { error: 'The entity has to cross both bounding entities.' };
       var dist = function (t) { var d = Math.abs(t - kt); return prim.full ? Math.min(d, TAU - d) : d; };   // round a circle either way
       ps.sort(function (p, q) { return dist(p) - dist(q); });

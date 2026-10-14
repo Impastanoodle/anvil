@@ -33,6 +33,7 @@ When a task is finished the head moves it to the Done section with the run id.
 - Round-5 follow-ups (local-2026-10-03c): view scale text "SCALE 2 : 1" (SolidWorks spacing); API section views can still land off a full sheet; residual line-end gaps under 0.015 mm in isometric views; crease rule may surface new edges on other models; material hatch patterns enlarge SVG / DXF; Offset Entities adds no offset dimension (needs a circle-to-circle radial distance); dimension-on-entry option; rigid sub-assemblies can miss the fast edge path after a translation; transparency not saved; Width mate pop-up.
 ## Ideas (lower priority)
 
+- Flat pattern: a hole cut from the top face that bites into a bend below the top leaves the strip un-notched (bendSurfaceNotches reads only the inside surface), and a hole reaching a bend line shows the strip's 1e-3 weld overlap (rfCJ bounds both). Found by the 2026-10-14g scan.
 - Desktop shell so Anvil opens as its own window with native file dialogs.
 
 ## Deferred (out of scope since 2026-10-07; only on an explicit user request)
@@ -41,6 +42,7 @@ When a task is finished the head moves it to the Done section with the run id.
 - Variable-radius and face fillets on the OpenCascade kernel (BRepFilletAPI_MakeFillet Add_3 / Add_5), with PropertyManager UI.
 
 ## Done
+- (2026-10-14g) Scan-and-fix of the 2026-10-13/14 work: 17 confirmed bugs fixed (split base face in the flat, corner-notch bend tab, Sketched Bend side; Trim at slot centres / own ends / double cuts; Fillet row delete, refused value, pair pick; text undo, Edit ▸ Undo, curve-tool undo, spin arming; double-click undo at 60 steps, Circle third Enter, Ctrl+Z in unit boxes, Parallel Line re-pick).
 
 - (2026-10-14c) Sketch Fillet / Chamfer corners stay live and follow an Enter-committed value; agent area cards + generated code index; agent reuse across /compact.
 - (2026-10-14) Green 10 px endpoint dots; white Undo / Redo when available; the View ribbon tab (Zoom, Orientation, Appearance, Show / Hide, Section, Managers) with 22 new icons. More View-tab commands to come (user).

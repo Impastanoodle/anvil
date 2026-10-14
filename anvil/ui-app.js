@@ -836,45 +836,61 @@
   // a sketch dimension) and a sketch tool's own PM (Insert Line …), where Ctrl+Z undoes at once (the last line drawn)
   // and the tool keeps its PM, as in SolidWorks; a drawing's PMs keep the drawing's own undo. In the command's value box
   // Ctrl+Z takes back what was typed there first (the browser's own text undo); with nothing typed it cancels.
+  // rfCM: the curve family's tool PM (Circle / Arc / Polygon / Slot, ui-sketch-curves.js openToolPM: _curves.kind
+  // 'tool', no sketchTool flag) is a sketch tool's PM too; it was cancelled ("Circle cancelled.", the tool put down, the
+  // circle kept) where Line / Rectangle undid the entity at once.
   function pmIsCommand(spec) {
     return !!(spec && !spec.sketchTool && !spec.selectionPM && spec.entityIndex == null && !spec._skEntity && !spec._txtEntity &&
-      !(spec._curves && spec._curves.kind === 'entity') && !(UI.dimensionPMOpen && UI.dimensionPMOpen()));
+      !(spec._curves && (spec._curves.kind === 'entity' || spec._curves.kind === 'tool')) && !(UI.dimensionPMOpen && UI.dimensionPMOpen()));
   }
+  function pmIsSketchTool(spec) { return !!(spec && (spec.sketchTool || (spec._curves && spec._curves.kind === 'tool'))); }
   function undoCancelsPM(target) {
     var spec = UI.pmSpec && UI.pmSpec();
     if (!pmIsCommand(spec) || (UI.drawingActive && UI.drawingActive())) return false;
     if (target && typingIn(target)) {
       var root = $('pm');
       if (!root || !root.contains(target)) return false;   // the script console, a dimension's value box: their own Ctrl+Z
-      if (UI.pmPending && UI.pmPending(target)) return false;   // typed text in the command's box: undo the typing first
+      // typed text in the command's box: undo the typing first. rfCM: text the code put there ("=" or a shop entry's
+      // letter switching a number box to text, ui-commands.js: _codeText) is not in the browser's history, so with the
+      // box still at that text Ctrl+Z has nothing to take back and cancels the command instead of doing nothing
+      if (UI.pmPending && UI.pmPending(target) && target.value !== target._codeText) return false;
     }
     return true;
   }
-  function undoCommand(redo) {
-    if (undoCancelsPM(document.activeElement)) {
+  // rfCM: `target` is the key's target for Ctrl+Z / Ctrl+Y, null for Edit ▸ Undo / Redo and the toolbar buttons: a menu
+  // row runs on mouseup with the focus still in the command's box (the menu bar swallows the mousedown), and a menu never
+  // triggers the browser's text undo, so the "typed text in the box" exception is the keyboard's only; before, Edit ▸
+  // Undo with text typed in the box undid the previous step under the open command.
+  function undoCommand(redo, target) {
+    if (undoCancelsPM(target)) {
       var title = UI.pmTitle ? UI.pmTitle() : '';
       UI.pmCancel();
       var sm = $('status-msg');
       if (title && sm && !/cancelled/.test(sm.textContent)) UI.setStatus(title + ' cancelled.');
       return UI.whenIdle();
     }
-    var spec = UI.pmSpec && UI.pmSpec(), tool = spec && spec.sketchTool && App.mode === 'sketch' ? App.tool : null;
+    var spec = UI.pmSpec && UI.pmSpec(), tool = pmIsSketchTool(spec) && App.mode === 'sketch' ? App.tool : null;
     if (redo ? !App.redo.length : !App.undo.length) return UI.whenIdle();
     var p = redo ? UI.redo() : UI.undo();
     // the undo closed every PropertyManager (ui-core.js afterModelSwap): a sketch tool still in hand gets its own back
-    if (tool && tool !== 'select' && App.mode === 'sketch' && App.tool === tool && !UI.hasPM() && UI.setTool) UI.setTool(tool);
+    // (rfCM: a curve tool's PM puts its tool down as it closes, onClose, so the tool may read 'select' here)
+    if (tool && tool !== 'select' && App.mode === 'sketch' && (App.tool === tool || App.tool === 'select') && !UI.hasPM() && UI.setTool) UI.setTool(tool);
     return p;
   }
   // lane BY: the two-Enter rule (ui-commands.js pmEnter) counts what was typed, not only a changed text: "3" typed over a
   // selected 3 (Rectangular Array's instances) and Enter was ✓ and closed the command with the distance still to set.
   // A PropertyManager box typed in holds an entry until Enter commits it, whatever its text.
+  // rfCM: the browser's own text undo / redo (Ctrl+Z in the box) fires an input event too; one landing back on the armed
+  // text is not that text typed again: the box is clean (it was left pending for good, the next Ctrl+Z did nothing and
+  // Enter committed again instead of ✓).
   document.addEventListener('input', function (e) {
+    if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') return;
     var t = e.target, root = $('pm');
     if (!t || t.tagName !== 'INPUT' || t._armed == null || t.value !== t._armed || !root || !root.contains(t)) return;
     t._armed = '\u0000' + t._armed;   // the same text, but typed: pending (pmPending compares the two)
   }, true);
-  UI.undoCommand = function () { return undoCommand(false); };
-  UI.redoCommand = function () { return undoCommand(true); };
+  UI.undoCommand = function () { return undoCommand(false, null); };
+  UI.redoCommand = function () { return undoCommand(true, null); };
   UI.undoCancelsPM = undoCancelsPM;
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
@@ -907,8 +923,8 @@
     var k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && !e.shiftKey && k >= '1' && k <= '7') { e.preventDefault(); UI.setView(['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Isometric'][+k - 1]); return; }
     if (ctrl && k === '8') { e.preventDefault(); UI.normalToSelection(); return; }
-    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else undoCommand(false); return; }
-    if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); undoCommand(true); return; }
+    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) UI.previousView(); else undoCommand(false, e.target); return; }
+    if (ctrl && (k === 'y' || k === 'Y')) { e.preventDefault(); undoCommand(true, e.target); return; }
     if (ctrl && (k === 's' || k === 'S')) { e.preventDefault(); fileSave(); return; }
     if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.rebuild().then(function () { UI.toast('Rebuilt in ' + UI.fmtNum(App.lastRebuildMs, 0) + ' ms'); }); return; }
     if (ctrl && (k === 'n' || k === 'N')) { e.preventDefault(); fileNew(); return; }

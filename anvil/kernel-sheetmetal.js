@@ -1271,7 +1271,9 @@
         var d = dot(face.normal, plane.n);
         var off = Math.abs(dot(face.normal, pt) - face.w);   // either face of the sheet there
         if (Math.abs(d) < 0.999 || (off > 1e-4 && Math.abs(off - T) > 1e-4)) return;
-        var score = face.area * (d > 0 ? 1 + 1e-6 : 1);
+        // rfCJ: the same side rule as above (was the old 1e-6 tie-break, so a pocket or countersink on the sketch side
+        // flipped a Sketched Bend part to the far face and every UP note read DOWN)
+        var score = face.area * (d > 0 ? 1.1 : 1);
         if (!ab || score > ab.score) ab = { face: face, i: i, score: score, anchor: pt };
       });
       if (ab) best = ab;
@@ -1367,12 +1369,36 @@
       var gaps = mergeFlatRegions([[band]], covered, FLAT_WELD) || [], cutouts = fi.cutouts || [], tC = dot(sub(C, fi.a), dir);
       // a gap is a hole only where the part has air at mid-thickness: not the stretch of a bend another flange's bend
       // runs into at a corner (metal there, the surface merely covered), and not a hole cut before the bend, whose
-      // cutout above is exact already. A gap at either end of the bend is a corner, not a hole: the trim or relief
-      // of the flange meeting this one there (the reliefs above draw those), so the strip keeps its full length.
+      // cutout above is exact already. A gap at either end of the bend is a corner, not a hole, while a flange meets
+      // this one there: its relief slot (cut through the base's thickness past its own end, where this bend starts)
+      // takes a bite out of this bend's start that the reliefs above draw already, and whose eps bridge below would
+      // nick the base corner; so the strip keeps its full length. (rfCJ) With nothing meeting that end, a gap there is
+      // a cut made after the bend through the bend's end (a corner notch), judged by the mid-thickness test like any
+      // other: before, the strip kept a tab of bend where the part has no metal. A flange meets this end when it has
+      // a relief here, or another record ends within 3 (R + T) of it (a Virtual Sharp corner trims (R + T)·tan(A/2)
+      // back from the corner) and that record's own bend still has metal at that end (a corner notch cut through both
+      // bends leaves nobody owning the corner; a relief's bite leaves the neighbour's bend whole).
+      function bendMetal(g, near) {
+        var dg = sub(g.b, g.a), lg = Math.hypot(dg[0], dg[1], dg[2]);
+        if (!(lg > 1e-9)) return true;
+        dg = scale(dg, 1 / lg);
+        var Cg = add(g.origin, scale(g.u, g.R)), rg = g.R + g.T / 2, hg = Math.min(g.T / 2, lg / 4), tg = near === 0 ? hg : lg - hg;
+        var P = add(add(Cg, scale(g.o, rg * Math.sin(g.angle / 2))), scale(g.u, -rg * Math.cos(g.angle / 2)));
+        return inBody(add(P, scale(dg, tg - dot(sub(Cg, g.a), dg))));
+      }
+      function cornerAt(kk) {
+        if (fi.reliefs && fi.reliefs[kk]) return true;
+        var E = kk === 0 ? fi.a : fi.b, reach = 3 * (fi.R + fi.T) + 1e-3;
+        return flanges.some(function (g) {
+          if (g === fi || !g.a || !g.b || !g.origin) return false;
+          return [g.a, g.b].some(function (P, near) { var d = sub(P, E); return Math.hypot(d[0], d[1], d[2]) < reach && bendMetal(g, near); });
+        });
+      }
+      var corner = [cornerAt(0), cornerAt(1)];
       function keep(l) {
         var q = loopInteriorPoint(l);
         if (!q || cutouts.some(function (cl) { return pointInPoly(q, cl); })) return false;
-        if (l.some(function (p) { return p[1] < 1e-6 || p[1] > len - 1e-6; })) return false;
+        if (l.some(function (p) { return (p[1] < 1e-6 && corner[0]) || (p[1] > len - 1e-6 && corner[1]); })) return false;
         var th = A * q[0] / BA, rm = fi.R + fi.T / 2;
         return !inBody(add(add(add(C, scale(fi.o, rm * Math.sin(th))), scale(fi.u, -rm * Math.cos(th))), scale(dir, q[1] - tC)));
       }
@@ -1584,7 +1610,12 @@
       });
     }
     var baseComp = best.anchor != null ? componentAt(best.i, best.anchor) : -1;
-    unfold(best.i, baseComp >= 0 ? baseComp : 0, function (Q) { return to2D(plane, Q); }, best.face.normal, 0);
+    var baseMap = function (Q) { return to2D(plane, Q); };
+    unfold(best.i, baseComp >= 0 ? baseComp : 0, baseMap, best.face.normal, 0);
+    // rfCJ: a cut that splits the base face (a window across a channel bottom running into both bends) leaves pieces of
+    // it no wall reaches back from; they lie rigidly in the base plane, so they go in with the base map, flanges and
+    // all (was: only the anchor's piece was laid, and a flange on another piece was lost with it)
+    faceComponents(best.i).forEach(function (c, ci) { if (!usedFaces[best.i + '/' + ci]) unfold(best.i, ci, baseMap, best.face.normal, 0); });
     // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
     var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
     if (!loops) loops = csgMerge(regions, notches);

@@ -1413,11 +1413,17 @@
   // it by more than noise is no junction (user, 2026-10-14: "it shouldn't trim if it's not a true intersection or a
   // T-junction"): nothing cuts there, as before. A point at the primitive's own end is no cut (no zero-length piece);
   // the same parameter reached twice counts once. opts.only: the indices of the entities that cut (all when absent).
+  // opts.ends (rfCK): keep a crossing at the primitive's own end too (Trim away inside / outside: a bound through the
+  // end is a corner the entity does meet; the caller drops the empty span there).
+  // rfCK: a junction the crossing test already found counts once: the foot of an end that is off the primitive by up to
+  // its tolerance (overshooting it, so the entity crosses it there too) is dropped when a crossing lies within that
+  // tolerance along the primitive; before, the two parameters (apart by less than the tolerance, more than the 1e-9
+  // merge) were two cuts, and a circle with one such junction kept a sliver or a 360-degree arc instead of going.
   // Before this (user report, 2026-10-14) a junction counted only through the crossing test, within 1e-9 of the other
   // entity's parameter, and an end a hair off it did not split the line: trimming at the junction deleted the whole line.
   function trimCuts(entities, idx, k, prim, opts) {
     opts = opts || {};
-    var only = opts.only || null, params = [], size = 1;
+    var only = opts.only || null, cross = [], feet = [], size = 1;
     function grow(p) { size = Math.max(size, Math.abs(p[0]), Math.abs(p[1])); }
     if (prim.kind === 'seg') { grow(prim.a); grow(prim.b); } else grow([Math.abs(prim.c[0]) + prim.r, Math.abs(prim.c[1]) + prim.r]);
     if (opts.tol == null) entities.forEach(function (o) { entityEnds(o).forEach(grow); });
@@ -1426,15 +1432,22 @@
       if (!o || o.t === 'point' || (only && only.indexOf(oi) < 0)) return;
       entityPrimitives(o).forEach(function (q, qi) {
         if (oi === idx && qi === k) return;
-        primIntersections(prim, q).forEach(function (t) { params.push(t); });
+        primIntersections(prim, q).forEach(function (t) { cross.push(t); });
       });
-      if (oi !== idx) entityEnds(o).forEach(function (p) { var t = footParam(prim, p, tol); if (t != null) params.push(t); });
+      if (oi !== idx) entityEnds(o).forEach(function (p) { feet.push([p, tol]); });
     });
     var cutTol = opts.cutTol != null ? opts.cutTol : Math.max(tol, 1e-3 * size);
-    (opts.cuts || []).forEach(function (p) { var t = footParam(prim, p, cutTol); if (t != null) params.push(t); });
-    // a crossing at the primitive's own end (an L corner) cuts nothing either
+    (opts.cuts || []).forEach(function (p) { feet.push([p, cutTol]); });
     var start = prim.kind === 'arc' ? prim.a0 : 0, end = prim.kind === 'arc' ? prim.a1 : 1, per = prim.kind === 'arc' ? prim.r : Math.hypot(prim.b[0] - prim.a[0], prim.b[1] - prim.a[1]);
-    params = params.filter(function (t) { return prim.full || ((t - start) * per > tol && (end - t) * per > tol); });
+    var params = cross.slice();
+    feet.forEach(function (f) {
+      var t = footParam(prim, f[0], f[1]);
+      if (t == null) return;
+      var same = cross.some(function (c) { var d = Math.abs(t - c); if (prim.full) d = Math.min(d, 2 * Math.PI - d); return d * per <= f[1]; });
+      if (!same) params.push(t);
+    });
+    // a crossing at the primitive's own end (an L corner) cuts nothing either, unless the caller asks for it (opts.ends)
+    if (!opts.ends) params = params.filter(function (t) { return prim.full || ((t - start) * per > tol && (end - t) * per > tol); });
     params.sort(function (a, b) { return a - b; });
     return params.filter(function (t, i) { return !i || t - params[i - 1] > 1e-9; });
   }

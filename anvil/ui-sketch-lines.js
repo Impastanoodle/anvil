@@ -1137,7 +1137,9 @@
       groups: [
         { title: 'Reference', fields: [{ type: 'pick', icon: 'line', placeholder: 'Line or edge',
           value: function () { return ref ? ref.label : ''; }, active: function () { return picking(); },
-          onActivate: function () { v.box = 'ref'; UI.renderPM(); hintNow(); draw(); } }] },
+          // rfCN: back to picking drops the placed preview and its distance box (as clearRef and a new pick do): the box
+          // left live took Enter, Enter to ✓, which closes without a line while picking
+          onActivate: function () { v.box = 'ref'; placed = null; closeUnitBox(); UI.renderPM(); hintNow(); draw(); } }] },
         { title: 'Placement', fields: [
           { type: 'radio', key: 'place', rerender: true, options: [['point', 'Through point'], ['distance', 'Distance'], ['tangent', 'Tangent to arc']] },
           { type: 'number', key: 'd', label: 'Distance', unit: 'u', min: 0, show: function (x) { return x.place !== 'tangent'; } },

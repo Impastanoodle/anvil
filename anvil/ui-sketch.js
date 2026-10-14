@@ -1232,12 +1232,15 @@
     // rfCF: the Line tool logs its clicks (screen point, the entities the click made, whether it pushed an undo
     // snapshot) for the double-click that ends the chain (the viewport's dblclick handler takes back what the
     // double-click's own two clicks made). The log lives on the tool state, so it is the chain's
-    var fL = App.tool === 'line' ? UI.activeSketchFeature() : null, nL = fL ? fL.entities.length : 0, uL = App.undo.length;
+    // rfCN: "this click pushed the snapshot" is the dirty flag's flip (addEntity pushes when it is clear and sets it;
+    // every mouse press clears it), not the stack's growth: at 60 snapshots pushUndo shifts the oldest and the length
+    // stays, so by length nothing ever counted as pushed and the discarded segment came back on the next Ctrl+Z
+    var fL = App.tool === 'line' ? UI.activeSketchFeature() : null, nL = fL ? fL.entities.length : 0, cleanL = !App.sketchDirty;
     placePoint(p, typed);
     if (fL && App.tool === 'line' && App.toolState) {
       var madeL = [];
       for (var kL = nL; kL < fL.entities.length; kL++) madeL.push(kL);
-      App.toolState.clicks = (App.toolState.clicks || []).slice(-2).concat([{ sx: mx, sy: my, made: madeL, pushed: App.undo.length > uL }]);
+      App.toolState.clicks = (App.toolState.clicks || []).slice(-2).concat([{ sx: mx, sy: my, made: madeL, pushed: cleanL && !!App.sketchDirty }]);
     }
   }
   // The next point of the drawing tool: closes a Line chain on its first point, completes an entity once the tool has
@@ -1974,6 +1977,18 @@
     // lane CG: Esc in the box (the on-screen box or the unit request box of Circle / Parallel Line) ends the whole
     // command in one press: the box closes unapplied, the tool goes down, the command's PropertyManager is cancelled
     if (ev.key === 'Escape') { ev.preventDefault(); UI.escapeCommand(); return; }
+    // rfCN: Ctrl+Z / Ctrl+Y in a command's unit request box (Parallel Line) with nothing newly typed cancels the
+    // command, as they do in the command's own PropertyManager boxes (ui-app.js undoCancelsPM; the key never reaches
+    // that shortcut from here, and the box is outside #pm). A half-typed entry keeps the browser's own text undo.
+    if (unitOwner && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && /^[zZyY]$/.test(ev.key)) {
+      if (numBox.inputs.every(function (x) { return x.input.value === x.input._armed; })) {
+        ev.preventDefault();
+        var ttl = UI.pmTitle ? UI.pmTitle() : '', smU = document.getElementById('status-msg');
+        UI.escapeCommand();
+        if (ttl && smU && !/cancelled/.test(smU.textContent)) UI.setStatus(ttl + ' cancelled.');
+      }
+      return;
+    }
     if (ev.key === 'Tab') {
       ev.preventDefault();
       var nx = list[(k + (ev.shiftKey ? list.length - 1 : 1)) % list.length];
@@ -2006,9 +2021,14 @@
         var fk = numBox.inputs[k >= 0 ? k : 0];
         if (!unitOwner && (fk.key === 'r' || fk.key === 'd') && fk.typed) circleBoxField = fk.key;   // lane BV: remembered for the next circle
         if (!numBox.committed || numBox.inputs.some(function (x) { return x.input.value !== x.input._armed; })) {
-          numBox.inputs.forEach(function (x) { x.input._armed = x.input.value; });
+          var bxC = numBox;
           numBox.committed = true;
           if (unitOwner) { if (unitOwner.onCommit) unitOwner.onCommit(v); } else numPreview();
+          if (numBox !== bxC) return;   // the commit closed the box
+          // rfCN: armed after the commit, not before: the preview rewrites the untyped fields from the committed
+          // value (R 0.313 held makes Ø 0.626 where the live 0.6254 showed 0.625), and the next Enter compares with
+          // what the box shows now; armed before, it saw a change and committed again, and a third Enter was needed
+          numBox.inputs.forEach(function (x) { x.input._armed = x.input.value; });
           var fv = v[fk.key];
           if (UI.pmEntryStatus) UI.pmEntryStatus(fk.input.getAttribute('aria-label') || '', fv == null ? fk.input.value : fk.key === 'ang' || fk.key === 'sweep' ? UI.fmtNum(fv, 2) + '°' : UI.fmtDim(fv) + ' ' + UI.unitLabel());
           try { fk.input.focus(); fk.input.select(); } catch (e) { }

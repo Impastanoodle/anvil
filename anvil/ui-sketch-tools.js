@@ -138,6 +138,22 @@
       list.forEach(function (k) { var e = f.entities[k]; if (k === not || !direct(e) || e.construction) return; var d = distTo(e, uv); if (d < bd) { bd = d; best = k; } });
       return best;
     }
+    // rfCL: a pick is recorded by where it was made, never by an entity index: the indices of the sketch as the pick
+    // found it no longer hold once an earlier pick is dropped (its rectangle not made into lines, its polyline corner
+    // not rounded), so every make re-finds the entity (the vertex) at the pick's point. The entity the tool takes (or
+    // makes into lines first) nearest uv, within tol (the pick's tolerance in sketch units; none: the nearest), or null
+    function entityAt(uv, tol) {
+      var best = null, bd = tol == null ? Infinity : tol;
+      f.entities.forEach(function (e, k) {
+        if (!direct(e) && !explodable(e)) return;
+        if (UI.entityLayerHidden && UI.entityLayerHidden(f, e)) return;
+        var d = distTo(e, uv);
+        if (d < bd) { bd = d; best = k; }
+      });
+      return best;
+    }
+    // a shape's vertex re-found at a pick's point: exactly there, but for the 1e-4 rounding of a rounded polyline
+    function vertexTol(at) { return Math.max(1e-3, 10 * cornerTolAt(at)); }
     // two picks { i, uvi, j, uvj }: a rectangle, polygon or slot picked is made into lines first and the line (or arc)
     // picked in it is taken; null when that leaves nothing the tool takes
     function resolvePicks(spec) {
@@ -161,16 +177,17 @@
     // or polygon's corner (the shape becomes lines first, as SolidWorks draws it); 'pl': a closed polyline's corner,
     // rounded in place; 'pair': two entities; 'sel': the entities selected when the command started (their corners)
     function runSpec(sp) {
-      var o, r, rows1, spec, cs, k;
+      var o, r, rows1, spec, cs, k, sc;
       if (sp.k === 'pl') {
-        var e = f.entities[sp.ei];
-        if (!e || e.t !== 'polyline' || !e.closed || !e.pts[sp.pi]) return { ok: false, error: 'No corner there.' };
-        var pts = e.pts, out = pts.slice(), ats = [];
+        // the polyline's vertex re-found at the pick's point (rfCL: its index moves once an earlier corner is rounded)
+        sc = shapeCorner(sp.at, 'pl');
+        if (!sc || sc.d > vertexTol(sp.at)) return { ok: false, error: 'No corner there.' };
+        var e = sc.e, ei = sc.ei, pi = sc.pi, pts = e.pts, out = pts.slice(), ats = [];
         // sketch-tools2: Fillet all corners of the chain: every corner, from the last to the first so the indices still to do do not move
         if (v.chain) { for (k = pts.length - 1; k >= 0; k--) { if (skipped(sp, pts[k])) continue; out = K.filletPolyline(out, k, +v.r); ats.unshift(pts[k]); } }
-        else { out = K.filletPolyline(pts, sp.pi, +v.r); ats = [pts[sp.pi]]; }
-        f.entities[sp.ei] = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
-        if (e.construction) f.entities[sp.ei].construction = true;
+        else { out = K.filletPolyline(pts, pi, +v.r); ats = [pts[pi]]; }
+        f.entities[ei] = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
+        if (e.construction) f.entities[ei].construction = true;
         S.clean(f);
         return { ok: true, rows: ats.map(vertexRow), ents: [] };
       }
@@ -189,11 +206,22 @@
       }
       if (sp.k === 'pair') {
         rows1 = [{ label: sp.label, at: null }];
-        spec = resolvePicks({ i: sp.i, uvi: sp.uvi, j: sp.j, uvj: sp.uvj });
+        // the two entities re-found at the picks' points (rfCL); a preselected pair (always the first pick, made on the
+        // sketch as the command found it, no tol) keeps its indices
+        var i = sp.i, j = sp.j;
+        if (sp.tol != null) { i = entityAt(sp.uvi, sp.tol); j = i == null ? null : entityAt(sp.uvj, sp.tol); }
+        spec = i == null || j == null ? null : resolvePicks({ i: i, uvi: sp.uvi, j: j, uvj: sp.uvj });
         if (!spec) return { ok: false, rows: rows1, error: chamfer ? 'Pick two lines (or two sides of a rectangle or polygon).' : 'Pick two lines, arcs or circles (or a spline and a line or arc).' };
       } else {
-        if (sp.k === 'rect' && !explodeBlock(sp.ei)) return { ok: false, error: 'No corner there.' };
-        spec = S.curveCorner(f, sp.at, cornerTolAt(sp.at));
+        // 'rect': the rectangle's (polygon's) vertex at sp.at, re-found (rfCL), becomes lines first; 'corner': a corner
+        // of curves at sp.at, else a shape's vertex there made into lines (the corner was picked on lines a pick since
+        // dropped had made of it)
+        spec = sp.k === 'rect' ? null : S.curveCorner(f, sp.at, cornerTolAt(sp.at));
+        if (!spec) {
+          sc = shapeCorner(sp.at, 'shape');
+          if (sc && sc.d <= vertexTol(sp.at)) explodeBlock(sc.ei);
+          spec = S.curveCorner(f, sp.at, cornerTolAt(sp.at));
+        }
         if (!spec) return { ok: false, error: 'No corner there.' };
         rows1 = [vertexRow(spec.at)];
       }
@@ -274,6 +302,9 @@
     // when it cannot be. The first one pushes the session's one undo step: the sketch as the command found it.
     function pick(sp) {
       fresh();
+      // rfCL: a value refused since the last make (the box marked bad) must fit now, or be put right, before another
+      // corner is added: every pick follows the one committed value, as ✓ waits for a good one
+      if (specs.length && good != null && valuesNow() !== good && !replay()) return null;
       var back = snapOf(f), first0 = first, fresh0 = !specs.length, r;
       if (fresh0) { App.undo.length = Math.min(App.undo.length, undo0); UI.pushUndo(); }
       App.sketchDirty = true;
@@ -298,16 +329,19 @@
     function replay(key) {
       fresh();
       if (!specs.length) return true;
-      var back = snapOf(f), first0 = first, r;
-      restore(snap); first = null; picked = null;
+      var back = snapOf(f), first0 = first, picked0 = picked ? picked.i : null, r;
+      restore(snap); first = null;
       r = runAll();
       if (!r.ok) {
         restore(back); first = first0;
+        if (picked) picked.i = picked0;   // (explodeBlock moved it while the picks were re-made)
         UI.updateSketches(); UI.setStatus(r.error);
         if (!typing()) UI.toast(r.error);
         markBad(key, r.error);
         return false;
       }
+      // rfCL: the first entity picked (of two) stays picked across a value change, re-found at its point in the re-made sketch
+      if (picked) { var pi = entityAt(picked.uv, picked.tol); if (pi == null) picked = null; else picked.i = pi; }
       rows = r.rows; madeEnts = r.ents; good = valuesNow(); goodV = valuesOf();
       App.sketchDirty = true;
       listRows(); changed(); rerender(); UI.sketchFeedbackClear(); showMade();
@@ -335,17 +369,20 @@
       if (sp.skip && row.at && siblings > 1) { sp.skip.push(row.at); undoIt = function () { sp.skip.pop(); }; }
       else { specs.splice(row.spec, 1); undoIt = function () { specs.splice(row.spec, 0, sp); }; }
       if (!specs.length) { reset(); UI.setStatus('Nothing left to ' + (chamfer ? 'chamfer' : 'fillet') + ': pick a vertex or two entities.'); return; }
+      picked = null;   // (the set of picks changes: a first entity picked is dropped with it)
       if (!replay()) undoIt();
     }
     function dropAll() {
       if (pending) { pending = null; rows = []; listRows(); App.tempEntities = []; UI.updateTemp(); UI.renderPM(); UI.setStatus('Pick a vertex or two entities.'); return; }
       if (specs.length) { reset(); UI.setStatus('Nothing left to ' + (chamfer ? 'chamfer' : 'fillet') + ': pick a vertex or two entities.'); }
     }
-    // the nearest vertex of a rectangle, polygon or closed polyline: { e, ei, pts, pi, d }
-    function shapeCorner(uv) {
+    // the nearest vertex of a rectangle, polygon or closed polyline: { e, ei, pts, pi, d }; only: 'shape' (a rectangle
+    // or polygon, made into lines to be filleted) or 'pl' (a closed polyline, rounded in place)
+    function shapeCorner(uv, only) {
       var best = null;
       f.entities.forEach(function (e, ei) {
-        if (e.t !== 'rect' && e.t !== 'crect' && e.t !== 'poly' && !(e.t === 'polyline' && e.closed)) return;
+        var pl = e.t === 'polyline' && !!e.closed, shape = e.t === 'rect' || e.t === 'crect' || e.t === 'poly';
+        if (!(pl || shape) || (only === 'pl' && !pl) || (only === 'shape' && !shape)) return;
         var pts = e.t === 'polyline' ? e.pts : K.entityPolylines(e)[0].pts;
         pts.forEach(function (p, pi) { var d = Math.hypot(p[0] - uv[0], p[1] - uv[1]); if (!best || d < best.d) best = { e: e, ei: ei, pts: pts, pi: pi, d: d }; });
       });
@@ -362,18 +399,19 @@
         var at = sc.pts[sc.pi].slice();
         // a rectangle's corner: the rectangle becomes four lines first (as SolidWorks draws it); sketch-fillet2: a
         // polygon's corner the same (still a regular polygon), rounded (chamfered) with its relations and the radius dimension
-        if (sc.e.t === 'rect' || sc.e.t === 'crect' || sc.e.t === 'poly') { picked = null; pickDone(pick({ k: 'rect', ei: sc.ei, at: at, skip: [] })); return; }
+        if (sc.e.t === 'rect' || sc.e.t === 'crect' || sc.e.t === 'poly') { picked = null; pickDone(pick({ k: 'rect', at: at, skip: [] })); return; }
         if (chamfer) { UI.toast('Sketch Chamfer works on lines: a polyline\'s corner cannot be chamfered.'); return; }
-        // a closed polyline's corner: the outline is rounded in place (it stays one entity)
-        pickDone(pick({ k: 'pl', ei: sc.ei, pi: sc.pi, skip: [] }));
+        // a closed polyline's corner: the outline is rounded in place (it stays one entity); rfCL: recorded by its point
+        pickDone(pick({ k: 'pl', at: at, skip: [] }));
         return;
       }
       if (c) { picked = null; pickDone(pick({ k: 'corner', at: c.at.slice(), skip: [] })); return; }
       // two entities picked one after the other (two sides of one rectangle, polygon or slot too)
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
       if (!e || !(direct(e) || explodable(e))) { UI.setStatus(chamfer ? 'Pick a corner, or two lines.' : 'Pick a corner, or two sketch entities: lines, arcs, circles, or a spline and a line or arc.'); return; }
-      if (!picked || (picked.i === hit.index && !explodable(e))) { picked = { i: hit.index, uv: uv }; UI.sketchFeedbackClear(); showMade(); UI.sketchPreview(entPts(e), PICK_STYLE, 'sk-trim-pick'); UI.setStatus('Pick the second entity.'); return; }
-      var sp = { k: 'pair', i: picked.i, uvi: picked.uv, j: hit.index, uvj: uv, label: entityLabel(f.entities[picked.i], picked.i) + ', ' + entityLabel(e, hit.index) };
+      if (!picked || (picked.i === hit.index && !explodable(e))) { picked = { i: hit.index, uv: uv, tol: tol }; UI.sketchFeedbackClear(); showMade(); UI.sketchPreview(entPts(e), PICK_STYLE, 'sk-trim-pick'); UI.setStatus('Pick the second entity.'); return; }
+      // (rfCL: i and j name the entities for the label; the make re-finds them at uvi / uvj within tol)
+      var sp = { k: 'pair', i: picked.i, uvi: picked.uv, j: hit.index, uvj: uv, tol: Math.max(picked.tol || 0, tol), label: entityLabel(f.entities[picked.i], picked.i) + ', ' + entityLabel(e, hit.index) };
       picked = null;
       pickDone(pick(sp));
     }

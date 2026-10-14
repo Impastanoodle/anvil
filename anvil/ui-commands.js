@@ -209,7 +209,7 @@
   // number box reads shop input and reformats itself, Nesting re-nests); returning false refuses: a bad entry or
   // equation shows its error on the first Enter and stays. Boxes are armed (their clean text noted) when rendered and
   // when they take the focus; a re-render while an entry is pending keeps it pending (renderPM).
-  function pmArm(inp) { if (inp && inp.tagName === 'INPUT') inp._armed = inp.value; }
+  function pmArm(inp) { if (inp && inp.tagName === 'INPUT') { inp._armed = inp.value; inp._codeText = null; } }   // rfCM: a clean box holds no code-set text (ui-app.js undoCancelsPM)
   function pmPending(inp) {
     return !!(inp && inp.tagName === 'INPUT' && /^(text|number|search)$/i.test(inp.type || 'text') && inp._armed != null && inp.value !== inp._armed);
   }
@@ -409,6 +409,7 @@
           if (e.key === '=' && inp.type === 'number') {
             e.preventDefault();
             inp.type = 'text'; inp.value = '=';
+            inp._codeText = '=';   // rfCM: text set by code is not in the browser's undo history (ui-app.js undoCancelsPM)
             try { inp.setSelectionRange(1, 1); } catch (er) { }
             setExpr('=');
             return;
@@ -419,6 +420,7 @@
             var old = inp.validity && inp.validity.badInput ? '' : inp.value, sel = window.getSelection ? String(window.getSelection()) : '';
             var t = (sel && sel === old ? '' : old) + e.key;
             inp.type = 'text'; inp.value = t;
+            inp._codeText = t;   // rfCM
             try { inp.setSelectionRange(t.length, t.length); } catch (er) { }
             inp.dispatchEvent(new Event('input', { bubbles: true }));
             return;
@@ -654,6 +656,10 @@
     if (f.min != null && val < f.min) val = +f.min;
     if (f.max != null && val > f.max) val = +f.max;
     inp.value = val;
+    // rfCM: a spin is not typing and its value is applied here, so the box is clean after it: Enter is ✓ and Ctrl+Z
+    // cancels the command (it was left pending, and the browser had nothing to undo for a value set by code, so Ctrl+Z
+    // did nothing); armed before changed(), which may re-render the box
+    pmArm(inp);
     changed(val);
   }
 
