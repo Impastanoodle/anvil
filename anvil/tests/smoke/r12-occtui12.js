@@ -35,7 +35,8 @@
       UI.App.model.features.filter(function (x) { return x.type === 'cpattern'; })[0].n = 11;
       await UI.rebuild();
       var tShown = performance.now() - t0;
-      assert(!UI.App.build.occt && !(UI.App.holdFrameUntil > performance.now()) && !UI.occt.rollback().cue, 'Anvil\'s result shown at once, not held');
+      // (lane CI) the hold is on the app frame's clock (W.performance.now()), not this page's
+      assert(!UI.App.build.occt && !(UI.App.holdFrameUntil > W.performance.now()) && !UI.occt.rollback().cue, 'Anvil\'s result shown at once, not held');
       await anvil.occtIdle(); await idle();
       for (var k = 0; k < 40 && UI.occt.fades() === fades0; k++) await wait(25);
       assert(UI.App.build.occt, 'OpenCascade\'s solid swapped in');

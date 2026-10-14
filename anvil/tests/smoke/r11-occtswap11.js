@@ -37,18 +37,26 @@
     try {
       if (!await occtDriving(exByName('Spur gear (12 teeth)').code)) return 'skipped: OpenCascade not installed';
       await wait(200);   // not a burst of rebuilds
-      UI.App.model.features.filter(function (x) { return x.type === 'cpattern'; })[0].n = 11;
+      // (lane CI) The app's clock: the hold (App.holdFrameUntil) is on the frame's performance.now(), whose origin is the
+      // frame's load, 1–5 s after this page's (the page reads every group file before it loads the frame); read on this
+      // page's clock, a 1.5 s hold looked that much shorter, or already over, at the check.
+      var appNow = function () { return W.performance.now(); };
+      // A known, short build: a deeper keyway (the last feature). OpenCascade's rebuild cache restores the gear up to it, so
+      // the estimate is that cut's measured time plus tessellation and the round trip (~0.65 s), well inside the hold limit
+      // (ui-occt.js HOLD_MAX 1.5 s). The tooth-count edit used before rebuilt the pattern and every cut after it (~1.45–1.55 s
+      // estimated, 1.6 s measured): right at the limit, where a build expected to take longer is rightly shown at once.
+      UI.App.model.features.filter(function (x) { return x.type === 'sketch'; }).pop().entities[0].h = 3.5;
       await UI.rebuild();
-      var heldNow = UI.App.holdFrameUntil > performance.now(), info = UI.occt.rollback();
-      assert(!UI.App.build.occt && heldNow, 'Anvil\'s build applied under a held frame: held ' + heldNow + ', estimate ' + info.estimate);
+      var heldNow = UI.App.holdFrameUntil > appNow(), info = UI.occt.rollback();
+      assert(!UI.App.build.occt && heldNow, 'Anvil\'s build applied under a held frame: held ' + heldNow + ' (' + Math.round(UI.App.holdFrameUntil - appNow()) + ' ms left), estimate ' + Math.round(info.estimate) + ' ms');
       assert(info.cue && D.querySelector('.occt-cue.on'), 'Rebuilding cue');
       await anvil.occtIdle(); await idle();
-      assert(UI.App.build.occt && !(UI.App.holdFrameUntil > performance.now()), 'OpenCascade\'s solid swapped in and the hold released');
+      assert(UI.App.build.occt && !(UI.App.holdFrameUntil > appNow()), 'OpenCascade\'s solid swapped in and the hold released');
       assert(!UI.occt.rollback().cue && !D.querySelector('.occt-cue.on'), 'cue gone');
       await anvil.run(exByName('Mug').code);
-      assert(!(UI.App.holdFrameUntil > performance.now()), 'another part opened: not held');
+      assert(!(UI.App.holdFrameUntil > appNow()), 'another part opened: not held');
       await anvil.occtIdle(); await idle();
-      return 'estimate ' + info.estimate.toFixed(0) + ' ms';
+      return 'estimate ' + info.estimate.toFixed(0) + ' ms, hold ' + (info.estimate * 1.5 + 150).toFixed(0) + ' ms (page clock ' + Math.round(performance.now() - appNow()) + ' ms ahead of the app\'s)';
     } finally { if (swap0) UI.occt.swapMode(swap0, { remember: false }); anvil.occt(was, { remember: false }); await idle(); }
   });
   step('r11/occtswap11: a whole-part OpenCascade build that finishes while Edit Feature is rolled back is not checked against the rolled-back part (no "volume differs"); ✗ swaps it in (skipped without vendor/occt)', async function () {
