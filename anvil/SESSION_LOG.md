@@ -1547,3 +1547,10 @@ Tests: kernel 1154/1154, examples 29/29 (both kernels), ui-smoke 690/690, occt-t
 - drawings (lane CA): Ctrl+Z / Ctrl+Y / Undo in a drawing cancel an open PropertyManager first (Smart Dimension ends the tool and keeps the dimension; typed text keeps its own undo; a cancelled Dimension PM leaves no empty undo step); a Smart Dimension click between the extension lines keeps the text centred when it fits (`tside` in `DIM_PROPS`); a bend note longer than its line wraps to two lines inside the blank, else runs past the line's end outside the outline; a hidden / DOWN-bend segment shorter than dash + gap draws as one centred dash (screen, SVG, PDF; DXF keeps the true line). Tests: rfCA.
 - next: occt-kernel.js has its own `normalCutTool` (the OpenCascade build of a Normal Cut across a bend may still be partial); no Auto Relief; the Smart Dimension preview shows the text centred before an outside click.
 Tests: kernel 1157/1157, examples 29/29 (both kernels), ui-smoke 696/696, occt-tests 87/87.
+
+## 2026-10-14a (interactive head, no subagents): endpoint dots and Undo / Redo look
+
+- end-point dots (ui-core.js `sketchPointMat`): 10 px beads with a near-black ring; plain white geometry gets green dots (#2ee66b), state colours (selected yellow, over-defined red, construction grey) keep the line colour. Tests: r12/sketchui12, rfBR.
+- quick-access Undo / Redo (style.css, rfBF block): white when there is something to undo / redo, faded grey when not; in the light theme the white arrow sits on a dark #3a3a3a chip. Test: rfCB.
+- note: the scheduled 9:15 pm run (anvil-8pm-round) started but waited on a permission prompt (default mode) after reading its instruction files.
+Tests: ui-smoke 697/697.

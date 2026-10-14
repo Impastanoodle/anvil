@@ -58,7 +58,7 @@
     var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints && !(o.userData && o.userData.sketchOpenEnds); });   // sketch-layers: not the open-end markers
     var n = pts.reduce(function (s, o) { return s + o.geometry.getAttribute('position').count; }, 0);
     assert(n === 3, 'three end points (the shared corner once): ' + n);
-    assert(pts.every(function (o) { return o.material.color.getHex() === UI.mats.sketch.color.getHex(); }), 'white like the under-defined lines (rfBR)');
+    assert(pts.every(function (o) { return o.material.color.getHex() === 0x2ee66b && o.material.size >= 10; }), 'green 10 px beads on the white lines (user 2026-10-14)');
     return n + ' points';
   });
   // --- end r12/sketchui12 ---

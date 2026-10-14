@@ -1517,19 +1517,24 @@ var UI = (function () {
     d.dashSize = cam.scale * 7; d.gapSize = cam.scale * 4;
     return d;
   }
-  // r12/sketchui12: the end and centre points of the active sketch's entities as small round dots in the entity's
-  // colour (SolidWorks' entity points), one dot where several ends meet; mid points and a corner rectangle's centre
-  // are not shown (SolidWorks has none there)
-  var ptTexture = null, ptMats = {};
+  // r12/sketchui12: the end and centre points of the active sketch's entities as round dots in the entity's colour
+  // (SolidWorks' entity points), one dot where several ends meet; mid points and a corner rectangle's centre are not
+  // shown (SolidWorks has none there). User 2026-10-14: prominent against the white wireframe, so a 10 px bead with a
+  // near-black ring (the ring stays dark: the material colour multiplies only the light centre)
+  var ptTexture = null, ptMats = {}, PT_GREEN = new THREE.Color(0x2ee66b);
   function sketchPointMat(m) {
     if (!ptTexture) {
       var cv = document.createElement('canvas'); cv.width = cv.height = 32;
-      var cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(16, 16, 14, 0, Math.PI * 2); cx.fill();
+      var cx = cv.getContext('2d');
+      cx.fillStyle = '#111'; cx.beginPath(); cx.arc(16, 16, 15.5, 0, Math.PI * 2); cx.fill();
+      cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(16, 16, 9.5, 0, Math.PI * 2); cx.fill();
       ptTexture = new THREE.CanvasTexture(cv);
     }
     var pm = ptMats[m.uuid];
-    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
-    pm.color = m.color;   // the same Color: a theme switch recolours the dots with their lines
+    if (!pm) pm = ptMats[m.uuid] = new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, map: ptTexture, alphaTest: 0.5, transparent: false, depthTest: false });
+    // the same Color as the line (a state colour — over-defined red, selected yellow — shows on its dots too), except
+    // plain white geometry, whose dots are green so they stand out on the white wireframe
+    pm.color = m.color.getHex() === 0xffffff ? PT_GREEN : m.color;
     return pm;
   }
   function sketchEndPoints(f, i, e, mat, ptsBy) {

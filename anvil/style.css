@@ -224,6 +224,14 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #menubar .std-btn:hover:not(:disabled) { background: var(--cm-hover); border-color: var(--cm-hover-line); }
 #menubar .std-btn:active:not(:disabled) { background: var(--cm-down); }
 #menubar .std-btn:disabled { opacity: 0.4; }
+/* user 2026-10-14: Undo / Redo turn white when there is something to undo / redo (grey and faded when not); on the
+   light menu bar the button gets a dark chip so the white arrow reads */
+#menubar #std-undo:not(:disabled) .ico path, #menubar #std-redo:not(:disabled) .ico path { stroke: #ffffff; }
+#menubar #std-undo:not(:disabled) .ico path:not([fill="none"]), #menubar #std-redo:not(:disabled) .ico path:not([fill="none"]) { fill: #ffffff; }
+#menubar #std-undo:not(:disabled), #menubar #std-redo:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
+#menubar #std-undo:not(:disabled):hover, #menubar #std-redo:not(:disabled):hover { background: #555555; border-color: #555555; }
+:root[data-theme="dark"] #menubar #std-undo:not(:disabled), :root[data-theme="dark"] #menubar #std-redo:not(:disabled) { background: transparent; border-color: transparent; }
+:root[data-theme="dark"] #menubar #std-undo:not(:disabled):hover, :root[data-theme="dark"] #menubar #std-redo:not(:disabled):hover { background: var(--cm-hover); border-color: var(--cm-hover-line); }
 #menubar .std-sep { width: 1px; height: 16px; margin: 0 3px; background: var(--cm-line); flex: none; }
 /* a narrow window keeps only Undo / Redo of the quick-access toolbar (below 560 px the whole toolbar goes, further down) */
 @media (max-width: 960px) { #menubar #std-toolbar .std-btn:not(#std-undo):not(#std-redo), #menubar #std-toolbar .std-sep { display: none; } }

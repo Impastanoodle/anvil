@@ -322,6 +322,7 @@
     'smoke/rfBW.js',
     'smoke/rfCA.js',
     'smoke/rfBZ.js',
+    'smoke/rfCB.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'ui-smoke.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'ui-smoke.groups.js', error: e }); }

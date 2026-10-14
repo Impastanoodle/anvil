@@ -43,7 +43,7 @@
     W.SketchSolver.addRelation(f, 'fix', ['0']); UI.updateSketches();
     assert(rfBRline(f, 0).material.color.getHex() === 0xffffff, 'fully defined white too');
     var pts = UI.groups.sketches.children.filter(function (o) { return o.isPoints && !(o.userData && o.userData.sketchOpenEnds); });
-    assert(pts.length && pts.every(function (o) { return o.material.color.getHex() === 0xffffff || o.material.color.getHex() === 0xa8a8a8; }), 'end points in the line colour');
+    assert(pts.length && pts.every(function (o) { return o.material.color.getHex() === 0x2ee66b || o.material.color.getHex() === 0xa8a8a8; }), 'end points green on white lines (user 2026-10-14), grey on construction');
     UI.setSelection([{ kind: 'entity', index: 0 }]);
     var s0 = rfBRline(f, 0), m = s0.material;
     assert(m === UI.mats.sketchSel && m.type === 'LineDashedMaterial' && m.color.getHex() === 0xffd400, 'selected: yellow LineDashedMaterial #' + m.color.getHexString() + ' ' + m.type);
