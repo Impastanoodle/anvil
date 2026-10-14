@@ -1554,3 +1554,11 @@ Tests: kernel 1157/1157, examples 29/29 (both kernels), ui-smoke 696/696, occt-t
 - quick-access Undo / Redo (style.css, rfBF block): white when there is something to undo / redo, faded grey when not; in the light theme the white arrow sits on a dark #3a3a3a chip. Test: rfCB.
 - note: the scheduled 9:15 pm run (anvil-8pm-round) started but waited on a permission prompt (default mode) after reading its instruction files.
 Tests: ui-smoke 697/697.
+
+## 2026-10-14b (interactive head, 2 Opus 5.5 subagents in worktrees): the View tab
+
+- tab (lane CC, ui-panels.js): a View ribbon tab after Transform (assemblies too, without Levels Manager), Mastercam-style group captions — Zoom (Zoom to Fit, Zoom to Area toggle, Previous View), Orientation (Front / Back / Left / Right / Top / Bottom / Isometric / Normal To grid, Ctrl+1–8 in tooltips), Appearance (five display styles, current pressed; Edit Appearance; Apply Scene, Background flyout, Dark Theme toggle), Show / Hide (Planes, Origins, All Sketches, Sketch Grid, Sketch Regions, Sketch Dimensions, Show Endpoints, Snap to Model, pressed while on), Section (Section View), Managers (FeatureManager, Levels Manager, Selection Filter; first into the » menu when narrow). Every button calls what the View menu / HUD calls; pressed states refresh after View-menu, HUD and pane changes. Captions (ui-transform.js `captions`) read whichever tab is shown (also fixes captions not returning after leaving and re-entering a tab). Test: rfCC.
+- icons (lane CD, icons.js): 22 new (`vFront` … `vBottom`, `vIso`, `vNormalTo`, `dsShadedEdges` … `dsWireframe`, `vBackground`, `vTheme`, `vPlanes`, `vOrigins`, `vSketches`, `vSketchDims`, `vGrid`, `vRegions`, `vSnapModel`), `vZoomFit` = `fit`, `vFeatureTree` = `tree`; no blue. Test: rfCD.
+- head: F5 (Selection Filter) refreshes the ribbon so the View tab button follows.
+- note: r11/occtswap11 failed in 2 of the last 4 full headless runs (held-frame timing, estimate ~1500 ms) and passes alone — a timing flake on this machine.
+Tests: kernel 1157/1157, ui-smoke 701/701 (occtswap11 rerun alone).

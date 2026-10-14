@@ -1327,3 +1327,5 @@ body.splitting #viewport { pointer-events: none; }
    on geometry under it did nothing: an opaque ground, and clicks pass through to the geometry. */
 #viewport #hud { --icon-ink: #d0d0d0; }
 #viewport #sketch-hint { pointer-events: none; background: rgba(30,30,30,0.9); }
+/* lane CC: the View tab (ui-panels.js viewTab): the eight view orientations as a grid of icon buttons, three rows */
+.rb-stack.rb-grid.rb-vgrid > .rb { width: 28px; }

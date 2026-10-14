@@ -233,7 +233,9 @@
         t('Stretch', 'tStretch', 'Stretch', 'Size', 'Move the sketch geometry inside a window, stretching what crosses it'),
         t('Scale', 'tScale', 'Scale', 'Size', 'Scale sketch geometry about a point, evenly or by X / Y factors')
       ];
-    })()
+    })(),
+    // lane CC: Mastercam's View tab with the view commands Anvil has (viewTab, below the heads-up toolbar)
+    View: viewTab(false)
   };
 
   // Assembly documents get their own CommandManager: the Assembly tab plus Evaluate (the part-only tabs are hidden).
@@ -264,7 +266,8 @@
       { id: 'check', label: 'Check', run: function () { UI.cmdCheck(); } },
       { id: 'zebra', label: 'Zebra\nStripes', run: function () { UI.cmdZebra(); }, active: function () { return !!(UI.evaluate && UI.evaluate.zebra.state().on); } },
       { id: 'draftAnalysis', label: 'Draft\nAnalysis', run: function () { UI.cmdDraftAnalysis(); } }
-    ]
+    ],
+    View: viewTab(true)   // lane CC: the part's View tab without the Levels Manager (levels belong to parts)
   };
   function isAsm() { return UI.isAssembly ? UI.isAssembly() : !!(App.model && App.model.type === 'assembly'); }
   function ribbonSet() { return isAsm() ? ASM_RIBBON : RIBBON; }
@@ -332,8 +335,8 @@
   };
   // r14/commands14: tooltips in SolidWorks' two-line style: the name in bold (with its shortcut), a description under it,
   // and a third, muted line for why a button is greyed (setTip, below). An item's own `help` wins over the tables.
-  function ribbonTip(id, label, enabled, needsSketch, help) {
-    var key = UI.shortcutFor ? UI.shortcutFor(id) : null;
+  function ribbonTip(id, label, enabled, needsSketch, help, ownKey) {
+    var key = ownKey || (UI.shortcutFor ? UI.shortcutFor(id) : null);   // lane CC: an item's own `key` (View tab: Ctrl+1 …)
     var desc = help || (UI.drawingActive && UI.drawingActive() && DRAW_HELP[label]) || RIBBON_HELP[label] || '';
     if (!enabled) return { name: label, key: '', desc: desc, note: 'Not available in Anvil yet' };   // rfC: SolidWorks' command, greyed
     return { name: label, key: key || '', desc: desc, note: needsSketch ? 'Open a sketch first' : '' };
@@ -348,7 +351,7 @@
     var enabled = !!(item.run || item.tool), needsSketch = !!item.tool && App.mode !== 'sketch' && !rapid, active = false;
     if (item.tool) active = (App.mode === 'sketch' && App.tool === item.tool && (!item.active || !!item.active())) || (rapid && UI.rapidSketchArmed() === item);   // p9-sketchtab: Line / Centerline / Midpoint Line share the line tool
     else if (item.run) active = !!((item.id === 'sketch' && App.mode === 'sketch') || (item.active && item.active()));
-    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help) };
+    return { id: id, icon: (d && d.icon) || (d ? id : item.icon || id), label: label, flat: flat, disabled: !enabled || needsSketch, active: active, tip: ribbonTip(id, flat, enabled, needsSketch, item.help, item.key) };
   }
   function runItem(item) {
     if (item.tool && item.tool !== 'dimension' && App.mode !== 'sketch' && UI.rapidSketchOn && UI.rapidSketchOn()) { UI.rapidSketchArm(item); refreshRibbon(); return; }   // rfAY: Rapid Sketch
@@ -476,7 +479,7 @@
       if (item.stack) {
         // rfC: a grid stack (the sketch entities) shows icons only, three rows filled column by column, as SolidWorks
         // does; its labels stay in the buttons (hidden) for the accessible names, the » menu and lookups by label
-        var st = el('div', { class: 'rb-stack' + (item.grid ? ' rb-grid' : '') + (item.extra ? ' rb-extra' : '') });
+        var st = el('div', { class: 'rb-stack' + (item.grid ? ' rb-grid' : '') + (item.cls ? ' ' + item.cls : '') + (item.extra ? ' rb-extra' : '') });
         item.stack.forEach(function (s) { st.appendChild(s.fly ? ribbonFlyout(s, true) : ribbonButton(s, true)); });   // a small flyout in a stack (Ellipse)
         frag.appendChild(st);
         return;
@@ -701,6 +704,7 @@
       $('fm-tree').hidden = true; $('pm').hidden = true;
       if ($('config-panel')) $('config-panel').hidden = true;
       if (UI.refreshLevelsPanel) UI.refreshLevelsPanel();
+      syncViewTab();   // lane CC: the View tab's FeatureManager / Levels Manager buttons
       return;
     }
     if (name === 'pm' && UI.hasPM && UI.hasPM()) $('pm').hidden = false;
@@ -710,6 +714,7 @@
     if (name === 'tree') { $('fm-tree').hidden = false; if (cp) cp.hidden = true; }
     else if (name === 'config') { $('fm-tree').hidden = true; if (cp) { cp.hidden = false; refreshConfigPanel(); } }
     else if (cp) cp.hidden = true;
+    syncViewTab();
   }
 
   // ------------------------------------------------------------------ feature tree
@@ -1171,7 +1176,7 @@
         // item also works) and the click that ends the same press is swallowed, so it never lands on the ribbon button
         // that was under the menu; click alone (keyboard, scripted) still runs it, once
         var ran = false;
-        var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); };
+        var run = function () { if (ran) return; ran = true; closeMenus(); it.action(); syncViewTab(); };   // lane CC: View tab toggles follow the menus
         row.addEventListener('mouseup', function (e) { if (e.button !== 0) return; e.stopPropagation(); if (e.detail > 0) guardClick(e); run(); });
         row.addEventListener('click', run);
       }
@@ -1531,6 +1536,73 @@
     else toast('Select a face or plane first.');
   }
 
+  // ------------------------------------------------------------------ the View tab (lane CC)
+  // Mastercam's View tab with the view commands Anvil already has, in groups with their captions under them
+  // (ui-transform.js lays the captions out from `group`): Zoom | Orientation (Mastercam's Graphics View) | Appearance |
+  // Show / Hide (Mastercam's Display) | Section | Managers. Each button calls what the View menu or the heads-up toolbar
+  // calls; a toggle is pressed while it is on (the menu and the HUD keep their own copies of these commands). The
+  // Managers go to the » menu first when the ribbon is narrow (`extra`). An assembly gets it without the Levels Manager.
+  function viewTab(asm) {
+    function orient(name, key, help) { return { id: 'v' + (name === 'Isometric' ? 'Iso' : name), label: name, key: key, help: help, run: function () { UI.setView(name); } }; }
+    function style(s, id, label, help) { return { id: id, label: label, help: help, run: function () { setStyle(s); }, active: function () { return App.view.style === s; } }; }
+    function bg(b, label) { return { id: 'vBackground', label: label, help: 'Graphics-area background: ' + label.toLowerCase() + ' (View ▸ Background)', run: function () { setBg(b); }, active: function () { return App.view.bg === b; } }; }
+    function show(id, label, help, on, flip) { return { id: id, label: label, help: help, run: flip, active: on }; }
+    var managers = [
+      { id: 'vFeatureTree', label: 'FeatureManager', help: 'FeatureManager design tree: show the features of the document in the left pane', run: function () { var b = document.querySelector('#fm-tabs button[data-tab="tree"]'); if (b) b.click(); }, active: function () { return App.fmTab === 'tree'; } },
+      { id: 'levels', label: 'Levels Manager', help: 'Numbered part-wide levels (CUT, ETCH, BEND …) with their own colours, shown or hidden, in the left pane', run: function () { if (UI.showLevelsManager) UI.showLevelsManager(); else toast('The Levels Manager did not load.'); }, active: function () { return App.fmTab === 'levels'; } },
+      { id: 'filter', label: 'Selection Filter', key: 'F5', help: 'Show or hide the Selection Filter toolbar: pick only the kinds of geometry switched on', run: function () { if (UI.toggleSelectionFilterBar) UI.toggleSelectionFilterBar(); }, active: function () { return !!(UI.selectionFilterBarShown && UI.selectionFilterBarShown()); } }
+    ];
+    if (asm) managers.splice(1, 1);
+    return [
+      { id: 'vZoomFit', label: 'Zoom to\nFit', key: 'F', group: 'Zoom', help: 'Zoom so the whole model fits the graphics area', run: function () { UI.zoomToFit(); } },
+      { group: 'Zoom', stack: [
+        { id: 'zoomArea', label: 'Zoom to Area', help: 'Drag a box round the area to zoom to (click again to cancel)', run: function () { App.zoomAreaMode = !App.zoomAreaMode; refreshHud(); }, active: function () { return !!App.zoomAreaMode; } },
+        { id: 'prevView', label: 'Previous View', key: 'Shift+Ctrl+Z', help: 'Go back to the view before the last view change', run: function () { UI.previousView(); } }] },
+      { sep: true },
+      { group: 'Orientation', grid: true, cls: 'rb-vgrid', stack: [
+        orient('Front', 'Ctrl+1', 'Look at the model from the front'), orient('Back', 'Ctrl+2', 'Look at the model from the back'),
+        orient('Left', 'Ctrl+3', 'Look at the model from the left'), orient('Right', 'Ctrl+4', 'Look at the model from the right'),
+        orient('Top', 'Ctrl+5', 'Look down on the model from the top'), orient('Bottom', 'Ctrl+6', 'Look up at the model from the bottom'),
+        orient('Isometric', 'Ctrl+7', 'Isometric view: the three axes at equal angles'),
+        { id: 'vNormalTo', label: 'Normal To', key: 'Ctrl+8', help: 'Look straight at the selected face, plane or edge, or at the open sketch', run: function () { normalToSelection(); } }] },
+      { sep: true },
+      { group: 'Appearance', stack: [style('shadedEdges', 'dsShadedEdges', 'Shaded With Edges', 'Shade the model and draw its edges'), style('shaded', 'dsShaded', 'Shaded', 'Shade the model without its edges'),
+        style('hlr', 'dsHLR', 'Hidden Lines Removed', 'Draw only the edges you can see')] },
+      { group: 'Appearance', stack: [style('hlv', 'dsHLV', 'Hidden Lines Visible', 'Draw the visible edges, and the hidden ones dashed'), style('wireframe', 'dsWireframe', 'Wireframe', 'Draw every edge, hidden or not, with no shading')] },
+      { id: 'appearance', label: 'Edit\nAppearance', group: 'Appearance', help: 'Change the part colour (Task Pane ▸ Appearances, Scenes)', run: function () { UI.openTaskPane('appearance'); } },
+      { group: 'Appearance', stack: [
+        { id: 'scene', label: 'Apply Scene', help: 'Pick the graphics-area scene: Gradient, Plain or Dark', run: applySceneMenu },
+        { fly: 'vBackground', items: [bg('gradient', 'Gradient Background'), bg('plain', 'Plain Background'), bg('dark', 'Dark Background')] },
+        { id: 'vTheme', label: 'Dark Theme', help: 'Switch the window between the light and the dark theme (View ▸ Theme)', run: function () { var d = UI.theme() !== 'dark'; UI.setTheme(d ? 'dark' : 'light'); toast(d ? 'Dark theme' : 'Light theme'); }, active: function () { return !!(UI.theme && UI.theme() === 'dark'); } }] },
+      { sep: true },
+      { group: 'Show / Hide', stack: [
+        show('vPlanes', 'Planes', 'Show or hide the reference planes', function () { return !!App.view.showPlanes; }, function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); }),
+        show('vOrigins', 'Origins', 'Show or hide the origin', function () { return !!App.view.showOrigin; }, function () { App.view.showOrigin = !App.view.showOrigin; UI.updateOrigin(); }),
+        show('vSketches', 'All Sketches', 'Show or hide the sketches that are not being edited', function () { return !!App.view.showSketches; }, function () { App.view.showSketches = !App.view.showSketches; UI.updateSketches(); })] },
+      { group: 'Show / Hide', stack: [
+        show('vGrid', 'Sketch Grid', 'Show or hide the grid on the sketch plane', function () { return !!App.view.showGrid; }, function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; }),
+        show('vRegions', 'Sketch Regions', 'Shade the closed regions of the sketch and mark its open ends', function () { return App.view.sketchRegions !== false; }, function () { toggleSketchRegions(); }),
+        show('vSketchDims', 'Sketch Dimensions', 'Show the driven dimensions on every sketch entity, or only the placed ones', function () { return !!App.view.showDims; }, function () { var v = App.view; v.showDims = !v.showDims; App.dimsStale = true; UI.setStatus(v.showDims ? 'Driven dimensions shown on every sketch entity. Click a value to change it.' : 'Only placed dimensions are shown.'); })] },
+      { group: 'Show / Hide', stack: [
+        show('showEndpoints', 'Show Endpoints', 'Show or hide the end-point dots of sketch entities (they still select and snap)', function () { return App.view.showEndpoints !== false; }, function () { toggleShowEndpoints(); }),
+        show('vSnapModel', 'Snap to Model', 'Let sketch points snap to model vertices, edges, centres and faces', function () { return App.view.snapModel !== false; }, function () { var v = App.view; v.snapModel = v.snapModel === false; UI.setStatus(v.snapModel ? 'Sketch points snap to model vertices, edges, centres and faces.' : 'Sketch points snap to sketch geometry only.'); })] },
+      { sep: true },
+      { id: 'section', label: 'Section\nView', group: 'Section', help: 'Cut the view with a section plane (click again to turn it off)', run: function () { UI.cmdSection(); }, active: function () { return !!App.view.section; } },
+      { sep: true, extra: true },
+      { group: 'Managers', extra: true, stack: managers }
+    ];
+  }
+  // Apply Scene: the heads-up toolbar's scene list, under the View tab's button (or the HUD's when the tab is not shown)
+  function sceneItems() { return [['gradient', 'Gradient'], ['plain', 'Plain'], ['dark', 'Dark']].map(function (s) { return { label: s[1], checked: App.view.bg === s[0], action: function () { setBg(s[0]); } }; }); }
+  function applySceneMenu() {
+    var b = document.querySelector('#ribbon-buttons .rb[aria-label="Apply Scene"]');
+    if (!b || !b.offsetWidth) b = document.querySelector('#hud [data-hud="Apply Scene"]');
+    var r = b ? b.getBoundingClientRect() : { left: window.innerWidth / 2, bottom: 120 };
+    showMenu(r.left, r.bottom + 1, sceneItems());
+  }
+  // the View tab's pressed states follow changes made from the View menu, the heads-up toolbar and the FeatureManager tabs
+  function syncViewTab() { if (ribbonBuilt && App.ribbonTab === 'View') refreshRibbon(); }
+
   // ------------------------------------------------------------------ heads-up view toolbar
   // Built once; later calls only move the active marks (the buttons stay under the mouse, tooltips do not flicker).
   // Drop-down items are made when the menu opens, so their check marks are always current.
@@ -1540,6 +1612,7 @@
   function orientItems() { return Object.keys(UI.VIEWS).map(function (n) { return { label: n, action: function () { hideVS(); UI.setView(n); } }; }).concat([{ sep: true }, { label: 'Normal To (Ctrl+8)', action: function () { hideVS(); normalToSelection(); } }]); }
   function refreshHud() {
     var hud = $('hud');
+    syncViewTab();   // lane CC
     if (hudActive && hud.children.length) { hudActive.forEach(function (a) { var on = !!a[1](); if (a[0].classList.contains('active') !== on) a[0].classList.toggle('active', on); }); return; }
     hud.innerHTML = '';
     hudActive = [];
@@ -2174,6 +2247,8 @@
 
   UI.setStatus = setStatus; UI.toast = toast; UI.refreshStatus = refreshStatus;
   UI.RIBBON = RIBBON; UI.ASM_RIBBON = ASM_RIBBON;   // drawing.js adds its Drawing tab to both (a drawing of a part or of an assembly)
+  // lane CC: the items the CommandManager shows now, one per child of #ribbon-buttons (the group captions read them)
+  UI.ribbonShownItems = function () { return ribbonBuilt ? ribbonBuilt.items : null; };
   UI.fitWorkspace = fitWorkspace;   // r12/chrome12: panel widths and the CommandManager fitted to the window now
   UI.refreshRibbon = refreshRibbon; UI.setRibbonTab = setRibbonTab; UI.renderFmTabs = renderFmTabs; UI.setFmTab = setFmTab;
   UI.menuModel = MENUS; UI.ribbonLeaves = ribbonLeaves; UI.ribbonItemState = itemState;   // rfAP: Search Commands (ui-app.js)

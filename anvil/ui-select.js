@@ -239,7 +239,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     o.active = !!filterSet();
     return o;
   }
-  function toggleBar(on) { setFilter({ bar: on == null ? !filter.bar : !!on }); return filter.bar; }
+  function toggleBar(on) { setFilter({ bar: on == null ? !filter.bar : !!on }); if (UI.refreshRibbon) UI.refreshRibbon(); return filter.bar; }   // the View tab's Selection Filter button shows it pressed
   renderBar();
 
   // ================================================================== picking with the filter

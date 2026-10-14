@@ -6,6 +6,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Do next
 
+- View tab: the user will name more commands to add (2026-10-14). Flaky: r11/occtswap11 held-frame timing in full headless runs.
 - Open after the 2026-10-13m/n user tests: sheet metal Unfold / Fold / Rip / Tab / Break Corner / Closed Corner / Flat-Pattern feature, Auto Relief, the OpenCascade `normalCutTool` across a bend (occt-kernel.js); drawings: the Smart Dimension preview shows the text centred before an outside click, isometric scale label; sketch auto-dimension offset (test-reports/2026-10-13-*-user.md).
 - Sheet-metal shop scope (user, 2026-10-07): sketching, bend deductions, flat patterns, flat-pattern drawings with annotations, DXF / DWG / STEP output come first. Plan from ROADMAP *Phase 9*.
 - Sketch tab follow-ups (2026-10-07T12): Sketch Text (needs an offline outline font + 2D unions for Cut-Extrude); trim of splines / ellipses, Smart Dimension and point-on-curve on splines; drawings should show sketch-dimension tolerance / precision / text (copy d.tol, prec, prefix, suffix into model items); drawing slot callout for arc slots; `headless/dxf-check.js` should accept SPLINE / ELLIPSE; Display instance count, Dynamic Mirror, Intersection Curve, box Stretch; a true infinite line (today a long finite one; the script drops the flag); relation glyphs crowd small entities; ordinate dimensions for Fully Define Sketch. (2026-10-12c: Smart Dimension to a text point, virtual-sharp script round trip, dx / dy and tx to the sharp, Offset circle radial dimension, ordinate edits and drawing dimension properties checked done.)
@@ -41,6 +42,7 @@ When a task is finished the head moves it to the Done section with the run id.
 
 ## Done
 
+- (2026-10-14) Green 10 px endpoint dots; white Undo / Redo when available; the View ribbon tab (Zoom, Orientation, Appearance, Show / Hide, Section, Managers) with 22 new icons. More View-tab commands to come (user).
 - (2026-10-13n) Hem default Closed; Material Inside corner trim nick; Normal Cut across a bend; crossing hems refused; Ctrl+Z in drawings; dimension text between extension lines; long bend notes wrap; short hidden lines as one dash.
 - (2026-10-13m) Last blue removed (neutral part grey, amber drawing selection); user-like test-and-fix of sketch (13 findings), sheet metal (25; per-piece unfold, cuts across bends, flipped blank), drawings (14; bend label placement, .125 text), Transform / look (15; Ctrl+Z cancels an open command, end-point picks).
 - (2026-10-13l) Two-Enter rule in every PropertyManager (first Enter commits a typed value, second closes the command); unit request box for Circle / Parallel Line (a click no longer makes another parallel line); grey-black UI and graphics area, white wireframe, selected wireframe yellow dashed, relation icons removed; Close Arc; Show Endpoints toggle; Levels Manager white in both themes in the FeatureManager font.

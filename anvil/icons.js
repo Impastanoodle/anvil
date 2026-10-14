@@ -384,6 +384,56 @@ var Icons = (function () {
   // (the heads-up toggle: a line with its two end dots)
   I.closeArc = ln('M8 13.5 A5.5 5.5 0 1 1 13.5 8', S, 1.5) + ln('M13.5 8 A5.5 5.5 0 0 1 8 13.5', G, 1.4, 'stroke-dasharray="1.3 1.3"') + pt(8, 13.5) + pt(13.5, 8) + ln('M7 8 h2 M8 7 v2', M, 0.9);
   I.showEndpoints = ln('M3.5 12.5 L12.5 3.5', S, 1.4) + circ(3.5, 12.5, 2, B, 'none') + circ(12.5, 3.5, 2, B, 'none');
+  // lane CD: the View ribbon tab (Mastercam-style, built by lane CC). Standard views: SolidWorks' wire cube with the
+  // named face in yellow (a face at the back shows through paler, behind the dashed hidden edges); Isometric a true iso
+  // cube with its three faces shaded. Display styles: one cube drawn in each style. Show toggles (planes, origins,
+  // sketches, sketch dimensions): the item with a small eye at the bottom right. No blue anywhere (rfCD checks it).
+  (function () {
+    var CUBE_OUT = 'M2 6 L6 2 H14 V10 L10 14 H2 Z M2 6 H10 V14 M10 6 L14 2';      // visible edges of blk(2, 2, 8, 8, 4)
+    var CUBE_HID = 'M6 10 V2 M6 10 H14 M6 10 L2 14';                            // its three hidden edges
+    var FACE = { front: 'M2 6 h8 v8 h-8 z', top: 'M2 6 l4 -4 h8 l-4 4 z', right: 'M10 6 l4 -4 v8 l-4 4 z',
+      back: 'M6 2 h8 v8 h-8 z', left: 'M2 6 l4 -4 v8 l-4 4 z', bottom: 'M2 14 l4 -4 h8 l-4 4 z' };
+    var HDASH = 'stroke-dasharray="1.4 1.1"';
+    var SH_F = '#a3a3a3', SH_T = '#cbcbcb', SH_S = '#7d7d7d';                     // shaded cube: front, top, side
+    var EYE = p('M8.3 12.4 c1.9 -3 5.4 -3 7.3 0 c-1.9 3 -5.4 3 -7.3 0 z', W, S, 1) + circ(11.95, 12.4, 1.35, B, 'none');
+    function viewCube(face) {
+      var hidden = face === 'back' || face === 'left' || face === 'bottom';
+      return (hidden ? p(FACE[face], 'rgba(245,196,0,0.72)', 'none') : '') + ln(CUBE_HID, M, 0.9, HDASH) +
+        (hidden ? '' : p(FACE[face], FY, 'none')) + ln(CUBE_OUT, S, 1.1);
+    }
+    function shadedCube(color, w) {
+      return p(FACE.front, SH_F, color || SH_F, w || 0.4) + p(FACE.top, SH_T, color || SH_T, w || 0.4) + p(FACE.right, SH_S, color || SH_S, w || 0.4);
+    }
+    I.vZoomFit = I.fit;
+    I.vFront = viewCube('front');
+    I.vBack = viewCube('back');
+    I.vLeft = viewCube('left');
+    I.vRight = viewCube('right');
+    I.vTop = viewCube('top');
+    I.vBottom = viewCube('bottom');
+    I.vIso = p('M8 1.5 L14 5 L8 8.5 L2 5 z', FYL, S, 1.1) + p('M2 5 L8 8.5 V15 L2 11.5 z', FY, S, 1.1) + p('M14 5 L8 8.5 V15 L14 11.5 z', FYD, S, 1.1);
+    // Normal To: a yellow face with the view arrow square to it (the right-angle mark at its foot)
+    I.vNormalTo = p('M1 14.5 l3 -4.5 h11 l-3 4.5 z', FY, S, 1.1) + ln('M8 12.2 V4', S, 1.4) + p('M8 1.2 l-2.4 3.4 h4.8 z', S, S, 0.6) + ln('M8 10.4 h1.7 v1.8', S, 0.8);
+    // display styles
+    I.dsShadedEdges = shadedCube(S, 1.1);
+    I.dsShaded = shadedCube();
+    I.dsHLR = ln(CUBE_OUT, S, 1.2);
+    I.dsHLV = ln(CUBE_HID, M, 1, HDASH) + ln(CUBE_OUT, S, 1.2);
+    I.dsWireframe = ln(CUBE_HID + ' ' + CUBE_OUT, S, 1.1);
+    // Background (a gradient frame), Theme (a circle half light, half dark)
+    I.vBackground = '<defs><linearGradient id="anvil-ico-bgv" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7a7a7a"/></linearGradient></defs>' +
+      p('M2.3 2.5 h11.4 a0.8 0.8 0 0 1 0.8 0.8 v9.4 a0.8 0.8 0 0 1 -0.8 0.8 h-11.4 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z', 'url(#anvil-ico-bgv)', S, 1.2);
+    I.vTheme = p('M8 2 A6 6 0 0 0 8 14 z', '#f6f6f6', 'none') + p('M8 2 A6 6 0 0 1 8 14 z', '#3a3a3a', 'none') + circ(8, 8, 6, 'none', S, 1.2);
+    // show toggles: planes, origins, sketches, sketch dimensions (each with the eye); grid, closed regions, snap to model
+    I.vPlanes = p('M1 10.5 l4 -7.5 h10 l-4 7.5 z', PL, P, 1.2) + EYE;
+    I.vOrigins = ln('M3 11 H11 M3 11 V2.5', R, 1.5) + ln('M3 11 l2.8 2.8', B, 1.5) + circ(3, 11, 1.4, S, 'none') + EYE;
+    I.vSketches = ln('M2 11.5 V5.5 a2.5 2.5 0 0 1 2.5 -2.5 H13 V8.5 M2 11.5 H7', S, 1.4) + pt(2, 11.5) + pt(13, 3) + EYE;
+    I.vSketchDims = ln('M2 1.5 V8.5 M14 1.5 V8.5', M, 0.9) + ln('M2 4.5 H14', S, 1.1) + p('M2 4.5 l2.6 -1.4 v2.8 z M14 4.5 l-2.6 -1.4 v2.8 z', S, S, 0.5) + ln('M1 8.5 H15', S, 1.4) + EYE;
+    I.vGrid = ln('M5 2 V14 M8 2 V14 M11 2 V14 M2 5 H14 M2 8 H14 M2 11 H14', M, 0.8) + rect(2, 2, 12, 12, 'none', S, 1.2);
+    I.vRegions = p('M2 13.5 V5 a2.5 2.5 0 0 1 2.5 -2.5 H13.5 V13.5 z M10 8 a2 2 0 1 0 -4 0 a2 2 0 1 0 4 0 z', FYL, S, 1.3, 'fill-rule="evenodd"') + pt(2, 13.5) + pt(13.5, 2.5);
+    I.vSnapModel = p('M1 12 H15 V15.5 H1 z', F2, 'none') + ln('M1 12 H15', S, 1.4) + ln('M4.5 9.2 V6 a3.5 3.5 0 0 1 7 0 V9.2', R, 2.6) + ln('M4.5 8.2 V9.4 M11.5 8.2 V9.4', M, 2.6) + circ(8, 12, 1.6, FY, FYD, 0.9);
+    I.vFeatureTree = I.tree;
+  })();
   function icon(name, size, cls) {
     var body = I[name] || I.generic;
     size = size || 32;

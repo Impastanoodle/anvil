@@ -1104,12 +1104,14 @@
   // ------------------------------------------------------------------ the Transform tab: group captions, search
   // Mastercam shows each group's name under its buttons (Position, Offset, Layout, Size). The ribbon items of the
   // Transform tab carry `group`; the captions are a layer under #ribbon-buttons, laid out from the buttons' places.
+  // lane CC: any tab whose items carry `group` (the View tab too, also in an assembly): read from the items shown now
   function captions() {
     var rib = $('ribbon'), bar = $('ribbon-buttons');
     if (!rib || !bar) return;
-    var items = UI.RIBBON && UI.RIBBON[App.ribbonTab], on = !!(items && items.some(function (it) { return it.group; })) && !(UI.isAssembly && UI.isAssembly()) && !(UI.drawingActive && UI.drawingActive());
+    var items = UI.ribbonShownItems ? UI.ribbonShownItems() : UI.RIBBON && UI.RIBBON[App.ribbonTab], on = !!(items && items.some(function (it) { return it.group; })) && !(UI.drawingActive && UI.drawingActive());
     var layer = rib.querySelector(':scope > .rb-captions');
-    if (!on) { if (rib.classList.contains('rb-has-captions')) rib.classList.remove('rb-has-captions'); if (layer && layer.firstChild) layer.innerHTML = ''; return; }
+    // (lane CC: the cleared layer forgets what it showed, so the same captions come back on the next visit to the tab)
+    if (!on) { if (rib.classList.contains('rb-has-captions')) rib.classList.remove('rb-has-captions'); if (layer && layer.firstChild) { layer.innerHTML = ''; layer._html = ''; } return; }
     if (!rib.classList.contains('rb-has-captions')) rib.classList.add('rb-has-captions');
     if (!layer) { layer = document.createElement('div'); layer.className = 'rb-captions'; layer.setAttribute('aria-hidden', 'true'); rib.insertBefore(layer, bar.nextSibling); }
     var kids = Array.prototype.filter.call(bar.children, function (c) { return !c.classList.contains('rb-more'); });
