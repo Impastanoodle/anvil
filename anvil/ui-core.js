@@ -2085,7 +2085,8 @@ var UI = (function () {
     if (ev.target.closest && ev.target.closest('.menu, #hud')) return;
     hideViewSelector();
   }, true);
-  window.addEventListener('keydown', function (ev) { if (vs.shown && ev.key === 'Escape') hideViewSelector(); }, true);
+  // the cube is a menu: Esc closes it (and the orientation menu with it) and nothing else (lane CG: not the command under it)
+  window.addEventListener('keydown', function (ev) { if (vs.shown && ev.key === 'Escape') { hideViewSelector(); if (UI.closeMenus) UI.closeMenus(); ev.preventDefault(); ev.stopPropagation(); } }, true);
 
   // ------------------------------------------------------------------ render loop
   // The frame loop draws only when something changed: a camera move, a view transition or eased zoom in progress, an

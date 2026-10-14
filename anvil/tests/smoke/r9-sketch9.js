@@ -29,7 +29,7 @@
       selKey('a'); selEv('mousemove', rskScr([30, 16]));
       assert(!UI.App.toolState.arcMode && UI.sketchNumBox(), 'A again: lines, box back');
       r3sKey(UI.sketchNumBox()[0], 'Escape');
-      assert(UI.App.tool === 'line' && !UI.App.toolState.pts.length && !UI.sketchNumBox(), 'Esc ended the chain, the Line tool stays');
+      assert(UI.App.tool === 'select' && !UI.App.toolState.pts.length && !UI.sketchNumBox(), 'lane CG: one Esc ended the chain and put the Line tool down');
       UI.setTool('rect'); rskClick([0, -30]); selEv('mousemove', rskScr([16, -20]));
       box = UI.sketchNumBox();
       assert(box && box.length === 2, 'W / H box');

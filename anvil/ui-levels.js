@@ -724,7 +724,8 @@
     if (chip) { if (pop) closePop(); else openPop(chip); return; }
     if (pop && !pop.contains(ev.target)) closePop();
   });
-  document.addEventListener('keydown', function (ev) { if (pop && ev.key === 'Escape') closePop(); });
+  // the popup is a menu: Esc closes it only (lane CG: not also the command under it, ui-app.js escapeCommand)
+  document.addEventListener('keydown', function (ev) { if (pop && ev.key === 'Escape') { closePop(); ev.preventDefault(); ev.stopPropagation(); } }, true);
   UI.levelsPopup = function () { var c = document.querySelector('#status-right [data-lvl]'); return openPop(c); };   // test hook
 
   // ================================================================== API (scripts, tests): UI.levels and anvil.levels

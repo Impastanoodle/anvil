@@ -1660,7 +1660,9 @@ var SketchSolver = (function () {
   }
   // (r13/trim13) ctx, optional: { conflicts, redundant } of the sketch before (a Power trim drag knows them from the trim
   // before), and on return { conflicts, redundant, analysis } of the result, so a run of trims analyses each state once.
-  function afterTrim(sketch, before, idx, ctx) {
+  // junctions (rfCH, optional): the end refs of other entities that lay on the trimmed entity within floating-point
+  // noise (endsOn, read before the cut): each is tied to the piece it lies on by a Coincident when nothing ties it yet.
+  function afterTrim(sketch, before, idx, ctx, junctions) {
     var E = sketch.entities, old = before[idx];
     var map = before.map(function (e) { return E.indexOf(e); });
     var pieces = [];
@@ -1770,6 +1772,22 @@ var SketchSolver = (function () {
           var ce = { type: 'coincident', refs: [pi + '.p' + k, on] };
           rels.push(ce); moved.push(ce);
         });
+      });
+      // rfCH: a true T-junction on the trimmed entity (another entity's end on it within noise) is tied to the piece it
+      // lies on now, when nothing ties it yet: the pieces were rounded to 1e-4, and only a junction a Coincident holds
+      // is closed again by the solve below (an untied one on a slanted line would be left off it by up to 1.4e-4 and
+      // the next trim there would no longer find it, deleting the whole piece)
+      (junctions || []).forEach(function (ref) {
+        var p = parseRef(ref);
+        if (!p || p.o || !(map[p.e] >= 0)) return;
+        var nr = String(map[p.e]) + String(ref).slice(String(p.e).length), pt = refPoint(E, parseRef(nr));
+        if (!pt) return;
+        var pi = pieces.filter(function (i) { return onPieceExtent(pt, E[i]); })[0];
+        if (pi == null) return;
+        var tied = rels.some(function (r) { return r.type === 'coincident' && r.refs.indexOf(nr) >= 0 && r.refs.some(function (x) { return x === String(pi) || x === pi + '.p1' || x === pi + '.p2'; }); });
+        if (tied) return;
+        var jr = { type: 'coincident', refs: [nr, String(pi)] };
+        rels.push(jr); moved.push(jr);
       });
     }
     sketch.rels = rels;
@@ -2663,6 +2681,10 @@ var SketchSolver = (function () {
       }
     });
     var scale = Math.max(1, Math.abs(from[0]), Math.abs(from[1])), eps = 1e-9 * scale, hits = [];
+    // rfCH: the other entities' ends (and corners) that lie on the carrier within floating-point noise are met too (a
+    // T-junction the crossing test misses when the end is a hair off): the carrier lands exactly at the end's foot
+    var ends = [], jtol = 1e-9 * tSize(sketch);
+    if (K && K.entityEnds) E.forEach(function (o, j) { if (j !== i && o) K.entityEnds(o).forEach(function (p) { ends.push(p); }); });
     function onSweep(o, p) {
       if (o.t !== 'arc' || o.a1 - o.a0 >= 360) return true;
       var a = Math.atan2(p[1] - o.cy, p[0] - o.cx) / D2R, rel = ((a - o.a0) % 360 + 360) % 360;
@@ -2670,6 +2692,7 @@ var SketchSolver = (function () {
     }
     // points where the carrier (the infinite line, or the arc's whole circle) meets the other entities
     function lineHits(A, d) {
+      ends.forEach(function (p) { var t = dot(sub(p, A), d), foot = [A[0] + d[0] * t, A[1] + d[1] * t]; if (len(sub(p, foot)) <= jtol) hits.push(foot); });
       segs.forEach(function (sg) {
         var w = sub(sg[1], sg[0]), den = crs(d, w);
         if (Math.abs(den) < 1e-12 * (len(w) || 1)) return;
@@ -2685,6 +2708,7 @@ var SketchSolver = (function () {
       frees.forEach(function (fo) { freeHits(fo, { kind: 'line', a: A, b: [A[0] + d[0], A[1] + d[1]] }).forEach(function (t) { hits.push(fo.pt(t)); }); });
     }
     function circleHits(C, R) {
+      ends.forEach(function (p) { var v = sub(p, C), l = len(v); if (l > 1e-12 && Math.abs(l - R) <= jtol) hits.push([C[0] + v[0] * R / l, C[1] + v[1] * R / l]); });
       segs.forEach(function (sg) {
         var d = sub(sg[1], sg[0]), L = len(d);
         if (L < 1e-12) return;
@@ -3366,21 +3390,61 @@ var SketchSolver = (function () {
     var R = Math.max(1e6, 1e6 * L, 1e3 * Math.max(Math.abs(a[0]), Math.abs(a[1]))) / L;
     return { a: sd.p1 ? [a[0] - d[0] * R, a[1] - d[1] * R] : a, b: sd.p2 ? [b[0] + d[0] * R, b[1] + d[1] * R] : b };
   }
-  // parameters on primitive k of entity idx where the other primitives cross it (only entities listed in `only`, if given)
-  function tCuts(E, idx, k, prim, only) {
-    var params = [];
-    E.forEach(function (o, oi) {
-      if (!o || o.t === 'point' || (only && only.indexOf(oi) < 0)) return;
-      tPrims(o).forEach(function (q, qi) { if (oi === idx && qi === k) return; tPrimHits(prim, q).forEach(function (t) { params.push(t); }); });
+  // the largest coordinate of the sketch's points (1 at least): the trim tolerances follow it
+  function tSize(sketch) {
+    var m = 1;
+    sketch.entities.forEach(function (e, i) { pointRefs(sketch, i).forEach(function (pr) { m = Math.max(m, Math.abs(pr.pt[0]), Math.abs(pr.pt[1])); }); });
+    return m;
+  }
+  // the entity list as Kernel.trimEntity / trimCuts see it: an infinite line (or a ray) stands as the long segment it
+  // is drawn as (carrierSeg), marked __for its index, so it cuts along its whole length (sketch-refine)
+  function standIn(E, idx) {
+    return E.map(function (o, j) { if (j === idx || !o || o.t !== 'line' || !o.infinite) return o; var cs = carrierSeg(o); return { t: 'line', x1: cs.a[0], y1: cs.a[1], x2: cs.b[0], y2: cs.b[1], __for: j }; });
+  }
+  // rfCH: the T-junction options of Kernel.trimCuts for entity idx: tol (floating-point noise: 1e-9 of the sketch's
+  // size) and cuts, the points of other entities' ends (and corners) a Coincident holds on the entity: a junction the
+  // sketch declares cuts the entity there even when the end is off it by more than noise (an unsolved relation).
+  function junctionOpts(sketch, idx, only) {
+    var E = sketch.entities, cuts = [], me = String(idx);
+    (sketch.rels || []).forEach(function (rel) {
+      if (rel.type !== 'coincident' || rel.refs.indexOf(me) < 0) return;
+      rel.refs.forEach(function (r) {
+        var p = parseRef(r);
+        if (!p || p.o || p.e === idx || p.s === null || /^(mid|c)$/.test(p.s) || !E[p.e] || (only && only.indexOf(p.e) < 0)) return;
+        var pt = refPoint(E, p);
+        if (pt) cuts.push(pt);
+      });
     });
-    return params;
+    var o = { tol: 1e-9 * tSize(sketch), cuts: cuts };
+    if (only) o.only = only;
+    return o;
+  }
+  // rfCH: the end (and corner) refs of other entities that lie on entity idx within tol, away from its own ends: the
+  // true T-junctions on it (an end at its end is a corner, not a junction; a sketch point or a text is no end)
+  function endsOn(sketch, idx, tol) {
+    var E = sketch.entities, e = E[idx], prims = tPrims(e), out = [];
+    var own = [refPoint(E, { e: idx, s: 'p', k: 1 }), refPoint(E, { e: idx, s: 'p', k: 2 })].filter(Boolean);
+    E.forEach(function (o, j) {
+      if (j === idx || !o || o.t === 'point' || o.t === 'text') return;
+      pointRefs(sketch, j).forEach(function (pr) {
+        if (/\.(mid|c)$/.test(pr.ref) || (isFree(o) && /\.v\d+$/.test(pr.ref))) return;
+        if (own.some(function (q) { return len(sub(q, pr.pt)) <= tol; })) return;
+        if (prims.some(function (p) { return tPrimAt(p, pr.pt).dist <= tol; })) out.push(pr.ref);
+      });
+    });
+    return out;
+  }
+  // parameters on primitive k of entity idx where the other entities cut it (only those listed in `only`, if given):
+  // where they cross it and, rfCH, where an end of theirs lies on it (Kernel.trimCuts)
+  function tCuts(sketch, idx, k, prim, only) {
+    return K && K.trimCuts ? K.trimCuts(standIn(sketch.entities, idx), idx, k, prim, junctionOpts(sketch, idx, only)) : [];
   }
   // The part of entity idx that Trim to closest removes at uv: { prim, lo, hi (parameters on the primitive), whole }.
   function spanOf(sketch, idx, uv) {
     var E = sketch.entities, e = E[idx], prims = tPrims(e), k = -1, kd = Infinity, kt = 0;
     prims.forEach(function (p, i) { var q = tPrimAt(p, uv); if (q.dist < kd) { kd = q.dist; k = i; kt = q.t; } });
     if (k < 0) return null;
-    var prim = prims[k], params = tCuts(E, idx, k, prim), lo = null, hi = null;
+    var prim = prims[k], params = tCuts(sketch, idx, k, prim), lo = null, hi = null;
     params.forEach(function (t) {
       if (t < kt - 1e-7 && (lo == null || t > lo)) lo = t;
       if (t > kt + 1e-7 && (hi == null || t < hi)) hi = t;
@@ -3487,12 +3551,13 @@ var SketchSolver = (function () {
     // a whole entity (nothing crosses it) becomes construction, keeping its relations and dimensions
     if (keep && keep.whole) { sketch.entities[idx].construction = true; if (ctx) { ctx.analysis = analyze(sketch); ctx.conflicts = ctx.analysis.conflicts; ctx.redundant = ctx.analysis.redundant; } return { ok: true, kept: true }; }
     var before = sketch.entities.slice(), out;
-    // sketch-refine: infinite lines cut as the lines they are (Kernel.trimEntity sees the segment between their points)
-    var stand = sketch.entities.map(function (o, j) { if (j === idx || !o || o.t !== 'line' || !o.infinite) return o; var cs = carrierSeg(o); return { t: 'line', x1: cs.a[0], y1: cs.a[1], x2: cs.b[0], y2: cs.b[1], __for: j }; });
-    try { out = K.trimEntity(stand, idx, uv); } catch (err) { return { ok: false, error: err.message }; }
+    // sketch-refine: infinite lines cut as the lines they are (Kernel.trimEntity sees the segment between their points);
+    // rfCH: an end another entity has on this one (held there, or on it within noise) cuts it too (junctionOpts)
+    var jx = junctionOpts(sketch, idx), jEnds = endsOn(sketch, idx, jx.tol);
+    try { out = K.trimEntity(standIn(sketch.entities, idx), idx, uv, jx); } catch (err) { return { ok: false, error: err.message }; }
     out = out.map(function (o) { return o && o.__for != null ? before[o.__for] : o; });
     sketch.entities = out.map(tRound);
-    afterTrim(sketch, before, idx, ctx);
+    afterTrim(sketch, before, idx, ctx, jEnds);
     if (keep) keptPiece(sketch, keep, ctx);
     return { ok: true };
   }
@@ -3817,7 +3882,7 @@ var SketchSolver = (function () {
     if (bounds.indexOf(idx) >= 0) return { error: 'That is one of the bounding entities.' };
     var prim = tPrims(e)[0], kt = tPrimAt(prim, uv).t, hits = [];
     for (var b = 0; b < bounds.length; b++) {
-      var ps = tCuts(E, -1, -1, prim, [bounds[b]]);
+      var ps = tCuts(sketch, idx, 0, prim, [bounds[b]]);
       if (!ps.length) return { error: 'The entity has to cross both bounding entities.' };
       var dist = function (t) { var d = Math.abs(t - kt); return prim.full ? Math.min(d, TAU - d) : d; };   // round a circle either way
       ps.sort(function (p, q) { return dist(p) - dist(q); });

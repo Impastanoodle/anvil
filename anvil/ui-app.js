@@ -887,13 +887,16 @@
       return;
     }
     if (e.key === 'Escape') {
-      if (typing) { e.target.blur(); return; }
-      // Esc with a menu open only closes the menu (it does not also cancel the command or clear the selection)
-      if (UI.menuOpen && UI.menuOpen()) { UI.closeMenus(); return; }
+      // an in-place editor that is not a command (a rename, a table cell, a level number) took its own Esc
+      if (e.defaultPrevented) return;
+      // Esc with a menu or a ribbon flyout open only closes it (it does not also cancel the command or clear the selection)
+      if ((UI.menuOpen && UI.menuOpen()) || document.querySelector('.rb-fly.open, .rb-more.open, #menus > li.open')) { UI.closeMenus(); return; }
       UI.closeMenus();
       if (App.zoomAreaMode) { App.zoomAreaMode = false; UI.refreshHud(); return; }
-      if (App.mode === 'sketch' && App.tool !== 'select') { UI.cancelTool(); return; }
-      if (UI.hasPM()) { UI.pmCancel(); return; }
+      // one press ends the active command completely (ui-commands.js escapeCommand); a box outside any command (the
+      // command search) only lets go of the keyboard
+      if (UI.escapeCommand && UI.escapeCommand()) { e.preventDefault(); return; }
+      if (typing) { e.target.blur(); return; }
       App.sel = null; App.sel2 = null; UI.updateHighlights(); UI.updateSketches(); UI.refreshTree();
       return;
     }
@@ -1202,7 +1205,7 @@
     box.addEventListener('focus', function () { if (box.value) list(); });
     box.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== box) close(); }, 200); });
     box.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { box.value = ''; close(); box.blur(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); box.value = ''; close(); box.blur(); return; }   // the search only (not the command under it)
       if (e.key !== 'Enter') return;
       var q = box.value, hits = searchCommands(q), first = hits.filter(function (h) { return h.enabled; })[0] || hits[0];
       if (first) runHit(first);

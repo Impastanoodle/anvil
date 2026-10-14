@@ -283,7 +283,7 @@
     inp.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
       if (ev.key === 'Enter') { ev.preventDefault(); go(); }
-      else if (ev.key === 'Escape') { ev.preventDefault(); cur.picks = []; closeScaleBox(); drawPicks(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); cur.picks = []; closeScaleBox(); drawPicks(); UI.escapeCommand(); }   // lane CG: Esc ends the Sketch Picture command (✗)
     });
     box.querySelectorAll('button')[0].addEventListener('click', go);
     box.querySelectorAll('button')[1].addEventListener('click', function () { cur.picks = []; closeScaleBox(); drawPicks(); });

@@ -1963,7 +1963,7 @@
     var anyTyped = numBox.inputs.some(function (x) { return x.typed; });
     // r9/sketch9: a box that opened by itself must not swallow the sketcher's keys while nothing is typed in it:
     // a letter (A for a tangent arc, L, D …) or a Ctrl shortcut closes it and goes on to the sketch as if the box
-    // were not there; Esc ends the entity being drawn (SolidWorks)
+    // were not there
     if (numBox.auto && !anyTyped && ((ev.key.length === 1 && /[a-zA-Z]/.test(ev.key) && !(k >= 0 && /^=/.test(list[k].value))) || ev.ctrlKey || ev.metaKey || /^F\d+$/.test(ev.key))) {
       ev.preventDefault();
       closeNumBox();
@@ -1971,14 +1971,9 @@
       if (lastMove && App.mode === 'sketch') sketchMove(lastMove[0], lastMove[1]);
       return;
     }
-    if (ev.key === 'Escape' && numBox.auto) {
-      ev.preventDefault();
-      if (anyTyped) {   // the typed values go back to following the mouse
-        numBox.inputs.forEach(function (x) { x.typed = false; x.input.style.outline = '0'; x.bad = false; });
-        if (lastMove) sketchMove(lastMove[0], lastMove[1]);
-      } else finishChain();
-      return;
-    }
+    // lane CG: Esc in the box (the on-screen box or the unit request box of Circle / Parallel Line) ends the whole
+    // command in one press: the box closes unapplied, the tool goes down, the command's PropertyManager is cancelled
+    if (ev.key === 'Escape') { ev.preventDefault(); UI.escapeCommand(); return; }
     if (ev.key === 'Tab') {
       ev.preventDefault();
       var nx = list[(k + (ev.shiftKey ? list.length - 1 : 1)) % list.length];
@@ -2037,10 +2032,6 @@
       App.sketchDirty = false;   // r15/snapaudit15: each segment placed by a typed value is its own Ctrl+Z step (Enter in the box skips the keydown reset)
       placePoint(p, v);
       if (m) sketchMove(m[0], m[1]);
-    } else if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeNumBox();
-      if (lastMove) sketchMove(lastMove[0], lastMove[1]);
     }
   }
   // typing a number (or "=" for an equation) with a drawing tool and a point placed opens the box; A in the Line tool
@@ -3094,7 +3085,7 @@
   dimInput.addEventListener('keydown', function (ev) {
     ev.stopPropagation();
     if (ev.key === 'Enter') { ev.preventDefault(); closeDimEdit(true, true); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); closeDimEdit(false); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); UI.escapeCommand(); }   // lane CG: closes unapplied (escapeBoxes below) and ends Smart Dimension
     else if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') { ev.preventDefault(); spinDim(ev.key === 'ArrowUp' ? 1 : -1, ev); }
   });
   dimInput.addEventListener('input', function () { if (dimEdit.getAttribute('data-error')) dimEditError(''); });
@@ -3655,6 +3646,16 @@
       if (App.mode === 'sketch') { cancelTool(true); App.sketchDirty = false; if (dimEditing) closeDimEdit(false); }
       return base.apply(this, arguments);
     };
+  });
+
+  // lane CG: Esc (ui-commands.js escapeCommand) closes the sketch's value boxes without applying them before the tool
+  // is put down: the on-screen / unit request box (no onFinish: Parallel Line makes no line) and the Modify box
+  UI.escapeBoxes = UI.escapeBoxes || [];
+  UI.escapeBoxes.push(function () {
+    var did = false;
+    if (numBox) { closeNumBox(); did = true; }
+    if (dimEditing) { closeDimEdit(false); did = true; }
+    return did;
   });
 
   UI.enterSketch = enterSketch;

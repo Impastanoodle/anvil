@@ -69,8 +69,7 @@
     assert(dd.e === 2 && dd.k === 'dia' && Math.abs(K.dimValue(c, dd) - 15) < 1e-9, 'diameter dimension ' + JSON.stringify(dd));
     UI.setTool('rect'); rskClick([0, -40]); selEv('mousemove', rskScr([10, -30]));
     selKey('1'); r3sKey(UI.sketchNumBox()[0], 'Escape');
-    assert(!UI.sketchNumBox() && UI.App.toolState.pts.length === 1 && UI.App.tool === 'rect', 'Esc closed the box only');
-    selKey('Escape');
+    assert(!UI.sketchNumBox() && !UI.App.toolState.pts.length && UI.App.tool === 'select', 'lane CG: one Esc in the box ends the rectangle and puts the tool down');
     return 'line ' + l.x2.toFixed(4) + ', ' + l.y2.toFixed(4);
   });
   step('r3/sketch3: dragging a circle\'s centre onto another circle\'s centre merges them (Concentric glyph while over it, Concentric on release); an arc centre dropped on a line end gets a Coincident', async function () {

@@ -610,17 +610,31 @@
     D.tool = 'dim'; drawOverlay(); UI.refreshRibbon();
     return spec;
   }
-  // Esc while the placed dimension's PropertyManager is open: close it and end Smart Dimension (before the drawing's
-  // own key handler, which leaves Esc to an open PropertyManager)
+  // lane CG: Esc with a PropertyManager open (the placed dimension's, a view's …) goes to ui-commands.js escapeCommand,
+  // which cancels the PM and then ends the drawing's tool here (Smart Dimension, Note …), from the PM's boxes too; a
+  // command's inline box (a note being typed, a dimension's value) closes unapplied first. With no PM the drawing's
+  // own key handler (drawing-ui-panels.js) ends the tool. The window listener takes the PM case before that handler
+  // (which leaves Esc to an open PropertyManager) for a key sent to the window itself, which no document listener sees.
   window.addEventListener('keydown', function (e) {
-    if (e.key !== 'Escape' || !D.active || !D.sdPM || D.tool !== 'dim' || !(UI.hasPM && UI.hasPM())) return;
+    if (e.key !== 'Escape' || e.defaultPrevented || !D.active || !(UI.hasPM && UI.hasPM()) || !$('modal').hidden) return;
     var tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;   // a PM box: the PM's own Esc (ui-commands.js)
+    if ((UI.menuOpen && UI.menuOpen()) || document.querySelector('.rb-fly.open, .rb-more.open, #menus > li.open')) return;   // the menu first (ui-app.js)
     e.preventDefault(); e.stopImmediatePropagation();
-    UI.pmCancel();
-    if (D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); }
-    drawOverlay();
+    UI.escapeCommand();
   }, true);
+  UI.escapeBoxes = UI.escapeBoxes || [];
+  UI.escapeBoxes.push(function () {
+    if (!D.active || !D.inline || D.inline.field || D.inline.cell) return false;
+    D.inline.autoCommit = false; closeInlineEdit(false);
+    return true;
+  });
+  UI.escapeTools = UI.escapeTools || [];
+  UI.escapeTools.push(function () {
+    if (!D.active || !D.tool) return false;
+    D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); drawOverlay();
+    return true;
+  });
   // the pointer over the sheet while the tool runs: what the next click picks, and the preview
   function smartDimMove(q, e) {
     var P = D.pending;
@@ -978,7 +992,7 @@
     ta.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
       if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); closeInlineEdit(true); }
-      else if (ev.key === 'Escape') { ev.preventDefault(); if (D.inline) D.inline.autoCommit = false; closeInlineEdit(false); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); if (D.inline) D.inline.autoCommit = false; closeInlineEdit(false); UI.escapeCommand(); }   // lane CG: and the Note tool ends
     });
     [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });
     ok.addEventListener('click', function () { closeInlineEdit(true); });
@@ -1482,7 +1496,7 @@
     inp.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
       if (ev.key === 'Enter') { ev.preventDefault(); closeInlineEdit(true); }
-      else if (ev.key === 'Escape') { ev.preventDefault(); closeInlineEdit(false); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeInlineEdit(false); UI.escapeCommand(); }   // lane CG: unapplied, and the command under it ends
     });
     inp.addEventListener('blur', function () { setTimeout(function () { if (D.inline && D.inline.inp === inp && !box.contains(document.activeElement)) closeInlineEdit(false); }, 0); });
     [ok, no].forEach(function (b) { b.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); }); });

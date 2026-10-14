@@ -97,12 +97,12 @@
     try { inp.focus({ preventScroll: true }); inp.select(); } catch (e) { }
   }
   // Enter anywhere in the PropertyManager goes through pmEnter (below): a value box with a new entry commits it and
-  // stays, anything else is ✓. Esc is ✗, as in SolidWorks. A focused button keeps Enter for itself; equation-field
+  // stays, anything else is ✓. Esc cancels the whole command (escapeCommand: ✗ plus the sketch tool and its boxes). A focused button keeps Enter for itself; equation-field
   // and other handlers that already took the key win.
   pm.root.addEventListener('keydown', function (e) {
     if (!pm.spec || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     var tag = (e.target.tagName || '').toLowerCase();
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmCancel(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); escapeCommand(); return; }   // the whole command, not only the PM
     if (e.key === 'Enter' && tag !== 'button' && tag !== 'textarea') { e.preventDefault(); e.stopPropagation(); pmEnter(e.target); }
   });
   // a box that takes the focus starts clean: what is typed from here on is the entry Enter commits (pmEnter)
@@ -177,6 +177,26 @@
     var spec = pm.spec;
     if (spec.onCancel) spec.onCancel();
     closePM();
+  }
+  UI.escapeBoxes = UI.escapeBoxes || [];
+  UI.escapeTools = UI.escapeTools || [];
+  // Esc, the same in every command (user, 2026-10-14: "Pressing Esc should end any function"): one press cancels the
+  // active command completely, whatever has the keyboard (a PropertyManager box or list, the unit request box, the
+  // Modify box, the graphics area). In order: UI.escapeBoxes (value boxes and sub-states close without applying: the
+  // sketch's on-screen / unit box and Modify box, Instant3D's box, a drawing's inline editor), the sketch tool is put
+  // down (the segment being pulled goes, placed ones stay), the PropertyManager is cancelled (✗: onCancel puts back
+  // what the command made, onClose takes its preview), then UI.escapeTools (other tools: a drawing's). Each hook
+  // returns true when it closed something. Returns true when anything was cancelled. Every Esc handler of a command
+  // calls this instead of its own copy; editors that are not commands (a rename, a table cell, a dialog) and open
+  // menus keep their own Esc (ui-app.js).
+  function escapeCommand() {
+    var did = false;
+    function run(list) { list.forEach(function (h) { try { if (h()) did = true; } catch (er) { console.error('Esc hook: ' + (er && er.message)); } }); }
+    run(UI.escapeBoxes);
+    if (App.mode === 'sketch' && App.tool && App.tool !== 'select' && UI.cancelTool) { UI.cancelTool(); did = true; }
+    if (pm.spec) { pmCancel(); did = true; }
+    run(UI.escapeTools);
+    return did;
   }
 
   // Enter, the same in every command (user, 2026-10-13: "the Enter key completes a unit insertion only; the second
@@ -3832,7 +3852,7 @@
     }
   }
 
-  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.hasPM = function () { return !!pm.spec; };
+  UI.openPM = openPM; UI.closePM = closePM; UI.pmOK = pmOK; UI.pmCancel = pmCancel; UI.escapeCommand = escapeCommand; UI.hasPM = function () { return !!pm.spec; };
   UI.pmEnter = pmEnter; UI.pmPending = pmPending; UI.pmArm = pmArm; UI.pmEntryStatus = pmEntryStatus;
   // for commands in other files (ui-assembly.js, ui-evaluate.js) that update their open PropertyManager's message and results
   UI.renderPM = function () { if (pm.spec) renderPM(); }; UI.pmSpec = function () { return pm.spec; }; UI.pmTitle = function () { return pm.spec ? pm.spec.title : null; };

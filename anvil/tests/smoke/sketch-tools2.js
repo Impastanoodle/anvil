@@ -45,11 +45,9 @@
     f = UI.activeSketchFeature();
     assert(f.entities.length === 3, 'Undo takes a segment and its mirror image back together: ' + f.entities.length);
     assert(UI.dynamicMirrorOn(), 'still on after Undo');
-    // Esc twice: the first puts the tool down, the second turns Dynamic Mirror off
+    // one Esc ends every function (user, 2026-10-14): the tool goes down and Dynamic Mirror goes off together
     selKey('Escape');
-    assert(UI.App.tool === 'select' && UI.dynamicMirrorOn(), 'first Esc: the tool goes down, still mirroring');
-    selKey('Escape');
-    assert(!UI.dynamicMirrorOn(), 'second Esc turns it off');
+    assert(UI.App.tool === 'select' && !UI.dynamicMirrorOn(), 'one Esc: the tool down and Dynamic Mirror off');
     UI.setTool('line'); rskClick([10, -10]); rskClick([20, -20]); await wait(20);
     f = UI.activeSketchFeature();
     assert(f.entities.length === 4, 'off: nothing mirrored: ' + f.entities.length);

@@ -1369,10 +1369,81 @@
   }
   function r2d(a) { return a * 180 / Math.PI; }
 
+  // The end points of an entity: a line's two ends (a ray's one, an infinite line's none), an arc's two, a rectangle's /
+  // polygon's corners, a polyline's vertices, an open spline's / partial ellipse's two ends. Closed curves (circles,
+  // ellipses, closed splines, slots), points and text have none.
+  function entityEnds(e) {
+    if (!e) return [];
+    switch (e.t) {
+      case 'line': {
+        var inf = e.infinite, ends = [];
+        if (!inf || inf === 'p2') ends.push([e.x1, e.y1]);   // 'p2': that side runs on for ever, p1 is still an end
+        if (!inf || inf === 'p1') ends.push([e.x2, e.y2]);
+        return ends;
+      }
+      case 'arc': return [[e.cx + e.r * Math.cos(e.a0 * Math.PI / 180), e.cy + e.r * Math.sin(e.a0 * Math.PI / 180)], [e.cx + e.r * Math.cos(e.a1 * Math.PI / 180), e.cy + e.r * Math.sin(e.a1 * Math.PI / 180)]];
+      case 'rect': case 'crect': case 'poly': case 'polyline': { var pl = entityPolylines(e)[0]; return pl ? pl.pts.slice() : []; }
+      case 'spline': return e.closed || !e.pts || e.pts.length < 2 ? [] : [e.pts[0], e.pts[e.pts.length - 1]];
+      case 'pellipse': { var pe = entityPolylines(e)[0]; return pe && pe.pts.length >= 2 ? [pe.pts[0], pe.pts[pe.pts.length - 1]] : []; }
+    }
+    return [];
+  }
+  // rfCH: the parameter on primitive p of the foot of point pt, when pt lies on p within tol and the foot is inside it
+  // (more than tol from either end: a point at an end makes no cut), else null.
+  function footParam(p, pt, tol) {
+    if (p.kind === 'seg') {
+      var d = [p.b[0] - p.a[0], p.b[1] - p.a[1]], L2 = d[0] * d[0] + d[1] * d[1], L = Math.sqrt(L2);
+      if (L2 < 1e-24) return null;
+      var t = ((pt[0] - p.a[0]) * d[0] + (pt[1] - p.a[1]) * d[1]) / L2;
+      if (t * L <= tol || (1 - t) * L <= tol) return null;
+      return Math.hypot(pt[0] - p.a[0] - d[0] * t, pt[1] - p.a[1] - d[1] * t) <= tol ? t : null;
+    }
+    var vx = pt[0] - p.c[0], vy = pt[1] - p.c[1], rr = Math.hypot(vx, vy);
+    if (rr < 1e-12 || Math.abs(rr - p.r) > tol) return null;
+    var a = angleIn(Math.atan2(vy, vx), p.a0, p.a1);
+    if (a == null) return null;
+    if (!p.full && ((a - p.a0) * p.r <= tol || (p.a1 - a) * p.r <= tol)) return null;
+    return a;
+  }
+  // rfCH: the parameters on primitive `prim` (number k of entity idx) at which Trim cuts it: where the other entities'
+  // primitives truly cross it, where an end point of another entity truly lies on it (a T-junction: within opts.tol,
+  // floating-point noise only — 1e-9 of the sketch's size, the largest coordinate, 1 at least), and at opts.cuts
+  // (points the caller knows are tied to it: ends a Coincident holds on the entity, taken within opts.cutTol, 1e-3 of
+  // the size), each exactly at the point's foot on the primitive. An end that stops short of the entity or overshoots
+  // it by more than noise is no junction (user, 2026-10-14: "it shouldn't trim if it's not a true intersection or a
+  // T-junction"): nothing cuts there, as before. A point at the primitive's own end is no cut (no zero-length piece);
+  // the same parameter reached twice counts once. opts.only: the indices of the entities that cut (all when absent).
+  // Before this (user report, 2026-10-14) a junction counted only through the crossing test, within 1e-9 of the other
+  // entity's parameter, and an end a hair off it did not split the line: trimming at the junction deleted the whole line.
+  function trimCuts(entities, idx, k, prim, opts) {
+    opts = opts || {};
+    var only = opts.only || null, params = [], size = 1;
+    function grow(p) { size = Math.max(size, Math.abs(p[0]), Math.abs(p[1])); }
+    if (prim.kind === 'seg') { grow(prim.a); grow(prim.b); } else grow([Math.abs(prim.c[0]) + prim.r, Math.abs(prim.c[1]) + prim.r]);
+    if (opts.tol == null) entities.forEach(function (o) { entityEnds(o).forEach(grow); });
+    var tol = opts.tol != null ? opts.tol : 1e-9 * size;
+    entities.forEach(function (o, oi) {
+      if (!o || o.t === 'point' || (only && only.indexOf(oi) < 0)) return;
+      entityPrimitives(o).forEach(function (q, qi) {
+        if (oi === idx && qi === k) return;
+        primIntersections(prim, q).forEach(function (t) { params.push(t); });
+      });
+      if (oi !== idx) entityEnds(o).forEach(function (p) { var t = footParam(prim, p, tol); if (t != null) params.push(t); });
+    });
+    var cutTol = opts.cutTol != null ? opts.cutTol : Math.max(tol, 1e-3 * size);
+    (opts.cuts || []).forEach(function (p) { var t = footParam(prim, p, cutTol); if (t != null) params.push(t); });
+    // a crossing at the primitive's own end (an L corner) cuts nothing either
+    var start = prim.kind === 'arc' ? prim.a0 : 0, end = prim.kind === 'arc' ? prim.a1 : 1, per = prim.kind === 'arc' ? prim.r : Math.hypot(prim.b[0] - prim.a[0], prim.b[1] - prim.a[1]);
+    params = params.filter(function (t) { return prim.full || ((t - start) * per > tol && (end - t) * per > tol); });
+    params.sort(function (a, b) { return a - b; });
+    return params.filter(function (t, i) { return !i || t - params[i - 1] > 1e-9; });
+  }
+
   // Trim: remove the portion of entity `idx` between the intersections on either side of the point uv.
   // Returns the new entity list (the trimmed entity is replaced by 0..n pieces). Slots (and arc slots) are exploded into
-  // lines and arcs first; rectangles and polygons become polylines.
-  function trimEntity(entities, idx, uv) {
+  // lines and arcs first; rectangles and polygons become polylines. opts (rfCH): the T-junction options of trimCuts
+  // ({ tol, cuts, cutTol }).
+  function trimEntity(entities, idx, uv, opts) {
     var e = entities[idx];
     if (!e || e.t === 'point') throw new Error('Nothing to trim there.');
     if (e.t === 'text') throw new Error('Sketch text cannot be trimmed: edit its text, or delete it.');
@@ -1387,19 +1458,12 @@
       var list = entities.slice(0, idx).concat(parts, entities.slice(idx + 1));
       var best = -1, bestD = Infinity;
       parts.forEach(function (p, i) { var q = primParamAt(entityPrimitives(p)[0], uv); if (q.dist < bestD) { bestD = q.dist; best = idx + i; } });
-      return trimEntity(list, best, uv);
+      return trimEntity(list, best, uv, opts);
     }
     var prims = entityPrimitives(e), k = -1, kd = Infinity, kt = 0;
     prims.forEach(function (p, i) { var q = primParamAt(p, uv); if (q.dist < kd) { kd = q.dist; k = i; kt = q.t; } });
     if (k < 0) throw new Error('Nothing to trim there.');
-    var prim = prims[k], params = [];
-    entities.forEach(function (o, oi) {
-      if (o.t === 'point') return;
-      entityPrimitives(o).forEach(function (q, qi) {
-        if (oi === idx && qi === k) return;
-        primIntersections(prim, q).forEach(function (t) { params.push(t); });
-      });
-    });
+    var prim = prims[k], params = trimCuts(entities, idx, k, prim, opts);
     var isArc = prim.kind === 'arc', start = isArc ? prim.a0 : 0, end = isArc ? prim.a1 : 1, span = end - start;
     var lo = null, hi = null;
     params.forEach(function (t) {
@@ -2133,7 +2197,7 @@
   K.entityPolylines = entityPolylines; K.entitySnapPoints = entitySnapPoints; K.sketchProfile = sketchProfile; K.signedArea = signedArea;
   K.loopSelfCrossing = loopSelfCrossing; K.checkProfile = checkProfile; K.offsetLoop = offsetLoop; K.filletPolyline = filletPolyline;
   K.mirrorAxis = mirrorAxis; K.mirrorEntity = mirrorEntity; K.translateEntity = translateEntity; K.entityPrimitives = entityPrimitives;
-  K.trimEntity = trimEntity; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
+  K.trimEntity = trimEntity; K.trimCuts = trimCuts; K.entityEnds = entityEnds; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
   K.splineCurvatureAt = splineCurvatureAt;   // rfAY

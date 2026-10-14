@@ -1430,7 +1430,7 @@ if (typeof UI !== 'undefined') (function (UI) {
   editInput.addEventListener('keydown', function (ev) {
     ev.stopPropagation();
     if (ev.key === 'Enter') { ev.preventDefault(); closeEdit(true); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); closeEdit(false); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); UI.escapeCommand(); }   // lane CG: closes unapplied (escapeBoxes) and ends the command under it
   });
   editInput.addEventListener('blur', function () { if (i3d.edit && !i3d.committing) closeEdit(false); });
   editBox.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
@@ -1506,11 +1506,18 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (e.key === 'F5') { e.preventDefault(); toggleBar(); return; }
     if (e.key === 'F6') { e.preventDefault(); setFilter({ suspended: !filter.suspended }); return; }
     if (e.key === 'Escape') {
-      if (boxing) { boxing.cancelled = true; boxEl.hidden = true; }
-      if (i3d.edit) closeEdit(false);
       if (!escOnMenu) App.multi = [];
       escOnMenu = false;
     }
+  });
+  // lane CG: Esc (ui-commands.js escapeCommand) drops a box selection being dragged and closes Instant3D's value box
+  // unapplied
+  UI.escapeBoxes = UI.escapeBoxes || [];
+  UI.escapeBoxes.push(function () {
+    var did = false;
+    if (boxing) { boxing.cancelled = true; boxEl.hidden = true; did = true; }
+    if (i3d.edit) { closeEdit(false); did = true; }
+    return did;
   });
 
   // ================================================================== exports

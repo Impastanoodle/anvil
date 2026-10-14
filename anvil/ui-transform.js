@@ -863,7 +863,7 @@
         // lane BP: Enter applies a new entry and keeps the box; Enter with nothing new typed is ✓ (ui-commands.js pmEnter)
         if (ev.key === 'Enter') { ev.preventDefault(); if (box.value === box._armed) UI.pmEnter(null); else typed(box.value); }
         else if (ev.key === 'Tab') { ev.preventDefault(); if (typed(box.value) && UI.pmFocusField) UI.pmFocusField(last && last.kind === 'rz' ? 'ang' : 'dx'); }
-        else if (ev.key === 'Escape') { ev.preventDefault(); hideBox(); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); hideBox(); UI.escapeCommand(); }   // lane CG: Esc ends Dynamic (ui-commands.js escapeCommand)
       });
       host.appendChild(box);
       tip = document.createElement('div');
@@ -907,7 +907,7 @@
     // a digit typed while dragging freezes the drag and edits the value exactly (Mastercam); Shift snaps angles to 15°
     function onKey(ev) {
       if (ev.key === 'Shift') shift = true;
-      if (aligning && ev.key === 'Escape') { aligning = null; UI.setStatus('Align cancelled.'); ev.stopPropagation(); ev.preventDefault(); return; }
+      if (aligning && ev.key === 'Escape') aligning = null;   // lane CG: the Esc goes on and ends Dynamic (ui-app.js)
       if (!live || live.typing || live.kind === 'ball' || inert(live.kind)) return;
       if (!/^[-+0-9.]$/.test(ev.key)) return;
       ev.preventDefault(); ev.stopPropagation();

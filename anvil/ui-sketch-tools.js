@@ -1505,6 +1505,9 @@
     UI.updateSketches(); UI.refreshRibbon();
     if (msg) UI.setStatus(msg);
   }
+  // one Esc ends every function (user, 2026-10-14): Dynamic Mirror goes off with the tool in hand (ui-commands.js escapeCommand)
+  UI.escapeTools = UI.escapeTools || [];
+  UI.escapeTools.push(function () { if (!dyn) return false; dynOff('Dynamic Mirror off.'); return true; });
   // a drawing tool committed f.entities.slice(n0) (UI.sketchCommitHooks): each is mirrored at once, in the same undo
   // step, the copy held Symmetric to its original (only drawing tools call the hook: Text has already put itself
   // down when it does, so the tool in hand is not asked again)

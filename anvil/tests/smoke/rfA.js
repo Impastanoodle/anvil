@@ -41,7 +41,7 @@
       assert(made >= 1 && n1 - n0 === 2 * made, name + ': ' + (n1 - n0) + ' entities added: ' + JSON.stringify(rfAEnts().slice(n0)));
       for (var q = 0; q < made; q++) assert(rfASym(n0 + q, n0 + made + q, 0), name + ': copy ' + (n0 + made + q) + ' Symmetric to ' + (n0 + q) + ': ' + rfARels().join(' '));
       assert(UI.App.undo.length === u0 + 1, name + ': one undo step, got ' + (UI.App.undo.length - u0));
-      selKey('Escape');
+      UI.cancelTool();   // the tool down, Dynamic Mirror still on (one Esc would end both since 2026-10-14)
       done.push(name);
     }
     await tool('circle', [[20, 25], [25, 25]]);

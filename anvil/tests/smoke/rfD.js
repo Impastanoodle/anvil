@@ -101,11 +101,13 @@
     assert(f.dims.length === 1 && f.dims[0].k === 'len' && UI.isDimEditOpen() && UI.dimEditValue() === '3.6056', 'length ' + JSON.stringify(f.dims) + ' box ' + UI.dimEditValue());
     var u0 = UI.App.undo.length;
     r3sType(inp, '5'); r3sKey(inp, 'Escape');
-    assert(!UI.isDimEditOpen() && f.dims.length === 1 && UI.App.undo.length === u0 && UI.App.tool === 'dimension', 'Esc: closed, kept, nothing to undo');
+    assert(!UI.isDimEditOpen() && f.dims.length === 1 && UI.App.undo.length === u0 && UI.App.tool === 'select', 'Esc: closed, kept, nothing to undo, Smart Dimension down (lane CG)');
+    UI.setTool('dimension');
     near(len(), Math.sqrt(13), 1e-12, 'length kept');
     rskClick([1.0, 2 / 3]); selEv('mousemove', rskScr([1.3, 3.4])); rskClick([1.3, 3.4]);
     assert(f.dims.length === 2 && f.dims[1].k === 'dx' && UI.dimEditValue() === '3', 'above: horizontal ' + JSON.stringify(f.dims[1]) + ' ' + UI.dimEditValue());
     r3sKey(inp, 'Escape');
+    UI.setTool('dimension');   // lane CG: the Esc put Smart Dimension down
     rskClick([2, 4 / 3]); selEv('mousemove', rskScr([4.4, 1.2])); rskClick([4.4, 1.2]);
     assert(modalOpen() && $('drv-driven'), 'beside: the vertical one over-defines, Make Dimension Driven? asks');
     $('drv-driven').click();
