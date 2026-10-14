@@ -9,7 +9,9 @@ be at an older base; first run `git merge --ff-only main` (main is at <hash>). T
 inches and uses SolidWorks 2024 daily. Time box: about <30–45> minutes; iterate with `?only=<rfXX>`, one full ui-smoke
 run at the end.
 
-Read only what you need: `CLAUDE.md` *Conventions*; <the exact functions / files / report lines for this task>.
+Start from the map, not a search: read `anvil/docs/areas/<area>.md` first (files, entry points, patterns to copy,
+data shapes, tests, traps); find any function's line with `grep -n <name> anvil/docs/INDEX.md`, then read that range.
+Also `CLAUDE.md` *Conventions* and <the exact functions / files / report lines for this task>.
 
 ## Lane <XX>: <title>. Tasks, in priority order
 1. <task, the SolidWorks behaviour expected, acceptance test>
@@ -38,6 +40,9 @@ anything or use git / GitHub credentials. Use headless Chrome for checks (the br
   --port <94xx>` (baseline <n>). Stop your server when done.
 
 ## Finish
-When green, `git add -A`, commit in your worktree as `TEMP lane <XX>` (do not push). Report in under 250 words: what
-works, tests (and existing tests changed), suite counts, anything unresolved.
+When green, update `anvil/docs/areas/<area>.md` with anything you had to dig for or found wrong (stay under ~150
+lines), run `node head-tools/make-index.js`, then `git add -A`, commit in your worktree as `TEMP lane <XX>` (do not
+push). Report in under 250 words: what works, tests (and existing tests changed), suite counts, anything unresolved.
+Stay available: the head may send a follow-up task in this area to you (you keep your context); it will say when
+to `git reset --hard main` first.
 ```

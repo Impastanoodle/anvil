@@ -1,0 +1,93 @@
+# Sheet metal — agent map
+Read this first; find line numbers with `grep -n <name> anvil/docs/INDEX.md`. Update this card at the end of any lane that touched this area (add what you had to dig for; fix what is wrong).
+
+## Files — one line each: what the file owns
+- `anvil/kernel-sheetmetal.js` — all sheet-metal geometry and math: `model.sheet` (makeSheet), bend allowance / deduction / bend tables / gauge tables, edge flange + hem + miter + reliefs (`flangeLayout` → `buildFlange`), jog, Normal Cut tool, cuts across a bend, Sketched Bend, the flat pattern, bend notes. No DOM.
+- `anvil/kernel-rebuild.js` — the `flange` / `jog` / `sketchedBend` cases of `rebuildModel` (they are NOT `buildTool` cases), `needsSheet`, `featureKey` (adds `model.sheet` to the key of bend features), the Normal Cut swap in the default case, `ctx.flanges` / `ctx.flangeCut`.
+- `anvil/kernel-script.js` — Builder `sheet` / `baseFlange` / `flange` / `hem` / `jog` / `sketchedBend` / `customBendAllowance`; `generateScript` (`p.sheet(...)` header; base flange is written as `p.extrude(T, { sheetBase: true })`; `flange` / `jog` / `sketchedBend` cases); `exportDXFFlat`, `bendNotePlace`, the `DXF` writer, `dxfLoopCurves` (true arcs / circles from chords).
+- `anvil/kernel-equations.js` — `resolvedModel`: sheet fields may be `"=expr"` strings; a bad one gives `sheetError`, which fails every feature that `needsSheet`.
+- `anvil/ui-commands.js` — the PropertyManagers: shared groups `sheetGroups` / `sheetToValues` / `sheetFromValues` / `applyGauge` / `editGaugeTable` / `editBendTable`, `cmdBaseFlange`, `cmdSheetMetal`, `cmdEdgeFlange(existing, kind)` (kind `flange` | `miter` | `hem` | `jog`; `cmdHem` / `cmdJog` / `cmdMiterFlange` are wrappers), `cmdSketchedBend`, `cmdFlatten` (modal, `flatSvg`), `exportFlatDXF`, `dxfOutput` / `cmdDxfOutput` (DXF/DWG Output PM, `export: 'sheet'`), `dxfToDwg`, `editDispatch` cases, the Cut-Extrude *Normal cut* check in `cmdExtrude`.
+- `anvil/ui-panels.js` — `RIBBON['Sheet Metal']` buttons, `FEATURE_ICON` (flange, jog → `bend`) / `featureIcon`, the feature tooltip text (`case 'sketchedBend'`, `case 'jog'`).
+- `anvil/ui-app.js` — `anvil.flat()`, `anvil.dxfFlat()`, flat size in Custom Properties.
+- `anvil/occt-kernel.js` — `flangeOp` / `jogOp` / `sketchedBendOp`: the same layouts built with exact bend arcs; `shapeToCSG`.
+- `anvil/drawing-views.js` — flat-pattern drawing view (`view.kind 'flat'`) calls `flatPattern` (see the drawing card). `nest.js` / `ui-nesting.js` nest flats.
+- `anvil/headless/anvil.js` — `--dxf-flat` / `--dwg-flat`; `headless/dxf-check.js` reads every DXF back as a laser would.
+- `exchange.js` has no DXF (STEP / OBJ / 3MF / STL only); DXF import is `dxf-import.js`.
+
+## Entry points — the functions / builders / script API and key internals
+Script API (part script, `p` = Builder):
+- `p.sheet(T, R, K, opts)` — sets `model.sheet` through `makeSheet`. opts: `bendAllowanceType` (`kfactor` | `allowance` | `deduction` | `table`), `bendAllowance`, `bendDeduction`, `bendTable`, `gaugeTable` + `gauge` (null T / R / K come from the gauge row).
+- `sketch(...).….end().baseFlange(T?, opts)` (also `p.baseFlange`) — extrude of depth T with `sheetBase: true`; makes a sheet if none, else edits only what it is given.
+- `p.flange(L, [[x,y,z], …], opts)` — points on straight edges of a flat sheet face. opts `angle` (90), `reverse`, `toward` (world dir, overrides reverse), `radius`, `position`, `lengthRef`, `miter`, `miterGap`, `relief`, `reliefWidth`, `reliefDepth`, `bendAllowance: { type, value }`.
+- `p.hem(L, edges, { hemType, hemPosition, gap, hemRadius, hemAngle, reverse })` — a `flange` with `hem: true`, angle 180.
+- `p.jog(H, L, edges, opts)`; `p.sketchedBend(angle, { sketch, fixed, position, reverse, radius, bendAllowance })` (also on SketchBuilder); `p.cut(d, { normalCut: true })`.
+Kernel (`Kernel.*`):
+- `flatPattern(model, build, mesh)` — the blank (see Data shapes). `exportDXFFlat(flat, units, opts)` — laser DXF text.
+- `bendCalc(sheet, angleRad, R, T, custom)` — THE bend math: `{ BA, BD, type, source, value, K, warning }`.
+- `bendAllowance(θ, R, T, K)`, `outsideSetback(θ, R, T)`, `bendDeduction(θ, R, T, BA)`, `bendTableLookup(table, T, R, deg)`.
+- `makeSheet(o)`, `sheetParams(model)`, `sheetKFactor(sheet)`, `sheetNote(sheet)`, `gaugeTable(ref)`, `gaugeRow(ref, gauge, units)`, `gaugeTables`, `DEFAULT_GAUGE_TABLE`.
+- `bendNoteText(bend, units, { prec }?)` (`UP 90° R.060`), `bendNotePlace(bend, h)`.
+- `flangeLayout(f, model, ctx)` → `{ parts, cuts, info, section }` (plain data, both kernels build it); `buildFlange`; `buildJog` → `{ first, second }`; `flangeProfile(A, R, T, L, ov)`; `hemSection(type, A, R, T)`.
+- `sketchedBendLayout` / `buildSketchedBend` → `{ body, tool }`; `normalCutTool(tool, body, model, dir)`.
+- Cuts across a bend: `bendVoids`, `wrapCut`, `bendZoneMap`, `bandSlabSpec` (OpenCascade reuses them).
+- Flat hygiene: `cleanFlatLoop`, `snapFlatCircle`, `flatCircleTol`, `flatOptions.merge` (`'2d'` default | `'csg'`).
+- Constants: `FLANGE_LENGTH_REFS`, `HEM_TYPES`, `SKETCHED_BEND_POSITIONS`, `BEND_ALLOWANCE_TYPES`, `DEFAULT_K_FACTOR` 0.5, `LEGACY_K_FACTOR` 0.71, `CLOSED_HEM_RADIUS` 0.02 (×T), `DEFAULT_HEM_ANGLE` 270.
+Internals worth knowing: `hemCrossing` (refuses crossing hems), `coplanarBody` + `EDGE_PICK_TOL` (edge picks within 0.75·T), `planeFaces` (face grouping for the unfold), `faceComponents` (unfold one connected piece at a time), `bendSurfaceNotches`, `mergeFlatRegions` / `csgMerge`, `flatEtch`, `sketchedBendRecords`, `zoneBA` / `customBA`.
+UI: `UI.cmdBaseFlange`, `cmdSheetMetal`, `cmdEdgeFlange`, `cmdMiterFlange`, `cmdHem`, `cmdJog`, `cmdSketchedBend`, `cmdFlatten`, `exportFlatDXF`, `cmdDxfOutput`, `dxfOutput`, `dxfToDwg`.
+
+## How things are done here — patterns to copy
+- **Bend math**: always through `bendCalc` (custom BA wins over the sheet's method). BA = θ·(R + K·T); OSSB = (R+T)·tan(θ/2) up to 90°, R + T beyond; BD = 2·OSSB − BA; an L with outside dims A, B unfolds to A + B − BD. Entered BA / BD apply at every angle (warning off 90°); tables interpolate by angle, tolerance 0.5 % of T / R, fall back to K with a warning.
+- **Sheet parameters**: written only through `makeSheet` (fixed key order, `kFactor` always stored). Kernel code reads `resolvedModel(model).model.sheet`; UI code reads `previewModel().sheet` (resolved), never raw `App.model.sheet` numbers.
+- **New sheet feature end to end** (CLAUDE.md list, sheet flavour): layout function returning plain data like `flangeLayout` → CSG builder like `buildFlange` → a `rebuildModel` switch case like `'flange'` (`pickBody`, build, subtract `ctx.flangeCut`, `putBody`) — body-editing, so not `buildTool`; add to `needsSheet` and to the `featureKey` regex if BA changes the solid; one record per bend in `ctx.flanges[f.id]` (plain arrays only: they cross to the worker by structured clone) that `flatPattern` consumes — emit edge-flange-shaped records (`kind: 'edge'`) as Sketched Bend does, so the unfold needs no new code; `NAME_BASE` in `featureName`; Builder method + `generateScript` case (round picks to 1e-4, `nv()` for equations); `cmdX(existing)` with `openPM` → `commitFeature`, Custom Bend Allowance fields like `cmdSketchedBend` (`useCustomBA`, `cbaType`, `cbaK`, `cbaBA`, `cbaBD`); `editDispatch` case; `FEATURE_ICON` / `featureIcon` + `icons.js`; `RIBBON['Sheet Metal']`; worker preview op in `worker.js` (`'flange'`, `'jog'` exist); OpenCascade: `SUPPORTED` + an op like `flangeOp` (else the feature is 'unsupported' and Anvil's solid stays); kernel + smoke group files.
+- **Unfold** (`flatPattern`): base face = largest face parallel to the base sketch plane (sketch side wins unless the other is 10 % larger; a Sketched Bend anchor overrides) → `unfold` recursively: each flange record attached to an unfolded face adds a strip of length BA beyond its edge, then its wall face (real outline, holes) goes in with a rigid map. Regions merge in 2D (`mergeFlatRegions`, weld 1e-4; `csgMerge` fallback); reliefs, `cutouts` and `bendSurfaceNotches` are notches; every loop then `cleanFlatLoop` + `snapFlatCircle`. Bend line = mid-strip; `up` from the tracked inner side.
+- **DXF** (`exportDXFFlat`): layers OUTLINE (loop 0), HOLES (other loops; round → CIRCLE), BEND (bend lines), NOTES (each bend's `label` centred along its line via `bendNotePlace`; the sheet note + `BLANK W X H IN|MM` below the blank), ETCH (marks; colour from the sketch layer, default ACI 3). R12 default, R2000 for DWG; `style` polyline | entities; blank's lower-left at 0,0; `$INSUNITS` 1 in / 4 mm. Check with `dxf-check` (headless does it on every `--dxf-flat`).
+- **Exact vs mesh**: flat sizes are analytic (assert to 1e-9). Anvil's bends are faceted, so solid volumes are not π-exact: compare with the polygon section (`K.flangeProfile` area × edge length, as `mitred-corners-and-bend-reliefs.js` does) or `nearRel(blankArea·T, volume, 2e-3)` (`rfBW.js`).
+- **OpenCascade**: `flangeOp` runs `K.flangeLayout(f, m, { body: shapeToCSG(body) })` and sweeps exact arcs; BA never changes its solid except through cuts across bends (voids re-read from the exact solid). The flat is computed from whichever mesh drives (`App.mesh`), so anything in `flatPattern` must work on a face-tagged OpenCascade mesh too (`occt-flat.js`).
+
+## Data shapes — feature JSON with short examples
+```js
+model.sheet = { thickness: 0.0598, bendRadius: 0.0598, kFactor: 0.5 }                       // K-factor (default type)
+            | { …, bendAllowanceType: 'deduction', bendDeduction: 0.098 }  // or 'allowance' + bendAllowance
+            | { …, bendAllowanceType: 'table', bendTable: { kind: 'BD', name, tolerance?, rows: [{ thickness, radius, angle, value }] } }
+            // + gaugeTable ('Steel (Manufacturers\' Standard Gauge)' | own { name, units, rows: [{ gauge, thickness, radius, kFactor | bendDeduction }] }), gauge: '16'
+{ id: 2, type: 'extrude', sketch: 1, depth: 0.0598, end: 'blind', reverse: false, cut: false, dir2: false, depth2: 0, end2: 'blind', sheetBase: true, name: 'Base-Flange1' }
+{ id: 3, type: 'flange', length: 1.5, angle: 90, reverse: false, radius: null, position: 'inside' /* bendOutside | outside | inside | virtualSharp */,
+  lengthRef: 'outer' /* outer | inner | tangent | wall; absent = wall */, edges: [{ at: [0, 0.0598, 1.5] }], miter: false, miterGap: 0,
+  relief: 'none' /* rect | obround */, reliefWidth: null, reliefDepth: null, toward?: [x,y,z], bendAllowance?: { type: 'deduction', value: 0.09 } }
+{ type: 'flange', hem: true, angle: 180, length: 0.5, hemType: 'closed' /* open | teardrop | rolled; absent = open */, hemPosition: 'inside' /* | outside */,
+  radius: null /* open hem: gap/2 */, gap?: '=…', hemRadius?, hemAngle?, position: 'bendOutside', edges: [...] }
+{ type: 'jog', height: 0.5, length: 1, angle: 90, reverse: false, radius: null, position: 'bendOutside', edges: [{ at }] }
+{ type: 'sketchedBend', sketch: 5, angle: 90, position: 'centerline' /* inside | outside | bendOutside */, reverse: false, radius: null, fixed: [x,y,z] | null }
+{ type: 'extrude', cut: true, normalCut: true, … }                                        // Normal Cut
+// flatPattern(model, build, mesh) ->
+{ loops: [[[u,v],…] /* outer, CCW */, …holes], bends: [{ a, b, up, angle /*deg*/, R, ba, bd, method, source: 'sheet'|'custom', label }],
+  plane, sheet /* resolved, kFactor filled */, bbox: { min, max }, size: [w, h], note: 'T=0.0598 R=0.0598 K=0.5', warnings: [], etch: [...], etchLayer }
+// ctx.flanges[featureId] = [{ kind: 'edge', a, b, mid, origin, o, u, len, angle /*rad*/, R, L, T, ba /*custom BA*/, mitred: [bool,bool],
+//   miterPlanes: [{ n, w } | null ×2], reliefs?: [{ w, d0, d1, obround } | null ×2], cutouts?: [[[d, τ], …]] }]
+```
+
+## Tests — groups, helpers, how to run fast
+- Kernel groups (`anvil/tests/kernel/`): `sheet-metal.js` (base), `mitred-corners-and-bend-reliefs.js`, `normal-cut.js`, `p9-bend.js` (BA / BD / tables / gauges / custom BA), `p9-sheet.js` (relief notches, lengthRef, hem types, bend notes), `p9-cutbend.js`, `p9-sketchedbend.js`, `p9-output.js` (laser DXF R12 / R2000 read back), `p9-bendtable.js` + `p9-drawing.js` (drawing side), `flat-weld.js`, `flat-hygiene.js` (+ ETCH), `occt-flat.js`, `r12-inchflange12.js`, `rfBW.js` (shop scenarios), `rfBZ.js` (corner trim, Normal Cut across a bend, crossing hems), `pack-unpack-and-the-rebuild.js`.
+- Smoke groups (`anvil/tests/smoke/`): `p9-pm.js`, `p9-bend.js`, `rfBW.js`, `rfBZ.js`, `rfK.js`, `basics.js`.
+- Page helpers: `build(code)` → `{ model, build, body, mesh, mp, errors, warnings }`, `noErrors(r)`, `near`, `nearRel`, `fmt`. File-local (copy them): `flatOf`, `blankArea` in `rfBW.js`; `polyMoments`, `mitreFaceIndex` in `mitred-corners-and-bend-reliefs.js`. New tests go in a new group file + one `GROUPS` line; `node anvil/tests/split-tests.js --check`.
+- Fastest check (a few seconds, no browser):
+  `node -e "const {Kernel:K}=require('./anvil/headless/load').load(); const m=K.newModel('t'); K.runScript(m,'p.units(\"in\"); p.sheet(0.0598,0.0598,0.5); p.sketch(\"Top\").rect(0,-3,4,3).end().baseFlange(); p.flange(1.5,[[0,0.0598,1.5]],{position:\"inside\",lengthRef:\"outer\"});'); const b=K.rebuild(m); const f=K.flatPattern(m,b,K.meshFromBody(b.body)); console.log(b.errors,f.size,f.bends.map(x=>x.label))"` → `[5.4017, 3]` (4 + 1.5 − BD .0983).
+- `node anvil/headless/anvil.js build part.js --dxf-flat out.dxf [--dxf-version 2000 --dxf-style entities]` (summary carries the dxf-check result); `example "Sheet-metal U-bracket" --dxf-flat out.dxf`.
+- Full: `node anvil/headless/anvil.js test` (all kernel groups, ~1 min); `example --all [--occt]` (U-bracket, Tray, Normal Cut Bracket volumes); `tests/occt-tests.html` in the browser (needs `vendor/occt` and the server on 8812); `node anvil/headless/ui-smoke.js` for PMs.
+
+## Traps — things that broke before
+- **Mirrored blank / UP read DOWN** (rfBW #14): a cut made one sheet face a hair larger and "largest face wins" flipped the flat. Base face choice gives the sketch side a 1.1 factor; keep it when touching face selection.
+- **Countersink in the flat** (rfBW #25): the far face fills what it still has under a hole, so CSK / CBORE leave the through hole and a blind pocket leaves nothing.
+- **Hemmed panel / pan lips** (rfBW #10–11): one mesh face can hold several separate coplanar pieces; the unfold works per connected piece (`faceComponents`) and a flange takes only pieces its wall starts on.
+- **Cut across a bend made after the flange** (rfBW #12–13, p9-cutbend): the strip must not bridge it; `bendSurfaceNotches` unrolls what the bend surface lacks. Cuts made before the flange are wrapped by BA (`bendVoids` / `wrapCut`) — so BA changes the solid; `featureKey` puts the whole sheet in the key of bend features (the `hem` in its regex is dead: hems are type `flange`).
+- **Material Inside corner trim** (rfBZ): the trim overshoots 0.01 only where the sheet stops; it used to nick the next bend by 0.016 in. Material Inside at angles other than 90° trims R + T regardless (unconfirmed vs SolidWorks; `virtualSharp` trims (R+T)·tan(θ/2)).
+- **Crossing hems** are refused by `hemCrossing` ("would cross: shorten one or add a relief") — a CSG union would self-intersect.
+- **Inch edge picks** (r12/inchflange12): `meshFromBody` groups faces by plane rounded to 0.01 units; 0.075 / 0.125 in sheets split the top face, the pick fell on the bottom edge and the flange folded down. `coplanarBody` + picks within 0.75·T; OpenCascade's `shapeToCSG` gives one plane per B-rep face and a 0.05 mm chord in model units.
+- **Corrupt flat DXF on OpenCascade** (`faceOutline` weld): vertices on a 1e-4 rounding midpoint lost their twin and chained two holes together; now a neighbour-cell weld (`flat-weld.js`). Relief slivers of bend face on a wall plane: `planeFaces` never puts a curved (`polygon.surf`) facet in a plane.
+- **K = 0.71** is a shop MIB constant, not a K-factor (true K = 0.452). Examples and old parts store 0.71 (flat warns "outside 0–0.5"); a sheet with no stored K uses `LEGACY_K` 0.71, a new one 0.5. Do not "fix" stored K values.
+- **Script vs UI defaults differ**: script flange without `lengthRef` = `'wall'` (legacy; L is the straight wall), UI new flange = `'outer'`; script hem without `hemType` = open, Bend Outside, UI new hem = Closed, Material Inside. Keep scripts' meanings when changing UI defaults.
+- **Closed hem** folds at 0.02·T (a solid needs a radius); its BA is π·(0.02·T + K·T). Jog `height` is the inside offset (riser = H − 2R); jog is edge-based (SolidWorks uses a sketch line). OpenCascade's jog keeps only the first bend's cuts.
+- `bendCalc` throws when BD > 2·OSSB (negative BA). Bend table misses fall back to K with a `flat.warnings` entry, not an error.
+- **R12 → DWG** makes an empty DWG through LibreDWG: `dxfToDwg` refuses R12; always convert from R2000. DWG needs `serve.ps1`'s `api/dxf2dwg`.
+- Records in `ctx.flanges` must be plain arrays / numbers (worker structured clone); no CSG, no functions.
+- Not built yet (do not assume): Unfold / Fold / Rip are placeholders, no Flat-Pattern feature (Flatten is a dialog), no sheet-level Auto Relief, Break / Closed Corner, Link to thickness, Miter Flange start / end offset, jog Outside Offset / Overall Dimension.

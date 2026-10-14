@@ -9,3 +9,5 @@ HEAD.lock
 anvil/vendor/occt/opencascade.full.*
 # LibreDWG (DXF to DWG fallback converter, 35 MB) is fetched by anvil/vendor/get-libredwg.ps1, not committed
 anvil/vendor/libredwg/
+# the head session's live subagent registry (agent ids, per session)
+head-tools/agents.local.json

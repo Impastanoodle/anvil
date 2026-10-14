@@ -19,6 +19,20 @@ session after the round is pushed): a long head context is re-read on every turn
 `isolation: worktree`, `run_in_background: true`, brief from `head-tools/brief-template.md`. Put the run on the board
 (`runs/<id>`, status running, lanes) — see CLAUDE.md *The board*.
 
+## 2b. Context for agents (user, 2026-10-14)
+- Every brief points the agent at its area card `anvil/docs/areas/<area>.md` (sketch, sheetmetal, kernel, drawings,
+  transform-view, ui-core, tests) and at `anvil/docs/INDEX.md` (every function / exported name with its line;
+  regenerate with `node head-tools/make-index.js`, `--check` in step 4). Agents update their card before they finish.
+- **Reuse an agent for a follow-up in the same area** instead of spawning a fresh one: `SendMessage` to the agent id
+  of the lane that just finished, with the new task and "first `git reset --hard main` in your worktree (your last
+  lane is merged)". For that, merge its branch but keep its worktree (skip the worktree remove / branch delete until
+  the agent is retired). Retire it (fresh agent + card) after about three tasks, or when its tasks change area — a long
+  agent context costs more per step than a card read.
+- `/compact` does not end the head's subagents, it only drops their ids from the head's memory: keep them in
+  `head-tools/agents.local.json` (git-ignored; area -> id, task count, worktree), update it on every spawn / follow-up /
+  retire, and read it (plus `ListAgents`) first thing after a compaction.
+- Across head sessions agents do not survive; the cards, INDEX.md, SESSION_LOG and QUEUE are the carried context.
+
 ## 3. Merge each lane as it returns
 ```
 git merge --squash worktree-agent-<id>          # main tree, on top of the previous lanes' TEMP commits
@@ -33,6 +47,7 @@ hook when it is cheap.
 ## 4. Verify (all green or no commit)
 ```
 node anvil/tests/split-tests.js --check          # every group file listed in its page manifest and parsing
+node head-tools/make-index.js --check            # anvil/docs/INDEX.md current (else run it without --check)
 node anvil/headless/anvil.js test
 node anvil/headless/anvil.js example --all
 node anvil/headless/anvil.js example --all --occt

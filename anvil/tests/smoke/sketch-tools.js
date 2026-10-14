@@ -65,7 +65,7 @@
     assert(arcs.length === 2 && arcs.every(function (a) { return Math.abs(a.r - 4) < 1e-9; }), 'two R4 fillets: ' + JSON.stringify(arcs));
     assert(f.dims.filter(function (d) { return d.k === 'r'; }).length === 1 && stToolRels().some(function (r) { return /^equal:/.test(r); }), 'one R dimension + Equal: ' + stToolRels().join(' '));
     var st = stNoRedundant('fillets');
-    assert(st.status === 'full' && UI.App.undo.length === undo0 + 2, 'Fully Defined, one undo step each: ' + st.status + ' ' + (UI.App.undo.length - undo0));
+    assert(st.status === 'full' && UI.App.undo.length === undo0 + 1, 'Fully Defined, one undo step for the session (rfCE): ' + st.status + ' ' + (UI.App.undo.length - undo0));
     assert(D.querySelectorAll('#pm .pm-list .pm-item').length === 2, 'listed in Entities to Fillet');
     UI.pmCancel();
     assert(f.entities.length === 4 && !f.entities.some(function (e) { return e.t === 'arc'; }) && UI.App.undo.length === undo0 && UI.sketchStatus().status === 'full', '✗ took them back: ' + f.entities.length);

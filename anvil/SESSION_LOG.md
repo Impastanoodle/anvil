@@ -1562,3 +1562,12 @@ Tests: ui-smoke 697/697.
 - head: F5 (Selection Filter) refreshes the ribbon so the View tab button follows.
 - note: r11/occtswap11 failed in 2 of the last 4 full headless runs (held-frame timing, estimate ~1500 ms) and passes alone — a timing flake on this machine.
 Tests: kernel 1157/1157, ui-smoke 701/701 (occtswap11 rerun alone).
+
+## 2026-10-14c (interactive head, 1 Fable 5.1 + 3 Opus 5.5 subagents in worktrees): live fillet / chamfer corners; agent maps and code index
+
+- Sketch Fillet / Chamfer (lane CE, Fable, `cornerTool`): every pick is a replayable spec; a committed value (first Enter, spin, check box, pick, blur; keystrokes wait — the box reads what is typed, "Press Enter to apply") restores the open-time sketch and re-makes all picked corners; one undo step for the session; a failed replay (radius too large) keeps the last good fillets, marks the box and refuses ✓; Delete on a listed corner drops it and re-makes the rest; ✗ restores. Tests: rfCE (5); sketch-tools expects one undo step (was two).
+- agent context (user: agents read too much before coding): `anvil/docs/areas/{sketch,transform-view,sheetmetal,kernel,drawings,ui-core,tests}.md` (files, entry points, patterns to copy, data shapes, tests, traps; 56–93 lines each) and `head-tools/make-index.js` -> `anvil/docs/INDEX.md` (4672 symbols with lines; `--check`). Briefs start agents from their card + INDEX; agents update their card before finishing; same-area follow-ups go to the live agent (SendMessage), tracked in the git-ignored `head-tools/agents.local.json` so they survive /compact (ROUND.md 2b, brief-template, CLAUDE.md).
+- head: CLAUDE.md drawing lane lists drawing-ui-sketch.js.
+- open question for the user: Edge Flange default position (Bend Outside today; a 2026-10-12 report says SolidWorks starts on Material Inside).
+- flaky: r11/occtswap11 failed in 3 of the last 5 full headless runs (held-frame estimate ~1500 ms), passes alone — worth a look.
+Tests: kernel 1157/1157, ui-smoke 706/706 (occtswap11 rerun alone).

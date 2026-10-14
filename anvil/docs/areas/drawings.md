@@ -1,0 +1,66 @@
+# Drawings — agent map
+Read this first; find line numbers with `grep -n <name> anvil/docs/INDEX.md`. Update this card at the end of any lane that touched this area (add what you had to dig for; fix what is wrong).
+
+## Files — one line each: what the file owns
+Engine (`Drawing`, no DOM; loaded by index.html, tests/kernel-tests.html, drawing-worker.js `importScripts`, headless/load.js), in load order:
+- `drawing.js` — creates `Drawing` and the hidden `Drawing._` privates; view orientations (`ORIENTS`, `frameOf`, `projectedFrame`, `sectionFrame`), view-independent model edges (`meshEdges`, `joinCollinear`).
+- `drawing-curves.js` — true curves from the kernel's analytic records (`meshCurves`): circles, arcs, ellipses, cylinder / cone silhouettes, surface intersections.
+- `drawing-hlr.js` — `projectView(mesh, frame, {display, tangent})`: exact hidden-line removal against front-facing triangles; `fitArcs`, chains.
+- `drawing-views.js` — section (`sectionOf` exact CSG cut, `hatchPattern` ANSI31…38, `hatchAssign`), detail (`clipProjection`), auxiliary / crop / break / broken-out / relative views, flat-pattern data (`flatData`, `bendNoteText`), `reattachDim`, and the drawing-sketch engine (`addSketchEntity`, `addSketchDim`, `setLineFormat`, `hideEdge`).
+- `drawing-sheet.js` — `FORMATS` / `SCALES` / `ANSI_SCALES`, `newDrawing`, `addView`, projection cache + lazy mode (`_.LAZY`, `sectionJob` / `putSection`), `standard3View`, `layout`, projected / section / detail / flat views, title block (`TB_FIELDS`, `$PRP` links), sheet format editing, templates, tables, revision table, multi-sheet (`addSheet`, `sheets`, `activateSheet`), `autoDims` / `modelItems`, `fmtDim` / `inchText` / `dimStyle`, BOM and balloons, `drawingFile` / `readDrawingFile`.
+- `drawing-annotations.js` — centre marks / centrelines (+ `autoInsert`), hole callouts (`holeInfo`, `holeText`), ordinate / baseline / chamfer dims, `numText` / `dimLabel` / `DIM_PROPS` / `setDimProps`, `dimSource` / `driveDim` (model dims drive the part), balloons, hole tables, symbols (finish, datum, GD&T), notes, `smartDim` / `addSmartDim`, `flatAnnotation`, `annotationPrims`.
+- `drawing-render.js` — `compute(doc, mesh, model, ctx)` -> paper primitives; ANSI dimension drawing; text metrics (`textRect`, Century Gothic, `CAP_EM`), `STROKE`; writers `toSVG` / `svgParts` (one patchable group per layer), `toDXF` (R12 / R2000, layer per view), `toPDF` (one page per sheet). Loads last.
+- `drawing-worker.js` — off-thread `projectView` / `sectionJob` (messages `mesh`, `project`, `section` -> `projected`, `sectioned`, `failed`).
+UI (only when `UI` exists; share state through `UI.drawingInternal`, alias `DW`; the document state object is `D`):
+- `drawing-ui.js` — makes `DW` and `D`; drawing icons (`DI` table that wraps the global `Icons`); doc state, open / close / detach, sheet DOM with pan / zoom, `render` (sheet recomputed, SVG patched per layer, views dropped in from the worker), `settle` / `ready`, hit testing (`viewAt`, `dimAt`, `entityAt`), the mouse.
+- `drawing-ui-tools.js` — every command and tool: Standard 3 View, Model View (`startPlacing` / `placePending`), Projected / Section / Detail / Flat views, view & sheet properties, Model Items, exports (`exportAs`, `saveDWG`), annotation tools and their PMs, Smart Dimension (`smartDimClick`), Dimension PM (`cmdDimensionPM`, `applyDimensionPM`), arrow flipping, inline text edit, dimension dragging with snapping, BOM, Auto Balloon.
+- `drawing-ui-panels.js` — drawing FeatureManager (`renderTree`), View Layout / Annotation / Sheet Format ribbon tabs (`UI.RIBBON[...]`), `UI.ribbonTabsFor`, `UI.menuHook`, keys, `window.anvil.drawing` API + `summary()`, `UI.drawing`, `UI.makeDrawing / openDrawing / closeDrawing / drawingActive`, Edit Sheet Format, templates, General Table, revisions, symbols, `UI.undoCancelsPM` chain.
+- `drawing-ui-sketch.js` — the drawing's Sketch tab (rfAO): Line / Centerline / Rectangle / Circle / Arc / Spline / Point / Text on the sheet or in a view, relations, Smart Dimension on sketch entities, Line Format, Hide / Show Edges, Relative View (`DW.sk*` hooks called before drawing-ui.js mouse handling). Not in CLAUDE.md's drawing lane list, but it is this area.
+- `drawing.css` — sheet desk / shadow, sheet tabs, drawing FeatureManager; `--dw-hot` amber hover / selection.
+
+## Entry points — commands / API / key functions
+- `anvil.drawing.make(opts)` — new drawing (or opens #0 if one exists; `{ fresh: true }` always adds one), Standard 3 View, returns `summary()`.
+- `anvil.drawing.summary()` — `{ name, open, sheet, sheets, views[{ id, orient, kind, box, extents, stats, scale, flat… }], dims, notes, symbols, revisions, bom }`.
+- `anvil.drawing.projectedView / sectionView / detailView / flatView / addView / deleteView / tangent` — views without the mouse, one undo step each.
+- `anvil.drawing.centerMark / centerline / holeCallout / ordinate / baseline / chamferDim / note / symbol / balloon / autoBalloon / bom / titleBlock / modelItems / dimProps(i, props) / driveDim(i, v) / options / setSheet / addSheet …`.
+- `anvil.drawing.svg(i) / dxf({ version: 'R12' | 'R2000', sheet }) / pdf()` — exports; DWG: `DW.saveDWG(sheet)` = R2000 DXF -> `UI.dxfToDwg` (POST `api/dxf2dwg` on serve.ps1: ODA File Converter, else LibreDWG); `UI.dwgConverter()` probes with HEAD.
+- `UI.drawing.{ state (D), render, ready(), settle(), standard3View, smartDimension, dimensionPM, modelView, sectionView, detailView … }` — the UI commands, for tests.
+- Engine (no UI): `Drawing.newDrawing(model, opts)`, `standard3View(doc, mesh, units)`, `layout(doc, mesh, units)`, `compute(doc, mesh, model, { build, lazy })`, `toSVG / toDXF / toPDF(sheet)`, `addProjectedView(doc, mesh, parentId, dir, opts)`, `addSectionView`, `addDetailView`, `addFlatView(doc, mesh, { model, build })`, `addSmartDim`, `autoDims`.
+- Headless: `node anvil/headless/anvil.js drawing <script|model.json> --svg o --dxf o --dwg o --pdf o [--views Front,Top,Right,Isometric] [--scale 1:2] [--dxf-version r12|2000]`.
+
+## How things are done here — the patterns to copy
+- Engine file shape: `(function (D, _) { … D.name = name; _.helper = helper; })(Drawing, Drawing._)`. Alias what an earlier file put on `_` (`var meshDiag = _.meshDiag;`); call later files' members through `_.name` / `D.name` (late bound). Reassigned state (`_.LAZY`, `_.DIMSTYLE`, `_.CTX`) is always read through `_`. Copy `drawing-views.js` top.
+- A doc edit from the UI: `edit(function (dc) { … })` (settle, `UI.pushUndo`, `D.dirty`, `UI.autosave`, `render`); a placed view: `editView(fn)` (worker linework + auto insert). An API call: `annotApi(fn)` / `viewApi(fn)` in drawing-ui-panels.js (dry-run on a JSON copy first, so a throw leaves no undo step).
+- A new annotation kind: engine `addX(doc, viewId, spec)` + `findX` / `deleteX` in drawing-annotations.js, primitives from `annotationPrims` (layer ANNOTATIONS), a tool `cmdX` + `xClick` in drawing-ui-tools.js (imitate `cmdCenterMark` / `centerMarkClick`), a tree row in `renderTree`, a ribbon item in `UI.RIBBON.Annotation`, an `anvil.drawing.x` entry.
+- New ribbon tab or menu row: chain the hook — `var base = UI.menuHook; UI.menuHook = function (m) { var out = base ? base(m) : m; … return out; }` (same for `UI.ribbonTabsFor`); imitate drawing-ui-sketch.js.
+- Text sizes and arrows come from the dimension style (`D.dimStyle(doc)`, `_.DIMGEO`: .125 in on inch, 3.5 mm on mm). Never hard-code 3.5 mm (rfBX).
+- Numbers on the sheet: `fmtDim` / `numText` (ANSI inch: no leading zero, trailing zeros kept, `2X`, `Ø`, `R.060`); scales: `scalesFor(doc)` (ANSI set for inch), `scaleLabel` ('SCALE 2 : 1') vs `scaleText` ('2:1').
+- A dimension's paper geometry: primitives carry `dimIx`; hit-test with `Drawing.textRect(prim)`.
+
+## Data shapes
+- Doc (in `App.model.drawings[i]`, saved with the part): `{ name: 'Draw1', sheet: { name, format: 'ANSI B', scale: [1, 2], autoScale, projection: 'third', paper? }, units, views: [], date, autoDims, suppressed: [], nextView, layout: 'auto', options: {}, bom, bomRows, … annotations, notes, symbols, sheets, activeSheet, properties }`.
+- View: `{ id, name: 'Drawing View1', orient: 'Front', x, y, display: 'hlv' | 'hlr' | …, scale: null | [1, 2], parent, align, role, dims: [], kind?: 'section' | 'detail' | 'flat' | …, label?, tangent? }`.
+- `compute(...)` -> `{ size: [W, H], units, prims, views: [{ view, proj, box, section?, hatches? }], dims, pending? }`; prims `{ k: 'line', a, b, layer, style }`, `circle { c, r }`, `arc { c, r, a0, a1 }`, `ellipse`, `text { p, h, text, anchor, rot }`, `fill { pts }`; styles `visible | hidden | thin | thick | bendup | benddown`. Paper units (model units), origin lower-left, y up.
+- DXF layers: one per view (`FRONT`, `TOP`, `SECTION_A`, `DETAIL_B`, `FLAT_PATTERN` …) + `SHEET`, `DIMENSIONS`, `ANNOTATIONS`, `NOTES`, `BEND_UP`, `BEND_DOWN`, `BEND_NOTES`, `BOM`, `BALLOONS`, `TABLES`; `$INSUNITS` 1 in / 4 mm; R2000 writes DIMENSION entities with a DIMSTYLE, R12 explodes them; `%%c %%p %%d`.
+
+## Tests
+- Kernel groups (engine, Node-fast): `tests/kernel/drawings.js` (helpers `drawingOf(code)`, `hasLine`, `rayBlocked`), `drawing-annotations.js`, `drawings-of-assemblies.js`, `p9-drawing.js`, `p9-bendtable.js`, `r3…r10-drawings*.js`, `r11-hatch11.js`, `rfAB/AD/AF/AG/AL/AN/BA/BC/M/N/P/Q/S/T/V/Z.js`.
+- Smoke groups (UI): `tests/smoke/drawings.js` (shared helpers `ribbonButton`, `dwTab`, `dwMenu`, `dwView(orient)`, `paperToClient`, `sheetMouse(type, p)`, `key`, `plateCode`), `drawing-views.js`, `drawing-annotations.js`, `close-drawing-asks-to-save.js`, `r12-drawui12.js`, `r13-drawings13.js`, `rfBX.js` (`rfBXdrawing()` bent inch bracket, `rfBXtexts()`, `rfBXclick(p)`), `rfCA.js` (`caSettle()`).
+- After `anvil.drawing.make()` or any edit: `await UI.drawing.ready()` (views come from the worker). Read the sheet as `UI.drawing.state.sheet.prims`.
+- Fast loop: `node anvil/headless/anvil.js test`, then `ui-smoke.html?only=<rfXX>`; see `tests.md`.
+
+## Traps
+- A new engine file goes in five places: index.html, tests/kernel-tests.html (headless/load.js reads that list), drawing-worker.js `importScripts`, CLAUDE.md publish list, and the lane table.
+- Projections are cached on the mesh (`mesh._drawingProj`, `_drawingSections`; meshes are immutable). Anything sent to the worker drops the `_drawing*` keys; a structured clone has plain objects, not CSG polygons.
+- Lazy compute: a view without its projection is a placeholder (`proj.pending`); its dims / annotations / balloons wait, and model items wait for every view. Reading the sheet before `ready()` sees empty views.
+- `anvil.drawing.make()` without `{ fresh: true }` reopens drawing 0 when the part already has one.
+- Drawings share the part's undo stack (`App.undo`, JSON of the whole model). Ctrl+Z with a drawing PM open cancels the PM first (lane CA, `undoCancelsDrawingPM`); typed text in a box keeps its own undo.
+- The Dimension PM applies text / tolerance / precision / flip live; ✗ must restore (rfBX 3). Two-Enter rule applies (`UI.pmEnter`).
+- Smart Dimension: a click between the extension lines keeps the text centred when it fits (`tside` in `DIM_PROPS`); a model item (no click) goes past the far arrow. Open: the preview shows the text centred before an outside click.
+- A hidden / DOWN-bend segment shorter than dash + gap draws as one centred dash on screen / SVG / PDF; DXF keeps the true line (rfCA). Long bend notes wrap to two lines inside the blank (rfCA).
+- Duplicate ordinate values are refused ("… is dimensioned already", rfBX 4). A bend radius may be led from the concave side (rfBX 1).
+- `onAssign` in drawing-ui-tools.js puts a property setter on `UI.RIBBON['View Layout']` / `Annotation`: a list assigned later passes through its fix. Edit those tab lists in place, or expect the fix.
+- Drawing icons are in drawing-ui.js (`DI`, wrapping `Icons`), not icons.js. No blue anywhere (rfBU scans drawing.css).
+- README *Known limitations* still says no auxiliary / broken-out / crop views and one sheet: stale, all exist now.
+- toDXF's header comment says dimensions are exploded; that is R12 only (R2000 has DIMENSION entities, rfT).
+- Minor open: Standard 3 View's isometric shows a "SCALE" label (SolidWorks shows none).
