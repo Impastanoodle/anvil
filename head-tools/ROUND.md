@@ -26,8 +26,11 @@ session after the round is pushed): a long head context is re-read on every turn
 - **Reuse an agent for a follow-up in the same area** instead of spawning a fresh one: `SendMessage` to the agent id
   of the lane that just finished, with the new task and "first `git reset --hard main` in your worktree (your last
   lane is merged)". For that, merge its branch but keep its worktree (skip the worktree remove / branch delete until
-  the agent is retired). Retire it (fresh agent + card) after about three tasks, or when its tasks change area — a long
-  agent context costs more per step than a card read.
+  the agent is retired). Retire it by size, not task count: when its context passes ~400 K tokens (the task
+  notification's subagent_tokens), or when the next task is in another part of the code. Every step re-reads the whole
+  context, so a 400 K agent pays ~3x per step what a fresh agent pays early on, and near its limit it compacts itself
+  and loses detail anyway. Measured 2026-10-14: the sketch agent's third task (355 K context) took 54 steps / 13 min,
+  a fresh agent on a similar sketch task ~100 steps / 25 min — about the same tokens, half the time.
 - `/compact` does not end the head's subagents, it only drops their ids from the head's memory: keep them in
   `head-tools/agents.local.json` (git-ignored; area -> id, task count, worktree), update it on every spawn / follow-up /
   retire, and read it (plus `ListAgents`) first thing after a compaction.
