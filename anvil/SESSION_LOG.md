@@ -1571,3 +1571,9 @@ Tests: kernel 1157/1157, ui-smoke 701/701 (occtswap11 rerun alone).
 - open question for the user: Edge Flange default position (Bend Outside today; a 2026-10-12 report says SolidWorks starts on Material Inside).
 - flaky: r11/occtswap11 failed in 3 of the last 5 full headless runs (held-frame estimate ~1500 ms), passes alone — worth a look.
 Tests: kernel 1157/1157, ui-smoke 706/706 (occtswap11 rerun alone).
+
+## 2026-10-14d (interactive head, the live sketch agent's third task): double-click discards the pulled segment
+
+- sketch (lane CF, `ui-sketch.js`): Line-tool clicks are logged on `App.toolState.clicks` ({sx, sy, made, pushed}); a double-click with a chain in progress takes back what its own two clicks made (the segment to the double-click point and any stub, with relations, dimensions and undo snapshots) and ends the chain; the tool stays; earlier segments untouched; a deliberate click on D then a double-click on D keeps D. Also Centerline / Midpoint Line / chained tangent arcs. Replaces the 500 ms `lastSeg` stub logic. Tests: rfCF; r15/dblclick15, refine-sketcher, r12-sketchui12, r6-sketch6, rfG, rfCE now click D before double-clicking it.
+- agents: the sketch agent did lanes CE, CE 2, CF (third task in 13 min vs ~25 for a fresh agent) and is retired; the next sketch task gets a fresh agent from `docs/areas/sketch.md`.
+Tests: kernel 1157/1157, ui-smoke 709/709.

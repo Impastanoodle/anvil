@@ -4,7 +4,7 @@
   step('rfG: inference while drawing — a level line across a centerline infers Horizontal only (no Symmetric, none in the preview glyphs); a Corner Rectangle started on a line gets ONE Coincident (the clicked corner), not one per corner on the line', async function () {
     var errs0 = errors.length;
     await rskNew();
-    UI.cmdCenterline(); rskClick([10, -20]); rskDbl([10, 20]); selKey('Escape');
+    UI.cmdCenterline(); rskClick([10, -20]); rskClick([10, 20]); rskDbl([10, 20]); selKey('Escape');   // rfCF: the last point is clicked, the double-click on it only ends the chain
     var f = UI.activeSketchFeature();
     assert(f.entities.length === 1 && f.entities[0].construction, 'centerline ' + JSON.stringify(f.entities));
     UI.setTool('line'); rskClick([6, -8]); selEv('mousemove', rskScr([14, -8]));

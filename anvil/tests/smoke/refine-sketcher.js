@@ -15,7 +15,7 @@
     await rskNew();
     var undo0 = UI.App.undo.length;
     UI.setTool('line');
-    rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 30]); rskDbl([0, 30]);
+    rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 30]); rskClick([0, 30]); rskDbl([0, 30]);   // rfCF: the last point is clicked, the double-click on it only ends the chain
     var ents = rskEnts();
     assert(ents.length === 3, 'three segments, got ' + ents.length + ': ' + JSON.stringify(ents));
     assert(ents.every(function (e) { return Math.hypot(e.x2 - e.x1, e.y2 - e.y1) > 1; }), 'a zero-length line was added');
@@ -36,7 +36,7 @@
     assert(rskEnts().length === 4 && !UI.App.toolState.pts.length, '4 lines, and closing the loop ended the chain');
     // a line starting on the bottom edge, between grid points (screen-space snap to the curve)
     var a = rskScr([0, 0]), b = rskScr([40, 0]), on = [a[0] + (b[0] - a[0]) * 0.37, a[1]];
-    selClick(on); rskDbl([13, -20]);
+    selClick(on); rskClick([13, -20]); rskDbl([13, -20]);   // rfCF
     var f = UI.activeSketchFeature(), rl = (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); });
     assert(rl.indexOf('coincident:4.p1,0') >= 0, 'point-on-line Coincident: ' + rl.join(' '));
     near(rskEnts()[4].y1, 0, 1e-9, 'snapped onto the line');
@@ -70,7 +70,7 @@
     c = rskEnts()[0];
     near(c.cx, 0, 1e-9, 'centre held (on the origin)'); near(c.r, 30, 2 * s0, 'radius follows the edge');
     // a horizontal line with a length; a vertical distance of 5 on it cannot be reached
-    UI.setTool('line'); rskClick([40, 0]); rskDbl([60, 0]);
+    UI.setTool('line'); rskClick([40, 0]); rskClick([60, 0]); rskDbl([60, 0]);   // rfCF
     UI.setTool('select');
     var f = UI.activeSketchFeature();
     (f.dims = f.dims || []).push({ e: 1, k: 'dy', off: 5 });
@@ -116,7 +116,7 @@
     var f = UI.activeSketchFeature(), rl = (f.rels || []).map(function (r) { return r.type + ':' + r.refs.join(','); });
     assert(rl.indexOf('concentric:0,1') >= 0, 'concentric: ' + rl.join(' '));
     assert(UI.App.undo.length === undo0 + 1, 'one undo step: ' + (UI.App.undo.length - undo0));
-    UI.cmdCenterline(); rskClick([0, -24]); rskDbl([0, 24]);
+    UI.cmdCenterline(); rskClick([0, -24]); rskClick([0, 24]); rskDbl([0, 24]);   // rfCF
     selKey('Escape');
     UI.App.sel = { kind: 'entity', index: 0 };
     UI.cmdMirrorEntities();

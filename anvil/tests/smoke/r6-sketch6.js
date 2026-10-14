@@ -11,7 +11,7 @@
     assert(D.querySelectorAll('#dim-layer g.dim').length >= 1, 'drawn');
     var r = UI.editRelDim(f.rels.indexOf(dim), '5');
     assert(r.ok && Math.abs(f.entities[1].r - f.entities[0].r - 5) < 1e-6 && Math.abs(f.entities[1].cx - f.entities[0].cx) < 1e-6,'r ' + f.entities[0].r + ' / ' + f.entities[1].r);
-    UI.setTool('line'); rskClick([0, 30]); rskDbl([30, 30]); selKey('Escape');
+    UI.setTool('line'); rskClick([0, 30]); rskClick([30, 30]); rskDbl([30, 30]); selKey('Escape');   // rfCF: the last point is clicked, the double-click on it only ends the chain
     UI.setTool('select'); rskClick([15, 30]);
     var li = UI.App.sel && UI.App.sel.index;
     UI.cmdOffsetEntities(); UI.pmSetField('d', '4'); await wait(20);

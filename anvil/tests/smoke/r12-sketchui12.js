@@ -4,7 +4,7 @@
     var showDims = UI.App.view.showDims;
     UI.App.view.showDims = true;
     try {
-      UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 25]); rskDbl([0, 25]); selKey('Escape');
+      UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 25]); rskClick([0, 25]); rskDbl([0, 25]); selKey('Escape');   // rfCF: the last point is clicked, the double-click on it only ends the chain
       UI.setTool('select');
       UI.App.dimsStale = false; UI.drawDims();
       var nodes = Array.prototype.slice.call(D.querySelectorAll('#dim-layer *')), n0 = nodes.length;
@@ -30,7 +30,7 @@
   });
   step('r12/sketchui12: no Instant3D dimension dot in a sketch before, while or after its geometry is dragged (rfBA: not made at all; Instant2D gives the dimension its ball after the drag)', async function () {
     await rskNew();
-    UI.setTool('line'); rskClick([0, 0]); rskDbl([30, 0]); selKey('Escape');
+    UI.setTool('line'); rskClick([0, 0]); rskClick([30, 0]); rskDbl([30, 0]); selKey('Escape');   // rfCF
     UI.setTool('select');
     var f = UI.activeSketchFeature();
     f.dims = [{ e: 0, k: 'len', off: 6 }];
@@ -48,7 +48,7 @@
   step('r12/sketchui12: a new sketch shows only placed dimensions (View ▸ Sketch Dimensions off by default); end points are drawn as dots in the entity colour; each sketch tool has its own cursor', async function () {
     await rskNew();
     assert(UI.App.view.showDims === false, 'Sketch Dimensions off by default');
-    UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskDbl([40, 25]); selKey('Escape');
+    UI.setTool('line'); rskClick([0, 0]); rskClick([40, 0]); rskClick([40, 25]); rskDbl([40, 25]); selKey('Escape');   // rfCF
     UI.setTool('circle');
     var cur = W.getComputedStyle($('viewport')).cursor;
     assert($('viewport').getAttribute('data-sktool') === 'circle' && /^url\(/.test(cur), 'circle cursor: ' + cur.slice(0, 40));

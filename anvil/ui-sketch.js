@@ -1229,7 +1229,16 @@
     if (App.quickSnap) { App.quickSnap = null; qsParallel = null; if (UI.refreshRibbon) UI.refreshRibbon(); }   // rfAR: a Quick Snap is for one pick
     // values typed into the on-screen box hold (the length, the radius …); the click supplies the rest
     if (numBox) { typed = numValues(); if (Object.keys(typed).length) p = typedPoint(p, typed); else typed = null; closeNumBox(); }
+    // rfCF: the Line tool logs its clicks (screen point, the entities the click made, whether it pushed an undo
+    // snapshot) for the double-click that ends the chain (the viewport's dblclick handler takes back what the
+    // double-click's own two clicks made). The log lives on the tool state, so it is the chain's
+    var fL = App.tool === 'line' ? UI.activeSketchFeature() : null, nL = fL ? fL.entities.length : 0, uL = App.undo.length;
     placePoint(p, typed);
+    if (fL && App.tool === 'line' && App.toolState) {
+      var madeL = [];
+      for (var kL = nL; kL < fL.entities.length; kL++) madeL.push(kL);
+      App.toolState.clicks = (App.toolState.clicks || []).slice(-2).concat([{ sx: mx, sy: my, made: madeL, pushed: App.undo.length > uL }]);
+    }
   }
   // The next point of the drawing tool: closes a Line chain on its first point, completes an entity once the tool has
   // all its points (adding a dimension for each value typed for it), otherwise waits for the next.
@@ -1286,13 +1295,9 @@
         else if (tv0.d != null && e0.t === 'circle') e0.r = tv0.d / 2;
         if (tv0.w != null && e0.t === 'slot' && App.tool === 'slot') { e0.w = tv0.w; var fc2 = slotFarCentre([e0.x1, e0.y1], st.pts[1], e0.w); e0.x2 = fc2[0]; e0.y2 = fc2[1]; }   // slot-overall: the exact width sets the far centre (the Centerpoint Straight Slot's own entities do this)
       }
-      var pushedUndo = !App.sketchDirty;   // r15/dblclick15: addEntity pushes the undo snapshot when the sketch is clean
       var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
       if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(function (e) { addEntity(e); });
       if (f && UI.sketchLayerNew) f.entities.slice(n0).forEach(function (e) { UI.sketchLayerNew(f, e); });   // sketch-layers: a tool's own commit
-      // r15/dblclick15: the segment just placed, for the double-click that ends the chain: placed within 500 ms of the
-      // previous one it may be the stub the double-click's second click made (the handler takes it back when it is tiny)
-      if (App.tool === 'line' && f && f.entities.length === n0 + 1) { var nowT = performance.now(); st.lastSeg = { index: f.entities.length - 1, at: nowT, quick: st.lastSegAt != null && nowT - st.lastSegAt < 500, pushed: pushedUndo }; st.lastSegAt = nowT; }
       // r6/sketch6: with Sketch Settings ▸ Enable on-screen numeric input on entity creation, every value of the new
       // entity gets a driving dimension (as SolidWorks), not only the typed ones
       if (f && typedAll && f.entities.length === n0 + 1) typedDims(f, n0, typedAll);
@@ -3454,23 +3459,31 @@
 
   viewport.addEventListener('dblclick', function (ev) {
     if (App.mode === 'sketch') {
-      // r15/dblclick15: as in SolidWorks the double-click ends the chain without the stub its second click made (the two
-      // clicks a pixel or two apart placed a tiny segment): a line placed within 500 ms of the previous one and shorter
-      // than 6 px on screen is taken back with its relations, dimensions and undo snapshot
-      var stD = App.toolState, fD = UI.activeSketchFeature();
-      if (App.tool === 'line' && stD && stD.lastSeg && stD.lastSeg.quick && fD && fD.entities.length === stD.lastSeg.index + 1) {
-        var eD = fD.entities[stD.lastSeg.index], plD = UI.activePlane();
-        if (eD && eD.t === 'line') {
-          var sA = UI.worldToScreen(K.to3D(plD, eD.x1, eD.y1)), sB = UI.worldToScreen(K.to3D(plD, eD.x2, eD.y2));
-          if (Math.hypot(sA[0] - sB[0], sA[1] - sB[1]) < 6) {
-            fD.entities.pop();
-            if (window.SketchSolver) SketchSolver.removeEntity(fD, stD.lastSeg.index);
-            if (fD.dims) fD.dims = fD.dims.filter(function (d) { return d.e !== stD.lastSeg.index; });
-            if (stD.lastSeg.pushed) { App.undo.pop(); App.sketchDirty = false; }
-            stD.lastSeg = null;
-            UI.updateSketches(); UI.refreshTree();
+      // rfCF (user, 2026-10-14: "double clicking when sketching lines should delete the current line being pulled"): a
+      // double-click ends the Line chain (Centerline, Midpoint Line, a tangent arc pulled from it too) and discards
+      // the segment being pulled. The double-click is made of two clicks the tool already took (sketchClick's log):
+      // the first placed a segment to the double-click point, the second a stub or nothing (r15/dblclick15 took back
+      // the stub alone). Both are taken back, each with its relations, dimensions and undo snapshot, so the segments
+      // placed before stay as they were, with theirs, and the tool stays for the next chain. A deliberate click at
+      // that spot, then a double-click on it, keeps its segment: the double-click's own two clicks made nothing.
+      var stD = App.toolState, fD = UI.activeSketchFeature(), pD = pos(ev), logD = (stD && stD.clicks) || [];
+      if (App.tool === 'line' && fD && stD.pts && stD.pts.length && logD.length >= 2) {
+        var two = logD.slice(-2), took = 0;
+        if (two.every(function (c) { return Math.hypot(c.sx - pD[0], c.sy - pD[1]) <= 6; })) {
+          for (var cD = 1; cD >= 0; cD--) {
+            var made = two[cD].made;
+            if (!made.length) continue;
+            if (made[made.length - 1] !== fD.entities.length - 1) break;   // something placed after it (a typed segment): leave the rest
+            for (var iD = made.length - 1; iD >= 0; iD--) {
+              fD.entities.pop();
+              if (window.SketchSolver) SketchSolver.removeEntity(fD, made[iD]);
+              if (fD.dims) fD.dims = fD.dims.filter(function (d) { return d.e !== made[iD]; });
+              took++;
+            }
+            if (two[cD].pushed) { App.undo.pop(); App.sketchDirty = false; }
           }
         }
+        if (took) { App.sel = null; App.sel2 = null; App.dimsStale = true; UI.updateSketches(); UI.refreshTree(); }
       }
       finishChain(); return;
     }

@@ -231,16 +231,16 @@
     selKey('Escape'); selKey('Escape'); UI.setLineTangentStart(false);
     return 'start slid from ' + JSON.stringify(T1.map(fmt)) + ' to ' + JSON.stringify(T2.map(fmt)) + '; ' + rl.join(' ');
   });
-  step('r15/dblclick15: a double-click ends the Line chain without the stub its second click made (as in SolidWorks) — click, click, then two clicks 2 px apart: the 2 px segment is taken back and the chain ends at the double-click point', async function () {
+  step('r15/dblclick15 (rfCF): a double-click ends the Line chain without the segment its first click made nor the stub of its second — click, click, then two clicks 2 px apart: both the segment to the double-click point and the 2 px stub are taken back, the chain ends at (20, 0) with no undo step of theirs', async function () {
     await rskNew();
     UI.setTool('line'); rskClick([0, 0]); rskClick([20, 0]);
     var u0 = UI.App.undo.length, p = rskScr([40, 0]);
     selClick(p); selClick([p[0] + 2, p[1]]); selEv('dblclick', [p[0] + 2, p[1]], $('viewport'));
     var e = rskEnts();
-    assert(e.length === 2 && e[1].x2 === 40 && e[1].y2 === 0, 'two segments, the chain ends at (40, 0): ' + JSON.stringify(e));
-    assert(!UI.App.toolState.pts.length, 'chain ended');
-    assert(UI.App.undo.length - u0 <= 1, 'the stub left no undo step of its own (' + (UI.App.undo.length - u0) + ')');
-    return 'stub removed, chain ended at (40, 0)';
+    assert(e.length === 1 && e[0].x2 === 20 && e[0].y2 === 0, 'one segment, the chain ends at (20, 0): ' + JSON.stringify(e));
+    assert(!UI.App.toolState.pts.length && UI.App.tool === 'line', 'chain ended, the Line tool stays');
+    assert(UI.App.undo.length === u0, 'the double-click\'s clicks left no undo step (' + (UI.App.undo.length - u0) + ')');
+    return 'segment and stub removed, chain ended at (20, 0)';
   });
   step('r15/scalebar15: the scale bar at the bottom right reads the length of its 100 px bar in model units at the current zoom, follows zoom and units, and hides under a drawing', async function () {
     await anvil.newPart(); await idle();

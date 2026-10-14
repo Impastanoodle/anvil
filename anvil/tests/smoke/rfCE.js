@@ -18,7 +18,7 @@
     UI.zoomView(0.02 / UI.cam.scale);   // 0.02 in per pixel: the 7 in of geometry fill the view
     UI.App.gridStale = true;
     UI.setTool('rect'); rskClick([0, 0]); rskClick([4, 3]);
-    UI.setTool('line'); rskClick([-1, 0]); rskClick([-3, 0]); rskDbl([-3, 2]);
+    UI.setTool('line'); rskClick([-1, 0]); rskClick([-3, 0]); rskClick([-3, 2]); rskDbl([-3, 2]);   // rfCF: the last point is clicked, the double-click on it only ends the chain
     UI.setTool('select'); await wait(20);
     if (UI.setSelection) UI.setSelection([]);
     UI.App.sel = null;
