@@ -2101,6 +2101,73 @@
     return spec;
   }
   UI.cmdCloseArc = cmdCloseArc;
+
+  // ------------------------------------------------------------------ Replace Entity (rfCR)
+  // SolidWorks' Sketch Tools ▸ Replace Entity (also on the sketch right-click menu): pick the entity to replace, then
+  // the entity that replaces it; ✓ moves the old entity's relations and dimensions onto the new one (each end to the
+  // nearest end, SketchSolver.replaceEntity) and deletes the old entity, or keeps it as construction geometry (Make
+  // construction). A selected entity when the command opens is the one to replace. One undo step; Esc ends it.
+  function cmdReplaceEntity() {
+    var f = sketch();
+    if (!f) return;
+    var v = { old: null, neu: null, construction: false, box: 'old' }, spec = null;
+    var HELP = 'Select the entity to replace, then the entity that replaces it. ✓ moves its relations and dimensions onto the new entity.';
+    var pre = selIdx(f);
+    if (pre.length === 1 && f.entities[pre[0]] && f.entities[pre[0]].t !== 'point' && f.entities[pre[0]].t !== 'text') { v.old = pre[0]; v.box = 'neu'; }
+    function fresh() { var g = UI.activeSketchFeature(); if (g) f = g; }
+    function label(i) { return i != null && f.entities[i] ? entityLabel(f.entities[i], i) : ''; }
+    function preview() {
+      UI.sketchFeedbackClear();
+      if (v.old != null && f.entities[v.old]) UI.sketchPreview(entPts(f.entities[v.old]), PICK_STYLE, 'sk-replace-old');
+      if (v.neu != null && f.entities[v.neu]) UI.sketchPreview(entPts(f.entities[v.neu]), HOT_STYLE, 'sk-replace-new');
+    }
+    function hint() {
+      UI.setStatus(v.old == null ? 'Replace Entity: select the entity to replace.' : v.neu == null ? 'Replace Entity: ' + label(v.old) + ' will be replaced; select the entity that replaces it.' : 'Replace Entity: ' + label(v.old) + ' → ' + label(v.neu) + '. Press ✓ to replace it.');
+    }
+    function pickBox(key, icon, placeholder) {
+      return { type: 'pick', icon: icon, placeholder: placeholder, value: function (x) { return label(x[key]); },
+        active: function (x) { return x.box === key; }, onActivate: function () { v.box = key; UI.renderPM(); hint(); },
+        items: function (x) { return x[key] != null ? [{ label: label(x[key]) }] : []; },
+        onRemove: function (x) { x[key] = null; x.box = key; UI.renderPM(); preview(); hint(); },
+        onClear: function (x) { x[key] = null; x.box = key; UI.renderPM(); preview(); hint(); } };
+    }
+    spec = {
+      title: 'Replace Entity', icon: 'moveEnt', values: v, message: HELP, keepSelection: true,
+      command: { onSketchPoint: function (uv, mx, my) {
+        fresh();
+        var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
+        if (!e || e.t === 'point' || e.t === 'text') { UI.setStatus('Click a line, arc, circle or curve.'); return; }
+        var key = v.box === 'neu' && v.old != null ? 'neu' : v.old == null ? 'old' : 'neu';
+        if (key === 'neu' && hit.index === v.old) { UI.toast('The replacement has to be another entity.'); return; }
+        if (key === 'old' && hit.index === v.neu) v.neu = null;
+        v[key] = hit.index;
+        v.box = key === 'old' && v.neu == null ? 'neu' : key;
+        if (UI.setSelection) UI.setSelection([hit]);
+        UI.renderPM(); preview(); hint();
+      } },
+      groups: [
+        { title: 'Entities', fields: [pickBox('old', 'moveEnt', 'Entity to replace…'), pickBox('neu', 'moveEnt', 'Replacement entity…')] },
+        { title: 'Options', fields: [{ type: 'check', key: 'construction', label: 'Make construction' }] }
+      ],
+      okBlocked: function () { return v.old == null ? 'Select the entity to replace.' : v.neu == null ? 'Select the entity that replaces it.' : ''; },
+      onOK: function () {
+        fresh();
+        var i = v.old, j = v.neu, nameOld = label(i), nameNew = label(j);
+        var r = step(function () { return S.replaceEntity(f, i, j, { construction: !!v.construction }); }, true);
+        if (!r.ok) { UI.toast(r.error); return false; }
+        clearPreview(); changed();
+        if (UI.setSelection) UI.setSelection([{ kind: 'entity', index: r.index }]);
+        UI.setStatus(nameOld + ' replaced by ' + nameNew + ': ' + r.moved + ' relation' + (r.moved === 1 ? '' : 's') + ' and ' + r.dims + ' dimension' + (r.dims === 1 ? '' : 's') + ' moved' + (v.construction ? '; the old entity stays as construction geometry.' : '.'));
+        return true;
+      },
+      onCancel: function () { clearPreview(); UI.setStatus('Replace Entity cancelled.'); },
+      help: 'Replace Entity: pick the entity to replace, then its replacement. The relations and dimensions of the first move to the second (each end to the nearest end); the first is deleted, or kept as construction geometry with Make construction.'
+    };
+    UI.openPM(spec);
+    preview(); hint();
+    return spec;
+  }
+  UI.cmdReplaceEntity = cmdReplaceEntity;
   // UI.closeArcs([entity indices]) closes those arcs of the open sketch at once (one undo step): { ok, closed,
   // relations, dimensions } (the counts removed), as the PropertyManager's ✓ does
   UI.closeArcs = function (list) {

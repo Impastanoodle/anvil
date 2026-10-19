@@ -332,6 +332,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (UI.viewAnimating && UI.viewAnimating()) return App.hover;
     if (soMenu && soMenu.isConnected) return App.hover;   // r5/select5: the Select Other list (over the model) owns the hover
     var cmd = App.command, f = filterSet();
+    if (cmd && cmd.regionsActive && cmd.regionsActive()) return cmd.pickRegions(mx, my);   // lane CO: Selected Contours box active: the sketch region under the pointer, nothing else
     if (cmd && cmd.pickPlane) return (!f || f.faces || bodyFilter(f) ? UI.pickFace(mx, my) : null) || UI.pickPlane(mx, my);
     if (cmd && cmd.pickEdges) return allows('edge') ? UI.pickEdge(mx, my) : null;
     return pick(mx, my);
@@ -339,6 +340,8 @@ if (typeof UI !== 'undefined') (function (UI) {
   // A click in the part / assembly viewport (ui-sketch.js partClick). Ctrl or Shift toggles the item in the selection.
   function selectClick(mx, my, ev) {
     if (App.command && App.command.onPick) {
+      // lane CO: with the Selected Contours box active a click toggles the sketch region under the pointer and selects nothing else
+      if (App.command.regionsActive && App.command.regionsActive()) { var rg = App.command.pickRegions(mx, my); if (rg) App.command.onPick(rg); return; }
       var pk = pickFor(mx, my, App.command);
       if (pk && App.command.onPick(pk) !== false) return;
     }
@@ -725,8 +728,34 @@ if (typeof UI !== 'undefined') (function (UI) {
     // r4/features4: the face of the PropertyManager list row under the pointer
     var hi = App.command && App.command.hoverItem;
     if (hi && hi.faces && hi.faces.length && UI.mats && UI.mats.hover) hi.faces.forEach(function (i) { var r = h.selectionRanges({ kind: 'face', index: i }); if (r) g.add(new THREE.Mesh(h.triRangeGeometry(r), UI.mats.hover)); });
+    // lane CO: Selected Contours — the picked sketch regions (yellow) and the one under the pointer or listed row (orange)
+    var cmd = App.command;
+    if (cmd && cmd.pickedRegions) {
+      cmd.pickedRegions().forEach(function (it) { var m = regionMesh(it.region, it.plane, UI.mats.sel); if (m) g.add(m); });
+      var hv = App.hover && App.hover.kind === 'region' && cmd.regionsActive && cmd.regionsActive() ? App.hover : (hi && hi.region ? hi : null);
+      if (hv && hv.region && hv.plane) { var hm = regionMesh(hv.region, hv.plane, UI.mats.hover); if (hm) g.add(hm); }
+    }
     App.dimsStale = true;
   };
+  // a translucent fill of a sketch region (Kernel.sketchRegions: outer loop + holes, sketch uv) on its plane
+  function regionMesh(region, pl, mat) {
+    if (!region || !pl || !THREE.ShapeUtils) return null;
+    var contour = region.loops[0].pts.map(function (p) { return new THREE.Vector2(p[0], p[1]); });
+    var holes = region.loops.slice(1).map(function (l) { return l.pts.map(function (p) { return new THREE.Vector2(p[0], p[1]); }); });
+    var tris;
+    try { tris = THREE.ShapeUtils.triangulateShape(contour, holes); } catch (e) { return null; }
+    var pos = [], idx = [];
+    contour.concat.apply(contour, holes).forEach(function (p) { var q = K.to3D(pl, p.x, p.y); pos.push(q[0], q[1], q[2]); });
+    tris.forEach(function (t) { idx.push(t[0], t[1], t[2]); });
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    var m = new THREE.Mesh(geo, mat);
+    m.renderOrder = 10;
+    m.raycast = function () { };
+    m.userData = { sketchRegion: region.index };
+    return m;
+  }
 
   // ================================================================== FeatureManager sync
   // Rows of selected features, bodies and components are marked; the feature that owns a selected face or edge gets a

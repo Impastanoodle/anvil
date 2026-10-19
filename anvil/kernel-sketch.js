@@ -932,6 +932,379 @@
     return out;
   }
 
+  // ------------------------------------------------------------------ regions: the faces of the sketch's planar arrangement
+  // Selected Contours (lane CO). The non-construction entities, split where they cross and where an end lands on
+  // another entity, make a planar graph; its bounded faces are the regions SolidWorks lets a feature pick from: a
+  // rectangle split by a line gives two, a circle inside a rectangle the annulus and the disk, two overlapping circles
+  // three. Pieces that touch nothing at one end bound no region and are dropped. Crossings of chords are refined onto
+  // the true circles (circle–circle, line–circle), so a picked region's chords keep their exact curves (loop.seg as in
+  // sketchProfile) and the solid's volume stays exact.
+  // sketchRegions(sketch) -> [{ index, loops: [{ pts (CCW), hole, depth, seg? }], area, p: [u, v] }] (p is strictly
+  //   inside the region and outside its holes; sorted by the outer loop's lower-left corner, then area); [] when the
+  //   sketch bounds no region. Cached per sketch content.
+  // regionAt(sketch, uv, regions?) -> the region holding uv, or null.
+  // contourProfile(sketch, contours) -> the profile (sketchProfile's shape) of the union of the regions the points in
+  //   `contours` ([[u, v], …]) fall in; throws when a point is in no region (the feature errors instead of silently
+  //   extruding the whole sketch).
+  // contourSketch(f, sketch) -> sketch itself, or a copy whose profile is contourProfile(...) when f.contours has picks.
+  // regionsAmbiguous(sketch) -> true when a plain extrude would not take every region: more regions than profile loops
+  //   (an open line splits a loop, two contours share an edge), or loops that cross (the PropertyManager opens its
+  //   Selected Contours box then, as SolidWorks does).
+  function circleCircle(A, B) {
+    var dx = B.c[0] - A.c[0], dy = B.c[1] - A.c[1], d = Math.hypot(dx, dy);
+    if (d < 1e-12 || d > A.r + B.r + 1e-9 || d < Math.abs(A.r - B.r) - 1e-9) return [];
+    var a = (A.r * A.r - B.r * B.r + d * d) / (2 * d), h2 = A.r * A.r - a * a, h = h2 > 0 ? Math.sqrt(h2) : 0;
+    var mx = A.c[0] + a * dx / d, my = A.c[1] + a * dy / d;
+    return [[mx + h * dy / d, my - h * dx / d], [mx - h * dy / d, my + h * dx / d]];
+  }
+  function lineCircle(a, b, C) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+    if (L2 < 1e-24) return [];
+    var fx = a[0] - C.c[0], fy = a[1] - C.c[1];
+    var bq = 2 * (fx * dx + fy * dy), cq = fx * fx + fy * fy - C.r * C.r, disc = bq * bq - 4 * L2 * cq;
+    if (disc < 0) return [];
+    var s = Math.sqrt(disc), t1 = (-bq - s) / (2 * L2), t2 = (-bq + s) / (2 * L2);
+    return [[a[0] + dx * t1, a[1] + dy * t1], [a[0] + dx * t2, a[1] + dy * t2]];
+  }
+  // fraction (0..1) of the angle from p to q (the short way) at which the point x stands about C's centre, or null
+  // when x is not between them
+  function angleFraction(x, p, q, C) {
+    var ap = Math.atan2(p[1] - C.c[1], p[0] - C.c[0]), aq = Math.atan2(q[1] - C.c[1], q[0] - C.c[0]), ax = Math.atan2(x[1] - C.c[1], x[0] - C.c[0]);
+    function wrap(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; }
+    var dq = wrap(aq - ap), dx = wrap(ax - ap);
+    if (Math.abs(dq) < 1e-15) return null;
+    var t = dx / dq;
+    return t >= -1e-9 && t <= 1 + 1e-9 ? Math.max(0, Math.min(1, t)) : null;
+  }
+  // the entities as polylines with each segment tagged with its true curve (index into curves) or -1
+  function regionSources(sketch) {
+    var chains = [], curves = [];
+    syncTextPaths(sketch);
+    (sketch.entities || []).forEach(function (e) {
+      if (e.construction || noProfileEntity(sketch, e)) return;
+      if (e.t === 'line' && e.infinite) return;
+      if (e.t === 'text' && e.mode !== 'outline') return;
+      var ec = entityCurves(e), base = curves.length;
+      curves = curves.concat(ec);
+      entityPolylines(e, true).forEach(function (pl) {
+        var pts = pl.closed ? dedupeLoop(pl.pts) : pl.pts.filter(function (p, i, arr) { return !i || Math.abs(p[0] - arr[i - 1][0]) > 1e-9 || Math.abs(p[1] - arr[i - 1][1]) > 1e-9; });
+        if (pts.length < 2) return;
+        var cv = null;
+        if (ec.length) {
+          var tags = curveSegments(pts, ec);
+          if (tags) { cv = tags.map(function (k) { return k >= 0 ? k + base : -1; }); if (!pl.closed) cv[pts.length - 1] = -1; }
+        }
+        chains.push({ pts: pts, closed: !!pl.closed, cv: cv });
+      });
+    });
+    return { chains: chains, curves: curves };
+  }
+  function regionGraph(sketch) {
+    var src = regionSources(sketch), chains = src.chains, curves = src.curves;
+    var span = 0;
+    chains.forEach(function (ch) { ch.pts.forEach(function (p) { span = Math.max(span, Math.abs(p[0]), Math.abs(p[1])); }); });
+    var tol = 1e-7 * (1 + span);
+    function sag(C) { return C.r * (1 - Math.cos(C.step / 2)); }
+    // segments with their bounding boxes (padded by the chord's sagitta: a true-circle point may stand that far off)
+    var segs = [];
+    chains.forEach(function (ch, ci) {
+      var n = ch.pts.length, m = ch.closed ? n : n - 1;
+      for (var i = 0; i < m; i++) {
+        var a = ch.pts[i], b = ch.pts[(i + 1) % n], cv = ch.cv ? ch.cv[i] : -1, pad = (cv >= 0 ? sag(curves[cv]) : 0) + tol;
+        segs.push({ a: a, b: b, cv: cv, chain: ci, i: i, cuts: [], x0: Math.min(a[0], b[0]) - pad, x1: Math.max(a[0], b[0]) + pad, y0: Math.min(a[1], b[1]) - pad, y1: Math.max(a[1], b[1]) + pad });
+      }
+    });
+    function adjacent(s, t) {
+      if (s.chain !== t.chain) return false;
+      var n = chains[s.chain].pts.length, d = Math.abs(s.i - t.i);
+      return d <= 1 || (chains[s.chain].closed && d === n - 1);
+    }
+    function cutAt(s, p) {
+      var t;
+      if (s.cv >= 0) {
+        // on a chord of a true curve the cut goes where the point's angle falls; it may fall in a neighbouring chord
+        var C = curves[s.cv], ch = chains[s.chain], n = ch.pts.length, m = ch.closed ? n : n - 1;
+        t = angleFraction(p, s.a, s.b, C);
+        if (t == null) {
+          for (var k = 0; k < segs.length; k++) {
+            var o = segs[k];
+            if (o.chain !== s.chain || o.cv !== s.cv || o === s) continue;
+            var tk = angleFraction(p, o.a, o.b, C);
+            if (tk != null) { o.cuts.push({ t: tk, p: p }); return; }
+          }
+          t = null;
+        }
+      }
+      if (t == null) {
+        var dx = s.b[0] - s.a[0], dy = s.b[1] - s.a[1], L2 = dx * dx + dy * dy;
+        t = L2 > 0 ? ((p[0] - s.a[0]) * dx + (p[1] - s.a[1]) * dy) / L2 : 0;
+        t = Math.max(0, Math.min(1, t));
+      }
+      s.cuts.push({ t: t, p: p });
+    }
+    // a crossing of two chords, moved onto the true curves behind them
+    function refine(s, u, X) {
+      var Cs = s.cv >= 0 ? curves[s.cv] : null, Cu = u.cv >= 0 ? curves[u.cv] : null;
+      if (!Cs && !Cu) return X;
+      if (Cs && Cu && Cs === Cu) return X;
+      var cands, lim = (Cs ? sag(Cs) : 0) + (Cu ? sag(Cu) : 0);
+      if (Cs && Cu) cands = circleCircle(Cs, Cu);
+      else {
+        var line = Cs ? u : s;
+        cands = lineCircle(line.a, line.b, Cs || Cu).filter(function (q) {
+          var dx = line.b[0] - line.a[0], dy = line.b[1] - line.a[1], L2 = dx * dx + dy * dy, eps = L2 > 0 ? (lim + tol) / Math.sqrt(L2) : 0;
+          var t = L2 > 0 ? ((q[0] - line.a[0]) * dx + (q[1] - line.a[1]) * dy) / L2 : 0;
+          return t >= -eps && t <= 1 + eps;
+        });
+      }
+      var best = null, bd = Infinity;
+      cands.forEach(function (q) { var d = Math.hypot(q[0] - X[0], q[1] - X[1]); if (d < bd) { bd = d; best = q; } });
+      return best && bd <= 10 * lim + tol ? best : X;
+    }
+    function nearEnd(p, s) { return (Math.abs(p[0] - s.a[0]) <= tol && Math.abs(p[1] - s.a[1]) <= tol) || (Math.abs(p[0] - s.b[0]) <= tol && Math.abs(p[1] - s.b[1]) <= tol); }
+    // an end p of segment s lying on segment u (not at u's ends): on u's true circle within its chord's angle, or on
+    // the chord itself
+    function endOn(p, s, u) {
+      if (nearEnd(p, u)) return;
+      if (u.cv >= 0 && (s.cv < 0 || s.cv !== u.cv)) {
+        var C = curves[u.cv];
+        if (Math.abs(Math.hypot(p[0] - C.c[0], p[1] - C.c[1]) - C.r) <= tol && angleFraction(p, u.a, u.b, C) != null) { cutAt(u, p); return; }
+      }
+      var dx = u.b[0] - u.a[0], dy = u.b[1] - u.a[1], L2 = dx * dx + dy * dy;
+      if (L2 <= 0) return;
+      var t = ((p[0] - u.a[0]) * dx + (p[1] - u.a[1]) * dy) / L2;
+      if (t <= 0 || t >= 1) return;
+      if (Math.abs(u.a[0] + dx * t - p[0]) <= tol && Math.abs(u.a[1] + dy * t - p[1]) <= tol) cutAt(u, p);
+    }
+    // every pair whose boxes meet (sweep on x)
+    var order = segs.map(function (s, i) { return i; }).sort(function (i, j) { return segs[i].x0 - segs[j].x0; });
+    for (var oi = 0; oi < order.length; oi++) {
+      var s = segs[order[oi]];
+      for (var oj = oi + 1; oj < order.length; oj++) {
+        var u = segs[order[oj]];
+        if (u.x0 > s.x1) break;
+        if (u.y0 > s.y1 || u.y1 < s.y0 || adjacent(s, u)) continue;
+        var X = segCross(s.a, s.b, u.a, u.b);
+        if (X) { X = refine(s, u, X); cutAt(s, X); cutAt(u, X); }
+        endOn(s.a, s, u); endOn(s.b, s, u); endOn(u.a, u, s); endOn(u.b, u, s);
+      }
+    }
+    // the split polylines, welded into a graph (vertices within 1e-4 are one)
+    var verts = [], cells = {}, edges = [], ekeys = {};
+    function vertexOf(p) {
+      var cx = Math.round(p[0] * 1e4), cy = Math.round(p[1] * 1e4);
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        var ids = cells[(cx + dx) + ',' + (cy + dy)];
+        if (!ids) continue;
+        for (var k = 0; k < ids.length; k++) { var q = verts[ids[k]]; if (Math.abs(q[0] - p[0]) <= 1e-4 && Math.abs(q[1] - p[1]) <= 1e-4) return ids[k]; }
+      }
+      var id = verts.length;
+      verts.push([p[0], p[1]]);
+      (cells[cx + ',' + cy] = cells[cx + ',' + cy] || []).push(id);
+      return id;
+    }
+    function addEdge(a, b, cv) {
+      if (a === b) return;
+      var k = a < b ? a + ',' + b : b + ',' + a;
+      if (ekeys[k] != null) return;
+      ekeys[k] = edges.length;
+      edges.push({ a: a, b: b, cv: cv, dead: false });
+    }
+    segs.forEach(function (s) {
+      var pts = [s.a];
+      s.cuts.sort(function (p, q) { return p.t - q.t; });
+      s.cuts.forEach(function (c) { if (c.t > 1e-9 && c.t < 1 - 1e-9) pts.push(c.p); });
+      pts.push(s.b);
+      for (var i = 0; i + 1 < pts.length; i++) addEdge(vertexOf(pts[i]), vertexOf(pts[i + 1]), s.cv);
+    });
+    // drop what dangles: an end that touches nothing bounds no region
+    var adj = verts.map(function () { return []; }), deg = verts.map(function () { return 0; });
+    edges.forEach(function (e, i) { adj[e.a].push(i); adj[e.b].push(i); deg[e.a]++; deg[e.b]++; });
+    var stack = [];
+    deg.forEach(function (d, v) { if (d === 1) stack.push(v); });
+    while (stack.length) {
+      var v = stack.pop();
+      if (deg[v] !== 1) continue;
+      for (var k = 0; k < adj[v].length; k++) {
+        var e = edges[adj[v][k]];
+        if (e.dead) continue;
+        e.dead = true; deg[e.a]--; deg[e.b]--;
+        var w = e.a === v ? e.b : e.a;
+        if (deg[w] === 1) stack.push(w);
+        break;
+      }
+    }
+    return { verts: verts, edges: edges, adj: adj, curves: curves, span: span };
+  }
+  function regionFaces(g) {
+    var verts = g.verts, edges = g.edges;
+    // half-edge h: edge h >> 1, direction h & 1 (0: a -> b); outgoing half-edges per vertex sorted by angle
+    function from(h) { var e = edges[h >> 1]; return h & 1 ? e.b : e.a; }
+    function to(h) { var e = edges[h >> 1]; return h & 1 ? e.a : e.b; }
+    var out = verts.map(function () { return []; });
+    edges.forEach(function (e, i) { if (e.dead) return; out[e.a].push(2 * i); out[e.b].push(2 * i + 1); });
+    var angles = {};
+    out.forEach(function (list, v) {
+      list.forEach(function (h) { var p = verts[v], q = verts[to(h)]; angles[h] = Math.atan2(q[1] - p[1], q[0] - p[0]); });
+      list.sort(function (h1, h2) { return angles[h1] - angles[h2]; });
+    });
+    function next(h) {
+      var v = to(h), list = out[v], i = list.indexOf(h ^ 1);
+      return list[(i - 1 + list.length) % list.length];   // the first half-edge clockwise from the way back: the face on the left stays tight
+    }
+    var seen = {}, faces = [];
+    edges.forEach(function (e, i) {
+      if (e.dead) return;
+      [2 * i, 2 * i + 1].forEach(function (h0) {
+        if (seen[h0]) return;
+        var h = h0, cyc = [], guard = 0;
+        do { seen[h] = true; cyc.push(h); h = next(h); } while (h !== h0 && guard++ < 4 * edges.length + 4);
+        var pts = cyc.map(function (x) { return verts[from(x)]; });
+        faces.push({ cyc: cyc, pts: pts, area: signedArea(pts), v: from(h0) });
+      });
+    });
+    // connected components (so an inner contour's outer face can be told from the outer face of the whole)
+    var comp = verts.map(function (v, i) { return i; });
+    function find(x) { while (comp[x] !== x) { comp[x] = comp[comp[x]]; x = comp[x]; } return x; }
+    edges.forEach(function (e) { if (!e.dead) comp[find(e.a)] = find(e.b); });
+    faces.forEach(function (f) { f.comp = find(f.v); f.edges = f.cyc.map(function (h) { return { a: verts[from(h)], b: verts[to(h)], cv: edges[h >> 1].cv }; }); });
+    return faces;
+  }
+  var regionCache = { key: null, regions: null };
+  function sketchRegions(sketch) {
+    syncTextPaths(sketch);
+    var key = tessKey() + '|' + JSON.stringify(sketch.entities || null) + '|' + JSON.stringify(sketch.layers || null);
+    if (regionCache.key === key) return regionCache.regions;
+    var g = regionGraph(sketch), faces = regionFaces(g), eps = 1e-10 * (1 + g.span * g.span);
+    var bounded = faces.filter(function (f) { return f.area > eps; }), outers = {};
+    faces.forEach(function (f) { if (f.area < -eps && (!outers[f.comp] || f.area < outers[f.comp].area)) outers[f.comp] = f; });
+    bounded.forEach(function (f) { f.holes = []; });
+    Object.keys(outers).forEach(function (c) {
+      var O = outers[c], probe = [(O.pts[0][0] + O.pts[1 % O.pts.length][0]) / 2, (O.pts[0][1] + O.pts[1 % O.pts.length][1]) / 2], best = null;
+      bounded.forEach(function (f) { if (f.comp !== O.comp && (!best || f.area < best.area) && pointInPoly(probe, f.pts)) best = f; });
+      if (best) best.holes.push(O);
+    });
+    function loopOf(f, hole) {
+      var pts = f.pts, cv = f.edges.map(function (e) { return e.cv; }), n = pts.length;
+      if (hole) {   // traced clockwise round the hole; the profile wants every loop counter-clockwise
+        pts = pts.slice().reverse();
+        cv = cv.map(function (x, j) { return f.edges[(n - 2 - j + n) % n].cv; });
+      }
+      var loop = { pts: pts, hole: !!hole, depth: hole ? 1 : 0 };
+      if (cv.some(function (k) { return k >= 0; })) loop.seg = cv;
+      return loop;
+    }
+    var regions = bounded.map(function (f) {
+      var loops = [loopOf(f, false)].concat(f.holes.map(function (h) { return loopOf(h, true); }));
+      var area = f.area;
+      f.holes.forEach(function (h) { area -= Math.abs(h.area); });
+      var ed = f.edges.slice();
+      f.holes.forEach(function (h) { ed = ed.concat(h.edges); });
+      var bb = loopBox(f.pts);
+      return { loops: loops, area: area, p: interiorPoint(loops), _edges: ed, _bb: bb };
+    });
+    regions.sort(function (r, s) { return (r._bb[0] - s._bb[0]) || (r._bb[1] - s._bb[1]) || (s.area - r.area) || (r.p[0] - s.p[0]) || (r.p[1] - s.p[1]); });
+    regions.forEach(function (r, i) { r.index = i; delete r._bb; });
+    if (regions.some(function (r) { return r.loops.some(function (l) { return l.seg; }); })) regions.curves = g.curves;
+    regionCache = { key: key, regions: regions };
+    return regions;
+  }
+  // a point strictly inside the outer loop and outside the holes: the middle of the longest run of a scan line through
+  // the centroid of the outer loop's biggest ear
+  function interiorPoint(loops) {
+    var outer = loops[0].pts, best = null, ba = 0;
+    _.triangulate(outer).forEach(function (t) {
+      var a = outer[t[0]], b = outer[t[1]], c = outer[t[2]], ar = Math.abs(signedArea([a, b, c]));
+      if (ar > ba) { ba = ar; best = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3]; }
+    });
+    if (!best) { best = [0, 0]; outer.forEach(function (p) { best[0] += p[0] / outer.length; best[1] += p[1] / outer.length; }); }
+    var y0 = best[1], xs = [];
+    loops.forEach(function (l) {
+      for (var i = 0, n = l.pts.length; i < n; i++) {
+        var p = l.pts[i], q = l.pts[(i + 1) % n];
+        if ((p[1] > y0) !== (q[1] > y0)) xs.push(p[0] + (y0 - p[1]) * (q[0] - p[0]) / (q[1] - p[1]));
+      }
+    });
+    xs.sort(function (a, b) { return a - b; });
+    var bi = -1, bl = 0;
+    for (var k = 0; k + 1 < xs.length; k += 2) { var L = xs[k + 1] - xs[k]; if (L > bl) { bl = L; bi = k; } }
+    return bi >= 0 ? [(xs[bi] + xs[bi + 1]) / 2, y0] : best;
+  }
+  function regionAt(sketch, uv, regions) {
+    regions = regions || sketchRegions(sketch);
+    for (var i = 0; i < regions.length; i++) {
+      var r = regions[i];
+      if (!pointInPoly(uv, r.loops[0].pts)) continue;
+      var inHole = false;
+      for (var j = 1; j < r.loops.length; j++) if (pointInPoly(uv, r.loops[j].pts)) { inHole = true; break; }
+      if (!inHole) return r;
+    }
+    return null;
+  }
+  function contourProfile(sketch, contours) {
+    var regions = sketchRegions(sketch), picked = [], seen = {};
+    if (!regions.length) throw new Error('Sketch has no closed region for the selected contours.');
+    (contours || []).forEach(function (c) {
+      var uv = [+c[0], +c[1]], r = regionAt(sketch, uv, regions);
+      if (!r) throw new Error('Selected contour at (' + _.fmt(uv[0]) + ', ' + _.fmt(uv[1]) + ') is no longer inside a closed sketch region. Edit the feature and pick its contours again.');
+      if (!seen[r.index]) { seen[r.index] = true; picked.push(r); }
+    });
+    if (!picked.length) throw new Error('Select at least one contour.');
+    // the union of the picked regions: the edge two of them share is gone; what is left chains into the outline and holes
+    var dir = {};
+    picked.forEach(function (r) {
+      r._edges.forEach(function (e) {
+        var ka = key2(e.a), kb = key2(e.b), back = kb + '>' + ka;
+        if (dir[back]) delete dir[back]; else dir[ka + '>' + kb] = { a: e.a, b: e.b, cv: e.cv, ka: ka, kb: kb };
+      });
+    });
+    var outs = {};
+    Object.keys(dir).forEach(function (k) { var e = dir[k]; (outs[e.ka] = outs[e.ka] || []).push(e); });
+    var loops = [];
+    Object.keys(dir).forEach(function (k0) {
+      var e = dir[k0];
+      if (e.used) return;
+      var pts = [], cv = [], cur = e, guard = 0;
+      while (cur && !cur.used && guard++ < 100000) {
+        cur.used = true; pts.push(cur.a); cv.push(cur.cv);
+        var cands = (outs[cur.kb] || []).filter(function (x) { return !x.used; });
+        if (!cands.length) break;
+        if (cands.length === 1) { cur = cands[0]; continue; }
+        var rev = Math.atan2(cur.a[1] - cur.b[1], cur.a[0] - cur.b[0]), best = null, bturn = Infinity;   // the first way clockwise from the way back
+        cands.forEach(function (x) { var t = rev - Math.atan2(x.b[1] - x.a[1], x.b[0] - x.a[0]); while (t <= 1e-12) t += 2 * Math.PI; while (t > 2 * Math.PI) t -= 2 * Math.PI; if (t < bturn) { bturn = t; best = x; } });
+        cur = best;
+      }
+      if (pts.length < 3) return;
+      var a = signedArea(pts), loop;
+      if (a < 0) {
+        var n = pts.length, rc = cv.map(function (x, j) { return cv[(n - 2 - j + n) % n]; });
+        loop = { pts: pts.slice().reverse(), hole: true, depth: 1 };
+        if (rc.some(function (x) { return x >= 0; })) loop.seg = rc;
+      } else {
+        loop = { pts: pts, hole: false, depth: 0 };
+        if (cv.some(function (x) { return x >= 0; })) loop.seg = cv;
+      }
+      loops.push(loop);
+    });
+    loops.sort(function (l, m) { return (l.hole ? 1 : 0) - (m.hole ? 1 : 0); });
+    var prof = { loops: loops, warnings: [] };
+    if (loops.some(function (l) { return l.seg; })) prof.curves = regions.curves;
+    return prof;
+  }
+  function contourSketch(f, sketch) {
+    if (!f || !Array.isArray(f.contours) || !f.contours.length || !sketch) return sketch;
+    var copy = {};
+    Object.keys(sketch).forEach(function (k) { copy[k] = sketch[k]; });
+    copy.profile = contourProfile(sketch, f.contours);
+    return copy;
+  }
+  function regionsAmbiguous(sketch) {
+    var regions = sketchRegions(sketch);
+    if (!regions.length) return false;
+    var prof = sketch.profile || sketchProfile(sketch);
+    return regions.length > prof.loops.length || prof.loops.some(function (l) { return l.cross || l.meet; });
+  }
+
   // ------------------------------------------------------------------ 2D sketch geometry utilities
   // Offset a closed polygon by d (positive = outward for a CCW loop) using mitred corners.
   function offsetLoop(pts, d) {
@@ -2212,6 +2585,7 @@
   K.mirrorAxis = mirrorAxis; K.mirrorEntity = mirrorEntity; K.translateEntity = translateEntity; K.entityPrimitives = entityPrimitives;
   K.trimEntity = trimEntity; K.trimCuts = trimCuts; K.entityEnds = entityEnds; K.dimGeometry = dimGeometry; K.dimValue = dimValue; K.setDimValue = setDimValue; K.dimForEntity = dimForEntity;
   K.setTessellation = setTessellation; K.segsForRadius = segsForRadius; K.entityCurves = entityCurves;
+  K.sketchRegions = sketchRegions; K.regionAt = regionAt; K.contourProfile = contourProfile; K.contourSketch = contourSketch; K.regionsAmbiguous = regionsAmbiguous;   // lane CO: Selected Contours
   K.isStyleSpline = isStyle; K.bzPoint = bzPoint; K.bzDeriv = bzDeriv; K.bzSub = bzSub; K.bzElevate = bzElevate; K.bzDegree = bzDegree;   // rfAH: Style Spline
   K.splineCurvatureAt = splineCurvatureAt;   // rfAY
   K.splineGeom = splineGeom; K.conicData = conicData; K.conicPoint = conicPoint; K.ellipsePoint = ellipsePoint; K.bezPoint = bezPoint; K.freeSamples = freeSamples; K.isFreeCurve = isFree;
@@ -2224,6 +2598,7 @@
   _.mirrorAxis = mirrorAxis; _.mirrorEntity = mirrorEntity; _.offsetLoop = offsetLoop; _.pointInPoly = pointInPoly; _.segsForRadius = segsForRadius;
   _.setDimValue = setDimValue; _.setTessellation = setTessellation; _.signedArea = signedArea; _.sketchProfile = sketchProfile; _.tessKey = tessKey;
   _.translateEntity = translateEntity; _.trimEntity = trimEntity; _.splineGeom = splineGeom; _.ellipsePoint = ellipsePoint; _.freeSamples = freeSamples;
+  _.contourSketch = contourSketch;   // lane CO: kernel-rebuild.js buildTool hands extrude / revolve the picked-contour profile
   _.syncTextPaths = syncTextPaths; _.textDxf = textDxf;
 
   // ------------------------------------------------------------------ rfAT: Blocks (Tools ▸ Blocks)

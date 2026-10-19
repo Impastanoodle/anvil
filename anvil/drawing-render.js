@@ -235,13 +235,23 @@
       // (the view's label goes below its linework and below any detail circle drawn on it, r11/hatch11)
       var lb = box.y0;
       doc.views.forEach(function (dv) { if (dv.parent === v.id && dv.kind === 'detail' && dv.detail) lb = Math.min(lb, toSheet(dv.detail.c)[1] - _.detailHalf(dv.detail)[1] * s); });
-      if (v.kind === 'section') {
+      // (rfCQ) only a view whose label is shown (D.viewLabelShown: section and detail views by default, a model,
+      // projected or flat view when its Display label is on; an auxiliary view's is drawn by drawing-views.js); a model
+      // view's label names it and gives the scale it is drawn at (its own, else the sheet's)
+      if (!D.viewLabelShown(v) || v.kind === 'aux') { }
+      else if (v.kind === 'section') {
         text([v.x, lb - 7 * k], 3.5 * k, 'SECTION ' + v.label + '-' + v.label, 'middle', layer);
         if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 12 * k], 3 * k, scaleLabel(v.scale), 'middle', layer);
       } else if (v.kind === 'detail') {
         text([(box.x0 + box.x1) / 2, lb - 7 * k], 3.5 * k, 'DETAIL ' + v.label, 'middle', layer);
         text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
-      } else if (v.scale && scaleValue(v.scale) !== scaleValue(scale)) text([v.x, lb - 6 * k], 3 * k, String(v.orient).toUpperCase() + '  ' + scaleLabel(v.scale), 'middle', layer);
+      } else {
+        text([(box.x0 + box.x1) / 2, lb - 7 * k], 3.5 * k, v.kind === 'flat' ? 'FLAT PATTERN' : String(v.orient).toUpperCase(), 'middle', layer);
+        text([(box.x0 + box.x1) / 2, lb - 12 * k], 3 * k, scaleLabel(v.scale || scale), 'middle', layer);
+      }
+      // (rfCQ) a sketched-profile detail: its hatching (and anything else on its layer) clipped to the profile; a Jagged
+      // outline clips to its zig-zag instead (detailOutline)
+      if (v.kind === 'detail' && v.detail && v.detail.pts && v.detail.pts.length >= 3 && v.detail.outline !== 'jagged' && !pr.pending) _.clipLayerToPoly(prims, layer, v.detail.pts.map(toSheet));
       // (rfZ) a detail view's Full / Jagged outline
       if (v.kind === 'detail' && v.detail && v.detail.outline) _.detailOutline(prims, { view: v, layer: layer, toSheet: toSheet, scale: s }, k);
       // (a flat pattern is drawn at true size whatever plane the Base Flange was sketched on)
@@ -285,8 +295,11 @@
         // (a thin line from the circle to the detail view)
         var dtl = v.detail, hfd = _.detailHalf(dtl), prof = dtl.shape === 'profile', dc = pw.toSheet(dtl.c), r = hfd[0] * pw.scale, rh = hfd[1] * pw.scale;
         var dst = dtl.style || 'standard', broken = dst === 'broken' && !prof, lead = dst === 'leader' ? 6 * k : 0;
-        function sup(cx, cy) { return prof ? Math.abs(cx) * r + Math.abs(cy) * rh : r; }   // centre to the boundary along (cx, cy)
-        if (prof) [[-1, -1, 1, -1], [1, -1, 1, 1], [1, 1, -1, 1], [-1, 1, -1, -1]].forEach(function (q) { prims.push({ k: 'line', a: [dc[0] + q[0] * r, dc[1] + q[1] * rh], b: [dc[0] + q[2] * r, dc[1] + q[3] * rh], layer: L, style: 'thick', detailMark: v.id }); });
+        // (rfCQ) a sketched profile is drawn on the parent as sketched
+        var PP = dtl.pts && dtl.pts.length >= 3 ? dtl.pts.map(pw.toSheet) : null;
+        function sup(cx, cy) { return PP ? _.rayOut(dc, [cx, cy], PP) : prof ? Math.abs(cx) * r + Math.abs(cy) * rh : r; }   // centre to the boundary along (cx, cy)
+        if (PP) PP.forEach(function (q, i) { prims.push({ k: 'line', a: q, b: PP[(i + 1) % PP.length], layer: L, style: 'thick', detailMark: v.id }); });
+        else if (prof) [[-1, -1, 1, -1], [1, -1, 1, 1], [1, 1, -1, 1], [-1, 1, -1, -1]].forEach(function (q) { prims.push({ k: 'line', a: [dc[0] + q[0] * r, dc[1] + q[1] * rh], b: [dc[0] + q[2] * r, dc[1] + q[3] * rh], layer: L, style: 'thick', detailMark: v.id }); });
         else if (!broken) prims.push({ k: 'circle', c: dc, r: r, layer: L, style: 'thick', detailMark: v.id });
         // the letter goes just outside the circle where it covers the least of the parent's linework and hatching
         // (upper right first, then the other diagonals and sides), as SolidWorks keeps it readable (r11/hatch11)

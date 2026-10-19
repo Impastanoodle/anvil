@@ -199,7 +199,7 @@
       { id: 'generic', icon: 'convertSM', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
-      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { id: 'generic', icon: 'corners', label: 'Corners' }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
+      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
@@ -726,6 +726,7 @@
     if (f.type === 'flange') return f.miter ? 'miter' : (f.hem ? 'hem' : 'bend');
     if (f.type === 'jog') return 'jog';
     if (f.type === 'sketchedBend') return 'sketchedBend';
+    if (f.type === 'breakCorner') return 'breakCorner';   // lane CP
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {
@@ -1387,6 +1388,7 @@
         { label: 'Spline Tools ▸ Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddCurvatureControl },
         { label: 'Spline Tools ▸ Show Inflection Points', icon: 'spline', action: function () { UI.cmdShowInflectionPoints(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowInflectionPoints },
         { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
+        { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
         // rfAT: Jog Line (ui-sketch-tools.js) and Tools ▸ Blocks (ui-sketch-blocks.js)
         { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
         { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine },

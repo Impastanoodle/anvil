@@ -161,7 +161,10 @@
         if (!sketch || sketch.type !== 'sketch') throw new Error('Select a sketch for this feature.');
         plane = resolvePlane(sketch.plane, model, ctx.planes);
         if (!sketch.profile) sketch.profile = sketchProfile(sketch);
-        return f.type === 'extrude' ? buildExtrude(f, sketch, plane, ctx.throughLimit) : buildRevolve(f, sketch, plane);
+        // lane CO: Selected Contours (f.contours = [[u, v], …]) — the profile is the union of the picked regions; the
+        // sketch feature keeps its own full profile (contourSketch returns a copy)
+        var csk = _.contourSketch(f, sketch);
+        return f.type === 'extrude' ? buildExtrude(f, csk, plane, ctx.throughLimit) : buildRevolve(f, csk, plane);
       case 'sweep': return _.buildSweep(f, model, ctx);
       case 'loft': return _.buildLoft(f, model, ctx);
       case 'lpattern': {

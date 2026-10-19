@@ -2041,6 +2041,185 @@
     return { flanges: flanges, anchors: anchors };
   }
 
+  // ------------------------------------------------------------------ Break Corner / Corner Trim (lane CP)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Break-Corner/Corner-Trim: outside corners of the sheet's flat faces (the base
+  // flange, tabs, flange walls) rounded (kind 'fillet', radius `size`) or cut off (kind 'chamfer', `size` along both
+  // edges), through the thickness. Feature JSON { type: 'breakCorner', kind: 'chamfer' | 'fillet', size,
+  // corners: [[x, y, z], …] (points on corner edges: the short edges through the thickness; re-found by position within
+  // EDGE_PICK_TOL·T, like flange edge picks), faces?: [[x, y, z], …] (points on flat sheet faces: every outside corner
+  // of each) }. A corner that is no longer there, a face with none and a break that does not fit its edges are rebuild
+  // errors. It is a cut (registered below): the tool is one prism per corner, its arc sides tagged as true cylinders, so
+  // the volume is exact, the flat outline gets the arc's chords (exportDXFFlat writes them as one ARC) and a later
+  // flange on a broken edge picks the shortened edge as usual.
+  // sheetCorners(body, T) -> { faces: [{ index, plane, loops, w }], corners: [{ at (mid-thickness point of the corner
+  // edge), top, bot, n, plane, uv, d1, d2, o1, o2, l1, l2, alpha, prev, next, faces: [mesh face indices] }] }. A corner
+  // is a convex vertex (interior angle alpha at most BC_MAX_ANGLE, so chords of round edges never count) of an outer
+  // loop of a flat face that has the opposite sheet face T behind it, where the sheet ends square on both edges (probed
+  // at mid-thickness: material just inside each edge, none just outside) and is T thick at the corner. So the corners
+  // where a wall meets its bend, corners inside bends and corners of holes and notches are not corners.
+  var BC_MAX_ANGLE = 150 * Math.PI / 180, BC_KINDS = ['chamfer', 'fillet'];
+  function sheetCorners(body, T) {
+    var mesh = meshFromBody(coplanarBody(body)), inside = body.pointTester(), faces = [], corners = [];
+    var d = 0.25 * T, tolW = 1e-6 * (1 + T) + 1e-4 * T;
+    function curved(face) { return (face.polys || []).some(function (p) { return !!p.surf; }); }
+    mesh.faces.forEach(function (face, fi) {
+      if (curved(face)) return;
+      // the opposite face of the sheet: normal −n, T behind (n·x = w there is −n·x = T − w: w + w' = T)
+      var paired = mesh.faces.some(function (g) { return !curved(g) && dot(g.normal, face.normal) < -1 + 1e-9 && Math.abs(face.w + g.w - T) <= tolW; });
+      if (!paired) return;
+      var o = faceOutline(mesh, fi);
+      if (!o || !o.loops.length) return;
+      var plane = o.plane, n = plane.n, rec = { index: fi, plane: plane, loops: o.loops, w: face.w };
+      faces.push(rec);
+      function P3(q, depth) { return add(to3D(plane, q[0], q[1]), scale(n, -depth)); }
+      function at(q, dir, s) { return [q[0] + dir[0] * s, q[1] + dir[1] * s]; }
+      faceLoopsClassified(o).outers.forEach(function (raw) {
+        var p = straightLoop(raw), m = p.length;
+        if (m < 3) return;
+        for (var i = 0; i < m; i++) {
+          var a = p[(i + m - 1) % m], V = p[i], c = p[(i + 1) % m];
+          var e1 = [V[0] - a[0], V[1] - a[1]], e2 = [c[0] - V[0], c[1] - V[1]], l1 = Math.hypot(e1[0], e1[1]), l2 = Math.hypot(e2[0], e2[1]);
+          if (l1 < 1e-9 || l2 < 1e-9) continue;
+          var turn = Math.atan2(e1[0] * e2[1] - e1[1] * e2[0], e1[0] * e2[0] + e1[1] * e2[1]), alpha = Math.PI - turn;
+          if (turn <= 0 || alpha > BC_MAX_ANGLE || alpha < 1e-6) continue;
+          var d1 = [-e1[0] / l1, -e1[1] / l1], d2 = [e2[0] / l2, e2[1] / l2];
+          var o1 = [e1[1] / l1, -e1[0] / l1], o2 = [e2[1] / l2, -e2[0] / l2];   // outward (right of a CCW loop's edges)
+          var s1 = Math.min(l1 / 2, T), s2 = Math.min(l2 / 2, T);
+          var m1 = at(V, d1, s1), m2 = at(V, d2, s2);
+          if (inside(P3(at(m1, o1, d), T / 2)) || !inside(P3(at(m1, o1, -d), T / 2))) continue;   // edge 1 is not a free sheet edge
+          if (inside(P3(at(m2, o2, d), T / 2)) || !inside(P3(at(m2, o2, -d), T / 2))) continue;
+          var bl = Math.hypot(d1[0] + d2[0], d1[1] + d2[1]), bis = [(d1[0] + d2[0]) / bl, (d1[1] + d2[1]) / bl];
+          var q = at(V, bis, Math.min(d / Math.sin(alpha / 2), 0.5 * Math.min(l1, l2)));
+          if (!inside(P3(q, T - d)) || inside(P3(q, T + d))) continue;   // not T thick at the corner
+          var top = P3(V, 0), bot = P3(V, T), mid = P3(V, T / 2);
+          var dup = corners.filter(function (k) { return len(sub(k.at, mid)) <= 0.05 * T; })[0];
+          if (dup) { if (dup.faces.indexOf(fi) < 0) dup.faces.push(fi); continue; }
+          corners.push({ at: mid, top: top, bot: bot, n: n.slice(), plane: plane, uv: V.slice(), d1: d1, d2: d2, o1: o1, o2: o2, l1: l1, l2: l2, alpha: alpha,
+            prev: P3(a, 0), next: P3(c, 0), faces: [fi] });
+        }
+      });
+    });
+    return { faces: faces, corners: corners };
+  }
+  // a loop without the points where it runs straight on (T-junction splits of the mesh outline)
+  function straightLoop(l) {
+    var p = l.slice();
+    for (var again = true; again && p.length > 3;) {
+      again = false;
+      for (var i = 0; i < p.length && p.length > 3; i++) {
+        var a = p[(i + p.length - 1) % p.length], b = p[i], c = p[(i + 1) % p.length];
+        var ux = b[0] - a[0], uy = b[1] - a[1], vx = c[0] - b[0], vy = c[1] - b[1], lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+        if (lu < 1e-12 || lv < 1e-12 || (Math.abs(ux * vy - uy * vx) <= 1e-9 * lu * lv && ux * vx + uy * vy > 0)) { p.splice(i, 1); i--; again = true; }
+      }
+    }
+    return p;
+  }
+  function bcNum(x) { return String(Math.round(x * 1e4) / 1e4); }
+  function bcPt(p) { return '(' + p.map(bcNum).join(', ') + ')'; }
+  // the corner tool's section in the face's plane: [Q1, A, (arc), B, Q2, Qc] with seg[i] the curve of segment i → i+1
+  // (0: the fillet arc, −1 straight); A and B are where the break meets the two edges, Q1 / Q2 / Qc lie eps outside the
+  // edges, so the prism overshoots the corner and never shares a face with the sheet's sides
+  function cornerSection(c, kind, size, eps) {
+    var V = c.uv, d1 = c.d1, d2 = c.d2, half = c.alpha / 2;
+    var t = kind === 'fillet' ? size / Math.tan(half) : size;
+    function at(q, dir, s) { return [q[0] + dir[0] * s, q[1] + dir[1] * s]; }
+    var A = at(V, d1, t), B = at(V, d2, t), pts = [at(A, c.o1, eps), A], seg = [-1], curves = [];
+    if (kind === 'fillet') {
+      var bl = Math.hypot(d1[0] + d2[0], d1[1] + d2[1]), C = at(V, [(d1[0] + d2[0]) / bl, (d1[1] + d2[1]) / bl], size / Math.sin(half));
+      var a0 = Math.atan2(A[1] - C[1], A[0] - C[0]), sw = Math.atan2(B[1] - C[1], B[0] - C[0]) - a0;
+      while (sw > Math.PI) sw -= 2 * Math.PI;
+      while (sw <= -Math.PI) sw += 2 * Math.PI;
+      // equal chords no longer than 22.5° (exportDXFFlat's arc fitting takes runs of three or more equal chords)
+      var segs = Math.max(4, Math.ceil(Math.abs(sw) / (Math.PI / 8) - 1e-9), Math.ceil(_.segsForRadius(size) * Math.abs(sw) / (2 * Math.PI) - 1e-9));
+      curves.push({ c: C, r: size });
+      for (var k = 1; k < segs; k++) { var th = a0 + sw * k / segs; seg.push(0); pts.push([C[0] + size * Math.cos(th), C[1] + size * Math.sin(th)]); }
+      seg.push(0);
+    } else seg.push(-1);
+    pts.push(B, at(B, c.o2, eps), at(V, [c.o1[0] + c.o2[0], c.o1[1] + c.o2[1]], eps));
+    seg.push(-1, -1, -1);
+    if (signedArea(pts) < 0) {
+      var n = pts.length;
+      pts = pts.slice().reverse();
+      seg = pts.map(function (q, j) { return seg[(n - 2 - j + n) % n]; });
+    }
+    return { pts: pts, seg: seg, curves: curves, t: t };
+  }
+  // breakCornerLayout(f, model, ctx) -> { tools: [{ plane, pts, seg, curves, a, b }] (one prism per corner, from a to b
+  // along plane.n), corners: [corner records used] }; plain data, built here with the CSG kernel (buildBreakCorner) and
+  // in occt-kernel.js with exact arcs. ctx.body: the part as built so far (a CSG).
+  function breakCornerLayout(f, model, ctx) {
+    var sheet = model.sheet;
+    if (!sheet) throw new Error('Break Corner needs a sheet-metal part: make a Base Flange first (Sheet Metal tab).');
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw new Error('Nothing to break yet.');
+    var T = +sheet.thickness, kind = f.kind || 'chamfer', size = +f.size, what = kind === 'fillet' ? 'radius' : 'distance';
+    if (BC_KINDS.indexOf(kind) < 0) throw new Error('Break Corner: the break type must be "chamfer" or "fillet".');
+    if (!(size > 0) || !isFinite(size)) throw new Error('Break Corner: the ' + what + ' must be a positive number.');
+    var found = sheetCorners(ctx.body, T), chosen = [], tol = EDGE_PICK_TOL * T;
+    function take(c) { if (chosen.indexOf(c) < 0) chosen.push(c); }
+    (f.corners || []).forEach(function (p) {
+      var best = null, bd = tol;
+      found.corners.forEach(function (c) { var dd = _.pointSegmentDistance(p, c.top, c.bot); if (dd <= bd) { bd = dd; best = c; } });
+      if (!best) throw new Error('Break Corner: there is no outside sheet corner at ' + bcPt(p) + ' any more.');
+      take(best);
+    });
+    (f.faces || []).forEach(function (p) {
+      var face = null, bd = 1e-3 * (1 + T);
+      found.faces.forEach(function (fr) {
+        var off = Math.abs(dot(fr.plane.n, p) - fr.w);
+        if (off > bd) return;
+        var uv = to2D(fr.plane, p), inn = 0;
+        fr.loops.forEach(function (l) { if (pointInPoly(uv, l)) inn++; });
+        if (inn % 2 === 1) { bd = off; face = fr; }
+      });
+      if (!face) throw new Error('Break Corner: there is no flat sheet face at ' + bcPt(p) + ' any more.');
+      var own = found.corners.filter(function (c) { return c.faces.indexOf(face.index) >= 0; });
+      if (!own.length) throw new Error('Break Corner: the face at ' + bcPt(p) + ' has no outside corners.');
+      own.forEach(take);
+    });
+    if (!chosen.length) throw new Error('Break Corner: pick corner edges or faces.');
+    var eps = Math.max(0.01 * T, 1e-6), secs = chosen.map(function (c) { return cornerSection(c, kind, size, eps); });
+    chosen.forEach(function (c, i) {
+      var t = secs[i].t;
+      if (t > Math.min(c.l1, c.l2) + 1e-9) throw new Error('Break Corner: a ' + what + ' of ' + bcNum(size) + ' does not fit the corner at ' + bcPt(c.top) + ': its edges are ' + bcNum(Math.min(c.l1, c.l2)) + ' long.');
+      // two broken corners at the two ends of one edge must not overlap on it
+      chosen.forEach(function (o, j) {
+        if (j <= i) return;
+        [[c.prev, c.l1], [c.next, c.l2]].forEach(function (e) {
+          if (_.pointSegmentDistance(e[0], o.top, o.bot) <= 1e-4 * (1 + T) && t + secs[j].t > e[1] + 1e-9)
+            throw new Error('Break Corner: the corners at ' + bcPt(c.top) + ' and ' + bcPt(o.top) + ' overlap on their ' + bcNum(e[1]) + ' edge: make the ' + what + ' smaller.');
+        });
+      });
+    });
+    return { corners: chosen, tools: chosen.map(function (c, i) { var s = secs[i]; return { plane: c.plane, pts: s.pts, seg: s.seg, curves: s.curves, a: -T - eps, b: eps }; }) };
+  }
+  function buildBreakCorner(f, model, ctx) {
+    var lay = breakCornerLayout(f, model, ctx);
+    return unionAll(lay.tools.map(function (t) { return prism(t.pts, t.plane, t.a, t.b, f.id, t.seg.map(function (k) { return k >= 0 ? t.curves[k] : null; })); }));
+  }
+  // the outside corners a part offers (the Break-Corner PropertyManager highlights and picks them): [{ at, top, bot, faces }]
+  function breakCornerCandidates(body, model) {
+    var sheet = model && resolvedModel(model).model.sheet;
+    if (!body || !sheet) return [];
+    return sheetCorners(body, +sheet.thickness).corners.map(function (c) { return { at: c.at, top: c.top, bot: c.bot, faces: c.faces, alpha: c.alpha }; });
+  }
+  // Break-Corner1, Break-Corner2, … (the rebuild's name table does not know the type)
+  function breakCornerName(model) {
+    var max = 0;
+    (model.features || []).forEach(function (g) { var mm = /^Break-Corner(\d+)$/.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return 'Break-Corner' + (max + 1);
+  }
+  K.registerFeature('breakCorner', {
+    cut: true,
+    build: buildBreakCorner,
+    script: function (f, v, idVar, optsStr) {
+      function pts(list) { return (list || []).map(function (p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }); }
+      var o = { kind: f.kind || 'chamfer' };
+      if (f.faces && f.faces.length) o.faces = pts(f.faces);
+      o.name = f.name;
+      return 'var ' + v + ' = p.breakCorner(' + (K.isExpression(f.size) ? JSON.stringify(f.size) : String(f.size)) + ', ' + JSON.stringify(pts(f.corners)) + ', ' + optsStr(o) + ').last();';
+    }
+  });
+
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
@@ -2055,5 +2234,8 @@
   K.buildSketchedBend = buildSketchedBend; K.sketchedBendLayout = sketchedBendLayout; K.SKETCHED_BEND_POSITIONS = SB_POSITIONS.slice();
   // cuts across a bend zone (occt-kernel.js reads the voids again from its exact solid and cuts them from its sweep)
   K.bendVoids = bendVoids; K.bandSlabSpec = bandSlabSpec; K.wrapCut = wrapCut; K.bendZoneMap = bendZoneMap;
+  // Break Corner (lane CP)
+  K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
+  K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
 })(Kernel, Kernel._);

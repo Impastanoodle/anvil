@@ -1263,6 +1263,7 @@
       var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
       addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0], true);   // rfH: the closing point is in no st.pts
       if (fc && numericInputOn() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6
+      if (fc && fc.entities.length === nc + 1) typedOutside(fc, nc);   // rfCR: the outline closed: its typed dimensions go outside it
       UI.afterSketchCommit(fc, nc, st);   // sketch-hooks: the closing segment is committed too (Dynamic Mirror)
       cancelTool(true);
       return;
@@ -1699,11 +1700,18 @@
     }
     return null;
   }
+  // rfCR (sketch user report #12): a dimension made from a value typed while drawing sits TYPED_PX off its entity, so
+  // its text clears the line by about one text height and a gap, as SolidWorks places them at the shop's zoom (it was
+  // 14 px: the text 6 px off the line). On a closed outline it goes outside the region, whichever way the outline was
+  // drawn: when a Line chain closes, each typed length dimension on the loop whose dimension line lies inside the
+  // region flips to the other side (typedOutside). An open chain keeps the side rule (the left of the line's direction,
+  // where `off` is positive). typedMade: the dimension objects typedDims made (the ones typedOutside may flip).
+  var TYPED_PX = 26, typedMade = [];
   function typedDims(f, idx, typed) {
-    var e = f.entities[idx], s = UI.cam.scale || 0.1, off = Math.round(14 * s * 1e4) / 1e4, list = [];
+    var e = f.entities[idx], s = UI.cam.scale || 0.1, off = Math.round(TYPED_PX * s * 1e4) / 1e4, list = [];
     if (!e) return;
     function lin(k, o) { list.push({ e: idx, k: k, off: o }); }
-    function rad(k) { list.push({ e: idx, k: k, ang: 45, off: Math.round((e.r + 14 * s) * 1e4) / 1e4 }); }
+    function rad(k) { list.push({ e: idx, k: k, ang: 45, off: Math.round((e.r + TYPED_PX * s) * 1e4) / 1e4 }); }
     switch (e.t) {
       case 'line': if (typed.len != null) lin('len', off); break;
       case 'rect': case 'crect': if (typed.w != null) lin('w', -off); if (typed.h != null) lin('h', off); break;
@@ -1712,17 +1720,74 @@
       case 'poly': if (typed.r != null) rad('r'); break;
       // p9-sketch: outside the slot — the length beside its side, the width beyond its first end (both sat inside it,
       // the width's label on the length's line)
-      case 'slot': if (typed.len != null) lin(slotOverall() ? 'olen' : 'len', Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); if (typed.w != null) lin('w', -Math.round((e.w / 2 + 14 * s) * 1e4) / 1e4); break;   // slot-overall
+      case 'slot': if (typed.len != null) lin(slotOverall() ? 'olen' : 'len', Math.round((e.w / 2 + TYPED_PX * s) * 1e4) / 1e4); if (typed.w != null) lin('w', -Math.round((e.w / 2 + TYPED_PX * s) * 1e4) / 1e4); break;   // slot-overall
     }
     list.forEach(function (d) {
       f.dims = f.dims || [];
       f.dims.push(d);
       if (window.SketchSolver && SketchSolver.overDefines(f, 'dim', f.dims.length - 1)) f.dims.pop();
+      else { typedMade.push(d); if (typedMade.length > 200) typedMade.shift(); }
     });
     if (f.dims && !f.dims.length) delete f.dims;
     App.dimsStale = true;
     if (list.length) UI.updateSketches();
   }
+  // The closed loop of lines / arcs through entity idx (end to end, within 1e-6), or null: [{ i, fwd }] in order, fwd =
+  // the entity is run p1 -> p2 along the loop.
+  function closedLoopThrough(f, idx) {
+    var E = f.entities, S = window.SketchSolver;
+    if (!S || !E[idx] || (E[idx].t !== 'line' && E[idx].t !== 'arc')) return null;
+    function ends(i) { return S.pointRefs(f, i).filter(function (pr) { return /\.p[12]$/.test(pr.ref); }).map(function (pr) { return pr.pt; }); }
+    function same(a, b) { return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6; }
+    var e0 = ends(idx);
+    if (e0.length !== 2 || same(e0[0], e0[1])) return null;
+    var loop = [{ i: idx, fwd: true }], at = e0[1], start = e0[0], guard = 0;
+    while (!same(at, start) && guard++ < 1000) {
+      var next = -1, to = null, fwd = true;
+      for (var j = 0; j < E.length && next < 0; j++) {
+        if (!E[j] || (E[j].t !== 'line' && E[j].t !== 'arc') || E[j].construction || loop.some(function (l) { return l.i === j; })) continue;
+        var ej = ends(j);
+        if (ej.length !== 2) continue;
+        if (same(ej[0], at)) { next = j; to = ej[1]; fwd = true; } else if (same(ej[1], at)) { next = j; to = ej[0]; fwd = false; }
+      }
+      if (next < 0) return null;
+      loop.push({ i: next, fwd: fwd }); at = to;
+    }
+    return same(at, start) ? loop : null;
+  }
+  // rfCR: the Line chain through entity idx just closed: every typed length dimension on the loop whose dimension line
+  // lies inside the region flips to the outside.
+  function typedOutside(f, idx) {
+    var loop = closedLoopThrough(f, idx), E = f.entities;
+    if (!loop || !f.dims) return;
+    var poly = [];
+    loop.forEach(function (l) {
+      var pl = K.entityPolylines(E[l.i])[0], pts = pl ? pl.pts.slice() : [];
+      if (!l.fwd) pts.reverse();
+      pts.forEach(function (p) { poly.push(p); });
+    });
+    if (poly.length < 3) return;
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    poly.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
+    var eps = 1e-4 * Math.max(1, x1 - x0, y1 - y0), flipped = 0;
+    function inside(p) {
+      var c = false;
+      for (var a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+        var pa = poly[a], pb = poly[b];
+        if ((pa[1] > p[1]) !== (pb[1] > p[1]) && p[0] < (pb[0] - pa[0]) * (p[1] - pa[1]) / (pb[1] - pa[1]) + pa[0]) c = !c;
+      }
+      return c;
+    }
+    f.dims.forEach(function (d) {
+      if (d.k !== 'len' || typedMade.indexOf(d) < 0 || !loop.some(function (l) { return l.i === d.e; }) || !E[d.e] || E[d.e].t !== 'line') return;
+      var g = K.dimGeometry(E[d.e], d);
+      if (!g || g.type !== 'linear' || !(d.off > 0 || d.off < 0)) return;
+      var n = [-g.dir[1], g.dir[0]], sgn = d.off > 0 ? 1 : -1, m = [(g.P[0] + g.Q[0]) / 2 + n[0] * sgn * eps, (g.P[1] + g.Q[1]) / 2 + n[1] * sgn * eps];
+      if (inside(m)) { d.off = -d.off; flipped++; }
+    });
+    if (flipped) { App.dimsStale = true; UI.updateSketches(); }
+  }
+  UI.typedOutside = typedOutside;
 
   // ---- on-screen numeric input while drawing (SolidWorks): with a point placed, typing a number opens a small box at
   // the cursor for the live value(s) — L and A for a line, W and H for a rectangle, R for a circle … Tab moves to the
@@ -3538,9 +3603,19 @@
     items.push({ sep: true });
     items.push({ label: 'Exit Sketch', action: function () { exitSketch(); } });
     items.push({ label: 'Discard Changes and Exit', action: function () { confirmCancelSketch(); } });
+    // rfCR: Replace Entity… with the entity commands, after Mirror Entities… (SolidWorks' Sketch Tools ▸ Replace
+    // Entity). The full list (ui-panels.js sketchMenuItems) is built here so the row has a place in it: showMenu shows
+    // a list already built as it is.
+    if (sel.length && UI.sketchMenuItems && UI.cmdReplaceEntity) {
+      items = UI.sketchMenuItems(items);
+      var rk = -1;
+      items.forEach(function (it, k) { if (it && it.label === 'Mirror Entities…') rk = k; });
+      var rep = { label: 'Replace Entity…', icon: 'moveEnt', action: function () { if (App.mode === 'sketch') UI.cmdReplaceEntity(); } };
+      if (rk < 0) items.push(rep); else items.splice(rk + 1, 0, rep);
+    }
     // rfL: Edit Polygon on a polygon's side or circle (SolidWorks puts it with the entity's commands)
     if (sel.length === 1 && UI.polygonOf && UI.polygonOf(sel[0], f) && UI.editPolygon) {
-      if (UI.sketchMenuItems) items = UI.sketchMenuItems(items);
+      if (UI.sketchMenuItems && !items.sketchMenu) items = UI.sketchMenuItems(items);
       var pk = -1;
       items.forEach(function (it, k) { if (it && it.label === 'Properties…') pk = k; });
       if (pk < 0) items.forEach(function (it, k) { if (pk < 0 && it && it.label === 'Delete') pk = k; });

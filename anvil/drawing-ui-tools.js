@@ -44,12 +44,13 @@
     openDrawingPM({
       title: 'Model View', icon: 'modelView', command: 'modelView',
       message: 'Pick the orientation, press OK, then click on the sheet to place the view.' + (sm ? ' Flat pattern draws the unfolded blank with its bend lines and notes.' : ''),
-      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scaleMode: 'sheet', scale: custom.some(function (o) { return o[0] === sheetSc; }) ? sheetSc : custom[0][0], bendNotes: Drawing.docOptions(doc()).bendNotes, autoProj: true, dimType: 'projected' },
+      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scaleMode: 'sheet', scale: custom.some(function (o) { return o[0] === sheetSc; }) ? sheetSc : custom[0][0], bendNotes: Drawing.docOptions(doc()).bendNotes, autoProj: true, dimType: 'projected', showLabel: false },
       groups: [
         { title: 'Orientation', fields: [
           { type: 'buttons', key: 'stdViews', buttons: std.map(function (o) { return { label: o === FLAT ? '(A) Flat pattern' : o, active: function (v) { return v.orient === o; }, onclick: function (v) { v.orient = o; if (o !== FLAT && ORTHO_NAMES.indexOf(o) < 0 && v.display === 'hlv') v.display = 'hlr'; UI.renderPM(); } }; }) },
           { type: 'select', key: 'orient', label: 'View', rerender: true, options: (sm ? [[FLAT, 'Flat pattern']] : []).concat(Drawing.ORIENTS) }] },
-        { title: 'Options', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'check', key: 'autoProj', label: 'Auto-start projected view' }] },
+        // (rfCQ) Display label: a model view has no label unless asked (SolidWorks), then its name and scale
+        { title: 'Options', fields: [{ type: 'check', key: 'autoProj', label: 'Auto-start projected view', show: function (v) { return v.orient !== FLAT; } }, { type: 'check', key: 'showLabel', label: 'Display label' }] },
         { title: 'Display Style', show: function (v) { return v.orient !== FLAT; }, fields: [{ type: 'radio', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }] },
         { title: 'Bend Notes', show: function (v) { return v.orient === FLAT; }, fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }] },
         { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['sheet', 'Use sheet scale (' + sheetSc + ')'], ['custom', 'Use custom scale']] },
@@ -60,7 +61,7 @@
         // (the API's old values: scale 'sheet' or a scale text in `scale` alone)
         var sc = v.scaleMode === 'custom' ? v.scale : v.scaleMode === 'sheet' ? 'sheet' : v.scale;
         startPlacing({ orient: v.orient, flat: v.orient === FLAT, bendNotes: v.bendNotes, display: v.display, scale: !sc || sc === 'sheet' ? null : Drawing.parseScale(sc), autoProj: !!v.autoProj && v.orient !== FLAT,
-          dimType: v.dimType === 'true' && v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0 ? 'true' : null });
+          dimType: v.dimType === 'true' && v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0 ? 'true' : null, showLabel: !!v.showLabel });
       }
     });
   }
@@ -85,9 +86,10 @@
     D.tool = null; D.pending = null;
     var v = editView(function (dc) {
       dc.layout = 'manual';
-      if (spec.flat) return Drawing.addFlatView(dc, mesh(), { model: App.model, build: App.build, x: p[0], y: p[1], scale: spec.scale || null, bendNotes: spec.bendNotes });
+      if (spec.flat) return Drawing.addFlatView(dc, mesh(), { model: App.model, build: App.build, x: p[0], y: p[1], scale: spec.scale || null, bendNotes: spec.bendNotes, showLabel: spec.showLabel ? true : null });
       var nv = Drawing.addView(dc, spec.orient, { display: spec.display || (ORTHO_NAMES.indexOf(spec.orient) >= 0 ? 'hlv' : 'hlr'), scale: spec.scale || null, x: p[0], y: p[1] });
       if (spec.dimType === 'true') nv.dimType = 'true';   // (rfZ) Dimension Type True
+      if (spec.showLabel) Drawing.setViewLabel(dc, nv.id, true);   // (rfCQ)
       return nv;
     });
     D.sel = { kind: 'view', id: v.id };
@@ -172,7 +174,7 @@
       message: 'Pick the cutting line, press OK, click in a view to place it (it snaps to hole centres), then click on the side where the section view goes. Half: the click is the centre where the line turns. Offset: click each leg (2 or 3), then the side. Aligned: click the centre, then a point on the second leg, then the side.',
       // (rfW) SolidWorks' groups: Section Line (type, orientation, half), Section View (label, Flip direction),
       // Scale (Use parent scale / Use custom scale)
-      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()), flip: false, scaleMode: 'parent', scale: scaleOptions()[1][0], partial: false, swm: false },
+      values: { axis: 'h', type: 'full', side: '1', label: Drawing.nextLabel(doc()), flip: false, scaleMode: 'parent', scale: scaleOptions()[1][0], partial: false, swm: false, showLabel: true },
       groups: [
         { title: 'Section Line', fields: [{ type: 'select', key: 'type', label: 'Type', rerender: true, options: [['full', 'Full Section'], ['half', 'Half Section'], ['offset', 'Offset Section'], ['aligned', 'Aligned Section']] },
           { type: 'select', key: 'axis', label: 'Line', options: [['h', 'Horizontal'], ['v', 'Vertical']] },
@@ -181,14 +183,14 @@
           // changes: the line keeps its place on the part when the part changes size
           { type: 'check', key: 'partial', label: 'Partial section', show: function (v) { return v.type === 'full'; } },
           { type: 'check', key: 'swm', label: 'Scale with model changes' }] },
-        { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }] },
+        { title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }, { type: 'check', key: 'showLabel', label: 'Display label' }] },
         { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['parent', 'Use parent scale'], ['custom', 'Use custom scale']] },
           { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }
       ],
       onOK: function (val) {
         var ty = /^(half|offset|aligned)$/.test(val.type) ? val.type : 'full';
         startTool('section', { axis: val.axis === 'v' ? 'v' : 'h', type: ty, side: +val.side < 0 ? -1 : 1, label: cleanLabel(val.label), parent: null, at: null, pts: [],
-          flip: !!val.flip, scale: val.scaleMode === 'custom' && val.scale ? Drawing.parseScale(val.scale) : null, partial: ty === 'full' && !!val.partial, swm: !!val.swm });
+          flip: !!val.flip, scale: val.scaleMode === 'custom' && val.scale ? Drawing.parseScale(val.scale) : null, partial: ty === 'full' && !!val.partial, swm: !!val.swm, showLabel: val.showLabel !== false });
         if (ty === 'full' && val.partial) { UI.setStatus('Section View (partial): click one end of the ' + (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line in a view. Esc cancels.'); return; }
         UI.setStatus('Section View: click in a view to place the ' + (ty === 'half' ? 'centre of the half section' : ty === 'aligned' ? 'centre of the aligned section' : (val.axis === 'v' ? 'vertical' : 'horizontal') + ' cutting line') + '. Esc cancels.');
       }
@@ -274,6 +276,7 @@
     var pl = sectionPlacement(p), spec = { axis: P.axis, at: P.cut, sign: pl.sign, x: pl.x, y: pl.y, label: P.label }, parent = P.parent, v;
     if (P.partial && P.to != null) spec.partial = [P.from, P.to];   // (rfZ)
     if (P.swm) spec.scaleWithModel = true;
+    if (P.showLabel === false) spec.showLabel = false;   // (rfCQ) Display label off
     if (ty === 'half') { spec.type = 'half'; spec.c = P.c; spec.side = P.side; }
     else if (ty === 'aligned') { spec.type = 'aligned'; spec.c = P.c; spec.side = P.side; spec.angle = P.angle; }
     else if (ty === 'offset' && P.pts.length > 1) {
@@ -294,25 +297,48 @@
   function cmdDetailView() {
     if (D.tool === 'detail') { endToolPM(); return; }
     if (!App.mesh || !App.mesh.triCount) { UI.toast(isAsm() ? 'The assembly has no components to draw yet.' : 'The part has no solid body to draw yet.'); return; }
-    var vals = { label: Drawing.nextLabel(doc()), shape: 'circle', style: 'standard', fullOutline: false, jagged: false, scaleMode: 'default', scale: scaleOptions()[1][0] };
+    var vals = { label: Drawing.nextLabel(doc()), shape: 'circle', style: 'standard', fullOutline: false, jagged: false, scaleMode: 'default', scale: scaleOptions()[1][0], showLabel: true };
+    // (rfCQ) a closed sketch profile selected in a view (a circle, or lines / arcs / splines end to end, drawn with the
+    // drawing's Sketch tab) is the detail's boundary, as in SolidWorks: the tool starts at "click where the view goes"
+    var prof = selectedProfile();
     startTool('detail', { parent: null, at: null, pm: vals });
+    if (prof) {
+      var P0 = D.pending, w0 = sheetView(prof.view);
+      P0.parent = prof.view; P0.loopIds = prof.ids;
+      if (prof.circle) { P0.c = w0.fromSheet(prof.circle.c); P0.cp = prof.circle.c; P0.r = prof.circle.r / w0.scale; }
+      else { P0.pts = prof.pts.map(w0.fromSheet); vals.shape = 'profile'; }
+      P0.scale = Drawing.detailScale(w0.view.scale || doc().sheet.scale || [1, 1]);
+    }
     // (rfW) its PropertyManager opens with the tool (SolidWorks): Detail Circle (style, label, Circle / Profile: rfZ, a
     // rectangle by two corner clicks), Detail View (rfZ: Full outline / Jagged outline) and Scale (twice the parent's,
     // or a custom one); the keyboard stays on the sheet
     openDrawingPM({
       title: 'Detail View', icon: 'detailView', command: 'detailView', noFocus: true, values: vals,
-      message: 'Click the centre of the detail circle in a view, click again for its radius, then click where the view goes (Profile: click two opposite corners of the rectangle). Esc cancels.',
+      message: prof ? 'The selected sketch profile is the detail boundary: click where the view goes. Esc cancels.' :
+        'Click the centre of the detail circle in a view, click again for its radius, then click where the view goes (Profile: click two opposite corners of the rectangle, or sketch a closed profile in the view, select it, then Detail View). Esc cancels.',
       groups: [
         { title: 'Detail Circle', fields: [{ type: 'select', key: 'style', label: 'Style', options: DETAIL_STYLE_OPTIONS }, { type: 'text', key: 'label', label: 'Label' },
           { type: 'radio', key: 'shape', label: 'Shape', options: [['circle', 'Circle'], ['profile', 'Profile']] }] },
-        { title: 'Detail View', fields: [{ type: 'check', key: 'fullOutline', label: 'Full outline' }, { type: 'check', key: 'jagged', label: 'Jagged outline', show: function (v) { return !v.fullOutline; } }] },
+        { title: 'Detail View', fields: [{ type: 'check', key: 'fullOutline', label: 'Full outline' }, { type: 'check', key: 'jagged', label: 'Jagged outline', show: function (v) { return !v.fullOutline; } },
+          { type: 'check', key: 'showLabel', label: 'Display label' }] },
         { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['default', 'Twice the parent\'s scale'], ['custom', 'Use custom scale']] },
           { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }
       ],
       onOK: function () { if (D.tool === 'detail') endTool(); },
       onClose: function () { if (D.tool === 'detail' && D.pending && D.pending.pm === vals) endTool(); }
     });
-    UI.setStatus('Detail View: click the centre of the detail circle in a view. Esc cancels.');
+    UI.setStatus(prof ? 'Detail View (' + Drawing.scaleText(D.pending.scale) + ') of the selected profile: click where the view goes. Esc cancels.' : 'Detail View: click the centre of the detail circle in a view. Esc cancels.');
+  }
+  // (rfCQ) the closed profile the selected sketch entities make in a view that can have a detail: { view, ids, circle,
+  // pts (sheet) } or null (nothing suitable selected; a message says why when the selection is sketch entities)
+  function selectedProfile() {
+    var ids = D.sel && D.sel.kind === 'sk' ? (D.sel.ids || [D.sel.id]) : [];
+    if (!ids.length || !D.sheet) return null;
+    var L = null;
+    try { L = Drawing.sketchLoop(doc(), ids); } catch (err) { UI.toast('Detail View: ' + err.message + '. A detail circle is used instead.'); return null; }
+    var w = L.view != null ? sheetView(L.view) : null;
+    if (!w || w.view.kind === 'detail' || w.view.kind === 'flat') { UI.toast('Detail View: sketch the profile in a model, projected or section view. A detail circle is used instead.'); return null; }
+    return L;
   }
   var DETAIL_STYLE_OPTIONS = [['standard', 'Per Standard'], ['broken', 'Broken Circle'], ['leader', 'With Leader'], ['noleader', 'Without Leader'], ['connected', 'Connected']];
   function detailClick(p) {
@@ -326,7 +352,7 @@
       return;
     }
     var w2 = sheetView(P.parent);
-    if (P.profile && !P.cp2) {
+    if (!P.pts && P.profile && !P.cp2) {
       var c2 = w2.fromSheet(p);
       if (Math.abs(c2[0] - P.c[0]) < 1e-9 || Math.abs(c2[1] - P.c[1]) < 1e-9) { UI.setStatus('Detail View: click the opposite corner, away from the first in both directions.'); return; }
       P.cp2 = p; P.c2 = c2; P.r = Math.hypot(c2[0] - P.c[0], c2[1] - P.c[1]) / 2;
@@ -334,19 +360,22 @@
       UI.setStatus('Detail View (' + Drawing.scaleText(P.scale) + '): click where the view goes.');
       return;
     }
-    if (P.r == null) {
+    if (!P.pts && P.r == null) {
       var r = Math.hypot(p[0] - P.cp[0], p[1] - P.cp[1]) / w2.scale;
       if (!(r > 0)) return;
       P.r = r; P.scale = P.pm && P.pm.scaleMode === 'custom' && P.pm.scale ? Drawing.parseScale(P.pm.scale) : Drawing.detailScale(w2.view.scale || doc().sheet.scale || [1, 1]);
       UI.setStatus('Detail View (' + Drawing.scaleText(P.scale) + '): click where the view goes.');
       return;
     }
-    var spec = P.profile ? { shape: 'profile', a: P.c, b: P.c2, scale: P.scale, x: p[0], y: p[1] } : { c: P.c, r: P.r, scale: P.scale, x: p[0], y: p[1] }, parent = P.parent, v;
+    var spec = P.pts ? { pts: P.pts, scale: P.scale, x: p[0], y: p[1] } : P.profile ? { shape: 'profile', a: P.c, b: P.c2, scale: P.scale, x: p[0], y: p[1] } : { c: P.c, r: P.r, scale: P.scale, x: p[0], y: p[1] }, parent = P.parent, v;
     if (P.pm && P.pm.label) spec.label = cleanLabel(P.pm.label);
-    if (P.pm) { spec.style = P.pm.style || null; spec.outline = P.pm.fullOutline ? 'full' : P.pm.jagged ? 'jagged' : null; }
+    if (P.pm) { spec.style = P.pm.style || null; spec.outline = P.pm.fullOutline ? 'full' : P.pm.jagged ? 'jagged' : null; if (P.pm.showLabel === false) spec.showLabel = false; }
+    if (P.pm && P.pm.scaleMode === 'custom' && P.pm.scale) spec.scale = Drawing.parseScale(P.pm.scale);
     endTool();
     if (P.pm && UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === P.pm) UI.pmCancel();
-    v = editView(function (dc) { return Drawing.addDetailView(dc, mesh(), parent, spec); });
+    // (rfCQ) a sketched profile becomes the detail's own boundary: its sketch entities go (one undo step)
+    var loopIds = P.loopIds || null;
+    v = editView(function (dc) { if (loopIds) loopIds.forEach(function (id) { try { Drawing.deleteSketchEntity(dc, id); } catch (e) { } }); return Drawing.addDetailView(dc, mesh(), parent, spec); });
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
     UI.setStatus(v.name + ' placed.');
     return v;
@@ -360,13 +389,13 @@
         title: v.name + ' (Flat pattern)', icon: 'flatView', command: 'viewProps',
         message: 'The unfolded blank of ' + (App.model.name || 'the part') + ': bend lines UP (solid) and DOWN (dashed); drag a bend note to move it, Delete hides it.',
         values: { bendNotes: v.bendNotes || o.bendNotes, flatSize: v.flatSize != null ? !!v.flatSize : o.flatSizeNote, scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet', showAll: false,
-          colBD: bendColsOf(v).indexOf('bd') >= 0, colBA: bendColsOf(v).indexOf('ba') >= 0, colK: bendColsOf(v).indexOf('k') >= 0, showEtch: v.showEtch !== false },
+          colBD: bendColsOf(v).indexOf('bd') >= 0, colBA: bendColsOf(v).indexOf('ba') >= 0, colK: bendColsOf(v).indexOf('k') >= 0, showEtch: v.showEtch !== false, showLabel: Drawing.viewLabelShown(v) },
         groups: [
           { title: 'Bend Notes', fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }, { type: 'check', key: 'showAll', label: 'Show hidden bend notes again' }] },
           // (SolidWorks' bend table template takes these columns besides TAG / DIRECTION / ANGLE / RADIUS)
           { title: 'Bend Table Columns', show: function (val) { return val.bendNotes === 'table'; }, fields: [{ type: 'check', key: 'colBD', label: 'Bend deduction (BEND DED.)' },
             { type: 'check', key: 'colBA', label: 'Bend allowance (BEND ALLOW.)' }, { type: 'check', key: 'colK', label: 'K-factor' }] },
-          { title: 'Flat Pattern', fields: [{ type: 'check', key: 'flatSize', label: 'FLAT SIZE note' }, { type: 'check', key: 'showEtch', label: 'Show etch marks' }] },
+          { title: 'Flat Pattern', fields: [{ type: 'check', key: 'flatSize', label: 'FLAT SIZE note' }, { type: 'check', key: 'showEtch', label: 'Show etch marks' }, { type: 'check', key: 'showLabel', label: 'Display label' }] },
           { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: scaleOptions() }] }
         ],
         onOK: function (val) {
@@ -378,6 +407,7 @@
             setBendCols(w, [val.colBD && 'bd', val.colBA && 'ba', val.colK && 'k'].filter(Boolean));
             w.scale = val.scale === 'sheet' ? null : Drawing.parseScale(val.scale);
             if (val.showAll && w.flatAnn) Object.keys(w.flatAnn).forEach(function (k) { Drawing.flatAnnotation(dc, id, k, { hidden: false }); });
+            Drawing.setViewLabel(dc, id, !!val.showLabel);   // (rfCQ)
             dc.layout = 'manual';
           });
         }
@@ -387,7 +417,8 @@
     openDrawingPM({
       title: v.name, icon: 'drawingView', command: 'viewProps',
       values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
-        swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none' },
+        swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
+        showLabel: Drawing.viewLabelShown(v) },
       // projected, section and detail views take their direction from the parent
       groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
@@ -398,7 +429,9 @@
         // Scale with model changes; a detail's circle style and outline
         !v.kind && ORTHO_NAMES.indexOf(v.orient) < 0 ? [{ title: 'Dimension Type', fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']] }] }] : [],
         v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
-        v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : []),
+        v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : [],
+        // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
+        [{ title: 'Label', fields: [{ type: 'check', key: 'showLabel', label: 'Display label' }] }]),
       onOK: function (val) {
         edit(function (dc) {
           var w = Drawing.findView(dc, id);
@@ -415,6 +448,7 @@
           if (!w.kind) { if (val.dimType === 'true' && ORTHO_NAMES.indexOf(w.orient) < 0) w.dimType = 'true'; else delete w.dimType; }
           if (w.kind === 'section' && w.section) Drawing.setSectionOptions(dc, mesh(), w.id, { partial: w.section.partial && !val.partial ? null : undefined, scaleWithModel: !!val.swm });
           if (w.kind === 'detail' && w.detail) Drawing.setDetailOptions(dc, w.id, { style: val.dstyle, outline: val.outline });
+          Drawing.setViewLabel(dc, w.id, !!val.showLabel);   // (rfCQ)
           dc.layout = 'manual';
         });
       }
@@ -1665,13 +1699,13 @@
   function cmdAuxiliaryView() {
     if (D.tool === 'aux') { endToolPM(); return; }
     if (!needPart()) return;
-    var vals = { label: Drawing.nextLabel(doc()), flip: false };
+    var vals = { label: Drawing.nextLabel(doc()), flip: false, showLabel: true };
     startTool('aux', { parent: null, edge: null, label: vals.label, pm: vals });
-    // (rfW) its PropertyManager opens with the tool (SolidWorks): Arrow (label, Flip direction)
+    // (rfW) its PropertyManager opens with the tool (SolidWorks): Arrow (label, Flip direction); (rfCQ) Display label
     openDrawingPM({
       title: 'Auxiliary View', icon: 'auxView', command: 'auxView', noFocus: true, values: vals,
       message: 'Click a straight edge in a view, then click where the view goes along its arrow. Esc cancels.',
-      groups: [{ title: 'Arrow', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }] }],
+      groups: [{ title: 'Arrow', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }, { type: 'check', key: 'showLabel', label: 'Display label' }] }],
       onChange: function (v) { var P = D.pending; if (D.tool === 'aux' && P && P.pm === vals) { P.label = cleanLabel(v.label); P.ghosts = null; drawOverlay(); } },
       onOK: function () { if (D.tool === 'aux') endTool(); },
       onClose: function () { if (D.tool === 'aux' && D.pending && D.pending.pm === vals) endTool(); }
@@ -1690,6 +1724,7 @@
     }
     var e = P.edge, n = [-(e.pb[1] - e.pa[1]), e.pb[0] - e.pa[0]], m = [(e.pa[0] + e.pb[0]) / 2, (e.pa[1] + e.pb[1]) / 2];
     var spec = { a: e.a, b: e.b, sign: ((p[0] - m[0]) * n[0] + (p[1] - m[1]) * n[1] >= 0 ? 1 : -1) * (P.pm && P.pm.flip ? -1 : 1), label: P.label, x: p[0], y: p[1] }, parent = P.parent, v;
+    if (P.pm && P.pm.showLabel === false) spec.showLabel = false;   // (rfCQ)
     endTool();
     if (P.pm && UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === P.pm) UI.pmCancel();
     try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }

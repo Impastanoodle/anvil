@@ -19,15 +19,16 @@
 // two directions, reverse, draft; bodies scope and merge: false), revolve / revolve cut, linear and circular patterns,
 // mirror of features and of the body (stage 1); fillet and chamfer (edges nearest the picked points, tangent
 // propagation), shell (faces nearest the picked points removed; none: closed hollow), loft, sweep (sketch path with
-// exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2); sheet metal: edge flange, hem, jog
-// and Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs). Anything else stops
+// exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2); sheet metal: edge flange, hem, jog,
+// Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs) and Break Corner (Kernel.breakCornerLayout,
+// exact fillet arcs). Anything else stops
 // the build at that feature ('unsupported'), so the caller keeps Anvil's own result. `tolerance` is the relative
 // volume agreement to expect with Anvil (1e-4; 2e-2 with sweeps / lofts, which Anvil facets). OpenCascade objects
 // are freed after every build.
 var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
-    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1 };
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1, breakCorner: 1 };
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -231,7 +232,7 @@ var OcctKernel = (function () {
     function moveTo(sh, t, plane) { var tr = N(new oc.gp_Trsf_1()); tr.SetTranslation_1(Vec([plane.n[0] * t, plane.n[1] * t, plane.n[2] * t])); return transformed(sh, tr); }
     function extrudeTool(f) {
       if (f.sheetBase && rm.sheetError) throw new Error(rm.sheetError);
-      var sk = sketchOf(f), plane = K.resolvePlane(sk.plane, m, planes), range = K.extrudeRange(f, K.THROUGH);
+      var sk = K.contourSketch(f, sketchOf(f)), plane = K.resolvePlane(sk.plane, m, planes), range = K.extrudeRange(f, K.THROUGH);   // lane CO: Selected Contours
       if (f.draft != null && !isFinite(+f.draft)) throw new Error('Draft angle must be a number.');
       var draft = +f.draft || 0;
       if (Math.abs(draft) >= 89) throw new Error('Draft angle must be less than 89°.');
@@ -312,7 +313,7 @@ var OcctKernel = (function () {
       return out;
     }
     function revolveTool(f) {
-      var sk = sketchOf(f);
+      var sk = K.contourSketch(f, sketchOf(f));   // lane CO: Selected Contours
       return revolveSketch(sk, K.resolvePlane(sk.plane, m, planes), K.revolveAxis(f, sk), (+f.angle || 360) * (f.reverse ? -1 : 1));
     }
     function revolveSketch(sk, plane, axis, ang) {
@@ -884,6 +885,23 @@ var OcctKernel = (function () {
       if (parts.length > 1) body = boolMany('fuse', body, parts.slice(1), 'OpenCascade could not join the bent pieces.');
       bodies[k] = unify(body);
     }
+    // Break Corner (lane CP; as Kernel.buildBreakCorner, from Kernel.breakCornerLayout found on the bodies'
+    // tessellation): one prism per corner, its section's fillet an exact arc; the rebuild cuts the tool (a registered cut)
+    function breakCornerTool(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      if (!bodies.length) throw new Error('Nothing to break yet.');
+      var polys = [];
+      bodies.forEach(function (b) { Array.prototype.push.apply(polys, shapeToCSG(b).polygons); });
+      var lay = K.breakCornerLayout(f, m, { body: CSGlib.fromPolygons(polys) }), acc = null;
+      lay.tools.forEach(function (t) {
+        var mf = N(new oc.BRepBuilderAPI_MakeFace_15(loopWire({ pts: t.pts, seg: t.seg }, { curves: t.curves }, t.plane), true));
+        if (!mf.IsDone()) throw new Error('Break Corner: OpenCascade could not make the corner section.');
+        var s = N(N(new oc.BRepPrimAPI_MakePrism_1(moveTo(N(mf.Face()), t.a, t.plane), Vec(V.scale(t.plane.n, t.b - t.a)), false, true)).Shape());
+        acc = acc ? fuse(acc, s) : s;
+      });
+      return acc;
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -981,6 +999,7 @@ var OcctKernel = (function () {
             case 'flange': flangeOp(f); break;
             case 'jog': jogOp(f); break;
             case 'sketchedBend': sketchedBendOp(f); break;
+            case 'breakCorner': tool = breakCornerTool(f); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }

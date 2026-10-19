@@ -767,7 +767,15 @@
       else if (sl) svgNode('line', { class: 'dw-cut', x1: sl.a[0], y1: H - sl.a[1], x2: sl.b[0], y2: H - sl.b[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': sdash }, g);
       if (P.parent != null && (!legs || legs.ghost) && !(P.partial && P.to == null)) { var sp = DW.sectionPlacement(P.at); if (sp) ghost(sp.x, sp.y, sp.w, sp.h); }
     }
-    if (D.tool === 'detail' && P && P.parent != null && P.profile) {
+    if (D.tool === 'detail' && P && P.parent != null && P.pts) {
+      // (rfCQ) a sketched profile: its outline on the parent, the enlarged view's box at the pointer
+      var pw0 = DW.sheetView(P.parent);
+      if (pw0) {
+        var PS = P.pts.map(pw0.toSheet), xs = PS.map(function (q) { return q[0]; }), ys = PS.map(function (q) { return q[1]; });
+        svgNode('polygon', { class: 'dw-cut', points: PS.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': pxToPaper(2) }, g);
+        if (P.at) { var pk0 = Drawing.scaleValue(P.scale) / pw0.scale; ghost(P.at[0], P.at[1], (Math.max.apply(null, xs) - Math.min.apply(null, xs)) * pk0, (Math.max.apply(null, ys) - Math.min.apply(null, ys)) * pk0); }
+      }
+    } else if (D.tool === 'detail' && P && P.parent != null && P.profile) {
       // (rfZ) a Profile: the rectangle from the first corner to the pointer, then the enlarged view at the pointer
       var q2 = P.cp2 || P.at;
       if (q2) svgNode('rect', { class: 'dw-cut', x: Math.min(P.cp[0], q2[0]), y: H - Math.max(P.cp[1], q2[1]), width: Math.abs(q2[0] - P.cp[0]), height: Math.abs(q2[1] - P.cp[1]), fill: 'none', 'stroke-width': pxToPaper(2) }, g);

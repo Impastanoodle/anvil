@@ -167,6 +167,9 @@ var SketchSolver = (function () {
     tangent: { name: 'Tangent', glyph: 'T' },
     concentric: { name: 'Concentric', glyph: '◎' },
     equal: { name: 'Equal', glyph: '=' },
+    // rfCR: SolidWorks' Equal Curve Length: two of line, arc, circle, spline, ellipse keep one length (a line's length,
+    // an arc's r · sweep, a circle's 2πr, a free curve's length along it)
+    equalcurve: { name: 'Equal Curve Length', glyph: '≎' },
     midpoint: { name: 'Midpoint', glyph: 'M' },
     collinear: { name: 'Collinear', glyph: '≡' },
     symmetric: { name: 'Symmetric', glyph: '⇹' },
@@ -201,7 +204,7 @@ var SketchSolver = (function () {
     pathlength: { name: 'Path Length', glyph: '⤳', dim: true },
     runangle: { name: 'Angular Running', glyph: '∠', dim: true }
   };
-  var ADD_ORDER = ['horizontal', 'vertical', 'coincident', 'midpoint', 'intersection', 'collinear', 'parallel', 'perpendicular', 'tangent', 'concentric', 'coradial', 'equal', 'symmetric', 'fix'];
+  var ADD_ORDER = ['horizontal', 'vertical', 'coincident', 'midpoint', 'intersection', 'collinear', 'parallel', 'perpendicular', 'tangent', 'concentric', 'coradial', 'equal', 'equalcurve', 'symmetric', 'fix'];
 
   // Does relation `type` apply to refs of these kinds? (order-free; returns the kinds in the order the residual wants
   // them, as an index permutation, or null)
@@ -244,6 +247,8 @@ var SketchSolver = (function () {
       }
       case 'arclength': return n === 1 && kinds[0] === 'circle' ? [0] : null;
       case 'equal': return n === 2 ? perm('line', 'line') || perm('circle', 'circle') : null;
+      // rfCR: any two curves (a line, an arc / circle, a spline / ellipse); relEquation refuses the entity types it cannot measure
+      case 'equalcurve': return n === 2 && kinds.every(function (k) { return k === 'line' || k === 'circle' || k === 'free'; }) ? [0, 1] : null;
       case 'fix': case 'onEdge': return n === 1 && kinds[0] ? [0] : null;
       case 'distance':
         if (n !== 2) return null;
@@ -487,6 +492,25 @@ var SketchSolver = (function () {
         }
         else f = function (E) { return [C(A, E).r - C(B, E).r]; };
         break;
+      case 'equalcurve': {
+        // rfCR: the length along each curve: a line (or a rectangle's / polygon's edge), an arc's r · sweep, a circle's
+        // 2πr, a spline's / ellipse's chord length over its samples. Other entity types (slots, arc slots) are refused.
+        var lenOf = function (r, k) {
+          var e = ents[r.e];
+          if (e && (e.t === 'slot' || e.t === 'aslot')) return null;   // a slot's whole ref is its centre line, not its outline
+          if (k === 'line') return function (E) { var l = C(r, E); return len(sub(l.b, l.a)); };
+          if (k === 'free') return r.s === null ? function (E) { var fc = refFree(E, r); if (!fc) return 0; var sm = freeSamples(fc), L = 0; for (var q = 1; q < sm.length; q++) L += len(sub(sm[q].p, sm[q - 1].p)); return L; } : null;
+          if (r.s !== null || !e) return null;
+          if (e.t === 'arc') return function (E) { var a = E[r.e]; return Math.abs(a.a1 - a.a0) * D2R * a.r; };
+          if (e.t === 'circle') return function (E) { return 2 * Math.PI * E[r.e].r; };
+          return null;
+        };
+        var lA = lenOf(A, kA), lB = lenOf(B, kB);
+        if (!lA || !lB) return null;
+        n = 1;
+        f = function (E) { return [lA(E) - lB(E)]; };
+        break;
+      }
       case 'fix': case 'onEdge': {
         if (!A.o && A.s === null && ents[A.e] && ents[A.e].t !== 'point') {
           var names = paramNames(ents[A.e]), at = Array.isArray(rel.at) && rel.at.length === names.length ? rel.at : names.map(function (nm) { return pget(ents[A.e], nm); });
@@ -1533,6 +1557,8 @@ var SketchSolver = (function () {
       if (R.length === 2 && t === 'fix') return true;
       // sketch-fillet2: Tangent to a spline only where it shares an end with the line / arc
       if (t === 'tangent' && (kinds.indexOf('free') >= 0 || (kinds[0] === 'line' && kinds[1] === 'line'))) return !!match(t, kinds) && !!relEquation(sketch.entities, { type: 'tangent', refs: refs.map(String) }, sketch.rels);
+      // rfCR: Equal Curve Length only between curves it can measure (not a slot's outline, not two refs of one entity)
+      if (t === 'equalcurve') return R.length === 2 && R[0].e !== R[1].e && !!match(t, kinds) && !!relEquation(sketch.entities, { type: t, refs: refs.map(String) }, sketch.rels);
       return !!match(t, kinds);
     });
   }
@@ -1622,6 +1648,71 @@ var SketchSolver = (function () {
     sketch.rels.splice(index, 1);
     if (!sketch.rels.length) delete sketch.rels;
     return true;
+  }
+  // rfCR: SolidWorks' Replace Entity: entity j takes the place of entity i. Every relation and dimension on i moves to
+  // j: a whole-entity ref (and a rectangle's / polygon's edge) becomes j, each end (or corner) the nearest end or
+  // corner of j, a centre j's centre, a midpoint j's midpoint; a ref j cannot take (a centre of a line) drops that
+  // relation, as does a relation that tied i to j (an end they shared). A placed dimension moves when j can carry its
+  // kind, and keeps its value (the solve pulls j to it, as a driving dimension would). The old entity goes, or stays as
+  // construction geometry (opts.construction). All or nothing: when the sketch cannot be solved afterwards it is left
+  // exactly as it was. Returns { ok, index (j's index afterwards), moved (relations), dims, error }.
+  function replaceEntity(sketch, i, j, opts) {
+    opts = opts || {};
+    var E = sketch.entities, a = E[i], b = E[j];
+    if (!a || !b) return { ok: false, error: 'Select the entity to replace, then the entity that replaces it.' };
+    if (i === j) return { ok: false, error: 'The replacement has to be another entity.' };
+    if (a.t === 'point' || a.t === 'text' || b.t === 'point' || b.t === 'text') return { ok: false, error: 'Replace Entity works on lines, arcs, circles and curves, not on points or text.' };
+    var saved = tSave(sketch), an0 = analyze(sketch);
+    var ptsB = pointRefs(sketch, j), endsB = ptsB.filter(function (q) { return /\.(p\d|v\d+)$/.test(q.ref); });
+    function mapRef(r) {
+      var p = parseRef(r);
+      if (!p || p.o || p.e !== i) return r;
+      if (p.s === null) return String(j);
+      if (p.s === 'e') return (b.t === 'line' || b.t === 'arc' || b.t === 'circle') ? String(j) : null;
+      if (p.s === 'c' || p.s === 'mid') { var same = ptsB.filter(function (q) { return q.ref === j + '.' + p.s; })[0]; return same ? same.ref : null; }
+      var at = refPoint(E, p), best = null, bd = Infinity;
+      if (!at) return null;
+      endsB.forEach(function (q) { var d = len(sub(q.pt, at)); if (d < bd) { bd = d; best = q.ref; } });
+      return best;
+    }
+    var moved = 0;
+    sketch.rels = (sketch.rels || []).map(function (rel) {
+      if (!rel.refs.some(function (r) { var p = parseRef(r); return p && !p.o && p.e === i; })) return rel;
+      var refs = rel.refs.map(mapRef);
+      if (refs.some(function (r) { return r == null; })) return null;
+      if (refs.some(function (r, k) { return refs.indexOf(r) !== k; })) return null;   // it tied i to j: nothing to hold now
+      var copy = clone(rel);
+      copy.refs = refs;
+      moved++;
+      return copy;
+    }).filter(Boolean);
+    if (!sketch.rels.length) delete sketch.rels;
+    // placed dimensions: the kinds j can carry, at their old values
+    var targets = [], dims = 0;
+    sketch.dims = (sketch.dims || []).filter(function (d) {
+      if (d.e !== i) return true;
+      var v = K ? K.dimValue(a, d) : null;
+      if (!K || !K.dimGeometry(b, d) || v == null) return false;
+      d.e = j; dims++;
+      if (!d.driven) targets.push({ d: d, v: v });
+      return true;
+    });
+    if (!sketch.dims.length) delete sketch.dims;
+    if (opts.construction) a.construction = true;
+    else {
+      removeEntity(sketch, i);
+      E.splice(i, 1);
+      (sketch.dims || []).forEach(function (d) { if (d.e > i) d.e--; });
+      if (j > i) j--;
+    }
+    clean(sketch);
+    var res = solve(sketch), ok = res.ok;
+    for (var t = 0; ok && t < targets.length; t++) { var sr = setDim(sketch, sketch.dims.indexOf(targets[t].d), targets[t].v); ok = sr.ok; }
+    var an = ok ? analyze(sketch) : null;
+    // a moved dimension or relation the new entity cannot take (it fights, or repeats, what already holds it) refuses
+    // the whole replacement, as an over-defining dimension is refused elsewhere
+    if (!ok || an.conflicts > an0.conflicts || an.redundant > an0.redundant) { tRestore(sketch, saved); return { ok: false, error: 'The replacement conflicts with the relations or dimensions moved onto it (it would over-define the sketch): nothing was replaced.' }; }
+    return { ok: true, index: j, moved: moved, dims: dims, analysis: an };
   }
 
   // Entity `index` was deleted: relations on it go, refs to later entities shift down.
@@ -5597,7 +5688,7 @@ var SketchSolver = (function () {
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
     setDim: setDim, setRelValue: setRelValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, relArgs: relArgs,
-    removeEntity: removeEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
+    removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
     diagnose: diagnose, diagnoseApply: diagnoseApply, scanEqual: scanEqual, applyEqual: applyEqual,   // rfAR: SketchXpert, Scan Equal
     lineCorner: lineCorner, filletCorner: filletCorner, extendTarget: extendTarget, extendEntity: extendEntity, endDir: endDir, offsetEntity: offsetEntity, offsetRelations: offsetRelations, offsetDimensions: offsetDimensions,

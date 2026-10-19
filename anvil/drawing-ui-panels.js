@@ -655,7 +655,7 @@
       name: dc.name, open: D.active, sheet: { name: dc.sheet.name, format: dc.sheet.format, size: D.sheet.size, scale: Drawing.scaleText(dc.sheet.scale), autoScale: !!dc.sheet.autoScale, projection: dc.sheet.projection, index: dc.activeSheet | 0, count: Drawing.sheetCount(dc) }, sheets: Drawing.sheets(dc),
       views: D.sheet.views.map(function (w) {
         var b = w.proj.bounds;
-        return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent,
+        return { id: w.view.id, name: w.view.name, orient: w.view.orient, role: w.view.role, kind: w.view.kind || 'model', label: w.view.label || null, parent: w.view.parent, showLabel: Drawing.viewLabelShown(w.view),
           display: w.view.display, tangent: w.view.tangent || 'removed', x: +w.view.x.toFixed(3), y: +w.view.y.toFixed(3), scale: w.view.scale ? Drawing.scaleText(w.view.scale) : null,
           extents: [+(b.umax - b.umin).toFixed(4), +(b.vmax - b.vmin).toFixed(4)], box: [w.box.x0, w.box.y0, w.box.x1, w.box.y1].map(function (x) { return +x.toFixed(3); }), stats: w.proj.stats, dims: (w.view.dims || []).length,
           hatch: w.hatch, sectionArea: w.section ? +w.section.area.toFixed(6) : null,
@@ -725,7 +725,24 @@
       // Projected / Section / Detail View without the mouse; each is one undo step and returns the summary
       projectedView: function (parentId, dir, opts) { return viewApi(function (dc) { return Drawing.addProjectedView(dc, mesh(), parentId, dir, Object.assign({ fit: true }, opts || {})); }); },
       sectionView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addSectionView(dc, mesh(), parentId, Object.assign({ fit: true }, opts || {})); }); },
-      detailView: function (parentId, opts) { return viewApi(function (dc) { return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts || {})); }); },
+      // (rfCQ) detailView(parentId, { sketch: [entity ids] }): the closed sketch profile those entities make in a view
+      // is the detail's boundary (its entities go); parentId may be null (the profile's view)
+      detailView: function (parentId, opts) {
+        opts = Object.assign({}, opts || {});
+        var loopIds = null;
+        if (opts.sketch) {
+          var L, sh = current();
+          try { L = Drawing.sketchLoop(doc(), opts.sketch); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+          var lw = sh && sh.views.filter(function (x) { return x.view.id === L.view; })[0];
+          if (!lw) { var m0 = 'Detail View: sketch the profile in a view'; UI.toast(m0); UI.setStatus(m0); return null; }
+          if (parentId == null) parentId = L.view;
+          if (L.circle) { opts.c = lw.fromSheet(L.circle.c); opts.r = L.circle.r / lw.scale; } else opts.pts = L.pts.map(lw.fromSheet);
+          loopIds = L.ids; delete opts.sketch;
+        }
+        return viewApi(function (dc) { if (loopIds) loopIds.forEach(function (id) { Drawing.deleteSketchEntity(dc, id); }); return Drawing.addDetailView(dc, mesh(), parentId, Object.assign({ c: [0, 0], fit: true }, opts)); });
+      },
+      // (rfCQ) viewLabel(id, on | null): a view's Display label (null: its kind's default); one undo step, the summary
+      viewLabel: function (id, on) { return annotApi(function (dc) { return Drawing.setViewLabel(dc, id, on); }); },
       deleteView: function (id) { deleteView(id); return summary(); },
       tangent: function (id, mode) { setViewTangent(id, mode); return summary(); },
       // assembly drawings: Auto Balloon on a view (default: the selected view, else the isometric), the Bill of

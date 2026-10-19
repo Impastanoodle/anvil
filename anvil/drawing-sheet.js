@@ -70,6 +70,8 @@
     doc.views.push(v);
     return v;
   }
+  // (rfCQ) opts.showLabel (true / false) of a view-adding call: the view's Display label (Drawing.setViewLabel)
+  function labelOpt(doc, v, opts) { if (opts && opts.showLabel != null) D.setViewLabel(doc, v.id, opts.showLabel); }
   function viewScale(doc, view) { return scaleValue(view.scale || doc.sheet.scale || [1, 1]); }
   // Views are recomputed on every render; the projection of a mesh in one orientation is cached on the mesh
   // (meshes are immutable once built, so the cache dies with it).
@@ -151,6 +153,7 @@
     var S = sheetSize(doc, doc.units), sc = opts.scale ? (Array.isArray(opts.scale) ? opts.scale : parseScale(opts.scale)) : null;
     var v = addView(doc, 'Flat pattern', { kind: 'flat', frame: { e: fd.frame.e.slice(), u: fd.frame.u.slice(), v: fd.frame.v.slice() }, display: 'hlv', scale: sc,
       x: opts.x != null ? +opts.x : S[0] / 2, y: opts.y != null ? +opts.y : S[1] / 2 });
+    labelOpt(doc, v, opts);
     if (opts.bendNotes === 'notes' || opts.bendNotes === 'table' || opts.bendNotes === 'none') v.bendNotes = opts.bendNotes;
     if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
     delete v.offSheet;
@@ -170,6 +173,7 @@
     var pos = besidePos(doc, mesh, par, F, dir);
     var v = addView(doc, F.name, { kind: 'projected', frame: { e: F.e, u: F.u, v: F.v }, parent: par.id, align: vert ? 'x' : 'y', dir: dir,
       scale: par.scale ? par.scale.slice() : null, display: isOrthoFrame(F) ? 'hlv' : 'hlr', x: pos[0], y: pos[1] });
+    labelOpt(doc, v, opts);
     if (opts.x != null && !vert) v.x = opts.x;
     if (opts.y != null && vert) v.y = opts.y;
     if ((vert ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, vert ? 'y' : 'x');
@@ -187,8 +191,10 @@
   function viewPaperBox(doc, mesh, v) {
     var k = paperK(doc.units), s = viewScale(doc, v), hw, hh, lab = 0;
     var left = 0;
-    if (v.kind === 'detail' && v.detail) { var dh = _.detailHalf(v.detail); hw = dh[0] * s; hh = dh[1] * s; lab = 14 * k; }
-    else { var ex = viewExtents(doc, mesh, v); hw = ex.w * s / 2; hh = ex.h * s / 2; if (v.kind === 'section' || v.scale) lab = 14 * k; }
+    // (rfCQ) room under the view for its label when it shows one
+    if (v.kind === 'detail' && v.detail) { var dh = _.detailHalf(v.detail); hw = dh[0] * s; hh = dh[1] * s; }
+    else { var ex = viewExtents(doc, mesh, v); hw = ex.w * s / 2; hh = ex.h * s / 2; }
+    if (D.viewLabelShown(v)) lab = 14 * k;
     if (v.kind === 'flat') {
       // a flat view carries its overall dimensions (left and below), the FLAT SIZE note and the Bend Table under it
       var o = D.docOptions(doc), fd = D.flatData(mesh), nb = fd && fd.bends ? fd.bends.length : 0;
@@ -293,6 +299,7 @@
     var pos = besidePos(doc, mesh, par, F, place);
     var v = addView(doc, F.name, { kind: 'section', name: 'Section View ' + label + '-' + label, label: label, parent: par.id, align: axis === 'h' ? 'x' : 'y',
       section: { axis: axis, at: +opts.at || 0, sign: sign }, scale: par.scale ? par.scale.slice() : null, display: 'hlr', x: pos[0], y: pos[1] });
+    labelOpt(doc, v, opts);
     if (opts.x != null && axis === 'v') v.x = opts.x;
     if (opts.y != null && axis === 'h') v.y = opts.y;
     if ((axis === 'h' ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, axis === 'h' ? 'y' : 'x');
@@ -326,6 +333,7 @@
     var v = addView(doc, par.orient, { kind: 'detail', name: 'Detail View ' + label + ' (' + scaleText(sc) + ')', label: label, parent: par.id, align: null,
       detail: dt, scale: sc, display: par.display,
       x: opts.x != null ? opts.x : par.x + pe.w * ps / 2 + g + _.detailHalf(dt)[0] * s, y: opts.y != null ? opts.y : par.y });
+    labelOpt(doc, v, opts);
     if (opts.x == null && opts.y == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, null);
     if (v.scale !== sc) v.name = 'Detail View ' + label + ' (' + scaleText(v.scale) + ')';
     doc.layout = 'manual';
@@ -1896,7 +1904,22 @@
     if (/^\d+$/.test(r)) return String(+r + 1);
     return 'A';
   }
-  function latestRev(doc) { var rv = doc && doc.revisions, l = rv && rv.show !== false && rv.rows || []; return l.length ? String(l[l.length - 1].rev || '') : null; }
+  // (rfCQ) a Revision Table belongs to the sheet it was inserted on (doc.revisions is a per-sheet key, SHEET_KEYS); the
+  // drawing's revision is still one: revTables(doc) lists the active sheet's table first, then the other sheets' in
+  // order, and latestRev / revRow read the first that has the row (a sheet without a table shows the drawing's REV)
+  function revTables(doc) {
+    var base = doc && (doc._sheetBase || doc), out = [];
+    function add(t) { if (t && t.show !== false && out.indexOf(t) < 0) out.push(t); }
+    if (!doc) return out;
+    add(doc.revisions); add(base.revisions);
+    (base.sheets || []).forEach(function (r) { if (r) add(r.revisions); });
+    return out;
+  }
+  function latestRev(doc) {
+    var ts = revTables(doc);
+    for (var i = 0; i < ts.length; i++) { var l = ts[i].rows || []; if (l.length) return String(l[l.length - 1].rev || ''); }
+    return null;
+  }
   // insertRevisionTable(doc, { anchor }) -> the table (kept when there is one)
   function insertRevisionTable(doc, opts) {
     opts = opts || {};
@@ -1909,7 +1932,8 @@
   function addRevision(doc, spec) {
     spec = spec || {};
     var t = doc.revisions && doc.revisions.show !== false ? doc.revisions : insertRevisionTable(doc, {});
-    var prev = t.rows.length ? t.rows[t.rows.length - 1].rev : null;
+    // (rfCQ) a table new on this sheet goes on from the drawing's latest revision (another sheet's table)
+    var prev = t.rows.length ? t.rows[t.rows.length - 1].rev : latestRev(doc);
     var row = { zone: String(spec.zone || ''), rev: spec.rev ? String(spec.rev).toUpperCase() : nextRev(prev), description: String(spec.description == null ? '' : spec.description), date: spec.date != null ? String(spec.date) : todayISO(), approved: String(spec.approved || '') };
     // (rfAN) a stable row id: a Revision Symbol placed for this row keeps its letter when the row's REV is edited
     row.id = revRowId(t);
@@ -1925,9 +1949,12 @@
   }
   // revRow(doc, { row, rev }) -> the row a Revision Symbol names: by its row id, else by its letter; null when none
   function revRow(doc, s) {
-    var l = doc && doc.revisions && doc.revisions.show !== false && doc.revisions.rows || [], i;
-    if (s && s.row != null) for (i = 0; i < l.length; i++) if (l[i].id === s.row) return l[i];
-    if (s && s.rev) for (i = 0; i < l.length; i++) if (String(l[i].rev).toUpperCase() === String(s.rev).toUpperCase()) return l[i];
+    var ts = revTables(doc), i, j;
+    for (j = 0; j < ts.length; j++) {
+      var l = ts[j].rows || [];
+      if (s && s.row != null) for (i = 0; i < l.length; i++) if (l[i].id === s.row) return l[i];
+      if (s && s.rev) for (i = 0; i < l.length; i++) if (String(l[i].rev).toUpperCase() === String(s.rev).toUpperCase()) return l[i];
+    }
     return null;
   }
   // editRevision(doc, i, props) / deleteRevision(doc, i) / deleteRevisionTable(doc)
@@ -1967,7 +1994,9 @@
   // document's own) and the others as { sheet, views, notes, symbols, bom, bomRows, layout }; doc.activeSheet is its
   // index. A document without doc.sheets (saved before rfQ) is one sheet. View and annotation ids stay unique across
   // the sheets (doc.nextView, doc.nextAnnot); the revisions, title block texts, properties and options are the drawing's.
-  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout', 'tables', 'holeTables'];   // (rfAE: general tables per sheet; rfAN: hole tables)
+  // (rfCQ) and the Revision Table: a drawing saved before rfCQ kept one doc.revisions, which is the active sheet's now,
+  // so the table stays on the sheet that was active when it was saved (sheet 1 in a one-sheet drawing)
+  var SHEET_KEYS = ['sheet', 'views', 'notes', 'symbols', 'bom', 'bomRows', 'layout', 'tables', 'holeTables', 'revisions'];   // (rfAE: general tables per sheet; rfAN: hole tables)
   function sheetCount(doc) { return doc.sheets && doc.sheets.length ? doc.sheets.length : 1; }
   function sheetsOf(doc) {
     if (!doc.sheets || !doc.sheets.length) { doc.sheets = [null]; doc.activeSheet = 0; }
@@ -1990,6 +2019,8 @@
     SHEET_KEYS.forEach(function (q) { if (q in r) d[q] = r[q]; else delete d[q]; });
     if (!d.views) d.views = r.views = [];
     d.activeSheet = i;
+    // (rfCQ) the drawing it is a sheet of (the drawing's REV comes from any sheet's Revision Table: revTables)
+    Object.defineProperty(d, '_sheetBase', { value: doc._sheetBase || doc, enumerable: false, configurable: true });
     return d;
   }
   // sheets(doc) -> [{ index, name, format, scale, autoScale, projection, views, active }]

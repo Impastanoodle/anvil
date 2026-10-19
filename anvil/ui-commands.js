@@ -1279,6 +1279,68 @@
     return list.length ? list[list.length - 1].id : null;
   }
 
+  // ------------------------------------------------------------------ lane CO: Selected Contours
+  // A Boss-Extrude / Cut-Extrude / Revolve can take only some regions of its sketch (Kernel.sketchRegions: the faces
+  // of the sketch's planar arrangement). The PropertyManager's Selected Contours box (at the bottom, as in SolidWorks)
+  // lists the picks as Sketch2-Region<1>; while it is active, hovering the graphics area lights the region under the
+  // pointer (ui-select.js draws it), a click toggles it in or out, Delete on a row removes it. The feature keeps a
+  // point inside each picked region (f.contours = [[u, v], …]), so a pick survives a dimension edit the way SolidWorks
+  // re-finds a contour. The box starts active when a plain extrude could not take every region
+  // (Kernel.regionsAmbiguous: an open line splits a loop, contours cross or share an edge).
+  // contourPicker(v, refresh) -> { field (the PM pick field), command (merged into the PM's command), init() }
+  function contourPicker(v, refresh) {
+    var st = { active: false, lastHover: null };
+    if (!Array.isArray(v.contours)) v.contours = [];
+    v.contours = v.contours.map(function (p) { return [+p[0], +p[1]]; });
+    function sketch() { return K.findFeature(App.model, typeof v.sketch === 'string' ? +v.sketch : v.sketch); }
+    function regionOf(p) { var sk = sketch(); try { return sk ? K.regionAt(sk, p) : null; } catch (e) { return null; } }
+    function label(p) { var sk = sketch(), r = regionOf(p); return (sk ? sk.name : 'Sketch') + '-Region<' + (r ? r.index + 1 : '?') + '>'; }
+    function pickOf(r, sk, pl) { return { kind: 'region', sketch: sk.id, index: r.index, p: r.p.slice(), region: r, plane: pl, label: label(r.p) }; }
+    function pickAt(mx, my) {
+      var sk = sketch(), pl = sk && sketchPlaneOf(sk);
+      if (!sk || !pl) return null;
+      var uv = UI.screenToPlane(mx, my, pl), r = uv && regionOf(uv), idx = r ? r.index : -1;
+      if (idx !== st.lastHover) { st.lastHover = idx; if (r) UI.setStatus(label(r.p) + ' — click to ' + (indexOfRegion(r) >= 0 ? 'remove it from' : 'add it to') + ' the selected contours.'); }
+      return r ? pickOf(r, sk, pl) : null;
+    }
+    function indexOfRegion(r) { for (var i = 0; i < v.contours.length; i++) if (regionOf(v.contours[i]) === r) return i; return -1; }
+    function changed() { renderPM(); if (refresh) refresh(); }
+    var field = {
+      type: 'pick', icon: 'vRegions', placeholder: 'Select sketch regions…',
+      value: function (x) { return x.contours.length ? x.contours.length + ' contour' + (x.contours.length > 1 ? 's' : '') : ''; },
+      active: function () { return st.active; },
+      onActivate: function () { st.active = !st.active; st.lastHover = null; if (st.active) UI.setStatus('Selected Contours: click the sketch regions to use (click a region again to remove it).'); renderPM(); UI.updateHighlights(); },
+      items: function (x) { var sk = sketch(), pl = sk && sketchPlaneOf(sk); return x.contours.map(function (p) { var r = regionOf(p); return { label: label(p), icon: 'vRegions', region: r, plane: pl, at: r ? null : undefined }; }); },
+      onRemove: function (x, i) { x.contours.splice(i, 1); changed(); },
+      onClear: function (x) { x.contours.length = 0; changed(); }
+    };
+    var command = {
+      pickRegions: pickAt,
+      regionsActive: function () { return st.active; },
+      pickedRegions: function () { var sk = sketch(), pl = sk && sketchPlaneOf(sk); if (!pl) return []; return v.contours.map(function (p) { return { region: regionOf(p), plane: pl }; }).filter(function (it) { return it.region; }); },
+      onPick: function (pk) {
+        if (!pk || pk.kind !== 'region') return false;
+        var i = indexOfRegion(pk.region);
+        if (i >= 0) v.contours.splice(i, 1); else v.contours.push(pk.p.slice());
+        st.lastHover = null;
+        changed();
+        return true;
+      }
+    };
+    function init() {
+      var sk = sketch();
+      try { st.active = !!(sk && K.regionsAmbiguous(sk)); } catch (e) { st.active = false; }
+      if (st.active) UI.setStatus('This sketch has more than one region: click the regions to extrude in the graphics area (Selected Contours).');
+    }
+    return { field: field, command: command, init: init, isActive: function () { return st.active; } };
+  }
+  // the feature as committed: no picks = the whole sketch, exactly as before
+  function contourFeature(out, v) {
+    if (!v.contours || !v.contours.length) delete out.contours;
+    else out.contours = v.contours.map(function (p) { return [+p[0], +p[1]]; });
+    return out;
+  }
+
   // Default "Reverse direction" for a NEW cut so it goes into the body instead of away from it.
   // 1. A sketch on a face (custom plane) has its normal pointing out of the material: reverse.
   // 2. The kernel's cutDirectionHint (when present) looks at where the body actually lies relative to the
@@ -1314,14 +1376,17 @@
         if (!v.draftOn || !(+v.draft > 0)) { delete out.draft; delete out.draftOut; }
         else if (!v.draftOut) delete out.draftOut;
         if (!v.cut || !v.normalCut) delete out.normalCut;
-        return applyBodyFields(out, v, !!v.cut);
+        return applyBodyFields(contourFeature(out, v), v, !!v.cut);
       }
       function isSheetCut(v) { return !!v.cut && !!App.model.sheet; }
       function isCutPM(v) { return !!v.cut; }
       function isBossPM(v) { return !v.cut; }
+      function preview(v) { App.command.sketchId = v.sketch; UI.updateSketches(); UI.updateHighlights(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); }
+      var contours = contourPicker(f, function () { preview(f); });   // lane CO: Selected Contours
+      contours.init();
       openPM({
         title: existing ? existing.name : title, icon: f.cut ? 'cut' : 'extrude', values: f,
-        command: { sketchId: f.sketch }, handles: extrudeHandles,
+        command: Object.assign({ sketchId: f.sketch }, contours.command), handles: extrudeHandles,
         groups: [
           { title: 'From', fields: [{ type: 'static', label: 'Start', value: 'Sketch Plane' }, sketchPickerField(f)] },
           {
@@ -1353,11 +1418,13 @@
               { type: 'check', label: 'Draft outward', key: 'draftOut', show: function (v) { return v.draftOn; } }
             ]
           },
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] },
+          { title: 'Selected Contours', fields: [contours.field] }   // lane CO: at the bottom, as in SolidWorks
         ],
-        onChange: function (v) { App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); },
+        onChange: function (v, key) { if (key === 'sketch') { v.contours.length = 0; renderPM(); } preview(v); },
         onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; return commitFeature(feat, existing); }
       });
+      if (contours.isActive()) UI.setStatus('This sketch has more than one region: click the regions to extrude in the graphics area (Selected Contours).');
     });
   }
 
@@ -1375,18 +1442,23 @@
       if (f.sketch == null) { UI.toast('No sketch available. Draw a sketch first.'); return; }
       var title = f.cut ? 'Cut-Revolve' : 'Revolve';
       initBodyFields(f, existing);
-      function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(v)), v, !!v.cut); }
+      function toFeature(v) { return applyBodyFields(contourFeature(JSON.parse(JSON.stringify(v)), v), v, !!v.cut); }
+      function preview(v) { App.command.sketchId = v.sketch; UI.updateSketches(); UI.updateHighlights(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '.'); }
+      var contours = contourPicker(f, function () { preview(f); });   // lane CO: Selected Contours
+      contours.init();
       openPM({
-        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: { sketchId: f.sketch }, handles: revolveHandles,
+        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: Object.assign({ sketchId: f.sketch }, contours.command), handles: revolveHandles,
         groups: [
           { title: 'Axis of Revolution', fields: [sketchPickerField(f), { type: 'select', label: 'Axis', key: 'axis', options: revolveAxisOptions }] },
           { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, mergeField(function (v) { return !v.cut; })] },
           scopeGroup(function (v) { return !!v.cut; }),
-          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] }
+          { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] },
+          { title: 'Selected Contours', fields: [contours.field] }   // lane CO
         ],
-        onChange: function (v, key) { if (key === 'sketch') { renderPM(); } App.command.sketchId = v.sketch; UI.updateSketches(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '.'); },
-        onOK: function (v) { if (!v.name) delete v.name; if (typeof v.axis === 'string' && /^\d+$/.test(v.axis)) v.axis = +v.axis; return commitFeature(applyBodyFields(v, v, !!v.cut), existing); }
+        onChange: function (v, key) { if (key === 'sketch') { v.contours.length = 0; renderPM(); } preview(v); },
+        onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; if (typeof feat.axis === 'string' && /^\d+$/.test(feat.axis)) feat.axis = +feat.axis; return commitFeature(feat, existing); }
       });
+      if (contours.isActive()) UI.setStatus('This sketch has more than one region: click the regions to revolve in the graphics area (Selected Contours).');
     });
   }
 
@@ -2473,6 +2545,139 @@
         }
       });
     });
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Break-Corner / Corner-Trim (lane CP)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Break-Corner/Corner-Trim (Kernel.buildBreakCorner, a cut): Corner Edges /
+  // Faces (a click on a corner edge — the short edge through the thickness at an outside corner — adds it, or on a
+  // flat sheet face, which takes every outside corner of that face; a second click removes it), Break type (Chamfer /
+  // Fillet) and Distance / Radius. The preview is the material that goes (built in the worker); ✓ is one undo step;
+  // the type and size are remembered for the next Break-Corner of the session.
+  var bcLast = { kind: 'chamfer', size: null };
+  function cmdBreakCorner(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body) { UI.toast('Create a Base Flange first.'); return; }
+    var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'breakCorner', kind: bcLast.kind, size: bcLast.size != null ? bcLast.size : UI.lenDefault(5), corners: [] };
+    f.corners = (f.corners || []).map(function (p) { return p.slice(); });
+    f.faces = (f.faces || []).map(function (p) { return p.slice(); });
+    // the part the break is made on: as it stands, or (editing) as it was before this feature; its outside corners
+    var base = null, cands = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    function corners() {
+      if (!cands) { try { cands = K.breakCornerCandidates(baseBody(), App.model); } catch (e) { cands = []; } }
+      return cands;
+    }
+    function near(p, c) { return K.pointSegmentDistance(p, c.top, c.bot) <= 0.75 * T; }
+    function cornerAt(p) { var best = null, bd = 0.75 * T; corners().forEach(function (c) { var d = K.pointSegmentDistance(p, c.top, c.bot); if (d <= bd) { bd = d; best = c; } }); return best; }
+    // the corners a face pick takes (the kernel's own face rule), or the reason it takes none; kept per point until
+    // the part shown changes (onRollback)
+    var faceMemo = {};
+    function faceCorners(p) {
+      var key = p.join(',');
+      if (faceMemo[key]) return faceMemo[key];
+      try {
+        var lay = K.breakCornerLayout({ kind: 'chamfer', size: 1e-6 * (1 + T), faces: [p] }, previewModel(), { body: baseBody() });
+        faceMemo[key] = { list: lay.corners.map(function (c) { return cornerAt(c.at) || { at: c.at, top: c.top, bot: c.bot }; }) };
+      } catch (e) { faceMemo[key] = { error: e.message }; }
+      return faceMemo[key];
+    }
+    function featOf(v) {
+      var out = { type: 'breakCorner', kind: v.kind, size: v.size, corners: v.corners.map(function (p) { return p.slice(); }) };
+      if (v.faces.length) out.faces = v.faces.map(function (p) { return p.slice(); });
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    // the model's corner edges lit while the PM is open: every picked corner and every corner of a picked face
+    function lit() {
+      var at = f.corners.slice();
+      f.faces.forEach(function (p) { var r = faceCorners(p); (r.list || []).forEach(function (c) { at.push(c.at); }); });
+      var list = (App.edges || []).filter(function (e) { return e.faces.length === 2 && at.some(function (p) { return K.pointSegmentDistance(e.mid, p, p) <= 0.6 * T && e.len <= 1.5 * T; }); });
+      if (App.command) App.command.edgeList = list;
+      UI.updateHighlights();
+    }
+    function status(extra) {
+      var n = f.corners.length, m = f.faces.length;
+      UI.setStatus((extra ? extra + ' ' : '') + 'Break-Corner: ' + n + ' corner' + (n === 1 ? '' : 's') + (m ? ' and ' + m + ' face' + (m === 1 ? '' : 's') : '') + ' picked. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      lit();
+      if (!f.corners.length && !f.faces.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click corner edges (through the thickness) or flat faces of the sheet to break their corners.'); return; }
+      livePreview({ op: 'tool', feature: featOf(f), mats: [UI.mats.previewCut], sync: previewSync, done: function () { status(); }, fail: function (msg) { UI.setStatus('Preview: ' + msg); } });
+    }
+    function previewSync() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var tool = K.buildBreakCorner(featOf(f), previewModel(), { body: baseBody() });
+        if (tool && tool.polygons.length) addPreviewMesh(tool, UI.mats.previewCut);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function toggleCorner(p) {
+      var i = -1;
+      f.corners.forEach(function (q, k) { var c = cornerAt(q); if (c && near(p, c)) i = k; });
+      if (i >= 0) f.corners.splice(i, 1); else f.corners.push(p.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
+    }
+    function pick(pk) {
+      if (pk.kind === 'edge' && pk.edge) {
+        var c = cornerAt(pk.edge.mid);
+        if (!c || pk.edge.len > 1.5 * T) { UI.setStatus('That edge is not a corner edge: click the short edge through the thickness at an outside corner, or a flat face.'); return true; }
+        toggleCorner(c.at);
+      } else if (pk.kind === 'face' && pk.point) {
+        var r = faceCorners(pk.point);
+        if (r.error) { UI.setStatus(r.error.replace(/^Break Corner: /, '')); return true; }
+        var key = function (list) { return list.map(function (c) { return c.at.map(function (x) { return Math.round(x * 1e4); }).join(','); }).sort().join(';'); }, mine = key(r.list), hit = -1;
+        f.faces.forEach(function (q, k) { var o = faceCorners(q); if (o.list && key(o.list) === mine) hit = k; });
+        if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push(pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
+      } else return false;
+      renderPM(); preview();
+      return true;
+    }
+    // r9/polish9 (as Fillet): pre-selected corner edges and faces move into the PropertyManager
+    if (!existing && UI.selection) {
+      var pre = UI.selection(), used = false;
+      pre.forEach(function (s) {
+        if (s.kind === 'edge' && s.edge) { var c = cornerAt(s.edge.mid); if (c && s.edge.len <= 1.5 * T) { toggleCorner(c.at); used = true; } }
+        else if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) { var fc = App.mesh.faces[s.index], r = faceCorners(fc.centroid); if (r.list) { f.faces.push(fc.centroid.slice()); used = true; } }
+      });
+      if (used && UI.setSelection) UI.setSelection([]);
+    }
+    var KINDS = [['chamfer', 'Chamfer', 'chamfer'], ['fillet', 'Fillet', 'fillet']];
+    openPM({
+      title: existing ? existing.name : 'Break Corner', icon: 'breakCorner', values: f,
+      onRollback: function () { cands = null; faceMemo = {}; lit(); },
+      message: 'Click <b>corner edges</b> (the short edges through the thickness at outside corners) or <b>flat faces</b> of the sheet (every outside corner of the face). Choose the break type and its size.',
+      command: { pickEdges: true, edgeList: [], onPick: pick },
+      groups: [
+        { title: 'Break Corner Options', fields: [
+          { type: 'pick', icon: 'breakCorner', placeholder: 'Corner edges and / or flange faces…',
+            value: function (v) { var n = v.corners.length + v.faces.length; return n ? n + ' item' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) {
+              return v.corners.map(function (p, i) { return { label: 'Corner<' + (i + 1) + '>', at: p }; })
+                .concat(v.faces.map(function (p, i) { return { label: 'Face<' + (i + 1) + '>', at: p }; }));
+            },
+            onRemove: function (v, i) { if (i < v.corners.length) v.corners.splice(i, 1); else v.faces.splice(i - v.corners.length, 1); renderPM(); preview(); },
+            onClear: function (v) { v.corners.length = 0; v.faces.length = 0; renderPM(); preview(); } },
+          { type: 'iconRadio', label: 'Break type', key: 'kind', options: KINDS, rerender: true },
+          { type: 'number', label: 'Distance', key: 'size', unit: 'u', min: 0, show: function (v) { return v.kind === 'chamfer'; } },
+          { type: 'number', label: 'Radius', key: 'size', unit: 'u', min: 0, show: function (v) { return v.kind === 'fillet'; } },
+          { type: 'buttons', buttons: [{ label: 'Clear selections', onclick: function (v) { v.corners.length = 0; v.faces.length = 0; renderPM(); preview(); } }] }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.corners.length && !v.faces.length) { UI.toast('Select at least one corner edge or face.'); return false; }
+        if (!(+v.size > 0)) { UI.toast('The ' + (v.kind === 'fillet' ? 'radius' : 'distance') + ' must be more than 0.'); return false; }
+        var feat = featOf(v);
+        feat.size = +v.size;   // an equation typed in the box goes back in through commitFeature (applyExpressions)
+        if (!existing && !feat.name) feat.name = K.breakCornerName(App.model);
+        bcLast = { kind: v.kind, size: +v.size };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
   }
 
   function flatSvg(flat, width) {
@@ -3781,6 +3986,7 @@
       case 'flange': cmdEdgeFlange(f); break;
       case 'jog': cmdJog(f); break;
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
+      case 'breakCorner': UI.cmdBreakCorner(f); break;
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
@@ -3898,6 +4104,7 @@
     ['editSketch', 'Edit Sketch']
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
+  UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

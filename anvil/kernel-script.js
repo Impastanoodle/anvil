@@ -935,9 +935,20 @@
     if (opts.sheetBase) f.sheetBase = true;
     if (opts.draft) { f.draft = num(opts.draft); if (opts.draftOutward) f.draftOut = true; }
     if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
+    contourOpts(f, opts);
     bodyOpts(f, opts);
     return this;
   };
+  // lane CO: Selected Contours — `contours: [[u, v], …]` (sketch-plane coordinates, one point inside each picked
+  // region) makes the feature's profile the union of those regions of the sketch (Kernel.sketchRegions)
+  function contourOpts(f, opts) {
+    if (opts && Array.isArray(opts.contours) && opts.contours.length) f.contours = opts.contours.map(function (p) { return [+p[0], +p[1]]; });
+    return f;
+  }
+  function contoursOut(o, f) {
+    if (Array.isArray(f.contours) && f.contours.length) o.contours = f.contours.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; });
+    return o;
+  }
   // Multi-body options shared by every boss and cut: `merge: false` keeps a boss as a separate body, `bodies: [i, …]`
   // limits a cut to those bodies. A pattern or mirror takes both and the rebuild applies whichever fits its source.
   function bodyOpts(f, opts) {
@@ -1071,6 +1082,21 @@
     this._add(customBendAllowance(f, opts.bendAllowance));
     return this;
   };
+  // breakCorner(size, corners, opts): Sheet Metal ▸ Break-Corner/Corner-Trim (kernel-sheetmetal.js). corners: [[x, y, z],
+  // …] points on corner edges (the short edges through the thickness at outside corners); opts: kind ('chamfer', the
+  // default, size = the distance along both edges | 'fillet', size = the radius), faces ([[x, y, z], …] points on flat
+  // sheet faces: every outside corner of each), name
+  Builder.prototype.breakCorner = function (size, corners, opts) {
+    opts = opts || {};
+    var kind = opts.kind || 'chamfer';
+    if (K.BREAK_CORNER_KINDS.indexOf(kind) < 0) throw new Error('breakCorner kind must be "chamfer" or "fillet".');
+    function pt(p) { return [+p[0], +p[1], +p[2]]; }
+    var f = { type: 'breakCorner', kind: kind, size: num(size), corners: (corners || []).map(pt) };
+    if (opts.faces && opts.faces.length) f.faces = opts.faces.map(pt);
+    f.name = opts.name || K.breakCornerName(this.model);
+    this._add(f);
+    return this;
+  };
   Builder.prototype.cut = function (depth, opts) {
     opts = Object.assign({}, opts || {}, { cut: true });
     if (depth === 'through' || depth == null) { opts.throughAll = true; depth = 0; }
@@ -1078,7 +1104,7 @@
   };
   Builder.prototype.revolve = function (angle, opts) {
     opts = opts || {};
-    bodyOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : num(angle), axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts);
+    bodyOpts(contourOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : num(angle), axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts), opts);
     return this;
   };
   Builder.prototype.revolveCut = function (angle, opts) { return this.revolve(angle, Object.assign({}, opts || {}, { cut: true })); };
@@ -1437,7 +1463,7 @@
           if (f.sheetBase) o.sheetBase = true;
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
           if (f.cut && f.normalCut) o.normalCut = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(o, f)) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(contoursOut(o, f), f)) + ').last();');
           break;
         }
         default:
@@ -1492,7 +1518,7 @@
         case 'revolve': {
           var ro = { sketch: '@' + idVar[f.sketch], name: f.name, axis: f.axis };
           if (f.reverse) ro.reverse = true;
-          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + nv(f.angle) + ', ' + optsStr(bodyOptsOut(ro, f)) + ').last();');
+          out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + nv(f.angle) + ', ' + optsStr(bodyOptsOut(contoursOut(ro, f), f)) + ').last();');
           break;
         }
         case 'lpattern': {

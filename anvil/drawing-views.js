@@ -1045,6 +1045,7 @@
     var v = D.addView(doc, 'Auxiliary', { kind: 'aux', name: 'Auxiliary View ' + label + '-' + label, label: label, parent: par.id, align: null,
       frame: { e: F.e, u: F.u, v: F.v }, aux: { a: [+opts.a[0], +opts.a[1]], b: [+opts.b[0], +opts.b[1]], sign: sign, dir: d2.slice() },
       scale: par.scale ? par.scale.slice() : null, display: 'hlv', x: base[0], y: base[1] });
+    if (opts.showLabel != null) setViewLabel(doc, v.id, opts.showLabel);   // (rfCQ)
     if (opts.x != null || opts.y != null) {
       var t = ((opts.x != null ? +opts.x : base[0]) - base[0]) * d2[0] + ((opts.y != null ? +opts.y : base[1]) - base[1]) * d2[1];
       v.x = base[0] + d2[0] * t; v.y = base[1] + d2[1] * t;
@@ -1182,6 +1183,73 @@
     out.bounds = { umin: Math.max(b.umin, R[0]), umax: Math.min(b.umax, R[2]), vmin: Math.max(b.vmin, R[1]), vmax: Math.min(b.vmax, R[3]) };
     if (out.bounds.umin > out.bounds.umax) out.bounds.umin = out.bounds.umax = (R[0] + R[2]) / 2;
     if (out.bounds.vmin > out.bounds.vmax) out.bounds.vmin = out.bounds.vmax = (R[1] + R[3]) / 2;
+    out.stats = { visibleLines: out.lines.visible.length, hiddenLines: out.lines.hidden.length, visibleCircles: out.circles.visible.length, hiddenCircles: out.circles.hidden.length,
+      visibleArcs: out.arcs.visible.length, hiddenArcs: out.arcs.hidden.length };
+    return out;
+  }
+  // (rfCQ) a projection clipped to the closed polygon P (a detail's sketched profile, model units of the frame): lines
+  // split where they cross it, circles and arcs cut into their arcs inside it, an ellipse kept whole when inside, else
+  // its pieces inside as short lines
+  function segInPoly(l, P) {
+    var a = [l[0], l[1]], b = [l[2], l[3]], r = [b[0] - a[0], b[1] - a[1]], ts = [0, 1], out = [];
+    for (var i = 0; i < P.length; i++) {
+      var c = P[i], d = P[(i + 1) % P.length], s = [d[0] - c[0], d[1] - c[1]], den = r[0] * s[1] - r[1] * s[0];
+      if (Math.abs(den) < 1e-18) continue;
+      var t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den, u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+      if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+    }
+    ts.sort(function (x, y) { return x - y; });
+    var endT = null;   // where the last piece kept ends (a piece that goes on from there extends it)
+    for (var j = 0; j + 1 < ts.length; j++) {
+      if (ts[j + 1] - ts[j] < 1e-12) continue;
+      var tm = (ts[j] + ts[j + 1]) / 2;
+      if (!inPoly([a[0] + r[0] * tm, a[1] + r[1] * tm], P)) continue;
+      if (endT != null && Math.abs(endT - ts[j]) < 1e-12) { var last = out[out.length - 1]; last[2] = a[0] + r[0] * ts[j + 1]; last[3] = a[1] + r[1] * ts[j + 1]; endT = ts[j + 1]; continue; }
+      var q = l.slice(); q[0] = a[0] + r[0] * ts[j]; q[1] = a[1] + r[1] * ts[j]; q[2] = a[0] + r[0] * ts[j + 1]; q[3] = a[1] + r[1] * ts[j + 1];
+      out.push(q); endT = ts[j + 1];
+    }
+    return out;
+  }
+  // the angles (radians) where circle (c, r) crosses polygon P's edges
+  function polyCircleCuts(c, r, P) {
+    var cuts = [];
+    for (var e = 0; e < P.length; e++) {
+      var C = P[e], D2 = P[(e + 1) % P.length], dx = D2[0] - C[0], dy = D2[1] - C[1], fx = C[0] - c[0], fy = C[1] - c[1];
+      var qa = dx * dx + dy * dy, qb = 2 * (fx * dx + fy * dy), qc = fx * fx + fy * fy - r * r, disc = qb * qb - 4 * qa * qc;
+      if (qa < 1e-24 || disc < 0) continue;
+      [(-qb - Math.sqrt(disc)) / (2 * qa), (-qb + Math.sqrt(disc)) / (2 * qa)].forEach(function (t) { if (t >= 0 && t <= 1) cuts.push(Math.atan2(C[1] + dy * t - c[1], C[0] + dx * t - c[0])); });
+    }
+    return cuts;
+  }
+  function clipProjectionPoly(pr, P) {
+    function inside(p) { return inPoly(p, P); }
+    function ranges(c, r) { return circleRanges(c, r, polyCircleCuts(c, r, P), inside); }
+    function whole(a) { var q = arcPieces(a, ranges(a.c, a.r)); return q.length === 1 && Math.abs(q[0].a0 - a.a0) < 1e-9 && Math.abs(q[0].a1 - a.a1) < 1e-9; }
+    var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [], tangent: [] }, circles: { visible: [], hidden: [], tangent: [] }, arcs: { visible: [], hidden: [], tangent: [] },
+      ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [] };
+    if (pr.pending) out.pending = true;
+    ['visible', 'hidden', 'tangent'].forEach(function (k) {
+      (pr.lines[k] || []).forEach(function (l) { segInPoly(l, P).forEach(function (q) { out.lines[k].push(q); }); });
+      (pr.circles[k] || []).forEach(function (c) {
+        var q = ranges(c.c, c.r);
+        if (q === 'full') out.circles[k].push(c); else q.forEach(function (w) { out.arcs[k].push({ c: c.c, r: c.r, a0: w.a0, a1: w.a1, body: c.body || 0 }); });
+      });
+      (pr.arcs && pr.arcs[k] || []).forEach(function (a) { arcPieces(a, ranges(a.c, a.r)).forEach(function (x) { out.arcs[k].push(x); }); });
+      if (k === 'tangent') return;
+      (pr.ellipses ? pr.ellipses[k] : []).forEach(function (el) {
+        var inAll = true, n = Math.max(8, Math.ceil((el.t1 - el.t0) / TWO_PI * 144)), pts = [];
+        for (var i = 0; i <= n; i++) { var t = el.t0 + (el.t1 - el.t0) * i / n, p = [el.c[0] + el.ax[0] * Math.cos(t) + el.ay[0] * Math.sin(t), el.c[1] + el.ax[1] * Math.cos(t) + el.ay[1] * Math.sin(t)]; pts.push(p); if (!inside(p)) inAll = false; }
+        if (inAll) { out.ellipses[k].push(el); return; }
+        for (var j = 1; j < pts.length; j++) segInPoly([pts[j - 1][0], pts[j - 1][1], pts[j][0], pts[j][1], el.body || 0], P).forEach(function (q) { out.lines[k].push(q); });
+      });
+    });
+    (pr.all || []).forEach(function (l) { segInPoly(l, P).forEach(function (q) { out.all.push(q); }); });
+    (pr.circlesAll || []).forEach(function (c) { if (ranges(c.c, c.r) === 'full') out.circlesAll.push(c); });
+    (pr.arcsAll || []).forEach(function (a) { if (whole(a)) out.arcsAll.push(a); });
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    P.forEach(function (p) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; });
+    var b = pr.bounds || { umin: lo[0], umax: hi[0], vmin: lo[1], vmax: hi[1] };
+    out.bounds = { umin: Math.max(b.umin, lo[0]), umax: Math.min(b.umax, hi[0]), vmin: Math.max(b.vmin, lo[1]), vmax: Math.min(b.vmax, hi[1]) };
     out.stats = { visibleLines: out.lines.visible.length, hiddenLines: out.lines.hidden.length, visibleCircles: out.circles.visible.length, hiddenCircles: out.circles.hidden.length,
       visibleArcs: out.arcs.visible.length, hiddenArcs: out.arcs.hidden.length };
     return out;
@@ -1362,8 +1430,11 @@
   function auxMarks(sheet, w, pw, k, projection) {
     var v = w.view, L = w.layer, CAP = _.CAP_EM || 1;
     sheet.prims = sheet.prims.filter(function (p) { return !(p.k === 'text' && p.layer === L && p.view == null && /^AUXILIARY/.test(p.text)); });
-    sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 7 * k], h: 3.5 * k * CAP, text: 'VIEW ' + v.label + '-' + v.label, anchor: 'middle', layer: L, rot: 0, auxLabel: v.id });
-    if (v.scale && D.scaleValue(v.scale) !== D.scaleValue(sheet.scale || [1, 1])) sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 12 * k], h: 3 * k * CAP, text: D.scaleLabel(v.scale), anchor: 'middle', layer: L, rot: 0 });
+    // (rfCQ) the label unless the view's Display label is off
+    if (viewLabelShown(v)) {
+      sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 7 * k], h: 3.5 * k * CAP, text: 'VIEW ' + v.label + '-' + v.label, anchor: 'middle', layer: L, rot: 0, auxLabel: v.id });
+      if (v.scale && D.scaleValue(v.scale) !== D.scaleValue(sheet.scale || [1, 1])) sheet.prims.push({ k: 'text', p: [(w.box.x0 + w.box.x1) / 2, w.box.y0 - 12 * k], h: 3 * k * CAP, text: D.scaleLabel(v.scale), anchor: 'middle', layer: L, rot: 0 });
+    }
     if (!pw) return;
     var PL = pw.layer, A = pw.toSheet(v.aux.a), B = pw.toSheet(v.aux.b), M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], d2 = v.aux.dir, sg = projection === 'first' ? -1 : 1;
     var side = [d2[0] * sg, d2[1] * sg], gap = 3 * k, shaft = 10 * k, ar = 3 * k, aw = 0.9 * k, lh = 5 * k;
@@ -1434,23 +1505,61 @@
     if (dt && dt.shape === 'profile' && dt.a && dt.b) return [Math.abs(dt.b[0] - dt.a[0]) / 2, Math.abs(dt.b[1] - dt.a[1]) / 2];
     return [dt ? dt.r : 0, dt ? dt.r : 0];
   }
-  // a profile detail's content: the parent's clipped to the rectangle, its box the whole rectangle
+  // a profile detail's content: the parent's clipped to the rectangle, its box the whole rectangle; (rfCQ) a sketched
+  // profile (dt.pts) is clipped to its bounding rectangle, then the linework to the polygon itself (the hatching is
+  // clipped to it on the sheet, drawing-render.js)
   function detailProfileContent(pc, dt, s) {
     var R = [Math.min(dt.a[0], dt.b[0]), Math.min(dt.a[1], dt.b[1]), Math.max(dt.a[0], dt.b[0]), Math.max(dt.a[1], dt.b[1])];
     var o = cropContent({ frame: pc.frame, proj: pc.proj, caps: pc.caps, center: pc.center, scale: s }, { type: 'rect', a: [R[0], R[1]], b: [R[2], R[3]] });
+    if (dt.pts && dt.pts.length >= 3) { o.proj = clipProjectionPoly(o.proj, dt.pts); o.poly = dt.pts; }
     o.proj.bounds = { umin: R[0], umax: R[2], vmin: R[1], vmax: R[3] };
     o.center = [(R[0] + R[2]) / 2, (R[1] + R[3]) / 2];
     o.profile = R;
     delete o.crop;
     return o;
   }
+  // (rfCQ) profilePts(dt) -> a profile detail's boundary (model units of the parent's frame, counter-clockwise): the
+  // sketched polygon, or the rectangle's four corners; null for a circle
+  function profilePts(dt) {
+    if (!dt || dt.shape !== 'profile') return null;
+    if (dt.pts && dt.pts.length >= 3) return dt.pts;
+    if (!dt.a || !dt.b) return null;
+    return [[dt.a[0], dt.a[1]], [dt.b[0], dt.a[1]], [dt.b[0], dt.b[1]], [dt.a[0], dt.b[1]]];
+  }
+  // (rfCQ) rayOut(o, dir, P) -> how far from o along the unit direction dir the polygon P's boundary is, at its
+  // furthest crossing (0 when the ray misses it)
+  function rayOut(o, dir, P) {
+    var best = 0;
+    for (var i = 0; i < P.length; i++) {
+      var a = P[i], b = P[(i + 1) % P.length], s = [b[0] - a[0], b[1] - a[1]], den = dir[0] * s[1] - dir[1] * s[0];
+      if (Math.abs(den) < 1e-15) continue;
+      var t = ((a[0] - o[0]) * s[1] - (a[1] - o[1]) * s[0]) / den, u = ((a[0] - o[0]) * dir[1] - (a[1] - o[1]) * dir[0]) / den;
+      if (t > 0 && u >= -1e-12 && u <= 1 + 1e-12 && t > best) best = t;
+    }
+    return best;
+  }
   // detailOpts(dt, opts): the style / outline of a detail from opts (undefined keeps, null clears)
   function detailOpts(dt, opts) {
     if (opts.style !== undefined) { if (DETAIL_STYLES.indexOf(opts.style) > 0) dt.style = opts.style; else delete dt.style; }
     if (opts.outline !== undefined) { if (opts.outline === 'full' || opts.outline === 'jagged') dt.outline = opts.outline; else delete dt.outline; }
   }
-  // a detail's profile rectangle from opts.a / opts.b (null when opts asks for a circle)
+  // a detail's profile rectangle from opts.a / opts.b (null when opts asks for a circle); (rfCQ) or a closed sketched
+  // profile, opts.pts: [[u, v], …] in the parent's frame (a polygon; a spline comes as its points along the curve)
   function detailProfile(opts) {
+    if (opts.pts) {
+      var P = [];
+      opts.pts.forEach(function (q) {
+        var p = [+q[0], +q[1]], l = P[P.length - 1];
+        if (!isFinite(p[0]) || !isFinite(p[1])) throw new Error('A detail profile point must be two numbers');
+        if (!l || Math.hypot(p[0] - l[0], p[1] - l[1]) > 1e-9) P.push(p);
+      });
+      if (P.length > 1 && Math.hypot(P[0][0] - P[P.length - 1][0], P[0][1] - P[P.length - 1][1]) <= 1e-9) P.pop();
+      if (P.length < 3 || Math.abs(polyArea(P)) < 1e-12) throw new Error('A detail profile needs a closed outline of three points or more: { pts: [[u, v], …] }');
+      if (polyArea(P) < 0) P.reverse();
+      var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+      P.forEach(function (p) { lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; });
+      return { c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2], r: Math.hypot(hi[0] - lo[0], hi[1] - lo[1]) / 2, shape: 'profile', a: lo, b: hi, pts: P };
+    }
     if (!(opts.shape === 'profile' || (opts.a && opts.b && !(opts.r > 0)))) return null;
     var a = opts.a, b = opts.b;
     if (!a || !b || Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9) throw new Error('A detail profile needs two opposite corners: { a: [u, v], b: [u, v] }');
@@ -1467,7 +1576,8 @@
     var prof = dt.shape === 'profile', hw = hf[0] * s, hh = hf[1] * s;
     var Q = [[c[0] - hw, c[1] - hh], [c[0] + hw, c[1] - hh], [c[0] + hw, c[1] + hh], [c[0] - hw, c[1] + hh]];
     if (dt.outline === 'full') {
-      if (!prof) put({ k: 'circle', c: c, r: hw });
+      if (dt.pts && dt.pts.length >= 3) { var S = dt.pts.map(w.toSheet); for (var j = 0; j < S.length; j++) seg(S[j], S[(j + 1) % S.length]); }   // (rfCQ) the sketched profile
+      else if (!prof) put({ k: 'circle', c: c, r: hw });
       else for (var i = 0; i < 4; i++) seg(Q[i], Q[(i + 1) % 4]);
       return;
     }
@@ -1587,6 +1697,19 @@
     return v;
   }
   D.setDetailOptions = setDetailOptions;
+  // (rfCQ) the view label, as SolidWorks shows it: section, detail and auxiliary views are labelled by default (SECTION
+  // A-A, DETAIL B / SCALE 2 : 1, VIEW C-C); model, projected, relative and flat-pattern views are not, unless the view's
+  // Display label is on (view.showLabel: stored only when it differs from the default). viewLabelShown(v) -> boolean
+  function labelDefault(v) { return !!(v && (v.kind === 'section' || v.kind === 'detail' || v.kind === 'aux')); }
+  function viewLabelShown(v) { return v && v.showLabel != null ? !!v.showLabel : labelDefault(v); }
+  // setViewLabel(doc, id, on | null) -> the view (null: back to the default for its kind)
+  function setViewLabel(doc, id, on) {
+    var v = findV(doc, id);
+    if (!v) throw new Error('No drawing view ' + id);
+    if (on == null || !!on === labelDefault(v)) delete v.showLabel; else v.showLabel = !!on;
+    return v;
+  }
+  D.viewLabelShown = viewLabelShown; D.setViewLabel = setViewLabel;
   // setDimType(doc, id, 'true' | 'projected') -> the view (True is a model view's option; Projected is the default)
   function setDimType(doc, id, t) {
     var v = findV(doc, id);
@@ -1892,6 +2015,20 @@
   function jaggedPts(w, k) {
     var dt = w.view.detail, c = w.toSheet(dt.c), hf = detailHalf(dt), s = w.scale, prof = dt.shape === 'profile', hw = hf[0] * s, hh = hf[1] * s;
     var amp = 1.2 * k, step = 2 * k, pts = [];
+    if (dt.pts && dt.pts.length >= 3) {
+      // (rfCQ) a sketched profile: points every `step` along its perimeter, every other one out along the boundary's
+      // outward normal (the profile is counter-clockwise, and toSheet keeps that)
+      var Sp = dt.pts.map(w.toSheet), segs = [], L = 0;
+      for (var i = 0; i < Sp.length; i++) { var a = Sp[i], b = Sp[(i + 1) % Sp.length], ln = Math.hypot(b[0] - a[0], b[1] - a[1]); if (ln > 1e-12) { segs.push({ a: a, b: b, len: ln, at: L }); L += ln; } }
+      var m2 = Math.max(12, 2 * Math.round(L / step / 2)), si = 0;
+      for (var jj = 0; jj < m2; jj++) {
+        var at = jj / m2 * L;
+        while (si < segs.length - 1 && segs[si].at + segs[si].len < at) si++;
+        var sg = segs[si], f2 = (at - sg.at) / sg.len, dx = (sg.b[0] - sg.a[0]) / sg.len, dy = (sg.b[1] - sg.a[1]) / sg.len, o2 = jj % 2 ? amp : 0;
+        pts.push([sg.a[0] + (sg.b[0] - sg.a[0]) * f2 + dy * o2, sg.a[1] + (sg.b[1] - sg.a[1]) * f2 - dx * o2]);
+      }
+      return pts;
+    }
     if (!prof) {
       var n = Math.max(12, 2 * Math.round(Math.PI * hw / step));
       for (var j = 0; j < n; j++) { var t = j / n * 2 * Math.PI, rr = hw + (j % 2 ? amp : 0); pts.push([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t)]); }
@@ -2000,6 +2137,7 @@
   function viewClipper(w, k) {
     var v = w.view, ct = w.content || {};
     if (v.kind === 'detail' && v.detail && v.detail.outline === 'jagged') { var J = jaggedPts(w, k); return function (p) { return primInPoly(p, J); }; }
+    if (ct.poly) { var Qp = ct.poly.map(w.toSheet); return function (p) { return primInPoly(p, Qp); }; }   // (rfCQ) a sketched profile
     var R = ct.profile || (ct.crop && ct.crop.type === 'rect' ? [ct.crop.a[0], ct.crop.a[1], ct.crop.b[0], ct.crop.b[1]] : null);
     if (R) { var a = w.toSheet([R[0], R[1]]), b = w.toSheet([R[2], R[3]]), Q = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]; return function (p) { return primInPoly(p, Q); }; }
     if (w.clip) return function (p) { var q = clipSeg([p.a[0], p.a[1], p.b[0], p.b[1]], w.clip.c, w.clip.r); return q ? [withAB(p, [q[0], q[1]], [q[2], q[3]])] : []; };
@@ -2050,7 +2188,8 @@
   _.auxSlide = auxSlide; _.carryAux = carryAux; _.viewPositions = positions;
   D.setSectionType = setSectionType; D.sectionSteps = sectionSteps; D.alignedLegs = alignedLegs; D.pathSectionOf = pathSectionOf;
   D.auxFrame = auxFrame; D.addAuxiliaryView = addAuxiliaryView; D.setCrop = setCrop; D.addBreak = addBreak; D.clearBreaks = clearBreaks;
-  D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap;
+  D.clipProjectionRect = clipProjectionRect; D.bandMap = bandMap; D.clipProjectionPoly = clipProjectionPoly;
+  _.profilePts = profilePts; _.rayOut = rayOut; _.clipLayerToPoly = clipLayerToPoly;   // (rfCQ)
 
   D.flatCurves = flatCurves; D.bendKey = bendKey; D.bendKeyMatch = bendKeyMatch; D.flatData = flatData; D.flatProjection = flatProjection; D.bendNoteText = bendNoteText; D.bendTag = bendTag;
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
@@ -2302,6 +2441,52 @@
       var e = l[i];
       if (gone[e.id] || e.t === 'dim' && gone[e.of] || e.t === 'rel' && (gone[e.of] || (e.refs || []).some(function (r) { return gone[r.id]; }))) l.splice(i, 1);
     }
+  }
+  // (rfCQ) sketchLoop(doc, ids) -> { view, ids, circle: { c, r } | null, pts: [[x, y] …] } (sheet coordinates, closed,
+  // counter-clockwise): the closed profile the selected sketch entities make, as SolidWorks' Detail View takes a
+  // sketched circle, polygon or spline for its boundary. A circle is one on its own; otherwise lines, arcs and splines
+  // are followed end to end from the first one (through the selected ones, or through any of its view's entities
+  // when one alone is selected) until the chain closes. Throws when they make no closed profile in one view.
+  function sketchLoop(doc, ids) {
+    ids = [].concat(ids == null ? [] : ids);
+    if (!ids.length) throw new Error('Select a closed sketch profile (a circle, or lines, arcs and splines end to end) first');
+    var first = locate(doc, ids[0]);
+    if (!first) throw new Error('No sketch entity ' + ids[0]);
+    var o = first.owner, curve = { line: 1, arc: 1, spline: 1, circle: 1 };
+    ids.forEach(function (id) { var f = locate(doc, id); if (!f || f.owner.list !== o.list) throw new Error('A detail profile is sketched in one view'); });
+    var vid = o.view ? o.view.id : null, sh = function (q) { return [q[0] + o.off[0], q[1] + o.off[1]]; };
+    if (first.ent.t === 'circle') {
+      var C = first.ent, P0 = [];
+      for (var i = 0; i < 96; i++) { var t = i / 96 * 2 * Math.PI; P0.push(sh([C.c[0] + C.r * Math.cos(t), C.c[1] + C.r * Math.sin(t)])); }
+      return { view: vid, ids: [C.id], circle: { c: sh(C.c), r: C.r }, pts: P0 };
+    }
+    function along(e) {
+      if (e.t === 'line') return [e.a, e.b];
+      if (e.t === 'arc') { var n = Math.max(8, Math.ceil((e.a1 - e.a0) / 5)), q = []; for (var j = 0; j <= n; j++) q.push(arcPt(e, e.a0 + (e.a1 - e.a0) * j / n)); return q; }
+      if (e.t === 'spline') return splinePts(e.pts);
+      return null;
+    }
+    var tol = 0.01 * paperK(doc), pool = (ids.length > 1 ? ids.map(function (id) { return locate(doc, id).ent; }) : o.list).filter(function (e) { return curve[e.t] && e.t !== 'circle'; });
+    if (!curve[first.ent.t]) throw new Error('A detail profile is made of lines, arcs, splines or one circle');
+    function near(p, q) { return Math.hypot(p[0] - q[0], p[1] - q[1]) <= tol; }
+    var chain = along(first.ent).slice(), used = {}, loopIds = [first.ent.id];
+    used[first.ent.id] = 1;
+    while (!(chain.length > 2 && near(chain[0], chain[chain.length - 1]))) {
+      var end = chain[chain.length - 1], next = null;
+      for (var k = 0; k < pool.length && !next; k++) {
+        var e = pool[k], q = used[e.id] ? null : along(e);
+        if (!q) continue;
+        if (near(q[0], end)) next = q; else if (near(q[q.length - 1], end)) next = q.slice().reverse();
+        if (next) { used[e.id] = 1; loopIds.push(e.id); }
+      }
+      if (!next) throw new Error('The selected sketch is not a closed profile: its ends do not meet');
+      chain = chain.concat(next.slice(1));
+    }
+    chain.pop();
+    var P = chain.map(sh), a = 0;
+    for (var m = 0, l = P.length - 1; m < P.length; l = m++) a += (P[l][0] - P[m][0]) * (P[l][1] + P[m][1]);
+    if (a < 0) P.reverse();
+    return { view: vid, ids: loopIds, circle: null, pts: P };
   }
   // addSketchRelation(doc, 'H' | 'V', lineId) | (doc, 'coincident', [{ id, end }, { id, end }]) -> relation
   function addSketchRelation(doc, kind, refs) {
@@ -2608,5 +2793,5 @@
   D.sketchEnds = endsOf; D.sketchPoint = function (e, end) { return getPt(e, end).slice(); };
   D.edgeKey = edgeKey; D.setEdgeFormat = setEdgeFormat; D.hideEdge = hideEdge; D.showEdges = showEdges; D.hiddenEdges = hiddenEdges;
   D.relativeFrame = relativeFrame; D.faceAt = faceAt; D.addRelativeView = addRelativeView;
-  D.sketchSpline = splinePts; _.sketchPrims = sketchPrims;
+  D.sketchSpline = splinePts; _.sketchPrims = sketchPrims; D.sketchLoop = sketchLoop;
 })(Drawing, Drawing._);
