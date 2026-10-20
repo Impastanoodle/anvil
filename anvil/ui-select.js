@@ -113,6 +113,8 @@ if (typeof UI !== 'undefined') (function (UI) {
       case 'plane': return 'plane:' + s.ref;
       case 'sketchPoint': return 'sketchPoint:' + s.ref;   // rfF: an end point / centre picked with the Select tool
       case 'sketchRef': return 'sketchRef:' + s.ref;   // rfAK: a style spline's control polygon leg
+      case 'refgeo': return 'feature:' + s.id;   // lane CZ: a reference axis / point / csys is its feature
+      case 'sketchEntity': return 'sketchEntity:' + s.sketch + '.' + s.index + (s.end ? '.' + s.end : '');
     }
     return s.kind + ':' + JSON.stringify(s);
   }
@@ -305,6 +307,8 @@ if (typeof UI !== 'undefined') (function (UI) {
   // What a plain click selects under the filter (part or assembly, no command).
   function pick(mx, my) {
     var f = filterSet();
+    var rg = refFeaturePick(mx, my);   // lane CZ: a shown reference axis / point / csys is on top of the model
+    if (rg) return rg;
     if (!f) return UI.pickEdge(mx, my) || UI.pickFace(mx, my) || (App.view.showPlanes ? UI.pickPlane(mx, my) : null);
     var hit = null;
     if (f.vertices) hit = pickVertex(mx, my);
@@ -317,10 +321,83 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (!hit && App.view.showPlanes) hit = UI.pickPlane(mx, my);
     return hit;
   }
+  // ------------------------------------------------------------------ lane CZ: reference geometry picks
+  // A plain click on a shown reference axis / point / coordinate system selects its feature ({ kind: 'feature', id,
+  // refgeo }); a command with `pickRefGeo` (the Axis / Point / Coordinate System PropertyManagers, Revolve, Circular
+  // Pattern) gets, in this order: the reference geometry under the cursor ({ kind: 'refgeo', id, refgeo, point }, kinds
+  // limited by cmd.refKinds), with `pickVertices` a model vertex, with `pickSketchRefs` a sketch point / line end / arc
+  // centre or a sketch line / arc of a shown sketch ({ kind: 'sketchEntity', sketch, index, end?, point }); then the
+  // usual edge / face / plane picks.
+  function refFeaturePick(mx, my) {
+    if (!UI.pickRefGeo || App.mode === 'sketch') return null;
+    var r = UI.pickRefGeo(mx, my);
+    return r ? { kind: 'feature', id: r.id, refgeo: r.refgeo, point: r.point } : null;
+  }
+  function shownSketchIds() {
+    var ids = {};
+    UI.groups.sketches.children.forEach(function (o) { if (o.userData && o.userData.sketch != null) ids[o.userData.sketch] = true; });
+    // only the sketches on screen (unconsumed ones, View ▸ All Sketches): a hidden sketch's lines must not steal a pick
+    // meant for the model edge in front of them
+    return ids;
+  }
+  function pickSketchRefs(mx, my) {
+    if (App.mode === 'sketch') return null;
+    var ids = shownSketchIds(), best = null, bd = 8, bestCurve = null, bc = 7;
+    (App.model.features || []).forEach(function (sk) {
+      if (sk.type !== 'sketch' || !ids[sk.id]) return;
+      var pl = sketchPlane(sk);
+      if (!pl) return;
+      (sk.entities || []).forEach(function (e, i) {
+        var pts = [];
+        if (e.t === 'point') pts.push([null, e.x, e.y]);
+        if (e.t === 'line') pts.push(['p1', e.x1, e.y1], ['p2', e.x2, e.y2]);
+        if (e.cx != null && (e.t === 'circle' || e.t === 'arc')) pts.push(['c', e.cx, e.cy]);
+        pts.forEach(function (q) {
+          var P = K.to3D(pl, q[1], q[2]), S = UI.worldToScreen(P), d = Math.hypot(S[0] - mx, S[1] - my);
+          if (d < bd) { bd = d; best = { kind: 'sketchEntity', sketch: sk.id, index: i, end: q[0], point: P, t: e.t }; }
+        });
+        // a rectangle / polygon / polyline: its corners (pt) and sides (seg), as SolidWorks' separate lines
+        var PT = { rect: 1, crect: 1, poly: 1, polyline: 1 };
+        if (PT[e.t]) {
+          var epl = (K.entityPolylines(e) || [])[0];
+          if (epl) {
+            var n = epl.pts.length;
+            epl.pts.forEach(function (q, k) {
+              var P = K.to3D(pl, q[0], q[1]), S = UI.worldToScreen(P), d = Math.hypot(S[0] - mx, S[1] - my);
+              if (d < bd) { bd = d; best = { kind: 'sketchEntity', sketch: sk.id, index: i, pt: k, point: P, t: e.t }; }
+            });
+            for (var sg = 0; sg < (epl.closed ? n : n - 1); sg++) {
+              var A2 = K.to3D(pl, epl.pts[sg][0], epl.pts[sg][1]), B2 = K.to3D(pl, epl.pts[(sg + 1) % n][0], epl.pts[(sg + 1) % n][1]), d3 = distSeg([mx, my], UI.worldToScreen(A2), UI.worldToScreen(B2));
+              if (d3 < bc) { bc = d3; bestCurve = { kind: 'sketchEntity', sketch: sk.id, index: i, seg: sg, point: V.scale(V.add(A2, B2), 0.5), t: e.t }; }
+            }
+          }
+        }
+        if (e.t === 'line' || e.t === 'arc' || e.t === 'circle') {
+          var poly = [];
+          if (e.t === 'line') poly = [[e.x1, e.y1], [e.x2, e.y2]];
+          else { var a0 = e.t === 'circle' ? 0 : e.a0, a1 = e.t === 'circle' ? 360 : e.a1; if (a1 <= a0) a1 += 360; for (var k = 0; k <= 48; k++) { var an = (a0 + (a1 - a0) * k / 48) * Math.PI / 180; poly.push([e.cx + e.r * Math.cos(an), e.cy + e.r * Math.sin(an)]); } }
+          for (var j = 0; j + 1 < poly.length; j++) {
+            var A = K.to3D(pl, poly[j][0], poly[j][1]), B = K.to3D(pl, poly[j + 1][0], poly[j + 1][1]), d2 = distSeg([mx, my], UI.worldToScreen(A), UI.worldToScreen(B));
+            if (d2 < bc) { bc = d2; bestCurve = { kind: 'sketchEntity', sketch: sk.id, index: i, end: null, point: V.scale(V.add(A, B), 0.5), t: e.t }; }
+          }
+        }
+      });
+    });
+    return best || bestCurve;
+  }
+  function refCommandPick(mx, my, cmd) {
+    var pk = UI.pickRefGeo ? UI.pickRefGeo(mx, my, cmd.refKinds) : null;
+    if (!pk && (typeof cmd.pickVertices === 'function' ? cmd.pickVertices() : cmd.pickVertices) && allows('vertex')) pk = pickVertex(mx, my);
+    if (!pk && cmd.pickSketchRefs) pk = pickSketchRefs(mx, my);
+    return pk;
+  }
+  UI.pickSketchRefs = pickSketchRefs;
+
   // What a PropertyManager selection box receives (App.command.onPick), filtered. Commands that map a face to its
   // component (assembly selection boxes) still get the face when only Bodies / Components are on.
   function pickFor(mx, my, cmd) {
     var f = filterSet(), pk = null;
+    if (cmd.pickRefGeo) { pk = refCommandPick(mx, my, cmd); if (pk) return pk; }   // lane CZ
     if (cmd.pickEdges && allows('edge')) pk = UI.pickEdge(mx, my);
     if (!pk && (!f || f.faces || bodyFilter(f))) pk = UI.pickFace(mx, my);
     if (!pk && cmd.pickPlane) pk = UI.pickPlane(mx, my);
@@ -333,6 +410,7 @@ if (typeof UI !== 'undefined') (function (UI) {
     if (soMenu && soMenu.isConnected) return App.hover;   // r5/select5: the Select Other list (over the model) owns the hover
     var cmd = App.command, f = filterSet();
     if (cmd && cmd.regionsActive && cmd.regionsActive()) return cmd.pickRegions(mx, my);   // lane CO: Selected Contours box active: the sketch region under the pointer, nothing else
+    if (cmd && cmd.pickRefGeo) { var rh = refCommandPick(mx, my, cmd); if (rh) return rh; }   // lane CZ
     if (cmd && cmd.pickPlane) return (!f || f.faces || bodyFilter(f) ? UI.pickFace(mx, my) : null) || UI.pickPlane(mx, my);
     if (cmd && cmd.pickEdges) return allows('edge') ? UI.pickEdge(mx, my) : null;
     return pick(mx, my);

@@ -20,15 +20,16 @@
 // mirror of features and of the body (stage 1); fillet and chamfer (edges nearest the picked points, tangent
 // propagation), shell (faces nearest the picked points removed; none: closed hollow), loft, sweep (sketch path with
 // exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2); sheet metal: edge flange, hem, jog,
-// Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs) and Break Corner (Kernel.breakCornerLayout,
-// exact fillet arcs). Anything else stops
+// Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs), Break Corner (Kernel.breakCornerLayout,
+// exact fillet arcs) and Closed Corner (Kernel.closedCornerLayout, planar prisms). Anything else stops
 // the build at that feature ('unsupported'), so the caller keeps Anvil's own result. `tolerance` is the relative
 // volume agreement to expect with Anvil (1e-4; 2e-2 with sweeps / lofts, which Anvil facets). OpenCascade objects
 // are freed after every build.
 var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
-    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1, breakCorner: 1 };
+    fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1, breakCorner: 1, closedCorner: 1 };
+  SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
   function build(oc, K, model, opts) {
@@ -272,31 +273,98 @@ var OcctKernel = (function () {
       var T = +K.sheetParams(m).thickness, eps = 1e-3 * T;
       var cls = N(new oc.BRepClass3d_SolidClassifier_2(body));
       function inside(p) { cls.Perform(P(p), 1e-7); return cls.State() === oc.TopAbs_State.TopAbs_IN; }
-      N(new oc.BRepMesh_IncrementalMesh_2(Rs, Math.max(0.05, T / 4), false, 0.35, false));
-      var caps = [], entry = [];
-      facesOf(Rs).forEach(function (fc) {
+      // tris(fc) -> { n: area-weighted unit normal, pts: triangulation nodes, list: [{ c: centroid, n, w: 2·area }] }
+      // of a face of a shape meshed beforehand, or null
+      function tris(fc) {
         var loc = N(new oc.TopLoc_Location_1()), h = N(oc.BRep_Tool.Triangulation(fc, loc, oc.Poly_MeshPurpose ? oc.Poly_MeshPurpose.Poly_MeshPurpose_NONE : 0));
-        if (h.IsNull()) return;
-        var tri = h.get(), tr = N(loc.Transformation()), rev = fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [];
+        if (h.IsNull()) return null;
+        var tri = h.get(), tr = N(loc.Transformation()), rev = fc.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED, nodes = [], list = [];
         for (var i = 1; i <= tri.NbNodes(); i++) { var p = N(N(tri.Node(i)).Transformed(tr)); nodes[i] = [p.X(), p.Y(), p.Z()]; }
-        var yes = 0, no = 0, nSum = [0, 0, 0];
+        var nSum = [0, 0, 0], uv = tri.HasUVNodes(), gf = uv ? N(new oc.BRepGProp_Face_2(fc, false)) : null;
         for (var j = 1; j <= tri.NbTriangles(); j++) {
-          var Tt = N(tri.Triangle(j)), a = nodes[Tt.Value(1)], b = nodes[Tt.Value(2)], c = nodes[Tt.Value(3)];
+          var Tt = N(tri.Triangle(j)), ia = Tt.Value(1), ib = Tt.Value(2), ic = Tt.Value(3), a = nodes[ia], b = nodes[ib], c = nodes[ic];
           if (rev) { var x = b; b = c; c = x; }
           var cr = V.cross(V.sub(b, a), V.sub(c, a)), w = V.len(cr);
           if (w < 1e-12) continue;
-          var n = V.scale(cr, 1 / w), cen = V.scale(V.add(V.add(a, b), c), 1 / 3);
           nSum = V.add(nSum, cr);
-          var onSheet = !inside(V.add(cen, V.scale(n, eps))) && inside(V.sub(cen, V.scale(n, T / 2))) && !inside(V.sub(cen, V.scale(n, T + eps)));
-          if (onSheet) yes += w; else no += w;
+          var t = { c: V.scale(V.add(V.add(a, b), c), 1 / 3), n: V.scale(cr, 1 / w), w: w };
+          // CW: the probe point and normal on the surface itself (the triangle's centroid on a bend's chord lies up to
+          // its sagitta off the surface, more than the probes' 1e-3·T: the inside surface of a bend never read as a
+          // sheet surface)
+          if (gf) {
+            var A2 = N(tri.UVNode(ia)), B2 = N(tri.UVNode(ib)), C2 = N(tri.UVNode(ic)), Ps = N(new oc.gp_Pnt_1()), Vn = N(new oc.gp_Vec_1());
+            gf.Normal((A2.X() + B2.X() + C2.X()) / 3, (A2.Y() + B2.Y() + C2.Y()) / 3, Ps, Vn);
+            var nl = Math.hypot(Vn.X(), Vn.Y(), Vn.Z());
+            if (nl > 1e-12) { t.c = [Ps.X(), Ps.Y(), Ps.Z()]; t.n = [Vn.X() / nl, Vn.Y() / nl, Vn.Z() / nl]; }
+          }
+          list.push(t);
         }
-        if (!(yes > no)) return;
-        var nf = V.norm(nSum);
-        caps.push({ face: fc, n: nf });
-        if (dir && V.dot(nf, dir) < -1e-6) entry.push({ face: fc, n: nf });
-      });
+        return list.length ? { n: V.norm(nSum), pts: nodes.slice(1), list: list } : null;
+      }
+      // sheetFaces(shape) -> { caps, entry }: its faces on a sheet surface (air just in front, metal half a thickness
+      // behind, air a thickness behind; area-weighted over the triangles), and of those the ones the cut enters through
+      function sheetFaces(sh) {
+        N(new oc.BRepMesh_IncrementalMesh_2(sh, Math.max(0.05, T / 4), false, 0.35, false));
+        var out = { caps: [], entry: [] };
+        facesOf(sh).forEach(function (fc) {
+          var ti = tris(fc);
+          if (!ti) return;
+          var yes = 0, no = 0;
+          ti.list.forEach(function (t) {
+            var onSheet = !inside(V.add(t.c, V.scale(t.n, eps))) && inside(V.sub(t.c, V.scale(t.n, T / 2))) && !inside(V.sub(t.c, V.scale(t.n, T + eps)));
+            if (onSheet) yes += t.w; else no += t.w;
+          });
+          if (!(yes > no)) return;
+          var rec = { face: fc, n: ti.n, pts: ti.pts };
+          out.caps.push(rec);
+          if (dir && V.dot(ti.n, dir) < -1e-6) out.entry.push(rec);
+        });
+        return out;
+      }
+      var sf = sheetFaces(Rs), caps = sf.caps, entry = sf.entry;
       var chosen = entry.length ? entry : caps;
       if (!chosen.length) return tool;
+      // CW (as Kernel.normalCutTool, rfBZ): a cut sketched on a face next to a bend (a hole straddling the bend line,
+      // cut from the top face) reaches only the part of the bend below its sketch plane, while the bend's inside surface
+      // rises above it. As SolidWorks' Normal Cut, the footprint follows the sheet surface it enters through across the
+      // bend: the tool's start cap (its backmost faces facing −dir) is swept back against dir past the body, and the
+      // sheet-surface faces it meets there that face the cut and continue an entry face (sharing a point with one, face
+      // after face) join the entry faces. On the exact bend the inside surface is tangent to the flat face and to the
+      // wall, so the pieces meet with no joint wedge (Anvil's faceted bend needs one).
+      if (dir && entry.length) {
+        var tcaps = [], wMin = Infinity;
+        N(new oc.BRepMesh_IncrementalMesh_2(tool, Math.max(0.05, T / 4), false, 0.35, false));
+        facesOf(tool).forEach(function (fc) {
+          var ad = N(new oc.BRepAdaptor_Surface_2(fc, true)), ty = ad.GetType();
+          if ((ty && ty.value != null ? ty.value : ty) !== 0) return;
+          var ti = tris(fc);
+          if (!ti || V.dot(ti.n, dir) > -1 + 1e-9) return;
+          var w = V.dot(ti.n, ti.pts[0]);
+          tcaps.push({ face: fc, w: w });
+          wMin = Math.min(wMin, w);
+        });
+        tcaps = tcaps.filter(function (c) { return Math.abs(c.w - wMin) < 1e-9 * (1 + Math.abs(wMin)); });
+        var bb = bboxOf(body), H = bb ? V.len(V.sub(bb[1], bb[0])) + 1 : 0, back = null;
+        tcaps.forEach(function (c) {
+          var pr = N(N(new oc.BRepPrimAPI_MakePrism_1(c.face, Vec(V.scale(dir, -H)), false, true)).Shape());
+          back = back ? fuse(back, pr) : pr;
+        });
+        var com2 = back ? N(new oc.BRepAlgoAPI_Common_3(body, back, R())) : null;
+        var R2 = com2 && com2.IsDone() ? N(com2.Shape()) : null;
+        if (R2 && volumeOf(R2) > 1e-12) {
+          var tol = 1e-6 * Math.max(1, 100 * T), cand = sheetFaces(R2).entry, seen = chosen.map(function (c) { return c.pts; });
+          var touches = function (c) { return seen.some(function (pts) { return pts.some(function (q) { return c.pts.some(function (s) { return Math.abs(s[0] - q[0]) < tol && Math.abs(s[1] - q[1]) < tol && Math.abs(s[2] - q[2]) < tol; }); }); }); };
+          chosen = chosen.slice();
+          for (var grew = true; grew && cand.length;) {
+            grew = false;
+            cand = cand.filter(function (c) {
+              if (!touches(c)) return true;
+              chosen.push(c); seen.push(c.pts); grew = true;
+              return false;
+            });
+          }
+        }
+      }
       var pieces = chosen.map(function (c) {
         var ad = N(new oc.BRepAdaptor_Surface_2(c.face, true)), t = ad.GetType(), planar = (t && t.value != null ? t.value : t) === 0;
         if (planar) {
@@ -902,6 +970,19 @@ var OcctKernel = (function () {
       });
       return acc;
     }
+    // Closed Corner (lane CS; as Kernel.buildClosedCorner, from Kernel.closedCornerLayout found on the body's
+    // tessellation): the trim of the matching walls is cut, then the extensions (planar prisms) are fused on
+    function closedCornerOp(f) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var k = pickBody(f.faces && f.faces[0]);
+      if (k < 0) throw new Error('Closed Corner: there are no flanges yet.');
+      bodies[k] = unify(bodies[k]);
+      var lay = K.closedCornerLayout(f, m, { body: shapeToCSG(bodies[k]) }), body = bodies[k];
+      if (lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not trim the matching wall.');
+      body = boolMany('fuse', body, lay.adds.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not extend the faces.');
+      bodies[k] = unify(body);
+    }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
       var tb = bboxOf(tool), hit = [];
@@ -976,12 +1057,15 @@ var OcctKernel = (function () {
         if (fi < start) return;   // restored from the cache
         if (unsupported) { status[f.id] = 'skipped'; return; }
         if (!SUPPORTED[f.type]) { unsupported = f.type; status[f.id] = 'unsupported'; return; }
+        // lane CZ: a pattern / revolve about a reference Axis is Anvil's (the axis resolves against Anvil's body)
+        if (K.refAxisId && K.refAxisId(f) != null) { unsupported = f.type + ' about a reference axis'; status[f.id] = 'unsupported'; return; }
         var tf = now();   // r11/occtswap11: per-feature build time (out.ms.features)
         try {
           if (rm.featureErrors[f.id]) throw new Error(rm.featureErrors[f.id]);
           var tool = null;
           switch (f.type) {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
+            case 'refaxis': case 'refpoint': case 'csys': break;   // lane CZ: reference geometry, no body
             case 'sketch': {
               // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an
               // extrude cap from the extrude itself; other planar faces from this build's B-rep faces)
@@ -1000,6 +1084,7 @@ var OcctKernel = (function () {
             case 'jog': jogOp(f); break;
             case 'sketchedBend': sketchedBendOp(f); break;
             case 'breakCorner': tool = breakCornerTool(f); break;
+            case 'closedCorner': closedCornerOp(f); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }

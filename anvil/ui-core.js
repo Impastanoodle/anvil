@@ -1433,6 +1433,7 @@ var UI = (function () {
       }
     });
     // multi-selection items beyond sel / sel2, vertices, and the Instant3D overlay (ui-select.js)
+    updateRefGeo();   // lane CZ: a selected / hovered reference axis, point or csys
     if (UI.drawSelectionExtras) UI.drawSelectionExtras(groups.highlight, { selectionRanges: selectionRanges, triRangeGeometry: triRangeGeometry, edgeLineObject: edgeLineObject, edgeSelMat: edgeSelMat });
   }
 
@@ -1457,6 +1458,7 @@ var UI = (function () {
   }
   function updatePlanes() {
     disposeGroup(groups.planes);
+    updateRefGeo();   // lane CZ: reference axes, points, coordinate systems
     var want = App.view.showPlanes || (App.command && App.command.pickPlane && !App.command.quietPlanes) || (App.sel && App.sel.kind === 'plane') || (App.hover && App.hover.kind === 'plane');
     if (!want) return;
     var half = planeExtent();
@@ -1470,6 +1472,119 @@ var UI = (function () {
       planeQuad(K.makePlane(f.ref, f.offset), half * 0.8, f.id, f.name).forEach(function (o) { groups.planes.add(o); });
     });
   }
+  // ------------------------------------------------------------------ lane CZ: reference Axes, Points and Coordinate Systems
+  // Drawn from the records rebuild keeps in App.build.planes (refgeo 'axis' | 'point' | 'csys', kernel-features.js):
+  // an axis as a thin dashed line a little longer than its reference, a point as a small star, a coordinate system as
+  // a red / green / blue triad with X Y Z labels. View ▸ Hide/Show ▸ Axes / Points / Coordinate Systems
+  // (App.view.showAxes / showPoints / showCsys, on by default, as SolidWorks shows the ones you make); a command that
+  // picks them (App.command.pickRefGeo) shows them all; a selected or hovered one is yellow / orange.
+  var refGroup = new THREE.Group();
+  scene.add(refGroup); groups.refgeo = refGroup;
+  ['showAxes', 'showPoints', 'showCsys'].forEach(function (k) { if (App.view[k] == null) App.view[k] = true; });
+  var REF_COL = { line: 0xb4b4b4, sel: 0xffd400, hover: 0xff9a2e, x: 0xd9453b, y: 0x3fa34d, z: 0x2d7dd2 };
+  var refMatCache = {};
+  function refMat(kind, dashed) {
+    var k = kind + (dashed ? 'd' : '');
+    if (!refMatCache[k]) {
+      refMatCache[k] = dashed ? lineMat(new THREE.LineDashedMaterial({ color: REF_COL[kind], depthTest: false, transparent: true }), kind === 'line' ? 1.2 : 2, { dashPx: 9, gapPx: 3 })
+        : lineMat(new THREE.LineBasicMaterial({ color: REF_COL[kind], depthTest: false, transparent: true }), kind === 'line' ? 1.5 : 2.5);
+    }
+    return refMatCache[k];
+  }
+  var refLabelTex = {};
+  function refLabel(text, color, at, size) {
+    var key = text + color;
+    if (!refLabelTex[key]) {
+      var cv = document.createElement('canvas'); cv.width = cv.height = 64;
+      var g = cv.getContext('2d');
+      if (g) { g.font = 'bold 44px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#' + ('00000' + color.toString(16)).slice(-6); g.fillText(text, 32, 34); }
+      refLabelTex[key] = new THREE.CanvasTexture(cv);
+    }
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({ map: refLabelTex[key], depthTest: false, transparent: true }));
+    s.position.set(at[0], at[1], at[2]); s.scale.set(size, size, size); s.renderOrder = 12;
+    return s;
+  }
+  function refSegs(arr, mat, dashed) {
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+    var l = new THREE.LineSegments(g, mat);
+    if (dashed) l.computeLineDistances();
+    l.renderOrder = 11;
+    return l;
+  }
+  // the reference geometry features shown now: [{ f, g (the record) }]
+  function refGeoItems(all) {
+    var out = [], planes = App.build && App.build.planes;
+    if (!planes || !App.model || !App.model.features) return out;
+    var cmdAll = !!(App.command && App.command.pickRefGeo);
+    App.model.features.forEach(function (f) {
+      if (f.type !== 'refaxis' && f.type !== 'refpoint' && f.type !== 'csys') return;
+      var g = planes[f.id];
+      if (!g || !g.refgeo || rolledBack(f)) return;
+      if (App.editingFeatureId === f.id) return;   // the PropertyManager shows its preview instead
+      var flag = { axis: 'showAxes', point: 'showPoints', csys: 'showCsys' }[g.refgeo];
+      var on = all || cmdAll || (App.view[flag] !== false && !f.hidden) || refSelected(f.id) || refHovered(f.id);
+      if (on) out.push({ f: f, g: g });
+    });
+    return out;
+  }
+  function refSelected(id) {
+    var s = App.sel;
+    if (s && (s.kind === 'refgeo' || s.kind === 'feature') && s.id === id) return true;
+    return !!(UI.selection && UI.selection().some(function (x) { return (x.kind === 'refgeo' || x.kind === 'feature') && x.id === id; }));
+  }
+  function refHovered(id) { var h = App.hover; return !!(h && (h.kind === 'refgeo' || (h.kind === 'feature' && h.refgeo)) && h.id === id); }
+  function refSize() { return Math.max(1e-3, planeExtent() * 0.06); }
+  // drawRefGeo(g, group, state): one record into a group ('sel' | 'hover' | null) — also the PropertyManager previews
+  function drawRefGeo(g, group, state) {
+    var s = refSize();
+    if (g.refgeo === 'axis') {
+      var a = g.a || V.add(g.o, V.scale(g.d, -s * 4)), b = g.b || V.add(g.o, V.scale(g.d, s * 4));
+      var L = V.len(V.sub(b, a)), ext = Math.max(L * 0.06, s * 0.4);
+      a = V.add(a, V.scale(g.d, -ext)); b = V.add(b, V.scale(g.d, ext));
+      group.add(refSegs([].concat(a, b), refMat(state || 'line', true), true));
+    } else if (g.refgeo === 'point') {
+      var p = g.p, r = s * 0.22, k = r * 0.7, arr = [];
+      [[r, 0, 0], [0, r, 0], [0, 0, r], [k, k, k], [k, -k, k], [-k, k, k], [-k, -k, k]].forEach(function (d) { arr.push(p[0] - d[0], p[1] - d[1], p[2] - d[2], p[0] + d[0], p[1] + d[1], p[2] + d[2]); });
+      group.add(refSegs(arr, refMat(state || 'line', false), false));
+    } else if (g.refgeo === 'csys') {
+      var o = g.origin, L2 = s * 1.4;
+      ['x', 'y', 'z'].forEach(function (ax) {
+        var tip = V.add(o, V.scale(g[ax], L2)), side = ax === 'x' ? g.y : g.x, h = L2 * 0.12;
+        var arr2 = [].concat(o, tip, tip, V.add(V.add(tip, V.scale(g[ax], -h * 1.6)), V.scale(side, h)), tip, V.add(V.add(tip, V.scale(g[ax], -h * 1.6)), V.scale(side, -h)));
+        group.add(refSegs(arr2, refMat(state || ax, false), false));
+        group.add(refLabel(ax.toUpperCase(), REF_COL[state || ax], V.add(o, V.scale(g[ax], L2 * 1.22)), L2 * 0.32));
+      });
+    }
+  }
+  function updateRefGeo() {
+    disposeGroup(refGroup);
+    refGeoItems(false).forEach(function (it) {
+      drawRefGeo(it.g, refGroup, refSelected(it.f.id) ? 'sel' : refHovered(it.f.id) ? 'hover' : null);
+    });
+  }
+  // pickRefGeo(mx, my, kinds?) -> { kind: 'refgeo', id, refgeo, name, point } for the shown axis / point / csys under the
+  // cursor (axes within 7 px of the line, points and csys origins within 9 px), or null. kinds: ['axis', 'point', 'csys']
+  function pickRefGeo(mx, my, kinds) {
+    var best = null, bd = 9;
+    function seg(p, q) {
+      var A = worldToScreen(p), B = worldToScreen(q), dx = B[0] - A[0], dy = B[1] - A[1], L2 = dx * dx + dy * dy;
+      var t = L2 > 0 ? Math.max(0, Math.min(1, ((mx - A[0]) * dx + (my - A[1]) * dy) / L2)) : 0;
+      return { d: Math.hypot(mx - A[0] - t * dx, my - A[1] - t * dy), t: t };
+    }
+    refGeoItems(false).forEach(function (it) {
+      var g = it.g, d = Infinity, P = null;
+      if (kinds && kinds.indexOf(g.refgeo) < 0) return;
+      if (g.refgeo === 'axis') {
+        var s = refSize(), a = g.a || V.add(g.o, V.scale(g.d, -s * 4)), b = g.b || V.add(g.o, V.scale(g.d, s * 4)), r = seg(a, b);
+        d = r.d + 2; P = V.add(a, V.scale(V.sub(b, a), r.t));   // + 2: a point or origin on the line wins
+      } else if (g.refgeo === 'point') { var q = worldToScreen(g.p); d = Math.hypot(q[0] - mx, q[1] - my); P = g.p; }
+      else if (g.refgeo === 'csys') { var c = worldToScreen(g.origin); d = Math.hypot(c[0] - mx, c[1] - my); P = g.origin; }
+      if (d < bd) { bd = d; best = { kind: 'refgeo', id: it.f.id, refgeo: g.refgeo, name: it.f.name, point: P.slice(), rec: g }; }
+    });
+    return best;
+  }
+
   function updateOrigin() {
     disposeGroup(groups.origin);
     if (!App.view.showOrigin) return;
@@ -1787,6 +1902,40 @@ var UI = (function () {
     edgeScr = { edges: E, ver: camVer, w: w, h: h, xy: xy };
     return xy;
   }
+  // lane DA: does a screen box [x0, y0, x1, y1] (graphics-area pixels) cross a drawn model edge? For overlays that
+  // must not sit on the model's edges (Instant3D dimension labels: the caller moves the label / dimension line
+  // outward until this is false, as sketch labels keep clear of the sketch's curves). Sharp edges of shown bodies,
+  // from the per-camera projection pickEdge uses (no allocation per call); `pad` grows the box.
+  function modelEdgeInBox(b, pad) {
+    var E = App.edges;
+    if (!E || !E.length || !b) return false;
+    var p = pad || 0, x0 = b[0] - p, y0 = b[1] - p, x1 = b[2] + p, y1 = b[3] + p, xy = edgeScreen();
+    for (var i = 0; i < E.length; i++) {
+      var e = E[i];
+      if (e.smooth) continue;
+      var ax = xy[i * 4], ay = xy[i * 4 + 1], bx = xy[i * 4 + 2], by = xy[i * 4 + 3];
+      if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(ay, by) < y0 || Math.min(ay, by) > y1) continue;
+      if (!edgeVisible(e)) continue;
+      // Liang-Barsky: the part of the segment inside the box is not empty
+      var dx = bx - ax, dy = by - ay, t0 = 0, t1 = 1, P4 = [-dx, dx, -dy, dy], Q4 = [ax - x0, x1 - ax, ay - y0, y1 - ay], ok = true;
+      for (var k = 0; k < 4 && ok; k++) {
+        if (Math.abs(P4[k]) < 1e-12) { if (Q4[k] < 0) ok = false; continue; }
+        var r = Q4[k] / P4[k];
+        if (P4[k] < 0) { if (r > t1) ok = false; else if (r > t0) t0 = r; }
+        else { if (r < t0) ok = false; else if (r < t1) t1 = r; }
+      }
+      if (!ok || t1 < t0) continue;
+      // hidden edges (behind the body: the back edges of a block in a shaded view) do not count: the face under the
+      // middle of the part inside the box must not be clearly in front of the edge there (pickEdge's test)
+      var tm = (t0 + t1) / 2, hit = pickFace(ax + dx * tm, ay + dy * tm);
+      if (hit) {
+        var D = [cam.dir.x, cam.dir.y, cam.dir.z], q = [e.a[0] + (e.b[0] - e.a[0]) * tm, e.a[1] + (e.b[1] - e.a[1]) * tm, e.a[2] + (e.b[2] - e.a[2]) * tm];
+        if (V.dot(q, D) < V.dot(hit.point, D) - Math.max(0.5, cam.scale * 3)) continue;
+      }
+      return true;
+    }
+    return false;
+  }
   // Nearest visible sharp edge within 7 px. Occlusion: the edge midpoint must not sit clearly behind the face under the cursor.
   function pickEdge(mx, my) {
     if (!App.edges || !App.edges.length) return null;
@@ -1803,7 +1952,10 @@ var UI = (function () {
       if (!edgeVisible(e)) continue;
       var d = distToSegment(P, A, B);
       if (d >= bestD) continue;
-      var depth = V.dot(e.mid, [cam.dir.x, cam.dir.y, cam.dir.z]);
+      // lane CZ: the depth of the edge point under the cursor, not of the edge's middle (a long edge seen at an angle
+      // was "behind" the face it bounds when picked away from its middle)
+      var ex = B[0] - A[0], ey = B[1] - A[1], eL = ex * ex + ey * ey, et = eL > 0 ? Math.max(0, Math.min(1, ((mx - A[0]) * ex + (my - A[1]) * ey) / eL)) : 0.5;
+      var depth = V.dot(V.add(e.a, V.scale(V.sub(e.b, e.a), et)), [cam.dir.x, cam.dir.y, cam.dir.z]);
       if (hit && depth < hitDepth - Math.max(0.5, cam.scale * 3)) continue;
       bestD = d; best = e;
     }
@@ -1986,6 +2138,36 @@ var UI = (function () {
     return out;
   })();
   function vsBasis() { return triadState.basis && viewAnim ? triadState.basis : [cam.right, cam.up, cam.dir]; }
+  // lane DA: as in SolidWorks the cube sits on the model (the screen point of the model's bounding-box centre), not
+  // in the middle of the window; clamped so all of it stays inside the graphics area (the middle when there is no
+  // model or the area is smaller than the cube). It follows the model while the view turns.
+  function placeViewSelector(S) {
+    var c = sceneCenter(), p = c && isFinite(c[0] + c[1] + c[2]) ? worldToScreen(c) : null, m = 4;
+    if (!p || !isFinite(p[0] + p[1])) p = [size.w / 2, size.h / 2];
+    var x = size.w < S + 2 * m ? size.w / 2 : Math.max(S / 2 + m, Math.min(size.w - S / 2 - m, p[0]));
+    var y = size.h < S + 2 * m ? size.h / 2 : Math.max(S / 2 + m, Math.min(size.h - S / 2 - m, p[1]));
+    var l = Math.round(x) + 'px', t = Math.round(y) + 'px';
+    if (vsCanvas.style.left !== l) vsCanvas.style.left = l;
+    if (vsCanvas.style.top !== t) vsCanvas.style.top = t;
+  }
+  // lane DA: the View Orientation menu that comes up with the cube (Space at the pointer, or the heads-up button)
+  // never covers it: a menu that overlaps the cube moves beside it (right, else left, else below / above), inside the
+  // window. Run when the cube shows and once more after the current task (Space shows the cube before the menu).
+  function vsMenuClear() {
+    if (!vs.shown) return;
+    var menu = document.querySelector('body > .menu'), c = vsCanvas.getBoundingClientRect();
+    if (!menu || !c.width) return;
+    var r = menu.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, g = 8;
+    if (r.right <= c.left || r.left >= c.right || r.bottom <= c.top || r.top >= c.bottom) return;
+    var top = Math.max(4, Math.min(H - 4 - r.height, r.top)), left = null;
+    if (c.right + g + r.width <= W - 4) left = c.right + g;
+    else if (c.left - g - r.width >= 4) left = c.left - g - r.width;
+    else {
+      left = Math.max(4, Math.min(W - 4 - r.width, r.left));
+      top = c.bottom + g + r.height <= H - 4 ? c.bottom + g : Math.max(4, c.top - g - r.height);
+    }
+    menu.style.left = Math.round(left) + 'px'; menu.style.top = Math.round(top) + 'px';
+  }
   function drawViewSelector() {
     if (!vs.shown) return;
     var dpr = window.devicePixelRatio || 1, S = Math.round(Math.max(170, Math.min(280, Math.min(size.w, size.h) * 0.46)));
@@ -1993,6 +2175,7 @@ var UI = (function () {
       vs.size = S; vsCanvas.width = Math.round(S * dpr); vsCanvas.height = Math.round(S * dpr);
       vsCanvas.style.width = S + 'px'; vsCanvas.style.height = S + 'px';
     }
+    placeViewSelector(S);   // lane DA
     var b = vsBasis(), R = b[0], U = b[1], D = b[2], half = S / 2, r = S * 0.285;   // cube half-size in px (its diagonal fits)
     function P(p) { return [half + (p[0] * R.x + p[1] * R.y + p[2] * R.z) * r, half - (p[0] * U.x + p[1] * U.y + p[2] * U.z) * r]; }
     var g = vsCtx, dark = darkViewport();
@@ -2042,6 +2225,7 @@ var UI = (function () {
   function showViewSelector() {
     vs.shown = true; vs.hover = null; vsCanvas.hidden = false;
     drawViewSelector();
+    vsMenuClear(); Promise.resolve().then(vsMenuClear);   // lane DA: the menu may open just after the cube (Space)
     return true;
   }
   function hideViewSelector() {
@@ -2947,7 +3131,7 @@ var UI = (function () {
     updateOrigin: updateOrigin, updateSketches: updateSketches, screenPolylines: screenPolylines, scaleBar: scaleBarInfo, updateTemp: updateTemp, disposeGroup: disposeGroup,
     sketchOverlayHooks: sketchOverlayHooks, tempEntityHooks: tempEntityHooks, sketchOverlayObjects: sketchOverlayObjects, tempEntitiesShown: tempEntitiesShown,   // sketch-hooks
     activeSketchFeature: activeSketchFeature, activePlane: activePlane, isConsumed: isConsumed, snapStep: snapStep, gridStep: gridStep,
-    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
+    screenToPlane: screenToPlane, worldToScreen: worldToScreen, pickFace: pickFace, pickFacesAll: pickFacesAll, pickPlane: pickPlane, pickRefGeo: pickRefGeo, updateRefGeo: updateRefGeo, drawRefGeo: drawRefGeo, pickEntity: pickEntity, pickEntityDist: pickEntityDist, pickEdge: pickEdge,
     lineGeometryFromPolylines: lineGeometryFromPolylines, render: render, frame: frame, tick: tick, thickLines: thickLines, LINE_W: LINE_W, requestRender: requestRender,
     // view transitions and smooth zoom (see "view animation")
     finishViewAnimation: finishViewAnimation, viewAnimating: viewAnimating, viewPose: viewPose, wheelZoom: wheelZoom, zoomToArea: zoomToArea,
@@ -2958,7 +3142,7 @@ var UI = (function () {
     setViewportTheme: setViewportTheme, viewportTheme: viewportTheme,
     // r14/viewui14: background, triad, View Selector
     setBackground: setBackground, drawTriad: function () { drawTriad(); }, triadClick: triadClick, triadAxisAt: triadAxisAt, orientView: orientView,
-    showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick,
+    showViewSelector: showViewSelector, hideViewSelector: hideViewSelector, viewSelectorShown: viewSelectorShown, viewSelectorPick: viewSelectorPick, viewSelectorMenuClear: vsMenuClear, modelEdgeInBox: modelEdgeInBox,
     viewSelectorRegions: function () { return vs.cells.map(function (c) { return { id: c.id, center: [(c.q[0][0] + c.q[2][0]) / 2, (c.q[0][1] + c.q[2][1]) / 2] }; }); },
     imageQuality: imageQuality, setImageQuality: setImageQuality, IMAGE_QUALITY: IMAGE_QUALITY, imagePresets: imagePresets, defaultUnits: defaultUnits, setDefaultUnits: setDefaultUnits, lenDefault: lenDefault,
     analyticNormals: analyticNormals, surfNormal: surfNormal, annotateCurveEdges: annotateCurveEdges,

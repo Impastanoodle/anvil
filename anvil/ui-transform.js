@@ -1124,9 +1124,27 @@
       if (!cur || cur.name !== it.group) { cur = { name: it.group, l: r.left, r: r.right }; groups.push(cur); }
       cur.l = Math.min(cur.l, r.left); cur.r = Math.max(cur.r, r.right);
     });
+    // lane DA: a group narrower than its name (the View tab's Managers: one column of small buttons) gets a caption as
+    // wide as the name, centred under the group and kept clear of its neighbours (it was cut to "Mana")
+    var prevR = -Infinity;
+    groups.forEach(function (g, k) {
+      var need = capTextWidth(g.name) + 8, w = g.r - g.l;
+      if (w >= need) { prevR = g.r; return; }
+      var nextL = k + 1 < groups.length ? groups[k + 1].l : rr.right, l = (g.l + g.r) / 2 - need / 2;
+      l = Math.max(prevR + 2, Math.min(nextL - 2 - need, l));
+      g.l = l; g.r = l + need; prevR = g.r;
+    });
     var html = groups.map(function (g) { return '<span class="rb-caption" style="left:' + Math.round(g.l - rr.left) + 'px;width:' + Math.round(g.r - g.l) + 'px">' + g.name + '</span>'; }).join('');
     layer.style.top = Math.round(br.bottom - rr.top - 15) + 'px';
     if (layer._html !== html) { layer.innerHTML = html; layer._html = html; }
+  }
+  var capCtx = null;
+  function capTextWidth(s) {
+    if (!capCtx) { try { capCtx = document.createElement('canvas').getContext('2d'); } catch (e) { capCtx = null; } }
+    if (!capCtx) return String(s).length * 6;
+    var cs = window.getComputedStyle($('ribbon'));
+    capCtx.font = '11px ' + (cs.fontFamily || 'Segoe UI, sans-serif');
+    return Math.ceil(capCtx.measureText(String(s)).width);
   }
   var capFrame = 0;
   function captionsSoon() { if (!capFrame) capFrame = requestAnimationFrame(function () { capFrame = 0; captions(); }); }

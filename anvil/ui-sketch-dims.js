@@ -76,6 +76,7 @@
     var pre = d.prefix ? String(d.prefix) : '', suf = d.suffix ? String(d.suffix) : '';
     if (pre && !/\s$/.test(pre)) pre += ' ';
     if (suf && !/^\s/.test(suf)) suf = ' ' + suf;
+    if (d.link != null && d.link !== '') main = '∞' + main;   // lane CV: a linked (shared) value, as SolidWorks marks it
     return pre + main + suf;
   }
   UI.dimLabelText = dimLabelText;
@@ -1675,6 +1676,154 @@
     window.anvil.runningAngle = withSketch(function (f, spec) { return S.addRunningAngle(f, spec); });
     window.anvil.runningSets = function () { var f = UI.activeSketchFeature(); return f ? JSON.parse(JSON.stringify(S.runningSets(f))) : {}; };
   }
+
+  // ------------------------------------------------------------------ lane CV: Link Values (shared values)
+  // SolidWorks' right-click a dimension ▸ Link Values: the Shared Values dialog (Value, read-only; Name, typed or picked
+  // from the names already in the part). Every dimension with that name (d.link, on a Smart Dimension or a distance /
+  // angle relation, written by the script as a dim / rel property) has one value: editing one changes them all (in its
+  // sketch at once, SketchSolver.setDim / setRelValue; in the part's other sketches when the sketch is left, below).
+  // Unlink Value takes the dimension out of its name and leaves its value. Linked dimensions show ∞ before the value.
+  function sketchesOf(model) { return (model && model.features || []).filter(function (g) { return g && g.type === 'sketch'; }); }
+  // { name: { value, kind: 'len' | 'angle', count } } over every sketch of the part (the active one first)
+  function linkNames(f) {
+    var out = {}, list = sketchesOf(App.model);
+    if (f && list.indexOf(f) > 0) { list.splice(list.indexOf(f), 1); list.unshift(f); }
+    list.forEach(function (g) {
+      [['dim', g.dims], ['rel', g.rels]].forEach(function (pr) {
+        (pr[1] || []).forEach(function (d, i) {
+          if (d.link == null || d.link === '') return;
+          var it = { kind: pr[0], index: i }, v = S.linkItemValue(g, it);
+          if (!out[d.link]) out[d.link] = { value: v, kind: pr[0] === 'rel' && d.type === 'angle' ? 'angle' : 'len', count: 0 };
+          out[d.link].count++;
+        });
+      });
+    });
+    return out;
+  }
+  UI.sketchLinkNames = function () { return linkNames(UI.activeSketchFeature()); };
+  function dimItems(f) {
+    var out = [];
+    function add(s) { if (s && (s.kind === 'dim' || s.kind === 'rel') && !out.some(function (o) { return o.kind === s.kind && o.index === s.index; })) out.push({ kind: s.kind, index: s.index }); }
+    if (UI.selection) UI.selection().forEach(add);
+    add(App.sel);
+    return out.filter(function (it) { var d = it.kind === 'rel' ? (f.rels || [])[it.index] : (f.dims || [])[it.index]; return d && (it.kind === 'dim' || (S.TYPES[d.type] && S.TYPES[d.type].dim)); });
+  }
+  // UI.linkValues(items | null, name) -> { ok, value } | { ok: false, error }: one undo step
+  UI.linkValues = function (items, name) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) return { ok: false, error: 'Open a sketch first.' };
+    items = items || dimItems(f);
+    var nm = String(name == null ? '' : name).trim(), names = linkNames(f), here = S.linkedItems(f, nm).length > 0;
+    var other = !here && names[nm] ? names[nm].value : null;   // the name's value in another sketch of the part
+    markDirty();
+    var r = S.linkValues(f, items, nm, other);
+    refresh();
+    if (!r.ok) { UI.toast('Link Values: ' + r.error); return r; }
+    UI.setStatus(items.length + ' dimension' + (items.length === 1 ? '' : 's') + ' linked to "' + nm + '" (' + dimLabelText({}, r.value, names[nm] && names[nm].kind === 'angle' ? 'angle' : 'len') + ').');
+    return r;
+  };
+  UI.unlinkValue = function (item) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) return { ok: false, error: 'Open a sketch first.' };
+    var items = item ? [item] : dimItems(f), n = 0;
+    markDirty();
+    items.forEach(function (it) { if (S.unlinkValue(f, it).ok) n++; });
+    refresh();
+    UI.setStatus(n ? n + ' dimension' + (n === 1 ? '' : 's') + ' unlinked.' : 'No linked dimension selected.');
+    return { ok: n > 0 };
+  };
+  // the Shared Values dialog
+  UI.cmdLinkValues = function (items) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
+    items = items || dimItems(f);
+    if (!items.length) { UI.toast('Select a dimension first, then Link Values.'); return; }
+    var first = items[0], d0 = first.kind === 'rel' ? f.rels[first.index] : f.dims[first.index], names = linkNames(f);
+    var kind0 = first.kind === 'rel' && d0.type === 'angle' ? 'angle' : 'len', v0 = S.linkItemValue(f, first);
+    var opts = Object.keys(names).filter(function (n) { return names[n].kind === kind0; }).sort();
+    var defName = d0.link || (opts[0] || (function () { var k = 1; while (names['Value' + k]) k++; return 'Value' + k; })());
+    var body = '<div id="lv-dialog" class="lv-dialog"><p style="margin:0 0 8px">Every dimension linked to one name has the same value; changing one changes them all.</p>' +
+      '<label style="display:block;margin:4px 0">Value: <input id="lv-value" type="text" readonly value="' + esc(dimLabelText({}, v0, kind0)) + '" style="width:9em"></label>' +
+      '<label style="display:block;margin:4px 0">Name: <input id="lv-name" type="text" list="lv-names" value="' + esc(defName) + '" style="width:12em"></label>' +
+      '<datalist id="lv-names">' + opts.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>' +
+      '<div id="lv-msg" style="color:#c0392b;min-height:1.2em"></div></div>';
+    function ok() {
+      var nm = $('lv-name') ? $('lv-name').value : defName;
+      var r = UI.linkValues(items, nm);
+      if (!r.ok) { if ($('lv-msg')) $('lv-msg').textContent = r.error; return; }
+      UI.closeModal();
+    }
+    UI.showModal({ title: 'Shared Values', body: body, buttons: [{ label: 'OK', primary: true, id: 'lv-ok', action: ok }, { label: 'Cancel', id: 'lv-cancel', action: UI.closeModal }] });
+    setTimeout(function () { var inp = $('lv-name'); if (inp) { try { inp.focus(); inp.select(); } catch (e) { /* */ } inp.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); ok(); } else if (ev.key === 'Escape') UI.closeModal(); ev.stopPropagation(); }); } }, 0);
+  };
+  // the dimension's shortcut menu (right-click its value): Link Values… / Unlink Value, Properties…, Delete
+  function dimMenu(ev, it) {
+    var f = UI.activeSketchFeature();
+    if (!f || it.temp || it.auto) return false;
+    var sel = it.rel != null ? { kind: 'rel', index: it.rel } : { kind: 'dim', index: it.index };
+    var d = sel.kind === 'rel' ? (f.rels || [])[sel.index] : (f.dims || [])[sel.index];
+    if (!d) return false;
+    var inSel = dimItems(f).some(function (o) { return o.kind === sel.kind && o.index === sel.index; });
+    if (!inSel) { App.sel = sel; App.sel2 = null; if (UI.setSelection) UI.setSelection([sel]); UI.updateSketches(); }
+    var items = [];
+    items.push({ label: 'Link Values…', icon: 'dim', action: function () { UI.cmdLinkValues(); } });
+    if (d.link != null && d.link !== '') items.push({ label: 'Unlink Value', icon: 'dim', action: function () { UI.unlinkValue(sel); } });
+    items.push({ sep: true });
+    if (UI.openDimensionPM) items.push({ label: 'Properties…', icon: 'props', action: function () { UI.openDimensionPM(sel); } });
+    items.push({ label: 'Delete', key: 'Del', icon: 'cancel', action: function () { App.sel = sel; UI.deleteSelection(); } });
+    UI.showMenu(ev.clientX, ev.clientY, items);
+    return true;
+  }
+  UI.sketchDimMenu = function (index, isRel, ev) {   // test / script hook: the menu of placed dimension index (or relation index)
+    var r = $('dim-layer') && $('dim-layer').getBoundingClientRect();
+    return dimMenu(ev || { clientX: r ? r.left + 100 : 100, clientY: r ? r.top + 100 : 100 }, isRel ? { rel: index } : { index: index });
+  };
+  var dimLayerEl = $('dim-layer');
+  if (dimLayerEl) {
+    dimLayerEl.addEventListener('mousedown', function (ev) {
+      if (ev.button !== 2 || App.mode !== 'sketch') return;
+      var t = ev.target;
+      while (t && t !== dimLayerEl && !t._d) t = t.parentNode;
+      if (!t || !t._d) return;
+      if (dimMenu(ev, t._d)) { ev.preventDefault(); ev.stopPropagation(); }
+    }, true);
+    dimLayerEl.addEventListener('contextmenu', function (ev) { if (App.mode === 'sketch') ev.preventDefault(); });
+  }
+  // leaving a sketch: its linked values go to the dimensions of the same names in the part's other sketches
+  UI.sketchExitHooks = UI.sketchExitHooks || [];
+  UI.sketchExitHooks.push(function (f) { try { pushLinks(f, linkBase && linkBase.f === f ? linkBase.vals : null); } catch (e) { /* never block leaving the sketch */ } linkBase = null; });
+  // only the shared values this sketch changed (or newly linked) while open go out: a sketch merely opened and left
+  // never pushes an older value over one set in another sketch
+  var linkBase = null;
+  UI.sketchEnterHooks = UI.sketchEnterHooks || [];
+  UI.sketchEnterHooks.push(function (f) { linkBase = { f: f, vals: linkVals(f) }; });
+  function linkVals(f) {
+    var vals = {};
+    [['dim', f.dims], ['rel', f.rels]].forEach(function (pr) {
+      (pr[1] || []).forEach(function (d, i) { if (d.link != null && d.link !== '' && vals[d.link] == null) { var v = S.linkItemValue(f, { kind: pr[0], index: i }); if (v != null) vals[d.link] = v; } });
+    });
+    return vals;
+  }
+  function pushLinks(f, base) {
+    if (!f) return 0;
+    var vals = linkVals(f), n = 0;
+    if (base) Object.keys(vals).forEach(function (nm) { if (base[nm] != null && Math.abs(base[nm] - vals[nm]) <= 1e-12 * Math.max(1, Math.abs(vals[nm]))) delete vals[nm]; });
+    if (!Object.keys(vals).length) return 0;
+    sketchesOf(App.model).forEach(function (g) {
+      if (g === f) return;
+      Object.keys(vals).forEach(function (nm) {
+        var its = S.linkedItems(g, nm);
+        if (!its.length) return;
+        var v = vals[nm], cur = S.linkItemValue(g, its[0]);
+        if (cur != null && Math.abs(cur - v) <= 1e-12 * Math.max(1, Math.abs(v))) return;
+        var r = its[0].kind === 'rel' ? S.setRelValue(g, its[0].index, v) : S.setDim(g, its[0].index, v);
+        if (r.ok) n++;
+        else UI.toast('Linked value "' + nm + '" could not be applied in ' + (g.name || 'a sketch') + ': ' + r.error);
+      });
+    });
+    return n;
+  }
+  UI.pushLinkedValues = pushLinks;
 })();
 
 // ------------------------------------------------------------------ rfAV: Instant2D (Sketch tab toggle, as SolidWorks)

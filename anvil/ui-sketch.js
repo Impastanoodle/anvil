@@ -25,7 +25,9 @@
     refreshCorner(true);
     UI.refreshTree(); UI.refreshStatus();
     UI.setStatus('Editing ' + f.name + '. Pick a tool from the Sketch tab, or click an entity to edit its values.');
+    (UI.sketchEnterHooks || []).forEach(function (h) { try { h(f); } catch (e) { /* entering the sketch goes on */ } });   // lane CV: Link Values notes the values
   }
+  UI.sketchEnterHooks = UI.sketchEnterHooks || [];   // functions (f) run as sketch f is opened (enterSketch)
 
   // r5/sketch5: the confirmation corner, side by side in the top-right corner of the graphics area as SolidWorks has
   // it: Exit Sketch (rebuilds) and Discard Changes and Exit; while a PropertyManager is open in the sketch it holds that
@@ -1262,7 +1264,7 @@
     if (App.tool === 'line' && st.pts.length && st.chainStart && Math.abs(p[0] - st.chainStart[0]) < 1e-9 && Math.abs(p[1] - st.chainStart[1]) < 1e-9) {
       var fc = UI.activeSketchFeature(), nc = fc ? fc.entities.length : 0;
       addEntity(toolEntities([st.pts[st.pts.length - 1]], p)[0], true);   // rfH: the closing point is in no st.pts
-      if (fc && numericInputOn() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6
+      if (fc && dimAllOnCreate() && fc.entities.length === nc + 1) typedDims(fc, nc, ALL_TYPED);   // r6/sketch6; lane CV: not with Create dimension only when value is entered
       if (fc && fc.entities.length === nc + 1) typedOutside(fc, nc);   // rfCR: the outline closed: its typed dimensions go outside it
       UI.afterSketchCommit(fc, nc, st);   // sketch-hooks: the closing segment is committed too (Dynamic Mirror)
       cancelTool(true);
@@ -1299,7 +1301,7 @@
         else if (tv0.d != null && e0.t === 'circle') e0.r = tv0.d / 2;
         if (tv0.w != null && e0.t === 'slot' && App.tool === 'slot') { e0.w = tv0.w; var fc2 = slotFarCentre([e0.x1, e0.y1], st.pts[1], e0.w); e0.x2 = fc2[0]; e0.y2 = fc2[1]; }   // slot-overall: the exact width sets the far centre (the Centerpoint Straight Slot's own entities do this)
       }
-      var hkP = toolHook(), typedAll = numericInputOn() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;
+      var hkP = toolHook(), typedAll = dimAllOnCreate() ? Object.assign({}, ALL_TYPED, st.typed || {}) : st.typed;   // lane CV: only typed values with Create dimension only when value is entered
       if (!(hkP && hkP.commit && hkP.commit(ents, st, typedAll))) ents.forEach(function (e) { addEntity(e); });
       if (f && UI.sketchLayerNew) f.entities.slice(n0).forEach(function (e) { UI.sketchLayerNew(f, e); });   // sketch-layers: a tool's own commit
       // r6/sketch6: with Sketch Settings ▸ Enable on-screen numeric input on entity creation, every value of the new
@@ -1342,6 +1344,11 @@
     if (numInputOn == null) { numInputOn = false; try { numInputOn = window.localStorage.getItem('anvil.sketchNumericInput') === '1'; } catch (e) { /* storage blocked */ } }
     return numInputOn;
   }
+  // lane CV: Tools ▸ Sketch Settings ▸ Create dimension only when value is entered (SolidWorks' sub-option of the
+  // on-screen numeric input): on, only the values typed in the box become dimensions; off (the default), every value of
+  // an entity drawn with the numeric input on does. Without the numeric input, typed values make dimensions as before.
+  function dimAllOnCreate() { return numericInputOn() && !skSetting('dimOnlyTyped'); }
+  UI.sketchDimAllOnCreate = dimAllOnCreate;
   UI.sketchNumericInput = function (on) {
     if (on == null) return numericInputOn();
     numInputOn = !!on;
@@ -1359,8 +1366,8 @@
   //   ghostOnDrag    rfAY: Ghost image on drag — while sketch geometry is dragged its pre-drag shape stays drawn faded
   //   rapidSketch    rfAY: Rapid Sketch (the Sketch tab toggle, not in the menu) — a sketch tool picked with no sketch open
   //                  sketches on the plane / planar face clicked first, and moves to another one clicked between entities
-  var SK_SET_DEF = { autoRelations: true, autoSolve: true, snapping: true, noSolveMove: false, detachOnDrag: false, overrideDims: false, ghostOnDrag: true, rapidSketch: false };
-  var SK_SET_NAMES = { autoRelations: 'Automatic Relations', autoSolve: 'Automatic Solve', snapping: 'Enable Snapping', noSolveMove: 'No Solve Move', detachOnDrag: 'Detach Segment on Drag', overrideDims: 'Override Dims on Drag/Move', ghostOnDrag: 'Ghost image on drag', rapidSketch: 'Rapid Sketch' };
+  var SK_SET_DEF = { autoRelations: true, autoSolve: true, snapping: true, noSolveMove: false, detachOnDrag: false, overrideDims: false, ghostOnDrag: true, rapidSketch: false, dimOnlyTyped: false };   // lane CV: dimOnlyTyped
+  var SK_SET_NAMES = { autoRelations: 'Automatic Relations', autoSolve: 'Automatic Solve', snapping: 'Enable Snapping', noSolveMove: 'No Solve Move', detachOnDrag: 'Detach Segment on Drag', overrideDims: 'Override Dims on Drag/Move', ghostOnDrag: 'Ghost image on drag', rapidSketch: 'Rapid Sketch', dimOnlyTyped: 'Create dimension only when value is entered' };
   var skSet = null;
   function skSettings() {
     if (skSet) return skSet;
@@ -2607,6 +2614,22 @@
   // UI.radialDimScreen -> { d: lines path, arrows: arrowheads path, text }
   UI.dimLayout = function (sc) {
     dimLayout(sc);
+    // lane DA: in a part (Instant3D / feature dimensions) the label keeps off the model's visible edges
+    if (App.mode === 'part' && UI.modelEdgeInBox && sc.along && !sc.along.radial && sc.text && UI.modelEdgeInBox(labelBox(sc, 0, 0))) {
+      var al = sc.along, b0 = labelBox(sc, 0, 0), w = b0[2] - b0[0], step = Math.abs(al.u[0]) * w + Math.abs(al.u[1]) * (b0[3] - b0[1]) + 4;
+      var tries = [1, -1, 2, -2, 3, -3, 4, -4];
+      for (var k = 0; k < tries.length; k++) {
+        var t = tries[k] * step;
+        if (UI.modelEdgeInBox(labelBox(sc, al.u[0] * t, al.u[1] * t))) continue;
+        sc.text = { x: sc.text.x + al.u[0] * t, y: sc.text.y + al.u[1] * t, anchor: sc.text.anchor };
+        var reach = Math.abs(t) + step / 2;
+        if (sc.lin && reach > al.half) {   // the dimension line runs on to a label moved past its end
+          var c = [(sc.lin.a[0] + sc.lin.b[0]) / 2, (sc.lin.a[1] + sc.lin.b[1]) / 2], sg = t < 0 ? -1 : 1;
+          sc.lines.push([[c[0] + al.u[0] * sg * al.half, c[1] + al.u[1] * sg * al.half], [c[0] + al.u[0] * sg * reach, c[1] + al.u[1] * sg * reach]]);
+        }
+        break;
+      }
+    }
     var b = labelBox(sc, 0, 0);
     return { d: linesPath(breakLines(sc.lines, b)), arrows: arrowsPath(sc.arrows), text: sc.text };
   };
@@ -3621,6 +3644,14 @@
       if (pk < 0) items.forEach(function (it, k) { if (pk < 0 && it && it.label === 'Delete') pk = k; });
       var edit = { label: 'Edit Polygon', icon: 'polygon', action: function () { if (App.mode === 'sketch') UI.editPolygon(sel[0]); } };
       if (pk < 0) items.unshift(edit); else items.splice(pk, 0, edit);
+    }
+    // lane CV: Dissolve Sketch Text on a sketch text (SolidWorks puts it above Properties…)
+    if (sel.length === 1 && f.entities[sel[0]].t === 'text' && UI.dissolveSketchText) {
+      if (UI.sketchMenuItems && !items.sketchMenu) items = UI.sketchMenuItems(items);
+      var tk = -1;
+      items.forEach(function (it, k) { if (it && it.label === 'Properties…') tk = k; });
+      var dis = { label: 'Dissolve Sketch Text', icon: 'text', action: function () { if (App.mode === 'sketch') UI.dissolveSketchText(sel[0]); } };
+      if (tk < 0) items.push(dis); else items.splice(tk, 0, dis);
     }
     UI.showMenu(ev.clientX, ev.clientY, items);
   }

@@ -727,9 +727,36 @@
         loops.push(dedupeLoop(pts));
       } else {
         warnings.push('Open contour ignored (' + pts.length + ' points).');
+        (warnings.open = warnings.open || []).push({ pts: pts, w: warnings.length - 1 });
       }
     }
     return { loops: loops, warnings: warnings };
+  }
+  // lane CV: an open contour whose two ends both lie on the sketch's other geometry (a line across a rectangle, used
+  // with Selected Contours) splits a region: it is not an ignored open contour, so it gives no warning
+  function splitterWarnings(ch, loops, chains) {
+    var open = ch.warnings.open || [];
+    if (!open.length) return ch.warnings.slice();
+    var segs = [], scale = 1;
+    loops.forEach(function (l) { for (var i = 0; i < l.length; i++) segs.push([l[i], l[(i + 1) % l.length]]); });
+    chains.forEach(function (c) { for (var i = 0; i + 1 < c.length; i++) segs.push([c[i], c[i + 1], c]); });
+    segs.forEach(function (s) { scale = Math.max(scale, Math.abs(s[0][0]), Math.abs(s[0][1])); });
+    var tol = 1e-7 * scale;
+    function onOther(p, own) {
+      return segs.some(function (s) {
+        if (s[2] && own.indexOf(s[2]) >= 0) return false;
+        var a = s[0], b = s[1], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        var t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+        return Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1]) <= tol;
+      });
+    }
+    var drop = {};
+    open.forEach(function (o) {
+      // the chains this open contour was made of (its own pieces do not count as "other geometry")
+      var own = chains.filter(function (c) { return c.some(function (q) { return o.pts.some(function (r) { return r === q || (r[0] === q[0] && r[1] === q[1]); }); }); });
+      if (onOther(o.pts[0], own) && onOther(o.pts[o.pts.length - 1], own)) drop[o.w] = true;
+    });
+    return ch.warnings.filter(function (w, i) { return !drop[i]; });
   }
 
   // Proper crossing of segments a-b and c-d (interiors only; touching at an end is not a crossing) -> point | null.
@@ -866,7 +893,7 @@
     if (chains.length) {
       var ch = chainSegments(chains);
       loops = loops.concat(ch.loops);
-      warnings = warnings.concat(ch.warnings);
+      warnings = warnings.concat(splitterWarnings(ch, loops, chains));   // lane CV: a splitting line is no open contour
     }
     var zero = 0, out = [];
     loops.forEach(function (l) {
@@ -2146,23 +2173,55 @@
       if (!ccw) pts.reverse();
       return { pts: pts, src: pts.map(function () { return src; }) };
     }
-    function capsule(a, b) {
+    // a closed ring from pieces in order: { pts, sr (the circle the piece's chords lie on, null: straight) }; a piece
+    // starting where the last ended continues it, otherwise a straight edge joins them (a flat end)
+    function ringOf(pieces) {
+      var P = [], S = [];
+      function same(p, q) { return Math.abs(p[0] - q[0]) <= 1e-12 * (1 + Math.abs(p[0])) && Math.abs(p[1] - q[1]) <= 1e-12 * (1 + Math.abs(p[1])); }
+      function add(q, sr) { if (P.length) S.push(sr); P.push(q); }
+      pieces.forEach(function (pc) {
+        pc.pts.forEach(function (q, i) { if (i === 0 && P.length && same(P[P.length - 1], q)) return; add(q, i === 0 ? null : pc.sr); });
+      });
+      if (P.length > 1 && same(P[P.length - 1], P[0])) P.pop(); else S.push(null);
+      return { pts: P, src: S };
+    }
+    function capPiece(c, a0, a1, segs) {   // a round end: half a circle of the stroke's radius, with its curve record
+      curves.push({ c: c, r: hw, a0: a0, a1: a1, full: false, step: (a1 - a0) / segs });
+      return { pts: arcPoints(c[0], c[1], hw, a0, a1, segs), sr: { id: uid++, c: c, r: hw } };
+    }
+    function flatPiece(c, a0, a1) { return { pts: [[c[0] + hw * Math.cos(a0), c[1] + hw * Math.sin(a0)], [c[0] + hw * Math.cos(a1), c[1] + hw * Math.sin(a1)]], sr: null }; }
+    // lane CV2: flatA / flatB — the end runs on smoothly into the next stroke (a tangent joint), so it is cut square
+    // instead of rounded: a round cap there poked its chords out of the neighbour's ring and the union kept slivers
+    // that no true arc carries (plain Cut "O" was 0.46 % short of its analytic area)
+    function capsule(a, b, flatA, flatB) {
       var dx = b[0] - a[0], dy = b[1] - a[1];
       if (Math.hypot(dx, dy) < 1e-12) { var rg = circleRing(a, hw, true); shapes.push({ rings: [rg], box: box(rg.pts) }); return; }
       var ang = Math.atan2(dy, dx), segs = Math.max(8, Math.round(segsForRadius(hw) / 2));
-      var c2 = { id: uid++, c: b, r: hw }, c1 = { id: uid++, c: a, r: hw }, src = [], i;
-      var pts = arcPoints(b[0], b[1], hw, ang - Math.PI / 2, ang + Math.PI / 2, segs).concat(arcPoints(a[0], a[1], hw, ang + Math.PI / 2, ang + 3 * Math.PI / 2, segs));
-      for (i = 0; i < segs; i++) src.push(c2);
-      src.push(null);
-      for (i = 0; i < segs; i++) src.push(c1);
-      src.push(null);
-      curves.push({ c: b, r: hw, a0: ang - Math.PI / 2, a1: ang + Math.PI / 2, full: false, step: Math.PI / segs },
-        { c: a, r: hw, a0: ang + Math.PI / 2, a1: ang + 3 * Math.PI / 2, full: false, step: Math.PI / segs });
-      shapes.push({ rings: [{ pts: pts, src: src }], box: box(pts) });
+      var rg2 = ringOf([flatB ? flatPiece(b, ang - Math.PI / 2, ang + Math.PI / 2) : capPiece(b, ang - Math.PI / 2, ang + Math.PI / 2, segs),
+        flatA ? flatPiece(a, ang + Math.PI / 2, ang + 3 * Math.PI / 2) : capPiece(a, ang + Math.PI / 2, ang + 3 * Math.PI / 2, segs)]);
+      shapes.push({ rings: [rg2], box: box(rg2.pts) });
     }
     function chain(pts) { for (var i = 0; i + 1 < pts.length; i++) capsule(pts[i], pts[i + 1]); }
-    strokes.forEach(function (s) {
-      if (s.t === 'line') { capsule([s.x1, s.y1], [s.x2, s.y2]); return; }
+    // the ends of the line and arc strokes: { p, o (unit, pointing out of the stroke) }; an end meeting exactly one other
+    // end at the same point with the opposite outward direction is a tangent joint (flat)
+    var ends = [];
+    strokes.forEach(function (s, i) {
+      if (s.t === 'line') {
+        var L = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+        if (L > 1e-12) { var tx = (s.x2 - s.x1) / L, ty = (s.y2 - s.y1) / L; ends.push({ i: i, k: 0, p: [s.x1, s.y1], o: [-tx, -ty] }, { i: i, k: 1, p: [s.x2, s.y2], o: [tx, ty] }); }
+      } else if (s.t === 'arc' && s.a1 - s.a0 < 360 - 1e-9 && s.r - hw > 1e-6 * s.r) {
+        var e0 = s.a0 * Math.PI / 180, e1 = s.a1 * Math.PI / 180;
+        ends.push({ i: i, k: 0, p: [s.cx + s.r * Math.cos(e0), s.cy + s.r * Math.sin(e0)], o: [Math.sin(e0), -Math.cos(e0)] },
+          { i: i, k: 1, p: [s.cx + s.r * Math.cos(e1), s.cy + s.r * Math.sin(e1)], o: [-Math.sin(e1), Math.cos(e1)] });
+      }
+    });
+    var flat = {}, tolP = 1e-9 * Math.max(1, hw);
+    ends.forEach(function (E) {
+      var meet = ends.filter(function (F) { return F !== E && Math.hypot(F.p[0] - E.p[0], F.p[1] - E.p[1]) <= tolP; });
+      if (meet.length === 1 && E.o[0] * meet[0].o[0] + E.o[1] * meet[0].o[1] < -1 + 1e-9) flat[E.i + ':' + E.k] = true;
+    });
+    strokes.forEach(function (s, si) {
+      if (s.t === 'line') { capsule([s.x1, s.y1], [s.x2, s.y2], flat[si + ':0'], flat[si + ':1']); return; }
       if (s.t === 'poly') { chain(s.closed ? s.pts.concat([s.pts[0]]) : s.pts); return; }
       var sweep = s.a1 - s.a0, c = [s.cx, s.cy];
       if (!(s.r - hw > 1e-6 * s.r)) { chain(strokePolyline(s).pts.concat(sweep >= 360 - 1e-9 ? [strokePolyline(s).pts[0]] : [])); return; }   // tighter than the stroke: a chain of capsules
@@ -2171,20 +2230,20 @@
         shapes.push({ rings: [outer, inner], box: box(outer.pts) });
         return;
       }
-      // an arc: arc slots of at most 180° each (a longer one could close on itself)
+      // an arc: arc slots of at most 180° each (a longer one could close on itself); the joints between them are flat
       var k = Math.max(1, Math.ceil(sweep / 180 - 1e-9));
       for (var j = 0; j < k; j++) {
         var as = aslotArcs({ cx: s.cx, cy: s.cy, r: s.r, a0: s.a0 + sweep * j / k, a1: s.a0 + sweep * (j + 1) / k, w: 2 * hw });
         if (!as) continue;
-        var ring = [], src = [];
+        var fl0 = j > 0 || flat[si + ':0'], fl1 = j < k - 1 || flat[si + ':1'], pieces = [];
         as.forEach(function (cv, q) {
+          if ((q === 1 && fl1) || (q === 3 && fl0)) return;   // the end caps (1: at a1, 3: at a0)
           var p = cv.back ? arcPoints(cv.c[0], cv.c[1], cv.r, cv.a1, cv.a0, cv.n) : arcPoints(cv.c[0], cv.c[1], cv.r, cv.a0, cv.a1, cv.n);
-          ring = ring.concat(q ? p.slice(1, q === 3 ? -1 : undefined) : p);
-          var sr = { id: uid++, c: cv.c, r: cv.r };
-          for (var m = 0; m < cv.n; m++) src.push(sr);
+          pieces.push({ pts: p, sr: { id: uid++, c: cv.c, r: cv.r } });
           curves.push({ c: cv.c, r: cv.r, a0: cv.a0, a1: cv.a1, full: false, step: (cv.a1 - cv.a0) / cv.n });
         });
-        shapes.push({ rings: [{ pts: ring, src: src }], box: box(ring) });
+        var ring = ringOf(pieces);
+        shapes.push({ rings: [ring], box: box(ring.pts) });
       }
     });
     return { shapes: shapes, curves: curves };
@@ -2322,9 +2381,10 @@
   // island's centroid (else the middle of its box), up its letter's y axis — along x when the counter is narrower than
   // two bridges and taller than wide; from the middle of the stretch of that line inside the island it goes out each
   // way through the strokes round the island to where the line leaves the letter, on the line and on both edges of
-  // the bridge (the furthest of the three, then a tenth of the width more), and the bridge is that stretch bw wide.
+  // the bridge (the furthest of the three, then a tenth of the width more), and the bridge is that stretch bw wide —
+  // at most half as wide as the counter across it (lane CV2).
   function textBridges(lay, hw, bw, scale) {
-    var out = [], b = bw / 2, m = Math.max(0.1 * bw, 1e-9 * scale);
+    var out = [];
     lay.glyphs.forEach(function (gl) {
       if (!(gl.s1 > gl.s0)) return;
       var loops = textUnion(strokeShapes(lay.strokes.slice(gl.s0, gl.s1), hw).shapes, scale);
@@ -2362,6 +2422,9 @@
         H.forEach(function (p, i) { var q = H[(i + 1) % H.length], cr = p[0] * q[1] - q[0] * p[1]; A2 += cr; cx += (p[0] + q[0]) * cr; cy += (p[1] + q[1]) * cr; });
         var cen = Math.abs(A2) > 1e-300 ? [cx / (3 * A2), cy / (3 * A2)] : [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2];
         var wd = bb[2] - bb[0], ht = bb[3] - bb[1], ax = wd < 2 * bw && ht > wd ? 1 : 0, o = 1 - ax;
+        // lane CV2: a bridge is never wider than half the counter it crosses (a wider one swallowed the letter: Stencil
+        // "B" 1 high with the 0.8 mm default bridge kept 0.3 % of its area); b / m are this bridge's half width / margin
+        var b = Math.min(bw, 0.5 * (ax === 0 ? wd : ht)) / 2, m = Math.max(0.2 * b, 1e-9 * scale);
         var c = cen[ax], hc = cuts([H], ax, c);
         if (hc.length < 2) { c = (bb[ax] + bb[ax + 2]) / 2; hc = cuts([H], ax, c); }
         if (hc.length < 2) return;
@@ -2497,6 +2560,68 @@
     });
     return { polys: polys };
   }
+  // lane CV: Dissolve Sketch Text (SolidWorks' right-click ▸ Dissolve Sketch Text). dissolveText(e) -> the ordinary
+  // sketch entities the text is drawn with, on the text's layer (ETCH for an Etch text with none), construction kept:
+  // Etch strokes as lines, arcs (circles when whole) and open / closed polylines; a Cut text's outline loops as lines
+  // and arcs end to end (a run of chords of one true circle is one arc, a loop all on one circle a circle; a run whose
+  // ends are off its circle, where trueArcs kept the chords, stays lines), collinear straight pieces joined. The
+  // profile of the result is the text's: same loops, same exact curves (volumes agree to rounding).
+  function dissolveText(e) {
+    if (!e || e.t !== 'text') return [];
+    var out = [], layer = e.layer != null && e.layer !== '' ? e.layer : (e.mode === 'outline' ? null : 'ETCH');
+    function add(x) { if (layer) x.layer = layer; if (e.construction) x.construction = true; out.push(x); }
+    function deg(a) { return a * 180 / Math.PI; }
+    if (e.mode !== 'outline') {
+      textLayout(e).strokes.forEach(function (s) {
+        if (s.t === 'line') add({ t: 'line', x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 });
+        else if (s.t === 'poly') { var pl = { t: 'polyline', pts: s.pts.map(function (q) { return [q[0], q[1]]; }) }; if (s.closed) pl.closed = true; add(pl); }
+        else if (s.a1 - s.a0 >= 360 - 1e-9) add({ t: 'circle', cx: s.cx, cy: s.cy, r: s.r });
+        else add({ t: 'arc', cx: s.cx, cy: s.cy, r: s.r, a0: s.a0, a1: s.a1 });
+      });
+      return out;
+    }
+    var o = textOutline(e);
+    (o ? o.loops : []).forEach(function (l) {
+      var P = l.pts, src = l.src, n = P.length, segs = [], j;
+      if (n < 2) return;
+      function onCircle(p, s) { return Math.abs(Math.hypot(p[0] - s.c[0], p[1] - s.c[1]) - s.r) <= 1e-9 * Math.max(1, s.r); }
+      // edge j (P[j] -> P[j + 1]) lies on a true circle when both its ends do (as curveSegments tags a profile's chords);
+      // a partial chord the union left at a crossing trueArcs could not move onto the circle stays a line
+      var on = [], tags = curveSegments(P, o.curves);
+      for (j = 0; j < n; j++) {
+        var cv = tags && tags[j] >= 0 ? o.curves[tags[j]] : null;
+        on.push(cv ? { c: cv.c, r: cv.r } : null);   // exactly the chords the text's own profile takes as true arcs
+      }
+      function same(a, b) { return !!(a && b && (a === b || (Math.abs(a.r - b.r) <= 1e-9 * Math.max(1, a.r) && Math.hypot(a.c[0] - b.c[0], a.c[1] - b.c[1]) <= 1e-9 * Math.max(1, a.r)))); }
+      if (on.every(function (s) { return same(s, on[0]); })) { add({ t: 'circle', cx: on[0].c[0], cy: on[0].c[1], r: on[0].r }); return; }
+      var s0 = 0;
+      while (s0 < n && on[s0] && same(on[s0], on[(s0 + n - 1) % n])) s0++;
+      function line(a, b) {
+        var last = segs[segs.length - 1];
+        if (last && last.t === 'line') {   // join a straight piece on to the previous one when they are collinear
+          var ux = last.x2 - last.x1, uy = last.y2 - last.y1, vx = b[0] - a[0], vy = b[1] - a[1], L = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+          if (L > 0 && Math.abs(ux * vy - uy * vx) <= 1e-12 * L && ux * vx + uy * vy > 0) { last.x2 = b[0]; last.y2 = b[1]; return; }
+        }
+        segs.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+      }
+      for (var i = 0; i < n;) {
+        var a = (s0 + i) % n, sr = on[a];
+        if (!sr) { line(P[a], P[(a + 1) % n]); i++; continue; }
+        var k = i + 1;
+        while (k < n && same(on[(s0 + k) % n], sr)) k++;
+        var A = P[a], c = sr.c, sw = 0;
+        for (j = i; j < k; j++) {
+          var p = P[(s0 + j) % n], p2 = P[(s0 + j + 1) % n];
+          sw += Math.atan2((p[0] - c[0]) * (p2[1] - c[1]) - (p[1] - c[1]) * (p2[0] - c[0]), (p[0] - c[0]) * (p2[0] - c[0]) + (p[1] - c[1]) * (p2[1] - c[1]));
+        }
+        var ta = Math.atan2(A[1] - c[1], A[0] - c[0]), tb = ta + sw;
+        segs.push({ t: 'arc', cx: c[0], cy: c[1], r: sr.r, a0: deg(Math.min(ta, tb)), a1: deg(Math.max(ta, tb)) });
+        i = k;
+      }
+      segs.forEach(add);
+    });
+    return out;
+  }
   // ---- text along a curve: keeping path.e / path.g in step with the sketch
   // pathGeomOf(src) -> the geometry a text keeps of the curve it follows (a copy of the line / arc / spline / ellipse /
   // partial ellipse's own fields), or null for any other entity
@@ -2593,6 +2718,7 @@
   K.textLayout = textLayout; K.textOutline = textOutline; K.textDxf = textDxf; K.textStrokeWidth = textStrokeWidth;   // sketch-text
   K.syncTextPaths = syncTextPaths; K.textEntityRemoved = textEntityRemoved; K.remapTextPaths = remapTextPaths; K.transformText = transformText;
   K.textPathOf = pathGeomOf; K.TEXT_PATH_TYPES = TEXT_PATH_TYPES.slice(); K.textBridgeWidth = textBridgeWidth;   // sketch-text2
+  K.dissolveText = dissolveText;   // lane CV: Dissolve Sketch Text
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
   _.TESS = TESS; _.checkProfile = checkProfile; _.dimGeometry = dimGeometry; _.entityPolylines = entityPolylines; _.key2 = key2;
   _.mirrorAxis = mirrorAxis; _.mirrorEntity = mirrorEntity; _.offsetLoop = offsetLoop; _.pointInPoly = pointInPoly; _.segsForRadius = segsForRadius;

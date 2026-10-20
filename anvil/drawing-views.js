@@ -919,6 +919,21 @@
   // centred on the whole part like a full section, so it stays aligned with its parent
   function pathContent(doc, v, mesh, parentContent) {
     var par = findV(doc, v.parent), P = parentContent(par).frame, sc = v.section, F = D.sectionFrame(P, sc.axis, sc.sign), full = D.extentsOf(mesh, F);
+    // (rfCX2) lazy compute: a path cut not worked out yet is a job for drawing-worker.js (Drawing.sectionJob with
+    // section.path), as a full section's is, and a pending placeholder the size of the whole part meanwhile
+    if (_.LAZY && _.LAZY.mesh === mesh) {
+      var key = secKey(P, sc), S0 = mesh._drawingSections && mesh._drawingSections[key], pk = D.projectionKey(F, v.display, v.tangent);
+      if (!S0 || (S0.mesh.faces.length && !(S0.mesh._drawingProj && S0.mesh._drawingProj[pk])) || !(S0._capLoops && S0._capLoops[frameKey(F)])) {
+        var jk = 'T|' + key + '|' + pk;
+        if (!_.LAZY.keys[jk]) {
+          _.LAZY.keys[jk] = 1;
+          _.LAZY.missing.push({ key: jk, section: { path: { P: { u: P.u.slice(), v: P.v.slice(), e: P.e.slice() }, sc: JSON.parse(JSON.stringify(sc)) } }, frame: { name: F.name, e: F.e, u: F.u, v: F.v }, display: v.display, tangent: v.tangent || null });
+        }
+        var ph = { orient: F.name, u: F.u, v: F.v, e: F.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
+          bounds: { umin: full.umin, umax: full.umax, vmin: full.vmin, vmax: full.vmax }, stats: { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 }, pending: true };
+        return { frame: F, proj: ph, center: [full.cu, full.cv], caps: [], section: null, scale: _.viewScale(doc, v) };
+      }
+    }
     var S = pathSectionOf(mesh, P, sc), pr;
     if (!S.mesh.faces.length) pr = { orient: F.name, u: F.u, v: F.v, e: F.e, lines: { visible: [], hidden: [] }, circles: { visible: [], hidden: [] }, arcs: { visible: [], hidden: [] }, ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [],
       bounds: { umin: full.cu, umax: full.cu, vmin: full.cv, vmax: full.cv }, stats: { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 } };
@@ -932,6 +947,7 @@
   function setSectionType(doc, viewId, spec) {
     var v = findV(doc, viewId);
     if (!v || v.kind !== 'section') throw new Error('No section view ' + viewId);
+    if (isRemoved(v) && spec && spec.type && spec.type !== 'full') throw new Error('A removed section is cut straight across between its two edges');   // (rfCX)
     var sc = v.section, t = spec && spec.type, keep = JSON.parse(JSON.stringify(sc));
     ['type', 'c', 'side', 'jogs', 'angle'].forEach(function (q) { delete sc[q]; });
     if (!t || t === 'full') return v;
@@ -1447,6 +1463,7 @@
   // the angle dimensions): typed sections' cutting lines on their parents, breaks, auxiliary arrows and labels
   function viewKindMarks(doc, sheet) {
     if (!sheet || !sheet.views) return sheet;
+    if (_.applyEdgeFormats) _.applyEdgeFormats(doc, sheet);   // (rfAO) Line Format / Hide Edge on the model edges, first
     var k = _.paperK(sheet.units), byId = {};
     sheet.views.forEach(function (w) { byId[w.view.id] = w; });
     sheet.views.forEach(function (w) {
@@ -1461,6 +1478,7 @@
       w.ortho = true;   // seen square: edges parallel to the sheet are true length, so Smart Dimension works on it
       auxMarks(sheet, w, w.view.parent != null ? byId[w.view.parent] : null, k, doc.sheet.projection);
     });
+    if (_.sketchPrims) _.sketchPrims(doc, sheet);   // (rfAO) the drawing sketch's entities, last
     return sheet;
   }
   // auxiliary views follow their parent and slide only along their axis
@@ -1611,6 +1629,7 @@
   // resolveSectionScale(doc, mesh): every section line set to scale with the model goes to its place on the part as
   // it is now (drawing-render.js compute, before the views are worked out)
   function resolveSectionScale(doc, mesh) {
+    if (doc && doc.views) followParentScale(doc);   // (rfCX) Use parent scale follows the parent
     if (!doc || !doc.views || !mesh) return;
     doc.views.forEach(function (v) {
       var sc = v.kind === 'section' && v.section;
@@ -1628,6 +1647,7 @@
     var v = findV(doc, id);
     if (!v || v.kind !== 'section' || !v.section) throw new Error('No section view ' + id);
     opts = opts || {};
+    if (opts.partial !== undefined && (opts.partial == null || opts.partial === false) && isRemoved(v)) throw new Error('A removed section\'s cutting line always runs between its two ends');   // (rfCX)
     if (opts.partial !== undefined) {
       if (opts.partial == null || opts.partial === false) delete v.section.partial;
       else {
@@ -1644,7 +1664,8 @@
   // a partial section's content: the band of the full section its cutting line covers (the section view's u is the
   // parent's u for a horizontal line, its v the parent's v for a vertical one)
   function partialContent(v, ct) {
-    var p = v.kind === 'section' && v.section && !v.section.type && v.section.partial;
+    if (isRemoved(v) && v.section.partial && ct && ct.proj) return removedContent(v, ct);   // (rfCX) a removed section
+    var p =v.kind === 'section' && v.section && !v.section.type && v.section.partial;
     if (!p || !ct || !ct.proj) return ct;
     var B = 1e9, o = v.section.axis === 'h' ? { type: 'rect', a: [p[0], -B], b: [p[1], B] } : { type: 'rect', a: [-B, p[0]], b: [B, p[1]] };
     var r = cropContent(ct, o);
@@ -2104,7 +2125,7 @@
     for (var i = prims.length - 1; i >= 0; i--) {
       var p = prims[i];
       if (p.layer !== L || p.detailOutline != null || !/^(line|arc|circle|ellipse|region)$/.test(p.k)) continue;
-      if (p.k === 'region') { var rq = withLoops(p, clipLoopsConvex(p.loops, convexHull(P))); Array.prototype.splice.apply(prims, rq ? [i, 1, rq] : [i, 1]); continue; }   // (rfAG)
+      if (p.k === 'region') { var rq = withLoops(p, clipLoopsPoly(p.loops, P)); Array.prototype.splice.apply(prims, rq ? [i, 1, rq] : [i, 1]); continue; }   // (rfAG; rfCX: the true profile, not its convex hull)
       Array.prototype.splice.apply(prims, [i, 1].concat(primInPoly(p, P)));
     }
   }
@@ -2181,6 +2202,190 @@
     var q = w.fromSheet(p);
     return hatchRegions(w).filter(function (g) { return inLoops(q, g.loops); })[0] || null;
   }
+  // ---- (rfCX) Removed Section (SolidWorks: Drawing View ▸ Removed Section). The cutting line runs between two points
+  // of the parent (two opposite edges picked in the UI), horizontal or vertical, whichever is nearer; the view is
+  // the cross-section alone (the cut faces hatched and their outlines, nothing behind the cut), not aligned with the
+  // parent, placed anywhere and labelled SECTION A-A. It is a section view (kind 'section') with
+  // section.removed: true and section.partial: [from, to] (the line's ends), so the cutting line, the label letter,
+  // deleting with the parent, Scale with model changes and the worker's section jobs are the full section's.
+  // addRemovedSection(doc, mesh, parentId, { a: [u, v], b: [u, v] (parent frame, model units), at?, sign, flip, x, y,
+  // label, scale, showLabel, scaleWithModel, fit }) -> the view
+  function addRemovedSection(doc, mesh, parentId, opts) {
+    opts = opts || {};
+    function num2(p) { return p && p.length >= 2 && isFinite(+p[0]) && isFinite(+p[1]) ? [+p[0], +p[1]] : null; }
+    var a = num2(opts.a), b = num2(opts.b);
+    if (!a || !b) throw new Error('A removed section needs the two ends of its cutting line: { a: [u, v], b: [u, v] } (points on two opposite edges of the parent view)');
+    var du = b[0] - a[0], dv = b[1] - a[1];
+    if (!(Math.hypot(du, dv) > 1e-9)) throw new Error('The two ends of a removed section\'s cutting line must be apart');
+    var par = findV(doc, parentId);
+    if (!par) throw new Error('No drawing view ' + parentId);
+    if (isRemoved(par)) throw new Error('A removed section cannot be cut from a removed section');
+    var axis = Math.abs(du) >= Math.abs(dv) ? 'h' : 'v', ti = axis === 'h' ? 0 : 1;
+    var at = opts.at != null && isFinite(+opts.at) ? +opts.at : a[1 - ti];
+    var lo = Math.min(a[ti], b[ti]), hi = Math.max(a[ti], b[ti]), sign = (opts.sign < 0 ? -1 : 1) * (opts.flip ? -1 : 1);
+    var nv = doc.views.length, nn = doc.nextView, v;
+    try {
+      v = D.addSectionView(doc, mesh, parentId, { axis: axis, at: at, sign: sign, label: opts.label, showLabel: opts.showLabel, x: par.x, y: par.y, partial: [lo, hi], scaleWithModel: !!opts.scaleWithModel });
+      v.section.removed = true;
+      v.align = null;
+      v.name = 'Removed Section ' + v.label + '-' + v.label;
+      if (opts.scale) {
+        var sc = Array.isArray(opts.scale) ? [+opts.scale[0], +opts.scale[1]] : D.parseScale(opts.scale);
+        if (!sc || !(sc[0] > 0 && sc[1] > 0)) throw new Error('Scale: ' + opts.scale);
+        v.scale = sc; delete v.section.parentScale;
+      }
+      if (opts.x != null && opts.y != null) { v.x = +opts.x; v.y = +opts.y; }
+      else if (mesh) {
+        // (beside the parent first: right of a vertical line, below a horizontal one; then the nearest clear spot)
+        var pe = D.viewExtents(doc, mesh, par), ps = _.viewScale(doc, par), g = 22 * _.paperK(doc.units === 'in' ? 'in' : 'mm');
+        if (axis === 'v') { v.x = par.x + pe.w * ps / 2 + g * 2; v.y = par.y; } else { v.x = par.x; v.y = par.y - pe.h * ps / 2 - g * 2; }
+        (opts.fit ? _.fitOnSheet : _.clearSpot)(doc, mesh, v, null);
+        if (v.section.parentScale && JSON.stringify(v.scale || null) !== JSON.stringify(par.scale || null)) delete v.section.parentScale;   // (fitted smaller)
+      }
+    } catch (err) { doc.views.splice(nv); doc.nextView = nn; throw err; }
+    return v;
+  }
+  function isRemoved(v) { return !!(v && v.kind === 'section' && v.section && v.section.removed); }
+  // removedContent(v, ct): the full section's content cut down to the removed section: the cut faces between the
+  // line's ends (each loop clipped to the band, a hair wider so an end on an edge keeps the face whole) and, of the cut
+  // part's projection, only the visible lines, circles and arcs that lie on those faces' outlines
+  function removedContent(v, ct) {
+    var sc = v.section, p = sc.partial, ti = sc.axis === 'h' ? 0 : 1, span = p[1] - p[0], tol = Math.max(span * 1e-4, 1e-9), B = 1e9;
+    var R = ti === 0 ? [p[0] - tol, -B, p[1] + tol, B] : [-B, p[0] - tol, B, p[1] + tol];
+    var o = {}; Object.keys(ct).forEach(function (q) { o[q] = ct[q]; });
+    o.caps = (ct.caps || []).map(function (cap) {
+      var c2 = {}; Object.keys(cap).forEach(function (q) { c2[q] = cap[q]; });
+      c2.loops = cap.loops.map(function (l) { return loopInRect(l, R); }).filter(Boolean);
+      return c2;
+    }).filter(function (c) { return c.loops.length; });
+    o.removed = true;
+    var pr = ct.proj, E = [], lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    o.caps.forEach(function (c) { c.loops.forEach(function (l) { for (var i = 0; i < l.length; i++) { var q = l[i]; E.push([q, l[(i + 1) % l.length]]); lo = [Math.min(lo[0], q[0]), Math.min(lo[1], q[1])]; hi = [Math.max(hi[0], q[0]), Math.max(hi[1], q[1])]; } }); });
+    var out = { orient: pr.orient, u: pr.u, v: pr.v, e: pr.e, lines: { visible: [], hidden: [], tangent: [] }, circles: { visible: [], hidden: [], tangent: [] }, arcs: { visible: [], hidden: [], tangent: [] },
+      ellipses: { visible: [], hidden: [] }, all: [], circlesAll: [], arcsAll: [] };
+    if (pr.pending) out.pending = true;
+    if (!E.length) {
+      // (nothing cut between the ends, or the cut not worked out yet: the placeholder's box over the band, or a point)
+      var bb = pr.pending && pr.bounds ? pr.bounds : null, m = ti === 0 ? [(p[0] + p[1]) / 2, ct.center[1]] : [ct.center[0], (p[0] + p[1]) / 2];
+      out.bounds = bb ? { umin: bb.umin, umax: bb.umax, vmin: bb.vmin, vmax: bb.vmax } : { umin: m[0], umax: m[0], vmin: m[1], vmax: m[1] };
+      if (bb) { if (ti === 0) { out.bounds.umin = Math.max(bb.umin, p[0]); out.bounds.umax = Math.min(bb.umax, p[1]); } else { out.bounds.vmin = Math.max(bb.vmin, p[0]); out.bounds.vmax = Math.min(bb.vmax, p[1]); } }
+      out.stats = { visibleLines: 0, hiddenLines: 0, visibleCircles: 0, hiddenCircles: 0 };
+      o.proj = out; o.center = [(out.bounds.umin + out.bounds.umax) / 2, (out.bounds.vmin + out.bounds.vmax) / 2];
+      return o;
+    }
+    var eps = Math.hypot(hi[0] - lo[0], hi[1] - lo[1]) * 1e-4 + 1e-9;
+    function segDist(q, s) {
+      var a = s[0], b = s[1], dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy, t = l2 > 0 ? ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(q[0] - a[0] - dx * t, q[1] - a[1] - dy * t);
+    }
+    function onOutline(q, e) { for (var i = 0; i < E.length; i++) if (segDist(q, E[i]) <= e) return true; return false; }
+    // the pieces of line l that run along an outline edge (collinear within eps), as parameter ranges merged
+    function alongOutline(l) {
+      var A = [l[0], l[1]], dx = l[2] - l[0], dy = l[3] - l[1], L = Math.hypot(dx, dy), iv = [];
+      if (!(L > 0)) return [];
+      E.forEach(function (s) {
+        var d0 = Math.abs((s[0][0] - A[0]) * dy - (s[0][1] - A[1]) * dx) / L, d1 = Math.abs((s[1][0] - A[0]) * dy - (s[1][1] - A[1]) * dx) / L;
+        if (d0 > eps || d1 > eps) return;
+        var t0 = ((s[0][0] - A[0]) * dx + (s[0][1] - A[1]) * dy) / (L * L), t1 = ((s[1][0] - A[0]) * dx + (s[1][1] - A[1]) * dy) / (L * L);
+        var x0 = Math.max(0, Math.min(t0, t1)), x1 = Math.min(1, Math.max(t0, t1));
+        if (x1 - x0 > 1e-9) iv.push([x0, x1]);
+      });
+      iv.sort(function (x, y) { return x[0] - y[0]; });
+      var mg = [], g = eps / L;
+      iv.forEach(function (r) { var last = mg[mg.length - 1]; if (last && r[0] <= last[1] + g) last[1] = Math.max(last[1], r[1]); else mg.push(r.slice()); });
+      return mg.filter(function (r) { return (r[1] - r[0]) * L > eps * 2; }).map(function (r) {
+        var q = [l[0] + dx * r[0], l[1] + dy * r[0], l[0] + dx * r[1], l[1] + dy * r[1]];
+        for (var k = 4; k < l.length; k++) q.push(l[k]);
+        return q;
+      });
+    }
+    // a circle / arc lies on the outline when points along it do (the outline's chords sag a little from the curve)
+    function curveOn(c, a0, a1) {
+      var e = eps + c.r * 0.03, n = 12;
+      for (var i = 0; i <= n; i++) { var t = (a0 + (a1 - a0) * (i + 0.5) / (n + 1)) * Math.PI / 180; if (!onOutline([c.c[0] + c.r * Math.cos(t), c.c[1] + c.r * Math.sin(t)], e)) return false; }
+      return true;
+    }
+    var cp = clipProjectionRect(pr, R);
+    (cp.lines.visible || []).forEach(function (l) { alongOutline(l).forEach(function (q) { out.lines.visible.push(q); out.all.push(q); }); });
+    (cp.circles.visible || []).forEach(function (c) { if (curveOn(c, 0, 360)) { out.circles.visible.push(c); out.circlesAll.push(c); } });
+    (cp.arcs && cp.arcs.visible || []).forEach(function (a) { if (curveOn(a, a.a0, a.a1)) { out.arcs.visible.push(a); out.arcsAll.push(a); } });
+    (cp.ellipses && cp.ellipses.visible || []).forEach(function (el) {
+      var ok = true, e = eps + Math.hypot(el.ax[0], el.ax[1]) * 0.03;
+      for (var i = 0; i <= 12 && ok; i++) { var t = el.t0 + (el.t1 - el.t0) * (i + 0.5) / 13; ok = onOutline([el.c[0] + el.ax[0] * Math.cos(t) + el.ay[0] * Math.sin(t), el.c[1] + el.ax[1] * Math.cos(t) + el.ay[1] * Math.sin(t)], e); }
+      if (ok) out.ellipses.visible.push(el);
+    });
+    out.bounds = { umin: lo[0], umax: hi[0], vmin: lo[1], vmax: hi[1] };
+    out.stats = { visibleLines: out.lines.visible.length, hiddenLines: 0, visibleCircles: out.circles.visible.length, hiddenCircles: 0, visibleArcs: out.arcs.visible.length, hiddenArcs: 0 };
+    o.proj = out;
+    o.center = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+    return o;
+  }
+  // (rfCX) a section drawn at its parent's scale (Use parent scale: section.parentScale, set when it is made) follows
+  // the parent's scale when that changes (drawing-render.js compute, through resolveSectionScale)
+  function followParentScale(doc) {
+    (doc.views || []).forEach(function (v) {
+      if (!(v.kind === 'section' && v.section && v.section.parentScale && v.parent != null)) return;
+      var par = findV(doc, v.parent);
+      if (!par) return;
+      var want = par.scale ? par.scale.slice() : null;
+      if (JSON.stringify(v.scale || null) !== JSON.stringify(want)) v.scale = want;
+    });
+  }
+  // (rfCX) non-convex clip of solid fills: polygon P (any simple polygon) cut into convex pieces (ear clipping, then
+  // neighbouring pieces merged while their union stays convex, Hertel-Mehlhorn); the region is clipped to each piece
+  // and all the pieces' loops go in one region (they cover disjoint areas, so the even-odd fill is their union)
+  function convexPieces(P) {
+    if (!P || P.length < 3) return [];
+    var Q = polyArea(P) < 0 ? P.slice().reverse() : P.slice();
+    function cr(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+    function isConvex(R) { for (var i = 0; i < R.length; i++) if (cr(R[i], R[(i + 1) % R.length], R[(i + 2) % R.length]) < -1e-12) return false; return true; }
+    if (isConvex(Q)) return [Q];
+    var idx = Q.map(function (q, i) { return i; }), tris = [], guard = 0;
+    while (idx.length > 3 && guard++ < 100000) {
+      var cut = false;
+      for (var i = 0; i < idx.length && !cut; i++) {
+        var i0 = idx[(i + idx.length - 1) % idx.length], i1 = idx[i], i2 = idx[(i + 1) % idx.length], a = Q[i0], b = Q[i1], c = Q[i2];
+        if (cr(a, b, c) <= 1e-15) continue;
+        var ear = true;
+        for (var j = 0; j < idx.length && ear; j++) {
+          var k = idx[j];
+          if (k === i0 || k === i1 || k === i2) continue;
+          var p = Q[k];
+          if (cr(a, b, p) >= -1e-15 && cr(b, c, p) >= -1e-15 && cr(c, a, p) >= -1e-15) ear = false;
+        }
+        if (!ear) continue;
+        tris.push([i0, i1, i2]); idx.splice(i, 1); cut = true;
+      }
+      if (!cut) break;   // (a degenerate outline: what is left goes as one piece)
+    }
+    if (idx.length >= 3) tris.push(idx.slice());
+    var polys = tris, merged = true;
+    while (merged) {
+      merged = false;
+      for (var x = 0; x < polys.length && !merged; x++) for (var y = x + 1; y < polys.length && !merged; y++) {
+        var A = polys[x], Bp = polys[y];
+        for (var ia = 0; ia < A.length && !merged; ia++) {
+          var u0 = A[ia], u1 = A[(ia + 1) % A.length], jb = -1;
+          for (var q = 0; q < Bp.length; q++) if (Bp[q] === u1 && Bp[(q + 1) % Bp.length] === u0) jb = q;
+          if (jb < 0) continue;
+          // A runs … u0 u1 …, B runs … u1 u0 …: A from u1 round to u0, then B's vertices strictly between u0 and u1
+          var U = [], s = (ia + 1) % A.length;
+          for (var r = 0; r < A.length; r++) U.push(A[(s + r) % A.length]);
+          for (var r2 = 2; r2 < Bp.length; r2++) U.push(Bp[(jb + r2) % Bp.length]);
+          if (isConvex(U.map(function (k2) { return Q[k2]; }))) { polys[x] = U; polys.splice(y, 1); merged = true; }
+        }
+      }
+    }
+    return polys.map(function (t) { return t.map(function (k2) { return Q[k2]; }); });
+  }
+  function clipLoopsPoly(loops, P) {
+    var out = [];
+    convexPieces(P).forEach(function (C) { clipLoopsConvex(loops, C).forEach(function (l) { out.push(l); }); });
+    return out;
+  }
+  // (rfCX)
+  D.addRemovedSection = addRemovedSection; D.isRemovedSection = isRemoved; _.removedContent = removedContent; _.followParentScale = followParentScale; D.convexPieces = convexPieces; _.clipLoopsPoly = clipLoopsPoly;
   _.detailHalf = detailHalf; _.detailProfileContent = detailProfileContent; _.detailOpts = detailOpts; _.detailProfile = detailProfile; _.detailOutline = detailOutline;
   _.resolveSectionScale = resolveSectionScale; _.sectionRel = sectionRel; _.partialContent = partialContent; _.isTrueView = isTrueView;
   D.DETAIL_STYLES = DETAIL_STYLES; D.setSectionOptions = setSectionOptions; D.trueLength = trueLength; D.setDimType = setDimType; D.resolveSectionScale = resolveSectionScale;
@@ -2195,12 +2400,10 @@
   D.sectionOf = sectionOf; D.hatchLines = hatchLines; D.hatchStyle = hatchStyle; D.hatchAssign = hatchAssign; D.HATCH_PATTERNS = Object.keys(HATCH_PATTERNS);
   D.hatchPattern = hatchPattern; D.patternLines = patternLines; D.snapHatch = snapHatch; D.clipProjection = clipProjection; D.reattachDim = reattachDim;
   _.sectionKey = sectionKey; _.capLoops = capLoops; _.HATCH_PATTERNS = HATCH_PATTERNS; _.clipSeg = clipSeg; _.primHitsRect = primHitsRect; _.segOutsideRect = segOutsideRect;
-  // (rfAD) drawing-sheet.js viewContent asks _.typedSection whether a view is cut along a path and then calls
-  // _.pathContent for it: a view with broken-out sections is worked out here the same way; _.auxCenter runs on every
-  // view's content, and goes on to contentExtras (jagged detail, Area Hatch regions)
-  _.typedSection = function (doc, v, pc) { return typedSection(doc, v, pc) || hasBrokenOut(v); };
-  _.pathContent = function (doc, v, mesh, pc) { return hasBrokenOut(v) ? brokenOutContent(doc, v, mesh) : pathContent(doc, v, mesh, pc); };
-  _.auxCenter = function (doc, v, ct, pc) { auxCenter(doc, v, ct, pc); contentExtras(doc, v, ct, pc); };
+  // (rfAD; rfCX2: called directly, no wrappers) drawing-sheet.js viewContent works out a view with broken-out sections
+  // with _.brokenOutContent, a typed section with _.pathContent, and runs _.auxCenter then _.contentExtras (jagged
+  // detail, Area Hatch regions) on every view's content
+  _.hasBrokenOut = hasBrokenOut; _.brokenOutContent = brokenOutContent; _.contentExtras = contentExtras; _.secKey = secKey;   // (rfCX2: putSection files a path cut under it)
   D.addBrokenOut = addBrokenOut; D.setBrokenOut = setBrokenOut; D.clearBrokenOut = clearBrokenOut; D.brokenOutPolygon = boPolygon; D.brokenOutOf = brokenOutOf;
   D.setAreaHatch = setAreaHatch; D.hatchRegions = hatchRegions; D.hatchRegionAt = regionAt; D.AREA_PATTERNS = AREA_PATTERNS; D.interiorPoint = interiorPoint;
   _.jaggedPts = jaggedPts; _.primInPoly = primInPoly; _.inLoops = inLoops; _.clipLoopsConvex = clipLoopsConvex; _.circlePoly = circlePoly; _.convexHull = convexHull; _.regionOutsideRect = regionOutsideRect;
@@ -2727,13 +2930,7 @@
       if (Object.keys(drop).length) sheet.prims = sheet.prims.filter(function (p, i) { return !drop[i]; });
     });
   }
-  var baseMarks = _.viewKindMarks;
-  _.viewKindMarks = function (doc, sheet) {
-    applyEdgeFormats(doc, sheet);
-    var r = baseMarks.apply(this, arguments);
-    sketchPrims(doc, sheet);
-    return r;
-  };
+  _.applyEdgeFormats = applyEdgeFormats;   // (rfCX2: viewKindMarks calls it first and _.sketchPrims last, directly)
 
   // ---- Relative View: the first face looks at the viewer (Front), the second face points to the sheet's Right (or
   // Left / Top / Bottom), as SolidWorks' Relative View PropertyManager

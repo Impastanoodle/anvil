@@ -827,7 +827,7 @@
     this.model.features.push(f);
     this.lastId = f.id;
     if (f.type === 'sketch') this.lastSketchId = f.id;
-    else if (f.type !== 'plane') this.lastSolidId = f.id;
+    else if (f.type !== 'plane' && f.type !== 'refaxis' && f.type !== 'refpoint' && f.type !== 'csys') this.lastSolidId = f.id;   // lane CZ: reference geometry is no pattern source
     return f;
   };
   // num(x): a numeric argument, or an equation ('=T*2') passed through untouched for rebuild to resolve
@@ -888,6 +888,44 @@
   Builder.prototype.plane = function (ref, offset, name) {
     var f = this._add({ type: 'plane', ref: ref || 'Front', offset: num(offset) || 0, name: name });
     return f.id;
+  };
+  // lane CZ: reference geometry. Each returns the new feature's id (like p.plane), to pass on as a ref ({ axis: id },
+  // { point: id }, { plane: csysId }) or as a circular pattern's / revolve's `axisRef`. A ref is an object (see
+  // kernel-features.js) or a shorthand: 'Front' / 'Top' / 'Right' (a standard plane), 'x' / 'y' / 'z' (an origin axis),
+  // 'origin', or [x, y, z] (a vertex).
+  function refIn(r) {
+    if (r == null) return null;
+    if (typeof r === 'string') return r === 'origin' ? { point: 'origin' } : /^[xyz]$/.test(r) ? { axis: r } : { plane: r };
+    if (Array.isArray(r)) return { vertex: r.map(Number) };
+    var o = {};
+    Object.keys(r).forEach(function (k) { o[k] = Array.isArray(r[k]) ? r[k].map(Number) : r[k]; });
+    return o;
+  }
+  // p.axis(kind, refs, opts): kind 'line' (one line / edge / axis), 'planes' (two planes), 'points' (two points),
+  // 'cyl' (a cylindrical / conical face), 'pointFace' (a point and a plane: the normal through the point)
+  Builder.prototype.axis = function (kind, refs, opts) {
+    opts = opts || {};
+    return this._add({ type: 'refaxis', kind: kind || 'line', refs: (refs || []).map(refIn), name: opts.name }).id;
+  };
+  // p.point(kind, refs, opts): kind 'arc' (arc centre), 'face' (centre of face), 'intersect' (two edges / lines),
+  // 'project' (a point onto a plane / face), 'on' (a vertex / sketch point), 'along' (opts.distance along an edge or
+  // sketch line / arc from its start; opts.percent: distance in %; opts.reverse: from the other end)
+  Builder.prototype.point = function (kind, refs, opts) {
+    opts = opts || {};
+    var f = { type: 'refpoint', kind: kind || 'on', refs: (refs || []).map(refIn), name: opts.name };
+    if (opts.distance != null) f.distance = num(opts.distance);
+    if (opts.percent) f.percent = true;
+    if (opts.reverse) f.reverse = true;
+    return this._add(f).id;
+  };
+  // p.csys({ origin, x, y, z, flipX, flipY, flipZ, name }): any two of x / y / z fix the frame (the third follows,
+  // right-handed); one fixes that axis; none gives the world axes at the origin
+  Builder.prototype.csys = function (opts) {
+    opts = opts || {};
+    var f = { type: 'csys', name: opts.name };
+    ['origin', 'x', 'y', 'z'].forEach(function (k) { if (opts[k] != null) f[k] = refIn(opts[k]); });
+    ['flipX', 'flipY', 'flipZ'].forEach(function (k) { if (opts[k]) f[k] = true; });
+    return this._add(f).id;
   };
   Builder.prototype._planeRef = function (spec, offset) {
     if (spec == null) return { ref: 'Front', offset: 0 };
@@ -980,6 +1018,7 @@
     else if (g && g.bendDeduction != null) o.bendDeduction = g.bendDeduction;
     if (opts.bendTable) o.bendTable = opts.bendTable;
     if (g) { o.gaugeTable = opts.gaugeTable != null ? opts.gaugeTable : K.DEFAULT_GAUGE_TABLE; o.gauge = g.gauge; }
+    if (opts.relief != null) { o.relief = opts.relief; if (opts.reliefRatio != null) o.reliefRatio = num(opts.reliefRatio); }   // Auto Relief (absent: none)
     this.model.sheet = K.makeSheet(o);
     return this;
   };
@@ -1019,7 +1058,9 @@
     opts = opts || {};
     var f = { type: 'flange', length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside', toward: opts.toward ? [num(opts.toward[0]), num(opts.toward[1]), num(opts.toward[2])] : undefined,
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name,
-      miter: !!opts.miter, relief: opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none' };
+      miter: !!opts.miter };
+    // lane CS: no relief given = the sheet's Auto Relief (none on a sheet without one, as before); 'none' turns it off
+    if (opts.relief != null) f.relief = opts.relief === 'rect' || opts.relief === 'obround' ? opts.relief : 'none';
     if (opts.miterGap != null) f.miterGap = num(opts.miterGap);
     if (opts.reliefWidth != null) f.reliefWidth = num(opts.reliefWidth);
     if (opts.reliefDepth != null) f.reliefDepth = num(opts.reliefDepth);
@@ -1097,6 +1138,22 @@
     this._add(f);
     return this;
   };
+  // closedCorner(faces, opts): Sheet Metal ▸ Closed Corner (kernel-sheetmetal.js). faces: [[x, y, z], …] points on the
+  // end faces of a flange to extend across a corner gap (the matching faces are found); opts: cornerType ('butt', the
+  // default | 'overlap' | 'underlap'), gap (default 0.01 in / 0.25 mm), ratio (overlap / underlap ratio 0..1, default
+  // 1), coplanar (default true: coplanar end faces are extended too), name
+  Builder.prototype.closedCorner = function (faces, opts) {
+    opts = opts || {};
+    var type = opts.cornerType || 'butt';
+    if (K.CLOSED_CORNER_TYPES.indexOf(type) < 0) throw new Error('closedCorner cornerType must be "butt", "overlap" or "underlap".');
+    function pt(p) { return [+p[0], +p[1], +p[2]]; }
+    var f = { type: 'closedCorner', faces: (faces || []).map(pt), cornerType: type,
+      gap: opts.gap != null ? num(opts.gap) : K.closedCornerDefaultGap(this.model), ratio: opts.ratio != null ? num(opts.ratio) : 1 };
+    if (opts.coplanar === false) f.coplanar = false;
+    f.name = opts.name || K.closedCornerName(this.model);
+    this._add(f);
+    return this;
+  };
   Builder.prototype.cut = function (depth, opts) {
     opts = Object.assign({}, opts || {}, { cut: true });
     if (depth === 'through' || depth == null) { opts.throughAll = true; depth = 0; }
@@ -1105,6 +1162,7 @@
   Builder.prototype.revolve = function (angle, opts) {
     opts = opts || {};
     bodyOpts(contourOpts(this._add({ type: 'revolve', sketch: this._sketchId(opts), angle: angle == null ? 360 : num(angle), axis: opts.axis == null ? 'y' : opts.axis, reverse: !!opts.reverse, cut: !!opts.cut, name: opts.name }), opts), opts);
+    if (opts.axisRef != null) this.model.features[this.model.features.length - 1].axisRef = opts.axisRef;   // lane CZ: about a reference axis
     return this;
   };
   Builder.prototype.revolveCut = function (angle, opts) { return this.revolve(angle, Object.assign({}, opts || {}, { cut: true })); };
@@ -1145,6 +1203,7 @@
   Builder.prototype.circularPattern = function (opts) {
     opts = opts || {};
     bodyOpts(this._add({ type: 'cpattern', feature: this._srcId(opts), axis: opts.axis || 'z', center: opts.center ? opts.center.map(num) : [0, 0, 0], n: num(opts.count) || 4, angle: opts.angle == null ? 360 : num(opts.angle), equal: opts.equal !== false, name: opts.name }), opts);
+    if (opts.axisRef != null) this.model.features[this.model.features.length - 1].axisRef = opts.axisRef;   // lane CZ: about a reference axis
     return this;
   };
   Builder.prototype.mirror = function (plane, opts) {
@@ -1400,6 +1459,7 @@
       if (sh.bendDeduction != null) so.bendDeduction = numOut(sh.bendDeduction);
       if (sh.bendTable) so.bendTable = sh.bendTable;
       if (sh.gaugeTable != null && sh.gauge != null) { so.gaugeTable = sh.gaugeTable; so.gauge = sh.gauge; }
+      if (sh.relief) { so.relief = sh.relief; so.reliefRatio = numOut(sh.reliefRatio); }
       out.push('p.sheet(' + nv(sh.thickness) + ', ' + nv(sh.bendRadius) + ', ' + nv(sh.kFactor != null && sh.kFactor !== '' ? sh.kFactor : K.LEGACY_K_FACTOR) + (Object.keys(so).length ? ', ' + optsStr(so) : '') + ');');
     }
     var idVar = {};
@@ -1410,6 +1470,24 @@
         case 'plane':
           out.push('var ' + v + ' = p.plane(' + JSON.stringify(f.ref) + ', ' + nv(f.offset) + ', ' + JSON.stringify(f.name) + ');');
           break;
+        case 'refaxis':   // lane CZ: reference geometry
+          out.push('var ' + v + ' = p.axis(' + JSON.stringify(f.kind || 'line') + ', [' + (f.refs || []).map(function (r) { return refOut(r, idVar); }).join(', ') + '], ' + optsStr({ name: f.name }) + ');');
+          break;
+        case 'refpoint': {
+          var po = { name: f.name };
+          if (f.distance != null) po.distance = numOut(f.distance);
+          if (f.percent) po.percent = true;
+          if (f.reverse) po.reverse = true;
+          out.push('var ' + v + ' = p.point(' + JSON.stringify(f.kind || 'on') + ', [' + (f.refs || []).map(function (r) { return refOut(r, idVar); }).join(', ') + '], ' + optsStr(po) + ');');
+          break;
+        }
+        case 'csys': {
+          var co = { name: f.name };
+          ['origin', 'x', 'y', 'z'].forEach(function (k) { if (f[k]) co[k] = '@' + refOut(f[k], idVar); });
+          ['flipX', 'flipY', 'flipZ'].forEach(function (k) { if (f[k]) co[k] = true; });
+          out.push('var ' + v + ' = p.csys(' + optsStr(co) + ');');
+          break;
+        }
         case 'sketch': {
           var pl = f.plane || {};
           // r10/facesketch10: a face reference names its feature by the script variable (ids are renumbered)
@@ -1479,7 +1557,7 @@
           if (f.toward) fo.toward = f.toward.map(function (x) { return isExpression(x) ? x : Math.round(x * 1e4) / 1e4; });
           if (f.miter) fo.miter = true;
           if (f.miterGap != null && (isExpression(f.miterGap) || +f.miterGap !== 0)) fo.miterGap = numOut(f.miterGap);
-          if (f.relief && f.relief !== 'none') fo.relief = f.relief;
+          if (f.relief && (f.relief !== 'none' || (model.sheet && model.sheet.relief))) fo.relief = f.relief;   // 'none' matters only against an Auto Relief
           if (f.reliefWidth != null) fo.reliefWidth = numOut(f.reliefWidth);
           if (f.reliefDepth != null) fo.reliefDepth = numOut(f.reliefDepth);
           if (f.bendAllowance) fo.bendAllowance = bendAllowanceOut(f.bendAllowance);
@@ -1515,8 +1593,19 @@
           out.push('var ' + v + ' = p.sketchedBend(' + nv(f.angle == null ? 90 : f.angle) + ', ' + optsStr(sbo) + ').last();');
           break;
         }
+        case 'closedCorner': {
+          var cco = { cornerType: f.cornerType || 'butt' };
+          if (f.gap != null) cco.gap = numOut(f.gap);
+          if (f.ratio != null && +f.ratio !== 1) cco.ratio = numOut(f.ratio);
+          cco.name = f.name;
+          var ccs = optsStr(cco);
+          if (f.coplanar === false) ccs = ccs.replace(/^\{ /, '{ coplanar: false, ');   // optsStr drops false values
+          out.push('var ' + v + ' = p.closedCorner(' + JSON.stringify((f.faces || []).map(function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); })) + ', ' + ccs + ').last();');
+          break;
+        }
         case 'revolve': {
           var ro = { sketch: '@' + idVar[f.sketch], name: f.name, axis: f.axis };
+          if (f.axisRef != null && idVar[f.axisRef]) ro.axisRef = '@' + idVar[f.axisRef];   // lane CZ
           if (f.reverse) ro.reverse = true;
           out.push('var ' + v + ' = p.' + (f.cut ? 'revolveCut' : 'revolve') + '(' + nv(f.angle) + ', ' + optsStr(bodyOptsOut(contoursOut(ro, f), f)) + ').last();');
           break;
@@ -1529,7 +1618,7 @@
           break;
         }
         case 'cpattern':
-          out.push('var ' + v + ' = p.circularPattern(' + optsStr(bodyOptsOut({ feature: '@' + idVar[f.feature], axis: f.axis, center: f.center, count: f.n, angle: f.angle, equal: f.equal !== false, name: f.name }, f)) + ').last();');
+          out.push('var ' + v + ' = p.circularPattern(' + optsStr(bodyOptsOut({ feature: '@' + idVar[f.feature], axis: f.axis, center: f.center, count: f.n, angle: f.angle, equal: f.equal !== false, axisRef: f.axisRef != null && idVar[f.axisRef] ? '@' + idVar[f.axisRef] : null, name: f.name }, f)) + ').last();');
           break;
         case 'mirror': {
           var mo = { name: f.name, offset: f.offset || 0 };
@@ -1577,6 +1666,17 @@
     if (f.merge === false) o.merge = false;
     if (Array.isArray(f.bodies) && f.bodies.length) o.bodies = f.bodies.slice();
     return o;
+  }
+  // lane CZ: a reference-geometry ref as script text: feature ids become their variables, picked points 1e-4
+  function refOut(r, idVar) {
+    var parts = [];
+    Object.keys(r || {}).forEach(function (k) {
+      var x = r[k];
+      if ((k === 'plane' || k === 'axis' || k === 'point' || k === 'sketch') && typeof x === 'number' && idVar[x]) parts.push(k + ': ' + idVar[x]);
+      else if (Array.isArray(x)) parts.push(k + ': ' + JSON.stringify(x.map(function (c) { return Math.round(c * 1e4) / 1e4; })));
+      else parts.push(k + ': ' + JSON.stringify(x));
+    });
+    return '{ ' + parts.join(', ') + ' }';
   }
   function optsStr(o) {
     var parts = [];

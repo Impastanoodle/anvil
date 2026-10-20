@@ -1500,8 +1500,84 @@
     out.push({ label: 'Show Inflection Points', icon: 'spline', checked: !!e.showInflection, action: function () { UI.cmdShowInflectionPoints(i); } });
     out.push({ label: 'Show Spline Handles', icon: 'spline', checked: splineView.handles, action: function () { UI.cmdShowSplineHandles(); } });
     out.push({ label: 'Show Curvature', icon: 'spline', checked: !!e.showCurvature, action: function () { UI.cmdShowCurvature(i); } });
+    out.push({ label: 'Show Minimum Radius', icon: 'spline', checked: !!e.showMinRadius, action: function () { UI.cmdShowMinimumRadius(i); } });   // lane CV
     return out;
   };
+
+  // ------------------------------------------------------------------ lane CV: Show Minimum Radius
+  // SolidWorks' right-click a spline ▸ Show Minimum Radius: the smallest radius of curvature along the spline, shown
+  // read-only (it is not a dimension) with a leader to the point where it occurs, on the concave side; it follows the
+  // spline as it changes (it is recomputed on every redraw of the dimension layer) and the same row turns it off.
+  // e.showMinRadius is saved with the sketch. minRadius(e) -> { r, p, n (unit, towards the centre of curvature), span,
+  // s } or null (a straight spline).
+  function minRadius(e) {
+    var g = K.splineGeom(e);
+    if (!g || !g.bez || !g.bez.length) return null;
+    function d2poly(P) { var n = P.length - 1, D = []; for (var i = 0; i < n; i++) D.push([n * (P[i + 1][0] - P[i][0]), n * (P[i + 1][1] - P[i][1])]); return D; }
+    var best = null;
+    g.bez.forEach(function (P, j) {
+      if (P.length < 3) return;
+      var D = d2poly(P);
+      function kap(s) { var a = K.bzPoint(D, s), b = K.bzDeriv(D, s), L = Math.hypot(a[0], a[1]); return L > 1e-15 ? (a[0] * b[1] - a[1] * b[0]) / (L * L * L) : 0; }
+      var N = 64, kb = -1, sb = 0;
+      for (var q = 0; q <= N; q++) { var s = q / N, k = Math.abs(kap(s)); if (k > kb) { kb = k; sb = s; } }
+      // golden-section refinement of |k| about the best sample
+      var lo = Math.max(0, sb - 1 / N), hi = Math.min(1, sb + 1 / N), gr = (Math.sqrt(5) - 1) / 2;
+      var x1 = hi - gr * (hi - lo), x2 = lo + gr * (hi - lo), f1 = Math.abs(kap(x1)), f2 = Math.abs(kap(x2));
+      for (var it = 0; it < 80 && hi - lo > 1e-13; it++) {
+        if (f1 > f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr * (hi - lo); f1 = Math.abs(kap(x1)); }
+        else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr * (hi - lo); f2 = Math.abs(kap(x2)); }
+      }
+      var sm = (lo + hi) / 2, km = Math.abs(kap(sm));
+      if (km < kb) { sm = sb; km = kb; }
+      if (!best || km > best.k) best = { k: km, ks: kap(sm), span: j, s: sm, P: P, D: D };
+    });
+    if (!best || !(best.k > 1e-12)) return null;
+    var p = K.bzPoint(best.P, best.s), t = K.bzPoint(best.D, best.s), L = Math.hypot(t[0], t[1]) || 1, sg = best.ks >= 0 ? 1 : -1;
+    return { r: 1 / best.k, p: p, n: [-t[1] / L * sg, t[0] / L * sg], span: best.span, s: best.s };
+  }
+  UI.splineMinRadius = minRadius;   // test hook
+  UI.cmdShowMinimumRadius = function (index) {
+    var f = UI.activeSketchFeature();
+    if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return; }
+    var sel = index != null ? [index] : selectedEntities(f).filter(function (i) { return f.entities[i].t === 'spline'; });
+    if (!sel.length) { UI.toast('Select a spline first, then Show Minimum Radius.'); return; }
+    var on = !sel.every(function (i) { return f.entities[i].showMinRadius; }), shown = [];
+    undoStep(function (g) { sel.forEach(function (i) { if (on) g.entities[i].showMinRadius = true; else delete g.entities[i].showMinRadius; if (on) { var m = minRadius(g.entities[i]); if (m) shown.push(m.r); } }); return { ok: true }; });
+    App.dimsStale = true;
+    if (UI.requestRender) UI.requestRender();
+    drawMinRadius();
+    UI.setStatus(on ? (shown.length ? 'Minimum radius ' + shown.map(function (r) { return SS() && SS().fmtLen ? SS().fmtLen(r) : r.toFixed(3); }).join(', ') + ' shown.' : 'The spline is straight: no minimum radius.') : 'Minimum radius hidden.');
+  };
+  var minRLayer = null, SVGNS2 = 'http://www.w3.org/2000/svg';
+  function drawMinRadius() {
+    var host = document.getElementById('dim-layer');
+    if (!host) return;
+    if (!minRLayer) { minRLayer = document.createElementNS(SVGNS2, 'g'); minRLayer.setAttribute('class', 'sp-minr'); minRLayer.setAttribute('pointer-events', 'none'); }
+    while (minRLayer.firstChild) minRLayer.removeChild(minRLayer.firstChild);
+    var f = App.mode === 'sketch' ? UI.activeSketchFeature() : null;
+    var list = f ? f.entities.map(function (e, i) { return e && e.t === 'spline' && e.showMinRadius ? i : -1; }).filter(function (i) { return i >= 0; }) : [];
+    if (!list.length) { if (minRLayer.parentNode) minRLayer.parentNode.removeChild(minRLayer); return; }
+    host.appendChild(minRLayer);
+    var pl = UI.activePlane();
+    list.forEach(function (i) {
+      var m = minRadius(f.entities[i]);
+      if (!m) return;
+      var a = UI.worldToScreen(K.to3D(pl, m.p[0], m.p[1])), q = UI.worldToScreen(K.to3D(pl, m.p[0] + m.n[0], m.p[1] + m.n[1]));
+      var dx = q[0] - a[0], dy = q[1] - a[1], L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, b = [a[0] + ux * 42, a[1] + uy * 42];
+      function mk(tag, at) { var n = document.createElementNS(SVGNS2, tag); Object.keys(at).forEach(function (k) { n.setAttribute(k, at[k]); }); minRLayer.appendChild(n); return n; }
+      mk('line', { x1: a[0].toFixed(1), y1: a[1].toFixed(1), x2: b[0].toFixed(1), y2: b[1].toFixed(1), style: 'stroke:#e8891c;stroke-width:1.2' });
+      var ah = 8, aw = 3;   // the arrow on the spline
+      mk('path', { d: 'M' + a[0].toFixed(1) + ' ' + a[1].toFixed(1) + 'L' + (a[0] + ux * ah - uy * aw).toFixed(1) + ' ' + (a[1] + uy * ah + ux * aw).toFixed(1) + 'L' + (a[0] + ux * ah + uy * aw).toFixed(1) + ' ' + (a[1] + uy * ah - ux * aw).toFixed(1) + 'Z', style: 'fill:#e8891c' });
+      var txt = mk('text', { x: (b[0] + (ux >= 0 ? 3 : -3)).toFixed(1), y: (b[1] + (uy >= 0 ? 12 : -3)).toFixed(1), 'text-anchor': ux >= 0 ? 'start' : 'end', 'class': 'sp-minr-text', 'data-entity': String(i), style: 'fill:#e8891c;font:12px sans-serif' });
+      txt.textContent = 'Min R' + (UI.fmtDim ? UI.fmtDim(m.r) : m.r.toFixed(3));
+    });
+  }
+  UI.splineMinRadiusLabels = function () { drawMinRadius(); return Array.prototype.map.call(document.querySelectorAll('#dim-layer .sp-minr-text'), function (t) { return t.textContent; }); };
+  if (UI.drawDims) {
+    var baseDrawDimsMinR = UI.drawDims;
+    UI.drawDims = function () { var r = baseDrawDimsMinR.apply(this, arguments); try { drawMinRadius(); } catch (err) { /* an overlay: never break the dimensions */ } return r; };
+  }
 
   // ------------------------------------------------------------------ Parabola and Conic (Ellipse flyout)
   // Parabola: click the focus, then the apex (the vertex: the parabola opens towards the focus), then the start point

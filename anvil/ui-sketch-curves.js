@@ -742,7 +742,7 @@
     readout: function (pts, p, n) { var a = tarcArc(App.toolState || {}, pts[0], p); return a ? 'R ' + n(a.r, 2) + '   A ' + n(a.a1 - a.a0, 1) + '°' : ''; },
     after: function (f, i0, cnt, st) {
       tarcRelations(f, i0, st);
-      if (typedR(st, 'r') != null || numericOn()) radDim(f, i0, 45);
+      if (typedR(st, 'r') != null || (UI.sketchDimAllOnCreate ? UI.sketchDimAllOnCreate() : numericOn())) radDim(f, i0, 45);   // lane CV2: Create dimension only when value is entered
       after(f, i0);
     }
   };
@@ -876,8 +876,8 @@
   function widthStep(st) { return st.pts.length >= 3; }
   function slotAfter(f, i0, st) {
     var which = {};
-    if (typedR(st, 'r') != null || numericOn()) which.r = 1;
-    if (typedR(st, 'w') != null || numericOn()) which.w = 1;
+    if (typedR(st, 'r') != null || (UI.sketchDimAllOnCreate ? UI.sketchDimAllOnCreate() : numericOn())) which.r = 1;   // lane CV2
+    if (typedR(st, 'w') != null || (UI.sketchDimAllOnCreate ? UI.sketchDimAllOnCreate() : numericOn())) which.w = 1;
     if (opt.slotDims) which = { r: 1, w: 1 };
     if (which.r || which.w) slotDims(f, i0, which);
     if (!explodeShape(f, i0)) after(f, i0);   // rfY: an arc slot is its arcs, as SolidWorks draws it

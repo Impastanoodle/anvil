@@ -21,7 +21,7 @@
   // radians, R the inside radius). Physical values lie between 0 and 0.5; SolidWorks (and Anvil, for a new part)
   // defaults to 0.5. Models saved before bend deductions existed always stored their K; one with a sheet but no stored
   // K keeps the old fallback 0.71 so its flat does not change.
-  var DEFAULT_K = 0.5, LEGACY_K = 0.71;
+  var DEFAULT_K = 0.5, LEGACY_K = 0.71, AUTO_RELIEF_RATIO = 0.5;
   var BA_TYPES = ['kfactor', 'allowance', 'deduction', 'table'];
   function sheetParams(model) {
     return model.sheet || { thickness: 2, bendRadius: 2, kFactor: DEFAULT_K };
@@ -48,6 +48,12 @@
       var gt = typeof o.gaugeTable === 'object' ? null : gaugeTable(o.gaugeTable);   // a short name becomes the full one
       s.gaugeTable = gt && gt.name ? gt.name : o.gaugeTable; s.gauge = String(o.gauge);
     }
+    // lane CS: Auto Relief (SolidWorks' Base Flange / Sheet-Metal group): the relief an Edge Flange without its own
+    // gets where it stops short of the sheet's end: 'rect' | 'obround', ratio × T wide and ratio × T past the bend
+    // (SolidWorks' default Rectangular, 0.5). Absent ('none'): no relief, as every sheet made before it.
+    if (o.relief === 'rect' || o.relief === 'obround') { s.relief = o.relief; s.reliefRatio = o.reliefRatio != null && o.reliefRatio !== '' ? o.reliefRatio : AUTO_RELIEF_RATIO; }
+    else if (o.relief != null && o.relief !== 'none') throw new Error('Unknown auto relief type "' + o.relief + '" (rect, obround or none).');
+    if (typeof s.reliefRatio === 'number' && !(s.reliefRatio > 0)) throw new Error('Auto relief ratio must be greater than zero.');
     return s;
   }
   // bendTable = { kind: 'BA' | 'BD', name?, tolerance? (absolute, model units), rows: [{ thickness, radius, angle (°), value }] }
@@ -283,8 +289,12 @@
       L -= toSharp;
     }
     var miter = !!f.miter, gap = Math.max(0, +f.miterGap || 0);
-    var relief = f.relief === 'rect' || f.relief === 'obround' ? f.relief : 'none';
-    var rw = f.reliefWidth != null ? +f.reliefWidth : T, rd = f.reliefDepth != null ? +f.reliefDepth : T / 2;
+    // a flange (not a hem, not a jog's halves) without its own relief takes the sheet's Auto Relief (makeSheet)
+    var auto = f.type === 'flange' && !f.hem && f.relief == null && (sheet.relief === 'rect' || sheet.relief === 'obround');
+    var relief = auto ? sheet.relief : (f.relief === 'rect' || f.relief === 'obround' ? f.relief : 'none');
+    var ratio = auto ? +sheet.reliefRatio : NaN;
+    if (auto && !(ratio > 0)) throw new Error('Auto relief ratio must be greater than zero.');
+    var rw = f.reliefWidth != null ? +f.reliefWidth : (auto ? ratio * T : T), rd = f.reliefDepth != null ? +f.reliefDepth : (auto ? ratio * T : T / 2);
     if (relief !== 'none' && !(rw > 0)) throw new Error('Relief width must be greater than zero.');
     if (relief !== 'none' && !(rd >= 0)) throw new Error('Relief depth must be zero or more.');
     var mesh = meshFromBody(coplanarBody(ctx.body));   // r12/inchflange12: see coplanarBody
@@ -1336,37 +1346,54 @@
       var dir = sub(fi.b, fi.a), len = Math.hypot(dir[0], dir[1], dir[2]);
       if (!(len > 1e-9) || !(A > 1e-6) || !(BA > 1e-9) || !(Rt > 0)) return [];
       dir = scale(dir, 1 / len);
-      var rtol = 1e-4 * (1 + Rt), rmin = 0.97 * Rt - rtol, rmax = Rt + rtol, atol = 1e-3;
+      var atol = 1e-3, band = [[0, 0], [BA, 0], [BA, len], [0, len]];
       function polar(Q) { var d = sub(Q, C), po = dot(d, fi.o), pu = dot(d, fi.u); return { r: Math.hypot(po, pu), th: Math.atan2(po, -pu), tau: dot(sub(Q, fi.a), dir) }; }
+      // (CW) both surfaces of the bend are read, the tracked one (Rt) and the other: a cut from the top face that bites
+      // into an up-bend below the top takes only the bend's outside surface, so reading the tracked (inside) surface
+      // alone left the strip whole. Each surface's pieces are unrolled by angle (s = BA·θ/A, the same station on both),
+      // so the notch is the union of what either surface lacks, kept where the part has air at mid-thickness.
+      function surfaceGaps(Rs) {
+      var rtol = 1e-4 * (1 + Rs), rmin = 0.97 * Rs - rtol, rmax = Rs + rtol;
       var pieces = [];
       mesh.faces.forEach(function (fc) {
-        if (!fc.polys || Math.abs(dot(fc.normal, ax)) > 1e-4) return;
-        var dAxis = Math.abs(dot(fc.normal, C) - fc.w);
-        if (dAxis < rmin || dAxis > rmax) return;
+        if (!fc.polys) return;
+        // (CW) a facet of the surface: every corner within the radius band and the bend's angles, and the plane facing
+        // the axis (normal within 25° of radial at its centre). Anvil's facets hold the axis direction exactly;
+        // OpenCascade's triangles of a cut bend surface are tilted (an unstructured triangulation round the hole), and
+        // the old plane-holds-the-axis test dropped them, so the uncut surface read as a gap across the strip and the
+        // flat fell apart at the bend
         var sel = fc.polys.filter(function (p) {
-          var lo = Infinity, hi = -Infinity;
+          var lo = Infinity, hi = -Infinity, cen = [0, 0, 0];
           var on = p.vertices.every(function (v) {
-            var q = polar([v.pos.x, v.pos.y, v.pos.z]);
+            var P = [v.pos.x, v.pos.y, v.pos.z], q = polar(P);
+            cen = add(cen, P);
             lo = Math.min(lo, q.th); hi = Math.max(hi, q.th);
             return q.r >= rmin && q.r <= rmax && q.th >= -atol && q.th <= A + atol;
           });
-          return on && hi - lo > 1e-4;   // (a sliver of the sheet along the edge line is no facet)
+          if (!on || !(hi - lo > 1e-4)) return false;   // (a sliver of the sheet along the edge line is no facet)
+          var d = sub(scale(cen, 1 / p.vertices.length), C), rad = sub(d, scale(ax, dot(d, ax))), rl = Math.hypot(rad[0], rad[1], rad[2]);
+          return rl > 0 && Math.abs(dot(fc.normal, rad)) > 0.9 * rl;
         });
         if (sel.length) pieces.push({ polys: sel, normal: fc.normal, w: fc.w });
       });
       if (!pieces.length) return [];
-      var covered = [], inner = [];
+      // (CW) every polygon is unrolled on its own and the band less their union is the gap (was: each face's outline,
+      // and faceOutline lost a whole piece of a facet next to a zero-area polygon a Normal Cut leaves at the hole's
+      // rim: the last facet of a 16 ga bend read as cut from end to end, the mid-thickness test then threw the gap
+      // away and the strip kept its metal across the hole)
+      var covered = [];
       pieces.forEach(function (pc) {
-        var o = faceOutline({ faces: [pc] }, 0);
-        if (!o) return;
-        o.loops.forEach(function (l) {
-          var m = l.map(function (p) { var q = polar(to3D(o.plane, p[0], p[1])); return [BA * q.th / A, q.tau]; });
-          (signedArea(l) > 0 ? covered : inner).push(m);
+        pc.polys.forEach(function (p) {
+          var m = p.vertices.map(function (v) { var q = polar([v.pos.x, v.pos.y, v.pos.z]); return [BA * q.th / A, q.tau]; });
+          if (Math.abs(signedArea(m)) > 1e-12) covered.push(signedArea(m) < 0 ? m.reverse() : m);
         });
       });
       if (!covered.length) return [];
-      var band = [[0, 0], [BA, 0], [BA, len], [0, len]];
-      var gaps = mergeFlatRegions([[band]], covered, FLAT_WELD) || [], cutouts = fi.cutouts || [], tC = dot(sub(C, fi.a), dir);
+      return mergeFlatRegions([[band]], covered, FLAT_WELD) || [];
+      }
+      var Ro = Math.abs(Rt - fi.R) < 1e-9 * (1 + Rt) ? fi.R + fi.T : fi.R;
+      var gapsT = surfaceGaps(Rt), gapsO = Ro > 0 ? surfaceGaps(Ro) : [], cutouts = fi.cutouts || [], tC = dot(sub(C, fi.a), dir);
+      if (!gapsT.length && !gapsO.length) return [];
       // a gap is a hole only where the part has air at mid-thickness: not the stretch of a bend another flange's bend
       // runs into at a corner (metal there, the surface merely covered), and not a hole cut before the bend, whose
       // cutout above is exact already. A gap at either end of the bend is a corner, not a hole, while a flange meets
@@ -1402,7 +1429,17 @@
         var th = A * q[0] / BA, rm = fi.R + fi.T / 2;
         return !inBody(add(add(add(C, scale(fi.o, rm * Math.sin(th))), scale(fi.u, -rm * Math.cos(th))), scale(dir, q[1] - tC)));
       }
-      var loops = gaps.filter(keep).concat(inner.filter(keep)), out = loops.slice();
+      // (CW2) the tracked surface's gaps first; the other surface adds only gaps the tracked one has nothing of (a cut
+      // that crosses that surface alone: a bite into an up-bend below the top). Where both are cut (a Normal Cut) the
+      // tracked footprint is the hole: on Anvil's faceted bend the far surface's hole steps at every facet (each
+      // facet's prism goes along its own normal), and the union drew those steps into the flat (~90 points, a
+      // stair along both sides of the strip)
+      var keptT = gapsT.filter(keep);
+      var loops = keptT.concat(gapsO.filter(function (l) {
+        if (!keep(l)) return false;
+        var q = loopInteriorPoint(l);
+        return !keptT.some(function (t) { return (q && pointInPoly(q, t)) || l.filter(function (p) { return pointInPoly(p, t); }).length * 2 > l.length; });
+      })), out = loops.slice();
       // a notch along the band's edge s = at is bridged `push` past it (to −eps / BA + eps) so it meets the hole in the
       // base or the wall; the bridge's far corners continue the hole's own rims, so the rim points stay exact
       function bridge(l, at, push) {
@@ -1485,7 +1522,7 @@
         var o2 = [O2[0] - M2[0], O2[1] - M2[1]], ol = Math.hypot(o2[0], o2[1]);
         if (ol < 1e-9) return;
         o2 = [o2[0] / ol, o2[1] / ol];
-        var bc = bendCalc(sheet, fi.angle, fi.R, T, fi.ba), BA = bc.BA, eps = 1e-3;
+        var bc = bendCalc(sheet, fi.angle, fi.R, T, fi.ba), BA = bc.BA, eps = 0;
         warn(bc.warning);
         if (bc.K != null) kUsed[bc.K] = true;
         if ((bc.type === 'allowance' || bc.type === 'deduction') && Math.abs(fi.angle - Math.PI / 2) > 1e-6)
@@ -1594,6 +1631,38 @@
           if (hit) mine.push(ci);
         });
         if (!mine.length && comps.length === 1) mine.push(0);
+        // lane CS: the strip runs eps past BA into the wall to weld to it; where the wall does not start on the start
+        // line (a Closed Corner overlap trimmed the wall's end above its bend) that eps would stick out of the blank as a
+        // 0.001 step, so it is notched off there: the stretches of the start line no wall piece's outline runs along
+        if (fi.kind === 'edge' && !eA.mitred && !eB.mitred && fi.L > 1e-9 && mine.length) {
+          var cov = [], elw = 0;
+          mine.forEach(function (ci) {
+            var c = comps[ci], wa = to2D(c.plane, Wa), wb = to2D(c.plane, Wb), ex = [wb[0] - wa[0], wb[1] - wa[1]];
+            elw = Math.hypot(ex[0], ex[1]);
+            if (elw < 1e-9) return;
+            ex = [ex[0] / elw, ex[1] / elw];
+            c.loops.forEach(function (l) {
+              l.forEach(function (p, i) {
+                var q = l[(i + 1) % l.length];
+                function off2(r) { return Math.abs((r[0] - wa[0]) * ex[1] - (r[1] - wa[1]) * ex[0]); }
+                if (off2(p) > 1e-4 || off2(q) > 1e-4) return;
+                var tp = (p[0] - wa[0]) * ex[0] + (p[1] - wa[1]) * ex[1], tq = (q[0] - wa[0]) * ex[0] + (q[1] - wa[1]) * ex[1];
+                var lo = Math.max(0, Math.min(tp, tq)), hi = Math.min(elw, Math.max(tp, tq));
+                if (hi - lo > 1e-9) cov.push([lo, hi]);
+              });
+            });
+          });
+          if (elw > 1e-9 && cov.length) {
+            cov.sort(function (x, y) { return x[0] - y[0]; });
+            var at = 0, gaps = [];
+            cov.forEach(function (s) { if (s[0] > at + 1e-4) gaps.push([at, s[0]]); at = Math.max(at, s[1]); });
+            if (at < elw - 1e-4) gaps.push([at, elw]);
+            gaps.forEach(function (g) {
+              var nt = [corner(eA, BA, -g[0]), corner(eA, BA, -g[1]), corner(eA, BA + 2 * eps, -g[1]), corner(eA, BA + 2 * eps, -g[0])];
+              notches.push(signedArea(nt) < 0 ? nt.reverse() : nt);
+            });
+          }
+        }
         var laid = false, same = false;
         mine.forEach(function (ci) {
           var key = wIdx + '/' + ci;
@@ -2221,12 +2290,196 @@
   });
 
 
+  // ------------------------------------------------------------------ Closed Corner (lane CS)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Closed Corner: where two flanges meet at a box corner and leave a gap (a wall
+  // that stops short of its neighbour), the end faces of one flange (the faces to extend, picked) are extended to the
+  // neighbouring wall (the matching face: the nearest flat face facing back at them, found automatically). Feature JSON
+  // { type: 'closedCorner', faces: [[x, y, z], …] (points on the end faces to extend), cornerType: 'butt' | 'overlap' |
+  // 'underlap', gap (default 0.01 in / 0.25 mm, at least CC_MIN_GAP: a smaller gap would weld the walls into one and the
+  // flat could not unfold), ratio (overlap / underlap ratio, 0..1, default 1), coplanar (default true: every end face
+  // in the picked face's plane that has a matching face is extended too), name }. Only the part of an end face that
+  // sees the matching face is extended (the wall above its bend): the bend region stays open (SolidWorks' Open bend
+  // region); closing it is not built.
+  //   butt      the extended wall stops `gap` short of the matching wall's inside face; the matching wall's end ends flush
+  //             with the extended wall's outside (anything of it past that is trimmed)
+  //   overlap   the extended wall runs over the matching wall's end, ratio·T into it (1: flush with its outside); the
+  //             matching wall is trimmed back to `gap` from the extended wall's inside face
+  //   underlap  the extended wall stops `gap` short of the matching wall's inside face (as butt) and the matching wall
+  //             covers ratio·T of its thickness (1: the same as butt; less: the matching wall's end is trimmed back)
+  // It adds material (and overlap / underlap trim the matching wall), so it is a rebuildModel case (kernel-rebuild.js)
+  // that subtracts `cut` and unions `add`. The flat needs nothing new: the extended wall face unfolds with its new
+  // outline (flatPattern lays each wall face's real outline), so the corner notch closes to the gap.
+  var CC_TYPES = ['butt', 'overlap', 'underlap'];
+  function ccMinGap(model) { return model && model.units === 'mm' ? 0.0254 : 0.001; }
+  function ccDefaultGap(model) { return model && model.units === 'mm' ? 0.25 : 0.01; }
+  // closedCornerLayout(f, model, ctx) -> { adds: [{ loop, plane, a, b }], cuts: [{ loop, plane, a, b }], corners:
+  // [{ at, d, faceAt }] } — prisms of `loop` (2D in `plane`) from a to b along plane.n; plain data for both kernels.
+  function closedCornerLayout(f, model, ctx) {
+    var sheet = model.sheet;
+    if (!sheet) throw new Error('Closed Corner needs a sheet-metal part: make a Base Flange first (Sheet Metal tab).');
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw new Error('Closed Corner: there are no flanges yet.');
+    var T = +sheet.thickness, R = +sheet.bendRadius;
+    var type = f.cornerType == null ? 'butt' : String(f.cornerType);
+    if (CC_TYPES.indexOf(type) < 0) throw new Error('Closed Corner: the corner type must be butt, overlap or underlap.');
+    var gap = f.gap == null ? ccDefaultGap(model) : +f.gap, minGap = ccMinGap(model);
+    if (!isFinite(gap) || gap < 0) throw new Error('Closed Corner: the gap must be a number, zero or more.');
+    if (gap < minGap - 1e-12) throw new Error('Closed Corner: a gap below ' + bcNum(minGap) + ' would join the two flanges into one (the flat could not unfold): use at least ' + bcNum(minGap) + '.');
+    var ratio = type === 'butt' || f.ratio == null ? 1 : +f.ratio;
+    if (!isFinite(ratio) || ratio < 0 || ratio > 1) throw new Error('Closed Corner: the overlap/underlap ratio must be between 0 and 1.');
+    if (!f.faces || !f.faces.length) throw new Error('Closed Corner: pick the end faces of a flange to extend.');
+    var mesh = meshFromBody(coplanarBody(ctx.body)), outl = {};
+    function curved(face) { return (face.polys || []).some(function (p) { return !!p.surf; }); }
+    // a face's components: each outer loop (CCW in the face's frame) with the holes inside it
+    function comps(fi) {
+      if (outl[fi] !== undefined) return outl[fi];
+      var o = faceOutline(mesh, fi);
+      if (!o || !o.loops.length) return (outl[fi] = []);
+      var cl = faceLoopsClassified(o);
+      return (outl[fi] = cl.outers.map(function (l, k) {
+        return { fi: fi, k: k, plane: o.plane, outer: l, holes: cl.holes.filter(function (h) { return pointInPoly(h[0], l); }) };
+      }));
+    }
+    function inComp(c, uv) { return pointInPoly(uv, c.outer) && !c.holes.some(function (h) { return pointInPoly(uv, h); }); }
+    function moved(l, from, to) {   // a loop of plane `from` in the 2D frame of plane `to` (projected along to.n)
+      var m = l.map(function (q) { return to2D(to, to3D(from, q[0], q[1])); });
+      return signedArea(m) < 0 ? m.reverse() : m;
+    }
+    function bbox(l) { var b = [Infinity, Infinity, -Infinity, -Infinity]; l.forEach(function (q) { b[0] = Math.min(b[0], q[0]); b[1] = Math.min(b[1], q[1]); b[2] = Math.max(b[2], q[0]); b[3] = Math.max(b[3], q[1]); }); return b; }
+    var eps = Math.max(0.01 * T, 1e-6), ov = Math.min(0.5 * T, 0.25), dMax = 10 * T + 2 * R, tolV = 1e-4 * T * T * T;
+    // the end-face components to extend: the one under each pick (plus, with `coplanar`, the others in its plane)
+    var work = [], seen = {};
+    f.faces.forEach(function (p, pi) {
+      var best = null, bd = 1e-3 * (1 + T);
+      mesh.faces.forEach(function (face, fi) {
+        if (curved(face)) return;
+        var off = Math.abs(dot(face.normal, p) - face.w);
+        if (off > bd) return;
+        comps(fi).forEach(function (c) { if (inComp(c, to2D(c.plane, p))) { bd = off; best = c; } });
+      });
+      if (!best) throw new Error('Closed Corner: there is no flat face at ' + bcPt(p) + ' any more.');
+      var list = f.coplanar === false ? [best] : comps(best.fi);
+      list.forEach(function (c) {
+        var key = c.fi + ':' + c.k;
+        if (seen[key]) { if (c === best) seen[key].picked = p; return; }
+        work.push(seen[key] = { c: c, picked: c === best ? p : null });
+      });
+    });
+    function rectLoop(wd, hd, wa, wb, ha, hb) {   // the rectangle w ∈ [wa, wb], h ∈ [ha, hb] of a (wd, hd) frame, CCW
+      var r = [[wa, ha], [wb, ha], [wb, hb], [wa, hb]].map(function (q) { return [q[0] * wd[0] + q[1] * hd[0], q[0] * wd[1] + q[1] * hd[1]]; });
+      return signedArea(r) < 0 ? r.reverse() : r;
+    }
+    function extent(l, dir) { var lo = Infinity, hi = -Infinity; l.forEach(function (q) { var t = q[0] * dir[0] + q[1] * dir[1]; lo = Math.min(lo, t); hi = Math.max(hi, t); }); return [lo, hi]; }
+    var adds = [], cuts = [], checks = [], corners = [];
+    work.forEach(function (wk) {
+      var C = wk.c, face = mesh.faces[C.fi], ne = face.normal, Cp = C.plane, cb = bbox(C.outer), why = null;
+      // the end face's frame: h along its longest straight edge (the wall's height), w across the wall's thickness
+      var sl = straightLoop(C.outer), hd = null, hl = 0;
+      for (var k = 0; k < sl.length; k++) {
+        var p0 = sl[k], p1 = sl[(k + 1) % sl.length], l = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+        if (l > hl) { hl = l; hd = [(p1[0] - p0[0]) / l, (p1[1] - p0[1]) / l]; }
+      }
+      if (!hd) return;
+      var wd = [hd[1], -hd[0]], cw = extent(C.outer, wd), ch = extent(C.outer, hd);
+      // matching faces: flat, facing back (−ne), in front of the end face within dMax, nearest first; the matching
+      // wall's inside face either covers the end face (a wall that runs on to the corner) or stops beside it (both
+      // walls stop at the corner: Bend Outside / Material Outside flanges), within dMax
+      var cands = [];
+      mesh.faces.forEach(function (g, gi) {
+        if (curved(g) || dot(g.normal, ne) > -1 + 1e-6) return;
+        var d = -g.w - face.w;
+        if (d > 1e-6 && d <= dMax) cands.push({ gi: gi, d: d });
+      });
+      cands.sort(function (a, b) { return a.d - b.d; });
+      var match = null;
+      for (var i = 0; i < cands.length && !match; i++) {
+        var d = cands[i].d;
+        comps(cands[i].gi).forEach(function (M) {
+          if (match) return;
+          var Ml = moved(M.outer, M.plane, Cp), mw = extent(Ml, wd), mh = extent(Ml, hd);
+          var h0 = Math.max(ch[0], mh[0]), h1 = Math.min(ch[1], mh[1]);
+          if (h1 - h0 < 0.5 * T) return;   // not level with each other
+          // the part of the end face level with the matching wall (the wall above the bend: the bend region stays open)
+          var X = prism(C.outer, Cp, 0, T).intersect(prism(rectLoop(wd, hd, cw[0] - T, cw[1] + T, h0, h1), Cp, -eps, T + eps));
+          C.holes.forEach(function (h) { X = X.subtract(prism(h, Cp, -eps, T + eps)); });
+          if (!X.polygons.length || !(X.volume() > tolV)) return;
+          var xm = meshFromBody(X), cap = -1, cwm = -Infinity;
+          xm.faces.forEach(function (xf, xi) { if (dot(xf.normal, ne) > 0.999 && xf.w > cwm) { cwm = xf.w; cap = xi; } });
+          var xo = cap >= 0 ? faceOutline(xm, cap) : null;
+          if (!xo) return;
+          var O = faceLoopsClassified(xo).outers.map(function (l) { return straightLoop(moved(l, xo.plane, Cp)); }).filter(function (l) { return l.length >= 3 && Math.abs(signedArea(l)) > 1e-6 * T * T; });
+          if (!O.length) return;
+          var ow = [Infinity, -Infinity];
+          O.forEach(function (l) { var e = extent(l, wd); ow[0] = Math.min(ow[0], e[0]); ow[1] = Math.max(ow[1], e[1]); });
+          if (ow[1] - ow[0] > 1.5 * T) { why = 'wide'; return; }   // wider than the sheet: not the end of a flange
+          // the matching wall lies on the extended wall's inside; its end toward it must be within dMax of it
+          var sg = (mw[0] + mw[1]) / 2 >= (ow[0] + ow[1]) / 2 ? 1 : -1, wIn = sg > 0 ? ow[1] : ow[0], wOut = sg > 0 ? ow[0] : ow[1];
+          var bEnd = sg > 0 ? mw[0] : mw[1];
+          if (sg * (bEnd - wIn) > dMax || sg * ((sg > 0 ? mw[1] : mw[0]) - wIn) < T) return;
+          match = { d: d, O: O, h0: h0, h1: h1, mh: mh, sg: sg, wIn: wIn, wOut: wOut, bEnd: bEnd, tA: ow[1] - ow[0] };
+        });
+      }
+      if (!match) {
+        if (wk.picked) throw new Error(why === 'wide' ? 'Closed Corner: the face at ' + bcPt(wk.picked) + ' is not the end of a flange: pick the narrow face through the thickness where the flange stops at the corner.' :
+          'Closed Corner: the face at ' + bcPt(wk.picked) + ' has no flange face across the corner to close to (within ' + bcNum(dMax) + '): pick the end face of the flange that stops short of the corner.');
+        return;
+      }
+      var d = match.d, sg = match.sg, wIn = match.wIn, wOut = match.wOut, target = type === 'overlap' ? d + ratio * T : d - gap;
+      if (!(target > 1e-6)) {
+        if (wk.picked) throw new Error('Closed Corner: the face at ' + bcPt(wk.picked) + ' is already within the gap (' + bcNum(d) + ' from the flange across the corner).');
+        return;
+      }
+      match.O.forEach(function (Ol) {
+        adds.push({ loop: Ol, plane: Cp, a: -ov, b: target });
+        checks.push({ loop: Ol, plane: Cp, a: eps, b: target - (type === 'overlap' ? 0 : eps) });
+      });
+      // the matching wall's end goes to `to`: butt, flush with the extended wall's outside; overlap, `gap` short of its
+      // inside face; underlap, covering ratio·T of its thickness. A wall that stops short of it is extended (its whole
+      // height, T thick, overlapping ov into it); one that runs past it is trimmed back (and anything of it sticking out
+      // past the extended wall's outside goes too).
+      var to = type === 'overlap' ? wIn + sg * gap : (type === 'underlap' ? wIn - sg * ratio * match.tA : wOut);
+      if (sg * (match.bEnd - to) > 1e-9) {
+        adds.push({ loop: rectLoop(wd, hd, Math.min(to, match.bEnd + sg * ov), Math.max(to, match.bEnd + sg * ov), match.mh[0], match.mh[1]), plane: Cp, a: d, b: d + T });
+        checks.push({ loop: rectLoop(wd, hd, Math.min(to, match.bEnd - sg * eps), Math.max(to, match.bEnd - sg * eps), match.mh[0] + eps, match.mh[1] - eps), plane: Cp, a: d + eps, b: d + T - eps });
+      } else {
+        var wa = Math.min(wOut - sg * T, to), wb = Math.max(wOut - sg * T, to);
+        if (wb - wa > 1e-9) cuts.push({ loop: rectLoop(wd, hd, wa, wb, match.h0, match.h1), plane: Cp, a: d - eps, b: d + T + eps });
+      }
+      corners.push({ at: to3D(Cp, (cb[0] + cb[2]) / 2, (cb[1] + cb[3]) / 2), d: d, faceAt: wk.picked });
+    });
+    if (!adds.length) throw new Error('Closed Corner: nothing to close.');
+    // the extensions must run through empty space (after the trim): anything else in their way is a flange that is
+    // not the matching one (a hem, a tab), and a union would weld it on
+    var rest = cuts.length ? ctx.body.subtract(unionAll(cuts.map(function (c) { return prism(c.loop, c.plane, c.a, c.b); }))) : ctx.body;
+    checks.forEach(function (a) {
+      var clash = rest.intersect(prism(a.loop, a.plane, a.a, a.b));
+      if (clash.polygons.length && clash.volume() > tolV) throw new Error('Closed Corner: closing the corner at ' + bcPt(to3D(a.plane, a.loop[0][0], a.loop[0][1])) + ' would run into other material.');
+    });
+    return { adds: adds, cuts: cuts, corners: corners, type: type, gap: gap, ratio: ratio };
+  }
+  // buildClosedCorner(f, model, ctx) -> { add: CSG, cut: CSG | null } (the rebuild subtracts cut, then unions add)
+  function buildClosedCorner(f, model, ctx) {
+    var lay = closedCornerLayout(f, model, ctx);
+    return {
+      add: unionAll(lay.adds.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); })),
+      cut: lay.cuts.length ? unionAll(lay.cuts.map(function (t) { return prism(t.loop, t.plane, t.a, t.b, f.id); })) : null
+    };
+  }
+  // Closed Corner1, Closed Corner2, … (NAME_BASE.closedCorner)
+  function closedCornerName(model) {
+    var max = 0;
+    (model.features || []).forEach(function (g) { var mm = /^Closed Corner(\d+)$/.exec(g.name || ''); if (mm && +mm[1] > max) max = +mm[1]; });
+    return 'Closed Corner' + (max + 1);
+  }
+
   // ------------------------------------------------------------------ public API (Kernel.*)
+  K.buildClosedCorner = buildClosedCorner; K.closedCornerLayout = closedCornerLayout;
+  K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
+  _.buildClosedCorner = buildClosedCorner;
   K.buildFlange = buildFlange; K.flangeLayout = flangeLayout; K.buildJog = buildJog; K.normalCutTool = normalCutTool;
   K.flangeProfile = flangeProfile; K.flatPattern = flatPattern; K.flatOptions = flatOptions; K.cleanFlatLoop = cleanFlatLoop; K.snapFlatCircle = snapFlatCircle; K.flatCircleTol = flatCircleTol; K.bendAllowance = bendAllowance; K.sheetParams = sheetParams;
   K.bendDeduction = bendDeduction; K.outsideSetback = outsideSetback; K.bendCalc = bendCalc; K.bendTableLookup = bendTableLookup;
   K.makeSheet = makeSheet; K.sheetKFactor = sheetKFactor; K.sheetNote = sheetNote; K.gaugeTables = GAUGE_TABLES; K.gaugeTable = gaugeTable; K.gaugeRow = gaugeRow;
-  K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();
+  K.DEFAULT_K_FACTOR = DEFAULT_K; K.LEGACY_K_FACTOR = LEGACY_K; K.AUTO_RELIEF_RATIO = AUTO_RELIEF_RATIO; K.DEFAULT_GAUGE_TABLE = DEFAULT_GAUGE_TABLE; K.BEND_ALLOWANCE_TYPES = BA_TYPES.slice();
   K.bendNoteText = bendNoteText; K.hemSection = hemSection; K.FLANGE_LENGTH_REFS = LENGTH_REFS.slice(); K.HEM_TYPES = HEM_TYPES.slice();
   K.CLOSED_HEM_RADIUS = CLOSED_HEM_R; K.DEFAULT_HEM_ANGLE = DEFAULT_HEM_ANGLE;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)

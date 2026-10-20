@@ -411,6 +411,7 @@
   }
   // reattachUserDim(d, pr): reattachDim for every kind, including the references of ordinate / baseline / chamfer
   function reattachUserDim(d, pr) {
+    if (d.kind === 'angrun' || d.kind === 'pathlen') return reattachCT(d, pr);   // (lane CT)
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var ok = [d.base].concat(d.refs).map(function (r) { return reattachDim(r, pr); }).every(Boolean);
       if (ok) delete d.dangling; else d.dangling = true;
@@ -426,8 +427,9 @@
       return ok2;
     }
     if (d.refs && d.refs.length === 2) {
-      // (rfS) a Smart Dimension between two picks: reattach each, then measure again
-      var okR = d.refs.map(function (r) { return reattachRef(r, pr); }).every(Boolean);
+      // (rfS) a Smart Dimension between two picks: reattach each, then measure again (lane CT2: an angle's two lines
+      // follow their edges when the angle between them changes)
+      var okR = d.kind === 'angle' ? ctReattachLines(d.refs, pr) : d.refs.map(function (r) { return reattachRef(r, pr); }).every(Boolean);
       if (okR) { delete d.dangling; measurePair(d); } else d.dangling = true;
       return okR;
     }
@@ -563,6 +565,7 @@
   }
   function smartDim(p1, p2, at, opts) {
     opts = opts || {};
+    if (opts.lock === 'h' || opts.lock === 'v') return lockedDim(p1, p2, at, opts);   // (lane CT) Horizontal / Vertical Dimension
     var sc = +opts.scale > 0 ? +opts.scale : 1, r1 = p1 && pickRef(p1), r2 = p2 && pickRef(p2), d;
     if (!r1) return null;
     if (!r2) {
@@ -633,6 +636,263 @@
     if (!d) return null;
     (v.dims || (v.dims = [])).push(d);
     return d;
+  }
+  // ------------------------------------------------------------------ lane CT: locked, running angle, path length
+  // Horizontal / Vertical Dimension (the Smart Dimension flyout): Smart Dimension's picks, the dimension held
+  // horizontal (lock 'h': the distance along the view's u) or vertical ('v': along v) wherever the pointer is. One
+  // circle: its width across (two references to it, measured side to side: minmax 'max'); one arc: the run between
+  // its ends (two point references); one edge: its run
+  // along the lock; two picks: a linear dimension of that kind between them (an edge gives its end nearer the other
+  // pick, measurePair). The record is an ordinary linear dimension (kind 'h' | 'v') with d.lock.
+  function lockedDim(p1, p2, at, opts) {
+    var lk = opts.lock, sc = +opts.scale > 0 ? +opts.scale : 1, r1 = p1 && pickRef(p1), r2 = p2 && pickRef(p2), d;
+    if (!r1) return null;
+    if (!r2) {
+      if (r1.kind === 'dia' && !r1.ell) d = { kind: lk, lock: lk, refs: [r1, JSON.parse(JSON.stringify(r1))], minmax: 'max' };
+      // an arc (a bend, a corner fillet): the run between its two ends (R.250 quarter round: .250), not its full width
+      else if (r1.kind === 'arc' && !r1.ell && r1.a0 != null && r1.a1 != null) {
+        var e0 = r1.a0 * Math.PI / 180, e1 = r1.a1 * Math.PI / 180;
+        d = { kind: lk, lock: lk, refs: [{ kind: 'pt', p: [r1.c[0] + r1.r * Math.cos(e0), r1.c[1] + r1.r * Math.sin(e0)] }, { kind: 'pt', p: [r1.c[0] + r1.r * Math.cos(e1), r1.c[1] + r1.r * Math.sin(e1)] }] };
+      }
+      else if (isEdgeRef(r1)) {
+        var a = r1.a.slice(), b = r1.b.slice(), L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        d = { kind: lk, lock: lk, a: a, b: b, value: lk === 'h' ? Math.abs(b[0] - a[0]) : Math.abs(b[1] - a[1]) };
+        if (!(d.value > L * 1e-9 + 1e-12)) return null;   // a vertical edge has no horizontal run
+        return placeLinear(d, at, sc);
+      } else return null;   // a point alone measures nothing
+    } else {
+      d = { kind: lk, lock: lk, refs: [r1, r2] };
+      if ((opts.minmax === 'min' || opts.minmax === 'max') && !(isEdgeRef(r1) && isEdgeRef(r2))) d.minmax = opts.minmax;
+    }
+    measurePair(d);
+    if (!(d.value > 1e-12)) return null;
+    return placeLinear(d, at, sc);
+  }
+  // Angular Running Dimension: a base line (0°), then lines or holes round one vertex, each read as its angle from the
+  // base, running one way (0°, 30°, 75° …), in one group record like an ordinate set:
+  // { kind: 'angrun', base: edge ref, refs: [edge | circle refs], cw? (running clockwise; chosen when the first pick is
+  // past 180° counter-clockwise), cFix? (a vertex the caller gave), rad? (the arc's radius, model units) }. Measured
+  // (angRunMeasure, at every render): c (the vertex: where the base line meets the first line not parallel to it; holes
+  // only: the base line's end the holes are most evenly round), u (unit directions from c: the base's, then each
+  // reference's, toward an edge's far end or a hole's centre), values (degrees, one per reference), value (the last).
+  function ctLineMeet(r1, r2) {
+    var t1 = [r1.b[0] - r1.a[0], r1.b[1] - r1.a[1]], t2 = [r2.b[0] - r2.a[0], r2.b[1] - r2.a[1]], cr = t1[0] * t2[1] - t1[1] * t2[0];
+    if (!(Math.abs(cr) > Math.hypot(t1[0], t1[1]) * Math.hypot(t2[0], t2[1]) * 1e-9)) return null;
+    var w = [r2.a[0] - r1.a[0], r2.a[1] - r1.a[1]], s = (w[0] * t2[1] - w[1] * t2[0]) / cr;
+    return [r1.a[0] + t1[0] * s, r1.a[1] + t1[1] * s];
+  }
+  function angRunVertex(d) {
+    var c = null;
+    d.refs.some(function (r) { if (isEdgeRef(r)) c = ctLineMeet(d.base, r); return !!c; });
+    if (c) return c;
+    var cs = d.refs.filter(function (r) { return r.c; }).map(function (r) { return r.c; });
+    if (!cs.length) return null;
+    function spread(p) {
+      var ds = cs.map(function (q) { return Math.hypot(q[0] - p[0], q[1] - p[1]); }), m = ds.reduce(function (s, x) { return s + x; }, 0) / ds.length;
+      return ds.reduce(function (s, x) { return s + (x - m) * (x - m); }, 0) - m * 1e-9;   // (a tie: the end farther from the holes)
+    }
+    return spread(d.base.a) <= spread(d.base.b) ? d.base.a.slice() : d.base.b.slice();
+  }
+  function angRunMeasure(d) {
+    var c = d.cFix ? d.cFix.slice() : angRunVertex(d);
+    if (!c) { d.dangling = true; return d; }
+    d.c = c;
+    function dirOf(r) {
+      var q = r.c ? r.c : Math.hypot(r.a[0] - c[0], r.a[1] - c[1]) >= Math.hypot(r.b[0] - c[0], r.b[1] - c[1]) ? r.a : r.b;
+      return unit([q[0] - c[0], q[1] - c[1]]);
+    }
+    var u0 = dirOf(d.base);
+    d.u = [u0];
+    d.values = d.refs.map(function (r) {
+      var u = dirOf(r), a = Math.atan2(u0[0] * u[1] - u0[1] * u[0], u0[0] * u[0] + u0[1] * u[1]) * 180 / Math.PI;
+      d.u.push(u);
+      if (d.cw) a = -a;
+      if (a < 0) a += 360;
+      if (a > 360 - 1e-7) a = 0;
+      return a;
+    });
+    d.value = d.values.length ? d.values[d.values.length - 1] : 0;
+    return d;
+  }
+  // addAngularRunning(doc, viewId, { base: { a, b }, refs: [{ a, b } | { c, r }], c?, cw?, rad? }) -> the dimension
+  function addAngularRunning(doc, viewId, spec) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (!spec || !spec.base || !spec.base.a || !spec.base.b || !(spec.refs || []).length) throw new Error('An angular running dimension needs a base line and at least one more line or hole');
+    var d = { kind: 'angrun', base: refFrom(spec.base), refs: spec.refs.map(refFrom) };
+    if (spec.c) d.cFix = [+spec.c[0], +spec.c[1]];
+    angRunMeasure(d);
+    if (!d.c) throw new Error('The lines picked are parallel to the base line: there is no vertex to measure round');
+    if (d.values.some(function (x) { return x < 1e-6; })) throw new Error('A line or hole picked lies along the base line (0°)');
+    if (spec.cw != null ? !!spec.cw : d.values[0] > 180 + 1e-9) { d.cw = true; angRunMeasure(d); }
+    if (+spec.rad > 0) d.rad = +spec.rad;
+    delete d.dangling;
+    (v.dims || (v.dims = [])).push(d);
+    return d;
+  }
+  // Path Length Dimension: the total length of a chain of edges, as the sketch's (sketch-solver.js rfaqPathLen): a line
+  // its length, an arc r × its sweep, a whole circle 2πr. { kind: 'pathlen', refs: [edge | { kind: 'rad', c, r, a0, a1 }
+  // (an arc, degrees counter-clockwise) | { kind: 'dia', c, r }], value, lead? (paper offset of the text's leader elbow
+  // from the first entity's middle) }. Drawn as SolidWorks does: the value on a leader from the first entity, no
+  // dimension lines (ctDimPrims). Each entity after the first meets one picked before it end to end.
+  function pathRefFrom(x) {
+    if (x.kind === 'rad' || (x.c && x.a0 != null && x.a1 != null)) return { kind: 'rad', c: [+x.c[0], +x.c[1]], r: +x.r, a0: +x.a0, a1: +x.a1 };
+    return refFrom(x);
+  }
+  function arcSweep(r) { var s = ((r.a1 - r.a0) % 360 + 360) % 360; return s < 1e-9 ? 360 : s; }
+  function pathLengthOf(refs) {
+    return refs.reduce(function (t, r) {
+      if (r.kind === 'dia') return t + 2 * Math.PI * r.r;
+      if (r.kind === 'rad') return t + r.r * arcSweep(r) * Math.PI / 180;
+      return t + Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]);
+    }, 0);
+  }
+  function arcPoint(r, deg) { var a = deg * Math.PI / 180; return [r.c[0] + r.r * Math.cos(a), r.c[1] + r.r * Math.sin(a)]; }
+  function pathRefEnds(r) {
+    if (r.kind === 'dia') return [];
+    if (r.kind === 'rad') return [arcPoint(r, r.a0), arcPoint(r, r.a0 + arcSweep(r))];
+    return [r.a, r.b];
+  }
+  function pathRefMid(r) {
+    if (r.kind === 'dia') return arcPoint(r, 45);
+    if (r.kind === 'rad') return arcPoint(r, r.a0 + arcSweep(r) / 2);
+    return [(r.a[0] + r.b[0]) / 2, (r.a[1] + r.b[1]) / 2];
+  }
+  // pathChained(refs) -> the index of the first entity that meets none picked before it end to end (-1: a chain)
+  function pathChained(refs) {
+    var pts = [];
+    refs.forEach(function (r) { pts = pts.concat(pathRefEnds(r), r.c ? [r.c] : []); });
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    pts.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
+    var tol = Math.max(1e-9, 2e-3 * Math.hypot(x1 - x0, y1 - y0));
+    for (var i = 1; i < refs.length; i++) {
+      var e = pathRefEnds(refs[i]), ok = false;
+      for (var j = 0; j < i && !ok; j++) pathRefEnds(refs[j]).forEach(function (q) { e.forEach(function (p) { if (Math.hypot(p[0] - q[0], p[1] - q[1]) <= tol) ok = true; }); });
+      if (!ok) return i;
+    }
+    return -1;
+  }
+  // addPathLength(doc, viewId, { refs: [{ a, b } | { c, r, a0, a1 } | { c, r }], lead? }) -> the dimension
+  function addPathLength(doc, viewId, spec) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    var refs = (spec && spec.refs || []).map(pathRefFrom);
+    if (!refs.length) throw new Error('A path length dimension needs at least one line or arc');
+    if (pathChained(refs) >= 0) throw new Error('The edges of a path length must join end to end');
+    var d = { kind: 'pathlen', refs: refs, value: pathLengthOf(refs) };
+    if (spec.lead) d.lead = [+spec.lead[0], +spec.lead[1]];
+    (v.dims || (v.dims = [])).push(d);
+    return d;
+  }
+  // (lane CT2) the lines of an angle follow the same model edge when its angle changes (SolidWorks): an edge still
+  // collinear with where it was reattaches as any edge does (reattachDim); else the visible / hidden edge that keeps one
+  // of its old ends (the vertex the angle turns about) and whose direction is nearest the old one, not one already
+  // taken by a sibling line, not lying along one; else reattachDim (an edge moved parallel). The projection carries no
+  // edge ids, so the shared vertex is the identity. The kept end stays first (a stays a), so an angle's sides keep
+  // their sense. refs: the edge references of one dimension, in order; returns whether all were found.
+  function ctReattachLines(refs, pr) {
+    var b = pr.bounds, size = Math.max(1e-9, Math.hypot(b.umax - b.umin, b.vmax - b.vmin)), tol = size * 1e-6, vtol = size * 1e-4, taken = [];
+    function dirOf(a, c) { return unit([c[0] - a[0], c[1] - a[1]]); }
+    function collinear(r) {
+      var t = dirOf(r.a, r.b), L = Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]);
+      return (pr.all || []).some(function (m) {
+        var o0 = Math.abs((m[0] - r.a[0]) * t[1] - (m[1] - r.a[1]) * t[0]), o1 = Math.abs((m[2] - r.a[0]) * t[1] - (m[3] - r.a[1]) * t[0]);
+        if (o0 > tol || o1 > tol) return false;
+        var p0 = (m[0] - r.a[0]) * t[0] + (m[1] - r.a[1]) * t[1], p1 = (m[2] - r.a[0]) * t[0] + (m[3] - r.a[1]) * t[1];
+        return Math.min(Math.max(p0, p1), L) - Math.max(Math.min(p0, p1), 0) > tol;
+      });
+    }
+    return refs.map(function (r) {
+      if (!isEdgeRef(r)) return reattachDim(r, pr);
+      var ok = false;
+      if (collinear(r)) { var re = { kind: r.kind, a: r.a, b: r.b, value: r.value }; ok = reattachDim(re, pr); if (ok) { r.a = re.a; r.b = re.b; r.value = re.value; } }
+      if (!ok) {
+        var t0 = dirOf(r.a, r.b), best = null, bs = Infinity;
+        (pr.all || []).forEach(function (m) {
+          var q0 = [m[0], m[1]], q1 = [m[2], m[3]];
+          if (Math.hypot(q1[0] - q0[0], q1[1] - q0[1]) <= tol) return;
+          [[r.a, 1], [r.b, -1]].forEach(function (end) {
+            var V = end[0], keep = null, other = null;
+            if (Math.hypot(q0[0] - V[0], q0[1] - V[1]) <= vtol) { keep = q0; other = q1; } else if (Math.hypot(q1[0] - V[0], q1[1] - V[1]) <= vtol) { keep = q1; other = q0; }
+            if (!keep) return;
+            var u = dirOf(keep, other), want = [t0[0] * end[1], t0[1] * end[1]];
+            if (taken.some(function (x) { return Math.abs(x[0] * u[1] - x[1] * u[0]) < 1e-9; })) return;   // along a sibling line
+            var s = Math.acos(Math.max(-1, Math.min(1, u[0] * want[0] + u[1] * want[1])));
+            if (s < bs - 1e-12) { bs = s; best = end[1] > 0 ? { a: keep.slice(), b: other.slice() } : { a: other.slice(), b: keep.slice() }; }
+          });
+        });
+        if (best && bs < Math.PI / 2) { var nr = refFrom(best); r.a = nr.a; r.b = nr.b; r.kind = nr.kind; r.value = nr.value; ok = true; }
+      }
+      if (!ok) { var rg = { kind: r.kind, a: r.a, b: r.b, value: r.value }; ok = reattachDim(rg, pr); if (ok) { r.a = rg.a; r.b = rg.b; r.value = rg.value; } }
+      if (ok) taken.push(dirOf(r.a, r.b));
+      return ok;
+    }).every(Boolean);
+  }
+  function reattachCT(d, pr) {
+    var ok = d.kind === 'angrun' ? ctReattachLines([d.base].concat(d.refs), pr) : d.refs.map(function (r) { return reattachDim(r, pr); }).every(Boolean);
+    if (ok) delete d.dangling; else d.dangling = true;
+    if (d.kind === 'angrun') angRunMeasure(d); else d.value = pathLengthOf(d.refs);
+    return ok;
+  }
+  function ctAngleText(x, prec) { return (prec != null && prec !== '' ? (+x).toFixed(+prec) : fmtAngle(x)) + '°'; }
+  // ctDimPrims(d, vw, k, S (sheet sizes: th, ar, aw, gap, ext), units) -> the paper primitives of an angular running or
+  // a path length dimension (drawing-render.js dimPrims hands them here). Sets d.radNow / d.leadNow for dragging.
+  function ctDimPrims(d, vw, k, S, units) {
+    var out = [], L = 'DIMENSIONS', th = S.th;
+    function line(a, b) { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin' }); }
+    function arrow(tip, dir) {
+      var n = [-dir[1], dir[0]];
+      out.push({ k: 'fill', pts: [tip, [tip[0] - dir[0] * S.ar + n[0] * S.aw, tip[1] - dir[1] * S.ar + n[1] * S.aw], [tip[0] - dir[0] * S.ar - n[0] * S.aw, tip[1] - dir[1] * S.ar - n[1] * S.aw]], layer: L });
+    }
+    var prec = d.prec != null && d.prec !== '' ? +d.prec : null;
+    if (d.kind === 'pathlen') {
+      var m = vw.toSheet(pathRefMid(d.refs[0])), box = vw.box, cc = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
+      var lead = d.lead || [(m[0] >= cc[0] ? 1 : -1) * 10 * k, (m[1] >= cc[1] ? 1 : -1) * 10 * k], el = [m[0] + lead[0], m[1] + lead[1]], lu = Math.hypot(lead[0], lead[1]) || 1, sg = lead[0] >= 0 ? 1 : -1;
+      line(m, el); line(el, [el[0] + sg * _.SHOULDER * k, el[1]]); arrow(m, [-lead[0] / lu, -lead[1] / lu]);
+      var txt = d.tol || d.label != null ? dimLabel(d, units).text : numText(d.value, units, prec);
+      out.push({ k: 'text', p: [el[0] + sg * (_.SHOULDER + _.TEXT_GAP) * k, el[1] - th / 2], h: th, text: txt, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 });
+      d.leadNow = lead.slice();
+      return out;
+    }
+    if (d.kind !== 'angrun' || !d.c || !d.u) return out;
+    var V0 = vw.toSheet(d.c);
+    function dS(u) { var q = vw.toSheet([d.c[0] + u[0], d.c[1] + u[1]]); return unit([q[0] - V0[0], q[1] - V0[1]]); }
+    var items = [{ ref: d.base, val: 0, q: dS(d.u[0]) }].concat(d.refs.map(function (r, i) { return { ref: r, val: (d.values || [])[i] || 0, q: dS(d.u[i + 1] || d.u[0]) }; }));
+    // the radius: dragged (d.rad), else three quarters of the way to the nearest item's far end / hole centre
+    var reachOf = function (it) {
+      var r = it.ref;
+      if (r.c) return Math.hypot(r.c[0] - d.c[0], r.c[1] - d.c[1]);
+      return Math.max(Math.hypot(r.a[0] - d.c[0], r.a[1] - d.c[1]), Math.hypot(r.b[0] - d.c[0], r.b[1] - d.c[1]));
+    };
+    var rad = d.rad > 0 ? d.rad : 0.75 * Math.min.apply(null, items.map(reachOf)), R = Math.max(6 * k, rad * vw.scale);
+    // the running sense on paper (a view may show the model's counter-clockwise either way round)
+    var u0 = d.u[0], rot = dS([-u0[1], u0[0]]), q0 = items[0].q, sense = (q0[0] * rot[1] - q0[1] * rot[0] >= 0 ? 1 : -1) * (d.cw ? -1 : 1);
+    var th0 = Math.atan2(q0[1], q0[0]), maxV = Math.max.apply(null, items.map(function (it) { return it.val; })) * Math.PI / 180;
+    if (maxV > 1e-9) {
+      var aLo = sense > 0 ? th0 : th0 - maxV, aHi = sense > 0 ? th0 + maxV : th0;
+      out.push({ k: 'arc', c: V0, r: R, a0: aLo * 180 / Math.PI, a1: aHi * 180 / Math.PI, layer: L, style: 'thin' });
+    }
+    items.forEach(function (it, i) {
+      var a = th0 + sense * it.val * Math.PI / 180, q = [Math.cos(a), Math.sin(a)], r = it.ref, lo, hi;
+      // the extension line, along the item's direction from where its edge (or hole) stops short of the arc
+      if (r.c) { var tc = Math.hypot(r.c[0] - d.c[0], r.c[1] - d.c[1]) * vw.scale, rr = (r.r || 0) * vw.scale; lo = tc - rr; hi = tc + rr; }
+      else {
+        var A = vw.toSheet(r.a), B = vw.toSheet(r.b), ta = (A[0] - V0[0]) * q[0] + (A[1] - V0[1]) * q[1], tb = (B[0] - V0[0]) * q[0] + (B[1] - V0[1]) * q[1];
+        lo = Math.min(ta, tb); hi = Math.max(ta, tb);
+      }
+      if (!(R >= lo - 1e-9 && R <= hi + 1e-9)) {
+        var from = R > hi ? hi + S.gap : lo - S.gap, to = R > hi ? R + S.ext : R - S.ext;
+        line([V0[0] + q[0] * from, V0[1] + q[1] * from], [V0[0] + q[0] * to, V0[1] + q[1] * to]);
+      }
+      var tip = [V0[0] + q[0] * R, V0[1] + q[1] * R];
+      if (i > 0 && it.val > 1e-9) arrow(tip, [-sense * q[1], sense * q[0]]);
+      // the value just outside the arc, square to the paper
+      var text = ctAngleText(it.val, prec), tw = _.textWidth ? _.textWidth(text, th) : text.length * th * 0.78;
+      var reach = R + 1.5 * k + Math.abs(q[0]) * tw / 2 + Math.abs(q[1]) * th / 2, C = [V0[0] + q[0] * reach, V0[1] + q[1] * reach];
+      out.push({ k: 'text', p: [C[0], C[1] - th / 2], h: th, text: text, anchor: 'middle', layer: L, rot: 0 });
+    });
+    d.radNow = R / vw.scale;
+    return out;
   }
   // an angle dimension's paper primitives (drawing-render.js draws none for it): the arc through the pointer's place
   // between the two lines, arrows at its ends, extension lines where the edges stop short of it, the text outside the
@@ -1404,6 +1664,9 @@
       text = lines.join(' ');
       info = info || {};
       info.lines = lines;
+    } else if (an.type === 'cosmeticThread' || an.type === 'dowelPin') {   // (rfCU)
+      var cu = cuAnnotPrims(an, w, k, units, out, L);
+      dangling = cu.dangling; text = cu.text; info = cu.info;
     }
     if (dangling) out.forEach(function (x) { x.color = 'dangling'; });
     return { prims: out, dangling: dangling, text: text, info: info };
@@ -1554,6 +1817,7 @@
         if (!dx && !dy) return;
         if (a.p) a.p = [a.p[0] + dx, a.p[1] + dy];
         if (a.leader) a.leader = [a.leader[0] + dx, a.leader[1] + dy];
+        if (a.jogs) a.jogs = a.jogs.map(function (q) { return [q[0] + dx, q[1] + dy]; });   // (rfCU) a multi-jog leader
         a.vxy = [v.x, v.y];
       });
     });
@@ -1565,6 +1829,7 @@
     var nt = { id: nextAnnotId(doc), p: [+spec.p[0], +spec.p[1]], text: t };
     if (+spec.h > 0) nt.h = +spec.h;
     if (spec.leader) nt.leader = [+spec.leader[0], +spec.leader[1]];   // (rfM) the arrow tip, paper
+    cleanNoteFmt(nt, spec);   // (rfCU) border, list
     setAttach(nt, spec.view);
     (doc.notes || (doc.notes = [])).push(nt);
     return nt;
@@ -1578,6 +1843,7 @@
     if (props.p) nt.p = [+props.p[0], +props.p[1]];
     if (props.h != null) { if (+props.h > 0) nt.h = +props.h; else delete nt.h; }
     if (props.leader !== undefined) { if (props.leader) nt.leader = [+props.leader[0], +props.leader[1]]; else delete nt.leader; }
+    cleanNoteFmt(nt, props);   // (rfCU) border, list
     setAttach(nt, props.view);
     return nt;
   }
@@ -1620,7 +1886,7 @@
     ['profileLine', 'Profile of a Line'], ['profileSurface', 'Profile of a Surface'], ['perpendicularity', 'Perpendicularity'], ['parallelism', 'Parallelism'], ['angularity', 'Angularity'],
     ['concentricity', 'Concentricity'], ['symmetry', 'Symmetry'], ['circularRunout', 'Circular Runout'], ['totalRunout', 'Total Runout']];
   var SF_SYMBOLS = [['basic', 'Basic'], ['machined', 'Machining Required'], ['prohibited', 'Machining Prohibited']];
-  var SYMBOL_TYPES = { surfaceFinish: 1, datum: 1, gtol: 1, revision: 1, revCloud: 1, weld: 1 };   // (rfAN: Revision Symbol, Revision Cloud, Weld Symbol)
+  var SYMBOL_TYPES = { surfaceFinish: 1, datum: 1, gtol: 1, revision: 1, revCloud: 1, weld: 1, datumTarget: 1, leader: 1 };   // (rfCU: Datum Target, Multi-jog Leader)   // (rfAN: Revision Symbol, Revision Cloud, Weld Symbol)
   // the next datum letter: A, B, C … skipping I, O, Q (ASME Y14.5), past the ones the drawing uses
   function nextDatum(doc) {
     var used = {}; (doc.symbols || []).forEach(function (s) { if (s.type === 'datum') used[String(s.label).toUpperCase()] = 1; });
@@ -1629,6 +1895,7 @@
     return 'AA';
   }
   function cleanSymbol(s, spec) {
+    if (CU_SYMBOLS[s.type]) return cleanCU(s, spec);   // (rfCU)
     if (spec.p) s.p = [+spec.p[0], +spec.p[1]];
     setAttach(s, spec.view);
     if (spec.leader !== undefined) { if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader; }
@@ -1666,6 +1933,7 @@
     if (!spec.p || !isFinite(+spec.p[0]) || !isFinite(+spec.p[1])) throw new Error('A symbol needs a position on the sheet');
     var s = { id: nextAnnotId(doc), type: spec.type };
     if (spec.type === 'datum' && spec.label == null) spec = Object.assign({}, spec, { label: nextDatum(doc) });
+    if (spec.type === 'datumTarget' && spec.num == null) spec = Object.assign({}, spec, { num: nextTargetNum(doc, String(spec.datum || 'A').trim().toUpperCase()) });   // (rfCU)
     // (rfAN) a Revision Symbol names the latest revision of the Revision Table (A when there is none) and its row
     if (spec.type === 'revision') {
       var rows = doc.revisions && doc.revisions.show !== false && doc.revisions.rows || [], rr = spec.rev != null ? D.revRow(doc, { rev: spec.rev }) : rows[rows.length - 1];
@@ -1694,6 +1962,7 @@
   function datumRef(x) { var m = /^([A-Z]+(?:-[A-Z]+)?)\s*\(?([ML])?\)?$/.exec(String(x).toUpperCase().replace(/\s+/g, '')); return m ? { ref: m[1], mod: m[2] || null } : { ref: String(x), mod: null }; }
   // symbolText(s) -> one line for lists and the summary: 'POSITION Ø.010(M) | A | B | C', 'DATUM A', 'SURFACE FINISH 63'
   function symbolText(s, doc) {
+    if (CU_SYMBOLS[s.type]) return cuSymbolText(s, doc);   // (rfCU)
     if (s.type === 'datum') return 'DATUM ' + s.label;
     if (s.type === 'revision') return 'REVISION ' + revOf(s, doc);
     if (s.type === 'revCloud') return 'REVISION CLOUD (' + (CLOUD_SHAPES.filter(function (c) { return c[0] === s.shape; })[0] || ['', 'Rectangle'])[1].toUpperCase() + ')';
@@ -1786,6 +2055,8 @@
       cloudArcs(s, k).forEach(function (a) { out.push({ k: 'arc', c: a.c, r: a.r, a0: a.a0, a1: a.a1, layer: L, style: 'thin', symbol: s.id }); });
     } else if (s.type === 'weld') {
       weldPrims(s, k, textWidth, ln, tx, circ, fill, arrow);
+    } else if (CU_SYMBOLS[s.type]) {
+      var cuPts = cuSymbolPrims(s, k, textWidth, ln, tx, circ, fill, arrow, out, doc);   // (rfCU)
     }
     var r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
     function grow(q) { r.x0 = Math.min(r.x0, q[0]); r.x1 = Math.max(r.x1, q[0]); r.y0 = Math.min(r.y0, q[1]); r.y1 = Math.max(r.y1, q[1]); }
@@ -1796,7 +2067,7 @@
       if (x2.k === 'fill') x2.pts.forEach(grow);
       if (x2.k === 'text') { var w2 = textWidth(x2.text, x2.h), s0 = x2.anchor === 'middle' ? -w2 / 2 : x2.anchor === 'end' ? -w2 : 0; grow([x2.p[0] + s0, x2.p[1]]); grow([x2.p[0] + s0 + w2, x2.p[1] + x2.h]); }
     });
-    return { prims: out, box: r, text: symbolText(s, doc) };
+    return { prims: out, box: r, text: symbolText(s, doc), pts: cuPts || null };
   }
   // the geometric characteristic symbols (ASME Y14.5) drawn about c, half-size q
   function gtolGlyph(ch, c, q, ln, circ, fill, out, L, id) {
@@ -2191,6 +2462,274 @@
     (sheet && sheet.holeTables || []).forEach(function (t) { var b = t.box; if (b && p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1) hit = t; });
     return hit;
   }
+  // ------------------------------------------------------------------ rfCU: Cosmetic Thread, Dowel Pin Symbol, Datum
+  // Target, Multi-jog Leader (SolidWorks' Insert ▸ Annotations). The first two sit on a hole circle of a view
+  // (view.annotations, reattached to the circle on every render like a hole callout, dangling when it is gone):
+  //  cosmeticThread: { c, r (the picked circle, view model units), size ('#10-32 UNF', ANSI Inch, HoleWizard.ANSI_THREADS),
+  //    end: 'blind' | 'through', depth (blind, model units), callout (false: no callout), lead (the callout's elbow from
+  //    the centre, paper), text (replaces the callout; <THREAD> is the standard one), external (a shaft / boss: size
+  //    'auto' by major diameter, else by tap drill) }. Drawn as the end view of a thread: a thin 3/4 circle at the
+  //    major diameter round a tapped hole (2B), at the minor diameter on a shaft (2A); the callout
+  //    '#10-32 UNF - 2B ↧ .375' / '… THRU' on a leader.
+  //  dowelPin: { c, r }: the hole circle with a cross and two opposite quadrants filled.
+  // The other two are paper symbols (doc.symbols, they follow a view like the others):
+  //  datumTarget: { datum: 'A', num: 1, area: 'point' | 'circle' | 'rect', aw, ah (the target area: diameter / width,
+  //    height, model units, drawn at the view's scale), size (the upper half's text; default: the area's size), p the
+  //    symbol's centre, leader the target point }: ASME Y14.5 — a circle split across, size above, A1 below, a leader
+  //    to an X (point) or to a dot in a phantom outline (area).
+  //  leader: { p (the start), jogs: [[x, y] …] (paper, the bend points in order), leader (the tip), end: 'arrow' |
+  //    'dot' | 'none', note (a note id: the start follows that note's nearer side) }.
+  var CU_DIM_SYM = 'Ø';
+  function cuThreads() { return typeof HoleWizard !== 'undefined' && HoleWizard.ANSI_THREADS ? HoleWizard.ANSI_THREADS : []; }
+  function cuThreadRow(size) { var k = String(size || '').replace(/\s+/g, ' ').trim().toUpperCase(); return cuThreads().filter(function (r) { return r.size.toUpperCase() === k; })[0] || null; }
+  // the thread a hole of diameter dia (model units) is most likely tapped for: the nearest tap drill; external (a
+  // shaft picked at its outside): the nearest major diameter; UNC before UNF on a tie
+  function threadForDia(dia, units, external) {
+    var din = units === 'mm' ? dia / 25.4 : dia, best = null, bs = Infinity;
+    cuThreads().forEach(function (r) {
+      var s = (external ? Math.abs(r.d - din) / r.d : Math.abs(r.tap - din) / r.tap) + (/UNF/.test(r.size) ? 1e-4 : 0);
+      if (s < bs) { bs = s; best = r; }
+    });
+    return best;
+  }
+  function cuViewAnn(doc, viewId, spec, type) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    if (!spec || !spec.c || !(+spec.r > 0)) throw new Error((type === 'dowelPin' ? 'A dowel pin symbol' : 'A cosmetic thread') + ' needs a hole circle');
+    return { v: v, an: { id: nextAnnotId(doc), type: type, c: [+spec.c[0], +spec.c[1]], r: +spec.r } };
+  }
+  function cleanThread(an, spec, units) {
+    // external: a thread on a shaft / boss (class 2A, drawn at the minor diameter); a hole otherwise
+    if (spec.external != null) { if (spec.external) an.external = true; else delete an.external; }
+    var auto = spec.size === 'auto' || spec.size === '';
+    if (spec.size != null || !an.size) {
+      var row = spec.size != null && !auto ? cuThreadRow(spec.size) : threadForDia(2 * an.r, units, an.external);
+      if (!row) throw new Error('No ANSI Inch thread ' + spec.size);
+      an.size = row.size;
+    }
+    if (spec.end != null) an.end = spec.end === 'through' ? 'through' : 'blind';
+    if (!an.end) an.end = 'through';
+    if (spec.depth !== undefined) { if (+spec.depth > 0) an.depth = +spec.depth; else delete an.depth; }
+    if (an.end === 'blind' && !(an.depth > 0)) throw new Error('A blind cosmetic thread needs a depth');
+    if (an.end === 'through') delete an.depth;
+    if (spec.callout != null) { if (spec.callout === false) an.callout = false; else delete an.callout; }
+    if (spec.lead !== undefined) { if (spec.lead) an.lead = [+spec.lead[0], +spec.lead[1]]; else delete an.lead; }
+    if (spec.text !== undefined) { if (spec.text && String(spec.text).trim()) an.text = String(spec.text); else delete an.text; }
+    return an;
+  }
+  // addCosmeticThread(doc, viewId, { c, r, size, end, depth, callout, lead, text }) -> the annotation
+  function addCosmeticThread(doc, viewId, spec) {
+    var q = cuViewAnn(doc, viewId, spec, 'cosmeticThread');
+    cleanThread(q.an, spec, doc.units);
+    (q.v.annotations || (q.v.annotations = [])).push(q.an);
+    return q.an;
+  }
+  function addDowelPin(doc, viewId, spec) {
+    var q = cuViewAnn(doc, viewId, spec, 'dowelPin');
+    (q.v.annotations || (q.v.annotations = [])).push(q.an);
+    return q.an;
+  }
+  // editAnnotation(doc, id, props): a cosmetic thread's size / end / depth / callout / lead / text, a callout's lead
+  function editAnnotation(doc, id, props) {
+    var f = findAnnotation(doc, id);
+    if (!f) throw new Error('No annotation ' + id);
+    var an = f.annotation;
+    if (an.type === 'cosmeticThread') { var c = JSON.parse(JSON.stringify(an)); cleanThread(c, props || {}, doc.units); Object.keys(an).forEach(function (q) { delete an[q]; }); Object.assign(an, c); }
+    else if (props && props.lead !== undefined && an.type === 'holeCallout') { if (props.lead) an.lead = [+props.lead[0], +props.lead[1]]; else delete an.lead; }
+    return an;
+  }
+  // the callout's text: '#10-32 UNF - 2B ↧ .375' / '#10-32 UNF - 2B THRU' (2A on a shaft)
+  function threadCallout(an, units, external) {
+    var std = an.size + ' - ' + (external ? '2A' : '2B') + (an.end === 'blind' && an.depth > 0 ? ' ↧ ' + numText(an.depth, units) : ' THRU');
+    return an.text ? String(an.text).split('<THREAD>').join(std) : std;
+  }
+  function cuAnnotPrims(an, w, k, units, out, L) {
+    var ref = { kind: 'dia', c: an.c, r: an.r }, dangling = false;
+    if (reattachDim(ref, w.proj)) { an.c = ref.c; an.r = ref.r; } else dangling = true;
+    var c = w.toSheet(an.c), rr = an.r * w.scale, text, info = { c: c, r: rr };
+    if (an.type === 'dowelPin') {
+      // the hole's circle, a cross through it past the circle and quadrants I and III filled
+      out.push({ k: 'circle', c: c, r: rr, layer: L, style: 'thin' });
+      var e = rr + 1.5 * k;
+      out.push({ k: 'line', a: [c[0] - e, c[1]], b: [c[0] + e, c[1]], layer: L, style: 'thin' }, { k: 'line', a: [c[0], c[1] - e], b: [c[0], c[1] + e], layer: L, style: 'thin' });
+      [0, 180].forEach(function (a0) {
+        var pts = [c.slice()];
+        for (var i = 0; i <= 12; i++) { var t = (a0 + 90 * i / 12) * Math.PI / 180; pts.push([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t)]); }
+        out.push({ k: 'fill', pts: pts, layer: L });
+      });
+      return { dangling: dangling, text: 'Dowel Pin ' + CU_DIM_SYM + numText(2 * an.r, units), info: info };
+    }
+    var row = cuThreadRow(an.size), inch = units === 'mm' ? 25.4 : 1;
+    var major = row ? row.d * inch : 2 * an.r, external = !!an.external;
+    // a tapped hole: the major diameter outside the drilled one; a shaft: the minor diameter (major − 1.299 P) inside
+    var dT = external && row ? (row.d - 1.299 / row.tpi) * inch : major, rT = dT / 2 * w.scale;
+    out.push({ k: 'arc', c: c, r: rT, a0: 105, a1: 15, layer: L, style: 'thin', thread: an.size });
+    text = threadCallout(an, units, external);
+    info.thread = an.size; info.major = major; info.external = external; info.drawnDia = dT; info.callout = an.callout !== false ? text : null;
+    if (an.callout !== false) {
+      var R = Math.max(rr, rT), lead = an.lead || [R + 8 * k, R + 8 * k], ll = Math.hypot(lead[0], lead[1]) || 1, u = [lead[0] / ll, lead[1] / ll];
+      var tip = [c[0] + u[0] * R, c[1] + u[1] * R], elbow = [c[0] + lead[0], c[1] + lead[1]], sg = lead[0] >= 0 ? 1 : -1;
+      var th = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * k, ar = (_.DIMGEO && +_.DIMGEO.arrow > 0 ? +_.DIMGEO.arrow : 3) * k, aw = (_.ARROW_W || 0.5) * k, sh = (_.SHOULDER || 4) * k;
+      out.push({ k: 'line', a: tip, b: elbow, layer: L, style: 'thin' }, { k: 'line', a: elbow, b: [elbow[0] + sg * sh, elbow[1]], layer: L, style: 'thin' });
+      out.push({ k: 'fill', pts: [tip, [tip[0] + u[0] * ar - u[1] * aw, tip[1] + u[1] * ar + u[0] * aw], [tip[0] + u[0] * ar + u[1] * aw, tip[1] + u[1] * ar - u[0] * aw]], layer: L });
+      text.split('\n').forEach(function (s, i, all) { out.push({ k: 'text', p: [elbow[0] + sg * (sh + (_.TEXT_GAP || 1) * k), elbow[1] - th / 2 + ((all.length - 1) / 2 - i) * th * 1.6], h: th, text: s, anchor: sg > 0 ? 'start' : 'end', layer: L, rot: 0 }); });
+      an.leadNow = lead.slice();
+    }
+    return { dangling: dangling, text: 'Cosmetic Thread ' + text.replace(/\n/g, ' '), info: info };
+  }
+  var CU_SYMBOLS = { datumTarget: 1, leader: 1 };
+  var TARGET_AREAS = [['point', 'Point'], ['circle', 'Circular area'], ['rect', 'Rectangular area']];
+  var LEADER_ENDS = [['arrow', 'Arrow'], ['dot', 'Dot'], ['none', 'None']];
+  function nextTargetNum(doc, datum) {
+    var n = 0; (doc.symbols || []).forEach(function (s) { if (s.type === 'datumTarget' && s.datum === datum) n = Math.max(n, s.num || 0); });
+    return n + 1;
+  }
+  function cleanCU(s, spec, doc) {
+    var old = s.p ? s.p.slice() : null;
+    if (spec.p) s.p = [+spec.p[0], +spec.p[1]];
+    setAttach(s, spec.view);
+    if (spec.leader !== undefined) { if (spec.leader) s.leader = [+spec.leader[0], +spec.leader[1]]; else delete s.leader; }
+    if (s.type === 'datumTarget') {
+      if (spec.datum != null) s.datum = String(spec.datum).trim().toUpperCase();
+      if (!s.datum) s.datum = 'A';
+      if (!/^[A-Z]{1,2}$/.test(s.datum)) throw new Error('A datum target needs a datum letter');
+      if (spec.num != null) s.num = Math.max(1, Math.round(+spec.num) || 1);
+      if (!s.num) s.num = doc ? nextTargetNum(doc, s.datum) : 1;
+      if (spec.area != null) { if (!TARGET_AREAS.some(function (a) { return a[0] === spec.area; })) throw new Error('No datum target area ' + spec.area); s.area = spec.area; }
+      if (!s.area) s.area = 'point';
+      ['aw', 'ah'].forEach(function (q) { if (spec[q] !== undefined) { if (+spec[q] > 0) s[q] = +spec[q]; else delete s[q]; } });
+      if (spec.size !== undefined) { var sz = String(spec.size == null ? '' : spec.size).trim(); if (sz) s.size = sz; else delete s.size; }
+      if (s.area === 'point') { delete s.aw; delete s.ah; }
+      else if (!(s.aw > 0) || (s.area === 'rect' && !(s.ah > 0))) throw new Error('A datum target area needs its size');
+      if (s.area === 'circle') delete s.ah;
+      if (!s.leader) throw new Error('A datum target needs a target point (leader)');
+    } else {
+      // a move of the whole leader (p alone) carries its jogs and tip along
+      if (old && spec.p && !spec.jogs && spec.leader === undefined) {
+        var dx = s.p[0] - old[0], dy = s.p[1] - old[1];
+        if (s.jogs) s.jogs = s.jogs.map(function (q) { return [q[0] + dx, q[1] + dy]; });
+        if (s.leader) s.leader = [s.leader[0] + dx, s.leader[1] + dy];
+      }
+      if (spec.jogs) s.jogs = spec.jogs.map(function (q) { return [+q[0], +q[1]]; }).filter(function (q) { return isFinite(q[0]) && isFinite(q[1]); });
+      if (spec.jog != null && spec.at) { var j = +spec.jog; if (!s.jogs || !s.jogs[j]) throw new Error('No jog ' + spec.jog); s.jogs[j] = [+spec.at[0], +spec.at[1]]; }
+      if (!s.jogs) s.jogs = [];
+      if (spec.end != null) { if (!LEADER_ENDS.some(function (a) { return a[0] === spec.end; })) throw new Error('No leader end ' + spec.end); s.end = spec.end; }
+      if (!s.end) s.end = 'arrow';
+      if (spec.note !== undefined) { if (spec.note != null && spec.note !== false) s.note = +spec.note; else delete s.note; }
+      if (!s.leader) throw new Error('A leader needs an end point');
+    }
+    return s;
+  }
+  function areaText(s, units) {
+    if (s.size) return s.size;
+    if (s.area === 'circle') return CU_DIM_SYM + numText(s.aw, units);
+    if (s.area === 'rect') return numText(s.aw, units) + 'X' + numText(s.ah, units);
+    return '';
+  }
+  function cuSymbolText(s, doc) {
+    if (s.type === 'datumTarget') { var at = areaText(s, doc && doc.units); return 'DATUM TARGET ' + s.datum + s.num + (at ? ' ' + at : ''); }
+    var nj = (s.jogs || []).length;
+    return 'LEADER (' + (nj + 1) + ' segment' + (nj ? 's' : '') + (s.note != null ? ', NOTE' + s.note : '') + ')';
+  }
+  // the start of a leader attached to a note: the note's nearer side, middle of its first line
+  function noteAnchor(doc, s, k, textWidth, toward) {
+    var nt = null;
+    (doc && doc.notes || []).forEach(function (n) { if (n.id === s.note) nt = n; });
+    if (!nt) return null;
+    var h = (+nt.h > 0 ? +nt.h : _.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * k, lines = String(nt.text).split('\n'), w = 0;
+    lines.forEach(function (t) { w = Math.max(w, textWidth(t, h)); });
+    var ind = nt.list ? textWidth(nt.list === 'number' ? lines.length + '. ' : '•  ', h) + 0.5 * k : 0, x0 = nt.p[0] - (nt.border ? 2 * k : 0), x1 = nt.p[0] + ind + w + (nt.border ? 2 * k : 0);
+    var left = toward[0] < (x0 + x1) / 2;
+    return [left ? x0 - k : x1 + k, nt.p[1] + h / 2];
+  }
+  // cuSymbolPrims(…) -> a leader's polyline (paper points) or null
+  function cuSymbolPrims(s, k, textWidth, ln, tx, circ, fill, arrow, out, doc) {
+    var L = 'SYMBOLS', p = s.p, units = doc && doc.units, h = (_.DIMGEO && +_.DIMGEO.text > 0 ? +_.DIMGEO.text : 3.5) * k;
+    if (s.type === 'datumTarget') {
+      var top = areaText(s, units), bot = s.datum + s.num, R = Math.max(5 * k, (Math.max(textWidth(top, h), textWidth(bot, h)) + 2 * k) / 2 / 0.8);
+      circ(p, R);
+      ln([p[0] - R, p[1]], [p[0] + R, p[1]]);
+      if (top) tx([p[0], p[1] + R * 0.18], top, 'middle', h);
+      tx([p[0], p[1] - R * 0.18 - h], bot, 'middle', h);
+      var tip = s.leader, d = [tip[0] - p[0], tip[1] - p[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n];
+      if (n > R) ln([p[0] + u[0] * R, p[1] + u[1] * R], tip);
+      if (s.area === 'point') {
+        var x = 1.8 * k;
+        ln([tip[0] - x, tip[1] - x], [tip[0] + x, tip[1] + x], 'thick'); ln([tip[0] - x, tip[1] + x], [tip[0] + x, tip[1] - x], 'thick');
+      } else {
+        // the target area drawn at its view's scale (phantom outline), the leader ends in a dot inside it
+        var v = s.view && doc ? findView(doc, s.view) : null, sc = v && v.scale || doc && doc.sheet && doc.sheet.scale || [1, 1], f = sc[0] / sc[1];
+        var ph = function (a, b) { out.push({ k: 'line', a: a, b: b, layer: L, style: 'chain', symbol: s.id }); };
+        if (s.area === 'circle') out.push({ k: 'circle', c: tip.slice(), r: s.aw / 2 * f, layer: L, style: 'chain', symbol: s.id });
+        else {
+          var hw = s.aw / 2 * f, hh = s.ah / 2 * f;
+          ph([tip[0] - hw, tip[1] - hh], [tip[0] + hw, tip[1] - hh]); ph([tip[0] + hw, tip[1] - hh], [tip[0] + hw, tip[1] + hh]);
+          ph([tip[0] + hw, tip[1] + hh], [tip[0] - hw, tip[1] + hh]); ph([tip[0] - hw, tip[1] + hh], [tip[0] - hw, tip[1] - hh]);
+        }
+        var dr = 0.6 * k, dp = [];
+        for (var i = 0; i < 12; i++) dp.push([tip[0] + dr * Math.cos(i * Math.PI / 6), tip[1] + dr * Math.sin(i * Math.PI / 6)]);
+        fill(dp);
+      }
+      return null;
+    }
+    // multi-jog leader: the start (or the note's side), the jogs, the tip with its end
+    var jogs = s.jogs || [], first = jogs[0] || s.leader, start = s.note != null ? noteAnchor(doc, s, k, textWidth, first) || p : p;
+    var pts = [start].concat(jogs, [s.leader]);
+    for (var j = 1; j < pts.length; j++) ln(pts[j - 1], pts[j]);
+    var last = pts[pts.length - 2], tp = s.leader;
+    if (s.end === 'arrow') arrow(tp, last);
+    else if (s.end === 'dot') { var dq = [], rd = 0.75 * k; for (var q = 0; q < 12; q++) dq.push([tp[0] + rd * Math.cos(q * Math.PI / 6), tp[1] + rd * Math.sin(q * Math.PI / 6)]); fill(dq); }
+    return pts;
+  }
+  // (rfCU) note borders and lists: border 'circle' | 'triangle' | 'square' | 'hexagon' | 'flag' (Flag Triangle: the
+  // flag note) round the note, list 'number' (1. 2. … per line, hanging indent) | 'bullet'
+  var NOTE_BORDERS = [['none', 'None'], ['circle', 'Circle'], ['triangle', 'Triangle'], ['square', 'Square'], ['hexagon', 'Hexagon'], ['flag', 'Flag Triangle']];
+  var NOTE_LISTS = [['none', 'None'], ['number', 'Numbered'], ['bullet', 'Bulleted']];
+  function cleanNoteFmt(nt, spec) {
+    if (spec.border !== undefined) {
+      if (spec.border && spec.border !== 'none') { if (!NOTE_BORDERS.some(function (b) { return b[0] === spec.border; })) throw new Error('No note border ' + spec.border); nt.border = spec.border; } else delete nt.border;
+    }
+    if (spec.list !== undefined) {
+      if (spec.list && spec.list !== 'none') { if (!NOTE_LISTS.some(function (b) { return b[0] === spec.list; })) throw new Error('No note list ' + spec.list); nt.list = spec.list; } else delete nt.list;
+    }
+    return nt;
+  }
+  // noteLayout(nt, lines, h, k, textWidth) -> { prims, box } (rfCU): the note's lines with their list markers (the text
+  // on a hanging indent) and its border; box the text's box, or the border's
+  function noteLayout(nt, lines, h, k, textWidth) {
+    var out = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }, n = lines.length;
+    var mark = function (i) { return nt.list === 'number' ? (i + 1) + '.' : nt.list === 'bullet' ? '•' : ''; };
+    var ind = nt.list ? textWidth(nt.list === 'number' ? n + '. ' : '•  ', h) + 0.5 * k : 0;
+    lines.forEach(function (s, i) {
+      var p = [nt.p[0], nt.p[1] - i * h * 1.6];
+      if (s.length) {
+        if (nt.list && s.trim()) out.push({ k: 'text', p: p.slice(), h: h, text: mark(i), anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
+        out.push({ k: 'text', p: [p[0] + ind, p[1]], h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
+      }
+      r.x0 = Math.min(r.x0, p[0]); r.x1 = Math.max(r.x1, p[0] + ind + Math.max(textWidth(s, h), h * 0.5)); r.y0 = Math.min(r.y0, p[1]); r.y1 = Math.max(r.y1, p[1] + h);
+    });
+    if (nt.border) {
+      var m = 1.5 * k, cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2, W = r.x1 - r.x0 + 2 * m, H = r.y1 - r.y0 + 2 * m, P = null, b = nt.border;
+      if (b === 'circle') { var rc = Math.hypot(W, H) / 2; out.push({ k: 'circle', c: [cx, cy], r: rc, layer: 'NOTES', style: 'thin', note: nt.id }); r = { x0: cx - rc, x1: cx + rc, y0: cy - rc, y1: cy + rc }; }
+      else if (b === 'square') { var sq = Math.max(W, H) / 2; P = [[cx - sq, cy - sq], [cx + sq, cy - sq], [cx + sq, cy + sq], [cx - sq, cy + sq]]; }
+      else if (b === 'hexagon') { var hr = Math.max(W / Math.sqrt(3), H / 1.5) * 0.75 + m; P = []; for (var i = 0; i < 6; i++) { var t = 60 * i * Math.PI / 180; P.push([cx + hr * Math.cos(t), cy + hr * Math.sin(t)]); } }
+      else {
+        // an equilateral triangle, point up, round the text (a Flag Triangle at least 7 mm a side, as a flag note)
+        var side = Math.max(W + 2 * H / Math.sqrt(3), (b === 'flag' ? 7 : 0) * k), yb = r.y0 - m;
+        P = [[cx - side / 2, yb], [cx + side / 2, yb], [cx, yb + side * Math.sqrt(3) / 2]];
+      }
+      if (P) {
+        for (var e = 0; e < P.length; e++) out.push({ k: 'line', a: P[e], b: P[(e + 1) % P.length], layer: 'NOTES', style: 'thin', note: nt.id });
+        r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+        P.forEach(function (q) { r.x0 = Math.min(r.x0, q[0]); r.x1 = Math.max(r.x1, q[0]); r.y0 = Math.min(r.y0, q[1]); r.y1 = Math.max(r.y1, q[1]); });
+      }
+    }
+    return { prims: out, box: r };
+  }
+  D.addCosmeticThread = addCosmeticThread; D.addDowelPin = addDowelPin; D.editAnnotation = editAnnotation; D.threadForDia = threadForDia; D.threadCallout = threadCallout;
+  D.TARGET_AREAS = TARGET_AREAS; D.LEADER_ENDS = LEADER_ENDS; D.NOTE_BORDERS = NOTE_BORDERS; D.NOTE_LISTS = NOTE_LISTS; D.nextTargetNum = nextTargetNum;
+  _.noteLayout = noteLayout;
+
   D.CLOUD_SHAPES = CLOUD_SHAPES; D.WELD_TYPES = WELD_TYPES; D.cloudArcs = cloudArcs; D.weldText = weldText;
   D.findHoleTable = findHoleTable; D.addHoleTable = addHoleTable; D.editHoleTable = editHoleTable; D.deleteHoleTable = deleteHoleTable; D.moveHoleTable = moveHoleTable;
   D.viewHoles = viewHoles; D.holeTableRows = holeTableRows; D.holeTablePrims = holeTablePrims; D.holeTableAt = holeTableAt;
@@ -2199,6 +2738,8 @@
 
   D.addNote = addNote; D.followViews = followViews; D.findNote = findNote; D.editNote = editNote; D.deleteNote = deleteNote; D.flatAnnotation = flatAnnotation;
   D.holeSizeNames = holeSizeNames;
+  D.addAngularRunning = addAngularRunning; D.addPathLength = addPathLength; D.angRunMeasure = angRunMeasure; D.pathLengthOf = pathLengthOf;   // (lane CT)
+  D.pathRefFrom = pathRefFrom; D.pathRefEnds = pathRefEnds; D.pathRefMid = pathRefMid; D.pathChained = pathChained; D.ctAngleText = ctAngleText; _.ctDimPrims = ctDimPrims;
   D.smartDim = smartDim; D.addSmartDim = addSmartDim; D.measurePair = measurePair; D.finishAngles = finishAngles; D._anglePrims = anglePrims;
   _.holeEnds = holeEnds; _.finishAngles = finishAngles; _.refPos = refPos; _.reattachUserDim = reattachUserDim; _.partThreads = partThreads; _.threadsAlong = threadsAlong; _.annotationPrims = annotationPrims;
 })(Drawing, Drawing._);

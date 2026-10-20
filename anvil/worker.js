@@ -74,6 +74,10 @@ function preview(m) {
   } else if (m.op === 'jog') {
     var jg = Kernel.buildJog(f, Kernel.resolvedModel(model).model, { body: b.body, flanges: {}, tools: {} });
     tools = [jg.first.union(jg.second)];
+  } else if (m.op === 'closedCorner') {
+    // lane CS: [material added, material trimmed from the matching walls]
+    var ccr = Kernel.buildClosedCorner(f, Kernel.resolvedModel(model).model, { body: b.body });
+    tools = [ccr.add || null, ccr.cut || null];
   } else {
     // m.sketches: sketches the previewed feature uses that are not in the model yet (the Hole Wizard's points, r3/engine3)
     var ctx = { tools: b.tools, planes: b.planes, sketches: m.sketches || {}, body: b.body, throughLimit: m.throughLimit };

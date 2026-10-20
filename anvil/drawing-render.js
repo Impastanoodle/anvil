@@ -610,7 +610,8 @@
           x.view = w.view.id;
           prims.push(x);
           if (x.a) { grow(x.a); grow(x.b); }
-          if (x.k === 'circle') { grow([x.c[0] - x.r, x.c[1] - x.r]); grow([x.c[0] + x.r, x.c[1] + x.r]); }
+          if (x.k === 'circle' || x.k === 'arc') { grow([x.c[0] - x.r, x.c[1] - x.r]); grow([x.c[0] + x.r, x.c[1] + x.r]); }   // (rfCU: a cosmetic thread's arc alone)
+          if (x.k === 'fill') x.pts.forEach(grow);
           if (x.k === 'text') { var tw = textWidth(x.text, x.h); grow(x.p); grow([x.p[0] + (x.anchor === 'end' ? -tw : tw), x.p[1] + x.h]); }
         });
         annotations.push({ id: an.id, view: w.view.id, index: i, type: an.type, style: an.style || null, auto: !!an.auto, text: r.text, dangling: r.dangling, box: bx, info: r.info });
@@ -631,7 +632,7 @@
     var symbols = symPre.map(function (it, i) {
       var of = (doc.symbols[i] || {}).view || null;
       it.prims.forEach(function (x) { if (of) x.view = of; prims.push(x); });
-      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of };
+      return { id: it.id, type: it.type, text: it.text, box: it.box, view: of, pts: it.pts || undefined };   // (rfCU) pts: a multi-jog leader's polyline
     });
     var holeTables = htPre.map(function (it) {
       it.prims.forEach(function (x) { prims.push(x); });
@@ -824,7 +825,8 @@
   function noteItem(nt, k, evalText) {
     var raw = String(nt.text == null ? '' : nt.text), shown = evalText ? evalText(raw) : raw;
     var h = (+nt.h > 0 ? +nt.h : noteH()) * k, lines = shown.split('\n'), prims = [], r = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-    lines.forEach(function (s, i) {
+    if (nt.border || nt.list) { var lay = _.noteLayout(nt, lines, h, k, textWidth); prims = lay.prims; r = lay.box; }   // (rfCU) a border, a numbered / bulleted list
+    else lines.forEach(function (s, i) {
       var p = [nt.p[0], nt.p[1] - i * h * 1.6];
       if (s.length) prims.push({ k: 'text', p: p, h: h, text: s, anchor: 'start', layer: 'NOTES', rot: 0, note: nt.id });
       r.x0 = Math.min(r.x0, p[0]); r.x1 = Math.max(r.x1, p[0] + Math.max(textWidth(s, h), h * 0.5)); r.y0 = Math.min(r.y0, p[1]); r.y1 = Math.max(r.y1, p[1] + h);
@@ -943,6 +945,7 @@
     // (rfT) text height, arrow and extension-line sizes from the drawing's dimension style (D.dimGeometry, paper mm)
     var G = _.DIMGEO || { text: 3.5, arrow: 3, arrowW: 2 * ARROW_W, gap: 1.5, ext: 2 };
     var out = [], L = 'DIMENSIONS', th = G.text * k, ar = G.arrow * k, aw = G.arrowW / 2 * k, units = k === 1 ? 'mm' : 'in';
+    if (d.kind === 'angrun' || d.kind === 'pathlen') return _.ctDimPrims(d, vw, k, { th: th, ar: ar, aw: aw, gap: G.gap * k, ext: G.ext * k }, units);   // (lane CT, drawing-annotations.js)
     function line(a, b) { out.push({ k: 'line', a: a, b: b, layer: L, style: 'thin' }); }
     function arrow(tip, dir) {
       var n = [-dir[1], dir[0]];

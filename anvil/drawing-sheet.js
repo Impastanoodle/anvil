@@ -100,12 +100,15 @@
   // drawing-worker.js, and putSection files the answer in the same caches the main thread reads, so the next compute
   // finds it. { section: { mesh, caps, area, e, w }, proj, loops }; the cut mesh goes without its _drawing caches.
   function sectionJob(mesh, sec, frame, display, tangent) {
-    var S = sectionOf(mesh, sec.e, sec.w), F = frameOf(frame), proj = cachedProjection(S.mesh, F, display, tangent), loops = capLoops(S, F), sm = {};
+    // (rfCX2) sec.path = { P (the parent's frame), sc (view.section) }: a half / offset / aligned section's path cut
+    var S = sec.path ? D.pathSectionOf(mesh, sec.path.P, sec.path.sc) : sectionOf(mesh, sec.e, sec.w), F = frameOf(frame), proj = cachedProjection(S.mesh, F, display, tangent), loops = capLoops(S, F), sm = {};
     Object.keys(S.mesh).forEach(function (q) { if (q.indexOf('_drawing') !== 0) sm[q] = S.mesh[q]; });
-    return { section: { mesh: S.mesh === mesh ? null : sm, caps: S.caps, area: S.area, e: S.e, w: S.w }, proj: proj, loops: loops };
+    var out = { section: { mesh: S.mesh === mesh ? null : sm, caps: S.caps, area: S.area, e: S.e, w: S.w }, proj: proj, loops: loops };
+    if (S.path) out.section.path = S.path;
+    return out;
   }
   function putSection(mesh, sec, frame, display, tangent, r) {
-    var c = mesh._drawingSections || (mesh._drawingSections = {}), key = sectionKey(sec.e, sec.w), S = c[key];
+    var c = mesh._drawingSections || (mesh._drawingSections = {}), key = sec.path ? _.secKey(sec.path.P, sec.path.sc) : sectionKey(sec.e, sec.w), S = c[key];
     if (!S) { S = c[key] = r.section; if (!S.mesh) S.mesh = mesh; }
     var F = frameOf(frame);
     if (S.mesh !== mesh) putProjection(S.mesh, projectionKey(F, display, tangent), r.proj);
@@ -299,10 +302,15 @@
     var pos = besidePos(doc, mesh, par, F, place);
     var v = addView(doc, F.name, { kind: 'section', name: 'Section View ' + label + '-' + label, label: label, parent: par.id, align: axis === 'h' ? 'x' : 'y',
       section: { axis: axis, at: +opts.at || 0, sign: sign }, scale: par.scale ? par.scale.slice() : null, display: 'hlr', x: pos[0], y: pos[1] });
+    // (rfCX) Use parent scale (the default): the section follows the parent's scale when it changes; opts.scale is a
+    // custom scale of its own
+    var osc = opts.scale ? (Array.isArray(opts.scale) ? [+opts.scale[0], +opts.scale[1]] : parseScale(opts.scale)) : null;
+    if (osc && osc[0] > 0 && osc[1] > 0) v.scale = osc; else v.section.parentScale = true;
     labelOpt(doc, v, opts);
     if (opts.x != null && axis === 'v') v.x = opts.x;
     if (opts.y != null && axis === 'h') v.y = opts.y;
     if ((axis === 'h' ? opts.y : opts.x) == null && mesh) (opts.fit ? fitOnSheet : clearSpot)(doc, mesh, v, axis === 'h' ? 'y' : 'x');
+    if (v.section.parentScale && JSON.stringify(v.scale || null) !== JSON.stringify(par.scale || null)) delete v.section.parentScale;   // (rfCX: fitted at a smaller scale of its own)
     doc.layout = 'manual';
     return v;
   }
@@ -479,9 +487,10 @@
   // (_.pathContent), an auxiliary view stays square to its parent's edge (_.auxCenter), a crop keeps what lies inside
   // it (_.cropContent); plainContent is everything else
   function viewContent(doc, v, mesh, parentContent) {
-    var ct = _.typedSection(doc, v, parentContent) ? _.pathContent(doc, v, mesh, parentContent) : plainContent(doc, v, mesh, parentContent);
+    var ct = _.hasBrokenOut(v) ? _.brokenOutContent(doc, v, mesh) : _.typedSection(doc, v, parentContent) ? _.pathContent(doc, v, mesh, parentContent) : plainContent(doc, v, mesh, parentContent);
     if (!ct || !ct.proj) return ct;
     _.auxCenter(doc, v, ct, parentContent);
+    _.contentExtras(doc, v, ct, parentContent);   // (rfAD) jagged detail linework, Area Hatch regions
     if (v.crop && v.kind !== 'detail' && v.kind !== 'flat') ct = _.cropContent(ct, v.crop);
     if (v.kind === 'section' && v.section && v.section.partial) ct = _.partialContent(v, ct);   // (rfZ) a partial section
     return ct;
@@ -1371,6 +1380,9 @@
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));
   }
   function dimText(d, units) {
+    // (lane CT) an angular running set: its values from 0° on; a path length: its total
+    if (d.kind === 'angrun') return ['0°'].concat((d.values || []).map(function (x) { return D.ctAngleText(x, d.prec); })).join(', ');
+    if (d.kind === 'pathlen' && !(d.prec != null || d.tol || d.label != null)) return fmtDim(d.value, units);
     if (d.kind === 'ordinate' || d.kind === 'baseline') {
       var p = d.prec != null && d.prec !== '' ? +d.prec : null;
       return (d.kind === 'ordinate' ? ['0'] : []).concat((d.values || []).map(function (x, i) {
@@ -2360,6 +2372,7 @@
   D.partInfo = partInfo; D.asmPartMaterials = asmPartMaterials; D.BOM_COLS = BOM_COLS; D.BOM_TYPES = BOM_TYPES; D.bomType = bomType; D.bomColumnSpecs = bomColumnSpecs; D.bomColumns = bomColumns;
   D.bomRows = bomRows; D.BOM_ANCHORS = BOM_ANCHORS; D.bomPropertyNames = bomPropertyNames; D.bomBox = bomBox; D.autoBalloon = autoBalloon; D.deleteBalloons = deleteBalloons; D.balloonSpots = balloonSpots;
   D.BALLOON_SIDES = BALLOON_SIDES; D.addMagLine = addMagLine; D.setMagLine = setMagLine; D.balloonMag = balloonMag; D.magLinesOf = magLinesOf; D.magLineAt = magLineAt; D.findMagLine = findMagLine;
+  _.clearSpot = clearSpot; _.fitOnSheet = fitOnSheet;   // (rfCX: Removed Section placement, drawing-views.js)
   _.MM = MM; _.paperK = paperK; _.viewScale = viewScale; _.cachedProjection = cachedProjection; _.BORDER = BORDER; _.TB_W = TB_W; _.TB_H = TB_H; _.GAP = GAP; _.HATCH = HATCH;
   _.viewContent = viewContent; _.autoDimKey = autoDimKey; _.partInfoCache = partInfoCache; _.hasMaterials = hasMaterials; _.bomCell = bomCell; _.BOM_TEXT = BOM_TEXT;
 })(Drawing, Drawing._);

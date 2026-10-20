@@ -447,9 +447,14 @@
   function clipScale(c) { var a = unitsOf(c.units), b = unitsOf(App.model.units); return a === b ? 1 : a === 'in' ? 25.4 : 1 / 25.4; }
   var LEN_KEYS = ['x', 'y', 'w', 'h', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'size', 'height'];
   function scaleEntity(e, s) {
+    // rfCY: a Sketch Text scales as Scale Entities scales it (letter height, outline stroke width, stencil bridges, the
+    // curve it runs along), about the origin
+    if (e.t === 'text' && K.transformText) return K.transformText(e, { s: s, cx: 0, cy: 0 });   // (a pasted text keeps its curve's shape, path.g, scaled: K.translateEntity unlinks it anyway)
     var o = clone(e);
     LEN_KEYS.forEach(function (k) { if (typeof o[k] === 'number') o[k] *= s; });
     if (Array.isArray(o.pts)) o.pts = o.pts.map(function (p) { return [p[0] * s, p[1] * s]; });
+    // rfCY: a spline's curvature control (tans[k][3], 1 / R) scales as 1 / s; the tangent directions and weights stay
+    if (Array.isArray(o.tans)) o.tans = o.tans.map(function (tg) { if (!tg) return tg; var t = tg.slice(); if (t[3] != null && isFinite(+t[3])) t[3] = +t[3] / s; return t; });
     return o;
   }
   function scaleTol(t, s) { if (t && typeof t === 'object') { if (typeof t.plus === 'number') t.plus *= s; if (typeof t.minus === 'number') t.minus *= s; } }
@@ -460,7 +465,8 @@
     var out = clone(c);
     out.entities = c.entities.map(function (e) { return scaleEntity(e, s); });
     out.rels.forEach(function (r) {
-      if (r.type === 'distance' && typeof r.v === 'number') { r.v *= s; scaleTol(r.tol, s); }
+      // (rfCY: every length-valued dimension relation: distance, arc length, path length, chamfer distance)
+      if (/^(distance|arclength|pathlength|chamfer)$/.test(r.type) && typeof r.v === 'number') { r.v *= s; scaleTol(r.tol, s); }
       if (typeof r.off === 'number') r.off *= s;
       if (typeof r.tx === 'number') r.tx *= s;
     });

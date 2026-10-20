@@ -567,6 +567,10 @@
         onSketchPoint: function (uv, mx, my) { if (!uv) uv = toUV(mx, my); if (uv) o.onPoint(uv, mx, my); }
       } : null,
       onSelection: o.onSelection, okBlocked: o.okBlocked,
+      // lane CY2: a command that places per click (Split Entities, Tangent Line …): Ctrl+Z undoes its last edit and it
+      // stays open (ui-app.js undoCommand); o.onUndo drops what it was half-way through
+      undoInside: o.onPoint && UI.undoMark ? UI.undoMark() : null,
+      onUndoInside: function () { if (o.onUndo) o.onUndo(); App.tempEntities = []; UI.updateTemp(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); if (o.hint) o.hint(true); },
       groups: o.groups,
       onChange: function (v, key) { if (key && o.onChange) o.onChange(v, key); },
       onOK: function (v) { return o.onOK ? o.onOK(v) : undefined; },
@@ -693,6 +697,7 @@
     function next() { if (!st.last) { UI.setStatus('Place a tangent line first: Next solution swaps the one just placed.'); return; } st.redo(st.last.k + 1, ctxNow()); UI.renderPM(); draw(); }
     openCommand({
       id: 'tangentLine', title: 'Tangent Line', icon: 'tangentLine', values: v,
+      onUndo: function () { picks = []; hover = null; UI.renderPM(); },   // lane CY2: the picks named the geometry as it was
       message: 'Select two circles or arcs: the line tangent to both. Angle: one circle and the line\'s angle.',
       hint: hintNow, next: next,
       onMove: function (uv, mx, my) { var f = sketch(); hover = f ? curveAt(f, mx, my, ['circle']) : null; draw(); },
@@ -884,6 +889,7 @@
     function next() { if (!st.last) { UI.setStatus('Place a bisector first: Next solution swaps the one just placed.'); return; } st.redo(st.last.k + 1, ctxNow()); UI.renderPM(); draw(); }
     openCommand({
       id: 'bisectorLine', title: 'Bisector', icon: 'bisectorLine', values: v,
+      onUndo: function () { picks = []; hover = null; UI.renderPM(); },   // lane CY2
       message: 'Select two lines: the bisector of the angle between the sides picked, from where they meet.',
       hint: hintNow, next: next,
       onMove: function (uv, mx, my) { var f = sketch(); hover = f ? curveAt(f, mx, my, ['line']) : null; draw(); },
@@ -963,6 +969,7 @@
     function next() { if (!st.last) { UI.setStatus('Place a tangent circle first: Next solution swaps the one just placed.'); return; } st.redo(st.last.k + 1, ctxNow()); UI.renderPM(); draw(); }
     openCommand({
       id: 'tangentCircle', title: 'Tangent Circle', icon: 'tangentCircle', values: v,
+      onUndo: function () { picks = []; hover = null; UI.renderPM(); },   // lane CY2
       message: 'Select the lines, circles or arcs the circle is tangent to: two and a Radius, or three.',
       hint: hintNow, next: next,
       onMove: function (uv, mx, my) { var f = sketch(); hover = f ? curveAt(f, mx, my, ['line', 'circle']) : null; draw(); },
@@ -1062,6 +1069,7 @@
     }
     openCommand({
       id: 'splitEnt', title: 'Split Entities', icon: 'splitEnt', values: v,
+      onUndo: function () { pending = null; if (count > 0) count--; UI.renderPM(); },   // lane CY2
       message: 'Click where to split a line, arc, circle, ellipse or spline (two points on a circle, an ellipse or a closed spline). Split all at intersections breaks the selected entities, or the whole sketch, wherever they cross.',
       hint: hintNow,
       onMove: function (uv, mx, my) { last = { uv: uv, mx: mx, my: my }; draw(); },

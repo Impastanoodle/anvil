@@ -861,7 +861,35 @@
   // row runs on mouseup with the focus still in the command's box (the menu bar swallows the mousedown), and a menu never
   // triggers the browser's text undo, so the "typed text in the box" exception is the keyboard's only; before, Edit ▸
   // Undo with text typed in the box undid the previous step under the open command.
+  // lane CY2 (SolidWorks): a sketch tool that commits an edit per click (Trim / Extend / Split Entities, the construct
+  // tools) opens its PropertyManager with `undoInside: UI.undoMark()`, the undo stack's top as it opened. While the
+  // stack holds snapshots pushed since (the tool's own edits), Ctrl+Z undoes the last of them and the tool stays open
+  // (spec.onUndoInside(redo) lets it drop picks that named the old geometry); Ctrl+Y redoes what it undid. With none
+  // left, Ctrl+Z cancels the tool as it cancels any command. Feature PropertyManagers keep the rfCM rule.
+  UI.undoMark = function () { return { top: App.undo.length ? App.undo[App.undo.length - 1] : null, undone: 0 }; };
+  function insideSteps(spec) {
+    var m = spec && spec.undoInside;
+    if (!m || App.mode !== 'sketch' || (UI.drawingActive && UI.drawingActive())) return 0;
+    // the mark's place (-1: the stack was empty, or the mark has been shifted out of a full stack: all of it is the tool's)
+    var at = m.top == null ? -1 : App.undo.lastIndexOf(m.top);
+    return App.undo.length - 1 - at;
+  }
+  function insideCan(redo, spec) { return redo ? !!(spec && spec.undoInside && spec.undoInside.undone > 0 && App.redo.length && insideSteps(spec) >= 0 && App.mode === 'sketch') : insideSteps(spec) > 0; }
+  function undoInside(redo, spec) {
+    var m = spec.undoInside;
+    if (redo) { App.undo.push(JSON.stringify(App.model)); App.model = JSON.parse(App.redo.pop()); m.undone--; }
+    else { App.redo.push(JSON.stringify(App.model)); App.model = JSON.parse(App.undo.pop()); m.undone++; }
+    App.sketchDirty = false; App.sel = null; App.sel2 = null; App.dimsStale = true;
+    if (spec.onUndoInside) { try { spec.onUndoInside(redo); } catch (e) { } }
+    if (UI.setStatus) UI.setStatus((redo ? 'Step redone' : 'Last step undone') + ' (' + (UI.pmTitle ? UI.pmTitle() : 'the command') + ' stays open).');
+    var p = UI.rebuild();
+    if (UI.updateSketches) UI.updateSketches();
+    if (UI.refreshTree) UI.refreshTree();
+    return p;
+  }
   function undoCommand(redo, target) {
+    var spec0 = UI.pmSpec && UI.pmSpec();
+    if (spec0 && spec0.undoInside && !(target && typingIn(target) && $('pm') && $('pm').contains(target) && UI.pmPending && UI.pmPending(target)) && insideCan(redo, spec0)) return undoInside(redo, spec0);
     if (undoCancelsPM(target)) {
       var title = UI.pmTitle ? UI.pmTitle() : '';
       UI.pmCancel();
@@ -1230,6 +1258,34 @@
   }
   UI.searchCommands = function (q) { return searchCommands(q).map(function (h) { return { name: h.name, where: h.where, icon: h.icon, enabled: h.enabled }; }); };
 
+  // lane DA: toasts sit over the middle of the graphics area (between the FeatureManager and the Task Pane), as
+  // SolidWorks' pop-ups do, not over the middle of the window: the graphics area's centre and width go to CSS
+  // variables (--gfx-cx, --gfx-w on <html>, read by .toast in style.css), refreshed whenever the viewport resizes
+  function placeGfxCentre() {
+    var v = UI.viewport, r = v && v.getBoundingClientRect();
+    if (!r || r.width < 2) return;
+    var s = document.documentElement.style, cx = Math.round(r.left + r.width / 2) + 'px', w = Math.round(r.width) + 'px';
+    if (s.getPropertyValue('--gfx-cx') !== cx) s.setProperty('--gfx-cx', cx);
+    if (s.getPropertyValue('--gfx-w') !== w) s.setProperty('--gfx-w', w);
+  }
+  UI.placeGfxCentre = placeGfxCentre;
+  // lane DA: the status-bar coordinates must not jump when a chip to their right changes width ("Editing Part" →
+  // "Editing Sketch12", Under → Fully Defined, the level chip): the chips' box keeps the widest it has been (at most
+  // 45 % of the bar), so the coordinates' fixed-width box (style.css) stays put; a window resize starts afresh
+  function holdStatusRight() {
+    var sr = $('status-right'), bar = $('statusbar');
+    if (!sr || !bar) return;
+    var held = 0;
+    function grow() {
+      var w = Math.ceil(Math.max(sr.scrollWidth, sr.offsetWidth)), cap = bar.clientWidth * 0.45;
+      if (w > held && w <= cap) { held = w; sr.style.minWidth = w + 'px'; }
+    }
+    if (window.ResizeObserver) new ResizeObserver(grow).observe(sr);
+    if (window.MutationObserver) new MutationObserver(grow).observe(sr, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', function () { held = 0; sr.style.minWidth = ''; grow(); });
+    grow();
+  }
+
   // ------------------------------------------------------------------ boot
   function boot() {
     // theme first, before anything is drawn (index.html already set data-theme from localStorage to avoid a flash)
@@ -1262,7 +1318,10 @@
       if (UI.size.w > 50 || fitTries++ > 20) UI.setView('Isometric');
       else requestAnimationFrame(fitWhenReady);
     })();
-    if (window.ResizeObserver) new ResizeObserver(function () { UI.resize(); }).observe(UI.viewport);
+    if (window.ResizeObserver) new ResizeObserver(function () { UI.resize(); placeGfxCentre(); }).observe(UI.viewport);
+    window.addEventListener('resize', placeGfxCentre);
+    placeGfxCentre();
+    holdStatusRight();
     UI.setStatus('Ready. Sketch tab → Sketch to start drawing, or open Automation / Script on the right to model in code.');
     initCommandSearch();
     offerRecovery();

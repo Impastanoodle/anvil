@@ -373,6 +373,39 @@
     UI.setTool('text');
   }, true);
 
+  // ------------------------------------------------------------------ lane CV: Dissolve Sketch Text
+  // Right-click a sketch text ▸ Dissolve Sketch Text (SolidWorks): the text becomes the ordinary entities it is drawn
+  // with (Kernel.dissolveText: Etch strokes as lines / arcs / polylines on its layer, a Cut text's outline as lines and
+  // arcs end to end), appended to the sketch; the text entity goes (its relations and dimensions with it). One undo
+  // step. Returns the new entities' indices, or null.
+  UI.dissolveSketchText = function (index) {
+    var f = UI.activeSketchFeature ? UI.activeSketchFeature() : null;
+    if (App.mode !== 'sketch' || !f) { UI.toast('Open a sketch first.'); return null; }
+    if (index == null) {
+      var s = (UI.selection ? UI.selection() : []).filter(function (x) { return x.kind === 'entity' && f.entities[x.index] && f.entities[x.index].t === 'text'; })[0];
+      index = s ? s.index : App.sel && App.sel.kind === 'entity' ? App.sel.index : null;
+    }
+    var e = index != null ? f.entities[index] : null;
+    if (!e || e.t !== 'text') { UI.toast('Select a sketch text first, then Dissolve Sketch Text.'); return null; }
+    var made = K.dissolveText(e);
+    if (!made.length) { UI.toast('The text has no geometry to dissolve (it is empty).'); return null; }
+    if (UI.closePM && UI.pmSpec && UI.pmSpec() && UI.pmSpec()._txtEntity) UI.closePM();
+    markDirty();
+    made.forEach(function (x) { if (x.layer) ensureLayer(f, x.layer); });
+    f.entities.splice(index, 1);
+    if (S && S.removeEntity) S.removeEntity(f, index);
+    if (f.dims) f.dims = f.dims.filter(function (d) { return d.e !== index; }).map(function (d) { if (d.e > index) d.e--; return d; });
+    var first = f.entities.length;
+    made.forEach(function (x) { f.entities.push(x); });
+    var idx = made.map(function (x, k) { return first + k; });
+    App.sel = null; App.sel2 = null;
+    if (UI.setSelection) UI.setSelection(idx.map(function (i) { return { kind: 'entity', index: i }; }));
+    App.dimsStale = true;
+    refresh();
+    UI.setStatus('Sketch text dissolved into ' + made.length + ' entit' + (made.length === 1 ? 'y' : 'ies') + '.');
+    return idx;
+  };
+
   // test / script hooks
   UI.sketchTextValues = function () { return cur ? cur.v : null; };
   UI.sketchTextPick = function (on) { setPicking(on !== false); };

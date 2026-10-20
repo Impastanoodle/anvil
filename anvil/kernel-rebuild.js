@@ -22,6 +22,8 @@
     revolveCut: 'Cut-Revolve', lpattern: 'LPattern', cpattern: 'CirPattern', mirror: 'Mirror', chamfer: 'Chamfer', fillet: 'Fillet', flange: 'Edge-Flange', sweep: 'Sweep', loft: 'Loft', shell: 'Shell', hem: 'Hem', jog: 'Jog'
   };
   NAME_BASE.sketchedBend = 'SketchBend';
+  NAME_BASE.closedCorner = 'Closed Corner';
+  NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
 
   function featureName(model, type, cut) {
     var base = NAME_BASE[type] || 'Feature';
@@ -164,6 +166,7 @@
         // lane CO: Selected Contours (f.contours = [[u, v], …]) — the profile is the union of the picked regions; the
         // sketch feature keeps its own full profile (contourSketch returns a copy)
         var csk = _.contourSketch(f, sketch);
+        if (f.type === 'revolve' && _.refAxisId(f) != null) f = _.revolveOnRefAxis(f, refAxisFor(f, ctx), plane, ctx);   // lane CZ
         return f.type === 'extrude' ? buildExtrude(f, csk, plane, ctx.throughLimit) : buildRevolve(f, csk, plane);
       case 'sweep': return _.buildSweep(f, model, ctx);
       case 'loft': return _.buildLoft(f, model, ctx);
@@ -186,7 +189,8 @@
         var count = Math.max(2, f.n | 0), total = +f.angle || 360;
         var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
         var ccopies = [];
-        for (var k = 1; k < count; k++) ccopies.push(rotateBody(csrc, f.center || [0, 0, 0], AXES[f.axis || 'z'], step * k));
+        var cax = _.refAxisId(f) != null ? refAxisFor(f, ctx) : null;   // lane CZ: about a reference axis
+        for (var k = 1; k < count; k++) ccopies.push(rotateBody(csrc, cax ? cax.o : f.center || [0, 0, 0], cax ? cax.d : AXES[f.axis || 'z'], step * k));
         return unionAll(ccopies);
       }
       case 'mirror': {
@@ -203,6 +207,13 @@
         if (featureTypes[f.type] && featureTypes[f.type].build) return featureTypes[f.type].build(f, model, ctx);
     }
     return null;
+  }
+
+  // lane CZ: the resolved reference Axis a feature turns about ({ refgeo: 'axis', o, d, a, b } from ctx.planes)
+  function refAxisFor(f, ctx) {
+    var id = _.refAxisId(f), g = id != null && ctx.planes ? ctx.planes[id] : null;
+    if (!g || g.refgeo !== 'axis') throw new Error('The reference axis (feature ' + id + ') is missing or failed to rebuild.');
+    return g;
   }
 
   // registerFeature(type, spec): a feature type defined in another file. spec is either
@@ -353,7 +364,7 @@
     var origFeatures = model.features, resolved = resolvedModel(model);
     model = resolved.model;
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
-    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.sheetBase || (f.cut && f.normalCut); }
+    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.type === 'closedCorner' || f.sheetBase || (f.cut && f.normalCut); }
     var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings, units: model.units || 'mm' };   // units: pick tolerances (Kernel.pickTol)
     function syncBody() { ctx.body = combineBodies(ctx.bodies); }
     // a boss tool joins the part: merged into the bodies it meets, or appended as a new body
@@ -458,6 +469,16 @@
             ctx.tools[f.id] = sb.tool;
             break;
           }
+          case 'closedCorner': {
+            // Closed Corner (kernel-sheetmetal.js): extends flange end faces across a corner gap; overlap / underlap
+            // also trim the matching wall. Acts on the body nearest its first face pick.
+            var cck = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, (f.faces && f.faces[0]) || [0, 0, 0])) : -1;
+            ctx.body = cck >= 0 ? ctx.bodies[cck] : null;
+            var ccr = _.buildClosedCorner(f, model, ctx);
+            putBody(cck, (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
+            ctx.tools[f.id] = ccr.add;
+            break;
+          }
           case 'sketch': {
             // r10/facesketch10: a sketch on a face follows the face; the resolved frame is written onto the model's
             // own feature (as the profile is) and reported in build.facePlanes for a build made on a copy
@@ -482,6 +503,9 @@
           }
           case 'plane':
             ctx.planes[f.id] = makePlane(f.ref || 'Front', +f.offset || 0);
+            break;
+          case 'refaxis': case 'refpoint': case 'csys':   // lane CZ: reference geometry, no body change; the record rides in planes
+            ctx.planes[f.id] = _.resolveRefGeo(f, model, ctx);
             break;
           case 'chamfer':
           case 'fillet': {
@@ -636,6 +660,7 @@
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.newModel = newModel; K.featureName = featureName; K.findFeature = findFeature; K.cutDirectionHint = cutDirectionHint; K.buildTool = buildTool;
+  K.refAxisFor = refAxisFor;   // lane CZ
   K.isCut = isCut; K.cutScope = cutScope; K.registerFeature = registerFeature; K.registerSketchScript = registerSketchScript;
   K.registerScriptSection = registerScriptSection; K.rebuild = rebuild; K.combineBodies = combineBodies; K.bodyInfo = bodyInfo;
   K.bodyNearPoint = bodyNearPoint; K.packBuild = packBuild; K.packTransferables = packTransferables; K.unpackBuild = unpackBuild;

@@ -17,19 +17,24 @@
       assert(c1.flat.loops.length === 2, 'outline + the window, got ' + c1.flat.loops.length + ' loops');
       assert(c1.flat.loops[0].length === 4, 'outline has 4 corners, got ' + c1.flat.loops[0].length);
       near(c1.flat.size[0], c0.flat.size[0], 1e-9, 'same width as the uncut channel'); near(c1.flat.size[1], 60, 1e-9, 'same height');
-      // The window's ends sit within the bend strips' weld overlap of the bend lines: flatPattern lays each strip from
-      // −eps to BA + eps (eps = 1e-3) so it welds to the base, and this cut (from the top face down) leaves the bend's
-      // inside surface whole, so the strip stays whole and its overlap shows through a hole that reaches the bend line
-      // (119.998 today; exactly 120 if the overlap is ever clipped to the base's holes).
-      var WELD = 1e-3, w = box(c1.flat.loops[1]);
-      near(w.hi[0] - w.lo[0], 120, 2 * WELD + 1e-6, 'window 120 wide (the base between the bends, less the strips\' weld overlap)'); near(w.hi[1] - w.lo[1], 10, 1e-6, 'window 10 tall');
-      near(blankArea(c1.flat), blankArea(c0.flat) - 1200, 10 * 2 * WELD + 1e-6, 'blank area = uncut − the window');
-      // blank × T against the solid: the uncut channel's shortfall is the faceted bends' alone; the cut part shows that
-      // plus the two 1 mm bites the window took out of the bends below the sheet's top (the inside surface is whole
-      // there, so the strips are not notched: known, see bendSurfaceNotches), at most 1 × 10 × T each
+      // rfCW: the window runs 1 mm past each bend line into the bends below the sheet's top, so it takes the bends'
+      // outside surface (radius R + T, flangeProfile's 8 facets) up to where that surface is 1 mm past the tangent;
+      // bendSurfaceNotches reads both bend surfaces now, so each strip is notched by that bite unrolled by angle,
+      // s = BA·θ/A (was: the inside surface alone, whole here, so the strips stayed whole and their 1e-3 weld overlap
+      // showed: 119.998). Exact: 120 + 2·BA·θb/(π/2), θb where the faceted outside surface is 1 mm past the tangent.
+      var D = Math.PI / 16, Ro = R + T;
+      function fx(th) { var k = Math.min(7, Math.floor(th / D)); return Ro * Math.cos(D / 2) / Math.cos(th - (k + 0.5) * D) * Math.sin(th); }
+      var tLo = 0, tHi = Math.PI / 2;
+      for (var it = 0; it < 100; it++) { var tm = (tLo + tHi) / 2; if (fx(tm) < 1) tLo = tm; else tHi = tm; }
+      var bite = BA90 * tLo / (Math.PI / 2), w = box(c1.flat.loops[1]);
+      near(w.hi[0] - w.lo[0], 120 + 2 * bite, 1e-6, 'window 120 + both bites wide (bite ' + fmt(bite) + ')'); near(w.hi[1] - w.lo[1], 10, 1e-9, 'window 10 tall');
+      near(blankArea(c1.flat), blankArea(c0.flat) - 10 * (120 + 2 * bite), 1e-6, 'blank area = uncut − the window and its bites');
+      // blank × T against the solid: the uncut channel's shortfall is the faceted bends' alone; with the cut, the blank
+      // drops each bite through the thickness while the solid lost the bend's metal below the top within 1 mm of the
+      // tangent: the two differ by less than 1 × 10 × T per bend
       nearRel(blankArea(c0.flat) * T, c0.mp.volume, 2e-3, 'uncut: blank area × T ≈ volume (K = 0.5; faceted bends)');
       var over = (blankArea(c1.flat) * T - c1.mp.volume) - (blankArea(c0.flat) * T - c0.mp.volume);
-      assert(over > -1e-6 && over <= 2 * 1 * 10 * T + 1e-6, 'the cut blank shows the two 1 mm bend bites and nothing more: ' + fmt(over) + ' mm³ over the solid');
+      assert(Math.abs(over) <= 2 * 1 * 10 * T, 'the cut blank and the solid differ by less than the two 1 mm bend bites: ' + fmt(over) + ' mm³');
       var c3 = flatOf(CHANNEL + 'p.flange(20, [[60, ' + T + ', 0]]);'), c4 = flatOf(CHANNEL + 'p.sketch("Top", ' + T + ').rect(-1, -35, 122, 10).cut("through", { reverse: true });\np.flange(20, [[60, ' + T + ', 0]]);');
       assert(c4.flat.bends.length === 3, 'three bends with the flange on the far half, got ' + c4.flat.bends.length);
       assert(c4.flat.loops.length === 2, 'outline + the window with the third flange, got ' + c4.flat.loops.length);

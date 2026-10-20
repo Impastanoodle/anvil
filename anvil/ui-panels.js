@@ -61,7 +61,7 @@
       { id: 'shell', label: 'Shell', run: function () { UI.cmdShell(); } },
       { id: 'draft', label: 'Draft' }, { id: 'intersect', label: 'Intersect' }, { id: 'rib', label: 'Rib' }, { id: 'wrap', label: 'Wrap' },
       { sep: true },
-      { fly: 'refgeo', label: 'Reference\nGeometry', items: [{ id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } }, { id: 'refAxis', label: 'Axis' }, { id: 'csys', label: 'Coordinate\nSystem' }, { id: 'refPoint', label: 'Point', help: 'Create a reference point' }] },
+      { fly: 'refgeo', label: 'Reference\nGeometry', items: [{ id: 'plane', label: 'Plane', run: function () { UI.cmdPlane(); } }, { id: 'refAxis', label: 'Axis', help: 'Create a reference axis: a line, edge, two planes, two points, a cylindrical face, or a point and a face', run: function () { UI.cmdRefAxis(); } }, { id: 'csys', label: 'Coordinate\nSystem', help: 'Create a coordinate system: an origin and X / Y / Z directions', run: function () { UI.cmdCsys(); } }, { id: 'refPoint', label: 'Point', help: 'Create a reference point: arc centre, face centre, intersection, projection, on a point, or along a curve', run: function () { UI.cmdRefPoint(); } }] },   // lane CZ
       { id: 'curves', label: 'Curves' },
       { id: 'instant', label: 'Instant3D', run: function () { if (UI.toggleInstant3D) UI.toggleInstant3D(); }, active: function () { return !!(UI.instant3DOn && UI.instant3DOn()); } }
     ],
@@ -199,7 +199,7 @@
       { id: 'generic', icon: 'convertSM', label: 'Convert to\nSheet Metal' }, { id: 'loft', label: 'Lofted-\nBend' },
       { sep: true },
       { id: 'bend', label: 'Edge\nFlange', run: function () { UI.cmdEdgeFlange(); } }, { id: 'miter', label: 'Miter\nFlange', run: function () { UI.cmdMiterFlange(); } }, { id: 'hem', label: 'Hem', run: function () { UI.cmdHem(); } }, { id: 'jog', label: 'Jog', run: function () { UI.cmdJog(); } }, { id: 'sketchedBend', label: 'Sketched\nBend', run: function () { UI.cmdSketchedBend(); } },
-      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
+      { stack: [{ id: 'generic', icon: 'crossBreak', label: 'Cross-Break' }, { fly: 'corners', items: [{ id: 'breakCorner', label: 'Break-Corner', help: 'Round or chamfer outside corners of the sheet (Corners ▸ Break-Corner/Corner-Trim)', run: function () { UI.cmdBreakCorner(); } }, { id: 'closedCorner', label: 'Closed Corner', help: 'Extend the end faces of a flange to close the gap at a box corner (Corners ▸ Closed Corner)', run: function () { UI.cmdClosedCorner(); } }] }, { id: 'generic', icon: 'formingTool', label: 'Forming Tool' }] },
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
@@ -720,6 +720,7 @@
   // ------------------------------------------------------------------ feature tree
   var expanded = {};
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
+  FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   function featureIcon(f) {
     if (f.type === 'extrude') return f.cut ? 'cut' : (f.sheetBase ? 'flange' : 'extrude');
     if (f.type === 'revolve') return f.cut ? 'revolveCut' : 'revolve';
@@ -727,6 +728,7 @@
     if (f.type === 'jog') return 'jog';
     if (f.type === 'sketchedBend') return 'sketchedBend';
     if (f.type === 'breakCorner') return 'breakCorner';   // lane CP
+    if (f.type === 'closedCorner') return 'closedCorner';   // lane CS
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {
@@ -1014,9 +1016,12 @@
       case 'extrude': return (f.cut ? 'Cut' : 'Boss') + ' extrude, ' + (f.end === 'through' ? 'through all' : f.end === 'mid' ? 'mid plane ' + f.depth : 'blind ' + f.depth) + (f.draft ? ', draft ' + f.draft + '°' + (f.draftOut ? ' outward' : '') : '') + (f.normalCut ? ', normal cut' : '');
       case 'revolve': return (f.cut ? 'Cut' : 'Boss') + ' revolve ' + f.angle + '°';
       case 'lpattern': return 'Linear pattern ' + f.n1 + ' × ' + f.s1 + ' along ' + f.d1 + (f.d2 ? ', ' + f.n2 + ' × ' + f.s2 + ' along ' + f.d2 : '');
-      case 'cpattern': return 'Circular pattern ' + f.n + ' about ' + f.axis;
+      case 'cpattern': return 'Circular pattern ' + f.n + ' about ' + (f.axisRef != null ? ((K.findFeature(App.model, f.axisRef) || {}).name || 'a reference axis') : f.axis);
       case 'mirror': return 'Mirror about ' + f.plane + (f.body ? ' (body)' : '');
       case 'plane': return 'Plane parallel to ' + f.ref + ' at ' + f.offset;
+      case 'refaxis': return 'Reference axis: ' + ({ line: 'one line / edge / axis', planes: 'two planes', points: 'two points / vertices', cyl: 'cylindrical / conical face', pointFace: 'point and face / plane' }[f.kind] || f.kind);   // lane CZ
+      case 'refpoint': return 'Reference point: ' + ({ arc: 'arc center', face: 'center of face', intersect: 'intersection', project: 'projection', on: 'on point', along: 'along curve ' + f.distance + (f.percent ? ' %' : '') }[f.kind] || f.kind);
+      case 'csys': return 'Coordinate system' + (f.origin ? '' : ' at the origin');
       case 'chamfer': return 'Chamfer ' + f.d + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'fillet': return 'Fillet R' + f.r + ' on ' + (f.edges || []).length + ' edge pick' + ((f.edges || []).length === 1 ? '' : 's');
       case 'sketchedBend': return 'Sketched bend ' + f.angle + '°, ' + ({ inside: 'material inside', outside: 'material outside', bendOutside: 'bend outside' }[f.position] || 'bend centerline') + (f.reverse ? ', reversed' : '') + (f.fixed ? ', fixed face picked' : '');
@@ -1041,6 +1046,7 @@
     if (f.type === 'sketch' && UI.editSketchPlane) items.push({ label: 'Edit Sketch Plane', action: function () { UI.editSketchPlane(f.id); } });   // r11/faceref11
     if (f.type === 'sketch') items.push({ label: 'Export sketch as DXF', action: function () { UI.exportSketchDXF(f); } });
     if (f.type === 'sketch') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { f.hidden = !f.hidden; UI.updateSketches(); } });
+    if (f.type === 'refaxis' || f.type === 'refpoint' || f.type === 'csys') items.push({ label: f.hidden ? 'Show' : 'Hide', action: function () { UI.pushUndo(); f.hidden = !f.hidden; UI.updatePlanes(); refreshTree(); } });   // lane CZ
     items.push({ label: 'Rename (F2)', action: function () { startRename(f); } });
     items.push({ sep: true });
     items.push({ label: 'Delete', action: function () { UI.deleteFeature(f.id); } });
@@ -1315,6 +1321,9 @@
         { sep: true },
         { label: 'Planes', checked: v.showPlanes, action: function () { v.showPlanes = !v.showPlanes; UI.updatePlanes(); } },
         { label: 'Origins', checked: v.showOrigin, action: function () { v.showOrigin = !v.showOrigin; UI.updateOrigin(); } },
+        { label: 'Axes', checked: v.showAxes !== false, action: function () { v.showAxes = v.showAxes === false; UI.updatePlanes(); } },   // lane CZ
+        { label: 'Points', checked: v.showPoints !== false, action: function () { v.showPoints = v.showPoints === false; UI.updatePlanes(); } },
+        { label: 'Coordinate Systems', checked: v.showCsys !== false, action: function () { v.showCsys = v.showCsys === false; UI.updatePlanes(); } },
         { label: 'All Sketches', checked: v.showSketches, action: function () { v.showSketches = !v.showSketches; UI.updateSketches(); } },
         { label: 'Sketch Grid', checked: v.showGrid, action: function () { v.showGrid = !v.showGrid; App.gridStale = true; } },
         { label: 'Sketch Regions', checked: v.sketchRegions !== false, action: toggleSketchRegions },   // sketch-layers
@@ -1374,8 +1383,22 @@
         // rfAP: Tools ▸ Sketch Entities / Sketch Tools / Relations / Dimensions with every sketch command, in
         // SolidWorks 2024's order (the rows run the Sketch tab's own items: sketchMenuRows)
       ].concat(sketchMenuRows('Sketch Entities', ['line', 'rect', 'crect', 'rect3', 'crect3', 'parallelogram', 'slot', 'cslot', 'aslot3', 'aslot', 'polygon', 'circle', 'pcircle', 'arc', 'tarc', 'arc3', 'ellipse', 'pellipse', 'parabola', 'conic', 'spline', 'styleSpline', 'eqnCurve', 'point', 'centerline', 'midline', 'parallelLine', 'tangentLine', 'perpLine', 'bisectorLine', 'tangentCircle', 'text', 'plane', 'fillet:skFillet', 'skChamfer']),
-        sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve', 'offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'closeArc', 'construction', 'mirrorEnt', 'dynMirror', 'moveEnt', 'copyEnt', 'rotateEnt', 'scaleEnt', 'stretchEnt', 'sketchPattern', 'cSketchPattern']), [
-        { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment },
+        // lane CV: Tools ▸ Sketch Tools in SolidWorks 2024's order — Convert Entities, Intersection Curve, Segment, Offset,
+        // Trim, Extend, Split (Join, Close Arc: Anvil's), Jog Line, Construction Geometry, Mirror, Dynamic Mirror, Stretch,
+        // Move, Rotate, Scale, Copy, Linear / Circular Pattern, Repair Sketch, SketchXpert, Modify (Replace Entity), Check
+        // Sketch for Feature, Sketch Picture (Insert DXF / DWG: Anvil's). Fillet / Chamfer are under Sketch Entities.
+        sketchMenuRows('Sketch Tools', ['convert', 'intersectCurve']), [
+        { label: 'Sketch Tools ▸ Segment…', icon: 'point', action: function () { UI.cmdSegment(); }, disabled: App.mode !== 'sketch' || !UI.cmdSegment }
+      ], sketchMenuRows('Sketch Tools', ['offset', 'trim', 'extend', 'splitEnt', 'joinEnt', 'closeArc']), [
+        { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine }
+      ], sketchMenuRows('Sketch Tools', ['construction', 'mirrorEnt', 'dynMirror', 'stretchEnt', 'moveEnt', 'rotateEnt', 'scaleEnt', 'copyEnt', 'sketchPattern', 'cSketchPattern']), [
+        { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
+        { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert },
+        { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
+        { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
+        { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },   // dxf-import (ui-sketch-import.js)
+        { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
+        { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
         // rfAS: Tools ▸ Spline Tools (ui-sketch-spline.js)
         { label: 'Spline Tools ▸ Insert Spline Point', icon: 'spline', action: function () { UI.cmdInsertSplinePoint(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertSplinePoint },
         { label: 'Spline Tools ▸ Simplify Spline…', icon: 'spline', action: function () { UI.cmdSimplifySpline(); }, disabled: App.mode !== 'sketch' || !UI.cmdSimplifySpline },
@@ -1387,30 +1410,24 @@
         { label: 'Spline Tools ▸ Add Tangency Control', icon: 'spline', action: function () { UI.cmdAddTangencyControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddTangencyControl },
         { label: 'Spline Tools ▸ Add Curvature Control', icon: 'spline', action: function () { UI.cmdAddCurvatureControl(); }, disabled: App.mode !== 'sketch' || !UI.cmdAddCurvatureControl },
         { label: 'Spline Tools ▸ Show Inflection Points', icon: 'spline', action: function () { UI.cmdShowInflectionPoints(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowInflectionPoints },
-        { label: 'Sketch Tools ▸ Modify…', icon: 'moveEnt', action: function () { UI.cmdModifySketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdModifySketch },
-        { label: 'Sketch Tools ▸ Replace Entity…', icon: 'moveEnt', action: function () { UI.cmdReplaceEntity(); }, disabled: App.mode !== 'sketch' || !UI.cmdReplaceEntity },   // rfCR: ui-sketch-tools.js
-        // rfAT: Jog Line (ui-sketch-tools.js) and Tools ▸ Blocks (ui-sketch-blocks.js)
-        { label: 'Sketch Tools ▸ Sketch Picture…', icon: 'sketchPicture', action: function () { UI.cmdSketchPicture(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchPicture },   // rfAW: ui-sketch-picture.js
-        { label: 'Sketch Tools ▸ Jog Line', icon: 'jogLine', action: function () { UI.cmdJogLine(); }, disabled: App.mode !== 'sketch' || !UI.cmdJogLine },
+        { label: 'Spline Tools ▸ Show Minimum Radius', icon: 'spline', action: function () { UI.cmdShowMinimumRadius(); }, disabled: App.mode !== 'sketch' || !UI.cmdShowMinimumRadius },   // lane CV
+        // rfAT: Tools ▸ Blocks (ui-sketch-blocks.js)
         { label: 'Blocks ▸ Make…', icon: 'block', action: function () { UI.cmdMakeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdMakeBlock },
         { label: 'Blocks ▸ Edit Block', icon: 'block', checked: !!(UI.blockEditing && UI.blockEditing()), action: function () { UI.cmdEditBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdEditBlock },
         { label: 'Blocks ▸ Insert…', icon: 'block', action: function () { UI.cmdInsertBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdInsertBlock },
         { label: 'Blocks ▸ Explode', icon: 'block', action: function () { UI.cmdExplodeBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdExplodeBlock },
         { label: 'Blocks ▸ Save…', icon: 'block', action: function () { UI.cmdSaveBlock(); }, disabled: App.mode !== 'sketch' || !UI.cmdSaveBlock },
-        // dxf-import: Tools ▸ Sketch Tools, as SolidWorks has them (ui-sketch-import.js)
-        { label: 'Sketch Tools ▸ Check Sketch for Feature…', action: function () { UI.cmdCheckSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdCheckSketch },
-        { label: 'Sketch Tools ▸ Repair Sketch…', action: function () { UI.cmdRepairSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdRepairSketch },
-        { label: 'Sketch Tools ▸ Insert DXF / DWG…', action: function () { UI.cmdInsertDXF(); }, disabled: isAsm() || !UI.cmdInsertDXF },
         { label: 'Relations ▸ Add…', icon: 'addRelation', action: function () { if (App.mode !== 'sketch') toast('Open a sketch first.'); else UI.cmdAddRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Display/Delete…', icon: 'relations', action: function () { UI.cmdDisplayRelations(); }, disabled: App.mode !== 'sketch' },
         { label: 'Relations ▸ Constrain All', icon: 'fullyDefine', action: function () { UI.cmdConstrainAll(); }, disabled: App.mode !== 'sketch' || !UI.cmdConstrainAll },
-        // rfAR: Scan Equal and SketchXpert (ui-relations.js)
-        { label: 'Relations ▸ Scan Equal…', icon: 'relations', action: function () { UI.cmdScanEqual(); }, disabled: App.mode !== 'sketch' || !UI.cmdScanEqual },
-        { label: 'Sketch Tools ▸ SketchXpert…', icon: 'relations', action: function () { UI.cmdSketchXpert(); }, disabled: App.mode !== 'sketch' || !UI.cmdSketchXpert }
+        // rfAR: Scan Equal (ui-relations.js; SketchXpert is with the Sketch Tools above)
+        { label: 'Relations ▸ Scan Equal…', icon: 'relations', action: function () { UI.cmdScanEqual(); }, disabled: App.mode !== 'sketch' || !UI.cmdScanEqual }
       ], sketchMenuRows('Dimensions', ['dim', 'horizDim', 'vertDim', 'ordinateDim', 'ordinateH', 'ordinateV', 'chamferDim', 'pathLengthDim', 'angRunDim', 'autodim']), [   // rfAQ
         { label: 'Dimensions ▸ Fully Define Sketch…', icon: 'fullyDefine', action: function () { if (UI.cmdFullyDefineSketch) UI.cmdFullyDefineSketch(); }, disabled: App.mode !== 'sketch' || !UI.cmdFullyDefineSketch },   // sketchdims
         { sep: true },
-        { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } }
+        { label: 'Sketch Settings ▸ Enable on-screen numeric input on entity creation', checked: !!(UI.sketchNumericInput && UI.sketchNumericInput()), disabled: !UI.sketchNumericInput, action: function () { var on = UI.sketchNumericInput(!UI.sketchNumericInput()); toast(on ? 'Every entity you sketch gets its dimensions' : 'On-screen numeric input on entity creation off'); } },
+        // lane CV: SolidWorks' sub-option of the numeric input (ui-sketch.js UI.sketchSettings 'dimOnlyTyped')
+        { label: 'Sketch Settings ▸ Create dimension only when value is entered', checked: !!(UI.sketchSettings && UI.sketchSettings.get('dimOnlyTyped')), disabled: !UI.sketchSettings || !(UI.sketchNumericInput && UI.sketchNumericInput()), action: function () { var on = UI.sketchSettings.toggle('dimOnlyTyped'); toast(on ? 'Only the values you type become dimensions' : 'Every value of a new entity becomes a dimension'); } }
       ].concat(['autoRelations', 'autoSolve', 'noSolveMove', 'snapping', 'detachOnDrag', 'ghostOnDrag', 'overrideDims'].map(function (k) {   // rfAR (ui-sketch.js UI.sketchSettings); rfAY: Ghost image on drag
         var SSet = UI.sketchSettings, name = SSet ? SSet.NAMES[k] : k;
         return { label: 'Sketch Settings ▸ ' + name, checked: !!(SSet && SSet.get(k)), disabled: !SSet, action: function () { var on = SSet.toggle(k); toast(name + (on ? ' on' : ' off')); } };
@@ -1642,6 +1659,9 @@
     dd('hideshow', 'Hide/Show Items', function () { return [
       { label: 'Planes', checked: App.view.showPlanes, action: function () { App.view.showPlanes = !App.view.showPlanes; UI.updatePlanes(); } },
       { label: 'Origins', checked: App.view.showOrigin, action: function () { App.view.showOrigin = !App.view.showOrigin; UI.updateOrigin(); } },
+      { label: 'Axes', checked: App.view.showAxes !== false, action: function () { App.view.showAxes = App.view.showAxes === false; UI.updatePlanes(); } },   // lane CZ
+      { label: 'Points', checked: App.view.showPoints !== false, action: function () { App.view.showPoints = App.view.showPoints === false; UI.updatePlanes(); } },
+      { label: 'Coordinate Systems', checked: App.view.showCsys !== false, action: function () { App.view.showCsys = App.view.showCsys === false; UI.updatePlanes(); } },
       { label: 'Sketches', checked: App.view.showSketches, action: function () { App.view.showSketches = !App.view.showSketches; UI.updateSketches(); } },
       { label: 'Sketch grid', checked: App.view.showGrid, action: function () { App.view.showGrid = !App.view.showGrid; App.gridStale = true; } },
       { label: 'Snap to model', checked: App.view.snapModel !== false, action: function () { App.view.snapModel = App.view.snapModel === false; } }   // p9-modelsnap

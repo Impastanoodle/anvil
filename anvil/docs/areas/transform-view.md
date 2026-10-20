@@ -62,5 +62,7 @@ App.view = { style: 'shadedEdges', bg: 'gradient', showPlanes, showOrigin, showS
 - The Levels Manager and level popup are white with dark text in both themes (own palette, `color-scheme: light`); 20 px rows, FeatureManager font (rfBT).
 - Levels sync runs before every rebuild, load, sketch redraw and status refresh (wrappers): heavy work in `sync` slows everything.
 - View tab: the Levels Manager button is removed for assemblies (`viewTab(true)`); F5 refreshes the ribbon so `filter` follows. Show Endpoints is `App.view.showEndpoints` (localStorage `anvil.showEndpoints`, default on).
-- Graphics area is grey-black in every theme; previews must read on it (magenta for Transform, orange for sketch commands); HUD glyphs need `--icon-ink` light on it.
+- Graphics area is grey-black in every theme; previews must read on it (magenta for Transform, orange for sketch commands); HUD glyphs need `--icon-ink` light on it. CSS overlays take the `--ov-*` variables (see ui-core card; rfDA).
+- Group captions (`captions()`): a group narrower than its name gets a caption as wide as the name (`capTextWidth`, canvas measure at the ribbon's font), centred and clamped between its neighbours; the View tab's Managers was cut to "Mana" (rfDA).
+- The View Selector sits on the model, not the middle (lane DA); the Space / heads-up View Orientation menu moves beside it.
 - `r11/occtswap11` is a known timing flake in full headless runs (passes alone).

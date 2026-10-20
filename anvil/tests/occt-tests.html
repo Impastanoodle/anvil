@@ -423,6 +423,74 @@
     } catch (e) { row('bad', 'cut across a bend, OpenCascade = Anvil: ' + cb.name, e.message); counts.fail++; }
   }
   // --- end cutbend ---
+  // --- CW (2026-10-20): Break-Corner and a Normal Cut across a bend on OpenCascade. Exact volumes (the uncut part's
+  // OpenCascade volume less exactly what the feature takes, within 1e-6): a fillet R takes (1 − π/4)·R²·T per 90°
+  // corner, a chamfer d takes d²/2·T. A Normal Cut of a Ø.375 hole straddling a 16 ga bend's tangent line, sketched on
+  // the top face (rfBZ), follows the sheet across the bend: the half disk on the base through T, plus the hole's
+  // footprint on the bend's inside surface pushed radially through T = T·(R + T/2)·∫ 2√(r² − R² sin²θ) dθ (was: the
+  // OpenCascade tool kept only the part of the bend below the sketch plane, half the metal). Both kernels' flats:
+  // same size, loops and bends; DXF entity counts equal for the corner cases (ARCs for the fillets). ---
+  var CW_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -3, 4, 3).end().baseFlange();\n';
+  var CW_L = CW_HEAD + 'p.flange(1.5, [[0, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\n';
+  var CW_BC = function (size, corners, opts) { return 'p.breakCorner(' + size + ', ' + JSON.stringify(corners) + ', ' + JSON.stringify(opts) + ');\n'; };
+  var CW_NC = SH_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 4]], { position: "inside", lengthRef: "outer" });\n', CW_Z0 = 4 - 2 * SH_T, cwChord = 0;
+  for (var cwi = 0; cwi < 20000; cwi++) { var cwTh = (cwi + 0.5) * Math.PI / 2 / 20000; cwChord += 2 * Math.sqrt(0.1875 * 0.1875 - SH_T * SH_T * Math.sin(cwTh) * Math.sin(cwTh)) * Math.PI / 2 / 20000; }
+  // CW2: Closed Corner (lane CS) on rfCS's 4 × 3 tray, four 1.0 in edge flanges as separate features (each later wall
+  // stops R short of its neighbour); Overlap, ratio .75, gap .01 (as rfCS): each corner adds a wall strip
+  // (1 − R − T) high, T thick and R + .75·T − (T + gap) wide, so the tray gains exactly 4·H·T·(R + .75T − T − gap)
+  var CW_TRAY = CW_HEAD + [[2, SH_T, 0], [4, SH_T, 1.5], [2, SH_T, 3], [0, SH_T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('');
+  var CW_F4 = [[SH_T / 2, 0.6, 2 * SH_T], [4 - SH_T / 2, 0.6, 2 * SH_T], [4 - 2 * SH_T, 0.6, 3 - SH_T / 2], [SH_T / 2, 0.6, 3 - 2 * SH_T]];
+  var CW_CASES = [
+    { name: 'Closed Corner Overlap (ratio .75, gap .01) on all four corners of a 16 ga 4 × 3 tray', plain: CW_TRAY,
+      code: CW_TRAY + 'p.closedCorner(' + JSON.stringify(CW_F4) + ', ' + JSON.stringify({ cornerType: 'overlap', gap: 0.01, ratio: 0.75, coplanar: false }) + ');',
+      removed: -4 * (1 - 2 * SH_T) * SH_T * (SH_T + 0.75 * SH_T - (SH_T + 0.01)), loops: 1 },
+    { name: 'Break-Corner fillet R .25 on the four corners of a 4 × 3 base', plain: null, code: CW_HEAD + CW_BC(0.25, [[0, SH_T / 2, 0], [4, SH_T / 2, 0], [4, SH_T / 2, 3], [0, SH_T / 2, 3]], { kind: 'fillet' }), exact: (12 - 4 * (1 - Math.PI / 4) * 0.0625) * SH_T, loops: 1, arcs: 4, dxf: true },
+    { name: 'Break-Corner chamfer .2 on the free base corners of an L bracket', plain: CW_L, code: CW_L + CW_BC(0.2, [[4, SH_T / 2, 0], [4, SH_T / 2, 3]], {}), removed: 2 * 0.02 * SH_T, loops: 1, arcs: 0, dxf: true },
+    { name: 'Normal Cut of a Ø.375 hole straddling a bend\'s tangent line, cut from the top face, goes through the whole bend normal to the sheet', plain: CW_NC,
+      code: CW_NC + 'p.sketch("Top", ' + SH_T + ').circle(3, ' + (-CW_Z0) + ', 0.1875).cut("through", { reverse: true, normalCut: true });', removed: SH_T * Math.PI * 0.1875 * 0.1875 / 2 + SH_T * 1.5 * SH_T * cwChord, loops: 2, holeArea: true },
+    // the flat of a plain cut after the bend that bites into the bend below the top (rfCW): OpenCascade's bend surface
+    // is an unstructured triangulation round the hole, whose tilted triangles the unfold used to drop, so the uncut
+    // inside surface read as a gap across the strip and the blank fell apart in two at the bend (no exact volume: the
+    // cut thins the bend; volumes and hole areas agree within the faceting)
+    { name: 'flat of a Ø.25 hole cut from the top at a bend\'s tangent line (bites into the bend below the top): one blank, one hole on both kernels', plain: null,
+      code: CW_HEAD + 'p.flange(1.5, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.sketch("Top", ' + SH_T + ').circle(' + (4 - 2 * SH_T) + ', -1.5, 0.125).cut("through", { reverse: true });', loops: 2, holeArea: true }
+  ];
+  for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
+    var cw = CW_CASES[cwk], tcw = performance.now();
+    try {
+      var cwm = K.newModel('T'); K.runScript(cwm, cw.code);
+      var cwb = K.rebuild(cwm), cwmesh = K.meshFromBody(cwb.body), whyW = [];
+      if (Object.keys(cwb.errors).length) whyW.push('Anvil errors ' + JSON.stringify(cwb.errors));
+      var cwr = await occt(cwm, { noCache: true });
+      if (cwr.unsupported) whyW.push('OpenCascade: unsupported ' + cwr.unsupported);
+      Object.keys(cwr.status).forEach(function (id) { if (cwr.status[id] !== 'ok') whyW.push('OpenCascade feature ' + id + ': ' + cwr.status[id]); });
+      if (!cwr.valid) whyW.push('invalid solid');
+      var cwa = K.massProps(cwmesh, 1).volume;
+      if (!(Math.abs(cwr.volume - cwa) / cwa <= (cwr.tolerance || 1e-4))) whyW.push('volume ' + cwr.volume.toFixed(6) + ' vs Anvil ' + cwa.toFixed(6));
+      var cwWant = cw.exact;
+      if (cw.plain) { var cwp = K.newModel('T'); K.runScript(cwp, cw.plain); K.rebuild(cwp); var cwpr = await occt(cwp, { noCache: true }); cwWant = cwpr.volume - cw.removed; }
+      if (cwWant == null) cwWant = cwr.volume;
+      else if (!(Math.abs(cwr.volume - cwWant) <= 1e-6 * cwWant)) whyW.push('OpenCascade volume ' + cwr.volume.toFixed(8) + ', exact ' + cwWant.toFixed(8));
+      var cwfa = K.flatPattern(cwm, cwb, cwmesh), cwfo = null;
+      if (!whyW.length) {
+        var cwob = OcctKernel.toBuild(cwr, cwb, cwmesh, null, CSG, K);
+        cwfo = K.flatPattern(cwm, cwob, K.meshFromBody(cwob.body));
+        [0, 1].forEach(function (k) { if (Math.abs(cwfo.size[k] - cwfa.size[k]) > 1e-6) whyW.push('flat ' + 'wh'[k] + ' ' + cwfo.size[k].toFixed(4) + ' vs Anvil ' + cwfa.size[k].toFixed(4)); });
+        if (cwfo.loops.length !== cw.loops || cwfa.loops.length !== cw.loops) whyW.push('loops ' + cwfo.loops.length + ' / Anvil ' + cwfa.loops.length + ', want ' + cw.loops);
+        if (cwfo.bends.length !== cwfa.bends.length) whyW.push('bends ' + cwfo.bends.length + ' / Anvil ' + cwfa.bends.length);
+        var cwSrt = function (o) { var s = {}; Object.keys(o).sort().forEach(function (k) { s[k] = o[k]; }); return JSON.stringify(s); };
+        if (cw.dxf && cwSrt(shDxf(cwfo)) !== cwSrt(shDxf(cwfa))) whyW.push('DXF ' + JSON.stringify(shDxf(cwfo)) + ' vs Anvil ' + JSON.stringify(shDxf(cwfa)));
+        if (cw.holeArea && cwfo.loops.length === 2 && cwfa.loops.length === 2) {
+          var cwHo = Math.abs(K.signedArea(cwfo.loops[1])), cwHa = Math.abs(K.signedArea(cwfa.loops[1]));
+          if (!(Math.abs(cwHo - cwHa) <= 0.015 * cwHa)) whyW.push('hole area ' + cwHo.toFixed(5) + ' vs Anvil ' + cwHa.toFixed(5));
+        }
+        if (cw.arcs != null) [['OpenCascade', cwfo], ['Anvil', cwfa]].forEach(function (q) { var dq = shDxf(q[1]); if ((dq['ARC/OUTLINE'] || 0) !== cw.arcs) whyW.push(q[0] + ' flat DXF ' + JSON.stringify(dq) + ', want ' + cw.arcs + ' ARC on OUTLINE'); });
+      }
+      row(whyW.length ? 'bad' : 'ok', 'OpenCascade = Anvil: ' + cw.name, whyW.join('\n') || ('volume ' + cwr.volume.toFixed(8) + ' (exact ' + cwWant.toFixed(8) + ', Anvil ' + cwa.toFixed(6) + '), flat ' + cwfo.size.map(function (v) { return v.toFixed(4); }).join(' × ') + ' in, ' + cwfo.loops.length + ' loop' + (cwfo.loops.length === 1 ? '' : 's') + ', DXF ' + JSON.stringify(shDxf(cwfo))), performance.now() - tcw);
+      counts[whyW.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'OpenCascade = Anvil: ' + cw.name, e.message); counts.fail++; }
+  }
+  // --- end CW ---
   // --- rfI: pick tolerances in the model's units on both kernels (0.5 mm, 0.5 / 25.4 in an inch part, or the feature's
   // size): on a small inch part a fillet picked 0.3 mm off its edge and a shell picked on its face build to the exact
   // volume; a fillet picked 1.5 mm off and a shell picked .15 in above the face are refused by both (OpenCascade's shell

@@ -127,7 +127,15 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   }
   function isCopyFeature(f) { return !!f && (f.type === 'lpattern' || f.type === 'cpattern' || (f.type === 'mirror' && !f.body)); }
   // a pattern's own copy transforms, in the order buildTool makes them
-  function ownTransforms(f) {
+  // lane CZ: the reference Axis feature a circular pattern / revolve turns about (`axisRef: id`, or `axis: 'ref:<id>'`
+  // as a PropertyManager list writes it), or null
+  function refAxisId(f) {
+    if (!f) return null;
+    if (f.axisRef != null && f.axisRef !== '') return +f.axisRef;
+    var m = typeof f.axis === 'string' ? /^ref:(\d+)$/.exec(f.axis) : null;
+    return m ? +m[1] : null;
+  }
+  function ownTransforms(f, planesById) {
     var out = [];
     if (f.type === 'lpattern') {
       var d1 = scale(AXES[f.d1 || 'x'], f.rev1 ? -1 : 1), n1 = Math.max(1, f.n1 | 0), n2 = f.d2 ? Math.max(1, f.n2 | 0) : 1;
@@ -136,7 +144,10 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
     } else if (f.type === 'cpattern') {
       var count = Math.max(2, f.n | 0), total = +f.angle || 360;
       var step = (f.equal === false) ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
-      var rot = function (ang) { return xfFromMap(function (p) { return _.rotatePoint(p, f.center || [0, 0, 0], AXES[f.axis || 'z'], ang); }); };
+      var ra = refAxisId(f), rg = ra != null && planesById ? planesById[ra] : null;   // lane CZ: about a reference axis
+      if (ra != null && !(rg && rg.refgeo === 'axis')) return out;
+      var rc = rg ? rg.o : f.center || [0, 0, 0], rd = rg ? rg.d : AXES[f.axis || 'z'];
+      var rot = function (ang) { return xfFromMap(function (p) { return _.rotatePoint(p, rc, rd, ang); }); };
       for (var k = 1; k < count; k++) out.push(rot(step * k * Math.PI / 180));
     } else if (f.type === 'mirror' && !f.body) {
       var mp = makePlane(f.plane || 'Right', f.offset || 0);
@@ -146,20 +157,20 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   }
   // patternFamily(id): the seed (identity) and every copy down a pattern chain to its extrude, { root, list } or null;
   // patternCopies(P): the pattern's own part of it (its copies of its source's whole family), as its tool is made
-  function patternFamily(id, model, depth) {
+  function patternFamily(id, model, depth, planesById) {
     var f = _.findFeature(model, id);
     depth = depth || 0;
     if (!f || depth > 8) return null;
     if (f.type === 'extrude') return { root: f, list: [XF_ID] };
     if (!isCopyFeature(f)) return null;
-    var base = patternFamily(f.feature, model, depth + 1), own = patternCopies(f, model, depth + 1);
+    var base = patternFamily(f.feature, model, depth + 1, planesById), own = patternCopies(f, model, depth + 1, planesById);
     return base && own ? { root: own.root, list: base.list.concat(own.list) } : null;
   }
-  function patternCopies(P, model, depth) {
-    var base = patternFamily(P.feature, model, (depth || 0) + 1);
+  function patternCopies(P, model, depth, planesById) {
+    var base = patternFamily(P.feature, model, (depth || 0) + 1, planesById);
     if (!base) return null;
     var list = [];
-    ownTransforms(P).forEach(function (T) { base.list.forEach(function (B) { list.push(xfThen(T, B)); }); });
+    ownTransforms(P, planesById).forEach(function (T) { base.list.forEach(function (B) { list.push(xfThen(T, B)); }); });
     return { root: base.root, list: list };
   }
   // the cap of extrude `root` under transform X: { n, w, local } (local: its normal before X)
@@ -184,7 +195,7 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
       var g = P;
       for (var d = 0; g && g.id !== featureId && isCopyFeature(g) && d < 9; d++) g = _.findFeature(m, g.feature);
       if (!g || g.id !== featureId) return;
-      var cp = patternCopies(P, m);
+      var cp = patternCopies(P, m, 0, pb);
       if (!cp) return;
       cp.list.forEach(function (X, k) {
         ['far', 'near'].forEach(function (which) {
@@ -200,7 +211,7 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   function capFrame(fr, src, pl, model, planesById) {
     var root = src, X = XF_ID, lx = pl.x, ln = pl.n, lo = null;
     if (fr.inst != null) {
-      var cp = isCopyFeature(src) ? patternCopies(src, model) : null;
+      var cp = isCopyFeature(src) ? patternCopies(src, model, 0, planesById) : null;
       if (!cp || !cp.list[fr.inst] || !fr.lx || !fr.ln || !fr.lo) return null;
       root = cp.root; X = cp.list[fr.inst]; lx = fr.lx; ln = fr.ln; lo = fr.lo;
     }
@@ -329,6 +340,7 @@ Object.defineProperty(Kernel, '_', { value: {}, enumerable: false });   // the i
   K.faceRef = faceRef; K.resolveFacePlane = resolveFacePlane; K.capPlane = capPlane; K.patternCopies = patternCopies; K.tidyPlane = tidyPlane;
   K.to3D = to3D; K.to2D = to2D; K.vec = { add: add, sub: sub, scale: scale, dot: dot, cross: cross, len: len, norm: norm };
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
+  K.refAxisId = refAxisId; _.refAxisId = refAxisId;   // lane CZ
   _.AXES = AXES; _.add = add; _.arr = arr; _.cross = cross; _.dot = dot; _.ensureOutward = ensureOutward; _.faceCopy = faceCopy; _.len = len;
   _.makePlane = makePlane; _.norm = norm; _.planeFromFace = planeFromFace; _.poly = poly; _.pushPoly = pushPoly;
   _.resolveFacePlane = resolveFacePlane; _.resolvePlane = resolvePlane; _.scale = scale; _.sub = sub; _.tidyPlane = tidyPlane; _.to2D = to2D;

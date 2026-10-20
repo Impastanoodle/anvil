@@ -398,7 +398,7 @@ body { overflow: hidden; }   /* r12/chrome12: the window never scrolls sideways;
 #hud button.off:hover { background: transparent; border-color: transparent; }
 #hud .sep { width: 1px; height: 18px; background: var(--line); margin: 0 3px; }
 #hud .dd { position: relative; }
-#hud .caret { font-size: 9px; line-height: 1; color: var(--muted); margin-left: 1px; width: 7px; text-align: center; }
+#hud .caret { font-size: 9px; line-height: 1; color: var(--ov-muted, var(--muted)); margin-left: 1px; width: 7px; text-align: center; }
 /* rfBR: the Heads-up toolbar over the grey-black graphics area: light glyphs, neutral grey frames */
 #viewport, #viewport.bg-dark, html[data-theme="dark"] #viewport { --hud-hover: rgba(255,255,255,0.12); --hud-hover-line: #6e6e6e; --hud-on: rgba(255,255,255,0.2); --hud-on-line: #a0a0a0; }
 #viewport #hud button { color: #e6e6e6; }
@@ -601,7 +601,7 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 #modal-body th { color: var(--muted); font-weight: 600; width: 40%; }
 #modal-body kbd { font-family: var(--mono); background: var(--code-bg); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; font-size: 11px; }
 #modal-buttons { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel-2); }
-.toast { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); background: var(--toast-bg); color: var(--toast-text); padding: 6px 14px; border-radius: 3px; z-index: 70; font-size: 12px; opacity: 0.95; }
+.toast { position: fixed; bottom: 34px; left: var(--gfx-cx, 50%); transform: translateX(-50%); background: var(--toast-bg); color: var(--toast-text); padding: 6px 14px; border-radius: 3px; z-index: 70; font-size: 12px; opacity: 0.95; max-width: calc(var(--gfx-w, 100vw) - 32px); box-sizing: border-box; }   /* lane DA: centred over the graphics area (ui-app.js placeGfxCentre) */
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
@@ -701,18 +701,18 @@ html[data-theme="dark"] #sketch-hint b, #viewport #sketch-hint b { color: #ecece
 #i3d-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
 #i3d-layer .i3d-handle { pointer-events: all; cursor: grab; }
 #i3d-layer .i3d-grip { stroke: transparent; stroke-width: 14; fill: transparent; }
-#i3d-layer .i3d-shaft { stroke: #3a3a3a; stroke-width: 2.5; }
-#i3d-layer .i3d-head { fill: #3a3a3a; }
-#i3d-layer .i3d-base { fill: #fff; stroke: #3a3a3a; stroke-width: 1.5; }
-#i3d-layer .i3d-dot { fill: #3a3a3a; stroke: #fff; stroke-width: 1.5; }
+#i3d-layer .i3d-shaft { stroke: var(--ov-ink, #3a3a3a); stroke-width: 2.5; }
+#i3d-layer .i3d-head { fill: var(--ov-ink, #3a3a3a); }
+#i3d-layer .i3d-base { fill: var(--ov-halo, #fff); stroke: var(--ov-ink, #3a3a3a); stroke-width: 1.5; }
+#i3d-layer .i3d-dot { fill: var(--ov-ink, #3a3a3a); stroke: var(--ov-halo, #fff); stroke-width: 1.5; }
 /* r12/sketchui12: in an open sketch the dimension dots stay hidden until the pointer is over one (SolidWorks draws no dots on sketch dimensions) */
 #i3d-layer .i3d-handle:hover .i3d-shaft { stroke: #ff8c1a; }
 #i3d-layer .i3d-handle:hover .i3d-head, #i3d-layer .i3d-handle:hover .i3d-dot { fill: #ff8c1a; }
-#i3d-layer .i3d-ruler { fill: none; stroke: #272727; stroke-width: 1; }
-#i3d-layer .i3d-tick { stroke: #272727; stroke-width: 1; }
+#i3d-layer .i3d-ruler { fill: none; stroke: var(--ov-ink-2, #272727); stroke-width: 1; }
+#i3d-layer .i3d-tick { stroke: var(--ov-ink-2, #272727); stroke-width: 1; }
 #i3d-layer .i3d-tick.major { stroke-width: 1.5; }
-#i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: #272727; }
-#i3d-layer .i3d-value { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #3a3a3a; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+#i3d-layer .i3d-tick-label { font: 10px "Segoe UI", sans-serif; fill: var(--ov-ink-2, #272727); paint-order: stroke; stroke: var(--ov-halo, #fff); stroke-width: 2.5px; }
+#i3d-layer .i3d-value { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: var(--ov-ink, #3a3a3a); paint-order: stroke; stroke: var(--ov-halo, #fff); stroke-width: 3px; }
 #i3d-layer .i3d-dim line, #i3d-layer .i3d-dim .i3d-dim-line { stroke: #b4b4b4; stroke-width: 1; fill: none; }   /* r14/sketchui14: feature dimensions in the part laid out as the sketch's (ANSI); rfBU: the sketch dimensions' greys (was driving blue) */
 #i3d-layer .i3d-dim polygon, #i3d-layer .i3d-dim .i3d-dim-arrow { fill: #b4b4b4; stroke: none; }
 #i3d-layer .i3d-dim-text { font: 13px "Century Gothic", "URW Gothic", "URW Gothic L", "TeX Gyre Adventor", "Avant Garde", Futura, "Segoe UI", Arial, sans-serif; fill: #f2f2f2; pointer-events: all; cursor: text; paint-order: stroke; stroke: #1e1e1e; stroke-width: 3px; }
@@ -987,7 +987,7 @@ body.splitting #viewport { pointer-events: none; }
 /* rfBR: the graphics area is grey-black in every background and theme, so these always apply, in neutral greys */
 #viewport #dim-layer, #viewport #ord-layer, #viewport #i3d-layer {
   --dim: #b4b4b4; --sketch: #ffffff; --dim-ink: #b4b4b4; --dim-text: #f2f2f2; --dim-halo: rgba(30,30,30,0.9);
-  --blue: #e0e0e0; --green: #5cc46a; --text: #e6e6e6; --menu-bg: #2b2b2b;
+  --blue: #e0e0e0; --green: #5cc46a; --text: #e6e6e6; --menu-bg: #2b2b2b; --muted: var(--ov-muted);   /* lane DA: --muted (virtual-sharp lines) */
 }
 /* rfBU: the Instant2D ruler and its labels too: light grey with a dark halo (were blue) */
 #viewport #i2d-layer { --blue: #e0e0e0; --dim-halo: rgba(30,30,30,0.9); }
@@ -1329,3 +1329,18 @@ body.splitting #viewport { pointer-events: none; }
 #viewport #sketch-hint { pointer-events: none; background: rgba(30,30,30,0.9); }
 /* lane CC: the View tab (ui-panels.js viewTab): the eight view orientations as a grid of icon buttons, three rows */
 .rb-stack.rb-grid.rb-vgrid > .rb { width: 28px; }
+/* lane DA: every overlay drawn by CSS over the graphics area (Instant3D arrows, rulers and values, sketch dimension
+   layers, heads-up carets, the confirmation corner, virtual-sharp lines) reads its ink from these variables. :root
+   holds the inks for a light ground; #viewport (grey-black in every theme and background, rfBR) redefines them for
+   the dark ground, so a new overlay that uses them is legible on it. Text keeps a 4.5 : 1 contrast against the
+   lightest part of the ground (#3c3c3c, the top of the gradient); rfDA checks it. */
+:root { --ov-ink: #3a3a3a; --ov-ink-2: #272727; --ov-muted: #6a6a6a; --ov-halo: #ffffff; --ov-icon: #545454; --ov-red: #d9453b; }
+#viewport, :root[data-theme="dark"] #viewport, #viewport.bg-plain, #viewport.bg-dark { --ov-ink: #e6e6e6; --ov-ink-2: #dcdcdc; --ov-muted: #ababab; --ov-halo: #1e1e1e; --ov-icon: #d0d0d0; --ov-red: #ff7a72; }
+#viewport #exit-sketch { --icon-ink: var(--ov-icon); }
+#viewport #exit-sketch [fill="#d9453b"] { fill: var(--ov-red); }
+#viewport #exit-sketch [stroke="#d9453b"] { stroke: var(--ov-red); }
+#viewport #hud { --overlay: rgba(40,40,40,0.85); --line: #4f4f4f; --sel: rgba(255,255,255,0.22); }   /* the bar under the pointer (and on the Dark background) is a dark one in the light theme too */
+/* lane DA: the status-bar coordinates keep their place: a fixed-width box, and the chips to their right reserve
+   room (ui-app.js holdStatusRight keeps the widest the chips have been, until the window is resized) */
+#status-coords { flex: none; width: clamp(220px, 24vw, 380px); min-width: 0; max-width: none; }
+#status-right { flex: none; justify-content: flex-end; min-width: min(480px, 34vw); }   /* room for the sketch-mode chips from the start */

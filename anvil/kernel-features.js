@@ -423,9 +423,405 @@
     return out;
   }
 
+  // ------------------------------------------------------------------ lane CZ: reference geometry (Axis, Point, Coordinate System)
+  // Three feature types that change no body; rebuild resolves each into a record kept in ctx.planes[f.id] (so the
+  // rebuild cache, packBuild / unpackBuild and the worker carry it like a reference plane's frame):
+  //   { type: 'refaxis', kind: 'line' | 'planes' | 'points' | 'cyl' | 'pointFace', refs: [ref, ref?] }
+  //       -> { refgeo: 'axis', o, d (unit), a, b (the drawn extent: the reference's own, else the part's) }
+  //   { type: 'refpoint', kind: 'arc' | 'face' | 'intersect' | 'project' | 'on' | 'along', refs: [ref, ref?],
+  //     distance?, percent?, reverse? }   -> { refgeo: 'point', p }
+  //   { type: 'csys', origin?: ref, x?: ref, y?: ref, z?: ref, flipX?, flipY?, flipZ? }
+  //       -> { refgeo: 'csys', origin, x, y, z, n (= z): a frame, so its XY plane can be a sketch plane }
+  // A ref is one of: { plane: 'Front' | 'Top' | 'Right' | <plane / csys feature id> }, { axis: 'x' | 'y' | 'z' | <axis
+  // feature id> }, { point: 'origin' | <point / csys feature id> }, { face: [x, y, z] }, { edge: [x, y, z] },
+  // { vertex: [x, y, z] } (snapped to the nearest body vertex), { sketch: id, entity: i, end?: 'p1' | 'p2' | 'c' }.
+  // Face / edge / vertex refs are points on the body before the feature, re-resolved at every rebuild (pickTol), so
+  // the reference follows the model as long as the face or edge is still there.
+  var REF_EPS = 1e-9;
+  function refTol(ctx) { return _.pickTol(ctx.units || 'mm'); }
+  function refErr(msg) { return new Error(msg); }
+  function fmtPt(p) { return '(' + p.map(function (x) { return Math.round(x * 1000) / 1000; }).join(', ') + ')'; }
+  function polyN(poly) { return [poly.plane.normal.x, poly.plane.normal.y, poly.plane.normal.z]; }
+  function polyPts(poly) { return poly.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }); }
+  function needBody(ctx) {
+    if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) throw refErr('This reference needs a solid body, and there is none before this feature.');
+    return ctx.body;
+  }
+  // how far p lies outside a convex polygon (0 inside), measured in its plane, plus its distance from the plane
+  function polyScore(poly, p) {
+    var n = polyN(poly), pts = polyPts(poly), out = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var a = pts[i], b = pts[(i + 1) % pts.length], inward = cross(n, sub(b, a)), l = len(inward);
+      if (l < 1e-12) continue;
+      out = Math.max(out, -dot(sub(p, a), inward) / l);
+    }
+    return Math.abs(dot(n, p) - poly.plane.w) + out;
+  }
+  function polyAt(body, p, tol) {
+    var best = null, bs = tol;
+    body.polygons.forEach(function (poly) {
+      if (Math.abs(dot(polyN(poly), p) - poly.plane.w) >= bs) return;
+      var s = polyScore(poly, p);
+      if (s < bs) { bs = s; best = poly; }
+    });
+    return best;
+  }
+  function surfOf(q) { return q.surf && q.surf.s ? q.surf.s : null; }   // polygon.surf = { s: surface, … } (kernel-curves.js)
+  function curvedSurf(s) { return !!(s && s.t && s.t !== 'plane' && s.o); }
+  function sameSurf(a, b) {
+    if (!a || !b || a.t !== b.t) return false;
+    if (len(sub(a.o, b.o)) > 1e-7 * (1 + len(a.o))) {
+      // two points on the same axis line are the same cylinder's axis
+      if (!(a.d && b.d)) return false;
+      var v = sub(b.o, a.o), dd = norm(a.d);
+      if (len(sub(v, scale(dd, dot(v, dd)))) > 1e-7 * (1 + len(a.o))) return false;
+    }
+    if (a.d && b.d && Math.abs(Math.abs(dot(norm(a.d), norm(b.d))) - 1) > 1e-9) return false;
+    return Math.abs((a.r || 0) - (b.r || 0)) < 1e-9 && Math.abs((a.R || 0) - (b.R || 0)) < 1e-9;
+  }
+  // the face under a picked point: { kind: 'plane', n, o, polys } or { kind: 'cyl' | 'cone' | 'sph' | 'tor', o, d, polys }
+  function refFace(at, ctx) {
+    var body = needBody(ctx), poly = polyAt(body, at, refTol(ctx));
+    if (!poly) throw refErr('A referenced face is gone (nothing at ' + fmtPt(at) + ').');
+    var s = surfOf(poly);
+    if (curvedSurf(s)) return { kind: s.t, o: s.o.slice(), d: s.d ? norm(s.d) : [0, 0, 1], surf: s, polys: body.polygons.filter(function (q) { return sameSurf(surfOf(q), s); }) };
+    // a planar face: the polygons of its plane connected to the picked one through shared vertices
+    var n = polyN(poly), w = poly.plane.w;
+    var pool = body.polygons.filter(function (q) { return !curvedSurf(surfOf(q)) && dot(polyN(q), n) > 1 - 1e-9 && Math.abs(q.plane.w - w) < 1e-7 * (1 + Math.abs(w)); });
+    var seen = [poly], keys = {}, grew = true;
+    polyPts(poly).forEach(function (P) { keys[_.ekey(P)] = 1; });
+    while (grew) {
+      grew = false;
+      pool.forEach(function (q) {
+        if (seen.indexOf(q) >= 0) return;
+        var pts = polyPts(q);
+        if (!pts.some(function (P) { return keys[_.ekey(P)]; })) return;
+        seen.push(q); grew = true;
+        pts.forEach(function (P) { keys[_.ekey(P)] = 1; });
+      });
+    }
+    return { kind: 'plane', n: n, o: sub(at, scale(n, dot(n, at) - w)), w: w, polys: seen };
+  }
+  // area-weighted centroid of a set of convex polygons
+  function polysCentroid(polys) {
+    var A = 0, c = [0, 0, 0];
+    polys.forEach(function (q) {
+      var pts = polyPts(q);
+      for (var j = 1; j + 1 < pts.length; j++) {
+        var a = len(cross(sub(pts[j], pts[0]), sub(pts[j + 1], pts[0]))) / 2;
+        A += a; c = add(c, scale(add(add(pts[0], pts[j]), pts[j + 1]), a / 3));
+      }
+    });
+    return A > 0 ? scale(c, 1 / A) : null;
+  }
+  // the sharp body edges (cached per body for the rebuild)
+  function refEdges(ctx) {
+    var body = needBody(ctx), c = ctx._refEdges;
+    if (c && c.body === body) return c.edges;
+    var edges = bodyEdges(meshFromBody(body)).filter(function (e) { return !e.smooth; });
+    ctx._refEdges = { body: body, edges: edges };
+    return edges;
+  }
+  // a picked model edge: { seg, line: { a, b } (its straight run), circle: { c, d, r } | null }
+  function refEdge(at, ctx) {
+    var edges = refEdges(ctx), tol = refTol(ctx), best = null, bd = tol;
+    edges.forEach(function (e) { var d = pointSegmentDistance(at, e.a, e.b); if (d < bd) { bd = d; best = e; } });
+    if (!best) throw refErr('A referenced edge is gone (nothing at ' + fmtPt(at) + ').');
+    // a circular edge: a cylinder / cone beside it whose axis is not along the edge
+    var circle = null;
+    ctx.body.polygons.forEach(function (q) {
+      if (circle) return;
+      var s = surfOf(q);
+      if (!s || (s.t !== 'cyl' && s.t !== 'cone') || !s.o || !s.d) return;
+      var d = norm(s.d);
+      if (Math.abs(dot(d, best.dir)) > 0.5) return;
+      if (polyScore(q, best.mid) > tol) return;
+      var c = add(s.o, scale(d, dot(sub(best.a, s.o), d)));
+      circle = { c: c, d: d, r: len(sub(best.a, c)) };
+    });
+    // the straight run: exactly collinear sharp edges joined end to end
+    var a = best.a, b = best.b, dir = best.dir, grew = !circle, used = [best];
+    var onLine = function (p) { var v = sub(p, best.a); return len(sub(v, scale(dir, dot(v, dir)))) < 1e-7 * (1 + len(p)); };
+    while (grew) {
+      grew = false;
+      edges.forEach(function (e) {
+        if (used.indexOf(e) >= 0 || Math.abs(dot(e.dir, dir)) < 1 - 1e-9 || !onLine(e.a) || !onLine(e.b)) return;
+        var ta = dot(sub(e.a, best.a), dir), tb = dot(sub(e.b, best.a), dir), t0 = dot(sub(a, best.a), dir), t1 = dot(sub(b, best.a), dir);
+        if (Math.min(ta, tb) > Math.max(t0, t1) + 1e-7 || Math.max(ta, tb) < Math.min(t0, t1) - 1e-7) return;
+        used.push(e); grew = true;
+        var lo = Math.min(ta, tb, t0, t1), hi = Math.max(ta, tb, t0, t1);
+        a = add(best.a, scale(dir, lo)); b = add(best.a, scale(dir, hi));
+      });
+    }
+    // the run's start is the end its largest direction component points away from (the edge's own direction
+    // depends on which face outline found it, so it could flip from one rebuild to the next)
+    var dv = sub(b, a), kmax = 0;
+    for (var k = 1; k < 3; k++) if (Math.abs(dv[k]) > Math.abs(dv[kmax]) + 1e-9) kmax = k;
+    if (dv[kmax] < 0) { var sw = a; a = b; b = sw; }
+    return { seg: best, line: { a: a, b: b }, circle: circle };
+  }
+  function refSketch(r, ctx, model) {
+    var sk = (ctx.sketches && ctx.sketches[r.sketch]) || findFeature(model, r.sketch);
+    if (!sk || sk.type !== 'sketch') throw refErr('A referenced sketch (feature ' + r.sketch + ') is gone.');
+    var e = sk.entities && sk.entities[r.entity];
+    if (!e) throw refErr('A referenced sketch entity (' + sk.name + ', entity ' + (r.entity + 1) + ') is gone.');
+    return { e: e, pl: resolvePlane(sk.plane, model, ctx.planes), sk: sk };
+  }
+  // a straight-sided sketch entity (rectangle, centre rectangle, polygon, polyline): its k-th corner / side
+  var POLY_TYPES = { rect: 1, crect: 1, poly: 1, polyline: 1 };
+  function polyPts2(e) {
+    if (!POLY_TYPES[e.t]) throw refErr('Pick a line, or a side / corner of a rectangle, polygon or polyline.');
+    var pl = entityPolylines(e)[0];
+    if (!pl || pl.pts.length < 2) throw refErr('The sketch entity has no sides.');
+    return pl;
+  }
+  function polyCorner(e, k) { var pl = polyPts2(e); if (k < 0 || k >= pl.pts.length) throw refErr('A referenced sketch corner is gone.'); return pl.pts[k]; }
+  function polySide(e, k) {
+    var pl = polyPts2(e), n = pl.pts.length;
+    if (k < 0 || k >= (pl.closed ? n : n - 1)) throw refErr('A referenced sketch side is gone.');
+    return [pl.pts[k], pl.pts[(k + 1) % n]];
+  }
+  function refGeoOf(id, ctx, kinds) {
+    var g = ctx.planes && ctx.planes[id];
+    if (!g || (kinds && kinds.indexOf(g.refgeo || 'plane') < 0)) throw refErr('A referenced feature (' + id + ') is missing or failed to rebuild.');
+    return g;
+  }
+  // -> [x, y, z]
+  function refPoint(r, ctx, model) {
+    if (Array.isArray(r)) return r.slice();
+    if (r.point === 'origin') return [0, 0, 0];
+    if (r.point != null) { var g = refGeoOf(r.point, ctx, ['point', 'csys']); return (g.p || g.origin).slice(); }
+    if (r.vertex) {
+      if (!ctx.body || !ctx.body.polygons || !ctx.body.polygons.length) return r.vertex.slice();
+      var best = null, bd = refTol(ctx);
+      ctx.body.polygons.forEach(function (q) { polyPts(q).forEach(function (P) { var d = len(sub(P, r.vertex)); if (d < bd) { bd = d; best = P; } }); });
+      if (!best) throw refErr('A referenced vertex is gone (nothing at ' + fmtPt(r.vertex) + ').');
+      return best;
+    }
+    if (r.sketch != null) {
+      var s = refSketch(r, ctx, model), e = s.e;
+      if (r.pt != null) { var cp = polyCorner(e, r.pt); return to3D(s.pl, cp[0], cp[1]); }
+      if (e.t === 'point') return to3D(s.pl, e.x, e.y);
+      if (e.cx != null && (r.end === 'c' || r.end == null)) return to3D(s.pl, e.cx, e.cy);
+      if (e.t === 'line') return r.end === 'p2' ? to3D(s.pl, e.x2, e.y2) : to3D(s.pl, e.x1, e.y1);
+      if (e.t === 'arc' && (r.end === 'p1' || r.end === 'p2')) { var an = (r.end === 'p1' ? e.a0 : e.a1) * Math.PI / 180; return to3D(s.pl, e.cx + e.r * Math.cos(an), e.cy + e.r * Math.sin(an)); }
+      throw refErr('Pick a sketch point, a line end or an arc centre.');
+    }
+    if (r.edge) { var ed = refEdge(r.edge, ctx); return ed.circle ? ed.circle.c : scale(add(ed.line.a, ed.line.b), 0.5); }
+    throw refErr('This reference is not a point.');
+  }
+  // -> { o, d (unit), a?, b? }
+  function refLine(r, ctx, model) {
+    if (r.axis === 'x' || r.axis === 'y' || r.axis === 'z') return { o: [0, 0, 0], d: _.AXES[r.axis].slice() };
+    if (r.axis != null) { var g = refGeoOf(r.axis, ctx, ['axis']); return { o: g.o.slice(), d: g.d.slice(), a: g.a, b: g.b }; }
+    if (r.edge) {
+      var ed = refEdge(r.edge, ctx);
+      if (ed.circle) throw refErr('A circular edge has no direction: pick a straight edge, or the cylindrical face for its axis.');
+      return { o: ed.line.a, d: norm(sub(ed.line.b, ed.line.a)), a: ed.line.a, b: ed.line.b };
+    }
+    if (r.sketch != null) {
+      var s = refSketch(r, ctx, model), e = s.e, A, B;
+      if (r.seg != null) { var sd = polySide(e, r.seg); A = to3D(s.pl, sd[0][0], sd[0][1]); B = to3D(s.pl, sd[1][0], sd[1][1]); }
+      else if (e.t !== 'line') throw refErr('Pick a sketch line.');
+      else { A = to3D(s.pl, e.x1, e.y1); B = to3D(s.pl, e.x2, e.y2); }
+      if (len(sub(B, A)) < REF_EPS) throw refErr('The sketch line has no length.');
+      return { o: A, d: norm(sub(B, A)), a: A, b: B };
+    }
+    if (r.face) {
+      var f = refFace(r.face, ctx);
+      if (f.kind === 'cyl' || f.kind === 'cone') return faceAxis(f);
+      throw refErr('Pick a straight edge, a sketch line, an axis or a cylindrical face.');
+    }
+    throw refErr('This reference is not a line.');
+  }
+  function faceAxis(f) {
+    var lo = Infinity, hi = -Infinity;
+    f.polys.forEach(function (q) { polyPts(q).forEach(function (P) { var t = dot(sub(P, f.o), f.d); lo = Math.min(lo, t); hi = Math.max(hi, t); }); });
+    var o = add(f.o, scale(f.d, isFinite(lo) ? lo : 0));
+    return { o: o, d: f.d.slice(), a: o, b: add(f.o, scale(f.d, isFinite(hi) ? hi : 0)) };
+  }
+  // -> { n (unit), o (a point on it) }
+  function refPlane(r, ctx, model) {
+    if (typeof r.plane === 'string') { var sp = _.makePlane(r.plane, 0); return { n: sp.n, o: sp.origin }; }
+    if (r.plane != null) { var g = refGeoOf(r.plane, ctx, ['plane', 'csys']); return { n: norm(g.n), o: (g.origin || [0, 0, 0]).slice() }; }
+    if (r.face) {
+      var f = refFace(r.face, ctx);
+      if (f.kind !== 'plane') throw refErr('Pick a planar face or a plane.');
+      return { n: f.n, o: f.o };
+    }
+    if (r.sketch != null && r.entity == null) {
+      var sk = (ctx.sketches && ctx.sketches[r.sketch]) || findFeature(model, r.sketch);
+      if (!sk || sk.type !== 'sketch') throw refErr('A referenced sketch is gone.');
+      var pl = resolvePlane(sk.plane, model, ctx.planes);
+      return { n: pl.n, o: pl.origin };
+    }
+    throw refErr('This reference is not a plane or a planar face.');
+  }
+  // a direction from a line ref or (failing that) a plane's normal
+  function refDir(r, ctx, model) {
+    if (r.plane != null || (r.sketch != null && r.entity == null)) return refPlane(r, ctx, model).n;
+    if (r.face) { var f = refFace(r.face, ctx); return f.kind === 'plane' ? f.n : f.d; }
+    return refLine(r, ctx, model).d;
+  }
+  // the drawn extent of an axis without one of its own: the part's box projected on it (or ±1 in / 25 mm)
+  function axisExtent(o, d, ctx) {
+    var bb = ctx.body && ctx.body.polygons && ctx.body.polygons.length ? ctx.body.getBounds() : null;
+    var lo, hi;
+    if (bb) {
+      lo = Infinity; hi = -Infinity;
+      for (var i = 0; i < 8; i++) { var c = [(i & 1 ? bb.max : bb.min)[0], (i & 2 ? bb.max : bb.min)[1], (i & 4 ? bb.max : bb.min)[2]], t = dot(sub(c, o), d); lo = Math.min(lo, t); hi = Math.max(hi, t); }
+    } else { var L = ctx.units === 'in' ? 1 : 25; lo = -L; hi = L; }
+    return { a: add(o, scale(d, lo)), b: add(o, scale(d, hi)) };
+  }
+  function lineLineClosest(L1, L2) {
+    var w = sub(L1.o, L2.o), b = dot(L1.d, L2.d), den = 1 - b * b;
+    if (den < 1e-12) return null;
+    var d1 = dot(L1.d, w), d2 = dot(L2.d, w), s = (b * d2 - d1) / den, t = (d2 - b * d1) / den;
+    return { p: add(L1.o, scale(L1.d, s)), q: add(L2.o, scale(L2.d, t)) };
+  }
+  function tidy3(v) { return v.map(function (x) { var r = Math.round(x * 1e9) / 1e9; return Math.abs(x - r) < 1e-12 ? r + 0 : x; }); }
+  function resolveRefAxis(f, ctx, model) {
+    var R = f.refs || [], o, d, ext = null;
+    switch (f.kind || 'line') {
+      case 'line': { if (!R[0]) throw refErr('Select a line, edge or axis.'); var L = refLine(R[0], ctx, model); o = L.o; d = L.d; if (L.a && L.b) ext = { a: L.a, b: L.b }; break; }
+      case 'cyl': {
+        if (!R[0] || !R[0].face) throw refErr('Select a cylindrical or conical face.');
+        var F = refFace(R[0].face, ctx);
+        if (F.kind !== 'cyl' && F.kind !== 'cone') throw refErr('The face is not cylindrical or conical.');
+        var FA = faceAxis(F); o = FA.o; d = FA.d; ext = { a: FA.a, b: FA.b }; break;
+      }
+      case 'planes': {
+        if (!R[0] || !R[1]) throw refErr('Select two planes or planar faces.');
+        var P1 = refPlane(R[0], ctx, model), P2 = refPlane(R[1], ctx, model);
+        d = cross(P1.n, P2.n);
+        if (len(d) < 1e-9) throw refErr('The two planes are parallel: they do not intersect.');
+        d = norm(d);
+        // the point on both planes nearest the world origin: x = α n1 + β n2
+        var w1 = dot(P1.n, P1.o), w2 = dot(P2.n, P2.o), c = dot(P1.n, P2.n), den = 1 - c * c;
+        o = add(scale(P1.n, (w1 - c * w2) / den), scale(P2.n, (w2 - c * w1) / den));
+        break;
+      }
+      case 'points': {
+        if (!R[0] || !R[1]) throw refErr('Select two points or vertices.');
+        var A = refPoint(R[0], ctx, model), B = refPoint(R[1], ctx, model);
+        if (len(sub(B, A)) < REF_EPS) throw refErr('The two points are the same point.');
+        o = A; d = norm(sub(B, A)); ext = { a: A, b: B }; break;
+      }
+      case 'pointFace': {
+        if (!R[0] || !R[1]) throw refErr('Select a point and a plane or planar face.');
+        var pt = refPoint(R[0], ctx, model), PL = refPlane(R[1], ctx, model);
+        o = pt; d = PL.n.slice(); break;
+      }
+      default: throw refErr('Unknown axis type "' + f.kind + '".');
+    }
+    if (!ext) ext = axisExtent(o, d, ctx);
+    return { refgeo: 'axis', o: tidy3(o), d: tidy3(norm(d)), a: tidy3(ext.a), b: tidy3(ext.b) };
+  }
+  function alongCurve(f, R, ctx, model) {
+    var dist = +f.distance || 0, pts, arc = null;
+    if (R[0].sketch != null) {
+      var se = refSketch(R[0], ctx, model), e = se.e;
+      if (R[0].seg != null) { var sd = polySide(e, R[0].seg); pts = [to3D(se.pl, sd[0][0], sd[0][1]), to3D(se.pl, sd[1][0], sd[1][1])]; }
+      else if (e.t === 'line') pts = [to3D(se.pl, e.x1, e.y1), to3D(se.pl, e.x2, e.y2)];
+      else if (e.t === 'arc' || e.t === 'circle') {
+        var a0 = e.t === 'circle' ? 0 : e.a0 * Math.PI / 180, a1 = e.t === 'circle' ? 2 * Math.PI : e.a1 * Math.PI / 180;
+        while (a1 <= a0) a1 += 2 * Math.PI;
+        arc = { pl: se.pl, e: e, a0: a0, a1: a1 };
+      } else throw refErr('Pick a sketch line or arc.');
+    } else {
+      var L = refLine(R[0], ctx, model);
+      if (!L.a || !L.b) throw refErr('Pick a straight edge or a sketch line / arc.');
+      pts = [L.a, L.b];
+    }
+    if (arc) {
+      var total = arc.e.r * (arc.a1 - arc.a0), want = f.percent ? dist / 100 * total : dist;
+      if (want < -1e-9 || want > total + 1e-9) throw refErr('The distance is off the end of the curve (its length is ' + Math.round(total * 1e4) / 1e4 + ').');
+      var an = f.reverse ? arc.a1 - want / arc.e.r : arc.a0 + want / arc.e.r;
+      return to3D(arc.pl, arc.e.cx + arc.e.r * Math.cos(an), arc.e.cy + arc.e.r * Math.sin(an));
+    }
+    if (f.reverse) pts = pts.slice().reverse();
+    var Ln = len(sub(pts[1], pts[0])), w2 = f.percent ? dist / 100 * Ln : dist;
+    if (w2 < -1e-9 || w2 > Ln + 1e-9) throw refErr('The distance is off the end of the curve (its length is ' + Math.round(Ln * 1e4) / 1e4 + ').');
+    return add(pts[0], scale(sub(pts[1], pts[0]), Ln > 0 ? w2 / Ln : 0));
+  }
+  function resolveRefPoint(f, ctx, model) {
+    var R = f.refs || [], p;
+    switch (f.kind || 'on') {
+      case 'arc': {
+        if (!R[0]) throw refErr('Select a circular edge or a sketch arc / circle.');
+        if (R[0].edge) { var ed = refEdge(R[0].edge, ctx); if (!ed.circle) throw refErr('The edge is not circular.'); p = ed.circle.c; }
+        else if (R[0].sketch != null) { var s = refSketch(R[0], ctx, model); if (s.e.cx == null) throw refErr('Pick a sketch arc or circle.'); p = to3D(s.pl, s.e.cx, s.e.cy); }
+        else if (R[0].face) { var cf = refFace(R[0].face, ctx); if (cf.kind === 'plane') throw refErr('Pick a circular edge, not a flat face.'); p = cf.o; }
+        else throw refErr('Select a circular edge or a sketch arc / circle.');
+        break;
+      }
+      case 'face': {
+        if (!R[0] || !R[0].face) throw refErr('Select a face.');
+        p = polysCentroid(refFace(R[0].face, ctx).polys);
+        if (!p) throw refErr('The face has no area.');
+        break;
+      }
+      case 'intersect': {
+        if (!R[0] || !R[1]) throw refErr('Select two edges, lines or axes.');
+        var cl = lineLineClosest(refLine(R[0], ctx, model), refLine(R[1], ctx, model));
+        if (!cl) throw refErr('The two are parallel: they do not intersect.');
+        if (len(sub(cl.p, cl.q)) > refTol(ctx)) throw refErr('The two do not intersect (they pass ' + Math.round(len(sub(cl.p, cl.q)) * 1000) / 1000 + ' apart).');
+        p = scale(add(cl.p, cl.q), 0.5);
+        break;
+      }
+      case 'project': {
+        if (!R[0] || !R[1]) throw refErr('Select a point and a plane or face to project it onto.');
+        var q = refPoint(R[0], ctx, model), PL = refPlane(R[1], ctx, model);
+        p = sub(q, scale(PL.n, dot(sub(q, PL.o), PL.n)));
+        break;
+      }
+      case 'on': { if (!R[0]) throw refErr('Select a point, vertex or sketch point.'); p = refPoint(R[0], ctx, model); break; }
+      case 'along': { if (!R[0]) throw refErr('Select an edge or a sketch line / arc.'); p = alongCurve(f, R, ctx, model); break; }
+      default: throw refErr('Unknown point type "' + f.kind + '".');
+    }
+    return { refgeo: 'point', p: tidy3(p) };
+  }
+  function resolveCsys(f, ctx, model) {
+    var o = f.origin ? refPoint(f.origin, ctx, model) : [0, 0, 0];
+    function dir(r, flip) { if (!r) return null; var v = norm(refDir(r, ctx, model)); return flip ? scale(v, -1) : v; }
+    function ortho(a, b) { var c = sub(b, scale(a, dot(a, b))); if (len(c) < 1e-9) throw refErr('Two of the coordinate system directions are parallel.'); return norm(c); }
+    // a direction perpendicular to v, from the world axis least along it
+    function perp(v) { var w = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].sort(function (p, q) { return Math.abs(dot(p, v)) - Math.abs(dot(q, v)); })[0]; return ortho(v, w); }
+    var X = dir(f.x, f.flipX), Y = dir(f.y, f.flipY), Z = dir(f.z, f.flipZ);
+    if (X && Y) { Y = ortho(X, Y); Z = cross(X, Y); }
+    else if (X && Z) { Z = ortho(X, Z); Y = cross(Z, X); }
+    else if (Y && Z) { Z = ortho(Y, Z); X = cross(Y, Z); }
+    else if (X) { Y = perp(X); if (f.flipY) Y = scale(Y, -1); Z = cross(X, Y); }
+    else if (Y) { Z = perp(Y); if (f.flipZ) Z = scale(Z, -1); X = cross(Y, Z); }
+    else if (Z) { X = perp(Z); if (f.flipX) X = scale(X, -1); Y = cross(Z, X); }
+    else { X = [f.flipX ? -1 : 1, 0, 0]; Y = [0, f.flipY ? -1 : 1, 0]; Z = cross(X, Y); }
+    X = tidy3(X); Y = tidy3(Y); Z = tidy3(Z); o = tidy3(o);
+    return { refgeo: 'csys', origin: o, x: X, y: Y, z: Z, n: Z, offset: dot(Z, o), custom: true };
+  }
+  function resolveRefGeo(f, model, ctx) {
+    if (f.type === 'refaxis') return resolveRefAxis(f, ctx, model);
+    if (f.type === 'refpoint') return resolveRefPoint(f, ctx, model);
+    if (f.type === 'csys') return resolveCsys(f, ctx, model);
+    throw refErr('Not a reference geometry feature.');
+  }
+  // a revolve about a reference axis: the axis must lie in the sketch plane; the revolve gets it as a 2D line
+  function revolveOnRefAxis(f, ax, plane, ctx) {
+    var tol = Math.max(1e-6, refTol(ctx || {}) * 1e-3);
+    if (Math.abs(dot(ax.d, plane.n)) > 1e-6 || Math.abs(dot(sub(ax.o, plane.origin), plane.n)) > tol) throw refErr('The reference axis must lie in the sketch plane.');
+    var p = to2D(plane, ax.o), q = to2D(plane, add(ax.o, ax.d)), g = {};
+    Object.keys(f).forEach(function (k) { g[k] = f[k]; });
+    g.axis = { x1: p[0], y1: p[1], x2: q[0], y2: q[1] };
+    delete g.axisRef;
+    return g;
+  }
+  // reporting in a Coordinate System record: a world point / direction -> its coordinates in the system
+  function toCsys(cs, p) { var v = sub(p, cs.origin); return [dot(v, cs.x), dot(v, cs.y), dot(v, cs.z)]; }
+  function dirToCsys(cs, v) { return [dot(v, cs.x), dot(v, cs.y), dot(v, cs.z)]; }
+
 
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.sketchPath = sketchPath; K.buildSweep = buildSweep; K.buildLoft = buildLoft; K.resolveFaces = resolveFaces; K.buildShell = buildShell;
   // ------------------------------------------------------------------ shared with the other kernel files (Kernel._)
+  K.resolveRefGeo = resolveRefGeo; K.toCsys = toCsys; K.dirToCsys = dirToCsys; _.resolveRefGeo = resolveRefGeo; _.revolveOnRefAxis = revolveOnRefAxis;   // lane CZ
   _.buildLoft = buildLoft; _.buildShell = buildShell; _.buildSweep = buildSweep; _.faceLoopsClassified = faceLoopsClassified;
 })(Kernel, Kernel._);

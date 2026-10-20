@@ -788,6 +788,8 @@
     var sk = K.findFeature(App.model, typeof v.sketch === 'string' ? +v.sketch : v.sketch), pl = sk && sketchPlaneOf(sk), c = pl && profileCentre(sk, pl);
     if (!c) return [];
     var ax = typeof v.axis === 'string' && /^\d+$/.test(v.axis) ? +v.axis : v.axis, p, d;
+    var rr = refAxisRec(v);   // lane CZ: about a reference axis
+    if (rr) return [{ type: 'angle', key: 'angle', label: 'Angle', A: rr.o, D: rr.d, c: c.p, sign: v.reverse ? -1 : 1, value: +v.angle, max: 360, flip: 'reverse' }];
     if (ax === 'x') { p = [0, 0]; d = [1, 0]; }
     else if (typeof ax === 'number') { var e = sk.entities[ax]; if (!e || e.t !== 'line') return []; p = [e.x1, e.y1]; d = [e.x2 - e.x1, e.y2 - e.y1]; }
     else if (ax && typeof ax === 'object' && ax.x1 != null) { p = [ax.x1, ax.y1]; d = [ax.x2 - ax.x1, ax.y2 - ax.y1]; }
@@ -852,6 +854,8 @@
   }
   function cpatternHandles(v) {
     var c = toolCentre(typeof v.feature === 'string' ? +v.feature : v.feature);
+    var rr = c ? refAxisRec(v) : null;   // lane CZ: about a reference axis
+    if (rr) return [{ type: 'angle', key: 'angle', label: 'Angle', A: rr.o, D: rr.d, c: c, sign: 1, value: +v.angle, max: 360 }];
     if (!c || !AXV[v.axis]) return [];
     return [{ type: 'angle', key: 'angle', label: 'Angle', A: [+v.cx || 0, +v.cy || 0, +v.cz || 0], D: AXV[v.axis], c: c, sign: 1, value: +v.angle, max: 360 }];
   }
@@ -868,7 +872,7 @@
     return App.model.features.filter(function (f) { return f.type === 'sketch' && !UI.isConsumed(f.id); });
   }
   function solidFeatures() {
-    return App.model.features.filter(function (f) { return f.type !== 'sketch' && f.type !== 'plane'; });
+    return App.model.features.filter(function (f) { return f.type !== 'sketch' && f.type !== 'plane' && f.type !== 'refaxis' && f.type !== 'refpoint' && f.type !== 'csys'; });   // lane CZ: reference geometry is no solid
   }
   function selectedSketchId() {
     if (App.sel && App.sel.kind === 'feature') {
@@ -880,7 +884,7 @@
   function selectedSolidId() {
     if (App.sel && App.sel.kind === 'feature') {
       var f = K.findFeature(App.model, App.sel.id);
-      if (f && f.type !== 'sketch' && f.type !== 'plane') return f.id;
+      if (f && f.type !== 'sketch' && f.type !== 'plane' && f.type !== 'refaxis' && f.type !== 'refpoint' && f.type !== 'csys') return f.id;
     }
     if (App.sel && App.sel.kind === 'face' && App.mesh) {
       var id = App.triShared[App.mesh.faces[App.sel.index].start];
@@ -1433,12 +1437,13 @@
     var opts = [['y', 'Sketch vertical axis (Y)'], ['x', 'Sketch horizontal axis (X)']];
     var s = K.findFeature(App.model, v.sketch);
     if (s) s.entities.forEach(function (e, i) { if (e.t === 'line') opts.push([i, 'Line ' + (i + 1) + '  (' + UI.fmtNum(e.x1, 1) + ', ' + UI.fmtNum(e.y1, 1) + ') → (' + UI.fmtNum(e.x2, 1) + ', ' + UI.fmtNum(e.y2, 1) + ')']); });
-    return opts;
+    return opts.concat(refAxisOptions(v.id));   // lane CZ: reference axes
   }
   function cmdRevolve(cut, existing) {
     withSketch(function (sid) {
       var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'revolve', cut: !!cut, angle: 360, axis: 'y', reverse: false, sketch: pickDefaultSketch(sid) };
       if (existing) delete f.profile;
+      axisRefIn(f);   // lane CZ: about a reference axis
       if (f.sketch == null) { UI.toast('No sketch available. Draw a sketch first.'); return; }
       var title = f.cut ? 'Cut-Revolve' : 'Revolve';
       initBodyFields(f, existing);
@@ -1447,7 +1452,7 @@
       var contours = contourPicker(f, function () { preview(f); });   // lane CO: Selected Contours
       contours.init();
       openPM({
-        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: Object.assign({ sketchId: f.sketch }, contours.command), handles: revolveHandles,
+        title: existing ? existing.name : title, icon: f.cut ? 'revolveCut' : 'revolve', values: f, command: refAxisCommand(f, Object.assign({ sketchId: f.sketch }, contours.command)), handles: revolveHandles,
         groups: [
           { title: 'Axis of Revolution', fields: [sketchPickerField(f), { type: 'select', label: 'Axis', key: 'axis', options: revolveAxisOptions }] },
           { title: 'Direction 1', fields: [{ type: 'number', label: 'Angle', key: 'angle', unit: '°', min: 0 }, { type: 'check', label: 'Reverse direction', key: 'reverse' }, mergeField(function (v) { return !v.cut; })] },
@@ -1456,7 +1461,7 @@
           { title: 'Selected Contours', fields: [contours.field] }   // lane CO
         ],
         onChange: function (v, key) { if (key === 'sketch') { v.contours.length = 0; renderPM(); } preview(v); },
-        onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; if (typeof feat.axis === 'string' && /^\d+$/.test(feat.axis)) feat.axis = +feat.axis; return commitFeature(feat, existing); }
+        onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; if (typeof feat.axis === 'string' && /^\d+$/.test(feat.axis)) feat.axis = +feat.axis; axisRefOut(feat, 'y'); return commitFeature(feat, existing); }
       });
       if (contours.isActive()) UI.setStatus('This sketch has more than one region: click the regions to revolve in the graphics area (Selected Contours).');
     });
@@ -1584,21 +1589,22 @@
     if (App.mode === 'sketch') UI.exitSketch(true);
     var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'cpattern', feature: defaultSource(), axis: 'y', cx: 0, cy: 0, cz: 0, n: 6, angle: 360, equal: true };
     if (existing && existing.center) { f.cx = existing.center[0]; f.cy = existing.center[1]; f.cz = existing.center[2]; }
+    axisRefIn(f);   // lane CZ: about a reference axis
     if (!needSource(f)) return;
     initBodyFields(f, existing);
     function norm(v) { v.center = [+v.cx || 0, +v.cy || 0, +v.cz || 0]; return v; }
     function toFeature(v) { return applyBodyFields(JSON.parse(JSON.stringify(norm(v))), v, featureIsCut(v)); }
     openPM({
-      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles,
+      title: existing ? existing.name : 'Circular Pattern', icon: 'cpattern', values: f, handles: cpatternHandles, command: refAxisCommand(f),
       groups: [
         { title: 'Features to Pattern', fields: [Object.assign(sourceField(f), { rerender: true })] },
-        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']] }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
-        { title: 'Axis point', fields: [{ type: 'number', label: 'X', key: 'cx', unit: 'u' }, { type: 'number', label: 'Y', key: 'cy', unit: 'u' }, { type: 'number', label: 'Z', key: 'cz', unit: 'u' }] },
+        { title: 'Direction 1', fields: [{ type: 'select', label: 'Axis', key: 'axis', options: function (v) { return [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis']].concat(refAxisOptions(v.id)); }, rerender: true }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }, { type: 'number', label: 'Instances', key: 'n', step: 1, min: 2 }, { type: 'check', label: 'Equal spacing', key: 'equal' }, mergeField(featureIsBoss)] },
+        { title: 'Axis point', show: function (v) { return !/^ref:/.test(String(v.axis)); }, fields: [{ type: 'number', label: 'X', key: 'cx', unit: 'u' }, { type: 'number', label: 'Y', key: 'cy', unit: 'u' }, { type: 'number', label: 'Z', key: 'cz', unit: 'u' }] },
         scopeGroup(featureIsCut),   // a pattern of a cut is itself a cut
         { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
       ],
       onChange: function (v) { var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing circular pattern.'); },
-      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
+      onOK: function (v) { norm(v); delete v.cx; delete v.cy; delete v.cz; if (!v.name) delete v.name; axisRefOut(v, 'z'); return commitFeature(applyBodyFields(v, v, featureIsCut(v)), existing); }
     });
   }
 
@@ -1856,6 +1862,249 @@
     });
   }
 
+  // ------------------------------------------------------------------ lane CZ: Reference Geometry — Axis, Point, Coordinate System
+  // SolidWorks' Axis / Point / Coordinate System PropertyManagers: a type (icon buttons), selection boxes that take
+  // picks in the graphics area (faces, edges, vertices, planes, sketch points / lines / arcs, other reference
+  // geometry; the active box is magenta and fills in order), a live preview of the result, and a feature that
+  // rebuilds with the model (kernel-features.js resolveRefGeo; refs are picked points that follow the faces / edges).
+  var REF_TYPES = {
+    refaxis: { title: 'Axis', icon: 'refAxis', kinds: [
+      ['line', 'One Line/Edge/Axis', [['line', 'Line, edge or axis']]],
+      ['planes', 'Two Planes', [['plane', 'First plane or planar face'], ['plane', 'Second plane or planar face']]],
+      ['points', 'Two Points/Vertices', [['point', 'First point or vertex'], ['point', 'Second point or vertex']]],
+      ['cyl', 'Cylindrical/Conical Face', [['cyl', 'Cylindrical or conical face']]],
+      ['pointFace', 'Point and Face/Plane', [['point', 'Point or vertex'], ['plane', 'Plane or planar face']]]] },
+    refpoint: { title: 'Point', icon: 'refPoint', kinds: [
+      ['arc', 'Arc Center', [['circle', 'Circular edge, sketch arc or circle']]],
+      ['face', 'Center of Face', [['face', 'Face']]],
+      ['intersect', 'Intersection', [['line', 'First edge, line or axis'], ['line', 'Second edge, line or axis']]],
+      ['project', 'Projection', [['point', 'Point to project'], ['plane', 'Plane or face to project onto']]],
+      ['on', 'On Point', [['point', 'Vertex, sketch point or point']]],
+      ['along', 'Along Curve Distance', [['curve', 'Edge, sketch line or arc']]]] }
+  };
+  var CSYS_SLOTS = [['origin', 'point', 'Origin (point or vertex)'], ['x', 'dir', 'X axis (edge, axis, face or plane)'], ['y', 'dir', 'Y axis'], ['z', 'dir', 'Z axis']];
+  // a pick ({ kind: 'face' | 'edge' | 'vertex' | 'plane' | 'refgeo' | 'sketchEntity' | 'feature' }) -> a kernel ref for
+  // a box that wants `want`, or a reason string when it cannot go there
+  function refFromPick(pk, want) {
+    var r4 = function (p) { return p.map(function (x) { return Math.round(x * 1e4) / 1e4; }); };
+    if (pk.kind === 'feature' && pk.refgeo) pk = { kind: 'refgeo', id: pk.id, refgeo: pk.refgeo, point: pk.point };
+    if (pk.kind === 'feature') { var pf = K.findFeature(App.model, pk.id); if (pf && pf.type === 'plane') pk = { kind: 'plane', ref: pf.id }; else if (pf && pf.type === 'sketch' && (want === 'plane' || want === 'dir')) return { sketch: pf.id }; }
+    var faceAt = pk.point ? r4(pk.point) : null;
+    switch (pk.kind) {
+      case 'plane': return want === 'plane' || want === 'dir' ? { plane: pk.ref } : 'Pick ' + refWantText(want) + ', not a plane.';
+      case 'face': return faceAt && (want === 'plane' || want === 'cyl' || want === 'face' || want === 'dir' || want === 'line' || want === 'circle') ? { face: faceAt } : 'Pick ' + refWantText(want) + ', not a face.';
+      case 'edge': { var e = pk.edge, at = r4(pk.point || (e && e.mid) || [0, 0, 0]); return want === 'line' || want === 'circle' || want === 'curve' || want === 'dir' || want === 'point' ? { edge: at } : 'Pick ' + refWantText(want) + ', not an edge.'; }
+      case 'vertex': return want === 'point' ? { vertex: r4(pk.point) } : 'Pick ' + refWantText(want) + ', not a vertex.';
+      case 'refgeo':
+        if (pk.refgeo === 'axis') return want === 'line' || want === 'dir' || want === 'curve' ? { axis: pk.id } : 'Pick ' + refWantText(want) + ', not an axis.';
+        if (pk.refgeo === 'point') return want === 'point' ? { point: pk.id } : 'Pick ' + refWantText(want) + ', not a point.';
+        if (pk.refgeo === 'csys') return want === 'point' ? { point: pk.id } : want === 'plane' || want === 'dir' ? { plane: pk.id } : 'Pick ' + refWantText(want) + ', not a coordinate system.';
+        break;
+      case 'sketchEntity': {
+        var r = { sketch: pk.sketch, entity: pk.index };
+        if (pk.end) r.end = pk.end;
+        if (pk.pt != null) r.pt = pk.pt;
+        if (pk.seg != null) {   // a side of a rectangle / polygon / polyline is a line
+          if (want === 'line' || want === 'dir' || want === 'curve') return { sketch: pk.sketch, entity: pk.index, seg: pk.seg };
+          return 'Pick ' + refWantText(want) + ', not a sketch line.';
+        }
+        if (want === 'point') return pk.end || pk.pt != null || pk.t === 'point' ? r : 'Pick a sketch point, a line end or an arc centre.';
+        if (want === 'circle') return pk.t === 'arc' || pk.t === 'circle' ? { sketch: pk.sketch, entity: pk.index } : 'Pick a sketch arc or circle.';
+        if (want === 'line' || want === 'dir') return pk.t === 'line' && !pk.end ? { sketch: pk.sketch, entity: pk.index } : 'Pick a sketch line.';
+        if (want === 'curve') return (pk.t === 'line' || pk.t === 'arc' || pk.t === 'circle') && !pk.end ? { sketch: pk.sketch, entity: pk.index } : 'Pick a sketch line or arc.';
+        return 'Pick ' + refWantText(want) + ', not a sketch entity.';
+      }
+    }
+    return 'Pick ' + refWantText(want) + '.';
+  }
+  function refWantText(want) {
+    return { line: 'a straight edge, sketch line or axis', plane: 'a plane or planar face', point: 'a vertex, point or sketch point', cyl: 'a cylindrical or conical face', circle: 'a circular edge or sketch arc', face: 'a face', curve: 'an edge or sketch line / arc', dir: 'an edge, axis, face or plane' }[want] || 'an entity';
+  }
+  // the PropertyManager's name for a ref
+  function refLabel(r) {
+    if (!r) return '';
+    var fname = function (id) { var g = K.findFeature(App.model, id); return g ? g.name : 'Feature ' + id; };
+    if (r.plane != null) return typeof r.plane === 'string' ? r.plane + ' Plane' : fname(r.plane);
+    if (r.axis != null) return typeof r.axis === 'string' ? r.axis.toUpperCase() + ' axis' : fname(r.axis);
+    if (r.point != null) return r.point === 'origin' ? 'Origin' : fname(r.point);
+    if (r.sketch != null) {
+      var sk = K.findFeature(App.model, r.sketch), e = sk && r.entity != null ? sk.entities[r.entity] : null;
+      if (r.entity == null) return sk ? sk.name : 'Sketch';
+      var nm = e ? { line: 'Line', arc: 'Arc', circle: 'Circle', point: 'Point' }[e.t] || 'Entity' : 'Entity';
+      if (e && r.seg != null) nm = 'Side ' + (r.seg + 1) + ' of ' + ({ rect: 'Rectangle', crect: 'Rectangle', poly: 'Polygon', polyline: 'Polyline' }[e.t] || 'Entity');
+      if (e && r.pt != null) nm = 'Corner ' + (r.pt + 1) + ' of ' + ({ rect: 'Rectangle', crect: 'Rectangle', poly: 'Polygon', polyline: 'Polyline' }[e.t] || 'Entity');
+      return (r.end === 'c' ? 'Center of ' : r.end ? 'End of ' : '') + nm + (r.seg != null || r.pt != null ? ' ' : '') + (r.entity + 1) + '@' + (sk ? sk.name : 'Sketch');
+    }
+    var p = r.face || r.edge || r.vertex;
+    if (p) return (r.face ? 'Face' : r.edge ? 'Edge' : 'Vertex') + ' at (' + p.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ')';
+    return '?';
+  }
+  // the build of the features before `id` (the part as the feature sees it), or the current build for a new one
+  function refBuildBefore(id) {
+    var idx = -1;
+    if (id != null) App.model.features.forEach(function (g, i) { if (g.id === id) idx = i; });
+    if (idx < 0) return App.build;
+    var m = JSON.parse(JSON.stringify(App.model));
+    m.features = m.features.slice(0, idx);
+    try { return K.rebuild(m); } catch (e) { return App.build; }
+  }
+  function cmdRefGeo(type, existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var T = REF_TYPES[type], isCsys = type === 'csys';
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : isCsys ? { type: 'csys' } : { type: type, kind: T.kinds[0][0], refs: [] };
+    if (!isCsys && !Array.isArray(f.refs)) f.refs = [];
+    if (type === 'refpoint' && f.distance == null) f.distance = f.percent ? 50 : UI.lenDefault(10);
+    var before = refBuildBefore(existing ? existing.id : null), st = { slot: 0 };
+    function slots(v) {
+      if (isCsys) return CSYS_SLOTS.map(function (s) { return { key: s[0], want: s[1], label: s[2] }; });
+      var k = T.kinds.filter(function (x) { return x[0] === v.kind; })[0] || T.kinds[0];
+      return k[2].map(function (s, i) { return { key: i, want: s[0], label: s[1] }; });
+    }
+    function getRef(v, key) { return isCsys ? v[key] : v.refs[key]; }
+    function setRef(v, key, r) { if (isCsys) { if (r) v[key] = r; else delete v[key]; } else v.refs[key] = r || null; }
+    function toFeature(v) {
+      var o = JSON.parse(JSON.stringify(v));
+      if (!isCsys) {
+        o.refs = o.refs.slice(0, slots(o).length).filter(Boolean);
+        if (o.type !== 'refpoint' || o.kind !== 'along') { delete o.distance; delete o.percent; delete o.reverse; }
+        else { o.distance = +o.distance || 0; if (!o.percent) delete o.percent; if (!o.reverse) delete o.reverse; }
+      } else ['flipX', 'flipY', 'flipZ'].forEach(function (k) { if (!o[k]) delete o[k]; });
+      if (!o.name) delete o.name;
+      return o;
+    }
+    function resolveNow(v) {
+      var ctx = { planes: (before && before.planes) || {}, sketches: {}, body: before ? before.body : null, units: App.model.units || 'mm' };
+      return K.resolveRefGeo(toFeature(v), K.resolvedModel ? K.resolvedModel(App.model).model : App.model, ctx);
+    }
+    function preview(v) {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var rec = resolveNow(v);
+        UI.drawRefGeo(rec, UI.groups.preview, 'sel');
+        var txt = rec.refgeo === 'axis' ? 'axis through (' + rec.o.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ') along (' + rec.d.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ')'
+          : rec.refgeo === 'point' ? 'point at (' + rec.p.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ')'
+          : 'origin at (' + rec.origin.map(function (x) { return UI.fmtNum(x, 3); }).join(', ') + ')';
+        UI.setStatus((existing ? existing.name : isCsys ? 'Coordinate System' : T.title) + ' preview: ' + txt + '. Press Enter or ✓ to accept.');
+        st.err = null;
+      } catch (e) { st.err = e.message; UI.setStatus('Preview: ' + e.message); }
+      UI.requestRender();
+    }
+    function onPick(pk) {
+      var S = slots(f), s = S[Math.min(st.slot, S.length - 1)];
+      if (!s) return false;
+      var r = refFromPick(pk, s.want);
+      if (typeof r === 'string') { UI.setStatus(r); UI.toast(r); return true; }
+      setRef(f, s.key, r);
+      // the next empty box after this one (then from the top) takes the next pick; all filled: this one stays active
+      var idx = S.indexOf(s), nxt = -1, i;
+      for (i = idx + 1; i < S.length && nxt < 0; i++) if (!getRef(f, S[i].key)) nxt = i;
+      for (i = 0; i < idx && nxt < 0; i++) if (!getRef(f, S[i].key)) nxt = i;
+      st.slot = nxt >= 0 ? nxt : idx;
+      renderPM(); preview(f);
+      return true;
+    }
+    // a vertex is offered only to a box that takes a point (else the chord vertices of a hole edge would win over it)
+    function activeWant() { var S = slots(f), s = S[Math.min(st.slot, S.length - 1)]; return s ? s.want : null; }
+    var command = { pickRefGeo: true, pickEdges: true, pickPlane: true, pickVertices: function () { return activeWant() === 'point'; }, pickSketchRefs: true, onPick: onPick };
+    var fields = [];
+    if (!isCsys) fields.push({ type: 'radio', key: 'kind', options: T.kinds.map(function (k) { return [k[0], k[1]]; }), rerender: true });
+    var groups = [];
+    if (!isCsys) {
+      groups.push({ title: 'Selections', fields: fields });
+      var refFields = [];
+      T.kinds.forEach(function (k) {
+        k[2].forEach(function (sl, i) {
+          refFields.push({ type: 'pick', icon: sl[0] === 'plane' ? 'plane' : T.icon, placeholder: sl[1], show: function (v) { return v.kind === k[0]; },
+            value: function (v) { return refLabel(v.refs[i]); }, active: function () { return st.slot === i; }, onActivate: function () { st.slot = i; renderPM(); } });
+        });
+      });
+      groups.push({ title: 'References', fields: refFields });
+      if (type === 'refpoint') groups.push({ title: 'Along Curve Distance', show: function (v) { return v.kind === 'along'; }, fields: [
+        { type: 'number', label: 'Distance', key: 'distance', unit: 'u', min: 0, show: function (v) { return !v.percent; } },
+        { type: 'number', label: 'Percentage', key: 'distance', unit: '%', min: 0, max: 100, show: function (v) { return !!v.percent; } },
+        { type: 'check', label: 'Percentage', key: 'percent', rerender: true },
+        { type: 'check', label: 'Reverse direction', key: 'reverse' }] });
+    } else {
+      groups.push({ title: 'Selections', fields: CSYS_SLOTS.map(function (s, i) {
+        var pf = { type: 'pick', icon: i === 0 ? 'refPoint' : 'refAxis', placeholder: s[2], value: function (v) { return refLabel(v[s[0]]); }, active: function () { return st.slot === i; }, onActivate: function () { st.slot = i; renderPM(); } };
+        return pf;
+      }).concat([{ type: 'check', label: 'Flip X', key: 'flipX' }, { type: 'check', label: 'Flip Y', key: 'flipY' }, { type: 'check', label: 'Flip Z', key: 'flipZ' }]) });
+    }
+    groups.push({ title: 'Clear', collapsed: false, fields: [{ type: 'buttons', buttons: [{ label: 'Clear selections', onclick: function (v) { if (isCsys) ['origin', 'x', 'y', 'z'].forEach(function (k) { delete v[k]; }); else v.refs = []; st.slot = 0; renderPM(); preview(v); } }] }] });
+    groups.push({ title: 'Feature', collapsed: !existing, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
+    var spec = {
+      title: existing ? existing.name : isCsys ? 'Coordinate System' : T.title, icon: isCsys ? 'csys' : T.icon, values: f, command: command, groups: groups,
+      message: isCsys ? 'Pick the <b>origin</b>, then any two of the <b>X / Y / Z</b> directions (edges, axes, faces or planes); the third follows. With none, the system is the part origin and axes.'
+        : 'Pick the references in the graphics area: the highlighted box takes the next pick.',
+      onChange: function (v, key) { if (key === 'kind') { v.refs = []; st.slot = 0; } preview(v); },
+      okBlocked: function (v) { return isCsys ? null : slots(v).every(function (s) { return getRef(v, s.key); }) ? null : 'Select ' + slots(v).map(function (s) { return s.label.toLowerCase(); }).join(' and ') + '.'; },
+      onOK: function (v) {
+        if (st.err) { UI.toast(st.err); return false; }
+        return commitFeature(toFeature(v), existing);
+      },
+      onClose: function () { UI.disposeGroup(UI.groups.preview); }
+    };
+    openPM(spec);
+    // SolidWorks: what was selected before the command fills its boxes
+    var pre = (UI.selection ? UI.selection() : [App.sel]).filter(Boolean);
+    if (!existing && pre.length) {
+      // the type follows what was selected, as in SolidWorks (two planes / faces: Two Planes; a face: its axis; …)
+      var kindsOf = pre.map(function (pk) { return pk.kind === 'feature' && pk.refgeo ? pk.refgeo : pk.kind; }).join(',');
+      var auto = type === 'refaxis' ? { 'face,face': 'planes', 'plane,plane': 'planes', 'face,plane': 'planes', 'plane,face': 'planes', face: 'cyl', edge: 'line', axis: 'line', 'vertex,vertex': 'points', 'point,point': 'points', 'vertex,point': 'points', 'point,vertex': 'points', 'vertex,face': 'pointFace', 'point,face': 'pointFace', 'vertex,plane': 'pointFace', 'point,plane': 'pointFace' }[kindsOf]
+        : type === 'refpoint' ? { edge: 'arc', face: 'face', vertex: 'on', point: 'on', 'edge,edge': 'intersect', 'axis,axis': 'intersect', 'edge,axis': 'intersect', 'axis,edge': 'intersect', 'vertex,face': 'project', 'point,face': 'project', 'vertex,plane': 'project', 'point,plane': 'project' }[kindsOf] : null;
+      if (auto) { f.kind = auto; renderPM(); }
+      pre.forEach(function (pk) { if (App.command && App.command.onPick === onPick) onPick(pk); });
+      if (UI.setSelection) UI.setSelection([], { quiet: true });
+    }
+    preview(f);
+  }
+  // the resolved reference axis a Revolve / Circular Pattern value set turns about, or null
+  function refAxisRec(v) { var id = K.refAxisId(v), g = id != null && App.build && App.build.planes ? App.build.planes[id] : null; return g && g.refgeo === 'axis' ? g : null; }
+  // refUses(g, id): feature g turns about reference axis id, or one of its reference-geometry refs names feature id
+  function refUses(g, id) {
+    if (g.id === id) return false;
+    if (K.refAxisId(g) === id) return true;
+    var refs = (g.refs || []).concat([g.origin, g.x, g.y, g.z]).filter(function (r) { return r && typeof r === 'object'; });
+    if (g.type !== 'refaxis' && g.type !== 'refpoint' && g.type !== 'csys') return false;
+    return refs.some(function (r) { return r.plane === id || r.axis === id || r.point === id || r.sketch === id; });
+  }
+  UI.refUses = refUses;
+  function cmdRefAxis(existing) { cmdRefGeo('refaxis', existing); }
+  function cmdRefPoint(existing) { cmdRefGeo('refpoint', existing); }
+  function cmdCsys(existing) { cmdRefGeo('csys', existing); }
+  // ref-axis options for a Revolve / Circular Pattern axis list: ['ref:<id>', 'Axis1'] for every axis before `beforeId`
+  function refAxisOptions(beforeId) {
+    var out = [];
+    for (var i = 0; i < App.model.features.length; i++) {
+      var g = App.model.features[i];
+      if (beforeId != null && g.id === beforeId) break;
+      if (g.type === 'refaxis') out.push(['ref:' + g.id, g.name]);
+    }
+    return out;
+  }
+  // a feature's axis select value <-> axisRef: the list shows 'ref:<id>'; the feature stores axisRef (and keeps axis)
+  function axisRefIn(f) { if (f.axisRef != null) f.axis = 'ref:' + f.axisRef; }
+  function axisRefOut(v, dflt) {
+    var m = typeof v.axis === 'string' ? /^ref:(\d+)$/.exec(v.axis) : null;
+    if (m) { v.axisRef = +m[1]; v.axis = dflt; } else delete v.axisRef;
+    return v;
+  }
+  // a click on a reference axis while a Revolve / Circular Pattern PropertyManager is open makes it the axis
+  function refAxisCommand(v, base) {
+    var c = Object.assign({}, base || {}), inner = c.onPick;
+    c.pickRefGeo = true; c.refKinds = ['axis'];
+    c.onPick = function (pk) {
+      if (pk && pk.kind === 'refgeo' && pk.refgeo === 'axis') {
+        v.axis = 'ref:' + pk.id; renderPM();
+        var sp = UI.pmSpec && UI.pmSpec();
+        if (sp && sp.onChange) sp.onChange(v, 'axis');
+        return true;
+      }
+      return inner ? inner(pk) : false;
+    };
+    return c;
+  }
+
   // ------------------------------------------------------------------ hole wizard (simple hole)
   function cmdHole() {
     if (App.mode === 'sketch') UI.exitSketch(true);
@@ -1916,10 +2165,11 @@
   // or '__custom'), customGauge (the part's own gauge table), gauge.
   var BA_OPTIONS = [['table', 'Bend Table'], ['kfactor', 'K-Factor'], ['allowance', 'Bend Allowance'], ['deduction', 'Bend Deduction']];
   var BA_NAMES = { table: 'Bend Table', kfactor: 'K-Factor', allowance: 'Bend Allowance', deduction: 'Bend Deduction' };
-  var SHEET_PM_KEYS = ['thickness', 'bendRadius', 'kFactor', 'baType', 'bendAllowance', 'bendDeduction', 'bendTable', 'useGauge', 'gaugeTable', 'customGauge', 'gauge'];
+  var SHEET_PM_KEYS = ['thickness', 'bendRadius', 'kFactor', 'baType', 'bendAllowance', 'bendDeduction', 'bendTable', 'useGauge', 'gaugeTable', 'customGauge', 'gauge', 'autoRelief', 'reliefRatio'];
   var EXAMPLE_NOTE = 'example — replace with your shop\'s values';
   // a new part's sheet: 2 mm (or 3/32 in) thick, R = T, K = 0.5
-  function defaultSheet() { var t = UI.lenDefault(2); return { thickness: t, bendRadius: t, kFactor: K.DEFAULT_K_FACTOR }; }
+  // lane CS: and SolidWorks' default Auto Relief, Rectangular, ratio 0.5 (a part's saved sheet keeps what it has)
+  function defaultSheet() { var t = UI.lenDefault(2); return { thickness: t, bendRadius: t, kFactor: K.DEFAULT_K_FACTOR, relief: 'rect', reliefRatio: K.AUTO_RELIEF_RATIO }; }
   function sheetToValues(sm, v) {
     v = v || {};
     v.thickness = sm.thickness; v.bendRadius = sm.bendRadius != null ? sm.bendRadius : sm.thickness;
@@ -1933,6 +2183,8 @@
     v.customGauge = sm.gaugeTable && typeof sm.gaugeTable === 'object' ? JSON.parse(JSON.stringify(sm.gaugeTable)) : null;
     v.gaugeTable = v.customGauge ? '__custom' : (typeof sm.gaugeTable === 'string' && K.gaugeTables[sm.gaugeTable] ? sm.gaugeTable : K.DEFAULT_GAUGE_TABLE);
     v.gauge = sm.gauge != null ? String(sm.gauge) : '16';
+    v.autoRelief = sm.relief === 'rect' || sm.relief === 'obround' ? sm.relief : 'none';
+    v.reliefRatio = sm.reliefRatio != null ? sm.reliefRatio : K.AUTO_RELIEF_RATIO;
     return v;
   }
   function gaugeRef(v) { return v.gaugeTable === '__custom' ? v.customGauge : v.gaugeTable; }
@@ -1941,7 +2193,8 @@
     function val(k) { return exprs ? pmExpr(k, +v[k]) : +v[k]; }
     return K.makeSheet({ thickness: val('thickness'), bendRadius: val('bendRadius'), kFactor: val('kFactor'), bendAllowanceType: v.baType,
       bendAllowance: val('bendAllowance'), bendDeduction: val('bendDeduction'), bendTable: v.bendTable,
-      gaugeTable: v.useGauge ? gaugeRef(v) : null, gauge: v.useGauge ? v.gauge : null });
+      gaugeTable: v.useGauge ? gaugeRef(v) : null, gauge: v.useGauge ? v.gauge : null,
+      relief: v.autoRelief || 'none', reliefRatio: v.autoRelief && v.autoRelief !== 'none' ? +v.reliefRatio : null });
   }
   // a gauge pick fills T, R and K (or BD) from the table's row
   function applyGauge(v) {
@@ -2079,6 +2332,12 @@
           if (v.baType === 'table') return '<div class="pm-note" style="margin:2px 0 4px">Bends the table does not cover use the K-factor above.</div>';
           return '<div class="pm-note" style="margin:2px 0 4px">Applied unchanged to every bend, whatever its angle (as SolidWorks does); flat = A + B − BD with A, B the outside dimensions (to the virtual sharp up to 90°, to the outside tangent beyond). Use a bend table for angle-dependent values.</div>';
         } }
+      ] },
+      // lane CS: SolidWorks' Auto Relief: the relief every Edge Flange without a Custom Relief Type gets where it stops
+      // short of the sheet's end (Tear is not built)
+      { title: 'Auto Relief', fields: [
+        { type: 'select', label: 'Relief type', key: 'autoRelief', options: [['rect', 'Rectangular'], ['obround', 'Obround'], ['none', 'None']], rerender: true },
+        { type: 'number', label: 'Relief ratio', key: 'reliefRatio', step: 0.05, min: 0, show: function (v) { return v.autoRelief !== 'none'; } }
       ] }
     ];
   }
@@ -2190,7 +2449,7 @@
   // p9-pm: the Edge Flange and Hem PropertyManagers start with the values last accepted in this session, as SolidWorks
   // does (per document units: a length remembered in inches is not offered to a millimetre part)
   var smMemory = { flange: null, hem: null };
-  var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue'];
+  var FLANGE_MEMORY_KEYS = ['length', 'angle', 'position', 'lengthRef', 'useCustomRelief', 'relief', 'useDefaultReliefWidth', 'reliefWidthValue', 'useDefaultReliefDepth', 'reliefDepthValue'];
   var HEM_MEMORY_KEYS = ['hemType', 'hemPosition', 'length', 'gap', 'hemRadius', 'hemAngle'];
   // UI.sheetMetalMemory() -> copy of what is remembered; UI.sheetMetalMemory(null) forgets it (tests)
   UI.sheetMetalMemory = function (set) {
@@ -2207,7 +2466,7 @@
     var f = existing ? JSON.parse(JSON.stringify(existing)) :
       isJog ? { type: 'jog', edges: [], height: UI.lenDefault(10), length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside' } :
       isHem ? { type: 'flange', hem: true, edges: [], length: UI.lenDefault(10), angle: 180, reverse: false, radius: T / 4, position: 'bendOutside', hemType: 'closed', hemPosition: 'inside' } :
-      { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', lengthRef: 'outer', miter: isMiter, miterGap: 0, relief: 'none', reliefWidth: null, reliefDepth: null };
+      { type: 'flange', edges: [], length: UI.lenDefault(20), angle: 90, reverse: false, radius: null, position: 'bendOutside', lengthRef: 'outer', miter: isMiter, miterGap: 0 };   // lane CS: no relief of its own: the sheet's Auto Relief
     f.useDefaultRadius = f.radius == null;
     f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
     if (isHem) {
@@ -2231,6 +2490,8 @@
       // older flanges lack the miter/relief fields: fill the defaults, then split relief sizes into UI-only check + value pairs
       if (f.miter == null) f.miter = false;
       if (f.miterGap == null) f.miterGap = 0;
+      // lane CS: SolidWorks' Custom Relief Type check: off (no `relief` in the feature) takes the sheet's Auto Relief
+      f.useCustomRelief = f.relief != null;
       if (!f.relief) f.relief = 'none';
       if (f.reliefWidth === undefined) f.reliefWidth = null;
       if (f.reliefDepth === undefined) f.reliefDepth = null;
@@ -2286,9 +2547,12 @@
       if (isFlange) {
         out.miter = !!v.miter;
         out.miterGap = out.miter ? Math.max(0, +v.miterGap || 0) : 0;
-        out.relief = RELIEF_NAMES[v.relief] ? v.relief : 'none';
-        out.reliefWidth = out.relief !== 'none' && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
-        out.reliefDepth = out.relief !== 'none' && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
+        if (v.useCustomRelief) {
+          out.relief = RELIEF_NAMES[v.relief] ? v.relief : 'none';
+          out.reliefWidth = out.relief !== 'none' && !v.useDefaultReliefWidth ? +v.reliefWidthValue : null;
+          out.reliefDepth = out.relief !== 'none' && !v.useDefaultReliefDepth ? +v.reliefDepthValue : null;
+        } else { delete out.relief; delete out.reliefWidth; delete out.reliefDepth; }
+        delete out.useCustomRelief;
       }
       if (v.useCustomBA) {
         out.bendAllowance = { type: v.cbaType };
@@ -2310,7 +2574,7 @@
       var ne = edgeList.length || (feat.edges || []).length;   // editing: the picks are on the sheet before this feature
       var extra = '';
       if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
-      if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
+      if (isFlange && feat.relief && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
       UI.setStatus(titles[kind] + ' preview: ' + ne + ' edge' + (ne === 1 ? '' : 's') + bendText(feat) + extra + '.');
     }
     // built in the worker (livePreview); previewSync without it
@@ -2335,7 +2599,7 @@
         UI.groups.preview.add(new THREE.Mesh(g, UI.mats.preview));
         var extra = '';
         if (isFlange && feat.miter) extra += ' · mitred corners' + (feat.miterGap > 0 ? ' (gap ' + UI.fmtNum(feat.miterGap, 3) + ')' : '');
-        if (isFlange && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
+        if (isFlange && feat.relief && feat.relief !== 'none') extra += ' · ' + RELIEF_NAMES[feat.relief].toLowerCase() + ' relief';
         UI.setStatus(titles[kind] + ' preview: ' + edgeList.length + ' edge' + (edgeList.length === 1 ? '' : 's') + bendText(feat) + extra + '.');
       } catch (e) { UI.setStatus('Preview: ' + e.message); }
     }
@@ -2379,11 +2643,13 @@
         { type: 'number', label: 'Gap', key: 'miterGap', unit: 'u', min: 0, show: function (v) { return !!v.miter; } }
       ] },
       { title: 'Custom Relief Type', fields: [   // rfK: SolidWorks' group name on the Edge-Flange PM (Auto Relief is the sheet's default, in the Sheet-Metal feature)
-        { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], rerender: true },
-        { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.relief !== 'none'; } },
-        { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefWidth; } },
-        { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return v.relief !== 'none'; } },
-        { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return v.relief !== 'none' && !v.useDefaultReliefDepth; } }
+        { type: 'check', label: 'Custom relief type', key: 'useCustomRelief', rerender: true },
+        { type: 'static', label: 'Auto Relief', value: function () { return sheet.relief ? RELIEF_NAMES[sheet.relief] + ', ratio ' + sheet.reliefRatio + ' (sheet default)' : 'None (sheet default)'; }, show: function (v) { return !v.useCustomRelief; } },
+        { type: 'select', label: 'Relief type', key: 'relief', options: [['none', 'None'], ['rect', 'Rectangle'], ['obround', 'Obround']], rerender: true, show: function (v) { return v.useCustomRelief; } },
+        { type: 'check', label: 'Use default width (T = ' + T + ')', key: 'useDefaultReliefWidth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
+        { type: 'number', label: 'Relief width', key: 'reliefWidthValue', unit: 'u', min: 0, show: function (v) { return v.useCustomRelief && v.relief !== 'none' && !v.useDefaultReliefWidth; } },
+        { type: 'check', label: 'Use default depth (T/2 = ' + T / 2 + ')', key: 'useDefaultReliefDepth', rerender: true, show: function (v) { return v.useCustomRelief && v.relief !== 'none'; } },
+        { type: 'number', label: 'Relief depth', key: 'reliefDepthValue', unit: 'u', min: 0, show: function (v) { return v.useCustomRelief && v.relief !== 'none' && !v.useDefaultReliefDepth; } }
       ] }
     ];
     groups.push({ title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
@@ -2674,6 +2940,127 @@
         feat.size = +v.size;   // an equation typed in the box goes back in through commitFeature (applyExpressions)
         if (!existing && !feat.name) feat.name = K.breakCornerName(App.model);
         bcLast = { kind: v.kind, size: +v.size };
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+
+  // ------------------------------------------------------------------ sheet metal: Closed Corner (lane CS)
+  // SolidWorks' Sheet Metal ▸ Corners ▸ Closed Corner (Kernel.buildClosedCorner, a rebuild case): Faces to Extend (a
+  // click on the end face of a flange wall at an open corner adds it, a second click removes it; the matching faces
+  // across the corner are found by the kernel), Corner type (Butt / Overlap / Underlap), Gap distance, Overlap /
+  // underlap ratio, Coplanar faces. The preview shows the material added (and, red, what is trimmed from the matching
+  // wall), built in the worker; ✓ is one undo step; the type, gap and ratio are remembered for the session.
+  var ccLast = { cornerType: 'butt', gap: null, ratio: 1 };
+  function cmdClosedCorner(existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body) { UI.toast('Create a Base Flange and edge flanges first.'); return; }
+    var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : { type: 'closedCorner', faces: [], cornerType: ccLast.cornerType,
+      gap: ccLast.gap != null ? ccLast.gap : K.closedCornerDefaultGap(App.model), ratio: ccLast.ratio };
+    f.faces = (f.faces || []).map(function (p) { return p.slice(); });
+    if (f.cornerType == null) f.cornerType = 'butt';
+    if (f.ratio == null) f.ratio = 1;
+    f.coplanar = f.coplanar !== false;
+    f.openBend = true;   // shown, always on: the bend region is left open
+    var base = null;
+    function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : App.build.body; return base; }
+    // a pick's end face (the kernel's own rule) or the reason it is not one; kept per point until the part shown changes
+    var memo = {};
+    function faceOf(p) {
+      var key = p.join(',');
+      if (memo[key]) return memo[key];
+      try {
+        var lay = K.closedCornerLayout({ faces: [p], coplanar: false, gap: K.closedCornerMinGap(App.model) }, previewModel(), { body: baseBody() });
+        memo[key] = { key: lay.corners[0].at.map(function (x) { return Math.round(x * 1e4); }).join(','), d: lay.corners[0].d };
+      } catch (e) { memo[key] = { error: e.message.replace(/^Closed Corner: /, '') }; }
+      return memo[key];
+    }
+    function featOf(v) {
+      var out = { type: 'closedCorner', faces: v.faces.map(function (p) { return p.slice(); }), cornerType: v.cornerType, gap: v.gap, ratio: v.ratio };
+      if (v.coplanar === false) out.coplanar = false;
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    function tol() { return K.pickTol(App.model.units, T / 2); }
+    function lit() {
+      var idx = [];
+      if (App.mesh && (!existing || App.rollback != null)) f.faces.forEach(function (p) { try { var k = K.resolveFaces([{ at: p }], App.mesh, tol())[0]; if (k != null && k >= 0) idx.push(k); } catch (e) { } });
+      if (App.command) App.command.faceList = idx;
+      UI.updateHighlights();
+    }
+    function status(extra) {
+      var n = f.faces.length;
+      UI.setStatus((extra ? extra + ' ' : '') + 'Closed Corner: ' + n + ' face' + (n === 1 ? '' : 's') + ' to extend. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      lit();
+      if (!f.faces.length) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Click the end faces of a flange at open corners (the narrow faces through the thickness facing the next flange).'); return; }
+      livePreview({ op: 'closedCorner', feature: featOf(f), mats: [UI.mats.preview, UI.mats.previewCut], sync: previewSync, done: function () { status(); }, fail: function (msg) { UI.setStatus('Preview: ' + msg); } });
+    }
+    function previewSync() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var r = K.buildClosedCorner(featOf(f), previewModel(), { body: baseBody() });
+        if (r.add && r.add.polygons.length) addPreviewMesh(r.add, UI.mats.preview);
+        if (r.cut && r.cut.polygons.length) addPreviewMesh(r.cut, UI.mats.previewCut);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function pick(pk) {
+      if (pk.kind !== 'face' || !pk.point) return false;
+      var p = pk.point.map(function (x) { return Math.round(x * 1e6) / 1e6; }), r = faceOf(p);
+      if (r.error) { UI.setStatus(r.error); return true; }
+      var hit = -1;
+      f.faces.forEach(function (q, k) { var o = faceOf(q); if (o.key === r.key) hit = k; });
+      if (hit >= 0) f.faces.splice(hit, 1); else f.faces.push(p);
+      renderPM(); preview();
+      return true;
+    }
+    // pre-selected end faces move into the PropertyManager
+    if (!existing && UI.selection) {
+      var used = false;
+      UI.selection().forEach(function (s) {
+        if (s.kind !== 'face' || !App.mesh || !App.mesh.faces[s.index]) return;
+        var at = (s.point || App.mesh.faces[s.index].centroid).slice();
+        if (!faceOf(at).error) { f.faces.push(at); used = true; }
+      });
+      if (used && UI.setSelection) UI.setSelection([]);
+    }
+    var TYPES = [['butt', 'Butt', 'ccButt'], ['overlap', 'Overlap', 'ccOverlap'], ['underlap', 'Underlap', 'ccUnderlap']];
+    openPM({
+      title: existing ? existing.name : 'Closed Corner', icon: 'closedCorner', values: f,
+      onRollback: function () { memo = {}; lit(); },
+      message: 'Click the <b>end faces</b> of a flange at open corners (the faces to extend); the faces to match on the next flange are found automatically. Choose the corner type, the gap and the overlap ratio.',
+      command: { faceList: [], onPick: pick },
+      groups: [
+        { title: 'Faces to Extend', fields: [
+          { type: 'pick', icon: 'closedCorner', placeholder: 'End faces of a flange…',
+            value: function (v) { var n = v.faces.length; return n ? n + ' face' + (n === 1 ? '' : 's') : ''; },
+            items: function (v) { return v.faces.map(function (p, i) { return { label: 'Face<' + (i + 1) + '>', at: p }; }); },
+            onRemove: function (v, i) { v.faces.splice(i, 1); renderPM(); preview(); },
+            onClear: function (v) { v.faces.length = 0; renderPM(); preview(); } },
+          { type: 'static', label: 'Faces to match', value: function (v) { return v.faces.length ? 'found across each corner' : '—'; } },
+          { type: 'iconRadio', label: 'Corner type', key: 'cornerType', options: TYPES, rerender: true },
+          { type: 'number', label: 'Gap distance', key: 'gap', unit: 'u', min: 0 },
+          { type: 'number', label: 'Overlap/underlap ratio', key: 'ratio', min: 0, step: 0.05, show: function (v) { return v.cornerType !== 'butt'; } },
+          { type: 'check', label: 'Open bend region', key: 'openBend', disabled: true },
+          { type: 'check', label: 'Coplanar faces', key: 'coplanar' }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ],
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (!v.faces.length) { UI.toast('Select at least one face to extend.'); return false; }
+        var min = K.closedCornerMinGap(App.model);
+        if (!(+v.gap >= min - 1e-12)) { UI.toast('The gap must be at least ' + UI.fmtNum(min, 4) + ' (the flanges would join).'); return false; }
+        if (v.cornerType !== 'butt' && !(+v.ratio >= 0 && +v.ratio <= 1)) { UI.toast('The overlap/underlap ratio must be between 0 and 1.'); return false; }
+        var feat = featOf(v);
+        feat.gap = +v.gap; feat.ratio = +v.ratio;   // equations go back in through commitFeature (applyExpressions)
+        if (!existing && !feat.name) feat.name = K.closedCornerName(App.model);
+        ccLast = { cornerType: v.cornerType, gap: +v.gap, ratio: +v.ratio };
         return commitFeature(feat, existing);
       }
     });
@@ -3981,12 +4368,14 @@
       case 'cpattern': cmdCircularPattern(f); break;
       case 'mirror': cmdMirror(f); break;
       case 'plane': cmdPlane(f); break;
+      case 'refaxis': case 'refpoint': case 'csys': cmdRefGeo(f.type, f); break;   // lane CZ
       case 'chamfer': cmdChamfer(f); break;
       case 'fillet': cmdFillet(f); break;
       case 'flange': cmdEdgeFlange(f); break;
       case 'jog': cmdJog(f); break;
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
+      case 'closedCorner': UI.cmdClosedCorner(f); break;
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
@@ -4018,7 +4407,7 @@
   function deleteFeature(id) {
     var f = K.findFeature(App.model, id);
     if (!f) return;
-    var dependents = App.model.features.filter(function (g) { return g.sketch === id || g.feature === id || (g.plane && g.plane.featureId === id); });
+    var dependents = App.model.features.filter(function (g) { return g.sketch === id || g.feature === id || (g.plane && g.plane.featureId === id) || refUses(g, id); });   // lane CZ: refUses
     var base = [id].concat(dependents.map(function (d) { return d.id; }));
     // cascade one more level (patterns of dependents)
     App.model.features.forEach(function (g) { if (base.indexOf(g.feature) >= 0 && base.indexOf(g.id) < 0) base.push(g.id); });
@@ -4086,6 +4475,7 @@
   UI.pmSpinStep = spinStep;
   UI.cmdSketch = cmdSketch; UI.editSketch = editSketch; UI.cmdExtrude = cmdExtrude; UI.cmdRevolve = cmdRevolve;
   UI.cmdLinearPattern = cmdLinearPattern; UI.cmdCircularPattern = cmdCircularPattern; UI.cmdMirror = cmdMirror; UI.cmdPlane = cmdPlane;
+  UI.cmdRefAxis = cmdRefAxis; UI.cmdRefPoint = cmdRefPoint; UI.cmdCsys = cmdCsys; UI.refFromPick = refFromPick;   // lane CZ
   UI.cmdHole = cmdHole; UI.cmdBaseFlange = cmdBaseFlange; UI.cmdSection = cmdSection; UI.cmdMeasure = cmdMeasure;
   UI.cmdChamfer = cmdChamfer; UI.cmdFillet = cmdFillet;
   UI.cmdEdgeFlange = cmdEdgeFlange; UI.cmdMiterFlange = cmdMiterFlange; UI.cmdHem = cmdHem; UI.cmdJog = cmdJog; UI.cmdFlatten = cmdFlatten; UI.exportFlatDXF = exportFlatDXF;
@@ -4105,6 +4495,7 @@
   ].forEach(function (c) { UI[c[0]] = partOnly(UI[c[0]], c[1]); });
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
   UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
+  UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

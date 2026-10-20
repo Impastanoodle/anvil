@@ -15,6 +15,13 @@
   var PICK_STYLE = 'stroke:#ffd400;stroke-dasharray:6 4;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.75';
   var HOT_STYLE = 'stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function sketch() { var f = UI.activeSketchFeature(); if (!f) UI.toast('Open a sketch first.'); return f; }
+  // rfCY: fn run with the entities on a hidden layer of sketch f left out of Power trim's trail and Extend's targets
+  // (SketchSolver.withSkip): what cannot be seen is neither trimmed by a drag nor extended to
+  function unhidden(f, fn) {
+    if (!S.withSkip || !UI.entityLayerHidden) return fn();
+    var hid = f.entities.filter(function (e) { return e && UI.entityLayerHidden(f, e); });   // once per call (a Power trim move): no layer hidden, no cost
+    return hid.length ? S.withSkip(function (e) { return hid.indexOf(e) >= 0; }, fn) : fn();
+  }
   function toUV(mx, my) { return UI.screenToPlane(mx, my, UI.activePlane()); }
   function scr(q) { return UI.worldToScreen(K.to3D(UI.activePlane(), q[0], q[1])); }
   // sketch units per screen pixel at (mx, my)
@@ -184,10 +191,11 @@
         if (!sc || sc.d > vertexTol(sp.at)) return { ok: false, error: 'No corner there.' };
         var e = sc.e, ei = sc.ei, pi = sc.pi, pts = e.pts, out = pts.slice(), ats = [];
         // sketch-tools2: Fillet all corners of the chain: every corner, from the last to the first so the indices still to do do not move
-        if (v.chain) { for (k = pts.length - 1; k >= 0; k--) { if (skipped(sp, pts[k])) continue; out = K.filletPolyline(out, k, +v.r); ats.unshift(pts[k]); } }
+        if (v.chain || sp.chain) { for (k = pts.length - 1; k >= 0; k--) { if (skipped(sp, pts[k])) continue; out = K.filletPolyline(out, k, +v.r); ats.unshift(pts[k]); } }
         else { out = K.filletPolyline(pts, pi, +v.r); ats = [pts[pi]]; }
         f.entities[ei] = { t: 'polyline', pts: out.map(function (p) { return [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]; }), closed: true };
         if (e.construction) f.entities[ei].construction = true;
+        if (e.layer != null) f.entities[ei].layer = e.layer;   // rfCY: the rounded outline stays on its layer
         S.clean(f);
         return { ok: true, rows: ats.map(vertexRow), ents: [] };
       }
@@ -230,7 +238,7 @@
       var eq = eqTo();
       if (eq != null) { o.equalTo = eq; o.dimension = false; }
       // sketch-tools2: Fillet all corners of the chain — a vertex rounds every corner of its chain of lines / arcs
-      if (v.chain && spec.ei) {
+      if ((v.chain || sp.chain) && spec.ei) {   // (rfCY: sp.chain, a chain picked by a double-click on one of its entities)
         cs = S.chainCorners(f, spec).filter(function (c) { return !skipped(sp, c.at); });
         if (!cs.length) return { ok: false, error: 'No corner there.' };
         return finish(S.filletCorners(f, cs.map(function (c) { return c.at; }), +v.r, { keepCorner: o.keepCorner, dimEach: !!v.dimEach, equalTo: eq }), cs.map(function (c) { return vertexRow(c.at); }));
@@ -241,8 +249,23 @@
     function finish(r, rows1) {
       if (!r || !r.ok) return { ok: false, error: r && r.error, rows: rows1 };
       var made1 = r.arcs || [chamfer ? r.line : r.arc];
+      made1.forEach(layerMade);   // rfCY: the fillet arc (chamfer line) on the layer of the entities it joins
+      if (r.sharp != null && r.sharp >= 0 && f.entities[r.sharp] && f.entities[r.sharp].layer == null && made1[0] != null && f.entities[made1[0]] && f.entities[made1[0]].layer != null) f.entities[r.sharp].layer = f.entities[made1[0]].layer;
       if (!chamfer && first == null && made1[0] != null) first = made1[0];
       return { ok: true, rows: rows1, ents: made1.map(copyEnt).filter(Boolean) };
+    }
+    // rfCY: made entity k takes the layer of the entities its ends are Coincident with, when they all share one (a
+    // fillet on a CUT outline stays on CUT, as the trimmed pieces do); entities on different layers leave it as made
+    function layerMade(k) {
+      var e = f.entities[k];
+      if (!e || e.layer != null) return;
+      var re = new RegExp('^' + k + '\\.p[12]$'), lay = {};
+      (f.rels || []).forEach(function (rel) {
+        if (rel.type !== 'coincident' || !(rel.refs || []).some(function (q) { return re.test(q); })) return;
+        rel.refs.forEach(function (q) { var j = parseInt(q, 10), o = f.entities[j]; if (isNaN(j) || j === k || !o) return; lay[o.layer == null ? '' : String(o.layer)] = 1; });
+      });
+      var ks = Object.keys(lay);
+      if (ks.length === 1 && ks[0] !== '') e.layer = ks[0];
     }
     // every recorded pick made in order on f as it is: { ok, rows, ents, error }
     function runAll() {
@@ -389,6 +412,44 @@
       return best;
     }
     function pickDone(r) { if (r) sayMade(r.rows.length); }
+    var chainAt = null, vp = document.getElementById('viewport');   // rfCY: where the last chain was picked; the viewport (double-clicks)
+    // rfCY: Fillet Chain from an entity (SolidWorks: Sketch Fillet with the chain option, or a double-click on one entity
+    // of a chain): the pick that rounds every corner of the chain entity i is part of, recorded by a corner's point (a
+    // corner at one of its ends; a rectangle's or polygon's first vertex; a closed polyline's first vertex), or null
+    // when the entity meets nothing at a corner. sp.chain makes it a chain pick whatever the check box says.
+    function chainPick(i) {
+      var e = f.entities[i];
+      if (!e || e.construction) return null;
+      if (e.t === 'rect' || e.t === 'crect' || e.t === 'poly') return { k: 'rect', at: K.entityPolylines(e)[0].pts[0].slice(), skip: [], chain: true };
+      if (e.t === 'polyline' && e.closed && e.pts.length > 2) return { k: 'pl', at: e.pts[0].slice(), skip: [], chain: true };
+      if (!direct(e) || !K.entityEnds) return null;
+      var ends = K.entityEnds(e);
+      for (var q = 0; q < ends.length; q++) {
+        var c = S.curveCorner(f, ends[q], cornerTolAt(ends[q]));
+        if (c && (c.i === i || c.j === i)) return { k: 'corner', at: c.at.slice(), skip: [], chain: true };
+      }
+      return null;
+    }
+    // the corners chain pick sp would round, for the hover rings (sp as chainPick made it)
+    function chainRings(sp) {
+      if (sp.k === 'corner') { var c = S.curveCorner(f, sp.at, cornerTolAt(sp.at)); return c ? S.chainCorners(f, c).map(function (k) { return k.at; }) : []; }
+      var sc = shapeCorner(sp.at, sp.k === 'pl' ? 'pl' : 'shape');
+      return sc ? sc.pts.slice() : [];
+    }
+    // rfCY: a double-click on an entity rounds every corner of its chain (the check box need not be on): the two clicks
+    // before it picked the entity (the first of a pair), which the chain pick replaces
+    function onDbl(ev) {
+      if (chamfer || App.mode !== 'sketch' || !UI.hasPM() || !vp || !vp.contains(ev.target)) return;
+      if (v.chain) { picked = null; return; }   // the first click took the chain already
+      var r0 = vp.getBoundingClientRect(), mx = ev.clientX - r0.left, my = ev.clientY - r0.top;
+      fresh();
+      var hit = UI.pickEntity(mx, my);
+      if (!hit || !f.entities[hit.index]) return;
+      var cp = chainPick(hit.index);
+      if (!cp) { UI.setStatus('That entity meets no other at a corner: there is no chain to fillet.'); return; }
+      picked = null;
+      pickDone(pick(cp));
+    }
     function click(uv, mx, my) {
       if (pending && !commitPending()) return;   // AZ: the previewed selection is made first, then the pick
       if (!applyTyped()) return;   // rfCE 2: a value typed in a box is committed by the pick (as leaving the box does); refused: no pick
@@ -409,6 +470,14 @@
       // two entities picked one after the other (two sides of one rectangle, polygon or slot too)
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
       if (!e || !(direct(e) || explodable(e))) { UI.setStatus(chamfer ? 'Pick a corner, or two lines.' : 'Pick a corner, or two sketch entities: lines, arcs, circles, or a spline and a line or arc.'); return; }
+      // rfCY: Fillet all corners of the chain with an entity picked (not a vertex): every corner of its chain at once
+      if (!chamfer && v.chain && !picked) {
+        if (chainAt && Math.hypot(uv[0] - chainAt[0], uv[1] - chainAt[1]) <= tol / 3) return;   // a double-click's second click: the first took the chain
+        var cp = chainPick(hit.index);
+        if (cp) { if (pick(cp)) { chainAt = uv.slice(); sayMade(rows.length); } return; }
+      }
+      // rfCY: the second click of a double-click on the entity just picked is no second pick (the double-click takes its chain)
+      if (picked && picked.i === hit.index && Math.hypot(uv[0] - picked.uv[0], uv[1] - picked.uv[1]) <= tol / 3) return;
       if (!picked || (picked.i === hit.index && !explodable(e))) { picked = { i: hit.index, uv: uv, tol: tol }; UI.sketchFeedbackClear(); showMade(); UI.sketchPreview(entPts(e), PICK_STYLE, 'sk-trim-pick'); UI.setStatus('Pick the second entity.'); return; }
       // (rfCL: i and j name the entities for the label; the make re-finds them at uvi / uvj within tol)
       var sp = { k: 'pair', i: picked.i, uvi: picked.uv, j: hit.index, uvj: uv, tol: Math.max(picked.tol || 0, tol), label: entityLabel(f.entities[picked.i], picked.i) + ', ' + entityLabel(e, hit.index) };
@@ -425,6 +494,9 @@
       if (sc && sc.d <= tol) { UI.sketchPreview([ring(sc.pts[sc.pi], 7)], HOT_STYLE, 'sk-trim-end'); return; }
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
       if (e && (direct(e) || explodable(e))) UI.sketchPreview(entPts(e), HOT_STYLE, 'sk-trim-span');
+      // rfCY: with the chain option an entity shows the corners its pick rounds
+      var cpH = e && !chamfer && v.chain && !picked ? chainPick(hit.index) : null;
+      if (cpH) UI.sketchPreview(chainRings(cpH).map(function (p) { return ring(p, 7); }), HOT_STYLE, 'sk-trim-end');
     }
     var groups = [{ title: chamfer ? 'Entities to Chamfer' : 'Entities to Fillet', fields: [{ type: 'pick', icon: chamfer ? 'skChamfer' : 'fillet', placeholder: 'Select sketch vertices or entities…', value: function (x) { return x.items.length ? x.items.length + (chamfer ? ' chamfer' : ' fillet') + (x.items.length > 1 ? 's' : '') : ''; }, items: function (x) { return x.items.map(function (t) { return { label: t }; }); },
       onRemove: function (x, i) { dropRow(i); }, onClear: function () { dropAll(); } }] }];
@@ -466,9 +538,10 @@
         if (App.undo.length > undo0) App.undo.length = undo0;
         changed();
       },
-      onClose: function () { pending = null; typed = null; if (root) root.removeEventListener('focusout', onBlur); App.tempEntities = []; UI.updateTemp(); UI.sketchFeedbackClear(); }
+      onClose: function () { pending = null; typed = null; if (root) root.removeEventListener('focusout', onBlur); document.removeEventListener('dblclick', onDbl, true); App.tempEntities = []; UI.updateTemp(); UI.sketchFeedbackClear(); }
     });
     if (root) root.addEventListener('focusout', onBlur);
+    if (!chamfer) document.addEventListener('dblclick', onDbl, true);   // rfCY (removed by onClose)
     // AZ: a selection when the command starts is previewed, not made, as SolidWorks does: several entities (a box over
     // a contour, a rectangle, a polygon, a slot; rfAX: every corner where they meet one another, one radius, Equal to
     // the first) or two entities (filleted / chamfered where they meet). Its corners are listed in Entities to Fillet
@@ -635,7 +708,7 @@
     function freeEndAt(mx, my) {
       var best = null, bd = 8;
       f.entities.forEach(function (e, i) {
-        if ((e.t !== 'line' && e.t !== 'arc') || e.infinite || ignored(e)) return;
+        if ((e.t !== 'line' && e.t !== 'arc') || e.infinite || ignored(e) || (UI.entityLayerHidden && UI.entityLayerHidden(f, e))) return;   // (rfCY: not a hidden one)
         ['p1', 'p2'].forEach(function (end) {
           var p = S.refPoint(f, i + '.' + end), s = p && scr(p), d = s ? Math.hypot(s[0] - mx, s[1] - my) : Infinity;
           if (d < bd && !S.endJoined(f, i + '.' + end)) { bd = d; best = { i: i, end: end, pt: p }; }
@@ -749,7 +822,7 @@
           var uv = toUV(q[0], q[1]);
           if (!uv) return;
           var t0 = performance.now();
-          var n = S.powerTrim(f, last, uv, function () { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }, ctx);
+          var n = unhidden(f, function () { return S.powerTrim(f, last, uv, function () { if (!App.sketchDirty) { UI.pushUndo(); App.sketchDirty = true; } }, ctx); });
           trail.push(uv); last = uv;
           if (n) { count += n; App.sel = null; pt.mark(); }
           UI.sketchPreview([trail], TRAIL_STYLE(), 'sk-trim-trail');
@@ -770,7 +843,7 @@
         start: function () {
           pushed = !App.sketchDirty;
           if (pushed) { UI.pushUndo(); App.sketchDirty = true; }
-          st = S.extendBegin(f, fe.i, fe.end);
+          st = unhidden(f, function () { return S.extendBegin(f, fe.i, fe.end); });
           ctx.analysis = st ? S.analyze(f) : null;   // the drag changes no relation: the state is drawn from this one
         },
         move: function (q) {
@@ -805,6 +878,8 @@
     }
     UI.openPM({
       title: 'Trim Entities', icon: 'trim', values: vals, message: TRIM_MSG[vals.mode],
+      // lane CY2: Ctrl+Z undoes the last trim and Trim stays open (ui-app.js undoCommand); the picks named old geometry
+      undoInside: UI.undoMark ? UI.undoMark() : null, onUndoInside: function () { fresh(); picks = []; UI.renderPM(); if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); },
       command: { ownHover: true, onSketchMove: hover, onSketchPoint: click, onSketchDrag: drag },
       groups: [
         { title: 'Options', fields: [{ type: 'radio', key: 'mode', options: TRIM_MODES },
@@ -839,11 +914,13 @@
     function target(uv, mx, my) {
       var hit = UI.pickEntity(mx, my), e = hit && f.entities[hit.index];
       if (!e || !(e.t === 'line' || e.t === 'arc' || e.t === 'pellipse' || (e.t === 'spline' && !e.closed))) return null;
-      var tg = S.extendTarget(f, hit.index, uv);
+      var tg = unhidden(f, function () { return S.extendTarget(f, hit.index, uv); });
       return tg ? { i: hit.index, e: e, tg: tg } : null;
     }
     UI.openPM({
       title: 'Extend Entities', icon: 'extend',
+      // lane CY2: Ctrl+Z undoes the last extension and Extend stays open (ui-app.js undoCommand)
+      undoInside: UI.undoMark ? UI.undoMark() : null, onUndoInside: function () { f = UI.activeSketchFeature() || f; if (UI.sketchFeedbackClear) UI.sketchFeedbackClear(); },
       message: '<b>Click a line, an arc, an open spline or a partial ellipse near the end to lengthen.</b> It grows to the first entity in its way; the orange preview shows where.',
       command: {
         onSketchMove: function (uv, mx, my) {
@@ -863,7 +940,7 @@
         onSketchPoint: function (uv, mx, my) {
           var hit = UI.pickEntity(mx, my);
           if (!hit) { UI.setStatus('Click a line or an arc near the end to extend.'); return; }
-          var r = step(function () { return S.extendEntity(f, hit.index, uv); });
+          var r = step(function () { return unhidden(f, function () { return S.extendEntity(f, hit.index, uv); }); });
           if (!r.ok) { UI.toast(r.error); return; }
           count++;
           App.sel = null; App.gridStale = true;

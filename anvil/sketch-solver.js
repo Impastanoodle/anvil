@@ -1439,9 +1439,83 @@ var SketchSolver = (function () {
     K.setDimValue(e, dim, v);              // the kernel's one-entity move is the starting guess
     if (index >= 0) opts.dimTargets[index] = v;
     else opts.extra = [dimEquation(sketch.entities, dim, v)];
+    var lk = index >= 0 ? linkTargets(sketch, dim.link, v, 'dim', index, opts) : null;   // lane CV: Link Values
     var r = solve(sketch, opts);
     if (!r.ok) { var names = conflictNames(sketch, opts, index >= 0 ? { src: 'dim', index: index } : null); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
+    if (lk) lk.rels.forEach(function (j) { sketch.rels[j].v = v; });
     return { ok: true };
+  }
+  // lane CV: Link Values (SolidWorks' right-click a dimension ▸ Link Values). Dimensions (Smart Dimensions in
+  // sketch.dims and distance / angle relations) that carry the same `link` name share one value: setting one sets
+  // them all in the same solve (whole sketch, not only the edited part). Adds their targets to opts and returns
+  // { dims, rels } (indices), or null when the item has no link.
+  function linkTargets(sketch, link, v, src, index, opts) {
+    if (link == null || link === '') return null;
+    var out = { dims: [], rels: [] };
+    (sketch.dims || []).forEach(function (o, j) {
+      if ((src === 'dim' && j === index) || o.link !== link || o.driven) return;
+      var oe = sketch.entities[o.e];
+      if (!oe || !K.dimGeometry(oe, o)) return;
+      K.setDimValue(oe, o, v);
+      (opts.dimTargets = opts.dimTargets || {})[j] = v;
+      out.dims.push(j);
+    });
+    (sketch.rels || []).forEach(function (o, j) {
+      if ((src === 'rel' && j === index) || o.link !== link || o.driven || !TYPES[o.type] || !TYPES[o.type].dim) return;
+      (opts.relTargets = opts.relTargets || {})[j] = v;
+      out.rels.push(j);
+    });
+    if (out.dims.length || out.rels.length) { delete opts.part; delete opts.mob; delete opts.extra; }
+    return out;
+  }
+  // the value a dimension item ({ kind: 'dim' | 'rel', index }) holds now, or null
+  function itemValue(sketch, it) {
+    if (it.kind === 'rel') { var r = (sketch.rels || [])[it.index]; return r && r.v != null ? +r.v : null; }
+    var d = (sketch.dims || [])[it.index], e = d && sketch.entities[d.e];
+    return e ? K.dimValue(e, d) : null;
+  }
+  function itemKind(sketch, it) {
+    var d = it.kind === 'rel' ? (sketch.rels || [])[it.index] : (sketch.dims || [])[it.index];
+    return !d ? null : it.kind === 'rel' && d.type === 'angle' ? 'angle' : 'len';
+  }
+  // linkValues(sketch, items, name, value?) -> { ok, value } | { ok: false, error }: items ([{ kind, index }]) take the
+  // link `name` and all take one value: `value` when given (the name's value in another sketch), else the value of
+  // an item already linked by that name in this sketch, else the first item's. All or nothing.
+  function linkValues(sketch, items, name, value) {
+    name = String(name == null ? '' : name).trim();
+    if (!name) return { ok: false, error: 'Type a name for the shared value.' };
+    items = (items || []).filter(function (it) { return it && itemKind(sketch, it); });
+    if (!items.length) return { ok: false, error: 'Select the dimensions to link.' };
+    var already = linkedItems(sketch, name), kinds = {};
+    items.concat(already).forEach(function (it) { kinds[itemKind(sketch, it)] = true; });
+    if (Object.keys(kinds).length > 1) return { ok: false, error: 'An angle cannot share a value with a length.' };
+    if (items.some(function (it) { var d = it.kind === 'rel' ? sketch.rels[it.index] : sketch.dims[it.index]; return d.driven; })) return { ok: false, error: 'A driven dimension cannot be linked: make it driving first.' };
+    var v = value != null ? +value : already.length ? itemValue(sketch, already[0]) : itemValue(sketch, items[0]);
+    if (v == null || !isFinite(v)) return { ok: false, error: 'That dimension has no value to share.' };
+    var saved = clone(sketch.entities), old = items.map(function (it) { var d = it.kind === 'rel' ? sketch.rels[it.index] : sketch.dims[it.index]; return { d: d, link: d.link, v: d.v }; });
+    old.forEach(function (o) { o.d.link = name; });
+    var first = items[0], r = first.kind === 'rel' ? setRelValue(sketch, first.index, v) : setDim(sketch, first.index, v);
+    if (!r.ok) {
+      sketch.entities = saved;
+      old.forEach(function (o) { if (o.link == null) delete o.d.link; else o.d.link = o.link; if (o.v !== undefined) o.d.v = o.v; });
+      return { ok: false, error: r.error, conflicts: r.conflicts };
+    }
+    return { ok: true, value: v };
+  }
+  // unlinkValue(sketch, item): the dimension keeps its value and leaves its link
+  function unlinkValue(sketch, it) {
+    var d = it && (it.kind === 'rel' ? (sketch.rels || [])[it.index] : (sketch.dims || [])[it.index]);
+    if (!d || d.link == null) return { ok: false, error: 'That dimension is not linked.' };
+    delete d.link;
+    return { ok: true };
+  }
+  // linkedItems(sketch, link) -> [{ kind: 'dim' | 'rel', index, d }] the dimensions of the sketch with that link name
+  function linkedItems(sketch, link) {
+    var out = [];
+    if (link == null || link === '') return out;
+    (sketch.dims || []).forEach(function (d, i) { if (d.link === link) out.push({ kind: 'dim', index: i, d: d }); });
+    (sketch.rels || []).forEach(function (d, i) { if (d.link === link && TYPES[d.type] && TYPES[d.type].dim) out.push({ kind: 'rel', index: i, d: d }); });
+    return out;
   }
   // p9-sketchtab: drive entity i to satisfy n extra equations f(E) -> residuals (a value typed into Line Properties,
   // the Rectangle or Point PropertyManager), keeping every relation and dimension; the rest of the sketch moves as
@@ -1477,6 +1551,14 @@ var SketchSolver = (function () {
     // picked second moves with what hangs on it; the minimum-norm solve alone would shift both (an ordinate edit in an
     // under-defined sketch moved the whole sketch). When the sketch cannot satisfy that (the two sides are joined
     // rigidly), the plain solve moves both.
+    var lo = { relTargets: t }, lk = linkTargets(sketch, rel.link, v, 'rel', index, lo);   // lane CV: Link Values
+    if (lk && (lk.dims.length || lk.rels.length)) {
+      var rl = solve(sketch, lo), r = rl.ok ? rl : null;
+      if (!r) { var nl = conflictNames(sketch, lo, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(nl), conflicts: nl }; }
+      rel.v = v;
+      lk.rels.forEach(function (j) { sketch.rels[j].v = v; });
+      return { ok: true };
+    }
     var an = anchorFirst(sketch, rel, R), r = an ? solve(sketch, { relTargets: t, part: pe ? pe.e : null, mob: an.mob, extra: an.extra }) : null;
     if (!r || !r.ok) r = solve(sketch, { relTargets: t, part: pe ? pe.e : null });
     if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
@@ -2758,7 +2840,7 @@ var SketchSolver = (function () {
     var end = len(sub(uv, q1)) <= len(sub(uv, q2)) ? 'p1' : 'p2', from = end === 'p1' ? q1 : q2;
     var segs = [], circs = [], frees = [];
     E.forEach(function (o, j) {
-      if (j === i || !o || o.t === 'point') return;
+      if (j === i || !o || o.t === 'point' || tSkipped(o)) return;   // (rfCY: nor an entity withSkip leaves out, a hidden layer's)
       if (o.t === 'line') { var cs = carrierSeg(o); segs.push([cs.a, cs.b]); }
       else if (o.t === 'circle' || o.t === 'arc') circs.push(o);
       else if (isFree(o)) { var fo = freeCurve(o); if (fo) frees.push(fo); }   // sketch-refine: onto the true curve
@@ -2775,7 +2857,7 @@ var SketchSolver = (function () {
     // rfCH: the other entities' ends (and corners) that lie on the carrier within floating-point noise are met too (a
     // T-junction the crossing test misses when the end is a hair off): the carrier lands exactly at the end's foot
     var ends = [], jtol = 1e-9 * tSize(sketch);
-    if (K && K.entityEnds) E.forEach(function (o, j) { if (j !== i && o) K.entityEnds(o).forEach(function (p) { ends.push(p); }); });
+    if (K && K.entityEnds) E.forEach(function (o, j) { if (j !== i && o && !tSkipped(o)) K.entityEnds(o).forEach(function (p) { ends.push(p); }); });
     function onSweep(o, p) {
       if (o.t !== 'arc' || o.a1 - o.a0 >= 360) return true;
       var a = Math.atan2(p[1] - o.cy, p[0] - o.cx) / D2R, rel = ((a - o.a0) % 360 + 360) % 360;
@@ -3073,6 +3155,7 @@ var SketchSolver = (function () {
       // rfAH: the piece of a style spline is a style spline of the same degree (the Bézier's own sub-span, exactly)
       o = { t: 'spline', style: true, pts: K.bzSub(e.pts, ta, tb).map(function (q) { return [r6(q[0]), r6(q[1])]; }) };
       if (e.showCurvature) o.showCurvature = true;
+      if (e.showMinRadius) o.showMinRadius = true;   // lane CV
     } else if (e.t !== 'spline') {
       o = { t: 'pellipse', cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, rot: +e.rot || 0, a0: ta / D2R, a1: tb / D2R };
       while (o.a0 >= 360) { o.a0 -= 360; o.a1 -= 360; }
@@ -3118,6 +3201,7 @@ var SketchSolver = (function () {
       if (any) o.tans = tans;
       if (e.local) o.local = true;
       if (e.showCurvature) o.showCurvature = true;
+      if (e.showMinRadius) o.showMinRadius = true;   // lane CV
     }
     if (e.construction) o.construction = true;
     if (e.layer != null) o.layer = e.layer;
@@ -3320,7 +3404,7 @@ var SketchSolver = (function () {
     } else { var rch = fc.reach || 3; ext = end === 'p2' ? { t0: fc.t1, t1: fc.t1 + rch } : { t0: fc.t0 - rch, t1: fc.t0 }; }
     var xc = { e: e, t0: ext.t0, t1: ext.t1, closed: false, per: fc.per, n: 96, pt: fc.pt, d1: fc.d1 }, sm = freeSamples(xc), best = null;
     E.forEach(function (o, j) {
-      if (j === i || !o || o.t === 'point') return;
+      if (j === i || !o || o.t === 'point' || tSkipped(o)) return;
       freeCutters(o).forEach(function (q) {
         freeHits(xc, q, sm).forEach(function (t) {
           var d = end === 'p2' ? t - ext.t0 : ext.t1 - t;
@@ -3681,12 +3765,18 @@ var SketchSolver = (function () {
     if (ctx) { ctx.analysis = an; ctx.conflicts = an.conflicts; ctx.redundant = an.redundant; }
     return k;
   }
+  // rfCY: withSkip(skip, fn) runs fn with skip(entity) -> true leaving entities out of Power trim's trail (trailHits)
+  // and out of Extend's targets (extendTarget, freeExtendTarget): the sketch UI passes "on a hidden layer", which the
+  // user cannot see. Outside withSkip nothing is left out.
+  var tSkip = null;
+  function tSkipped(e) { return !!(tSkip && e && tSkip(e)); }
+  function withSkip(skip, fn) { var s0 = tSkip; tSkip = typeof skip === 'function' ? skip : null; try { return fn(); } finally { tSkip = s0; } }
   // The entities the straight trail a -> b crosses, the first crossing of each, nearest a first: [{ i, t, pt }].
   function trailHits(sketch, a, b) {
     var seg = { kind: 'seg', a: a, b: b }, out = [];
     var x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
     sketch.entities.forEach(function (e, i) {
-      if (!e || e.t === 'point') return;
+      if (!e || e.t === 'point' || tSkipped(e)) return;   // (rfCY: a hidden layer's entities are not trimmed by the trail)
       // a cheap box test first: most entities are nowhere near one mouse move's worth of trail
       if (e.t === 'line' && (Math.max(e.x1, e.x2) < x0 || Math.min(e.x1, e.x2) > x1 || Math.max(e.y1, e.y2) < y0 || Math.min(e.y1, e.y2) > y1)) return;
       if ((e.t === 'circle' || e.t === 'arc') && (e.cx + e.r < x0 || e.cx - e.r > x1 || e.cy + e.r < y0 || e.cy - e.r > y1)) return;
@@ -5402,8 +5492,8 @@ var SketchSolver = (function () {
   // sketchdims: what a relation or dimension carries besides its geometry, kept through scripts: arc conditions, the
   // Dimension PropertyManager's name / tolerance / precision / text before and after / radius-or-diameter display, and
   // Suppressed (Display/Delete Relations). A Smart Dimension's go through .dimProps([[i, { … }], …]).
-  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied'];   // rfY: implied (an arc slot's fourth join)
-  var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show'];
+  var REL_EXTRA = ['ac', 'name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'suppressed', 'implied', 'link'];   // lane CV: link (Link Values)   // rfY: implied (an arc slot's fourth join)
+  var DIM_EXTRA = ['name', 'tol', 'prec', 'prefix', 'suffix', 'show', 'link'];
   function extras(item, keys) {
     var o = null;
     keys.forEach(function (k) { var x = item[k]; if (x != null && x !== false && x !== '') (o = o || {})[k] = JSON.parse(JSON.stringify(x)); });
@@ -5544,8 +5634,18 @@ var SketchSolver = (function () {
       });
       return this;
     };
+    // .showMinRadius([i, …]) (lane CV): splines i show their minimum radius (right-click ▸ Show Minimum Radius)
+    SBP.showMinRadius = function (list) {
+      var self = this;
+      (Array.isArray(list) ? list : [list]).forEach(function (i) { var e = self.f.entities[i]; if (!e || e.t !== 'spline') throw new Error('No sketch spline ' + i + ' to show the minimum radius of.'); e.showMinRadius = true; });
+      return this;
+    };
     Kn.registerSketchScript(function (f) {
-      var cons = (f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
+      var mnr = (f.entities || []).map(function (e, i) { return e.showMinRadius && e.t === 'spline' ? i : -1; }).filter(function (i) { return i >= 0; });
+      if (mnr.length) return '\n  .showMinRadius(' + JSON.stringify(mnr) + ')';
+    });
+    Kn.registerSketchScript(function (f) {
+      var cons =(f.entities || []).map(function (e, i) { return e.construction ? i : -1; }).filter(function (i) { return i >= 0; });
       var drv = (f.dims || []).map(function (d, i) { return d.driven ? i : -1; }).filter(function (i) { return i >= 0; });
       var shp = (f.entities || []).map(function (e, i) { return e.sharp && e.t === 'point' ? i : -1; }).filter(function (i) { return i >= 0; });
       var inf = (f.entities || []).map(function (e, i) { return e.infinite && e.t === 'line' ? (e.infinite === 'p1' || e.infinite === 'p2' ? [i, e.infinite] : i) : -1; }).filter(function (i) { return i !== -1; });
@@ -5686,7 +5786,7 @@ var SketchSolver = (function () {
     refKind: function (sketch, ref) { return refKind(sketch.entities, parseRef(ref)); },
     pointRefs: pointRefs, curveRefs: curveRefs, refName: refName, describe: describe,
     buildSystem: buildSystem, analyze: analyze, solve: solve, drag: drag,
-    setDim: setDim, setRelValue: setRelValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
+    setDim: setDim, setRelValue: setRelValue, linkedItems: linkedItems, linkValues: linkValues, unlinkValue: unlinkValue, linkItemValue: itemValue, driveEntity: driveEntity, measure: measure, updateDriven: updateDriven, overDefines: overDefines, setDriven: setDriven,
     applicable: applicable, addRelation: addRelation, deleteRelation: deleteRelation, fullyDefine: fullyDefine, relArgs: relArgs,
     removeEntity: removeEntity, replaceEntity: replaceEntity, remap: remap, afterTrim: afterTrim, explodeRect: explodeRect, explodePoly: explodePoly, explodeSlot: explodeSlot, explodeArcSlot: explodeArcSlot, slotCap: slotCap, slotAxisOf: slotAxisOf, clean: clean,
     infer: infer, inferCandidates: inferCandidates, inferPreview: inferPreview, onCurveRef: onCurveRef,
@@ -5698,7 +5798,7 @@ var SketchSolver = (function () {
     curveCorner: curveCorner, filletPair: filletPair, chamferPair: chamferPair, offsetChains: offsetChains, offsetSelection: offsetSelection,
     xfEntity: xfEntity, transformEntities: transformEntities, stretchEntities: stretchEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
     // r13/trim13: Trim Entities modes
-    trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
+    trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, withSkip: withSkip,extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
     cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined,
     // sketch-refine: splines and ellipses as curves (closest point, crossings, the points along a stretch of one)
     isFree: isFree, freeCurve: freeCurve, infSides: infSides, freeClosest: freeClosest, freeHits: freeHits, freePts: freePts,

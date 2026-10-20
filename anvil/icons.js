@@ -168,6 +168,12 @@ var Icons = (function () {
     sketchedBend: p('M1.5 12 h5.5 a2 2 0 0 0 2 -2 V2.5 h2.5 V10 a4.5 4.5 0 0 1 -4.5 4.5 H1.5 z', F2, S) + p('M7 12 a2 2 0 0 0 2 -2 h2.5 a4.5 4.5 0 0 1 -4.5 4.5 z', FY, S, 1) + ln('M7.2 15 l5.6 -5.6', B, 1.2, DASH),
     // lane CP: Break-Corner/Corner-Trim — a sheet with one corner chamfered and one rounded, the breaks in yellow
     breakCorner: p('M1.5 14 V7.5 L4.5 4.5 H9.5 a4.5 4.5 0 0 1 4.5 4.5 V14 z', F2, S) + p('M1.5 14 h12.5 v1 H1.5 z', FYD, S, 0.8) + ln('M1.5 7.5 L4.5 4.5 M9.5 4.5 a4.5 4.5 0 0 1 4.5 4.5', FY, 2.2),
+    // lane CS: Closed Corner (top view of a box corner: the far wall grey, the near wall's extension closing the gap in
+    // yellow) and its corner types (the extended flange yellow, the matching flange grey)
+    closedCorner: p('M1.5 1.5 h13 v3 h-13 z', F2, S) + p('M1.5 7.5 h3 v7 h-3 z', F2, S) + p('M1.5 5.2 h3 v2.3 h-3 z', FY, S),
+    ccButt: p('M2 2 h12.5 v3 H2 z', F2, S) + p('M2 6 h3 v8.5 H2 z', FY, S),
+    ccOverlap: p('M2 2 h3 v12.5 H2 z', FY, S) + p('M6 2 h8.5 v3 H6 z', F2, S),
+    ccUnderlap: p('M3.5 2 h11 v3 h-11 z', F2, S) + p('M2 6 h3 v8.5 H2 z', FY, S),
     flatten: p('M1.5 12 l3 -8 h10 l-3 8 z', FYL, S) + ln('M5.5 12 l3 -8 M9 12 l3 -8', B, 1, DASH),
     // p9-pm: Edge Flange ▸ Flange Length reference: the bent sheet with the length dimension (blue) measured from the
     // top of the flange to the outer virtual sharp, the inner virtual sharp, or the tangent where the bend starts

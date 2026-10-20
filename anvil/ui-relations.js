@@ -755,6 +755,7 @@
     // also missed a circle between its facets when zoomed far in. A curve the point lay on when the drag began is no
     // target (the point slides along it), and an arc is a target only inside its sweep. Equal distances keep the
     // first entity in sketch order, so a drop on two coincident points always picks the same one.
+    function hiddenEnt(e) { return !!(e && UI.entityLayerHidden && UI.entityLayerHidden(f, e)); }
     function dropTarget(q) {
       var e0 = refEntity(ref), P0 = S.refPoint({ entities: start }, ref), best = null, bd = 9, st0 = { entities: start };
       function same(a, b) { return !!(a && b && Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9); }
@@ -762,6 +763,7 @@
       function take(c) { var s = scr(pl, c.pt), d = Math.hypot(s[0] - q[0], s[1] - q[1]); if (d < bd) { bd = d; best = c; } }
       function lineMid(c) { return [(c.a[0] + c.b[0]) / 2, (c.a[1] + c.b[1]) / 2]; }
       f.entities.forEach(function (e, i) {
+        if (i !== e0 && hiddenEnt(e)) return;   // rfCY: a hidden layer's points and curves are no drop targets
         S.pointRefs(f, i).forEach(function (pr) {
           if (/\.c$/.test(pr.ref) && CENTERLESS.test(e.t)) return;
           if (excluded(i, S.refPoint(st0, pr.ref))) return;
@@ -800,7 +802,7 @@
         return Math.abs(Math.hypot(P[0] - c.c[0], P[1] - c.c[1]) - c.r) < tol;
       }
       f.entities.forEach(function (e, i) {
-        if (i === e0 || !e || e.t === 'slot') return;   // a slot's curve ref is its (undrawn) centre line: no target, as in SketchSolver.onCurveRef
+        if (i === e0 || !e || e.t === 'slot' || hiddenEnt(e)) return;   // a slot's curve ref is its (undrawn) centre line: no target, as in SketchSolver.onCurveRef
         S.curveRefs(f, i).forEach(function (cr) {
           var c = S.refCurve(f, cr), c0 = S.refCurve(st0, cr), pt;
           if (!c || (c0 && onAt(c0, start[i], P0))) return;

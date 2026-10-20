@@ -27,11 +27,11 @@
     face.click(); await idle();
     assert(UI.hasPM() && /Chamfer/.test($('pm').textContent), 'the face does not run Chamfer');
     UI.pmCancel(); await idle();
-    // Reference Geometry: Plane runs, the other reference types are listed greyed
+    // Reference Geometry: Plane, Axis, Coordinate System and Point all run (lane CZ)
     var rg = c14Fly('refgeo');
     rg.querySelector('.rb-caret').dispatchEvent(new W.MouseEvent('mousedown', { bubbles: true })); rg.querySelector('.rb-caret').click();
     assert(c14MenuLabels().join(' | ') === 'Plane | Axis | Coordinate System | Point', 'Reference Geometry lists ' + c14MenuLabels().join(' | '));
-    assert(!c14MenuRow('Plane').classList.contains('disabled') && c14MenuRow('Axis').classList.contains('disabled'), 'Plane enabled, Axis greyed');
+    assert(!c14MenuRow('Plane').classList.contains('disabled') && !c14MenuRow('Axis').classList.contains('disabled'), 'Plane and Axis enabled (lane CZ: Axis, Coordinate System and Point work now)');
     UI.closeMenus();
     assert(rg.querySelector('.rb').getAttribute('aria-label') === 'Reference Geometry', 'Reference Geometry keeps its name');
     var pat = c14Fly('pattern');

@@ -363,12 +363,12 @@
       var first = String(n.text).split('\n')[0];
       t.appendChild(row({ icon: 'note', name: 'Note' + n.id, depth: 2, cls: 'dw-note', data: { note: String(n.id) }, sel: D.sel && D.sel.kind === 'note' && D.sel.id === n.id, badge: first.length > 18 ? first.slice(0, 17) + '…' : first, title: n.text + '\n(double-click to edit)',
         click: function () { D.sel = { kind: 'note', id: n.id }; drawOverlay(); renderTree(); }, dbl: function () { D.sel = { kind: 'note', id: n.id }; DW.openNoteEdit(Drawing.findNote(doc(), n.id)); },
-        menu: function () { return [{ label: 'Delete', action: function () { edit(function (dc2) { Drawing.deleteNote(dc2, n.id); }); } }]; } }));
+        menu: function () { return [{ label: 'Properties…', action: function () { DW.cmdNoteProps(n.id); } }, { label: 'Delete', action: function () { edit(function (dc2) { Drawing.deleteNote(dc2, n.id); }); } }]; } }));   // (rfCU: Properties)
     });
     (dc.symbols || []).forEach(function (sy) {
-      var nm = ({ surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance', weld: 'Weld Symbol', revision: 'Revision Symbol', revCloud: 'Revision Cloud' }[sy.type] || 'Symbol') + sy.id;
-      t.appendChild(row({ icon: ({ gtol: 'gtol', datum: 'datumFeature', weld: 'weldSymbol', revision: 'revisionSymbol', revCloud: 'revisionCloud' })[sy.type] || 'surfaceFinish', name: nm, depth: 2, cls: 'dw-symbol', data: { symbol: String(sy.id) }, sel: D.sel && D.sel.kind === 'symbol' && D.sel.id === sy.id,
-        badge: sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.type === 'revision' ? sy.rev || '' : sy.type === 'surfaceFinish' ? sy.ra || '' : '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
+      var nm = ({ surfaceFinish: 'Surface Finish', datum: 'Datum Feature', gtol: 'Geometric Tolerance', weld: 'Weld Symbol', revision: 'Revision Symbol', revCloud: 'Revision Cloud', datumTarget: 'Datum Target', leader: 'Multi-jog Leader' }[sy.type] || 'Symbol') + sy.id;
+      t.appendChild(row({ icon: ({ gtol: 'gtol', datum: 'datumFeature', weld: 'weldSymbol', revision: 'revisionSymbol', revCloud: 'revisionCloud', datumTarget: 'datumTarget', leader: 'multiJogLeader' })[sy.type] || 'surfaceFinish', name: nm, depth: 2, cls: 'dw-symbol', data: { symbol: String(sy.id) }, sel: D.sel && D.sel.kind === 'symbol' && D.sel.id === sy.id,
+        badge: sy.type === 'datumTarget' ? sy.datum + sy.num : sy.type === 'datum' ? sy.label : sy.type === 'gtol' ? (sy.dia ? 'Ø' : '') + sy.tol : sy.type === 'revision' ? sy.rev || '' : sy.type === 'surfaceFinish' ? sy.ra || '' : '', title: Drawing.symbolText(sy) + '\n(double-click for properties)',
         click: function () { D.sel = { kind: 'symbol', id: sy.id }; drawOverlay(); renderTree(); }, dbl: function () { cmdSymbol(sy.type, sy.id); }, menu: function () { return symbolMenu(sy.id); } }));
     });
     // (rfQ) the other sheets: one row each, in sheet order around the active one (whose views are listed under it);
@@ -403,13 +403,13 @@
       var w = D.sheet && D.sheet.views.filter(function (x) { return x.view.id === v.id; })[0];
       var st = w ? w.proj.stats : null;
       var badge = v.kind === 'section' ? v.label + '-' + v.label : v.kind === 'detail' ? v.label + ' ' + Drawing.scaleText(v.scale || dc.sheet.scale) : v.orient;
-      t.appendChild(row({ icon: v.kind === 'section' ? 'sectionView' : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
+      t.appendChild(row({ icon: v.kind === 'section' ? (v.section && v.section.removed ? 'removedSection' : 'sectionView') : v.kind === 'detail' ? 'detailView' : v.kind === 'projected' ? 'projView' : v.kind === 'flat' ? 'flatView' : 'drawingView', name: v.name, depth: 2, twisty: true, cls: 'dw-view' + (v.kind ? ' dw-' + v.kind : ''), data: { view: String(v.id) }, sel: sel, badge: badge,
         title: v.name + ' \u2014 ' + v.orient + (v.scale ? ', scale ' + Drawing.scaleText(v.scale) : '') + (st ? ' \u2014 ' + st.visibleLines + ' visible / ' + st.hiddenLines + ' hidden lines, ' + st.visibleCircles + ' circles' : '') + '. Double-click for properties.',
         click: function () { D.sel = { kind: 'view', id: v.id }; drawOverlay(); renderTree(); },
         dbl: function () { cmdViewProperties(v.id); }, menu: function () { return viewMenu(v); } }));
       t.appendChild(row({ icon: isAsm() ? 'assembly' : 'part', name: App.model.name, depth: 3, cls: 'dw-ref' }));
       var an = w && D.sheet.annotations ? D.sheet.annotations.filter(function (a) { return a.view === v.id; }) : [];
-      [['centerMark', 'Center Marks'], ['centerline', 'Centerlines'], ['holeCallout', 'Hole Callouts']].forEach(function (tp) {
+      [['centerMark', 'Center Marks'], ['centerline', 'Centerlines'], ['holeCallout', 'Hole Callouts'], ['cosmeticThread', 'Cosmetic Threads'], ['dowelPin', 'Dowel Pin Symbols']].forEach(function (tp) {   // (rfCU: the last two)
         var list = an.filter(function (a) { return a.type === tp[0]; }), dang = list.filter(function (a) { return a.dangling; }).length;
         if (!list.length) return;
         t.appendChild(row({ icon: tp[0], name: tp[1], depth: 3, cls: 'dw-annots dw-' + tp[0], badge: String(list.length), data: { annots: tp[0] }, title: list.map(function (a) { return a.text; }).join(', ') + (dang ? ' (' + dang + ' dangling)' : ''),
@@ -444,10 +444,25 @@
   // Sheet Properties in Tools and the sheet's right-click menu.
   // Annotation tab (SolidWorks: Smart Dimension with its Ordinate / Baseline / Chamfer flyout, Model Items, Balloon,
   // Auto Balloon, Stacked Balloon, Hole Callout, Center Mark, Centerline)
+  // (lane CT) the dimension tools of the Smart Dimension flyout and Tools ▸ Dimensions, in SolidWorks 2024's order
+  function ordFixed(f) { return function () { return D.tool === 'ordinate' && !!D.pending && D.pending.fixed === f; }; }
+  var CT_DIMS = [
+    { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim' && !D.dimLock; } },
+    { id: 'horizDim', label: 'Horizontal\nDimension', run: function () { DW.cmdLockedDimension('h'); }, active: function () { return D.tool === 'dim' && D.dimLock === 'h'; } },
+    { id: 'vertDim', label: 'Vertical\nDimension', run: function () { DW.cmdLockedDimension('v'); }, active: function () { return D.tool === 'dim' && D.dimLock === 'v'; } },
+    { id: 'baselineDim', label: 'Baseline\nDimension', run: function () { cmdChainDim('baseline'); }, active: function () { return D.tool === 'baseline'; } },
+    { id: 'ordinateDim', label: 'Ordinate\nDimension', run: function () { cmdChainDim('ordinate'); }, active: function () { return D.tool === 'ordinate' && !(D.pending && D.pending.fixed); } },
+    { id: 'ordinateH', label: 'Horizontal Ordinate\nDimension', run: function () { cmdChainDim('ordinate', 'h'); }, active: ordFixed('h') },
+    { id: 'ordinateV', label: 'Vertical Ordinate\nDimension', run: function () { cmdChainDim('ordinate', 'v'); }, active: ordFixed('v') },
+    { id: 'angRunDim', label: 'Angular Running\nDimension', run: function () { DW.cmdAngularRunning(); }, active: function () { return D.tool === 'angrun'; } },
+    { id: 'chamferDim', label: 'Chamfer\nDimension', run: cmdChamferDim, active: function () { return D.tool === 'chamferdim'; } },
+    { id: 'pathLengthDim', label: 'Path Length\nDimension', run: function () { DW.cmdPathLength(); }, active: function () { return D.tool === 'pathlen'; } }
+  ];
   UI.RIBBON.Annotation = [
-    { id: 'dim', label: 'Smart\nDimension', run: cmdSmartDimension, active: function () { return D.tool === 'dim'; } },
+    // (lane CT) the Smart Dimension flyout, SolidWorks 2024's drawing order (CT_DIMS)
+    { fly: 'dwDim', items: CT_DIMS.map(function (x) { return { id: x.id, label: x.label, run: x.run, active: x.active }; }) },
     { stack: [
-      { id: 'ordinateDim', label: 'Ordinate Dimension', run: function () { cmdChainDim('ordinate'); }, active: function () { return D.tool === 'ordinate'; } },
+      { id: 'ordinateDim', label: 'Ordinate Dimension', run: function () { cmdChainDim('ordinate'); }, active: function () { return D.tool === 'ordinate' && !(D.pending && D.pending.fixed); } },
       { id: 'baselineDim', label: 'Baseline Dimension', run: function () { cmdChainDim('baseline'); }, active: function () { return D.tool === 'baseline'; } },
       { id: 'chamferDim', label: 'Chamfer Dimension', run: cmdChamferDim, active: function () { return D.tool === 'chamferdim'; } }
     ] },
@@ -542,7 +557,9 @@
         { label: 'Tables \u25b8 Revision Table', disabled: !!(dc && dc.revisions), action: function () { insertRevisionTable(); } },
         { label: 'Tables \u25b8 Add Revision\u2026', action: function () { cmdRevision(null); } }
       ] },
-      { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }, { label: 'Options \u25b8 Document Properties\u2026', action: cmdDocProps }] },
+      { label: 'Tools', items: [{ label: 'Sheet Properties\u2026', action: cmdSheetProperties }, { label: 'Options \u25b8 Document Properties\u2026', action: cmdDocProps }, { sep: true }].concat(CT_DIMS.map(function (x) {
+        return { label: 'Dimensions \u25b8 ' + x.label.replace(/\n/g, ' '), checked: !!x.active(), action: x.run };   // (lane CT)
+      })) },
       { label: 'Window', items: [
         { label: App.model.name + ' (' + docKind() + ')', action: requestClose },
         { label: (dc ? dc.name + ' - ' + dc.sheet.name : 'Drawing'), checked: true, action: function () { } }
@@ -793,6 +810,17 @@
       ordinate: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addOrdinate(dc, viewId, spec || {}); }); },
       baseline: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addBaseline(dc, viewId, spec || {}); }); },
       chamferDim: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addChamferDim(dc, viewId, spec || {}); }); },
+      // (lane CT) horizontalDim / verticalDim(viewId, pick1, pick2 | null, at): smartDim held horizontal / vertical (the
+      // same picks, view model units) -> { kind, value, text, index, view }; horizontalOrdinate / verticalOrdinate(viewId,
+      // { base, refs, side, at }): ordinate with the direction preset; angularRunning(viewId, { base: { a, b }, refs:
+      // [{ a, b } | { c, r }], c?, cw?, rad? }), pathLength(viewId, { refs: [{ a, b } | { c, r, a0, a1 } | { c, r }],
+      // lead? }) -> the summary. One undo step each (null: refused, the message shown)
+      horizontalDim: function (viewId, p1, p2, at, opts) { return window.anvil.drawing.smartDim(viewId, p1, p2, at, Object.assign({}, opts || {}, { lock: 'h' })); },
+      verticalDim: function (viewId, p1, p2, at, opts) { return window.anvil.drawing.smartDim(viewId, p1, p2, at, Object.assign({}, opts || {}, { lock: 'v' })); },
+      horizontalOrdinate: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addOrdinate(dc, viewId, Object.assign({}, spec || {}, { dir: 'h' })); }); },
+      verticalOrdinate: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addOrdinate(dc, viewId, Object.assign({}, spec || {}, { dir: 'v' })); }); },
+      angularRunning: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addAngularRunning(dc, viewId, spec || {}); }); },
+      pathLength: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addPathLength(dc, viewId, spec || {}); }); },
       // dimension i of summary().dims: dimProps(i) -> its properties; dimProps(i, { tol, prec, label, flip, at, tx, lead, off })
       dimProps: function (i, props) {
         var d = current() && current().dims[i];
@@ -845,6 +873,18 @@
       editSymbol: function (id, props) { return annotApi(function (dc) { return Drawing.editSymbol(dc, id, props || {}); }); },
       deleteSymbol: function (id) { return annotApi(function (dc) { if (!Drawing.deleteSymbol(dc, id)) throw new Error('No symbol ' + id); return true; }); },
       symbols: function () { var s = summary(); return s ? s.symbols : null; },
+      // (rfCU) cosmeticThread(viewId, { c, r, size ('#10-32 UNF'; default: the tap drill's thread), end: 'through' | 'blind',
+      // depth, callout, lead, text }), dowelPin(viewId, { c, r }) on a hole circle of the view (model units), editAnnotation(id,
+      // props), annotations() -> [{ id, view, type, text, dangling, info }]; datumTarget({ p, leader, datum, num, area:
+      // 'point' | 'circle' | 'rect', aw, ah, size }), leader({ p, jogs: [[x, y] …], leader (the tip), end: 'arrow' | 'dot' |
+      // 'none', note }) are symbols (editSymbol / deleteSymbol); note() / editNote() take border ('circle' | 'triangle' |
+      // 'square' | 'hexagon' | 'flag' | 'none') and list ('number' | 'bullet' | 'none')
+      cosmeticThread: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addCosmeticThread(dc, viewId, spec || {}); }); },
+      dowelPin: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addDowelPin(dc, viewId, spec || {}); }); },
+      editAnnotation: function (id, props) { return annotApi(function (dc) { return Drawing.editAnnotation(dc, id, props || {}); }); },
+      annotations: function () { var sh = current(); return sh ? (sh.annotations || []).map(function (a) { return { id: a.id, view: a.view, type: a.type, text: a.text, dangling: !!a.dangling, info: a.info ? JSON.parse(JSON.stringify(a.info)) : null, box: a.box ? [a.box.x0, a.box.y0, a.box.x1, a.box.y1] : null }; }) : null; },
+      datumTarget: function (spec) { return annotApi(function (dc) { return Drawing.addSymbol(dc, Object.assign({}, spec || {}, { type: 'datumTarget' })); }); },
+      leader: function (spec) { return annotApi(function (dc) { return Drawing.addSymbol(dc, Object.assign({}, spec || {}, { type: 'leader' })); }); },
       // the drawing's custom properties ($PRP:"name"): properties() -> them; properties({ name: value | null })
       properties: function (map) { if (!doc()) return null; if (map) setDrawingProps(map); return JSON.parse(JSON.stringify(doc().properties || {})); },
       balloon: function (viewId, spec) { return annotApi(function (dc) { return Drawing.addBalloon(dc, App.model, viewId, spec || {}); }); },

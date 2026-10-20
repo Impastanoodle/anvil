@@ -287,7 +287,7 @@
     endTool();
     if (spec.type) { try { Drawing.addSectionView(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; } }
     var vsc = P.scale;
-    v = editView(function (dc) { var nv = Drawing.addSectionView(dc, mesh(), parent, spec); if (vsc) nv.scale = vsc.slice(); return nv; });
+    v = editView(function (dc) { var nv = Drawing.addSectionView(dc, mesh(), parent, spec); if (vsc) { nv.scale = vsc.slice(); delete nv.section.parentScale; } return nv; });   // (rfCX: a custom scale stays)
     D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
     UI.setStatus(v.name + ' placed, cut at ' + Drawing.fmtDim(spec.at, units()) + ' ' + units() + '.');
     return v;
@@ -416,19 +416,19 @@
     }
     openDrawingPM({
       title: v.name, icon: 'drawingView', command: 'viewProps',
-      values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
+      values: { orient: v.orient, display: v.display, tangent: v.tangent || 'removed', scale: v.section && v.section.parentScale ? 'parent' : v.scale ? Drawing.scaleText(v.scale) : 'sheet', dimType: v.dimType === 'true' ? 'true' : 'projected',
         swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
         showLabel: Drawing.viewLabelShown(v) },
       // projected, section and detail views take their direction from the parent
       groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
           { type: 'select', key: 'tangent', label: 'Tangent edges', options: [['visible', 'Tangent Edges Visible'], ['font', 'Tangent Edges With Font'], ['removed', 'Tangent Edges Removed']] }]) },
-        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: v.kind === 'detail' ? scaleOptions().slice(1) : scaleOptions() }] }
+        { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: v.kind === 'detail' ? scaleOptions().slice(1) : v.kind === 'section' ? [['parent', 'Use parent scale']].concat(scaleOptions()) : scaleOptions() }] }
       ]).concat(
         // (rfZ) a pictorial model view's Dimension Type; a section's Partial section (off only: a new line is clicked) and
         // Scale with model changes; a detail's circle style and outline
         !v.kind && ORTHO_NAMES.indexOf(v.orient) < 0 ? [{ title: 'Dimension Type', fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']] }] }] : [],
-        v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
+        v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial && !v.section.removed ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
         v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : [],
         // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
         [{ title: 'Label', fields: [{ type: 'check', key: 'showLabel', label: 'Display label' }] }]),
@@ -442,7 +442,11 @@
             dc.views.forEach(function (c) { if (c.parent === w.id && c.kind === 'projected') { c.parent = null; c.align = null; } });
           }
           if (w.kind === 'detail' && val.scale !== 'sheet') w.name = 'Detail View ' + w.label + ' (' + val.scale + ')';
-          w.display = val.display; w.scale = val.scale === 'sheet' ? null : Drawing.parseScale(val.scale);
+          w.display = val.display; w.scale = val.scale === 'sheet' || val.scale === 'parent' ? null : Drawing.parseScale(val.scale);
+          if (w.kind === 'section' && w.section) {   // (rfCX) Use parent scale: follows the parent
+            var wp = val.scale === 'parent' ? Drawing.findView(dc, w.parent) : null;
+            if (val.scale === 'parent') { w.section.parentScale = true; w.scale = wp && wp.scale ? wp.scale.slice() : null; } else delete w.section.parentScale;
+          }
           if (val.tangent === 'visible' || val.tangent === 'font') w.tangent = val.tangent; else if (val.tangent) delete w.tangent;
           if (w.role === 'iso') w.role = null;
           if (!w.kind) { if (val.dimType === 'true' && ORTHO_NAMES.indexOf(w.orient) < 0) w.dimType = 'true'; else delete w.dimType; }
@@ -527,9 +531,21 @@
   // far (max) side, the side clicked.
   var SD_MSG = 'Smart Dimension: click an edge, a circle or arc, a vertex or a circle’s centre in an orthographic view. Esc ends.';
   function cmdSmartDimension() {
-    D.tool = D.tool === 'dim' ? null : 'dim'; D.pending = null; D.hover = null;
+    D.tool = D.tool === 'dim' && !D.dimLock ? null : 'dim'; D.pending = null; D.hover = null; D.dimLock = null;   // (lane CT: from Horizontal / Vertical Dimension it turns into Smart Dimension)
     drawOverlay(); UI.refreshRibbon();
     UI.setStatus(D.tool === 'dim' ? SD_MSG : 'Ready');
+  }
+  // (lane CT) Horizontal / Vertical Dimension (the Smart Dimension flyout, Tools ▸ Dimensions): the Smart Dimension
+  // tool with its dimension held horizontal / vertical (D.dimLock, Drawing.smartDim's lock); the same picks, preview,
+  // PropertyManager and Esc. Again on the same button ends it.
+  function sdName() { return D.dimLock === 'h' ? 'Horizontal Dimension' : D.dimLock === 'v' ? 'Vertical Dimension' : 'Smart Dimension'; }
+  function cmdLockedDimension(lock) {
+    lock = lock === 'v' ? 'v' : 'h';
+    if (D.tool === 'dim' && D.dimLock === lock) { if (UI.hasPM && UI.hasPM() && D.sdPM) UI.pmCancel(); D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; drawOverlay(); UI.refreshRibbon(); UI.setStatus('Ready'); return; }
+    if (D.tool && D.tool !== 'dim' && UI.hasPM && UI.hasPM()) UI.pmCancel();
+    D.tool = 'dim'; D.dimLock = lock; D.pending = null; D.hover = null;
+    drawOverlay(); UI.refreshRibbon();
+    UI.setStatus(sdName() + ': click two points, a point and a circle centre, an edge or a circle in an orthographic view; the dimension stays ' + (lock === 'h' ? 'horizontal' : 'vertical') + '. Esc ends.');
   }
   // pickAt(p, viewId?) -> { view, w, pick (model units), at (sheet), hl (what the overlay outlines) } or null: a
   // circle's / arc's centre or an edge's end within 6 px first, else the nearest visible edge, circle or arc
@@ -593,36 +609,36 @@
   function smartSpec(P, p) {
     if (!P || !P.first) return null;
     var w = P.first.w;
-    return Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P), aligned: !!w.trueDims });
+    return Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P), aligned: !!w.trueDims, lock: D.dimLock || null });
   }
   function smartDimClick(p, e) {
     var P = D.pending, hit;
     if (!P || !P.first) {
       hit = pickAt(p);
-      if (!hit) { UI.setStatus('Smart Dimension: click a visible edge, circle, arc, vertex or circle centre of an orthographic view.'); return; }
+      if (!hit) { UI.setStatus(sdName() + ': click a visible edge, circle, arc, vertex or circle centre of an orthographic view.'); return; }
       // the previous dimension's PropertyManager closes, keeping its edits, as the next one starts
       if (UI.hasPM && UI.hasPM() && $('app').classList.contains('dw-pm')) { D.sdNext = true; try { UI.pmOK(); } finally { D.sdNext = false; } D.tool = 'dim'; }
       hit.shift = !!(e && e.shiftKey);
       D.pending = { view: hit.view, first: hit, second: null, at: p };
       D.hover = null; drawOverlay(); UI.refreshRibbon();
-      UI.setStatus(hit.pick.point || hit.pick.center ? 'Smart Dimension: click a second item (a point, a centre, a circle or an edge). Esc cancels.'
-        : 'Smart Dimension: click where the dimension goes, or a second item (distance or angle). Esc cancels.');
+      UI.setStatus(hit.pick.point || hit.pick.center ? sdName() + ': click a second item (a point, a centre, a circle or an edge). Esc cancels.'
+        : sdName() + ': click where the dimension goes, or a second item (distance' + (D.dimLock ? '' : ' or angle') + '). Esc cancels.');
       return;
     }
     if (!P.second) {
       hit = pickAt(p, P.view);
       if (hit && !samePick(hit, P.first)) {
         hit.shift = !!(e && e.shiftKey);
-        var trial = Drawing.smartDim(P.first.pick, hit.pick, null, {});
+        var trial = Drawing.smartDim(P.first.pick, hit.pick, null, { lock: D.dimLock || null });
         if (trial) {
           P.second = hit; P.at = p; drawOverlay();
-          UI.setStatus('Smart Dimension: click where the dimension goes (' + (trial.kind === 'angle' ? 'angle' : 'distance') + '). Esc cancels.');
+          UI.setStatus(sdName() + ': click where the dimension goes (' + (trial.kind === 'angle' ? 'angle' : 'distance') + '). Esc cancels.');
           return;
         }
       }
     }
     var w = P.first.w, spec = smartSpec(P, p);
-    if (!spec) { UI.setStatus('Smart Dimension: a point needs a second item to measure to. Esc cancels.'); return; }
+    if (!spec) { UI.setStatus(sdName() + (D.dimLock && P.first && !P.first.pick.point && !P.first.pick.center ? ': that item has no ' + (D.dimLock === 'h' ? 'horizontal' : 'vertical') + ' size; pick a second item. Esc cancels.' : ': a point needs a second item to measure to. Esc cancels.')); return; }
     var index = -1;
     edit(function (dc) {
       var v = Drawing.findView(dc, P.view);
@@ -638,7 +654,7 @@
     UI.setStatus('Dimension ' + (sd ? sd.text : '') + ' added to ' + w.view.name + '. Pick the next item, or Esc to end.');
     // (✓ or Esc on it ends Smart Dimension, as SolidWorks; the next pick closes it with its edits and goes on)
     if (sd) {
-      cmdDimensionPM(ref, function () { D.sdPM = false; if (!D.sdNext && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); UI.setStatus('Ready'); } });
+      cmdDimensionPM(ref, function () { D.sdPM = false; if (!D.sdNext && D.tool === 'dim') { D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; UI.refreshRibbon(); UI.setStatus('Ready'); } });
       D.sdPM = true;
     }
     D.tool = 'dim'; drawOverlay(); UI.refreshRibbon();
@@ -666,7 +682,7 @@
   UI.escapeTools = UI.escapeTools || [];
   UI.escapeTools.push(function () {
     if (!D.active || !D.tool) return false;
-    D.tool = null; D.pending = null; D.hover = null; UI.refreshRibbon(); drawOverlay();
+    D.tool = null; D.pending = null; D.hover = null; D.dimLock = null; UI.refreshRibbon(); drawOverlay();
     return true;
   });
   // the pointer over the sheet while the tool runs: what the next click picks, and the preview
@@ -1194,21 +1210,24 @@
   }
   // Ordinate / Baseline Dimension: pick the direction, click the base (an edge or a hole), then every feature to
   // dimension from it; ✓ ends. The first feature creates the dimension (one undo step), the next ones extend it.
-  function cmdChainDim(kind) {
+  // (lane CT) fixed 'h' | 'v': Horizontal / Vertical Ordinate Dimension, the direction preset (no Direction box)
+  function cmdChainDim(kind, fixed) {
     var tool = kind === 'ordinate' ? 'ordinate' : 'baseline';
-    if (D.tool === tool) { endToolPM(); return; }
-    var name = kind === 'ordinate' ? 'Ordinate Dimension' : 'Baseline Dimension';
+    fixed = kind === 'ordinate' && (fixed === 'h' || fixed === 'v') ? fixed : null;
+    if (D.tool === tool && (D.pending && D.pending.fixed || null) === fixed) { endToolPM(); return; }
+    if (D.tool === tool) endToolPM();
+    var name = fixed ? (fixed === 'h' ? 'Horizontal' : 'Vertical') + ' Ordinate Dimension' : kind === 'ordinate' ? 'Ordinate Dimension' : 'Baseline Dimension';
     toolPM({
-      title: name, icon: kind === 'ordinate' ? 'ordinateDim' : 'baselineDim', command: tool,
-      message: 'Click the base (an edge or hole) in an orthographic view, then each feature to dimension from it. ✓ ends.',
-      values: { dir: 'h' },
-      groups: [{ title: 'Direction', fields: [{ type: 'select', key: 'dir', label: 'Measure', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] }],
-      onChange: function (v) { if (D.pending && !D.pending.dim) D.pending.dir = v.dir === 'v' ? 'v' : 'h'; }
-    }, tool, { kind: kind, dir: 'h', view: null, base: null, dim: null });
+      title: name, icon: fixed ? (fixed === 'h' ? 'ordinateH' : 'ordinateV') : kind === 'ordinate' ? 'ordinateDim' : 'baselineDim', command: tool,
+      message: 'Click the base (an edge or hole) in an orthographic view, then each feature to dimension from it' + (fixed ? ', ' + (fixed === 'h' ? 'horizontally' : 'vertically') : '') + '. ✓ ends.',
+      values: { dir: fixed || 'h' },
+      groups: fixed ? [] : [{ title: 'Direction', fields: [{ type: 'select', key: 'dir', label: 'Measure', options: [['h', 'Horizontal'], ['v', 'Vertical']] }] }],
+      onChange: function (v) { if (D.pending && !D.pending.dim && !D.pending.fixed) D.pending.dir = v.dir === 'v' ? 'v' : 'h'; }
+    }, tool, { kind: kind, dir: fixed || 'h', fixed: fixed, view: null, base: null, dim: null });
     UI.setStatus(name + ': click the base edge or hole. Esc ends.');
   }
   function chainDimClick(p) {
-    var ent = entityAt(p), P = D.pending, name = P.kind === 'ordinate' ? 'Ordinate' : 'Baseline';
+    var ent = entityAt(p), P = D.pending, name = P.fixed ? (P.fixed === 'h' ? 'Horizontal Ordinate' : 'Vertical Ordinate') : P.kind === 'ordinate' ? 'Ordinate' : 'Baseline';
     if (!ent) { UI.setStatus(name + ': click an edge or hole of an orthographic view.'); return; }
     if (!P.base) { P.base = entRef(ent); P.view = ent.view; UI.setStatus(name + ': base picked; now click the features to dimension.'); return; }
     if (ent.view !== P.view) { UI.setStatus(name + ': stay in the view of the base.'); return; }
@@ -1335,7 +1354,7 @@
     var w = sheetView(d.view), src = d.auto && d.kind !== 'ordinate' && d.kind !== 'baseline' ? Drawing.dimSource(App.model, App.build, w, d) : null;
     var tol = d.tol || { type: 'none' }, u = units();
     var values = { value: d.value != null ? +d.value.toFixed(8) : 0, tolType: tol.type || 'none', plus: tol.plus != null ? tol.plus : 0, minus: tol.minus != null ? tol.minus : 0, prec: d.prec != null ? String(d.prec) : 'auto', label: d.label != null ? d.label : '<DIM>', flip: !!d.flip };
-    var single = d.kind !== 'ordinate' && d.kind !== 'baseline';
+    var single = d.kind !== 'ordinate' && d.kind !== 'baseline' && d.kind !== 'angrun';
     var primary = src ? [{ type: 'number', key: 'value', label: 'Value', unit: 'u' }, { type: 'static', label: 'Drives', value: src.featureName + ' (' + src.what + ')' + (src.expr ? ' — equation ' + src.expr : '') }]
       : [{ type: 'static', label: 'Value', value: single ? (d.kind === 'angle' ? (Math.round(d.value * 1e4) / 1e4) + '°' : Drawing.numText(d.value, u) + ' ' + u) + (d.auto ? ' (no model parameter found)' : ' (reference: driven by the model)') : d.text }];
     // (lane BX) the two-Enter rule: text, tolerance, precision and arrows show on the sheet as they are typed or picked,
@@ -1355,13 +1374,13 @@
       groups: [
         { title: 'Primary Value', fields: primary },
         { title: 'Tolerance/Precision', fields: [
-          { type: 'select', key: 'tolType', label: 'Tolerance', options: Drawing.TOL_TYPES, rerender: true },
+          { type: 'select', key: 'tolType', label: 'Tolerance', options: Drawing.TOL_TYPES, rerender: true, show: function () { return d.kind !== 'angrun'; } },   // (lane CT: an angular running set takes a precision only)
           { type: 'number', key: 'plus', label: 'Maximum variation (+)', unit: 'u', show: function (v) { return v.tolType !== 'none'; } },
           { type: 'number', key: 'minus', label: 'Minimum variation (−)', unit: 'u', show: function (v) { return v.tolType === 'bilateral' || v.tolType === 'limit'; } },
           { type: 'select', key: 'prec', label: 'Unit precision', options: PREC_OPTIONS }
         ] },
-        { title: 'Dimension Text', fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
-        { title: 'Leaders', fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
+        { title: 'Dimension Text', show: function () { return d.kind !== 'angrun'; }, fields: [{ type: 'text', key: 'label', label: 'Text (<DIM> is the value)' }] },
+        { title: 'Leaders', show: function () { return d.kind !== 'angrun' && d.kind !== 'pathlen'; }, fields: [{ type: 'check', key: 'flip', label: 'Flip arrows (outside)' }] }
       ],
       onChange: function (v, key) {
         // (the PM's opening call has no key; nothing changed yet: no undo step)
@@ -1662,7 +1681,8 @@
       props.off = (d.offNow || 0) + dx * n0[0] + dy * n0[1]; props.tx = (d.txNow != null ? d.txNow : d.tx || 0) + dx * tt[0] + dy * tt[1];
     } else if (d.kind === 'dia' || d.kind === 'rad' || d.kind === 'chamfer') props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];
     else if (d.kind === 'ordinate' || d.kind === 'baseline') props.at = d.lineAt + (d.dir === 'v' ? dx : dy) / w.scale;
-    else if (d.kind === 'angle' && d.c) {
+    else if (d.kind === 'pathlen' && d.leadNow) props.lead = [d.leadNow[0] + dx, d.leadNow[1] + dy];   // (lane CT)
+    else if ((d.kind === 'angle' || d.kind === 'angrun') && d.c) {
       // (rfS) the arc moves in or out with the pointer, along the line from the vertex to where the drag started
       var vc = w.toSheet(d.c), um = [dg.start[0] - vc[0], dg.start[1] - vc[1]], ul = Math.hypot(um[0], um[1]) || 1;
       props.rad = Math.max(1e-9, ((d.radNow || d.rad || 0) * w.scale + (dx * um[0] + dy * um[1]) / ul) / w.scale);
@@ -1733,6 +1753,91 @@
     UI.setStatus(v.name + ' placed: square to the edge; drag it along its arrow.');
     return v;
   }
+  // (rfCX) Removed Section (SolidWorks: View Layout ▸ Removed Section): click an edge of a view, click the opposite
+  // edge (each click lands on the edge under the pointer, or a hole centre within 8 px), then click anywhere on the
+  // sheet for the section: the cross-section alone, hatched, SECTION A-A, the cutting line drawn on the parent.
+  // Its PropertyManager opens with the tool (label, Flip direction, Display label, scale); Esc ends it.
+  function cmdRemovedSection() {
+    if (D.tool === 'rmsec') { endToolPM(); return; }
+    if (!needPart()) return;
+    var vals = { label: Drawing.nextLabel(doc()), flip: false, showLabel: true, scaleMode: 'parent', scale: scaleOptions()[1][0] };
+    startTool('rmsec', { parent: null, a: null, b: null, at: null, label: vals.label, pm: vals });
+    openDrawingPM({
+      title: 'Removed Section', icon: 'removedSection', command: 'removedSection', noFocus: true, values: vals,
+      message: 'Click an edge of a view, then the opposite edge: the cutting line runs between them. Then click where the section goes. Esc cancels.',
+      groups: [{ title: 'Section View', fields: [{ type: 'text', key: 'label', label: 'Label' }, { type: 'check', key: 'flip', label: 'Flip direction' }, { type: 'check', key: 'showLabel', label: 'Display label' }] },
+        { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['parent', 'Use parent scale'], ['custom', 'Use custom scale']] },
+          { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: scaleOptions().slice(1) }] }],
+      onChange: function (v) { var P = D.pending; if (D.tool === 'rmsec' && P && P.pm === vals) { P.label = cleanLabel(v.label); drawOverlay(); } },
+      onOK: function () { if (D.tool === 'rmsec') endTool(); },
+      onClose: function () { if (D.tool === 'rmsec' && D.pending && D.pending.pm === vals) endTool(); }
+    });
+    UI.setStatus('Removed Section: click an edge of a view where the cutting line starts. Esc cancels.');
+  }
+  // the parent point a click picks: on the straight edge under the pointer (the foot of the pointer on it), else the
+  // pointer with each coordinate snapped to a hole centre
+  function rmsecPoint(w, p) {
+    var ent = entityAt(p);
+    if (ent && ent.la && ent.view === w.view.id) {
+      var q = w.fromSheet(p), a = ent.la, b = ent.lb, dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+      var t = l2 > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2)) : 0;
+      return [a[0] + dx * t, a[1] + dy * t];
+    }
+    return snapCentre(w, p);
+  }
+  // the second end: square to the first (the line is horizontal or vertical, whichever is nearer)
+  function rmsecSecond(P, q) {
+    var a = P.a, h = Math.abs(q[0] - a[0]) >= Math.abs(q[1] - a[1]);
+    return h ? [q[0], a[1]] : [a[0], q[1]];
+  }
+  function rmsecClick(p) {
+    var P = D.pending;
+    if (P.parent == null) {
+      var ent = entityAt(p), w = ent && ent.la ? sheetView(ent.view) : parentAt(p);
+      if (!w || w.view.kind === 'detail' || w.view.kind === 'flat' || Drawing.isRemovedSection(w.view)) { UI.setStatus('Removed Section: click an edge of a model, projected, section or auxiliary view.'); return; }
+      P.parent = w.view.id; P.a = rmsecPoint(w, p);
+      D.sel = { kind: 'view', id: w.view.id }; drawOverlay();
+      UI.setStatus('Removed Section ' + P.label + '-' + P.label + ': click the opposite edge.');
+      return;
+    }
+    var w0 = sheetView(P.parent);
+    if (!w0) { endTool(); return; }
+    if (!P.b) {
+      var b = rmsecSecond(P, rmsecPoint(w0, p));
+      if (Math.hypot(b[0] - P.a[0], b[1] - P.a[1]) < 1e-9) { UI.setStatus('Removed Section: click the opposite edge, away from the first.'); return; }
+      P.b = b; drawOverlay();
+      UI.setStatus('Removed Section ' + P.label + '-' + P.label + ': click where the section goes.');
+      return;
+    }
+    var pm = P.pm || {}, spec = { a: P.a, b: P.b, x: p[0], y: p[1], label: P.label, flip: !!pm.flip }, parent = P.parent, v;
+    if (pm.showLabel === false) spec.showLabel = false;
+    if (pm.scaleMode === 'custom' && pm.scale) spec.scale = Drawing.parseScale(pm.scale);
+    endTool();
+    if (UI.pmSpec && UI.pmSpec() && UI.pmSpec().values === P.pm) UI.pmCancel();
+    try { Drawing.addRemovedSection(JSON.parse(JSON.stringify(doc())), mesh(), parent, spec); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+    v = editView(function (dc) { return Drawing.addRemovedSection(dc, mesh(), parent, spec); });
+    D.sel = { kind: 'view', id: v.id }; drawOverlay(); DW.renderTree();
+    UI.setStatus(v.name + ' placed: the cross-section between the two edges.');
+    return v;
+  }
+  // the preview: the cutting line from the first end to the pointer (square to it), then the section's box at the pointer
+  function rmsecOverlay(g, H, node, ghost) {
+    var P = D.pending, w = P && P.parent != null ? sheetView(P.parent) : null;
+    if (!w || !P.a) return;
+    var b = P.b || (P.at ? rmsecSecond(P, w.fromSheet(P.at)) : null);
+    if (!b) return;
+    var A = w.toSheet(P.a), Bs = w.toSheet(b), dash = pxToPaper(12) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3) + ' ' + pxToPaper(3);
+    node('line', { class: 'dw-cut dw-rmsec', x1: A[0], y1: H - A[1], x2: Bs[0], y2: H - Bs[1], 'stroke-width': pxToPaper(2), 'stroke-dasharray': dash }, g);
+    D.preview = { kind: 'removedSection', a: A, b: Bs };
+    if (P.b && P.at) {
+      var h = Math.abs(b[0] - P.a[0]) >= Math.abs(b[1] - P.a[1]), ex = Drawing.extentsOf(mesh(), Drawing.sectionFrame(w.frame, h ? 'h' : 'v', 1));
+      var sc = P.pm && P.pm.scaleMode === 'custom' && P.pm.scale ? Drawing.scaleValue(Drawing.parseScale(P.pm.scale)) : w.scale, len = Math.hypot(b[0] - P.a[0], b[1] - P.a[1]);
+      var gw = (h ? len : ex.w) * sc, gh = (h ? ex.h : len) * sc;
+      ghost(P.at[0], P.at[1], gw, gh);
+      D.preview.ghost = { x: P.at[0], y: P.at[1], w: gw, h: gh };
+    }
+  }
+  DW.cmdRemovedSection = cmdRemovedSection; DW.rmsecClick = rmsecClick; DW.rmsecOverlay = rmsecOverlay;
   function cmdCropView() {
     if (D.tool === 'crop') { endTool(); return; }
     if (!needPart()) return;
@@ -2061,6 +2166,7 @@
   }, true);
   document.addEventListener('contextmenu', function (e) { ctxAt = D.active && D.sheet && D.host && D.host.contains(e.target) ? DW.toPaper(e) : null; }, true);
   var RF_TOOLS = { aux: auxClick, crop: cropClick, brk: breakClick, bko: boClick, ahatch: hatchPickClick };   // (rfAG) routed by tool name
+  RF_TOOLS.rmsec = rmsecClick;   // (rfCX) Removed Section
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0 || !D.active || !D.sheet || !RF_TOOLS[D.tool] || !D.pending || !D.host || !D.host.contains(e.target)) return;
     if (D.inline && D.inline.box.contains(e.target)) return;
@@ -2081,6 +2187,7 @@
     list.forEach(function (b) {
       out.push(b);
       if (b.id === 'projView') out.push({ id: 'auxView', label: 'Auxiliary\nView', run: cmdAuxiliaryView, active: function () { return D.tool === 'aux'; } });
+      if (b.id === 'sectionView') out.push({ id: 'removedSection', label: 'Removed\nSection', run: cmdRemovedSection, active: function () { return D.tool === 'rmsec'; } });   // (rfCX)
       if (b.id === 'detailView') {
         out.push({ id: 'brokenOut', label: 'Broken-out\nSection', run: cmdBrokenOut, active: boActive });   // (rfAD, SolidWorks order)
         out.push({ id: 'breakView', label: 'Break', run: cmdBreakView, active: function () { return D.tool === 'brk'; } });
@@ -2104,7 +2211,12 @@
         { id: 'weldSymbol', label: 'Weld Symbol', run: function () { cmdSymbolAN('weld'); }, active: function () { return D.tool === 'rfansym' && D.pending && D.pending.type === 'weld'; } },
         { id: 'revisionSymbol', label: 'Revision Symbol', run: function () { cmdSymbolAN('revision'); }, active: function () { return D.tool === 'rfansym' && D.pending && D.pending.type === 'revision'; } },
         { id: 'revisionCloud', label: 'Revision Cloud', run: cmdCloud, active: function () { return D.tool === 'rfancloud'; } }
+      ] }, { stack: [   // (rfCU) Datum Target, Cosmetic Thread, Dowel Pin Symbol
+        { id: 'datumTarget', label: 'Datum Target', run: function () { cuSymbolPM('datumTarget'); }, active: function () { return D.tool === 'cutarget'; } },
+        { id: 'cosmeticThread', label: 'Cosmetic Thread', run: function () { cmdCosmeticThread(); }, active: function () { return D.tool === 'cuthread'; } },
+        { id: 'dowelPin', label: 'Dowel Pin Symbol', run: cmdDowelPin, active: function () { return D.tool === 'cudowel'; } }
       ] });
+      if (b.id === 'note') out.push({ id: 'multiJogLeader', label: 'Multi-jog\nLeader', run: cmdMultiJog, active: function () { return D.tool === 'culeader'; } });   // (rfCU)
       if (b.id === 'revTable') out.push({ id: 'holeTable', label: 'Hole\nTable', run: cmdHoleTable, active: function () { return D.tool === 'holetable'; } });
     });
     Object.defineProperty(out, '_rfAD', { value: true });
@@ -2133,7 +2245,8 @@
           if (it && it.label === 'Drawing View ▸ Detail') { add('Drawing View ▸ Broken-out Section', cmdBrokenOut); add('Drawing View ▸ Break', cmdBreakView); add('Drawing View ▸ Crop', cmdCropView); }
           if (it && it.label === 'Annotations ▸ Centerline') add('Annotations ▸ Area Hatch/Fill', cmdAreaHatchTool);   // (rfAD)
           if (it && it.label === 'Annotations ▸ Auto Balloon') add('Annotations ▸ Magnetic Line', cmdMagLine);   // (rfAG)
-          if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); }   // (rfAN)
+          if (it && it.label === 'Annotations ▸ Geometric Tolerance…') { add('Annotations ▸ Weld Symbol…', function () { cmdSymbolAN('weld'); }); add('Annotations ▸ Revision Symbol…', function () { cmdSymbolAN('revision'); }); add('Annotations ▸ Revision Cloud', cmdCloud); add('Annotations ▸ Datum Target…', function () { cuSymbolPM('datumTarget'); }); add('Annotations ▸ Cosmetic Thread…', function () { cmdCosmeticThread(); }); add('Annotations ▸ Dowel Pin Symbol', cmdDowelPin); }   // (rfAN; rfCU)
+          if (it && it.label === 'Annotations ▸ Note') add('Annotations ▸ Multi-jog Leader', cmdMultiJog);   // (rfCU)
           if (it && /^Tables ▸ (Revision|General) Table/.test(it.label || '')) add('Tables ▸ Hole Table…', cmdHoleTable);
         });
         if (D.active && !items.some(function (q) { return q && q.label === 'Tables ▸ Hole Table…'; })) items.push({ label: 'Tables ▸ Hole Table…', action: cmdHoleTable });
@@ -2153,6 +2266,15 @@
       var v;
       try { Drawing.addAuxiliaryView(JSON.parse(JSON.stringify(doc())), mesh(), parentId, opts || {}); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
       edit(function (dc) { v = Drawing.addAuxiliaryView(dc, mesh(), parentId, opts || {}); autoInsertViews(dc, [v.id]); });
+      D.sel = { kind: 'view', id: v.id };
+      return api.summary();
+    };
+    // (rfCX) removedSection(parentId, { a: [u, v], b: [u, v], x, y, label, flip, scale, showLabel }): one undo step
+    api.removedSection = function (parentId, opts) {
+      if (!doc()) return null;
+      var v, o = Object.assign({ fit: true }, opts || {});
+      try { Drawing.addRemovedSection(JSON.parse(JSON.stringify(doc())), mesh(), parentId, o); } catch (err) { UI.toast(err.message); UI.setStatus(err.message); return null; }
+      edit(function (dc) { v = Drawing.addRemovedSection(dc, mesh(), parentId, o); delete v.offSheet; autoInsertViews(dc, [v.id]); });
       D.sel = { kind: 'view', id: v.id };
       return api.summary();
     };
@@ -2640,16 +2762,329 @@
     drawOverlay();
   }
   RF_TOOLS.rfancloud = cloudClick;
+  // ------------------------------------------------------------------ lane CT: Angular Running and Path Length Dimension
+  // Angular Running Dimension (Smart Dimension flyout, Tools ▸ Dimensions): click the 0° line in an orthographic view,
+  // then lines or holes round its vertex; the first one places the set (Drawing.addAngularRunning, one undo step), the
+  // next ones join it, as Ordinate Dimension does (a value already in the set is refused). ✓ or Esc ends.
+  var AR_NAME = 'Angular Running Dimension', PL_NAME = 'Path Length Dimension';
+  function cmdAngularRunning() {
+    if (D.tool === 'angrun') { endToolPM(); return; }
+    if (D.tool && UI.hasPM && UI.hasPM()) UI.pmCancel();
+    toolPM({
+      title: AR_NAME, icon: 'angRunDim', command: 'angrun', values: {}, groups: [],
+      message: 'Click the 0° line in an orthographic view, then each line or hole to measure round its vertex. ✓ ends.'
+    }, 'angrun', { base: null, baseEnt: null, view: null, dim: null });
+    UI.setStatus(AR_NAME + ': click the base line (0°) in an orthographic view. Esc ends.');
+  }
+  function angRunClick(p) {
+    var ent = entityAt(p), P = D.pending;
+    if (!ent || ent.arc) { UI.setStatus(AR_NAME + ': click a straight edge or a hole of an orthographic view.'); return; }
+    if (!P.base) {
+      if (!ent.la) { UI.setStatus(AR_NAME + ': the base (0°) is a straight edge.'); return; }
+      P.base = entRef(ent); P.baseEnt = ent; P.view = ent.view; drawOverlay();
+      UI.setStatus(AR_NAME + ': base picked; now click the lines or holes to measure round its vertex. ✓ ends.');
+      return;
+    }
+    if (ent.view !== P.view) { UI.setStatus(AR_NAME + ': stay in the view of the base.'); return; }
+    var ref = entRef(ent);
+    if (!P.dim) {
+      var spec = { base: P.base, refs: [ref] };
+      try { Drawing.addAngularRunning(JSON.parse(JSON.stringify(doc())), P.view, spec); } catch (err) { UI.setStatus(AR_NAME + ': ' + err.message + '.'); return; }
+      edit(function (dc) { Drawing.addAngularRunning(dc, P.view, spec); });
+      P.dim = { view: P.view, index: Drawing.findView(doc(), P.view).dims.length - 1 };
+    } else {
+      var v = Drawing.findView(doc(), P.dim.view), dd = v && v.dims[P.dim.index];
+      if (!dd) return;
+      var had = [0].concat(dd.values || []);
+      dd.refs.push(Drawing.refFrom(ref)); Drawing.angRunMeasure(dd);
+      var nv = dd.values[dd.values.length - 1];
+      if (had.some(function (x) { return Math.abs(x - nv) <= 1e-6; })) {
+        dd.refs.pop(); Drawing.angRunMeasure(dd);
+        UI.setStatus(AR_NAME + ': ' + Drawing.ctAngleText(nv) + ' is in the set already — click another line or hole, ✓ ends.');
+        return;
+      }
+      UI.autosave(); render();
+    }
+    var sd = D.sheet.dims.filter(function (x) { return x.view === P.dim.view && x.index === P.dim.index; })[0];
+    UI.setStatus(AR_NAME + ': ' + (sd ? sd.text : '') + ' — click more, ✓ ends.');
+  }
+  // Path Length Dimension: click the lines and arcs of a chain (each meets one picked before it end to end; a second
+  // click takes one off), then click where the value goes: one undo step (Drawing.addPathLength); ✓ places a picked
+  // chain beside its first edge and ends. The tool stays on for the next chain; Esc ends.
+  function cmdPathLength() {
+    if (D.tool === 'pathlen') { endToolPM(); return; }
+    if (D.tool && UI.hasPM && UI.hasPM()) UI.pmCancel();
+    toolPM({
+      title: PL_NAME, icon: 'pathLengthDim', command: 'pathlen', values: {}, groups: [],
+      message: 'Click the lines and arcs of a chain in an orthographic view, end to end, then click where the value goes. ✓ places it beside the first edge.',
+      onOK: function () { placePath(null); }
+    }, 'pathlen', { refs: [], keys: [], hl: [], view: null });
+    UI.setStatus(PL_NAME + ': click the lines and arcs of a chain. Esc ends.');
+  }
+  function pathPick(ent) {
+    if (ent.arc) return { c: ent.ma.c.slice(), r: ent.ma.r, a0: ent.ma.a0, a1: ent.ma.a1 };
+    if (ent.circle) return { c: ent.mc.c.slice(), r: ent.mc.r };
+    return { a: ent.la.slice(), b: ent.lb.slice() };
+  }
+  function pathLenClick(p) {
+    var ent = entityAt(p), P = D.pending;
+    if (!ent || ent.ellipse) {
+      if (P.refs.length) { placePath(p); return; }
+      UI.setStatus(PL_NAME + ': click a line or arc of an orthographic view.');
+      return;
+    }
+    if (P.view != null && ent.view !== P.view) { UI.setStatus(PL_NAME + ': stay in the view of the first edge.'); return; }
+    var r = pathPick(ent), key = JSON.stringify(r), at = P.keys.indexOf(key);
+    if (at >= 0) { P.refs.splice(at, 1); P.keys.splice(at, 1); P.hl.splice(at, 1); if (!P.refs.length) P.view = null; }
+    else {
+      var trial = P.refs.concat([r]).map(Drawing.pathRefFrom);
+      if (Drawing.pathChained(trial) >= 0) { UI.setStatus(PL_NAME + ': that edge does not join the chain end to end.'); return; }
+      P.refs.push(r); P.keys.push(key); P.hl.push(ent); P.view = ent.view;
+    }
+    drawOverlay();
+    var n = P.refs.length;
+    UI.setStatus(n ? PL_NAME + ': ' + n + ' edge' + (n === 1 ? '' : 's') + ', ' + Drawing.numText(Drawing.pathLengthOf(P.refs.map(Drawing.pathRefFrom)), units()) + ' — click more, or click where the value goes.'
+      : PL_NAME + ': click the lines and arcs of a chain. Esc ends.');
+  }
+  function placePath(p) {
+    var P = D.pending;
+    if (D.tool !== 'pathlen' || !P || !P.refs.length) return null;
+    var viewId = P.view, w = sheetView(viewId), spec = { refs: P.refs.slice() }, d = null;
+    if (p && w) { var m = w.toSheet(Drawing.pathRefMid(Drawing.pathRefFrom(spec.refs[0]))); spec.lead = [p[0] - m[0], p[1] - m[1]]; }
+    try { Drawing.addPathLength(JSON.parse(JSON.stringify(doc())), viewId, spec); } catch (err) { UI.setStatus(PL_NAME + ': ' + err.message + '.'); return null; }
+    edit(function (dc) { d = Drawing.addPathLength(dc, viewId, spec); });
+    P.refs = []; P.keys = []; P.hl = []; P.view = null;
+    var idx = Drawing.findView(doc(), viewId).dims.length - 1, sd = sheetDim({ kind: 'dim', view: viewId, key: null, index: idx });
+    drawOverlay();
+    UI.setStatus('Path length ' + (sd ? sd.text : '') + ' added. Click the next chain, Esc ends.');
+    return d;
+  }
+  RF_TOOLS.angrun = angRunClick; RF_TOOLS.pathlen = pathLenClick;
+  // drawOverlay's part (drawing-ui.js): the base line of an angular running set, the chain picked so far
+  function ctOverlay(g, H, svgNode) {
+    var P = D.pending, list = D.tool === 'angrun' && P && P.baseEnt ? [P.baseEnt] : D.tool === 'pathlen' && P ? P.hl : [];
+    list.forEach(function (h) {
+      if (h.circle) svgNode('circle', { class: 'dw-hot', cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': pxToPaper(3) }, g);
+      else if (h.arc) {
+        var a0 = h.arc.a0 * Math.PI / 180, a1 = h.arc.a1 * Math.PI / 180, c = h.arc.c, r = h.arc.r, s = [c[0] + r * Math.cos(a0), c[1] + r * Math.sin(a0)], e = [c[0] + r * Math.cos(a1), c[1] + r * Math.sin(a1)];
+        svgNode('path', { class: 'dw-hot', d: 'M' + s[0] + ' ' + (H - s[1]) + ' A' + r + ' ' + r + ' 0 ' + (h.arc.a1 - h.arc.a0 > 180 ? 1 : 0) + ' 0 ' + e[0] + ' ' + (H - e[1]), fill: 'none', 'stroke-width': pxToPaper(3) }, g);
+      } else if (h.a) svgNode('line', { class: 'dw-hot', x1: h.a[0], y1: H - h.a[1], x2: h.b[0], y2: H - h.b[1], 'stroke-width': pxToPaper(3) }, g);
+    });
+  }
+  DW.cmdLockedDimension = cmdLockedDimension; DW.cmdAngularRunning = cmdAngularRunning; DW.angRunClick = angRunClick; DW.cmdPathLength = cmdPathLength;
+  DW.pathLenClick = pathLenClick; DW.placePath = placePath; DW.ctOverlay = ctOverlay;
   document.addEventListener('mouseup', function (e) {
     var P = D.pending;
     if (D.tool !== 'rfancloud' || !P || !P.drawing) return;
     P.drawing = false;
     if (P.pts.length >= 3) cloudMake(P.pts.slice()); else { P.pts = []; UI.setStatus('Revision Cloud: press and draw round the change.'); }
   }, true);
+  // ------------------------------------------------------------------ rfCU: Cosmetic Thread, Dowel Pin Symbol, Datum
+  // Target, Multi-jog Leader, Note properties (border, numbered / bulleted list). Each tool opens its PropertyManager
+  // (✓ / ✗, Esc ends), each placement is one undo step. Cosmetic Thread / Dowel Pin: click a hole circle in a view
+  // (the thread's size defaults to the tap drill's thread); Datum Target: click the target point, then where the
+  // symbol goes; Multi-jog Leader: click the start (on a note: the leader hangs from the note), each bend point, then
+  // double-click the end (or ✓ / Enter: the last click is the end). Double-click edits; Delete removes; a leader's bend
+  // point drags on its own (DW.jogAt), the whole leader drags by a segment.
+  var CU_SYM = { datumTarget: { title: 'Datum Target', icon: 'datumTarget' }, leader: { title: 'Multi-jog Leader', icon: 'multiJogLeader' } };
+  function cuThreadOptions() {
+    var rows = typeof HoleWizard !== 'undefined' && HoleWizard.ANSI_THREADS ? HoleWizard.ANSI_THREADS : [];
+    return [['auto', 'From the hole (tap drill)']].concat(rows.map(function (r) { return [r.size, r.size]; }));
+  }
+  function cuThreadGroups() {
+    return [
+      { title: 'Thread Settings', fields: [{ type: 'select', key: 'standard', label: 'Standard', options: [['ansi', 'ANSI Inch']] }, { type: 'select', key: 'size', label: 'Size', options: cuThreadOptions() },
+        { type: 'select', key: 'end', label: 'End Condition', options: [['through', 'Through'], ['blind', 'Blind']] }, { type: 'number', key: 'depth', label: 'Depth (Blind)', unit: 'u', min: 0 }] },
+      { title: 'Thread Callout', fields: [{ type: 'check', key: 'callout', label: 'Insert callout' }, { type: 'text', key: 'text', label: 'Callout text (<THREAD> is the standard one; blank: standard)' }] }
+    ];
+  }
+  function cuThreadSpec(v) {
+    var s = { end: v.end === 'blind' ? 'blind' : 'through', callout: !!v.callout, text: v.text || null, size: v.size || 'auto' };
+    if (s.end === 'blind') s.depth = +v.depth;
+    return s;
+  }
+  function cmdCosmeticThread(id) {
+    if (id != null) {
+      var f = Drawing.findAnnotation(doc(), id);
+      if (!f || f.annotation.type !== 'cosmeticThread') return;
+      var an = f.annotation;
+      openDrawingPM({ title: 'Cosmetic Thread', icon: 'cosmeticThread', command: 'cosmeticThread', message: 'Cosmetic thread ' + an.size + ' on the hole.',
+        values: { standard: 'ansi', size: an.size, end: an.end, depth: an.depth || (units() === 'in' ? 0.5 : 12), callout: an.callout !== false, text: an.text || '' }, groups: cuThreadGroups(),
+        onOK: function (v) { if (tryEdit(function (dc) { Drawing.editAnnotation(dc, id, cuThreadSpec(v)); })) UI.setStatus('Cosmetic Thread changed.'); else return false; } });
+      return;
+    }
+    if (D.tool === 'cuthread') { endToolPM(); return; }
+    var v0 = { standard: 'ansi', size: 'auto', end: 'through', depth: units() === 'in' ? 0.5 : 12, callout: true, text: '' };
+    toolPM({ title: 'Cosmetic Thread', icon: 'cosmeticThread', command: 'cosmeticThread', values: v0, groups: cuThreadGroups(),
+      message: 'Set the thread, then click the edge of a hole (a circle) in a view. Esc or ✓ ends.',
+      onChange: function (v) { if (D.pending) D.pending.values = v; } }, 'cuthread', { values: v0 });
+    UI.setStatus('Cosmetic Thread: click the edge of a hole in a view.');
+  }
+  function cuHoleClick(p) {
+    var P = D.pending, ent = entityAt(p), what = D.tool === 'cudowel' ? 'Dowel Pin Symbol' : 'Cosmetic Thread', made = null;
+    if (!ent || !ent.circle) { UI.setStatus(what + ': click the edge of a hole (a circle) in a view.'); return; }
+    var spec = { c: ent.mc.c.slice(), r: ent.mc.r };
+    if (D.tool === 'cuthread') {
+      Object.assign(spec, cuThreadSpec(P.values));
+      // a circle that is not a hole (a boss, a shaft end) takes an external thread (2A); a flat pattern's circles are holes
+      var w = sheetView(ent.view), m = w && (w.section ? w.section.mesh : mesh());
+      spec.external = !!(w && w.ortho && !w.flat && m && m.faces && m.faces.length && !Drawing.holeInfo(m, w.frame, spec.c, spec.r));
+    }
+    if (!tryEdit(function (dc) { made = D.tool === 'cudowel' ? Drawing.addDowelPin(dc, ent.view, spec) : Drawing.addCosmeticThread(dc, ent.view, spec); })) return;
+    D.sel = { kind: 'annot', id: made.id, view: ent.view };
+    drawOverlay();
+    UI.setStatus(what + (made.size ? ' ' + made.size : '') + ' added — click the next hole, Esc ends.');
+  }
+  RF_TOOLS.cuthread = cuHoleClick; RF_TOOLS.cudowel = cuHoleClick;
+  function cmdDowelPin() {
+    if (D.tool === 'cudowel') { endToolPM(); return; }
+    toolPM({ title: 'Dowel Pin Symbol', icon: 'dowelPin', command: 'dowelPin', values: {}, groups: [],
+      message: 'Click the edge of a hole (a circle) in a view: the dowel pin symbol goes on it, at its size. Esc or ✓ ends.' }, 'cudowel', { values: {} });
+    UI.setStatus('Dowel Pin Symbol: click the edge of a hole in a view.');
+  }
+  function cuTargetGroups() {
+    return [
+      { title: 'Datum Target', fields: [{ type: 'text', key: 'datum', label: 'Datum' }, { type: 'number', key: 'num', label: 'Target number', min: 1 }] },
+      { title: 'Target Area', fields: [{ type: 'select', key: 'area', label: 'Target', options: Drawing.TARGET_AREAS }, { type: 'number', key: 'aw', label: 'Diameter / width', unit: 'u', min: 0 }, { type: 'number', key: 'ah', label: 'Height (rectangle)', unit: 'u', min: 0 },
+        { type: 'text', key: 'size', label: 'Size text (blank: the area\'s size)' }] }
+    ];
+  }
+  function cuTargetSpec(v) { return { datum: v.datum, num: +v.num > 0 ? +v.num : null, area: v.area, aw: v.area === 'point' ? null : +v.aw, ah: v.area === 'rect' ? +v.ah : null, size: v.size || null }; }
+  function cuLeaderGroups() { return [{ title: 'Leader', fields: [{ type: 'select', key: 'end', label: 'Arrow style', options: Drawing.LEADER_ENDS }] }]; }
+  function cuSymbolPM(type, id) {
+    var M = CU_SYM[type];
+    if (id != null) {
+      var s = Drawing.findSymbol(doc(), id);
+      if (!s) return;
+      var vals = type === 'datumTarget' ? { datum: s.datum, num: s.num, area: s.area, aw: s.aw || 0, ah: s.ah || 0, size: s.size || '' } : { end: s.end || 'arrow' };
+      openDrawingPM({ title: M.title, icon: M.icon, command: type, message: Drawing.symbolText(s, doc()), values: vals, groups: type === 'datumTarget' ? cuTargetGroups() : cuLeaderGroups(),
+        onOK: function (v) {
+          var spec = type === 'datumTarget' ? cuTargetSpec(v) : { end: v.end };
+          if (spec.num == null) delete spec.num;
+          if (tryEdit(function (dc) { Drawing.editSymbol(dc, id, spec); })) UI.setStatus(M.title + ' changed.'); else return false;
+        } });
+      return;
+    }
+    if (type === 'leader') { cmdMultiJog(); return; }
+    if (D.tool === 'cutarget') { endToolPM(); return; }
+    var inch = units() === 'in', v0 = { datum: 'A', num: Drawing.nextTargetNum(doc(), 'A'), area: 'point', aw: inch ? 0.5 : 10, ah: inch ? 0.25 : 5, size: '' };
+    toolPM({ title: M.title, icon: M.icon, command: type, values: v0, groups: cuTargetGroups(),
+      message: 'Click the target point (the X, or the area\'s centre), then where the symbol goes. Esc or ✓ ends.',
+      onChange: function (v) { if (D.pending) D.pending.values = v; } }, 'cutarget', { values: v0, tip: null });
+    UI.setStatus('Datum Target: click the target point.');
+  }
+  function cuTargetClick(p) {
+    var P = D.pending, made = null;
+    if (!P.tip) { P.tip = p; UI.setStatus('Datum Target: now click where the symbol goes.'); return; }
+    if (Math.hypot(p[0] - P.tip[0], p[1] - P.tip[1]) <= pxToPaper(12)) { UI.setStatus('Datum Target: click away from the target point, where the symbol goes.'); return; }
+    var spec = Object.assign({ type: 'datumTarget', p: p, leader: P.tip }, cuTargetSpec(P.values));
+    P.tip = null;
+    if (!tryEdit(function (dc) { made = Drawing.addSymbol(dc, spec); })) return;
+    // the next target of the same datum takes the next number
+    P.values.num = Drawing.nextTargetNum(doc(), made.datum);
+    if (UI.pmSetValue) try { UI.pmSetValue('num', P.values.num); } catch (err) { }
+    D.sel = { kind: 'symbol', id: made.id };
+    drawOverlay();
+    UI.setStatus(Drawing.symbolText(made, doc()) + ' placed — click the next target point, Esc ends.');
+  }
+  RF_TOOLS.cutarget = cuTargetClick;
+  function cmdMultiJog() {
+    if (D.tool === 'culeader') { endToolPM(); return; }
+    var v0 = { end: 'arrow' };
+    toolPM({ title: 'Multi-jog Leader', icon: 'multiJogLeader', command: 'leader', values: v0, groups: cuLeaderGroups(),
+      message: 'Click the start (on a note: the leader hangs from it), each bend point, then double-click the end (or ✓ / Enter: the last click is the end). Esc ends.',
+      onChange: function (v) { if (D.pending) D.pending.values = v; },
+      onOK: function () { var P = D.pending; if (P && P.pts.length >= 2) cuLeaderMake(); } }, 'culeader', { values: v0, pts: [], note: null });
+    UI.setStatus('Multi-jog Leader: click the start (a note, or anywhere on the sheet).');
+  }
+  function cuLeaderClick(p) {
+    var P = D.pending;
+    if (!P.pts.length) { var nt = DW.noteAt(p); P.note = nt ? nt.id : null; }
+    var last = P.pts[P.pts.length - 1];
+    if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) <= pxToPaper(3)) return;   // (the second click of a double-click)
+    P.pts.push(p);
+    UI.setStatus('Multi-jog Leader: ' + P.pts.length + ' point' + (P.pts.length === 1 ? '' : 's') + (P.note != null ? ' (from Note' + P.note + ')' : '') + ' — click the next bend, double-click the end.');
+    drawOverlay();
+  }
+  RF_TOOLS.culeader = cuLeaderClick;
+  function cuLeaderMake() {
+    var P = D.pending, pts = P.pts.slice(), made = null;
+    P.pts = [];
+    if (pts.length < 2) { UI.setStatus('Multi-jog Leader: a leader needs a start and an end.'); return; }
+    var spec = { type: 'leader', p: pts[0], jogs: pts.slice(1, -1), leader: pts[pts.length - 1], end: P.values.end, note: P.note };
+    P.note = null;
+    if (!tryEdit(function (dc) { made = Drawing.addSymbol(dc, spec); })) return;
+    D.sel = { kind: 'symbol', id: made.id };
+    drawOverlay();
+    UI.setStatus('Multi-jog Leader placed (' + (pts.length - 1) + ' segments) — draw the next one, Esc ends.');
+  }
+  document.addEventListener('dblclick', function (e) {
+    if (!D.active || D.tool !== 'culeader' || !D.pending || !D.host || !D.host.contains(e.target)) return;
+    e.preventDefault(); e.stopPropagation();
+    if (D.pending.pts.length >= 2) cuLeaderMake();
+  }, true);
+  // a multi-jog leader's bend point under p (within 4 px): { id, index, at }
+  function jogAt(p) {
+    var t = pxToPaper(4), hit = null;
+    (doc() && doc().symbols || []).forEach(function (s) { (s.type === 'leader' && s.jogs || []).forEach(function (q, i) { if (Math.hypot(p[0] - q[0], p[1] - q[1]) <= t) hit = { id: s.id, index: i, at: q.slice() }; }); });
+    return hit;
+  }
+  var jogDrag = null;
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !D.active || D.tool || !D.sheet || !D.host || !D.host.contains(e.target) || (D.inline && D.inline.box.contains(e.target))) return;
+    var p = DW.toPaper(e), j = jogAt(p);
+    if (!j) return;
+    e.preventDefault(); e.stopPropagation();
+    settle();
+    jogDrag = { id: j.id, index: j.index, start: p, at0: j.at, moved: false };
+    D.sel = { kind: 'symbol', id: j.id }; drawOverlay(); DW.renderTree();
+    UI.setStatus('Leader bend point — drag it.');
+  }, true);
+  document.addEventListener('mousemove', function (e) {
+    if (!jogDrag) return;
+    var p = DW.toPaper(e), g = jogDrag;
+    if (!g.moved && Math.hypot(p[0] - g.start[0], p[1] - g.start[1]) < pxToPaper(3)) return;
+    if (!g.moved) { UI.pushUndo(); g.moved = true; }
+    e.stopPropagation();
+    Drawing.editSymbol(doc(), g.id, { jog: g.index, at: [g.at0[0] + p[0] - g.start[0], g.at0[1] + p[1] - g.start[1]] });
+    queueRender(true);
+  }, true);
+  document.addEventListener('mouseup', function () {
+    var g = jogDrag; jogDrag = null;
+    if (g && g.moved) { D.dirty = true; UI.autosave(); render(); }
+  }, true);
+  // Note PropertyManager (right-click a note ▸ Properties…): Border and the list style of a multi-line note
+  function cmdNoteProps(id) {
+    var n = Drawing.findNote(doc(), id);
+    if (!n) return;
+    openDrawingPM({ title: 'Note', icon: 'note', command: 'noteProps', message: String(n.text).split('\n')[0],
+      values: { border: n.border || 'none', list: n.list || 'none' },
+      groups: [{ title: 'Border', fields: [{ type: 'select', key: 'border', label: 'Style', options: Drawing.NOTE_BORDERS }] }, { title: 'Text Format', fields: [{ type: 'select', key: 'list', label: 'List (one item per line)', options: Drawing.NOTE_LISTS }] }],
+      onOK: function (v) { if (tryEdit(function (dc) { Drawing.editNote(dc, id, { border: v.border, list: v.list }); })) UI.setStatus('Note changed.'); else return false; } });
+  }
+  // (rfCU2) the leader being clicked, as a rubber band: the placed segments, a live one to the pointer, and the end
+  // (arrow / dot, the PM's Arrow style) where the next click would put the tip; group class dw-cu-leader
+  function cuLeaderOverlay(g, H, svgNode) {
+    var P = D.pending;
+    if (!P || !P.pts || !P.pts.length) return;
+    var pts = P.pts.concat(P.at && Math.hypot(P.at[0] - P.pts[P.pts.length - 1][0], P.at[1] - P.pts[P.pts.length - 1][1]) > pxToPaper(1) ? [P.at] : []);
+    var grp = svgNode('g', { class: 'dw-cu-leader' }, g), lw = pxToPaper(1.5);
+    svgNode('polyline', { class: 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': lw }, grp);
+    if (pts.length < 2) { svgNode('circle', { class: 'dw-cut', cx: pts[0][0], cy: H - pts[0][1], r: pxToPaper(3), 'stroke-width': lw }, grp); return; }
+    var tip = pts[pts.length - 1], from = pts[pts.length - 2], d = [tip[0] - from[0], tip[1] - from[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], k = paperK();
+    var end = P.values && P.values.end || 'arrow';
+    if (end === 'arrow') {
+      var L = 3 * k, w = 0.5 * k, b = [tip[0] - u[0] * L, tip[1] - u[1] * L];
+      svgNode('polygon', { class: 'dw-cu-end', points: [tip, [b[0] + u[1] * w, b[1] - u[0] * w], [b[0] - u[1] * w, b[1] + u[0] * w]].map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'var(--dw-hot)', stroke: 'none' }, grp);
+    } else if (end === 'dot') svgNode('circle', { class: 'dw-cu-end', cx: tip[0], cy: H - tip[1], r: 0.75 * k, fill: 'var(--dw-hot)', stroke: 'none' }, grp);
+  }
+  DW.cmdCosmeticThread = cmdCosmeticThread; DW.cmdDowelPin = cmdDowelPin; DW.cuSymbolPM = cuSymbolPM; DW.cmdMultiJog = cmdMultiJog; DW.cmdNoteProps = cmdNoteProps; DW.jogAt = jogAt; DW.cuLeaderOverlay = cuLeaderOverlay;   // (rfCU; rfCU2)
+  DW.cuDatumTarget = function () { cuSymbolPM('datumTarget'); };
   // the shop symbols' PropertyManager and right-click menu (drawing-ui-panels.js) hand these types to cmdSymbolAN
+  // (rfCU: Datum Target and Multi-jog Leader to cuSymbolPM)
   onAssign(DW, 'cmdSymbol', function (f) {
     if (typeof f !== 'function' || f._rfAN) return f;
-    var g = function (type, id) { return RF_SYM[type] ? cmdSymbolAN(type, id) : f.apply(this, arguments); };
+    var g = function (type, id) { return CU_SYM[type] ? cuSymbolPM(type, id) : RF_SYM[type] ? cmdSymbolAN(type, id) : f.apply(this, arguments); };
     g._rfAN = true;
     return g;
   });
@@ -2660,6 +3095,10 @@
       if (s && RF_SYM[s.type]) {
         items[0] = { label: 'Properties…', action: function () { cmdSymbolAN(s.type, id); } };
         if (s.type !== 'revision') items = items.filter(function (it) { return !/Leader/.test(it.label || ''); });
+      }
+      if (s && CU_SYM[s.type]) {   // (rfCU)
+        items[0] = { label: 'Properties…', action: function () { cuSymbolPM(s.type, id); } };
+        items = items.filter(function (it) { return !/Leader/.test(it.label || ''); });
       }
       return items;
     };

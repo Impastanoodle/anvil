@@ -59,6 +59,14 @@
   DI.saveTemplate = '<path d="M3 1.5 h7 l3 3 v10 H3 z" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M5 11 h6 M5 11 v2.5 M8 11 v2.5" stroke="currentColor" stroke-width="0.8"/><text x="8" y="8.5" font-size="4.4" font-weight="700" font-family="Arial" text-anchor="middle" fill="#6d6d6d">DRW</text>';
   DI.resetFormat = '<path d="M2 3 h12 v10 H2 z" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5 8 a3 3 0 1 0 1 -2.3 M5 4.5 v1.5 h1.5" stroke="#e0553c" stroke-width="1.1" fill="none"/>';
   DI.generalTable = '<rect x="1.5" y="2.5" width="13" height="11" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M1.5 6 h13 M1.5 9.5 h13 M6 2.5 v11 M10.5 2.5 v11" stroke="#6d6d6d" stroke-width="0.8"/>';
+  // (rfCU) Cosmetic Thread (a hole with its 3/4 thread circle), Dowel Pin Symbol (quadrants), Datum Target (split circle, X),
+  // Multi-jog Leader (a bent leader with an arrow)
+  DI.cosmeticThread = '<circle cx="8" cy="8" r="3.6" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M14 6.4 A6.2 6.2 0 1 1 9.6 1.9" fill="none" stroke="#6d6d6d" stroke-width="1"/>';
+  DI.dowelPin = '<circle cx="8" cy="8" r="5.5" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M8 8 V2.5 A5.5 5.5 0 0 1 13.5 8 z M8 8 V13.5 A5.5 5.5 0 0 1 2.5 8 z" fill="currentColor"/><path d="M1 8 h14 M8 1 v14" stroke="#6d6d6d" stroke-width="0.8"/>';
+  DI.datumTarget = '<circle cx="6" cy="6" r="4.8" fill="#fff" stroke="currentColor" stroke-width="1"/><path d="M1.2 6 h9.6 M9.4 9.4 L12.5 12.5" stroke="currentColor" stroke-width="0.9"/><text x="6" y="10" font-size="3.6" font-weight="700" font-family="Arial" text-anchor="middle" fill="currentColor">A1</text><path d="M11.3 11.3 l2.6 2.6 M13.9 11.3 l-2.6 2.6" stroke="#6d6d6d" stroke-width="1.2"/>';
+  DI.multiJogLeader = '<path d="M9 3 h5 M9 3 L5 7 V10 L2.5 13.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M2 14.2 l0.4 -2.5 2 1.4 z" fill="currentColor"/><circle cx="5" cy="7" r="1" fill="#6d6d6d"/><circle cx="5" cy="10" r="1" fill="#6d6d6d"/>';
+  // (rfCX) Removed Section: the parent with its cutting line, the hatched cross-section set apart
+  DI.removedSection = '<path d="M1.5 2.5 h7 v11 h-7 z" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5 1 v14" stroke="#e0553c" stroke-width="1.2" stroke-dasharray="3 1 1 1"/><path d="M10.5 6 h4 v4 h-4 z" fill="#c4c4c4" stroke="currentColor" stroke-width="1"/><path d="M10.5 9 l3 -3 M11.5 10 l3 -3" stroke="currentColor" stroke-width="0.6"/>';
   var baseIcons = Icons;
   var wrapped = function (name, size, cls) {
     if (!DI[name]) return baseIcons(name, size, cls);
@@ -725,6 +733,12 @@
     (D.sheet.symbols || []).forEach(function (y) {
       var ysel = D.sel && D.sel.kind === 'symbol' && D.sel.id === y.id, yhov = D.hover && D.hover.kind === 'symbol' && D.hover.id === y.id;
       if (!(ysel || yhov) || !isFinite(y.box.x0)) return;
+      if (y.pts) {
+        // (rfCU) a multi-jog leader: its polyline highlighted, a handle on each bend point when selected (drag it)
+        svgNode('polyline', { class: 'dw-vbox' + (ysel ? ' sel' : ' pre'), points: y.pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': pxToPaper(2) }, g);
+        if (ysel) y.pts.slice(1, -1).forEach(function (q) { var hs = pxToPaper(3); svgNode('rect', { class: 'dw-dbox sel', x: q[0] - hs, y: H - q[1] - hs, width: 2 * hs, height: 2 * hs, 'stroke-width': sw }, g); });
+        return;
+      }
       svgNode('rect', { class: 'dw-dbox' + (ysel ? ' sel' : ' pre'), x: y.box.x0 - pad / 2, y: H - y.box.y1 - pad / 2, width: y.box.x1 - y.box.x0 + pad, height: y.box.y1 - y.box.y0 + pad, 'stroke-width': sw }, g);
     });
     if (D.sheet.revisions && ((D.sel && D.sel.kind === 'revtable') || (D.hover && D.hover.kind === 'revtable'))) {
@@ -746,6 +760,7 @@
       svgNode('circle', { class: 'dw-cut', cx: D.pending.at[0], cy: H - D.pending.at[1], r: 5 * paperK(), 'stroke-width': pxToPaper(1.5) }, g);
     }
     if (D.tool === 'dim' && DW.smartDimOverlay) DW.smartDimOverlay(g, H, svgNode);   // (rfS)
+    if (DW.ctOverlay) DW.ctOverlay(g, H, svgNode);   // (lane CT) Angular Running / Path Length picks
     if (D.hover && D.hover.kind === 'entity') {
       var h = D.hover, hc = 'dw-hot' + (h.pre ? ' pre' : ''), hw = pxToPaper(h.pre ? 2.4 : 3);
       if (h.circle) svgNode('circle', { class: hc, cx: h.circle.c[0], cy: H - h.circle.c[1], r: h.circle.r, 'stroke-width': hw }, g);
@@ -787,7 +802,9 @@
     }
     D.preview = null;
     if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && DW.liveOverlay) DW.liveOverlay(g, H, svgNode, ghost);   // (rfW)
+    if (D.tool === 'rmsec' && D.pending && DW.rmsecOverlay) DW.rmsecOverlay(g, H, svgNode, ghost);   // (rfCX) Removed Section
     if (DW.magOverlay) DW.magOverlay(g, H, svgNode);   // (rfAG) magnetic lines (not printed)
+    if (D.tool === 'culeader' && DW.cuLeaderOverlay) DW.cuLeaderOverlay(g, H, svgNode);   // (rfCU2) the multi-jog leader being clicked
     if (DW.aeOverlay) DW.aeOverlay(g, H, svgNode, sw, pad);
     if (DW.skOverlay) DW.skOverlay(g, H, svgNode, sw, pad);   // (rfAO) sketch selection, tool previews, hidden edges   // (rfAE) sheet format items, General Tables, their tools
   }
@@ -942,7 +959,7 @@
         UI.setStatus(an.text + ' — drag to move it, Delete hides it, double-click for the flat-pattern view\'s properties.');
         return;
       }
-      if (an.type === 'holeCallout') D.drag ={ kind: 'annot', id: an.id, start: p, lead0: (Drawing.findAnnotation(doc(), an.id).annotation.leadNow || [0, 0]).slice(), moved: false };
+      if (an.type === 'holeCallout' || (an.type === 'cosmeticThread' && an.info && an.info.callout)) D.drag ={ kind: 'annot', id: an.id, start: p, lead0: (Drawing.findAnnotation(doc(), an.id).annotation.leadNow || [0, 0]).slice(), moved: false };
       drawOverlay(); DW.renderTree();
       UI.setStatus(an.text + (an.dangling ? ' (dangling: its geometry is gone)' : '') + (an.type === 'holeCallout' ? ' — drag to move it, double-click for its text' : '') + ', Delete removes it.');
       return;
@@ -1052,16 +1069,16 @@
     if (e.target && e.target.nodeType && D.host.contains(e.target)) {
       var q = toPaper(e), h = null;
       if (DW.skHover && DW.skHover(q, e)) return;   // (rfAO)
-      if (/^(place|project|section|detail)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }
+      if (/^(place|project|section|detail|culeader)$/.test(D.tool) && D.pending) { D.pending.at = q; drawOverlay(); return; }   // (rfCU2: culeader, the multi-jog leader's rubber band)
       // (rfW) Auxiliary / Crop / Break follow the pointer; before its edge is picked, Auxiliary pre-highlights straight edges
-      if (/^(aux|crop|brk|bko|ahatch|magline)$/.test(D.tool) && D.pending) {
+      if (/^(aux|crop|brk|bko|ahatch|magline|rmsec)$/.test(D.tool) && D.pending) {
         D.pending.at = q;
         if (D.tool === 'aux' && D.pending.parent == null) { var ea = entityAt(q); D.hover = ea && ea.la ? ea : null; } else D.hover = null;
         drawOverlay(); return;
       }
       if (D.pending && (D.tool === 'balloon' || D.tool === 'stackballoon')) D.pending.at = q;
       if (D.tool === 'dim') { DW.smartDimMove(q, e); return; }   // (rfS) pre-highlight and the preview
-      if (/^(centermark|holecallout|ordinate|baseline|chamferdim)$/.test(D.tool)) h = entityAt(q);
+      if (/^(centermark|holecallout|ordinate|baseline|chamferdim|cuthread|cudowel|angrun|pathlen)$/.test(D.tool)) h = entityAt(q);   // (lane CT: angrun, pathlen)
       else if (D.tool === 'balloon' || D.tool === 'stackballoon') { var eg = DW.edgeAt(q); h = eg ? { kind: 'edge', view: eg.view, body: eg.body } : null; if (D.pending && D.pending.item && !D.pending.placed) { D.hover = h; drawOverlay(); return; } }
       else if (D.tool === 'centerline') h = null;
       else h = preHighlight(q);
@@ -1175,7 +1192,7 @@
     var nq = DW.noteAt(pp);
     if (nq) { D.sel = { kind: 'note', id: nq.id }; DW.openNoteEdit(Drawing.findNote(doc(), nq.id)); return; }
     var aq = DW.annotAt(pp);
-    if (aq) { if (aq.type === 'holeCallout') DW.cmdCalloutProps(aq); else if (aq.flat) DW.cmdViewProperties(aq.view); return; }
+    if (aq) { if (aq.type === 'cosmeticThread' && DW.cmdCosmeticThread) DW.cmdCosmeticThread(aq.id); else if (aq.type === 'holeCallout') DW.cmdCalloutProps(aq); else if (aq.flat) DW.cmdViewProperties(aq.view); return; }
     var dq = dimAt(pp);
     if (dq) { DW.cmdDimensionPM(DW.dimRef(dq)); DW.openInlineEdit(dq); return; }
     if (DW.bomAt(toPaper(e))) { DW.cmdBOM(); return; }
@@ -1204,7 +1221,11 @@
   // (rfM) the shop symbol under paper point p (within 3 px of its box), the Revision Table under it
   function symbolAt(p) {
     var t = pxToPaper(3), hit = null;
-    (D.sheet && D.sheet.symbols || []).forEach(function (y) { var b = y.box; if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = y; });
+    (D.sheet && D.sheet.symbols || []).forEach(function (y) {
+      var b = y.box;
+      if (y.pts) { for (var i = 1; i < y.pts.length; i++) if (segDist(p, y.pts[i - 1], y.pts[i]) <= t) { hit = y; break; } return; }   // (rfCU) a multi-jog leader: along its segments
+      if (b && p[0] >= b.x0 - t && p[0] <= b.x1 + t && p[1] >= b.y0 - t && p[1] <= b.y1 + t) hit = y;
+    });
     return hit;
   }
   function revTableAt(p) { var r = D.sheet && D.sheet.revisions, b = r && r.box; return b && p[0] >= b.x0 && p[0] <= b.x1 && p[1] >= b.y0 && p[1] <= b.y1 ? r : null; }
@@ -1221,6 +1242,7 @@
     var n = Drawing.findNote(doc(), id), k = paperK();
     return [
       { label: 'Edit Text', action: function () { DW.openNoteEdit(Drawing.findNote(doc(), id)); } },
+      { label: 'Properties…', action: function () { DW.cmdNoteProps(id); } },   // (rfCU) border, numbered / bulleted list
       { label: n.leader ? 'Remove Leader' : 'Add Leader', action: function () { edit(function (dc) { Drawing.editNote(dc, id, { leader: n.leader ? null : [n.p[0] - 15 * k, n.p[1] - 10 * k] }); }); } },
       { label: 'Delete', key: 'Del', action: function () { edit(function (dc) { Drawing.deleteNote(dc, id); }); D.sel = null; render(); } }
     ];
