@@ -355,6 +355,34 @@
     (v.annotations || (v.annotations = [])).push(an);
     return an;
   }
+  // (rfDD) Hole Callout on a slot (SolidWorks: the callout of a slot picked by its end arc or, for an arc slot, its side
+  // arc): slotAt(pr, c, r) -> { end (the end arc the leader goes to), slot: { w, len } | { arc, R, w, angle, center } }
+  // or null, from the slots the projection shows (Drawing.slotsIn / arcSlotsIn, as Model Items finds them).
+  // addSlotCallout(doc, viewId, pr, { c, r, lead? }) puts a slot callout on the view as a dimension (kind 'rad' with
+  // slot, slotCallout: true: the same "W X L SLOT" / "R… ARC SLOT … WIDE …°" text, tolerance and drag as a model
+  // item's); each compute finds its slot again by the end arc (reattachUserDim), so a resized slot reads its new size.
+  function slotAt(pr, c, r) {
+    if (!pr || !pr.arcs || !D.slotsIn) return null;
+    var b = pr.bounds, tol = 1e-6 * Math.max(1e-9, b.umax - b.umin, b.vmax - b.vmin) * 10;
+    function same(a) { return Math.abs(a.r - r) <= tol && Math.hypot(a.c[0] - c[0], a.c[1] - c[1]) <= tol; }
+    var hit = null;
+    D.slotsIn(pr).forEach(function (s) { if (!hit && (same(s.ends[0]) || same(s.ends[1]))) hit = { end: same(s.ends[1]) ? s.ends[1] : s.ends[0], slot: { w: s.w, len: s.len } }; });
+    if (!hit && D.arcSlotsIn) D.arcSlotsIn(pr).forEach(function (s) {
+      if (hit || !(same(s.ends[0]) || same(s.ends[1]) || s.sides.some(same))) return;
+      hit = { end: same(s.ends[1]) ? s.ends[1] : s.ends[0], slot: { arc: true, R: s.R, w: s.w, angle: s.angle, center: s.center.slice() } };
+    });
+    return hit;
+  }
+  function addSlotCallout(doc, viewId, pr, spec) {
+    var v = findView(doc, viewId);
+    if (!v) throw new Error('No drawing view ' + viewId);
+    var hit = spec && spec.c && spec.r > 0 ? slotAt(pr, spec.c, +spec.r) : null;
+    if (!hit) throw new Error('That arc is not the end of a slot');
+    var e = hit.end, d = { kind: 'rad', c: e.c.slice(), r: e.r, a0: e.a0, a1: e.a1, value: e.r, slot: hit.slot, slotCallout: true };
+    if (spec.lead) d.lead = [+spec.lead[0], +spec.lead[1]];
+    (v.dims || (v.dims = [])).push(d);
+    return d;
+  }
   function findAnnotation(doc, id) {
     for (var i = 0; i < doc.views.length; i++) { var l = doc.views[i].annotations || []; for (var j = 0; j < l.length; j++) if (l[j].id === id) return { view: doc.views[i], annotation: l[j], index: j }; }
     return null;
@@ -432,6 +460,12 @@
       var okR = d.kind === 'angle' ? ctReattachLines(d.refs, pr) : d.refs.map(function (r) { return reattachRef(r, pr); }).every(Boolean);
       if (okR) { delete d.dangling; measurePair(d); } else d.dangling = true;
       return okR;
+    }
+    if (d.slotCallout) {   // (rfDD) a slot callout: its end arc, then the slot's size again
+      var okS = reattachDim(d, pr), hs = okS ? slotAt(pr, d.c, d.r) : null;
+      if (hs) { d.slot = Object.assign({}, hs.slot, d.slot && d.slot.props ? { props: d.slot.props } : {}); d.a0 = hs.end.a0; d.a1 = hs.end.a1; d.value = d.r; delete d.dangling; }
+      else d.dangling = true;
+      return !!hs;
     }
     return reattachDim(d, pr);
   }
@@ -1674,7 +1708,7 @@
 
   D.circlesAlong = circlesAlong; D.holeInfo = holeInfo; D.holeText = holeText; D.cylAxes = cylAxes; D.fitCircle = fitCircle; D.lineIntervals = lineIntervals;
   D.addCenterMark = addCenterMark; D.autoCenterMarks = autoCenterMarks; D.addCenterline = addCenterline; D.autoCenterlines = autoCenterlines; D.autoInsert = autoInsert;
-  D.addHoleCallout = addHoleCallout; D.insertWizardCallouts = insertWizardCallouts; D.wizardHoles = wizardHoles; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;
+  D.addHoleCallout = addHoleCallout; D.slotAt = slotAt; D.addSlotCallout = addSlotCallout; D.insertWizardCallouts = insertWizardCallouts; D.wizardHoles = wizardHoles; D.findAnnotation = findAnnotation; D.deleteAnnotation = deleteAnnotation; D.docOptions = docOptions; D.markPaper = markPaper;
   D.addOrdinate = addOrdinate; D.addBaseline = addBaseline; D.addChamferDim = addChamferDim; D.refFrom = refFrom;
   D.TOL_TYPES = TOL_TYPES; D.dimLabel = dimLabel; D.numText = numText; D.styleKey = styleKey; D.setDimProps = setDimProps; D.DIM_PROPS = DIM_PROPS;
   D.dimSource = dimSource; D.driveDim = driveDim; D.addBalloon = addBalloon; D.STACK_DIRS = STACK_DIRS;
@@ -1688,9 +1722,10 @@
   // the two drawn lines, or its supplement as the sketch shows it), each value of an Angular Running set up to 180°
   // (from the datum ray) and a Chamfer Dimension ("0.100 X 45°"), each marked for drawing (rel.mark: on unless false;
   // a driven one only when set true), in the first orthographic view that looks square at its sketch, with relSrc so
-  // sketchDimProps gives it the relation's properties and name (sketchAng 'sketchId:relIndex'). A Path Length dimension
-  // has no drawing counterpart and stays in the sketch. Model Items ▸ Selected feature brings its sketch's only.
-  var ANG_RELS = { angle: 1, chamfer: 1, runangle: 1 };
+  // sketchDimProps gives it the relation's properties and name (sketchAng 'sketchId:relIndex'). (rfDD) A Path Length
+  // dimension comes as the drawing's Path Length dimension (kind 'pathlen': its lines and arcs in the view, the value
+  // on a leader from the first). Model Items ▸ Selected feature brings its sketch's only.
+  var ANG_RELS = { angle: 1, chamfer: 1, runangle: 1, pathlength: 1 };
   function sketchAngularItems(doc, projections) {
     var ctx = _.CTX, model = ctx && ctx.model, S = typeof SketchSolver !== 'undefined' ? SketchSolver : null, out = [];
     if (!doc || !projections || !model || model.type === 'assembly' || !model.features || !S || !S.refCurve || !D.modelItems || !D.viewFrame) return out;
@@ -1725,7 +1760,29 @@
       function pt(r) { var p = S.refPoint(f, r); if (p) return p; var c = S.refCurve(f, r); return c && c.kind === 'circle' ? c.c : null; }
       list.forEach(function (i) {
         var rel = f.rels[i], d = null, src = { f: f.id, i: i };
-        if (rel.type === 'chamfer') {
+        if (rel.type === 'pathlength') {
+          // each line as an edge, each arc / circle in the view's frame (a view that shows the sketch mirrored turns
+          // the arc's sense round: its ends swap)
+          var o0 = at([0, 0]), ux = at([1, 0]), uy = at([0, 1]);
+          var flip = ((ux[0] - o0[0]) * (uy[1] - o0[1]) - (ux[1] - o0[1]) * (uy[0] - o0[0])) < 0;
+          var ang = function (p, c) { return Math.atan2(p[1] - c[1], p[0] - c[0]) * 180 / Math.PI; };
+          var prefs = [], okp = true;
+          rel.refs.forEach(function (r) {
+            var c = S.refCurve(f, r);
+            if (!okp || !c) { okp = false; return; }
+            if (c.kind === 'line') { prefs.push(refFrom({ a: at(c.a), b: at(c.b) })); return; }
+            var e = f.entities[parseInt(String(r), 10)], C = at(c.c);
+            if (!e) { okp = false; return; }
+            if (e.t === 'circle') { prefs.push({ kind: 'dia', c: C, r: Math.abs(c.r) }); return; }
+            var R0 = Math.abs(e.r), d2r = Math.PI / 180;
+            var P0 = at([e.cx + R0 * Math.cos(e.a0 * d2r), e.cy + R0 * Math.sin(e.a0 * d2r)]), P1 = at([e.cx + R0 * Math.cos(e.a1 * d2r), e.cy + R0 * Math.sin(e.a1 * d2r)]);
+            var A0 = ang(flip ? P1 : P0, C), A1 = ang(flip ? P0 : P1, C);
+            prefs.push({ kind: 'rad', c: C, r: R0, a0: A0, a1: A1 });
+          });
+          if (!okp || !prefs.length) return;
+          d = { view: v.id, kind: 'pathlen', refs: prefs, value: pathLengthOf(prefs), auto: true, relSrc: src, sketchAng: f.id + ':' + i };
+          if (!(d.value > 1e-12)) return;
+        } else if (rel.type === 'chamfer') {
           var C = line(rel.refs[0]), A = line(rel.refs[1]);
           if (!C || !A) return;
           d = { view: v.id, kind: 'chamfer', a: at(C.a), b: at(C.b), ref: refFrom({ a: at(A.a), b: at(A.b) }), auto: true, relSrc: src, sketchAng: f.id + ':' + i };
@@ -1764,19 +1821,8 @@
     });
     return out;
   }
-  D.sketchAngularItems = sketchAngularItems;
-  // Model Items (Drawing.autoDims, read by drawing-render.js when it loads) with the sketches' angular dimensions after
-  // the linear ones, so the items before keep their style keys
-  if (D.autoDims && !D.autoDims.rfBA) {
-    var baseAutoDims = D.autoDims;
-    D.autoDims = function (doc, projections, units) {
-      var dims = baseAutoDims.apply(this, arguments), extra = [];
-      try { extra = sketchAngularItems(doc, projections); } catch (e) { extra = []; }   // (extra items: never break the others)
-      extra.forEach(function (d) { d.text = D.dimText(d, units); });
-      return extra.length ? dims.concat(extra) : dims;
-    };
-    D.autoDims.rfBA = true;
-  }
+  // (rfDD) Drawing.autoDims (drawing-sheet.js) calls it directly through _.sketchAngularItems, after the linear items
+  D.sketchAngularItems = _.sketchAngularItems = sketchAngularItems;
   // ------------------------------------------------------------------ notes (Annotation ▸ Note)
   // doc.notes = [{ id, p: [x, y] (paper: the first line's baseline start), text (lines split at \n), h (paper mm,
   // default 3.5) }]: free text on the sheet, drawn on the NOTES layer in SVG, DXF (one TEXT per line) and PDF.

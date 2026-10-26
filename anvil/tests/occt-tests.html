@@ -322,7 +322,10 @@
     { name: 'Sketched Bend, Material Inside', code: shBend('.line(3, 0, 3, -4)', '90, { fixed: [1, 0, 2], position: "inside" }'), size: [6, 4], bends: 1, loops: 1 },
     { name: 'Sketched Bend after an edge flange on the moving side, holes in the plate', size: [7.1409, 4], bends: 2, loops: 3,
       code: SH_HEAD + 'p.flange(1, [[6, ' + SH_T + ', 2]]);\np.sketch("Top", ' + SH_T + ').circle(1, -1, 0.2).circle(5, -3, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).sketchedBend(90, { fixed: [1, 0, 2] });' },
-    { name: 'Sketched Bend 60°, reversed, Material Inside, radius .1, custom deduction', code: shBend('.line(3, 0, 3, -4)', '60, { fixed: [1, 0, 2], position: "inside", reverse: true, radius: 0.1, bendAllowance: { type: "deduction", value: 0.1 } }'), size: [6, 4], bends: 1, loops: 1 }
+    { name: 'Sketched Bend 60°, reversed, Material Inside, radius .1, custom deduction', code: shBend('.line(3, 0, 3, -4)', '60, { fixed: [1, 0, 2], position: "inside", reverse: true, radius: 0.1, bendAllowance: { type: "deduction", value: 0.1 } }'), size: [6, 4], bends: 1, loops: 1 },
+    // lane DC2: Jog from a sketch line (two Sketched Bends; K .5 rolls each strip up with its metal, so the volume is the plate's exactly)
+    { name: 'Jog from a sketch line, Outside Offset .5, 90°', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.5, { fixed: [1, 0, 2] });', size: [6, 4], bends: 2, loops: 1, exact: 24 * SH_T },
+    { name: 'Jog 45°, Inside Offset .4, Material Inside, a Ø.4 hole on the jogged side', code: SH_HEAD + 'p.sketch("Top", ' + SH_T + ').circle(5, -2, 0.2).cut("through", { reverse: true });\np.sketch("Top", ' + SH_T + ').line(3, 0, 3, -4).jog(0.4, { fixed: [1, 0, 2], angle: 45, offsetRef: "inside", position: "inside" });', size: [6, 4], bends: 2, loops: 2, exact: (24 - Math.PI * 0.04) * SH_T }
   ];
   function shDxf(flat) {
     var d = K.exportDXFFlat(flat, 'in', { version: 'R2000', style: 'entities' }), out = {}, re = /\n0\n([A-Z]+)\n(?:(?!\n0\n)[\s\S])*?\n8\n([A-Z]+)\n/g, mm;
@@ -342,6 +345,7 @@
       if (!sr.valid) whyS.push('invalid solid');
       var sva = K.massProps(smesh, 1).volume, sdv = Math.abs(sr.volume - sva) / sva;
       if (!(sdv <= (sr.tolerance || 1e-4))) whyS.push('volume ' + sr.volume.toFixed(6) + ' vs Anvil ' + sva.toFixed(6));
+      if (sc.exact != null && !(Math.abs(sr.volume - sc.exact) <= 1e-6 * sc.exact)) whyS.push('OpenCascade volume ' + sr.volume.toFixed(7) + ', exact ' + sc.exact.toFixed(7));
       var sbb = sb.body.getBounds(), sdb = 0;
       if (sr.bbox) for (var c2 = 0; c2 < 3; c2++) sdb = Math.max(sdb, Math.abs(sr.bbox[0][c2] - sbb.min[c2]), Math.abs(sr.bbox[1][c2] - sbb.max[c2])); else sdb = Infinity;
       if (!(sdb <= 1e-4)) whyS.push('bbox off by ' + sdb.toExponential(2));
@@ -440,6 +444,10 @@
   // (1 − R − T) high, T thick and R + .75·T − (T + gap) wide, so the tray gains exactly 4·H·T·(R + .75T − T − gap)
   var CW_TRAY = CW_HEAD + [[2, SH_T, 0], [4, SH_T, 1.5], [2, SH_T, 3], [0, SH_T, 1.5]].map(function (e) { return 'p.flange(1, [' + JSON.stringify(e) + '], { position: "inside", lengthRef: "outer" });\n'; }).join('');
   var CW_F4 = [[SH_T / 2, 0.6, 2 * SH_T], [4 - SH_T / 2, 0.6, 2 * SH_T], [4 - 2 * SH_T, 0.6, 3 - SH_T / 2], [SH_T / 2, 0.6, 3 - 2 * SH_T]];
+  var DB2_BA = Math.PI / 2 * (SH_T + 0.5 * SH_T), DB2_BD = 4 * SH_T - DB2_BA, DB2_ZB = 2 * SH_T - DB2_BA / 2;   // lane DB2 (T = R)
+  var DB2_HEAD = 'p.units("in");\np.sheet(' + SH_T + ', ' + SH_T + ', 0.5);\np.sketch("Top").rect(0, -4, 6, 4).end().baseFlange();\n';
+  var DB2_L = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0]], { position: "inside", lengthRef: "outer" });\n';
+  var DB2_U = DB2_HEAD + 'p.flange(1.5, [[3, ' + SH_T + ', 0], [3, ' + SH_T + ', 4]], { position: "inside", lengthRef: "outer" });\n';
   var CW_CASES = [
     { name: 'Closed Corner Overlap (ratio .75, gap .01) on all four corners of a 16 ga 4 × 3 tray', plain: CW_TRAY,
       code: CW_TRAY + 'p.closedCorner(' + JSON.stringify(CW_F4) + ', ' + JSON.stringify({ cornerType: 'overlap', gap: 0.01, ratio: 0.75, coplanar: false }) + ');',
@@ -453,7 +461,16 @@
     // inside surface read as a gap across the strip and the blank fell apart in two at the bend (no exact volume: the
     // cut thins the bend; volumes and hole areas agree within the faceting)
     { name: 'flat of a Ø.25 hole cut from the top at a bend\'s tangent line (bites into the bend below the top): one blank, one hole on both kernels', plain: null,
-      code: CW_HEAD + 'p.flange(1.5, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.sketch("Top", ' + SH_T + ').circle(' + (4 - 2 * SH_T) + ', -1.5, 0.125).cut("through", { reverse: true });', loops: 2, holeArea: true }
+      code: CW_HEAD + 'p.flange(1.5, [[4, ' + SH_T + ', 1.5]], { position: "inside", lengthRef: "outer" });\np.sketch("Top", ' + SH_T + ').circle(' + (4 - 2 * SH_T) + ', -1.5, 0.125).cut("through", { reverse: true });', loops: 2, holeArea: true },
+    // lane DB2: Unfold / Fold built by OpenCascade (exact pieces of the folded part moved flat, the flat strip × T; the
+    // cut across the bend folded back through cylinderCutter). K = 0.5, so an exact bend's volume is BA·T: the U-channel
+    // unfolded is exactly the blank × T; the 0.25 × 1.0 slot cut flat across the L's bend line takes the whole exact bend
+    // section (π/4·((R + T)² − R²)) plus (0.25 − BA)·T of straight sheet, × 1.0
+    { name: 'Unfold (Collect All Bends) of a 16 ga 6 × 4 U-channel, 1.5 walls: exactly the blank × T, flat in the base plane', plain: null,
+      code: DB2_U + 'p.unfold([1, ' + SH_T + ', 2], null);', exact: 6 * (4 + 2 * (1.5 - DB2_BD)) * SH_T, loops: 1 },
+    { name: 'Unfold, a 0.25 × 1.0 slot cut flat centred on the bend line, Fold (16 ga L-bracket): the slot wraps the exact bend; the flat shows the slot', plain: DB2_L,
+      code: DB2_L + 'p.unfold([1, ' + SH_T + ', 2], null);\np.sketch("Top", 1).rect(2.5, ' + (-(DB2_ZB + 0.125)) + ', 1, 0.25).cut("through", { reverse: true });\np.fold();',
+      removed: Math.PI / 4 * (4 * SH_T * SH_T - SH_T * SH_T) + (0.25 - DB2_BA) * SH_T, loops: 2, holeArea: true }
   ];
   for (var cwk = 0; cwk < CW_CASES.length; cwk++) {
     var cw = CW_CASES[cwk], tcw = performance.now();
@@ -817,6 +834,47 @@
     counts[why11.length ? 'fail' : 'pass']++;
   } catch (e) { row('bad', 'Edit Feature rollback from the rebuild cache; Tray Miter Flange', e.message); counts.fail++; }
   // --- end r11/occtswap11 ---
+  // --- lane DF: a Circular Pattern / Revolve about a reference Axis is built by OpenCascade (the axis, point and
+  // coordinate system resolved in occt-kernel.js as Kernel.rebuild does, face / edge refs on its own bodies): every
+  // feature 'ok', the volume Anvil's and the exact one to 1e-6; then the model under a face axis is edited (the
+  // cylinder moves) and the cached worker build follows it ---
+  var DF_CASES = [
+    { name: 'Circular Pattern about an axis where two planes meet', code: 'var pl = p.plane("Right", 50);\np.sketch("Top").circle(80, 0, 5).end().extrude(10);\nvar ax = p.axis("planes", [{ plane: pl }, "Front"]);\np.circularPattern({ axisRef: ax, count: 4 });', want: 4 * Math.PI * 250 },
+    { name: 'Revolve about a two-point axis', code: 'var a = p.axis("points", ["origin", [0, 10, 0]]);\np.sketch("Front").rect(10, 0, 10, 10).end().revolve(360, { axisRef: a });', want: Math.PI * 3000 },
+    { name: 'Circular Pattern about a cylindrical face\'s axis', code: 'p.sketch("Top").circle(0, 0, 10).end().extrude(20);\nvar a = p.axis("cyl", [{ face: [10, 10, 0] }]);\np.sketch("Top").circle(30, 0, 4).end().extrude(5);\np.circularPattern({ axisRef: a, count: 6 });', want: Math.PI * 2000 + 6 * Math.PI * 80 },
+    { name: 'Revolve Cut about an axis on a model edge', code: 'p.sketch("Front").rect(0, 0, 40, 30).end().extrude(10);\nvar a = p.axis("line", [{ edge: [20, 30, 0] }]);\np.sketch("Front").rect(10, 25, 10, 5).end().revolveCut(360, { axisRef: a });', want: 12000 - 62.5 * Math.PI },
+    { name: 'inch: Cut pattern about a hole\'s axis, a boss sketched on a Coordinate System at the hole edge\'s centre', units: 'in', code: 'p.sketch("Front").rect(0, 0, 4, 3).end().extrude(0.5);\np.sketch("Front").circle(1.2, 1.5, 0.25).end().cut("through");\nvar a = p.axis("cyl", [{ face: [1.45, 1.5, 0.25] }]);\np.sketch("Front").circle(2, 1.5, 0.1875).end().cut("through");\np.circularPattern({ axisRef: a, count: 3 });\nvar c = p.point("arc", [{ edge: [1.45, 1.5, 0.5] }]);\nvar cs = p.csys({ origin: { point: c } });\np.sketch(cs, 0).rect(1.5, 0.5, 0.5, 0.5).end().extrude(0.25);', want: 6 - Math.PI * 0.03125 - 3 * Math.PI * 0.1875 * 0.1875 * 0.5 + 0.0625 }
+  ];
+  for (var dfc of DF_CASES) {
+    try {
+      var tdf = performance.now(), mdf = K.newModel('T'); if (dfc.units) mdf.units = dfc.units; K.runScript(mdf, dfc.code);
+      var adf = K.rebuild(JSON.parse(JSON.stringify(mdf))), avdf = K.massProps(K.meshFromBody(adf.body), 1).volume;
+      var rdf = await occt(JSON.parse(JSON.stringify(mdf)), { noCache: true }), whyDF = [];
+      if (Object.keys(adf.errors).length) whyDF.push('Anvil errors ' + JSON.stringify(adf.errors));
+      if (rdf.unsupported || !rdf.ok) whyDF.push('OpenCascade did not build every feature: ' + (rdf.unsupported || JSON.stringify(rdf.status)));
+      if (!rdf.valid) whyDF.push('invalid solid');
+      if (!(Math.abs(rdf.volume - dfc.want) <= 1e-6 * dfc.want)) whyDF.push('OpenCascade volume ' + rdf.volume + ', exact ' + dfc.want);
+      if (!(Math.abs(avdf - dfc.want) <= 1e-6 * dfc.want)) whyDF.push('Anvil volume ' + avdf + ', exact ' + dfc.want);
+      row(whyDF.length ? 'bad' : 'ok', 'reference axis, OpenCascade = Anvil: ' + dfc.name, whyDF.join('\n') || ('OpenCascade ' + rdf.volume.toFixed(6) + ' / Anvil ' + avdf.toFixed(6) + ' / exact ' + dfc.want.toFixed(6)), performance.now() - tdf);
+      counts[whyDF.length ? 'fail' : 'pass']++;
+    } catch (e) { row('bad', 'reference axis, OpenCascade = Anvil: ' + dfc.name, e.message); counts.fail++; }
+  }
+  try {
+    var tdf2 = performance.now(), mdf2 = K.newModel('T'), whyDF2 = [];
+    K.runScript(mdf2, DF_CASES[2].code);
+    var r1df = await occt(JSON.parse(JSON.stringify(mdf2)));
+    mdf2.features[1].depth = 30;   // the cylinder grows 10 taller: its face (and the axis on it) rebuild, the pattern stays
+    var r2df = await occt(JSON.parse(JSON.stringify(mdf2))), a2df = K.rebuild(JSON.parse(JSON.stringify(mdf2))), bbdf = a2df.body.getBounds();
+    var axdf = a2df.planes[mdf2.features[2].id], wantDF2 = DF_CASES[2].want + Math.PI * 1000;
+    if (!r2df.ok || !r1df.ok) whyDF2.push('status ' + JSON.stringify(r2df.status));
+    if (!(r2df.reused >= 1 && r2df.reused < mdf2.features.length)) whyDF2.push('reused ' + r2df.reused + ' (want the first sketch only)');
+    if (!(Math.abs(r2df.volume - wantDF2) <= 1e-6 * wantDF2)) whyDF2.push('volume ' + r2df.volume + ', want ' + wantDF2);
+    if (!axdf || !(Math.abs(Math.abs(axdf.b[1] - axdf.a[1]) - 30) < 1e-9)) whyDF2.push('Anvil axis ' + JSON.stringify(axdf) + ' (want 30 long)');
+    for (var kdf = 0; kdf < 3; kdf++) if (!(Math.abs(r2df.bbox[0][kdf] - bbdf.min[kdf]) < 1e-6 && Math.abs(r2df.bbox[1][kdf] - bbdf.max[kdf]) < 1e-6)) whyDF2.push('box ' + JSON.stringify(r2df.bbox) + ' vs Anvil ' + JSON.stringify([bbdf.min, bbdf.max]));
+    row(whyDF2.length ? 'bad' : 'ok', 'reference axis on a cylindrical face: the cylinder grows, OpenCascade\'s cached rebuild resolves the axis on the new face and patterns about it', whyDF2.join('\n') ||('reused ' + r2df.reused + ', volume ' + r2df.volume.toFixed(6)), performance.now() - tdf2);
+    counts[whyDF2.length ? 'fail' : 'pass']++;
+  } catch (e) { row('bad', 'reference axis follows an edit (OpenCascade cache)', e.message); counts.fail++; }
+  // --- end lane DF ---
   var s = document.getElementById('summary');
   s.textContent = counts.pass + ' / ' + (counts.pass + counts.fail) + ' passed' + (counts.fail ? ' — ' + counts.fail + ' FAILED' : '') + ' · ' + counts.todo + ' parts need features not built by OpenCascade yet · engine loaded in ' + loadMs.toFixed(0) + ' ms · Anvil ' + totals.anvil.toFixed(0) + ' ms, OpenCascade ' + totals.occt.toFixed(0) + ' ms';
   s.className = counts.fail ? 'bad' : 'ok';

@@ -39,6 +39,7 @@
 <script src="../kernel-sheetmetal.js"></script>
 <script src="../kernel-script.js"></script>
 <script src="../dxf-import.js"></script>
+<script src="../dwg-writer.js"></script>
 <script src="../nest.js"></script>
 <script src="../holewizard.js"></script>
 <script src="../sketch-solver.js"></script>
@@ -409,6 +410,12 @@
     'kernel/rfCS.js',
     'kernel/rfCW.js',
     'kernel/rfCZ.js',
+    'kernel/rfDD.js',
+    'kernel/rfDE.js',
+    'kernel/rfDB.js',
+    'kernel/rfDC.js',
+    'kernel/rfDG.js',
+    'kernel/rfDF.js',
   ];
   var groupFiles = [], groupSet = loadGroups(GROUPS, 'kernel-tests.groups.js');
   try { eval(groupSet.source); } catch (e) { groupSet.failed.push({ file: groupWhere(e && e.stack) || 'kernel-tests.groups.js', error: e }); }

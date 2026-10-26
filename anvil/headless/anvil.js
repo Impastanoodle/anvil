@@ -30,6 +30,7 @@ const USAGE = [
   '  example --all [--occt]                      every example against its documented volume',
   '  examples                                    list the examples with their documented volumes',
   '  test                                        run tests/kernel-tests.html under Node',
+  '  dwg <in.dxf> <out.dwg>                      an R2000 DXF to an AutoCAD 2000 DWG with Anvil\'s own writer (no converter)',
   '  dxf2sketch <file.dxf | file.dwg> [--dxf out] what File > Open brings into a sketch: units, layers, entities, extents,',
   '                                              Check Sketch summary (a DWG through the ODA File Converter or LibreDWG)',
   '',
@@ -67,9 +68,18 @@ function writeOut(file, text, encoding) {
 }
 function note(quiet, s) { if (!quiet) process.stderr.write(s + '\n'); }
 
-// DXF text -> DWG bytes through headless/dwg.js; records which converter did it in summary.converter.
-// No converter: exit 2 with the hint; a converter failure: exit 1 with its first stderr lines.
+// DXF text -> DWG bytes: Anvil's own writer (dwg-writer.js, AutoCAD 2000) first, summary.converter 'anvil'; only if it
+// throws (an entity it does not write) through headless/dwg.js (ODA File Converter or LibreDWG), summary.writerError
+// saying why. No converter then: exit 2 with the hint; a converter failure: exit 1 with its first stderr lines.
 function toDwg(dxfText, summary) {
+  try {
+    const b = require('../dwg-writer.js').fromDXF(String(dxfText));
+    summary.converter = 'anvil';
+    return Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+  } catch (e) {
+    if (/R12/.test(e.message)) throw Object.assign(new Error(e.message), { code: 1 });
+    summary.writerError = e.message;
+  }
   const Dwg = require('./dwg');
   const conv = Dwg.which();
   if (!conv) throw Object.assign(new Error('No DXF to DWG converter on this machine. ' + Dwg.HINT), { code: 2 });
@@ -542,12 +552,26 @@ async function main(argv) {
       return cmdBuild(sourceFromExample(findExample(args._[1])), flags);
     case 'test':
       return cmdTest(flags);
+    case 'dwg':
+      if (!args._[1] || !args._[2]) throw usage('dwg: give an R2000 .dxf and the .dwg to write');
+      return cmdDwg(args._[1], args._[2]);
     case 'dxf2sketch':
       if (!args._[1]) throw usage('dxf2sketch: give a .dxf or .dwg file');
       return cmdDxf2Sketch(args._[1], flags);
     default:
       throw usage('unknown command "' + cmd + '"');
   }
+}
+
+// dwg <in.dxf> <out.dwg>: dwg-writer.js on the file (no converter); prints { file, bytes, version }
+function cmdDwg(inFile, outFile) {
+  const f = path.resolve(process.cwd(), inFile);
+  if (!fs.existsSync(f)) throw usage('no such file: ' + f);
+  let bytes;
+  try { bytes = require('../dwg-writer.js').fromDXF(fs.readFileSync(f, 'latin1')); } catch (e) { throw Object.assign(new Error('dwg: ' + e.message), { code: 1 }); }
+  const out = writeOut(outFile, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  process.stdout.write(JSON.stringify({ file: out.file, bytes: bytes.length, version: String.fromCharCode.apply(null, bytes.slice(0, 6)) }, null, 2) + '\n');
+  return 0;
 }
 
 if (require.main === module) {

@@ -291,6 +291,7 @@ var UI = (function () {
         K.entityPolylines(e).forEach(function (l) { l.pts.forEach(function (q) { var w = K.to3D(pl, q[0], q[1]); for (var k = 0; k < 3; k++) { if (w[k] < min[k]) min[k] = w[k]; if (w[k] > max[k]) max[k] = w[k]; } any = true; }); });
       });
     });
+    if (flatShown() && App.flatBounds) { for (var fk = 0; fk < 3; fk++) { min[fk] = Math.min(min[fk], App.flatBounds.min[fk]); max[fk] = Math.max(max[fk], App.flatBounds.max[fk]); } any = true; }   // lane DC
     if (!any) { min = [-50, -50, -50]; max = [50, 50, 50]; }
     return { min: min, max: max };
   }
@@ -670,6 +671,74 @@ var UI = (function () {
     applyDisplayStyle();
   }
   var silLines = null;
+
+  // ------------------------------------------------------------------ lane DC (finding #9): the flattened state
+  // SolidWorks' Flatten: the part is shown as its flat pattern (Flat-Pattern1 unsuppressed) until Flatten is clicked
+  // again. App.model.flatState (saved with the document, undoable) asks for it; the folded part stays App.mesh /
+  // App.build (flat pattern, DXF, mass properties and every feature read it), its drawn geometry is hidden, and a group
+  // of its own shows Kernel.flatBody (the blank T thick on the Base Flange's sketch plane) with its outline and the
+  // bend lines (dashed, on the face the flat is drawn from). App.flat = the flat pattern shown, App.flatError = why it
+  // could not be shown (the Flat-Pattern1 row turns red; the folded part stays on screen). Faces and edges of the
+  // hidden folded part are not picked meanwhile.
+  var flatGroup = new THREE.Group();
+  scene.add(flatGroup);
+  var flatBendMat = new THREE.LineDashedMaterial({ color: 0x3fa34d, dashSize: 1, gapSize: 0.5, depthTest: true });
+  function flatShown() { return !!(App.model && App.model.flatState && App.flat); }
+  function updateFlatState() {
+    disposeGroup(flatGroup);
+    App.flat = null; App.flatError = null; App.flatBounds = null;
+    var want = !!(App.model && App.model.flatState && App.model.sheet && !isAssembly());
+    if (want && App.build && App.build.body && App.mesh) {
+      try {
+        var flat = K.flatPattern(App.model, App.build, App.mesh), fb = K.flatBody(App.model, App.build, flat);
+        var fm = K.meshFromBody(fb.body);
+        var g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(fm.positions, 3));
+        g.setAttribute('normal', new THREE.BufferAttribute(analyticNormals(fm), 3));
+        var mesh = new THREE.Mesh(g, App.view.style === 'hlr' || App.view.style === 'hlv' ? mats.hlr : mats.part);
+        mesh.renderOrder = -1;
+        mesh.userData.flatPattern = true;
+        flatGroup.add(mesh);
+        var pl = fb.plane, seg = [], T = fb.h1 - fb.h0, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+        function P(q, h) { var w = K.to3D(pl, q[0], q[1]); return [w[0] + pl.n[0] * h, w[1] + pl.n[1] * h, w[2] + pl.n[2] * h]; }
+        function push(a, b) { seg.push(a[0], a[1], a[2], b[0], b[1], b[2]); for (var k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], a[k], b[k]); hi[k] = Math.max(hi[k], a[k], b[k]); } }
+        flat.loops.forEach(function (l) {
+          var n = l.length;
+          for (var i = 0; i < n; i++) {
+            var a = l[i], b = l[(i + 1) % n], c = l[(i + n - 1) % n];
+            push(P(a, fb.h0), P(b, fb.h0)); push(P(a, fb.h1), P(b, fb.h1));
+            // a corner (not a chord of an arc): the edge through the thickness
+            var e1 = [a[0] - c[0], a[1] - c[1]], e2 = [b[0] - a[0], b[1] - a[1]];
+            var turn = Math.abs(Math.atan2(e1[0] * e2[1] - e1[1] * e2[0], e1[0] * e2[0] + e1[1] * e2[1]));
+            if (turn > 25 * Math.PI / 180) push(P(a, fb.h0), P(a, fb.h1));
+          }
+        });
+        var eg = new THREE.BufferGeometry();
+        eg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3));
+        flatGroup.add(new THREE.LineSegments(eg, mats.edge));
+        if (flat.bends.length) {
+          var bs = [], hb = fb.h1 + 1e-3 * T;
+          flat.bends.forEach(function (bd) { var a = P(bd.a, hb), b = P(bd.b, hb); bs.push(a[0], a[1], a[2], b[0], b[1], b[2]); });
+          var bg = new THREE.BufferGeometry();
+          bg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bs), 3));
+          var size = Math.max(flat.size[0], flat.size[1]) || 1;
+          flatBendMat.dashSize = size / 60; flatBendMat.gapSize = size / 120;
+          var bl = new THREE.LineSegments(bg, flatBendMat);
+          bl.computeLineDistances();
+          bl.userData.flatBends = true;
+          flatGroup.add(bl);
+        }
+        App.flat = flat;
+        App.flatBounds = { min: lo, max: hi };
+      } catch (e) { App.flatError = (e && e.message) || String(e); }
+    } else if (want) App.flatError = 'The part has no solid to flatten.';
+    var on = flatShown();
+    groups.body.visible = !on; groups.edges.visible = !on; groups.highlight.visible = !on;
+    pickMemo.key = null;
+    sceneVer++;
+    if (UI.requestRender) UI.requestRender();
+    return on;
+  }
 
   // ------------------------------------------------------------------ silhouette edges
   // SolidWorks draws the outline of a curved face where it turns away from the viewer (the side of a cylinder, the
@@ -1854,7 +1923,7 @@ var UI = (function () {
   // projected once per camera change into a flat array (no per-edge allocations), not once per pick.
   var pickMemo = { key: null, hit: null };
   function pickFace(mx, my) {
-    if (!bodyMesh) return null;
+    if (!bodyMesh || flatShown()) return null;   // lane DC: the flat is shown
     var sec = App.view.section && App.view.section.plane;
     var key = mx + ',' + my + ',' + camVer + ',' + bodyMesh.id + (sec ? ',' + sec.normal.x + ',' + sec.normal.y + ',' + sec.normal.z + ',' + sec.constant : '');
     if (pickMemo.key !== key) { pickMemo.key = key; pickMemo.hit = pickFaceRaw(mx, my); }
@@ -1875,7 +1944,7 @@ var UI = (function () {
   }
   // r5/select5: every face under the pointer, nearest first, one per face group (Select Other reaches hidden faces)
   function pickFacesAll(mx, my) {
-    if (!bodyMesh) return [];
+    if (!bodyMesh || flatShown()) return [];   // lane DC
     raycaster.setFromCamera(ndc(mx, my), camera);
     var hits = raycaster.intersectObject(bodyMesh, false), out = [], seen = {};
     hits.forEach(function (h) {
@@ -1938,7 +2007,7 @@ var UI = (function () {
   }
   // Nearest visible sharp edge within 7 px. Occlusion: the edge midpoint must not sit clearly behind the face under the cursor.
   function pickEdge(mx, my) {
-    if (!App.edges || !App.edges.length) return null;
+    if (!App.edges || !App.edges.length || flatShown()) return null;   // lane DC
     var best = null, bestD = 7;
     var hit = pickFace(mx, my);
     var hitDepth = hit ? V.dot(hit.point, [cam.dir.x, cam.dir.y, cam.dir.z]) : -Infinity;
@@ -2491,6 +2560,7 @@ var UI = (function () {
     var tt = performance.now();
     pruneHiddenBodies();
     updateBodyMesh();
+    updateFlatState();   // lane DC: Flatten
     var tb = performance.now();
     var nb = bodyCount();
     ['sel', 'sel2'].forEach(function (k) {
@@ -3159,6 +3229,8 @@ var UI = (function () {
     // equations (global variables)
     equationVars: equationVars, equationErrorMessages: equationErrorMessages, evalInput: evalInput, parseLength: parseLength,
     // whole curved faces (every facet of one cylinder, hole, cone...) for picking and selection
-    faceGroup: faceGroup, faceGroups: function () { return faceGroups(App.mesh); }
+    faceGroup: faceGroup, faceGroups: function () { return faceGroups(App.mesh); },
+    // lane DC: Flatten (the flat state's display)
+    updateFlatState: updateFlatState, flatShown: flatShown, flatGroup: flatGroup
   };
 })();

@@ -203,7 +203,7 @@
       { sep: true },
       { id: 'cut', label: 'Extruded\nCut', run: function () { UI.cmdExtrude(true); } }, { id: 'hole', label: 'Simple\nHole', run: function () { UI.cmdHole(); } }, { id: 'generic', icon: 'vent', label: 'Vent' },
       { sep: true },
-      { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'generic', icon: 'unfold', label: 'Unfold' }, { id: 'generic', icon: 'fold', label: 'Fold' }, { id: 'generic', icon: 'rip', label: 'Rip' }
+      { id: 'flatten', label: 'Flatten', run: function () { UI.cmdFlatten(); } }, { id: 'dxf', label: 'Flat to\nDXF', run: function () { UI.exportFlatDXF(); } }, { id: 'unfold', label: 'Unfold', help: 'Unfold bends about a fixed face to cut across them flat', run: function () { UI.cmdUnfold(); } }, { id: 'fold', label: 'Fold', help: 'Fold back the bends an Unfold unfolded, with the cuts made across them', run: function () { UI.cmdFold(); } }, { id: 'generic', icon: 'rip', label: 'Rip' }
     ],
     // lane BJ: Mastercam 2024's Transform tab, groups Position | Offset | Layout | Size with their captions under the
     // buttons (ui-transform.js lays them out from `group`). Each button runs UI['cmdT' + name] (ui-transform.js,
@@ -719,6 +719,53 @@
 
   // ------------------------------------------------------------------ feature tree
   var expanded = {};
+  // lane DC (finding #9): Sheet Metal ▸ Flatten toggles the part's flat state (pressed while flat); the Flat Pattern
+  // dialog stays UI.cmdFlatten (the tree's Flat-Pattern1 ▸ Flat Pattern…)
+  (function walk(list) { (list || []).forEach(function (it) { if (it && (it.stack || it.items)) walk(it.stack || it.items); else if (it) flattenItem(it); }); })(RIBBON['Sheet Metal']);
+  function flattenItem(it) {
+    if (it.id !== 'flatten') return;
+    it.run = function () { UI.toggleFlatten(); };
+    it.active = function () { return !!(App.model && App.model.flatState); };
+    it.help = 'Show the part flat with its bend lines; click again to fold it (Flat-Pattern1)';
+  }
+  // lane DC (finding #8): a sheet part's FeatureManager as SolidWorks shows it: a Sheet-Metal row (the sheet's
+  // parameters: double-click / Edit Feature opens the Sheet-Metal PropertyManager) just above the Base Flange, and a
+  // Flat-Pattern folder at the end holding Flat-Pattern1 (greyed while the part is folded, i.e. suppressed; Flatten
+  // unsuppresses it). DOM: .ti.sm-folder, .ti.fp-folder, .ti.fp-row (.suppressed while folded, .err when the flat
+  // fails).
+  function sheetMetalRow() {
+    var sh = App.model.sheet, units = UI.unitLabel ? UI.unitLabel() : '';
+    var row = treeItem({ icon: 'flange', name: 'Sheet-Metal', depth: 1, cls: 'sm-folder', title: 'Sheet-Metal: T ' + sh.thickness + ' ' + units + ', R ' + sh.bendRadius + (K.sheetNote ? ' · ' + K.sheetNote(sh) : '') + ' — double-click to edit' });
+    row.addEventListener('click', function () { setStatus('Sheet-Metal: ' + (K.sheetNote ? K.sheetNote(sh) : 'T ' + sh.thickness) + '. Double-click to edit the sheet parameters.'); });
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.cmdSheetMetal(); });
+    row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: 'Edit Feature', action: function () { UI.cmdSheetMetal(); } }]); });
+    return row;
+  }
+  function flatPatternMenu() {
+    var flat = !!App.model.flatState;
+    return [
+      { label: 'Edit Feature', action: function () { UI.cmdFlatPatternEdit(); } },
+      { label: flat ? 'Suppress' : 'Unsuppress', action: function () { UI.toggleFlatten(!flat); } },
+      { sep: true },
+      { label: 'Flat Pattern…', action: function () { UI.cmdFlatten(); } },
+      { label: 'Export DXF…', action: function () { UI.exportFlatDXF(); } }
+    ];
+  }
+  function appendFlatPatternFolder(tree) {
+    var flat = !!App.model.flatState, err = flat ? App.flatError : null, open = expanded.flatPattern !== false;
+    var folder = treeItem({ icon: 'folder', name: 'Flat-Pattern', depth: 1, cls: 'fp-folder', children: true, open: open, toggle: function () { expanded.flatPattern = !open; refreshTree(); } });
+    folder.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, flatPatternMenu()); });
+    tree.appendChild(folder);
+    var box = el('div', { class: 'tc' + (open ? ' open' : '') });
+    var row = treeItem({ icon: err ? 'error' : 'flatten', name: 'Flat-Pattern1', depth: 2, cls: 'fp-row' + (flat ? '' : ' suppressed dim') + (err ? ' err' : ''),
+      title: err ? 'Flat-Pattern1: ' + err : flat ? 'Flat-Pattern1: the part is shown flat (click Flatten to fold)' : 'Flat-Pattern1 (suppressed): Flatten shows the flat pattern' });
+    if (!flat) { var nm = row.querySelector('.nm'); if (nm) nm.style.textDecoration = 'none'; var ic = row.querySelector('svg'); if (ic) ic.style.opacity = '0.45'; }
+    row.addEventListener('click', function () { setStatus(err ? 'Flat-Pattern1: ' + err : 'Flat-Pattern1' + (flat ? ': flattened' + (App.flat ? ', ' + UI.fmtNum(App.flat.size[0], 4) + ' × ' + UI.fmtNum(App.flat.size[1], 4) + ' ' + UI.unitLabel() : '') : ' (suppressed)')); });
+    row.addEventListener('dblclick', function (e) { e.stopPropagation(); UI.cmdFlatPatternEdit(); });
+    row.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, flatPatternMenu()); });
+    box.appendChild(row);
+    tree.appendChild(box);
+  }
   var FEATURE_ICON = { sketch: 'sketch', plane: 'planeSmall', extrude: 'extrude', revolve: 'revolve', lpattern: 'lpattern', cpattern: 'cpattern', mirror: 'mirror', chamfer: 'chamfer', fillet: 'fillet', flange: 'bend', jog: 'bend', sweep: 'sweep', loft: 'loft', shell: 'shell', import: 'imported', hole: 'holeWizard' };
   FEATURE_ICON.refaxis = 'refAxis'; FEATURE_ICON.refpoint = 'refPoint'; FEATURE_ICON.csys = 'csys';   // lane CZ: reference geometry
   function featureIcon(f) {
@@ -729,6 +776,7 @@
     if (f.type === 'sketchedBend') return 'sketchedBend';
     if (f.type === 'breakCorner') return 'breakCorner';   // lane CP
     if (f.type === 'closedCorner') return 'closedCorner';   // lane CS
+    if (f.type === 'unfold' || f.type === 'fold') return f.type;   // lane DB
     return FEATURE_ICON[f.type] || 'generic';
   }
   function treeItem(opts) {
@@ -788,8 +836,11 @@
     }
     var consumedBy = {};
     m.features.forEach(function (f) { childSketchIds(f).forEach(function (id) { if (consumedBy[id] == null) consumedBy[id] = f.id; }); });
+    var smBase = m.sheet ? m.features.filter(function (f) { return f.sheetBase; })[0] || null : null;   // lane DC: Sheet-Metal row above it
+    if (m.sheet && !smBase && !filter) tree.appendChild(sheetMetalRow());
     m.features.forEach(function (f) {
       if (f.type === 'sketch' && consumedBy[f.id] != null) return; // shown under its feature
+      if (f === smBase && !filter) tree.appendChild(sheetMetalRow());
       if (filter && f.name.toLowerCase().indexOf(filter) < 0) return;
       var kids = childSketchIds(f).filter(function (id) { return consumedBy[id] === f.id; }).map(function (id) { return K.findFeature(m, id); }).filter(Boolean);
       var isOpen = !!expanded[f.id];
@@ -801,6 +852,7 @@
         tree.appendChild(box);
       }
     });
+    if (m.sheet && !filter) appendFlatPatternFolder(tree);   // lane DC
     // rfBG: SolidWorks' rollback bar, under the last feature, or above the first rolled-back one during an edit
     // (drawn only: dragging it is not supported)
     var bar = el('div', { class: 'rollbar', title: 'Rollback bar', 'aria-hidden': 'true' });
@@ -1368,7 +1420,7 @@
         { label: 'Sheet Metal ▸ Miter Flange', action: function () { UI.cmdMiterFlange(); } },
         { label: 'Sheet Metal ▸ Hem', action: function () { UI.cmdHem(); } },
         { label: 'Sheet Metal ▸ Jog', action: function () { UI.cmdJog(); } },
-        { label: 'Sheet Metal ▸ Flatten', action: function () { UI.cmdFlatten(); } }
+        { label: 'Sheet Metal ▸ Flatten', checked: !!(App.model && App.model.flatState), action: function () { UI.toggleFlatten(); } }
       ] },
       { label: 'Tools', items: [
         { label: 'Macro ▸ Run script…', action: function () { UI.openTaskPane('macro'); } },

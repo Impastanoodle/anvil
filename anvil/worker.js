@@ -6,7 +6,7 @@
 //   { type: 'rebuild', seq: <number>, model: <model JSON> }
 //     `model` is a structured clone of App.model; Kernel.rebuild writes sketch profiles onto this copy, which is
 //     harmless here and is how the reply's `profiles` are produced.
-//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog', feature, throughLimit, sketches? }
+//   { type: 'preview', seq, model, upto: <feature count | null>, op: 'tool' | 'shell' | 'edge' | 'flange' | 'jog' | 'closedCorner' | 'unfold' | 'fold', feature, throughLimit, sketches? }
 //     a PropertyManager live preview (ui-core.js UI.previewInWorker): the model (its first `upto` features when set) is
 //     built with the rebuild cache, then the feature being edited is built on it without joining the part:
 //     'tool' Kernel.buildTool (extrude, revolve, sweep, loft, patterns, mirror, base flange), 'shell' Kernel.buildShell's
@@ -78,6 +78,10 @@ function preview(m) {
     // lane CS: [material added, material trimmed from the matching walls]
     var ccr = Kernel.buildClosedCorner(f, Kernel.resolvedModel(model).model, { body: b.body });
     tools = [ccr.add || null, ccr.cut || null];
+  } else if (m.op === 'unfold' || m.op === 'fold') {
+    // lane DB: Unfold / Fold change the whole part: rebuild with the feature appended (the prefix comes from the cache)
+    // and show the resulting part
+    tools = [Kernel.unfoldPreview(model, b, f)];
   } else {
     // m.sketches: sketches the previewed feature uses that are not in the model yet (the Hole Wizard's points, r3/engine3)
     var ctx = { tools: b.tools, planes: b.planes, sketches: m.sketches || {}, body: b.body, throughLimit: m.throughLimit };

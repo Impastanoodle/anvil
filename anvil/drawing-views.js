@@ -1703,13 +1703,16 @@
     function lift(p) {
       var q = null, qz = -Infinity;
       E.forEach(function (ed) { [ed.a, ed.b].forEach(function (x) { var s = pj(x); if (Math.hypot(s[0] - p[0], s[1] - p[1]) <= tol * 10) { var z = V.dot(x, F.e); if (z > qz) { qz = z; q = x; } } }); });
+      // (rfDD) else the centre of a true circle / arc of the model (a hole seen as an ellipse: its centre is no vertex)
+      if (!q) { var mc = D.meshCurves ? D.meshCurves(mesh) : null; (mc && mc.groups || []).forEach(function (g) { var s = pj(g.c); if (Math.hypot(s[0] - p[0], s[1] - p[1]) <= tol * 10) { var z = V.dot(g.c, F.e); if (z > qz) { qz = z; q = g.c; } } }); }
       return q;
     }
     var A3 = lift(a), B3 = lift(b);
     return A3 && B3 ? V.len(V.sub(B3, A3)) : null;
   }
   // a view whose linear dimensions read true lengths: a pictorial model view set to True
-  function isTrueView(v, F) { return !!(v && v.dimType === 'true' && !v.kind && F && !D.isOrthoFrame(D.frameOf(F))); }
+  // (rfDD2) or an auxiliary view set to True (it looks square to an inclined face, not to the model's axes)
+  function isTrueView(v, F) { return !!(v && v.dimType === 'true' && (!v.kind || v.kind === 'aux') && F && !D.isOrthoFrame(D.frameOf(F))); }
   // setDetailOptions(doc, id, { style, outline }) -> the detail view (undefined keeps, null back to the default)
   function setDetailOptions(doc, id, opts) {
     var v = findV(doc, id);
@@ -1735,7 +1738,8 @@
   function setDimType(doc, id, t) {
     var v = findV(doc, id);
     if (!v) throw new Error('No drawing view ' + id);
-    if (t === 'true') { if (v.kind) throw new Error('True dimensions are a model view\'s option'); v.dimType = 'true'; } else delete v.dimType;
+    // (rfDD2) an auxiliary view too; True is a new pictorial model view's default (addView), Projected is no key
+    if (t === 'true') { if (v.kind && v.kind !== 'aux') throw new Error('True dimensions are a model or auxiliary view\'s option'); v.dimType = 'true'; } else delete v.dimType;
     return v;
   }
   // ------------------------------------------------------------------ rfAD: Broken-out Section, Area Hatch / Fill per

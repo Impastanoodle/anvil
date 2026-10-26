@@ -269,7 +269,40 @@ if (typeof UI !== 'undefined') (function (UI) {
   }
   function camDir() { return [UI.cam.dir.x, UI.cam.dir.y, UI.cam.dir.z]; }
   // Nearest visible vertex within 8 px (occluded when it sits clearly behind the face under the cursor).
+  // lane DF: the reference points a sketch can use, as SolidWorks offers them: the shown reference Points, the ends of
+  // the shown reference Axes and the shown Coordinate System origins of the features before sketch f (none after it,
+  // nor rolled back) -> [{ p: [x, y, z], id, label }]
+  function sketchRefPoints(f) {
+    var planes = App.build && App.build.planes, feats = (App.model && App.model.features) || [], out = [];
+    if (!planes) return out;
+    var stop = f ? feats.indexOf(f) : feats.length;
+    if (stop < 0) stop = feats.length;
+    if (App.rollback != null) stop = Math.min(stop, App.rollback);
+    for (var i = 0; i < stop; i++) {
+      var g = feats[i], r = planes[g.id];
+      if ((g.type !== 'refaxis' && g.type !== 'refpoint' && g.type !== 'csys') || !r || !r.refgeo || g.hidden) continue;
+      if (App.view[{ axis: 'showAxes', point: 'showPoints', csys: 'showCsys' }[r.refgeo]] === false) continue;
+      if (r.refgeo === 'point') out.push({ p: r.p.slice(), id: g.id, label: g.name });
+      else if (r.refgeo === 'csys') out.push({ p: r.origin.slice(), id: g.id, label: g.name + ' origin' });
+      else if (r.a && r.b) { out.push({ p: r.a.slice(), id: g.id, label: g.name + ' end' }); out.push({ p: r.b.slice(), id: g.id, label: g.name + ' end' }); }
+    }
+    return out;
+  }
+  UI.sketchRefPoints = sketchRefPoints;
+  // in a sketch, a reference point (above) within 8 px is a vertex too, ahead of the model's: Smart Dimension and Add
+  // Relations bring it in as a fixed construction point (ui-relations.js pickModelRef), as a model vertex
+  function refVertex(mx, my) {
+    if (App.mode !== 'sketch' || !UI.activeSketchFeature) return null;
+    var best = null, bd = 8;
+    sketchRefPoints(UI.activeSketchFeature()).forEach(function (q) {
+      var s = UI.worldToScreen(q.p), d = Math.hypot(s[0] - mx, s[1] - my);
+      if (d < bd) { bd = d; best = { kind: 'vertex', point: q.p.slice(), index: -1, refgeo: q.id, label: q.label }; }
+    });
+    return best;
+  }
   function pickVertex(mx, my) {
+    var rv = refVertex(mx, my);   // lane DF
+    if (rv) return rv;
     var list = vertices(), best = null, bestD = 8;
     if (!list.length) return null;
     var hit = UI.pickFace(mx, my), cd = camDir(), hitDepth = hit ? V.dot(hit.point, cd) : -Infinity;

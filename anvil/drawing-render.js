@@ -926,8 +926,40 @@
     var d1 = side(p, q, a), d2 = side(p, q, b), d3 = side(a, b, p), d4 = side(a, b, q), eps = 1e-12;
     return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
   }
+  // (rfDD2) a linear dimension whose text is wider than its span (a short span in a small-scale view) goes outside,
+  // beyond the far arrow; when that spot sits on another dimension's or the part's lines, the text goes beyond the
+  // other arrow, or further out along the dimension line on either side (the line running on to it, as SolidWorks
+  // flips it outside), whichever is clear first, nearest first. A text placed by a click (tside), dragged (tx) or with
+  // flipped arrows keeps its place (a click between the lines keeps the far-arrow rule, rfCA); a text that fits
+  // between the extension lines is not moved.
+  function placeLinearOut(d, vw, k, placed, obs) {
+    var p0 = dimPrims(d, vw, k, placed), off0 = d.txNow;
+    if (!(Math.abs(off0 || 0) > 1e-9)) return p0;
+    var c0 = clashCost(primGeo(p0), obs, k, d.view, false);
+    if (c0 === 0) return p0;
+    var t0 = d.tside, hadT = 'tside' in d;
+    d.tside = -1; dimPrims(d, vw, k, placed);
+    var offL = d.txNow;
+    if (hadT) d.tside = t0; else delete d.tside;
+    var step = 3 * k, best = null, bestCost = c0;
+    var cands = [{ tx: offL }];
+    for (var j = 1; j <= 3; j++) cands.push({ tx: off0 + (off0 > 0 ? 1 : -1) * j * step, j: j }, { tx: offL + (offL > 0 ? 1 : -1) * j * step, j: j });
+    for (var i = 0; i < cands.length; i++) {
+      d.tx = cands[i].tx;
+      var c = clashCost(primGeo(dimPrims(d, vw, k, placed)), obs, k, d.view, false) + 0.5 * (cands[i].j || 0);
+      if (c < bestCost) { bestCost = c; best = cands[i]; }
+      if (c === 0) break;
+    }
+    delete d.tx;
+    if (!best) return dimPrims(d, vw, k, placed);
+    d.tx = best.tx;
+    var p = dimPrims(d, vw, k, placed);
+    delete d.tx;
+    return p;
+  }
   // dimPrims for a dimension, an unplaced radius / diameter (no dragged leader) trying ALT_* until it is clear
   function placeDim(d, vw, k, placed, obs) {
+    if (obs && /^(h|v|aligned)$/.test(d.kind) && d.tx == null && !d.flip && d.tside == null) return placeLinearOut(d, vw, k, placed, obs);
     if ((d.kind !== 'rad' && d.kind !== 'dia') || d.lead || !obs) return dimPrims(d, vw, k, placed);
     var alts = d.kind === 'rad' ? ALT_RAD : ALT_DIA, best = 0, bestCost = Infinity;
     for (var i = 0; i < alts.length; i++) {
@@ -1712,5 +1744,6 @@
   }
 
   D.compute = compute; D.toSVG = toSVG; D.svgParts = svgParts; D.toDXF = toDXF; D.toPDF = toPDF; D.textRect = textRect; D.STROKE = STROKE; D.plainText = plainText;
+  _.dimPrims = dimPrims;   // (rfDD: the Smart Dimension preview draws the dimension as it will be placed)
   _.ARROW_W = ARROW_W; _.SHOULDER = SHOULDER; _.TEXT_GAP = TEXT_GAP; _.CAP_EM = CAP_EM; _.DW_FONT = DW_FONT; _.textWidth = textWidth; _.arcEnds = arcEnds; _.ellipseAt = ellipseAt;
 })(Drawing, Drawing._);

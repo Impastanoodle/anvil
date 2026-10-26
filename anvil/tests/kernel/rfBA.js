@@ -78,7 +78,7 @@
       var sheet = DW.compute(doc, mesh, r.model, { build: b });
       return { r: r, f: f, n0: n0, doc: doc, sheet: sheet, mesh: mesh, build: b };
     }
-    test('rfBA: Model Items brings the sketch\'s Chamfer Dimension ("2X .500 X 45°"), angle ("45.0° ±0.5°", BEVEL@Sketch1) and Angular Running value ("… REF") onto the Front view with their properties, drawn (arc / leader) and in the DXF; a Path Length dimension stays in the sketch', function () {
+    test('rfBA: Model Items brings the sketch\'s Chamfer Dimension ("2X .500 X 45°"), angle ("45.0° ±0.5°", BEVEL@Sketch1) and Angular Running value ("… REF") onto the Front view with their properties, drawn (arc / leader) and in the DXF; a Path Length dimension comes as the drawing\'s Path Length (rfDD)', function () {
       if (!DW || !S || !S.addChamferDim) return 'no drawing engine / solver';
       var x = rfBADrawing(), dims = x.sheet.dims, front = x.sheet.views.filter(function (w) { return w.view.orient === 'Front'; })[0];
       function bySrc(i) { return dims.filter(function (d) { return d.relSrc && d.relSrc.i === x.n0 + i; })[0]; }
@@ -90,11 +90,14 @@
       assert(x.sheet.prims.some(function (p) { return p.k === 'arc' && p.layer === 'DIMENSIONS'; }) && x.sheet.prims.some(function (p) { return p.k === 'text' && p.text === '2X .500 X 45°'; }), 'drawn');
       var dxf = DW.toDXF(x.sheet);
       assert(dxf.indexOf('2X .500 X 45%%d') >= 0 && dxf.indexOf('45.0%%d %%p0.5%%d') >= 0, 'DXF texts');
-      // a path length dimension has no drawing counterpart; Mark for drawing off keeps one off
+      // (rfDD) a path length dimension comes as the drawing's Path Length (4 + 1.5 along lines 0 and 1); Mark for
+      // drawing off keeps the angle off
       x.f.rels[x.n0 + 1].mark = false;
       S.addPathLength(x.f, ['0', '1']);
       var sh2 = DW.compute(x.doc, x.mesh, x.r.model, { build: x.build });
-      assert(!sh2.dims.some(function (d) { return d.relSrc && (d.relSrc.i === x.n0 + 1 || x.f.rels[d.relSrc.i].type === 'pathlength'); }), 'unmarked angle and path length left out');
+      assert(!sh2.dims.some(function (d) { return d.relSrc && d.relSrc.i === x.n0 + 1; }), 'unmarked angle left out');
+      var pl = sh2.dims.filter(function (d) { return d.relSrc && x.f.rels[d.relSrc.i].type === 'pathlength'; })[0];
+      assert(pl && pl.kind === 'pathlen' && Math.abs(pl.value - 5.5) < 1e-9, 'path length as a drawing pathlen model item: ' + JSON.stringify(pl && [pl.kind, pl.value, pl.text]));
       return dims.filter(function (d) { return d.sketchAng; }).map(function (d) { return d.text; }).join(' | ');
     });
     test('rfBA: every other sketch dimension kind carries its properties onto the drawing: an entity Smart Dimension (3.50 TYP, by its own key), the origin to a hole (HOLE_X, 2.00), a converted model edge to the hole (1.000 +.005/-.000)', function () {

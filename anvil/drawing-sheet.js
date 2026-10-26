@@ -66,7 +66,12 @@
   }
   function addView(doc, orient, props) {
     var v = { id: doc.nextView++, name: 'Drawing View' + (doc.nextView - 1), orient: orient, x: 0, y: 0, display: ORTHO[orient] ? 'hlv' : 'hlr', scale: null, parent: null, align: null, role: null, dims: [] };
+    // (rfDD2) a pictorial model view (isometric, dimetric, trimetric …) reads true 3D lengths by default, as in
+    // SolidWorks (Dimension Type: True); props.dimType 'projected' / null keeps the projected lengths. A view saved
+    // without the key (made before) stays Projected.
+    if (!ORTHO[orient] && !(props && props.kind)) v.dimType = 'true';
     Object.keys(props || {}).forEach(function (k) { v[k] = props[k]; });
+    if (v.dimType !== 'true') delete v.dimType;
     doc.views.push(v);
     return v;
   }
@@ -774,7 +779,15 @@
       views: m && Array.isArray(m.views) && m.views.length ? m.views.slice() : null, marked: !m || m.marked !== false, holeLocations: !!m && m.holeLocations !== false,
       holeCallouts: !m || m.holeCallouts !== false, annotations: !m || m.annotations !== false, dedupe: !m || m.dedupe !== false };
   }
+  // (rfDD) autoDims = the items below + the sketches' angular dimensions (Drawing.sketchAngularItems, drawing-annotations.js),
+  // after the linear ones so the items before keep their style keys; a throw there never loses the others
   function autoDims(doc, projections, units) {
+    var dims = modelItemDims(doc, projections, units), extra = [];
+    if (_.sketchAngularItems) { try { extra = _.sketchAngularItems(doc, projections); } catch (e) { extra = []; } }
+    extra.forEach(function (d) { d.text = dimText(d, units); });
+    return extra.length ? dims.concat(extra) : dims;
+  }
+  function modelItemDims(doc, projections, units) {
     var MI = modelItems(doc), dims = [];
     var order = doc.views.filter(function (v) { return ORTHO[v.orient] && (!v.kind || v.kind === 'projected') && projections[v.id] && (!MI.views || MI.views.indexOf(v.id) >= 0); });
     if (MI.source === 'feature') return featureItems(doc, order, projections, units, MI);
@@ -1375,6 +1388,7 @@
     if (d.kind === 'ordinate' && d.sketchOrd) return d.view + ':ord:' + d.sketchOrd;
     if (d.sketchRel) return d.view + ':rel:' + d.sketchRel;
     if (d.sketchDim) return d.view + ':dim:' + d.sketchDim;
+    if (d.kind === 'pathlen' && d.sketchAng) return d.view + ':path:' + d.sketchAng;   // (rfDD)
     if (d.slot && d.slot.arc) return d.view + ':arcslot:' + d.slot.R.toFixed(4) + 'x' + d.slot.w.toFixed(4) + 'x' + d.slot.angle.toFixed(2);
     if (d.slot) return d.view + ':slot:' + d.slot.w.toFixed(4) + 'x' + d.slot.len.toFixed(4);
     return d.view + ':' + d.kind + ':' + (d.kind === 'dia' || d.kind === 'rad' ? d.value.toFixed(4) : d.a.concat(d.b).map(function (x) { return x.toFixed(4); }).join(','));

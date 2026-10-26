@@ -23,6 +23,7 @@
   };
   NAME_BASE.sketchedBend = 'SketchBend';
   NAME_BASE.closedCorner = 'Closed Corner';
+  NAME_BASE.unfold = 'Unfold'; NAME_BASE.fold = 'Fold';   // lane DB
   NAME_BASE.refaxis = 'Axis'; NAME_BASE.refpoint = 'Point'; NAME_BASE.csys = 'Coordinate System';   // lane CZ: reference geometry
 
   function featureName(model, type, cut) {
@@ -209,6 +210,14 @@
     return null;
   }
 
+  // lane DF: a reference Point "Center of Face" on a planar face is the face's exact area centroid (true circles and
+  // arcs on its outline, Kernel.faceCentroidExact) rather than its facets' (≈0.004 off beside an 8 mm hole)
+  function exactFaceCenter(f, ctx) {
+    var g = ctx.planes[f.id], r = f.refs && f.refs[0];
+    if (f.type !== 'refpoint' || f.kind !== 'face' || !g || !r || !r.face || !K.faceCentroidExact) return;
+    var p = K.faceCentroidExact(ctx.body, r.face, _.pickTol(ctx.units || 'mm'));
+    if (p) g.p = p.map(function (x) { var q = Math.round(x * 1e9) / 1e9; return Math.abs(x - q) < 1e-12 ? q + 0 : x; });
+  }
   // lane CZ: the resolved reference Axis a feature turns about ({ refgeo: 'axis', o, d, a, b } from ctx.planes)
   function refAxisFor(f, ctx) {
     var id = _.refAxisId(f), g = id != null && ctx.planes ? ctx.planes[id] : null;
@@ -253,7 +262,7 @@
     var sh = model.sheet ? [model.sheet.thickness, model.sheet.bendRadius] : null;
     // its bend allowance sets how much flat each bend rolls up (sketched bends; and p9-cutbend: a cut crossing a
     // flange's or jog's bend is wrapped round it by BA, so the solid changes with K / BA too)
-    if (sh && /^(sketchedBend|flange|jog|hem)$/.test(f.type)) sh = model.sheet;
+    if (sh && /^(sketchedBend|flange|jog|hem|unfold|fold)$/.test(f.type)) sh = model.sheet;   // (Unfold / Fold: BA sets the strip)
     return JSON.stringify(f, function (k, v) { return k === 'profile' || k === 'name' ? undefined : v; }) + '|' + JSON.stringify(sh) + '|' + tessKey();
   }
 
@@ -358,14 +367,31 @@
     try { setTessellation(tess); return fn(); } finally { TESS.chordTol = saved.chordTol; TESS.minSegs = saved.minSegs; TESS.maxSegs = saved.maxSegs; TESS.legacy = saved.legacy; }
   }
   function rebuild(model, cache) { return withModelTess(model, function () { return rebuildModel(model, cache); }); }
+  // lane DC (finding #10): Cut-Extrude's "Link to thickness" in a sheet part: a feature with linkT: true is a blind cut
+  // whose depth is the sheet's thickness, whatever depth it stores (the PM stores T too, for the other kernel). On the
+  // RESOLVED model; the features it changes are copies.
+  function linkThickness(model) {
+    var T = model.sheet ? +model.sheet.thickness : NaN;
+    if (!(T > 0) || !model.features.some(function (f) { return f.linkT; })) return model;
+    model.features = model.features.map(function (f) {
+      if (!f.linkT || f.type !== 'extrude') return f;
+      var c = {};
+      Object.keys(f).forEach(function (k) { c[k] = f[k]; });
+      c.depth = T; c.end = 'blind';
+      return c;
+    });
+    return model;
+  }
+  _.linkThickness = linkThickness;
   function rebuildModel(model, cache) {
     var t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     var errors = {}, warnings = {}, facePlanes = {};
     var origFeatures = model.features, resolved = resolvedModel(model);
-    model = resolved.model;
+    model = linkThickness(resolved.model);
     var resolveErrors = resolved.featureErrors, sheetError = resolved.sheetError;
-    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.type === 'closedCorner' || f.sheetBase || (f.cut && f.normalCut); }
+    function needsSheet(f) { return f.type === 'flange' || f.type === 'jog' || f.type === 'closedCorner' || f.type === 'unfold' || f.type === 'fold' || f.sheetBase || (f.cut && f.normalCut); }
     var ctx = { tools: {}, planes: {}, sketches: {}, flanges: {}, body: null, bodies: [], bodyFeatures: [], warnings: warnings, units: model.units || 'mm' };   // units: pick tolerances (Kernel.pickTol)
+    ctx.errors = errors; ctx.unfold = null;   // lane DB: Unfold's state (in memory only: the steps carry it) until its Fold
     function syncBody() { ctx.body = combineBodies(ctx.bodies); }
     // a boss tool joins the part: merged into the bodies it meets, or appended as a new body
     function addBoss(tool, f) {
@@ -418,12 +444,15 @@
     var pathIds = {};
     model.features.forEach(function (f) { if (f.type === 'sweep' && typeof f.path === 'number') pathIds[f.path] = true; });
     model.features.forEach(function (f) { if (f.type === 'sketchedBend' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // bend lines are open too
+    model.features.forEach(function (f) { if (f.type === 'jog' && typeof f.sketch === 'number') pathIds[f.sketch] = true; });   // lane DC: a jog's line
     var keys = model.features.map(function (f) { return featureKey(f, model); });
     var prev = cache && cache.steps ? cache.steps : [], steps = [], p = 0;
     while (p < model.features.length && p < prev.length && prev[p].key === keys[p]) p++;
     // a cache made from a finished build (cacheFromBuild) only knows the final body: a partial step cannot hand over
     // ctx.body, so the prefix ends at the last step that carries one (all of them, or none, for such a cache)
     while (p > 0 && prev[p - 1].partial) p--;
+    // lane DB: a Fold needs its Unfold's state, which only an in-memory step carries (not a cache made from a build)
+    if (p > 0 && p < model.features.length && !('unfold' in prev[p - 1]) && model.features.slice(0, p).some(function (f) { return f.type === 'unfold'; })) p = 0;
     for (var i = 0; i < p; i++) {
       var st = prev[i], pf = model.features[i];
       if (st.error) errors[pf.id] = st.error;
@@ -436,6 +465,7 @@
       ctx.bodies = (st.bodies || (st.body ? [st.body] : [])).slice();
       ctx.bodyFeatures = (st.bodyFeatures || ctx.bodies.map(function () { return null; })).slice();
       ctx.body = st.body || null;
+      ctx.unfold = st.unfold || null;
       steps.push(st);
     }
     model.features.slice(p).forEach(function (f, j) {
@@ -452,6 +482,15 @@
             break;
           }
           case 'jog': {
+            if (f.sketch != null) {
+              // lane DC: Jog from a sketch line (kernel-sheetmetal.js buildSketchJog): two Sketched Bends, the part replaced
+              var sjk = ctx.bodies.length ? Math.max(0, bodyNearPoint(ctx.bodies, _.sketchedBendPoint(f, model, ctx))) : -1;
+              ctx.body = sjk >= 0 ? ctx.bodies[sjk] : null;
+              var sj = _.buildSketchJog(f, model, ctx);
+              putBody(sjk, sj.body);
+              ctx.tools[f.id] = sj.tool;
+              break;
+            }
             var jk = pickBody(f);
             var jg = _.buildJog(f, model, ctx);
             var jb = ctx.flangeCut ? ctx.body.subtract(ctx.flangeCut) : ctx.body;
@@ -477,6 +516,19 @@
             var ccr = _.buildClosedCorner(f, model, ctx);
             putBody(cck, (ccr.cut ? ctx.body.subtract(ccr.cut) : ctx.body).union(ccr.add));
             ctx.tools[f.id] = ccr.add;
+            break;
+          }
+          case 'unfold':
+          case 'fold': {
+            // lane DB: Unfold / Fold (kernel-sheetmetal.js) act on the body nearest the fixed face (Fold: the one Unfold made)
+            var uat = f.type === 'unfold' ? f.fixedFace : (ctx.unfold && ctx.unfold.fixedFace);
+            var ufk = ctx.bodies.length ? Math.max(0, uat ? bodyNearPoint(ctx.bodies, uat) : 0) : -1;
+            ctx.body = ufk >= 0 ? ctx.bodies[ufk] : null;
+            var ufr = f.type === 'unfold' ? _.buildUnfold(f, model, ctx) : _.buildFold(f, model, ctx);
+            putBody(ufk, ufr.body);
+            ctx.unfold = ufr.state;
+            ctx.flanges[f.id] = ufr.recs;
+            ctx.tools[f.id] = ufr.cut || null;
             break;
           }
           case 'sketch': {
@@ -506,6 +558,7 @@
             break;
           case 'refaxis': case 'refpoint': case 'csys':   // lane CZ: reference geometry, no body change; the record rides in planes
             ctx.planes[f.id] = _.resolveRefGeo(f, model, ctx);
+            exactFaceCenter(f, ctx);   // lane DF
             break;
           case 'chamfer':
           case 'fillet': {
@@ -547,7 +600,7 @@
         errors[f.id] = e.message || String(e);
         syncBody(); // a failed pick-based feature may have left ctx.body pointing at one body
       }
-      steps.push({ key: keys[p + j], body: ctx.body, bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice(), tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null });
+      steps.push({ key: keys[p + j], body: ctx.body, bodies: ctx.bodies.slice(), bodyFeatures: ctx.bodyFeatures.slice(), tool: ctx.tools[f.id] || null, plane: ctx.planes[f.id] || null, flange: ctx.flanges[f.id] || null, profile: f.profile || null, error: errors[f.id] || null, warning: warnings[f.id] || null, unfold: ctx.unfold });
     });
     var t1 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     // profiles: the computed profile of every sketch, by feature id, so a build made on a copy of the model (a worker)
@@ -641,7 +694,7 @@
   // whole cache for an unchanged or appended model and starts over for a change anywhere in the middle.
   function cacheFromBuild(model, build) { return withModelTess(model, function () { return cacheFromBuildModel(model, build); }); }
   function cacheFromBuildModel(model, build) {
-    model = resolvedModel(model).model; // keys come from the resolved features, as rebuild makes them
+    model = linkThickness(resolvedModel(model).model); // keys come from the resolved features, as rebuild makes them
     var n = model.features.length;
     var steps = model.features.map(function (f, i) {
       var st = { key: featureKey(f, model), tool: (build.tools && build.tools[f.id]) || null, plane: (build.planes && build.planes[f.id]) || null,
@@ -661,6 +714,7 @@
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.newModel = newModel; K.featureName = featureName; K.findFeature = findFeature; K.cutDirectionHint = cutDirectionHint; K.buildTool = buildTool;
   K.refAxisFor = refAxisFor;   // lane CZ
+  K.exactFaceCenter = exactFaceCenter;   // lane DF (occt-kernel.js resolves reference geometry the same way)
   K.isCut = isCut; K.cutScope = cutScope; K.registerFeature = registerFeature; K.registerSketchScript = registerSketchScript;
   K.registerScriptSection = registerScriptSection; K.rebuild = rebuild; K.combineBodies = combineBodies; K.bodyInfo = bodyInfo;
   K.bodyNearPoint = bodyNearPoint; K.packBuild = packBuild; K.packTransferables = packTransferables; K.unpackBuild = unpackBuild;

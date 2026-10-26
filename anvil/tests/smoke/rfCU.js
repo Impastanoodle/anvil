@@ -141,7 +141,10 @@
       rfCUButton('Multi-jog Leader').click(); await idle();
       assert(UI.drawing.state.tool === 'culeader' && UI.pmTitle() === 'Multi-jog Leader', 'leader PM');
       var u0 = rfCUUndoDepth();
-      rfCUClick(a0); rfCUClick(j1); rfCUClick(j2); rfCUClick(tip); rfCUMouse('mousedown', tip); rfCUMouse('mouseup', tip); rfCUMouse('dblclick', tip); await idle();
+      // lane DF: SolidWorks' order, the arrow tip first and the note end last (double-click)
+      var ld0 = function () { return (JSON.parse(JSON.stringify(anvil.drawing.doc())).symbols || []).filter(function (s) { return s.type === 'leader'; })[0] || {}; };
+      rfCUClick(tip); rfCUClick(j2); rfCUClick(j1); rfCUClick(a0); rfCUMouse('mousedown', a0); rfCUMouse('mouseup', a0); rfCUMouse('dblclick', a0); await idle();
+      assert(Math.hypot(ld0().leader[0] - tip[0], ld0().leader[1] - tip[1]) < rfCUTol() && Math.hypot(ld0().p[0] - a0[0], ld0().p[1] - a0[1]) < rfCUTol(), 'arrow at the first click, end on the note: ' + JSON.stringify(ld0()));
       var ld = anvil.drawing.symbols().filter(function (s) { return s.type === 'leader'; });
       assert(ld.length === 1 && /LEADER \(3 segments, NOTE/.test(ld[0].text), 'leader ' + JSON.stringify(ld));
       assert(rfCUUndoDepth() === u0 + 1, 'one undo step');

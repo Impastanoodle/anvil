@@ -363,7 +363,7 @@
   // the sketch's own points (a sketch point as near wins) and after sketch curves, add no relation (a sketch has no
   // external references: SketchSolver.inferCandidates only sees sketch geometry) and are drawn in their own colour with
   // a label naming them. View ▸ Snap to Model turns them off (App.view.snapModel).
-  var MODEL_RANK = { mvertex: 0, mcenter: 1, mmid: 2, mquad: 3, mface: 4, mpart: 5, mmass: 6 };
+  var MODEL_RANK = { mvertex: 0, mref: 0, mcenter: 1, mmid: 2, mquad: 3, mface: 4, mpart: 5, mmass: 6 };   // lane DF: mref
   var MODEL_LABEL = { mvertex: 'Vertex', mcenter: 'Center', mmid: 'Midpoint', mquad: 'Quadrant', mface: 'Face center', mpart: 'Part center', mmass: 'Center of mass', medge: 'On edge' };
   var MODEL_MAX = 5000, MODEL_FACES_MAX = 400, MODEL_COLOR = '#c2409f';
   var modelCache = { key: null };
@@ -624,6 +624,13 @@
     });
     return best;
   }
+  // lane DF: the shown reference Points, Axis ends and Coordinate System origins before the sketch (UI.sketchRefPoints,
+  // ui-select.js) projected onto plane pl: point snaps like model vertices, labelled with the feature's name, no relation
+  function refSnaps(f, pl) {
+    if (App.view.snapModel === false || !UI.sketchRefPoints) return [];
+    return UI.sketchRefPoints(f).map(function (q) { return { pt: K.to2D(pl, q.p), kind: 'mref', model: true, label: q.label }; });
+  }
+  UI.sketchRefSnaps = function () { var f = UI.activeSketchFeature(); return App.mode === 'sketch' && f ? refSnaps(f, UI.activePlane()) : []; };   // test hook
   UI.sketchModelSnaps = function () { return App.mode === 'sketch' && modelSnapOn() ? modelSnaps(UI.activePlane()) : null; };   // test / script hook
 
   // Where a drawing tool's next point goes for the cursor at sketch point raw (screen mx, my):
@@ -645,11 +652,11 @@
       return out;
     }
     // 1. an existing point
-    var cands = sketchPoints(f).slice(), mc = modelSnapOn() ? modelSnaps(pl) : null;
+    var cands = sketchPoints(f).slice(), mc = modelSnapOn() ? modelSnaps(pl) : null, rsn = refSnaps(f, pl);   // lane DF: rsn
     // r15/snapaudit15: a woken point whose entity is gone (Undo, Delete, a drag moved it) is forgotten, so nothing lines
     // up with a point that is no longer there (p9-modelsnap: a model point stays while the model has it)
     function has(list, w) { return list.some(function (c) { return c.pt[0] === w[0] && c.pt[1] === w[1]; }); }
-    if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || has(cands, w) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }) || (mc && has(mc.pts, w)); });
+    if (woken.length) woken = woken.filter(function (w) { return (w[0] === 0 && w[1] === 0) || has(cands, w) || st.pts.some(function (q) { return q[0] === w[0] && q[1] === w[1]; }) || (mc && has(mc.pts, w)) || has(rsn, w); });
     cands.push({ pt: [0, 0], kind: 'origin' });
     // sketch-hooks: the tool's own points are snap and alignment targets unless its definition says this step must not
     // land on them (UI.sketchToolDefs[tool].noOwnSnap(st) or UI.sketchFreeHooks[tool].noOwnSnap(st): an arc slot's width
@@ -669,6 +676,11 @@
     if (mc && mc.pts.length) {
       var mp = modelPointSnap(mc, pl, raw, mx, my, px, INFER_PX.point);
       if (mp && (!best || mp.d < bestD - 1)) best = mp.c;
+    }
+    // lane DF: a reference point, as a model vertex (and ahead of a model point no nearer)
+    if (rsn.length) {
+      var rpS = modelPointSnap({ pts: rsn }, pl, raw, mx, my, px, INFER_PX.point);
+      if (rpS && (!best || (best.model ? rpS.d <= (mp ? mp.d : Infinity) + 1e-9 : rpS.d < bestD - 1))) best = rpS.c;
     }
     if (best) {
       out.p = [best.pt[0], best.pt[1]]; out.snap = best;
@@ -2262,6 +2274,14 @@
       svg('polyline', { 'class': cls || 'sk-preview', points: s.join(' '), style: style || 'stroke:#e8891c;stroke-width:2;fill:none;stroke-dasharray:5 3;stroke-linecap:round' }, layer);
     });
   };
+  // lane DE2: a label (sketch point uv, offset dx / dy px) in the cursor feedback: a command's preview text (the sketch
+  // patterns' Display instance count)
+  UI.sketchPreviewText = function (uv, text, cls, dx, dy) {
+    var layer = feedbackLayer(), p = UI.worldToScreen(K.to3D(UI.activePlane(), uv[0], uv[1]));
+    var t = svg('text', { 'class': cls || 'sk-preview-text', x: Math.round((p[0] + (dx || 0)) * 10) / 10, y: Math.round((p[1] + (dy || 0)) * 10) / 10, 'text-anchor': 'middle', 'dominant-baseline': 'middle', style: 'fill:#e8891c;font:600 13px sans-serif' }, layer);
+    t.textContent = String(text);
+    return t;
+  };
   UI.sketchFeedbackClear = function () { clearFeedback(); };
   var HOVER_STYLE ='stroke:#e8891c;stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:0.9';
   function drawHover(pl, ref) {
@@ -3284,9 +3304,10 @@
     if (!hit || !t) {
       // p9-sketch: a point that lies on no curve (a circle's or a slot's centre, a sketch point) starts a distance
       var pr = UI.pickSketchRef ? UI.pickSketchRef(mx, my) : null, sp = pr && window.SketchSolver ? SketchSolver.parseRef(pr) : null;
-      if (pr && (pr === 'O' || (sp && window.SketchSolver.refKind(f, pr) === 'point'))) {
+      var hdl = !!(sp && sp.s === 'h');   // lane DE: a spline handle starts an angle to a line
+      if (pr && (pr === 'O' || hdl || (sp && window.SketchSolver.refKind(f, pr) === 'point'))) {
         st.pt1 = pr;
-        $('sketch-hint').innerHTML = 'Click a second point or a line for the distance from this point.';
+        $('sketch-hint').innerHTML = hdl ? 'Click a line for the angle to this spline handle.' : 'Click a second point or a line for the distance from this point.';
         return;
       }
       // p9-sketchfix: a model edge or vertex (sketch on a face) first: the distance from it

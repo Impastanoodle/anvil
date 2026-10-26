@@ -40,8 +40,8 @@ var SketchSolver = (function () {
     if (e.t === 'point' && e.blkDef != null && e.blk != null) return ['x', 'y', 'blkAng'];   // rfAU: a block instance's insertion point (x, y, angle)
     return PARAMS[e.t] || [];
   }
-  function pget(e, n) { return typeof n === 'number' ? e.pts[n >> 1][n & 1] : (+e[n] || 0); }
-  function pset(e, n, v) { if (typeof n === 'number') e.pts[n >> 1][n & 1] = v; else e[n] = v; }
+  function pget(e, n) { return typeof n === 'number' ? e.pts[n >> 1][n & 1] : isHandleName(e, n) ? +e.tans[+n.slice(1)][0] : (+e[n] || 0); }
+  function pset(e, n, v) { if (typeof n === 'number') e.pts[n >> 1][n & 1] = v; else if (isHandleName(e, n)) e.tans[+n.slice(1)][0] = v; else e[n] = v; }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   // sketch-units: a length in a message. The UI sets SketchSolver.fmtLen (ui-sketch.js: the document's dimension
   // style and unit, ".250 in"); without it, 4 decimals.
@@ -124,7 +124,40 @@ var SketchSolver = (function () {
       if (r.k >= last) return null;
       return { kind: 'line', a: c[r.k], b: c[(r.k + 1) % n] };
     }
+    if (r.s === 'h') return handleLine(e, r.k);   // lane DE: a spline point's tangent handle
     return null;
+  }
+  // Lane DE: '3.h2' is the tangent handle of (non-style) spline 3 at its point 2, a line for an angle Smart Dimension
+  // (SolidWorks: a spline handle dimensioned to a line): from the point along the tangent there (a driving tangent's
+  // angle tans[k][0], else the curve's own), a third of the longer neighbouring chord long. A handle in a relation is
+  // made driving (handleDrive) and its angle is a solver unknown ('h2', pget / pset), so the dimension turns the handle,
+  // not the points.
+  function handleLine(e, k) {
+    if (!e || e.t !== 'spline' || e.style || k == null || k < 0 || !e.pts || k >= e.pts.length || e.pts.length < 2) return null;
+    var P = e.pts[k], tg = e.tans && e.tans[k], ang;
+    if (tg && tg[0] != null && isFinite(+tg[0])) ang = +tg[0] * D2R;
+    else { var fc = freeCurve(e); if (!fc) return null; var d = fc.d1(Math.min(k, fc.t1)); if (!(len(d) > 1e-15)) return null; ang = Math.atan2(d[1], d[0]); }
+    // as long as the handle drawn (Show Spline Handles: the Bézier leg leaving the point, or entering the last one)
+    var n = e.pts.length, hl = 0, g = K && K.splineGeom ? K.splineGeom(e) : null, B = g && g.bez && g.bez.length ? (g.bez[k] || g.bez[g.bez.length - 1]) : null;
+    if (B) hl = g.bez[k] ? len(sub(B[1], B[0])) : len(sub(B[3], B[2]));
+    if (!(hl > 1e-12)) { hl = len(sub(e.pts[(k + 1) % n], P)) / 3 || 1; }
+    return { kind: 'line', a: [P[0], P[1]], b: [P[0] + Math.cos(ang) * hl, P[1] + Math.sin(ang) * hl] };
+  }
+  function isHandleName(e, n) { return typeof n === 'string' && e && e.t === 'spline' && /^h\d+$/.test(n); }
+  // make the handle of spline point k driving with the curve as it is (its tangent's angle and speed there: the C2
+  // spline through a point of known tangent is the same curve), so dimensioning it changes nothing until a value is set
+  function handleDrive(e, k) {
+    if (!e || e.t !== 'spline' || e.style || !e.pts || k < 0 || k >= e.pts.length) return false;
+    var tg = e.tans && e.tans[k];
+    if (tg && tg[0] != null) return true;
+    var fc = freeCurve(e);
+    if (!fc || !fc.knotD1) return false;
+    var d = fc.knotD1(Math.min(k, fc.t1));
+    if (!(len(d) > 1e-15)) return false;
+    if (!e.tans) e.tans = e.pts.map(function () { return null; });
+    while (e.tans.length < e.pts.length) e.tans.push(null);
+    e.tans[k] = [Math.atan2(d[1], d[0]) / D2R, len(d)];
+    return true;
   }
   function refKind(ents, r) {
     if (refPoint(ents, r)) return 'point';
@@ -737,6 +770,16 @@ var SketchSolver = (function () {
     var vars = [], owner = [];
     var only = opts.entities || null;   // { index: true }: unknowns of these entities only, and the equations that touch them
     ents.forEach(function (e, i) { if (only && !only[i]) return; paramNames(e).forEach(function (nm) { vars.push({ e: i, n: nm }); owner.push(i); }); });
+    // lane DE: a driving spline handle a relation names ('3.h2') turns: its angle is an unknown
+    var hSeen = {};
+    (sketch.rels || []).forEach(function (rel) {
+      if (rel.suppressed) return;
+      rel.refs.forEach(function (r) {
+        var p = parseRef(r), e = p && !p.o && p.s === 'h' ? ents[p.e] : null;
+        if (!e || e.t !== 'spline' || e.style || (only && !only[p.e]) || !(e.tans && e.tans[p.k] && e.tans[p.k][0] != null) || hSeen[r]) return;
+        hSeen[r] = true; vars.push({ e: p.e, n: 'h' + p.k }); owner.push(p.e);
+      });
+    });
     var cons = blockRows(sketch, ents);   // rfAU: block instances are rigid (first: the rank reduction blames relations)
     (sketch.rels || []).forEach(function (rel, i) {
       var r = rel;
@@ -768,7 +811,7 @@ var SketchSolver = (function () {
     var row = 0, byEnt = ents.map(function () { return []; });
     cons.forEach(function (c) { c.row = row; row += c.n; c.ents.forEach(function (e) { if (byEnt[e]) byEnt[e].push(c); }); });
     var scale = 1;
-    vars.forEach(function (v) { if (v.n !== 'a0' && v.n !== 'a1' && v.n !== 'rot' && v.n !== 'blkAng') scale = Math.max(scale, Math.abs(pget(ents[v.e], v.n))); });
+    vars.forEach(function (v) { if (v.n !== 'a0' && v.n !== 'a1' && v.n !== 'rot' && v.n !== 'blkAng' && !isHandleName(ents[v.e], v.n)) scale = Math.max(scale, Math.abs(pget(ents[v.e], v.n))); });
     return { ents: ents, vars: vars, cons: cons, m: row, byEnt: byEnt, scale: scale };
   }
   // The entities tied to entity e through the system's equations: { set: { index: true }, count }. skip: an entity the
@@ -995,6 +1038,16 @@ var SketchSolver = (function () {
   // On failure (a conflict, no convergence) the geometry is left as it was unless opts.force. Returns
   // { ok, it, res, moved }.
   function writeBack(sketch, sys) {
+    // lane DE: the handle angles a relation turned (unknowns beyond paramNames)
+    sys.vars.forEach(function (v) {
+      var e = sys.ents[v.e], o = sketch.entities[v.e];
+      if (!isHandleName(e, v.n) || !o || !o.tans || !o.tans[+v.n.slice(1)]) return;
+      var x = pget(e, v.n), q = Math.round(x * 1e6) / 1e6;
+      if (Math.abs(q - x) < 1e-9) x = q;
+      while (x > 180) x -= 360;
+      while (x <= -180) x += 360;
+      if (x !== pget(o, v.n)) pset(o, v.n, x);
+    });
     sys.ents.forEach(function (e, i) {
       var o = sketch.entities[i];
       paramNames(e).forEach(function (nm) {
@@ -1011,9 +1064,10 @@ var SketchSolver = (function () {
   function mobility(sys, mobByEnt) {
     // ui-sketch-spline: an ellipse's radii move less than positions (a Coincident on an axis end moves the ellipse
     // rather than collapsing it)
-    var axes = sys.vars.some(function (v) { return v.n === 'rx' || v.n === 'ry' || v.n === 'blkAng'; });
+    // lane DE: a spline handle's angle turns freely (its dimension turns the handle, not the line it is measured to)
+    var axes = sys.vars.some(function (v) { return v.n === 'rx' || v.n === 'ry' || v.n === 'blkAng' || isHandleName(sys.ents[v.e], v.n); });
     if (!mobByEnt && !axes) return null;
-    return sys.vars.map(function (v) { var mb = mobByEnt && mobByEnt[v.e] != null ? mobByEnt[v.e] : 1; return v.n === 'rx' || v.n === 'ry' ? mb * 0.3 : v.n === 'blkAng' ? mb * BLK_ANG_MOB : mb; });
+    return sys.vars.map(function (v) { var mb = mobByEnt && mobByEnt[v.e] != null ? mobByEnt[v.e] : 1; return v.n === 'rx' || v.n === 'ry' ? mb * 0.3 : v.n === 'blkAng' ? mb * BLK_ANG_MOB : isHandleName(sys.ents[v.e], v.n) ? mb * 100 : mb; });
   }
   // ui-sketch-spline: dragging an ellipse's axis end turns / resizes it about its centre, a partial ellipse's end slides
   // along it (SolidWorks): the centre hardly moves, the end's parameter angle moves freely
@@ -1559,11 +1613,32 @@ var SketchSolver = (function () {
       lk.rels.forEach(function (j) { sketch.rels[j].v = v; });
       return { ok: true };
     }
+    if (rel.type === 'angle') handleTurn(sketch, rel, R, v);   // lane DE: a spline handle turns to the value first
     var an = anchorFirst(sketch, rel, R), r = an ? solve(sketch, { relTargets: t, part: pe ? pe.e : null, mob: an.mob, extra: an.extra }) : null;
     if (!r || !r.ok) r = solve(sketch, { relTargets: t, part: pe ? pe.e : null });
     if (!r.ok) { var names = conflictNames(sketch, { relTargets: t }, { src: 'rel', index: index }); sketch.entities = saved; return { ok: false, error: conflictMessage(names), conflicts: names }; }
     rel.v = v;
     return { ok: true };
+  }
+  // lane DE: an angle to a driving spline handle: the handle alone is turned until the angle reads v (secant steps on
+  // its angle), so the solve that follows has nothing to move (SolidWorks: the dimension turns the handle)
+  function handleTurn(sketch, rel, R, v) {
+    var E = sketch.entities, h = R.filter(function (q) { return q && !q.o && q.s === 'h'; })[0], e = h && E[h.e];
+    if (!e || e.t !== 'spline' || !e.tans || !e.tans[h.k] || e.tans[h.k][0] == null) return;
+    var rv = clone(rel); rv.v = v;
+    var q = relEquation(E, rv, sketch.rels), tg = e.tans[h.k], th0 = +tg[0];
+    if (!q) return;
+    function F(th) { tg[0] = th; return q.f(E)[0]; }
+    var a = th0, b = th0 + 1, fa = F(a), fb = F(b);
+    for (var it = 0; it < 30 && Math.abs(fb) > 1e-11; it++) {
+      if (fb === fa) break;
+      var c = b - fb * (b - a) / (fb - fa);
+      a = b; fa = fb; b = c; fb = F(b);
+    }
+    if (!(Math.abs(fb) < 1e-9)) { tg[0] = th0; return; }
+    while (b > 180) b -= 360;
+    while (b <= -180) b += 360;
+    tg[0] = b;
   }
   // sketch-anchor: solve options that hold the first ref of a two-ref dimension (its point, a line's two ends, a
   // circle's centre) and let the second ref's side move: mob 1 for the entities reachable from the second ref's entity
@@ -1677,6 +1752,7 @@ var SketchSolver = (function () {
     sketch.rels = sketch.rels || [];
     for (var g = 0; g < groups.length; g++) {
       var rel = { type: type, refs: groups[g] };
+      groups[g].forEach(function (r) { var hp = parseRef(r); if (hp && !hp.o && hp.s === 'h') handleDrive(sketch.entities[hp.e], hp.k); });   // lane DE
       if (TYPES[type].dim) {
         if (type === 'distance' && (opts.dir === 'h' || opts.dir === 'v') && groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) !== 'line'; })) rel.dir = opts.dir;
         if (type === 'distance' && opts.dir === 'r' && (groups[g].every(function (r) { return refKind(sketch.entities, parseRef(r)) === 'circle'; }) || slotPair(sketch.entities, parseRef(groups[g][0]), parseRef(groups[g][1])))) rel.dir = 'r';
@@ -3054,15 +3130,18 @@ var SketchSolver = (function () {
         if (Math.abs(den) < 1e-18) continue;
         var w = sub(C, A), s = crs(w, d2) / den, u = crs(w, d1) / den;
         if (s < -1e-9 || s > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) continue;
-        var t = sm[i].t + (sm[i + 1].t - sm[i].t) * s, v = sq[j].t + (sq[j + 1].t - sq[j].t) * u;
+        var t = sm[i].t + (sm[i + 1].t - sm[i].t) * s, v = sq[j].t + (sq[j + 1].t - sq[j].t) * u, t00 = t, v00 = v;
         for (var it = 0; it < 30; it++) {
           var F = sub(fc.pt(t), q.fc.pt(v)), Ja = fc.d1(t), Jb = q.fc.d1(v), dt = crs(Jb, Ja);
           if (Math.abs(dt) < 1e-300) break;
-          // F + Ja·δt − Jb·δv = 0
-          var x = crs(Jb, [-F[0], -F[1]]) / -dt, y = crs(Ja, [-F[0], -F[1]]) / -dt;
+          // F + Ja·δt − Jb·δv = 0 (lane DE: the signs were flipped, so Newton ran away and spline / spline and
+          // spline / ellipse crossings were dropped)
+          var x = crs(F, Jb) / dt, y = crs(F, Ja) / dt;
           t += x; v += y;
           if (Math.abs(x) + Math.abs(y) < 1e-15 * Math.max(1, Math.abs(t))) break;
         }
+        // a Newton that wandered off (tangent curves) keeps the chords' crossing
+        if (!(len(sub(fc.pt(t), q.fc.pt(v))) < 1e-9 * Math.max(1, len(fc.pt(t00))))) { t = t00; v = v00; }
         if (!fc.closed && (t < fc.t0 - 1e-9 || t > fc.t1 + 1e-9)) continue;
         if (!q.fc.closed && (v < q.fc.t0 - 1e-9 || v > q.fc.t1 + 1e-9)) continue;
         out.push(t);
@@ -3573,8 +3652,29 @@ var SketchSolver = (function () {
   }
   // the entity list as Kernel.trimEntity / trimCuts see it: an infinite line (or a ray) stands as the long segment it
   // is drawn as (carrierSeg), marked __for its index, so it cuts along its whole length (sketch-refine)
+  // Lane DE: a spline / ellipse other than idx stands as a cut-nothing point: its true crossings and end junctions come
+  // in through junctionOpts' cuts (freeJunctions), not through its facets (a line trimmed at a spline ended up to
+  // 0.02 in off the curve, then the solve bent it onto the curve)
   function standIn(E, idx) {
-    return E.map(function (o, j) { if (j === idx || !o || o.t !== 'line' || !o.infinite) return o; var cs = carrierSeg(o); return { t: 'line', x1: cs.a[0], y1: cs.a[1], x2: cs.b[0], y2: cs.b[1], __for: j }; });
+    return E.map(function (o, j) {
+      if (j !== idx && isFree(o) && freeCurve(o)) return { t: 'point', x: 0, y: 0, __for: j };
+      if (j === idx || !o || o.t !== 'line' || !o.infinite) return o; var cs = carrierSeg(o); return { t: 'line', x1: cs.a[0], y1: cs.a[1], x2: cs.b[0], y2: cs.b[1], __for: j };
+    });
+  }
+  // Lane DE: the exact points where the splines / ellipses (other than idx; only those listed) cross entity idx, and
+  // their open ends that lie on it within tol (T-junctions)
+  function freeJunctions(sketch, idx, tol, only) {
+    var E = sketch.entities, prims = tPrims(E[idx]), out = [];
+    if (isFree(E[idx]) || !prims.length) return out;
+    E.forEach(function (o, j) {
+      if (j === idx || !isFree(o) || (only && only.indexOf(j) < 0)) return;
+      var fc = freeCurve(o);
+      if (!fc) return;
+      var sm = freeSamples(fc);
+      prims.forEach(function (p) { freeHits(fc, p, sm).forEach(function (t) { out.push(fc.pt(t)); }); });
+      if (!fc.closed) [fc.pt(fc.t0), fc.pt(fc.t1)].forEach(function (q) { if (prims.some(function (p) { return tPrimAt(p, q).dist <= tol; })) out.push(q); });
+    });
+    return out;
   }
   // rfCH: the T-junction options of Kernel.trimCuts for entity idx: tol (floating-point noise: 1e-9 of the sketch's
   // size) and cuts, the points of other entities' ends (and corners) a Coincident holds on the entity: a junction the
@@ -3591,6 +3691,7 @@ var SketchSolver = (function () {
       });
     });
     var o = { tol: 1e-9 * tSize(sketch), cuts: cuts };
+    freeJunctions(sketch, idx, o.tol, only).forEach(function (q) { cuts.push(q); });   // lane DE
     if (only) o.only = only;
     return o;
   }
@@ -3971,21 +4072,26 @@ var SketchSolver = (function () {
   // carried on along its end span to it (as Extend Entities carries a spline: the point where it lands becomes its new
   // end point, the old end stays a spline point); the other entity is a line, an arc or another open spline. Each
   // keeps the side clicked, and the two ends are joined (Coincident).
-  function cornerFree(E, i, j) { return !!((E[i] && E[i].t === 'spline') || (E[j] && E[j].t === 'spline')); }
-  // the curve Corner follows along an open spline: the spline carried on three spans past each end
-  function cornerReach(fc) { var r = fc.reach || 3; return { e: fc.e, t0: fc.t0 - r, t1: fc.t1 + r, closed: false, per: fc.per, n: fc.style ? 3 * fc.n : Math.ceil(24 * (fc.t1 - fc.t0 + 6)), pt: fc.pt, d1: fc.d1 }; }
+  // (lane DE: a partial ellipse too: cut back, or run on round its ellipse, as Extend Entities runs it)
+  function cornerFree(E, i, j) { return !!((E[i] && (E[i].t === 'spline' || E[i].t === 'pellipse')) || (E[j] && (E[j].t === 'spline' || E[j].t === 'pellipse'))); }
+  // the curve Corner follows along an open spline: the spline carried on three spans past each end (a partial
+  // ellipse: its whole ellipse, same parameter)
+  function cornerReach(fc) {
+    if (fc.e.t === 'pellipse') { var w = fc.e; return freeCurve({ t: 'ellipse', cx: w.cx, cy: w.cy, rx: w.rx, ry: w.ry, rot: w.rot }); }
+    var r = fc.reach || 3; return { e: fc.e, t0: fc.t0 - r, t1: fc.t1 + r, closed: false, per: fc.per, n: fc.style ? 3 * fc.n : Math.ceil(24 * (fc.t1 - fc.t0 + 6)), pt: fc.pt, d1: fc.d1 }; }
   function freeCornerPlan(sketch, i, uvi, j, uvj) {
     var E = sketch.entities, a = E[i], b = E[j];
-    function usable(e) { return !!e && (e.t === 'line' || e.t === 'arc' || (e.t === 'spline' && !e.closed)); }
-    if (!usable(a) || !usable(b)) return { ok: false, error: (a && a.t === 'spline' && a.closed) || (b && b.t === 'spline' && b.closed) ? 'A closed spline has no end to make a corner with.' : 'Corner works on lines, arcs and open splines.' };
-    var fa = a.t === 'spline' ? freeCurve(a) : null, fb = b.t === 'spline' ? freeCurve(b) : null;
-    if ((a.t === 'spline' && !fa) || (b.t === 'spline' && !fb)) return { ok: false, error: 'That spline cannot make a corner.' };
+    function usable(e) { return !!e && (e.t === 'line' || e.t === 'arc' || e.t === 'pellipse' || (e.t === 'spline' && !e.closed)); }
+    if (!usable(a) || !usable(b)) return { ok: false, error: (a && a.t === 'spline' && a.closed) || (b && b.t === 'spline' && b.closed) ? 'A closed spline has no end to make a corner with.' : 'Corner works on lines, arcs, partial ellipses and open splines.' };
+    function fr(e) { return e.t === 'spline' || e.t === 'pellipse'; }
+    var fa = fr(a) ? freeCurve(a) : null, fb = fr(b) ? freeCurve(b) : null;
+    if ((fr(a) && !fa) || (fr(b) && !fb)) return { ok: false, error: 'That curve cannot make a corner.' };
     // where the two meet: a spline carried on past its ends, a line's whole line, an arc's whole circle
     var pts = [], A = fa ? cornerReach(fa) : null, B = fb ? cornerReach(fb) : null;
     if (A && B) freeHits(A, { fc: B }).forEach(function (t) { pts.push(A.pt(t)); });
     else { var F = A || B, o = A ? b : a; freeHits(F, tCarrier(o)).forEach(function (t) { pts.push(F.pt(t)); }); }
     if (!pts.length) return { ok: false, error: 'Those entities cannot meet: the spline carried on along its end span never reaches the other entity.' };
-    function ends(e) { return e.t === 'spline' ? [e.pts[0], e.pts[e.pts.length - 1]] : tEnds(e); }
+    function ends(e) { return e.t === 'spline' ? [e.pts[0], e.pts[e.pts.length - 1]] : e.t === 'pellipse' ? [refPoint(E, { e: e === a ? i : j, s: 'p', k: 1 }), refPoint(E, { e: e === a ? i : j, s: 'p', k: 2 })] : tEnds(e); }
     var ea = ends(a), eb = ends(b), P = null, bd = Infinity;
     pts.forEach(function (p) {
       var d = Math.min(len(sub(p, ea[0])), len(sub(p, ea[1]))) + Math.min(len(sub(p, eb[0])), len(sub(p, eb[1])));
@@ -3993,6 +4099,18 @@ var SketchSolver = (function () {
     });
     function side(e, fc, uv) {
       if (!fc) return cornerSide(e, P, uv);
+      if (e.t === 'pellipse') {
+        // lane DE: P on the ellipse at angle w (from t0 round): inside the arc cuts it back on the side away from the
+        // click; past its ends the nearer end runs on round the ellipse to it
+        var full = cornerReach(fc), w = fc.t0 + ((((freeClosest(full, P).t - fc.t0) % TAU) + TAU) % TAU), etol = 1e-9;
+        if (w <= fc.t1 + etol) {
+          var tcl = freeClosest(fc, uv).t, en = tcl <= w ? 'p2' : 'p1';
+          if (en === 'p2' ? w <= fc.t0 + etol : w >= fc.t1 - etol) return null;
+          var sm = Math.abs(w - (en === 'p2' ? fc.t1 : fc.t0)) <= etol;
+          return { free: true, end: en, t: w, pt: P, same: sm, cut: !sm };
+        }
+        return w - fc.t1 <= fc.t0 + TAU - w ? { free: true, end: 'p2', t: w, pt: P, same: false, cut: false } : { free: true, end: 'p1', t: w - TAU, pt: P, same: false, cut: false };
+      }
       var tP = freeClosest(cornerReach(fc), P).t, tc = freeClosest(fc, uv).t, end = tc <= tP ? 'p2' : 'p1', tol = 1e-7 * (fc.t1 - fc.t0);
       if (end === 'p2' ? tP <= fc.t0 + tol : tP >= fc.t1 - tol) return null;   // nothing would be left
       var same = Math.abs(tP - (end === 'p2' ? fc.t1 : fc.t0)) <= tol;
@@ -4007,6 +4125,7 @@ var SketchSolver = (function () {
     if (s.same) return e;
     var fc = freeCurve(e);
     if (s.cut || fc.style) return freePiece(fc, s.end === 'p2' ? fc.t0 : s.t, s.end === 'p2' ? s.t : fc.t1);   // rfAH: a style spline carried on is its own Bézier, longer
+    if (e.t === 'pellipse') { var pe = clone(e); if (s.end === 'p2') pe.a1 = s.t / D2R; else pe.a0 = s.t / D2R; return normArc(pe); }   // lane DE
     var o = clone(e), P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
     if (s.end === 'p2') { o.pts.push(P); if (o.tans) o.tans.push(null); } else { o.pts.unshift(P); if (o.tans) o.tans.unshift(null); }
     return o;
@@ -4023,6 +4142,7 @@ var SketchSolver = (function () {
       return;
     }
     if (e.style) { styleRegrow(sketch, k, s.end === 'p2' ? 0 : s.t, s.end === 'p2' ? s.t : 1, s.end); return; }   // rfAH
+    if (e.t === 'pellipse') { if (s.end === 'p2') e.a1 = s.t / D2R; else e.a0 = s.t / D2R; normArc(e); return; }   // lane DE
     var P = [Math.round(s.pt[0] * 1e6) / 1e6, Math.round(s.pt[1] * 1e6) / 1e6];
     if (s.end === 'p2') { e.pts.push(P); if (e.tans) e.tans.push(null); }
     else {
@@ -5475,6 +5595,7 @@ var SketchSolver = (function () {
         if (e && (e.t === 'ellipse' || e.t === 'pellipse')) return base + (p.k % 2 ? ' minor' : ' major') + ' axis end' + (p.k > 1 ? ' 2' : '');
         return base + ' corner ' + (p.k + 1);
       case 'e': return base + (e && e.t === 'spline' ? ' control polygon line ' : ' edge ') + (p.k + 1);   // rfAK
+      case 'h': return base + ' handle ' + (p.k + 1);   // lane DE
     }
     return base;
   }
@@ -5798,6 +5919,7 @@ var SketchSolver = (function () {
     curveCorner: curveCorner, filletPair: filletPair, chamferPair: chamferPair, offsetChains: offsetChains, offsetSelection: offsetSelection,
     xfEntity: xfEntity, transformEntities: transformEntities, stretchEntities: stretchEntities, linearPattern: linearPattern, circularPattern: circularPattern, anchorRef: anchorRef, spanOf: spanOf,
     // r13/trim13: Trim Entities modes
+    handleLine: handleLine, handleDrive: handleDrive,   // lane DE
     trimSpan: trimSpan, trimAt: trimAt, trailHits: trailHits, powerTrim: powerTrim, withSkip: withSkip,extendBegin: extendBegin, extendMove: extendMove, extendEnd: extendEnd,
     cornerPlan: cornerPlan, cornerPreview: cornerPreview, cornerTrim: cornerTrim, betweenPlan: betweenPlan, betweenSpans: betweenSpans, trimBetween: trimBetween, endJoined: endJoined,
     // sketch-refine: splines and ellipses as curves (closest point, crossings, the points along a stretch of one)

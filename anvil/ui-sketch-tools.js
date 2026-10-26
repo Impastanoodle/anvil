@@ -1037,16 +1037,46 @@
     }
     return out;
   }
+  // lane DF2: a reference Point / Coordinate System origin converts to a sketch point, a reference Axis to a construction
+  // line (its drawn ends projected; square to the sketch: a point); each held Fixed (reference geometry has no edge for
+  // On Edge). Only reference geometry before the sketch (and not rolled back) converts.
+  function refConvertPick(f, mx, my) {
+    var r = UI.pickRefGeo ? UI.pickRefGeo(mx, my) : null, feats = App.model.features || [];
+    if (!r) return null;
+    var fi = -1, si = feats.indexOf(f);
+    feats.forEach(function (g, i) { if (g.id === r.id) fi = i; });
+    if (fi < 0 || (si >= 0 && fi >= si) || (App.rollback != null && fi >= App.rollback)) return null;
+    return { kind: 'ref', id: r.id, name: r.name || ('Feature ' + r.id) };
+  }
+  function refConvertGeometry(items) {
+    var pl = UI.activePlane(), planes = App.build && App.build.planes, out = [];
+    function r6(x) { return Math.round(x * 1e6) / 1e6; }
+    function p2(p) { var q = K.to2D(pl, p); return [r6(q[0]), r6(q[1])]; }
+    items.forEach(function (it) {
+      var g = planes && planes[it.id];
+      if (!g || !g.refgeo) return;
+      if (g.refgeo === 'point' || g.refgeo === 'csys') { var q = p2(g.p || g.origin); out.push({ t: 'point', x: q[0], y: q[1] }); return; }
+      if (g.refgeo === 'axis' && g.a && g.b) {
+        var a = p2(g.a), b = p2(g.b);
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6) out.push({ t: 'point', x: a[0], y: a[1] });
+        else out.push({ t: 'line', x1: a[0], y1: a[1], x2: b[0], y2: b[1], construction: true });
+      }
+    });
+    return out;
+  }
   function cmdConvertEntities() {
     var f = sketch();
     if (!f) return;
     var v = { items: [], chain: false, inner: true };
-    function itemLabel(it, k) { return it.kind === 'face' ? 'Face<' + (k + 1) + '>' : 'Edge<' + (k + 1) + '>'; }
-    function same(a, b) { return a.kind === b.kind && (a.kind === 'face' ? a.index === b.index : a.edge === b.edge); }
-    function pick(mx, my) { var ed = UI.pickEdge ? UI.pickEdge(mx, my) : null; if (ed && ed.edge) return { kind: 'edge', edge: ed.edge }; var fc = UI.pickFace ? UI.pickFace(mx, my) : null; return fc && fc.index != null ? { kind: 'face', index: fc.index } : null; }
+    function itemLabel(it, k) { return it.kind === 'ref' ? it.name : it.kind === 'face' ? 'Face<' + (k + 1) + '>' : 'Edge<' + (k + 1) + '>'; }
+    function same(a, b) { return a.kind === b.kind && (a.kind === 'face' ? a.index === b.index : a.kind === 'ref' ? a.id === b.id : a.edge === b.edge); }
+    function modelItems(list) { return list.filter(function (it) { return it.kind !== 'ref'; }); }
+    function refItems(list) { return list.filter(function (it) { return it.kind === 'ref'; }); }
+    function allGeometry(list) { return convertGeometry(edgeList(modelItems(list), v)).concat(refConvertGeometry(refItems(list))); }
+    function pick(mx, my) { var rf = refConvertPick(f, mx, my); if (rf) return rf; var ed = UI.pickEdge ? UI.pickEdge(mx, my) : null; if (ed && ed.edge) return { kind: 'edge', edge: ed.edge }; var fc = UI.pickFace ? UI.pickFace(mx, my) : null; return fc && fc.index != null ? { kind: 'face', index: fc.index } : null; }
     function preview() {
       UI.sketchFeedbackClear();
-      try { App.tempEntities = v.items.length ? convertGeometry(edgeList(v.items, v)) : []; } catch (e) { App.tempEntities = []; }
+      try { App.tempEntities = v.items.length ? allGeometry(v.items) : []; } catch (e) { App.tempEntities = []; }
       UI.updateTemp();
     }
     UI.openPM({
@@ -1056,13 +1086,13 @@
         ownHover: true,
         onSketchMove: function (uv, mx, my) {
           UI.sketchFeedbackClear();
-          var it = App.edges ? pick(mx, my) : null;
+          var it = pick(mx, my);
           if (!it) return;
-          try { UI.sketchPreview(convertGeometry(edgeList([it], v)).map(function (e) { return entPts(e)[0]; }), HOT_STYLE, 'sk-trim-span'); } catch (e) { }
+          try { UI.sketchPreview(allGeometry([it]).map(function (e) { return entPts(e)[0]; }), HOT_STYLE, 'sk-trim-span'); } catch (e) { }
         },
         onSketchPoint: function (uv, mx, my) {
-          var it = App.edges ? pick(mx, my) : null;
-          if (!it) { UI.setStatus('Click a model edge or face.'); return; }
+          var it = pick(mx, my);
+          if (!it) { UI.setStatus('Click a model edge or face, or a reference point / axis.'); return; }
           var k = -1;
           v.items.forEach(function (x, i) { if (same(x, it)) k = i; });
           if (k >= 0) v.items.splice(k, 1); else v.items.push(it);
@@ -1079,14 +1109,14 @@
       onChange: preview,
       okBlocked: function () { return v.items.length ? '' : 'Select the model edges or faces to convert.'; },
       onOK: function () {
-        var geo = convertGeometry(edgeList(v.items, v)), n = 0;
+        var geo = convertGeometry(edgeList(modelItems(v.items), v)), rgeo = refConvertGeometry(refItems(v.items)), n = 0;
         var r = step(function () {
-          geo.forEach(function (g) {
+          geo.concat(rgeo).forEach(function (g, gi) {
             var keys = S.paramNames(g);
             var dup = f.entities.some(function (o) { return o.t === g.t && keys.every(function (k) { return Math.abs((+o[k] || 0) - g[k]) < 1e-6 * Math.max(1, Math.abs(g[k])); }); });
             if (dup) return;
             f.entities.push(g);
-            var ar = S.addRelation(f, 'onEdge', [String(f.entities.length - 1)]);
+            var ar = S.addRelation(f, gi < geo.length ? 'onEdge' : 'fix', [String(f.entities.length - 1)]);   // lane DF2: reference geometry is Fixed
             if (!ar.ok) throw new Error(ar.error);
             n++;
           });
@@ -1276,6 +1306,15 @@
       UI.sketchFeedbackClear();
       // in the Instances to Skip box every instance shows a dot (an orange ring when skipped)
       var p0 = seedPt();
+      // lane DE2: Display instance count (SolidWorks): the count by the last instance of each direction
+      if (p0 && UI.sketchPreviewText) {
+        var lastOf = function (key) { var q = instances().filter(function (x) { return x.key === key; })[0]; if (!q) return null; var at = S.xfEntity({ t: 'point', x: p0[0], y: p0[1] }, q.xf); return [at.x, at.y]; };
+        if (circular) { if (v.showCount && (v.count | 0) > 1) { var lc = lastOf(String((v.count | 0) - 1)); if (lc) UI.sketchPreviewText(lc, v.count | 0, 'sk-count', 0, -18); } }
+        else {
+          if (v.showCount && (v.count | 0) > 1) { var l1 = lastOf(((v.count | 0) - 1) + ',0'); if (l1) UI.sketchPreviewText(l1, v.count | 0, 'sk-count', 0, -18); }
+          if (v.showCount2 && (v.count2 | 0) > 1) { var l2 = lastOf('0,' + ((v.count2 | 0) - 1)); if (l2) UI.sketchPreviewText(l2, v.count2 | 0, 'sk-count', 18, 0); }
+        }
+      }
       if (v.box === 'skip' && p0) instances().forEach(function (q) {
         var at = S.xfEntity({ t: 'point', x: p0[0], y: p0[1] }, q.xf);
         UI.sketchPreview([ring([at.x, at.y], v.skip.indexOf(q.key) >= 0 ? 7 : 3)], v.skip.indexOf(q.key) >= 0 ? HOT_STYLE : PICK_STYLE, 'sk-skip');
@@ -1328,10 +1367,11 @@
     else groups = [
       { title: 'Direction 1', fields: [dirBox(1), { type: 'check', label: 'Reverse direction', key: 'rev1' },
         { type: 'number', label: 'Spacing', key: 'spacing', unit: 'u' }, { type: 'check', label: 'Dimension X spacing', key: 'dims' },
-        { type: 'number', label: 'Number of instances', key: 'count', step: 1, min: 1 }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' }] },
+        { type: 'number', label: 'Number of instances', key: 'count', step: 1, min: 1 }, { type: 'number', label: 'Angle', key: 'angle', unit: '°' },
+        { type: 'check', label: 'Display instance count', key: 'showCount' }] },   // lane DE2
       { title: 'Direction 2', fields: [dirBox(2), { type: 'check', label: 'Reverse direction', key: 'rev2' },
         { type: 'number', label: 'Spacing', key: 'spacing2', unit: 'u' }, { type: 'check', label: 'Dimension Y spacing', key: 'dimY' },
-        { type: 'number', label: 'Number of instances', key: 'count2', step: 1, min: 1 }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°' },
+        { type: 'number', label: 'Number of instances', key: 'count2', step: 1, min: 1 }, { type: 'check', label: 'Display instance count', key: 'showCount2' }, { type: 'number', label: 'Angle', key: 'angle2', unit: '°' },
         { type: 'check', label: 'Dimension angle between axes', key: 'dimAngle' }] },
       { title: 'Entities to Pattern', fields: [entityBox(f, v, 'sketchPattern', preview, { box: setBox })] },
       { title: 'Instances to Skip', collapsed: true, fields: [skipBox(v, preview, setBox)] }

@@ -843,6 +843,9 @@
     return out;
   }
   UI.splineHandles = handleLines;
+  // lane DE: are spline i's handles on screen (Show Spline Handles)? Smart Dimension picks only the handles shown
+  // (ui-relations.js pickSketchRef)
+  UI.splineHandlesShownFor = function (i) { return !!splineView.handles; };
   UI.styleSplineOverlay = function () { try { updateComb(); } catch (err) { /* */ } return combGroup ? combGroup.children.length : 0; };   // rfAH test hook: overlay objects shown   // test hook: the comb's segments [[p, q], …] of spline e
 
   // ================================================================== rfAS: spline tools and conic curves

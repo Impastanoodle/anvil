@@ -783,7 +783,84 @@
   }
 
 
+  // lane DF: the exact area centroid of the planar face of `body` under the picked point `at` (a reference Point "Center
+  // of Face"), or null when the face there is curved / missing. The faceted face's own centroid is corrected by the
+  // circular segment between every chord of a true circle on its outline and its arc: the chords are the in-plane edges
+  // of the cylinder / cone facets (axis along the face normal) that bound the face; a segment whose arc midpoint lies in
+  // the faceted face (a hole, a boss standing on it) is taken off, one outside it (a rounded outer corner) is added.
+  function faceCentroidExact(body, at, tol) {
+    if (!body || !body.polygons || !body.polygons.length) return null;
+    var PN = function (q) { return [q.plane.normal.x, q.plane.normal.y, q.plane.normal.z]; };
+    var PP = function (q) { return q.vertices.map(function (v) { return [v.pos.x, v.pos.y, v.pos.z]; }); };
+    var curved = function (q) { var s = q.surf && q.surf.s; return !!(s && s.t && s.t !== 'plane' && s.o); };
+    function outside(q, p) {   // how far p lies outside convex q in its plane, plus its distance off the plane
+      var n = PN(q), pts = PP(q), o = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var a = pts[i], b = pts[(i + 1) % pts.length], inw = cross(n, sub(b, a)), l = len(inw);
+        if (l > 1e-12) o = Math.max(o, -dot(sub(p, a), inw) / l);
+      }
+      return Math.abs(dot(n, p) - q.plane.w) + o;
+    }
+    var pick = null, bs = tol;
+    body.polygons.forEach(function (q) {
+      if (Math.abs(dot(PN(q), at) - q.plane.w) >= bs) return;
+      var s = outside(q, at); if (s < bs) { bs = s; pick = q; }
+    });
+    if (!pick || curved(pick)) return null;
+    var n = PN(pick), w = pick.plane.w, eps = 1e-7 * (1 + Math.abs(w));
+    var key = function (p) { return Math.round(p[0] * 1e6) + ',' + Math.round(p[1] * 1e6) + ',' + Math.round(p[2] * 1e6); };
+    var pool = body.polygons.filter(function (q) { return !curved(q) && dot(PN(q), n) > 1 - 1e-9 && Math.abs(q.plane.w - w) < eps; });
+    var face = [pick], keys = {}, grew = true;
+    PP(pick).forEach(function (P) { keys[key(P)] = 1; });
+    while (grew) {
+      grew = false;
+      pool.forEach(function (q) {
+        if (face.indexOf(q) >= 0) return;
+        var pts = PP(q);
+        if (!pts.some(function (P) { return keys[key(P)]; })) return;
+        face.push(q); grew = true; pts.forEach(function (P) { keys[key(P)] = 1; });
+      });
+    }
+    var A = 0, M = [0, 0, 0];
+    face.forEach(function (q) {
+      var pts = PP(q);
+      for (var j = 1; j + 1 < pts.length; j++) {
+        var a = len(cross(sub(pts[j], pts[0]), sub(pts[j + 1], pts[0]))) / 2;
+        A += a; M = add(M, scale(add(add(pts[0], pts[j]), pts[j + 1]), a / 3));
+      }
+    });
+    if (!(A > 0)) return null;
+    var onFace = function (p, t) { return face.some(function (q) { return outside(q, p) < t; }); };
+    var seen = {};
+    body.polygons.forEach(function (q) {
+      if (!curved(q)) return;
+      var s = q.surf.s, d = s.d ? norm(s.d) : null;
+      if (!d || (s.t !== 'cyl' && s.t !== 'cone') || Math.abs(Math.abs(dot(d, n)) - 1) > 1e-9) return;
+      var pts = PP(q);
+      for (var i = 0; i < pts.length; i++) {
+        var a = pts[i], b = pts[(i + 1) % pts.length];
+        if (Math.abs(dot(n, a) - w) > eps || Math.abs(dot(n, b) - w) > eps) continue;
+        var ka = key(a), kb = key(b), k2 = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        if (seen[k2]) continue;
+        seen[k2] = 1;
+        var c = add(s.o, scale(d, dot(sub(a, s.o), d))), r = len(sub(a, c)), ch = len(sub(b, a));
+        if (r < 1e-12 || ch < 1e-12 || Math.abs(len(sub(b, c)) - r) > 1e-7 * (1 + r)) continue;
+        var mid = scale(add(a, b), 0.5), u = sub(mid, c), ul = len(u);
+        if (ul < 1e-12) continue;   // a half circle in one chord: not a tessellation
+        u = scale(u, 1 / ul);
+        var th = 2 * Math.asin(Math.min(1, ch / (2 * r))), sag = r - ul;
+        if (!onFace(mid, Math.max(1e-9, sag * 0.01))) continue;   // the chord does not bound this face
+        var tms = th < 1e-3 ? th * th * th / 6 - Math.pow(th, 5) / 120 : th - Math.sin(th);
+        var As = r * r / 2 * tms, g = add(c, scale(u, 4 * r * Math.pow(Math.sin(th / 2), 3) / (3 * tms)));
+        var sign = onFace(add(c, scale(u, r)), sag * 0.25) ? -1 : 1;
+        A += sign * As; M = add(M, scale(g, sign * As));
+      }
+    });
+    return A > 0 ? scale(M, 1 / A) : null;
+  }
+
   // ------------------------------------------------------------------ public API (Kernel.*)
+  K.faceCentroidExact = faceCentroidExact;   // lane DF
   K.extrudeRange = extrudeRange; K.revolveAxis = revolveAxis; K.THROUGH = THROUGH; K.massProps = massProps; K.curveCorrection = curveCorrection;
   K.curveEdges = curveEdges; K.curveSurfaces = curveSurfaces; K.massOptions = massOptions; K.meshCurveInfo = meshCurveInfo;
   K.analyticNormals = analyticNormals;

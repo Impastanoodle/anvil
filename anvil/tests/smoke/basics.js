@@ -277,19 +277,15 @@
     assert(D.querySelector('#pm input[data-key="export:faces"]').checked && !D.querySelector('#pm input[data-key="export:faces"]').disabled, 'Faces default with a face selected');
     var face = anvil.dxfOutput({ export: 'faces' });
     assert(/\n8\nOUTLINE\n/.test(face) && /\n0\nPOLYLINE\n/.test(face), 'face outline');
-    // DWG follows the server: with a converter (HEAD api/dxf2dwg 200, serve.ps1 with LibreDWG or the ODA File Converter)
-    // the radio is live and a POST gives a DWG (magic AC10xx); without one it is greyed with the note. Either way no console error.
+    // DWG no longer needs the server (rfDG): Anvil's own writer (dwg-writer.js) makes it, so the radio is always live
+    // and UI.dxfToDwg gives a DWG (magic AC1015) from the R2000 DXF of the face. No console error.
     var conv = await UI.dwgConverter();
     var dwg = D.querySelector('#pm input[data-key="format:dwg"]');
-    if (conv) {
-      assert(dwg && !dwg.disabled, 'DWG enabled with converter ' + conv);
-      if (conv === 'libredwg') assert(/experimental/.test($('pm').textContent), 'LibreDWG note shown');
-      var res = await W.fetch('api/dxf2dwg', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: face });
-      var head = new Uint8Array(await res.arrayBuffer()).slice(0, 4);
-      assert(res.status === 200 && String.fromCharCode.apply(null, head) === 'AC10', 'DWG from the face DXF: ' + res.status + ' ' + String.fromCharCode.apply(null, head));
-    } else {
-      assert(dwg && dwg.disabled && /DWG needs the local server/.test($('pm').textContent), 'DWG greyed with the note');
-    }
+    assert(dwg && !dwg.disabled, 'DWG enabled (converter ' + conv + ')');
+    var face2000 = anvil.dxfOutput({ export: 'faces', version: 'R2000' });
+    var bytes = await UI.dxfToDwg(face2000);
+    var head = String.fromCharCode.apply(null, new Uint8Array(bytes).slice(0, 6));
+    assert(head === 'AC1015', 'DWG from the face DXF: ' + head);
     assert(D.querySelector('#pm select[data-key="version"]').value === 'R12', 'version R12 for DXF');
     assert(errors.length === errs0, 'console errors: ' + errors.slice(errs0).join(' | '));
     UI.pmCancel();

@@ -973,6 +973,7 @@
     if (opts.sheetBase) f.sheetBase = true;
     if (opts.draft) { f.draft = num(opts.draft); if (opts.draftOutward) f.draftOut = true; }
     if (opts.cut && opts.normalCut) f.normalCut = true; // sheet metal Normal Cut: the tool is made normal to the sheet
+    if (opts.cut && opts.linkT) { f.linkT = true; f.end = 'blind'; if (this.model.sheet) f.depth = this.model.sheet.thickness; }   // lane DC: Link to thickness
     contourOpts(f, opts);
     bodyOpts(f, opts);
     return this;
@@ -1104,10 +1105,24 @@
     return this;
   };
   // jog: two bends offsetting the sheet by `height`, then `length` of flat parallel to the base
+  // lane DC: jog(offset, { sketch, fixed, offsetRef, angle, position, reverse, radius, bendAllowance, name }) — SolidWorks'
+  // Jog from a sketch with one line on a flat face of the sheet (also on SketchBuilder). offsetRef 'outside' (default) |
+  // 'inside' | 'overall'; position 'centerline' (default) | 'inside' | 'outside' | 'bendOutside'; fixed [x, y, z] on the side
+  // that stays (default the larger piece)
   Builder.prototype.jog = function (height, length, edges, opts) {
+    if (edges == null && (length == null || (typeof length === 'object' && !Array.isArray(length)))) return this._sketchJog(height, length || {});
     opts = opts || {};
     this._add(customBendAllowance({ type: 'jog', height: num(height), length: num(length), angle: opts.angle == null ? 90 : num(opts.angle), reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, position: opts.position || 'bendOutside',
       edges: (edges || []).map(function (e) { return Array.isArray(e) ? { at: e } : e; }), name: opts.name }, opts.bendAllowance));
+    return this;
+  };
+  Builder.prototype._sketchJog = function (offset, opts) {
+    var position = opts.position || 'centerline', ref = opts.offsetRef || 'outside';
+    if (K.SKETCHED_BEND_POSITIONS.indexOf(position) < 0) throw new Error('jog position must be one of ' + K.SKETCHED_BEND_POSITIONS.join(', ') + '.');
+    if (K.JOG_OFFSET_REFS.indexOf(ref) < 0) throw new Error('jog offsetRef must be one of ' + K.JOG_OFFSET_REFS.join(', ') + '.');
+    var f = { type: 'jog', sketch: this._sketchId(opts), offset: num(offset), offsetRef: ref, angle: opts.angle == null ? 90 : num(opts.angle), position: position,
+      reverse: !!opts.reverse, radius: opts.radius != null ? num(opts.radius) : null, fixed: opts.fixed ? [+opts.fixed[0], +opts.fixed[1], +opts.fixed[2]] : null, name: opts.name };
+    this._add(customBendAllowance(f, opts.bendAllowance));
     return this;
   };
   // sketchedBend(angle, opts): bend the sheet along every line of a sketch drawn on one of its flat faces (SolidWorks'
@@ -1152,6 +1167,21 @@
     if (opts.coplanar === false) f.coplanar = false;
     f.name = opts.name || K.closedCornerName(this.model);
     this._add(f);
+    return this;
+  };
+  // unfold(fixedFace, bends, opts) / fold(bends, opts): Sheet Metal > Unfold / Fold (kernel-sheetmetal.js, lane DB).
+  // fixedFace: [x, y, z] on a flat face of the sheet that stays put (null: the flat pattern's base face); bends:
+  // [[x, y, z] on a bend (folded state), ...] or null / [] / 'all' for every bend (Collect All Bends); a Fold with no
+  // bends folds back every bend its Unfold unfolded. opts: name
+  function ufPts(list) { return list === 'all' || !list ? [] : list.map(function (p) { return [+p[0], +p[1], +p[2]]; }); }
+  Builder.prototype.unfold = function (fixedFace, bends, opts) {
+    opts = opts || {};
+    this._add({ type: 'unfold', fixedFace: fixedFace ? [+fixedFace[0], +fixedFace[1], +fixedFace[2]] : null, bends: ufPts(bends), name: opts.name });
+    return this;
+  };
+  Builder.prototype.fold = function (bends, opts) {
+    opts = opts || {};
+    this._add({ type: 'fold', bends: ufPts(bends), name: opts.name });
     return this;
   };
   Builder.prototype.cut = function (depth, opts) {
@@ -1420,6 +1450,7 @@
   });
 
   SketchBuilder.prototype.sketchedBend = function (a, opts) { return this.part.sketchedBend(a, Object.assign({}, opts || {}, { sketch: this.f.id })); };
+  SketchBuilder.prototype.jog = function (offset, opts) { return this.part._sketchJog(offset, Object.assign({}, opts || {}, { sketch: this.f.id })); };   // lane DC
 
   function runScript(model, code) {
     var b = new Builder(model);
@@ -1541,6 +1572,7 @@
           if (f.sheetBase) o.sheetBase = true;
           if (f.draft) { o.draft = f.draft; if (f.draftOut) o.draftOutward = true; }
           if (f.cut && f.normalCut) o.normalCut = true;
+          if (f.cut && f.linkT) o.linkT = true;   // lane DC
           out.push('var ' + v + ' = p.' + (f.cut ? 'cut' : 'extrude') + '(' + nv(f.depth) + ', ' + optsStr(bodyOptsOut(contoursOut(o, f), f)) + ').last();');
           break;
         }
@@ -1574,6 +1606,18 @@
           break;
         }
         case 'jog': {
+          if (f.sketch != null) {   // lane DC: Jog from a sketch line
+            var sjo = { sketch: '@' + idVar[f.sketch], name: f.name };
+            if (f.offsetRef && f.offsetRef !== 'outside') sjo.offsetRef = f.offsetRef;
+            if (f.angle != null && (isExpression(f.angle) || +f.angle !== 90)) sjo.angle = numOut(f.angle);
+            if (f.position && f.position !== 'centerline') sjo.position = f.position;
+            if (f.fixed) sjo.fixed = f.fixed.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+            if (f.reverse) sjo.reverse = true;
+            if (f.radius != null) sjo.radius = numOut(f.radius);
+            if (f.bendAllowance) sjo.bendAllowance = bendAllowanceOut(f.bendAllowance);
+            out.push('var ' + v + ' = p.jog(' + nv(f.offset) + ', ' + optsStr(sjo) + ').last();');
+            break;
+          }
           var jspecs = JSON.stringify((f.edges || []).map(function (e) { return e.at.map(function (x) { return Math.round(x * 1e4) / 1e4; }); }));
           var jo = { angle: f.angle, name: f.name };
           if (f.reverse) jo.reverse = true;
@@ -1591,6 +1635,15 @@
           if (f.radius != null) sbo.radius = numOut(f.radius);
           if (f.bendAllowance) sbo.bendAllowance = bendAllowanceOut(f.bendAllowance);
           out.push('var ' + v + ' = p.sketchedBend(' + nv(f.angle == null ? 90 : f.angle) + ', ' + optsStr(sbo) + ').last();');
+          break;
+        }
+        case 'unfold':
+        case 'fold': {
+          // lane DB
+          var ufr = function (q) { return q.map(function (x) { return Math.round(x * 1e4) / 1e4; }); };
+          var ufb = f.bends && f.bends.length ? JSON.stringify(f.bends.map(ufr)) : 'null';
+          if (f.type === 'unfold') out.push('var ' + v + ' = p.unfold(' + (f.fixedFace ? JSON.stringify(ufr(f.fixedFace)) : 'null') + ', ' + ufb + ', ' + optsStr({ name: f.name }) + ').last();');
+          else out.push('var ' + v + ' = p.fold(' + ufb + ', ' + optsStr({ name: f.name }) + ').last();');
           break;
         }
         case 'closedCorner': {

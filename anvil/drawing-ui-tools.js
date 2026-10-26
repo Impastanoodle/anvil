@@ -44,7 +44,7 @@
     openDrawingPM({
       title: 'Model View', icon: 'modelView', command: 'modelView',
       message: 'Pick the orientation, press OK, then click on the sheet to place the view.' + (sm ? ' Flat pattern draws the unfolded blank with its bend lines and notes.' : ''),
-      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scaleMode: 'sheet', scale: custom.some(function (o) { return o[0] === sheetSc; }) ? sheetSc : custom[0][0], bendNotes: Drawing.docOptions(doc()).bendNotes, autoProj: true, dimType: 'projected', showLabel: false },
+      values: { orient: flatFirst && sm ? FLAT : 'Isometric', display: 'hlr', scaleMode: 'sheet', scale: custom.some(function (o) { return o[0] === sheetSc; }) ? sheetSc : custom[0][0], bendNotes: Drawing.docOptions(doc()).bendNotes, autoProj: true, dimType: 'true', showLabel: false },   // (rfDD2: True, SolidWorks' default for a pictorial view)
       groups: [
         { title: 'Orientation', fields: [
           { type: 'buttons', key: 'stdViews', buttons: std.map(function (o) { return { label: o === FLAT ? '(A) Flat pattern' : o, active: function (v) { return v.orient === o; }, onclick: function (v) { v.orient = o; if (o !== FLAT && ORTHO_NAMES.indexOf(o) < 0 && v.display === 'hlv') v.display = 'hlr'; UI.renderPM(); } }; }) },
@@ -55,13 +55,15 @@
         { title: 'Bend Notes', show: function (v) { return v.orient === FLAT; }, fields: [{ type: 'select', key: 'bendNotes', label: 'Bends', options: BEND_NOTE_OPTIONS }] },
         { title: 'Scale', fields: [{ type: 'radio', key: 'scaleMode', label: 'Scale', rerender: true, options: [['sheet', 'Use sheet scale (' + sheetSc + ')'], ['custom', 'Use custom scale']] },
           { type: 'select', key: 'scale', label: 'Scale', show: function (v) { return v.scaleMode === 'custom'; }, options: custom }] },
-        { title: 'Dimension Type', show: function (v) { return v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0; }, fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']] }] }
+        // (rfDD2) a pictorial model view: True by default (SolidWorks); an orthographic one has no choice (rfW: group hidden)
+        { title: 'Dimension Type', show: function (v) { return v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0; }, fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']],
+          disabledOption: function (o, v) { return o === 'true' && ORTHO_NAMES.indexOf(v.orient) >= 0 ? 'An orthographic view shows true lengths.' : null; } }] }
       ],
       onOK: function (v) {
         // (the API's old values: scale 'sheet' or a scale text in `scale` alone)
         var sc = v.scaleMode === 'custom' ? v.scale : v.scaleMode === 'sheet' ? 'sheet' : v.scale;
         startPlacing({ orient: v.orient, flat: v.orient === FLAT, bendNotes: v.bendNotes, display: v.display, scale: !sc || sc === 'sheet' ? null : Drawing.parseScale(sc), autoProj: !!v.autoProj && v.orient !== FLAT,
-          dimType: v.dimType === 'true' && v.orient !== FLAT && ORTHO_NAMES.indexOf(v.orient) < 0 ? 'true' : null, showLabel: !!v.showLabel });
+          dimType: v.orient === FLAT || ORTHO_NAMES.indexOf(v.orient) >= 0 ? 'projected' : v.dimType === 'projected' ? 'projected' : 'true', showLabel: !!v.showLabel });
       }
     });
   }
@@ -88,7 +90,7 @@
       dc.layout = 'manual';
       if (spec.flat) return Drawing.addFlatView(dc, mesh(), { model: App.model, build: App.build, x: p[0], y: p[1], scale: spec.scale || null, bendNotes: spec.bendNotes, showLabel: spec.showLabel ? true : null });
       var nv = Drawing.addView(dc, spec.orient, { display: spec.display || (ORTHO_NAMES.indexOf(spec.orient) >= 0 ? 'hlv' : 'hlr'), scale: spec.scale || null, x: p[0], y: p[1] });
-      if (spec.dimType === 'true') nv.dimType = 'true';   // (rfZ) Dimension Type True
+      if (spec.dimType === 'true') nv.dimType = 'true'; else if (spec.dimType === 'projected') delete nv.dimType;   // (rfZ, rfDD2: no choice: addView's default, True when pictorial)
       if (spec.showLabel) Drawing.setViewLabel(dc, nv.id, true);   // (rfCQ)
       return nv;
     });
@@ -420,14 +422,16 @@
         swm: !!(v.section && v.section.scaleWithModel), partial: !!(v.section && v.section.partial), dstyle: (v.detail && v.detail.style) || 'standard', outline: (v.detail && v.detail.outline) || 'none',
         showLabel: Drawing.viewLabelShown(v) },
       // projected, section and detail views take their direction from the parent
-      groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', options: Drawing.ORIENTS }] }]).concat([
+      groups: (v.kind ? [] : [{ title: 'Orientation', fields: [{ type: 'select', key: 'orient', label: 'View', rerender: true, options: Drawing.ORIENTS }] }]).concat([
         { title: 'Display Style', fields: [{ type: 'select', key: 'display', label: 'Style', options: [['hlv', 'Hidden Lines Visible'], ['hlr', 'Hidden Lines Removed']] }].concat(v.kind === 'detail' ? [] : [
           { type: 'select', key: 'tangent', label: 'Tangent edges', options: [['visible', 'Tangent Edges Visible'], ['font', 'Tangent Edges With Font'], ['removed', 'Tangent Edges Removed']] }]) },
         { title: 'Scale', fields: [{ type: 'select', key: 'scale', label: 'Scale', options: v.kind === 'detail' ? scaleOptions().slice(1) : v.kind === 'section' ? [['parent', 'Use parent scale']].concat(scaleOptions()) : scaleOptions() }] }
       ]).concat(
         // (rfZ) a pictorial model view's Dimension Type; a section's Partial section (off only: a new line is clicked) and
         // Scale with model changes; a detail's circle style and outline
-        !v.kind && ORTHO_NAMES.indexOf(v.orient) < 0 ? [{ title: 'Dimension Type', fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']] }] }] : [],
+        // (rfDD2) a pictorial model view or an auxiliary view; True greyed when the orientation is changed to an orthographic one
+        (!v.kind && ORTHO_NAMES.indexOf(v.orient) < 0) || v.kind === 'aux' ? [{ title: 'Dimension Type', fields: [{ type: 'radio', key: 'dimType', label: 'Dimension type', options: [['projected', 'Projected'], ['true', 'True']],
+          disabledOption: function (o, val) { return o === 'true' && ORTHO_NAMES.indexOf(v.kind ? v.orient : val.orient) >= 0 ? 'An orthographic view shows true lengths.' : null; } }] }] : [],
         v.kind === 'section' ? [{ title: 'Section Line', fields: (v.section && v.section.partial && !v.section.removed ? [{ type: 'check', key: 'partial', label: 'Partial section' }] : []).concat([{ type: 'check', key: 'swm', label: 'Scale with model changes' }]) }] : [],
         v.kind === 'detail' ? [{ title: 'Detail Circle', fields: [{ type: 'select', key: 'dstyle', label: 'Circle style', options: DETAIL_STYLE_OPTIONS }, { type: 'select', key: 'outline', label: 'Outline', options: [['none', 'None'], ['full', 'Full outline'], ['jagged', 'Jagged outline']] }] }] : [],
         // (rfCQ) the view label: off by default on model and projected views, on for section, detail and auxiliary views
@@ -449,7 +453,7 @@
           }
           if (val.tangent === 'visible' || val.tangent === 'font') w.tangent = val.tangent; else if (val.tangent) delete w.tangent;
           if (w.role === 'iso') w.role = null;
-          if (!w.kind) { if (val.dimType === 'true' && ORTHO_NAMES.indexOf(w.orient) < 0) w.dimType = 'true'; else delete w.dimType; }
+          if (!w.kind || w.kind === 'aux') { if (val.dimType === 'true' && ORTHO_NAMES.indexOf(w.orient) < 0) w.dimType = 'true'; else delete w.dimType; }
           if (w.kind === 'section' && w.section) Drawing.setSectionOptions(dc, mesh(), w.id, { partial: w.section.partial && !val.partial ? null : undefined, scaleWithModel: !!val.swm });
           if (w.kind === 'detail' && w.detail) Drawing.setDetailOptions(dc, w.id, { style: val.dstyle, outline: val.outline });
           Drawing.setViewLabel(dc, w.id, !!val.showLabel);   // (rfCQ)
@@ -609,7 +613,32 @@
   function smartSpec(P, p) {
     if (!P || !P.first) return null;
     var w = P.first.w;
-    return Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P), aligned: !!w.trueDims, lock: D.dimLock || null });
+    var d = Drawing.smartDim(P.first.pick, P.second ? P.second.pick : null, p ? w.fromSheet(p) : null, { scale: w.scale, minmax: minmaxOf(P), aligned: !!w.trueDims, lock: D.dimLock || null });
+    if (d && p) sdFollow(d, w, p);
+    return d;
+  }
+  // (rfDD) a linear dimension placed outside its extension lines: the text follows the pointer out along the dimension
+  // line (SolidWorks), never nearer than the spot the render gives a click outside (d.tside, beyond the arrow); the
+  // preview and the click make the same record (d.tx: the text's offset from the middle, paper)
+  function sdFollow(d, w, at) {
+    var DP = Drawing._ && Drawing._.dimPrims;
+    if (!DP || !(d.tside === 1 || d.tside === -1) || !/^(h|v|aligned)$/.test(d.kind) || !d.a || !d.b || !w || !w.toSheet) return;
+    var probe = JSON.parse(JSON.stringify(d));
+    probe.view = w.view.id; probe.text = Drawing.dimText(probe, units());
+    try { DP(probe, w, paperK(), []); } catch (e) { return; }
+    var def = probe.txNow;
+    if (def == null || !isFinite(def)) return;
+    var A = w.toSheet(d.a), B = w.toSheet(d.b);
+    if (d.kind === 'aligned') {
+      var Ln = Math.hypot(B[0] - A[0], B[1] - A[1]);
+      if (!(Ln > 0)) return;
+      var t = [(B[0] - A[0]) / Ln, (B[1] - A[1]) / Ln], sAt = (at[0] - A[0]) * t[0] + (at[1] - A[1]) * t[1];
+      var sd = (def >= 0 ? 1 : -1) * d.tside, sDef = Ln / 2 + def * sd;
+      if ((sAt - sDef) * d.tside > 0) d.tx = (sAt - Ln / 2) * sd;
+      return;
+    }
+    var i0 = d.kind === 'h' ? 0 : 1, mid = (A[i0] + B[i0]) / 2;
+    if ((at[i0] - (mid + def)) * d.tside > 0) d.tx = at[i0] - mid;
   }
   function smartDimClick(p, e) {
     var P = D.pending, hit;
@@ -716,6 +745,27 @@
     function ln(a, b) { svgNode('line', { x1: a[0], y1: H - a[1], x2: b[0], y2: H - b[1], stroke: col.stroke, 'stroke-width': sw, class: 'dw-sdprev' }, g); }
     function tx(q) { var t = svgNode('text', { x: q[0], y: H - q[1], 'font-size': th / 0.72, 'text-anchor': 'middle', fill: col.stroke, class: 'dw-sdprev' }, g); t.textContent = text; }
     var A, B;
+    // (rfDD) a linear dimension: drawn as the click will place it (the render's own primitives): the text centred
+    // between the extension lines while the pointer is between them, outside and following the pointer past them
+    var DP = Drawing._ && Drawing._.dimPrims;
+    if (DP && /^(h|v|aligned)$/.test(d.kind)) {
+      var pd = JSON.parse(JSON.stringify(d)), prims = null;
+      pd.view = w.view.id; pd.text = text;
+      try { prims = DP(pd, w, k, []); } catch (err) { prims = null; }
+      if (prims) {
+        prims.forEach(function (x) {
+          if (x.k === 'line') ln(x.a, x.b);
+          else if (x.k === 'fill') svgNode('path', { d: x.pts.map(function (q, i) { return (i ? 'L' : 'M') + q[0] + ' ' + (H - q[1]); }).join(' ') + ' Z', fill: col.stroke, stroke: 'none', class: 'dw-sdprev' }, g);
+          else if (x.k === 'text') {
+            var ta = { x: x.p[0], y: H - x.p[1], 'font-size': x.h / (Drawing._.CAP_EM || 0.72), 'text-anchor': x.anchor || 'middle', fill: col.stroke, class: 'dw-sdprev dw-sdprev-text' };
+            if (x.rot) ta.transform = 'rotate(' + (-x.rot) + ' ' + x.p[0] + ' ' + (H - x.p[1]) + ')';
+            var tn = svgNode('text', ta, g);
+            tn.textContent = x.text;
+          }
+        });
+        return;
+      }
+    }
     if (d.kind === 'h' || d.kind === 'v') {
       A = w.toSheet(d.a); B = w.toSheet(d.b);
       var hz = d.kind === 'h', pos = hz ? P.at[1] : P.at[0];
@@ -799,8 +849,8 @@
         var sel = el('select', { id: 'dw-dxf-version', title: 'DXF version' });
         [['R12', 'R12 (AC1009)'], ['R2000', 'R2000 (AC1015)']].forEach(function (x) { var op = el('option', { value: x[0], text: x[1] }); if (x[0] === ver) op.selected = true; sel.appendChild(op); });
         sel.onchange = function () { exportAs('dxf', { version: sel.value }); };
-        // (rfS) the same sheet as DWG, through the local server's converter
-        var dwgBtn = el('button', { id: 'dw-save-dwg', type: 'button', text: 'Save as DWG…', title: 'Converts the R2000 DXF of this sheet to DWG on the local server' });
+        // (rfS) the same sheet as DWG (lane DG: written in the page by dwg-writer.js, AutoCAD 2000, no server)
+        var dwgBtn = el('button', { id: 'dw-save-dwg', type: 'button', text: 'Save as DWG…', title: 'Saves this sheet as an AutoCAD 2000 DWG' });
         dwgBtn.onclick = function () { exportAs('dwg'); };
         ta.parentNode.insertBefore(el('p', {}, [el('label', { text: 'Version ' }), sel, el('span', { text: '  ' }), dwgBtn]), ta);
       }
@@ -808,18 +858,18 @@
     else if (kind === 'dwg') return saveDWG(sh);
     else if (kind === 'pdf') UI.exportDialog('Save Drawing as PDF', safeName() + '.pdf', Drawing.toPDF(sh), 'application/pdf');
   }
-  // (rfS) File ▸ Save Drawing as DWG: the active sheet's R2000 DXF, converted by the local server (POST api/dxf2dwg, as
-  // the part's DXF/DWG Output does); without a converter (or the published copy, which has no server) the part path's
-  // message. Returns a promise of { name, bytes } (null when nothing was saved).
-  var DWG_NOTE = 'DWG needs the local server\'s converter (anvil/vendor/get-libredwg.ps1, or install the free ODA File Converter)';
+  // (rfS) File ▸ Save Drawing as DWG: the active sheet's R2000 DXF made into an AutoCAD 2000 DWG by UI.dxfToDwg, as the
+  // part's DXF/DWG Output does (lane DG: dwg-writer.js in the page, no server; the local server's converter only when
+  // the writer throws or did not load). Returns a promise of { name, bytes } (null when nothing was saved).
+  var DWG_NOTE = 'DWG needs the local server\'s converter (dwg-writer.js did not load)';
   function saveDWG(sh) {
     var text = Drawing.toDXF(sh, { version: 'R2000' }), name = safeName() + '.dwg';
     if (document.getElementById('modal') && !$('modal').hidden) UI.closeModal();
     var probe = UI.dwgConverter ? UI.dwgConverter() : Promise.resolve(null);
-    UI.setStatus('Save Drawing as DWG: checking for the converter…');
+    UI.setStatus('Save Drawing as DWG…');
     return probe.then(function (conv) {
       if (!conv || !UI.dxfToDwg) { UI.toast(DWG_NOTE); UI.setStatus('DWG: ' + DWG_NOTE + '. Save as DXF (R2000) instead.'); D.lastDwg = { ok: false, note: DWG_NOTE }; return null; }
-      UI.setStatus('Converting ' + name + '…');
+      UI.setStatus('Writing ' + name + '…');
       return UI.dxfToDwg(text).then(function (bytes) {
         UI.download(name, bytes, 'application/acad');
         UI.setStatus('Saved ' + name + ' (' + (bytes.byteLength / 1024).toFixed(1) + ' KB).');
@@ -1199,7 +1249,17 @@
   }
   function holeCalloutClick(p) {
     var ent = entityAt(p);
-    if (!ent || !ent.circle) { UI.setStatus('Hole Callout: click the edge of a hole (a circle) in an orthographic view.'); return; }
+    // (rfDD) a slot's end arc (or an arc slot's side): the slot callout, as SolidWorks' Hole Callout on a slot
+    if (ent && ent.arc && ent.ma) {
+      var sw = sheetView(ent.view), d = null;
+      if (!sw || !sw.proj || !Drawing.slotAt(sw.proj, ent.ma.c, ent.ma.r)) { UI.setStatus('Hole Callout: that arc is not the end of a slot. Click a hole or the end of a slot.'); return; }
+      edit(function (dc) { d = Drawing.addSlotCallout(dc, ent.view, sw.proj, { c: ent.ma.c, r: ent.ma.r }); });
+      var vd = d && doc().views.filter(function (x) { return x.id === ent.view; })[0], ix = vd && vd.dims ? vd.dims.length - 1 : -1;
+      var sd = (D.sheet.dims || []).filter(function (x) { return x.view === ent.view && x.index === ix; })[0];
+      UI.setStatus('Hole Callout: ' + (sd ? sd.text : 'slot') + ' — drag it to move it.');
+      return;
+    }
+    if (!ent || !ent.circle) { UI.setStatus('Hole Callout: click the edge of a hole or slot in an orthographic view.'); return; }
     var w = sheetView(ent.view);
     if (!Drawing.holeInfo(mesh(), w.frame, ent.mc.c, ent.mc.r)) { UI.setStatus('Hole Callout: that circle is not a hole.'); return; }
     var an;
@@ -2883,8 +2943,8 @@
   // Target, Multi-jog Leader, Note properties (border, numbered / bulleted list). Each tool opens its PropertyManager
   // (✓ / ✗, Esc ends), each placement is one undo step. Cosmetic Thread / Dowel Pin: click a hole circle in a view
   // (the thread's size defaults to the tap drill's thread); Datum Target: click the target point, then where the
-  // symbol goes; Multi-jog Leader: click the start (on a note: the leader hangs from the note), each bend point, then
-  // double-click the end (or ✓ / Enter: the last click is the end). Double-click edits; Delete removes; a leader's bend
+  // symbol goes; Multi-jog Leader (lane DF: SolidWorks' order): click the arrow tip, each bend point, then double-click
+  // the end (on a note: the leader hangs from the note; or ✓ / Enter: the last click is the end). Double-click edits; Delete removes; a leader's bend
   // point drags on its own (DW.jogAt), the whole leader drags by a segment.
   var CU_SYM = { datumTarget: { title: 'Datum Target', icon: 'datumTarget' }, leader: { title: 'Multi-jog Leader', icon: 'multiJogLeader' } };
   function cuThreadOptions() {
@@ -2992,18 +3052,17 @@
     if (D.tool === 'culeader') { endToolPM(); return; }
     var v0 = { end: 'arrow' };
     toolPM({ title: 'Multi-jog Leader', icon: 'multiJogLeader', command: 'leader', values: v0, groups: cuLeaderGroups(),
-      message: 'Click the start (on a note: the leader hangs from it), each bend point, then double-click the end (or ✓ / Enter: the last click is the end). Esc ends.',
+      message: 'Click the arrow tip, each bend point, then double-click the end (on a note: the leader hangs from it; or ✓ / Enter: the last click is the end). Esc ends.',
       onChange: function (v) { if (D.pending) D.pending.values = v; },
       onOK: function () { var P = D.pending; if (P && P.pts.length >= 2) cuLeaderMake(); } }, 'culeader', { values: v0, pts: [], note: null });
-    UI.setStatus('Multi-jog Leader: click the start (a note, or anywhere on the sheet).');
+    UI.setStatus('Multi-jog Leader: click where the arrow points.');
   }
   function cuLeaderClick(p) {
     var P = D.pending;
-    if (!P.pts.length) { var nt = DW.noteAt(p); P.note = nt ? nt.id : null; }
     var last = P.pts[P.pts.length - 1];
     if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) <= pxToPaper(3)) return;   // (the second click of a double-click)
     P.pts.push(p);
-    UI.setStatus('Multi-jog Leader: ' + P.pts.length + ' point' + (P.pts.length === 1 ? '' : 's') + (P.note != null ? ' (from Note' + P.note + ')' : '') + ' — click the next bend, double-click the end.');
+    UI.setStatus('Multi-jog Leader: ' + P.pts.length + ' point' + (P.pts.length === 1 ? '' : 's') + ' — click the next bend, double-click the end (on a note to hang it from the note).');
     drawOverlay();
   }
   RF_TOOLS.culeader = cuLeaderClick;
@@ -3011,7 +3070,9 @@
     var P = D.pending, pts = P.pts.slice(), made = null;
     P.pts = [];
     if (pts.length < 2) { UI.setStatus('Multi-jog Leader: a leader needs a start and an end.'); return; }
-    var spec = { type: 'leader', p: pts[0], jogs: pts.slice(1, -1), leader: pts[pts.length - 1], end: P.values.end, note: P.note };
+    // lane DF: clicked from the arrow tip to the end; stored from the end (p, the note side) through the jogs to the tip
+    var nt = DW.noteAt(pts[pts.length - 1]);
+    var spec = { type: 'leader', p: pts[pts.length - 1], jogs: pts.slice(1, -1).reverse(), leader: pts[0], end: P.values.end, note: nt ? nt.id : null };
     P.note = null;
     if (!tryEdit(function (dc) { made = Drawing.addSymbol(dc, spec); })) return;
     D.sel = { kind: 'symbol', id: made.id };
@@ -3071,8 +3132,8 @@
     var grp = svgNode('g', { class: 'dw-cu-leader' }, g), lw = pxToPaper(1.5);
     svgNode('polyline', { class: 'dw-cut', points: pts.map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'none', 'stroke-width': lw }, grp);
     if (pts.length < 2) { svgNode('circle', { class: 'dw-cut', cx: pts[0][0], cy: H - pts[0][1], r: pxToPaper(3), 'stroke-width': lw }, grp); return; }
-    var tip = pts[pts.length - 1], from = pts[pts.length - 2], d = [tip[0] - from[0], tip[1] - from[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], k = paperK();
-    var end = P.values && P.values.end || 'arrow';
+    var tip = pts[0], from = pts[1], d = [tip[0] - from[0], tip[1] - from[1]], n = Math.hypot(d[0], d[1]) || 1, u = [d[0] / n, d[1] / n], k = paperK();
+    var end = P.values && P.values.end || 'arrow';   // lane DF: the arrow sits on the first click (the tip)
     if (end === 'arrow') {
       var L = 3 * k, w = 0.5 * k, b = [tip[0] - u[0] * L, tip[1] - u[1] * L];
       svgNode('polygon', { class: 'dw-cu-end', points: [tip, [b[0] + u[1] * w, b[1] - u[0] * w], [b[0] - u[1] * w, b[1] + u[0] * w]].map(function (q) { return q[0] + ',' + (H - q[1]); }).join(' '), fill: 'var(--dw-hot)', stroke: 'none' }, grp);

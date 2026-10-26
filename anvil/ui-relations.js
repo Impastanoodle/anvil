@@ -30,6 +30,20 @@
     var o = scr(pl, [0, 0]);
     if (Math.hypot(o[0] - mx, o[1] - my) < Math.min(bd, 7)) best = 'O';
     if (best) return best;
+    // lane DE: Smart Dimension on a spline handle (shown: Show Spline Handles, or the spline's PropertyManager is open):
+    // a tip within 7 px picks the handle ('3.h2'), for an angle to a line (SolidWorks)
+    if (App.tool === 'dimension' && UI.splineHandlesShownFor && S.handleLine) {
+      var hb = null, hd = 7;
+      f.entities.forEach(function (e, i) {
+        if (!e || e.t !== 'spline' || e.style || e.conic != null || !UI.splineHandlesShownFor(i)) return;
+        e.pts.forEach(function (q, k) {
+          var hl = S.handleLine(e, k);
+          if (!hl) return;
+          [hl.b, [2 * hl.a[0] - hl.b[0], 2 * hl.a[1] - hl.b[1]]].forEach(function (tip) { var s = scr(pl, tip), d = Math.hypot(s[0] - mx, s[1] - my); if (d < hd) { hd = d; hb = i + '.h' + k; } });
+        });
+      });
+      if (hb) return hb;
+    }
     var hit = UI.pickEntity(mx, my);
     if (!hit) return null;
     var curves = S.curveRefs(f, hit.index);
@@ -69,7 +83,10 @@
     // facet corners along it are no vertices (only an arc's ends are)
     var V = K.vec, ed0 = UI.pickEdge ? UI.pickEdge(mx, my) : null, cv0 = ed0 && ed0.edge && ed0.edge.curve != null && App.curves ? App.curves[ed0.edge.curve] : null, C0 = cv0 && cv0.curve;
     var onTrue = !!(C0 && C0.normal && Math.abs(Math.abs(V.dot(C0.normal, pl.n)) - 1) < 1e-6);
-    if (v && v.point && onTrue) {
+    // lane DE2: a circle / arc in a plane tilted to the sketch projects to a true ellipse / partial ellipse (it came in
+    // as the one facet line under the cursor); edge-on (square to the sketch) it stays a line
+    var onTilt = !!(C0 && C0.normal && C0.radius > 0 && !onTrue && Math.abs(V.dot(C0.normal, pl.n)) > 1e-3);
+    if (v && v.point && (onTrue || onTilt)) {
       var arcEnd = C0.a1 - C0.a0 < 2 * Math.PI - 1e-6 && [C0.a0, C0.a1].some(function (u) { var yd0 = V.cross(C0.normal, C0.xdir), P = V.add(C0.center, V.add(V.scale(C0.xdir, Math.cos(u) * C0.radius), V.scale(yd0, Math.sin(u) * C0.radius))); return V.len(V.sub(P, v.point)) < 1e-6 * Math.max(1, C0.radius); });
       if (!arcEnd) v = null;
     }
@@ -88,7 +105,8 @@
           while (a0 >= 360) a0 -= 360;
           ent = { t: 'arc', cx: r4(cen[0]), cy: r4(cen[1]), r: r4(C.radius), a0: r4(a0), a1: r4(a0 + sweep * 180 / Math.PI) };
         }
-      } else {
+      } else if (onTilt) ent = tiltedEllipse(pl, C0, r4);
+      else {
         var a = K.to2D(pl, ed.edge.a), b = K.to2D(pl, ed.edge.b);
         // an edge square to the sketch plane projects to a point
         if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-6 * Math.max(1, Math.abs(a[0]), Math.abs(a[1]))) ent = { t: 'point', x: r4(a[0]), y: r4(a[1]) };
@@ -109,6 +127,29 @@
     refresh();
     UI.setStatus('Model ' + (ent.t === 'point' ? 'vertex' : 'edge') + ' brought into the sketch as fixed construction geometry (' + S.refName(f, String(idx)) + ').');
     return { ref: String(idx), entity: ent };
+  }
+  // lane DE2: the projection onto sketch plane pl of model circle / arc C ({ center, normal, xdir, radius, a0, a1 }):
+  // P(t) = c + a cos t + b sin t (a, b the projected radius vectors along xdir and normal × xdir) turned to principal
+  // axes (u0, the major axis first): an ellipse, or a partial ellipse over the arc's sweep (its parameter angles in
+  // degrees, counter-clockwise)
+  function tiltedEllipse(pl, C, r4) {
+    var V = K.vec, yd = V.cross(C.normal, C.xdir), c = K.to2D(pl, C.center);
+    function pr(d) { var q = K.to2D(pl, V.add(C.center, V.scale(d, C.radius))); return [q[0] - c[0], q[1] - c[1]]; }
+    var a = pr(C.xdir), b = pr(yd), ab = a[0] * b[0] + a[1] * b[1], aa = a[0] * a[0] + a[1] * a[1], bb = b[0] * b[0] + b[1] * b[1];
+    var u0 = 0.5 * Math.atan2(2 * ab, aa - bb);
+    function ax(u) { return [[a[0] * Math.cos(u) + b[0] * Math.sin(u), a[1] * Math.cos(u) + b[1] * Math.sin(u)], [-a[0] * Math.sin(u) + b[0] * Math.cos(u), -a[1] * Math.sin(u) + b[1] * Math.cos(u)]]; }
+    var A = ax(u0);
+    if (Math.hypot(A[1][0], A[1][1]) > Math.hypot(A[0][0], A[0][1])) { u0 += Math.PI / 2; A = ax(u0); }
+    var v1 = A[0], v2 = A[1], s = v1[0] * v2[1] - v1[1] * v2[0] < 0 ? -1 : 1, D = 180 / Math.PI;
+    var e = { t: 'ellipse', cx: r4(c[0]), cy: r4(c[1]), rx: r4(Math.hypot(v1[0], v1[1])), ry: r4(Math.hypot(v2[0], v2[1])), rot: r4(Math.atan2(v1[1], v1[0]) * D) };
+    var sweep = C.a1 - C.a0;
+    if (sweep < 2 * Math.PI - 1e-6) {
+      var p0 = s * (C.a0 - u0), p1 = s * (C.a1 - u0), lo = Math.min(p0, p1) * D, hi = Math.max(p0, p1) * D;
+      while (lo < 0) { lo += 360; hi += 360; }
+      while (lo >= 360) { lo -= 360; hi -= 360; }
+      e.t = 'pellipse'; e.a0 = r4(lo); e.a1 = r4(hi);
+    }
+    return e;
   }
   // Model reference geometry brought in for a dimension or relation that was never made (the tool was put down, the
   // PropertyManager cancelled): taken out again. entities: the entity objects pickModelRef returned.
@@ -150,6 +191,7 @@
       var sn = Math.abs(d1[0] * d2[1] - d1[1] * d2[0]) / ((Math.hypot(d1[0], d1[1]) * Math.hypot(d2[0], d2[1])) || 1);
       if (sn > 1e-6) return { type: 'angle', refs: [r1, r2] };
     }
+    if ((p1 && p1.s === 'h') || (p2 && p2.s === 'h')) return null;   // lane DE: a spline handle takes an angle only
     if (k1 === 'circle' && k2 === 'circle') {
       // r6/sketch6: two concentric circles -> the radial distance between them (their centre distance is 0)
       var c1 = S.refCurve(f, r1), c2 = S.refCurve(f, r2);
@@ -1138,6 +1180,7 @@
   UI.pickSketchRef = pickSketchRef;
   UI.sketchPointDragHook = sketchDragHook;   // the solver drag itself (ui-sketch.js takes it for a free Sketch Text)
   UI.pickModelRef = pickModelRef;
+  UI.modelCircleProjection = function (pl, C) { return tiltedEllipse(pl, C, function (x) { return Math.round(x * 1e6) / 1e6; }); };   // lane DE2 (tests)
   UI.dropUnusedModelRefs = dropUnusedModelRefs;
   UI.relDimFor = relDimFor;
   UI.relDimPlacement = relDimPlacement;

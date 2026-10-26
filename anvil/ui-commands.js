@@ -893,6 +893,8 @@
     return null;
   }
   function commitFeature(f, existing) {
+    // lane DC2: a feature made while the part is flat goes in above Flat-Pattern1 (the end of the feature list) and
+    // acts on the folded part, as in SolidWorks; the flat is redrawn from the rebuilt part
     applyExpressions(f);   // number fields typed as '=T*2' are stored as the equation, not its value
     UI.pushUndo();
     if (existing) {
@@ -1368,6 +1370,13 @@
       // SolidWorks default: a new cut on a sheet-metal part is a Normal cut (perpendicular to the sheet faces, through the thickness)
       if (!existing && cut && App.model.sheet) f.normalCut = true;
       f.normalCut = !!f.normalCut;
+      // lane DC (finding #10): SolidWorks' "Link to thickness" (Direction 1, checked for a new cut on a sheet part): a
+      // blind cut whose depth is the sheet thickness and follows it (linkT: true; the kernel reads T, the stored depth
+      // is T too)
+      if (!existing && cut && App.model.sheet) { f.linkT = true; f.end = 'blind'; }
+      f.linkT = !!f.linkT;
+      function sheetT() { var sh = previewModel().sheet || App.model.sheet; return sh ? +sh.thickness : null; }
+      if (f.linkT && sheetT() != null) f.depth = sheetT();
       if (f.sketch == null) { UI.setStatus('Create a sketch first: Sketch tab → pick a plane → draw a closed profile.'); UI.toast('No sketch available. Draw a sketch first.'); return; }
       // a cut drawn on a face should go into the material (the face normal points out of it)
       if (!existing && cut) f.reverse = defaultCutReverse(f.sketch, f.reverse);
@@ -1380,9 +1389,12 @@
         if (!v.draftOn || !(+v.draft > 0)) { delete out.draft; delete out.draftOut; }
         else if (!v.draftOut) delete out.draftOut;
         if (!v.cut || !v.normalCut) delete out.normalCut;
+        if (!isLinkT(v)) delete out.linkT;
+        else { out.end = 'blind'; out.depth = App.model.sheet.thickness; }   // the sheet's T (its equation text, if any)
         return applyBodyFields(contourFeature(out, v), v, !!v.cut);
       }
       function isSheetCut(v) { return !!v.cut && !!App.model.sheet; }
+      function isLinkT(v) { return isSheetCut(v) && !!v.linkT && v.end === 'blind'; }
       function isCutPM(v) { return !!v.cut; }
       function isBossPM(v) { return !v.cut; }
       function preview(v) { App.command.sketchId = v.sketch; UI.updateSketches(); UI.updateHighlights(); var err = showPreview(toFeature(v)); UI.setStatus(err ? 'Preview: ' + err : 'Previewing ' + title + '. Press Enter or ✓ to accept.'); }
@@ -1396,7 +1408,9 @@
           {
             title: 'Direction 1', fields: [
               { type: 'select', label: 'End condition', key: 'end', options: [['blind', 'Blind'], ['through', 'Through All'], ['mid', 'Mid Plane']], rerender: true },
-              { type: 'number', label: 'Depth  D1', key: 'depth', unit: 'u', min: 0, show: function (v) { return v.end !== 'through'; } },
+              { type: 'number', label: 'Depth  D1', key: 'depth', unit: 'u', min: 0, show: function (v) { return v.end !== 'through' && !isLinkT(v); } },
+              { type: 'static', label: 'Depth  D1', value: function () { return UI.fmtNum(sheetT(), 4) + ' ' + UI.unitLabel() + ' (sheet thickness)'; }, show: isLinkT },
+              { type: 'check', label: 'Link to thickness', key: 'linkT', rerender: true, show: function (v) { return isSheetCut(v) && v.end === 'blind'; } },
               { type: 'check', label: 'Reverse direction', key: 'reverse' },
               mergeField(isBossPM)
             ]
@@ -1425,7 +1439,7 @@
           { title: 'Feature', collapsed: !existing, fields: [{ type: 'check', label: 'Cut (remove material)', key: 'cut', rerender: true }, { type: 'text', label: 'Name', key: 'name' }] },
           { title: 'Selected Contours', fields: [contours.field] }   // lane CO: at the bottom, as in SolidWorks
         ],
-        onChange: function (v, key) { if (key === 'sketch') { v.contours.length = 0; renderPM(); } preview(v); },
+        onChange: function (v, key) { if (key === 'sketch') { v.contours.length = 0; renderPM(); } if (key === 'linkT' && v.linkT && sheetT() != null) v.depth = sheetT(); preview(v); },
         onOK: function (v) { var feat = toFeature(v); if (!feat.name) delete feat.name; return commitFeature(feat, existing); }
       });
       if (contours.isActive()) UI.setStatus('This sketch has more than one region: click the regions to extrude in the graphics area (Selected Contours).');
@@ -2422,6 +2436,7 @@
         App.model.sheet = sheet;
         // the Base Flange is extruded by the sheet thickness: it follows a new T (equation text included)
         App.model.features.forEach(function (q) { if (q.sheetBase && q.type === 'extrude') q.depth = sheet.thickness; });
+        App.model.features.forEach(function (q) { if (q.linkT && q.type === 'extrude') q.depth = sheet.thickness; });   // lane DC: Link to thickness
         return UI.afterRebuild(UI.rebuild(), function () {
           UI.refreshTree();
           var msg = 'Sheet metal parameters updated.';
@@ -2702,7 +2717,125 @@
     resolveList(); preview();
   }
   function cmdHem(existing) { cmdEdgeFlange(existing, 'hem'); }
-  function cmdJog(existing) { cmdEdgeFlange(existing, 'jog'); }
+  // lane DC (finding #4): SolidWorks' Jog — a sketch with one line on a flat face of the sheet (Kernel.buildSketchJog).
+  // An edge jog of an older part (edges, height, length) still edits in the Edge-Flange-style PM.
+  function cmdJog(existing) {
+    if (existing && existing.sketch == null) { cmdEdgeFlange(existing, 'jog'); return; }
+    cmdSketchJog(existing);
+  }
+  var JOG_OFFSET_REFS = [['outside', 'Outside Offset'], ['inside', 'Inside Offset'], ['overall', 'Overall Dimension']];
+  var jogLast = null;   // the offset / reference / position / angle last accepted this session
+  function cmdSketchJog(existing) {
+    if (!existing && App.mode !== 'sketch' && selectedSketchId() == null && pickDefaultSketch(null) == null && App.sel && App.sel.kind === 'face' && App.model.sheet) {
+      // SolidWorks: Jog with a face selected and no sketch opens a sketch on the face; exiting it brings Jog back
+      newSketchOnFace(App.sel);
+      App.pendingAfterSketch = function () { cmdSketchJog(); };
+      UI.setStatus('Jog: sketch one line across the face where the jog starts, then exit the sketch.');
+      return;
+    }
+    withSketch(function (sid) {
+      if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+      var sheet = previewModel().sheet || App.model.sheet, T = +sheet.thickness;
+      var f = existing ? JSON.parse(JSON.stringify(existing)) : Object.assign({ type: 'jog', sketch: pickDefaultSketch(sid), fixed: null, offset: Math.round(UI.lenDefault(10) * 1e4) / 1e4, offsetRef: 'outside', position: 'centerline', angle: 90, reverse: false, radius: null }, jogLast || {});
+      if (f.sketch == null) { UI.toast('Sketch one line on a flat face of the sheet (or select the face), then click Jog.'); UI.setStatus('Jog: select a flat face of the sheet and click Jog, or sketch one line on it first.'); return; }
+      if (!f.offsetRef) f.offsetRef = 'outside';
+      if (!f.position) f.position = 'centerline';
+      f.useDefaultRadius = f.radius == null;
+      f.radiusValue = f.radius != null ? f.radius : sheet.bendRadius;
+      f.fixProjected = false;
+      var cba = f.bendAllowance || null, kSheet = K.sheetKFactor(sheet), R0 = +sheet.bendRadius, BA0 = K.bendAllowance(Math.PI / 2, R0, T, kSheet);
+      f.useCustomBA = !!cba;
+      f.cbaType = cba ? cba.type : 'kfactor';
+      f.cbaK = cba && cba.type === 'kfactor' ? cba.value : kSheet;
+      f.cbaBA = cba && cba.type === 'allowance' ? cba.value : Math.round(BA0 * 1e4) / 1e4;
+      f.cbaBD = cba && cba.type === 'deduction' ? cba.value : Math.round(K.bendDeduction(Math.PI / 2, R0, T, BA0) * 1e4) / 1e4;
+      delete f.bendAllowance;
+      var CBA_KEY = { kfactor: 'cbaK', allowance: 'cbaBA', deduction: 'cbaBD' };
+      var base = null;
+      function baseBody() { if (!base) base = existing ? bodyBefore(existing.id) : (App.build ? App.build.body : null); return base; }
+      function toFeature(v, forOK) {
+        var out = JSON.parse(JSON.stringify(v));
+        out.radius = v.useDefaultRadius ? null : +v.radiusValue;
+        out.fixed = v.fixed ? v.fixed.slice() : null;
+        if (v.useCustomBA) {
+          out.bendAllowance = { type: v.cbaType };
+          if (v.cbaType !== 'table') out.bendAllowance.value = forOK ? pmExpr(CBA_KEY[v.cbaType], +v[CBA_KEY[v.cbaType]]) : +v[CBA_KEY[v.cbaType]];
+        } else delete out.bendAllowance;
+        ['useDefaultRadius', 'radiusValue', 'useCustomBA', 'cbaType', 'cbaK', 'cbaBA', 'cbaBD', 'fixProjected'].forEach(function (k) { delete out[k]; });
+        if (!forOK) out.offset = +v.offset;
+        return out;
+      }
+      function minText(v) {
+        var R = v.useDefaultRadius ? +sheet.bendRadius : +v.radiusValue, A = (+v.angle || 90) * Math.PI / 180;
+        return UI.fmtNum(K.jogMinOffset(A, R, T, v.offsetRef), 4) + ' ' + UI.unitLabel();
+      }
+      function preview() {
+        UI.disposeGroup(UI.groups.preview);
+        var feat = toFeature(f);
+        try {
+          if (!baseBody()) throw new Error('Create a Base Flange first.');
+          var r = K.buildSketchJog(feat, previewModel(), { body: baseBody(), sketches: {}, planes: (App.build && App.build.planes) || {}, flanges: {}, tools: {} });
+          if (r.tool && r.tool.polygons.length) addPreviewMesh(r.tool, UI.mats.preview);
+          UI.setStatus('Jog preview: ' + f.offsetRef + ' offset ' + UI.fmtNum(+f.offset, 4) + ' ' + UI.unitLabel() + ', ' + (f.fixed ? 'fixed face picked' : 'the larger side fixed') + ', straight riser ' + UI.fmtNum(r.g, 4) + ' ' + UI.unitLabel() + '.');
+        } catch (e) { UI.setStatus('Preview: ' + e.message); }
+      }
+      var groups = [
+        { title: 'Selections', fields: [
+          sketchPickerField(f),
+          { type: 'pick', icon: 'jog', value: function (v) { return v.fixed ? 'Fixed face <1>' : ''; }, placeholder: 'Fixed face (default: the larger side)…' },
+          { type: 'buttons', show: function (v) { return !!v.fixed; }, buttons: [{ label: 'Clear fixed face', onclick: function (v) { v.fixed = null; renderPM(); preview(); } }] },
+          { type: 'check', label: 'Use default radius (' + sheet.bendRadius + ')', key: 'useDefaultRadius', rerender: true },
+          { type: 'number', label: 'Bend radius', key: 'radiusValue', unit: 'u', min: 0, show: function (v) { return !v.useDefaultRadius; } }
+        ] },
+        { title: 'Jog Offset', fields: [
+          { type: 'static', label: 'End condition', value: 'Blind' },
+          { type: 'check', label: 'Reverse direction', key: 'reverse' },
+          { type: 'number', label: 'Offset distance', key: 'offset', unit: 'u', min: 0 },
+          { type: 'select', label: 'Dimension position', key: 'offsetRef', options: JOG_OFFSET_REFS, rerender: true },
+          { type: 'static', label: 'Smallest offset', value: minText },
+          { type: 'check', label: 'Fix projected length (not available)', key: 'fixProjected', disabled: true }
+        ] },
+        { title: 'Jog Position', fields: [{ type: 'select', label: 'Jog position', key: 'position', options: SKETCHED_BEND_POSITIONS }] },
+        { title: 'Jog Angle', fields: [{ type: 'number', label: 'Jog angle', key: 'angle', unit: '°', min: 0, max: 180 }] },
+        { title: 'Custom Bend Allowance', collapsed: !f.useCustomBA, fields: [
+          { type: 'check', label: 'Custom bend allowance', key: 'useCustomBA', rerender: true },
+          { type: 'select', label: 'Type', key: 'cbaType', options: BA_OPTIONS, rerender: true, show: function (v) { return v.useCustomBA; } },
+          { type: 'number', label: 'K-factor', key: 'cbaK', step: 0.01, min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'kfactor'; } },
+          { type: 'number', label: 'Bend allowance', key: 'cbaBA', unit: 'u', min: 0, show: function (v) { return v.useCustomBA && v.cbaType === 'allowance'; } },
+          { type: 'number', label: 'Bend deduction', key: 'cbaBD', unit: 'u', show: function (v) { return v.useCustomBA && v.cbaType === 'deduction'; } }
+        ] },
+        { title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] }
+      ];
+      openPM({
+        title: existing ? existing.name : 'Jog', icon: 'jog', values: f,
+        exprMap: { radiusValue: 'radius' },
+        message: 'Sketch <b>one line</b> on a flat face of the sheet where the jog starts. Click the <b>face that stays fixed</b> (default: the larger side); the other side is offset by two bends. The flat pattern keeps the plate\'s size.',
+        command: {
+          sketchId: f.sketch,
+          onPick: function (pk) {
+            if (pk.kind !== 'face' || !pk.point) return false;
+            f.fixed = pk.point.map(function (x) { return Math.round(x * 1e4) / 1e4; });
+            renderPM(); preview();
+            return true;
+          }
+        },
+        groups: groups,
+        onChange: function (v, key) {
+          if (key === 'sketch' && App.command) { App.command.sketchId = v.sketch; UI.updateSketches(); }
+          preview();
+        },
+        onOK: function (v) {
+          if (v.sketch == null || v.sketch < 0) { UI.toast('Select the sketch with the jog line.'); return false; }
+          if (!(+v.offset > 0)) { UI.toast('Jog offset must be greater than zero.'); return false; }
+          var feat = toFeature(v, true);
+          if (!feat.name) delete feat.name;
+          jogLast = { offset: feat.offset, offsetRef: feat.offsetRef, position: feat.position, angle: feat.angle };
+          return commitFeature(feat, existing);
+        }
+      });
+      preview();
+    });
+  }
   // Miter Flange: an Edge-Flange with "Miter corners" preset; flanges on adjacent edges meet at the corner.
   function cmdMiterFlange(existing) { cmdEdgeFlange(existing, 'miter'); }
 
@@ -3067,6 +3200,154 @@
     preview();
   }
 
+  // ------------------------------------------------------------------ sheet metal: Unfold / Fold (lane DB)
+  // SolidWorks' Sheet Metal ▸ Unfold / Fold (Kernel.buildUnfold / buildFold, rebuild cases). Unfold: Fixed face (a
+  // click on a flat face of the sheet; default the flat pattern's base face), Bends to unfold (a click on a bend adds
+  // it, a second click removes it), Collect All Bends. Fold: Bends to fold (a click on an unfolded strip; empty = every
+  // bend the Unfold unfolded), Collect All Bends. The preview is the part as the feature leaves it, built in the worker;
+  // ✓ is one undo step. Cuts made between the two are folded with the part (Kernel: wrapped round each bend).
+  function ufPt(p) { return p.map(function (x) { return Math.round(x * 1e6) / 1e6; }); }
+  function ufSheetT() { var sh = previewModel().sheet || App.model.sheet; return sh ? +sh.thickness : 0; }
+  // the Unfold record (kind 'unfold') the part shows now: the last Unfold (or partial Fold) before `upto` still open
+  function ufActiveRecord(upto) {
+    var feats = App.model.features.slice(0, upto == null ? App.model.features.length : upto), fl = (App.build && App.build.flanges) || {};
+    for (var i = feats.length - 1; i >= 0; i--) {
+      var g = feats[i];
+      if (g.type !== 'unfold' && g.type !== 'fold') continue;
+      if (App.build.errors && App.build.errors[g.id]) continue;
+      var rec = (fl[g.id] || []).filter(function (r) { return r && r.kind === 'unfold'; })[0];
+      return rec || null;
+    }
+    return null;
+  }
+  function ufLit(points, T) {
+    var idx = [];
+    if (App.mesh) points.forEach(function (p) { try { var k = K.resolveFaces([{ at: p }], App.mesh, K.pickTol(App.model.units, T / 2))[0]; if (k != null && k >= 0 && idx.indexOf(k) < 0) idx.push(k); } catch (e) { } });
+    if (App.command) App.command.faceList = idx;
+    UI.updateHighlights();
+  }
+  function cmdUnfoldFold(kind, existing) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    var isFold = kind === 'fold', title = isFold ? 'Fold' : 'Unfold';
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    if (!App.build || !App.build.body) { UI.toast('Create a Base Flange and edge flanges first.'); return; }
+    var T = ufSheetT();
+    var f = existing ? JSON.parse(JSON.stringify(existing)) : (isFold ? { type: 'fold', bends: [] } : { type: 'unfold', fixedFace: null, bends: [] });
+    f.bends = (f.bends || []).map(function (p) { return p.slice(); });
+    if (!isFold) f.fixedFace = f.fixedFace ? f.fixedFace.slice() : null;
+    // the bends the part offers (Unfold: of the folded part shown; Fold: the strips the open Unfold laid flat)
+    var bendsMemo = null;
+    function upto() { return pm.editUpto != null ? pm.editUpto : null; }
+    function bends() {
+      if (bendsMemo) return bendsMemo;
+      try {
+        if (isFold) { var rec = ufActiveRecord(upto()); bendsMemo = rec ? rec.bends.filter(function (b) { return b.unfolded; }) : []; bendsMemo.rec = rec; }
+        else bendsMemo = K.sheetBends(previewModel(), App.build, App.mesh);
+      } catch (e) { bendsMemo = []; bendsMemo.error = e.message; }
+      return bendsMemo;
+    }
+    function featOf(v) {
+      var out = { type: kind, bends: v.bends.map(function (p) { return p.slice(); }) };
+      if (!isFold) out = { type: kind, fixedFace: v.fixedFace ? v.fixedFace.slice() : null, bends: out.bends };
+      if (v.name) out.name = v.name;
+      return out;
+    }
+    // what is lit: the fixed face and the bends picked (in the state shown)
+    function lit() {
+      if (existing && App.rollback == null) { if (App.command) App.command.faceList = []; UI.updateHighlights(); return; }
+      var pts = [];
+      if (!isFold && f.fixedFace) pts.push(f.fixedFace);
+      f.bends.forEach(function (p) {
+        if (!isFold) { pts.push(p); return; }
+        var b = bends().filter(function (x) { return x.at && Math.hypot(x.at[0] - p[0], x.at[1] - p[1], x.at[2] - p[2]) < 1e-4 * (1 + T); })[0];
+        if (b && b.quad) pts.push(b.quad.reduce(function (s, q) { return [s[0] + q[0] / b.quad.length, s[1] + q[1] / b.quad.length, s[2] + q[2] / b.quad.length]; }, [0, 0, 0]));
+      });
+      ufLit(pts, T);
+    }
+    function status(extra) {
+      var n = f.bends.length, all = bends().length;
+      UI.setStatus((extra ? extra + ' ' : '') + title + ': ' + (n ? n + ' of ' + all + ' bend' + (all === 1 ? '' : 's') : 'all ' + all + ' bend' + (all === 1 ? '' : 's')) +
+        (isFold ? '' : ', fixed face ' + (f.fixedFace ? 'picked' : 'the base face')) + '. Press Enter or ✓ to accept.');
+    }
+    function preview() {
+      lit();
+      if (bends().error) { UI.setStatus(title + ': ' + bends().error); return; }
+      if (isFold && !bends().rec) { lp.shown = ++lp.seq; UI.disposeGroup(UI.groups.preview); UI.setStatus('Fold: the part is not unfolded. Add an Unfold first.'); return; }
+      livePreview({ op: kind, feature: featOf(f), mats: [UI.mats.preview], sync: previewSync, done: function () { status(); }, fail: function (msg) { UI.setStatus('Preview: ' + msg); } });
+    }
+    function previewSync() {
+      UI.disposeGroup(UI.groups.preview);
+      try {
+        var m = JSON.parse(JSON.stringify(App.model));
+        if (upto() != null) m.features = m.features.slice(0, upto());
+        var body = K.unfoldPreview(m, K.rebuild(m), featOf(f));
+        if (body && body.polygons.length) addPreviewMesh(body, UI.mats.preview);
+        status();
+      } catch (e) { UI.setStatus('Preview: ' + e.message); }
+    }
+    function toggleBend(at) {
+      var hit = -1;
+      f.bends.forEach(function (q, k) { if (Math.hypot(q[0] - at[0], q[1] - at[1], q[2] - at[2]) < 1e-4 * (1 + T)) hit = k; });
+      if (hit >= 0) f.bends.splice(hit, 1); else f.bends.push(at.slice());
+    }
+    function pick(pk) {
+      if (pk.kind !== 'face' || !pk.point) return false;
+      var p = ufPt(pk.point), list = bends();
+      if (isFold) {
+        var k = K.unfoldedBendAt(list.rec, p, T);
+        if (k < 0) { UI.setStatus('Fold: click a flat bend strip (a bend the Unfold laid flat).'); return true; }
+        toggleBend(list.rec.bends[k].at.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
+      } else {
+        var b = K.sheetBendAt(list, p, T);
+        if (b >= 0) toggleBend(list[b].at.map(function (x) { return Math.round(x * 1e6) / 1e6; }));
+        else f.fixedFace = p;
+      }
+      renderPM(); preview();
+      return true;
+    }
+    function collectAll(v) {
+      v.bends = bends().map(function (b) { return b.at.map(function (x) { return Math.round(x * 1e6) / 1e6; }); });
+      renderPM(); preview();
+    }
+    var groups = [];
+    if (!isFold) groups.push({ title: 'Selections', fields: [
+      { type: 'pick', icon: 'unfold', placeholder: 'Fixed face (default: the base face)…',
+        value: function (v) { return v.fixedFace ? 'Fixed face <1>' : ''; },
+        items: function (v) { return v.fixedFace ? [{ label: 'Face<1>', at: v.fixedFace }] : []; },
+        onRemove: function (v) { v.fixedFace = null; renderPM(); preview(); },
+        onClear: function (v) { v.fixedFace = null; renderPM(); preview(); } }
+    ] });
+    groups.push({ title: isFold ? 'Selections' : 'Bends to unfold', fields: [
+      { type: 'pick', icon: isFold ? 'fold' : 'unfold', placeholder: isFold ? 'Bends to fold (empty: every unfolded bend)…' : 'Bends to unfold (empty: every bend)…',
+        value: function (v) { var n = v.bends.length; return n ? n + ' bend' + (n === 1 ? '' : 's') : ''; },
+        items: function (v) { return v.bends.map(function (p, i) { return { label: 'Bend<' + (i + 1) + '>', at: p }; }); },
+        onRemove: function (v, i) { v.bends.splice(i, 1); renderPM(); preview(); },
+        onClear: function (v) { v.bends.length = 0; renderPM(); preview(); } },
+      { type: 'buttons', buttons: [{ label: 'Collect All Bends', onclick: collectAll }] },
+      { type: 'static', label: 'Bends in the part', value: function () { var n = bends().length; return n + (isFold ? ' unfolded' : ''); } }
+    ] });
+    groups.push({ title: 'Feature', collapsed: true, fields: [{ type: 'text', label: 'Name', key: 'name' }] });
+    openPM({
+      title: existing ? existing.name : title, icon: kind, values: f,
+      onRollback: function () { bendsMemo = null; lit(); },
+      message: isFold
+        ? 'Click the <b>flat bend strips</b> to fold back, or <b>Collect All Bends</b> (none picked: every bend the Unfold unfolded). Cuts made across the flat follow the bends.'
+        : 'Click a <b>flat face</b> that stays fixed, then the <b>bends</b> to unfold (a second click removes one), or <b>Collect All Bends</b>. Features after it (cuts, holes, sketches) work on the flat; a Fold folds them with the part.',
+      command: { faceList: [], onPick: pick },
+      groups: groups,
+      onChange: function () { preview(); },
+      onOK: function (v) {
+        if (isFold && !bends().rec) { UI.toast('The part is not unfolded: add an Unfold first.'); return false; }
+        var feat = featOf(v);
+        if (!feat.name) delete feat.name;
+        return commitFeature(feat, existing);
+      }
+    });
+    preview();
+  }
+  function cmdUnfold(existing) { cmdUnfoldFold('unfold', existing); }
+  function cmdFold(existing) { cmdUnfoldFold('fold', existing); }
+
   function flatSvg(flat, width) {
     var b = flat.bbox, w = b.max[0] - b.min[0], h = b.max[1] - b.min[1], pad = Math.max(w, h) * 0.08 + 2;
     var vb = [b.min[0] - pad, -(b.max[1] + pad), w + 2 * pad, h + 2 * pad];
@@ -3111,6 +3392,80 @@
       { label: 'Close', action: UI.closeModal }
     ] });
   }
+  // ------------------------------------------------------------------ lane DC (findings #8, #9): Flatten as a state
+  // Sheet Metal ▸ Flatten toggles the part between folded and its flat pattern (App.model.flatState, saved with the
+  // document; one undo step each way; ui-core.js updateFlatState draws it), as SolidWorks unsuppresses / suppresses
+  // Flat-Pattern1. UI.cmdFlatten stays the Flat Pattern dialog (size, bends, Export DXF): the tree's right-click ▸
+  // Flat Pattern… and anvil scripts use it. A feature made while flat goes in above Flat-Pattern1 (commitFeature);
+  // flatRefuse (unused since lane DC2) is kept for a command that cannot work on a flat part.
+  var FLAT_REFUSE = 'The part is flattened: click Flatten (or suppress Flat-Pattern1) to fold it, then add the feature.';
+  function flatRefuse() {
+    if (!App.model || !App.model.flatState) return false;
+    UI.toast(FLAT_REFUSE); UI.setStatus(FLAT_REFUSE);
+    return true;
+  }
+  UI.flatRefuse = flatRefuse;
+  // toggleFlatten(on?) -> true when the state changed. on: true flattens, false folds, omitted toggles.
+  function toggleFlatten(on) {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return false; }
+    var want = on == null ? !App.model.flatState : !!on;
+    if (want === !!App.model.flatState) return false;
+    if (want) {
+      var flat;
+      try { flat = K.flatPattern(App.model, App.build, App.mesh); }
+      catch (e) { UI.toast('Flatten: ' + e.message); UI.setStatus('Flatten: ' + e.message); return false; }
+    }
+    if (UI.hasPM && UI.hasPM()) UI.closePM();
+    UI.pushUndo();
+    if (want) App.model.flatState = true; else delete App.model.flatState;
+    App.sel = null; App.sel2 = null; App.hover = null;
+    UI.updateFlatState();
+    UI.updateHighlights();
+    UI.refreshTree();
+    if (UI.refreshRibbon) UI.refreshRibbon();
+    if (UI.autosave) UI.autosave();
+    if (want && App.flat) UI.setStatus('Flattened: ' + flatSizeText(App.flat) + ' · ' + App.flat.bends.length + ' bend' + (App.flat.bends.length === 1 ? '' : 's') + ' · ' + App.flat.note + '. Click Flatten again to fold.');
+    else if (want) UI.setStatus('Flatten: ' + (App.flatError || 'the flat pattern could not be shown.'));
+    else UI.setStatus('Folded.');
+    return true;
+  }
+  UI.toggleFlatten = toggleFlatten;
+  // Flat-Pattern1 ▸ Edit Feature: SolidWorks' Flat-Pattern PropertyManager. Anvil's unfold has no choices yet: it lays
+  // the largest face on the Base Flange's sketch side, always merges the faces and writes the bends' arcs as arcs, so
+  // those boxes show what it does, greyed; ✓ changes nothing. The flat's size and bends are shown.
+  function cmdFlatPatternEdit() {
+    if (App.mode === 'sketch') UI.exitSketch(true);
+    if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
+    var flat = null, err = null;
+    try { flat = K.flatPattern(App.model, App.build, App.mesh); } catch (e) { err = e.message; }
+    var base = App.model.features.filter(function (q) { return q.sheetBase; })[0];
+    openPM({
+      title: 'Flat-Pattern1', icon: 'flatten', values: { merge: true, simplify: true, grain: false, corner: false },
+      message: 'Anvil unfolds from the Base Flange\'s face on its sketch side and always merges faces and keeps bend arcs as arcs; the options it does not offer yet are greyed. Flatten (Sheet Metal tab) shows the flat.',
+      groups: [
+        { title: 'Parameters', fields: [
+          { type: 'static', label: 'Fixed face', value: (base ? base.name : 'Base Flange') + ' face (automatic)' },
+          { type: 'static', label: 'Grain direction', value: 'not available' },
+          { type: 'check', label: 'Merge faces', key: 'merge', disabled: true },
+          { type: 'check', label: 'Simplify bends', key: 'simplify', disabled: true },
+          { type: 'check', label: 'Corner treatment (not available)', key: 'corner', disabled: true }
+        ] },
+        { title: 'Flat Pattern', fields: [
+          { type: 'static', label: 'Flat size', value: flat ? flatSizeText(flat).replace(/^Flat size /, '') : (err || '') },
+          { type: 'static', label: 'Bends', value: flat ? String(flat.bends.length) : '' },
+          { type: 'static', label: 'State', value: App.model.flatState ? 'Flattened' : 'Folded (suppressed)' },
+          { type: 'buttons', buttons: [
+            { label: App.model.flatState ? 'Fold' : 'Flatten', onclick: function () { UI.closePM(); toggleFlatten(); } },
+            { label: 'Flat Pattern…', onclick: function () { UI.closePM(); cmdFlatten(); } },
+            { label: 'Export DXF…', onclick: function () { UI.closePM(); cmdDxfOutput({ export: 'sheet' }); } }
+          ] }
+        ] }
+      ],
+      onOK: function () { return true; }
+    });
+  }
+  UI.cmdFlatPatternEdit = cmdFlatPatternEdit;
   // Sheet Metal ▸ Flat to DXF: the DXF/DWG Output PropertyManager with Sheet metal chosen (p9-pm: was a text dialog)
   function exportFlatDXF() {
     if (!App.model.sheet) { UI.toast('Create a Base Flange first (Sheet Metal tab).'); return; }
@@ -3290,10 +3645,13 @@
     if (v.export === 'sketch') { var s = v.sketch != null && v.sketch !== '' ? K.findFeature(App.model, +v.sketch) : dxfDefaultSketch(); return '_' + String(s ? s.name : 'sketch').replace(/[^\w\-]+/g, '_'); }
     return v.export === 'faces' ? '_face' + (App.sel && App.sel.kind === 'face' ? App.sel.index : '') : v.export === 'sheet' ? '_flat' : '_views';
   }
-  // The converter on the local server: HEAD api/dxf2dwg answers 200 with X-Anvil-Converter: oda | libredwg when one is
-  // installed, 503 when not; the published copy has no endpoint at all (a 404 or a network error, both "none").
-  var dwgState = { probed: false, ok: false, converter: null, pending: null };
+  // (lane DG) DWG is written in the page by dwg-writer.js (global DWG, AutoCAD 2000 / AC1015): converter 'anvil', no
+  // server needed, so the published copy saves DWG too. Only without that file does the probe ask the local server:
+  // HEAD api/dxf2dwg answers 200 with X-Anvil-Converter: oda | libredwg when one is installed, 503 when not.
+  function jsDwg() { return typeof DWG !== 'undefined' && DWG && typeof DWG.fromDXF === 'function'; }
+  var dwgState = jsDwg() ? { probed: true, ok: true, converter: 'anvil', pending: null } : { probed: false, ok: false, converter: null, pending: null };
   function probeDwg() {
+    if (jsDwg()) { dwgState.probed = dwgState.ok = true; dwgState.converter = 'anvil'; return Promise.resolve(dwgState); }
     if (dwgState.pending) return dwgState.pending;
     var p;
     try {
@@ -3305,23 +3663,30 @@
     dwgState.pending = p.then(function () { dwgState.probed = true; dwgState.pending = null; return dwgState; });
     return dwgState.pending;
   }
-  // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer); rejects with the server's error message.
-  // (shop audit 2) An R12 DXF (AC1009, POLYLINE / VERTEX) is refused up front: LibreDWG's writer makes a DWG with no
-  // entities from one, silently (the flat read back empty), and the PM, the drawing's Save as DWG and the headless
-  // runner all convert from R2000 anyway.
+  // dxfToDwg(dxfText) -> Promise of the DWG bytes (ArrayBuffer). (lane DG) DWG.fromDXF writes them in the page; only if
+  // it throws (an entity it does not write) does the R2000 DXF go to the local server's converter (POST api/dxf2dwg),
+  // and with no server either the writer's message is the error.
+  // (shop audit 2) An R12 DXF (AC1009, POLYLINE / VERTEX) is refused up front: the PM, the drawing's Save as DWG and
+  // the headless runner all convert from R2000.
   var DXF_R12_NOTE = 'DWG is made from an R2000 DXF (AC1015); this DXF is R12. Export it as R2000 first.';
   function dxfToDwg(dxfText) {
     if (/\$ACADVER\s*\r?\n\s*1\s*\r?\n\s*AC1009\b/.test(String(dxfText).slice(0, 4000))) return Promise.reject(new Error(DXF_R12_NOTE));
+    var jsError = null;
+    if (jsDwg()) {
+      try { var b = DWG.fromDXF(String(dxfText)); return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); }
+      catch (e) { jsError = e && e.message || String(e); }
+    }
     return fetch('api/dxf2dwg', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: dxfText }).then(function (r) {
       if (r.status === 200) return r.arrayBuffer();
       return r.text().then(function (t) {
-        var msg = 'DWG conversion failed (' + r.status + ')';
+        var msg = jsError ? 'DWG: ' + jsError + '. Save as DXF (R2000) instead.' : 'DWG conversion failed (' + r.status + ')';
+        if (jsError) throw new Error(msg);
         try { msg = JSON.parse(t).error || msg; } catch (e) { }
         throw new Error(msg);
       });
-    }, function () { throw new Error('DWG needs the local server (anvil/serve.ps1) and its converter.'); });
+    }, function () { throw new Error(jsError ? 'DWG: ' + jsError + '. Save as DXF (R2000) instead.' : 'DWG needs dwg-writer.js (or the local server\'s converter).'); });
   }
-  var DWG_NOTE = 'DWG needs the local server\'s converter (anvil/vendor/get-libredwg.ps1, or install the free ODA File Converter)';
+  var DWG_NOTE = 'DWG needs the local server\'s converter (dwg-writer.js did not load)';
   var LIBREDWG_NOTE = 'LibreDWG\'s DWG writer is experimental; use DXF for CAM, or install the ODA File Converter for compliant DWG';
   // cmdDxfOutput({ format: 'dxf' | 'dwg', name }) opens the PropertyManager (File ▸ Save As DXF / DWG…, Save As with
   // type DXF / DWG carries the typed file name over)
@@ -3448,34 +3813,93 @@
   }
 
   // ------------------------------------------------------------------ measure
+  // lane DF: a reference Point, Axis or Coordinate System (its origin), a model vertex or a straight edge, besides
+  // faces. One item: its position / direction; two (Ctrl+click): the distance point–point (with dX, dY, dZ),
+  // point–axis (normal distance), axis–axis (angle; distance when parallel, minimum distance when skew), point–face
+  // and axis–face. Faces and edges alone read as before (measureFaceEdgeHtml).
+  var MV = K.vec;
   function cmdMeasure() {
     openPM({
       title: 'Measure', icon: 'measure',
-      message: 'Select a face for its area and normal. <b>Ctrl+click</b> a second face for the distance between them.',
+      message: 'Select a face, edge, vertex or reference point / axis. <b>Ctrl+click</b> a second item for the distance or angle between them.',
       groups: [{ title: 'Results', fields: [{ type: 'html', html: measureHtml }] }],
       onChange: function () { }
     });
   }
-  function measureHtml() {
+  function measVec(p, d) { return p.map(function (x) { return UI.fmtNum(Math.abs(x) < 5e-13 ? 0 : x, d == null ? 3 : d); }).join(', '); }
+  function measKv(rows) { return '<div class="kv" style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px">' + rows.map(function (r) { return '<span class="static">' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('') + '</div>'; }
+  function measFeatName(id) { var f = (App.model.features || []).filter(function (x) { return x.id === id; })[0]; return f ? f.name : 'Feature ' + id; }
+  // a selection item as { t: 'pt' | 'line' | 'plane', p, d?, n?, name, ref? } or null
+  function measGeom(s) {
+    if (!s) return null;
+    var planes = App.build && App.build.planes;
+    if ((s.kind === 'feature' || s.kind === 'refgeo') && planes && planes[s.id] && planes[s.id].refgeo) {
+      var r = planes[s.id], nm = measFeatName(s.id);
+      if (r.refgeo === 'point') return { t: 'pt', p: r.p, name: nm, ref: true };
+      if (r.refgeo === 'csys') return { t: 'pt', p: r.origin, name: nm + ' origin', ref: true };
+      if (r.refgeo === 'axis') return { t: 'line', p: r.o, d: MV.norm(r.d), name: nm, ref: true };
+    }
+    if (s.kind === 'vertex' && s.point) return { t: 'pt', p: s.point, name: 'Vertex', ref: true };
+    if (s.kind === 'edge' && s.edge && s.edge.a && s.edge.b && MV.len(MV.sub(s.edge.b, s.edge.a)) > 1e-12) return { t: 'line', p: s.edge.a, d: MV.norm(MV.sub(s.edge.b, s.edge.a)), name: 'Edge' };
+    if (s.kind === 'face' && App.mesh && App.mesh.faces[s.index]) {
+      var fc = App.mesh.faces[s.index];
+      if (!(fc.polys && fc.polys[0] && fc.polys[0].surf)) return { t: 'plane', p: fc.centroid, n: MV.norm(fc.normal), name: 'Face' };
+    }
+    return null;
+  }
+  function measLineDist(p, L) { var v = MV.sub(p, L.p); return MV.len(MV.sub(v, MV.scale(L.d, MV.dot(v, L.d)))); }
+  function measDeg(x) { return UI.fmtNum(Math.acos(Math.max(-1, Math.min(1, x))) * 180 / Math.PI, 2) + '°'; }
+  // the rows for a selection that holds reference geometry or a vertex, else null (the face / edge rows)
+  function measureRefRows() {
+    var list = [App.sel, App.sel2].filter(Boolean).map(measGeom);
+    if (!list.length || list.some(function (g) { return !g; }) || !list.some(function (g) { return g.ref; })) return null;
+    var u = UI.unitLabel(), rows = [], A = list[0], B = list[1];
+    list.forEach(function (g) {
+      if (g.t === 'pt') rows.push([g.name, measVec(g.p) + ' ' + u]);
+      else if (g.t === 'line') rows.push([g.name, 'through ' + measVec(g.p) + ', direction ' + measVec(g.d, 4)]);
+      else rows.push([g.name, 'normal ' + measVec(g.n, 4)]);
+    });
+    if (!B) return rows;
+    var ord = { pt: 0, line: 1, plane: 2 };
+    if (ord[B.t] < ord[A.t]) { var x = A; A = B; B = x; }
+    var dv = function (v) { return UI.fmtNum(v, 3) + ' ' + u; };
+    if (A.t === 'pt' && B.t === 'pt') {
+      var D = MV.sub(B.p, A.p);
+      rows.push(['Distance', dv(MV.len(D))], ['dX', dv(D[0])], ['dY', dv(D[1])], ['dZ', dv(D[2])]);
+    } else if (A.t === 'pt' && B.t === 'line') rows.push(['Normal distance', dv(measLineDist(A.p, B))]);
+    else if (A.t === 'pt' && B.t === 'plane') rows.push(['Normal distance', dv(Math.abs(MV.dot(MV.sub(A.p, B.p), B.n)))]);
+    else if (A.t === 'line' && B.t === 'line') {
+      var X = MV.cross(A.d, B.d);
+      rows.push(['Angle', measDeg(Math.abs(MV.dot(A.d, B.d)))]);
+      if (MV.len(X) < 1e-9) rows.push(['Distance', dv(measLineDist(B.p, A))]);
+      else rows.push(['Minimum distance', dv(Math.abs(MV.dot(MV.sub(B.p, A.p), X)) / MV.len(X))]);
+    } else if (A.t === 'line' && B.t === 'plane') {
+      var s = Math.abs(MV.dot(A.d, B.n));
+      rows.push(['Angle to face', UI.fmtNum(Math.asin(Math.min(1, s)) * 180 / Math.PI, 2) + '°']);
+      if (s < 1e-9) rows.push(['Distance', dv(Math.abs(MV.dot(MV.sub(A.p, B.p), B.n)))]);
+    }
+    return rows;
+  }
+  function measureFaceEdgeHtml() {
     var u = UI.unitLabel();
     if (App.sel && App.sel.kind === 'edge') {
       var e = App.sel.edge, erows = [['Edge', 'length ' + UI.fmtNum(e.len, 3) + ' ' + u], ['Start', e.a.map(function (x) { return UI.fmtNum(x, 2); }).join(', ')], ['End', e.b.map(function (x) { return UI.fmtNum(x, 2); }).join(', ')], ['Direction', e.dir.map(function (x) { return UI.fmtNum(x, 3); }).join(', ')]];
-      if (e.normals.length === 2) erows.push(['Between faces', UI.fmtNum(Math.acos(Math.max(-1, Math.min(1, UI.V.dot(e.normals[0], e.normals[1])))) * 180 / Math.PI, 2) + '° (' + (e.convex ? 'convex' : 'concave') + ')']);
-      return '<div class="kv" style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px">' + erows.map(function (r) { return '<span class="static">' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('') + '</div>';
+      if (e.normals.length === 2) erows.push(['Between faces', UI.fmtNum(Math.acos(Math.max(-1, Math.min(1, MV.dot(e.normals[0], e.normals[1])))) * 180 / Math.PI, 2) + '° (' + (e.convex ? 'convex' : 'concave') + ')']);
+      return measKv(erows);
     }
     if (!App.sel || App.sel.kind !== 'face' || !App.mesh) return '<span class="static">Nothing selected.</span>';
     var a = App.mesh.faces[App.sel.index], rows = [];
     rows.push(['Face', String(App.sel.index)], ['Area', UI.fmtNum(a.area, 2) + ' ' + u + '²'], ['Normal', a.normal.map(function (x) { return UI.fmtNum(x, 3); }).join(', ')], ['Centroid', a.centroid.map(function (x) { return UI.fmtNum(x, 2); }).join(', ')]);
     if (App.sel2 && App.sel2.kind === 'face') {
-      var b = App.mesh.faces[App.sel2.index];
-      var dotn = Math.abs(UI.V.dot(a.normal, b.normal));
-      var ang = Math.acos(Math.min(1, dotn)) * 180 / Math.PI;
+      var b = App.mesh.faces[App.sel2.index], dotn = Math.abs(MV.dot(a.normal, b.normal)), ang = Math.acos(Math.min(1, dotn)) * 180 / Math.PI;
       rows.push(['Second face', String(App.sel2.index)], ['Angle between', UI.fmtNum(ang, 2) + '°']);
-      if (dotn > 0.9999) rows.push(['Parallel distance', UI.fmtNum(Math.abs(UI.V.dot(UI.V.sub(b.centroid, a.centroid), a.normal)), 3) + ' ' + u]);
-      rows.push(['Centroid distance', UI.fmtNum(UI.V.len(UI.V.sub(b.centroid, a.centroid)), 3) + ' ' + u]);
+      if (dotn > 0.9999) rows.push(['Parallel distance', UI.fmtNum(Math.abs(MV.dot(MV.sub(b.centroid, a.centroid), a.normal)), 3) + ' ' + u]);
+      rows.push(['Centroid distance', UI.fmtNum(MV.len(MV.sub(b.centroid, a.centroid)), 3) + ' ' + u]);
     }
-    return '<div class="kv" style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px">' + rows.map(function (r) { return '<span class="static">' + r[0] + '</span><span>' + r[1] + '</span>'; }).join('') + '</div>';
+    return measKv(rows);
   }
+  function measureHtml() { var r = measureRefRows(); return r ? '<div id="measure-ref">' + measKv(r) + '</div>' : measureFaceEdgeHtml(); }
+  UI.measureRows = measureRefRows;   // test hook
   UI.onSelectionChanged = function () { if (!pm.spec) return; if (pm.spec.title === 'Measure') renderPM(); if (pm.spec.onSelection) pm.spec.onSelection(); };
   // the open PropertyManager collects graphics-area selections (its onSelection hook): a plain click in a sketch
   // selects into it instead of opening the clicked entity's PropertyManager (ui-select.js sketchSelectClick)
@@ -4376,6 +4800,8 @@
       case 'sketchedBend': UI.cmdSketchedBend(f); break;
       case 'breakCorner': UI.cmdBreakCorner(f); break;
       case 'closedCorner': UI.cmdClosedCorner(f); break;
+      case 'unfold': UI.cmdUnfold(f); break;   // lane DB
+      case 'fold': UI.cmdFold(f); break;
       case 'sweep': cmdSweep(f.cut, f); break;
       case 'loft': cmdLoft(f.cut, f); break;
       case 'shell': cmdShell(f); break;
@@ -4496,6 +4922,7 @@
   UI.cmdSketchedBend = partOnly(cmdSketchedBend, 'Sketched Bend');
   UI.cmdBreakCorner = partOnly(cmdBreakCorner, 'Break-Corner');   // Sheet Metal ▸ Break-Corner/Corner-Trim PropertyManager (lane CP)
   UI.cmdClosedCorner = partOnly(cmdClosedCorner, 'Closed Corner');   // Sheet Metal ▸ Closed Corner PropertyManager (lane CS)
+  UI.cmdUnfold = partOnly(cmdUnfold, 'Unfold'); UI.cmdFold = partOnly(cmdFold, 'Fold');   // Sheet Metal ▸ Unfold / Fold (lane DB)
   // assembly documents
   UI.cmdInsertComponent = cmdInsertComponent; UI.cmdMate = cmdMate; UI.editMate = editMate; UI.mateSelect = mateSelect;
   UI.cmdMoveComponent = function () { cmdMoveComponent('move'); }; UI.cmdRotateComponent = function () { cmdMoveComponent('rotate'); };

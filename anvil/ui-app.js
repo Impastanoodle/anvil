@@ -705,7 +705,7 @@
         v === '3mf' ? 'Mesh package in ' + (App.model.units === 'in' ? 'inches' : 'millimetres') + ': one object per body' + (isAsm() ? ', one build item per component.' : '.') :
         v === 'obj' ? 'Mesh with normals, one group per body' + (isAsm() ? ' per component' : '') + '; colours go into the .mtl downloaded with it.' :
         v === 'stl' ? 'Triangle mesh, ASCII.' : v === 'script' ? 'The model as an Anvil script.' :
-        v === 'dxf' || v === 'dwg' ? 'Opens the DXF/DWG Output PropertyManager: a planar face, the standard views at full size (1:1), or the sheet-metal flat pattern.' + (v === 'dwg' ? ' DWG needs the local server\'s converter.' : '') :
+        v === 'dxf' || v === 'dwg' ? 'Opens the DXF/DWG Output PropertyManager: a planar face, the standard views at full size (1:1), or the sheet-metal flat pattern.' + (v === 'dwg' ? ' DWG is AutoCAD 2000 (AC1015), written by Anvil itself (no converter needed).' : '') :
         'The Anvil document, re-opened with File ▸ Open.';
     }
     type.addEventListener('change', describe); describe();
@@ -790,8 +790,54 @@
         rows.push([info.name, bm ? 'volume ' + UI.fmtNum(bm.volume, 2) + ' ' + u + '³, mass ' + UI.fmtNum(bVolM3 * App.model.density * 1000, 2) + ' g' : '(not computed)']);
       });
     }
-    var body = el('table', {}, rows.map(function (r) { return el('tr', {}, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
-    UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () { copyText(rows.map(function (r) { return r[0] + ': ' + r[1]; }).join('\n')); } }, { label: 'Close', primary: true, action: UI.closeModal }] });
+    var cells = {}, body = el('table', {}, rows.map(function (r) { var td = el('td', { text: r[1] }); cells[r[0]] = td; return el('tr', {}, [el('th', { text: r[0] }), td]); }));
+    // lane CZ / DF: "Report coordinate values relative to" (SolidWorks' output coordinate system): with a Coordinate
+    // System feature in the part, the centre of mass and the bounding box are given in the chosen system
+    // (Kernel.toCsys); the choice is remembered for the session in App.massFrame (a csys feature id)
+    var frames = massFrames(), sel = null;
+    if (frames.length) {
+      if (App.massFrame != null && !frames.some(function (f) { return f.id === App.massFrame; })) App.massFrame = null;
+      sel = el('select', { id: 'mass-frame', 'aria-label': 'Report coordinate values relative to' });
+      [['', '-- default --']].concat(frames.map(function (f) { return [String(f.id), f.name]; })).forEach(function (o) {
+        var op = el('option', { value: o[0], text: o[1] });
+        if (String(App.massFrame == null ? '' : App.massFrame) === o[0]) op.selected = true;
+        sel.appendChild(op);
+      });
+      body.insertBefore(el('tr', {}, [el('th', { text: 'Report coordinate values relative to' }), el('td', {}, [sel])]), body.firstChild);
+      var setRow = function (name, text) { rows.forEach(function (r) { if (r[0] === name) r[1] = text; }); if (cells[name]) cells[name].textContent = text; };
+      var applyFrame = function () {
+        App.massFrame = sel.value === '' ? null : +sel.value;
+        var fm = massInFrame(App.massFrame);
+        if (!fm) return;
+        setRow('Center of mass', fm.centroid.map(function (x) { return UI.fmtNum(Math.abs(x) < 5e-13 ? 0 : x, 3); }).join(', ') + ' ' + u);
+        setRow('Bounding box', fm.bboxMin.map(function (x) { return UI.fmtNum(x, 2); }).join(', ') + '  →  ' + fm.bboxMax.map(function (x) { return UI.fmtNum(x, 2); }).join(', '));
+        setRow('Extents', [0, 1, 2].map(function (k) { return UI.fmtNum(fm.bboxMax[k] - fm.bboxMin[k], 2); }).join(' × ') + ' ' + u);
+      };
+      sel.addEventListener('change', applyFrame);
+      if (App.massFrame != null) applyFrame();
+    }
+    UI.showModal({ title: 'Mass Properties — ' + App.model.name, body: body, buttons: [{ label: 'Copy', action: function () {
+      var head = sel ? ['Report coordinate values relative to: ' + sel.options[sel.selectedIndex].text] : [];
+      copyText(head.concat(rows.map(function (r) { return r[0] + ': ' + r[1]; })).join('\n'));
+    } }, { label: 'Close', primary: true, action: UI.closeModal }] });
+  }
+  // the part's Coordinate System features that rebuilt (the Mass Properties frame list)
+  function massFrames() {
+    var b = App.build && App.build.planes;
+    return (App.model.features || []).filter(function (f) { return f.type === 'csys' && b && b[f.id] && b[f.id].refgeo === 'csys'; });
+  }
+  // massInFrame(csysId) -> { centroid, bboxMin, bboxMax, frame } in that system (null: the part origin), or null
+  function massInFrame(id) {
+    if (!App.mesh || !App.mesh.triCount) return null;
+    var mp = K.massProps(App.mesh, App.model.density), cs = id != null && App.build && App.build.planes ? App.build.planes[id] : null;
+    if (!cs || cs.refgeo !== 'csys') return { centroid: mp.centroid.slice(), bboxMin: mp.bbox.min.slice(), bboxMax: mp.bbox.max.slice(), frame: null };
+    // the box of the vertices in the system's axes (not the world box carried over)
+    var P = App.mesh.positions64 || App.mesh.positions, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (var i = 0; i + 2 < P.length; i += 3) {
+      var q = K.toCsys(cs, [P[i], P[i + 1], P[i + 2]]);
+      for (var k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+    }
+    return { centroid: K.toCsys(cs, mp.centroid), bboxMin: lo, bboxMax: hi, frame: id };
   }
 
   function showShortcuts() {
@@ -1389,6 +1435,7 @@
   UI.newPart = function (name) { return new Promise(function (res) { confirmDiscard(null, function () { res(newPart(name)); }); }); };
   UI.confirmDiscard = confirmDiscard; UI.offerRecovery = offerRecovery; UI.recoverDocument = recoverDocument;
   UI.rememberPart = rememberPart; UI.modelScript = modelScript; UI.openExample = openExample;
+  UI.massInFrame = massInFrame;   // lane DF
   UI.showMassProperties = showMassProperties; UI.showShortcuts = showShortcuts; UI.showAbout = showAbout; UI.EXAMPLES = EXAMPLES;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

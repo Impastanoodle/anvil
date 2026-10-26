@@ -119,9 +119,12 @@
       var d = DW.smartDim({ edge: [[best[0], best[1]], [best[2], best[3]]] }, null, [best[0], best[1] + 20], { scale: w.scale, aligned: true });
       assert(d.kind === 'aligned', 'along the edge: ' + d.kind);
       iso.dims = [d];
+      // (rfDD2) a new isometric view reads True by default (SolidWorks); Projected is chosen here
+      assert(iso.dimType === 'true', 'a new isometric view starts True: ' + iso.dimType);
+      DW.setDimType(r.doc, iso.id, 'projected');
       r.recompute();
       var sd = r.sheet.dims.filter(function (x) { return x.view === iso.id; })[0];
-      near(sd.value, L, 1e-9, 'Projected (default) ' + sd.text);
+      near(sd.value, L, 1e-9, 'Projected ' + sd.text);
       DW.setDimType(r.doc, iso.id, 'true');
       r.recompute();
       sd = r.sheet.dims.filter(function (x) { return x.view === iso.id; })[0];

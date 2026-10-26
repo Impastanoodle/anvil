@@ -21,7 +21,8 @@
 // propagation), shell (faces nearest the picked points removed; none: closed hollow), loft, sweep (sketch path with
 // exact arcs, or a 3D polyline; mitred corners) and Hole Wizard holes (stage 2); sheet metal: edge flange, hem, jog,
 // Sketched Bend (Kernel.flangeLayout / sketchedBendLayout, exact bend arcs), Break Corner (Kernel.breakCornerLayout,
-// exact fillet arcs) and Closed Corner (Kernel.closedCornerLayout, planar prisms). Anything else stops
+// exact fillet arcs) and Closed Corner (Kernel.closedCornerLayout, planar prisms); reference Axis / Point / Coordinate
+// System (resolved as Kernel.rebuild does; patterns and revolves about an axis, lane DF). Anything else stops
 // the build at that feature ('unsupported'), so the caller keeps Anvil's own result. `tolerance` is the relative
 // volume agreement to expect with Anvil (1e-4; 2e-2 with sweeps / lofts, which Anvil facets). OpenCascade objects
 // are freed after every build.
@@ -29,6 +30,7 @@ var OcctKernel = (function () {
   'use strict';
   var SUPPORTED = { sketch: 1, plane: 1, extrude: 1, revolve: 1, lpattern: 1, cpattern: 1, mirror: 1,
     fillet: 1, chamfer: 1, shell: 1, loft: 1, sweep: 1, hole: 1, import: 1, flange: 1, jog: 1, sketchedBend: 1, breakCorner: 1, closedCorner: 1 };
+  SUPPORTED.unfold = SUPPORTED.fold = 1;   // lane DB2
   SUPPORTED.refaxis = SUPPORTED.refpoint = SUPPORTED.csys = 1;   // lane CZ: reference geometry makes no body (skipped below)
   var SURF = ['plane', 'cylinder', 'cone', 'sphere', 'torus', 'bezier', 'bspline', 'revolution', 'extrusion', 'offset', 'other'];
 
@@ -381,8 +383,25 @@ var OcctKernel = (function () {
       return out;
     }
     function revolveTool(f) {
-      var sk = K.contourSketch(f, sketchOf(f));   // lane CO: Selected Contours
-      return revolveSketch(sk, K.resolvePlane(sk.plane, m, planes), K.revolveAxis(f, sk), (+f.angle || 360) * (f.reverse ? -1 : 1));
+      var sk = K.contourSketch(f, sketchOf(f)), rpl = K.resolvePlane(sk.plane, m, planes);   // lane CO: Selected Contours
+      if (K.refAxisId(f) != null) f = K._.revolveOnRefAxis(f, refAxisRec(f), rpl, { units: m.units });   // lane DF: about a reference axis
+      return revolveSketch(sk, rpl, K.revolveAxis(f, sk), (+f.angle || 360) * (f.reverse ? -1 : 1));
+    }
+    // lane DF: reference geometry resolved here exactly as Kernel.rebuild does (Kernel.resolveRefGeo); a face / edge /
+    // vertex reference reads a faceted copy of this build's bodies, its cylinder / cone faces tagged with their
+    // analytic records (so a cylindrical face gives its exact axis). The record rides in `planes` like Anvil's ctx.planes.
+    function refGeoCtx() {
+      var c = { planes: planes, sketches: sketches, units: m.units }, body;
+      Object.defineProperty(c, 'body', { enumerable: true, get: function () {
+        if (body === undefined) body = bodies.length && CSGlib ? shapeToCSG(transformed(compound(bodies), N(new oc.gp_Trsf_1())), null, null, true) : null;
+        return body;
+      } });
+      return c;
+    }
+    function refAxisRec(f) {
+      var id = K.refAxisId(f), g = planes[id];
+      if (!g || g.refgeo !== 'axis') throw new Error('The reference axis (feature ' + id + ') is missing or failed to rebuild.');
+      return g;
     }
     function revolveSketch(sk, plane, axis, ang) {
       var dl = Math.hypot(axis.d[0], axis.d[1]);
@@ -419,7 +438,8 @@ var OcctKernel = (function () {
       } else if (f.type === 'cpattern') {
         var count = Math.max(2, f.n | 0), total = +f.angle || 360;
         var step = f.equal === false ? total : (Math.abs(total) >= 360 ? total / count : total / (count - 1));
-        var axis = N(new oc.gp_Ax1_2(P(f.center || [0, 0, 0]), Dir(K.AXES[f.axis || 'z'])));
+        var rax = K.refAxisId(f) != null ? refAxisRec(f) : null;   // lane DF: about a reference axis
+        var axis = N(new oc.gp_Ax1_2(P(rax ? rax.o : f.center || [0, 0, 0]), Dir(rax ? rax.d : K.AXES[f.axis || 'z'])));
         for (var c = 1; c < count; c++) { var rt = N(new oc.gp_Trsf_1()); rt.SetRotation_1(axis, step * c * Math.PI / 180); copies.push(transformed(src, rt)); }
       } else {
         var mp = K.makePlane(f.plane || 'Right', f.offset || 0), mt = N(new oc.gp_Trsf_1());
@@ -654,7 +674,7 @@ var OcctKernel = (function () {
     // and the triangles of one planar B-rep face all get the same plane (the face's own, area-weighted), not each its
     // own plane from three rounded nodes: Anvil's mesh groups faces by the plane rounded to 0.01 units, and
     // per-triangle noise on an offset like 0.075 in split the top face of a 14 ga sheet in two (see Kernel.flangeLayout)
-    function shapeToCSG(sh, lin, ang) {
+    function shapeToCSG(sh, lin, ang, withSurf) {   // lane DF: withSurf tags curved faces' polygons with { s: record }
       N(new oc.BRepMesh_IncrementalMesh_2(sh, lin || (m.units === 'in' ? 0.05 / 25.4 : 0.05), false, ang || 0.35, false));
       var polys = [];
       facesOf(sh).forEach(function (f) {
@@ -670,6 +690,7 @@ var OcctKernel = (function () {
           if (pg) fps.push(pg);
         }
         var ad = N(new oc.BRepAdaptor_Surface_2(f, true)), st = ad.GetType();
+        if (withSurf) { var stv = st && st.value != null ? st.value : st, srec = stv ? surfRecord(ad, SURF[stv]) : null; if (srec) fps.forEach(function (q) { q.surf = { s: srec }; }); }
         if (fps.length > 1 && (st && st.value != null ? st.value : st) === 0) {
           var nx = 0, ny = 0, nz = 0, ws = 0, as = 0;
           fps.forEach(function (q) {
@@ -895,6 +916,7 @@ var OcctKernel = (function () {
     // Jog (as Kernel.buildJog): a flange whose wall length makes the offset `height`, then on its wall's end a flange
     // folding back parallel to the base for `length`
     function jogOp(f) {
+      if (f.sketch != null) { sketchJogOp(f); return; }   // lane DC2: Jog from a sketch line
       var k = sheetBody(f), sheet = K.sheetParams(m), T = +sheet.thickness, Rr = f.radius != null ? +f.radius : +sheet.bendRadius;
       var A = (f.angle == null ? 90 : +f.angle) * Math.PI / 180, H = +f.height, L2 = +f.length;
       if (!isFinite(H) || !isFinite(L2) || !isFinite(A)) throw new Error('Jog height, length and angle must be a number each.');
@@ -925,15 +947,16 @@ var OcctKernel = (function () {
       return tr;
     }
     function isIdentity(M) { for (var i = 0; i < 3; i++) { if (Math.abs(M.t[i]) > 1e-12) return false; for (var j = 0; j < 3; j++) if (Math.abs(M.R[i][j] - (i === j ? 1 : 0)) > 1e-12) return false; } return true; }
-    function sketchedBendOp(f) {
+    function sketchedBendOp(f, extraSketches) {
       if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
       if (rm.sheetError) throw new Error(rm.sheetError);
-      var ctxS = { sketches: sketches, planes: planes };
+      var skAll = extraSketches ? Object.assign({}, sketches, extraSketches) : sketches;   // lane DC2: a sketch jog's second line
+      var ctxS = { sketches: skAll, planes: planes };
       var at = K._ && K._.sketchedBendPoint ? K._.sketchedBendPoint(f, m, ctxS) : null;
       var k = pickBody(at);
       if (k < 0) throw new Error('Create a Base Flange before adding a sketched bend.');
       var src = bodies[k] = unify(bodies[k]);
-      var srcCSG = shapeToCSG(src), lay = K.sketchedBendLayout(f, m, { body: srcCSG, sketches: sketches, planes: planes });
+      var srcCSG = shapeToCSG(src), lay = K.sketchedBendLayout(f, m, { body: srcCSG, sketches: skAll, planes: planes });
       function clipAll(sh, hs) { hs.forEach(function (h) { sh = clipKeep(sh, h.n, h.w); }); return sh; }
       var parts = [], fixed = clipAll(src, lay.fixed);
       if (volumeOf(fixed) > 1e-12) parts.push(fixed);
@@ -952,6 +975,34 @@ var OcctKernel = (function () {
       var body = parts[0];
       if (parts.length > 1) body = boolMany('fuse', body, parts.slice(1), 'OpenCascade could not join the bent pieces.');
       bodies[k] = unify(body);
+      return lay;
+    }
+    // lane DC2: Jog from a sketch line (as Kernel.buildSketchJog): a Sketched Bend at the line, then a second one on the
+    // moved wall a straight length g further (a sketch made here on the moved face, folding back, Bend Outside), both
+    // with exact bend arcs. The offset reference, g and the second line are worked out as the CSG kernel does.
+    function sketchJogOp(f) {
+      var sheet = K.sheetParams(m), T = +sheet.thickness, Rr = f.radius != null ? +f.radius : +sheet.bendRadius;
+      var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, D = +f.offset, ref = f.offsetRef || 'outside';
+      if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
+      if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
+      var inner = ref === 'inside' ? D : ref === 'overall' ? D - 2 * T : D - T;
+      var g = (inner - 2 * Rr * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
+      if (!(g > -1e-9)) throw new Error('Jog offset is too small for this bend radius and angle: at least ' + (Math.round(K.jogMinOffset(A, Rr, T, ref) * 1e6) / 1e6) + ' (' + ref + ' offset).');
+      g = Math.max(g, 0);
+      var position = f.position || 'centerline';
+      var lay1 = sketchedBendOp({ id: f.id, sketch: f.sketch, fixed: f.fixed || null, angle: deg, position: position, reverse: !!f.reverse, radius: Rr, bendAllowance: f.bendAllowance });
+      if (!lay1 || lay1.bends.length !== 1 || lay1.pieces.length !== 1) throw new Error('Jog: the sketch must hold exactly one line, on a flat face of the sheet.');
+      var G = lay1.pieces[0].motion, mdir = lay1.bends[0].plane.x, BA = lay1.BA, shift = lay1.shift;
+      var sk = sketches[f.sketch] || K.findFeature(m, f.sketch), pl = K.resolvePlane(sk.plane, m, planes), ln = null;
+      (sk.entities || []).forEach(function (e) { if (!ln && e.t === 'line' && !e.construction && !(K.noProfileEntity && K.noProfileEntity(sk, e))) ln = e; });
+      var P1 = K.to3D(pl, +ln.x1, +ln.y1), P2 = K.to3D(pl, +ln.x2, +ln.y2), Dm = BA - shift + g;
+      function mP(M, q) { return V.add([V.dot(M.R[0], q), V.dot(M.R[1], q), V.dot(M.R[2], q)], M.t); }
+      function mD(M, q) { return [V.dot(M.R[0], q), V.dot(M.R[1], q), V.dot(M.R[2], q)]; }
+      var Q1 = K.to2D(pl, V.add(P1, V.scale(mdir, Dm))), Q2 = K.to2D(pl, V.add(P2, V.scale(mdir, Dm)));
+      var pl2 = { custom: true, origin: mP(G, pl.origin), x: mD(G, pl.x), y: mD(G, pl.y), n: mD(G, pl.n) };
+      var mid = V.scale(V.add(P1, P2), 0.5), fixed2 = mP(G, V.add(mid, V.scale(mdir, Dm - 0.05 * T)));
+      sketchedBendOp({ id: f.id, sketch: 'jog2', fixed: fixed2, angle: deg, position: 'bendOutside', reverse: !f.reverse, radius: Rr, bendAllowance: f.bendAllowance },
+        { jog2: { id: 'jog2', type: 'sketch', plane: pl2, entities: [{ t: 'line', x1: Q1[0], y1: Q1[1], x2: Q2[0], y2: Q2[1] }] } });
     }
     // Break Corner (lane CP; as Kernel.buildBreakCorner, from Kernel.breakCornerLayout found on the bodies'
     // tessellation): one prism per corner, its section's fillet an exact arc; the rebuild cuts the tool (a registered cut)
@@ -982,6 +1033,87 @@ var OcctKernel = (function () {
       if (lay.cuts.length) body = boolMany('cut', body, lay.cuts.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not trim the matching wall.');
       body = boolMany('fuse', body, lay.adds.map(function (t) { return prismOf(t.loop, t.plane, t.a, t.b); }), 'Closed Corner: OpenCascade could not extend the faces.');
       bodies[k] = unify(body);
+    }
+    // Unfold / Fold (lane DB2; as Kernel.buildUnfold / buildFold, from the state Kernel.rebuild leaves after the Unfold:
+    // its face pieces' rigid motions F, Q, P and the bend strips). Unfold: every face piece of the exact folded part
+    // (the part ∩ the piece's cell, the piece's outline through the thickness) moved by P·Q·F, each unfolded strip the
+    // flat strip × T moved by P·Q (a strip that still has a cut across it from before is Anvil's: unsupported), each
+    // bend left folded the part ∩ its wedge moved with its parent; all fused. Fold: what was cut since (the unfolded
+    // part less now), face pieces moved back rigidly, each strip's through-voids (Kernel.bendVoids) as exact
+    // cylinderCutter tools round the bend; all cut from the folded part as it was before the Unfold. A Fold of some
+    // bends only is unsupported (Anvil re-unfolds the rest).
+    var ufLocal = {};   // feature index of an Unfold built in this run -> { B0, F0 }
+    function ufMath() { return K._ || {}; }
+    function ufCell(st, loop, M, d0, d1) { var sp = st.fr.span(d0, d1), sh = prismOf(loop, sp.plane, sp.a, sp.b); return transformed(sh, trsfOf(M)); }
+    function common(a, b) { var op = N(new oc.BRepAlgoAPI_Common_3(a, b, R())); if (!op.IsDone()) throw new Error('OpenCascade could not intersect the bodies.'); return N(op.Shape()); }
+    function ufState(fi) {
+      var r = K.unfoldStateAt(model, fi);
+      if (!r.state) throw new Error('Unfold: no unfold state.');
+      return r.state;
+    }
+    function unfoldOp(f, fi) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var st = ufState(fi), mc = ufMath().mCompose, mi = ufMath().mInv, T = st.T, eps = 0.01 * T;
+      var k = pickBody(f.fixedFace || null);
+      if (k < 0) throw new Error('Unfold: there is no sheet metal part yet.');
+      var B0 = bodies[k] = unify(bodies[k]), parts = [];
+      st.faces.forEach(function (fc, i) {
+        var pc = common(B0, ufCell(st, fc.outer, mi(st.F[i]), -eps, T + eps));
+        if (volumeOf(pc) > 1e-12) parts.push(transformed(pc, trsfOf(mc(st.P, mc(st.Q[i], st.F[i])))));
+      });
+      st.strips.forEach(function (s, k2) {
+        if (st.sel[k2]) {
+          if (s.fi.cutouts && s.fi.cutouts.length) throw unsupportedErr('an Unfold of a bend with a cut across it');
+          parts.push(ufCell(st, s.strip, mc(st.P, st.Q[s.parent]), 0, T));
+          return;
+        }
+        var w = K.unfoldWedgeSpec(s, T), pw = common(B0, prismOf(w.loop, w.plane, w.a, w.b));
+        if (volumeOf(pw) > 1e-12) parts.push(transformed(pw, trsfOf(mc(st.P, mc(st.Q[s.parent], st.F[s.parent])))));
+      });
+      if (!parts.length) throw new Error('Unfold: nothing of the sheet is left.');
+      var body = parts.length > 1 ? boolMany('fuse', parts[0], parts.slice(1), 'Unfold: OpenCascade could not join the flat pieces.') : parts[0];
+      bodies[k] = unify(body);
+      ufLocal[fi] = { B0: B0, F0: bodies[k], k: k };
+    }
+    function foldOp(f, fi) {
+      if (!CSGlib) throw unsupportedErr('sheet metal (csg.js not loaded)');
+      if (rm.sheetError) throw new Error(rm.sheetError);
+      var u = -1;
+      m.features.forEach(function (g, j) { if (j < fi && g.type === 'unfold') u = j; else if (j < fi && g.type === 'fold') u = -1; });
+      if (u < 0) throw new Error('Fold: there is no Unfold before it to fold back.');
+      var st = ufState(u), mc = ufMath().mCompose, mi = ufMath().mInv, T = st.T, eps = 0.01 * T;
+      if (f.bends && f.bends.length && f.bends.length < st.sel.filter(Boolean).length) throw unsupportedErr('a Fold of some of the bends');
+      var k = pickBody(st.fixedFace || null), B0 = null, F0 = null;
+      if (ufLocal[u]) { B0 = ufLocal[u].B0; F0 = ufLocal[u].F0; k = ufLocal[u].k; }
+      else if (cache && cache.states && u > 0 && cache.states[u - 1] && cache.states[u]) { B0 = cache.states[u - 1].bodies[k]; F0 = cache.states[u].bodies[k]; }
+      if (!B0 || !F0 || k < 0) throw unsupportedErr('a Fold whose Unfold is not in this build');
+      var now = bodies[k], removed = cut(F0, now), cuts = [];
+      if (volumeOf(removed) > 1e-12) {
+        st.faces.forEach(function (fc, i) {
+          var M = mc(st.P, st.Q[i]), pc = common(removed, ufCell(st, fc.outer, M, -eps, T + eps));
+          if (volumeOf(pc) > 1e-12) cuts.push(transformed(pc, trsfOf(mi(mc(M, st.F[i])))));
+        });
+        st.strips.forEach(function (s, k2) {
+          if (!st.sel[k2]) {
+            var w = K.unfoldWedgeSpec(s, T), Mw = mc(st.P, mc(st.Q[s.parent], st.F[s.parent]));
+            var pw = common(removed, transformed(prismOf(w.loop, w.plane, w.a, w.b), trsfOf(Mw)));
+            if (volumeOf(pw) > 1e-12) cuts.push(transformed(pw, trsfOf(mi(Mw))));
+            return;
+          }
+          var M = mc(st.P, st.Q[s.parent]), Mi = trsfOf(mi(M)), pc = common(removed, ufCell(st, s.strip, M, -eps, T + eps));
+          if (!(volumeOf(pc) > 1e-12)) return;
+          var sf = K.unfoldStripFrame(st, s), slab = K.bandSlabSpec(sf.plane, sf.band, T);
+          var vs = common(prismOf(slab.loop, slab.plane, slab.a, slab.b), transformed(pc, Mi));
+          if (!(volumeOf(vs) > 0)) return;
+          var loops = K.bendVoids(shapeToCSG(transformed(now, Mi)), sf.plane, sf.band, T, { ends: true, voids: shapeToCSG(vs, 4e-3 * T, 0.1) });
+          // cylinderCutter takes a right-handed section frame (x × y = n); the bend's n runs a → b, which may be the other way
+          var bp = sf.bend, flip = V.dot(V.cross(bp.x, bp.y), bp.n) < 0;
+          if (flip) bp = { origin: bp.origin, x: bp.x, y: bp.y, n: V.scale(bp.n, -1) };
+          loops.forEach(function (l) { cuts.push(cylinderCutter(flip ? l.map(function (q) { return [q[0], -q[1]]; }).reverse() : l, bp, sf.sec, s.BA)); });
+        });
+      }
+      bodies[k] = unify(cuts.length ? boolMany('cut', B0, cuts, 'Fold: OpenCascade could not cut the folded part.') : B0);
     }
     function unsupportedErr(what) { var e = new Error(what + ' is not supported by the OpenCascade kernel yet'); e.unsupported = what; return e; }
     function addBoss(tool, f) {
@@ -1057,15 +1189,13 @@ var OcctKernel = (function () {
         if (fi < start) return;   // restored from the cache
         if (unsupported) { status[f.id] = 'skipped'; return; }
         if (!SUPPORTED[f.type]) { unsupported = f.type; status[f.id] = 'unsupported'; return; }
-        // lane CZ: a pattern / revolve about a reference Axis is Anvil's (the axis resolves against Anvil's body)
-        if (K.refAxisId && K.refAxisId(f) != null) { unsupported = f.type + ' about a reference axis'; status[f.id] = 'unsupported'; return; }
         var tf = now();   // r11/occtswap11: per-feature build time (out.ms.features)
         try {
           if (rm.featureErrors[f.id]) throw new Error(rm.featureErrors[f.id]);
           var tool = null;
           switch (f.type) {
             case 'plane': planes[f.id] = K.makePlane(f.ref || 'Front', +f.offset || 0); break;
-            case 'refaxis': case 'refpoint': case 'csys': break;   // lane CZ: reference geometry, no body
+            case 'refaxis': case 'refpoint': case 'csys': var rgc = refGeoCtx(); planes[f.id] = K.resolveRefGeo(f, m, rgc); if (K.exactFaceCenter) K.exactFaceCenter(f, rgc); break;   // lane DF: no body, a record
             case 'sketch': {
               // r10/facesketch10: a sketch on a face follows the face, resolved exactly as Kernel.rebuild does (an
               // extrude cap from the extrude itself; other planar faces from this build's B-rep faces)
@@ -1085,6 +1215,8 @@ var OcctKernel = (function () {
             case 'sketchedBend': sketchedBendOp(f); break;
             case 'breakCorner': tool = breakCornerTool(f); break;
             case 'closedCorner': closedCornerOp(f); break;
+            case 'unfold': unfoldOp(f, fi); break;   // lane DB2
+            case 'fold': foldOp(f, fi); break;
             case 'shell': shellOp(f); break;
             default: tool = patternTool(f);
           }

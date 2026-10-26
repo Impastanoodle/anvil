@@ -1242,7 +1242,11 @@
   // wall face (real outline, holes included) with a rigid
   // map, recursively, so flanges on flanges and holes on walls all reach the flat. The regions are merged in 2D
   // (mergeFlatRegions; the CSG merge, csgMerge, only as its fallback) and every loop is cleaned (cleanFlatLoop).
-  function flatPattern(model, build, mesh) {
+  function flatPattern(model, build, mesh, opts) {
+    // lane DB: opts.trace (an object) is filled with { faces, strips, plane, nB, wB }: every laid face piece and bend
+    // strip with the rigid map it went into the flat with (Unfold / Fold use them to move material between the states)
+    var trace = opts && opts.trace ? opts.trace : null;
+    if (trace) { trace.faces = []; trace.strips = []; }
     var rmodel = resolvedModel(model);
     if (rmodel.sheetError) throw new Error(rmodel.sheetError);
     model = rmodel.model;
@@ -1252,6 +1256,9 @@
     if (!base) throw new Error('No Base Flange feature found.');
     var sketch = findFeature(model, base.sketch);
     var plane = resolvePlane(sketch.plane, model, build.planes);
+    // lane DB2: a part left unfolded draws its flat in the frame the Unfold moved the flat to (the same 2D as folded)
+    var openUnfold = ufOpenRecord(model, build);
+    if (openUnfold && openUnfold.frame) plane = openUnfold.frame;
     var T = +sheet.thickness, warnings = [], kUsed = {};
     function warn(w) { if (w && warnings.indexOf(w) < 0) warnings.push(w); }
     mesh = planeFaces(mesh);
@@ -1267,11 +1274,14 @@
       if (!best || score > best.score) best = { face: face, i: i, score: score };
     });
     if (!best) throw new Error('Could not find the flat sheet face.');
-    var flanges = [], anchors = [];
+    var flanges = [], anchors = [], flangeIds = [];
     model.features.forEach(function (f) {
+      // lane DB: a Fold carries the cuts it wrapped round bends as cutouts of those bends' records (exact in the flat)
+      if (f.type === 'fold' && !build.errors[f.id]) { foldCutouts(flanges, flangeIds, build.flanges[f.id]); return; }
       if ((f.type !== 'flange' && f.type !== 'jog' && f.type !== 'sketchedBend') || build.errors[f.id]) return;
+      if (isSketchJog(f)) { sketchJogRecordSets(build.flanges[f.id] || []).forEach(function (rs) { var jr = sketchedBendRecords(flanges, anchors, rs); flanges = jr.flanges; anchors = jr.anchors; }); return; }   // lane DC
       if (f.type === 'sketchedBend') { var sbr = sketchedBendRecords(flanges, anchors, build.flanges[f.id] || []); flanges = sbr.flanges; anchors = sbr.anchors; return; }
-      (build.flanges[f.id] || []).forEach(function (fi) { flanges.push(fi); });
+      (build.flanges[f.id] || []).forEach(function (fi, j) { flanges.push(fi); flangeIds[flanges.length - 1] = { feature: f.id, index: j }; });
     });
     // a Sketched Bend's fixed side stays where it was: the unfold starts from the largest face parallel to the base
     // sketch on the sheet at the earliest anchor that still lies on such a face (else the largest such face, as before)
@@ -1470,7 +1480,8 @@
       for (var i = 0; i < comps.length; i++) { var q = to2D(comps[i].plane, P); if (pointInPoly(q, comps[i].loops[0])) return i; }
       return -1;
     }
-    function unfold(faceIdx, ci, map, nTracked, depth) {
+    function traceFaceOf(key) { for (var i = trace.faces.length - 1; i >= 0; i--) if (trace.faces[i].key === key) return i; return -1; }
+    function unfold(faceIdx, ci, map, nTracked, depth, parent) {
       var key = faceIdx + '/' + ci;
       if (usedFaces[key] || depth > 16) return;
       usedFaces[key] = true;
@@ -1505,6 +1516,7 @@
         });
       }
       faceRecs.push({ map: map, normal: face.normal, w: face.w, loops: loops2 });
+      if (trace) trace.faces.push({ key: key, map: map, n: face.normal.slice(), w: face.w, outer: loops2[0], parent: parent == null ? -1 : parent });
       flanges.forEach(function (fi, k) {
         if (usedFlanges[k] || Math.abs(dot(fi.u, face.normal)) < 0.999) return;
         var dm = dot(fi.mid, face.normal) - face.w;
@@ -1565,6 +1577,12 @@
         if (eA.mitred) strip.push(corner(eA, BA + eps, eA.ext + eA.slope * eps), corner(eA, BA, eA.ext));
         else strip.push(off(A2, BA + far));
         regions.push([strip]);
+        var stripIdx = -1;
+        if (trace) {
+          stripIdx = trace.strips.length;
+          trace.strips.push({ fi: fi, id: flangeIds[k] || null, BA: BA, A2: A2, B2: B2, o2: o2, strip: strip.slice(), parent: traceFaceOf(key),
+            trackedInner: trackedInner, mitred: eA.mitred || eB.mitred });
+        }
         // bend reliefs at the ends: a notch w wide past the end, from d0 inside the edge line out to d1 past the flat
         // bend zone (BA, or the slot's R + T reach in the solid when that is longer), so the blank's relief clears the
         // whole bend allowance; an obround relief has its inner end rounded, as in the solid
@@ -1593,6 +1611,7 @@
         var bend = { a: corner(eA, BA / 2, (eA.t0 + eA.ext) / 2), b: corner(eB, BA / 2, (eB.t0 + eB.ext) / 2), up: trackedInner, angle: fi.angle * 180 / Math.PI, R: fi.R, ba: BA, bd: bc.BD, method: bc.type, source: bc.source };
         bend.label = bendNoteText(bend, model.units);
         bends.push(bend);
+        if (trace && stripIdx >= 0) trace.strips[stripIdx].bend = bend;   // lane DB2
         var Pmid = add(add(fi.origin, scale(fi.o, Rt * sA)), scale(fi.u, fi.R - Rt * cA));
         var wn = trackedInner ? add(scale(fi.o, -sA), scale(fi.u, cA)) : add(scale(fi.o, sA), scale(fi.u, -cA));
         var tw = add(scale(fi.o, cA), scale(fi.u, sA));
@@ -1607,6 +1626,7 @@
         if (wIdx < 0) {
           if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
             corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
+          if (trace && fi.L > 1e-9) trace.faces.push({ key: 'w' + k, map: wallMap, n: wn, w: dot(wn, Pmid), outer: regions[regions.length - 1][0], parent: stripIdx });
           return;
         }
         // the pieces of the wall's plane this flange made: those whose outline runs along the wall's start line (the
@@ -1666,7 +1686,7 @@
         var laid = false, same = false;
         mine.forEach(function (ci) {
           var key = wIdx + '/' + ci;
-          if (!usedFaces[key]) { unfold(wIdx, ci, wallMap, wn, depth + 1); laid = true; }
+          if (!usedFaces[key]) { unfold(wIdx, ci, wallMap, wn, depth + 1, stripIdx); laid = true; }
           // Coplanar walls are one mesh face (two flanges on one edge line either side of a tab: the Tray's back walls),
           // so the first flange's unfold already laid this wall down, holes and all. When that unfold put it where this
           // flange would, there is nothing more to add: the stand-in rectangle below would cover the wall's holes and,
@@ -1676,15 +1696,19 @@
         if (laid || same) return;
         if (fi.L > 1e-9) regions.push([[corner(eA, BA - eps, eA.ext - eA.slope * eps), corner(eB, BA - eps, eB.ext - eB.slope * eps),
           corner(eB, BA + fi.L, eB.ext + eB.slope * fi.L), corner(eA, BA + fi.L, eA.ext + eA.slope * fi.L)]]);
+        if (trace && fi.L > 1e-9) trace.faces.push({ key: 'w' + k, map: wallMap, n: wn, w: dot(wn, Pmid), outer: regions[regions.length - 1][0], parent: stripIdx });
       });
     }
     var baseComp = best.anchor != null ? componentAt(best.i, best.anchor) : -1;
     var baseMap = function (Q) { return to2D(plane, Q); };
-    unfold(best.i, baseComp >= 0 ? baseComp : 0, baseMap, best.face.normal, 0);
+    unfold(best.i, baseComp >= 0 ? baseComp : 0, baseMap, best.face.normal, 0, -1);
     // rfCJ: a cut that splits the base face (a window across a channel bottom running into both bends) leaves pieces of
     // it no wall reaches back from; they lie rigidly in the base plane, so they go in with the base map, flanges and
     // all (was: only the anchor's piece was laid, and a flange on another piece was lost with it)
-    faceComponents(best.i).forEach(function (c, ci) { if (!usedFaces[best.i + '/' + ci]) unfold(best.i, ci, baseMap, best.face.normal, 0); });
+    faceComponents(best.i).forEach(function (c, ci) { if (!usedFaces[best.i + '/' + ci]) unfold(best.i, ci, baseMap, best.face.normal, 0, -1); });
+    if (trace) { trace.plane = plane; trace.nB = best.face.normal.slice(); trace.wB = best.face.w; trace.T = T; }
+    // lane DB2: the bends an open Unfold laid flat keep their bend lines and notes (SolidWorks)
+    if (openUnfold) ufOpenBends(openUnfold, faceRecs, sheet, T, model.units, warn).forEach(function (b) { bends.push(b); });
     // merge: in 2D (mergeFlatRegions); the CSG merge stays as the fallback for a boundary that does not close
     var loops = flatOptions.merge === 'csg' ? null : mergeFlatRegions(regions, notches, FLAT_WELD);
     if (!loops) loops = csgMerge(regions, notches);
@@ -2110,6 +2134,84 @@
     return { flanges: flanges, anchors: anchors };
   }
 
+  // ------------------------------------------------------------------ Jog from a sketch line (lane DC, finding #4)
+  // SolidWorks' Jog: one line sketched on a flat face of the sheet; the side of the line away from the Fixed face is
+  // offset by two opposite bends of the same angle. Feature JSON { type: 'jog', sketch, fixed: [x, y, z] | null (on the
+  // side that stays; default the larger piece), offset, offsetRef: 'outside' (default) | 'inside' | 'overall', angle (90),
+  // position: 'centerline' (default) | 'inside' | 'outside' | 'bendOutside' (the first bend against the line, as a
+  // Sketched Bend), reverse, radius, bendAllowance? }. Offset: inside = between the faces that look at each other
+  // across the riser, outside = from a face of the sheet to the same face of the jogged flange (inside + T), overall =
+  // from the far face to the far face (inside + 2T). Built as two Sketched Bends: the first at the line, the second on
+  // the moved wall a straight length g further, folding back, so the jogged flange ends parallel to the sheet; the flat
+  // keeps all the metal (each bend rolls up BA). An edge jog (edges, height, length: older parts) is buildJog.
+  var JOG_OFFSET_REFS = ['outside', 'inside', 'overall'];
+  function isSketchJog(f) { return !!f && f.type === 'jog' && f.sketch != null; }
+  // the riser's inside offset (between the facing faces) for an offset measured as `ref`
+  function jogInsideOffset(D, ref, T) { return ref === 'inside' ? D : ref === 'overall' ? D - 2 * T : D - T; }
+  // the smallest offset (as `ref` measures it) a jog of angle A (rad), radius R and thickness T can make (g = 0)
+  function jogMinOffset(A, R, T, ref) {
+    var inner = 2 * R * (1 - Math.cos(A)) - T * Math.cos(A);
+    return ref === 'inside' ? inner : ref === 'overall' ? inner + 2 * T : inner + T;
+  }
+  function buildSketchJog(f, model, ctx) {
+    if (!ctx.body) throw new Error('Create a Base Flange before adding a jog.');
+    var sheet = sheetParams(model), T = +sheet.thickness, R = f.radius != null ? +f.radius : +sheet.bendRadius;
+    var deg = f.angle == null ? 90 : +f.angle, A = deg * Math.PI / 180, D = +f.offset, ref = f.offsetRef || 'outside';
+    if (JOG_OFFSET_REFS.indexOf(ref) < 0) throw new Error('Unknown jog offset "' + ref + '" (outside, inside or overall).');
+    if (!isFinite(D) || !isFinite(A)) throw new Error('Jog offset and angle must be a number each.');
+    if (!(A > 0.05 && A < Math.PI - 0.05)) throw new Error('Jog angle must be between 3° and 177°.');
+    if (!(R > 0)) throw new Error('Bend radius must be greater than zero.');
+    var sk = sketchedBendLines(f, model, ctx);
+    if (sk.lines.length !== 1) throw new Error('Jog: the sketch must hold exactly one line, on a flat face of the sheet (it has ' + sk.lines.length + ').');
+    var inner = jogInsideOffset(D, ref, T);
+    var g = (inner - 2 * R * (1 - Math.cos(A)) + T * Math.cos(A)) / Math.sin(A);
+    if (!(g > -1e-9)) throw new Error('Jog offset is too small for this bend radius and angle: at least ' + fmtN(jogMinOffset(A, R, T, ref)) + ' (' + ref + ' offset).');
+    g = Math.max(g, 0);
+    var position = f.position || 'centerline';
+    var f1 = { id: f.id, sketch: f.sketch, fixed: f.fixed || null, angle: deg, position: position, reverse: !!f.reverse, radius: R, bendAllowance: f.bendAllowance };
+    var b1 = buildSketchedBend(f1, model, ctx), rec1 = ctx.flanges[f.id] || [];
+    var mv = rec1.filter(function (r) { return r.move; })[0], rb = rec1.filter(function (r) { return r.o && r.sketched; })[0];
+    if (!mv || !rb) throw new Error('Jog: the first bend could not be made.');
+    var G = { R: mv.move.R, t: mv.move.t }, m = rb.o, BA = bendCalc(sheet, A, R, T, customBA(f)).BA;
+    var shift = position === 'centerline' ? BA / 2 : position === 'inside' ? R + T : position === 'outside' ? R : 0;
+    // the second line: on the same face, BA − shift + g past the first (its strip starts there: Bend Outside), carried
+    // with the moving piece by the first bend's motion
+    var pl = sk.plane, ln = sk.lines[0], Dm = BA - shift + g;
+    var Q1 = to2D(pl, add(ln.P1, scale(m, Dm))), Q2 = to2D(pl, add(ln.P2, scale(m, Dm)));
+    var pl2 = { custom: true, origin: mPt(G, pl.origin), x: mDir(G, pl.x), y: mDir(G, pl.y), n: mDir(G, pl.n) };
+    var sk2 = { id: 'jog2', type: 'sketch', plane: pl2, entities: [{ t: 'line', x1: Q1[0], y1: Q1[1], x2: Q2[0], y2: Q2[1] }] };
+    var fixed2 = mPt(G, add(ln.mid, scale(m, Dm - 0.05 * T)));   // just before the second line, on the moved wall
+    var ctx2 = { body: b1.body, flanges: {}, tools: {}, planes: ctx.planes, sketches: { jog2: sk2 } };
+    var f2 = { id: f.id, sketch: 'jog2', fixed: fixed2, angle: deg, position: 'bendOutside', reverse: !f.reverse, radius: R, bendAllowance: f.bendAllowance };
+    var b2 = buildSketchedBend(f2, model, ctx2);
+    // the flat reads the two bends' records one after the other (flatPattern splits at jogSplit)
+    ctx.flanges[f.id] = rec1.concat([{ jogSplit: true }], ctx2.flanges[f.id] || []);
+    return { body: b2.body, tool: b1.tool.union(b2.tool), g: g };
+  }
+  // flatPattern: a sketch jog's records as two Sketched Bends' record lists
+  function sketchJogRecordSets(recs) {
+    var i = recs.map(function (r) { return !!r.jogSplit; }).indexOf(true);
+    return i < 0 ? [recs] : [recs.slice(0, i), recs.slice(i + 1)];
+  }
+
+  // ------------------------------------------------------------------ Flat-Pattern solid (lane DC, finding #9)
+  // flatBody(model, build, flat?) -> the flat blank as a solid lying on the Base Flange's sketch plane, where the base
+  // flange is (the flat's 2D frame is the base sketch's: flatPattern lays the base face with to2D(plane, ·)), T thick on
+  // the side the Base Flange was extruded to; flat defaults to flatPattern(model, build, meshFromBody(build.body)).
+  // -> { body (CSG), flat, plane, h0, h1 (the solid spans plane.n·[h0, h1] from the plane's origin) }
+  function flatBody(model, build, flat) {
+    if (!flat) flat = flatPattern(model, build, meshFromBody(build.body));
+    var rm = resolvedModel(model).model, T = +flat.sheet.thickness;
+    var base = rm.features.filter(function (f) { return f.sheetBase; })[0];
+    var plane = flat.plane, h0 = base && base.reverse ? -T : 0;
+    if (base && base.end === 'mid') h0 = -T / 2;
+    var loops = flat.loops, outer = loops[0];
+    var body = prism(signedArea(outer) < 0 ? outer.slice().reverse() : outer, plane, h0, h0 + T);
+    var holes = loops.slice(1).map(function (l) { return prism(signedArea(l) < 0 ? l.slice().reverse() : l, plane, h0 - 1e-3 * T, h0 + T + 1e-3 * T); });
+    if (holes.length) body = body.subtract(unionAll(holes));
+    return { body: body, flat: flat, plane: plane, h0: h0, h1: h0 + T };
+  }
+
   // ------------------------------------------------------------------ Break Corner / Corner Trim (lane CP)
   // SolidWorks' Sheet Metal ▸ Corners ▸ Break-Corner/Corner-Trim: outside corners of the sheet's flat faces (the base
   // flange, tabs, flange walls) rounded (kind 'fillet', radius `size`) or cut off (kind 'chamfer', `size` along both
@@ -2471,6 +2573,296 @@
     return 'Closed Corner' + (max + 1);
   }
 
+  // ------------------------------------------------------------------ sheet metal: Unfold / Fold (lane DB)
+  // SolidWorks' Unfold / Fold: unfold some or all bends about a fixed face, cut across the flat, fold back.
+  //   { type: 'unfold', fixedFace: [x, y, z] (a point on a flat face of the sheet; absent: the flat pattern's base
+  //     face), bends: [[x, y, z] on a bend, ...] (empty / absent: every bend, "Collect All Bends") }
+  //   { type: 'fold', bends: [...] (empty / absent: every bend the Unfold before it unfolded) }
+  // Bend points are in the folded state (the PMs turn a pick on an unfolded strip into its bend's `at`).
+  // How (no second unfold): flatPattern(…, { trace }) lays every face piece of the part in the flat with a rigid map
+  // and each bend strip [0, BA] beside its parent face; those maps give, per face piece, a rigid motion F (folded →
+  // flat, 3D) and Q (flat → unfolded state: the parent's across an unfolded bend, the folded relation across a bend
+  // left folded). Unfold builds the flat solid (the blank × T: exactly the flat pattern) and moves its pieces by P·Q
+  // (P keeps the fixed face where it was). Fold takes what was cut between the two (the unfolded solid less the
+  // part now), moves each face piece of it back rigidly and wraps each strip's through-voids round its bend with
+  // wrapCut (the map a cut made before a flange takes: s along the strip to the angle A·s/BA), and takes all that from
+  // the folded part. The voids also ride on the bend records as `cutouts` (ctx.flanges[fold.id], kind 'foldCutouts'),
+  // so the flat pattern of the folded part shows the cut exactly as it was made. Only through cuts cross a bend;
+  // blind cuts are carried on flat faces. Material added between Unfold and Fold is not folded.
+  function mInv(M) {
+    var R = [0, 1, 2].map(function (i) { return [M.R[0][i], M.R[1][i], M.R[2][i]]; });
+    return { R: R, t: scale(mDir({ R: R }, M.t), -1) };
+  }
+  // apply a fold's records to flatPattern's flange list: the cutouts join the record they belong to (a copy)
+  function foldCutouts(flanges, ids, recs) {
+    (recs || []).forEach(function (r) {
+      if (!r || r.kind !== 'foldCutouts' || !r.cutouts || !r.cutouts.length) return;
+      for (var k = 0; k < flanges.length; k++) {
+        var id = ids[k];
+        if (id && id.feature === r.feature && id.index === r.index) {
+          flanges[k] = Object.assign({}, flanges[k], { cutouts: (flanges[k].cutouts || []).concat(r.cutouts) });
+          return;
+        }
+      }
+    });
+  }
+  // the flat's 3D frame: q (flat 2D) on the tracked surface, d deep into the sheet
+  function ufFlat(tr) {
+    var pl = tr.plane, nB = tr.nB, wB = tr.wB, sg = dot(nB, pl.n) > 0 ? 1 : -1, c0 = dot(nB, pl.origin);
+    return {
+      at: function (q, d) { var p = to3D(pl, q[0], q[1]); return add(p, scale(nB, wB - dot(nB, p) - (d || 0))); },
+      dir: function (v) { return add(scale(pl.x, v[0]), scale(pl.y, v[1])); },
+      prism: function (loop, d0, d1, shared) { var ha = (wB - c0 - d0) * sg, hb = (wB - c0 - d1) * sg; return prism(loop, pl, Math.min(ha, hb), Math.max(ha, hb), shared); },
+      // lane DB2 (OpenCascade): the same prism as { plane, a, b } (prismOf's arguments)
+      span: function (d0, d1) { var ha = (wB - c0 - d0) * sg, hb = (wB - c0 - d1) * sg; return { plane: pl, a: Math.min(ha, hb), b: Math.max(ha, hb) }; }
+    };
+  }
+  // rigid motion folded → flat of a traced face piece (its tracked plane n·p = w, its 2D map)
+  function ufFaceMotion(fc, fr, nB) {
+    var n = fc.n, P0 = scale(n, fc.w), e1 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    e1 = norm(sub(e1, scale(n, dot(e1, n))));
+    var e2 = cross(n, e1), Q0 = fr.at(fc.map(P0), 0);
+    var i1 = sub(fr.at(fc.map(add(P0, e1)), 0), Q0), i2 = sub(fr.at(fc.map(add(P0, e2)), 0), Q0);
+    var R = [0, 1, 2].map(function (i) { return [0, 1, 2].map(function (j) { return i1[i] * e1[j] + i2[i] * e2[j] + nB[i] * n[j]; }); });
+    return { R: R, t: sub(Q0, mDir({ R: R }, P0)) };
+  }
+  // a traced bend strip's frame in the folded part: section plane { origin (inner face, bend start, end a), x = o,
+  // y = u (toward the fold), n along the edge a → b }, its length, its axis point and a point mid-bend
+  function ufBendFrame(s, T) {
+    var fi = s.fi, e3 = norm(sub(fi.b, fi.a)), O3 = add(fi.origin, scale(e3, dot(sub(fi.a, fi.origin), e3)));
+    var L = dot(sub(fi.b, O3), e3), C = add(O3, scale(fi.u, fi.R)), h = fi.angle / 2, r = fi.R + T / 2;
+    var at = add(add(C, add(scale(fi.u, -r * Math.cos(h)), scale(fi.o, r * Math.sin(h)))), scale(e3, L / 2));
+    return { plane: { origin: O3, x: fi.o.slice(), y: fi.u.slice(), n: e3 }, len: L, C: C, at: at };
+  }
+  // is P on (in) the bend of strip s? polar test about its axis
+  function ufOnBend(s, P, T) {
+    var fi = s.fi, fr = ufBendFrame(s, T), d = sub(P, fr.C), po = dot(d, fi.o), pu = dot(d, fi.u), tau = dot(sub(P, fr.plane.origin), fr.plane.n);
+    var r = Math.hypot(po, pu), th = Math.atan2(po, -pu), tol = Math.max(1e-3, 0.02 * T);
+    if (th < -Math.PI / 2) th += 2 * Math.PI;
+    return r > fi.R - tol && r < fi.R + T + tol && th > -0.01 && th < fi.angle + 0.01 && tau > -tol && tau < fr.len + tol;
+  }
+  // the bend zone of strip s in the folded part as a solid (a sector a little wider than the bend)
+  function ufWedgeSpec(s, T) {
+    var fi = s.fi, fr = ufBendFrame(s, T), rr = fi.R + 1.05 * T, d = 0.02, n = Math.max(4, Math.ceil((fi.angle + 2 * d) / (Math.PI / 16))), loop = [[0, fi.R]];
+    for (var i = 0; i <= n; i++) { var th = -d + (fi.angle + 2 * d) * i / n; loop.push([rr * Math.sin(th), fi.R - rr * Math.cos(th)]); }
+    return { loop: loop, plane: fr.plane, a: 0, b: fr.len };
+  }
+  function ufWedge(s, T) { var w = ufWedgeSpec(s, T); return prism(w.loop, w.plane, w.a, w.b); }
+  // lane DB2: an unfolded strip's frames: `plane` / `band` its (s, τ) frame in the flat (origin at A2 on the tracked
+  // surface, x across, y out of the sheet; a mitred strip's band spans its whole τ range), `bend` the folded bend's
+  // section frame (ufBendFrame) and `sec` { A, R, T } (wrapCut's / OpenCascade's cylinderCutter's arguments)
+  function ufStripFrame(st, s) {
+    var fr = st.fr, T = st.T, tv = [s.B2[0] - s.A2[0], s.B2[1] - s.A2[1]], tl = Math.hypot(tv[0], tv[1]), t0 = 0, t1 = tl;
+    s.strip.forEach(function (q) { var tq = ((q[0] - s.A2[0]) * tv[0] + (q[1] - s.A2[1]) * tv[1]) / tl; t0 = Math.min(t0, tq); t1 = Math.max(t1, tq); });
+    return { plane: { origin: fr.at(s.A2, 0), x: fr.dir(s.o2), y: st.tr.nB.slice(), n: norm(fr.dir(tv)) }, band: { s0: 0, s1: s.BA, t0: t0, t1: t1 },
+      bend: ufBendFrame(s, T).plane, sec: { A: s.fi.angle, R: s.fi.R, T: T } };
+  }
+  // lane DB2: Unfold's state as Kernel.rebuild leaves it after feature index `idx` of `model` (OpenCascade builds its
+  // Unfold / Fold from it), or null
+  function unfoldStateAt(model, idx) {
+    var m = {};
+    Object.keys(model).forEach(function (k) { m[k] = model[k]; });
+    m.features = model.features.slice(0, idx + 1);
+    var b = K.rebuild(m), id = model.features[idx].id;
+    if (b.errors[id]) throw new Error(b.errors[id]);
+    var stp = b.cache && b.cache.steps && b.cache.steps[idx];
+    return { state: (stp && stp.unfold) || null, build: b };
+  }
+  function ufBendIndex(strips, P, T) {
+    for (var j = 0; j < strips.length; j++) if (ufOnBend(strips[j], P, T)) return j;
+    return -1;
+  }
+  // unfoldState(f, model, ctx, B0, bendPts) -> { body, state, recs }: unfold body B0 (the folded part)
+  function unfoldState(f, model, ctx, B0, bendPts) {
+    var tr = {}, flat;
+    if (!B0) throw new Error('Unfold: there is no sheet metal part yet.');
+    try { flat = flatPattern(model, { planes: ctx.planes, errors: ctx.errors || {}, flanges: ctx.flanges, body: B0 }, meshFromBody(B0), { trace: tr }); }
+    catch (e) { throw new Error('Unfold: ' + (e.message || e)); }
+    var T = tr.T, fr = ufFlat(tr), faces = tr.faces, strips = tr.strips.filter(function (s) { return s.parent >= 0; });
+    if (!strips.length) throw new Error('Unfold: the part has no bends.');
+    var sel = strips.map(function () { return !(bendPts && bendPts.length); });
+    (bendPts || []).forEach(function (P, i) {
+      var k = ufBendIndex(strips, P, T);
+      if (k < 0) throw new Error('Unfold: bend ' + (i + 1) + ' (' + P.map(fmtN).join(', ') + ') is not on a bend of the part.');
+      sel[k] = true;
+    });
+    var F = faces.map(function (fc) { return ufFaceMotion(fc, fr, tr.nB); });
+    // Q: flat → unfolded state, per face piece (faces come in unfold order: a parent before its children)
+    var Q = [];
+    faces.forEach(function (fc, i) {
+      var s = fc.parent >= 0 ? tr.strips[fc.parent] : null, k = s ? strips.indexOf(s) : -1;
+      if (!s || s.parent < 0) { Q[i] = M_ID; return; }
+      Q[i] = k >= 0 && sel[k] ? Q[s.parent] : mCompose(Q[s.parent], mCompose(F[s.parent], mInv(F[i])));
+    });
+    // the fixed face: the face piece holding the point, on either side of the sheet
+    var fix = 0;
+    if (f.fixedFace) {
+      fix = -1;
+      faces.forEach(function (fc, i) {
+        if (fix >= 0) return;
+        var h = fc.w - dot(fc.n, f.fixedFace), tol = 1e-3 * Math.max(1, T);
+        if (Math.abs(h) > tol && Math.abs(h - T) > tol) return;
+        if (pointInPoly(to2D(tr.plane, mPt(F[i], f.fixedFace)), fc.outer)) fix = i;
+      });
+      if (fix < 0) throw new Error('Unfold: the fixed face (' + f.fixedFace.map(fmtN).join(', ') + ') is not a flat face of the sheet.');
+    }
+    var P = mCompose(mInv(F[fix]), mInv(Q[fix]));
+    // the flat solid: the blank × T, its faces tagged with the feature (a sketch on the flat face refers to it)
+    var m = 0.01 * T, flatBody = fr.prism(flat.loops[0], 0, T, f.id);
+    flat.loops.slice(1).forEach(function (h) { flatBody = flatBody.subtract(fr.prism(h, -m, T + m, f.id)); });
+    var body;
+    if (sel.every(Boolean)) body = mBody(flatBody, P);
+    else {
+      var pieces = [];
+      faces.forEach(function (fc, i) { var pc = flatBody.intersect(fr.prism(fc.outer, -m, T + m)); if (pc.polygons.length) pieces.push(mBody(pc, mCompose(P, Q[i]))); });
+      strips.forEach(function (s, k) {
+        var pc = sel[k] ? flatBody.intersect(fr.prism(s.strip, -m, T + m)) : B0.intersect(ufWedge(s, T));
+        if (pc.polygons.length) pieces.push(mBody(pc, sel[k] ? mCompose(P, Q[s.parent]) : mCompose(P, mCompose(Q[s.parent], F[s.parent]))));
+      });
+      body = unionAll(pieces);
+    }
+    var pl = tr.plane, frame = { origin: mPt(P, pl.origin), x: mDir(P, pl.x), y: mDir(P, pl.y), n: mDir(P, pl.n) };
+    var recs = [{ kind: 'unfold', fixed: f.fixedFace || null, frame: frame, bends: strips.map(function (s, k) {
+      var bf = ufBendFrame(s, T), M = sel[k] ? mCompose(P, Q[s.parent]) : null;
+      var out = { at: bf.at, unfolded: sel[k], R: s.fi.R, angle: s.fi.angle, ba: s.BA,
+        quad: M ? s.strip.map(function (q) { return mPt(M, fr.at(q, 0)); }) : null, normal: M ? mDir(M, tr.nB) : null };
+      // lane DB2: the flat bend line (unfolded state, on the tracked surface), the side it folds toward, a custom BA
+      if (M && s.bend) {
+        out.line = [mPt(M, fr.at(s.bend.a, 0)), mPt(M, fr.at(s.bend.b, 0))];
+        out.toward = mDir(M, s.trackedInner ? tr.nB : scale(tr.nB, -1));
+        if (s.fi.ba) out.cba = s.fi.ba;
+      }
+      return out;
+    }) }];
+    return { body: body, recs: recs, state: { id: f.id, B0: B0, F0: body, tr: tr, fr: fr, strips: strips, faces: faces, F: F, Q: Q, P: P, sel: sel, fixedFace: f.fixedFace || null, T: T } };
+  }
+  // sheetBends(model, build, mesh) -> [{ at, angle (deg), R, len }]: the bends of the part as built (folded), in the
+  // order Unfold numbers them; `at` is the point Unfold / Fold store for a bend. sheetBendAt(bends, P, T) -> the
+  // index of the bend whose zone holds P (a click on its inside or outside surface), else -1.
+  function sheetBends(model, build, mesh) {
+    var tr = {};
+    flatPattern(model, build, mesh, { trace: tr });
+    return tr.strips.filter(function (s) { return s.parent >= 0; }).map(function (s) {
+      var bf = ufBendFrame(s, tr.T);
+      return { at: bf.at, angle: s.fi.angle * 180 / Math.PI, R: s.fi.R, len: bf.len, ba: s.BA, zone: { fi: s.fi } };
+    });
+  }
+  function sheetBendAt(bends, P, T) {
+    for (var i = 0; i < bends.length; i++) if (ufOnBend(bends[i].zone, P, T)) return i;
+    return -1;
+  }
+  // unfoldedBendAt(rec, P, T) -> the index in rec.bends (an Unfold's record, kind 'unfold') of the unfolded strip that
+  // holds P (a click on either face of the flat strip), else -1
+  function unfoldedBendAt(rec, P, T) {
+    var bends = (rec && rec.bends) || [];
+    for (var i = 0; i < bends.length; i++) {
+      var b = bends[i], q = b.quad;
+      if (!b.unfolded || !q || q.length < 3) continue;
+      var n = b.normal, h = dot(sub(P, q[0]), n);
+      if (h > 1e-3 * Math.max(1, T) || h < -T * 1.001 - 1e-6) continue;
+      var e1 = norm(sub(q[1], q[0])), e2 = cross(n, e1), loop = q.map(function (Q) { var d = sub(Q, q[0]); return [dot(d, e1), dot(d, e2)]; });
+      var d0 = sub(P, q[0]);
+      if (pointInPoly([dot(d0, e1), dot(d0, e2)], loop)) return i;
+    }
+    return -1;
+  }
+  // unfoldPreview(model, build, f) -> the part with Unfold / Fold `f` appended to `model` (as built in `build`, whose
+  // cache gives the prefix): what the PropertyManagers' live preview shows (the worker's 'unfold' / 'fold' op)
+  function unfoldPreview(model, build, f) {
+    var m = {};
+    Object.keys(model).forEach(function (k) { m[k] = model[k]; });
+    var g = JSON.parse(JSON.stringify(f));
+    if (g.id == null) g.id = (model.nextId || 1) + 1000;
+    m.features = model.features.concat([g]);
+    var b = K.rebuild(m, build && build.cache);
+    if (b.errors[g.id]) throw new Error(b.errors[g.id]);
+    return b.body;
+  }
+  // lane DB2: the Unfold record left open at the end of `build` (an Unfold, or a Fold of some bends, with no full Fold
+  // after it), else null
+  function ufOpenRecord(model, build) {
+    var open = null;
+    (model.features || []).forEach(function (f) {
+      if ((f.type !== 'unfold' && f.type !== 'fold') || !build.flanges || (build.errors && build.errors[f.id])) return;
+      open = ((build.flanges[f.id] || []).filter(function (r) { return r && r.kind === 'unfold'; })[0]) || null;
+    });
+    return open;
+  }
+  // the flat bend lines of an open Unfold's unfolded bends, in the 2D of the face piece each lies on (faceRecs: the
+  // pieces flatPattern laid, with their maps)
+  function ufOpenBends(rec, faceRecs, sheet, T, units, warn) {
+    var out = [], tol = 1e-3 * Math.max(1, T);
+    (rec.bends || []).forEach(function (b) {
+      if (!b.unfolded || !b.line) return;
+      var mid = scale(add(b.line[0], b.line[1]), 0.5);
+      var fr = faceRecs.filter(function (r) {
+        var h = r.w - dot(r.normal, mid);
+        return (Math.abs(h) < tol || Math.abs(h - T) < tol) && pointInPoly(r.map(mid), r.loops[0]);
+      })[0];
+      if (!fr) return;
+      var bc;
+      try { bc = bendCalc(sheet, b.angle, b.R, T, b.cba); } catch (e) { warn(e.message); return; }
+      warn(bc.warning);
+      var bend = { a: fr.map(b.line[0]), b: fr.map(b.line[1]), up: dot(b.toward, fr.normal) > 0, angle: b.angle * 180 / Math.PI, R: b.R, ba: bc.BA, bd: bc.BD, method: bc.type, source: bc.source };
+      bend.label = bendNoteText(bend, units);
+      out.push(bend);
+    });
+    return out;
+  }
+  function buildUnfold(f, model, ctx) {
+    if (ctx.unfold) throw new Error('Unfold: the part is unfolded already (' + (ctx.unfold.name || 'an Unfold') + '): add a Fold first.');
+    var r = unfoldState(f, model, ctx, ctx.body, f.bends);
+    r.state.name = f.name;
+    return r;
+  }
+  // buildFold(f, model, ctx) -> { body, recs, state, cut }: fold the part ctx.body (unfolded by ctx.unfold) back
+  function buildFold(f, model, ctx) {
+    var st = ctx.unfold;
+    if (!st) throw new Error('Fold: there is no Unfold before it to fold back.');
+    var T = st.T, fr = st.fr, m = 0.01 * T, cuts = [], recs = [];
+    var removed = st.F0.subtract(ctx.body);
+    var some = removed.polygons.length && removed.volume() > 1e-12 * Math.max(1, Math.abs(st.F0.volume()));
+    if (some) {
+      st.faces.forEach(function (fc, i) {
+        var M = mCompose(st.P, st.Q[i]), pc = removed.intersect(mBody(fr.prism(fc.outer, -m, T + m), M));
+        if (pc.polygons.length) cuts.push(mBody(pc, mInv(mCompose(M, st.F[i]))));
+      });
+      st.strips.forEach(function (s, k) {
+        if (!st.sel[k]) {
+          var Mw = mCompose(st.P, mCompose(st.Q[s.parent], st.F[s.parent])), pw = removed.intersect(mBody(ufWedge(s, T), Mw));
+          if (pw.polygons.length) cuts.push(mBody(pw, mInv(Mw)));
+          return;
+        }
+        var M = mCompose(st.P, st.Q[s.parent]), Mi = mInv(M), pc = removed.intersect(mBody(fr.prism(s.strip, -m, T + m), M));
+        if (!pc.polygons.length) return;
+        // the strip's voids in its own (s, τ) frame (ufStripFrame; lane DB2: a mitred strip's whole τ range)
+        var sf = ufStripFrame(st, s), band = sf.band;
+        var loops = bendVoids(mBody(ctx.body, Mi), sf.plane, band, T, { ends: true, voids: bandSlab(sf.plane, band, T).intersect(mBody(pc, Mi)) });
+        if (!loops.length) return;
+        var w = wrapCut(loops, sf.sec, s.BA, sf.bend, { grow: band, shared: f.id });
+        if (w) cuts.push(w);
+        if (s.id) recs.push({ kind: 'foldCutouts', feature: s.id.feature, index: s.id.index, cutouts: loops });
+      });
+    }
+    var cut = cuts.length ? unionAll(cuts) : null, body = cut ? st.B0.subtract(cut) : st.B0;
+    // a Fold of some of the bends: the rest stay unfolded (an Unfold of them on the folded result)
+    var keep = [];
+    if (f.bends && f.bends.length) {
+      var fold = st.sel.map(function () { return false; });
+      f.bends.forEach(function (P, i) {
+        var k = ufBendIndex(st.strips, P, T);
+        if (k < 0 || !st.sel[k]) throw new Error('Fold: bend ' + (i + 1) + ' (' + P.map(fmtN).join(', ') + ') is not one the Unfold unfolded.');
+        fold[k] = true;
+      });
+      st.strips.forEach(function (s, k) { if (st.sel[k] && !fold[k]) keep.push(ufBendFrame(s, T).at); });
+    }
+    if (!keep.length) return { body: body, recs: recs, state: null, cut: cut };
+    ctx.flanges[f.id] = recs;
+    var again = unfoldState({ id: f.id, fixedFace: st.fixedFace }, model, ctx, body, keep);
+    again.state.name = f.name;
+    return { body: again.body, recs: recs.concat(again.recs), state: again.state, cut: cut };
+  }
+
   // ------------------------------------------------------------------ public API (Kernel.*)
   K.buildClosedCorner = buildClosedCorner; K.closedCornerLayout = closedCornerLayout;
   K.closedCornerName = closedCornerName; K.CLOSED_CORNER_TYPES = CC_TYPES.slice(); K.closedCornerDefaultGap = ccDefaultGap; K.closedCornerMinGap = ccMinGap;
@@ -2491,4 +2883,10 @@
   K.buildBreakCorner = buildBreakCorner; K.breakCornerLayout = breakCornerLayout; K.breakCornerCandidates = breakCornerCandidates;
   K.breakCornerName = breakCornerName; K.BREAK_CORNER_KINDS = BC_KINDS.slice();
   _.buildSketchedBend = buildSketchedBend; _.sketchedBendPoint = sketchedBendPoint;
+  // Unfold / Fold (lane DB)
+  K.buildUnfold = buildUnfold; K.buildFold = buildFold; K.sheetBends = sheetBends; K.sheetBendAt = sheetBendAt; K.unfoldedBendAt = unfoldedBendAt; K.unfoldPreview = unfoldPreview; _.buildUnfold = buildUnfold; _.buildFold = buildFold;
+  // lane DC: Jog from a sketch line, the Flat-Pattern solid
+  K.buildSketchJog = buildSketchJog; K.isSketchJog = isSketchJog; K.JOG_OFFSET_REFS = JOG_OFFSET_REFS.slice(); K.jogMinOffset = jogMinOffset; K.flatBody = flatBody;
+  _.buildSketchJog = buildSketchJog; _.isSketchJog = isSketchJog;
+  K.unfoldStateAt = unfoldStateAt; K.unfoldStripFrame = ufStripFrame; K.unfoldWedgeSpec = ufWedgeSpec; _.mCompose = mCompose; _.mInv = mInv;   // lane DB2 (OpenCascade)
 })(Kernel, Kernel._);
