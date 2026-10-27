@@ -33,9 +33,9 @@
     assert(/gradient/.test(bgImg), 'the gradient background: ' + bgImg);
     return bgImg.slice(0, 80);
   });
-  step('r14 view: face selection yellow (rfBR) and pre-highlight orange, both translucent tints over the shaded face', async function () {
+  step('r14 view: face / solid selection light blue (user 2026-10-27) and pre-highlight orange, both translucent tints over the shaded face', async function () {
     var s = UI.mats.sel, h = UI.mats.hover;
-    assert(s.color.r > 0.9 && s.color.g > 0.75 && s.color.b < 0.2 && s.transparent && s.opacity < 0.5, 'selection yellow tint: #' + s.color.getHexString() + ' @' + s.opacity);
+    assert(s.color.b > 0.9 && s.color.g > 0.7 && s.color.r > 0.4 && s.color.r < s.color.b && s.transparent && s.opacity < 0.5, 'selection light-blue tint: #' + s.color.getHexString() + ' @' + s.opacity);
     assert(h.color.r > 0.9 && h.color.b < 0.3 && h.transparent && h.opacity < 0.5, 'pre-highlight orange tint: #' + h.color.getHexString() + ' @' + h.opacity);
     anvil.select(0); UI.tick();
     var sm = UI.groups.highlight.children.filter(function (o) { return o.material === UI.mats.sel; });

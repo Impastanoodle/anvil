@@ -104,7 +104,7 @@ var UI = (function () {
     // the pre-highlight), light enough that the face's shading (and its edges) still read through
     hover: new THREE.MeshBasicMaterial({ color: 0xff9a2e, transparent: true, opacity: 0.38,   // r5/select5: orange like edge / vertex / sketch pre-highlights (was light blue)
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }),
-    sel: new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.42, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // rfBR: yellow (was blue 0x3d8bff)
+    sel: new THREE.MeshBasicMaterial({ color: 0x7ec8ff, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, side: THREE.DoubleSide }),   // 2026-10-27 user: selected faces / solids light blue (rfBR yellow 0xffd400 stays for edges and sketch entities)
     preview: new THREE.MeshPhongMaterial({ color: 0xf2cf5b, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
     previewCut: new THREE.MeshPhongMaterial({ color: 0xe8746a, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
     // the sketch being edited is drawn on top of the body so it stays visible on hidden planes

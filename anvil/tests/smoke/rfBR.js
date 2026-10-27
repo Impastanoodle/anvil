@@ -26,7 +26,8 @@
           seen.push(th + ':' + b);
         });
       });
-      ['grid', 'gridMajor', 'planeLine', 'planeFace', 'planeFaceHi', 'sel', 'sketch', 'sketchDim', 'temp'].forEach(function (k) {
+      // 'sel' left out: the face / solid selection tint is light blue by the user's choice (2026-10-27, r14-viewui14 checks it)
+      ['grid', 'gridMajor', 'planeLine', 'planeFace', 'planeFaceHi', 'sketch', 'sketchDim', 'temp'].forEach(function (k) {
         var c = UI.mats[k].color; assert(!rfBRbluish([c.r * 255, c.g * 255, c.b * 255]), k + ' not blue: #' + c.getHexString());
       });
     } finally { UI.setTheme(theme0); UI.setBackground(bg0 || 'gradient'); }
